@@ -2,7 +2,7 @@
 
 基于 GitHub Actions 的易班（yiban）自动签到项目，无需服务器、无需保持电脑开机，配置一次即可每天自动签到。
 
-> 本项目是 [WorkBuddy/橙星](https://github.com/) 大项目的延伸子项目，将原 Android 客户端中的易班签到逻辑移植为 Python 脚本，并托管到 GitHub Actions 上运行。
+> 本项目是橙星（oranje-star）的延伸子项目，将原 Android 客户端中的易班签到逻辑移植为 Python 脚本，并托管到 GitHub Actions 上运行。
 
 ---
 
