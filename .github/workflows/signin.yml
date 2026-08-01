@@ -1,0 +1,57 @@
+name: Yiban Sign-in
+
+on:
+  schedule:
+    # 每天 UTC 00:00 = 北京时间 08:00
+    - cron: '0 0 * * *'
+    # 每天 UTC 12:00 = 北京时间 20:00
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      YIBAN_ACCOUNTS:
+        required: false
+      YIBAN_PHONE:
+        required: false
+      YIBAN_PASSWORD:
+        required: false
+      YIBAN_NOTIFY_URL:
+        required: false
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run sign-in script
+        env:
+          YIBAN_ACCOUNTS: ${{ secrets.YIBAN_ACCOUNTS }}
+          YIBAN_PHONE: ${{ secrets.YIBAN_PHONE }}
+          YIBAN_PASSWORD: ${{ secrets.YIBAN_PASSWORD }}
+          YIBAN_NOTIFY_URL: ${{ secrets.YIBAN_NOTIFY_URL }}
+        run: python scripts/signin.py
+
+  # 在定时触发时调用 keepalive 防止工作流被 GitHub 自动禁用（60 天限制）
+  workflow-keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: liskin/gh-workflow-keepalive@v1

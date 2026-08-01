@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+
+# 本地配置（避免泄露账号密码）
+config.local.py
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志与数据
+*.log
+logs/
+data/
+
+# 系统文件
+.DS_Store
+Thumbs.db

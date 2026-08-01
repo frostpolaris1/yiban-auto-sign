@@ -1,0 +1,4 @@
+# 易班自动签到依赖
+requests>=2.31.0
+pycryptodome>=3.19.0
+js2py>=0.74

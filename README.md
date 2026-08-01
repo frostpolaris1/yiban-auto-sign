@@ -1,0 +1,341 @@
+# 易班自动签到（GitHub Actions 版）
+
+基于 GitHub Actions 的易班（yiban）自动签到项目，无需服务器、无需保持电脑开机，配置一次即可每天自动签到。
+
+> 本项目是 [WorkBuddy/橙星](https://github.com/) 大项目的延伸子项目，将原 Android 客户端中的易班签到逻辑移植为 Python 脚本，并托管到 GitHub Actions 上运行。
+
+---
+
+## ✨ 功能特点
+
+- 🤖 **全自动签到**：每天定时执行，无需人工干预
+- 📍 **智能定位**：在签到范围内生成随机定位点，模拟真实 GPS（缩放质心算法）
+- 👥 **多账号支持**：一个仓库管理多个易班账号
+- 🔔 **消息通知**：签到失败时推送通知（Server 酱 / Bark / 企业微信等）
+- 🆓 **完全免费**：使用 GitHub Actions 免费额度，每月消耗约 60 分钟（远低于 2000 分钟配额）
+- ⏰ **永久运行**：内置 `gh-workflow-keepalive`，自动破解 GitHub 60 天无活动禁用限制
+
+---
+
+## 📁 项目结构
+
+```
+yiban-auto-sign/
+├── .github/
+│   └── workflows/
+│       └── signin.yml          # 签到工作流（含 keepalive）
+├── scripts/
+│   └── signin.py               # 核心签到脚本
+├── .env.example                # 环境变量示例
+├── .gitignore
+├── requirements.txt            # Python 依赖
+├── LICENSE
+└── README.md                   # 本文件（部署教程）
+```
+
+---
+
+## 🚀 快速部署（5 分钟搞定）
+
+### 第 1 步：Fork 或导入仓库
+
+**方式一：Fork（推荐）**
+
+如果你已将本项目推送到 GitHub，直接点击页面右上角的 **Fork** 按钮，将仓库复制到你的账号下。
+
+**方式二：新建仓库并上传**
+
+1. 在 GitHub 上点击右上角 `+` → `New repository`
+2. 仓库名填 `yiban-auto-sign`（可自定义）
+3. **可见性建议选 Private（私有）**，避免泄露账号信息
+4. 点击 `Create repository`
+5. 在本地将本项目代码推送到该仓库：
+
+```bash
+cd yiban-auto-sign
+git init
+git add .
+git commit -m "feat: 初始化易班自动签到项目"
+git branch -M main
+git remote add origin https://github.com/<你的用户名>/yiban-auto-sign.git
+git push -u origin main
+```
+
+### 第 2 步：配置 Secrets（关键）
+
+进入你 fork 的仓库，依次点击 **`Settings`** → **`Secrets and variables`** → **`Actions`** → **`New repository secret`**，添加以下密钥：
+
+| Secret 名称 | 说明 | 是否必填 |
+|------------|------|---------|
+| `YIBAN_ACCOUNTS` | 易班账号，格式 `手机号:密码`，多账号用 `#` 分隔 | 二选一必填 |
+| `YIBAN_PHONE` | 易班手机号（单账号，向后兼容） | 二选一必填 |
+| `YIBAN_PASSWORD` | 易班密码（单账号，向后兼容） | 二选一必填 |
+| `YIBAN_NOTIFY_URL` | 通知 webhook URL（Server 酱 / Bark 等） | 可选 |
+
+**配置示例：**
+
+**单账号（推荐用 YIBAN_ACCOUNTS）：**
+```
+Name:  YIBAN_ACCOUNTS
+Value: 13800138000:your_password
+```
+
+**多账号：**
+```
+Name:  YIBAN_ACCOUNTS
+Value: 13800138000:pwd1#13900139000:pwd2#13700137000:pwd3
+```
+
+> ⚠️ **密码中如包含 `:` 或 `#` 字符**：请改用单账号的 `YIBAN_PHONE` / `YIBAN_PASSWORD` 配置。
+
+### 第 3 步：启用 GitHub Actions
+
+1. 进入仓库的 **`Actions`** 标签页
+2. 如果看到提示，点击 **`I understand my workflows, go ahead and enable them`** 启用工作流
+3. 左侧应能看到名为 **`Yiban Sign-in`** 的工作流
+
+### 第 4 步：手动测试
+
+部署完成后，先手动触发一次确认配置无误：
+
+1. 进入 `Actions` 标签页
+2. 左侧选择 **`Yiban Sign-in`** 工作流
+3. 点击右侧的 **`Run workflow`** 按钮
+4. 分支选 `main`，点击绿色的 **`Run workflow`** 确认执行
+5. 等待约 30 秒后刷新页面，点击本次运行查看日志
+
+**日志中出现以下内容即代表签到成功：**
+```
+[2026-08-01 08:00:01] [INFO] ==== 开始执行签到，共 1 个账号 ====
+[2026-08-01 08:00:03] [INFO] [13800138000] 登录成功
+[2026-08-01 08:00:04] [INFO] [13800138000] 生成定位: (118.789,32.045) 地址: XX大学
+[2026-08-01 08:00:05] [INFO] [13800138000] ✅ 签到成功
+[2026-08-01 08:00:05] [INFO] ==== 签到汇总 ====
+[2026-08-01 08:00:05] [INFO]   ✅ 13800138000: 签到成功
+```
+
+---
+
+## ⏰ 定时说明与调整
+
+### 默认执行时间
+
+项目默认每天执行 **2 次**（北京时间）：
+
+| Cron 表达式 | UTC 时间 | 北京时间 |
+|------------|---------|---------|
+| `0 0 * * *` | 00:00 | 08:00 |
+| `0 12 * * *` | 12:00 | 20:00 |
+
+> 每天执行 2 次是为了：① 应对单次签到失败；② 覆盖上午/晚间的不同签到任务。
+
+### 修改执行时间
+
+编辑 [`.github/workflows/signin.yml`](.github/workflows/signin.yml) 中的 `cron` 字段：
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'    # 北京时间 08:00
+    - cron: '0 12 * * *'   # 北京时间 20:00
+```
+
+**Cron 表达式格式**：`分 时 日 月 周`（UTC 时间）
+
+常用示例：
+```yaml
+# 每天北京时间 06:00
+- cron: '0 22 * * *'      # UTC 22:00 = 北京时间次日 06:00
+
+# 每天北京时间 22:30
+- cron: '30 14 * * *'     # UTC 14:30 = 北京时间 22:30
+
+# 每天北京时间 07:00 和 21:00
+- cron: '0 23 * * *'
+- cron: '0 13 * * *'
+```
+
+> ⏱️ GitHub Actions 的 `schedule` 实际触发时间可能延迟 5–30 分钟（高峰期更久），请勿用于要求精确到分钟的场景。
+
+---
+
+## 🔔 消息通知配置（可选）
+
+签到失败时会自动推送通知。支持多种通知渠道：
+
+### Server 酱（微信推送）
+
+1. 访问 [https://sct.ftqq.com/](https://sct.ftqq.com/) 注册并获取 SendKey
+2. 将 URL 填入 `YIBAN_NOTIFY_URL`：
+   ```
+   https://sctapi.ftqq.com/YOUR_SENDKEY.send
+   ```
+
+### Bark（iOS 推送）
+
+```
+https://api.day.app/YOUR_KEY/易班签到通知
+```
+
+### 企业微信群机器人
+
+1. 企业微信群 → 群设置 → 群机器人 → 添加机器人
+2. 复制 webhook URL 填入 `YIBAN_NOTIFY_URL`：
+   ```
+   https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY
+   ```
+
+---
+
+## 🧠 工作原理
+
+### 签到流程
+
+```
+登录易班 (OAuth + RSA 加密)
+    ↓
+获取签到任务范围 (nightAttendance/signPosition)
+    ↓
+解析签到多边形 Points
+    ↓
+在多边形内生成随机定位点（缩放质心算法）
+    ↓
+提交签到 (nightAttendance/signIn)
+```
+
+### 定位生成算法
+
+为保证定位落在有效签到范围内且不暴露固定位置，本项目使用与原 Android 客户端一致的 **缩放质心算法**：
+
+1. 解析签到范围返回的多边形顶点 `Points`
+2. 计算多边形质心 `(center_lng, center_lat)`
+3. 将多边形顶点向质心收缩 0.7 倍，得到 `scaled_polygon`
+4. 在质心附近的边界框内随机生成点（最多 100 次尝试）
+5. 校验点是否同时在 `scaled_polygon` 和 `original_polygon` 内
+6. 若 100 次均未命中，兜底返回质心
+
+这样每次签到的定位点都不同，但都落在有效范围内，避免被识别为异常定位。
+
+### 60 天限制破解
+
+GitHub 官方政策：**仓库连续 60 天无活动，定时工作流会被自动禁用**。
+
+本项目在工作流中集成了 [`liskin/gh-workflow-keepalive@v1`](https://github.com/liskin/gh-workflow-keepalive)：
+
+```yaml
+workflow-keepalive:
+  if: github.event_name == 'schedule'
+  runs-on: ubuntu-latest
+  permissions:
+    actions: write
+  steps:
+    - uses: liskin/gh-workflow-keepalive@v1
+```
+
+**原理**：每次定时触发签到时，keepalive job 会通过 GitHub API 检查并重新启用被禁用的工作流，重置 60 天计时器。无需产生额外的 commit，不污染提交历史。
+
+---
+
+## ❓ 常见问题
+
+### Q1：手动测试报错 "登录失败（账号或密码错误）"
+
+- 确认 `YIBAN_ACCOUNTS` 格式为 `手机号:密码`，密码中不含 `#` 字符
+- 如密码含特殊字符，改用 `YIBAN_PHONE` / `YIBAN_PASSWORD` 两个 Secret 分别配置
+- 确认账号可在 [https://www.yiban.cn/](https://www.yiban.cn/) 正常登录
+
+### Q2：报错 "获取签到任务失败"
+
+- 你的学校可能未开启晚间考勤（nightAttendance）任务
+- 该接口仅适用于开启「晚间考勤 / 晚签到」功能的学校
+- 如需打卡的是「每日打卡」（officeTask），需修改脚本中的 API 路径
+
+### Q3：报错 "未在签到时间内"
+
+- 当前时间不在管理员设置的签到时间窗口内
+- 调整 cron 表达式到正确的签到时间，或等待下一次定时触发
+
+### Q4：报错 "遇到 ydclearance 反爬"
+
+- 已在 `requirements.txt` 中包含 `js2py`，正常情况下不会触发此错误
+- 若仍出现，可能是 GitHub Actions IP 被风控，可在 workflow 中添加代理或重试
+
+### Q5：签到成功但 GitHub Actions 显示失败
+
+- 检查日志中是否有 "❌" 标记的账号
+- 多账号场景下，只要有一个失败，整体退出码就是 1
+
+### Q6：定时任务不执行 / 突然停止
+
+- 进入 `Actions` 页面确认工作流是否被禁用（被禁用会有醒目提示）
+- 点击 `Enable workflow` 重新启用
+- keepalive 会在下次定时触发时自动处理，但首次需手动启用
+
+### Q7：如何查看签到历史
+
+- 进入仓库 `Actions` 标签页
+- 左侧选择 `Yiban Sign-in`
+- 可看到所有历史运行记录，点击进入可查看详细日志
+
+---
+
+## 📊 资源消耗
+
+| 项目 | 数值 |
+|------|------|
+| 每次执行耗时 | 约 30–60 秒 |
+| 每日执行次数 | 2 次 |
+| 每月消耗 Actions 分钟 | 约 30–60 分钟 |
+| GitHub 免费额度 | 2000 分钟/月（公开仓库无限） |
+| 费用 | **完全免费** |
+
+---
+
+## ⚠️ 注意事项
+
+1. **本项目仅供学习研究使用**，请遵守易班用户协议，由此产生的任何后果由使用者自负
+2. **强烈建议仓库设为 Private**，避免账号密码被搜索引擎索引
+3. 不要将账号密码直接写在代码中，必须使用 GitHub Secrets
+4. 请勿频繁调用 API（默认每天 2 次足够），以免触发风控
+5. 如账号开启了二次验证，可能需要额外处理
+
+---
+
+## 🛠️ 本地调试
+
+如需在本地运行：
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/<你的用户名>/yiban-auto-sign.git
+cd yiban-auto-sign
+
+# 2. 安装依赖
+pip install -r requirements.txt
+
+# 3. 配置环境变量（Windows PowerShell）
+$env:YIBAN_ACCOUNTS="13800138000:your_password"
+
+#    或 Linux/macOS
+export YIBAN_ACCOUNTS="13800138000:your_password"
+
+# 4. 运行
+python scripts/signin.py
+```
+
+---
+
+## 📜 License
+
+MIT License - 详见 [LICENSE](LICENSE)
+
+---
+
+## 🙏 致谢
+
+本项目参考了以下开源项目与资料：
+
+- [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
+- [Auto-Test](https://github.com/) - 易班登录流程（OAuth + RSA + ydclearance）
+- [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 60 天限制破解方案
+- 原项目 KillYiBan 模块 - nightAttendance 签到流程与多边形定位算法
