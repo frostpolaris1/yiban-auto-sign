@@ -2,10 +2,11 @@ name: Yiban Sign-in
 
 on:
   schedule:
-    # 每天 UTC 00:00 = 北京时间 08:00
-    - cron: '0 0 * * *'
-    # 每天 UTC 12:00 = 北京时间 20:00
-    - cron: '0 12 * * *'
+    # 早操签到窗口：北京时间 06:30-07:50
+    # 第一次：UTC 22:35 = 北京时间 06:35（首次打卡）
+    - cron: '35 22 * * *'
+    # 第二次：UTC 23:15 = 北京时间 07:15（容错重试；若已签到则按成功处理）
+    - cron: '15 23 * * *'
   workflow_dispatch:
   workflow_call:
     secrets:
