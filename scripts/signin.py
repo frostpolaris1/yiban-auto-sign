@@ -218,6 +218,14 @@ class YibanClient:
             timeout=15,
         )
         result = resp.json()
+        # 诊断：usersure 响应结构可能随账号状态/风控变化，打印关键字段定位问题
+        if 'reUrl' not in result:
+            body_preview = resp.text[:1500].replace('\n', '\\n')
+            logger.error(f'[{self.account}] usersure 响应无 reUrl 字段，诊断:')
+            logger.error(f'  状态码: {resp.status_code}')
+            logger.error(f'  响应前1500字符: {body_preview}')
+            # 常见情况：账号密码错误返回 {"code":"xxx","msg":"..."} 无 reUrl
+            raise RuntimeError(f'登录响应异常（无 reUrl）: {result}')
         if 'error' in result.get('reUrl', ''):
             raise RuntimeError(f'登录失败（账号或密码错误）: {self.account}')
 
