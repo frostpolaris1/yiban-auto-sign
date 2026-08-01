@@ -18,6 +18,8 @@ on:
         required: false
       YIBAN_NOTIFY_URL:
         required: false
+      YIBAN_PROXY:
+        required: false
 
 jobs:
   signin:
@@ -40,12 +42,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Diagnose runner network
+        run: |
+          echo "=== Runner 出口 IP / 地域（用于判断是否被易班地域风控）==="
+          curl -s --max-time 10 https://ipinfo.io/json || true
+
       - name: Run sign-in script
         env:
           YIBAN_ACCOUNTS: ${{ secrets.YIBAN_ACCOUNTS }}
           YIBAN_PHONE: ${{ secrets.YIBAN_PHONE }}
           YIBAN_PASSWORD: ${{ secrets.YIBAN_PASSWORD }}
           YIBAN_NOTIFY_URL: ${{ secrets.YIBAN_NOTIFY_URL }}
+          YIBAN_PROXY: ${{ secrets.YIBAN_PROXY }}
         run: python scripts/signin.py
 
   # 在定时触发时调用 keepalive 防止工作流被 GitHub 自动禁用（60 天限制）

@@ -149,6 +149,13 @@ class YibanClient:
         self.session = requests.Session()
         self.session.keep_alive = False
         self.session.headers = dict(HEADERS)
+        # 可选代理：GitHub Actions 海外 IP 可能被易班 WAF/地域风控拦截，
+        # 设置环境变量 YIBAN_PROXY（如 http://user:pass@host:port 或 socks5://host:port）
+        # 即可让所有请求走代理（建议用国内出口）。
+        proxy = os.environ.get('YIBAN_PROXY', '').strip()
+        if proxy:
+            self.session.proxies = {'http': proxy, 'https': proxy}
+            logger.info(f'[{self.account}] 已启用代理: {proxy}')
         self.logged_in = False
 
     # ---- 登录 -------------------------------------------------------------
@@ -176,7 +183,17 @@ class YibanClient:
         page_use_match = compile(r'page_use ?= ?[\'|"]([a-zA-Z0-9-_]+)[\'|"]').findall(resp.text)
         key_match = compile(r'id="key" ?value="?([0-9a-zA-Z -_/=+\n]+[^"])"? ').findall(resp.text)
         if not page_use_match or not key_match:
-            raise RuntimeError('登录页面解析失败（page_use / RSA key 未找到）')
+            # 诊断：打印实际收到的响应，便于判断是 WAF 挑战页 / 地域拦截 / 空响应
+            body_preview = resp.text[:1500].replace('\n', '\\n')
+            logger.error(f'[{self.account}] OAuth 页解析失败诊断:')
+            logger.error(f'  最终 URL: {resp.url}')
+            logger.error(f'  状态码: {resp.status_code}')
+            logger.error(f'  响应长度: {len(resp.text)}')
+            logger.error(f'  响应前1500字符: {body_preview}')
+            logger.error(f'  page_use 命中: {len(page_use_match)}, key 命中: {len(key_match)}')
+            logger.error('  若响应为 WAF 挑战页/拦截页，通常是 GitHub Actions 海外 IP 被易班风控，'
+                         '请配置 YIBAN_PROXY 代理（国内出口）后重试。')
+            raise RuntimeError('登录页面解析失败（page_use / RSA key 未找到），详见上方诊断日志')
 
         cipher = PKCS1_v1_5.new(RSA.importKey(key_match[0]))
         self.session.headers.update(
