@@ -136,11 +136,18 @@ def is_waf_blocked(response_text):
     WAF 拦截页通常很短（< 2000 字符），而正常页面（如 OAuth 授权页、
     服务协议等）内容较长且可能包含"风控""拦截"等正常法律文本。
     因此仅在响应内容较短时才检测 WAF 关键词，避免误报。
+
+    注意：易班 WAF 返回 JSON 格式时，中文会被 Unicode 转义
+   （如 \\u98ce\\u9669 = "风险"），需先解码再匹配关键词。
     """
     if len(response_text) > 2000:
         return False
+    # 解码 \uXXXX 形式的 Unicode 转义序列后一并检测
+    decoded = compile(r'\\u([0-9a-fA-F]{4})').sub(
+        lambda m: chr(int(m.group(1), 16)), response_text
+    )
     for keyword in WAF_KEYWORDS:
-        if keyword in response_text:
+        if keyword in response_text or keyword in decoded:
             return True
     return False
 
