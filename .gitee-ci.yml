@@ -1,0 +1,21 @@
+version: '1.0'
+name: yiban-auto-sign
+
+stages:
+  - name: signin
+    jobs:
+      - name: run-signin
+        script:
+          - python -m pip install --upgrade pip
+          - pip install -r requirements.txt
+          - python scripts/signin.py
+        env:
+          YIBAN_ACCOUNTS: $YIBAN_ACCOUNTS
+          YIBAN_PHONE: $YIBAN_PHONE
+          YIBAN_PASSWORD: $YIBAN_PASSWORD
+          YIBAN_NOTIFY_URL: $YIBAN_NOTIFY_URL
+          YIBAN_PROXY: $YIBAN_PROXY
+        only:
+          - schedules
+          - pushes
+          - merge_requests
