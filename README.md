@@ -1,8 +1,17 @@
-# 易班自动签到（GitHub Actions 版）
+# 易班自动签到
 
-基于 GitHub Actions 的易班（yiban）自动签到项目，无需服务器、无需保持电脑开机，配置一次即可每天自动签到。
+基于 Python 的易班（yiban）自动签到项目，支持 **双方案互为冗余** 部署：云服务器（主力）+ GitHub Actions（备份），任一方案均可独立完成每日签到，配置一次即可稳定运行。
 
-> 本项目是橙星（oranje-star）的延伸子项目，将原 Android 客户端中的易班签到逻辑移植为 Python 脚本，并托管到 GitHub Actions 上运行。
+> 本项目是橙星（oranje-star）的延伸子项目，将原 Android 客户端中的易班签到逻辑移植为 Python 脚本。
+
+## 🛡️ 双方案冗余架构
+
+| 方案 | 定位 | 优势 | 适用场景 |
+|------|------|------|---------|
+| 云服务器部署（阿里云 ECS + TinyProxy） | **主力** | 即时执行、可调试、本机代理绕过 WAF | 已有国内云服务器资源 |
+| GitHub Actions | **备份** | 免费、免维护、无需服务器 | 云服务器故障或维护时的兜底 |
+
+> 💡 **推荐做法**：两套方案同时启用，签到时间错开（如云服务器 06:40、GitHub Actions 07:15），任一成功即可。详见下文部署章节。
 
 ---
 
@@ -29,15 +38,18 @@ yiban-auto-sign/
 ├── scripts/
 │   └── signin.py               # 核心签到脚本
 ├── .env.example                # 环境变量示例
+├── .gitee-ci.yml               # Gitee Go 工作流配置
 ├── .gitignore
 ├── requirements.txt            # Python 依赖
+├── run.sh                      # 服务器部署运行脚本
+├── PROXY_DEPLOY_GUIDE.md       # TinyProxy 代理部署指南
 ├── LICENSE
 └── README.md                   # 本文件（部署教程）
 ```
 
 ---
 
-## 🚀 快速部署（5 分钟搞定）
+## 🚀 方案一：GitHub Actions 部署（备份方案，免费免维护）
 
 ### 第 1 步：Fork 或导入仓库
 
@@ -98,6 +110,28 @@ Value: http://myproxy:password123@1.2.3.4:7890
 > ⚠️ **密码中如包含 `:` 或 `#` 字符**：请改用单账号的 `YIBAN_PHONE` / `YIBAN_PASSWORD` 配置。
 
 > 💡 **关于代理**：GitHub Actions 的海外 IP 可能被易班 WAF 风控拦截。如果遇到"风险访问服务禁用"错误，请配置 `YIBAN_PROXY` 代理（国内出口）后重试。
+
+#### 复用方案二的 ECS 代理（推荐）
+
+如果已按方案二部署了阿里云 ECS + TinyProxy，可直接把同一代理用于 GitHub Actions，无需另建代理：
+
+1. 确认 ECS 安全组已放行 **8888** 端口（GitHub Actions 出口 IP 不固定，需允许所有来源）
+2. 确认 `/etc/tinyproxy/tinyproxy.conf` 中 `Allow 127.0.0.1` 已注释掉（允许外网访问）
+3. 在 GitHub 仓库 Secrets 中配置：
+
+```
+Name:  YIBAN_PROXY
+Value: http://你的ECS公网IP:8888
+```
+
+例如 ECS 公网 IP 为 `120.26.23.83`，则填入 `http://120.26.23.83:8888`。
+
+> ⚠️ **安全提示**：公网开放的 HTTP 代理可能被第三方滥用扫流量。强烈建议：
+> - 通过 TinyProxy 的 `Allow` 指令限制来源 IP（但 GitHub Actions IP 动态，需放行较大范围）
+> - 或改用带 BasicAuth 的代理（如 Squid），配置 `http://user:pass@IP:port`
+> - 或仅在云服务器维护期间临时启用公网代理，平时关闭 8888 端口
+>
+> 详见 [PROXY_DEPLOY_GUIDE.md](PROXY_DEPLOY_GUIDE.md)。
 
 ### 第 3 步：启用 GitHub Actions
 
@@ -255,6 +289,125 @@ workflow-keepalive:
 
 ---
 
+## 🖥️ 方案二：自有服务器部署（主力方案，更稳定）
+
+如果希望更稳定、可即时调试，或作为 GitHub Actions 的兜底，可部署到国内服务器（如阿里云 ECS）。
+
+### 适用场景
+
+- GitHub Actions 因 WAF 拦截无法稳定运行
+- 希望随时手动触发签到或查看日志
+- 已有国内云服务器资源
+
+### 部署步骤
+
+#### 1. 服务器环境准备（Ubuntu 22.04）
+
+```bash
+apt update
+apt install -y python3 python3-pip
+```
+
+#### 2. 上传项目代码
+
+在本地打包（排除 `.git` 和缓存）：
+
+```powershell
+cd yiban-auto-sign
+tar -czf yiban.tar.gz --exclude='.git' --exclude='__pycache__' .
+scp yiban.tar.gz root@你的服务器IP:/opt/
+```
+
+在服务器解压并安装依赖：
+
+```bash
+mkdir -p /opt/yiban-auto-sign
+cd /opt/yiban-auto-sign
+tar -xzf /opt/yiban.tar.gz
+rm /opt/yiban.tar.gz
+pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+pip3 install -r requirements.txt
+```
+
+#### 3. 配置环境变量
+
+```bash
+cat > /opt/yiban-auto-sign/.env << 'EOF'
+YIBAN_PHONE=你的手机号
+YIBAN_PASSWORD=你的易班密码
+YIBAN_PROXY=http://127.0.0.1:8888
+EOF
+```
+
+> 💡 **关于代理**：阿里云 ECS 的 IP 段也可能被易班 WAF 拦截。建议在同台服务器上部署 TinyProxy，通过本机代理访问易班。TinyProxy 安装与配置见 [PROXY_DEPLOY_GUIDE.md](PROXY_DEPLOY_GUIDE.md)。
+
+#### 4. 创建运行脚本
+
+```bash
+cat > /opt/yiban-auto-sign/run.sh << 'EOF'
+#!/bin/bash
+cd /opt/yiban-auto-sign
+export $(cat .env | xargs)
+/usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign.log 2>&1
+EOF
+chmod +x /opt/yiban-auto-sign/run.sh
+mkdir -p /var/log/yiban
+```
+
+#### 5. 配置 crontab 定时任务
+
+```bash
+crontab -e
+```
+
+添加以下内容（周一到周六 6:40 和 7:10 各执行一次，周日不签到）：
+
+```cron
+# 易班自动签到 - 周一到周六执行
+# 6:40 第一次签到（主要）
+40 6 * * 1-6 /opt/yiban-auto-sign/run.sh
+# 7:10 第二次签到（备用，防止第一次失败）
+10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
+```
+
+#### 6. 手动测试
+
+```bash
+bash /opt/yiban-auto-sign/run.sh
+tail -20 /var/log/yiban/sign.log
+```
+
+### 常用运维命令
+
+```bash
+# 查看签到日志
+tail -50 /var/log/yiban/sign.log
+
+# 手动触发签到
+bash /opt/yiban-auto-sign/run.sh
+
+# 查看 cron 服务状态
+systemctl status cron
+
+# 查看 crontab 配置
+crontab -l
+
+# 更新代码后重新部署
+scp scripts/signin.py root@服务器IP:/opt/yiban-auto-sign/scripts/
+```
+
+### 方案对比
+
+| 特性 | GitHub Actions | 自有服务器 |
+|------|---------------|-----------|
+| 成本 | 免费（2000 分钟/月） | 需服务器费用 |
+| 稳定性 | 受 WAF 拦截影响 | 本机代理更稳定 |
+| 调试 | 仅看日志 | 可即时调试 |
+| 触发延迟 | 5-30 分钟 | 即时执行 |
+| 维护 | 配置后免维护 | 需维护服务器 |
+
+---
+
 ## ❓ 常见问题
 
 ### Q1：手动测试报错 "登录失败（账号或密码错误）"
@@ -272,8 +425,8 @@ workflow-keepalive:
 ### Q3：报错 "未在签到时间内"
 
 - 当前时间不在管理员设置的签到时间窗口内
-- 脚本的随机延时范围设计在 06:35-07:40 之间，若仍触发此错误，可能是学校签到窗口有调整
-- 可调整 `scripts/signin.py` 中 `sleep_random_minutes()` 的参数，或等待下一次定时触发
+- 脚本启动时会随机延时 0-120 秒（`random_delay()`），若仍触发此错误，可能是学校签到窗口有调整
+- 可调整 `scripts/signin.py` 中 `RANDOM_DELAY_MAX` 常量，或等待下一次定时触发
 - 此错误**不会**导致 GitHub Actions 标记为失败（退出码仍为 0）
 
 ### Q4：报错 "风险访问服务禁用" / WAF 风控拦截
