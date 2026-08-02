@@ -131,7 +131,14 @@ def generate_position_in_polygon(polygon_points):
 # 工具函数
 # ---------------------------------------------------------------------------
 def is_waf_blocked(response_text):
-    """判断响应是否为 WAF 风控拦截。"""
+    """判断响应是否为 WAF 风控拦截。
+
+    WAF 拦截页通常很短（< 2000 字符），而正常页面（如 OAuth 授权页、
+    服务协议等）内容较长且可能包含"风控""拦截"等正常法律文本。
+    因此仅在响应内容较短时才检测 WAF 关键词，避免误报。
+    """
+    if len(response_text) > 2000:
+        return False
     for keyword in WAF_KEYWORDS:
         if keyword in response_text:
             return True
@@ -213,7 +220,7 @@ class YibanClient:
             raise RuntimeError('请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试')
 
         page_use_match = compile(r'page_use ?= ?[\'|\"]([a-zA-Z0-9-_]+)[\'|\"]').findall(resp.text)
-        key_match = compile(r'id="key" ?"?([0-9a-zA-Z -_/=+\n]+[^"])"? ').findall(resp.text)
+        key_match = compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
         if not page_use_match or not key_match:
             body_preview = resp.text[:1500].replace('\n', '\\n')
             logger.error(f'[{self.account}] OAuth 页解析失败诊断:')
@@ -344,8 +351,11 @@ class YibanClient:
             return False, f"获取签到任务失败: {data.get('msg')}", False
 
         data_obj = data['data']
-        if data_obj.get('Msg') == '已签到':
+        msg = data_obj.get('Msg', '')
+        if msg == '已签到':
             return True, '今日已签到（无需重复签到）', False
+        if msg == '今日无需签到':
+            return True, '今日无需签到（非签到日）', False
 
         position_list = data_obj.get('Position', [])
         if not position_list:
