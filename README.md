@@ -2,7 +2,7 @@
 
 ![GitHub Actions](https://img.shields.io/github/actions/workflow/status/frostpolaris1/yiban-auto-sign/signin.yml?label=Actions&logo=github)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
-![License](https://img.shields.io/github/license/frostpolaris1/yiban-auto-sign)
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 > 易班（yiban）是很多高校学生用的校园社交平台，部分学校要求每天早晨进行「早操签到」打卡。
 >
