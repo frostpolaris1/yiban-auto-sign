@@ -72,10 +72,6 @@ MAX_RETRIES = 3  # 最大重试次数
 RETRY_BASE_DELAY = 5  # 基础延迟（秒）
 RETRY_MAX_DELAY = 60  # 最大延迟（秒）
 
-# 随机延迟配置（避免并发触发风控）
-RANDOM_DELAY_MIN = 0  # 最小延迟（秒）
-RANDOM_DELAY_MAX = 120  # 最大延迟（秒）
-
 # WAF 风控关键词（用于判断是否被拦截）
 WAF_KEYWORDS = ['风险访问', '风控', '访问服务禁用', 'WAF', '拦截']
 
@@ -150,14 +146,6 @@ def is_waf_blocked(response_text):
         if keyword in response_text or keyword in decoded:
             return True
     return False
-
-
-def random_delay():
-    """随机延迟，避免并发触发风控。"""
-    delay = random.randint(RANDOM_DELAY_MIN, RANDOM_DELAY_MAX)
-    if delay > 0:
-        logger.info(f'随机延迟 {delay} 秒，避免触发风控...')
-        time.sleep(delay)
 
 
 def retry_with_backoff(func, *args, **kwargs):
@@ -489,9 +477,6 @@ def main():
         sys.exit(1)
 
     logger.info(f'==== 开始执行签到，共 {len(accounts)} 个账号 ====')
-
-    # 随机延迟（避免并发触发风控）
-    random_delay()
 
     results = []
     for phone, pwd in accounts:
