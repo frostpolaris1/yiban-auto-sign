@@ -2,11 +2,12 @@ name: Yiban Sign-in
 
 on:
   schedule:
-    # 早操签到窗口：北京时间 06:30-07:50
-    # 第一次：UTC 22:35 = 北京时间 06:35（首次打卡）
-    - cron: '35 22 * * *'
-    # 第二次：UTC 23:15 = 北京时间 07:15（容错重试；若已签到则按成功处理）
-    - cron: '15 23 * * *'
+    # 签到窗口：北京时间 13:00-15:00（根据服务端返回的签到时间）
+    # 第一次触发：12:45（北京时间），留出延迟余量
+    # 第二次触发：13:30（北京时间），容错重试
+    # UTC 时间 = 北京时间 - 8
+    - cron: '45 4 * * *'   # 北京时间 12:45
+    - cron: '30 5 * * *'   # 北京时间 13:30
   workflow_dispatch:
   workflow_call:
     secrets:
@@ -24,7 +25,7 @@ on:
 jobs:
   signin:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -46,6 +47,13 @@ jobs:
         run: |
           echo "=== Runner 出口 IP / 地域（用于判断是否被易班地域风控）==="
           curl -s --max-time 10 https://ipinfo.io/json || true
+          echo ""
+          echo "=== 代理配置状态 ===="
+          if [ -n "${{ secrets.YIBAN_PROXY }}" ]; then
+            echo "YIBAN_PROXY 已配置（隐藏具体内容）"
+          else
+            echo "⚠️ YIBAN_PROXY 未配置，如遇到 WAF 拦截请配置代理（国内出口）"
+          fi
 
       - name: Run sign-in script
         env:
