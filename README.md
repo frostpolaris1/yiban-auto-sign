@@ -54,6 +54,8 @@
 | `YIBAN_PHONE` | 易班手机号（单账号，向后兼容） | 二选一必填 |
 | `YIBAN_PASSWORD` | 易班密码（单账号，向后兼容） | 二选一必填 |
 | `YIBAN_PROXY` | 代理地址（绕过 WAF 风控，详见 [代理配置](#代理配置重要)） | **推荐配置** |
+| `YIBAN_PHONE_MODEL` | 设备型号（学校开启设备绑定时必填，详见 [设备绑定](#设备绑定可选)） | 视情况必填 |
+| `YIBAN_PHONE_CODE` | 设备唯一识别码（学校开启设备绑定时必填，详见 [设备绑定](#设备绑定可选)） | 视情况必填 |
 | `YIBAN_NOTIFY_URL` | 通知 webhook URL（详见 [消息通知](#消息通知可选)） | 可选 |
 
 **单账号示例（推荐）：**
@@ -168,6 +170,8 @@ on:
 | `YIBAN_PHONE` | 易班手机号（单账号） | 二选一 |
 | `YIBAN_PASSWORD` | 易班密码（单账号） | 二选一 |
 | `YIBAN_PROXY` | 代理地址，如 `http://host:port` 或 `socks5://host:port` | 推荐 |
+| `YIBAN_PHONE_MODEL` | 设备型号（如 `Vivo-XXXX`），学校开启设备绑定时必填 | 视情况 |
+| `YIBAN_PHONE_CODE` | 设备唯一识别码（64位十六进制字符串），学校开启设备绑定时必填 | 视情况 |
 | `YIBAN_NOTIFY_URL` | 通知 webhook URL | 可选 |
 
 ### 消息通知（可选）
@@ -211,6 +215,24 @@ https://api.day.app/YOUR_KEY/易班签到通知
 | SOCKS5 代理 | `socks5://host:port` | 如 SS5 / Shadowsocks |
 
 > 💡 代理必须是国内出口 IP，否则无法绕过易班 WAF 风控。自建代理教程见 [PROXY_DEPLOY_GUIDE.md](PROXY_DEPLOY_GUIDE.md)。
+
+### 设备绑定（可选）
+
+部分学校在校本化后台开启了「设备绑定」功能，签到时会校验设备型号和唯一识别码，不匹配则返回「请使用授权设备进行签到」错误。如果你的学校开启了此功能，需要配置以下两个环境变量：
+
+| 变量名 | 说明 | 示例 |
+|--------|------|------|
+| `YIBAN_PHONE_MODEL` | 设备型号（品牌-型号，`:` 需替换为 `-`） | `Vivo-XXXX` |
+| `YIBAN_PHONE_CODE` | 设备唯一识别码（64位十六进制字符串） | `xxxxxxxx...` |
+
+**如何获取设备信息：**
+
+1. 在易班 App 中打开校本化签到页面
+2. 通过易班内置的 JS 桥接获取（需借助工具页面）：
+   - `yiban.getUUID()` → 返回设备唯一识别码（即 `YIBAN_PHONE_CODE`）
+   - `yiban.getDeviceInfo()` → 返回设备信息，其中 `deviceModel` 字段即 `YIBAN_PHONE_MODEL`
+
+> 💡 如果签到时未报「请使用授权设备进行签到」错误，说明你的学校未开启设备绑定，无需配置这两个变量。
 
 ---
 
@@ -457,7 +479,15 @@ workflow-keepalive:
 </details>
 
 <details>
-<summary><b>Q6：签到成功但 GitHub Actions 显示失败</b></summary>
+<summary><b>Q6：报错 "请使用授权设备进行签到"</b></summary>
+
+- **原因**：学校在校本化后台开启了「设备绑定」功能，签到时会校验设备型号和唯一识别码
+- **解决方案**：配置 `YIBAN_PHONE_MODEL` 和 `YIBAN_PHONE_CODE` 两个环境变量（GitHub Actions 中为 Secrets）
+- 获取方式详见 [设备绑定](#设备绑定可选) 章节
+</details>
+
+<details>
+<summary><b>Q7：签到成功但 GitHub Actions 显示失败</b></summary>
 
 - 检查日志中是否有 "❌" 标记的账号
 - 多账号场景下，只要有一个**真正的失败**（非"未在签到时间内"），整体退出码就是 1
@@ -465,7 +495,7 @@ workflow-keepalive:
 </details>
 
 <details>
-<summary><b>Q7：定时任务不执行 / 突然停止</b></summary>
+<summary><b>Q8：定时任务不执行 / 突然停止</b></summary>
 
 - 进入 `Actions` 页面确认工作流是否被禁用（被禁用会有醒目提示）
 - 点击 `Enable workflow` 重新启用
@@ -473,7 +503,7 @@ workflow-keepalive:
 </details>
 
 <details>
-<summary><b>Q8：如何查看签到历史</b></summary>
+<summary><b>Q9：如何查看签到历史</b></summary>
 
 - 进入仓库 `Actions` 标签页
 - 左侧选择 `Yiban Sign-in`
