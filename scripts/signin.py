@@ -44,9 +44,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # 日志配置
 # ---------------------------------------------------------------------------
+# 支持通过环境变量调整日志级别：DEBUG / INFO / WARNING / ERROR
+LOG_LEVEL = os.environ.get('YIBAN_LOG_LEVEL', 'DEBUG').upper()
 logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    level=getattr(logging, LOG_LEVEL, logging.DEBUG),
+    format='[%(asctime)s] [%(levelname)s] %(name)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger = logging.getLogger('yiban')
