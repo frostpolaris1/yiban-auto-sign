@@ -21,6 +21,10 @@ on:
         required: false
       YIBAN_PROXY:
         required: false
+      YIBAN_PHONE_MODEL:
+        required: false
+      YIBAN_PHONE_CODE:
+        required: false
 
 jobs:
   signin:
@@ -62,6 +66,8 @@ jobs:
           YIBAN_PASSWORD: ${{ secrets.YIBAN_PASSWORD }}
           YIBAN_NOTIFY_URL: ${{ secrets.YIBAN_NOTIFY_URL }}
           YIBAN_PROXY: ${{ secrets.YIBAN_PROXY }}
+          YIBAN_PHONE_MODEL: ${{ secrets.YIBAN_PHONE_MODEL }}
+          YIBAN_PHONE_CODE: ${{ secrets.YIBAN_PHONE_CODE }}
         run: python scripts/signin.py
 
   # 在定时触发时调用 keepalive 防止工作流被 GitHub 自动禁用（60 天限制）

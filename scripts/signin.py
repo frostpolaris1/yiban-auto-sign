@@ -186,6 +186,9 @@ class YibanClient:
             logger.info(f'[{self.account}] 已启用代理: {proxy}')
         else:
             logger.warning(f'[{self.account}] 未配置 YIBAN_PROXY，如遇到 WAF 拦截请配置代理（国内出口）')
+        # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码
+        self.phone_model = os.environ.get('YIBAN_PHONE_MODEL', '').strip()
+        self.phone_code = os.environ.get('YIBAN_PHONE_CODE', '').strip()
         self.logged_in = False
 
     def login(self):
@@ -388,12 +391,15 @@ class YibanClient:
             'LngLat': f'{lng},{lat}',
             'Address': position.get('Address', ''),
         }
+        if not self.phone_model or not self.phone_code:
+            logger.warning(f'[{self.account}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），'
+                           '如学校开启了设备绑定，签到将失败')
         resp = self.session.post(
             'https://api.uyiban.com/nightAttendance/student/index/signIn',
             params={'CSRF': self.csrf},
             data={
-                'Code': '',
-                'PhoneModel': '',
+                'Code': self.phone_code,
+                'PhoneModel': self.phone_model,
                 'SignInfo': json.dumps(sign_info, ensure_ascii=False),
                 'OutState': '1.0',
             },
@@ -403,7 +409,10 @@ class YibanClient:
         result = resp.json()
         if result.get('code') == 0 and result.get('data'):
             return True, '签到成功', False
-        return False, f"签到失败: {result.get('msg', '未知错误')}", False
+        err_msg = result.get('msg', '未知错误')
+        if '授权设备' in err_msg:
+            err_msg += '（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）'
+        return False, f"签到失败: {err_msg}", False
 
 
 # ---------------------------------------------------------------------------
