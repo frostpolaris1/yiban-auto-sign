@@ -38,6 +38,10 @@ ICON_PENDING = '⏳'   # 准备签到（今日未签到）
 ICON_SUCCESS = '✅'   # 今日签到成功
 ICON_FAILED = '❌'    # 今日签到失败
 
+# 签到时间窗口（默认 06:30-07:50，与项目早操签到窗口一致；学校不同可修改）
+SIGN_START = (6, 30)
+SIGN_END = (7, 50)
+
 # 解析 sign.log（行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功）
 SIGN_LOG_RE = re.compile(r'\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)')
 STATE_RE = re.compile(r'\[(\d+)\]\s*(✅|❌)')
@@ -217,6 +221,11 @@ class YibanTuiApp(App):
     }
     #clock {
         color: $text-muted;
+        width: auto;
+    }
+    #sign-status {
+        margin-left: 2;
+        width: auto;
     }
     #ping-result {
         width: 1fr;
@@ -291,7 +300,8 @@ class YibanTuiApp(App):
                                classes='set-row'),
                     Horizontal(Button('连通性检测', id='ping-btn'), Static('', id='ping-result'),
                                classes='set-row'),
-                    Static('', id='clock'),
+                    Horizontal(Static('', id='clock'), Static('', id='sign-status'),
+                               classes='set-row'),
                     id='settings-box',
                 ),
                 id='right-panel',
@@ -361,10 +371,34 @@ class YibanTuiApp(App):
         text = '\n'.join(recent) if recent else '（暂无签到日志，等待定时任务执行…）'
         self.query_one('#log-box', Static).update(text)
 
-    # ---- 服务器时间 ----
+    # ---- 服务器时间与签到状态 ----
+    def _sign_status(self, now=None):
+        """基于服务器时间计算签到状态。
+
+        返回 (显示文本, markup 颜色)：
+        - ⏳ 未到签到时间（每日 0 点 ~ 窗口开始）
+        - 🔔 签到窗口（窗口内，绿色高亮）
+        - ✅ 打卡时间已过（窗口结束后）
+        - 🌙 今日无需打卡（周日）
+        """
+        now = now or datetime.now()
+        if now.weekday() == 6:  # 周日
+            return '🌙 今日无需打卡（周日）', '#565f89'
+        start = now.replace(hour=SIGN_START[0], minute=SIGN_START[1],
+                            second=0, microsecond=0)
+        end = now.replace(hour=SIGN_END[0], minute=SIGN_END[1],
+                          second=0, microsecond=0)
+        if now < start:
+            return f'⏳ 未到签到时间（{SIGN_START[0]:02d}:{SIGN_START[1]:02d} 开始）', '#7aa2f7'
+        if now <= end:
+            return f'🔔 签到窗口（~{SIGN_END[0]:02d}:{SIGN_END[1]:02d} 结束）', '#9ece6a'
+        return '✅ 打卡时间已过', '#e0af68'
+
     def _refresh_clock(self) -> None:
         self.query_one('#clock', Static).update(
             f'服务器时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+        text, color = self._sign_status()
+        self.query_one('#sign-status', Static).update(f'[{color}]{text}[/{color}]')
 
     # ---- 执行模式（顺序 / 并发）----
     def _refresh_mode_ui(self) -> None:
