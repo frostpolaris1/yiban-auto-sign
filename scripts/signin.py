@@ -21,8 +21,10 @@ import sys
 import json
 import random
 import logging
+import argparse
 import traceback
 import time
+from dataclasses import dataclass
 from hashlib import md5
 from datetime import datetime
 from re import compile
@@ -67,12 +69,35 @@ HEADERS = {
 }
 
 # ---------------------------------------------------------------------------
+# 账号数据模型
+# ---------------------------------------------------------------------------
+@dataclass
+class Account:
+    """单个易班账号配置。
+
+    通过 TUI 配置工具或直接编辑 accounts.json 创建，
+    一次输入一个账号的完整信息，无需用符号分隔。
+    """
+    phone: str
+    password: str
+    phone_model: str = ''  # 设备型号（学校开启"设备绑定"时必填）
+    phone_code: str = ''   # 设备唯一识别码（学校开启"设备绑定"时必填）
+
+    @property
+    def has_device_info(self):
+        return bool(self.phone_model and self.phone_code)
+
+
+# ---------------------------------------------------------------------------
 # 配置常量
 # ---------------------------------------------------------------------------
 # 重试配置
 MAX_RETRIES = 3  # 最大重试次数
 RETRY_BASE_DELAY = 5  # 基础延迟（秒）
 RETRY_MAX_DELAY = 60  # 最大延迟（秒）
+
+# 账号配置文件（默认当前目录，可用 YIBAN_ACCOUNTS_FILE 覆盖）
+ACCOUNTS_FILE = os.environ.get('YIBAN_ACCOUNTS_FILE', 'accounts.json')
 
 # WAF 风控关键词（用于判断是否被拦截）
 WAF_KEYWORDS = ['风险访问', '风控', '访问服务禁用', 'WAF', '拦截']
@@ -169,14 +194,129 @@ def retry_with_backoff(func, *args, **kwargs):
 
 
 # ---------------------------------------------------------------------------
+# 账号配置加载
+# ---------------------------------------------------------------------------
+def _parse_account_dict(data):
+    """将账号 JSON 对象解析为 Account，校验必填字段。"""
+    phone = str(data.get('phone') or data.get('account') or '').strip()
+    password = str(data.get('password') or data.get('pwd') or '').strip()
+    if not phone or not password:
+        raise ValueError(f'账号配置缺少必填字段: {data}')
+    return Account(
+        phone=phone,
+        password=password,
+        phone_model=str(data.get('phone_model') or '').strip(),
+        phone_code=str(data.get('phone_code') or '').strip(),
+    )
+
+
+def _load_accounts_from_file():
+    """从 accounts.json 文件加载（服务器端 TUI 配置工具生成）。"""
+    if not os.path.exists(ACCOUNTS_FILE):
+        return []
+    try:
+        with open(ACCOUNTS_FILE, encoding='utf-8') as f:
+            raw = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        raise RuntimeError(f'账号配置文件 {ACCOUNTS_FILE} 解析失败: {e}')
+    if not isinstance(raw, list):
+        raise RuntimeError(f'账号配置文件 {ACCOUNTS_FILE} 应为 JSON 数组')
+    accounts = [_parse_account_dict(item) for item in raw]
+    logger.info(f'已从 {ACCOUNTS_FILE} 加载 {len(accounts)} 个账号')
+    return accounts
+
+
+def _load_accounts_from_json_env():
+    """从 YIBAN_ACCOUNTS_JSON 环境变量加载（JSON 数组字符串，供 CI 使用）。"""
+    raw = os.environ.get('YIBAN_ACCOUNTS_JSON', '').strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f'YIBAN_ACCOUNTS_JSON 不是合法 JSON: {e}')
+    if not isinstance(data, list):
+        raise RuntimeError('YIBAN_ACCOUNTS_JSON 应为 JSON 数组')
+    accounts = [_parse_account_dict(item) for item in data]
+    logger.info(f'已从 YIBAN_ACCOUNTS_JSON 加载 {len(accounts)} 个账号')
+    return accounts
+
+
+def _load_accounts_from_legacy_env():
+    """旧格式兼容：YIBAN_ACCOUNTS（phone:password#...）与 YIBAN_PHONE/YIBAN_PASSWORD。"""
+    accounts = []
+    accounts_str = os.environ.get('YIBAN_ACCOUNTS', '')
+    for item in accounts_str.split('#'):
+        item = item.strip()
+        if not item:
+            continue
+        if ':' not in item:
+            logger.error(f'账号配置格式错误（应为 phone:password）: {item}')
+            continue
+        phone, pwd = item.split(':', 1)
+        accounts.append(Account(phone.strip(), pwd.strip()))
+    if not accounts:
+        phone = os.environ.get('YIBAN_PHONE', '').strip()
+        pwd = os.environ.get('YIBAN_PASSWORD', '').strip()
+        if phone and pwd:
+            accounts.append(Account(phone, pwd))
+    return accounts
+
+
+def _apply_global_device_info(accounts):
+    """账号未配置设备信息时，回退到全局环境变量（兼容旧配置方式）。"""
+    model = os.environ.get('YIBAN_PHONE_MODEL', '').strip()
+    code = os.environ.get('YIBAN_PHONE_CODE', '').strip()
+    if not (model and code):
+        return accounts
+    for acc in accounts:
+        if not acc.has_device_info:
+            acc.phone_model = model
+            acc.phone_code = code
+    return accounts
+
+
+def load_accounts():
+    """按优先级加载账号配置：文件 > JSON 环境变量 > 旧格式环境变量。"""
+    for loader in (_load_accounts_from_file,
+                   _load_accounts_from_json_env,
+                   _load_accounts_from_legacy_env):
+        accounts = loader()
+        if accounts:
+            return _apply_global_device_info(accounts)
+    return []
+
+
+def parse_concurrency(value):
+    """解析并发数：未设置/0/1/非法值均回退为顺序执行（1）。"""
+    try:
+        return max(1, int(str(value).strip()))
+    except (TypeError, ValueError):
+        logger.warning(f'YIBAN_CONCURRENCY 取值无效: {value!r}，已回退为顺序执行')
+        return 1
+
+
+def print_config_summary(accounts):
+    """打印账号配置摘要（密码脱敏），不发任何网络请求。"""
+    print('==== 账号配置检查 ====')
+    for i, acc in enumerate(accounts, 1):
+        if acc.has_device_info:
+            device = f'设备: {acc.phone_model} / {acc.phone_code[:8]}...'
+        else:
+            device = '设备: 未配置（如学校开启设备绑定，签到将失败）'
+        print(f'  {i}. {acc.phone} | 密码: {"*" * 8} | {device}')
+    print(f'共 {len(accounts)} 个账号，配置检查通过。')
+
+
+# ---------------------------------------------------------------------------
 # 易班登录
 # ---------------------------------------------------------------------------
 class YibanClient:
     """易班客户端：封装登录与签到流程。"""
 
-    def __init__(self, account, password):
+    def __init__(self, account):
         self.account = account
-        self.password = password.encode('UTF-8')
+        self.password = account.password.encode('UTF-8')
         self.csrf = md5(str(datetime.now()).encode('UTF-8')).hexdigest()
         self.session = requests.Session()
         self.session.keep_alive = False
@@ -185,12 +325,12 @@ class YibanClient:
         proxy = os.environ.get('YIBAN_PROXY', '').strip()
         if proxy:
             self.session.proxies = {'http': proxy, 'https': proxy}
-            logger.info(f'[{self.account}] 已启用代理: {proxy}')
+            logger.info(f'[{account.phone}] 已启用代理: {proxy}')
         else:
-            logger.warning(f'[{self.account}] 未配置 YIBAN_PROXY，如遇到 WAF 拦截请配置代理（国内出口）')
+            logger.warning(f'[{account.phone}] 未配置 YIBAN_PROXY，如遇到 WAF 拦截请配置代理（国内出口）')
         # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码
-        self.phone_model = os.environ.get('YIBAN_PHONE_MODEL', '').strip()
-        self.phone_code = os.environ.get('YIBAN_PHONE_CODE', '').strip()
+        self.phone_model = account.phone_model
+        self.phone_code = account.phone_code
         self.logged_in = False
 
     def login(self):
@@ -223,7 +363,7 @@ class YibanClient:
         key_match = compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
         if not page_use_match or not key_match:
             body_preview = resp.text[:1500].replace('\n', '\\n')
-            logger.error(f'[{self.account}] OAuth 页解析失败诊断:')
+            logger.error(f'[{self.account.phone}] OAuth 页解析失败诊断:')
             logger.error(f'  最终 URL: {resp.url}')
             logger.error(f'  状态码: {resp.status_code}')
             logger.error(f'  响应长度: {len(resp.text)}')
@@ -265,12 +405,12 @@ class YibanClient:
 
         if 'reUrl' not in result:
             body_preview = resp.text[:1500].replace('\n', '\\n')
-            logger.error(f'[{self.account}] usersure 响应无 reUrl 字段，诊断:')
+            logger.error(f'[{self.account.phone}] usersure 响应无 reUrl 字段，诊断:')
             logger.error(f'  状态码: {resp.status_code}')
             logger.error(f'  响应前1500字符: {body_preview}')
             raise RuntimeError(f'登录响应异常（无 reUrl）: {result}')
         if 'error' in result.get('reUrl', ''):
-            raise RuntimeError(f'登录失败（账号或密码错误）: {self.account}')
+            raise RuntimeError(f'登录失败（账号或密码错误）: {self.account.phone}')
 
         # 4. 跳转回 f.yiban.cn，可能遇到 ydclearance 反爬
         self.session.headers.update(Referer='https://oauth.yiban.cn')
@@ -314,7 +454,7 @@ class YibanClient:
             raise RuntimeError('登录失败：未获取到 csrf_token')
 
         self.logged_in = True
-        logger.info(f'[{self.account}] 登录成功')
+        logger.info(f'[{self.account.phone}] 登录成功')
 
     def _solve_ydclearance(self, text):
         """解析 ydclearance 反爬 JS。"""
@@ -384,7 +524,7 @@ class YibanClient:
 
         # 4. 在多边形内生成随机点
         lng, lat = generate_position_in_polygon(polygon)
-        logger.info(f'[{self.account}] 生成定位: ({lng},{lat}) 地址: {position.get("Address", "")}')
+        logger.info(f'[{self.account.phone}] 生成定位: ({lng},{lat}) 地址: {position.get("Address", "")}')
 
         # 5. 构建签到数据并提交
         sign_info = {
@@ -394,7 +534,7 @@ class YibanClient:
             'Address': position.get('Address', ''),
         }
         if not self.phone_model or not self.phone_code:
-            logger.warning(f'[{self.account}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），'
+            logger.warning(f'[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），'
                            '如学校开启了设备绑定，签到将失败')
         resp = self.session.post(
             'https://api.uyiban.com/nightAttendance/student/index/signIn',
@@ -435,10 +575,11 @@ def send_notification(title, content, url):
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-def process_account(account, password, notify_url=None):
+def process_account(account, notify_url=None):
     """处理单个账号签到，带重试逻辑。"""
+    phone = account.phone
     try:
-        client = YibanClient(account, password)
+        client = YibanClient(account)
 
         # 使用重试逻辑执行登录和签到
         def do_signin():
@@ -448,63 +589,97 @@ def process_account(account, password, notify_url=None):
         success, message, skip = retry_with_backoff(do_signin)
 
         status = '✅' if success else '❌'
-        logger.info(f'[{account}] {status} {message}')
+        logger.info(f'[{phone}] {status} {message}')
         if not success and notify_url and not skip:
-            send_notification('易班签到失败', f'账号: {account}\n原因: {message}', notify_url)
+            send_notification('易班签到失败', f'账号: {phone}\n原因: {message}', notify_url)
         return success, message, skip
     except Exception as e:
-        logger.error(f'[{account}] ❌ 异常: {e}')
+        logger.error(f'[{phone}] ❌ 异常: {e}')
         logger.debug(traceback.format_exc())
         if notify_url:
-            send_notification('易班签到异常', f'账号: {account}\n异常: {e}', notify_url)
+            send_notification('易班签到异常', f'账号: {phone}\n异常: {e}', notify_url)
         return False, str(e), False
 
 
+def run_concurrent(accounts, notify_url, max_workers):
+    """并发执行多账号签到（每个账号使用独立会话，互不干扰）。
+
+    返回结果列表，顺序与传入的 accounts 一致，便于汇总展示。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    results = [None] * len(accounts)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(process_account, acc, notify_url): idx
+            for idx, acc in enumerate(accounts)
+        }
+        from concurrent.futures import as_completed
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                results[idx] = future.result()
+            except Exception as e:
+                phone = accounts[idx].phone
+                logger.error(f'[{phone}] ❌ 并发执行异常: {e}')
+                results[idx] = (False, str(e), False)
+    return results
+
+
 def main():
-    """主函数：支持多账号（账号间用 # 分隔，账号与密码用 : 分隔）。"""
-    # 兼容两种配置方式
-    accounts_str = os.environ.get('YIBAN_ACCOUNTS', '')
+    """主函数：加载账号配置并执行签到。
+
+    支持：
+    - 配置文件 accounts.json / YIBAN_ACCOUNTS_JSON（推荐，一次输入一个账号完整信息）
+    - 旧格式 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（向后兼容）
+    - YIBAN_CONCURRENCY 控制并发（默认顺序执行）
+    - --check-config 仅检查配置，不发任何网络请求
+    """
+    parser = argparse.ArgumentParser(description='易班自动签到')
+    parser.add_argument('--check-config', action='store_true',
+                        help='仅检查账号配置（脱敏打印），不发起任何网络请求')
+    args = parser.parse_args()
+
     notify_url = os.environ.get('YIBAN_NOTIFY_URL', '')
 
-    accounts = []
-    if accounts_str:
-        for item in accounts_str.split('#'):
-            item = item.strip()
-            if not item:
-                continue
-            if ':' not in item:
-                logger.error(f'账号配置格式错误（应为 phone:password）: {item}')
-                continue
-            phone, pwd = item.split(':', 1)
-            accounts.append((phone.strip(), pwd.strip()))
-    else:
-        phone = os.environ.get('YIBAN_PHONE')
-        pwd = os.environ.get('YIBAN_PASSWORD')
-        if phone and pwd:
-            accounts.append((phone, pwd))
-
-    if not accounts:
-        logger.error('未配置任何账号，请设置 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD 环境变量')
+    # 加载账号配置（文件 > JSON 环境变量 > 旧格式，详见 load_accounts）
+    try:
+        accounts = load_accounts()
+    except RuntimeError as e:
+        logger.error(f'配置加载失败: {e}')
         sys.exit(1)
 
-    logger.info(f'==== 开始执行签到，共 {len(accounts)} 个账号 ====')
+    if not accounts:
+        logger.error('未配置任何账号，请通过以下任一方式配置：')
+        logger.error('  1. accounts.json 文件（推荐，用 TUI 配置工具生成）')
+        logger.error('  2. YIBAN_ACCOUNTS_JSON 环境变量（JSON 数组）')
+        logger.error('  3. YIBAN_ACCOUNTS 环境变量（旧格式 phone:password#phone2:password2）')
+        logger.error('  4. YIBAN_PHONE / YIBAN_PASSWORD 环境变量（单账号）')
+        sys.exit(1)
 
-    results = []
-    for phone, pwd in accounts:
-        success, msg, skip = process_account(phone, pwd, notify_url)
-        results.append((phone, success, msg, skip))
+    # 仅检查配置模式：不发任何网络请求，用于部署验证
+    if args.check_config:
+        print_config_summary(accounts)
+        sys.exit(0)
 
-    # 汇总
+    # 并发配置：YIBAN_CONCURRENCY 默认 1（顺序执行），>1 时并发执行
+    concurrency = parse_concurrency(os.environ.get('YIBAN_CONCURRENCY', '1'))
+    mode = f'并发（{concurrency} 线程）' if concurrency > 1 else '顺序'
+    logger.info(f'==== 开始执行签到，共 {len(accounts)} 个账号，执行模式: {mode} ====')
+
+    if concurrency > 1:
+        results = run_concurrent(accounts, notify_url, concurrency)
+    else:
+        results = [process_account(acc, notify_url) for acc in accounts]
+
+    # 汇总（results 顺序与 accounts 一致）
     logger.info('==== 签到汇总 ====')
-    all_success = True
     has_real_failure = False
-    for phone, success, msg, skip in results:
+    for acc, (success, msg, skip) in zip(accounts, results):
         status = '✅' if success else '❌'
-        logger.info(f'  {status} {phone}: {msg}')
-        if not success:
-            all_success = False
-            if not skip:
-                has_real_failure = True
+        logger.info(f'  {status} {acc.phone}: {msg}')
+        if not success and not skip:
+            has_real_failure = True
 
     # 退出码：
     # 0 - 全部成功，或仅因"未在签到时间内"跳过（不是真正的失败）
