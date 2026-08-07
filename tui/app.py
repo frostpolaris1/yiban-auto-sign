@@ -25,6 +25,8 @@ from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
+from tui.monitor import MonitorScreen
+
 # 默认配置文件路径（与 signin.py 保持一致，可用环境变量覆盖）
 ACCOUNTS_DEFAULT = os.environ.get('YIBAN_ACCOUNTS_FILE', 'accounts.json')
 
@@ -132,6 +134,7 @@ class YibanTuiApp(App):
         Binding('e', 'edit', '编辑'),
         Binding('d', 'delete', '删除'),
         Binding('s', 'save', '保存'),
+        Binding('m', 'monitor', '监控'),
         Binding('q', 'quit', '退出'),
     ]
 
@@ -182,6 +185,10 @@ class YibanTuiApp(App):
             f.write('\n')
         self.notify(f'已保存 {len(self.accounts)} 个账号 → {self.config_path}',
                     severity='information', timeout=3)
+
+    def action_monitor(self) -> None:
+        """打开实时性能监控页面（btop 简化版，Esc 返回）。"""
+        self.push_screen(MonitorScreen())
 
     # ---- 账号操作 ----
     def action_add(self) -> None:

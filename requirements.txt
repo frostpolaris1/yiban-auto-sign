@@ -6,3 +6,5 @@ js2py>=0.74
 PySocks>=1.7.1
 # TUI 配置工具（服务器端 python3 -m tui 使用）
 textual>=8.0.0
+# TUI 实时性能监控（btop 简化版，M 键打开）
+psutil>=5.9.0
