@@ -1,34 +1,99 @@
 #!/usr/bin/env python3
-"""易班自动签到 TUI 配置工具。
+"""易班自动签到 TUI 配置工具（服务器端）。
 
-服务器端（SSH）运行的简易配置界面：
-- 表单式输入账号：手机号、密码（掩码）、设备型号、设备识别码
-- 一个账号的所有信息一次性输入，无需用符号分隔
-- 多账号列表管理（添加 / 编辑 / 删除）
-- 保存为 accounts.json，signin.py 会自动读取
+SSH 登录服务器后执行 `yiban`（或 `python3 -m tui`）即可打开面板：
 
-用法：
-    python3 -m tui [--config /path/to/accounts.json]
+- 左侧：账号列表（序号 / 状态 / 名称 / 手机号 / 设备型号）
+  - 序号决定顺序模式下的打卡顺序（[ ] 上下调整）
+  - 状态图标：⏳ 准备签到（今日未签到） ✅ 签到成功 ❌ 签到失败（来自 sign.log）
+- 右上：签到日志（简化展示最近记录，自动刷新）
+- 右下：设置区
+  - 执行模式切换（顺序 / 并发 + 线程数，写入 .env 的 YIBAN_CONCURRENCY）
+  - 连通性检测（不登录，仅检查易班 API 可达性）
+  - 服务器当前时间
 
-快捷键：
-    A 添加账号   E 编辑选中账号   D 删除选中账号
-    S 保存配置   Q 退出
+快捷键：A 添加  E 编辑  D 删除  [ ] 上下移  S 保存  Q 退出
 """
 
 import argparse
 import json
 import os
+import re
+from datetime import datetime
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 
-from tui.monitor import MonitorScreen
-
-# 默认配置文件路径（与 signin.py 保持一致，可用环境变量覆盖）
+# 默认路径（与 signin.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get('YIBAN_ACCOUNTS_FILE', 'accounts.json')
+LOG_DEFAULT = os.environ.get('YIBAN_LOG_FILE', '/var/log/yiban/sign.log')
+ENV_DEFAULT = os.environ.get('YIBAN_ENV_FILE', '.env')
+
+# 状态图标
+ICON_PENDING = '⏳'   # 准备签到（今日未签到）
+ICON_SUCCESS = '✅'   # 今日签到成功
+ICON_FAILED = '❌'    # 今日签到失败
+
+# 解析 sign.log（行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功）
+SIGN_LOG_RE = re.compile(r'\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)')
+STATE_RE = re.compile(r'\[(\d+)\]\s*(✅|❌)')
+
+
+def parse_sign_log(path):
+    """解析签到日志：返回 (今日各账号状态 dict, 最近日志行列表)。"""
+    today = datetime.now().strftime('%Y-%m-%d')
+    states = {}
+    recent = []
+    try:
+        with open(path, encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                m = SIGN_LOG_RE.match(line.strip())
+                if not m:
+                    continue
+                date, level, logger_name, msg = m.groups()
+                if logger_name != 'yiban' or level == 'DEBUG':
+                    continue
+                recent.append(line.strip())
+                if date == today:
+                    sm = STATE_RE.search(msg)
+                    if sm:
+                        states[sm.group(1)] = sm.group(2)
+    except OSError:
+        pass
+    return states, recent[-15:]
+
+
+def load_env_concurrency(env_path):
+    """读取 .env 中的 YIBAN_CONCURRENCY（默认 1 = 顺序执行）。"""
+    try:
+        with open(env_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('YIBAN_CONCURRENCY='):
+                    try:
+                        return max(1, int(line.split('=', 1)[1]))
+                    except ValueError:
+                        return 1
+    except OSError:
+        pass
+    return 1
+
+
+def write_env_concurrency(env_path, concurrency):
+    """把并发设置写入 .env：1=顺序（删除该行），>1=写入 N；保留其他行。"""
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, encoding='utf-8') as f:
+            lines = f.read().splitlines()
+    out = [l for l in lines if not l.strip().startswith('YIBAN_CONCURRENCY=')]
+    if concurrency > 1:
+        out.append(f'YIBAN_CONCURRENCY={concurrency}')
+    with open(env_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(out) + '\n')
 
 
 class AccountForm(ModalScreen):
@@ -46,6 +111,8 @@ class AccountForm(ModalScreen):
         title = '➕ 添加账号' if self.index is None else f'✏️ 编辑账号 #{self.index + 1}'
         yield Container(
             Label(title, id='form-title'),
+            Input(placeholder='名称（可选，不填默认 账号N）', value=acc.get('name', ''),
+                  id='name', max_length=20),
             Input(placeholder='手机号（必填）', value=acc.get('phone', ''),
                   id='phone', max_length=20),
             Input(placeholder='密码（必填）', value=acc.get('password', ''),
@@ -75,7 +142,7 @@ class AccountForm(ModalScreen):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """任意输入框回车即保存，简化键盘操作。"""
-        if event.input.id in ('phone', 'password', 'phone_model', 'phone_code'):
+        if event.input.id in ('name', 'phone', 'password', 'phone_model', 'phone_code'):
             self._save()
 
     def _save(self) -> None:
@@ -85,6 +152,7 @@ class AccountForm(ModalScreen):
             self.notify('手机号和密码为必填项', severity='error', timeout=3)
             return
         self.dismiss({
+            'name': self.query_one('#name', Input).value.strip(),
             'phone': phone,
             'password': password,
             'phone_model': self.query_one('#phone_model', Input).value.strip(),
@@ -93,25 +161,82 @@ class AccountForm(ModalScreen):
 
 
 class YibanTuiApp(App):
-    """易班账号配置 TUI 主应用。"""
+    """易班自动签到 TUI 主应用。"""
 
-    TITLE = '易班自动签到 · 账号配置'
-    SUB_TITLE = '服务器端 TUI 配置工具'
+    TITLE = '易班自动签到'
+    SUB_TITLE = '账号配置 · 日志 · 设置'
 
+    # ---- 现代化配色（Tokyo Night 风格）----
     CSS = '''
+    $background: #16161e;
+    $surface: #24283b;
+    $panel: #1a1b26;
+    $primary: #7aa2f7;
+    $accent: #7dcfff;
+    $success: #9ece6a;
+    $warning: #e0af68;
+    $error: #f7768e;
+    $text: #c0caf5;
+    $text-muted: #565f89;
+
+    #main-row {
+        height: 1fr;
+    }
+    #left-panel {
+        width: 55%;
+        height: 1fr;
+        border: round $surface;
+        padding: 0 1;
+    }
+    #right-panel {
+        width: 45%;
+        height: 1fr;
+    }
+    #log-box-wrap {
+        height: 1fr;
+    }
+    #log-box {
+        height: 1fr;
+        border: round $surface;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+    #settings-box {
+        height: auto;
+        border: round $surface;
+        padding: 0 1;
+        margin-top: 1;
+    }
+    #settings-box Label.section {
+        text-style: bold;
+        color: $accent;
+    }
+    .set-row {
+        height: 3;
+        align: left middle;
+    }
+    #clock {
+        color: $text-muted;
+    }
+    #ping-result {
+        width: 1fr;
+    }
+    #mode-btn {
+        width: auto;
+    }
+    #threads {
+        width: 8;
+    }
     #form {
         width: 64;
         height: auto;
-        border: thick $accent;
+        border: thick $primary;
         background: $surface;
         padding: 1 2;
         margin: 2 6;
     }
     #form-title {
         text-style: bold;
-        margin-bottom: 1;
-    }
-    Input {
         margin-bottom: 1;
     }
     #form-hint {
@@ -133,30 +258,64 @@ class YibanTuiApp(App):
         Binding('a', 'add', '添加'),
         Binding('e', 'edit', '编辑'),
         Binding('d', 'delete', '删除'),
+        Binding('[', 'move_up', '上移'),
+        Binding(']', 'move_down', '下移'),
         Binding('s', 'save', '保存'),
-        Binding('m', 'monitor', '监控'),
         Binding('q', 'quit', '退出'),
     ]
 
-    def __init__(self, config_path: str = ACCOUNTS_DEFAULT):
+    def __init__(self, config_path: str = ACCOUNTS_DEFAULT,
+                 log_path: str = LOG_DEFAULT, env_path: str = ENV_DEFAULT):
         super().__init__()
         self.config_path = config_path
-        self.accounts = []  # [{'phone', 'password', 'phone_model', 'phone_code'}, ...]
-        self._editing_row = None  # 编辑模式目标行（None=添加模式）
+        self.log_path = log_path
+        self.env_path = env_path
+        self.accounts = []          # [{'name','phone','password','phone_model','phone_code'}]
+        self._editing_row = None    # 编辑模式目标行（None=添加模式）
+        self.mode_concurrency = 1   # 执行模式：1=顺序，N=并发 N 线程（来自 .env）
+        self.states = {}            # {phone: '✅'|'❌'} 今日签到状态
+        self._clock_timer = None
+        self._log_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield DataTable(id='table', cursor_type='row')
+        yield Horizontal(
+            Container(DataTable(id='table', cursor_type='row'), id='left-panel'),
+            Vertical(
+                Container(Label('📋 签到日志（最近）', classes='section'), Static('', id='log-box'),
+                          id='log-box-wrap'),
+                Container(
+                    Label('⚙️ 设置', classes='section'),
+                    Horizontal(Label('执行模式:'), Button('', id='mode-btn'),
+                               Input(placeholder='并发线程数', id='threads', type='integer'),
+                               classes='set-row'),
+                    Horizontal(Button('连通性检测', id='ping-btn'), Static('', id='ping-result'),
+                               classes='set-row'),
+                    Static('', id='clock'),
+                    id='settings-box',
+                ),
+                id='right-panel',
+            ),
+            id='main-row',
+        )
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one('#table', DataTable)
-        table.add_columns('手机号', '设备型号', '设备识别码')
+        table.add_columns(' #', '状态', '名称', '手机号', '设备型号')
+        # 模式初始化（来自 .env）
+        self.mode_concurrency = load_env_concurrency(self.env_path)
+        self._refresh_mode_ui()
         self._load()
+        # 定时刷新：时钟 1s，日志 10s
+        self._clock_timer = self.set_interval(1.0, self._refresh_clock)
+        self._log_timer = self.set_interval(10.0, self._refresh_log)
+        self._refresh_clock()
+        self._refresh_log()
 
     # ---- 数据加载与展示 ----
     def _load(self) -> None:
-        """加载已有 accounts.json（若存在且合法）。"""
+        """加载 accounts.json（若存在且合法）。"""
         self.accounts = []
         if os.path.exists(self.config_path):
             try:
@@ -169,26 +328,117 @@ class YibanTuiApp(App):
                             severity='error', timeout=4)
         self._refresh_table()
 
+    def _display_name(self, acc, index):
+        """显示名称：用户输入的名称，未填写则用默认名 账号N。"""
+        return acc.get('name') or f'账号{index + 1}'
+
+    def _status_icon(self, acc):
+        """状态图标：⏳ 准备签到 / ✅ 成功 / ❌ 失败（来自今日 sign.log）。"""
+        return self.states.get(acc.get('phone', ''), ICON_PENDING)
+
     def _refresh_table(self) -> None:
         table = self.query_one('#table', DataTable)
         table.clear()
-        for acc in self.accounts:
-            code = acc.get('phone_code', '')
-            display_code = code[:12] + ('…' if len(code) > 12 else '')
-            table.add_row(acc.get('phone', ''), acc.get('phone_model', ''), display_code)
-        self.sub_title = f'共 {len(self.accounts)} 个账号 | {os.path.basename(self.config_path)}'
+        for idx, acc in enumerate(self.accounts):
+            table.add_row(
+                str(idx + 1),
+                self._status_icon(acc),
+                self._display_name(acc, idx),
+                acc.get('phone', ''),
+                acc.get('phone_model', ''),
+            )
+        self.sub_title = (f'共 {len(self.accounts)} 个账号 · '
+                          f'{"顺序执行" if self.mode_concurrency <= 1 else f"并发({self.mode_concurrency})"} · '
+                          f'{os.path.basename(self.config_path)}')
 
+    # ---- 签到日志 ----
+    def _refresh_log(self) -> None:
+        _, recent = parse_sign_log(self.log_path)
+        self.states, _ = parse_sign_log(self.log_path)
+        # 状态可能变化，刷新列表图标
+        if self.accounts:
+            self._refresh_table()
+        text = '\n'.join(recent) if recent else '（暂无签到日志，等待定时任务执行…）'
+        self.query_one('#log-box', Static).update(text)
+
+    # ---- 服务器时间 ----
+    def _refresh_clock(self) -> None:
+        self.query_one('#clock', Static).update(
+            f'服务器时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+
+    # ---- 执行模式（顺序 / 并发）----
+    def _refresh_mode_ui(self) -> None:
+        btn = self.query_one('#mode-btn', Button)
+        threads = self.query_one('#threads', Input)
+        if self.mode_concurrency <= 1:
+            btn.label = '顺序'
+            btn.variant = 'default'
+            threads.value = ''
+            threads.placeholder = '并发线程数'
+        else:
+            btn.label = f'并发 {self.mode_concurrency}'
+            btn.variant = 'primary'
+            threads.value = str(self.mode_concurrency)
+        self.sub_title = (f'共 {len(self.accounts)} 个账号 · '
+                          f'{"顺序执行" if self.mode_concurrency <= 1 else f"并发({self.mode_concurrency})"} · '
+                          f'{os.path.basename(self.config_path)}')
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == 'mode-btn':
+            self._toggle_mode()
+        elif event.button.id == 'ping-btn':
+            self._check_connectivity()
+
+    def _toggle_mode(self) -> None:
+        """顺序 ↔ 并发切换（并发默认 3 线程）。"""
+        if self.mode_concurrency <= 1:
+            self.mode_concurrency = 3
+        else:
+            self.mode_concurrency = 1
+        self._refresh_mode_ui()
+        self.notify(f'执行模式: {"顺序" if self.mode_concurrency <= 1 else f"并发 {self.mode_concurrency}"}'
+                    '（按 S 保存生效）', timeout=3)
+
+    # ---- 连通性检测（不登录，仅检查易班 API 可达性）----
+    @work(exclusive=True)
+    async def _check_connectivity(self) -> None:
+        result = self.query_one('#ping-result', Static)
+        result.update('检测中…')
+        try:
+            import requests
+            resp = requests.get(
+                'https://api.uyiban.com/base/c/auth/yiban',
+                timeout=6,
+                headers={'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) '
+                                       'AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148'},
+            )
+            ok = resp.status_code < 500
+            detail = f'HTTP {resp.status_code}'
+        except Exception as e:
+            ok = False
+            detail = str(e)[:60]
+        result.update(f'{"✅ 易班 API 可达" if ok else f"❌ 不可达"}（{detail}）')
+
+    # ---- 保存 ----
     def action_save(self) -> None:
-        """写入 accounts.json（UTF-8、缩进 2、保留中文）。"""
+        """保存账号到 accounts.json，并把执行模式写入 .env。"""
+        # 1. 账号配置
         with open(self.config_path, 'w', encoding='utf-8') as f:
             json.dump(self.accounts, f, ensure_ascii=False, indent=2)
             f.write('\n')
-        self.notify(f'已保存 {len(self.accounts)} 个账号 → {self.config_path}',
-                    severity='information', timeout=3)
-
-    def action_monitor(self) -> None:
-        """打开实时性能监控页面（btop 简化版，Esc 返回）。"""
-        self.push_screen(MonitorScreen())
+        # 2. 执行模式（并发数来自线程数输入框）
+        concurrency = self.mode_concurrency
+        if concurrency > 1:
+            try:
+                concurrency = max(2, int(self.query_one('#threads', Input).value or '3'))
+            except ValueError:
+                concurrency = 3
+        write_env_concurrency(self.env_path, concurrency)
+        self.mode_concurrency = concurrency
+        self._refresh_mode_ui()
+        self.notify(f'已保存 {len(self.accounts)} 个账号 → {self.config_path}；'
+                    f'模式: {"顺序" if concurrency <= 1 else f"并发 {concurrency}"}（.env）',
+                    severity='information', timeout=4)
 
     # ---- 账号操作 ----
     def action_add(self) -> None:
@@ -201,7 +451,6 @@ class YibanTuiApp(App):
         if row is None:
             self.notify('请先选中要编辑的账号（↑↓ 选择）', severity='warning', timeout=3)
             return
-        # 记录编辑目标行：表单保存时按此行覆盖，不随光标移动变化
         self._editing_row = row
         self.push_screen(AccountForm(account=self.accounts[row], index=row),
                          callback=self._on_form_result)
@@ -214,6 +463,29 @@ class YibanTuiApp(App):
         removed = self.accounts.pop(row)
         self.notify(f'已删除账号 {removed.get("phone", "")}（按 S 保存生效）', timeout=3)
         self._refresh_table()
+
+    def action_move_up(self) -> None:
+        """上移选中账号：改变阅读顺序与顺序模式打卡顺序。"""
+        row = self._current_row()
+        if row is None or row == 0:
+            return
+        self.accounts[row], self.accounts[row - 1] = self.accounts[row - 1], self.accounts[row]
+        self._refresh_table()
+        self._select_row(row - 1)
+
+    def action_move_down(self) -> None:
+        """下移选中账号。"""
+        row = self._current_row()
+        if row is None or row >= len(self.accounts) - 1:
+            return
+        self.accounts[row], self.accounts[row + 1] = self.accounts[row + 1], self.accounts[row]
+        self._refresh_table()
+        self._select_row(row + 1)
+
+    def _select_row(self, row) -> None:
+        table = self.query_one('#table', DataTable)
+        if 0 <= row < len(self.accounts):
+            table.move_cursor(row=row)
 
     def _current_row(self):
         table = self.query_one('#table', DataTable)
@@ -233,15 +505,20 @@ class YibanTuiApp(App):
         else:
             self.accounts.append(data)  # 添加新账号
         self._refresh_table()
-        self.notify(f'账号 {data["phone"]} 已就绪，按 S 保存到配置文件', timeout=3)
+        self.notify(f'{data["name"] or "账号" + str(len(self.accounts))} '
+                    f'({data["phone"]}) 已就绪，按 S 保存到配置文件', timeout=3)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='易班自动签到 TUI 配置工具')
     parser.add_argument('--config', default=ACCOUNTS_DEFAULT,
                         help=f'账号配置文件路径（默认: {ACCOUNTS_DEFAULT}）')
+    parser.add_argument('--log', default=LOG_DEFAULT,
+                        help=f'签到日志路径（默认: {LOG_DEFAULT}）')
+    parser.add_argument('--env', default=ENV_DEFAULT,
+                        help=f'.env 路径（默认: {ENV_DEFAULT}）')
     args = parser.parse_args()
-    YibanTuiApp(config_path=args.config).run()
+    YibanTuiApp(config_path=args.config, log_path=args.log, env_path=args.env).run()
 
 
 if __name__ == '__main__':

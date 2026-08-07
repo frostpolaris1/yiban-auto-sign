@@ -82,6 +82,7 @@ class Account:
     password: str
     phone_model: str = ''  # 设备型号（学校开启"设备绑定"时必填）
     phone_code: str = ''   # 设备唯一识别码（学校开启"设备绑定"时必填）
+    name: str = ''         # 可选：自定义名称（TUI 输入，未填写时显示为"账号N"）
 
     @property
     def has_device_info(self):
@@ -207,6 +208,7 @@ def _parse_account_dict(data):
         password=password,
         phone_model=str(data.get('phone_model') or '').strip(),
         phone_code=str(data.get('phone_code') or '').strip(),
+        name=str(data.get('name') or '').strip(),
     )
 
 
