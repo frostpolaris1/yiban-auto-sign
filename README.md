@@ -11,8 +11,9 @@
 ## ✨ 功能特点
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预
+- 🖥️ **TUI 配置工具**（服务器端）：表单式输入账号/密码/设备识别码，一个账号一次输完，无需记忆分隔符号
 - 📍 **智能定位**：在签到范围内生成随机定位点，模拟真实 GPS（缩放质心算法）
-- 👥 **多账号支持**：一个仓库管理多个易班账号
+- 👥 **多账号支持**：一个仓库管理多个易班账号，支持并发/顺序执行（`YIBAN_CONCURRENCY`）
 - 🔔 **消息通知**：签到失败时推送通知（Server 酱 / Bark / 企业微信等）
 - 🆓 **完全免费**：使用 GitHub Actions 免费额度，每月消耗约 60 分钟（远低于 2000 分钟配额）
 - ⏰ **永久运行**：内置 `gh-workflow-keepalive`，自动破解 GitHub 60 天无活动禁用限制
@@ -164,15 +165,37 @@ on:
 
 ### 环境变量一览
 
+账号配置支持多种方式，按优先级自动加载：**`accounts.json` 文件 > `YIBAN_ACCOUNTS_JSON` > 旧格式 `YIBAN_ACCOUNTS` / `YIBAN_PHONE`+`YIBAN_PASSWORD`**。推荐使用服务器端 TUI 配置工具（见 [服务器部署](#️-服务器部署进阶)）生成 `accounts.json`。
+
 | 变量名 | 说明 | 必填 |
 |--------|------|------|
-| `YIBAN_ACCOUNTS` | 易班账号，格式 `手机号:密码`，多账号用 `#` 分隔 | 二选一 |
-| `YIBAN_PHONE` | 易班手机号（单账号） | 二选一 |
-| `YIBAN_PASSWORD` | 易班密码（单账号） | 二选一 |
+| `YIBAN_ACCOUNTS_JSON` | 账号 JSON 数组（推荐），每个账号一次输入完整信息，格式见下方 | 二选一 |
+| `YIBAN_ACCOUNTS` | 旧格式 `手机号:密码`，多账号用 `#` 分隔（向后兼容） | 二选一 |
+| `YIBAN_PHONE` | 易班手机号（单账号，向后兼容） | 二选一 |
+| `YIBAN_PASSWORD` | 易班密码（单账号，向后兼容） | 二选一 |
+| `YIBAN_ACCOUNTS_FILE` | `accounts.json` 文件路径，默认 `./accounts.json` | 可选 |
+| `YIBAN_CONCURRENCY` | 并发线程数：默认 `1`（顺序执行，推荐）；`>1` 时多账号并发签到（如 `3`） | 可选 |
 | `YIBAN_PROXY` | 代理地址，如 `http://host:port` 或 `socks5://host:port` | 推荐 |
-| `YIBAN_PHONE_MODEL` | 设备型号（如 `Vivo-XXXX`），学校开启设备绑定时必填 | 视情况 |
-| `YIBAN_PHONE_CODE` | 设备唯一识别码（64位十六进制字符串），学校开启设备绑定时必填 | 视情况 |
+| `YIBAN_PHONE_MODEL` | 设备型号（如 `Vivo-XXXX`），账号未配置设备信息时全局回退 | 视情况 |
+| `YIBAN_PHONE_CODE` | 设备唯一识别码（64位十六进制字符串），账号未配置设备信息时全局回退 | 视情况 |
 | `YIBAN_NOTIFY_URL` | 通知 webhook URL | 可选 |
+
+### 账号配置格式（JSON，推荐）
+
+`accounts.json` 与 `YIBAN_ACCOUNTS_JSON` 使用相同的 JSON 数组格式，一个账号一次输入完整信息（手机号、密码、设备型号、设备识别码），**无需用符号分隔**：
+
+```json
+[
+  {"phone": "13800138000", "password": "你的密码", "phone_model": "Vivo-XXXX", "phone_code": "64位识别码"},
+  {"phone": "13900139000", "password": "另一个密码"}
+]
+```
+
+- `phone` / `password` 必填；`phone_model` / `phone_code` 可选（学校开启"设备绑定"时必填，每个账号可独立配置）
+- 服务器端可用 TUI 工具自动生成此文件：`python3 -m tui`
+- 检查配置（不发送任何请求）：`python scripts/signin.py --check-config`
+
+> ⚠️ `accounts.json` 包含明文密码，已被 `.gitignore` 排除，请勿提交到仓库。
 
 ### 消息通知（可选）
 
@@ -279,19 +302,45 @@ pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip3 install -r requirements.txt
 ```
 
-#### 3. 配置环境变量
+#### 3. 配置账号（推荐：TUI 配置工具）
+
+SSH 登录服务器后运行表单式配置工具，**一个账号的所有信息（手机号、密码、设备型号、设备识别码）一次输入完成**，密码输入时自动掩码：
+
+```bash
+cd /opt/yiban-auto-sign
+python3 -m tui
+```
+
+**界面快捷键**：
+
+| 按键 | 功能 |
+|------|------|
+| `A` | 添加账号（填写手机号 / 密码 / 设备型号 / 设备识别码） |
+| `E` / `D` | 编辑 / 删除选中账号（↑↓ 选择） |
+| `S` | 保存到 `accounts.json` |
+| `Q` | 退出 |
+
+保存后 `signin.py` 每次执行会自动读取 `accounts.json`。也可以不启动 TUI，直接手写该文件（格式见 [账号配置格式](#账号配置格式json推荐)）。
+
+> 💡 **手动验证配置**（不发送任何网络请求）：
+> ```bash
+> python3 scripts/signin.py --check-config
+> ```
+
+#### 4. 配置环境变量
 
 ```bash
 cat > /opt/yiban-auto-sign/.env << 'EOF'
-YIBAN_PHONE=你的手机号
-YIBAN_PASSWORD=你的易班密码
 YIBAN_PROXY=http://127.0.0.1:8888
+# YIBAN_CONCURRENCY=1   # 多账号并发：默认 1（顺序），可设为 3 等并发数
 EOF
 ```
 
+账号已通过 TUI 写入 `accounts.json`，`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`）。
+
 > 💡 **关于代理**：阿里云 ECS 的 IP 段也可能被易班 WAF 拦截。建议在同台服务器上部署 TinyProxy，通过本机代理访问易班。TinyProxy 安装与配置见 [PROXY_DEPLOY_GUIDE.md](PROXY_DEPLOY_GUIDE.md)。
 
-#### 4. 创建运行脚本
+#### 5. 创建运行脚本
 
 ```bash
 cat > /opt/yiban-auto-sign/run.sh << 'EOF'
@@ -304,7 +353,7 @@ chmod +x /opt/yiban-auto-sign/run.sh
 mkdir -p /var/log/yiban
 ```
 
-#### 5. 配置 crontab 定时任务
+#### 6. 配置 crontab 定时任务
 
 ```bash
 crontab -e
@@ -320,7 +369,7 @@ crontab -e
 10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
 ```
 
-#### 6. 手动测试
+#### 7. 手动测试
 
 ```bash
 bash /opt/yiban-auto-sign/run.sh
@@ -538,11 +587,17 @@ cd yiban-auto-sign
 # 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. 配置环境变量（Windows PowerShell）
+# 3. 配置账号（推荐 JSON，一次输入一个账号完整信息）
+$env:YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"your_password"}]'
+
+#    或旧格式（多个账号用 # 分隔，向后兼容）
 $env:YIBAN_ACCOUNTS="13800138000:your_password"
 
 #    或 Linux/macOS
-export YIBAN_ACCOUNTS="13800138000:your_password"
+export YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"your_password"}]'
+
+# 3.1 检查配置（不发送任何网络请求，密码脱敏显示）
+python scripts/signin.py --check-config
 
 # 4. 运行
 python scripts/signin.py
