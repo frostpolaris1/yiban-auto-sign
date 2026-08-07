@@ -272,6 +272,37 @@ https://api.day.app/YOUR_KEY/易班签到通知
 - 希望随时手动触发签到或查看日志
 - 已有国内云服务器资源
 
+### ⚡ 快速部署（3 分钟）
+
+```bash
+# 1. 服务器环境（Ubuntu 22.04 已含 python3）——只需一次
+apt update && apt install -y python3-pip
+pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 2. 拉取代码（服务器为主力签到，推荐国内网络直拉 Gitee 或上传压缩包）
+git clone https://gitee.com/frostpolaris/yiban-auto-sign.git /opt/yiban-auto-sign
+cd /opt/yiban-auto-sign && pip3 install -r requirements.txt
+
+# 3. 配置账号（TUI 面板：名称/手机号/密码/设备识别码，一个账号一次输完）
+# 安装 yiban 命令（SSH 后输入 yiban 直接打开面板）
+cat > /usr/local/bin/yiban << 'EOF'
+#!/bin/bash
+cd /opt/yiban-auto-sign
+exec python3 -m tui "$@"
+EOF
+chmod +x /usr/local/bin/yiban
+yiban        #   A 添加 → 填写 → S 保存 → Q 退出；设置区可切换顺序/并发模式
+
+# 4. 配置定时任务（周一到周六 6:40 + 7:10 两次）
+crontab -e   # 追加：
+# 40 6 * * 1-6 /opt/yiban-auto-sign/run.sh
+# 10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
+
+# 5. 验证
+python3 scripts/signin.py --check-config   # 配置检查（不发请求）
+bash run.sh && tail -20 /var/log/yiban/sign.log
+```
+
 ### 部署步骤
 
 #### 1. 服务器环境准备（Ubuntu 22.04）
@@ -494,11 +525,19 @@ workflow-keepalive:
 ## ❓ 常见问题
 
 <details>
-<summary><b>Q1：手动测试报错 "登录失败（账号或密码错误）"</b></summary>
+<summary><b>Q1：报错 "账号或密码错误"（e003），但密码明明是对的</b></summary>
 
-- 确认 `YIBAN_ACCOUNTS` 格式为 `手机号:密码`，密码中不含 `#` 字符
-- 如密码含特殊字符，改用 `YIBAN_PHONE` / `YIBAN_PASSWORD` 两个 Secret 分别配置
-- 确认账号可在 [https://www.yiban.cn/](https://www.yiban.cn/) 正常登录
+这是本项目实测遇到的**典型风控伪装**：易班对可疑登录请求（海外 IP、异常频率）会返回 `e003 账号或密码错误`，而不是真实的 WAF 文案，用来迷惑自动化脚本。
+
+**排查顺序（按此执行，别急着改密码）**：
+
+1. **用手机易班 App 登录一次**——能正常登录则说明账号和密码都没问题，是登录风控
+2. **对照实验**：临时移走 `accounts.json`，用旧 `.env` 方式再跑一次——新旧方式同时报错，即可排除配置问题
+3. **确认触发源**：检查同一账号当天是否被多个 IP 尝试过（如 GitHub Actions 海外 IP 定时签到失败重试），这类异常尝试会让易班把账号标记为可疑
+4. **等待冷却**：风控冷却通常几小时到 24 小时，**期间不要反复重试**（会延长冷却）
+5. 冷却后由 cron 自动重试即可恢复
+
+> 💡 **预防**：避免在同一账号上叠加多路定时签到（如 GitHub Actions + 服务器同时跑），海外 IP 的失败尝试会连带影响国内服务器签到。推荐以国内服务器为唯一签到通道。
 </details>
 
 <details>
@@ -524,6 +563,7 @@ workflow-keepalive:
 - **原因**：GitHub Actions 的海外 IP 被易班 WAF 风控拦截
 - **解决方案**：配置 `YIBAN_PROXY` 代理（国内出口），详见 [代理配置](#代理配置重要)
 - 脚本会自动重试 3 次，如果仍然失败会标记为错误
+- **注意**：海外 IP 的反复失败尝试可能让易班把**账号**标记为可疑，连带影响服务器签到（表现为 e003，见 [Q1](#q1报错-账号或密码错误e003但密码明明是对的)）。如果已有国内服务器签到，**建议在 GitHub Actions 页面禁用该工作流**，避免双路签到触发风控
 </details>
 
 <details>
@@ -565,6 +605,18 @@ workflow-keepalive:
 - 可看到所有历史运行记录，点击进入可查看详细日志
 </details>
 
+<details>
+<summary><b>Q10：GitHub Actions 会触发风控吗？要不要停掉？</b></summary>
+
+**会**。Actions 使用 GitHub 海外 IP，每次定时尝试登录都会被易班 WAF 拦截（报"风险访问服务禁用"）；更麻烦的是，**反复的失败尝试可能让易班把账号标记为可疑，连带影响国内服务器签到**（服务器随后出现 e003 伪装"密码错误"，见 [Q1](#q1报错-账号或密码错误e003但密码明明是对的)）。
+
+**建议**：
+
+- 已有国内服务器签到 → **在 Actions 页面禁用工作流**（Actions → Yiban Sign-in → ⋯ → Disable workflow），让服务器成为唯一签到通道，最稳
+- 没有服务器、必须用 Actions → 配置 `YIBAN_PROXY` 国内代理（见 [代理配置](#代理配置重要)），且避免与其他签到通道叠加同一账号
+- 恢复 Actions：同一位置 `Enable workflow`
+</details>
+
 ---
 
 ## ⚠️ 注意事项
@@ -574,7 +626,8 @@ workflow-keepalive:
 3. 不要将账号密码直接写在代码中，必须使用 GitHub Secrets
 4. 请勿频繁调用 API（默认每天 2 次足够），以免触发风控
 5. 如账号开启了二次验证，可能需要额外处理
-6. **推荐配置代理**：GitHub Actions 的海外 IP 可能被易班风控，配置国内代理可提高稳定性
+6. **推荐国内服务器为唯一签到通道**：GitHub Actions 海外 IP 会被 WAF 拦截，其反复失败尝试可能连带触发账号风控（表现为 e003"密码错误"），进而影响服务器签到——有服务器时建议在 Actions 页面禁用工作流（详见 [Q10](#q10github-actions-会触发风控吗要不要停掉)）
+7. **遇到"账号或密码错误"先别改密码**：先用手机 App 验证账号正常 + 等待风控冷却（详见 [Q1](#q1报错-账号或密码错误e003但密码明明是对的)），反复重试会延长冷却时间
 
 ---
 
