@@ -12,6 +12,8 @@ env/
 # 本地配置（避免泄露账号密码）
 config.local.py
 *.local
+# 账号配置文件（含密码，严禁入库）
+accounts.json
 
 # IDE
 .vscode/
