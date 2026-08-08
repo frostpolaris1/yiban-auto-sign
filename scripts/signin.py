@@ -69,8 +69,9 @@ HEADERS = {
     'Connection': 'close',
 }
 
-# KillYiBan 同款请求头（默认登录方式；实测 usersure 必须不带 Origin 才返回 s200）
-# 关键：usersure 必须带 Referer: https://c.uyiban.com/ 才返回 s200（否则 e001 无效应用端编号）
+# KillYiBan 同款请求头（默认登录方式）
+# 注意：usersure 提交时会被显式覆盖为不带 Origin/Referer（见 login_killyiban 第 3 步，
+# 实测带 Origin → e001 无效应用端编号），其余请求用此头
 KILLYIBAN_HEADERS = {
     'User-Agent': 'Yiban',
     'AppVersion': '5.1.2',
@@ -492,7 +493,7 @@ class YibanClient:
         phone = self.account.phone
         # 设置 csrf_token cookie（服务器用其校验 CSRF 参数，缺失会报 CSRF invalid）
         self.session.cookies = cookiejar_from_dict({'csrf_token': self.csrf})
-        # session 头已是 KillYiBan 三个头（UA=Yiban/AppVersion/Origin=c.uyiban.com），无需再改
+        # session 头已是 KILLYIBAN_HEADERS，此处无需再改
 
         # 1. 打开 OAuth 登录页（client_id/redirect_uri 参数，无 CSRF）
         #    注意：不跟随重定向，直接取登录页 HTML（diag 实测 allow_redirects=False 返回 200 登录页）
@@ -591,7 +592,11 @@ class YibanClient:
         skip=True 表示当前不在签到时间窗口内，不需要重试。
         """
         if not self.logged_in:
-            self.login()
+            # 与 process_account 保持一致：按配置选择登录流程（防止直接调 signin() 时走错）
+            if self.use_killyiban:
+                self.login_killyiban()
+            else:
+                self.login()
 
         # 1. 获取签到位置范围
         if not self.use_killyiban:
