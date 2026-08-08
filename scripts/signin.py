@@ -112,6 +112,11 @@ RETRY_MAX_DELAY = 60  # 最大延迟（秒）
 # 账号配置文件（默认当前目录，可用 YIBAN_ACCOUNTS_FILE 覆盖）
 ACCOUNTS_FILE = os.environ.get('YIBAN_ACCOUNTS_FILE', 'accounts.json')
 
+# 随机延迟默认值（TUI 设置栏开启时采用；默认关闭=0）
+# 打散"每天固定秒级执行"的脚本特征，作为 e003 登录特征修复之外的纵深防御
+DEFAULT_START_DELAY_MAX = 60  # 启动后随机等待 0~60 秒
+DEFAULT_ACCOUNT_GAP_MAX = 10  # 顺序模式账号间随机间隔 0~10 秒
+
 # WAF 风控关键词（用于判断是否被拦截）
 WAF_KEYWORDS = ['风险访问', '风控', '访问服务禁用', 'WAF', '拦截']
 
@@ -308,6 +313,23 @@ def parse_concurrency(value):
     except (TypeError, ValueError):
         logger.warning(f'YIBAN_CONCURRENCY 取值无效: {value!r}，已回退为顺序执行')
         return 1
+
+
+def parse_env_int(name, default):
+    """读取非负整数环境变量：缺失/非法回退默认值，负值归零。"""
+    try:
+        return max(0, int(os.environ.get(name, '').strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def random_delay(max_seconds, label):
+    """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。"""
+    if max_seconds <= 0:
+        return
+    wait = random.uniform(0, max_seconds)
+    logger.info(f'{label}: 随机延迟 {int(wait)} 秒（上限 {max_seconds} 秒）')
+    time.sleep(wait)
 
 
 def print_config_summary(accounts):
@@ -792,10 +814,20 @@ def main():
     mode = f'并发（{concurrency} 线程）' if concurrency > 1 else '顺序'
     logger.info(f'==== 开始执行签到，共 {len(accounts)} 个账号，执行模式: {mode} ====')
 
+    # 随机延迟（TUI 设置栏可开关；默认关闭，不影响现有行为）
+    start_delay_max = parse_env_int('YIBAN_START_DELAY_MAX', 0)
+    random_delay(start_delay_max, '启动延迟')
+    # 账号间隔仅在顺序模式生效（并发模式同时发起，间隔无意义）
+    gap_max = parse_env_int('YIBAN_ACCOUNT_GAP_MAX', 0)
+
     if concurrency > 1:
         results = run_concurrent(accounts, notify_url, concurrency)
     else:
-        results = [process_account(acc, notify_url) for acc in accounts]
+        results = []
+        for i, acc in enumerate(accounts):
+            if i > 0:
+                random_delay(gap_max, f'账号 {acc.phone} 间隔')
+            results.append(process_account(acc, notify_url))
 
     # 汇总（results 顺序与 accounts 一致）
     logger.info('==== 签到汇总 ====')
