@@ -594,11 +594,18 @@ class YibanTuiApp(App):
         # 单账号手动签到：关闭随机延迟，避免等待
         env['YIBAN_START_DELAY_MAX'] = '0'
         env['YIBAN_ACCOUNT_GAP_MAX'] = '0'
+        # 日志输出重定向到与 cron 相同的 sign.log（追加、行缓冲），
+        # 否则日志被 DEVNULL 丢弃，TUI 日志区与状态图标无法更新
+        log_fh = None
+        try:
+            log_fh = open(self.log_path, 'a', encoding='utf-8', buffering=1)
+        except OSError:
+            pass  # 日志文件不可写时回退丢弃，不影响签到执行
         try:
             subprocess.Popen(
                 [sys.executable, script, '--only', phone],
                 cwd=base, env=env,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=log_fh, stderr=subprocess.STDOUT,
             )
         except FileNotFoundError as e:
             self.notify(f'手动签到启动失败: {e}', severity='error', timeout=4)
