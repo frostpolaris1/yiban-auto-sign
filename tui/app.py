@@ -19,6 +19,8 @@ import argparse
 import json
 import os
 import re
+import subprocess
+import sys
 from datetime import datetime
 
 from textual import work
@@ -275,6 +277,7 @@ class YibanTuiApp(App):
         Binding('d', 'delete', '删除'),
         Binding('[', 'move_up', '上移'),
         Binding(']', 'move_down', '下移'),
+        Binding('m', 'manual_sign', '手动签到'),
         Binding('s', 'save', '保存'),
         Binding('q', 'quit', '退出'),
     ]
@@ -569,6 +572,38 @@ class YibanTuiApp(App):
         if 0 <= table.cursor_row < len(self.accounts):
             return table.cursor_row
         return None
+
+    # ---- 手动签到（M 键：对选中账号立即执行一次签到）----
+    def action_manual_sign(self) -> None:
+        """手动签到选中账号：以子进程运行 signin.py --only 手机号。
+
+        日志写入与 cron 相同路径（sign.log），状态图标随日志 10s 刷新自动更新。
+        独立子进程：TUI 崩溃不影响签到执行。
+        """
+        row = self._current_row()
+        if row is None:
+            self.notify('请先选中要签到的账号（↑↓ 选择）', severity='warning', timeout=3)
+            return
+        phone = self.accounts[row].get('phone', '')
+        if not phone:
+            return
+        # 项目根目录（tui 的上一级）
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = os.path.join(base, 'scripts', 'signin.py')
+        env = dict(os.environ)
+        # 单账号手动签到：关闭随机延迟，避免等待
+        env['YIBAN_START_DELAY_MAX'] = '0'
+        env['YIBAN_ACCOUNT_GAP_MAX'] = '0'
+        try:
+            subprocess.Popen(
+                [sys.executable, script, '--only', phone],
+                cwd=base, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as e:
+            self.notify(f'手动签到启动失败: {e}', severity='error', timeout=4)
+            return
+        self.notify(f'已触发 {phone} 手动签到（后台执行，详见右侧日志）', timeout=3)
 
     def _on_form_result(self, data) -> None:
         """表单关闭回调：data=None 表示取消。"""

@@ -806,11 +806,14 @@ def main():
     - 旧格式 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（向后兼容）
     - 队列重试：账号顺序执行，失败账号放队尾分散重试（分级上限）
     - 随机延迟：YIBAN_START_DELAY_MAX（启动）/ YIBAN_ACCOUNT_GAP_MAX（账号间隔）
+    - --only 指定手机号（逗号分隔），仅供 TUI 手动签到单个账号
     - --check-config 仅检查配置，不发任何网络请求
     """
     parser = argparse.ArgumentParser(description='易班自动签到')
     parser.add_argument('--check-config', action='store_true',
                         help='仅检查账号配置（脱敏打印），不发起任何网络请求')
+    parser.add_argument('--only', default='',
+                        help='仅签到指定手机号（逗号分隔，用于 TUI 手动签到）')
     args = parser.parse_args()
 
     notify_url = os.environ.get('YIBAN_NOTIFY_URL', '')
@@ -829,6 +832,14 @@ def main():
         logger.error('  3. YIBAN_ACCOUNTS 环境变量（旧格式 phone:password#phone2:password2）')
         logger.error('  4. YIBAN_PHONE / YIBAN_PASSWORD 环境变量（单账号）')
         sys.exit(1)
+
+    # --only 过滤：只保留指定手机号（TUI 手动签到单个账号）
+    if args.only:
+        only_set = {p.strip() for p in args.only.split(',') if p.strip()}
+        accounts = [a for a in accounts if a.phone in only_set]
+        if not accounts:
+            logger.error(f'--only 指定账号不在配置中: {args.only}')
+            sys.exit(1)
 
     # 仅检查配置模式：不发任何网络请求，用于部署验证
     if args.check_config:
