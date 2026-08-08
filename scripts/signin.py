@@ -3,17 +3,17 @@
 易班自动签到脚本
 
 功能：
-1. 自动登录易班（支持多账号）
+1. 自动登录易班（支持多账号，默认 KillYiBan 同款真实 App 特征登录）
 2. 自动获取签到任务范围
 3. 在签到范围内生成随机定位点（模拟真实定位）
 4. 自动提交签到
 5. 支持消息通知（Server 酱、Bark、企业微信等）
-6. 重试逻辑：遇到 WAF 拦截时自动重试（指数退避）
-7. 随机延迟：启动时随机延时，避免并发触发风控
+6. 重试逻辑：遇到 WAF 拦截或登录失败时自动重试（指数退避）
+7. 并发控制：YIBAN_CONCURRENCY 支持多账号顺序/并发执行（默认顺序）
 
 参考项目：
-- 本地 KillYiBan 模块（nightAttendance 签到流程）
-- Auto-Test 项目（登录流程）
+- 本地 KillYiBan 模块（nightAttendance 签到流程与登录特征）
+- Auto-Test 项目（旧登录流程，YIBAN_LEGACY_LOGIN=1 启用）
 """
 
 import os
@@ -565,8 +565,6 @@ class YibanClient:
             allow_redirects=True,
             timeout=15,
         )
-        logger.debug(f'[{phone}] 最终认证 状态码={resp.status_code} 最终URL={resp.url[:100]}')
-        logger.debug(f'[{phone}] 最终认证 响应前300: {resp.text[:300]}')
         data = resp.json()
         if data.get('code') != 0:
             raise RuntimeError(f"最终认证失败: {data.get('msg')}")
