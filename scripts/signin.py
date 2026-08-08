@@ -22,13 +22,14 @@ import json
 import random
 import logging
 import argparse
+import secrets
 import traceback
 import time
 from dataclasses import dataclass
 from hashlib import md5
 from datetime import datetime
 from re import compile
-from base64 import b64encode
+from base64 import b64encode, b64decode
 from urllib.parse import urlencode
 
 import requests
@@ -65,6 +66,16 @@ HEADERS = {
     'X-Requested-With': 'com.yiban.app',
     'Origin': 'https://app.uyiban.com',
     'Referer': 'https://app.uyiban.com/',
+    'Connection': 'close',
+}
+
+# KillYiBan 同款请求头（默认登录方式；实测 usersure 必须不带 Origin 才返回 s200）
+# 关键：usersure 必须带 Referer: https://c.uyiban.com/ 才返回 s200（否则 e001 无效应用端编号）
+KILLYIBAN_HEADERS = {
+    'User-Agent': 'Yiban',
+    'AppVersion': '5.1.2',
+    'Origin': 'https://c.uyiban.com',
+    'Referer': 'https://c.uyiban.com/',
     'Connection': 'close',
 }
 
@@ -319,10 +330,18 @@ class YibanClient:
     def __init__(self, account):
         self.account = account
         self.password = account.password.encode('UTF-8')
-        self.csrf = md5(str(datetime.now()).encode('UTF-8')).hexdigest()
+        # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，实测绕过 e003）；
+        # 旧流程（Auto-Test 继承的 iOS 伪造 UA）仅在 YIBAN_LEGACY_LOGIN=1 时启用（GitHub Actions 等场景备选）
+        self.use_killyiban = os.environ.get('YIBAN_LEGACY_LOGIN', '') != '1'
+        if self.use_killyiban:
+            self.csrf = secrets.token_hex(16)  # SecureRandom 真随机
+            logger.info(f'[{account.phone}] 登录方式: KillYiBan 同款（UA=Yiban/AppVersion=5.1.2/SecureRandom CSRF）')
+        else:
+            self.csrf = md5(str(datetime.now()).encode('UTF-8')).hexdigest()
+            logger.info(f'[{account.phone}] 登录方式: 旧流程（iOS 伪造 UA，YIBAN_LEGACY_LOGIN=1）')
         self.session = requests.Session()
         self.session.keep_alive = False
-        self.session.headers = dict(HEADERS)
+        self.session.headers = dict(KILLYIBAN_HEADERS if self.use_killyiban else HEADERS)
         # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截
         proxy = os.environ.get('YIBAN_PROXY', '').strip()
         if proxy:
@@ -458,6 +477,102 @@ class YibanClient:
         self.logged_in = True
         logger.info(f'[{self.account.phone}] 登录成功')
 
+    # ---- KillYiBan 同款登录（默认登录方式，e003 修复）----
+    def login_killyiban(self):
+        """完全复刻反编译 KillYiBan (p101w2/b.java) 的登录流程。
+
+        差异点（vs 原 login）：
+        - 入口直接打 oauth.yiban.cn/code/html（不先打 api.uyiban.com）
+        - usersure 请求不带 Referer/Origin（原 App 传空 headers）
+        - scope 传空、display 传 "authorize"（原 App 实值）
+        - 成功标志判断 code == "s200"（原 App 判断方式）
+        - CSRF 为 SecureRandom 真随机
+        - 页面解析用 jsoup 等价正则（key 去掉 BEGIN/END 后按 X509 解码）
+        """
+        phone = self.account.phone
+        # 设置 csrf_token cookie（服务器用其校验 CSRF 参数，缺失会报 CSRF invalid）
+        self.session.cookies = cookiejar_from_dict({'csrf_token': self.csrf})
+        # session 头已是 KillYiBan 三个头（UA=Yiban/AppVersion/Origin=c.uyiban.com），无需再改
+
+        # 1. 打开 OAuth 登录页（client_id/redirect_uri 参数，无 CSRF）
+        #    注意：不跟随重定向，直接取登录页 HTML（diag 实测 allow_redirects=False 返回 200 登录页）
+        resp = self.session.get(
+            'https://oauth.yiban.cn/code/html',
+            params={'client_id': '95626fa3080300ea',
+                    'redirect_uri': 'https://f.yiban.cn/iapp7463'},
+            allow_redirects=False,
+            timeout=15,
+        )
+        # 若直接返回 iapp7463 说明已登录（正常流程是停留在登录页）
+        if 'iapp7463' in (resp.headers.get('Location', '')):
+            logger.info(f'[{phone}] KillYiBan登录: 已登录状态（无需提交）')
+            self.logged_in = True
+            return
+
+        # 2. 解析 RSA 公钥与 page_use（jsoup input#key 等价正则）
+        key_match = compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"').findall(resp.text)
+        page_use_match = compile(r"var page_use = '([^']+)'").findall(resp.text)
+        if not key_match or not page_use_match:
+            logger.error(f'[{phone}] KillYiBan登录 OAuth 页解析失败（key={len(key_match)}, page_use={len(page_use_match)}）')
+            raise RuntimeError('KillYiBan登录: OAuth 页解析失败')
+        # key 去掉 PEM 头尾后按 X509 解码
+        key_b64 = compile(r'\s+').sub('',
+                         key_match[0].replace('-----BEGIN PUBLIC KEY-----', '')
+                         .replace('-----END PUBLIC KEY-----', ''))
+        cipher = PKCS1_v1_5.new(RSA.import_key(b64decode(key_b64)))
+
+        # 3. 提交账号密码（实测：usersure 必须不带 Origin/Referer 才返回 s200；
+        #    带 Origin → e001"无效的应用端编号"；scope 空 + display=authorize 与 App 一致）
+        resp = self.session.post(
+            'https://oauth.yiban.cn/code/usersure',
+            params={'ajax_sign': page_use_match[0]},
+            headers={'User-Agent': 'Yiban', 'AppVersion': '5.1.2',
+                     'Origin': None, 'Referer': None, 'X-Requested-With': None,
+                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=urlencode({
+                'oauth_uname': phone,
+                'oauth_upwd': b64encode(cipher.encrypt(self.password)),
+                'client_id': '95626fa3080300ea',
+                'redirect_uri': 'https://f.yiban.cn/iapp7463',
+                'state': '',
+                'scope': '',
+                'display': 'authorize',
+            }),
+            allow_redirects=False,
+            timeout=15,
+        )
+        result = resp.json()
+        # App 用 code == "s200" 判断成功
+        if result.get('code') != 's200':
+            raise RuntimeError(f"登录失败: {result.get('msgCN', result)}")
+
+        # 4. 打开 iframe/index 获取 Location → verify_request（默认三个头）
+        resp = self.session.get(
+            'https://f.yiban.cn/iframe/index',
+            params={'act': 'iapp7463'},
+            allow_redirects=False,
+            timeout=15,
+        )
+        location = resp.headers.get('Location', '')
+        verify_match = compile(r'verify_request=(.*?)&').findall(location)
+        if not verify_match:
+            raise RuntimeError(f'无法提取 verify_request（Location={location[:100]}）')
+
+        # 5. 完成认证（默认三个头 + 跟随重定向，最终返回 JSON）
+        resp = self.session.get(
+            'https://api.uyiban.com/base/c/auth/yiban',
+            params={'verifyRequest': verify_match[0], 'CSRF': self.csrf},
+            allow_redirects=True,
+            timeout=15,
+        )
+        logger.debug(f'[{phone}] 最终认证 状态码={resp.status_code} 最终URL={resp.url[:100]}')
+        logger.debug(f'[{phone}] 最终认证 响应前300: {resp.text[:300]}')
+        data = resp.json()
+        if data.get('code') != 0:
+            raise RuntimeError(f"最终认证失败: {data.get('msg')}")
+        self.logged_in = True
+        logger.info(f'[{phone}] KillYiBan登录成功')
+
     def _solve_ydclearance(self, text):
         """解析 ydclearance 反爬 JS。"""
         result = compile(r'(function ([a-z]{2,})\(.+) ?</script>').findall(text)
@@ -481,7 +596,8 @@ class YibanClient:
             self.login()
 
         # 1. 获取签到位置范围
-        self.session.headers.update(Origin='https://app.uyiban.com', Referer='https://app.uyiban.com/')
+        if not self.use_killyiban:
+            self.session.headers.update(Origin='https://app.uyiban.com', Referer='https://app.uyiban.com/')
         resp = self.session.get(
             'https://api.uyiban.com/nightAttendance/student/index/signPosition',
             params={'CSRF': self.csrf},
@@ -545,7 +661,8 @@ class YibanClient:
                 'Code': self.phone_code,
                 'PhoneModel': self.phone_model,
                 'SignInfo': json.dumps(sign_info, ensure_ascii=False),
-                'OutState': '1.0',
+                # KillYiBan 用 MINI_VERSION="1"，原脚本用 "1.0"
+                'OutState': '1' if self.use_killyiban else '1.0',
             },
             allow_redirects=False,
             timeout=15,
@@ -585,7 +702,10 @@ def process_account(account, notify_url=None):
 
         # 使用重试逻辑执行登录和签到
         def do_signin():
-            client.login()
+            if client.use_killyiban:
+                client.login_killyiban()
+            else:
+                client.login()
             return client.signin()
 
         success, message, skip = retry_with_backoff(do_signin)
