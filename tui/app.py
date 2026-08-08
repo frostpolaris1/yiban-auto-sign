@@ -8,9 +8,9 @@ SSH 登录服务器后执行 `yiban`（或 `python3 -m tui`）即可打开面板
   - 状态图标：⏳ 准备签到（今日未签到） ✅ 签到成功 ❌ 签到失败（来自 sign.log）
 - 右上：签到日志（简化展示最近记录，自动刷新）
 - 右下：设置区
-  - 执行模式切换（顺序 / 并发 + 线程数，写入 .env 的 YIBAN_CONCURRENCY）
+  - 随机延迟开关（启动延迟 / 账号间隔，写入 .env）
   - 连通性检测（不登录，仅检查易班 API 可达性）
-  - 服务器当前时间
+  - 服务器时间与签到状态
 
 快捷键：A 添加  E 编辑  D 删除  [ ] 上下移  S 保存  Q 退出
 """
@@ -36,7 +36,9 @@ ENV_DEFAULT = os.environ.get('YIBAN_ENV_FILE', '.env')
 # 状态图标
 ICON_PENDING = '⏳'   # 准备签到（今日未签到）
 ICON_SUCCESS = '✅'   # 今日签到成功
-ICON_FAILED = '❌'    # 今日签到失败
+ICON_FAILED = '❌'    # 今日签到失败（最终放弃）
+ICON_RETRYING = '🔄'  # 重试中（队列重试放回队尾）
+ICON_SKIPPED = '➖'   # 跳过（未在签到时间窗口等，非失败）
 
 # 签到时间窗口（默认 06:30-07:50，与项目早操签到窗口一致；学校不同可修改）
 SIGN_START = (6, 30)
@@ -48,7 +50,7 @@ DEFAULT_ACCOUNT_GAP_MAX = 10
 
 # 解析 sign.log（行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功）
 SIGN_LOG_RE = re.compile(r'\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)')
-STATE_RE = re.compile(r'\[(\d+)\]\s*(✅|❌)')
+STATE_RE = re.compile(r'\[(\d+)\]\s*(✅|❌|🔄|➖)')
 
 
 def parse_sign_log(path):
@@ -234,12 +236,6 @@ class YibanTuiApp(App):
     #ping-result {
         width: 1fr;
     }
-    #mode-btn {
-        width: auto;
-    }
-    #threads {
-        width: 8;
-    }
     #delay-btn, #gap-btn {
         width: auto;
     }
@@ -291,7 +287,6 @@ class YibanTuiApp(App):
         self.env_path = env_path
         self.accounts = []          # [{'name','phone','password','phone_model','phone_code'}]
         self._editing_row = None    # 编辑模式目标行（None=添加模式）
-        self.mode_concurrency = 1   # 执行模式：1=顺序，N=并发 N 线程（来自 .env）
         self.start_delay_max = 0    # 启动随机延迟上限（0=关闭）
         self.gap_max = 0            # 顺序模式账号间隔上限（0=关闭）
         self.states = {}            # {phone: '✅'|'❌'} 今日签到状态
@@ -307,9 +302,6 @@ class YibanTuiApp(App):
                           id='log-box-wrap'),
                 Container(
                     Label('⚙️ 设置', classes='section'),
-                    Horizontal(Label('执行模式:'), Button('', id='mode-btn'),
-                               Input(placeholder='并发线程数', id='threads', type='integer'),
-                               classes='set-row'),
                     Horizontal(Label('启动延迟:'), Button('关闭', id='delay-btn'),
                                Input(placeholder='秒数', id='delay-secs', type='integer'),
                                classes='set-row'),
@@ -331,8 +323,7 @@ class YibanTuiApp(App):
     def on_mount(self) -> None:
         table = self.query_one('#table', DataTable)
         table.add_columns(' #', '状态', '名称', '手机号', '设备型号')
-        # 模式与延迟初始化（来自 .env）
-        self.mode_concurrency = load_env_int(self.env_path, 'YIBAN_CONCURRENCY', 1)
+        # 随机延迟初始化（来自 .env）
         self.start_delay_max = load_env_int(self.env_path, 'YIBAN_START_DELAY_MAX', 0)
         self.gap_max = load_env_int(self.env_path, 'YIBAN_ACCOUNT_GAP_MAX', 0)
         self._refresh_settings_ui()
@@ -363,7 +354,7 @@ class YibanTuiApp(App):
         return acc.get('name') or f'账号{index + 1}'
 
     def _status_icon(self, acc):
-        """状态图标：⏳ 准备签到 / ✅ 成功 / ❌ 失败（来自今日 sign.log）。"""
+        """状态图标：⏳ 准备签到 / ✅ 成功 / ❌ 最终失败 / 🔄 重试中 / ➖ 跳过（来自今日 sign.log）。"""
         return self.states.get(acc.get('phone', ''), ICON_PENDING)
 
     def _refresh_table(self) -> None:
@@ -377,8 +368,7 @@ class YibanTuiApp(App):
                 acc.get('phone', ''),
                 acc.get('phone_model', ''),
             )
-        self.sub_title = (f'共 {len(self.accounts)} 个账号 · '
-                          f'{"顺序执行" if self.mode_concurrency <= 1 else f"并发({self.mode_concurrency})"} · '
+        self.sub_title = (f'共 {len(self.accounts)} 个账号 · 顺序执行（队列重试） · '
                           f'{os.path.basename(self.config_path)}')
 
     # ---- 签到日志 ----
@@ -420,21 +410,9 @@ class YibanTuiApp(App):
         text, color = self._sign_status()
         self.query_one('#sign-status', Static).update(f'[{color}]{text}[/{color}]')
 
-    # ---- 执行模式（顺序 / 并发）----
+    # ---- 设置区（随机延迟）----
     def _refresh_settings_ui(self) -> None:
-        """同步设置区全部控件状态（模式按钮/线程数/延迟开关与秒数）。"""
-        # 执行模式
-        btn = self.query_one('#mode-btn', Button)
-        threads = self.query_one('#threads', Input)
-        if self.mode_concurrency <= 1:
-            btn.label = '顺序'
-            btn.variant = 'default'
-            threads.value = ''
-            threads.placeholder = '并发线程数'
-        else:
-            btn.label = f'并发 {self.mode_concurrency}'
-            btn.variant = 'primary'
-            threads.value = str(self.mode_concurrency)
+        """同步设置区控件状态（延迟开关与秒数）。"""
         # 启动延迟开关
         dbtn = self.query_one('#delay-btn', Button)
         dsecs = self.query_one('#delay-secs', Input)
@@ -459,29 +437,16 @@ class YibanTuiApp(App):
             gbtn.variant = 'default'
             gsecs.value = ''
             gsecs.placeholder = f'秒数（默认{DEFAULT_ACCOUNT_GAP_MAX}）'
-        self.sub_title = (f'共 {len(self.accounts)} 个账号 · '
-                          f'{"顺序执行" if self.mode_concurrency <= 1 else f"并发({self.mode_concurrency})"} · '
+        self.sub_title = (f'共 {len(self.accounts)} 个账号 · 顺序执行（队列重试） · '
                           f'{os.path.basename(self.config_path)}')
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == 'mode-btn':
-            self._toggle_mode()
-        elif event.button.id == 'delay-btn':
+        if event.button.id == 'delay-btn':
             self._toggle_delay('start')
         elif event.button.id == 'gap-btn':
             self._toggle_delay('gap')
         elif event.button.id == 'ping-btn':
             self._check_connectivity()
-
-    def _toggle_mode(self) -> None:
-        """顺序 ↔ 并发切换（并发默认 3 线程）。"""
-        if self.mode_concurrency <= 1:
-            self.mode_concurrency = 3
-        else:
-            self.mode_concurrency = 1
-        self._refresh_settings_ui()
-        self.notify(f'执行模式: {"顺序" if self.mode_concurrency <= 1 else f"并发 {self.mode_concurrency}"}'
-                    '（按 S 保存生效）', timeout=3)
 
     def _toggle_delay(self, which) -> None:
         """启动延迟 / 账号间隔 开关切换（开启时填默认上限秒数，可改）。"""
@@ -524,21 +489,12 @@ class YibanTuiApp(App):
 
     # ---- 保存 ----
     def action_save(self) -> None:
-        """保存账号到 accounts.json，并把执行模式与随机延迟写入 .env。"""
+        """保存账号到 accounts.json，并把随机延迟写入 .env。"""
         # 1. 账号配置
         with open(self.config_path, 'w', encoding='utf-8') as f:
             json.dump(self.accounts, f, ensure_ascii=False, indent=2)
             f.write('\n')
-        # 2. 执行模式（并发数来自线程数输入框）
-        concurrency = self.mode_concurrency
-        if concurrency > 1:
-            try:
-                concurrency = max(2, int(self.query_one('#threads', Input).value or '3'))
-            except ValueError:
-                concurrency = 3
-        write_env_int(self.env_path, 'YIBAN_CONCURRENCY', concurrency)
-        self.mode_concurrency = concurrency
-        # 3. 随机延迟（开启时读秒数输入框，非法值回退默认；关闭写 0 即删除该行）
+        # 2. 随机延迟（开启时读秒数输入框，非法值回退默认；关闭写 0 即删除该行）
         if self.start_delay_max > 0:
             try:
                 self.start_delay_max = max(1, int(self.query_one('#delay-secs', Input).value
@@ -555,8 +511,7 @@ class YibanTuiApp(App):
         write_env_int(self.env_path, 'YIBAN_ACCOUNT_GAP_MAX', self.gap_max)
         self._refresh_settings_ui()
         self.notify(f'已保存 {len(self.accounts)} 个账号 → {self.config_path}；'
-                    f'模式: {"顺序" if concurrency <= 1 else f"并发 {concurrency}"}'
-                    f' | 延迟: {"开" if self.start_delay_max > 0 else "关"}'
+                    f'延迟: {"开" if self.start_delay_max > 0 else "关"}'
                     f' | 间隔: {"开" if self.gap_max > 0 else "关"}（.env）',
                     severity='information', timeout=4)
 

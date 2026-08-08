@@ -8,8 +8,8 @@
 3. 在签到范围内生成随机定位点（模拟真实定位）
 4. 自动提交签到
 5. 支持消息通知（Server 酱、Bark、企业微信等）
-6. 重试逻辑：遇到 WAF 拦截或登录失败时自动重试（指数退避）
-7. 并发控制：YIBAN_CONCURRENCY 支持多账号顺序/并发执行（默认顺序）
+6. 重试逻辑：失败账号放队尾分散重试（风控类最多 2 次，其他最多 4 次）
+7. 随机延迟：启动与账号间隔随机打散（YIBAN_START_DELAY_MAX / YIBAN_ACCOUNT_GAP_MAX）
 
 参考项目：
 - 本地 KillYiBan 模块（nightAttendance 签到流程与登录特征）
@@ -104,10 +104,14 @@ class Account:
 # ---------------------------------------------------------------------------
 # 配置常量
 # ---------------------------------------------------------------------------
-# 重试配置
-MAX_RETRIES = 3  # 最大重试次数
-RETRY_BASE_DELAY = 5  # 基础延迟（秒）
-RETRY_MAX_DELAY = 60  # 最大延迟（秒）
+# 队列重试配置：每账号"1 次初始尝试 + 最多 3 次队列重试"（总尝试上限 4 次）
+MAX_ATTEMPTS = 4
+# 风控类失败（e003/无效应用端等）加重标记风险，最多重试 1 次（总尝试上限 2 次）
+RISK_MAX_ATTEMPTS = 2
+# 同一账号两次尝试之间的最短间隔（秒），避免紧邻重试被识别为连击
+RETRY_MIN_INTERVAL = 60
+# 网络/瞬时类失败重试间隔打散上限（秒），作为账号间随机延迟之外的补充
+RETRY_GAP_MAX = 30
 
 # 账号配置文件（默认当前目录，可用 YIBAN_ACCOUNTS_FILE 覆盖）
 ACCOUNTS_FILE = os.environ.get('YIBAN_ACCOUNTS_FILE', 'accounts.json')
@@ -193,22 +197,36 @@ def is_waf_blocked(response_text):
     return False
 
 
-def retry_with_backoff(func, *args, **kwargs):
-    """带指数退避的重试装饰器。"""
-    last_exception = None
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            last_exception = e
-            if attempt < MAX_RETRIES:
-                delay = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
-                delay += random.uniform(0, delay * 0.3)  # 添加抖动
-                logger.warning(f'第 {attempt + 1} 次尝试失败，{int(delay)} 秒后重试: {e}')
-                time.sleep(delay)
-            else:
-                logger.error(f'已重试 {MAX_RETRIES} 次，放弃')
-    raise last_exception
+# ---------------------------------------------------------------------------
+# 重试分级：判断一次失败是否值得重试、重试上限
+# ---------------------------------------------------------------------------
+# 风控/凭据类失败特征：重试不仅无用，还可能加重账号标记
+RISK_FAIL_KEYWORDS = ['账号或密码错误', 'e003', '无效的应用端', 'e001', 'origin invalid',
+                      '登录失败', '登录响应异常', 'KillYiBan登录']
+# 网络/瞬时类失败特征：值得重试
+TRANSIENT_FAIL_KEYWORDS = ['Connection', '连接', '超时', 'timeout', 'Max retries', 'Read timed']
+
+
+def classify_failure(message):
+    """对失败信息分级，返回 (max_attempts, retryable)。
+
+    - 风控/凭据类：最多重试 1 次（RISK_MAX_ATTEMPTS），避免加重账号标记
+    - 其他失败（网络/未知）：最多重试 MAX_ATTEMPTS 次
+    - 网络类之外明确不可重试（配置错误等）：retryable=False
+    """
+    for kw in RISK_FAIL_KEYWORDS:
+        if kw in message:
+            return RISK_MAX_ATTEMPTS, True
+    return MAX_ATTEMPTS, True
+
+
+def random_delay(max_seconds, label):
+    """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。"""
+    if max_seconds <= 0:
+        return
+    wait = random.uniform(0, max_seconds)
+    logger.info(f'{label}: 随机延迟 {int(wait)} 秒（上限 {max_seconds} 秒）')
+    time.sleep(wait)
 
 
 # ---------------------------------------------------------------------------
@@ -306,30 +324,12 @@ def load_accounts():
     return []
 
 
-def parse_concurrency(value):
-    """解析并发数：未设置/0/1/非法值均回退为顺序执行（1）。"""
-    try:
-        return max(1, int(str(value).strip()))
-    except (TypeError, ValueError):
-        logger.warning(f'YIBAN_CONCURRENCY 取值无效: {value!r}，已回退为顺序执行')
-        return 1
-
-
 def parse_env_int(name, default):
     """读取非负整数环境变量：缺失/非法回退默认值，负值归零。"""
     try:
         return max(0, int(os.environ.get(name, '').strip()))
     except (TypeError, ValueError):
         return default
-
-
-def random_delay(max_seconds, label):
-    """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。"""
-    if max_seconds <= 0:
-        return
-    wait = random.uniform(0, max_seconds)
-    logger.info(f'{label}: 随机延迟 {int(wait)} 秒（上限 {max_seconds} 秒）')
-    time.sleep(wait)
 
 
 def print_config_summary(accounts):
@@ -614,7 +614,7 @@ class YibanClient:
         skip=True 表示当前不在签到时间窗口内，不需要重试。
         """
         if not self.logged_in:
-            # 与 process_account 保持一致：按配置选择登录流程（防止直接调 signin() 时走错）
+            # 与 attempt_signin 保持一致：按配置选择登录流程（防止直接调 signin() 时走错）
             if self.use_killyiban:
                 self.login_killyiban()
             else:
@@ -719,57 +719,82 @@ def send_notification(title, content, url):
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-def process_account(account, notify_url=None):
-    """处理单个账号签到，带重试逻辑。"""
+def attempt_signin(account, notify_url=None):
+    """单次签到尝试（登录 + 签到），不重试。
+
+    返回 (success, message, skip)：
+    - success: 是否成功（含"已签到""非签到日"）
+    - message: 结果说明
+    - skip: True 表示窗口外等无需重试的情况
+    """
     phone = account.phone
     try:
         client = YibanClient(account)
-
-        # 使用重试逻辑执行登录和签到
-        def do_signin():
-            if client.use_killyiban:
-                client.login_killyiban()
-            else:
-                client.login()
-            return client.signin()
-
-        success, message, skip = retry_with_backoff(do_signin)
-
-        status = '✅' if success else '❌'
-        logger.info(f'[{phone}] {status} {message}')
-        if not success and notify_url and not skip:
-            send_notification('易班签到失败', f'账号: {phone}\n原因: {message}', notify_url)
-        return success, message, skip
+        if client.use_killyiban:
+            client.login_killyiban()
+        else:
+            client.login()
+        return client.signin()
     except Exception as e:
-        logger.error(f'[{phone}] ❌ 异常: {e}')
+        logger.error(f'[{phone}] ❌ 尝试失败: {e}')
         logger.debug(traceback.format_exc())
         if notify_url:
             send_notification('易班签到异常', f'账号: {phone}\n异常: {e}', notify_url)
         return False, str(e), False
 
 
-def run_concurrent(accounts, notify_url, max_workers):
-    """并发执行多账号签到（每个账号使用独立会话，互不干扰）。
+def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
+    """轮询队列 + 分散重试执行全部账号签到。
 
-    返回结果列表，顺序与传入的 accounts 一致，便于汇总展示。
+    流程：启动随机延迟 → 按账号顺序逐个尝试（账号间随机间隔）；
+    失败的账号不立即重试，放入队尾等待下一轮；每账号总尝试次数受
+    classify_failure 分级控制（风控类最多 2 次，其他最多 4 次）；
+    同一账号两次尝试间隔不小于 RETRY_MIN_INTERVAL 秒，避免连击。
+
+    返回结果字典 {手机号: (success, message, skip)}。
     """
-    from concurrent.futures import ThreadPoolExecutor
+    random_delay(start_delay_max, '启动延迟')
+    queue = list(accounts)
+    attempts = {acc.phone: 0 for acc in accounts}
+    results = {}
+    first_round = True
 
-    results = [None] * len(accounts)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(process_account, acc, notify_url): idx
-            for idx, acc in enumerate(accounts)
-        }
-        from concurrent.futures import as_completed
-        for future in as_completed(future_map):
-            idx = future_map[future]
-            try:
-                results[idx] = future.result()
-            except Exception as e:
-                phone = accounts[idx].phone
-                logger.error(f'[{phone}] ❌ 并发执行异常: {e}')
-                results[idx] = (False, str(e), False)
+    while queue:
+        acc = queue.pop(0)
+        phone = acc.phone
+        if not first_round:
+            random_delay(gap_max, f'账号 {phone} 间隔')
+        attempts[phone] += 1
+        logger.info(f'[{phone}] 🔄 第 {attempts[phone]} 次尝试')
+
+        success, message, skip = attempt_signin(acc, notify_url)
+
+        if success:
+            results[phone] = (True, message, skip)
+            logger.info(f'[{phone}] ✅ {message}')
+            continue
+
+        # 失败：跳过类不重试；其余按分级放回队尾
+        if skip:
+            results[phone] = (False, message, True)
+            logger.info(f'[{phone}] ➖ {message}（不重试）')
+            continue
+
+        max_attempts, _ = classify_failure(message)
+        if attempts[phone] >= max_attempts:
+            results[phone] = (False, message, False)
+            logger.error(f'[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}')
+            if notify_url:
+                send_notification('易班签到失败', f'账号: {phone}\n原因: {message}', notify_url)
+            continue
+
+        # 放回队尾：先补最短间隔，再打散一段随机延迟
+        remaining = max(0, RETRY_MIN_INTERVAL - gap_max)
+        random_delay(remaining + RETRY_GAP_MAX, f'账号 {phone} 重试前等待')
+        queue.append(acc)
+        logger.warning(f'[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次）')
+        first_round = False
+
     return results
 
 
@@ -779,7 +804,8 @@ def main():
     支持：
     - 配置文件 accounts.json / YIBAN_ACCOUNTS_JSON（推荐，一次输入一个账号完整信息）
     - 旧格式 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（向后兼容）
-    - YIBAN_CONCURRENCY 控制并发（默认顺序执行）
+    - 队列重试：账号顺序执行，失败账号放队尾分散重试（分级上限）
+    - 随机延迟：YIBAN_START_DELAY_MAX（启动）/ YIBAN_ACCOUNT_GAP_MAX（账号间隔）
     - --check-config 仅检查配置，不发任何网络请求
     """
     parser = argparse.ArgumentParser(description='易班自动签到')
@@ -809,30 +835,18 @@ def main():
         print_config_summary(accounts)
         sys.exit(0)
 
-    # 并发配置：YIBAN_CONCURRENCY 默认 1（顺序执行），>1 时并发执行
-    concurrency = parse_concurrency(os.environ.get('YIBAN_CONCURRENCY', '1'))
-    mode = f'并发（{concurrency} 线程）' if concurrency > 1 else '顺序'
-    logger.info(f'==== 开始执行签到，共 {len(accounts)} 个账号，执行模式: {mode} ====')
-
     # 随机延迟（TUI 设置栏可开关；默认关闭，不影响现有行为）
     start_delay_max = parse_env_int('YIBAN_START_DELAY_MAX', 0)
-    random_delay(start_delay_max, '启动延迟')
-    # 账号间隔仅在顺序模式生效（并发模式同时发起，间隔无意义）
     gap_max = parse_env_int('YIBAN_ACCOUNT_GAP_MAX', 0)
 
-    if concurrency > 1:
-        results = run_concurrent(accounts, notify_url, concurrency)
-    else:
-        results = []
-        for i, acc in enumerate(accounts):
-            if i > 0:
-                random_delay(gap_max, f'账号 {acc.phone} 间隔')
-            results.append(process_account(acc, notify_url))
+    logger.info(f'==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====')
+    results = run_queue_retry(accounts, notify_url, start_delay_max, gap_max)
 
-    # 汇总（results 顺序与 accounts 一致）
+    # 汇总（按 accounts 原始顺序展示）
     logger.info('==== 签到汇总 ====')
     has_real_failure = False
-    for acc, (success, msg, skip) in zip(accounts, results):
+    for acc in accounts:
+        success, msg, skip = results.get(acc.phone, (False, '未执行', False))
         status = '✅' if success else '❌'
         logger.info(f'  {status} {acc.phone}: {msg}')
         if not success and not skip:
