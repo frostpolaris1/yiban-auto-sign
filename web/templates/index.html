@@ -334,9 +334,15 @@
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div id="f-email-wrap">
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">用户邮箱（可选，自动注册并进入待审核）</label>
-          <input id="f-email" type="email" maxlength="64" placeholder="如：user@example.com"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
+          <select id="f-email"
+                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            <option value="">不绑定（管理员自有账号，直接生效）</option>
+            <option value="__manual__">手填邮箱（未注册用户自动注册）</option>
+            <optgroup label="已注册用户（无账号）" id="f-email-users"></optgroup>
+          </select>
+          <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
+                 class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
@@ -487,6 +493,40 @@ function switchTab(name) {
 }
 
 // ================= 账号管理 =================
+// 绑定用户：下拉列出已注册但无易班账号的用户（/api/users 过滤 account_count==0）
+async function loadAvailableUsers() {
+  try {
+    const data = await api('/api/users');
+    const available = (data.users || []).filter(u => (u.account_count || 0) === 0);
+    const group = $('f-email-users');
+    group.innerHTML = '';
+    if (!available.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '（暂无）';
+      group.appendChild(opt);
+      return;
+    }
+    available.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.email;
+      opt.textContent = `${u.email.split('@')[0]}@${u.email.split('@')[1] || ''}`;
+      group.appendChild(opt);
+    });
+  } catch (e) { /* 静默：下拉为空也可手填 */ }
+}
+
+// 手填邮箱显示切换
+$('f-email').addEventListener('change', () => {
+  $('f-email-manual').classList.toggle('hidden', $('f-email').value !== '__manual__');
+});
+
+function getEmailValue() {
+  const v = $('f-email').value;
+  if (v === '__manual__') return $('f-email-manual').value.trim();
+  return v;
+}
+
 async function loadAccounts() {
   try {
     const data = await api('/api/accounts');
@@ -609,7 +649,10 @@ function openForm(index) {
   $('form-title').textContent = a ? `编辑账号 #${index + 1}` : '添加账号';
   $('f-name').value = a ? a.name : '';
   $('f-email').value = '';
+  $('f-email-manual').value = '';
+  $('f-email-manual').classList.add('hidden');
   $('f-email-wrap').classList.toggle('hidden', index !== null);  // 编辑时不显示邮箱（归属不变）
+  if (index === null) loadAvailableUsers();  // 添加时加载可绑定用户
   $('f-phone').value = a ? a.phone : '';
   $('f-password').value = '';
   $('f-password').placeholder = a ? '留空表示不修改密码' : '易班登录密码';
@@ -628,7 +671,7 @@ $('account-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = {
     name: $('f-name').value,
-    email: $('f-email').value.trim(),
+    email: getEmailValue(),
     phone: $('f-phone').value.trim(),
     password: $('f-password').value,
     phone_model: $('f-model').value.trim(),
