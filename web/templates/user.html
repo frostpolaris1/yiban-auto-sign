@@ -98,6 +98,28 @@
     </form>
   </section>
 
+  <!-- 修改密码 -->
+  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
+    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">修改密码</h2>
+    <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
+    <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
+        <input id="p-old" type="password" required placeholder="输入当前密码"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
+        <input id="p-new" type="password" required placeholder="新密码"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div class="md:col-span-2 flex items-center gap-3">
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
+        <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+    </form>
+  </section>
+
   <!-- 我的账号与运行情况 -->
   <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
@@ -400,6 +422,25 @@ async function loadAnnouncement() {
     }
   } catch (e) { /* 静默 */ }
 }
+// 修改密码
+$('password-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tip = $('p-tip');
+  tip.textContent = '提交中…';
+  try {
+    const data = await api('/api/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: $('p-old').value, new_password: $('p-new').value }),
+    });
+    tip.textContent = '';
+    e.target.reset();
+    toast(data.msg || '密码已更新');
+  } catch (err) {
+    tip.textContent = '';
+    toast(err.message, true);
+  }
+});
+
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
 </body>

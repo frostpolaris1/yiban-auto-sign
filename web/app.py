@@ -347,7 +347,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.4.0'
+APP_VERSION = '1.5.0'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -397,7 +397,7 @@ def create_app():
         if role == 'admin':
             return
         # 普通用户：只能操作自己的账号（/api/my-*）、读取时钟、查询身份与登出
-        if request.path.startswith('/api/my-') or request.path in ('/api/clock', '/api/me', '/api/logout'):
+        if request.path.startswith('/api/my-') or request.path in ('/api/clock', '/api/me', '/api/logout', '/api/me/password'):
             return
         return jsonify({'error': '无权限'}), 403
 
@@ -557,6 +557,47 @@ def create_app():
     def api_logout():
         session.clear()
         return jsonify({'ok': True})
+
+    @app.route('/api/me/password', methods=['POST'])
+    def api_me_password():
+        """所有用户自助修改自己的密码（账号不可修改）。
+
+        内置管理员（.env）验证当前密码后写入新密码；注册用户（含提升的管理员）
+        验证当前密码后更新 users.json 的哈希。失败计数复用登录限速，防暴力尝试。
+        """
+        data = request.get_json(silent=True) or {}
+        old_password = str(data.get('old_password', ''))
+        new_password = str(data.get('new_password', ''))
+        if len(new_password) < 6:
+            return jsonify({'error': '新密码至少 6 位'}), 400
+        username = session.get('username', '')
+        ip = request.remote_addr or '?'
+        now = time.time()
+        fails, lock_until = _login_fails.get(ip, (0, 0))
+        if now < lock_until:
+            return jsonify({'error': f'尝试次数过多，请 {int(lock_until - now)} 秒后重试'}), 429
+        # 内置管理员：验证 .env 当前密码后更新
+        if username.strip().lower() == _builtin_admin_email():
+            if not verify_admin(username, old_password):
+                _login_fails[ip] = (fails + 1, 0)
+                return jsonify({'error': '当前密码不正确'}), 400
+            write_env_key(ENV_FILE, 'YIBAN_ADMIN_PASSWORD', new_password)
+            _login_fails.pop(ip, None)
+            logger.info('内置管理员密码已更新')
+            return jsonify({'ok': True, 'msg': '密码已更新，下次登录使用新密码'})
+        # 注册用户（含提升的管理员）：更新 users.json 哈希
+        users = load_users()
+        for u in users:
+            if u.get('email') == username.strip().lower():
+                if not check_password_hash(u.get('password_hash', ''), old_password):
+                    _login_fails[ip] = (fails + 1, 0)
+                    return jsonify({'error': '当前密码不正确'}), 400
+                u['password_hash'] = generate_password_hash(new_password)
+                save_users(users)
+                _login_fails.pop(ip, None)
+                logger.info('用户 %s 已修改自己的密码', username)
+                return jsonify({'ok': True, 'msg': '密码已更新，下次登录使用新密码'})
+        return jsonify({'error': '用户不存在'}), 404
 
     @app.route('/api/me')
     def api_me():
@@ -1032,27 +1073,6 @@ def create_app():
         write_env_key(ENV_FILE, 'YIBAN_ANNOUNCEMENT', text)
         logger.info('公告已更新: %s', text[:50] or '（已清除）')
         return jsonify({'ok': True, 'msg': '公告已更新' if text else '公告已清除'})
-
-    @app.route('/api/admin/credentials', methods=['POST'])
-    def api_admin_credentials():
-        """修改管理员用户名/密码（写入 .env，仅管理员；需验证当前密码）。"""
-        if _current_role() != 'admin':
-            return jsonify({'error': '无权限'}), 403
-        data = request.get_json(silent=True) or {}
-        old_password = str(data.get('old_password', ''))
-        username = str(data.get('username', '')).strip()
-        password = str(data.get('password', ''))
-        # 用当前登录的用户名 + 输入的旧密码验证（密码错误则拒绝）
-        if not verify_admin(session.get('username', ''), old_password):
-            return jsonify({'error': '当前密码不正确'}), 400
-        if not username:
-            return jsonify({'error': '用户名不能为空'}), 400
-        if len(password) < 6:
-            return jsonify({'error': '新密码至少 6 位'}), 400
-        write_env_key(ENV_FILE, 'YIBAN_ADMIN_USER', username)
-        write_env_key(ENV_FILE, 'YIBAN_ADMIN_PASSWORD', password)
-        logger.info('管理员凭据已更新（%s）', username)
-        return jsonify({'ok': True, 'msg': '管理员账号已更新，下次登录使用新账号密码'})
 
     # ---- 连通性检测 ----
     @app.route('/api/ping', methods=['POST'])

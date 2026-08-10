@@ -284,28 +284,23 @@
       <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
     </div>
 
-    <!-- 管理员账号 -->
+    <!-- 修改我的密码 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">管理员账号</div>
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">修改后下次登录使用新账号密码；当前登录不受影响。</p>
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">修改我的密码</div>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">所有用户可修改自己的密码；账号（用户名/邮箱）不可修改。改后下次登录使用新密码。</p>
       <div class="space-y-3 max-w-sm">
         <div>
-          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新用户名</label>
-          <input id="adm-username" type="text" maxlength="32" placeholder="管理员用户名"
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
+          <input id="my-old-password" type="password" placeholder="输入当前密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
         <div>
           <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 6 位）</label>
-          <input id="adm-password" type="password" placeholder="新密码"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-        </div>
-        <div>
-          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码（验证用）</label>
-          <input id="adm-old-password" type="password" placeholder="输入当前密码确认"
+          <input id="my-new-password" type="password" placeholder="新密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
         <div class="flex items-center gap-3">
-          <button onclick="saveAdminCredentials()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存管理员账号</button>
+          <button onclick="saveMyPassword()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
         </div>
       </div>
     </div>
@@ -958,24 +953,21 @@ async function doPing() {
 }
 
 // 修改管理员账号（验证当前密码，写入 .env）
-async function saveAdminCredentials() {
-  const username = $('adm-username').value.trim();
-  const password = $('adm-password').value;
-  const oldPassword = $('adm-old-password').value;
-  if (!username) { toast('用户名不能为空', true); return; }
+async function saveMyPassword() {
+  const oldPassword = $('my-old-password').value;
+  const password = $('my-new-password').value;
   if (password.length < 6) { toast('新密码至少 6 位', true); return; }
   if (!oldPassword) { toast('请输入当前密码验证', true); return; }
   try {
-    const data = await api('/api/admin/credentials', {
+    const data = await api('/api/me/password', {
       method: 'POST',
-      body: JSON.stringify({ username, password, old_password: oldPassword }),
+      body: JSON.stringify({ old_password: oldPassword, new_password: password }),
     });
-    $('adm-password').value = '';
-    $('adm-old-password').value = '';
-    toast(data.msg || '管理员账号已更新');
+    toast(data.msg || '密码已更新');
+    $('my-old-password').value = '';
+    $('my-new-password').value = '';
   } catch (e) { toast(e.message, true); }
 }
-
 // ================= 时钟与签到状态（本地平滑走秒，60 秒校准一次） =================
 let clockOffset = 0;
 async function calibrateClock() {
