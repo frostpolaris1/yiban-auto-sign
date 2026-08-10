@@ -137,7 +137,7 @@
 
     <!-- 待审核提示 -->
     <div id="pending-tip" class="hidden mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
-      有 <span id="pending-count" class="font-semibold">0</span> 个普通用户提交的账号等待审核，审核通过后才会参与定时签到。
+      有 <span id="pending-count" class="font-semibold">0</span> 个账号待处理（待审核或已拒绝），通过后才会参与定时签到。
     </div>
 
     <!-- 统计卡 -->
@@ -149,18 +149,43 @@
       <span>🔄 重试中</span><span>➖ 跳过</span>
     </div>
 
-    <!-- 账号表格 -->
+    <!-- 待处理账号组（待审核/已拒绝，置顶） -->
+    <div id="accounts-pending-box" class="bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl shadow-sm p-4 md:p-6 mb-4">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待处理账号</div>
+        <span id="accounts-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
+              <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium">名称</th>
+              <th class="px-4 py-3 font-medium">手机号</th>
+              <th class="px-4 py-3 font-medium">归属</th>
+              <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-pending-tbody"></tbody>
+        </table>
+        <div id="accounts-pending-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-6">暂无待处理账号</div>
+      </div>
+    </div>
+
+    <!-- 正常账号组 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm overflow-x-auto">
+      <div class="px-4 py-3 border-b border-zinc-100 dark:border-zinc-700 text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
       <table class="w-full text-sm">
         <thead>
-          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
+          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
             <th class="px-4 py-3 font-medium">状态</th>
             <th class="px-4 py-3 font-medium">#</th>
             <th class="px-4 py-3 font-medium">名称</th>
             <th class="px-4 py-3 font-medium">手机号</th>
             <th class="px-4 py-3 font-medium">设备型号</th>
             <th class="px-4 py-3 font-medium">归属</th>
-            <th class="px-4 py-3 font-medium">状态</th>
             <th class="px-4 py-3 font-medium text-right">操作</th>
           </tr>
         </thead>
@@ -326,7 +351,7 @@
     </div>
 
     <!-- 正式用户组 -->
-    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">正式用户</div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
@@ -342,6 +367,30 @@
           <tbody id="users-tbody"></tbody>
         </table>
         <div id="users-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无注册用户</div>
+      </div>
+    </div>
+
+    <!-- 空用户组 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">空用户</div>
+        <span id="users-vacant-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">已注册但未提交任何账号，可重置密码或删除</p>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+              <th class="px-4 py-3 font-medium">邮箱</th>
+              <th class="px-4 py-3 font-medium">角色</th>
+              <th class="px-4 py-3 font-medium">注册时间</th>
+              <th class="px-4 py-3 font-medium">账号数</th>
+              <th class="px-4 py-3 font-medium text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="users-vacant-tbody"></tbody>
+        </table>
+        <div id="users-vacant-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无空用户</div>
       </div>
     </div>
   </section>
@@ -578,73 +627,115 @@ async function loadAccounts() {
 const ICONS = {'⏳': '⏳', '✅': '✅', '❌': '❌', '🔄': '🔄', '➖': '➖'};
 
 function renderAccounts() {
+  // 分组：待处理（待审核/已拒绝）置顶，正常账号一组
+  const pendingAccounts = state.accounts.filter(a => a.status === 'pending' || a.status === 'rejected');
+  const activeAccounts = state.accounts.filter(a => a.status === 'active');
+
+  // ---- 待处理组 ----
+  const pbody = $('accounts-pending-tbody');
+  const pempty = $('accounts-pending-empty');
+  pbody.innerHTML = '';
+  pempty.classList.toggle('hidden', pendingAccounts.length > 0);
+  $('accounts-pending-count').textContent = pendingAccounts.length ? pendingAccounts.length + ' 个待处理' : '';
+  pendingAccounts.forEach(a => pbody.appendChild(pendingAccountRow(a)));
+
+  // ---- 正常账号组 ----
   const tbody = $('accounts-tbody');
   const empty = $('accounts-empty');
   tbody.innerHTML = '';
-  empty.classList.toggle('hidden', state.accounts.length > 0);
+  empty.classList.toggle('hidden', activeAccounts.length > 0);
+  activeAccounts.forEach(a => tbody.appendChild(accountRow(a)));
 
-  // 统计卡
-  let success = 0, failed = 0, pending = 0, retrying = 0;
-  state.accounts.forEach(a => {
+  // 统计卡（仅统计参与签到的正常账号）
+  let success = 0, failed = 0, retrying = 0, waiting = 0;
+  activeAccounts.forEach(a => {
     const s = state.states[a.phone] || '⏳';
     if (s === '✅') success++;
     else if (s === '❌') failed++;
     else if (s === '🔄') retrying++;
-    else pending++;
+    else waiting++;
   });
   $('stat-cards').innerHTML = [
     card('账号总数', state.accounts.length, 'text-zinc-900 dark:text-zinc-100'),
     card('今日成功', success, 'text-green-600 dark:text-green-400'),
     card('今日失败', failed, 'text-red-600 dark:text-red-400'),
-    card('待签到/进行中', pending + retrying, 'text-blue-600'),
+    card('待签到/进行中', waiting + retrying, 'text-blue-600'),
   ].join('');
 
-  state.accounts.forEach(a => {
-    const s = state.states[a.phone] || '⏳';
-    const tr = document.createElement('tr');
-    tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 transition-colors duration-150';
-    const pending = a.status === 'pending';
-    const statusCell = pending
-      ? `<span class="inline-flex items-center rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs px-2 py-0.5">待审核</span>`
-      : `<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 dark:text-green-400 text-xs px-2 py-0.5">已生效</span>`;
-    tr.innerHTML = `
-      <td class="px-4 py-3 text-lg leading-none">${s}</td>
-      <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
-      <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">${esc(a.display_name)}</td>
-      <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(a.phone)}</td>
-      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">${esc(a.phone_model || '—')}</td>
-      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
-      <td class="px-4 py-3">${statusCell}</td>
-      <td class="px-4 py-3">
-        <div class="flex items-center justify-end gap-1">
-          ${pending ? `
-            <button title="审核通过" onclick="reviewAccount(${a.index}, 'approve')" class="px-2 py-1 rounded-lg text-sm text-green-600 dark:text-green-400 hover:bg-green-50 transition-colors duration-150">通过</button>
-            <button title="拒绝" onclick="reviewAccount(${a.index}, 'reject')" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">拒绝</button>
-          ` : `
-            <button title="上移" onclick="moveAccount(${a.index}, -1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">↑</button>
-            <button title="下移" onclick="moveAccount(${a.index}, 1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">↓</button>
-            <button title="手动签到" onclick="doSignin('${a.phone}')" class="px-2 py-1 rounded-lg text-sm text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors duration-150">签到</button>
-          `}
-          <button title="编辑" onclick="openForm(${a.index})" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
-          <button title="删除" onclick="deleteAccount(${a.index})" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">删除</button>
-        </div>
-      </td>`;
-    tbody.appendChild(tr);
-  });
+  // 顶部待处理提示
+  $('pending-count').textContent = pendingAccounts.length;
+  $('pending-tip').classList.toggle('hidden', pendingAccounts.length === 0);
+}
 
-  // 待审核提示
-  const pendingCount = state.accounts.filter(a => a.status === 'pending').length;
-  $('pending-count').textContent = pendingCount;
-  $('pending-tip').classList.toggle('hidden', pendingCount === 0);
+function statusBadge(a) {
+  if (a.status === 'pending')
+    return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5">待审核</span>';
+  if (a.status === 'rejected')
+    return '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5">已拒绝</span>';
+  return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5">已生效</span>';
+}
+
+function pendingAccountRow(a) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 transition-colors duration-150';
+  const reasonHtml = a.reject_reason
+    ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
+    : '';
+  tr.innerHTML = `
+    <td class="px-4 py-3 text-lg leading-none">➖</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(a.phone)}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3">${statusBadge(a)}${reasonHtml}</td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-end gap-1">
+        <button title="审核通过" onclick="reviewAccount(${a.index}, 'approve')" class="px-2 py-1 rounded-lg text-sm text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/30 transition-colors duration-150">通过</button>
+        <button title="拒绝并留言理由" onclick="reviewAccount(${a.index}, 'reject')" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">拒绝</button>
+        <button title="编辑" onclick="openForm(${a.index})" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">编辑</button>
+        <button title="删除" onclick="deleteAccount(${a.index})" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">删除</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+function accountRow(a) {
+  const s = state.states[a.phone] || '⏳';
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 transition-colors duration-150';
+  tr.innerHTML = `
+    <td class="px-4 py-3 text-lg leading-none">${s}</td>
+    <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(a.phone)}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${esc(a.phone_model || '—')}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3">${statusBadge(a)}</td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-end gap-1">
+        <button title="上移" onclick="moveAccount(${a.index}, -1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">↑</button>
+        <button title="下移" onclick="moveAccount(${a.index}, 1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">↓</button>
+        <button title="手动签到" onclick="doSignin('${a.phone}')" class="px-2 py-1 rounded-lg text-sm text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors duration-150">签到</button>
+        <button title="编辑" onclick="openForm(${a.index})" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">编辑</button>
+        <button title="删除" onclick="deleteAccount(${a.index})" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">删除</button>
+      </div>
+    </td>`;
+  return tr;
 }
 
 async function reviewAccount(idx, action) {
   const a = state.accounts[idx];
-  if (action === 'reject' && !confirm(`确定拒绝「${a.display_name}」(${a.phone}) 吗？将删除该账号。`)) return;
+  let body = { action };
+  if (action === 'reject') {
+    const reason = prompt(`拒绝「${a.display_name}」(${a.phone})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
+    if (reason === null) return;  // 用户取消
+    body.reason = reason.trim();
+  } else if (action === 'approve' && !confirm(`确定通过「${a.display_name}」(${a.phone}) 吗？通过后将参与定时签到。`)) {
+    return;
+  }
   try {
     const data = await api(`/api/accounts/${idx}/review`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(body),
     });
     toast(data.msg || (action === 'approve' ? '已通过' : '已拒绝'));
     loadAccounts();
@@ -938,18 +1029,18 @@ async function loadUsers() {
 
 function renderUsers(users, builtinAdmin) {
   const pendingUsers = users.filter(u => (u.pending_count || 0) > 0);
-  const otherUsers = users.filter(u => !((u.pending_count || 0) > 0));
-  // 待审核用户组
+  const normalUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) > 0);
+  const emptyUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) === 0);
+  // 第一组：待审核用户
   const ptbody = $('users-pending-tbody');
   ptbody.innerHTML = '';
   $('users-pending-empty').classList.toggle('hidden', pendingUsers.length > 0);
   $('users-pending-count').textContent = pendingUsers.length ? `（${pendingUsers.length} 人待审核）` : '';
   pendingUsers.forEach(u => ptbody.appendChild(userRow(u)));
-  // 正式用户组（含内置管理员）
+  // 第二组：正式用户（含内置管理员）
   const tbody = $('users-tbody');
   tbody.innerHTML = '';
-  $('users-empty').classList.toggle('hidden', otherUsers.length > 0);
-  // 内置管理员行（不可操作）
+  $('users-empty').classList.toggle('hidden', normalUsers.length > 0);
   const builtin = document.createElement('tr');
   builtin.className = 'border-b border-zinc-50 dark:border-zinc-700/50 bg-zinc-50/50 dark:bg-zinc-700/30';
   builtin.innerHTML = `
@@ -959,8 +1050,13 @@ function renderUsers(users, builtinAdmin) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
     <td class="px-4 py-3 text-right text-xs text-zinc-400 dark:text-zinc-500">不可修改</td>`;
   tbody.appendChild(builtin);
-  // 注册用户行（正式组）
-  otherUsers.forEach(u => tbody.appendChild(userRow(u)));
+  normalUsers.forEach(u => tbody.appendChild(userRow(u)));
+  // 第三组：空用户（未提交账号）
+  const vbody = $('users-vacant-tbody');
+  vbody.innerHTML = '';
+  $('users-vacant-empty').classList.toggle('hidden', emptyUsers.length > 0);
+  $('users-vacant-count').textContent = emptyUsers.length ? `（${emptyUsers.length} 人）` : '';
+  emptyUsers.forEach(u => vbody.appendChild(userRow(u)));
 }
 
 // 用户行渲染（待审核组/正式组共用）

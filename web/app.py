@@ -41,6 +41,7 @@ USERS_DEFAULT = os.environ.get('YIBAN_USERS_FILE', 'users.json')
 # 普通用户账号的审核状态
 STATUS_PENDING = 'pending'   # 待审核（不参与定时签到）
 STATUS_ACTIVE = 'active'     # 已生效（参与定时签到）
+STATUS_REJECTED = 'rejected'  # 已拒绝（附理由，用户可编辑重新提交）
 
 # 状态图标（与 tui/app.py 一致；前端渲染使用，后端仅用于日志解析）
 SIGN_START = (6, 30)
@@ -237,6 +238,7 @@ def mask_account(acc, index):
         'owner': acc.get('owner', 'admin'),
         'owner_display': _owner_display_of(acc.get('owner', 'admin')),
         'status': acc.get('status', STATUS_ACTIVE),
+        'reject_reason': acc.get('reject_reason', ''),
     }
 
 
@@ -345,7 +347,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.2.0'
+APP_VERSION = '1.3.0'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -660,24 +662,34 @@ def create_app():
 
     @app.route('/api/accounts/<int:idx>/review', methods=['POST'])
     def api_account_review(idx):
-        """审核普通用户提交的账号：approve=生效参与定时签到，reject=删除。"""
+        """审核普通用户提交的账号：
+        approve=生效参与定时签到；reject=标记拒绝并附理由（用户可编辑后重新提交）。
+        """
         accounts = load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({'error': '账号不存在'}), 404
         action = (request.get_json(silent=True) or {}).get('action')
         acc = accounts[idx]
         if action == 'approve':
-            if acc.get('status') != STATUS_PENDING:
+            if acc.get('status') not in (STATUS_PENDING, STATUS_REJECTED):
                 return jsonify({'error': '该账号无需审核'}), 400
             acc['status'] = STATUS_ACTIVE
+            acc.pop('reject_reason', None)
             save_accounts(accounts)
             logger.info('审核通过账号 %s（提交者 %s）', acc.get('phone'), acc.get('owner'))
             return jsonify({'ok': True, 'msg': f"已通过 {acc.get('phone')}，将参与定时签到"})
         if action == 'reject':
-            accounts.pop(idx)
+            if acc.get('status') not in (STATUS_PENDING, STATUS_REJECTED):
+                return jsonify({'error': '该账号无需拒绝'}), 400
+            reason = str((request.get_json(silent=True) or {}).get('reason', '')).strip()[:100]
+            acc['status'] = STATUS_REJECTED
+            if reason:
+                acc['reject_reason'] = reason
+            else:
+                acc.pop('reject_reason', None)
             save_accounts(accounts)
-            logger.info('拒绝账号 %s（提交者 %s）', acc.get('phone'), acc.get('owner'))
-            return jsonify({'ok': True, 'msg': '已拒绝并删除该账号'})
+            logger.info('拒绝账号 %s（提交者 %s，理由: %s）', acc.get('phone'), acc.get('owner'), reason or '无')
+            return jsonify({'ok': True, 'msg': '已拒绝，用户可查看理由并重新提交'})
         return jsonify({'error': '未知操作'}), 400
 
     @app.route('/api/accounts/<int:idx>/move', methods=['POST'])
@@ -734,6 +746,7 @@ def create_app():
                 'phone': phone,
                 'phone_model': acc.get('phone_model', ''),
                 'status': acc.get('status', STATUS_ACTIVE),
+                'reject_reason': acc.get('reject_reason', ''),
                 'state_icon': states.get(phone, '⏳'),
                 'queue_ahead': queue_ahead,
                 'logs': my_logs[-5:],
@@ -787,10 +800,15 @@ def create_app():
         if not clean['phone_code']:
             clean['phone_code'] = old.get('phone_code', '')
         clean['owner'] = old.get('owner', '')
-        clean['status'] = old.get('status', STATUS_PENDING)
+        # 被拒绝的账号编辑后 = 重新提交审核（回 pending，清除拒绝理由）
+        clean['status'] = STATUS_PENDING if old.get('status') == STATUS_REJECTED else old.get('status', STATUS_PENDING)
+        if clean['status'] == STATUS_PENDING:
+            clean.pop('reject_reason', None)
         accounts[real_idx] = clean
         save_accounts(accounts)
         logger.info('用户 %s 编辑账号 %s', clean['owner'], clean['phone'])
+        if old.get('status') == STATUS_REJECTED:
+            return jsonify({'ok': True, 'msg': '已重新提交，等待管理员审核'})
         return jsonify({'ok': True, 'msg': '已保存'})
 
     @app.route('/api/my-accounts/<int:idx>', methods=['DELETE'])
