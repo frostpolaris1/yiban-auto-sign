@@ -448,9 +448,12 @@ function switchTab(name) {
   });
   document.querySelectorAll('[data-tab-btn]').forEach(btn => {
     const active = btn.dataset.tabBtn === name;
-    btn.classList.toggle('text-zinc-600 dark:text-zinc-300', !active);
-    btn.classList.toggle('text-zinc-900 dark:text-zinc-100', active);
-    btn.classList.toggle('bg-zinc-100 dark:bg-zinc-700', active);
+    btn.classList.toggle('text-zinc-600', !active);
+    btn.classList.toggle('dark:text-zinc-300', !active);
+    btn.classList.toggle('text-zinc-900', active);
+    btn.classList.toggle('dark:text-zinc-100', active);
+    btn.classList.toggle('bg-zinc-100', active);
+    btn.classList.toggle('dark:bg-zinc-700', active);
     btn.classList.toggle('border-l-blue-500', active);
     btn.classList.toggle('border-l-2', active);
   });
@@ -791,7 +794,7 @@ async function doLogout() {
     setInterval(calibrateClock, 60000);  // 时钟校准 60s
     setInterval(tickClock, 1000);    // 时钟走秒 1s
   } catch (e) {
-    location.href = '/login';
+    location.href = '/login?err=' + encodeURIComponent(String(e && e.message || e));
   }
 })();
 // 暗色主题切换（localStorage 记忆）
