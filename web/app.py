@@ -56,6 +56,13 @@ LOGIN_LOCK_SECONDS = 300
 # 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
 LOGIN_FAIL_NOTIFY = 3
 
+# 全局请求限速（防疯狂刷新/脚本轰炸）：每 IP 窗口内最多 RATE_MAX 次
+RATE_WINDOW = 10          # 窗口（秒）
+RATE_MAX = 60             # 窗口内最大请求数（正常用户远低于此）
+# 注册限速（防邮箱批量注册）：每 IP 窗口内最多 REGISTER_MAX 次成功注册
+REGISTER_WINDOW = 600     # 窗口（秒）= 10 分钟
+REGISTER_MAX = 5          # 窗口内最大成功注册数
+
 # 普通用户邮箱格式校验
 EMAIL_RE = re.compile(r'^[\w.+-]+@[\w-]+(\.[\w-]+)+$')
 
@@ -352,6 +359,23 @@ def create_app():
 
     # 登录失败记录 {ip: [fail_count, lock_until]}
     _login_fails = {}
+    # 全局限速记录 {ip: [count, window_start]}
+    _rate_limits = {}
+    # 注册限速记录 {ip: [count, window_start]}
+    _register_limits = {}
+
+    # ---- 全局限速：防疯狂刷新/脚本轰炸（所有请求，含页面与 API）----
+    @app.before_request
+    def rate_limit():
+        ip = request.remote_addr or '?'
+        now = time.time()
+        cnt, start = _rate_limits.get(ip, (0, now))
+        if now - start > RATE_WINDOW:
+            cnt, start = 0, now
+        cnt += 1
+        _rate_limits[ip] = (cnt, start)
+        if cnt > RATE_MAX:
+            return jsonify({'error': '请求过于频繁，请稍后再试'}), 429
 
     # ---- 认证守卫：/api/* 需登录；普通用户仅限 my-* 与 clock ----
     @app.before_request
@@ -498,6 +522,14 @@ def create_app():
             return jsonify({'error': '请输入有效的邮箱地址'}), 400
         if len(password) < 6:
             return jsonify({'error': '密码至少 6 位'}), 400
+        # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
+        ip = request.remote_addr or '?'
+        now = time.time()
+        rcnt, rstart = _register_limits.get(ip, (0, now))
+        if now - rstart > REGISTER_WINDOW:
+            rcnt, rstart = 0, now
+        if rcnt >= REGISTER_MAX:
+            return jsonify({'error': f'注册过于频繁，请 {REGISTER_WINDOW // 60} 分钟后再试'}), 429
         users = load_users()
         if any(u.get('email') == email for u in users):
             return jsonify({'error': '该邮箱已注册'}), 400
@@ -507,6 +539,7 @@ def create_app():
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         })
         save_users(users)
+        _register_limits[ip] = (rcnt + 1, rstart)
         logger.info('新用户注册: %s（共 %d 个用户）', email, len(users))
         return jsonify({'ok': True})
 
