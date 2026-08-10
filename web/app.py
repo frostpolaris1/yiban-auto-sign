@@ -337,6 +337,10 @@ def send_notification(title, content):
 # ---------------------------------------------------------------------------
 # Flask 应用
 # ---------------------------------------------------------------------------
+# 页面版本号：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
+WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
+
+
 def create_app():
     app = Flask(__name__)
     app.config['SECRET_KEY'] = ensure_secret_key(ENV_FILE)
@@ -393,7 +397,7 @@ def create_app():
             return redirect('/login')
         if session.get('role') != 'admin':
             return redirect('/user')
-        return render_template('index.html')
+        return render_template('index.html', web_version=WEB_VERSION)
 
     @app.route('/user')
     def user_page():
@@ -401,13 +405,13 @@ def create_app():
             return redirect('/login')
         if session.get('role') != 'user':
             return redirect('/')
-        return render_template('user.html')
+        return render_template('user.html', web_version=WEB_VERSION)
 
     @app.route('/login')
     def login_page():
         if session.get('auth'):
             return redirect('/' if session.get('role') == 'admin' else '/user')
-        return render_template('login.html')
+        return render_template('login.html', web_version=WEB_VERSION)
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -497,8 +501,11 @@ def create_app():
 
     @app.route('/api/me')
     def api_me():
+        # admin 字段为旧版前端兼容（早期前端检查 me.admin；新版用 role）——
+        # 防止浏览器缓存旧页面时误判未登录导致刷新循环
         return jsonify({'ok': True, 'auth': bool(session.get('auth')),
                         'role': session.get('role'), 'username': session.get('username'),
+                        'admin': session.get('role') == 'admin',
                         'csrf_token': get_csrf_token()})
 
     # ---- 账号管理 ----

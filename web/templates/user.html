@@ -8,6 +8,20 @@
   // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
   try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
 </script>
+<script>
+  // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
+  // 防止部署更新后缓存旧页面导致登录/功能异常
+  (function () {
+    try {
+      var v = '{{ web_version }}';
+      var prev = localStorage.getItem('web_version');
+      localStorage.setItem('web_version', v);
+      if (prev && prev !== v && !location.search.includes('v=' + v)) {
+        location.replace('/?v=' + v);
+      }
+    } catch (e) {}
+  })();
+</script>
 <script src="/static/vendor/tailwind.js"></script>
 <script>tailwind.config = { darkMode: 'class' }</script>
 <style>
