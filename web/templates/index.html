@@ -677,7 +677,7 @@ function statusBadge(a) {
 
 function pendingAccountRow(a) {
   const tr = document.createElement('tr');
-  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 transition-colors duration-150';
+  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   const reasonHtml = a.reject_reason
     ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
     : '';
@@ -701,7 +701,7 @@ function pendingAccountRow(a) {
 function accountRow(a) {
   const s = state.states[a.phone] || '⏳';
   const tr = document.createElement('tr');
-  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 transition-colors duration-150';
+  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
     <td class="px-4 py-3 text-lg leading-none">${s}</td>
     <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
@@ -1071,7 +1071,7 @@ function renderUsers(users, builtinAdmin) {
 // 用户行渲染（待审核组/正式组共用）
 function userRow(u) {
   const tr = document.createElement('tr');
-  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors duration-150';
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50';
   const isAdmin = u.role === 'admin';
   const roleBadge = isAdmin
     ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
