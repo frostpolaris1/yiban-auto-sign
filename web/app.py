@@ -345,7 +345,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.0.2'
+APP_VERSION = '1.0.3'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -416,7 +416,10 @@ def create_app():
         if request.path in ('/api/login', '/api/register'):
             return
         token = request.headers.get('X-CSRF-Token', '')
-        if not token or not secrets.compare_digest(token, session.get('csrf_token', '')):
+        sess_token = session.get('csrf_token', '')
+        if not token or not secrets.compare_digest(token, sess_token):
+            logger.warning('CSRF 校验失败: ip=%s path=%s token_len=%d session_token_len=%d',
+                           request.remote_addr, request.path, len(token), len(sess_token))
             return jsonify({'error': '请求校验失败，请刷新页面后重试'}), 403
 
     # ---- 页面（服务端按登录态重定向，避免未登录时先渲染后台造成闪烁）----

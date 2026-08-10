@@ -167,7 +167,7 @@ let editingIdx = null;
 
 let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, _retried = false) {
   const resp = await fetch(path, {
     headers: {
       'Content-Type': 'application/json',
@@ -181,6 +181,14 @@ async function api(path, opts = {}) {
     throw new Error('未登录');
   }
   const data = await resp.json().catch(() => ({}));
+  // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
+  if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
+    try {
+      const me = await fetch('/api/me').then(r => r.json());
+      csrfToken = me.csrf_token || '';
+      return api(path, opts, true);
+    } catch (e) { /* 重试失败则走下方错误提示 */ }
+  }
   if (!resp.ok || data.ok === false) {
     throw new Error(data.error || `请求失败 (${resp.status})`);
   }
