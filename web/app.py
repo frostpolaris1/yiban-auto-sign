@@ -360,6 +360,9 @@ def create_app():
             return
         if request.path in ('/api/login', '/api/register'):
             return
+        # 公告读取对所有用户开放（含未登录，登录页也显示公告）
+        if request.path == '/api/announcement' and request.method == 'GET':
+            return
         if not session.get('auth'):
             return jsonify({'error': '未登录'}), 401
         if session.get('role') == 'admin':
@@ -895,6 +898,19 @@ def create_app():
         write_env_int(ENV_FILE, 'YIBAN_ACCOUNT_GAP_MAX', max(0, gap))
         logger.info('更新随机延迟: 启动=%s 间隔=%s', max(0, start), max(0, gap))
         return jsonify({'ok': True, 'msg': '设置已保存（cron 下次触发自动生效）'})
+
+    # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----
+    @app.route('/api/announcement', methods=['GET'])
+    def api_announcement():
+        return jsonify({'ok': True, 'text': read_env(ENV_FILE).get('YIBAN_ANNOUNCEMENT', '').strip()})
+
+    @app.route('/api/announcement', methods=['PUT'])
+    def api_announcement_save():
+        data = request.get_json(silent=True) or {}
+        text = str(data.get('text', '')).strip()
+        write_env_key(ENV_FILE, 'YIBAN_ANNOUNCEMENT', text)
+        logger.info('公告已更新: %s', text[:50] or '（已清除）')
+        return jsonify({'ok': True, 'msg': '公告已更新' if text else '公告已清除'})
 
     @app.route('/api/admin/credentials', methods=['POST'])
     def api_admin_credentials():

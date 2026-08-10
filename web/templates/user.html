@@ -53,6 +53,10 @@
 </header>
 
 <main class="max-w-4xl mx-auto px-4 py-6">
+<!-- 全局公告条 -->
+<div id="announcement-bar" class="hidden bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+  <span id="announcement-text"></span>
+</div>
 
   <!-- 提交账号 -->
   <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
@@ -371,3 +375,19 @@ document.addEventListener('DOMContentLoaded', updateThemeBtn);
 </script>
 </body>
 </html>
+
+// 全局公告：访问时加载一次（登录页也显示，无需登录）
+async function loadAnnouncement() {
+  try {
+    const resp = await fetch('/api/announcement');
+    const data = await resp.json().catch(() => ({}));
+    const text = (data && data.text || '').trim();
+    const bar = document.getElementById('announcement-bar');
+    const el = document.getElementById('announcement-text');
+    if (text && bar && el) {
+      el.textContent = text;  // textContent 防 XSS
+      bar.classList.remove('hidden');
+    }
+  } catch (e) { /* 静默 */ }
+}
+document.addEventListener('DOMContentLoaded', loadAnnouncement);
