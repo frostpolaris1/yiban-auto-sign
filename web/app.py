@@ -347,7 +347,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.3.0'
+APP_VERSION = '1.3.1'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -391,9 +391,10 @@ def create_app():
         # 公告读取对所有用户开放（含未登录，登录页也显示公告）
         if request.path == '/api/announcement' and request.method == 'GET':
             return
-        if not session.get('auth'):
+        role = _current_role()
+        if role is None:
             return jsonify({'error': '未登录'}), 401
-        if session.get('role') == 'admin':
+        if role == 'admin':
             return
         # 普通用户：只能操作自己的账号（/api/my-*）、读取时钟、查询身份与登出
         if request.path.startswith('/api/my-') or request.path in ('/api/clock', '/api/me', '/api/logout'):
@@ -427,17 +428,19 @@ def create_app():
     # ---- 页面（服务端按登录态重定向，避免未登录时先渲染后台造成闪烁）----
     @app.route('/')
     def index_page():
-        if not session.get('auth'):
+        role = _current_role()
+        if role is None:
             return redirect('/login')
-        if session.get('role') != 'admin':
+        if role != 'admin':
             return redirect('/user')
         return render_template('index.html', web_version=WEB_VERSION, app_version=APP_VERSION)
 
     @app.route('/user')
     def user_page():
-        if not session.get('auth'):
+        role = _current_role()
+        if role is None:
             return redirect('/login')
-        if session.get('role') != 'user':
+        if role != 'user':
             return redirect('/')
         return render_template('user.html', web_version=WEB_VERSION, app_version=APP_VERSION)
 
@@ -456,7 +459,7 @@ def create_app():
             cnt += 1
             _login_loop[ip] = (cnt, first)
             if cnt < 4:
-                return redirect('/' if session.get('role') == 'admin' else '/user')
+                return redirect('/' if _current_role() == 'admin' else '/user')
             logger.warning('检测到登录页访问循环（IP %s），已打断并渲染登录页', ip)
         return render_template('login.html', web_version=WEB_VERSION, app_version=APP_VERSION)
 
@@ -559,9 +562,10 @@ def create_app():
     def api_me():
         # admin 字段为旧版前端兼容（早期前端检查 me.admin；新版用 role）——
         # 防止浏览器缓存旧页面时误判未登录导致刷新循环
+        role = _current_role()
         return jsonify({'ok': True, 'auth': bool(session.get('auth')),
-                        'role': session.get('role'), 'username': session.get('username'),
-                        'admin': session.get('role') == 'admin',
+                        'role': role, 'username': session.get('username'),
+                        'admin': role == 'admin',
                         'csrf_token': get_csrf_token()})
 
     # ---- 账号管理 ----
@@ -710,7 +714,7 @@ def create_app():
     def _my_account_indices():
         """当前登录用户的账号下标：普通用户=owner 邮箱；管理员=owner 'admin' 或本人邮箱。"""
         email = session.get('username', '').lower()
-        if session.get('role') == 'admin':
+        if _current_role() == 'admin':
             return [i for i, a in enumerate(load_accounts())
                     if a.get('owner') in ('admin', email)]
         return [i for i, a in enumerate(load_accounts())
@@ -773,8 +777,8 @@ def create_app():
         if find_account_index(accounts, clean['phone']) is not None:
             return jsonify({'error': f'手机号 {clean["phone"]} 已被使用'}), 400
         # 管理员提交的账号归属 'admin'（后台添加账号同理），直接生效免审核
-        clean['owner'] = 'admin' if session.get('role') == 'admin' else session.get('username', '').lower()
-        clean['status'] = STATUS_PENDING if session.get('role') != 'admin' else STATUS_ACTIVE
+        clean['owner'] = 'admin' if _current_role() == 'admin' else session.get('username', '').lower()
+        clean['status'] = STATUS_PENDING if _current_role() != 'admin' else STATUS_ACTIVE
         accounts.append(clean)
         save_accounts(accounts)
         logger.info('用户 %s 提交账号 %s（待审核）', clean['owner'], clean['phone'])
@@ -827,6 +831,28 @@ def create_app():
         """内置管理员（.env）标识，用于防呆：不可改角色/删除。"""
         env = read_env(ENV_FILE)
         return env.get('YIBAN_ADMIN_USER', '').strip().lower()
+
+    def _effective_role(username):
+        """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
+        内置管理员 → admin；注册用户 → users.json 的 role；查无此人 → None。
+        管理员变更角色后，已登录用户的下一次请求立即生效，无需重新登录；
+        被删除/取消权限的用户旧会话随之失效（None 视为未登录）。
+        """
+        if not username:
+            return None
+        if username.strip().lower() == _builtin_admin_email():
+            return 'admin'
+        email = username.strip().lower()
+        for u in load_users():
+            if u.get('email') == email:
+                return 'admin' if u.get('role') == 'admin' else 'user'
+        return None
+
+    def _current_role():
+        """当前登录会话的实时角色；未登录 → None。"""
+        if not session.get('auth'):
+            return None
+        return _effective_role(session.get('username'))
 
     def _find_user(users, email):
         return next((u for u in users if u.get('email') == email), None)
@@ -1010,7 +1036,7 @@ def create_app():
     @app.route('/api/admin/credentials', methods=['POST'])
     def api_admin_credentials():
         """修改管理员用户名/密码（写入 .env，仅管理员；需验证当前密码）。"""
-        if session.get('role') != 'admin':
+        if _current_role() != 'admin':
             return jsonify({'error': '无权限'}), 403
         data = request.get_json(silent=True) or {}
         old_password = str(data.get('old_password', ''))
