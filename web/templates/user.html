@@ -350,10 +350,9 @@ async function doLogout() {
     const email = me.email || '';
     $('user-email').textContent = email.split('@')[0];
     $('user-email').title = email;
-    loadAccounts();
+    loadAccounts();  // 排队/状态：访问时加载一次（静态实时，不轮询）
     calibrateClock();
     tickClock();
-    setInterval(loadAccounts, 15000);  // 状态/日志 15s 刷新
   } catch (e) {
     location.href = '/login';
   }
