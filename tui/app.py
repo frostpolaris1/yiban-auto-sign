@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import requests
 import subprocess
 import sys
 from datetime import datetime
@@ -106,6 +107,7 @@ def write_env_int(env_path, key, value):
         out.append(f'{key}={value}')
     with open(env_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(out) + '\n')
+        os.replace(tmp, self.config_path)
 
 
 class AccountForm(ModalScreen):
@@ -476,7 +478,6 @@ class YibanTuiApp(App):
         result = self.query_one('#ping-result', Static)
         result.update('检测中…')
         try:
-            import requests
             resp = requests.get(
                 'https://api.uyiban.com/base/c/auth/yiban',
                 timeout=6,
@@ -494,7 +495,9 @@ class YibanTuiApp(App):
     def action_save(self) -> None:
         """保存账号到 accounts.json，并把随机延迟写入 .env。"""
         # 1. 账号配置
-        with open(self.config_path, 'w', encoding='utf-8') as f:
+        # 原子写：先写临时文件再替换，避免与 web 端并发读写出现半写文件
+        tmp = f'{self.config_path}.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(self.accounts, f, ensure_ascii=False, indent=2)
             f.write('\n')
         # 2. 随机延迟（开启时读秒数输入框，非法值回退默认；关闭写 0 即删除该行）

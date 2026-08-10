@@ -29,6 +29,8 @@ import threading
 import time
 from datetime import datetime
 
+import requests
+
 from flask import Flask, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -100,8 +102,8 @@ def parse_sign_log(path):
                     sm = STATE_RE.search(msg)
                     if sm:
                         states[sm.group(1)] = sm.group(2)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug('签到日志读取失败: %s', e)
     return states, recent
 
 
@@ -311,7 +313,6 @@ def sign_status(now=None):
 def check_connectivity():
     """连通性检测：不登录，仅检查易班 API 可达性。返回 (ok, detail)。"""
     try:
-        import requests
         resp = requests.get(
             'https://api.uyiban.com/base/c/auth/yiban',
             timeout=6,
@@ -336,7 +337,6 @@ def send_notification(title, content):
     if not url:
         return
     try:
-        import requests
         requests.post(url, json={'title': title, 'content': content}, timeout=10)
         logger.info('告警通知已发送: %s', title)
     except Exception as e:
@@ -347,7 +347,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.3.7'
+APP_VERSION = '1.4.0'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 

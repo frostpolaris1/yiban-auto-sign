@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 from hashlib import md5
 from datetime import datetime
-from re import compile
+import re
 from base64 import b64encode, b64decode
 from urllib.parse import urlencode
 
@@ -48,7 +48,7 @@ except ImportError:
 # 日志配置
 # ---------------------------------------------------------------------------
 # 支持通过环境变量调整日志级别：DEBUG / INFO / WARNING / ERROR
-LOG_LEVEL = os.environ.get('YIBAN_LOG_LEVEL', 'DEBUG').upper()
+LOG_LEVEL = os.environ.get('YIBAN_LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.DEBUG),
     format='[%(asctime)s] [%(levelname)s] %(name)s: %(message)s',
@@ -188,7 +188,7 @@ def is_waf_blocked(response_text):
     if len(response_text) > 2000:
         return False
     # 解码 \uXXXX 形式的 Unicode 转义序列后一并检测
-    decoded = compile(r'\\u([0-9a-fA-F]{4})').sub(
+    decoded = re.compile(r'\\u([0-9a-fA-F]{4})').sub(
         lambda m: chr(int(m.group(1), 16)), response_text
     )
     for keyword in WAF_KEYWORDS:
@@ -405,8 +405,8 @@ class YibanClient:
         if is_waf_blocked(resp.text):
             raise RuntimeError('请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试')
 
-        page_use_match = compile(r'page_use ?= ?[\'|\"]([a-zA-Z0-9-_]+)[\'|\"]').findall(resp.text)
-        key_match = compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
+        page_use_match = re.compile(r'page_use ?= ?[\'|\"]([a-zA-Z0-9-_]+)[\'|\"]').findall(resp.text)
+        key_match = re.compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
         if not page_use_match or not key_match:
             body_preview = resp.text[:1500].replace('\n', '\\n')
             logger.error(f'[{self.account.phone}] OAuth 页解析失败诊断:')
@@ -477,7 +477,7 @@ class YibanClient:
 
         # 5. 获取 verify_request
         resp = self.session.get(resp.headers['Location'], allow_redirects=False, timeout=15)
-        verify_match = compile(r'verify_request=([^&]+)&?').findall(resp.headers.get('Location', ''))
+        verify_match = re.compile(r'verify_request=([^&]+)&?').findall(resp.headers.get('Location', ''))
         if not verify_match:
             raise RuntimeError('获取 verify_request 失败')
         verify_code = verify_match[0]
@@ -535,13 +535,13 @@ class YibanClient:
             return
 
         # 2. 解析 RSA 公钥与 page_use（jsoup input#key 等价正则）
-        key_match = compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"').findall(resp.text)
-        page_use_match = compile(r"var page_use = '([^']+)'").findall(resp.text)
+        key_match = re.compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"').findall(resp.text)
+        page_use_match = re.compile(r"var page_use = '([^']+)'").findall(resp.text)
         if not key_match or not page_use_match:
             logger.error(f'[{phone}] 登录 OAuth 页解析失败（key={len(key_match)}, page_use={len(page_use_match)}）')
             raise RuntimeError('登录: OAuth 页解析失败')
         # key 去掉 PEM 头尾后按 X509 解码
-        key_b64 = compile(r'\s+').sub('',
+        key_b64 = re.compile(r'\s+').sub('',
                          key_match[0].replace('-----BEGIN PUBLIC KEY-----', '')
                          .replace('-----END PUBLIC KEY-----', ''))
         cipher = PKCS1_v1_5.new(RSA.import_key(b64decode(key_b64)))
@@ -579,7 +579,7 @@ class YibanClient:
             timeout=15,
         )
         location = resp.headers.get('Location', '')
-        verify_match = compile(r'verify_request=(.*?)&').findall(location)
+        verify_match = re.compile(r'verify_request=(.*?)&').findall(location)
         if not verify_match:
             raise RuntimeError(f'无法提取 verify_request（Location={location[:100]}）')
 
@@ -598,15 +598,15 @@ class YibanClient:
 
     def _solve_ydclearance(self, text):
         """解析 ydclearance 反爬 JS。"""
-        result = compile(r'(function ([a-z]{2,})\(.+) ?</script>').findall(text)
+        result = re.compile(r'(function ([a-z]{2,})\(.+) ?</script>').findall(text)
         js_code = str(result[0][0])
         js_code = js_code.replace(r'eval("qo=eval;qo(po);");', r'return po;')
         js_code += '\n' + result[0][1] + '(' + \
-            compile(r'window.onload=setTimeout\("' + result[0][1] + r'\(([0-9]+).+').findall(text)[0] + ');'
+            re.compile(r'window.onload=setTimeout\("' + result[0][1] + r'\(([0-9]+).+').findall(text)[0] + ');'
         evaluated = eval_js(js_code)
         return [
-            compile(r'https?_ydclearance=([0-9a-zA-Z-_]+);?').findall(evaluated)[0],
-            compile(r'window\.document\.location="(.+)"').findall(evaluated)[0],
+            re.compile(r'https?_ydclearance=([0-9a-zA-Z-_]+);?').findall(evaluated)[0],
+            re.compile(r'window\.document\.location="(.+)"').findall(evaluated)[0],
         ]
 
     # ---- 签到 -------------------------------------------------------------

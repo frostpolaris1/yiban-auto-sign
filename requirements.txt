@@ -6,3 +6,6 @@ js2py>=0.74
 PySocks>=1.7.1
 # TUI 配置工具（服务器端 python3 -m tui 使用）
 textual>=8.0.0
+# 网页管理系统（web 模块）
+flask>=3.0.0
+werkzeug>=3.0.0
