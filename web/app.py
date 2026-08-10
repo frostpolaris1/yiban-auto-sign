@@ -569,18 +569,52 @@ def create_app():
 
     @app.route('/api/accounts', methods=['POST'])
     def api_account_add():
+        """添加账号。
+
+        - 不填邮箱：管理员自有账号（owner=admin，直接生效）
+        - 填用户邮箱：账号归属该用户并进入待审核（仍需管理员点"通过"）；
+          邮箱未注册时自动创建网站用户（生成临时密码，需告知用户）。
+        """
         accounts = load_accounts()
-        err, clean = validate_account(request.get_json(silent=True) or {}, require_password=True)
+        data = request.get_json(silent=True) or {}
+        err, clean = validate_account(data, require_password=True)
         if err:
             return jsonify({'error': err}), 400
         if find_account_index(accounts, clean['phone']) is not None:
             return jsonify({'error': f"手机号 {clean['phone']} 已存在"}), 400
-        clean['owner'] = 'admin'
-        clean['status'] = STATUS_ACTIVE
+
+        email = str(data.get('email', '')).strip().lower()
+        temp_password = ''
+        if email:
+            if not EMAIL_RE.match(email) or len(email) > 64:
+                return jsonify({'error': '用户邮箱格式不正确'}), 400
+            # 该用户已有账号（每人限 1 个）则拒绝
+            if any(a.get('owner') == email for a in accounts):
+                return jsonify({'error': f'{email} 已有一个账号，无需重复添加'}), 400
+            # 自动注册：邮箱未注册则创建网站用户（临时密码返回给管理员转告）
+            users = load_users()
+            if not any(u.get('email') == email for u in users):
+                temp_password = secrets.token_urlsafe(8)
+                users.append({
+                    'email': email,
+                    'password_hash': generate_password_hash(temp_password),
+                    'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                })
+                save_users(users)
+                logger.info('为邮箱 %s 自动注册用户（临时密码已生成）', email)
+            clean['owner'] = email
+            clean['status'] = STATUS_PENDING
+        else:
+            clean['owner'] = 'admin'
+            clean['status'] = STATUS_ACTIVE
         accounts.append(clean)
         save_accounts(accounts)
-        logger.info('添加账号 %s（共 %d 个）', clean['phone'], len(accounts))
-        return jsonify({'ok': True, 'accounts': [mask_account(a, i) for i, a in enumerate(accounts)]})
+        logger.info('添加账号 %s（归属 %s，状态 %s）', clean['phone'], clean['owner'], clean['status'])
+        msg = f"已添加，等待审核通过后参与签到"
+        if temp_password:
+            msg = f"已为 {email} 创建用户账号，临时密码：{temp_password}（请告知用户）"
+        return jsonify({'ok': True, 'msg': msg,
+                        'accounts': [mask_account(a, i) for i, a in enumerate(accounts)]})
 
     @app.route('/api/accounts/<int:idx>', methods=['PUT'])
     def api_account_update(idx):

@@ -333,6 +333,11 @@
           <input id="m-name" type="text" maxlength="20" placeholder="如：我的手机"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
+        <div id="f-email-wrap">
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">用户邮箱（可选，自动注册并进入待审核）</label>
+          <input id="f-email" type="email" maxlength="64" placeholder="如：user@example.com"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
           <input id="m-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
@@ -603,6 +608,8 @@ function openForm(index) {
   const a = index === null ? null : state.accounts[index];
   $('form-title').textContent = a ? `编辑账号 #${index + 1}` : '添加账号';
   $('f-name').value = a ? a.name : '';
+  $('f-email').value = '';
+  $('f-email-wrap').classList.toggle('hidden', index !== null);  // 编辑时不显示邮箱（归属不变）
   $('f-phone').value = a ? a.phone : '';
   $('f-password').value = '';
   $('f-password').placeholder = a ? '留空表示不修改密码' : '易班登录密码';
@@ -621,6 +628,7 @@ $('account-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = {
     name: $('f-name').value,
+    email: $('f-email').value.trim(),
     phone: $('f-phone').value.trim(),
     password: $('f-password').value,
     phone_model: $('f-model').value.trim(),
@@ -628,8 +636,8 @@ $('account-form').addEventListener('submit', async (e) => {
   };
   try {
     if (state.editingIndex === null) {
-      await api('/api/accounts', { method: 'POST', body: JSON.stringify(body) });
-      toast('账号已添加');
+      const data = await api('/api/accounts', { method: 'POST', body: JSON.stringify(body) });
+      toast(data.msg || '账号已添加', !data.msg);
     } else {
       await api(`/api/accounts/${state.editingIndex}`, { method: 'PUT', body: JSON.stringify(body) });
       toast('账号已更新');
