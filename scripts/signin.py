@@ -202,7 +202,7 @@ def is_waf_blocked(response_text):
 # ---------------------------------------------------------------------------
 # 风控/凭据类失败特征：重试不仅无用，还可能加重账号标记
 RISK_FAIL_KEYWORDS = ['账号或密码错误', 'e003', '无效的应用端', 'e001', 'origin invalid',
-                      '登录失败', '登录响应异常', 'KillYiBan登录']
+                      '登录失败', '登录响应异常', 'OAuth 页解析失败']
 # 网络/瞬时类失败特征：值得重试
 TRANSIENT_FAIL_KEYWORDS = ['Connection', '连接', '超时', 'timeout', 'Max retries', 'Read timed']
 
@@ -360,10 +360,10 @@ class YibanClient:
         self.use_killyiban = os.environ.get('YIBAN_LEGACY_LOGIN', '') != '1'
         if self.use_killyiban:
             self.csrf = secrets.token_hex(16)  # SecureRandom 真随机
-            logger.info(f'[{account.phone}] 登录方式: KillYiBan 同款（UA=Yiban/AppVersion=5.1.2/SecureRandom CSRF）')
+            logger.debug(f'[{account.phone}] 登录方式: 标准 App 特征（UA=Yiban/AppVersion=5.1.2/SecureRandom CSRF）')
         else:
             self.csrf = md5(str(datetime.now()).encode('UTF-8')).hexdigest()
-            logger.info(f'[{account.phone}] 登录方式: 旧流程（iOS 伪造 UA，YIBAN_LEGACY_LOGIN=1）')
+            logger.debug(f'[{account.phone}] 登录方式: 旧流程（iOS 伪造 UA，YIBAN_LEGACY_LOGIN=1）')
         self.session = requests.Session()
         self.session.keep_alive = False
         self.session.headers = dict(KILLYIBAN_HEADERS if self.use_killyiban else HEADERS)
@@ -530,7 +530,7 @@ class YibanClient:
         )
         # 若直接返回 iapp7463 说明已登录（正常流程是停留在登录页）
         if 'iapp7463' in (resp.headers.get('Location', '')):
-            logger.info(f'[{phone}] KillYiBan登录: 已登录状态（无需提交）')
+            logger.info(f'[{phone}] 登录: 已登录状态（无需提交）')
             self.logged_in = True
             return
 
@@ -538,8 +538,8 @@ class YibanClient:
         key_match = compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"').findall(resp.text)
         page_use_match = compile(r"var page_use = '([^']+)'").findall(resp.text)
         if not key_match or not page_use_match:
-            logger.error(f'[{phone}] KillYiBan登录 OAuth 页解析失败（key={len(key_match)}, page_use={len(page_use_match)}）')
-            raise RuntimeError('KillYiBan登录: OAuth 页解析失败')
+            logger.error(f'[{phone}] 登录 OAuth 页解析失败（key={len(key_match)}, page_use={len(page_use_match)}）')
+            raise RuntimeError('登录: OAuth 页解析失败')
         # key 去掉 PEM 头尾后按 X509 解码
         key_b64 = compile(r'\s+').sub('',
                          key_match[0].replace('-----BEGIN PUBLIC KEY-----', '')
@@ -594,7 +594,7 @@ class YibanClient:
         if data.get('code') != 0:
             raise RuntimeError(f"最终认证失败: {data.get('msg')}")
         self.logged_in = True
-        logger.info(f'[{phone}] KillYiBan登录成功')
+        logger.info(f'[{phone}] 登录成功')
 
     def _solve_ydclearance(self, text):
         """解析 ydclearance 反爬 JS。"""
