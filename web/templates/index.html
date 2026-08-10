@@ -837,11 +837,20 @@ async function loadLogs() {
       box.classList.add('hidden');
       empty.classList.remove('hidden');
     }
-    // 日志变化时同步刷新账号表格状态图标
+    // 日志变化时同步刷新账号表格：状态图标 + 审核状态（用户重新提交后 10 秒内管理员可见「待审核」）
     if (!document.getElementById('tab-accounts').classList.contains('hidden')) {
-      renderAccounts();
+      refreshAccountsSilent();
     }
   } catch (e) { /* 静默：轮询失败不打扰 */ }
+}
+
+async function refreshAccountsSilent() {
+  // 轮询拉取账号列表（静默失败）：管理员停留页面时同步审核状态/分组/统计卡
+  try {
+    const data = await api('/api/accounts');
+    state.accounts = data.accounts;
+    renderAccounts();
+  } catch (e) { /* 轮询失败不打扰 */ }
 }
 
 function fillSigninSelect() {
