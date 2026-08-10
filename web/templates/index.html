@@ -334,17 +334,7 @@
           <input id="m-name" type="text" maxlength="20" placeholder="如：我的手机"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
-        <div id="f-email-wrap">
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
-          <select id="f-email"
-                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
-            <option value="">不绑定（管理员自有账号，直接生效）</option>
-            <option value="__manual__">手填邮箱（未注册用户自动注册）</option>
-            <optgroup label="已注册用户（无账号）" id="f-email-users"></optgroup>
-          </select>
-          <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
-                 class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
-        </div>
+
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
           <input id="m-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
@@ -390,6 +380,17 @@
         <input id="f-name" type="text" maxlength="20" placeholder="如：小明"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
+      <div id="f-email-wrap">
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
+          <select id="f-email"
+                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            <option value="">不绑定（管理员自有账号，直接生效）</option>
+            <option value="__manual__">手填邮箱（未注册用户自动注册）</option>
+            <optgroup label="已注册用户（无账号）" id="f-email-users"></optgroup>
+          </select>
+          <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
+                 class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-phone" type="text" maxlength="20" required placeholder="易班登录手机号"
@@ -574,7 +575,7 @@ function renderAccounts() {
       <td class="px-4 py-3 text-lg leading-none">${s}</td>
       <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
       <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">${esc(a.display_name)}</td>
-      <td class="px-4 py-3 font-mono text-sm">${esc(a.phone)}</td>
+      <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(a.phone)}</td>
       <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">${esc(a.phone_model || '—')}</td>
       <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
       <td class="px-4 py-3">${statusCell}</td>
