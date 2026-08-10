@@ -425,15 +425,15 @@ def create_app():
         password = str(data.get('password', ''))
 
         role = None
-        # 1) 管理员（.env）
+        # 1) 内置管理员（.env，兜底超级管理员）
         if verify_admin(username, password):
             role = 'admin'
         else:
-            # 2) 普通用户（users.json，邮箱登录，不区分大小写）
+            # 2) 普通用户（users.json，邮箱登录，不区分大小写；role 支持多管理员）
             email = username.lower()
             for u in load_users():
                 if u.get('email') == email and check_password_hash(u.get('password_hash', ''), password):
-                    role = 'user'
+                    role = 'admin' if u.get('role') == 'admin' else 'user'
                     break
         if role:
             _login_fails.pop(ip, None)
@@ -594,8 +594,11 @@ def create_app():
 
     # ---- 普通用户：我的账号（提交 / 查看 / 编辑 / 删除，仅限本人）----
     def _my_account_indices():
-        """返回当前登录用户在 accounts.json 中的下标列表（owner 存小写邮箱）。"""
+        """当前登录用户的账号下标：普通用户=owner 邮箱；管理员=owner 'admin' 或本人邮箱。"""
         email = session.get('username', '').lower()
+        if session.get('role') == 'admin':
+            return [i for i, a in enumerate(load_accounts())
+                    if a.get('owner') in ('admin', email)]
         return [i for i, a in enumerate(load_accounts())
                 if a.get('owner') == email]
 
@@ -639,8 +642,9 @@ def create_app():
             return jsonify({'error': err}), 400
         if find_account_index(accounts, clean['phone']) is not None:
             return jsonify({'error': f'手机号 {clean["phone"]} 已被使用'}), 400
-        clean['owner'] = session.get('username', '').lower()
-        clean['status'] = STATUS_PENDING
+        # 管理员提交的账号归属 'admin'（后台添加账号同理），直接生效免审核
+        clean['owner'] = 'admin' if session.get('role') == 'admin' else session.get('username', '').lower()
+        clean['status'] = STATUS_PENDING if session.get('role') != 'admin' else STATUS_ACTIVE
         accounts.append(clean)
         save_accounts(accounts)
         logger.info('用户 %s 提交账号 %s（待审核）', clean['owner'], clean['phone'])
@@ -682,6 +686,98 @@ def create_app():
         save_accounts(accounts)
         logger.info('用户 %s 删除账号 %s', session.get('username', ''), removed.get('phone', ''))
         return jsonify({'ok': True, 'msg': '已删除'})
+
+    # ---- 用户管理（仅管理员；路径不在普通用户白名单，自动 403）----
+    def _builtin_admin_email():
+        """内置管理员（.env）标识，用于防呆：不可改角色/删除。"""
+        env = read_env(ENV_FILE)
+        return env.get('YIBAN_ADMIN_USER', '').strip().lower()
+
+    def _find_user(users, email):
+        return next((u for u in users if u.get('email') == email), None)
+
+    @app.route('/api/users')
+    def api_users():
+        """用户列表（完整邮箱/角色/注册时间/提交账号数）+ 内置管理员信息。"""
+        users = load_users()
+        accounts = load_accounts()
+        result = [{
+            'email': u.get('email', ''),
+            'role': u.get('role', 'user'),
+            'created_at': u.get('created_at', ''),
+            'account_count': sum(1 for a in accounts if a.get('owner') == u.get('email')),
+        } for u in users]
+        return jsonify({'ok': True, 'users': result,
+                        'builtin_admin': _builtin_admin_email() or 'admin'})
+
+    @app.route('/api/users/<email>/role', methods=['POST'])
+    def api_user_role(email):
+        """设为管理员 / 取消管理员。防呆：内置管理员不可改；至少保留 1 个管理员。"""
+        data = request.get_json(silent=True) or {}
+        new_role = data.get('role')
+        if new_role not in ('admin', 'user'):
+            return jsonify({'error': '未知角色'}), 400
+        # 内置管理员（.env）不可修改角色
+        if email == _builtin_admin_email():
+            return jsonify({'error': '内置管理员不可修改角色'}), 400
+        users = load_users()
+        target = _find_user(users, email)
+        if not target:
+            return jsonify({'error': '用户不存在'}), 404
+        if new_role == 'user' and target.get('role') == 'admin':
+            admins = [u for u in users if u.get('role') == 'admin']
+            if len(admins) <= 1:
+                return jsonify({'error': '至少保留 1 个管理员'}), 400
+        target['role'] = new_role
+        save_users(users)
+        logger.info('用户 %s 角色 → %s', email, new_role)
+        return jsonify({'ok': True,
+                        'msg': f"{email} 已{'设为管理员' if new_role == 'admin' else '取消管理员'}"})
+
+    @app.route('/api/users/<email>/password', methods=['POST'])
+    def api_user_password(email):
+        """重置用户密码（管理员无法查看原密码，只能设置新密码）。"""
+        data = request.get_json(silent=True) or {}
+        password = str(data.get('password', ''))
+        if len(password) < 6:
+            return jsonify({'error': '新密码至少 6 位'}), 400
+        users = load_users()
+        target = _find_user(users, email)
+        if not target:
+            return jsonify({'error': '用户不存在'}), 404
+        target['password_hash'] = generate_password_hash(password)
+        save_users(users)
+        logger.info('已重置用户 %s 密码', email)
+        return jsonify({'ok': True, 'msg': f'{email} 密码已重置'})
+
+    @app.route('/api/users/<email>/delete', methods=['POST'])
+    def api_user_delete(email):
+        """删除用户：mode=accounts_only 仅清空其易班账号（保留用户可重新提交）；
+        mode=full 完全删除用户及其账号。"""
+        data = request.get_json(silent=True) or {}
+        mode = data.get('mode', 'full')
+        if mode not in ('accounts_only', 'full'):
+            return jsonify({'error': '未知操作'}), 400
+        if email == _builtin_admin_email():
+            return jsonify({'error': '内置管理员不可删除'}), 400
+        users = load_users()
+        target = _find_user(users, email)
+        if not target:
+            return jsonify({'error': '用户不存在'}), 404
+        if mode == 'full' and target.get('role') == 'admin':
+            admins = [u for u in users if u.get('role') == 'admin']
+            if len(admins) <= 1:
+                return jsonify({'error': '至少保留 1 个管理员'}), 400
+        # 删除其提交的易班账号
+        accounts = [a for a in load_accounts() if a.get('owner') != email]
+        save_accounts(accounts)
+        if mode == 'full':
+            users = [u for u in users if u.get('email') != email]
+            save_users(users)
+            logger.info('完全删除用户 %s（含易班账号）', email)
+            return jsonify({'ok': True, 'msg': f'{email} 已完全删除'})
+        logger.info('清空用户 %s 的易班账号（保留用户）', email)
+        return jsonify({'ok': True, 'msg': f'{email} 的易班账号已清空（用户保留，可重新提交）'})
 
     # ---- 手动签到 ----
     _last_trigger = {}  # phone -> 上次触发时间戳
