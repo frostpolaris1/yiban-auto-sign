@@ -4,59 +4,64 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>易班自动签到 · 网页管理</title>
+<script>
+  // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
+  try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
+</script>
 <script src="/static/vendor/tailwind.js"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
   pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
 </style>
 </head>
-<body class="bg-zinc-50 min-h-screen">
+<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen">
 
 <!-- 移动端顶栏 -->
-<div class="md:hidden fixed top-0 inset-x-0 z-30 bg-white border-b border-zinc-200 h-14 flex items-center px-4 gap-3">
-  <button onclick="toggleSidebar(true)" class="text-zinc-600 hover:text-zinc-900 transition-colors duration-150" aria-label="打开菜单">
+<div class="md:hidden fixed top-0 inset-x-0 z-30 bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 h-14 flex items-center px-4 gap-3">
+  <button onclick="toggleSidebar(true)" class="text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150" aria-label="打开菜单">
     <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
     </svg>
   </button>
-  <span class="font-semibold tracking-tight text-zinc-900">易班签到管理</span>
+  <span class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">易班签到管理</span>
 </div>
 <div id="sidebar-overlay" class="hidden fixed inset-0 bg-black/30 z-20 md:hidden" onclick="toggleSidebar(false)"></div>
 
 <!-- 固定侧边栏 -->
-<aside id="sidebar" class="fixed inset-y-0 left-0 w-64 bg-white border-r border-zinc-200 z-30 flex flex-col
+<aside id="sidebar" class="fixed inset-y-0 left-0 w-64 bg-white dark:bg-zinc-800 border-r border-zinc-200 dark:border-zinc-700 z-30 flex flex-col
               -translate-x-full md:translate-x-0 transition-transform duration-200">
   <!-- 品牌 -->
-  <div class="px-4 py-5 border-b border-zinc-100 flex items-center gap-2">
+  <div class="px-4 py-5 border-b border-zinc-100 dark:border-zinc-700 flex items-center gap-2">
     <div class="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center shrink-0">
       <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
       </svg>
     </div>
     <div>
-      <div class="font-semibold tracking-tight text-zinc-900 text-sm">易班自动签到</div>
-      <div class="text-xs text-zinc-400">管理后台</div>
+      <div class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 text-sm">易班自动签到</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500">管理后台</div>
     </div>
   </div>
 
   <!-- 导航 -->
   <nav class="flex-1 overflow-y-auto py-3 px-2 space-y-1">
     <button onclick="switchTab('accounts')" data-tab-btn="accounts"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 transition-colors duration-150 border-l-2 border-transparent">
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
       <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a4 4 0 0 0-3-3.87M9 20H4v-2a4 4 0 0 1 3-3.87m6-1.13a4 4 0 1 0-6 0m5 5.13a4 4 0 1 0-8 0" />
       </svg>
       账号管理
     </button>
     <button onclick="switchTab('logs')" data-tab-btn="logs"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 transition-colors duration-150 border-l-2 border-transparent">
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
       <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6M9 8h6M5 21h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z" />
       </svg>
       签到日志
     </button>
     <button onclick="switchTab('settings')" data-tab-btn="settings"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 transition-colors duration-150 border-l-2 border-transparent">
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
       <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
         <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" />
@@ -66,10 +71,14 @@
   </nav>
 
   <!-- 底部：服务器时间 + 退出 -->
-  <div class="border-t border-zinc-100 px-4 py-3">
-    <div id="sidebar-clock" class="text-xs text-zinc-400 mb-2">服务器时间：--:--:--</div>
+  <div class="border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
+    <div class="flex items-center justify-between mb-2">
+      <div id="sidebar-clock" class="text-xs text-zinc-400 dark:text-zinc-500">服务器时间：--:--:--</div>
+      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+              class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">🌙</button>
+    </div>
     <button onclick="doLogout()"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 transition-colors duration-150">
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">
       <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v1" />
       </svg>
@@ -85,8 +94,8 @@
   <section id="tab-accounts">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
       <div>
-        <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">账号管理</h1>
-        <p class="text-sm text-zinc-500 mt-1">列表顺序即顺序打卡顺序 · 修改后自动保存到 <span id="config-file" class="font-mono text-xs bg-zinc-100 rounded px-1">accounts.json</span></p>
+        <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">账号管理</h1>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">列表顺序即顺序打卡顺序 · 修改后自动保存到 <span id="config-file" class="font-mono text-xs bg-zinc-100 dark:bg-zinc-700 rounded px-1">accounts.json</span></p>
       </div>
       <button onclick="openForm(null)" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
         添加账号
@@ -102,16 +111,16 @@
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" id="stat-cards"></div>
 
     <!-- 状态图例 -->
-    <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 mb-3">
+    <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-3">
       <span>⏳ 准备签到</span><span>✅ 今日成功</span><span>❌ 今日失败</span>
       <span>🔄 重试中</span><span>➖ 跳过</span>
     </div>
 
     <!-- 账号表格 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm overflow-x-auto">
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
-          <tr class="text-left text-xs text-zinc-500 border-b border-zinc-100 bg-zinc-50">
+          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
             <th class="px-4 py-3 font-medium">状态</th>
             <th class="px-4 py-3 font-medium">#</th>
             <th class="px-4 py-3 font-medium">名称</th>
@@ -124,7 +133,7 @@
         </thead>
         <tbody id="accounts-tbody"></tbody>
       </table>
-      <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 py-10">
+      <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">
         暂无账号，点击右上角「添加账号」开始配置
       </div>
     </div>
@@ -133,59 +142,59 @@
   <!-- ===== 签到日志 ===== -->
   <section id="tab-logs" class="hidden">
     <div class="mb-4">
-      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">签到日志</h1>
-      <p class="text-sm text-zinc-500 mt-1">实时查看签到结果与今日各账号状态（每 10 秒自动刷新）</p>
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">签到日志</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">实时查看签到结果与今日各账号状态（每 10 秒自动刷新）</p>
     </div>
 
     <!-- 手动签到 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 mb-4">
-      <div class="text-sm font-medium text-zinc-700 mb-3">手动签到</div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">手动签到</div>
       <div class="flex flex-wrap items-center gap-2">
-        <select id="signin-select" class="bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 focus:outline-none focus:border-blue-500 px-3 py-2 min-w-52"></select>
+        <select id="signin-select" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 min-w-52"></select>
         <button onclick="doSignin()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
           立即签到
         </button>
-        <span id="signin-tip" class="text-xs text-zinc-400">后台执行，结果约 30 秒内出现在下方日志</span>
+        <span id="signin-tip" class="text-xs text-zinc-400 dark:text-zinc-500">后台执行，结果约 30 秒内出现在下方日志</span>
       </div>
     </div>
 
     <!-- 日志面板 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm">
-      <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-100">
-        <div class="text-sm font-medium text-zinc-700">最近日志</div>
-        <div class="text-xs text-zinc-400">文件：<span id="log-file" class="font-mono">/var/log/yiban/sign.log</span></div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">最近日志</div>
+        <div class="text-xs text-zinc-400 dark:text-zinc-500">文件：<span id="log-file" class="font-mono">/var/log/yiban/sign.log</span></div>
       </div>
-      <pre id="log-box" class="log-text text-zinc-700 p-4 overflow-auto max-h-[60vh] whitespace-pre-wrap break-all"></pre>
-      <div id="log-empty" class="hidden text-center text-sm text-zinc-400 py-10">（暂无签到日志，等待定时任务执行…）</div>
+      <pre id="log-box" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto max-h-[60vh] whitespace-pre-wrap break-all"></pre>
+      <div id="log-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">（暂无签到日志，等待定时任务执行…）</div>
     </div>
   </section>
 
   <!-- ===== 系统设置 ===== -->
   <section id="tab-settings" class="hidden">
     <div class="mb-4">
-      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">系统设置</h1>
-      <p class="text-sm text-zinc-500 mt-1">随机延迟用于打散"每天固定秒级执行"的脚本特征（防风控纵深防御）</p>
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">系统设置</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">随机延迟用于打散"每天固定秒级执行"的脚本特征（防风控纵深防御）</p>
     </div>
 
     <!-- 随机延迟 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 mb-4">随机延迟（写入 .env，cron 下次触发自动生效）</div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-4">随机延迟（写入 .env，cron 下次触发自动生效）</div>
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
-          <label class="text-sm text-zinc-600 w-32">启动延迟</label>
+          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-32">启动延迟</label>
           <button id="start-delay-btn" onclick="toggleDelay('start')"
-                  class="bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
+                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
           <input id="start-delay-secs" type="number" min="1" placeholder="秒数"
-                 class="bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-400">启动后随机等待 0~N 秒再开始首个签到</span>
+                 class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">启动后随机等待 0~N 秒再开始首个签到</span>
         </div>
         <div class="flex flex-wrap items-center gap-3">
-          <label class="text-sm text-zinc-600 w-32">账号间隔</label>
+          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-32">账号间隔</label>
           <button id="gap-delay-btn" onclick="toggleDelay('gap')"
-                  class="bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
+                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
           <input id="gap-delay-secs" type="number" min="1" placeholder="秒数"
-                 class="bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-400">账号间随机停顿 0~N 秒（顺序模式）</span>
+                 class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">账号间随机停顿 0~N 秒（顺序模式）</span>
         </div>
       </div>
       <div class="flex items-center gap-3 mt-5">
@@ -196,43 +205,43 @@
     </div>
 
     <!-- 连通性检测 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 mb-3">连通性检测（不登录，仅检查易班 API 可达性）</div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">连通性检测（不登录，仅检查易班 API 可达性）</div>
       <div class="flex flex-wrap items-center gap-3">
-        <button onclick="doPing()" class="bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-4 py-2 text-sm">
+        <button onclick="doPing()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-4 py-2 text-sm">
           开始检测
         </button>
-        <span id="ping-result" class="text-sm text-zinc-500"></span>
+        <span id="ping-result" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500"></span>
       </div>
     </div>
 
     <!-- 服务器时间与签到状态 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 mb-3">服务器时间与签到窗口</div>
-      <div class="text-2xl font-semibold tracking-tight text-zinc-900" id="clock-now">--:--:--</div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
+      <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-400 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
     </div>
 
     <!-- 管理员账号 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6">
-      <div class="text-sm font-medium text-zinc-700 mb-1">管理员账号</div>
-      <p class="text-xs text-zinc-400 mb-4">修改后下次登录使用新账号密码；当前登录不受影响。</p>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">管理员账号</div>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">修改后下次登录使用新账号密码；当前登录不受影响。</p>
       <div class="space-y-3 max-w-sm">
         <div>
-          <label class="block text-sm text-zinc-600 mb-1">新用户名</label>
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新用户名</label>
           <input id="adm-username" type="text" maxlength="32" placeholder="管理员用户名"
-                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm text-zinc-600 mb-1">新密码（至少 6 位）</label>
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 6 位）</label>
           <input id="adm-password" type="password" placeholder="新密码"
-                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm text-zinc-600 mb-1">当前密码（验证用）</label>
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码（验证用）</label>
           <input id="adm-old-password" type="password" placeholder="输入当前密码确认"
-                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
         <div class="flex items-center gap-3">
           <button onclick="saveAdminCredentials()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存管理员账号</button>
@@ -246,37 +255,37 @@
 <!-- 账号编辑模态 -->
 <div id="modal-account" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeForm()"></div>
-  <div class="relative bg-white rounded-xl border border-zinc-200 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
-    <div class="text-base font-semibold tracking-tight text-zinc-900 mb-4" id="form-title">添加账号</div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
     <form id="account-form" class="space-y-3">
       <div>
-        <label class="block text-sm font-medium text-zinc-700 mb-1">名称（可选，不填显示为 账号N）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
         <input id="f-name" type="text" maxlength="20" placeholder="如：小明"
-               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 mb-1">手机号 <span class="text-red-500">*</span></label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-phone" type="text" maxlength="20" required placeholder="易班登录手机号"
-               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 mb-1">密码 <span class="text-red-500">*</span></label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-password" type="password" placeholder="编辑时留空表示不修改"
-               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 mb-1">设备型号（学校开启设备绑定时必填）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时必填）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
-               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 mb-1">设备识别码（学校开启设备绑定时必填）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时必填）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
-               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div class="flex items-center gap-2 pt-2">
         <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
-        <button type="button" onclick="closeForm()" class="bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
+        <button type="button" onclick="closeForm()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
       </div>
     </form>
   </div>
@@ -284,7 +293,7 @@
 
 <!-- Toast -->
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
-            bg-zinc-900 text-white text-sm rounded-lg px-4 py-2 shadow-md"></div>
+            bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md"></div>
 
 <script>
 // ================= 状态 =================
@@ -298,9 +307,14 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 // ================= 基础请求 =================
+let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
+
 async function api(path, opts = {}) {
   const resp = await fetch(path, {
-    headers: {'Content-Type': 'application/json'},
+    headers: {
+      'Content-Type': 'application/json',
+      ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
+    },
     ...opts,
   });
   if (resp.status === 401) {
@@ -317,7 +331,7 @@ async function api(path, opts = {}) {
 function toast(msg, isError = false) {
   const el = $('toast');
   el.textContent = msg;
-  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900'}`;
+  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
   clearTimeout(el._timer);
   el._timer = setTimeout(() => el.classList.add('hidden'), 3000);
 }
@@ -335,9 +349,9 @@ function switchTab(name) {
   });
   document.querySelectorAll('[data-tab-btn]').forEach(btn => {
     const active = btn.dataset.tabBtn === name;
-    btn.classList.toggle('text-zinc-600', !active);
-    btn.classList.toggle('text-zinc-900', active);
-    btn.classList.toggle('bg-zinc-100', active);
+    btn.classList.toggle('text-zinc-600 dark:text-zinc-300', !active);
+    btn.classList.toggle('text-zinc-900 dark:text-zinc-100', active);
+    btn.classList.toggle('bg-zinc-100 dark:bg-zinc-700', active);
     btn.classList.toggle('border-l-blue-500', active);
     btn.classList.toggle('border-l-2', active);
   });
@@ -376,40 +390,40 @@ function renderAccounts() {
     else pending++;
   });
   $('stat-cards').innerHTML = [
-    card('账号总数', state.accounts.length, 'text-zinc-900'),
-    card('今日成功', success, 'text-green-600'),
-    card('今日失败', failed, 'text-red-600'),
+    card('账号总数', state.accounts.length, 'text-zinc-900 dark:text-zinc-100'),
+    card('今日成功', success, 'text-green-600 dark:text-green-400'),
+    card('今日失败', failed, 'text-red-600 dark:text-red-400'),
     card('待签到/进行中', pending + retrying, 'text-blue-600'),
   ].join('');
 
   state.accounts.forEach(a => {
     const s = state.states[a.phone] || '⏳';
     const tr = document.createElement('tr');
-    tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 transition-colors duration-150';
+    tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50 transition-colors duration-150';
     const pending = a.status === 'pending';
     const statusCell = pending
       ? `<span class="inline-flex items-center rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs px-2 py-0.5">待审核</span>`
-      : `<span class="inline-flex items-center rounded-lg bg-green-50 border border-green-200 text-green-700 text-xs px-2 py-0.5">已生效</span>`;
+      : `<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 dark:text-green-400 text-xs px-2 py-0.5">已生效</span>`;
     tr.innerHTML = `
       <td class="px-4 py-3 text-lg leading-none">${s}</td>
-      <td class="px-4 py-3 text-zinc-400">${a.index + 1}</td>
-      <td class="px-4 py-3 font-medium text-zinc-900">${esc(a.display_name)}</td>
+      <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
+      <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">${esc(a.display_name)}</td>
       <td class="px-4 py-3 font-mono text-sm">${esc(a.phone)}</td>
-      <td class="px-4 py-3 text-zinc-500">${esc(a.phone_model || '—')}</td>
-      <td class="px-4 py-3 text-zinc-500 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">${esc(a.phone_model || '—')}</td>
+      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
       <td class="px-4 py-3">${statusCell}</td>
       <td class="px-4 py-3">
         <div class="flex items-center justify-end gap-1">
           ${pending ? `
-            <button title="审核通过" onclick="reviewAccount(${a.index}, 'approve')" class="px-2 py-1 rounded-lg text-sm text-green-600 hover:bg-green-50 transition-colors duration-150">通过</button>
-            <button title="拒绝" onclick="reviewAccount(${a.index}, 'reject')" class="px-2 py-1 rounded-lg text-sm text-red-600 hover:bg-red-50 transition-colors duration-150">拒绝</button>
+            <button title="审核通过" onclick="reviewAccount(${a.index}, 'approve')" class="px-2 py-1 rounded-lg text-sm text-green-600 dark:text-green-400 hover:bg-green-50 transition-colors duration-150">通过</button>
+            <button title="拒绝" onclick="reviewAccount(${a.index}, 'reject')" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">拒绝</button>
           ` : `
-            <button title="上移" onclick="moveAccount(${a.index}, -1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 transition-colors duration-150">↑</button>
-            <button title="下移" onclick="moveAccount(${a.index}, 1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 transition-colors duration-150">↓</button>
-            <button title="手动签到" onclick="doSignin('${a.phone}')" class="px-2 py-1 rounded-lg text-sm text-blue-600 hover:bg-blue-50 transition-colors duration-150">签到</button>
+            <button title="上移" onclick="moveAccount(${a.index}, -1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">↑</button>
+            <button title="下移" onclick="moveAccount(${a.index}, 1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">↓</button>
+            <button title="手动签到" onclick="doSignin('${a.phone}')" class="px-2 py-1 rounded-lg text-sm text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors duration-150">签到</button>
           `}
-          <button title="编辑" onclick="openForm(${a.index})" class="px-2 py-1 rounded-lg text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 transition-colors duration-150">编辑</button>
-          <button title="删除" onclick="deleteAccount(${a.index})" class="px-2 py-1 rounded-lg text-sm text-red-600 hover:bg-red-50 transition-colors duration-150">删除</button>
+          <button title="编辑" onclick="openForm(${a.index})" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
+          <button title="删除" onclick="deleteAccount(${a.index})" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">删除</button>
         </div>
       </td>`;
     tbody.appendChild(tr);
@@ -435,8 +449,8 @@ async function reviewAccount(idx, action) {
 }
 
 function card(label, value, color) {
-  return `<div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-3 md:p-4">
-            <div class="text-xs text-zinc-400">${label}</div>
+  return `<div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-3 md:p-4">
+            <div class="text-xs text-zinc-400 dark:text-zinc-500">${label}</div>
             <div class="text-xl md:text-2xl font-semibold tracking-tight ${color}">${value}</div>
           </div>`;
 }
@@ -574,7 +588,7 @@ function renderDelayUI() {
     btn.textContent = on ? '开启' : '关闭';
     btn.className = on
       ? 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200'
-      : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+      : 'bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
     secs.value = on ? state.delays[k] : '';
     secs.placeholder = `默认 ${k === 'start' ? 60 : 10}`;
   });
@@ -609,10 +623,10 @@ async function doPing() {
   try {
     const data = await api('/api/ping', { method: 'POST' });
     el.innerHTML = data.reachable
-      ? `<span class="text-green-600">✅ 易班 API 可达（${esc(data.detail)}）</span>`
-      : `<span class="text-red-600">❌ 不可达（${esc(data.detail)}）</span>`;
+      ? `<span class="text-green-600 dark:text-green-400">✅ 易班 API 可达（${esc(data.detail)}）</span>`
+      : `<span class="text-red-600 dark:text-red-400">❌ 不可达（${esc(data.detail)}）</span>`;
   } catch (e) {
-    el.innerHTML = `<span class="text-red-600">❌ 检测失败（${esc(e.message)}）</span>`;
+    el.innerHTML = `<span class="text-red-600 dark:text-red-400">❌ 检测失败（${esc(e.message)}）</span>`;
   }
 }
 
@@ -667,6 +681,7 @@ async function doLogout() {
   try {
     const me = await api('/api/me');
     if (me.role !== 'admin') { location.href = '/user'; return; }  // 普通用户 → 用户页
+    csrfToken = me.csrf_token || '';
     switchTab('accounts');
     loadLogs();
     calibrateClock();
@@ -678,6 +693,17 @@ async function doLogout() {
     location.href = '/login';
   }
 })();
+// 暗色主题切换（localStorage 记忆）
+function toggleTheme() {
+  const dark = document.documentElement.classList.toggle('dark');
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+  updateThemeBtn();
+}
+function updateThemeBtn() {
+  const dark = document.documentElement.classList.contains('dark');
+  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.textContent = dark ? '☀️' : '🌙'; });
+}
+document.addEventListener('DOMContentLoaded', updateThemeBtn);
 </script>
 </body>
 </html>

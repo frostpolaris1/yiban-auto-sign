@@ -346,6 +346,27 @@ def create_app():
             return
         return jsonify({'error': '无权限'}), 403
 
+    # ---- CSRF 防护：登录后所有写请求（POST/PUT/DELETE）必须携带与 session 匹配的 token ----
+    # 登录/注册无需 token（未登录态，跨站表单攻击由 SameSite=Lax 已基本阻断）；
+    # 已登录用户的写操作由 token 双重校验（借鉴 flask-wtf 的 Session 方案，自实现零依赖）。
+    def get_csrf_token():
+        """惰性生成并返回当前会话的 CSRF token。"""
+        if 'csrf_token' not in session:
+            session['csrf_token'] = secrets.token_hex(32)
+        return session['csrf_token']
+
+    @app.before_request
+    def check_csrf():
+        if request.method not in ('POST', 'PUT', 'DELETE'):
+            return
+        if not request.path.startswith('/api/'):
+            return
+        if request.path in ('/api/login', '/api/register'):
+            return
+        token = request.headers.get('X-CSRF-Token', '')
+        if not token or not secrets.compare_digest(token, session.get('csrf_token', '')):
+            return jsonify({'error': '请求校验失败，请刷新页面后重试'}), 403
+
     # ---- 页面（服务端按登录态重定向，避免未登录时先渲染后台造成闪烁）----
     @app.route('/')
     def index_page():
@@ -445,7 +466,8 @@ def create_app():
     @app.route('/api/me')
     def api_me():
         return jsonify({'ok': True, 'auth': bool(session.get('auth')),
-                        'role': session.get('role'), 'username': session.get('username')})
+                        'role': session.get('role'), 'username': session.get('username'),
+                        'csrf_token': get_csrf_token()})
 
     # ---- 账号管理 ----
     @app.route('/api/accounts')

@@ -4,39 +4,46 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>登录 · 易班自动签到管理</title>
+<script>
+  // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
+  try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
+</script>
 <script src="/static/vendor/tailwind.js"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
 </style>
 </head>
-<body class="bg-zinc-50 min-h-screen flex items-center justify-center px-4">
+<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4">
+  <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+          class="fixed top-4 right-4 z-50 w-9 h-9 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow">🌙</button>
   <div class="w-full max-w-md">
 
     <!-- 登录/注册卡片 -->
-    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6">
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
       <!-- Tab 切换 -->
-      <div class="flex bg-zinc-100 rounded-lg p-1 mb-5 text-sm font-medium">
+      <div class="flex bg-zinc-100 dark:bg-zinc-700 rounded-lg p-1 mb-5 text-sm font-medium">
         <button id="tab-login" onclick="switchMode('login')"
-                class="flex-1 py-1.5 rounded-lg bg-white text-zinc-900 shadow-sm transition-colors duration-150">登录</button>
+                class="flex-1 py-1.5 rounded-lg bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm transition-colors duration-150">登录</button>
         <button id="tab-register" onclick="switchMode('register')"
-                class="flex-1 py-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 transition-colors duration-150">注册</button>
+                class="flex-1 py-1.5 rounded-lg text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">注册</button>
       </div>
 
       <!-- 登录表单 -->
       <form id="login-form" class="space-y-4">
         <div>
-          <label class="block text-sm font-medium text-zinc-700 mb-1" for="username">邮箱</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="username">邮箱</label>
           <input id="username" name="username" type="text" required autocomplete="username"
                  placeholder="输入邮箱"
-                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 mb-1" for="password">密码</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="password">密码</label>
           <input id="password" name="password" type="password" required autocomplete="current-password"
                  placeholder="输入密码"
-                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
         </div>
-        <div id="error-box" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <div id="error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="login-btn"
                 class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
           <span id="login-btn-text">登录</span>
@@ -46,22 +53,22 @@
       <!-- 注册表单 -->
       <form id="register-form" class="space-y-4 hidden">
         <div>
-          <label class="block text-sm font-medium text-zinc-700 mb-1" for="reg-email">邮箱 <span class="text-red-500">*</span></label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-email">邮箱 <span class="text-red-500 dark:text-red-400">*</span></label>
           <input id="reg-email" type="email" required autocomplete="email" maxlength="64"
                  placeholder="输入邮箱地址"
-                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
-          <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500">邮箱格式不正确（示例：name@example.com）</p>
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+          <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">邮箱格式不正确（示例：name@example.com）</p>
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 mb-1" for="reg-password">密码 <span class="text-red-500">*</span></label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
           <input id="reg-password" type="password" required autocomplete="new-password"
                  placeholder="至少 6 位"
-                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
-          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500">密码至少 6 位（当前 0 位）</p>
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 6 位（当前 0 位）</p>
         </div>
-        <div id="reg-error-box" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <div id="reg-error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="register-btn"
-                class="w-full bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
+                class="w-full bg-zinc-900 dark:bg-zinc-700 hover:bg-zinc-800 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
           <span id="register-btn-text">注册并登录</span>
         </button>
       </form>
@@ -70,6 +77,17 @@
 
 <script>
 let mode = 'login';
+// 暗色主题切换（localStorage 记忆）
+function toggleTheme() {
+  const dark = document.documentElement.classList.toggle('dark');
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+  updateThemeBtn();
+}
+function updateThemeBtn() {
+  const dark = document.documentElement.classList.contains('dark');
+  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.textContent = dark ? '☀️' : '🌙'; });
+}
+document.addEventListener('DOMContentLoaded', updateThemeBtn);
 
 function switchMode(m) {
   mode = m;
@@ -78,9 +96,9 @@ function switchMode(m) {
   const lt = document.getElementById('tab-login');
   const rt = document.getElementById('tab-register');
   lt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
-    (m === 'login' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900');
+    (m === 'login' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
   rt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
-    (m === 'register' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900');
+    (m === 'register' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
 }
 
 function showError(el, msg) {

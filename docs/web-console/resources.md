@@ -106,3 +106,19 @@
 ### 本项目已吸收的实践
 - KillYiBan 真实 App 登录特征（e003 风控）、队列重试、随机延迟、代理出口、多账号、webhook 通知
 - 邮箱+密码注册、scrypt 哈希、登录限速、HttpOnly/SameSite、字段级即时校验
+
+## 七、后台方案深度调研（2026-08-10）
+
+| 方案 | stars | 核心能力 | 对本项目可借鉴点 |
+|------|-------|---------|-----------------|
+| flask-wtf | 1509 | **CSRF token 全程防护**、WTForms 校验、文件上传、reCAPTCHA | ① 自实现 CSRF：session 存 token + 前端 POST 带 X-CSRF-Token + 后端校验（当前仅 SameSite=Lax 是基础层）② 表单校验封装 |
+| flask-login | ~3k | 用户 session 管理、remember me、@login_required | 已用等价实现（permanent session 30 天 + before_request 守卫），借鉴意义小 |
+| flask-security | ~1.9k | 认证+角色（RBAC）+密码重置/邮箱确认/双因子 | ② 密码重置流程（忘记密码→邮件链接，需邮件服务）③ 角色模型（admin/user 已实现） |
+| flask-admin | 6068 | django-admin 式现成管理界面，支持 ORM | ① 列表页+编辑页的信息架构（已实现）② 批量操作/过滤器/分页模式（可借鉴） |
+| AdminLTE | 45552 | Bootstrap 5 后台模板 | ① **暗色主题切换** ② 统计卡变体（趋势箭头/迷你图）③ 表格加载态/空状态 ④ 面包屑/通知徽标 ⑤ toast 变体（成功/警告/错误）⑥ 确认对话框模式 |
+| Tabler | 41439 | Bootstrap 后台 UI Kit | 同上组件细节 + 更现代的间距/排版 |
+| CoreUI | 12236 | Bootstrap 后台模板（AI 友好） | 组件命名/可访问性细节 |
+| （未来）flask-sqlalchemy | - | 数据库持久化 | 数据量增长后 JSON → SQLite：签到历史/审核记录可查 |
+| （未来）APScheduler | - | 应用内定时任务 | cron → 可视化调度（网页改签到时间） |
+
+**建议优先级**：① CSRF token（安全最短板，自实现成本低）→ ② 暗色主题（体验）→ ③ 密码重置（需邮件）→ ④ 数据库/定时任务（规模增长后）
