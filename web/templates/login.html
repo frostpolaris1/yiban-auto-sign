@@ -84,6 +84,10 @@
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
           <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 6 位（当前 0 位）</p>
         </div>
+        <label class="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">
+          <input id="reg-agree" type="checkbox" class="mt-0.5 w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 accent-blue-500">
+          <span>我已阅读并同意 <a href="javascript:void(0)" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</a></span>
+        </label>
         <div id="reg-error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="register-btn"
                 class="w-full bg-zinc-900 dark:bg-zinc-700 hover:bg-zinc-800 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
@@ -183,6 +187,14 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   }
 });
 
+// 用户协议弹窗
+function showAgreement() {
+  document.getElementById('agreement-modal').classList.remove('hidden');
+}
+function closeAgreement() {
+  document.getElementById('agreement-modal').classList.add('hidden');
+}
+
 // 注册（注册成功后自动登录）
 document.getElementById('register-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -193,6 +205,12 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
   try {
     const email = regEmail.value.trim();
     const password = regPw.value;
+    // 必须勾选同意用户协议
+    if (!document.getElementById('reg-agree').checked) {
+      showError(errorBox, '请先阅读并同意《用户协议》');
+      btn.disabled = false;
+      return;
+    }
     // 提交前兜底：字段级即时校验优先（错误显示在字段下方，不弹顶部错误框）
     const emailInvalid = !(EMAIL_RE.test(email) && email.length <= 64);
     markField(regEmail, regEmailErr, emailInvalid);
@@ -238,5 +256,24 @@ async function loadAnnouncement() {
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
 
+<!-- 用户协议弹窗 -->
+<div id="agreement-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeAgreement()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
+    <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="agreement-content">
+      <p>欢迎使用易班自动签到服务。使用本服务前，请仔细阅读以下条款：</p>
+      <p>一、服务说明：本服务用于协助完成每日签到，用户需自行提供易班账号信息。</p>
+      <p>二、账号安全：用户提交的账号密码仅用于自动签到，系统以加密形式存储，管理员不可查看明文密码。</p>
+      <p>三、合规声明：请遵守所在学校相关规定，自愿使用本服务；因使用本服务产生的任何后果由使用者自行承担。</p>
+      <p>四、数据使用：系统仅收集签到所需的最少信息（手机号、设备信息），不用于其他用途。</p>
+      <p>五、服务变更：服务可能因平台规则变化而调整或停止，恕不另行通知。</p>
+      <p class="text-zinc-400 dark:text-zinc-500">（协议内容将后续完善）</p>
+    </div>
+    <div class="flex justify-end mt-4">
+      <button onclick="closeAgreement()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">我知道了</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
