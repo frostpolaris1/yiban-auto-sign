@@ -407,10 +407,23 @@ def create_app():
             return redirect('/')
         return render_template('user.html', web_version=WEB_VERSION)
 
+    # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
+    # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
+    _login_loop = {}
+
     @app.route('/login')
     def login_page():
         if session.get('auth'):
-            return redirect('/' if session.get('role') == 'admin' else '/user')
+            ip = request.remote_addr or '?'
+            now = time.time()
+            cnt, first = _login_loop.get(ip, (0, now))
+            if now - first > 10:
+                cnt, first = 0, now
+            cnt += 1
+            _login_loop[ip] = (cnt, first)
+            if cnt < 4:
+                return redirect('/' if session.get('role') == 'admin' else '/user')
+            logger.warning('检测到登录页访问循环（IP %s），已打断并渲染登录页', ip)
         return render_template('login.html', web_version=WEB_VERSION)
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
