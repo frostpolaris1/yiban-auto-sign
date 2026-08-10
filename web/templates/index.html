@@ -301,20 +301,48 @@
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">用户管理</h1>
       <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">管理注册用户与管理员权限 · 密码仅可重置，不可查看</p>
     </div>
-    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
-            <th class="px-4 py-3 font-medium">邮箱</th>
-            <th class="px-4 py-3 font-medium">角色</th>
-            <th class="px-4 py-3 font-medium">注册时间</th>
-            <th class="px-4 py-3 font-medium">账号数</th>
-            <th class="px-4 py-3 font-medium text-right">操作</th>
-          </tr>
-        </thead>
-        <tbody id="users-tbody"></tbody>
-      </table>
-      <div id="users-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">暂无注册用户</div>
+    <!-- 待审核用户组 -->
+    <div class="bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl shadow-sm p-4 md:p-6 mb-4">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待审核用户</div>
+        <span id="users-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+              <th class="px-4 py-3 font-medium">邮箱</th>
+              <th class="px-4 py-3 font-medium">角色</th>
+              <th class="px-4 py-3 font-medium">注册时间</th>
+              <th class="px-4 py-3 font-medium">账号数</th>
+              <th class="px-4 py-3 font-medium text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="users-pending-tbody"></tbody>
+        </table>
+        <div id="users-pending-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无待审核用户</div>
+      </div>
+    </div>
+
+    <!-- 正式用户组 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">正式用户</div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+              <th class="px-4 py-3 font-medium">邮箱</th>
+              <th class="px-4 py-3 font-medium">角色</th>
+              <th class="px-4 py-3 font-medium">注册时间</th>
+              <th class="px-4 py-3 font-medium">账号数</th>
+              <th class="px-4 py-3 font-medium text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+        <div id="users-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无注册用户</div>
+      </div>
     </div>
   </section>
 
@@ -909,9 +937,18 @@ async function loadUsers() {
 }
 
 function renderUsers(users, builtinAdmin) {
+  const pendingUsers = users.filter(u => (u.pending_count || 0) > 0);
+  const otherUsers = users.filter(u => !((u.pending_count || 0) > 0));
+  // 待审核用户组
+  const ptbody = $('users-pending-tbody');
+  ptbody.innerHTML = '';
+  $('users-pending-empty').classList.toggle('hidden', pendingUsers.length > 0);
+  $('users-pending-count').textContent = pendingUsers.length ? `（${pendingUsers.length} 人待审核）` : '';
+  pendingUsers.forEach(u => ptbody.appendChild(userRow(u)));
+  // 正式用户组（含内置管理员）
   const tbody = $('users-tbody');
   tbody.innerHTML = '';
-  $('users-empty').classList.toggle('hidden', users.length > 0);
+  $('users-empty').classList.toggle('hidden', otherUsers.length > 0);
   // 内置管理员行（不可操作）
   const builtin = document.createElement('tr');
   builtin.className = 'border-b border-zinc-50 dark:border-zinc-700/50 bg-zinc-50/50 dark:bg-zinc-700/30';
@@ -922,30 +959,33 @@ function renderUsers(users, builtinAdmin) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
     <td class="px-4 py-3 text-right text-xs text-zinc-400 dark:text-zinc-500">不可修改</td>`;
   tbody.appendChild(builtin);
-  // 注册用户行
-  users.forEach(u => {
-    const tr = document.createElement('tr');
-    tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors duration-150';
-    const isAdmin = u.role === 'admin';
-    const roleBadge = isAdmin
-      ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
-      : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';
-    tr.innerHTML = `
-      <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(u.email)}</td>
-      <td class="px-4 py-3">${roleBadge}</td>
-      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${esc(u.created_at || '—')}</td>
-      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${u.account_count}</td>
-      <td class="px-4 py-3">
-        <div class="flex items-center justify-end gap-1">
-          <button onclick="setUserRole('${esc(u.email)}', '${isAdmin ? 'user' : 'admin'}')"
-                  class="px-2 py-1 rounded-lg text-sm ${isAdmin ? 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700' : 'text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30'} transition-colors duration-150">${isAdmin ? '取消管理员' : '设为管理员'}</button>
-          <button onclick="resetUserPassword('${esc(u.email)}')" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">重置密码</button>
-          <button onclick="deleteUserAccounts('${esc(u.email)}')" class="px-2 py-1 rounded-lg text-sm text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors duration-150">清空账号</button>
-          <button onclick="deleteUserFull('${esc(u.email)}')" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">删除</button>
-        </div>
-      </td>`;
-    tbody.appendChild(tr);
-  });
+  // 注册用户行（正式组）
+  otherUsers.forEach(u => tbody.appendChild(userRow(u)));
+}
+
+// 用户行渲染（待审核组/正式组共用）
+function userRow(u) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors duration-150';
+  const isAdmin = u.role === 'admin';
+  const roleBadge = isAdmin
+    ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
+    : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';
+  tr.innerHTML = `
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(u.email)}</td>
+    <td class="px-4 py-3">${roleBadge}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${esc(u.created_at || '—')}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${u.account_count}</td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-end gap-1">
+        <button onclick="setUserRole('${esc(u.email)}', '${isAdmin ? 'user' : 'admin'}')"
+                class="px-2 py-1 rounded-lg text-sm ${isAdmin ? 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700' : 'text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30'} transition-colors duration-150">${isAdmin ? '取消管理员' : '设为管理员'}</button>
+        <button onclick="resetUserPassword('${esc(u.email)}')" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">重置密码</button>
+        <button onclick="deleteUserAccounts('${esc(u.email)}')" class="px-2 py-1 rounded-lg text-sm text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors duration-150">清空账号</button>
+        <button onclick="deleteUserFull('${esc(u.email)}')" class="px-2 py-1 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors duration-150">删除</button>
+      </div>
+    </td>`;
+  return tr;
 }
 
 async function setUserRole(email, role) {

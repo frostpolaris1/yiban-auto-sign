@@ -345,7 +345,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.0.3'
+APP_VERSION = '1.1.0'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -815,7 +815,7 @@ def create_app():
 
     @app.route('/api/users')
     def api_users():
-        """用户列表（完整邮箱/角色/注册时间/提交账号数）+ 内置管理员信息。"""
+        """用户列表（完整邮箱/角色/注册时间/账号数/待审核账号数）+ 内置管理员信息。"""
         users = load_users()
         accounts = load_accounts()
         result = [{
@@ -823,6 +823,9 @@ def create_app():
             'role': u.get('role', 'user'),
             'created_at': u.get('created_at', ''),
             'account_count': sum(1 for a in accounts if a.get('owner') == u.get('email')),
+            'pending_count': sum(1 for a in accounts
+                                 if a.get('owner') == u.get('email')
+                                 and a.get('status') == STATUS_PENDING),
         } for u in users]
         return jsonify({'ok': True, 'users': result,
                         'builtin_admin': _builtin_admin_email() or 'admin'})
