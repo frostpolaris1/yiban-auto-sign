@@ -157,7 +157,7 @@
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
-        <table class="w-full text-sm">
+    <table class="w-full text-sm ">
           <thead>
             <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
               <th class="px-4 py-3 font-medium">状态</th>
@@ -177,7 +177,7 @@
     <!-- 正常账号组 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm overflow-x-auto">
       <div class="px-4 py-3 border-b border-zinc-100 dark:border-zinc-700 text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
-      <table class="w-full text-sm">
+   <table class="w-full text-sm ">
         <thead>
           <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
             <th class="px-4 py-3 font-medium">状态</th>
@@ -334,14 +334,14 @@
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full text-sm table-fixed">
           <thead>
             <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
-              <th class="px-4 py-3 font-medium">邮箱</th>
-              <th class="px-4 py-3 font-medium">角色</th>
-              <th class="px-4 py-3 font-medium">注册时间</th>
-              <th class="px-4 py-3 font-medium">账号数</th>
-              <th class="px-4 py-3 font-medium text-right">操作</th>
+              <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium w-[12%]">角色</th>
+              <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
+              <th class="px-4 py-3 font-medium w-[8%]">账号数</th>
+              <th class="px-4 py-3 font-medium text-right w-[30%]">操作</th>
             </tr>
           </thead>
           <tbody id="users-pending-tbody"></tbody>
@@ -353,15 +353,15 @@
     <!-- 正式用户组 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">正式用户</div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+        <table class="w-full text-sm table-fixed">
           <thead>
             <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
-              <th class="px-4 py-3 font-medium">邮箱</th>
-              <th class="px-4 py-3 font-medium">角色</th>
-              <th class="px-4 py-3 font-medium">注册时间</th>
-              <th class="px-4 py-3 font-medium">账号数</th>
-              <th class="px-4 py-3 font-medium text-right">操作</th>
+              <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium w-[12%]">角色</th>
+              <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
+              <th class="px-4 py-3 font-medium w-[8%]">账号数</th>
+              <th class="px-4 py-3 font-medium text-right w-[30%]">操作</th>
             </tr>
           </thead>
           <tbody id="users-tbody"></tbody>
@@ -377,15 +377,15 @@
         <span id="users-vacant-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">已注册但未提交任何账号，可重置密码或删除</p>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+        <table class="w-full text-sm table-fixed">
           <thead>
             <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
-              <th class="px-4 py-3 font-medium">邮箱</th>
-              <th class="px-4 py-3 font-medium">角色</th>
-              <th class="px-4 py-3 font-medium">注册时间</th>
-              <th class="px-4 py-3 font-medium">账号数</th>
-              <th class="px-4 py-3 font-medium text-right">操作</th>
+              <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium w-[12%]">角色</th>
+              <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
+              <th class="px-4 py-3 font-medium w-[8%]">账号数</th>
+              <th class="px-4 py-3 font-medium text-right w-[30%]">操作</th>
             </tr>
           </thead>
           <tbody id="users-vacant-tbody"></tbody>
