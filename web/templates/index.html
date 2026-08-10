@@ -157,9 +157,9 @@
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
-    <table class="w-full text-sm ">
+    <table class="w-full text-sm min-w-[760px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
               <th class="px-4 py-3 font-medium">状态</th>
               <th class="px-4 py-3 font-medium">名称</th>
               <th class="px-4 py-3 font-medium">手机号</th>
@@ -175,11 +175,12 @@
     </div>
 
     <!-- 正常账号组 -->
-    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm overflow-x-auto">
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
       <div class="px-4 py-3 border-b border-zinc-100 dark:border-zinc-700 text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
-   <table class="w-full text-sm ">
+      <div class="overflow-x-auto">
+   <table class="w-full text-sm min-w-[1000px]">
         <thead>
-          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800">
+          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
             <th class="px-4 py-3 font-medium">状态</th>
             <th class="px-4 py-3 font-medium">#</th>
             <th class="px-4 py-3 font-medium">名称</th>
@@ -192,8 +193,9 @@
         </thead>
         <tbody id="accounts-tbody"></tbody>
       </table>
-      <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">
-        暂无账号，点击右上角「添加账号」开始配置
+        <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">
+          暂无账号，点击右上角「添加账号」开始配置
+        </div>
       </div>
     </div>
   </section>
@@ -240,20 +242,20 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-4">随机延迟（写入 .env，cron 下次触发自动生效）</div>
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
-          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-32">启动延迟</label>
+          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
           <button id="start-delay-btn" onclick="toggleDelay('start')"
                   class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
           <input id="start-delay-secs" type="number" min="1" placeholder="秒数"
                  class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-400 dark:text-zinc-500">启动后随机等待 0~N 秒再开始首个签到</span>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">启动后随机等待 0~N 秒再开始首个签到</span>
         </div>
         <div class="flex flex-wrap items-center gap-3">
-          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-32">账号间隔</label>
+          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">账号间隔</label>
           <button id="gap-delay-btn" onclick="toggleDelay('gap')"
                   class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
           <input id="gap-delay-secs" type="number" min="1" placeholder="秒数"
                  class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-400 dark:text-zinc-500">账号间随机停顿 0~N 秒（顺序模式）</span>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">账号间随机停顿 0~N 秒（顺序模式）</span>
         </div>
       </div>
       <div class="flex items-center gap-3 mt-5">
@@ -335,7 +337,7 @@
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
-        <table class="w-full text-sm table-fixed">
+        <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
             <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
@@ -355,7 +357,7 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">正式用户</div>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
-        <table class="w-full text-sm table-fixed">
+        <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
             <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
@@ -379,7 +381,7 @@
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">已注册但未提交任何账号，可重置密码或删除</p>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
-        <table class="w-full text-sm table-fixed">
+        <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
             <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
@@ -670,10 +672,10 @@ function renderAccounts() {
 
 function statusBadge(a) {
   if (a.status === 'pending')
-    return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5">待审核</span>';
+    return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5 whitespace-nowrap">待审核</span>';
   if (a.status === 'rejected')
-    return '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5">已拒绝</span>';
-  return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5">已生效</span>';
+    return '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5 whitespace-nowrap">已拒绝</span>';
+  return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 whitespace-nowrap">已生效</span>';
 }
 
 function pendingAccountRow(a) {
@@ -684,9 +686,9 @@ function pendingAccountRow(a) {
     : '';
   tr.innerHTML = `
     <td class="px-4 py-3 text-lg leading-none">➖</td>
-    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">${esc(a.display_name)}</td>
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(a.phone)}</td>
-    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}${reasonHtml}</td>
     <td class="px-4 py-3">
       <div class="flex items-center justify-end gap-1">
@@ -706,10 +708,10 @@ function accountRow(a) {
   tr.innerHTML = `
     <td class="px-4 py-3 text-lg leading-none">${s}</td>
     <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
-    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">${esc(a.display_name)}</td>
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(a.phone)}</td>
-    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${esc(a.phone_model || '—')}</td>
-    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(a.phone_model || '—')}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}</td>
     <td class="px-4 py-3">
       <div class="flex items-center justify-end gap-1">
@@ -1078,10 +1080,10 @@ function userRow(u) {
     ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
     : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';
   tr.innerHTML = `
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(u.email)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(u.email)}</td>
     <td class="px-4 py-3">${roleBadge}</td>
-    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${esc(u.created_at || '—')}</td>
-    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${u.account_count}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${u.account_count}</td>
     <td class="px-4 py-3">
       <div class="flex items-center justify-end gap-1">
         <button onclick="setUserRole('${esc(u.email)}', '${isAdmin ? 'user' : 'admin'}')"
@@ -1155,8 +1157,8 @@ async function loadMine() {
 }
 
 function mineStatusBadge(status) {
-  if (status === 'pending') return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5">待审核</span>';
-  if (status === 'active') return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5">已生效</span>';
+  if (status === 'pending') return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5 whitespace-nowrap">待审核</span>';
+  if (status === 'active') return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 whitespace-nowrap">已生效</span>';
   return esc(status);
 }
 
