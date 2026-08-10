@@ -409,6 +409,13 @@ def create_app():
             return redirect('/' if session.get('role') == 'admin' else '/user')
         return render_template('login.html')
 
+    # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
+    @app.after_request
+    def no_cache(resp):
+        if request.path in ('/', '/login', '/user'):
+            resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
     # ---- 认证 API ----
     @app.route('/api/login', methods=['POST'])
     def api_login():
