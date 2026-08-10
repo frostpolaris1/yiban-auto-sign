@@ -630,14 +630,28 @@ def create_app():
                 if a.get('owner') == email]
 
     def _my_account_view(accounts, indices):
-        """用户视图：账号脱敏 + 今日状态图标 + 审核状态 + 最近相关日志。"""
+        """用户视图：账号脱敏 + 今日状态图标 + 审核状态 + 最近相关日志 + 排队信息。
+
+        排队说明：签到按 accounts.json 顺序执行（队列重试模式）；
+        queue_ahead = 自己账号之前、今日尚未签到成功（非 ✅）的已生效账号数。
+        """
         states, _ = parse_sign_log(LOG_FILE)
         _, recent = parse_sign_log(LOG_FILE)
+        # 参与排队队列的账号：已生效（active，pending 不参与签到）
+        active = [a for a in accounts if a.get('status') == STATUS_ACTIVE]
         result = []
         for i, real_idx in enumerate(indices):
             acc = accounts[real_idx]
             phone = acc.get('phone', '')
             my_logs = [line for line in recent if f'[{phone}]' in line]
+            # 排队：自己账号在 active 队列中的位置之前、今日状态非 ✅ 的账号数
+            queue_ahead = 0
+            if acc.get('status') == STATUS_ACTIVE:
+                pos = next((j for j, a in enumerate(active) if a.get('phone') == phone), None)
+                if pos is not None:
+                    queue_ahead = sum(
+                        1 for a in active[:pos]
+                        if states.get(a.get('phone', ''), '⏳') not in ('✅',))
             result.append({
                 'index': i,
                 'name': acc.get('name', ''),
@@ -646,6 +660,7 @@ def create_app():
                 'phone_model': acc.get('phone_model', ''),
                 'status': acc.get('status', STATUS_ACTIVE),
                 'state_icon': states.get(phone, '⏳'),
+                'queue_ahead': queue_ahead,
                 'logs': my_logs[-5:],
             })
         return result
