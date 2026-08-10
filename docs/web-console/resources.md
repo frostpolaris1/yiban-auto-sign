@@ -62,11 +62,14 @@
 - [x] 修复：普通用户登出 403 导致无法退出（/api/logout 加入用户白名单）
 - [x] 归属列显示邮箱前缀（无昵称体系后）；密码明文仅存 accounts.json（signin.py 登录必需，已 gitignore，建议服务器 chmod 600）
 
-### 待办（生产部署）
+### 待办（生产部署——**待上服务器后处理**，当前阶段不做）
 - [ ] 服务器：`pip3 install flask`
 - [ ] 服务器 `.env` 配置管理员账号（`YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD`）与 SECRET_KEY（自动生成）
-- [ ] 阿里云安全组放行端口
+- [ ] 阿里云安全组放行端口（建议 IP 白名单）
+- [ ] 敏感文件权限：`chmod 600 accounts.json users.json .env`
+- [ ] fail2ban 防暴力破解
 - [ ] systemd 服务单元（开机自启、崩溃重启）
+- [ ] （可选，需确认）便宜域名 + Let's Encrypt HTTPS
 
 ### 待办（后续功能）
 - [ ] 用户账号管理系统（用户表单提交自己易班账号 + 查看自己签到情况）——后端 API 已预留扩展空间

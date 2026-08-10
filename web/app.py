@@ -53,6 +53,8 @@ DEFAULT_ACCOUNT_GAP_MAX = 10
 # 登录失败限速：同一 IP 连续失败超过阈值后锁定
 LOGIN_MAX_FAILS = 5
 LOGIN_LOCK_SECONDS = 300
+# 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
+LOGIN_FAIL_NOTIFY = 3
 
 # 普通用户邮箱格式校验
 EMAIL_RE = re.compile(r'^[\w.+-]+@[\w-]+(\.[\w-]+)+$')
@@ -315,6 +317,23 @@ def check_connectivity():
     return ok, detail
 
 
+def send_notification(title, content):
+    """通过 YIBAN_NOTIFY_URL webhook 发送告警通知（.env 优先，静默失败）。
+
+    与 scripts/signin.py 的 send_notification 同款渠道：Server 酱 / Bark / 企业微信。
+    """
+    env = read_env(ENV_FILE)
+    url = env.get('YIBAN_NOTIFY_URL', '').strip() or os.environ.get('YIBAN_NOTIFY_URL', '').strip()
+    if not url:
+        return
+    try:
+        import requests
+        requests.post(url, json={'title': title, 'content': content}, timeout=10)
+        logger.info('告警通知已发送: %s', title)
+    except Exception as e:
+        logger.warning('告警通知发送失败: %s', e)
+
+
 # ---------------------------------------------------------------------------
 # Flask 应用
 # ---------------------------------------------------------------------------
@@ -430,6 +449,12 @@ def create_app():
             _login_fails[ip] = (0, now + LOGIN_LOCK_SECONDS)
             logger.warning('登录失败次数过多，IP %s 锁定 %s 秒', ip, LOGIN_LOCK_SECONDS)
             return jsonify({'error': f'密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟'}), 429
+        # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解
+        if fails == LOGIN_FAIL_NOTIFY:
+            send_notification('登录失败告警',
+                              f'IP {ip} 连续 {fails} 次登录失败（尝试用户名: {username}）\n'
+                              f'时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n'
+                              f'如非本人操作，请检查是否有人尝试暴力破解')
         _login_fails[ip] = (fails, 0)
         return jsonify({'error': '用户名或密码错误'}), 401
 
