@@ -373,9 +373,7 @@ function updateThemeBtn() {
 }
 document.addEventListener('DOMContentLoaded', updateThemeBtn);
 </script>
-</body>
-</html>
-
+<script>
 // 全局公告：访问时加载一次（登录页也显示，无需登录）
 async function loadAnnouncement() {
   try {
@@ -391,3 +389,6 @@ async function loadAnnouncement() {
   } catch (e) { /* 静默 */ }
 }
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
+</script>
+</body>
+</html>
