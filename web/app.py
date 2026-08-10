@@ -344,7 +344,9 @@ def send_notification(title, content):
 # ---------------------------------------------------------------------------
 # Flask 应用
 # ---------------------------------------------------------------------------
-# 页面版本号：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
+# 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
+APP_VERSION = '1.0.0'
+# 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
 
@@ -424,7 +426,7 @@ def create_app():
             return redirect('/login')
         if session.get('role') != 'admin':
             return redirect('/user')
-        return render_template('index.html', web_version=WEB_VERSION)
+        return render_template('index.html', web_version=WEB_VERSION, app_version=APP_VERSION)
 
     @app.route('/user')
     def user_page():
@@ -432,7 +434,7 @@ def create_app():
             return redirect('/login')
         if session.get('role') != 'user':
             return redirect('/')
-        return render_template('user.html', web_version=WEB_VERSION)
+        return render_template('user.html', web_version=WEB_VERSION, app_version=APP_VERSION)
 
     # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
     # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
@@ -451,7 +453,7 @@ def create_app():
             if cnt < 4:
                 return redirect('/' if session.get('role') == 'admin' else '/user')
             logger.warning('检测到登录页访问循环（IP %s），已打断并渲染登录页', ip)
-        return render_template('login.html', web_version=WEB_VERSION)
+        return render_template('login.html', web_version=WEB_VERSION, app_version=APP_VERSION)
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
