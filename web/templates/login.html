@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 易班自动签到管理</title>
+<script src="/static/vendor/tailwind.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+</style>
+</head>
+<body class="bg-zinc-50 min-h-screen flex items-center justify-center px-4">
+  <div class="w-full max-w-md">
+
+    <!-- 登录/注册卡片 -->
+    <div class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6">
+      <!-- Tab 切换 -->
+      <div class="flex bg-zinc-100 rounded-lg p-1 mb-5 text-sm font-medium">
+        <button id="tab-login" onclick="switchMode('login')"
+                class="flex-1 py-1.5 rounded-lg bg-white text-zinc-900 shadow-sm transition-colors duration-150">登录</button>
+        <button id="tab-register" onclick="switchMode('register')"
+                class="flex-1 py-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 transition-colors duration-150">注册</button>
+      </div>
+
+      <!-- 登录表单 -->
+      <form id="login-form" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1" for="username">邮箱</label>
+          <input id="username" name="username" type="text" required autocomplete="username"
+                 placeholder="输入邮箱"
+                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1" for="password">密码</label>
+          <input id="password" name="password" type="password" required autocomplete="current-password"
+                 placeholder="输入密码"
+                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+        </div>
+        <div id="error-box" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <button type="submit" id="login-btn"
+                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
+          <span id="login-btn-text">登录</span>
+        </button>
+      </form>
+
+      <!-- 注册表单 -->
+      <form id="register-form" class="space-y-4 hidden">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1" for="reg-email">邮箱 <span class="text-red-500">*</span></label>
+          <input id="reg-email" type="email" required autocomplete="email" maxlength="64"
+                 placeholder="输入邮箱地址"
+                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+          <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500">邮箱格式不正确（示例：name@example.com）</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 mb-1" for="reg-password">密码 <span class="text-red-500">*</span></label>
+          <input id="reg-password" type="password" required autocomplete="new-password"
+                 placeholder="至少 6 位"
+                 class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500">密码至少 6 位（当前 0 位）</p>
+        </div>
+        <div id="reg-error-box" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <button type="submit" id="register-btn"
+                class="w-full bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
+          <span id="register-btn-text">注册并登录</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+<script>
+let mode = 'login';
+
+function switchMode(m) {
+  mode = m;
+  document.getElementById('login-form').classList.toggle('hidden', m !== 'login');
+  document.getElementById('register-form').classList.toggle('hidden', m !== 'register');
+  const lt = document.getElementById('tab-login');
+  const rt = document.getElementById('tab-register');
+  lt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
+    (m === 'login' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900');
+  rt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
+    (m === 'register' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900');
+}
+
+function showError(el, msg) {
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+// ---- 注册表单即时校验（输入时实时反馈，字段下方提示）----
+const EMAIL_RE = /^[\w.+-]+@[\w-]+(\.[\w-]+)+$/;
+const regEmail = document.getElementById('reg-email');
+const regEmailErr = document.getElementById('reg-email-error');
+const regPw = document.getElementById('reg-password');
+const regPwErr = document.getElementById('reg-password-error');
+
+function markField(input, errEl, invalid) {
+  input.classList.toggle('border-red-400', invalid);
+  input.classList.toggle('focus:border-red-400', invalid);
+  errEl.classList.toggle('hidden', !invalid);
+}
+
+regEmail.addEventListener('input', () => {
+  const v = regEmail.value.trim();
+  const invalid = v !== '' && !(EMAIL_RE.test(v) && v.length <= 64);
+  markField(regEmail, regEmailErr, invalid);
+});
+
+regPw.addEventListener('input', () => {
+  const n = regPw.value.length;
+  regPwErr.textContent = `密码至少 6 位（当前 ${n} 位）`;
+  markField(regPw, regPwErr, n < 6);
+});
+
+async function post(path, body) {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  return [resp.status, await resp.json().catch(() => ({}))];
+}
+
+// 登录
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorBox = document.getElementById('error-box');
+  errorBox.classList.add('hidden');
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true;
+  try {
+    const [st, data] = await post('/api/login', {
+      username: document.getElementById('username').value,
+      password: document.getElementById('password').value,
+    });
+    if (st === 200 && data.ok) {
+      location.href = data.role === 'admin' ? '/' : '/user';
+      return;
+    }
+    showError(errorBox, data.error || '登录失败，请重试');
+  } catch (err) {
+    showError(errorBox, '网络错误：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// 注册（注册成功后自动登录）
+document.getElementById('register-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorBox = document.getElementById('reg-error-box');
+  errorBox.classList.add('hidden');
+  const btn = document.getElementById('register-btn');
+  btn.disabled = true;
+  try {
+    const email = regEmail.value.trim();
+    const password = regPw.value;
+    // 提交前兜底：字段级即时校验优先（错误显示在字段下方，不弹顶部错误框）
+    const emailInvalid = !(EMAIL_RE.test(email) && email.length <= 64);
+    markField(regEmail, regEmailErr, emailInvalid);
+    const pwInvalid = password.length < 6;
+    markField(regPw, regPwErr, pwInvalid);
+    if (emailInvalid || pwInvalid) {
+      btn.disabled = false;
+      return;
+    }
+    const [st, data] = await post('/api/register', {email, password});
+    if (st !== 200) {
+      showError(errorBox, data.error || '注册失败');
+      return;
+    }
+    const [st2, data2] = await post('/api/login', {username: email, password});
+    if (st2 === 200 && data2.ok) {
+      location.href = '/user';
+      return;
+    }
+    showError(errorBox, '注册成功，但自动登录失败，请手动登录');
+  } catch (err) {
+    showError(errorBox, '网络错误：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

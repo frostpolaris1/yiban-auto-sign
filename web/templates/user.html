@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>我的账号 · 易班自动签到</title>
+<script src="/static/vendor/tailwind.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+</style>
+</head>
+<body class="bg-zinc-50 min-h-screen">
+
+<!-- 顶栏 -->
+<header class="bg-white border-b border-zinc-200 sticky top-0 z-20">
+  <div class="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <div class="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+        </svg>
+      </div>
+      <span class="font-semibold tracking-tight text-zinc-900 text-sm">易班自动签到</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span id="user-clock" class="text-xs text-zinc-400 hidden sm:inline">服务器时间：--:--:--</span>
+      <span id="user-email" class="text-sm text-zinc-600"></span>
+      <button onclick="doLogout()" class="text-sm text-zinc-500 hover:text-zinc-900 transition-colors duration-150">退出</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-4xl mx-auto px-4 py-6">
+
+  <!-- 提交账号 -->
+  <section class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6 mb-6">
+    <h2 class="text-base font-semibold tracking-tight text-zinc-900 mb-1">提交我的易班账号</h2>
+    <p class="text-sm text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号，可编辑或删除后重新提交。</p>
+    <div id="submit-done" class="hidden mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700">
+      已提交账号，可编辑或删除后重新提交。
+    </div>
+    <form id="account-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">名称 / 备注（可选）</label>
+        <input id="f-name" type="text" maxlength="20" placeholder="如：我的手机"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">易班手机号 <span class="text-red-500">*</span></label>
+        <input id="f-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+      </div>
+      <div class="md:col-span-2">
+        <label class="block text-sm font-medium text-zinc-700 mb-1">易班密码 <span class="text-red-500">*</span></label>
+        <input id="f-password" type="password" required placeholder="用于自动登录签到"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">设备型号（学校开启设备绑定时必填）</label>
+        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">设备识别码（学校开启设备绑定时必填）</label>
+        <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-2">
+      </div>
+      <div class="md:col-span-2 flex items-center gap-3 pt-1">
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+        <span id="form-tip" class="text-xs text-zinc-400"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- 我的账号与运行情况 -->
+  <section class="bg-white rounded-xl border border-zinc-200 shadow-sm p-4 md:p-6">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+      <h2 class="text-base font-semibold tracking-tight text-zinc-900">我的账号与签到情况</h2>
+      <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
+        <span>⏳ 待签到</span><span>✅ 今日成功</span><span>❌ 今日失败</span>
+        <span>🔄 重试中</span><span>➖ 跳过</span>
+      </div>
+    </div>
+
+    <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 py-8">
+      还没有提交账号
+    </div>
+
+    <div id="account-list" class="space-y-3"></div>
+  </section>
+
+</main>
+
+<!-- 编辑模态 -->
+<div id="modal-edit" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeEdit()"></div>
+  <div class="relative bg-white rounded-xl border border-zinc-200 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 mb-4">编辑账号</div>
+    <form id="edit-form" class="space-y-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">名称</label>
+        <input id="e-name" type="text" maxlength="20"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">手机号</label>
+        <input id="e-phone" type="text" maxlength="20" required
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">密码（留空表示不修改）</label>
+        <input id="e-password" type="password" placeholder="留空表示不修改"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">设备型号</label>
+        <input id="e-model" type="text" maxlength="50"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 mb-1">设备识别码（留空表示不修改）</label>
+        <input id="e-code" type="text" maxlength="100" placeholder="留空表示不修改"
+               class="w-full bg-white border border-zinc-200 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500">
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
+        <button type="button" onclick="closeEdit()" class="bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let accounts = [];
+let editingIdx = null;
+
+async function api(path, opts = {}) {
+  const resp = await fetch(path, {
+    headers: {'Content-Type': 'application/json'},
+    ...opts,
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    location.href = '/login';
+    throw new Error('未登录');
+  }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || data.ok === false) {
+    throw new Error(data.error || `请求失败 (${resp.status})`);
+  }
+  return data;
+}
+
+function toast(msg, isError = false) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900'}`;
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.add('hidden'), 3000);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 审核状态徽章
+function statusBadge(status) {
+  if (status === 'pending') return '<span class="inline-flex items-center rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs px-2 py-0.5">待审核</span>';
+  if (status === 'active') return '<span class="inline-flex items-center rounded-lg bg-green-50 border border-green-200 text-green-700 text-xs px-2 py-0.5">已生效</span>';
+  return esc(status);
+}
+
+// 加载我的账号
+async function loadAccounts() {
+  try {
+    const data = await api('/api/my-accounts');
+    accounts = data.accounts;
+    renderList();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderList() {
+  const list = $('account-list');
+  $('accounts-empty').classList.toggle('hidden', accounts.length > 0);
+  // 已提交账号时隐藏提交表单，显示提示（每个用户限 1 个）
+  $('account-form').classList.toggle('hidden', accounts.length > 0);
+  $('submit-done').classList.toggle('hidden', accounts.length === 0);
+  list.innerHTML = '';
+  accounts.forEach((a, i) => {
+    const card = document.createElement('div');
+    card.className = 'border border-zinc-200 rounded-xl p-4';
+    card.innerHTML = `
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <span class="text-lg leading-none">${a.state_icon}</span>
+          <div>
+            <div class="font-medium text-zinc-900 text-sm">${esc(a.display_name)}</div>
+            <div class="font-mono text-xs text-zinc-500">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          ${statusBadge(a.status)}
+          <button onclick="openEdit(${i})" class="text-sm text-zinc-500 hover:text-zinc-900 transition-colors duration-150">编辑</button>
+          <button onclick="deleteAccount(${i})" class="text-sm text-red-600 hover:text-red-700 transition-colors duration-150">删除</button>
+        </div>
+      </div>
+      ${a.logs && a.logs.length ? `
+        <details class="mt-3">
+          <summary class="text-xs text-zinc-400 cursor-pointer hover:text-zinc-600 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
+          <pre class="log-text text-zinc-600 mt-2 p-3 bg-zinc-50 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
+        </details>` : ''}
+    `;
+    list.appendChild(card);
+  });
+}
+
+// 提交账号
+$('account-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tip = $('form-tip');
+  tip.textContent = '提交中…';
+  try {
+    const data = await api('/api/my-accounts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: $('f-name').value,
+        phone: $('f-phone').value.trim(),
+        password: $('f-password').value,
+        phone_model: $('f-model').value.trim(),
+        phone_code: $('f-code').value.trim(),
+      }),
+    });
+    tip.textContent = '';
+    e.target.reset();
+    toast(data.msg || '已提交');
+    loadAccounts();
+  } catch (err) {
+    tip.textContent = '';
+    toast(err.message, true);
+  }
+});
+
+// 编辑
+function openEdit(i) {
+  editingIdx = i;
+  const a = accounts[i];
+  $('e-name').value = a.name;
+  $('e-phone').value = a.phone;
+  $('e-password').value = '';
+  $('e-model').value = a.phone_model;
+  $('e-code').value = '';
+  $('modal-edit').classList.remove('hidden');
+}
+function closeEdit() { $('modal-edit').classList.add('hidden'); }
+
+$('edit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api(`/api/my-accounts/${editingIdx}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: $('e-name').value,
+        phone: $('e-phone').value.trim(),
+        password: $('e-password').value,
+        phone_model: $('e-model').value.trim(),
+        phone_code: $('e-code').value.trim(),
+      }),
+    });
+    closeEdit();
+    toast('已保存');
+    loadAccounts();
+  } catch (err) { toast(err.message, true); }
+});
+
+// 删除
+async function deleteAccount(i) {
+  const a = accounts[i];
+  if (!confirm(`确定删除「${a.display_name}」(${a.phone}) 吗？`)) return;
+  try {
+    await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
+    toast('已删除');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+// 服务器时间：本地平滑走秒，60 秒校准一次
+let clockOffset = 0;
+async function calibrateClock() {
+  try {
+    const data = await api('/api/clock');
+    clockOffset = data.server_ts - Math.floor(Date.now() / 1000);
+  } catch (e) { /* 静默 */ }
+}
+function tickClock() {
+  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset) * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  $('user-clock').textContent =
+    `服务器时间：${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+}
+setInterval(tickClock, 1000);
+setInterval(calibrateClock, 60000);
+
+// 退出
+async function doLogout() {
+  try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
+  location.href = '/login';
+}
+
+// 初始化
+(async function init() {
+  try {
+    const me = await api('/api/me');
+    if (me.role !== 'user') { location.href = '/'; return; }  // 管理员访问用户页 → 后台
+    // 顶部显示邮箱前缀（悬停显示完整邮箱）
+    const email = me.email || '';
+    $('user-email').textContent = email.split('@')[0];
+    $('user-email').title = email;
+    loadAccounts();
+    calibrateClock();
+    tickClock();
+    setInterval(loadAccounts, 15000);  // 状态/日志 15s 刷新
+  } catch (e) {
+    location.href = '/login';
+  }
+})();
+</script>
+</body>
+</html>
