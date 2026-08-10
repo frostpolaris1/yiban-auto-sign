@@ -804,7 +804,8 @@ def create_app():
             return jsonify({'error': '用户不存在'}), 404
         if new_role == 'user' and target.get('role') == 'admin':
             admins = [u for u in users if u.get('role') == 'admin']
-            if len(admins) <= 1:
+            # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users.json 中的最后一个管理员
+            if len(admins) <= 1 and not _builtin_admin_email():
                 return jsonify({'error': '至少保留 1 个管理员'}), 400
         target['role'] = new_role
         save_users(users)
@@ -844,7 +845,8 @@ def create_app():
             return jsonify({'error': '用户不存在'}), 404
         if mode == 'full' and target.get('role') == 'admin':
             admins = [u for u in users if u.get('role') == 'admin']
-            if len(admins) <= 1:
+            # 内置管理员（.env）兜底存在时可删除 users.json 中的最后一个管理员
+            if len(admins) <= 1 and not _builtin_admin_email():
                 return jsonify({'error': '至少保留 1 个管理员'}), 400
         # 删除其提交的易班账号
         accounts = [a for a in load_accounts() if a.get('owner') != email]
