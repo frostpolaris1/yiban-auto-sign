@@ -404,7 +404,7 @@
       <div id="mine-list" class="space-y-3"></div>
     </div>
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
+      <div id="mine-form-title" class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
       <div id="mine-done" class="hidden mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
         已提交账号，可编辑或删除后重新提交。
       </div>
@@ -426,114 +426,21 @@
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时必填）</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
           <input id="m-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时必填）</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
           <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div class="md:col-span-2 flex items-center gap-3 pt-1">
-          <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+          <button id="mine-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
           <span id="mine-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
       </form>
     </div>    </section>
-
-    <!-- 我的账号编辑弹窗（与普通用户一致：名称/手机号/密码/设备型号/识别码） -->
-    <div id="modal-mine-edit" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
-      <div class="absolute inset-0 bg-black/30" onclick="closeMineEdit()"></div>
-      <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
-        <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4">编辑我的账号</div>
-        <form id="mine-edit-form" class="space-y-3">
-          <div>
-            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称</label>
-            <input id="me-name" type="text" maxlength="20"
-                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号</label>
-            <input id="me-phone" type="text" maxlength="20" required
-                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码（留空表示不修改）</label>
-            <input id="me-password" type="password" placeholder="留空表示不修改"
-                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号</label>
-            <input id="me-model" type="text" maxlength="50"
-                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（留空表示不修改）</label>
-            <input id="me-code" type="text" maxlength="100" placeholder="留空表示不修改"
-                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-          </div>
-          <div class="flex items-center gap-2 pt-2">
-            <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
-            <button type="button" onclick="closeMineEdit()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
-          </div>
-        </form>
-      </div>
-    </div>
-    </div>
-  </section>
-
-</main>
-
-<!-- 账号编辑模态 -->
-<div id="modal-account" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeForm()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
-    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
-    <form id="account-form" class="space-y-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
-        <input id="f-name" type="text" maxlength="20" placeholder="如：小明"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div id="f-email-wrap">
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
-          <select id="f-email"
-                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
-            <option value="">不绑定（管理员自有账号，直接生效）</option>
-            <option value="__manual__">手填邮箱（未注册用户自动注册）</option>
-            <optgroup label="已注册用户（无账号）" id="f-email-users"></optgroup>
-          </select>
-          <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
-                 class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
-        </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-phone" type="text" maxlength="20" required placeholder="易班登录手机号"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-password" type="password" placeholder="编辑时留空表示不修改"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时必填）</label>
-        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时必填）</label>
-        <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div class="flex items-center gap-2 pt-2">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
-        <button type="button" onclick="closeForm()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
-      </div>
-    </form>
-  </div>
-</div>
 
 <!-- Toast -->
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
@@ -566,12 +473,14 @@ async function api(path, opts = {}, _retried = false) {
     throw new Error('未登录');
   }
   const data = await resp.json().catch(() => ({}));
-  // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
-  if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
+  // CSRF token 不同步（如服务重启/会话更新/多标签页）：自动重新获取 token 并重试（最多 2 次）
+  if (resp.status === 403 && _retried < 2 && data.error && data.error.includes('校验失败')) {
     try {
       const me = await fetch('/api/me').then(r => r.json());
-      csrfToken = me.csrf_token || '';
-      return api(path, opts, true);
+      if (me.csrf_token) {
+        csrfToken = me.csrf_token;
+        return api(path, opts, _retried + 1);
+      }
     } catch (e) { /* 重试失败则走下方错误提示 */ }
   }
   if (!resp.ok || data.ok === false) {
@@ -767,6 +676,11 @@ function accountRow(a) {
 
 async function reviewAccount(idx, action) {
   const a = state.accounts[idx];
+  // 主动同步 CSRF token（防旧标签页/会话更新导致的首次 403）
+  try {
+    const me = await fetch('/api/me').then(r => r.json());
+    if (me.csrf_token) csrfToken = me.csrf_token;
+  } catch (e) { /* 忽略：api() 内仍有重试兜底 */ }
   let body = { action };
   if (action === 'reject') {
     const reason = prompt(`拒绝「${a.display_name}」(${a.phone})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
@@ -1270,7 +1184,7 @@ function renderMine() {
         </div>
         <div class="flex items-center gap-2">
           ${mineStatusBadge(a.status)}
-          <button onclick="openMineEdit(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
+          <button onclick="openMineEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
           <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>
         </div>
       </div>
@@ -1282,7 +1196,7 @@ function renderMine() {
       <div class="mt-4 max-w-sm" id="cal-wrap-${a.phone}"></div>
     `;
     list.appendChild(card);
-    renderCalendar(a.phone);
+    if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
   });
 }
 
@@ -1361,57 +1275,52 @@ function calLoadLog(phone, date) {
   }).catch(e => { box.innerHTML = ''; toast(e.message, true); });
 }
 
-// 我的账号编辑（与普通用户一致）
+// 我的账号内联编辑（与普通用户一致：复用提交表单，编辑时预填）
 let mineEditingIdx = null;
-function openMineEdit(i) {
+function openMineEditInline(i) {
   mineEditingIdx = i;
   const a = mineAccounts[i];
-  $('me-name').value = a.name;
-  $('me-phone').value = a.phone;
-  $('me-password').value = '';
-  $('me-model').value = a.phone_model;
-  $('me-code').value = '';
-  $('modal-mine-edit').classList.remove('hidden');
+  $('m-name').value = a.name;
+  $('m-phone').value = a.phone;
+  $('m-password').value = '';
+  $('m-password').placeholder = '留空表示不修改密码';
+  $('m-model').value = a.phone_model;
+  $('m-code').value = '';
+  $('m-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  $('mine-form-title').textContent = '编辑我的易班账号';
+  $('mine-submit-btn').textContent = '保存修改';
+  $('mine-done').classList.add('hidden');
+  $('mine-form').classList.remove('hidden');
+  $('mine-form').scrollIntoView({ behavior: 'smooth' });
 }
-function closeMineEdit() { $('modal-mine-edit').classList.add('hidden'); }
 
-$('mine-edit-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    const data = await api(`/api/my-accounts/${mineEditingIdx}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        name: $('me-name').value,
-        phone: $('me-phone').value.trim(),
-        password: $('me-password').value,
-        phone_model: $('me-model').value.trim(),
-        phone_code: $('me-code').value.trim(),
-      }),
-    });
-    closeMineEdit();
-    toast(data.msg || '已保存');
-    loadMine();
-  } catch (err) { toast(err.message, true); }
-});
+function resetMineForm() {
+  mineEditingIdx = null;
+  $('mine-form-title').textContent = '提交我的易班账号';
+  $('mine-submit-btn').textContent = '提交账号';
+  $('m-password').placeholder = '用于自动登录签到';
+  $('m-code').placeholder = '64 位十六进制识别码';
+}
 
 $('mine-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const tip = $('mine-tip');
   tip.textContent = '提交中…';
   try {
-    const data = await api('/api/my-accounts', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: $('m-name').value,
-        phone: $('m-phone').value.trim(),
-        password: $('m-password').value,
-        phone_model: $('m-model').value.trim(),
-        phone_code: $('m-code').value.trim(),
-      }),
-    });
+    const body = {
+      name: $('m-name').value,
+      phone: $('m-phone').value.trim(),
+      password: $('m-password').value,
+      phone_model: $('m-model').value.trim(),
+      phone_code: $('m-code').value.trim(),
+    };
+    const data = mineEditingIdx !== null
+      ? await api(`/api/my-accounts/${mineEditingIdx}`, { method: 'PUT', body: JSON.stringify(body) })
+      : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
     tip.textContent = '';
+    resetMineForm();
     e.target.reset();
-    toast(data.msg || '已提交');
+    toast(data.msg || '已保存');
     loadMine();
   } catch (err) {
     tip.textContent = '';

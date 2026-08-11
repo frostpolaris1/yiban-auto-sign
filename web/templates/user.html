@@ -74,55 +74,15 @@
 
     <div id="account-list" class="space-y-3"></div>
   </section>
-
-</main>
 <footer onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</footer>
 
 <!-- 编辑模态 -->
-<div id="modal-edit" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeEdit()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
-    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4">编辑账号</div>
-    <form id="edit-form" class="space-y-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称</label>
-        <input id="e-name" type="text" maxlength="20"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号</label>
-        <input id="e-phone" type="text" maxlength="20" required
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码（留空表示不修改）</label>
-        <input id="e-password" type="password" placeholder="留空表示不修改"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号</label>
-        <input id="e-model" type="text" maxlength="50"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（留空表示不修改）</label>
-        <input id="e-code" type="text" maxlength="100" placeholder="留空表示不修改"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
-      </div>
-      <div class="flex items-center gap-2 pt-2">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
-        <button type="button" onclick="closeEdit()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
-      </div>
-    </form>
-  </div>
-</div>
-
 <!-- Toast -->
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700"></div>
 
   <!-- 提交账号 -->
   <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
-    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">提交我的易班账号</h2>
+    <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">提交我的易班账号</h2>
     <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号，可编辑或删除后重新提交。</p>
     <div id="submit-done" class="hidden mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
       已提交账号，可编辑或删除后重新提交。
@@ -144,17 +104,17 @@
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时必填）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时必填）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div class="md:col-span-2 flex items-center gap-3 pt-1">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+        <button id="account-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
         <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
       </div>
     </form>
@@ -181,6 +141,7 @@
       </div>
     </form>
   </section>
+</main>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -270,7 +231,7 @@ function renderList() {
         </div>
         <div class="flex items-center gap-2">
           ${statusBadge(a.status)}
-          <button onclick="openEdit(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
+          <button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
           <button onclick="deleteAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">删除</button>
         </div>
       </div>
@@ -284,7 +245,7 @@ function renderList() {
       <div class="mt-4 max-w-sm" id="cal-wrap-${a.phone}"></div>
     `;
     list.appendChild(card);
-    renderCalendar(a.phone);
+    if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
   });
 }
 
@@ -363,25 +324,52 @@ function calLoadLog(phone, date) {
   }).catch(e => { box.innerHTML = ''; toast(e.message, true); });
 }
 
-// 提交账号
+// 内联编辑：复用提交表单（编辑时预填，保存走 PUT）
+function openEditInline(i) {
+  editingIdx = i;
+  const a = accounts[i];
+  $('f-name').value = a.name;
+  $('f-phone').value = a.phone;
+  $('f-password').value = '';
+  $('f-password').placeholder = '留空表示不修改密码';
+  $('f-model').value = a.phone_model;
+  $('f-code').value = '';
+  $('f-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  $('account-form-title').textContent = '编辑我的易班账号';
+  $('account-submit-btn').textContent = '保存修改';
+  $('submit-done').classList.add('hidden');
+  $('account-form').classList.remove('hidden');
+  $('account-form').scrollIntoView({ behavior: 'smooth' });
+}
+
+function resetAccountForm() {
+  editingIdx = null;
+  $('account-form-title').textContent = '提交我的易班账号';
+  $('account-submit-btn').textContent = '提交账号';
+  $('f-password').placeholder = '用于自动登录签到';
+  $('f-code').placeholder = '64 位十六进制识别码';
+}
+
+// 提交账号（无账号=新建；编辑模式=更新）
 $('account-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const tip = $('form-tip');
   tip.textContent = '提交中…';
   try {
-    const data = await api('/api/my-accounts', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: $('f-name').value,
-        phone: $('f-phone').value.trim(),
-        password: $('f-password').value,
-        phone_model: $('f-model').value.trim(),
-        phone_code: $('f-code').value.trim(),
-      }),
-    });
+    const body = {
+      name: $('f-name').value,
+      phone: $('f-phone').value.trim(),
+      password: $('f-password').value,
+      phone_model: $('f-model').value.trim(),
+      phone_code: $('f-code').value.trim(),
+    };
+    const data = editingIdx !== null
+      ? await api(`/api/my-accounts/${editingIdx}`, { method: 'PUT', body: JSON.stringify(body) })
+      : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
     tip.textContent = '';
+    resetAccountForm();
     e.target.reset();
-    toast(data.msg || '已提交');
+    toast(data.msg || '已保存');
     loadAccounts();
   } catch (err) {
     tip.textContent = '';
@@ -390,37 +378,6 @@ $('account-form').addEventListener('submit', async (e) => {
 });
 
 // 编辑
-function openEdit(i) {
-  editingIdx = i;
-  const a = accounts[i];
-  $('e-name').value = a.name;
-  $('e-phone').value = a.phone;
-  $('e-password').value = '';
-  $('e-model').value = a.phone_model;
-  $('e-code').value = '';
-  $('modal-edit').classList.remove('hidden');
-}
-function closeEdit() { $('modal-edit').classList.add('hidden'); }
-
-$('edit-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    await api(`/api/my-accounts/${editingIdx}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        name: $('e-name').value,
-        phone: $('e-phone').value.trim(),
-        password: $('e-password').value,
-        phone_model: $('e-model').value.trim(),
-        phone_code: $('e-code').value.trim(),
-      }),
-    });
-    closeEdit();
-    toast('已保存');
-    loadAccounts();
-  } catch (err) { toast(err.message, true); }
-});
-
 // 删除
 async function deleteAccount(i) {
   const a = accounts[i];
