@@ -349,7 +349,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.7.7'
+APP_VERSION = '1.7.8'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -869,10 +869,15 @@ def create_app():
         prefix = f'[{date} '
         out = []
         try:
+            # 倒序扫描：日志按时间追加，从尾部向前；遇到更早日期的行即停止（避免全文件扫描）
             with open(LOG_FILE, encoding='utf-8', errors='replace') as f:
-                for line in f:
-                    if line.startswith(prefix) and any(f'[{p}]' in line for p in phones):
-                        out.append(line.strip())
+                for line in reversed(f.readlines()):
+                    if line.startswith(prefix):
+                        if any(f'[{p}]' in line for p in phones):
+                            out.append(line.strip())
+                    elif line.startswith('[') and line < prefix:
+                        break
+            out.reverse()
         except OSError as e:
             logger.debug('按日期读取日志失败: %s', e)
         return jsonify({'ok': True, 'date': date, 'logs': out[-50:]})

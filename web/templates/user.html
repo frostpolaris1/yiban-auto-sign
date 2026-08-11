@@ -296,15 +296,16 @@ function renderCalendar(phone) {
       const date = `${monthStr}-${calPad(d)}`;
       const stt = data.days && data.days[date] ? data.days[date][phone] || '' : '';
       const wd = new Date(year, month - 1, d).getDay();
-      let dot = '';
-      if (wd === 0) dot = '<span class="absolute bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-zinc-300 dark:bg-zinc-600"></span>';
-      else if (stt === '✅') dot = '<span class="absolute bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-green-500"></span>';
-      else if (stt === '❌') dot = '<span class="absolute bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-red-500"></span>';
+      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周日灰 / 无记录默认
+      let numCls = 'text-zinc-600 dark:text-zinc-300';
+      if (wd === 0) numCls = 'text-zinc-300 dark:text-zinc-600';
+      else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
+      else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
       grid.insertAdjacentHTML('beforeend', `
         <div onclick="calLoadLog('${phone}', '${date}')" title="${date}"
-             class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs text-zinc-600 dark:text-zinc-300 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
-          <span>${d}</span>${dot}
+             class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
+          <span>${d}</span>
         </div>`);
     }
   }).catch(() => {});
@@ -312,6 +313,11 @@ function renderCalendar(phone) {
 
 function calLoadLog(phone, date) {
   const box = $('cal-log-' + phone);
+  // 周日无需签到，直接提示（不查询日志）
+  if (new Date(date + 'T00:00:00').getDay() === 0) {
+    box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">周日无需签到</div>';
+    return;
+  }
   box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">加载中…</div>';
   api(`/api/my-logs?date=${date}`).then(data => {
     if (!data.logs || !data.logs.length) {
