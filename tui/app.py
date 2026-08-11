@@ -19,11 +19,11 @@ import argparse
 import json
 import os
 import re
-import requests
 import subprocess
 import sys
 from datetime import datetime
 
+import requests
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -107,7 +107,6 @@ def write_env_int(env_path, key, value):
         out.append(f'{key}={value}')
     with open(env_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(out) + '\n')
-        os.replace(tmp, self.config_path)
 
 
 class AccountForm(ModalScreen):
@@ -489,7 +488,7 @@ class YibanTuiApp(App):
         except Exception as e:
             ok = False
             detail = str(e)[:60]
-        result.update(f'{"✅ 易班 API 可达" if ok else f"❌ 不可达"}（{detail}）')
+        result.update(f'{"✅ 易班 API 可达" if ok else "❌ 不可达"}（{detail}）')
 
     # ---- 保存 ----
     def action_save(self) -> None:

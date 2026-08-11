@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["backup-main-20260807", ".git", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "SIM", "RUF"]
+ignore = [
+    "DTZ005",  # 服务器本地时间是有意设计（签到窗口基于本地时间）
+    "DTZ006",
+    "BLE001",  # 顶层兜底已逐处审查（API 输入校验/网络调用/文件降级）
+    "SIM115",  # 行缓冲写入是有意行为（log_fh）
+    "E501",    # 行长交由格式化器处理
+]

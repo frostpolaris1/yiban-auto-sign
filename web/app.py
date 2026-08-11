@@ -30,7 +30,6 @@ import time
 from datetime import datetime
 
 import requests
-
 from flask import Flask, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -665,7 +664,7 @@ def create_app():
         accounts.append(clean)
         save_accounts(accounts)
         logger.info('添加账号 %s（归属 %s，状态 %s）', clean['phone'], clean['owner'], clean['status'])
-        msg = f"已添加，等待审核通过后参与签到"
+        msg = "已添加，等待审核通过后参与签到"
         if temp_password:
             msg = f"已为 {email} 创建用户账号，临时密码：{temp_password}（请告知用户）"
         return jsonify({'ok': True, 'msg': msg,

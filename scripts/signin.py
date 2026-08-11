@@ -16,26 +16,26 @@
 - Auto-Test 项目（旧登录流程，YIBAN_LEGACY_LOGIN=1 启用）
 """
 
-import os
-import sys
-import json
-import random
-import logging
 import argparse
-import secrets
-import traceback
-import time
-from dataclasses import dataclass
-from hashlib import md5
-from datetime import datetime
+import json
+import logging
+import os
+import random
 import re
-from base64 import b64encode, b64decode
+import secrets
+import sys
+import time
+import traceback
+from base64 import b64decode, b64encode
+from dataclasses import dataclass
+from datetime import datetime
+from hashlib import md5
 from urllib.parse import urlencode
 
 import requests
-from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
+from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
 try:
     from js2py import eval_js
