@@ -349,7 +349,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.6.0'
+APP_VERSION = '1.6.1'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -608,6 +608,7 @@ def create_app():
         role = _current_role()
         return jsonify({'ok': True, 'auth': bool(session.get('auth')),
                         'role': role, 'username': session.get('username'),
+                        'email': session.get('username'),  # 普通用户顶部显示邮箱前缀（管理员为用户名）
                         'admin': role == 'admin',
                         'csrf_token': get_csrf_token()})
 

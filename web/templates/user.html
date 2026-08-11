@@ -58,70 +58,8 @@
   <span id="announcement-text"></span>
 </div>
 
-  <!-- 提交账号 -->
-  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
-    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">提交我的易班账号</h2>
-    <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号，可编辑或删除后重新提交。</p>
-    <div id="submit-done" class="hidden mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
-      已提交账号，可编辑或删除后重新提交。
-    </div>
-    <form id="account-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
-        <input id="f-name" type="text" maxlength="20" placeholder="如：我的手机"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div class="md:col-span-2">
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-password" type="password" required placeholder="用于自动登录签到"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时必填）</label>
-        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时必填）</label>
-        <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div class="md:col-span-2 flex items-center gap-3 pt-1">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
-        <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
-      </div>
-    </form>
-  </section>
-
-  <!-- 修改密码 -->
-  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
-    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">修改密码</h2>
-    <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
-    <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
-        <input id="p-old" type="password" required placeholder="输入当前密码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
-        <input id="p-new" type="password" required placeholder="新密码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div class="md:col-span-2 flex items-center gap-3">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
-        <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
-      </div>
-    </form>
-  </section>
-
   <!-- 我的账号与运行情况 -->
-  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h2>
       <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">
@@ -181,6 +119,68 @@
 
 <!-- Toast -->
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700"></div>
+
+  <!-- 提交账号 -->
+  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
+    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">提交我的易班账号</h2>
+    <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号，可编辑或删除后重新提交。</p>
+    <div id="submit-done" class="hidden mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
+      已提交账号，可编辑或删除后重新提交。
+    </div>
+    <form id="account-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
+        <input id="f-name" type="text" maxlength="20" placeholder="如：我的手机"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <input id="f-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div class="md:col-span-2">
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <input id="f-password" type="password" required placeholder="用于自动登录签到"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时必填）</label>
+        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时必填）</label>
+        <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div class="md:col-span-2 flex items-center gap-3 pt-1">
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+        <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- 修改密码 -->
+  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">修改密码</h2>
+    <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
+    <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
+        <input id="p-old" type="password" required placeholder="输入当前密码"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
+        <input id="p-new" type="password" required placeholder="新密码"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div class="md:col-span-2 flex items-center gap-3">
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
+        <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+    </form>
+  </section>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -320,10 +320,10 @@ function renderCalendar(phone) {
     <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
     <div id="cal-log-${phone}" class="mt-2"></div>`;
   const grid = $('cal-grid-' + phone);
-  grid.innerHTML = ['日','一','二','三','四','五','六'].map(w =>
+  grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
-    const firstDay = new Date(year, month - 1, 1).getDay();
+    const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     const days = new Date(year, month, 0).getDate();
     for (let i = 0; i < firstDay; i++) {
       grid.insertAdjacentHTML('beforeend', '<div></div>');

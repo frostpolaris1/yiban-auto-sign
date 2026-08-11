@@ -1224,10 +1224,10 @@ function renderCalendar(phone) {
     <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
     <div id="cal-log-${phone}" class="mt-2"></div>`;
   const grid = $('cal-grid-' + phone);
-  grid.innerHTML = ['日','一','二','三','四','五','六'].map(w =>
+  grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
-    const firstDay = new Date(year, month - 1, 1).getDay();
+    const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     const days = new Date(year, month, 0).getDate();
     for (let i = 0; i < firstDay; i++) {
       grid.insertAdjacentHTML('beforeend', '<div></div>');
