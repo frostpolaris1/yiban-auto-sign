@@ -390,8 +390,8 @@ def create_app():
             return
         if request.path in ('/api/login', '/api/register'):
             return
-        # 公告读取对所有用户开放（含未登录，登录页也显示公告）
-        if request.path == '/api/announcement' and request.method == 'GET':
+        # 公告/更新日志读取对所有用户开放（含未登录，登录页也显示）
+        if request.path in ('/api/announcement', '/api/changelog') and request.method == 'GET':
             return
         role = _current_role()
         if role is None:
