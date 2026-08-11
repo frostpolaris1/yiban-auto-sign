@@ -349,7 +349,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.6.1'
+APP_VERSION = '1.7.0'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -1114,6 +1114,18 @@ def create_app():
         return jsonify({'ok': True, 'msg': '设置已保存（cron 下次触发自动生效）'})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----
+    @app.route('/api/changelog')
+    def api_changelog():
+        """更新日志：读取项目根 CHANGELOG.md（公开，无需登录）。"""
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(base, 'CHANGELOG.md')
+        try:
+            with open(path, encoding='utf-8') as f:
+                text = f.read()
+        except OSError:
+            text = '暂无更新日志'
+        return jsonify({'ok': True, 'text': text})
+
     @app.route('/api/announcement', methods=['GET'])
     def api_announcement():
         return jsonify({'ok': True, 'text': read_env(ENV_FILE).get('YIBAN_ANNOUNCEMENT', '').strip()})

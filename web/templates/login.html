@@ -28,12 +28,12 @@
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
 </style>
 </head>
-<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4">
+<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4 overscroll-y-none">
   <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
           class="fixed top-4 right-4 z-50 w-9 h-9 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow">🌙</button>
   <div class="w-full max-w-md">
 <!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+<div id="announcement-bar" class="hidden sticky top-0 z-40 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
   <span id="announcement-text"></span>
 </div>
 
@@ -95,7 +95,7 @@
         </button>
       </form>
     </div>
-    <footer class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4 mt-4">易班自动签到 v{{ app_version }}</footer>
+    <footer onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4 mt-4 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</footer>
   </div>
 
 <script>
@@ -253,6 +253,20 @@ async function loadAnnouncement() {
     }
   } catch (e) { /* 静默 */ }
 }
+// 更新日志弹窗（版本号点击，登录页无需登录）
+async function openChangelog() {
+  const modal = document.getElementById('changelog-modal');
+  modal.classList.remove('hidden');
+  const content = document.getElementById('changelog-content');
+  content.textContent = '加载中…';
+  try {
+    const resp = await fetch('/api/changelog');
+    const data = await resp.json().catch(() => ({}));
+    content.textContent = (data && data.text) || '暂无更新日志';
+  } catch (e) { content.textContent = '加载失败，请稍后重试'; }
+}
+function closeChangelog() { document.getElementById('changelog-modal').classList.add('hidden'); }
+
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
 
@@ -290,6 +304,17 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
     <div class="flex justify-end mt-4">
       <button onclick="closeAgreement()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">我知道了</button>
     </div>
+  </div>
+</div>
+<!-- 更新日志弹窗 -->
+<div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
+    <div class="flex items-center justify-between mb-3">
+      <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
+    </div>
+    <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
   </div>
 </div>
 </body>

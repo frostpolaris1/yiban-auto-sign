@@ -29,7 +29,7 @@
   pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
 </style>
 </head>
-<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen">
+<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen overscroll-y-none">
 
 <!-- 顶栏 -->
 <header class="bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 sticky top-0 z-20">
@@ -54,7 +54,7 @@
 
 <main class="max-w-4xl mx-auto px-4 py-6">
 <!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+<div id="announcement-bar" class="hidden sticky top-0 z-40 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
   <span id="announcement-text"></span>
 </div>
 
@@ -76,7 +76,7 @@
   </section>
 
 </main>
-<footer class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4">易班自动签到 v{{ app_version }}</footer>
+<footer onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</footer>
 
 <!-- 编辑模态 -->
 <div id="modal-edit" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
@@ -281,7 +281,7 @@ function renderList() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:text-zinc-300 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      <div class="mt-4" id="cal-wrap-${a.phone}"></div>
+      <div class="mt-4 max-w-sm" id="cal-wrap-${a.phone}"></div>
     `;
     list.appendChild(card);
     renderCalendar(a.phone);
@@ -495,6 +495,19 @@ async function loadAnnouncement() {
     }
   } catch (e) { /* 静默 */ }
 }
+// 更新日志弹窗（版本号点击）
+async function openChangelog() {
+  const modal = $('changelog-modal');
+  modal.classList.remove('hidden');
+  const content = $('changelog-content');
+  content.textContent = '加载中…';
+  try {
+    const data = await api('/api/changelog');
+    content.textContent = data.text || '暂无更新日志';
+  } catch (e) { content.textContent = '加载失败，请稍后重试'; }
+}
+function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
+
 // 修改密码
 $('password-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -516,5 +529,16 @@ $('password-form').addEventListener('submit', async (e) => {
 
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
+<!-- 更新日志弹窗 -->
+<div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
+    <div class="flex items-center justify-between mb-3">
+      <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
+    </div>
+    <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
+  </div>
+</div>
 </body>
 </html>
