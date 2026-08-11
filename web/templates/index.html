@@ -1236,6 +1236,7 @@ function renderMine() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
+      <div class="mt-4 max-w-sm" id="cal-wrap-${a.phone}"></div>
     `;
     list.appendChild(card);
     renderCalendar(a.phone);
@@ -1382,17 +1383,5 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
     <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
   </div>
 </div>
-<script>
-// 禁用橡皮筋回弹（iOS Safari 不支持 overscroll-behavior 时的兜底；不影响内部滚动容器）
-document.addEventListener('touchmove', (e) => {
-  const t = e.target;
-  if (t && t.closest && t.closest('.overflow-auto, .overflow-x-auto, [style*="overflow"]')) return;
-  const el = document.documentElement;
-  const y = window.scrollY;
-  const atTop = y <= 0, atBottom = y + window.innerHeight >= el.scrollHeight - 1;
-  const dy = e.touches && e.touches[0] ? e.touches[0].clientY : 0;
-  if ((atTop && dy > 0) || (atBottom && dy < 0)) e.preventDefault();
-}, { passive: false });
-</script>
 </body>
 </html>
