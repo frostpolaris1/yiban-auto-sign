@@ -33,7 +33,7 @@
           class="fixed top-4 right-4 z-50 w-9 h-9 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow">🌙</button>
   <div class="w-full max-w-md">
 <!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden sticky top-0 z-40 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
   <span id="announcement-text"></span>
 </div>
 
@@ -317,5 +317,17 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
     <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
   </div>
 </div>
+<script>
+// 禁用橡皮筋回弹（iOS Safari 不支持 overscroll-behavior 时的兜底；不影响内部滚动容器）
+document.addEventListener('touchmove', (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest('.overflow-auto, .overflow-x-auto, [style*="overflow"]')) return;
+  const el = document.documentElement;
+  const y = window.scrollY;
+  const atTop = y <= 0, atBottom = y + window.innerHeight >= el.scrollHeight - 1;
+  const dy = e.touches && e.touches[0] ? e.touches[0].clientY : 0;
+  if ((atTop && dy > 0) || (atBottom && dy < 0)) e.preventDefault();
+}, { passive: false });
+</script>
 </body>
 </html>

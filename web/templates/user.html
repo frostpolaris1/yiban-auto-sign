@@ -54,7 +54,7 @@
 
 <main class="max-w-4xl mx-auto px-4 py-6">
 <!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden sticky top-0 z-40 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
   <span id="announcement-text"></span>
 </div>
 
@@ -310,15 +310,19 @@ function renderCalendar(phone) {
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${calPad(today.getMonth() + 1)}-${calPad(today.getDate())}`;
   wrap.innerHTML = `
-    <div class="flex items-center justify-between mb-2">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
-      <div class="flex items-center gap-1">
-        <button onclick="calShift('${phone}', -1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
-        <button onclick="calShift('${phone}', 1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
+          <div class="flex items-center gap-1">
+            <button onclick="calShift('${phone}', -1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
+            <button onclick="calShift('${phone}', 1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+          </div>
+        </div>
+        <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
       </div>
-    </div>
-    <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
-    <div id="cal-log-${phone}" class="mt-2"></div>`;
+      <div id="cal-log-${phone}" class="lg:pt-8"></div>
+    </div>`;
   const grid = $('cal-grid-' + phone);
   grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
@@ -540,5 +544,17 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
     <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
   </div>
 </div>
+<script>
+// 禁用橡皮筋回弹（iOS Safari 不支持 overscroll-behavior 时的兜底；不影响内部滚动容器）
+document.addEventListener('touchmove', (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest('.overflow-auto, .overflow-x-auto, [style*="overflow"]')) return;
+  const el = document.documentElement;
+  const y = window.scrollY;
+  const atTop = y <= 0, atBottom = y + window.innerHeight >= el.scrollHeight - 1;
+  const dy = e.touches && e.touches[0] ? e.touches[0].clientY : 0;
+  if ((atTop && dy > 0) || (atBottom && dy < 0)) e.preventDefault();
+}, { passive: false });
+</script>
 </body>
 </html>
