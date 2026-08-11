@@ -396,9 +396,15 @@
   <section id="tab-mine" class="hidden">
     <div class="mb-4">
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号</h1>
-      <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">提交自己的易班账号（直接生效，免审核）与查看签到情况</p>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">查看自己的易班账号签到情况；管理员提交的账号直接生效（免审核）</p>
     </div>
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
+      <div id="mine-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">还没有提交账号</div>
+      <div id="mine-list" class="space-y-3"></div>
+    </div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
       <div id="mine-done" class="hidden mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
         已提交账号，可编辑或删除后重新提交。
       </div>
@@ -434,10 +440,46 @@
           <span id="mine-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
       </form>
+    </div>    </section>
+
+    <!-- 我的账号编辑弹窗（与普通用户一致：名称/手机号/密码/设备型号/识别码） -->
+    <div id="modal-mine-edit" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-black/30" onclick="closeMineEdit()"></div>
+      <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
+        <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4">编辑我的账号</div>
+        <form id="mine-edit-form" class="space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称</label>
+            <input id="me-name" type="text" maxlength="20"
+                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号</label>
+            <input id="me-phone" type="text" maxlength="20" required
+                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码（留空表示不修改）</label>
+            <input id="me-password" type="password" placeholder="留空表示不修改"
+                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号</label>
+            <input id="me-model" type="text" maxlength="50"
+                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（留空表示不修改）</label>
+            <input id="me-code" type="text" maxlength="100" placeholder="留空表示不修改"
+                   class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400">
+          </div>
+          <div class="flex items-center gap-2 pt-2">
+            <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
+            <button type="button" onclick="closeMineEdit()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
+          </div>
+        </form>
+      </div>
     </div>
-    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
-      <div id="mine-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">还没有提交账号</div>
-      <div id="mine-list" class="space-y-3"></div>
     </div>
   </section>
 
@@ -1228,6 +1270,7 @@ function renderMine() {
         </div>
         <div class="flex items-center gap-2">
           ${mineStatusBadge(a.status)}
+          <button onclick="openMineEdit(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
           <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>
         </div>
       </div>
@@ -1317,6 +1360,39 @@ function calLoadLog(phone, date) {
       <pre class="log-text text-zinc-600 dark:text-zinc-300 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(data.logs.join(String.fromCharCode(10)))}</pre>`;
   }).catch(e => { box.innerHTML = ''; toast(e.message, true); });
 }
+
+// 我的账号编辑（与普通用户一致）
+let mineEditingIdx = null;
+function openMineEdit(i) {
+  mineEditingIdx = i;
+  const a = mineAccounts[i];
+  $('me-name').value = a.name;
+  $('me-phone').value = a.phone;
+  $('me-password').value = '';
+  $('me-model').value = a.phone_model;
+  $('me-code').value = '';
+  $('modal-mine-edit').classList.remove('hidden');
+}
+function closeMineEdit() { $('modal-mine-edit').classList.add('hidden'); }
+
+$('mine-edit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const data = await api(`/api/my-accounts/${mineEditingIdx}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: $('me-name').value,
+        phone: $('me-phone').value.trim(),
+        password: $('me-password').value,
+        phone_model: $('me-model').value.trim(),
+        phone_code: $('me-code').value.trim(),
+      }),
+    });
+    closeMineEdit();
+    toast(data.msg || '已保存');
+    loadMine();
+  } catch (err) { toast(err.message, true); }
+});
 
 $('mine-form').addEventListener('submit', async (e) => {
   e.preventDefault();
