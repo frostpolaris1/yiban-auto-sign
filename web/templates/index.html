@@ -442,6 +442,58 @@
       </form>
     </div>    </section>
 
+</main>
+
+<!-- 账号编辑模态 -->
+<div id="modal-account" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeForm()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
+    <form id="account-form" class="space-y-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
+        <input id="f-name" type="text" maxlength="20" placeholder="如：小明"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div id="f-email-wrap">
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
+          <select id="f-email"
+                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            <option value="">不绑定（管理员自有账号，直接生效）</option>
+            <option value="__manual__">手填邮箱（未注册用户自动注册）</option>
+            <optgroup label="已注册用户（无账号）" id="f-email-users"></optgroup>
+          </select>
+          <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
+                 class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <input id="f-phone" type="text" maxlength="20" required placeholder="易班登录手机号"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <input id="f-password" type="password" placeholder="编辑时留空表示不修改"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
+        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+        <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
+        <button type="button" onclick="closeForm()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Toast -->
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
             bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md"></div>
@@ -473,14 +525,12 @@ async function api(path, opts = {}, _retried = false) {
     throw new Error('未登录');
   }
   const data = await resp.json().catch(() => ({}));
-  // CSRF token 不同步（如服务重启/会话更新/多标签页）：自动重新获取 token 并重试（最多 2 次）
-  if (resp.status === 403 && _retried < 2 && data.error && data.error.includes('校验失败')) {
+  // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
+  if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
     try {
       const me = await fetch('/api/me').then(r => r.json());
-      if (me.csrf_token) {
-        csrfToken = me.csrf_token;
-        return api(path, opts, _retried + 1);
-      }
+      csrfToken = me.csrf_token || '';
+      return api(path, opts, true);
     } catch (e) { /* 重试失败则走下方错误提示 */ }
   }
   if (!resp.ok || data.ok === false) {
@@ -676,11 +726,6 @@ function accountRow(a) {
 
 async function reviewAccount(idx, action) {
   const a = state.accounts[idx];
-  // 主动同步 CSRF token（防旧标签页/会话更新导致的首次 403）
-  try {
-    const me = await fetch('/api/me').then(r => r.json());
-    if (me.csrf_token) csrfToken = me.csrf_token;
-  } catch (e) { /* 忽略：api() 内仍有重试兜底 */ }
   let body = { action };
   if (action === 'reject') {
     const reason = prompt(`拒绝「${a.display_name}」(${a.phone})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
