@@ -36,6 +36,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 # 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get('YIBAN_ACCOUNTS_FILE', 'accounts.json')
+# 按日状态文件目录（signin.py 写入 sign-daily-YYYY-MM-DD.json，网页日历读取）
+STATE_DIR_DEFAULT = os.environ.get('YIBAN_STATE_DIR', '/var/log/yiban')
 LOG_DEFAULT = os.environ.get('YIBAN_LOG_FILE', '/var/log/yiban/sign.log')
 ENV_DEFAULT = os.environ.get('YIBAN_ENV_FILE', '.env')
 USERS_DEFAULT = os.environ.get('YIBAN_USERS_FILE', 'users.json')
@@ -347,7 +349,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = '1.5.0'
+APP_VERSION = '1.6.0'
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime('%Y%m%d%H%M%S')
 
@@ -825,6 +827,55 @@ def create_app():
         logger.info('用户 %s 提交账号 %s（待审核）', clean['owner'], clean['phone'])
         return jsonify({'ok': True, 'msg': '已提交，等待管理员审核后参与签到'})
 
+    @app.route('/api/my-calendar')
+    def api_my_calendar():
+        """我的账号月历：返回指定月份（YYYY-MM）每天每账号的签到状态（✅/❌/空字符串）。"""
+        month = str(request.args.get('month', '')).strip()
+        try:
+            year, mon = map(int, month.split('-'))
+            if not (2000 <= year <= 2100 and 1 <= mon <= 12):
+                raise ValueError
+        except Exception:
+            return jsonify({'error': '月份格式不正确，应为 YYYY-MM'}), 400
+        accounts = load_accounts()
+        indices = _my_account_indices()
+        phones = [str(accounts[i].get('phone', '')) for i in indices]
+        import calendar as _cal
+        days_in_month = _cal.monthrange(year, mon)[1]
+        result = {}
+        for d in range(1, days_in_month + 1):
+            date = f'{year:04d}-{mon:02d}-{d:02d}'
+            daily = {}
+            path = os.path.join(STATE_DIR, f'sign-daily-{date}.json')
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        daily = json.load(f)
+                except Exception:
+                    daily = {}
+            result[date] = {p: daily.get(p, '') for p in phones}
+        return jsonify({'ok': True, 'month': month, 'days': result})
+
+    @app.route('/api/my-logs')
+    def api_my_logs():
+        """我的账号指定日期（YYYY-MM-DD）的日志（按手机号过滤，最多 50 条）。"""
+        date = str(request.args.get('date', '')).strip()
+        if len(date) != 10 or date[4] != '-' or date[7] != '-':
+            return jsonify({'error': '日期格式不正确，应为 YYYY-MM-DD'}), 400
+        accounts = load_accounts()
+        indices = _my_account_indices()
+        phones = [str(accounts[i].get('phone', '')) for i in indices]
+        prefix = f'[{date} '
+        out = []
+        try:
+            with open(LOG_FILE, encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    if line.startswith(prefix) and any(f'[{p}]' in line for p in phones):
+                        out.append(line.strip())
+        except OSError as e:
+            logger.debug('按日期读取日志失败: %s', e)
+        return jsonify({'ok': True, 'date': date, 'logs': out[-50:]})
+
     @app.route('/api/my-accounts/<int:idx>', methods=['PUT'])
     def api_my_account_update(idx):
         """编辑自己提交的账号：密码/识别码留空=保留；不影响已生效状态。"""
@@ -1099,7 +1150,7 @@ def create_app():
 # 入口
 # ---------------------------------------------------------------------------
 def main():
-    global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, USERS_FILE
+    global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, USERS_FILE, STATE_DIR
     parser = argparse.ArgumentParser(description='易班自动签到网页管理系统')
     parser.add_argument('--host', default='0.0.0.0', help='监听地址（默认 0.0.0.0）')
     # 非常见端口（默认 17892）：避开 8000/5000/3000 等常见端口，防止与其他部署冲突
@@ -1118,6 +1169,7 @@ def main():
     LOG_FILE = args.log
     ENV_FILE = args.env
     USERS_FILE = args.users
+    STATE_DIR = STATE_DIR_DEFAULT
 
     logging.basicConfig(
         level=logging.INFO,

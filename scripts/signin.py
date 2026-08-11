@@ -865,6 +865,25 @@ def main():
         if not success and not skip:
             has_real_failure = True
 
+    # 写按日状态文件（供网页日历组件读取；skip=未在签到时间跳过则不写，当天留空）
+    state_dir = os.environ.get('YIBAN_STATE_DIR', '/var/log/yiban')
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        today = datetime.now().strftime('%Y-%m-%d')
+        daily_path = os.path.join(state_dir, f'sign-daily-{today}.json')
+        daily = {}
+        if os.path.exists(daily_path):
+            with open(daily_path, encoding='utf-8') as f:
+                daily = json.load(f)
+        for acc in accounts:
+            success, msg, skip = results.get(acc.phone, (False, '未执行', False))
+            if not skip:
+                daily[acc.phone] = '✅' if success else '❌'
+        with open(daily_path, 'w', encoding='utf-8') as f:
+            json.dump(daily, f, ensure_ascii=False)
+    except OSError as e:
+        logger.warning('写入按日状态文件失败: %s', e)
+
     # 退出码：
     # 0 - 全部成功，或仅因"未在签到时间内"跳过（不是真正的失败）
     # 1 - 有真正的失败（登录失败、签到失败等）
