@@ -3,6 +3,13 @@
 > **本文件为内部详细版**：含技术实现细节、安全漏洞原理与攻击路径留档，仅限开发者/管理员查看，**不对外展示**。
 > 网页端（页面底部「更新日志」弹窗）展示的是项目根 `CHANGELOG.md`（脱敏通俗版，适合普通用户阅读）。
 
+## v0.12.2（2026-08-12）
+- **表格级居中对齐**（用户人工校验确认）：6 个表格 table 级 `text-center` + 操作列 `justify-center` + 表头 th 去 `text-right`；同时修复此前插入批量复选框时误删的 **thead tr class**（text-center/text-xs/bg-zinc-50/sticky top-0 恢复）——表头背景与吸顶回归
+- **邮箱/用户名长度限制**：EMAIL_RE 收紧为 `[\w.+-]{1,32}@...`（用户名部分 ≤32，常量 EMAIL_USER_MAX）；api_register/api_account_add 前置"用户名部分过长"错误；api_users_batch 校验 email ≤64；login.html 前端正则同步 + 提示文案
+- **显示截断**：userRow 邮箱 td、内置管理员行、owner_display 3 处加 `max-w-[220px/160px] truncate` + `title`（悬停完整邮箱）；存量超长邮箱不受注册限制影响，仅显示截断
+- 验证：API 5/5（33 字符拒/32 字符过/绑定拒/批量拒/存量在）+ 浏览器（truncate class + title 生效）+ 识图（居中+表头背景+无错位）
+- 流程规范：本次开发在 feature/table-center-email-limit 分支完成（用户要求不使用主分支开发）
+
 ## v0.12.1（2026-08-12）
 - 修复批量操作 4 个 bug（用户实测反馈）：
   1. **key is not defined**：patch 脚本误把 cb 声明插入 renderAccounts 统计循环（batchSel[key] 引用未定义 key）→ 渲染崩溃 → toast 报错；且首次修复脚本在保存前崩溃（f-string 错误）导致删除未落盘，二次修复并验证

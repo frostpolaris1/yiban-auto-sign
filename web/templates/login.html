@@ -135,7 +135,7 @@ function showError(el, msg) {
 }
 
 // ---- 注册表单即时校验（输入时实时反馈，字段下方提示）----
-const EMAIL_RE = /^[\w.+-]+@[\w-]+(\.[\w-]+)+$/;
+const EMAIL_RE = /^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$/;  // 用户名部分（@ 前）限 32 字符
 const regEmail = document.getElementById('reg-email');
 const regEmailErr = document.getElementById('reg-email-error');
 const regPw = document.getElementById('reg-password');
@@ -150,6 +150,11 @@ function markField(input, errEl, invalid) {
 regEmail.addEventListener('input', () => {
   const v = regEmail.value.trim();
   const invalid = v !== '' && !(EMAIL_RE.test(v) && v.length <= 64);
+  if (v.includes('@') && v.split('@')[0].length > 32) {
+    regEmailErr.textContent = '邮箱用户名部分过长（最多 32 字符）';
+  } else {
+    regEmailErr.textContent = '邮箱格式不正确（示例：name@example.com）';
+  }
   markField(regEmail, regEmailErr, invalid);
 });
 
