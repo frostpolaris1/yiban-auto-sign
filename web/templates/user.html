@@ -63,7 +63,7 @@
   <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h2>
-      <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">
+      <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">
         <span>⏳ 待签到</span><span>✅ 今日成功</span><span>❌ 今日失败</span>
         <span>🔄 重试中</span><span>➖ 跳过</span>
       </div>
@@ -115,31 +115,39 @@
       </div>
       <div class="md:col-span-2 flex items-center gap-3 pt-1">
         <button id="account-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+        <button id="cancel-edit-btn" type="button" onclick="cancelEdit()"
+                class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
         <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
       </div>
     </form>
   </section>
 
-  <!-- 修改密码 -->
+  <!-- 修改密码（默认收起，点击标题展开） -->
   <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
-    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">修改密码</h2>
-    <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
-    <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
-        <input id="p-old" type="password" required placeholder="输入当前密码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
-        <input id="p-new" type="password" required placeholder="新密码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div class="md:col-span-2 flex items-center gap-3">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
-        <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
-      </div>
-    </form>
+    <button type="button" onclick="togglePassword()" aria-expanded="false"
+            class="w-full flex items-center justify-between text-left">
+      <span class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">修改密码</span>
+      <span id="password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
+    </button>
+    <div id="password-body" class="hidden mt-4">
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
+      <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
+          <input id="p-old" type="password" required placeholder="输入当前密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
+          <input id="p-new" type="password" required placeholder="新密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
+        <div class="md:col-span-2 flex items-center gap-3">
+          <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
+          <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        </div>
+      </form>
+    </div>
   </section>
 </main>
 <footer onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</footer>
@@ -218,7 +226,7 @@ function renderList() {
     const card = document.createElement('div');
     card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl p-4';
     card.innerHTML = `
-      <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
           <span class="text-lg leading-none">${a.state_icon}</span>
           <div>
@@ -242,7 +250,7 @@ function renderList() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:text-zinc-300 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      <div class="mt-4 max-w-sm" id="cal-wrap-${esc(a.phone)}"></div>
+      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${esc(a.phone)}"></div>
     `;
     list.appendChild(card);
     if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
@@ -345,18 +353,35 @@ function openEditInline(i) {
   $('f-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
   $('account-form-title').textContent = '编辑我的易班账号';
   $('account-submit-btn').textContent = '保存修改';
+  $('cancel-edit-btn').classList.remove('hidden');
   $('submit-done').classList.add('hidden');
   $('account-form-section').classList.remove('hidden');
   $('account-form').classList.remove('hidden');
   $('account-form').scrollIntoView({ behavior: 'smooth' });
 }
 
+// 取消编辑：恢复提交态并收起表单（renderList 按账号数重新隐藏）
+function cancelEdit() {
+  resetAccountForm();
+  renderList();
+  toast('已取消编辑');
+}
+
 function resetAccountForm() {
   editingIdx = null;
   $('account-form-title').textContent = '提交我的易班账号';
   $('account-submit-btn').textContent = '提交账号';
+  $('cancel-edit-btn').classList.add('hidden');
   $('f-password').placeholder = '用于自动登录签到';
   $('f-code').placeholder = '64 位十六进制识别码';
+}
+
+// 修改密码：默认收起，点击标题展开/收起
+function togglePassword() {
+  const body = $('password-body');
+  const hidden = body.classList.toggle('hidden');
+  $('password-arrow').textContent = hidden ? '▸' : '▾';
+  document.querySelector('[onclick="togglePassword()"]').setAttribute('aria-expanded', String(!hidden));
 }
 
 // 提交账号（无账号=新建；编辑模式=更新）
