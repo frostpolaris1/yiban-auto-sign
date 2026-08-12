@@ -419,7 +419,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.12.6"
+APP_VERSION = "0.13.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -752,14 +752,17 @@ def create_app():
         # admin 字段为旧版前端兼容（早期前端检查 me.admin；新版用 role）——
         # 防止浏览器缓存旧页面时误判未登录导致刷新循环
         role = _current_role()
+        username = session.get("username") or ""
         return jsonify(
             {
                 "ok": True,
                 "auth": bool(session.get("auth")),
                 "role": role,
-                "username": session.get("username"),
-                "email": session.get("username"),  # 普通用户顶部显示邮箱前缀（管理员为用户名）
+                "username": username,
+                "email": username,  # 普通用户顶部显示邮箱前缀（管理员为用户名）
                 "admin": role == "admin",
+                "is_builtin_admin": role == "admin" and username.strip().lower()
+                == _builtin_admin_email(),  # 主管理员（.env）：仅主管理员可改管理员权限
                 "csrf_token": get_csrf_token(),
             }
         )
@@ -1334,6 +1337,7 @@ def create_app():
         """批量操作注册用户：set_admin/unset_admin/reset_password/delete。
 
         body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
+        set_admin/unset_admin 仅主管理员（.env 内置管理员）可用；set_admin 仅限正式用户。
         """
         with _file_lock:
             users = load_users()
@@ -1349,13 +1353,30 @@ def create_app():
             password = str(data.get("password", ""))
             if action == "reset_password" and len(password) < 6:
                 return jsonify({"error": "新密码至少 6 位"}), 400
+            # 权限：管理员权限变更仅主管理员（普通管理员可重置密码/删除，不可改权限）
+            if action in ("set_admin", "unset_admin"):
+                username = (session.get("username") or "").strip().lower()
+                if username != _builtin_admin_email():
+                    return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
             builtin = _builtin_admin_email()
+            accounts = load_accounts() if action == "set_admin" else None
             done = 0
             for email in emails:
                 target = _find_user(users, email)
                 if not target or email == builtin:  # 内置管理员不可批量操作
                     continue
                 if action == "set_admin":
+                    # 只能将正式用户（有生效账号且无待审核）设为管理员
+                    has_pending = any(
+                        a.get("owner") == email and a.get("status") == STATUS_PENDING
+                        for a in accounts
+                    )
+                    has_active = any(
+                        a.get("owner") == email and a.get("status") != STATUS_PENDING
+                        for a in accounts
+                    )
+                    if not has_active or has_pending:
+                        continue
                     target["role"] = "admin"
                     done += 1
                 elif action == "unset_admin":
@@ -1388,7 +1409,13 @@ def create_app():
 
     @app.route("/api/users/<email>/role", methods=["POST"])
     def api_user_role(email):
-        """设为管理员 / 取消管理员。防呆：内置管理员不可改；至少保留 1 个管理员。"""
+        """设为管理员 / 取消管理员。仅主管理员（.env 内置管理员）可操作；
+        只能将「正式用户」（有生效账号且无待审核）设为管理员；
+        防呆：内置管理员不可改；至少保留 1 个管理员。"""
+        # 权限：仅主管理员（普通管理员无管理员权限变更权）
+        username = (session.get("username") or "").strip().lower()
+        if username != _builtin_admin_email():
+            return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
         data = request.get_json(silent=True) or {}
         new_role = data.get("role")
         if new_role not in ("admin", "user"):
@@ -1401,6 +1428,19 @@ def create_app():
             target = _find_user(users, email)
             if not target:
                 return jsonify({"error": "用户不存在"}), 404
+            if new_role == "admin":
+                # 只能将正式用户（有生效账号且无待审核）设为管理员
+                accounts = load_accounts()
+                has_pending = any(
+                    a.get("owner") == email and a.get("status") == STATUS_PENDING
+                    for a in accounts
+                )
+                has_active = any(
+                    a.get("owner") == email and a.get("status") != STATUS_PENDING
+                    for a in accounts
+                )
+                if not has_active or has_pending:
+                    return jsonify({"error": "仅正式用户可设为管理员（需有已生效账号且无待审核）"}), 400
             if new_role == "user" and target.get("role") == "admin":
                 admins = [u for u in users if u.get("role") == "admin"]
                 # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users.json 中的最后一个管理员
@@ -1408,7 +1448,7 @@ def create_app():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             target["role"] = new_role
             save_users(users)
-            logger.info("用户 %s 角色 → %s", email, new_role)
+            logger.info("主管理员 %s 将用户 %s 角色 → %s", username, email, new_role)
             return jsonify(
                 {
                     "ok": True,
