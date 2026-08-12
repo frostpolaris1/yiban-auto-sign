@@ -419,7 +419,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.12.3"
+APP_VERSION = "0.12.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -883,7 +883,7 @@ def create_app():
             data = request.get_json(silent=True) or {}
             action = data.get("action")
             ids = data.get("ids") or []
-            if action not in ("approve", "reject", "purge", "restore"):
+            if action not in ("approve", "reject", "purge", "restore", "delete"):
                 return jsonify({"error": "未知操作"}), 400
             if not isinstance(ids, list) or not ids:
                 return jsonify({"error": "请选择要操作的账号"}), 400
@@ -918,6 +918,11 @@ def create_app():
                     acc.pop("deleted", None)
                     acc.pop("deleted_at", None)
                     done += 1
+                elif action == "delete" and not acc.get("deleted"):
+                    # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
+                    acc["deleted"] = True
+                    acc["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+                    done += 1
             save_accounts(accounts)
             logger.info("批量%s账号 %d 个", action, done)
             msg = {
@@ -925,6 +930,7 @@ def create_app():
                 "reject": f"已拒绝 {done} 个账号",
                 "purge": f"已彻底删除 {done} 个账号",
                 "restore": f"已恢复 {done} 个账号",
+                "delete": f"已删除 {done} 个账号（可恢复）",
             }[action]
             return jsonify(
                 {
