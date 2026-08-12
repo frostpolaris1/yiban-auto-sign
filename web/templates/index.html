@@ -845,7 +845,6 @@ function renderAccounts() {
   let success = 0, failed = 0, retrying = 0, waiting = 0;
   activeAccounts.forEach(a => {
     const s = state.states[a.phone] || '⏳';
-  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', a.index, this)"></td>` : '';
     if (s === '✅') success++;
     else if (s === '❌') failed++;
     else if (s === '🔄') retrying++;
@@ -925,7 +924,7 @@ function statusBadge(a) {
 function pendingAccountRow(a, key) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
-  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', a.index, this)"></td>` : '';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const reasonHtml = a.reject_reason
     ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
     : '';
@@ -951,7 +950,7 @@ function pendingAccountRow(a, key) {
 
 function accountRow(a, key) {
   const s = state.states[a.phone] || '⏳';
-  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', a.index, this)"></td>` : '';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
@@ -1395,6 +1394,7 @@ function renderUsers(users, builtinAdmin) {
   const builtin = document.createElement('tr');
   builtin.className = 'border-b border-zinc-50 dark:border-zinc-700/50 bg-zinc-50/50 dark:bg-zinc-700/30';
   builtin.innerHTML = `
+    ${state.batchMode ? '<td class="px-2 py-3 w-8"></td>' : ''}
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100">${esc(builtinAdmin)} <span class="text-xs text-zinc-400 dark:text-zinc-500">（内置管理员 · .env）</span></td>
     <td class="px-4 py-3"><span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span></td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
@@ -1444,7 +1444,7 @@ function userRow(u, key) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50';
   const isAdmin = u.role === 'admin';
-  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has('+esc(u.email)+') ? 'checked' : ''} onchange="toggleRow('${key}', '+esc(u.email)+', this)"></td>` : '';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(u.email) ? 'checked' : ''} onchange="toggleRow('${key}', '${esc(u.email)}', this)"></td>` : '';
   const roleBadge = isAdmin
     ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
     : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';

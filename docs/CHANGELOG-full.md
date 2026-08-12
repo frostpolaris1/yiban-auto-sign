@@ -3,6 +3,15 @@
 > **本文件为内部详细版**：含技术实现细节、安全漏洞原理与攻击路径留档，仅限开发者/管理员查看，**不对外展示**。
 > 网页端（页面底部「更新日志」弹窗）展示的是项目根 `CHANGELOG.md`（脱敏通俗版，适合普通用户阅读）。
 
+## v0.12.1（2026-08-12）
+- 修复批量操作 4 个 bug（用户实测反馈）：
+  1. **key is not defined**：patch 脚本误把 cb 声明插入 renderAccounts 统计循环（batchSel[key] 引用未定义 key）→ 渲染崩溃 → toast 报错；且首次修复脚本在保存前崩溃（f-string 错误）导致删除未落盘，二次修复并验证
+  2. **列错位**：accountRow/pendingAccountRow 的 onchange 中 `a.index` 缺 `${}`（事件触发时 a 不可见 → ReferenceError）；userRow 的 `'+esc(u.email)+'` 为字面量（选中失效）
+  3. **用户管理严重错位**：内置管理员行 5 td vs 表头 6 列（batchMode 开）→ 补 batchMode 时空 td
+  4. 全选修复（0.12.0 已修 toggleSelectAll 分组，Node 模拟验证 4/1）
+- 完整用户视角测试：API 回归 26/26（软删/恢复/彻底删/批量/权限/CSRF/恶意输入/7 天清理）+ 浏览器（key 报错消失、勾选/取消、列对齐 batchMode 开/关、内置行、普通用户编辑取消/密码收起）+ 识图视觉确认
+- 教训：**bash 内联 python + f-string 拼接 JS 模板字符串极易出错**（转义/崩溃不保存），复杂字符串修改必须用脚本文件 + 保存后立即验证
+
 ## v0.12.0（2026-08-12）
 - **软删除撤销**：accounts.json 账号新增 `deleted`/`deleted_at`；`DELETED_RETENTION_DAYS=7`；`load_accounts()` 惰性清理超期项（锁内写回）；管理员 DELETE 改软删除、新增 `restore`/`purge` API；signin.py 过滤 deleted（不参与签到）；单账号限制排除 deleted（用户可重新提交）；用户端显示「已删除」状态徽章（隐藏编辑/删除）；用户自删仍物理删除；管理端「待删除账号」分组（搜索+限高+恢复/彻底删除）
 - **批量多选**：`.env YIBAN_BATCH_MODE=on` 开关（设置页持久化）；`POST /api/accounts/batch`（approve/reject/purge/restore，reject 需共同理由）；`POST /api/users/batch`（set_admin/unset_admin/reset_password/delete，内置管理员跳过+防呆）；前端 6 表复选框列（batchMode 时渲染，行+表头全选）+ 批量操作条（选中数/按表定制按钮）
