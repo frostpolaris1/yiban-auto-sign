@@ -151,15 +151,19 @@
 
     <!-- 待处理账号组（待审核/已拒绝，置顶） -->
     <div id="accounts-pending-box" class="bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl shadow-sm p-4 md:p-6 mb-4">
-      <div class="flex items-center justify-between mb-1">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待处理账号</div>
-        <span id="accounts-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <div class="flex items-center gap-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待处理账号</div>
+          <span id="accounts-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+        </div>
+        <input id="pending-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
+               class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
     <table class="w-full text-sm min-w-[760px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
               <th class="px-4 py-3 font-medium">状态</th>
               <th class="px-4 py-3 font-medium">名称</th>
               <th class="px-4 py-3 font-medium">手机号</th>
@@ -176,11 +180,18 @@
 
     <!-- 正常账号组 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
-      <div class="px-4 py-3 border-b border-zinc-100 dark:border-zinc-700 text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
-      <div class="overflow-x-auto">
+      <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
+        <div class="flex items-center gap-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
+          <span id="accounts-active-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
+        </div>
+        <input id="active-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
+               class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+      </div>
+      <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
    <table class="w-full text-sm min-w-[1000px]">
         <thead>
-          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
             <th class="px-4 py-3 font-medium">状态</th>
             <th class="px-4 py-3 font-medium">#</th>
             <th class="px-4 py-3 font-medium">名称</th>
@@ -325,15 +336,19 @@
     </div>
     <!-- 待审核用户组 -->
     <div class="bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl shadow-sm p-4 md:p-6 mb-4">
-      <div class="flex items-center justify-between mb-1">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待审核用户</div>
-        <span id="users-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <div class="flex items-center gap-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待审核用户</div>
+          <span id="users-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+        </div>
+        <input id="users-pending-search" type="search" placeholder="搜索邮箱…"
+               class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
               <th class="px-4 py-3 font-medium w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
@@ -349,11 +364,18 @@
 
     <!-- 正式用户组 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">正式用户</div>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div class="flex items-center gap-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">正式用户</div>
+          <span id="users-normal-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
+        </div>
+        <input id="users-normal-search" type="search" placeholder="搜索邮箱…"
+               class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+      </div>
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
               <th class="px-4 py-3 font-medium w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
@@ -369,15 +391,19 @@
 
     <!-- 空用户组 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
-      <div class="flex items-center justify-between mb-1">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">空用户</div>
-        <span id="users-vacant-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <div class="flex items-center gap-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">空用户</div>
+          <span id="users-vacant-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        </div>
+        <input id="users-vacant-search" type="search" placeholder="搜索邮箱…"
+               class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">已注册但未提交任何账号，可重置密码或删除</p>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
               <th class="px-4 py-3 font-medium w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
@@ -624,25 +650,51 @@ async function loadAccounts() {
 
 const ICONS = {'⏳': '⏳', '✅': '✅', '❌': '❌', '🔄': '🔄', '➖': '➖'};
 
+// 各表格搜索词（内存态：10 秒轮询刷新后过滤依然生效）
+let pendingSearch = '', activeSearch = '';
+let usersPendingSearch = '', usersNormalSearch = '', usersVacantSearch = '';
+// 用户列表缓存（搜索事件触发时无需重新请求）
+let allUsers = [];
+let builtinAdminName = 'admin';
+
+function accountMatch(a, kw) {
+  if (!kw) return true;
+  return [a.name, a.phone, a.owner_display, a.owner].some(v => String(v || '').toLowerCase().includes(kw));
+}
+
+function userMatch(u, kw) {
+  if (!kw) return true;
+  return u.email.toLowerCase().includes(kw);
+}
+
 function renderAccounts() {
   // 分组：待处理（待审核/已拒绝）置顶，正常账号一组
   const pendingAccounts = state.accounts.filter(a => a.status === 'pending' || a.status === 'rejected');
   const activeAccounts = state.accounts.filter(a => a.status === 'active');
+  const pendingFiltered = pendingAccounts.filter(a => accountMatch(a, pendingSearch));
+  const activeFiltered = activeAccounts.filter(a => accountMatch(a, activeSearch));
 
   // ---- 待处理组 ----
   const pbody = $('accounts-pending-tbody');
   const pempty = $('accounts-pending-empty');
   pbody.innerHTML = '';
-  pempty.classList.toggle('hidden', pendingAccounts.length > 0);
-  $('accounts-pending-count').textContent = pendingAccounts.length ? pendingAccounts.length + ' 个待处理' : '';
-  pendingAccounts.forEach(a => pbody.appendChild(pendingAccountRow(a)));
+  pempty.classList.toggle('hidden', pendingFiltered.length > 0);
+  pempty.textContent = pendingFiltered.length ? '' : (pendingAccounts.length ? '无匹配结果' : '暂无待处理账号');
+  $('accounts-pending-count').textContent = pendingSearch
+    ? `${pendingFiltered.length} 个匹配 / 共 ${pendingAccounts.length} 个待处理`
+    : (pendingAccounts.length ? pendingAccounts.length + ' 个待处理' : '');
+  pendingFiltered.forEach(a => pbody.appendChild(pendingAccountRow(a)));
 
   // ---- 正常账号组 ----
   const tbody = $('accounts-tbody');
   const empty = $('accounts-empty');
   tbody.innerHTML = '';
-  empty.classList.toggle('hidden', activeAccounts.length > 0);
-  activeAccounts.forEach(a => tbody.appendChild(accountRow(a)));
+  empty.classList.toggle('hidden', activeFiltered.length > 0);
+  empty.textContent = activeFiltered.length ? '' : (activeAccounts.length ? '无匹配结果' : '暂无账号，点击右上角「添加账号」开始配置');
+  $('accounts-active-count').textContent = activeSearch
+    ? `${activeFiltered.length} 个匹配 / 共 ${activeAccounts.length} 个`
+    : (activeAccounts.length ? activeAccounts.length + ' 个' : '');
+  activeFiltered.forEach(a => tbody.appendChild(accountRow(a)));
 
   // 统计卡（仅统计参与签到的正常账号）
   let success = 0, failed = 0, retrying = 0, waiting = 0;
@@ -1082,7 +1134,9 @@ document.addEventListener('DOMContentLoaded', updateThemeBtn);
 async function loadUsers() {
   try {
     const data = await api('/api/users');
-    renderUsers(data.users || [], data.builtin_admin || 'admin');
+    allUsers = data.users || [];
+    builtinAdminName = data.builtin_admin || 'admin';
+    renderUsers(allUsers, builtinAdminName);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1090,16 +1144,26 @@ function renderUsers(users, builtinAdmin) {
   const pendingUsers = users.filter(u => (u.pending_count || 0) > 0);
   const normalUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) > 0);
   const emptyUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) === 0);
+  const pendingFiltered = pendingUsers.filter(u => userMatch(u, usersPendingSearch));
+  const normalFiltered = normalUsers.filter(u => userMatch(u, usersNormalSearch));
+  const emptyFiltered = emptyUsers.filter(u => userMatch(u, usersVacantSearch));
   // 第一组：待审核用户
   const ptbody = $('users-pending-tbody');
   ptbody.innerHTML = '';
-  $('users-pending-empty').classList.toggle('hidden', pendingUsers.length > 0);
-  $('users-pending-count').textContent = pendingUsers.length ? `（${pendingUsers.length} 人待审核）` : '';
-  pendingUsers.forEach(u => ptbody.appendChild(userRow(u)));
+  $('users-pending-empty').classList.toggle('hidden', pendingFiltered.length > 0);
+  $('users-pending-empty').textContent = pendingFiltered.length ? '' : (pendingUsers.length ? '无匹配结果' : '暂无待审核用户');
+  $('users-pending-count').textContent = usersPendingSearch
+    ? `（${pendingFiltered.length} 人匹配 / 共 ${pendingUsers.length} 人待审核）`
+    : (pendingUsers.length ? `（${pendingUsers.length} 人待审核）` : '');
+  pendingFiltered.forEach(u => ptbody.appendChild(userRow(u)));
   // 第二组：正式用户（含内置管理员）
   const tbody = $('users-tbody');
   tbody.innerHTML = '';
-  $('users-empty').classList.toggle('hidden', normalUsers.length > 0);
+  $('users-empty').classList.toggle('hidden', normalFiltered.length > 0);
+  $('users-empty').textContent = normalFiltered.length ? '' : (normalUsers.length ? '无匹配结果' : '暂无注册用户');
+  $('users-normal-count').textContent = usersNormalSearch
+    ? `（${normalFiltered.length} 人匹配 / 共 ${normalUsers.length} 人）`
+    : (normalUsers.length ? `（${normalUsers.length} 人）` : '');
   const builtin = document.createElement('tr');
   builtin.className = 'border-b border-zinc-50 dark:border-zinc-700/50 bg-zinc-50/50 dark:bg-zinc-700/30';
   builtin.innerHTML = `
@@ -1109,14 +1173,39 @@ function renderUsers(users, builtinAdmin) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
     <td class="px-4 py-3 text-right text-xs text-zinc-400 dark:text-zinc-500">不可修改</td>`;
   tbody.appendChild(builtin);
-  normalUsers.forEach(u => tbody.appendChild(userRow(u)));
+  normalFiltered.forEach(u => tbody.appendChild(userRow(u)));
   // 第三组：空用户（未提交账号）
   const vbody = $('users-vacant-tbody');
   vbody.innerHTML = '';
-  $('users-vacant-empty').classList.toggle('hidden', emptyUsers.length > 0);
-  $('users-vacant-count').textContent = emptyUsers.length ? `（${emptyUsers.length} 人）` : '';
-  emptyUsers.forEach(u => vbody.appendChild(userRow(u)));
+  $('users-vacant-empty').classList.toggle('hidden', emptyFiltered.length > 0);
+  $('users-vacant-empty').textContent = emptyFiltered.length ? '' : (emptyUsers.length ? '无匹配结果' : '暂无空用户');
+  $('users-vacant-count').textContent = usersVacantSearch
+    ? `（${emptyFiltered.length} 人匹配 / 共 ${emptyUsers.length} 人）`
+    : (emptyUsers.length ? `（${emptyUsers.length} 人）` : '');
+  emptyFiltered.forEach(u => vbody.appendChild(userRow(u)));
 }
+
+// 搜索框实时过滤（输入即过滤；只过滤当前组，不影响其他组）
+$('pending-search').addEventListener('input', e => {
+  pendingSearch = e.target.value.trim().toLowerCase();
+  renderAccounts();
+});
+$('active-search').addEventListener('input', e => {
+  activeSearch = e.target.value.trim().toLowerCase();
+  renderAccounts();
+});
+$('users-pending-search').addEventListener('input', e => {
+  usersPendingSearch = e.target.value.trim().toLowerCase();
+  renderUsers(allUsers, builtinAdminName);
+});
+$('users-normal-search').addEventListener('input', e => {
+  usersNormalSearch = e.target.value.trim().toLowerCase();
+  renderUsers(allUsers, builtinAdminName);
+});
+$('users-vacant-search').addEventListener('input', e => {
+  usersVacantSearch = e.target.value.trim().toLowerCase();
+  renderUsers(allUsers, builtinAdminName);
+});
 
 // 用户行渲染（待审核组/正式组共用）
 function userRow(u) {
