@@ -3,6 +3,15 @@
 > **本文件为内部详细版**：含技术实现细节、安全漏洞原理与攻击路径留档，仅限开发者/管理员查看，**不对外展示**。
 > 网页端（页面底部「更新日志」弹窗）展示的是项目根 `CHANGELOG.md`（脱敏通俗版，适合普通用户阅读）。
 
+## v0.12.3（2026-08-12）
+- 批量开关按钮文案反转（显示点击后的动作：on→"关闭"/off→"开启"）
+- 批量操作条**常驻**（batchMode 开启时始终显示"已选 N 项"），显示由 renderAccounts/renderUsers 的 batchMode 切换控制（与 .batch-col 同处）；updateBatchBar 只更新计数；未勾选点操作 toast 提示
+- 搜索框居中：标题行去 justify-between + 搜索框 `w-full md:w-56 md:mx-auto`（手机端整行宽居中自然，桌面端 224px 居中）；手机端批量条 flex-wrap（内容多换行整齐）
+- 复选框列 `text-left`（td/th 靠左，紧贴表格左缘）
+- 内置管理员行操作列去 text-right（与账号页操作列统一居中）
+- 验证：PC DOM（开关"关闭"/条常驻 count=0/搜索 ml=mr=170.8/checkbox left/内置行 class 无 text-right）+ 手机（wrap/全宽 309px）+ 识图（搜索框全宽/批量条整齐/checkbox 靠左/居中；表格横滑滚动条为既有设计）
+- 开发流程：feature/batch-bar-optimize 分支（用户要求不用主分支）
+
 ## v0.12.2（2026-08-12）
 - **表格级居中对齐**（用户人工校验确认）：6 个表格 table 级 `text-center` + 操作列 `justify-center` + 表头 th 去 `text-right`；同时修复此前插入批量复选框时误删的 **thead tr class**（text-center/text-xs/bg-zinc-50/sticky top-0 恢复）——表头背景与吸顶回归
 - **邮箱/用户名长度限制**：EMAIL_RE 收紧为 `[\w.+-]{1,32}@...`（用户名部分 ≤32，常量 EMAIL_USER_MAX）；api_register/api_account_add 前置"用户名部分过长"错误；api_users_batch 校验 email ≤64；login.html 前端正则同步 + 提示文案
