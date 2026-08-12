@@ -295,9 +295,14 @@
       <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
     </div>
 
-    <!-- 修改我的密码 -->
+    <!-- 修改我的密码（默认收起，点击标题展开） -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">修改主管理员密码</div>
+      <button type="button" onclick="toggleMyPassword()" aria-expanded="false"
+              class="w-full flex items-center justify-between text-left">
+        <span class="text-sm font-medium text-zinc-700 dark:text-zinc-200">修改主管理员密码</span>
+        <span id="my-password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
+      </button>
+      <div id="my-password-body" class="hidden mt-4">
       <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
       <div class="space-y-3 max-w-sm">
         <div>
@@ -313,6 +318,7 @@
         <div class="flex items-center gap-3">
           <button onclick="saveMyPassword()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
         </div>
+      </div>
       </div>
     </div>
 
@@ -464,6 +470,8 @@
         </div>
         <div class="md:col-span-2 flex items-center gap-3 pt-1">
           <button id="mine-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+          <button id="mine-cancel-btn" type="button" onclick="cancelMineEdit()"
+                  class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
           <span id="mine-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
       </form>
@@ -1340,7 +1348,7 @@ function renderMine() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      <div class="mt-4 max-w-sm" id="cal-wrap-${esc(a.phone)}"></div>
+      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${esc(a.phone)}"></div>
     `;
     list.appendChild(card);
     if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
@@ -1444,17 +1452,34 @@ function openMineEditInline(i) {
   $('m-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
   $('mine-form-title').textContent = '编辑我的易班账号';
   $('mine-submit-btn').textContent = '保存修改';
+  $('mine-cancel-btn').classList.remove('hidden');
   $('mine-done').classList.add('hidden');
   $('mine-form').classList.remove('hidden');
   $('mine-form').scrollIntoView({ behavior: 'smooth' });
+}
+
+// 取消编辑：恢复提交态并收起表单（loadMine 按账号数重新隐藏）
+function cancelMineEdit() {
+  resetMineForm();
+  loadMine();
+  toast('已取消编辑');
 }
 
 function resetMineForm() {
   mineEditingIdx = null;
   $('mine-form-title').textContent = '提交我的易班账号';
   $('mine-submit-btn').textContent = '提交账号';
+  $('mine-cancel-btn').classList.add('hidden');
   $('m-password').placeholder = '用于自动登录签到';
   $('m-code').placeholder = '64 位十六进制识别码';
+}
+
+// 修改主管理员密码：默认收起，点击标题展开/收起
+function toggleMyPassword() {
+  const body = $('my-password-body');
+  const hidden = body.classList.toggle('hidden');
+  $('my-password-arrow').textContent = hidden ? '▸' : '▾';
+  document.querySelector('[onclick="toggleMyPassword()"]').setAttribute('aria-expanded', String(!hidden));
 }
 
 $('mine-form').addEventListener('submit', async (e) => {

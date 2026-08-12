@@ -3,6 +3,14 @@
 > **本文件为内部详细版**：含技术实现细节、安全漏洞原理与攻击路径留档，仅限开发者/管理员查看，**不对外展示**。
 > 网页端（页面底部「更新日志」弹窗）展示的是项目根 `CHANGELOG.md`（脱敏通俗版，适合普通用户阅读）。
 
+## v0.11.1（2026-08-12）
+- 修复普通用户页 PC 端日历/日志双栏过窄：根因 cal-wrap `max-w-sm`(384px) 锁死容器，`lg:grid-cols-2` 两列各 184px 致格子 22px、日志窄条换行；改 `max-w-sm lg:max-w-none` 后容器 781px、两列各 383px、格子 51px（实测）；index.html 管理端「我的账号」同根因一并修
+- 账号卡片操作区 `items-start` → `items-center`（与左侧三行信息垂直居中）
+- 编辑表单新增「取消」按钮（user.html cancel-edit-btn + cancelEdit()；index.html mine-cancel-btn + cancelMineEdit()，均 reset 后重渲染收起表单）
+- 修改密码默认收起点击展开（user.html togglePassword / index.html toggleMyPassword，▸/▾ 箭头 + aria-expanded）；注意 classList.toggle 返回值是 hidden 状态，箭头逻辑按 hidden 判定
+- 手机端图例 gap-x-3→gap-x-2 微调
+- 验证：node --check 通过；浏览器实测双端全项（密码收起循环 ▸→▾→▸、编辑取消出现/隐藏、管理端同款）；识图复验 PC 修复生效
+
 ## v0.11.0（2026-08-12）
 - 品牌 logo 替换：用户提供 Q 版角色图（544×544 RGBA 透明底，无文字）→ web/static/vendor/logo.png；替换 index.html 侧边栏品牌区（蓝色方块 SVG → img，w-12 h-12=48px）与 user.html 顶栏（w-9 h-9=36px）
 - 教训：32px 缩放下角色细节全糊（识图读作"像素猫"）——放大到 48px 后角色可辨；验证时命中 Windows 端口共享坑（旧进程服务旧模板，需杀全部 LISTENING PID 重启）
