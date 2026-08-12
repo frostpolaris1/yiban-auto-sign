@@ -69,6 +69,8 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 
 # 普通用户邮箱格式校验
 EMAIL_RE = re.compile(r"^[\w.+-]+@[\w-]+(\.[\w-]+)+$")
+# 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
+PHONE_RE = re.compile(r"^1\d{10}$")
 
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
 SIGN_MIN_INTERVAL = 30
@@ -145,7 +147,7 @@ def write_env_key(env_path, key, value):
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8") as f:
             lines = f.read().splitlines()
-    out = [l for l in lines if not l.strip().startswith(f"{key}=")]
+    out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
     if value:
         out.append(f"{key}={value}")
     _atomic_write(env_path, "\n".join(out) + "\n")
@@ -162,7 +164,7 @@ def ensure_secret_key(env_path):
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8") as f:
             lines = f.read().splitlines()
-    if not any(l.strip().startswith("YIBAN_SECRET_KEY=") for l in lines):
+    if not any(ln.strip().startswith("YIBAN_SECRET_KEY=") for ln in lines):
         lines.append(f"YIBAN_SECRET_KEY={key}")
     _atomic_write(env_path, "\n".join(lines) + "\n")
     logger.info("已自动生成 YIBAN_SECRET_KEY 并写入 %s", env_path)
@@ -259,6 +261,8 @@ def validate_account(data, require_password):
     password = str(data.get("password", "")).strip()
     if not phone:
         return "手机号为必填项", None
+    if not PHONE_RE.match(phone):
+        return "手机号格式不正确（应为 1 开头的 11 位数字）", None
     if require_password and not password:
         return "密码为必填项", None
     return None, {
@@ -353,7 +357,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.9.4"
+APP_VERSION = "0.9.5"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -421,6 +425,22 @@ def create_app():
             session["csrf_token"] = secrets.token_hex(32)
         return session["csrf_token"]
 
+    def _is_same_origin():
+        """登录/注册等未登录写接口的同源校验：跨站表单提交的 POST 必然携带 Origin 头。
+
+        浏览器同源 fetch POST 也携带 Origin；无 Origin 的请求（同站导航、curl）放行。
+        """
+        origin = request.headers.get("Origin")
+        if not origin:
+            return True
+        from urllib.parse import urlparse
+
+        try:
+            o = urlparse(origin)
+        except ValueError:
+            return False
+        return (o.scheme, o.netloc) == (request.scheme, request.host)
+
     @app.before_request
     def check_csrf():
         if request.method not in ("POST", "PUT", "DELETE"):
@@ -428,6 +448,15 @@ def create_app():
         if not request.path.startswith("/api/"):
             return
         if request.path in ("/api/login", "/api/register"):
+            # 未登录态无 session token：用同源校验阻断跨站登录/注册 CSRF
+            if not _is_same_origin():
+                logger.warning(
+                    "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
+                    request.remote_addr,
+                    request.path,
+                    request.headers.get("Origin"),
+                )
+                return jsonify({"error": "请求来源校验失败"}), 403
             return
         token = request.headers.get("X-CSRF-Token", "")
         sess_token = session.get("csrf_token", "")
@@ -1147,10 +1176,12 @@ def create_app():
         # 子进程读取与主进程相同的账号文件（--config 自定义路径时保持一致）
         env["YIBAN_ACCOUNTS_FILE"] = ACCOUNTS_FILE
         log_fh = None
-        try:
-            log_fh = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
-        except OSError:
-            pass  # 日志不可写时丢弃，不影响签到执行
+        from contextlib import suppress
+
+        with suppress(OSError):
+            log_fh = open(
+                LOG_FILE, "a", encoding="utf-8", buffering=1
+            )  # 日志不可写时丢弃，不影响签到执行
         try:
             subprocess.Popen(
                 [sys.executable, script, "--only", phone],
