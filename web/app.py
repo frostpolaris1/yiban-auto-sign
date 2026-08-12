@@ -74,8 +74,9 @@ RATE_MAX = 60  # 窗口内最大请求数（正常用户远低于此）
 REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
 REGISTER_MAX = 5  # 窗口内最大成功注册数
 
-# 普通用户邮箱格式校验
-EMAIL_RE = re.compile(r"^[\w.+-]+@[\w-]+(\.[\w-]+)+$")
+# 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
+EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$")
+EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
 # 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
 PHONE_RE = re.compile(r"^1\d{10}$")
 
@@ -418,7 +419,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.12.1"
+APP_VERSION = "0.12.2"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -663,6 +664,8 @@ def create_app():
         data = request.get_json(silent=True) or {}
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
+        if len(email.split("@")[0]) > EMAIL_USER_MAX:
+            return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
         if not EMAIL_RE.match(email) or len(email) > 64:
             return jsonify({"error": "请输入有效的邮箱地址"}), 400
         if len(password) < 6:
@@ -794,6 +797,8 @@ def create_app():
             email = str(data.get("email", "")).strip().lower()
             temp_password = ""
             if email:
+                if len(email.split("@")[0]) > EMAIL_USER_MAX:
+                    return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
                 if not EMAIL_RE.match(email) or len(email) > 64:
                     return jsonify({"error": "用户邮箱格式不正确"}), 400
                 # 该用户已有账号（每人限 1 个）则拒绝
@@ -1333,6 +1338,8 @@ def create_app():
                 return jsonify({"error": "未知操作"}), 400
             if not isinstance(emails, list) or not emails:
                 return jsonify({"error": "请选择要操作的用户"}), 400
+            if any(not isinstance(e, str) or len(e) > 64 for e in emails):
+                return jsonify({"error": "邮箱格式不正确"}), 400
             password = str(data.get("password", ""))
             if action == "reset_password" and len(password) < 6:
                 return jsonify({"error": "新密码至少 6 位"}), 400
