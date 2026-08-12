@@ -297,7 +297,7 @@
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">批量操作</div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后，账号管理与用户管理页面显示多选框，支持批量通过/拒绝/删除、批量设管理员/重置密码等</p>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后，账号管理与用户管理页面显示多选框，支持批量通过/拒绝/删除、批量设管理员/重置密码等。默认关闭，开启仅本次会话有效，刷新页面后自动恢复关闭</p>
         </div>
         <button id="batch-mode-btn" onclick="toggleBatchMode()"
                 class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
@@ -590,7 +590,7 @@ const state = {
   states: {},         // {phone: '✅'|'❌'|'🔄'|'➖'}
   editingIndex: null, // null=添加
   delays: { start: 0, gap: 0 },
-  batchMode: false,   // 批量多选开关（.env YIBAN_BATCH_MODE 持久化）
+  batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
   isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
   deletedCollapsed: false, // 待删除账号表格折叠状态（标题栏 ▾/▸ 切换）
 };
@@ -1168,7 +1168,7 @@ async function loadSettings() {
     const data = await api('/api/settings');
     state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
-    state.batchMode = !!data.batch_mode;
+    state.batchMode = false;  // 批量多选会话级开关：每次进入默认关闭，不读取持久化状态
     renderDelayUI();
     renderBatchModeUI();
     // 批量开关影响表格复选框渲染：加载完成后重绘（页面初始加载也会执行）
@@ -1190,7 +1190,9 @@ function renderBatchModeUI() {
 function toggleBatchMode() {
   state.batchMode = !state.batchMode;
   renderBatchModeUI();
-  saveSettings(true);
+  renderAccounts();
+  renderUsers(allUsers, builtinAdminName);
+  // 会话级开关：不写入配置，刷新/重进页面自动恢复关闭
 }
 
 function renderDelayUI() {
@@ -1225,7 +1227,6 @@ async function saveSettings(silent) {
       body: JSON.stringify({
         start_delay_max: read('start'),
         gap_max: read('gap'),
-        batch_mode: state.batchMode,
       }),
     });
     state.delays.start = read('start');
