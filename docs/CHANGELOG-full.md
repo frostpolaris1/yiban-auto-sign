@@ -3,6 +3,10 @@
 > **本文件为内部详细版**：含技术实现细节、安全漏洞原理与攻击路径留档，仅限开发者/管理员查看，**不对外展示**。
 > 网页端（页面底部「更新日志」弹窗）展示的是项目根 `CHANGELOG.md`（脱敏通俗版，适合普通用户阅读）。
 
+## v0.10.4（2026-08-12）
+- 修复管理员页公告横幅与下方标题间距过近（移动端反馈）：公告条 `mb-3`(12px) → `mb-5 md:mb-4`（移动端 20px / 桌面端 16px）；computed margin 实测 390px 视口 20px、1280px 视口 16px
+- 注：user.html / login.html 公告条同为 mb-3 结构（静态/非 sticky），用户未反馈，暂未调整
+
 ## v0.10.3（2026-08-12）
 - 修复 MiSans 渲染偏黑：根因是 npm 包字重编号（330/380/450，MiSans 体系）与 CSS 请求（400/500/600）错位——浏览器把 400 匹配到 380（Medium 字形）、500 匹配到 450（Demibold 字形），全站偏粗。修正 misans.css 映射：330→Regular 文件、380 档改声明 500 且 src 换 Regular 文件（细字形）、450 档改声明 600（Demibold 保留标题粗体）；校验字重分布 330/500/600 各 100 face
 - 修复低分屏模糊：woff2 无 hinting，Windows 桌面等低分屏渲染模糊——新增 `@media (max-resolution: 1.5dppx)` 回退系统字体（微软雅黑 ClearType 优化），高分屏（手机/Retina）保持 MiSans；body 补 -webkit-font-smoothing/-moz-osx-font-smoothing
