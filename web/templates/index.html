@@ -712,16 +712,21 @@ function accountRow(a) {
     <td class="px-4 py-3">${statusBadge(a)}</td>
     <td class="px-4 py-3">
       <div class="flex items-center justify-end">
-        <button title="更多操作" onclick="openRowMenu(event, [
-          {label: '上移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(${a.index}, -1)},
-          {label: '下移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(${a.index}, 1)},
-          {label: '手动签到', cls: 'text-blue-600 dark:text-blue-400', fn: () => doSignin('${a.phone}')},
-          {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(${a.index})},
-          {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(${a.index})},
-        ])" class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
+        <button title="更多操作" data-phone="${esc(a.phone)}" onclick="accountRowMenu(event, this, ${a.index})"
+                class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
       </div>
     </td>`;
   return tr;
+}
+
+function accountRowMenu(evt, btn, idx) {
+  openRowMenu(evt, [
+    {label: '上移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, -1)},
+    {label: '下移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, 1)},
+    {label: '手动签到', cls: 'text-blue-600 dark:text-blue-400', fn: () => doSignin(btn.dataset.phone)},
+    {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(idx)},
+    {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(idx)},
+  ]);
 }
 
 async function reviewAccount(idx, action) {
@@ -1128,15 +1133,22 @@ function userRow(u) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${u.account_count}</td>
     <td class="px-4 py-3">
       <div class="flex items-center justify-end">
-        <button title="更多操作" onclick="openRowMenu(event, [
-          {label: '${isAdmin ? '取消管理员' : '设为管理员'}', cls: '${isAdmin ? 'text-zinc-600 dark:text-zinc-300' : 'text-blue-600 dark:text-blue-400'}', fn: () => setUserRole('${esc(u.email)}', '${isAdmin ? 'user' : 'admin'}')},
-          {label: '重置密码', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => resetUserPassword('${esc(u.email)}')},
-          {label: '清空账号', cls: 'text-amber-600 dark:text-amber-400', fn: () => deleteUserAccounts('${esc(u.email)}')},
-          {label: '删除用户', cls: 'text-red-600 dark:text-red-400', fn: () => deleteUserFull('${esc(u.email)}')},
-        ])" class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
+        <button title="更多操作" data-email="${esc(u.email)}" data-role="${u.role}" onclick="userRowMenu(event, this)"
+                class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
       </div>
     </td>`;
   return tr;
+}
+
+function userRowMenu(evt, btn) {
+  const email = btn.dataset.email;
+  const isAdmin = btn.dataset.role === 'admin';
+  openRowMenu(evt, [
+    {label: isAdmin ? '取消管理员' : '设为管理员', cls: isAdmin ? 'text-zinc-600 dark:text-zinc-300' : 'text-blue-600 dark:text-blue-400', fn: () => setUserRole(email, isAdmin ? 'user' : 'admin')},
+    {label: '重置密码', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => resetUserPassword(email)},
+    {label: '清空账号', cls: 'text-amber-600 dark:text-amber-400', fn: () => deleteUserAccounts(email)},
+    {label: '删除用户', cls: 'text-red-600 dark:text-red-400', fn: () => deleteUserFull(email)},
+  ]);
 }
 
 async function setUserRole(email, role) {
@@ -1215,7 +1227,7 @@ function renderMine() {
     const card = document.createElement('div');
     card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl bg-zinc-50/50 dark:bg-zinc-700/30 p-4';
     card.innerHTML = `
-      <div class="mb-3" id="cal-wrap-${a.phone}"></div>
+      <div class="mb-3" id="cal-wrap-${esc(a.phone)}"></div>
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="flex items-center gap-3">
           <span class="text-lg leading-none">${a.state_icon}</span>
@@ -1238,7 +1250,7 @@ function renderMine() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      <div class="mt-4 max-w-sm" id="cal-wrap-${a.phone}"></div>
+      <div class="mt-4 max-w-sm" id="cal-wrap-${esc(a.phone)}"></div>
     `;
     list.appendChild(card);
     if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
@@ -1250,7 +1262,8 @@ const calState = {};  // phone -> {year, month}
 
 function calPad(n) { return String(n).padStart(2, '0'); }
 
-function calShift(phone, delta) {
+function calShift(btn, delta) {
+  const phone = btn.dataset.phone;
   const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   st.month += delta;
   if (st.month < 1) { st.month = 12; st.year--; }
@@ -1272,8 +1285,8 @@ function renderCalendar(phone) {
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
-            <button onclick="calShift('${phone}', -1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
-            <button onclick="calShift('${phone}', 1)" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+            <button onclick="calShift(this, -1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
+            <button onclick="calShift(this, 1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
           </div>
         </div>
         <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
@@ -1300,7 +1313,7 @@ function renderCalendar(phone) {
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
       grid.insertAdjacentHTML('beforeend', `
-        <div onclick="calLoadLog('${phone}', '${date}')" title="${date}"
+        <div onclick="calLoadLog(this, '${date}')" data-phone="${esc(phone)}" title="${date}"
              class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
           <span>${d}</span>
         </div>`);
@@ -1308,7 +1321,8 @@ function renderCalendar(phone) {
   }).catch(() => {});
 }
 
-function calLoadLog(phone, date) {
+function calLoadLog(btn, date) {
+  const phone = btn.dataset.phone;
   const box = $('cal-log-' + phone);
   // 周日无需签到，直接提示（不查询日志）
   if (new Date(date + 'T00:00:00').getDay() === 0) {
