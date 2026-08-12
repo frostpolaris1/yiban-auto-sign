@@ -3,6 +3,13 @@
 > **本文件为内部详细版**：含技术实现细节、安全漏洞原理与攻击路径留档，仅限开发者/管理员查看，**不对外展示**。
 > 网页端（页面底部「更新日志」弹窗）展示的是项目根 `CHANGELOG.md`（脱敏通俗版，适合普通用户阅读）。
 
+## v0.12.0（2026-08-12）
+- **软删除撤销**：accounts.json 账号新增 `deleted`/`deleted_at`；`DELETED_RETENTION_DAYS=7`；`load_accounts()` 惰性清理超期项（锁内写回）；管理员 DELETE 改软删除、新增 `restore`/`purge` API；signin.py 过滤 deleted（不参与签到）；单账号限制排除 deleted（用户可重新提交）；用户端显示「已删除」状态徽章（隐藏编辑/删除）；用户自删仍物理删除；管理端「待删除账号」分组（搜索+限高+恢复/彻底删除）
+- **批量多选**：`.env YIBAN_BATCH_MODE=on` 开关（设置页持久化）；`POST /api/accounts/batch`（approve/reject/purge/restore，reject 需共同理由）；`POST /api/users/batch`（set_admin/unset_admin/reset_password/delete，内置管理员跳过+防呆）；前端 6 表复选框列（batchMode 时渲染，行+表头全选）+ 批量操作条（选中数/按表定制按钮）
+- **设置页**：服务器时间与签到窗口卡片置顶（第一位），批量操作开关卡片第二
+- 已知问题：toggleSelectAll 初版误全选全部账号（应只选当前组）已修复；IAB 交互不稳定（locator/dom_cua 反复超时），浏览器侧以 DOM 断言+API 断言为准
+- 验证：API 全流程（软删/恢复/彻底删/批量 approve/批量设管理员+重置密码/用户端 deleted 状态+重提交）✓；浏览器（复选框渲染 6 表头+23 行、批量条出现、待删除组 3 行、设置页顺序+开关"开启"）✓
+
 ## v0.11.1（2026-08-12）
 - 修复普通用户页 PC 端日历/日志双栏过窄：根因 cal-wrap `max-w-sm`(384px) 锁死容器，`lg:grid-cols-2` 两列各 184px 致格子 22px、日志窄条换行；改 `max-w-sm lg:max-w-none` 后容器 781px、两列各 383px、格子 51px（实测）；index.html 管理端「我的账号」同根因一并修
 - 账号卡片操作区 `items-start` → `items-center`（与左侧三行信息垂直居中）

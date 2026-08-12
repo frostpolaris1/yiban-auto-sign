@@ -267,7 +267,12 @@ def _load_accounts_from_file():
     if not isinstance(raw, list):
         raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 应为 JSON 数组")
     # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）
-    active_raw = [item for item in raw if item.get("status") != "pending"]
+    # 与待删除账号（deleted：网页端软删除，保留期内可恢复，不参与签到）
+    active_raw = [
+        item
+        for item in raw
+        if item.get("status") != "pending" and not item.get("deleted")
+    ]
     accounts = [_parse_account_dict(item) for item in active_raw]
     logger.info(f"已从 {ACCOUNTS_FILE} 加载 {len(accounts)} 个账号")
     return accounts

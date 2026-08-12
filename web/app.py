@@ -46,6 +46,9 @@ STATUS_PENDING = "pending"  # 待审核（不参与定时签到）
 STATUS_ACTIVE = "active"  # 已生效（参与定时签到）
 STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑重新提交）
 
+# 软删除保留期：管理员删除的账号进入待删除状态，超期自动彻底清除
+DELETED_RETENTION_DAYS = 7
+
 # 状态图标（与 tui/app.py 一致；前端渲染使用，后端仅用于日志解析）
 SIGN_START = (6, 30)
 SIGN_END = (7, 50)
@@ -213,9 +216,28 @@ _file_lock = threading.RLock()
 
 
 def load_accounts():
-    """读取 accounts.json，返回账号 dict 列表；文件缺失/非法返回 []。"""
+    """读取 accounts.json，返回账号 dict 列表；文件缺失/非法返回 []。
+
+    惰性清理：软删除超过保留期的账号在此物理清除（读取即生效）。
+    """
     with _file_lock:
-        return _load_json_list(ACCOUNTS_FILE)
+        accounts = _load_json_list(ACCOUNTS_FILE)
+        expired = [
+            a for a in accounts if a.get("deleted") and _deleted_expired(a.get("deleted_at", ""))
+        ]
+        if expired:
+            accounts = [a for a in accounts if a not in expired]
+            _atomic_write(ACCOUNTS_FILE, json.dumps(accounts, ensure_ascii=False, indent=2) + "\n")
+        return accounts
+
+
+def _deleted_expired(deleted_at):
+    """软删除是否已超过保留期（deleted_at 缺失/非法按未过期处理）。"""
+    try:
+        t = datetime.fromisoformat(deleted_at)
+    except (TypeError, ValueError):
+        return False
+    return (datetime.now() - t).days >= DELETED_RETENTION_DAYS
 
 
 def save_accounts(accounts):
@@ -271,6 +293,9 @@ def mask_account(acc, index):
         "owner_display": _owner_display_of(acc.get("owner", "admin")),
         "status": acc.get("status", STATUS_ACTIVE),
         "reject_reason": acc.get("reject_reason", ""),
+        # 软删除：管理员删除后进入待删除状态（保留期内可恢复）
+        "deleted": bool(acc.get("deleted")),
+        "deleted_at": acc.get("deleted_at", ""),
     }
 
 
@@ -393,7 +418,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.11.1"
+APP_VERSION = "0.12.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -842,17 +867,131 @@ def create_app():
                 {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
             )
 
+    @app.route("/api/accounts/batch", methods=["POST"])
+    def api_accounts_batch():
+        """批量操作账号（批量多选功能）：approve/reject 审核，purge 彻底删除。
+
+        body: {"action": ..., "ids": [...], "reason": "批量拒绝理由"}
+        """
+        with _file_lock:
+            accounts = load_accounts()
+            data = request.get_json(silent=True) or {}
+            action = data.get("action")
+            ids = data.get("ids") or []
+            if action not in ("approve", "reject", "purge", "restore"):
+                return jsonify({"error": "未知操作"}), 400
+            if not isinstance(ids, list) or not ids:
+                return jsonify({"error": "请选择要操作的账号"}), 400
+            reason = str(data.get("reason", "")).strip()[:100]
+            if action == "reject" and not reason:
+                return jsonify({"error": "批量拒绝需要填写理由"}), 400
+            valid = sorted(
+                {i for i in ids if isinstance(i, int) and 0 <= i < len(accounts)}, reverse=True
+            )
+            if not valid:
+                return jsonify({"error": "所选账号不存在"}), 404
+            done = 0
+            for i in valid:
+                acc = accounts[i]
+                if action == "approve":
+                    if acc.get("status") in (STATUS_PENDING, STATUS_REJECTED):
+                        acc["status"] = STATUS_ACTIVE
+                        acc.pop("reject_reason", None)
+                        done += 1
+                elif action == "reject":
+                    if acc.get("status") in (STATUS_PENDING, STATUS_REJECTED):
+                        acc["status"] = STATUS_REJECTED
+                        if reason:
+                            acc["reject_reason"] = reason
+                        else:
+                            acc.pop("reject_reason", None)
+                        done += 1
+                elif action == "purge":
+                    accounts.pop(i)  # 倒序处理下标稳定
+                    done += 1
+                elif action == "restore" and acc.get("deleted"):
+                    acc.pop("deleted", None)
+                    acc.pop("deleted_at", None)
+                    done += 1
+            save_accounts(accounts)
+            logger.info("批量%s账号 %d 个", action, done)
+            msg = {
+                "approve": f"已通过 {done} 个账号",
+                "reject": f"已拒绝 {done} 个账号",
+                "purge": f"已彻底删除 {done} 个账号",
+                "restore": f"已恢复 {done} 个账号",
+            }[action]
+            return jsonify(
+                {
+                    "ok": True,
+                    "msg": msg,
+                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
+                }
+            )
+
     @app.route("/api/accounts/<int:idx>", methods=["DELETE"])
     def api_account_delete(idx):
+        """删除账号（软删除）：进入待删除状态，保留期内可恢复，超期自动彻底清除。"""
         with _file_lock:
             accounts = load_accounts()
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
+            acc = accounts[idx]
+            acc["deleted"] = True
+            acc["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+            save_accounts(accounts)
+            logger.info(
+                "软删除账号 %s（%s 天内可恢复）", acc.get("phone", ""), DELETED_RETENTION_DAYS
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "msg": f"已删除「{acc.get('name', '')}」，{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
+                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
+                }
+            )
+
+    @app.route("/api/accounts/<int:idx>/restore", methods=["POST"])
+    def api_account_restore(idx):
+        """恢复待删除账号：撤销软删除，回到删除前状态。"""
+        with _file_lock:
+            accounts = load_accounts()
+            if not 0 <= idx < len(accounts):
+                return jsonify({"error": "账号不存在"}), 404
+            acc = accounts[idx]
+            if not acc.get("deleted"):
+                return jsonify({"error": "该账号不在待删除状态"}), 400
+            acc.pop("deleted", None)
+            acc.pop("deleted_at", None)
+            save_accounts(accounts)
+            logger.info("恢复账号 %s", acc.get("phone", ""))
+            return jsonify(
+                {
+                    "ok": True,
+                    "msg": f"已恢复「{acc.get('name', '')}」",
+                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
+                }
+            )
+
+    @app.route("/api/accounts/<int:idx>/purge", methods=["POST"])
+    def api_account_purge(idx):
+        """彻底删除待删除账号：立即物理清除，不可恢复。"""
+        with _file_lock:
+            accounts = load_accounts()
+            if not 0 <= idx < len(accounts):
+                return jsonify({"error": "账号不存在"}), 404
+            acc = accounts[idx]
+            if not acc.get("deleted"):
+                return jsonify({"error": "该账号不在待删除状态"}), 400
             removed = accounts.pop(idx)
             save_accounts(accounts)
-            logger.info("删除账号 %s", removed.get("phone", ""))
+            logger.info("彻底删除账号 %s", removed.get("phone", ""))
             return jsonify(
-                {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
+                {
+                    "ok": True,
+                    "msg": f"已彻底删除「{removed.get('name', '')}」",
+                    "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
+                }
             )
 
     @app.route("/api/accounts/<int:idx>/review", methods=["POST"])
@@ -912,10 +1051,18 @@ def create_app():
 
     # ---- 普通用户：我的账号（提交 / 查看 / 编辑 / 删除，仅限本人）----
     def _my_account_indices_of(accounts):
-        """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。"""
+        """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。
+
+        管理员：owner 'admin' 或本人邮箱，不含待删除；普通用户：本人邮箱（含待删除，
+        用于展示「已删除」状态；单账号限制在提交处另行排除）。
+        """
         email = session.get("username", "").lower()
         if _current_role() == "admin":
-            return [i for i, a in enumerate(accounts) if a.get("owner") in ("admin", email)]
+            return [
+                i
+                for i, a in enumerate(accounts)
+                if a.get("owner") in ("admin", email) and not a.get("deleted")
+            ]
         return [i for i, a in enumerate(accounts) if a.get("owner") == email]
 
     def _my_account_indices():
@@ -958,6 +1105,8 @@ def create_app():
                     "state_icon": states.get(phone, "⏳"),
                     "queue_ahead": queue_ahead,
                     "logs": my_logs[-5:],
+                    "deleted": bool(acc.get("deleted")),
+                    "deleted_at": acc.get("deleted_at", ""),
                 }
             )
         return result
@@ -976,8 +1125,10 @@ def create_app():
         """
         with _file_lock:
             accounts = load_accounts()
-            # 单账号限制：已有提交（含待审核/已生效）则拒绝
-            if _my_account_indices_of(accounts):
+            # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
+            email = session.get("username", "").lower()
+            has_live = any(a.get("owner") == email and not a.get("deleted") for a in accounts)
+            if has_live:
                 return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
             data = request.get_json(silent=True) or {}
             err, clean = validate_account(data, require_password=True)
@@ -1167,6 +1318,61 @@ def create_app():
             }
         )
 
+    @app.route("/api/users/batch", methods=["POST"])
+    def api_users_batch():
+        """批量操作注册用户：set_admin/unset_admin/reset_password/delete。
+
+        body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
+        """
+        with _file_lock:
+            users = load_users()
+            data = request.get_json(silent=True) or {}
+            action = data.get("action")
+            emails = data.get("emails") or []
+            if action not in ("set_admin", "unset_admin", "reset_password", "delete"):
+                return jsonify({"error": "未知操作"}), 400
+            if not isinstance(emails, list) or not emails:
+                return jsonify({"error": "请选择要操作的用户"}), 400
+            password = str(data.get("password", ""))
+            if action == "reset_password" and len(password) < 6:
+                return jsonify({"error": "新密码至少 6 位"}), 400
+            builtin = _builtin_admin_email()
+            done = 0
+            for email in emails:
+                target = _find_user(users, email)
+                if not target or email == builtin:  # 内置管理员不可批量操作
+                    continue
+                if action == "set_admin":
+                    target["role"] = "admin"
+                    done += 1
+                elif action == "unset_admin":
+                    admins = [u for u in users if u.get("role") == "admin"]
+                    # 防呆：内置管理员不存在且这是最后一个注册管理员时跳过
+                    if target.get("role") == "admin" and len(admins) <= 1 and not builtin:
+                        continue
+                    target["role"] = "user"
+                    done += 1
+                elif action == "reset_password":
+                    target["password_hash"] = generate_password_hash(password)
+                    target["pw_version"] = target.get("pw_version", 1) + 1
+                    done += 1
+                elif action == "delete":
+                    users = [u for u in users if u.get("email") != email]
+                    done += 1
+            save_users(users)
+            if action == "delete":
+                # 同步清除这些用户提交的易班账号
+                accounts = [a for a in load_accounts() if a.get("owner") not in emails]
+                save_accounts(accounts)
+            logger.info("批量%s用户 %d 个", action, done)
+            msg = {
+                "set_admin": f"已设为管理员 {done} 个用户",
+                "unset_admin": f"已取消管理员 {done} 个用户",
+                "reset_password": f"已重置密码 {done} 个用户",
+                "delete": f"已删除 {done} 个用户",
+            }[action]
+            return jsonify({"ok": True, "msg": msg})
+
     @app.route("/api/users/<email>/role", methods=["POST"])
     def api_user_role(email):
         """设为管理员 / 取消管理员。防呆：内置管理员不可改；至少保留 1 个管理员。"""
@@ -1318,6 +1524,8 @@ def create_app():
                 "gap_max": load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", 0),
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
+                # 批量操作开关（持久化 .env，默认关闭）
+                "batch_mode": read_env(ENV_FILE).get("YIBAN_BATCH_MODE", "").strip() == "on",
             }
         )
 
@@ -1334,7 +1542,10 @@ def create_app():
         gap = min(max(gap, 0), 3600)
         write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", start)
         write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", gap)
-        logger.info("更新随机延迟: 启动=%s 间隔=%s", start, gap)
+        # 批量操作开关
+        batch_mode = "on" if data.get("batch_mode") else ""
+        write_env_key(ENV_FILE, "YIBAN_BATCH_MODE", batch_mode)
+        logger.info("更新设置: 启动=%s 间隔=%s 批量操作=%s", start, gap, batch_mode or "关")
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----

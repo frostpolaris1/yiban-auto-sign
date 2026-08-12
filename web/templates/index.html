@@ -161,10 +161,11 @@
                class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
+      <div id="batch-bar-pending" class="hidden items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-pending" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('pending','approve')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">通过</button> <button onclick="batchAccounts('pending','reject')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">拒绝</button> <button onclick="batchAccounts('pending','purge')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">彻底删除</button> <button onclick="clearBatch('pending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
     <table class="w-full text-sm min-w-[760px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
+            <tr><th class="px-2 py-3 w-8 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('pending', this)" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium">状态</th>
               <th class="px-4 py-3 font-medium">名称</th>
               <th class="px-4 py-3 font-medium">手机号</th>
@@ -188,11 +189,12 @@
         </div>
         <input id="active-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
                class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+      <div id="batch-bar-active" class="hidden items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-active" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('active','purge')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">彻底删除</button> <button onclick="clearBatch('active')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       </div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
    <table class="w-full text-sm min-w-[1000px]">
         <thead>
-          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
+          <tr><th class="px-2 py-3 w-8 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('active', this)" class="accent-blue-500"></th>
             <th class="px-4 py-3 font-medium">状态</th>
             <th class="px-4 py-3 font-medium">#</th>
             <th class="px-4 py-3 font-medium">名称</th>
@@ -208,6 +210,36 @@
         <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">
           暂无账号，点击右上角「添加账号」开始配置
         </div>
+      </div>
+    </div>
+
+    <!-- 待删除账号组（软删除：保留期内可恢复） -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm mt-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
+        <div class="flex items-center gap-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待删除账号</div>
+          <span id="accounts-deleted-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        </div>
+        <input id="deleted-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
+               class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">已删除的账号保留 7 天，可随时恢复；超期将自动彻底清除</p>
+      <div id="batch-bar-deleted" class="hidden items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-deleted" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('deleted','restore')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">恢复</button> <button onclick="batchAccounts('deleted','purge')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">彻底删除</button> <button onclick="clearBatch('deleted')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
+        <table class="w-full text-sm min-w-[760px]">
+          <thead>
+            <tr><th class="px-2 py-3 w-8 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('deleted', this)" class="accent-blue-500"></th>
+              <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium">名称</th>
+              <th class="px-4 py-3 font-medium">手机号</th>
+              <th class="px-4 py-3 font-medium">用户名</th>
+              <th class="px-4 py-3 font-medium">删除时间</th>
+              <th class="px-4 py-3 font-medium text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-deleted-tbody"></tbody>
+        </table>
+        <div id="accounts-deleted-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无待删除账号</div>
       </div>
     </div>
   </section>
@@ -249,6 +281,26 @@
       <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">随机延迟用于打散"每天固定秒级执行"的脚本特征（防风控纵深防御）</p>
     </div>
 
+    <!-- 服务器时间与签到状态（置顶） -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
+      <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
+      <div class="text-sm mt-2" id="sign-status">…</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
+    </div>
+
+    <!-- 批量操作开关 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">批量操作</div>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后，账号管理与用户管理页面显示多选框，支持批量通过/拒绝/删除、批量设管理员/重置密码等</p>
+        </div>
+        <button id="batch-mode-btn" onclick="toggleBatchMode()"
+                class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
+      </div>
+    </div>
+
     <!-- 随机延迟 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-4">随机延迟（写入 .env，cron 下次触发自动生效）</div>
@@ -285,14 +337,6 @@
         </button>
         <span id="ping-result" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500"></span>
       </div>
-    </div>
-
-    <!-- 服务器时间与签到状态 -->
-    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
-      <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
-      <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
     </div>
 
     <!-- 修改我的密码（默认收起，点击标题展开） -->
@@ -352,10 +396,11 @@
                class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
+      <div id="batch-bar-usersPending" class="hidden items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersPending" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersPending','set_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersPending','unset_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersPending','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersPending','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersPending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
+            <tr><th class="px-2 py-3 w-8 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersPending', this)" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
               <th class="px-4 py-3 font-medium w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
@@ -374,6 +419,7 @@
       <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div class="flex items-center gap-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">正式用户</div>
+      <div id="batch-bar-usersNormal" class="hidden items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersNormal" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersNormal','set_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersNormal','unset_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersNormal','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersNormal','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersNormal')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
           <span id="users-normal-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <input id="users-normal-search" type="search" placeholder="搜索邮箱…"
@@ -382,7 +428,7 @@
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
+            <tr><th class="px-2 py-3 w-8 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersNormal', this)" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
               <th class="px-4 py-3 font-medium w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
@@ -407,10 +453,11 @@
                class="w-44 md:w-56 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">已注册但未提交任何账号，可重置密码或删除</p>
+      <div id="batch-bar-usersVacant" class="hidden items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersVacant" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersVacant','set_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersVacant','unset_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersVacant','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersVacant','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersVacant')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px]">
           <thead>
-            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
+            <tr><th class="px-2 py-3 w-8 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersVacant', this)" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
               <th class="px-4 py-3 font-medium w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
@@ -540,6 +587,7 @@ const state = {
   states: {},         // {phone: '✅'|'❌'|'🔄'|'➖'}
   editingIndex: null, // null=添加
   delays: { start: 0, gap: 0 },
+  batchMode: false,   // 批量多选开关（.env YIBAN_BATCH_MODE 持久化）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -660,7 +708,7 @@ async function loadAccounts() {
 const ICONS = {'⏳': '⏳', '✅': '✅', '❌': '❌', '🔄': '🔄', '➖': '➖'};
 
 // 各表格搜索词（内存态：10 秒轮询刷新后过滤依然生效）
-let pendingSearch = '', activeSearch = '';
+let pendingSearch = '', activeSearch = '', deletedSearch = '';
 let usersPendingSearch = '', usersNormalSearch = '', usersVacantSearch = '';
 // 用户列表缓存（搜索事件触发时无需重新请求）
 let allUsers = [];
@@ -676,7 +724,95 @@ function userMatch(u, kw) {
   return u.email.toLowerCase().includes(kw);
 }
 
+// ================= 批量多选（开关开启后生效） =================
+const batchSel = {
+  pending: new Set(), active: new Set(), deleted: new Set(),
+  usersPending: new Set(), usersNormal: new Set(), usersVacant: new Set(),
+};
+
+function updateBatchBar(key) {
+  const n = batchSel[key].size;
+  const bar = $('batch-bar-' + key);
+  if (!bar) return;
+  $('batch-count-' + key).textContent = n;
+  bar.classList.toggle('hidden', n === 0);
+  bar.classList.toggle('flex', n > 0);
+}
+
+function toggleRow(key, id, el) {
+  if (el.checked) batchSel[key].add(id);
+  else batchSel[key].delete(id);
+  updateBatchBar(key);
+}
+
+function toggleSelectAll(key, el) {
+  const sel = batchSel[key];
+  sel.clear();
+  if (el.checked) {
+    // 仅当前组全部选中（账号按下标，用户按邮箱）
+    if (key.startsWith('users')) {
+      const group = key === 'usersPending'
+        ? (allUsers || []).filter(u => (u.pending_count || 0) > 0)
+        : key === 'usersNormal'
+          ? (allUsers || []).filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) > 0)
+          : (allUsers || []).filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) === 0);
+      group.forEach(u => sel.add(u.email));
+    } else {
+      const group = key === 'pending'
+        ? state.accounts.filter(a => a.status === 'pending' || a.status === 'rejected')
+        : key === 'active'
+          ? state.accounts.filter(a => a.status === 'active' && !a.deleted)
+          : state.accounts.filter(a => a.deleted);
+      group.forEach(a => sel.add(a.index));
+    }
+  }
+  updateBatchBar(key);
+  if (key.startsWith('users')) renderUsers(allUsers, builtinAdminName);
+  else renderAccounts();
+}
+
+function clearBatch(key) {
+  batchSel[key].clear();
+  updateBatchBar(key);
+  if (key.startsWith('users')) renderUsers(allUsers, builtinAdminName);
+  else renderAccounts();
+}
+
+function batchAccounts(key, action) {
+  const ids = [...batchSel[key]];
+  if (!ids.length) return;
+  const body = { action, ids };
+  if (action === 'reject') {
+    const reason = prompt(`批量拒绝 ${ids.length} 个账号，请输入共同理由（用户会看到）：`);
+    if (reason === null) return;
+    body.reason = reason.trim();
+    if (!body.reason) { toast('拒绝理由不能为空', true); return; }
+  }
+  if (action === 'purge' && !confirm(`确定彻底删除选中的 ${ids.length} 个账号吗？此操作不可恢复！`)) return;
+  api('/api/accounts/batch', { method: 'POST', body: JSON.stringify(body) })
+    .then(data => { toast(data.msg || '操作成功'); clearBatch(key); loadAccounts(); })
+    .catch(e => toast(e.message, true));
+}
+
+function batchUsers(key, action) {
+  const emails = [...batchSel[key]];
+  if (!emails.length) return;
+  const body = { action, emails };
+  if (action === 'reset_password') {
+    const pw = prompt(`为选中的 ${emails.length} 个用户设置新密码（至少 6 位）：`);
+    if (!pw) return;
+    if (pw.length < 6) { toast('密码至少 6 位', true); return; }
+    body.password = pw;
+  }
+  if (action === 'delete' && !confirm(`确定删除选中的 ${emails.length} 个用户吗？将连同其易班账号删除，不可恢复！`)) return;
+  api('/api/users/batch', { method: 'POST', body: JSON.stringify(body) })
+    .then(data => { toast(data.msg || '操作成功'); clearBatch(key); loadUsers(); })
+    .catch(e => toast(e.message, true));
+}
+
 function renderAccounts() {
+  // 批量开关：控制表头复选框列显示
+  document.querySelectorAll('.batch-col').forEach(th => th.classList.toggle('hidden', !state.batchMode));
   // 分组：待处理（待审核/已拒绝）置顶，正常账号一组
   const pendingAccounts = state.accounts.filter(a => a.status === 'pending' || a.status === 'rejected');
   const activeAccounts = state.accounts.filter(a => a.status === 'active');
@@ -692,7 +828,7 @@ function renderAccounts() {
   $('accounts-pending-count').textContent = pendingSearch
     ? `${pendingFiltered.length} 个匹配 / 共 ${pendingAccounts.length} 个待处理`
     : (pendingAccounts.length ? pendingAccounts.length + ' 个待处理' : '');
-  pendingFiltered.forEach(a => pbody.appendChild(pendingAccountRow(a)));
+  pendingFiltered.forEach(a => pbody.appendChild(pendingAccountRow(a, 'pending')));
 
   // ---- 正常账号组 ----
   const tbody = $('accounts-tbody');
@@ -703,12 +839,13 @@ function renderAccounts() {
   $('accounts-active-count').textContent = activeSearch
     ? `${activeFiltered.length} 个匹配 / 共 ${activeAccounts.length} 个`
     : (activeAccounts.length ? activeAccounts.length + ' 个' : '');
-  activeFiltered.forEach(a => tbody.appendChild(accountRow(a)));
+  activeFiltered.forEach(a => tbody.appendChild(accountRow(a, 'active')));
 
   // 统计卡（仅统计参与签到的正常账号）
   let success = 0, failed = 0, retrying = 0, waiting = 0;
   activeAccounts.forEach(a => {
     const s = state.states[a.phone] || '⏳';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', a.index, this)"></td>` : '';
     if (s === '✅') success++;
     else if (s === '❌') failed++;
     else if (s === '🔄') retrying++;
@@ -721,9 +858,60 @@ function renderAccounts() {
     card('待签到/进行中', waiting + retrying, 'text-blue-600'),
   ].join('');
 
+  // ---- 待删除账号组（软删除，保留期内可恢复） ----
+  const deletedAccounts = state.accounts.filter(a => a.deleted);
+  const deletedFiltered = deletedAccounts.filter(a => accountMatch(a, deletedSearch));
+  const dbody = $('accounts-deleted-tbody');
+  const dempty = $('accounts-deleted-empty');
+  dbody.innerHTML = '';
+  dempty.classList.toggle('hidden', deletedFiltered.length > 0);
+  dempty.textContent = deletedFiltered.length ? '' : (deletedAccounts.length ? '无匹配结果' : '暂无待删除账号');
+  $('accounts-deleted-count').textContent = deletedSearch
+    ? `${deletedFiltered.length} 个匹配 / 共 ${deletedAccounts.length} 个`
+    : (deletedAccounts.length ? deletedAccounts.length + ' 个' : '');
+  deletedFiltered.forEach(a => dbody.appendChild(deletedAccountRow(a, 'deleted')));
+
   // 顶部待处理提示
   $('pending-count').textContent = pendingAccounts.length;
   $('pending-tip').classList.toggle('hidden', pendingAccounts.length === 0);
+}
+
+function deletedAccountRow(a, key) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
+  tr.innerHTML = `
+    ${cb}
+    <td class="px-4 py-3 text-lg leading-none">🗑️</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">${esc((a.deleted_at || '').replace('T', ' ').slice(0, 16))}</td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-end gap-2">
+        <button onclick="restoreAccount(${a.index})" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-150">恢复</button>
+        <button onclick="purgeAccount(${a.index})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">彻底删除</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+async function restoreAccount(idx) {
+  try {
+    const data = await api(`/api/accounts/${idx}/restore`, { method: 'POST' });
+    toast(data.msg || '已恢复');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function purgeAccount(idx) {
+  const a = state.accounts[idx];
+  if (!confirm(`确定彻底删除「${a.display_name}」(${a.phone}) 吗？此操作不可恢复！`)) return;
+  try {
+    const data = await api(`/api/accounts/${idx}/purge`, { method: 'POST' });
+    toast(data.msg || '已彻底删除');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
 }
 
 function statusBadge(a) {
@@ -734,13 +922,15 @@ function statusBadge(a) {
   return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 whitespace-nowrap">已生效</span>';
 }
 
-function pendingAccountRow(a) {
+function pendingAccountRow(a, key) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', a.index, this)"></td>` : '';
   const reasonHtml = a.reject_reason
     ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
     : '';
   tr.innerHTML = `
+    ${cb}
     <td class="px-4 py-3 text-lg leading-none">➖</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
@@ -759,11 +949,13 @@ function pendingAccountRow(a) {
   return tr;
 }
 
-function accountRow(a) {
+function accountRow(a, key) {
   const s = state.states[a.phone] || '⏳';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', a.index, this)"></td>` : '';
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
+    ${cb}
     <td class="px-4 py-3 text-lg leading-none">${s}</td>
     <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
@@ -957,8 +1149,28 @@ async function loadSettings() {
     const data = await api('/api/settings');
     state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
+    state.batchMode = !!data.batch_mode;
     renderDelayUI();
+    renderBatchModeUI();
+    // 批量开关影响表格复选框渲染：加载完成后重绘（页面初始加载也会执行）
+    renderAccounts();
+    renderUsers(allUsers, builtinAdminName);
   } catch (e) { toast(e.message, true); }
+}
+
+function renderBatchModeUI() {
+  const btn = $('batch-mode-btn');
+  const on = state.batchMode;
+  btn.textContent = on ? '开启' : '关闭';
+  btn.className = on
+    ? 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200'
+    : 'bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+}
+
+function toggleBatchMode() {
+  state.batchMode = !state.batchMode;
+  renderBatchModeUI();
+  saveSettings(true);
 }
 
 function renderDelayUI() {
@@ -990,7 +1202,11 @@ async function saveSettings(silent) {
   try {
     const data = await api('/api/settings', {
       method: 'POST',
-      body: JSON.stringify({ start_delay_max: read('start'), gap_max: read('gap') }),
+      body: JSON.stringify({
+        start_delay_max: read('start'),
+        gap_max: read('gap'),
+        batch_mode: state.batchMode,
+      }),
     });
     state.delays.start = read('start');
     state.delays.gap = read('gap');
@@ -1117,6 +1333,7 @@ function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
     const me = await api('/api/me');
     if (me.role !== 'admin') { location.href = '/user'; return; }  // 普通用户 → 用户页
     csrfToken = me.csrf_token || '';
+    loadSettings();  // 加载持久配置（含批量开关），表格复选框渲染依赖
     switchTab('accounts');
     loadLogs();
     calibrateClock();
@@ -1150,6 +1367,8 @@ async function loadUsers() {
 }
 
 function renderUsers(users, builtinAdmin) {
+  // 批量开关：控制表头复选框列显示
+  document.querySelectorAll('.batch-col').forEach(th => th.classList.toggle('hidden', !state.batchMode));
   const pendingUsers = users.filter(u => (u.pending_count || 0) > 0);
   const normalUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) > 0);
   const emptyUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) === 0);
@@ -1164,7 +1383,7 @@ function renderUsers(users, builtinAdmin) {
   $('users-pending-count').textContent = usersPendingSearch
     ? `（${pendingFiltered.length} 人匹配 / 共 ${pendingUsers.length} 人待审核）`
     : (pendingUsers.length ? `（${pendingUsers.length} 人待审核）` : '');
-  pendingFiltered.forEach(u => ptbody.appendChild(userRow(u)));
+  pendingFiltered.forEach(u => ptbody.appendChild(userRow(u, 'usersPending')));
   // 第二组：正式用户（含内置管理员）
   const tbody = $('users-tbody');
   tbody.innerHTML = '';
@@ -1182,7 +1401,7 @@ function renderUsers(users, builtinAdmin) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
     <td class="px-4 py-3 text-right text-xs text-zinc-400 dark:text-zinc-500">不可修改</td>`;
   tbody.appendChild(builtin);
-  normalFiltered.forEach(u => tbody.appendChild(userRow(u)));
+  normalFiltered.forEach(u => tbody.appendChild(userRow(u, 'usersNormal')));
   // 第三组：空用户（未提交账号）
   const vbody = $('users-vacant-tbody');
   vbody.innerHTML = '';
@@ -1191,7 +1410,7 @@ function renderUsers(users, builtinAdmin) {
   $('users-vacant-count').textContent = usersVacantSearch
     ? `（${emptyFiltered.length} 人匹配 / 共 ${emptyUsers.length} 人）`
     : (emptyUsers.length ? `（${emptyUsers.length} 人）` : '');
-  emptyFiltered.forEach(u => vbody.appendChild(userRow(u)));
+  emptyFiltered.forEach(u => vbody.appendChild(userRow(u, 'usersVacant')));
 }
 
 // 搜索框实时过滤（输入即过滤；只过滤当前组，不影响其他组）
@@ -1201,6 +1420,10 @@ $('pending-search').addEventListener('input', e => {
 });
 $('active-search').addEventListener('input', e => {
   activeSearch = e.target.value.trim().toLowerCase();
+  renderAccounts();
+});
+$('deleted-search').addEventListener('input', e => {
+  deletedSearch = e.target.value.trim().toLowerCase();
   renderAccounts();
 });
 $('users-pending-search').addEventListener('input', e => {
@@ -1217,14 +1440,16 @@ $('users-vacant-search').addEventListener('input', e => {
 });
 
 // 用户行渲染（待审核组/正式组共用）
-function userRow(u) {
+function userRow(u, key) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50';
   const isAdmin = u.role === 'admin';
+  const cb = state.batchMode ? `<td class="px-2 py-3 w-8"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has('+esc(u.email)+') ? 'checked' : ''} onchange="toggleRow('${key}', '+esc(u.email)+', this)"></td>` : '';
   const roleBadge = isAdmin
     ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
     : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';
   tr.innerHTML = `
+    ${cb}
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(u.email)}</td>
     <td class="px-4 py-3">${roleBadge}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
