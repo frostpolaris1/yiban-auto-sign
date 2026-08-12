@@ -903,7 +903,7 @@ function deletedAccountRow(a, key) {
     ${cb}
     <td class="px-4 py-3 text-lg leading-none">🗑️</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">${esc((a.deleted_at || '').replace('T', ' ').slice(0, 16))}</td>
     <td class="px-4 py-3">
@@ -925,7 +925,7 @@ async function restoreAccount(idx) {
 
 async function purgeAccount(idx) {
   const a = state.accounts[idx];
-  if (!confirm(`确定彻底删除「${a.display_name}」(${a.phone}) 吗？此操作不可恢复！`)) return;
+  if (!confirm(`确定彻底删除「${a.display_name}」(${maskPhone(a.phone)}) 吗？此操作不可恢复！`)) return;
   try {
     const data = await api(`/api/accounts/${idx}/purge`, { method: 'POST' });
     toast(data.msg || '已彻底删除');
@@ -952,7 +952,7 @@ function pendingAccountRow(a, key) {
     ${cb}
     <td class="px-4 py-3 text-lg leading-none">➖</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}${reasonHtml}</td>
     <td class="px-4 py-3">
@@ -978,7 +978,7 @@ function accountRow(a, key) {
     <td class="px-4 py-3 text-lg leading-none">${s}</td>
     <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(a.phone_model || '—')}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}</td>
@@ -1005,10 +1005,10 @@ async function reviewAccount(idx, action) {
   const a = state.accounts[idx];
   let body = { action };
   if (action === 'reject') {
-    const reason = prompt(`拒绝「${a.display_name}」(${a.phone})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
+    const reason = prompt(`拒绝「${a.display_name}」(${maskPhone(a.phone)})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
     if (reason === null) return;  // 用户取消
     body.reason = reason.trim();
-  } else if (action === 'approve' && !confirm(`确定通过「${a.display_name}」(${a.phone}) 吗？通过后将参与定时签到。`)) {
+  } else if (action === 'approve' && !confirm(`确定通过「${a.display_name}」(${maskPhone(a.phone)}) 吗？通过后将参与定时签到。`)) {
     return;
   }
   try {
@@ -1032,6 +1032,11 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// 手机号脱敏：13912341234 → 139****1234（管理员列表/弹窗展示，防隐私泄露；非 11 位原样返回）
+function maskPhone(p) {
+  return p && String(p).length === 11 ? String(p).slice(0, 3) + '****' + String(p).slice(7) : p;
+}
+
 async function moveAccount(idx, dir) {
   try {
     const data = await api(`/api/accounts/${idx}/move`, { method: 'POST', body: JSON.stringify({ dir }) });
@@ -1042,7 +1047,7 @@ async function moveAccount(idx, dir) {
 
 async function deleteAccount(idx) {
   const a = state.accounts[idx];
-  if (!confirm(`确定删除账号「${a.display_name}」(${a.phone}) 吗？`)) return;
+  if (!confirm(`确定删除账号「${a.display_name}」(${maskPhone(a.phone)}) 吗？`)) return;
   try {
     await api(`/api/accounts/${idx}`, { method: 'DELETE' });
     toast('已删除账号');
@@ -1144,7 +1149,7 @@ function fillSigninSelect() {
   state.accounts.forEach(a => {
     const opt = document.createElement('option');
     opt.value = a.phone;
-    opt.textContent = `${a.display_name} (${a.phone})`;
+    opt.textContent = `${a.display_name} (${maskPhone(a.phone)})`;
     sel.appendChild(opt);
   });
   if (current) sel.value = current;
