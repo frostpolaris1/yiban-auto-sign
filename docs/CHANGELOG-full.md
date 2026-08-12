@@ -3,6 +3,15 @@
 > **本文件为内部详细版**：含技术实现细节、安全漏洞原理与攻击路径留档，仅限开发者/管理员查看，**不对外展示**。
 > 网页端（页面底部「更新日志」弹窗）展示的是项目根 `CHANGELOG.md`（脱敏通俗版，适合普通用户阅读）。
 
+## v0.10.2（2026-08-12）
+- UI 字体升级 MiSans（npm misans@4.1.0 子集化分片方案，OFL 免费商用）：
+  - 本地化 web/static/vendor/fonts/misans/（369 个 unicode-range 分片 woff2 + 合并 misans.css 297 条 @font-face，6.9MB 入库，浏览器按需加载）
+  - 字重匹配：Regular(330→400 档)/Medium(500)/Demibold(600) 对应页面 font-normal/medium/semibold；font-display:swap 无空白期
+  - body 字体栈 "MiSans" 第一优先（3 模板）；font-mono 标识符（手机号/邮箱/文件名/时间）保留等宽
+  - 三模板 <head> 引用 /static/vendor/fonts/misans/misans.css
+  - 验证：静态断言（css 200/引用无缺失/字体栈替换）+ IAB 不可用（webview not ready）留待部署后浏览器确认
+- .gitignore 补 demo-log/（本地调试目录，此前遗漏）
+
 ## v0.10.1（2026-08-12）
 - 修复字体不一致：正式用户表内置管理员行的用户名缺 font-mono（普通用户邮箱列已用），补 class 后全站同类标识符（邮箱/手机号/文件名/时间区间）字体统一；computed style 验证 font-family 等宽栈 + 14px 与邮箱列一致
 
