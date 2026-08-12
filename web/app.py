@@ -60,6 +60,10 @@ LOGIN_LOCK_SECONDS = 300
 # 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
 LOGIN_FAIL_NOTIFY = 3
 
+# IP 计数 dict（限速/登录失败/注册）的条目上限与最长保留：防公网扫描器多 IP 打爆内存
+_IP_STORE_LIMIT = 10000
+_IP_STORE_MAX_AGE = 3600
+
 # 全局请求限速（防疯狂刷新/脚本轰炸）：每 IP 窗口内最多 RATE_MAX 次
 RATE_WINDOW = 10  # 窗口（秒）
 RATE_MAX = 60  # 窗口内最大请求数（正常用户远低于此）
@@ -86,27 +90,47 @@ logger = logging.getLogger("web")
 # ---------------------------------------------------------------------------
 # 签到日志解析（与 tui/app.py parse_sign_log 保持一致）
 # ---------------------------------------------------------------------------
+# 签到日志解析（与 tui/app.py parse_sign_log 保持一致）
+# ---------------------------------------------------------------------------
+_LOG_TAIL_BYTES = 2 * 1024 * 1024  # 日志倒读上限 2MB（约 2 万行）
+
+
+def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
+    """从文件尾部读取最多 max_bytes 的完整文本行：大日志避免整读入内存。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    try:
+        with open(path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()  # 丢弃首个不完整行
+                raw = f.read()
+            else:
+                raw = f.read()
+    except OSError:
+        return []
+    return raw.decode("utf-8", errors="replace").splitlines()
+
+
 def parse_sign_log(path):
     """解析签到日志：返回 (今日各账号状态 dict, 最近日志行列表)。"""
     today = datetime.now().strftime("%Y-%m-%d")
     states = {}
     recent = []
-    try:
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                m = SIGN_LOG_RE.match(line.strip())
-                if not m:
-                    continue
-                date, level, logger_name, msg = m.groups()
-                if logger_name != "yiban" or level == "DEBUG":
-                    continue
-                recent.append(line.strip())
-                if date == today:
-                    sm = STATE_RE.search(msg)
-                    if sm:
-                        states[sm.group(1)] = sm.group(2)
-    except OSError as e:
-        logger.debug("签到日志读取失败: %s", e)
+    for line in _tail_lines(path):
+        m = SIGN_LOG_RE.match(line.strip())
+        if not m:
+            continue
+        date, level, logger_name, msg = m.groups()
+        if logger_name != "yiban" or level == "DEBUG":
+            continue
+        recent.append(line.strip())
+        if date == today:
+            sm = STATE_RE.search(msg)
+            if sm:
+                states[sm.group(1)] = sm.group(2)
     return states, recent
 
 
@@ -176,6 +200,8 @@ def _atomic_write(path, content):
     tmp = f"{path}.tmp{secrets.token_hex(4)}"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
+        f.flush()
+        os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
     os.replace(tmp, path)
 
 
@@ -258,6 +284,9 @@ def find_account_index(accounts, phone):
 
 def validate_account(data, require_password):
     """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。"""
+    name = str(data.get("name", "")).strip()
+    if len(name) > 50:
+        return "名称过长（最多 50 字）", None
     phone = str(data.get("phone", "")).strip()
     password = str(data.get("password", "")).strip()
     if not phone:
@@ -266,12 +295,18 @@ def validate_account(data, require_password):
         return "手机号格式不正确（应为 1 开头的 11 位数字）", None
     if require_password and not password:
         return "密码为必填项", None
+    phone_model = str(data.get("phone_model", "")).strip()
+    if len(phone_model) > 50:
+        return "设备型号过长（最多 50 字）", None
+    phone_code = str(data.get("phone_code", "")).strip()
+    if len(phone_code) > 128:
+        return "设备识别码过长", None
     return None, {
-        "name": str(data.get("name", "")).strip(),
+        "name": name,
         "phone": phone,
         "password": password,
-        "phone_model": str(data.get("phone_model", "")).strip(),
-        "phone_code": str(data.get("phone_code", "")).strip(),
+        "phone_model": phone_model,
+        "phone_code": phone_code,
     }
 
 
@@ -358,7 +393,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.9.6"
+APP_VERSION = "0.9.7"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -379,11 +414,25 @@ def create_app():
     # 注册限速记录 {ip: [count, window_start]}
     _register_limits = {}
 
+    def _ip_store_trim(store, max_age):
+        """IP 计数 dict 超限时清理过期条目：仅当长度超上限才遍历，避免每请求开销。
+
+        各 store 的值为二元/三元组，末位统一是时间戳；防止公网扫描器用海量
+        不同 IP 打爆内存（无界增长 DoS）。
+        """
+        if len(store) <= _IP_STORE_LIMIT:
+            return
+        now = time.time()
+        stale = [k for k, v in store.items() if now - v[-1] > max_age]
+        for k in stale:
+            store.pop(k, None)
+
     # ---- 全局限速：防疯狂刷新/脚本轰炸（所有请求，含页面与 API）----
     @app.before_request
     def rate_limit():
         ip = request.remote_addr or "?"
         now = time.time()
+        _ip_store_trim(_rate_limits, _IP_STORE_MAX_AGE)
         cnt, start = _rate_limits.get(ip, (0, now))
         if now - start > RATE_WINDOW:
             cnt, start = 0, now
@@ -499,6 +548,7 @@ def create_app():
         if session.get("auth"):
             ip = request.remote_addr or "?"
             now = time.time()
+            _ip_store_trim(_login_loop, 60)
             cnt, first = _login_loop.get(ip, (0, now))
             if now - first > 10:
                 cnt, first = 0, now
@@ -528,13 +578,16 @@ def create_app():
         ).strip()  # 管理员用户名保持原样；邮箱仅用户登录时小写
         password = str(data.get("password", ""))
         # 失败计数按 (IP, 用户名) 组合：同一出口 IP 的用户不因他人爆破尝试被连带锁定
+        # 值三元组 (count, lock_until, last_ts)：last_ts 供超限清理
         fail_key = (ip, username.lower())
-        fails, lock_until = _login_fails.get(fail_key, (0, 0))
+        _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
+        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
         if now < lock_until:
             remain = int(lock_until - now)
             return jsonify({"error": f"失败次数过多，请 {remain} 秒后重试"}), 429
 
         role = None
+        pw_version = None
         # 1) 内置管理员（.env，兜底超级管理员）
         if verify_admin(username, password):
             role = "admin"
@@ -546,6 +599,7 @@ def create_app():
                     u.get("password_hash", ""), password
                 ):
                     role = "admin" if u.get("role") == "admin" else "user"
+                    pw_version = u.get("pw_version", 1)
                     break
         if role:
             _login_fails.pop(fail_key, None)
@@ -555,10 +609,11 @@ def create_app():
             session["auth"] = True
             session["role"] = role
             session["username"] = username
+            session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
             return jsonify({"ok": True, "role": role})
         fails += 1
         if fails >= LOGIN_MAX_FAILS:
-            _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS)
+            _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
             logger.warning("登录失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
             return jsonify(
                 {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
@@ -571,7 +626,7 @@ def create_app():
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"如非本人操作，请检查是否有人尝试暴力破解",
             )
-        _login_fails[fail_key] = (fails, 0)
+        _login_fails[fail_key] = (fails, 0, now)
         return jsonify({"error": "用户名或密码错误"}), 401
 
     @app.route("/api/register", methods=["POST"])
@@ -590,6 +645,7 @@ def create_app():
         # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
         ip = request.remote_addr or "?"
         now = time.time()
+        _ip_store_trim(_register_limits, REGISTER_WINDOW)
         rcnt, rstart = _register_limits.get(ip, (0, now))
         if now - rstart > REGISTER_WINDOW:
             rcnt, rstart = 0, now
@@ -605,6 +661,7 @@ def create_app():
                     "email": email,
                     "password_hash": generate_password_hash(password),
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "pw_version": 1,  # 密码版本：改密时递增，旧会话随之失效
                 }
             )
             save_users(users)
@@ -634,13 +691,13 @@ def create_app():
         now = time.time()
         # 失败计数键与登录一致：按 (IP, 用户名) 组合
         fail_key = (ip, username.strip().lower())
-        fails, lock_until = _login_fails.get(fail_key, (0, 0))
+        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
         if now < lock_until:
             return jsonify({"error": f"尝试次数过多，请 {int(lock_until - now)} 秒后重试"}), 429
         # 内置管理员：验证 .env 当前密码后更新
         if username.strip().lower() == _builtin_admin_email():
             if not verify_admin(username, old_password):
-                _login_fails[fail_key] = (fails + 1, 0)
+                _login_fails[fail_key] = (fails + 1, 0, now)
                 return jsonify({"error": "当前密码不正确"}), 400
             write_env_key(ENV_FILE, "YIBAN_ADMIN_PASSWORD", new_password)
             _login_fails.pop(fail_key, None)
@@ -652,9 +709,10 @@ def create_app():
             for u in users:
                 if u.get("email") == username.strip().lower():
                     if not check_password_hash(u.get("password_hash", ""), old_password):
-                        _login_fails[fail_key] = (fails + 1, 0)
+                        _login_fails[fail_key] = (fails + 1, 0, now)
                         return jsonify({"error": "当前密码不正确"}), 400
                     u["password_hash"] = generate_password_hash(new_password)
+                    u["pw_version"] = u.get("pw_version", 1) + 1  # 旧会话随之失效
                     save_users(users)
                     _login_fails.pop(fail_key, None)
                     logger.info("用户 %s 已修改自己的密码", username)
@@ -725,6 +783,7 @@ def create_app():
                             "email": email,
                             "password_hash": generate_password_hash(temp_password),
                             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "pw_version": 1,
                         }
                     )
                     save_users(users)
@@ -970,25 +1029,22 @@ def create_app():
     def api_my_logs():
         """我的账号指定日期（YYYY-MM-DD）的日志（按手机号过滤，最多 50 条）。"""
         date = str(request.args.get("date", "")).strip()
-        if len(date) != 10 or date[4] != "-" or date[7] != "-":
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
         accounts = load_accounts()
         indices = _my_account_indices()
         phones = [str(accounts[i].get("phone", "")) for i in indices]
         prefix = f"[{date} "
         out = []
-        try:
-            # 倒序扫描：日志按时间追加，从尾部向前；遇到更早日期的行即停止（避免全文件扫描）
-            with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
-                for line in reversed(f.readlines()):
-                    if line.startswith(prefix):
-                        if any(f"[{p}]" in line for p in phones):
-                            out.append(line.strip())
-                    elif line.startswith("[") and line < prefix:
-                        break
-            out.reverse()
-        except OSError as e:
-            logger.debug("按日期读取日志失败: %s", e)
+        # 倒序扫描：日志按时间追加，从尾部向前（_tail_lines 限制读取量，不整读大文件）；
+        # 遇到更早日期的行即停止
+        for line in reversed(_tail_lines(LOG_FILE)):
+            if line.startswith(prefix):
+                if any(f"[{p}]" in line for p in phones):
+                    out.append(line.strip())
+            elif line.startswith("[") and line < prefix:
+                break
+        out.reverse()
         return jsonify({"ok": True, "date": date, "logs": out[-50:]})
 
     @app.route("/api/my-accounts/<int:idx>", methods=["PUT"])
@@ -1046,15 +1102,21 @@ def create_app():
 
     # ---- 用户管理（仅管理员；路径不在普通用户白名单，自动 403）----
     def _builtin_admin_email():
-        """内置管理员（.env）标识，用于防呆：不可改角色/删除。"""
+        """内置管理员（.env）标识（小写），用于防呆比较：不可改角色/删除。"""
         env = read_env(ENV_FILE)
         return env.get("YIBAN_ADMIN_USER", "").strip().lower()
 
-    def _effective_role(username):
+    def _builtin_admin_display():
+        """内置管理员显示名（保留 .env 原始大小写，仅用于界面展示）。"""
+        env = read_env(ENV_FILE)
+        return env.get("YIBAN_ADMIN_USER", "").strip() or "admin"
+
+    def _effective_role(username, pw_version=None):
         """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
         内置管理员 → admin；注册用户 → users.json 的 role；查无此人 → None。
         管理员变更角色后，已登录用户的下一次请求立即生效，无需重新登录；
-        被删除/取消权限的用户旧会话随之失效（None 视为未登录）。
+        被删除/取消权限的用户旧会话随之失效（None 视为未登录）；
+        注册用户密码被重置/修改后（pw_version 递增）旧会话随之失效。
         """
         if not username:
             return None
@@ -1063,6 +1125,9 @@ def create_app():
         email = username.strip().lower()
         for u in load_users():
             if u.get("email") == email:
+                # 旧数据（无 pw_version 字段）不做会话吊销校验，兼容存量会话
+                if "pw_version" in u and pw_version != u.get("pw_version", 1):
+                    return None
                 return "admin" if u.get("role") == "admin" else "user"
         return None
 
@@ -1070,7 +1135,7 @@ def create_app():
         """当前登录会话的实时角色；未登录 → None。"""
         if not session.get("auth"):
             return None
-        return _effective_role(session.get("username"))
+        return _effective_role(session.get("username"), session.get("pw_version"))
 
     def _find_user(users, email):
         return next((u for u in users if u.get("email") == email), None)
@@ -1095,7 +1160,11 @@ def create_app():
             for u in users
         ]
         return jsonify(
-            {"ok": True, "users": result, "builtin_admin": _builtin_admin_email() or "admin"}
+            {
+                "ok": True,
+                "users": result,
+                "builtin_admin": _builtin_admin_display(),
+            }
         )
 
     @app.route("/api/users/<email>/role", methods=["POST"])
@@ -1141,6 +1210,7 @@ def create_app():
             if not target:
                 return jsonify({"error": "用户不存在"}), 404
             target["password_hash"] = generate_password_hash(password)
+            target["pw_version"] = target.get("pw_version", 1) + 1  # 被重置用户的旧会话随之失效
             save_users(users)
             logger.info("已重置用户 %s 密码", email)
             return jsonify({"ok": True, "msg": f"{email} 密码已重置"})
@@ -1234,7 +1304,7 @@ def create_app():
                 "ok": True,
                 "states": states,
                 "logs": recent[-80:],
-                "log_file": LOG_FILE,
+                "log_file": os.path.basename(LOG_FILE),  # 只暴露文件名，不暴露服务器路径
             }
         )
 
@@ -1254,11 +1324,17 @@ def create_app():
     @app.route("/api/settings", methods=["POST"])
     def api_settings_save():
         data = request.get_json(silent=True) or {}
-        start = int(data.get("start_delay_max", 0))
-        gap = int(data.get("gap_max", 0))
-        write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", max(0, start))
-        write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", max(0, gap))
-        logger.info("更新随机延迟: 启动=%s 间隔=%s", max(0, start), max(0, gap))
+        try:
+            start = int(data.get("start_delay_max", 0))
+            gap = int(data.get("gap_max", 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "延迟秒数必须是整数"}), 400
+        # 上限 1 小时：防止误填超大值破坏签到随机延迟
+        start = min(max(start, 0), 3600)
+        gap = min(max(gap, 0), 3600)
+        write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", start)
+        write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", gap)
+        logger.info("更新随机延迟: 启动=%s 间隔=%s", start, gap)
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----
