@@ -18,6 +18,14 @@
 - 验证：DOM 类断言（pending 白卡+琥珀栏/搜索 ml-auto/35 th nowrap/折叠 id）+ 折叠功能（▾→▸→▾ 表格显隐）+ 识图两轮（表头单行、琥珀栏可读、结构统一、无错位）
 - 教训：结构统一必须对齐完整外层结构（卡片 padding/标题行边框/提示行），只改内层容器类会产生"视觉不一致"的假统一；正则改 HTML 前先 grep 确认所有变体
 
+## v0.13.4（2026-08-12）
+- 批量多选改为会话级开关（用户确认"不记住，每次默认关"）：
+  - 后端：`/api/settings` GET 不再读 `.env YIBAN_BATCH_MODE`（恒返回 `batch_mode: False`）；POST 不再写入该键（`write_env_key` 移除）；日志去掉批量操作字段
+  - 前端：`loadSettings` 强制 `state.batchMode = false`；`toggleBatchMode` 切换后直接重绘表格（renderAccounts/renderUsers），不再调 `saveSettings`（不再持久化）；`saveSettings` body 移除 `batch_mode`
+  - 设置页说明补充"默认关闭，开启仅本次会话有效，刷新后自动恢复关闭"；按钮显示逻辑不变（off→「开启」蓝 / on→「关闭」灰），默认关后自然显示「开启」
+  - 遗留：生产/本地 `.env` 中的 `YIBAN_BATCH_MODE=on` 残留不再生效（代码已不读取），未清理以免误动配置
+- 验证：默认进入 0 checkbox 列/0 批量条/按钮「开启」蓝 → 手动开启 6 列+6 条出现/按钮「关闭」灰 → 刷新后全部恢复默认（即使环境变量带 on 也无效）
+
 ## v0.13.3（2026-08-12）
 - 更新日志弹窗 Markdown 渲染（用户反馈：md 格式只显示文字）：
   - 新建 `web/static/vendor/md-render.js`（迷你渲染器，零依赖，与 tailwind.js 同为本地化 vendor）

@@ -419,7 +419,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.13.3"
+APP_VERSION = "0.13.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1577,8 +1577,8 @@ def create_app():
                 "gap_max": load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", 0),
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
-                # 批量操作开关（持久化 .env，默认关闭）
-                "batch_mode": read_env(ENV_FILE).get("YIBAN_BATCH_MODE", "").strip() == "on",
+                # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
+                "batch_mode": False,
             }
         )
 
@@ -1595,10 +1595,8 @@ def create_app():
         gap = min(max(gap, 0), 3600)
         write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", start)
         write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", gap)
-        # 批量操作开关
-        batch_mode = "on" if data.get("batch_mode") else ""
-        write_env_key(ENV_FILE, "YIBAN_BATCH_MODE", batch_mode)
-        logger.info("更新设置: 启动=%s 间隔=%s 批量操作=%s", start, gap, batch_mode or "关")
+        # 批量多选为前端会话级开关，不写入配置
+        logger.info("更新设置: 启动=%s 间隔=%s", start, gap)
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----
