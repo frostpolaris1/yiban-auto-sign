@@ -39,3 +39,6 @@ Thumbs.db
 
 # 网页管理系统：普通用户表（含密码哈希）
 users.json
+
+# 本地调试目录（不提交）
+demo-log/
