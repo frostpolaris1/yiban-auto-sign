@@ -181,8 +181,9 @@ def _atomic_write(path, content):
 
 # ---------------------------------------------------------------------------
 # 数据文件读写（accounts.json / users.json，进程内锁防止并发读改写丢失）
+# RLock：handler 层可再包一层"读→检查→写"操作级锁（load/save 内部重入）
 # ---------------------------------------------------------------------------
-_file_lock = threading.Lock()
+_file_lock = threading.RLock()
 
 
 def load_accounts():
@@ -357,7 +358,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.9.5"
+APP_VERSION = "0.9.6"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -521,16 +522,17 @@ def create_app():
         """登录：管理员（.env 配置）或普通用户（users.json 注册）。返回 role。"""
         ip = request.remote_addr or "?"
         now = time.time()
-        fails, lock_until = _login_fails.get(ip, (0, 0))
-        if now < lock_until:
-            remain = int(lock_until - now)
-            return jsonify({"error": f"失败次数过多，请 {remain} 秒后重试"}), 429
-
         data = request.get_json(silent=True) or {}
         username = str(
             data.get("username", "")
         ).strip()  # 管理员用户名保持原样；邮箱仅用户登录时小写
         password = str(data.get("password", ""))
+        # 失败计数按 (IP, 用户名) 组合：同一出口 IP 的用户不因他人爆破尝试被连带锁定
+        fail_key = (ip, username.lower())
+        fails, lock_until = _login_fails.get(fail_key, (0, 0))
+        if now < lock_until:
+            remain = int(lock_until - now)
+            return jsonify({"error": f"失败次数过多，请 {remain} 秒后重试"}), 429
 
         role = None
         # 1) 内置管理员（.env，兜底超级管理员）
@@ -546,7 +548,7 @@ def create_app():
                     role = "admin" if u.get("role") == "admin" else "user"
                     break
         if role:
-            _login_fails.pop(ip, None)
+            _login_fails.pop(fail_key, None)
             # 防 session 固定：登录成功先清空再重建会话
             session.clear()
             session.permanent = True
@@ -556,7 +558,7 @@ def create_app():
             return jsonify({"ok": True, "role": role})
         fails += 1
         if fails >= LOGIN_MAX_FAILS:
-            _login_fails[ip] = (0, now + LOGIN_LOCK_SECONDS)
+            _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS)
             logger.warning("登录失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
             return jsonify(
                 {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
@@ -569,7 +571,7 @@ def create_app():
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"如非本人操作，请检查是否有人尝试暴力破解",
             )
-        _login_fails[ip] = (fails, 0)
+        _login_fails[fail_key] = (fails, 0)
         return jsonify({"error": "用户名或密码错误"}), 401
 
     @app.route("/api/register", methods=["POST"])
@@ -593,17 +595,19 @@ def create_app():
             rcnt, rstart = 0, now
         if rcnt >= REGISTER_MAX:
             return jsonify({"error": f"注册过于频繁，请 {REGISTER_WINDOW // 60} 分钟后再试"}), 429
-        users = load_users()
-        if any(u.get("email") == email for u in users):
-            return jsonify({"error": "该邮箱已注册"}), 400
-        users.append(
-            {
-                "email": email,
-                "password_hash": generate_password_hash(password),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
-        save_users(users)
+        # 操作级锁：邮箱唯一性检查与写入原子（防并发注册互相覆盖）
+        with _file_lock:
+            users = load_users()
+            if any(u.get("email") == email for u in users):
+                return jsonify({"error": "该邮箱已注册"}), 400
+            users.append(
+                {
+                    "email": email,
+                    "password_hash": generate_password_hash(password),
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+            save_users(users)
         _register_limits[ip] = (rcnt + 1, rstart)
         logger.info("新用户注册: %s（共 %d 个用户）", email, len(users))
         return jsonify({"ok": True})
@@ -628,30 +632,33 @@ def create_app():
         username = session.get("username", "")
         ip = request.remote_addr or "?"
         now = time.time()
-        fails, lock_until = _login_fails.get(ip, (0, 0))
+        # 失败计数键与登录一致：按 (IP, 用户名) 组合
+        fail_key = (ip, username.strip().lower())
+        fails, lock_until = _login_fails.get(fail_key, (0, 0))
         if now < lock_until:
             return jsonify({"error": f"尝试次数过多，请 {int(lock_until - now)} 秒后重试"}), 429
         # 内置管理员：验证 .env 当前密码后更新
         if username.strip().lower() == _builtin_admin_email():
             if not verify_admin(username, old_password):
-                _login_fails[ip] = (fails + 1, 0)
+                _login_fails[fail_key] = (fails + 1, 0)
                 return jsonify({"error": "当前密码不正确"}), 400
             write_env_key(ENV_FILE, "YIBAN_ADMIN_PASSWORD", new_password)
-            _login_fails.pop(ip, None)
+            _login_fails.pop(fail_key, None)
             logger.info("内置管理员密码已更新")
             return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
-        # 注册用户（含提升的管理员）：更新 users.json 哈希
-        users = load_users()
-        for u in users:
-            if u.get("email") == username.strip().lower():
-                if not check_password_hash(u.get("password_hash", ""), old_password):
-                    _login_fails[ip] = (fails + 1, 0)
-                    return jsonify({"error": "当前密码不正确"}), 400
-                u["password_hash"] = generate_password_hash(new_password)
-                save_users(users)
-                _login_fails.pop(ip, None)
-                logger.info("用户 %s 已修改自己的密码", username)
-                return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
+        # 注册用户（含提升的管理员）：更新 users.json 哈希（锁内读改写防并发覆盖）
+        with _file_lock:
+            users = load_users()
+            for u in users:
+                if u.get("email") == username.strip().lower():
+                    if not check_password_hash(u.get("password_hash", ""), old_password):
+                        _login_fails[fail_key] = (fails + 1, 0)
+                        return jsonify({"error": "当前密码不正确"}), 400
+                    u["password_hash"] = generate_password_hash(new_password)
+                    save_users(users)
+                    _login_fails.pop(fail_key, None)
+                    logger.info("用户 %s 已修改自己的密码", username)
+                    return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         return jsonify({"error": "用户不存在"}), 404
 
     @app.route("/api/me")
@@ -691,42 +698,44 @@ def create_app():
         - 填用户邮箱：账号归属该用户并进入待审核（仍需管理员点"通过"）；
           邮箱未注册时自动创建网站用户（生成临时密码，需告知用户）。
         """
-        accounts = load_accounts()
-        data = request.get_json(silent=True) or {}
-        err, clean = validate_account(data, require_password=True)
-        if err:
-            return jsonify({"error": err}), 400
-        if find_account_index(accounts, clean["phone"]) is not None:
-            return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
+        # 操作级锁：手机号唯一/每人限 1/自动注册检查与写入原子（防并发重复添加与覆盖丢失）
+        with _file_lock:
+            accounts = load_accounts()
+            data = request.get_json(silent=True) or {}
+            err, clean = validate_account(data, require_password=True)
+            if err:
+                return jsonify({"error": err}), 400
+            if find_account_index(accounts, clean["phone"]) is not None:
+                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
 
-        email = str(data.get("email", "")).strip().lower()
-        temp_password = ""
-        if email:
-            if not EMAIL_RE.match(email) or len(email) > 64:
-                return jsonify({"error": "用户邮箱格式不正确"}), 400
-            # 该用户已有账号（每人限 1 个）则拒绝
-            if any(a.get("owner") == email for a in accounts):
-                return jsonify({"error": f"{email} 已有一个账号，无需重复添加"}), 400
-            # 自动注册：邮箱未注册则创建网站用户（临时密码返回给管理员转告）
-            users = load_users()
-            if not any(u.get("email") == email for u in users):
-                temp_password = secrets.token_urlsafe(8)
-                users.append(
-                    {
-                        "email": email,
-                        "password_hash": generate_password_hash(temp_password),
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                )
-                save_users(users)
-                logger.info("为邮箱 %s 自动注册用户（临时密码已生成）", email)
-            clean["owner"] = email
-            clean["status"] = STATUS_PENDING
-        else:
-            clean["owner"] = "admin"
-            clean["status"] = STATUS_ACTIVE
-        accounts.append(clean)
-        save_accounts(accounts)
+            email = str(data.get("email", "")).strip().lower()
+            temp_password = ""
+            if email:
+                if not EMAIL_RE.match(email) or len(email) > 64:
+                    return jsonify({"error": "用户邮箱格式不正确"}), 400
+                # 该用户已有账号（每人限 1 个）则拒绝
+                if any(a.get("owner") == email for a in accounts):
+                    return jsonify({"error": f"{email} 已有一个账号，无需重复添加"}), 400
+                # 自动注册：邮箱未注册则创建网站用户（临时密码返回给管理员转告）
+                users = load_users()
+                if not any(u.get("email") == email for u in users):
+                    temp_password = secrets.token_urlsafe(8)
+                    users.append(
+                        {
+                            "email": email,
+                            "password_hash": generate_password_hash(temp_password),
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                    )
+                    save_users(users)
+                    logger.info("为邮箱 %s 自动注册用户（临时密码已生成）", email)
+                clean["owner"] = email
+                clean["status"] = STATUS_PENDING
+            else:
+                clean["owner"] = "admin"
+                clean["status"] = STATUS_ACTIVE
+            accounts.append(clean)
+            save_accounts(accounts)
         logger.info(
             "添加账号 %s（归属 %s，状态 %s）", clean["phone"], clean["owner"], clean["status"]
         )
@@ -743,108 +752,115 @@ def create_app():
 
     @app.route("/api/accounts/<int:idx>", methods=["PUT"])
     def api_account_update(idx):
-        accounts = load_accounts()
-        if not 0 <= idx < len(accounts):
-            return jsonify({"error": "账号不存在"}), 404
-        old = accounts[idx]
-        data = request.get_json(silent=True) or {}
-        err, clean = validate_account(data, require_password=False)
-        if err:
-            return jsonify({"error": err}), 400
-        # 手机号变更时检查冲突（排除自己）
-        if (
-            clean["phone"] != old.get("phone")
-            and find_account_index(accounts, clean["phone"]) is not None
-        ):
-            return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-        # 密码留空 = 保持不变（密码明文永不下发前端）
-        if not clean["password"]:
-            clean["password"] = old.get("password", "")
-        # 设备识别码留空 = 保持不变（编辑表单不预填，避免误清空设备绑定信息）
-        if not clean["phone_code"]:
-            clean["phone_code"] = old.get("phone_code", "")
-        # 归属与审核状态保持不变（管理员编辑不改变提交者与生效状态）
-        clean["owner"] = old.get("owner", "admin")
-        clean["status"] = old.get("status", STATUS_ACTIVE)
-        accounts[idx] = clean
-        save_accounts(accounts)
-        logger.info("编辑账号 %s", clean["phone"])
-        return jsonify(
-            {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
-        )
+        with _file_lock:
+            accounts = load_accounts()
+            if not 0 <= idx < len(accounts):
+                return jsonify({"error": "账号不存在"}), 404
+            old = accounts[idx]
+            data = request.get_json(silent=True) or {}
+            err, clean = validate_account(data, require_password=False)
+            if err:
+                return jsonify({"error": err}), 400
+            # 手机号变更时检查冲突（排除自己）
+            if (
+                clean["phone"] != old.get("phone")
+                and find_account_index(accounts, clean["phone"]) is not None
+            ):
+                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
+            # 密码留空 = 保持不变（密码明文永不下发前端）
+            if not clean["password"]:
+                clean["password"] = old.get("password", "")
+            # 设备识别码留空 = 保持不变（编辑表单不预填，避免误清空设备绑定信息）
+            if not clean["phone_code"]:
+                clean["phone_code"] = old.get("phone_code", "")
+            # 归属与审核状态保持不变（管理员编辑不改变提交者与生效状态）
+            clean["owner"] = old.get("owner", "admin")
+            clean["status"] = old.get("status", STATUS_ACTIVE)
+            accounts[idx] = clean
+            save_accounts(accounts)
+            logger.info("编辑账号 %s", clean["phone"])
+            return jsonify(
+                {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
+            )
 
     @app.route("/api/accounts/<int:idx>", methods=["DELETE"])
     def api_account_delete(idx):
-        accounts = load_accounts()
-        if not 0 <= idx < len(accounts):
-            return jsonify({"error": "账号不存在"}), 404
-        removed = accounts.pop(idx)
-        save_accounts(accounts)
-        logger.info("删除账号 %s", removed.get("phone", ""))
-        return jsonify(
-            {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
-        )
+        with _file_lock:
+            accounts = load_accounts()
+            if not 0 <= idx < len(accounts):
+                return jsonify({"error": "账号不存在"}), 404
+            removed = accounts.pop(idx)
+            save_accounts(accounts)
+            logger.info("删除账号 %s", removed.get("phone", ""))
+            return jsonify(
+                {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
+            )
 
     @app.route("/api/accounts/<int:idx>/review", methods=["POST"])
     def api_account_review(idx):
         """审核普通用户提交的账号：
         approve=生效参与定时签到；reject=标记拒绝并附理由（用户可编辑后重新提交）。
         """
-        accounts = load_accounts()
-        if not 0 <= idx < len(accounts):
-            return jsonify({"error": "账号不存在"}), 404
-        action = (request.get_json(silent=True) or {}).get("action")
-        acc = accounts[idx]
-        if action == "approve":
-            if acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
-                return jsonify({"error": "该账号无需审核"}), 400
-            acc["status"] = STATUS_ACTIVE
-            acc.pop("reject_reason", None)
-            save_accounts(accounts)
-            logger.info("审核通过账号 %s（提交者 %s）", acc.get("phone"), acc.get("owner"))
-            return jsonify({"ok": True, "msg": f"已通过 {acc.get('phone')}，将参与定时签到"})
-        if action == "reject":
-            if acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
-                return jsonify({"error": "该账号无需拒绝"}), 400
-            reason = str((request.get_json(silent=True) or {}).get("reason", "")).strip()[:100]
-            acc["status"] = STATUS_REJECTED
-            if reason:
-                acc["reject_reason"] = reason
-            else:
+        with _file_lock:
+            accounts = load_accounts()
+            if not 0 <= idx < len(accounts):
+                return jsonify({"error": "账号不存在"}), 404
+            action = (request.get_json(silent=True) or {}).get("action")
+            acc = accounts[idx]
+            if action == "approve":
+                if acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
+                    return jsonify({"error": "该账号无需审核"}), 400
+                acc["status"] = STATUS_ACTIVE
                 acc.pop("reject_reason", None)
-            save_accounts(accounts)
-            logger.info(
-                "拒绝账号 %s（提交者 %s，理由: %s）",
-                acc.get("phone"),
-                acc.get("owner"),
-                reason or "无",
-            )
-            return jsonify({"ok": True, "msg": "已拒绝，用户可查看理由并重新提交"})
+                save_accounts(accounts)
+                logger.info("审核通过账号 %s（提交者 %s）", acc.get("phone"), acc.get("owner"))
+                return jsonify({"ok": True, "msg": f"已通过 {acc.get('phone')}，将参与定时签到"})
+            if action == "reject":
+                if acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
+                    return jsonify({"error": "该账号无需拒绝"}), 400
+                reason = str((request.get_json(silent=True) or {}).get("reason", "")).strip()[:100]
+                acc["status"] = STATUS_REJECTED
+                if reason:
+                    acc["reject_reason"] = reason
+                else:
+                    acc.pop("reject_reason", None)
+                save_accounts(accounts)
+                logger.info(
+                    "拒绝账号 %s（提交者 %s，理由: %s）",
+                    acc.get("phone"),
+                    acc.get("owner"),
+                    reason or "无",
+                )
+                return jsonify({"ok": True, "msg": "已拒绝，用户可查看理由并重新提交"})
         return jsonify({"error": "未知操作"}), 400
 
     @app.route("/api/accounts/<int:idx>/move", methods=["POST"])
     def api_account_move(idx):
         """上移/下移账号：调整顺序模式下的打卡顺序。body: {"dir": -1|1}"""
-        accounts = load_accounts()
-        if not 0 <= idx < len(accounts):
-            return jsonify({"error": "账号不存在"}), 404
-        direction = int((request.get_json(silent=True) or {}).get("dir", 0))
-        target = idx + direction
-        if direction not in (-1, 1) or not 0 <= target < len(accounts):
-            return jsonify({"error": "无法移动"}), 400
-        accounts[idx], accounts[target] = accounts[target], accounts[idx]
-        save_accounts(accounts)
-        return jsonify(
-            {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
-        )
+        with _file_lock:
+            accounts = load_accounts()
+            if not 0 <= idx < len(accounts):
+                return jsonify({"error": "账号不存在"}), 404
+            direction = int((request.get_json(silent=True) or {}).get("dir", 0))
+            target = idx + direction
+            if direction not in (-1, 1) or not 0 <= target < len(accounts):
+                return jsonify({"error": "无法移动"}), 400
+            accounts[idx], accounts[target] = accounts[target], accounts[idx]
+            save_accounts(accounts)
+            return jsonify(
+                {"ok": True, "accounts": [mask_account(a, i) for i, a in enumerate(accounts)]}
+            )
 
     # ---- 普通用户：我的账号（提交 / 查看 / 编辑 / 删除，仅限本人）----
-    def _my_account_indices():
-        """当前登录用户的账号下标：普通用户=owner 邮箱；管理员=owner 'admin' 或本人邮箱。"""
+    def _my_account_indices_of(accounts):
+        """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。"""
         email = session.get("username", "").lower()
         if _current_role() == "admin":
-            return [i for i, a in enumerate(load_accounts()) if a.get("owner") in ("admin", email)]
-        return [i for i, a in enumerate(load_accounts()) if a.get("owner") == email]
+            return [i for i, a in enumerate(accounts) if a.get("owner") in ("admin", email)]
+        return [i for i, a in enumerate(accounts) if a.get("owner") == email]
+
+    def _my_account_indices():
+        return _my_account_indices_of(load_accounts())
 
     def _my_account_view(accounts, indices):
         """用户视图：账号脱敏 + 今日状态图标 + 审核状态 + 最近相关日志 + 排队信息。
@@ -895,26 +911,30 @@ def create_app():
 
     @app.route("/api/my-accounts", methods=["POST"])
     def api_my_account_add():
-        """提交自己的易班账号：每个用户仅限 1 套，写入 accounts.json 状态 pending（待审核）。"""
-        accounts = load_accounts()
-        # 单账号限制：已有提交（含待审核/已生效）则拒绝
-        if _my_account_indices():
-            return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
-        data = request.get_json(silent=True) or {}
-        err, clean = validate_account(data, require_password=True)
-        if err:
-            return jsonify({"error": err}), 400
-        if find_account_index(accounts, clean["phone"]) is not None:
-            return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
-        # 管理员提交的账号归属 'admin'（后台添加账号同理），直接生效免审核
-        clean["owner"] = (
-            "admin" if _current_role() == "admin" else session.get("username", "").lower()
-        )
-        clean["status"] = STATUS_PENDING if _current_role() != "admin" else STATUS_ACTIVE
-        accounts.append(clean)
-        save_accounts(accounts)
-        logger.info("用户 %s 提交账号 %s（待审核）", clean["owner"], clean["phone"])
-        return jsonify({"ok": True, "msg": "已提交，等待管理员审核后参与签到"})
+        """提交自己的易班账号：每个用户仅限 1 套，写入 accounts.json 状态 pending（待审核）。
+
+        操作级锁：单账号限制与手机号唯一检查 + 写入原子（防并发双提交互相覆盖）。
+        """
+        with _file_lock:
+            accounts = load_accounts()
+            # 单账号限制：已有提交（含待审核/已生效）则拒绝
+            if _my_account_indices_of(accounts):
+                return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
+            data = request.get_json(silent=True) or {}
+            err, clean = validate_account(data, require_password=True)
+            if err:
+                return jsonify({"error": err}), 400
+            if find_account_index(accounts, clean["phone"]) is not None:
+                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
+            # 管理员提交的账号归属 'admin'（后台添加账号同理），直接生效免审核
+            clean["owner"] = (
+                "admin" if _current_role() == "admin" else session.get("username", "").lower()
+            )
+            clean["status"] = STATUS_PENDING if _current_role() != "admin" else STATUS_ACTIVE
+            accounts.append(clean)
+            save_accounts(accounts)
+            logger.info("用户 %s 提交账号 %s（待审核）", clean["owner"], clean["phone"])
+            return jsonify({"ok": True, "msg": "已提交，等待管理员审核后参与签到"})
 
     @app.route("/api/my-calendar")
     def api_my_calendar():
@@ -974,51 +994,55 @@ def create_app():
     @app.route("/api/my-accounts/<int:idx>", methods=["PUT"])
     def api_my_account_update(idx):
         """编辑自己提交的账号：密码/识别码留空=保留；不影响已生效状态。"""
-        accounts = load_accounts()
-        indices = _my_account_indices()
-        if not 0 <= idx < len(indices):
-            return jsonify({"error": "账号不存在"}), 404
-        real_idx = indices[idx]
-        old = accounts[real_idx]
-        data = request.get_json(silent=True) or {}
-        err, clean = validate_account(data, require_password=False)
-        if err:
-            return jsonify({"error": err}), 400
-        if (
-            clean["phone"] != old.get("phone")
-            and find_account_index(accounts, clean["phone"]) is not None
-        ):
-            return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
-        if not clean["password"]:
-            clean["password"] = old.get("password", "")
-        if not clean["phone_code"]:
-            clean["phone_code"] = old.get("phone_code", "")
-        clean["owner"] = old.get("owner", "")
-        # 被拒绝的账号编辑后 = 重新提交审核（回 pending，清除拒绝理由）
-        clean["status"] = (
-            STATUS_PENDING
-            if old.get("status") == STATUS_REJECTED
-            else old.get("status", STATUS_PENDING)
-        )
-        if clean["status"] == STATUS_PENDING:
-            clean.pop("reject_reason", None)
-        accounts[real_idx] = clean
-        save_accounts(accounts)
-        logger.info("用户 %s 编辑账号 %s", clean["owner"], clean["phone"])
-        if old.get("status") == STATUS_REJECTED:
-            return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
-        return jsonify({"ok": True, "msg": "已保存"})
+        with _file_lock:
+            accounts = load_accounts()
+            indices = _my_account_indices_of(accounts)
+            if not 0 <= idx < len(indices):
+                return jsonify({"error": "账号不存在"}), 404
+            real_idx = indices[idx]
+            old = accounts[real_idx]
+            data = request.get_json(silent=True) or {}
+            err, clean = validate_account(data, require_password=False)
+            if err:
+                return jsonify({"error": err}), 400
+            if (
+                clean["phone"] != old.get("phone")
+                and find_account_index(accounts, clean["phone"]) is not None
+            ):
+                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
+            if not clean["password"]:
+                clean["password"] = old.get("password", "")
+            if not clean["phone_code"]:
+                clean["phone_code"] = old.get("phone_code", "")
+            clean["owner"] = old.get("owner", "")
+            # 被拒绝的账号编辑后 = 重新提交审核（回 pending，清除拒绝理由）
+            clean["status"] = (
+                STATUS_PENDING
+                if old.get("status") == STATUS_REJECTED
+                else old.get("status", STATUS_PENDING)
+            )
+            if clean["status"] == STATUS_PENDING:
+                clean.pop("reject_reason", None)
+            accounts[real_idx] = clean
+            save_accounts(accounts)
+            logger.info("用户 %s 编辑账号 %s", clean["owner"], clean["phone"])
+            if old.get("status") == STATUS_REJECTED:
+                return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
+            return jsonify({"ok": True, "msg": "已保存"})
 
     @app.route("/api/my-accounts/<int:idx>", methods=["DELETE"])
     def api_my_account_delete(idx):
-        accounts = load_accounts()
-        indices = _my_account_indices()
-        if not 0 <= idx < len(indices):
-            return jsonify({"error": "账号不存在"}), 404
-        removed = accounts.pop(indices[idx])
-        save_accounts(accounts)
-        logger.info("用户 %s 删除账号 %s", session.get("username", ""), removed.get("phone", ""))
-        return jsonify({"ok": True, "msg": "已删除"})
+        with _file_lock:
+            accounts = load_accounts()
+            indices = _my_account_indices_of(accounts)
+            if not 0 <= idx < len(indices):
+                return jsonify({"error": "账号不存在"}), 404
+            removed = accounts.pop(indices[idx])
+            save_accounts(accounts)
+            logger.info(
+                "用户 %s 删除账号 %s", session.get("username", ""), removed.get("phone", "")
+            )
+            return jsonify({"ok": True, "msg": "已删除"})
 
     # ---- 用户管理（仅管理员；路径不在普通用户白名单，自动 403）----
     def _builtin_admin_email():
@@ -1084,24 +1108,25 @@ def create_app():
         # 内置管理员（.env）不可修改角色
         if email == _builtin_admin_email():
             return jsonify({"error": "内置管理员不可修改角色"}), 400
-        users = load_users()
-        target = _find_user(users, email)
-        if not target:
-            return jsonify({"error": "用户不存在"}), 404
-        if new_role == "user" and target.get("role") == "admin":
-            admins = [u for u in users if u.get("role") == "admin"]
-            # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users.json 中的最后一个管理员
-            if len(admins) <= 1 and not _builtin_admin_email():
-                return jsonify({"error": "至少保留 1 个管理员"}), 400
-        target["role"] = new_role
-        save_users(users)
-        logger.info("用户 %s 角色 → %s", email, new_role)
-        return jsonify(
-            {
-                "ok": True,
-                "msg": f"{email} 已{'设为管理员' if new_role == 'admin' else '取消管理员'}",
-            }
-        )
+        with _file_lock:
+            users = load_users()
+            target = _find_user(users, email)
+            if not target:
+                return jsonify({"error": "用户不存在"}), 404
+            if new_role == "user" and target.get("role") == "admin":
+                admins = [u for u in users if u.get("role") == "admin"]
+                # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users.json 中的最后一个管理员
+                if len(admins) <= 1 and not _builtin_admin_email():
+                    return jsonify({"error": "至少保留 1 个管理员"}), 400
+            target["role"] = new_role
+            save_users(users)
+            logger.info("用户 %s 角色 → %s", email, new_role)
+            return jsonify(
+                {
+                    "ok": True,
+                    "msg": f"{email} 已{'设为管理员' if new_role == 'admin' else '取消管理员'}",
+                }
+            )
 
     @app.route("/api/users/<email>/password", methods=["POST"])
     def api_user_password(email):
@@ -1110,14 +1135,15 @@ def create_app():
         password = str(data.get("password", ""))
         if len(password) < 6:
             return jsonify({"error": "新密码至少 6 位"}), 400
-        users = load_users()
-        target = _find_user(users, email)
-        if not target:
-            return jsonify({"error": "用户不存在"}), 404
-        target["password_hash"] = generate_password_hash(password)
-        save_users(users)
-        logger.info("已重置用户 %s 密码", email)
-        return jsonify({"ok": True, "msg": f"{email} 密码已重置"})
+        with _file_lock:
+            users = load_users()
+            target = _find_user(users, email)
+            if not target:
+                return jsonify({"error": "用户不存在"}), 404
+            target["password_hash"] = generate_password_hash(password)
+            save_users(users)
+            logger.info("已重置用户 %s 密码", email)
+            return jsonify({"ok": True, "msg": f"{email} 密码已重置"})
 
     @app.route("/api/users/<email>/delete", methods=["POST"])
     def api_user_delete(email):
@@ -1129,25 +1155,26 @@ def create_app():
             return jsonify({"error": "未知操作"}), 400
         if email == _builtin_admin_email():
             return jsonify({"error": "内置管理员不可删除"}), 400
-        users = load_users()
-        target = _find_user(users, email)
-        if not target:
-            return jsonify({"error": "用户不存在"}), 404
-        if mode == "full" and target.get("role") == "admin":
-            admins = [u for u in users if u.get("role") == "admin"]
-            # 内置管理员（.env）兜底存在时可删除 users.json 中的最后一个管理员
-            if len(admins) <= 1 and not _builtin_admin_email():
-                return jsonify({"error": "至少保留 1 个管理员"}), 400
-        # 删除其提交的易班账号
-        accounts = [a for a in load_accounts() if a.get("owner") != email]
-        save_accounts(accounts)
-        if mode == "full":
-            users = [u for u in users if u.get("email") != email]
-            save_users(users)
-            logger.info("完全删除用户 %s（含易班账号）", email)
-            return jsonify({"ok": True, "msg": f"{email} 已完全删除"})
-        logger.info("清空用户 %s 的易班账号（保留用户）", email)
-        return jsonify({"ok": True, "msg": f"{email} 的易班账号已清空（用户保留，可重新提交）"})
+        with _file_lock:
+            users = load_users()
+            target = _find_user(users, email)
+            if not target:
+                return jsonify({"error": "用户不存在"}), 404
+            if mode == "full" and target.get("role") == "admin":
+                admins = [u for u in users if u.get("role") == "admin"]
+                # 内置管理员（.env）兜底存在时可删除 users.json 中的最后一个管理员
+                if len(admins) <= 1 and not _builtin_admin_email():
+                    return jsonify({"error": "至少保留 1 个管理员"}), 400
+            # 删除其提交的易班账号（accounts 与 users 同锁内读写，防并发覆盖）
+            accounts = [a for a in load_accounts() if a.get("owner") != email]
+            save_accounts(accounts)
+            if mode == "full":
+                users = [u for u in users if u.get("email") != email]
+                save_users(users)
+                logger.info("完全删除用户 %s（含易班账号）", email)
+                return jsonify({"ok": True, "msg": f"{email} 已完全删除"})
+            logger.info("清空用户 %s 的易班账号（保留用户）", email)
+            return jsonify({"ok": True, "msg": f"{email} 的易班账号已清空（用户保留，可重新提交）"})
 
     # ---- 手动签到 ----
     _last_trigger = {}  # phone -> 上次触发时间戳
