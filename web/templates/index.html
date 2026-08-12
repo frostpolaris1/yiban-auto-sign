@@ -555,6 +555,7 @@
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-phone" type="text" maxlength="20" required placeholder="易班登录手机号"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        <p id="f-phone-mask-tip" class="hidden mt-1 text-xs text-zinc-400 dark:text-zinc-500">为保护隐私，手机号已打码显示；如需修改请填写完整新号码</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -1066,7 +1067,9 @@ function openForm(index) {
   $('f-email-manual').classList.add('hidden');
   $('f-email-wrap').classList.toggle('hidden', index !== null);  // 编辑时不显示邮箱（归属不变）
   if (index === null) loadAvailableUsers();  // 添加时加载可绑定用户
-  $('f-phone').value = a ? a.phone : '';
+  $('f-phone').value = a ? maskPhone(a.phone) : '';   // 编辑时打码显示，保护隐私
+  $('f-phone').dataset.full = a ? a.phone : '';        // 完整号码仅存内存，提交时还原
+  $('f-phone-mask-tip').classList.toggle('hidden', index === null);  // 仅编辑时提示打码
   $('f-password').value = '';
   $('f-password').placeholder = a ? '留空表示不修改密码' : '易班登录密码';
   $('f-model').value = a ? a.phone_model : '';
@@ -1082,10 +1085,14 @@ function closeForm() {
 
 $('account-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  // 手机号打码显示时（未修改）用内存中的完整号码提交，避免 **** 入库
+  const phoneInput = $('f-phone');
+  const phoneRaw = phoneInput.value.trim();
+  const phone = phoneRaw.includes('****') && phoneInput.dataset.full ? phoneInput.dataset.full : phoneRaw;
   const body = {
     name: $('f-name').value,
     email: getEmailValue(),
-    phone: $('f-phone').value.trim(),
+    phone,
     password: $('f-password').value,
     phone_model: $('f-model').value.trim(),
     phone_code: $('f-code').value.trim(),
