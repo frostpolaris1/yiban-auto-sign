@@ -24,6 +24,7 @@
 </script>
 <link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css">
 <script src="/static/vendor/tailwind.js"></script>
+<script src="/static/vendor/md-render.js"></script>
 <script>tailwind.config = { darkMode: 'class' }</script>
 <style>
   body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
@@ -263,17 +264,17 @@ async function loadAnnouncement() {
     }
   } catch (e) { /* 静默 */ }
 }
-// 更新日志弹窗（版本号点击，登录页无需登录）
+// 更新日志弹窗（版本号点击，登录页无需登录；Markdown 渲染）
 async function openChangelog() {
   const modal = document.getElementById('changelog-modal');
   modal.classList.remove('hidden');
   const content = document.getElementById('changelog-content');
-  content.textContent = '加载中…';
+  content.innerHTML = '加载中…';
   try {
     const resp = await fetch('/api/changelog');
     const data = await resp.json().catch(() => ({}));
-    content.textContent = (data && data.text) || '暂无更新日志';
-  } catch (e) { content.textContent = '加载失败，请稍后重试'; }
+    content.innerHTML = window.renderMarkdown ? renderMarkdown((data && data.text) || '暂无更新日志') : ((data && data.text) || '暂无更新日志');
+  } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
 }
 function closeChangelog() { document.getElementById('changelog-modal').classList.add('hidden'); }
 
@@ -324,7 +325,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
       <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
       <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
     </div>
-    <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
+    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed"></div>
   </div>
 </div>
 </body>

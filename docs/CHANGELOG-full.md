@@ -18,6 +18,14 @@
 - 验证：DOM 类断言（pending 白卡+琥珀栏/搜索 ml-auto/35 th nowrap/折叠 id）+ 折叠功能（▾→▸→▾ 表格显隐）+ 识图两轮（表头单行、琥珀栏可读、结构统一、无错位）
 - 教训：结构统一必须对齐完整外层结构（卡片 padding/标题行边框/提示行），只改内层容器类会产生"视觉不一致"的假统一；正则改 HTML 前先 grep 确认所有变体
 
+## v0.13.3（2026-08-12）
+- 更新日志弹窗 Markdown 渲染（用户反馈：md 格式只显示文字）：
+  - 新建 `web/static/vendor/md-render.js`（迷你渲染器，零依赖，与 tailwind.js 同为本地化 vendor）
+  - 支持语法：`#/##/###` 标题、`-` 列表、`**加粗**`、`` `行内代码` ``；先 HTML 转义再应用标记（防 XSS，日志内容来自服务器文件仍做防御）
+  - 弹窗容器 `<pre>`（纯文本）→ `<div class="md-body">`（渲染 HTML），样式由 md-render.js 注入（标题/列表/加粗在 text-xs 容器内协调）
+  - index.html 与 login.html 同步三处改造（引入脚本 / openChangelog 用 innerHTML / 容器改 div）；openChangelog 保留 `window.renderMarkdown` 存在性兜底（脚本加载失败时降级纯文本）
+- 版本号 0.13.3；用户可见 CHANGELOG 按用户整理的合并概述风格并入 v0.13.0 条目
+
 ## v0.13.0（2026-08-12）
 - **管理员权限分级**（用户反馈：设置管理员应仅主管理员可用）：
   - 后端：`api_user_role` 与批量 `set_admin/unset_admin` 增加主管理员校验（session username == `.env` 内置管理员，否则 403"仅主管理员可修改管理员权限"）；`set_admin` 目标限定正式用户（有已生效账号且无待审核，否则 400）
