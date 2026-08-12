@@ -162,7 +162,7 @@
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
       <div id="batch-bar-pending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-pending" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('pending','approve')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">通过</button> <button onclick="batchAccounts('pending','reject')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">拒绝</button> <button onclick="clearBatch('pending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
+      <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
     <table class="w-full text-sm min-w-[760px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('pending', this)" class="accent-blue-500"></th>
@@ -396,8 +396,8 @@
                class="w-full md:w-56 md:mx-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
-      <div id="batch-bar-usersPending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersPending" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersPending','set_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersPending','unset_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersPending','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersPending','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersPending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
+      <div id="batch-bar-usersPending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersPending" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersPending','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersPending','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersPending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersPending', this)" class="accent-blue-500"></th>
@@ -424,8 +424,8 @@
         <input id="users-normal-search" type="search" placeholder="搜索邮箱…"
                class="w-full md:w-56 md:mx-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
-      <div id="batch-bar-usersNormal" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersNormal" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersNormal','set_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersNormal','unset_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersNormal','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersNormal','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersNormal')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
+      <div id="batch-bar-usersNormal" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersNormal" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersNormal','set_admin')" class="batch-admin-only px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersNormal','unset_admin')" class="batch-admin-only px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersNormal','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersNormal','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersNormal')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersNormal', this)" class="accent-blue-500"></th>
@@ -453,8 +453,8 @@
                class="w-full md:w-56 md:mx-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">已注册但未提交任何账号，可重置密码或删除</p>
-      <div id="batch-bar-usersVacant" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersVacant" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersVacant','set_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersVacant','unset_admin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersVacant','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersVacant','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersVacant')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
-      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto max-h-[420px] overflow-y-auto">
+      <div id="batch-bar-usersVacant" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersVacant" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersVacant','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersVacant','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersVacant')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
         <table class="w-full text-sm table-fixed min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersVacant', this)" class="accent-blue-500"></th>
@@ -588,6 +588,7 @@ const state = {
   editingIndex: null, // null=添加
   delays: { start: 0, gap: 0 },
   batchMode: false,   // 批量多选开关（.env YIBAN_BATCH_MODE 持久化）
+  isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1334,6 +1335,11 @@ function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
     const me = await api('/api/me');
     if (me.role !== 'admin') { location.href = '/user'; return; }  // 普通用户 → 用户页
     csrfToken = me.csrf_token || '';
+    state.isMasterAdmin = !!me.is_builtin_admin;  // 主管理员才可设置/取消管理员
+    if (!state.isMasterAdmin) {
+      // 普通管理员：隐藏「设为/取消管理员」批量按钮（仅主管理员权限）
+      document.querySelectorAll('.batch-admin-only').forEach(el => el.classList.add('hidden'));
+    }
     loadSettings();  // 加载持久配置（含批量开关），表格复选框渲染依赖
     switchTab('accounts');
     loadLogs();
@@ -1459,7 +1465,7 @@ function userRow(u, key) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${u.account_count}</td>
     <td class="px-4 py-3">
       <div class="flex items-center justify-center">
-        <button title="更多操作" data-email="${esc(u.email)}" data-role="${u.role}" onclick="userRowMenu(event, this)"
+        <button title="更多操作" data-email="${esc(u.email)}" data-role="${u.role}" data-key="${key}" onclick="userRowMenu(event, this)"
                 class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
       </div>
     </td>`;
@@ -1469,12 +1475,18 @@ function userRow(u, key) {
 function userRowMenu(evt, btn) {
   const email = btn.dataset.email;
   const isAdmin = btn.dataset.role === 'admin';
-  openRowMenu(evt, [
-    {label: isAdmin ? '取消管理员' : '设为管理员', cls: isAdmin ? 'text-zinc-600 dark:text-zinc-300' : 'text-blue-600 dark:text-blue-400', fn: () => setUserRole(email, isAdmin ? 'user' : 'admin')},
+  const key = btn.dataset.key;
+  const items = [];
+  // 管理员权限变更：仅主管理员 + 正式用户组可用（待审核/空用户不可设管理员）
+  if (state.isMasterAdmin && key === 'usersNormal') {
+    items.push({label: isAdmin ? '取消管理员' : '设为管理员', cls: isAdmin ? 'text-zinc-600 dark:text-zinc-300' : 'text-blue-600 dark:text-blue-400', fn: () => setUserRole(email, isAdmin ? 'user' : 'admin')});
+  }
+  items.push(
     {label: '重置密码', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => resetUserPassword(email)},
     {label: '清空账号', cls: 'text-amber-600 dark:text-amber-400', fn: () => deleteUserAccounts(email)},
     {label: '删除用户', cls: 'text-red-600 dark:text-red-400', fn: () => deleteUserFull(email)},
-  ]);
+  );
+  openRowMenu(evt, items);
 }
 
 async function setUserRole(email, role) {
