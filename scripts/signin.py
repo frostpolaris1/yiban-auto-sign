@@ -191,10 +191,7 @@ def is_waf_blocked(response_text):
     decoded = re.compile(r"\\u([0-9a-fA-F]{4})").sub(
         lambda m: chr(int(m.group(1), 16)), response_text
     )
-    for keyword in WAF_KEYWORDS:
-        if keyword in response_text or keyword in decoded:
-            return True
-    return False
+    return any(keyword in response_text or keyword in decoded for keyword in WAF_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +260,7 @@ def _load_accounts_from_file():
         with open(ACCOUNTS_FILE, encoding="utf-8") as f:
             raw = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 解析失败: {e}")
+        raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 解析失败: {e}") from e
     if not isinstance(raw, list):
         raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 应为 JSON 数组")
     # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）
@@ -286,7 +283,7 @@ def _load_accounts_from_json_env():
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"YIBAN_ACCOUNTS_JSON 不是合法 JSON: {e}")
+        raise RuntimeError(f"YIBAN_ACCOUNTS_JSON 不是合法 JSON: {e}") from e
     if not isinstance(data, list):
         raise RuntimeError("YIBAN_ACCOUNTS_JSON 应为 JSON 数组")
     accounts = [_parse_account_dict(item) for item in data]

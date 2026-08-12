@@ -3,8 +3,114 @@
 > 审查基准：`server-web` 分支 v0.13.6（已部署生产）。工作区初始在旧分支 `fix/web-security`（0.9.7），审查前已切换。
 > 用户决策：先出报告再修；本轮不做易班密码加密存储；性能优化全部评估。
 > 三份探索报告基于 0.9.7 生成，本报告在 0.13.6 上逐项回验 + 0.13.x 增量专项。
+> **二轮深挖（用户要求"再深入审查"）已追加：T1-T10（安全）、F1-F7（前端/规范）、R1-R2（ruff）、P12-P19（性能补充）。**
 
 ---
+
+## 二、二轮深挖新增发现（2026-08-12 同日，0.13.6 基准）
+
+### 安全新增
+
+#### T1. 【高】批量「彻底删除」绕过软删除检查
+- **位置**：`web/app.py:917-918`（`api_accounts_batch` 的 `purge` 分支直接 `accounts.pop(i)`，未检查 `deleted` 状态）
+- **对比**：单个彻底删除接口（`app.py:998-999`）正确检查了 `deleted`；批量版本遗漏
+- **影响**：管理员勾选正常账号批量彻底删除 → 跳过 7 天保留期物理清除，不可恢复；会话被劫持时可静默销毁全部账号
+- **建议**：`purge` 分支加 `if not acc.get("deleted"): continue`，与单删行为一致
+
+#### T2. 【中】手动签到防抖 TOCTOU 竞态
+- **位置**：`web/app.py:1520-1523`（`_last_trigger` 检查与赋值非原子）
+- **影响**：并发请求绕过 30 秒防抖 → 同账号多子进程并发签到 → 触发易班风控（e003）
+- **建议**：检查+赋值放入 `threading.Lock()` 临界区
+
+#### T3+T9. 【中】手动签到子进程无超时 + 文件句柄泄漏
+- **位置**：`web/app.py:1542-1548`（`Popen` 后立即返回不等待）、`:1534`（`log_fh` 打开后父进程不关闭）
+- **影响**：子进程挂起时无限运行 → 进程/句柄累积 → 资源耗尽 DoS
+- **建议**：`{phone: Popen}` 字典管理，新触发 terminate 旧进程；父进程关闭 `log_fh`（子进程继承后由子进程持有）
+
+#### T4. 【中】拒绝理由日志注入（Log Forging）
+- **位置**：`web/app.py:1033, 1040-1045`（`reject_reason` 仅截断 100 字，无换行过滤后写入 logger）
+- **影响**：理由含 `\n` 可伪造日志行（假签到成功/嫁祸账号）
+- **建议**：`reason.replace('\n',' ').replace('\r',' ')` 或拒绝控制字符
+
+#### T5. 【中】js2py.eval_js 执行远程 JavaScript
+- **位置**：`scripts/signin.py:639-657`（`_solve_ydclearance` 提取易班响应中的 JS 后 `eval_js` 执行）
+- **影响**：JS 内容由远程控制；js2py 沙箱逃逸 CVE 历史 → 理论上服务器 RCE 面
+- **建议**：用正则/字符串解析 `ydclearance` 值替代执行 JS；或换 `py-mini-racer`/Node 子进程隔离
+
+#### T6. 【低】公告无后端长度限制
+- `web/app.py:1624`（仅 strip，前端 maxlength=200 可绕过）→ 后端加 `len(text) > 500 → 400`
+
+#### T7. 【低】`backup-main-20260807/` 目录未纳入 .gitignore
+- 若被误提交会泄露历史敏感文件 → `.gitignore` 加 `backup-*/`
+
+#### T8. 【低】`_last_trigger` 字典无清理
+- `web/app.py:1509` → load_accounts 时同步清理不在当前 phone 列表的 key
+
+#### T10. 【低】`sys.executable` 无路径校验（供应链纵深）
+- `web/app.py:1543` → 校验 `os.path.isfile(script)`
+
+### 前端/规范新增
+
+#### F1. 【高·结构】日历容器重复 DOM id
+- `web/templates/index.html:1603, 1626`（同一 card 内 `cal-wrap-{phone}` 出现两次）+「账号管理」「我的账号」跨 tab 同 phone 冲突
+- **影响**：`getElementById` 只取第一个 → 日历渲染错位/空壳（功能 bug，与 S3/P6 同源一并修复）
+- **建议**：删重复容器；id 改用 index 键（同时解决 S3 手机号进 id）
+
+#### F2. 【中】名称输入 maxlength=20 与后端 50 不一致
+- `index.html:497,540`、`user.html:93` → 统一 `maxlength="50"`
+
+#### F3. 【中·防御】md-render.js esc() 不转义单引号
+- `md-render.js:7` → 补 `.replace(/'/g, '&#39;')`（防上下文迁移）
+
+#### F4. 【中·规范】`ICONS` 常量死代码
+- `index.html:714` 定义未使用 → 删除
+
+#### F5. 【低·规范】多余 `</section>` 闭合标签
+- `index.html:528` → 删除
+
+#### F6. 【低·规范】Tailwind dark: 类重复堆叠（多处）
+- 同一状态多个 `dark:text-zinc-*` 后者覆盖前者 → 清理（登录页/用户页/管理页标题行）
+
+#### F7. 【低】日历 API `.catch(() => {})` 静默；主题按钮缺 aria-label；tickClock 无 try/catch
+- `index.html:302/1672`、`user.html:302`、登录/用户/管理页主题按钮 → 补轻提示/aria-label/防御
+
+### 后端规范（ruff 实测）
+
+#### R1. SIM110 `for` 循环可改 `any()` — `scripts/signin.py:194`
+#### R2. B904 ×2 `except` 内 raise 缺 `from` — `scripts/signin.py:266, 289`
+
+（`ruff check web/ scripts/` 全量仅此 3 处错误级问题，整体规范良好）
+
+### 性能补充
+
+#### P12. 【高】登录全量遍历 users + 逐用户哈希
+- `web/app.py:623-626`：`for u in load_users(): ... check_password_hash(...)`——O(n) 遍历 + 对匹配用户 scrypt ~100ms；用户量大时登录慢
+- 建议：确认是否仅对匹配邮箱执行哈希（是则遍历开销 O(n) 可接受，100 用户 <1ms）；优化为 email→user 映射或短路
+
+#### P13. 【中】6 个搜索框无防抖
+- `web/templates/index.html:1461-1484`：每 keystroke 全量 `renderAccounts/renderUsers` → 加 150ms 防抖
+
+#### P14. 【中】load_accounts 惰性清理 O(n×m)
+- `web/app.py:219-232`：`a not in expired` 列表身份比较 → 改 `expired` 为 set 判定 O(1)
+
+#### P15. 【中】_effective_role 每请求读 users.json
+- `web/app.py:1288-1296`：`before_request → _current_role → load_users()` 全量读盘（高频轮询放大）→ 配合 P4 缓存（users 读多写少同样适用）
+
+#### P16. 【中】/api/announcement 每次 read_env
+- `web/app.py:1615-1619` → 缓存公告（写时失效）
+
+#### P17. 【低】mask_account 全量序列化（500 账号 ≈ 100KB 响应）
+- 可接受，标注；>500 账号时考虑分页
+
+#### P18. 【低】静态资源无 Cache-Control
+- `web/app.py:589-593`：仅页面 no-store；`static/vendor/` 无强缓存 → 加 `send_file` cache_timeout（版本号 URL 已覆盖更新）
+
+#### P19. 【低】_my_account_view 队列计算 O(n²)
+- `web/app.py:1094-1109`：`active[:pos]` 切片 + sum 重复遍历 → 单次遍历累计
+
+---
+
+## 一、安全发现（第一轮，0.13.6 基准）
 
 ## 一、安全发现
 
