@@ -45,7 +45,7 @@
     </div>
     <div class="flex items-center gap-4">
       <span id="user-clock" class="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:inline">服务器时间：--:--:--</span>
-      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
               class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">🌙</button>
       <span id="user-email" class="text-sm text-zinc-600 dark:text-zinc-300"></span>
       <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
@@ -90,7 +90,7 @@
     <form id="account-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
-        <input id="f-name" type="text" maxlength="20" placeholder="如：我的手机"
+        <input id="f-name" type="text" maxlength="50" placeholder="如：我的手机"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
@@ -253,31 +253,32 @@ function renderList() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:text-zinc-300 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${esc(a.phone)}"></div>
+      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-u-${i}"></div>
     `;
     list.appendChild(card);
-    if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
+    if (a.status === 'active') renderCalendar(a.phone, 'u-' + i);  // 未生效账号不显示日历
   });
 }
 
 // ================= 签到日历（按日状态文件 + 日志） =================
-const calState = {};  // phone -> {year, month}
+const calState = {};  // calKey -> {year, month}
 
 function calPad(n) { return String(n).padStart(2, '0'); }
 
 function calShift(btn, delta) {
+  const key = btn.dataset.key;
   const phone = btn.dataset.phone;
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   st.month += delta;
   if (st.month < 1) { st.month = 12; st.year--; }
   if (st.month > 12) { st.month = 1; st.year++; }
-  renderCalendar(phone);
+  renderCalendar(phone, key);
 }
 
-function renderCalendar(phone) {
-  const wrap = $('cal-wrap-' + phone);
+function renderCalendar(phone, key) {
+  const wrap = $('cal-wrap-' + key);
   if (!wrap) return;
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   const { year, month } = st;
   const monthStr = `${year}-${calPad(month)}`;
   const today = new Date();
@@ -288,15 +289,15 @@ function renderCalendar(phone) {
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
-            <button onclick="calShift(this, -1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
-            <button onclick="calShift(this, 1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
+            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
           </div>
         </div>
-        <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
+        <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
       </div>
-      <div id="cal-log-${phone}" class="lg:pt-8"></div>
+      <div id="cal-log-${key}" class="lg:pt-8"></div>
     </div>`;
-  const grid = $('cal-grid-' + phone);
+  const grid = $('cal-grid-' + key);
   grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
@@ -316,17 +317,19 @@ function renderCalendar(phone) {
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
       grid.insertAdjacentHTML('beforeend', `
-        <div onclick="calLoadLog(this, '${date}')" data-phone="${esc(phone)}" title="${date}"
+        <div onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
              class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
           <span>${d}</span>
         </div>`);
     }
-  }).catch(() => {});
+  }).catch(() => {
+    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-400 dark:text-zinc-500 py-4">日历加载失败，请稍后重试</div>';
+  });
 }
 
 function calLoadLog(btn, date) {
-  const phone = btn.dataset.phone;
-  const box = $('cal-log-' + phone);
+  const key = btn.dataset.key;
+  const box = $('cal-log-' + key);
   // 周日无需签到，直接提示（不查询日志）
   if (new Date(date + 'T00:00:00').getDay() === 0) {
     box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">周日无需签到</div>';

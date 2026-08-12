@@ -104,7 +104,7 @@
   <div class="border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
     <div class="flex items-center justify-between mb-2">
       <div id="sidebar-clock" class="text-xs text-zinc-400 dark:text-zinc-500">服务器时间：--:--:--</div>
-      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
               class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">🌙</button>
     </div>
     <button onclick="doLogout()"
@@ -259,7 +259,7 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">手动签到</div>
       <div class="flex flex-wrap items-center gap-2">
         <select id="signin-select" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 min-w-52"></select>
-        <button onclick="doSignin()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
+        <button onclick="doSigninFromSelect()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
           立即签到
         </button>
         <span id="signin-tip" class="text-xs text-zinc-400 dark:text-zinc-500">后台执行，结果约 30 秒内出现在下方日志</span>
@@ -494,7 +494,7 @@
       <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
-          <input id="m-name" type="text" maxlength="20" placeholder="如：我的手机"
+          <input id="m-name" type="text" maxlength="50" placeholder="如：我的手机"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
 
@@ -525,8 +525,7 @@
           <span id="mine-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
       </form>
-    </div>    </section>
-
+    </div>
 </main>
 
 <!-- 账号编辑模态 -->
@@ -537,7 +536,7 @@
     <form id="account-form" class="space-y-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
-        <input id="f-name" type="text" maxlength="20" placeholder="如：小明"
+        <input id="f-name" type="text" maxlength="50" placeholder="如：小明"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div id="f-email-wrap">
@@ -549,6 +548,9 @@
             <optgroup label="已注册用户（无账号）" id="f-email-users"></optgroup>
           </select>
           <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
+                 class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <input id="f-initial-password" type="password" maxlength="64" autocomplete="new-password"
+                 placeholder="该邮箱未注册：填写初始密码为其创建账号（至少 6 位）"
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
       <div>
@@ -690,9 +692,11 @@ async function loadAvailableUsers() {
   } catch (e) { /* 静默：下拉为空也可手填 */ }
 }
 
-// 手填邮箱显示切换
+// 手填邮箱显示切换（初始密码随手动邮箱模式显示）
 $('f-email').addEventListener('change', () => {
-  $('f-email-manual').classList.toggle('hidden', $('f-email').value !== '__manual__');
+  const manual = $('f-email').value === '__manual__';
+  $('f-email-manual').classList.toggle('hidden', !manual);
+  $('f-initial-password').classList.toggle('hidden', !manual);
 });
 
 function getEmailValue() {
@@ -711,8 +715,6 @@ async function loadAccounts() {
   } catch (e) { toast(e.message, true); }
 }
 
-const ICONS = {'⏳': '⏳', '✅': '✅', '❌': '❌', '🔄': '🔄', '➖': '➖'};
-
 // 各表格搜索词（内存态：10 秒轮询刷新后过滤依然生效）
 let pendingSearch = '', activeSearch = '', deletedSearch = '';
 let usersPendingSearch = '', usersNormalSearch = '', usersVacantSearch = '';
@@ -722,7 +724,8 @@ let builtinAdminName = 'admin';
 
 function accountMatch(a, kw) {
   if (!kw) return true;
-  return [a.name, a.phone, a.owner_display, a.owner].some(v => String(v || '').toLowerCase().includes(kw));
+  // phone 列表值已脱敏（138****8000）：输入完整号时同样 mask 后匹配，保证搜索可用
+  return [a.name, maskPhone(a.phone), a.owner_display, a.owner].some(v => String(v || '').toLowerCase().includes(maskPhone(kw) || kw));
 }
 
 function userMatch(u, kw) {
@@ -926,7 +929,7 @@ async function restoreAccount(idx) {
 
 async function purgeAccount(idx) {
   const a = state.accounts[idx];
-  if (!confirm(`确定彻底删除「${a.display_name}」(${maskPhone(a.phone)}) 吗？此操作不可恢复！`)) return;
+  if (!confirm(`确定彻底删除「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？此操作不可恢复！`)) return;
   try {
     const data = await api(`/api/accounts/${idx}/purge`, { method: 'POST' });
     toast(data.msg || '已彻底删除');
@@ -985,7 +988,7 @@ function accountRow(a, key) {
     <td class="px-4 py-3">${statusBadge(a)}</td>
     <td class="px-4 py-3">
       <div class="flex items-center justify-center">
-        <button title="更多操作" data-phone="${esc(a.phone)}" onclick="accountRowMenu(event, this, ${a.index})"
+        <button title="更多操作" onclick="accountRowMenu(event, this, ${a.index})"
                 class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
       </div>
     </td>`;
@@ -996,7 +999,7 @@ function accountRowMenu(evt, btn, idx) {
   openRowMenu(evt, [
     {label: '上移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, -1)},
     {label: '下移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, 1)},
-    {label: '手动签到', cls: 'text-blue-600 dark:text-blue-400', fn: () => doSignin(btn.dataset.phone)},
+    {label: '手动签到', cls: 'text-blue-600 dark:text-blue-400', fn: () => doSigninByIndex(idx)},
     {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(idx)},
     {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(idx)},
   ]);
@@ -1006,10 +1009,10 @@ async function reviewAccount(idx, action) {
   const a = state.accounts[idx];
   let body = { action };
   if (action === 'reject') {
-    const reason = prompt(`拒绝「${a.display_name}」(${maskPhone(a.phone)})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
+    const reason = prompt(`拒绝「${jsEscape(a.display_name)}」(${maskPhone(a.phone)})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
     if (reason === null) return;  // 用户取消
     body.reason = reason.trim();
-  } else if (action === 'approve' && !confirm(`确定通过「${a.display_name}」(${maskPhone(a.phone)}) 吗？通过后将参与定时签到。`)) {
+  } else if (action === 'approve' && !confirm(`确定通过「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？通过后将参与定时签到。`)) {
     return;
   }
   try {
@@ -1033,9 +1036,24 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// 手机号脱敏：13912341234 → 139****1234（管理员列表/弹窗展示，防隐私泄露；非 11 位原样返回）
+// 手机号脱敏：13912341234 → 139****1234（列表/弹窗展示，防隐私泄露）；已脱敏（含 *）或非 11 位原样返回（幂等）
 function maskPhone(p) {
-  return p && String(p).length === 11 ? String(p).slice(0, 3) + '****' + String(p).slice(7) : p;
+  p = String(p || '');
+  if (p.includes('*')) return p;
+  return p.length === 11 ? p.slice(0, 3) + '****' + p.slice(7) : p;
+}
+
+// JS 模板字面量上下文转义：防用户可控数据（如账号名称）中的 `${...}`/反引号被执行（存储型 XSS）
+function jsEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+}
+
+// 邮箱脱敏：abc123@example.com → abc***@example.com（保留域名；超短用户名至少留 1 位）
+function maskEmail(e) {
+  const s = String(e || '');
+  const i = s.indexOf('@');
+  if (i <= 0) return s;
+  return s.slice(0, Math.min(3, i)) + '***' + s.slice(i);
 }
 
 async function moveAccount(idx, dir) {
@@ -1048,7 +1066,7 @@ async function moveAccount(idx, dir) {
 
 async function deleteAccount(idx) {
   const a = state.accounts[idx];
-  if (!confirm(`确定删除账号「${a.display_name}」(${maskPhone(a.phone)}) 吗？`)) return;
+  if (!confirm(`确定删除账号「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？`)) return;
   try {
     await api(`/api/accounts/${idx}`, { method: 'DELETE' });
     toast('已删除账号');
@@ -1057,7 +1075,7 @@ async function deleteAccount(idx) {
 }
 
 // ---- 账号表单（添加 / 编辑共用）----
-function openForm(index) {
+async function openForm(index) {
   state.editingIndex = index;
   const a = index === null ? null : state.accounts[index];
   $('form-title').textContent = a ? `编辑账号 #${index + 1}` : '添加账号';
@@ -1065,10 +1083,25 @@ function openForm(index) {
   $('f-email').value = '';
   $('f-email-manual').value = '';
   $('f-email-manual').classList.add('hidden');
+  $('f-initial-password').value = '';
+  $('f-initial-password').classList.add('hidden');
   $('f-email-wrap').classList.toggle('hidden', index !== null);  // 编辑时不显示邮箱（归属不变）
   if (index === null) loadAvailableUsers();  // 添加时加载可绑定用户
-  $('f-phone').value = a ? maskPhone(a.phone) : '';   // 编辑时打码显示，保护隐私
-  $('f-phone').dataset.full = a ? a.phone : '';        // 完整号码仅存内存，提交时还原
+  if (a) {
+    // 编辑：列表已脱敏，按需从详情接口取完整手机号（仅存内存，提交时还原）
+    try {
+      const d = await api(`/api/accounts/${index}/detail`);
+      $('f-phone').value = maskPhone(d.account.phone);
+      $('f-phone').dataset.full = d.account.phone;
+    } catch (e) {
+      $('f-phone').value = maskPhone(a.phone);  // 详情接口异常时退化为脱敏列表值
+      $('f-phone').dataset.full = '';
+      toast('无法获取账号完整信息', true);
+    }
+  } else {
+    $('f-phone').value = '';
+    $('f-phone').dataset.full = '';
+  }
   $('f-phone-mask-tip').classList.toggle('hidden', index === null);  // 仅编辑时提示打码
   $('f-password').value = '';
   $('f-password').placeholder = a ? '留空表示不修改密码' : '易班登录密码';
@@ -1088,10 +1121,15 @@ $('account-form').addEventListener('submit', async (e) => {
   // 手机号打码显示时（未修改）用内存中的完整号码提交，避免 **** 入库
   const phoneInput = $('f-phone');
   const phoneRaw = phoneInput.value.trim();
+  if (phoneRaw.includes('****') && !phoneInput.dataset.full) {
+    toast('无法获取账号完整信息，请刷新页面后重试', true);
+    return;
+  }
   const phone = phoneRaw.includes('****') && phoneInput.dataset.full ? phoneInput.dataset.full : phoneRaw;
   const body = {
     name: $('f-name').value,
     email: getEmailValue(),
+    initial_password: $('f-initial-password').value,  // 手填未注册邮箱时的首登密码（替代明文临时密码）
     phone,
     password: $('f-password').value,
     phone_model: $('f-model').value.trim(),
@@ -1112,6 +1150,7 @@ $('account-form').addEventListener('submit', async (e) => {
 
 // ================= 日志与状态 =================
 let _logFirstLoad = true;
+let _lastRenderSnap = '';  // 轮询条件渲染：accounts+states 快照，无变化不重建 DOM
 async function loadLogs() {
   try {
     const data = await api('/api/logs');
@@ -1121,7 +1160,8 @@ async function loadLogs() {
     const empty = $('log-empty');
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     if (data.logs.length) {
-      box.textContent = data.logs.join('\n');
+      // 展示层脱敏：日志行内 [13800138000] 前缀 → [138****8000]（sign.log 文件保持完整供状态解析）
+      box.textContent = data.logs.map(l => l.replace(/\[(\d{11})\]/g, (m, p) => '[' + maskPhone(p) + ']')).join('\n');
       box.classList.remove('hidden');
       empty.classList.add('hidden');
       if (nearBottom || _logFirstLoad) { box.scrollTop = box.scrollHeight; _logFirstLoad = false; }
@@ -1138,10 +1178,15 @@ async function loadLogs() {
 
 async function refreshAccountsSilent() {
   // 轮询拉取账号列表（静默失败）：管理员停留页面时同步审核状态/分组/统计卡
+  // 条件渲染：数据（accounts + states）无变化时不重建 DOM，避免 10s 全量 reflow
   try {
     const data = await api('/api/accounts');
-    state.accounts = data.accounts;
-    renderAccounts();
+    const snap = JSON.stringify(data.accounts) + '|' + JSON.stringify(state.states);
+    if (snap !== _lastRenderSnap) {
+      _lastRenderSnap = snap;
+      state.accounts = data.accounts;
+      renderAccounts();
+    }
   } catch (e) { /* 轮询失败不打扰 */ }
 }
 
@@ -1155,18 +1200,32 @@ function fillSigninSelect() {
   }
   state.accounts.forEach(a => {
     const opt = document.createElement('option');
-    opt.value = a.phone;
+    opt.value = a.index;  // value 用索引（列表已脱敏，完整号按需从详情接口取）
     opt.textContent = `${a.display_name} (${maskPhone(a.phone)})`;
     sel.appendChild(opt);
   });
   if (current) sel.value = current;
 }
 
-async function doSignin(phone) {
-  const target = phone || $('signin-select').value;
-  if (!target) { toast('请先在账号管理中配置账号', true); return; }
+// 手动签到（下拉）：value 为账号索引 → 按需取完整手机号
+async function doSigninFromSelect() {
+  const v = $('signin-select').value;
+  if (!v) { toast('请先在账号管理中配置账号', true); return; }
+  doSigninByIndex(Number(v));
+}
+
+// 手动签到（行菜单/下拉）：通过详情接口取完整手机号后触发
+async function doSigninByIndex(idx) {
   try {
-    const data = await api('/api/signin', { method: 'POST', body: JSON.stringify({ phone: target }) });
+    const d = await api(`/api/accounts/${idx}/detail`);
+    doSignin(d.account.phone);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function doSignin(phone) {
+  if (!phone) { toast('请先在账号管理中配置账号', true); return; }
+  try {
+    const data = await api('/api/signin', { method: 'POST', body: JSON.stringify({ phone }) });
     toast(data.msg || '已触发签到');
   } catch (e) { toast(e.message, true); }
 }
@@ -1458,29 +1517,34 @@ function renderUsers(users, builtinAdmin) {
 }
 
 // 搜索框实时过滤（输入即过滤；只过滤当前组，不影响其他组）
+// 150ms 防抖：每 keystroke 全量重建 DOM 开销大，停顿后再渲染
+function debounceSearch(fn) {
+  clearTimeout(fn._t);
+  fn._t = setTimeout(fn, 150);
+}
 $('pending-search').addEventListener('input', e => {
   pendingSearch = e.target.value.trim().toLowerCase();
-  renderAccounts();
+  debounceSearch(() => renderAccounts());
 });
 $('active-search').addEventListener('input', e => {
   activeSearch = e.target.value.trim().toLowerCase();
-  renderAccounts();
+  debounceSearch(() => renderAccounts());
 });
 $('deleted-search').addEventListener('input', e => {
   deletedSearch = e.target.value.trim().toLowerCase();
-  renderAccounts();
+  debounceSearch(() => renderAccounts());
 });
 $('users-pending-search').addEventListener('input', e => {
   usersPendingSearch = e.target.value.trim().toLowerCase();
-  renderUsers(allUsers, builtinAdminName);
+  debounceSearch(() => renderUsers(allUsers, builtinAdminName));
 });
 $('users-normal-search').addEventListener('input', e => {
   usersNormalSearch = e.target.value.trim().toLowerCase();
-  renderUsers(allUsers, builtinAdminName);
+  debounceSearch(() => renderUsers(allUsers, builtinAdminName));
 });
 $('users-vacant-search').addEventListener('input', e => {
   usersVacantSearch = e.target.value.trim().toLowerCase();
-  renderUsers(allUsers, builtinAdminName);
+  debounceSearch(() => renderUsers(allUsers, builtinAdminName));
 });
 
 // 用户行渲染（待审核组/正式组共用）
@@ -1494,7 +1558,7 @@ function userRow(u, key) {
     : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';
   tr.innerHTML = `
     ${cb}
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(u.email)}">${esc(u.email)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(maskEmail(u.email))}">${esc(maskEmail(u.email))}</td>
     <td class="px-4 py-3">${roleBadge}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${u.account_count}</td>
@@ -1599,8 +1663,8 @@ function renderMine() {
   mineAccounts.forEach((a, i) => {
     const card = document.createElement('div');
     card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl bg-zinc-50/50 dark:bg-zinc-700/30 p-4';
+    const calKey = 'mine-' + i;  // DOM id 用索引键（避免手机号进 id，可枚举泄露）
     card.innerHTML = `
-      <div class="mb-3" id="cal-wrap-${esc(a.phone)}"></div>
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="flex items-center gap-3">
           <span class="text-lg leading-none">${a.state_icon}</span>
@@ -1623,31 +1687,32 @@ function renderMine() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${esc(a.phone)}"></div>
+      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${calKey}"></div>
     `;
     list.appendChild(card);
-    if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
+    if (a.status === 'active') renderCalendar(a.phone, calKey);  // 未生效账号不显示日历
   });
 }
 
 // ================= 签到日历（按日状态文件 + 日志，与用户端一致） =================
-const calState = {};  // phone -> {year, month}
+const calState = {};  // calKey -> {year, month}
 
 function calPad(n) { return String(n).padStart(2, '0'); }
 
 function calShift(btn, delta) {
+  const key = btn.dataset.key;
   const phone = btn.dataset.phone;
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   st.month += delta;
   if (st.month < 1) { st.month = 12; st.year--; }
   if (st.month > 12) { st.month = 1; st.year++; }
-  renderCalendar(phone);
+  renderCalendar(phone, key);
 }
 
-function renderCalendar(phone) {
-  const wrap = $('cal-wrap-' + phone);
+function renderCalendar(phone, key) {
+  const wrap = $('cal-wrap-' + key);
   if (!wrap) return;
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   const { year, month } = st;
   const monthStr = `${year}-${calPad(month)}`;
   const today = new Date();
@@ -1658,15 +1723,15 @@ function renderCalendar(phone) {
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
-            <button onclick="calShift(this, -1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
-            <button onclick="calShift(this, 1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
+            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
           </div>
         </div>
-        <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
+        <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
       </div>
-      <div id="cal-log-${phone}" class="lg:pt-8"></div>
+      <div id="cal-log-${key}" class="lg:pt-8"></div>
     </div>`;
-  const grid = $('cal-grid-' + phone);
+  const grid = $('cal-grid-' + key);
   grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
@@ -1686,17 +1751,19 @@ function renderCalendar(phone) {
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
       grid.insertAdjacentHTML('beforeend', `
-        <div onclick="calLoadLog(this, '${date}')" data-phone="${esc(phone)}" title="${date}"
+        <div onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
              class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
           <span>${d}</span>
         </div>`);
     }
-  }).catch(() => {});
+  }).catch(() => {
+    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-400 dark:text-zinc-500 py-4">日历加载失败，请稍后重试</div>';
+  });
 }
 
 function calLoadLog(btn, date) {
-  const phone = btn.dataset.phone;
-  const box = $('cal-log-' + phone);
+  const key = btn.dataset.key;
+  const box = $('cal-log-' + key);
   // 周日无需签到，直接提示（不查询日志）
   if (new Date(date + 'T00:00:00').getDay() === 0) {
     box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">周日无需签到</div>';
@@ -1785,7 +1852,7 @@ $('mine-form').addEventListener('submit', async (e) => {
 
 async function deleteMineAccount(i) {
   const a = mineAccounts[i];
-  if (!confirm(`确定删除「${a.display_name}」(${a.phone}) 吗？`)) return;
+  if (!confirm(`确定删除「${jsEscape(a.display_name)}」(${a.phone}) 吗？`)) return;
   try {
     await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
     toast('已删除');

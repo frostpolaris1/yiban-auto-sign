@@ -18,6 +18,46 @@
 - 验证：DOM 类断言（pending 白卡+琥珀栏/搜索 ml-auto/35 th nowrap/折叠 id）+ 折叠功能（▾→▸→▾ 表格显隐）+ 识图两轮（表头单行、琥珀栏可读、结构统一、无错位）
 - 教训：结构统一必须对齐完整外层结构（卡片 padding/标题行边框/提示行），只改内层容器类会产生"视觉不一致"的假统一；正则改 HTML 前先 grep 确认所有变体
 
+## v0.14.0（2026-08-13）
+**安全+性能对抗性审查修复大版本**（审查报告 `docs/review-security-perf-2026-08-12.md`，两轮审查：S1-S12/T1-T10 安全 + P1-P19 性能 + R1-R2 规范，按 4 组修复）：
+
+### 组 1 安全高危
+- **S1** display_name JS 模板注入（存储型 XSS）：新增前端 `jsEscape()`（转义反引号/`\`/`${`），5 处 confirm/prompt 包裹（index.html:929/1009/1012/1051/1788）
+- **T1** 批量 purge 绕过软删除：`api_accounts_batch` purge 分支加 `deleted` 状态检查（仅能彻底删除已软删除账号，与单删一致）
+- **S2** 日志手机号明文：后端 `_mask_phone/_mask_email`（幂等）应用于 14 处 logger + `api_logs` 响应层（states 键 + 日志行内 `[手机号]` 脱敏，前端 maskPhone 幂等兼容）；sign.log 文件保持完整（parse_sign_log 解析依赖），仅展示层/响应层脱敏
+- **S3+F1** 日历 DOM id 含手机号 + 重复 id：id 改用索引键（`cal-wrap-mine-{i}`/`cal-wrap-u-{i}`/`cal-grid-{key}`/`cal-log-{key}`），calShift/calLoadLog 增加 `data-key`，`data-phone` 仅作操作传参；顺带修复同一 card 双 cal-wrap 重复 id bug（P6）
+- **S4** 用户管理邮箱脱敏：前端 `maskEmail`（abc***@example.com），列表显示 + title 均脱敏；data-email/checkbox 传参保留完整
+
+### 组 2 安全中危
+- **S5** API 传输层完整号（用户决策"最安全"）：`mask_account` 默认脱敏 phone/owner（网络层不再全量泄露）+ 新增 `/api/accounts/<idx>/detail`（masked=False，管理员守卫）——编辑表单（openForm 改 async 拉 detail）、行菜单手动签到（`doSigninByIndex`）、签到下拉（value 改 index + `doSigninFromSelect`）均按需取完整号；`accountMatch` 搜索兼容（输入完整号 mask 后匹配）；提交防 **** 入库（dataset.full 缺失时拒绝）
+- **S6** 内置管理员 pw_version：登录记 `.env YIBAN_ADMIN_PW_VERSION`，改密递增，`_effective_role` 比对（改密后旧会话失效）
+- **S7** 登录频率限制：60s 窗口 10 次/IP（`_login_rate`，比全局限速更严，防密码喷洒）；注册限速已有（S8 部分缓解，保留"已注册"提示）
+- **S9** 临时密码明文：改为管理员填写初始密码（前端 `f-initial-password` 字段 + 后端 `initial_password` 校验），不再生成明文临时密码经 API 传输
+- **T2** 手动签到 TOCTOU：`_signin_lock` 原子化检查+占位；**T3/T9** `_signin_procs` 字典终止旧进程 + 父进程关闭 log_fh；**T4** reject_reason 换行清洗（防日志伪造）；**T6** 公告后端 500 字限制；**T7** .gitignore 加 backup-*/；**L1** 子进程启动失败不暴露路径
+- **F2** 名称输入 maxlength 20→50（与后端一致，手机号字段保留 20）；**F3** md-render.js esc 补单引号
+
+### 组 3 性能
+- **P4** accounts/users 内存缓存（TTL 5s + save 后直接更新缓存），解决 10s 轮询读盘与 P15（_effective_role 每请求读 users）
+- **P1** 日历聚合读取：`os.scandir` 单次遍历替代每天一次 exists+open（30 次→1 次）
+- **P2+P19** _my_account_view 单次 parse_sign_log + 排队数单次遍历累计（O(n²)→O(n)）
+- **P3** 初始密码哈希移出 _file_lock（scrypt ~100ms 不再阻塞）
+- **P5** 轮询条件渲染：accounts+states 快照（`_lastRenderSnap`）无变化不重建 DOM
+- **P13** 6 个搜索框 150ms 防抖（debounceSearch）
+- **P8/P16** changelog/公告内存缓存；**P18** 静态资源 Cache-Control max-age=86400
+- P12 登录遍历经 users 缓存后为内存 O(n)（<1ms），保持现状
+
+### 组 4 规范
+- R1/R2：signin.py SIM110 any() + B904 raise from ×2（ruff 清零）
+- F4 ICONS 死代码删除；F5 多余 </section> 删除；F7 主题按钮 aria-label + 日历加载失败提示
+- F6 Tailwind 重复 dark: 类（影响极小，暂缓）、P17 大数组序列化（>500 账号时考虑分页，暂缓）
+
+### 验证
+- ruff / python ast / node --check 全过
+- 浏览器回归：列表脱敏（138****8000）、状态图标匹配（states 脱敏键）、编辑表单 detail 拉取+未修改保存数据完整、签到下拉 value=index 显示脱敏、用户管理邮箱脱敏（zha***@example.com）、搜索完整手机号命中
+
+### 遗留（已确认）
+- 易班密码加密存储（用户确认留后续专项）；T5 js2py.eval_js RCE 面（ydclearance 反爬 JS 沙箱，需专项评估替换方案）；S10 TLS 部署（无 HTTPS 环境）；F6/P17 暂缓项
+
 ## v0.13.6（2026-08-12）
 - 编辑账号弹窗手机号脱敏（接 0.13.5，用户要求"修改用户账号信息时也不显示手机号"）：
   - `openForm` 编辑回填 `maskPhone(a.phone)` 打码显示；完整号码存入 `dataset.full`（仅内存）
