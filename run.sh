@@ -1,4 +1,5 @@
 #!/bin/bash
+umask 077
 # 易班自动签到运行脚本
 cd /opt/yiban-auto-sign
 
