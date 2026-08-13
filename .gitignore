@@ -68,6 +68,12 @@ docs/review-security-perf-*.md
 docs/web-console/DEPLOY-CHECKLIST.md
 docs/web-console/resources.md
 
+# 内部工作流文档（AI 实施计划/设计过程/提示词，本地保留不入库）
+docs/user-agreement-prompt.md
+docs/archive/
+docs/design/
+docs/web-console/design/
+
 # ZCode 工具目录
 .zcode/
 .ruff_cache/

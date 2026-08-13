@@ -22,7 +22,8 @@
 | 字体 | 小米 MiSans（MiSans-Regular / MiSans-Demibold），woff2 按 unicode-range 分片 |
 | 来源 | 小米官方字体站：`https://hyperos.mi.com/font/`（MiSans 开源字体，SIL OFL 1.1 许可证） |
 | 用途 | 网页正文/标题字体；`misans.css` 声明分片 @font-face，浏览器按需下载分片 |
-| 说明 | 分片文件 370 个 + `misans.css` 1 个；低分屏（<1.5x）回退系统字体（woff2 无 hinting 渲染模糊） |
+| 许可证 | SIL Open Font License 1.1（许可证全文见 `fonts/misans/OFL.txt`，含版权声明与来源；OFL 要求重新分发附带许可证文本） |
+| 说明 | 分片文件 370 个 + `misans.css` 1 个 + `OFL.txt` 1 个；低分屏（<1.5x）回退系统字体（woff2 无 hinting 渲染模糊） |
 
 ## 3. md-render.js
 
