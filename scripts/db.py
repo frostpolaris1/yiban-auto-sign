@@ -289,6 +289,17 @@ def load_accounts():
     return [_row_to_account(r) for r in rows]
 
 
+def load_accounts_raw():
+    """全部账号原始行（password/phone_code 保持密文 JSON 串，不解密）。
+
+    供 db_export 等导出场景使用：避免生成明文凭据文件；顺带清除超期软删除行。
+    """
+    conn = get_conn()
+    _purge_expired_deleted(conn)
+    rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
+    return [{**dict(r), "deleted": bool(r["deleted"])} for r in rows]
+
+
 def _next_sort_order(conn):
     row = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM accounts").fetchone()
     return row["n"]

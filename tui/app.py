@@ -92,7 +92,7 @@ def parse_sign_log(path):
 def load_env_int(env_path, key, default):
     """读取 .env 中的整数配置，缺失/非法回退默认值。"""
     try:
-        with open(env_path, encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
             for line in f:
                 line = line.strip()
                 if line.startswith(f"{key}="):
@@ -109,7 +109,7 @@ def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
     lines = []
     if os.path.exists(env_path):
-        with open(env_path, encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
             lines = f.read().splitlines()
     out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
     if value > 0:

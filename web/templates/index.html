@@ -1211,6 +1211,7 @@ $('account-form').addEventListener('submit', async (e) => {
 // ================= 日志与状态 =================
 let _logFirstLoad = true;
 let _lastRenderSnap = '';  // 轮询条件渲染：accounts+states 快照，无变化不重建 DOM
+let _logLastSnap = null;  // 日志渲染快照：内容未变化时跳过重写，避免 10s 轮询全量 DOM 重建
 async function loadLogs() {
   try {
     const data = await api('/api/logs');
@@ -1218,20 +1219,20 @@ async function loadLogs() {
     $('log-file').textContent = data.log_file;
     const box = $('log-box');
     const empty = $('log-empty');
-    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    // 展示层脱敏：日志行内 [13800138000] 前缀 → [138****8000]（sign.log 文件保持完整供状态解析）
+    const rendered = data.logs.map(l => l.replace(/\[(\d{11})\]/g, (m, p) => '[' + maskPhone(p) + ']')).join('\n');
+    const snap = data.logs.length ? rendered : '';
+    if (snap === _logLastSnap) return;  // 日志无变化：不重写 DOM
+    _logLastSnap = snap;
     if (data.logs.length) {
-      // 展示层脱敏：日志行内 [13800138000] 前缀 → [138****8000]（sign.log 文件保持完整供状态解析）
-      box.textContent = data.logs.map(l => l.replace(/\[(\d{11})\]/g, (m, p) => '[' + maskPhone(p) + ']')).join('\n');
+      const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      box.textContent = rendered;
       box.classList.remove('hidden');
       empty.classList.add('hidden');
       if (nearBottom || _logFirstLoad) { box.scrollTop = box.scrollHeight; _logFirstLoad = false; }
     } else {
       box.classList.add('hidden');
       empty.classList.remove('hidden');
-    }
-    // 日志变化时同步刷新账号表格：状态图标 + 审核状态（用户重新提交后 10 秒内管理员可见「待审核」）
-    if (!document.getElementById('tab-accounts').classList.contains('hidden')) {
-      refreshAccountsSilent();
     }
   } catch (e) { /* 静默：轮询失败不打扰 */ }
 }
@@ -1241,13 +1242,23 @@ async function refreshAccountsSilent() {
   // 条件渲染：数据（accounts + states）无变化时不重建 DOM，避免 10s 全量 reflow
   try {
     const data = await api('/api/accounts');
-    const snap = JSON.stringify(data.accounts) + '|' + JSON.stringify(state.states);
+    state.states = data.states;  // /api/accounts 自带状态（键已脱敏），账号表格图标不再依赖日志轮询
+    const snap = JSON.stringify(data.accounts) + '|' + JSON.stringify(data.states);
     if (snap !== _lastRenderSnap) {
       _lastRenderSnap = snap;
       state.accounts = data.accounts;
       renderAccounts();
     }
   } catch (e) { /* 轮询失败不打扰 */ }
+}
+
+// 可见性轮询：仅当前可见的 tab 才请求对应接口（logs/accounts 都不可见时零请求），
+// 避免后台页停留时持续拉日志/解密账号列表的服务端放大
+function pollVisible() {
+  const logsVisible = !$('tab-logs').classList.contains('hidden');
+  const accountsVisible = !$('tab-accounts').classList.contains('hidden');
+  if (logsVisible) loadLogs();
+  if (accountsVisible) refreshAccountsSilent();
 }
 
 function fillSigninSelect() {
@@ -1443,7 +1454,9 @@ async function calibrateClock() {
     const data = await api('/api/clock');
     clockOffset = data.server_ts - Math.floor(Date.now() / 1000);
     if (!$('tab-settings').classList.contains('hidden')) {
-      $('sign-status').innerHTML = `<span style="color:${data.color}">${esc(data.sign_status)}</span>`;
+      // 颜色白名单校验：仅接受 #rrggbb（防属性上下文逃逸，纵深防御）
+      const color = /^#[0-9a-f]{6}$/i.test(String(data.color || '')) ? data.color : '#7aa2f7';
+      $('sign-status').innerHTML = `<span style="color:${color}">${esc(data.sign_status)}</span>`;
     }
   } catch (e) { /* 静默 */ }
 }
@@ -1495,7 +1508,7 @@ async function openChangelog() {
   content.innerHTML = '加载中…';
   try {
     const data = await api('/api/changelog');
-    content.innerHTML = window.renderMarkdown ? renderMarkdown(data.text || '暂无更新日志') : (data.text || '暂无更新日志');
+    content.innerHTML = window.renderMarkdown ? renderMarkdown(data.text || '暂无更新日志') : esc(data.text || '暂无更新日志');
   } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
 }
 function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
@@ -1516,7 +1529,7 @@ function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
     loadLogs();
     calibrateClock();
     tickClock();
-    setInterval(loadLogs, 10000);    // 日志/状态 10s
+    setInterval(pollVisible, 10000);    // 可见性轮询：仅当前 tab 可见时请求（日志/账号）10s
     setInterval(calibrateClock, 60000);  // 时钟校准 60s
     setInterval(tickClock, 1000);    // 时钟走秒 1s
   } catch (e) {

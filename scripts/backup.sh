@@ -76,8 +76,21 @@ restore() {
         echo "错误：请指定恢复目标目录（恢复演练用临时目录，避免覆盖生产数据）" >&2
         exit 1
     fi
+    # 安全校验：拒绝含路径穿越（../ 或绝对路径）或符号链接的条目，防止恶意备份包写出目标目录
+    if tar -tzf "$archive" 2>/dev/null | grep -E '(^|/)\.\.(/|$)|^/' | grep -q .; then
+        echo "错误：备份包含不安全条目（路径穿越/绝对路径），已拒绝解包" >&2
+        exit 1
+    fi
+    if tar -tzf "$archive" 2>/dev/null | grep -qE '^l'; then
+        echo "错误：备份包含符号链接条目，已拒绝解包（防链接写出目标目录）" >&2
+        exit 1
+    fi
     mkdir -p "$dest"
-    tar -xzf "$archive" -C "$dest"
+    tar -xzf "$archive" -C "$dest" --anchored --no-overwrite-dir 2>/dev/null || \
+        tar -xzf "$archive" -C "$dest" --no-overwrite-dir 2>/dev/null || {
+        echo "错误：解包失败（备份包可能损坏）" >&2
+        exit 1
+    }
     log "已从 $archive 恢复到 $dest"
     log "恢复内容清单："
     find "$dest" -type f -exec ls -l {} \;

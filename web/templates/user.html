@@ -242,7 +242,7 @@ function renderList() {
             ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，可重新提交</div>'
               : (a.status === 'active' ? (a.state_icon === '✅'
                 ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
-                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + a.queue_ahead + '</span> 人</div>') : '')}
+                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + Number(a.queue_ahead) + '</span> 人</div>') : '')}
           </div>
         </div>
         <div class="flex items-center gap-2">

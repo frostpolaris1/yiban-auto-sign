@@ -79,6 +79,18 @@ CLEAR_SENTINEL = "__clear__"
 SIGN_START = (6, 30)
 SIGN_END = (7, 50)
 
+# 登录时延拉平占位哈希：用户名/账号不存在时也执行一次等价 scrypt 比对，
+# 消除「响应耗时差异」造成的用户枚举时序侧信道（占位哈希无需真实有效，比对恒为 False）。
+_dummy_pw_hash = None
+
+
+def _constant_time_dummy(password):
+    """对不存在的账号执行一次与真实校验等价的 scrypt 比对（耗时拉平）。"""
+    global _dummy_pw_hash
+    if _dummy_pw_hash is None:
+        _dummy_pw_hash = generate_password_hash("dummy-placeholder", method=SCRYPT_METHOD)
+    check_password_hash(_dummy_pw_hash, password)
+
 # 随机延迟默认上限（与 signin.py 一致）
 DEFAULT_START_DELAY_MAX = 60
 DEFAULT_ACCOUNT_GAP_MAX = 10
@@ -168,10 +180,14 @@ def parse_sign_log(path):
 # .env 读写（与 tui/app.py 保持一致）
 # ---------------------------------------------------------------------------
 def read_env(env_path):
-    """读取 .env 全部键值，返回 dict。"""
+    """读取 .env 全部键值，返回 dict。
+
+    utf-8-sig：兼容带 BOM 的 .env（Windows 记事本等工具保存时会带 BOM，
+    否则首个键名会带上 \ufeff 前缀导致读不到，管理员登录/改密会静默失败）。
+    """
     result = {}
     try:
-        with open(env_path, encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -199,12 +215,12 @@ def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。"""
     lines = []
     if os.path.exists(env_path):
-        with open(env_path, encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
             lines = f.read().splitlines()
     out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
     if value:
         out.append(f"{key}={value}")
-    _atomic_write(env_path, "\n".join(out) + "\n")
+    _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
 
 
 def ensure_secret_key(env_path):
@@ -216,23 +232,58 @@ def ensure_secret_key(env_path):
     key = secrets.token_hex(32)
     lines = []
     if os.path.exists(env_path):
-        with open(env_path, encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
             lines = f.read().splitlines()
     if not any(ln.strip().startswith("YIBAN_SECRET_KEY=") for ln in lines):
         lines.append(f"YIBAN_SECRET_KEY={key}")
-    _atomic_write(env_path, "\n".join(lines) + "\n")
+    _atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
     logger.info("已自动生成 YIBAN_SECRET_KEY 并写入 %s", env_path)
     return key
 
 
-def _atomic_write(path, content):
-    """原子写文件：先写临时文件再替换，避免半写状态（cron 并发读取安全）。"""
+def migrate_admin_password_to_hash(env_path):
+    """启动时安全迁移：检测到管理员口令以明文（YIBAN_ADMIN_PASSWORD）存储且无哈希时，
+    自动生成 scrypt 哈希写入 YIBAN_ADMIN_PASSWORD_HASH 并清空明文。
+
+    说明：仅改变口令的存储形态（明文 → 哈希），口令本身不变；已有哈希则跳过；
+    明文回退比对路径（verify_admin）保留以兼容未迁移的存量部署。
+    """
+    env = read_env(env_path)
+    if env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip():
+        return
+    plain = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
+    if not plain:
+        return
+    write_env_key(
+        env_path,
+        "YIBAN_ADMIN_PASSWORD_HASH",
+        generate_password_hash(plain, method=SCRYPT_METHOD),
+    )
+    write_env_key(env_path, "YIBAN_ADMIN_PASSWORD", "")
+    logger.warning(
+        "检测到管理员口令明文存储（%s），已自动迁移为 scrypt 哈希并清空明文；"
+        "口令本身未变更，请确认其强度足够（弱口令仍可被猜测）",
+        env_path,
+    )
+
+
+def _atomic_write(path, content, chmod_priv=False):
+    """原子写文件：先写临时文件再替换，避免半写状态（cron 并发读取安全）。
+
+    chmod_priv=True 时写完后收紧为 0600（含密钥/口令的 .env 场景），
+    防止默认 umask 下产生同主机其他用户可读的宽松权限。
+    """
     tmp = f"{path}.tmp{secrets.token_hex(4)}"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
     os.replace(tmp, path)
+    if chmod_priv:
+        try:
+            os.chmod(path, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +458,7 @@ def verify_admin(username, password):
     if not secrets.compare_digest(
         username.strip().encode("utf-8"), admin_user.encode("utf-8")
     ):
+        _constant_time_dummy(password)  # 时延拉平：防用户名枚举（与真实比对等开销）
         return False
     pw_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
     if pw_hash:
@@ -480,6 +532,8 @@ WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
 
 def create_app():
+    # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
+    migrate_admin_password_to_hash(ENV_FILE)
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
     # JSON 改名 .bak 保留逃生门）；多 worker 各自调用幂等（模块级连接缓存）
     db.init_db(DB_FILE, migrate_from=ACCOUNTS_FILE, env_file=ENV_FILE)
@@ -667,8 +721,8 @@ def create_app():
     # ---- 数据层错误保护：SQLite 读写/密文解密失败 → 明确 500（防静默降级或返回错误数据）----
     @app.errorhandler(RuntimeError)
     def _handle_data_error(e):
-        logger.error("数据层错误: %s", e)
-        return jsonify({"error": str(e)}), 500
+        logger.error("数据层错误: %s", e)  # 详细信息只入日志，不回显客户端（防内部路径/字段泄露）
+        return jsonify({"error": "服务器内部错误，请稍后重试或联系管理员"}), 500
 
     # ---- 认证 API ----
     @app.route("/api/login", methods=["POST"])
@@ -708,7 +762,9 @@ def create_app():
             # 2) 普通用户（users，邮箱登录，不区分大小写；role 支持多管理员）
             email = username.lower()
             u = db.find_user(email)
-            if u and check_password_hash(u.get("password_hash", ""), password):
+            if u is None:
+                _constant_time_dummy(password)  # 时延拉平：防邮箱枚举（与真实比对等开销）
+            elif check_password_hash(u.get("password_hash", ""), password):
                 role = "admin" if u.get("role") == "admin" else "user"
                 pw_version = u.get("pw_version", 1)
         if role:
@@ -894,10 +950,14 @@ def create_app():
     @app.route("/api/accounts")
     def api_accounts():
         accounts = load_accounts()
+        # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
+        # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
+        states, _ = parse_sign_log(LOG_FILE)
         return jsonify(
             {
                 "ok": True,
                 "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
+                "states": {_mask_phone(k): v for k, v in states.items()},
                 "config_file": os.path.basename(DB_FILE),
             }
         )
@@ -1127,7 +1187,7 @@ def create_app():
                     f"中断，已处理 {done} 个",
                 )
                 return jsonify(
-                    {"ok": True, "msg": f"批量操作中断，已处理 {done} 个（{e}）"}
+                    {"ok": True, "msg": f"批量操作中断，已处理 {done} 个（详情见服务器日志）"}
                 )
             db.audit(
                 session.get("username") or "?",
