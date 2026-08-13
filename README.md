@@ -3,11 +3,14 @@
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)
 
+## 项目介绍
+
 > 易班（yiban）是很多高校学生用的校园社交平台，部分学校要求每天早晨进行「早操签到」打卡。
 >
 > 本项目通过 Python 脚本自动完成这个签到过程——配置一次后，每天到点自动帮你打卡，无需手动操作、无需保持电脑开机。
+>
+> 支持 **国内云服务器** 与 **GitHub Actions** 两种部署方式；提供 **网页管理后台** 与 **终端面板（TUI）** 两种管理界面。
 
-## ✨ 功能特点
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预
 - 🔐 **真实 App 登录特征**：登录流程参考 [OneFeiFan/fyiban](https://github.com/OneFeiFan/FYIBAN) 的真实 App 请求特征（UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
@@ -20,25 +23,274 @@
 - ⏰ **自动续期**：内置 `gh-workflow-keepalive`，定时工作流自动续期，避免被 GitHub 60 天无活动禁用
 - 🔄 **队列重试**：失败账号不立即重试，放回队尾分散重试，避免连击触发风控
 
-## 📑 目录
+## 目录
 
-- [🚀 快速开始（GitHub Actions）](#-快速开始github-actions)
-- [⏰ 定时执行](#-定时执行)
-- [🔧 配置说明](#-配置说明)
-- [🖥️ 服务器部署（进阶）](#️-服务器部署进阶)
-- [👥 网页系统使用指南](#-网页系统使用指南)
-- [🗄️ 数据存储与备份（0.17+）](#️-数据存储与备份017)
-- [🧠 工作原理](#-工作原理)
-- [❓ 常见问题](#-常见问题)
-- [⚠️ 注意事项](#-注意事项)
-- [🛠️ 本地调试](#️-本地调试)
-- [📜 License](#-license)
-- [🙏 致谢](#-致谢)
-- [🤖 AI 生成说明](#-ai-生成说明)
+- [项目介绍](#项目介绍)
+- [部署方式选择](#部署方式选择)
+- [服务器部署教程](#服务器部署教程)
+- [网页管理系统](#网页管理系统)
+- [GitHub Actions 使用教程（备选）](#github-actions-使用教程备选)
+- [配置说明](#配置说明)
+- [数据存储与备份](#数据存储与备份)
+- [本地调试](#本地调试)
+- [原理与实现](#原理与实现)
+- [常见问题](#常见问题)
+- [注意事项](#注意事项)
+- [测试范围与适配说明](#测试范围与适配说明)
+- [License](#license)
+- [致谢](#致谢)
+- [相关开源项目推荐](#相关开源项目推荐)
+- [AI 生成说明](#ai-生成说明)
+
+## 部署方式选择
+
+本项目支持两种部署方式，**推荐使用国内云服务器作为主力签到通道**：
+
+| 部署方式 | 适用场景 | 稳定性 | 成本 |
+|---------|---------|--------|------|
+| **云服务器**（推荐） | 有国内服务器；主力签到通道 | 稳定（国内出口不被 WAF 拦截） | 需服务器费用 |
+| **GitHub Actions**（备选） | 无服务器；或作为冗余备份 | 受 WAF 拦截影响，不稳定 | 免费 |
+
+> ⚠️ GitHub Actions 的海外 IP 可能被易班 WAF 风控拦截，且反复失败可能触发账号风控。**有云服务器时强烈建议使用服务器部署**。
+
+
+- GitHub Actions 因 WAF 拦截无法稳定运行
+- 希望随时手动触发签到或查看日志
+- 已有国内云服务器资源
+
+
+
+| 特性 | GitHub Actions | 自有服务器 |
+|------|---------------|-----------|
+| 成本 | 免费（2000 分钟/月） | 需服务器费用 |
+| 稳定性 | 受 WAF 拦截影响 | 本机代理更稳定 |
+| 调试 | 仅看日志 | 可即时调试 |
+| 触发延迟 | 5-30 分钟 | 即时执行 |
+| 维护 | 配置后免维护 | 需维护服务器 |
+
+</details>
 
 ---
 
-## 🚀 快速开始（GitHub Actions）
+
+## 服务器部署教程
+
+### ⚡ 快速部署（3 分钟）
+
+```bash
+# 1. 服务器环境（Ubuntu 22.04 已含 python3）——只需一次
+apt update && apt install -y python3-pip
+pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 2. 拉取代码（服务器为主力签到，推荐国内网络直拉 Gitee 或上传压缩包）
+git clone https://gitee.com/frostpolaris/yiban-auto-sign.git /opt/yiban-auto-sign
+cd /opt/yiban-auto-sign && pip3 install -r requirements.txt
+
+# 3. 配置账号（TUI 面板：名称/手机号/密码/设备识别码，一个账号一次输完）
+# 安装 yiban 命令（SSH 后输入 yiban 直接打开面板）
+cat > /usr/local/bin/yiban << 'EOF'
+#!/bin/bash
+cd /opt/yiban-auto-sign
+exec python3 -m tui "$@"
+EOF
+chmod +x /usr/local/bin/yiban
+yiban        #   A 添加 → 填写 → S 保存 → Q 退出；设置区可调随机延迟开关
+
+# 4. 配置定时任务（周一到周六 6:31 + 7:10 两次）
+crontab -e   # 追加：
+# 31 6 * * 1-6 /opt/yiban-auto-sign/run.sh
+# 10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
+
+# 5. 验证
+python3 scripts/signin.py --check-config   # 配置检查（不发请求）
+bash run.sh && tail -20 /var/log/yiban/sign.log
+```
+
+
+### 部署步骤
+
+#### 1. 服务器环境准备（Ubuntu 22.04）
+
+```bash
+apt update
+apt install -y python3 python3-pip
+```
+
+#### 2. 上传项目代码
+
+在本地打包（排除 `.git` 和缓存）：
+
+```powershell
+cd yiban-auto-sign
+tar -czf yiban.tar.gz --exclude='.git' --exclude='__pycache__' .
+scp yiban.tar.gz root@你的服务器IP:/opt/
+```
+
+在服务器解压并安装依赖：
+
+```bash
+mkdir -p /opt/yiban-auto-sign
+cd /opt/yiban-auto-sign
+tar -xzf /opt/yiban.tar.gz
+rm /opt/yiban.tar.gz
+pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+pip3 install -r requirements.txt
+```
+
+#### 3. 配置账号（推荐：TUI 配置工具）
+
+SSH 登录服务器后运行表单式配置工具，**一个账号的所有信息（名称、手机号、密码、设备型号、设备识别码）一次输入完成**，密码输入时自动掩码：
+
+```bash
+yiban            # 推荐：全局命令（已安装到 /usr/local/bin/yiban）
+# 或 python3 -m tui
+```
+
+**面板布局**：
+- **左侧**：账号列表——序号（决定顺序打卡顺序）、状态图标（⏳ 准备签到 / ✅ 今日成功 / ❌ 最终失败 / 🔄 重试中 / ➖ 跳过）、名称、手机号、设备型号
+- **右上**：签到日志（最近记录，自动刷新）
+- **右下**：设置区——随机延迟开关（启动延迟/账号间隔，各含秒数可调）、连通性检测、服务器时间与签到状态，均写入 `.env`
+
+**界面快捷键**：
+
+| 按键 | 功能 |
+|------|------|
+| `A` | 添加账号（名称 / 手机号 / 密码 / 设备型号 / 设备识别码） |
+| `E` / `D` | 编辑 / 删除选中账号（↑↓ 选择） |
+| `[` / `]` | 上移 / 下移选中账号（调整阅读与顺序打卡顺序） |
+| `M` | 手动签到选中账号（后台子进程执行，日志同步刷新） |
+| `S` | 保存（账号 → `accounts.json`，随机延迟 → `.env`） |
+| `Q` | 退出 |
+
+保存后 `signin.py` 每次执行会自动读取 `accounts.json`。也可以不启动 TUI，直接手写该文件（格式见 [账号配置格式](#账号配置格式json推荐)）。
+
+> 💡 **手动验证配置**（不发送任何网络请求）：
+> ```bash
+> python3 scripts/signin.py --check-config
+> ```
+
+#### 4. 配置环境变量
+
+```bash
+cat > /opt/yiban-auto-sign/.env << 'EOF'
+YIBAN_PROXY=http://127.0.0.1:8888
+# YIBAN_START_DELAY_MAX=60   # 随机延迟：启动后 0~60 秒随机（默认关，见"随机延迟"小节）
+# YIBAN_ACCOUNT_GAP_MAX=10   # 随机延迟：账号间 0~10 秒随机（默认关）
+EOF
+```
+
+账号已通过 TUI 写入 `accounts.json`，`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`）。
+
+#### 5. 创建运行脚本
+
+```bash
+cat > /opt/yiban-auto-sign/run.sh << 'EOF'
+#!/bin/bash
+cd /opt/yiban-auto-sign
+export $(cat .env | xargs)
+/usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign.log 2>&1
+EOF
+chmod +x /opt/yiban-auto-sign/run.sh
+mkdir -p /var/log/yiban
+```
+
+#### 6. 配置 crontab 定时任务
+
+```bash
+crontab -e
+```
+
+添加以下内容（周一到周六 6:31 和 7:10 各执行一次，周日不签到）：
+
+```cron
+# 易班自动签到 - 周一到周六执行
+# 6:31 第一次签到（主要，落在签到窗口 06:30 起点后）
+31 6 * * 1-6 /opt/yiban-auto-sign/run.sh
+# 7:10 第二次签到（备用，防止第一次失败）
+10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
+```
+
+#### 7. 手动测试
+
+```bash
+bash /opt/yiban-auto-sign/run.sh
+tail -20 /var/log/yiban/sign.log
+```
+
+
+### 常用运维命令
+
+```bash
+# 查看签到日志
+tail -50 /var/log/yiban/sign.log
+
+# 手动触发签到
+bash /opt/yiban-auto-sign/run.sh
+
+# 查看 cron 服务状态
+systemctl status cron
+
+# 查看 crontab 配置
+crontab -l
+
+# 更新代码后重新部署
+scp scripts/signin.py root@服务器IP:/opt/yiban-auto-sign/scripts/
+```
+
+
+## 网页管理系统
+
+
+除 SSH 打开 TUI 外，还提供浏览器管理界面（手机/平板/电脑任意设备访问）：
+
+```bash
+# 1. 安装依赖
+pip3 install flask
+
+# 2. .env 配置管理员账号（否则无法登录后台）
+echo -e "YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD=你的密码" >> .env
+
+# 3. 启动（默认端口 17892，--port 可改）
+python3 -m web
+# 生产建议用 systemd + gunicorn 常驻（禁止 werkzeug dev server 公网直连）：
+#   systemd 单元模板：web/deploy/yiban-web.service
+#   （部署细节见下方「🖥️ 服务器部署（进阶）」章节）
+```
+
+浏览器访问 `http://服务器IP:17892`：
+
+- **管理员**：登录后可管理全部账号（添加/编辑/删除/排序/手动签到）、审核普通用户提交的账号、查看签到日志与状态、设置随机延迟、连通性检测、修改管理员账密；支持暗色主题
+- **普通用户**：邮箱注册后提交自己的易班账号（名称+手机号+密码+设备信息），管理员审核通过后参与每日自动签到；可查看自己账号的签到状态与最近记录；每个用户限提交一个账号
+- **安全**：登录失败限速（5 次锁定 5 分钟）+ 连续失败 webhook 告警（`YIBAN_NOTIFY_URL`）、CSRF 防护、密码哈希存储（scrypt）、HttpOnly/SameSite 会话、密码明文永不下发前端
+
+> ⚠️ 无固定域名时建议在云服务商安全组仅放行常用 IP，并定期修改管理员密码。
+
+
+### 使用指南
+
+
+部署完成后，浏览器访问 `http://服务器IP:17892`（或经 nginx 反代的 HTTPS 域名）：
+
+**普通用户**（详细版见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)）：
+1. 邮箱注册 → 登录
+2. 「提交我的易班账号」：填写名称、易班手机号、密码、设备信息（学校开启设备绑定时必填）
+3. 等待管理员审核；审核不通过会显示拒绝理由，修改后可重新提交
+4. 查看「签到情况」与「签到日历」（✅ 成功 / ❌ 失败 / ➖ 周日休息）
+
+**管理员**（.env 配置的账号登录）：
+- **账号管理**：添加/编辑（手机号唯一、密码留空=不变、识别码可一键清除）/软删除（7 天可恢复）/彻底删除/上移下移排序（决定签到顺序）/手动签到（30 秒防抖）/批量操作（审核、删除、恢复）
+- **审核**：普通用户提交的账号 → 通过/拒绝（附理由）
+- **用户管理**：查看注册用户、设为/取消管理员（仅主管理员）、重置密码、清空账号、完全删除；权限分级（主管理员 / 注册管理员 / 普通用户）
+- **设置**：随机延迟开关、签到模式（列表顺序/列表随机）、全局公告、修改管理员账密
+- **日志与状态**：签到日志实时刷新（手机号打码）、今日各账号状态图标、连通性检测、服务器时间
+
+> 🔒 安全设计：登录失败限速锁定（5 次/5 分钟）、CSRF 防护、密码 scrypt 哈希、会话 HttpOnly/SameSite、列表手机号/邮箱脱敏、密码明文永不下发前端。
+
+---
+
+
+## GitHub Actions 使用教程（备选）
+
 
 > ⚠️ **注意**：GitHub Actions 的服务器位于海外，可能被易班 WAF 风控拦截（返回「风险访问服务禁用」），且海外 IP 反复失败可能触发账号风控。**有云服务器时强烈建议改用 [服务器部署](#️-服务器部署进阶)**；以下 Actions 方案仅作免服务器场景的备选。
 
@@ -105,7 +357,8 @@ Value: 13800138000:pwd1#13900139000:pwd2#13700137000:pwd3
 
 如果遇到 WAF 风控拦截（「风险访问服务禁用」），说明该网络出口被易班风控，建议改用服务器部署方案。
 
-## ⏰ 定时执行
+
+### 定时执行
 
 ### 默认执行时间
 
@@ -137,7 +390,22 @@ on:
 
 ---
 
-## 🔧 配置说明
+
+### 资源消耗
+
+| 项目 | 数值 |
+|------|------|
+| 每次执行耗时 | 约 10-30 秒 |
+| 每日执行次数 | 2 次 |
+| 每月消耗 Actions 分钟 | 约 2-5 分钟 |
+| GitHub 免费额度 | 2000 分钟/月（公开仓库无限） |
+| 费用 | **完全免费** |
+
+---
+
+
+## 配置说明
+
 
 ### 环境变量一览
 
@@ -264,241 +532,9 @@ https://api.day.app/YOUR_KEY/易班签到通知
 
 ---
 
-## 🖥️ 服务器部署（进阶）
 
-<details>
-<summary>🔧 展开查看服务器部署方案</summary>
+## 数据存储与备份
 
-如果你已有国内云服务器，或希望比 GitHub Actions 更稳定、可即时调试，可部署到自己的服务器上。两套方案可同时启用，互为冗余。
-
-### 适用场景
-
-- GitHub Actions 因 WAF 拦截无法稳定运行
-- 希望随时手动触发签到或查看日志
-- 已有国内云服务器资源
-
-### ⚡ 快速部署（3 分钟）
-
-```bash
-# 1. 服务器环境（Ubuntu 22.04 已含 python3）——只需一次
-apt update && apt install -y python3-pip
-pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 2. 拉取代码（服务器为主力签到，推荐国内网络直拉 Gitee 或上传压缩包）
-git clone https://gitee.com/frostpolaris/yiban-auto-sign.git /opt/yiban-auto-sign
-cd /opt/yiban-auto-sign && pip3 install -r requirements.txt
-
-# 3. 配置账号（TUI 面板：名称/手机号/密码/设备识别码，一个账号一次输完）
-# 安装 yiban 命令（SSH 后输入 yiban 直接打开面板）
-cat > /usr/local/bin/yiban << 'EOF'
-#!/bin/bash
-cd /opt/yiban-auto-sign
-exec python3 -m tui "$@"
-EOF
-chmod +x /usr/local/bin/yiban
-yiban        #   A 添加 → 填写 → S 保存 → Q 退出；设置区可调随机延迟开关
-
-# 4. 配置定时任务（周一到周六 6:31 + 7:10 两次）
-crontab -e   # 追加：
-# 31 6 * * 1-6 /opt/yiban-auto-sign/run.sh
-# 10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
-
-# 5. 验证
-python3 scripts/signin.py --check-config   # 配置检查（不发请求）
-bash run.sh && tail -20 /var/log/yiban/sign.log
-```
-
-### 部署步骤
-
-#### 1. 服务器环境准备（Ubuntu 22.04）
-
-```bash
-apt update
-apt install -y python3 python3-pip
-```
-
-#### 2. 上传项目代码
-
-在本地打包（排除 `.git` 和缓存）：
-
-```powershell
-cd yiban-auto-sign
-tar -czf yiban.tar.gz --exclude='.git' --exclude='__pycache__' .
-scp yiban.tar.gz root@你的服务器IP:/opt/
-```
-
-在服务器解压并安装依赖：
-
-```bash
-mkdir -p /opt/yiban-auto-sign
-cd /opt/yiban-auto-sign
-tar -xzf /opt/yiban.tar.gz
-rm /opt/yiban.tar.gz
-pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-pip3 install -r requirements.txt
-```
-
-#### 3. 配置账号（推荐：TUI 配置工具）
-
-SSH 登录服务器后运行表单式配置工具，**一个账号的所有信息（名称、手机号、密码、设备型号、设备识别码）一次输入完成**，密码输入时自动掩码：
-
-```bash
-yiban            # 推荐：全局命令（已安装到 /usr/local/bin/yiban）
-# 或 python3 -m tui
-```
-
-**面板布局**：
-- **左侧**：账号列表——序号（决定顺序打卡顺序）、状态图标（⏳ 准备签到 / ✅ 今日成功 / ❌ 最终失败 / 🔄 重试中 / ➖ 跳过）、名称、手机号、设备型号
-- **右上**：签到日志（最近记录，自动刷新）
-- **右下**：设置区——随机延迟开关（启动延迟/账号间隔，各含秒数可调）、连通性检测、服务器时间与签到状态，均写入 `.env`
-
-**界面快捷键**：
-
-| 按键 | 功能 |
-|------|------|
-| `A` | 添加账号（名称 / 手机号 / 密码 / 设备型号 / 设备识别码） |
-| `E` / `D` | 编辑 / 删除选中账号（↑↓ 选择） |
-| `[` / `]` | 上移 / 下移选中账号（调整阅读与顺序打卡顺序） |
-| `M` | 手动签到选中账号（后台子进程执行，日志同步刷新） |
-| `S` | 保存（账号 → `accounts.json`，随机延迟 → `.env`） |
-| `Q` | 退出 |
-
-保存后 `signin.py` 每次执行会自动读取 `accounts.json`。也可以不启动 TUI，直接手写该文件（格式见 [账号配置格式](#账号配置格式json推荐)）。
-
-> 💡 **手动验证配置**（不发送任何网络请求）：
-> ```bash
-> python3 scripts/signin.py --check-config
-> ```
-
-#### 4. 配置环境变量
-
-```bash
-cat > /opt/yiban-auto-sign/.env << 'EOF'
-YIBAN_PROXY=http://127.0.0.1:8888
-# YIBAN_START_DELAY_MAX=60   # 随机延迟：启动后 0~60 秒随机（默认关，见"随机延迟"小节）
-# YIBAN_ACCOUNT_GAP_MAX=10   # 随机延迟：账号间 0~10 秒随机（默认关）
-EOF
-```
-
-账号已通过 TUI 写入 `accounts.json`，`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`）。
-
-#### 5. 创建运行脚本
-
-```bash
-cat > /opt/yiban-auto-sign/run.sh << 'EOF'
-#!/bin/bash
-cd /opt/yiban-auto-sign
-export $(cat .env | xargs)
-/usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign.log 2>&1
-EOF
-chmod +x /opt/yiban-auto-sign/run.sh
-mkdir -p /var/log/yiban
-```
-
-#### 6. 配置 crontab 定时任务
-
-```bash
-crontab -e
-```
-
-添加以下内容（周一到周六 6:31 和 7:10 各执行一次，周日不签到）：
-
-```cron
-# 易班自动签到 - 周一到周六执行
-# 6:31 第一次签到（主要，落在签到窗口 06:30 起点后）
-31 6 * * 1-6 /opt/yiban-auto-sign/run.sh
-# 7:10 第二次签到（备用，防止第一次失败）
-10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
-```
-
-#### 7. 手动测试
-
-```bash
-bash /opt/yiban-auto-sign/run.sh
-tail -20 /var/log/yiban/sign.log
-```
-
-### 常用运维命令
-
-```bash
-# 查看签到日志
-tail -50 /var/log/yiban/sign.log
-
-# 手动触发签到
-bash /opt/yiban-auto-sign/run.sh
-
-# 查看 cron 服务状态
-systemctl status cron
-
-# 查看 crontab 配置
-crontab -l
-
-# 更新代码后重新部署
-scp scripts/signin.py root@服务器IP:/opt/yiban-auto-sign/scripts/
-```
-
-### 网页管理系统（可选，替代 TUI）
-
-除 SSH 打开 TUI 外，还提供浏览器管理界面（手机/平板/电脑任意设备访问）：
-
-```bash
-# 1. 安装依赖
-pip3 install flask
-
-# 2. .env 配置管理员账号（否则无法登录后台）
-echo -e "YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD=你的密码" >> .env
-
-# 3. 启动（默认端口 17892，--port 可改）
-python3 -m web
-# 生产建议用 systemd + gunicorn 常驻（禁止 werkzeug dev server 公网直连）：
-#   systemd 单元模板：web/deploy/yiban-web.service
-#   （部署细节见下方「🖥️ 服务器部署（进阶）」章节）
-```
-
-浏览器访问 `http://服务器IP:17892`：
-
-- **管理员**：登录后可管理全部账号（添加/编辑/删除/排序/手动签到）、审核普通用户提交的账号、查看签到日志与状态、设置随机延迟、连通性检测、修改管理员账密；支持暗色主题
-- **普通用户**：邮箱注册后提交自己的易班账号（名称+手机号+密码+设备信息），管理员审核通过后参与每日自动签到；可查看自己账号的签到状态与最近记录；每个用户限提交一个账号
-- **安全**：登录失败限速（5 次锁定 5 分钟）+ 连续失败 webhook 告警（`YIBAN_NOTIFY_URL`）、CSRF 防护、密码哈希存储（scrypt）、HttpOnly/SameSite 会话、密码明文永不下发前端
-
-> ⚠️ 无固定域名时建议在云服务商安全组仅放行常用 IP，并定期修改管理员密码。
-
-### 方案对比
-
-| 特性 | GitHub Actions | 自有服务器 |
-|------|---------------|-----------|
-| 成本 | 免费（2000 分钟/月） | 需服务器费用 |
-| 稳定性 | 受 WAF 拦截影响 | 本机代理更稳定 |
-| 调试 | 仅看日志 | 可即时调试 |
-| 触发延迟 | 5-30 分钟 | 即时执行 |
-| 维护 | 配置后免维护 | 需维护服务器 |
-
-</details>
-
----
-
-## 👥 网页系统使用指南
-
-部署完成后，浏览器访问 `http://服务器IP:17892`（或经 nginx 反代的 HTTPS 域名）：
-
-**普通用户**（详细版见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)）：
-1. 邮箱注册 → 登录
-2. 「提交我的易班账号」：填写名称、易班手机号、密码、设备信息（学校开启设备绑定时必填）
-3. 等待管理员审核；审核不通过会显示拒绝理由，修改后可重新提交
-4. 查看「签到情况」与「签到日历」（✅ 成功 / ❌ 失败 / ➖ 周日休息）
-
-**管理员**（.env 配置的账号登录）：
-- **账号管理**：添加/编辑（手机号唯一、密码留空=不变、识别码可一键清除）/软删除（7 天可恢复）/彻底删除/上移下移排序（决定签到顺序）/手动签到（30 秒防抖）/批量操作（审核、删除、恢复）
-- **审核**：普通用户提交的账号 → 通过/拒绝（附理由）
-- **用户管理**：查看注册用户、设为/取消管理员（仅主管理员）、重置密码、清空账号、完全删除；权限分级（主管理员 / 注册管理员 / 普通用户）
-- **设置**：随机延迟开关、签到模式（列表顺序/列表随机）、全局公告、修改管理员账密
-- **日志与状态**：签到日志实时刷新（手机号打码）、今日各账号状态图标、连通性检测、服务器时间
-
-> 🔒 安全设计：登录失败限速锁定（5 次/5 分钟）、CSRF 防护、密码 scrypt 哈希、会话 HttpOnly/SameSite、列表手机号/邮箱脱敏、密码明文永不下发前端。
-
----
-
-## 🗄️ 数据存储与备份（0.17+）
 
 从 v0.17 起，账号与用户数据存储于 **SQLite 数据库**（`yiban.db`，WAL 模式），替代早期的 JSON 文件：
 
@@ -522,7 +558,46 @@ sqlite3 /opt/yiban-auto-sign/yiban.db "SELECT ts, username, action, target FROM 
 
 ---
 
-## 🧠 工作原理
+
+## 本地调试
+
+
+<details>
+<summary>🔧 展开查看本地运行方法</summary>
+
+如需在本地运行：
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/<你的用户名>/yiban-auto-sign.git
+cd yiban-auto-sign
+
+# 2. 安装依赖
+pip install -r requirements.txt
+
+# 3. 配置账号（推荐 JSON，一次输入一个账号完整信息）
+$env:YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"your_password"}]'
+
+#    或旧格式（多个账号用 # 分隔，向后兼容）
+$env:YIBAN_ACCOUNTS="13800138000:your_password"
+
+#    或 Linux/macOS
+export YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"your_password"}]'
+
+# 3.1 检查配置（不发送任何网络请求，密码脱敏显示）
+python scripts/signin.py --check-config
+
+# 4. 运行
+python scripts/signin.py
+```
+
+</details>
+
+---
+
+
+## 原理与实现
+
 
 <details>
 <summary>🔬 展开查看技术实现细节</summary>
@@ -612,7 +687,9 @@ workflow-keepalive:
 
 ---
 
-## ❓ 常见问题
+
+## 常见问题
+
 
 <details>
 <summary><b>Q1：报错 "账号或密码错误"（e003），但密码明明是对的</b></summary>
@@ -712,7 +789,9 @@ workflow-keepalive:
 
 ---
 
-## ⚠️ 注意事项
+
+## 注意事项
+
 
 1. **本项目仅供学习研究使用**，完整免责声明见 [AI 生成说明](#-ai-生成说明)
 2. **强烈建议仓库设为 Private**，避免账号密码被搜索引擎索引
@@ -724,54 +803,22 @@ workflow-keepalive:
 
 ---
 
-## 🛠️ 本地调试
 
-<details>
-<summary>🔧 展开查看本地运行方法</summary>
+## 测试范围与适配说明
 
-如需在本地运行：
+**已测试环境**：Ubuntu 22.04 服务器部署、Python 3.10+。
 
-```bash
-# 1. 克隆仓库
-git clone https://github.com/<你的用户名>/yiban-auto-sign.git
-cd yiban-auto-sign
+**未覆盖场景**（请自行验证）：
 
-# 2. 安装依赖
-pip install -r requirements.txt
+- **Docker / Windows 部署**：未测试（仅 Ubuntu 验证）
+- **消息通知**（Server酱 / Bark / 企业微信）：代码已实现，但本项目未在生产环境实测通知链路，建议配置后自行验证
+- **多学校适配**：易班校本化签到因学校而异（接口与任务类型可能不同）。本项目**仅在南京工程学院（NJIT）实测**，其他学校可能需要适配
+- **多校混合账号**：未测试同一实例下多校账号混合签到
 
-# 3. 配置账号（推荐 JSON，一次输入一个账号完整信息）
-$env:YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"your_password"}]'
+如你在其他学校使用成功或有适配需求，欢迎提交 Issue 或 PR。
 
-#    或旧格式（多个账号用 # 分隔，向后兼容）
-$env:YIBAN_ACCOUNTS="13800138000:your_password"
+## License
 
-#    或 Linux/macOS
-export YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"your_password"}]'
-
-# 3.1 检查配置（不发送任何网络请求，密码脱敏显示）
-python scripts/signin.py --check-config
-
-# 4. 运行
-python scripts/signin.py
-```
-
-</details>
-
----
-
-## 📊 资源消耗
-
-| 项目 | 数值 |
-|------|------|
-| 每次执行耗时 | 约 10-30 秒 |
-| 每日执行次数 | 2 次 |
-| 每月消耗 Actions 分钟 | 约 2-5 分钟 |
-| GitHub 免费额度 | 2000 分钟/月（公开仓库无限） |
-| 费用 | **完全免费** |
-
----
-
-## 📜 License
 
 **GNU Affero General Public License v3.0（AGPL-3.0）** - 见 [LICENSE](LICENSE)
 
@@ -798,7 +845,9 @@ python scripts/signin.py
 
 ---
 
-## 🙏 致谢
+
+## 致谢
+
 
 本项目参考了以下开源项目与资料：
 
@@ -809,7 +858,9 @@ python scripts/signin.py
 
 ---
 
-## 🌟 相关开源项目推荐
+
+## 相关开源项目推荐
+
 
 易班签到生态中的其他开源方案（均含开源许可证，可放心参考）：
 
@@ -818,7 +869,9 @@ python scripts/signin.py
 
 ---
 
-## 🤖 AI 生成说明
+
+## AI 生成说明
+
 
 ### AI 编程生成声明
 
@@ -862,3 +915,4 @@ python scripts/signin.py
 5. **停止维护**：如易班官方提出要求，本项目可能随时停止维护或下架
 
 > 📌 **建议**：如条件允许，请优先使用易班官方客户端手动签到。本项目仅作为技术学习与研究的产物，不鼓励用于实际规避考勤。
+
