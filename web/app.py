@@ -247,19 +247,29 @@ def migrate_admin_password_to_hash(env_path):
 
     说明：仅改变口令的存储形态（明文 → 哈希），口令本身不变；已有哈希则跳过；
     明文回退比对路径（verify_admin）保留以兼容未迁移的存量部署。
+    迁移失败（如 .env 对进程不可写）只告警不阻断启动——明文回退仍可登录。
     """
-    env = read_env(env_path)
-    if env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip():
+    try:
+        env = read_env(env_path)
+        if env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip():
+            return
+        plain = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
+        if not plain:
+            return
+        write_env_key(
+            env_path,
+            "YIBAN_ADMIN_PASSWORD_HASH",
+            generate_password_hash(plain, method=SCRYPT_METHOD),
+        )
+        write_env_key(env_path, "YIBAN_ADMIN_PASSWORD", "")
+    except OSError as e:
+        logger.warning(
+            "管理员口令明文迁移失败（%s 不可写？）：%s；将暂时回退明文比对，"
+            "请修复权限后重启或手动改密",
+            env_path,
+            e,
+        )
         return
-    plain = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
-    if not plain:
-        return
-    write_env_key(
-        env_path,
-        "YIBAN_ADMIN_PASSWORD_HASH",
-        generate_password_hash(plain, method=SCRYPT_METHOD),
-    )
-    write_env_key(env_path, "YIBAN_ADMIN_PASSWORD", "")
     logger.warning(
         "检测到管理员口令明文存储（%s），已自动迁移为 scrypt 哈希并清空明文；"
         "口令本身未变更，请确认其强度足够（弱口令仍可被猜测）",
