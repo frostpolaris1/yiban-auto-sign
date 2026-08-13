@@ -49,7 +49,7 @@ from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 # 支持通过环境变量调整日志级别：DEBUG / INFO / WARNING / ERROR
 LOG_LEVEL = os.environ.get("YIBAN_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.DEBUG),
+    level=getattr(logging, LOG_LEVEL, logging.INFO),  # 非法值回退 INFO（不回退 DEBUG，防误配泄露详细堆栈）
     format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -162,12 +162,21 @@ def generate_position_in_polygon(polygon_points):
         for p in polygon_points
     ]
 
-    for _ in range(100):
+    for _ in range(5000):
         lng = center_lng + (max_lng - min_lng) * 0.2 * (random.random() - 0.5)
         lat = center_lat + (max_lat - min_lat) * 0.2 * (random.random() - 0.5)
         if point_in_polygon(lng, lat, scaled_points) and point_in_polygon(lng, lat, polygon_points):
             return (lng, lat)
 
+    # 兜底：质心 + 小范围随机抖动。避免多账号/多次触发共用同一质心坐标
+    # （固定坐标聚集会成为风控行为指纹），同时保持仍在签到范围内。
+    jitter = min(max_lng - min_lng, max_lat - min_lat) * 0.01  # 范围边长的 1%，约几十米量级
+    jitter = max(jitter, 1e-6)  # 极小多边形时防止抖动归零
+    for _ in range(50):
+        fallback = (center_lng + random.uniform(-jitter, jitter),
+                    center_lat + random.uniform(-jitter, jitter))
+        if point_in_polygon(fallback[0], fallback[1], polygon_points):
+            return fallback
     return (center_lng, center_lat)
 
 
@@ -387,7 +396,8 @@ def print_config_summary(accounts):
     print("==== 账号配置检查 ====")
     for i, acc in enumerate(accounts, 1):
         if acc.has_device_info:
-            device = f"设备: {acc.phone_model} / {acc.phone_code[:8]}..."
+            # 只显示是否已配置（不打印识别码任何前缀，防摘要泄露设备指纹）
+            device = f"设备: {acc.phone_model} / 识别码已配置"
         else:
             device = "设备: 未配置（如学校开启设备绑定，签到将失败）"
         print(f"  {i}. {acc.phone} | 密码: {'*' * 8} | {device}")

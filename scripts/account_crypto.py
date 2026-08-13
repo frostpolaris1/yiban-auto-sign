@@ -31,10 +31,14 @@ _KEY_CACHE = None
 
 
 def _parse_env_file(env_file):
-    """读取 .env 全部键值，返回 dict（文件缺失/非法行静默跳过）。"""
+    """读取 .env 全部键值，返回 dict（文件缺失/非法行静默跳过）。
+
+    utf-8-sig：兼容带 BOM 的 .env（Windows 工具保存常见），否则首个键名带
+    \ufeff 前缀会导致密钥读不到（误判未配置 → 静默生成新密钥 → 旧数据不可解）。
+    """
     result = {}
     try:
-        with open(env_file, encoding="utf-8") as f:
+        with open(env_file, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -67,7 +71,7 @@ def _write_key_to_env_file(env_file, key):
         return _decode_key(existing)
     lines = []
     if os.path.exists(env_file):
-        with open(env_file, encoding="utf-8") as f:
+        with open(env_file, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
             lines = f.read().splitlines()
     out = [ln for ln in lines if not ln.strip().startswith("YIBAN_ACCOUNTS_KEY=")]
     out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")

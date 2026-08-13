@@ -106,6 +106,10 @@
 
 <script>
 let mode = 'login';
+// HTML 转义（changelog 兜底渲染等文本上下文）
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 // 暗色主题切换（localStorage 记忆）
 function toggleTheme() {
   const dark = document.documentElement.classList.toggle('dark');
@@ -273,7 +277,7 @@ async function openChangelog() {
   try {
     const resp = await fetch('/api/changelog');
     const data = await resp.json().catch(() => ({}));
-    content.innerHTML = window.renderMarkdown ? renderMarkdown((data && data.text) || '暂无更新日志') : ((data && data.text) || '暂无更新日志');
+    content.innerHTML = window.renderMarkdown ? renderMarkdown((data && data.text) || '暂无更新日志') : esc((data && data.text) || '暂无更新日志');
   } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
 }
 function closeChangelog() { document.getElementById('changelog-modal').classList.add('hidden'); }
