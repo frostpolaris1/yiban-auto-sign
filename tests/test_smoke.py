@@ -5,12 +5,15 @@
     py -m pytest tests/test_smoke.py -v        # 需要 pytest
     py tests/test_smoke.py                     # 无 pytest 也可直接运行
 
-覆盖：加密/解密/迁移（最易改坏）、登录权限、批量防呆、软删除、设置读写。
-所有测试使用临时数据目录，不碰真实数据。
+覆盖：加密/解密/迁移（最易改坏）、登录权限、批量防呆、软删除、数据层 CRUD。
+所有测试使用临时数据目录（独立 SQLite 库），不碰真实数据。
 """
+import contextlib
+import datetime
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -30,43 +33,56 @@ class SmokeTest(unittest.TestCase):
         cls.env_file = os.path.join(cls.tmp, ".env")
         with open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
         cls.users_file = os.path.join(cls.tmp, "users.json")
         os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
         os.environ["YIBAN_ENV_FILE"] = cls.env_file
         os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
         os.environ["YIBAN_USERS_FILE"] = cls.users_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
         # 导入被测模块
-        global account_crypto, load_accounts, save_accounts
-        import account_crypto
-        sys.path.insert(0, os.path.join(BASE, "web"))
+        global account_crypto, db
         # web/app.py 模块级函数可独立调用
         import importlib.util
+
+        import account_crypto
+        import db
         spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
-        try:
-            spec.loader.exec_module(cls.webapp)
-        except Exception:
-            pass  # 模块顶层可能因环境失败，用函数级验证兜底
+        with contextlib.suppress(Exception):
+            spec.loader.exec_module(cls.webapp)  # 模块顶层可能因环境失败，用函数级验证兜底
 
     @classmethod
     def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
         shutil.rmtree(cls.tmp, ignore_errors=True)
         os.environ.pop("YIBAN_ACCOUNTS_KEY", None)
+
+    def setUp(self):
+        # 每个测试独立数据库：关闭连接、删除库文件（含 WAL/SHM），再按需迁移
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
 
     def _write_accounts(self, accounts):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump(accounts, f, ensure_ascii=False)
-        # 重置 TTL 缓存，确保下次 load 真实读盘（迁移/清理逻辑依赖 fresh）
-        if hasattr(self.webapp, "_accounts_cache"):
-            self.webapp._accounts_cache[0] = None
 
-    def _read_accounts(self):
-        with open(self.accounts_file, encoding="utf-8") as f:
-            return json.load(f)
+    def _init_db(self):
+        """初始化数据库并执行 JSON→SQLite 自动迁移（模拟 create_app 启动路径）。"""
+        db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
 
-    # ---- 1. 加密/解密/迁移 ----
+    # ---- 1. 加密/解密 ----
     def test_encrypt_decrypt_roundtrip(self):
         key = account_crypto._decode_key(TEST_KEY)
         ct = account_crypto.encrypt_password("secret-pass", key, "13800138000")
@@ -79,25 +95,41 @@ class SmokeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             account_crypto.decrypt_password(ct, key, "13900139000")  # AAD 不匹配
 
-    def test_plain_migration_to_cipher(self):
-        # 明文文件 + 密钥 → load 后写回应为密文
-        self._write_accounts([{"name": "测试", "phone": "13800138000", "password": "plain-pass", "status": "active"}])
-        accounts = self.webapp.load_accounts()
-        self.assertEqual(accounts[0]["password"], "plain-pass")  # 业务层看到明文
-        disk = self._read_accounts()
-        self.assertTrue(account_crypto.is_encrypted(disk[0]["password"]))  # 盘上已加密
+    # ---- 2. JSON→SQLite 迁移 + 解密 + 惰性清理 ----
+    def test_migration_encrypts_and_decrypts(self):
+        old = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
+        self._write_accounts([
+            {"name": "测试", "phone": "13800138000", "password": "plain-pass", "status": "active"},
+            # 超期软删除账号：迁移后 load 时应被惰性清理
+            {"name": "旧删", "phone": "13900139000", "password": "p2", "status": "active",
+             "deleted": True, "deleted_at": old},
+        ])
+        self._init_db()
+        # 业务层看到明文；超期账号被清除
+        accounts = db.load_accounts()
+        self.assertEqual([a["phone"] for a in accounts], ["13800138000"])
+        self.assertEqual(accounts[0]["password"], "plain-pass")
+        # 库内为密文（存储层加密）
+        conn = db.get_conn()
+        row = conn.execute("SELECT password FROM accounts WHERE phone='13800138000'").fetchone()
+        self.assertTrue(account_crypto.is_encrypted(json.loads(row["password"])))
+        # JSON 已改名 .bak 保留逃生门
+        self.assertTrue(any(n.startswith("accounts.json.bak-") for n in os.listdir(self.tmp)))
 
-    def test_save_encrypts(self):
-        self._write_accounts([])
-        self.webapp.save_accounts([{"name": "新号", "phone": "13700137000", "password": "new-pass", "status": "active"}])
-        disk = self._read_accounts()
-        self.assertTrue(account_crypto.is_encrypted(disk[0]["password"]))
+    def test_add_account_encrypts(self):
+        self._init_db()
+        db.add_account({"name": "新号", "phone": "13700137000", "password": "new-pass",
+                        "owner": "admin", "status": "active"})
+        conn = db.get_conn()
+        row = conn.execute("SELECT password FROM accounts WHERE phone='13700137000'").fetchone()
+        self.assertTrue(account_crypto.is_encrypted(json.loads(row["password"])))
+        # load 后业务层为明文
+        self.assertEqual(db.load_accounts()[0]["password"], "new-pass")
 
-    # ---- 2. 登录/权限基础（轻量：直接验证 verify_admin 兼容路径）----
+    # ---- 3. 登录/权限基础（轻量：直接验证 verify_admin 兼容路径）----
     def test_admin_verify_plain_fallback(self):
         # 无哈希时明文回退（旧 .env 兼容）
         if hasattr(self.webapp, "verify_admin"):
-            # 用临时 env 文件模拟
             old_env = self.webapp.ENV_FILE
             self.webapp.ENV_FILE = self.env_file
             try:
@@ -105,30 +137,93 @@ class SmokeTest(unittest.TestCase):
             finally:
                 self.webapp.ENV_FILE = old_env
 
-    # ---- 3. 批量防呆：批量 purge 不能删未软删除账号 ----
+    # ---- 4. 批量防呆：批量 purge 不能删未软删除账号 ----
     def test_batch_purge_requires_deleted(self):
-        if not hasattr(self.webapp, "load_accounts"):
-            self.skipTest("webapp 未完整加载")
-        self._write_accounts([
-            {"name": "正常", "phone": "13800138000", "password": "p1", "status": "active"},
-            {"name": "已删", "phone": "13900139000", "password": "p2", "status": "active",
-             "deleted": True, "deleted_at": "2026-08-13T10:00:00"},
-        ])
-        accounts = self.webapp.load_accounts()
+        self._init_db()
+        db.add_account({"name": "正常", "phone": "13800138000", "password": "p1", "status": "active"})
+        deleted_id = db.add_account({"name": "已删", "phone": "13900139000", "password": "p2",
+                                     "status": "active"})
+        db.set_account_deleted(deleted_id, 1, datetime.datetime.now().isoformat(timespec="seconds"))
         # 模拟批量 purge 逻辑：仅删 deleted 的
+        accounts = db.load_accounts()
         deleted = [a for a in accounts if a.get("deleted")]
         self.assertEqual(len(deleted), 1)
         self.assertEqual(deleted[0]["phone"], "13900139000")
+        for a in deleted:
+            db.purge_account(a["id"])
+        self.assertEqual([a["phone"] for a in db.load_accounts()], ["13800138000"])
 
-    # ---- 4. 软删除超期清理 ----
+    # ---- 5. 软删除超期惰性清理 ----
     def test_expired_soft_delete_cleaned(self):
-        if not hasattr(self.webapp, "_deleted_expired"):
-            self.skipTest("webapp 未完整加载")
-        import datetime
-        expired_at = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat()
-        self.assertTrue(self.webapp._deleted_expired(expired_at))
-        fresh_at = datetime.datetime.now().isoformat()
-        self.assertFalse(self.webapp._deleted_expired(fresh_at))
+        self._init_db()
+        old = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
+        db.add_account({"name": "A", "phone": "13800138000", "password": "p1", "status": "active"})
+        db.set_account_deleted(db.load_accounts()[0]["id"], 1, old)
+        # load 时惰性清除超期行
+        self.assertEqual(db.load_accounts(), [])
+
+    # ---- 6. 用户表 CRUD（db 层）----
+    def test_users_crud(self):
+        self._init_db()
+        db.create_user("a@x.com", "hash1", role="user", created_at="", pw_version=1)
+        self.assertEqual(db.find_user("a@x.com")["email"], "a@x.com")
+        db.update_user("a@x.com", {"role": "admin", "pw_version": 2})
+        u = db.find_user("a@x.com")
+        self.assertEqual(u["role"], "admin")
+        self.assertEqual(u["pw_version"], 2)
+        db.delete_user("a@x.com")
+        self.assertIsNone(db.find_user("a@x.com"))
+
+    # ---- 7. 手机号唯一约束（并发兜底语义）----
+    def test_phone_unique_conflict(self):
+        self._init_db()
+        db.add_account({"name": "A", "phone": "13800138000", "password": "p1", "status": "active"})
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.add_account({"name": "B", "phone": "13800138000", "password": "p2"})
+        id2 = db.add_account({"name": "B", "phone": "13900139000", "password": "p2", "status": "active"})
+        # 改手机号撞他人 UNIQUE（改自己的号不冲突，排除自身）
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.update_account(id2, {"phone": "13800138000"})
+        db.update_account(id2, {"phone": "13900139000"})  # 原号不改，不冲突
+
+    # ---- 8. 乐观锁：匹配 True / 不匹配 False / 不存在 None ----
+    def test_optimistic_lock(self):
+        self._init_db()
+        acc_id = db.add_account({"name": "A", "phone": "13800138000", "password": "p1",
+                                 "status": "active"})
+        snap = {"name": "A", "phone": "13800138000", "phone_model": "",
+                "status": "active", "deleted": False}
+        self.assertTrue(db.update_account(acc_id, {"name": "A2"}, expect_snapshot=snap))
+        self.assertFalse(db.update_account(acc_id, {"name": "A3"}, expect_snapshot=snap))
+        self.assertIsNone(db.update_account(99999, {"name": "X"}, expect_snapshot=snap))
+
+    # ---- 9. 移动交换排序（仅未删除行参与）----
+    def test_move_swap_order(self):
+        self._init_db()
+        id1 = db.add_account({"name": "A", "phone": "13800138000", "password": "p1", "status": "active"})
+        id2 = db.add_account({"name": "B", "phone": "13900139000", "password": "p2", "status": "active"})
+        id3 = db.add_account({"name": "C", "phone": "13700137000", "password": "p3", "status": "active"})
+        # B 下移（与 C 交换）
+        self.assertTrue(db.move_account(id2, 1))
+        order = [a["phone"] for a in db.load_accounts()]
+        self.assertEqual(order, ["13800138000", "13700137000", "13900139000"])
+        # A 上移（已到顶，失败）
+        self.assertFalse(db.move_account(id1, -1))
+        # 软删除的账号不参与交换
+        db.set_account_deleted(id2, 1, datetime.datetime.now().isoformat(timespec="seconds"))
+        self.assertFalse(db.move_account(id3, 1))  # C 之后无未删除账号
+
+    # ---- 10. 审计写入 ----
+    def test_audit_write(self):
+        self._init_db()
+        db.audit("tester", "account_add", "138****8000", "测试审计")
+        conn = db.get_conn()
+        row = conn.execute(
+            "SELECT username, action, target, detail FROM audit_logs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row["username"], "tester")
+        self.assertEqual(row["action"], "account_add")
+        self.assertEqual(row["detail"], "测试审计")
 
 
 if __name__ == "__main__":

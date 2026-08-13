@@ -1,0 +1,519 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+"""SQLite 数据访问层（web / signin / tui 三进程共用）。
+
+- accounts/users 数据从 JSON 整文件读写迁移到 SQLite（yiban.db，WAL 模式）
+  ——根治并发覆盖 / 索引漂移 / 进程外覆盖三个历史问题
+- 稳定 ID（id PK AUTOINCREMENT）：业务层用 id 寻址，不再受列表顺序漂移影响
+- 密码/识别码字段在库内仍为 AES-GCM 密文（复用 account_crypto，解密在 load 时）
+- 自动迁移：yiban.db 不存在且 accounts.json/users.json 存在 → 导入（幂等）→ JSON 改名 .bak 保留逃生门
+- 操作审计：audit() 记录关键管理操作（多管理员追溯）
+- 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
+"""
+import datetime
+import json
+import logging
+import os
+import sqlite3
+import threading
+
+logger = logging.getLogger("yiban.db")
+
+DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
+
+# 软删除保留期（秒）：与 web 原 JSON 实现的惰性清理语义一致（>= 7 天）
+SOFT_DELETE_RETENTION_SECONDS = 7 * 86400
+
+# 模块级共享（web 通过环境变量注入路径后调用 init_db）
+_conn = None
+_conn_lock = threading.Lock()
+_db_file = DB_DEFAULT
+_env_file = None  # .env 路径（密钥来源；None=account_crypto 默认 .env）
+
+
+def init_db(db_file=None, migrate_from=None, env_file=None):
+    """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
+
+    env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
+    None 时走 account_crypto 默认（.env 于当前工作目录）。
+    """
+    global _conn, _db_file, _env_file
+    _env_file = env_file
+    _db_file = db_file or os.environ.get("YIBAN_DB_FILE", DB_DEFAULT)
+    if _conn is not None:
+        return _conn
+    with _conn_lock:
+        if _conn is not None:
+            return _conn
+        _conn = sqlite3.connect(_db_file, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA busy_timeout=5000")
+        _conn.execute("PRAGMA foreign_keys=OFF")
+        _create_tables(_conn)
+        # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
+        if migrate_from:
+            _maybe_migrate(_conn, migrate_from)
+        _audit_cleanup(_conn)
+        return _conn
+
+
+def get_conn():
+    if _conn is None:
+        init_db()
+    return _conn
+
+
+# ---------------------------------------------------------------------------
+# 表结构
+# ---------------------------------------------------------------------------
+def _create_tables(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS accounts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sort_order INTEGER NOT NULL,
+          name TEXT NOT NULL DEFAULT '',
+          phone TEXT NOT NULL UNIQUE,
+          password TEXT NOT NULL DEFAULT '',
+          phone_model TEXT NOT NULL DEFAULT '',
+          phone_code TEXT NOT NULL DEFAULT '',
+          owner TEXT NOT NULL DEFAULT 'admin',
+          status TEXT NOT NULL DEFAULT 'pending',
+          reject_reason TEXT NOT NULL DEFAULT '',
+          deleted INTEGER NOT NULL DEFAULT 0,
+          deleted_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner);
+        CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
+        CREATE INDEX IF NOT EXISTS idx_accounts_sort ON accounts(sort_order);
+
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'user',
+          created_at TEXT NOT NULL DEFAULT '',
+          pw_version INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          username TEXT NOT NULL,
+          action TEXT NOT NULL,
+          target TEXT NOT NULL DEFAULT '',
+          detail TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts);
+        """
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# 自动迁移（JSON → SQLite，幂等）
+# ---------------------------------------------------------------------------
+def _maybe_migrate(conn, json_base):
+    """json_base 形如 /path/accounts.json（users.json 同目录推断）。"""
+    accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
+        os.path.dirname(json_base), "accounts.json"
+    )
+    users_json = os.path.join(os.path.dirname(accounts_json), "users.json")
+    has_db_rows = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] > 0
+    if has_db_rows:
+        return  # 已迁移过
+    imported = 0
+    if os.path.exists(accounts_json):
+        try:
+            with open(accounts_json, encoding="utf-8") as f:
+                accounts = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            accounts = []
+        if isinstance(accounts, list) and accounts:
+            # 加密字段：明文 → 密文（复用 account_crypto）；已是密文（dict 或 JSON 串）原样入库
+            try:
+                import account_crypto
+            except ImportError:
+                account_crypto = None
+            key = account_crypto.load_key(_env_file) if account_crypto else None
+            with conn:
+                for i, a in enumerate(accounts):
+                    password = a.get("password", "") or ""
+                    phone_code = a.get("phone_code", "") or ""
+                    if key is not None:
+                        if password and not _is_encrypted_value(password):
+                            password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
+                        if phone_code and not _is_encrypted_value(phone_code):
+                            phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
+                    conn.execute(
+                        "INSERT OR IGNORE INTO accounts "
+                        "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            i + 1,
+                            a.get("name", ""),
+                            a.get("phone", ""),
+                            password,
+                            a.get("phone_model", ""),
+                            phone_code,
+                            a.get("owner", "admin"),
+                            a.get("status", "active"),
+                            a.get("reject_reason", ""),
+                            1 if a.get("deleted") else 0,
+                            a.get("deleted_at", ""),
+                        ),
+                    )
+            imported += len(accounts)
+            _rename_backup(accounts_json)
+    if os.path.exists(users_json):
+        try:
+            with open(users_json, encoding="utf-8") as f:
+                users = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            users = []
+        if isinstance(users, list) and users:
+            with conn:
+                for u in users:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
+                        (
+                            u.get("email", ""),
+                            u.get("password_hash", ""),
+                            u.get("role", "user"),
+                            u.get("created_at", ""),
+                            u.get("pw_version", 1),
+                        ),
+                    )
+            imported += len(users)
+            _rename_backup(users_json)
+    if imported:
+        logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
+    else:
+        logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
+
+
+def _rename_backup(path):
+    """JSON 迁移成功后改名保留（逃生门），避免被旧代码误写回。"""
+    if os.path.exists(path):
+        import datetime
+        bak = f"{path}.bak-{datetime.datetime.now().strftime('%Y%m%d')}"
+        if not os.path.exists(bak):
+            os.rename(path, bak)
+
+
+# ---------------------------------------------------------------------------
+# accounts CRUD（单行操作，事务内）
+# ---------------------------------------------------------------------------
+def _row_to_account(row):
+    a = dict(row)
+    a["deleted"] = bool(a["deleted"])
+    # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
+    for k in ("password", "phone_code"):
+        v = a.get(k)
+        if v:
+            try:
+                obj = json.loads(v)
+            except (TypeError, ValueError):
+                obj = None
+            if isinstance(obj, dict) and "ct" in obj:
+                import account_crypto
+                if not account_crypto.has_key(_env_file):
+                    raise RuntimeError(
+                        "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
+                    )
+                key = account_crypto.load_key(_env_file)
+                a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
+            else:
+                a[k] = v  # 明文（迁移前数据或未加密）
+    return a
+
+
+def _is_encrypted_value(v):
+    """字段值是否为密文（dict 密文对象，或密文 JSON 串）——迁移/写路径判定用。"""
+    if isinstance(v, dict):
+        import account_crypto
+        return account_crypto.is_encrypted(v)
+    if isinstance(v, str):
+        try:
+            obj = json.loads(v)
+        except (TypeError, ValueError):
+            return False
+        import account_crypto
+        return account_crypto.is_encrypted(obj)
+    return False
+
+
+def _encrypt_field(value, phone):
+    """写库前密文化：dict 密文对象 → JSON 串；其他非空值 → AES-GCM 加密（AAD=phone）→ JSON 串；空值原样。
+
+    无密钥时 load_key 自动生成并持久化（与 web 现状一致）；密钥非法则抛错（绝不静默降级明文）。
+    """
+    if not value:
+        return ""
+    if isinstance(value, dict):
+        return json.dumps(value)  # 已是密文对象
+    import account_crypto
+    key = account_crypto.load_key(_env_file)
+    return json.dumps(account_crypto.encrypt_password(str(value), key, phone))
+
+
+def _purge_expired_deleted(conn):
+    """软删除超过保留期（>= 7 天）的行物理清除（web 原 load 惰性清理语义，库内必有 deleted_at）。
+
+    deleted_at 为 ISO 秒级字符串（web 写入格式），同格式字符串比较等价时间序。
+    """
+    try:
+        cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).isoformat(timespec="seconds")
+        conn.execute(
+            "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+            (cutoff,),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def load_accounts():
+    """全部账号（按 sort_order 升序），已解密；顺带清除超期软删除行。"""
+    conn = get_conn()
+    _purge_expired_deleted(conn)
+    rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
+    return [_row_to_account(r) for r in rows]
+
+
+def _next_sort_order(conn):
+    row = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM accounts").fetchone()
+    return row["n"]
+
+
+def add_account(fields):
+    """新增账号（fields 为业务层明文 dict），返回新 id。
+
+    敏感字段写库前加密（AAD=手机号）；手机号重复抛 sqlite3.IntegrityError（业务层捕获）。
+    """
+    conn = get_conn()
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                _next_sort_order(conn),
+                fields.get("name", ""),
+                fields.get("phone", ""),
+                _encrypt_field(fields.get("password"), fields.get("phone", "")),
+                fields.get("phone_model", ""),
+                _encrypt_field(fields.get("phone_code"), fields.get("phone", "")),
+                fields.get("owner", "admin"),
+                fields.get("status", "pending"),
+                fields.get("reject_reason", ""),
+            ),
+        )
+        return cur.lastrowid
+
+
+def update_account(account_id, fields, expect_snapshot=None):
+    """更新单行；expect_snapshot 为乐观锁指纹 dict（name/phone/phone_model/status/deleted），不匹配返回 False。
+
+    手机号变更时自动用新手机号重加密 password/phone_code（旧密文 AAD 绑定旧手机号）；
+    改 phone 撞 UNIQUE 抛 sqlite3.IntegrityError（业务层捕获）。
+    """
+    conn = get_conn()
+    with conn:
+        cur = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None if expect_snapshot is not None else False
+        cur_a = _row_to_account(row)  # 解密（AAD=库内当前手机号）
+        if expect_snapshot is not None:
+            snap = {
+                "name": cur_a.get("name", ""),
+                "phone": cur_a.get("phone", ""),
+                "phone_model": cur_a.get("phone_model", ""),
+                "status": cur_a.get("status", ""),
+                "deleted": bool(cur_a.get("deleted")),
+            }
+            if snap != expect_snapshot:
+                return False  # 已被他人修改（409）
+        # 手机号变更且敏感字段未随本次提供 → 用旧手机号解密的明文按新手机号重加密
+        new_phone = fields.get("phone")
+        if new_phone is not None and new_phone != cur_a.get("phone"):
+            for k in ("password", "phone_code"):
+                if k not in fields:
+                    fields = dict(fields)
+                    fields[k] = cur_a.get(k, "")  # 已解密明文
+        phone_for_aad = new_phone if new_phone is not None else cur_a.get("phone", "")
+        sets = []
+        vals = []
+        for k in ("name", "phone", "phone_model", "owner", "status", "reject_reason", "deleted", "deleted_at"):
+            if k in fields:
+                sets.append(f"{k}=?")
+                vals.append(fields[k])
+        for k in ("password", "phone_code"):
+            if k in fields:
+                sets.append(f"{k}=?")
+                vals.append(_encrypt_field(fields[k], phone_for_aad))
+        if not sets:
+            return True
+        vals.append(account_id)
+        conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+        return True
+
+
+def set_account_deleted(account_id, deleted, deleted_at=""):
+    conn = get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
+            (1 if deleted else 0, deleted_at, account_id),
+        )
+
+
+def purge_account(account_id):
+    conn = get_conn()
+    with conn:
+        conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+
+
+def update_account_status(account_id, status, reject_reason=None):
+    conn = get_conn()
+    with conn:
+        if reject_reason is None:
+            conn.execute("UPDATE accounts SET status=? WHERE id=?", (status, account_id))
+        else:
+            conn.execute("UPDATE accounts SET status=?, reject_reason=? WHERE id=?", (status, reject_reason, account_id))
+
+
+def move_account(account_id, direction):
+    """direction: -1 上移 / 1 下移。事务内与相邻账号交换 sort_order。"""
+    conn = get_conn()
+    with conn:
+        rows = conn.execute(
+            "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
+        ).fetchall()
+        pos = next((i for i, r in enumerate(rows) if r["id"] == account_id), None)
+        if pos is None:
+            return False
+        target = pos + direction
+        if target < 0 or target >= len(rows):
+            return False
+        a, b = rows[pos]["sort_order"], rows[target]["sort_order"]
+        conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (b, rows[pos]["id"]))
+        conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (a, rows[target]["id"]))
+        return True
+
+
+def delete_accounts_by_owner(owner):
+    """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。"""
+    conn = get_conn()
+    with conn:
+        cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
+        return cur.rowcount
+
+
+def replace_accounts(accounts):
+    """整表替换（TUI 保存专用）：事务内清空并重插，sort_order=列表顺序 1..N。
+
+    敏感字段密文化同 add_account（AAD=手机号）。
+    ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（TUI 与 web 勿同时编辑）。
+    """
+    conn = get_conn()
+    with conn:
+        conn.execute("DELETE FROM accounts")
+        for i, a in enumerate(accounts):
+            conn.execute(
+                "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    i + 1,
+                    a.get("name", ""),
+                    a.get("phone", ""),
+                    _encrypt_field(a.get("password"), a.get("phone", "")),
+                    a.get("phone_model", ""),
+                    _encrypt_field(a.get("phone_code"), a.get("phone", "")),
+                    a.get("owner", "admin"),
+                    a.get("status", "active"),
+                    a.get("reject_reason", ""),
+                    1 if a.get("deleted") else 0,
+                    a.get("deleted_at", ""),
+                ),
+            )
+    return len(accounts)
+
+
+# ---------------------------------------------------------------------------
+# users CRUD
+# ---------------------------------------------------------------------------
+def load_users():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def find_user(email):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_user(email, password_hash, role="user", created_at="", pw_version=1):
+    conn = get_conn()
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
+            (email, password_hash, role, created_at, pw_version),
+        )
+
+
+def update_user(email, fields):
+    conn = get_conn()
+    with conn:
+        sets, vals = [], []
+        for k in ("password_hash", "role", "pw_version"):
+            if k in fields:
+                sets.append(f"{k}=?")
+                vals.append(fields[k])
+        if not sets:
+            return
+        vals.append(email)
+        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE email=?", vals)
+
+
+def delete_user(email):
+    conn = get_conn()
+    with conn:
+        conn.execute("DELETE FROM users WHERE email=?", (email,))
+
+
+# ---------------------------------------------------------------------------
+# 操作审计
+# ---------------------------------------------------------------------------
+def audit(username, action, target="", detail=""):
+    """记录关键管理操作（多管理员追溯；detail 需已脱敏）。"""
+    try:
+        conn = get_conn()
+        import datetime
+        conn.execute(
+            "INSERT INTO audit_logs (ts, username, action, target, detail) VALUES (?,?,?,?,?)",
+            (
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                username or "?",
+                action,
+                target,
+                detail[:200],
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning("审计写入失败: %s", e)
+
+
+def _audit_cleanup(conn):
+    """清理超 180 天审计（启动时顺带，一条 DELETE）。"""
+    try:
+        import datetime
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
+        conn.commit()
+    except Exception:
+        pass

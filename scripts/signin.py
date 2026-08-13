@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# 易班自动签到脚本（AGPL-3.0，见项目根 LICENSE）
+# 本项目为以下 AGPL-3.0 项目的衍生实现，保留上游版权与许可条款：
+#   - OneFeiFan/FYIBAN（多边形内随机定位点算法：缩放质心 + 射线法验证）
+#   - KillYiBan 模块（易班登录特征与 nightAttendance 签到流程，源自 OneFeiFan 的 Gitee 仓库）
 """
 易班自动签到脚本
 
@@ -32,7 +37,7 @@ from datetime import datetime
 from hashlib import md5
 from urllib.parse import urlencode, urlsplit
 
-# 共享加密模块（同目录）：web/tui 存储层加密落盘的 accounts.json 在此解密
+# 共享模块（同目录）：加密（web/tui/db 共用密钥与密文格式）与 SQLite 数据访问层
 import account_crypto
 import requests
 from Crypto.Cipher import PKCS1_v1_5
@@ -109,9 +114,6 @@ RISK_MAX_ATTEMPTS = 2
 RETRY_MIN_INTERVAL = 60
 # 网络/瞬时类失败重试间隔打散上限（秒），作为账号间随机延迟之外的补充
 RETRY_GAP_MAX = 30
-
-# 账号配置文件（默认当前目录，可用 YIBAN_ACCOUNTS_FILE 覆盖）
-ACCOUNTS_FILE = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
 
 # 随机延迟默认值（TUI 设置栏开启时采用；默认关闭=0）
 # 打散"每天固定秒级执行"的脚本特征，作为 e003 登录特征修复之外的纵深防御
@@ -287,29 +289,26 @@ def _parse_account_dict(data):
 
 
 def _load_accounts_from_file():
-    """从 accounts.json 文件加载（服务器端 TUI 配置工具生成）。"""
-    if not os.path.exists(ACCOUNTS_FILE):
-        return []
-    try:
-        with open(ACCOUNTS_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 解析失败: {e}") from e
-    if not isinstance(raw, list):
-        raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 应为 JSON 数组")
+    """从数据库加载（yiban.db，SQLite；web 后台写入，单行事务防并发覆盖）。
+
+    db 层返回已解密明文；此处只做审核状态过滤。
+    """
+    import db
+    db.init_db()
+    all_accounts = db.load_accounts()
     # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）、
     # 被拒绝账号（status=rejected：管理员审核不通过，不得签到）与待删除账号
     # （deleted：网页端软删除，保留期内可恢复，不参与签到）。
     # 注意：旧数据可能没有 status 字段（等于通过审核），必须放行。
     active_raw = [
         item
-        for item in raw
+        for item in all_accounts
         if item.get("status") != "pending"
         and item.get("status") != "rejected"
         and not item.get("deleted")
     ]
     accounts = [_parse_account_dict(item) for item in active_raw]
-    logger.info(f"已从 {ACCOUNTS_FILE} 加载 {len(accounts)} 个账号")
+    logger.info(f"已从数据库加载 {len(accounts)} 个账号")
     return accounts
 
 
@@ -1036,7 +1035,7 @@ def main():
     """主函数：加载账号配置并执行签到。
 
     支持：
-    - 配置文件 accounts.json / YIBAN_ACCOUNTS_JSON（推荐，一次输入一个账号完整信息）
+    - 数据库 yiban.db（SQLite，web 后台 / TUI 配置工具写入）与 YIBAN_ACCOUNTS_JSON
     - 旧格式 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（向后兼容）
     - 队列重试：账号顺序执行，失败账号放队尾分散重试（分级上限）
     - 随机延迟：YIBAN_START_DELAY_MAX（启动）/ YIBAN_ACCOUNT_GAP_MAX（账号间隔）
@@ -1063,7 +1062,7 @@ def main():
 
     if not accounts:
         logger.error("未配置任何账号，请通过以下任一方式配置：")
-        logger.error("  1. accounts.json 文件（推荐，用 TUI 配置工具生成）")
+        logger.error("  1. yiban.db 数据库（推荐，用网页后台或 TUI 配置工具添加）")
         logger.error("  2. YIBAN_ACCOUNTS_JSON 环境变量（JSON 数组）")
         logger.error("  3. YIBAN_ACCOUNTS 环境变量（旧格式 phone:password#phone2:password2）")
         logger.error("  4. YIBAN_PHONE / YIBAN_PASSWORD 环境变量（单账号）")

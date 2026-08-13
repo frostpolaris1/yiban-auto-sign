@@ -4,8 +4,7 @@
 # ============================================================
 # 功能：
 #   1. 本地打包数据文件 → /var/backups/yiban-YYYY-MM-DD.tar.gz（0600）
-#      - accounts.json（易班账号，含明文密码）
-#      - users.json（普通用户表，含密码哈希）
+#      - yiban.db（SQLite：账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
 #      - .env（管理员口令 / YIBAN_ACCOUNTS_KEY 等敏感配置）
 #      - 密钥文件：/etc/yiban/accounts-key（存在则单独置于 keys/ 子目录）
 #        不存在则从 .env 提取 YIBAN_ACCOUNTS_KEY 单独置于 keys/（密钥与数据
@@ -29,7 +28,7 @@
 #   0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup.sh >> /var/log/yiban/backup.log 2>&1
 #
 # 依赖：
-#   - 本地打包：tar / find（系统自带）
+#   - 本地打包：tar / find / sqlite3（系统自带）
 #   - 异机加密副本（可选）：age（apt install age）或 gpg（系统自带）；
 #     rsync（apt install rsync）或 scp（系统自带）
 # ============================================================
@@ -48,7 +47,9 @@ AGE_PASSPHRASE="${BACKUP_AGE_PASSPHRASE:-}"         # age 对称加密口令（�
 GPG_RECIPIENT="${BACKUP_GPG_RECIPIENT:-}"           # gpg 接收者（公钥 ID），配置后走 gpg 公钥加密
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
-DATA_FILES=(accounts.json users.json .env)
+DATA_FILES=(.env)
+# SQLite 数据库（账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
+DB_FILE="${DB_FILE:-yiban.db}"
 # 可选：sign-daily 状态目录（网页日历读取签到状态；不存在则跳过）
 SIGN_DAILY_DIR="${SIGN_DAILY_DIR:-/var/log/yiban/sign-daily}"
 
@@ -82,10 +83,10 @@ restore() {
     find "$dest" -type f -exec ls -l {} \;
     log "恢复演练核对项："
     local n_accounts
-    n_accounts=$(grep -o '"phone"' "${dest}/data/accounts.json" 2>/dev/null | wc -l)
-    log "  - accounts.json 账号数量：${n_accounts:-0}"
+    n_accounts=$(sqlite3 "${dest}/data/yiban.db" "SELECT COUNT(*) FROM accounts" 2>/dev/null || echo "?")
+    log "  - yiban.db 账号数量：${n_accounts:-0}"
     log "  - keys/ 目录是否含密钥：$(ls "${dest}/keys/" 2>/dev/null | tr '\n' ' ' || echo '无（备份时密钥缺失）')"
-    log "提示：恢复演练请核对上述内容后删除临时目录；真实恢复时将 data/ 与 keys/ 覆盖回 $APP_DIR 并 chmod 600。"
+    log "提示：恢复演练请核对上述内容后删除临时目录；真实恢复时将 data/ 与 keys/ 覆盖回 $APP_DIR 并 chmod 600（yiban.db 需先停止 yiban-web 服务）。"
 }
 
 if [ "${1:-}" = "--restore" ]; then
@@ -110,6 +111,26 @@ for f in "${DATA_FILES[@]}"; do
         log "跳过（不存在）：${APP_DIR}/${f}"
     fi
 done
+
+# 1b) SQLite 数据库：sqlite3 .backup 一致性快照（WAL 模式下 cp 会漏未合并日志，
+#     .backup 由 SQLite 内部保证快照一致；--restore 时直接替换回 yiban.db 即可）
+if [ -f "${APP_DIR}/${DB_FILE}" ]; then
+    if command -v sqlite3 > /dev/null 2>&1; then
+        if sqlite3 "${APP_DIR}/${DB_FILE}" ".backup '${TMPDIR_BAK}/data/${DB_FILE}'" 2>/dev/null; then
+            log "数据库已备份（一致性快照）：${DB_FILE}"
+        else
+            log "警告：sqlite3 .backup 失败（${DB_FILE} 可能被占用），回退为文件复制"
+            cp -p "${APP_DIR}/${DB_FILE}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
+                { log "警告：无法复制 ${DB_FILE}，已跳过"; rm -f "${TMPDIR_BAK}/data/${DB_FILE}"; }
+        fi
+    else
+        log "警告：未安装 sqlite3，回退为文件复制（WAL 未合并时快照可能不完整）"
+        cp -p "${APP_DIR}/${DB_FILE}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
+            { log "警告：无法复制 ${DB_FILE}，已跳过"; rm -f "${TMPDIR_BAK}/data/${DB_FILE}"; }
+    fi
+else
+    log "跳过（不存在）：${APP_DIR}/${DB_FILE}"
+fi
 
 # 2) 密钥：优先 /etc/yiban/accounts-key（systemd EnvironmentFile）
 #    ——密钥与数据一起备份但分开放置（keys/ 子目录），恢复时可区分对待

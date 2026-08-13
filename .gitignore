@@ -15,6 +15,11 @@ config.local.py
 # 账号配置文件（含密码，严禁入库）
 accounts.json
 
+# SQLite 数据库（含账号密文/用户哈希/审计日志，严禁入库）
+yiban.db
+yiban.db-wal
+yiban.db-shm
+
 # IDE
 .vscode/
 .idea/
@@ -42,9 +47,27 @@ users.json
 
 # 本地调试目录（不提交）
 demo-log/
+demo-tmp/
 
 # 备份目录（防历史敏感文件被误提交）
 backup-*/
 
 # 服务器访问信息（含真实 IP/手机号，严禁入库）
 服务器访问信息.md
+
+# 内部运维文档（含服务器 IP/部署配置/漏洞细节，本地保留不入库）
+MAINTENANCE.md
+PROXY_DEPLOY_GUIDE.md
+hardening/
+docs/AI-HANDOFF.md
+docs/OPERATIONS-GUIDE.md
+docs/CHANGELOG-full.md
+docs/DEVELOPMENT_LOG.md
+docs/fix-report-*.md
+docs/review-security-perf-*.md
+docs/web-console/DEPLOY-CHECKLIST.md
+docs/web-console/resources.md
+
+# ZCode 工具目录
+.zcode/
+.ruff_cache/
