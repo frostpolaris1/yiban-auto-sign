@@ -385,9 +385,13 @@ class YibanTuiApp(App):
 
     # ---- 数据加载与展示 ----
     def _load(self) -> None:
-        """从 SQLite 加载全部账号（db 层已解密为明文）。"""
-        db.init_db(env_file=self.env_path)
-        self.accounts = db.load_accounts()
+        """从 SQLite 加载全部账号（db 层已解密为明文）；数据库异常时明确提示而非崩溃。"""
+        try:
+            db.init_db(env_file=self.env_path)
+            self.accounts = db.load_accounts()
+        except Exception as e:
+            self.accounts = []
+            self.notify(f"数据库读取失败: {e}", severity="error", timeout=6)
         self._refresh_table()
 
     def _display_name(self, acc, index):

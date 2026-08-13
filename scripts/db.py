@@ -298,9 +298,12 @@ def add_account(fields):
     """新增账号（fields 为业务层明文 dict），返回新 id。
 
     敏感字段写库前加密（AAD=手机号）；手机号重复抛 sqlite3.IntegrityError（业务层捕获）。
+    BEGIN IMMEDIATE：跨进程（多 worker）并发时提前获取写锁，
+    保证 MAX(sort_order)+1 的读与 INSERT 原子（防并发重复排序号）。
     """
     conn = get_conn()
-    with conn:
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
             "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
@@ -316,7 +319,12 @@ def add_account(fields):
                 fields.get("reject_reason", ""),
             ),
         )
-        return cur.lastrowid
+        new_id = cur.lastrowid
+        conn.commit()
+        return new_id
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def update_account(account_id, fields, expect_snapshot=None):
@@ -415,6 +423,15 @@ def delete_accounts_by_owner(owner):
     conn = get_conn()
     with conn:
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
+        return cur.rowcount
+
+
+def delete_user_with_accounts(email):
+    """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。"""
+    conn = get_conn()
+    with conn:
+        cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+        conn.execute("DELETE FROM users WHERE email=?", (email,))
         return cur.rowcount
 
 

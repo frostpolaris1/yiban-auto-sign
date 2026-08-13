@@ -248,13 +248,19 @@ _announcement_cache = [None]  # [公告文本]
 
 
 def load_accounts():
-    """全部账号（SQLite，password/phone_code 已解密为明文，按 sort_order 升序）。"""
-    return db.load_accounts()
+    """全部账号（SQLite，password/phone_code 已解密为明文，按 sort_order 升序）。
+
+    _file_lock：与写操作同锁，避免读到同一连接上未提交事务的部分结果
+    （批量操作进行中，并发读可能看到半成品状态；RLock 可重入，写操作内调用无死锁）。
+    """
+    with _file_lock:
+        return db.load_accounts()
 
 
 def load_users():
     """全部用户（SQLite）。"""
-    return db.load_users()
+    with _file_lock:
+        return db.load_users()
 
 
 def _mask_phone(p):
@@ -468,7 +474,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.17.0"
+APP_VERSION = "0.17.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1088,35 +1094,48 @@ def create_app():
                             }
                         ), 400
             done = 0
-            for i in valid:
-                acc = accounts[i]
-                if action == "approve":
-                    # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
-                    if not acc.get("deleted") and acc.get("status") in (
-                        STATUS_PENDING,
-                        STATUS_REJECTED,
-                    ):
-                        db.update_account_status(acc["id"], STATUS_ACTIVE, reject_reason="")
+            try:
+                for i in valid:
+                    acc = accounts[i]
+                    if action == "approve":
+                        # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
+                        if not acc.get("deleted") and acc.get("status") in (
+                            STATUS_PENDING,
+                            STATUS_REJECTED,
+                        ):
+                            db.update_account_status(acc["id"], STATUS_ACTIVE, reject_reason="")
+                            done += 1
+                    elif action == "reject":
+                        if acc.get("status") in (STATUS_PENDING, STATUS_REJECTED):
+                            db.update_account_status(acc["id"], STATUS_REJECTED, reason)
+                            done += 1
+                    elif action == "purge":
+                        # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
+                        if not acc.get("deleted"):
+                            continue
+                        db.purge_account(acc["id"])
                         done += 1
-                elif action == "reject":
-                    if acc.get("status") in (STATUS_PENDING, STATUS_REJECTED):
-                        db.update_account_status(acc["id"], STATUS_REJECTED, reason)
+                    elif action == "restore" and acc.get("deleted"):
+                        db.set_account_deleted(acc["id"], 0)
                         done += 1
-                elif action == "purge":
-                    # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
-                    if not acc.get("deleted"):
-                        continue
-                    db.purge_account(acc["id"])
-                    done += 1
-                elif action == "restore" and acc.get("deleted"):
-                    db.set_account_deleted(acc["id"], 0)
-                    done += 1
-                elif action == "delete" and not acc.get("deleted"):
-                    # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
-                    db.set_account_deleted(
-                        acc["id"], 1, datetime.now().isoformat(timespec="seconds")
-                    )
-                    done += 1
+                    elif action == "delete" and not acc.get("deleted"):
+                        # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
+                        db.set_account_deleted(
+                            acc["id"], 1, datetime.now().isoformat(timespec="seconds")
+                        )
+                        done += 1
+            except RuntimeError as e:
+                # 循环中断（如数据库异常）：已处理部分已生效，明确告知避免用户困惑
+                logger.error("批量%s中断: %s（已处理 %d 个）", action, e, done)
+                db.audit(
+                    session.get("username") or "?",
+                    "account_batch",
+                    action,
+                    f"中断，已处理 {done} 个",
+                )
+                return jsonify(
+                    {"ok": True, "msg": f"批量操作中断，已处理 {done} 个（{e}）"}
+                )
             db.audit(
                 session.get("username") or "?",
                 "account_batch",
@@ -1702,9 +1721,7 @@ def create_app():
                         admins = [u for u in load_users() if u.get("role") == "admin"]
                         if len(admins) <= 1 and not builtin:
                             continue
-                    db.delete_user(email)
-                    # 同步清除该用户提交的易班账号
-                    db.delete_accounts_by_owner(email)
+                    db.delete_user_with_accounts(email)
                     done += 1
             db.audit(
                 session.get("username") or "?",
@@ -1826,8 +1843,11 @@ def create_app():
                 # 内置管理员（.env）兜底存在时可删除 users.json 中的最后一个管理员
                 if len(admins) <= 1 and not _builtin_admin_email():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
-            # 删除其提交的易班账号（accounts 与 users 同锁内操作，事务独立但一致）
-            db.delete_accounts_by_owner(email)
+            # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
+            if mode == "full":
+                db.delete_user_with_accounts(email)
+            else:
+                db.delete_accounts_by_owner(email)
             db.audit(
                 session.get("username") or "?",
                 "user_delete",
@@ -1835,7 +1855,6 @@ def create_app():
                 f"mode={mode}",
             )
             if mode == "full":
-                db.delete_user(email)
                 logger.info("完全删除用户 %s（含易班账号）", _mask_email(email))
                 return jsonify({"ok": True, "msg": f"{email} 已完全删除"})
             logger.info("清空用户 %s 的易班账号（保留用户）", _mask_email(email))
