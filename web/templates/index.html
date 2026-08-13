@@ -33,6 +33,10 @@
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
   }
   pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+
+  /* 表格 sticky 操作列：行 hover 时同步变色（否则滚动时背景穿帮） */
+  tr:hover td.sticky { background-color: rgb(250 250 250); }
+  .dark tr:hover td.sticky { background-color: rgb(39 39 42 / 0.5); }
 </style>
 </head>
 <body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen overscroll-y-none">
@@ -174,7 +178,7 @@
               <th class="px-4 py-3 font-medium whitespace-nowrap">手机号</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">用户名</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">状态</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="accounts-pending-tbody"></tbody>
@@ -205,7 +209,7 @@
             <th class="px-4 py-3 font-medium whitespace-nowrap hidden lg:table-cell">设备型号</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">用户名</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">审核</th>
-            <th class="px-4 py-3 font-medium whitespace-nowrap">操作</th>
+            <th class="px-4 py-3 font-medium whitespace-nowrap sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
           </tr>
         </thead>
         <tbody id="accounts-tbody"></tbody>
@@ -239,7 +243,7 @@
               <th class="px-4 py-3 font-medium whitespace-nowrap">手机号</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">用户名</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">删除时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="accounts-deleted-tbody"></tbody>
@@ -938,7 +942,7 @@ function deletedAccountRow(a, key) {
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">${esc((a.deleted_at || '').replace('T', ' ').slice(0, 16))}</td>
-    <td class="px-4 py-3">
+    <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center gap-2">
         <button onclick="restoreAccount(${a.index})" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-150">恢复</button>
         <button onclick="purgeAccount(${a.index})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">彻底删除</button>
@@ -987,7 +991,7 @@ function pendingAccountRow(a, key) {
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}${reasonHtml}</td>
-    <td class="px-4 py-3">
+    <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center">
         <button title="更多操作" onclick="openRowMenu(event, [
           {label: '通过', cls: 'text-green-600 dark:text-green-400', fn: () => reviewAccount(${a.index}, 'approve')},
@@ -1014,7 +1018,7 @@ function accountRow(a, key) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell">${esc(a.phone_model || '—')}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}</td>
-    <td class="px-4 py-3">
+    <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center">
         <button title="更多操作" onclick="accountRowMenu(event, this, ${a.index})"
                 class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
