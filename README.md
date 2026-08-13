@@ -2,7 +2,7 @@
 
 ![GitHub Actions](https://img.shields.io/github/actions/workflow/status/frostpolaris1/yiban-auto-sign/signin.yml?label=Actions&logo=github)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)
 
 > 易班（yiban）是很多高校学生用的校园社交平台，部分学校要求每天早晨进行「早操签到」打卡。
 >
@@ -12,7 +12,8 @@
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预
 - 🔐 **真实 App 登录特征**：登录流程复刻解包版 KillYiBan（UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
-- 🖥️ **TUI 面板**（服务器端）：SSH 登录后输入 `yiban` 即可打开——账号列表（序号/状态/名称）、签到日志、随机延迟开关、连通性检测、服务器时间一屏掌控
+- 🖥️ **网页管理后台**：管理员在任意设备（手机/平板/电脑）登录管理——账号 CRUD/排序/手动签到、审核用户提交的账号、用户管理与权限分级、批量操作、全局公告、签到日志与日历
+- 🗄️ **SQLite 数据库存储**：账号与用户数据存于 SQLite（0.17+）——多人同时操作不互相覆盖、手机号全局唯一有保障；关键管理操作自动审计留痕
 - 📍 **智能定位**：在签到范围内生成随机定位点，模拟真实 GPS（缩放质心算法）
 - 👥 **多账号支持**：一个仓库管理多个易班账号，顺序执行 + 队列重试（失败账号放队尾分散重试，风控类≤2次/其他≤4次）
 - 🔔 **消息通知**：签到失败时推送通知（Server 酱 / Bark / 企业微信等）
@@ -26,6 +27,8 @@
 - [⏰ 定时执行](#-定时执行)
 - [🔧 配置说明](#-配置说明)
 - [🖥️ 服务器部署（进阶）](#️-服务器部署进阶)
+- [👥 网页系统使用指南](#-网页系统使用指南)
+- [🗄️ 数据存储与备份（0.17+）](#️-数据存储与备份017)
 - [🧠 工作原理](#-工作原理)
 - [❓ 常见问题](#-常见问题)
 - [⚠️ 注意事项](#-注意事项)
@@ -478,8 +481,8 @@ echo -e "YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD=你的密码" >> .env
 # 3. 启动（默认端口 17892，--port 可改）
 python3 -m web
 # 生产建议用 systemd + gunicorn 常驻（禁止 werkzeug dev server 公网直连）：
-#   详见 docs/web-console/resources.md「生产部署安全基线」与 DEPLOY-CHECKLIST.md
 #   systemd 单元模板：web/deploy/yiban-web.service
+#   （部署细节见下方「🖥️ 服务器部署（进阶）」章节）
 ```
 
 浏览器访问 `http://服务器IP:17892`：
@@ -501,6 +504,51 @@ python3 -m web
 | 维护 | 配置后免维护 | 需维护服务器 |
 
 </details>
+
+---
+
+## 👥 网页系统使用指南
+
+部署完成后，浏览器访问 `http://服务器IP:17892`（或经 nginx 反代的 HTTPS 域名）：
+
+**普通用户**（详细版见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)）：
+1. 邮箱注册 → 登录
+2. 「提交我的易班账号」：填写名称、易班手机号、密码、设备信息（学校开启设备绑定时必填）
+3. 等待管理员审核；审核不通过会显示拒绝理由，修改后可重新提交
+4. 查看「签到情况」与「签到日历」（✅ 成功 / ❌ 失败 / ➖ 周日休息）
+
+**管理员**（.env 配置的账号登录）：
+- **账号管理**：添加/编辑（手机号唯一、密码留空=不变、识别码可一键清除）/软删除（7 天可恢复）/彻底删除/上移下移排序（决定签到顺序）/手动签到（30 秒防抖）/批量操作（审核、删除、恢复）
+- **审核**：普通用户提交的账号 → 通过/拒绝（附理由）
+- **用户管理**：查看注册用户、设为/取消管理员（仅主管理员）、重置密码、清空账号、完全删除；权限分级（主管理员 / 注册管理员 / 普通用户）
+- **设置**：随机延迟开关、签到模式（列表顺序/列表随机）、全局公告、修改管理员账密
+- **日志与状态**：签到日志实时刷新（手机号打码）、今日各账号状态图标、连通性检测、服务器时间
+
+> 🔒 安全设计：登录失败限速锁定（5 次/5 分钟）、CSRF 防护、密码 scrypt 哈希、会话 HttpOnly/SameSite、列表手机号/邮箱脱敏、密码明文永不下发前端。
+
+---
+
+## 🗄️ 数据存储与备份（0.17+）
+
+从 v0.17 起，账号与用户数据存储于 **SQLite 数据库**（`yiban.db`，WAL 模式），替代早期的 JSON 文件：
+
+| 内容 | 位置 | 说明 |
+|---|---|---|
+| 易班账号（含密码/识别码，AES-GCM 密文） | `yiban.db` 的 `accounts` 表 | 手机号全局唯一；软删除保留 7 天可恢复 |
+| 网站用户（邮箱/密码哈希/角色） | `yiban.db` 的 `users` 表 | scrypt 哈希存储 |
+| 管理操作审计 | `yiban.db` 的 `audit_logs` 表 | 账号增删改/审核/批量/用户管理自动留痕，保留 180 天 |
+| 每日签到状态 | `/var/log/yiban/sign-daily-*.json` | 日历展示用，不入库 |
+
+**审计查询**（服务器上）：
+```bash
+sqlite3 /opt/yiban-auto-sign/yiban.db "SELECT ts, username, action, target FROM audit_logs ORDER BY id DESC LIMIT 20"
+```
+
+**备份**：`scripts/backup.sh`（每日 cron 02:00）——`sqlite3 .backup` 一致性快照 + 加密密钥 + 异机加密副本 + 30 天保留；恢复演练 `bash backup.sh --restore <包> <目录>`。
+
+**回滚逃生门**：`python3 scripts/db_export.py --out /tmp/export` 可将数据库导出回 JSON 格式（降级/迁移用）。
+
+> ⚠️ 加密密钥（`.env` 的 `YIBAN_ACCOUNTS_KEY`）与数据分开备份——密钥丢失 = 已加密账号密码不可恢复。
 
 ---
 
@@ -741,7 +789,14 @@ python scripts/signin.py
 
 ## 📜 License
 
-MIT License - 见 [LICENSE](LICENSE)
+**GNU Affero General Public License v3.0（AGPL-3.0）** - 见 [LICENSE](LICENSE)
+
+本项目基于以下 AGPL-3.0 项目的衍生实现，按 AGPL-3.0 条款发布：
+
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) - 多边形内随机定位点算法（缩放质心 + 射线法验证）
+- KillYiBan 模块（易班登录特征与签到流程，源自同一开发者的 Gitee 仓库）
+
+使用、修改、分发本项目时，请遵守 AGPL-3.0 条款（衍生作品须以相同许可证开源）。
 
 ---
 
@@ -752,7 +807,8 @@ MIT License - 见 [LICENSE](LICENSE)
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
 - [Auto-Test](https://github.com/) - 易班登录流程（OAuth + RSA + ydclearance）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 60 天限制破解方案
-- 原项目 KillYiBan 模块 - nightAttendance 签到流程与多边形定位算法
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）
+- 原项目 KillYiBan 模块（AGPL-3.0）- nightAttendance 签到流程与易班登录特征（源自 [OneFeiFan](https://github.com/OneFeiFan) 的 Gitee 仓库）
 
 ---
 
