@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """易班自动签到 TUI 配置工具（服务器端）。
 
 SSH 登录服务器后执行 `yiban`（或 `python3 -m tui`）即可打开面板：
@@ -16,12 +17,13 @@ SSH 登录服务器后执行 `yiban`（或 `python3 -m tui`）即可打开面板
 """
 
 import argparse
-import json
+import contextlib
 import os
 import re
 import subprocess
 import sys
 from datetime import datetime
+from typing import ClassVar
 
 import requests
 from textual import work
@@ -31,11 +33,12 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 
-# 共享加密模块（tui/ 与 scripts/ 同级；与 web/signin 共用同一密钥与密文格式）
+# 共享模块（tui/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 import account_crypto  # noqa: E402
+import db  # noqa: E402
 
 # 默认路径（与 signin.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
@@ -108,7 +111,7 @@ def write_env_int(env_path, key, value):
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8") as f:
             lines = f.read().splitlines()
-    out = [l for l in lines if not l.strip().startswith(f"{key}=")]
+    out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
     if value > 0:
         out.append(f"{key}={value}")
     with open(env_path, "w", encoding="utf-8") as f:
@@ -118,7 +121,7 @@ def write_env_int(env_path, key, value):
 class AccountForm(ModalScreen):
     """账号编辑表单：添加新账号或编辑已有账号。"""
 
-    BINDINGS = [Binding("escape", "cancel", "取消")]
+    BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel", "取消")]
 
     def __init__(self, account=None, index=None):
         super().__init__()
@@ -297,7 +300,7 @@ class YibanTuiApp(App):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("a", "add", "添加"),
         Binding("e", "edit", "编辑"),
         Binding("d", "delete", "删除"),
@@ -382,58 +385,10 @@ class YibanTuiApp(App):
 
     # ---- 数据加载与展示 ----
     def _load(self) -> None:
-        """加载 accounts.json（若存在且合法），密文字段解密为明文。"""
-        self.accounts = []
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, encoding="utf-8") as f:
-                    raw = json.load(f)
-                if isinstance(raw, list):
-                    self.accounts = [a for a in raw if isinstance(a, dict)]
-                    self._decrypt_accounts()
-            except (json.JSONDecodeError, OSError):
-                self.notify(
-                    f"配置文件 {self.config_path} 解析失败，已从空列表开始",
-                    severity="error",
-                    timeout=4,
-                )
+        """从 SQLite 加载全部账号（db 层已解密为明文）。"""
+        db.init_db(env_file=self.env_path)
+        self.accounts = db.load_accounts()
         self._refresh_table()
-
-    def _decrypt_accounts(self) -> None:
-        """把内存账号的密文敏感字段解密为明文（表单编辑/保存使用明文，加密只在落盘）。
-
-        无密钥且存在密文 → 明确报错（防静默明文化）；无密钥且仅明文 → 提示配置密钥。
-        """
-        has_cipher = any(
-            account_crypto.is_encrypted(acc.get(f))
-            for acc in self.accounts
-            for f in ("password", "phone_code")
-        )
-        if not has_cipher:
-            if self.accounts and not account_crypto.has_key(self.env_path):
-                self.notify(
-                    "未配置 YIBAN_ACCOUNTS_KEY，密码将以明文存储——强烈建议配置密钥",
-                    severity="warning",
-                    timeout=5,
-                )
-            return
-        if not account_crypto.has_key(self.env_path):
-            self.notify(
-                "账号已加密但未配置 YIBAN_ACCOUNTS_KEY，无法读取密码（请恢复密钥或重新输入）",
-                severity="error",
-                timeout=6,
-            )
-            return
-        key = account_crypto.load_key(self.env_path)
-        for acc in self.accounts:
-            phone = str(acc.get("phone", ""))
-            for f in ("password", "phone_code"):
-                if account_crypto.is_encrypted(acc.get(f)):
-                    try:
-                        acc[f] = account_crypto.decrypt_password(acc[f], key, phone)
-                    except ValueError as e:
-                        self.notify(f"账号 {phone} 解密失败: {e}", severity="error", timeout=6)
-                        acc[f] = ""  # 明确报错后置空：用户重输密码即可恢复
 
     def _display_name(self, acc, index):
         """显示名称：用户输入的名称，未填写则用默认名 账号N。"""
@@ -456,7 +411,7 @@ class YibanTuiApp(App):
             )
         self.sub_title = (
             f"共 {len(self.accounts)} 个账号 · 顺序执行（队列重试） · "
-            f"{os.path.basename(self.config_path)}"
+            f"{os.path.basename(db._db_file)}"
         )
 
     # ---- 签到日志 ----
@@ -526,7 +481,7 @@ class YibanTuiApp(App):
             gsecs.placeholder = f"秒数（默认{DEFAULT_ACCOUNT_GAP_MAX}）"
         self.sub_title = (
             f"共 {len(self.accounts)} 个账号 · 顺序执行（队列重试） · "
-            f"{os.path.basename(self.config_path)}"
+            f"{os.path.basename(db._db_file)}"
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -579,23 +534,13 @@ class YibanTuiApp(App):
 
     # ---- 保存 ----
     def action_save(self) -> None:
-        """保存账号到 accounts.json（password/phone_code AES-GCM 加密落盘），并把随机延迟写入 .env。"""
-        # 1. 账号配置：先加密敏感字段（空值/已是密文跳过），再原子写（临时文件 → os.replace）
-        key = account_crypto.load_key(self.env_path)  # 无密钥自动生成并写入 .env（0600）
-        encrypted = []
-        for acc in self.accounts:
-            out = dict(acc)
-            phone = str(acc.get("phone", ""))
-            for f in ("password", "phone_code"):
-                value = out.get(f)
-                if value and not account_crypto.is_encrypted(value):
-                    out[f] = account_crypto.encrypt_password(value, key, phone)
-            encrypted.append(out)
-        tmp = f"{self.config_path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(encrypted, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, self.config_path)  # 原子替换正式文件（原实现只写 tmp 从未替换，已修复）
+        """保存账号到 SQLite（整表替换，敏感字段 db 层加密落盘），并把随机延迟写入 .env。
+
+        ⚠️ 整表替换语义：与 web 后台并发使用时以最后一次保存为准（勿同时编辑）。
+        """
+        # 1. 账号配置：整表替换（事务内清空重插，保留 sort_order=列表顺序）
+        db.replace_accounts(self.accounts)
+        db.audit("tui", "tui_save", "", f"整表保存 {len(self.accounts)} 个账号")
         # 2. 随机延迟（开启时读秒数输入框，非法值回退默认；关闭写 0 即删除该行）
         if self.start_delay_max > 0:
             try:
@@ -615,7 +560,7 @@ class YibanTuiApp(App):
         write_env_int(self.env_path, "YIBAN_ACCOUNT_GAP_MAX", self.gap_max)
         self._refresh_settings_ui()
         self.notify(
-            f"已保存 {len(self.accounts)} 个账号 → {self.config_path}；"
+            f"已保存 {len(self.accounts)} 个账号 → yiban.db；"
             f"延迟: {'开' if self.start_delay_max > 0 else '关'}"
             f" | 间隔: {'开' if self.gap_max > 0 else '关'}（.env）",
             severity="information",
@@ -705,10 +650,9 @@ class YibanTuiApp(App):
         # 日志输出重定向到与 cron 相同的 sign.log（追加、行缓冲），
         # 否则日志被 DEVNULL 丢弃，TUI 日志区与状态图标无法更新
         log_fh = None
-        try:
+        with contextlib.suppress(OSError):
+            # 日志文件不可写时回退丢弃，不影响签到执行
             log_fh = open(self.log_path, "a", encoding="utf-8", buffering=1)
-        except OSError:
-            pass  # 日志文件不可写时回退丢弃，不影响签到执行
         try:
             subprocess.Popen(
                 [sys.executable, script, "--only", phone],

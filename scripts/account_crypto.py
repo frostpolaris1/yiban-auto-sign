@@ -1,4 +1,5 @@
 """易班账号敏感字段加密（AES-GCM）：web / signin / tui 三进程共享。
+# SPDX-License-Identifier: AGPL-3.0-only
 
 - 存储层加密：accounts.json 的 password/phone_code 为密文对象
 - 密钥：环境变量 YIBAN_ACCOUNTS_KEY → 回退 .env 同键 → 缺失时生成并持久化（0600）
