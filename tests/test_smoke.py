@@ -73,6 +73,10 @@ class SmokeTest(unittest.TestCase):
             p = self.db_file + suffix
             if os.path.exists(p):
                 os.remove(p)
+        # 清理迁移源残留：.bak 已存在时新 JSON 不再改名，会导致后续测试重复迁移
+        for n in os.listdir(self.tmp):
+            if n.startswith("accounts.json.bak-") or n.startswith("users.json.bak-"):
+                os.remove(os.path.join(self.tmp, n))
 
     def _write_accounts(self, accounts):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
@@ -125,6 +129,22 @@ class SmokeTest(unittest.TestCase):
         self.assertTrue(account_crypto.is_encrypted(json.loads(row["password"])))
         # load 后业务层为明文
         self.assertEqual(db.load_accounts()[0]["password"], "new-pass")
+
+    def test_migration_cipher_dict_format(self):
+        """0.16 生产格式：accounts.json 密文为 JSON 嵌套对象（dict）——迁移须序列化入库。"""
+        key = account_crypto._decode_key(TEST_KEY)
+        ct_obj = account_crypto.encrypt_password("cipher-pass", key, "13600136000")
+        self._write_accounts([
+            {"name": "密文账号", "phone": "13600136000", "password": ct_obj,  # dict 密文对象
+             "phone_model": "X1", "status": "active", "owner": "admin"},
+        ])
+        self._init_db()
+        accounts = db.load_accounts()
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(accounts[0]["password"], "cipher-pass")  # 解密为明文
+        conn = db.get_conn()
+        row = conn.execute("SELECT password FROM accounts WHERE phone='13600136000'").fetchone()
+        self.assertTrue(account_crypto.is_encrypted(json.loads(row["password"])))  # 库内 JSON 串
 
     # ---- 3. 登录/权限基础（轻量：直接验证 verify_admin 兼容路径）----
     def test_admin_verify_plain_fallback(self):

@@ -131,7 +131,10 @@ def _maybe_migrate(conn, json_base):
         except (json.JSONDecodeError, OSError):
             accounts = []
         if isinstance(accounts, list) and accounts:
-            # 加密字段：明文 → 密文（复用 account_crypto）；已是密文（dict 或 JSON 串）原样入库
+            # 加密字段统一为库内 JSON 串格式：
+            #   明文 str → 加密（复用 account_crypto）；
+            #   密文 dict（0.16 JSON 嵌套对象）→ json.dumps 序列化；
+            #   密文 JSON 串 → 原样。
             try:
                 import account_crypto
             except ImportError:
@@ -144,8 +147,12 @@ def _maybe_migrate(conn, json_base):
                     if key is not None:
                         if password and not _is_encrypted_value(password):
                             password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
+                        elif isinstance(password, dict):
+                            password = json.dumps(password)  # 已是密文对象 → 序列化入库
                         if phone_code and not _is_encrypted_value(phone_code):
                             phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
+                        elif isinstance(phone_code, dict):
+                            phone_code = json.dumps(phone_code)
                     conn.execute(
                         "INSERT OR IGNORE INTO accounts "
                         "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
