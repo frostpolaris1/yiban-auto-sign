@@ -32,6 +32,8 @@ from datetime import datetime
 from hashlib import md5
 from urllib.parse import urlencode, urlsplit
 
+# 共享加密模块（同目录）：web/tui 存储层加密落盘的 accounts.json 在此解密
+import account_crypto
 import requests
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
@@ -245,9 +247,32 @@ def _sanitize_text(text):
 # 账号配置加载
 # ---------------------------------------------------------------------------
 def _parse_account_dict(data):
-    """将账号 JSON 对象解析为 Account，校验必填字段。"""
+    """将账号 JSON 对象解析为 Account，校验必填字段。
+
+    password/phone_code 支持 AES-GCM 密文对象（web/tui 存储层加密落盘，
+    accounts.json 内为密文，解密依赖同一密钥：环境变量 YIBAN_ACCOUNTS_KEY
+    → .env 同键；密钥缺失/解密失败抛明确错误，绝不静默使用错误数据）。
+    """
     phone = str(data.get("phone") or data.get("account") or "").strip()
-    password = str(data.get("password") or data.get("pwd") or "").strip()
+    password = data.get("password") or data.get("pwd") or ""
+    phone_code = data.get("phone_code") or ""
+    if account_crypto.is_encrypted(password) or account_crypto.is_encrypted(phone_code):
+        if not account_crypto.has_key():
+            raise RuntimeError(
+                "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 中配置或恢复密钥备份）"
+            )
+        key = account_crypto.load_key()
+        if account_crypto.is_encrypted(password):
+            try:
+                password = account_crypto.decrypt_password(password, key, phone)
+            except ValueError as e:
+                raise RuntimeError(f"账号 {phone} 密码解密失败: {e}") from e
+        if account_crypto.is_encrypted(phone_code):
+            try:
+                phone_code = account_crypto.decrypt_password(phone_code, key, phone)
+            except ValueError as e:
+                raise RuntimeError(f"账号 {phone} 设备识别码解密失败: {e}") from e
+    password = str(password).strip()
     if not phone or not password:
         # 异常消息只带 phone（登录名，非机密），绝不包含 password 明文
         missing = "phone" if not phone else "password"
@@ -256,7 +281,7 @@ def _parse_account_dict(data):
         phone=phone,
         password=password,
         phone_model=str(data.get("phone_model") or "").strip(),
-        phone_code=str(data.get("phone_code") or "").strip(),
+        phone_code=str(phone_code).strip(),
         name=str(data.get("name") or "").strip(),
     )
 

@@ -33,6 +33,12 @@ import requests
 from flask import Flask, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
+# 共享加密模块（web/ 与 scripts/ 同级；与 signin.py / tui/app.py 共用同一密钥与密文格式）
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import account_crypto  # noqa: E402
+
 # 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
 # 按日状态文件目录（signin.py 写入 sign-daily-YYYY-MM-DD.json，网页日历读取）
@@ -40,6 +46,12 @@ STATE_DIR_DEFAULT = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
 LOG_DEFAULT = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
 ENV_DEFAULT = os.environ.get("YIBAN_ENV_FILE", ".env")
 USERS_DEFAULT = os.environ.get("YIBAN_USERS_FILE", "users.json")
+# 模块级路径（gunicorn 走 create_app() 不执行 main()，需在此初始化；main() 用 --config 等参数覆盖）
+ACCOUNTS_FILE = ACCOUNTS_DEFAULT
+LOG_FILE = LOG_DEFAULT
+ENV_FILE = ENV_DEFAULT
+USERS_FILE = USERS_DEFAULT
+STATE_DIR = STATE_DIR_DEFAULT
 
 # 普通用户账号的审核状态
 STATUS_PENDING = "pending"  # 待审核（不参与定时签到）
@@ -249,13 +261,59 @@ def _invalidate_caches():
     _users_cache[0] = None
 
 
+# 敏感字段（存储层加密：落盘为 AES-GCM 密文对象，业务层始终使用明文）
+_SENSITIVE_FIELDS = ("password", "phone_code")
+
+
+def _account_has_plain_sensitive(acc):
+    """账号是否含明文敏感字段（非空且非密文对象）——自动迁移判定用。"""
+    return any(
+        acc.get(f) and not account_crypto.is_encrypted(acc.get(f))
+        for f in _SENSITIVE_FIELDS
+    )
+
+
+def _account_has_cipher_sensitive(acc):
+    """账号是否含密文敏感字段——解密判定用。"""
+    return any(account_crypto.is_encrypted(acc.get(f)) for f in _SENSITIVE_FIELDS)
+
+
+def _encrypt_account_fields(acc, key):
+    """把账号的明文敏感字段加密为密文对象（已是密文/空值跳过），返回新 dict。"""
+    out = dict(acc)
+    phone = str(acc.get("phone", ""))
+    for f in _SENSITIVE_FIELDS:
+        value = out.get(f)
+        if value and not account_crypto.is_encrypted(value):
+            out[f] = account_crypto.encrypt_password(value, key, phone)
+    return out
+
+
+def _decrypt_account_fields(acc, key):
+    """把账号的密文敏感字段解密为明文（明文原样保留），返回新 dict。
+
+    解密失败（密钥不匹配/密文被篡改/手机号不匹配）抛 ValueError——不静默。
+    """
+    out = dict(acc)
+    phone = str(acc.get("phone", ""))
+    for f in _SENSITIVE_FIELDS:
+        if account_crypto.is_encrypted(out.get(f)):
+            out[f] = account_crypto.decrypt_password(out[f], key, phone)
+    return out
+
+
 def load_accounts():
-    """读取 accounts.json，返回账号 dict 列表；文件缺失/非法返回 []。
+    """读取 accounts.json，返回账号 dict 列表（password/phone_code 为明文）；文件缺失/非法返回 []。
+
+    存储层加密：盘上密文在此解密后返回给业务层；明文原样返回。
+    自动迁移：读盘发现明文敏感字段且已配置密钥 → 解密读取 + 加密写回（幂等，一次完成）；
+    未配置密钥 → 明文兼容 + warning 提示。
+    解密失败/密文但无密钥 → 抛 AccountCryptoError（明确错误，不静默崩溃）。
 
     惰性清理：软删除超过保留期的账号在此物理清除（缓存刷新时执行，最多延迟 TTL）。
     """
     with _file_lock:
-        accounts, _fresh = _cache_get(_accounts_cache, ACCOUNTS_FILE)
+        accounts, fresh = _cache_get(_accounts_cache, ACCOUNTS_FILE)
         expired = [
             a for a in accounts if a.get("deleted") and _deleted_expired(a.get("deleted_at", ""))
         ]
@@ -264,6 +322,27 @@ def load_accounts():
             accounts = [a for a in accounts if id(a) not in expired_ids]
             _atomic_write(ACCOUNTS_FILE, json.dumps(accounts, ensure_ascii=False, indent=2) + "\n")
             _accounts_cache[0] = (accounts, time.time())
+        # 自动迁移（仅真实读盘时判定，缓存命中不重复触发）：明文 → 密文，一次完成
+        # 无密钥时 load_key() 自动生成并持久化到 .env（chmod 600），不保留明文降级
+        if fresh and any(_account_has_plain_sensitive(a) for a in accounts):
+            key = account_crypto.load_key(ENV_FILE)
+            encrypted = [_encrypt_account_fields(a, key) for a in accounts]
+            _atomic_write(
+                ACCOUNTS_FILE, json.dumps(encrypted, ensure_ascii=False, indent=2) + "\n"
+            )
+            _accounts_cache[0] = (accounts, time.time())  # 缓存保持明文（业务层视角）
+            logger.info("检测到 accounts.json 明文密码，已自动迁移为 AES-GCM 加密存储")
+        # 解密密文字段（缓存内容可能来自盘上密文，每次读取统一解密）
+        if any(_account_has_cipher_sensitive(a) for a in accounts):
+            if not account_crypto.has_key(ENV_FILE):
+                raise AccountCryptoError(
+                    "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
+                )
+            key = account_crypto.load_key(ENV_FILE)
+            try:
+                accounts = [_decrypt_account_fields(a, key) for a in accounts]
+            except ValueError as e:
+                raise AccountCryptoError(str(e)) from e
         return accounts
 
 
@@ -288,15 +367,18 @@ def _deleted_expired(deleted_at):
 
 
 def save_accounts(accounts):
-    """原子写 accounts.json（密码明文只落盘，永不出现在 API 响应中）。
+    """原子写 accounts.json（password/phone_code 以 AES-GCM 密文落盘，业务层始终明文）。
 
     accounts.json 解析失败（损坏）时拒绝写入：防止管理员保存操作覆盖丢失全部数据。
+    未配置 YIBAN_ACCOUNTS_KEY 时自动生成并持久化（load_key），密钥与数据分文件存放。
     """
     with _file_lock:
         if ACCOUNTS_FILE in _load_failed_paths:
             raise DataFileError("accounts.json 解析失败，已拒绝保存以防数据丢失（请修复文件后重试）")
-        _atomic_write(ACCOUNTS_FILE, json.dumps(accounts, ensure_ascii=False, indent=2) + "\n")
-        _accounts_cache[0] = (accounts, time.time())  # 写后缓存直接更新，避免立即回读
+        key = account_crypto.load_key(ENV_FILE)  # 无密钥自动生成（幂等：已有则复用）
+        encrypted = [_encrypt_account_fields(a, key) for a in accounts]
+        _atomic_write(ACCOUNTS_FILE, json.dumps(encrypted, ensure_ascii=False, indent=2) + "\n")
+        _accounts_cache[0] = (accounts, time.time())  # 写后缓存直接更新（明文），避免立即回读
 
 
 def load_users():
@@ -348,6 +430,10 @@ def _password_policy_error(password):
 
 class DataFileError(Exception):
     """数据文件解析失败保护：文件损坏（无法解析）时拒绝写入，防止覆盖丢失全部数据。"""
+
+
+class AccountCryptoError(Exception):
+    """账号密文处理失败（解密失败/密钥缺失）：数据不可用，拒绝继续，避免静默明文化。"""
 
 
 # 解析失败的文件路径集合：save_accounts/save_users 保存前检查，命中则拒绝写入
@@ -544,7 +630,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.15.1"
+APP_VERSION = "0.16.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -735,6 +821,12 @@ def create_app():
     @app.errorhandler(DataFileError)
     def _handle_data_file_error(e):
         logger.critical("拒绝写入数据文件: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+    # ---- 账号密文失败保护：解密失败/密钥缺失 → 明确 500（防静默以明文或错误数据运行）----
+    @app.errorhandler(AccountCryptoError)
+    def _handle_account_crypto_error(e):
+        logger.error("账号密文处理失败: %s", e)
         return jsonify({"error": str(e)}), 500
 
     # ---- 认证 API ----
@@ -1064,6 +1156,24 @@ def create_app():
             if old.get("deleted"):
                 return jsonify({"error": "账号已删除，请先恢复"}), 400
             data = request.get_json(silent=True) or {}
+            # 乐观锁（L9 轻量版）：请求携带编辑打开时的账号快照（JSON 字符串），
+            # 与当前值不一致 → 409，防多管理员/多标签页并发编辑互相覆盖
+            snapshot_raw = data.get("_snapshot") or ""
+            if snapshot_raw:
+                try:
+                    snapshot = json.loads(snapshot_raw) if isinstance(snapshot_raw, str) else snapshot_raw
+                except json.JSONDecodeError:
+                    snapshot = None
+                if isinstance(snapshot, dict):
+                    current = {
+                        "name": old.get("name", ""),
+                        "phone": old.get("phone", ""),
+                        "phone_model": old.get("phone_model", ""),
+                        "status": old.get("status", STATUS_ACTIVE),
+                        "deleted": bool(old.get("deleted")),
+                    }
+                    if current != snapshot:
+                        return jsonify({"error": "账号已被其他管理员修改，请刷新后重试"}), 409
             err, clean = validate_account(data, require_password=False)
             if err:
                 return jsonify({"error": err}), 400
@@ -1840,6 +1950,9 @@ def create_app():
         env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
         # 子进程读取与主进程相同的账号文件（--config 自定义路径时保持一致）
         env["YIBAN_ACCOUNTS_FILE"] = ACCOUNTS_FILE
+        # 解密 accounts.json 需要同一密钥：显式注入（--env 自定义路径时保证一致）
+        if account_crypto.has_key(ENV_FILE) and not env.get("YIBAN_ACCOUNTS_KEY"):
+            env["YIBAN_ACCOUNTS_KEY"] = account_crypto.load_key(ENV_FILE).hex()
         log_fh = None
         from contextlib import suppress
 

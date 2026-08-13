@@ -225,7 +225,7 @@ YIBAN_ACCOUNT_GAP_MAX=10
 - 服务器端可用 TUI 工具自动生成此文件：`python3 -m tui`
 - 检查配置（不发送任何请求）：`python scripts/signin.py --check-config`
 
-> ⚠️ `accounts.json` 包含明文密码，已被 `.gitignore` 排除，请勿提交到仓库。
+> ⚠️ 通过网页/TUI 保存的 `accounts.json`，其中 `password` / `phone_code` 为 **AES-GCM 密文对象**（非明文，`.gitignore` 已排除该文件）。解密密钥 `YIBAN_ACCOUNTS_KEY` 自动生成在 `.env`（chmod 600）：**密钥丢失 = 已加密账号密码不可恢复**，备份数据时必须连同 `.env` 一起备份（建议与数据分开放、分开打包）。
 
 ### 消息通知（可选）
 
@@ -477,7 +477,9 @@ echo -e "YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD=你的密码" >> .env
 
 # 3. 启动（默认端口 17892，--port 可改）
 python3 -m web
-# 生产建议用 systemd 或 nohup 常驻：nohup python3 -m web >> /var/log/yiban/web.log 2>&1 &
+# 生产建议用 systemd + gunicorn 常驻（禁止 werkzeug dev server 公网直连）：
+#   详见 docs/web-console/resources.md「生产部署安全基线」与 DEPLOY-CHECKLIST.md
+#   systemd 单元模板：web/deploy/yiban-web.service
 ```
 
 浏览器访问 `http://服务器IP:17892`：
