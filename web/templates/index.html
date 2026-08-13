@@ -291,7 +291,7 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六）</div>
     </div>
 
     <!-- 批量操作开关 -->
@@ -311,7 +311,7 @@
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到模式</div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">列表顺序：按账号管理列表顺序执行；列表随机：每次签到随机打乱顺序（进一步打散脚本特征，防风控识别）。写入配置，cron 下次触发自动生效</p>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">列表顺序：按账号管理列表顺序执行；列表随机：每次签到随机打乱顺序（进一步打散脚本特征，防风控识别）。保存后下次自动签到时生效</p>
         </div>
         <select id="sign-mode-select"
                 class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
@@ -323,7 +323,7 @@
 
     <!-- 随机延迟 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-4">随机延迟（写入 .env，cron 下次触发自动生效）</div>
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-4">随机延迟（保存后下次自动签到时生效）</div>
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
           <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
