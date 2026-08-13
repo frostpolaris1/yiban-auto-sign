@@ -33,6 +33,28 @@
   }
   pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
 </style>
+<style type="text/tailwindcss">
+  /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
+  @layer components {
+    .input {
+      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2;
+    }
+    .input-sm { @apply px-3 py-1.5; }
+    .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-all duration-200; }
+    .btn-primary {
+      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
+    }
+    .btn-ghost {
+      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200;
+    }
+    .card {
+      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6;
+    }
+    .card-sm {
+      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4;
+    }
+  }
+</style>
 </head>
 <body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen overscroll-y-none">
 
@@ -60,7 +82,7 @@
 </div>
 
   <!-- 我的账号与运行情况 -->
-  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
+  <section class="card mb-6">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h2>
       <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">
@@ -81,7 +103,7 @@
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700"></div>
 
   <!-- 提交账号 -->
-  <section id="account-form-section" class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
+  <section id="account-form-section" class="card mb-6">
     <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">提交我的易班账号</h2>
     <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号，可编辑或删除后重新提交。</p>
     <div id="submit-done" class="hidden mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
@@ -116,7 +138,7 @@
                 class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
       </div>
       <div class="md:col-span-2 flex items-center gap-3 pt-1">
-        <button id="account-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+        <button id="account-submit-btn" type="submit" class="btn-primary">提交账号</button>
         <button id="cancel-edit-btn" type="button" onclick="cancelEdit()"
                 class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
         <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
@@ -125,7 +147,7 @@
   </section>
 
   <!-- 修改密码（默认收起，点击标题展开） -->
-  <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+  <section class="card">
     <button type="button" onclick="togglePassword()" aria-expanded="false"
             class="w-full flex items-center justify-between text-left">
       <span class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">修改密码</span>
@@ -137,20 +159,20 @@
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
           <input id="p-old" type="password" required placeholder="输入当前密码"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+                 class="input">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 10 位，含两类字符）</label>
           <input id="p-new" type="password" required placeholder="新密码"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+                 class="input">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">确认新密码</label>
           <input id="p-confirm" type="password" required placeholder="再次输入新密码"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+                 class="input">
         </div>
         <div class="flex items-center gap-3">
-          <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
+          <button type="submit" class="btn-primary">保存新密码</button>
           <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
       </form>

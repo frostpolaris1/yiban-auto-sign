@@ -33,6 +33,28 @@
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
   }
 </style>
+<style type="text/tailwindcss">
+  /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
+  @layer components {
+    .input {
+      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2;
+    }
+    .input-sm { @apply px-3 py-1.5; }
+    .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-all duration-200; }
+    .btn-primary {
+      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
+    }
+    .btn-ghost {
+      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200;
+    }
+    .card {
+      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6;
+    }
+    .card-sm {
+      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4;
+    }
+  }
+</style>
 </head>
 <body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4 overscroll-y-none">
   <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
@@ -44,7 +66,7 @@
 </div>
 
     <!-- 登录/注册卡片 -->
-    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+    <div class="card">
       <!-- Tab 切换 -->
       <div class="flex bg-zinc-100 dark:bg-zinc-700 rounded-lg p-1 mb-5 text-sm font-medium">
         <button id="tab-login" onclick="switchMode('login')"
@@ -59,13 +81,13 @@
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="username">邮箱</label>
           <input id="username" name="username" type="text" required autocomplete="username"
                  placeholder="输入邮箱"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+                 class="input input-ring">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="password">密码</label>
           <input id="password" name="password" type="password" required autocomplete="current-password"
                  placeholder="输入密码"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+                 class="input input-ring">
         </div>
         <div id="error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="login-btn"
@@ -80,14 +102,14 @@
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-email">邮箱 <span class="text-red-500 dark:text-red-400">*</span></label>
           <input id="reg-email" type="email" required autocomplete="email" maxlength="64"
                  placeholder="输入邮箱地址"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+                 class="input input-ring">
           <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">邮箱格式不正确（示例：name@example.com）</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
           <input id="reg-password" type="password" required autocomplete="new-password"
                  placeholder="至少 10 位，含两类字符"
-                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+                 class="input input-ring">
           <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且含字母/数字/符号中至少两类</p>
         </div>
         <label class="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">
@@ -326,7 +348,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
       <p>本协议可能随服务更新而修改，更新后继续使用即视为同意新协议。注册账号即表示你已阅读并同意以上全部条款。如你不同意本协议，请立即停止使用本服务。</p>
     </div>
     <div class="flex justify-end mt-4">
-      <button onclick="closeAgreement()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">我知道了</button>
+      <button onclick="closeAgreement()" class="btn-primary">我知道了</button>
     </div>
   </div>
 </div>
