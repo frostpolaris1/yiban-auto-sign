@@ -88,7 +88,7 @@
           <input id="reg-password" type="password" required autocomplete="new-password"
                  placeholder="至少 6 位"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
-          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 6 位（当前 0 位）</p>
+          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且含字母/数字/符号中至少两类</p>
         </div>
         <label class="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">
           <input id="reg-agree" type="checkbox" class="mt-0.5 w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 accent-blue-500">
@@ -227,9 +227,11 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
       return;
     }
     // 提交前兜底：字段级即时校验优先（错误显示在字段下方，不弹顶部错误框）
+    // 与后端 _password_policy_error 对齐：至少 10 位 + 大写/小写/数字/符号中至少两类
     const emailInvalid = !(EMAIL_RE.test(email) && email.length <= 64);
     markField(regEmail, regEmailErr, emailInvalid);
-    const pwInvalid = password.length < 6;
+    const pwClasses = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(password)).length;
+    const pwInvalid = password.length < 10 || pwClasses < 2;
     markField(regPw, regPwErr, pwInvalid);
     if (emailInvalid || pwInvalid) {
       btn.disabled = false;
