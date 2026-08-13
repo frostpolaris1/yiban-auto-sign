@@ -206,6 +206,11 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// JS 模板字面量上下文转义：防用户可控数据（如账号名称）中的 `${...}`/反引号被误执行（与 index.html 一致）
+function jsEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+}
+
 // 审核状态徽章
 function statusBadge(status) {
   if (status === 'pending') return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5">待审核</span>';
@@ -457,7 +462,7 @@ $('account-form').addEventListener('submit', async (e) => {
 // 删除
 async function deleteAccount(i) {
   const a = accounts[i];
-  if (!confirm(`确定删除「${a.display_name}」(${a.phone}) 吗？`)) return;
+  if (!confirm(`确定删除「${jsEscape(a.display_name)}」(${a.phone}) 吗？`)) return;
   try {
     await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
     toast('已删除');
@@ -468,7 +473,7 @@ async function deleteAccount(i) {
 // 移除被管理员软删除的账号记录：释放一人一号名额，移除后提交表单重新出现
 async function removeDeletedAccount(i) {
   const a = accounts[i];
-  if (!confirm(`确定移除「${a.display_name}」(${a.phone}) 的删除记录吗？移除后可重新提交新账号。`)) return;
+  if (!confirm(`确定移除「${jsEscape(a.display_name)}」(${a.phone}) 的删除记录吗？移除后可重新提交新账号。`)) return;
   try {
     await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
     toast('已移除记录');
