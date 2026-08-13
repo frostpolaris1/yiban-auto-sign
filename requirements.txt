@@ -1,7 +1,6 @@
 # 易班自动签到依赖
 requests>=2.31.0
 pycryptodome>=3.19.0
-js2py>=0.74
 # 可选：YIBAN_PROXY 使用 socks5 代理时需要
 PySocks>=1.7.1
 # TUI 配置工具（服务器端 python3 -m tui 使用）
