@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Python 依赖：requirements.txt 下限更新 + requirements.lock 精确版本更新
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: daily
+  # GitHub Actions：锁定 action 版本更新（配合 workflow 中固定 commit SHA 使用）
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
