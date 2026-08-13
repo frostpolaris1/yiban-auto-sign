@@ -91,6 +91,35 @@ def _constant_time_dummy(password):
         _dummy_pw_hash = generate_password_hash("dummy-placeholder", method=SCRYPT_METHOD)
     check_password_hash(_dummy_pw_hash, password)
 
+
+# 可信第一跳代理（nginx 反代）：仅当请求来自这些地址时才信任转发头。
+# 生产部署：yiban-web 监听 127.0.0.1，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`
+# 覆盖设置（客户端伪造的 XFF 会被丢弃），故此处读取的 XFF 即真实客户端 IP。
+TRUSTED_PROXIES = ("127.0.0.1", "::1")
+
+
+def _json_body():
+    """安全解析 JSON 请求体：非 dict（数组/数字/字符串/null）一律视为空对象，
+    防 `.get()` AttributeError 导致 500（模糊测试：body=[1,2,3] / 42 → 500）。"""
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _client_ip():
+    """真实客户端 IP（限速/锁定/审计按真实 IP 隔离，防反代后全站共享同一桶）。
+
+    - 反代场景：remote_addr 为代理地址且第一跳可信 → 取 X-Forwarded-For 首个值（nginx 已覆盖，不可伪造）；
+    - 直连场景（无转发头/首跳不可信）：回退 remote_addr。
+    注意：本函数假设应用不直接暴露公网（17892 仅监听回环 + 防火墙放行 22/443）。
+    """
+    r = request.remote_addr or "?"
+    if r in TRUSTED_PROXIES:
+        xff = request.headers.get("X-Forwarded-For", "")
+        first = xff.split(",")[0].strip() if xff else ""
+        if first and first != r:
+            return first
+    return r
+
 # 随机延迟默认上限（与 signin.py 一致）
 DEFAULT_START_DELAY_MAX = 60
 DEFAULT_ACCOUNT_GAP_MAX = 10
@@ -536,7 +565,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.17.2"
+APP_VERSION = "0.17.3"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -552,6 +581,8 @@ def create_app():
     app.config["SESSION_COOKIE_NAME"] = "yiban_admin"
     app.config["SESSION_COOKIE_HTTPONLY"] = True  # JS 不可读 session cookie（防 XSS 窃取）
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"  # 跨站请求不携带 cookie（防 CSRF）
+    # Secure 标志由部署层保证：nginx 反代配置 `proxy_cookie_flags yiban_admin secure`（生产 HTTPS）；
+    # 不在应用层强制，避免本机 HTTP 直连演示（localhost）登录失效
     app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 30  # 30 天
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 请求体上限 64KB
 
@@ -580,7 +611,7 @@ def create_app():
     # ---- 全局限速：防疯狂刷新/脚本轰炸（所有请求，含页面与 API）----
     @app.before_request
     def rate_limit():
-        ip = request.remote_addr or "?"
+        ip = _client_ip()
         now = time.time()
         _ip_store_trim(_rate_limits, _IP_STORE_MAX_AGE)
         cnt, start = _rate_limits.get(ip, (0, now))
@@ -652,7 +683,7 @@ def create_app():
             if not _is_same_origin():
                 logger.warning(
                     "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
-                    request.remote_addr,
+                    _client_ip(),
                     request.path,
                     request.headers.get("Origin"),
                 )
@@ -663,7 +694,7 @@ def create_app():
         if not token or not secrets.compare_digest(token, sess_token):
             logger.warning(
                 "CSRF 校验失败: ip=%s path=%s token_len=%d session_token_len=%d",
-                request.remote_addr,
+                _client_ip(),
                 request.path,
                 len(token),
                 len(sess_token),
@@ -696,7 +727,7 @@ def create_app():
     @app.route("/login")
     def login_page():
         if session.get("auth"):
-            ip = request.remote_addr or "?"
+            ip = _client_ip()
             now = time.time()
             _ip_store_trim(_login_loop, 60)
             cnt, first = _login_loop.get(ip, (0, now))
@@ -738,9 +769,9 @@ def create_app():
     @app.route("/api/login", methods=["POST"])
     def api_login():
         """登录：管理员（.env 配置）或普通用户（users.json 注册）。返回 role。"""
-        ip = request.remote_addr or "?"
+        ip = _client_ip()
         now = time.time()
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         username = str(
             data.get("username", "")
         ).strip()  # 管理员用户名保持原样；邮箱仅用户登录时小写
@@ -811,7 +842,7 @@ def create_app():
 
         邮箱格式校验；邮箱全局唯一；不做验证码服务。无昵称体系（一人一号，账号备注名在账号表单中填写）。
         """
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
         if len(email.split("@")[0]) > EMAIL_USER_MAX:
@@ -822,7 +853,7 @@ def create_app():
         if pw_err:
             return jsonify({"error": pw_err}), 400
         # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
-        ip = request.remote_addr or "?"
+        ip = _client_ip()
         now = time.time()
         _ip_store_trim(_register_limits, REGISTER_WINDOW)
         rcnt, rstart = _register_limits.get(ip, (0, now))
@@ -863,7 +894,7 @@ def create_app():
         失败计数与登录共用限速：达阈值（LOGIN_MAX_FAILS）锁定，超阈值返回 429；
         旧会话失效由 pw_version 递增实现（_effective_role 实时校验）。
         """
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         old_password = str(data.get("old_password", ""))
         new_password = str(data.get("new_password", ""))
         if new_password != str(data.get("confirm_password", "")):
@@ -872,7 +903,7 @@ def create_app():
         if pw_err:
             return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
         username = session.get("username", "")
-        ip = request.remote_addr or "?"
+        ip = _client_ip()
         now = time.time()
         # 失败计数键与登录一致：按 (IP, 用户名) 组合
         fail_key = (ip, username.strip().lower())
@@ -989,7 +1020,7 @@ def create_app():
           邮箱未注册时自动创建网站用户（生成临时密码，需告知用户）。
         """
         # 操作级锁：手机号唯一/每人限 1/自动注册检查与写入原子（防并发重复添加与覆盖丢失）
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         err, clean = validate_account(data, require_password=True)
         if err:
             return jsonify({"error": err}), 400
@@ -1066,7 +1097,7 @@ def create_app():
             # 软删除账号禁止编辑（防编辑流程绕过软删除，恢复需走 restore 接口）
             if old.get("deleted"):
                 return jsonify({"error": "账号已删除，请先恢复"}), 400
-            data = request.get_json(silent=True) or {}
+            data = _json_body()
             # 乐观锁：请求携带编辑打开时的账号快照（JSON 字符串），与库内当前值
             # 不一致 → db 返回 False → 409，防多管理员/多标签页并发编辑互相覆盖
             snapshot = None
@@ -1130,7 +1161,7 @@ def create_app():
         """
         with _file_lock:
             accounts = load_accounts()
-            data = request.get_json(silent=True) or {}
+            data = _json_body()
             action = data.get("action")
             ids = data.get("ids") or []
             if action not in ("approve", "reject", "purge", "restore", "delete"):
@@ -1319,7 +1350,7 @@ def create_app():
             accounts = load_accounts()
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
-            action = (request.get_json(silent=True) or {}).get("action")
+            action = (_json_body()).get("action")
             acc = accounts[idx]
             if action == "approve":
                 # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
@@ -1339,7 +1370,7 @@ def create_app():
                     return jsonify({"error": "该账号无需拒绝"}), 400
                 # 理由清洗：换行/控制字符 → 空格（防日志注入伪造日志行）
                 reason = (
-                    str((request.get_json(silent=True) or {}).get("reason", ""))
+                    str((_json_body()).get("reason", ""))
                     .strip()[:100]
                     .replace("\r", " ")
                     .replace("\n", " ")
@@ -1368,7 +1399,7 @@ def create_app():
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
             try:
-                direction = int((request.get_json(silent=True) or {}).get("dir", 0))
+                direction = int((_json_body()).get("dir", 0))
             except (TypeError, ValueError):
                 return jsonify({"error": "无法移动"}), 400
             if direction not in (-1, 1):
@@ -1476,7 +1507,7 @@ def create_app():
             has_live = any(a.get("owner") == email and not a.get("deleted") for a in accounts)
             if has_live:
                 return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
-            data = request.get_json(silent=True) or {}
+            data = _json_body()
             err, clean = validate_account(data, require_password=True)
             if err:
                 return jsonify({"error": err}), 400
@@ -1569,7 +1600,7 @@ def create_app():
             # 软删除账号禁止编辑（防编辑流程绕过软删除；恢复由管理员操作）
             if old.get("deleted"):
                 return jsonify({"error": "账号已删除，请先恢复"}), 400
-            data = request.get_json(silent=True) or {}
+            data = _json_body()
             err, clean = validate_account(data, require_password=False)
             if err:
                 return jsonify({"error": err}), 400
@@ -1715,7 +1746,7 @@ def create_app():
         """
         with _file_lock:
             users = load_users()
-            data = request.get_json(silent=True) or {}
+            data = _json_body()
             action = data.get("action")
             emails = data.get("emails") or []
             if action not in ("set_admin", "unset_admin", "reset_password", "delete"):
@@ -1810,7 +1841,7 @@ def create_app():
         username = (session.get("username") or "").strip().lower()
         if username != _builtin_admin_email():
             return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         new_role = data.get("role")
         if new_role not in ("admin", "user"):
             return jsonify({"error": "未知角色"}), 400
@@ -1862,7 +1893,7 @@ def create_app():
     @app.route("/api/users/<email>/password", methods=["POST"])
     def api_user_password(email):
         """重置用户密码（管理员无法查看原密码，只能设置新密码）。"""
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         password = str(data.get("password", ""))
         pw_err = _password_policy_error(password)
         if pw_err:
@@ -1891,7 +1922,7 @@ def create_app():
     def api_user_delete(email):
         """删除用户：mode=accounts_only 仅清空其易班账号（保留用户可重新提交）；
         mode=full 完全删除用户及其账号。"""
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         mode = data.get("mode", "full")
         if mode not in ("accounts_only", "full"):
             return jsonify({"error": "未知操作"}), 400
@@ -1931,7 +1962,7 @@ def create_app():
     @app.route("/api/signin", methods=["POST"])
     def api_signin():
         """手动签到指定账号：子进程执行 signin.py --only（与 TUI M 键一致）。"""
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         phone = str(data.get("phone", "")).strip()
         accounts = load_accounts()
         idx = find_account_index(accounts, phone)
@@ -2024,7 +2055,7 @@ def create_app():
 
     @app.route("/api/settings", methods=["POST"])
     def api_settings_save():
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         try:
             start = int(data.get("start_delay_max", 0))
             gap = int(data.get("gap_max", 0))
@@ -2068,7 +2099,7 @@ def create_app():
 
     @app.route("/api/announcement", methods=["PUT"])
     def api_announcement_save():
-        data = request.get_json(silent=True) or {}
+        data = _json_body()
         text = str(data.get("text", "")).strip()
         if len(text) > 500:  # 后端长度限制（前端 maxlength=200 可绕过，防 .env 膨胀 DoS）
             return jsonify({"error": "公告内容过长（最多 500 字）"}), 400
