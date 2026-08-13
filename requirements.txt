@@ -1,14 +1,14 @@
 # 易班自动签到依赖
 # 版本下限依据：
 #   requests>=2.32.0   CVE-2024-35195（代理凭证泄露）
-#   urllib3>=2.2.2     CVE-2024-37891（代理走私）——requests 的传递依赖，显式声明
+#   urllib3>=2.7.0     CVE-2024-37891（代理走私）——requests 的传递依赖，显式声明
 #   pycryptodome>=3.19.1  CVE-2023-52323（RSA OAEP 时序侧信道）
 #   flask>=3.1.0       Werkzeug 3.1.x 系列安全下限
 #   werkzeug>=3.1.3    CVE-2024-49766/49767（dev server DoS）
 #   js2py 已移除：CVE-2024-28397 无修复版本，代码已不再依赖
 requests>=2.32.0
 pycryptodome>=3.19.1
-urllib3>=2.2.2
+urllib3>=2.7.0
 # 可选：YIBAN_PROXY 使用 socks5 代理时需要
 PySocks>=1.7.1
 # TUI 配置工具（服务器端 python3 -m tui 使用）
