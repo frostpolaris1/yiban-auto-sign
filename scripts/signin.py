@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # 易班自动签到脚本（AGPL-3.0，见项目根 LICENSE）
 # 本项目为以下 AGPL-3.0 项目的衍生实现，保留上游版权与许可条款：
-#   - OneFeiFan/FYIBAN（多边形内随机定位点算法：缩放质心 + 射线法验证）
-#   - KillYiBan 模块（易班登录特征与 nightAttendance 签到流程，源自 OneFeiFan 的 Gitee 仓库）
+#   - OneFeiFan/FYIBAN（多边形内随机定位点算法：缩放质心 + 射线法验证；易班登录特征与 nightAttendance 签到流程）
 """
 易班自动签到脚本
 
 功能：
-1. 自动登录易班（支持多账号，默认 KillYiBan 同款真实 App 特征登录）
+1. 自动登录易班（支持多账号，默认 fyiban 同款真实 App 特征登录）
 2. 自动获取签到任务范围
 3. 在签到范围内生成随机定位点（模拟真实定位）
 4. 自动提交签到
@@ -17,7 +16,7 @@
 7. 随机延迟：启动与账号间隔随机打散（YIBAN_START_DELAY_MAX / YIBAN_ACCOUNT_GAP_MAX）
 
 参考项目：
-- 本地 KillYiBan 模块（nightAttendance 签到流程与登录特征）
+- OneFeiFan/FYIBAN 模块（nightAttendance 签到流程与登录特征）
 - Auto-Test 项目（旧登录流程，YIBAN_LEGACY_LOGIN=1 启用）
 """
 

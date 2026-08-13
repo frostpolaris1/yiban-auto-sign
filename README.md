@@ -528,6 +528,20 @@ sqlite3 /opt/yiban-auto-sign/yiban.db "SELECT ts, username, action, target FROM 
 <details>
 <summary>🔬 展开查看技术实现细节</summary>
 
+### 项目架构
+
+```
+web/app.py  Flask 管理后台（账号管理/审核/用户管理/日历/手动签到）
+   │
+   ├── scripts/db.py            SQLite 数据层（账号/用户/审计日志）
+   ├── scripts/account_crypto.py AES-GCM 加密（密码/设备识别码）
+   └── scripts/signin.py        签到引擎
+            │
+            ├── OAuth 登录（RSA 加密）→ 获取签到任务 → 多边形随机定位 → 提交
+            ├── 触发方式：服务器 cron（run.sh）/ GitHub Actions
+            └── 通知：Server酱 / Bark / 企业微信 webhook
+```
+
 ### 签到流程
 
 ```
@@ -762,11 +776,26 @@ python scripts/signin.py
 
 **GNU Affero General Public License v3.0（AGPL-3.0）** - 见 [LICENSE](LICENSE)
 
-本项目基于以下 AGPL-3.0 项目的衍生实现，按 AGPL-3.0 条款发布：
+### 核心条款简述
 
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 及其 KillYiBan 组件（AGPL-3.0）- 多边形内随机定位点算法（缩放质心 + 射线法验证）、易班登录特征与签到流程
+1. **网络服务强制开源**：通过网络（网站 / API）向用户提供服务时，必须向服务使用者提供完整的源代码
+2. **强制传染**：任何使用、修改或分发本项目的衍生作品，必须同样以 AGPL-3.0 协议开源
+3. **署名要求**：必须保留原作者版权声明与许可声明
 
-使用、修改、分发本项目时，请遵守 AGPL-3.0 条款（衍生作品须以相同许可证开源）。
+### 衍生来源
+
+本项目直接参考 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）实现：
+
+- 多边形内随机定位点算法（缩放质心 + 射线法验证）
+- 易班登录特征与 nightAttendance 签到流程
+
+> 披露：OneFeiFan/FYIBAN 在其 README 中声明参考了 [Qs315490/fyiban](https://github.com/Qs315490/fyiban)（无许可证，上游 Sricor/yiban 已删库）。本项目未直接使用上述无许可证项目的代码，直接参考对象为 FYIBAN（AGPL-3.0），并按 AGPL-3.0 条款发布。
+
+### 特别免责声明
+
+- **滥用与盈利免责**：本项目按"原样"提供。任何使用本项目进行商业或非商业行为时，若因违反当地法律法规、滥用功能（包括但不限于网络攻击、诈骗等非法用途）而产生任何形式的刑事或民事纠纷，均与本项目作者无关，使用者需自行承担所有法律后果
+- **无担保**：作者不保证本项目的适用性、稳定性或无错误（Bug）
+- **损失免责**：因使用或无法使用本项目而导致的任何直接、间接、偶然或后果性损害（包括数据丢失、业务中断、利润损失等），作者不承担任何责任
 
 ---
 
@@ -777,7 +806,7 @@ python scripts/signin.py
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
 - [Auto-Test](https://github.com/) - 易班登录流程（OAuth + RSA + ydclearance）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 60 天限制破解方案
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 及其 KillYiBan 组件（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、易班登录特征与 nightAttendance 签到流程
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、易班登录特征与 nightAttendance 签到流程
 
 ---
 
