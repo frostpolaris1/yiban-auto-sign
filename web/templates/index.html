@@ -613,6 +613,7 @@ const state = {
   accounts: [],       // [{index,name,phone,phone_model,has_password,display_name}]
   states: {},         // {phone: '✅'|'❌'|'🔄'|'➖'}
   editingIndex: null, // null=添加
+  editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
   delays: { start: 0, gap: 0 },
   batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
   signMode: 'sequence', // 签到模式（sequence 列表顺序 / random 列表随机，持久化 .env）
@@ -1117,6 +1118,7 @@ function toggleModalClearCode() {
 
 async function openForm(index) {
   state.editingIndex = index;
+  state.editSnapshot = null;  // 乐观锁快照在详情取到完整号后设置
   const a = index === null ? null : state.accounts[index];
   $('form-title').textContent = a ? `编辑账号 #${index + 1}` : '添加账号';
   $('f-name').value = a ? a.name : '';
@@ -1133,9 +1135,15 @@ async function openForm(index) {
       const d = await api(`/api/accounts/${index}/detail`);
       $('f-phone').value = maskPhone(d.account.phone);
       $('f-phone').dataset.full = d.account.phone;
+      // 乐观锁快照：编辑打开时的账号指纹，提交时后端比对，防止并发编辑互相覆盖
+      state.editSnapshot = JSON.stringify({
+        name: d.account.name, phone: d.account.phone, phone_model: d.account.phone_model,
+        status: d.account.status, deleted: d.account.deleted,
+      });
     } catch (e) {
       $('f-phone').value = maskPhone(a.phone);  // 详情接口异常时退化为脱敏列表值
       $('f-phone').dataset.full = '';
+      state.editSnapshot = null;  // 拿不到完整指纹 → 不携带快照（不做冲突校验）
       toast('无法获取账号完整信息', true);
     }
   } else {
@@ -1184,9 +1192,12 @@ $('account-form').addEventListener('submit', async (e) => {
       const data = await api('/api/accounts', { method: 'POST', body: JSON.stringify(body) });
       toast(data.msg || '账号已添加', !data.msg);
     } else {
+      // 编辑：携带乐观锁快照（打开表单时的账号指纹），后端比对不一致返回 409 阻止覆盖
+      if (state.editSnapshot) body._snapshot = state.editSnapshot;
       await api(`/api/accounts/${state.editingIndex}`, { method: 'PUT', body: JSON.stringify(body) });
       toast('账号已更新');
     }
+    state.editSnapshot = null;
     closeForm();
     loadAccounts();
   } catch (err) { toast(err.message, true); }
