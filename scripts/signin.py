@@ -431,7 +431,7 @@ class YibanClient:
             logger.info(f"[{account.phone}] 已启用代理: {proxy_desc}")
         else:
             logger.warning(
-                f"[{account.phone}] 未配置 YIBAN_PROXY，如遇到 WAF 拦截请配置代理（国内出口）"
+                f"[{account.phone}] 未配置代理，如遇 WAF 拦截可配置 YIBAN_PROXY"
             )
         # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码
         self.phone_model = account.phone_model
@@ -463,7 +463,7 @@ class YibanClient:
             timeout=15,
         )
         if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
         data = resp.json()
         if data.get("code") != 0:
             raise RuntimeError(f"获取登录入口失败: {_sanitize_text(data.get('msg'))}")
@@ -473,7 +473,7 @@ class YibanClient:
 
         # 检查是否被 WAF 拦截
         if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
 
         page_use_match = re.compile(r"page_use ?= ?[\'|\"]([a-zA-Z0-9-_]+)[\'|\"]").findall(
             resp.text
@@ -492,7 +492,7 @@ class YibanClient:
                 logger.error("  检测到 WAF 风控拦截特征，通常是 GitHub Actions 海外 IP 被易班风控")
             logger.error(
                 "  若响应为 WAF 挑战页/拦截页，通常是 GitHub Actions 海外 IP 被易班风控，"
-                "请配置 YIBAN_PROXY 代理（国内出口）后重试。"
+                "请配置 YIBAN_PROXY 代理后重试。"
             )
             raise RuntimeError("登录页面解析失败（page_use / RSA key 未找到），详见上方诊断日志")
 
@@ -522,7 +522,7 @@ class YibanClient:
         )
         # 先检测 WAF 拦截再做 JSON 解析（拦截页是 HTML，直接 json() 会抛解析异常）
         if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
         result = resp.json()
 
         if "reUrl" not in result:
@@ -668,7 +668,7 @@ class YibanClient:
         )
         # 先检测 WAF 拦截再做 JSON 解析（拦截页是 HTML，直接 json() 会抛解析异常）
         if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
         result = resp.json()
         # App 用 code == "s200" 判断成功
         if result.get("code") != "s200":
@@ -704,7 +704,7 @@ class YibanClient:
             timeout=15,
         )
         if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
         data = resp.json()
         if data.get("code") != 0:
             raise RuntimeError(f"最终认证失败: {_sanitize_text(data.get('msg'))}")
@@ -835,7 +835,7 @@ class YibanClient:
             timeout=15,
         )
         if is_waf_blocked(resp.text):
-            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试", False
+            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False
         data = resp.json()
         if data.get("code") != 0:
             return False, f"获取签到任务失败: {_sanitize_text(data.get('msg'))}", False
@@ -843,7 +843,7 @@ class YibanClient:
         data_obj = data["data"]
         msg = data_obj.get("Msg", "")
         if "已签到" in msg:
-            return True, "今日已签到（无需重复签到）", False
+            return True, "今日已签到（无需重复签到）", True
         if "今日无需签到" in msg:
             return True, "今日无需签到（非签到日）", True
 
@@ -911,7 +911,7 @@ class YibanClient:
             timeout=15,
         )
         if is_waf_blocked(resp.text):
-            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试", False
+            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False
         result = resp.json()
         if result.get("code") == 0 and result.get("data"):
             return True, "签到成功", False
@@ -1000,7 +1000,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
 
         if success:
             results[phone] = (True, message, skip)
-            logger.info(f"[{phone}] ✅ {message}")
+            # 已签到/非签到日等跳过类成功：用 ➖ 图标（区别于真正签到成功的 ✅）
+            logger.info(f"[{phone}] {'➖' if skip else '✅'} {message}")
             continue
 
         # 失败：跳过类不重试；其余按分级放回队尾

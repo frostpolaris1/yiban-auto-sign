@@ -379,6 +379,11 @@
           <input id="my-new-password" type="password" placeholder="新密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
+        <div>
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
+          <input id="my-confirm-password" type="password" placeholder="再次输入新密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
         <div class="flex items-center gap-3">
           <button onclick="saveMyPassword()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
         </div>
@@ -1419,14 +1424,16 @@ async function saveMyPassword() {
   const password = $('my-new-password').value;
   if (password.length < 6) { toast('新密码至少 6 位', true); return; }
   if (!oldPassword) { toast('请输入当前密码验证', true); return; }
+  if (password !== $('my-confirm-password').value) { toast('两次输入的新密码不一致', true); return; }
   try {
     const data = await api('/api/me/password', {
       method: 'POST',
-      body: JSON.stringify({ old_password: oldPassword, new_password: password }),
+      body: JSON.stringify({ old_password: oldPassword, new_password: password, confirm_password: $('my-confirm-password').value }),
     });
     toast(data.msg || '密码已更新');
     $('my-old-password').value = '';
     $('my-new-password').value = '';
+    $('my-confirm-password').value = '';
   } catch (e) { toast(e.message, true); }
 }
 // ================= 时钟与签到状态（本地平滑走秒，60 秒校准一次） =================

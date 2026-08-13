@@ -795,11 +795,13 @@ def create_app():
         内置管理员（.env）验证当前口令后写入新哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt），
         并清理旧明文；注册用户（含提升的管理员）验证当前密码后更新 users.json 哈希。
         失败计数与登录共用限速：达阈值（LOGIN_MAX_FAILS）锁定，超阈值返回 429；
-        改密成功后轮换 SECRET_KEY（旧会话全部失效，防已泄露密钥继续可用）。
+        旧会话失效由 pw_version 递增实现（_effective_role 实时校验）。
         """
         data = request.get_json(silent=True) or {}
         old_password = str(data.get("old_password", ""))
         new_password = str(data.get("new_password", ""))
+        if new_password != str(data.get("confirm_password", "")):
+            return jsonify({"error": "两次输入的新密码不一致"}), 400
         pw_err = _password_policy_error(new_password)
         if pw_err:
             return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
@@ -831,13 +833,6 @@ def create_app():
             _login_fails[fail_key] = (nfails, 0, now)
             return jsonify({"error": "当前密码不正确"}), 400
 
-        def _rotate_secret_key():
-            """改密成功后轮换 SECRET_KEY：已登录旧会话全部失效，防已泄露密钥继续可用。"""
-            new_key = secrets.token_hex(32)
-            write_env_key(ENV_FILE, "YIBAN_SECRET_KEY", new_key)
-            app.config["SECRET_KEY"] = new_key  # 当前进程立即生效（会话签名按请求实时读取）
-            logger.info("SECRET_KEY 已轮换（改密触发）")
-
         # 内置管理员：验证 .env 当前口令后更新
         if username.strip().lower() == _builtin_admin_email():
             if not verify_admin(username, old_password):
@@ -854,7 +849,6 @@ def create_app():
                 load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1,
             )
             _login_fails.pop(fail_key, None)
-            _rotate_secret_key()
             logger.info("内置管理员密码已更新")
             return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         # 注册用户（含提升的管理员）：db 单行更新（事务内，防并发覆盖）
@@ -872,7 +866,6 @@ def create_app():
                 )
                 db.audit(username, "user_password", username, "自助改密")
                 _login_fails.pop(fail_key, None)
-                _rotate_secret_key()
                 logger.info("用户 %s 已修改自己的密码", _mask_email(username))
                 return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         return jsonify({"error": "用户不存在"}), 404

@@ -144,6 +144,11 @@
           <input id="p-new" type="password" required placeholder="新密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">确认新密码</label>
+          <input id="p-confirm" type="password" required placeholder="再次输入新密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
         <div class="md:col-span-2 flex items-center gap-3">
           <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
           <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
@@ -557,9 +562,14 @@ $('password-form').addEventListener('submit', async (e) => {
   const tip = $('p-tip');
   tip.textContent = '提交中…';
   try {
+    if ($('p-new').value !== $('p-confirm').value) {
+      tip.textContent = '';
+      toast('两次输入的新密码不一致', true);
+      return;
+    }
     const data = await api('/api/me/password', {
       method: 'POST',
-      body: JSON.stringify({ old_password: $('p-old').value, new_password: $('p-new').value }),
+      body: JSON.stringify({ old_password: $('p-old').value, new_password: $('p-new').value, confirm_password: $('p-confirm').value }),
     });
     tip.textContent = '';
     e.target.reset();
