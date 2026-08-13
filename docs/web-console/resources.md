@@ -66,10 +66,25 @@
 - [ ] 服务器：`pip3 install flask`
 - [ ] 服务器 `.env` 配置管理员账号（`YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD`）与 SECRET_KEY（自动生成）
 - [ ] 阿里云安全组放行端口（建议 IP 白名单）
-- [ ] 敏感文件权限：`chmod 600 accounts.json users.json .env`
 - [ ] fail2ban 防暴力破解
 - [ ] systemd 服务单元（开机自启、崩溃重启）
 - [ ] （可选，需确认）便宜域名 + Let's Encrypt HTTPS
+
+### 生产部署安全基线（2026-08-13 补充，上服务器时执行）
+
+**数据文件权限（含密码/敏感信息，必须收紧）：**
+- `accounts.json`、`users.json`、`.env`：`chmod 600`（仅属主可读写）
+- 日志文件（`/var/log/yiban/sign.log` 等）：`chmod 640` 或更严的 `600`（日志含手机号前缀，虽展示层已脱敏，落盘仍应受限）
+- 状态文件（`/var/log/yiban/sign-status-*.txt`）：随日志目录权限
+
+**run.sh 默认掩码：**
+- `run.sh` 开头（`cd /opt/yiban-auto-sign` 之后）加 `umask 077`，确保脚本运行期间新建的文件（状态文件、日志追加产生的临时文件等）默认权限 600/700，不依赖显式 chmod
+
+**备份策略：**
+- 每日 cron 定时 `tar` 打包数据文件（`accounts.json`、`users.json`、`.env`、当日日志），打包前先 `cp` 快照再归档（避免写中打包）
+- 备份副本加密后同步到异机（如 `gpg --symmetric` 或 `openssl enc -aes-256-cbc`，密钥单独保管）
+- 本地与异机各保留 30 天，超过自动清理（`find ... -mtime +30 -delete`）
+- 定期做**恢复演练**：至少每月一次从备份恢复到临时目录并核对账号数量/日志完整性，确保备份可用（不可恢复的备份等于没有备份）
 
 ### 待办（后续功能）
 - [ ] 用户账号管理系统（用户表单提交自己易班账号 + 查看自己签到情况）——后端 API 已预留扩展空间
