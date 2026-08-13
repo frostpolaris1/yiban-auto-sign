@@ -18,6 +18,37 @@
 - 验证：DOM 类断言（pending 白卡+琥珀栏/搜索 ml-auto/35 th nowrap/折叠 id）+ 折叠功能（▾→▸→▾ 表格显隐）+ 识图两轮（表头单行、琥珀栏可读、结构统一、无错位）
 - 教训：结构统一必须对齐完整外层结构（卡片 padding/标题行边框/提示行），只改内层容器类会产生"视觉不一致"的假统一；正则改 HTML 前先 grep 确认所有变体
 
+## v0.15.0（2026-08-13）
+**综合修复大版本**（计划 `docs/plan-0.15.0-fixes.md`；4 个并行流 × worktree 独立分支修复，合并回 server-web 统一验证）：
+- **流 1 签到脚本**（fix/0.15-signin，16 项）：
+  - F1 高危：`_load_accounts_from_file` 排除 rejected（审核拒绝真正生效；`--only` 同源过滤）
+  - A1 代理 URL 脱敏（urlsplit 去 userinfo）；A3 配置错误异常只带 phone 不落明文密码
+  - A2 退出码语义：全 skip→exit 2，run.sh 写 SKIPPED（不再误标 SUCCESS 吞备份）
+  - M1 first_round 无条件置 False（全成功路径间隔恢复生效）；M2 重试基线 = remaining + uniform(0,30)（不再可为 0）
+  - A-M1 通知去重（仅最终放弃通知）；A-M4 Location .get + 可诊断错误
+  - A-M5 WAF 关键词入风控类 + 全部 resp.json() 前先 is_waf_blocked
+  - A-M6 **js2py 替换**：`_solve_ydclearance` 纯正则/字符串复刻易盾模板（oo 数组/变换 A/B/C），删除 eval_js 与导入（CVE-2024-28397 消除）；触发判定改 Set-Cookie/JS 特征
+  - A-L1/L3/L4/L5/L8 + 功能 L3/L13（跨午夜状态文件日期、skip 不记 ✅）
+- **流 2 Web 后端**（fix/0.15-web，18 项）：
+  - F3 批量 unset_admin/delete 防呆（动态重算 admins + 至少保留 1 管理员）
+  - M3 拒绝编辑已 deleted 账号（双路径）；M4 restore 校验一人一号（单/批量）；M5 api_signin 校验可签到账号
+  - M8 改密失败锁定与登录一致（达阈值 429）；M9 软删除占用规则统一（admin 添加排除 deleted）
+  - L1 超期按秒 + mtime 兜底；L2 排队排除 deleted；L4 setdefault 防 500；L5 move int 捕获；L6 识别码 `__clear__` 清空；L7 解析失败拒写保护；L10 管理员 mine 可见域；L12 计数/审核排除 deleted；L14 正式用户仅 active
+  - 安全 M3 密码策略：下限 10 位两类字符（全路径）、管理员口令哈希存储（兼容过渡）、scrypt:65536:8:1
+  - 安全 M1 安全头（nosniff/X-Frame-Options:DENY/CSP/Referrer-Policy）；M6 改密轮换 SECRET_KEY
+- **流 3 前端与合规**（fix/0.15-frontend，10 项）：
+  - F2 软删除死路：deleted 卡片「移除记录」按钮（用户页+管理员我的账号）+ 全 deleted 时表单仍显示
+  - M6 编辑表单 required 动态移除；L6 识别码清除按钮交互；L16 calState 内存键改 phone（DOM id 仍索引键）；M5 签到下拉只列 active
+  - 安全 M7 协议修正（密码存储事实描述 + 数据保留/删除权/未成年条款，同步 docs/user-agreement-prompt.md）
+  - B1 .gitignore 加 `服务器访问信息.md`；B7 VENDOR.md 溯源（tailwind 3.4.17 + sha256/MiSans/md-render）；M4 部署文档（0600 权限/umask/备份策略）；L9/L8/L17 已知限制文档化
+- **流 4 CI 与依赖**（fix/0.15-ci，6 项）：
+  - B4 依赖下限：werkzeug>=3.1.3 / requests>=2.32.0 / urllib3>=2.2.2 / pycryptodome>=3.19.1 / flask>=3.1.0；删除 js2py（流 1 移除代码，本流删依赖）
+  - B6 requirements.lock（25 包精确锁定）+ CI 改装 lock + pip-audit 扫描 + Dependabot（pip + github-actions）
+  - A-M7 keepalive 固定 SHA f72ff1a + job 级最小权限；A-M8 signin job `contents: read`；删除 .gitee-ci.yml 死配置
+- 合并：395a724（流2）→ f60fa21（流1）→ aa77a6a（流3）→ fbd4ae1（流4+冲突解决）；requirements.txt 冲突采用流 4 版本
+- 验证：ruff/AST/node --check 全过；浏览器回归——明文兼容登录、CSP 下页面正常、安全头生效（curl 实测）、列表脱敏、签到下拉只列 active、协议新条款、F2 端到端（软删除→用户页移除记录→表单重现）；测试数据已还原
+- 遗留（已确认/文档化）：易班密码加密存储（后续专项）、TLS 反代部署（需环境变更）、历史泄露 filter-repo（需用户单独确认）、并发编辑乐观锁/索引寻址（文档化）
+
 ## v0.14.0（2026-08-13）
 **安全+性能对抗性审查修复大版本**（审查报告 `docs/review-security-perf-2026-08-12.md`，两轮审查：S1-S12/T1-T10 安全 + P1-P19 性能 + R1-R2 规范，按 4 组修复）：
 
