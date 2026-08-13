@@ -363,7 +363,7 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
       <button type="button" onclick="toggleMyPassword()" aria-expanded="false"
               class="w-full flex items-center justify-between text-left">
-        <span class="text-sm font-medium text-zinc-700 dark:text-zinc-200">修改主管理员密码</span>
+        <span id="my-password-title" class="text-sm font-medium text-zinc-700 dark:text-zinc-200">修改主管理员密码</span>
         <span id="my-password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
       </button>
       <div id="my-password-body" class="hidden mt-4">
@@ -375,7 +375,7 @@
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 6 位）</label>
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，含两类字符）</label>
           <input id="my-new-password" type="password" placeholder="新密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
@@ -574,7 +574,7 @@
           <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
           <input id="f-initial-password" type="password" maxlength="64" autocomplete="new-password"
-                 placeholder="该邮箱未注册：填写初始密码为其创建账号（至少 6 位）"
+                 placeholder="该邮箱未注册：填写初始密码为其创建账号（至少 10 位）"
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
       <div>
@@ -1433,7 +1433,8 @@ async function doPing() {
 async function saveMyPassword() {
   const oldPassword = $('my-old-password').value;
   const password = $('my-new-password').value;
-  if (password.length < 6) { toast('新密码至少 6 位', true); return; }
+  const pwClasses = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(password)).length;
+  if (password.length < 10 || pwClasses < 2) { toast('新密码至少 10 位，且含两类字符', true); return; }
   if (!oldPassword) { toast('请输入当前密码验证', true); return; }
   if (password !== $('my-confirm-password').value) { toast('两次输入的新密码不一致', true); return; }
   try {
@@ -1520,6 +1521,8 @@ function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
     if (me.role !== 'admin') { location.href = '/user'; return; }  // 普通用户 → 用户页
     csrfToken = me.csrf_token || '';
     state.isMasterAdmin = !!me.is_builtin_admin;  // 主管理员才可设置/取消管理员
+    // 修改密码卡片标题按角色区分：主管理员=修改主管理员密码，普通管理员=修改密码（改的是自己账号）
+    $('my-password-title').textContent = state.isMasterAdmin ? '修改主管理员密码' : '修改密码';
     if (!state.isMasterAdmin) {
       // 普通管理员：隐藏「设为/取消管理员」批量按钮（仅主管理员权限）
       document.querySelectorAll('.batch-admin-only').forEach(el => el.classList.add('hidden'));
@@ -1697,7 +1700,7 @@ async function setUserRole(email, role) {
 async function resetUserPassword(email) {
   const password = prompt(`为 ${email} 设置新密码（至少 10 位，含两类字符）：`);
   if (!password) return;
-  if (password.length < 6) { toast('密码至少 6 位', true); return; }
+  if (password.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
   try {
     const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
       method: 'POST', body: JSON.stringify({ password }),
