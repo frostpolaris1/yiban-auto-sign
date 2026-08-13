@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+
+# 本地配置（避免泄露账号密码）
+config.local.py
+*.local
+# 账号配置文件（含密码，严禁入库）
+accounts.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志与数据
+*.log
+logs/
+data/
+
+# 部署打包文件（不应进仓库）
+*.tar.gz
+*.zip
+
+# 临时提示词文件
+PROMPT_FOR_MULTIMODAL_MODEL.txt
+
+# 系统文件
+.DS_Store
+Thumbs.db
