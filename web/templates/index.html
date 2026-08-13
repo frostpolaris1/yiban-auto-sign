@@ -130,7 +130,9 @@
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
       <div>
         <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">账号管理</h1>
-        <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">列表顺序即顺序打卡顺序 · 修改后自动保存到 <span id="config-file" class="font-mono text-xs bg-zinc-100 dark:bg-zinc-700 rounded px-1">accounts.json</span></p>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">列表顺序即顺序打卡顺序 · 修改后自动保存到 <span id="config-file" class="font-mono text-xs bg-zinc-100 dark:bg-zinc-700 rounded px-1">accounts.json</span>
+          <span id="sign-mode-hint" class="hidden text-xs text-amber-600 dark:text-amber-400">（当前为随机签到模式，列表顺序不影响执行）</span>
+        </p>
       </div>
       <button onclick="openForm(null)" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
         添加账号
@@ -301,6 +303,21 @@
         </div>
         <button id="batch-mode-btn" onclick="toggleBatchMode()"
                 class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
+      </div>
+    </div>
+
+    <!-- 签到模式 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到模式</div>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">列表顺序：按账号管理列表顺序执行；列表随机：每次签到随机打乱顺序（进一步打散脚本特征，防风控识别）。写入配置，cron 下次触发自动生效</p>
+        </div>
+        <select id="sign-mode-select"
+                class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <option value="sequence">列表顺序</option>
+          <option value="random">列表随机</option>
+        </select>
       </div>
     </div>
 
@@ -517,6 +534,8 @@
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
           <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <button id="clear-mcode-btn" type="button" onclick="toggleMineClearCode()"
+                  class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
         </div>
         <div class="md:col-span-2 flex items-center gap-3 pt-1">
           <button id="mine-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
@@ -573,6 +592,8 @@
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        <button id="clear-code-btn" type="button" onclick="toggleModalClearCode()"
+                class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
       </div>
       <div class="flex items-center gap-2 pt-2">
         <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
@@ -594,6 +615,7 @@ const state = {
   editingIndex: null, // null=添加
   delays: { start: 0, gap: 0 },
   batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
+  signMode: 'sequence', // 签到模式（sequence 列表顺序 / random 列表随机，持久化 .env）
   isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
   deletedCollapsed: false, // 待删除账号表格折叠状态（标题栏 ▾/▸ 切换）
 };
@@ -1075,6 +1097,24 @@ async function deleteAccount(idx) {
 }
 
 // ---- 账号表单（添加 / 编辑共用）----
+// 清除已配置识别码（编辑模式）：标记后提交 __clear__（后端并行流已支持该标记清空字段）
+let modalClearCodeFlag = false;
+function toggleModalClearCode() {
+  modalClearCodeFlag = !modalClearCodeFlag;
+  const input = $('f-code');
+  const btn = $('clear-code-btn');
+  if (modalClearCodeFlag) {
+    input.value = '';
+    input.readOnly = true;
+    input.placeholder = '提交后将清除已配置识别码';
+    btn.textContent = '取消清除';
+  } else {
+    input.readOnly = false;
+    input.placeholder = '64 位十六进制识别码';
+    btn.textContent = '清除已配置识别码';
+  }
+}
+
 async function openForm(index) {
   state.editingIndex = index;
   const a = index === null ? null : state.accounts[index];
@@ -1107,7 +1147,10 @@ async function openForm(index) {
   $('f-password').placeholder = a ? '留空表示不修改密码' : '易班登录密码';
   $('f-model').value = a ? a.phone_model : '';
   $('f-code').value = '';
+  $('f-code').readOnly = false;
   $('f-code').placeholder = a && a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  modalClearCodeFlag = false;
+  $('clear-code-btn').classList.toggle('hidden', !(a && a.has_phone_code));
   $('modal-account').classList.remove('hidden');
   $('f-name').focus();
 }
@@ -1133,7 +1176,8 @@ $('account-form').addEventListener('submit', async (e) => {
     phone,
     password: $('f-password').value,
     phone_model: $('f-model').value.trim(),
-    phone_code: $('f-code').value.trim(),
+    // 已标记清除识别码 → 提交 __clear__ 由后端清空字段；否则留空表示不修改
+    phone_code: modalClearCodeFlag ? '__clear__' : $('f-code').value.trim(),
   };
   try {
     if (state.editingIndex === null) {
@@ -1194,11 +1238,13 @@ function fillSigninSelect() {
   const sel = $('signin-select');
   const current = sel.value;
   sel.innerHTML = '';
-  if (!state.accounts.length) {
-    sel.innerHTML = '<option value="">暂无账号</option>';
+  // 只列可签到账号：已生效（active）且未被软删除；待审核/已拒绝/已删除不可手动签到
+  const signable = state.accounts.filter(a => a.status === 'active' && !a.deleted);
+  if (!signable.length) {
+    sel.innerHTML = '<option value="">暂无签到账号</option>';
     return;
   }
-  state.accounts.forEach(a => {
+  signable.forEach(a => {
     const opt = document.createElement('option');
     opt.value = a.index;  // value 用索引（列表已脱敏，完整号按需从详情接口取）
     opt.textContent = `${a.display_name} (${maskPhone(a.phone)})`;
@@ -1239,13 +1285,29 @@ async function loadSettings() {
     const data = await api('/api/settings');
     state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
+    state.signMode = data.sign_mode || 'sequence';  // 签到模式（sequence/random）
+    $('sign-mode-select').value = state.signMode;
     state.batchMode = false;  // 批量多选会话级开关：每次进入默认关闭，不读取持久化状态
     renderDelayUI();
     renderBatchModeUI();
+    updateSignModeHint();
     // 批量开关影响表格复选框渲染：加载完成后重绘（页面初始加载也会执行）
     renderAccounts();
     renderUsers(allUsers, builtinAdminName);
   } catch (e) { toast(e.message, true); }
+}
+
+// 签到模式切换（自动保存到 .env，cron 下次触发生效）
+$('sign-mode-select').addEventListener('change', () => {
+  state.signMode = $('sign-mode-select').value;
+  updateSignModeHint();
+  saveSettings(true);
+});
+
+// 随机模式下账号管理页提示：顺序不影响执行
+function updateSignModeHint() {
+  const hint = $('sign-mode-hint');
+  if (hint) hint.classList.toggle('hidden', state.signMode !== 'random');
 }
 
 function renderBatchModeUI() {
@@ -1298,6 +1360,7 @@ async function saveSettings(silent) {
       body: JSON.stringify({
         start_delay_max: read('start'),
         gap_max: read('gap'),
+        sign_mode: state.signMode || 'sequence',
       }),
     });
     state.delays.start = read('start');
@@ -1658,7 +1721,8 @@ function renderMine() {
   const list = $('mine-list');
   list.innerHTML = '';
   $('mine-empty').classList.toggle('hidden', mineAccounts.length > 0);
-  $('mine-form').classList.toggle('hidden', mineAccounts.length > 0);
+  // 存在未删除账号时隐藏提交表单；全部被管理员删除时仍显示表单供重新提交（软删除不死路）
+  $('mine-form').classList.toggle('hidden', mineAccounts.some(a => !a.deleted));
   $('mine-done').classList.toggle('hidden', mineAccounts.length === 0);
   mineAccounts.forEach((a, i) => {
     const card = document.createElement('div');
@@ -1667,19 +1731,23 @@ function renderMine() {
     card.innerHTML = `
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="flex items-center gap-3">
-          <span class="text-lg leading-none">${a.state_icon}</span>
+          <span class="text-lg leading-none">${a.deleted ? '🗑️' : a.state_icon}</span>
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
-            ${a.status === 'active' ? (a.state_icon === '✅'
-              ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
-              : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + a.queue_ahead + '</span> 人</div>') : ''}
+            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，可移除记录后重新提交</div>'
+              : (a.status === 'active' ? (a.state_icon === '✅'
+                ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
+                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + a.queue_ahead + '</span> 人</div>') : '')}
           </div>
         </div>
         <div class="flex items-center gap-2">
-          ${mineStatusBadge(a.status)}
-          <button onclick="openMineEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
-          <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>
+          ${a.deleted ? '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2 py-0.5">已删除</span>'
+            : mineStatusBadge(a.status)}
+          ${a.deleted
+            ? `<button onclick="removeDeletedMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">移除记录</button>`
+            : `<button onclick="openMineEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
+          <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>`}
         </div>
       </div>
       ${a.logs && a.logs.length ? `
@@ -1690,19 +1758,19 @@ function renderMine() {
       <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${calKey}"></div>
     `;
     list.appendChild(card);
-    if (a.status === 'active') renderCalendar(a.phone, calKey);  // 未生效账号不显示日历
+    if (!a.deleted && a.status === 'active') renderCalendar(a.phone, calKey);  // 已删除/未生效账号不显示日历
   });
 }
 
 // ================= 签到日历（按日状态文件 + 日志，与用户端一致） =================
-const calState = {};  // calKey -> {year, month}
+const calState = {};  // phone -> {year, month}（内存键用手机号防排序变化错位；DOM id 仍用索引键避免手机号进 id）
 
 function calPad(n) { return String(n).padStart(2, '0'); }
 
 function calShift(btn, delta) {
-  const key = btn.dataset.key;
-  const phone = btn.dataset.phone;
-  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const key = btn.dataset.key;     // DOM 查询键（索引）
+  const phone = btn.dataset.phone; // 内存状态键（手机号）
+  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   st.month += delta;
   if (st.month < 1) { st.month = 12; st.year--; }
   if (st.month > 12) { st.month = 1; st.year++; }
@@ -1712,7 +1780,7 @@ function calShift(btn, delta) {
 function renderCalendar(phone, key) {
   const wrap = $('cal-wrap-' + key);
   if (!wrap) return;
-  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   const { year, month } = st;
   const monthStr = `${year}-${calPad(month)}`;
   const today = new Date();
@@ -1781,6 +1849,24 @@ function calLoadLog(btn, date) {
 }
 
 // 我的账号内联编辑（与普通用户一致：复用提交表单，编辑时预填）
+// 清除已配置识别码（我的账号编辑）：标记后提交 __clear__（后端并行流已支持该标记清空字段）
+let mineClearCodeFlag = false;
+function toggleMineClearCode() {
+  mineClearCodeFlag = !mineClearCodeFlag;
+  const input = $('m-code');
+  const btn = $('clear-mcode-btn');
+  if (mineClearCodeFlag) {
+    input.value = '';
+    input.readOnly = true;
+    input.placeholder = '提交后将清除已配置识别码';
+    btn.textContent = '取消清除';
+  } else {
+    input.readOnly = false;
+    input.placeholder = '64 位十六进制识别码';
+    btn.textContent = '清除已配置识别码';
+  }
+}
+
 let mineEditingIdx = null;
 function openMineEditInline(i) {
   mineEditingIdx = i;
@@ -1789,9 +1875,13 @@ function openMineEditInline(i) {
   $('m-phone').value = a.phone;
   $('m-password').value = '';
   $('m-password').placeholder = '留空表示不修改密码';
+  $('m-password').removeAttribute('required');  // 编辑模式密码可留空（留空=不修改），添加模式保留必填
   $('m-model').value = a.phone_model;
   $('m-code').value = '';
+  $('m-code').readOnly = false;
   $('m-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  mineClearCodeFlag = false;
+  $('clear-mcode-btn').classList.toggle('hidden', !a.has_phone_code);
   $('mine-form-title').textContent = '编辑我的易班账号';
   $('mine-submit-btn').textContent = '保存修改';
   $('mine-cancel-btn').classList.remove('hidden');
@@ -1809,11 +1899,15 @@ function cancelMineEdit() {
 
 function resetMineForm() {
   mineEditingIdx = null;
+  mineClearCodeFlag = false;
   $('mine-form-title').textContent = '提交我的易班账号';
   $('mine-submit-btn').textContent = '提交账号';
   $('mine-cancel-btn').classList.add('hidden');
   $('m-password').placeholder = '用于自动登录签到';
+  $('m-password').setAttribute('required', '');
+  $('m-code').readOnly = false;
   $('m-code').placeholder = '64 位十六进制识别码';
+  $('clear-mcode-btn').classList.add('hidden');
 }
 
 // 修改主管理员密码：默认收起，点击标题展开/收起
@@ -1834,7 +1928,8 @@ $('mine-form').addEventListener('submit', async (e) => {
       phone: $('m-phone').value.trim(),
       password: $('m-password').value,
       phone_model: $('m-model').value.trim(),
-      phone_code: $('m-code').value.trim(),
+      // 已标记清除识别码 → 提交 __clear__ 由后端清空字段；否则留空表示不修改
+      phone_code: mineClearCodeFlag ? '__clear__' : $('m-code').value.trim(),
     };
     const data = mineEditingIdx !== null
       ? await api(`/api/my-accounts/${mineEditingIdx}`, { method: 'PUT', body: JSON.stringify(body) })
@@ -1856,6 +1951,18 @@ async function deleteMineAccount(i) {
   try {
     await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
     toast('已删除');
+    loadMine();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+// 移除被管理员软删除的账号记录：移除后提交表单重新出现
+async function removeDeletedMineAccount(i) {
+  const a = mineAccounts[i];
+  if (!confirm(`确定移除「${jsEscape(a.display_name)}」(${a.phone}) 的删除记录吗？移除后可重新提交新账号。`)) return;
+  try {
+    await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
+    toast('已移除记录');
     loadMine();
     loadAccounts();
   } catch (e) { toast(e.message, true); }

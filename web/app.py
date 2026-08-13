@@ -49,6 +49,14 @@ STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑重新提
 # 软删除保留期：管理员删除的账号进入待删除状态，超期自动彻底清除
 DELETED_RETENTION_DAYS = 7
 
+# 密码策略：至少 10 位且包含大写/小写/数字/符号中至少两类（只对新建/修改生效，存量密码不受影响）
+PASSWORD_MIN_LEN = 10
+# 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
+SCRYPT_METHOD = "scrypt:65536:8:1"
+
+# 账号编辑时识别码清空哨兵值（收到该值 = 显式删除设备识别码字段）
+CLEAR_SENTINEL = "__clear__"
+
 # 状态图标（与 tui/app.py 一致；前端渲染使用，后端仅用于日志解析）
 SIGN_START = (6, 30)
 SIGN_END = (7, 50)
@@ -260,17 +268,33 @@ def load_accounts():
 
 
 def _deleted_expired(deleted_at):
-    """软删除是否已超过保留期（deleted_at 缺失/非法按未过期处理）。"""
+    """软删除是否已超过保留期。
+
+    按秒比较（`>= 7*86400`，避免 .days 截断导致临界日期差一天）；
+    deleted_at 缺失/非法时按 accounts.json 文件 mtime 兜底判定
+    （文件 mtime 超保留期视为过期，防旧数据/脏数据永久滞留）。
+    """
     try:
         t = datetime.fromisoformat(deleted_at)
     except (TypeError, ValueError):
+        t = None
+    if t is not None:
+        return (datetime.now() - t).total_seconds() >= DELETED_RETENTION_DAYS * 86400
+    try:
+        mtime = os.path.getmtime(ACCOUNTS_FILE)
+    except OSError:
         return False
-    return (datetime.now() - t).days >= DELETED_RETENTION_DAYS
+    return time.time() - mtime >= DELETED_RETENTION_DAYS * 86400
 
 
 def save_accounts(accounts):
-    """原子写 accounts.json（密码明文只落盘，永不出现在 API 响应中）。"""
+    """原子写 accounts.json（密码明文只落盘，永不出现在 API 响应中）。
+
+    accounts.json 解析失败（损坏）时拒绝写入：防止管理员保存操作覆盖丢失全部数据。
+    """
     with _file_lock:
+        if ACCOUNTS_FILE in _load_failed_paths:
+            raise DataFileError("accounts.json 解析失败，已拒绝保存以防数据丢失（请修复文件后重试）")
         _atomic_write(ACCOUNTS_FILE, json.dumps(accounts, ensure_ascii=False, indent=2) + "\n")
         _accounts_cache[0] = (accounts, time.time())  # 写后缓存直接更新，避免立即回读
 
@@ -283,8 +307,10 @@ def load_users():
 
 
 def save_users(users):
-    """原子写 users.json。"""
+    """原子写 users.json；users.json 解析失败（损坏）时拒绝写入，防止覆盖丢失全部数据。"""
     with _file_lock:
+        if USERS_FILE in _load_failed_paths:
+            raise DataFileError("users.json 解析失败，已拒绝保存以防数据丢失（请修复文件后重试）")
         _atomic_write(USERS_FILE, json.dumps(users, ensure_ascii=False, indent=2) + "\n")
         _users_cache[0] = (users, time.time())
 
@@ -308,6 +334,26 @@ def _mask_email(e):
     return e[: min(3, i)] + "***" + e[i:]
 
 
+def _password_policy_error(password):
+    """校验密码强度：至少 10 位且包含大写/小写/数字/符号中至少两类。返回错误信息 or None。"""
+    if len(password) < PASSWORD_MIN_LEN:
+        return f"密码至少 {PASSWORD_MIN_LEN} 位，且需包含两类以上字符"
+    classes = sum(
+        bool(re.search(pat, password)) for pat in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]")
+    )
+    if classes < 2:
+        return "密码需包含大写字母/小写字母/数字/符号中的至少两类"
+    return None
+
+
+class DataFileError(Exception):
+    """数据文件解析失败保护：文件损坏（无法解析）时拒绝写入，防止覆盖丢失全部数据。"""
+
+
+# 解析失败的文件路径集合：save_accounts/save_users 保存前检查，命中则拒绝写入
+_load_failed_paths = set()
+
+
 def _load_json_list(path):
     if not os.path.exists(path):
         return []
@@ -315,9 +361,12 @@ def _load_json_list(path):
         with open(path, encoding="utf-8") as f:
             raw = json.load(f)
     except (json.JSONDecodeError, OSError):
+        _load_failed_paths.add(path)
         return []
     if not isinstance(raw, list):
+        _load_failed_paths.add(path)
         return []
+    _load_failed_paths.discard(path)  # 本次解析成功则清除失败标记（外部修复文件后可恢复写）
     return [x for x in raw if isinstance(x, dict)]
 
 
@@ -363,6 +412,16 @@ def find_account_index(accounts, phone):
     return None
 
 
+def _owner_has_other_live(accounts, acc):
+    """归属用户（非 admin）名下是否已有其他未删除账号（每人限 1 个，恢复/添加时校验）。"""
+    owner = acc.get("owner", "admin")
+    if not owner or owner == "admin":
+        return False
+    return any(
+        a.get("owner") == owner and not a.get("deleted") and a is not acc for a in accounts
+    )
+
+
 def validate_account(data, require_password):
     """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。"""
     name = str(data.get("name", "")).strip()
@@ -395,24 +454,35 @@ def validate_account(data, require_password):
 # 管理员认证
 # ---------------------------------------------------------------------------
 def check_admin_configured():
-    """管理员账号是否已在 .env 配置。"""
+    """管理员账号是否已在 .env 配置（口令哈希或旧明文任一即可）。"""
     env = read_env(ENV_FILE)
     return bool(
-        env.get("YIBAN_ADMIN_USER", "").strip() and env.get("YIBAN_ADMIN_PASSWORD", "").strip()
+        env.get("YIBAN_ADMIN_USER", "").strip()
+        and (
+            env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
+            or env.get("YIBAN_ADMIN_PASSWORD", "").strip()
+        )
     )
 
 
 def verify_admin(username, password):
     """校验管理员账号（每次登录实时读 .env，修改立即生效）。
 
+    口令哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt）优先；未配置哈希时
+    回退旧明文（YIBAN_ADMIN_PASSWORD）比对，兼容存量部署。
     注意：compare_digest 不支持非 ASCII 直接比较，先编码为 UTF-8 字节。
     """
     env = read_env(ENV_FILE)
     admin_user = env.get("YIBAN_ADMIN_USER", "").strip()
-    admin_pass = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
-    return secrets.compare_digest(
+    if not secrets.compare_digest(
         username.strip().encode("utf-8"), admin_user.encode("utf-8")
-    ) and secrets.compare_digest(password.encode("utf-8"), admin_pass.encode("utf-8"))
+    ):
+        return False
+    pw_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
+    if pw_hash:
+        return check_password_hash(pw_hash, password)
+    admin_pass = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
+    return secrets.compare_digest(password.encode("utf-8"), admin_pass.encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +544,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.15.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -645,11 +715,27 @@ def create_app():
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
     def no_cache(resp):
+        # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+            "base-uri 'self'; form-action 'self'"
+        )
         if request.path in ("/", "/login", "/user"):
             resp.headers["Cache-Control"] = "no-store"
         elif request.path.startswith("/static/"):
             resp.headers["Cache-Control"] = "public, max-age=86400"  # 静态资源长缓存（版本变化由 ?v= 兜底）
         return resp
+
+    # ---- 数据文件损坏保护：解析失败后所有保存操作拒绝并返回 500（防覆盖丢失全部数据）----
+    @app.errorhandler(DataFileError)
+    def _handle_data_file_error(e):
+        logger.critical("拒绝写入数据文件: %s", e)
+        return jsonify({"error": str(e)}), 500
 
     # ---- 认证 API ----
     @app.route("/api/login", methods=["POST"])
@@ -736,8 +822,9 @@ def create_app():
             return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
         if not EMAIL_RE.match(email) or len(email) > 64:
             return jsonify({"error": "请输入有效的邮箱地址"}), 400
-        if len(password) < 6:
-            return jsonify({"error": "密码至少 6 位"}), 400
+        pw_err = _password_policy_error(password)
+        if pw_err:
+            return jsonify({"error": pw_err}), 400
         # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
         ip = request.remote_addr or "?"
         now = time.time()
@@ -755,7 +842,7 @@ def create_app():
             users.append(
                 {
                     "email": email,
-                    "password_hash": generate_password_hash(password),
+                    "password_hash": generate_password_hash(password, method=SCRYPT_METHOD),
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "pw_version": 1,  # 密码版本：改密时递增，旧会话随之失效
                 }
@@ -774,14 +861,17 @@ def create_app():
     def api_me_password():
         """所有用户自助修改自己的密码（账号不可修改）。
 
-        内置管理员（.env）验证当前密码后写入新密码；注册用户（含提升的管理员）
-        验证当前密码后更新 users.json 的哈希。失败计数复用登录限速，防暴力尝试。
+        内置管理员（.env）验证当前口令后写入新哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt），
+        并清理旧明文；注册用户（含提升的管理员）验证当前密码后更新 users.json 哈希。
+        失败计数与登录共用限速：达阈值（LOGIN_MAX_FAILS）锁定，超阈值返回 429；
+        改密成功后轮换 SECRET_KEY（旧会话全部失效，防已泄露密钥继续可用）。
         """
         data = request.get_json(silent=True) or {}
         old_password = str(data.get("old_password", ""))
         new_password = str(data.get("new_password", ""))
-        if len(new_password) < 6:
-            return jsonify({"error": "新密码至少 6 位"}), 400
+        pw_err = _password_policy_error(new_password)
+        if pw_err:
+            return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
         username = session.get("username", "")
         ip = request.remote_addr or "?"
         now = time.time()
@@ -790,18 +880,50 @@ def create_app():
         fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
         if now < lock_until:
             return jsonify({"error": f"尝试次数过多，请 {int(lock_until - now)} 秒后重试"}), 429
-        # 内置管理员：验证 .env 当前密码后更新
+
+        def _pw_failed():
+            """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。"""
+            nfails = fails + 1
+            if nfails >= LOGIN_MAX_FAILS:
+                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
+                logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                return jsonify(
+                    {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
+                ), 429
+            if nfails == LOGIN_FAIL_NOTIFY:
+                send_notification(
+                    "改密失败告警",
+                    f"IP {ip} 连续 {nfails} 次修改密码失败（用户名: {username}）\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"如非本人操作，请检查是否有人尝试暴力破解",
+                )
+            _login_fails[fail_key] = (nfails, 0, now)
+            return jsonify({"error": "当前密码不正确"}), 400
+
+        def _rotate_secret_key():
+            """改密成功后轮换 SECRET_KEY：已登录旧会话全部失效，防已泄露密钥继续可用。"""
+            new_key = secrets.token_hex(32)
+            write_env_key(ENV_FILE, "YIBAN_SECRET_KEY", new_key)
+            app.config["SECRET_KEY"] = new_key  # 当前进程立即生效（会话签名按请求实时读取）
+            logger.info("SECRET_KEY 已轮换（改密触发）")
+
+        # 内置管理员：验证 .env 当前口令后更新
         if username.strip().lower() == _builtin_admin_email():
             if not verify_admin(username, old_password):
-                _login_fails[fail_key] = (fails + 1, 0, now)
-                return jsonify({"error": "当前密码不正确"}), 400
-            write_env_key(ENV_FILE, "YIBAN_ADMIN_PASSWORD", new_password)
+                return _pw_failed()
+            write_env_key(
+                ENV_FILE,
+                "YIBAN_ADMIN_PASSWORD_HASH",
+                generate_password_hash(new_password, method=SCRYPT_METHOD),
+            )
+            write_env_key(ENV_FILE, "YIBAN_ADMIN_PASSWORD", "")  # 清理旧明文口令，改由哈希校验
             write_env_int(  # 密码版本递增：已登录的旧会话随之失效
                 ENV_FILE,
                 "YIBAN_ADMIN_PW_VERSION",
                 load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1,
             )
             _login_fails.pop(fail_key, None)
+            _rotate_secret_key()
             logger.info("内置管理员密码已更新")
             return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         # 注册用户（含提升的管理员）：更新 users.json 哈希（锁内读改写防并发覆盖）
@@ -810,12 +932,12 @@ def create_app():
             for u in users:
                 if u.get("email") == username.strip().lower():
                     if not check_password_hash(u.get("password_hash", ""), old_password):
-                        _login_fails[fail_key] = (fails + 1, 0, now)
-                        return jsonify({"error": "当前密码不正确"}), 400
-                    u["password_hash"] = generate_password_hash(new_password)
+                        return _pw_failed()
+                    u["password_hash"] = generate_password_hash(new_password, method=SCRYPT_METHOD)
                     u["pw_version"] = u.get("pw_version", 1) + 1  # 旧会话随之失效
                     save_users(users)
                     _login_fails.pop(fail_key, None)
+                    _rotate_secret_key()
                     logger.info("用户 %s 已修改自己的密码", _mask_email(username))
                     return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         return jsonify({"error": "用户不存在"}), 404
@@ -877,8 +999,11 @@ def create_app():
         initial_hash = None  # 锁外预计算（scrypt ~100ms 不阻塞其他请求）
         if email:
             initial = str(data.get("initial_password", ""))
-            if len(initial) >= 6:
-                initial_hash = generate_password_hash(initial)
+            if initial:
+                pw_err = _password_policy_error(initial)
+                if pw_err:
+                    return jsonify({"error": f"初始密码不符合要求：{pw_err}"}), 400
+                initial_hash = generate_password_hash(initial, method=SCRYPT_METHOD)
         with _file_lock:
             accounts = load_accounts()
             if find_account_index(accounts, clean["phone"]) is not None:
@@ -889,14 +1014,14 @@ def create_app():
                     return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
                 if not EMAIL_RE.match(email) or len(email) > 64:
                     return jsonify({"error": "用户邮箱格式不正确"}), 400
-                # 该用户已有账号（每人限 1 个）则拒绝
-                if any(a.get("owner") == email for a in accounts):
+                # 该用户已有账号（每人限 1 个）则拒绝（软删除的不占名额，与用户端一致）
+                if any(a.get("owner") == email and not a.get("deleted") for a in accounts):
                     return jsonify({"error": f"{email} 已有一个账号，无需重复添加"}), 400
                 # 自动注册：邮箱未注册则创建网站用户（初始密码由管理员在表单中设置，不生成明文临时密码）
                 users = load_users()
                 if not any(u.get("email") == email for u in users):
                     if initial_hash is None:
-                        return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码（至少 6 位）"}), 400
+                        return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
                     users.append(
                         {
                             "email": email,
@@ -935,6 +1060,9 @@ def create_app():
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
             old = accounts[idx]
+            # 软删除账号禁止编辑（防编辑流程绕过软删除，恢复需走 restore 接口）
+            if old.get("deleted"):
+                return jsonify({"error": "账号已删除，请先恢复"}), 400
             data = request.get_json(silent=True) or {}
             err, clean = validate_account(data, require_password=False)
             if err:
@@ -948,8 +1076,10 @@ def create_app():
             # 密码留空 = 保持不变（密码明文永不下发前端）
             if not clean["password"]:
                 clean["password"] = old.get("password", "")
-            # 设备识别码留空 = 保持不变（编辑表单不预填，避免误清空设备绑定信息）
-            if not clean["phone_code"]:
+            # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变（表单不预填防误清空）
+            if clean["phone_code"] == CLEAR_SENTINEL:
+                clean.pop("phone_code", None)
+            elif not clean["phone_code"]:
                 clean["phone_code"] = old.get("phone_code", "")
             # 归属与审核状态保持不变（管理员编辑不改变提交者与生效状态）
             clean["owner"] = old.get("owner", "admin")
@@ -984,11 +1114,26 @@ def create_app():
             )
             if not valid:
                 return jsonify({"error": "所选账号不存在"}), 404
+            if action == "restore":
+                # 恢复防呆：归属用户名下已有其他未删除账号时整批拒绝（每人限 1 个，
+                # 防恢复后同一用户出现多套账号；校验在变更前完成，避免部分生效）
+                for i in valid:
+                    acc = accounts[i]
+                    if acc.get("deleted") and _owner_has_other_live(accounts, acc):
+                        return jsonify(
+                            {
+                                "error": f"账号「{acc.get('name', '')}」的归属用户已有生效账号，无法恢复（每人限 1 个）"
+                            }
+                        ), 400
             done = 0
             for i in valid:
                 acc = accounts[i]
                 if action == "approve":
-                    if acc.get("status") in (STATUS_PENDING, STATUS_REJECTED):
+                    # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
+                    if not acc.get("deleted") and acc.get("status") in (
+                        STATUS_PENDING,
+                        STATUS_REJECTED,
+                    ):
                         acc["status"] = STATUS_ACTIVE
                         acc.pop("reject_reason", None)
                         done += 1
@@ -1064,6 +1209,11 @@ def create_app():
             acc = accounts[idx]
             if not acc.get("deleted"):
                 return jsonify({"error": "该账号不在待删除状态"}), 400
+            # 防呆：归属用户名下已有其他未删除账号则拒绝恢复（每人限 1 个，防恢复后重复）
+            if _owner_has_other_live(accounts, acc):
+                return jsonify(
+                    {"error": "该用户已有生效账号，无法恢复（每人限 1 个）"}
+                ), 400
             acc.pop("deleted", None)
             acc.pop("deleted_at", None)
             save_accounts(accounts)
@@ -1109,7 +1259,8 @@ def create_app():
             action = (request.get_json(silent=True) or {}).get("action")
             acc = accounts[idx]
             if action == "approve":
-                if acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
+                # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
+                if acc.get("deleted") or acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
                     return jsonify({"error": "该账号无需审核"}), 400
                 acc["status"] = STATUS_ACTIVE
                 acc.pop("reject_reason", None)
@@ -1148,7 +1299,10 @@ def create_app():
             accounts = load_accounts()
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
-            direction = int((request.get_json(silent=True) or {}).get("dir", 0))
+            try:
+                direction = int((request.get_json(silent=True) or {}).get("dir", 0))
+            except (TypeError, ValueError):
+                return jsonify({"error": "无法移动"}), 400
             target = idx + direction
             if direction not in (-1, 1) or not 0 <= target < len(accounts):
                 return jsonify({"error": "无法移动"}), 400
@@ -1162,15 +1316,20 @@ def create_app():
     def _my_account_indices_of(accounts):
         """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。
 
-        管理员：owner 'admin' 或本人邮箱，不含待删除；普通用户：本人邮箱（含待删除，
-        用于展示「已删除」状态；单账号限制在提交处另行排除）。
+        管理员：内置管理员（.env）显示 owner 'admin' + 本人邮箱；注册管理员仅本人邮箱
+        （不显示他人/内置管理员添加的账号）；均不含待删除。
+        普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
         """
         email = session.get("username", "").lower()
         if _current_role() == "admin":
+            if email == _builtin_admin_email():
+                return [
+                    i
+                    for i, a in enumerate(accounts)
+                    if a.get("owner") in ("admin", email) and not a.get("deleted")
+                ]
             return [
-                i
-                for i, a in enumerate(accounts)
-                if a.get("owner") in ("admin", email) and not a.get("deleted")
+                i for i, a in enumerate(accounts) if a.get("owner") == email and not a.get("deleted")
             ]
         return [i for i, a in enumerate(accounts) if a.get("owner") == email]
 
@@ -1184,8 +1343,10 @@ def create_app():
         queue_ahead = 自己账号之前、今日尚未签到成功（非 ✅）的已生效账号数。
         """
         states, recent = parse_sign_log(LOG_FILE)  # 单次解析复用（原双调用读盘+正则×2）
-        # 参与排队队列的账号：已生效（active，pending 不参与签到）
-        active = [a for a in accounts if a.get("status") == STATUS_ACTIVE]
+        # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除
+        active = [
+            a for a in accounts if a.get("status") == STATUS_ACTIVE and not a.get("deleted")
+        ]
         # 排队位置预计算（单次遍历累计，替代每个账号 O(pos) 切片求和）
         queue_before = []
         running = 0
@@ -1285,7 +1446,8 @@ def create_app():
                             daily = json.load(f)
                     except Exception:
                         daily = {}
-                    result[date] = {p: daily.get(p, "") for p in phones}
+                    # setdefault：异常文件名（非 YYYY-MM-DD）不落入本月键时自动补空，防 KeyError 500
+                    result.setdefault(date, {}).update({p: daily.get(p, "") for p in phones})
         except OSError:
             pass  # STATE_DIR 不存在等：按无记录返回
         return jsonify({"ok": True, "month": month, "days": result})
@@ -1322,6 +1484,9 @@ def create_app():
                 return jsonify({"error": "账号不存在"}), 404
             real_idx = indices[idx]
             old = accounts[real_idx]
+            # 软删除账号禁止编辑（防编辑流程绕过软删除；恢复由管理员操作）
+            if old.get("deleted"):
+                return jsonify({"error": "账号已删除，请先恢复"}), 400
             data = request.get_json(silent=True) or {}
             err, clean = validate_account(data, require_password=False)
             if err:
@@ -1333,7 +1498,10 @@ def create_app():
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
             if not clean["password"]:
                 clean["password"] = old.get("password", "")
-            if not clean["phone_code"]:
+            # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变
+            if clean["phone_code"] == CLEAR_SENTINEL:
+                clean.pop("phone_code", None)
+            elif not clean["phone_code"]:
                 clean["phone_code"] = old.get("phone_code", "")
             clean["owner"] = old.get("owner", "")
             # 被拒绝的账号编辑后 = 重新提交审核（回 pending，清除拒绝理由）
@@ -1418,11 +1586,18 @@ def create_app():
                 "email": u.get("email", ""),
                 "role": u.get("role", "user"),
                 "created_at": u.get("created_at", ""),
-                "account_count": sum(1 for a in accounts if a.get("owner") == u.get("email")),
+                # 计数排除软删除账号（删除后不占账号数/待审核数）
+                "account_count": sum(
+                    1
+                    for a in accounts
+                    if a.get("owner") == u.get("email") and not a.get("deleted")
+                ),
                 "pending_count": sum(
                     1
                     for a in accounts
-                    if a.get("owner") == u.get("email") and a.get("status") == STATUS_PENDING
+                    if a.get("owner") == u.get("email")
+                    and a.get("status") == STATUS_PENDING
+                    and not a.get("deleted")
                 ),
             }
             for u in users
@@ -1454,8 +1629,10 @@ def create_app():
             if any(not isinstance(e, str) or len(e) > 64 for e in emails):
                 return jsonify({"error": "邮箱格式不正确"}), 400
             password = str(data.get("password", ""))
-            if action == "reset_password" and len(password) < 6:
-                return jsonify({"error": "新密码至少 6 位"}), 400
+            if action == "reset_password":
+                pw_err = _password_policy_error(password)
+                if pw_err:
+                    return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
             # 权限：管理员权限变更仅主管理员（普通管理员可重置密码/删除，不可改权限）
             if action in ("set_admin", "unset_admin"):
                 username = (session.get("username") or "").strip().lower()
@@ -1469,13 +1646,18 @@ def create_app():
                 if not target or email == builtin:  # 内置管理员不可批量操作
                     continue
                 if action == "set_admin":
-                    # 只能将正式用户（有生效账号且无待审核）设为管理员
+                    # 只能将正式用户（有生效账号且无待审核）设为管理员；
+                    # 正式用户判定仅 status==active 算（rejected 不算），且软删除不算
                     has_pending = any(
-                        a.get("owner") == email and a.get("status") == STATUS_PENDING
+                        a.get("owner") == email
+                        and a.get("status") == STATUS_PENDING
+                        and not a.get("deleted")
                         for a in accounts
                     )
                     has_active = any(
-                        a.get("owner") == email and a.get("status") != STATUS_PENDING
+                        a.get("owner") == email
+                        and a.get("status") == STATUS_ACTIVE
+                        and not a.get("deleted")
                         for a in accounts
                     )
                     if not has_active or has_pending:
@@ -1483,6 +1665,7 @@ def create_app():
                     target["role"] = "admin"
                     done += 1
                 elif action == "unset_admin":
+                    # 每次循环内动态重算 admins：前一个被取消后，后续目标以最新列表判定
                     admins = [u for u in users if u.get("role") == "admin"]
                     # 防呆：内置管理员不存在且这是最后一个注册管理员时跳过
                     if target.get("role") == "admin" and len(admins) <= 1 and not builtin:
@@ -1490,10 +1673,16 @@ def create_app():
                     target["role"] = "user"
                     done += 1
                 elif action == "reset_password":
-                    target["password_hash"] = generate_password_hash(password)
+                    target["password_hash"] = generate_password_hash(password, method=SCRYPT_METHOD)
                     target["pw_version"] = target.get("pw_version", 1) + 1
                     done += 1
                 elif action == "delete":
+                    # 防呆：目标为管理员时校验至少保留 1 个管理员
+                    # （内置管理员存在时允许删除最后一个注册管理员，与单条路径一致）
+                    if target.get("role") == "admin":
+                        admins = [u for u in users if u.get("role") == "admin"]
+                        if len(admins) <= 1 and not builtin:
+                            continue
                     users = [u for u in users if u.get("email") != email]
                     done += 1
             save_users(users)
@@ -1532,14 +1721,19 @@ def create_app():
             if not target:
                 return jsonify({"error": "用户不存在"}), 404
             if new_role == "admin":
-                # 只能将正式用户（有生效账号且无待审核）设为管理员
+                # 只能将正式用户（有生效账号且无待审核）设为管理员；
+                # 正式用户判定仅 status==active 算（rejected 不算），且软删除不算
                 accounts = load_accounts()
                 has_pending = any(
-                    a.get("owner") == email and a.get("status") == STATUS_PENDING
+                    a.get("owner") == email
+                    and a.get("status") == STATUS_PENDING
+                    and not a.get("deleted")
                     for a in accounts
                 )
                 has_active = any(
-                    a.get("owner") == email and a.get("status") != STATUS_PENDING
+                    a.get("owner") == email
+                    and a.get("status") == STATUS_ACTIVE
+                    and not a.get("deleted")
                     for a in accounts
                 )
                 if not has_active or has_pending:
@@ -1564,14 +1758,15 @@ def create_app():
         """重置用户密码（管理员无法查看原密码，只能设置新密码）。"""
         data = request.get_json(silent=True) or {}
         password = str(data.get("password", ""))
-        if len(password) < 6:
-            return jsonify({"error": "新密码至少 6 位"}), 400
+        pw_err = _password_policy_error(password)
+        if pw_err:
+            return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
         with _file_lock:
             users = load_users()
             target = _find_user(users, email)
             if not target:
                 return jsonify({"error": "用户不存在"}), 404
-            target["password_hash"] = generate_password_hash(password)
+            target["password_hash"] = generate_password_hash(password, method=SCRYPT_METHOD)
             target["pw_version"] = target.get("pw_version", 1) + 1  # 被重置用户的旧会话随之失效
             save_users(users)
             logger.info("已重置用户 %s 密码", _mask_email(email))
@@ -1619,8 +1814,13 @@ def create_app():
         data = request.get_json(silent=True) or {}
         phone = str(data.get("phone", "")).strip()
         accounts = load_accounts()
-        if find_account_index(accounts, phone) is None:
+        idx = find_account_index(accounts, phone)
+        if idx is None:
             return jsonify({"error": f"账号 {phone} 不在配置中"}), 404
+        acc = accounts[idx]
+        # 仅可签到账号可手动触发：已生效（active）且未软删除
+        if acc.get("deleted") or acc.get("status") != STATUS_ACTIVE:
+            return jsonify({"error": "该账号不可手动签到（未生效或已删除）"}), 400
         with _signin_lock:  # 原子检查+占位：并发请求不能同时通过防抖
             now = time.time()
             if phone in _last_trigger and now - _last_trigger[phone] < SIGN_MIN_INTERVAL:
@@ -1692,6 +1892,8 @@ def create_app():
                 "gap_max": load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", 0),
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
+                # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
+                "sign_mode": read_env(ENV_FILE).get("YIBAN_SIGN_MODE", "").strip() or "sequence",
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
                 "batch_mode": False,
             }
@@ -1710,8 +1912,14 @@ def create_app():
         gap = min(max(gap, 0), 3600)
         write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", start)
         write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", gap)
+        # 签到模式（sequence/random）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
+        sign_mode = str(data.get("sign_mode", "")).strip().lower()
+        if sign_mode and sign_mode not in ("sequence", "random"):
+            return jsonify({"error": "签到模式取值应为 sequence 或 random"}), 400
+        if sign_mode:
+            write_env_key(ENV_FILE, "YIBAN_SIGN_MODE", sign_mode)
         # 批量多选为前端会话级开关，不写入配置
-        logger.info("更新设置: 启动=%s 间隔=%s", start, gap)
+        logger.info("更新设置: 启动=%s 间隔=%s 签到模式=%s", start, gap, sign_mode or "不变")
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----
