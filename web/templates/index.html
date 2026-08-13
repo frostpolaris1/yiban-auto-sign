@@ -836,9 +836,9 @@ function batchUsers(key, action) {
   if (!emails.length) { toast('请先勾选要操作的用户', true); return; }
   const body = { action, emails };
   if (action === 'reset_password') {
-    const pw = prompt(`为选中的 ${emails.length} 个用户设置新密码（至少 6 位）：`);
+    const pw = prompt(`为选中的 ${emails.length} 个用户设置新密码（至少 10 位，含两类字符）：`);
     if (!pw) return;
-    if (pw.length < 6) { toast('密码至少 6 位', true); return; }
+    if (pw.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
     body.password = pw;
   }
   if (action === 'delete' && !confirm(`确定删除选中的 ${emails.length} 个用户吗？将连同其易班账号删除，不可恢复！`)) return;
@@ -1695,7 +1695,7 @@ async function setUserRole(email, role) {
 }
 
 async function resetUserPassword(email) {
-  const password = prompt(`为 ${email} 设置新密码（至少 6 位）：`);
+  const password = prompt(`为 ${email} 设置新密码（至少 10 位，含两类字符）：`);
   if (!password) return;
   if (password.length < 6) { toast('密码至少 6 位', true); return; }
   try {
