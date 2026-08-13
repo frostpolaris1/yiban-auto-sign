@@ -34,6 +34,10 @@
   }
   pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
 
+
+  /* Tab 切换淡入（克制动效） */
+  @keyframes tab-fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+  .tab-enter { animation: tab-fade-in 0.18s ease-out; }
   /* 表格 sticky 操作列：行 hover 时同步变色（否则滚动时背景穿帮） */
   tr:hover td.sticky { background-color: rgb(250 250 250); }
   .dark tr:hover td.sticky { background-color: rgb(39 39 42 / 0.5); }
@@ -118,7 +122,7 @@
       </svg>
       退出登录
     </button>
-    <div onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 mt-3 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }} · <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a></div>
+    <div onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-400 mt-3 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }} · <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a></div>
   </div>
 </aside>
 
@@ -165,7 +169,7 @@
           <span id="accounts-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
         </div>
         <input id="pending-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
-               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-amber-100 dark:border-amber-800/50">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
       <div id="batch-bar-pending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-pending" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('pending','approve')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">通过</button> <button onclick="batchAccounts('pending','reject')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">拒绝</button> <button onclick="clearBatch('pending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
@@ -195,7 +199,7 @@
           <span id="accounts-active-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <input id="active-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
-               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <div id="batch-bar-active" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-active" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('active','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('active')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
@@ -230,7 +234,7 @@
                   class="text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 text-sm leading-none px-1">▾</button>
         </div>
         <input id="deleted-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
-               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">已删除的账号保留 7 天，可随时恢复；超期将自动彻底清除</p>
       <div id="batch-bar-deleted" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-deleted" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('deleted','restore')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">恢复</button> <button onclick="clearBatch('deleted')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
@@ -422,7 +426,7 @@
           <span id="users-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
         </div>
         <input id="users-pending-search" type="search" placeholder="搜索邮箱…"
-               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-amber-100 dark:border-amber-800/50">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
       <div id="batch-bar-usersPending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersPending" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersPending','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersPending','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersPending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
@@ -451,7 +455,7 @@
           <span id="users-normal-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <input id="users-normal-search" type="search" placeholder="搜索邮箱…"
-               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <div id="batch-bar-usersNormal" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersNormal" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersNormal','set_admin')" class="batch-admin-only px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersNormal','unset_admin')" class="batch-admin-only px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersNormal','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersNormal','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersNormal')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto">
@@ -479,7 +483,7 @@
           <span id="users-vacant-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
         <input id="users-vacant-search" type="search" placeholder="搜索邮箱…"
-               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
+               class="w-full md:w-56 md:ml-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 px-3 py-1.5">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">已注册但未提交任何账号，可重置密码或删除</p>
       <div id="batch-bar-usersVacant" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersVacant" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersVacant','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersVacant','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersVacant')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
@@ -693,6 +697,10 @@ function switchTab(name) {
     btn.classList.toggle('border-l-2', active);
   });
   toggleSidebar(false);
+  const tabEl = $('tab-' + name);
+  tabEl.classList.remove('tab-enter');
+  void tabEl.offsetWidth;  // 重触发动画
+  tabEl.classList.add('tab-enter');
   if (name === 'accounts') loadAccounts();
   if (name === 'logs') { loadLogs(); fillSigninSelect(); }
   if (name === 'settings') { loadSettings(); calibrateClock(); tickClock(); }
