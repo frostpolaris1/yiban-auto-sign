@@ -30,20 +30,12 @@ from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import md5
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
-
-try:
-    from js2py import eval_js
-
-    HAS_JS2PY = True
-except ImportError:
-    HAS_JS2PY = False
-
 
 # ---------------------------------------------------------------------------
 # 日志配置
@@ -207,6 +199,12 @@ RISK_FAIL_KEYWORDS = [
     "登录失败",
     "登录响应异常",
     "OAuth 页解析失败",
+    # WAF 风控拦截：重试只会浪费请求并加重 IP/账号标记（与 WAF_KEYWORDS 对应）
+    "风险访问",
+    "风控",
+    "访问服务禁用",
+    "WAF",
+    "拦截",
 ]
 # 网络/瞬时类失败特征：值得重试
 TRANSIENT_FAIL_KEYWORDS = ["Connection", "连接", "超时", "timeout", "Max retries", "Read timed"]
@@ -234,6 +232,11 @@ def random_delay(max_seconds, label):
     time.sleep(wait)
 
 
+def _sanitize_text(text):
+    """服务端可控内容进入错误消息/日志/通知前转义换行与回车，防止日志与通知注入。"""
+    return str(text).replace("\r", "\\r").replace("\n", "\\n")
+
+
 # ---------------------------------------------------------------------------
 # 账号配置加载
 # ---------------------------------------------------------------------------
@@ -242,7 +245,9 @@ def _parse_account_dict(data):
     phone = str(data.get("phone") or data.get("account") or "").strip()
     password = str(data.get("password") or data.get("pwd") or "").strip()
     if not phone or not password:
-        raise ValueError(f"账号配置缺少必填字段: {data}")
+        # 异常消息只带 phone（登录名，非机密），绝不包含 password 明文
+        missing = "phone" if not phone else "password"
+        raise ValueError(f"账号配置缺少必填字段: {missing} 为空（phone={phone or '<空>'}）")
     return Account(
         phone=phone,
         password=password,
@@ -263,12 +268,16 @@ def _load_accounts_from_file():
         raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 解析失败: {e}") from e
     if not isinstance(raw, list):
         raise RuntimeError(f"账号配置文件 {ACCOUNTS_FILE} 应为 JSON 数组")
-    # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）
-    # 与待删除账号（deleted：网页端软删除，保留期内可恢复，不参与签到）
+    # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）、
+    # 被拒绝账号（status=rejected：管理员审核不通过，不得签到）与待删除账号
+    # （deleted：网页端软删除，保留期内可恢复，不参与签到）。
+    # 注意：旧数据可能没有 status 字段（等于通过审核），必须放行。
     active_raw = [
         item
         for item in raw
-        if item.get("status") != "pending" and not item.get("deleted")
+        if item.get("status") != "pending"
+        and item.get("status") != "rejected"
+        and not item.get("deleted")
     ]
     accounts = [_parse_account_dict(item) for item in active_raw]
     logger.info(f"已从 {ACCOUNTS_FILE} 加载 {len(accounts)} 个账号")
@@ -379,13 +388,20 @@ class YibanClient:
             self.csrf = md5(str(datetime.now()).encode("UTF-8")).hexdigest()
             logger.debug(f"[{account.phone}] 登录方式: 旧流程（iOS 伪造 UA，YIBAN_LEGACY_LOGIN=1）")
         self.session = requests.Session()
-        self.session.keep_alive = False
         self.session.headers = dict(KILLYIBAN_HEADERS if self.use_killyiban else HEADERS)
         # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截
         proxy = os.environ.get("YIBAN_PROXY", "").strip()
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
-            logger.info(f"[{account.phone}] 已启用代理: {proxy}")
+            # 日志只记录 scheme://host:port，绝不落 userinfo（账号密码）明文
+            proxy_parsed = urlsplit(proxy)
+            if proxy_parsed.hostname:
+                proxy_desc = f"{proxy_parsed.scheme}://{proxy_parsed.hostname}"
+                if proxy_parsed.port:
+                    proxy_desc += f":{proxy_parsed.port}"
+            else:
+                proxy_desc = "<无法解析>"
+            logger.info(f"[{account.phone}] 已启用代理: {proxy_desc}")
         else:
             logger.warning(
                 f"[{account.phone}] 未配置 YIBAN_PROXY，如遇到 WAF 拦截请配置代理（国内出口）"
@@ -394,6 +410,15 @@ class YibanClient:
         self.phone_model = account.phone_model
         self.phone_code = account.phone_code
         self.logged_in = False
+
+    def _rsa_encrypt(self, cipher):
+        """RSA-1024 + PKCS1_v1_5 加密密码，超长时给出明确报错（而非底层 ValueError 裸抛）。"""
+        if len(self.password) > 117:
+            raise ValueError(
+                "密码过长: RSA-1024 公钥单次最多加密 117 字节（约 39 个中文字符），"
+                "当前密码无法加密提交，请缩短密码或联系管理员处理"
+            )
+        return b64encode(cipher.encrypt(self.password))
 
     def login(self):
         """登录易班，成功返回 True，失败抛出异常。"""
@@ -410,9 +435,11 @@ class YibanClient:
             allow_redirects=False,
             timeout=15,
         )
+        if is_waf_blocked(resp.text):
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
         data = resp.json()
         if data.get("code") != 0:
-            raise RuntimeError(f"获取登录入口失败: {data.get('msg')}")
+            raise RuntimeError(f"获取登录入口失败: {_sanitize_text(data.get('msg'))}")
 
         # 2. 跳转到 OAuth 页面，解析 RSA 公钥与 page_use
         resp = self.session.get(data["data"]["Data"], allow_redirects=True, timeout=15)
@@ -426,12 +453,13 @@ class YibanClient:
         )
         key_match = re.compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
         if not page_use_match or not key_match:
-            body_preview = resp.text[:1500].replace("\n", "\\n")
+            # 只落响应摘要（前 300 字符），避免整页 HTML/敏感内容进日志
+            body_preview = resp.text[:300].replace("\n", "\\n")
             logger.error(f"[{self.account.phone}] OAuth 页解析失败诊断:")
             logger.error(f"  最终 URL: {resp.url}")
             logger.error(f"  状态码: {resp.status_code}")
             logger.error(f"  响应长度: {len(resp.text)}")
-            logger.error(f"  响应前1500字符: {body_preview}")
+            logger.error(f"  响应前300字符: {body_preview}")
             logger.error(f"  page_use 命中: {len(page_use_match)}, key 命中: {len(key_match)}")
             if is_waf_blocked(resp.text):
                 logger.error("  检测到 WAF 风控拦截特征，通常是 GitHub Actions 海外 IP 被易班风控")
@@ -454,7 +482,7 @@ class YibanClient:
             data=urlencode(
                 {
                     "oauth_uname": self.account,
-                    "oauth_upwd": b64encode(cipher.encrypt(self.password)),
+                    "oauth_upwd": self._rsa_encrypt(cipher),
                     "client_id": "95626fa3080300ea",
                     "redirect_uri": "https://f.yiban.cn/iapp7463",
                     "state": "",
@@ -465,18 +493,17 @@ class YibanClient:
             allow_redirects=False,
             timeout=15,
         )
-        result = resp.json()
-
-        # 检查是否被 WAF 拦截
+        # 先检测 WAF 拦截再做 JSON 解析（拦截页是 HTML，直接 json() 会抛解析异常）
         if is_waf_blocked(resp.text):
             raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
+        result = resp.json()
 
         if "reUrl" not in result:
-            body_preview = resp.text[:1500].replace("\n", "\\n")
+            body_preview = resp.text[:300].replace("\n", "\\n")
             logger.error(f"[{self.account.phone}] usersure 响应无 reUrl 字段，诊断:")
             logger.error(f"  状态码: {resp.status_code}")
-            logger.error(f"  响应前1500字符: {body_preview}")
-            raise RuntimeError(f"登录响应异常（无 reUrl）: {result}")
+            logger.error(f"  响应前300字符: {body_preview}")
+            raise RuntimeError(f"登录响应异常（无 reUrl）: {_sanitize_text(result)}")
         if "error" in result.get("reUrl", ""):
             raise RuntimeError(f"登录失败（账号或密码错误）: {self.account.phone}")
 
@@ -484,28 +511,37 @@ class YibanClient:
         self.session.headers.update(Referer="https://oauth.yiban.cn")
         resp = self.session.get(result["reUrl"], allow_redirects=False, timeout=15)
 
-        if len(resp.text) > 10:  # 触发 ydclearance 反爬
-            if not HAS_JS2PY:
-                raise RuntimeError("遇到 ydclearance 反爬，需安装 js2py: pip install js2py")
+        if self._is_ydclearance_challenge(resp):
+            # 纯 Python 解析挑战（不执行任何远程 JS），得出 cookie 与跳转路径
             clearance = self._solve_ydclearance(resp.text)
             cookies = dict_from_cookiejar(self.session.cookies)
             cookies["https_ydclearance"] = clearance[0]
             self.session.cookies = cookiejar_from_dict(cookies)
             self.session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
-            resp = self.session.get(
-                f"https://f.yiban.cn{clearance[1]}", allow_redirects=False, timeout=15
-            )
+            target = clearance[1]
+            if not target.startswith("http"):
+                target = "https://f.yiban.cn" + target
+            resp = self.session.get(target, allow_redirects=False, timeout=15)
             self.session.headers.update(Referer=resp.url)
         else:
             self.session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
 
         # 5. 获取 verify_request
-        resp = self.session.get(resp.headers["Location"], allow_redirects=False, timeout=15)
+        location = resp.headers.get("Location", "")
+        if not location:
+            raise RuntimeError(
+                f"获取 verify_request 失败: 上一步响应缺少 Location 头"
+                f"（状态码 {resp.status_code}，响应长度 {len(resp.text)}）"
+            )
+        resp = self.session.get(location, allow_redirects=False, timeout=15)
         verify_match = re.compile(r"verify_request=([^&]+)&?").findall(
             resp.headers.get("Location", "")
         )
         if not verify_match:
-            raise RuntimeError("获取 verify_request 失败")
+            raise RuntimeError(
+                f"获取 verify_request 失败: 重定向响应缺少 verify_request 参数"
+                f"（状态码 {resp.status_code}，响应长度 {len(resp.text)}）"
+            )
         verify_code = verify_match[0]
 
         # 6. 完成登录
@@ -592,7 +628,7 @@ class YibanClient:
             data=urlencode(
                 {
                     "oauth_uname": phone,
-                    "oauth_upwd": b64encode(cipher.encrypt(self.password)),
+                    "oauth_upwd": self._rsa_encrypt(cipher),
                     "client_id": "95626fa3080300ea",
                     "redirect_uri": "https://f.yiban.cn/iapp7463",
                     "state": "",
@@ -603,10 +639,13 @@ class YibanClient:
             allow_redirects=False,
             timeout=15,
         )
+        # 先检测 WAF 拦截再做 JSON 解析（拦截页是 HTML，直接 json() 会抛解析异常）
+        if is_waf_blocked(resp.text):
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
         result = resp.json()
         # App 用 code == "s200" 判断成功
         if result.get("code") != "s200":
-            raise RuntimeError(f"登录失败: {result.get('msgCN', result)}")
+            raise RuntimeError(f"登录失败: {_sanitize_text(result.get('msgCN', result))}")
 
         # 4. 打开 iframe/index 获取 Location → verify_request（默认三个头）
         resp = self.session.get(
@@ -618,7 +657,17 @@ class YibanClient:
         location = resp.headers.get("Location", "")
         verify_match = re.compile(r"verify_request=(.*?)&").findall(location)
         if not verify_match:
-            raise RuntimeError(f"无法提取 verify_request（Location={location[:100]}）")
+            # Location 的 query 中含 verify_request 令牌，错误消息只留 host/path
+            loc_desc = ""
+            try:
+                parts = urlsplit(location)
+                if parts.scheme:
+                    loc_desc = f"{parts.scheme}://{parts.netloc}{parts.path}"
+                else:
+                    loc_desc = parts.path
+            except ValueError:
+                loc_desc = "<无法解析>"
+            raise RuntimeError(f"无法提取 verify_request（Location={loc_desc}）")
 
         # 5. 完成认证（默认三个头 + 跟随重定向，最终返回 JSON）
         resp = self.session.get(
@@ -627,31 +676,112 @@ class YibanClient:
             allow_redirects=True,
             timeout=15,
         )
+        if is_waf_blocked(resp.text):
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试")
         data = resp.json()
         if data.get("code") != 0:
-            raise RuntimeError(f"最终认证失败: {data.get('msg')}")
+            raise RuntimeError(f"最终认证失败: {_sanitize_text(data.get('msg'))}")
         self.logged_in = True
         logger.info(f"[{phone}] 登录成功")
 
+    def _is_ydclearance_challenge(self, resp):
+        """判断响应是否触发 ydclearance 反爬挑战。
+
+        特征判定（不依赖响应长度）：
+        - Set-Cookie 已下发 https_ydclearance（说明已过挑战）；
+        - 或响应包含挑战 JS 特征（window.onload=setTimeout + eval("qo=eval;qo(po);")）。
+        """
+        if "https_ydclearance" in resp.headers.get("Set-Cookie", ""):
+            return True
+        return "window.onload=setTimeout" in resp.text and 'eval("qo=eval;qo(po);")' in resp.text
+
     def _solve_ydclearance(self, text):
-        """解析 ydclearance 反爬 JS。"""
-        result = re.compile(r"(function ([a-z]{2,})\(.+) ?</script>").findall(text)
-        js_code = str(result[0][0])
-        js_code = js_code.replace(r'eval("qo=eval;qo(po);");', r"return po;")
-        js_code += (
-            "\n"
-            + result[0][1]
-            + "("
-            + re.compile(r'window.onload=setTimeout\("' + result[0][1] + r"\(([0-9]+).+").findall(
-                text
-            )[0]
-            + ");"
+        """纯 Python 解析易盾 WAF（https_ydclearance）挑战，不执行任何远程 JS。
+
+        挑战模板固定（易盾 WAF v1，f.yiban.cn 与 kuaidaili/89ip 同款）：
+        `oo` 十六进制字节数组 + 三步固定变换（取反+旋转-常量、逆向差分、
+        加常量+旋转），最后跳过 `qo % K` 的下标、逐字节异或挑战参数拼出
+        `po` 字符串（含 cookie 赋值与跳转路径）。各步数值常量随挑战变化，
+        用正则从 JS 中提取后在 Python 中复刻运算；任何一步提取失败都抛
+        明确错误，绝不 eval 远程代码。
+        """
+        fn_m = re.compile(r"(function ([a-z]{2,})\(.+) ?</script>").findall(text)
+        if not fn_m:
+            raise RuntimeError("ydclearance 挑战解析失败: 未找到挑战函数")
+        js_code = fn_m[0][0]
+        if 'eval("qo=eval;qo(po);")' not in js_code:
+            raise RuntimeError("ydclearance 挑战解析失败: 模板特征缺失（eval qo/po 未找到）")
+
+        # 挑战参数：window.onload=setTimeout("<fn>(<arg>)", 200)
+        arg_m = re.compile(r'window\.onload=setTimeout\("' + fn_m[0][1] + r"\(([0-9]+).+").findall(
+            text
         )
-        evaluated = eval_js(js_code)
-        return [
-            re.compile(r"https?_ydclearance=([0-9a-zA-Z-_]+);?").findall(evaluated)[0],
-            re.compile(r'window\.document\.location="(.+)"').findall(evaluated)[0],
-        ]
+        if not arg_m:
+            raise RuntimeError("ydclearance 挑战解析失败: 未找到挑战参数")
+        arg = int(arg_m[0])
+
+        # oo 字节数组
+        arr_m = re.compile(r"oo = (\[[0-9a-fA-Fx,\s]+?\])").findall(js_code)
+        if not arr_m:
+            raise RuntimeError("ydclearance 挑战解析失败: 未找到 oo 数组")
+        oo = [int(x, 16) for x in re.findall(r"0x([0-9a-fA-F]+)", arr_m[0])]
+        if len(oo) < 4:
+            raise RuntimeError("ydclearance 挑战解析失败: oo 数组过短")
+
+        # 变换 A（尾部到头部）：取反 → 旋转 → 减常量
+        ta = re.search(
+            r'"qo=(\d+); do\{oo\[qo\]=\(-oo\[qo\]\)&0xff;(.+?)\} while\(--qo>=2\);',
+            js_code,
+        )
+        if not ta:
+            raise RuntimeError("ydclearance 挑战解析失败: 变换 A 未找到")
+        n_a = int(ta.group(1))
+        ta_num = re.search(r">>(\d+)", ta.group(2))
+        ta_shift_l = re.search(r"<<(\d+)", ta.group(2))
+        ta_sub = re.search(r"-(\d+)\)&0xff", ta.group(2))
+        if not (ta_num and ta_shift_l and ta_sub):
+            raise RuntimeError("ydclearance 挑战解析失败: 变换 A 常量未找到")
+        for i in range(n_a, 1, -1):
+            oo[i] = (-oo[i]) & 0xFF
+            oo[i] = (
+                ((oo[i] >> int(ta_num.group(1))) | ((oo[i] << int(ta_shift_l.group(1))) & 0xFF))
+                - int(ta_sub.group(1))
+            ) & 0xFF
+
+        # 变换 B（尾部到头部）：逆向差分
+        tb = re.search(r"qo = (\d+); do \{ oo\[qo\] = \(oo\[qo\] - oo\[qo - 1\]\)", js_code)
+        if not tb:
+            raise RuntimeError("ydclearance 挑战解析失败: 变换 B 未找到")
+        for i in range(int(tb.group(1)), 2, -1):
+            oo[i] = (oo[i] - oo[i - 1]) & 0xFF
+
+        # 变换 C（头部到尾部）：加常量 → 旋转
+        tc = re.search(r"if \(qo > (\d+)\) break; oo\[qo\] = (.+?); qo\+\+", js_code)
+        if not tc:
+            raise RuntimeError("ydclearance 挑战解析失败: 变换 C 未找到")
+        tc_num = re.search(r"\+ (\d+)\) & 0xff\) \+ (\d+)\) & 0xff\) << (\d+)", tc.group(2))
+        tc_shift_r = re.search(r">> (\d+)\)", tc.group(2))
+        if not (tc_num and tc_shift_r):
+            raise RuntimeError("ydclearance 挑战解析失败: 变换 C 常量未找到")
+        n_c = int(tc.group(1))
+        tc_add1, tc_add2, tc_shift_l = (int(x) for x in tc_num.groups())
+        for i in range(1, n_c + 1):
+            v = (oo[i] + tc_add1) & 0xFF
+            v = (v + tc_add2) & 0xFF
+            oo[i] = ((v << tc_shift_l) & 0xFF) | (v >> int(tc_shift_r.group(1)))
+
+        # 拼 po：跳过 qo % K 的下标，逐字节异或挑战参数
+        tk = re.search(r"if \(qo % (\d+)\) po \+= String\.fromCharCode\(oo\[qo\] \^ [A-Za-z_]+\)", js_code)
+        if not tk:
+            raise RuntimeError("ydclearance 挑战解析失败: po 拼接逻辑未找到")
+        k = int(tk.group(1))
+        po = "".join(chr(oo[i] ^ arg) for i in range(1, n_c + 1) if i % k)
+
+        cookie_m = re.compile(r"https?_ydclearance=([0-9a-zA-Z-_]+);?").findall(po)
+        path_m = re.compile(r'window\.document\.location="(.+)"').findall(po)
+        if not cookie_m or not path_m:
+            raise RuntimeError("ydclearance 挑战解析失败: 解码结果中未提取到 cookie/跳转路径")
+        return cookie_m[0], path_m[0]
 
     # ---- 签到 -------------------------------------------------------------
     def signin(self):
@@ -677,16 +807,18 @@ class YibanClient:
             allow_redirects=False,
             timeout=15,
         )
+        if is_waf_blocked(resp.text):
+            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试", False
         data = resp.json()
         if data.get("code") != 0:
-            return False, f"获取签到任务失败: {data.get('msg')}", False
+            return False, f"获取签到任务失败: {_sanitize_text(data.get('msg'))}", False
 
         data_obj = data["data"]
         msg = data_obj.get("Msg", "")
-        if msg == "已签到":
+        if "已签到" in msg:
             return True, "今日已签到（无需重复签到）", False
-        if msg == "今日无需签到":
-            return True, "今日无需签到（非签到日）", False
+        if "今日无需签到" in msg:
+            return True, "今日无需签到（非签到日）", True
 
         position_list = data_obj.get("Position", [])
         if not position_list:
@@ -698,7 +830,10 @@ class YibanClient:
         now_ts = int(datetime.now().timestamp())
         start_ts = int(range_obj.get("StartTime", 0))
         end_ts = int(range_obj.get("EndTime", 0))
-        if start_ts and end_ts and not (start_ts <= now_ts <= end_ts):
+        if not start_ts or not end_ts:
+            # 签到时间窗口缺失（Range 为空），视为 skip，不直接提交
+            return False, "签到时间窗口缺失（无 Range），已跳过", True
+        if not (start_ts <= now_ts <= end_ts):
             # 不在签到时间窗口内，标记为 skip（不需要重试）
             return (
                 False,
@@ -748,10 +883,12 @@ class YibanClient:
             allow_redirects=False,
             timeout=15,
         )
+        if is_waf_blocked(resp.text):
+            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理（国内出口）后重试", False
         result = resp.json()
         if result.get("code") == 0 and result.get("data"):
             return True, "签到成功", False
-        err_msg = result.get("msg", "未知错误")
+        err_msg = _sanitize_text(result.get("msg", "未知错误"))
         if "授权设备" in err_msg:
             err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
         return False, f"签到失败: {err_msg}", False
@@ -794,8 +931,7 @@ def attempt_signin(account, notify_url=None):
     except Exception as e:
         logger.error(f"[{phone}] ❌ 尝试失败: {e}")
         logger.debug(traceback.format_exc())
-        if notify_url:
-            send_notification("易班签到异常", f"账号: {phone}\n异常: {e}", notify_url)
+        # 逐次失败不通知（避免通知风暴），仅最终放弃时由 run_queue_retry 通知一次
         return False, str(e), False
 
 
@@ -818,8 +954,12 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
     while queue:
         acc = queue.pop(0)
         phone = acc.phone
+        # 首轮（第一个账号）不等待，后续每个账号（含重试回队）先打散账号间间隔；
+        # 标记在 pop 之后无条件置 False（原实现只在失败分支置 False，
+        # 导致全成功路径账号间隔打散失效）
         if not first_round:
             random_delay(gap_max, f"账号 {phone} 间隔")
+        first_round = False
         attempts[phone] += 1
         logger.info(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
@@ -841,15 +981,18 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
             results[phone] = (False, message, False)
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
             if notify_url:
-                send_notification("易班签到失败", f"账号: {phone}\n原因: {message}", notify_url)
+                send_notification(
+                    "易班签到失败", f"账号: {phone}\n原因: {_sanitize_text(message)}", notify_url
+                )
             continue
 
-        # 放回队尾：先补最短间隔，再打散一段随机延迟
+        # 放回队尾：先固定补足最短间隔（可为 0），再打散一段随机延迟，
+        # 总等待 = remaining + uniform(0, RETRY_GAP_MAX)，避免总间隔可能为 0
         remaining = max(0, RETRY_MIN_INTERVAL - gap_max)
-        random_delay(remaining + RETRY_GAP_MAX, f"账号 {phone} 重试前等待")
+        time.sleep(remaining)
+        random_delay(RETRY_GAP_MAX, f"账号 {phone} 重试前等待")
         queue.append(acc)
         logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次）")
-        first_round = False
 
     return results
 
@@ -909,24 +1052,28 @@ def main():
     gap_max = parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 0)
 
     logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
+    # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）
+    attempt_date = datetime.now().strftime("%Y-%m-%d")
     results = run_queue_retry(accounts, notify_url, start_delay_max, gap_max)
 
     # 汇总（按 accounts 原始顺序展示）
     logger.info("==== 签到汇总 ====")
     has_real_failure = False
+    has_executed = False
     for acc in accounts:
         success, msg, skip = results.get(acc.phone, (False, "未执行", False))
         status = "✅" if success else "❌"
         logger.info(f"  {status} {acc.phone}: {msg}")
         if not success and not skip:
             has_real_failure = True
+        if not skip:
+            has_executed = True
 
-    # 写按日状态文件（供网页日历组件读取；skip=未在签到时间跳过则不写，当天留空）
+    # 写按日状态文件（供网页日历组件读取；skip=未在签到时间/非签到日跳过则不写，当天留空）
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
     try:
         os.makedirs(state_dir, exist_ok=True)
-        today = datetime.now().strftime("%Y-%m-%d")
-        daily_path = os.path.join(state_dir, f"sign-daily-{today}.json")
+        daily_path = os.path.join(state_dir, f"sign-daily-{attempt_date}.json")
         daily = {}
         if os.path.exists(daily_path):
             with open(daily_path, encoding="utf-8") as f:
@@ -940,10 +1087,16 @@ def main():
     except OSError as e:
         logger.warning("写入按日状态文件失败: %s", e)
 
-    # 退出码：
-    # 0 - 全部成功，或仅因"未在签到时间内"跳过（不是真正的失败）
+    # 退出码（run.sh 依据退出码写状态文件）：
+    # 0 - 全部成功（有实际签到执行；含"已签到""窗口外部分跳过但至少执行过"）
     # 1 - 有真正的失败（登录失败、签到失败等）
-    sys.exit(0 if not has_real_failure else 1)
+    # 2 - 全部 skip（无实际执行：全部未在签到时间内/非签到日/窗口缺失），
+    #     由 run.sh 写 SKIPPED 而非 SUCCESS，避免备份等下游任务被吞
+    if has_real_failure:
+        sys.exit(1)
+    if not has_executed:
+        sys.exit(2)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
