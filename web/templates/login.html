@@ -22,14 +22,20 @@
     } catch (e) {}
   })();
 </script>
+<link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css">
 <script src="/static/vendor/tailwind.js"></script>
+<script src="/static/vendor/md-render.js"></script>
 <script>tailwind.config = { darkMode: 'class' }</script>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
+  @media (max-resolution: 1.5dppx) {
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  }
 </style>
 </head>
 <body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4 overscroll-y-none">
-  <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+  <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
           class="fixed top-4 right-4 z-50 w-9 h-9 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow">🌙</button>
   <div class="w-full max-w-md">
 <!-- 全局公告条 -->
@@ -63,7 +69,7 @@
         </div>
         <div id="error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="login-btn"
-                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
+                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
           <span id="login-btn-text">登录</span>
         </button>
       </form>
@@ -90,7 +96,7 @@
         </label>
         <div id="reg-error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="register-btn"
-                class="w-full bg-zinc-900 dark:bg-zinc-700 hover:bg-zinc-800 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
+                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
           <span id="register-btn-text">注册并登录</span>
         </button>
       </form>
@@ -130,7 +136,7 @@ function showError(el, msg) {
 }
 
 // ---- 注册表单即时校验（输入时实时反馈，字段下方提示）----
-const EMAIL_RE = /^[\w.+-]+@[\w-]+(\.[\w-]+)+$/;
+const EMAIL_RE = /^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$/;  // 用户名部分（@ 前）限 32 字符
 const regEmail = document.getElementById('reg-email');
 const regEmailErr = document.getElementById('reg-email-error');
 const regPw = document.getElementById('reg-password');
@@ -145,6 +151,11 @@ function markField(input, errEl, invalid) {
 regEmail.addEventListener('input', () => {
   const v = regEmail.value.trim();
   const invalid = v !== '' && !(EMAIL_RE.test(v) && v.length <= 64);
+  if (v.includes('@') && v.split('@')[0].length > 32) {
+    regEmailErr.textContent = '邮箱用户名部分过长（最多 32 字符）';
+  } else {
+    regEmailErr.textContent = '邮箱格式不正确（示例：name@example.com）';
+  }
   markField(regEmail, regEmailErr, invalid);
 });
 
@@ -253,17 +264,17 @@ async function loadAnnouncement() {
     }
   } catch (e) { /* 静默 */ }
 }
-// 更新日志弹窗（版本号点击，登录页无需登录）
+// 更新日志弹窗（版本号点击，登录页无需登录；Markdown 渲染）
 async function openChangelog() {
   const modal = document.getElementById('changelog-modal');
   modal.classList.remove('hidden');
   const content = document.getElementById('changelog-content');
-  content.textContent = '加载中…';
+  content.innerHTML = '加载中…';
   try {
     const resp = await fetch('/api/changelog');
     const data = await resp.json().catch(() => ({}));
-    content.textContent = (data && data.text) || '暂无更新日志';
-  } catch (e) { content.textContent = '加载失败，请稍后重试'; }
+    content.innerHTML = window.renderMarkdown ? renderMarkdown((data && data.text) || '暂无更新日志') : ((data && data.text) || '暂无更新日志');
+  } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
 }
 function closeChangelog() { document.getElementById('changelog-modal').classList.add('hidden'); }
 
@@ -314,7 +325,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
       <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
       <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
     </div>
-    <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
+    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed"></div>
   </div>
 </div>
 </body>

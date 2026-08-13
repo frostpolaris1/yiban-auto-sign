@@ -22,10 +22,15 @@
     } catch (e) {}
   })();
 </script>
+<link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css">
 <script src="/static/vendor/tailwind.js"></script>
 <script>tailwind.config = { darkMode: 'class' }</script>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
+  @media (max-resolution: 1.5dppx) {
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  }
   pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
 </style>
 </head>
@@ -35,16 +40,12 @@
 <header class="bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 sticky top-0 z-20">
   <div class="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
     <div class="flex items-center gap-2">
-      <div class="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center">
-        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-        </svg>
-      </div>
+      <img src="/static/vendor/logo.png" alt="易班自动签到" class="w-9 h-9 rounded-lg object-cover shrink-0">
       <span class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 text-sm">易班自动签到</span>
     </div>
     <div class="flex items-center gap-4">
       <span id="user-clock" class="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:inline">服务器时间：--:--:--</span>
-      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
               class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">🌙</button>
       <span id="user-email" class="text-sm text-zinc-600 dark:text-zinc-300"></span>
       <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
@@ -62,9 +63,9 @@
   <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-6">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h2>
-      <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">
-        <span>⏳ 待签到</span><span>✅ 今日成功</span><span>❌ 今日失败</span>
-        <span>🔄 重试中</span><span>➖ 跳过</span>
+      <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">
+        <span>⏳ 待签</span><span>✅ 成功</span><span>❌ 失败</span>
+        <span>🔄 重试</span><span>➖ 跳过</span>
       </div>
     </div>
 
@@ -89,7 +90,7 @@
     <form id="account-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
-        <input id="f-name" type="text" maxlength="20" placeholder="如：我的手机"
+        <input id="f-name" type="text" maxlength="50" placeholder="如：我的手机"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
@@ -114,31 +115,39 @@
       </div>
       <div class="md:col-span-2 flex items-center gap-3 pt-1">
         <button id="account-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+        <button id="cancel-edit-btn" type="button" onclick="cancelEdit()"
+                class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
         <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
       </div>
     </form>
   </section>
 
-  <!-- 修改密码 -->
+  <!-- 修改密码（默认收起，点击标题展开） -->
   <section class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
-    <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">修改密码</h2>
-    <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
-    <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
-        <input id="p-old" type="password" required placeholder="输入当前密码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
-        <input id="p-new" type="password" required placeholder="新密码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-      </div>
-      <div class="md:col-span-2 flex items-center gap-3">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
-        <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
-      </div>
-    </form>
+    <button type="button" onclick="togglePassword()" aria-expanded="false"
+            class="w-full flex items-center justify-between text-left">
+      <span class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">修改密码</span>
+      <span id="password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
+    </button>
+    <div id="password-body" class="hidden mt-4">
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
+      <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
+          <input id="p-old" type="password" required placeholder="输入当前密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
+          <input id="p-new" type="password" required placeholder="新密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
+        <div class="md:col-span-2 flex items-center gap-3">
+          <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
+          <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        </div>
+      </form>
+    </div>
   </section>
 </main>
 <footer onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</footer>
@@ -217,21 +226,24 @@ function renderList() {
     const card = document.createElement('div');
     card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl p-4';
     card.innerHTML = `
-      <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
-          <span class="text-lg leading-none">${a.state_icon}</span>
+          <span class="text-lg leading-none">${a.deleted ? '🗑️' : a.state_icon}</span>
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
-            ${a.status === 'active' ? (a.state_icon === '✅'
-              ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
-              : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + a.queue_ahead + '</span> 人</div>') : ''}
+            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，可重新提交</div>'
+              : (a.status === 'active' ? (a.state_icon === '✅'
+                ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
+                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + a.queue_ahead + '</span> 人</div>') : '')}
           </div>
         </div>
         <div class="flex items-center gap-2">
-          ${statusBadge(a.status)}
-          <button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
-          <button onclick="deleteAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">删除</button>
+          ${a.deleted ? '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2 py-0.5">已删除</span>'
+            : statusBadge(a.status)}
+          ${a.deleted ? ''
+            : `<button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
+          <button onclick="deleteAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">删除</button>`}
         </div>
       </div>
       ${a.status === 'rejected' ? `
@@ -241,31 +253,32 @@ function renderList() {
           <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:text-zinc-300 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      <div class="mt-4 max-w-sm" id="cal-wrap-${esc(a.phone)}"></div>
+      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-u-${i}"></div>
     `;
     list.appendChild(card);
-    if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
+    if (a.status === 'active') renderCalendar(a.phone, 'u-' + i);  // 未生效账号不显示日历
   });
 }
 
 // ================= 签到日历（按日状态文件 + 日志） =================
-const calState = {};  // phone -> {year, month}
+const calState = {};  // calKey -> {year, month}
 
 function calPad(n) { return String(n).padStart(2, '0'); }
 
 function calShift(btn, delta) {
+  const key = btn.dataset.key;
   const phone = btn.dataset.phone;
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   st.month += delta;
   if (st.month < 1) { st.month = 12; st.year--; }
   if (st.month > 12) { st.month = 1; st.year++; }
-  renderCalendar(phone);
+  renderCalendar(phone, key);
 }
 
-function renderCalendar(phone) {
-  const wrap = $('cal-wrap-' + phone);
+function renderCalendar(phone, key) {
+  const wrap = $('cal-wrap-' + key);
   if (!wrap) return;
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const st = calState[key] || (calState[key] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
   const { year, month } = st;
   const monthStr = `${year}-${calPad(month)}`;
   const today = new Date();
@@ -276,15 +289,15 @@ function renderCalendar(phone) {
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
-            <button onclick="calShift(this, -1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
-            <button onclick="calShift(this, 1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
+            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
           </div>
         </div>
-        <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
+        <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
       </div>
-      <div id="cal-log-${phone}" class="lg:pt-8"></div>
+      <div id="cal-log-${key}" class="lg:pt-8"></div>
     </div>`;
-  const grid = $('cal-grid-' + phone);
+  const grid = $('cal-grid-' + key);
   grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
@@ -304,17 +317,19 @@ function renderCalendar(phone) {
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
       grid.insertAdjacentHTML('beforeend', `
-        <div onclick="calLoadLog(this, '${date}')" data-phone="${esc(phone)}" title="${date}"
+        <div onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
              class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
           <span>${d}</span>
         </div>`);
     }
-  }).catch(() => {});
+  }).catch(() => {
+    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-400 dark:text-zinc-500 py-4">日历加载失败，请稍后重试</div>';
+  });
 }
 
 function calLoadLog(btn, date) {
-  const phone = btn.dataset.phone;
-  const box = $('cal-log-' + phone);
+  const key = btn.dataset.key;
+  const box = $('cal-log-' + key);
   // 周日无需签到，直接提示（不查询日志）
   if (new Date(date + 'T00:00:00').getDay() === 0) {
     box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">周日无需签到</div>';
@@ -344,18 +359,35 @@ function openEditInline(i) {
   $('f-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
   $('account-form-title').textContent = '编辑我的易班账号';
   $('account-submit-btn').textContent = '保存修改';
+  $('cancel-edit-btn').classList.remove('hidden');
   $('submit-done').classList.add('hidden');
   $('account-form-section').classList.remove('hidden');
   $('account-form').classList.remove('hidden');
   $('account-form').scrollIntoView({ behavior: 'smooth' });
 }
 
+// 取消编辑：恢复提交态并收起表单（renderList 按账号数重新隐藏）
+function cancelEdit() {
+  resetAccountForm();
+  renderList();
+  toast('已取消编辑');
+}
+
 function resetAccountForm() {
   editingIdx = null;
   $('account-form-title').textContent = '提交我的易班账号';
   $('account-submit-btn').textContent = '提交账号';
+  $('cancel-edit-btn').classList.add('hidden');
   $('f-password').placeholder = '用于自动登录签到';
   $('f-code').placeholder = '64 位十六进制识别码';
+}
+
+// 修改密码：默认收起，点击标题展开/收起
+function togglePassword() {
+  const body = $('password-body');
+  const hidden = body.classList.toggle('hidden');
+  $('password-arrow').textContent = hidden ? '▸' : '▾';
+  document.querySelector('[onclick="togglePassword()"]').setAttribute('aria-expanded', String(!hidden));
 }
 
 // 提交账号（无账号=新建；编辑模式=更新）
