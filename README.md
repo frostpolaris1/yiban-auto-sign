@@ -11,7 +11,7 @@
 ## ✨ 功能特点
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预
-- 🔐 **真实 App 登录特征**：登录流程复刻解包版 KillYiBan（UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
+- 🔐 **真实 App 登录特征**：登录流程参考 [OneFeiFan/fyiban](https://github.com/OneFeiFan/FYIBAN) 的真实 App 请求特征（UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
 - 🖥️ **网页管理后台**：管理员在任意设备（手机/平板/电脑）登录管理——账号 CRUD/排序/手动签到、审核用户提交的账号、用户管理与权限分级、批量操作、全局公告、签到日志与日历
 - 🗄️ **SQLite 数据库存储**：账号与用户数据存于 SQLite（0.17+）——多人同时操作不互相覆盖、手机号全局唯一有保障；关键管理操作自动审计留痕
 - 📍 **智能定位**：在签到范围内生成随机定位点，模拟真实 GPS（缩放质心算法）
@@ -41,6 +41,8 @@
 
 ## 🚀 快速开始（GitHub Actions）
 
+> ⚠️ **注意**：GitHub Actions 的服务器位于海外，可能被易班 WAF 风控拦截（返回「风险访问服务禁用」），且海外 IP 反复失败可能触发账号风控。**有云服务器时强烈建议改用 [服务器部署](#️-服务器部署进阶)**；以下 Actions 方案仅作免服务器场景的备选。
+
 无需服务器，Fork 仓库 + 配置账号即可，5 分钟搞定。
 
 ### 第 1 步：Fork 仓库
@@ -58,7 +60,7 @@
 | `YIBAN_ACCOUNTS` | 易班账号，格式 `手机号:密码`，多账号用 `#` 分隔 | 二选一必填 |
 | `YIBAN_PHONE` | 易班手机号（单账号，向后兼容） | 二选一必填 |
 | `YIBAN_PASSWORD` | 易班密码（单账号，向后兼容） | 二选一必填 |
-| `YIBAN_PROXY` | 代理地址（绕过 WAF 风控，详见 [代理配置](#代理配置重要)） | **推荐配置** |
+| `YIBAN_PROXY` | 可选：HTTP 代理地址（配置后签到请求经代理发出） | 可选 |
 | `YIBAN_PHONE_MODEL` | 设备型号（学校开启设备绑定时必填，详见 [设备绑定](#设备绑定可选)） | 视情况必填 |
 | `YIBAN_PHONE_CODE` | 设备唯一识别码（学校开启设备绑定时必填，详见 [设备绑定](#设备绑定可选)） | 视情况必填 |
 | `YIBAN_NOTIFY_URL` | 通知 webhook URL（详见 [消息通知](#消息通知可选)） | 可选 |
@@ -102,36 +104,7 @@ Value: 13800138000:pwd1#13900139000:pwd2#13700137000:pwd3
 [2026-08-01 06:35:03] [INFO]   ✅ 13800138000: 签到成功
 ```
 
-如果日志显示 `风险访问服务禁用` 或 `WAF 风控拦截`，说明 GitHub 的海外 IP 被易班风控了，需要配置代理——见下方 [代理配置](#代理配置重要)。
-
-### 第 5 步：配置代理（重要）
-
-<details>
-<summary>📖 为什么需要代理？</summary>
-
-易班平台有 WAF（Web 应用防火墙）风控，会拦截来自海外 IP 的请求。GitHub Actions 的服务器在海外，直接访问会被拦截，返回「风险访问服务禁用」错误。
-
-**解决方案**：配置一个国内出口的代理，让请求看起来是从国内发出的。
-</details>
-
-**方式一：自建代理（推荐，免费）**
-
-如果你有国内云服务器（阿里云/腾讯云等），可在服务器上部署 TinyProxy 作为代理。完整教程见 [PROXY_DEPLOY_GUIDE.md](PROXY_DEPLOY_GUIDE.md)。
-
-部署完成后，在 GitHub Secrets 中添加：
-
-```
-Name:  YIBAN_PROXY
-Value: http://你的服务器IP:8888
-```
-
-**方式二：复用已有的服务器代理**
-
-如果已按 [服务器部署](#️-服务器部署进阶) 方案部署了 ECS + TinyProxy，直接用同一个代理地址填入 GitHub Secrets 即可。
-
-> ⚠️ **安全提示**：公网开放的 HTTP 代理可能被第三方滥用。建议平时关闭 8888 端口，仅在 GitHub Actions 需要时临时开放；或改用带密码认证的代理（如 Squid + BasicAuth）。
-
----
+如果遇到 WAF 风控拦截（「风险访问服务禁用」），说明该网络出口被易班风控，建议改用服务器部署方案。
 
 ## ⏰ 定时执行
 
@@ -141,11 +114,11 @@ Value: http://你的服务器IP:8888
 
 | Cron 表达式 | UTC 时间 | 北京时间 | 实际预计执行 | 用途 |
 |------------|---------|---------|------------|------|
-| `45 21 * * *` | 21:45（前一日） | 05:45 | 约 06:40–07:45 | 签到（ECS 为主力，此为备用） |
+| `45 21 * * *` | 21:45（前一日） | 05:45 | 约 06:40–07:45 | 签到（云服务器为主力，此为备用） |
 
 > GitHub Actions 的 `schedule` 延迟分布约 55–120 分钟（26 个样本，中位数约 80 分钟）。设为 05:45 触发，实际执行约 06:40–07:45，安全落在签到窗口内；延迟 <45 分钟才空跑（历史 0%），延迟 >125 分钟才超时（历史 0%）。
 >
-> ECS 服务器（主力）在 06:31 和 07:10 各执行一次（07:10 仅在 06:31 失败时执行），GitHub Actions 作为备用方案。
+> 云服务器（主力）在 06:31 和 07:10 各执行一次（07:10 仅在 06:31 失败时执行），GitHub Actions 作为备用方案。
 
 ### 修改执行时间
 
@@ -180,8 +153,8 @@ on:
 | `YIBAN_ACCOUNTS_FILE` | `accounts.json` 文件路径，默认 `./accounts.json` | 可选 |
 | `YIBAN_START_DELAY_MAX` | 启动后随机延迟上限秒数：默认 `0`（关闭）；开启后脚本启动随机等待 0~N 秒再开始首个签到，打散"每天固定秒级执行"的脚本特征 | 可选 |
 | `YIBAN_ACCOUNT_GAP_MAX` | 账号间随机间隔上限秒数：默认 `0`（关闭）；开启后账号间随机停顿 0~N 秒 | 可选 |
-| `YIBAN_LEGACY_LOGIN` | 设为 `1` 时使用旧登录流程（伪造 iOS UA）；默认使用 KillYiBan 同款真实 App 特征（推荐，见 [Q1](#q1报错-账号或密码错误e003但密码明明是对的)） | 可选 |
-| `YIBAN_PROXY` | 代理地址，如 `http://host:port` 或 `socks5://host:port` | 推荐 |
+| `YIBAN_LEGACY_LOGIN` | 设为 `1` 时使用旧登录流程（伪造 iOS UA）；默认使用 fyiban 同款真实 App 特征（推荐，见 [Q1](#q1报错-账号或密码错误e003但密码明明是对的)） | 可选 |
+| `YIBAN_PROXY` | 代理地址，如 `http://host:port` 或 `socks5://host:port` | 可选 |
 | `YIBAN_PHONE_MODEL` | 设备型号（如 `Vivo-XXXX`），账号未配置设备信息时全局回退 | 视情况 |
 | `YIBAN_PHONE_CODE` | 设备唯一识别码（64位十六进制字符串），账号未配置设备信息时全局回退 | 视情况 |
 | `YIBAN_NOTIFY_URL` | 通知 webhook URL | 可选 |
@@ -262,15 +235,15 @@ https://api.day.app/YOUR_KEY/易班签到通知
    ```
 </details>
 
-### 代理配置（重要）
+### 代理配置（可选）
 
 | 代理类型 | 格式 | 说明 |
 |---------|------|------|
-| HTTP 代理 | `http://host:port` | 推荐，如 TinyProxy |
-| 带认证的 HTTP | `http://user:pass@host:port` | 如 Squid + BasicAuth |
-| SOCKS5 代理 | `socks5://host:port` | 如 SS5 / Shadowsocks |
+| HTTP 代理 | `http://host:port` | 可选 |
+| 带认证的 HTTP | `http://user:pass@host:port` | 可选 |
+| SOCKS5 代理 | `socks5://host:port` | 可选 |
 
-> 💡 代理必须是国内出口 IP，否则无法绕过易班 WAF 风控。自建代理教程见 [PROXY_DEPLOY_GUIDE.md](PROXY_DEPLOY_GUIDE.md)。
+> 💡 仅在网络出口被风控时按需配置；使用代理访问服务请遵守相关法律法规与平台条款。
 
 ### 设备绑定（可选）
 
@@ -410,8 +383,6 @@ EOF
 
 账号已通过 TUI 写入 `accounts.json`，`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`）。
 
-> 💡 **关于代理**：阿里云 ECS 的 IP 段也可能被易班 WAF 拦截。建议在同台服务器上部署 TinyProxy，通过本机代理访问易班。TinyProxy 安装与配置见 [PROXY_DEPLOY_GUIDE.md](PROXY_DEPLOY_GUIDE.md)。
-
 #### 5. 创建运行脚本
 
 ```bash
@@ -491,7 +462,7 @@ python3 -m web
 - **普通用户**：邮箱注册后提交自己的易班账号（名称+手机号+密码+设备信息），管理员审核通过后参与每日自动签到；可查看自己账号的签到状态与最近记录；每个用户限提交一个账号
 - **安全**：登录失败限速（5 次锁定 5 分钟）+ 连续失败 webhook 告警（`YIBAN_NOTIFY_URL`）、CSRF 防护、密码哈希存储（scrypt）、HttpOnly/SameSite 会话、密码明文永不下发前端
 
-> ⚠️ 无固定域名时建议在阿里云安全组仅放行常用 IP，并定期修改管理员密码。
+> ⚠️ 无固定域名时建议在云服务商安全组仅放行常用 IP，并定期修改管理员密码。
 
 ### 方案对比
 
@@ -573,7 +544,7 @@ sqlite3 /opt/yiban-auto-sign/yiban.db "SELECT ts, username, action, target FROM 
 
 ### 定位生成算法
 
-为保证定位落在有效签到范围内且不暴露固定位置，本项目使用与原 Android 客户端一致的 **缩放质心算法**：
+为保证定位落在有效签到范围内且不暴露固定位置，本项目使用与 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）一致的 **缩放质心算法**（射线法校验，感谢原作者开源）：
 
 1. 解析签到范围返回的多边形顶点 `Points`
 2. 计算多边形质心 `(center_lng, center_lat)`
@@ -633,11 +604,11 @@ workflow-keepalive:
 <details>
 <summary><b>Q1：报错 "账号或密码错误"（e003），但密码明明是对的</b></summary>
 
-> ✅ **已在 v1.7+ 修复**：默认登录方式改为复刻真实解包 App（KillYiBan）的请求特征，详见下方"根因"。
+> ✅ **已修复**：默认登录方式改为参考 fyiban 的真实 App 请求特征，详见下方"根因"。
 
 **根因（2026-08-08 实测破解）**：旧登录流程沿用开源项目 Auto-Test 的请求特征（伪造 iPhone UA + `X-Requested-With: com.yiban.app` + 可预测 CSRF + 非 App 参数组合），被易班风控识别为**非官方客户端**，对登录接口统一返回 `e003 账号或密码错误` 伪装拒绝。它与 IP、账号、密码、设备信息均无关——实测：手机流量 IP + 新账号同样 e003，而同一网络下手机 App 正常。
 
-**修复方式**：登录改为 KillYiBan 同款流程（UA=`Yiban` + `AppVersion: 5.1.2` + SecureRandom 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回（如 GitHub Actions 等特殊场景）。
+**修复方式**：登录改为 fyiban 同款流程（UA=`Yiban` + `AppVersion: 5.1.2` + SecureRandom 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回（如 GitHub Actions 等特殊场景）。
 
 **排查顺序（老版本或自定义改回旧流程时参考）**：
 
@@ -670,7 +641,7 @@ workflow-keepalive:
 <summary><b>Q4：报错 "风险访问服务禁用" / WAF 风控拦截</b></summary>
 
 - **原因**：GitHub Actions 的海外 IP 被易班 WAF 风控拦截
-- **解决方案**：配置 `YIBAN_PROXY` 代理（国内出口），详见 [代理配置](#代理配置重要)
+- **解决方案**：改用 [服务器部署](#️-服务器部署进阶)（国内网络出口）；如确需使用 Actions，可配置 `YIBAN_PROXY` 代理（见 [代理配置](#代理配置可选)）
 - 脚本会自动重试 3 次，如果仍然失败会标记为错误
 - **注意**：海外 IP 的反复失败尝试可能让易班把**账号**标记为可疑，连带影响服务器签到（表现为 e003，见 [Q1](#q1报错-账号或密码错误e003但密码明明是对的)）。如果已有国内服务器签到，**建议在 GitHub Actions 页面禁用该工作流**，避免双路签到触发风控
 </details>
@@ -679,7 +650,7 @@ workflow-keepalive:
 <summary><b>Q5：报错 "遇到 ydclearance 反爬"</b></summary>
 
 - 已在 `requirements.txt` 中包含 `js2py`，正常情况下不会触发此错误
-- 若仍出现，可能是 GitHub Actions IP 被风控，请配置代理
+- 若仍出现，可能是 GitHub Actions 的 IP 被风控，请改用服务器部署方案
 </details>
 
 <details>
@@ -722,7 +693,7 @@ workflow-keepalive:
 **建议**：
 
 - 已有国内服务器签到 → **在 Actions 页面禁用工作流**（Actions → Yiban Sign-in → ⋯ → Disable workflow），让服务器成为唯一签到通道，最稳
-- 没有服务器、必须用 Actions → 配置 `YIBAN_PROXY` 国内代理（见 [代理配置](#代理配置重要)），且避免与其他签到通道叠加同一账号
+- 没有服务器、必须用 Actions → 可配置 `YIBAN_PROXY` 代理（见 [代理配置](#代理配置可选)），并避免与其他签到通道叠加同一账号
 - 恢复 Actions：同一位置 `Enable workflow`
 </details>
 
@@ -793,8 +764,7 @@ python scripts/signin.py
 
 本项目基于以下 AGPL-3.0 项目的衍生实现，按 AGPL-3.0 条款发布：
 
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) - 多边形内随机定位点算法（缩放质心 + 射线法验证）
-- KillYiBan 模块（易班登录特征与签到流程，源自同一开发者的 Gitee 仓库）
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 及其 KillYiBan 组件（AGPL-3.0）- 多边形内随机定位点算法（缩放质心 + 射线法验证）、易班登录特征与签到流程
 
 使用、修改、分发本项目时，请遵守 AGPL-3.0 条款（衍生作品须以相同许可证开源）。
 
@@ -807,8 +777,16 @@ python scripts/signin.py
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
 - [Auto-Test](https://github.com/) - 易班登录流程（OAuth + RSA + ydclearance）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 60 天限制破解方案
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）
-- 原项目 KillYiBan 模块（AGPL-3.0）- nightAttendance 签到流程与易班登录特征（源自 [OneFeiFan](https://github.com/OneFeiFan) 的 Gitee 仓库）
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 及其 KillYiBan 组件（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、易班登录特征与 nightAttendance 签到流程
+
+---
+
+## 🌟 相关开源项目推荐
+
+易班签到生态中的其他开源方案（均含开源许可证，可放心参考）：
+
+- [2117516450/yiban_signin](https://github.com/2117516450/yiban-signin)（易签，Unlicense）- 易班校本化早签/晚签打卡，多用户 + 多线程 + Server酱推送
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 易班 API 安卓库，校本化 OAuth 登录与签到（本项目定位算法与登录特征参考来源）
 
 ---
 
@@ -818,7 +796,7 @@ python scripts/signin.py
 
 本项目的代码与文档由 AI 辅助生成，非人工逐行编写：
 
-- **开发工具**：[TRAE IDE](https://www.trae.cn/)（基于 GLM-5.2 模型）
+- **开发工具**：[ZCode](https://zcode.z.ai/)（基于 deepseek-v4-flash-0731 模型）
 - **AI 负责的工作**：
   - 核心签到脚本 `scripts/signin.py` 的编写与调试
   - GitHub Actions / Gitee Go 工作流配置
