@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 易班自动签到管理</title>
+<script>
+  // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
+  try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
+</script>
+<script>
+  // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
+  // 防止部署更新后缓存旧页面导致登录/功能异常
+  (function () {
+    try {
+      var v = '{{ web_version }}';
+      var prev = localStorage.getItem('web_version');
+      localStorage.setItem('web_version', v);
+      if (prev && prev !== v && !location.search.includes('v=' + v)) {
+        location.replace('/?v=' + v);
+      }
+    } catch (e) {}
+  })();
+</script>
+<script src="/static/vendor/tailwind.js"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+</style>
+</head>
+<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4 overscroll-y-none">
+  <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+          class="fixed top-4 right-4 z-50 w-9 h-9 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow">🌙</button>
+  <div class="w-full max-w-md">
+<!-- 全局公告条 -->
+<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+  <span id="announcement-text"></span>
+</div>
+
+    <!-- 登录/注册卡片 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <!-- Tab 切换 -->
+      <div class="flex bg-zinc-100 dark:bg-zinc-700 rounded-lg p-1 mb-5 text-sm font-medium">
+        <button id="tab-login" onclick="switchMode('login')"
+                class="flex-1 py-1.5 rounded-lg bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm transition-colors duration-150">登录</button>
+        <button id="tab-register" onclick="switchMode('register')"
+                class="flex-1 py-1.5 rounded-lg text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">注册</button>
+      </div>
+
+      <!-- 登录表单 -->
+      <form id="login-form" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="username">邮箱</label>
+          <input id="username" name="username" type="text" required autocomplete="username"
+                 placeholder="输入邮箱"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="password">密码</label>
+          <input id="password" name="password" type="password" required autocomplete="current-password"
+                 placeholder="输入密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+        </div>
+        <div id="error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <button type="submit" id="login-btn"
+                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
+          <span id="login-btn-text">登录</span>
+        </button>
+      </form>
+
+      <!-- 注册表单 -->
+      <form id="register-form" class="space-y-4 hidden">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-email">邮箱 <span class="text-red-500 dark:text-red-400">*</span></label>
+          <input id="reg-email" type="email" required autocomplete="email" maxlength="64"
+                 placeholder="输入邮箱地址"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+          <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">邮箱格式不正确（示例：name@example.com）</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
+          <input id="reg-password" type="password" required autocomplete="new-password"
+                 placeholder="至少 6 位"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
+          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 6 位（当前 0 位）</p>
+        </div>
+        <label class="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">
+          <input id="reg-agree" type="checkbox" class="mt-0.5 w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 accent-blue-500">
+          <span>我已阅读并同意 <a href="javascript:void(0)" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</a></span>
+        </label>
+        <div id="reg-error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <button type="submit" id="register-btn"
+                class="w-full bg-zinc-900 dark:bg-zinc-700 hover:bg-zinc-800 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2">
+          <span id="register-btn-text">注册并登录</span>
+        </button>
+      </form>
+    </div>
+    <footer onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-4 mt-4 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</footer>
+  </div>
+
+<script>
+let mode = 'login';
+// 暗色主题切换（localStorage 记忆）
+function toggleTheme() {
+  const dark = document.documentElement.classList.toggle('dark');
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+  updateThemeBtn();
+}
+function updateThemeBtn() {
+  const dark = document.documentElement.classList.contains('dark');
+  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.textContent = dark ? '☀️' : '🌙'; });
+}
+document.addEventListener('DOMContentLoaded', updateThemeBtn);
+
+function switchMode(m) {
+  mode = m;
+  document.getElementById('login-form').classList.toggle('hidden', m !== 'login');
+  document.getElementById('register-form').classList.toggle('hidden', m !== 'register');
+  const lt = document.getElementById('tab-login');
+  const rt = document.getElementById('tab-register');
+  lt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
+    (m === 'login' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
+  rt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
+    (m === 'register' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
+}
+
+function showError(el, msg) {
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+// ---- 注册表单即时校验（输入时实时反馈，字段下方提示）----
+const EMAIL_RE = /^[\w.+-]+@[\w-]+(\.[\w-]+)+$/;
+const regEmail = document.getElementById('reg-email');
+const regEmailErr = document.getElementById('reg-email-error');
+const regPw = document.getElementById('reg-password');
+const regPwErr = document.getElementById('reg-password-error');
+
+function markField(input, errEl, invalid) {
+  input.classList.toggle('border-red-400', invalid);
+  input.classList.toggle('focus:border-red-400', invalid);
+  errEl.classList.toggle('hidden', !invalid);
+}
+
+regEmail.addEventListener('input', () => {
+  const v = regEmail.value.trim();
+  const invalid = v !== '' && !(EMAIL_RE.test(v) && v.length <= 64);
+  markField(regEmail, regEmailErr, invalid);
+});
+
+regPw.addEventListener('input', () => {
+  const n = regPw.value.length;
+  regPwErr.textContent = `密码至少 6 位（当前 ${n} 位）`;
+  markField(regPw, regPwErr, n < 6);
+});
+
+async function post(path, body) {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  return [resp.status, await resp.json().catch(() => ({}))];
+}
+
+// 登录
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorBox = document.getElementById('error-box');
+  errorBox.classList.add('hidden');
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true;
+  try {
+    const [st, data] = await post('/api/login', {
+      username: document.getElementById('username').value,
+      password: document.getElementById('password').value,
+    });
+    if (st === 200 && data.ok) {
+      location.href = data.role === 'admin' ? '/' : '/user';
+      return;
+    }
+    showError(errorBox, data.error || '登录失败，请重试');
+  } catch (err) {
+    showError(errorBox, '网络错误：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// 用户协议弹窗
+function showAgreement() {
+  document.getElementById('agreement-modal').classList.remove('hidden');
+}
+function closeAgreement() {
+  document.getElementById('agreement-modal').classList.add('hidden');
+}
+
+// 注册（注册成功后自动登录）
+document.getElementById('register-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorBox = document.getElementById('reg-error-box');
+  errorBox.classList.add('hidden');
+  const btn = document.getElementById('register-btn');
+  btn.disabled = true;
+  try {
+    const email = regEmail.value.trim();
+    const password = regPw.value;
+    // 必须勾选同意用户协议
+    if (!document.getElementById('reg-agree').checked) {
+      showError(errorBox, '请先阅读并同意《用户协议》');
+      btn.disabled = false;
+      return;
+    }
+    // 提交前兜底：字段级即时校验优先（错误显示在字段下方，不弹顶部错误框）
+    const emailInvalid = !(EMAIL_RE.test(email) && email.length <= 64);
+    markField(regEmail, regEmailErr, emailInvalid);
+    const pwInvalid = password.length < 6;
+    markField(regPw, regPwErr, pwInvalid);
+    if (emailInvalid || pwInvalid) {
+      btn.disabled = false;
+      return;
+    }
+    const [st, data] = await post('/api/register', {email, password});
+    if (st !== 200) {
+      showError(errorBox, data.error || '注册失败');
+      return;
+    }
+    const [st2, data2] = await post('/api/login', {username: email, password});
+    if (st2 === 200 && data2.ok) {
+      location.href = '/user';
+      return;
+    }
+    showError(errorBox, '注册成功，但自动登录失败，请手动登录');
+  } catch (err) {
+    showError(errorBox, '网络错误：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+<script>
+// 全局公告：访问时加载一次（登录页也显示，无需登录）
+async function loadAnnouncement() {
+  try {
+    const resp = await fetch('/api/announcement');
+    const data = await resp.json().catch(() => ({}));
+    const text = (data && data.text || '').trim();
+    const bar = document.getElementById('announcement-bar');
+    const el = document.getElementById('announcement-text');
+    if (text && bar && el) {
+      el.textContent = text;  // textContent 防 XSS
+      bar.classList.remove('hidden');
+    }
+  } catch (e) { /* 静默 */ }
+}
+// 更新日志弹窗（版本号点击，登录页无需登录）
+async function openChangelog() {
+  const modal = document.getElementById('changelog-modal');
+  modal.classList.remove('hidden');
+  const content = document.getElementById('changelog-content');
+  content.textContent = '加载中…';
+  try {
+    const resp = await fetch('/api/changelog');
+    const data = await resp.json().catch(() => ({}));
+    content.textContent = (data && data.text) || '暂无更新日志';
+  } catch (e) { content.textContent = '加载失败，请稍后重试'; }
+}
+function closeChangelog() { document.getElementById('changelog-modal').classList.add('hidden'); }
+
+document.addEventListener('DOMContentLoaded', loadAnnouncement);
+</script>
+
+<!-- 用户协议弹窗 -->
+<div id="agreement-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeAgreement()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
+    <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="agreement-content">
+      <p>欢迎使用易班自动签到服务。注册前请仔细阅读以下条款：</p>
+      <p>一、服务说明</p>
+      <p>本服务是一个自建的易班自动签到工具，用于在每日签到窗口内，代替你完成易班平台的早操签到打卡。你需要在本网页注册账号，并提交自己的易班登录信息（手机号、密码、设备型号与设备识别码），由系统定时自动执行签到。</p>
+      <p>本服务不提供人工客服，不保证签到一定成功，也不提供任何付费功能或会员服务。</p>
+      <p>二、账号提交与审核</p>
+      <p>注册并登录后，你可以在个人页面提交一套易班账号信息，每个用户仅限提交一套。提交后，管理员会人工审核你的账号信息，审核通过后该账号才会被纳入自动签到队列。</p>
+      <p>如果审核不通过，系统会注明拒绝理由，你可以根据理由修改信息后重新提交，直到审核通过为止。</p>
+      <p>三、信息收集与使用</p>
+      <p>本服务仅收集以下信息：你的注册邮箱与登录密码、易班账号手机号、易班登录密码、设备型号与设备唯一识别码。以上信息仅用于完成自动签到操作，不会用于任何其他用途，也不会向任何第三方提供、出售或共享。</p>
+      <p>我们不会收集你的姓名、学校、学号等与签到无关的个人信息。</p>
+      <p>四、信息安全与责任</p>
+      <p>你的易班登录密码以不可逆哈希形式存储，包括管理员和站长在内的任何人都无法查看明文密码。但请你理解：没有任何系统能做到绝对安全，使用本服务仍存在一定的密码泄露风险。</p>
+      <p>请勿将账号密码与他人共用，因共用导致的后果由你自行承担。</p>
+      <p>五、免责声明</p>
+      <p>自动签到操作处于易班平台规则的边缘地带，使用本服务存在账号被平台限制、处罚的风险。因使用本服务产生的一切后果，包括但不限于签到失败、账号受限、被学校通报等，均由你自愿承担。</p>
+      <p>本服务不保证签到必定成功，也不对任何间接损失负责。</p>
+      <p>六、用户义务</p>
+      <p>你应当提供真实、有效的账号信息，并遵守所在学校的规定和易班平台的使用规则。如果你的易班账号信息发生变更（如修改密码、更换设备），请及时在本服务中更新，否则由此导致的签到失败由你自行承担。</p>
+      <p>你不得利用本服务从事任何违法违规活动。</p>
+      <p>七、服务变更与终止</p>
+      <p>本服务属于个人运维的小规模工具，无固定域名，不保证服务的稳定性与可用性。我们可能因易班平台规则变化、技术故障或其他原因，随时调整或停止服务，恕不另行通知。</p>
+      <p>服务停止后，你的账号信息将被删除，我们不承担数据备份的责任。</p>
+      <p>八、其他</p>
+      <p>本协议可能随服务更新而修改，更新后继续使用即视为同意新协议。注册账号即表示你已阅读并同意以上全部条款。如你不同意本协议，请立即停止使用本服务。</p>
+    </div>
+    <div class="flex justify-end mt-4">
+      <button onclick="closeAgreement()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">我知道了</button>
+    </div>
+  </div>
+</div>
+<!-- 更新日志弹窗 -->
+<div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
+    <div class="flex items-center justify-between mb-3">
+      <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
+    </div>
+    <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
+  </div>
+</div>
+</body>
+</html>

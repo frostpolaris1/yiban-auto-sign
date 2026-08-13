@@ -36,3 +36,6 @@ PROMPT_FOR_MULTIMODAL_MODEL.txt
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 网页管理系统：普通用户表（含密码哈希）
+users.json

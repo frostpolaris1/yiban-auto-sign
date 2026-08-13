@@ -1,0 +1,1437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>易班自动签到 · 网页管理</title>
+<script>
+  // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
+  try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
+</script>
+<script>
+  // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
+  // 防止部署更新后缓存旧页面导致登录/功能异常
+  (function () {
+    try {
+      var v = '{{ web_version }}';
+      var prev = localStorage.getItem('web_version');
+      localStorage.setItem('web_version', v);
+      if (prev && prev !== v && !location.search.includes('v=' + v)) {
+        location.replace('/?v=' + v);
+      }
+    } catch (e) {}
+  })();
+</script>
+<script src="/static/vendor/tailwind.js"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+</style>
+</head>
+<body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen overscroll-y-none">
+
+<!-- 移动端顶栏 -->
+<div class="md:hidden fixed top-0 inset-x-0 z-30 bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 h-14 flex items-center px-4 gap-3">
+  <button onclick="toggleSidebar(true)" class="text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150" aria-label="打开菜单">
+    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  </button>
+  <span class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">易班签到管理</span>
+</div>
+<div id="sidebar-overlay" class="hidden fixed inset-0 bg-black/30 z-20 md:hidden" onclick="toggleSidebar(false)"></div>
+
+<!-- 固定侧边栏 -->
+<aside id="sidebar" class="fixed inset-y-0 left-0 w-64 bg-white dark:bg-zinc-800 border-r border-zinc-200 dark:border-zinc-700 z-30 flex flex-col
+              -translate-x-full md:translate-x-0 transition-transform duration-200">
+  <!-- 品牌 -->
+  <div class="px-4 py-5 border-b border-zinc-100 dark:border-zinc-700 flex items-center gap-2">
+    <div class="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center shrink-0">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+      </svg>
+    </div>
+    <div>
+      <div class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 text-sm">易班自动签到</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500">管理后台</div>
+    </div>
+  </div>
+
+  <!-- 导航 -->
+  <nav class="flex-1 overflow-y-auto py-3 px-2 space-y-1">
+    <button onclick="switchTab('accounts')" data-tab-btn="accounts"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a4 4 0 0 0-3-3.87M9 20H4v-2a4 4 0 0 1 3-3.87m6-1.13a4 4 0 1 0-6 0m5 5.13a4 4 0 1 0-8 0" />
+      </svg>
+      账号管理
+    </button>
+    <button onclick="switchTab('logs')" data-tab-btn="logs"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6M9 8h6M5 21h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z" />
+      </svg>
+      签到日志
+    </button>
+    <button onclick="switchTab('settings')" data-tab-btn="settings"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" />
+      </svg>
+      系统设置
+    </button>
+    <button onclick="switchTab('users')" data-tab-btn="users"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a4 4 0 0 0-3-3.87M9 20H4v-2a4 4 0 0 1 3-3.87m6-1.13a4 4 0 1 0-6 0m5 5.13a4 4 0 1 0-8 0" />
+      </svg>
+      用户管理
+    </button>
+    <button onclick="switchTab('mine')" data-tab-btn="mine"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150 border-l-2 border-transparent">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+      </svg>
+      我的账号
+    </button>
+  </nav>
+
+  <!-- 底部：服务器时间 + 退出 -->
+  <div class="border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
+    <div class="flex items-center justify-between mb-2">
+      <div id="sidebar-clock" class="text-xs text-zinc-400 dark:text-zinc-500">服务器时间：--:--:--</div>
+      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题"
+              class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">🌙</button>
+    </div>
+    <button onclick="doLogout()"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:bg-zinc-700 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v1" />
+      </svg>
+      退出登录
+    </button>
+    <div onclick="openChangelog()" title="点击查看更新日志" class="text-center text-xs text-zinc-400 dark:text-zinc-500 mt-3 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</div>
+  </div>
+</aside>
+
+<!-- 主内容区 -->
+<main class="md:ml-64 pt-14 md:pt-0 p-4 md:p-6 lg:p-8">
+<!-- 全局公告条 -->
+<div id="announcement-bar" class="hidden sticky top-14 md:top-0 z-20 -mx-4 -mt-4 md:-mx-6 md:-mt-6 lg:-mx-8 lg:-mt-8 px-4 md:px-6 lg:px-8 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+  <span id="announcement-text"></span>
+</div>
+
+  <!-- ===== 账号管理 ===== -->
+  <section id="tab-accounts">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div>
+        <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">账号管理</h1>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">列表顺序即顺序打卡顺序 · 修改后自动保存到 <span id="config-file" class="font-mono text-xs bg-zinc-100 dark:bg-zinc-700 rounded px-1">accounts.json</span></p>
+      </div>
+      <button onclick="openForm(null)" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
+        添加账号
+      </button>
+    </div>
+
+    <!-- 待审核提示 -->
+    <div id="pending-tip" class="hidden mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+      有 <span id="pending-count" class="font-semibold">0</span> 个账号待处理（待审核或已拒绝），通过后才会参与定时签到。
+    </div>
+
+    <!-- 统计卡 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" id="stat-cards"></div>
+
+    <!-- 状态图例 -->
+    <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-3">
+      <span>⏳ 准备签到</span><span>✅ 今日成功</span><span>❌ 今日失败</span>
+      <span>🔄 重试中</span><span>➖ 跳过</span>
+    </div>
+
+    <!-- 待处理账号组（待审核/已拒绝，置顶） -->
+    <div id="accounts-pending-box" class="bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl shadow-sm p-4 md:p-6 mb-4">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待处理账号</div>
+        <span id="accounts-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+    <table class="w-full text-sm min-w-[760px]">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+              <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium">名称</th>
+              <th class="px-4 py-3 font-medium">手机号</th>
+              <th class="px-4 py-3 font-medium">用户名</th>
+              <th class="px-4 py-3 font-medium">状态</th>
+              <th class="px-4 py-3 font-medium text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-pending-tbody"></tbody>
+        </table>
+        <div id="accounts-pending-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-6">暂无待处理账号</div>
+      </div>
+    </div>
+
+    <!-- 正常账号组 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
+      <div class="px-4 py-3 border-b border-zinc-100 dark:border-zinc-700 text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
+      <div class="overflow-x-auto">
+   <table class="w-full text-sm min-w-[1000px]">
+        <thead>
+          <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+            <th class="px-4 py-3 font-medium">状态</th>
+            <th class="px-4 py-3 font-medium">#</th>
+            <th class="px-4 py-3 font-medium">名称</th>
+            <th class="px-4 py-3 font-medium">手机号</th>
+            <th class="px-4 py-3 font-medium">设备型号</th>
+            <th class="px-4 py-3 font-medium">用户名</th>
+            <th class="px-4 py-3 font-medium">审核</th>
+            <th class="px-4 py-3 font-medium text-right">操作</th>
+          </tr>
+        </thead>
+        <tbody id="accounts-tbody"></tbody>
+      </table>
+        <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">
+          暂无账号，点击右上角「添加账号」开始配置
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 签到日志 ===== -->
+  <section id="tab-logs" class="hidden">
+    <div class="mb-4">
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">签到日志</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">实时查看签到结果与今日各账号状态（每 10 秒自动刷新）</p>
+    </div>
+
+    <!-- 手动签到 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">手动签到</div>
+      <div class="flex flex-wrap items-center gap-2">
+        <select id="signin-select" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 min-w-52"></select>
+        <button onclick="doSignin()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
+          立即签到
+        </button>
+        <span id="signin-tip" class="text-xs text-zinc-400 dark:text-zinc-500">后台执行，结果约 30 秒内出现在下方日志</span>
+      </div>
+    </div>
+
+    <!-- 日志面板 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">最近日志</div>
+        <div class="text-xs text-zinc-400 dark:text-zinc-500">文件：<span id="log-file" class="font-mono">/var/log/yiban/sign.log</span></div>
+      </div>
+      <pre id="log-box" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-280px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
+      <div id="log-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-10">（暂无签到日志，等待定时任务执行…）</div>
+    </div>
+  </section>
+
+  <!-- ===== 系统设置 ===== -->
+  <section id="tab-settings" class="hidden">
+    <div class="mb-4">
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">系统设置</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">随机延迟用于打散"每天固定秒级执行"的脚本特征（防风控纵深防御）</p>
+    </div>
+
+    <!-- 随机延迟 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-4">随机延迟（写入 .env，cron 下次触发自动生效）</div>
+      <div class="space-y-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
+          <button id="start-delay-btn" onclick="toggleDelay('start')"
+                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
+          <input id="start-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
+                 class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
+          <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">启动后随机等待 0~N 秒再开始首个签到</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">账号间隔</label>
+          <button id="gap-delay-btn" onclick="toggleDelay('gap')"
+                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">关闭</button>
+          <input id="gap-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
+                 class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
+          <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">账号间随机停顿 0~N 秒（顺序模式）</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-3 mt-5">
+        <span class="text-xs text-zinc-400 dark:text-zinc-500">开关与秒数修改后自动保存</span>
+        <span id="settings-saved-tip" class="text-xs text-green-600 dark:text-green-400 hidden">已自动保存</span>
+      </div>
+    </div>
+
+    <!-- 连通性检测 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">连通性检测（不登录，仅检查易班 API 可达性）</div>
+      <div class="flex flex-wrap items-center gap-3">
+        <button onclick="doPing()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-4 py-2 text-sm">
+          开始检测
+        </button>
+        <span id="ping-result" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+    </div>
+
+    <!-- 服务器时间与签到状态 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
+      <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
+      <div class="text-sm mt-2" id="sign-status">…</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六，可在 tui 或代码中调整）</div>
+    </div>
+
+    <!-- 修改我的密码 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">修改主管理员密码</div>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
+      <div class="space-y-3 max-w-sm">
+        <div>
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
+          <input id="my-old-password" type="password" placeholder="输入当前密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 6 位）</label>
+          <input id="my-new-password" type="password" placeholder="新密码"
+                 class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        </div>
+        <div class="flex items-center gap-3">
+          <button onclick="saveMyPassword()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全局公告 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">全局公告</div>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">显示在所有页面顶部（含登录页）；留空保存 = 清除公告</p>
+      <textarea id="announcement-input" rows="2" maxlength="200" placeholder="如：当前测试中，服务器可能不稳定"
+                class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2"></textarea>
+      <div class="flex items-center gap-3 mt-3">
+        <button onclick="saveAnnouncement()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存公告</button>
+        <span id="announcement-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 用户管理 ===== -->
+  <section id="tab-users" class="hidden">
+    <div class="mb-4">
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">用户管理</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">管理注册用户与管理员权限 · 密码仅可重置，不可查看</p>
+    </div>
+    <!-- 待审核用户组 -->
+    <div class="bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl shadow-sm p-4 md:p-6 mb-4">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待审核用户</div>
+        <span id="users-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+        <table class="w-full text-sm table-fixed min-w-[880px]">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+              <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium w-[12%]">角色</th>
+              <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
+              <th class="px-4 py-3 font-medium w-[8%]">账号数</th>
+              <th class="px-4 py-3 font-medium text-right w-[30%]">操作</th>
+            </tr>
+          </thead>
+          <tbody id="users-pending-tbody"></tbody>
+        </table>
+        <div id="users-pending-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无待审核用户</div>
+      </div>
+    </div>
+
+    <!-- 正式用户组 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">正式用户</div>
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+        <table class="w-full text-sm table-fixed min-w-[880px]">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+              <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium w-[12%]">角色</th>
+              <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
+              <th class="px-4 py-3 font-medium w-[8%]">账号数</th>
+              <th class="px-4 py-3 font-medium text-right w-[30%]">操作</th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+        <div id="users-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无注册用户</div>
+      </div>
+    </div>
+
+    <!-- 空用户组 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">空用户</div>
+        <span id="users-vacant-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">已注册但未提交任何账号，可重置密码或删除</p>
+      <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-x-auto">
+        <table class="w-full text-sm table-fixed min-w-[880px]">
+          <thead>
+            <tr class="text-left text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700">
+              <th class="px-4 py-3 font-medium w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium w-[12%]">角色</th>
+              <th class="px-4 py-3 font-medium w-[20%]">注册时间</th>
+              <th class="px-4 py-3 font-medium w-[8%]">账号数</th>
+              <th class="px-4 py-3 font-medium text-right w-[30%]">操作</th>
+            </tr>
+          </thead>
+          <tbody id="users-vacant-tbody"></tbody>
+        </table>
+        <div id="users-vacant-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无空用户</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 我的账号（管理员）===== -->
+  <section id="tab-mine" class="hidden">
+    <div class="mb-4">
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">查看自己的易班账号签到情况；管理员提交的账号直接生效（免审核）</p>
+    </div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6 mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
+      <div id="mine-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">还没有提交账号</div>
+      <div id="mine-list" class="space-y-3"></div>
+    </div>
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6">
+      <div id="mine-form-title" class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
+      <div id="mine-done" class="hidden mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
+        已提交账号，可编辑或删除后重新提交。
+      </div>
+      <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
+          <input id="m-name" type="text" maxlength="20" placeholder="如：我的手机"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
+          <input id="m-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
+          <input id="m-password" type="password" required placeholder="用于自动登录签到"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
+          <input id="m-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+          <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+        <div class="md:col-span-2 flex items-center gap-3 pt-1">
+          <button id="mine-submit-btn" type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交账号</button>
+          <span id="mine-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        </div>
+      </form>
+    </div>    </section>
+
+</main>
+
+<!-- 账号编辑模态 -->
+<div id="modal-account" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeForm()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
+    <form id="account-form" class="space-y-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
+        <input id="f-name" type="text" maxlength="20" placeholder="如：小明"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div id="f-email-wrap">
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
+          <select id="f-email"
+                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            <option value="">不绑定（管理员自有账号，直接生效）</option>
+            <option value="__manual__">手填邮箱（未注册用户自动注册）</option>
+            <optgroup label="已注册用户（无账号）" id="f-email-users"></optgroup>
+          </select>
+          <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
+                 class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <input id="f-phone" type="text" maxlength="20" required placeholder="易班登录手机号"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <input id="f-password" type="password" placeholder="编辑时留空表示不修改"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
+        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+        <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存</button>
+        <button type="button" onclick="closeForm()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
+            bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md"></div>
+
+<script>
+// ================= 状态 =================
+const state = {
+  accounts: [],       // [{index,name,phone,phone_model,has_password,display_name}]
+  states: {},         // {phone: '✅'|'❌'|'🔄'|'➖'}
+  editingIndex: null, // null=添加
+  delays: { start: 0, gap: 0 },
+};
+
+const $ = (id) => document.getElementById(id);
+
+// ================= 基础请求 =================
+let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
+
+async function api(path, opts = {}, _retried = false) {
+  const resp = await fetch(path, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
+    },
+    ...opts,
+  });
+  if (resp.status === 401) {
+    location.href = '/login';
+    throw new Error('未登录');
+  }
+  const data = await resp.json().catch(() => ({}));
+  // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
+  if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
+    try {
+      const me = await fetch('/api/me').then(r => r.json());
+      csrfToken = me.csrf_token || '';
+      return api(path, opts, true);
+    } catch (e) { /* 重试失败则走下方错误提示 */ }
+  }
+  if (!resp.ok || data.ok === false) {
+    throw new Error(data.error || `请求失败 (${resp.status})`);
+  }
+  return data;
+}
+
+function toast(msg, isError = false) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.add('hidden'), 3000);
+}
+
+// ================= 侧边栏（移动端抽屉） =================
+function toggleSidebar(open) {
+  $('sidebar').classList.toggle('-translate-x-full', !open);
+  $('sidebar-overlay').classList.toggle('hidden', !open);
+}
+
+// ================= Tab 切换 =================
+function switchTab(name) {
+  ['accounts', 'logs', 'settings', 'users', 'mine'].forEach(t => {
+    $('tab-' + t).classList.toggle('hidden', t !== name);
+  });
+  document.querySelectorAll('[data-tab-btn]').forEach(btn => {
+    const active = btn.dataset.tabBtn === name;
+    btn.classList.toggle('text-zinc-600', !active);
+    btn.classList.toggle('dark:text-zinc-300', !active);
+    btn.classList.toggle('text-zinc-900', active);
+    btn.classList.toggle('dark:text-zinc-100', active);
+    btn.classList.toggle('bg-zinc-100', active);
+    btn.classList.toggle('dark:bg-zinc-700', active);
+    btn.classList.toggle('border-l-blue-500', active);
+    btn.classList.toggle('border-l-2', active);
+  });
+  toggleSidebar(false);
+  if (name === 'accounts') loadAccounts();
+  if (name === 'logs') { loadLogs(); fillSigninSelect(); }
+  if (name === 'settings') { loadSettings(); calibrateClock(); tickClock(); }
+  if (name === 'users') loadUsers();
+  if (name === 'mine') loadMine();
+}
+
+// ================= 账号管理 =================
+// 绑定用户：下拉列出已注册但无易班账号的用户（/api/users 过滤 account_count==0）
+async function loadAvailableUsers() {
+  try {
+    const data = await api('/api/users');
+    const available = (data.users || []).filter(u => (u.account_count || 0) === 0);
+    const group = $('f-email-users');
+    group.innerHTML = '';
+    if (!available.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '（暂无）';
+      group.appendChild(opt);
+      return;
+    }
+    available.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.email;
+      opt.textContent = `${u.email.split('@')[0]}@${u.email.split('@')[1] || ''}`;
+      group.appendChild(opt);
+    });
+  } catch (e) { /* 静默：下拉为空也可手填 */ }
+}
+
+// 手填邮箱显示切换
+$('f-email').addEventListener('change', () => {
+  $('f-email-manual').classList.toggle('hidden', $('f-email').value !== '__manual__');
+});
+
+function getEmailValue() {
+  const v = $('f-email').value;
+  if (v === '__manual__') return $('f-email-manual').value.trim();
+  return v;
+}
+
+async function loadAccounts() {
+  try {
+    const data = await api('/api/accounts');
+    state.accounts = data.accounts;
+    $('config-file').textContent = data.config_file;
+    renderAccounts();
+    fillSigninSelect();
+  } catch (e) { toast(e.message, true); }
+}
+
+const ICONS = {'⏳': '⏳', '✅': '✅', '❌': '❌', '🔄': '🔄', '➖': '➖'};
+
+function renderAccounts() {
+  // 分组：待处理（待审核/已拒绝）置顶，正常账号一组
+  const pendingAccounts = state.accounts.filter(a => a.status === 'pending' || a.status === 'rejected');
+  const activeAccounts = state.accounts.filter(a => a.status === 'active');
+
+  // ---- 待处理组 ----
+  const pbody = $('accounts-pending-tbody');
+  const pempty = $('accounts-pending-empty');
+  pbody.innerHTML = '';
+  pempty.classList.toggle('hidden', pendingAccounts.length > 0);
+  $('accounts-pending-count').textContent = pendingAccounts.length ? pendingAccounts.length + ' 个待处理' : '';
+  pendingAccounts.forEach(a => pbody.appendChild(pendingAccountRow(a)));
+
+  // ---- 正常账号组 ----
+  const tbody = $('accounts-tbody');
+  const empty = $('accounts-empty');
+  tbody.innerHTML = '';
+  empty.classList.toggle('hidden', activeAccounts.length > 0);
+  activeAccounts.forEach(a => tbody.appendChild(accountRow(a)));
+
+  // 统计卡（仅统计参与签到的正常账号）
+  let success = 0, failed = 0, retrying = 0, waiting = 0;
+  activeAccounts.forEach(a => {
+    const s = state.states[a.phone] || '⏳';
+    if (s === '✅') success++;
+    else if (s === '❌') failed++;
+    else if (s === '🔄') retrying++;
+    else waiting++;
+  });
+  $('stat-cards').innerHTML = [
+    card('账号总数', state.accounts.length, 'text-zinc-900 dark:text-zinc-100'),
+    card('今日成功', success, 'text-green-600 dark:text-green-400'),
+    card('今日失败', failed, 'text-red-600 dark:text-red-400'),
+    card('待签到/进行中', waiting + retrying, 'text-blue-600'),
+  ].join('');
+
+  // 顶部待处理提示
+  $('pending-count').textContent = pendingAccounts.length;
+  $('pending-tip').classList.toggle('hidden', pendingAccounts.length === 0);
+}
+
+function statusBadge(a) {
+  if (a.status === 'pending')
+    return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5 whitespace-nowrap">待审核</span>';
+  if (a.status === 'rejected')
+    return '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5 whitespace-nowrap">已拒绝</span>';
+  return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 whitespace-nowrap">已生效</span>';
+}
+
+function pendingAccountRow(a) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  const reasonHtml = a.reject_reason
+    ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
+    : '';
+  tr.innerHTML = `
+    <td class="px-4 py-3 text-lg leading-none">➖</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3">${statusBadge(a)}${reasonHtml}</td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-end">
+        <button title="更多操作" onclick="openRowMenu(event, [
+          {label: '通过', cls: 'text-green-600 dark:text-green-400', fn: () => reviewAccount(${a.index}, 'approve')},
+          {label: '拒绝', cls: 'text-red-600 dark:text-red-400', fn: () => reviewAccount(${a.index}, 'reject')},
+          {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(${a.index})},
+          {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(${a.index})},
+        ])" class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+function accountRow(a) {
+  const s = state.states[a.phone] || '⏳';
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  tr.innerHTML = `
+    <td class="px-4 py-3 text-lg leading-none">${s}</td>
+    <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.phone)}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(a.phone_model || '—')}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3">${statusBadge(a)}</td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-end">
+        <button title="更多操作" data-phone="${esc(a.phone)}" onclick="accountRowMenu(event, this, ${a.index})"
+                class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+function accountRowMenu(evt, btn, idx) {
+  openRowMenu(evt, [
+    {label: '上移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, -1)},
+    {label: '下移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, 1)},
+    {label: '手动签到', cls: 'text-blue-600 dark:text-blue-400', fn: () => doSignin(btn.dataset.phone)},
+    {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(idx)},
+    {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(idx)},
+  ]);
+}
+
+async function reviewAccount(idx, action) {
+  const a = state.accounts[idx];
+  let body = { action };
+  if (action === 'reject') {
+    const reason = prompt(`拒绝「${a.display_name}」(${a.phone})，请输入理由（用户会看到，并可修改后重新提交）：`, '');
+    if (reason === null) return;  // 用户取消
+    body.reason = reason.trim();
+  } else if (action === 'approve' && !confirm(`确定通过「${a.display_name}」(${a.phone}) 吗？通过后将参与定时签到。`)) {
+    return;
+  }
+  try {
+    const data = await api(`/api/accounts/${idx}/review`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    toast(data.msg || (action === 'approve' ? '已通过' : '已拒绝'));
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+function card(label, value, color) {
+  return `<div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-3 md:p-4">
+            <div class="text-xs text-zinc-400 dark:text-zinc-500">${label}</div>
+            <div class="text-xl md:text-2xl font-semibold tracking-tight ${color}">${value}</div>
+          </div>`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function moveAccount(idx, dir) {
+  try {
+    const data = await api(`/api/accounts/${idx}/move`, { method: 'POST', body: JSON.stringify({ dir }) });
+    state.accounts = data.accounts;
+    renderAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteAccount(idx) {
+  const a = state.accounts[idx];
+  if (!confirm(`确定删除账号「${a.display_name}」(${a.phone}) 吗？`)) return;
+  try {
+    await api(`/api/accounts/${idx}`, { method: 'DELETE' });
+    toast('已删除账号');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ---- 账号表单（添加 / 编辑共用）----
+function openForm(index) {
+  state.editingIndex = index;
+  const a = index === null ? null : state.accounts[index];
+  $('form-title').textContent = a ? `编辑账号 #${index + 1}` : '添加账号';
+  $('f-name').value = a ? a.name : '';
+  $('f-email').value = '';
+  $('f-email-manual').value = '';
+  $('f-email-manual').classList.add('hidden');
+  $('f-email-wrap').classList.toggle('hidden', index !== null);  // 编辑时不显示邮箱（归属不变）
+  if (index === null) loadAvailableUsers();  // 添加时加载可绑定用户
+  $('f-phone').value = a ? a.phone : '';
+  $('f-password').value = '';
+  $('f-password').placeholder = a ? '留空表示不修改密码' : '易班登录密码';
+  $('f-model').value = a ? a.phone_model : '';
+  $('f-code').value = '';
+  $('f-code').placeholder = a && a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  $('modal-account').classList.remove('hidden');
+  $('f-name').focus();
+}
+
+function closeForm() {
+  $('modal-account').classList.add('hidden');
+}
+
+$('account-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {
+    name: $('f-name').value,
+    email: getEmailValue(),
+    phone: $('f-phone').value.trim(),
+    password: $('f-password').value,
+    phone_model: $('f-model').value.trim(),
+    phone_code: $('f-code').value.trim(),
+  };
+  try {
+    if (state.editingIndex === null) {
+      const data = await api('/api/accounts', { method: 'POST', body: JSON.stringify(body) });
+      toast(data.msg || '账号已添加', !data.msg);
+    } else {
+      await api(`/api/accounts/${state.editingIndex}`, { method: 'PUT', body: JSON.stringify(body) });
+      toast('账号已更新');
+    }
+    closeForm();
+    loadAccounts();
+  } catch (err) { toast(err.message, true); }
+});
+
+// ================= 日志与状态 =================
+let _logFirstLoad = true;
+async function loadLogs() {
+  try {
+    const data = await api('/api/logs');
+    state.states = data.states;
+    $('log-file').textContent = data.log_file;
+    const box = $('log-box');
+    const empty = $('log-empty');
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    if (data.logs.length) {
+      box.textContent = data.logs.join('\n');
+      box.classList.remove('hidden');
+      empty.classList.add('hidden');
+      if (nearBottom || _logFirstLoad) { box.scrollTop = box.scrollHeight; _logFirstLoad = false; }
+    } else {
+      box.classList.add('hidden');
+      empty.classList.remove('hidden');
+    }
+    // 日志变化时同步刷新账号表格：状态图标 + 审核状态（用户重新提交后 10 秒内管理员可见「待审核」）
+    if (!document.getElementById('tab-accounts').classList.contains('hidden')) {
+      refreshAccountsSilent();
+    }
+  } catch (e) { /* 静默：轮询失败不打扰 */ }
+}
+
+async function refreshAccountsSilent() {
+  // 轮询拉取账号列表（静默失败）：管理员停留页面时同步审核状态/分组/统计卡
+  try {
+    const data = await api('/api/accounts');
+    state.accounts = data.accounts;
+    renderAccounts();
+  } catch (e) { /* 轮询失败不打扰 */ }
+}
+
+function fillSigninSelect() {
+  const sel = $('signin-select');
+  const current = sel.value;
+  sel.innerHTML = '';
+  if (!state.accounts.length) {
+    sel.innerHTML = '<option value="">暂无账号</option>';
+    return;
+  }
+  state.accounts.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.phone;
+    opt.textContent = `${a.display_name} (${a.phone})`;
+    sel.appendChild(opt);
+  });
+  if (current) sel.value = current;
+}
+
+async function doSignin(phone) {
+  const target = phone || $('signin-select').value;
+  if (!target) { toast('请先在账号管理中配置账号', true); return; }
+  try {
+    const data = await api('/api/signin', { method: 'POST', body: JSON.stringify({ phone: target }) });
+    toast(data.msg || '已触发签到');
+  } catch (e) { toast(e.message, true); }
+}
+
+// ================= 系统设置 =================
+async function loadSettings() {
+  try {
+    // 预填当前公告
+    const ann = await fetch('/api/announcement').then(r => r.json()).catch(() => ({}));
+    if (ann && ann.text) $('announcement-input').value = ann.text;
+    const data = await api('/api/settings');
+    state.delays.start = data.start_delay_max;
+    state.delays.gap = data.gap_max;
+    renderDelayUI();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderDelayUI() {
+  ['start', 'gap'].forEach(k => {
+    const btn = $(k + '-delay-btn');
+    const secs = $(k + '-delay-secs');
+    const on = state.delays[k] > 0;
+    btn.textContent = on ? '开启' : '关闭';
+    btn.className = on
+      ? 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200'
+      : 'bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+    secs.value = on ? state.delays[k] : '';
+    secs.placeholder = `默认 ${k === 'start' ? 60 : 10}`;
+  });
+}
+
+function toggleDelay(k) {
+  const on = state.delays[k] > 0;
+  state.delays[k] = on ? 0 : (k === 'start' ? 60 : 10);
+  renderDelayUI();
+  saveSettings(true);  // 自动保存
+}
+
+async function saveSettings(silent) {
+  const read = (k) => {
+    const v = parseInt($(k + '-delay-secs').value, 10);
+    return state.delays[k] > 0 ? (isNaN(v) || v < 1 ? (k === 'start' ? 60 : 10) : v) : 0;
+  };
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({ start_delay_max: read('start'), gap_max: read('gap') }),
+    });
+    state.delays.start = read('start');
+    state.delays.gap = read('gap');
+    renderDelayUI();
+    if (!silent) {
+      toast(data.msg || '设置已保存');
+    } else {
+      const tip = $('settings-saved-tip');
+      tip.classList.remove('hidden');
+      clearTimeout(tip._t);
+      tip._t = setTimeout(() => tip.classList.add('hidden'), 2000);
+    }
+  } catch (e) { if (!silent) toast(e.message, true); }
+}
+
+// 全局公告编辑（管理员）：保存到 .env；loadSettings 时预填当前公告
+async function saveAnnouncement() {
+  const text = $('announcement-input').value.trim();
+  try {
+    const data = await api('/api/announcement', {
+      method: 'PUT', body: JSON.stringify({ text }),
+    });
+    $('announcement-tip').textContent = data.msg || '已更新';
+    setTimeout(() => { $('announcement-tip').textContent = ''; }, 3000);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function doPing() {
+  const el = $('ping-result');
+  el.textContent = '检测中…';
+  try {
+    const data = await api('/api/ping', { method: 'POST' });
+    el.innerHTML = data.reachable
+      ? `<span class="text-green-600 dark:text-green-400">✅ 易班 API 可达（${esc(data.detail)}）</span>`
+      : `<span class="text-red-600 dark:text-red-400">❌ 不可达（${esc(data.detail)}）</span>`;
+  } catch (e) {
+    el.innerHTML = `<span class="text-red-600 dark:text-red-400">❌ 检测失败（${esc(e.message)}）</span>`;
+  }
+}
+
+// 修改管理员账号（验证当前密码，写入 .env）
+async function saveMyPassword() {
+  const oldPassword = $('my-old-password').value;
+  const password = $('my-new-password').value;
+  if (password.length < 6) { toast('新密码至少 6 位', true); return; }
+  if (!oldPassword) { toast('请输入当前密码验证', true); return; }
+  try {
+    const data = await api('/api/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: password }),
+    });
+    toast(data.msg || '密码已更新');
+    $('my-old-password').value = '';
+    $('my-new-password').value = '';
+  } catch (e) { toast(e.message, true); }
+}
+// ================= 时钟与签到状态（本地平滑走秒，60 秒校准一次） =================
+let clockOffset = 0;
+async function calibrateClock() {
+  try {
+    const data = await api('/api/clock');
+    clockOffset = data.server_ts - Math.floor(Date.now() / 1000);
+    if (!$('tab-settings').classList.contains('hidden')) {
+      $('sign-status').innerHTML = `<span style="color:${data.color}">${esc(data.sign_status)}</span>`;
+    }
+  } catch (e) { /* 静默 */ }
+}
+function tickClock() {
+  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset) * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  const str = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+  $('sidebar-clock').textContent = '服务器时间：' + str;
+  if (!$('tab-settings').classList.contains('hidden')) {
+    $('clock-now').textContent = str;
+  }
+}
+
+// ================= 退出 =================
+async function doLogout() {
+  try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
+  location.href = '/login';
+}
+
+// ============ 行操作省略号菜单（fixed 定位，点外部关闭） ============
+let _rowMenu = null;
+function closeRowMenu() {
+  if (_rowMenu) { _rowMenu.remove(); _rowMenu = null; }
+}
+function openRowMenu(evt, items) {
+  evt.stopPropagation();
+  closeRowMenu();
+  const el = document.createElement('div');
+  el.className = 'fixed z-50 bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-lg py-1 min-w-36';
+  el.style.left = Math.min(evt.clientX, window.innerWidth - 180) + 'px';
+  el.style.top = Math.min(evt.clientY, window.innerHeight - items.length * 40 - 12) + 'px';
+  items.forEach(it => {
+    const b = document.createElement('button');
+    b.className = 'w-full text-left px-4 py-2 text-sm ' + it.cls + ' hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors duration-150';
+    b.textContent = it.label;
+    b.onclick = () => { closeRowMenu(); it.fn(); };
+    el.appendChild(b);
+  });
+  document.body.appendChild(el);
+  _rowMenu = el;
+}
+document.addEventListener('click', closeRowMenu);
+
+// 更新日志弹窗（版本号点击）
+async function openChangelog() {
+  const modal = $('changelog-modal');
+  modal.classList.remove('hidden');
+  const content = $('changelog-content');
+  content.textContent = '加载中…';
+  try {
+    const data = await api('/api/changelog');
+    content.textContent = data.text || '暂无更新日志';
+  } catch (e) { content.textContent = '加载失败，请稍后重试'; }
+}
+function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
+
+// 初始化
+(async function init() {
+  try {
+    const me = await api('/api/me');
+    if (me.role !== 'admin') { location.href = '/user'; return; }  // 普通用户 → 用户页
+    csrfToken = me.csrf_token || '';
+    switchTab('accounts');
+    loadLogs();
+    calibrateClock();
+    tickClock();
+    setInterval(loadLogs, 10000);    // 日志/状态 10s
+    setInterval(calibrateClock, 60000);  // 时钟校准 60s
+    setInterval(tickClock, 1000);    // 时钟走秒 1s
+  } catch (e) {
+    location.href = '/login?err=' + encodeURIComponent(String(e && e.message || e));
+  }
+})();
+// 暗色主题切换（localStorage 记忆）
+function toggleTheme() {
+  const dark = document.documentElement.classList.toggle('dark');
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+  updateThemeBtn();
+}
+function updateThemeBtn() {
+  const dark = document.documentElement.classList.contains('dark');
+  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.textContent = dark ? '☀️' : '🌙'; });
+}
+document.addEventListener('DOMContentLoaded', updateThemeBtn);
+// ================= 用户管理（仅管理员）=================
+async function loadUsers() {
+  try {
+    const data = await api('/api/users');
+    renderUsers(data.users || [], data.builtin_admin || 'admin');
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderUsers(users, builtinAdmin) {
+  const pendingUsers = users.filter(u => (u.pending_count || 0) > 0);
+  const normalUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) > 0);
+  const emptyUsers = users.filter(u => !((u.pending_count || 0) > 0) && (u.account_count || 0) === 0);
+  // 第一组：待审核用户
+  const ptbody = $('users-pending-tbody');
+  ptbody.innerHTML = '';
+  $('users-pending-empty').classList.toggle('hidden', pendingUsers.length > 0);
+  $('users-pending-count').textContent = pendingUsers.length ? `（${pendingUsers.length} 人待审核）` : '';
+  pendingUsers.forEach(u => ptbody.appendChild(userRow(u)));
+  // 第二组：正式用户（含内置管理员）
+  const tbody = $('users-tbody');
+  tbody.innerHTML = '';
+  $('users-empty').classList.toggle('hidden', normalUsers.length > 0);
+  const builtin = document.createElement('tr');
+  builtin.className = 'border-b border-zinc-50 dark:border-zinc-700/50 bg-zinc-50/50 dark:bg-zinc-700/30';
+  builtin.innerHTML = `
+    <td class="px-4 py-3 text-zinc-900 dark:text-zinc-100">${esc(builtinAdmin)} <span class="text-xs text-zinc-400 dark:text-zinc-500">（内置管理员 · .env）</span></td>
+    <td class="px-4 py-3"><span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span></td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
+    <td class="px-4 py-3 text-right text-xs text-zinc-400 dark:text-zinc-500">不可修改</td>`;
+  tbody.appendChild(builtin);
+  normalUsers.forEach(u => tbody.appendChild(userRow(u)));
+  // 第三组：空用户（未提交账号）
+  const vbody = $('users-vacant-tbody');
+  vbody.innerHTML = '';
+  $('users-vacant-empty').classList.toggle('hidden', emptyUsers.length > 0);
+  $('users-vacant-count').textContent = emptyUsers.length ? `（${emptyUsers.length} 人）` : '';
+  emptyUsers.forEach(u => vbody.appendChild(userRow(u)));
+}
+
+// 用户行渲染（待审核组/正式组共用）
+function userRow(u) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50';
+  const isAdmin = u.role === 'admin';
+  const roleBadge = isAdmin
+    ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
+    : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';
+  tr.innerHTML = `
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(u.email)}</td>
+    <td class="px-4 py-3">${roleBadge}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${u.account_count}</td>
+    <td class="px-4 py-3">
+      <div class="flex items-center justify-end">
+        <button title="更多操作" data-email="${esc(u.email)}" data-role="${u.role}" onclick="userRowMenu(event, this)"
+                class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+function userRowMenu(evt, btn) {
+  const email = btn.dataset.email;
+  const isAdmin = btn.dataset.role === 'admin';
+  openRowMenu(evt, [
+    {label: isAdmin ? '取消管理员' : '设为管理员', cls: isAdmin ? 'text-zinc-600 dark:text-zinc-300' : 'text-blue-600 dark:text-blue-400', fn: () => setUserRole(email, isAdmin ? 'user' : 'admin')},
+    {label: '重置密码', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => resetUserPassword(email)},
+    {label: '清空账号', cls: 'text-amber-600 dark:text-amber-400', fn: () => deleteUserAccounts(email)},
+    {label: '删除用户', cls: 'text-red-600 dark:text-red-400', fn: () => deleteUserFull(email)},
+  ]);
+}
+
+async function setUserRole(email, role) {
+  const action = role === 'admin' ? '设为管理员' : '取消管理员';
+  if (!confirm(`确定将 ${email} ${action} 吗？`)) return;
+  try {
+    const data = await api(`/api/users/${encodeURIComponent(email)}/role`, {
+      method: 'POST', body: JSON.stringify({ role }),
+    });
+    toast(data.msg || '已更新');
+    loadUsers();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function resetUserPassword(email) {
+  const password = prompt(`为 ${email} 设置新密码（至少 6 位）：`);
+  if (!password) return;
+  if (password.length < 6) { toast('密码至少 6 位', true); return; }
+  try {
+    const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
+      method: 'POST', body: JSON.stringify({ password }),
+    });
+    toast(data.msg || '密码已重置');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteUserAccounts(email) {
+  if (!confirm(`确定清空 ${email} 的易班账号吗？\n将解除其签到服务，用户账号保留（可重新提交）。`)) return;
+  try {
+    const data = await api(`/api/users/${encodeURIComponent(email)}/delete`, {
+      method: 'POST', body: JSON.stringify({ mode: 'accounts_only' }),
+    });
+    toast(data.msg || '已清空');
+    loadUsers();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteUserFull(email) {
+  if (!confirm(`确定完全删除用户 ${email} 吗？\n将删除其账号和提交的易班账号，不可恢复！`)) return;
+  if (!confirm(`再次确认：完全删除 ${email}？（点确定继续）`)) return;
+  try {
+    const data = await api(`/api/users/${encodeURIComponent(email)}/delete`, {
+      method: 'POST', body: JSON.stringify({ mode: 'full' }),
+    });
+    toast(data.msg || '已删除');
+    loadUsers();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ================= 我的账号（管理员）=================
+let mineAccounts = [];
+
+async function loadMine() {
+  try {
+    const data = await api('/api/my-accounts');
+    mineAccounts = data.accounts || [];
+    renderMine();
+  } catch (e) { toast(e.message, true); }
+}
+
+function mineStatusBadge(status) {
+  if (status === 'pending') return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5 whitespace-nowrap">待审核</span>';
+  if (status === 'active') return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 whitespace-nowrap">已生效</span>';
+  return esc(status);
+}
+
+function renderMine() {
+  const list = $('mine-list');
+  list.innerHTML = '';
+  $('mine-empty').classList.toggle('hidden', mineAccounts.length > 0);
+  $('mine-form').classList.toggle('hidden', mineAccounts.length > 0);
+  $('mine-done').classList.toggle('hidden', mineAccounts.length === 0);
+  mineAccounts.forEach((a, i) => {
+    const card = document.createElement('div');
+    card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl bg-zinc-50/50 dark:bg-zinc-700/30 p-4';
+    card.innerHTML = `
+      <div class="mb-3" id="cal-wrap-${esc(a.phone)}"></div>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <span class="text-lg leading-none">${a.state_icon}</span>
+          <div>
+            <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
+            <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
+            ${a.status === 'active' ? (a.state_icon === '✅'
+              ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
+              : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + a.queue_ahead + '</span> 人</div>') : ''}
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          ${mineStatusBadge(a.status)}
+          <button onclick="openMineEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
+          <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>
+        </div>
+      </div>
+      ${a.logs && a.logs.length ? `
+        <details class="mt-3">
+          <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
+          <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
+        </details>` : ''}
+      <div class="mt-4 max-w-sm" id="cal-wrap-${esc(a.phone)}"></div>
+    `;
+    list.appendChild(card);
+    if (a.status === 'active') renderCalendar(a.phone);  // 未生效账号不显示日历
+  });
+}
+
+// ================= 签到日历（按日状态文件 + 日志，与用户端一致） =================
+const calState = {};  // phone -> {year, month}
+
+function calPad(n) { return String(n).padStart(2, '0'); }
+
+function calShift(btn, delta) {
+  const phone = btn.dataset.phone;
+  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  st.month += delta;
+  if (st.month < 1) { st.month = 12; st.year--; }
+  if (st.month > 12) { st.month = 1; st.year++; }
+  renderCalendar(phone);
+}
+
+function renderCalendar(phone) {
+  const wrap = $('cal-wrap-' + phone);
+  if (!wrap) return;
+  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const { year, month } = st;
+  const monthStr = `${year}-${calPad(month)}`;
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${calPad(today.getMonth() + 1)}-${calPad(today.getDate())}`;
+  wrap.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
+          <div class="flex items-center gap-1">
+            <button onclick="calShift(this, -1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
+            <button onclick="calShift(this, 1)" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+          </div>
+        </div>
+        <div id="cal-grid-${phone}" class="grid grid-cols-7 gap-1"></div>
+      </div>
+      <div id="cal-log-${phone}" class="lg:pt-8"></div>
+    </div>`;
+  const grid = $('cal-grid-' + phone);
+  grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
+    `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
+  api(`/api/my-calendar?month=${monthStr}`).then(data => {
+    const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
+    const days = new Date(year, month, 0).getDate();
+    for (let i = 0; i < firstDay; i++) {
+      grid.insertAdjacentHTML('beforeend', '<div></div>');
+    }
+    for (let d = 1; d <= days; d++) {
+      const date = `${monthStr}-${calPad(d)}`;
+      const stt = data.days && data.days[date] ? data.days[date][phone] || '' : '';
+      const wd = new Date(year, month - 1, d).getDay();
+      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周日灰 / 无记录默认
+      let numCls = 'text-zinc-600 dark:text-zinc-300';
+      if (wd === 0) numCls = 'text-zinc-300 dark:text-zinc-600';
+      else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
+      else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
+      const isToday = date === todayStr;
+      grid.insertAdjacentHTML('beforeend', `
+        <div onclick="calLoadLog(this, '${date}')" data-phone="${esc(phone)}" title="${date}"
+             class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
+          <span>${d}</span>
+        </div>`);
+    }
+  }).catch(() => {});
+}
+
+function calLoadLog(btn, date) {
+  const phone = btn.dataset.phone;
+  const box = $('cal-log-' + phone);
+  // 周日无需签到，直接提示（不查询日志）
+  if (new Date(date + 'T00:00:00').getDay() === 0) {
+    box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">周日无需签到</div>';
+    return;
+  }
+  box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">加载中…</div>';
+  api(`/api/my-logs?date=${date}`).then(data => {
+    if (!data.logs || !data.logs.length) {
+      box.innerHTML = `<div class="text-xs text-zinc-400 dark:text-zinc-500">${date} 暂无签到记录</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">${date} 签到记录（${data.logs.length} 条）</div>
+      <pre class="log-text text-zinc-600 dark:text-zinc-300 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(data.logs.join(String.fromCharCode(10)))}</pre>`;
+  }).catch(e => { box.innerHTML = ''; toast(e.message, true); });
+}
+
+// 我的账号内联编辑（与普通用户一致：复用提交表单，编辑时预填）
+let mineEditingIdx = null;
+function openMineEditInline(i) {
+  mineEditingIdx = i;
+  const a = mineAccounts[i];
+  $('m-name').value = a.name;
+  $('m-phone').value = a.phone;
+  $('m-password').value = '';
+  $('m-password').placeholder = '留空表示不修改密码';
+  $('m-model').value = a.phone_model;
+  $('m-code').value = '';
+  $('m-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  $('mine-form-title').textContent = '编辑我的易班账号';
+  $('mine-submit-btn').textContent = '保存修改';
+  $('mine-done').classList.add('hidden');
+  $('mine-form').classList.remove('hidden');
+  $('mine-form').scrollIntoView({ behavior: 'smooth' });
+}
+
+function resetMineForm() {
+  mineEditingIdx = null;
+  $('mine-form-title').textContent = '提交我的易班账号';
+  $('mine-submit-btn').textContent = '提交账号';
+  $('m-password').placeholder = '用于自动登录签到';
+  $('m-code').placeholder = '64 位十六进制识别码';
+}
+
+$('mine-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tip = $('mine-tip');
+  tip.textContent = '提交中…';
+  try {
+    const body = {
+      name: $('m-name').value,
+      phone: $('m-phone').value.trim(),
+      password: $('m-password').value,
+      phone_model: $('m-model').value.trim(),
+      phone_code: $('m-code').value.trim(),
+    };
+    const data = mineEditingIdx !== null
+      ? await api(`/api/my-accounts/${mineEditingIdx}`, { method: 'PUT', body: JSON.stringify(body) })
+      : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
+    tip.textContent = '';
+    resetMineForm();
+    e.target.reset();
+    toast(data.msg || '已保存');
+    loadMine();
+  } catch (err) {
+    tip.textContent = '';
+    toast(err.message, true);
+  }
+});
+
+async function deleteMineAccount(i) {
+  const a = mineAccounts[i];
+  if (!confirm(`确定删除「${a.display_name}」(${a.phone}) 吗？`)) return;
+  try {
+    await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
+    toast('已删除');
+    loadMine();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+</script>
+<script>
+// 全局公告：访问时加载一次（登录页也显示，无需登录）
+async function loadAnnouncement() {
+  try {
+    const resp = await fetch('/api/announcement');
+    const data = await resp.json().catch(() => ({}));
+    const text = (data && data.text || '').trim();
+    const bar = document.getElementById('announcement-bar');
+    const el = document.getElementById('announcement-text');
+    if (text && bar && el) {
+      el.textContent = text;  // textContent 防 XSS
+      bar.classList.remove('hidden');
+    }
+  } catch (e) { /* 静默 */ }
+}
+document.addEventListener('DOMContentLoaded', loadAnnouncement);
+</script>
+<!-- 更新日志弹窗 -->
+<div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
+    <div class="flex items-center justify-between mb-3">
+      <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
+    </div>
+    <pre id="changelog-content" class="text-xs text-zinc-600 dark:text-zinc-300 overflow-auto whitespace-pre-wrap break-all leading-relaxed"></pre>
+  </div>
+</div>
+</body>
+</html>
