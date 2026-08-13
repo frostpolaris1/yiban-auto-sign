@@ -1,6 +1,5 @@
 # 易班自动签到
 
-![GitHub Actions](https://img.shields.io/github/actions/workflow/status/frostpolaris1/yiban-auto-sign/signin.yml?label=Actions&logo=github)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)
 
