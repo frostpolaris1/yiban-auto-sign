@@ -464,6 +464,30 @@ crontab -l
 scp scripts/signin.py root@服务器IP:/opt/yiban-auto-sign/scripts/
 ```
 
+### 网页管理系统（可选，替代 TUI）
+
+除 SSH 打开 TUI 外，还提供浏览器管理界面（手机/平板/电脑任意设备访问）：
+
+```bash
+# 1. 安装依赖
+pip3 install flask
+
+# 2. .env 配置管理员账号（否则无法登录后台）
+echo -e "YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD=你的密码" >> .env
+
+# 3. 启动（默认端口 17892，--port 可改）
+python3 -m web
+# 生产建议用 systemd 或 nohup 常驻：nohup python3 -m web >> /var/log/yiban/web.log 2>&1 &
+```
+
+浏览器访问 `http://服务器IP:17892`：
+
+- **管理员**：登录后可管理全部账号（添加/编辑/删除/排序/手动签到）、审核普通用户提交的账号、查看签到日志与状态、设置随机延迟、连通性检测、修改管理员账密；支持暗色主题
+- **普通用户**：邮箱注册后提交自己的易班账号（名称+手机号+密码+设备信息），管理员审核通过后参与每日自动签到；可查看自己账号的签到状态与最近记录；每个用户限提交一个账号
+- **安全**：登录失败限速（5 次锁定 5 分钟）+ 连续失败 webhook 告警（`YIBAN_NOTIFY_URL`）、CSRF 防护、密码哈希存储（scrypt）、HttpOnly/SameSite 会话、密码明文永不下发前端
+
+> ⚠️ 无固定域名时建议在阿里云安全组仅放行常用 IP，并定期修改管理员密码。
+
 ### 方案对比
 
 | 特性 | GitHub Actions | 自有服务器 |
