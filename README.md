@@ -18,7 +18,7 @@
 - 👥 **多账号支持**：一个仓库管理多个易班账号，顺序执行 + 队列重试（失败账号放队尾分散重试，风控类≤2次/其他≤4次）
 - 🔔 **消息通知**：签到失败时推送通知（Server 酱 / Bark / 企业微信等）
 - 🆓 **完全免费**：使用 GitHub Actions 免费额度，每月消耗约 60 分钟（远低于 2000 分钟配额）
-- ⏰ **永久运行**：内置 `gh-workflow-keepalive`，自动破解 GitHub 60 天无活动禁用限制
+- ⏰ **自动续期**：内置 `gh-workflow-keepalive`，定时工作流自动续期，避免被 GitHub 60 天无活动禁用
 - 🔄 **队列重试**：失败账号不立即重试，放回队尾分散重试，避免连击触发风控
 
 ## 📑 目录
@@ -591,7 +591,7 @@ web/app.py  Flask 管理后台（账号管理/审核/用户管理/日历/手动�
 - **关键词匹配**：检测「风险访问」「风控」「访问服务禁用」「WAF」「拦截」
 - **Unicode 解码**：WAF 返回 JSON 格式时中文会被 `\uXXXX` 转义，需先解码再匹配
 
-### 60 天限制破解
+### 定时工作流自动续期
 
 GitHub 官方政策：**仓库连续 60 天无活动，定时工作流会被自动禁用**。
 
@@ -620,7 +620,7 @@ workflow-keepalive:
 
 > ✅ **已修复**：默认登录方式改为参考 fyiban 的真实 App 请求特征，详见下方"根因"。
 
-**根因（2026-08-08 实测破解）**：旧登录流程沿用开源项目 Auto-Test 的请求特征（伪造 iPhone UA + `X-Requested-With: com.yiban.app` + 可预测 CSRF + 非 App 参数组合），被易班风控识别为**非官方客户端**，对登录接口统一返回 `e003 账号或密码错误` 伪装拒绝。它与 IP、账号、密码、设备信息均无关——实测：手机流量 IP + 新账号同样 e003，而同一网络下手机 App 正常。
+**根因（2026-08-08 排查确认）**：旧登录流程沿用开源项目 Auto-Test 的请求特征（伪造 iPhone UA + `X-Requested-With: com.yiban.app` + 可预测 CSRF + 非 App 参数组合），被易班风控识别为**非官方客户端**，对登录接口统一返回 `e003 账号或密码错误` 伪装拒绝。它与 IP、账号、密码、设备信息均无关——实测：手机流量 IP + 新账号同样 e003，而同一网络下手机 App 正常。
 
 **修复方式**：登录改为 fyiban 同款流程（UA=`Yiban` + `AppVersion: 5.1.2` + SecureRandom 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回（如 GitHub Actions 等特殊场景）。
 
@@ -804,8 +804,8 @@ python scripts/signin.py
 本项目参考了以下开源项目与资料：
 
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
-- [Auto-Test](https://github.com/) - 易班登录流程（OAuth + RSA + ydclearance）
-- [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 60 天限制破解方案
+- Auto-Test - 易班登录流程（OAuth + RSA + ydclearance，已弃用并被本项目新登录特征取代）
+- [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 定时工作流自动续期（避免 60 天无活动被禁用）
 - [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、易班登录特征与 nightAttendance 签到流程
 
 ---

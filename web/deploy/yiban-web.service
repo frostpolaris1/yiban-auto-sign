@@ -1,14 +1,14 @@
 # ============================================================
 # yiban-web.service —— 易班自动签到 Web 控制台 systemd 单元模板
 # ============================================================
-# 安装（见 docs/web-console/DEPLOY-CHECKLIST.md 步骤 5）：
+# 安装：
 #   sudo cp web/deploy/yiban-web.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now yiban-web
 #
 # 前提：
 #   1. 应用监听 127.0.0.1:17892，由 nginx 反代对外提供 443 HTTPS，
-#      17892 不对公网开放（见 hardening/01_firewall.sh 与安全基线文档）。
+#      17892 不对公网开放（防火墙仅放行 22/443）。
 #   2. /etc/yiban/accounts-key 为密钥文件（0600，属主 root:yiban），
 #      由 systemd 注入为环境变量（web/app.py 会通过 .env / 环境变量读取）。
 #      若服务器不使用该密钥文件，可删除 EnvironmentFile 一行，
