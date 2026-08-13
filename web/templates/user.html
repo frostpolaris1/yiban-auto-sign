@@ -133,14 +133,14 @@
     </button>
     <div id="password-body" class="hidden mt-4">
       <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
-      <form id="password-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <form id="password-form" class="grid grid-cols-1 gap-3 max-w-sm">
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
           <input id="p-old" type="password" required placeholder="输入当前密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 6 位）</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 10 位，含两类字符）</label>
           <input id="p-new" type="password" required placeholder="新密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
@@ -149,7 +149,7 @@
           <input id="p-confirm" type="password" required placeholder="再次输入新密码"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         </div>
-        <div class="md:col-span-2 flex items-center gap-3">
+        <div class="flex items-center gap-3">
           <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存新密码</button>
           <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
@@ -567,7 +567,14 @@ $('password-form').addEventListener('submit', async (e) => {
   const tip = $('p-tip');
   tip.textContent = '提交中…';
   try {
-    if ($('p-new').value !== $('p-confirm').value) {
+    const newPw = $('p-new').value;
+    const pwClasses = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(newPw)).length;
+    if (newPw.length < 10 || pwClasses < 2) {
+      tip.textContent = '';
+      toast('新密码至少 10 位，且含两类字符', true);
+      return;
+    }
+    if (newPw !== $('p-confirm').value) {
       tip.textContent = '';
       toast('两次输入的新密码不一致', true);
       return;

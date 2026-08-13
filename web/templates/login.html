@@ -86,7 +86,7 @@
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
           <input id="reg-password" type="password" required autocomplete="new-password"
-                 placeholder="至少 6 位"
+                 placeholder="至少 10 位，含两类字符"
                  class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-1 focus:ring-blue-500 transition-all duration-200 px-3 py-2">
           <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且含字母/数字/符号中至少两类</p>
         </div>
@@ -164,9 +164,11 @@ regEmail.addEventListener('input', () => {
 });
 
 regPw.addEventListener('input', () => {
-  const n = regPw.value.length;
-  regPwErr.textContent = `密码至少 6 位（当前 ${n} 位）`;
-  markField(regPw, regPwErr, n < 6);
+  const v = regPw.value;
+  const n = v.length;
+  const classes = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(v)).length;
+  regPwErr.textContent = `密码至少 10 位且含两类字符（当前 ${n} 位，${classes} 类）`;
+  markField(regPw, regPwErr, n < 10 || classes < 2);
 });
 
 async function post(path, body) {
