@@ -877,7 +877,10 @@ workflow-keepalive:
 
 本项目的代码与文档由 AI 辅助生成，非人工逐行编写：
 
-- **开发工具**：[ZCode](https://zcode.z.ai/)（基于 deepseek-v4-flash-0731 模型）
+- **开发工具**：
+  - [ZCode](https://zcode.z.ai/)（基于 deepseek-v4-flash-0731 模型）
+  - [TRAE](https://www.trae.cn/)（基于 GLM-5.2 模型）
+  - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（基于 deepseek-v4-pro-0813 模型）
 - **AI 负责的工作**：
   - 核心签到脚本 `scripts/signin.py` 的编写与调试
   - GitHub Actions / Gitee Go 工作流配置
