@@ -12,7 +12,7 @@ urllib3>=2.2.2
 # 可选：YIBAN_PROXY 使用 socks5 代理时需要
 PySocks>=1.7.1
 # TUI 配置工具（服务器端 python3 -m tui 使用）
-textual>=8.0.0
+textual>=8.2.8
 # 网页管理系统（web 模块）
 flask>=3.1.0
 werkzeug>=3.1.3
