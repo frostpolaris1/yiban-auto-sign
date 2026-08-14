@@ -87,7 +87,7 @@
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h2>
       <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500">
         <span>⏳ 待签</span><span>✅ 成功</span><span>❌ 失败</span>
-        <span>🔄 重试</span><span>➖ 跳过</span>
+        <span>🔄 重试</span><span>⛔ 跳过</span><span>➖ 无需</span>
       </div>
     </div>
 
@@ -251,6 +251,22 @@ async function loadAccounts() {
   } catch (e) { toast(e.message, true); }
 }
 
+// 状态行文案（按状态码）：成功/已签到→绿；无需签到/时段外→中性；失败→红；重试→琥珀；待签→排队
+function userStateLine(a) {
+  const s = a.state_status || 'pending';
+  if (s === 'success' || s === 'already')
+    return '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>';
+  if (s === 'no_task')
+    return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">今日无需签到</div>';
+  if (s === 'skipped_window' || s === 'skipped_norange')
+    return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">未在签到时段</div>';
+  if (s === 'failed')
+    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">今日签到失败</div>';
+  if (s === 'retrying')
+    return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">签到重试中</div>';
+  return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + Number(a.queue_ahead) + '</span> 人</div>';
+}
+
 function renderList() {
   const list = $('account-list');
   $('accounts-empty').classList.toggle('hidden', accounts.length > 0);
@@ -268,9 +284,7 @@ function renderList() {
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
             ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，可重新提交</div>'
-              : (a.status === 'active' ? (a.state_icon === '✅'
-                ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
-                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + Number(a.queue_ahead) + '</span> 人</div>') : '')}
+              : (a.status === 'active' ? userStateLine(a) : '')}
           </div>
         </div>
         <div class="flex items-center gap-2">

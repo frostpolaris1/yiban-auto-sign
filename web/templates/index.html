@@ -175,12 +175,12 @@
     </div>
 
     <!-- 统计卡 -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" id="stat-cards"></div>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4" id="stat-cards"></div>
 
     <!-- 状态图例 -->
     <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-3">
       <span>⏳ 待签</span><span>✅ 成功</span><span>❌ 失败</span>
-      <span>🔄 重试</span><span>➖ 跳过</span>
+      <span>🔄 重试</span><span>⛔ 跳过</span><span>➖ 无需</span>
     </div>
 
     <!-- 待处理账号组（待审核/已拒绝，置顶；标题栏琥珀色区分） -->
@@ -654,10 +654,19 @@
             bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md"></div>
 
 <script>
+// ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 一致） =================
+const STATUS_ICON = {
+  success: '✅', already: '✅', no_task: '➖', failed: '❌', retrying: '🔄',
+  skipped_window: '⛔', skipped_norange: '⛔',
+};
+const STATUS_TEXT = {
+  success: '签到成功', already: '已签到', no_task: '无需签到', failed: '签到失败',
+  retrying: '重试中', skipped_window: '时段外', skipped_norange: '窗口缺失',
+};
 // ================= 状态 =================
 const state = {
   accounts: [],       // [{index,name,phone,phone_model,has_password,display_name}]
-  states: {},         // {phone: '✅'|'❌'|'🔄'|'➖'}
+  states: {},         // {phone: 'success'|'already'|'no_task'|'failed'|'retrying'|'skipped_*'}（状态码，来自 sign-state 文件）
   editingIndex: null, // null=添加
   editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
   delays: { start: 0, gap: 0 },
@@ -938,20 +947,22 @@ function renderAccounts() {
     : (activeAccounts.length ? activeAccounts.length + ' 个' : '');
   activeFiltered.forEach(a => tbody.appendChild(accountRow(a, 'active')));
 
-  // 统计卡（仅统计参与签到的正常账号）
-  let success = 0, failed = 0, retrying = 0, waiting = 0;
+  // 统计卡（仅统计参与签到的正常账号；五卡：总数/成功/失败/待签/跳过）
+  // 成功=success+already；待签=pending+retrying；跳过=no_task+skipped_*
+  let success = 0, failed = 0, waiting = 0, skipped = 0;
   activeAccounts.forEach(a => {
-    const s = state.states[a.phone] || '⏳';
-    if (s === '✅') success++;
-    else if (s === '❌') failed++;
-    else if (s === '🔄') retrying++;
+    const s = state.states[a.phone] || 'pending';
+    if (s === 'success' || s === 'already') success++;
+    else if (s === 'failed') failed++;
+    else if (s === 'no_task' || s === 'skipped_window' || s === 'skipped_norange') skipped++;
     else waiting++;
   });
   $('stat-cards').innerHTML = [
     card('账号总数', state.accounts.length, 'text-zinc-900 dark:text-zinc-100'),
     card('今日成功', success, 'text-green-600 dark:text-green-400'),
     card('今日失败', failed, 'text-red-600 dark:text-red-400'),
-    card('待签 · 重试', waiting + retrying, 'text-blue-600'),
+    card('待签', waiting, 'text-blue-600'),
+    card('跳过', skipped, 'text-zinc-400 dark:text-zinc-500'),
   ].join('');
 
   // ---- 待删除账号组（软删除，保留期内可恢复） ----
@@ -1046,13 +1057,15 @@ function pendingAccountRow(a, key) {
 }
 
 function accountRow(a, key) {
-  const s = state.states[a.phone] || '⏳';
+  const st = state.states[a.phone] || 'pending';
+  const s = STATUS_ICON[st] || '⏳';
+  const stTitle = STATUS_TEXT[st] || '待签';
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
     ${cb}
-    <td class="px-4 py-3 text-lg leading-none">${s}</td>
+    <td class="px-4 py-3 text-lg leading-none" title="${stTitle}">${s}</td>
     <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
