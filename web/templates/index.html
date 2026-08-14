@@ -184,7 +184,7 @@
     <!-- 状态图例 -->
     <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-3">
       <span>⏳ 待签</span><span>✅ 成功</span><span>❌ 失败</span>
-      <span>🔄 重试</span><span>⛔ 跳过</span><span>➖ 无需</span>
+      <span>🔄 重试</span><span>⛔ 跳过</span><span>➖ 无需</span><span>⏸️ 暂停</span>
     </div>
 
     <!-- 待处理账号组（待审核/已拒绝，置顶；标题栏琥珀色区分） -->
@@ -661,11 +661,11 @@
 // ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 一致） =================
 const STATUS_ICON = {
   success: '✅', already: '✅', no_task: '➖', failed: '❌', retrying: '🔄',
-  skipped_window: '⛔', skipped_norange: '⛔',
+  skipped_window: '⛔', skipped_norange: '⛔', paused: '⏸️',
 };
 const STATUS_TEXT = {
   success: '签到成功', already: '已签到', no_task: '无需签到', failed: '签到失败',
-  retrying: '重试中', skipped_window: '时段外', skipped_norange: '窗口缺失',
+  retrying: '重试中', skipped_window: '时段外', skipped_norange: '窗口缺失', paused: '暂停',
 };
 // ================= 状态 =================
 const state = {
@@ -795,6 +795,8 @@ async function loadAccounts() {
   try {
     const data = await api('/api/accounts');
     state.accounts = data.accounts;
+    state.states = data.states;  // /api/accounts 自带状态（键已脱敏），初始加载即填充（与轮询 refreshAccountsSilent 一致）
+    state.state_msgs = data.state_msgs || {};  // 状态原因/计划时间（表格 title 展示）
     $('config-file').textContent = data.config_file;
     renderAccounts();
     fillSigninSelect();
@@ -966,7 +968,7 @@ function renderAccounts() {
     const s = state.states[a.phone] || 'pending';
     if (s === 'success' || s === 'already') success++;
     else if (s === 'failed') failed++;
-    else if (s === 'no_task' || s === 'skipped_window' || s === 'skipped_norange') skipped++;
+    else if (s === 'no_task' || s === 'skipped_window' || s === 'skipped_norange' || s === 'paused') skipped++;
     else waiting++;
   });
   $('stat-cards').innerHTML = [

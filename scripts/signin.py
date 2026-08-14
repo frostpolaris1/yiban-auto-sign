@@ -135,6 +135,7 @@ STATUS_FAILED = "failed"                 # 最终失败（重试耗尽）
 STATUS_RETRYING = "retrying"             # 重试中
 STATUS_SKIPPED_WINDOW = "skipped_window"  # 未在签到时段（窗口外）
 STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空）
+STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
 STATUS_PENDING = "pending"               # 待签（未执行/无记录）
 
 # 状态码 → 日志/日历符号（与 web/TUI 显示层一致）
@@ -142,7 +143,24 @@ STATUS_SYMBOL = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
+    STATUS_PAUSED: "⏸️",
 }
+
+# 凭据类失败关键词（熔断器计数用）：账号密码问题——连续失败达到阈值后暂停签到。
+# 注意：不含 WAF/风控关键词（那是环境问题不是凭据问题，不计入）。
+CRED_FAIL_KEYWORDS = [
+    "账号或密码错误",
+    "e003",
+    "无效的应用端",
+    "e001",
+    "origin invalid",
+    "登录失败",
+    "登录响应异常",
+    "OAuth 页解析失败",
+]
+# 熔断参数：连续 N 天凭据失败 → 暂停；暂停后每 N 天半开试探 1 次
+CRED_FAIL_DAYS = 3          # 连续凭据失败天数阈值
+PROBE_INTERVAL_DAYS = 7     # 暂停后半开试探周期（天）
 
 # 签到窗口（与 web/app.py 一致；自动错峰在窗口内均匀分配时间点）
 SIGN_START = (6, 30)
@@ -1036,6 +1054,74 @@ def _write_sign_state(phone, status, message, scheduled=None):
         pass
 
 
+# ---------------------------------------------------------------------------
+# 账密熔断器：连续凭据失败 → 暂停签到（零请求），周期性半开试探自动恢复
+# ---------------------------------------------------------------------------
+def _cred_state_path():
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    return os.path.join(state_dir, "cred-state.json")
+
+
+def _load_cred_state():
+    """读账密状态文件：{phone: {fail_days, last_fail, paused_since, probe_date}}。"""
+    try:
+        # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
+        with open(_cred_state_path(), encoding="utf-8-sig") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cred_state(data):
+    """原子写账密状态文件（目录不可写时丢弃，不影响签到执行）。"""
+    try:
+        os.makedirs(os.path.dirname(_cred_state_path()), exist_ok=True)
+        tmp = _cred_state_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, _cred_state_path())
+    except OSError:
+        pass
+
+
+def _is_credential_failure(message):
+    """凭据类失败判定（不含 WAF/风控——那是环境问题不是凭据问题）。"""
+    return any(kw in message for kw in CRED_FAIL_KEYWORDS)
+
+
+def _update_cred_state(cred_state, phone, success, message, today):
+    """执行一次后更新账密熔断状态。
+
+    - 成功：清除该账号记录（恢复 ACTIVE）
+    - 凭据类失败：连续失败天数 +1（同一天多次失败只计 1 天）；达到阈值 → 暂停并设试探日
+    - 其他失败（网络等）：不计数不动记录
+    """
+    if success:
+        if phone in cred_state:
+            del cred_state[phone]
+        return
+    if not _is_credential_failure(message):
+        return
+    cred = cred_state.get(phone, {})
+    if cred.get("last_fail") == today:
+        return  # 今天已计过
+    cred["fail_days"] = cred.get("fail_days", 0) + 1
+    cred["last_fail"] = today
+    if cred["fail_days"] >= CRED_FAIL_DAYS and not cred.get("paused_since"):
+        pause_day = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+        cred["paused_since"] = today
+        cred["probe_date"] = pause_day
+    cred_state[phone] = cred
+
+
+def _probe_due(cred, today):
+    """半开试探判定：暂停中且今天已到（或超过）试探日。"""
+    if not cred.get("paused_since"):
+        return False
+    return not cred.get("probe_date") or today >= cred["probe_date"]
+
+
 def build_schedule(accounts):
     """为参与签到的账号分配今日时间点（签到窗口内均匀错峰）。
 
@@ -1060,7 +1146,7 @@ def build_schedule(accounts):
     return schedule
 
 
-def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None):
+def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None):
     """轮询队列 + 分散重试执行全部账号签到。
 
     流程（schedule 为空=原行为）：启动随机延迟 → 按签到模式（列表顺序 / 列表随机）
@@ -1071,9 +1157,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     schedule 非空（自动错峰模式）：按 {phone: datetime} 时间点到点执行（已过点立即执行），
     不再叠加启动/账号间随机延迟；重试仍按队列逻辑尽快进行（不等待计划）。
 
+    cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
+    执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
+
     返回结果字典 {手机号: (success, message, skip, status)}。
     """
     schedule = schedule or {}
+    cred_state = cred_state or {}
     if not schedule:
         random_delay(start_delay_max, "启动延迟")
     queue = list(accounts)
@@ -1087,6 +1177,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     attempts = {acc.phone: 0 for acc in accounts}
     results = {}
     first_round = True
+    today = datetime.now().strftime("%Y-%m-%d")
 
     while queue:
         acc = queue.pop(0)
@@ -1104,12 +1195,30 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         elif not first_round:
             random_delay(gap_max, f"账号 {phone} 间隔")
         first_round = False
+
+        # 账密熔断：暂停中的账号零请求直接跳过（半开试探日除外——试探 1 次以验证恢复）
+        cred = cred_state.get(phone, {})
+        if cred.get("paused_since") and not _probe_due(cred, today):
+            results[phone] = (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED)
+            _write_sign_state(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
+            logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
+            continue
+
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
         success, message, skip, status = attempt_signin(acc, notify_url)
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中）
         _write_sign_state(phone, status, message)
+        # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
+        _update_cred_state(cred_state, phone, success, message, today)
+        if cred.get("paused_since") and success:
+            logger.info(f"[{phone}] ✅ 半开试探成功，账密恢复，解除暂停")
+        elif cred.get("paused_since") and not success and _probe_due(cred, today):
+            # 试探失败：更新下次试探日，保持暂停
+            next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+            cred_state[phone]["probe_date"] = next_probe
+            logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
 
         if success:
             results[phone] = (True, message, skip, status)
@@ -1220,7 +1329,12 @@ def main():
                     f"计划 {t.strftime('%H:%M')}", scheduled=t.strftime("%H:%M:%S"),
                 )
         accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
-    results = run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=schedule)
+    # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
+    cred_state = {} if args.only else _load_cred_state()
+    results = run_queue_retry(
+        accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
+    )
+    _save_cred_state(cred_state)
 
     # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
     # 口径：成功=success/already；跳过=no_task+skipped（无需签到与时段外同列）；
@@ -1232,7 +1346,7 @@ def main():
         _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
         if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
-        elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE):
+        elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE, STATUS_PAUSED):
             skip_n += 1
         else:
             fail_n += 1
