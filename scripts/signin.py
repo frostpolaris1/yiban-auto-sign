@@ -127,6 +127,23 @@ SIGN_MODE = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
 # 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
 SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
 
+# 签到状态码（写 sign-state 状态文件，web/TUI 状态显示的事实源）与日志符号
+STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
+STATUS_ALREADY = "already"               # 今日已签到（重复执行时服务器告知）
+STATUS_NO_TASK = "no_task"               # 今日无需签到（服务器确认今日无任务）
+STATUS_FAILED = "failed"                 # 最终失败（重试耗尽）
+STATUS_RETRYING = "retrying"             # 重试中
+STATUS_SKIPPED_WINDOW = "skipped_window"  # 未在签到时段（窗口外）
+STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空）
+STATUS_PENDING = "pending"               # 待签（未执行/无记录）
+
+# 状态码 → 日志/日历符号（与 web/TUI 显示层一致）
+STATUS_SYMBOL = {
+    STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
+    STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
+    STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
+}
+
 # WAF 风控关键词（用于判断是否被拦截）
 WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
 
@@ -849,21 +866,21 @@ class YibanClient:
             timeout=15,
         )
         if is_waf_blocked(resp.text):
-            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False
+            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False, STATUS_FAILED
         data = resp.json()
         if data.get("code") != 0:
-            return False, f"获取签到任务失败: {_sanitize_text(data.get('msg'))}", False
+            return False, f"获取签到任务失败: {_sanitize_text(data.get('msg'))}", False, STATUS_FAILED
 
         data_obj = data["data"]
         msg = data_obj.get("Msg", "")
         if "已签到" in msg:
-            return True, "今日已签到（无需重复签到）", False
+            return True, "今日已签到（无需重复签到）", False, STATUS_ALREADY
         if "今日无需签到" in msg:
-            return True, "今日无需签到（非签到日）", False
+            return True, "今日无需签到（非签到日）", False, STATUS_NO_TASK
 
         position_list = data_obj.get("Position", [])
         if not position_list:
-            return False, "未找到签到位置数据", False
+            return False, "未找到签到位置数据", False, STATUS_FAILED
         position = position_list[0]
         range_obj = data_obj.get("Range", {})
 
@@ -873,13 +890,14 @@ class YibanClient:
         end_ts = int(range_obj.get("EndTime", 0))
         if not start_ts or not end_ts:
             # 签到时间窗口缺失（Range 为空），视为 skip，不直接提交
-            return False, "签到时间窗口缺失（无 Range），已跳过", True
+            return False, "签到时间窗口缺失（无 Range），已跳过", True, STATUS_SKIPPED_NORANGE
         if not (start_ts <= now_ts <= end_ts):
             # 不在签到时间窗口内，标记为 skip（不需要重试）
             return (
                 False,
                 f"未在签到时间内（{datetime.fromtimestamp(start_ts)} ~ {datetime.fromtimestamp(end_ts)}）",
                 True,
+                STATUS_SKIPPED_WINDOW,
             )
 
         # 3. 解析多边形点
@@ -891,7 +909,7 @@ class YibanClient:
                 polygon.append((float(parts[0]), float(parts[1])))
 
         if not polygon:
-            return False, "签到范围点解析失败", False
+            return False, "签到范围点解析失败", False, STATUS_FAILED
 
         # 4. 在多边形内生成随机点
         lng, lat = generate_position_in_polygon(polygon)
@@ -925,14 +943,14 @@ class YibanClient:
             timeout=15,
         )
         if is_waf_blocked(resp.text):
-            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False
+            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False, STATUS_FAILED
         result = resp.json()
         if result.get("code") == 0 and result.get("data"):
-            return True, "签到成功", False
+            return True, "签到成功", False, STATUS_SUCCESS
         err_msg = _sanitize_text(result.get("msg", "未知错误"))
         if "授权设备" in err_msg:
             err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
-        return False, f"签到失败: {err_msg}", False
+        return False, f"签到失败: {err_msg}", False, STATUS_FAILED
 
 
 # ---------------------------------------------------------------------------
@@ -973,7 +991,38 @@ def attempt_signin(account, notify_url=None):
         logger.error(f"[{phone}] ❌ 尝试失败: {e}")
         logger.debug(traceback.format_exc())
         # 逐次失败不通知（避免通知风暴），仅最终放弃时由 run_queue_retry 通知一次
-        return False, str(e), False
+        return False, str(e), False, STATUS_FAILED
+
+
+def _write_sign_state(phone, status, message):
+    """写按日结构化状态文件（web/TUI 状态显示的事实源，原子替换防半截文件）。
+
+    文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
+    结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
+    状态目录不可写时丢弃，不影响签到执行。
+    """
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        now = datetime.now()
+        date = now.strftime("%Y-%m-%d")
+        path = os.path.join(state_dir, f"sign-state-{date}.json")
+        data = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        data[phone] = {
+            "status": status,
+            "message": message,
+            "time": now.strftime("%H:%M:%S"),
+            "task": "default",
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
@@ -1010,23 +1059,25 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
-        success, message, skip = attempt_signin(acc, notify_url)
+        success, message, skip, status = attempt_signin(acc, notify_url)
+        # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中）
+        _write_sign_state(phone, status, message)
 
         if success:
-            results[phone] = (True, message, skip)
-            # 已签到/非签到日等跳过类成功：用 ➖ 图标（区别于真正签到成功的 ✅）
-            logger.info(f"[{phone}] {'➖' if skip else '✅'} {message}")
+            results[phone] = (True, message, skip, status)
+            # 符号按状态码输出：success/already→✅、no_task→➖（与界面显示一致）
+            logger.info(f"[{phone}] {STATUS_SYMBOL[status]} {message}")
             continue
 
         # 失败：跳过类不重试；其余按分级放回队尾
         if skip:
-            results[phone] = (False, message, True)
-            logger.info(f"[{phone}] ➖ {message}（不重试）")
+            results[phone] = (False, message, True, status)
+            logger.info(f"[{phone}] ⛔ {message}（不重试）")
             continue
 
         max_attempts, _ = classify_failure(message)
         if attempts[phone] >= max_attempts:
-            results[phone] = (False, message, False)
+            results[phone] = (False, message, False, status)
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
             if notify_url:
                 send_notification(
@@ -1036,6 +1087,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
 
         # 放回队尾：先固定补足最短间隔（可为 0），再打散一段随机延迟，
         # 总等待 = remaining + uniform(0, RETRY_GAP_MAX)，避免总间隔可能为 0
+        _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
         remaining = max(0, RETRY_MIN_INTERVAL - gap_max)
         time.sleep(remaining)
         random_delay(RETRY_GAP_MAX, f"账号 {phone} 重试前等待")
@@ -1111,26 +1163,29 @@ def main():
     results = run_queue_retry(accounts, notify_url, start_delay_max, gap_max)
 
     # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
+    # 口径：成功=success/already；跳过=no_task+skipped（无需签到与时段外同列）；
+    # 已执行=已了结（success/already/no_task），窗口外等跳过不算（7:10 还会再跑）
     has_real_failure = False
     has_executed = False
     ok_n = fail_n = skip_n = 0
     for acc in accounts:
-        success, _msg, skip = results.get(acc.phone, (False, "未执行", False))
-        if skip:
-            skip_n += 1
-        elif success:
+        _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
+        if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
+        elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE):
+            skip_n += 1
         else:
             fail_n += 1
             has_real_failure = True
-        if not skip:
+        if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK):
             has_executed = True
     summary = f"✅ {ok_n} 成功，❌ {fail_n} 失败"
     if skip_n:
         summary += f"，➖ {skip_n} 跳过"
     logger.info(f"==== 签到汇总：{summary} ====")
 
-    # 写按日状态文件（供网页日历组件读取；skip=未在签到时间/非签到日跳过则不写，当天留空）
+    # 写按日状态文件（供网页日历组件读取；窗口外跳过不写，当天留空）
+    # 符号按状态码：success/already→✅、no_task→➖、failed→❌
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
     try:
         os.makedirs(state_dir, exist_ok=True)
@@ -1140,9 +1195,9 @@ def main():
             with open(daily_path, encoding="utf-8") as f:
                 daily = json.load(f)
         for acc in accounts:
-            success, msg, skip = results.get(acc.phone, (False, "未执行", False))
-            if not skip:
-                daily[acc.phone] = "✅" if success else "❌"
+            _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
+            if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK, STATUS_FAILED):
+                daily[acc.phone] = STATUS_SYMBOL[status]
         with open(daily_path, "w", encoding="utf-8") as f:
             json.dump(daily, f, ensure_ascii=False)
     except OSError as e:

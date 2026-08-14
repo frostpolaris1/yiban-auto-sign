@@ -18,6 +18,7 @@ SSH 登录服务器后执行 `yiban`（或 `python3 -m tui`）即可打开面板
 
 import argparse
 import contextlib
+import json
 import os
 import re
 import subprocess
@@ -50,7 +51,30 @@ ICON_PENDING = "⏳"  # 准备签到（今日未签到）
 ICON_SUCCESS = "✅"  # 今日签到成功
 ICON_FAILED = "❌"  # 今日签到失败（最终放弃）
 ICON_RETRYING = "🔄"  # 重试中（队列重试放回队尾）
-ICON_SKIPPED = "➖"  # 跳过（未在签到时间窗口等，非失败）
+ICON_SKIPPED = "⛔"  # 跳过（未在签到时间窗口等，非失败）
+ICON_NO_TASK = "➖"  # 今日无需签到（服务器确认无任务）
+
+# 签到状态码（signin.py 写 sign-state 文件）→ 图标（与 web 显示层一致）
+STATUS_ICON = {
+    "success": ICON_SUCCESS, "already": ICON_SUCCESS, "no_task": ICON_NO_TASK,
+    "failed": ICON_FAILED, "retrying": ICON_RETRYING,
+    "skipped_window": ICON_SKIPPED, "skipped_norange": ICON_SKIPPED,
+}
+
+# 结构化状态文件目录（signin.py 同源）
+STATE_DIR = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+
+
+def load_sign_state(date_str=None):
+    """读取按日结构化状态文件：{phone: {status, message, time, task}}；缺失返回空 dict。"""
+    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 # 签到时间窗口（默认 06:30-07:50，与项目早操签到窗口一致；学校不同可修改）
 SIGN_START = (6, 30)
@@ -399,8 +423,10 @@ class YibanTuiApp(App):
         return acc.get("name") or f"账号{index + 1}"
 
     def _status_icon(self, acc):
-        """状态图标：⏳ 准备签到 / ✅ 成功 / ❌ 最终失败 / 🔄 重试中 / ➖ 跳过（来自今日 sign.log）。"""
-        return self.states.get(acc.get("phone", ""), ICON_PENDING)
+        """状态图标：按 sign-state 状态码映射（⏳ 待签 / ✅ 成功 / ❌ 失败 / 🔄 重试 / ⛔ 跳过 / ➖ 无需）。"""
+        st = self.states.get(acc.get("phone", ""), {})
+        status = st.get("status", "pending") if isinstance(st, dict) else "pending"
+        return STATUS_ICON.get(status, ICON_PENDING)
 
     def _refresh_table(self) -> None:
         table = self.query_one("#table", DataTable)
@@ -421,7 +447,7 @@ class YibanTuiApp(App):
     # ---- 签到日志 ----
     def _refresh_log(self) -> None:
         _, recent = parse_sign_log(self.log_path)
-        self.states, _ = parse_sign_log(self.log_path)
+        self.states = load_sign_state()  # 状态事实源（signin.py 写入的结构化文件）
         # 状态可能变化，刷新列表图标
         if self.accounts:
             self._refresh_table()

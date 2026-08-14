@@ -155,6 +155,42 @@ SIGN_MIN_INTERVAL = 30
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
 STATE_RE = re.compile(r"\[(\d+)\]\s*(✅|❌|🔄|➖)")
 
+# 签到状态码（signin.py 写 sign-state 文件，为状态显示的事实源）与图标/文案映射
+STATUS_SUCCESS = "success"
+STATUS_ALREADY = "already"
+STATUS_NO_TASK = "no_task"
+STATUS_FAILED = "failed"
+STATUS_RETRYING = "retrying"
+STATUS_SKIPPED_WINDOW = "skipped_window"
+STATUS_SKIPPED_NORANGE = "skipped_norange"
+STATUS_PENDING = "pending"
+
+STATUS_ICON = {
+    STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
+    STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
+    STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
+}
+STATUS_TEXT = {
+    STATUS_SUCCESS: "签到成功", STATUS_ALREADY: "已签到", STATUS_NO_TASK: "无需签到",
+    STATUS_FAILED: "签到失败", STATUS_RETRYING: "重试中",
+    STATUS_SKIPPED_WINDOW: "时段外", STATUS_SKIPPED_NORANGE: "窗口缺失",
+}
+
+
+def load_sign_state(date_str=None):
+    """读取按日结构化状态文件：{phone: {status, message, time, task}}。
+
+    缺失/损坏/目录不存在一律返回空 dict（前端回退显示待签 ⏳）。
+    """
+    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
 logger = logging.getLogger("web")
 
 
@@ -566,7 +602,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.17.16"
+APP_VERSION = "0.17.17"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -994,12 +1030,17 @@ def create_app():
         accounts = load_accounts()
         # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
         # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
-        states, _ = parse_sign_log(LOG_FILE)
+        # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
+        states = load_sign_state()
         return jsonify(
             {
                 "ok": True,
                 "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
-                "states": {_mask_phone(k): v for k, v in states.items()},
+                # states 值压成状态码字符串（前端图标映射用）
+                "states": {
+                    _mask_phone(k): (v.get("status", STATUS_PENDING) if isinstance(v, dict) else STATUS_PENDING)
+                    for k, v in states.items()
+                },
                 "config_file": os.path.basename(DB_FILE),
             }
         )
@@ -1443,12 +1484,13 @@ def create_app():
         return _my_account_indices_of(load_accounts())
 
     def _my_account_view(accounts, indices):
-        """用户视图：账号脱敏 + 今日状态图标 + 审核状态 + 最近相关日志 + 排队信息。
+        """用户视图：账号脱敏 + 今日状态（结构化状态文件）+ 审核状态 + 最近相关日志 + 排队信息。
 
         排队说明：签到按 accounts.json 顺序执行（队列重试模式）；
-        queue_ahead = 自己账号之前、今日尚未签到成功（非 ✅）的已生效账号数。
+        queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
         """
-        states, recent = parse_sign_log(LOG_FILE)  # 单次解析复用（原双调用读盘+正则×2）
+        _, recent = parse_sign_log(LOG_FILE)  # 最近日志仅用于「最近签到记录」展示
+        states = load_sign_state()  # 今日状态事实源（signin.py 写入）
         # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除
         active = [
             a for a in accounts if a.get("status") == STATUS_ACTIVE and not a.get("deleted")
@@ -1458,7 +1500,9 @@ def create_app():
         running = 0
         for a in active:
             queue_before.append(running)
-            if states.get(a.get("phone", ""), "⏳") not in ("✅",):
+            if states.get(a.get("phone", ""), {}).get("status", STATUS_PENDING) not in (
+                STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK,
+            ):
                 running += 1
         # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
         today_prefix = f"[{datetime.now().strftime('%Y-%m-%d')} "
@@ -1470,12 +1514,14 @@ def create_app():
                 line for line in recent
                 if line.startswith(today_prefix) and f"[{phone}]" in line
             ]
-            # 排队：自己账号在 active 队列中的位置之前、今日状态非 ✅ 的账号数
+            # 排队：自己账号在 active 队列中的位置之前、今日未了结的账号数
             queue_ahead = 0
             if acc.get("status") == STATUS_ACTIVE:
                 pos = next((j for j, a in enumerate(active) if a.get("phone") == phone), None)
                 if pos is not None:
                     queue_ahead = queue_before[pos]
+            st = states.get(phone, {})
+            st_status = st.get("status", STATUS_PENDING) if isinstance(st, dict) else STATUS_PENDING
             result.append(
                 {
                     "index": i,
@@ -1485,7 +1531,9 @@ def create_app():
                     "phone_model": acc.get("phone_model", ""),
                     "status": acc.get("status", STATUS_ACTIVE),
                     "reject_reason": acc.get("reject_reason", ""),
-                    "state_icon": states.get(phone, "⏳"),
+                    "state_icon": STATUS_ICON.get(st_status, "⏳"),
+                    "state_status": st_status,  # 状态码（前端按码映射文案）
+                    "state_message": st.get("message", "") if isinstance(st, dict) else "",
                     "queue_ahead": queue_ahead,
                     "logs": my_logs[-5:],
                     "deleted": bool(acc.get("deleted")),
