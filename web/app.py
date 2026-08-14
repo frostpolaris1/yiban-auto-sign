@@ -619,7 +619,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.18.2"
+APP_VERSION = "0.18.3"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2039,25 +2039,28 @@ def create_app():
     _last_trigger = {}  # phone -> 上次触发时间戳
     _signin_procs = {}  # phone -> Popen（新触发时终止仍在运行的旧进程，防重复签到触发风控）
     _signin_lock = threading.Lock()  # 防抖检查+赋值原子化（TOCTOU 竞态防护）
+    _batch_signin_running = False  # 批量签到队列互斥：同时只允许一个在跑
+    _batch_signin_lock = threading.Lock()
 
-    @app.route("/api/signin", methods=["POST"])
-    def api_signin():
-        """手动签到指定账号：子进程执行 signin.py --only（与 TUI M 键一致）。"""
-        data = _json_body()
-        phone = str(data.get("phone", "")).strip()
-        accounts = load_accounts()
+    # ---- 手动签到（单个 / 批量）----
+    def _spawn_signin(phone, accounts=None):
+        """触发单账号手动签到子进程（signin.py --only）。
+
+        防抖：60 秒内同账号不重复触发（SIGN_MIN_INTERVAL）；仍在运行的旧进程先终止。
+        返回 (ok: bool, msg: str)。
+        """
+        accounts = accounts if accounts is not None else load_accounts()
         idx = find_account_index(accounts, phone)
         if idx is None:
-            return jsonify({"error": f"账号 {phone} 不在配置中"}), 404
+            return False, f"账号 {phone} 不在配置中"
         acc = accounts[idx]
-        # 仅可签到账号可手动触发：已生效（active）且未软删除
         if acc.get("deleted") or acc.get("status") != STATUS_ACTIVE:
-            return jsonify({"error": "该账号不可手动签到（未生效或已删除）"}), 400
+            return False, f"账号 {phone} 不可手动签到（未生效或已删除）"
         with _signin_lock:  # 原子检查+占位：并发请求不能同时通过防抖
             now = time.time()
             if phone in _last_trigger and now - _last_trigger[phone] < SIGN_MIN_INTERVAL:
                 remain = int(SIGN_MIN_INTERVAL - (now - _last_trigger[phone]))
-                return jsonify({"error": f"该账号正在签到，请 {remain} 秒后再试"}), 429
+                return False, f"账号 {phone} 正在签到，请 {remain} 秒后再试"
             old = _signin_procs.get(phone)
             if old and old.poll() is None:
                 old.terminate()  # 仍在运行 → 终止旧进程，防止同账号并发签到
@@ -2094,14 +2097,85 @@ def create_app():
         except FileNotFoundError:
             with _signin_lock:
                 _last_trigger.pop(phone, None)
-            return jsonify({"error": "手动签到启动失败，请稍后重试"}), 500
+            return False, f"账号 {phone} 手动签到启动失败，请稍后重试"
         finally:
             if log_fh is not None:
                 log_fh.close()  # 父进程关闭句柄（子进程已继承自身副本），防句柄累积
         logger.info("触发手动签到: %s", _mask_phone(phone))
-        return jsonify(
-            {"ok": True, "msg": f"已触发 {phone} 手动签到（后台执行，日志约 30 秒内刷新）"}
-        )
+        return True, f"已触发 {phone} 手动签到（后台执行，日志约 30 秒内刷新）"
+
+    @app.route("/api/signin", methods=["POST"])
+    def api_signin():
+        """手动签到指定账号：子进程执行 signin.py --only（与 TUI M 键一致）。"""
+        data = _json_body()
+        phone = str(data.get("phone", "")).strip()
+        ok, msg = _spawn_signin(phone)
+        if not ok:
+            if "不在配置中" in msg:
+                return jsonify({"error": msg}), 404
+            if "不可手动签到" in msg:
+                return jsonify({"error": msg}), 400
+            if "正在签到" in msg:
+                return jsonify({"error": msg}), 429
+            return jsonify({"error": msg}), 500
+        return jsonify({"ok": True, "msg": msg})
+
+    @app.route("/api/signin/batch", methods=["POST"])
+    def api_signin_batch():
+        """批量手动签到：顺序逐个触发（与自动签到同语义，防风控）。
+
+        全局互斥（同时只允许一个批量队列在跑）；防抖冲突的账号自动跳过。
+        接口立即返回，实际执行在后台线程。
+        """
+        data = _json_body()
+        ids = data.get("ids")
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"error": "请先勾选要签到的账号"}), 400
+        accounts = load_accounts()
+        phones = []
+        for i in ids:
+            if not isinstance(i, int) or not 0 <= i < len(accounts):
+                continue
+            acc = accounts[i]
+            if acc.get("deleted") or acc.get("status") != STATUS_ACTIVE:
+                continue
+            phone = str(acc.get("phone", "")).strip()
+            if phone:
+                phones.append(phone)
+        if not phones:
+            return jsonify({"error": "选中的账号均不可手动签到（未生效或已删除）"}), 400
+        nonlocal _batch_signin_running
+        with _batch_signin_lock:
+            if _batch_signin_running:
+                return jsonify({"error": "已有批量签到正在执行，请稍后再试"}), 429
+            _batch_signin_running = True
+
+        def _run_batch():
+            try:
+                ok_n = skip_n = 0
+                for phone in phones:
+                    ok, _ = _spawn_signin(phone, accounts=accounts)
+                    if ok:
+                        ok_n += 1
+                        proc = _signin_procs.get(phone)
+                        if proc:
+                            try:
+                                proc.wait(timeout=300)  # 等该账号完成再触发下一个（顺序执行）
+                            except Exception:
+                                pass
+                    else:
+                        skip_n += 1
+                logger.info("批量手动签到完成: 触发 %s 个，跳过 %s 个", ok_n, skip_n)
+            finally:
+                nonlocal _batch_signin_running
+                with _batch_signin_lock:
+                    _batch_signin_running = False
+
+        threading.Thread(target=_run_batch, daemon=True).start()
+        return jsonify({
+            "ok": True,
+            "msg": f"已加入批量签到队列（{len(phones)} 个账号，将按顺序逐个执行，日志约几分钟内刷新）",
+        })
 
     # ---- 日志与状态 ----
     @app.route("/api/logs")
