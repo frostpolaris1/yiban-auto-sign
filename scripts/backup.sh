@@ -9,7 +9,7 @@
 #      - 密钥文件：/etc/yiban/accounts-key（存在则单独置于 keys/ 子目录）
 #        不存在则从 .env 提取 YIBAN_ACCOUNTS_KEY 单独置于 keys/（密钥与数据
 #        同包但分目录放置，恢复时可区分）
-#      - sign-daily 状态目录（/var/log/yiban 下 sign-daily-*.json，可选）
+#      - 签到状态文件（/var/log/yiban 下 sign-daily-*.json / sign-state-*.json / cred-state.json，可选）
 #   2. 异机加密副本（可选）：REMOTE_BACKUP 配置后，用 age（优先）或
 #      gpg --symmetric 加密备份包，再 rsync（优先）/ scp 到远端。
 #      REMOTE_BACKUP 未配置时仅保留本地副本。
@@ -50,8 +50,9 @@ GPG_RECIPIENT="${BACKUP_GPG_RECIPIENT:-}"           # gpg 接收者（公钥 ID�
 DATA_FILES=(.env)
 # SQLite 数据库（账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
 DB_FILE="${DB_FILE:-yiban.db}"
-# 可选：sign-daily 状态目录（网页日历读取签到状态；不存在则跳过）
-SIGN_DAILY_DIR="${SIGN_DAILY_DIR:-/var/log/yiban/sign-daily}"
+# 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
+#      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
+SIGN_STATE_DIR="${SIGN_STATE_DIR:-/var/log/yiban}"
 
 # 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
@@ -161,10 +162,17 @@ else
     fi
 fi
 
-# 3) sign-daily 状态目录（可选）
-if [ -d "${SIGN_DAILY_DIR}" ]; then
-    mkdir -p "${TMPDIR_BAK}/state"
-    cp -a "${SIGN_DAILY_DIR}/." "${TMPDIR_BAK}/state/" 2>/dev/null && log "已备份签到状态目录：${SIGN_DAILY_DIR}"
+# 3) 签到状态文件（可选）：/var/log/yiban 根下 sign-daily/sign-state/cred-state
+#    ——glob 匹配多个状态文件模式；无匹配时 cp 会失败，静默跳过（状态可重建，非关键）
+if [ -d "${SIGN_STATE_DIR}" ]; then
+    shopt -s nullglob
+    state_files=("${SIGN_STATE_DIR}"/sign-daily-*.json "${SIGN_STATE_DIR}"/sign-state-*.json "${SIGN_STATE_DIR}"/cred-state.json)
+    shopt -u nullglob
+    if [ ${#state_files[@]} -gt 0 ]; then
+        mkdir -p "${TMPDIR_BAK}/state"
+        cp -p "${state_files[@]}" "${TMPDIR_BAK}/state/" 2>/dev/null \
+            && log "已备份签到状态文件（${#state_files[@]} 个：sign-daily/sign-state/cred-state）"
+    fi
 fi
 
 # 4) 打包（--owner/--group 归一化，便于跨机恢复）
