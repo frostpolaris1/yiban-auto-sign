@@ -163,18 +163,38 @@ STATUS_FAILED = "failed"
 STATUS_RETRYING = "retrying"
 STATUS_SKIPPED_WINDOW = "skipped_window"
 STATUS_SKIPPED_NORANGE = "skipped_norange"
+STATUS_PAUSED = "paused"  # 账密异常暂停（signin 熔断器）
 STATUS_PENDING = "pending"
 
 STATUS_ICON = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
+    STATUS_PAUSED: "⏸️",
 }
 STATUS_TEXT = {
     STATUS_SUCCESS: "签到成功", STATUS_ALREADY: "已签到", STATUS_NO_TASK: "无需签到",
     STATUS_FAILED: "签到失败", STATUS_RETRYING: "重试中",
     STATUS_SKIPPED_WINDOW: "时段外", STATUS_SKIPPED_NORANGE: "窗口缺失",
+    STATUS_PAUSED: "暂停",
 }
+
+
+def clear_cred_state(phone):
+    """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。"""
+    try:
+        path = os.path.join(STATE_DIR, "cred-state.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or phone not in data:
+            return
+        del data[phone]
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except (OSError, ValueError):
+        pass
 
 
 def load_sign_state(date_str=None):
@@ -187,7 +207,8 @@ def load_sign_state(date_str=None):
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
     path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
     try:
-        with open(path, encoding="utf-8") as f:
+        # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, dict) and data:
             return data
@@ -196,7 +217,7 @@ def load_sign_state(date_str=None):
     # 回退：sign-daily（旧版符号 ✅/❌/➖）→ 状态码
     daily_path = os.path.join(STATE_DIR, f"sign-daily-{date_str}.json")
     try:
-        with open(daily_path, encoding="utf-8") as f:
+        with open(daily_path, encoding="utf-8-sig") as f:
             daily = json.load(f)
     except (OSError, ValueError):
         return {}
@@ -619,7 +640,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.18.3"
+APP_VERSION = "0.18.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1205,6 +1226,8 @@ def create_app():
                 return jsonify({"error": "账号已被其他管理员修改，请刷新后重试"}), 409
             if result is None:
                 return jsonify({"error": "账号不存在"}), 404
+            # 凭据变更（改密码/识别码）后清除熔断暂停，立即恢复签到
+            clear_cred_state(clean["phone"])
             db.audit(
                 session.get("username") or "?",
                 "account_update",
@@ -1716,6 +1739,8 @@ def create_app():
                 _mask_phone(clean["phone"]),
                 "用户编辑",
             )
+            # 用户改密码/识别码后清除熔断暂停，立即恢复签到
+            clear_cred_state(clean["phone"])
             logger.info("用户 %s 编辑账号 %s", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
             if old.get("status") == STATUS_REJECTED:
                 return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})

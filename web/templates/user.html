@@ -89,7 +89,7 @@
     </div>
     <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">
       <span>⏳ 待签</span><span>✅ 成功</span><span>❌ 失败</span>
-      <span>🔄 重试</span><span>⛔ 跳过</span><span>➖ 无需</span>
+      <span>🔄 重试</span><span>⛔ 跳过</span><span>➖ 无需</span><span>⏸️ 暂停</span>
     </div>
 
     <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">
@@ -269,6 +269,8 @@ function userStateLine(a) {
     const reason = a.state_message ? '：' + esc(a.state_message) : '';
     return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">今日签到失败' + reason + '</div>';
   }
+  if (s === 'paused')
+    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">账号密码异常，已暂停签到，请修改密码</div>';
   if (s === 'retrying')
     return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">签到重试中</div>';
   // 待签：显示今日计划时间（自动错峰分配，来自 sign-state 的 message="计划 HH:MM"）
