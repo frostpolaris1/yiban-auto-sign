@@ -658,7 +658,7 @@ def create_app():
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"  # 跨站请求不携带 cookie（防 CSRF）
     # Secure 标志由部署层保证：nginx 反代配置 `proxy_cookie_flags yiban_admin secure`（生产 HTTPS）；
     # 不在应用层强制，避免本机 HTTP 直连演示（localhost）登录失效
-    app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 30  # 30 天
+    app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 14  # 14 天（折中：安全与管理员便利平衡）
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 请求体上限 64KB
 
     # 登录失败记录 {ip: [fail_count, lock_until]}
