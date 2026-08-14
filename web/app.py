@@ -602,7 +602,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.17.17"
+APP_VERSION = "0.18.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1039,6 +1039,11 @@ def create_app():
                 # states 值压成状态码字符串（前端图标映射用）
                 "states": {
                     _mask_phone(k): (v.get("status", STATUS_PENDING) if isinstance(v, dict) else STATUS_PENDING)
+                    for k, v in states.items()
+                },
+                # 状态原因/计划（如"计划 06:42"），前端表格 title 展示
+                "state_msgs": {
+                    _mask_phone(k): (v.get("message", "") if isinstance(v, dict) else "")
                     for k, v in states.items()
                 },
                 "config_file": os.path.basename(DB_FILE),

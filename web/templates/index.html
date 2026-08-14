@@ -1059,7 +1059,10 @@ function pendingAccountRow(a, key) {
 function accountRow(a, key) {
   const st = state.states[a.phone] || 'pending';
   const s = STATUS_ICON[st] || '⏳';
-  const stTitle = STATUS_TEXT[st] || '待签';
+  const stMsg = state.state_msgs ? (state.state_msgs[a.phone] || '') : '';
+  const baseTitle = STATUS_TEXT[st] || '待签';
+  // 原因/计划仅在不同于状态名时拼接（避免"签到成功 · 签到成功"式重复）
+  const stTitle = baseTitle + (stMsg && stMsg !== baseTitle ? ' · ' + stMsg : '');
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
@@ -1301,6 +1304,7 @@ async function refreshAccountsSilent() {
   try {
     const data = await api('/api/accounts');
     state.states = data.states;  // /api/accounts 自带状态（键已脱敏），账号表格图标不再依赖日志轮询
+    state.state_msgs = data.state_msgs || {};  // 状态原因/计划时间（表格 title 展示）
     const snap = JSON.stringify(data.accounts) + '|' + JSON.stringify(data.states);
     if (snap !== _lastRenderSnap) {
       _lastRenderSnap = snap;

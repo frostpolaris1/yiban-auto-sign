@@ -3,6 +3,14 @@ umask 077
 # 易班自动签到运行脚本
 cd /opt/yiban-auto-sign
 
+# 单实例锁：自动错峰模式下 06:31 进程可能 sleep 等待时间点，
+# 防止 07:10 的 cron 并发启动第二个进程（重复签到/并发竞争）
+exec 9>/tmp/yiban-sign.lock
+flock -n 9 || {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === 已有签到进程在运行，本次跳过 ===" >> /var/log/yiban/sign.log
+    exit 0
+}
+
 # 加载环境变量（set -a 确保变量导出到子进程；source 语义安全，
 # 替代易受特殊字符/空格影响的 `export $(cat .env | xargs)`）
 set -a

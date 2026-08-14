@@ -32,7 +32,7 @@ import time
 import traceback
 from base64 import b64decode, b64encode
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import md5
 from urllib.parse import urlencode, urlsplit
 
@@ -143,6 +143,10 @@ STATUS_SYMBOL = {
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
 }
+
+# 签到窗口（与 web/app.py 一致；自动错峰在窗口内均匀分配时间点）
+SIGN_START = (6, 30)
+SIGN_END = (7, 50)
 
 # WAF 风控关键词（用于判断是否被拦截）
 WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
@@ -994,11 +998,12 @@ def attempt_signin(account, notify_url=None):
         return False, str(e), False, STATUS_FAILED
 
 
-def _write_sign_state(phone, status, message):
+def _write_sign_state(phone, status, message, scheduled=None):
     """写按日结构化状态文件（web/TUI 状态显示的事实源，原子替换防半截文件）。
 
     文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
+    scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
@@ -1011,12 +1016,18 @@ def _write_sign_state(phone, status, message):
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
-        data[phone] = {
+        # 计划时间是当日事实：后续写入（执行结果/重试）未显式传 scheduled 时保留既有值
+        if not scheduled and isinstance(data.get(phone), dict):
+            scheduled = data[phone].get("scheduled")
+        entry = {
             "status": status,
             "message": message,
             "time": now.strftime("%H:%M:%S"),
             "task": "default",
         }
+        if scheduled:
+            entry["scheduled"] = scheduled
+        data[phone] = entry
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -1025,20 +1036,50 @@ def _write_sign_state(phone, status, message):
         pass
 
 
-def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
+def build_schedule(accounts):
+    """为参与签到的账号分配今日时间点（签到窗口内均匀错峰）。
+
+    槽位：列表顺序（sequence）= 按列表顺序固定，可预期；
+         列表随机（random）= 当天打乱重排，防风控最强（语义与设置页开关一致）。
+    槽内随机偏移 0~0.8×槽宽：两种模式共用，留余量防最晚账号超出窗口边界。
+    返回 {phone: datetime}；账号为空返回空 dict。
+    """
+    n = len(accounts)
+    if n == 0:
+        return {}
+    total_seconds = (SIGN_END[0] * 60 + SIGN_END[1] - SIGN_START[0] * 60 - SIGN_START[1]) * 60
+    slot = total_seconds / n
+    ordered = list(accounts)
+    if SIGN_MODE == "random":
+        random.shuffle(ordered)  # 列表随机：每次运行打乱（时间点每天全变）
+    base = datetime.now().replace(hour=SIGN_START[0], minute=SIGN_START[1], second=0, microsecond=0)
+    schedule = {}
+    for i, acc in enumerate(ordered):
+        offset = i * slot + random.uniform(0, slot * 0.8)
+        schedule[acc.phone] = base + timedelta(seconds=offset)
+    return schedule
+
+
+def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None):
     """轮询队列 + 分散重试执行全部账号签到。
 
-    流程：启动随机延迟 → 按签到模式（列表顺序 / 列表随机）确定执行顺序逐个尝试
-    （账号间随机间隔）；失败的账号不立即重试，放入队尾等待下一轮；
+    流程（schedule 为空=原行为）：启动随机延迟 → 按签到模式（列表顺序 / 列表随机）
+    确定执行顺序逐个尝试（账号间随机间隔）；失败的账号不立即重试，放入队尾等待下一轮；
     每账号总尝试次数受 classify_failure 分级控制（风控类最多 2 次，其他最多 4 次）；
     同一账号两次尝试间隔不小于 RETRY_MIN_INTERVAL 秒，避免连击。
 
-    返回结果字典 {手机号: (success, message, skip)}。
+    schedule 非空（自动错峰模式）：按 {phone: datetime} 时间点到点执行（已过点立即执行），
+    不再叠加启动/账号间随机延迟；重试仍按队列逻辑尽快进行（不等待计划）。
+
+    返回结果字典 {手机号: (success, message, skip, status)}。
     """
-    random_delay(start_delay_max, "启动延迟")
+    schedule = schedule or {}
+    if not schedule:
+        random_delay(start_delay_max, "启动延迟")
     queue = list(accounts)
-    if SIGN_MODE == "random":
-        # 列表随机模式：每次运行打乱顺序（打破"固定顺序+固定时刻"的脚本指纹）
+    if SIGN_MODE == "random" and not schedule:
+        # 列表随机模式：每次运行打乱顺序（打破"固定顺序+固定时刻"的脚本指纹）；
+        # 时间点模式下随机性已由 build_schedule 的槽位重排承担，此处不再重复打乱
         random.shuffle(queue)
         logger.debug(f"签到模式: 列表随机（顺序已打散，共 {len(queue)} 个账号）")
     else:
@@ -1053,7 +1094,14 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
         # 首轮（第一个账号）不等待，后续每个账号（含重试回队）先打散账号间间隔；
         # 标记在 pop 之后无条件置 False（原实现只在失败分支置 False，
         # 导致全成功路径账号间隔打散失效）
-        if not first_round:
+        if schedule:
+            # 自动错峰：到点执行（已过时间点立即执行）；重试回队的账号时间点已过，直接执行
+            t = schedule.get(phone)
+            if t:
+                wait = (t - datetime.now()).total_seconds()
+                if wait > 0:
+                    time.sleep(wait)
+        elif not first_round:
             random_delay(gap_max, f"账号 {phone} 间隔")
         first_round = False
         attempts[phone] += 1
@@ -1160,7 +1208,19 @@ def main():
     logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
     # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）
     attempt_date = datetime.now().strftime("%Y-%m-%d")
-    results = run_queue_retry(accounts, notify_url, start_delay_max, gap_max)
+    # 自动错峰（仅自动签到；--only 手动签到立即执行，不走计划）
+    schedule = {} if args.only else build_schedule(accounts)
+    if schedule:
+        # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
+        for acc in accounts:
+            t = schedule.get(acc.phone)
+            if t:
+                _write_sign_state(
+                    acc.phone, STATUS_PENDING,
+                    f"计划 {t.strftime('%H:%M')}", scheduled=t.strftime("%H:%M:%S"),
+                )
+        accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
+    results = run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=schedule)
 
     # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
     # 口径：成功=success/already；跳过=no_task+skipped（无需签到与时段外同列）；

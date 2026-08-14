@@ -264,7 +264,10 @@ function userStateLine(a) {
     return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">今日签到失败</div>';
   if (s === 'retrying')
     return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">签到重试中</div>';
-  return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + Number(a.queue_ahead) + '</span> 人</div>';
+  // 待签：显示今日计划时间（自动错峰分配，来自 sign-state 的 message="计划 HH:MM"）
+  const plan = a.state_message && a.state_message.startsWith('计划') ? ' · 今日' + a.state_message : '';
+  return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">待签到' + plan
+    + ' · 前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + Number(a.queue_ahead) + '</span> 人</div>';
 }
 
 function renderList() {
