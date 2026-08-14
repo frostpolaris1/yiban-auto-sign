@@ -264,8 +264,11 @@ function userStateLine(a) {
     return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">今日无需签到</div>';
   if (s === 'skipped_window' || s === 'skipped_norange')
     return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">未在签到时段</div>';
-  if (s === 'failed')
-    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">今日签到失败</div>';
+  if (s === 'failed') {
+    // 显示失败原因（如"登录失败: 账号或密码错误"），引导用户修改密码/识别码
+    const reason = a.state_message ? '：' + esc(a.state_message) : '';
+    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">今日签到失败' + reason + '</div>';
+  }
   if (s === 'retrying')
     return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">签到重试中</div>';
   // 待签：显示今日计划时间（自动错峰分配，来自 sign-state 的 message="计划 HH:MM"）
