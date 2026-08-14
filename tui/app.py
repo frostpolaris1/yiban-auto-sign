@@ -439,8 +439,9 @@ class YibanTuiApp(App):
         - 🌙 今日无需打卡（周日）
         """
         now = now or datetime.now()
-        if now.weekday() == 6:  # 周日
-            return "🌙 今日无需打卡（周日）", "#565f89"
+        if now.weekday() == 6:  # 周日：仅当「周日签到」开启（.env YIBAN_SUNDAY_SIGN=1）时走正常窗口逻辑
+            if not load_env_int(self.env_path, "YIBAN_SUNDAY_SIGN", 0):
+                return "🌙 今日无需打卡（周日）", "#565f89"
         start = now.replace(hour=SIGN_START[0], minute=SIGN_START[1], second=0, microsecond=0)
         end = now.replace(hour=SIGN_END[0], minute=SIGN_END[1], second=0, microsecond=0)
         if now < start:

@@ -123,6 +123,10 @@ DEFAULT_ACCOUNT_GAP_MAX = 10  # 顺序模式账号间随机间隔 0~10 秒
 # 由网页系统设置页写入 .env（YIBAN_SIGN_MODE），run.sh 加载后经环境变量传入
 SIGN_MODE = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
 
+# 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
+# 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
+SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
+
 # WAF 风控关键词（用于判断是否被拦截）
 WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
 
@@ -853,9 +857,9 @@ class YibanClient:
         data_obj = data["data"]
         msg = data_obj.get("Msg", "")
         if "已签到" in msg:
-            return True, "今日已签到（无需重复签到）", True
+            return True, "今日已签到（无需重复签到）", False
         if "今日无需签到" in msg:
-            return True, "今日无需签到（非签到日）", True
+            return True, "今日无需签到（非签到日）", False
 
         position_list = data_obj.get("Position", [])
         if not position_list:
@@ -1094,6 +1098,12 @@ def main():
     # 随机延迟（TUI 设置栏可开关；默认关闭，不影响现有行为）
     start_delay_max = parse_env_int("YIBAN_START_DELAY_MAX", 0)
     gap_max = parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 0)
+
+    # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
+    # 手动签到（--only）不受限——用户主动触发应当放行
+    if not args.only and datetime.now().weekday() == 6 and not SUNDAY_SIGN:
+        logger.info("==== 周日签到未开启（系统设置中开启后周日也会尝试签到），跳过执行 ====")
+        sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
 
     logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
     # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）

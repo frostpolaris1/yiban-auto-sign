@@ -96,10 +96,11 @@ EOF
 chmod +x /usr/local/bin/yiban
 yiban        #   A 添加 → 填写 → S 保存 → Q 退出；设置区可调随机延迟开关
 
-# 4. 配置定时任务（周一到周六 6:31 + 7:10 两次）
+# 4. 配置定时任务（每天 6:31 + 7:10 两次；周日是否执行由「周日签到」开关控制）
 crontab -e   # 追加：
-# 31 6 * * 1-6 /opt/yiban-auto-sign/run.sh
-# 10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
+# 31 6 * * * /opt/yiban-auto-sign/run.sh
+# 10 7 * * * /opt/yiban-auto-sign/run.sh
+# 说明：cron 需每天执行，signin.py 内部按「周日签到」开关（网页系统设置，.env 的 YIBAN_SUNDAY_SIGN=1）决定周日是否跳过；未开启时周日自动跳过（SKIPPED）
 
 # 5. 验证
 python3 scripts/signin.py --check-config   # 配置检查（不发请求）
@@ -200,15 +201,17 @@ mkdir -p /var/log/yiban
 crontab -e
 ```
 
-添加以下内容（周一到周六 6:31 和 7:10 各执行一次，周日不签到）：
+添加以下内容（每天 6:31 和 7:10 各执行一次；周日是否签到由网页「系统设置 → 周日签到」开关控制，未开启时周日自动跳过）：
 
 ```cron
-# 易班自动签到 - 周一到周六执行
+# 易班自动签到 - 每天执行（周日由 YIBAN_SUNDAY_SIGN 开关控制，默认跳过）
 # 6:31 第一次签到（主要，落在签到窗口 06:30 起点后）
-31 6 * * 1-6 /opt/yiban-auto-sign/run.sh
+31 6 * * * /opt/yiban-auto-sign/run.sh
 # 7:10 第二次签到（备用，防止第一次失败）
-10 7 * * 1-6 /opt/yiban-auto-sign/run.sh
+10 7 * * * /opt/yiban-auto-sign/run.sh
 ```
+
+> 部分学校周日也有签到任务：在网页「系统设置」开启「周日签到」后，周日也会尝试签到；若学校周日无需签到，将显示为已签到。
 
 #### 7. 手动测试
 

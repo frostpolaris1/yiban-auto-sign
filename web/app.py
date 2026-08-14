@@ -515,8 +515,9 @@ def sign_status(now=None):
     返回 (显示文本, 颜色)。
     """
     now = now or datetime.now()
-    if now.weekday() == 6:  # 周日
-        return "🌙 今日无需打卡（周日）", "#565f89"
+    if now.weekday() == 6:  # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
+        if not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
+            return "🌙 今日无需打卡（周日）", "#565f89"
     start = now.replace(hour=SIGN_START[0], minute=SIGN_START[1], second=0, microsecond=0)
     end = now.replace(hour=SIGN_END[0], minute=SIGN_END[1], second=0, microsecond=0)
     if now < start:
@@ -565,7 +566,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.17.15"
+APP_VERSION = "0.17.16"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1459,11 +1460,16 @@ def create_app():
             queue_before.append(running)
             if states.get(a.get("phone", ""), "⏳") not in ("✅",):
                 running += 1
+        # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
+        today_prefix = f"[{datetime.now().strftime('%Y-%m-%d')} "
         result = []
         for i, real_idx in enumerate(indices):
             acc = accounts[real_idx]
             phone = acc.get("phone", "")
-            my_logs = [line for line in recent if f"[{phone}]" in line]
+            my_logs = [
+                line for line in recent
+                if line.startswith(today_prefix) and f"[{phone}]" in line
+            ]
             # 排队：自己账号在 active 队列中的位置之前、今日状态非 ✅ 的账号数
             queue_ahead = 0
             if acc.get("status") == STATUS_ACTIVE:
@@ -1563,7 +1569,12 @@ def create_app():
                     result.setdefault(date, {}).update({p: daily.get(p, "") for p in phones})
         except OSError:
             pass  # STATE_DIR 不存在等：按无记录返回
-        return jsonify({"ok": True, "month": month, "days": result})
+        return jsonify({
+            "ok": True,
+            "month": month,
+            "days": result,
+            "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),  # 前端据此决定周日是否置灰/可查
+        })
 
     @app.route("/api/my-logs")
     def api_my_logs():
@@ -2048,6 +2059,8 @@ def create_app():
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
                 # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
                 "sign_mode": read_env(ENV_FILE).get("YIBAN_SIGN_MODE", "").strip() or "sequence",
+                # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
+                "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
                 "batch_mode": False,
             }
@@ -2072,8 +2085,11 @@ def create_app():
             return jsonify({"error": "签到模式取值应为 sequence 或 random"}), 400
         if sign_mode:
             write_env_key(ENV_FILE, "YIBAN_SIGN_MODE", sign_mode)
+        # 周日签到开关（1=开启/0=关闭）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
+        sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        write_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", sunday_sign)
         # 批量多选为前端会话级开关，不写入配置
-        logger.info("更新设置: 启动=%s 间隔=%s 签到模式=%s", start, gap, sign_mode or "不变")
+        logger.info("更新设置: 启动=%s 间隔=%s 签到模式=%s 周日签到=%s", start, gap, sign_mode or "不变", sunday_sign)
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----
