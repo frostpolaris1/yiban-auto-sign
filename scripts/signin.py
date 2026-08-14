@@ -244,7 +244,7 @@ def random_delay(max_seconds, label):
     if max_seconds <= 0:
         return
     wait = random.uniform(0, max_seconds)
-    logger.info(f"{label}: 随机延迟 {int(wait)} 秒（上限 {max_seconds} 秒）")
+    logger.debug(f"{label}: 随机延迟 {int(wait)} 秒（上限 {max_seconds} 秒）")
     time.sleep(wait)
 
 
@@ -316,7 +316,7 @@ def _load_accounts_from_file():
         and not item.get("deleted")
     ]
     accounts = [_parse_account_dict(item) for item in active_raw]
-    logger.info(f"已从数据库加载 {len(accounts)} 个账号")
+    logger.debug(f"已从数据库加载 {len(accounts)} 个账号")
     return accounts
 
 
@@ -438,9 +438,9 @@ class YibanClient:
                     proxy_desc += f":{proxy_parsed.port}"
             else:
                 proxy_desc = "<无法解析>"
-            logger.info(f"[{account.phone}] 已启用代理: {proxy_desc}")
+            logger.debug(f"[{account.phone}] 已启用代理: {proxy_desc}")
         else:
-            logger.warning(
+            logger.debug(
                 f"[{account.phone}] 未配置代理，如遇 WAF 拦截可配置 YIBAN_PROXY"
             )
         # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码
@@ -987,9 +987,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
     if SIGN_MODE == "random":
         # 列表随机模式：每次运行打乱顺序（打破"固定顺序+固定时刻"的脚本指纹）
         random.shuffle(queue)
-        logger.info(f"签到模式: 列表随机（顺序已打散，共 {len(queue)} 个账号）")
+        logger.debug(f"签到模式: 列表随机（顺序已打散，共 {len(queue)} 个账号）")
     else:
-        logger.info(f"签到模式: 列表顺序（共 {len(queue)} 个账号）")
+        logger.debug(f"签到模式: 列表顺序（共 {len(queue)} 个账号）")
     attempts = {acc.phone: 0 for acc in accounts}
     results = {}
     first_round = True
@@ -1004,7 +1004,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max):
             random_delay(gap_max, f"账号 {phone} 间隔")
         first_round = False
         attempts[phone] += 1
-        logger.info(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
+        logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
         success, message, skip = attempt_signin(acc, notify_url)
 
@@ -1100,18 +1100,25 @@ def main():
     attempt_date = datetime.now().strftime("%Y-%m-%d")
     results = run_queue_retry(accounts, notify_url, start_delay_max, gap_max)
 
-    # 汇总（按 accounts 原始顺序展示）
-    logger.info("==== 签到汇总 ====")
+    # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
     has_real_failure = False
     has_executed = False
+    ok_n = fail_n = skip_n = 0
     for acc in accounts:
-        success, msg, skip = results.get(acc.phone, (False, "未执行", False))
-        status = "✅" if success else "❌"
-        logger.info(f"  {status} {acc.phone}: {msg}")
-        if not success and not skip:
+        success, _msg, skip = results.get(acc.phone, (False, "未执行", False))
+        if skip:
+            skip_n += 1
+        elif success:
+            ok_n += 1
+        else:
+            fail_n += 1
             has_real_failure = True
         if not skip:
             has_executed = True
+    summary = f"✅ {ok_n} 成功，❌ {fail_n} 失败"
+    if skip_n:
+        summary += f"，➖ {skip_n} 跳过"
+    logger.info(f"==== 签到汇总：{summary} ====")
 
     # 写按日状态文件（供网页日历组件读取；skip=未在签到时间/非签到日跳过则不写，当天留空）
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
