@@ -321,7 +321,7 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六）</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六；周日是否签到见上方开关）</div>
     </div>
 
     <!-- 批量操作开关 -->
@@ -348,6 +348,17 @@
           <option value="sequence">列表顺序</option>
           <option value="random">列表随机</option>
         </select>
+      </div>
+    </div>
+
+    <!-- 周日签到 -->
+    <div class="card mb-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周日签到</div>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为已签到</p>
+        </div>
+        <button id="sunday-sign-btn" onclick="toggleSundaySign()" class="btn-ghost">关闭</button>
       </div>
     </div>
 
@@ -1348,6 +1359,8 @@ async function loadSettings() {
     state.delays.gap = data.gap_max;
     state.signMode = data.sign_mode || 'sequence';  // 签到模式（sequence/random）
     $('sign-mode-select').value = state.signMode;
+    state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
+    renderSundaySignUI();
     state.batchMode = false;  // 批量多选会话级开关：每次进入默认关闭，不读取持久化状态
     renderDelayUI();
     renderBatchModeUI();
@@ -1369,6 +1382,22 @@ $('sign-mode-select').addEventListener('change', () => {
 function updateSignModeHint() {
   const hint = $('sign-mode-hint');
   if (hint) hint.classList.toggle('hidden', state.signMode !== 'random');
+}
+
+function renderSundaySignUI() {
+  const btn = $('sunday-sign-btn');
+  if (!btn) return;
+  const on = state.sundaySign;
+  btn.textContent = on ? '关闭' : '开启';  // 按钮显示点击后的动作
+  btn.className = on
+    ? 'btn-ghost'
+    : 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+}
+
+function toggleSundaySign() {
+  state.sundaySign = !state.sundaySign;
+  renderSundaySignUI();
+  saveSettings(true);  // 自动保存（写入 .env，cron 下次触发生效）
 }
 
 function renderBatchModeUI() {
@@ -1422,6 +1451,7 @@ async function saveSettings(silent) {
         start_delay_max: read('start'),
         gap_max: read('gap'),
         sign_mode: state.signMode || 'sequence',
+        sunday_sign: state.sundaySign ? 1 : 0,
       }),
     });
     state.delays.start = read('start');
