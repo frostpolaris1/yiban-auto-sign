@@ -180,16 +180,33 @@ STATUS_TEXT = {
 def load_sign_state(date_str=None):
     """读取按日结构化状态文件：{phone: {status, message, time, task}}。
 
-    缺失/损坏/目录不存在一律返回空 dict（前端回退显示待签 ⏳）。
+    缺失/损坏/目录不存在时回退读旧格式按日文件（sign-daily，符号 → 状态码）：
+    覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
+    两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
     """
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
     path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict) and data:
+            return data
+    except (OSError, ValueError):
+        pass
+    # 回退：sign-daily（旧版符号 ✅/❌/➖）→ 状态码
+    daily_path = os.path.join(STATE_DIR, f"sign-daily-{date_str}.json")
+    try:
+        with open(daily_path, encoding="utf-8") as f:
+            daily = json.load(f)
     except (OSError, ValueError):
         return {}
+    if not isinstance(daily, dict):
+        return {}
+    sym_map = {"✅": STATUS_SUCCESS, "❌": STATUS_FAILED, "➖": STATUS_NO_TASK}
+    return {
+        phone: {"status": sym_map.get(sym, STATUS_PENDING), "message": "", "task": "default"}
+        for phone, sym in daily.items()
+    }
 
 logger = logging.getLogger("web")
 
@@ -602,7 +619,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.18.1"
+APP_VERSION = "0.18.2"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 

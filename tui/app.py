@@ -66,15 +66,33 @@ STATE_DIR = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
 
 
 def load_sign_state(date_str=None):
-    """读取按日结构化状态文件：{phone: {status, message, time, task}}；缺失返回空 dict。"""
+    """读取按日结构化状态文件：{phone: {status, message, time, task}}。
+
+    缺失/损坏时回退读旧格式按日文件（sign-daily，符号 → 状态码），
+    覆盖部署过渡期与历史日期查看场景；两者都无返回空 dict。
+    """
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
     path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict) and data:
+            return data
+    except (OSError, ValueError):
+        pass
+    daily_path = os.path.join(STATE_DIR, f"sign-daily-{date_str}.json")
+    try:
+        with open(daily_path, encoding="utf-8") as f:
+            daily = json.load(f)
     except (OSError, ValueError):
         return {}
+    if not isinstance(daily, dict):
+        return {}
+    sym_map = {"✅": "success", "❌": "failed", "➖": "no_task"}
+    return {
+        phone: {"status": sym_map.get(sym, "pending"), "message": "", "task": "default"}
+        for phone, sym in daily.items()
+    }
 
 # 签到时间窗口（默认 06:30-07:50，与项目早操签到窗口一致；学校不同可修改）
 SIGN_START = (6, 30)
