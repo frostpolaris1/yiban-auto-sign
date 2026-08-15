@@ -1843,20 +1843,16 @@ def create_app():
 
     # ---- 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）----
     def _my_phone():
-        """当前用户的自选绑定账号：普通用户=本人账号；管理员=归属 admin 的第一个非删除账号。
+        """当前用户的自选绑定账号（2026-08-15 修复：与「我的账号」视图同口径）。
 
-        2026-08-15 用户反馈：仅 status=active（正式进入签到列表）才算——
-        pending/rejected 的"注册但未生效"用户不可查看/选择时间片
-        （GET 返回 has_account=False → 前端整卡隐藏；PUT 400 兜底）。
+        普通用户=本人账号；内置管理员=归属 admin/本人邮箱的账号；注册管理员=归属本人邮箱的账号。
+        ——此前 admin 分支硬编码 owner='admin'，导致注册管理员也绑定到内置管理员的账号，
+        选片显示/保存互相覆盖（用户实测报告）。
+        仅 status=active（正式进入签到列表）才算——pending/rejected 的"注册但未生效"
+        用户不可查看/选择时间片（GET 返回 has_account=False → 前端整卡隐藏；PUT 400 兜底）。
         """
         accounts = load_accounts()
-        if _current_role() == "admin":
-            for acc in accounts:
-                if (acc.get("owner", "admin") == "admin" and not acc.get("deleted")
-                        and acc.get("status") == "active"):
-                    return acc.get("phone", "")
-            return None
-        for idx in _my_account_indices():
+        for idx in _my_account_indices_of(accounts):
             acc = accounts[idx]
             if not acc.get("deleted") and acc.get("status") == "active":
                 return acc.get("phone", "")
