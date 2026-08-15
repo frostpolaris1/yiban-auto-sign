@@ -1050,7 +1050,7 @@ function renderAccounts() {
     const s = state.states[a.phone] || 'pending';
     if (s === 'success' || s === 'already') success++;
     else if (s === 'failed') failed++;
-    else if (s === 'no_task' || s === 'skipped_window' || s === 'skipped_norange' || s === 'paused') skipped++;
+    else if (s === 'no_task' || s === 'skipped_window' || s === 'skipped_norange' || s === 'paused' || s === 'user_cancelled') skipped++;
     else waiting++;
   });
   $('stat-cards').innerHTML = [
