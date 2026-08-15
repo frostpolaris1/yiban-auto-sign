@@ -220,6 +220,21 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": 999}, headers=h).status_code, 400)
         self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": "abc"}, headers=h).status_code, 400)
 
+    def test_api_pref_save_window_start_59_no_crash(self):
+        """对抗：窗口起点分钟=59（06:59）→ 保存自选不得 500（boundary 计算需进位）。"""
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write("YIBAN_SIGN_START=06:59\nYIBAN_SIGN_END=07:50\n")
+        try:
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, "user1@test.local", USER_PASS)
+            r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertIn("已保存", r.get_json()["msg"])
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace("YIBAN_SIGN_START=06:59\nYIBAN_SIGN_END=07:50\n", ""))
+
     def test_api_pref_stats_admin_only(self):
         app = self.webapp.create_app()
         c = app.test_client()
@@ -335,6 +350,28 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(results["13800138001"][3], signin.STATUS_USER_CANCELLED)
         w.assert_called_once()
         self.assertEqual(w.call_args[0][1], signin.STATUS_USER_CANCELLED)
+
+    def test_run_queue_retry_window_over_zero_request(self):
+        """对抗（2026-08-15）：窗口已过（08:30 > 07:50）→ 全部零请求跳过，不登录不发通知。"""
+        import unittest.mock as mock
+        from datetime import datetime as _dt
+
+        accs = [signin.Account(phone="13800138001", password="p")]
+
+        class FakeNow:
+            @staticmethod
+            def now():
+                return _dt(2026, 8, 15, 8, 30, 0)
+
+        sched = {"13800138001": _dt(2026, 8, 15, 6, 40)}
+        with mock.patch.object(signin, "datetime", FakeNow), \
+             mock.patch.object(signin, "attempt_signin") as attempt, \
+             mock.patch.object(signin, "_write_sign_state") as w, \
+             mock.patch.object(signin, "_update_cred_state"):
+            results = signin.run_queue_retry(accs, "http://notify.invalid", 0, 0, schedule=sched)
+        attempt.assert_not_called()
+        self.assertEqual(results["13800138001"][3], signin.STATUS_SKIPPED_WINDOW)
+        self.assertEqual(w.call_args[0][1], signin.STATUS_SKIPPED_WINDOW)
 
     def test_api_settings_sched_master_only(self):
         """调度字段仅主管理员可改；普通管理员 403，其他字段仍可改。"""

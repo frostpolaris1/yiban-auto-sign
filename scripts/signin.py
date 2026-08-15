@@ -30,7 +30,6 @@ import re
 import secrets
 import sys
 import time
-import traceback
 from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -396,6 +395,13 @@ def _sanitize_text(text):
     return str(text).replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _mask_phone(phone):
+    """通知/对外输出脱敏：11 位手机号 → 138****8000（本地 sign.log 保留完整号供排查；
+    对外 webhook 与 web 展示层不落完整号——规范审查 D2）。"""
+    p = str(phone)
+    return p[:3] + "****" + p[7:] if len(p) == 11 else p
+
+
 # ---------------------------------------------------------------------------
 # 账号配置加载
 # ---------------------------------------------------------------------------
@@ -489,7 +495,8 @@ def _load_accounts_from_legacy_env():
         if not item:
             continue
         if ":" not in item:
-            logger.error(f"账号配置格式错误（应为 phone:password）: {item}")
+            # 清洗后落日志：防畸形片段换行/回车注入（日志审查 P7）
+            logger.error(f"账号配置格式错误（应为 phone:password）: {_sanitize_text(item)}")
             continue
         phone, pwd = item.split(":", 1)
         accounts.append(Account(phone.strip(), pwd.strip()))
@@ -1086,9 +1093,10 @@ def send_notification(title, content, url):
     try:
         if url.startswith("http"):
             requests.post(url, json={"title": title, "content": content}, timeout=10)
-            logger.info("通知发送成功")
+            logger.info("通知发送成功: %s", title)
     except Exception as e:
-        logger.warning(f"通知发送失败: {e}")
+        # exc_info 可追溯告警通道不可达（日志审查 P4：原无渠道/标题标识）
+        logger.warning(f"通知发送失败（{title}）: {e}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1111,8 +1119,9 @@ def attempt_signin(account, notify_url=None):
             client.login()
         return client.signin()
     except Exception as e:
-        logger.error(f"[{phone}] ❌ 尝试失败: {e}")
-        logger.debug(traceback.format_exc())
+        # exc_info 落堆栈（INFO 级别也可见）：登录/签到异常可定位具体失败步骤
+        # （日志审查 P1：原仅 debug 记录，默认 INFO 下堆栈丢失）
+        logger.error(f"[{phone}] ❌ 尝试失败: {e}", exc_info=True)
         # 逐次失败不通知（避免通知风暴），仅最终放弃时由 run_queue_retry 通知一次
         return False, str(e), False, STATUS_FAILED
 
@@ -1147,12 +1156,14 @@ def _write_sign_state(phone, status, message, scheduled=None):
         if scheduled:
             entry["scheduled"] = scheduled
         data[phone] = entry
-        tmp = path + ".tmp"
+        # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖（对抗性审查发现）
+        tmp = f"{path}.tmp{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, path)
-    except OSError:
-        pass
+    except OSError as e:
+        # 状态目录不可写时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）
+        logger.debug("写入状态文件失败（%s）: %s", path, e)
 
 
 # ---------------------------------------------------------------------------
@@ -1178,12 +1189,12 @@ def _save_cred_state(data):
     """原子写账密状态文件（目录不可写时丢弃，不影响签到执行）。"""
     try:
         os.makedirs(os.path.dirname(_cred_state_path()), exist_ok=True)
-        tmp = _cred_state_path() + ".tmp"
+        tmp = f"{_cred_state_path()}.tmp{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, _cred_state_path())
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("写入账密状态失败（%s）: %s", _cred_state_path(), e)
 
 
 def _is_credential_failure(message):
@@ -1239,12 +1250,23 @@ def _schedule_blocks(cfg):
     """按时钟 5 分钟对齐切块（首尾块各 4 分钟），返回 (blocks, eff_lo, eff_hi)。
 
     blocks: [(lo_min, hi_min), ...]；eff_lo/eff_hi：有效窗口分钟边界（相对当天 0:00）。
+    有效窗口为空（缓冲 >= 窗口宽度）时回退默认窗口，保证调用方永不拿到空块列表。
     """
     start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
     end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
     edge = max(0, cfg["edge_sec"] // 60)
     eff_lo = start_min + edge
     eff_hi = end_min - edge
+    if eff_hi <= eff_lo:
+        logger.warning(
+            "有效签到窗口为空（窗口 %s~%s、缓冲 %ss），回退默认窗口 06:30~07:50",
+            cfg["sign_start"], cfg["sign_end"], cfg["edge_sec"],
+        )
+        start_min = _DEFAULT_SIGN_START[0] * 60 + _DEFAULT_SIGN_START[1]
+        end_min = _DEFAULT_SIGN_END[0] * 60 + _DEFAULT_SIGN_END[1]
+        edge = max(0, _DEFAULT_EDGE_SEC // 60)
+        eff_lo = start_min + edge
+        eff_hi = end_min - edge
     blocks = []
     b = start_min
     while b < end_min:
@@ -1279,6 +1301,26 @@ def _next_available(bi, filled, blocks, cap):
         if filled[idx] < cap:
             return idx
     return bi  # 全满（理论不会发生：cap 已按 n 放大）
+
+
+def _slot_to_bi(cfg):
+    """自选片分钟偏移（相对窗口起点）→ 块索引。
+
+    口径与 web/app.py `_pref_slots` 完全一致：块起点 = 窗口起点 + 5k 对齐，
+    key = 块起点 - 窗口起点（窗口起点非 5 分钟倍数时同样成立）。
+    """
+    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
+    end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
+    edge = max(0, cfg["edge_sec"] // 60)
+    m = {}
+    bi = 0
+    for b in range(start_min, end_min, 5):
+        lo = max(b, start_min + edge)
+        hi = min(b + 5, end_min - edge)
+        if hi > lo:
+            m[b - start_min] = bi
+            bi += 1
+    return m
 
 
 def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=None):
@@ -1318,6 +1360,9 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     base = now.replace(hour=0, minute=0, second=0, microsecond=0)
     blocks, eff_lo, eff_hi = _schedule_blocks(cfg)
     span = eff_hi - eff_lo
+    if not blocks:  # 纵深防御：任何原因导致无块（理论上已被 _schedule_blocks 回退兜底）
+        logger.error("有效签到窗口为空，无法生成调度计划（请检查签到窗口与缓冲配置）")
+        return {}
 
     # 小人数复用同一分块机制（统一逻辑，后续加人行为连续，无需特判）：
     # 顺序×均匀 = 线性填块（n=2 → 两人同块等分）；随机×均匀 = 循环填块；正态 = 采样落块
@@ -1343,10 +1388,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     if prefs:
         # 对抗性审查补：只保留当前账号集合内的 pref（换号/删号后的孤儿不占容量）
         valid_phones = {a.phone for a in accounts}
-        start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
-        slot_to_bi = {}
-        for bi, (lo, _hi) in enumerate(blocks):
-            slot_to_bi.setdefault((lo // 5) * 5 - start_min, bi)  # 片起点 = 块起点对齐 5 分钟
+        slot_to_bi = _slot_to_bi(cfg)
         by_slot = {}
         for phone, p in prefs.items():
             if phone not in valid_phones:
@@ -1390,6 +1432,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
         rng.shuffle(ordered)
 
     # 分布维度：uniform = 确定性位置；normal = 钟形采样位置
+    mu = sigma = None
     if dist == "normal" and ordered:
         if order == "random":
             zs = [rng.gauss(0, 1) for _ in ordered]
@@ -1397,6 +1440,13 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             zmap = {acc.phone: zs[i] for i, acc in enumerate(ordered)}
         else:
             zmap = {acc.phone: _anchor_z(acc.phone) for acc in ordered}
+        # μ/σ 每天采样一次、全体共享（对抗性审查 2026-08-15：原实现在循环内每账号
+        # 重采样，偏离设计"高峰中心每日一次全体共享"，导致分布趋平/作息漂移放大）
+        mu = eff_lo + span * rng.uniform(cfg["mu_min_pct"], cfg["mu_max_pct"]) / 100.0
+        sigma = _sigma_eff(
+            span * rng.uniform(cfg["sigma_min_pct"], cfg["sigma_max_pct"]) / 100.0,
+            n, span,
+        )
 
     # 阶段 1：分配块归属（容量满向后顺延；自选已占位）
     assign = dict(chosen)
@@ -1407,11 +1457,6 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
         if dist == "uniform":
             bi = (rank // k) if order == "sequence" else (rank % len(blocks))
         else:
-            mu = eff_lo + span * rng.uniform(cfg["mu_min_pct"], cfg["mu_max_pct"]) / 100.0
-            sigma = _sigma_eff(
-                span * rng.uniform(cfg["sigma_min_pct"], cfg["sigma_max_pct"]) / 100.0,
-                n, span,
-            )
             x = mu + sigma * zmap[acc.phone] + rng.gauss(0, 2)  # 个人小抖动 N(0, 2min)
             # 反射回有效窗口（while 兜底，失败回退均匀随机）
             for _ in range(10):
@@ -1423,9 +1468,11 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
                     break
             else:
                 x = rng.uniform(eff_lo, eff_hi)
-            # 落块：按时钟 5 分钟对齐（与 _schedule_blocks 的块边界一致）
-            start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
-            bi = min(max(int((x - start_min) / 5), 0), len(blocks) - 1)
+            # 落块：按块边界定位（与 _schedule_blocks 的块一致；edge 掐掉首块时
+            # (x - start_min)//5 会错位，改用边界匹配，杜绝越界/串块）
+            bi = next((i for i, (lo, hi) in enumerate(blocks) if lo <= x < hi), None)
+            if bi is None:
+                bi = 0 if x < blocks[0][0] else len(blocks) - 1
         bi = _next_available(bi, filled, blocks, k)
         assign[acc.phone] = bi
         filled[bi] += 1
@@ -1562,7 +1609,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
             if notify_url:
                 send_notification(
-                    "易班签到失败", f"账号: {phone}\n原因: {_sanitize_text(message)}", notify_url
+                    "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
                 )
             continue
 
@@ -1575,7 +1622,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
                 if notify_url:
                     send_notification(
-                        "易班签到失败", f"账号: {phone}\n原因: {_sanitize_text(message)}", notify_url
+                        "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
                     )
                 continue
 

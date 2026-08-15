@@ -53,12 +53,15 @@ ICON_FAILED = "❌"  # 今日签到失败（最终放弃）
 ICON_RETRYING = "🔄"  # 重试中（队列重试放回队尾）
 ICON_SKIPPED = "⛔"  # 跳过（未在签到时间窗口等，非失败）
 ICON_NO_TASK = "➖"  # 今日无需签到（服务器确认无任务）
+ICON_PAUSED = "⏸️"  # 账密异常暂停（熔断器，与 web 一致）
+ICON_CANCELLED = "⏹️"  # 用户自取消签到（调度 v2）
 
 # 签到状态码（signin.py 写 sign-state 文件）→ 图标（与 web 显示层一致）
 STATUS_ICON = {
     "success": ICON_SUCCESS, "already": ICON_SUCCESS, "no_task": ICON_NO_TASK,
     "failed": ICON_FAILED, "retrying": ICON_RETRYING,
     "skipped_window": ICON_SKIPPED, "skipped_norange": ICON_SKIPPED,
+    "paused": ICON_PAUSED, "user_cancelled": ICON_CANCELLED,  # 熔断暂停/用户自取消（调度 v2）
 }
 
 # 结构化状态文件目录（signin.py 同源）
@@ -74,7 +77,8 @@ def load_sign_state(date_str=None):
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
     path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
     try:
-        with open(path, encoding="utf-8") as f:
+        # utf-8-sig：与 web 侧同口径，兼容 Windows 记事本/手工编辑写入的 BOM（规范审查 D5）
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, dict) and data:
             return data
@@ -104,7 +108,7 @@ DEFAULT_ACCOUNT_GAP_MAX = 10
 
 # 解析 sign.log（行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功）
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
-STATE_RE = re.compile(r"\[(\d+)\]\s*(✅|❌|🔄|➖)")
+STATE_RE = re.compile(r"\[(\d+)\]\s*(✅|❌|🔄|➖|⛔|⏸️|⏹️)")
 
 
 def parse_sign_log(path):
@@ -148,7 +152,27 @@ def load_env_int(env_path, key, default):
 
 
 def write_env_int(env_path, key, value):
-    """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
+    """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。
+
+    原子写 + 跨进程 flock（与 web/app.py _env_write_lock 同一 .env.lock 锁文件，
+    防 TUI 与 web 并发保存设置互相覆盖——对抗性审查 2026-08-15）。
+    """
+    with contextlib.suppress(ImportError):
+        import fcntl
+
+        fd = open(env_path + ".lock", "a+")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _write_env_int_locked(env_path, key, value)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
+        return
+    _write_env_int_locked(env_path, key, value)
+
+
+def _write_env_int_locked(env_path, key, value):
+    """已持锁的写入：读-改-写 + 原子替换（tmp+os.replace 防半截）。"""
     lines = []
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
@@ -156,8 +180,10 @@ def write_env_int(env_path, key, value):
     out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
     if value > 0:
         out.append(f"{key}={value}")
-    with open(env_path, "w", encoding="utf-8") as f:
+    tmp = env_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
+    os.replace(tmp, env_path)
 
 
 class AccountForm(ModalScreen):
@@ -483,9 +509,9 @@ class YibanTuiApp(App):
         - 🌙 今日无需打卡（周日）
         """
         now = now or datetime.now()
-        if now.weekday() == 6:  # 周日：仅当「周日签到」开启（.env YIBAN_SUNDAY_SIGN=1）时走正常窗口逻辑
-            if not load_env_int(self.env_path, "YIBAN_SUNDAY_SIGN", 0):
-                return "🌙 今日无需打卡（周日）", "#565f89"
+        # 周日：仅当「周日签到」开启（.env YIBAN_SUNDAY_SIGN=1）时走正常窗口逻辑
+        if now.weekday() == 6 and not load_env_int(self.env_path, "YIBAN_SUNDAY_SIGN", 0):
+            return "🌙 今日无需打卡（周日）", "#565f89"
         start = now.replace(hour=SIGN_START[0], minute=SIGN_START[1], second=0, microsecond=0)
         end = now.replace(hour=SIGN_END[0], minute=SIGN_END[1], second=0, microsecond=0)
         if now < start:

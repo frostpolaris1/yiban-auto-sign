@@ -15,6 +15,7 @@
 import logging
 import os
 import secrets
+import threading
 from contextlib import suppress
 
 from Crypto.Cipher import AES
@@ -28,6 +29,9 @@ DEFAULT_ENV_FILE = ".env"
 # 进程内密钥缓存（bytes）。环境变量优先级最高，其次 .env 文件；
 # 两者都没有时自动生成并持久化（见 load_key）。
 _KEY_CACHE = None
+# 建钥互斥（对抗性审查 2026-08-15 F3）：防多线程首启各自生成不同密钥互相覆盖
+# （跨进程已由 _write_key_to_env_file 的"写前重读"缓解，此处封同进程竞态）
+_KEY_LOCK = threading.Lock()
 
 
 def _parse_env_file(env_file):
@@ -91,6 +95,7 @@ def load_key(env_file=None):
 
     两者都不存在时生成随机 32 字节密钥并持久化到 .env（0600）后返回；
     同一进程内缓存复用（避免每次读写 .env）。
+    读-生成-写-缓存全程持 _KEY_LOCK：多线程首启只生成一份密钥（F3）。
     """
     global _KEY_CACHE
     env_file = env_file or DEFAULT_ENV_FILE
@@ -100,13 +105,16 @@ def load_key(env_file=None):
         return _KEY_CACHE
     if _KEY_CACHE is not None:
         return _KEY_CACHE
-    file_key = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
-    if file_key:
-        _KEY_CACHE = _decode_key(file_key)
+    with _KEY_LOCK:
+        if _KEY_CACHE is not None:  # 双检：等锁期间他线程已生成
+            return _KEY_CACHE
+        file_key = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
+        if file_key:
+            _KEY_CACHE = _decode_key(file_key)
+            return _KEY_CACHE
+        logger.info("未找到 YIBAN_ACCOUNTS_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
+        _KEY_CACHE = _write_key_to_env_file(env_file, secrets.token_bytes(32))
         return _KEY_CACHE
-    logger.info("未找到 YIBAN_ACCOUNTS_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
-    _KEY_CACHE = _write_key_to_env_file(env_file, secrets.token_bytes(32))
-    return _KEY_CACHE
 
 
 def has_key(env_file=None):

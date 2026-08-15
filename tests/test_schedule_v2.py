@@ -201,6 +201,74 @@ class ScheduleV2Test(unittest.TestCase):
             accs, order="random", dist="normal", rng=random.Random(99))
         self.assertEqual(s1, s2)
 
+    # ============ 对抗性审查补充（2026-08-15） ============
+
+    def test_narrow_window_large_edge_no_crash(self):
+        """对抗：窗口 06:30~06:40 + edge 600s → 有效窗口为空，不得崩溃（回退默认窗口）。"""
+        os.environ["YIBAN_SIGN_START"] = "06:30"
+        os.environ["YIBAN_SIGN_END"] = "06:40"
+        os.environ["YIBAN_WINDOW_EDGE_SEC"] = "600"
+        try:
+            accs = make_accounts(3)
+            sched = signin.build_schedule(
+                accs, order="sequence", dist="uniform", rng=random.Random(1))
+            # 不崩溃且账号仍拿到时间点（回退默认窗口 06:30~07:50）
+            self.assertEqual(len(sched), 3)
+            for t in sched.values():
+                self.assertTrue(391 <= hm(t) <= 469, t)
+        finally:
+            for k in ("YIBAN_SIGN_START", "YIBAN_SIGN_END", "YIBAN_WINDOW_EDGE_SEC"):
+                os.environ.pop(k, None)
+
+    def test_edge_sec_600_default_window(self):
+        """对抗：默认窗口 + edge 600s → 有效窗口 [06:40, 07:40]，正常调度不越界。"""
+        os.environ["YIBAN_WINDOW_EDGE_SEC"] = "600"
+        try:
+            accs = make_accounts(10)
+            sched = signin.build_schedule(
+                accs, order="sequence", dist="uniform", rng=random.Random(2))
+            self.assertEqual(len(sched), 10)
+            for t in sched.values():
+                self.assertTrue(400 <= hm(t) <= 469, t)  # eff_lo=400
+        finally:
+            os.environ.pop("YIBAN_WINDOW_EDGE_SEC", None)
+
+    def test_edge_600_normal_blocks_aligned(self):
+        """对抗：edge=600s（首块被掐）时 normal 落块不得错位（全部落在有效块内且分布正常）。"""
+        os.environ["YIBAN_WINDOW_EDGE_SEC"] = "600"
+        try:
+            accs = make_accounts(200)
+            sched = signin.build_schedule(
+                accs, order="random", dist="normal", rng=random.Random(21))
+            self.assertEqual(len(sched), 200)
+            for t in sched.values():
+                self.assertTrue(400 <= hm(t) <= 469, t)  # 有效窗口 [06:40, 07:40]
+        finally:
+            os.environ.pop("YIBAN_WINDOW_EDGE_SEC", None)
+
+    def test_pref_slot_with_non_multiple_start(self):
+        """对抗：窗口起点非 5 分钟倍数（06:32）→ 自选 slot 仍精确落到所选片（与 web 口径一致）。"""
+        os.environ["YIBAN_SIGN_START"] = "06:32"
+        os.environ["YIBAN_SIGN_END"] = "07:50"
+        os.environ["YIBAN_WINDOW_EDGE_SEC"] = "60"
+        try:
+            accs = make_accounts(4)
+            prefs = {
+                accs[0].phone: {"slot_min": 0, "updated_at": "2026-08-15 08:00:00"},
+                accs[1].phone: {"slot_min": 5, "updated_at": "2026-08-15 08:01:00"},
+            }
+            sched = signin.build_schedule(
+                accs, order="sequence", dist="uniform",
+                rng=random.Random(3), prefs=prefs)
+            # slot0 → 块0 [06:33, 06:37)；slot5 → 块1 [06:37, 06:42)
+            t0 = hm(sched[accs[0].phone])
+            t1 = hm(sched[accs[1].phone])
+            self.assertTrue(393 <= t0 < 397, t0)   # 06:33~06:37
+            self.assertTrue(397 <= t1 < 402, t1)   # 06:37~06:42
+        finally:
+            for k in ("YIBAN_SIGN_START", "YIBAN_SIGN_END", "YIBAN_WINDOW_EDGE_SEC"):
+                os.environ.pop(k, None)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
