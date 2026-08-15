@@ -539,8 +539,7 @@
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">账号数</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[38%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="users-pending-tbody"></tbody>
@@ -567,8 +566,7 @@
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">账号数</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[38%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="users-tbody"></tbody>
@@ -596,8 +594,7 @@
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">账号数</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[38%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="users-vacant-tbody"></tbody>
@@ -1931,7 +1928,6 @@ function renderUsers(users, builtinAdmin) {
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(builtinAdmin)}">${esc(builtinAdmin)} <span class="text-xs text-zinc-400 dark:text-zinc-500">（主管理员）</span></td>
     <td class="px-4 py-3"><span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span></td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
-    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
     <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 sticky right-0 bg-zinc-50/50 dark:bg-zinc-700/30 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">不可修改</td>`;
   tbody.appendChild(builtin);
   normalFiltered.forEach(u => tbody.appendChild(userRow(u, 'usersNormal')));
@@ -1991,7 +1987,6 @@ function userRow(u, key) {
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(maskEmail(u.email))}">${esc(maskEmail(u.email))}</td>
     <td class="px-4 py-3">${roleBadge}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
-    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${u.account_count}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center">
         <button title="更多操作" data-email="${esc(u.email)}" data-role="${u.role}" data-key="${key}" onclick="userRowMenu(event, this)"
