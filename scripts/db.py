@@ -26,7 +26,9 @@ SOFT_DELETE_RETENTION_SECONDS = 7 * 86400
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
 _conn = None
-_conn_lock = threading.Lock()
+# RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
+# 会触发 "cannot start a transaction" / InterfaceError misuse——2026-08-15 本地并发验证暴露）
+_conn_lock = threading.RLock()
 _db_file = DB_DEFAULT
 _env_file = None  # .env 路径（密钥来源；None=account_crypto 默认 .env）
 
@@ -147,7 +149,7 @@ def _maybe_migrate(conn, json_base):
             except ImportError:
                 account_crypto = None
             key = account_crypto.load_key(_env_file) if account_crypto else None
-            with conn:
+            with _conn_lock, conn:
                 for i, a in enumerate(accounts):
                     password = a.get("password", "") or ""
                     phone_code = a.get("phone_code", "") or ""
@@ -187,7 +189,7 @@ def _maybe_migrate(conn, json_base):
         except (json.JSONDecodeError, OSError):
             users = []
         if isinstance(users, list) and users:
-            with conn:
+            with _conn_lock, conn:
                 for u in users:
                     conn.execute(
                         "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
@@ -290,10 +292,11 @@ def _purge_expired_deleted(conn):
 
 def load_accounts():
     """全部账号（按 sort_order 升序），已解密；顺带清除超期软删除行。"""
-    conn = get_conn()
-    _purge_expired_deleted(conn)
-    rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-    return [_row_to_account(r) for r in rows]
+    with _conn_lock:
+        conn = get_conn()
+        _purge_expired_deleted(conn)
+        rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
+        return [_row_to_account(r) for r in rows]
 
 
 def load_accounts_raw():
@@ -301,10 +304,11 @@ def load_accounts_raw():
 
     供 db_export 等导出场景使用：避免生成明文凭据文件；顺带清除超期软删除行。
     """
-    conn = get_conn()
-    _purge_expired_deleted(conn)
-    rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-    return [{**dict(r), "deleted": bool(r["deleted"])} for r in rows]
+    with _conn_lock:
+        conn = get_conn()
+        _purge_expired_deleted(conn)
+        rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
+        return [{**dict(r), "deleted": bool(r["deleted"])} for r in rows]
 
 
 def _next_sort_order(conn):
@@ -321,25 +325,26 @@ def add_account(fields):
     """
     conn = get_conn()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        cur = conn.execute(
-            "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (
-                _next_sort_order(conn),
-                fields.get("name", ""),
-                fields.get("phone", ""),
-                _encrypt_field(fields.get("password"), fields.get("phone", "")),
-                fields.get("phone_model", ""),
-                _encrypt_field(fields.get("phone_code"), fields.get("phone", "")),
-                fields.get("owner", "admin"),
-                fields.get("status", "pending"),
-                fields.get("reject_reason", ""),
-            ),
-        )
-        new_id = cur.lastrowid
-        conn.commit()
-        return new_id
+        with _conn_lock:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    _next_sort_order(conn),
+                    fields.get("name", ""),
+                    fields.get("phone", ""),
+                    _encrypt_field(fields.get("password"), fields.get("phone", "")),
+                    fields.get("phone_model", ""),
+                    _encrypt_field(fields.get("phone_code"), fields.get("phone", "")),
+                    fields.get("owner", "admin"),
+                    fields.get("status", "pending"),
+                    fields.get("reject_reason", ""),
+                ),
+            )
+            new_id = cur.lastrowid
+            conn.commit()
+            return new_id
     except Exception:
         conn.rollback()
         raise
@@ -352,7 +357,7 @@ def update_account(account_id, fields, expect_snapshot=None):
     改 phone 撞 UNIQUE 抛 sqlite3.IntegrityError（业务层捕获）。
     """
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         cur = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,))
         row = cur.fetchone()
         if row is None:
@@ -395,7 +400,7 @@ def update_account(account_id, fields, expect_snapshot=None):
 
 def set_account_deleted(account_id, deleted, deleted_at=""):
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         conn.execute(
             "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
             (1 if deleted else 0, deleted_at, account_id),
@@ -404,7 +409,7 @@ def set_account_deleted(account_id, deleted, deleted_at=""):
 
 def purge_account(account_id):
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         row = conn.execute("SELECT phone FROM accounts WHERE id=?", (account_id,)).fetchone()
         conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
         if row is not None:
@@ -413,7 +418,7 @@ def purge_account(account_id):
 
 def update_account_status(account_id, status, reject_reason=None):
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         if reject_reason is None:
             conn.execute("UPDATE accounts SET status=? WHERE id=?", (status, account_id))
         else:
@@ -423,7 +428,7 @@ def update_account_status(account_id, status, reject_reason=None):
 def move_account(account_id, direction):
     """direction: -1 上移 / 1 下移。事务内与相邻账号交换 sort_order。"""
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         rows = conn.execute(
             "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
         ).fetchall()
@@ -442,7 +447,7 @@ def move_account(account_id, direction):
 def delete_accounts_by_owner(owner):
     """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。"""
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (owner,)).fetchall()
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
         _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（调度 v2）
@@ -452,7 +457,7 @@ def delete_accounts_by_owner(owner):
 def delete_user_with_accounts(email):
     """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。"""
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
         conn.execute("DELETE FROM users WHERE email=?", (email,))
         return cur.rowcount
@@ -465,7 +470,7 @@ def replace_accounts(accounts):
     ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（TUI 与 web 勿同时编辑）。
     """
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         conn.execute("DELETE FROM accounts")
         for i, a in enumerate(accounts):
             conn.execute(
@@ -492,20 +497,22 @@ def replace_accounts(accounts):
 # users CRUD
 # ---------------------------------------------------------------------------
 def load_users():
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
-    return [dict(r) for r in rows]
+    with _conn_lock:
+        conn = get_conn()
+        rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
 
 
 def find_user(email):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
-    return dict(row) if row else None
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        return dict(row) if row else None
 
 
 def create_user(email, password_hash, role="user", created_at="", pw_version=1):
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         conn.execute(
             "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
             (email, password_hash, role, created_at, pw_version),
@@ -514,7 +521,7 @@ def create_user(email, password_hash, role="user", created_at="", pw_version=1):
 
 def update_user(email, fields):
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         sets, vals = [], []
         for k in ("password_hash", "role", "pw_version"):
             if k in fields:
@@ -528,7 +535,7 @@ def update_user(email, fields):
 
 def delete_user(email):
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         conn.execute("DELETE FROM users WHERE email=?", (email,))
 
 
@@ -538,19 +545,20 @@ def delete_user(email):
 def audit(username, action, target="", detail=""):
     """记录关键管理操作（多管理员追溯；detail 需已脱敏）。"""
     try:
-        conn = get_conn()
-        import datetime
-        conn.execute(
-            "INSERT INTO audit_logs (ts, username, action, target, detail) VALUES (?,?,?,?,?)",
-            (
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                username or "?",
-                action,
-                target,
-                detail[:200],
-            ),
-        )
-        conn.commit()
+        with _conn_lock:
+            conn = get_conn()
+            import datetime
+            conn.execute(
+                "INSERT INTO audit_logs (ts, username, action, target, detail) VALUES (?,?,?,?,?)",
+                (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    username or "?",
+                    action,
+                    target,
+                    detail[:200],
+                ),
+            )
+            conn.commit()
     except Exception as e:
         logger.warning("审计写入失败: %s", e)
 
@@ -572,9 +580,10 @@ def _audit_cleanup(conn):
 def get_time_prefs():
     """全量自选 {phone: {"slot_min": int, "updated_at": str}}（build_schedule 每次启动读一次）。"""
     try:
-        conn = get_conn()
-        rows = conn.execute("SELECT phone, slot_min, updated_at FROM time_prefs").fetchall()
-        return {r["phone"]: {"slot_min": r["slot_min"], "updated_at": r["updated_at"]} for r in rows}
+        with _conn_lock:
+            conn = get_conn()
+            rows = conn.execute("SELECT phone, slot_min, updated_at FROM time_prefs").fetchall()
+            return {r["phone"]: {"slot_min": r["slot_min"], "updated_at": r["updated_at"]} for r in rows}
     except Exception as e:
         logger.warning("读取 time_prefs 失败: %s", e)
         return {}
@@ -583,11 +592,12 @@ def get_time_prefs():
 def get_time_pref(phone):
     """单个账号自选；无则 None。"""
     try:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT phone, slot_min, updated_at FROM time_prefs WHERE phone=?", (phone,)
-        ).fetchone()
-        return None if row is None else {"slot_min": row["slot_min"], "updated_at": row["updated_at"]}
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT phone, slot_min, updated_at FROM time_prefs WHERE phone=?", (phone,)
+            ).fetchone()
+            return None if row is None else {"slot_min": row["slot_min"], "updated_at": row["updated_at"]}
     except Exception as e:
         logger.warning("读取 time_pref %s 失败: %s", phone, e)
         return None
@@ -596,7 +606,7 @@ def get_time_pref(phone):
 def set_time_pref(phone, slot_min, updated_at):
     """保存/更新自选（UPSERT）。slot_min 为窗口内分钟数（06:30 → 390，5 对齐）。"""
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         conn.execute(
             "INSERT INTO time_prefs (phone, slot_min, updated_at) VALUES (?,?,?) "
             "ON CONFLICT(phone) DO UPDATE SET slot_min=excluded.slot_min, updated_at=excluded.updated_at",
@@ -607,18 +617,19 @@ def set_time_pref(phone, slot_min, updated_at):
 def clear_time_pref(phone):
     """清除自选（回退自动错峰）。"""
     conn = get_conn()
-    with conn:
+    with _conn_lock, conn:
         conn.execute("DELETE FROM time_prefs WHERE phone=?", (phone,))
 
 
 def time_pref_stats():
     """每片已选人数（拥挤度）：[{slot_min, count}]，按 slot_min 升序。"""
     try:
-        conn = get_conn()
-        rows = conn.execute(
-            "SELECT slot_min, COUNT(*) AS count FROM time_prefs GROUP BY slot_min ORDER BY slot_min"
-        ).fetchall()
-        return [{"slot_min": r["slot_min"], "count": r["count"]} for r in rows]
+        with _conn_lock:
+            conn = get_conn()
+            rows = conn.execute(
+                "SELECT slot_min, COUNT(*) AS count FROM time_prefs GROUP BY slot_min ORDER BY slot_min"
+            ).fetchall()
+            return [{"slot_min": r["slot_min"], "count": r["count"]} for r in rows]
     except Exception as e:
         logger.warning("time_prefs 统计失败: %s", e)
         return []
