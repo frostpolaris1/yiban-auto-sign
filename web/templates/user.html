@@ -713,7 +713,9 @@ function renderPrefSlots(data) {
         : full
           ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
           : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
-    btn.innerHTML = `<div class="font-medium">${s.label}</div><div class="opacity-70">${full ? '已选满 · ' : ''}已选 ${s.pct}%</div>`;
+    // 拥挤度：满员=100%+黄底警示已传达"已选满"，不再拼冗余前缀（移动端 4 列窄屏换行，2026-08-15）
+    // nowrap + 移动端 11px：390/360/320 视口实测单行放得下
+    btn.innerHTML = `<div class="font-medium">${s.label}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
     btn.onclick = () => pickTimePref(s.slot_min);
     grid.appendChild(btn);
     // 首尾时段提醒（选中时；总开关关时与"暂不生效"提示拼接，两则信息都不丢）
