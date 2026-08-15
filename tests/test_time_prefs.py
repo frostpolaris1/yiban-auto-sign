@@ -536,6 +536,35 @@ class TimePrefsTest(unittest.TestCase):
         self.assertTrue(
             next(a for a in db.load_accounts_raw() if a["phone"] == "13600999001").get("user_paused"))
 
+    def test_api_pref_own_account_per_admin(self):
+        """对抗（2026-08-15 用户报告严重问题）：注册管理员的选片必须绑定自己的账号。
+        此前 _my_phone() 的 admin 分支硬编码 owner='admin'，导致所有管理员（含注册管理员）
+        都看到并覆盖内置管理员的选片。修复：与"我的账号"视图同口径
+        （内置管理员=owner admin/本人邮箱；注册管理员=owner 本人邮箱）。"""
+        # 内置管理员账号（owner=admin）选 slot 5；注册管理员 admin2 有自己的账号
+        db.add_account({"name": "内置管理员", "phone": "13900139099", "password": "p2",
+                        "status": "active", "owner": "admin"})
+        db.set_time_pref("13900139099", 5, "2026-08-15 10:00:00")
+        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.add_account({"name": "A2", "phone": "13600999001", "password": "p3",
+                        "status": "active", "owner": "admin2@test.local"})
+        # admin2 保存选片 → 应写入自己的账号（13600999001），不得覆盖内置管理员账号
+        c2 = self.webapp.create_app().test_client()
+        token2 = self._login(c2, "admin2@test.local", USER_PASS)
+        r = c2.put("/api/my-time-pref", json={"slot_min": 10}, headers=self._csrf(token2))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(db.get_time_pref("13600999001")["slot_min"], 10, "应写入 admin2 自己账号")
+        self.assertEqual(db.get_time_pref("13900139099")["slot_min"], 5, "不得覆盖内置管理员账号的选片")
+        # admin2 GET：pref 显示自己的选片（10），而不是内置管理员的（5）
+        data2 = c2.get("/api/my-time-pref").get_json()
+        self.assertTrue(data2["has_account"])
+        self.assertEqual(data2["pref_slot"], 10, "admin2 应看到自己的选片")
+        # 内置管理员 GET：仍看到自己的选片（5）
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        data = c.get("/api/my-time-pref").get_json()
+        self.assertEqual(data["pref_slot"], 5, "内置管理员应看到自己的选片")
+
     # ================= 用户自暂停签到（调度 v2） =================
     def test_api_pause_resume(self):
         c = self.webapp.create_app().test_client()
