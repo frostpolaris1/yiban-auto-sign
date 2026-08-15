@@ -42,7 +42,6 @@ import account_crypto  # noqa: E402
 import db  # noqa: E402
 
 # 默认路径（与 signin.py / run.sh 保持一致，可用参数覆盖）
-ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
 LOG_DEFAULT = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
 ENV_DEFAULT = os.environ.get("YIBAN_ENV_FILE", ".env")
 
@@ -381,12 +380,10 @@ class YibanTuiApp(App):
 
     def __init__(
         self,
-        config_path: str = ACCOUNTS_DEFAULT,
         log_path: str = LOG_DEFAULT,
         env_path: str = ENV_DEFAULT,
     ):
         super().__init__()
-        self.config_path = config_path
         self.log_path = log_path
         self.env_path = env_path
         self.accounts = []  # [{'name','phone','password','phone_model','phone_code'}]
@@ -760,13 +757,11 @@ class YibanTuiApp(App):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="易班自动签到 TUI 配置工具")
-    parser.add_argument(
-        "--config", default=ACCOUNTS_DEFAULT, help=f"账号配置文件路径（默认: {ACCOUNTS_DEFAULT}）"
-    )
     parser.add_argument("--log", default=LOG_DEFAULT, help=f"签到日志路径（默认: {LOG_DEFAULT}）")
     parser.add_argument("--env", default=ENV_DEFAULT, help=f".env 路径（默认: {ENV_DEFAULT}）")
     args = parser.parse_args()
-    YibanTuiApp(config_path=args.config, log_path=args.log, env_path=args.env).run()
+    # 2026-08-15 审查清理：原 --config 死参数（SQLite 迁移后无人读取，配置走 db），已删除
+    YibanTuiApp(log_path=args.log, env_path=args.env).run()
 
 
 if __name__ == "__main__":
