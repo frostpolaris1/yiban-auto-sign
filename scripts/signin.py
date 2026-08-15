@@ -1716,6 +1716,15 @@ def main():
                 "容量预检: %d 个账号 × 平均 %ds > 有效窗口 %d 秒，部分账号可能无法在窗口内完成",
                 len(accounts), _cfg["avg_attempt_sec"], _span_min * 60,
             )
+            # 超载提醒（对抗性审查补）：通知管理员，避免"超限只在日志里"无人知情
+            # （send_notification 内部已捕获异常，失败不影响签到）
+            send_notification(
+                "易班签到容量超载",
+                f"当前 {len(accounts)} 个账号 × 平均 {_cfg['avg_attempt_sec']}s "
+                f"> 有效窗口 {_span_min * 60}s，部分账号可能无法在窗口内完成签到。\n"
+                f"建议：增加窗口时长或减少账号数量（.env 调整）。",
+                notify_url,
+            )
         # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
         for acc in accounts:
             t = schedule.get(acc.phone)

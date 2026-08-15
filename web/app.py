@@ -163,6 +163,13 @@ RATE_MAX = 60  # 窗口内最大请求数（正常用户远低于此）
 REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
 REGISTER_MAX = 5  # 窗口内最大成功注册数
 
+# 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底）：
+# 注册用户上限默认 200（一人一号 ≈ 200 账号，远超班级/社团规模）；账号总数上限默认 500
+# （调度窗口 80min ÷ 单账号平均 8s ≈ 600 理论上限，留裕量防 web 解密/轮询劣化）。
+# 0 = 不限。可用 .env 的 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS 调整。
+DEFAULT_MAX_USERS = 200
+DEFAULT_MAX_ACCOUNTS = 500
+
 # 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$")
 EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
@@ -775,11 +782,28 @@ def send_notification(title, content):
         logger.warning("告警通知发送失败: %s", e)
 
 
+# 容量告警去重（进程内）：首次触顶通知一次，之后静默拒绝（防通知风暴；重启后重置）
+_capacity_alerts = {"users": False, "accounts": False}
+
+
+def _notify_capacity_once(kind, limit, label):
+    """容量触顶通知（每进程每种资源只发一次）：管理员知情且不刷屏。"""
+    if _capacity_alerts.get(kind):
+        return
+    _capacity_alerts[kind] = True
+    logger.warning("%s已达上限 %d，已拒绝新注册/添加", label, limit)
+    send_notification(
+        f"{label}已达上限",
+        f"{label}已达上限（{limit}），新的注册/添加已被拒绝。\n"
+        f"如需扩容请在 .env 调整 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS。",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.19.1"
+APP_VERSION = "0.19.2"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1077,6 +1101,11 @@ def create_app():
             return jsonify({"error": f"注册过于频繁，请 {REGISTER_WINDOW // 60} 分钟后再试"}), 429
         # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
         with _file_lock:
+            # 容量兜底：注册总人数上限（防分布式注册无限膨胀 users 表，对抗性审查补）
+            max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
+            if max_users > 0 and len(db.load_users()) >= max_users:
+                _notify_capacity_once("users", max_users, "注册人数")
+                return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
             if db.find_user(email) is not None:
                 return jsonify({"error": "该邮箱已注册"}), 400
             try:
@@ -1303,6 +1332,11 @@ def create_app():
                 initial_hash = generate_password_hash(initial, method=SCRYPT_METHOD)
         with _file_lock:
             accounts = load_accounts()
+            # 容量兜底：账号总数上限（防账号无限增长拖垮解密/轮询性能，对抗性审查补）
+            max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
+            if max_accounts > 0 and len(accounts) >= max_accounts:
+                _notify_capacity_once("accounts", max_accounts, "账号数量")
+                return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员扩容"}), 403
             if find_account_index(accounts, clean["phone"]) is not None:
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
 
@@ -1896,6 +1930,11 @@ def create_app():
         """
         with _file_lock:
             accounts = load_accounts()
+            # 容量兜底：账号总数上限（用户提交同样受限，对抗性审查补）
+            max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
+            if max_accounts > 0 and len(accounts) >= max_accounts:
+                _notify_capacity_once("accounts", max_accounts, "账号数量")
+                return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员"}), 403
             # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
             email = session.get("username", "").lower()
             has_live = any(a.get("owner") == email and not a.get("deleted") for a in accounts)
@@ -2565,6 +2604,13 @@ def create_app():
                 "window_edge_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60),
                 "allow_time_pref": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
                 "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
+                # 容量状态（对抗性审查补）：注册/账号上限与当前使用量（管理员知情）
+                "capacity": {
+                    "users": len(db.load_users()),
+                    "users_max": load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS),
+                    "accounts": len(load_accounts()),
+                    "accounts_max": load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS),
+                },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
                 "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
