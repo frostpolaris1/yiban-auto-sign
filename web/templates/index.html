@@ -63,16 +63,20 @@
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4;
     }
     /* 图形开关（2026-08-15 用户反馈：文字按钮→直观图形开关；aria-checked 驱动形态，
-       开=蓝底滑块右移，关=灰底；disabled 半透明） */
+       开=蓝底滑块右移，关=灰底；disabled 半透明。审查后加大触控：w-12 h-7） */
     .toggle {
-      @apply relative inline-flex w-11 h-6 rounded-full bg-zinc-300 dark:bg-zinc-600 transition-colors duration-150 shrink-0 cursor-pointer;
+      @apply relative inline-flex w-12 h-7 rounded-full bg-zinc-300 dark:bg-zinc-600 transition-colors duration-150 shrink-0 cursor-pointer;
     }
     .toggle .knob {
-      @apply absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-150;
+      @apply absolute top-1 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-150;
     }
     .toggle[aria-checked="true"] { @apply bg-blue-500; }
-    .toggle[aria-checked="true"] .knob { transform: translateX(1.25rem); }
+    .toggle[aria-checked="true"] .knob { transform: translateX(1.5rem); }
     .toggle[disabled] { @apply opacity-40 cursor-not-allowed; }
+    /* iOS Safari 聚焦缩放修复（2026-08-15 审查）：输入控件 <16px 时聚焦自动放大页面 */
+    @media (max-width: 767px) {
+      input, select, textarea { font-size: 16px !important; }
+    }
   }
 </style>
 </head>
@@ -192,7 +196,7 @@
 
     <!-- 待审核提示 -->
     <div id="pending-tip" class="hidden mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
-      有 <span id="pending-count" class="font-semibold">0</span> 个账号待处理（待审核或已拒绝），通过后才会参与定时签到。
+      有 <span id="pending-count" class="font-semibold">0</span> 个账号待审核或已拒绝，通过后参与定时签到。
     </div>
 
     <!-- 统计卡 -->
@@ -224,7 +228,7 @@
               <th class="px-4 py-3 font-medium whitespace-nowrap">名称</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">手机号</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap hidden md:table-cell">用户名</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap">状态</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap">审核</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
@@ -263,7 +267,7 @@
         <tbody id="accounts-tbody"></tbody>
       </table>
         <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">
-          暂无账号，点击右上角「添加账号」开始配置
+          暂无账号，点右上角「添加账号」配置
         </div>
       </div>
     </div>
@@ -335,7 +339,7 @@
   <section id="tab-settings" class="hidden">
     <div class="mb-4">
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">系统设置</h1>
-      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">随机延迟用于打散"每天固定秒级执行"的脚本特征（防风控纵深防御）</p>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">随机延迟让手动签到的时间略有随机变化（自动签到无需此设置）</p>
     </div>
 
     <!-- 服务器时间与签到状态（置顶） -->
@@ -352,7 +356,7 @@
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">批量操作</div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后，账号管理与用户管理页面显示多选框，支持批量通过/拒绝/删除、批量设管理员/重置密码等。默认关闭，开启仅本次会话有效，刷新页面后自动恢复关闭</p>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后账号与用户列表显示多选框，支持批量通过/删除/设管理员/重置密码等。仅本次会话有效，刷新后自动关闭</p>
         </div>
         <button id="batch-mode-btn" role="switch" aria-checked="false" onclick="toggleBatchMode()"
                 class="toggle" aria-label="批量操作"><span class="knob"></span></button>
@@ -388,7 +392,7 @@
             <option value="0">不掐（尾部可能超时）</option>
             <option value="120">各 2 分钟（更保守）</option>
           </select>
-          <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn">⚠️ 无缓冲：07:49~07:50 执行的账号可能超时</p>
+          <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn">⚠️ 无缓冲：窗口末尾时段的账号可能超时</p>
         </div>
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">签到窗口</div>
@@ -433,7 +437,7 @@
     <!-- 随机延迟 -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">随机延迟（仅手动签到生效）</div>
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">自动签到已由调度 v2 的错峰分配内置随机性，无需此设置；仅"手动签到"时生效</p>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">自动签到的时间已自动分散，无需此设置；仅手动签到生效</p>
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
           <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
@@ -460,7 +464,7 @@
 
     <!-- 连通性检测 -->
     <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">连通性检测（不登录，仅检查易班 API 可达性）</div>
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">连通性检测（不登录，仅测试易班服务器连通）</div>
       <div class="flex flex-wrap items-center gap-3">
         <button onclick="doPing()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-4 py-2 text-sm">
           开始检测
@@ -536,10 +540,10 @@
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersPending', this)" class="accent-blue-500"></th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[38%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[14%]">角色</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">注册时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="users-pending-tbody"></tbody>
@@ -563,10 +567,10 @@
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersNormal', this)" class="accent-blue-500"></th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[38%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[14%]">角色</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">注册时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="users-tbody"></tbody>
@@ -591,10 +595,10 @@
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersVacant', this)" class="accent-blue-500"></th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[38%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[14%]">角色</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">注册时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%] sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
             </tr>
           </thead>
           <tbody id="users-vacant-tbody"></tbody>
@@ -739,7 +743,7 @@
 
 <!-- Toast -->
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
-            bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md"></div>
+            bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md max-w-[90vw] text-center break-words"></div>
 
 <script>
 // ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 一致） =================
@@ -992,7 +996,7 @@ function batchAccounts(key, action) {
   if (action === 'purge' && !confirm(`确定彻底删除选中的 ${ids.length} 个账号吗？此操作不可恢复！`)) return;
   // 批量手动签到：独立端点，顺序逐个执行（防风控）
   if (action === 'signin') {
-    if (!confirm(`确定对选中的 ${ids.length} 个账号执行手动签到吗？将按顺序逐个执行，日志约几分钟内刷新。`)) return;
+    if (!confirm(`确定对选中的 ${ids.length} 个账号执行手动签到吗？将按顺序逐个执行，结果稍后出现在下方日志。`)) return;
     api('/api/signin/batch', { method: 'POST', body: JSON.stringify({ ids }) })
       .then(data => { toast(data.msg || '已加入签到队列'); clearBatch(key); })
       .catch(e => toast(e.message, true));
@@ -1059,7 +1063,7 @@ function renderAccounts() {
   const empty = $('accounts-empty');
   tbody.innerHTML = '';
   empty.classList.toggle('hidden', activeFiltered.length > 0);
-  empty.textContent = activeFiltered.length ? '' : (activeAccounts.length ? '无匹配结果' : '暂无账号，点击右上角「添加账号」开始配置');
+  empty.textContent = activeFiltered.length ? '' : (activeAccounts.length ? '无匹配结果' : '暂无账号，点右上角「添加账号」配置');
   $('accounts-active-count').textContent = activeSearch
     ? `${activeFiltered.length} 个匹配 / 共 ${activeAccounts.length} 个`
     : (activeAccounts.length ? activeAccounts.length + ' 个' : '');
@@ -1113,9 +1117,9 @@ function deletedAccountRow(a, key) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">${esc((a.deleted_at || '').replace('T', ' ').slice(0, 16))}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
-      <div class="flex items-center justify-center gap-2">
-        <button onclick="restoreAccount(${a.index})" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-150">恢复</button>
-        <button onclick="purgeAccount(${a.index})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">彻底删除</button>
+      <div class="flex items-center justify-center gap-1">
+        <button onclick="restoreAccount(${a.index})" class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-150">恢复</button>
+        <button onclick="purgeAccount(${a.index})" class="text-xs text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">彻底删除</button>
       </div>
     </td>`;
   return tr;
@@ -1144,7 +1148,7 @@ function statusBadge(a) {
     return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5 whitespace-nowrap">待审核</span>';
   if (a.status === 'rejected')
     return '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5 whitespace-nowrap">已拒绝</span>';
-  return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 whitespace-nowrap">已生效</span>';
+  return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 whitespace-nowrap">正常</span>';
 }
 
 function pendingAccountRow(a, key) {
@@ -1193,7 +1197,7 @@ function accountRow(a, key) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell">${esc(a.phone_model || '—')}</td>
     <td class="px-4 py-3 text-sm whitespace-nowrap hidden xl:table-cell">${a.time_pref
       ? (a.time_pref_edge === 'first'
-          ? '<span class="text-amber-600 dark:text-amber-400" title="最早时段：系统 06:31 启动后最先签到">最早 ' + esc(a.time_pref) + '</span>'
+          ? '<span class="text-amber-600 dark:text-amber-400" title="最早时段：窗口首块，最先执行">最早 ' + esc(a.time_pref) + '</span>'
           : a.time_pref_edge === 'last'
             ? '<span class="text-amber-600 dark:text-amber-400" title="最后时段：临近截止，网络波动可能错过">最后 ' + esc(a.time_pref) + '</span>'
             : esc(a.time_pref))
@@ -2123,7 +2127,7 @@ async function loadMineTimePref(preserve = false) {
 function renderMinePrefSlots(data) {
   const grid = $('mine-pref-slot-grid');
   grid.innerHTML = '';
-  let tip = data.allowed ? '' : '功能未开启：选择暂不生效';
+  let tip = '';  // 未开启时底部提示默认为空——黄字提示（mine-pref-disabled-hint）承担完整说明（2026-08-15 文案审查去重）
   data.slots.forEach((s, i) => {
     const sel = data.pref_slot === s.slot_min;
     const full = s.pct >= 100;  // 拥挤度百分比（2026-08-15：API 只下发 pct，与用户端一致）
@@ -2141,9 +2145,9 @@ function renderMinePrefSlots(data) {
     grid.appendChild(btn);
     if (sel && (i === 0 || i === data.slots.length - 1)) {
       const edgeTip = i === 0
-        ? '最早时段：系统每日 06:31 启动，将在 06:31~06:35 之间最先为你签到'
-        : '最后时段：将在 07:45~07:49 之间执行，临近 07:50 截止，网络波动可能导致错过';
-      tip = data.allowed ? '⚠️ ' + edgeTip : '功能未开启：选择暂不生效；' + edgeTip;
+        ? '最早时段：窗口开始后最先为你签到'
+        : '最后时段：临近窗口截止执行，网络波动可能导致错过';
+      tip = data.allowed ? '⚠️ ' + edgeTip : '⚠️ 未开启：' + edgeTip;
     }
   });
   $('mine-pref-tip').textContent = tip;
@@ -2321,9 +2325,9 @@ function toggleMineClearCode() {
   }
 }
 
-let mineEditingIdx = null;
+let mineEditingIndex = null;
 function openMineEditInline(i) {
-  mineEditingIdx = i;
+  mineEditingIndex = i;
   const a = mineAccounts[i];
   $('m-name').value = a.name;
   $('m-phone').value = a.phone;
@@ -2352,7 +2356,7 @@ function cancelMineEdit() {
 }
 
 function resetMineForm() {
-  mineEditingIdx = null;
+  mineEditingIndex = null;
   mineClearCodeFlag = false;
   $('mine-form-title').textContent = '提交我的易班账号';
   $('mine-submit-btn').textContent = '提交账号';
@@ -2385,8 +2389,8 @@ $('mine-form').addEventListener('submit', async (e) => {
       // 已标记清除识别码 → 提交 __clear__ 由后端清空字段；否则留空表示不修改
       phone_code: mineClearCodeFlag ? '__clear__' : $('m-code').value.trim(),
     };
-    const data = mineEditingIdx !== null
-      ? await api(`/api/my-accounts/${mineEditingIdx}`, { method: 'PUT', body: JSON.stringify(body) })
+    const data = mineEditingIndex !== null
+      ? await api(`/api/my-accounts/${mineEditingIndex}`, { method: 'PUT', body: JSON.stringify(body) })
       : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
     tip.textContent = '';
     resetMineForm();
