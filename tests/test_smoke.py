@@ -246,5 +246,55 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(row["detail"], "测试审计")
 
 
+    # ---- 11. 解密失败统一收口（对抗性审查 2026-08-15 L1）----
+    def test_decrypt_failure_wrapped_runtime_error(self):
+        """密文损坏（tag 校验失败）→ load_accounts 抛 RuntimeError（统一 JSON 收口），非 ValueError 透传。"""
+        self._init_db()
+        import account_crypto
+
+        key = account_crypto.load_key(self.env_file)
+        good = account_crypto.encrypt_password("secret", key, "13800138000")
+        bad = {**good, "tag": "00" * 16}  # 篡改 tag → 解密必失败
+        acc_id = db.add_account({"name": "A", "phone": "13800138000",
+                                 "password": "p1", "status": "active"})
+        conn = db.get_conn()
+        conn.execute("UPDATE accounts SET password=? WHERE id=?",
+                     (json.dumps(bad), acc_id))
+        conn.commit()
+        with self.assertRaises(RuntimeError):
+            db.load_accounts()
+
+    # ---- 12. 首启建密钥并发唯一（对抗性审查 2026-08-15 F3）----
+    def test_load_key_concurrent_single_key(self):
+        """多线程首启 load_key：只生成一份密钥并共享（_KEY_LOCK 双检）。"""
+        import threading
+
+        import account_crypto
+
+        old_cache = account_crypto._KEY_CACHE
+        old_env = os.environ.pop("YIBAN_ACCOUNTS_KEY", None)
+        env2 = os.path.join(self.tmp, "env2.env")
+        if os.path.exists(env2):
+            os.remove(env2)
+        account_crypto._KEY_CACHE = None
+        keys = []
+
+        def get():
+            keys.append(account_crypto.load_key(env2))
+
+        try:
+            ts = [threading.Thread(target=get) for _ in range(8)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            self.assertEqual(len({k.hex() for k in keys}), 1,
+                             f"多线程生成了多个密钥: {sorted({k.hex() for k in keys})}")
+        finally:
+            account_crypto._KEY_CACHE = old_cache
+            if old_env is not None:
+                os.environ["YIBAN_ACCOUNTS_KEY"] = old_env
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

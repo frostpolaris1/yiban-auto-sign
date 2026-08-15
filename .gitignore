@@ -84,3 +84,12 @@ docs/web-console/design/
 # ZCode 工具目录
 .zcode/
 .ruff_cache/
+
+# 内部 AI 工作记忆（含服务器 IP/部署细节，严禁入库，2026-08-15 对抗性审查 F1）
+.workbuddy/
+
+# 设计参考图（非产物，2026-08-15 对抗性审查 F2）
+build/
+
+# .env 并发写锁文件（2026-08-15 对抗性审查 B）
+.env.lock

@@ -30,7 +30,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from flask import Flask, jsonify, redirect, render_template, request, session
@@ -193,13 +193,13 @@ STATUS_ICON = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
-    STATUS_PAUSED: "⏸️",
+    STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️", STATUS_PENDING: "⏳",
 }
 STATUS_TEXT = {
     STATUS_SUCCESS: "签到成功", STATUS_ALREADY: "已签到", STATUS_NO_TASK: "无需签到",
     STATUS_FAILED: "签到失败", STATUS_RETRYING: "重试中",
     STATUS_SKIPPED_WINDOW: "时段外", STATUS_SKIPPED_NORANGE: "窗口缺失",
-    STATUS_PAUSED: "暂停",
+    STATUS_PAUSED: "暂停", STATUS_USER_CANCELLED: "已取消", STATUS_PENDING: "待签",
 }
 
 
@@ -212,7 +212,8 @@ def clear_cred_state(phone):
         if not isinstance(data, dict) or phone not in data:
             return
         del data[phone]
-        tmp = path + ".tmp"
+        # 唯一临时名：防与 signin 收尾 _save_cred_state 跨进程并发碰撞（对抗性审查 F5）
+        tmp = f"{path}.tmp{secrets.token_hex(4)}"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, path)
@@ -255,8 +256,6 @@ def load_sign_state(date_str=None):
 logger = logging.getLogger("web")
 
 
-# ---------------------------------------------------------------------------
-# 签到日志解析（与 tui/app.py parse_sign_log 保持一致）
 # ---------------------------------------------------------------------------
 # 签到日志解析（与 tui/app.py parse_sign_log 保持一致）
 # ---------------------------------------------------------------------------
@@ -338,33 +337,50 @@ def write_env_int(env_path, key, value):
 
 
 def write_env_key(env_path, key, value):
-    """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。"""
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-            lines = f.read().splitlines()
-    out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
-    if value:
-        out.append(f"{key}={value}")
-    _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
+    """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
+
+    写锁（_env_write_lock）：并发保存设置/公告时读-改-写互斥，防跨 worker 丢更新。
+    """
+    with _env_write_lock(env_path):
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
+                lines = f.read().splitlines()
+        out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
+        if value:
+            out.append(f"{key}={value}")
+        _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
 
 
 def ensure_secret_key(env_path):
-    """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。"""
-    env = read_env(env_path)
-    key = env.get("YIBAN_SECRET_KEY", "").strip()
-    if key:
+    """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。
+
+    .env 不可写时降级为进程内随机密钥并告警（服务可用，重启后会话失效）——
+    与 migrate_admin_password_to_hash 的降级策略一致（对抗性审查 F4）。
+    """
+    with _env_write_lock(env_path):
+        env = read_env(env_path)
+        key = env.get("YIBAN_SECRET_KEY", "").strip()
+        if key:
+            return key
+        key = secrets.token_hex(32)
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
+                lines = f.read().splitlines()
+        if not any(ln.strip().startswith("YIBAN_SECRET_KEY=") for ln in lines):
+            lines.append(f"YIBAN_SECRET_KEY={key}")
+        try:
+            _atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
+        except OSError as e:
+            logger.warning(
+                "无法写入 %s（%s）：YIBAN_SECRET_KEY 仅本次进程生效（重启后会话将失效），"
+                "请修复目录权限或手动配置密钥",
+                env_path, e,
+            )
+            return key
+        logger.info("已自动生成 YIBAN_SECRET_KEY 并写入 %s", env_path)
         return key
-    key = secrets.token_hex(32)
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-            lines = f.read().splitlines()
-    if not any(ln.strip().startswith("YIBAN_SECRET_KEY=") for ln in lines):
-        lines.append(f"YIBAN_SECRET_KEY={key}")
-    _atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
-    logger.info("已自动生成 YIBAN_SECRET_KEY 并写入 %s", env_path)
-    return key
 
 
 def migrate_admin_password_to_hash(env_path):
@@ -427,6 +443,29 @@ def _atomic_write(path, content, chmod_priv=False):
 # ---------------------------------------------------------------------------
 _file_lock = threading.RLock()
 
+
+@contextlib.contextmanager
+def _env_write_lock(env_path):
+    """.env 写互斥：进程内 RLock + 跨进程 flock（POSIX 可用时）。
+
+    修复（对抗性审查 2026-08-15 实证）：并发保存设置/公告时 read-modify-write
+    丢更新（60/60 轮必丢一个键）——gunicorn 多 worker 跨进程写 .env 需文件锁。
+    Windows 无 fcntl 退化为进程内锁（本地开发单进程足够）。
+    """
+    with _file_lock:
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+        fd = open(env_path + ".lock", "a+")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
+
 # 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告保存时同步更新
 _changelog_cache = [None]  # [文本]
 _announcement_cache = [None]  # [公告文本]
@@ -454,6 +493,15 @@ def _mask_phone(p):
     if "*" in p:
         return p
     return p[:3] + "****" + p[7:] if len(p) == 11 else p
+
+
+def _mask_log_phones(line):
+    """日志行内全部 [11 位手机号] 脱敏（/api/logs 与 /api/my-logs 共用，防展示层漏出 PII）。
+
+    覆盖 signin.py 的行格式 `[13800138000] 结果`；其他格式（如 `账号: 138...`）
+    不进日志（通知内容不落盘），单一格式正则足够——见日志审查 P3。
+    """
+    return re.sub(r"\[(\d{11})\]", lambda m: "[" + _mask_phone(m.group(1)) + "]", line)
 
 
 def _mask_email(e):
@@ -517,8 +565,10 @@ def _estimate_slot(phone):
     if order != "sequence":
         return None, "随机模式每日重排，签到时间当天 06:31 后可见"
     accounts = load_accounts()
-    idx = next((i for i, a in enumerate(accounts) if a.get("phone") == phone), None)
-    if idx is None or not accounts:
+    # 与 build_schedule 一致：user_paused 账号不参与调度（零占位），预计时段按实际参与人计算
+    live = [a for a in accounts if not a.get("user_paused")]
+    idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
+    if idx is None or not live:
         return None, ""
     sw = _sign_window()
     edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
@@ -533,11 +583,21 @@ def _estimate_slot(phone):
         return f"{m // 60:02d}:{m % 60:02d}"
 
     if dist == "uniform":
-        # 线性填块（小人数同样复用分块：n=2 → 同块等分，可预期）
+        # 线性填块（与 signin._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
+        # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）
         k = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
-        bi = idx // k
-        lo = eff_lo + 5 * bi
-        hi = min(eff_lo + 5 * (bi + 1), eff_hi)
+        valid = []
+        b = start_min
+        while b < end_min:
+            lo = max(b, eff_lo)
+            hi = min(b + 5, eff_hi)
+            if hi > lo:
+                valid.append((lo, hi))
+            b += 5
+        if not valid:
+            return None, ""
+        bi = min(idx // k, len(valid) - 1)
+        lo, hi = valid[bi]
         return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
     # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
     import random as _rnd
@@ -719,7 +779,7 @@ def send_notification(title, content):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.19.0"
+APP_VERSION = "0.19.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1577,7 +1637,8 @@ def create_app():
                     "approve",
                 )
                 logger.info("审核通过账号 %s（提交者 %s）", _mask_phone(acc.get("phone", "")), _mask_email(acc.get("owner", "")))
-                return jsonify({"ok": True, "msg": f"已通过 {acc.get('phone')}，将参与定时签到"})
+                # 回显脱敏（与列表口径一致，防响应混入完整 PII；管理员详情页可取完整号）
+                return jsonify({"ok": True, "msg": f"已通过 {_mask_phone(acc.get('phone', ''))}，将参与定时签到"})
             if action == "reject":
                 if acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
                     return jsonify({"error": "该账号无需拒绝"}), 400
@@ -1805,9 +1866,13 @@ def create_app():
             return jsonify({"error": "时间片需为 5 分钟对齐且落在签到窗口内"}), 400
         db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         db.audit(session.get("username", "?"), "time_pref_set", phone, _slot_to_label(slot))
-        # 生效分界 = 当天 cron 启动时刻（窗口起点 + 1 分钟）
+        # 生效分界 = 当天 cron 启动时刻（窗口起点 + 1 分钟；起点为 :59 时进位不崩）
         now = datetime.now()
-        boundary = now.replace(hour=sw[0][0], minute=sw[0][1] + 1, second=0, microsecond=0)
+        try:
+            boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
+        except ValueError:
+            boundary = now
+        boundary += timedelta(minutes=1)
         when = "今日生效" if now < boundary else "明日生效（今日已开始签到）"
         return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}"})
 
@@ -1919,7 +1984,8 @@ def create_app():
             elif line.startswith("[") and line < prefix:
                 break
         out.reverse()
-        return jsonify({"ok": True, "date": date, "logs": out[-50:]})
+        # 脱敏后再截断：与 /api/logs 同口径（日志行内 [手机号] 不落完整号）
+        return jsonify({"ok": True, "date": date, "logs": [_mask_log_phones(ln) for ln in out[-50:]]})
 
     @app.route("/api/my-accounts/<int:idx>", methods=["PUT"])
     def api_my_account_update(idx):
@@ -2471,7 +2537,7 @@ def create_app():
             {
                 "ok": True,
                 "states": {_mask_phone(k): v for k, v in states.items()},
-                "logs": [re.sub(r"\[(\d{11})\]", lambda m: "[" + _mask_phone(m.group(1)) + "]", ln) for ln in recent[-80:]],
+                "logs": [_mask_log_phones(ln) for ln in recent[-80:]],
                 "log_file": os.path.basename(LOG_FILE),  # 只暴露文件名，不暴露服务器路径
             }
         )

@@ -326,7 +326,7 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span class="font-mono">06:30 ~ 07:50</span>（周一至周六；周日是否签到见上方开关）</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周日是否签到见上方开关）</div>
     </div>
 
     <!-- 批量操作开关 -->
@@ -381,7 +381,7 @@
             <input id="window-end" type="time" step="60"
                    class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
           </div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">原生时间选择器，无需手动输入；修改后失焦自动保存</p>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">原生时间选择器，无需手动输入；修改后点「保存调度设置」生效</p>
         </div>
       </div>
       <p class="text-xs text-amber-600 dark:text-amber-400 hidden" id="sched-perm-tip">仅主管理员可修改调度设置</p>
@@ -803,6 +803,13 @@ function toggleSidebar(open) {
 
 // ================= Tab 切换 =================
 function switchTab(name) {
+  // 未保存的调度改动守卫（2026-08-15 对抗性审查 F-1）：切走会静默丢失，先确认
+  if (name !== 'settings' && schedDirty) {
+    if (!confirm('调度设置还有未保存的修改，切换页面将丢失。\n是否继续？')) return;
+    schedDirty = false;
+    $('schedule-save-btn').classList.add('hidden');
+    $('sched-dirty-tip').classList.add('hidden');
+  }
   ['accounts', 'logs', 'settings', 'users', 'mine'].forEach(t => {
     $('tab-' + t).classList.toggle('hidden', t !== name);
   });
@@ -822,7 +829,7 @@ function switchTab(name) {
   tabEl.classList.remove('tab-enter');
   void tabEl.offsetWidth;  // 重触发动画
   tabEl.classList.add('tab-enter');
-  if (name === 'accounts') loadAccounts();
+  if (name === 'accounts') { loadAccounts(); updateSignModeHint(); }
   if (name === 'logs') { loadLogs(); fillSigninSelect(); }
   if (name === 'settings') { loadSettings(); calibrateClock(); tickClock(); }
   if (name === 'users') loadUsers();
@@ -1487,7 +1494,9 @@ async function loadSettings() {
     $('sign-order-select').value = state.signOrder;
     $('sign-dist-select').value = state.signDist;
     $('edge-select').value = String(state.edgeSec);
-    state.signWindow = data.sign_window || '';
+    // 顶部"签到窗口"静态展示与实际配置联动（2026-08-15 对抗性审查：原为写死默认值误导）
+    const swEl = $('sign-window-static');
+    if (swEl) swEl.textContent = state.signWindow || '--:-- ~ --:--';
     const win = state.signWindow.split('~').map(s => s.trim());
     $('window-start').value = (win[0] || '06:30').slice(0, 5);
     $('window-end').value = (win[1] || '07:50').slice(0, 5);
@@ -1500,6 +1509,10 @@ async function loadSettings() {
     renderDelayUI();
     renderBatchModeUI();
     updateSignModeHint();
+    // 重置调度脏标记：重新加载以服务器值为准（防陈旧"未保存"提示，2026-08-15 对抗性审查 F-1）
+    schedDirty = false;
+    $('schedule-save-btn').classList.add('hidden');
+    $('sched-dirty-tip').classList.add('hidden');
     // 批量开关影响表格复选框渲染：加载完成后重绘（页面初始加载也会执行）
     renderAccounts();
     renderUsers(allUsers, builtinAdminName);
@@ -1526,8 +1539,13 @@ function renderSchedulePerm() {
   if (tip) tip.classList.toggle('hidden', !disabled);
 }
 
+// 在途锁：防连点重复 confirm/POST（2026-08-15 对抗性审查 F-16）
+let scheduleSaving = false;
 async function saveScheduleSettings() {
+  if (scheduleSaving) return;
   if (!confirm('保存调度设置？\n修改将在下次自动签到时生效。')) return;
+  scheduleSaving = true;
+  $('schedule-save-btn').disabled = true;
   try {
     const data = await api('/api/settings', {
       method: 'POST',
@@ -1544,6 +1562,11 @@ async function saveScheduleSettings() {
     $('sched-dirty-tip').classList.add('hidden');
     toast(data.msg || '调度设置已保存');
   } catch (e) { toast(e.message, true); }
+  finally {
+    scheduleSaving = false;
+    // 仅主管理员才恢复可点（renderSchedulePerm 权限语义）
+    if (state.isMasterAdmin) $('schedule-save-btn').disabled = false;
+  }
 }
 
 // 排序/分布/缓冲/窗口：改动只标记（显式保存）
@@ -1607,10 +1630,10 @@ function resetScheduleSettings() {
   toast('已恢复默认值，点击「保存调度设置」生效');
 }
 
-// 随机模式下账号管理页提示：顺序不影响执行
+// 随机模式下账号管理页提示：顺序不影响执行（调度 v2 判定来源为 sign_order，2026-08-15 对抗性审查 F-9）
 function updateSignModeHint() {
   const hint = $('sign-mode-hint');
-  if (hint) hint.classList.toggle('hidden', state.signMode !== 'random');
+  if (hint) hint.classList.toggle('hidden', state.signOrder !== 'random');
 }
 
 function renderSundaySignUI() {
@@ -1652,10 +1675,11 @@ function renderDelayUI() {
     const btn = $(k + '-delay-btn');
     const secs = $(k + '-delay-secs');
     const on = state.delays[k] > 0;
-    btn.textContent = on ? '开启' : '关闭';
+    // 按钮显示点击后的动作（与周日/自选/批量开关语义统一，2026-08-15 对抗性审查 F-12）
+    btn.textContent = on ? '关闭' : '开启';
     btn.className = on
-      ? 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200'
-      : 'btn-ghost';
+      ? 'btn-ghost'
+      : 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
     secs.value = on ? state.delays[k] : '';
     secs.placeholder = `默认 ${k === 'start' ? 60 : 10}`;
   });

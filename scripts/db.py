@@ -251,7 +251,12 @@ def _row_to_account(row):
                         "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
                     )
                 key = account_crypto.load_key(_env_file)
-                a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
+                try:
+                    a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
+                except ValueError as e:
+                    # 统一收口：解密失败（密钥不匹配/密文损坏）→ RuntimeError，
+                    # 与密钥缺失分支一致，由 web 层统一 JSON 错误处理（对抗性审查 L1）
+                    raise RuntimeError(str(e)) from e
             else:
                 a[k] = v  # 明文（迁移前数据或未加密）
     return a
@@ -290,6 +295,7 @@ def _purge_expired_deleted(conn):
     """软删除超过保留期（>= 7 天）的行物理清除（web 原 load 惰性清理语义，库内必有 deleted_at）。
 
     deleted_at 为 ISO 秒级字符串（web 写入格式），同格式字符串比较等价时间序。
+    清理失败仅告警不阻断（规范审查 D6：原静默吞错无痕迹）。
     """
     try:
         cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).isoformat(timespec="seconds")
@@ -298,8 +304,8 @@ def _purge_expired_deleted(conn):
             (cutoff,),
         )
         conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("清理超期软删除账号失败: %s", e)
 
 
 def load_accounts():
@@ -583,14 +589,14 @@ def audit(username, action, target="", detail=""):
 
 
 def _audit_cleanup(conn):
-    """清理超 180 天审计（启动时顺带，一条 DELETE）。"""
+    """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。"""
     try:
         import datetime
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
         conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("清理旧审计日志失败: %s", e)
 
 
 # ---------------------------------------------------------------------------
