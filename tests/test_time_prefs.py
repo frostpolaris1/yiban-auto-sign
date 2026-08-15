@@ -183,6 +183,9 @@ class TimePrefsTest(unittest.TestCase):
         self.assertTrue(data["allowed"])
         self.assertEqual(len(data["slots"]), 16)
         self.assertIsNone(data["pref"])
+        # 预计签到时段：顺序排序（默认）→ 非空可预期
+        self.assertIsNotNone(data["estimated"], "顺序排序应返回预计时段")
+        self.assertRegex(data["estimated"], r"\d{2}:\d{2}")
         # 保存 slot 0（06:30 片）
         r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -192,6 +195,22 @@ class TimePrefsTest(unittest.TestCase):
         r = c.put("/api/my-time-pref", json={"slot_min": None}, headers=self._csrf(token))
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(c.get("/api/my-time-pref").get_json()["pref"])
+
+    def test_api_pref_estimate_random_order_null(self):
+        """随机排序：预计时段为 None + 提示文案（随机才不提醒）。"""
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        env = open(self.env_file, "a", encoding="utf-8")
+        env.write("YIBAN_SIGN_ORDER=random\n")
+        env.close()
+        try:
+            data = c.get("/api/my-time-pref").get_json()
+            self.assertIsNone(data["estimated"])
+            self.assertIn("当天 06:31 后可见", data["estimate_note"])
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace("YIBAN_SIGN_ORDER=random\n", ""))
 
     def test_api_pref_validation(self):
         c = self.webapp.create_app().test_client()

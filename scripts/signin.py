@@ -175,7 +175,6 @@ _DEFAULT_SIGN_START = (6, 30)
 _DEFAULT_SIGN_END = (7, 50)
 _DEFAULT_EDGE_SEC = 60          # 首尾缓冲：有效窗口 [SIGN_START+60s, SIGN_END-60s]
 _DEFAULT_BLOCK_CAP = 15         # 块容量（每块最多人数，满则向后顺延）
-_DEFAULT_MIN_ACCOUNTS = 3       # 小人数免分块阈值
 _DEFAULT_MU_MIN_PCT = 40        # 正态高峰中心范围（有效窗口相对位置 %）
 _DEFAULT_MU_MAX_PCT = 60
 _DEFAULT_SIGMA_MIN_PCT = 15     # 正态分散程度范围（有效窗口宽度 %）
@@ -220,7 +219,7 @@ def _schedule_config():
 
     兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
     新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
-    返回 dict：order/dist/edge_sec/block_cap/min_accounts/mu/sigma 百分比/
+    返回 dict：order/dist/edge_sec/block_cap/mu/sigma 百分比/
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
     """
     mode = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
@@ -252,7 +251,6 @@ def _schedule_config():
         "dist": dist,
         "edge_sec": _env_int("YIBAN_WINDOW_EDGE_SEC", _DEFAULT_EDGE_SEC, 0, 600),
         "block_cap": _env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200),
-        "min_accounts": _env_int("YIBAN_SCHEDULE_MIN_ACCOUNTS", _DEFAULT_MIN_ACCOUNTS, 1, 50),
         "mu_min_pct": mu_lo,
         "mu_max_pct": mu_hi,
         "sigma_min_pct": sigma_lo,
@@ -1316,13 +1314,8 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     blocks, eff_lo, eff_hi = _schedule_blocks(cfg)
     span = eff_hi - eff_lo
 
-    # 小人数免分块：直接有效窗口内随机时刻（自选也走随机时刻——人少无需等分）
-    if n <= cfg["min_accounts"]:
-        out = {}
-        for acc in accounts:
-            out[acc.phone] = _minute_to_dt(base, rng.uniform(eff_lo, eff_hi))
-        return out
-
+    # 小人数复用同一分块机制（统一逻辑，后续加人行为连续，无需特判）：
+    # 顺序×均匀 = 线性填块（n=2 → 两人同块等分）；随机×均匀 = 循环填块；正态 = 采样落块
     # 容量：块数 × K；超出 → 压缩模式（K 放大到能容纳所有人，间隔下限告警）
     cap = len(blocks) * cfg["block_cap"]
     k = cfg["block_cap"] if n <= cap else math.ceil(n / len(blocks))
