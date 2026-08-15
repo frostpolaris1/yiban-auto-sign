@@ -373,6 +373,62 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(results["13800138001"][3], signin.STATUS_SKIPPED_WINDOW)
         self.assertEqual(w.call_args[0][1], signin.STATUS_SKIPPED_WINDOW)
 
+    def test_api_capacity_user_registration_limit(self):
+        """对抗性审查补：注册总人数上限（YIBAN_MAX_USERS）——超限拒绝。"""
+        # 临时设上限 = 当前用户数 + 1（追加 .env，用完移除）
+        cur = len(db.load_users())
+        limit = cur + 1
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write(f"YIBAN_MAX_USERS={limit}\n")
+        try:
+            app = self.webapp.create_app()
+            c = app.test_client()
+            # 第一个注册成功
+            r = c.post("/api/register", json={"email": "cap1@test.local", "password": "StrongPass1!"})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            # 第二个被拒（已达上限）
+            r2 = c.post("/api/register", json={"email": "cap2@test.local", "password": "StrongPass1!"})
+            self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
+            self.assertIn("上限", r2.get_json()["error"])
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace(f"YIBAN_MAX_USERS={limit}\n", ""))
+
+    def test_api_capacity_accounts_limit(self):
+        """对抗性审查补：账号总数上限（YIBAN_MAX_ACCOUNTS）——管理员添加与用户提交均受限。"""
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write("YIBAN_MAX_ACCOUNTS=1\n")
+        try:
+            app = self.webapp.create_app()
+            c = app.test_client()
+            self._login(c, "admin", ADMIN_PASS)
+            token = c.get("/api/me").get_json()["csrf_token"]
+            h = {"X-CSRF-Token": token}
+            # 第一个账号添加成功（setUp 已有一个 → 已达 1 → 被拒）
+            r = c.post("/api/accounts", json={
+                "name": "C1", "phone": "13700137001", "password": "p1",
+            }, headers=h)
+            self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+            self.assertIn("上限", r.get_json()["error"])
+            # 用户提交同样受限
+            c2 = app.test_client()
+            token2 = self._login(c2, "user1@test.local", USER_PASS)
+            r2 = c2.post("/api/my-accounts", json={
+                "name": "U2", "phone": "13700137002", "password": "p2",
+            }, headers={"X-CSRF-Token": token2})
+            self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
+            # settings 容量状态返回
+            c3 = app.test_client()
+            self._login(c3, "admin", ADMIN_PASS)
+            data = c3.get("/api/settings").get_json()
+            self.assertEqual(data["capacity"]["accounts_max"], 1)
+            self.assertGreaterEqual(data["capacity"]["accounts"], 1)
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace("YIBAN_MAX_ACCOUNTS=1\n", ""))
+
     def test_api_settings_sched_master_only(self):
         """调度字段仅主管理员可改；普通管理员 403，其他字段仍可改。"""
         app = self.webapp.create_app()

@@ -327,6 +327,7 @@
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
       <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周日是否签到见上方开关）</div>
+      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">容量：<span id="capacity-status">--</span></div>
     </div>
 
     <!-- 批量操作开关 -->
@@ -1497,6 +1498,19 @@ async function loadSettings() {
     // 顶部"签到窗口"静态展示与实际配置联动（2026-08-15 对抗性审查：原为写死默认值误导）
     const swEl = $('sign-window-static');
     if (swEl) swEl.textContent = state.signWindow || '--:-- ~ --:--';
+    // 容量状态（对抗性审查补）：注册用户/账号 当前使用量 vs 上限
+    const cap = data.capacity;
+    if (cap) {
+      const capEl = $('capacity-status');
+      if (capEl) {
+        const u = `${cap.users}/${cap.users_max || '∞'}`;
+        const a = `${cap.accounts}/${cap.accounts_max || '∞'}`;
+        const over = (cap.users_max && cap.users >= cap.users_max)
+          || (cap.accounts_max && cap.accounts >= cap.accounts_max);
+        capEl.textContent = `用户 ${u} · 账号 ${a}${over ? '（已达上限）' : ''}`;
+        if (over) capEl.className = 'text-xs text-red-500 mt-1';
+      }
+    }
     const win = state.signWindow.split('~').map(s => s.trim());
     $('window-start').value = (win[0] || '06:30').slice(0, 5);
     $('window-end').value = (win[1] || '07:50').slice(0, 5);
