@@ -337,14 +337,14 @@
           <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后，账号管理与用户管理页面显示多选框，支持批量通过/拒绝/删除、批量设管理员/重置密码等。默认关闭，开启仅本次会话有效，刷新页面后自动恢复关闭</p>
         </div>
         <button id="batch-mode-btn" onclick="toggleBatchMode()"
-                class="btn-ghost">关闭</button>
+                class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">开启</button>
       </div>
     </div>
 
     <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 自选总开关 + 窗口） -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">签到调度</div>
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">排序方式决定"谁先签"（顺序=列表序固定作息 / 随机=每天重排）；分布方式决定时间点形状（均匀=等分铺开 / 正态=钟形拟人）。改动保存后下次自动签到时生效</p>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">排序方式决定"谁先签"（顺序=列表序固定作息 / 随机=每天重排）；分布方式决定时间点形状。⚠️ <b>顺序 × 均匀 = 线性填块</b>：按列表顺序先到先签，账号集中在窗口前段（50 人约前 20 分钟）；想铺满窗口请选「随机 × 均匀」或正态。改动保存后下次自动签到时生效</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">排序方式</div>
@@ -387,9 +387,12 @@
       <div class="mt-3 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <span class="text-sm text-zinc-700 dark:text-zinc-200">用户自选时间片</span>
-          <button id="time-pref-toggle-btn" onclick="toggleTimePref()" class="btn-ghost">开启</button>
+          <button id="time-pref-toggle-btn" onclick="toggleTimePref()"
+                  class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">开启</button>
         </div>
         <span class="text-xs text-zinc-400 dark:text-zinc-500">开启后普通用户可选 5 分钟时间片（未开启时用户可预配置但不生效）</span>
+        <button id="schedule-reset-btn" type="button" onclick="resetScheduleSettings()"
+                class="btn-ghost">恢复默认调度</button>
       </div>
     </div>
 
@@ -400,7 +403,8 @@
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周日签到</div>
           <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为已签到</p>
         </div>
-        <button id="sunday-sign-btn" onclick="toggleSundaySign()" class="btn-ghost">关闭</button>
+        <button id="sunday-sign-btn" onclick="toggleSundaySign()"
+                class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">开启</button>
       </div>
     </div>
 
@@ -510,11 +514,11 @@
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersPending', this)" class="accent-blue-500"></th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[20%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[10%]">账号数</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[30%]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">账号数</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">操作</th>
             </tr>
           </thead>
           <tbody id="users-pending-tbody"></tbody>
@@ -538,11 +542,11 @@
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersNormal', this)" class="accent-blue-500"></th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[20%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[10%]">账号数</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[30%]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">账号数</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">操作</th>
             </tr>
           </thead>
           <tbody id="users-tbody"></tbody>
@@ -567,11 +571,11 @@
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
           <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersVacant', this)" class="accent-blue-500"></th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[30%]">邮箱</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">角色</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[20%]">注册时间</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[10%]">账号数</th>
-              <th class="px-4 py-3 font-medium whitespace-nowrap w-[30%]">操作</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注册时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">账号数</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">操作</th>
             </tr>
           </thead>
           <tbody id="users-vacant-tbody"></tbody>
@@ -591,6 +595,27 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
       <div id="mine-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">还没有提交账号</div>
       <div id="mine-list" class="space-y-3"></div>
+    </div>
+
+    <!-- 我的签到时间（调度 v2 自选；管理员同样可选时间片） -->
+    <div class="card mb-4" id="mine-pref-card">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">我的签到时间</div>
+        <button id="mine-pref-collapse-btn" type="button" onclick="toggleMinePrefCollapse()"
+                class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">▾</button>
+      </div>
+      <div id="mine-pref-body">
+        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">窗口 <span id="mine-pref-window"></span> · 5 分钟一片 · 随时可改（今日已开始签到后修改次日生效）</p>
+        <div id="mine-pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
+        <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
+          <button id="mine-pref-clear-btn" type="button" onclick="clearMineTimePref()"
+                  class="btn-ghost">清除选择（恢复自动分配）</button>
+          <span id="mine-pref-tip" class="text-zinc-400 dark:text-zinc-500"></span>
+        </div>
+        <p id="mine-pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
+          功能未开启：你的选择会保存，但暂不生效（开启后次日生效）
+        </p>
+      </div>
     </div>
     <div class="card">
       <div id="mine-form-title" class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
@@ -835,7 +860,7 @@ function getEmailValue() {
   return v;
 }
 
-async function loadAccounts() {
+async function loadAccounts(_retried = false) {
   try {
     const data = await api('/api/accounts');
     state.accounts = data.accounts;
@@ -844,7 +869,14 @@ async function loadAccounts() {
     $('config-file').textContent = data.config_file;
     renderAccounts();
     fillSigninSelect();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) {
+    // 首次加载失败（如服务重启窗口/瞬时抖动）自动重试一次，避免整页显示"待签"误导
+    if (!_retried) {
+      setTimeout(() => loadAccounts(true), 2000);
+      return;
+    }
+    toast(e.message, true);
+  }
 }
 
 // 各表格搜索词（内存态：10 秒轮询刷新后过滤依然生效）
@@ -1511,6 +1543,23 @@ function updateEdgeWarn() {
   if (warn) warn.classList.toggle('hidden', state.edgeSec !== 0);
 }
 
+// 恢复默认调度设置（窗口/缓冲/排序/分布；自选开关不动——那是功能开关）
+function resetScheduleSettings() {
+  if (!confirm('恢复默认调度设置？\n窗口 06:30 ~ 07:50 · 首尾缓冲 60s · 排序：顺序 · 分布：均匀')) return;
+  state.signOrder = 'sequence';
+  state.signDist = 'uniform';
+  state.edgeSec = 60;
+  state.signWindow = '06:30 ~ 07:50';
+  $('sign-order-select').value = state.signOrder;
+  $('sign-dist-select').value = state.signDist;
+  $('edge-select').value = String(state.edgeSec);
+  $('window-start').value = '06:30';
+  $('window-end').value = '07:50';
+  updateEdgeWarn();
+  saveSettings(true);
+  toast('已恢复默认调度设置');
+}
+
 // 随机模式下账号管理页提示：顺序不影响执行
 function updateSignModeHint() {
   const hint = $('sign-mode-hint');
@@ -1729,7 +1778,7 @@ function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
       // 普通管理员：隐藏「设为/取消管理员」批量按钮（仅主管理员权限）
       document.querySelectorAll('.batch-admin-only').forEach(el => el.classList.add('hidden'));
     }
-    loadSettings();  // 加载持久配置（含批量开关），表格复选框渲染依赖
+    await loadSettings();  // 先完成设置加载（末尾 renderAccounts 依赖），再切账号 tab 拉状态——防首次"待签"竞态
     switchTab('accounts');
     loadLogs();
     calibrateClock();
@@ -1944,6 +1993,82 @@ async function loadMine() {
     const data = await api('/api/my-accounts');
     mineAccounts = data.accounts || [];
     renderMine();
+  } catch (e) { toast(e.message, true); }
+  loadMineTimePref();  // 调度 v2：管理员自选时间片（失败不阻塞）
+}
+
+// ===== 调度 v2：管理端自选时间片（与用户端同接口，管理员绑定 owner=admin 账号） =====
+let minePrefCollapsed = false;
+
+function toggleMinePrefCollapse() {
+  minePrefCollapsed = !minePrefCollapsed;
+  $('mine-pref-body').classList.toggle('hidden', minePrefCollapsed);
+  $('mine-pref-collapse-btn').textContent = minePrefCollapsed ? '▸ 未开启（点击展开预配置）' : '▾';
+}
+
+async function loadMineTimePref() {
+  const card = $('mine-pref-card');
+  try {
+    const data = await api('/api/my-time-pref');
+    if (!data.has_account) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    $('mine-pref-window').textContent = data.window;
+    renderMinePrefSlots(data);
+    $('mine-pref-disabled-hint').classList.toggle('hidden', data.allowed);
+    if (!data.allowed) {
+      minePrefCollapsed = true;
+      $('mine-pref-body').classList.add('hidden');
+      $('mine-pref-collapse-btn').textContent = '▸ 未开启（点击展开预配置）';
+    } else {
+      minePrefCollapsed = false;
+      $('mine-pref-body').classList.remove('hidden');
+      $('mine-pref-collapse-btn').textContent = '▾';
+    }
+  } catch (e) { card.classList.add('hidden'); }
+}
+
+function renderMinePrefSlots(data) {
+  const grid = $('mine-pref-slot-grid');
+  grid.innerHTML = '';
+  let tip = data.allowed ? '' : '功能未开启：选择暂不生效';
+  data.slots.forEach((s, i) => {
+    const sel = data.pref_slot === s.slot_min;
+    const full = s.count >= s.cap;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center transition-colors duration-150 ' +
+      (sel
+        ? 'bg-blue-600 border-blue-600 text-white'
+        : full
+          ? 'bg-zinc-100 dark:bg-zinc-700 border-zinc-200 dark:border-zinc-600 text-zinc-400 cursor-not-allowed'
+          : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
+    btn.innerHTML = `<div class="font-medium">${s.label}</div><div class="opacity-70">${s.count}/${s.cap} 人</div>`;
+    if (full && !sel) btn.disabled = true;
+    btn.onclick = () => pickMineTimePref(s.slot_min);
+    grid.appendChild(btn);
+    if (sel && (i === 0 || i === data.slots.length - 1)) {
+      const edgeTip = i === 0
+        ? '最早时段：系统每日 06:31 启动，将在 06:31~06:35 之间最先为你签到'
+        : '最后时段：将在 07:45~07:49 之间执行，临近 07:50 截止，网络波动可能导致错过';
+      tip = data.allowed ? '⚠️ ' + edgeTip : '功能未开启：选择暂不生效；' + edgeTip;
+    }
+  });
+  $('mine-pref-tip').textContent = tip;
+}
+
+async function pickMineTimePref(slot) {
+  try {
+    const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: slot }) });
+    toast(data.msg || '已保存');
+    loadMineTimePref();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function clearMineTimePref() {
+  try {
+    const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: null }) });
+    toast(data.msg || '已清除');
+    loadMineTimePref();
   } catch (e) { toast(e.message, true); }
 }
 

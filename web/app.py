@@ -1666,8 +1666,13 @@ def create_app():
 
     # ---- 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）----
     def _my_phone():
-        """当前普通用户的自选绑定账号（第一个非删除账号）；无则 None。"""
+        """当前用户的自选绑定账号：普通用户=本人账号；管理员=归属 admin 的第一个非删除账号。"""
         accounts = load_accounts()
+        if _current_role() == "admin":
+            for acc in accounts:
+                if acc.get("owner", "admin") == "admin" and not acc.get("deleted"):
+                    return acc.get("phone", "")
+            return None
         for idx in _my_account_indices():
             acc = accounts[idx]
             if not acc.get("deleted"):
