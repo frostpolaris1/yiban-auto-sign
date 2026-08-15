@@ -186,6 +186,7 @@ STATUS_RETRYING = "retrying"
 STATUS_SKIPPED_WINDOW = "skipped_window"
 STATUS_SKIPPED_NORANGE = "skipped_norange"
 STATUS_PAUSED = "paused"  # 账密异常暂停（signin 熔断器）
+STATUS_USER_CANCELLED = "user_cancelled"  # 用户自暂停签到（调度 v2）
 STATUS_PENDING = "pending"
 
 STATUS_ICON = {
@@ -1163,6 +1164,14 @@ def create_app():
         # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
         # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
         states = load_sign_state()
+        # 用户自暂停账号：状态直接呈现"已取消"（⏹️）——无需等下次签到执行写状态文件，
+        # 管理员面板立即反映（2026-08-15 修复：此前仅 sign-state 有该状态时才会显示）
+        for acc in accounts:
+            if acc.get("user_paused"):
+                states[acc.get("phone", "")] = {
+                    "status": STATUS_USER_CANCELLED,
+                    "message": "用户已取消签到",
+                }
         # 调度 v2：自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
         prefs = {p: v["slot_min"] for p, v in db.get_time_prefs().items()}
         sw = _sign_window()
