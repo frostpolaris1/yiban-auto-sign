@@ -1854,7 +1854,11 @@ def create_app():
 
     @app.route("/api/my-time-pref")
     def api_my_time_pref():
-        """我的自选 + 拥挤度 + 预计签到时段（选片卡片数据；总开关关时仍可预配置，调度侧不激活）。"""
+        """我的自选 + 拥挤度 + 预计签到时段（选片卡片数据；总开关关时仍可预配置，调度侧不激活）。
+
+        拥挤度防调研（2026-08-15 用户决策）：普通用户端只下发「已选百分比」（整数，四舍五入），
+        不下发真实人数/块容量——不知道 K 无法反推人数；管理端 stats 接口保留精确计数。
+        """
         sw = _sign_window()
         phone = _my_phone()
         pref = db.get_time_pref(phone) if phone else None
@@ -1862,7 +1866,9 @@ def create_app():
         cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
         slots = []
         for s in _pref_slots(sw):
-            slots.append({**s, "count": stats.get(s["slot_min"], 0), "cap": cap})
+            count = stats.get(s["slot_min"], 0)
+            pct = min(100, round(count * 100 / cap)) if cap > 0 else 0
+            slots.append({"slot_min": s["slot_min"], "label": s["label"], "pct": pct})
         estimated, estimate_note = _estimate_slot(phone) if phone else (None, "")
         return jsonify({
             "ok": True,
@@ -1898,6 +1904,16 @@ def create_app():
         edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
         if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
             return jsonify({"error": "时间片需为 5 分钟对齐且落在签到窗口内"}), 400
+        # 满员提示（对抗性审查补，2026-08-15 用户决策：可继续选+提示会顺延）：
+        # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
+        # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
+        cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        count = stats.get(slot, 0)
+        cur = db.get_time_pref(phone)
+        if cur and cur.get("slot_min") == slot:
+            count = max(0, count - 1)  # 排除自己已占的位（换片/保留不误报）
+        full_notice = "，该时段已选满，将就近安排到附近时段" if count >= cap else ""
         db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         db.audit(session.get("username", "?"), "time_pref_set", phone, _slot_to_label(slot))
         # 生效分界 = 当天 cron 启动时刻（窗口起点 + 1 分钟；起点为 :59 时进位不崩）
@@ -1907,8 +1923,8 @@ def create_app():
         except ValueError:
             boundary = now
         boundary += timedelta(minutes=1)
-        when = "今日生效" if now < boundary else "明日生效（今日已开始签到）"
-        return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}"})
+        when = "今日生效" if now < boundary else "明日生效"
+        return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}{full_notice}"})
 
     @app.route("/api/time-prefs/stats")
     def api_time_prefs_stats():
