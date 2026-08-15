@@ -313,7 +313,6 @@ class TimePrefsTest(unittest.TestCase):
     def test_run_queue_retry_skips_paused(self):
         """端到端确认：user_paused 账号在 run_queue_retry 中零请求、状态写 user_cancelled。"""
         import unittest.mock as mock
-        from datetime import datetime
 
         accs = [signin.Account(phone="13800138001", password="p")]
         accs[0].user_paused = True
