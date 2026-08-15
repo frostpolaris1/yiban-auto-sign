@@ -81,11 +81,12 @@
 <!-- 固定侧边栏 -->
 <aside id="sidebar" class="fixed inset-y-0 left-0 w-64 bg-white dark:bg-zinc-800 border-r border-zinc-200 dark:border-zinc-700 z-30 flex flex-col
               -translate-x-full md:translate-x-0 transition-transform duration-200">
-  <!-- 品牌：默认占位符图标（无版权资源）。自定义方法见 README「自定义图标」：
-       1) 把下方 <svg> 换成 <img src="/static/vendor/logo.png" class="w-16 h-16 rounded-xl object-cover shrink-0">；
-       2) 将你的 logo.png 放入 web/static/vendor/ -->
+  <!-- 品牌：优先显示 web/static/vendor/logo.png（本地/服务器放入即生效；开源仓库不含该文件
+       ——版权来源不明，部署者自行放入，见 README「自定义 Web 图标」；文件缺失时回退占位图标） -->
   <div class="px-4 py-4 border-b border-zinc-100 dark:border-zinc-700 flex items-center gap-2.5">
-    <svg viewBox="0 0 64 64" class="w-16 h-16 rounded-xl shrink-0" role="img" aria-label="易班自动签到（占位图标）">
+    <img src="/static/vendor/logo.png" alt="易班自动签到" class="w-16 h-16 rounded-xl object-cover shrink-0"
+         onerror="this.style.display='none';const f=document.getElementById('brand-fallback');f.classList.remove('hidden');f.style.display=''">
+    <svg id="brand-fallback" viewBox="0 0 64 64" class="w-16 h-16 rounded-xl shrink-0 hidden" role="img" aria-label="易班自动签到（占位图标）">
       <rect width="64" height="64" rx="14" fill="#3b82f6"/>
       <text x="32" y="42" text-anchor="middle" font-size="30" fill="#ffffff" font-family="sans-serif">签</text>
     </svg>
