@@ -384,6 +384,7 @@
           <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">原生时间选择器，无需手动输入；修改后失焦自动保存</p>
         </div>
       </div>
+      <p class="text-xs text-amber-600 dark:text-amber-400 hidden" id="sched-perm-tip">仅主管理员可修改调度设置</p>
       <div class="mt-3 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <span class="text-sm text-zinc-700 dark:text-zinc-200">用户自选时间片</span>
@@ -393,6 +394,9 @@
         <span class="text-xs text-zinc-400 dark:text-zinc-500">开启后普通用户可选 5 分钟时间片（未开启时用户可预配置但不生效）</span>
         <button id="schedule-reset-btn" type="button" onclick="resetScheduleSettings()"
                 class="btn-ghost">恢复默认调度</button>
+        <button id="schedule-save-btn" type="button" onclick="saveScheduleSettings()"
+                class="hidden bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">保存调度设置</button>
+        <span id="sched-dirty-tip" class="hidden text-xs text-amber-600 dark:text-amber-400">有未保存的修改</span>
       </div>
     </div>
 
@@ -401,7 +405,7 @@
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周日签到</div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为已签到</p>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为「无需签到」</p>
         </div>
         <button id="sunday-sign-btn" onclick="toggleSundaySign()"
                 class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">开启</button>
@@ -605,7 +609,7 @@
                 class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">▾</button>
       </div>
       <div id="mine-pref-body">
-        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">窗口 <span id="mine-pref-window"></span> · 5 分钟一片 · 随时可改（今日已开始签到后修改次日生效）</p>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">签到窗口 <span id="mine-pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始签到后修改，次日生效）</p>
         <p id="mine-pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
         <div id="mine-pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
         <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
@@ -726,11 +730,12 @@
 // ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 一致） =================
 const STATUS_ICON = {
   success: '✅', already: '✅', no_task: '➖', failed: '❌', retrying: '🔄',
-  skipped_window: '⛔', skipped_norange: '⛔', paused: '⏸️',
+  skipped_window: '⛔', skipped_norange: '⛔', paused: '⏸️', user_cancelled: '⏹️',
 };
 const STATUS_TEXT = {
   success: '签到成功', already: '已签到', no_task: '无需签到', failed: '签到失败',
   retrying: '重试中', skipped_window: '时段外', skipped_norange: '窗口缺失', paused: '暂停',
+  user_cancelled: '已取消',
 };
 // ================= 状态 =================
 const state = {
@@ -1488,6 +1493,7 @@ async function loadSettings() {
     $('window-end').value = (win[1] || '07:50').slice(0, 5);
     renderTimePrefUI();
     updateEdgeWarn();
+    renderSchedulePerm();  // 调度权限：仅主管理员可改
     state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
     renderSundaySignUI();
     state.batchMode = false;  // 批量多选会话级开关：每次进入默认关闭，不读取持久化状态
@@ -1500,31 +1506,71 @@ async function loadSettings() {
   } catch (e) { toast(e.message, true); }
 }
 
-// 调度 v2：排序/分布/缓冲/窗口（自动保存到 .env，cron 下次触发生效）
+// 调度设置：显式保存 + 确认（2026-08-15 确认）；改动只标记脏，点「保存调度设置」才写入
+let schedDirty = false;
+function markSchedDirty() {
+  schedDirty = true;
+  $('schedule-save-btn').classList.remove('hidden');
+  $('sched-dirty-tip').classList.remove('hidden');
+}
+
+// 调度权限：仅主管理员可改（后端 403 兜底，前端禁用控件）
+function renderSchedulePerm() {
+  const disabled = !state.isMasterAdmin;
+  ['sign-order-select', 'sign-dist-select', 'edge-select', 'window-start', 'window-end',
+   'time-pref-toggle-btn', 'schedule-reset-btn', 'schedule-save-btn'].forEach(id => {
+    const el = $(id);
+    if (el) el.disabled = disabled;
+  });
+  const tip = $('sched-perm-tip');
+  if (tip) tip.classList.toggle('hidden', !disabled);
+}
+
+async function saveScheduleSettings() {
+  if (!confirm('保存调度设置？\n修改将在下次自动签到时生效。')) return;
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        sign_order: state.signOrder,
+        sign_dist: state.signDist,
+        window_edge_sec: state.edgeSec,
+        allow_time_pref: state.allowTimePref ? 1 : 0,
+        sign_window: state.signWindow,
+      }),
+    });
+    schedDirty = false;
+    $('schedule-save-btn').classList.add('hidden');
+    $('sched-dirty-tip').classList.add('hidden');
+    toast(data.msg || '调度设置已保存');
+  } catch (e) { toast(e.message, true); }
+}
+
+// 排序/分布/缓冲/窗口：改动只标记（显式保存）
 $('sign-order-select').addEventListener('change', () => {
   state.signOrder = $('sign-order-select').value;
-  saveSettings(true);
+  markSchedDirty();
 });
 $('sign-dist-select').addEventListener('change', () => {
   state.signDist = $('sign-dist-select').value;
-  saveSettings(true);
+  markSchedDirty();
 });
 $('edge-select').addEventListener('change', () => {
   state.edgeSec = parseInt($('edge-select').value, 10) || 60;
   updateEdgeWarn();
-  saveSettings(true);
+  markSchedDirty();
 });
-// 窗口起止（原生 time 选择器保证格式；失焦自动保存，校验交给后端）
+// 窗口起止（原生 time 选择器保证格式；改动只标记，保存走「保存调度设置」）
 ['window-start', 'window-end'].forEach(id => {
   $(id).addEventListener('change', () => {
     const s = $('window-start').value || '06:30';
     const e = $('window-end').value || '07:50';
     state.signWindow = `${s} ~ ${e}`;
-    saveSettings(true);
+    markSchedDirty();
   });
 });
 
-// 用户自选时间片总开关（持久化 .env；关闭时用户可预配置但不激活）
+// 用户自选时间片总开关（显式保存；关闭时用户可预配置但不激活）
 function renderTimePrefUI() {
   const btn = $('time-pref-toggle-btn');
   if (!btn) return;
@@ -1537,14 +1583,14 @@ function renderTimePrefUI() {
 function toggleTimePref() {
   state.allowTimePref = !state.allowTimePref;
   renderTimePrefUI();
-  saveSettings(true);
+  markSchedDirty();  // 显式保存：不直接写入
 }
 function updateEdgeWarn() {
   const warn = $('edge-warn');
   if (warn) warn.classList.toggle('hidden', state.edgeSec !== 0);
 }
 
-// 恢复默认调度设置（窗口/缓冲/排序/分布；自选开关不动——那是功能开关）
+// 恢复默认调度设置（窗口/缓冲/排序/分布；自选开关不动——那是功能开关）；标记脏，随保存按钮提交
 function resetScheduleSettings() {
   if (!confirm('恢复默认调度设置？\n窗口 06:30 ~ 07:50 · 首尾缓冲 60s · 排序：顺序 · 分布：均匀')) return;
   state.signOrder = 'sequence';
@@ -1557,8 +1603,8 @@ function resetScheduleSettings() {
   $('window-start').value = '06:30';
   $('window-end').value = '07:50';
   updateEdgeWarn();
-  saveSettings(true);
-  toast('已恢复默认调度设置');
+  markSchedDirty();
+  toast('已恢复默认值，点击「保存调度设置」生效');
 }
 
 // 随机模式下账号管理页提示：顺序不影响执行
@@ -1634,11 +1680,6 @@ async function saveSettings(silent) {
         start_delay_max: read('start'),
         gap_max: read('gap'),
         sign_mode: state.signMode || 'sequence',
-        sign_order: state.signOrder || 'sequence',
-        sign_dist: state.signDist || 'uniform',
-        window_edge_sec: state.edgeSec,
-        allow_time_pref: state.allowTimePref ? 1 : 0,
-        sign_window: state.signWindow,
         sunday_sign: state.sundaySign ? 1 : 0,
       }),
     });

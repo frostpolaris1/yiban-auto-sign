@@ -97,6 +97,7 @@ class Account:
     phone_model: str = ""  # 设备型号（学校开启"设备绑定"时必填）
     phone_code: str = ""  # 设备唯一识别码（学校开启"设备绑定"时必填）
     name: str = ""  # 可选：自定义名称（TUI 输入，未填写时显示为"账号N"）
+    user_paused: bool = False  # 用户自暂停签到（调度 v2；db.load_accounts 透传）
 
     @property
     def has_device_info(self):
@@ -137,6 +138,7 @@ STATUS_RETRYING = "retrying"             # 重试中
 STATUS_SKIPPED_WINDOW = "skipped_window"  # 未在签到时段（窗口外）
 STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空）
 STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
+STATUS_USER_CANCELLED = "user_cancelled"  # 用户自取消（用户暂停自己的签到任务）
 STATUS_PENDING = "pending"               # 待签（未执行/无记录）
 
 # 状态码 → 日志/日历符号（与 web/TUI 显示层一致）
@@ -144,7 +146,7 @@ STATUS_SYMBOL = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
-    STATUS_PAUSED: "⏸️",
+    STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️",
 }
 
 # 凭据类失败关键词（熔断器计数用）：账号密码问题——连续失败达到阈值后暂停签到。
@@ -434,6 +436,7 @@ def _parse_account_dict(data):
         phone_model=str(data.get("phone_model") or "").strip(),
         phone_code=str(phone_code).strip(),
         name=str(data.get("name") or "").strip(),
+        user_paused=bool(data.get("user_paused", False)),  # 用户自暂停（调度 v2）
     )
 
 
@@ -1307,6 +1310,8 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     rng = rng or random.Random()
     now = now or datetime.now()
 
+    # 用户自暂停账号不参与调度（零占位；执行侧 run_queue_retry 也会跳过）
+    accounts = [a for a in accounts if not getattr(a, "user_paused", False)]
     n = len(accounts)
     if n == 0:
         return {}
@@ -1507,6 +1512,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             random_delay(gap_max, f"账号 {phone} 间隔")
         first_round = False
 
+        # 用户自暂停（调度 v2）：零请求直接跳过，状态显示"已取消"
+        if getattr(acc, "user_paused", False):
+            results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
+            _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+            logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
+            continue
+
         # 账密熔断：暂停中的账号零请求直接跳过（半开试探日除外——试探 1 次以验证恢复）
         cred = cred_state.get(phone, {})
         if cred.get("paused_since") and not _probe_due(cred, today):
@@ -1683,7 +1695,7 @@ def main():
         _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
         if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
-        elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE, STATUS_PAUSED):
+        elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE, STATUS_PAUSED, STATUS_USER_CANCELLED):
             skip_n += 1
         else:
             fail_n += 1

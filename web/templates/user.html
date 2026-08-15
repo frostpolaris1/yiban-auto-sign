@@ -112,7 +112,7 @@
               class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">▾</button>
     </div>
     <div id="pref-body">
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">窗口 <span id="pref-window"></span> · 5 分钟一片 · 随时可改（今日已开始签到后修改次日生效）</p>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">签到窗口 <span id="pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始签到后修改，次日生效）</p>
       <p id="pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
       <div id="pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
       <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
@@ -273,6 +273,19 @@ function statusBadge(status) {
   return esc(status);
 }
 
+async function togglePause(i) {
+  const a = accounts[i];
+  const next = !a.user_paused;
+  if (next && !confirm(`确定暂停「${esc(a.display_name)}」的签到吗？\n暂停后系统将不再自动签到，可随时恢复。`)) return;
+  try {
+    const data = await api(`/api/my-accounts/${i}/pause`, {
+      method: 'PUT', body: JSON.stringify({ paused: next }),
+    });
+    toast(data.msg || (next ? '已暂停' : '已恢复'));
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
 // 加载我的账号
 async function loadAccounts() {
   try {
@@ -298,6 +311,8 @@ function userStateLine(a) {
   }
   if (s === 'paused')
     return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">账号密码异常，已暂停签到，请修改密码</div>';
+  if (s === 'user_cancelled')
+    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">已取消签到（可点「恢复签到」重新开启）</div>';
   if (s === 'retrying')
     return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">签到重试中</div>';
   // 待签：显示今日计划时间（自动错峰分配，来自 sign-state 的 message="计划 HH:MM"）
@@ -328,10 +343,15 @@ function renderList() {
         </div>
         <div class="flex items-center gap-2">
           ${a.deleted ? '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2 py-0.5">已删除</span>'
-            : statusBadge(a.status)}
+            : a.user_paused
+              ? '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5">已取消</span>'
+              : statusBadge(a.status)}
           ${a.deleted
             ? `<button onclick="removeDeletedAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">移除记录</button>`
-            : `<button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
+            : (a.status === 'active'
+                ? `<button onclick="togglePause(${i})" class="text-sm ${a.user_paused ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100'} transition-colors duration-150">${a.user_paused ? '恢复签到' : '暂停签到'}</button>`
+                : '')
+            + `<button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
           <button onclick="deleteAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">删除</button>`}
         </div>
       </div>
@@ -606,11 +626,10 @@ async function doLogout() {
 async function loadScheduleBanner() {
   try {
     const me = await api('/api/me');
-    const orderLabel = me.sign_order === 'random' ? '随机' : '顺序';
-    const distLabel = me.sign_dist === 'normal' ? '正态分布' : '均匀分布';
-    const pref = me.time_pref_allowed ? '自选时间片：已开启' : '自选时间片：未开启';
+    const orderLabel = me.sign_order === 'random' ? '每天随机安排' : '按固定顺序安排';
+    const pref = me.time_pref_allowed ? '可自选签到时间' : '暂不可自选签到时间';
     $('schedule-banner-text').textContent =
-      `当前签到时间分配：${orderLabel} × ${distLabel} · 窗口 ${me.sign_window} · ${pref}`;
+      `签到方式：${orderLabel} · 窗口 ${me.sign_window} · ${pref}`;
     $('schedule-banner').classList.remove('hidden');
   } catch (e) { /* 提示条加载失败不阻塞页面 */ }
 }

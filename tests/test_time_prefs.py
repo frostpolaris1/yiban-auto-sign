@@ -287,6 +287,48 @@ class TimePrefsTest(unittest.TestCase):
             c2.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token)).status_code,
             400)
 
+    # ================= 用户自暂停签到（调度 v2） =================
+    def test_api_pause_resume(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        h = self._csrf(token)
+        r = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        acc = next(a for a in db.load_accounts() if a["phone"] == "13800138001")
+        self.assertTrue(acc["user_paused"])
+        r = c.put("/api/my-accounts/0/pause", json={"paused": False}, headers=h)
+        self.assertEqual(r.status_code, 200)
+        acc = next(a for a in db.load_accounts() if a["phone"] == "13800138001")
+        self.assertFalse(acc["user_paused"])
+
+    def test_schedule_skips_paused_account(self):
+        """build_schedule 过滤 user_paused 账号（零占位）。"""
+        accs = self._accs(5)
+        accs[2].user_paused = True
+        sched = signin.build_schedule(
+            accs, order="sequence", dist="uniform", rng=random.Random(1))
+        self.assertEqual(len(sched), 4)
+        self.assertNotIn(accs[2].phone, sched)
+
+    def test_api_settings_sched_master_only(self):
+        """调度字段仅主管理员可改；普通管理员 403，其他字段仍可改。"""
+        app = self.webapp.create_app()
+        # 普通管理员（非主）
+        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        c = app.test_client()
+        token = self._login(c, "admin2@test.local", USER_PASS)
+        h = self._csrf(token)
+        r = c.post("/api/settings", json={"sign_order": "random"}, headers=h)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        # 低风险字段（周日）仍可改
+        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        # 主管理员可改调度
+        c2 = app.test_client()
+        token2 = self._login(c2, "admin", ADMIN_PASS)
+        r = c2.post("/api/settings", json={"sign_order": "random"}, headers=self._csrf(token2))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

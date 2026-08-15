@@ -567,6 +567,7 @@ def mask_account(acc, index, masked=True):
         "owner_display": _owner_display_of(owner),
         "status": acc.get("status", STATUS_ACTIVE),
         "reject_reason": acc.get("reject_reason", ""),
+        "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
         # 软删除：管理员删除后进入待删除状态（保留期内可恢复）
         "deleted": bool(acc.get("deleted")),
         "deleted_at": acc.get("deleted_at", ""),
@@ -1699,6 +1700,7 @@ def create_app():
                     "logs": my_logs[-5:],
                     "deleted": bool(acc.get("deleted")),
                     "deleted_at": acc.get("deleted_at", ""),
+                    "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
                 }
             )
         return result
@@ -1979,6 +1981,35 @@ def create_app():
                 "用户 %s 删除账号 %s", session.get("username", ""), _mask_phone(removed.get("phone", ""))
             )
             return jsonify({"ok": True, "msg": "已删除"})
+
+    @app.route("/api/my-accounts/<int:idx>/pause", methods=["PUT"])
+    def api_my_account_pause(idx):
+        """用户自暂停/恢复签到（调度 v2）：暂停后主程序自动跳过，状态显示红底"已取消"。"""
+        with _file_lock:
+            accounts = load_accounts()
+            indices = _my_account_indices_of(accounts)
+            if not 0 <= idx < len(indices):
+                return jsonify({"error": "账号不存在"}), 404
+            acc = accounts[indices[idx]]
+            data = _json_body()
+            paused = 1 if str(data.get("paused", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+            db.set_user_paused(acc["id"], paused)
+            db.audit(
+                session.get("username", "") or "?",
+                "my_account_pause" if paused else "my_account_resume",
+                _mask_phone(acc.get("phone", "")),
+                "用户自暂停" if paused else "用户恢复",
+            )
+            logger.info(
+                "用户 %s %s 账号 %s",
+                session.get("username", ""), "暂停" if paused else "恢复",
+                _mask_phone(acc.get("phone", "")),
+            )
+            return jsonify({
+                "ok": True,
+                "msg": "已暂停签到，主程序将自动跳过" if paused else "已恢复签到",
+                "paused": bool(paused),
+            })
 
     # ---- 用户管理（仅管理员；路径不在普通用户白名单，自动 403）----
     def _builtin_admin_email():
@@ -2461,6 +2492,15 @@ def create_app():
     @app.route("/api/settings", methods=["POST"])
     def api_settings_save():
         data = _json_body()
+        # 调度权限（2026-08-15 确认）：仅主管理员可改调度字段（排序/分布/缓冲/自选/窗口）；
+        # 普通管理员可改随机延迟/周日/公告等低风险项
+        username = session.get("username") or ""
+        is_master = username.strip().lower() == _builtin_admin_email()
+        if not is_master and any(
+            k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
+                                "allow_time_pref", "sign_window")
+        ):
+            return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         try:
             start = int(data.get("start_delay_max", 0))
             gap = int(data.get("gap_max", 0))
