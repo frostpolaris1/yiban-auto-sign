@@ -1537,7 +1537,8 @@ async function loadSettings() {
     renderSchedulePerm();  // 调度权限：仅主管理员可改
     state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
     renderSundaySignUI();
-    state.batchMode = false;  // 批量多选会话级开关：每次进入默认关闭，不读取持久化状态
+    // 批量开关（会话级）不在此重置：state.batchMode 初始 false 已保证"刷新页面后关闭"；
+    // 此前无条件重置导致"切 tab 再切回设置页开关失效"（2026-08-15 用户反馈）
     renderDelayUI();
     renderBatchModeUI();
     updateSignModeHint();
