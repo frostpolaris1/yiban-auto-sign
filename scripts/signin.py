@@ -23,6 +23,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -165,6 +166,103 @@ PROBE_INTERVAL_DAYS = 7     # 暂停后半开试探周期（天）
 # 签到窗口（与 web/app.py 一致；自动错峰在窗口内均匀分配时间点）
 SIGN_START = (6, 30)
 SIGN_END = (7, 50)
+
+# ---------------------------------------------------------------------------
+# 调度 v2（S1 demo）：统一填充框架配置
+# 设计文档：docs/design/plan-scheduler-v2.md（2×2 组合 + 安全底座）
+# ---------------------------------------------------------------------------
+_DEFAULT_SIGN_START = (6, 30)
+_DEFAULT_SIGN_END = (7, 50)
+_DEFAULT_EDGE_SEC = 60          # 首尾缓冲：有效窗口 [SIGN_START+60s, SIGN_END-60s]
+_DEFAULT_BLOCK_CAP = 15         # 块容量（每块最多人数，满则向后顺延）
+_DEFAULT_MIN_ACCOUNTS = 3       # 小人数免分块阈值
+_DEFAULT_MU_MIN_PCT = 40        # 正态高峰中心范围（有效窗口相对位置 %）
+_DEFAULT_MU_MAX_PCT = 60
+_DEFAULT_SIGMA_MIN_PCT = 15     # 正态分散程度范围（有效窗口宽度 %）
+_DEFAULT_SIGMA_MAX_PCT = 25
+_DEFAULT_MIN_EXEC_GAP = 5       # 压缩模式间隔下限（分钟）
+_DEFAULT_AVG_ATTEMPT_SEC = 8    # 容量预检：单次执行平均耗时估算
+_DEFAULT_RETRY_MIN_INTERVAL = 60
+_DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
+
+
+def _parse_hhmm(value, default):
+    """解析 HH:MM → (h, m)；非法返回 default。"""
+    try:
+        h, m = value.strip().split(":")
+        h, m = int(h), int(m)
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            return default
+        return (h, m)
+    except (ValueError, AttributeError):
+        return default
+
+
+def _env_int(name, default, lo=None, hi=None):
+    """读整数环境变量；缺失/非法回退默认（配置校验：回退 + 警告，不崩溃）。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+    except ValueError:
+        logger.warning("配置 %s=%r 非法，回退默认 %s", name, raw, default)
+        return default
+    if (lo is not None and v < lo) or (hi is not None and v > hi):
+        logger.warning("配置 %s=%s 超出范围 [%s, %s]，回退默认 %s", name, v, lo, hi, default)
+        return default
+    return v
+
+
+def _schedule_config():
+    """读取调度 v2 配置（每次调用读取，便于测试与热改）。
+
+    兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
+    新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
+    返回 dict：order/dist/edge_sec/block_cap/min_accounts/mu/sigma 百分比/
+    min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
+    """
+    mode = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
+    order = os.environ.get("YIBAN_SIGN_ORDER", "").strip().lower()
+    dist = os.environ.get("YIBAN_SIGN_DIST", "").strip().lower()
+    if order not in ("sequence", "random"):
+        order = "random" if mode == "random" else "sequence"
+        if dist not in ("uniform", "normal"):
+            dist = "normal" if mode == "normal" else "uniform"
+    elif dist not in ("uniform", "normal"):
+        dist = "uniform"
+    start = _parse_hhmm(os.environ.get("YIBAN_SIGN_START", ""), _DEFAULT_SIGN_START)
+    end = _parse_hhmm(os.environ.get("YIBAN_SIGN_END", ""), _DEFAULT_SIGN_END)
+    if start >= end:
+        logger.warning("签到窗口 %s >= %s 非法，回退默认 06:30/07:50", start, end)
+        start, end = _DEFAULT_SIGN_START, _DEFAULT_SIGN_END
+    mu_lo = _env_int("YIBAN_SCHEDULE_MU_MIN_PCT", _DEFAULT_MU_MIN_PCT, 0, 100)
+    mu_hi = _env_int("YIBAN_SCHEDULE_MU_MAX_PCT", _DEFAULT_MU_MAX_PCT, 0, 100)
+    if mu_lo >= mu_hi:
+        logger.warning("μ 范围 %s~%s 非法，回退默认 40~60", mu_lo, mu_hi)
+        mu_lo, mu_hi = _DEFAULT_MU_MIN_PCT, _DEFAULT_MU_MAX_PCT
+    sigma_lo = _env_int("YIBAN_SCHEDULE_SIGMA_MIN_PCT", _DEFAULT_SIGMA_MIN_PCT, 0, 100)
+    sigma_hi = _env_int("YIBAN_SCHEDULE_SIGMA_MAX_PCT", _DEFAULT_SIGMA_MAX_PCT, 0, 100)
+    if sigma_lo >= sigma_hi:
+        logger.warning("σ 范围 %s~%s 非法，回退默认 15~25", sigma_lo, sigma_hi)
+        sigma_lo, sigma_hi = _DEFAULT_SIGMA_MIN_PCT, _DEFAULT_SIGMA_MAX_PCT
+    return {
+        "order": order,
+        "dist": dist,
+        "edge_sec": _env_int("YIBAN_WINDOW_EDGE_SEC", _DEFAULT_EDGE_SEC, 0, 600),
+        "block_cap": _env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200),
+        "min_accounts": _env_int("YIBAN_SCHEDULE_MIN_ACCOUNTS", _DEFAULT_MIN_ACCOUNTS, 1, 50),
+        "mu_min_pct": mu_lo,
+        "mu_max_pct": mu_hi,
+        "sigma_min_pct": sigma_lo,
+        "sigma_max_pct": sigma_hi,
+        "min_exec_gap": _env_int("YIBAN_MIN_EXEC_GAP", _DEFAULT_MIN_EXEC_GAP, 1, 60),
+        "avg_attempt_sec": _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300),
+        "retry_min_interval": _env_int("YIBAN_RETRY_MIN_INTERVAL", _DEFAULT_RETRY_MIN_INTERVAL, 1, 600),
+        "exec_gap_min": _env_int("YIBAN_EXEC_GAP_MIN", _DEFAULT_EXEC_GAP_MIN, 0, 300),
+        "sign_start": start,
+        "sign_end": end,
+    }
 
 # WAF 风控关键词（用于判断是否被拦截）
 WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
@@ -1122,27 +1220,158 @@ def _probe_due(cred, today):
     return not cred.get("probe_date") or today >= cred["probe_date"]
 
 
-def build_schedule(accounts):
-    """为参与签到的账号分配今日时间点（签到窗口内均匀错峰）。
+def _anchor_z(phone):
+    """账号锚点分位（顺序×正态）：hash(phone) 派生标准正态值，零持久化、每天稳定。"""
+    return random.Random(str(phone)).gauss(0, 1)
 
-    槽位：列表顺序（sequence）= 按列表顺序固定，可预期；
-         列表随机（random）= 当天打乱重排，防风控最强（语义与设置页开关一致）。
-    槽内随机偏移 0~0.8×槽宽：两种模式共用，留余量防最晚账号超出窗口边界。
-    返回 {phone: datetime}；账号为空返回空 dict。
+
+def _sigma_eff(sigma, n, span_minutes):
+    """人数自适应 + 封顶：σ×(1+log2(n/20))，上限 有效窗口/3（防端点堆积）。"""
+    if n > 20:
+        sigma = sigma * (1 + math.log2(n / 20))
+    return min(sigma, span_minutes / 3)
+
+
+def _schedule_blocks(cfg):
+    """按时钟 5 分钟对齐切块（首尾块各 4 分钟），返回 (blocks, eff_lo, eff_hi)。
+
+    blocks: [(lo_min, hi_min), ...]；eff_lo/eff_hi：有效窗口分钟边界（相对当天 0:00）。
     """
+    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
+    end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
+    edge = max(0, cfg["edge_sec"] // 60)
+    eff_lo = start_min + edge
+    eff_hi = end_min - edge
+    blocks = []
+    b = start_min
+    while b < end_min:
+        lo = max(b, eff_lo)
+        hi = min(b + 5, eff_hi)
+        if hi > lo:
+            blocks.append((lo, hi))
+        b += 5
+    return blocks, eff_lo, eff_hi
+
+
+def _minute_to_dt(base_date, minute):
+    """当天分钟数 → datetime（base_date 提供日期）。"""
+    return base_date + timedelta(minutes=minute)
+
+
+def _next_available(bi, filled, blocks, cap):
+    """从 bi 向后（环回）找第一个未满块。"""
+    n = len(blocks)
+    for step in range(n):
+        idx = (bi + step) % n
+        if filled[idx] < cap:
+            return idx
+    return bi  # 全满（理论不会发生：cap 已按 n 放大）
+
+
+def build_schedule(accounts, order=None, dist=None, now=None, rng=None):
+    """调度 v2（S1 demo）：统一填充框架。
+
+    排序维度 × 分布维度（2×2）：
+    - 顺序×均匀：线性填块（第 i 账号 → 第 i/K 块，先到先签）
+    - 随机×均匀：打乱后循环填块（每块人数均衡、铺满窗口）
+    - 顺序×正态：z_i 锚点（hash(phone)）稳定作息 + 钟形
+    - 随机×正态：每天重抽分位（重排 + 钟形，防风控最强）
+    安全底座：首尾缓冲有效窗口、块容量顺延、块内等分 + 抖动、
+    σ_eff 封顶、反射兜底、n≤小人数免分块、超容量压缩模式。
+
+    参数（None → 读环境变量，见 _schedule_config）：
+    order: "sequence"|"random"；dist: "uniform"|"normal"
+    now: 注入当天日期（默认 datetime.now()）；rng: 注入随机源（测试固定 seed）
+    返回 {phone: datetime}。
+    """
+    cfg = _schedule_config()
+    order = (order or cfg["order"]).strip().lower()
+    dist = (dist or cfg["dist"]).strip().lower()
+    if order not in ("sequence", "random"):
+        order = "sequence"
+    if dist not in ("uniform", "normal"):
+        dist = "uniform"
+    rng = rng or random.Random()
+    now = now or datetime.now()
+
     n = len(accounts)
     if n == 0:
         return {}
-    total_seconds = (SIGN_END[0] * 60 + SIGN_END[1] - SIGN_START[0] * 60 - SIGN_START[1]) * 60
-    slot = total_seconds / n
+    base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    blocks, eff_lo, eff_hi = _schedule_blocks(cfg)
+    span = eff_hi - eff_lo
+
+    # 小人数免分块：直接有效窗口内随机时刻
+    if n <= cfg["min_accounts"]:
+        out = {}
+        for acc in accounts:
+            out[acc.phone] = _minute_to_dt(base, rng.uniform(eff_lo, eff_hi))
+        return out
+
+    # 容量：块数 × K；超出 → 压缩模式（K 放大到能容纳所有人，间隔下限告警）
+    cap = len(blocks) * cfg["block_cap"]
+    k = cfg["block_cap"] if n <= cap else math.ceil(n / len(blocks))
+    if n > cap:
+        logger.warning(
+            "压缩模式: %d 个账号超出块容量 %d，块容量放大至 %d（间隔 ≈ %.1fs）",
+            n, cap, k, (span * 60) / n,
+        )
+
+    # 排序维度：决定账号→位置的映射是否每天重排
     ordered = list(accounts)
-    if SIGN_MODE == "random":
-        random.shuffle(ordered)  # 列表随机：每次运行打乱（时间点每天全变）
-    base = datetime.now().replace(hour=SIGN_START[0], minute=SIGN_START[1], second=0, microsecond=0)
+    if order == "random":
+        rng.shuffle(ordered)
+
+    # 分布维度：uniform = 确定性位置；normal = 钟形采样位置
+    if dist == "normal":
+        if order == "random":
+            zs = [rng.gauss(0, 1) for _ in accounts]
+            rng.shuffle(zs)
+            zmap = {acc.phone: zs[i] for i, acc in enumerate(ordered)}
+        else:
+            zmap = {acc.phone: _anchor_z(acc.phone) for acc in accounts}
+
+    # 阶段 1：分配块归属（容量满向后顺延）
+    assign = {}
+    filled = [0] * len(blocks)
+    for rank, acc in enumerate(ordered):
+        if dist == "uniform":
+            bi = (rank // k) if order == "sequence" else (rank % len(blocks))
+        else:
+            mu = eff_lo + span * rng.uniform(cfg["mu_min_pct"], cfg["mu_max_pct"]) / 100.0
+            sigma = _sigma_eff(
+                span * rng.uniform(cfg["sigma_min_pct"], cfg["sigma_max_pct"]) / 100.0,
+                n, span,
+            )
+            x = mu + sigma * zmap[acc.phone] + rng.gauss(0, 2)  # 个人小抖动 N(0, 2min)
+            # 反射回有效窗口（while 兜底，失败回退均匀随机）
+            for _ in range(10):
+                if x < eff_lo:
+                    x = 2 * eff_lo - x
+                elif x > eff_hi:
+                    x = 2 * eff_hi - x
+                else:
+                    break
+            else:
+                x = rng.uniform(eff_lo, eff_hi)
+            # 落块：按时钟 5 分钟对齐（与 _schedule_blocks 的块边界一致）
+            start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
+            bi = min(max(int((x - start_min) / 5), 0), len(blocks) - 1)
+        bi = _next_available(bi, filled, blocks, k)
+        assign[acc.phone] = bi
+        filled[bi] += 1
+
+    # 阶段 2：块内等分 + 抖动（基于块内实际人数 m，避免人数少时挤前段）
     schedule = {}
-    for i, acc in enumerate(ordered):
-        offset = i * slot + random.uniform(0, slot * 0.8)
-        schedule[acc.phone] = base + timedelta(seconds=offset)
+    for bi, (lo, hi) in enumerate(blocks):
+        phones = [p for p in assign if assign[p] == bi]
+        m = len(phones)
+        if m == 0:
+            continue
+        dur = hi - lo
+        for j, p in enumerate(phones):
+            t = lo + dur * (j + 0.5) / m + rng.uniform(0, min(0.8, dur / m / 2))
+            schedule[p] = _minute_to_dt(base, min(t, hi - 0.001))
     return schedule
 
 
@@ -1178,6 +1407,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     results = {}
     first_round = True
     today = datetime.now().strftime("%Y-%m-%d")
+    # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐
+    sch_cfg = _schedule_config() if schedule else None
+    last_done = None  # 上次尝试结束时刻（monotonic），启动对齐用
 
     while queue:
         acc = queue.pop(0)
@@ -1186,12 +1418,27 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         # 标记在 pop 之后无条件置 False（原实现只在失败分支置 False，
         # 导致全成功路径账号间隔打散失效）
         if schedule:
+            # 本地截止保护（调度 v2）：超过签到窗口末端 → 不再登录，直接跳过
+            now_dt = datetime.now()
+            if now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second > (
+                sch_cfg["sign_end"][0] * 3600 + sch_cfg["sign_end"][1] * 60
+            ):
+                results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
+                _write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+                logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
+                continue
             # 自动错峰：到点执行（已过时间点立即执行）；重试回队的账号时间点已过，直接执行
             t = schedule.get(phone)
             if t:
-                wait = (t - datetime.now()).total_seconds()
+                wait = (t - now_dt).total_seconds()
                 if wait > 0:
                     time.sleep(wait)
+                # 启动对齐（调度 v2）：已过点账号补足最小执行间隔，防开头连发
+                elif sch_cfg["exec_gap_min"] > 0 and last_done is not None:
+                    gap = sch_cfg["exec_gap_min"] - (time.monotonic() - last_done)
+                    if gap > 0:
+                        logger.debug(f"[{phone}] 启动对齐: 补间隔 {int(gap)}s")
+                        time.sleep(gap)
         elif not first_round:
             random_delay(gap_max, f"账号 {phone} 间隔")
         first_round = False
@@ -1208,6 +1455,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
         success, message, skip, status = attempt_signin(acc, notify_url)
+        last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中）
         _write_sign_state(phone, status, message)
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
@@ -1242,10 +1490,23 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 )
             continue
 
+        # 本地截止保护（调度 v2）：窗口剩余不足一个重试周期 → 不再回队，直接判失败
+        if schedule:
+            now_sec = datetime.now().hour * 3600 + datetime.now().minute * 60 + datetime.now().second
+            end_sec = sch_cfg["sign_end"][0] * 3600 + sch_cfg["sign_end"][1] * 60
+            if now_sec + sch_cfg["retry_min_interval"] >= end_sec - sch_cfg["edge_sec"]:
+                results[phone] = (False, message, False, status)
+                logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
+                if notify_url:
+                    send_notification(
+                        "易班签到失败", f"账号: {phone}\n原因: {_sanitize_text(message)}", notify_url
+                    )
+                continue
+
         # 放回队尾：先固定补足最短间隔（可为 0），再打散一段随机延迟，
         # 总等待 = remaining + uniform(0, RETRY_GAP_MAX)，避免总间隔可能为 0
         _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
-        remaining = max(0, RETRY_MIN_INTERVAL - gap_max)
+        remaining = max(0, sch_cfg["retry_min_interval"] - gap_max) if schedule else max(0, RETRY_MIN_INTERVAL - gap_max)
         time.sleep(remaining)
         random_delay(RETRY_GAP_MAX, f"账号 {phone} 重试前等待")
         queue.append(acc)
@@ -1320,6 +1581,18 @@ def main():
     # 自动错峰（仅自动签到；--only 手动签到立即执行，不走计划）
     schedule = {} if args.only else build_schedule(accounts)
     if schedule:
+        # 容量预检（调度 v2 第三层）：n × 平均耗时 > 有效窗口秒数 → 告警不静默
+        _cfg = _schedule_config()
+        _span_min = (
+            (_cfg["sign_end"][0] * 60 + _cfg["sign_end"][1])
+            - (_cfg["sign_start"][0] * 60 + _cfg["sign_start"][1])
+            - 2 * (_cfg["edge_sec"] // 60)
+        )
+        if len(accounts) * _cfg["avg_attempt_sec"] > _span_min * 60:
+            logger.warning(
+                "容量预检: %d 个账号 × 平均 %ds > 有效窗口 %d 秒，部分账号可能无法在窗口内完成",
+                len(accounts), _cfg["avg_attempt_sec"], _span_min * 60,
+            )
         # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
         for acc in accounts:
             t = schedule.get(acc.phone)

@@ -34,8 +34,9 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run.sh 开始执行 ===" >> /var/log/yi
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 工作目录: $(pwd)" >> /var/log/yiban/sign.log
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python版本: $(python3 --version 2>&1)" >> /var/log/yiban/sign.log
 
-# 执行签到脚本
-/usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign.log 2>&1
+# 执行签到脚本（调度 v2：总超时防失控，与 flock 防并发互补；
+# timeout 杀掉后退出码 124，不写 SUCCESS——符合现状语义）
+timeout "${YIBAN_RUN_TIMEOUT_SEC:-1800}" /usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign.log 2>&1
 EXIT_CODE=$?
 
 # 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：
