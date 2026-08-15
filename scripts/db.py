@@ -588,6 +588,26 @@ def audit(username, action, target="", detail=""):
         logger.warning("审计写入失败: %s", e)
 
 
+def last_time_pref_set_at(username):
+    """最近一次自选时间片保存时间（切换冷却判定用；无记录返回 None）。
+
+    用审计时间而非 time_prefs.updated_at：清除后立即重选无法绕过冷却
+    （clear 不更新 updated_at，但重选必写 time_pref_set 审计）。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT ts FROM audit_logs WHERE username=? AND action='time_pref_set' "
+                "ORDER BY id DESC LIMIT 1",
+                (username or "",),
+            ).fetchone()
+            return row["ts"] if row else None
+    except Exception as e:
+        logger.warning("查询自选保存时间失败: %s", e)
+        return None
+
+
 def _audit_cleanup(conn):
     """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。"""
     try:

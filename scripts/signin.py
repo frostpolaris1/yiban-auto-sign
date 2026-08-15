@@ -1734,6 +1734,19 @@ def main():
                     f"计划 {t.strftime('%H:%M')}", scheduled=t.strftime("%H:%M:%S"),
                 )
         accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
+        # 调度快照标记（2026-08-15 用户反馈：卡点缓冲）：web 端保存自选时以此时刻为
+        # "今日/明日生效"分界——改选在快照后必为明日生效，提示与实际 100% 一致
+        # （原固定"窗口起点+1 分钟"与 cron 实际读取时刻有几秒偏差窗口）
+        try:
+            _snap_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+            os.makedirs(_snap_dir, exist_ok=True)
+            _snap_path = os.path.join(_snap_dir, f"sched-snapshot-{attempt_date}.json")
+            _snap_tmp = _snap_path + ".tmp" + str(os.getpid())
+            with open(_snap_tmp, "w", encoding="utf-8") as _f:
+                json.dump({"snapshot_at": datetime.now().strftime("%H:%M:%S")}, _f)
+            os.replace(_snap_tmp, _snap_path)
+        except OSError:
+            pass  # 标记不可写时 web 端回退旧分界，不影响签到
     # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
     cred_state = {} if args.only else _load_cred_state()
     results = run_queue_retry(

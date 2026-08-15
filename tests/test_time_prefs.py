@@ -48,6 +48,7 @@ class TimePrefsTest(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
                 "YIBAN_ALLOW_TIME_PREF=1\n"
+                "YIBAN_TIME_PREF_COOLDOWN_SEC=0\n"  # 默认关闭冷却，冷却专项测试单独开启
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -58,6 +59,7 @@ class TimePrefsTest(unittest.TestCase):
         os.environ["YIBAN_USERS_FILE"] = cls.users_file
         os.environ["YIBAN_DB_FILE"] = cls.db_file
         os.environ["YIBAN_ALLOW_TIME_PREF"] = "1"
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp  # 快照标记/状态文件隔离到临时目录
         global db, signin
         import db
         import signin
@@ -265,6 +267,71 @@ class TimePrefsTest(unittest.TestCase):
         # 现在自己已清除 → 再选同片仍满（count=15 不含自己）
         r2 = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
         self.assertIn("已选满", r2.get_json()["msg"])
+
+    def test_api_pref_cooldown(self):
+        """对抗（2026-08-15 用户反馈）：高频切换冷却——间隔内第二次保存被拒；清除豁免；清除后重选仍受限。"""
+        # 开启冷却 60s（追加覆盖默认 0）
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write("YIBAN_TIME_PREF_COOLDOWN_SEC=60\n")
+        try:
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, "user1@test.local", USER_PASS)
+            h = self._csrf(token)
+            # 第一次保存成功
+            r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            # 立即第二次保存 → 冷却拒绝（审计时间差 < 60s）
+            r2 = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
+            self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
+            self.assertIn("频繁", r2.get_json()["error"])
+            # 清除不受冷却限制（time_pref_clear 不计数）
+            r3 = c.put("/api/my-time-pref", json={"slot_min": None}, headers=h)
+            self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+            # 清除后立即重选仍受限（防绕过：审计 time_pref_set 计数）
+            r4 = c.put("/api/my-time-pref", json={"slot_min": 10}, headers=h)
+            self.assertEqual(r4.status_code, 429, r4.get_data(as_text=True))
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace("YIBAN_TIME_PREF_COOLDOWN_SEC=60\n", ""))
+
+    def test_api_pref_snapshot_boundary(self):
+        """对抗（2026-08-15 用户反馈：卡点缓冲）：生效分界优先取当日调度快照标记——
+        标记存在（cron 已快照）→ 之后改选提示"明日生效"；标记不存在 → 回退窗口起点+1 分钟。"""
+        import unittest.mock as mock
+        from datetime import datetime as _dt
+
+        class FakeDT:  # 替换 webapp.datetime：now 固定 06:30（cron 前），strptime 复用真实实现
+            @staticmethod
+            def now():
+                return _dt(2026, 8, 15, 6, 30, 0)
+
+            strptime = staticmethod(_dt.strptime)
+
+        # 场景 1：无标记 → 兜底 boundary=06:31:00 → 今日生效
+        snap = os.path.join(self.tmp, "sched-snapshot-2026-08-15.json")
+        if os.path.exists(snap):
+            os.remove(snap)
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        h = self._csrf(token)
+        with mock.patch.object(self.webapp, "datetime", FakeDT):
+            r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("今日生效", r.get_json()["msg"])
+        # 场景 2：标记存在（snapshot_at=06:00:00，cron 已快照）→ 改选在快照后 → 明日生效
+        with open(snap, "w", encoding="utf-8") as f:
+            json.dump({"snapshot_at": "06:00:00"}, f)
+        with mock.patch.object(self.webapp, "datetime", FakeDT):
+            r2 = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        self.assertIn("明日生效", r2.get_json()["msg"])
+        # 场景 3：标记存在但时间在未来（理论不可能，防御：走兜底逻辑即可不崩）
+        with open(snap, "w", encoding="utf-8") as f:
+            json.dump({"snapshot_at": "07:00:00"}, f)
+        with mock.patch.object(self.webapp, "datetime", FakeDT):
+            r3 = c.put("/api/my-time-pref", json={"slot_min": 10}, headers=h)
+        self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
 
     def test_api_pref_stats_admin_only(self):
         app = self.webapp.create_app()

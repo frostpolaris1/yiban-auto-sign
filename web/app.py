@@ -170,6 +170,10 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 DEFAULT_MAX_USERS = 200
 DEFAULT_MAX_ACCOUNTS = 500
 
+# 自选时间片切换冷却（2026-08-15 用户反馈）：同一用户两次保存最小间隔（秒）。
+# 防高频切换刷新 updated_at 操纵"先到先得"排序、防脚本刷屏；正常改选是低频操作不受影响。
+TIME_PREF_COOLDOWN_SEC = 60
+
 # 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$")
 EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
@@ -1906,6 +1910,20 @@ def create_app():
         if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
             # 不暴露"5 分钟对齐"等调度机制细节（信息分层，2026-08-15）
             return jsonify({"error": "所选时间片不在可选范围内，请重新选择"}), 400
+        # 切换冷却（2026-08-15 用户反馈）：两次保存最小间隔，防高频切换刷新 updated_at
+        # 操纵"先到先得"排序；清除后立即重选同样受限（审计 time_pref_set 计数）。
+        # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC，默认 60；测试用 0 关闭）
+        cooldown = load_env_int(ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", TIME_PREF_COOLDOWN_SEC)
+        if cooldown > 0:
+            last_ts = db.last_time_pref_set_at(session.get("username", ""))
+            if last_ts:
+                try:
+                    last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
+                    if (datetime.now() - last_dt).total_seconds() < cooldown:
+                        # 不暴露冷却时长（信息分层）
+                        return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
+                except ValueError:
+                    pass
         # 满员提示（对抗性审查补，2026-08-15 用户决策：可继续选+提示会顺延）：
         # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
         # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
@@ -1918,13 +1936,27 @@ def create_app():
         full_notice = "，该时段已选满，将就近安排到附近时段" if count >= cap else ""
         db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         db.audit(session.get("username", "?"), "time_pref_set", phone, _slot_to_label(slot))
-        # 生效分界 = 当天 cron 启动时刻（窗口起点 + 1 分钟；起点为 :59 时进位不崩）
+        # 生效分界（2026-08-15 用户反馈：卡点缓冲）：
+        # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
+        # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
+        # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
         now = datetime.now()
+        boundary = None
         try:
-            boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
-        except ValueError:
-            boundary = now
-        boundary += timedelta(minutes=1)
+            snap_path = os.path.join(STATE_DIR, f"sched-snapshot-{now.strftime('%Y-%m-%d')}.json")
+            with open(snap_path, encoding="utf-8") as f:
+                snap = json.load(f)
+            boundary = datetime.strptime(
+                f"{now.strftime('%Y-%m-%d')} {snap['snapshot_at']}", "%Y-%m-%d %H:%M:%S"
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            boundary = None
+        if boundary is None:
+            try:
+                boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
+            except ValueError:
+                boundary = now
+            boundary += timedelta(minutes=1)
         when = "今日生效" if now < boundary else "明日生效"
         return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}{full_notice}"})
 
