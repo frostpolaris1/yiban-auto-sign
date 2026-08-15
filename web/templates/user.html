@@ -54,6 +54,10 @@
     .card-sm {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4;
     }
+    /* iOS Safari 聚焦缩放修复（2026-08-15 审查）：输入控件 <16px 时聚焦自动放大页面 */
+    @media (max-width: 767px) {
+      input, select, textarea { font-size: 16px !important; }
+    }
   }
 </style>
 </head>
@@ -133,14 +137,14 @@
         <span id="pref-tip" class="text-zinc-400 dark:text-zinc-500"></span>
       </div>
       <p id="pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
-        功能未开启：你的选择会保存，但暂不生效（管理员开启后次日生效）
+        功能未开启：你的选择会保存，但暂不生效（开启后次日生效）
       </p>
     </div>
   </section>
 
 <!-- 编辑模态 -->
 <!-- Toast -->
-<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700"></div>
+<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
 
 <!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗） -->
 <div id="account-form-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -232,7 +236,7 @@
 const $ = (id) => document.getElementById(id);
 let accounts = [];
 let sundaySign = false;  // 周日签到开关（来自 /api/my-calendar 响应；开启后周日可查日志/不置灰）
-let editingIdx = null;
+let editingIndex = null;
 
 let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
 
@@ -501,7 +505,7 @@ function closeAccountModal() {
 }
 
 function openEditInline(i) {
-  editingIdx = i;
+  editingIndex = i;
   const a = accounts[i];
   $('f-name').value = a.name;
   $('f-phone').value = a.phone;
@@ -543,7 +547,7 @@ function cancelEdit() {
 }
 
 function resetAccountForm() {
-  editingIdx = null;
+  editingIndex = null;
   clearCodeFlag = false;
   $('account-form-title').textContent = '提交我的易班账号';
   $('account-submit-btn').textContent = '提交账号';
@@ -577,8 +581,8 @@ $('account-form').addEventListener('submit', async (e) => {
       // 已标记清除识别码 → 提交 __clear__ 由后端清空字段；否则留空表示不修改
       phone_code: clearCodeFlag ? '__clear__' : $('f-code').value.trim(),
     };
-    const data = editingIdx !== null
-      ? await api(`/api/my-accounts/${editingIdx}`, { method: 'PUT', body: JSON.stringify(body) })
+    const data = editingIndex !== null
+      ? await api(`/api/my-accounts/${editingIndex}`, { method: 'PUT', body: JSON.stringify(body) })
       : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
     tip.textContent = '';
     resetAccountForm();
@@ -720,7 +724,7 @@ async function loadTimePref(preserve = false) {
 function renderPrefSlots(data) {
   const grid = $('pref-slot-grid');
   grid.innerHTML = '';
-  let tip = data.allowed ? '' : '功能未开启：选择暂不生效';
+  let tip = '';  // 未开启时底部提示默认为空——黄字提示（pref-disabled-hint）承担完整说明（2026-08-15 文案审查去重）
   data.slots.forEach((s, i) => {
     const sel = data.pref_slot === s.slot_min;
     const full = s.pct >= 100;
@@ -743,9 +747,9 @@ function renderPrefSlots(data) {
     // 首尾时段提醒（选中时；总开关关时与"暂不生效"提示拼接，两则信息都不丢）
     if (sel && (i === 0 || i === data.slots.length - 1)) {
       const edgeTip = i === 0
-        ? '最早时段：系统每日 06:31 启动，将在 06:31~06:35 之间最先为你签到'
-        : '最后时段：将在 07:45~07:49 之间执行，临近 07:50 截止，网络波动可能导致错过';
-      tip = data.allowed ? '⚠️ ' + edgeTip : '功能未开启：选择暂不生效；' + edgeTip;
+        ? '最早时段：窗口开始后最先为你签到'
+        : '最后时段：临近窗口截止执行，网络波动可能导致错过';
+      tip = data.allowed ? '⚠️ ' + edgeTip : '⚠️ 未开启：' + edgeTip;
     }
   });
   $('pref-tip').textContent = tip;
