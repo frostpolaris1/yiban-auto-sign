@@ -301,6 +301,16 @@ class TimePrefsTest(unittest.TestCase):
         acc = next(a for a in db.load_accounts() if a["phone"] == "13800138001")
         self.assertFalse(acc["user_paused"])
 
+    def test_api_accounts_shows_paused_immediately(self):
+        """管理端立即体现：用户暂停后 /api/accounts 状态直接为 user_cancelled（无需等状态文件）。"""
+        db.set_user_paused(next(a["id"] for a in db.load_accounts_raw()
+                                if a["phone"] == "13800138001"), True)
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        data = c.get("/api/accounts").get_json()
+        self.assertEqual(data["states"].get("138****8001"), "user_cancelled")
+        self.assertIn("已取消", data["state_msgs"].get("138****8001", ""))
+
     def test_schedule_skips_paused_account(self):
         """build_schedule 过滤 user_paused 账号（零占位）。"""
         accs = self._accs(5)
