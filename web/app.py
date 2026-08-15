@@ -170,9 +170,15 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 DEFAULT_MAX_USERS = 200
 DEFAULT_MAX_ACCOUNTS = 500
 
-# 自选时间片切换冷却（2026-08-15 用户反馈）：同一用户两次保存最小间隔（秒）。
-# 防高频切换刷新 updated_at 操纵"先到先得"排序、防脚本刷屏；正常改选是低频操作不受影响。
-TIME_PREF_COOLDOWN_SEC = 60
+# 自选时间片切换冷却（2026-08-15 用户反馈 → 弹性冷却）：
+# 60 秒窗口内前 TIME_PREF_COOLDOWN_FREE 次切换完全自由（浏览式"全点一遍再定"属正常行为）；
+# 超出后冷却递增：基础 × 2^(超限次数)，封顶 TIME_PREF_COOLDOWN_MAX（持续高频才被压制）。
+# 高频切换本质是自我惩罚（updated_at 变晚 → 先到先得排后），冷却只为防连点/防刷屏噪音。
+# 0 = 关闭。可用 .env 的 YIBAN_TIME_PREF_COOLDOWN_SEC 调整基础值（默认 30）。
+TIME_PREF_COOLDOWN_SEC = 30
+TIME_PREF_COOLDOWN_FREE = 20        # 60 秒窗口内自由切换次数（覆盖"全点一遍"16 片+选定）
+TIME_PREF_COOLDOWN_MAX = 300        # 弹性封顶（秒）
+TIME_PREF_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 
 # 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$")
@@ -1923,24 +1929,32 @@ def create_app():
             if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
                 # 不暴露"5 分钟对齐"等调度机制细节（信息分层，2026-08-15）
                 return jsonify({"error": "所选时间片不在可选范围内，请重新选择"}), 400
-            # 切换冷却（2026-08-15 用户反馈）：同一账号两次保存最小间隔，防高频切换刷新
-            # updated_at 操纵"先到先得"排序；按被选账号计价（H3 多管理员共享 admin 账号
-            # 全局生效；H4 改号/重提交新号不被旧账号误伤）；清除后立即重选同样受限（审计计数）。
-            # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC，默认 60；测试用 0 关闭）
-            cooldown = load_env_int(ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", TIME_PREF_COOLDOWN_SEC)
-            if cooldown > 0:
-                last_ts = db.last_time_pref_set_at(phone)
-                if last_ts:
-                    try:
-                        last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
-                        elapsed = (datetime.now() - last_dt).total_seconds()
-                        # 负间隔（时钟回拨）视为已过冷却，不误伤（对抗性审查第三轮）
-                        if 0 <= elapsed < cooldown:
-                            # 不暴露冷却时长（信息分层）
+            # 弹性切换冷却（2026-08-15 用户反馈）：60s 窗口内自由次数内完全放行（浏览式
+            # "全点一遍再定"正常）；超出后冷却随超限次数递增（30s→60s→120s→…封顶 300s），
+            # 持续高频才被压制。按被选账号计价（H3 多管理员共享全局生效；H4 新号豁免）。
+            # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC 基础值，默认 30；0=关闭）
+            base_cd = load_env_int(ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", TIME_PREF_COOLDOWN_SEC)
+            if base_cd > 0:
+                now_ts = datetime.now()
+                since = (now_ts - timedelta(seconds=TIME_PREF_COOLDOWN_WINDOW)
+                         ).strftime("%Y-%m-%d %H:%M:%S")
+                count = db.time_pref_set_count_since(phone, since)
+                if count >= TIME_PREF_COOLDOWN_FREE:
+                    # 弹性冷却 = 基础 × 2^(超限次数)，封顶
+                    cooldown = min(base_cd * (2 ** (count - TIME_PREF_COOLDOWN_FREE + 1)),
+                                   TIME_PREF_COOLDOWN_MAX)
+                    last_ts = db.last_time_pref_set_at(phone)
+                    if last_ts:
+                        try:
+                            last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
+                            elapsed = (now_ts - last_dt).total_seconds()
+                            # 负间隔（时钟回拨）视为已过冷却，不误伤（对抗性审查第三轮）
+                            if 0 <= elapsed < cooldown:
+                                # 不暴露冷却时长（信息分层）
+                                return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
+                        except ValueError:
+                            # ts 格式异常（写坏）：保守按冷却生效拦截（M3：防 fail-open 绕过）
                             return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
-                    except ValueError:
-                        # ts 格式异常（写坏）：保守按冷却生效拦截（M3 对抗性审查：防 fail-open 绕过）
-                        return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
             # 满员提示（对抗性审查补，2026-08-15 用户决策：可继续选+提示会顺延）：
             # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
             # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）

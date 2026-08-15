@@ -615,6 +615,22 @@ def last_time_pref_set_at(phone):
         return None
 
 
+def time_pref_set_count_since(phone, since_ts):
+    """指定账号在 since_ts 之后的保存次数（弹性冷却高频判定用；ts 定宽字符串可比较）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
+                "AND target=? AND ts >= ?",
+                (phone or "", since_ts),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.warning("统计自选保存次数失败: %s", e)
+        return 0
+
+
 def _audit_cleanup(conn):
     """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。"""
     try:
