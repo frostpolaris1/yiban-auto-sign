@@ -64,8 +64,9 @@ STATUS_PENDING = "pending"  # 待审核（不参与定时签到）
 STATUS_ACTIVE = "active"  # 已生效（参与定时签到）
 STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑重新提交）
 
-# 软删除保留期：管理员删除的账号进入待删除状态，超期自动彻底清除
-DELETED_RETENTION_DAYS = 7
+# 软删除保留期（天）：管理员删除的账号进入待删除状态，超期自动彻底清除。
+# 唯一来源在 db.py（SOFT_DELETE_RETENTION_DAYS），此处仅引用防双源漂移（2026-08-15 审查）
+DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
 # 密码策略：至少 10 位且包含大写/小写/数字/符号中至少两类（只对新建/修改生效，存量密码不受影响）
 PASSWORD_MIN_LEN = 10
@@ -224,8 +225,12 @@ STATUS_TEXT = {
 }
 
 
-def clear_cred_state(phone):
-    """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。"""
+def clear_fuse_pause(phone):
+    """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
+
+    2026-08-15 命名审查：原名 clear_cred_state 误导（"cred"易被理解为清除凭据/密钥，
+    实际只删 cred-state.json 里的熔断暂停条目）；现名体现真实行为。
+    """
     try:
         path = os.path.join(STATE_DIR, "cred-state.json")
         with open(path, encoding="utf-8") as f:
@@ -817,7 +822,8 @@ def _notify_capacity_once(kind, limit, label):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-APP_VERSION = "0.19.2"
+# 2026-08-15 审查轮：UI 全面审查（操作列遮挡/iOS 输入缩放/文案简化去重/命名清理）→ +0.1.0
+APP_VERSION = "0.20.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1170,8 +1176,11 @@ def create_app():
             # 不显示剩余秒数（信息分层，2026-08-15）
             return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
 
-        def _pw_failed():
-            """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。"""
+        def _handle_failed_login():
+            """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。
+
+            2026-08-15 命名审查：原名 _pw_failed 读作"记录失败"，实际返回 429/400 响应。
+            """
             nfails = fails + 1
             if nfails >= LOGIN_MAX_FAILS:
                 _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
@@ -1191,7 +1200,7 @@ def create_app():
         # 内置管理员：验证 .env 当前口令后更新
         if username.strip().lower() == _builtin_admin_email():
             if not verify_admin(username, old_password):
-                return _pw_failed()
+                return _handle_failed_login()
             write_env_key(
                 ENV_FILE,
                 "YIBAN_ADMIN_PASSWORD_HASH",
@@ -1211,7 +1220,7 @@ def create_app():
             u = db.find_user(username.strip().lower())
             if u is not None:
                 if not check_password_hash(u.get("password_hash", ""), old_password):
-                    return _pw_failed()
+                    return _handle_failed_login()
                 db.update_user(
                     u["email"],
                     {
@@ -1462,7 +1471,7 @@ def create_app():
             if result is None:
                 return jsonify({"error": "账号不存在"}), 404
             # 凭据变更（改密码/识别码）后清除熔断暂停，立即恢复签到
-            clear_cred_state(clean["phone"])
+            clear_fuse_pause(clean["phone"])
             db.audit(
                 session.get("username") or "?",
                 "account_update",
@@ -2186,7 +2195,7 @@ def create_app():
                 "用户编辑",
             )
             # 用户改密码/识别码后清除熔断暂停，立即恢复签到
-            clear_cred_state(clean["phone"])
+            clear_fuse_pause(clean["phone"])
             logger.info("用户 %s 编辑账号 %s", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
             if old.get("status") == STATUS_REJECTED:
                 return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
