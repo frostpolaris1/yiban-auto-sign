@@ -1,0 +1,185 @@
+# -*- coding: utf-8 -*-
+"""调度 v2（S1 demo）build_schedule 统一填充框架测试。
+
+用法（在项目根目录）：
+    py -m pytest tests/test_schedule_v2.py -v   # 需要 pytest
+    py tests/test_schedule_v2.py                # 无 pytest 也可直接运行
+
+覆盖（对应 docs/design/plan-scheduler-v2.md 第 3/6 章）：
+- 小人数（n≤3）免分块：直接有效窗口内随机时刻
+- 顺序×均匀：线性填块（50 人 → 前 4 块，块内等分）
+- 随机×均匀：循环填块（每块人数均衡、铺满窗口）
+- 顺序×正态：z_i 锚点稳定（hash(phone)，两天波动有界）；全局钟形
+- 随机×正态：每天重排（两次运行结果不同）
+- 首尾缓冲：所有组合 × 多 seed 全部 ∈ [06:31, 07:49]
+- σ_eff 封顶：n 大时 ≤ 有效窗口/3
+- 压缩模式：n=300 全部账号拿到时间点且不越界
+- 兼容映射：旧 YIBAN_SIGN_MODE=normal → 顺序×正态
+- 固定 seed 可复现
+"""
+import os
+import random
+import sys
+import unittest
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "scripts"))
+
+import signin  # noqa: E402
+
+# 有效窗口（默认配置）：[06:31, 07:49] = 分钟 [391, 469]
+EFF_LO = 391
+EFF_HI = 469
+
+
+def hm(dt):
+    """datetime → 当天分钟数（0:00 = 0）。"""
+    return dt.hour * 60 + dt.minute
+
+
+def make_accounts(n):
+    accs = []
+    for i in range(n):
+        a = signin.Account(phone=str(13800000000 + i), password="p")
+        accs.append(a)
+    return accs
+
+
+class ScheduleV2Test(unittest.TestCase):
+    def setUp(self):
+        for k in (
+            "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST", "YIBAN_SIGN_MODE",
+            "YIBAN_WINDOW_EDGE_SEC", "YIBAN_BLOCK_CAP", "YIBAN_SCHEDULE_MIN_ACCOUNTS",
+            "YIBAN_MIN_EXEC_GAP", "YIBAN_SIGN_START", "YIBAN_SIGN_END",
+        ):
+            os.environ.pop(k, None)
+
+    def test_small_n_direct_random_within_window(self):
+        """n=2：不分块，直接有效窗口内随机时刻。"""
+        accs = make_accounts(2)
+        sched = signin.build_schedule(accs, rng=random.Random(1))
+        self.assertEqual(len(sched), 2)
+        for t in sched.values():
+            self.assertTrue(EFF_LO <= hm(t) <= EFF_HI, t)
+
+    def test_sequence_uniform_linear_blocks(self):
+        """顺序×均匀：线性填块，50 人 → 前 4 块，块内等分。"""
+        accs = make_accounts(50)
+        sched = signin.build_schedule(
+            accs, order="sequence", dist="uniform", rng=random.Random(2))
+        self.assertEqual(len(sched), 50)
+        p0 = hm(sched[accs[0].phone])
+        p14 = hm(sched[accs[14].phone])
+        p15 = hm(sched[accs[15].phone])
+        p29 = hm(sched[accs[29].phone])
+        p30 = hm(sched[accs[30].phone])
+        p49 = hm(sched[accs[49].phone])
+        # 块0 [06:31,06:35) 15 人；块1 [06:35,06:40)；块2 [06:40,06:45)；块3 [06:45,06:50)
+        self.assertTrue(391 <= p0 < 395)
+        self.assertTrue(391 <= p14 < 395)
+        self.assertTrue(395 <= p15 < 400)
+        self.assertTrue(395 <= p29 < 400)
+        self.assertTrue(400 <= p30 < 405)
+        self.assertTrue(405 <= p49 < 410)
+        # 块内等分：块0 首尾间隔 ≥ 2 分钟（等分 240s/15 人，首尾差约 224s）
+        self.assertGreaterEqual(p14 - p0, 2)
+
+    def test_random_uniform_balances_blocks(self):
+        """随机×均匀：循环填块，50 人铺满 16 块、每块人数均衡。"""
+        accs = make_accounts(50)
+        sched = signin.build_schedule(
+            accs, order="random", dist="uniform", rng=random.Random(3))
+        counts = {}
+        for t in sched.values():
+            bi = (hm(t) - 390) // 5
+            counts[bi] = counts.get(bi, 0) + 1
+        self.assertEqual(len(counts), 16)  # 铺满所有块
+        for bi, c in counts.items():
+            self.assertTrue(1 <= c <= 6, (bi, c))  # 50/16 ≈ 3.1
+
+    def test_anchor_z_stable_and_distinct(self):
+        """顺序×正态锚点：同一 phone 的 z_i 稳定；不同 phone 不同。"""
+        self.assertEqual(signin._anchor_z("13800138000"), signin._anchor_z("13800138000"))
+        self.assertNotEqual(signin._anchor_z("13800138000"), signin._anchor_z("13800138001"))
+
+    def test_normal_sequence_daily_range_bounded(self):
+        """顺序×正态：同一账号两天波动有界（固定 seed 确定性）。"""
+        accs = make_accounts(50)
+        s1 = signin.build_schedule(
+            accs, order="sequence", dist="normal", rng=random.Random(4))
+        s2 = signin.build_schedule(
+            accs, order="sequence", dist="normal", rng=random.Random(5))
+        phone = accs[7].phone
+        self.assertLessEqual(abs(hm(s1[phone]) - hm(s2[phone])), 45)
+        # 全局钟形：中间 4 块人数 > 首块+尾块人数
+        def block_counts(sched):
+            counts = {}
+            for t in sched.values():
+                bi = (hm(t) - 390) // 5
+                counts[bi] = counts.get(bi, 0) + 1
+            return counts
+
+        c1 = block_counts(s1)
+        mid = sum(c1.get(bi, 0) for bi in (6, 7, 8, 9))  # 07:01~07:21
+        edges = c1.get(0, 0) + c1.get(15, 0)             # 首尾块
+        self.assertGreater(mid, edges)
+
+    def test_random_normal_shuffles_daily(self):
+        """随机×正态：每天重排，两次运行结果不同。"""
+        accs = make_accounts(50)
+        s1 = signin.build_schedule(
+            accs, order="random", dist="normal", rng=random.Random(6))
+        s2 = signin.build_schedule(
+            accs, order="random", dist="normal", rng=random.Random(7))
+        self.assertNotEqual(s1, s2)
+
+    def test_all_combos_within_window(self):
+        """四组合 × 多 seed：所有时间 ∈ [06:31, 07:49]，不丢账号。"""
+        for order in ("sequence", "random"):
+            for dist in ("uniform", "normal"):
+                for seed in (10, 11, 12):
+                    accs = make_accounts(50)
+                    sched = signin.build_schedule(
+                        accs, order=order, dist=dist, rng=random.Random(seed))
+                    self.assertEqual(len(sched), 50, (order, dist, seed))
+                    for t in sched.values():
+                        self.assertTrue(EFF_LO <= hm(t) <= EFF_HI, (order, dist, seed, t))
+
+    def test_sigma_eff_cap(self):
+        """σ_eff 封顶：n 大时 ≤ 有效窗口/3；n≤20 不变；n 大放大。"""
+        self.assertLessEqual(signin._sigma_eff(20, 200, 78), 78 / 3 + 1e-9)
+        self.assertEqual(signin._sigma_eff(15, 20, 78), 15)
+        self.assertGreater(signin._sigma_eff(15, 80, 78), 15)
+
+    def test_compression_300_all_scheduled(self):
+        """压缩模式：n=300 超容量（240），全部账号拿到时间点且不越界。"""
+        accs = make_accounts(300)
+        sched = signin.build_schedule(
+            accs, order="sequence", dist="uniform", rng=random.Random(8))
+        self.assertEqual(len(sched), 300)
+        for t in sched.values():
+            self.assertTrue(EFF_LO <= hm(t) <= EFF_HI, t)
+
+    def test_legacy_sign_mode_mapping(self):
+        """兼容：旧 YIBAN_SIGN_MODE=normal → 顺序×正态。"""
+        os.environ["YIBAN_SIGN_MODE"] = "normal"
+        try:
+            cfg = signin._schedule_config()
+            self.assertEqual(cfg["order"], "sequence")
+            self.assertEqual(cfg["dist"], "normal")
+        finally:
+            os.environ.pop("YIBAN_SIGN_MODE", None)
+
+    def test_seed_reproducible(self):
+        """固定 seed 可复现（随机性测试防 flaky 的基础）。"""
+        accs = make_accounts(50)
+        s1 = signin.build_schedule(
+            accs, order="random", dist="normal", rng=random.Random(99))
+        s2 = signin.build_schedule(
+            accs, order="random", dist="normal", rng=random.Random(99))
+        self.assertEqual(s1, s2)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
