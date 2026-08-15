@@ -184,6 +184,7 @@ _DEFAULT_MIN_EXEC_GAP = 5       # 压缩模式间隔下限（分钟）
 _DEFAULT_AVG_ATTEMPT_SEC = 8    # 容量预检：单次执行平均耗时估算
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
+_DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
 
 
 def _parse_hhmm(value, default):
@@ -260,6 +261,7 @@ def _schedule_config():
         "avg_attempt_sec": _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300),
         "retry_min_interval": _env_int("YIBAN_RETRY_MIN_INTERVAL", _DEFAULT_RETRY_MIN_INTERVAL, 1, 600),
         "exec_gap_min": _env_int("YIBAN_EXEC_GAP_MIN", _DEFAULT_EXEC_GAP_MIN, 0, 300),
+        "allow_time_pref": _env_int("YIBAN_ALLOW_TIME_PREF", _DEFAULT_ALLOW_TIME_PREF, 0, 1),
         "sign_start": start,
         "sign_end": end,
     }
@@ -1258,6 +1260,16 @@ def _minute_to_dt(base_date, minute):
     return base_date + timedelta(minutes=minute)
 
 
+def _nearest_available(bi, filled, blocks, cap):
+    """双向就近找未满块（自选溢出顺延用；同距离优先更早的块）。无可用返回 None。"""
+    n = len(blocks)
+    for d in range(n):
+        for idx in (bi - d, bi + d):
+            if 0 <= idx < n and filled[idx] < cap:
+                return idx
+    return None
+
+
 def _next_available(bi, filled, blocks, cap):
     """从 bi 向后（环回）找第一个未满块。"""
     n = len(blocks)
@@ -1268,7 +1280,7 @@ def _next_available(bi, filled, blocks, cap):
     return bi  # 全满（理论不会发生：cap 已按 n 放大）
 
 
-def build_schedule(accounts, order=None, dist=None, now=None, rng=None):
+def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=None):
     """调度 v2（S1 demo）：统一填充框架。
 
     排序维度 × 分布维度（2×2）：
@@ -1276,12 +1288,15 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None):
     - 随机×均匀：打乱后循环填块（每块人数均衡、铺满窗口）
     - 顺序×正态：z_i 锚点（hash(phone)）稳定作息 + 钟形
     - 随机×正态：每天重抽分位（重排 + 钟形，防风控最强）
+    自选优先（S2）：prefs 传入 {phone: {slot_min, updated_at}} 时，自选账号固定所选片
+    （片内等分），片满先到先得（updated_at 早者留），溢出双向就近顺延；未选走四组合。
     安全底座：首尾缓冲有效窗口、块容量顺延、块内等分 + 抖动、
     σ_eff 封顶、反射兜底、n≤小人数免分块、超容量压缩模式。
 
     参数（None → 读环境变量，见 _schedule_config）：
     order: "sequence"|"random"；dist: "uniform"|"normal"
     now: 注入当天日期（默认 datetime.now()）；rng: 注入随机源（测试固定 seed）
+    prefs: 自选 {phone: {"slot_min": int, "updated_at": str}}；None → 总开关开时读 db
     返回 {phone: datetime}。
     """
     cfg = _schedule_config()
@@ -1301,7 +1316,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None):
     blocks, eff_lo, eff_hi = _schedule_blocks(cfg)
     span = eff_hi - eff_lo
 
-    # 小人数免分块：直接有效窗口内随机时刻
+    # 小人数免分块：直接有效窗口内随机时刻（自选也走随机时刻——人少无需等分）
     if n <= cfg["min_accounts"]:
         out = {}
         for acc in accounts:
@@ -1317,23 +1332,79 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None):
             n, cap, k, (span * 60) / n,
         )
 
-    # 排序维度：决定账号→位置的映射是否每天重排
-    ordered = list(accounts)
+    # 自选优先占块（S2）：先到先得 + 溢出双向就近顺延
+    chosen = {}  # phone -> bi
+    if prefs is None:
+        prefs = {}
+        if cfg["allow_time_pref"]:
+            try:
+                import db
+                prefs = db.get_time_prefs()
+            except Exception as e:
+                logger.warning("读取自选时间失败（忽略，走自动分配）: %s", e)
+    if prefs:
+        # 对抗性审查补：只保留当前账号集合内的 pref（换号/删号后的孤儿不占容量）
+        valid_phones = {a.phone for a in accounts}
+        start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
+        slot_to_bi = {}
+        for bi, (lo, _hi) in enumerate(blocks):
+            slot_to_bi.setdefault((lo // 5) * 5 - start_min, bi)  # 片起点 = 块起点对齐 5 分钟
+        by_slot = {}
+        for phone, p in prefs.items():
+            if phone not in valid_phones:
+                continue
+            try:
+                slot = int(p.get("slot_min", -1))
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= slot < span):  # 片落窗外 → 回退自动分配
+                continue
+            by_slot.setdefault(slot, []).append((str(p.get("updated_at", "")), phone))
+        filled = [0] * len(blocks)
+        overflow = []
+        for slot, items in sorted(by_slot.items()):
+            items.sort()  # updated_at 升序 → 先到先得
+            bi = slot_to_bi.get(slot)
+            if bi is None:
+                for _u, phone in items:
+                    overflow.append((slot, phone))
+                continue
+            for _u, phone in items:
+                if filled[bi] < k:
+                    chosen[phone] = bi
+                    filled[bi] += 1
+                else:
+                    overflow.append((slot, phone))
+        for slot, phone in overflow:  # 溢出：双向就近顺延（±1 块 → ±2 块 → …）
+            base_bi = slot_to_bi.get(slot)
+            if base_bi is None:
+                continue
+            bi = _nearest_available(base_bi, filled, blocks, k)
+            if bi is not None:
+                chosen[phone] = bi
+                filled[bi] += 1
+        if overflow:
+            logger.info("自选顺延: %d 个账号所选时段已满，已就近调整到附近时段", len(overflow))
+
+    # 排序维度：决定账号→位置的映射是否每天重排（自选账号不参与）
+    ordered = [a for a in accounts if a.phone not in chosen]
     if order == "random":
         rng.shuffle(ordered)
 
     # 分布维度：uniform = 确定性位置；normal = 钟形采样位置
-    if dist == "normal":
+    if dist == "normal" and ordered:
         if order == "random":
-            zs = [rng.gauss(0, 1) for _ in accounts]
+            zs = [rng.gauss(0, 1) for _ in ordered]
             rng.shuffle(zs)
             zmap = {acc.phone: zs[i] for i, acc in enumerate(ordered)}
         else:
-            zmap = {acc.phone: _anchor_z(acc.phone) for acc in accounts}
+            zmap = {acc.phone: _anchor_z(acc.phone) for acc in ordered}
 
-    # 阶段 1：分配块归属（容量满向后顺延）
-    assign = {}
+    # 阶段 1：分配块归属（容量满向后顺延；自选已占位）
+    assign = dict(chosen)
     filled = [0] * len(blocks)
+    for phone in assign:
+        filled[assign[phone]] += 1
     for rank, acc in enumerate(ordered):
         if dist == "uniform":
             bi = (rank // k) if order == "sequence" else (rank % len(blocks))

@@ -10,6 +10,7 @@
 - 导出文件统一 chmod 0600（含凭据数据，防同主机其他用户读取）。
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -38,10 +39,8 @@ def main():
         path = os.path.join(args.out, name)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        try:
-            os.chmod(path, 0o600)  # 含凭据数据，收紧权限
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)  # 含凭据数据，收紧权限（Windows 无实际效果，忽略失败）
     if args.plaintext:
         print("⚠️  已导出明文凭据（--plaintext），请立即转移到安全位置并删除该文件")
     print(f"已导出 {len(accounts)} 个账号 / {len(users)} 个用户 → {args.out}/")

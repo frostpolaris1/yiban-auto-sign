@@ -79,6 +79,28 @@ CLEAR_SENTINEL = "__clear__"
 SIGN_START = (6, 30)
 SIGN_END = (7, 50)
 
+
+def _sign_window():
+    """签到窗口（调度 v2：支持 .env 覆盖 YIBAN_SIGN_START/END，非法回退默认）。"""
+    start = SIGN_START
+    end = SIGN_END
+    env = read_env(ENV_FILE)
+    for key in ("YIBAN_SIGN_START", "YIBAN_SIGN_END"):
+        raw = env.get(key, "").strip()
+        try:
+            h, m = raw.split(":")
+            parsed = (int(h), int(m))
+            if 0 <= parsed[0] <= 23 and 0 <= parsed[1] <= 59:
+                if key.endswith("START"):
+                    start = parsed
+                else:
+                    end = parsed
+        except (ValueError, AttributeError):
+            pass
+    if start >= end:
+        start, end = SIGN_START, SIGN_END
+    return start, end
+
 # 登录时延拉平占位哈希：用户名/账号不存在时也执行一次等价 scrypt 比对，
 # 消除「响应耗时差异」造成的用户枚举时序侧信道（占位哈希无需真实有效，比对恒为 False）。
 _dummy_pw_hash = None
@@ -393,10 +415,8 @@ def _atomic_write(path, content, chmod_priv=False):
         os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
     os.replace(tmp, path)
     if chmod_priv:
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(path, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +489,16 @@ def _owner_display_of(owner_email):
     if owner_email in ("admin", ""):
         return "管理员"
     return owner_email.split("@")[0] if "@" in owner_email else owner_email
+
+
+def _slot_to_label(slot_min):
+    """自选片窗口内分钟数 → "HH:MM"（调度 v2，与 signin 的 slot 口径一致：06:30 → 390）。"""
+    if slot_min is None:
+        return None
+    sw = _sign_window()
+    base = sw[0][0] * 60 + sw[0][1]
+    m = base + int(slot_min)
+    return f"{m // 60:02d}:{m % 60:02d}"
 
 
 def mask_account(acc, index, masked=True):
@@ -589,15 +619,17 @@ def sign_status(now=None):
     返回 (显示文本, 颜色)。
     """
     now = now or datetime.now()
-    if now.weekday() == 6:  # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
-        if not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
-            return "🌙 今日无需打卡（周日）", "#565f89"
-    start = now.replace(hour=SIGN_START[0], minute=SIGN_START[1], second=0, microsecond=0)
-    end = now.replace(hour=SIGN_END[0], minute=SIGN_END[1], second=0, microsecond=0)
+    if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
+        # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
+        return "🌙 今日无需打卡（周日）", "#565f89"
+    start_h, start_m = _sign_window()[0]
+    end_h, end_m = _sign_window()[1]
+    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     if now < start:
-        return f"⏳ 未到签到时间（{SIGN_START[0]:02d}:{SIGN_START[1]:02d} 开始）", "#7aa2f7"
+        return f"⏳ 未到签到时间（{start_h:02d}:{start_m:02d} 开始）", "#7aa2f7"
     if now <= end:
-        return f"🔔 签到窗口（~{SIGN_END[0]:02d}:{SIGN_END[1]:02d} 结束）", "#9ece6a"
+        return f"🔔 签到窗口（~{end_h:02d}:{end_m:02d} 结束）", "#9ece6a"
     return "✅ 打卡时间已过", "#e0af68"
 
 
@@ -1048,6 +1080,16 @@ def create_app():
         # 防止浏览器缓存旧页面时误判未登录导致刷新循环
         role = _current_role()
         username = session.get("username") or ""
+        # 调度 v2：排序×分布模式与自选开关同步给用户（只读展示）
+        env = read_env(ENV_FILE)
+        mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
+        sign_order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
+            "random" if mode == "random" else "sequence"
+        )
+        sign_dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
+            "normal" if mode == "normal" else "uniform"
+        )
+        sw = _sign_window()
         return jsonify(
             {
                 "ok": True,
@@ -1059,6 +1101,11 @@ def create_app():
                 "is_builtin_admin": role == "admin" and username.strip().lower()
                 == _builtin_admin_email(),  # 主管理员（.env）：仅主管理员可改管理员权限
                 "csrf_token": get_csrf_token(),
+                # 调度 v2（docs/design/plan-scheduler-v2.md 2.1/2.2）
+                "sign_order": sign_order,
+                "sign_dist": sign_dist,
+                "time_pref_allowed": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
+                "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
             }
         )
 
@@ -1070,10 +1117,31 @@ def create_app():
         # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
         # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
         states = load_sign_state()
+        # 调度 v2：自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
+        prefs = {p: v["slot_min"] for p, v in db.get_time_prefs().items()}
+        sw = _sign_window()
+        _span_min = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
+
+        def _edge_mark(slot):
+            if slot is None:
+                return None
+            if slot == 0:
+                return "first"
+            if slot >= _span_min - 5:
+                return "last"
+            return None
+
         return jsonify(
             {
                 "ok": True,
-                "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
+                "accounts": [
+                    {
+                        **mask_account(a, i),
+                        "time_pref": _slot_to_label(prefs.get(a["phone"])),
+                        "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
+                    }
+                    for i, a in enumerate(accounts)
+                ],
                 # states 值压成状态码字符串（前端图标映射用）
                 "states": {
                     _mask_phone(k): (v.get("status", STATUS_PENDING) if isinstance(v, dict) else STATUS_PENDING)
@@ -1203,6 +1271,9 @@ def create_app():
                 and find_account_index(accounts, clean["phone"]) is not None
             ):
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
+            # 手机号变更 → 旧号自选时间片失效（防孤儿 pref 占容量，对抗性审查补）
+            if clean["phone"] != old.get("phone"):
+                db.clear_time_pref(old.get("phone", ""))
             # 密码留空 = 保持不变（密码明文永不下发前端）
             if not clean["password"]:
                 clean["password"] = old.get("password", "")
@@ -1593,6 +1664,93 @@ def create_app():
         indices = _my_account_indices()
         return jsonify({"ok": True, "accounts": _my_account_view(accounts, indices)})
 
+    # ---- 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）----
+    def _my_phone():
+        """当前普通用户的自选绑定账号（第一个非删除账号）；无则 None。"""
+        accounts = load_accounts()
+        for idx in _my_account_indices():
+            acc = accounts[idx]
+            if not acc.get("deleted"):
+                return acc.get("phone", "")
+        return None
+
+    def _pref_slots(sw):
+        """窗口内 16 个 5 分钟片（时钟对齐）：[{slot_min, label}]。"""
+        start_min = sw[0][0] * 60 + sw[0][1]
+        end_min = sw[1][0] * 60 + sw[1][1]
+        edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
+        slots = []
+        for b in range(start_min, end_min, 5):
+            lo = max(b, start_min + edge)
+            hi = min(b + 5, end_min - edge)
+            if hi > lo:
+                m = b - start_min
+                slots.append({"slot_min": m, "label": f"{b // 60:02d}:{b % 60:02d}"})
+        return slots
+
+    @app.route("/api/my-time-pref")
+    def api_my_time_pref():
+        """我的自选 + 拥挤度（选片卡片数据；总开关关时仍可预配置，调度侧不激活）。"""
+        sw = _sign_window()
+        phone = _my_phone()
+        pref = db.get_time_pref(phone) if phone else None
+        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+        slots = []
+        for s in _pref_slots(sw):
+            slots.append({**s, "count": stats.get(s["slot_min"], 0), "cap": cap})
+        return jsonify({
+            "ok": True,
+            "pref": _slot_to_label(pref["slot_min"]) if pref else None,
+            "pref_slot": pref["slot_min"] if pref else None,
+            "slots": slots,
+            "allowed": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
+            "window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
+            "edge_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60),
+            "has_account": bool(phone),
+        })
+
+    @app.route("/api/my-time-pref", methods=["PUT"])
+    def api_my_time_pref_save():
+        """保存/清除自选：{slot_min: int|null}。校验 5 对齐、窗口内；生效按分界时刻提示。"""
+        phone = _my_phone()
+        if not phone:
+            return jsonify({"error": "请先提交易班账号"}), 400
+        data = _json_body()
+        slot = data.get("slot_min")
+        if slot is None:
+            db.clear_time_pref(phone)
+            db.audit(session.get("username", "?"), "time_pref_clear", phone, "")
+            return jsonify({"ok": True, "msg": "已清除自选，恢复自动分配"})
+        try:
+            slot = int(slot)
+        except (TypeError, ValueError):
+            return jsonify({"error": "时间片取值无效"}), 400
+        sw = _sign_window()
+        span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
+        edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
+        if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
+            return jsonify({"error": "时间片需为 5 分钟对齐且落在签到窗口内"}), 400
+        db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        db.audit(session.get("username", "?"), "time_pref_set", phone, _slot_to_label(slot))
+        # 生效分界 = 当天 cron 启动时刻（窗口起点 + 1 分钟）
+        now = datetime.now()
+        boundary = now.replace(hour=sw[0][0], minute=sw[0][1] + 1, second=0, microsecond=0)
+        when = "今日生效" if now < boundary else "明日生效（今日已开始签到）"
+        return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}"})
+
+    @app.route("/api/time-prefs/stats")
+    def api_time_prefs_stats():
+        """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
+        sw = _sign_window()
+        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+        return jsonify({
+            "ok": True,
+            "slots": [{**s, "count": stats.get(s["slot_min"], 0), "cap": cap}
+                      for s in _pref_slots(sw)],
+        })
+
     @app.route("/api/my-accounts", methods=["POST"])
     def api_my_account_add():
         """提交自己的易班账号：每个用户仅限 1 套，写入 accounts.json 状态 pending（待审核）。
@@ -1713,6 +1871,9 @@ def create_app():
                 and find_account_index(accounts, clean["phone"]) is not None
             ):
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
+            # 手机号变更 → 旧号自选时间片失效（防孤儿 pref 占容量，对抗性审查补）
+            if clean["phone"] != old.get("phone"):
+                db.clear_time_pref(old.get("phone", ""))
             if not clean["password"]:
                 clean["password"] = old.get("password", "")
             # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变
@@ -2184,10 +2345,8 @@ def create_app():
                         ok_n += 1
                         proc = _signin_procs.get(phone)
                         if proc:
-                            try:
+                            with contextlib.suppress(Exception):
                                 proc.wait(timeout=300)  # 等该账号完成再触发下一个（顺序执行）
-                            except Exception:
-                                pass
                     else:
                         skip_n += 1
                 logger.info("批量手动签到完成: 触发 %s 个，跳过 %s 个", ok_n, skip_n)
@@ -2219,6 +2378,9 @@ def create_app():
     # ---- 设置（随机延迟，写入 .env）----
     @app.route("/api/settings")
     def api_settings():
+        env = read_env(ENV_FILE)
+        mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
+        sw = _sign_window()
         return jsonify(
             {
                 "ok": True,
@@ -2227,7 +2389,15 @@ def create_app():
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
                 # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
-                "sign_mode": read_env(ENV_FILE).get("YIBAN_SIGN_MODE", "").strip() or "sequence",
+                "sign_mode": mode or "sequence",
+                # 调度 v2：排序×分布二级开关 + 首尾缓冲 + 自选总开关 + 窗口
+                "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
+                    "random" if mode == "random" else "sequence"),
+                "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
+                    "normal" if mode == "normal" else "uniform"),
+                "window_edge_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60),
+                "allow_time_pref": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
+                "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
                 "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
@@ -2254,11 +2424,56 @@ def create_app():
             return jsonify({"error": "签到模式取值应为 sequence 或 random"}), 400
         if sign_mode:
             write_env_key(ENV_FILE, "YIBAN_SIGN_MODE", sign_mode)
+        # 调度 v2：排序×分布二级开关（替代旧三选一，旧值自动映射兼容）
+        sign_order = str(data.get("sign_order", "")).strip().lower()
+        sign_dist = str(data.get("sign_dist", "")).strip().lower()
+        if sign_order and sign_order not in ("sequence", "random"):
+            return jsonify({"error": "排序方式取值应为 sequence 或 random"}), 400
+        if sign_dist and sign_dist not in ("uniform", "normal"):
+            return jsonify({"error": "分布方式取值应为 uniform 或 normal"}), 400
+        if sign_order:
+            write_env_key(ENV_FILE, "YIBAN_SIGN_ORDER", sign_order)
+        if sign_dist:
+            write_env_key(ENV_FILE, "YIBAN_SIGN_DIST", sign_dist)
+        # 首尾缓冲（0=关闭，设置页需警示尾部风险）
+        # 注意：0 是合法配置值（关闭缓冲），不能用 write_env_int（其语义为 <=0 删除行）
+        edge_raw = data.get("window_edge_sec")
+        if edge_raw is not None:
+            try:
+                edge = int(edge_raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "首尾缓冲必须是整数秒"}), 400
+            if not (0 <= edge <= 600):
+                return jsonify({"error": "首尾缓冲应在 0~600 秒之间"}), 400
+            write_env_key(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", str(edge))
+        # 用户自选总开关（0/1；0 同样需显式写入）
+        pref_raw = data.get("allow_time_pref")
+        if pref_raw is not None:
+            pref = 1 if str(pref_raw).strip().lower() in ("1", "true", "on", "yes") else 0
+            write_env_key(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", str(pref))
+        # 签到窗口（HH:MM，管理员可调；校验非法拒绝）
+        win = str(data.get("sign_window", "")).strip()
+        if win:
+            try:
+                w_start, w_end = win.split("~")
+                sh, sm = (int(x) for x in w_start.strip().split(":"))
+                eh, em = (int(x) for x in w_end.strip().split(":"))
+            except (ValueError, AttributeError):
+                return jsonify({"error": "签到窗口格式应为 HH:MM ~ HH:MM"}), 400
+            if not (0 <= sh <= 23 and 0 <= sm <= 59 and 0 <= eh <= 23 and 0 <= em <= 59 and (sh, sm) < (eh, em)):
+                return jsonify({"error": "签到窗口非法（需 HH:MM 且开始早于结束）"}), 400
+            write_env_key(ENV_FILE, "YIBAN_SIGN_START", f"{sh:02d}:{sm:02d}")
+            write_env_key(ENV_FILE, "YIBAN_SIGN_END", f"{eh:02d}:{em:02d}")
         # 周日签到开关（1=开启/0=关闭）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
         sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
         write_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", sunday_sign)
         # 批量多选为前端会话级开关，不写入配置
-        logger.info("更新设置: 启动=%s 间隔=%s 签到模式=%s 周日签到=%s", start, gap, sign_mode or "不变", sunday_sign)
+        logger.info(
+            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 缓冲=%s 自选=%s 窗口=%s 周日=%s",
+            start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
+            edge_raw if edge_raw is not None else "不变", pref_raw if pref_raw is not None else "不变",
+            win or "不变", sunday_sign,
+        )
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----

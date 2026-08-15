@@ -13,9 +13,7 @@
 """
 import contextlib
 import importlib.util
-import io
 import json
-import logging
 import os
 import shutil
 import sys
@@ -118,11 +116,9 @@ class BreakerTest(unittest.TestCase):
              mock.patch.object(signin.time, "sleep"), \
              mock.patch.object(signin, "_load_cred_state", return_value=cred_state), \
              mock.patch.object(signin, "_save_cred_state"), \
-             mock.patch.object(sys, "argv", argv):
-            try:
-                signin.main()
-            except SystemExit:
-                pass
+             mock.patch.object(sys, "argv", argv), \
+             contextlib.suppress(SystemExit):
+            signin.main()
 
     def setUp(self):
         self._calls = []
