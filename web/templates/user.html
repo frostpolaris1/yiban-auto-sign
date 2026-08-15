@@ -104,21 +104,25 @@
     <div id="account-list" class="space-y-3"></div>
   </section>
 
-  <!-- 我的签到时间（调度 v2 自选；总开关关时可预配置但不激活） -->
+  <!-- 我的签到时间（调度 v2 自选；未开启时折叠，展开可预配置但不激活） -->
   <section id="time-pref-card" class="card mb-6 hidden">
-    <div class="mb-1">
+    <div class="flex items-center justify-between mb-1">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的签到时间</h2>
+      <button id="pref-collapse-btn" type="button" onclick="togglePrefCollapse()"
+              class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">▾</button>
     </div>
-    <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">窗口 <span id="pref-window"></span> · 5 分钟一片 · 随时可改（今日已开始签到后修改次日生效）</p>
-    <div id="pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
-    <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
-      <button id="pref-clear-btn" type="button" onclick="clearTimePref()"
-              class="btn-ghost">清除选择（恢复自动分配）</button>
-      <span id="pref-tip" class="text-zinc-400 dark:text-zinc-500"></span>
+    <div id="pref-body">
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">窗口 <span id="pref-window"></span> · 5 分钟一片 · 随时可改（今日已开始签到后修改次日生效）</p>
+      <div id="pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
+      <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
+        <button id="pref-clear-btn" type="button" onclick="clearTimePref()"
+                class="btn-ghost">清除选择（恢复自动分配）</button>
+        <span id="pref-tip" class="text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+      <p id="pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
+        功能未开启：你的选择会保存，但暂不生效（管理员开启后次日生效）
+      </p>
     </div>
-    <p id="pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
-      功能未开启：你的选择会保存，但暂不生效（管理员开启后次日生效）
-    </p>
   </section>
 
 <!-- 编辑模态 -->
@@ -610,6 +614,14 @@ async function loadScheduleBanner() {
   } catch (e) { /* 提示条加载失败不阻塞页面 */ }
 }
 
+let prefCollapsed = false;  // 自选卡片折叠态（未开启时自动折叠，展开可预配置）
+
+function togglePrefCollapse() {
+  prefCollapsed = !prefCollapsed;
+  $('pref-body').classList.toggle('hidden', prefCollapsed);
+  $('pref-collapse-btn').textContent = prefCollapsed ? '▸ 未开启（点击展开预配置）' : '▾';
+}
+
 async function loadTimePref() {
   const card = $('time-pref-card');
   try {
@@ -619,6 +631,16 @@ async function loadTimePref() {
     $('pref-window').textContent = data.window;
     renderPrefSlots(data);
     $('pref-disabled-hint').classList.toggle('hidden', data.allowed);
+    // 未开启时自动折叠（展开仍可预配置）；开启时保持展开
+    if (!data.allowed) {
+      prefCollapsed = true;
+      $('pref-body').classList.add('hidden');
+      $('pref-collapse-btn').textContent = '▸ 未开启（点击展开预配置）';
+    } else {
+      prefCollapsed = false;
+      $('pref-body').classList.remove('hidden');
+      $('pref-collapse-btn').textContent = '▾';
+    }
   } catch (e) { card.classList.add('hidden'); }
 }
 
