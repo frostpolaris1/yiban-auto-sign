@@ -93,3 +93,6 @@ build/
 
 # .env 并发写锁文件（2026-08-15 对抗性审查 B）
 .env.lock
+
+# 品牌图标（版权来源不明，不入开源仓库；本地/服务器自行放入即可生效，见 README「自定义 Web 图标」）
+web/static/vendor/logo.png
