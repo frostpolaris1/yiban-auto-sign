@@ -21,8 +21,10 @@ logger = logging.getLogger("yiban.db")
 
 DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
 
-# 软删除保留期（秒）：与 web 原 JSON 实现的惰性清理语义一致（>= 7 天）
-SOFT_DELETE_RETENTION_SECONDS = 7 * 86400
+# 软删除保留期（2026-08-15 审查统一命名/单位）：天为唯一来源，秒数派生——
+# 此前 web(app.py DELETED_RETENTION_DAYS) 与 db 各持一份同名不同单位常量，易改一处漏一处
+SOFT_DELETE_RETENTION_DAYS = 7
+SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
 _conn = None
