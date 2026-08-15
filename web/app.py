@@ -209,7 +209,7 @@ STATUS_SKIPPED_WINDOW = "skipped_window"
 STATUS_SKIPPED_NORANGE = "skipped_norange"
 STATUS_PAUSED = "paused"  # 账密异常暂停（signin 熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自暂停签到（调度 v2）
-STATUS_PENDING = "pending"
+STATUS_PENDING = "pending"  # 待签（未执行/无记录）；注意与第 63 行账号审核态 STATUS_PENDING 同名同值（历史遗留，重命名见 TODO）
 
 STATUS_ICON = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
@@ -553,12 +553,6 @@ def _password_policy_error(password):
     return None
 
 
-class AccountCryptoError(Exception):
-    """账号密文处理失败（解密失败/密钥缺失）：数据不可用，拒绝继续，避免静默明文化。
-
-    （db 层解密失败抛 RuntimeError，此异常兼容保留——不再有抛出点，仅防御旧调用。）"""
-
-
 def _owner_display_of(owner_email):
     """把账号归属邮箱映射为展示名（后台归属列用）：普通用户显示邮箱前缀（@ 前）。"""
     if owner_email in ("admin", ""):
@@ -823,7 +817,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-15 审查轮：UI 全面审查（操作列遮挡/iOS 输入缩放/文案简化去重/命名清理）
-APP_VERSION = "0.19.3"
+APP_VERSION = "0.19.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1863,7 +1857,7 @@ def create_app():
         accounts = load_accounts()
         for idx in _my_account_indices_of(accounts):
             acc = accounts[idx]
-            if not acc.get("deleted") and acc.get("status") == "active":
+            if not acc.get("deleted") and acc.get("status") == STATUS_ACTIVE:
                 return acc.get("phone", "")
         return None
 

@@ -365,20 +365,18 @@ RISK_FAIL_KEYWORDS = [
     "拦截",
 ]
 # 网络/瞬时类失败特征：值得重试
-TRANSIENT_FAIL_KEYWORDS = ["Connection", "连接", "超时", "timeout", "Max retries", "Read timed"]
-
-
 def classify_failure(message):
-    """对失败信息分级，返回 (max_attempts, retryable)。
+    """对失败信息分级，返回最大重试次数。
 
     - 风控/凭据类：最多重试 1 次（RISK_MAX_ATTEMPTS），避免加重账号标记
     - 其他失败（网络/未知）：最多重试 MAX_ATTEMPTS 次
-    - 网络类之外明确不可重试（配置错误等）：retryable=False
+    （2026-08-15 审查清理：原返回 (max_attempts, retryable) 的 retryable 恒为 True
+    且无调用方使用——死返回值；TRANSIENT_FAIL_KEYWORDS 死常量一并删除）
     """
     for kw in RISK_FAIL_KEYWORDS:
         if kw in message:
-            return RISK_MAX_ATTEMPTS, True
-    return MAX_ATTEMPTS, True
+            return RISK_MAX_ATTEMPTS
+    return MAX_ATTEMPTS
 
 
 def random_delay(max_seconds, label):
@@ -1102,13 +1100,16 @@ def send_notification(title, content, url):
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-def attempt_signin(account, notify_url=None):
+def attempt_signin(account):
     """单次签到尝试（登录 + 签到），不重试。
 
     返回 (success, message, skip)：
     - success: 是否成功（含"已签到""非签到日"）
     - message: 结果说明
     - skip: True 表示窗口外等无需重试的情况
+
+    2026-08-15 审查清理：原 notify_url 参数从未在函数体内使用
+    （通知统一由 run_queue_retry 最终放弃时发送），已删除。
     """
     phone = account.phone
     try:
@@ -1577,7 +1578,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
-        success, message, skip, status = attempt_signin(acc, notify_url)
+        success, message, skip, status = attempt_signin(acc)
         last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中）
         _write_sign_state(phone, status, message)
@@ -1603,7 +1604,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             logger.info(f"[{phone}] ⛔ {message}（不重试）")
             continue
 
-        max_attempts, _ = classify_failure(message)
+        max_attempts = classify_failure(message)
         if attempts[phone] >= max_attempts:
             results[phone] = (False, message, False, status)
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
