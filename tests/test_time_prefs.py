@@ -22,6 +22,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import datetime  # 弹性冷却测试构造审计时间戳用
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -308,32 +309,42 @@ class TimePrefsTest(unittest.TestCase):
         r2 = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
         self.assertIn("已选满", r2.get_json()["msg"])
 
-    def test_api_pref_cooldown(self):
-        """对抗（2026-08-15 用户反馈）：高频切换冷却——间隔内第二次保存被拒；清除豁免；清除后重选仍受限。"""
-        # 开启冷却 60s（追加覆盖默认 0）
+    def test_api_pref_cooldown_elastic(self):
+        """对抗（2026-08-15 用户反馈→弹性冷却）：60s 窗口内自由次数内放行（浏览式全点一遍正常）；
+        超出后递增冷却拦截；清除豁免；清除后重选仍受限。"""
+        from datetime import timedelta as _td
+
+        # 开启弹性冷却（基础 30s，自由 20 次；追加覆盖默认 0）
         with open(self.env_file, "a", encoding="utf-8") as f:
-            f.write("YIBAN_TIME_PREF_COOLDOWN_SEC=60\n")
+            f.write("YIBAN_TIME_PREF_COOLDOWN_SEC=30\n")
         try:
             c = self.webapp.create_app().test_client()
             token = self._login(c, "user1@test.local", USER_PASS)
             h = self._csrf(token)
-            # 第一次保存成功
+            # 自由窗口：伪造 5 条近期审计 → 保存仍放行（5 < 20）
+            now = datetime.now()
+            for i in range(5):
+                db.audit("user1@test.local", "time_pref_set", "13800138001",
+                         (now - _td(seconds=5 * i)).strftime("%Y-%m-%d %H:%M:%S"))
             r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-            # 立即第二次保存 → 冷却拒绝（审计时间差 < 60s）
+            # 超限：凑满 20 条 → 下一次保存被递增冷却拦截（30×2^1=60s）
+            for i in range(14):
+                db.audit("user1@test.local", "time_pref_set", "13800138001",
+                         (now - _td(seconds=5 * i)).strftime("%Y-%m-%d %H:%M:%S"))
             r2 = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
             self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
             self.assertIn("频繁", r2.get_json()["error"])
             # 清除不受冷却限制（time_pref_clear 不计数）
             r3 = c.put("/api/my-time-pref", json={"slot_min": None}, headers=h)
             self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
-            # 清除后立即重选仍受限（防绕过：审计 time_pref_set 计数）
+            # 清除后立即重选仍受限（防绕过：time_pref_set 计数不因清除清零）
             r4 = c.put("/api/my-time-pref", json={"slot_min": 10}, headers=h)
             self.assertEqual(r4.status_code, 429, r4.get_data(as_text=True))
         finally:
             s = open(self.env_file, encoding="utf-8").read()
             open(self.env_file, "w", encoding="utf-8").write(
-                s.replace("YIBAN_TIME_PREF_COOLDOWN_SEC=60\n", ""))
+                s.replace("YIBAN_TIME_PREF_COOLDOWN_SEC=30\n", ""))
 
     def test_api_pref_snapshot_boundary(self):
         """对抗（2026-08-15 用户反馈：卡点缓冲）：生效分界优先取当日调度快照标记——
