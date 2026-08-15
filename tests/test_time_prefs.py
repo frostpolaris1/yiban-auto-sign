@@ -310,6 +310,23 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(len(sched), 4)
         self.assertNotIn(accs[2].phone, sched)
 
+    def test_run_queue_retry_skips_paused(self):
+        """端到端确认：user_paused 账号在 run_queue_retry 中零请求、状态写 user_cancelled。"""
+        import unittest.mock as mock
+        from datetime import datetime
+
+        accs = [signin.Account(phone="13800138001", password="p")]
+        accs[0].user_paused = True
+        state_dir = tempfile.mkdtemp(prefix="yiban-pause-")
+        self.addCleanup(shutil.rmtree, state_dir, ignore_errors=True)
+        with mock.patch.object(signin, "_write_sign_state") as w, \
+             mock.patch.object(signin, "attempt_signin") as attempt:
+            results = signin.run_queue_retry(accs, "", 0, 0)
+        attempt.assert_not_called()  # 零请求
+        self.assertEqual(results["13800138001"][3], signin.STATUS_USER_CANCELLED)
+        w.assert_called_once()
+        self.assertEqual(w.call_args[0][1], signin.STATUS_USER_CANCELLED)
+
     def test_api_settings_sched_master_only(self):
         """调度字段仅主管理员可改；普通管理员 403，其他字段仍可改。"""
         app = self.webapp.create_app()
