@@ -854,6 +854,20 @@ workflow-keepalive:
 2. **强制传染**：任何使用、修改或分发本项目的衍生作品，必须同样以 AGPL-3.0 协议开源
 3. **署名要求**：必须保留原作者版权声明与许可声明
 
+### 第三方组件声明（2026-08-15 补）
+
+本项目分发包含以下第三方开源组件（按各自许可保留版权声明）：
+
+| 组件 | 用途 | 许可证 |
+|------|------|--------|
+| [Textual](https://github.com/Textualize/textual) | TUI 终端面板（`tui/`） | MIT — Copyright (c) 2022 Textualize Inc. |
+| Flask / Werkzeug | Web 框架 | BSD-3-Clause |
+| requests / urllib3 | HTTP 客户端 | Apache-2.0 / MIT |
+| PySocks | SOCKS 代理 | MIT |
+| pycryptodome | AES-GCM 加密 | Public Domain（作者声明）+ BSD-2-Clause 条款 |
+
+各组件版权声明与完整许可文本见其官方仓库 LICENSE 文件。本项目仅按各自许可条款使用，未修改上述组件源码。
+
 ### 衍生来源
 
 本项目直接参考 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）实现：
@@ -881,6 +895,7 @@ workflow-keepalive:
 - Auto-Test - 易班登录流程（OAuth + RSA + ydclearance，已弃用并被本项目新登录特征取代）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 定时工作流自动续期（避免 60 天无活动被禁用）
 - [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、易班登录特征与 nightAttendance 签到流程
+- [Textualize/textual](https://github.com/Textualize/textual)（MIT）- TUI 终端面板框架（`tui/` 组件）
 
 ---
 
