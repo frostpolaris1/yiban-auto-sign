@@ -1932,7 +1932,7 @@ function renderUsers(users, builtinAdmin) {
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(builtinAdmin)}">${esc(builtinAdmin)} <span class="text-xs text-zinc-400 dark:text-zinc-500">（主管理员）</span></td>
     <td class="px-4 py-3"><span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span></td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
-    <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 sticky right-0 bg-zinc-50/50 dark:bg-zinc-700/30 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">不可修改</td>`;
+    <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 sticky right-0 bg-zinc-50/50 dark:bg-zinc-700/30 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">不可改</td>`;
   tbody.appendChild(builtin);
   normalFiltered.forEach(u => tbody.appendChild(userRow(u, 'usersNormal')));
   // 第三组：空用户（未提交账号）
