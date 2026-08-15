@@ -110,6 +110,10 @@
     </div>
 
     <div id="account-list" class="space-y-3"></div>
+
+    <!-- 提交账号入口（无有效账号时显示；编辑统一走弹窗，2026-08-15 用户反馈） -->
+    <button id="open-account-btn" type="button" onclick="openAccountModalForNew()"
+            class="hidden w-full sm:w-auto bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">提交我的易班账号</button>
   </section>
 
   <!-- 我的签到时间（调度 v2 自选；未开启时折叠，展开可预配置但不激活） -->
@@ -138,14 +142,17 @@
 <!-- Toast -->
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700"></div>
 
-  <!-- 提交账号 -->
-  <section id="account-form-section" class="card mb-6">
-    <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1">提交我的易班账号</h2>
-    <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号，可编辑或删除后重新提交。</p>
-    <div id="submit-done" class="hidden mb-4 bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
-      已提交账号，可编辑或删除后重新提交。
+<!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗） -->
+<div id="account-form-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[85vh] overflow-y-auto">
+    <div class="flex items-center justify-between mb-1">
+      <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">提交我的易班账号</h2>
+      <button type="button" onclick="closeAccountModal()" aria-label="关闭"
+              class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
     </div>
-    <form id="account-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号。</p>
+    <form id="account-form" class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：我的手机"
@@ -156,7 +163,7 @@
         <input id="f-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
-      <div class="md:col-span-2">
+      <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-password" type="password" required placeholder="用于自动登录签到"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
@@ -173,14 +180,15 @@
         <button id="clear-code-btn" type="button" onclick="toggleClearCode()"
                 class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
       </div>
-      <div class="md:col-span-2 flex items-center gap-3 pt-1">
+      <div class="flex items-center gap-3 pt-1">
         <button id="account-submit-btn" type="submit" class="btn-primary">提交账号</button>
         <button id="cancel-edit-btn" type="button" onclick="cancelEdit()"
                 class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
         <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
       </div>
     </form>
-  </section>
+  </div>
+</div>
 
   <!-- 修改密码（默认收起，点击标题展开） -->
   <section class="card">
@@ -338,8 +346,8 @@ function userStateLine(a) {
 function renderList() {
   const list = $('account-list');
   $('accounts-empty').classList.toggle('hidden', accounts.length > 0);
-  // 存在未删除账号时隐藏整个提交区（标题/提示/表单）；全部被管理员删除时仍显示表单供重新提交（软删除不死路）
-  $('account-form-section').classList.toggle('hidden', accounts.some(a => !a.deleted));
+  // 存在未删除账号时隐藏「提交账号」入口（编辑统一走卡片内按钮+弹窗）；全部被管理员删除时仍显示供重新提交（软删除不死路）
+  $('open-account-btn').classList.toggle('hidden', accounts.some(a => !a.deleted));
   list.innerHTML = '';
   accounts.forEach((a, i) => {
     const card = document.createElement('div');
@@ -474,7 +482,24 @@ function calLoadLog(btn, date) {
 // 清除已配置识别码：点击后标记提交时传 __clear__（后端并行流已支持该标记清空字段）
 let clearCodeFlag = false;
 
-// 内联编辑：复用提交表单（编辑时预填，保存走 PUT）
+// 内联编辑：复用提交表单（编辑时预填，保存走 PUT）；统一弹窗（2026-08-15 用户反馈：
+// 编辑不再滚到页底表单——提交/编辑都在模态内完成，新建走「提交我的易班账号」入口）
+function openAccountModal() {
+  $('account-form-modal').classList.remove('hidden');
+  $('f-name').focus();
+}
+
+function openAccountModalForNew() {
+  $('account-form').reset();  // 清残留输入
+  resetAccountForm();
+  openAccountModal();
+}
+
+function closeAccountModal() {
+  $('account-form-modal').classList.add('hidden');
+  resetAccountForm();
+}
+
 function openEditInline(i) {
   editingIdx = i;
   const a = accounts[i];
@@ -492,10 +517,7 @@ function openEditInline(i) {
   $('account-form-title').textContent = '编辑我的易班账号';
   $('account-submit-btn').textContent = '保存修改';
   $('cancel-edit-btn').classList.remove('hidden');
-  $('submit-done').classList.add('hidden');
-  $('account-form-section').classList.remove('hidden');
-  $('account-form').classList.remove('hidden');
-  $('account-form').scrollIntoView({ behavior: 'smooth' });
+  openAccountModal();
 }
 
 function toggleClearCode() {
@@ -514,10 +536,9 @@ function toggleClearCode() {
   }
 }
 
-// 取消编辑：恢复提交态并收起表单（renderList 按账号数重新隐藏）
+// 取消编辑：关闭模态并恢复提交态
 function cancelEdit() {
-  resetAccountForm();
-  renderList();
+  closeAccountModal();
   toast('已取消编辑');
 }
 
@@ -563,6 +584,7 @@ $('account-form').addEventListener('submit', async (e) => {
     resetAccountForm();
     e.target.reset();
     toast(data.msg || '已保存');
+    $('account-form-modal').classList.add('hidden');  // 成功即关模态（2026-08-15 弹窗改造）
     loadAccounts();
   } catch (err) {
     tip.textContent = '';
