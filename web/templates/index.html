@@ -62,6 +62,17 @@
     .card-sm {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4;
     }
+    /* 图形开关（2026-08-15 用户反馈：文字按钮→直观图形开关；aria-checked 驱动形态，
+       开=蓝底滑块右移，关=灰底；disabled 半透明） */
+    .toggle {
+      @apply relative inline-flex w-11 h-6 rounded-full bg-zinc-300 dark:bg-zinc-600 transition-colors duration-150 shrink-0 cursor-pointer;
+    }
+    .toggle .knob {
+      @apply absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-150;
+    }
+    .toggle[aria-checked="true"] { @apply bg-blue-500; }
+    .toggle[aria-checked="true"] .knob { transform: translateX(1.25rem); }
+    .toggle[disabled] { @apply opacity-40 cursor-not-allowed; }
   }
 </style>
 </head>
@@ -343,8 +354,8 @@
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">批量操作</div>
           <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后，账号管理与用户管理页面显示多选框，支持批量通过/拒绝/删除、批量设管理员/重置密码等。默认关闭，开启仅本次会话有效，刷新页面后自动恢复关闭</p>
         </div>
-        <button id="batch-mode-btn" onclick="toggleBatchMode()"
-                class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">开启</button>
+        <button id="batch-mode-btn" role="switch" aria-checked="false" onclick="toggleBatchMode()"
+                class="toggle" aria-label="批量操作"><span class="knob"></span></button>
       </div>
     </div>
 
@@ -395,8 +406,8 @@
       <div class="mt-3 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <span class="text-sm text-zinc-700 dark:text-zinc-200">用户自选时间片</span>
-          <button id="time-pref-toggle-btn" onclick="toggleTimePref()"
-                  class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">开启</button>
+          <button id="time-pref-toggle-btn" role="switch" aria-checked="false" onclick="toggleTimePref()"
+                  class="toggle" aria-label="用户自选时间片"><span class="knob"></span></button>
         </div>
         <span class="text-xs text-zinc-400 dark:text-zinc-500">开启后普通用户可选 5 分钟时间片（未开启时用户可预配置但不生效）</span>
         <button id="schedule-reset-btn" type="button" onclick="resetScheduleSettings()"
@@ -414,8 +425,8 @@
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周日签到</div>
           <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为「无需签到」</p>
         </div>
-        <button id="sunday-sign-btn" onclick="toggleSundaySign()"
-                class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">开启</button>
+        <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
+                class="toggle" aria-label="周日签到"><span class="knob"></span></button>
       </div>
     </div>
 
@@ -426,16 +437,16 @@
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
           <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
-          <button id="start-delay-btn" onclick="toggleDelay('start')"
-                  class="btn-ghost">关闭</button>
+          <button id="start-delay-btn" role="switch" aria-checked="false" onclick="toggleDelay('start')"
+                  class="toggle" aria-label="启动延迟"><span class="knob"></span></button>
           <input id="start-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
                  class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
           <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">启动后随机等待 0~N 秒再开始首个签到</span>
         </div>
         <div class="flex flex-wrap items-center gap-3">
           <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">账号间隔</label>
-          <button id="gap-delay-btn" onclick="toggleDelay('gap')"
-                  class="btn-ghost">关闭</button>
+          <button id="gap-delay-btn" role="switch" aria-checked="false" onclick="toggleDelay('gap')"
+                  class="toggle" aria-label="账号间隔"><span class="knob"></span></button>
           <input id="gap-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
                  class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
           <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">账号间随机停顿 0~N 秒（顺序模式）</span>
@@ -1613,15 +1624,16 @@ $('edge-select').addEventListener('change', () => {
   });
 });
 
+// 图形开关渲染（2026-08-15 用户反馈：文字按钮→直观图形开关；aria-checked 驱动形态）
+function renderToggle(id, on) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
 // 用户自选时间片总开关（显式保存；关闭时用户可预配置但不激活）
 function renderTimePrefUI() {
-  const btn = $('time-pref-toggle-btn');
-  if (!btn) return;
-  const on = state.allowTimePref;
-  btn.textContent = on ? '关闭' : '开启';  // 显示点击后的动作
-  btn.className = on
-    ? 'btn-ghost'
-    : 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+  renderToggle('time-pref-toggle-btn', state.allowTimePref);
 }
 function toggleTimePref() {
   state.allowTimePref = !state.allowTimePref;
@@ -1657,13 +1669,7 @@ function updateSignModeHint() {
 }
 
 function renderSundaySignUI() {
-  const btn = $('sunday-sign-btn');
-  if (!btn) return;
-  const on = state.sundaySign;
-  btn.textContent = on ? '关闭' : '开启';  // 按钮显示点击后的动作
-  btn.className = on
-    ? 'btn-ghost'
-    : 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+  renderToggle('sunday-sign-btn', state.sundaySign);
 }
 
 function toggleSundaySign() {
@@ -1673,13 +1679,7 @@ function toggleSundaySign() {
 }
 
 function renderBatchModeUI() {
-  const btn = $('batch-mode-btn');
-  const on = state.batchMode;
-  btn.textContent = on ? '关闭' : '开启';  // 按钮显示点击后的动作
-  // 着色与文本语义一致：显示「关闭」（当前开启，点击即关）用中性灰；显示「开启」（当前关闭，点击即开）用蓝色
-  btn.className = on
-    ? 'btn-ghost'
-    : 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+  renderToggle('batch-mode-btn', state.batchMode);
 }
 
 function toggleBatchMode() {
@@ -1692,14 +1692,10 @@ function toggleBatchMode() {
 
 function renderDelayUI() {
   ['start', 'gap'].forEach(k => {
-    const btn = $(k + '-delay-btn');
     const secs = $(k + '-delay-secs');
     const on = state.delays[k] > 0;
-    // 按钮显示点击后的动作（与周日/自选/批量开关语义统一，2026-08-15 对抗性审查 F-12）
-    btn.textContent = on ? '关闭' : '开启';
-    btn.className = on
-      ? 'btn-ghost'
-      : 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+    // 图形开关（2026-08-15 用户反馈；原"显示点击后的动作"语义由滑块形态直观表达）
+    renderToggle(k + '-delay-btn', on);
     secs.value = on ? state.delays[k] : '';
     secs.placeholder = `默认 ${k === 'start' ? 60 : 10}`;
   });
