@@ -9,8 +9,10 @@
 
   var inline = function (s) {
     return esc(s)
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/`([^`]+)`/g, '<code>$1</code>');
+      // [^*\n]+ 不跨行：防 CHANGELOG 中脱敏手机号 138****8000 的 **** 与跨行 ** 误配对
+      // （对抗性审查/用户反馈：v0.13.x 条目整段被误加粗）
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>');
   };
 
   window.renderMarkdown = function (src) {
