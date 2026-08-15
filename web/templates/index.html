@@ -2007,7 +2007,8 @@ function toggleMinePrefCollapse() {
   $('mine-pref-collapse-btn').textContent = minePrefCollapsed ? '▸ 未开启（点击展开预配置）' : '▾';
 }
 
-async function loadMineTimePref() {
+async function loadMineTimePref(preserve = false) {
+  // preserve=true：修改后的局部刷新——不重置折叠状态，避免页面跳动
   const card = $('mine-pref-card');
   try {
     const data = await api('/api/my-time-pref');
@@ -2016,26 +2017,29 @@ async function loadMineTimePref() {
     $('mine-pref-window').textContent = data.window;
     renderMinePrefSlots(data);
     $('mine-pref-disabled-hint').classList.toggle('hidden', data.allowed);
-    // 预计签到时段（顺序排序可预期；随机排序显示"当天可见"；有自选时以自选为准）
+    // 预计签到时段：开启且有自选 → 以自选片为准；未开启时预选不激活 → 显示真实调度时段
     const est = $('mine-pref-estimate');
-    if (data.pref) {
+    if (data.allowed && data.pref) {
       est.textContent = '';
       est.classList.add('hidden');
     } else if (data.estimated) {
-      est.textContent = '📅 预计签到时段：' + data.estimated + (data.estimate_note || '');
+      est.textContent = '📅 预计签到时段：' + data.estimated + (data.estimate_note || '')
+        + (data.allowed ? '' : '（自选未开启，按自动分配）');
       est.classList.remove('hidden');
     } else {
       est.textContent = data.estimate_note || '';
       est.classList.remove('hidden');
     }
-    if (!data.allowed) {
-      minePrefCollapsed = true;
-      $('mine-pref-body').classList.add('hidden');
-      $('mine-pref-collapse-btn').textContent = '▸ 未开启（点击展开预配置）';
-    } else {
-      minePrefCollapsed = false;
-      $('mine-pref-body').classList.remove('hidden');
-      $('mine-pref-collapse-btn').textContent = '▾';
+    if (!preserve) {
+      if (!data.allowed) {
+        minePrefCollapsed = true;
+        $('mine-pref-body').classList.add('hidden');
+        $('mine-pref-collapse-btn').textContent = '▸ 未开启（点击展开预配置）';
+      } else {
+        minePrefCollapsed = false;
+        $('mine-pref-body').classList.remove('hidden');
+        $('mine-pref-collapse-btn').textContent = '▾';
+      }
     }
   } catch (e) { card.classList.add('hidden'); }
 }
@@ -2073,7 +2077,7 @@ async function pickMineTimePref(slot) {
   try {
     const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: slot }) });
     toast(data.msg || '已保存');
-    loadMineTimePref();
+    loadMineTimePref(true);  // 局部刷新：保留当前展开态
   } catch (e) { toast(e.message, true); }
 }
 
@@ -2081,7 +2085,7 @@ async function clearMineTimePref() {
   try {
     const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: null }) });
     toast(data.msg || '已清除');
-    loadMineTimePref();
+    loadMineTimePref(true);  // 局部刷新：保留当前展开态
   } catch (e) { toast(e.message, true); }
 }
 
