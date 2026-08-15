@@ -631,6 +631,26 @@ def time_pref_set_count_since(phone, since_ts):
         return 0
 
 
+def last_pause_at(username):
+    """指定用户最近一次暂停签到时间（暂停冷却判定用；恢复不计，按用户计价）。
+
+    审计 target 为脱敏手机号，故按 username 关联；多管理员共享账号各自独立计价
+    （暂停/恢复冷却仅防噪音，绕过危害极小，可接受）。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
+                "ORDER BY id DESC LIMIT 1",
+                (username or "",),
+            ).fetchone()
+            return row["ts"] if row else None
+    except Exception as e:
+        logger.warning("查询暂停时间失败: %s", e)
+        return None
+
+
 def _audit_cleanup(conn):
     """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。"""
     try:

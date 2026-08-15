@@ -180,6 +180,10 @@ TIME_PREF_COOLDOWN_FREE = 20        # 60 秒窗口内自由切换次数（覆盖
 TIME_PREF_COOLDOWN_MAX = 300        # 弹性封顶（秒）
 TIME_PREF_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 
+# 暂停签到冷却（2026-08-15 用户裁决）：暂停 30s 固定间隔（恢复不受限——恢复是紧迫正向
+# 操作且无危害）。正常用户低频操作无感；防脚本刷审计/状态显示抖动。0=关闭。
+PAUSE_COOLDOWN_SEC = 30
+
 # 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$")
 EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
@@ -2203,6 +2207,23 @@ def create_app():
             acc = accounts[indices[idx]]
             data = _json_body()
             paused = 1 if str(data.get("paused", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+            # 暂停冷却（2026-08-15 用户裁决）：仅"暂停"计冷却（固定间隔，默认 30s），
+            # "恢复"不受限——恢复是紧迫正向操作，绝不该被挡。冷却防连点/防审计噪音，
+            # 非安全边界。按用户计价（多管理员共享账号各自独立，可接受）。时长可配
+            # （YIBAN_PAUSE_COOLDOWN_SEC，默认 30；0=关闭）。不暴露时长（信息分层）。
+            if paused:
+                base_cd = load_env_int(ENV_FILE, "YIBAN_PAUSE_COOLDOWN_SEC", PAUSE_COOLDOWN_SEC)
+                if base_cd > 0:
+                    last_ts = db.last_pause_at(session.get("username", "") or "")
+                    if last_ts:
+                        try:
+                            last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
+                            # 负间隔（时钟回拨）视为已过冷却，不误伤（与弹性冷却同口径）
+                            if 0 <= (datetime.now() - last_dt).total_seconds() < base_cd:
+                                return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+                        except ValueError:
+                            # ts 格式异常（写坏）：保守按冷却生效拦截（M3 口径：防 fail-open 绕过）
+                            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
             db.set_user_paused(acc["id"], paused)
             db.audit(
                 session.get("username", "") or "?",

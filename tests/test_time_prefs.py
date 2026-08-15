@@ -50,6 +50,7 @@ class TimePrefsTest(unittest.TestCase):
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
                 "YIBAN_ALLOW_TIME_PREF=1\n"
                 "YIBAN_TIME_PREF_COOLDOWN_SEC=0\n"  # 默认关闭冷却，冷却专项测试单独开启
+                "YIBAN_PAUSE_COOLDOWN_SEC=0\n"      # 默认关闭暂停冷却，专项测试单独开启
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -497,6 +498,37 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         acc = next(a for a in db.load_accounts() if a["phone"] == "13800138001")
         self.assertFalse(acc["user_paused"])
+
+    def test_api_pause_cooldown(self):
+        """对抗（2026-08-15 用户裁决）：暂停 30s 固定冷却——仅"暂停"计，恢复不限
+        （恢复是紧迫正向操作）；防连点/防刷屏噪音；冷却期内恢复-暂停交替仍受限。"""
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write("YIBAN_PAUSE_COOLDOWN_SEC=30\n")
+        try:
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, "user1@test.local", USER_PASS)
+            h = self._csrf(token)
+            # 首次暂停放行
+            r = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            # 冷却期内再次暂停 → 429（不暴露时长，信息分层）
+            r2 = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
+            self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
+            self.assertIn("频繁", r2.get_json()["error"])
+            self.assertNotIn("30", r2.get_json()["error"])
+            # 冷却期内恢复不受限（紧迫正向操作）
+            r3 = c.put("/api/my-accounts/0/pause", json={"paused": False}, headers=h)
+            self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+            # 恢复后立即再暂停仍受限（冷却按上次"暂停"计价，防恢复-暂停交替刷屏）
+            r4 = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
+            self.assertEqual(r4.status_code, 429, r4.get_data(as_text=True))
+            # 中间那次恢复已生效（状态一致，无残留）
+            acc = next(a for a in db.load_accounts() if a["phone"] == "13800138001")
+            self.assertFalse(acc["user_paused"])
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace("YIBAN_PAUSE_COOLDOWN_SEC=30\n", ""))
 
     def test_api_accounts_shows_paused_immediately(self):
         """管理端立即体现：用户暂停后 /api/accounts 状态直接为 user_cancelled（无需等状态文件）。"""
