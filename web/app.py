@@ -925,7 +925,7 @@ def create_app():
                     request.path,
                     request.headers.get("Origin"),
                 )
-                return jsonify({"error": "请求来源校验失败"}), 403
+                return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
             return
         token = request.headers.get("X-CSRF-Token", "")
         sess_token = session.get("csrf_token", "")
@@ -1020,8 +1020,8 @@ def create_app():
         _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
         fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
         if now < lock_until:
-            remain = int(lock_until - now)
-            return jsonify({"error": f"失败次数过多，请 {remain} 秒后重试"}), 429
+            # 不显示剩余秒数：避免向用户暴露锁定窗口参数（信息分层，2026-08-15）
+            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         # 登录频率限制（60 秒窗口 10 次/IP，比全局限速更严）：防换用户名密码喷洒
         _ip_store_trim(_login_rate, 60 + _IP_STORE_MAX_AGE)
         lcnt, lstart = _login_rate.get(ip, (0, now))
@@ -1098,7 +1098,8 @@ def create_app():
         if now - rstart > REGISTER_WINDOW:
             rcnt, rstart = 0, now
         if rcnt >= REGISTER_MAX:
-            return jsonify({"error": f"注册过于频繁，请 {REGISTER_WINDOW // 60} 分钟后再试"}), 429
+            # 不暴露限速窗口分钟数（防恶意用户据此规划批量注册节奏，信息分层 2026-08-15）
+            return jsonify({"error": "注册过于频繁，请稍后再试"}), 429
         # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
         with _file_lock:
             # 容量兜底：注册总人数上限（防分布式注册无限膨胀 users 表，对抗性审查补）
@@ -1152,7 +1153,8 @@ def create_app():
         fail_key = (ip, username.strip().lower())
         fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
         if now < lock_until:
-            return jsonify({"error": f"尝试次数过多，请 {int(lock_until - now)} 秒后重试"}), 429
+            # 不显示剩余秒数（信息分层，2026-08-15）
+            return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
 
         def _pw_failed():
             """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。"""
@@ -1160,9 +1162,8 @@ def create_app():
             if nfails >= LOGIN_MAX_FAILS:
                 _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
                 logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
-                return jsonify(
-                    {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
-                ), 429
+                # 不暴露锁定时长分钟数（信息分层，2026-08-15）
+                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
                     "改密失败告警",
@@ -1903,7 +1904,8 @@ def create_app():
         span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
         edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
         if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
-            return jsonify({"error": "时间片需为 5 分钟对齐且落在签到窗口内"}), 400
+            # 不暴露"5 分钟对齐"等调度机制细节（信息分层，2026-08-15）
+            return jsonify({"error": "所选时间片不在可选范围内，请重新选择"}), 400
         # 满员提示（对抗性审查补，2026-08-15 用户决策：可继续选+提示会顺延）：
         # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
         # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
@@ -1950,7 +1952,8 @@ def create_app():
             max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
             if max_accounts > 0 and len(accounts) >= max_accounts:
                 _notify_capacity_once("accounts", max_accounts, "账号数量")
-                return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员"}), 403
+                # 不向普通用户暴露容量数字（信息分层，2026-08-15）
+                return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
             # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
             email = session.get("username", "").lower()
             has_live = any(a.get("owner") == email and not a.get("deleted") for a in accounts)
