@@ -693,18 +693,19 @@ function renderPrefSlots(data) {
   let tip = data.allowed ? '' : '功能未开启：选择暂不生效';
   data.slots.forEach((s, i) => {
     const sel = data.pref_slot === s.slot_min;
-    const full = s.count >= s.cap;
+    const full = s.pct >= 100;
+    // 拥挤度百分比（2026-08-15 用户决策）：API 只下发 pct，不暴露真实人数防调研，且适配 K 调整
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.dataset.slot = s.slot_min;
+    // 满员片仍可点选（先到先得+溢出顺延语义），但警示样式提示"会顺延"
     btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center transition-colors duration-150 ' +
       (sel
         ? 'bg-blue-600 border-blue-600 text-white'
         : full
-          ? 'bg-zinc-100 dark:bg-zinc-700 border-zinc-200 dark:border-zinc-600 text-zinc-400 cursor-not-allowed'
+          ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
           : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
-    btn.innerHTML = `<div class="font-medium">${s.label}</div><div class="opacity-70">${s.count}/${s.cap} 人</div>`;
-    if (full && !sel) btn.disabled = true;
+    btn.innerHTML = `<div class="font-medium">${s.label}</div><div class="opacity-70">${full ? '已选满 · ' : ''}已选 ${s.pct}%</div>`;
     btn.onclick = () => pickTimePref(s.slot_min);
     grid.appendChild(btn);
     // 首尾时段提醒（选中时；总开关关时与"暂不生效"提示拼接，两则信息都不丢）

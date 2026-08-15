@@ -235,6 +235,37 @@ class TimePrefsTest(unittest.TestCase):
             open(self.env_file, "w", encoding="utf-8").write(
                 s.replace("YIBAN_SIGN_START=06:59\nYIBAN_SIGN_END=07:50\n", ""))
 
+    def test_api_pref_crowding_pct_no_pii(self):
+        """对抗（2026-08-15 用户决策）：用户端拥挤度只返回已选百分比，不暴露人数/容量（防调研）。"""
+        # 5 人选同一片 + 块容量 15 → pct=33
+        for i in range(5):
+            db.set_time_pref(f"139{i:08d}", 0, f"2026-08-15 0{i+1}:00:00")
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        data = c.get("/api/my-time-pref").get_json()
+        slot0 = next(s for s in data["slots"] if s["slot_min"] == 0)
+        self.assertEqual(slot0["pct"], 33)
+        self.assertNotIn("count", slot0)  # 不暴露真实人数
+        self.assertNotIn("cap", slot0)    # 不暴露块容量（防反推人数）
+
+    def test_api_pref_full_slot_notice(self):
+        """对抗（2026-08-15 用户决策）：满员片仍可保存（先到先得+顺延语义），提示"已选满"且不带人数。"""
+        # 填满 slot 0（cap 默认 15）
+        for i in range(15):
+            db.set_time_pref(f"138{i:08d}", 0, f"2026-08-15 0{i+1}:00:00")
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        msg = r.get_json()["msg"]
+        self.assertIn("已选满", msg)
+        self.assertNotIn("15", msg)  # 提示不泄露真实人数/容量
+        # 自己的位不算满（换片不误报）：清除后重新选回同片不再提示满
+        c.put("/api/my-time-pref", json={"slot_min": None}, headers=self._csrf(token))
+        # 现在自己已清除 → 再选同片仍满（count=15 不含自己）
+        r2 = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
+        self.assertIn("已选满", r2.get_json()["msg"])
+
     def test_api_pref_stats_admin_only(self):
         app = self.webapp.create_app()
         c = app.test_client()
