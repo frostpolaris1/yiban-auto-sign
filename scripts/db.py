@@ -106,6 +106,13 @@ def _create_tables(conn):
           detail TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts);
+
+        CREATE TABLE IF NOT EXISTS time_prefs (
+          phone TEXT PRIMARY KEY,
+          slot_min INTEGER NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_time_prefs_slot ON time_prefs(slot_min);
         """
     )
     conn.commit()
@@ -398,7 +405,10 @@ def set_account_deleted(account_id, deleted, deleted_at=""):
 def purge_account(account_id):
     conn = get_conn()
     with conn:
+        row = conn.execute("SELECT phone FROM accounts WHERE id=?", (account_id,)).fetchone()
         conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+        if row is not None:
+            _delete_time_prefs_by_phones(conn, [row["phone"]])  # 连带清理自选（调度 v2）
 
 
 def update_account_status(account_id, status, reject_reason=None):
@@ -433,7 +443,9 @@ def delete_accounts_by_owner(owner):
     """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。"""
     conn = get_conn()
     with conn:
+        rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (owner,)).fetchall()
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
+        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（调度 v2）
         return cur.rowcount
 
 
@@ -552,3 +564,68 @@ def _audit_cleanup(conn):
         conn.commit()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）
+# ---------------------------------------------------------------------------
+def get_time_prefs():
+    """全量自选 {phone: {"slot_min": int, "updated_at": str}}（build_schedule 每次启动读一次）。"""
+    try:
+        conn = get_conn()
+        rows = conn.execute("SELECT phone, slot_min, updated_at FROM time_prefs").fetchall()
+        return {r["phone"]: {"slot_min": r["slot_min"], "updated_at": r["updated_at"]} for r in rows}
+    except Exception as e:
+        logger.warning("读取 time_prefs 失败: %s", e)
+        return {}
+
+
+def get_time_pref(phone):
+    """单个账号自选；无则 None。"""
+    try:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT phone, slot_min, updated_at FROM time_prefs WHERE phone=?", (phone,)
+        ).fetchone()
+        return None if row is None else {"slot_min": row["slot_min"], "updated_at": row["updated_at"]}
+    except Exception as e:
+        logger.warning("读取 time_pref %s 失败: %s", phone, e)
+        return None
+
+
+def set_time_pref(phone, slot_min, updated_at):
+    """保存/更新自选（UPSERT）。slot_min 为窗口内分钟数（06:30 → 390，5 对齐）。"""
+    conn = get_conn()
+    with conn:
+        conn.execute(
+            "INSERT INTO time_prefs (phone, slot_min, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(phone) DO UPDATE SET slot_min=excluded.slot_min, updated_at=excluded.updated_at",
+            (phone, slot_min, updated_at),
+        )
+
+
+def clear_time_pref(phone):
+    """清除自选（回退自动错峰）。"""
+    conn = get_conn()
+    with conn:
+        conn.execute("DELETE FROM time_prefs WHERE phone=?", (phone,))
+
+
+def time_pref_stats():
+    """每片已选人数（拥挤度）：[{slot_min, count}]，按 slot_min 升序。"""
+    try:
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT slot_min, COUNT(*) AS count FROM time_prefs GROUP BY slot_min ORDER BY slot_min"
+        ).fetchall()
+        return [{"slot_min": r["slot_min"], "count": r["count"]} for r in rows]
+    except Exception as e:
+        logger.warning("time_prefs 统计失败: %s", e)
+        return []
+
+
+def _delete_time_prefs_by_phones(conn, phones):
+    """按手机号批量删除自选（账号删除/清空时连带，须在调用方事务内）。"""
+    if not phones:
+        return
+    conn.executemany("DELETE FROM time_prefs WHERE phone=?", [(p,) for p in phones])

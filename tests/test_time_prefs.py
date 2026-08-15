@@ -1,0 +1,273 @@
+# -*- coding: utf-8 -*-
+"""调度 v2（S2/S3）自选时间片全链路测试：db 层 + 调度层 + API 层。
+
+全程 mock / 纯计算，不访问易班服务器（无任何网络请求）。
+用法（项目根目录）：
+    py -m pytest tests/test_time_prefs.py -v
+    py tests/test_time_prefs.py
+
+覆盖（docs/design/plan-scheduler-v2.md 2.2/2.3/3.3/6 章）：
+- db：set/get/clear/stats；账号 purge 连带清理自选
+- 调度：自选固定所选片；同片超 K 先到先得（updated_at 早者留）；溢出双向就近顺延；
+  总开关关时忽略自选
+- API：my-time-pref GET/PUT 校验（5 对齐/窗口内/null 清除）；stats 仅管理员；
+  accounts 返回 time_pref 字段；settings 读写新参数
+"""
+import contextlib
+import importlib.util
+import json
+import os
+import random
+import shutil
+import sys
+import tempfile
+import unittest
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE)
+sys.path.insert(0, os.path.join(BASE, "scripts"))
+sys.path.insert(0, os.path.join(BASE, "web"))
+
+TEST_KEY = "a" * 64
+ADMIN_PASS = "TestPass1234!"
+USER_PASS = "secret1"
+
+
+def hm(dt):
+    """datetime → 当天分钟数（0:00 = 0）。"""
+    return dt.hour * 60 + dt.minute
+
+
+class TimePrefsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-pref-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_ALLOW_TIME_PREF=1\n"
+            )
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        cls.users_file = os.path.join(cls.tmp, "users.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_USERS_FILE"] = cls.users_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_ALLOW_TIME_PREF"] = "1"
+        global db, signin
+        import db
+        import signin
+        spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
+        cls.webapp = importlib.util.module_from_spec(spec)
+        sys.modules["webapp"] = cls.webapp
+        with contextlib.suppress(Exception):
+            spec.loader.exec_module(cls.webapp)
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ALLOW_TIME_PREF"):
+            os.environ.pop(k, None)
+
+    def setUp(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        with open(self.accounts_file, "w", encoding="utf-8") as f:
+            json.dump([], f)
+        db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+        db.create_user("admin@test.local", self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
+        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.add_account({"name": "U1", "phone": "13800138001", "password": "p1",
+                        "status": "active", "owner": "user1@test.local"})
+
+    # ================= db 层 =================
+    def test_db_crud_and_stats(self):
+        db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
+        db.set_time_pref("13900139002", 5, "2026-08-15 10:01:00")
+        prefs = db.get_time_prefs()
+        self.assertEqual(prefs["13800138001"]["slot_min"], 0)
+        self.assertEqual(db.get_time_pref("13800138001")["slot_min"], 0)
+        self.assertIsNone(db.get_time_pref("13700000000"))
+        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+        self.assertEqual(stats, {0: 1, 5: 1})
+        db.clear_time_pref("13800138001")
+        self.assertIsNone(db.get_time_pref("13800138001"))
+
+    def test_db_purge_cleans_pref(self):
+        db.set_time_pref("13800138001", 0, "t")
+        acc_id = next(
+            r["id"] for r in db.load_accounts_raw() if r["phone"] == "13800138001"
+        )
+        db.purge_account(acc_id)
+        self.assertIsNone(db.get_time_pref("13800138001"))
+
+    # ================= 调度层（纯计算，无网络） =================
+    def _accs(self, n, base=13810000000):
+        return [signin.Account(phone=str(base + i), password="p") for i in range(n)]
+
+    def test_schedule_pref_fixed_slot(self):
+        """自选账号固定落在所选片（06:30 片 → 首块 [06:31, 06:35)）。"""
+        accs = self._accs(20)
+        prefs = {"13810000000": {"slot_min": 0, "updated_at": "2026-08-15 10:00:00"}}
+        sched = signin.build_schedule(
+            accs, order="random", dist="uniform", rng=random.Random(1), prefs=prefs)
+        t = sched["13810000000"]
+        self.assertTrue(391 <= hm(t) < 395, t)
+
+    def test_schedule_pref_fifo_overflow_nearby(self):
+        """同片 16 人（K=15）：updated_at 最早 15 人留下，最晚 1 人就近顺延到块 1。"""
+        accs = self._accs(18)
+        prefs = {}
+        for i in range(16):
+            phone = str(13810000000 + i)
+            prefs[phone] = {"slot_min": 0, "updated_at": f"2026-08-15 {10 + i // 60:02d}:{i % 60:02d}:00"}
+        sched = signin.build_schedule(
+            accs, order="random", dist="uniform", rng=random.Random(2), prefs=prefs)
+        for i in range(15):
+            m = hm(sched[str(13810000000 + i)])
+            self.assertTrue(391 <= m < 395, (i, m))
+        overflow = hm(sched[str(13810000000 + 15)])
+        self.assertTrue(395 <= overflow < 400, overflow)  # 就近顺延块 1 [06:35,06:40)
+
+    def test_schedule_pref_ignored_when_switch_off(self):
+        """总开关关：prefs=None 且不读 db，全部走算法（不激活）。"""
+        accs = self._accs(10)
+        os.environ["YIBAN_ALLOW_TIME_PREF"] = "0"
+        try:
+            sched = signin.build_schedule(
+                accs, order="sequence", dist="uniform", rng=random.Random(3), prefs=None)
+            self.assertEqual(len(sched), 10)
+            self.assertTrue(all(391 <= hm(t) <= 469 for t in sched.values()))
+        finally:
+            os.environ["YIBAN_ALLOW_TIME_PREF"] = "1"
+
+    def test_schedule_pref_tail_slot_within_window(self):
+        """自选尾片（07:45 片，slot 75）：时间 ∈ [07:45, 07:49]（首尾缓冲内不越界）。"""
+        accs = self._accs(20)
+        prefs = {"13810000000": {"slot_min": 75, "updated_at": "2026-08-15 10:00:00"}}
+        sched = signin.build_schedule(
+            accs, order="sequence", dist="normal", rng=random.Random(4), prefs=prefs)
+        t = sched["13810000000"]
+        self.assertTrue(465 <= hm(t) <= 469, t)
+
+    # ================= API 层（Flask test client，无网络） =================
+    def _login(self, c, username, password):
+        r = c.post("/api/login", json={"username": username, "password": password})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        return c.get("/api/me").get_json()["csrf_token"]
+
+    def _csrf(self, token):
+        return {"X-CSRF-Token": token}
+
+    def test_api_pref_get_put_clear(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        r = c.get("/api/my-time-pref")
+        data = r.get_json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["has_account"])
+        self.assertTrue(data["allowed"])
+        self.assertEqual(len(data["slots"]), 16)
+        self.assertIsNone(data["pref"])
+        # 保存 slot 0（06:30 片）
+        r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        data = c.get("/api/my-time-pref").get_json()
+        self.assertEqual(data["pref"], "06:30")
+        # 清除
+        r = c.put("/api/my-time-pref", json={"slot_min": None}, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(c.get("/api/my-time-pref").get_json()["pref"])
+
+    def test_api_pref_validation(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        h = self._csrf(token)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": 7}, headers=h).status_code, 400)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": 999}, headers=h).status_code, 400)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": "abc"}, headers=h).status_code, 400)
+
+    def test_api_pref_stats_admin_only(self):
+        app = self.webapp.create_app()
+        c = app.test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        self.assertEqual(c.get("/api/time-prefs/stats").status_code, 403)
+        c2 = app.test_client()
+        self._login(c2, "admin", ADMIN_PASS)
+        r = c2.get("/api/time-prefs/stats")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.get_json()["slots"]), 16)
+
+    def test_api_accounts_time_pref_field(self):
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
+        data = c.get("/api/accounts").get_json()
+        acc = next(a for a in data["accounts"] if a["phone"] == "138****8001")
+        self.assertEqual(acc["time_pref"], "06:30")
+        self.assertEqual(acc["time_pref_edge"], "first")
+
+    def test_api_settings_extended(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        data = c.get("/api/settings").get_json()
+        self.assertEqual(data["sign_order"], "sequence")
+        self.assertEqual(data["sign_dist"], "uniform")
+        self.assertEqual(data["window_edge_sec"], 60)
+        self.assertEqual(data["allow_time_pref"], 1)
+        self.assertIn("06:30", data["sign_window"])
+        # 保存新参数 → .env 生效
+        r = c.post("/api/settings", json={
+            "sign_order": "random", "sign_dist": "normal",
+            "window_edge_sec": 0, "allow_time_pref": 0,
+        }, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_SIGN_ORDER=random", env)
+        self.assertIn("YIBAN_SIGN_DIST=normal", env)
+        self.assertIn("YIBAN_WINDOW_EDGE_SEC=0", env)
+        self.assertIn("YIBAN_ALLOW_TIME_PREF=0", env)
+
+    def test_api_settings_window_validation(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        h = self._csrf(token)
+        r = c.post("/api/settings", json={"sign_window": "07:50 ~ 06:30"}, headers=h)
+        self.assertEqual(r.status_code, 400)
+        r = c.post("/api/settings", json={"sign_window": "06:30 ~ 07:50"}, headers=h)
+        self.assertEqual(r.status_code, 200)
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_SIGN_START=06:30", env)
+        self.assertIn("YIBAN_SIGN_END=07:50", env)
+
+    def test_api_pref_no_account_400(self):
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        # 管理员无 my-phone（owner=admin 的账号不属于普通用户自选）→ has_account 为 False
+        # 管理员本身走内置认证，不查账号；直接用无账号用户验证
+        db.create_user("user2@test.local", self.webapp.generate_password_hash(USER_PASS))
+        c2 = self.webapp.create_app().test_client()
+        token = self._login(c2, "user2@test.local", USER_PASS)
+        data = c2.get("/api/my-time-pref").get_json()
+        self.assertFalse(data["has_account"])
+        self.assertEqual(
+            c2.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token)).status_code,
+            400)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

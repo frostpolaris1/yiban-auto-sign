@@ -237,6 +237,7 @@
             <th class="px-4 py-3 font-medium whitespace-nowrap">名称</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">手机号</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap hidden lg:table-cell">设备型号</th>
+            <th class="px-4 py-3 font-medium whitespace-nowrap hidden xl:table-cell" title="用户自选签到时间片">自选</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">用户名</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">审核</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap sticky right-0 bg-zinc-50 dark:bg-zinc-700 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">操作</th>
@@ -340,18 +341,50 @@
       </div>
     </div>
 
-    <!-- 签到模式 -->
+    <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 自选总开关 + 窗口） -->
     <div class="card mb-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">签到调度</div>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">排序方式决定"谁先签"（顺序=列表序固定作息 / 随机=每天重排）；分布方式决定时间点形状（均匀=等分铺开 / 正态=钟形拟人）。改动保存后下次自动签到时生效</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到模式</div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">列表顺序：按账号管理列表顺序执行；列表随机：每次签到随机打乱顺序（进一步打散脚本特征，防风控识别）。保存后下次自动签到时生效</p>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">排序方式</div>
+          <select id="sign-order-select"
+                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            <option value="sequence">列表顺序（固定作息）</option>
+            <option value="random">列表随机（每天重排）</option>
+          </select>
         </div>
-        <select id="sign-mode-select"
-                class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
-          <option value="sequence">列表顺序</option>
-          <option value="random">列表随机</option>
-        </select>
+        <div>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">分布方式</div>
+          <select id="sign-dist-select"
+                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            <option value="uniform">均匀分布</option>
+            <option value="normal">正态分布（钟形拟人）</option>
+          </select>
+        </div>
+        <div>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">首尾缓冲</div>
+          <select id="edge-select"
+                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            <option value="60">掐头去尾各 1 分钟（推荐）</option>
+            <option value="0">不掐（尾部可能超时）</option>
+            <option value="120">各 2 分钟（更保守）</option>
+          </select>
+          <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn">⚠️ 无缓冲：07:49~07:50 执行的账号可能超时</p>
+        </div>
+        <div>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">签到窗口</div>
+          <input id="window-input" type="text" placeholder="06:30 ~ 07:50" maxlength="13"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">格式 HH:MM ~ HH:MM，失焦保存</p>
+        </div>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-4">
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-zinc-700 dark:text-zinc-200">用户自选时间片</span>
+          <button id="time-pref-toggle-btn" onclick="toggleTimePref()" class="btn-ghost">开启</button>
+        </div>
+        <span class="text-xs text-zinc-400 dark:text-zinc-500">开启后普通用户可选 5 分钟时间片（未开启时用户可预配置但不生效）</span>
       </div>
     </div>
 
@@ -675,7 +708,12 @@ const state = {
   editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
   delays: { start: 0, gap: 0 },
   batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
-  signMode: 'sequence', // 签到模式（sequence 列表顺序 / random 列表随机，持久化 .env）
+  signMode: 'sequence', // 签到模式（sequence 列表顺序 / random 列表随机，持久化 .env；旧版兼容）
+  signOrder: 'sequence', // 调度 v2：排序方式（sequence/random）
+  signDist: 'uniform',   // 调度 v2：分布方式（uniform/normal）
+  edgeSec: 60,           // 调度 v2：首尾缓冲秒数（0=关闭）
+  allowTimePref: false,  // 调度 v2：用户自选时间片总开关
+  signWindow: '',        // 调度 v2：签到窗口 "06:30 ~ 07:50"
   isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
   deletedCollapsed: false, // 待删除账号表格折叠状态（标题栏 ▾/▸ 切换）
 };
@@ -1087,6 +1125,13 @@ function accountRow(a, key) {
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell">${esc(a.phone_model || '—')}</td>
+    <td class="px-4 py-3 text-sm whitespace-nowrap hidden xl:table-cell">${a.time_pref
+      ? (a.time_pref_edge === 'first'
+          ? '<span class="text-amber-600 dark:text-amber-400" title="最早时段：系统 06:31 启动后最先签到">最早 ' + esc(a.time_pref) + '</span>'
+          : a.time_pref_edge === 'last'
+            ? '<span class="text-amber-600 dark:text-amber-400" title="最后时段：临近截止，网络波动可能错过">最后 ' + esc(a.time_pref) + '</span>'
+            : esc(a.time_pref))
+      : '<span class="text-zinc-300 dark:text-zinc-600">—</span>'}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
@@ -1388,8 +1433,19 @@ async function loadSettings() {
     const data = await api('/api/settings');
     state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
-    state.signMode = data.sign_mode || 'sequence';  // 签到模式（sequence/random）
-    $('sign-mode-select').value = state.signMode;
+    state.signMode = data.sign_mode || 'sequence';  // 旧版兼容（不再有独立控件）
+    // 调度 v2：排序×分布×缓冲×自选总开关×窗口
+    state.signOrder = data.sign_order || 'sequence';
+    state.signDist = data.sign_dist || 'uniform';
+    state.edgeSec = data.window_edge_sec ?? 60;
+    state.allowTimePref = !!data.allow_time_pref;
+    state.signWindow = data.sign_window || '';
+    $('sign-order-select').value = state.signOrder;
+    $('sign-dist-select').value = state.signDist;
+    $('edge-select').value = String(state.edgeSec);
+    $('window-input').value = state.signWindow;
+    renderTimePrefUI();
+    updateEdgeWarn();
     state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
     renderSundaySignUI();
     state.batchMode = false;  // 批量多选会话级开关：每次进入默认关闭，不读取持久化状态
@@ -1402,12 +1458,44 @@ async function loadSettings() {
   } catch (e) { toast(e.message, true); }
 }
 
-// 签到模式切换（自动保存到 .env，cron 下次触发生效）
-$('sign-mode-select').addEventListener('change', () => {
-  state.signMode = $('sign-mode-select').value;
-  updateSignModeHint();
+// 调度 v2：排序/分布/缓冲/窗口（自动保存到 .env，cron 下次触发生效）
+$('sign-order-select').addEventListener('change', () => {
+  state.signOrder = $('sign-order-select').value;
   saveSettings(true);
 });
+$('sign-dist-select').addEventListener('change', () => {
+  state.signDist = $('sign-dist-select').value;
+  saveSettings(true);
+});
+$('edge-select').addEventListener('change', () => {
+  state.edgeSec = parseInt($('edge-select').value, 10) || 60;
+  updateEdgeWarn();
+  saveSettings(true);
+});
+$('window-input').addEventListener('change', () => {
+  state.signWindow = $('window-input').value.trim();
+  saveSettings(true);
+});
+
+// 用户自选时间片总开关（持久化 .env；关闭时用户可预配置但不激活）
+function renderTimePrefUI() {
+  const btn = $('time-pref-toggle-btn');
+  if (!btn) return;
+  const on = state.allowTimePref;
+  btn.textContent = on ? '关闭' : '开启';  // 显示点击后的动作
+  btn.className = on
+    ? 'btn-ghost'
+    : 'bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200';
+}
+function toggleTimePref() {
+  state.allowTimePref = !state.allowTimePref;
+  renderTimePrefUI();
+  saveSettings(true);
+}
+function updateEdgeWarn() {
+  const warn = $('edge-warn');
+  if (warn) warn.classList.toggle('hidden', state.edgeSec !== 0);
+}
 
 // 随机模式下账号管理页提示：顺序不影响执行
 function updateSignModeHint() {
@@ -1482,6 +1570,11 @@ async function saveSettings(silent) {
         start_delay_max: read('start'),
         gap_max: read('gap'),
         sign_mode: state.signMode || 'sequence',
+        sign_order: state.signOrder || 'sequence',
+        sign_dist: state.signDist || 'uniform',
+        window_edge_sec: state.edgeSec,
+        allow_time_pref: state.allowTimePref ? 1 : 0,
+        sign_window: state.signWindow,
         sunday_sign: state.sundaySign ? 1 : 0,
       }),
     });
