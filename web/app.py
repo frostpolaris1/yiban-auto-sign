@@ -1653,18 +1653,28 @@ def create_app():
         """
         _, recent = parse_sign_log(LOG_FILE)  # 最近日志仅用于「最近签到记录」展示
         states = load_sign_state()  # 今日状态事实源（signin.py 写入）
-        # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除
+        # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除、未自暂停
         active = [
-            a for a in accounts if a.get("status") == STATUS_ACTIVE and not a.get("deleted")
+            a for a in accounts
+            if a.get("status") == STATUS_ACTIVE and not a.get("deleted")
+            and not a.get("user_paused", False)
         ]
+        # 执行顺序（调度 v2，2026-08-15 改进）：优先按今日计划时间（sign-state scheduled 字段，
+        # cron 生成后即真实执行顺序——覆盖自选/正态/随机模式）；计划未生成（06:31 前）回退列表顺序。
+        # scheduled 为 "HH:MM:SS" 字符串，字典序即时间序；无计划者排在有计划者之后（列表序兜底）。
+        def _exec_order_key(a):
+            st = states.get(a.get("phone", ""), {})
+            sched = st.get("scheduled", "") if isinstance(st, dict) else ""
+            return (0 if sched else 1, sched, a.get("sort_order", 0))
+
+        active_sorted = sorted(active, key=_exec_order_key)
         # 排队位置预计算（单次遍历累计，替代每个账号 O(pos) 切片求和）
-        queue_before = []
+        queue_before = {}
         running = 0
-        for a in active:
-            queue_before.append(running)
-            if states.get(a.get("phone", ""), {}).get("status", STATUS_PENDING) not in (
-                STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK,
-            ):
+        for a in active_sorted:
+            queue_before[a.get("phone", "")] = running
+            st_status = states.get(a.get("phone", ""), {}).get("status", STATUS_PENDING)
+            if st_status not in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK):
                 running += 1
         # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
         today_prefix = f"[{datetime.now().strftime('%Y-%m-%d')} "
@@ -1676,12 +1686,10 @@ def create_app():
                 line for line in recent
                 if line.startswith(today_prefix) and f"[{phone}]" in line
             ]
-            # 排队：自己账号在 active 队列中的位置之前、今日未了结的账号数
+            # 排队：按今日计划时间排序的队列中，自己之前未了结的账号数（含自暂停排除）
             queue_ahead = 0
-            if acc.get("status") == STATUS_ACTIVE:
-                pos = next((j for j, a in enumerate(active) if a.get("phone") == phone), None)
-                if pos is not None:
-                    queue_ahead = queue_before[pos]
+            if acc.get("status") == STATUS_ACTIVE and not acc.get("user_paused", False):
+                queue_ahead = queue_before.get(phone, 0)
             st = states.get(phone, {})
             st_status = st.get("status", STATUS_PENDING) if isinstance(st, dict) else STATUS_PENDING
             result.append(
