@@ -1828,6 +1828,9 @@ def create_app():
                     "deleted": bool(acc.get("deleted")),
                     "deleted_at": acc.get("deleted_at", ""),
                     "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
+                    # 2026-08-15 用户确认：管理员账号（owner=admin）不支持自暂停——
+                    # 暂停是普通用户管理自己账号的能力；该字段仅管理员视图可见（前端据此隐藏按钮）
+                    "pause_forbidden": acc.get("owner", "admin") == "admin" and not acc.get("deleted"),
                 }
             )
         return result
@@ -2224,6 +2227,11 @@ def create_app():
             acc = accounts[indices[idx]]
             data = _json_body()
             paused = 1 if str(data.get("paused", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+            # 2026-08-15 用户确认：管理员不能暂停自己账号（owner=admin 为系统/管理员账号；
+            # 暂停是普通用户管理自己账号的能力，管理端界面本无此入口，防 /user 页绕过）。
+            # 恢复放行（幂等无害；该状态本不可达，仅保持接口一致性）
+            if paused and acc.get("owner", "admin") == "admin":
+                return jsonify({"error": "管理员账号不支持自暂停"}), 403
             # 暂停冷却（2026-08-15 用户裁决）：仅"暂停"计冷却（固定间隔，默认 30s），
             # "恢复"不受限——恢复是紧迫正向操作，绝不该被挡。冷却防连点/防审计噪音，
             # 非安全边界。按用户计价（多管理员共享账号各自独立，可接受）。时长可配

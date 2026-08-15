@@ -504,6 +504,38 @@ class TimePrefsTest(unittest.TestCase):
             self.assertIn("审核", r.get_json()["error"], f"{status} 提示应区分未生效")
             self.assertIsNone(db.get_time_pref(phone), f"{status} 不应写库")
 
+    def test_api_pause_admin_own_forbidden(self):
+        """对抗（2026-08-15 用户确认）：管理员不能暂停自己账号——owner=admin 账号暂停 403
+        + pause_forbidden 下发（前端隐藏按钮）；恢复放行（幂等）；注册管理员自己提交的账号
+        （owner=本人邮箱）仍可暂停（非系统账号）。"""
+        db.add_account({"name": "管理员账号", "phone": "13900139099", "password": "p2",
+                        "status": "active", "owner": "admin"})
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        h = self._csrf(token)
+        data = c.get("/api/my-accounts").get_json()
+        acc = next(a for a in data["accounts"] if a["phone"] == "13900139099")
+        self.assertTrue(acc["pause_forbidden"], "管理员账号应标记不可暂停")
+        r = c.put(f"/api/my-accounts/{acc['index']}/pause", json={"paused": True}, headers=h)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertIn("管理员", r.get_json()["error"])
+        self.assertFalse(
+            next(a for a in db.load_accounts_raw() if a["phone"] == "13900139099").get("user_paused"),
+            "管理员账号不应被暂停写入")
+        # 恢复放行（幂等无危害）
+        r2 = c.put(f"/api/my-accounts/{acc['index']}/pause", json={"paused": False}, headers=h)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        # 注册管理员自己提交的账号（owner=本人邮箱）仍可暂停——只有系统管理员账号受保护
+        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.add_account({"name": "A2", "phone": "13600999001", "password": "p3",
+                        "status": "active", "owner": "admin2@test.local"})
+        c2 = self.webapp.create_app().test_client()
+        token2 = self._login(c2, "admin2@test.local", USER_PASS)
+        r3 = c2.put("/api/my-accounts/0/pause", json={"paused": True}, headers=self._csrf(token2))
+        self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+        self.assertTrue(
+            next(a for a in db.load_accounts_raw() if a["phone"] == "13600999001").get("user_paused"))
+
     # ================= 用户自暂停签到（调度 v2） =================
     def test_api_pause_resume(self):
         c = self.webapp.create_app().test_client()
