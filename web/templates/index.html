@@ -374,9 +374,14 @@
         </div>
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">签到窗口</div>
-          <input id="window-input" type="text" placeholder="06:30 ~ 07:50" maxlength="13"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">格式 HH:MM ~ HH:MM，失焦保存</p>
+          <div class="flex items-center gap-2">
+            <input id="window-start" type="time" step="60"
+                   class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
+            <span class="text-zinc-400">~</span>
+            <input id="window-end" type="time" step="60"
+                   class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
+          </div>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">原生时间选择器，无需手动输入；修改后失焦自动保存</p>
         </div>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-4">
@@ -401,7 +406,8 @@
 
     <!-- 随机延迟 -->
     <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-4">随机延迟（保存后下次自动签到时生效）</div>
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">随机延迟（仅手动签到生效）</div>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">自动签到已由调度 v2 的错峰分配内置随机性，无需此设置；仅"手动签到"时生效</p>
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
           <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
@@ -1443,7 +1449,10 @@ async function loadSettings() {
     $('sign-order-select').value = state.signOrder;
     $('sign-dist-select').value = state.signDist;
     $('edge-select').value = String(state.edgeSec);
-    $('window-input').value = state.signWindow;
+    state.signWindow = data.sign_window || '';
+    const win = state.signWindow.split('~').map(s => s.trim());
+    $('window-start').value = (win[0] || '06:30').slice(0, 5);
+    $('window-end').value = (win[1] || '07:50').slice(0, 5);
     renderTimePrefUI();
     updateEdgeWarn();
     state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
@@ -1472,9 +1481,14 @@ $('edge-select').addEventListener('change', () => {
   updateEdgeWarn();
   saveSettings(true);
 });
-$('window-input').addEventListener('change', () => {
-  state.signWindow = $('window-input').value.trim();
-  saveSettings(true);
+// 窗口起止（原生 time 选择器保证格式；失焦自动保存，校验交给后端）
+['window-start', 'window-end'].forEach(id => {
+  $(id).addEventListener('change', () => {
+    const s = $('window-start').value || '06:30';
+    const e = $('window-end').value || '07:50';
+    state.signWindow = `${s} ~ ${e}`;
+    saveSettings(true);
+  });
 });
 
 // 用户自选时间片总开关（持久化 .env；关闭时用户可预配置但不激活）
