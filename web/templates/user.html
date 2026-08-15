@@ -62,7 +62,13 @@
 <header class="bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 sticky top-0 z-20">
   <div class="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
     <div class="flex items-center gap-2">
-      <img src="/static/vendor/logo.png" alt="易班自动签到" class="w-9 h-9 rounded-lg object-cover shrink-0">
+      <!-- 品牌：默认占位符图标（无版权资源）。自定义方法见 README「自定义图标」：
+           1) 把下方 <svg> 换成 <img src="/static/vendor/logo.png" class="w-9 h-9 rounded-lg object-cover shrink-0">；
+           2) 将你的 logo.png 放入 web/static/vendor/ -->
+      <svg viewBox="0 0 36 36" class="w-9 h-9 rounded-lg shrink-0" role="img" aria-label="易班自动签到（占位图标）">
+        <rect width="36" height="36" rx="8" fill="#3b82f6"/>
+        <text x="18" y="25" text-anchor="middle" font-size="17" fill="#ffffff" font-family="sans-serif">签</text>
+      </svg>
       <span class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 text-sm">易班自动签到</span>
     </div>
     <div class="flex items-center gap-4">
