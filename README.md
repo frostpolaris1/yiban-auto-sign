@@ -169,10 +169,10 @@ yiban            # 推荐：全局命令（已安装到 /usr/local/bin/yiban）
 | `E` / `D` | 编辑 / 删除选中账号（↑↓ 选择） |
 | `[` / `]` | 上移 / 下移选中账号（调整阅读与顺序打卡顺序） |
 | `M` | 手动签到选中账号（后台子进程执行，日志同步刷新） |
-| `S` | 保存（账号 → `accounts.json`，随机延迟 → `.env`） |
+| `S` | 保存（账号 → SQLite 数据库 `yiban.db`，随机延迟 → `.env`） |
 | `Q` | 退出 |
 
-保存后 `signin.py` 每次执行会自动读取 `accounts.json`。也可以不启动 TUI，直接手写该文件（格式见 [账号配置格式](#账号配置格式json推荐)）。
+保存后 `signin.py` 每次执行会自动从数据库读取账号（0.17+ 数据存于 SQLite；`accounts.json` 仅为旧版本迁移来源）。也可以不启动 TUI，直接用网页管理后台添加账号。
 
 > 💡 **手动验证配置**（不发送任何网络请求）：
 > ```bash
@@ -189,7 +189,7 @@ YIBAN_PROXY=http://127.0.0.1:8888
 EOF
 ```
 
-账号已通过 TUI 写入 `accounts.json`，`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`）。
+账号已通过 TUI / 网页写入数据库（`yiban.db`），`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`，向后兼容）。
 
 #### 5. 创建运行脚本
 
@@ -438,7 +438,7 @@ on:
 
 ### 环境变量一览
 
-账号配置支持多种方式，按优先级自动加载：**`accounts.json` 文件 > `YIBAN_ACCOUNTS_JSON` > 旧格式 `YIBAN_ACCOUNTS` / `YIBAN_PHONE`+`YIBAN_PASSWORD`**。推荐使用服务器端 TUI 配置工具（见 [服务器部署](#️-服务器部署进阶)）生成 `accounts.json`。
+账号数据存于 **SQLite 数据库（`yiban.db`）**，由网页管理后台 / TUI 写入（AES-GCM 加密存储）。`YIBAN_ACCOUNTS_JSON`、`YIBAN_ACCOUNTS`、`YIBAN_PHONE`+`YIBAN_PASSWORD` 为旧格式 / CI 场景的向后兼容加载方式。
 
 | 变量名 | 说明 | 必填 |
 |--------|------|------|
@@ -446,7 +446,7 @@ on:
 | `YIBAN_ACCOUNTS` | 旧格式 `手机号:密码`，多账号用 `#` 分隔（向后兼容） | 二选一 |
 | `YIBAN_PHONE` | 易班手机号（单账号，向后兼容） | 二选一 |
 | `YIBAN_PASSWORD` | 易班密码（单账号，向后兼容） | 二选一 |
-| `YIBAN_ACCOUNTS_FILE` | `accounts.json` 文件路径，默认 `./accounts.json` | 可选 |
+| `YIBAN_ACCOUNTS_FILE` | 旧 JSON 账号文件路径（仅 JSON→SQLite 迁移时使用；0.17+ 数据在 `yiban.db`） | 可选 |
 | `YIBAN_START_DELAY_MAX` | 启动后随机延迟上限秒数：默认 `0`（关闭）；开启后脚本启动随机等待 0~N 秒再开始首个签到，打散"每天固定秒级执行"的脚本特征 | 可选 |
 | `YIBAN_ACCOUNT_GAP_MAX` | 账号间随机间隔上限秒数：默认 `0`（关闭）；开启后账号间随机停顿 0~N 秒 | 可选 |
 | `YIBAN_LEGACY_LOGIN` | 设为 `1` 时使用旧登录流程（伪造 iOS UA）；默认使用 fyiban 同款真实 App 特征（推荐，见 [Q1](#q1报错-账号或密码错误e003但密码明明是对的)） | 可选 |
@@ -482,9 +482,9 @@ YIBAN_ACCOUNT_GAP_MAX=10
 
 公式：`可容纳账号数 ≈ (窗口剩余秒数 − 启动延迟 − 单账号耗时) ÷ (单账号耗时 + 间隔) + 1`。对当前 1~2 个账号，60s 启动延迟 + 10s 间隔的实际影响可忽略（最晚 06:42 全部完成）。
 
-### 账号配置格式（JSON，推荐）
+### 账号配置格式（JSON，兼容旧格式 / CI）
 
-`accounts.json` 与 `YIBAN_ACCOUNTS_JSON` 使用相同的 JSON 数组格式，一个账号一次输入完整信息（手机号、密码、设备型号、设备识别码），**无需用符号分隔**：
+`YIBAN_ACCOUNTS_JSON` 使用如下 JSON 数组格式，一个账号一次输入完整信息（手机号、密码、设备型号、设备识别码），**无需用符号分隔**（网页后台/TUI 写入的数据库账号不依赖此格式）：
 
 ```json
 [
@@ -727,7 +727,7 @@ workflow-keepalive:
 **排查顺序（老版本或自定义改回旧流程时参考）**：
 
 1. **用手机易班 App 登录一次**——能正常登录则说明账号和密码都没问题
-2. **对照实验**：临时移走 `accounts.json`，用旧 `.env` 方式再跑一次——新旧方式同时报错，即可排除配置问题
+2. **对照实验**：临时用 `.env` 旧格式（`YIBAN_PHONE`+`YIBAN_PASSWORD`）再跑一次——新旧方式同时报错，即可排除配置问题
 3. **确认触发源**：检查同一账号当天是否被多个 IP 尝试过（如 GitHub Actions 海外 IP 定时签到失败重试）
 4. **等待冷却**：风控冷却通常几小时到 24 小时，**期间不要反复重试**（会延长冷却）
 
