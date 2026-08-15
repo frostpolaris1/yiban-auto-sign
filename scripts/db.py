@@ -483,7 +483,9 @@ def delete_user_with_accounts(email):
     """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。"""
     conn = get_conn()
     with _conn_lock, conn:
+        rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (email,)).fetchall()
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（H2 对抗性审查补）
         conn.execute("DELETE FROM users WHERE email=?", (email,))
         return cur.rowcount
 
@@ -493,10 +495,14 @@ def replace_accounts(accounts):
 
     敏感字段密文化同 add_account（AAD=手机号）。
     ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（TUI 与 web 勿同时编辑）。
+    不再存在的账号连带清理自选时间片（H2 对抗性审查补：防孤儿 pref 虚高拥挤度）。
     """
     conn = get_conn()
     with _conn_lock, conn:
+        old = conn.execute("SELECT phone FROM accounts").fetchall()
         conn.execute("DELETE FROM accounts")
+        keep = {a.get("phone", "") for a in accounts}
+        _delete_time_prefs_by_phones(conn, [r["phone"] for r in old if r["phone"] not in keep])
         for i, a in enumerate(accounts):
             conn.execute(
                 "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
@@ -588,19 +594,20 @@ def audit(username, action, target="", detail=""):
         logger.warning("审计写入失败: %s", e)
 
 
-def last_time_pref_set_at(username):
-    """最近一次自选时间片保存时间（切换冷却判定用；无记录返回 None）。
+def last_time_pref_set_at(phone):
+    """指定账号最近一次自选时间片保存时间（切换冷却判定用；无记录返回 None）。
 
-    用审计时间而非 time_prefs.updated_at：清除后立即重选无法绕过冷却
-    （clear 不更新 updated_at，但重选必写 time_pref_set 审计）。
+    按被选账号（审计 target=phone）而非操作用户计价（H3/H4 对抗性审查）：
+    - 多管理员共享 admin 账号时冷却全局生效（管理员 A 保存后 B 立即改选也被拦截）；
+    - 改手机号/删号重提交新号后，新 phone 无历史审计 → 不被旧账号冷却误伤。
     """
     try:
         with _conn_lock:
             conn = get_conn()
             row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE username=? AND action='time_pref_set' "
+                "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
                 "ORDER BY id DESC LIMIT 1",
-                (username or "",),
+                (phone or "",),
             ).fetchone()
             return row["ts"] if row else None
     except Exception as e:

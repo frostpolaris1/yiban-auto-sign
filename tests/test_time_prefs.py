@@ -239,16 +239,56 @@ class TimePrefsTest(unittest.TestCase):
 
     def test_api_pref_crowding_pct_no_pii(self):
         """对抗（2026-08-15 用户决策）：用户端拥挤度只返回已选百分比，不暴露人数/容量（防调研）。"""
-        # 5 人选同一片 + 块容量 15 → pct=33
+        # 5 人选同一片 + 块容量 15 → 5/15=33.3% → 粗粒度 10% 档 = 30
         for i in range(5):
             db.set_time_pref(f"139{i:08d}", 0, f"2026-08-15 0{i+1}:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
         data = c.get("/api/my-time-pref").get_json()
         slot0 = next(s for s in data["slots"] if s["slot_min"] == 0)
-        self.assertEqual(slot0["pct"], 33)
+        self.assertEqual(slot0["pct"], 30)
         self.assertNotIn("count", slot0)  # 不暴露真实人数
         self.assertNotIn("cap", slot0)    # 不暴露块容量（防反推人数）
+
+    def test_api_pref_pct_coarse_anti_inference(self):
+        """对抗（2026-08-15 深度审查）：10% 粗粒度防反推——1 人与 2 人同显 10%，跳变点不唯一。"""
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        data = c.get("/api/my-time-pref").get_json()
+        slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
+        # 0 人 → 0%
+        self.assertEqual(slot5["pct"], 0)
+        # 1 人 → 6.67% → 10% 档
+        db.set_time_pref("13900000009", 5, "2026-08-15 10:00:00")
+        data = c.get("/api/my-time-pref").get_json()
+        slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
+        self.assertEqual(slot5["pct"], 10)
+        # 2 人 → 13.3% → 仍 10% 档（无法区分 1 人/2 人 → 反推失效）
+        db.set_time_pref("13900000008", 5, "2026-08-15 10:01:00")
+        data = c.get("/api/my-time-pref").get_json()
+        slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
+        self.assertEqual(slot5["pct"], 10)
+        # 3 人 → 20% 档
+        db.set_time_pref("13900000007", 5, "2026-08-15 10:02:00")
+        data = c.get("/api/my-time-pref").get_json()
+        slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
+        self.assertEqual(slot5["pct"], 20)
+
+    def test_api_pref_full_exact_100(self):
+        """对抗（2026-08-15 深度审查）：未满封顶 90、满员恰好 100——前端判满精确不误报。"""
+        # 14/15 = 93.3% → 未满封顶 90（不再四舍五入成 100 误报"已选满"）
+        for i in range(14):
+            db.set_time_pref(f"137{i:08d}", 5, f"2026-08-15 0{i+1}:00:00")
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        data = c.get("/api/my-time-pref").get_json()
+        slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
+        self.assertEqual(slot5["pct"], 90)
+        # 15/15 → 恰好 100（满员，前端显示"已选满"与后端 count>=cap 一致）
+        db.set_time_pref("13700000014", 5, "2026-08-15 10:00:00")
+        data = c.get("/api/my-time-pref").get_json()
+        slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
+        self.assertEqual(slot5["pct"], 100)
 
     def test_api_pref_full_slot_notice(self):
         """对抗（2026-08-15 用户决策）：满员片仍可保存（先到先得+顺延语义），提示"已选满"且不带人数。"""
@@ -326,12 +366,45 @@ class TimePrefsTest(unittest.TestCase):
             r2 = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertIn("明日生效", r2.get_json()["msg"])
-        # 场景 3：标记存在但时间在未来（理论不可能，防御：走兜底逻辑即可不崩）
+        # 场景 3：标记时间在未来（时钟偏移/写坏，H1 对抗性审查）→ 视为无效回退兜底（06:31）
         with open(snap, "w", encoding="utf-8") as f:
             json.dump({"snapshot_at": "07:00:00"}, f)
         with mock.patch.object(self.webapp, "datetime", FakeDT):
             r3 = c.put("/api/my-time-pref", json={"slot_min": 10}, headers=h)
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+        self.assertIn("今日生效", r3.get_json()["msg"])  # 回退兜底 06:31 → now(06:30) 之前
+
+    def test_api_pref_slot_type_strict(self):
+        """对抗（M1）：bool（False→0）与小数（5.9→5）截断不得误入合法槽位。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        h = self._csrf(token)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": 5.9}, headers=h).status_code, 400)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": False}, headers=h).status_code, 400)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": True}, headers=h).status_code, 400)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": "5.9"}, headers=h).status_code, 400)
+        # 合法整数与整数字符串仍可用
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h).status_code, 200)
+        self.assertEqual(c.put("/api/my-time-pref", json={"slot_min": "5"}, headers=h).status_code, 200)
+
+    def test_db_delete_user_cleans_pref(self):
+        """对抗（H2）：删除用户连带清 pref（delete_user_with_accounts）。"""
+        db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
+        db.delete_user_with_accounts("user1@test.local")
+        self.assertIsNone(db.get_time_pref("13800138001"))
+
+    def test_db_replace_accounts_cleans_orphan_pref(self):
+        """对抗（H2）：整表替换（TUI）后，被移除账号的 pref 一并清理（防孤儿虚高拥挤度）。"""
+        # 13900139099 先作为正式账号入表，再被 replace_accounts 移除
+        db.add_account({"name": "B", "phone": "13900139099", "password": "p2",
+                        "status": "active", "owner": "admin"})
+        db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
+        db.set_time_pref("13900139099", 5, "2026-08-15 10:01:00")
+        db.replace_accounts([{"name": "A", "phone": "13800138001", "password": "p1",
+                             "status": "active", "owner": "user1@test.local"}])
+        # 13800138001 保留在表内 → pref 保留；13900139099 被移除 → pref 清理
+        self.assertIsNotNone(db.get_time_pref("13800138001"))
+        self.assertIsNone(db.get_time_pref("13900139099"))
 
     def test_api_pref_stats_admin_only(self):
         app = self.webapp.create_app()

@@ -1872,7 +1872,13 @@ def create_app():
         slots = []
         for s in _pref_slots(sw):
             count = stats.get(s["slot_min"], 0)
-            pct = min(100, round(count * 100 / cap)) if cap > 0 else 0
+            # 粗粒度 10% 档（对抗性审查补）：精确百分比 + 已知默认 K 可反推人数；
+            # 未满封顶 90、满员恰好 100——前端 pct>=100 判满精确（19/20=95% 不会再被
+            # 四舍五入成 100 误报"已选满"，与后端 count>=cap 口径一致）
+            if cap > 0:
+                pct = 100 if count >= cap else min(90, round(count * 100 / cap / 10) * 10)
+            else:
+                pct = 0
             slots.append({"slot_min": s["slot_min"], "label": s["label"], "pct": pct})
         estimated, estimate_note = _estimate_slot(phone) if phone else (None, "")
         return jsonify({
@@ -1891,74 +1897,91 @@ def create_app():
     @app.route("/api/my-time-pref", methods=["PUT"])
     def api_my_time_pref_save():
         """保存/清除自选：{slot_min: int|null}。校验 5 对齐、窗口内；生效按分界时刻提示。"""
-        phone = _my_phone()
-        if not phone:
-            return jsonify({"error": "请先提交易班账号"}), 400
-        data = _json_body()
-        slot = data.get("slot_min")
-        if slot is None:
-            db.clear_time_pref(phone)
-            db.audit(session.get("username", "?"), "time_pref_clear", phone, "")
-            return jsonify({"ok": True, "msg": "已清除自选，恢复自动分配"})
-        try:
-            slot = int(slot)
-        except (TypeError, ValueError):
-            return jsonify({"error": "时间片取值无效"}), 400
-        sw = _sign_window()
-        span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
-        edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
-        if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
-            # 不暴露"5 分钟对齐"等调度机制细节（信息分层，2026-08-15）
-            return jsonify({"error": "所选时间片不在可选范围内，请重新选择"}), 400
-        # 切换冷却（2026-08-15 用户反馈）：两次保存最小间隔，防高频切换刷新 updated_at
-        # 操纵"先到先得"排序；清除后立即重选同样受限（审计 time_pref_set 计数）。
-        # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC，默认 60；测试用 0 关闭）
-        cooldown = load_env_int(ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", TIME_PREF_COOLDOWN_SEC)
-        if cooldown > 0:
-            last_ts = db.last_time_pref_set_at(session.get("username", ""))
-            if last_ts:
-                try:
-                    last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
-                    if (datetime.now() - last_dt).total_seconds() < cooldown:
-                        # 不暴露冷却时长（信息分层）
-                        return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
-                except ValueError:
-                    pass
-        # 满员提示（对抗性审查补，2026-08-15 用户决策：可继续选+提示会顺延）：
-        # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
-        # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
-        cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
-        stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
-        count = stats.get(slot, 0)
-        cur = db.get_time_pref(phone)
-        if cur and cur.get("slot_min") == slot:
-            count = max(0, count - 1)  # 排除自己已占的位（换片/保留不误报）
-        full_notice = "，该时段已选满，将就近安排到附近时段" if count >= cap else ""
-        db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        db.audit(session.get("username", "?"), "time_pref_set", phone, _slot_to_label(slot))
-        # 生效分界（2026-08-15 用户反馈：卡点缓冲）：
-        # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
-        # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
-        # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
-        now = datetime.now()
-        boundary = None
-        try:
-            snap_path = os.path.join(STATE_DIR, f"sched-snapshot-{now.strftime('%Y-%m-%d')}.json")
-            with open(snap_path, encoding="utf-8") as f:
-                snap = json.load(f)
-            boundary = datetime.strptime(
-                f"{now.strftime('%Y-%m-%d')} {snap['snapshot_at']}", "%Y-%m-%d %H:%M:%S"
-            )
-        except (OSError, ValueError, KeyError, TypeError):
-            boundary = None
-        if boundary is None:
+        # F3 对抗性审查（TOCTOU）：read-check-write 整段持 _file_lock 原子化——
+        # 并发 purge 删号时不再重新插入孤儿 pref（已删 phone 残留→重占号被新账号继承泄漏）；
+        # 冷却检查与写入原子化（防并发双请求绕过冷却）；满员统计与写入原子化（防超容写入）
+        with _file_lock:
+            phone = _my_phone()
+            if not phone:
+                return jsonify({"error": "请先提交易班账号"}), 400
+            data = _json_body()
+            slot = data.get("slot_min")
+            if slot is None:
+                db.clear_time_pref(phone)
+                db.audit(session.get("username", "?"), "time_pref_clear", phone, "")
+                return jsonify({"ok": True, "msg": "已清除自选，恢复自动分配"})
+            # M1 对抗性审查：严格类型校验——bool（False→0）与小数（5.9→5）截断不得误入合法槽位
+            if isinstance(slot, bool) or (isinstance(slot, float) and not slot.is_integer()):
+                return jsonify({"error": "时间片取值无效"}), 400
             try:
-                boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
-            except ValueError:
-                boundary = now
-            boundary += timedelta(minutes=1)
-        when = "今日生效" if now < boundary else "明日生效"
-        return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}{full_notice}"})
+                slot = int(slot)
+            except (TypeError, ValueError):
+                return jsonify({"error": "时间片取值无效"}), 400
+            sw = _sign_window()
+            span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
+            edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
+            if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
+                # 不暴露"5 分钟对齐"等调度机制细节（信息分层，2026-08-15）
+                return jsonify({"error": "所选时间片不在可选范围内，请重新选择"}), 400
+            # 切换冷却（2026-08-15 用户反馈）：同一账号两次保存最小间隔，防高频切换刷新
+            # updated_at 操纵"先到先得"排序；按被选账号计价（H3 多管理员共享 admin 账号
+            # 全局生效；H4 改号/重提交新号不被旧账号误伤）；清除后立即重选同样受限（审计计数）。
+            # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC，默认 60；测试用 0 关闭）
+            cooldown = load_env_int(ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", TIME_PREF_COOLDOWN_SEC)
+            if cooldown > 0:
+                last_ts = db.last_time_pref_set_at(phone)
+                if last_ts:
+                    try:
+                        last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
+                        elapsed = (datetime.now() - last_dt).total_seconds()
+                        # 负间隔（时钟回拨）视为已过冷却，不误伤（对抗性审查第三轮）
+                        if 0 <= elapsed < cooldown:
+                            # 不暴露冷却时长（信息分层）
+                            return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
+                    except ValueError:
+                        # ts 格式异常（写坏）：保守按冷却生效拦截（M3 对抗性审查：防 fail-open 绕过）
+                        return jsonify({"error": "切换过于频繁，请稍后再试"}), 429
+            # 满员提示（对抗性审查补，2026-08-15 用户决策：可继续选+提示会顺延）：
+            # 该片已选人数 ≥ 块容量时仍允许保存（先到先得+溢出顺延语义），但明确告知；
+            # 提示不暴露真实人数/容量（防调研，与用户端 pct 口径一致）
+            cap = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+            stats = {s["slot_min"]: s["count"] for s in db.time_pref_stats()}
+            count = stats.get(slot, 0)
+            cur = db.get_time_pref(phone)
+            if cur and cur.get("slot_min") == slot:
+                count = max(0, count - 1)  # 排除自己已占的位（换片/保留不误报）
+            full_notice = "，该时段已选满，将就近安排到附近时段" if count >= cap else ""
+            # updated_at 带微秒（M2 对抗性审查）：同秒保存的"先到先得"可区分先后，
+            # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
+            db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
+            db.audit(session.get("username", "?"), "time_pref_set", phone, _slot_to_label(slot))
+            # 生效分界（2026-08-15 用户反馈：卡点缓冲）：
+            # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
+            # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
+            # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
+            now = datetime.now()
+            boundary = None
+            try:
+                snap_path = os.path.join(STATE_DIR, f"sched-snapshot-{now.strftime('%Y-%m-%d')}.json")
+                with open(snap_path, encoding="utf-8") as f:
+                    snap = json.load(f)
+                boundary = datetime.strptime(
+                    f"{now.strftime('%Y-%m-%d')} {snap['snapshot_at']}", "%Y-%m-%d %H:%M:%S"
+                )
+                # H1 对抗性审查：快照标记晚于当前时刻（时钟偏移/写坏）→ 视为无效回退兜底，
+                # 避免"提示今日生效但实际不可能"（改选时 cron 早已建表）
+                if boundary > now:
+                    boundary = None
+            except (OSError, ValueError, KeyError, TypeError):
+                boundary = None
+            if boundary is None:
+                try:
+                    boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
+                except ValueError:
+                    boundary = now
+                boundary += timedelta(minutes=1)
+            when = "今日生效" if now < boundary else "明日生效"
+            return jsonify({"ok": True, "msg": f"已保存自选 {_slot_to_label(slot)}，{when}{full_notice}"})
 
     @app.route("/api/time-prefs/stats")
     def api_time_prefs_stats():
