@@ -485,6 +485,25 @@ class TimePrefsTest(unittest.TestCase):
             c2.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token)).status_code,
             400)
 
+    def test_api_pref_non_active_user_hidden(self):
+        """对抗（2026-08-15 用户反馈）：仅注册未正式进入签到列表（pending/rejected）的用户
+        不可查看/选择时间片——GET has_account=False（前端整卡隐藏）、PUT 400 且不写库。"""
+        cases = [("pending", "13600138001"), ("rejected", "13600138002")]
+        for status, phone in cases:
+            user = f"{status}@test.local"
+            db.create_user(user, self.webapp.generate_password_hash(USER_PASS))
+            db.add_account({"name": status, "phone": phone, "password": "p",
+                            "status": status, "owner": user})
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, user, USER_PASS)
+            data = c.get("/api/my-time-pref").get_json()
+            self.assertFalse(data["has_account"], f"{status} 不应有自选资格")
+            self.assertIsNone(data["pref"])
+            r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
+            self.assertEqual(r.status_code, 400, f"{status} 保存应被拒绝")
+            self.assertIn("审核", r.get_json()["error"], f"{status} 提示应区分未生效")
+            self.assertIsNone(db.get_time_pref(phone), f"{status} 不应写库")
+
     # ================= 用户自暂停签到（调度 v2） =================
     def test_api_pause_resume(self):
         c = self.webapp.create_app().test_client()

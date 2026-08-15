@@ -1840,16 +1840,22 @@ def create_app():
 
     # ---- 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）----
     def _my_phone():
-        """当前用户的自选绑定账号：普通用户=本人账号；管理员=归属 admin 的第一个非删除账号。"""
+        """当前用户的自选绑定账号：普通用户=本人账号；管理员=归属 admin 的第一个非删除账号。
+
+        2026-08-15 用户反馈：仅 status=active（正式进入签到列表）才算——
+        pending/rejected 的"注册但未生效"用户不可查看/选择时间片
+        （GET 返回 has_account=False → 前端整卡隐藏；PUT 400 兜底）。
+        """
         accounts = load_accounts()
         if _current_role() == "admin":
             for acc in accounts:
-                if acc.get("owner", "admin") == "admin" and not acc.get("deleted"):
+                if (acc.get("owner", "admin") == "admin" and not acc.get("deleted")
+                        and acc.get("status") == "active"):
                     return acc.get("phone", "")
             return None
         for idx in _my_account_indices():
             acc = accounts[idx]
-            if not acc.get("deleted"):
+            if not acc.get("deleted") and acc.get("status") == "active":
                 return acc.get("phone", "")
         return None
 
@@ -1913,6 +1919,17 @@ def create_app():
         with _file_lock:
             phone = _my_phone()
             if not phone:
+                # 2026-08-15 用户反馈：非正式用户不可选时间片——区分"未提交"与"已提交未生效"，
+                # 提示不给待审核用户误导（信息分层，不暴露审核细节）
+                has_submitted = any(
+                    not a.get("deleted")
+                    for a in (load_accounts()[i] for i in _my_account_indices())
+                ) if _current_role() != "admin" else any(
+                    a.get("owner", "admin") == "admin" and not a.get("deleted")
+                    for a in load_accounts()
+                )
+                if has_submitted:
+                    return jsonify({"error": "账号审核通过后即可选择签到时间"}), 400
                 return jsonify({"error": "请先提交易班账号"}), 400
             data = _json_body()
             slot = data.get("slot_min")
