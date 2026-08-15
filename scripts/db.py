@@ -53,6 +53,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None):
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.execute("PRAGMA foreign_keys=OFF")
         _create_tables(_conn)
+        _maybe_add_account_columns(_conn)  # 存量库增量加列（幂等）
         # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
         if migrate_from:
             _maybe_migrate(_conn, migrate_from)
@@ -84,7 +85,8 @@ def _create_tables(conn):
           status TEXT NOT NULL DEFAULT 'pending',
           reject_reason TEXT NOT NULL DEFAULT '',
           deleted INTEGER NOT NULL DEFAULT 0,
-          deleted_at TEXT NOT NULL DEFAULT ''
+          deleted_at TEXT NOT NULL DEFAULT '',
+          user_paused INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner);
         CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
@@ -123,6 +125,15 @@ def _create_tables(conn):
 # ---------------------------------------------------------------------------
 # 自动迁移（JSON → SQLite，幂等）
 # ---------------------------------------------------------------------------
+def _maybe_add_account_columns(conn):
+    """存量库增量加列（幂等）：PRAGMA 检查缺列则 ALTER。"""
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+        if "user_paused" not in cols:
+            conn.execute("ALTER TABLE accounts ADD COLUMN user_paused INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+    except Exception as e:
+        logger.warning("accounts 增量加列失败: %s", e)
 def _maybe_migrate(conn, json_base):
     """json_base 形如 /path/accounts.json（users.json 同目录推断）。"""
     accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
@@ -224,6 +235,7 @@ def _rename_backup(path):
 def _row_to_account(row):
     a = dict(row)
     a["deleted"] = bool(a["deleted"])
+    a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
     # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
     for k in ("password", "phone_code"):
         v = a.get(k)
@@ -423,6 +435,13 @@ def update_account_status(account_id, status, reject_reason=None):
             conn.execute("UPDATE accounts SET status=? WHERE id=?", (status, account_id))
         else:
             conn.execute("UPDATE accounts SET status=?, reject_reason=? WHERE id=?", (status, reject_reason, account_id))
+
+
+def set_user_paused(account_id, paused):
+    """用户自暂停/恢复签到（user_paused 0/1）。"""
+    conn = get_conn()
+    with _conn_lock, conn:
+        conn.execute("UPDATE accounts SET user_paused=? WHERE id=?", (1 if paused else 0, account_id))
 
 
 def move_account(account_id, direction):

@@ -25,6 +25,9 @@
       if (h) { closeList(); var lv = h[1].length; html += '<h' + lv + '>' + inline(h[2]) + '</h' + lv + '>'; continue; }
       var li = /^[-*]\s+(.*)$/.exec(line);
       if (li) { if (!inList) { html += '<ul>'; inList = true; } html += '<li>' + inline(li[1]) + '</li>'; continue; }
+      // 二级缩进子列表（更新日志"  - 子要点"）：渲染为带缩进的分项（保持列表连续，不再当段落）
+      var li2 = /^(\s{2,})[-*]\s+(.*)$/.exec(line);
+      if (li2) { if (!inList) { html += '<ul>'; inList = true; } html += '<li class="md-sub">' + inline(li2[2]) + '</li>'; continue; }
       if (!line.trim()) { closeList(); continue; }
       closeList();
       html += '<p>' + inline(line) + '</p>';
@@ -41,6 +44,7 @@
     '.md-body p{margin:.25em 0}' +
     '.md-body ul{list-style:disc;padding-left:1.4em;margin:.25em 0}' +
     '.md-body li{margin:.15em 0}' +
+    '.md-body li.md-sub{list-style:circle;padding-left:1.2em;color:rgba(120,120,120,.95)}' +
     '.md-body strong{font-weight:600}' +
     '.md-body code{background:rgba(127,127,127,.12);border-radius:4px;padding:0 .3em;font-size:.95em}';
   document.head.appendChild(style);
