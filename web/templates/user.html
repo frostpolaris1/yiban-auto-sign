@@ -113,6 +113,7 @@
     </div>
     <div id="pref-body">
       <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">窗口 <span id="pref-window"></span> · 5 分钟一片 · 随时可改（今日已开始签到后修改次日生效）</p>
+      <p id="pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
       <div id="pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
       <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
         <button id="pref-clear-btn" type="button" onclick="clearTimePref()"
@@ -631,6 +632,18 @@ async function loadTimePref() {
     $('pref-window').textContent = data.window;
     renderPrefSlots(data);
     $('pref-disabled-hint').classList.toggle('hidden', data.allowed);
+    // 预计签到时段（顺序排序可预期；随机排序显示"当天可见"提示；有自选时以自选为准）
+    const est = $('pref-estimate');
+    if (data.pref) {
+      est.textContent = '';
+      est.classList.add('hidden');
+    } else if (data.estimated) {
+      est.textContent = '📅 预计签到时段：' + data.estimated + (data.estimate_note || '');
+      est.classList.remove('hidden');
+    } else {
+      est.textContent = data.estimate_note || '';
+      est.classList.remove('hidden');
+    }
     // 未开启时自动折叠（展开仍可预配置）；开启时保持展开
     if (!data.allowed) {
       prefCollapsed = true;

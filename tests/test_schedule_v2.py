@@ -55,13 +55,34 @@ class ScheduleV2Test(unittest.TestCase):
         ):
             os.environ.pop(k, None)
 
-    def test_small_n_direct_random_within_window(self):
-        """n=2：不分块，直接有效窗口内随机时刻。"""
+    def test_small_n_uses_blocks(self):
+        """小人数复用分块：顺序×均匀 n=2 → 线性填块同块（块 0）；随机×均匀 → 循环填块分块。"""
         accs = make_accounts(2)
-        sched = signin.build_schedule(accs, rng=random.Random(1))
-        self.assertEqual(len(sched), 2)
-        for t in sched.values():
-            self.assertTrue(EFF_LO <= hm(t) <= EFF_HI, t)
+        s_seq = signin.build_schedule(
+            accs, order="sequence", dist="uniform", rng=random.Random(1))
+        for t in s_seq.values():
+            self.assertTrue(391 <= hm(t) < 395, t)  # 线性填块：两人都在块 0 [06:31,06:35)
+        s_rnd = signin.build_schedule(
+            accs, order="random", dist="uniform", rng=random.Random(1))
+        blocks = sorted(hm(t) for t in s_rnd.values())
+        self.assertLess(blocks[0], 395)      # 循环填块：块 0
+        self.assertGreaterEqual(blocks[1], 395)  # 块 1
+        self.assertTrue(all(EFF_LO <= t <= EFF_HI for t in blocks))
+
+    def test_small_n_sequence_same_block(self):
+        """小人数 + 顺序排序：块确定（可预期）——不同 seed 仍在同一块。"""
+        accs = make_accounts(2)
+        s1 = signin.build_schedule(accs, order="sequence", dist="uniform", rng=random.Random(1))
+        s2 = signin.build_schedule(accs, order="sequence", dist="uniform", rng=random.Random(999))
+        for t1, t2 in zip(s1.values(), s2.values(), strict=True):
+            self.assertEqual((hm(t1) - 391) // 5, (hm(t2) - 391) // 5)  # 同一块（时刻略有抖动）
+
+    def test_small_n_random_differs(self):
+        """小人数 + 随机排序：循环填块每天重排（不同 seed 结果不同）。"""
+        accs = make_accounts(2)
+        s1 = signin.build_schedule(accs, order="random", dist="uniform", rng=random.Random(1))
+        s2 = signin.build_schedule(accs, order="random", dist="uniform", rng=random.Random(2))
+        self.assertNotEqual(s1, s2)
 
     def test_sequence_uniform_linear_blocks(self):
         """顺序×均匀：线性填块，50 人 → 前 4 块，块内等分。"""

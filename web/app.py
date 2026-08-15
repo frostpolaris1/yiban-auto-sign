@@ -501,6 +501,51 @@ def _slot_to_label(slot_min):
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
+def _estimate_slot(phone):
+    """预计签到时段（调度 v2 2.1，docs/design/plan-scheduler-v2.md）：
+    顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
+    随机排序 = 每天重排，返回 None + 提示文案。
+    返回 (estimated_str|None, note_str)。
+    """
+    env = read_env(ENV_FILE)
+    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
+    order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
+        "random" if mode == "random" else "sequence")
+    dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
+        "normal" if mode == "normal" else "uniform")
+    if order != "sequence":
+        return None, "随机模式每日重排，签到时间当天 06:31 后可见"
+    accounts = load_accounts()
+    idx = next((i for i, a in enumerate(accounts) if a.get("phone") == phone), None)
+    if idx is None or not accounts:
+        return None, ""
+    sw = _sign_window()
+    edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
+    start_min = sw[0][0] * 60 + sw[0][1]
+    end_min = sw[1][0] * 60 + sw[1][1]
+    eff_lo = start_min + edge
+    eff_hi = end_min - edge
+    span = eff_hi - eff_lo
+
+    def fmt(m):
+        m = int(m)
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    if dist == "uniform":
+        # 线性填块（小人数同样复用分块：n=2 → 同块等分，可预期）
+        k = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
+        bi = idx // k
+        lo = eff_lo + 5 * bi
+        hi = min(eff_lo + 5 * (bi + 1), eff_hi)
+        return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
+    # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
+    import random as _rnd
+
+    z = _rnd.Random(str(phone)).gauss(0, 1)
+    center = max(eff_lo, min(eff_hi, eff_lo + span * 0.5 + span * 0.20 * z))
+    return f"约 {fmt(center)}", "（每日波动约 ±10 分钟）"
+
+
 def mask_account(acc, index, masked=True):
     """账号展示序列化（列表默认脱敏手机号/归属邮箱，网络层不泄露完整 PII）。
 
@@ -1695,7 +1740,7 @@ def create_app():
 
     @app.route("/api/my-time-pref")
     def api_my_time_pref():
-        """我的自选 + 拥挤度（选片卡片数据；总开关关时仍可预配置，调度侧不激活）。"""
+        """我的自选 + 拥挤度 + 预计签到时段（选片卡片数据；总开关关时仍可预配置，调度侧不激活）。"""
         sw = _sign_window()
         phone = _my_phone()
         pref = db.get_time_pref(phone) if phone else None
@@ -1704,6 +1749,7 @@ def create_app():
         slots = []
         for s in _pref_slots(sw):
             slots.append({**s, "count": stats.get(s["slot_min"], 0), "cap": cap})
+        estimated, estimate_note = _estimate_slot(phone) if phone else (None, "")
         return jsonify({
             "ok": True,
             "pref": _slot_to_label(pref["slot_min"]) if pref else None,
@@ -1713,6 +1759,8 @@ def create_app():
             "window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
             "edge_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60),
             "has_account": bool(phone),
+            "estimated": estimated,        # 预计签到时段（顺序排序可预期；随机为 None）
+            "estimate_note": estimate_note,
         })
 
     @app.route("/api/my-time-pref", methods=["PUT"])
