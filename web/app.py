@@ -21,6 +21,7 @@
 import argparse
 import calendar
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -172,6 +173,12 @@ RATE_MAX = 60  # 窗口内最大 API 请求数（正常用户远低于此）
 # 注册限速（防邮箱批量注册）：每 IP 窗口内最多 REGISTER_MAX 次成功注册
 REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
 REGISTER_MAX = 5  # 窗口内最大成功注册数
+
+# 注销账号冷却（防批量注销，user_delete_requests 表计数，v5）：
+# 每用户 60 秒内最多 1 次、每 IP 60 秒内最多 DELETE_MAX_REQUESTS_PER_IP 次；
+# 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
+DELETE_COOLDOWN_SEC = 60
+DELETE_MAX_REQUESTS_PER_IP = 5
 
 # 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底）：
 # 注册用户上限默认 200（一人一号 ≈ 200 账号，远超班级/社团规模）；账号总数上限默认 500
@@ -868,7 +875,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.19.8"
+APP_VERSION = "0.19.9"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -949,6 +956,7 @@ def create_app():
             "/api/me",
             "/api/logout",
             "/api/me/password",
+            "/api/me/delete",
         ):
             return
         return jsonify({"error": "无权限"}), 403
@@ -1282,6 +1290,91 @@ def create_app():
                 logger.info("用户 %s 已修改自己的密码", _mask_email(username))
                 return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         return jsonify({"error": "用户不存在"}), 404
+
+    @app.route("/api/me/delete", methods=["POST"])
+    def api_me_delete():
+        """用户自助注销（软删除 + 3 天宽限期，数据库 v5）。
+
+        安全设计（docs/design/plan-frontend-user-deregistration.md）：
+        - 登录要求 + CSRF：全局写请求校验（X-CSRF-Token）自动覆盖；
+        - 防 IDOR：只从 session 取当前用户，请求体任何目标参数一律忽略；
+        - 密码确认：防"离开电脑被恶意页面直接注销"；
+        - 防批量：每用户 60s 1 次 + 每 IP 60s 5 次（user_delete_requests 表计数，
+          成功进入注销流程才记录；试密码已由 _login_fails 限速，两层防护不重叠），
+          超限 429 且不暴露冷却秒数；
+        - 管理员保护：内置管理员（.env 主管理员）不可注销；最后一个注册管理员
+          不可注销（is_last_registered_admin，防失去全部管理入口）；
+        - 审计：user_self_delete_request / user_self_delete_confirm，detail 脱敏；
+        - 注销即清会话（软删除后 find_user 查无此人，_effective_role 同步失效）。
+        """
+        if not session.get("auth") or not session.get("username"):
+            return jsonify({"error": "未登录"}), 401
+        data = _json_body()
+        password = str(data.get("password", ""))
+        if not password:
+            return jsonify({"error": "请输入当前密码"}), 400
+        username = session.get("username", "")
+        email = username.strip().lower()
+        ip = _client_ip()
+        now = time.time()
+        # 防批量冷却：计数基于 user_delete_requests 表
+        since_ts = (datetime.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        if db.count_user_delete_requests(username=email, since_ts=since_ts) >= 1:
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
+        if (
+            db.count_user_delete_requests(ip_hash=ip_hash, since_ts=since_ts)
+            >= DELETE_MAX_REQUESTS_PER_IP
+        ):
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        # 内置管理员（.env 主管理员）不可自助注销：系统兜底账号，不落 users 表
+        if email == _builtin_admin_email():
+            return jsonify({"error": "当前账号不可注销"}), 400
+        # 密码确认 + 失败锁定（与登录/改密共用 _login_fails 计数，达阈值锁定）
+        fail_key = (ip, email)
+        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+        if now < lock_until:
+            return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
+
+        def _handle_failed_login():
+            """当前密码校验失败：递增失败计数，达阈值锁定（与 api_me_password 一致）。"""
+            nfails = fails + 1
+            if nfails >= LOGIN_MAX_FAILS:
+                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
+                logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                # 不暴露锁定时长（信息分层，2026-08-15）
+                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+            if nfails == LOGIN_FAIL_NOTIFY:
+                send_notification(
+                    "注销密码失败告警",
+                    f"IP {ip} 连续 {nfails} 次注销密码验证失败（用户名: {username}）\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"如非本人操作，请检查是否有人尝试注销该账号",
+                )
+            _login_fails[fail_key] = (nfails, 0, now)
+            return jsonify({"error": "当前密码不正确"}), 400
+
+        with _file_lock:
+            u = db.find_user(email)
+            if u is None:
+                return jsonify({"error": "用户不存在"}), 404
+            if not check_password_hash(u.get("password_hash", ""), password):
+                return _handle_failed_login()
+            # 最后一个注册管理员不可注销（无内置管理员时会失去全部管理入口）
+            if u.get("role") == "admin" and db.is_last_registered_admin(email):
+                return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
+            # 防批量计数 + 审计 + 软注销（db 单事务：账号/time_prefs 清除 + 用户标记）
+            db.record_user_delete_request(email, ip_hash=ip_hash)
+            db.audit(username, "user_self_delete_request", email, "用户发起注销申请")
+            if not db.soft_delete_user_with_accounts(email):
+                return jsonify({"error": "注销失败，请稍后再试"}), 500
+            db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，3 天宽限期）")
+            _login_fails.pop(fail_key, None)
+            logger.info("用户 %s 已注销账号（3 天宽限期）", _mask_email(username))
+        session.clear()
+        return jsonify({"ok": True, "msg": "账号已注销，3 天内可撤销"})
 
     @app.route("/api/me")
     def api_me():
