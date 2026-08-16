@@ -194,7 +194,7 @@
   </div>
 </div>
 
-<!-- 注销账号第一重确认（3 天宽限期说明；第二重为密码确认，2026-08-16） -->
+<!-- 注销账号第一重确认（7 天宽限期说明；第二重为密码确认，2026-08-16 安全审查 3→7 天） -->
 <div id="delete-confirm-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
@@ -204,7 +204,7 @@
               class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
     </div>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">注销将删除你的网站账号、易班账号与自选签到时间。</p>
-    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4"><span class="text-amber-600 dark:text-amber-400 font-medium">3 天内可撤销恢复</span>，超过 3 天将永久删除，无法找回。</p>
+    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4"><span class="text-amber-600 dark:text-amber-400 font-medium">7 天内可撤销恢复</span>，超过 7 天将永久删除，无法找回。</p>
     <div class="flex gap-3 mt-1">
       <button type="button" onclick="closeDeleteModal()"
               class="flex-1 btn-ghost">取消</button>
@@ -214,7 +214,7 @@
   </div>
 </div>
 
-<!-- 注销账号第二重确认（再次提醒 + 密码确认；软删除 3 天宽限期，2026-08-16） -->
+<!-- 注销账号第二重确认（再次提醒 + 密码确认；软删除 7 天宽限期，2026-08-16） -->
 <div id="delete-account-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
@@ -224,7 +224,7 @@
               class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
     </div>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">真的要注销吗？注销后账号将无法登录，易班账号与自选签到时间会被删除。</p>
-    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">3 天宽限期内可撤销，超过 3 天无法恢复。请输入当前密码完成注销。</p>
+    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">7 天宽限期内可撤销，超过 7 天无法恢复。请输入当前密码完成注销。</p>
     <div class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
@@ -275,12 +275,12 @@
     </div>
   </section>
 
-  <!-- 注销账号（危险操作，置底防误触；软删除 3 天宽限期可撤销，2026-08-16） -->
+  <!-- 注销账号（危险操作，置底防误触；软删除 7 天宽限期可撤销，2026-08-16） -->
   <section class="card mt-6">
     <div class="flex items-center justify-between">
       <div>
         <p class="text-sm font-medium text-zinc-900 dark:text-zinc-100">注销账号</p>
-        <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">删除本账号、易班账号与自选签到时间，3 天内可撤销</p>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
       </div>
       <button type="button" onclick="openDeleteModal()"
               class="text-sm text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors duration-150 whitespace-nowrap ml-4">注销账号</button>
@@ -696,9 +696,9 @@ function tickClock() {
 setInterval(tickClock, 1000);
 setInterval(calibrateClock, 60000);
 
-// 注销账号（两次确认：先提示 3 天宽限期，再密码确认；均可取消；防连点，2026-08-16）
+// 注销账号（两次确认：先提示 7 天宽限期，再密码确认；均可取消；防连点，2026-08-16）
 function openDeleteModal() {
-  $('delete-confirm-modal').classList.remove('hidden');  // 第一重：3 天可撤销提示
+  $('delete-confirm-modal').classList.remove('hidden');  // 第一重：7 天可撤销提示
 }
 function closeDeleteModal() {
   $('delete-confirm-modal').classList.add('hidden');

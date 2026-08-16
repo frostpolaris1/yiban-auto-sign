@@ -153,14 +153,15 @@ class UserDeregistrationWebTest(unittest.TestCase):
         token = self._login(c, "user1@test.local", USER_PASS)
         r = self._delete(c, token, password=USER_PASS)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertIn("3 天内可撤销", r.get_json()["msg"])
-        # 软删除标记 + 账号清除
+        self.assertIn("7 天内可撤销", r.get_json()["msg"])
+        # 软删除标记 + 账号软删除（7 天保留，安全审查 2026-08-16）
         u = db.find_user_any("user1@test.local")
         self.assertEqual(u["deleted"], 1)
         self.assertTrue(u["deleted_at"])
         accs = db.load_accounts_raw()
-        self.assertFalse([a for a in accs if a["owner"] == "user1@test.local"],
-                         "注销应清除其易班账号")
+        self.assertFalse(
+            [a for a in accs if a["owner"] == "user1@test.local" and not a["deleted"]],
+            "注销后该用户不应有未删除的易班账号")
         # 会话已清（注销即登出：再访问 /api/me 未登录 → 401）
         me = c.get("/api/me")
         self.assertEqual(me.status_code, 401)
@@ -187,15 +188,15 @@ class UserDeregistrationWebTest(unittest.TestCase):
         item = items[0]
         self.assertEqual(item["email"], "user1@test.local")
         self.assertEqual(item["status"], "cooling")
-        self.assertGreaterEqual(item["remaining_days"], 2, "刚注销应剩约 3 天（整天向下取整 ≥2）")
+        self.assertGreaterEqual(item["remaining_days"], 6, "刚注销应剩约 7 天（整天向下取整 ≥6）")
         self.assertTrue(item["deleted_at"])
 
     def test_deleted_users_expired_shows_purge_pending(self):
-        # 构造已过宽限期的注销用户 → purge_pending + remaining_days=0
+        # 构造已过宽限期（7 天）的注销用户 → purge_pending + remaining_days=0
         db.create_user("expired@test.local", "hash")
         db.soft_delete_user_with_accounts("expired@test.local")
         conn = db.get_conn()
-        old = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired@test.local"))
         conn.commit()
         c = self.webapp.create_app().test_client()
