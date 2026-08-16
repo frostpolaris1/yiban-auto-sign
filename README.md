@@ -113,7 +113,7 @@ crontab -e   # 追加：
 
 # 5. 验证
 python3 scripts/signin.py --check-config   # 配置检查（不发请求）
-bash run.sh && tail -20 /var/log/yiban/sign.log
+bash run.sh && tail -20 /var/log/yiban/sign-$(date +%F).log
 ```
 
 
@@ -198,7 +198,7 @@ cat > /opt/yiban-auto-sign/run.sh << 'EOF'
 #!/bin/bash
 cd /opt/yiban-auto-sign
 export $(cat .env | xargs)
-/usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign.log 2>&1
+/usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign-$(date +%F).log 2>&1
 EOF
 chmod +x /opt/yiban-auto-sign/run.sh
 mkdir -p /var/log/yiban
@@ -233,8 +233,14 @@ tail -20 /var/log/yiban/sign.log
 ### 常用运维命令
 
 ```bash
-# 查看签到日志
-tail -50 /var/log/yiban/sign.log
+# 查看今天签到日志（日志按天分文件：每天一个 sign-YYYY-MM-DD.log）
+tail -50 /var/log/yiban/sign-$(date +%F).log
+
+# 查看某天历史日志（示例：8 月 15 日）
+cat /var/log/yiban/sign-2026-08-15.log
+
+# 清理 365 天前的按天日志（默认保留 365 天，可配 cron 每天执行）
+scripts/yiban-log-clean.sh
 
 # 手动触发签到
 bash /opt/yiban-auto-sign/run.sh

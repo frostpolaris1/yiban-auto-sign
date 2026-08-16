@@ -327,6 +327,45 @@ def parse_sign_log(path):
     return states, recent
 
 
+def _is_valid_date_str(s):
+    """YYYY-MM-DD 格式且为真实日历日期（2026-13-99 这类非法值拒绝）。"""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def log_path_for(date_str=None):
+    """按天日志文件路径：{LOG_FILE 目录}/sign-YYYY-MM-DD.log（date_str 缺省=今天）。
+
+    2026-08-16 日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
+    run.sh / signin.py / 手动签到子进程均写入当天文件（保留 LOG_FILE 配置的目录）。
+    """
+    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    return os.path.join(os.path.dirname(LOG_FILE), f"sign-{date_str}.log")
+
+
+def _log_lines_for(date_str):
+    """读取指定日期日志的行（行首日期过滤防跨天残留；仅 yiban 非 DEBUG 行）。
+
+    文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
+    """
+    prefix = f"[{date_str} "
+    out = []
+    for line in _tail_lines(log_path_for(date_str)):
+        if not line.startswith(prefix):
+            continue
+        m = SIGN_LOG_RE.match(line.strip())
+        if not m:
+            continue
+        _, level, logger_name, _msg = m.groups()
+        if logger_name != "yiban" or level == "DEBUG":
+            continue
+        out.append(line.strip())
+    return out
+
+
 # ---------------------------------------------------------------------------
 # .env 读写（与 tui/app.py 保持一致）
 # ---------------------------------------------------------------------------
@@ -816,8 +855,8 @@ def _notify_capacity_once(kind, limit, label):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-# 2026-08-15 审查轮：UI 全面审查（操作列遮挡/iOS 输入缩放/文案简化去重/命名清理）
-APP_VERSION = "0.19.4"
+# 2026-08-16 日志按天分文件 + 管理员按日期查看日志 + 用户日历历史可查（0.19.5）
+APP_VERSION = "0.19.5"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1773,7 +1812,7 @@ def create_app():
         排队说明：签到按 accounts.json 顺序执行（队列重试模式）；
         queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
         """
-        _, recent = parse_sign_log(LOG_FILE)  # 最近日志仅用于「最近签到记录」展示
+        _, recent = parse_sign_log(log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
         states = load_sign_state()  # 今日状态事实源（signin.py 写入）
         # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除、未自暂停
         active = [
@@ -2116,24 +2155,21 @@ def create_app():
 
     @app.route("/api/my-logs")
     def api_my_logs():
-        """我的账号指定日期（YYYY-MM-DD）的日志（按手机号过滤，最多 50 条）。"""
+        """我的账号指定日期（YYYY-MM-DD）的日志（按手机号过滤，最多 50 条）。
+
+        2026-08-16 起读按天文件（sign-YYYY-MM-DD.log）：历史日期同样可查
+        （此前只读当前 sign.log，轮转后历史日期恒为空）。
+        """
         date = str(request.args.get("date", "")).strip()
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        if not _is_valid_date_str(date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
         accounts = load_accounts()
         indices = _my_account_indices()
         phones = [str(accounts[i].get("phone", "")) for i in indices]
-        prefix = f"[{date} "
         out = []
-        # 倒序扫描：日志按时间追加，从尾部向前（_tail_lines 限制读取量，不整读大文件）；
-        # 遇到更早日期的行即停止
-        for line in reversed(_tail_lines(LOG_FILE)):
-            if line.startswith(prefix):
-                if any(f"[{p}]" in line for p in phones):
-                    out.append(line.strip())
-            elif line.startswith("[") and line < prefix:
-                break
-        out.reverse()
+        for line in _log_lines_for(date):
+            if any(f"[{p}]" in line for p in phones):
+                out.append(line.strip())
         # 脱敏后再截断：与 /api/logs 同口径（日志行内 [手机号] 不落完整号）
         return jsonify({"ok": True, "date": date, "logs": [_mask_log_phones(ln) for ln in out[-50:]]})
 
@@ -2608,8 +2644,8 @@ def create_app():
 
         with suppress(OSError):
             log_fh = open(
-                LOG_FILE, "a", encoding="utf-8", buffering=1
-            )  # 日志不可写时丢弃，不影响签到执行
+                log_path_for(), "a", encoding="utf-8", buffering=1
+            )  # 日志不可写时丢弃，不影响签到执行（按天文件：sign-当天.log）
         try:
             proc = subprocess.Popen(
                 [sys.executable, script, "--only", phone],
@@ -2703,14 +2739,25 @@ def create_app():
     # ---- 日志与状态 ----
     @app.route("/api/logs")
     def api_logs():
-        states, recent = parse_sign_log(LOG_FILE)
+        """签到日志与今日状态。
+
+        ?date=YYYY-MM-DD（可选，仅管理员）：缺省=今天（原行为不变）；
+        指定日期时 logs 为该日日志、states 仍为今日状态（账号表格图标语义不随历史日期变化）。
+        """
+        date = str(request.args.get("date", "")).strip()
+        if date and not _is_valid_date_str(date):
+            return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
+        date = date or datetime.now().strftime("%Y-%m-%d")
+        states, _ = parse_sign_log(log_path_for())  # states 恒为今日（按天文件 = 今天）
+        logs = _log_lines_for(date)
         # 响应层脱敏：states 键与日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）
         return jsonify(
             {
                 "ok": True,
                 "states": {_mask_phone(k): v for k, v in states.items()},
-                "logs": [_mask_log_phones(ln) for ln in recent[-80:]],
-                "log_file": os.path.basename(LOG_FILE),  # 只暴露文件名，不暴露服务器路径
+                "logs": [_mask_log_phones(ln) for ln in logs[-80:]],
+                "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
+                "date": date,
             }
         )
 

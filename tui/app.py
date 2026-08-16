@@ -384,7 +384,8 @@ class YibanTuiApp(App):
         env_path: str = ENV_DEFAULT,
     ):
         super().__init__()
-        self.log_path = log_path
+        # 2026-08-16 日志按天分文件：log_path 参数提供目录（兼容 --log），实际读写 sign-当天.log
+        self.log_path = os.path.join(os.path.dirname(log_path), f"sign-{datetime.now():%Y-%m-%d}.log")
         self.env_path = env_path
         self.accounts = []  # [{'name','phone','password','phone_model','phone_code'}]
         self._editing_row = None  # 编辑模式目标行（None=添加模式）
