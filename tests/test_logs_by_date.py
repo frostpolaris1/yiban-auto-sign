@@ -143,16 +143,17 @@ class LogsByDateTest(unittest.TestCase):
     def test_log_lines_for_missing_file(self):
         self.assertEqual(self.webapp._log_lines_for("2026-08-01"), [])
 
-    # ---- 3. parse_sign_log 兼容按天文件（states 只统计今天）----
-    def test_parse_sign_log_states_today_only(self):
+    # ---- 3. parse_sign_log 兼容按天文件（0.19.6 起仅返回 recent 行，states 语义已移除）----
+    def test_parse_sign_log_returns_recent_only(self):
         today = datetime.now().strftime("%Y-%m-%d")
         self._write_date_log(today, [
             _log_line(today, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
-            _log_line(HIST_DATE, "INFO", "yiban", "[13900139002] ✅ 签到成功"),  # 今天文件里的残留
+            _log_line(today, "DEBUG", "yiban", "[13800138001] 内部细节"),  # DEBUG 应滤掉
+            _log_line(today, "INFO", "werkzeug", 'GET /api/logs'),  # 非 yiban 应滤掉
         ])
-        states, recent = self.webapp.parse_sign_log(self.webapp.log_path_for())
-        self.assertIn("13800138001", states)
-        self.assertNotIn("13900139002", states)  # 历史行不进入今日状态
+        recent = self.webapp.parse_sign_log(self.webapp.log_path_for())
+        self.assertEqual(len(recent), 1)
+        self.assertIn("✅ 签到成功", recent[0])
 
     # ---- 4. API：/api/logs 日期参数 ----
     def _admin_client(self):
@@ -172,8 +173,9 @@ class LogsByDateTest(unittest.TestCase):
         self.assertEqual(data["log_file"], f"sign-{today}.log")
         self.assertEqual(len(data["logs"]), 1)
         self.assertIn("✅ 签到成功", data["logs"][0])
-        # states 为今日状态（账号表格图标语义不变）
-        self.assertEqual(data["states"].get("138****8001"), "✅")
+        # 0.19.6 起 /api/logs 不再返回 states（账号图标事实源为 /api/accounts），
+        # 防止日志符号污染前端状态映射
+        self.assertNotIn("states", data)
 
     def test_api_logs_bad_date_400(self):
         c = self._admin_client()
@@ -189,8 +191,6 @@ class LogsByDateTest(unittest.TestCase):
         self.assertEqual(data["date"], HIST_DATE)
         self.assertEqual(data["log_file"], f"sign-{HIST_DATE}.log")
         self.assertEqual(len(data["logs"]), 1)
-        # states 仍是今日（账号表格图标不随历史日期变化）
-        self.assertIn("states", data)
 
     def test_api_logs_missing_date_empty(self):
         c = self._admin_client()

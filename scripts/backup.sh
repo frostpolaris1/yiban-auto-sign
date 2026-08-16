@@ -43,7 +43,9 @@ APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"          # 项目部署目录
 BACKUP_DIR="${BACKUP_DIR:-/var/backups}"            # 本地备份目录
 RETENTION_DAYS="${RETENTION_DAYS:-30}"              # 保留天数
 REMOTE_BACKUP="${REMOTE_BACKUP:-}"                  # 异机目标，如 user@host:/backup/yiban；留空 = 仅本地
-AGE_PASSPHRASE="${BACKUP_AGE_PASSPHRASE:-}"         # age 对称加密口令（推荐用环境变量/密钥文件注入）
+# gpg 对称加密口令（推荐用环境变量/密钥文件注入；旧名 BACKUP_AGE_PASSPHRASE 兼容回退——
+# 2026-08-16 审查轮：原 AGE_PASSPHRASE 命名与 age 工具混淆，实际用途是 gpg AES-256 对称加密）
+GPG_PASSPHRASE="${BACKUP_GPG_PASSPHRASE:-${BACKUP_AGE_PASSPHRASE:-}}"
 GPG_RECIPIENT="${BACKUP_GPG_RECIPIENT:-}"           # gpg 接收者（公钥 ID），配置后走 gpg 公钥加密
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
@@ -189,7 +191,7 @@ log "本地备份完成：${ARCHIVE}（$(du -h "${ARCHIVE}" | cut -f1)）"
 # 异机加密副本（REMOTE_BACKUP 未配置时跳过）
 # 加密优先级（cron 场景无终端，口令必须可注入，否则跳过加密副本）：
 #   1) BACKUP_GPG_RECIPIENT 已配置 → gpg 公钥加密（无需口令）
-#   2) BACKUP_AGE_PASSPHRASE 已配置 → gpg AES-256 对称加密（口令经 stdin 注入）
+#   2) BACKUP_GPG_PASSPHRASE 已配置 → gpg AES-256 对称加密（口令经 stdin 注入；旧名 BACKUP_AGE_PASSPHRASE 兼容）
 #   3) 终端交互且已装 age → age -p 交互式
 #   4) 均不可用 → 告警并仅保留本地备份
 # ------------------------------------------------------------
@@ -200,10 +202,10 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         gpg --batch --yes --symmetric --cipher-algo AES256 \
             --recipient "${GPG_RECIPIENT}" -o "${ARCHIVE}.gpg" "${ARCHIVE}"
         REMOTE_FILE="${ARCHIVE}.gpg"
-    elif [ -n "${AGE_PASSPHRASE}" ] && command -v gpg > /dev/null 2>&1; then
+    elif [ -n "${GPG_PASSPHRASE}" ] && command -v gpg > /dev/null 2>&1; then
         # gpg 对称加密（非交互，口令从 stdin 读取；解密时用同一口令：
         #   gpg --batch --decrypt --passphrase-fd 0 < yiban-*.tar.gz.gpg > yiban-*.tar.gz）
-        printf '%s\n' "${AGE_PASSPHRASE}" | \
+        printf '%s\n' "${GPG_PASSPHRASE}" | \
             gpg --batch --yes --symmetric --cipher-algo AES256 \
                 --passphrase-fd 0 -o "${ARCHIVE}.gpg" "${ARCHIVE}"
         REMOTE_FILE="${ARCHIVE}.gpg"
@@ -211,7 +213,7 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         age -p -o "${ARCHIVE}.age" "${ARCHIVE}"
         REMOTE_FILE="${ARCHIVE}.age"
     else
-        log "警告：未提供加密口令（BACKUP_AGE_PASSPHRASE）且无 gpg/age，跳过异机加密副本；仅保留本地备份" >&2
+        log "警告：未提供加密口令（BACKUP_GPG_PASSPHRASE）且无 gpg/age，跳过异机加密副本；仅保留本地备份" >&2
     fi
 
     if [ -n "${REMOTE_FILE}" ]; then

@@ -38,6 +38,7 @@ from urllib.parse import urlencode, urlsplit
 
 # 共享模块（同目录）：加密（web/tui/db 共用密钥与密文格式）与 SQLite 数据访问层
 import account_crypto
+import db  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
 import requests
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
@@ -449,13 +450,14 @@ def _load_accounts_from_file():
 
     db 层返回已解密明文；此处只做审核状态过滤。
     """
-    import db
     db.init_db()
     all_accounts = db.load_accounts()
     # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）、
     # 被拒绝账号（status=rejected：管理员审核不通过，不得签到）与待删除账号
     # （deleted：网页端软删除，保留期内可恢复，不参与签到）。
-    # 注意：旧数据可能没有 status 字段（等于通过审核），必须放行。
+    # 注意：此处 "pending"/"rejected" 是账号审核态（web 侧 ACCOUNT_STATUS_*），
+    # 与下方 STATUS_PENDING 等签到状态码是两套语义，勿混用（2026-08-16 审查轮注明）。
+    # 旧数据可能没有 status 字段（等于通过审核），必须放行。
     active_raw = [
         item
         for item in all_accounts
@@ -1382,7 +1384,6 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
         prefs = {}
         if cfg["allow_time_pref"]:
             try:
-                import db
                 prefs = db.get_time_prefs()
             except Exception as e:
                 logger.warning("读取自选时间失败（忽略，走自动分配）: %s", e)

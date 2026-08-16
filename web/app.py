@@ -19,10 +19,12 @@
 """
 
 import argparse
+import calendar
 import contextlib
 import json
 import logging
 import os
+import random
 import re
 import secrets
 import sqlite3
@@ -49,20 +51,19 @@ ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
 STATE_DIR_DEFAULT = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
 LOG_DEFAULT = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
 ENV_DEFAULT = os.environ.get("YIBAN_ENV_FILE", ".env")
-USERS_DEFAULT = os.environ.get("YIBAN_USERS_FILE", "users.json")
 DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
 # 模块级路径（gunicorn 走 create_app() 不执行 main()，需在此初始化；main() 用 --config 等参数覆盖）
-ACCOUNTS_FILE = ACCOUNTS_DEFAULT  # 仅作 JSON→SQLite 自动迁移来源（迁移后改名 .bak）
+ACCOUNTS_FILE = ACCOUNTS_DEFAULT  # 仅作 JSON→SQLite 自动迁移来源（迁移后改名 .bak；users.json 同目录推断，无需单独路径）
 LOG_FILE = LOG_DEFAULT
 ENV_FILE = ENV_DEFAULT
-USERS_FILE = USERS_DEFAULT
 STATE_DIR = STATE_DIR_DEFAULT
 DB_FILE = DB_DEFAULT
 
-# 普通用户账号的审核状态
-STATUS_PENDING = "pending"  # 待审核（不参与定时签到）
-STATUS_ACTIVE = "active"  # 已生效（参与定时签到）
-STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑重新提交）
+# 普通用户账号的审核状态（2026-08-16 审查轮：原 STATUS_PENDING/ACTIVE/REJECTED 与签到状态码
+# STATUS_* 同名异义（历史遗留），改名为 ACCOUNT_STATUS_* 彻底分离命名空间）
+ACCOUNT_STATUS_PENDING = "pending"  # 待审核（不参与定时签到）
+ACCOUNT_STATUS_ACTIVE = "active"  # 已生效（参与定时签到）
+ACCOUNT_STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑重新提交）
 
 # 软删除保留期（天）：管理员删除的账号进入待删除状态，超期自动彻底清除。
 # 唯一来源在 db.py（SOFT_DELETE_RETENTION_DAYS），此处仅引用防双源漂移（2026-08-15 审查）
@@ -197,7 +198,6 @@ SIGN_MIN_INTERVAL = 30
 # 日志格式（与 signin.py / tui/app.py 相同）
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
-STATE_RE = re.compile(r"\[(\d+)\]\s*(✅|❌|🔄|➖)")
 
 # 签到状态码（signin.py 写 sign-state 文件，为状态显示的事实源）与图标/文案映射
 STATUS_SUCCESS = "success"
@@ -209,7 +209,7 @@ STATUS_SKIPPED_WINDOW = "skipped_window"
 STATUS_SKIPPED_NORANGE = "skipped_norange"
 STATUS_PAUSED = "paused"  # 账密异常暂停（signin 熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自暂停签到（调度 v2）
-STATUS_PENDING = "pending"  # 待签（未执行/无记录）；注意与第 63 行账号审核态 STATUS_PENDING 同名同值（历史遗留，重命名见 TODO）
+STATUS_PENDING = "pending"  # 待签（未执行/无记录）；账号审核态已改名为 ACCOUNT_STATUS_PENDING（2026-08-16），命名空间已分离
 
 STATUS_ICON = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
@@ -308,23 +308,23 @@ def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
 
 
 def parse_sign_log(path):
-    """解析签到日志：返回 (今日各账号状态 dict, 最近日志行列表)。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    states = {}
+    """解析签到日志：返回最近日志行列表（yiban 非 DEBUG 行）。
+
+    2026-08-16 审查轮：原返回值 (states, recent) 的 states（日志符号 → 图标）从未被
+    正确消费——账号状态的事实源是 sign-state 文件（load_sign_state，/api/accounts），
+    日志符号与前端状态码语义不符，曾被 /api/logs 透传污染前端图标/统计卡（历史遗留）。
+    现与 tui 同构：仅返回 recent 行。
+    """
     recent = []
     for line in _tail_lines(path):
         m = SIGN_LOG_RE.match(line.strip())
         if not m:
             continue
-        date, level, logger_name, msg = m.groups()
+        _date, level, logger_name, _msg = m.groups()
         if logger_name != "yiban" or level == "DEBUG":
             continue
         recent.append(line.strip())
-        if date == today:
-            sm = STATE_RE.search(msg)
-            if sm:
-                states[sm.group(1)] = sm.group(2)
-    return states, recent
+    return recent
 
 
 def _is_valid_date_str(s):
@@ -659,9 +659,7 @@ def _estimate_slot(phone):
         lo, hi = valid[bi]
         return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
     # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
-    import random as _rnd
-
-    z = _rnd.Random(str(phone)).gauss(0, 1)
+    z = random.Random(str(phone)).gauss(0, 1)
     center = max(eff_lo, min(eff_hi, eff_lo + span * 0.5 + span * 0.20 * z))
     return f"约 {fmt(center)}", "（每日波动约 ±10 分钟）"
 
@@ -685,7 +683,7 @@ def mask_account(acc, index, masked=True):
         # 普通用户体系：owner=提交者邮箱（'admin'=管理员添加），status=待审核/已生效
         "owner": _mask_email(owner) if masked else owner,
         "owner_display": _owner_display_of(owner),
-        "status": acc.get("status", STATUS_ACTIVE),
+        "status": acc.get("status", ACCOUNT_STATUS_ACTIVE),
         "reject_reason": acc.get("reject_reason", ""),
         "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
         # 软删除：管理员删除后进入待删除状态（保留期内可恢复）
@@ -788,8 +786,9 @@ def sign_status(now=None):
     if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
         return "🌙 今日无需打卡（周日）", "#565f89"
-    start_h, start_m = _sign_window()[0]
-    end_h, end_m = _sign_window()[1]
+    sw = _sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
+    start_h, start_m = sw[0]
+    end_h, end_m = sw[1]
     start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
     end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     if now < start:
@@ -855,8 +854,8 @@ def _notify_capacity_once(kind, limit, label):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-# 2026-08-16 日志按天分文件 + 管理员按日期查看日志 + 用户日历历史可查（0.19.5）
-APP_VERSION = "0.19.5"
+# 2026-08-16 审查轮：命名/死代码/文档一致性修复（审核态常量改名、行内导入清理、TUI 窗口覆盖等）
+APP_VERSION = "0.19.6"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1417,10 +1416,10 @@ def create_app():
                         )
                     logger.info("为邮箱 %s 自动注册用户（管理员设置初始密码）", _mask_email(email))
                 clean["owner"] = email
-                clean["status"] = STATUS_PENDING
+                clean["status"] = ACCOUNT_STATUS_PENDING
             else:
                 clean["owner"] = "admin"
-                clean["status"] = STATUS_ACTIVE
+                clean["status"] = ACCOUNT_STATUS_ACTIVE
             try:
                 db.add_account(clean)
             except sqlite3.IntegrityError:
@@ -1490,7 +1489,7 @@ def create_app():
                 clean["phone_code"] = old.get("phone_code", "")
             # 归属与审核状态保持不变（管理员编辑不改变提交者与生效状态）
             clean["owner"] = old.get("owner", "admin")
-            clean["status"] = old.get("status", STATUS_ACTIVE)
+            clean["status"] = old.get("status", ACCOUNT_STATUS_ACTIVE)
             try:
                 result = db.update_account(
                     old["id"],
@@ -1558,14 +1557,14 @@ def create_app():
                     if action == "approve":
                         # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
                         if not acc.get("deleted") and acc.get("status") in (
-                            STATUS_PENDING,
-                            STATUS_REJECTED,
+                            ACCOUNT_STATUS_PENDING,
+                            ACCOUNT_STATUS_REJECTED,
                         ):
-                            db.update_account_status(acc["id"], STATUS_ACTIVE, reject_reason="")
+                            db.update_account_status(acc["id"], ACCOUNT_STATUS_ACTIVE, reject_reason="")
                             done += 1
                     elif action == "reject":
-                        if acc.get("status") in (STATUS_PENDING, STATUS_REJECTED):
-                            db.update_account_status(acc["id"], STATUS_REJECTED, reason)
+                        if acc.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
+                            db.update_account_status(acc["id"], ACCOUNT_STATUS_REJECTED, reason)
                             done += 1
                     elif action == "purge":
                         # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
@@ -1718,9 +1717,9 @@ def create_app():
             acc = accounts[idx]
             if action == "approve":
                 # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
-                if acc.get("deleted") or acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
+                if acc.get("deleted") or acc.get("status") not in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
                     return jsonify({"error": "该账号无需审核"}), 400
-                db.update_account_status(acc["id"], STATUS_ACTIVE, reject_reason="")
+                db.update_account_status(acc["id"], ACCOUNT_STATUS_ACTIVE, reject_reason="")
                 db.audit(
                     session.get("username") or "?",
                     "account_review",
@@ -1731,7 +1730,7 @@ def create_app():
                 # 回显脱敏（与列表口径一致，防响应混入完整 PII；管理员详情页可取完整号）
                 return jsonify({"ok": True, "msg": f"已通过 {_mask_phone(acc.get('phone', ''))}，将参与定时签到"})
             if action == "reject":
-                if acc.get("status") not in (STATUS_PENDING, STATUS_REJECTED):
+                if acc.get("status") not in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
                     return jsonify({"error": "该账号无需拒绝"}), 400
                 # 理由清洗：换行/控制字符 → 空格（防日志注入伪造日志行）
                 reason = (
@@ -1740,7 +1739,7 @@ def create_app():
                     .replace("\r", " ")
                     .replace("\n", " ")
                 )
-                db.update_account_status(acc["id"], STATUS_REJECTED, reason)
+                db.update_account_status(acc["id"], ACCOUNT_STATUS_REJECTED, reason)
                 db.audit(
                     session.get("username") or "?",
                     "account_review",
@@ -1812,12 +1811,12 @@ def create_app():
         排队说明：签到按 accounts.json 顺序执行（队列重试模式）；
         queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
         """
-        _, recent = parse_sign_log(log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
+        recent = parse_sign_log(log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
         states = load_sign_state()  # 今日状态事实源（signin.py 写入）
         # 参与排队队列的账号：已生效（active，pending 不参与签到）且未软删除、未自暂停
         active = [
             a for a in accounts
-            if a.get("status") == STATUS_ACTIVE and not a.get("deleted")
+            if a.get("status") == ACCOUNT_STATUS_ACTIVE and not a.get("deleted")
             and not a.get("user_paused", False)
         ]
         # 执行顺序（调度 v2，2026-08-15 改进）：优先按今日计划时间（sign-state scheduled 字段，
@@ -1849,7 +1848,7 @@ def create_app():
             ]
             # 排队：按今日计划时间排序的队列中，自己之前未了结的账号数（含自暂停排除）
             queue_ahead = 0
-            if acc.get("status") == STATUS_ACTIVE and not acc.get("user_paused", False):
+            if acc.get("status") == ACCOUNT_STATUS_ACTIVE and not acc.get("user_paused", False):
                 queue_ahead = queue_before.get(phone, 0)
             st = states.get(phone, {})
             st_status = st.get("status", STATUS_PENDING) if isinstance(st, dict) else STATUS_PENDING
@@ -1860,7 +1859,7 @@ def create_app():
                     "display_name": acc.get("name") or f"账号{i + 1}",
                     "phone": phone,
                     "phone_model": acc.get("phone_model", ""),
-                    "status": acc.get("status", STATUS_ACTIVE),
+                    "status": acc.get("status", ACCOUNT_STATUS_ACTIVE),
                     "reject_reason": acc.get("reject_reason", ""),
                     "state_icon": STATUS_ICON.get(st_status, "⏳"),
                     "state_status": st_status,  # 状态码（前端按码映射文案）
@@ -1896,7 +1895,7 @@ def create_app():
         accounts = load_accounts()
         for idx in _my_account_indices_of(accounts):
             acc = accounts[idx]
-            if not acc.get("deleted") and acc.get("status") == STATUS_ACTIVE:
+            if not acc.get("deleted") and acc.get("status") == ACCOUNT_STATUS_ACTIVE:
                 return acc.get("phone", "")
         return None
 
@@ -2100,7 +2099,7 @@ def create_app():
             clean["owner"] = (
                 "admin" if _current_role() == "admin" else session.get("username", "").lower()
             )
-            clean["status"] = STATUS_PENDING if _current_role() != "admin" else STATUS_ACTIVE
+            clean["status"] = ACCOUNT_STATUS_PENDING if _current_role() != "admin" else ACCOUNT_STATUS_ACTIVE
             try:
                 db.add_account(clean)
             except sqlite3.IntegrityError:
@@ -2127,9 +2126,7 @@ def create_app():
         accounts = load_accounts()
         indices = _my_account_indices()
         phones = [str(accounts[i].get("phone", "")) for i in indices]
-        import calendar as _cal
-
-        days_in_month = _cal.monthrange(year, mon)[1]
+        days_in_month = calendar.monthrange(year, mon)[1]
         result = {f"{year:04d}-{mon:02d}-{d:02d}": {} for d in range(1, days_in_month + 1)}
         # 聚合读取：单次目录遍历取本月全部日文件（替代每天一次 exists+open 共 30 次 IO）
         prefix = f"sign-daily-{year:04d}-{mon:02d}-"
@@ -2208,12 +2205,14 @@ def create_app():
             clean["owner"] = old.get("owner", "")
             # 被拒绝的账号编辑后 = 重新提交审核（回 pending，清除拒绝理由）
             clean["status"] = (
-                STATUS_PENDING
-                if old.get("status") == STATUS_REJECTED
-                else old.get("status", STATUS_PENDING)
+                ACCOUNT_STATUS_PENDING
+                if old.get("status") == ACCOUNT_STATUS_REJECTED
+                else old.get("status", ACCOUNT_STATUS_PENDING)
             )
-            if clean["status"] == STATUS_PENDING:
-                clean.pop("reject_reason", None)
+            if clean["status"] == ACCOUNT_STATUS_PENDING:
+                # 2026-08-16 审查轮修复：原 clean.pop("reject_reason") 对不存在的键是空操作，
+                # 导致重新提交后旧拒绝理由残留（注释意图与实际不符）；显式置空随 update 落库
+                clean["reject_reason"] = ""
             try:
                 db.update_account(old["id"], clean)
             except sqlite3.IntegrityError:
@@ -2227,7 +2226,7 @@ def create_app():
             # 用户改密码/识别码后清除熔断暂停，立即恢复签到
             clear_fuse_pause(clean["phone"])
             logger.info("用户 %s 编辑账号 %s", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
-            if old.get("status") == STATUS_REJECTED:
+            if old.get("status") == ACCOUNT_STATUS_REJECTED:
                 return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
             return jsonify({"ok": True, "msg": "已保存"})
 
@@ -2342,9 +2341,6 @@ def create_app():
             return None
         return _effective_role(session.get("username"), session.get("pw_version"))
 
-    def _find_user(users, email):
-        return next((u for u in users if u.get("email") == email), None)
-
     @app.route("/api/users")
     def api_users():
         """用户列表（完整邮箱/角色/注册时间/账号数/待审核账号数）+ 内置管理员信息。"""
@@ -2365,7 +2361,7 @@ def create_app():
                     1
                     for a in accounts
                     if a.get("owner") == u.get("email")
-                    and a.get("status") == STATUS_PENDING
+                    and a.get("status") == ACCOUNT_STATUS_PENDING
                     and not a.get("deleted")
                 ),
             }
@@ -2411,7 +2407,7 @@ def create_app():
             accounts = load_accounts() if action == "set_admin" else None
             done = 0
             for email in emails:
-                target = _find_user(users, email)
+                target = next((u for u in users if u.get("email") == email), None)
                 if not target or email == builtin:  # 内置管理员不可批量操作
                     continue
                 if action == "set_admin":
@@ -2419,13 +2415,13 @@ def create_app():
                     # 正式用户判定仅 status==active 算（rejected 不算），且软删除不算
                     has_pending = any(
                         a.get("owner") == email
-                        and a.get("status") == STATUS_PENDING
+                        and a.get("status") == ACCOUNT_STATUS_PENDING
                         and not a.get("deleted")
                         for a in accounts
                     )
                     has_active = any(
                         a.get("owner") == email
-                        and a.get("status") == STATUS_ACTIVE
+                        and a.get("status") == ACCOUNT_STATUS_ACTIVE
                         and not a.get("deleted")
                         for a in accounts
                     )
@@ -2500,13 +2496,13 @@ def create_app():
                 accounts = load_accounts()
                 has_pending = any(
                     a.get("owner") == email
-                    and a.get("status") == STATUS_PENDING
+                    and a.get("status") == ACCOUNT_STATUS_PENDING
                     and not a.get("deleted")
                     for a in accounts
                 )
                 has_active = any(
                     a.get("owner") == email
-                    and a.get("status") == STATUS_ACTIVE
+                    and a.get("status") == ACCOUNT_STATUS_ACTIVE
                     and not a.get("deleted")
                     for a in accounts
                 )
@@ -2615,7 +2611,7 @@ def create_app():
         if idx is None:
             return False, f"账号 {phone} 不在配置中"
         acc = accounts[idx]
-        if acc.get("deleted") or acc.get("status") != STATUS_ACTIVE:
+        if acc.get("deleted") or acc.get("status") != ACCOUNT_STATUS_ACTIVE:
             return False, f"账号 {phone} 不可手动签到（未生效或已删除）"
         with _signin_lock:  # 原子检查+占位：并发请求不能同时通过防抖
             now = time.time()
@@ -2640,9 +2636,7 @@ def create_app():
         if account_crypto.has_key(ENV_FILE) and not env.get("YIBAN_ACCOUNTS_KEY"):
             env["YIBAN_ACCOUNTS_KEY"] = account_crypto.load_key(ENV_FILE).hex()
         log_fh = None
-        from contextlib import suppress
-
-        with suppress(OSError):
+        with contextlib.suppress(OSError):
             log_fh = open(
                 log_path_for(), "a", encoding="utf-8", buffering=1
             )  # 日志不可写时丢弃，不影响签到执行（按天文件：sign-当天.log）
@@ -2698,7 +2692,7 @@ def create_app():
             if not isinstance(i, int) or not 0 <= i < len(accounts):
                 continue
             acc = accounts[i]
-            if acc.get("deleted") or acc.get("status") != STATUS_ACTIVE:
+            if acc.get("deleted") or acc.get("status") != ACCOUNT_STATUS_ACTIVE:
                 continue
             phone = str(acc.get("phone", "")).strip()
             if phone:
@@ -2748,13 +2742,14 @@ def create_app():
         if date and not _is_valid_date_str(date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
         date = date or datetime.now().strftime("%Y-%m-%d")
-        states, _ = parse_sign_log(log_path_for())  # states 恒为今日（按天文件 = 今天）
         logs = _log_lines_for(date)
-        # 响应层脱敏：states 键与日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）
+        # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
+        # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
+        # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
+        # 符号污染（2026-08-16 审查轮修复）。
         return jsonify(
             {
                 "ok": True,
-                "states": {_mask_phone(k): v for k, v in states.items()},
                 "logs": [_mask_log_phones(ln) for ln in logs[-80:]],
                 "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
                 "date": date,
@@ -2937,7 +2932,7 @@ def create_app():
 # 入口
 # ---------------------------------------------------------------------------
 def main():
-    global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, USERS_FILE, STATE_DIR, DB_FILE
+    global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, STATE_DIR, DB_FILE
     parser = argparse.ArgumentParser(description="易班自动签到网页管理系统")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0）")
     # 非常见端口（默认 17892）：避开 8000/5000/3000 等常见端口，防止与其他部署冲突
@@ -2948,9 +2943,6 @@ def main():
     parser.add_argument("--log", default=LOG_DEFAULT, help=f"签到日志路径（默认: {LOG_DEFAULT}）")
     parser.add_argument("--env", default=ENV_DEFAULT, help=f".env 路径（默认: {ENV_DEFAULT}）")
     parser.add_argument(
-        "--users", default=USERS_DEFAULT, help=f"用户表 JSON 路径（迁移来源，默认: {USERS_DEFAULT}）"
-    )
-    parser.add_argument(
         "--db", default=DB_DEFAULT, help=f"SQLite 数据库路径（默认: {DB_DEFAULT}）"
     )
     parser.add_argument("--debug", action="store_true", help="Flask 调试模式")
@@ -2958,7 +2950,6 @@ def main():
     ACCOUNTS_FILE = args.config
     LOG_FILE = args.log
     ENV_FILE = args.env
-    USERS_FILE = args.users
     DB_FILE = args.db
     STATE_DIR = STATE_DIR_DEFAULT
 

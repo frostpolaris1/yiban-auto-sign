@@ -191,17 +191,16 @@ EOF
 
 账号已通过 TUI / 网页写入数据库（`yiban.db`），`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`，向后兼容）。
 
-#### 5. 创建运行脚本
+#### 5. 运行脚本（仓库已自带，无需手写）
+
+仓库根目录的 `run.sh` 已包含完整运行逻辑：单实例锁（防止 07:10 备用签到与 06:31 进行中的进程并发触发风控）、状态文件防重复（当天成功后自动跳过）、总超时保护、按天日志（`/var/log/yiban/sign-YYYY-MM-DD.log`）。直接使用即可：
 
 ```bash
-cat > /opt/yiban-auto-sign/run.sh << 'EOF'
-#!/bin/bash
-cd /opt/yiban-auto-sign
-export $(cat .env | xargs)
-/usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign-$(date +%F).log 2>&1
-EOF
 chmod +x /opt/yiban-auto-sign/run.sh
 mkdir -p /var/log/yiban
+# 如确需自定义，请基于仓库版本修改（勿用下面这段简化版覆盖：缺少并发/防重复/超时保护）
+# 简化版仅供理解核心调用：
+#   export $(cat .env | xargs) && /usr/bin/python3 scripts/signin.py >> /var/log/yiban/sign-$(date +%F).log 2>&1
 ```
 
 #### 6. 配置 crontab 定时任务
@@ -226,7 +225,7 @@ crontab -e
 
 ```bash
 bash /opt/yiban-auto-sign/run.sh
-tail -20 /var/log/yiban/sign.log
+tail -20 /var/log/yiban/sign-$(date +%F).log
 ```
 
 
@@ -317,7 +316,7 @@ python3 -m web
 - **审核**：普通用户提交的账号 → 通过/拒绝（附理由）
 - **用户管理**：查看注册用户、设为/取消管理员（仅主管理员）、重置密码、清空账号、完全删除；权限分级（主管理员 / 注册管理员 / 普通用户）
 - **设置**：随机延迟开关、签到模式（列表顺序/列表随机）、全局公告、修改管理员账密
-- **日志与状态**：签到日志实时刷新（手机号打码）、今日各账号状态图标、连通性检测、服务器时间
+- **日志与状态**：签到日志实时刷新（手机号打码）、可按日期查看任意一天的历史日志（0.19.5+，日志按天分文件）、今日各账号状态图标、连通性检测、服务器时间
 
 > 🔒 安全设计：登录失败限速锁定（5 次/5 分钟）、CSRF 防护、密码 scrypt 哈希、会话 HttpOnly/SameSite、列表手机号/邮箱脱敏、密码明文永不下发前端。
 
@@ -460,6 +459,16 @@ on:
 | `YIBAN_PHONE_MODEL` | 设备型号（如 `Vivo-XXXX`），账号未配置设备信息时全局回退 | 视情况 |
 | `YIBAN_PHONE_CODE` | 设备唯一识别码（64位十六进制字符串），账号未配置设备信息时全局回退 | 视情况 |
 | `YIBAN_NOTIFY_URL` | 通知 webhook URL | 可选 |
+| `YIBAN_SIGN_START` / `YIBAN_SIGN_END` | 签到窗口（`HH:MM`，默认 `06:30` / `07:50`；网页「系统设置」修改后写入） | 可选 |
+| `YIBAN_SUNDAY_SIGN` | 周日签到开关：`1`=周日也执行，`0`/缺省=周日跳过（网页「系统设置」开关） | 可选 |
+| `YIBAN_SIGN_ORDER` | 调度排序：`sequence`（列表顺序，默认）/ `random`（每天打乱） | 可选 |
+| `YIBAN_SIGN_DIST` | 调度分布：`uniform`（均匀，默认）/ `normal`（钟形高峰） | 可选 |
+| `YIBAN_WINDOW_EDGE_SEC` | 签到窗口首尾缓冲秒数（默认 `60`；防止踩点签到） | 可选 |
+| `YIBAN_BLOCK_CAP` | 错峰调度块容量（每块最多人数，默认 `15`；超出向后顺延/压缩模式） | 可选 |
+| `YIBAN_ALLOW_TIME_PREF` | 用户自选时间片总开关：`1`=开启（网页开放自选，默认关） | 可选 |
+| `YIBAN_MAX_USERS` / `YIBAN_MAX_ACCOUNTS` | 容量上限（默认 `200` 用户 / `500` 账号；`0`=不限） | 可选 |
+
+> 调度 v2 其余内部参数（正态 μ/σ 范围、重试最小间隔、容量预检耗时等）见代码 `scripts/signin.py` 的 `_schedule_config()`，网页「系统设置」不展示的项一般无需调整。
 
 ### 随机延迟（防风控）与容量预估
 

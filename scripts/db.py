@@ -17,6 +17,9 @@ import os
 import sqlite3
 import threading
 
+# 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
+import account_crypto
+
 logger = logging.getLogger("yiban.db")
 
 DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
@@ -157,11 +160,7 @@ def _maybe_migrate(conn, json_base):
             #   明文 str → 加密（复用 account_crypto）；
             #   密文 dict（0.16 JSON 嵌套对象）→ json.dumps 序列化；
             #   密文 JSON 串 → 原样。
-            try:
-                import account_crypto
-            except ImportError:
-                account_crypto = None
-            key = account_crypto.load_key(_env_file) if account_crypto else None
+            key = account_crypto.load_key(_env_file)
             with _conn_lock, conn:
                 for i, a in enumerate(accounts):
                     password = a.get("password", "") or ""
@@ -225,7 +224,6 @@ def _maybe_migrate(conn, json_base):
 def _rename_backup(path):
     """JSON 迁移成功后改名保留（逃生门），避免被旧代码误写回。"""
     if os.path.exists(path):
-        import datetime
         bak = f"{path}.bak-{datetime.datetime.now().strftime('%Y%m%d')}"
         if not os.path.exists(bak):
             os.rename(path, bak)
@@ -247,7 +245,6 @@ def _row_to_account(row):
             except (TypeError, ValueError):
                 obj = None
             if isinstance(obj, dict) and "ct" in obj:
-                import account_crypto
                 if not account_crypto.has_key(_env_file):
                     raise RuntimeError(
                         "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
@@ -267,14 +264,12 @@ def _row_to_account(row):
 def _is_encrypted_value(v):
     """字段值是否为密文（dict 密文对象，或密文 JSON 串）——迁移/写路径判定用。"""
     if isinstance(v, dict):
-        import account_crypto
         return account_crypto.is_encrypted(v)
     if isinstance(v, str):
         try:
             obj = json.loads(v)
         except (TypeError, ValueError):
             return False
-        import account_crypto
         return account_crypto.is_encrypted(obj)
     return False
 
@@ -288,7 +283,6 @@ def _encrypt_field(value, phone):
         return ""
     if isinstance(value, dict):
         return json.dumps(value)  # 已是密文对象
-    import account_crypto
     key = account_crypto.load_key(_env_file)
     return json.dumps(account_crypto.encrypt_password(str(value), key, phone))
 
@@ -580,7 +574,6 @@ def audit(username, action, target="", detail=""):
     try:
         with _conn_lock:
             conn = get_conn()
-            import datetime
             conn.execute(
                 "INSERT INTO audit_logs (ts, username, action, target, detail) VALUES (?,?,?,?,?)",
                 (
@@ -656,7 +649,6 @@ def last_pause_at(username):
 def _audit_cleanup(conn):
     """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。"""
     try:
-        import datetime
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
         conn.commit()
