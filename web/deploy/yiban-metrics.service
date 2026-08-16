@@ -1,0 +1,26 @@
+# ============================================================
+# yiban-metrics.service —— 服务器性能采集（oneshot，由 yiban-metrics.timer 触发）
+# ============================================================
+# 安装：
+#   sudo cp web/deploy/yiban-metrics.service /etc/systemd/system/
+#   sudo cp web/deploy/yiban-metrics.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now yiban-metrics.timer
+#
+# 说明：
+#   - 每 5 秒由 timer 触发一次，把 CPU/内存/磁盘/网络/负载写入 server_metrics 表。
+#   - 以 yiban 用户运行，与 yiban-web 同一数据目录，避免 db 文件属主错乱。
+#   - 依赖 psutil（requirements.txt 已加入）；若未安装先执行：
+#       /opt/yiban-auto-sign/.venv/bin/pip install -r /opt/yiban-auto-sign/requirements.txt
+
+[Unit]
+Description=Yiban server metrics collector (one-shot)
+After=network.target
+
+[Service]
+Type=oneshot
+User=yiban
+Group=yiban
+WorkingDirectory=/opt/yiban-auto-sign
+EnvironmentFile=-/etc/yiban/accounts-key
+ExecStart=/opt/yiban-auto-sign/.venv/bin/python3 /opt/yiban-auto-sign/scripts/collect_server_metrics.py --env /opt/yiban-auto-sign/.env
