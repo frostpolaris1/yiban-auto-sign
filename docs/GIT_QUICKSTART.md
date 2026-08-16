@@ -1,6 +1,6 @@
 # Git 快速上手（GIT QUICKSTART）
 
-面向不熟悉 Git 的协作者。完整的协作流程与分支规范见 [WORKFLOW.md](./WORKFLOW.md)，贡献须知见 [CONTRIBUTING.md](../CONTRIBUTING.md)。（注：WORKFLOW.md / CONTRIBUTING.md 尚未入库，待仓库决策后开放，见 docs/TODO.md）
+面向不熟悉 Git 的协作者。分支模型见下文「与项目分支模型对应」，提交规范见「提交信息规范」两节（本仓库为单人维护项目，更完整的团队协作文档本地保留不公开）。
 
 ## 首次准备
 
