@@ -183,6 +183,22 @@ class AdversarialTest(unittest.TestCase):
         r = c.post("/api/register", json={"email": "not-an-email", "password": "StrongPass123!"})
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
 
+    def test_self_delete_endpoint_soft_deletes_user_and_accounts(self):
+        self._new_user("dereg@test.local", "13800138007")
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "dereg@test.local", USER_PASS)
+        r = c.post("/api/me/delete", json={"password": USER_PASS}, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIsNone(db.find_user("dereg@test.local"))
+        self.assertIsNotNone(db.find_user_any("dereg@test.local"))
+        self.assertEqual(db.load_accounts(), [])
+
+    def test_self_delete_builtin_admin_forbidden(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.post("/api/me/delete", json={"password": ADMIN_PASS}, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
     def test_log_date_path_traversal_rejected(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)
