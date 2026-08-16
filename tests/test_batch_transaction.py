@@ -158,8 +158,9 @@ class BatchTransactionTest(unittest.TestCase):
     # ---- 4. API 同一批量恢复同一用户多个已删除账号被拦截 ----
     def test_api_batch_restore_duplicate_same_owner_blocked(self):
         id1 = self._add_account("user1@test.local", "13800138005")
-        id2 = self._add_account("user1@test.local", "13900139006")
         db.set_account_deleted(id1, 1, "2026-08-16T00:00:00")
+        # 第一个已软删除后，第二个同 owner 账号可以创建
+        id2 = self._add_account("user1@test.local", "13900139006")
         db.set_account_deleted(id2, 1, "2026-08-16T00:00:00")
         c = self._admin_client()
         token = self._login(c, "admin", ADMIN_PASS)

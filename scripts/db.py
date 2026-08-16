@@ -31,7 +31,19 @@ SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+
+class DuplicatePhoneError(Exception):
+    """手机号已存在（accounts.phone 唯一约束冲突）。"""
+
+
+class DuplicateOwnerError(Exception):
+    """该用户已有一个未删除账号（accounts.owner 部分唯一索引冲突）。"""
+
+
+class MigrationDeferred(Exception):
+    """迁移暂缓：本次不应用，下次启动重试（用于可选迁移遇到需人工处理的数据）。"""
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
 _conn = None
@@ -165,6 +177,28 @@ def migrate_v1(conn):
     _ensure_column(conn, "accounts", "user_paused", "user_paused INTEGER NOT NULL DEFAULT 0")
 
 
+def migrate_v2(conn):
+    """v2：为普通用户“每人限 1 账号”创建部分唯一索引（可选/延后）。
+
+    若存在历史重复数据，抛出 MigrationDeferred，不创建索引、不 bump 版本；
+    人工清理后下次启动自动重试。
+    """
+    rows = conn.execute(
+        "SELECT owner, COUNT(*) AS cnt FROM accounts "
+        "WHERE deleted=0 AND owner NOT IN ('', 'admin') "
+        "GROUP BY owner HAVING COUNT(*) > 1"
+    ).fetchall()
+    if rows:
+        dup = ", ".join(f"{r['owner']}({r['cnt']})" for r in rows)
+        logger.warning("检测到重复 owner，跳过唯一索引创建（需人工清理后重启重试）: %s", dup)
+        raise MigrationDeferred("存在重复 owner，唯一索引延后创建")
+    _ensure_index(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_live "
+        "ON accounts(owner) WHERE deleted=0 AND owner != '' AND owner != 'admin'",
+    )
+
+
 def _maybe_add_account_columns(conn):
     """兼容旧入口：v1 迁移的薄封装（行为由 migrate_v1 负责）。"""
     migrate_v1(conn)
@@ -172,9 +206,10 @@ def _maybe_add_account_columns(conn):
 
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
-# - 可选迁移：未来/非关键能力，失败只告警。
+# - 可选迁移：未来/非关键能力，失败只告警或延后重试。
 _MIGRATIONS = [
-    (SCHEMA_VERSION, "v1_add_account_user_paused", migrate_v1, True),
+    (1, "v1_add_account_user_paused", migrate_v1, True),
+    (2, "v2_unique_owner_live", migrate_v2, False),
 ]
 
 
@@ -182,7 +217,8 @@ def _run_migrations(conn):
     """按 PRAGMA user_version 顺序执行未应用的迁移。
 
     核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动）；
-    可选迁移失败只告警并停止后续迁移，不阻断启动。
+    可选迁移失败只告警并停止后续迁移，不阻断启动；
+    可选迁移抛 MigrationDeferred 时视为“延后”，下次启动重试。
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for target_version, name, fn, is_core in _MIGRATIONS:
@@ -194,6 +230,9 @@ def _run_migrations(conn):
             conn.commit()
             version = target_version
             logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
+        except MigrationDeferred as e:
+            logger.warning("可选 schema 迁移延后: %s: %s", name, e)
+            break
         except Exception as e:
             if is_core:
                 logger.error("核心 schema 迁移失败: %s: %s", name, e)
@@ -403,6 +442,16 @@ def _next_sort_order(conn):
     return row["n"]
 
 
+def _convert_integrity_error(e):
+    """把 sqlite3.IntegrityError 转换为可区分异常；无法识别则原样抛出。"""
+    msg = str(e)
+    if "accounts.owner" in msg:
+        raise DuplicateOwnerError("该用户已有一个未删除账号") from e
+    if "accounts.phone" in msg:
+        raise DuplicatePhoneError("手机号已存在") from e
+    raise e
+
+
 def add_account(fields):
     """新增账号（fields 为业务层明文 dict），返回新 id。
 
@@ -432,6 +481,9 @@ def add_account(fields):
             new_id = cur.lastrowid
             conn.commit()
             return new_id
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        _convert_integrity_error(e)
     except Exception:
         conn.rollback()
         raise
@@ -481,7 +533,10 @@ def update_account(account_id, fields, expect_snapshot=None):
         if not sets:
             return True
         vals.append(account_id)
-        conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+        try:
+            conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+        except sqlite3.IntegrityError as e:
+            _convert_integrity_error(e)
         return True
 
 
@@ -573,23 +628,26 @@ def replace_accounts(accounts):
         keep = {a.get("phone", "") for a in accounts}
         _delete_time_prefs_by_phones(conn, [r["phone"] for r in old if r["phone"] not in keep])
         for i, a in enumerate(accounts):
-            conn.execute(
-                "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    i + 1,
-                    a.get("name", ""),
-                    a.get("phone", ""),
-                    _encrypt_field(a.get("password"), a.get("phone", "")),
-                    a.get("phone_model", ""),
-                    _encrypt_field(a.get("phone_code"), a.get("phone", "")),
-                    a.get("owner", "admin"),
-                    a.get("status", "active"),
-                    a.get("reject_reason", ""),
-                    1 if a.get("deleted") else 0,
-                    a.get("deleted_at", ""),
-                ),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        i + 1,
+                        a.get("name", ""),
+                        a.get("phone", ""),
+                        _encrypt_field(a.get("password"), a.get("phone", "")),
+                        a.get("phone_model", ""),
+                        _encrypt_field(a.get("phone_code"), a.get("phone", "")),
+                        a.get("owner", "admin"),
+                        a.get("status", "active"),
+                        a.get("reject_reason", ""),
+                        1 if a.get("deleted") else 0,
+                        a.get("deleted_at", ""),
+                    ),
+                )
+            except sqlite3.IntegrityError as e:
+                _convert_integrity_error(e)
     return len(accounts)
 
 
@@ -615,10 +673,13 @@ def batch_account_ops(ops):
                     )
                 elif kind == "set_deleted":
                     _, account_id, deleted, deleted_at = op
-                    conn.execute(
-                        "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
-                        (1 if deleted else 0, deleted_at, account_id),
-                    )
+                    try:
+                        conn.execute(
+                            "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
+                            (1 if deleted else 0, deleted_at, account_id),
+                        )
+                    except sqlite3.IntegrityError as e:
+                        _convert_integrity_error(e)
                 elif kind == "purge":
                     _, account_id = op
                     row = conn.execute(

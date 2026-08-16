@@ -1428,6 +1428,10 @@ def create_app():
                 clean["status"] = ACCOUNT_STATUS_ACTIVE
             try:
                 db.add_account(clean)
+            except db.DuplicatePhoneError:
+                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
+            except db.DuplicateOwnerError:
+                return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
             except sqlite3.IntegrityError:
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发重复兜底
             db.audit(
@@ -1502,6 +1506,10 @@ def create_app():
                     clean,
                     expect_snapshot=snapshot if isinstance(snapshot, dict) else None,
                 )
+            except db.DuplicatePhoneError:
+                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
+            except db.DuplicateOwnerError:
+                return jsonify({"error": "该用户已有一个账号，无需重复添加"}), 400
             except sqlite3.IntegrityError:
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400  # 并发改号兜底
             if result is False:
@@ -1591,6 +1599,14 @@ def create_app():
             if ops:
                 try:
                     db.batch_account_ops(ops)
+                except db.DuplicateOwnerError:
+                    db.audit(
+                        session.get("username") or "?",
+                        "account_batch",
+                        action,
+                        "失败，已回滚（该用户已有一个账号）",
+                    )
+                    return jsonify({"error": "批量操作失败，已全部回滚（该用户已有一个账号）"}), 400
                 except Exception as e:
                     logger.error("批量%s账号失败: %s（已回滚）", action, e)
                     db.audit(

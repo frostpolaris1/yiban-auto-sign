@@ -13,7 +13,6 @@ import datetime
 import json
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -198,11 +197,11 @@ class SmokeTest(unittest.TestCase):
     def test_phone_unique_conflict(self):
         self._init_db()
         db.add_account({"name": "A", "phone": "13800138000", "password": "p1", "status": "active"})
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(db.DuplicatePhoneError):
             db.add_account({"name": "B", "phone": "13800138000", "password": "p2"})
         id2 = db.add_account({"name": "B", "phone": "13900139000", "password": "p2", "status": "active"})
         # 改手机号撞他人 UNIQUE（改自己的号不冲突，排除自身）
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(db.DuplicatePhoneError):
             db.update_account(id2, {"phone": "13800138000"})
         db.update_account(id2, {"phone": "13900139000"})  # 原号不改，不冲突
 
