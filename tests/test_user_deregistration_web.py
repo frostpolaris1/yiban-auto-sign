@@ -220,6 +220,51 @@ class UserDeregistrationWebTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.get_json()["items"], [])
 
+    # ---- 管理员手动清除已注销用户（2026-08-17）----
+    def _purge(self, c, token, emails):
+        return c.post("/api/users/deleted/purge", json={"emails": emails},
+                      headers={"X-CSRF-Token": token})
+
+    def test_purge_deleted_users_success(self):
+        # user1 注销（带账号与自选时间）→ 管理员立即清除 → 用户/账号/自选时间全没了
+        db.set_time_pref("13800138001", 0, "2026-08-17 10:00:00")
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._delete(c, token, password=USER_PASS)
+        c2 = self.webapp.create_app().test_client()
+        admin_token = self._login(c2, "admin", ADMIN_PASS)
+        r = self._purge(c2, admin_token, ["user1@test.local"])
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["purged"], ["user1@test.local"])
+        self.assertIsNone(db.find_user_any("user1@test.local"), "用户行应被物理删除")
+        accs = [a for a in db.load_accounts_raw() if a["owner"] == "user1@test.local"]
+        self.assertEqual(accs, [], "其易班账号行应被物理删除")
+        self.assertIsNone(db.get_time_pref("13800138001"), "其自选时间应被物理删除")
+        actions = self._audit_actions()
+        self.assertIn("user_deleted_purge", actions)
+
+    def test_purge_skips_active_user(self):
+        # 传入活跃用户邮箱 → 跳过不误删（安全边界：仅清 deleted=1 行）
+        c = self.webapp.create_app().test_client()
+        admin_token = self._login(c, "admin", ADMIN_PASS)
+        r = self._purge(c, admin_token, ["user1@test.local"])
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["purged"], [])
+        self.assertEqual(r.get_json()["skipped"], ["user1@test.local"])
+        self.assertIsNotNone(db.find_user("user1@test.local"), "活跃用户不应被删除")
+
+    def test_purge_requires_admin(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        r = self._purge(c, token, ["user1@test.local"])
+        self.assertEqual(r.status_code, 403, "普通用户无权清除已注销用户")
+
+    def test_purge_empty_emails(self):
+        c = self.webapp.create_app().test_client()
+        admin_token = self._login(c, "admin", ADMIN_PASS)
+        r = self._purge(c, admin_token, [])
+        self.assertEqual(r.status_code, 400)
+
     # ---- 管理员保护 ----
     def test_builtin_admin_cannot_delete(self):
         c = self.webapp.create_app().test_client()
@@ -324,11 +369,32 @@ class UserDeregistrationWebTest(unittest.TestCase):
         self.assertIsNone(db.find_user("oldone@test.local"), "过恢复期不应恢复")
 
     def test_restore_cooldown(self):
-        db.record_user_delete_request("user1@test.local", ip_hash="x")
+        # v7 分流：仅 restore 记录占用恢复冷却；注销记录不再阻断恢复
+        db.record_user_delete_request("user1@test.local", ip_hash="x", kind="restore")
         c = self.webapp.create_app().test_client()
         r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": USER_PASS})
         self.assertEqual(r.status_code, 429)
         self.assertNotIn("60", r.get_json()["error"], "不应暴露冷却秒数")
+
+    def test_restore_not_blocked_by_delete_record(self):
+        """v7 回归（2026-08-17 修复）：注销动作自身的记录不阻断 60s 内恢复。
+
+        此前注销与恢复共用计数，真实路径"注销 → 立即反悔 → 恢复"必现 429，
+        用户表现为"注销后不能登录"。现有 test_restore_success 曾靠绕过
+        /api/me/delete 规避该缺陷，本测试走真实路径锁死回归。
+        """
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        r = self._delete(c, token, password=USER_PASS)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        # 登录 → recoverable 引导
+        r = c.post("/api/login", json={"username": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json().get("recoverable"))
+        # 立即恢复（注销后 0 秒）：应成功，不再 429
+        r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIsNotNone(db.find_user("user1@test.local"), "恢复后用户应回到活跃状态")
 
     # ---- 冷却期邮箱保护（安全审查 2026-08-16：恢复权不被新注册抢占）----
     def test_register_blocked_during_grace(self):

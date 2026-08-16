@@ -628,15 +628,16 @@
         <span id="deleted-arrow" class="ml-auto text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
       </button>
       <div id="deleted-users-body" class="hidden">
-        <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">用户自助注销进入 7 天冷却期，期间可恢复；超过 7 天由系统定期物理清除</p>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">用户自助注销进入 7 天冷却期，期间可恢复；超过 7 天由系统每日自动物理清除，也可由管理员立即清除</p>
         <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
-          <table class="w-full text-sm table-fixed min-w-[640px] text-center">
+          <table class="w-full text-sm table-fixed min-w-[720px] text-center">
             <thead>
             <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
-                <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
-                <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">注销时间</th>
-                <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">剩余时间</th>
-                <th class="px-4 py-3 font-medium whitespace-nowrap w-[16%]">状态</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[32%]">邮箱</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">注销时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[18%]">剩余时间</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[12%]">状态</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap w-[14%]">操作</th>
               </tr>
             </thead>
             <tbody id="users-deleted-tbody"></tbody>
@@ -2014,9 +2015,25 @@ function renderDeletedUsers() {
       <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(u.email)}</td>
       <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.deleted_at || '—')}</td>
       <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${remainText}</td>
-      <td class="px-4 py-3 text-sm whitespace-nowrap"><span class="${statusCls}">${statusText}</span></td>`;
+      <td class="px-4 py-3 text-sm whitespace-nowrap"><span class="${statusCls}">${statusText}</span></td>
+      <td class="px-4 py-3 text-sm whitespace-nowrap">
+        <button onclick="purgeDeletedUser('${esc(u.email)}')"
+                class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">立即清除</button>
+      </td>`;
     tbody.appendChild(tr);
   });
+}
+
+// 管理员立即清除已注销用户（2026-08-17：物理删除用户+易班账号+自选时间，不可恢复）
+async function purgeDeletedUser(email) {
+  if (!confirm(`确定立即彻底清除用户 ${email} 吗？\n将物理删除其注册信息、易班账号与自选签到时间，此操作不可恢复！`)) return;
+  try {
+    const data = await api('/api/users/deleted/purge', {
+      method: 'POST', body: JSON.stringify({emails: [email]})
+    });
+    toast(data.msg || '已清除');
+    loadDeletedUsers();
+  } catch (e) { /* api() 已 toast 错误 */ }
 }
 
 function renderUsers(users, builtinAdmin) {
