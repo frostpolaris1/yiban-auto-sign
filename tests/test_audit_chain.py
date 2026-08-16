@@ -70,7 +70,7 @@ class AuditChainTest(unittest.TestCase):
 
     def test_migration_adds_hash_columns_and_version_3(self):
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 7)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_logs)").fetchall()}
         self.assertIn("prev_hash", cols)
         self.assertIn("hash", cols)
@@ -140,7 +140,7 @@ class AuditChainTest(unittest.TestCase):
             conn.close()
 
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 7)
         ok, broken, first = db.verify_audit_chain()
         self.assertTrue(ok, (broken, first))
 

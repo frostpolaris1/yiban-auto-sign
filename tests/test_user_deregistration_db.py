@@ -82,7 +82,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
 
     def test_migration_v5_schema(self):
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 7)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         self.assertIn("deleted", cols)
         self.assertIn("deleted_at", cols)
@@ -94,6 +94,11 @@ class UserDeregistrationDbTest(unittest.TestCase):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='user_delete_requests'"
         ).fetchone()
         self.assertIsNotNone(t)
+        # v7：注销请求表 kind 列（delete/restore 分流计数）
+        rcols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(user_delete_requests)").fetchall()
+        }
+        self.assertIn("kind", rcols)
 
     def test_soft_delete_marks_accounts_deleted(self):
         """安全审查 2026-08-16：注销时账号改软删除（7 天保留，可随用户一起恢复）。"""
