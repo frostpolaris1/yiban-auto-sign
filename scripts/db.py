@@ -538,6 +538,18 @@ def migrate_v6(conn):
         logger.warning("回填 sign_events.account_id 失败: %s", e)
 
 
+def migrate_v7(conn):
+    """v7：注销请求表加 kind 列（delete=注销 / restore=恢复），修复注销记录阻断 60s 内恢复的漏洞。
+
+    2026-08-17 排查复现：注销与恢复共用计数，注销动作本身写入的记录会让
+    随后 60 秒内的恢复请求全部 429（真实用户"注销后立即反悔"路径必现）。
+    旧数据无 kind → 默认 'delete'（历史记录均为注销）。
+    """
+    _ensure_column(
+        conn, "user_delete_requests", "kind", "kind TEXT NOT NULL DEFAULT 'delete'"
+    )
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -548,6 +560,7 @@ _MIGRATIONS = [
     (4, "v4_visual_tables", migrate_v4, False),
     (5, "v5_user_deregistration", migrate_v5, True),
     (6, "v6_webui_stats", migrate_v6, False),
+    (7, "v7_delete_request_kind", migrate_v7, True),
 ]
 
 
@@ -1191,6 +1204,38 @@ def purge_deleted_users(days=7):
         logger.warning("清理已注销用户失败: %s", e)
 
 
+def purge_deleted_users_hard(emails):
+    """管理员手动物理清除指定的已注销用户（2026-08-17 需求：不等 7 天自动清除）。
+
+    安全边界：仅处理 deleted=1 的用户行——传入活跃用户邮箱时该用户被直接跳过
+    （管理员误操作/并发注册新同邮箱用户均不可能误删活跃数据）。
+    单事务连带清理：该用户全部账号行（含软删）+ 账号对应 time_prefs + 用户行。
+    返回实际清除的邮箱列表（供调用方审计与回显）。
+    """
+    if not emails:
+        return []
+    conn = get_conn()
+    purged = []
+    with _conn_lock, conn:
+        for email in emails:
+            row = conn.execute(
+                "SELECT id FROM users WHERE email=? AND deleted=1", (email,)
+            ).fetchone()
+            if row is None:
+                continue
+            phones = [
+                r["phone"]
+                for r in conn.execute(
+                    "SELECT phone FROM accounts WHERE owner=?", (email,)
+                ).fetchall()
+            ]
+            conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+            _delete_time_prefs_by_phones(conn, phones)
+            conn.execute("DELETE FROM users WHERE id=?", (row["id"],))
+            purged.append(email)
+    return purged
+
+
 def purge_old_delete_requests(days=30):
     """物理清除超过保留期的注销请求记录（默认 30 天）；失败仅告警。
 
@@ -1212,18 +1257,19 @@ def purge_old_delete_requests(days=30):
         logger.warning("清理注销请求记录失败: %s", e)
 
 
-def record_user_delete_request(username, ip_hash=""):
-    """记录一次注销请求（供冷却/防批量使用）。"""
+def record_user_delete_request(username, ip_hash="", kind="delete"):
+    """记录一次注销/恢复请求（供冷却/防批量使用；kind: delete=注销 / restore=恢复，v7）。"""
     try:
         with _conn_lock:
             conn = get_conn()
             conn.execute(
-                "INSERT INTO user_delete_requests (username, ip_hash, created_at) "
-                "VALUES (?,?,?)",
+                "INSERT INTO user_delete_requests (username, ip_hash, created_at, kind) "
+                "VALUES (?,?,?,?)",
                 (
                     username or "",
                     ip_hash or "",
                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    kind if kind in ("delete", "restore") else "delete",
                 ),
             )
             conn.commit()
@@ -1231,8 +1277,8 @@ def record_user_delete_request(username, ip_hash=""):
         logger.warning("记录注销请求失败: %s", e)
 
 
-def count_user_delete_requests(username=None, ip_hash=None, since_ts=None):
-    """统计窗口内注销请求次数（用户或 IP 维度）。"""
+def count_user_delete_requests(username=None, ip_hash=None, since_ts=None, kind=None):
+    """统计窗口内注销/恢复请求次数（用户或 IP 维度；kind=None 统计全部，v7）。"""
     try:
         with _conn_lock:
             conn = get_conn()
@@ -1247,6 +1293,9 @@ def count_user_delete_requests(username=None, ip_hash=None, since_ts=None):
             if since_ts:
                 sql += " AND created_at >= ?"
                 params.append(since_ts)
+            if kind:
+                sql += " AND kind=?"
+                params.append(kind)
             row = conn.execute(sql, params).fetchone()
             return row[0] if row else 0
     except Exception as e:

@@ -893,7 +893,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.20.3"
+APP_VERSION = "0.20.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1358,15 +1358,23 @@ def create_app():
         email = username.strip().lower()
         ip = _client_ip()
         now = time.time()
-        # 防批量冷却：计数基于 user_delete_requests 表
+        # 防批量冷却：计数基于 user_delete_requests 表（kind=delete，v7 分流：
+        # 恢复记录不占注销冷却，允许"恢复后立即再注销"）
         since_ts = (datetime.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        if db.count_user_delete_requests(username=email, since_ts=since_ts) >= 1:
+        if (
+            db.count_user_delete_requests(
+                username=email, since_ts=since_ts, kind="delete"
+            )
+            >= 1
+        ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
         ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
         if (
-            db.count_user_delete_requests(ip_hash=ip_hash, since_ts=since_ts)
+            db.count_user_delete_requests(
+                ip_hash=ip_hash, since_ts=since_ts, kind="delete"
+            )
             >= DELETE_MAX_REQUESTS_PER_IP
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
@@ -1407,7 +1415,7 @@ def create_app():
             if u.get("role") == "admin" and db.is_last_registered_admin(email):
                 return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
             # 防批量计数 + 审计 + 软注销（db 单事务：账号/time_prefs 清除 + 用户标记）
-            db.record_user_delete_request(email, ip_hash=ip_hash)
+            db.record_user_delete_request(email, ip_hash=ip_hash, kind="delete")
             db.audit(username, "user_self_delete_request", email, "用户发起注销申请")
             if not db.soft_delete_user_with_accounts(email):
                 return jsonify({"error": "注销失败，请稍后再试"}), 500
@@ -1434,15 +1442,23 @@ def create_app():
         ip = _client_ip()
         if not email or not password:
             return jsonify({"error": "邮箱和密码为必填项"}), 400
-        # 防批量冷却（与注销同一张计数表）
+        # 防批量冷却（与注销同一张计数表，但按 kind 分流——v7 修复：
+        # 注销动作自身的记录不再阻断 60s 内的恢复请求，"注销后立即反悔"路径畅通）
         since_ts = (datetime.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        if db.count_user_delete_requests(username=email, since_ts=since_ts) >= 1:
+        if (
+            db.count_user_delete_requests(
+                username=email, since_ts=since_ts, kind="restore"
+            )
+            >= 1
+        ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
         ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
         if (
-            db.count_user_delete_requests(ip_hash=ip_hash, since_ts=since_ts)
+            db.count_user_delete_requests(
+                ip_hash=ip_hash, since_ts=since_ts, kind="restore"
+            )
             >= DELETE_MAX_REQUESTS_PER_IP
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
@@ -1451,7 +1467,7 @@ def create_app():
             return jsonify({"error": "账号不存在或已过恢复期"}), 404
         if not check_password_hash(u.get("password_hash", ""), password):
             return jsonify({"error": "密码不正确"}), 400
-        db.record_user_delete_request(email, ip_hash=ip_hash)
+        db.record_user_delete_request(email, ip_hash=ip_hash, kind="restore")
         if not db.restore_user(email):
             return jsonify({"error": "恢复失败，请稍后再试"}), 500
         db.audit(email, "user_self_delete_restore", email, "冷静期内恢复账号")
@@ -2636,6 +2652,42 @@ def create_app():
         items.sort(key=lambda x: x["deleted_at"])  # 最早到期在前（ISO 字符串字典序 = 时间序）
         return jsonify({"ok": True, "items": items})
 
+    @app.route("/api/users/deleted/purge", methods=["POST"])
+    def api_users_deleted_purge():
+        """管理员手动物理清除已注销用户（2026-08-17 需求：不留存已注销用户信息）。
+
+        body: {"emails": [...]}——只清 deleted=1 的用户（db 层再校验，活跃用户传入即跳过）；
+        冷却期内的用户也可被清除（管理员裁决权高于 7 天宽限承诺，审计留痕可追溯）。
+        连带清理其全部易班账号行（含软删）与 time_prefs；单事务失败全部回滚。
+        """
+        data = _json_body()
+        emails = data.get("emails") or []
+        if not isinstance(emails, list) or not emails:
+            return jsonify({"error": "请选择要清除的用户"}), 400
+        if len(emails) > 100:
+            return jsonify({"error": "单次最多清除 100 个用户"}), 400
+        if any(not isinstance(e, str) or len(e) > 64 for e in emails):
+            return jsonify({"error": "邮箱格式不正确"}), 400
+        with _file_lock:
+            purged = db.purge_deleted_users_hard(emails)
+            if purged:
+                admin = session.get("username") or "admin"
+                db.audit(
+                    admin,
+                    "user_deleted_purge",
+                    ",".join(purged),
+                    f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
+                )
+        skipped = [e for e in emails if e not in purged]
+        logger.info("管理员手动清除已注销用户: 成功 %d 个", len(purged))
+        return jsonify({
+            "ok": True,
+            "purged": purged,
+            "skipped": skipped,
+            "msg": f"已彻底清除 {len(purged)} 个用户"
+            + (f"，跳过 {len(skipped)} 个（非已注销状态）" if skipped else ""),
+        })
+
     @app.route("/api/users/batch", methods=["POST"])
     def api_users_batch():
         """批量操作注册用户：set_admin/unset_admin/reset_password/delete。
@@ -3220,6 +3272,24 @@ def create_app():
                 "color": color,
             }
         )
+
+    # ---- 每日自动清除超期注销用户（2026-08-17：修复"仅启动时清除一次"的隐患）----
+    # 此前 purge_deleted_users 只在 db 连接初始化（服务启动）时执行，长期不重启的
+    # 服务会让超期注销用户数据（邮箱、软删易班账密）无限留存，与页面"系统定期
+    # 物理清除"的承诺不符。后台 daemon 线程：启动 60s 后先跑一次，此后每 24h 一次。
+    def _daily_purge_loop():
+        # 首轮延迟：避开启动高峰（迁移/预热），且此时 init_db 已跑过一次 purge，
+        # 延迟不会造成额外的清除延迟（下一轮 24h 内必然覆盖）
+        time.sleep(60)
+        while True:
+            try:
+                db.purge_deleted_users()
+                db.purge_old_delete_requests()
+            except Exception as e:
+                logger.warning("每日自动清除注销用户失败: %s", e)
+            time.sleep(24 * 3600)
+
+    threading.Thread(target=_daily_purge_loop, daemon=True, name="daily-purge").start()
 
     return app
 
