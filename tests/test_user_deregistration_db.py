@@ -169,6 +169,25 @@ class UserDeregistrationDbTest(unittest.TestCase):
         db.purge_deleted_users(days=3)
         self.assertIsNone(db.find_user_any("old@test.local"))
 
+    def test_purge_old_delete_requests(self):
+        """对抗审查 2026-08-16：注销请求记录超保留期应被清除（防表无限膨胀）。"""
+        db.record_user_delete_request("user@test.local", "iphash1")
+        db.record_user_delete_request("user@test.local", "iphash1")
+        # 未过期：不清
+        db.purge_old_delete_requests(days=30)
+        self.assertEqual(
+            db.count_user_delete_requests(username="user@test.local"), 2,
+            "保留期内记录不应被清理")
+        # 改成 31 天前 → 清除
+        conn = db.get_conn()
+        old = (datetime.datetime.now() - datetime.timedelta(days=31)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE user_delete_requests SET created_at=?", (old,))
+        conn.commit()
+        db.purge_old_delete_requests(days=30)
+        self.assertEqual(
+            db.count_user_delete_requests(username="user@test.local"), 0,
+            "超过保留期的请求记录应被清除")
+
 
 if __name__ == "__main__":
     unittest.main()

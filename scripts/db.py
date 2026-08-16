@@ -105,6 +105,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None):
         _audit_cleanup(_conn)
         _event_cleanup(_conn)
         purge_deleted_users()
+        purge_old_delete_requests()
         return _conn
 
 
@@ -1120,6 +1121,27 @@ def purge_deleted_users(days=3):
             conn.commit()
     except Exception as e:
         logger.warning("清理已注销用户失败: %s", e)
+
+
+def purge_old_delete_requests(days=30):
+    """物理清除超过保留期的注销请求记录（默认 30 天）；失败仅告警。
+
+    对抗审查 2026-08-16：user_delete_requests 只增不删会无限累积
+    （长期使用后 count 查询变慢、库体积膨胀）——启动时随 purge_deleted_users 一并清理。
+    """
+    try:
+        conn = get_conn()
+        with _conn_lock, conn:
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            conn.execute(
+                "DELETE FROM user_delete_requests WHERE created_at <= ?",
+                (cutoff,),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("清理注销请求记录失败: %s", e)
 
 
 def record_user_delete_request(username, ip_hash=""):
