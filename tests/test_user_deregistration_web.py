@@ -352,11 +352,12 @@ class UserDeregistrationWebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad-pass"})
         self.assertEqual(r.status_code, 400)
-        self.assertIn("密码不正确", r.get_json()["error"])
+        # 统一文案（2026-08-17 安全审查）：不区分密码错误与账号状态，防注销账号枚举
+        self.assertIn("已过恢复期", r.get_json()["error"])
         self.assertIsNone(db.find_user("user1@test.local"), "密码错误不应恢复")
 
     def test_restore_not_in_grace_period(self):
-        # 已过 7 天宽限期（8 天前注销）→ 404
+        # 已过 7 天宽限期（8 天前注销）→ 统一 400 文案（2026-08-17：原 404 可被无凭探测）
         db.create_user("oldone@test.local", "hash")
         db.soft_delete_user_with_accounts("oldone@test.local")
         conn = db.get_conn()
@@ -365,8 +366,34 @@ class UserDeregistrationWebTest(unittest.TestCase):
         conn.commit()
         c = self.webapp.create_app().test_client()
         r = c.post("/api/me/restore", json={"email": "oldone@test.local", "password": "hash"})
-        self.assertEqual(r.status_code, 404)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("已过恢复期", r.get_json()["error"])
         self.assertIsNone(db.find_user("oldone@test.local"), "过恢复期不应恢复")
+
+    def test_restore_lockout(self):
+        """2026-08-17 安全审查补齐：恢复接口密码试错必须计入锁定（原可无限爆破冷却期账号）。"""
+        db.soft_delete_user_with_accounts("user1@test.local")
+        c = self.webapp.create_app().test_client()
+        for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+            r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad"})
+            self.assertEqual(r.status_code, 400, f"第 {i + 1} 次错误应为 400")
+        r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad"})
+        self.assertEqual(r.status_code, 429, "达阈值应锁定")
+        # 锁定期间正确密码也被拒（不泄露锁定状态与账号存在性）
+        r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 429)
+        self.assertNotIn(str(self.webapp.LOGIN_LOCK_SECONDS), r.get_json()["error"],
+                         "不应暴露锁定时长")
+        self.assertIsNone(db.find_user("user1@test.local"), "锁定期间不应恢复")
+
+    def test_restore_no_email_enum(self):
+        """2026-08-17 安全审查：不存在/过期的邮箱与密码错误返回完全一致（防注销状态枚举）。"""
+        db.soft_delete_user_with_accounts("user1@test.local")  # 冷却中账号
+        c = self.webapp.create_app().test_client()
+        r1 = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad"})
+        r2 = c.post("/api/me/restore", json={"email": "ghost@test.local", "password": "bad"})
+        self.assertEqual(r1.status_code, r2.status_code, "状态码应一致")
+        self.assertEqual(r1.get_json()["error"], r2.get_json()["error"], "错误文案应一致")
 
     def test_restore_cooldown(self):
         # v7 分流：仅 restore 记录占用恢复冷却；注销记录不再阻断恢复
