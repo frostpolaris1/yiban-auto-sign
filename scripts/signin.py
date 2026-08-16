@@ -1129,12 +1129,13 @@ def attempt_signin(account):
         return False, str(e), False, STATUS_FAILED
 
 
-def _write_sign_state(phone, status, message, scheduled=None):
+def _write_sign_state(phone, status, message, scheduled=None, dur=None):
     """写按日结构化状态文件（web/TUI 状态显示的事实源，原子替换防半截文件）。
 
     文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
     scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
+    dur：单次签到尝试耗时秒数（P6，2026-08-16：慢响应可据此判断网络/接口问题）。
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
@@ -1156,6 +1157,8 @@ def _write_sign_state(phone, status, message, scheduled=None):
             "time": now.strftime("%H:%M:%S"),
             "task": "default",
         }
+        if dur is not None:
+            entry["dur"] = round(float(dur), 2)  # 单次尝试耗时秒数（P6）
         if scheduled:
             entry["scheduled"] = scheduled
         data[phone] = entry
@@ -1189,15 +1192,23 @@ def _load_cred_state():
 
 
 def _save_cred_state(data):
-    """原子写账密状态文件（目录不可写时丢弃，不影响签到执行）。"""
+    """原子写账密状态文件；无任何暂停记录时删除文件（保持"无暂停 = 文件不存在"语义）。
+
+    2026-08-16 修复：原实现无条件写 `{}`，与设计语义不符（TODO P5b）；目录不可写时丢弃，不影响签到执行。
+    """
+    path = _cred_state_path()
     try:
-        os.makedirs(os.path.dirname(_cred_state_path()), exist_ok=True)
-        tmp = f"{_cred_state_path()}.tmp{os.getpid()}"
+        if not data:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, _cred_state_path())
+        os.replace(tmp, path)
     except OSError as e:
-        logger.debug("写入账密状态失败（%s）: %s", _cred_state_path(), e)
+        logger.debug("写入账密状态失败（%s）: %s", path, e)
 
 
 def _is_credential_failure(message):
@@ -1579,10 +1590,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
+        t0 = time.monotonic()  # 单次尝试耗时起点（P6：慢响应可判）
         success, message, skip, status = attempt_signin(acc)
         last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
-        # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中）
-        _write_sign_state(phone, status, message)
+        # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中；附耗时 dur）
+        _write_sign_state(phone, status, message, dur=last_done - t0)
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
         _update_cred_state(cred_state, phone, success, message, today)
         if cred.get("paused_since") and success:
