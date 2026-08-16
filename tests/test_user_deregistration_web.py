@@ -169,9 +169,9 @@ class UserDeregistrationWebTest(unittest.TestCase):
         actions = self._audit_actions()
         self.assertIn("user_self_delete_request", actions)
         self.assertIn("user_self_delete_confirm", actions)
-        # 邮箱可重新注册（软删除后 find_user 查无此人）
+        # 冷却期邮箱保护（安全审查 2026-08-16）：注销后 7 天内同邮箱注册被拒（恢复权不被抢占）
         r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234"})
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.status_code, 400, "冷却期内同邮箱注册应被拒")
 
     # ---- 管理员视图（v0.20.1：注销不发通知，改主动查看）----
     def test_admin_sees_deleted_users(self):
@@ -256,6 +256,102 @@ class UserDeregistrationWebTest(unittest.TestCase):
         token = self._login(c, "user1@test.local", USER_PASS)
         r = self._delete(c, token, password=USER_PASS)
         self.assertEqual(r.status_code, 429)
+
+    # ---- 冷静期登录即恢复（v0.20.3，2026-08-16 用户裁决）----
+    def test_login_recoverable_flag(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._delete(c, token, password=USER_PASS)
+        # 冷静期内密码正确 → 200 recoverable（不放行登录）
+        r = c.post("/api/login", json={"username": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("recoverable"))
+        self.assertIn("7 天内可恢复", data.get("msg", ""))
+        # 不建立会话
+        me = c.get("/api/me")
+        self.assertEqual(me.status_code, 401)
+
+    def test_login_recoverable_wrong_password_still_fails(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._delete(c, token, password=USER_PASS)
+        r = c.post("/api/login", json={"username": "user1@test.local", "password": "bad-pass"})
+        self.assertEqual(r.status_code, 401, "密码错误不返回 recoverable 标记")
+
+    def test_restore_success(self):
+        # 直接 DB 构造冷却中账号（不经 /api/me/delete，避免注销冷却记录挡住恢复的 60s 窗口）
+        db.soft_delete_user_with_accounts("user1@test.local")
+        c = self.webapp.create_app().test_client()
+        # 恢复（未登录调用；CSRF 走同源校验）
+        r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["role"], "user")
+        # 用户 + 易班账号联动恢复
+        u = db.find_user("user1@test.local")
+        self.assertIsNotNone(u)
+        self.assertEqual(u["deleted"], 0)
+        accs = db.load_accounts_raw()
+        row = next((a for a in accs if a["owner"] == "user1@test.local"), None)
+        self.assertIsNotNone(row, "恢复应联动恢复易班账号")
+        self.assertFalse(row["deleted"])
+        # 恢复即登录（会话已建立）
+        me = c.get("/api/me")
+        self.assertEqual(me.status_code, 200)
+        # 审计留痕
+        actions = self._audit_actions()
+        self.assertIn("user_self_delete_restore", actions)
+
+    def test_restore_wrong_password(self):
+        db.soft_delete_user_with_accounts("user1@test.local")
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": "bad-pass"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("密码不正确", r.get_json()["error"])
+        self.assertIsNone(db.find_user("user1@test.local"), "密码错误不应恢复")
+
+    def test_restore_not_in_grace_period(self):
+        # 已过 7 天宽限期（8 天前注销）→ 404
+        db.create_user("oldone@test.local", "hash")
+        db.soft_delete_user_with_accounts("oldone@test.local")
+        conn = db.get_conn()
+        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "oldone@test.local"))
+        conn.commit()
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/me/restore", json={"email": "oldone@test.local", "password": "hash"})
+        self.assertEqual(r.status_code, 404)
+        self.assertIsNone(db.find_user("oldone@test.local"), "过恢复期不应恢复")
+
+    def test_restore_cooldown(self):
+        db.record_user_delete_request("user1@test.local", ip_hash="x")
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/me/restore", json={"email": "user1@test.local", "password": USER_PASS})
+        self.assertEqual(r.status_code, 429)
+        self.assertNotIn("60", r.get_json()["error"], "不应暴露冷却秒数")
+
+    # ---- 冷却期邮箱保护（安全审查 2026-08-16：恢复权不被新注册抢占）----
+    def test_register_blocked_during_grace(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._delete(c, token, password=USER_PASS)
+        r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234"})
+        self.assertEqual(r.status_code, 400, "冷却期内同邮箱注册应被拒")
+        self.assertIn("冷却期", r.get_json()["error"])
+        self.assertIsNone(db.find_user("user1@test.local"), "注册不应产生新活跃用户")
+
+    def test_register_allowed_after_grace(self):
+        # 8 天前注销（已过 7 天宽限期）→ 同邮箱可重新注册
+        db.create_user("oldone@test.local", "hash")
+        db.soft_delete_user_with_accounts("oldone@test.local")
+        conn = db.get_conn()
+        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "oldone@test.local"))
+        conn.commit()
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/register", json={"email": "oldone@test.local", "password": "newpass1234"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIsNotNone(db.find_user("oldone@test.local"))
 
 
 if __name__ == "__main__":
