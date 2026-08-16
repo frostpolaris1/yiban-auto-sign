@@ -34,7 +34,7 @@ SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class DuplicatePhoneError(Exception):
@@ -104,6 +104,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None):
             _maybe_migrate(_conn, migrate_from)
         _audit_cleanup(_conn)
         _event_cleanup(_conn)
+        purge_deleted_users()
         return _conn
 
 
@@ -140,12 +141,16 @@ def _create_tables(conn):
 
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          email TEXT NOT NULL UNIQUE,
+          email TEXT NOT NULL,
           password_hash TEXT NOT NULL,
           role TEXT NOT NULL DEFAULT 'user',
           created_at TEXT NOT NULL DEFAULT '',
-          pw_version INTEGER NOT NULL DEFAULT 1
+          pw_version INTEGER NOT NULL DEFAULT 1,
+          deleted INTEGER NOT NULL DEFAULT 0,
+          deleted_at TEXT NOT NULL DEFAULT ''
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live
+          ON users(email) WHERE deleted = 0;
 
         CREATE TABLE IF NOT EXISTS audit_logs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,6 +168,15 @@ def _create_tables(conn):
           updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_time_prefs_slot ON time_prefs(slot_min);
+
+        CREATE TABLE IF NOT EXISTS user_delete_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL,
+          ip_hash TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username);
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash);
         """
     )
     conn.commit()
@@ -433,6 +447,49 @@ def migrate_v4(conn):
     conn.commit()
 
 
+def migrate_v5(conn):
+    """v5：用户注销支持——users 增加 deleted/deleted_at，邮箱唯一改为活跃唯一，新增注销请求表。"""
+    cols = _table_columns(conn, "users")
+    if "deleted" not in cols:
+        conn.executescript(
+            """
+            CREATE TABLE users_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email TEXT NOT NULL,
+              password_hash TEXT NOT NULL,
+              role TEXT NOT NULL DEFAULT 'user',
+              created_at TEXT NOT NULL DEFAULT '',
+              pw_version INTEGER NOT NULL DEFAULT 1,
+              deleted INTEGER NOT NULL DEFAULT 0,
+              deleted_at TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO users_new (id, email, password_hash, role, created_at, pw_version, deleted, deleted_at)
+              SELECT id, email, password_hash, role, created_at, pw_version, 0, '' FROM users;
+            DROP TABLE users;
+            ALTER TABLE users_new RENAME TO users;
+            """
+        )
+        conn.commit()
+    _ensure_index(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
+        "ON users(email) WHERE deleted = 0",
+    )
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS user_delete_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL,
+          ip_hash TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username);
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash);
+        """
+    )
+    conn.commit()
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -441,6 +498,7 @@ _MIGRATIONS = [
     (2, "v2_unique_owner_live", migrate_v2, False),
     (3, "v3_audit_hash_chain", migrate_v3, True),
     (4, "v4_visual_tables", migrate_v4, False),
+    (5, "v5_user_deregistration", migrate_v5, True),
 ]
 
 
@@ -931,17 +989,36 @@ def batch_account_ops(ops):
 # ---------------------------------------------------------------------------
 # users CRUD
 # ---------------------------------------------------------------------------
-def load_users():
+def load_users(include_deleted=False):
+    """全部用户（默认排除已注销/软删除用户）。"""
     with _conn_lock:
         conn = get_conn()
-        rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        if include_deleted:
+            rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM users WHERE deleted=0 ORDER BY id"
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
 def find_user(email):
+    """查找有效（未注销）用户。"""
     with _conn_lock:
         conn = get_conn()
-        row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM users WHERE email=? AND deleted=0", (email,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def find_user_any(email):
+    """查找任意用户（含已注销），供恢复/管理排查使用。"""
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT * FROM users WHERE email=? ORDER BY id DESC LIMIT 1", (email,)
+        ).fetchone()
         return dict(row) if row else None
 
 
@@ -949,7 +1026,8 @@ def create_user(email, password_hash, role="user", created_at="", pw_version=1):
     conn = get_conn()
     with _conn_lock, conn:
         conn.execute(
-            "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
+            "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version, deleted, deleted_at) "
+            "VALUES (?,?,?,?,?,0,'')",
             (email, password_hash, role, created_at, pw_version),
         )
 
@@ -965,13 +1043,140 @@ def update_user(email, fields):
         if not sets:
             return
         vals.append(email)
-        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE email=?", vals)
+        conn.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0", vals
+        )
 
 
 def delete_user(email):
     conn = get_conn()
     with _conn_lock, conn:
-        conn.execute("DELETE FROM users WHERE email=?", (email,))
+        conn.execute("DELETE FROM users WHERE email=? AND deleted=0", (email,))
+
+
+# ---------------------------------------------------------------------------
+# 用户主动注销（软删除 + 宽限期，Phase 5）
+# ---------------------------------------------------------------------------
+def soft_delete_user_with_accounts(email):
+    """软注销：标记用户 deleted=1，并删除其易班账号与 time_prefs。
+
+    返回是否找到并注销了有效用户。
+    """
+    conn = get_conn()
+    with _conn_lock, conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
+        ).fetchone()
+        if row is None:
+            return False
+        rows = conn.execute(
+            "SELECT phone FROM accounts WHERE owner=?", (email,)
+        ).fetchall()
+        conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
+            (now, row["id"]),
+        )
+        return True
+
+
+def restore_user(email):
+    """撤销注销：仅当没有同邮箱活跃用户时，把最近一个已注销用户恢复。"""
+    conn = get_conn()
+    with _conn_lock, conn:
+        active = conn.execute(
+            "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
+        ).fetchone()
+        if active is not None:
+            return False
+        deleted = conn.execute(
+            "SELECT id FROM users WHERE email=? AND deleted=1 "
+            "ORDER BY id DESC LIMIT 1",
+            (email,),
+        ).fetchone()
+        if deleted is None:
+            return False
+        conn.execute(
+            "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
+            (deleted["id"],),
+        )
+        return True
+
+
+def purge_deleted_users(days=3):
+    """物理清除超过宽限期的已注销用户（默认 3 天）；失败仅告警。"""
+    try:
+        conn = get_conn()
+        with _conn_lock, conn:
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            conn.execute(
+                "DELETE FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+                (cutoff,),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("清理已注销用户失败: %s", e)
+
+
+def record_user_delete_request(username, ip_hash=""):
+    """记录一次注销请求（供冷却/防批量使用）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO user_delete_requests (username, ip_hash, created_at) "
+                "VALUES (?,?,?)",
+                (
+                    username or "",
+                    ip_hash or "",
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("记录注销请求失败: %s", e)
+
+
+def count_user_delete_requests(username=None, ip_hash=None, since_ts=None):
+    """统计窗口内注销请求次数（用户或 IP 维度）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
+            params = []
+            if username:
+                sql += " AND username=?"
+                params.append(username)
+            if ip_hash:
+                sql += " AND ip_hash=?"
+                params.append(ip_hash)
+            if since_ts:
+                sql += " AND created_at >= ?"
+                params.append(since_ts)
+            row = conn.execute(sql, params).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.warning("统计注销请求失败: %s", e)
+        return 0
+
+
+def is_last_registered_admin(email):
+    """判断该邮箱是否是最后一个注册管理员（不含 .env 内置管理员）。"""
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
+        ).fetchone()
+        total = row[0] if row else 0
+        target = conn.execute(
+            "SELECT id FROM users WHERE email=? AND role='admin' AND deleted=0",
+            (email,),
+        ).fetchone()
+        return target is not None and total <= 1
 
 
 def batch_user_ops(ops):
@@ -997,7 +1202,10 @@ def batch_user_ops(ops):
                     if not sets:
                         continue
                     vals.append(email)
-                    conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE email=?", vals)
+                    conn.execute(
+                        f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0",
+                        vals,
+                    )
                 elif kind == "delete_user_with_accounts":
                     _, email = op
                     rows = conn.execute(
