@@ -78,7 +78,7 @@ class VisualTablesTest(unittest.TestCase):
 
     def test_migration_creates_tables_and_version_4(self):
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
         for table in ("sign_events", "page_visits", "server_metrics"):
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
