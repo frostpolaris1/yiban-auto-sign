@@ -194,6 +194,33 @@
   </div>
 </div>
 
+<!-- 注销账号确认模态（密码确认；软删除 3 天宽限期可撤销，2026-08-16） -->
+<div id="delete-account-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">注销账号</h2>
+      <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
+              class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
+    </div>
+    <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">注销后你的网站账号、易班账号与自选签到时间将被删除，<span class="text-amber-600 dark:text-amber-400">3 天内可撤销</span>，超过 3 天将无法恢复。请输入当前密码确认。</p>
+    <div class="grid grid-cols-1 gap-3">
+      <div>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
+        <input id="delete-password" type="password" autocomplete="current-password" placeholder="请输入当前密码"
+               onkeydown="if(event.key==='Enter')confirmDelete()"
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-red-500 dark:focus:border-red-400 px-3 py-2">
+      </div>
+      <div class="flex gap-3 mt-1">
+        <button type="button" onclick="closeDeleteModal()"
+                class="flex-1 btn-ghost">取消</button>
+        <button id="delete-confirm-btn" type="button" onclick="confirmDelete()"
+                class="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">确认注销</button>
+      </div>
+    </div>
+  </div>
+</div>
+
   <!-- 修改密码（默认收起，点击标题展开） -->
   <section class="card">
     <button type="button" onclick="togglePassword()" aria-expanded="false"
@@ -224,6 +251,18 @@
           <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
         </div>
       </form>
+    </div>
+  </section>
+
+  <!-- 注销账号（危险操作，置底防误触；软删除 3 天宽限期可撤销，2026-08-16） -->
+  <section class="card mt-6">
+    <div class="flex items-center justify-between">
+      <div>
+        <p class="text-sm font-medium text-zinc-900 dark:text-zinc-100">注销账号</p>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">删除本账号、易班账号与自选签到时间，3 天内可撤销</p>
+      </div>
+      <button type="button" onclick="openDeleteModal()"
+              class="text-sm text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors duration-150 whitespace-nowrap ml-4">注销账号</button>
     </div>
   </section>
 </main>
@@ -635,6 +674,35 @@ function tickClock() {
 }
 setInterval(tickClock, 1000);
 setInterval(calibrateClock, 60000);
+
+// 注销账号（软删除 3 天宽限期；密码确认 + 防连点，2026-08-16）
+function openDeleteModal() {
+  $('delete-password').value = '';
+  $('delete-account-modal').classList.remove('hidden');
+  setTimeout(() => $('delete-password').focus(), 50);
+}
+function closeDeleteModal() { $('delete-account-modal').classList.add('hidden'); }
+async function confirmDelete() {
+  const btn = $('delete-confirm-btn');
+  const pw = $('delete-password').value;
+  if (!pw) { toast('请输入当前密码', true); return; }
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+  try {
+    const data = await api('/api/me/delete', {
+      method: 'POST',
+      body: JSON.stringify({ password: pw }),
+    });
+    toast(data.msg || '账号已注销');
+    localStorage.clear();
+    setTimeout(() => { location.href = '/login'; }, 1200);
+  } catch (e) {
+    // 错误文案由后端给出（400 密码不正确/不可注销、403、429 请稍后再试、500）
+    toast(e.message || '注销失败，请稍后再试', true);
+    btn.disabled = false;
+    btn.textContent = '确认注销';
+  }
+}
 
 // 退出
 async function doLogout() {
