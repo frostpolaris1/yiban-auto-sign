@@ -906,6 +906,7 @@ async function loadAccounts(_retried = false) {
     state.accounts = data.accounts;
     state.states = data.states;  // /api/accounts 自带状态（键已脱敏），初始加载即填充（与轮询 refreshAccountsSilent 一致）
     state.state_msgs = data.state_msgs || {};  // 状态原因/计划时间（表格 title 展示）
+    state.state_durs = data.state_durs || {};  // 单次签到耗时（P6，表格 title 展示）
     $('config-file').textContent = data.config_file;
     renderAccounts();
     fillSigninSelect();
@@ -1190,9 +1191,12 @@ function accountRow(a, key) {
   const st = state.states[a.phone] || 'pending';
   const s = STATUS_ICON[st] || '⏳';
   const stMsg = state.state_msgs ? (state.state_msgs[a.phone] || '') : '';
+  const stDur = state.state_durs ? state.state_durs[a.phone] : null;
   const baseTitle = STATUS_TEXT[st] || '待签';
-  // 原因/计划仅在不同于状态名时拼接（避免"签到成功 · 签到成功"式重复）
-  const stTitle = baseTitle + (stMsg && stMsg !== baseTitle ? ' · ' + stMsg : '');
+  // 原因/计划仅在不同于状态名时拼接（避免"签到成功 · 签到成功"式重复）；耗时存在时追加
+  const stTitle = baseTitle
+    + (stMsg && stMsg !== baseTitle ? ' · ' + stMsg : '')
+    + (stDur ? ' · 耗时 ' + Number(stDur).toFixed(1) + 's' : '');
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
@@ -1471,6 +1475,7 @@ async function refreshAccountsSilent() {
     const data = await api('/api/accounts');
     state.states = data.states;  // /api/accounts 自带状态（键已脱敏），账号表格图标不再依赖日志轮询
     state.state_msgs = data.state_msgs || {};  // 状态原因/计划时间（表格 title 展示）
+    state.state_durs = data.state_durs || {};  // 单次签到耗时（P6，表格 title 展示）
     const snap = JSON.stringify(data.accounts) + '|' + JSON.stringify(data.states);
     if (snap !== _lastRenderSnap) {
       _lastRenderSnap = snap;

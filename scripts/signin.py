@@ -186,6 +186,7 @@ _DEFAULT_AVG_ATTEMPT_SEC = 8    # 容量预检：单次执行平均耗时估算
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
+_DEFAULT_SLOW_SIGN_SEC = 30     # P6 耗时告警阈值（秒）：单次尝试耗时超此值 → warning + 通知
 
 
 def _parse_hhmm(value, default):
@@ -1539,6 +1540,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐
     sch_cfg = _schedule_config() if schedule else None
     last_done = None  # 上次尝试结束时刻（monotonic），启动对齐用
+    # P6 耗时告警：阈值可配（YIBAN_SLOW_SIGN_SEC），每账号每轮最多告警 1 次
+    slow_sec = _env_int("YIBAN_SLOW_SIGN_SEC", _DEFAULT_SLOW_SIGN_SEC, 1, 600)
+    slow_notified = set()
 
     while queue:
         acc = queue.pop(0)
@@ -1594,7 +1598,20 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         success, message, skip, status = attempt_signin(acc)
         last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中；附耗时 dur）
-        _write_sign_state(phone, status, message, dur=last_done - t0)
+        dur = last_done - t0
+        _write_sign_state(phone, status, message, dur=dur)
+        # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知。
+        # 节流：每账号每轮最多 1 次（重试连击不刷屏；最终失败另有失败通知，
+        # 此处主要覆盖"慢但成功"的接口劣化预警）。通知失败不影响签到（内部已捕获）。
+        if dur > slow_sec and phone not in slow_notified:
+            slow_notified.add(phone)
+            logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
+            if notify_url:
+                send_notification(
+                    "易班签到耗时告警",
+                    f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
+                    notify_url,
+                )
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
         _update_cred_state(cred_state, phone, success, message, today)
         if cred.get("paused_since") and success:

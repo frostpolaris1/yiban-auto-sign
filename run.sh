@@ -41,7 +41,23 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python版本: $(python3 --version 2>&1)" >>
 
 # 执行签到脚本（调度 v2：总超时防失控，与 flock 防并发互补；
 # timeout 杀掉后退出码 124，不写 SUCCESS——符合现状语义）
-timeout "${YIBAN_RUN_TIMEOUT_SEC:-1800}" /usr/bin/python3 scripts/signin.py >> "$LOG_FILE" 2>&1
+# 超时值（2026-08-16，P6 修复）：默认动态计算 = 当天签到窗口结束（YIBAN_SIGN_END，
+# 与 signin.py _schedule_config 同一事实源，默认 07:50）− 当前时刻 + 5 分钟余量，
+# 下限 10 分钟。此前固定 1800s：06:31 启动 → 07:01 强杀，账号增多/自选开放后
+# 时间点排到窗口后段会被误杀漏签（07:10 备用 cron 重跑仍可能再杀，反复漏签）。
+# YIBAN_RUN_TIMEOUT_SEC 显式设置时优先（管理员手动覆盖）。
+END_HHMM="${YIBAN_SIGN_END:-07:50}"
+# 校验格式与 signin.py _parse_hhmm 一致（接受 7:50 与 07:50）；非法回退默认 07:50
+if ! echo "$END_HHMM" | grep -qE '^([01]?[0-9]|2[0-3]):[0-5][0-9]$'; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 警告: YIBAN_SIGN_END=$END_HHMM 非法，回退默认 07:50" >> "$LOG_FILE"
+    END_HHMM="07:50"
+fi
+END_TS=$(date -d "today $END_HHMM" +%s)
+NOW_TS=$(date +%s)
+RUN_TIMEOUT=$(( END_TS - NOW_TS + 300 ))
+[ "$RUN_TIMEOUT" -lt 600 ] && RUN_TIMEOUT=600
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 签到超时: ${YIBAN_RUN_TIMEOUT_SEC:-$RUN_TIMEOUT}s（窗口至 $END_HHMM）" >> "$LOG_FILE"
+timeout "${YIBAN_RUN_TIMEOUT_SEC:-$RUN_TIMEOUT}" /usr/bin/python3 scripts/signin.py >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
 # 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：
