@@ -614,6 +614,32 @@
         <div id="users-vacant-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无空用户</div>
       </div>
     </div>
+
+    <!-- 已注销用户组（软删除 3 天冷却期，v0.20.1；默认收起） -->
+    <div id="deleted-users-card" class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm mt-4 hidden">
+      <button type="button" onclick="toggleDeletedUsers()" class="w-full flex items-center gap-2 px-4 py-3 text-left">
+        <span class="text-sm font-medium text-zinc-700 dark:text-zinc-200">已注销用户</span>
+        <span id="users-deleted-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        <span id="deleted-arrow" class="ml-auto text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
+      </button>
+      <div id="deleted-users-body" class="hidden">
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">用户自助注销进入 3 天冷却期，期间可恢复；超过 3 天由系统定期物理清除</p>
+        <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
+          <table class="w-full text-sm table-fixed min-w-[640px] text-center">
+            <thead>
+            <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10">
+                <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
+                <th class="px-4 py-3 font-medium whitespace-nowrap w-[26%]">注销时间</th>
+                <th class="px-4 py-3 font-medium whitespace-nowrap w-[24%]">剩余时间</th>
+                <th class="px-4 py-3 font-medium whitespace-nowrap w-[16%]">状态</th>
+              </tr>
+            </thead>
+            <tbody id="users-deleted-tbody"></tbody>
+          </table>
+          <div id="users-deleted-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无已注销用户</div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- ===== 我的账号（管理员）===== -->
@@ -1936,6 +1962,52 @@ async function loadUsers() {
     builtinAdminName = data.builtin_admin || 'admin';
     renderUsers(allUsers, builtinAdminName);
   } catch (e) { toast(e.message, true); }
+  loadDeletedUsers();  // v0.20.1：已注销用户冷却视图（失败静默，非关键）
+}
+
+// 已注销用户（软删除 3 天冷却期；天粒度剩余时间，v0.20.1）
+let deletedUsers = [];
+let deletedUsersCollapsed = true;  // 默认收起，不占空间
+
+async function loadDeletedUsers() {
+  try {
+    const data = await api('/api/users/deleted');
+    deletedUsers = data.items || [];
+    renderDeletedUsers();
+  } catch (e) { /* 静默：视图非关键 */ }
+}
+
+function toggleDeletedUsers() {
+  deletedUsersCollapsed = !deletedUsersCollapsed;
+  $('deleted-users-body').classList.toggle('hidden', deletedUsersCollapsed);
+  $('deleted-arrow').textContent = deletedUsersCollapsed ? '▸' : '▾';
+}
+
+function renderDeletedUsers() {
+  const card = $('deleted-users-card');
+  card.classList.toggle('hidden', deletedUsers.length === 0);  // 无注销用户整卡隐藏
+  if (!deletedUsers.length) return;
+  $('users-deleted-count').textContent = `（${deletedUsers.length} 人）`;
+  $('deleted-users-body').classList.toggle('hidden', deletedUsersCollapsed);
+  $('deleted-arrow').textContent = deletedUsersCollapsed ? '▸' : '▾';
+  const tbody = $('users-deleted-tbody');
+  tbody.innerHTML = '';
+  deletedUsers.forEach(u => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+    // 剩余时间：冷却中 ≥1 天 → "剩余 X 天"；不足 1 天 → "不足一天"；待清除 → "—"
+    const remainText = u.status === 'purge_pending' ? '—'
+      : (u.remaining_days >= 1 ? `剩余 ${u.remaining_days} 天` : '不足一天');
+    const statusText = u.status === 'purge_pending' ? '待清除' : '冷却中';
+    const statusCls = u.status === 'purge_pending'
+      ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400';
+    tr.innerHTML = `
+      <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(u.email)}</td>
+      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.deleted_at || '—')}</td>
+      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${remainText}</td>
+      <td class="px-4 py-3 text-sm whitespace-nowrap"><span class="${statusCls}">${statusText}</span></td>`;
+    tbody.appendChild(tr);
+  });
 }
 
 function renderUsers(users, builtinAdmin) {

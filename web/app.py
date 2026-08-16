@@ -179,6 +179,8 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
 DELETE_COOLDOWN_SEC = 60
 DELETE_MAX_REQUESTS_PER_IP = 5
+# 注销宽限期（天）：软删除冷却期，与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
+DELETE_GRACE_DAYS = 3
 
 # 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底）：
 # 注册用户上限默认 200（一人一号 ≈ 200 账号，远超班级/社团规模）；账号总数上限默认 500
@@ -875,7 +877,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.20.0"
+APP_VERSION = "0.20.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1373,14 +1375,8 @@ def create_app():
             db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，3 天宽限期）")
             _login_fails.pop(fail_key, None)
             logger.info("用户 %s 已注销账号（3 天宽限期）", _mask_email(username))
-            # 安全增强（对抗审查 2026-08-16）：注销成功也通知管理员——
-            # 盗号批量注销时管理员可从通知流即时发现异常（审计之外的事中信号；
-            # 正常注销频率受冷却限制，通知量可控）
-            send_notification(
-                "用户注销账号",
-                f"用户 {_mask_email(username)} 已注销账号（3 天宽限期，超期物理清除）\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            )
+            # 2026-08-16 用户裁决：自助注销不发管理员通知（正常操作，避免通知轰炸）；
+            # 管理员在「用户管理 → 已注销用户」区块主动查看（/api/users/deleted）
         session.clear()
         return jsonify({"ok": True, "msg": "账号已注销，3 天内可撤销"})
 
@@ -2527,6 +2523,41 @@ def create_app():
                 "builtin_admin": _builtin_admin_display(),
             }
         )
+
+    @app.route("/api/users/deleted")
+    def api_users_deleted():
+        """已注销用户列表（仅管理员，v0.20.1）：软删除冷却中/待清除用户 + 剩余天数。
+
+        用户裁决 2026-08-16：自助注销不发管理员通知，改为本视图主动查看；
+        时间按天粒度（remaining_days 整天向下取整，0 = 不足一天），无秒级计算。
+        require_login 已限定仅管理员（普通用户白名单外 → 403）。
+        """
+        items = []
+        for u in db.load_users(include_deleted=True):
+            if not u.get("deleted"):
+                continue
+            deleted_at = str(u.get("deleted_at") or "")
+            remaining = timedelta(days=0)
+            status = "purge_pending"
+            if deleted_at:
+                try:
+                    d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    d = None
+                if d is not None:
+                    remaining = (d + timedelta(days=DELETE_GRACE_DAYS)) - datetime.now()
+                    if remaining.total_seconds() > 0:
+                        status = "cooling"
+            items.append(
+                {
+                    "email": u["email"],
+                    "deleted_at": deleted_at,
+                    "remaining_days": max(0, remaining.days),
+                    "status": status,
+                }
+            )
+        items.sort(key=lambda x: x["deleted_at"])  # 最早到期在前（ISO 字符串字典序 = 时间序）
+        return jsonify({"ok": True, "items": items})
 
     @app.route("/api/users/batch", methods=["POST"])
     def api_users_batch():
