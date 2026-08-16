@@ -615,7 +615,7 @@
       </div>
     </div>
 
-    <!-- 已注销用户组（软删除 3 天冷却期，v0.20.1；默认收起） -->
+    <!-- 已注销用户组（软删除 7 天冷却期，v0.20.1；默认收起） -->
     <div id="deleted-users-card" class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm mt-4 hidden">
       <button type="button" onclick="toggleDeletedUsers()" class="w-full flex items-center gap-2 px-4 py-3 text-left">
         <span class="text-sm font-medium text-zinc-700 dark:text-zinc-200">已注销用户</span>
@@ -623,7 +623,7 @@
         <span id="deleted-arrow" class="ml-auto text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
       </button>
       <div id="deleted-users-body" class="hidden">
-        <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">用户自助注销进入 3 天冷却期，期间可恢复；超过 3 天由系统定期物理清除</p>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">用户自助注销进入 7 天冷却期，期间可恢复；超过 7 天由系统定期物理清除</p>
         <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
           <table class="w-full text-sm table-fixed min-w-[640px] text-center">
             <thead>
@@ -1965,7 +1965,7 @@ async function loadUsers() {
   loadDeletedUsers();  // v0.20.1：已注销用户冷却视图（失败静默，非关键）
 }
 
-// 已注销用户（软删除 3 天冷却期；天粒度剩余时间，v0.20.1）
+// 已注销用户（软删除 7 天冷却期；天粒度剩余时间，v0.20.1）
 let deletedUsers = [];
 let deletedUsersCollapsed = true;  // 默认收起，不占空间
 

@@ -1107,7 +1107,11 @@ def delete_user(email):
 # 用户主动注销（软删除 + 宽限期，Phase 5）
 # ---------------------------------------------------------------------------
 def soft_delete_user_with_accounts(email):
-    """软注销：标记用户 deleted=1，并删除其易班账号与 time_prefs。
+    """软注销：标记用户 deleted=1，并软删除其易班账号与 time_prefs。
+
+    2026-08-16 安全审查（用户提出错位问题）：账号由物理删除改为软删除，
+    与管理员删除账号的 7 天保留语义对齐——宽限期内 restore_user 可完整恢复
+    （用户 + 账号）；软删账号不参与签到（signin _load_accounts_from_file 过滤 deleted）。
 
     返回是否找到并注销了有效用户。
     """
@@ -1119,11 +1123,14 @@ def soft_delete_user_with_accounts(email):
         if row is None:
             return False
         rows = conn.execute(
-            "SELECT phone FROM accounts WHERE owner=?", (email,)
+            "SELECT phone FROM accounts WHERE owner=? AND deleted=0", (email,)
         ).fetchall()
-        conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE accounts SET deleted=1, deleted_at=? WHERE owner=? AND deleted=0",
+            (now, email),
+        )
+        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
         conn.execute(
             "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
             (now, row["id"]),
@@ -1132,7 +1139,11 @@ def soft_delete_user_with_accounts(email):
 
 
 def restore_user(email):
-    """撤销注销：仅当没有同邮箱活跃用户时，把最近一个已注销用户恢复。"""
+    """撤销注销：仅当没有同邮箱活跃用户时，把最近一个已注销用户及其账号恢复。
+
+    2026-08-16 安全审查：联动恢复该用户的软删易班账号（deleted=0），
+    保证反悔恢复 = 用户 + 账号完整回来（此前账号在注销时被物理删除，恢复残缺）。
+    """
     conn = get_conn()
     with _conn_lock, conn:
         active = conn.execute(
@@ -1151,11 +1162,20 @@ def restore_user(email):
             "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
             (deleted["id"],),
         )
+        conn.execute(
+            "UPDATE accounts SET deleted=0, deleted_at='' WHERE owner=? AND deleted=1",
+            (email,),
+        )
         return True
 
 
-def purge_deleted_users(days=3):
-    """物理清除超过宽限期的已注销用户（默认 3 天）；失败仅告警。"""
+def purge_deleted_users(days=7):
+    """物理清除超过宽限期的已注销用户（默认 7 天）；失败仅告警。
+
+    2026-08-16 安全审查（用户提出错位问题）：宽限期 3 天 → 7 天，
+    与账号软删除保留期（_purge_expired_deleted，7 天）对齐——第 7 天用户与
+    账号同天清除，邮箱/手机号同时释放，消除"反悔窗口内资产被抢占"风险。
+    """
     try:
         conn = get_conn()
         with _conn_lock, conn:
