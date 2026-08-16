@@ -166,9 +166,9 @@ LOGIN_FAIL_NOTIFY = 3
 _IP_STORE_LIMIT = 10000
 _IP_STORE_MAX_AGE = 3600
 
-# 全局请求限速（防疯狂刷新/脚本轰炸）：每 IP 窗口内最多 RATE_MAX 次
+# API 请求限速（防脚本轰炸）：每 IP 窗口内最多 RATE_MAX 次 /api/* 请求
 RATE_WINDOW = 10  # 窗口（秒）
-RATE_MAX = 60  # 窗口内最大请求数（正常用户远低于此）
+RATE_MAX = 60  # 窗口内最大 API 请求数（正常用户远低于此）
 # 注册限速（防邮箱批量注册）：每 IP 窗口内最多 REGISTER_MAX 次成功注册
 REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
 REGISTER_MAX = 5  # 窗口内最大成功注册数
@@ -911,9 +911,12 @@ def create_app():
         for k in stale:
             store.pop(k, None)
 
-    # ---- 全局限速：防疯狂刷新/脚本轰炸（所有请求，含页面与 API）----
+    # ---- 全局限速：防脚本轰炸 API（2026-08-16 用户决策：只对 /api/* 限速，
+    # 页面/静态放宽，避免 302+200 双请求导致正常页面浏览被误伤）----
     @app.before_request
     def rate_limit():
+        if not request.path.startswith("/api/"):
+            return
         ip = _client_ip()
         now = time.time()
         _ip_store_trim(_rate_limits, _IP_STORE_MAX_AGE)
