@@ -10,10 +10,14 @@
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
 """
+import contextlib
 import datetime
+import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
 import sqlite3
 import threading
 
@@ -29,6 +33,21 @@ DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
 SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
+# schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
+SCHEMA_VERSION = 5
+
+
+class DuplicatePhoneError(Exception):
+    """手机号已存在（accounts.phone 唯一约束冲突）。"""
+
+
+class DuplicateOwnerError(Exception):
+    """该用户已有一个未删除账号（accounts.owner 部分唯一索引冲突）。"""
+
+
+class MigrationDeferred(Exception):
+    """迁移暂缓：本次不应用，下次启动重试（用于可选迁移遇到需人工处理的数据）。"""
+
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
 _conn = None
 # RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
@@ -36,6 +55,19 @@ _conn = None
 _conn_lock = threading.RLock()
 _db_file = DB_DEFAULT
 _env_file = None  # .env 路径（密钥来源；None=account_crypto 默认 .env）
+
+# 审计 HMAC 密钥缓存与互斥（Phase 3）
+_AUDIT_KEY_CACHE = None
+_AUDIT_KEY_LOCK = threading.Lock()
+
+# 可视化表保留期（Phase 4）
+SIGN_EVENTS_RETENTION_DAYS = 180
+PAGE_VISITS_RETENTION_DAYS = 90
+SERVER_METRICS_RETENTION_DAYS = 30
+
+# IP 加盐哈希（Phase 4）
+_TRACK_SALT_CACHE = None
+_TRACK_SALT_LOCK = threading.Lock()
 
 
 def init_db(db_file=None, migrate_from=None, env_file=None):
@@ -58,11 +90,22 @@ def init_db(db_file=None, migrate_from=None, env_file=None):
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.execute("PRAGMA foreign_keys=OFF")
         _create_tables(_conn)
-        _maybe_add_account_columns(_conn)  # 存量库增量加列（幂等）
+        # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
+        # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败仅告警。
+        try:
+            _run_migrations(_conn)
+        except Exception:
+            with contextlib.suppress(Exception):
+                _conn.close()
+            _conn = None
+            raise
         # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
         if migrate_from:
             _maybe_migrate(_conn, migrate_from)
         _audit_cleanup(_conn)
+        _event_cleanup(_conn)
+        purge_deleted_users()
+        purge_old_delete_requests()
         return _conn
 
 
@@ -99,12 +142,17 @@ def _create_tables(conn):
 
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          email TEXT NOT NULL UNIQUE,
+          email TEXT NOT NULL,
           password_hash TEXT NOT NULL,
           role TEXT NOT NULL DEFAULT 'user',
           created_at TEXT NOT NULL DEFAULT '',
-          pw_version INTEGER NOT NULL DEFAULT 1
+          pw_version INTEGER NOT NULL DEFAULT 1,
+          deleted INTEGER NOT NULL DEFAULT 0,
+          deleted_at TEXT NOT NULL DEFAULT ''
         );
+        -- 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
+        -- 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
+        -- 迁移执行前崩溃（对抗审查 2026-08-16 演练发现）。
 
         CREATE TABLE IF NOT EXISTS audit_logs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,23 +170,371 @@ def _create_tables(conn):
           updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_time_prefs_slot ON time_prefs(slot_min);
+
+        CREATE TABLE IF NOT EXISTS user_delete_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL,
+          ip_hash TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username);
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash);
         """
     )
     conn.commit()
 
 
 # ---------------------------------------------------------------------------
+# 通用幂等迁移框架（Phase 0）
+# ---------------------------------------------------------------------------
+def _table_columns(conn, table):
+    """返回表的所有列名（PRAGMA table_info）。"""
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_column(conn, table, column, definition):
+    """缺列才 ALTER TABLE ADD COLUMN（幂等）。"""
+    if column not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.commit()
+
+
+def _ensure_index(conn, create_sql):
+    """按给定 CREATE INDEX / CREATE UNIQUE INDEX 语句幂等创建（依赖 IF NOT EXISTS）。"""
+    conn.execute(create_sql)
+    conn.commit()
+
+
+def migrate_v1(conn):
+    """v1：补齐 accounts.user_paused 列（现状基线迁移）。"""
+    _ensure_column(conn, "accounts", "user_paused", "user_paused INTEGER NOT NULL DEFAULT 0")
+
+
+def migrate_v2(conn):
+    """v2：为普通用户“每人限 1 账号”创建部分唯一索引（可选/延后）。
+
+    若存在历史重复数据，抛出 MigrationDeferred，不创建索引、不 bump 版本；
+    人工清理后下次启动自动重试。
+    """
+    rows = conn.execute(
+        "SELECT owner, COUNT(*) AS cnt FROM accounts "
+        "WHERE deleted=0 AND owner NOT IN ('', 'admin') "
+        "GROUP BY owner HAVING COUNT(*) > 1"
+    ).fetchall()
+    if rows:
+        dup = ", ".join(f"{r['owner']}({r['cnt']})" for r in rows)
+        logger.warning("检测到重复 owner，跳过唯一索引创建（需人工清理后重启重试）: %s", dup)
+        raise MigrationDeferred("存在重复 owner，唯一索引延后创建")
+    _ensure_index(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_live "
+        "ON accounts(owner) WHERE deleted=0 AND owner != '' AND owner != 'admin'",
+    )
+
+
+def _maybe_add_account_columns(conn):
+    """兼容旧入口：v1 迁移的薄封装（行为由 migrate_v1 负责）。"""
+    migrate_v1(conn)
+
+
+# ---------------------------------------------------------------------------
+# 审计哈希链（Phase 3）
+# ---------------------------------------------------------------------------
+def _parse_env_file(env_file):
+    """读取 .env 全部键值，返回 dict（文件缺失/非法行静默跳过）。"""
+    result = {}
+    try:
+        with open(env_file, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    result[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return result
+
+
+def _decode_audit_key(raw):
+    """把 hex 字符串审计密钥解码为 bytes；格式/长度非法抛 ValueError。"""
+    try:
+        key = bytes.fromhex(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError("YIBAN_AUDIT_KEY 格式非法：应为 64 位十六进制字符串") from e
+    if len(key) != 32:
+        raise ValueError("YIBAN_AUDIT_KEY 长度非法：应为 32 字节（64 位十六进制）")
+    return key
+
+
+def _write_audit_key_to_env_file(env_file, key):
+    """把新生成的审计密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
+
+    写入前再读一次 .env：若其他进程已写入密钥则复用，避免多进程首启竞态。
+    """
+    existing = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
+    if existing:
+        return _decode_audit_key(existing)
+    lines = []
+    if os.path.exists(env_file):
+        with open(env_file, encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
+    out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
+    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, env_file)
+    with contextlib.suppress(OSError):
+        os.chmod(env_file, 0o600)
+    return key
+
+
+def _audit_key():
+    """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env，缺失时生成。"""
+    global _AUDIT_KEY_CACHE
+    env_file = _env_file or ".env"
+    env_key = os.environ.get("YIBAN_AUDIT_KEY", "").strip()
+    if env_key:
+        _AUDIT_KEY_CACHE = _decode_audit_key(env_key)
+        return _AUDIT_KEY_CACHE
+    if _AUDIT_KEY_CACHE is not None:
+        return _AUDIT_KEY_CACHE
+    with _AUDIT_KEY_LOCK:
+        if _AUDIT_KEY_CACHE is not None:
+            return _AUDIT_KEY_CACHE
+        file_key = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
+        if file_key:
+            _AUDIT_KEY_CACHE = _decode_audit_key(file_key)
+            return _AUDIT_KEY_CACHE
+        logger.info("未找到 YIBAN_AUDIT_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
+        _AUDIT_KEY_CACHE = _write_audit_key_to_env_file(env_file, secrets.token_bytes(32))
+        return _AUDIT_KEY_CACHE
+
+
+def _audit_hash(prev_hash, ts, username, action, target, detail):
+    """计算单条审计日志的 HMAC-SHA256 哈希。"""
+    payload = json.dumps(
+        [prev_hash, ts, username, action, target, detail],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hmac.new(_audit_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _rechain_audit_logs(conn):
+    """按 id 升序重建审计哈希链（从空 prev_hash 开始）。"""
+    rows = conn.execute(
+        "SELECT id, ts, username, action, target, detail FROM audit_logs ORDER BY id"
+    ).fetchall()
+    prev = ""
+    for r in rows:
+        h = _audit_hash(prev, r["ts"], r["username"], r["action"], r["target"], r["detail"])
+        conn.execute(
+            "UPDATE audit_logs SET prev_hash=?, hash=? WHERE id=?",
+            (prev, h, r["id"]),
+        )
+        prev = h
+    conn.commit()
+
+
+def migrate_v3(conn):
+    """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。"""
+    _ensure_column(conn, "audit_logs", "prev_hash", "prev_hash TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "audit_logs", "hash", "hash TEXT NOT NULL DEFAULT ''")
+    rows = conn.execute(
+        "SELECT id, hash FROM audit_logs ORDER BY id"
+    ).fetchall()
+    if rows and any(r["hash"] == "" for r in rows):
+        _rechain_audit_logs(conn)
+
+
+# ---------------------------------------------------------------------------
+# 可视化表（Phase 4）
+# ---------------------------------------------------------------------------
+def _write_track_salt_to_env_file(env_file, salt):
+    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。"""
+    existing = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
+    if existing:
+        return existing
+    lines = []
+    if os.path.exists(env_file):
+        with open(env_file, encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
+    out.append(f"YIBAN_TRACK_SALT={salt}")
+    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, env_file)
+    with contextlib.suppress(OSError):
+        os.chmod(env_file, 0o600)
+    return salt
+
+
+def _track_salt():
+    """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。"""
+    global _TRACK_SALT_CACHE
+    env_file = _env_file or ".env"
+    env_salt = os.environ.get("YIBAN_TRACK_SALT", "").strip()
+    if env_salt:
+        _TRACK_SALT_CACHE = env_salt
+        return env_salt
+    if _TRACK_SALT_CACHE is not None:
+        return _TRACK_SALT_CACHE
+    with _TRACK_SALT_LOCK:
+        if _TRACK_SALT_CACHE is not None:
+            return _TRACK_SALT_CACHE
+        file_salt = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
+        if file_salt:
+            _TRACK_SALT_CACHE = file_salt
+            return file_salt
+        logger.info("未找到 YIBAN_TRACK_SALT，已生成新盐并写入 %s（chmod 600）", env_file)
+        _TRACK_SALT_CACHE = _write_track_salt_to_env_file(env_file, secrets.token_hex(32))
+        return _TRACK_SALT_CACHE
+
+
+def hash_ip(ip):
+    """对 IP 加盐哈希（YIBAN_TRACK_SALT），返回十六进制字符串。"""
+    salt = _track_salt()
+    return hashlib.sha256(f"{salt}:{ip}".encode("utf-8")).hexdigest()
+
+
+def migrate_v4(conn):
+    """v4：创建可视化三表（可选迁移，失败只告警不阻断启动）。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sign_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          phone TEXT NOT NULL,
+          status TEXT NOT NULL,
+          message TEXT NOT NULL DEFAULT '',
+          stage TEXT NOT NULL DEFAULT '',
+          attempt INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sign_events_ts ON sign_events(ts);
+        CREATE INDEX IF NOT EXISTS idx_sign_events_phone ON sign_events(phone);
+
+        CREATE TABLE IF NOT EXISTS page_visits (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT '',
+          path TEXT NOT NULL,
+          ip_hash TEXT NOT NULL DEFAULT '',
+          ua TEXT NOT NULL DEFAULT '',
+          dur_ms INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_page_visits_ts ON page_visits(ts);
+        CREATE INDEX IF NOT EXISTS idx_page_visits_role ON page_visits(role);
+
+        CREATE TABLE IF NOT EXISTS server_metrics (
+          ts TEXT NOT NULL,
+          cpu REAL,
+          mem_pct REAL,
+          disk_pct REAL,
+          net_in REAL,
+          net_out REAL,
+          load1 REAL,
+          load5 REAL,
+          load15 REAL,
+          proc_count INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics(ts);
+        """
+    )
+    conn.commit()
+
+
+def migrate_v5(conn):
+    """v5：用户注销支持——users 增加 deleted/deleted_at，邮箱唯一改为活跃唯一，新增注销请求表。"""
+    cols = _table_columns(conn, "users")
+    if "deleted" not in cols:
+        conn.executescript(
+            """
+            CREATE TABLE users_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email TEXT NOT NULL,
+              password_hash TEXT NOT NULL,
+              role TEXT NOT NULL DEFAULT 'user',
+              created_at TEXT NOT NULL DEFAULT '',
+              pw_version INTEGER NOT NULL DEFAULT 1,
+              deleted INTEGER NOT NULL DEFAULT 0,
+              deleted_at TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO users_new (id, email, password_hash, role, created_at, pw_version, deleted, deleted_at)
+              SELECT id, email, password_hash, role, created_at, pw_version, 0, '' FROM users;
+            DROP TABLE users;
+            ALTER TABLE users_new RENAME TO users;
+            """
+        )
+        conn.commit()
+    _ensure_index(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
+        "ON users(email) WHERE deleted = 0",
+    )
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS user_delete_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL,
+          ip_hash TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username);
+        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash);
+        """
+    )
+    conn.commit()
+
+
+# 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
+# - 核心迁移：现有功能依赖，失败应阻断启动。
+# - 可选迁移：未来/非关键能力，失败只告警或延后重试。
+_MIGRATIONS = [
+    (1, "v1_add_account_user_paused", migrate_v1, True),
+    (2, "v2_unique_owner_live", migrate_v2, False),
+    (3, "v3_audit_hash_chain", migrate_v3, True),
+    (4, "v4_visual_tables", migrate_v4, False),
+    (5, "v5_user_deregistration", migrate_v5, True),
+]
+
+
+def _run_migrations(conn):
+    """按 PRAGMA user_version 顺序执行未应用的迁移。
+
+    核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动）；
+    可选迁移失败只告警并停止后续迁移，不阻断启动；
+    可选迁移抛 MigrationDeferred 时视为“延后”，下次启动重试。
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    for target_version, name, fn, is_core in _MIGRATIONS:
+        if version >= target_version:
+            continue
+        try:
+            fn(conn)
+            conn.execute(f"PRAGMA user_version = {target_version}")
+            conn.commit()
+            version = target_version
+            logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
+        except MigrationDeferred as e:
+            logger.warning("可选 schema 迁移延后: %s: %s", name, e)
+            break
+        except Exception as e:
+            if is_core:
+                logger.error("核心 schema 迁移失败: %s: %s", name, e)
+                raise
+            logger.warning("可选 schema 迁移失败: %s: %s，已跳过后续迁移", name, e)
+            break
+
+
+# ---------------------------------------------------------------------------
 # 自动迁移（JSON → SQLite，幂等）
 # ---------------------------------------------------------------------------
-def _maybe_add_account_columns(conn):
-    """存量库增量加列（幂等）：PRAGMA 检查缺列则 ALTER。"""
-    try:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
-        if "user_paused" not in cols:
-            conn.execute("ALTER TABLE accounts ADD COLUMN user_paused INTEGER NOT NULL DEFAULT 0")
-            conn.commit()
-    except Exception as e:
-        logger.warning("accounts 增量加列失败: %s", e)
 def _maybe_migrate(conn, json_base):
     """json_base 形如 /path/accounts.json（users.json 同目录推断）。"""
     accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
@@ -337,6 +733,16 @@ def _next_sort_order(conn):
     return row["n"]
 
 
+def _convert_integrity_error(e):
+    """把 sqlite3.IntegrityError 转换为可区分异常；无法识别则原样抛出。"""
+    msg = str(e)
+    if "accounts.owner" in msg:
+        raise DuplicateOwnerError("该用户已有一个未删除账号") from e
+    if "accounts.phone" in msg:
+        raise DuplicatePhoneError("手机号已存在") from e
+    raise e
+
+
 def add_account(fields):
     """新增账号（fields 为业务层明文 dict），返回新 id。
 
@@ -366,6 +772,9 @@ def add_account(fields):
             new_id = cur.lastrowid
             conn.commit()
             return new_id
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        _convert_integrity_error(e)
     except Exception:
         conn.rollback()
         raise
@@ -415,7 +824,10 @@ def update_account(account_id, fields, expect_snapshot=None):
         if not sets:
             return True
         vals.append(account_id)
-        conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+        try:
+            conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+        except sqlite3.IntegrityError as e:
+            _convert_integrity_error(e)
         return True
 
 
@@ -507,40 +919,108 @@ def replace_accounts(accounts):
         keep = {a.get("phone", "") for a in accounts}
         _delete_time_prefs_by_phones(conn, [r["phone"] for r in old if r["phone"] not in keep])
         for i, a in enumerate(accounts):
-            conn.execute(
-                "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    i + 1,
-                    a.get("name", ""),
-                    a.get("phone", ""),
-                    _encrypt_field(a.get("password"), a.get("phone", "")),
-                    a.get("phone_model", ""),
-                    _encrypt_field(a.get("phone_code"), a.get("phone", "")),
-                    a.get("owner", "admin"),
-                    a.get("status", "active"),
-                    a.get("reject_reason", ""),
-                    1 if a.get("deleted") else 0,
-                    a.get("deleted_at", ""),
-                ),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        i + 1,
+                        a.get("name", ""),
+                        a.get("phone", ""),
+                        _encrypt_field(a.get("password"), a.get("phone", "")),
+                        a.get("phone_model", ""),
+                        _encrypt_field(a.get("phone_code"), a.get("phone", "")),
+                        a.get("owner", "admin"),
+                        a.get("status", "active"),
+                        a.get("reject_reason", ""),
+                        1 if a.get("deleted") else 0,
+                        a.get("deleted_at", ""),
+                    ),
+                )
+            except sqlite3.IntegrityError as e:
+                _convert_integrity_error(e)
     return len(accounts)
+
+
+def batch_account_ops(ops):
+    """在一个事务内批量执行账号操作（Phase 1：整体成功或整体回滚）。
+
+    ops 为 (op, params) 列表，op 支持：
+      ("update_status", account_id, status, reject_reason)
+      ("set_deleted", account_id, deleted, deleted_at)
+      ("purge", account_id)
+    """
+    conn = get_conn()
+    try:
+        with _conn_lock:
+            conn.execute("BEGIN IMMEDIATE")
+            for op in ops:
+                kind = op[0]
+                if kind == "update_status":
+                    _, account_id, status, reject_reason = op
+                    conn.execute(
+                        "UPDATE accounts SET status=?, reject_reason=? WHERE id=?",
+                        (status, reject_reason, account_id),
+                    )
+                elif kind == "set_deleted":
+                    _, account_id, deleted, deleted_at = op
+                    try:
+                        conn.execute(
+                            "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
+                            (1 if deleted else 0, deleted_at, account_id),
+                        )
+                    except sqlite3.IntegrityError as e:
+                        _convert_integrity_error(e)
+                elif kind == "purge":
+                    _, account_id = op
+                    row = conn.execute(
+                        "SELECT phone FROM accounts WHERE id=?", (account_id,)
+                    ).fetchone()
+                    conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+                    if row is not None:
+                        _delete_time_prefs_by_phones(conn, [row["phone"]])
+                else:
+                    raise ValueError(f"未知批量账号操作: {kind}")
+            conn.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------
 # users CRUD
 # ---------------------------------------------------------------------------
-def load_users():
+def load_users(include_deleted=False):
+    """全部用户（默认排除已注销/软删除用户）。"""
     with _conn_lock:
         conn = get_conn()
-        rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        if include_deleted:
+            rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM users WHERE deleted=0 ORDER BY id"
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
 def find_user(email):
+    """查找有效（未注销）用户。"""
     with _conn_lock:
         conn = get_conn()
-        row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM users WHERE email=? AND deleted=0", (email,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def find_user_any(email):
+    """查找任意用户（含已注销），供恢复/管理排查使用。"""
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT * FROM users WHERE email=? ORDER BY id DESC LIMIT 1", (email,)
+        ).fetchone()
         return dict(row) if row else None
 
 
@@ -548,7 +1028,8 @@ def create_user(email, password_hash, role="user", created_at="", pw_version=1):
     conn = get_conn()
     with _conn_lock, conn:
         conn.execute(
-            "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
+            "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version, deleted, deleted_at) "
+            "VALUES (?,?,?,?,?,0,'')",
             (email, password_hash, role, created_at, pw_version),
         )
 
@@ -564,36 +1045,272 @@ def update_user(email, fields):
         if not sets:
             return
         vals.append(email)
-        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE email=?", vals)
+        conn.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0", vals
+        )
 
 
 def delete_user(email):
     conn = get_conn()
     with _conn_lock, conn:
-        conn.execute("DELETE FROM users WHERE email=?", (email,))
+        conn.execute("DELETE FROM users WHERE email=? AND deleted=0", (email,))
+
+
+# ---------------------------------------------------------------------------
+# 用户主动注销（软删除 + 宽限期，Phase 5）
+# ---------------------------------------------------------------------------
+def soft_delete_user_with_accounts(email):
+    """软注销：标记用户 deleted=1，并删除其易班账号与 time_prefs。
+
+    返回是否找到并注销了有效用户。
+    """
+    conn = get_conn()
+    with _conn_lock, conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
+        ).fetchone()
+        if row is None:
+            return False
+        rows = conn.execute(
+            "SELECT phone FROM accounts WHERE owner=?", (email,)
+        ).fetchall()
+        conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
+            (now, row["id"]),
+        )
+        return True
+
+
+def restore_user(email):
+    """撤销注销：仅当没有同邮箱活跃用户时，把最近一个已注销用户恢复。"""
+    conn = get_conn()
+    with _conn_lock, conn:
+        active = conn.execute(
+            "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
+        ).fetchone()
+        if active is not None:
+            return False
+        deleted = conn.execute(
+            "SELECT id FROM users WHERE email=? AND deleted=1 "
+            "ORDER BY id DESC LIMIT 1",
+            (email,),
+        ).fetchone()
+        if deleted is None:
+            return False
+        conn.execute(
+            "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
+            (deleted["id"],),
+        )
+        return True
+
+
+def purge_deleted_users(days=3):
+    """物理清除超过宽限期的已注销用户（默认 3 天）；失败仅告警。"""
+    try:
+        conn = get_conn()
+        with _conn_lock, conn:
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            conn.execute(
+                "DELETE FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+                (cutoff,),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("清理已注销用户失败: %s", e)
+
+
+def purge_old_delete_requests(days=30):
+    """物理清除超过保留期的注销请求记录（默认 30 天）；失败仅告警。
+
+    对抗审查 2026-08-16：user_delete_requests 只增不删会无限累积
+    （长期使用后 count 查询变慢、库体积膨胀）——启动时随 purge_deleted_users 一并清理。
+    """
+    try:
+        conn = get_conn()
+        with _conn_lock, conn:
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            conn.execute(
+                "DELETE FROM user_delete_requests WHERE created_at <= ?",
+                (cutoff,),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("清理注销请求记录失败: %s", e)
+
+
+def record_user_delete_request(username, ip_hash=""):
+    """记录一次注销请求（供冷却/防批量使用）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO user_delete_requests (username, ip_hash, created_at) "
+                "VALUES (?,?,?)",
+                (
+                    username or "",
+                    ip_hash or "",
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("记录注销请求失败: %s", e)
+
+
+def count_user_delete_requests(username=None, ip_hash=None, since_ts=None):
+    """统计窗口内注销请求次数（用户或 IP 维度）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
+            params = []
+            if username:
+                sql += " AND username=?"
+                params.append(username)
+            if ip_hash:
+                sql += " AND ip_hash=?"
+                params.append(ip_hash)
+            if since_ts:
+                sql += " AND created_at >= ?"
+                params.append(since_ts)
+            row = conn.execute(sql, params).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.warning("统计注销请求失败: %s", e)
+        return 0
+
+
+def is_last_registered_admin(email):
+    """判断该邮箱是否是最后一个注册管理员（不含 .env 内置管理员）。"""
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
+        ).fetchone()
+        total = row[0] if row else 0
+        target = conn.execute(
+            "SELECT id FROM users WHERE email=? AND role='admin' AND deleted=0",
+            (email,),
+        ).fetchone()
+        return target is not None and total <= 1
+
+
+def batch_user_ops(ops):
+    """在一个事务内批量执行用户操作（Phase 1：整体成功或整体回滚）。
+
+    ops 为 (op, params) 列表，op 支持：
+      ("update_user", email, fields_dict)          # role/password_hash/pw_version
+      ("delete_user_with_accounts", email)
+    """
+    conn = get_conn()
+    try:
+        with _conn_lock:
+            conn.execute("BEGIN IMMEDIATE")
+            for op in ops:
+                kind = op[0]
+                if kind == "update_user":
+                    _, email, fields = op
+                    sets, vals = [], []
+                    for k in ("password_hash", "role", "pw_version"):
+                        if k in fields:
+                            sets.append(f"{k}=?")
+                            vals.append(fields[k])
+                    if not sets:
+                        continue
+                    vals.append(email)
+                    conn.execute(
+                        f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0",
+                        vals,
+                    )
+                elif kind == "delete_user_with_accounts":
+                    _, email = op
+                    rows = conn.execute(
+                        "SELECT phone FROM accounts WHERE owner=?", (email,)
+                    ).fetchall()
+                    conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+                    _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+                    conn.execute("DELETE FROM users WHERE email=?", (email,))
+                else:
+                    raise ValueError(f"未知批量用户操作: {kind}")
+            conn.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------
 # 操作审计
 # ---------------------------------------------------------------------------
 def audit(username, action, target="", detail=""):
-    """记录关键管理操作（多管理员追溯；detail 需已脱敏）。"""
+    """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
+
+    Phase 3：写入 HMAC 哈希链，prev_hash 取上一条 hash；签名保持不变。
+    """
     try:
         with _conn_lock:
             conn = get_conn()
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            detail = detail[:200]
+            row = conn.execute(
+                "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            prev_hash = row["hash"] if row else ""
+            h = _audit_hash(prev_hash, ts, username, action, target, detail)
             conn.execute(
-                "INSERT INTO audit_logs (ts, username, action, target, detail) VALUES (?,?,?,?,?)",
-                (
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    username or "?",
-                    action,
-                    target,
-                    detail[:200],
-                ),
+                "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ts, username, action, target, detail, prev_hash, h),
             )
             conn.commit()
     except Exception as e:
         logger.warning("审计写入失败: %s", e)
+
+
+def verify_audit_chain():
+    """校验审计哈希链。
+
+    把当前表中 id 最小的一行视为链根（不校验其 prev_hash），
+    从第二行开始要求 prev_hash 等于上一行 hash，且每行 hash 与内容匹配。
+
+    返回 (ok, broken_count, first_broken_id)；broken_count=-1 表示校验过程异常。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            rows = conn.execute(
+                "SELECT id, prev_hash, hash, ts, username, action, target, detail "
+                "FROM audit_logs ORDER BY id"
+            ).fetchall()
+            if not rows:
+                return True, 0, None
+            prev = ""
+            broken = 0
+            first_broken = None
+            for r in rows:
+                if r["prev_hash"] != prev:
+                    broken += 1
+                    if first_broken is None:
+                        first_broken = r["id"]
+                expected_hash = _audit_hash(
+                    prev, r["ts"], r["username"], r["action"], r["target"], r["detail"]
+                )
+                if r["hash"] != expected_hash:
+                    broken += 1
+                    if first_broken is None:
+                        first_broken = r["id"]
+                prev = r["hash"]
+            return broken == 0, broken, first_broken
+    except Exception as e:
+        logger.warning("审计链校验失败: %s", e)
+        return False, -1, None
 
 
 def last_time_pref_set_at(phone):
@@ -653,14 +1370,166 @@ def last_pause_at(username):
         return None
 
 
+def pause_count_since(username, since_ts):
+    """指定用户在 since_ts 之后的暂停次数（弹性冷却高频判定用）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
+                "AND action='my_account_pause' AND ts >= ?",
+                (username or "", since_ts),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.warning("统计暂停次数失败: %s", e)
+        return 0
+
+
 def _audit_cleanup(conn):
-    """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。"""
+    """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。
+
+    Phase 3：删除旧行后重建哈希链，使剩余最旧一行成为新根。
+    """
     try:
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
         conn.commit()
+        remaining = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+        if remaining:
+            _rechain_audit_logs(conn)
     except Exception as e:
         logger.warning("清理旧审计日志失败: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# 可视化表（Phase 4）
+# ---------------------------------------------------------------------------
+def add_sign_event(ts, phone, status, message="", stage="", attempt=0):
+    """写入签到事件；失败仅告警，不影响调用方。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO sign_events (ts, phone, status, message, stage, attempt) "
+                "VALUES (?,?,?,?,?,?)",
+                (ts, phone, status, message, stage, attempt),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("写入 sign_events 失败: %s", e)
+
+
+def add_page_visit(ts, role, path, ip_hash="", ua="", dur_ms=0):
+    """写入页面访问；失败仅告警，不影响调用方。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO page_visits (ts, role, path, ip_hash, ua, dur_ms) "
+                "VALUES (?,?,?,?,?,?)",
+                (ts, role, path, ip_hash, ua, dur_ms),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("写入 page_visits 失败: %s", e)
+
+
+def add_server_metric(ts, cpu=None, mem_pct=None, disk_pct=None,
+                      net_in=None, net_out=None, load1=None, load5=None,
+                      load15=None, proc_count=None):
+    """写入服务器采样；失败仅告警，不影响调用方。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO server_metrics (ts, cpu, mem_pct, disk_pct, net_in, net_out, "
+                "load1, load5, load15, proc_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (ts, cpu, mem_pct, disk_pct, net_in, net_out, load1, load5, load15, proc_count),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("写入 server_metrics 失败: %s", e)
+
+
+def sign_event_stats(days=30):
+    """按天统计签到事件数量/状态分布；失败返回空列表。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT substr(ts, 1, 10) AS day, status, COUNT(*) AS cnt "
+                "FROM sign_events WHERE ts >= ? GROUP BY day, status ORDER BY day",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("sign_events 统计失败: %s", e)
+        return []
+
+
+def page_visit_stats(days=30):
+    """按天统计 PV/UV 等基础指标；失败返回空列表。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT substr(ts, 1, 10) AS day, COUNT(*) AS pv, "
+                "COUNT(DISTINCT ip_hash) AS uv "
+                "FROM page_visits WHERE ts >= ? GROUP BY day ORDER BY day",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("page_visits 统计失败: %s", e)
+        return []
+
+
+def server_metric_history(hours=24):
+    """返回最近 N 小时服务器采样点；失败返回空列表。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(hours=hours)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT ts, cpu, mem_pct, disk_pct, net_in, net_out, "
+                "load1, load5, load15, proc_count "
+                "FROM server_metrics WHERE ts >= ? ORDER BY ts",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("server_metrics 查询失败: %s", e)
+        return []
+
+
+def _event_cleanup(conn):
+    """清理可视化表超期数据；失败仅告警。"""
+    try:
+        now = datetime.datetime.now()
+        sign_cutoff = (now - datetime.timedelta(days=SIGN_EVENTS_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        page_cutoff = (now - datetime.timedelta(days=PAGE_VISITS_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        server_cutoff = (now - datetime.timedelta(days=SERVER_METRICS_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        conn.execute("DELETE FROM sign_events WHERE ts < ?", (sign_cutoff,))
+        conn.execute("DELETE FROM page_visits WHERE ts < ?", (page_cutoff,))
+        conn.execute("DELETE FROM server_metrics WHERE ts < ?", (server_cutoff,))
+        conn.commit()
+    except Exception as e:
+        logger.warning("清理可视化表失败: %s", e)
 
 
 # ---------------------------------------------------------------------------
