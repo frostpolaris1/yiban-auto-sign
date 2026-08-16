@@ -1139,6 +1139,22 @@ def last_pause_at(username):
         return None
 
 
+def pause_count_since(username, since_ts):
+    """指定用户在 since_ts 之后的暂停次数（弹性冷却高频判定用）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
+                "AND action='my_account_pause' AND ts >= ?",
+                (username or "", since_ts),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.warning("统计暂停次数失败: %s", e)
+        return 0
+
+
 def _audit_cleanup(conn):
     """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。
 

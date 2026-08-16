@@ -182,9 +182,14 @@ TIME_PREF_COOLDOWN_FREE = 20        # 60 秒窗口内自由切换次数（覆盖
 TIME_PREF_COOLDOWN_MAX = 300        # 弹性封顶（秒）
 TIME_PREF_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 
-# 暂停签到冷却（2026-08-15 用户裁决）：暂停 30s 固定间隔（恢复不受限——恢复是紧迫正向
-# 操作且无危害）。正常用户低频操作无感；防脚本刷审计/状态显示抖动。0=关闭。
+# 暂停签到冷却（2026-08-16 调整）：恢复不受限；暂停采用弹性冷却——
+# 60 秒窗口内前 PAUSE_COOLDOWN_FREE 次完全自由（好奇地暂停/恢复/再暂停不会被误杀），
+# 超出后冷却递增（基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX）。
+# 防脚本刷审计/状态显示抖动，但不惩罚正常手快用户。0=关闭。
 PAUSE_COOLDOWN_SEC = 30
+PAUSE_COOLDOWN_FREE = 3         # 60 秒窗口内自由暂停次数（覆盖"试一下"）
+PAUSE_COOLDOWN_MAX = 120        # 弹性封顶（秒）
+PAUSE_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 
 # 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$")
@@ -2296,16 +2301,29 @@ def create_app():
             if paused:
                 base_cd = load_env_int(ENV_FILE, "YIBAN_PAUSE_COOLDOWN_SEC", PAUSE_COOLDOWN_SEC)
                 if base_cd > 0:
-                    last_ts = db.last_pause_at(session.get("username", "") or "")
-                    if last_ts:
-                        try:
-                            last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
-                            # 负间隔（时钟回拨）视为已过冷却，不误伤（与弹性冷却同口径）
-                            if 0 <= (datetime.now() - last_dt).total_seconds() < base_cd:
+                    # 弹性冷却：60s 窗口内前 PAUSE_COOLDOWN_FREE 次完全自由，
+                    # 超出后冷却 = 基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX。
+                    now_ts = datetime.now()
+                    since = (now_ts - timedelta(seconds=PAUSE_COOLDOWN_WINDOW)
+                             ).strftime("%Y-%m-%d %H:%M:%S")
+                    pause_count = db.pause_count_since(
+                        session.get("username", "") or "", since
+                    )
+                    if pause_count >= PAUSE_COOLDOWN_FREE:
+                        cooldown = min(
+                            base_cd * (2 ** (pause_count - PAUSE_COOLDOWN_FREE + 1)),
+                            PAUSE_COOLDOWN_MAX,
+                        )
+                        last_ts = db.last_pause_at(session.get("username", "") or "")
+                        if last_ts:
+                            try:
+                                last_dt = datetime.strptime(str(last_ts), "%Y-%m-%d %H:%M:%S")
+                                # 负间隔（时钟回拨）视为已过冷却，不误伤
+                                if 0 <= (now_ts - last_dt).total_seconds() < cooldown:
+                                    return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+                            except ValueError:
+                                # ts 格式异常（写坏）：保守按冷却生效拦截
                                 return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-                        except ValueError:
-                            # ts 格式异常（写坏）：保守按冷却生效拦截（M3 口径：防 fail-open 绕过）
-                            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
             db.set_user_paused(acc["id"], paused)
             db.audit(
                 session.get("username", "") or "?",
