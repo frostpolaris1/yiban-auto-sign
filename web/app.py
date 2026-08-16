@@ -153,6 +153,21 @@ def _client_ip():
             return first
     return r
 
+
+def _delete_grace_remaining(deleted_at):
+    """注销冷却剩余秒数：deleted_at + 宽限期 − now；非冷却中（无时间/已过期/解析失败）返回 0。
+
+    登录即恢复（2026-08-16 用户裁决）与已注销用户视图共用此判定。
+    """
+    if not deleted_at:
+        return 0
+    try:
+        d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return 0
+    remain = (d + timedelta(days=DELETE_GRACE_DAYS)) - datetime.now()
+    return remain.total_seconds() if remain.total_seconds() > 0 else 0
+
 # 随机延迟默认上限（与 signin.py 一致）
 DEFAULT_START_DELAY_MAX = 60
 DEFAULT_ACCOUNT_GAP_MAX = 10
@@ -878,7 +893,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.20.2"
+APP_VERSION = "0.20.3"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -943,7 +958,7 @@ def create_app():
     def require_login():
         if not request.path.startswith("/api/"):
             return
-        if request.path in ("/api/login", "/api/register"):
+        if request.path in ("/api/login", "/api/register", "/api/me/restore"):
             return
         # 公告/更新日志读取对所有用户开放（含未登录，登录页也显示）
         if request.path in ("/api/announcement", "/api/changelog") and request.method == "GET":
@@ -995,8 +1010,8 @@ def create_app():
             return
         if not request.path.startswith("/api/"):
             return
-        if request.path in ("/api/login", "/api/register"):
-            # 未登录态无 session token：用同源校验阻断跨站登录/注册 CSRF
+        if request.path in ("/api/login", "/api/register", "/api/me/restore"):
+            # 未登录态无 session token：用同源校验阻断跨站 CSRF（与登录/注册同等级）
             if not _is_same_origin():
                 logger.warning(
                     "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
@@ -1113,6 +1128,7 @@ def create_app():
 
         role = None
         pw_version = None
+        recoverable = False
         # 1) 内置管理员（.env，兜底超级管理员）
         if verify_admin(username, password):
             role = "admin"
@@ -1123,6 +1139,16 @@ def create_app():
             u = db.find_user(email)
             if u is None:
                 _constant_time_dummy(password)  # 时延拉平：防邮箱枚举（与真实比对等开销）
+                # 登录即恢复（2026-08-16 用户裁决）：冷静期（7 天）内密码正确的已注销账号
+                # 不放行登录，返回 recoverable 标记，由前端引导恢复（受冷却限速）
+                du = db.find_user_any(email)
+                if (
+                    du is not None
+                    and du.get("deleted")
+                    and _delete_grace_remaining(du.get("deleted_at", "")) > 0
+                    and check_password_hash(du.get("password_hash", ""), password)
+                ):
+                    recoverable = True
             elif check_password_hash(u.get("password_hash", ""), password):
                 role = "admin" if u.get("role") == "admin" else "user"
                 pw_version = u.get("pw_version", 1)
@@ -1136,6 +1162,9 @@ def create_app():
             session["username"] = username
             session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
             return jsonify({"ok": True, "role": role})
+        if recoverable:
+            # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
+            return jsonify({"ok": True, "recoverable": True, "msg": "账号已注销，7 天内可恢复"})
         fails += 1
         if fails >= LOGIN_MAX_FAILS:
             _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
@@ -1189,6 +1218,15 @@ def create_app():
                 return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
             if db.find_user(email) is not None:
                 return jsonify({"error": "该邮箱已注册"}), 400
+            # 冷却期邮箱保护（安全审查 2026-08-16）：已注销账号 7 天冷却期内禁止同邮箱注册，
+            # 否则恢复权会被新注册抢占（登录即恢复形同虚设）；宽限期结束后邮箱正常释放
+            du = db.find_user_any(email)
+            if (
+                du is not None
+                and du.get("deleted")
+                and _delete_grace_remaining(du.get("deleted_at", "")) > 0
+            ):
+                return jsonify({"error": "该邮箱账号正在注销冷却期（7 天内可登录恢复）"}), 400
             try:
                 db.create_user(
                     email,
@@ -1380,6 +1418,53 @@ def create_app():
             # 管理员在「用户管理 → 已注销用户」区块主动查看（/api/users/deleted）
         session.clear()
         return jsonify({"ok": True, "msg": "账号已注销，7 天内可撤销"})
+
+    @app.route("/api/me/restore", methods=["POST"])
+    def api_me_restore():
+        """冷静期账号恢复（2026-08-16 用户裁决：仅登录即恢复，不做注册引导）。
+
+        未登录可调（冷静期用户无会话；CSRF 走同源校验，与登录同等级）；
+        密码验证 + 冷却限速（复用 user_delete_requests 计数：每邮箱 60s 1 次、
+        每 IP 60s 5 次——与注销同一套底层冷却系统）；
+        成功后 restore_user（联动恢复易班账号）+ 建立会话 + 审计 user_self_delete_restore。
+        """
+        data = _json_body()
+        email = str(data.get("email", "")).strip().lower()
+        password = str(data.get("password", ""))
+        ip = _client_ip()
+        if not email or not password:
+            return jsonify({"error": "邮箱和密码为必填项"}), 400
+        # 防批量冷却（与注销同一张计数表）
+        since_ts = (datetime.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        if db.count_user_delete_requests(username=email, since_ts=since_ts) >= 1:
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
+        if (
+            db.count_user_delete_requests(ip_hash=ip_hash, since_ts=since_ts)
+            >= DELETE_MAX_REQUESTS_PER_IP
+        ):
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        u = db.find_user_any(email)
+        if u is None or not u.get("deleted") or _delete_grace_remaining(u.get("deleted_at", "")) <= 0:
+            return jsonify({"error": "账号不存在或已过恢复期"}), 404
+        if not check_password_hash(u.get("password_hash", ""), password):
+            return jsonify({"error": "密码不正确"}), 400
+        db.record_user_delete_request(email, ip_hash=ip_hash)
+        if not db.restore_user(email):
+            return jsonify({"error": "恢复失败，请稍后再试"}), 500
+        db.audit(email, "user_self_delete_restore", email, "冷静期内恢复账号")
+        # 恢复即登录：与 api_login 同款会话建立（防 session 固定）
+        role = "admin" if u.get("role") == "admin" else "user"
+        session.clear()
+        session.permanent = True
+        session["auth"] = True
+        session["role"] = role
+        session["username"] = email
+        session["pw_version"] = u.get("pw_version", 1)
+        logger.info("用户 %s 已恢复注销账号", _mask_email(email))
+        return jsonify({"ok": True, "role": role})
 
     @app.route("/api/me")
     def api_me():
@@ -2538,22 +2623,13 @@ def create_app():
             if not u.get("deleted"):
                 continue
             deleted_at = str(u.get("deleted_at") or "")
-            remaining = timedelta(days=0)
-            status = "purge_pending"
-            if deleted_at:
-                try:
-                    d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    d = None
-                if d is not None:
-                    remaining = (d + timedelta(days=DELETE_GRACE_DAYS)) - datetime.now()
-                    if remaining.total_seconds() > 0:
-                        status = "cooling"
+            remain_sec = _delete_grace_remaining(deleted_at)
+            status = "cooling" if remain_sec > 0 else "purge_pending"
             items.append(
                 {
                     "email": u["email"],
                     "deleted_at": deleted_at,
-                    "remaining_days": max(0, remaining.days),
+                    "remaining_days": int(remain_sec // 86400) if remain_sec > 0 else 0,
                     "status": status,
                 }
             )
