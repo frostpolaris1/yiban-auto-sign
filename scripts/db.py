@@ -12,9 +12,12 @@
 """
 import contextlib
 import datetime
+import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
 import sqlite3
 import threading
 
@@ -31,7 +34,7 @@ SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class DuplicatePhoneError(Exception):
@@ -52,6 +55,10 @@ _conn = None
 _conn_lock = threading.RLock()
 _db_file = DB_DEFAULT
 _env_file = None  # .env 路径（密钥来源；None=account_crypto 默认 .env）
+
+# 审计 HMAC 密钥缓存与互斥（Phase 3）
+_AUDIT_KEY_CACHE = None
+_AUDIT_KEY_LOCK = threading.Lock()
 
 
 def init_db(db_file=None, migrate_from=None, env_file=None):
@@ -204,12 +211,126 @@ def _maybe_add_account_columns(conn):
     migrate_v1(conn)
 
 
+# ---------------------------------------------------------------------------
+# 审计哈希链（Phase 3）
+# ---------------------------------------------------------------------------
+def _parse_env_file(env_file):
+    """读取 .env 全部键值，返回 dict（文件缺失/非法行静默跳过）。"""
+    result = {}
+    try:
+        with open(env_file, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    result[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return result
+
+
+def _decode_audit_key(raw):
+    """把 hex 字符串审计密钥解码为 bytes；格式/长度非法抛 ValueError。"""
+    try:
+        key = bytes.fromhex(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError("YIBAN_AUDIT_KEY 格式非法：应为 64 位十六进制字符串") from e
+    if len(key) != 32:
+        raise ValueError("YIBAN_AUDIT_KEY 长度非法：应为 32 字节（64 位十六进制）")
+    return key
+
+
+def _write_audit_key_to_env_file(env_file, key):
+    """把新生成的审计密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
+
+    写入前再读一次 .env：若其他进程已写入密钥则复用，避免多进程首启竞态。
+    """
+    existing = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
+    if existing:
+        return _decode_audit_key(existing)
+    lines = []
+    if os.path.exists(env_file):
+        with open(env_file, encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
+    out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
+    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, env_file)
+    with contextlib.suppress(OSError):
+        os.chmod(env_file, 0o600)
+    return key
+
+
+def _audit_key():
+    """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env，缺失时生成。"""
+    global _AUDIT_KEY_CACHE
+    env_file = _env_file or ".env"
+    env_key = os.environ.get("YIBAN_AUDIT_KEY", "").strip()
+    if env_key:
+        _AUDIT_KEY_CACHE = _decode_audit_key(env_key)
+        return _AUDIT_KEY_CACHE
+    if _AUDIT_KEY_CACHE is not None:
+        return _AUDIT_KEY_CACHE
+    with _AUDIT_KEY_LOCK:
+        if _AUDIT_KEY_CACHE is not None:
+            return _AUDIT_KEY_CACHE
+        file_key = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
+        if file_key:
+            _AUDIT_KEY_CACHE = _decode_audit_key(file_key)
+            return _AUDIT_KEY_CACHE
+        logger.info("未找到 YIBAN_AUDIT_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
+        _AUDIT_KEY_CACHE = _write_audit_key_to_env_file(env_file, secrets.token_bytes(32))
+        return _AUDIT_KEY_CACHE
+
+
+def _audit_hash(prev_hash, ts, username, action, target, detail):
+    """计算单条审计日志的 HMAC-SHA256 哈希。"""
+    payload = json.dumps(
+        [prev_hash, ts, username, action, target, detail],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hmac.new(_audit_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _rechain_audit_logs(conn):
+    """按 id 升序重建审计哈希链（从空 prev_hash 开始）。"""
+    rows = conn.execute(
+        "SELECT id, ts, username, action, target, detail FROM audit_logs ORDER BY id"
+    ).fetchall()
+    prev = ""
+    for r in rows:
+        h = _audit_hash(prev, r["ts"], r["username"], r["action"], r["target"], r["detail"])
+        conn.execute(
+            "UPDATE audit_logs SET prev_hash=?, hash=? WHERE id=?",
+            (prev, h, r["id"]),
+        )
+        prev = h
+    conn.commit()
+
+
+def migrate_v3(conn):
+    """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。"""
+    _ensure_column(conn, "audit_logs", "prev_hash", "prev_hash TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "audit_logs", "hash", "hash TEXT NOT NULL DEFAULT ''")
+    rows = conn.execute(
+        "SELECT id, hash FROM audit_logs ORDER BY id"
+    ).fetchall()
+    if rows and any(r["hash"] == "" for r in rows):
+        _rechain_audit_logs(conn)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
 _MIGRATIONS = [
     (1, "v1_add_account_user_paused", migrate_v1, True),
     (2, "v2_unique_owner_live", migrate_v2, False),
+    (3, "v3_audit_hash_chain", migrate_v3, True),
 ]
 
 
@@ -788,23 +909,67 @@ def batch_user_ops(ops):
 # 操作审计
 # ---------------------------------------------------------------------------
 def audit(username, action, target="", detail=""):
-    """记录关键管理操作（多管理员追溯；detail 需已脱敏）。"""
+    """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
+
+    Phase 3：写入 HMAC 哈希链，prev_hash 取上一条 hash；签名保持不变。
+    """
     try:
         with _conn_lock:
             conn = get_conn()
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            detail = detail[:200]
+            row = conn.execute(
+                "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            prev_hash = row["hash"] if row else ""
+            h = _audit_hash(prev_hash, ts, username, action, target, detail)
             conn.execute(
-                "INSERT INTO audit_logs (ts, username, action, target, detail) VALUES (?,?,?,?,?)",
-                (
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    username or "?",
-                    action,
-                    target,
-                    detail[:200],
-                ),
+                "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ts, username, action, target, detail, prev_hash, h),
             )
             conn.commit()
     except Exception as e:
         logger.warning("审计写入失败: %s", e)
+
+
+def verify_audit_chain():
+    """校验审计哈希链。
+
+    把当前表中 id 最小的一行视为链根（不校验其 prev_hash），
+    从第二行开始要求 prev_hash 等于上一行 hash，且每行 hash 与内容匹配。
+
+    返回 (ok, broken_count, first_broken_id)；broken_count=-1 表示校验过程异常。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            rows = conn.execute(
+                "SELECT id, prev_hash, hash, ts, username, action, target, detail "
+                "FROM audit_logs ORDER BY id"
+            ).fetchall()
+            if not rows:
+                return True, 0, None
+            prev = ""
+            broken = 0
+            first_broken = None
+            for r in rows:
+                if r["prev_hash"] != prev:
+                    broken += 1
+                    if first_broken is None:
+                        first_broken = r["id"]
+                expected_hash = _audit_hash(
+                    prev, r["ts"], r["username"], r["action"], r["target"], r["detail"]
+                )
+                if r["hash"] != expected_hash:
+                    broken += 1
+                    if first_broken is None:
+                        first_broken = r["id"]
+                prev = r["hash"]
+            return broken == 0, broken, first_broken
+    except Exception as e:
+        logger.warning("审计链校验失败: %s", e)
+        return False, -1, None
 
 
 def last_time_pref_set_at(phone):
@@ -865,11 +1030,17 @@ def last_pause_at(username):
 
 
 def _audit_cleanup(conn):
-    """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。"""
+    """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。
+
+    Phase 3：删除旧行后重建哈希链，使剩余最旧一行成为新根。
+    """
     try:
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
         conn.commit()
+        remaining = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+        if remaining:
+            _rechain_audit_logs(conn)
     except Exception as e:
         logger.warning("清理旧审计日志失败: %s", e)
 
