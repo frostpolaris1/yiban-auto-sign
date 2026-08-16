@@ -34,7 +34,7 @@ SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class DuplicatePhoneError(Exception):
@@ -414,10 +414,15 @@ def migrate_v4(conn):
           status TEXT NOT NULL,
           message TEXT NOT NULL DEFAULT '',
           stage TEXT NOT NULL DEFAULT '',
-          attempt INTEGER NOT NULL DEFAULT 0
+          attempt INTEGER NOT NULL DEFAULT 0,
+          account_id INTEGER,
+          dur_sec REAL,
+          finished_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_sign_events_ts ON sign_events(ts);
         CREATE INDEX IF NOT EXISTS idx_sign_events_phone ON sign_events(phone);
+        CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts ON sign_events(phone, ts);
+        CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts ON sign_events(account_id, ts);
 
         CREATE TABLE IF NOT EXISTS page_visits (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -426,10 +431,13 @@ def migrate_v4(conn):
           path TEXT NOT NULL,
           ip_hash TEXT NOT NULL DEFAULT '',
           ua TEXT NOT NULL DEFAULT '',
-          dur_ms INTEGER NOT NULL DEFAULT 0
+          dur_ms INTEGER NOT NULL DEFAULT 0,
+          user_id INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_page_visits_ts ON page_visits(ts);
         CREATE INDEX IF NOT EXISTS idx_page_visits_role ON page_visits(role);
+        CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts ON page_visits(path, ts);
+        CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts ON page_visits(role, ts);
 
         CREATE TABLE IF NOT EXISTS server_metrics (
           ts TEXT NOT NULL,
@@ -492,6 +500,44 @@ def migrate_v5(conn):
     conn.commit()
 
 
+def migrate_v6(conn):
+    """v6：WebUI 统计/监控补齐——sign_events 增加 account_id/dur_sec/finished_at，
+    page_visits 增加 user_id，并补索引。可选迁移，失败不阻断启动。"""
+    _ensure_column(conn, "sign_events", "account_id", "account_id INTEGER")
+    _ensure_column(conn, "sign_events", "dur_sec", "dur_sec REAL")
+    _ensure_column(conn, "sign_events", "finished_at", "finished_at TEXT")
+    _ensure_column(conn, "page_visits", "user_id", "user_id INTEGER")
+    _ensure_index(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts "
+        "ON sign_events(phone, ts)",
+    )
+    _ensure_index(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts "
+        "ON sign_events(account_id, ts)",
+    )
+    _ensure_index(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts "
+        "ON page_visits(path, ts)",
+    )
+    _ensure_index(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts "
+        "ON page_visits(role, ts)",
+    )
+    try:
+        conn.execute(
+            "UPDATE sign_events SET account_id = ("
+            "SELECT id FROM accounts WHERE accounts.phone = sign_events.phone LIMIT 1"
+            ") WHERE account_id IS NULL"
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning("回填 sign_events.account_id 失败: %s", e)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -501,6 +547,7 @@ _MIGRATIONS = [
     (3, "v3_audit_hash_chain", migrate_v3, True),
     (4, "v4_visual_tables", migrate_v4, False),
     (5, "v5_user_deregistration", migrate_v5, True),
+    (6, "v6_webui_stats", migrate_v6, False),
 ]
 
 
@@ -1405,30 +1452,32 @@ def _audit_cleanup(conn):
 # ---------------------------------------------------------------------------
 # 可视化表（Phase 4）
 # ---------------------------------------------------------------------------
-def add_sign_event(ts, phone, status, message="", stage="", attempt=0):
+def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
+                   account_id=None, dur_sec=None, finished_at=None):
     """写入签到事件；失败仅告警，不影响调用方。"""
     try:
         with _conn_lock:
             conn = get_conn()
             conn.execute(
-                "INSERT INTO sign_events (ts, phone, status, message, stage, attempt) "
-                "VALUES (?,?,?,?,?,?)",
-                (ts, phone, status, message, stage, attempt),
+                "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
+                "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (ts, phone, status, message, stage, attempt,
+                 account_id, dur_sec, finished_at),
             )
             conn.commit()
     except Exception as e:
         logger.warning("写入 sign_events 失败: %s", e)
 
 
-def add_page_visit(ts, role, path, ip_hash="", ua="", dur_ms=0):
+def add_page_visit(ts, role, path, ip_hash="", ua="", dur_ms=0, user_id=None):
     """写入页面访问；失败仅告警，不影响调用方。"""
     try:
         with _conn_lock:
             conn = get_conn()
             conn.execute(
-                "INSERT INTO page_visits (ts, role, path, ip_hash, ua, dur_ms) "
-                "VALUES (?,?,?,?,?,?)",
-                (ts, role, path, ip_hash, ua, dur_ms),
+                "INSERT INTO page_visits (ts, role, path, ip_hash, ua, dur_ms, user_id) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ts, role, path, ip_hash, ua, dur_ms, user_id),
             )
             conn.commit()
     except Exception as e:
@@ -1450,6 +1499,68 @@ def add_server_metric(ts, cpu=None, mem_pct=None, disk_pct=None,
             conn.commit()
     except Exception as e:
         logger.warning("写入 server_metrics 失败: %s", e)
+
+
+def add_sign_events_batch(rows):
+    """批量写入签到事件（单事务）；失败仅告警，不影响调用方。
+
+    rows 为 dict 列表，支持 add_sign_event 的全部字段。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
+                    "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        r.get("ts", ""),
+                        r.get("phone", ""),
+                        r.get("status", ""),
+                        r.get("message", ""),
+                        r.get("stage", ""),
+                        r.get("attempt", 0),
+                        r.get("account_id"),
+                        r.get("dur_sec"),
+                        r.get("finished_at"),
+                    ),
+                )
+            conn.commit()
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        logger.warning("批量写入 sign_events 失败: %s", e)
+
+
+def add_page_visits_batch(rows):
+    """批量写入页面访问（单事务）；失败仅告警，不影响调用方。
+
+    rows 为 dict 列表，支持 add_page_visit 的全部字段。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO page_visits (ts, role, path, ip_hash, ua, dur_ms, user_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (
+                        r.get("ts", ""),
+                        r.get("role", ""),
+                        r.get("path", ""),
+                        r.get("ip_hash", ""),
+                        r.get("ua", ""),
+                        r.get("dur_ms", 0),
+                        r.get("user_id"),
+                    ),
+                )
+            conn.commit()
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        logger.warning("批量写入 page_visits 失败: %s", e)
 
 
 def sign_event_stats(days=30):
@@ -1508,6 +1619,167 @@ def server_metric_history(hours=24):
             return [dict(r) for r in rows]
     except Exception as e:
         logger.warning("server_metrics 查询失败: %s", e)
+        return []
+
+
+def sign_events_by_phone(phone, days=30):
+    """单账号历史表现：按手机号返回时间线事件列表。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT id, ts, phone, status, message, stage, attempt, "
+                "account_id, dur_sec, finished_at "
+                "FROM sign_events WHERE phone=? AND ts >= ? ORDER BY ts",
+                (phone, cutoff),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("sign_events_by_phone 失败: %s", e)
+        return []
+
+
+def sign_events_since(since_ts, phone=None, limit=100):
+    """实时事件流：返回 since_ts 之后的事件，可选按手机号过滤。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            sql = (
+                "SELECT id, ts, phone, status, message, stage, attempt, "
+                "account_id, dur_sec, finished_at FROM sign_events WHERE ts >= ?"
+            )
+            params = [since_ts]
+            if phone:
+                sql += " AND phone=?"
+                params.append(phone)
+            sql += " ORDER BY ts LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("sign_events_since 失败: %s", e)
+        return []
+
+
+def sign_event_peak(days=7, bucket_minutes=5):
+    """按时间桶统计签到事件数（第一版：近似并发/请求量）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT (strftime('%s', ts) - strftime('%s', ?)) / (? * 60) AS bucket, "
+                "COUNT(*) AS cnt FROM sign_events WHERE ts >= ? "
+                "GROUP BY bucket ORDER BY bucket",
+                (cutoff, bucket_minutes, cutoff),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("sign_event_peak 失败: %s", e)
+        return []
+
+
+def sign_event_summary_today():
+    """今日签到状态汇总。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS cnt FROM sign_events "
+                "WHERE ts LIKE ? GROUP BY status",
+                (today + "%",),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("sign_event_summary_today 失败: %s", e)
+        return []
+
+
+def page_visit_hourly(days=30):
+    """按小时统计 PV/UV，支撑 24h 柱状图。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT substr(ts, 12, 2) AS hour, COUNT(*) AS pv, "
+                "COUNT(DISTINCT ip_hash) AS uv "
+                "FROM page_visits WHERE ts >= ? GROUP BY hour ORDER BY hour",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("page_visit_hourly 失败: %s", e)
+        return []
+
+
+def page_visit_top_paths(days=30, limit=10):
+    """页面访问排行。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT path, COUNT(*) AS cnt FROM page_visits "
+                "WHERE ts >= ? GROUP BY path ORDER BY cnt DESC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("page_visit_top_paths 失败: %s", e)
+        return []
+
+
+def page_visit_active_users(days=30):
+    """活跃用户数：优先 user_id，缺失时回退 ip_hash。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            cols = _table_columns(conn, "page_visits")
+            if "user_id" in cols:
+                row = conn.execute(
+                    "SELECT COUNT(DISTINCT user_id) AS cnt FROM page_visits "
+                    "WHERE ts >= ? AND user_id IS NOT NULL",
+                    (cutoff,),
+                ).fetchone()
+                return row["cnt"] if row else 0
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT ip_hash) AS cnt FROM page_visits WHERE ts >= ?",
+                (cutoff,),
+            ).fetchone()
+            return row["cnt"] if row else 0
+    except Exception as e:
+        logger.warning("page_visit_active_users 失败: %s", e)
+        return 0
+
+
+def server_metric_latest(limit=60):
+    """返回最近 N 条服务器采样点。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            rows = conn.execute(
+                "SELECT ts, cpu, mem_pct, disk_pct, net_in, net_out, "
+                "load1, load5, load15, proc_count "
+                "FROM server_metrics ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("server_metric_latest 失败: %s", e)
         return []
 
 
