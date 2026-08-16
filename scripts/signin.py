@@ -98,6 +98,7 @@ class Account:
     phone_code: str = ""  # 设备唯一识别码（学校开启"设备绑定"时必填）
     name: str = ""  # 可选：自定义名称（TUI 输入，未填写时显示为"账号N"）
     user_paused: bool = False  # 用户自暂停签到（调度 v2；db.load_accounts 透传）
+    id: int = None  # 数据库 accounts.id（写 sign_events.account_id 用）
 
     @property
     def has_device_info(self):
@@ -443,6 +444,7 @@ def _parse_account_dict(data):
         phone_code=str(phone_code).strip(),
         name=str(data.get("name") or "").strip(),
         user_paused=bool(data.get("user_paused", False)),  # 用户自暂停（调度 v2）
+        id=data.get("id"),
     )
 
 
@@ -1173,6 +1175,37 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
         logger.debug("写入状态文件失败（%s）: %s", path, e)
 
 
+def _sign_event_status(status):
+    """把 sign-state 状态码映射为 sign_events.status 口径。"""
+    if status in (STATUS_SUCCESS, STATUS_ALREADY):
+        return "success"
+    if status in (STATUS_FAILED, STATUS_RETRYING):
+        return "failed"
+    if status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE):
+        return "skipped"
+    if status in (STATUS_PAUSED, STATUS_USER_CANCELLED):
+        return "paused"
+    if status == STATUS_NO_TASK:
+        return "no_task"
+    return status or "unknown"
+
+
+def _write_sign_event(acc, status, message="", stage="", attempt=0,
+                      dur_sec=None, finished_at=None):
+    """写一条 sign_events（DB 层已降级，失败不影响签到主流程）。"""
+    db.add_sign_event(
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        acc.phone,
+        _sign_event_status(status),
+        message=message or "",
+        stage=stage,
+        attempt=attempt,
+        account_id=getattr(acc, "id", None),
+        dur_sec=dur_sec,
+        finished_at=finished_at,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 账密熔断器：连续凭据失败 → 暂停签到（零请求），周期性半开试探自动恢复
 # ---------------------------------------------------------------------------
@@ -1558,6 +1591,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             ):
                 results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
                 _write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+                _write_sign_event(acc, STATUS_SKIPPED_WINDOW, "签到时段已结束", stage="skip")
                 logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
                 continue
             # 自动错峰：到点执行（已过时间点立即执行）；重试回队的账号时间点已过，直接执行
@@ -1580,6 +1614,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if getattr(acc, "user_paused", False):
             results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
             _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+            _write_sign_event(acc, STATUS_USER_CANCELLED, "用户已取消签到", stage="skip")
             logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
             continue
 
@@ -1588,6 +1623,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if cred.get("paused_since") and not _probe_due(cred, today):
             results[phone] = (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED)
             _write_sign_state(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
+            _write_sign_event(acc, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码", stage="skip")
             logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
             continue
 
@@ -1600,6 +1636,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中；附耗时 dur）
         dur = last_done - t0
         _write_sign_state(phone, status, message, dur=dur)
+        finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _write_sign_event(acc, status, message, stage="signin",
+                          attempt=attempts[phone], dur_sec=dur,
+                          finished_at=finished_at)
         # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知。
         # 节流：每账号每轮最多 1 次（重试连击不刷屏；最终失败另有失败通知，
         # 此处主要覆盖"慢但成功"的接口劣化预警）。通知失败不影响签到（内部已捕获）。
