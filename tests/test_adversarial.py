@@ -191,7 +191,10 @@ class AdversarialTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNone(db.find_user("dereg@test.local"))
         self.assertIsNotNone(db.find_user_any("dereg@test.local"))
-        self.assertEqual(db.load_accounts(), [])
+        # 安全审查 2026-08-16：账号随注销软删除（7 天保留），不再物理删除
+        accs = db.load_accounts_raw()
+        row = next(a for a in accs if a["phone"] == "13800138007")
+        self.assertTrue(row["deleted"])
 
     def test_self_delete_builtin_admin_forbidden(self):
         c = self.webapp.create_app().test_client()

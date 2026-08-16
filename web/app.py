@@ -179,8 +179,9 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
 DELETE_COOLDOWN_SEC = 60
 DELETE_MAX_REQUESTS_PER_IP = 5
-# 注销宽限期（天）：软删除冷却期，与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
-DELETE_GRACE_DAYS = 3
+# 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐（7 天，安全审查 2026-08-16）；
+# 与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
+DELETE_GRACE_DAYS = 7
 
 # 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底）：
 # 注册用户上限默认 200（一人一号 ≈ 200 账号，远超班级/社团规模）；账号总数上限默认 500
@@ -877,7 +878,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.20.1"
+APP_VERSION = "0.20.2"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1295,7 +1296,7 @@ def create_app():
 
     @app.route("/api/me/delete", methods=["POST"])
     def api_me_delete():
-        """用户自助注销（软删除 + 3 天宽限期，数据库 v5）。
+        """用户自助注销（软删除 + 7 天宽限期，数据库 v5；安全审查 2026-08-16 3→7 天对齐）。
 
         安全设计（docs/design/plan-frontend-user-deregistration.md）：
         - 登录要求 + CSRF：全局写请求校验（X-CSRF-Token）自动覆盖；
@@ -1372,13 +1373,13 @@ def create_app():
             db.audit(username, "user_self_delete_request", email, "用户发起注销申请")
             if not db.soft_delete_user_with_accounts(email):
                 return jsonify({"error": "注销失败，请稍后再试"}), 500
-            db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，3 天宽限期）")
+            db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，7 天宽限期）")
             _login_fails.pop(fail_key, None)
-            logger.info("用户 %s 已注销账号（3 天宽限期）", _mask_email(username))
+            logger.info("用户 %s 已注销账号（7 天宽限期）", _mask_email(username))
             # 2026-08-16 用户裁决：自助注销不发管理员通知（正常操作，避免通知轰炸）；
             # 管理员在「用户管理 → 已注销用户」区块主动查看（/api/users/deleted）
         session.clear()
-        return jsonify({"ok": True, "msg": "账号已注销，3 天内可撤销"})
+        return jsonify({"ok": True, "msg": "账号已注销，7 天内可撤销"})
 
     @app.route("/api/me")
     def api_me():

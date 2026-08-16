@@ -95,7 +95,8 @@ class UserDeregistrationDbTest(unittest.TestCase):
         ).fetchone()
         self.assertIsNotNone(t)
 
-    def test_soft_delete_cleans_accounts_and_time_prefs(self):
+    def test_soft_delete_marks_accounts_deleted(self):
+        """安全审查 2026-08-16：注销时账号改软删除（7 天保留，可随用户一起恢复）。"""
         db.create_user("user1@test.local", "hash", created_at="2026-08-16")
         self._add_account("user1@test.local", "13800138001")
         db.set_time_pref("13800138001", 0, "2026-08-16 10:00:00")
@@ -105,16 +106,26 @@ class UserDeregistrationDbTest(unittest.TestCase):
         u_any = db.find_user_any("user1@test.local")
         self.assertIsNotNone(u_any)
         self.assertEqual(u_any["deleted"], 1)
-        self.assertEqual(db.load_accounts(), [])
+        # 账号软删除保留（不再物理删除）：原始行存在且 deleted=1、deleted_at 非空
+        accs = db.load_accounts_raw()
+        row = next(a for a in accs if a["phone"] == "13800138001")
+        self.assertTrue(row["deleted"])
+        self.assertTrue(row["deleted_at"])
         self.assertIsNone(db.get_time_pref("13800138001"))
 
     def test_restore_user(self):
         db.create_user("user2@test.local", "hash")
+        self._add_account("user2@test.local", "13800138002")
         db.soft_delete_user_with_accounts("user2@test.local")
         self.assertTrue(db.restore_user("user2@test.local"))
         u = db.find_user("user2@test.local")
         self.assertIsNotNone(u)
         self.assertEqual(u["deleted"], 0)
+        # 安全审查 2026-08-16：恢复联动账号（deleted=0），保证完整接管
+        accs = db.load_accounts_raw()
+        row = next(a for a in accs if a["phone"] == "13800138002")
+        self.assertFalse(row["deleted"])
+        self.assertEqual(row["deleted_at"], "")
 
     def test_restore_blocked_when_active_same_email_exists(self):
         db.create_user("user3@test.local", "hash1")
