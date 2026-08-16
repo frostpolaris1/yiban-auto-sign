@@ -219,17 +219,19 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
       username: document.getElementById('username').value,
       password: document.getElementById('password').value,
     });
-    if (st === 200 && data.ok) {
-      location.href = data.role === 'admin' ? '/' : '/user';
-      return;
-    }
     // 冷静期恢复（2026-08-16 用户裁决）：账号已注销且 7 天内、密码正确 → 引导恢复
+    // 必须先于 data.ok 判断——recoverable 响应同时携带 ok:true，先查 ok 会误走
+    // 普通登录跳转（/user 未登录被弹回 /login，表现为"刷新无提示"），此分支即为死代码
     if (st === 200 && data.recoverable) {
       showError(errorBox, data.msg || '账号已注销，7 天内可恢复');
       const restoreBtn = document.getElementById('restore-btn');
       restoreBtn.dataset.email = document.getElementById('username').value.trim();
       restoreBtn.dataset.password = document.getElementById('password').value;
       restoreBtn.classList.remove('hidden');
+      return;
+    }
+    if (st === 200 && data.ok) {
+      location.href = data.role === 'admin' ? '/' : '/user';
       return;
     }
     showError(errorBox, data.error || '登录失败，请重试');
