@@ -34,7 +34,7 @@ SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class DuplicatePhoneError(Exception):
@@ -59,6 +59,15 @@ _env_file = None  # .env 路径（密钥来源；None=account_crypto 默认 .env
 # 审计 HMAC 密钥缓存与互斥（Phase 3）
 _AUDIT_KEY_CACHE = None
 _AUDIT_KEY_LOCK = threading.Lock()
+
+# 可视化表保留期（Phase 4）
+SIGN_EVENTS_RETENTION_DAYS = 180
+PAGE_VISITS_RETENTION_DAYS = 90
+SERVER_METRICS_RETENTION_DAYS = 30
+
+# IP 加盐哈希（Phase 4）
+_TRACK_SALT_CACHE = None
+_TRACK_SALT_LOCK = threading.Lock()
 
 
 def init_db(db_file=None, migrate_from=None, env_file=None):
@@ -94,6 +103,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None):
         if migrate_from:
             _maybe_migrate(_conn, migrate_from)
         _audit_cleanup(_conn)
+        _event_cleanup(_conn)
         return _conn
 
 
@@ -324,6 +334,105 @@ def migrate_v3(conn):
         _rechain_audit_logs(conn)
 
 
+# ---------------------------------------------------------------------------
+# 可视化表（Phase 4）
+# ---------------------------------------------------------------------------
+def _write_track_salt_to_env_file(env_file, salt):
+    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。"""
+    existing = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
+    if existing:
+        return existing
+    lines = []
+    if os.path.exists(env_file):
+        with open(env_file, encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
+    out.append(f"YIBAN_TRACK_SALT={salt}")
+    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, env_file)
+    with contextlib.suppress(OSError):
+        os.chmod(env_file, 0o600)
+    return salt
+
+
+def _track_salt():
+    """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。"""
+    global _TRACK_SALT_CACHE
+    env_file = _env_file or ".env"
+    env_salt = os.environ.get("YIBAN_TRACK_SALT", "").strip()
+    if env_salt:
+        _TRACK_SALT_CACHE = env_salt
+        return env_salt
+    if _TRACK_SALT_CACHE is not None:
+        return _TRACK_SALT_CACHE
+    with _TRACK_SALT_LOCK:
+        if _TRACK_SALT_CACHE is not None:
+            return _TRACK_SALT_CACHE
+        file_salt = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
+        if file_salt:
+            _TRACK_SALT_CACHE = file_salt
+            return file_salt
+        logger.info("未找到 YIBAN_TRACK_SALT，已生成新盐并写入 %s（chmod 600）", env_file)
+        _TRACK_SALT_CACHE = _write_track_salt_to_env_file(env_file, secrets.token_hex(32))
+        return _TRACK_SALT_CACHE
+
+
+def hash_ip(ip):
+    """对 IP 加盐哈希（YIBAN_TRACK_SALT），返回十六进制字符串。"""
+    salt = _track_salt()
+    return hashlib.sha256(f"{salt}:{ip}".encode("utf-8")).hexdigest()
+
+
+def migrate_v4(conn):
+    """v4：创建可视化三表（可选迁移，失败只告警不阻断启动）。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sign_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          phone TEXT NOT NULL,
+          status TEXT NOT NULL,
+          message TEXT NOT NULL DEFAULT '',
+          stage TEXT NOT NULL DEFAULT '',
+          attempt INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sign_events_ts ON sign_events(ts);
+        CREATE INDEX IF NOT EXISTS idx_sign_events_phone ON sign_events(phone);
+
+        CREATE TABLE IF NOT EXISTS page_visits (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT '',
+          path TEXT NOT NULL,
+          ip_hash TEXT NOT NULL DEFAULT '',
+          ua TEXT NOT NULL DEFAULT '',
+          dur_ms INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_page_visits_ts ON page_visits(ts);
+        CREATE INDEX IF NOT EXISTS idx_page_visits_role ON page_visits(role);
+
+        CREATE TABLE IF NOT EXISTS server_metrics (
+          ts TEXT NOT NULL,
+          cpu REAL,
+          mem_pct REAL,
+          disk_pct REAL,
+          net_in REAL,
+          net_out REAL,
+          load1 REAL,
+          load5 REAL,
+          load15 REAL,
+          proc_count INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics(ts);
+        """
+    )
+    conn.commit()
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -331,6 +440,7 @@ _MIGRATIONS = [
     (1, "v1_add_account_user_paused", migrate_v1, True),
     (2, "v2_unique_owner_live", migrate_v2, False),
     (3, "v3_audit_hash_chain", migrate_v3, True),
+    (4, "v4_visual_tables", migrate_v4, False),
 ]
 
 
@@ -1043,6 +1153,136 @@ def _audit_cleanup(conn):
             _rechain_audit_logs(conn)
     except Exception as e:
         logger.warning("清理旧审计日志失败: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# 可视化表（Phase 4）
+# ---------------------------------------------------------------------------
+def add_sign_event(ts, phone, status, message="", stage="", attempt=0):
+    """写入签到事件；失败仅告警，不影响调用方。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO sign_events (ts, phone, status, message, stage, attempt) "
+                "VALUES (?,?,?,?,?,?)",
+                (ts, phone, status, message, stage, attempt),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("写入 sign_events 失败: %s", e)
+
+
+def add_page_visit(ts, role, path, ip_hash="", ua="", dur_ms=0):
+    """写入页面访问；失败仅告警，不影响调用方。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO page_visits (ts, role, path, ip_hash, ua, dur_ms) "
+                "VALUES (?,?,?,?,?,?)",
+                (ts, role, path, ip_hash, ua, dur_ms),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("写入 page_visits 失败: %s", e)
+
+
+def add_server_metric(ts, cpu=None, mem_pct=None, disk_pct=None,
+                      net_in=None, net_out=None, load1=None, load5=None,
+                      load15=None, proc_count=None):
+    """写入服务器采样；失败仅告警，不影响调用方。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            conn.execute(
+                "INSERT INTO server_metrics (ts, cpu, mem_pct, disk_pct, net_in, net_out, "
+                "load1, load5, load15, proc_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (ts, cpu, mem_pct, disk_pct, net_in, net_out, load1, load5, load15, proc_count),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("写入 server_metrics 失败: %s", e)
+
+
+def sign_event_stats(days=30):
+    """按天统计签到事件数量/状态分布；失败返回空列表。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT substr(ts, 1, 10) AS day, status, COUNT(*) AS cnt "
+                "FROM sign_events WHERE ts >= ? GROUP BY day, status ORDER BY day",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("sign_events 统计失败: %s", e)
+        return []
+
+
+def page_visit_stats(days=30):
+    """按天统计 PV/UV 等基础指标；失败返回空列表。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT substr(ts, 1, 10) AS day, COUNT(*) AS pv, "
+                "COUNT(DISTINCT ip_hash) AS uv "
+                "FROM page_visits WHERE ts >= ? GROUP BY day ORDER BY day",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("page_visits 统计失败: %s", e)
+        return []
+
+
+def server_metric_history(hours=24):
+    """返回最近 N 小时服务器采样点；失败返回空列表。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(hours=hours)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            rows = conn.execute(
+                "SELECT ts, cpu, mem_pct, disk_pct, net_in, net_out, "
+                "load1, load5, load15, proc_count "
+                "FROM server_metrics WHERE ts >= ? ORDER BY ts",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("server_metrics 查询失败: %s", e)
+        return []
+
+
+def _event_cleanup(conn):
+    """清理可视化表超期数据；失败仅告警。"""
+    try:
+        now = datetime.datetime.now()
+        sign_cutoff = (now - datetime.timedelta(days=SIGN_EVENTS_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        page_cutoff = (now - datetime.timedelta(days=PAGE_VISITS_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        server_cutoff = (now - datetime.timedelta(days=SERVER_METRICS_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        conn.execute("DELETE FROM sign_events WHERE ts < ?", (sign_cutoff,))
+        conn.execute("DELETE FROM page_visits WHERE ts < ?", (page_cutoff,))
+        conn.execute("DELETE FROM server_metrics WHERE ts < ?", (server_cutoff,))
+        conn.commit()
+    except Exception as e:
+        logger.warning("清理可视化表失败: %s", e)
 
 
 # ---------------------------------------------------------------------------
