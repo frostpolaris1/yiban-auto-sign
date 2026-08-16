@@ -35,7 +35,7 @@ import time
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, jsonify, redirect, render_template, request, session
+from flask import Flask, abort, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层
@@ -123,10 +123,18 @@ TRUSTED_PROXIES = ("127.0.0.1", "::1")
 
 
 def _json_body():
-    """安全解析 JSON 请求体：非 dict（数组/数字/字符串/null）一律视为空对象，
-    防 `.get()` AttributeError 导致 500（模糊测试：body=[1,2,3] / 42 → 500）。"""
+    """安全解析 JSON 请求体：
+    - 空 body → {}
+    - 非法 JSON / 非对象 JSON → 400（API 语义清晰，不静默按空请求处理）
+    """
+    if not request.data:
+        return {}
     data = request.get_json(silent=True)
-    return data if isinstance(data, dict) else {}
+    if data is None:
+        abort(400, description="请求体不是合法 JSON")
+    if not isinstance(data, dict):
+        abort(400, description="请求体应为 JSON 对象")
+    return data
 
 
 def _client_ip():
@@ -2387,24 +2395,24 @@ def create_app():
         """用户列表（完整邮箱/角色/注册时间/账号数/待审核账号数）+ 内置管理员信息。"""
         users = load_users()
         accounts = load_accounts()
+        # 性能优化：单次遍历 accounts 预计算每个 owner 的计数，避免 O(用户数×账号数)
+        owner_account_count = {}
+        owner_pending_count = {}
+        for a in accounts:
+            if a.get("deleted"):
+                continue
+            owner = a.get("owner", "")
+            owner_account_count[owner] = owner_account_count.get(owner, 0) + 1
+            if a.get("status") == ACCOUNT_STATUS_PENDING:
+                owner_pending_count[owner] = owner_pending_count.get(owner, 0) + 1
         result = [
             {
                 "email": u.get("email", ""),
                 "role": u.get("role", "user"),
                 "created_at": u.get("created_at", ""),
                 # 计数排除软删除账号（删除后不占账号数/待审核数）
-                "account_count": sum(
-                    1
-                    for a in accounts
-                    if a.get("owner") == u.get("email") and not a.get("deleted")
-                ),
-                "pending_count": sum(
-                    1
-                    for a in accounts
-                    if a.get("owner") == u.get("email")
-                    and a.get("status") == ACCOUNT_STATUS_PENDING
-                    and not a.get("deleted")
-                ),
+                "account_count": owner_account_count.get(u.get("email", ""), 0),
+                "pending_count": owner_pending_count.get(u.get("email", ""), 0),
             }
             for u in users
         ]

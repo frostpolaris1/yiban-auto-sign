@@ -144,6 +144,45 @@ class AdversarialTest(unittest.TestCase):
         self.assertFalse(acc["deleted"])
         self.assertEqual(acc["status"], "active")
 
+    def test_invalid_json_returns_400(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", data="{bad json", content_type="application/json")
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
+    def test_negative_and_oversized_account_indices_rejected(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        h = self._csrf(token)
+        r1 = c.get("/api/accounts/-1/detail", headers=h)
+        self.assertEqual(r1.status_code, 404, r1.get_data(as_text=True))
+        r2 = c.get("/api/accounts/99999/detail", headers=h)
+        self.assertEqual(r2.status_code, 404, r2.get_data(as_text=True))
+
+    def test_oversized_name_rejected(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.post("/api/accounts", json={
+            "name": "x" * 51,
+            "phone": "13800138006",
+            "password": "p1",
+        }, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
+    def test_non_object_json_rejected(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", data="[1,2,3]", content_type="application/json")
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
+    def test_api_me_requires_login(self):
+        c = self.webapp.create_app().test_client()
+        r = c.get("/api/me")
+        self.assertEqual(r.status_code, 401, r.get_data(as_text=True))
+
+    def test_register_invalid_email_rejected(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/register", json={"email": "not-an-email", "password": "StrongPass123!"})
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+
     def test_log_date_path_traversal_rejected(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)

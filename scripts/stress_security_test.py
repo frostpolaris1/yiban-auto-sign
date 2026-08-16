@@ -161,8 +161,8 @@ def test_invalid_json(base_url):
     except requests.exceptions.RequestException as e:
         print(f"[非法JSON] 请求异常: {e}")
         return False
-    ok = r.status_code in (400, 401, 415)
-    print(f"[非法JSON] 状态={r.status_code} 通过={ok}（按空请求处理，未 500）")
+    ok = r.status_code == 400
+    print(f"[非法JSON] 状态={r.status_code} 通过={ok}")
     return ok
 
 
