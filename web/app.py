@@ -893,7 +893,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.20.5"
+APP_VERSION = "0.20.6"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1462,14 +1462,47 @@ def create_app():
             >= DELETE_MAX_REQUESTS_PER_IP
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        # 密码失败锁定预检（2026-08-17）：与登录/注销共用 (ip, email) 计数与锁定窗口
+        fail_key = (ip, email)
+        _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
+        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+        if time.time() < lock_until:
+            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         u = db.find_user_any(email)
-        if u is None or not u.get("deleted") or _delete_grace_remaining(u.get("deleted_at", "")) <= 0:
-            return jsonify({"error": "账号不存在或已过恢复期"}), 404
-        if not check_password_hash(u.get("password_hash", ""), password):
-            return jsonify({"error": "密码不正确"}), 400
+        in_grace = (
+            u is not None
+            and u.get("deleted")
+            and _delete_grace_remaining(u.get("deleted_at", "")) > 0
+        )
+        verified = in_grace and check_password_hash(u.get("password_hash", ""), password)
+        if not in_grace:
+            # 时延拉平：账号不存在/过期时也做等开销 dummy 比对，防时序探测
+            _constant_time_dummy(password)
+        if not verified:
+            # 密码失败锁定（2026-08-17 安全审查补齐）：与登录/注销共用 _login_fails
+            # （键 (ip, email) 相同）——此前试错完全不计数，同 IP 可无限爆破冷却期
+            # 账号密码，命中即恢复并建立会话；共用计数后登录侧锁定同样约束本接口
+            now2 = time.time()
+            nfails = fails + 1
+            if nfails >= LOGIN_MAX_FAILS:
+                _login_fails[fail_key] = (0, now2 + LOGIN_LOCK_SECONDS, now2)
+                logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+            if nfails == LOGIN_FAIL_NOTIFY:
+                send_notification(
+                    "恢复密码失败告警",
+                    f"IP {ip} 连续 {nfails} 次恢复密码验证失败（邮箱: {email}）\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"如非本人操作，请检查是否有人尝试冒充恢复已注销账号",
+                )
+            _login_fails[fail_key] = (nfails, 0, now2)
+            # 统一文案（2026-08-17 安全审查）：不区分"账号不存在/已过期"与"密码错误"，
+            # 防无凭探测"哪些邮箱正处于注销冷却期"（注销用户警惕性低，是钓鱼高价值目标）
+            return jsonify({"error": "邮箱或密码错误，或账号已过恢复期"}), 400
         db.record_user_delete_request(email, ip_hash=ip_hash, kind="restore")
         if not db.restore_user(email):
             return jsonify({"error": "恢复失败，请稍后再试"}), 500
+        _login_fails.pop(fail_key, None)
         db.audit(email, "user_self_delete_restore", email, "冷静期内恢复账号")
         # 恢复即登录：与 api_login 同款会话建立（防 session 固定）
         role = "admin" if u.get("role") == "admin" else "user"
