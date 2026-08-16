@@ -1527,6 +1527,7 @@ def create_app():
         """批量操作账号（批量多选功能）：approve/reject 审核，purge 彻底删除。
 
         body: {"action": ..., "ids": [...], "reason": "批量拒绝理由"}
+        Phase 1：整体事务，失败全部回滚；无效项软跳过。
         """
         with _file_lock:
             accounts = load_accounts()
@@ -1541,64 +1542,64 @@ def create_app():
             if action == "reject" and not reason:
                 return jsonify({"error": "批量拒绝需要填写理由"}), 400
             valid = sorted(
-                {i for i in ids if isinstance(i, int) and 0 <= i < len(accounts)}, reverse=True
+                {i for i in ids if isinstance(i, int) and 0 <= i < len(accounts)}
             )
             if not valid:
                 return jsonify({"error": "所选账号不存在"}), 404
-            if action == "restore":
-                # 恢复防呆：归属用户名下已有其他未删除账号时整批拒绝（每人限 1 个，
-                # 防恢复后同一用户出现多套账号；校验在变更前完成，避免部分生效）
-                for i in valid:
-                    acc = accounts[i]
-                    if acc.get("deleted") and _owner_has_other_live(accounts, acc):
-                        return jsonify(
-                            {
-                                "error": f"账号「{acc.get('name', '')}」的归属用户已有生效账号，无法恢复（每人限 1 个）"
-                            }
-                        ), 400
-            done = 0
-            try:
-                for i in valid:
-                    acc = accounts[i]
-                    if action == "approve":
-                        # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
-                        if not acc.get("deleted") and acc.get("status") in (
-                            ACCOUNT_STATUS_PENDING,
-                            ACCOUNT_STATUS_REJECTED,
-                        ):
-                            db.update_account_status(acc["id"], ACCOUNT_STATUS_ACTIVE, reject_reason="")
-                            done += 1
-                    elif action == "reject":
-                        if acc.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
-                            db.update_account_status(acc["id"], ACCOUNT_STATUS_REJECTED, reason)
-                            done += 1
-                    elif action == "purge":
-                        # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
-                        if not acc.get("deleted"):
-                            continue
-                        db.purge_account(acc["id"])
-                        done += 1
-                    elif action == "restore" and acc.get("deleted"):
-                        db.set_account_deleted(acc["id"], 0)
-                        done += 1
-                    elif action == "delete" and not acc.get("deleted"):
-                        # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
-                        db.set_account_deleted(
-                            acc["id"], 1, datetime.now().isoformat(timespec="seconds")
-                        )
-                        done += 1
-            except RuntimeError as e:
-                # 循环中断（如数据库异常）：已处理部分已生效，明确告知避免用户困惑
-                logger.error("批量%s中断: %s（已处理 %d 个）", action, e, done)
-                db.audit(
-                    session.get("username") or "?",
-                    "account_batch",
-                    action,
-                    f"中断，已处理 {done} 个",
-                )
-                return jsonify(
-                    {"ok": True, "msg": f"批量操作中断，已处理 {done} 个（详情见服务器日志）"}
-                )
+
+            ops = []
+            # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
+            live_owners = {
+                a.get("owner", "")
+                for a in accounts
+                if a.get("owner") and not a.get("deleted")
+            }
+            for i in valid:
+                acc = accounts[i]
+                if action == "approve":
+                    # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
+                    if not acc.get("deleted") and acc.get("status") in (
+                        ACCOUNT_STATUS_PENDING,
+                        ACCOUNT_STATUS_REJECTED,
+                    ):
+                        ops.append(("update_status", acc["id"], ACCOUNT_STATUS_ACTIVE, ""))
+                elif action == "reject":
+                    if acc.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
+                        ops.append(("update_status", acc["id"], ACCOUNT_STATUS_REJECTED, reason))
+                elif action == "purge":
+                    # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
+                    if acc.get("deleted"):
+                        ops.append(("purge", acc["id"]))
+                elif action == "restore":
+                    if acc.get("deleted"):
+                        owner = acc.get("owner", "")
+                        if owner and owner != "admin" and owner in live_owners:
+                            return jsonify(
+                                {
+                                    "error": f"账号「{acc.get('name', '')}」的归属用户已有生效账号，无法恢复（每人限 1 个）"
+                                }
+                            ), 400
+                        ops.append(("set_deleted", acc["id"], 0, ""))
+                        if owner:
+                            live_owners.add(owner)
+                elif action == "delete" and not acc.get("deleted"):
+                    # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
+                    ops.append(
+                        ("set_deleted", acc["id"], 1, datetime.now().isoformat(timespec="seconds"))
+                    )
+            done = len(ops)
+            if ops:
+                try:
+                    db.batch_account_ops(ops)
+                except Exception as e:
+                    logger.error("批量%s账号失败: %s（已回滚）", action, e)
+                    db.audit(
+                        session.get("username") or "?",
+                        "account_batch",
+                        action,
+                        "失败，已回滚",
+                    )
+                    return jsonify({"error": "批量操作失败，已全部回滚"}), 500
             db.audit(
                 session.get("username") or "?",
                 "account_batch",
@@ -2387,33 +2388,41 @@ def create_app():
 
         body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
         set_admin/unset_admin 仅主管理员（.env 内置管理员）可用；set_admin 仅限正式用户。
+        Phase 1：整体事务，失败全部回滚；无效项软跳过。
         """
+        data = _json_body()
+        action = data.get("action")
+        emails = data.get("emails") or []
+        if action not in ("set_admin", "unset_admin", "reset_password", "delete"):
+            return jsonify({"error": "未知操作"}), 400
+        if not isinstance(emails, list) or not emails:
+            return jsonify({"error": "请选择要操作的用户"}), 400
+        if any(not isinstance(e, str) or len(e) > 64 for e in emails):
+            return jsonify({"error": "邮箱格式不正确"}), 400
+        password = str(data.get("password", ""))
+        reset_hash = None
+        if action == "reset_password":
+            pw_err = _password_policy_error(password)
+            if pw_err:
+                return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
+            # 在 _file_lock 外预计算 scrypt 哈希，避免长时间占用进程锁
+            reset_hash = generate_password_hash(password, method=SCRYPT_METHOD)
+        # 权限：管理员权限变更仅主管理员（普通管理员可重置密码/删除，不可改权限）
+        if action in ("set_admin", "unset_admin"):
+            username = (session.get("username") or "").strip().lower()
+            if username != _builtin_admin_email():
+                return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
+
         with _file_lock:
             users = load_users()
-            data = _json_body()
-            action = data.get("action")
-            emails = data.get("emails") or []
-            if action not in ("set_admin", "unset_admin", "reset_password", "delete"):
-                return jsonify({"error": "未知操作"}), 400
-            if not isinstance(emails, list) or not emails:
-                return jsonify({"error": "请选择要操作的用户"}), 400
-            if any(not isinstance(e, str) or len(e) > 64 for e in emails):
-                return jsonify({"error": "邮箱格式不正确"}), 400
-            password = str(data.get("password", ""))
-            if action == "reset_password":
-                pw_err = _password_policy_error(password)
-                if pw_err:
-                    return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
-            # 权限：管理员权限变更仅主管理员（普通管理员可重置密码/删除，不可改权限）
-            if action in ("set_admin", "unset_admin"):
-                username = (session.get("username") or "").strip().lower()
-                if username != _builtin_admin_email():
-                    return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
             builtin = _builtin_admin_email()
             accounts = load_accounts() if action == "set_admin" else None
-            done = 0
+
+            # 内存模拟用户表，保持动态管理员数量判断
+            sim_users = {u["email"]: dict(u) for u in users}
+            ops = []
             for email in emails:
-                target = next((u for u in users if u.get("email") == email), None)
+                target = sim_users.get(email)
                 if not target or email == builtin:  # 内置管理员不可批量操作
                     continue
                 if action == "set_admin":
@@ -2433,34 +2442,52 @@ def create_app():
                     )
                     if not has_active or has_pending:
                         continue
-                    db.update_user(email, {"role": "admin"})
-                    done += 1
+                    ops.append(("update_user", email, {"role": "admin"}))
+                    sim_users[email]["role"] = "admin"
                 elif action == "unset_admin":
-                    # 每次循环内动态重算 admins：前一个被取消后，后续目标以最新列表判定
-                    admins = [u for u in load_users() if u.get("role") == "admin"]
-                    # 防呆：内置管理员不存在且这是最后一个注册管理员时跳过
-                    if target.get("role") == "admin" and len(admins) <= 1 and not builtin:
+                    if target.get("role") != "admin":
                         continue
-                    db.update_user(email, {"role": "user"})
-                    done += 1
+                    # 每次循环内动态重算 admins：前一个被取消后，后续目标以最新模拟列表判定
+                    admins = [u for u in sim_users.values() if u.get("role") == "admin"]
+                    # 防呆：内置管理员不存在且这是最后一个注册管理员时跳过
+                    if len(admins) <= 1 and not builtin:
+                        continue
+                    ops.append(("update_user", email, {"role": "user"}))
+                    sim_users[email]["role"] = "user"
                 elif action == "reset_password":
-                    db.update_user(
-                        email,
-                        {
-                            "password_hash": generate_password_hash(password, method=SCRYPT_METHOD),
-                            "pw_version": target.get("pw_version", 1) + 1,
-                        },
+                    ops.append(
+                        (
+                            "update_user",
+                            email,
+                            {
+                                "password_hash": reset_hash,
+                                "pw_version": target.get("pw_version", 1) + 1,
+                            },
+                        )
                     )
-                    done += 1
+                    sim_users[email]["pw_version"] = target.get("pw_version", 1) + 1
                 elif action == "delete":
                     # 防呆：目标为管理员时校验至少保留 1 个管理员
                     # （内置管理员存在时允许删除最后一个注册管理员，与单条路径一致）
                     if target.get("role") == "admin":
-                        admins = [u for u in load_users() if u.get("role") == "admin"]
+                        admins = [u for u in sim_users.values() if u.get("role") == "admin"]
                         if len(admins) <= 1 and not builtin:
                             continue
-                    db.delete_user_with_accounts(email)
-                    done += 1
+                    ops.append(("delete_user_with_accounts", email))
+                    sim_users.pop(email, None)
+            done = len(ops)
+            if ops:
+                try:
+                    db.batch_user_ops(ops)
+                except Exception as e:
+                    logger.error("批量%s用户失败: %s（已回滚）", action, e)
+                    db.audit(
+                        session.get("username") or "?",
+                        "users_batch",
+                        action,
+                        "失败，已回滚",
+                    )
+                    return jsonify({"error": "批量操作失败，已全部回滚"}), 500
             db.audit(
                 session.get("username") or "?",
                 "users_batch",

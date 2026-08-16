@@ -593,6 +593,49 @@ def replace_accounts(accounts):
     return len(accounts)
 
 
+def batch_account_ops(ops):
+    """在一个事务内批量执行账号操作（Phase 1：整体成功或整体回滚）。
+
+    ops 为 (op, params) 列表，op 支持：
+      ("update_status", account_id, status, reject_reason)
+      ("set_deleted", account_id, deleted, deleted_at)
+      ("purge", account_id)
+    """
+    conn = get_conn()
+    try:
+        with _conn_lock:
+            conn.execute("BEGIN IMMEDIATE")
+            for op in ops:
+                kind = op[0]
+                if kind == "update_status":
+                    _, account_id, status, reject_reason = op
+                    conn.execute(
+                        "UPDATE accounts SET status=?, reject_reason=? WHERE id=?",
+                        (status, reject_reason, account_id),
+                    )
+                elif kind == "set_deleted":
+                    _, account_id, deleted, deleted_at = op
+                    conn.execute(
+                        "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
+                        (1 if deleted else 0, deleted_at, account_id),
+                    )
+                elif kind == "purge":
+                    _, account_id = op
+                    row = conn.execute(
+                        "SELECT phone FROM accounts WHERE id=?", (account_id,)
+                    ).fetchone()
+                    conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+                    if row is not None:
+                        _delete_time_prefs_by_phones(conn, [row["phone"]])
+                else:
+                    raise ValueError(f"未知批量账号操作: {kind}")
+            conn.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        raise
+
+
 # ---------------------------------------------------------------------------
 # users CRUD
 # ---------------------------------------------------------------------------
@@ -637,6 +680,47 @@ def delete_user(email):
     conn = get_conn()
     with _conn_lock, conn:
         conn.execute("DELETE FROM users WHERE email=?", (email,))
+
+
+def batch_user_ops(ops):
+    """在一个事务内批量执行用户操作（Phase 1：整体成功或整体回滚）。
+
+    ops 为 (op, params) 列表，op 支持：
+      ("update_user", email, fields_dict)          # role/password_hash/pw_version
+      ("delete_user_with_accounts", email)
+    """
+    conn = get_conn()
+    try:
+        with _conn_lock:
+            conn.execute("BEGIN IMMEDIATE")
+            for op in ops:
+                kind = op[0]
+                if kind == "update_user":
+                    _, email, fields = op
+                    sets, vals = [], []
+                    for k in ("password_hash", "role", "pw_version"):
+                        if k in fields:
+                            sets.append(f"{k}=?")
+                            vals.append(fields[k])
+                    if not sets:
+                        continue
+                    vals.append(email)
+                    conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE email=?", vals)
+                elif kind == "delete_user_with_accounts":
+                    _, email = op
+                    rows = conn.execute(
+                        "SELECT phone FROM accounts WHERE owner=?", (email,)
+                    ).fetchall()
+                    conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+                    _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+                    conn.execute("DELETE FROM users WHERE email=?", (email,))
+                else:
+                    raise ValueError(f"未知批量用户操作: {kind}")
+            conn.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------
