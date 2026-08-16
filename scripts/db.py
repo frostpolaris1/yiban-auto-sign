@@ -10,6 +10,7 @@
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
 """
+import contextlib
 import datetime
 import json
 import logging
@@ -28,6 +29,9 @@ DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
 # 此前 web(app.py DELETED_RETENTION_DAYS) 与 db 各持一份同名不同单位常量，易改一处漏一处
 SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
+
+# schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
+SCHEMA_VERSION = 1
 
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
 _conn = None
@@ -58,7 +62,15 @@ def init_db(db_file=None, migrate_from=None, env_file=None):
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.execute("PRAGMA foreign_keys=OFF")
         _create_tables(_conn)
-        _maybe_add_account_columns(_conn)  # 存量库增量加列（幂等）
+        # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
+        # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败仅告警。
+        try:
+            _run_migrations(_conn)
+        except Exception:
+            with contextlib.suppress(Exception):
+                _conn.close()
+            _conn = None
+            raise
         # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
         if migrate_from:
             _maybe_migrate(_conn, migrate_from)
@@ -128,17 +140,71 @@ def _create_tables(conn):
 
 
 # ---------------------------------------------------------------------------
+# 通用幂等迁移框架（Phase 0）
+# ---------------------------------------------------------------------------
+def _table_columns(conn, table):
+    """返回表的所有列名（PRAGMA table_info）。"""
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_column(conn, table, column, definition):
+    """缺列才 ALTER TABLE ADD COLUMN（幂等）。"""
+    if column not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.commit()
+
+
+def _ensure_index(conn, create_sql):
+    """按给定 CREATE INDEX / CREATE UNIQUE INDEX 语句幂等创建（依赖 IF NOT EXISTS）。"""
+    conn.execute(create_sql)
+    conn.commit()
+
+
+def migrate_v1(conn):
+    """v1：补齐 accounts.user_paused 列（现状基线迁移）。"""
+    _ensure_column(conn, "accounts", "user_paused", "user_paused INTEGER NOT NULL DEFAULT 0")
+
+
+def _maybe_add_account_columns(conn):
+    """兼容旧入口：v1 迁移的薄封装（行为由 migrate_v1 负责）。"""
+    migrate_v1(conn)
+
+
+# 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
+# - 核心迁移：现有功能依赖，失败应阻断启动。
+# - 可选迁移：未来/非关键能力，失败只告警。
+_MIGRATIONS = [
+    (SCHEMA_VERSION, "v1_add_account_user_paused", migrate_v1, True),
+]
+
+
+def _run_migrations(conn):
+    """按 PRAGMA user_version 顺序执行未应用的迁移。
+
+    核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动）；
+    可选迁移失败只告警并停止后续迁移，不阻断启动。
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    for target_version, name, fn, is_core in _MIGRATIONS:
+        if version >= target_version:
+            continue
+        try:
+            fn(conn)
+            conn.execute(f"PRAGMA user_version = {target_version}")
+            conn.commit()
+            version = target_version
+            logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
+        except Exception as e:
+            if is_core:
+                logger.error("核心 schema 迁移失败: %s: %s", name, e)
+                raise
+            logger.warning("可选 schema 迁移失败: %s: %s，已跳过后续迁移", name, e)
+            break
+
+
+# ---------------------------------------------------------------------------
 # 自动迁移（JSON → SQLite，幂等）
 # ---------------------------------------------------------------------------
-def _maybe_add_account_columns(conn):
-    """存量库增量加列（幂等）：PRAGMA 检查缺列则 ALTER。"""
-    try:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
-        if "user_paused" not in cols:
-            conn.execute("ALTER TABLE accounts ADD COLUMN user_paused INTEGER NOT NULL DEFAULT 0")
-            conn.commit()
-    except Exception as e:
-        logger.warning("accounts 增量加列失败: %s", e)
 def _maybe_migrate(conn, json_base):
     """json_base 形如 /path/accounts.json（users.json 同目录推断）。"""
     accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
