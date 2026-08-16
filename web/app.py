@@ -443,7 +443,12 @@ def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
     写锁（_env_write_lock）：并发保存设置/公告时读-改-写互斥，防跨 worker 丢更新。
+    安全约束（安全审查 2026-08）：.env 为逐行键值格式，键或值含换行符会注入出
+    新的配置行（如经公告文本写入 YIBAN_ADMIN_PASSWORD_HASH 覆盖主管理员哈希提权）。
+    此处为兜底硬校验（调用方应先自行校验并返回友好错误），违规直接抛 ValueError。
     """
+    if "\n" in key or "\r" in key or "\n" in value or "\r" in value:
+        raise ValueError(f"write_env_key 拒绝包含换行符的键值（.env 单行格式）: {key}")
     with _env_write_lock(env_path):
         lines = []
         if os.path.exists(env_path):
@@ -893,7 +898,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.20.6"
+APP_VERSION = "0.20.7"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2746,9 +2751,10 @@ def create_app():
                 return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
             # 在 _file_lock 外预计算 scrypt 哈希，避免长时间占用进程锁
             reset_hash = generate_password_hash(password, method=SCRYPT_METHOD)
-        # 权限：管理员权限变更仅主管理员（普通管理员可重置密码/删除，不可改权限）
+        # 权限：权限变更与"操作管理员目标"仅主管理员
+        # （普通管理员可重置密码/删除普通用户，不可改权限、不可重置/删除其他管理员）
+        username = (session.get("username") or "").strip().lower()
         if action in ("set_admin", "unset_admin"):
-            username = (session.get("username") or "").strip().lower()
             if username != _builtin_admin_email():
                 return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
 
@@ -2763,6 +2769,14 @@ def create_app():
             for email in emails:
                 target = sim_users.get(email)
                 if not target or email == builtin:  # 内置管理员不可批量操作
+                    continue
+                if (
+                    action in ("reset_password", "delete")
+                    and target.get("role") == "admin"
+                    and username != builtin
+                ):
+                    # 安全审查 2026-08：普通管理员不可重置/删除其他管理员（与单条 403 同口径；
+                    # 批量沿用"无效项软跳过"惯例，与内置管理员跳过一致）
                     continue
                 if action == "set_admin":
                     # 只能将正式用户（有生效账号且无待审核）设为管理员；
@@ -2902,16 +2916,21 @@ def create_app():
 
     @app.route("/api/users/<email>/password", methods=["POST"])
     def api_user_password(email):
-        """重置用户密码（管理员无法查看原密码，只能设置新密码）。"""
+        """重置用户密码（管理员无法查看原密码，只能设置新密码）。
+        安全审查 2026-08：目标为注册管理员时仅主管理员可操作（防普通管理员横向接管）。"""
         data = _json_body()
         password = str(data.get("password", ""))
         pw_err = _password_policy_error(password)
         if pw_err:
             return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
+        username = (session.get("username") or "").strip().lower()
+        is_master = username == _builtin_admin_email()
         with _file_lock:
             target = db.find_user(email)
             if not target:
                 return jsonify({"error": "用户不存在"}), 404
+            if target.get("role") == "admin" and not is_master:
+                return jsonify({"error": "仅主管理员可重置管理员密码"}), 403
             db.update_user(
                 email,
                 {
@@ -2931,17 +2950,22 @@ def create_app():
     @app.route("/api/users/<email>/delete", methods=["POST"])
     def api_user_delete(email):
         """删除用户：mode=accounts_only 仅清空其易班账号（保留用户可重新提交）；
-        mode=full 完全删除用户及其账号。"""
+        mode=full 完全删除用户及其账号。
+        安全审查 2026-08：目标为注册管理员时仅主管理员可操作（与 role/密码重置口径一致）。"""
         data = _json_body()
         mode = data.get("mode", "full")
         if mode not in ("accounts_only", "full"):
             return jsonify({"error": "未知操作"}), 400
         if email == _builtin_admin_email():
             return jsonify({"error": "内置管理员不可删除"}), 400
+        username = (session.get("username") or "").strip().lower()
+        is_master = username == _builtin_admin_email()
         with _file_lock:
             target = db.find_user(email)
             if not target:
                 return jsonify({"error": "用户不存在"}), 404
+            if target.get("role") == "admin" and not is_master:
+                return jsonify({"error": "仅主管理员可删除管理员"}), 403
             if mode == "full" and target.get("role") == "admin":
                 admins = [u for u in load_users() if u.get("role") == "admin"]
                 # 内置管理员（.env）兜底存在时可删除 users.json 中的最后一个管理员
@@ -3168,13 +3192,15 @@ def create_app():
     @app.route("/api/settings", methods=["POST"])
     def api_settings_save():
         data = _json_body()
-        # 调度权限（2026-08-15 确认）：仅主管理员可改调度字段（排序/分布/缓冲/自选/窗口）；
-        # 普通管理员可改随机延迟/周日/公告等低风险项
+        # 调度权限（2026-08-15 确认）：仅主管理员可改调度字段（排序/分布/缓冲/自选/窗口/旧版模式）；
+        # 普通管理员可改随机延迟/周日/公告等低风险项。
+        # sign_mode 为遗留字段（已无 UI 控件），但 signin.py 在未设 sign_order 时以其为回退，
+        # 普通管理员改之可间接变更调度排序 → 同样仅主管理员可写（安全审查 2026-08）。
         username = session.get("username") or ""
         is_master = username.strip().lower() == _builtin_admin_email()
         if not is_master and any(
             k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
-                                "allow_time_pref", "sign_window")
+                                "allow_time_pref", "sign_window", "sign_mode")
         ):
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         try:
@@ -3185,14 +3211,12 @@ def create_app():
         # 上限 1 小时：防止误填超大值破坏签到随机延迟
         start = min(max(start, 0), 3600)
         gap = min(max(gap, 0), 3600)
-        write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", start)
-        write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", gap)
+        # 安全审查 2026-08：先全量校验、再统一写入——此前边校验边写，
+        # 后续字段非法返回 400 时前面的字段已落盘（"报错但设置变了"的部分写入）。
         # 签到模式（sequence/random）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
         sign_mode = str(data.get("sign_mode", "")).strip().lower()
         if sign_mode and sign_mode not in ("sequence", "random"):
             return jsonify({"error": "签到模式取值应为 sequence 或 random"}), 400
-        if sign_mode:
-            write_env_key(ENV_FILE, "YIBAN_SIGN_MODE", sign_mode)
         # 调度 v2：排序×分布二级开关（替代旧三选一，旧值自动映射兼容）
         sign_order = str(data.get("sign_order", "")).strip().lower()
         sign_dist = str(data.get("sign_dist", "")).strip().lower()
@@ -3200,13 +3224,10 @@ def create_app():
             return jsonify({"error": "排序方式取值应为 sequence 或 random"}), 400
         if sign_dist and sign_dist not in ("uniform", "normal"):
             return jsonify({"error": "分布方式取值应为 uniform 或 normal"}), 400
-        if sign_order:
-            write_env_key(ENV_FILE, "YIBAN_SIGN_ORDER", sign_order)
-        if sign_dist:
-            write_env_key(ENV_FILE, "YIBAN_SIGN_DIST", sign_dist)
         # 首尾缓冲（0=关闭，设置页需警示尾部风险）
         # 注意：0 是合法配置值（关闭缓冲），不能用 write_env_int（其语义为 <=0 删除行）
         edge_raw = data.get("window_edge_sec")
+        edge = None
         if edge_raw is not None:
             try:
                 edge = int(edge_raw)
@@ -3214,14 +3235,14 @@ def create_app():
                 return jsonify({"error": "首尾缓冲必须是整数秒"}), 400
             if not (0 <= edge <= 600):
                 return jsonify({"error": "首尾缓冲应在 0~600 秒之间"}), 400
-            write_env_key(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", str(edge))
         # 用户自选总开关（0/1；0 同样需显式写入）
         pref_raw = data.get("allow_time_pref")
+        pref = None
         if pref_raw is not None:
             pref = 1 if str(pref_raw).strip().lower() in ("1", "true", "on", "yes") else 0
-            write_env_key(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", str(pref))
         # 签到窗口（HH:MM，管理员可调；校验非法拒绝）
         win = str(data.get("sign_window", "")).strip()
+        win_start_str = win_end_str = None
         if win:
             try:
                 w_start, w_end = win.split("~")
@@ -3231,10 +3252,26 @@ def create_app():
                 return jsonify({"error": "签到窗口格式应为 HH:MM ~ HH:MM"}), 400
             if not (0 <= sh <= 23 and 0 <= sm <= 59 and 0 <= eh <= 23 and 0 <= em <= 59 and (sh, sm) < (eh, em)):
                 return jsonify({"error": "签到窗口非法（需 HH:MM 且开始早于结束）"}), 400
-            write_env_key(ENV_FILE, "YIBAN_SIGN_START", f"{sh:02d}:{sm:02d}")
-            write_env_key(ENV_FILE, "YIBAN_SIGN_END", f"{eh:02d}:{em:02d}")
+            win_start_str = f"{sh:02d}:{sm:02d}"
+            win_end_str = f"{eh:02d}:{em:02d}"
         # 周日签到开关（1=开启/0=关闭）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
         sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        # ---- 全部校验通过，统一写入 ----
+        write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", start)
+        write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", gap)
+        if sign_mode:
+            write_env_key(ENV_FILE, "YIBAN_SIGN_MODE", sign_mode)
+        if sign_order:
+            write_env_key(ENV_FILE, "YIBAN_SIGN_ORDER", sign_order)
+        if sign_dist:
+            write_env_key(ENV_FILE, "YIBAN_SIGN_DIST", sign_dist)
+        if edge is not None:
+            write_env_key(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", str(edge))
+        if pref is not None:
+            write_env_key(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", str(pref))
+        if win_start_str is not None:
+            write_env_key(ENV_FILE, "YIBAN_SIGN_START", win_start_str)
+            write_env_key(ENV_FILE, "YIBAN_SIGN_END", win_end_str)
         write_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", sunday_sign)
         # 批量多选为前端会话级开关，不写入配置
         logger.info(
@@ -3281,6 +3318,11 @@ def create_app():
         text = str(data.get("text", "")).strip()
         if len(text) > 500:  # 后端长度限制（前端 maxlength=200 可绕过，防 .env 膨胀 DoS）
             return jsonify({"error": "公告内容过长（最多 500 字）"}), 400
+        if "\n" in text or "\r" in text:
+            # 安全审查 2026-08：公告存入 .env 单行键值，换行会注入新配置行
+            # （如 YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。
+            # 前端为 textarea 但展示端换行本就折叠，直接拒绝（write_env_key 另有兜底）。
+            return jsonify({"error": "公告内容不能包含换行（单行存储）"}), 400
         write_env_key(ENV_FILE, "YIBAN_ANNOUNCEMENT", text)
         _announcement_cache[0] = text  # 同步内存缓存
         logger.info("公告已更新: %s", text[:50] or "（已清除）")

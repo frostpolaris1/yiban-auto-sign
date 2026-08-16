@@ -804,7 +804,6 @@ const state = {
   editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
   delays: { start: 0, gap: 0 },
   batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
-  signMode: 'sequence', // 签到模式（sequence 列表顺序 / random 列表随机，持久化 .env；旧版兼容）
   signOrder: 'sequence', // 调度 v2：排序方式（sequence/random）
   signDist: 'uniform',   // 调度 v2：分布方式（uniform/normal）
   edgeSec: 60,           // 调度 v2：首尾缓冲秒数（0=关闭）
@@ -1578,7 +1577,6 @@ async function loadSettings() {
     const data = await api('/api/settings');
     state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
-    state.signMode = data.sign_mode || 'sequence';  // 旧版兼容（不再有独立控件）
     // 调度 v2：排序×分布×缓冲×自选总开关×窗口
     state.signOrder = data.sign_order || 'sequence';
     state.signDist = data.sign_dist || 'uniform';
@@ -1796,7 +1794,8 @@ async function saveSettings(silent) {
       body: JSON.stringify({
         start_delay_max: read('start'),
         gap_max: read('gap'),
-        sign_mode: state.signMode || 'sequence',
+        // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
+        // 静默覆盖 .env 中既有的 YIBAN_SIGN_MODE，且权限上仅主管理员可写
         sunday_sign: state.sundaySign ? 1 : 0,
       }),
     });

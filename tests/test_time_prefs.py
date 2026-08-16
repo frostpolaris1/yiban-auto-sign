@@ -741,6 +741,81 @@ class TimePrefsTest(unittest.TestCase):
         r = c2.post("/api/settings", json={"sign_order": "random"}, headers=self._csrf(token2))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
+    # ---- 安全审查 2026-08：sign_mode 权限 / settings 原子性 / 公告 .env 注入 ----
+    def test_announcement_rejects_newline(self):
+        """公告含换行必须 400（防 .env 注入新配置行提权），.env 不得出现注入行。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        h = self._csrf(token)
+        payload = "正常公告\nYIBAN_ADMIN_PASSWORD_HASH=scrypt:fake"
+        r = c.put("/api/announcement", json={"text": payload}, headers=h)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        # .env 中原本就有启动时迁移生成的合法 YIBAN_ADMIN_PASSWORD_HASH 行，
+        # 注入行会再追加一行 → 校验注入内容不出现且该键仍只有 1 行
+        self.assertNotIn("scrypt:fake", env, "注入的哈希值不应落盘")
+        self.assertEqual(env.count("YIBAN_ADMIN_PASSWORD_HASH="), 1,
+                         "注入不应产生第二个 YIBAN_ADMIN_PASSWORD_HASH 行")
+        # 单行公告正常保存
+        r = c.put("/api/announcement", json={"text": "服务器维护中"}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_ANNOUNCEMENT=服务器维护中", env)
+
+    def test_api_settings_atomic_no_partial_write(self):
+        """任一字段校验失败时全部不落盘（此前 start/gap 先写、后续字段非法时部分生效）。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        h = self._csrf(token)
+        r = c.post("/api/settings", json={
+            "start_delay_max": 300, "gap_max": 30, "sign_mode": "bogus",
+        }, headers=h)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        for k in ("YIBAN_START_DELAY_MAX", "YIBAN_ACCOUNT_GAP_MAX", "YIBAN_SIGN_MODE"):
+            self.assertNotIn(k + "=", env, f"校验失败时 {k} 不应落盘")
+        # 合法请求照常写入（sign_mode 用 sequence：该键会持久化进共享 .env，
+        # 用默认等价值避免污染后续测试对默认状态的断言）
+        r = c.post("/api/settings", json={
+            "start_delay_max": 300, "gap_max": 30, "sign_mode": "sequence",
+        }, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_START_DELAY_MAX=300", env)
+        self.assertIn("YIBAN_SIGN_MODE=sequence", env)
+
+    def test_api_settings_sign_mode_master_only(self):
+        """遗留 sign_mode 字段同样仅主管理员可写（防普通管理员借其改调度排序）。"""
+        app = self.webapp.create_app()
+        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        c = app.test_client()
+        token = self._login(c, "admin2@test.local", USER_PASS)
+        h = self._csrf(token)
+        r = c.post("/api/settings", json={"sign_mode": "random"}, headers=h)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        # 低风险字段（周日）仍可改
+        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        # 主管理员可写 sign_mode
+        c2 = app.test_client()
+        token2 = self._login(c2, "admin", ADMIN_PASS)
+        r = c2.post("/api/settings", json={"sign_mode": "random"}, headers=self._csrf(token2))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_SIGN_MODE=random", env)
+
+    def test_write_env_key_guards_newline(self):
+        """write_env_key 兜底：含换行/回车的键或值直接抛 ValueError，不落盘。"""
+        with self.assertRaises(ValueError):
+            self.webapp.write_env_key(self.env_file, "K", "a\nb")
+        with self.assertRaises(ValueError):
+            self.webapp.write_env_key(self.env_file, "K", "a\rb")
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertNotIn("K=", env, "被拒的键不应写入 .env")
+        self.webapp.write_env_key(self.env_file, "K", "ok")
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("K=ok", env)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
