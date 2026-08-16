@@ -580,29 +580,28 @@ class TimePrefsTest(unittest.TestCase):
         self.assertFalse(acc["user_paused"])
 
     def test_api_pause_cooldown(self):
-        """对抗（2026-08-15 用户裁决）：暂停 30s 固定冷却——仅"暂停"计，恢复不限
-        （恢复是紧迫正向操作）；防连点/防刷屏噪音；冷却期内恢复-暂停交替仍受限。"""
+        """对抗（2026-08-16 调整）：暂停采用弹性冷却——60s 窗口内前 3 次自由，
+        恢复不限（紧迫正向操作）；第 4 次暂停才触发冷却，防连点/防刷屏噪音。"""
         with open(self.env_file, "a", encoding="utf-8") as f:
             f.write("YIBAN_PAUSE_COOLDOWN_SEC=30\n")
         try:
             c = self.webapp.create_app().test_client()
             token = self._login(c, "user1@test.local", USER_PASS)
             h = self._csrf(token)
-            # 首次暂停放行
-            r = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
-            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-            # 冷却期内再次暂停 → 429（不暴露时长，信息分层）
-            r2 = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
-            self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
-            self.assertIn("频繁", r2.get_json()["error"])
-            self.assertNotIn("30", r2.get_json()["error"])
-            # 冷却期内恢复不受限（紧迫正向操作）
-            r3 = c.put("/api/my-accounts/0/pause", json={"paused": False}, headers=h)
-            self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
-            # 恢复后立即再暂停仍受限（冷却按上次"暂停"计价，防恢复-暂停交替刷屏）
+            # 前 3 次暂停完全自由（好奇地暂停/恢复/再暂停不会被误杀）
+            for _ in range(3):
+                r = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                r = c.put("/api/my-accounts/0/pause", json={"paused": False}, headers=h)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            # 第 4 次暂停触发弹性冷却 → 429（不暴露时长，信息分层）
             r4 = c.put("/api/my-accounts/0/pause", json={"paused": True}, headers=h)
             self.assertEqual(r4.status_code, 429, r4.get_data(as_text=True))
-            # 中间那次恢复已生效（状态一致，无残留）
+            self.assertIn("频繁", r4.get_json()["error"])
+            self.assertNotIn("30", r4.get_json()["error"])
+            # 冷却期内恢复不受限（紧迫正向操作）
+            r5 = c.put("/api/my-accounts/0/pause", json={"paused": False}, headers=h)
+            self.assertEqual(r5.status_code, 200, r5.get_data(as_text=True))
             acc = next(a for a in db.load_accounts() if a["phone"] == "13800138001")
             self.assertFalse(acc["user_paused"])
         finally:
