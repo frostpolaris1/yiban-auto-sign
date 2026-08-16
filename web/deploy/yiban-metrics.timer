@@ -1,0 +1,19 @@
+# ============================================================
+# yiban-metrics.timer —— 每 5 秒触发一次服务器性能采集
+# ============================================================
+# 安装：见 yiban-metrics.service 头部注释。
+# 验证：
+#   systemctl list-timers yiban-metrics.timer
+#   journalctl -u yiban-metrics.service --since "1 minute ago"
+
+[Unit]
+Description=Run yiban server metrics collector every 5 seconds
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=5s
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
