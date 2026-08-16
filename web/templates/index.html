@@ -328,9 +328,17 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
       <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">最近日志</div>
-        <div class="text-xs text-zinc-400 dark:text-zinc-500">文件：<span id="log-file" class="font-mono">/var/log/yiban/sign.log</span></div>
+        <div class="text-xs text-zinc-400 dark:text-zinc-500">文件：<span id="log-file" class="font-mono">sign-YYYY-MM-DD.log</span></div>
       </div>
-      <pre id="log-box" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-280px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
+      <!-- 按日期查看（2026-08-16：日志按天分文件，可查任意日期） -->
+      <div class="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40">
+        <label for="log-date" class="text-xs text-zinc-500 dark:text-zinc-400">按日期查看</label>
+        <input type="date" id="log-date" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-2.5 py-1.5">
+        <button onclick="viewLogDate()" class="bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">查看</button>
+        <button id="log-back-today" onclick="backToTodayLogs()" class="hidden bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">回到今天</button>
+        <span id="log-date-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+      </div>
+      <pre id="log-box" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-320px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
       <div id="log-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">（暂无签到日志，等待定时任务执行…）</div>
     </div>
   </section>
@@ -1400,13 +1408,23 @@ $('account-form').addEventListener('submit', async (e) => {
 
 // ================= 日志与状态 =================
 let _logFirstLoad = true;
+let _logViewDate = '';  // 空 = 今天（10s 轮询）；非空 = 历史日期（静态，不轮询）
 let _lastRenderSnap = '';  // 轮询条件渲染：accounts+states 快照，无变化不重建 DOM
 let _logLastSnap = null;  // 日志渲染快照：内容未变化时跳过重写，避免 10s 轮询全量 DOM 重建
 async function loadLogs() {
   try {
-    const data = await api('/api/logs');
+    const q = _logViewDate ? '?date=' + _logViewDate : '';
+    const data = await api('/api/logs' + q);
     state.states = data.states;
     $('log-file').textContent = data.log_file;
+    // 日期视图提示：历史日期静态展示 + 「回到今天」按钮
+    if (_logViewDate) {
+      $('log-date-tip').textContent = `正在查看 ${_logViewDate} 的日志（历史日期不自动刷新）`;
+      $('log-back-today').classList.remove('hidden');
+    } else {
+      $('log-date-tip').textContent = '';
+      $('log-back-today').classList.add('hidden');
+    }
     const box = $('log-box');
     const empty = $('log-empty');
     // 展示层脱敏：日志行内 [13800138000] 前缀 → [138****8000]（sign.log 文件保持完整供状态解析）
@@ -1422,9 +1440,27 @@ async function loadLogs() {
       if (nearBottom || _logFirstLoad) { box.scrollTop = box.scrollHeight; _logFirstLoad = false; }
     } else {
       box.classList.add('hidden');
+      empty.textContent = _logViewDate ? `（${_logViewDate} 无签到日志）` : '（暂无签到日志，等待定时任务执行…）';
       empty.classList.remove('hidden');
     }
   } catch (e) { /* 静默：轮询失败不打扰 */ }
+}
+
+function viewLogDate() {
+  const v = $('log-date').value;
+  if (!v) { toast('请先选择日期', true); return; }
+  _logViewDate = v;
+  _logLastSnap = null;  // 强制重渲染（历史日期内容可能与当前快照相同）
+  _logFirstLoad = true;
+  loadLogs();
+}
+
+function backToTodayLogs() {
+  _logViewDate = '';
+  $('log-date').value = '';
+  _logLastSnap = null;
+  _logFirstLoad = true;
+  loadLogs();
 }
 
 async function refreshAccountsSilent() {
@@ -1448,7 +1484,8 @@ async function refreshAccountsSilent() {
 function pollVisible() {
   const logsVisible = !$('tab-logs').classList.contains('hidden');
   const accountsVisible = !$('tab-accounts').classList.contains('hidden');
-  if (logsVisible) loadLogs();
+  // 历史日期日志静态展示：仅当天视图参与 10s 轮询（历史内容不会变化）
+  if (logsVisible && !_logViewDate) loadLogs();
   if (accountsVisible) refreshAccountsSilent();
 }
 
