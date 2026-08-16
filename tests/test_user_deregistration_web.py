@@ -21,6 +21,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -150,9 +151,14 @@ class UserDeregistrationWebTest(unittest.TestCase):
     def test_delete_success(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
-        r = self._delete(c, token, password=USER_PASS)
+        with mock.patch.object(self.webapp, "send_notification") as sn:
+            r = self._delete(c, token, password=USER_PASS)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("3 天内可撤销", r.get_json()["msg"])
+        # 对抗审查 2026-08-16：注销成功通知管理员（盗号批量注销的事中检测信号）
+        sn.assert_called_once()
+        self.assertIn("注销", sn.call_args[0][0])
+        self.assertIn("***@test.local", sn.call_args[0][1], "通知应含脱敏邮箱")
         # 软删除标记 + 账号清除
         u = db.find_user_any("user1@test.local")
         self.assertEqual(u["deleted"], 1)

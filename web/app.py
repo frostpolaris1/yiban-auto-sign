@@ -1373,6 +1373,14 @@ def create_app():
             db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，3 天宽限期）")
             _login_fails.pop(fail_key, None)
             logger.info("用户 %s 已注销账号（3 天宽限期）", _mask_email(username))
+            # 安全增强（对抗审查 2026-08-16）：注销成功也通知管理员——
+            # 盗号批量注销时管理员可从通知流即时发现异常（审计之外的事中信号；
+            # 正常注销频率受冷却限制，通知量可控）
+            send_notification(
+                "用户注销账号",
+                f"用户 {_mask_email(username)} 已注销账号（3 天宽限期，超期物理清除）\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            )
         session.clear()
         return jsonify({"ok": True, "msg": "账号已注销，3 天内可撤销"})
 
