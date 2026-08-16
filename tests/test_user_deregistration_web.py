@@ -21,7 +21,7 @@ import shutil
 import sys
 import tempfile
 import unittest
-import unittest.mock as mock
+from datetime import datetime, timedelta
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -151,14 +151,9 @@ class UserDeregistrationWebTest(unittest.TestCase):
     def test_delete_success(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
-        with mock.patch.object(self.webapp, "send_notification") as sn:
-            r = self._delete(c, token, password=USER_PASS)
+        r = self._delete(c, token, password=USER_PASS)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("3 天内可撤销", r.get_json()["msg"])
-        # 对抗审查 2026-08-16：注销成功通知管理员（盗号批量注销的事中检测信号）
-        sn.assert_called_once()
-        self.assertIn("注销", sn.call_args[0][0])
-        self.assertIn("***@test.local", sn.call_args[0][1], "通知应含脱敏邮箱")
         # 软删除标记 + 账号清除
         u = db.find_user_any("user1@test.local")
         self.assertEqual(u["deleted"], 1)
@@ -176,6 +171,53 @@ class UserDeregistrationWebTest(unittest.TestCase):
         # 邮箱可重新注册（软删除后 find_user 查无此人）
         r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    # ---- 管理员视图（v0.20.1：注销不发通知，改主动查看）----
+    def test_admin_sees_deleted_users(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._delete(c, token, password=USER_PASS)
+        # 管理员查看已注销列表
+        c2 = self.webapp.create_app().test_client()
+        self._login(c2, "admin", ADMIN_PASS)
+        r = c2.get("/api/users/deleted")
+        self.assertEqual(r.status_code, 200)
+        items = r.get_json()["items"]
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["email"], "user1@test.local")
+        self.assertEqual(item["status"], "cooling")
+        self.assertGreaterEqual(item["remaining_days"], 2, "刚注销应剩约 3 天（整天向下取整 ≥2）")
+        self.assertTrue(item["deleted_at"])
+
+    def test_deleted_users_expired_shows_purge_pending(self):
+        # 构造已过宽限期的注销用户 → purge_pending + remaining_days=0
+        db.create_user("expired@test.local", "hash")
+        db.soft_delete_user_with_accounts("expired@test.local")
+        conn = db.get_conn()
+        old = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired@test.local"))
+        conn.commit()
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/api/users/deleted")
+        items = r.get_json()["items"]
+        item = next(i for i in items if i["email"] == "expired@test.local")
+        self.assertEqual(item["status"], "purge_pending")
+        self.assertEqual(item["remaining_days"], 0)
+
+    def test_deleted_users_requires_admin(self):
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        r = c.get("/api/users/deleted")
+        self.assertEqual(r.status_code, 403, "普通用户无权查看已注销列表")
+
+    def test_deleted_users_empty(self):
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/api/users/deleted")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["items"], [])
 
     # ---- 管理员保护 ----
     def test_builtin_admin_cannot_delete(self):
