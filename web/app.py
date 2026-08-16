@@ -854,8 +854,8 @@ def _notify_capacity_once(kind, limit, label):
 # Flask 应用
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
-# 2026-08-16 审查轮：命名/死代码/文档一致性修复（审核态常量改名、行内导入清理、TUI 窗口覆盖等）
-APP_VERSION = "0.19.6"
+# 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
+APP_VERSION = "0.19.7"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1045,8 +1045,9 @@ def create_app():
         )
         if request.path in ("/", "/login", "/user"):
             resp.headers["Cache-Control"] = "no-store"
-        elif request.path.startswith("/static/"):
-            resp.headers["Cache-Control"] = "public, max-age=86400"  # 静态资源长缓存（版本变化由 ?v= 兜底）
+        elif request.path.startswith("/static/") and resp.status_code < 400:
+            # 静态资源长缓存 30 天（版本变化由 ?v= 兜底）；404 等错误响应不缓存（防浏览器缓存 404）
+            resp.headers["Cache-Control"] = "public, max-age=2592000"
         return resp
 
     # ---- 数据层错误保护：SQLite 读写/密文解密失败 → 明确 500（防静默降级或返回错误数据）----
@@ -2870,6 +2871,15 @@ def create_app():
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
             edge_raw if edge_raw is not None else "不变", pref_raw if pref_raw is not None else "不变",
             win or "不变", sunday_sign,
+        )
+        # 设置变更审计（2026-08-16 补 P8：此前调度/系统设置保存无留痕，与其他管理操作不一致）
+        db.audit(
+            session.get("username") or "?",
+            "settings_save",
+            "settings",
+            f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
+            f"分布={sign_dist or '-'} 缓冲={edge_raw if edge_raw is not None else '-'} "
+            f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_sign}",
         )
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 

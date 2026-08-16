@@ -295,11 +295,18 @@ def _purge_expired_deleted(conn):
     """
     try:
         cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).isoformat(timespec="seconds")
-        conn.execute(
-            "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+        # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发写事务，
+        # 避免 1000 账号每 10s 轮询重复执行 DELETE+COMMIT
+        row = conn.execute(
+            "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ? LIMIT 1",
             (cutoff,),
-        )
-        conn.commit()
+        ).fetchone()
+        if row:
+            conn.execute(
+                "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+                (cutoff,),
+            )
+            conn.commit()
     except Exception as e:
         logger.warning("清理超期软删除账号失败: %s", e)
 

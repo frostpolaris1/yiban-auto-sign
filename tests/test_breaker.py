@@ -171,6 +171,23 @@ class BreakerTest(unittest.TestCase):
             json.dump({"13800138000": {"fail_days": 3}}, f)
         self.assertEqual(signin._load_cred_state()["13800138000"]["fail_days"], 3)
 
+    # ---- 5. 空状态删除 + dur 耗时字段（2026-08-16，P5b/P6）----
+    def test_save_cred_state_empty_removes_file(self):
+        state_path = signin._cred_state_path()
+        signin._save_cred_state({"13800138000": {"fail_days": 3}})
+        self.assertTrue(os.path.exists(state_path), "有暂停记录时应存在")
+        signin._save_cred_state({})
+        self.assertFalse(os.path.exists(state_path), "无暂停记录时应删除文件（无暂停=不存在语义）")
+
+    def test_write_sign_state_records_dur(self):
+        signin._write_sign_state("13800138000", "success", "签到成功", dur=3.45)
+        with open(os.path.join(self.tmp, "sign-state-" + datetime.now().strftime("%Y-%m-%d") + ".json"),
+                  encoding="utf-8") as f:
+            data = json.load(f)
+        entry = data["13800138000"]
+        self.assertEqual(entry["dur"], 3.45, "应记录单次尝试耗时（P6）")
+        self.assertEqual(entry["status"], "success")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

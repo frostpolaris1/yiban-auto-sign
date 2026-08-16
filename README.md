@@ -238,8 +238,8 @@ tail -50 /var/log/yiban/sign-$(date +%F).log
 # 查看某天历史日志（示例：8 月 15 日）
 cat /var/log/yiban/sign-2026-08-15.log
 
-# 清理 365 天前的按天日志（默认保留 365 天，可配 cron 每天执行）
-scripts/yiban-log-clean.sh
+# 清理过期数据（按天日志/状态文件默认保留 365 天、调度快照 7 天；可配 cron 每天执行）
+scripts/yiban-cleanup.sh
 
 # 手动触发签到
 bash /opt/yiban-auto-sign/run.sh

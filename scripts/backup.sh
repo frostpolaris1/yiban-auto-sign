@@ -55,6 +55,8 @@ DB_FILE="${DB_FILE:-yiban.db}"
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
 SIGN_STATE_DIR="${SIGN_STATE_DIR:-/var/log/yiban}"
+# 可选：按天签到日志目录（sign-YYYY-MM-DD.log；过期清理由 yiban-cleanup.sh 负责，此处仅备份现存量）
+SIGN_LOG_DIR="${SIGN_LOG_DIR:-/var/log/yiban}"
 
 # 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
@@ -177,11 +179,24 @@ if [ -d "${SIGN_STATE_DIR}" ]; then
     fi
 fi
 
-# 4) 打包（--owner/--group 归一化，便于跨机恢复）
+# 4) 按天签到日志（可选）：/var/log/yiban 下 sign-YYYY-MM-DD.log
+#    ——glob 匹配；无匹配时静默跳过（日志可重建，非关键；过期清理由 yiban-cleanup.sh 负责）
+if [ -d "${SIGN_LOG_DIR}" ]; then
+    shopt -s nullglob
+    log_files=("${SIGN_LOG_DIR}"/sign-*.log)
+    shopt -u nullglob
+    if [ ${#log_files[@]} -gt 0 ]; then
+        mkdir -p "${TMPDIR_BAK}/logs"
+        cp -p "${log_files[@]}" "${TMPDIR_BAK}/logs/" 2>/dev/null \
+            && log "已备份按天签到日志（${#log_files[@]} 个：sign-*.log）"
+    fi
+fi
+
+# 5) 打包（--owner/--group 归一化，便于跨机恢复）
 tar -czf "${ARCHIVE}" -C "${TMPDIR_BAK}" \
     --owner=0 --group=0 \
-    data keys state 2>/dev/null || {
-    # state 目录可能不存在，回退为只打包 data keys
+    data keys state logs 2>/dev/null || {
+    # state/logs 目录可能不存在，回退为只打包 data keys
     tar -czf "${ARCHIVE}" -C "${TMPDIR_BAK}" --owner=0 --group=0 data keys
 }
 chmod 0600 "${ARCHIVE}"
@@ -199,7 +214,8 @@ if [ -n "${REMOTE_BACKUP}" ]; then
     log "REMOTE_BACKUP 已配置，准备加密并同步到 ${REMOTE_BACKUP} ..."
     REMOTE_FILE=""
     if [ -n "${GPG_RECIPIENT}" ] && command -v gpg > /dev/null 2>&1; then
-        gpg --batch --yes --symmetric --cipher-algo AES256 \
+        # gpg 公钥加密（无需口令；2026-08-16 修正：原 --symmetric 与 --recipient 混用冗余）
+        gpg --batch --yes --encrypt \
             --recipient "${GPG_RECIPIENT}" -o "${ARCHIVE}.gpg" "${ARCHIVE}"
         REMOTE_FILE="${ARCHIVE}.gpg"
     elif [ -n "${GPG_PASSPHRASE}" ] && command -v gpg > /dev/null 2>&1; then

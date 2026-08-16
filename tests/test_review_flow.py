@@ -206,6 +206,24 @@ class ReviewFlowTest(unittest.TestCase):
                     headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 400)
 
+    # ---- 6. 设置保存审计（2026-08-16，P8：设置变更留痕）----
+    def test_settings_save_writes_audit(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.post("/api/settings", json={"start_delay_max": 30, "gap_max": 5},
+                   headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        # 审计记录应包含 settings_save 动作
+        import sqlite3
+        conn = sqlite3.connect(self.db_file)
+        row = conn.execute(
+            "SELECT action, detail FROM audit_logs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row, "设置保存应写审计")
+        self.assertEqual(row[0], "settings_save")
+        self.assertIn("启动延迟=30", row[1])
+
 
 if __name__ == "__main__":
     unittest.main()
