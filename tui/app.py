@@ -652,7 +652,14 @@ class YibanTuiApp(App):
         ⚠️ 整表替换语义：与 web 后台并发使用时以最后一次保存为准（勿同时编辑）。
         """
         # 1. 账号配置：整表替换（事务内清空重插，保留 sort_order=列表顺序）
-        db.replace_accounts(self.accounts)
+        try:
+            db.replace_accounts(self.accounts)
+        except db.DuplicateOwnerError as e:
+            self.notify(f"保存失败：{e}", severity="error", timeout=6)
+            return
+        except Exception as e:
+            self.notify(f"保存失败：{e}", severity="error", timeout=6)
+            return
         db.audit("tui", "tui_save", "", f"整表保存 {len(self.accounts)} 个账号")
         # 2. 随机延迟（开启时读秒数输入框，非法值回退默认；关闭写 0 即删除该行）
         if self.start_delay_max > 0:
