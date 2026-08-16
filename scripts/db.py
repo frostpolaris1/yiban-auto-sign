@@ -150,8 +150,9 @@ def _create_tables(conn):
           deleted INTEGER NOT NULL DEFAULT 0,
           deleted_at TEXT NOT NULL DEFAULT ''
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live
-          ON users(email) WHERE deleted = 0;
+        -- 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
+        -- 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
+        -- 迁移执行前崩溃（对抗审查 2026-08-16 演练发现）。
 
         CREATE TABLE IF NOT EXISTS audit_logs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,

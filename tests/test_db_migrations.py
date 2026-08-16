@@ -28,7 +28,11 @@ class DbMigrationTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="yiban-db-migrate-")
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + "a" * 64 + "\n")
         os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
 
     @classmethod
     def tearDownClass(cls):
@@ -37,6 +41,7 @@ class DbMigrationTest(unittest.TestCase):
                 db._conn.close()
             db._conn = None
         os.environ.pop("YIBAN_DB_FILE", None)
+        os.environ.pop("YIBAN_ENV_FILE", None)
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
@@ -70,6 +75,86 @@ class DbMigrationTest(unittest.TestCase):
         )
         conn.commit()
         conn.close()
+
+    def _create_old_production_like_db(self):
+        """模拟 0.19.8 生产库：无迁移版本号、users 无 deleted 列、audit 无哈希列。
+
+        对抗审查 2026-08-16：真实旧库升级路径此前无测试覆盖——本地测试全从新库
+        （users 表直接含 deleted 列）开始，掩盖了 _create_tables 提前建
+        idx_users_email_live（依赖 users.deleted）导致旧库升级崩溃的回归。
+        """
+        conn = sqlite3.connect(self.db_file)
+        conn.executescript(
+            """
+            CREATE TABLE accounts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              sort_order INTEGER NOT NULL,
+              name TEXT NOT NULL DEFAULT '',
+              phone TEXT NOT NULL UNIQUE,
+              password TEXT NOT NULL DEFAULT '',
+              phone_model TEXT NOT NULL DEFAULT '',
+              phone_code TEXT NOT NULL DEFAULT '',
+              owner TEXT NOT NULL DEFAULT 'admin',
+              status TEXT NOT NULL DEFAULT 'pending',
+              reject_reason TEXT NOT NULL DEFAULT '',
+              deleted INTEGER NOT NULL DEFAULT 0,
+              deleted_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE users (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email TEXT NOT NULL UNIQUE,
+              password_hash TEXT NOT NULL,
+              role TEXT NOT NULL DEFAULT 'user',
+              created_at TEXT NOT NULL DEFAULT '',
+              pw_version INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE audit_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL,
+              username TEXT NOT NULL,
+              action TEXT NOT NULL,
+              target TEXT NOT NULL DEFAULT '',
+              detail TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE time_prefs (
+              phone TEXT PRIMARY KEY,
+              slot_min INTEGER NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            INSERT INTO users (email, password_hash, role, created_at, pw_version)
+              VALUES ('old@test.local', 'hash', 'user', '2026-08-01 10:00:00', 1);
+            INSERT INTO accounts (sort_order, name, phone, password, phone_model,
+                                  phone_code, owner, status, reject_reason, deleted, deleted_at)
+              VALUES (1, 'Old', '13800138000', 'enc', '', '', 'old@test.local',
+                      'active', '', 0, '');
+            INSERT INTO audit_logs (ts, username, action, target, detail)
+              VALUES ('2026-08-01 10:00:00', 'old@test.local', 'user_register',
+                      'old@test.local', '开放注册');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+    def test_old_production_db_upgrades_to_v5(self):
+        """真实旧库（0.19.8 结构）升级到 v5 不崩溃、数据保留、审计链回填校验通过。"""
+        self._create_old_production_like_db()
+        conn = db.init_db(self.db_file)
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        self.assertEqual(version, 5)
+        users_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        self.assertIn("deleted", users_cols)
+        self.assertIn("deleted_at", users_cols)
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_users_email_live'"
+        ).fetchone()
+        self.assertIsNotNone(idx, "migrate_v5 应创建邮箱部分唯一索引")
+        # 数据保留
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0], 1)
+        # 审计哈希链回填后校验通过
+        ok, broken, _ = db.verify_audit_chain()
+        self.assertTrue(ok)
+        self.assertEqual(broken, 0)
 
     def test_new_db_gets_latest_version(self):
         conn = db.init_db(self.db_file)
