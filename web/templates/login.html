@@ -90,6 +90,8 @@
                  class="input input-ring">
         </div>
         <div id="error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <button type="button" id="restore-btn" onclick="restoreAccount()"
+                class="hidden w-full mt-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">恢复我的账号（7 天内可撤销）</button>
         <button type="submit" id="login-btn"
                 class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
           <span id="login-btn-text">登录</span>
@@ -221,6 +223,15 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
       location.href = data.role === 'admin' ? '/' : '/user';
       return;
     }
+    // 冷静期恢复（2026-08-16 用户裁决）：账号已注销且 7 天内、密码正确 → 引导恢复
+    if (st === 200 && data.recoverable) {
+      showError(errorBox, data.msg || '账号已注销，7 天内可恢复');
+      const restoreBtn = document.getElementById('restore-btn');
+      restoreBtn.dataset.email = document.getElementById('username').value.trim();
+      restoreBtn.dataset.password = document.getElementById('password').value;
+      restoreBtn.classList.remove('hidden');
+      return;
+    }
     showError(errorBox, data.error || '登录失败，请重试');
   } catch (err) {
     showError(errorBox, '网络错误：' + err.message);
@@ -228,6 +239,29 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     btn.disabled = false;
   }
 });
+
+// 冷静期恢复（2026-08-16）：账号注销 7 天内可恢复，密码已在登录步骤验证
+async function restoreAccount() {
+  const btn = document.getElementById('restore-btn');
+  const errorBox = document.getElementById('error-box');
+  btn.disabled = true;
+  try {
+    const [st, data] = await post('/api/me/restore', {
+      email: btn.dataset.email,
+      password: btn.dataset.password,
+    });
+    if (st === 200 && data.ok) {
+      location.href = data.role === 'admin' ? '/' : '/user';
+      return;
+    }
+    showError(errorBox, data.error || '恢复失败，请稍后再试');
+    btn.classList.add('hidden');
+  } catch (err) {
+    showError(errorBox, '网络错误：' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 // 用户协议弹窗
 function showAgreement() {
