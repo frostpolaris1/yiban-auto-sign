@@ -55,12 +55,26 @@ ICON_NO_TASK = "➖"  # 今日无需签到（服务器确认无任务）
 ICON_PAUSED = "⏸️"  # 账密异常暂停（熔断器，与 web 一致）
 ICON_CANCELLED = "⏹️"  # 用户自取消签到（调度 v2）
 
-# 签到状态码（signin.py 写 sign-state 文件）→ 图标（与 web 显示层一致）
+# 签到状态码（signin.py 写 sign-state 文件，与 web/app.py 同值；2026-08-16 审查轮：
+# 原 STATUS_ICON 键/回退值用裸字符串，现统一走常量，避免与账号审核态混淆）
+STATUS_SUCCESS = "success"
+STATUS_ALREADY = "already"
+STATUS_NO_TASK = "no_task"
+STATUS_FAILED = "failed"
+STATUS_RETRYING = "retrying"
+STATUS_SKIPPED_WINDOW = "skipped_window"
+STATUS_SKIPPED_NORANGE = "skipped_norange"
+STATUS_PAUSED = "paused"
+STATUS_USER_CANCELLED = "user_cancelled"
+STATUS_PENDING = "pending"  # 待签（未执行/无记录）
+
+# 签到状态码 → 图标（与 web 显示层一致；含 pending 键，键集与 web STATUS_ICON 完全对齐）
 STATUS_ICON = {
-    "success": ICON_SUCCESS, "already": ICON_SUCCESS, "no_task": ICON_NO_TASK,
-    "failed": ICON_FAILED, "retrying": ICON_RETRYING,
-    "skipped_window": ICON_SKIPPED, "skipped_norange": ICON_SKIPPED,
-    "paused": ICON_PAUSED, "user_cancelled": ICON_CANCELLED,  # 熔断暂停/用户自取消（调度 v2）
+    STATUS_SUCCESS: ICON_SUCCESS, STATUS_ALREADY: ICON_SUCCESS, STATUS_NO_TASK: ICON_NO_TASK,
+    STATUS_FAILED: ICON_FAILED, STATUS_RETRYING: ICON_RETRYING,
+    STATUS_SKIPPED_WINDOW: ICON_SKIPPED, STATUS_SKIPPED_NORANGE: ICON_SKIPPED,
+    STATUS_PAUSED: ICON_PAUSED, STATUS_USER_CANCELLED: ICON_CANCELLED,  # 熔断暂停/用户自取消（调度 v2）
+    STATUS_PENDING: ICON_PENDING,  # 待签（未执行/无记录）
 }
 
 # 结构化状态文件目录（signin.py 同源）
@@ -91,9 +105,9 @@ def load_sign_state(date_str=None):
         return {}
     if not isinstance(daily, dict):
         return {}
-    sym_map = {"✅": "success", "❌": "failed", "➖": "no_task"}
+    sym_map = {"✅": STATUS_SUCCESS, "❌": STATUS_FAILED, "➖": STATUS_NO_TASK}
     return {
-        phone: {"status": sym_map.get(sym, "pending"), "message": "", "task": "default"}
+        phone: {"status": sym_map.get(sym, STATUS_PENDING), "message": "", "task": "default"}
         for phone, sym in daily.items()
     }
 
@@ -107,13 +121,14 @@ DEFAULT_ACCOUNT_GAP_MAX = 10
 
 # 解析 sign.log（行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功）
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
-STATE_RE = re.compile(r"\[(\d+)\]\s*(✅|❌|🔄|➖|⛔|⏸️|⏹️)")
 
 
 def parse_sign_log(path):
-    """解析签到日志：返回 (今日各账号状态 dict, 最近日志行列表)。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    states = {}
+    """解析签到日志：返回最近日志行列表（yiban 非 DEBUG 行，最多 15 条）。
+
+    2026-08-16 审查轮：原返回值 (states, recent) 的 states 从未被消费
+    （TUI 状态展示走 load_sign_state()），删去无效提取与 STATE_RE。
+    """
     recent = []
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
@@ -121,17 +136,13 @@ def parse_sign_log(path):
                 m = SIGN_LOG_RE.match(line.strip())
                 if not m:
                     continue
-                date, level, logger_name, msg = m.groups()
+                _date, level, logger_name, _msg = m.groups()
                 if logger_name != "yiban" or level == "DEBUG":
                     continue
                 recent.append(line.strip())
-                if date == today:
-                    sm = STATE_RE.search(msg)
-                    if sm:
-                        states[sm.group(1)] = sm.group(2)
     except OSError:
         pass
-    return states, recent[-15:]
+    return recent[-15:]
 
 
 def load_env_int(env_path, key, default):
@@ -467,7 +478,7 @@ class YibanTuiApp(App):
     def _status_icon(self, acc):
         """状态图标：按 sign-state 状态码映射（⏳ 待签 / ✅ 成功 / ❌ 失败 / 🔄 重试 / ⛔ 跳过 / ➖ 无需）。"""
         st = self.states.get(acc.get("phone", ""), {})
-        status = st.get("status", "pending") if isinstance(st, dict) else "pending"
+        status = st.get("status", STATUS_PENDING) if isinstance(st, dict) else STATUS_PENDING
         return STATUS_ICON.get(status, ICON_PENDING)
 
     def _refresh_table(self) -> None:
@@ -488,7 +499,7 @@ class YibanTuiApp(App):
 
     # ---- 签到日志 ----
     def _refresh_log(self) -> None:
-        _, recent = parse_sign_log(self.log_path)
+        recent = parse_sign_log(self.log_path)
         self.states = load_sign_state()  # 状态事实源（signin.py 写入的结构化文件）
         # 状态可能变化，刷新列表图标
         if self.accounts:
@@ -497,6 +508,33 @@ class YibanTuiApp(App):
         self.query_one("#log-box", Static).update(text)
 
     # ---- 服务器时间与签到状态 ----
+    def _sign_window(self):
+        """签到窗口（读 .env 的 YIBAN_SIGN_START/END 覆盖，非法回退默认；与 web 同口径）。
+
+        2026-08-16 审查轮：原实现直接读模块常量，管理员在 web 设置页改窗口后
+        TUI 显示与实际窗口不一致（报告 5.3）。
+        """
+        start, end = SIGN_START, SIGN_END
+        try:
+            with open(self.env_path, encoding="utf-8-sig") as f:
+                for line in f:
+                    line = line.strip()
+                    for key, slot in (("YIBAN_SIGN_START=", "start"), ("YIBAN_SIGN_END=", "end")):
+                        if not line.startswith(key):
+                            continue
+                        h, m = line[len(key):].strip().split(":")
+                        parsed = (int(h), int(m))
+                        if 0 <= parsed[0] <= 23 and 0 <= parsed[1] <= 59:
+                            if slot == "start":
+                                start = parsed
+                            else:
+                                end = parsed
+        except (OSError, ValueError, AttributeError):
+            pass
+        if start >= end:
+            start, end = SIGN_START, SIGN_END
+        return start, end
+
     def _sign_status(self, now=None):
         """基于服务器时间计算签到状态。
 
@@ -510,12 +548,14 @@ class YibanTuiApp(App):
         # 周日：仅当「周日签到」开启（.env YIBAN_SUNDAY_SIGN=1）时走正常窗口逻辑
         if now.weekday() == 6 and not load_env_int(self.env_path, "YIBAN_SUNDAY_SIGN", 0):
             return "🌙 今日无需打卡（周日）", "#565f89"
-        start = now.replace(hour=SIGN_START[0], minute=SIGN_START[1], second=0, microsecond=0)
-        end = now.replace(hour=SIGN_END[0], minute=SIGN_END[1], second=0, microsecond=0)
+        start_h, start_m = self._sign_window()[0]
+        end_h, end_m = self._sign_window()[1]
+        start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+        end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
         if now < start:
-            return f"⏳ 未到签到时间（{SIGN_START[0]:02d}:{SIGN_START[1]:02d} 开始）", "#7aa2f7"
+            return f"⏳ 未到签到时间（{start_h:02d}:{start_m:02d} 开始）", "#7aa2f7"
         if now <= end:
-            return f"🔔 签到窗口（~{SIGN_END[0]:02d}:{SIGN_END[1]:02d} 结束）", "#9ece6a"
+            return f"🔔 签到窗口（~{end_h:02d}:{end_m:02d} 结束）", "#9ece6a"
         return "✅ 打卡时间已过", "#e0af68"
 
     def _refresh_clock(self) -> None:

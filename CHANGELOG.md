@@ -1,5 +1,13 @@
 # 更新日志
 
+## v0.19.6（2026-08-16）
+- **命名清理**：账号审核状态常量从 `STATUS_PENDING/ACTIVE/REJECTED` 改名为 `ACCOUNT_STATUS_*`，与签到状态码彻底分离（原同名异义，历史遗留）；TUI 状态图标改用 `STATUS_*` 常量，不再使用裸字符串
+- **修复：日志符号污染前端状态**：`/api/logs` 原透传日志符号（✅/❌）给前端，与账号状态码（success/failed）语义不符，曾造成账号表格图标/统计卡间歇性错乱；现移除该字段，账号状态统一以 `/api/accounts`（sign-state 文件）为事实源；web 端 `parse_sign_log` 同步精简为仅返回日志行（与 TUI 一致）
+- **一致性修复**：TUI 签到状态现在读取 `.env` 的签到窗口设置（`YIBAN_SIGN_START/END`），与网页端显示一致
+- **死代码清理**：删除 `USERS_FILE` 及 `--users` 参数（users.json 迁移由 db 层同目录推断）；日志符号提取 `STATE_RE` 移除；函数内重复 `import`（db.py 8 处、signin.py 2 处）上移；`_find_user` 冗余包装内联
+- **规范修正**：行内导入移至文件顶部（calendar/random/contextlib.suppress）；`_sign_window()` 单次调用避免重复读 .env；`backup.sh` 加密口令变量改名 `GPG_PASSPHRASE`（旧名 `BACKUP_AGE_PASSPHRASE` 兼容回退）
+- **文档修正**：README 环境变量表补齐调度 v2 配置项、部署教程改为使用仓库自带 `run.sh`（原简化版缺并发/防重复/超时保护）、`tail` 示例改按天日志；`.env.example` 移除失效的 `YIBAN_USERS_FILE` 并修正迁移/日志目录说明；systemd 模板补 `--no-control-socket`（与生产一致）
+
 ## v0.19.5（2026-08-16）
 - **日志按天分文件（新增）**：签到日志从单一 `sign.log` 改为每天一个文件 `sign-YYYY-MM-DD.log`（写入端 run.sh / 手动签到 / TUI 同步适配），按日期查看 = 直接读对应文件
 - **管理员按日期查看日志（新增）**：日志页新增日期选择器，可切换查看任意日期的签到日志；默认今天、10 秒自动刷新等原有行为不变

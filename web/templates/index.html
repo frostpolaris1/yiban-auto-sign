@@ -754,15 +754,15 @@
             bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md max-w-[90vw] text-center break-words"></div>
 
 <script>
-// ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 一致） =================
+// ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 完全一致，含 pending） =================
 const STATUS_ICON = {
   success: '✅', already: '✅', no_task: '➖', failed: '❌', retrying: '🔄',
-  skipped_window: '⛔', skipped_norange: '⛔', paused: '⏸️', user_cancelled: '⏹️',
+  skipped_window: '⛔', skipped_norange: '⛔', paused: '⏸️', user_cancelled: '⏹️', pending: '⏳',
 };
 const STATUS_TEXT = {
   success: '签到成功', already: '已签到', no_task: '无需签到', failed: '签到失败',
   retrying: '重试中', skipped_window: '时段外', skipped_norange: '窗口缺失', paused: '暂停',
-  user_cancelled: '已取消',
+  user_cancelled: '已取消', pending: '待签',
 };
 // ================= 状态 =================
 const state = {
@@ -1415,7 +1415,8 @@ async function loadLogs() {
   try {
     const q = _logViewDate ? '?date=' + _logViewDate : '';
     const data = await api('/api/logs' + q);
-    state.states = data.states;
+    // 注意：不再写 state.states——账号表格图标/统计卡的事实源是 /api/accounts 轮询
+    // （sign-state 文件状态码）；/api/logs 只提供日志行（2026-08-16 审查轮修复）
     $('log-file').textContent = data.log_file;
     // 日期视图提示：历史日期静态展示 + 「回到今天」按钮
     if (_logViewDate) {

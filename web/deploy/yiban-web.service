@@ -34,11 +34,11 @@ EnvironmentFile=/etc/yiban/accounts-key
 # 注意：必须保持 -w 1（单 worker 多线程）。限速/爆破锁定/签到防抖等状态存于进程内存，
 # 多 worker 各自持有独立副本会导致阈值被轮换请求绕过（安全审查 S2）。如需提升并发，
 # 请调整 --threads 而非 --workers（gthread 线程共享进程内存）。
-# 方式 A：虚拟环境安装（推荐，与项目依赖隔离）
-ExecStart=/opt/yiban-auto-sign/.venv/bin/gunicorn -w 1 --threads 8 -b 127.0.0.1:17892 "web.app:create_app()"
+# 方式 A：虚拟环境安装（推荐，与项目依赖隔离；--no-control-socket 与生产一致，防控制 socket 暴露）
+ExecStart=/opt/yiban-auto-sign/.venv/bin/gunicorn -w 1 --threads 8 --no-control-socket -b 127.0.0.1:17892 "web.app:create_app()"
 # 方式 B：系统级 gunicorn（未创建 .venv 时使用；注意 Ubuntu 包名/可执行名为 gunicorn3）
-# ExecStart=/usr/bin/gunicorn3 -w 1 --threads 8 -b 127.0.0.1:17892 "web.app:create_app()"
-# 方式 B（pip 全局安装）：ExecStart=/usr/bin/gunicorn -w 1 --threads 8 -b 127.0.0.1:17892 "web.app:create_app()"
+# ExecStart=/usr/bin/gunicorn3 -w 1 --threads 8 --no-control-socket -b 127.0.0.1:17892 "web.app:create_app()"
+# 方式 B（pip 全局安装）：ExecStart=/usr/bin/gunicorn -w 1 --threads 8 --no-control-socket -b 127.0.0.1:17892 "web.app:create_app()"
 Restart=always
 RestartSec=3
 ProtectSystem=strict
