@@ -188,6 +188,51 @@ class BreakerTest(unittest.TestCase):
         self.assertEqual(entry["dur"], 3.45, "应记录单次尝试耗时（P6）")
         self.assertEqual(entry["status"], "success")
 
+    # ---- 6. P6 耗时告警（2026-08-16）：超阈值 → warning + 通知；每账号每轮最多 1 次 ----
+    def test_slow_sign_warns_and_notifies(self):
+        """单次尝试耗时超阈值（31s > 30s）→ 发送耗时告警通知（含耗时与脱敏账号）。"""
+        import unittest.mock as mock
+
+        accs = [signin.Account(phone="13800138001", password="p")]
+        with mock.patch.object(signin, "time") as tm, \
+             mock.patch.object(signin, "attempt_signin") as attempt, \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin, "_update_cred_state"), \
+             mock.patch.object(signin, "send_notification") as sn:
+            tm.monotonic.side_effect = [100.0, 131.0]  # t0=100, last_done=131 → dur=31s
+            tm.sleep = lambda *a, **k: None
+            attempt.return_value = (True, "签到成功", False, signin.STATUS_SUCCESS)
+            signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
+        sn.assert_called_once()
+        title, content = sn.call_args[0][0], sn.call_args[0][1]
+        self.assertIn("耗时", title)
+        self.assertIn("31.0", content, "通知应含实际耗时")
+        self.assertIn("138****8001", content, "通知应含脱敏账号")
+        self.assertIn("签到成功", content, "通知应含结果说明")
+
+    def test_slow_sign_throttled_per_round(self):
+        """同一账号两次慢尝试（失败重试）→ 耗时告警只发 1 次（防重试连击刷屏）。"""
+        import unittest.mock as mock
+
+        accs = [signin.Account(phone="13800138001", password="p")]
+        seq = iter([100.0, 131.0, 200.0, 232.0])  # 两次尝试：31s / 32s 均超阈值
+        with mock.patch.object(signin, "time") as tm, \
+             mock.patch.object(signin, "attempt_signin") as attempt, \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin, "_update_cred_state"), \
+             mock.patch.object(signin, "classify_failure", return_value=2) as cf, \
+             mock.patch.object(signin, "send_notification") as sn:
+            tm.monotonic.side_effect = lambda: next(seq)
+            tm.sleep = lambda *a, **k: None
+            attempt.return_value = (False, "登录失败", False, signin.STATUS_FAILED)
+            signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
+        cf.assert_called()  # 失败确实走了分级
+        # 2 次尝试 → 慢告警 1 次 + 最终放弃失败通知 1 次（慢告警未连发）
+        self.assertEqual(sn.call_count, 2, "慢告警 1 次 + 失败通知 1 次")
+        self.assertEqual(sn.call_args_list[0].args[0], "易班签到耗时告警", "第一次应为耗时告警")
+        self.assertIn("31.0", sn.call_args_list[0].args[1])
+        self.assertEqual(sn.call_args_list[1].args[0], "易班签到失败", "第二次应为最终失败通知")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

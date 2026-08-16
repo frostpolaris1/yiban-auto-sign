@@ -855,7 +855,7 @@ def _notify_capacity_once(kind, limit, label):
 # ---------------------------------------------------------------------------
 # 应用版本号（页面底部显示；每次修改按语义递增：修复 +0.0.1 / 功能 +0.1.0 / 大版本 +1.0.0）
 # 2026-08-16 运维体系收尾：备份含日志/状态清理/设置审计/耗时记录/缓存优化（0.19.7）
-APP_VERSION = "0.19.7"
+APP_VERSION = "0.19.8"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1351,6 +1351,11 @@ def create_app():
                 # 状态原因/计划（如"计划 06:42"），前端表格 title 展示
                 "state_msgs": {
                     _mask_phone(k): (v.get("message", "") if isinstance(v, dict) else "")
+                    for k, v in states.items()
+                },
+                # 单次签到耗时秒数（P6）：表格状态 title 展示"耗时 xx s"；无记录为 None
+                "state_durs": {
+                    _mask_phone(k): (v.get("dur") if isinstance(v, dict) else None)
                     for k, v in states.items()
                 },
                 "config_file": os.path.basename(DB_FILE),
