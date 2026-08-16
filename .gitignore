@@ -96,3 +96,22 @@ build/
 
 # 品牌图标（版权来源不明，不入开源仓库；本地/服务器自行放入即可生效，见 README「自定义 Web 图标」）
 web/static/vendor/logo.png
+
+# 根目录 agent 记忆入口（2026-08-16 归并：AI-HANDOFF / TODO / .workbuddy 记忆 / WORKFLOW / CONTRIBUTING，非开源）
+memory.md
+
+# 命名/文档/死代码审查报告（2026-08-16 补忽略）
+docs/review-naming-docs-deadcode-*.md
+
+# 协作备用文件（未启用；等协作场景再决定入库，2026-08-16 补忽略）
+WORKFLOW.md
+CONTRIBUTING.md
+.github/pull_request_template.md
+.github/workflows/ci.yml
+.github/workflows/mirror.yml
+.commitlintrc.json
+scripts/git-hooks/
+
+# 本地工具配置目录（DSH 路由套件 / 模型 preset，非项目产物，2026-08-16 补忽略）
+dsh-routing-suite/
+v4-flash-godmode-opencode-go/
