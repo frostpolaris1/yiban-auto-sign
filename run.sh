@@ -3,9 +3,19 @@ umask 077
 # 易班自动签到运行脚本
 cd /opt/yiban-auto-sign
 
+# 加载环境变量（set -a 确保变量导出到子进程；source 语义安全，
+# 替代易受特殊字符/空格影响的 `export $(cat .env | xargs)`）
+# 必须先于日志/状态路径计算：YIBAN_STATE_DIR / YIBAN_LOG_FILE 可能由 .env 提供。
+set -a
+. /opt/yiban-auto-sign/.env
+set +a
+
+# 状态/日志根目录：优先 YIBAN_STATE_DIR
+STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
+
 # 日志按天分文件（2026-08-16）：sign-YYYY-MM-DD.log，web 端按日期直接读取对应文件；
-# 保留 YIBAN_LOG_FILE 配置的目录语义（默认 /var/log/yiban）。
-LOG_FILE="${YIBAN_LOG_FILE:-/var/log/yiban/sign.log}"
+# 保留 YIBAN_LOG_FILE 配置的目录语义（默认 $STATE_DIR/sign.log）。
+LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
 # 单实例锁：自动错峰模式下 06:31 进程可能 sleep 等待时间点，
@@ -22,14 +32,15 @@ flock -n 9 || {
     exit 0
 }
 
-# 加载环境变量（set -a 确保变量导出到子进程；source 语义安全，
-# 替代易受特殊字符/空格影响的 `export $(cat .env | xargs)`）
-set -a
-. /opt/yiban-auto-sign/.env
-set +a
-
 # 状态文件：记录今天的签到结果，避免重复执行
-STATUS_FILE="/var/log/yiban/sign-status-$(date +%Y-%m-%d).txt"
+STATUS_FILE="$STATE_DIR/sign-status-$(date +%Y-%m-%d).txt"
+
+# Python 解释器：优先项目虚拟环境，缺失时回退系统 Python
+if [ -x /opt/yiban-auto-sign/.venv/bin/python3 ]; then
+    PY=/opt/yiban-auto-sign/.venv/bin/python3
+else
+    PY=/usr/bin/python3
+fi
 
 # 检查今天是否已经签到成功
 if [ -f "$STATUS_FILE" ]; then
@@ -43,7 +54,7 @@ fi
 # 记录脚本开始执行
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run.sh 开始执行 ===" >> "$LOG_FILE"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 工作目录: $(pwd)" >> "$LOG_FILE"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python版本: $(python3 --version 2>&1)" >> "$LOG_FILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python版本: $("$PY" --version 2>&1)" >> "$LOG_FILE"
 
 # 执行签到脚本（调度 v2：总超时防失控，与 flock 防并发互补；
 # timeout 杀掉后退出码 124，不写 SUCCESS——符合现状语义）
@@ -63,7 +74,7 @@ NOW_TS=$(date +%s)
 RUN_TIMEOUT=$(( END_TS - NOW_TS + 300 ))
 [ "$RUN_TIMEOUT" -lt 600 ] && RUN_TIMEOUT=600
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 签到超时: ${YIBAN_RUN_TIMEOUT_SEC:-$RUN_TIMEOUT}s（窗口至 $END_HHMM）" >> "$LOG_FILE"
-timeout "${YIBAN_RUN_TIMEOUT_SEC:-$RUN_TIMEOUT}" /usr/bin/python3 scripts/signin.py >> "$LOG_FILE" 2>&1
+timeout "${YIBAN_RUN_TIMEOUT_SEC:-$RUN_TIMEOUT}" "$PY" scripts/signin.py >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
 # 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：
