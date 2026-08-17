@@ -69,11 +69,16 @@ class _FlockFileHandler(logging.FileHandler):
             if fcntl is not None and self.stream:
                 fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX)
             super().emit(record)
-            if fcntl is not None and self.stream:
-                self.stream.flush()
-                fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
         except Exception:
             self.handleError(record)
+        finally:
+            # 确保任何路径都释放锁（防 emit 异常后同进程死锁）
+            if fcntl is not None and self.stream:
+                try:
+                    self.stream.flush()
+                    fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
 
 
 # 按天日志文件路径（与 web/app.py log_path_for 一致）
@@ -442,10 +447,12 @@ def random_delay(max_seconds, label):
 def _sanitize_text(text):
     """服务端可控内容进入错误消息/日志/通知前转义换行与回车，防止日志与通知注入。"""
     s = str(text).replace("\r", "\\r").replace("\n", "\\n")
-    # 脱敏：异常消息可能含 Account dataclass repr（含明文密码），替换敏感字段
+    # 脱敏：异常消息可能含 Account dataclass repr（含明文密码/令牌）
+    # 整体替换 Account(...) 对象（正则处理引号转义边界），并兜底替换 password/phone_code 字段
     import re
-    s = re.sub(r"password\s*=\s*'[^']*'", "password='***'", s)
-    s = re.sub(r'password\s*=\s*"[^"]*"', 'password="***"', s)
+    s = re.sub(r"Account\([^)]*\)", "Account(***)", s)
+    s = re.sub(r"password\s*=\s*['\"][^'\"]*['\"]", "password='***'", s)
+    s = re.sub(r"phone_code\s*=\s*['\"][^'\"]*['\"]", "phone_code='***'", s)
     return s
 
 

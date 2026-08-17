@@ -140,7 +140,7 @@ done
 #     .backup 由 SQLite 内部保证快照一致；--restore 时直接替换回 yiban.db 即可）
 if [ -f "${APP_DIR}/${DB_FILE}" ]; then
     if command -v sqlite3 > /dev/null 2>&1; then
-        if sqlite3 "${APP_DIR}/${DB_FILE}" ".backup \"${TMPDIR_BAK}/data/${DB_FILE}\"" 2>/dev/null; then
+        if sqlite3 "${APP_DIR}/${DB_FILE}" ".backup ${TMPDIR_BAK}/data/${DB_FILE}" 2>/dev/null; then
             log "数据库已备份（一致性快照）：${DB_FILE}"
         else
             log "警告：sqlite3 .backup 失败（${DB_FILE} 可能被占用），回退为文件复制"

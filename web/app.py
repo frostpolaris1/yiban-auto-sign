@@ -518,19 +518,14 @@ def write_env_batch(env_path, updates):
     避免多次独立 write_env_key 调用时进程崩溃导致配置不一致。
     updates: dict {key: value}，value 为空字符串则删除该键。"""
     with _env_write_lock(env_path):
-        env = read_env(env_path)
         for key, value in updates.items():
             if "\n" in key or "\r" in key or "\n" in value or "\r" in value:
                 raise ValueError(f"write_env_batch 拒绝包含换行符的键值: {key}")
-            if value:
-                env[key] = value
-            else:
-                env.pop(key, None)
         lines = []
         if os.path.exists(env_path):
             with open(env_path, encoding="utf-8-sig") as f:
                 lines = f.read().splitlines()
-        # 保留注释行和非更新键
+        # 保留注释行和非更新键；过滤被更新键的旧行后追加新值
         out = [ln for ln in lines if not ln.strip().startswith(tuple(f"{k}=" for k in updates))]
         for key, value in updates.items():
             if value:
