@@ -1091,8 +1091,8 @@ def replace_accounts(accounts):
         for i, a in enumerate(accounts):
             try:
                 conn.execute(
-                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at, user_paused) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         i + 1,
                         a.get("name", ""),
@@ -1105,6 +1105,7 @@ def replace_accounts(accounts):
                         a.get("reject_reason", ""),
                         1 if a.get("deleted") else 0,
                         a.get("deleted_at", ""),
+                        1 if a.get("user_paused") else 0,
                     ),
                 )
             except sqlite3.IntegrityError as e:

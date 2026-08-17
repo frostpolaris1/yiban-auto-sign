@@ -32,6 +32,13 @@ class TuiFixes021Test(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="yiban-tui-fixes-021-")
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self._close_db)
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+
+    def _close_db(self):
         if db._conn is not None:
             with contextlib.suppress(Exception):
                 db._conn.close()
@@ -107,6 +114,32 @@ class TuiFixes021Test(unittest.TestCase):
             content = f.read()
         self.assertNotIn("YIBAN_START_DELAY_MAX=", content)
         self.assertIn("KEEP=1", content)
+
+    # ---- H5 落库回归：replace_accounts 保留 user_paused ----
+    def test_replace_accounts_persists_user_paused(self):
+        db_file = os.path.join(self.tmp.name, "replace.db")
+        env_file = os.path.join(self.tmp.name, "replace.env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+
+        db.init_db(db_file, env_file=env_file)
+        acc_id = db.add_account({
+            "name": "暂停账号",
+            "phone": "13800000009",
+            "password": "p1",
+            "phone_model": "",
+            "phone_code": "",
+            "owner": "admin",
+            "status": "active",
+            "reject_reason": "",
+        })
+        db.set_user_paused(acc_id, True)
+
+        db.replace_accounts(db.load_accounts())
+
+        loaded = db.load_accounts()
+        self.assertEqual(len(loaded), 1)
+        self.assertIs(loaded[0]["user_paused"], True, "整表替换后应保留 user_paused=1")
 
     # ---- M21/低项：db_export --env 透传 + 输出文件 0600 ----
     def test_db_export_passes_env_and_creates_0600_files(self):
