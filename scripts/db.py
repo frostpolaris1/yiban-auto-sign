@@ -1948,7 +1948,7 @@ def page_visit_top_paths(days=30, limit=10):
 
 
 def page_visit_active_users(days=30):
-    """活跃用户数：优先 user_id，缺失时回退 ip_hash（按 COALESCE 合并去重）。"""
+    """活跃用户数：仅统计登录用户（user_id 非空）。"""
     try:
         with _conn_lock:
             conn = get_conn()
@@ -1958,11 +1958,12 @@ def page_visit_active_users(days=30):
             cols = _table_columns(conn, "page_visits")
             if "user_id" in cols:
                 row = conn.execute(
-                    "SELECT COUNT(DISTINCT COALESCE(user_id, ip_hash)) AS cnt "
-                    "FROM page_visits WHERE ts >= ?",
+                    "SELECT COUNT(DISTINCT user_id) AS cnt FROM page_visits "
+                    "WHERE ts >= ? AND user_id IS NOT NULL",
                     (cutoff,),
                 ).fetchone()
                 return row["cnt"] if row else 0
+            # 旧库无 user_id 列时的迁移前兼容兜底
             row = conn.execute(
                 "SELECT COUNT(DISTINCT ip_hash) AS cnt FROM page_visits WHERE ts >= ?",
                 (cutoff,),
