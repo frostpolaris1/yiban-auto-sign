@@ -1026,9 +1026,9 @@ function batchAccounts(key, action) {
   if (!ids.length) { toast('请先勾选要操作的账号', true); return; }
   const body = { action, ids };
   if (action === 'reject') {
-    const reason = prompt(`批量拒绝 ${ids.length} 个账号，请输入共同理由（用户会看到，最多 200 字）：`);
+    const reason = prompt(`批量拒绝 ${ids.length} 个账号，请输入共同理由（用户会看到，最多 100 字）：`);
     if (reason === null) return;
-    body.reason = reason.trim().slice(0, 200);
+    body.reason = reason.trim().slice(0, 100);
     if (!body.reason) { toast('拒绝理由不能为空', true); return; }
   }
   if (action === 'approve' && !confirm(`确定通过选中的 ${ids.length} 个账号吗？通过后将参与定时签到。`)) return;
@@ -1270,9 +1270,9 @@ async function reviewAccount(idx, action) {
   const a = state.accounts[idx];
   let body = { action };
   if (action === 'reject') {
-    const reason = prompt(`拒绝「${jsEscape(a.display_name)}」(${maskPhone(a.phone)})，请输入理由（用户会看到，最多 200 字）：`, '');
+    const reason = prompt(`拒绝「${jsEscape(a.display_name)}」(${maskPhone(a.phone)})，请输入理由（用户会看到，最多 100 字）：`, '');
     if (reason === null) return;  // 用户取消
-    body.reason = reason.trim().slice(0, 200);
+    body.reason = reason.trim().slice(0, 100);
   } else if (action === 'approve' && !confirm(`确定通过「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？通过后将参与定时签到。`)) {
     return;
   }
