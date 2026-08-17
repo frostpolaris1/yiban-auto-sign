@@ -8,7 +8,7 @@
 - H1：restore_user 按用户行 deleted_at 关联恢复账号；
 - M4：_audit_cleanup 不再重建哈希链，verify 首行以自身 prev_hash 为锚；
 - M5：time_pref_stats 排除已删账号，_purge_expired_deleted 连带删除 time_prefs；
-- M23：page_visit_active_users 用 COUNT(DISTINCT COALESCE(user_id, ip_hash))。
+- M23：page_visit_active_users 仅统计登录用户（user_id 非空），匿名 ip_hash 不计入。
 """
 import contextlib
 import datetime
@@ -325,8 +325,8 @@ class DbFixes021Test(unittest.TestCase):
 
         self.assertIsNone(db.get_time_pref("13800000031"), "过期账号清除时 time_prefs 应连带删除")
 
-    # ---- M23：活跃用户数合并 user_id 与 ip_hash ----
-    def test_page_visit_active_users_uses_coalesce_user_id_ip(self):
+    # ---- M23：活跃用户数仅统计登录用户 ----
+    def test_page_visit_active_users_counts_only_logged_in_users(self):
         db.init_db(self.db_file, env_file=self.env_file)
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         db.add_page_visit(now, "admin", "/", ip_hash="a", user_id=1)
@@ -335,4 +335,5 @@ class DbFixes021Test(unittest.TestCase):
         db.add_page_visit(now, "admin", "/", ip_hash="b", user_id=None)
         db.add_page_visit(now, "admin", "/", ip_hash="c", user_id=None)
 
-        self.assertEqual(db.page_visit_active_users(days=30), 4)
+        # 匿名访问（user_id 为空）只留 ip_hash，不应计入活跃登录用户
+        self.assertEqual(db.page_visit_active_users(days=30), 1)
