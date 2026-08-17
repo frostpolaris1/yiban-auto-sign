@@ -188,6 +188,40 @@ class SecurityFixes021Test(unittest.TestCase):
         finally:
             os.environ.pop("YIBAN_COOKIE_SECURE", None)
 
+    # ---- I3：.env 敏感键原子写入 ----
+    def test_migrate_admin_password_to_hash_clears_plain_and_sets_hash(self):
+        env_file = os.path.join(self.tmp, "migrate.env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ADMIN_PASSWORD=OldPass123!\n")
+        self.webapp.migrate_admin_password_to_hash(env_file)
+        with open(env_file, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", content)
+        self.assertNotIn("YIBAN_ADMIN_PASSWORD=", content)
+
+    def test_builtin_admin_password_change_updates_env_atomically(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
+        new_pass = "NewPass1234!"
+        try:
+            r = c.post("/api/me/password", json={
+                "old_password": ADMIN_PASS,
+                "new_password": new_pass,
+                "confirm_password": new_pass,
+            }, headers=self._csrf(token))
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            with open(self.env_file, encoding="utf-8") as f:
+                content = f.read()
+            self.assertNotIn("YIBAN_ADMIN_PASSWORD=", content)
+            self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", content)
+            self.assertIn("YIBAN_ADMIN_PW_VERSION=2", content)
+        finally:
+            self.webapp.write_env_batch(self.env_file, {
+                "YIBAN_ADMIN_PASSWORD_HASH": "",
+                "YIBAN_ADMIN_PW_VERSION": "",
+                "YIBAN_ADMIN_PASSWORD": ADMIN_PASS,
+            })
+
     # ---- H7 ----
     def test_rate_helpers_atomic_under_concurrency(self):
         n_threads = 8

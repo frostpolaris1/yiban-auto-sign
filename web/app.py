@@ -580,12 +580,13 @@ def migrate_admin_password_to_hash(env_path):
         plain = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
         if not plain:
             return
-        write_env_key(
+        write_env_batch(
             env_path,
-            "YIBAN_ADMIN_PASSWORD_HASH",
-            generate_password_hash(plain, method=SCRYPT_METHOD),
+            {
+                "YIBAN_ADMIN_PASSWORD_HASH": generate_password_hash(plain, method=SCRYPT_METHOD),
+                "YIBAN_ADMIN_PASSWORD": "",
+            },
         )
-        write_env_key(env_path, "YIBAN_ADMIN_PASSWORD", "")
     except OSError as e:
         logger.warning(
             "管理员口令明文迁移失败（%s 不可写？）：%s；将暂时回退明文比对，"
@@ -1465,16 +1466,13 @@ def create_app(host=None):
         if _is_builtin_admin_session():
             if not verify_admin(username, old_password):
                 return _handle_failed_login()
-            write_env_key(
+            write_env_batch(
                 ENV_FILE,
-                "YIBAN_ADMIN_PASSWORD_HASH",
-                generate_password_hash(new_password, method=SCRYPT_METHOD),
-            )
-            write_env_key(ENV_FILE, "YIBAN_ADMIN_PASSWORD", "")  # 清理旧明文口令，改由哈希校验
-            write_env_int(  # 密码版本递增：已登录的旧会话随之失效
-                ENV_FILE,
-                "YIBAN_ADMIN_PW_VERSION",
-                load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1,
+                {
+                    "YIBAN_ADMIN_PASSWORD_HASH": generate_password_hash(new_password, method=SCRYPT_METHOD),
+                    "YIBAN_ADMIN_PASSWORD": "",  # 清理旧明文口令，改由哈希校验
+                    "YIBAN_ADMIN_PW_VERSION": str(load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1),
+                },
             )
             with _rate_lock:
                 _login_fails.pop(fail_key, None)

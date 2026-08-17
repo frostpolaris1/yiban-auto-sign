@@ -40,6 +40,8 @@ def main(argv=None):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        # 显式收紧权限：新建时由 os.open 0600 保证，已存在文件也统一覆盖为 0600
+        os.chmod(path, 0o600)
     if args.plaintext:
         print("⚠️  已导出明文凭据（--plaintext），请立即转移到安全位置并删除该文件")
     print(f"已导出 {len(accounts)} 个账号 / {len(users)} 个用户 → {args.out}/")

@@ -148,6 +148,14 @@ class TuiFixes021Test(unittest.TestCase):
         env_file = os.path.join(self.tmp.name, ".env")
         with open(env_file, "w", encoding="utf-8") as f:
             f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        # 先放置宽权限的已存在文件，验证导出后权限会被收紧（Windows 仅跑逻辑，跳过权限断言）
+        os.makedirs(out_dir, exist_ok=True)
+        for name in ("accounts.json", "users.json"):
+            path = os.path.join(out_dir, name)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("{}")
+            if os.name != "nt":
+                os.chmod(path, 0o666)
 
         with (
             mock.patch.object(db_export.db, "init_db", return_value=None) as init_db,
