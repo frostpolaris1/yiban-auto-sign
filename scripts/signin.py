@@ -43,6 +43,9 @@ from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
+# 密码学安全随机数生成器（用于定位生成等安全敏感场景）
+_secure_random = secrets.SystemRandom()
+
 # ---------------------------------------------------------------------------
 # 日志配置
 # ---------------------------------------------------------------------------
@@ -306,8 +309,8 @@ def generate_position_in_polygon(polygon_points):
     ]
 
     for _ in range(5000):
-        lng = center_lng + (max_lng - min_lng) * 0.2 * (random.random() - 0.5)
-        lat = center_lat + (max_lat - min_lat) * 0.2 * (random.random() - 0.5)
+        lng = center_lng + (max_lng - min_lng) * 0.2 * (_secure_random.random() - 0.5)
+        lat = center_lat + (max_lat - min_lat) * 0.2 * (_secure_random.random() - 0.5)
         if point_in_polygon(lng, lat, scaled_points) and point_in_polygon(lng, lat, polygon_points):
             return (lng, lat)
 
@@ -316,8 +319,8 @@ def generate_position_in_polygon(polygon_points):
     jitter = min(max_lng - min_lng, max_lat - min_lat) * 0.01  # 范围边长的 1%，约几十米量级
     jitter = max(jitter, 1e-6)  # 极小多边形时防止抖动归零
     for _ in range(50):
-        fallback = (center_lng + random.uniform(-jitter, jitter),
-                    center_lat + random.uniform(-jitter, jitter))
+        fallback = (center_lng + _secure_random.uniform(-jitter, jitter),
+                    center_lat + _secure_random.uniform(-jitter, jitter))
         if point_in_polygon(fallback[0], fallback[1], polygon_points):
             return fallback
     return (center_lng, center_lat)

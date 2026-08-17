@@ -339,7 +339,7 @@ def _audit_hash(prev_hash, ts, username, action, target, detail):
 def _rechain_audit_logs(conn):
     """按 id 升序重建审计哈希链（从空 prev_hash 开始）。"""
     rows = conn.execute(
-        "SELECT id, ts, username, action, target, detail FROM audit_logs ORDER BY id"
+        "SELECT id, ts, username, action, target, detail FROM audit_logs ORDER BY id LIMIT 10000"
     ).fetchall()
     prev = ""
     for r in rows:
@@ -357,7 +357,7 @@ def migrate_v3(conn):
     _ensure_column(conn, "audit_logs", "prev_hash", "prev_hash TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "audit_logs", "hash", "hash TEXT NOT NULL DEFAULT ''")
     rows = conn.execute(
-        "SELECT id, hash FROM audit_logs ORDER BY id"
+        "SELECT id, hash FROM audit_logs ORDER BY id LIMIT 10000"
     ).fetchall()
     if rows and any(r["hash"] == "" for r in rows):
         _rechain_audit_logs(conn)
@@ -1073,11 +1073,11 @@ def find_user(email):
 
 
 def find_user_any(email):
-    """查找任意用户（含已注销），供恢复/管理排查使用。"""
+    """查找任意用户（含已注销），供恢复/管理排查使用。优先返回活跃用户。"""
     with _conn_lock:
         conn = get_conn()
         row = conn.execute(
-            "SELECT * FROM users WHERE email=? ORDER BY id DESC LIMIT 1", (email,)
+            "SELECT * FROM users WHERE email=? ORDER BY deleted ASC, id DESC LIMIT 1", (email,)
         ).fetchone()
         return dict(row) if row else None
 

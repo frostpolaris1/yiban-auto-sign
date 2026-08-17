@@ -164,7 +164,7 @@ if [ -f "${KEY_FILE}" ]; then
 else
     # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（web 会话签名密钥，见 web/app.py ensure_secret_key）
     if [ -f "${APP_DIR}/.env" ]; then
-        grep -E '^\s*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/secret-key.env" \
+        grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/secret-key.env" \
             && log "密钥来源：${APP_DIR}/.env 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \
             || log "警告：.env 中未找到 YIBAN_ACCOUNTS_KEY，密钥未备份！"
     else
