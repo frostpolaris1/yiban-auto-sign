@@ -112,6 +112,12 @@ if [ "${1:-}" = "--restore" ]; then
     exit 0
 fi
 
+# --require-encrypt：强制加密，未配置加密时拒绝执行（防未加密备份泄露全部凭证）
+REQUIRE_ENCRYPT=0
+if [ "${1:-}" = "--require-encrypt" ]; then
+    REQUIRE_ENCRYPT=1
+fi
+
 # ------------------------------------------------------------
 # 本地打包
 # ------------------------------------------------------------
@@ -134,7 +140,7 @@ done
 #     .backup 由 SQLite 内部保证快照一致；--restore 时直接替换回 yiban.db 即可）
 if [ -f "${APP_DIR}/${DB_FILE}" ]; then
     if command -v sqlite3 > /dev/null 2>&1; then
-        if sqlite3 "${APP_DIR}/${DB_FILE}" ".backup '${TMPDIR_BAK}/data/${DB_FILE}'" 2>/dev/null; then
+        if sqlite3 "${APP_DIR}/${DB_FILE}" ".backup \"${TMPDIR_BAK}/data/${DB_FILE}\"" 2>/dev/null; then
             log "数据库已备份（一致性快照）：${DB_FILE}"
         else
             log "警告：sqlite3 .backup 失败（${DB_FILE} 可能被占用），回退为文件复制"
@@ -228,8 +234,12 @@ if [ -n "${REMOTE_BACKUP}" ]; then
     elif command -v age > /dev/null 2>&1 && [ -t 0 ]; then
         age -p -o "${ARCHIVE}.age" "${ARCHIVE}"
         REMOTE_FILE="${ARCHIVE}.age"
+    elif [ "$REQUIRE_ENCRYPT" -eq 1 ]; then
+        log "错误：--require-encrypt 指定但未配置加密（需 BACKUP_GPG_PASSPHRASE 或 GPG_RECIPIENT 或 age），拒绝执行" >&2
+        rm -rf "${TMPDIR_BAK}"
+        exit 1
     else
-        log "警告：未提供加密口令（BACKUP_GPG_PASSPHRASE）且无 gpg/age，跳过异机加密副本；仅保留本地备份" >&2
+        log "警告：未提供加密口令（BACKUP_GPG_PASSPHRASE）且无 gpg/age，跳过异机加密副本；仅保留本地备份（备份包含密钥+数据，请确保本地存储安全）" >&2
     fi
 
     if [ -n "${REMOTE_FILE}" ]; then

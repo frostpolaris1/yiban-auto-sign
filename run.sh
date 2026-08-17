@@ -10,7 +10,13 @@ LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
 # 单实例锁：自动错峰模式下 06:31 进程可能 sleep 等待时间点，
 # 防止 07:10 的 cron 并发启动第二个进程（重复签到/并发竞争）
-exec 9>/tmp/yiban-sign.lock
+# 使用 /var/lock（仅 yiban 用户可写），避免 /tmp 下可被任意用户预测/占用导致 DoS
+LOCK_DIR="/var/lock/yiban"
+if [ ! -d "$LOCK_DIR" ]; then
+    mkdir -p "$LOCK_DIR" 2>/dev/null || { echo "警告: 无法创建 $LOCK_DIR，回退 /tmp" >&2; LOCK_DIR="/tmp/yiban-sign-$(id -u)"; mkdir -p "$LOCK_DIR"; }
+    chmod 700 "$LOCK_DIR" 2>/dev/null
+fi
+exec 9>"$LOCK_DIR/sign.lock"
 flock -n 9 || {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] === 已有签到进程在运行，本次跳过 ===" >> "$LOG_FILE"
     exit 0
