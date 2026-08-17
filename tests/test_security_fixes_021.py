@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -60,8 +61,8 @@ class SecurityFixes021Test(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
-        with contextlib.suppress(Exception):
-            spec.loader.exec_module(cls.webapp)
+        # 导入错误必须直接暴露，不能吞掉
+        spec.loader.exec_module(cls.webapp)
 
     @classmethod
     def tearDownClass(cls):
@@ -111,11 +112,37 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertEqual(me["role"], "user")
         self.assertFalse(me["admin"])
 
+    def test_registered_admin_with_builtin_email_is_not_builtin_session(self):
+        h = self.webapp.generate_password_hash
+        db.create_user(BUILTIN_EMAIL, h(USER_PASS), role="admin")
+        db.add_account({
+            "name": "内置共享号", "phone": "13800138000", "password": "p1",
+            "owner": "admin", "status": "active",
+        })
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": BUILTIN_EMAIL, "password": USER_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["role"], "admin")
+        me = c.get("/api/me").get_json()
+        self.assertEqual(me["role"], "admin")
+        self.assertFalse(me["is_builtin_admin"], "同邮箱注册管理员不应被识别为内置主管理员")
+        my_accounts = c.get("/api/my-accounts").get_json()
+        self.assertEqual(my_accounts["accounts"], [], "注册管理员不应看到内置管理员的共享账号")
+
     def test_old_builtin_session_without_auth_source_is_unauthenticated(self):
         c = self.webapp.create_app().test_client()
         with c.session_transaction() as sess:
             sess["auth"] = True
             sess["username"] = BUILTIN_EMAIL
+            sess["pw_version"] = 1
+        r = c.get("/api/me")
+        self.assertEqual(r.status_code, 401, r.get_data(as_text=True))
+
+    def test_old_user_session_without_auth_source_is_unauthenticated(self):
+        c = self.webapp.create_app().test_client()
+        with c.session_transaction() as sess:
+            sess["auth"] = True
+            sess["username"] = "user@test.local"
             sess["pw_version"] = 1
         r = c.get("/api/me")
         self.assertEqual(r.status_code, 401, r.get_data(as_text=True))
@@ -162,9 +189,37 @@ class SecurityFixes021Test(unittest.TestCase):
             os.environ.pop("YIBAN_COOKIE_SECURE", None)
 
     # ---- H7 ----
-    def test_rate_lock_exists(self):
-        self.assertTrue(hasattr(self.webapp, "_rate_lock"), "需要模块级 _rate_lock = threading.Lock()")
-        self.assertIsInstance(self.webapp._rate_lock, type(threading.Lock()))
+    def test_rate_helpers_atomic_under_concurrency(self):
+        n_threads = 8
+        per_thread = 25
+        window_store = {}
+        fail_store = {}
+        barrier_window = threading.Barrier(n_threads)
+        barrier_fail = threading.Barrier(n_threads)
+
+        def worker_window():
+            barrier_window.wait()
+            for _ in range(per_thread):
+                self.webapp._bump_window_count(window_store, "ip", 1000.0, 60)
+
+        def worker_fail():
+            barrier_fail.wait()
+            for _ in range(per_thread):
+                self.webapp._bump_login_failure(fail_store, "key", 2000.0)
+
+        threads = [
+            threading.Thread(target=worker_window) for _ in range(n_threads)
+        ] + [
+            threading.Thread(target=worker_fail) for _ in range(n_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+            self.assertFalse(t.is_alive(), "并发 helper 线程未在超时内结束")
+
+        self.assertEqual(window_store["ip"][0], n_threads * per_thread, "窗口计数不应丢更新")
+        self.assertEqual(fail_store["key"][0], n_threads * per_thread, "失败计数不应丢更新")
 
     # ---- H14 ----
     def test_account_add_auto_register_blocks_during_delete_cooldown(self):
@@ -200,6 +255,32 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertIsNone(db.find_user("new@test.local"))
         self.assertEqual(db.load_accounts(), [])
+
+    # ---- M10 ----
+    def test_register_returns_already_registered_when_create_user_false(self):
+        c = self.webapp.create_app().test_client()
+        with mock.patch.object(db, "create_user", return_value=False):
+            r = c.post("/api/register", json={
+                "email": "race@test.local",
+                "password": "UserPass123!",
+            })
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertIn("该邮箱已注册", r.get_json()["error"])
+
+    def test_account_add_auto_register_returns_already_registered_when_create_user_false(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
+        with mock.patch.object(db, "create_user", return_value=False):
+            r = c.post("/api/accounts", json={
+                "name": "竞态邮箱",
+                "phone": "13800138000",
+                "password": "account-pass",
+                "email": "race2@test.local",
+                "initial_password": "UserPass123!",
+            }, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertIn("该邮箱已注册", r.get_json()["error"])
+        self.assertEqual(db.load_accounts(), [], "自动注册失败时不应新增账号")
 
     # ---- M7 ----
     def test_my_account_delete_soft_deleted_returns_400_not_purge(self):
