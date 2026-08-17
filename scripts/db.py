@@ -1579,7 +1579,7 @@ def verify_audit_chain():
 def last_time_pref_set_at(phone):
     """指定账号最近一次自选时间片保存时间（切换冷却判定用；无记录返回 None）。
 
-    按被选账号（审计 target=phone）而非操作用户计价（H3/H4 对抗性审查）：
+    按被选账号（审计 target=hash_phone(phone)（匿名稳定键））而非操作用户计价（H3/H4 对抗性审查）：
     - 多管理员共享 admin 账号时冷却全局生效（管理员 A 保存后 B 立即改选也被拦截）；
     - 改手机号/删号重提交新号后，新 phone 无历史审计 → 不被旧账号冷却误伤。
     """
@@ -1598,7 +1598,10 @@ def last_time_pref_set_at(phone):
 
 
 def time_pref_set_count_since(phone, since_ts):
-    """指定账号在 since_ts 之后的保存次数（弹性冷却高频判定用；ts 定宽字符串可比较）。"""
+    """指定账号在 since_ts 之后的保存次数（弹性冷却高频判定用；ts 定宽字符串可比较）。
+
+    审计 target=hash_phone(phone)（匿名稳定键）。
+    """
     try:
         with _conn_lock:
             conn = get_conn()
