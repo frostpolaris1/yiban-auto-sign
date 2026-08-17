@@ -412,6 +412,22 @@ def _log_lines_for(date_str):
     return out
 
 
+def _most_recent_log_date(max_days=30):
+    """查找最近有日志的日期（从今天往前最多 max_days 天）。返回 YYYY-MM-DD 或 None。"""
+    today = datetime.now()
+    for i in range(max_days):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        path = log_path_for(d)
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            # 确认文件内有 yiban 日志行（非空文件）
+            for line in _tail_lines(path, max_bytes=4096):
+                if SIGN_LOG_RE.match(line.strip()):
+                    m = SIGN_LOG_RE.match(line.strip())
+                    if m and m.group(3) == "yiban":
+                        return d
+    return None
+
+
 # ---------------------------------------------------------------------------
 # .env 读写（与 tui/app.py 保持一致）
 # ---------------------------------------------------------------------------
@@ -1138,8 +1154,7 @@ def create_app():
             f"default-src 'self'; script-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; img-src 'self'; "
             "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
-            "base-uri 'self'; form-action 'self'; object-src 'none'; "
-            "require-trusted-types-for 'script'"
+            "base-uri 'self'; form-action 'self'; object-src 'none'"
         )
         if request.path in ("/", "/login", "/user"):
             resp.headers["Cache-Control"] = "no-store"
@@ -2485,8 +2500,12 @@ def create_app():
         （此前只读当前 sign.log，轮转后历史日期恒为空）。
         """
         date = str(request.args.get("date", "")).strip()
-        if not _is_valid_date_str(date):
+        if date and not _is_valid_date_str(date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
+        # 默认：今天有日志则显示今天，否则找最近有日志的一天
+        if not date:
+            today = datetime.now().strftime("%Y-%m-%d")
+            date = today if _log_lines_for(today) else (_most_recent_log_date() or today)
         accounts = load_accounts()
         indices = _my_account_indices()
         phones = [str(accounts[i].get("phone", "")) for i in indices]
@@ -3181,13 +3200,16 @@ def create_app():
     def api_logs():
         """签到日志与今日状态。
 
-        ?date=YYYY-MM-DD（可选，仅管理员）：缺省=今天（原行为不变）；
+        ?date=YYYY-MM-DD（可选，仅管理员）：缺省=最近有日志的一天（优先今天）；
         指定日期时 logs 为该日日志、states 仍为今日状态（账号表格图标语义不随历史日期变化）。
         """
         date = str(request.args.get("date", "")).strip()
         if date and not _is_valid_date_str(date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-        date = date or datetime.now().strftime("%Y-%m-%d")
+        # 默认：今天有日志则显示今天，否则找最近有日志的一天
+        if not date:
+            today = datetime.now().strftime("%Y-%m-%d")
+            date = today if _log_lines_for(today) else (_most_recent_log_date() or today)
         logs = _log_lines_for(date)
         # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
         # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
@@ -3199,6 +3221,7 @@ def create_app():
                 "logs": [_mask_log_phones(ln) for ln in logs[-80:]],
                 "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
                 "date": date,
+                "is_today": date == datetime.now().strftime("%Y-%m-%d"),
             }
         )
 

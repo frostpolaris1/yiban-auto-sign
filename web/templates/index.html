@@ -1455,8 +1455,9 @@ async function loadLogs() {
     // （sign-state 文件状态码）；/api/logs 只提供日志行（2026-08-16 审查轮修复）
     $('log-file').textContent = data.log_file;
     // 日期视图提示：历史日期静态展示 + 「回到今天」按钮
-    if (_logViewDate) {
-      $('log-date-tip').textContent = `正在查看 ${_logViewDate} 的日志（历史日期不自动刷新）`;
+    // 当今天无日志时，后端返回最近有日志的一天（is_today=false）
+    if (_logViewDate || !data.is_today) {
+      $('log-date-tip').textContent = `正在查看 ${data.date} 的日志（历史日期不自动刷新）`;
       $('log-back-today').classList.remove('hidden');
     } else {
       $('log-date-tip').textContent = '';
