@@ -746,11 +746,11 @@ def _encrypt_field(value, phone):
 def _purge_expired_deleted(conn):
     """软删除超过保留期（>= 7 天）的行物理清除（web 原 load 惰性清理语义，库内必有 deleted_at）。
 
-    deleted_at 为 ISO 秒级字符串（web 写入格式），同格式字符串比较等价时间序。
+    deleted_at 为 %Y-%m-%d %H:%M:%S 格式（统一写入格式），字符串比较等价时间序。
     清理失败仅告警不阻断（规范审查 D6：原静默吞错无痕迹）。
     """
     try:
-        cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).isoformat(timespec="seconds")
+        cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
         # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发写事务，
         # 避免 1000 账号每 10s 轮询重复执行 DELETE+COMMIT
         row = conn.execute(
@@ -811,8 +811,8 @@ def add_account(fields):
     保证 MAX(sort_order)+1 的读与 INSERT 原子（防并发重复排序号）。
     """
     conn = get_conn()
-    try:
-        with _conn_lock:
+    with _conn_lock:
+        try:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
@@ -832,12 +832,12 @@ def add_account(fields):
             new_id = cur.lastrowid
             conn.commit()
             return new_id
-    except sqlite3.IntegrityError as e:
-        conn.rollback()
-        _convert_integrity_error(e)
-    except Exception:
-        conn.rollback()
-        raise
+        except sqlite3.IntegrityError as e:
+            conn.rollback()
+            _convert_integrity_error(e)
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def update_account(account_id, fields, expect_snapshot=None):
@@ -1011,8 +1011,8 @@ def batch_account_ops(ops):
       ("purge", account_id)
     """
     conn = get_conn()
-    try:
-        with _conn_lock:
+    with _conn_lock:
+        try:
             conn.execute("BEGIN IMMEDIATE")
             for op in ops:
                 kind = op[0]
@@ -1042,10 +1042,10 @@ def batch_account_ops(ops):
                 else:
                     raise ValueError(f"未知批量账号操作: {kind}")
             conn.commit()
-    except Exception:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        raise
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -1326,8 +1326,8 @@ def batch_user_ops(ops):
       ("delete_user_with_accounts", email)
     """
     conn = get_conn()
-    try:
-        with _conn_lock:
+    with _conn_lock:
+        try:
             conn.execute("BEGIN IMMEDIATE")
             for op in ops:
                 kind = op[0]
@@ -1356,10 +1356,10 @@ def batch_user_ops(ops):
                 else:
                     raise ValueError(f"未知批量用户操作: {kind}")
             conn.commit()
-    except Exception:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        raise
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -1575,8 +1575,8 @@ def add_sign_events_batch(rows):
 
     rows 为 dict 列表，支持 add_sign_event 的全部字段。
     """
-    try:
-        with _conn_lock:
+    with _conn_lock:
+        try:
             conn = get_conn()
             conn.execute("BEGIN IMMEDIATE")
             for r in rows:
@@ -1596,10 +1596,10 @@ def add_sign_events_batch(rows):
                     ),
                 )
             conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("批量写入 sign_events 失败: %s", e)
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            logger.warning("批量写入 sign_events 失败: %s", e)
 
 
 def add_page_visits_batch(rows):
@@ -1607,8 +1607,8 @@ def add_page_visits_batch(rows):
 
     rows 为 dict 列表，支持 add_page_visit 的全部字段。
     """
-    try:
-        with _conn_lock:
+    with _conn_lock:
+        try:
             conn = get_conn()
             conn.execute("BEGIN IMMEDIATE")
             for r in rows:
@@ -1626,10 +1626,10 @@ def add_page_visits_batch(rows):
                     ),
                 )
             conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("批量写入 page_visits 失败: %s", e)
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            logger.warning("批量写入 page_visits 失败: %s", e)
 
 
 def sign_event_stats(days=30):
