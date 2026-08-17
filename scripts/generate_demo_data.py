@@ -20,6 +20,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 
+DEFAULT_DEMO_DB = "demo-log/demo.db"
+
+
+def _is_allowed_demo_db(db_path, yes=False):
+    """非默认 demo 库必须显式 --yes 才允许继续（防误清真实库）。"""
+    return db_path == DEFAULT_DEMO_DB or yes
+
 
 def _phone(i):
     return f"13{100000000 + i:09d}"
@@ -38,7 +45,8 @@ def _ts(days_ago=0, hour=8, minute=0):
 
 def main():
     parser = argparse.ArgumentParser(description="生成本地 demo 数据库")
-    parser.add_argument("--db", default="demo-log/demo.db", help="demo 数据库路径")
+    parser.add_argument("--db", default=DEFAULT_DEMO_DB, help="demo 数据库路径")
+    parser.add_argument("--yes", action="store_true", help="确认清空非默认 demo 数据库")
     parser.add_argument("--env", default=None, help="demo .env 路径（默认使用项目根 .env）")
     parser.add_argument("--users", type=int, default=500, help="普通用户数量")
     parser.add_argument("--admin-accounts", type=int, default=10, help="admin 共享账号数量")
@@ -47,6 +55,11 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     args = parser.parse_args()
 
+    if not _is_allowed_demo_db(args.db, args.yes):
+        print(f"目标数据库路径: {args.db}")
+        print("非默认 demo 数据库，请加 --yes 确认后继续")
+        sys.exit(2)
+
     os.makedirs(os.path.dirname(os.path.abspath(args.db)), exist_ok=True)
     random.seed(args.seed)
 
@@ -54,6 +67,7 @@ def main():
     conn = db.get_conn()
 
     # 清空旧 demo 数据（只清 demo 相关表，避免误伤真实库）
+    print(f"将清空目标数据库: {args.db}")
     for table in ("server_metrics", "page_visits", "sign_events", "time_prefs",
                   "audit_logs", "accounts", "users"):
         conn.execute(f"DELETE FROM {table}")
