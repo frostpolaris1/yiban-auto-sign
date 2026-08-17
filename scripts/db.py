@@ -38,6 +38,14 @@ SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 SCHEMA_VERSION = 7
 
 
+def _normalize_limit(limit, default):
+    """把 limit 钳制到 1..1000；非法值回退到默认值。"""
+    try:
+        return max(1, min(int(limit), 1000))
+    except (TypeError, ValueError):
+        return default
+
+
 class DuplicatePhoneError(Exception):
     """手机号已存在（accounts.phone 唯一约束冲突）。"""
 
@@ -71,11 +79,13 @@ _TRACK_SALT_CACHE = None
 _TRACK_SALT_LOCK = threading.Lock()
 
 
-def init_db(db_file=None, migrate_from=None, env_file=None):
+def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True):
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
     env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
     None 时走 account_crypto 默认（.env 于当前工作目录）。
+    cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
+    校验类工具应传 False，避免只读校验改变数据。
     """
     global _conn, _db_file, _env_file
     _env_file = env_file
@@ -92,21 +102,22 @@ def init_db(db_file=None, migrate_from=None, env_file=None):
         _conn.execute("PRAGMA foreign_keys=OFF")
         _create_tables(_conn)
         # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
-        # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败仅告警。
+        # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败继续后续迁移但不提升版本。
         try:
             _run_migrations(_conn)
+            # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
+            if migrate_from:
+                _maybe_migrate(_conn, migrate_from)
         except Exception:
             with contextlib.suppress(Exception):
                 _conn.close()
             _conn = None
             raise
-        # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
-        if migrate_from:
-            _maybe_migrate(_conn, migrate_from)
-        _audit_cleanup(_conn)
-        _event_cleanup(_conn)
-        purge_deleted_users()
-        purge_old_delete_requests()
+        if cleanup:
+            _audit_cleanup(_conn)
+            _event_cleanup(_conn)
+            purge_deleted_users()
+            purge_old_delete_requests()
         return _conn
 
 
@@ -307,8 +318,12 @@ def _write_audit_key_to_env_file(env_file, key):
         return key
 
 
-def _audit_key():
-    """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env，缺失时生成。"""
+def _audit_key(create=True):
+    """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env。
+
+    create=True（默认）时缺失会生成并写入 .env；create=False 供只读校验，
+    密钥缺失返回 None，由调用方按 fail-closed 处理。
+    """
     global _AUDIT_KEY_CACHE
     env_file = _env_file or ".env"
     env_key = os.environ.get("YIBAN_AUDIT_KEY", "").strip()
@@ -324,6 +339,8 @@ def _audit_key():
         if file_key:
             _AUDIT_KEY_CACHE = _decode_audit_key(file_key)
             return _AUDIT_KEY_CACHE
+        if not create:
+            return None
         logger.info("未找到 YIBAN_AUDIT_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
         _AUDIT_KEY_CACHE = _write_audit_key_to_env_file(env_file, secrets.token_bytes(32))
         return _AUDIT_KEY_CACHE
@@ -486,6 +503,43 @@ def migrate_v5(conn):
         conn.execute("ALTER TABLE users ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
         conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
         conn.commit()
+    # 旧库 users.email TEXT UNIQUE 会生成 sqlite_autoindex_users_N 全局唯一索引，
+    # 与“同邮箱可有一个活跃 + 多个已注销”的部分唯一索引冲突，必须先移除。
+    # SQLite 不允许直接 DROP 与 UNIQUE 列约束关联的自动索引，因此重建 users 表
+    # 去掉 email UNIQUE 约束（保留数据）；idx_users_email_live 本身保留不动。
+    old_email_indexes = []
+    for idx in conn.execute("PRAGMA index_list('users')").fetchall():
+        name = idx["name"]
+        if name == "idx_users_email_live" or not idx["unique"]:
+            continue
+        info = conn.execute(f"PRAGMA index_info('{name}')").fetchall()
+        if [r["name"] for r in info] == ["email"]:
+            old_email_indexes.append(name)
+    if old_email_indexes:
+        col_list = "id, email, password_hash, role, created_at, pw_version"
+        cols = _table_columns(conn, "users")
+        if "deleted" in cols:
+            col_list += ", deleted"
+        if "deleted_at" in cols:
+            col_list += ", deleted_at"
+        conn.execute(
+            "CREATE TABLE users_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "email TEXT NOT NULL, "
+            "password_hash TEXT NOT NULL, "
+            "role TEXT NOT NULL DEFAULT 'user', "
+            "created_at TEXT NOT NULL DEFAULT '', "
+            "pw_version INTEGER NOT NULL DEFAULT 1, "
+            "deleted INTEGER NOT NULL DEFAULT 0, "
+            "deleted_at TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        conn.execute(
+            f"INSERT INTO users_new ({col_list}) SELECT {col_list} FROM users"
+        )
+        conn.execute("DROP TABLE users")
+        conn.execute("ALTER TABLE users_new RENAME TO users")
+        conn.commit()
     _ensure_index(
         conn,
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
@@ -541,6 +595,8 @@ def migrate_v6(conn):
         )
         conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("回填 sign_events.account_id 失败: %s", e)
 
 
@@ -574,113 +630,133 @@ def _run_migrations(conn):
     """按 PRAGMA user_version 顺序执行未应用的迁移。
 
     核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动）；
-    可选迁移失败只告警并停止后续迁移，不阻断启动；
-    可选迁移抛 MigrationDeferred 时视为“延后”，下次启动重试。
+    可选迁移失败/延后时置 blocked 并 continue，后续迁移照常执行，
+    但 blocked 期间任何迁移都不提升 user_version，下次启动重试。
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
+    blocked = False
     for target_version, name, fn, is_core in _MIGRATIONS:
         if version >= target_version:
             continue
         try:
             fn(conn)
-            conn.execute(f"PRAGMA user_version = {target_version}")
-            conn.commit()
-            version = target_version
-            logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
+            if blocked:
+                # 不提升 user_version：后续启动会重跑本迁移（实现必须幂等）
+                logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
+            else:
+                conn.execute(f"PRAGMA user_version = {target_version}")
+                conn.commit()
+                version = target_version
+                logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
         except MigrationDeferred as e:
             logger.warning("可选 schema 迁移延后: %s: %s", name, e)
-            break
+            blocked = True
         except Exception as e:
             if is_core:
                 logger.error("核心 schema 迁移失败: %s: %s", name, e)
                 raise
-            logger.warning("可选 schema 迁移失败: %s: %s，已跳过后续迁移", name, e)
-            break
+            logger.warning("可选 schema 迁移失败: %s: %s，继续后续迁移", name, e)
+            blocked = True
 
 
 # ---------------------------------------------------------------------------
 # 自动迁移（JSON → SQLite，幂等）
 # ---------------------------------------------------------------------------
 def _maybe_migrate(conn, json_base):
-    """json_base 形如 /path/accounts.json（users.json 同目录推断）。"""
+    """json_base 形如 /path/accounts.json（users.json 同目录推断）。
+
+    读取 accounts/users 两个 JSON 后在一个事务内导入，两个都成功后一起改名 .bak；
+    某个 JSON 读取失败/不存在时跳过该文件，不阻断另一个成功导入。
+    """
     accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
         os.path.dirname(json_base), "accounts.json"
     )
     users_json = os.path.join(os.path.dirname(accounts_json), "users.json")
-    has_db_rows = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] > 0
+    has_db_rows = (
+        conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] > 0
+        or conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
+    )
     if has_db_rows:
         return  # 已迁移过
-    imported = 0
+    accounts = []
+    users = []
     if os.path.exists(accounts_json):
         try:
             with open(accounts_json, encoding="utf-8") as f:
                 accounts = json.load(f)
         except (json.JSONDecodeError, OSError):
             accounts = []
-        if isinstance(accounts, list) and accounts:
-            # 加密字段统一为库内 JSON 串格式：
-            #   明文 str → 加密（复用 account_crypto）；
-            #   密文 dict（0.16 JSON 嵌套对象）→ json.dumps 序列化；
-            #   密文 JSON 串 → 原样。
-            key = account_crypto.load_key(_env_file)
-            with _conn_lock, conn:
-                for i, a in enumerate(accounts):
-                    password = a.get("password", "") or ""
-                    phone_code = a.get("phone_code", "") or ""
-                    if key is not None:
-                        if password and not _is_encrypted_value(password):
-                            password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
-                        elif isinstance(password, dict):
-                            password = json.dumps(password)  # 已是密文对象 → 序列化入库
-                        if phone_code and not _is_encrypted_value(phone_code):
-                            phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
-                        elif isinstance(phone_code, dict):
-                            phone_code = json.dumps(phone_code)
-                    conn.execute(
-                        "INSERT OR IGNORE INTO accounts "
-                        "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            i + 1,
-                            a.get("name", ""),
-                            a.get("phone", ""),
-                            password,
-                            a.get("phone_model", ""),
-                            phone_code,
-                            a.get("owner", "admin"),
-                            a.get("status", "active"),
-                            a.get("reject_reason", ""),
-                            1 if a.get("deleted") else 0,
-                            a.get("deleted_at", ""),
-                        ),
-                    )
-            imported += len(accounts)
-            _rename_backup(accounts_json)
+        if not isinstance(accounts, list):
+            accounts = []
     if os.path.exists(users_json):
         try:
             with open(users_json, encoding="utf-8") as f:
                 users = json.load(f)
         except (json.JSONDecodeError, OSError):
             users = []
-        if isinstance(users, list) and users:
-            with _conn_lock, conn:
-                for u in users:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
-                        (
-                            u.get("email", ""),
-                            u.get("password_hash", ""),
-                            u.get("role", "user"),
-                            u.get("created_at", ""),
-                            u.get("pw_version", 1),
-                        ),
-                    )
-            imported += len(users)
-            _rename_backup(users_json)
-    if imported:
-        logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
-    else:
+        if not isinstance(users, list):
+            users = []
+    if not accounts and not users:
         logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
+        return
+    imported = 0
+    key = account_crypto.load_key(_env_file) if accounts else None
+    with _conn_lock, conn:
+        if accounts:
+            # 加密字段统一为库内 JSON 串格式：
+            #   明文 str → 加密（复用 account_crypto）；
+            #   密文 dict（0.16 JSON 嵌套对象）→ json.dumps 序列化；
+            #   密文 JSON 串 → 原样。
+            for i, a in enumerate(accounts):
+                password = a.get("password", "") or ""
+                phone_code = a.get("phone_code", "") or ""
+                if key is not None:
+                    if password and not _is_encrypted_value(password):
+                        password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
+                    elif isinstance(password, dict):
+                        password = json.dumps(password)  # 已是密文对象 → 序列化入库
+                    if phone_code and not _is_encrypted_value(phone_code):
+                        phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
+                    elif isinstance(phone_code, dict):
+                        phone_code = json.dumps(phone_code)
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO accounts "
+                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        i + 1,
+                        a.get("name", ""),
+                        a.get("phone", ""),
+                        password,
+                        a.get("phone_model", ""),
+                        phone_code,
+                        a.get("owner", "admin"),
+                        a.get("status", "active"),
+                        a.get("reject_reason", ""),
+                        1 if a.get("deleted") else 0,
+                        a.get("deleted_at", ""),
+                    ),
+                )
+                imported += cur.rowcount
+        if users:
+            for u in users:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
+                    (
+                        u.get("email", ""),
+                        u.get("password_hash", ""),
+                        u.get("role", "user"),
+                        u.get("created_at", ""),
+                        u.get("pw_version", 1),
+                    ),
+                )
+                imported += cur.rowcount
+    # 事务提交成功后统一改名，避免单个 JSON 导入失败时已把另一个改名
+    if accounts:
+        _rename_backup(accounts_json)
+    if users:
+        _rename_backup(users_json)
+    logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
 
 
 def _rename_backup(path):
@@ -760,16 +836,26 @@ def _purge_expired_deleted(conn):
         # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发写事务，
         # 避免 1000 账号每 10s 轮询重复执行 DELETE+COMMIT
         row = conn.execute(
-            "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ? LIMIT 1",
+            "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ? LIMIT 1",
             (cutoff,),
         ).fetchone()
         if row:
+            phones = [
+                r["phone"]
+                for r in conn.execute(
+                    "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+                    (cutoff,),
+                ).fetchall()
+            ]
             conn.execute(
                 "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
                 (cutoff,),
             )
+            _delete_time_prefs_by_phones(conn, phones)
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("清理超期软删除账号失败: %s", e)
 
 
@@ -934,20 +1020,29 @@ def set_user_paused(account_id, paused):
 def move_account(account_id, direction):
     """direction: -1 上移 / 1 下移。事务内与相邻账号交换 sort_order。"""
     conn = get_conn()
-    with _conn_lock, conn:
-        rows = conn.execute(
-            "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
-        ).fetchall()
-        pos = next((i for i, r in enumerate(rows) if r["id"] == account_id), None)
-        if pos is None:
-            return False
-        target = pos + direction
-        if target < 0 or target >= len(rows):
-            return False
-        a, b = rows[pos]["sort_order"], rows[target]["sort_order"]
-        conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (b, rows[pos]["id"]))
-        conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (a, rows[target]["id"]))
-        return True
+    with _conn_lock:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
+            ).fetchall()
+            pos = next((i for i, r in enumerate(rows) if r["id"] == account_id), None)
+            if pos is None:
+                conn.rollback()
+                return False
+            target = pos + direction
+            if target < 0 or target >= len(rows):
+                conn.rollback()
+                return False
+            a, b = rows[pos]["sort_order"], rows[target]["sort_order"]
+            conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (b, rows[pos]["id"]))
+            conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (a, rows[target]["id"]))
+            conn.commit()
+            return True
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
 
 def delete_accounts_by_owner(owner):
@@ -1173,7 +1268,7 @@ def restore_user(email):
         if active is not None:
             return False
         deleted = conn.execute(
-            "SELECT id FROM users WHERE email=? AND deleted=1 "
+            "SELECT id, deleted_at FROM users WHERE email=? AND deleted=1 "
             "ORDER BY id DESC LIMIT 1",
             (email,),
         ).fetchone()
@@ -1183,9 +1278,12 @@ def restore_user(email):
             "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
             (deleted["id"],),
         )
+        # 只恢复同一注销事件的账号（deleted_at 与用户行一致），
+        # 避免把用户注销后单独软删的其他账号也一起恢复造成 owner 冲突。
         conn.execute(
-            "UPDATE accounts SET deleted=0, deleted_at='' WHERE owner=? AND deleted=1",
-            (email,),
+            "UPDATE accounts SET deleted=0, deleted_at='' "
+            "WHERE owner=? AND deleted=1 AND deleted_at=?",
+            (email, deleted["deleted_at"]),
         )
         return True
 
@@ -1209,6 +1307,8 @@ def purge_deleted_users(days=7):
             )
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("清理已注销用户失败: %s", e)
 
 
@@ -1217,7 +1317,8 @@ def purge_deleted_users_hard(emails):
 
     安全边界：仅处理 deleted=1 的用户行——传入活跃用户邮箱时该用户被直接跳过
     （管理员误操作/并发注册新同邮箱用户均不可能误删活跃数据）。
-    单事务连带清理：该用户全部账号行（含软删）+ 账号对应 time_prefs + 用户行。
+    账号行只删除 deleted=1 的软删账号；活跃账号跳过，避免误删用户注销后
+    重新添加的账号。单事务连带清理：这些已删账号对应 time_prefs + 用户行。
     返回实际清除的邮箱列表（供调用方审计与回显）。
     """
     if not emails:
@@ -1234,10 +1335,10 @@ def purge_deleted_users_hard(emails):
             phones = [
                 r["phone"]
                 for r in conn.execute(
-                    "SELECT phone FROM accounts WHERE owner=?", (email,)
+                    "SELECT phone FROM accounts WHERE owner=? AND deleted=1", (email,)
                 ).fetchall()
             ]
-            conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+            conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
             _delete_time_prefs_by_phones(conn, phones)
             conn.execute("DELETE FROM users WHERE id=?", (row["id"],))
             purged.append(email)
@@ -1262,6 +1363,8 @@ def purge_old_delete_requests(days=30):
             )
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("清理注销请求记录失败: %s", e)
 
 
@@ -1282,33 +1385,34 @@ def record_user_delete_request(username, ip_hash="", kind="delete"):
             )
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("记录注销请求失败: %s", e)
 
 
 def count_user_delete_requests(username=None, ip_hash=None, since_ts=None, kind=None):
-    """统计窗口内注销/恢复请求次数（用户或 IP 维度；kind=None 统计全部，v7）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
-            params = []
-            if username:
-                sql += " AND username=?"
-                params.append(username)
-            if ip_hash:
-                sql += " AND ip_hash=?"
-                params.append(ip_hash)
-            if since_ts:
-                sql += " AND created_at >= ?"
-                params.append(since_ts)
-            if kind:
-                sql += " AND kind=?"
-                params.append(kind)
-            row = conn.execute(sql, params).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        logger.warning("统计注销请求失败: %s", e)
-        return 0
+    """统计窗口内注销/恢复请求次数（用户或 IP 维度；kind=None 统计全部，v7）。
+
+    计数类查询 fail-closed：异常直接抛出 RuntimeError 由上层统一处理。
+    """
+    with _conn_lock:
+        conn = get_conn()
+        sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
+        params = []
+        if username:
+            sql += " AND username=?"
+            params.append(username)
+        if ip_hash:
+            sql += " AND ip_hash=?"
+            params.append(ip_hash)
+        if since_ts:
+            sql += " AND created_at >= ?"
+            params.append(since_ts)
+        if kind:
+            sql += " AND kind=?"
+            params.append(kind)
+        row = conn.execute(sql, params).fetchone()
+        return row[0] if row else 0
 
 
 def is_last_registered_admin(email):
@@ -1395,18 +1499,26 @@ def audit(username, action, target="", detail=""):
             )
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("审计写入失败: %s", e)
 
 
 def verify_audit_chain():
     """校验审计哈希链。
 
-    把当前表中 id 最小的一行视为链根（不校验其 prev_hash），
+    把当前表中 id 最小的一行视为链根：首行以自身 prev_hash 为锚校验 hash，
+    不判首行 prev 断链（清理旧行后 prev_hash 指向已删除的前序行是合法状态）。
     从第二行开始要求 prev_hash 等于上一行 hash，且每行 hash 与内容匹配。
 
-    返回 (ok, broken_count, first_broken_id)；broken_count=-1 表示校验过程异常。
+    返回 (ok, broken_count, first_broken_id)；broken_count=-1 表示校验过程异常
+    或审计密钥缺失（fail-closed）。
     """
     try:
+        key = _audit_key(create=False)
+        if key is None:
+            logger.warning("审计链校验失败: 未配置 YIBAN_AUDIT_KEY")
+            return False, -1, None
         with _conn_lock:
             conn = get_conn()
             rows = conn.execute(
@@ -1415,16 +1527,18 @@ def verify_audit_chain():
             ).fetchall()
             if not rows:
                 return True, 0, None
-            prev = ""
+            prev = None
             broken = 0
             first_broken = None
             for r in rows:
-                if r["prev_hash"] != prev:
+                # 首行锚点取自身 prev_hash；后续行要求 prev_hash 与上一行 hash 一致
+                anchor = r["prev_hash"] if prev is None else prev
+                if prev is not None and r["prev_hash"] != prev:
                     broken += 1
                     if first_broken is None:
                         first_broken = r["id"]
                 expected_hash = _audit_hash(
-                    prev, r["ts"], r["username"], r["action"], r["target"], r["detail"]
+                    anchor, r["ts"], r["username"], r["action"], r["target"], r["detail"]
                 )
                 if r["hash"] != expected_hash:
                     broken += 1
@@ -1444,34 +1558,26 @@ def last_time_pref_set_at(phone):
     - 多管理员共享 admin 账号时冷却全局生效（管理员 A 保存后 B 立即改选也被拦截）；
     - 改手机号/删号重提交新号后，新 phone 无历史审计 → 不被旧账号冷却误伤。
     """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
-                "ORDER BY id DESC LIMIT 1",
-                (phone or "",),
-            ).fetchone()
-            return row["ts"] if row else None
-    except Exception as e:
-        logger.warning("查询自选保存时间失败: %s", e)
-        return None
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
+            "ORDER BY id DESC LIMIT 1",
+            (phone or "",),
+        ).fetchone()
+        return row["ts"] if row else None
 
 
 def time_pref_set_count_since(phone, since_ts):
     """指定账号在 since_ts 之后的保存次数（弹性冷却高频判定用；ts 定宽字符串可比较）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
-                "AND target=? AND ts >= ?",
-                (phone or "", since_ts),
-            ).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        logger.warning("统计自选保存次数失败: %s", e)
-        return 0
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
+            "AND target=? AND ts >= ?",
+            (phone or "", since_ts),
+        ).fetchone()
+        return row[0] if row else 0
 
 
 def last_pause_at(username):
@@ -1480,49 +1586,41 @@ def last_pause_at(username):
     审计 target 为脱敏手机号，故按 username 关联；多管理员共享账号各自独立计价
     （暂停/恢复冷却仅防噪音，绕过危害极小，可接受）。
     """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
-                "ORDER BY id DESC LIMIT 1",
-                (username or "",),
-            ).fetchone()
-            return row["ts"] if row else None
-    except Exception as e:
-        logger.warning("查询暂停时间失败: %s", e)
-        return None
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
+            "ORDER BY id DESC LIMIT 1",
+            (username or "",),
+        ).fetchone()
+        return row["ts"] if row else None
 
 
 def pause_count_since(username, since_ts):
     """指定用户在 since_ts 之后的暂停次数（弹性冷却高频判定用）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
-                "AND action='my_account_pause' AND ts >= ?",
-                (username or "", since_ts),
-            ).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        logger.warning("统计暂停次数失败: %s", e)
-        return 0
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE username=? "
+            "AND action='my_account_pause' AND ts >= ?",
+            (username or "", since_ts),
+        ).fetchone()
+        return row[0] if row else 0
 
 
 def _audit_cleanup(conn):
     """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。
 
-    Phase 3：删除旧行后重建哈希链，使剩余最旧一行成为新根。
+    Phase 3 修订：删除旧行后不重建哈希链——剩余首行仍保留指向已删前序行的
+    prev_hash 作为锚，verify_audit_chain 以该锚校验首行 hash。
     """
     try:
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
         conn.commit()
-        remaining = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        if remaining:
-            _rechain_audit_logs(conn)
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("清理旧审计日志失败: %s", e)
 
 
@@ -1543,6 +1641,8 @@ def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
             )
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("写入 sign_events 失败: %s", e)
 
 
@@ -1558,6 +1658,8 @@ def add_page_visit(ts, role, path, ip_hash="", ua="", dur_ms=0, user_id=None):
             )
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("写入 page_visits 失败: %s", e)
 
 
@@ -1575,6 +1677,8 @@ def add_server_metric(ts, cpu=None, mem_pct=None, disk_pct=None,
             )
             conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("写入 server_metrics 失败: %s", e)
 
 
@@ -1733,7 +1837,7 @@ def sign_events_since(since_ts, phone=None, limit=100):
                 sql += " AND phone=?"
                 params.append(phone)
             sql += " ORDER BY ts LIMIT ?"
-            params.append(limit)
+            params.append(_normalize_limit(limit, 100))
             rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
     except Exception as e:
@@ -1809,7 +1913,7 @@ def page_visit_top_paths(days=30, limit=10):
             rows = conn.execute(
                 "SELECT path, COUNT(*) AS cnt FROM page_visits "
                 "WHERE ts >= ? GROUP BY path ORDER BY cnt DESC LIMIT ?",
-                (cutoff, limit),
+                (cutoff, _normalize_limit(limit, 10)),
             ).fetchall()
             return [dict(r) for r in rows]
     except Exception as e:
@@ -1818,7 +1922,7 @@ def page_visit_top_paths(days=30, limit=10):
 
 
 def page_visit_active_users(days=30):
-    """活跃用户数：优先 user_id，缺失时回退 ip_hash。"""
+    """活跃用户数：优先 user_id，缺失时回退 ip_hash（按 COALESCE 合并去重）。"""
     try:
         with _conn_lock:
             conn = get_conn()
@@ -1828,8 +1932,8 @@ def page_visit_active_users(days=30):
             cols = _table_columns(conn, "page_visits")
             if "user_id" in cols:
                 row = conn.execute(
-                    "SELECT COUNT(DISTINCT user_id) AS cnt FROM page_visits "
-                    "WHERE ts >= ? AND user_id IS NOT NULL",
+                    "SELECT COUNT(DISTINCT COALESCE(user_id, ip_hash)) AS cnt "
+                    "FROM page_visits WHERE ts >= ?",
                     (cutoff,),
                 ).fetchone()
                 return row["cnt"] if row else 0
@@ -1852,7 +1956,7 @@ def server_metric_latest(limit=60):
                 "SELECT ts, cpu, mem_pct, disk_pct, net_in, net_out, "
                 "load1, load5, load15, proc_count "
                 "FROM server_metrics ORDER BY ts DESC LIMIT ?",
-                (limit,),
+                (_normalize_limit(limit, 60),),
             ).fetchall()
             return [dict(r) for r in rows]
     except Exception as e:
@@ -1878,6 +1982,8 @@ def _event_cleanup(conn):
         conn.execute("DELETE FROM server_metrics WHERE ts < ?", (server_cutoff,))
         conn.commit()
     except Exception as e:
+        with contextlib.suppress(Exception):
+            conn.rollback()
         logger.warning("清理可视化表失败: %s", e)
 
 
@@ -1929,12 +2035,18 @@ def clear_time_pref(phone):
 
 
 def time_pref_stats():
-    """每片已选人数（拥挤度）：[{slot_min, count}]，按 slot_min 升序。"""
+    """每片已选人数（拥挤度）：[{slot_min, count}]，按 slot_min 升序。
+
+    只统计未删除账号的自选，避免已注销/已软删账号的残留 pref 虚高拥挤度。
+    """
     try:
         with _conn_lock:
             conn = get_conn()
             rows = conn.execute(
-                "SELECT slot_min, COUNT(*) AS count FROM time_prefs GROUP BY slot_min ORDER BY slot_min"
+                "SELECT t.slot_min, COUNT(*) AS count "
+                "FROM time_prefs t "
+                "JOIN accounts a ON a.phone = t.phone AND a.deleted = 0 "
+                "GROUP BY t.slot_min ORDER BY t.slot_min"
             ).fetchall()
             return [{"slot_min": r["slot_min"], "count": r["count"]} for r in rows]
     except Exception as e:

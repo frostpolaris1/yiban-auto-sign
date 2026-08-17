@@ -25,7 +25,7 @@ def main():
     if args.db:
         os.environ["YIBAN_DB_FILE"] = args.db
 
-    db.init_db()
+    db.init_db(cleanup=False)
     ok, broken, first_broken = db.verify_audit_chain()
     if ok:
         print("审计哈希链校验通过")
