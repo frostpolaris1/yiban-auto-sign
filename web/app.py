@@ -45,6 +45,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 import account_crypto  # noqa: E402
 import db  # noqa: E402
+import env_lock  # noqa: E402
 
 # 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
@@ -627,25 +628,14 @@ _file_lock = threading.RLock()
 
 @contextlib.contextmanager
 def _env_write_lock(env_path):
-    """.env 写互斥：进程内 RLock + 跨进程 flock（POSIX 可用时）。
+    """.env 写互斥：复用 scripts/env_lock.py 的共享锁。
 
     修复（对抗性审查 2026-08-15 实证）：并发保存设置/公告时 read-modify-write
-    丢更新（60/60 轮必丢一个键）——gunicorn 多 worker 跨进程写 .env 需文件锁。
-    Windows 无 fcntl 退化为进程内锁（本地开发单进程足够）。
+    丢更新——gunicorn 多 worker 跨进程写 .env 需文件锁；同一把锁也供
+    TUI 与密钥生成使用，避免各写各的锁文件。
     """
-    with _file_lock:
-        try:
-            import fcntl
-        except ImportError:
-            yield
-            return
-        fd = open(env_path + ".lock", "a+")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            fd.close()
+    with env_lock.env_write_lock(env_path):
+        yield
 
 # 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告保存时同步更新
 _changelog_cache = [None]  # [文本]
