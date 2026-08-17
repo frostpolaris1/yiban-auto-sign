@@ -61,6 +61,13 @@ def _decode_key(raw):
         raise ValueError("YIBAN_ACCOUNTS_KEY 格式非法：应为 64 位十六进制字符串") from e
     if len(key) != 32:
         raise ValueError("YIBAN_ACCOUNTS_KEY 长度非法：应为 32 字节（64 位十六进制）")
+    # 弱密钥检测：全零、单字节重复、顺序/逆序等明显弱模式 → 警告（不阻断，避免误杀合法密钥）
+    if key == b"\x00" * 32:
+        logger.warning("YIBAN_ACCOUNTS_KEY 为全零密钥，极易被破解，请立即更换")
+    elif len(set(key)) == 1:
+        logger.warning("YIBAN_ACCOUNTS_KEY 为单字节重复密钥，极易被破解，请立即更换")
+    elif key == bytes(range(32)) or key == bytes(range(31, -1, -1)):
+        logger.warning("YIBAN_ACCOUNTS_KEY 为顺序/逆序密钥，极易被破解，请立即更换")
     return key
 
 

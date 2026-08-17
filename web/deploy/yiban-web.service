@@ -42,8 +42,15 @@ ExecStart=/opt/yiban-auto-sign/.venv/bin/gunicorn -w 1 --threads 8 --no-control-
 Restart=always
 RestartSec=3
 ProtectSystem=strict
-ReadWritePaths=/opt/yiban-auto-sign /var/log/yiban
+ProtectHome=true
+ReadWritePaths=/opt/yiban-auto-sign /var/log/yiban /var/lock/yiban
 NoNewPrivileges=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+MemoryDenyWriteExecute=true
+LockPersonality=true
+RestrictRealtime=true
 
 [Install]
 WantedBy=multi-user.target
