@@ -444,7 +444,7 @@ def _most_recent_log_date(max_days=30):
     if _most_recent_log_cache["checked_day"] != today:
         _most_recent_log_cache["checked_day"] = today
         _most_recent_log_cache["history_date"] = None
-        for i in range(1, max_days):
+        for i in range(1, max_days + 1):
             d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
             path = log_path_for(d)
             if os.path.exists(path) and os.path.getsize(path) > 0:
@@ -624,6 +624,27 @@ def _atomic_write(path, content, chmod_priv=False):
 # 跨进程一致性由 SQLite 事务与 UNIQUE 约束保证）
 # ---------------------------------------------------------------------------
 _file_lock = threading.RLock()
+# 限速/失败计数 dict 的进程内读改写锁（H7：单 worker + 锁内原子更新；
+# scrypt 校验不持锁，避免长时间阻塞其他请求）
+_rate_lock = threading.Lock()
+
+
+def _wait_signin_proc(proc, timeout=300):
+    """等待手动签到子进程；超时则终止并回收，避免批量签到队列被卡死。
+
+    M8：原 proc.wait(timeout=300) 超时抛出 TimeoutExpired 后未回收子进程，
+    队列仍会继续触发下一个账号，造成并发签到。超时后先 terminate，再等待
+    回收；仍不退则 kill 兜底。
+    """
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
 
 @contextlib.contextmanager
@@ -970,7 +991,13 @@ APP_VERSION = "0.20.11"
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
 
-def create_app():
+def _is_loopback_host(host):
+    """判断监听地址是否为回环（用于 H6 非回环 Secure Cookie 强警告）。"""
+    h = str(host or "").strip().lower()
+    return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
+
+
+def create_app(host=None):
     # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
     migrate_admin_password_to_hash(ENV_FILE)
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
@@ -981,8 +1008,19 @@ def create_app():
     app.config["SESSION_COOKIE_NAME"] = "yiban_admin"
     app.config["SESSION_COOKIE_HTTPONLY"] = True  # JS 不可读 session cookie（防 XSS 窃取）
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"  # 跨站请求不携带 cookie（防 CSRF）
-    # Secure 标志由部署层保证：nginx 反代配置 `proxy_cookie_flags yiban_admin secure`（生产 HTTPS）；
-    # 不在应用层强制，避免本机 HTTP 直连演示（localhost）登录失效
+    # H6：Secure 标志可由 YIBAN_COOKIE_SECURE 显式开启（env 文件或环境变量，1/true/yes 开，
+    # 默认关）。默认关保持本机 HTTP 直连演示可用；生产 systemd 模板置 1（Task 7）。
+    cookie_secure_raw = os.environ.get("YIBAN_COOKIE_SECURE")
+    if cookie_secure_raw is None:
+        cookie_secure_raw = read_env(ENV_FILE).get("YIBAN_COOKIE_SECURE", "")
+    cookie_secure = str(cookie_secure_raw).strip().lower() in ("1", "true", "yes", "on")
+    app.config["SESSION_COOKIE_SECURE"] = cookie_secure
+    if host is not None and not _is_loopback_host(host) and not cookie_secure:
+        logger.warning(
+            "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
+            "YIBAN_COOKIE_SECURE=1（.env 或环境变量），否则登录 Cookie 可能在 HTTPS 下被浏览器拒绝",
+            host,
+        )
     app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 14  # 14 天（折中：安全与管理员便利平衡）
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 请求体上限 64KB
 
@@ -1016,14 +1054,15 @@ def create_app():
             return
         ip = _client_ip()
         now = time.time()
-        _ip_store_trim(_rate_limits, _IP_STORE_MAX_AGE)
-        cnt, start = _rate_limits.get(ip, (0, now))
-        if now - start > RATE_WINDOW:
-            cnt, start = 0, now
-        cnt += 1
-        _rate_limits[ip] = (cnt, start)
-        if cnt > RATE_MAX:
-            return jsonify({"error": "请求过于频繁，请稍后再试"}), 429
+        with _rate_lock:
+            _ip_store_trim(_rate_limits, _IP_STORE_MAX_AGE)
+            cnt, start = _rate_limits.get(ip, (0, now))
+            if now - start > RATE_WINDOW:
+                cnt, start = 0, now
+            cnt += 1
+            _rate_limits[ip] = (cnt, start)
+            if cnt > RATE_MAX:
+                return jsonify({"error": "请求过于频繁，请稍后再试"}), 429
 
     # ---- 认证守卫：/api/* 需登录；普通用户仅限 my-* 与 clock ----
     @app.before_request
@@ -1193,19 +1232,20 @@ def create_app():
         # 失败计数按 (IP, 用户名) 组合：同一出口 IP 的用户不因他人爆破尝试被连带锁定
         # 值三元组 (count, lock_until, last_ts)：last_ts 供超限清理
         fail_key = (ip, username.lower())
-        _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
-        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-        if now < lock_until:
-            # 不显示剩余秒数：避免向用户暴露锁定窗口参数（信息分层，2026-08-15）
-            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-        # 登录频率限制（60 秒窗口 10 次/IP，比全局限速更严）：防换用户名密码喷洒
-        _ip_store_trim(_login_rate, 60 + _IP_STORE_MAX_AGE)
-        lcnt, lstart = _login_rate.get(ip, (0, now))
-        if now - lstart > 60:
-            lcnt, lstart = 0, now
-        if lcnt >= 10:
-            return jsonify({"error": "登录尝试过于频繁，请稍后再试"}), 429
-        _login_rate[ip] = (lcnt + 1, lstart)
+        with _rate_lock:
+            _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
+            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+            if now < lock_until:
+                # 不显示剩余秒数：避免向用户暴露锁定窗口参数（信息分层，2026-08-15）
+                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+            # 登录频率限制（60 秒窗口 10 次/IP，比全局限速更严）：防换用户名密码喷洒
+            _ip_store_trim(_login_rate, 60 + _IP_STORE_MAX_AGE)
+            lcnt, lstart = _login_rate.get(ip, (0, now))
+            if now - lstart > 60:
+                lcnt, lstart = 0, now
+            if lcnt >= 10:
+                return jsonify({"error": "登录尝试过于频繁，请稍后再试"}), 429
+            _login_rate[ip] = (lcnt + 1, lstart)
 
         role = None
         pw_version = None
@@ -1234,34 +1274,45 @@ def create_app():
                 role = "admin" if u.get("role") == "admin" else "user"
                 pw_version = u.get("pw_version", 1)
         if role:
-            _login_fails.pop(fail_key, None)
+            with _rate_lock:
+                _login_fails.pop(fail_key, None)
+            # S1：登录来源标记——内置管理员（.env）为 builtin，注册用户（含提升的管理员）为 user
+            auth_source = (
+                "builtin"
+                if role == "admin" and username.strip().lower() == _builtin_admin_email()
+                else "user"
+            )
             # 防 session 固定：登录成功先清空再重建会话
             session.clear()
             session.permanent = True
             session["auth"] = True
             session["role"] = role
             session["username"] = username
+            session["auth_source"] = auth_source
             session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
             return jsonify({"ok": True, "role": role})
         if recoverable:
             # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
             return jsonify({"ok": True, "recoverable": True, "msg": "账号已注销，7 天内可恢复"})
-        fails += 1
-        if fails >= LOGIN_MAX_FAILS:
-            _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-            logger.warning("登录失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
-            return jsonify(
-                {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
-            ), 429
-        # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解
-        if fails == LOGIN_FAIL_NOTIFY:
-            send_notification(
-                "登录失败告警",
-                f"IP {ip} 连续 {fails} 次登录失败（尝试用户名: {username}）\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"如非本人操作，请检查是否有人尝试暴力破解",
-            )
-        _login_fails[fail_key] = (fails, 0, now)
+        with _rate_lock:
+            # 重新读取并原子递增：并发失败请求不丢计数（H7）
+            fails, _lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+            fails += 1
+            if fails >= LOGIN_MAX_FAILS:
+                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
+                logger.warning("登录失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                return jsonify(
+                    {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
+                ), 429
+            # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解
+            if fails == LOGIN_FAIL_NOTIFY:
+                send_notification(
+                    "登录失败告警",
+                    f"IP {ip} 连续 {fails} 次登录失败（尝试用户名: {username}）\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"如非本人操作，请检查是否有人尝试暴力破解",
+                )
+            _login_fails[fail_key] = (fails, 0, now)
         return jsonify({"error": "用户名或密码错误"}), 401
 
     @app.route("/api/register", methods=["POST"])
@@ -1280,16 +1331,20 @@ def create_app():
         pw_err = _password_policy_error(password)
         if pw_err:
             return jsonify({"error": pw_err}), 400
+        # S1：内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用
+        if email == _builtin_admin_email():
+            return jsonify({"error": "内置管理员邮箱不可注册"}), 400
         # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
         ip = _client_ip()
         now = time.time()
-        _ip_store_trim(_register_limits, REGISTER_WINDOW)
-        rcnt, rstart = _register_limits.get(ip, (0, now))
-        if now - rstart > REGISTER_WINDOW:
-            rcnt, rstart = 0, now
-        if rcnt >= REGISTER_MAX:
-            # 不暴露限速窗口分钟数（防恶意用户据此规划批量注册节奏，信息分层 2026-08-15）
-            return jsonify({"error": "注册过于频繁，请稍后再试"}), 429
+        with _rate_lock:
+            _ip_store_trim(_register_limits, REGISTER_WINDOW)
+            rcnt, rstart = _register_limits.get(ip, (0, now))
+            if now - rstart > REGISTER_WINDOW:
+                rcnt, rstart = 0, now
+            if rcnt >= REGISTER_MAX:
+                # 不暴露限速窗口分钟数（防恶意用户据此规划批量注册节奏，信息分层 2026-08-15）
+                return jsonify({"error": "注册过于频繁，请稍后再试"}), 429
         # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
         with _file_lock:
             # 容量兜底：注册总人数上限（防分布式注册无限膨胀 users 表，对抗性审查补）
@@ -1309,7 +1364,7 @@ def create_app():
             ):
                 return jsonify({"error": "该邮箱账号正在注销冷却期（7 天内可登录恢复）"}), 400
             try:
-                db.create_user(
+                created = db.create_user(
                     email,
                     generate_password_hash(password, method=SCRYPT_METHOD),
                     role="user",
@@ -1318,8 +1373,15 @@ def create_app():
                 )
             except sqlite3.IntegrityError:
                 return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
+            if not created:
+                return jsonify({"error": "该邮箱已注册"}), 400  # M10：OR IGNORE 未实际创建
             db.audit(email, "user_register", email, "开放注册")
-        _register_limits[ip] = (rcnt + 1, rstart)
+        with _rate_lock:
+            # 成功注册计数：原子重读后递增，避免并发注册丢失计数
+            rcnt, rstart = _register_limits.get(ip, (0, now))
+            if now - rstart > REGISTER_WINDOW:
+                rcnt, rstart = 0, now
+            _register_limits[ip] = (rcnt + 1, rstart)
         logger.info("新用户注册: %s", _mask_email(email))
         return jsonify({"ok": True})
 
@@ -1350,30 +1412,34 @@ def create_app():
         now = time.time()
         # 失败计数键与登录一致：按 (IP, 用户名) 组合
         fail_key = (ip, username.strip().lower())
-        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-        if now < lock_until:
-            # 不显示剩余秒数（信息分层，2026-08-15）
-            return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
+        with _rate_lock:
+            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+            if now < lock_until:
+                # 不显示剩余秒数（信息分层，2026-08-15）
+                return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
 
         def _handle_failed_login():
             """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。
 
             2026-08-15 命名审查：原名 _pw_failed 读作"记录失败"，实际返回 429/400 响应。
             """
-            nfails = fails + 1
-            if nfails >= LOGIN_MAX_FAILS:
-                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-                logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
-                # 不暴露锁定时长分钟数（信息分层，2026-08-15）
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-            if nfails == LOGIN_FAIL_NOTIFY:
-                send_notification(
-                    "改密失败告警",
-                    f"IP {ip} 连续 {nfails} 次修改密码失败（用户名: {username}）\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试暴力破解",
-                )
-            _login_fails[fail_key] = (nfails, 0, now)
+            with _rate_lock:
+                # 锁内重新读取并原子递增（H7：并发失败不丢计数）
+                nfails, _lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+                nfails += 1
+                if nfails >= LOGIN_MAX_FAILS:
+                    _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
+                    logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                    # 不暴露锁定时长分钟数（信息分层，2026-08-15）
+                    return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+                if nfails == LOGIN_FAIL_NOTIFY:
+                    send_notification(
+                        "改密失败告警",
+                        f"IP {ip} 连续 {nfails} 次修改密码失败（用户名: {username}）\n"
+                        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"如非本人操作，请检查是否有人尝试暴力破解",
+                    )
+                _login_fails[fail_key] = (nfails, 0, now)
             return jsonify({"error": "当前密码不正确"}), 400
 
         # 内置管理员：验证 .env 当前口令后更新
@@ -1391,7 +1457,8 @@ def create_app():
                 "YIBAN_ADMIN_PW_VERSION",
                 load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1,
             )
-            _login_fails.pop(fail_key, None)
+            with _rate_lock:
+                _login_fails.pop(fail_key, None)
             logger.info("内置管理员密码已更新")
             return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         # 注册用户（含提升的管理员）：db 单行更新（事务内，防并发覆盖）
@@ -1408,7 +1475,8 @@ def create_app():
                     },
                 )
                 db.audit(username, "user_password", username, "自助改密")
-                _login_fails.pop(fail_key, None)
+                with _rate_lock:
+                    _login_fails.pop(fail_key, None)
                 logger.info("用户 %s 已修改自己的密码", _mask_email(username))
                 return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         return jsonify({"error": "用户不存在"}), 404
@@ -1464,26 +1532,30 @@ def create_app():
             return jsonify({"error": "当前账号不可注销"}), 400
         # 密码确认 + 失败锁定（与登录/改密共用 _login_fails 计数，达阈值锁定）
         fail_key = (ip, email)
-        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-        if now < lock_until:
-            return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
+        with _rate_lock:
+            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+            if now < lock_until:
+                return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
 
         def _handle_failed_login():
             """当前密码校验失败：递增失败计数，达阈值锁定（与 api_me_password 一致）。"""
-            nfails = fails + 1
-            if nfails >= LOGIN_MAX_FAILS:
-                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-                logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
-                # 不暴露锁定时长（信息分层，2026-08-15）
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-            if nfails == LOGIN_FAIL_NOTIFY:
-                send_notification(
-                    "注销密码失败告警",
-                    f"IP {ip} 连续 {nfails} 次注销密码验证失败（用户名: {username}）\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试注销该账号",
-                )
-            _login_fails[fail_key] = (nfails, 0, now)
+            with _rate_lock:
+                # 锁内重新读取并原子递增（H7）
+                nfails, _lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+                nfails += 1
+                if nfails >= LOGIN_MAX_FAILS:
+                    _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
+                    logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                    # 不暴露锁定时长（信息分层，2026-08-15）
+                    return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+                if nfails == LOGIN_FAIL_NOTIFY:
+                    send_notification(
+                        "注销密码失败告警",
+                        f"IP {ip} 连续 {nfails} 次注销密码验证失败（用户名: {username}）\n"
+                        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"如非本人操作，请检查是否有人尝试注销该账号",
+                    )
+                _login_fails[fail_key] = (nfails, 0, now)
             return jsonify({"error": "当前密码不正确"}), 400
 
         with _file_lock:
@@ -1495,13 +1567,15 @@ def create_app():
             # 最后一个注册管理员不可注销（无内置管理员时会失去全部管理入口）
             if u.get("role") == "admin" and db.is_last_registered_admin(email):
                 return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
-            # 防批量计数 + 审计 + 软注销（db 单事务：账号/time_prefs 清除 + 用户标记）
-            db.record_user_delete_request(email, ip_hash=ip_hash, kind="delete")
+            # 审计 + 软注销（db 单事务：账号/time_prefs 清除 + 用户标记）
             db.audit(username, "user_self_delete_request", email, "用户发起注销申请")
             if not db.soft_delete_user_with_accounts(email):
                 return jsonify({"error": "注销失败，请稍后再试"}), 500
+            # 防批量计数仅在注销成功后才记录（低项：失败不占冷却额度）
+            db.record_user_delete_request(email, ip_hash=ip_hash, kind="delete")
             db.audit(username, "user_self_delete_confirm", email, "注销已确认（软删除，7 天宽限期）")
-            _login_fails.pop(fail_key, None)
+            with _rate_lock:
+                _login_fails.pop(fail_key, None)
             logger.info("用户 %s 已注销账号（7 天宽限期）", _mask_email(username))
             # 2026-08-16 用户裁决：自助注销不发管理员通知（正常操作，避免通知轰炸）；
             # 管理员在「用户管理 → 已注销用户」区块主动查看（/api/users/deleted）
@@ -1545,10 +1619,11 @@ def create_app():
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
         # 密码失败锁定预检（2026-08-17）：与登录/注销共用 (ip, email) 计数与锁定窗口
         fail_key = (ip, email)
-        _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
-        fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-        if time.time() < lock_until:
-            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+        with _rate_lock:
+            _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
+            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+            if time.time() < lock_until:
+                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         u = db.find_user_any(email)
         in_grace = (
             u is not None
@@ -1564,26 +1639,30 @@ def create_app():
             # （键 (ip, email) 相同）——此前试错完全不计数，同 IP 可无限爆破冷却期
             # 账号密码，命中即恢复并建立会话；共用计数后登录侧锁定同样约束本接口
             now2 = time.time()
-            nfails = fails + 1
-            if nfails >= LOGIN_MAX_FAILS:
-                _login_fails[fail_key] = (0, now2 + LOGIN_LOCK_SECONDS, now2)
-                logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
-                return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-            if nfails == LOGIN_FAIL_NOTIFY:
-                send_notification(
-                    "恢复密码失败告警",
-                    f"IP {ip} 连续 {nfails} 次恢复密码验证失败（邮箱: {email}）\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试冒充恢复已注销账号",
-                )
-            _login_fails[fail_key] = (nfails, 0, now2)
+            with _rate_lock:
+                nfails, _lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+                nfails += 1
+                if nfails >= LOGIN_MAX_FAILS:
+                    _login_fails[fail_key] = (0, now2 + LOGIN_LOCK_SECONDS, now2)
+                    logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                    return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+                if nfails == LOGIN_FAIL_NOTIFY:
+                    send_notification(
+                        "恢复密码失败告警",
+                        f"IP {ip} 连续 {nfails} 次恢复密码验证失败（邮箱: {email}）\n"
+                        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"如非本人操作，请检查是否有人尝试冒充恢复已注销账号",
+                    )
+                _login_fails[fail_key] = (nfails, 0, now2)
             # 统一文案（2026-08-17 安全审查）：不区分"账号不存在/已过期"与"密码错误"，
             # 防无凭探测"哪些邮箱正处于注销冷却期"（注销用户警惕性低，是钓鱼高价值目标）
             return jsonify({"error": "邮箱或密码错误，或账号已过恢复期"}), 400
-        db.record_user_delete_request(email, ip_hash=ip_hash, kind="restore")
         if not db.restore_user(email):
             return jsonify({"error": "恢复失败，请稍后再试"}), 500
-        _login_fails.pop(fail_key, None)
+        # 防批量计数仅在恢复成功后才记录（低项：失败不占冷却额度）
+        db.record_user_delete_request(email, ip_hash=ip_hash, kind="restore")
+        with _rate_lock:
+            _login_fails.pop(fail_key, None)
         db.audit(email, "user_self_delete_restore", email, "冷静期内恢复账号")
         # 恢复即登录：与 api_login 同款会话建立（防 session 固定）
         role = "admin" if u.get("role") == "admin" else "user"
@@ -1592,6 +1671,7 @@ def create_app():
         session["auth"] = True
         session["role"] = role
         session["username"] = email
+        session["auth_source"] = "user"
         session["pw_version"] = u.get("pw_version", 1)
         logger.info("用户 %s 已恢复注销账号", _mask_email(email))
         return jsonify({"ok": True, "role": role})
@@ -1736,6 +1816,9 @@ def create_app():
                     return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
                 if not EMAIL_RE.match(email) or len(email) > 64:
                     return jsonify({"error": "用户邮箱格式不正确"}), 400
+                # S1：内置管理员邮箱不可被自动注册占用
+                if email == _builtin_admin_email():
+                    return jsonify({"error": "内置管理员邮箱不可注册"}), 400
                 # 该用户已有账号（每人限 1 个）则拒绝（软删除的不占名额，与用户端一致）
                 if any(a.get("owner") == email and not a.get("deleted") for a in accounts):
                     return jsonify({"error": f"{email} 已有一个账号，无需重复添加"}), 400
@@ -1743,12 +1826,27 @@ def create_app():
                 if db.find_user(email) is None:
                     if initial_hash is None:
                         return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
-                    with contextlib.suppress(sqlite3.IntegrityError):
-                        # 并发已注册：继续归属流程（下方不重复注册）
-                        db.create_user(
+                    # H14：自动注册同样受用户容量与注销冷却期约束
+                    max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
+                    if max_users > 0 and len(db.load_users()) >= max_users:
+                        _notify_capacity_once("users", max_users, "注册人数")
+                        return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
+                    du = db.find_user_any(email)
+                    if (
+                        du is not None
+                        and du.get("deleted")
+                        and _delete_grace_remaining(du.get("deleted_at", "")) > 0
+                    ):
+                        return jsonify({"error": "该邮箱账号正在注销冷却期（7 天内可登录恢复）"}), 400
+                    try:
+                        created = db.create_user(
                             email, initial_hash, "user",
                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
                         )
+                    except sqlite3.IntegrityError:
+                        return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
+                    if not created:
+                        return jsonify({"error": "该邮箱已注册"}), 400  # M10：OR IGNORE 未实际创建
                     logger.info("为邮箱 %s 自动注册用户（管理员设置初始密码）", _mask_email(email))
                 clean["owner"] = email
                 clean["status"] = ACCOUNT_STATUS_PENDING
@@ -1815,9 +1913,6 @@ def create_app():
                 and find_account_index(accounts, clean["phone"]) is not None
             ):
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-            # 手机号变更 → 旧号自选时间片失效（防孤儿 pref 占容量，对抗性审查补）
-            if clean["phone"] != old.get("phone"):
-                db.clear_time_pref(old.get("phone", ""))
             # 密码留空 = 保持不变（密码明文永不下发前端）
             if not clean["password"]:
                 clean["password"] = old.get("password", "")
@@ -1845,6 +1940,10 @@ def create_app():
                 return jsonify({"error": "账号已被其他管理员修改，请刷新后重试"}), 409
             if result is None:
                 return jsonify({"error": "账号不存在"}), 404
+            # M11：手机号变更 → 旧号自选时间片失效，必须在 update_account 成功后再清，
+            # 避免更新失败时误删旧号自选（防孤儿 pref 占容量，对抗性审查补）
+            if clean["phone"] != old.get("phone"):
+                db.clear_time_pref(old.get("phone", ""))
             # 凭据变更（改密码/识别码）后清除熔断暂停，立即恢复签到
             clear_fuse_pause(clean["phone"])
             db.audit(
@@ -2313,12 +2412,10 @@ def create_app():
             if not phone:
                 # 2026-08-15 用户反馈：非正式用户不可选时间片——区分"未提交"与"已提交未生效"，
                 # 提示不给待审核用户误导（信息分层，不暴露审核细节）
+                # 低项：has_submitted 统一走 _my_account_indices，避免管理员/普通用户双口径漂移
                 has_submitted = any(
                     not a.get("deleted")
                     for a in (load_accounts()[i] for i in _my_account_indices())
-                ) if _current_role() != "admin" else any(
-                    a.get("owner", "admin") == "admin" and not a.get("deleted")
-                    for a in load_accounts()
                 )
                 if has_submitted:
                     return jsonify({"error": "账号审核通过后即可选择签到时间"}), 400
@@ -2327,7 +2424,7 @@ def create_app():
             slot = data.get("slot_min")
             if slot is None:
                 db.clear_time_pref(phone)
-                db.audit(session.get("username", "?"), "time_pref_clear", phone, "")
+                db.audit(session.get("username", "?"), "time_pref_clear", _mask_phone(phone), "")
                 return jsonify({"ok": True, "msg": "已清除自选，恢复自动分配"})
             # M1 对抗性审查：严格类型校验——bool（False→0）与小数（5.9→5）截断不得误入合法槽位
             if isinstance(slot, bool) or (isinstance(slot, float) and not slot.is_integer()):
@@ -2377,11 +2474,12 @@ def create_app():
             cur = db.get_time_pref(phone)
             if cur and cur.get("slot_min") == slot:
                 count = max(0, count - 1)  # 排除自己已占的位（换片/保留不误报）
-            full_notice = "，该时段已选满，将就近安排到附近时段" if count >= cap else ""
+            # 低项：cap=0（不限容量）时不应提示“已选满”
+            full_notice = "，该时段已选满，将就近安排到附近时段" if (cap > 0 and count >= cap) else ""
             # updated_at 带微秒（M2 对抗性审查）：同秒保存的"先到先得"可区分先后，
             # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
             db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
-            db.audit(session.get("username", "?"), "time_pref_set", phone, _slot_to_label(slot))
+            db.audit(session.get("username", "?"), "time_pref_set", _mask_phone(phone), _slot_to_label(slot))
             # 生效分界（2026-08-15 用户反馈：卡点缓冲）：
             # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
             # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
@@ -2547,9 +2645,6 @@ def create_app():
                 and find_account_index(accounts, clean["phone"]) is not None
             ):
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
-            # 手机号变更 → 旧号自选时间片失效（防孤儿 pref 占容量，对抗性审查补）
-            if clean["phone"] != old.get("phone"):
-                db.clear_time_pref(old.get("phone", ""))
             if not clean["password"]:
                 clean["password"] = old.get("password", "")
             # 设备识别码：__clear__ = 显式清空该字段；留空 = 保持不变
@@ -2572,6 +2667,9 @@ def create_app():
                 db.update_account(old["id"], clean)
             except sqlite3.IntegrityError:
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发改号兜底
+            # M11：手机号变更 → 旧号自选时间片失效，必须在 update_account 成功后再清
+            if clean["phone"] != old.get("phone"):
+                db.clear_time_pref(old.get("phone", ""))
             db.audit(
                 clean["owner"],
                 "my_account_update",
@@ -2593,6 +2691,9 @@ def create_app():
             if not 0 <= idx < len(indices):
                 return jsonify({"error": "账号不存在"}), 404
             removed = accounts[indices[idx]]
+            # M7：用户对已软删除账号无权物理清除；由管理员处理（前端按钮将在 Task 5 移除）
+            if removed.get("deleted"):
+                return jsonify({"error": "已删除账号由管理员处理，请等待恢复或清除"}), 400
             db.purge_account(removed["id"])
             db.audit(
                 session.get("username", "") or "?",
@@ -2614,6 +2715,8 @@ def create_app():
             if not 0 <= idx < len(indices):
                 return jsonify({"error": "账号不存在"}), 404
             acc = accounts[indices[idx]]
+            if acc.get("deleted"):
+                return jsonify({"error": "账号已删除，请先恢复"}), 400
             data = _json_body()
             paused = 1 if str(data.get("paused", "")).strip().lower() in ("1", "true", "on", "yes") else 0
             # 2026-08-15 用户确认：管理员不能暂停自己账号（owner=admin 为系统/管理员账号；
@@ -2691,9 +2794,14 @@ def create_app():
         if not username:
             return None
         if username.strip().lower() == _builtin_admin_email():
-            # 内置管理员：session 版本与当前 .env 版本不一致 → 视为未登录（改密后旧会话失效）
-            cur = load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)
-            return "admin" if pw_version == cur else None
+            # 内置管理员：必须是 builtin 登录来源且 session 版本与当前 .env 版本一致；
+            # 旧会话无 auth_source 视为未登录（S1）
+            if session.get("auth_source") is None:
+                return None
+            if session.get("auth_source") == "builtin":
+                cur = load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)
+                return "admin" if pw_version == cur else None
+            # auth_source == "user"：同名注册用户按普通用户判定，不借内置邮箱提权
         email = username.strip().lower()
         u = db.find_user(email)
         if u is not None:
@@ -3074,6 +3182,15 @@ def create_app():
     _batch_signin_lock = threading.Lock()
 
     # ---- 手动签到（单个 / 批量）----
+    def _reap_signin(phone, proc):
+        """M9：子进程结束后在锁内从 _signin_procs 移除同对象（防僵尸记录/重复 terminate）。"""
+        try:
+            proc.wait()
+        finally:
+            with _signin_lock:
+                if _signin_procs.get(phone) is proc:
+                    _signin_procs.pop(phone, None)
+
     def _spawn_signin(phone, accounts=None):
         """触发单账号手动签到子进程（signin.py --only）。
 
@@ -3122,7 +3239,10 @@ def create_app():
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
             )
-            _signin_procs[phone] = proc  # 记录子进程，供下次触发时终止旧进程
+            with _signin_lock:
+                _signin_procs[phone] = proc  # 记录子进程，供下次触发时终止旧进程
+            # M9：daemon 回收线程，进程退出后自动从 _signin_procs 移除同对象
+            threading.Thread(target=_reap_signin, args=(phone, proc), daemon=True).start()
         except FileNotFoundError:
             with _signin_lock:
                 _last_trigger.pop(phone, None)
@@ -3147,6 +3267,7 @@ def create_app():
             if "正在签到" in msg:
                 return jsonify({"error": msg}), 429
             return jsonify({"error": msg}), 500
+        db.audit(session.get("username") or "?", "signin_manual", _mask_phone(phone), "手动签到")
         return jsonify({"ok": True, "msg": msg})
 
     @app.route("/api/signin/batch", methods=["POST"])
@@ -3188,8 +3309,8 @@ def create_app():
                         ok_n += 1
                         proc = _signin_procs.get(phone)
                         if proc:
-                            with contextlib.suppress(Exception):
-                                proc.wait(timeout=300)  # 等该账号完成再触发下一个（顺序执行）
+                            # M8：超时后 terminate + 回收，避免遗留子进程造成并发签到
+                            _wait_signin_proc(proc)
                     else:
                         skip_n += 1
                 logger.info("批量手动签到完成: 触发 %s 个，跳过 %s 个", ok_n, skip_n)
@@ -3199,6 +3320,12 @@ def create_app():
                     _batch_signin_running = False
 
         threading.Thread(target=_run_batch, daemon=True).start()
+        db.audit(
+            session.get("username") or "?",
+            "signin_batch",
+            ",".join(_mask_phone(p) for p in phones),
+            f"批量签到 {len(phones)} 个",
+        )
         return jsonify({
             "ok": True,
             "msg": f"已加入批量签到队列（{len(phones)} 个账号，将按顺序逐个执行，日志约几分钟内刷新）",
@@ -3335,8 +3462,10 @@ def create_app():
                 return jsonify({"error": "签到窗口非法（需 HH:MM 且开始早于结束）"}), 400
             win_start_str = f"{sh:02d}:{sm:02d}"
             win_end_str = f"{eh:02d}:{em:02d}"
-        # 周日签到开关（1=开启/0=关闭）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
-        sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        # 周日签到开关（1=开启/0=关闭）：仅请求携带时才更新，避免保存其他设置时误关
+        sunday_sign = None
+        if "sunday_sign" in data:
+            sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
         updates = {
             "YIBAN_START_DELAY_MAX": str(start) if start > 0 else "",
@@ -3355,14 +3484,16 @@ def create_app():
         if win_start_str is not None:
             updates["YIBAN_SIGN_START"] = win_start_str
             updates["YIBAN_SIGN_END"] = win_end_str
-        updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
+        if sunday_sign is not None:
+            updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
         write_env_batch(ENV_FILE, updates)
+        sunday_display = "不变" if sunday_sign is None else sunday_sign
         # 批量多选为前端会话级开关，不写入配置
         logger.info(
             "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 缓冲=%s 自选=%s 窗口=%s 周日=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
             edge_raw if edge_raw is not None else "不变", pref_raw if pref_raw is not None else "不变",
-            win or "不变", sunday_sign,
+            win or "不变", sunday_display,
         )
         # 设置变更审计（2026-08-16 补 P8：此前调度/系统设置保存无留痕，与其他管理操作不一致）
         db.audit(
@@ -3371,7 +3502,7 @@ def create_app():
             "settings",
             f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
             f"分布={sign_dist or '-'} 缓冲={edge_raw if edge_raw is not None else '-'} "
-            f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_sign}",
+            f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display}",
         )
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
@@ -3409,6 +3540,12 @@ def create_app():
             return jsonify({"error": "公告内容不能包含换行（单行存储）"}), 400
         write_env_key(ENV_FILE, "YIBAN_ANNOUNCEMENT", text)
         _announcement_cache[0] = text  # 同步内存缓存
+        db.audit(
+            session.get("username") or "?",
+            "announcement_save",
+            "announcement",
+            text or "（已清除）",
+        )
         logger.info("公告已更新: %s", text[:50] or "（已清除）")
         return jsonify({"ok": True, "msg": "公告已更新" if text else "公告已清除"})
 
@@ -3496,7 +3633,7 @@ def main():
             "未配置管理员账号：请在 %s 中设置 YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD", ENV_FILE
         )
 
-    app = create_app()
+    app = create_app(host=args.host)
     # 生产模式：debug 关闭（Werkzeug 单进程即可；如部署用 systemd 更稳）
     app.run(host=args.host, port=args.port, debug=args.debug)
 
