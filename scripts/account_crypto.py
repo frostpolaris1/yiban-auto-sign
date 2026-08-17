@@ -18,9 +18,8 @@ import secrets
 import threading
 from contextlib import suppress
 
-from Crypto.Cipher import AES
-
 import env_lock
+from Crypto.Cipher import AES
 
 logger = logging.getLogger("yiban-crypto")
 
