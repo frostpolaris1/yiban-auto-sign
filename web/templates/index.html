@@ -1122,7 +1122,7 @@ function renderAccounts() {
     else waiting++;
   });
   $('stat-cards').innerHTML = [
-    card('账号总数', activeAccounts.length, 'text-zinc-900 dark:text-zinc-100'),
+    card('生效账号', activeAccounts.length, 'text-zinc-900 dark:text-zinc-100'),
     card('今日成功', success, 'text-green-600 dark:text-green-400'),
     card('今日失败', failed, 'text-red-600 dark:text-red-400'),
     card('待签', waiting, 'text-blue-600'),
