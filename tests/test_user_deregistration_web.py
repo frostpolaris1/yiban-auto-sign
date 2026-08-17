@@ -192,20 +192,43 @@ class UserDeregistrationWebTest(unittest.TestCase):
         self.assertTrue(item["deleted_at"])
 
     def test_deleted_users_expired_shows_purge_pending(self):
-        # 构造已过宽限期（7 天）的注销用户 → purge_pending + remaining_days=0
+        # 先 create_app() 拿 client 并登录，再构造过期注销用户；
+        # 否则 init_db 启动清理会在 create_app() 时把 8 天前用户直接清除，
+        # 测试意图是验证 API 对“待 purge 用户”的展示语义。
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
         db.create_user("expired@test.local", "hash")
         db.soft_delete_user_with_accounts("expired@test.local")
         conn = db.get_conn()
         old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired@test.local"))
         conn.commit()
-        c = self.webapp.create_app().test_client()
-        self._login(c, "admin", ADMIN_PASS)
         r = c.get("/api/users/deleted")
         items = r.get_json()["items"]
         item = next(i for i in items if i["email"] == "expired@test.local")
         self.assertEqual(item["status"], "purge_pending")
         self.assertEqual(item["remaining_days"], 0)
+
+    def test_deleted_users_expired_before_app_start_are_purged_by_cleanup(self):
+        # 反向回归：若在 create_app() 之前就构造 8 天前注销用户，
+        # 默认 init_db(cleanup=True) 的启动清理会把它物理清除——这正是
+        # test_deleted_users_expired_shows_purge_pending 必须调整顺序的原因。
+        db.create_user("expired-boot@test.local", "hash")
+        db.soft_delete_user_with_accounts("expired-boot@test.local")
+        conn = db.get_conn()
+        old = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "expired-boot@test.local"))
+        conn.commit()
+        # 模拟进程重启：关闭当前连接，让 create_app() 重新执行 init_db 启动清理
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        r = c.get("/api/users/deleted")
+        emails = [i["email"] for i in r.get_json()["items"]]
+        self.assertNotIn("expired-boot@test.local", emails)
 
     def test_deleted_users_requires_admin(self):
         c = self.webapp.create_app().test_client()
