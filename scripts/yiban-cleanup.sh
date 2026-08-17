@@ -31,8 +31,15 @@ fi
 removed=0
 clean_by_date() {
     # 用法：clean_by_date <glob> <前缀> <后缀> <截止日期>；按文件名日期删除更早的文件
-    local glob="$1" prefix="$2" suffix="$3" lim="$4" f d
-    for f in $glob; do
+    # 用 nullglob + 数组保存匹配结果，避免 glob 因路径含空格被拆词。
+    local glob="$1" prefix="$2" suffix="$3" lim="$4"
+    local -a files=()
+    local IFS=$'\n'
+    local f d
+    shopt -s nullglob
+    files=($glob)
+    shopt -u nullglob
+    for f in "${files[@]}"; do
         [ -e "$f" ] || continue
         d="${f##*/}"            # 去目录
         d="${d#"$prefix"}"      # 去前缀

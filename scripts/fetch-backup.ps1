@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # fetch-backup.ps1 —— 从服务器拉取每日备份包到本机（二次副本）
 # ============================================================
 # 功能：
@@ -10,11 +10,17 @@
 #
 # 用法（本机 Windows 开发机；需已配置免密 ssh 到服务器）：
 #   powershell -ExecutionPolicy Bypass -File scripts\fetch-backup.ps1 `
-#       -Server root@120.26.23.83 -Dest D:\backups\yiban
+#       -Server root@your-server-ip -Dest D:\backups\yiban
 #
 # 计划任务（每 7 天一次，示例每周一 09:00，普通权限即可）：
 #   schtasks /create /tn "YibanBackupFetch" /f /sc weekly /d MON /st 09:00 /tr `
-#     "powershell -ExecutionPolicy Bypass -File D:\code\...\scripts\fetch-backup.ps1 -Server root@120.26.23.83 -Dest D:\backups\yiban"
+#     "powershell -ExecutionPolicy Bypass -File D:\code\...\scripts\fetch-backup.ps1 -Server root@your-server-ip -Dest D:\backups\yiban"
+#
+# 主机密钥策略：
+#   - 默认 StrictHostKeyChecking=yes，首次连接前请先手动确认主机指纹：
+#       ssh-keyscan your-server-ip >> %USERPROFILE%\.ssh\known_hosts
+#     或先执行一次 `ssh root@your-server-ip` 手动接受。
+#   - 只有显式传入 -AcceptNewHostKey 时才会使用 accept-new（自动接受新主机密钥）。
 #
 # 说明：2026-08 决策——新服务器约 3 个月后到位，期间备份先落本机
 #       （7 天一次），不配置 REMOTE_BACKUP 异机推送；到期后按需改配。
@@ -22,17 +28,22 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Server,        # 服务器 ssh 目标，如 root@120.26.23.83
+    [string]$Server,        # 服务器 ssh 目标，如 root@your-server-ip
 
     [string]$RemoteDir = "/var/backups",
 
     [string]$Dest = "$env:USERPROFILE\backups\yiban",
 
     # 本机保留份数；0 = 保留全部（新服务器到位前建议 0，迁移时要用）
-    [int]$Keep = 0
+    [int]$Keep = 0,
+    # 显式 opt-in：传入后才使用 StrictHostKeyChecking=accept-new；默认 yes
+    [switch]$AcceptNewHostKey
 )
 
 $ErrorActionPreference = "Stop"
+
+# 主机密钥策略：默认严格校验；仅显式 -AcceptNewHostKey 时自动接受新主机密钥
+$strictHostKeyChecking = if ($AcceptNewHostKey) { "accept-new" } else { "yes" }
 
 function Write-Log {
     param([string]$Msg)
@@ -47,7 +58,7 @@ function Write-Log {
 # ------------------------------------------------------------
 $pattern = 'yiban-20[0-9][0-9]-[0-9][0-9]-[0-9][0-9].tar.gz'
 # 注意：glob 模式不能加引号，否则远端 shell 不展开（会按字面量查找而失败）
-$listOut = ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new $Server "ls -la $RemoteDir/$pattern 2>/dev/null" 2>$null
+$listOut = ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=$strictHostKeyChecking $Server "ls -la $RemoteDir/$pattern 2>/dev/null" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "错误：无法连接服务器 $Server 或列出备份目录（ssh 失败，退出码 $LASTEXITCODE）" -ForegroundColor Red
     exit 1
@@ -91,7 +102,7 @@ $okCount = 0
 foreach ($name in $missing) {
     $local = Join-Path $Dest $name
     try {
-        scp -p -o StrictHostKeyChecking=accept-new "$Server`:$RemoteDir/$name" $local
+        scp -p -o StrictHostKeyChecking=$strictHostKeyChecking "$Server`:$RemoteDir/$name" $local
         if ($LASTEXITCODE -ne 0) { throw "scp 退出码 $LASTEXITCODE" }
         # gzip 完整性校验：能列出包内文件 = 压缩流完整可读
         $null = tar -tzf $local 2>$null
