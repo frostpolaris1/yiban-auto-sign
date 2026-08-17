@@ -31,6 +31,7 @@ import secrets
 import sys
 import time
 from base64 import b64decode, b64encode
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlsplit
@@ -79,6 +80,27 @@ class _FlockFileHandler(logging.FileHandler):
                     fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
                 except Exception:
                     pass
+
+
+@contextmanager
+def _state_file_lock(path):
+    """状态文件读改写锁：POSIX 用 fcntl.flock，Windows 无 fcntl 时退化为无操作。
+
+    锁文件单独使用 ``<path>.lock``，不要与日志 handler 的 flock 混用。
+    """
+    if fcntl is None:
+        with nullcontext():
+            yield
+        return
+    lock_path = path + ".lock"
+    lock_dir = os.path.dirname(lock_path) or "."
+    os.makedirs(lock_dir, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
 
 
 # 按天日志文件路径（与 web/app.py log_path_for 一致）
@@ -170,10 +192,7 @@ RETRY_MIN_INTERVAL = 60
 # 网络/瞬时类失败重试间隔打散上限（秒），作为账号间随机延迟之外的补充
 RETRY_GAP_MAX = 30
 
-# 随机延迟默认值（TUI 设置栏开启时采用；默认关闭=0）
-# 打散"每天固定秒级执行"的脚本特征，作为 e003 登录特征修复之外的纵深防御
-DEFAULT_START_DELAY_MAX = 60  # 启动后随机等待 0~60 秒
-DEFAULT_ACCOUNT_GAP_MAX = 10  # 顺序模式账号间随机间隔 0~10 秒
+# 随机延迟默认值在 web/app.py 与 tui/app.py 中维护（signin.py 不直接使用）。
 
 # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
 # 由网页系统设置页写入 .env（YIBAN_SIGN_MODE），run.sh 加载后经环境变量传入
@@ -219,9 +238,7 @@ CRED_FAIL_KEYWORDS = [
 CRED_FAIL_DAYS = 3          # 连续凭据失败天数阈值
 PROBE_INTERVAL_DAYS = 7     # 暂停后半开试探周期（天）
 
-# 签到窗口（与 web/app.py 一致；自动错峰在窗口内均匀分配时间点）
-SIGN_START = (6, 30)
-SIGN_END = (7, 50)
+# 签到窗口默认值由下方 _DEFAULT_SIGN_START/_DEFAULT_SIGN_END 维护（与 web/app.py 一致）。
 
 # ---------------------------------------------------------------------------
 # 调度 v2（S1 demo）：统一填充框架配置
@@ -503,7 +520,8 @@ def _parse_account_dict(data):
         phone_model=str(data.get("phone_model") or "").strip(),
         phone_code=str(phone_code).strip(),
         name=str(data.get("name") or "").strip(),
-        user_paused=bool(data.get("user_paused", False)),  # 用户自暂停（调度 v2）
+        # 用户自暂停（调度 v2）：显式解析 "1"/"true"/"on"/"yes"，避免 "0"/"false" 被 bool() 误判
+        user_paused=str(data.get("user_paused", False)).strip().lower() in ("1", "true", "on", "yes"),
     )
 
 
@@ -769,8 +787,8 @@ class YibanClient:
             self.session.cookies = cookiejar_from_dict(cookies)
             self.session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
             target = clearance[1]
-            if not target.startswith("http"):
-                target = "https://f.yiban.cn" + target
+            if not target.startswith("https://f.yiban.cn"):
+                raise RuntimeError("ydclearance 跳转目标不在白名单")
             resp = self.session.get(target, allow_redirects=False, timeout=15)
             self.session.headers.update(Referer=resp.url)
         else:
@@ -799,13 +817,18 @@ class YibanClient:
             Referer="https://c.uyiban.com/",
             Origin="https://c.uyiban.com",
         )
-        self.session.get(
+        resp = self.session.get(
             "https://api.uyiban.com/base/c/auth/yiban",
             params={"verifyRequest": verify_code, "CSRF": self.csrf},
             cookies={},
             allow_redirects=False,
             timeout=15,
         )
+        if is_waf_blocked(resp.text):
+            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
+        data = resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"最终认证失败: {_sanitize_text(data.get('msg'))}")
 
         cookies = dict_from_cookiejar(self.session.cookies)
         if "csrf_token" not in cookies:
@@ -1031,11 +1054,16 @@ class YibanClient:
         path_m = re.compile(r'window\.document\.location="(.+)"').findall(po)
         if not cookie_m or not path_m:
             raise RuntimeError("ydclearance 挑战解析失败: 解码结果中未提取到 cookie/跳转路径")
-        return cookie_m[0], path_m[0]
+        target = path_m[0]
+        if target.startswith("/"):
+            target = "https://f.yiban.cn" + target
+        if not target.startswith("https://f.yiban.cn"):
+            raise RuntimeError("ydclearance 跳转目标不在白名单")
+        return cookie_m[0], target
 
     # ---- 签到 -------------------------------------------------------------
     def signin(self):
-        """执行签到，返回 (success: bool, message: str, skip: bool)。
+        """执行签到，返回 (success: bool, message: str, skip: bool, status: str)。
 
         skip=True 表示当前不在签到时间窗口内，不需要重试。
         """
@@ -1092,13 +1120,16 @@ class YibanClient:
                 STATUS_SKIPPED_WINDOW,
             )
 
-        # 3. 解析多边形点
+        # 3. 解析多边形点（逐点容错：单个坏点跳过，不拖垮整个签到）
         points_raw = position.get("Points", [])
         polygon = []
         for p in points_raw:
-            parts = p.split(",")
-            if len(parts) >= 2:
-                polygon.append((float(parts[0]), float(parts[1])))
+            try:
+                parts = str(p).split(",")
+                if len(parts) >= 2:
+                    polygon.append((float(parts[0]), float(parts[1])))
+            except (TypeError, ValueError):
+                continue
 
         if not polygon:
             return False, "签到范围点解析失败", False, STATUS_FAILED
@@ -1148,17 +1179,38 @@ class YibanClient:
 # ---------------------------------------------------------------------------
 # 消息通知
 # ---------------------------------------------------------------------------
+def _notify_url_desc(url):
+    """通知日志只记录 scheme://host[:port]，避免把 query/token/userinfo 带进日志。"""
+    try:
+        parts = urlsplit(url)
+        if parts.hostname:
+            desc = f"{parts.scheme}://{parts.hostname}"
+            if parts.port:
+                desc += f":{parts.port}"
+            return desc
+    except ValueError:
+        pass
+    return "<无法解析>"
+
+
 def send_notification(title, content, url):
     """通过 Server 酱 / Bark / 企业微信等 webhook 发送通知。"""
     if not url:
         return
+    url_desc = _notify_url_desc(url)
     try:
         if url.startswith("http"):
-            requests.post(url, json={"title": title, "content": content}, timeout=10)
-            logger.info("通知发送成功: %s", title)
+            resp = requests.post(url, json={"title": title, "content": content}, timeout=10)
+            if resp.status_code < 400:
+                logger.info("通知发送成功: %s", title)
+            else:
+                logger.warning(
+                    "通知发送失败（%s）: 状态码 %s，URL %s",
+                    title, resp.status_code, url_desc,
+                )
     except Exception as e:
-        # exc_info 可追溯告警通道不可达（日志审查 P4：原无渠道/标题标识）
-        logger.warning(f"通知发送失败（{title}）: {e}", exc_info=True)
+        # 不打印 exc_info：通知通道异常无需完整堆栈；URL 只保留 scheme://host[:port]
+        logger.warning("通知发送失败（%s）: %s，URL %s", title, e, url_desc)
 
 
 # ---------------------------------------------------------------------------
@@ -1167,10 +1219,11 @@ def send_notification(title, content, url):
 def attempt_signin(account):
     """单次签到尝试（登录 + 签到），不重试。
 
-    返回 (success, message, skip)：
+    返回 (success, message, skip, status)：
     - success: 是否成功（含"已签到""非签到日"）
-    - message: 结果说明
+    - message: 结果说明（异常时已脱敏，不返回原始 str(e)）
     - skip: True 表示窗口外等无需重试的情况
+    - status: 签到状态码（STATUS_*）
 
     2026-08-15 审查清理：原 notify_url 参数从未在函数体内使用
     （通知统一由 run_queue_retry 最终放弃时发送），已删除。
@@ -1190,7 +1243,7 @@ def attempt_signin(account):
         safe_err = _sanitize_text(str(e))
         logger.error(f"[{phone}] ❌ 尝试失败: {safe_err}", exc_info=False)
         # 逐次失败不通知（避免通知风暴），仅最终放弃时由 run_queue_retry 通知一次
-        return False, str(e), False, STATUS_FAILED
+        return False, safe_err, False, STATUS_FAILED
 
 
 def _write_sign_state(phone, status, message, scheduled=None, dur=None):
@@ -1203,36 +1256,44 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    path = os.path.join(state_dir, f"sign-state-{datetime.now().strftime('%Y-%m-%d')}.json")
     try:
         os.makedirs(state_dir, exist_ok=True)
-        now = datetime.now()
-        date = now.strftime("%Y-%m-%d")
-        path = os.path.join(state_dir, f"sign-state-{date}.json")
-        data = {}
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-        # 计划时间是当日事实：后续写入（执行结果/重试）未显式传 scheduled 时保留既有值
-        if not scheduled and isinstance(data.get(phone), dict):
-            scheduled = data[phone].get("scheduled")
-        entry = {
-            "status": status,
-            "message": message,
-            "time": now.strftime("%H:%M:%S"),
-            "task": "default",
-        }
-        if dur is not None:
-            entry["dur"] = round(float(dur), 2)  # 单次尝试耗时秒数（P6）
-        if scheduled:
-            entry["scheduled"] = scheduled
-        data[phone] = entry
-        # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖（对抗性审查发现）
-        tmp = f"{path}.tmp{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError as e:
-        # 状态目录不可写时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）
+        # M12：读-改-写整体持有状态文件锁，避免并发覆盖丢失条目
+        with _state_file_lock(path):
+            data = {}
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, ValueError, TypeError, AttributeError):
+                    logger.warning("状态文件 %s 损坏，按空数据重建", path)
+                    data = {}
+            if not isinstance(data, dict):
+                logger.warning("状态文件 %s 非 dict，按空数据重建", path)
+                data = {}
+            now = datetime.now()
+            # 计划时间是当日事实：后续写入（执行结果/重试）未显式传 scheduled 时保留既有值
+            if not scheduled and isinstance(data.get(phone), dict):
+                scheduled = data[phone].get("scheduled")
+            entry = {
+                "status": status,
+                "message": message,
+                "time": now.strftime("%H:%M:%S"),
+                "task": "default",
+            }
+            if dur is not None:
+                entry["dur"] = round(float(dur), 2)  # 单次尝试耗时秒数（P6）
+            if scheduled:
+                entry["scheduled"] = scheduled
+            data[phone] = entry
+            # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖（对抗性审查发现）
+            tmp = f"{path}.tmp{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+    except (OSError, ValueError, TypeError, AttributeError) as e:
+        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）
         logger.debug("写入状态文件失败（%s）: %s", path, e)
 
 
@@ -1262,16 +1323,18 @@ def _save_cred_state(data):
     """
     path = _cred_state_path()
     try:
-        if not data:
-            if os.path.exists(path):
-                os.remove(path)
-            return
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.tmp{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError as e:
+        # M12：删除/写入账密状态也持有状态文件锁，防止与 _write_sign_state 等并发写串扰
+        with _state_file_lock(path):
+            if not data:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f"{path}.tmp{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+    except (OSError, ValueError, TypeError, AttributeError) as e:
         logger.debug("写入账密状态失败（%s）: %s", path, e)
 
 
@@ -1599,7 +1662,6 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     attempts = {acc.phone: 0 for acc in accounts}
     results = {}
     first_round = True
-    today = datetime.now().strftime("%Y-%m-%d")
     # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐
     sch_cfg = _schedule_config() if schedule else None
     last_done = None  # 上次尝试结束时刻（monotonic），启动对齐用
@@ -1610,6 +1672,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     while queue:
         acc = queue.pop(0)
         phone = acc.phone
+        # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
+        today = datetime.now().strftime("%Y-%m-%d")
         # 首轮（第一个账号）不等待，后续每个账号（含重试回队）先打散账号间间隔；
         # 标记在 pop 之后无条件置 False（原实现只在失败分支置 False，
         # 导致全成功路径账号间隔打散失效）
@@ -1720,12 +1784,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     )
                 continue
 
-        # 放回队尾：先固定补足最短间隔（可为 0），再打散一段随机延迟，
-        # 总等待 = remaining + uniform(0, RETRY_GAP_MAX)，避免总间隔可能为 0
+        # 放回队尾：单次 sleep 保证总间隔 ≥ retry_min_interval，
+        # 随机部分只用于打散，不允许把最小间隔缩水
         _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
-        remaining = max(0, sch_cfg["retry_min_interval"] - gap_max) if schedule else max(0, RETRY_MIN_INTERVAL - gap_max)
-        time.sleep(remaining)
-        random_delay(RETRY_GAP_MAX, f"账号 {phone} 重试前等待")
+        retry_min_interval = sch_cfg["retry_min_interval"] if schedule else RETRY_MIN_INTERVAL
+        wait = max(retry_min_interval, retry_min_interval - gap_max + random.uniform(0, RETRY_GAP_MAX))
+        logger.debug(f"[{phone}] 重试前等待 {wait:.1f}s（最小 {retry_min_interval}s）")
+        time.sleep(wait)
         queue.append(acc)
         logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次）")
 
@@ -1799,22 +1864,24 @@ def main():
     schedule = {} if args.only else build_schedule(accounts)
     if schedule:
         # 容量预检（调度 v2 第三层）：n × 平均耗时 > 有效窗口秒数 → 告警不静默
+        # 用户自暂停账号不参与调度，也不计入容量
         _cfg = _schedule_config()
         _span_min = (
             (_cfg["sign_end"][0] * 60 + _cfg["sign_end"][1])
             - (_cfg["sign_start"][0] * 60 + _cfg["sign_start"][1])
             - 2 * (_cfg["edge_sec"] // 60)
         )
-        if len(accounts) * _cfg["avg_attempt_sec"] > _span_min * 60:
+        active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
+        if active_n * _cfg["avg_attempt_sec"] > _span_min * 60:
             logger.warning(
                 "容量预检: %d 个账号 × 平均 %ds > 有效窗口 %d 秒，部分账号可能无法在窗口内完成",
-                len(accounts), _cfg["avg_attempt_sec"], _span_min * 60,
+                active_n, _cfg["avg_attempt_sec"], _span_min * 60,
             )
             # 超载提醒（对抗性审查补）：通知管理员，避免"超限只在日志里"无人知情
             # （send_notification 内部已捕获异常，失败不影响签到）
             send_notification(
                 "易班签到容量超载",
-                f"当前 {len(accounts)} 个账号 × 平均 {_cfg['avg_attempt_sec']}s "
+                f"当前 {active_n} 个账号 × 平均 {_cfg['avg_attempt_sec']}s "
                 f"> 有效窗口 {_span_min * 60}s，部分账号可能无法在窗口内完成签到。\n"
                 f"建议：增加窗口时长或减少账号数量（.env 调整）。",
                 notify_url,
@@ -1875,18 +1942,30 @@ def main():
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
     try:
         os.makedirs(state_dir, exist_ok=True)
-        daily_path = os.path.join(state_dir, f"sign-daily-{attempt_date}.json")
-        daily = {}
-        if os.path.exists(daily_path):
-            with open(daily_path, encoding="utf-8") as f:
-                daily = json.load(f)
-        for acc in accounts:
-            _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
-            if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK, STATUS_FAILED):
-                daily[acc.phone] = STATUS_SYMBOL[status]
-        with open(daily_path, "w", encoding="utf-8") as f:
-            json.dump(daily, f, ensure_ascii=False)
-    except OSError as e:
+        # M14：汇总文件以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
+        daily_path = os.path.join(state_dir, f"sign-daily-{datetime.now().strftime('%Y-%m-%d')}.json")
+        with _state_file_lock(daily_path):
+            daily = {}
+            if os.path.exists(daily_path):
+                try:
+                    with open(daily_path, encoding="utf-8") as f:
+                        daily = json.load(f)
+                except (OSError, ValueError, TypeError):
+                    logger.warning("按日状态文件 %s 损坏，按空数据重建", daily_path)
+                    daily = {}
+            if not isinstance(daily, dict):
+                logger.warning("按日状态文件 %s 非 dict，按空数据重建", daily_path)
+                daily = {}
+            for acc in accounts:
+                _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
+                if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK, STATUS_FAILED):
+                    daily[acc.phone] = STATUS_SYMBOL[status]
+            # M15：tmp + os.replace 原子写，避免半截文件
+            daily_tmp = daily_path + ".tmp" + str(os.getpid())
+            with open(daily_tmp, "w", encoding="utf-8") as f:
+                json.dump(daily, f, ensure_ascii=False)
+            os.replace(daily_tmp, daily_path)
+    except (OSError, ValueError, TypeError) as e:
         logger.warning("写入按日状态文件失败: %s", e)
 
     # 退出码（run.sh 依据退出码写状态文件）：
