@@ -51,6 +51,8 @@ SystemCallFilter=@system-service
 MemoryDenyWriteExecute=true
 LockPersonality=true
 RestrictRealtime=true
+UMask=0077
+RestrictSUIDSGID=yes
 
 [Install]
 WantedBy=multi-user.target
