@@ -2341,7 +2341,7 @@ function renderMine() {
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
-            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，可移除记录后重新提交</div>'
+            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，待管理员在账号列表的待删除区处理</div>'
               : (a.status === 'active' ? (a.state_icon === '✅'
                 ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
                 : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>') : '')}
@@ -2351,7 +2351,7 @@ function renderMine() {
           ${a.deleted ? '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2 py-0.5">已删除</span>'
             : mineStatusBadge(a.status)}
           ${a.deleted
-            ? `<button onclick="removeDeletedMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">移除记录</button>`
+            ? '<span class="text-sm text-zinc-400 dark:text-zinc-500">待管理员在账号列表的待删除区处理</span>'
             : `<button onclick="openMineEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
           <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>`}
         </div>
@@ -2558,18 +2558,6 @@ async function deleteMineAccount(i) {
   try {
     await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
     toast('已删除');
-    loadMine();
-    loadAccounts();
-  } catch (e) { toast(e.message, true); }
-}
-
-// 移除被管理员软删除的账号记录：移除后提交表单重新出现
-async function removeDeletedMineAccount(i) {
-  const a = mineAccounts[i];
-  if (!confirm(`确定移除「${jsEscape(a.display_name)}」(${a.phone}) 的删除记录吗？移除后可重新提交新账号。`)) return;
-  try {
-    await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
-    toast('已移除记录');
     loadMine();
     loadAccounts();
   } catch (e) { toast(e.message, true); }
