@@ -51,10 +51,39 @@ _secure_random = secrets.SystemRandom()
 # ---------------------------------------------------------------------------
 # 支持通过环境变量调整日志级别：DEBUG / INFO / WARNING / ERROR
 LOG_LEVEL = os.environ.get("YIBAN_LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),  # 非法值回退 INFO（不回退 DEBUG，防误配泄露详细堆栈）
-    format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+
+
+class _FlockFileHandler(logging.FileHandler):
+    """带文件锁的日志处理器：防止多进程并发写入同一日志文件时行交错。"""
+
+    def emit(self, record):
+        import fcntl
+        try:
+            if self.stream:
+                fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX)
+            super().emit(record)
+            if self.stream:
+                self.stream.flush()
+                fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            self.handleError(record)
+
+
+# 按天日志文件路径（与 web/app.py log_path_for 一致）
+def _signin_log_path():
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    log_file = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
+    return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
+
+
+_handler = _FlockFileHandler(_signin_log_path(), encoding="utf-8")
+_handler.setFormatter(logging.Formatter(
+    "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+))
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    handlers=[_handler],
 )
 logger = logging.getLogger("yiban")
 
