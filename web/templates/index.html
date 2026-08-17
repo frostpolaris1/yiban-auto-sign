@@ -498,17 +498,17 @@
       <div class="space-y-3 max-w-sm">
         <div>
           <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
-          <input id="my-old-password" type="password" placeholder="输入当前密码"
+          <input id="my-old-password" type="password" autocomplete="current-password" placeholder="输入当前密码"
                  class="input">
         </div>
         <div>
           <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，含两类字符）</label>
-          <input id="my-new-password" type="password" placeholder="新密码"
+          <input id="my-new-password" type="password" autocomplete="new-password" placeholder="新密码"
                  class="input">
         </div>
         <div>
           <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
-          <input id="my-confirm-password" type="password" placeholder="再次输入新密码"
+          <input id="my-confirm-password" type="password" autocomplete="new-password" placeholder="再次输入新密码"
                  class="input">
         </div>
         <div class="flex items-center gap-3">
@@ -700,7 +700,7 @@
         </div>
         <div class="md:col-span-2">
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
-          <input id="m-password" type="password" required placeholder="用于自动登录签到"
+          <input id="m-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
@@ -758,7 +758,7 @@
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-password" type="password" placeholder="编辑时留空表示不修改"
+        <input id="f-password" type="password" autocomplete="new-password" placeholder="编辑时留空表示不修改"
                class="input">
       </div>
       <div>
@@ -819,12 +819,14 @@ const $ = (id) => document.getElementById(id);
 let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
 
 async function api(path, opts = {}, _retried = false) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
+    ...(opts.headers || {}),
+  };
   const resp = await fetch(path, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
-    },
     ...opts,
+    headers,
   });
   if (resp.status === 401) {
     location.href = '/login';
@@ -1002,7 +1004,7 @@ function toggleSelectAll(key, el) {
       group.forEach(u => sel.add(u.email));
     } else {
       const group = key === 'pending'
-        ? state.accounts.filter(a => a.status === 'pending' || a.status === 'rejected')
+        ? state.accounts.filter(a => (a.status === 'pending' || a.status === 'rejected') && !a.deleted)
         : key === 'active'
           ? state.accounts.filter(a => a.status === 'active' && !a.deleted)
           : state.accounts.filter(a => a.deleted);
@@ -1082,8 +1084,8 @@ function renderAccounts() {
     bar.classList.toggle('hidden', !state.batchMode || collapsed);
   });
   // 分组：待处理（待审核/已拒绝）置顶，正常账号一组
-  const pendingAccounts = state.accounts.filter(a => a.status === 'pending' || a.status === 'rejected');
-  const activeAccounts = state.accounts.filter(a => a.status === 'active');
+  const pendingAccounts = state.accounts.filter(a => (a.status === 'pending' || a.status === 'rejected') && !a.deleted);
+  const activeAccounts = state.accounts.filter(a => a.status === 'active' && !a.deleted);
   const pendingFiltered = pendingAccounts.filter(a => accountMatch(a, pendingSearch));
   const activeFiltered = activeAccounts.filter(a => accountMatch(a, activeSearch));
 
@@ -1120,7 +1122,7 @@ function renderAccounts() {
     else waiting++;
   });
   $('stat-cards').innerHTML = [
-    card('账号总数', state.accounts.length, 'text-zinc-900 dark:text-zinc-100'),
+    card('账号总数', activeAccounts.length, 'text-zinc-900 dark:text-zinc-100'),
     card('今日成功', success, 'text-green-600 dark:text-green-400'),
     card('今日失败', failed, 'text-red-600 dark:text-red-400'),
     card('待签', waiting, 'text-blue-600'),
@@ -1233,7 +1235,7 @@ function accountRow(a, key) {
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
     ${cb}
-    <td class="px-4 py-3 text-lg leading-none" title="${stTitle}">${s}</td>
+    <td class="px-4 py-3 text-lg leading-none" title="${esc(stTitle)}">${s}</td>
     <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
@@ -1273,6 +1275,7 @@ async function reviewAccount(idx, action) {
     const reason = prompt(`拒绝「${jsEscape(a.display_name)}」(${maskPhone(a.phone)})，请输入理由（用户会看到，最多 100 字）：`, '');
     if (reason === null) return;  // 用户取消
     body.reason = reason.trim().slice(0, 100);
+    if (!body.reason) { toast('拒绝理由不能为空', true); return; }
   } else if (action === 'approve' && !confirm(`确定通过「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？通过后将参与定时签到。`)) {
     return;
   }
@@ -1861,10 +1864,12 @@ async function saveMyPassword() {
 }
 // ================= 时钟与签到状态（本地平滑走秒，60 秒校准一次） =================
 let clockOffset = 0;
+let tzOffsetMin = 0;
 async function calibrateClock() {
   try {
     const data = await api('/api/clock');
     clockOffset = data.server_ts - Math.floor(Date.now() / 1000);
+    tzOffsetMin = Number(data.tz_offset_min) || 0;
     if (!$('tab-settings').classList.contains('hidden')) {
       // 颜色白名单校验：仅接受 #rrggbb（防属性上下文逃逸，纵深防御）
       const color = /^#[0-9a-f]{6}$/i.test(String(data.color || '')) ? data.color : '#7aa2f7';
@@ -1873,9 +1878,9 @@ async function calibrateClock() {
   } catch (e) { /* 静默 */ }
 }
 function tickClock() {
-  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset) * 1000);
-  const pad = (n) => String(n).padStart(2, '0');
-  const str = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+  // 服务器本地时间：epoch + 服务器时区偏移后按 UTC 字段格式化（toISOString 即服务器墙上时间）
+  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset + tzOffsetMin * 60) * 1000);
+  const str = t.toISOString().slice(0, 19).replace('T', ' ');
   $('sidebar-clock').textContent = '服务器时间：' + str;
   if (!$('tab-settings').classList.contains('hidden')) {
     $('clock-now').textContent = str;
@@ -2015,8 +2020,8 @@ function renderDeletedUsers() {
     tr.innerHTML = `
       <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(u.email)}</td>
       <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.deleted_at || '—')}</td>
-      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${remainText}</td>
-      <td class="px-4 py-3 text-sm whitespace-nowrap"><span class="${statusCls}">${statusText}</span></td>
+      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(remainText)}</td>
+      <td class="px-4 py-3 text-sm whitespace-nowrap"><span class="${statusCls}">${esc(statusText)}</span></td>
       <td class="px-4 py-3 text-sm whitespace-nowrap">
         <button onclick="purgeDeletedUser('${esc(u.email)}')"
                 class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">立即清除</button>
@@ -2136,7 +2141,7 @@ function userRow(u, key) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center">
-        <button title="更多操作" data-email="${esc(u.email)}" data-role="${u.role}" data-key="${key}" onclick="userRowMenu(event, this)"
+        <button title="更多操作" data-email="${esc(u.email)}" data-role="${esc(u.role)}" data-key="${key}" onclick="userRowMenu(event, this)"
                 class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
       </div>
     </td>`;
@@ -2283,7 +2288,7 @@ function renderMinePrefSlots(data) {
           ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
           : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
     // 拥挤度：满员=100%+黄底警示已传达"已选满"，不再拼冗余前缀（移动端 4 列窄屏换行，2026-08-15）
-    btn.innerHTML = `<div class="font-medium">${s.label}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
+    btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
     btn.onclick = () => pickMineTimePref(s.slot_min);
     grid.appendChild(btn);
     if (sel && (i === 0 || i === data.slots.length - 1)) {
@@ -2332,14 +2337,14 @@ function renderMine() {
     card.innerHTML = `
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="flex items-center gap-3">
-          <span class="text-lg leading-none">${a.deleted ? '🗑️' : jsEscape(a.state_icon)}</span>
+          <span class="text-lg leading-none">${a.deleted ? '🗑️' : esc(a.state_icon)}</span>
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
             ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，可移除记录后重新提交</div>'
               : (a.status === 'active' ? (a.state_icon === '✅'
                 ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
-                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + a.queue_ahead + '</span> 人</div>') : '')}
+                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>') : '')}
           </div>
         </div>
         <div class="flex items-center gap-2">
@@ -2404,6 +2409,7 @@ function renderCalendar(phone, key) {
   grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
+    state.sundaySign = !!data.sunday_sign;  // 与 user.html 一致：开启周日签到后周日正常显示/可查
     const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     const days = new Date(year, month, 0).getDate();
     for (let i = 0; i < firstDay; i++) {
@@ -2415,7 +2421,7 @@ function renderCalendar(phone, key) {
       const wd = new Date(year, month - 1, d).getDay();
       // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周日灰 / 无记录默认
       let numCls = 'text-zinc-600 dark:text-zinc-300';
-      if (wd === 0) numCls = 'text-zinc-300 dark:text-zinc-600';
+      if (wd === 0 && !state.sundaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
       else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
@@ -2433,8 +2439,8 @@ function renderCalendar(phone, key) {
 function calLoadLog(btn, date) {
   const key = btn.dataset.key;
   const box = $('cal-log-' + key);
-  // 周日无需签到，直接提示（不查询日志）
-  if (new Date(date + 'T00:00:00').getDay() === 0) {
+  // 周日无需签到（未开启周日签到），直接提示（不查询日志）
+  if (new Date(date + 'T00:00:00').getDay() === 0 && !state.sundaySign) {
     box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">周日无需签到</div>';
     return;
   }
