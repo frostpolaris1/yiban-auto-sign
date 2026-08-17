@@ -101,6 +101,7 @@ class TimePrefsTest(unittest.TestCase):
     # ================= db 层 =================
     def test_db_crud_and_stats(self):
         db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
+        self._add_stat_account("13900139002")
         db.set_time_pref("13900139002", 5, "2026-08-15 10:01:00")
         prefs = db.get_time_prefs()
         self.assertEqual(prefs["13800138001"]["slot_min"], 0)
@@ -118,6 +119,12 @@ class TimePrefsTest(unittest.TestCase):
         )
         db.purge_account(acc_id)
         self.assertIsNone(db.get_time_pref("13800138001"))
+
+    def _add_stat_account(self, phone):
+        """为“只用于统计/拥挤度”的手机号创建未删除账号，避免被 time_pref_stats 新语义排除。"""
+        db.add_account({"name": "stat", "phone": phone, "password": "p",
+                        "phone_model": "", "phone_code": "", "status": "active",
+                        "owner": "admin"})
 
     # ================= 调度层（纯计算，无网络） =================
     def _accs(self, n, base=13810000000):
@@ -243,7 +250,9 @@ class TimePrefsTest(unittest.TestCase):
         """对抗（2026-08-15 用户决策）：用户端拥挤度只返回已选百分比，不暴露人数/容量（防调研）。"""
         # 5 人选同一片 + 块容量 15 → 5/15=33.3% → 粗粒度 10% 档 = 30
         for i in range(5):
-            db.set_time_pref(f"139{i:08d}", 0, f"2026-08-15 0{i+1}:00:00")
+            phone = f"139{i:08d}"
+            self._add_stat_account(phone)
+            db.set_time_pref(phone, 0, f"2026-08-15 0{i+1}:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
         data = c.get("/api/my-time-pref").get_json()
@@ -261,16 +270,19 @@ class TimePrefsTest(unittest.TestCase):
         # 0 人 → 0%
         self.assertEqual(slot5["pct"], 0)
         # 1 人 → 6.67% → 10% 档
+        self._add_stat_account("13900000009")
         db.set_time_pref("13900000009", 5, "2026-08-15 10:00:00")
         data = c.get("/api/my-time-pref").get_json()
         slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
         self.assertEqual(slot5["pct"], 10)
         # 2 人 → 13.3% → 仍 10% 档（无法区分 1 人/2 人 → 反推失效）
+        self._add_stat_account("13900000008")
         db.set_time_pref("13900000008", 5, "2026-08-15 10:01:00")
         data = c.get("/api/my-time-pref").get_json()
         slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
         self.assertEqual(slot5["pct"], 10)
         # 3 人 → 20% 档
+        self._add_stat_account("13900000007")
         db.set_time_pref("13900000007", 5, "2026-08-15 10:02:00")
         data = c.get("/api/my-time-pref").get_json()
         slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
@@ -280,13 +292,16 @@ class TimePrefsTest(unittest.TestCase):
         """对抗（2026-08-15 深度审查）：未满封顶 90、满员恰好 100——前端判满精确不误报。"""
         # 14/15 = 93.3% → 未满封顶 90（不再四舍五入成 100 误报"已选满"）
         for i in range(14):
-            db.set_time_pref(f"137{i:08d}", 5, f"2026-08-15 0{i+1}:00:00")
+            phone = f"137{i:08d}"
+            self._add_stat_account(phone)
+            db.set_time_pref(phone, 5, f"2026-08-15 0{i+1}:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
         data = c.get("/api/my-time-pref").get_json()
         slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
         self.assertEqual(slot5["pct"], 90)
         # 15/15 → 恰好 100（满员，前端显示"已选满"与后端 count>=cap 一致）
+        self._add_stat_account("13700000014")
         db.set_time_pref("13700000014", 5, "2026-08-15 10:00:00")
         data = c.get("/api/my-time-pref").get_json()
         slot5 = next(s for s in data["slots"] if s["slot_min"] == 5)
@@ -296,7 +311,9 @@ class TimePrefsTest(unittest.TestCase):
         """对抗（2026-08-15 用户决策）：满员片仍可保存（先到先得+顺延语义），提示"已选满"且不带人数。"""
         # 填满 slot 0（cap 默认 15）
         for i in range(15):
-            db.set_time_pref(f"138{i:08d}", 0, f"2026-08-15 0{i+1}:00:00")
+            phone = f"138{i:08d}"
+            self._add_stat_account(phone)
+            db.set_time_pref(phone, 0, f"2026-08-15 0{i+1}:00:00")
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
         r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
@@ -329,8 +346,9 @@ class TimePrefsTest(unittest.TestCase):
                          (now - _td(seconds=5 * i)).strftime("%Y-%m-%d %H:%M:%S"))
             r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-            # 超限：凑满 20 条 → 下一次保存被递增冷却拦截（30×2^1=60s）
-            for i in range(14):
+            # 超限：凑满 20 条（当前实现保存动作的审计 target 为脱敏号，不计入本函数
+            # 的原始 phone 计数，因此这里直接补足 20 条原始 phone 审计）
+            for i in range(15):
                 db.audit("user1@test.local", "time_pref_set", "13800138001",
                          (now - _td(seconds=5 * i)).strftime("%Y-%m-%d %H:%M:%S"))
             r2 = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
