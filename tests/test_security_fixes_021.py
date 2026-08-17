@@ -221,6 +221,20 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertEqual(window_store["ip"][0], n_threads * per_thread, "窗口计数不应丢更新")
         self.assertEqual(fail_store["key"][0], n_threads * per_thread, "失败计数不应丢更新")
 
+    def test_login_rate_window_allows_ten_then_rejects_eleventh(self):
+        store = {}
+        now = 1000.0
+        for i in range(10):
+            _cnt, _start, allowed = self.webapp._bump_window_count(
+                store, "ip", now, 60, limit=10
+            )
+            self.assertTrue(allowed, f"第 {i + 1} 次应放行")
+        _cnt, _start, allowed = self.webapp._bump_window_count(
+            store, "ip", now, 60, limit=10
+        )
+        self.assertFalse(allowed, "第 11 次应拒绝")
+        self.assertEqual(store["ip"][0], 10, "拒绝时不应递增计数")
+
     # ---- H14 ----
     def test_account_add_auto_register_blocks_during_delete_cooldown(self):
         h = self.webapp.generate_password_hash
