@@ -343,7 +343,7 @@
         <button id="log-back-today" onclick="backToTodayLogs()" class="hidden bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">回到今天</button>
         <span id="log-date-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
       </div>
-      <pre id="log-box" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-320px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
+      <pre id="log-box" role="log" aria-label="签到日志" tabindex="0" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-320px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
       <div id="log-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">（暂无签到日志，等待定时任务执行…）</div>
     </div>
   </section>
@@ -1301,7 +1301,8 @@ function esc(s) {
 function maskPhone(p) {
   p = String(p || '');
   if (p.includes('*')) return p;
-  return p.length === 11 ? p.slice(0, 3) + '****' + p.slice(7) : p;
+  // 11 位手机号 → 138****8000；其他长度保留前 3 后 4，中间用 **** 遮盖
+  return p.length >= 7 ? p.slice(0, 3) + '****' + p.slice(-4) : p;
 }
 
 // JS 模板字面量上下文转义：防用户可控数据（如账号名称）中的 `${...}`/反引号被执行（存储型 XSS）
