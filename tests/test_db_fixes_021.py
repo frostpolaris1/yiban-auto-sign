@@ -201,6 +201,48 @@ class DbFixes021Test(unittest.TestCase):
             conn.execute("PRAGMA user_version").fetchone()[0], 7, "下次启动应重试到最新版本"
         )
 
+    # ---- S5 复审：可选迁移失败必须回滚部分写入 ----
+    def test_optional_migration_failure_rolls_back_partial_write(self):
+        conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
+        db._create_tables(conn)
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+
+        def failing_optional(conn):
+            conn.execute(
+                "INSERT INTO audit_logs (ts, username, action, target, detail) "
+                "VALUES ('2026-08-17 10:00:00', 'admin', 'partial', '', '')"
+            )
+            raise RuntimeError("optional migration boom")
+
+        def committing_optional(conn):
+            conn.execute(
+                "INSERT INTO audit_logs (ts, username, action, target, detail) "
+                "VALUES ('2026-08-17 10:01:00', 'admin', 'after', '', '')"
+            )
+            conn.commit()
+
+        old_migrations = db._MIGRATIONS
+        db._MIGRATIONS = [
+            (1, "v1_partial_fail", failing_optional, False),
+            (2, "v2_commit_after", committing_optional, False),
+        ]
+        try:
+            db._run_migrations(conn)
+            self.assertFalse(conn.in_transaction, "迁移结束后不应残留未提交事务")
+            partial = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='partial'"
+            ).fetchone()[0]
+            self.assertEqual(partial, 0, "失败迁移的部分写入不应被后续 commit 带出")
+            after = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='after'"
+            ).fetchone()[0]
+            self.assertEqual(after, 1, "后续成功迁移仍应正常提交")
+        finally:
+            db._MIGRATIONS = old_migrations
+            conn.close()
+
     # ---- H1：restore_user 按用户 deleted_at 关联恢复账号 ----
     def test_restore_user_only_restores_same_deleted_at_accounts(self):
         db.init_db(self.db_file, env_file=self.env_file)
