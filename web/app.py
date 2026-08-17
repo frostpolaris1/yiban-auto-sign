@@ -629,18 +629,23 @@ _file_lock = threading.RLock()
 _rate_lock = threading.Lock()
 
 
-def _bump_window_count(store, key, now, window):
-    """锁内递增窗口计数，返回 (count, window_start)。
+def _bump_window_count(store, key, now, window, limit=None):
+    """锁内递增窗口计数，返回 (count, window_start, allowed)。
 
+    - limit 为 None：总是递增，allowed 恒为 True；
+    - limit 非 None：达到 limit 后不再递增并返回 allowed=False（用于“先判断再递增”的限速语义，
+      例如登录频率限制允许第 10 次、拒绝第 11 次）。
     H7：限速计数 dict 的读改写统一走这里，避免并发请求丢失更新。
     """
     with _rate_lock:
         cnt, start = store.get(key, (0, now))
         if now - start > window:
             cnt, start = 0, now
+        if limit is not None and cnt >= limit:
+            return cnt, start, False
         cnt += 1
         store[key] = (cnt, start)
-        return cnt, start
+        return cnt, start, True
 
 
 def _bump_login_failure(store, key, now):
@@ -1082,7 +1087,7 @@ def create_app(host=None):
         now = time.time()
         with _rate_lock:
             _ip_store_trim(_rate_limits, _IP_STORE_MAX_AGE)
-        cnt, _start = _bump_window_count(_rate_limits, ip, now, RATE_WINDOW)
+        cnt, _start, _allowed = _bump_window_count(_rate_limits, ip, now, RATE_WINDOW)
         if cnt > RATE_MAX:
             return jsonify({"error": "请求过于频繁，请稍后再试"}), 429
 
@@ -1260,9 +1265,12 @@ def create_app(host=None):
             if now < lock_until:
                 # 不显示剩余秒数：避免向用户暴露锁定窗口参数（信息分层，2026-08-15）
                 return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-        # 登录频率限制（60 秒窗口 10 次/IP，比全局限速更严）：防换用户名密码喷洒
-        lcnt, _lstart = _bump_window_count(_login_rate, ip, now, 60)
-        if lcnt >= 10:
+        # 登录频率限制（60 秒窗口 10 次/IP，比全局限速更严）：防换用户名密码喷洒。
+        # 先清理过期条目再按“先判断后递增”的旧语义计数：允许第 10 次，第 11 次 429。
+        with _rate_lock:
+            _ip_store_trim(_login_rate, 60 + _IP_STORE_MAX_AGE)
+        _lcnt, _lstart, allowed = _bump_window_count(_login_rate, ip, now, 60, limit=10)
+        if not allowed:
             return jsonify({"error": "登录尝试过于频繁，请稍后再试"}), 429
 
         role = None
