@@ -69,10 +69,18 @@ EXIT_CODE=$?
 # 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：
 # 全部 skip（无实际执行，退出码 2）写 SKIPPED，避免把"没签到"记录成成功
 # 从而吞掉后续任务；其他失败（退出码 1）不写状态文件
+# 原子写：写临时文件 + mv，防止掉电/被杀时文件处于半写状态
+_status_write() {
+    local content="$1"
+    local tmp
+    tmp=$(mktemp "${STATUS_FILE}.tmp.XXXXXX")
+    echo "$content" > "$tmp"
+    mv -f "$tmp" "$STATUS_FILE"
+}
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "SUCCESS" > "$STATUS_FILE"
+    _status_write "SUCCESS"
 elif [ $EXIT_CODE -eq 2 ]; then
-    echo "SKIPPED" > "$STATUS_FILE"
+    _status_write "SKIPPED"
 fi
 
 # 记录脚本执行结果
