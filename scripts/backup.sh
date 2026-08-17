@@ -68,11 +68,17 @@ trap 'rm -rf "${TMPDIR_BAK}"' EXIT
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
-# 加密/同步失败时清理本轮已生成的明文归档与未完成加密文件后退出
+# 加密/同步失败时：未完成加密文件（.gpg/.age）始终清理；
+# 仅在 --require-encrypt 模式下删除本地明文归档，普通模式保留本地明文备份。
 remote_fail() {
     local msg="$1"
-    echo "错误：$msg" >&2
-    rm -f "$ARCHIVE" "$ARCHIVE.gpg" "$ARCHIVE.age"
+    rm -f "$ARCHIVE.gpg" "$ARCHIVE.age"
+    if [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
+        echo "错误：$msg；已删除本轮明文归档及未完成加密文件" >&2
+        rm -f "$ARCHIVE"
+    else
+        echo "错误：$msg；未完成加密文件已清理，本地明文归档已保留" >&2
+    fi
     exit 1
 }
 
@@ -255,7 +261,7 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         # gpg 公钥加密（无需口令；2026-08-16 修正：原 --symmetric 与 --recipient 混用冗余）
         if ! gpg --batch --yes --encrypt \
             --recipient "${GPG_RECIPIENT}" -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
-            remote_fail "gpg 公钥加密失败，已删除本轮明文归档"
+            remote_fail "gpg 公钥加密失败"
         fi
         REMOTE_FILE="${ARCHIVE}.gpg"
     elif [ -n "${GPG_PASSPHRASE}" ] && command -v gpg > /dev/null 2>&1; then
@@ -264,12 +270,12 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         if ! printf '%s\n' "${GPG_PASSPHRASE}" | \
             gpg --batch --yes --symmetric --cipher-algo AES256 \
                 --passphrase-fd 0 -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
-            remote_fail "gpg 对称加密失败，已删除本轮明文归档"
+            remote_fail "gpg 对称加密失败"
         fi
         REMOTE_FILE="${ARCHIVE}.gpg"
     elif command -v age > /dev/null 2>&1 && [ -t 0 ]; then
         if ! age -p -o "${ARCHIVE}.age" "${ARCHIVE}"; then
-            remote_fail "age 交互加密失败，已删除本轮明文归档"
+            remote_fail "age 交互加密失败"
         fi
         REMOTE_FILE="${ARCHIVE}.age"
     else
@@ -279,12 +285,12 @@ if [ -n "${REMOTE_BACKUP}" ]; then
     if [ -n "${REMOTE_FILE}" ]; then
         if command -v rsync > /dev/null 2>&1; then
             if ! rsync -az --chmod=600 "${REMOTE_FILE}" "${REMOTE_BACKUP}/"; then
-                remote_fail "rsync 同步失败，已删除本轮明文归档及加密文件"
+                remote_fail "rsync 同步失败"
             fi
             log "已 rsync 到 ${REMOTE_BACKUP}/$(basename "${REMOTE_FILE}")"
         else
             if ! scp -p "${REMOTE_FILE}" "${REMOTE_BACKUP}/"; then
-                remote_fail "scp 同步失败，已删除本轮明文归档及加密文件"
+                remote_fail "scp 同步失败"
             fi
             log "已 scp 到 ${REMOTE_BACKUP}/$(basename "${REMOTE_FILE}")"
         fi
