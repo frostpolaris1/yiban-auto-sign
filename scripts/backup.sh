@@ -86,7 +86,7 @@ restore() {
         echo "错误：备份包含不安全条目（路径穿越/绝对路径），已拒绝解包" >&2
         exit 1
     fi
-    if tar -tzf "$archive" 2>/dev/null | grep -qE '^l'; then
+    if tar -tvzf "$archive" 2>/dev/null | grep -qE '^l'; then
         echo "错误：备份包含符号链接条目，已拒绝解包（防链接写出目标目录）" >&2
         exit 1
     fi
@@ -116,6 +116,13 @@ fi
 REQUIRE_ENCRYPT=0
 if [ "${1:-}" = "--require-encrypt" ]; then
     REQUIRE_ENCRYPT=1
+fi
+
+# --require-encrypt 前置校验：未配置 gpg 接收者/口令且无法交互式 age 时，
+# 在创建本地明文归档前就退出，避免把含密钥和账号数据的备份包以明文落盘。
+if [ "$REQUIRE_ENCRYPT" -eq 1 ] && [ -z "$GPG_RECIPIENT" ] && [ -z "$GPG_PASSPHRASE" ] && { ! command -v age >/dev/null 2>&1 || [ ! -t 0 ]; }; then
+    echo "错误：--require-encrypt 指定但未配置加密（需 BACKUP_GPG_RECIPIENT 或 BACKUP_GPG_PASSPHRASE；交互式 age 仅在终端可用），拒绝创建未加密本地归档" >&2
+    exit 1
 fi
 
 # ------------------------------------------------------------
@@ -199,12 +206,19 @@ if [ -d "${SIGN_LOG_DIR}" ]; then
 fi
 
 # 5) 打包（--owner/--group 归一化，便于跨机恢复）
-tar -czf "${ARCHIVE}" -C "${TMPDIR_BAK}" \
-    --owner=0 --group=0 \
-    data keys state logs 2>/dev/null || {
-    # state/logs 目录可能不存在，回退为只打包 data keys
-    tar -czf "${ARCHIVE}" -C "${TMPDIR_BAK}" --owner=0 --group=0 data keys
-}
+#    按实际存在的目录动态拼参数：缺 state/logs 时只跳过缺失目录，
+#    绝不因某个目录不存在而丢弃其它已备份目录。
+archive_paths=()
+for dir_name in data keys state logs; do
+    if [ -d "${TMPDIR_BAK}/${dir_name}" ]; then
+        archive_paths+=("${dir_name}")
+    fi
+done
+if [ ${#archive_paths[@]} -eq 0 ]; then
+    echo "错误：没有可打包的目录" >&2
+    exit 1
+fi
+tar -czf "${ARCHIVE}" -C "${TMPDIR_BAK}" --owner=0 --group=0 "${archive_paths[@]}"
 chmod 0600 "${ARCHIVE}"
 log "本地备份完成：${ARCHIVE}（$(du -h "${ARCHIVE}" | cut -f1)）"
 

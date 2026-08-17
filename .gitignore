@@ -51,6 +51,7 @@ demo-tmp/
 
 # 备份目录（防历史敏感文件被误提交）
 backup-*/
+.backup-*/
 
 # 本地漏洞测试环境（隔离实例/模拟代理/模糊脚本，不入库）
 test-tmp/
@@ -80,12 +81,15 @@ docs/design-schedule-a.md
 docs/scheduler-research-20260814.md
 docs/design/
 docs/design-tui/
+.superpowers/
 docs/superpowers/
 docs/web-console/design/
 
 # ZCode 工具目录
 .zcode/
+.jspace/
 .ruff_cache/
+.pytest_cache/
 
 # 内部 AI 工作记忆（含服务器 IP/部署细节，严禁入库，2026-08-15 对抗性审查 F1）
 .workbuddy/

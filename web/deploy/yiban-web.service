@@ -31,6 +31,8 @@ User=yiban
 Group=yiban
 WorkingDirectory=/opt/yiban-auto-sign
 EnvironmentFile=/etc/yiban/accounts-key
+# 生产环境经 nginx HTTPS 反代，强制会话 Cookie 仅经 HTTPS 发送（H6）。
+Environment=YIBAN_COOKIE_SECURE=1
 # 注意：必须保持 -w 1（单 worker 多线程）。限速/爆破锁定/签到防抖等状态存于进程内存，
 # 多 worker 各自持有独立副本会导致阈值被轮换请求绕过（安全审查 S2）。如需提升并发，
 # 请调整 --threads 而非 --workers（gthread 线程共享进程内存）。
