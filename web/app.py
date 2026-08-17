@@ -2754,9 +2754,8 @@ def create_app():
         # 权限：权限变更与"操作管理员目标"仅主管理员
         # （普通管理员可重置密码/删除普通用户，不可改权限、不可重置/删除其他管理员）
         username = (session.get("username") or "").strip().lower()
-        if action in ("set_admin", "unset_admin"):
-            if username != _builtin_admin_email():
-                return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
+        if action in ("set_admin", "unset_admin") and username != _builtin_admin_email():
+            return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
 
         with _file_lock:
             users = load_users()
