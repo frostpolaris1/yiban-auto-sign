@@ -441,6 +441,17 @@ def hash_ip(ip):
     return hashlib.sha256(f"{salt}:{ip}".encode("utf-8")).hexdigest()
 
 
+def hash_phone(phone):
+    """对手机号做稳定匿名哈希（YIBAN_TRACK_SALT），返回十六进制字符串。
+
+    与审计脱敏不同：同一手机号总是得到相同哈希，可供 time_pref 冷却等
+    需要按账号关联审计记录的逻辑使用，同时不把真实手机号写入审计 target。
+    格式 sha256(salt:phone)，复用 _track_salt 确保部署内稳定。
+    """
+    salt = _track_salt()
+    return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
+
+
 def migrate_v4(conn):
     """v4：创建可视化三表（可选迁移，失败只告警不阻断启动）。"""
     conn.executescript(
@@ -1575,10 +1586,11 @@ def last_time_pref_set_at(phone):
     try:
         with _conn_lock:
             conn = get_conn()
+            target = hash_phone(phone) if phone else phone or ""
             row = conn.execute(
                 "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
                 "ORDER BY id DESC LIMIT 1",
-                (phone or "",),
+                (target,),
             ).fetchone()
             return row["ts"] if row else None
     except Exception as e:
@@ -1590,10 +1602,11 @@ def time_pref_set_count_since(phone, since_ts):
     try:
         with _conn_lock:
             conn = get_conn()
+            target = hash_phone(phone) if phone else phone or ""
             row = conn.execute(
                 "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
                 "AND target=? AND ts >= ?",
-                (phone or "", since_ts),
+                (target, since_ts),
             ).fetchone()
             return row[0] if row else 0
     except Exception as e:

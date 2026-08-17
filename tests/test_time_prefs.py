@@ -22,7 +22,7 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime  # 弹性冷却测试构造审计时间戳用
+from datetime import datetime, timedelta  # 弹性冷却测试构造审计时间戳/窗口用
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -342,14 +342,13 @@ class TimePrefsTest(unittest.TestCase):
             # 自由窗口：伪造 5 条近期审计 → 保存仍放行（5 < 20）
             now = datetime.now()
             for i in range(5):
-                db.audit("user1@test.local", "time_pref_set", "13800138001",
+                db.audit("user1@test.local", "time_pref_set", db.hash_phone("13800138001"),
                          (now - _td(seconds=5 * i)).strftime("%Y-%m-%d %H:%M:%S"))
             r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-            # 超限：凑满 20 条（当前实现保存动作的审计 target 为脱敏号，不计入本函数
-            # 的原始 phone 计数，因此这里直接补足 20 条原始 phone 审计）
+            # 超限：凑满 20 条（审计 target 已是匿名哈希，手工插入时同样使用 db.hash_phone）
             for i in range(15):
-                db.audit("user1@test.local", "time_pref_set", "13800138001",
+                db.audit("user1@test.local", "time_pref_set", db.hash_phone("13800138001"),
                          (now - _td(seconds=5 * i)).strftime("%Y-%m-%d %H:%M:%S"))
             r2 = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
             self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
@@ -364,6 +363,21 @@ class TimePrefsTest(unittest.TestCase):
             s = open(self.env_file, encoding="utf-8").read()
             open(self.env_file, "w", encoding="utf-8").write(
                 s.replace("YIBAN_TIME_PREF_COOLDOWN_SEC=30\n", ""))
+
+    def test_api_pref_save_audits_hash_for_cooldown_count(self):
+        """I1 回归：真实保存自选后冷却计数可通过匿名哈希 target 查到（不再依赖原始手机号）。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        h = self._csrf(token)
+        r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        since = (datetime.now() - timedelta(seconds=60)).strftime("%Y-%m-%d %H:%M:%S")
+        self.assertEqual(db.time_pref_set_count_since("13800138001", since), 1)
+        conn = db.get_conn()
+        row = conn.execute(
+            "SELECT target FROM audit_logs WHERE action='time_pref_set' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row["target"], db.hash_phone("13800138001"))
 
     def test_api_pref_snapshot_boundary(self):
         """对抗（2026-08-15 用户反馈：卡点缓冲）：生效分界优先取当日调度快照标记——

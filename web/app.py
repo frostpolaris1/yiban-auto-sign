@@ -2438,7 +2438,7 @@ def create_app(host=None):
             slot = data.get("slot_min")
             if slot is None:
                 db.clear_time_pref(phone)
-                db.audit(session.get("username", "?"), "time_pref_clear", _mask_phone(phone), "")
+                db.audit(session.get("username", "?"), "time_pref_clear", db.hash_phone(phone), "")
                 return jsonify({"ok": True, "msg": "已清除自选，恢复自动分配"})
             # M1 对抗性审查：严格类型校验——bool（False→0）与小数（5.9→5）截断不得误入合法槽位
             if isinstance(slot, bool) or (isinstance(slot, float) and not slot.is_integer()):
@@ -2493,7 +2493,7 @@ def create_app(host=None):
             # updated_at 带微秒（M2 对抗性审查）：同秒保存的"先到先得"可区分先后，
             # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
             db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
-            db.audit(session.get("username", "?"), "time_pref_set", _mask_phone(phone), _slot_to_label(slot))
+            db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), _slot_to_label(slot))
             # 生效分界（2026-08-15 用户反馈：卡点缓冲）：
             # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
             # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
