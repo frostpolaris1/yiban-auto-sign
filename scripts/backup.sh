@@ -68,6 +68,14 @@ trap 'rm -rf "${TMPDIR_BAK}"' EXIT
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
+# 加密/同步失败时清理本轮已生成的明文归档与未完成加密文件后退出
+remote_fail() {
+    local msg="$1"
+    echo "错误：$msg" >&2
+    rm -f "$ARCHIVE" "$ARCHIVE.gpg" "$ARCHIVE.age"
+    exit 1
+}
+
 # ------------------------------------------------------------
 # 恢复模式：--restore <备份包> <目标目录>
 # ------------------------------------------------------------
@@ -118,11 +126,21 @@ if [ "${1:-}" = "--require-encrypt" ]; then
     REQUIRE_ENCRYPT=1
 fi
 
-# --require-encrypt 前置校验：未配置 gpg 接收者/口令且无法交互式 age 时，
-# 在创建本地明文归档前就退出，避免把含密钥和账号数据的备份包以明文落盘。
-if [ "$REQUIRE_ENCRYPT" -eq 1 ] && [ -z "$GPG_RECIPIENT" ] && [ -z "$GPG_PASSPHRASE" ] && { ! command -v age >/dev/null 2>&1 || [ ! -t 0 ]; }; then
-    echo "错误：--require-encrypt 指定但未配置加密（需 BACKUP_GPG_RECIPIENT 或 BACKUP_GPG_PASSPHRASE；交互式 age 仅在终端可用），拒绝创建未加密本地归档" >&2
-    exit 1
+# --require-encrypt 前置校验：必须在打包前确认“异机目标已配置”且“加密工具可用”，
+# 不满足则直接退出，不得生成任何明文归档。
+if [ "$REQUIRE_ENCRYPT" -eq 1 ]; then
+    if [ -z "$REMOTE_BACKUP" ]; then
+        echo "错误：--require-encrypt 指定但 REMOTE_BACKUP 未配置，无法加密，拒绝创建本地明文归档" >&2
+        exit 1
+    fi
+    if { [ -n "$GPG_RECIPIENT" ] || [ -n "$GPG_PASSPHRASE" ]; } && ! command -v gpg >/dev/null 2>&1; then
+        echo "错误：--require-encrypt 指定且配置了 gpg，但未找到 gpg 命令，拒绝创建本地明文归档" >&2
+        exit 1
+    fi
+    if [ -z "$GPG_RECIPIENT" ] && [ -z "$GPG_PASSPHRASE" ] && { ! command -v age >/dev/null 2>&1 || [ ! -t 0 ]; }; then
+        echo "错误：--require-encrypt 指定但无可用加密方式（需 REMOTE_BACKUP + gpg/age），拒绝创建本地明文归档" >&2
+        exit 1
+    fi
 fi
 
 # ------------------------------------------------------------
@@ -235,33 +253,39 @@ if [ -n "${REMOTE_BACKUP}" ]; then
     REMOTE_FILE=""
     if [ -n "${GPG_RECIPIENT}" ] && command -v gpg > /dev/null 2>&1; then
         # gpg 公钥加密（无需口令；2026-08-16 修正：原 --symmetric 与 --recipient 混用冗余）
-        gpg --batch --yes --encrypt \
-            --recipient "${GPG_RECIPIENT}" -o "${ARCHIVE}.gpg" "${ARCHIVE}"
+        if ! gpg --batch --yes --encrypt \
+            --recipient "${GPG_RECIPIENT}" -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
+            remote_fail "gpg 公钥加密失败，已删除本轮明文归档"
+        fi
         REMOTE_FILE="${ARCHIVE}.gpg"
     elif [ -n "${GPG_PASSPHRASE}" ] && command -v gpg > /dev/null 2>&1; then
         # gpg 对称加密（非交互，口令从 stdin 读取；解密时用同一口令：
         #   gpg --batch --decrypt --passphrase-fd 0 < yiban-*.tar.gz.gpg > yiban-*.tar.gz）
-        printf '%s\n' "${GPG_PASSPHRASE}" | \
+        if ! printf '%s\n' "${GPG_PASSPHRASE}" | \
             gpg --batch --yes --symmetric --cipher-algo AES256 \
-                --passphrase-fd 0 -o "${ARCHIVE}.gpg" "${ARCHIVE}"
+                --passphrase-fd 0 -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
+            remote_fail "gpg 对称加密失败，已删除本轮明文归档"
+        fi
         REMOTE_FILE="${ARCHIVE}.gpg"
     elif command -v age > /dev/null 2>&1 && [ -t 0 ]; then
-        age -p -o "${ARCHIVE}.age" "${ARCHIVE}"
+        if ! age -p -o "${ARCHIVE}.age" "${ARCHIVE}"; then
+            remote_fail "age 交互加密失败，已删除本轮明文归档"
+        fi
         REMOTE_FILE="${ARCHIVE}.age"
-    elif [ "$REQUIRE_ENCRYPT" -eq 1 ]; then
-        log "错误：--require-encrypt 指定但未配置加密（需 BACKUP_GPG_PASSPHRASE 或 GPG_RECIPIENT 或 age），拒绝执行" >&2
-        rm -rf "${TMPDIR_BAK}"
-        exit 1
     else
-        log "警告：未提供加密口令（BACKUP_GPG_PASSPHRASE）且无 gpg/age，跳过异机加密副本；仅保留本地备份（备份包含密钥+数据，请确保本地存储安全）" >&2
+        log "警告：未提供可用加密方式（gpg/age），跳过异机加密副本；仅保留本地备份（备份包含密钥+数据，请确保本地存储安全）" >&2
     fi
 
     if [ -n "${REMOTE_FILE}" ]; then
         if command -v rsync > /dev/null 2>&1; then
-            rsync -az --chmod=600 "${REMOTE_FILE}" "${REMOTE_BACKUP}/"
+            if ! rsync -az --chmod=600 "${REMOTE_FILE}" "${REMOTE_BACKUP}/"; then
+                remote_fail "rsync 同步失败，已删除本轮明文归档及加密文件"
+            fi
             log "已 rsync 到 ${REMOTE_BACKUP}/$(basename "${REMOTE_FILE}")"
         else
-            scp -p "${REMOTE_FILE}" "${REMOTE_BACKUP}/"
+            if ! scp -p "${REMOTE_FILE}" "${REMOTE_BACKUP}/"; then
+                remote_fail "scp 同步失败，已删除本轮明文归档及加密文件"
+            fi
             log "已 scp 到 ${REMOTE_BACKUP}/$(basename "${REMOTE_FILE}")"
         fi
         # 异机侧保留策略：建议在远端另配清理 cron（find ... -mtime +30 -delete），
