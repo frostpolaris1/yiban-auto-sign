@@ -25,7 +25,7 @@ def main():
     if args.db:
         os.environ["YIBAN_DB_FILE"] = args.db
 
-    conn = db.init_db()
+    conn = db.init_db(cleanup=False)
     rows = conn.execute(
         "SELECT owner, COUNT(*) AS cnt FROM accounts "
         "WHERE deleted=0 AND owner NOT IN ('', 'admin') "
