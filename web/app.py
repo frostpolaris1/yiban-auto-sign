@@ -627,6 +627,9 @@ _file_lock = threading.RLock()
 # 限速/失败计数 dict 的进程内读改写锁（H7：单 worker + 锁内原子更新；
 # scrypt 校验不持锁，避免长时间阻塞其他请求）
 _rate_lock = threading.Lock()
+# 每日清理线程只允许同一进程启动一次（测试多次 create_app 时避免并发访问共享 SQLite 单例）
+_purge_loop_started = False
+_purge_loop_lock = threading.Lock()
 
 
 def _bump_window_count(store, key, now, window, limit=None):
@@ -1030,6 +1033,7 @@ def _is_loopback_host(host):
 
 
 def create_app(host=None):
+    global _purge_loop_started
     # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
     migrate_admin_password_to_hash(ENV_FILE)
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
@@ -3605,7 +3609,16 @@ def create_app(host=None):
                 logger.warning("每日自动清除注销用户失败: %s", e)
             time.sleep(24 * 3600)
 
-    threading.Thread(target=_daily_purge_loop, daemon=True, name="daily-purge").start()
+    # 测试环境通过 YIBAN_DISABLE_PURGE_LOOP=1 禁止启动该线程（全量 pytest 会反复 create_app，
+    # 大量 60s 后唤醒的线程并发访问共享 SQLite 单例有 access violation 风险）；
+    # 生产默认不设置该变量，仍按原逻辑启动，且同一进程最多一个 daily-purge。
+    if os.environ.get("YIBAN_DISABLE_PURGE_LOOP") != "1":
+        with _purge_loop_lock:
+            if not _purge_loop_started:
+                _purge_loop_started = True
+                threading.Thread(
+                    target=_daily_purge_loop, daemon=True, name="daily-purge"
+                ).start()
 
     return app
 

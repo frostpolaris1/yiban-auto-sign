@@ -235,6 +235,24 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertFalse(allowed, "第 11 次应拒绝")
         self.assertEqual(store["ip"][0], 10, "拒绝时不应递增计数")
 
+    def test_purge_loop_disabled_by_env_does_not_start_thread(self):
+        old = os.environ.get("YIBAN_DISABLE_PURGE_LOOP")
+        os.environ["YIBAN_DISABLE_PURGE_LOOP"] = "1"
+        try:
+            before = {t.name for t in threading.enumerate()}
+            with mock.patch.object(self.webapp, "_purge_loop_started", False, create=True):
+                app = self.webapp.create_app()
+                self.assertIsNotNone(app)
+                after = {t.name for t in threading.enumerate()}
+            self.assertFalse(self.webapp._purge_loop_started,
+                             "YIBAN_DISABLE_PURGE_LOOP=1 时不应启动 daily-purge")
+            self.assertNotIn("daily-purge", after - before)
+        finally:
+            if old is None:
+                os.environ.pop("YIBAN_DISABLE_PURGE_LOOP", None)
+            else:
+                os.environ["YIBAN_DISABLE_PURGE_LOOP"] = old
+
     # ---- H14 ----
     def test_account_add_auto_register_blocks_during_delete_cooldown(self):
         h = self.webapp.generate_password_hash
