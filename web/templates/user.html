@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>我的账号 · 易班自动签到</title>
-<script nonce="{{ g._csp_nonce }}">
+<script>
   // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
   try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
 </script>
-<script nonce="{{ g._csp_nonce }}">
+<script>
   // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
   // 防止部署更新后缓存旧页面导致登录/功能异常
   (function () {
@@ -25,7 +25,7 @@
 <link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css" media="(min-resolution: 1.5dppx)">
 <script src="/static/vendor/tailwind.js"></script>
 <script src="/static/vendor/md-render.js"></script>
-<script nonce="{{ g._csp_nonce }}">tailwind.config = { darkMode: 'class' }</script>
+<script>tailwind.config = { darkMode: 'class' }</script>
 <style>
   body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
@@ -292,7 +292,7 @@
     <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="inline-block mt-1 text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
   </footer>
 
-<script nonce="{{ g._csp_nonce }}">
+<script>
 const $ = (id) => document.getElementById(id);
 let accounts = [];
 let sundaySign = false;  // 周日签到开关（来自 /api/my-calendar 响应；开启后周日可查日志/不置灰）
@@ -879,7 +879,7 @@ function updateThemeBtn() {
 }
 document.addEventListener('DOMContentLoaded', updateThemeBtn);
 </script>
-<script nonce="{{ g._csp_nonce }}">
+<script>
 // 全局公告：访问时加载一次（登录页也显示，无需登录）
 async function loadAnnouncement() {
   try {

@@ -52,17 +52,24 @@ _secure_random = secrets.SystemRandom()
 # 支持通过环境变量调整日志级别：DEBUG / INFO / WARNING / ERROR
 LOG_LEVEL = os.environ.get("YIBAN_LOG_LEVEL", "INFO").upper()
 
+try:
+    import fcntl  # Unix/Linux 文件锁；Windows 不支持
+except ImportError:
+    fcntl = None
+
 
 class _FlockFileHandler(logging.FileHandler):
-    """带文件锁的日志处理器：防止多进程并发写入同一日志文件时行交错。"""
+    """带文件锁的日志处理器：防止多进程并发写入同一日志文件时行交错。
+
+    Windows 无 fcntl 时退化为普通 FileHandler（仅限本地开发）。
+    """
 
     def emit(self, record):
-        import fcntl
         try:
-            if self.stream:
+            if fcntl is not None and self.stream:
                 fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX)
             super().emit(record)
-            if self.stream:
+            if fcntl is not None and self.stream:
                 self.stream.flush()
                 fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
         except Exception:
@@ -76,7 +83,18 @@ def _signin_log_path():
     return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
 
 
-_handler = _FlockFileHandler(_signin_log_path(), encoding="utf-8")
+def _make_log_handler():
+    """创建日志处理器：目录不存在时尝试创建，仍失败则降级 stderr（不阻断签到执行）。"""
+    path = _signin_log_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return _FlockFileHandler(path, encoding="utf-8")
+    except OSError:
+        # 目录不可写/不存在：降级到 stderr（保持原始行为，签到不因日志中断）
+        return logging.StreamHandler()
+
+
+_handler = _make_log_handler()
 _handler.setFormatter(logging.Formatter(
     "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",

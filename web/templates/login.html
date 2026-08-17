@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>登录 · 易班自动签到管理</title>
-<script nonce="{{ g._csp_nonce }}">
+<script>
   // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
   try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
 </script>
-<script nonce="{{ g._csp_nonce }}">
+<script>
   // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
   // 防止部署更新后缓存旧页面导致登录/功能异常
   (function () {
@@ -25,7 +25,7 @@
 <link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css" media="(min-resolution: 1.5dppx)">
 <script src="/static/vendor/tailwind.js"></script>
 <script src="/static/vendor/md-render.js"></script>
-<script nonce="{{ g._csp_nonce }}">tailwind.config = { darkMode: 'class' }</script>
+<script>tailwind.config = { darkMode: 'class' }</script>
 <style>
   body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
@@ -131,7 +131,7 @@
     </footer>
   </div>
 
-<script nonce="{{ g._csp_nonce }}">
+<script>
 let mode = 'login';
 // HTML 转义（changelog 兜底渲染等文本上下文）
 function esc(s) {
@@ -318,7 +318,7 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
   }
 });
 </script>
-<script nonce="{{ g._csp_nonce }}">
+<script>
 // 全局公告：访问时加载一次（登录页也显示，无需登录）
 async function loadAnnouncement() {
   try {
