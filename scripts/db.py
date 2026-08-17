@@ -163,6 +163,7 @@ def _create_tables(conn):
           detail TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts);
+        CREATE INDEX IF NOT EXISTS idx_audit_action_target ON audit_logs(action, target, id);
 
         CREATE TABLE IF NOT EXISTS time_prefs (
           phone TEXT PRIMARY KEY,
@@ -187,13 +188,25 @@ def _create_tables(conn):
 # ---------------------------------------------------------------------------
 # 通用幂等迁移框架（Phase 0）
 # ---------------------------------------------------------------------------
+# 允许操作的表名白名单（防止 f-string SQL 注入）
+_ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
+                   "sign_events", "page_visits", "server_metrics"}
+
+
 def _table_columns(conn, table):
     """返回表的所有列名（PRAGMA table_info）。"""
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"非法表名: {table!r}")
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def _ensure_column(conn, table, column, definition):
     """缺列才 ALTER TABLE ADD COLUMN（幂等）。"""
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"非法表名: {table!r}")
+    # 列名白名单：仅允许字母数字下划线，防止注入
+    if not column.isidentifier() or not column.replace("_", "").isalnum():
+        raise ValueError(f"非法列名: {column!r}")
     if column not in _table_columns(conn, table):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         conn.commit()
@@ -1072,11 +1085,13 @@ def find_user_any(email):
 def create_user(email, password_hash, role="user", created_at="", pw_version=1):
     conn = get_conn()
     with _conn_lock, conn:
-        conn.execute(
+        # 使用 INSERT ... ON CONFLICT DO NOTHING 并通过 rowcount 判断是否实际创建
+        cur = conn.execute(
             "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version, deleted, deleted_at) "
             "VALUES (?,?,?,?,?,0,'')",
             (email, password_hash, role, created_at, pw_version),
         )
+        return cur.rowcount > 0
 
 
 def update_user(email, fields):

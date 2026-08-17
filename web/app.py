@@ -468,6 +468,31 @@ def write_env_key(env_path, key, value):
         _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
 
 
+def write_env_batch(env_path, updates):
+    """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
+    避免多次独立 write_env_key 调用时进程崩溃导致配置不一致。
+    updates: dict {key: value}，value 为空字符串则删除该键。"""
+    with _env_write_lock(env_path):
+        env = read_env(env_path)
+        for key, value in updates.items():
+            if "\n" in key or "\r" in key or "\n" in value or "\r" in value:
+                raise ValueError(f"write_env_batch 拒绝包含换行符的键值: {key}")
+            if value:
+                env[key] = value
+            else:
+                env.pop(key, None)
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8-sig") as f:
+                lines = f.read().splitlines()
+        # 保留注释行和非更新键
+        out = [ln for ln in lines if not ln.strip().startswith(tuple(f"{k}=" for k in updates))]
+        for key, value in updates.items():
+            if value:
+                out.append(f"{key}={value}")
+        _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
+
+
 def ensure_secret_key(env_path):
     """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。
 
@@ -3274,23 +3299,26 @@ def create_app():
             win_end_str = f"{eh:02d}:{em:02d}"
         # 周日签到开关（1=开启/0=关闭）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
         sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # ---- 全部校验通过，统一写入 ----
-        write_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", start)
-        write_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", gap)
+        # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
+        updates = {
+            "YIBAN_START_DELAY_MAX": str(start) if start > 0 else "",
+            "YIBAN_ACCOUNT_GAP_MAX": str(gap) if gap > 0 else "",
+        }
         if sign_mode:
-            write_env_key(ENV_FILE, "YIBAN_SIGN_MODE", sign_mode)
+            updates["YIBAN_SIGN_MODE"] = sign_mode
         if sign_order:
-            write_env_key(ENV_FILE, "YIBAN_SIGN_ORDER", sign_order)
+            updates["YIBAN_SIGN_ORDER"] = sign_order
         if sign_dist:
-            write_env_key(ENV_FILE, "YIBAN_SIGN_DIST", sign_dist)
+            updates["YIBAN_SIGN_DIST"] = sign_dist
         if edge is not None:
-            write_env_key(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", str(edge))
+            updates["YIBAN_WINDOW_EDGE_SEC"] = str(edge)
         if pref is not None:
-            write_env_key(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", str(pref))
+            updates["YIBAN_ALLOW_TIME_PREF"] = str(pref)
         if win_start_str is not None:
-            write_env_key(ENV_FILE, "YIBAN_SIGN_START", win_start_str)
-            write_env_key(ENV_FILE, "YIBAN_SIGN_END", win_end_str)
-        write_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", sunday_sign)
+            updates["YIBAN_SIGN_START"] = win_start_str
+            updates["YIBAN_SIGN_END"] = win_end_str
+        updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
+        write_env_batch(ENV_FILE, updates)
         # 批量多选为前端会话级开关，不写入配置
         logger.info(
             "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 缓冲=%s 自选=%s 窗口=%s 周日=%s",
@@ -3334,8 +3362,8 @@ def create_app():
     def api_announcement_save():
         data = _json_body()
         text = str(data.get("text", "")).strip()
-        if len(text) > 500:  # 后端长度限制（前端 maxlength=200 可绕过，防 .env 膨胀 DoS）
-            return jsonify({"error": "公告内容过长（最多 500 字）"}), 400
+        if len(text) > 200:  # 后端长度限制（与前端 maxlength=200 一致）
+            return jsonify({"error": "公告内容过长（最多 200 字）"}), 400
         if "\n" in text or "\r" in text:
             # 安全审查 2026-08：公告存入 .env 单行键值，换行会注入新配置行
             # （如 YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。

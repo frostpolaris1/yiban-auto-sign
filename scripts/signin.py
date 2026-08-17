@@ -33,7 +33,6 @@ import time
 from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from hashlib import md5
 from urllib.parse import urlencode, urlsplit
 
 # 共享模块（同目录）：加密（web/tui/db 共用密钥与密文格式）与 SQLite 数据访问层
@@ -392,7 +391,12 @@ def random_delay(max_seconds, label):
 
 def _sanitize_text(text):
     """服务端可控内容进入错误消息/日志/通知前转义换行与回车，防止日志与通知注入。"""
-    return str(text).replace("\r", "\\r").replace("\n", "\\n")
+    s = str(text).replace("\r", "\\r").replace("\n", "\\n")
+    # 脱敏：异常消息可能含 Account dataclass repr（含明文密码），替换敏感字段
+    import re
+    s = re.sub(r"password\s*=\s*'[^']*'", "password='***'", s)
+    s = re.sub(r'password\s*=\s*"[^"]*"', 'password="***"', s)
+    return s
 
 
 def _mask_phone(phone):
@@ -574,7 +578,7 @@ class YibanClient:
                 f"[{account.phone}] 登录方式: 标准 App 特征（UA=Yiban/AppVersion=5.1.2/SecureRandom CSRF）"
             )
         else:
-            self.csrf = md5(str(datetime.now()).encode("UTF-8")).hexdigest()
+            self.csrf = secrets.token_hex(16)  # 使用安全随机数替代可预测的时间戳 md5
             logger.debug(f"[{account.phone}] 登录方式: 旧流程（iOS 伪造 UA，YIBAN_LEGACY_LOGIN=1）")
         self.session = requests.Session()
         self.session.headers = dict(KILLYIBAN_HEADERS if self.use_killyiban else HEADERS)
@@ -1125,7 +1129,9 @@ def attempt_signin(account):
     except Exception as e:
         # exc_info 落堆栈（INFO 级别也可见）：登录/签到异常可定位具体失败步骤
         # （日志审查 P1：原仅 debug 记录，默认 INFO 下堆栈丢失）
-        logger.error(f"[{phone}] ❌ 尝试失败: {e}", exc_info=True)
+        # 脱敏：异常消息可能含敏感数据（密码/令牌），替换后记录
+        safe_err = _sanitize_text(str(e))
+        logger.error(f"[{phone}] ❌ 尝试失败: {safe_err}", exc_info=False)
         # 逐次失败不通知（避免通知风暴），仅最终放弃时由 run_queue_retry 通知一次
         return False, str(e), False, STATUS_FAILED
 
