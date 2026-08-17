@@ -629,9 +629,10 @@ _MIGRATIONS = [
 def _run_migrations(conn):
     """按 PRAGMA user_version 顺序执行未应用的迁移。
 
-    核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动）；
-    可选迁移失败/延后时置 blocked 并 continue，后续迁移照常执行，
-    但 blocked 期间任何迁移都不提升 user_version，下次启动重试。
+    核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动），包括核心迁移抛
+    MigrationDeferred；可选迁移失败/延后时先回滚该迁移的部分写入，再置 blocked
+    并 continue，后续迁移照常执行，但 blocked 期间任何迁移都不提升 user_version，
+    下次启动重试。
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     blocked = False
@@ -649,12 +650,19 @@ def _run_migrations(conn):
                 version = target_version
                 logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
         except MigrationDeferred as e:
+            if is_core:
+                logger.error("核心 schema 迁移延后: %s: %s", name, e)
+                raise
+            with contextlib.suppress(Exception):
+                conn.rollback()
             logger.warning("可选 schema 迁移延后: %s: %s", name, e)
             blocked = True
         except Exception as e:
             if is_core:
                 logger.error("核心 schema 迁移失败: %s: %s", name, e)
                 raise
+            with contextlib.suppress(Exception):
+                conn.rollback()
             logger.warning("可选 schema 迁移失败: %s: %s，继续后续迁移", name, e)
             blocked = True
 
@@ -979,6 +987,7 @@ def update_account(account_id, fields, expect_snapshot=None):
         try:
             conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
         except sqlite3.IntegrityError as e:
+            conn.rollback()
             _convert_integrity_error(e)
         return True
 
@@ -1099,6 +1108,7 @@ def replace_accounts(accounts):
                     ),
                 )
             except sqlite3.IntegrityError as e:
+                conn.rollback()
                 _convert_integrity_error(e)
     return len(accounts)
 
@@ -1393,26 +1403,29 @@ def record_user_delete_request(username, ip_hash="", kind="delete"):
 def count_user_delete_requests(username=None, ip_hash=None, since_ts=None, kind=None):
     """统计窗口内注销/恢复请求次数（用户或 IP 维度；kind=None 统计全部，v7）。
 
-    计数类查询 fail-closed：异常直接抛出 RuntimeError 由上层统一处理。
+    计数类查询 fail-closed：异常包装为 RuntimeError 由上层统一处理。
     """
-    with _conn_lock:
-        conn = get_conn()
-        sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
-        params = []
-        if username:
-            sql += " AND username=?"
-            params.append(username)
-        if ip_hash:
-            sql += " AND ip_hash=?"
-            params.append(ip_hash)
-        if since_ts:
-            sql += " AND created_at >= ?"
-            params.append(since_ts)
-        if kind:
-            sql += " AND kind=?"
-            params.append(kind)
-        row = conn.execute(sql, params).fetchone()
-        return row[0] if row else 0
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
+            params = []
+            if username:
+                sql += " AND username=?"
+                params.append(username)
+            if ip_hash:
+                sql += " AND ip_hash=?"
+                params.append(ip_hash)
+            if since_ts:
+                sql += " AND created_at >= ?"
+                params.append(since_ts)
+            if kind:
+                sql += " AND kind=?"
+                params.append(kind)
+            row = conn.execute(sql, params).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        raise RuntimeError(f"统计注销请求失败: {e}") from e
 
 
 def is_last_registered_admin(email):
@@ -1558,26 +1571,32 @@ def last_time_pref_set_at(phone):
     - 多管理员共享 admin 账号时冷却全局生效（管理员 A 保存后 B 立即改选也被拦截）；
     - 改手机号/删号重提交新号后，新 phone 无历史审计 → 不被旧账号冷却误伤。
     """
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
-            "ORDER BY id DESC LIMIT 1",
-            (phone or "",),
-        ).fetchone()
-        return row["ts"] if row else None
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
+                "ORDER BY id DESC LIMIT 1",
+                (phone or "",),
+            ).fetchone()
+            return row["ts"] if row else None
+    except Exception as e:
+        raise RuntimeError(f"查询自选保存时间失败: {e}") from e
 
 
 def time_pref_set_count_since(phone, since_ts):
     """指定账号在 since_ts 之后的保存次数（弹性冷却高频判定用；ts 定宽字符串可比较）。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
-            "AND target=? AND ts >= ?",
-            (phone or "", since_ts),
-        ).fetchone()
-        return row[0] if row else 0
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
+                "AND target=? AND ts >= ?",
+                (phone or "", since_ts),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        raise RuntimeError(f"统计自选保存次数失败: {e}") from e
 
 
 def last_pause_at(username):
@@ -1586,26 +1605,32 @@ def last_pause_at(username):
     审计 target 为脱敏手机号，故按 username 关联；多管理员共享账号各自独立计价
     （暂停/恢复冷却仅防噪音，绕过危害极小，可接受）。
     """
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
-            "ORDER BY id DESC LIMIT 1",
-            (username or "",),
-        ).fetchone()
-        return row["ts"] if row else None
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
+                "ORDER BY id DESC LIMIT 1",
+                (username or "",),
+            ).fetchone()
+            return row["ts"] if row else None
+    except Exception as e:
+        raise RuntimeError(f"查询暂停时间失败: {e}") from e
 
 
 def pause_count_since(username, since_ts):
     """指定用户在 since_ts 之后的暂停次数（弹性冷却高频判定用）。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM audit_logs WHERE username=? "
-            "AND action='my_account_pause' AND ts >= ?",
-            (username or "", since_ts),
-        ).fetchone()
-        return row[0] if row else 0
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
+                "AND action='my_account_pause' AND ts >= ?",
+                (username or "", since_ts),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        raise RuntimeError(f"统计暂停次数失败: {e}") from e
 
 
 def _audit_cleanup(conn):
