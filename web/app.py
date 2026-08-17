@@ -36,7 +36,7 @@ import time
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, abort, g, jsonify, redirect, render_template, request, session
+from flask import Flask, abort, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层
@@ -412,20 +412,49 @@ def _log_lines_for(date_str):
     return out
 
 
+# 最近日志日期缓存 {date: "YYYY-MM-DD"}：轮询每 10s 调用，避免每次都扫描 30 天文件
+_most_recent_log_cache = {"history_date": None, "checked_day": ""}
+
+
+def _today_has_logs():
+    """今天的日志文件是否存在且含 yiban 日志行（每次调用都检查，开销小）。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    path = log_path_for(today)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+    for line in _tail_lines(path, max_bytes=4096):
+        m = SIGN_LOG_RE.match(line.strip())
+        if m and m.group(3) == "yiban":
+            return True
+    return False
+
+
 def _most_recent_log_date(max_days=30):
-    """查找最近有日志的日期（从今天往前最多 max_days 天）。返回 YYYY-MM-DD 或 None。"""
-    today = datetime.now()
-    for i in range(max_days):
-        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
-        path = log_path_for(d)
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            # 确认文件内有 yiban 日志行（非空文件）
-            for line in _tail_lines(path, max_bytes=4096):
-                if SIGN_LOG_RE.match(line.strip()):
+    """查找最近有日志的日期（从今天往前最多 max_days 天）。返回 YYYY-MM-DD。
+
+    每次先检查今天（开销小，今天有新日志立即生效）；无日志时用历史缓存（每天只扫一次）。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    # 今天有日志 → 直接返回今天（并更新缓存）
+    if _today_has_logs():
+        _most_recent_log_cache["history_date"] = today
+        return today
+    # 今天无日志：跨天重置缓存，重新扫描历史
+    if _most_recent_log_cache["checked_day"] != today:
+        _most_recent_log_cache["checked_day"] = today
+        _most_recent_log_cache["history_date"] = None
+        for i in range(1, max_days):
+            d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            path = log_path_for(d)
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                for line in _tail_lines(path, max_bytes=4096):
                     m = SIGN_LOG_RE.match(line.strip())
                     if m and m.group(3) == "yiban":
-                        return d
-    return None
+                        _most_recent_log_cache["history_date"] = d
+                        break
+                if _most_recent_log_cache["history_date"]:
+                    break
+    return _most_recent_log_cache["history_date"] or today
 
 
 # ---------------------------------------------------------------------------
@@ -1137,21 +1166,17 @@ def create_app():
         return render_template("login.html", web_version=WEB_VERSION, app_version=APP_VERSION)
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
-    @app.before_request
-    def _gen_csp_nonce():
-        """为每个请求生成 CSP nonce，供模板内联脚本使用"""
-        g._csp_nonce = secrets.token_hex(16)
-
     @app.after_request
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
-        # CSP nonce：为每个请求生成随机 nonce，内联脚本需携带匹配 nonce 才执行
-        nonce = getattr(g, "_csp_nonce", secrets.token_hex(16))
+        # 注意：不使用 CSP nonce——模板含大量内联 onclick 处理器（无法加 nonce），
+        # nonce 存在时 'unsafe-inline' 会被浏览器忽略导致全部处理器失效（2026-08-17 线上事故）。
+        # 后续可将内联事件迁移到 addEventListener 后再启用 nonce 防护。
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Content-Security-Policy"] = (
-            f"default-src 'self'; script-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; img-src 'self'; "
             "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'; object-src 'none'"
@@ -2502,10 +2527,9 @@ def create_app():
         date = str(request.args.get("date", "")).strip()
         if date and not _is_valid_date_str(date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-        # 默认：今天有日志则显示今天，否则找最近有日志的一天
+        # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
         if not date:
-            today = datetime.now().strftime("%Y-%m-%d")
-            date = today if _log_lines_for(today) else (_most_recent_log_date() or today)
+            date = _most_recent_log_date()
         accounts = load_accounts()
         indices = _my_account_indices()
         phones = [str(accounts[i].get("phone", "")) for i in indices]
@@ -3206,10 +3230,9 @@ def create_app():
         date = str(request.args.get("date", "")).strip()
         if date and not _is_valid_date_str(date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-        # 默认：今天有日志则显示今天，否则找最近有日志的一天
+        # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
         if not date:
-            today = datetime.now().strftime("%Y-%m-%d")
-            date = today if _log_lines_for(today) else (_most_recent_log_date() or today)
+            date = _most_recent_log_date()
         logs = _log_lines_for(date)
         # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
         # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
