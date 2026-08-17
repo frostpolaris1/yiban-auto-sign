@@ -670,7 +670,7 @@ class YibanClient:
             params={"ajax_sign": page_use_match[0]},
             data=urlencode(
                 {
-                    "oauth_uname": self.account,
+                    "oauth_uname": self.account.phone,
                     "oauth_upwd": self._rsa_encrypt(cipher),
                     "client_id": "95626fa3080300ea",
                     "redirect_uri": "https://f.yiban.cn/iapp7463",
