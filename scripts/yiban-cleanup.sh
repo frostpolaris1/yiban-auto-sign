@@ -7,7 +7,10 @@
 #   - sched-snapshot-YYYY-MM-DD.json 调度快照标记，仅近期有意义，保留 YIBAN_SNAPSHOT_RETENTION_DAYS（默认 7）天
 #   - cred-state.json                账密熔断状态：内容为空（{}）时删除（无暂停 = 文件不存在语义）
 #
-# 部署：cron 每天执行一次，如 `0 3 * * * root /usr/local/sbin/yiban-cleanup.sh`
+# 部署：cron 每天执行一次，如 `0 3 * * * yiban /bin/bash /opt/yiban-auto-sign/scripts/yiban-cleanup.sh`
+#       以 yiban 用户运行（与 run.sh/签到日志同属主）；清理结果写入独立 cleanup.log，
+#       绝不写 sign-*.log——root 预创建当日签到日志（umask 077）会让 run.sh 全部重定向
+#       失败、signin 静默不执行（2026-08-17 事故：当天自动签到整体丢失）。
 # 环境变量：YIBAN_DATA_DIR（默认 /var/log/yiban）、YIBAN_RETENTION_DAYS（默认 365）、
 #           YIBAN_SNAPSHOT_RETENTION_DAYS（默认 7）
 umask 077
@@ -16,7 +19,7 @@ DATA_DIR="${YIBAN_DATA_DIR:-/var/log/yiban}"
 RETENTION_DAYS="${YIBAN_RETENTION_DAYS:-365}"
 SNAPSHOT_RETENTION_DAYS="${YIBAN_SNAPSHOT_RETENTION_DAYS:-7}"
 
-log_file="$DATA_DIR/sign-$(date +%Y-%m-%d).log"
+log_file="$DATA_DIR/cleanup.log"
 
 cutoff="$(date -d "$RETENTION_DAYS days ago" +%Y-%m-%d)"
 snap_cutoff="$(date -d "$SNAPSHOT_RETENTION_DAYS days ago" +%Y-%m-%d)"
