@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # fetch-backup.ps1 —— 从服务器拉取每日备份包到本机（二次副本）
 # ============================================================
 # 功能：
@@ -47,7 +47,7 @@ function Write-Log {
 # ------------------------------------------------------------
 $pattern = 'yiban-20[0-9][0-9]-[0-9][0-9]-[0-9][0-9].tar.gz'
 # 注意：glob 模式不能加引号，否则远端 shell 不展开（会按字面量查找而失败）
-$listOut = ssh -o ConnectTimeout=15 $Server "ls -la $RemoteDir/$pattern 2>/dev/null" 2>$null
+$listOut = ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new $Server "ls -la $RemoteDir/$pattern 2>/dev/null" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "错误：无法连接服务器 $Server 或列出备份目录（ssh 失败，退出码 $LASTEXITCODE）" -ForegroundColor Red
     exit 1
@@ -91,7 +91,7 @@ $okCount = 0
 foreach ($name in $missing) {
     $local = Join-Path $Dest $name
     try {
-        scp -p "$Server`:$RemoteDir/$name" $local
+        scp -p -o StrictHostKeyChecking=accept-new "$Server`:$RemoteDir/$name" $local
         if ($LASTEXITCODE -ne 0) { throw "scp 退出码 $LASTEXITCODE" }
         # gzip 完整性校验：能列出包内文件 = 压缩流完整可读
         $null = tar -tzf $local 2>$null
