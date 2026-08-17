@@ -1096,6 +1096,7 @@ def create_app():
     # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
     # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
     _login_loop = {}
+    _LOGIN_LOOP_LIMIT = 1000  # 条目上限，防止内存无限增长
 
     @app.route("/login")
     def login_page():
@@ -1103,6 +1104,11 @@ def create_app():
             ip = _client_ip()
             now = time.time()
             _ip_store_trim(_login_loop, 60)
+            # 条目上限防护：超出时清理最老的 20%
+            if len(_login_loop) > _LOGIN_LOOP_LIMIT:
+                sorted_ips = sorted(_login_loop, key=lambda k: _login_loop[k][1])
+                for old_ip in sorted_ips[:_LOGIN_LOOP_LIMIT // 5]:
+                    _login_loop.pop(old_ip, None)
             cnt, first = _login_loop.get(ip, (0, now))
             if now - first > 10:
                 cnt, first = 0, now
