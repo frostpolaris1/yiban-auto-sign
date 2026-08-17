@@ -1017,7 +1017,8 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-17 全量审查第一批修复：事务锁+时间戳+宽限期+密码泄露（0.20.9）
 # 2026-08-17 全量审查第二批修复：AES弱密钥检测+CSP nonce+systemd加固+flock路径+migrate_v5+备份加密+测试补齐（0.20.10）
 # 2026-08-17 全量审查第三+四批修复：中/低严重度问题全面清理（0.20.11）
-APP_VERSION = "0.20.11"
+# 2026-08-17 全量审查 0.21.0 修复：版本号更新
+APP_VERSION = "0.21.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
