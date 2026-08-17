@@ -11,6 +11,7 @@
 """
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -60,6 +61,7 @@ class SigninFixes021Test(unittest.TestCase):
             os.environ.pop("YIBAN_STATE_DIR", None)
         else:
             os.environ["YIBAN_STATE_DIR"] = self._old_state_dir
+        shutil.rmtree(self._tmp, ignore_errors=True)
 
     # ---- H2 ----
     def test_write_sign_state_rebuilds_corrupt_json(self):
@@ -102,6 +104,22 @@ class SigninFixes021Test(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ydclearance 跳转目标不在白名单"):
             client._solve_ydclearance(_challenge_text("http://evil.example"))
 
+    def test_solve_ydclearance_rejects_lookalike_host(self):
+        client = signin.YibanClient.__new__(signin.YibanClient)
+        with self.assertRaisesRegex(RuntimeError, "ydclearance 跳转目标不在白名单"):
+            client._solve_ydclearance(_challenge_text("https://f.yiban.cn.evil.com/iapp7463"))
+
+    def test_solve_ydclearance_rejects_userinfo_bypass(self):
+        client = signin.YibanClient.__new__(signin.YibanClient)
+        with self.assertRaisesRegex(RuntimeError, "ydclearance 跳转目标不在白名单"):
+            client._solve_ydclearance(_challenge_text("https://f.yiban.cn@evil.com/iapp7463"))
+
+    def test_is_fyiban_url_helper(self):
+        self.assertTrue(signin._is_fyiban_url("https://f.yiban.cn/iapp7463"))
+        self.assertFalse(signin._is_fyiban_url("https://f.yiban.cn.evil.com/iapp7463"))
+        self.assertFalse(signin._is_fyiban_url("https://f.yiban.cn@evil.com/iapp7463"))
+        self.assertFalse(signin._is_fyiban_url("http://f.yiban.cn/iapp7463"))
+
     # ---- H9 ----
     def test_attempt_signin_returns_safe_err_not_raw_exception(self):
         acc = signin.Account(phone="13800138000", password="secret")
@@ -137,6 +155,36 @@ class SigninFixes021Test(unittest.TestCase):
         self.assertGreaterEqual(sleeps[0], signin.RETRY_MIN_INTERVAL,
                                 "重试总间隔不得小于 RETRY_MIN_INTERVAL")
 
+    def test_retry_wait_schedule_branch_respects_sch_cfg_retry_min_interval(self):
+        acc = signin.Account(phone="13800138000", password="p")
+        sleeps = []
+        scheduled_at = datetime.now()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "YIBAN_RETRY_MIN_INTERVAL": "5",
+                "YIBAN_SIGN_START": "00:00",
+                "YIBAN_SIGN_END": "23:59",
+                "YIBAN_WINDOW_EDGE_SEC": "0",
+            },
+            clear=False,
+        ), \
+             mock.patch.object(signin, "attempt_signin",
+                               return_value=(False, "网络超时", False, signin.STATUS_FAILED)), \
+             mock.patch.object(signin, "classify_failure", return_value=2), \
+             mock.patch.object(signin, "random") as rnd, \
+             mock.patch.object(signin.time, "sleep", side_effect=lambda s: sleeps.append(s)), \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin, "_update_cred_state"), \
+             mock.patch.object(signin, "send_notification"):
+            rnd.uniform.return_value = 0.0
+            signin.run_queue_retry(
+                [acc], "", 0, 0, schedule={acc.phone: scheduled_at}
+            )
+        self.assertTrue(sleeps, "schedule 分支也应发生重试等待")
+        self.assertGreaterEqual(sleeps[0], 5,
+                                "schedule 分支重试总间隔不得小于 sch_cfg retry_min_interval")
+
     # ---- M16 ----
     def test_send_notification_warns_on_non_2xx_with_safe_url(self):
         class FakeResp:
@@ -162,8 +210,9 @@ class SigninFixes021Test(unittest.TestCase):
              mock.patch.object(signin.logger, "warning", side_effect=lambda *a, **k: warns.append((a, k))):
             signin.send_notification("t", "c", "https://example.com/hook")
         self.assertEqual(len(warns), 1)
-        _args, kwargs = warns[0]
+        args, kwargs = warns[0]
         self.assertFalse(kwargs.get("exc_info", False))
+        self.assertNotIn("boom", str(args), "异常分支不应记录原始异常消息")
 
     # ---- 低项：user_paused 显式布尔解析 ----
     def test_parse_account_dict_user_paused_explicit_truthy(self):
@@ -177,6 +226,20 @@ class SigninFixes021Test(unittest.TestCase):
                 {"phone": "13800138000", "password": "p", "user_paused": raw}
             )
             self.assertFalse(acc.user_paused, raw)
+
+
+def test_send_notification_exception_does_not_log_raw_url_or_exception_message(caplog):
+    """I2：异常消息含 webhook token 时，日志不得泄露原始 URL/异常文本。"""
+    with mock.patch.object(
+        signin.requests,
+        "post",
+        side_effect=RuntimeError("https://example.com/hook?token=secret"),
+    ), caplog.at_level("WARNING", logger="yiban"):
+        signin.send_notification("t", "c", "https://example.com/hook?token=secret")
+    assert "token=secret" not in caplog.text
+    assert "https://example.com/hook?token=secret" not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "https://example.com" in caplog.text
 
 
 if __name__ == "__main__":

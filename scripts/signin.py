@@ -638,6 +638,23 @@ def print_config_summary(accounts):
 # ---------------------------------------------------------------------------
 # 易班登录
 # ---------------------------------------------------------------------------
+def _is_fyiban_url(url):
+    """严格校验易班跳转 URL：https + 主机精确为 f.yiban.cn + 不允许 userinfo。
+
+    使用 urlsplit 避免 `https://f.yiban.cn.evil.com` 或
+    `https://f.yiban.cn@evil.com` 这类前缀/userinfo 绕过。
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and parts.hostname == "f.yiban.cn"
+        and parts.username is None
+    )
+
+
 class YibanClient:
     """易班客户端：封装登录与签到流程。"""
 
@@ -787,7 +804,7 @@ class YibanClient:
             self.session.cookies = cookiejar_from_dict(cookies)
             self.session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
             target = clearance[1]
-            if not target.startswith("https://f.yiban.cn"):
+            if not _is_fyiban_url(target):
                 raise RuntimeError("ydclearance 跳转目标不在白名单")
             resp = self.session.get(target, allow_redirects=False, timeout=15)
             self.session.headers.update(Referer=resp.url)
@@ -1057,7 +1074,7 @@ class YibanClient:
         target = path_m[0]
         if target.startswith("/"):
             target = "https://f.yiban.cn" + target
-        if not target.startswith("https://f.yiban.cn"):
+        if not _is_fyiban_url(target):
             raise RuntimeError("ydclearance 跳转目标不在白名单")
         return cookie_m[0], target
 
@@ -1209,8 +1226,12 @@ def send_notification(title, content, url):
                     title, resp.status_code, url_desc,
                 )
     except Exception as e:
-        # 不打印 exc_info：通知通道异常无需完整堆栈；URL 只保留 scheme://host[:port]
-        logger.warning("通知发送失败（%s）: %s，URL %s", title, e, url_desc)
+        # 不打印 exc_info，也不打印 str(e)：异常文本可能包含 webhook URL/token；
+        # 只记录异常类型名与脱敏后的 scheme://host[:port]
+        logger.warning(
+            "通知发送失败（%s）: %s，URL %s",
+            title, type(e).__name__, url_desc,
+        )
 
 
 # ---------------------------------------------------------------------------
