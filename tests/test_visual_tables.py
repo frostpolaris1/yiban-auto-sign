@@ -126,11 +126,15 @@ class VisualTablesTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM server_metrics").fetchone()[0], 0)
 
     def test_read_functions_return_expected_shape(self):
-        db.add_sign_event("2026-08-16 06:30:00", "13800138000", "success", "ok", "signin", 1)
-        db.add_sign_event("2026-08-16 06:31:00", "13900139000", "failed", "bad", "signin", 1)
-        db.add_page_visit("2026-08-16 08:00:00", "admin", "/", "hash1", "UA", 100)
-        db.add_page_visit("2026-08-16 08:01:00", "admin", "/", "hash2", "UA", 200)
-        db.add_server_metric("2026-08-16 08:00:00", cpu=10.0, mem_pct=50.0)
+        # 时间戳用相对时间（此前硬编码 2026-08-16 会随真实时钟过期：
+        # server_metric_history 按 now 过滤 24h，隔天跑即空——2026-08-17 发现）
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        earlier = (datetime.datetime.now() - datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+        db.add_sign_event(now, "13800138000", "success", "ok", "signin", 1)
+        db.add_sign_event(earlier, "13900139000", "failed", "bad", "signin", 1)
+        db.add_page_visit(now, "admin", "/", "hash1", "UA", 100)
+        db.add_page_visit(earlier, "admin", "/", "hash2", "UA", 200)
+        db.add_server_metric(now, cpu=10.0, mem_pct=50.0)
         sign_stats = db.sign_event_stats(days=30)
         self.assertTrue(sign_stats)
         self.assertIn("day", sign_stats[0])
