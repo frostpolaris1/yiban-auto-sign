@@ -36,7 +36,7 @@ import time
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, abort, jsonify, redirect, render_template, request, session
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层
@@ -121,6 +121,10 @@ def _constant_time_dummy(password):
 # 生产部署：yiban-web 监听 127.0.0.1，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`
 # 覆盖设置（客户端伪造的 XFF 会被丢弃），故此处读取的 XFF 即真实客户端 IP。
 TRUSTED_PROXIES = ("127.0.0.1", "::1")
+
+# 启动断言：TRUSTED_PROXIES 必须仅为回环地址，防止配置被改为非回环地址导致 XFF 伪造绕过速率限制
+assert all(p in ("127.0.0.1", "::1", "localhost") for p in TRUSTED_PROXIES), \
+    f"TRUSTED_PROXIES 必须仅为回环地址，当前值: {TRUSTED_PROXIES}"
 
 
 def _json_body():
@@ -1084,17 +1088,25 @@ def create_app():
         return render_template("login.html", web_version=WEB_VERSION, app_version=APP_VERSION)
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
+    @app.before_request
+    def _gen_csp_nonce():
+        """为每个请求生成 CSP nonce，供模板内联脚本使用"""
+        g._csp_nonce = secrets.token_hex(16)
+
     @app.after_request
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
+        # CSP nonce：为每个请求生成随机 nonce，内联脚本需携带匹配 nonce 才执行
+        nonce = getattr(g, "_csp_nonce", secrets.token_hex(16))
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            f"default-src 'self'; script-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self'; "
             "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
-            "base-uri 'self'; form-action 'self'"
+            "base-uri 'self'; form-action 'self'; object-src 'none'; "
+            "require-trusted-types-for 'script'"
         )
         if request.path in ("/", "/login", "/user"):
             resp.headers["Cache-Control"] = "no-store"

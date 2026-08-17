@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>易班自动签到 · 网页管理</title>
-<script>
+<script nonce="{{ g._csp_nonce }}">
   // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
   try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
 </script>
-<script>
+<script nonce="{{ g._csp_nonce }}">
   // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
   // 防止部署更新后缓存旧页面导致登录/功能异常
   (function () {
@@ -25,7 +25,7 @@
 <link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css" media="(min-resolution: 1.5dppx)">
 <script src="/static/vendor/tailwind.js"></script>
 <script src="/static/vendor/md-render.js"></script>
-<script>tailwind.config = { darkMode: 'class' }</script>
+<script nonce="{{ g._csp_nonce }}">tailwind.config = { darkMode: 'class' }</script>
 <style>
   body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
@@ -785,7 +785,7 @@
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
             bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md max-w-[90vw] text-center break-words"></div>
 
-<script>
+<script nonce="{{ g._csp_nonce }}">
 // ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 完全一致，含 pending） =================
 const STATUS_ICON = {
   success: '✅', already: '✅', no_task: '➖', failed: '❌', retrying: '🔄',
@@ -2568,7 +2568,7 @@ async function removeDeletedMineAccount(i) {
 }
 
 </script>
-<script>
+<script nonce="{{ g._csp_nonce }}">
 // 全局公告：访问时加载一次（登录页也显示，无需登录）
 async function loadAnnouncement() {
   try {

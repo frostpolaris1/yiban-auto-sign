@@ -34,7 +34,7 @@ SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class DuplicatePhoneError(Exception):
@@ -461,24 +461,9 @@ def migrate_v5(conn):
     """v5：用户注销支持——users 增加 deleted/deleted_at，邮箱唯一改为活跃唯一，新增注销请求表。"""
     cols = _table_columns(conn, "users")
     if "deleted" not in cols:
-        conn.executescript(
-            """
-            CREATE TABLE users_new (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              email TEXT NOT NULL,
-              password_hash TEXT NOT NULL,
-              role TEXT NOT NULL DEFAULT 'user',
-              created_at TEXT NOT NULL DEFAULT '',
-              pw_version INTEGER NOT NULL DEFAULT 1,
-              deleted INTEGER NOT NULL DEFAULT 0,
-              deleted_at TEXT NOT NULL DEFAULT ''
-            );
-            INSERT INTO users_new (id, email, password_hash, role, created_at, pw_version, deleted, deleted_at)
-              SELECT id, email, password_hash, role, created_at, pw_version, 0, '' FROM users;
-            DROP TABLE users;
-            ALTER TABLE users_new RENAME TO users;
-            """
-        )
+        # 使用 ALTER TABLE ADD COLUMN 而非表重建，避免崩溃窗口数据丢失
+        conn.execute("ALTER TABLE users ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
         conn.commit()
     _ensure_index(
         conn,
