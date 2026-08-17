@@ -3,12 +3,27 @@ umask 077
 # 易班自动签到运行脚本
 cd /opt/yiban-auto-sign
 
-# 加载环境变量（set -a 确保变量导出到子进程；source 语义安全，
-# 替代易受特殊字符/空格影响的 `export $(cat .env | xargs)`）
-# 必须先于日志/状态路径计算：YIBAN_STATE_DIR / YIBAN_LOG_FILE 可能由 .env 提供。
-set -a
-. /opt/yiban-auto-sign/.env
-set +a
+# 加载环境变量（逐行安全解析，显式 export；必须先于日志/状态路径计算：
+# YIBAN_STATE_DIR / YIBAN_LOG_FILE 可能由 .env 提供）
+# 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
+# 若公告含 `; $(...)` 等 shell 元字符，source 会把文本当作 shell 命令执行（命令注入）。
+# 这里只做 key=value 赋值导出，值不会再次被 shell 求值。
+if [ -r /opt/yiban-auto-sign/.env ]; then
+    while IFS='=' read -r key value || [ -n "$key$value" ]; do
+        # 兼容 CRLF 编辑产生的行尾 CR
+        value=${value%$'\r'}
+        # key 首尾空白去除后校验
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        [ -z "$key" ] && continue
+        case "$key" in \#*) continue ;; esac
+        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "警告: .env 含非法键名，已跳过: $key" >&2
+            continue
+        fi
+        export "$key=$value"
+    done < /opt/yiban-auto-sign/.env
+fi
 
 # 状态/日志根目录：优先 YIBAN_STATE_DIR
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
