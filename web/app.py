@@ -3573,11 +3573,16 @@ def create_app(host=None):
     @app.route("/api/clock")
     def api_clock():
         text, color = sign_status()
+        try:
+            tz_offset_min = int(datetime.now().astimezone().utcoffset().total_seconds() // 60)
+        except Exception:
+            tz_offset_min = 0
         return jsonify(
             {
                 "ok": True,
                 "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "server_ts": int(time.time()),  # 服务器 epoch 秒，供前端平滑走秒与校准
+                "tz_offset_min": tz_offset_min,  # 服务器本地时区相对 UTC 的分钟偏移
                 "sign_status": text,
                 "color": color,
             }

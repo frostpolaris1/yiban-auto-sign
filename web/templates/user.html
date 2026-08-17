@@ -169,7 +169,7 @@
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-password" type="password" required placeholder="用于自动登录签到"
+        <input id="f-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
@@ -254,17 +254,17 @@
       <form id="password-form" class="grid grid-cols-1 gap-3 max-w-sm">
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
-          <input id="p-old" type="password" required placeholder="输入当前密码"
+          <input id="p-old" type="password" autocomplete="current-password" required placeholder="输入当前密码"
                  class="input">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 10 位，含两类字符）</label>
-          <input id="p-new" type="password" required placeholder="新密码"
+          <input id="p-new" type="password" autocomplete="new-password" required placeholder="新密码"
                  class="input">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">确认新密码</label>
-          <input id="p-confirm" type="password" required placeholder="再次输入新密码"
+          <input id="p-confirm" type="password" autocomplete="new-password" required placeholder="再次输入新密码"
                  class="input">
         </div>
         <div class="flex items-center gap-3">
@@ -301,12 +301,14 @@ let editingIndex = null;
 let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
 
 async function api(path, opts = {}, _retried = false) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
+    ...(opts.headers || {}),
+  };
   const resp = await fetch(path, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
-    },
     ...opts,
+    headers,
   });
   // 401 未登录才跳转；403（无权限/CSRF 失败）返回错误提示，由页面展示
   if (resp.status === 401) {
@@ -404,7 +406,7 @@ function userStateLine(a) {
   // esc：state_message 来自状态文件，防御性转义防存储型 XSS（2026-08-15 对抗性审查 L2）
   const plan = a.state_message && a.state_message.startsWith('计划') ? ' · 今日' + esc(a.state_message) : '';
   return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">待签到' + plan
-    + ' · 前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + Number(a.queue_ahead) + '</span> 人</div>';
+    + ' · 前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>';
 }
 
 function renderList() {
@@ -419,11 +421,11 @@ function renderList() {
     card.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
-          <span class="text-lg leading-none">${a.deleted ? '🗑️' : jsEscape(a.state_icon)}</span>
+          <span class="text-lg leading-none">${a.deleted ? '🗑️' : esc(a.state_icon)}</span>
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
-            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，可重新提交</div>'
+            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，待管理员处理</div>'
               : (a.status === 'active' ? userStateLine(a) : '')}
           </div>
         </div>
@@ -433,7 +435,7 @@ function renderList() {
               ? '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5">已取消</span>'
               : statusBadge(a.status)}
           ${a.deleted
-            ? `<button onclick="removeDeletedAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">移除记录</button>`
+            ? '<span class="text-sm text-zinc-400 dark:text-zinc-500">待管理员处理</span>'
             : (a.status === 'active' && !a.pause_forbidden
                 ? `<button onclick="togglePause(${i})" class="text-sm ${a.user_paused ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100'} transition-colors duration-150">${a.user_paused ? '恢复签到' : '暂停签到'}</button>`
                 : '')
@@ -668,30 +670,21 @@ async function deleteAccount(i) {
   } catch (e) { toast(e.message, true); }
 }
 
-// 移除被管理员软删除的账号记录：释放一人一号名额，移除后提交表单重新出现
-async function removeDeletedAccount(i) {
-  const a = accounts[i];
-  if (!confirm(`确定移除「${jsEscape(a.display_name)}」(${a.phone}) 的删除记录吗？移除后可重新提交新账号。`)) return;
-  try {
-    await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
-    toast('已移除记录');
-    loadAccounts();
-  } catch (e) { toast(e.message, true); }
-}
-
 // 服务器时间：本地平滑走秒，60 秒校准一次
 let clockOffset = 0;
+let tzOffsetMin = 0;
 async function calibrateClock() {
   try {
     const data = await api('/api/clock');
     clockOffset = data.server_ts - Math.floor(Date.now() / 1000);
+    tzOffsetMin = Number(data.tz_offset_min) || 0;
   } catch (e) { /* 静默 */ }
 }
 function tickClock() {
-  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset) * 1000);
-  const pad = (n) => String(n).padStart(2, '0');
-  $('user-clock').textContent =
-    `服务器时间：${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+  // 服务器本地时间：epoch + 服务器时区偏移后按 UTC 字段格式化（toISOString 即服务器墙上时间）
+  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset + tzOffsetMin * 60) * 1000);
+  const str = t.toISOString().slice(0, 19).replace('T', ' ');
+  $('user-clock').textContent = '服务器时间：' + str;
 }
 setInterval(tickClock, 1000);
 setInterval(calibrateClock, 60000);
@@ -723,7 +716,7 @@ async function confirmDelete() {
       body: JSON.stringify({ password: pw }),
     });
     toast(data.msg || '账号已注销');
-    localStorage.clear();
+    try { localStorage.clear(); } catch (e) { /* 受限环境忽略 */ }
     setTimeout(() => { location.href = '/login'; }, 1200);
   } catch (e) {
     // 错误文案由后端给出（400 密码不正确/不可注销、403、429 请稍后再试、500）
@@ -838,7 +831,7 @@ function renderPrefSlots(data) {
           : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
     // 拥挤度：满员=100%+黄底警示已传达"已选满"，不再拼冗余前缀（移动端 4 列窄屏换行，2026-08-15）
     // nowrap + 移动端 11px：390/360/320 视口实测单行放得下
-    btn.innerHTML = `<div class="font-medium">${s.label}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
+    btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
     btn.onclick = () => pickTimePref(s.slot_min);
     grid.appendChild(btn);
     // 首尾时段提醒（选中时；总开关关时与"暂不生效"提示拼接，两则信息都不丢）
