@@ -158,13 +158,17 @@ def _delete_grace_remaining(deleted_at):
     """注销冷却剩余秒数：deleted_at + 宽限期 − now；非冷却中（无时间/已过期/解析失败）返回 0。
 
     登录即恢复（2026-08-16 用户裁决）与已注销用户视图共用此判定。
+    兼容两种格式：主格式 strftime("%Y-%m-%d %H:%M:%S")（新写入），存量 ISO 格式自动回退。
     """
     if not deleted_at:
         return 0
     try:
         d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return 0
+        try:
+            d = datetime.fromisoformat(str(deleted_at))
+        except (ValueError, TypeError):
+            return 0
     remain = (d + timedelta(days=DELETE_GRACE_DAYS)) - datetime.now()
     return remain.total_seconds() if remain.total_seconds() > 0 else 0
 
@@ -1847,7 +1851,7 @@ def create_app():
                 elif action == "delete" and not acc.get("deleted"):
                     # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
                     ops.append(
-                        ("set_deleted", acc["id"], 1, datetime.now().isoformat(timespec="seconds"))
+                        ("set_deleted", acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     )
             done = len(ops)
             if ops:
@@ -1902,7 +1906,7 @@ def create_app():
                 return jsonify({"error": "账号不存在"}), 404
             acc = accounts[idx]
             db.set_account_deleted(
-                acc["id"], 1, datetime.now().isoformat(timespec="seconds")
+                acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             )
             db.audit(
                 session.get("username") or "?",
