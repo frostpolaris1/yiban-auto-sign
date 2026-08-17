@@ -37,29 +37,30 @@ def main():
     print(f"返回 {len(sign_stats)} 行")
     for row in sign_stats[:10]:
         print(f"  {row}")
-    if sign_stats:
-        assert "day" in sign_stats[0] and "status" in sign_stats[0] and "cnt" in sign_stats[0]
+    if sign_stats and not ("day" in sign_stats[0] and "status" in sign_stats[0] and "cnt" in sign_stats[0]):
+        raise AssertionError("sign_event_stats 返回行缺少 day/status/cnt 字段")
 
     print("\n=== page_visit_stats(days=30) ===")
     page_stats = db.page_visit_stats(days=30)
     print(f"返回 {len(page_stats)} 行")
     for row in page_stats[:10]:
         print(f"  {row}")
-    if page_stats:
-        assert "day" in page_stats[0] and "pv" in page_stats[0] and "uv" in page_stats[0]
+    if page_stats and not ("day" in page_stats[0] and "pv" in page_stats[0] and "uv" in page_stats[0]):
+        raise AssertionError("page_visit_stats 返回行缺少 day/pv/uv 字段")
 
     print("\n=== server_metric_history(hours=24) ===")
     history = db.server_metric_history(hours=24)
     print(f"返回 {len(history)} 行")
     for row in history[:5]:
         print(f"  {row}")
-    if history:
-        assert "ts" in history[0] and "cpu" in history[0]
+    if history and not ("ts" in history[0] and "cpu" in history[0]):
+        raise AssertionError("server_metric_history 返回行缺少 ts/cpu 字段")
 
     print("\n=== verify_audit_chain() ===")
     ok, broken, first = db.verify_audit_chain()
     print(f"ok={ok}, broken={broken}, first_broken_id={first}")
-    assert ok, "审计哈希链校验失败"
+    if not ok:
+        raise AssertionError("审计哈希链校验失败")
 
     print("\n统计数据对接测试通过 [OK]")
 

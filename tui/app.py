@@ -17,7 +17,7 @@ SSH 登录服务器后执行 `yiban`（或 `python3 -m tui`）即可打开面板
 """
 
 import argparse
-import contextlib
+import asyncio
 import json
 import os
 import re
@@ -182,9 +182,30 @@ def _write_env_int_locked(env_path, key, value):
     if value > 0:
         out.append(f"{key}={value}")
     tmp = env_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
     os.replace(tmp, env_path)
+
+
+def _merge_account_edit(old, form):
+    """编辑账号时把表单值与管理字段合并，保留原账号的审核/软删/暂停状态。
+
+    old 为当前账号 dict（可能为空），form 为表单返回 dict；返回合并后的账号 dict。
+    """
+    merged = dict(form)
+    if old:
+        for key in (
+            "owner",
+            "status",
+            "reject_reason",
+            "deleted",
+            "deleted_at",
+            "user_paused",
+        ):
+            if key in old:
+                merged[key] = old[key]
+    return merged
 
 
 class AccountForm(ModalScreen):
@@ -255,19 +276,17 @@ class AccountForm(ModalScreen):
 
     def _save(self) -> None:
         phone = self.query_one("#phone", Input).value.strip()
-        password = self.query_one("#password", Input).value.strip()
-        if not phone or not password:
+        password = self.query_one("#password", Input).value
+        if not phone or not password.strip():
             self.notify("手机号和密码为必填项", severity="error", timeout=3)
             return
-        self.dismiss(
-            {
-                "name": self.query_one("#name", Input).value.strip(),
-                "phone": phone,
-                "password": password,
-                "phone_model": self.query_one("#phone_model", Input).value.strip(),
-                "phone_code": self.query_one("#phone_code", Input).value.strip(),
-            }
-        )
+        self.dismiss(_merge_account_edit(self.account, {
+            "name": self.query_one("#name", Input).value.strip(),
+            "phone": phone,
+            "password": password,
+            "phone_model": self.query_one("#phone_model", Input).value.strip(),
+            "phone_code": self.query_one("#phone_code", Input).value.strip(),
+        }))
 
 
 class YibanTuiApp(App):
@@ -621,7 +640,8 @@ class YibanTuiApp(App):
         result = self.query_one("#ping-result", Static)
         result.update("检测中…")
         try:
-            resp = requests.get(
+            resp = await asyncio.to_thread(
+                requests.get,
                 "https://api.uyiban.com/base/c/auth/yiban",
                 timeout=6,
                 headers={
@@ -755,26 +775,34 @@ class YibanTuiApp(App):
         # 单账号手动签到：关闭随机延迟，避免等待
         env["YIBAN_START_DELAY_MAX"] = "0"
         env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
+        # 子进程使用与 TUI 相同的数据库与 .env（--env/--db 自定义路径时保证一致）
+        env["YIBAN_DB_FILE"] = db._db_file
+        env["YIBAN_ENV_FILE"] = self.env_path
         # 解密 accounts.json 需要同一密钥：显式注入（--env 自定义路径时保证一致）
         if account_crypto.has_key(self.env_path) and not env.get("YIBAN_ACCOUNTS_KEY"):
             env["YIBAN_ACCOUNTS_KEY"] = account_crypto.load_key(self.env_path).hex()
         # 日志输出重定向到与 cron 相同的 sign.log（追加、行缓冲），
         # 否则日志被 DEVNULL 丢弃，TUI 日志区与状态图标无法更新
         log_fh = None
-        with contextlib.suppress(OSError):
+        try:
             # 日志文件不可写时回退丢弃，不影响签到执行
             log_fh = open(self.log_path, "a", encoding="utf-8", buffering=1)
+        except OSError:
+            log_fh = None
         try:
             subprocess.Popen(
                 [sys.executable, script, "--only", phone],
                 cwd=base,
                 env=env,
-                stdout=log_fh,
+                stdout=log_fh if log_fh is not None else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
             )
         except FileNotFoundError as e:
             self.notify(f"手动签到启动失败: {e}", severity="error", timeout=4)
             return
+        finally:
+            if log_fh is not None:
+                log_fh.close()
         self.notify(f"已触发 {phone} 手动签到（后台执行，详见右侧日志）", timeout=3)
 
     def _on_form_result(self, data) -> None:
