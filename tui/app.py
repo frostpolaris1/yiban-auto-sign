@@ -40,6 +40,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 import account_crypto  # noqa: E402
 import db  # noqa: E402
+import env_lock  # noqa: E402
 
 # 默认路径（与 signin.py / run.sh 保持一致，可用参数覆盖）
 LOG_DEFAULT = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
@@ -164,21 +165,11 @@ def load_env_int(env_path, key, default):
 def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。
 
-    原子写 + 跨进程 flock（与 web/app.py _env_write_lock 同一 .env.lock 锁文件，
+    原子写 + 共享 env_lock（与 web/app.py _env_write_lock、密钥生成同一把锁，
     防 TUI 与 web 并发保存设置互相覆盖——对抗性审查 2026-08-15）。
     """
-    with contextlib.suppress(ImportError):
-        import fcntl
-
-        fd = open(env_path + ".lock", "a+")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            _write_env_int_locked(env_path, key, value)
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            fd.close()
-        return
-    _write_env_int_locked(env_path, key, value)
+    with env_lock.env_write_lock(env_path):
+        _write_env_int_locked(env_path, key, value)
 
 
 def _write_env_int_locked(env_path, key, value):

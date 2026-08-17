@@ -20,6 +20,8 @@ from contextlib import suppress
 
 from Crypto.Cipher import AES
 
+import env_lock
+
 logger = logging.getLogger("yiban-crypto")
 
 # 密文对象格式版本（AES-256-GCM，v1）
@@ -74,27 +76,28 @@ def _decode_key(raw):
 def _write_key_to_env_file(env_file, key):
     """把新生成的密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
 
-    写入前再读一次 .env：若其他进程已写入密钥则复用（多进程首启竞态兜底，
-    避免后写覆盖导致先前加密的数据无法解密）。
+    读-写-替换整体包进共享 env_lock：与 web/tui 写 .env 互斥，避免多进程首启
+    同时生成不同密钥互相覆盖；锁内仍保留“写入前重读”的既有兜底。
     """
-    existing = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
-    if existing:
-        return _decode_key(existing)
-    lines = []
-    if os.path.exists(env_file):
-        with open(env_file, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-            lines = f.read().splitlines()
-    out = [ln for ln in lines if not ln.strip().startswith("YIBAN_ACCOUNTS_KEY=")]
-    out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")
-    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, env_file)
-    with suppress(OSError):
-        os.chmod(env_file, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
-    return key
+    with env_lock.env_write_lock(env_file):
+        existing = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
+        if existing:
+            return _decode_key(existing)
+        lines = []
+        if os.path.exists(env_file):
+            with open(env_file, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
+                lines = f.read().splitlines()
+        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_ACCOUNTS_KEY=")]
+        out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")
+        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_file)
+        with suppress(OSError):
+            os.chmod(env_file, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
+        return key
 
 
 def load_key(env_file=None):

@@ -23,6 +23,7 @@ import threading
 
 # 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
 import account_crypto
+import env_lock
 
 logger = logging.getLogger("yiban.db")
 
@@ -282,26 +283,28 @@ def _decode_audit_key(raw):
 def _write_audit_key_to_env_file(env_file, key):
     """把新生成的审计密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
 
-    写入前再读一次 .env：若其他进程已写入密钥则复用，避免多进程首启竞态。
+    读-写-替换整体包进共享 env_lock：与 web/tui 写 .env 互斥；锁内仍保留
+    “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
     """
-    existing = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
-    if existing:
-        return _decode_audit_key(existing)
-    lines = []
-    if os.path.exists(env_file):
-        with open(env_file, encoding="utf-8-sig") as f:
-            lines = f.read().splitlines()
-    out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
-    out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
-    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, env_file)
-    with contextlib.suppress(OSError):
-        os.chmod(env_file, 0o600)
-    return key
+    with env_lock.env_write_lock(env_file):
+        existing = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
+        if existing:
+            return _decode_audit_key(existing)
+        lines = []
+        if os.path.exists(env_file):
+            with open(env_file, encoding="utf-8-sig") as f:
+                lines = f.read().splitlines()
+        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
+        out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
+        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_file)
+        with contextlib.suppress(OSError):
+            os.chmod(env_file, 0o600)
+        return key
 
 
 def _audit_key():
@@ -367,25 +370,30 @@ def migrate_v3(conn):
 # 可视化表（Phase 4）
 # ---------------------------------------------------------------------------
 def _write_track_salt_to_env_file(env_file, salt):
-    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。"""
-    existing = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
-    if existing:
-        return existing
-    lines = []
-    if os.path.exists(env_file):
-        with open(env_file, encoding="utf-8-sig") as f:
-            lines = f.read().splitlines()
-    out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
-    out.append(f"YIBAN_TRACK_SALT={salt}")
-    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, env_file)
-    with contextlib.suppress(OSError):
-        os.chmod(env_file, 0o600)
-    return salt
+    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。
+
+    读-写-替换整体包进共享 env_lock：与 web/tui 写 .env 互斥；锁内仍保留
+    “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
+    """
+    with env_lock.env_write_lock(env_file):
+        existing = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
+        if existing:
+            return existing
+        lines = []
+        if os.path.exists(env_file):
+            with open(env_file, encoding="utf-8-sig") as f:
+                lines = f.read().splitlines()
+        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
+        out.append(f"YIBAN_TRACK_SALT={salt}")
+        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_file)
+        with contextlib.suppress(OSError):
+            os.chmod(env_file, 0o600)
+        return salt
 
 
 def _track_salt():
