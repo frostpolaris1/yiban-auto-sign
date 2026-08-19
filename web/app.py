@@ -488,6 +488,15 @@ def load_env_int(env_path, key, default):
         return default
 
 
+def icp_info():
+    """网站备案信息（可选）：.env 的 YIBAN_ICP_INFO，留空不显示。
+
+    解耦设计：未配置时模板 `{% if icp_info %}` 块不输出，footer 保持旧样式；
+    配置后所有页面底部显示该文本（模板经 Jinja autoescape 转义，无 XSS）。
+    """
+    return read_env(ENV_FILE).get("YIBAN_ICP_INFO", "").strip()
+
+
 def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
     write_env_key(env_path, key, str(value) if value > 0 else "")
@@ -1185,7 +1194,7 @@ def create_app(host=None):
             return redirect("/login")
         if role != "admin":
             return redirect("/user")
-        return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION)
+        return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
 
     @app.route("/user")
     def user_page():
@@ -1194,7 +1203,7 @@ def create_app(host=None):
             return redirect("/login")
         if role != "user":
             return redirect("/")
-        return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION)
+        return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
 
     # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
     # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
@@ -1220,7 +1229,7 @@ def create_app(host=None):
             if cnt < 4:
                 return redirect("/" if _current_role() == "admin" else "/user")
             logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", ip)
-        return render_template("login.html", web_version=WEB_VERSION, app_version=APP_VERSION)
+        return render_template("login.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -3410,6 +3419,8 @@ def create_app(host=None):
                 },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
                 "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
+                # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
+                "global_pause": load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
                 "batch_mode": False,
             }
@@ -3425,7 +3436,8 @@ def create_app(host=None):
         is_master = _is_builtin_admin_session()
         if not is_master and any(
             k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
-                                "allow_time_pref", "sign_window", "sign_mode")
+                                "allow_time_pref", "sign_window", "sign_mode",
+                                "global_pause")
         ):
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         try:
@@ -3483,6 +3495,11 @@ def create_app(host=None):
         sunday_sign = None
         if "sunday_sign" in data:
             sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        # 全局暂停（一键暂停签到）：仅主管理员可写（上方 403 已拦），下一轮 cron 生效。
+        # 1=暂停（signin.py 检测后 exit(2) 跳过），0/空=正常。
+        global_pause = None
+        if "global_pause" in data:
+            global_pause = 1 if str(data.get("global_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
         updates = {
             "YIBAN_START_DELAY_MAX": str(start) if start > 0 else "",
@@ -3503,14 +3520,17 @@ def create_app(host=None):
             updates["YIBAN_SIGN_END"] = win_end_str
         if sunday_sign is not None:
             updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
+        if global_pause is not None:
+            updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
         write_env_batch(ENV_FILE, updates)
         sunday_display = "不变" if sunday_sign is None else sunday_sign
+        pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
         # 批量多选为前端会话级开关，不写入配置
         logger.info(
-            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 缓冲=%s 自选=%s 窗口=%s 周日=%s",
+            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 缓冲=%s 自选=%s 窗口=%s 周日=%s 暂停=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
             edge_raw if edge_raw is not None else "不变", pref_raw if pref_raw is not None else "不变",
-            win or "不变", sunday_display,
+            win or "不变", sunday_display, pause_display,
         )
         # 设置变更审计（2026-08-16 补 P8：此前调度/系统设置保存无留痕，与其他管理操作不一致）
         db.audit(
@@ -3519,7 +3539,8 @@ def create_app(host=None):
             "settings",
             f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
             f"分布={sign_dist or '-'} 缓冲={edge_raw if edge_raw is not None else '-'} "
-            f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display}",
+            f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
+            f"全局暂停={pause_display}",
         )
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 

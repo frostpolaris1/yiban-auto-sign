@@ -213,6 +213,7 @@ STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空�
 STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自取消（用户暂停自己的签到任务）
 STATUS_PENDING = "pending"               # 待签（未执行/无记录）
+STATUS_GLOBAL_PAUSED = "global_paused"   # 全局暂停（管理员 Web UI 一键暂停：整站停止自动签到）
 
 # 状态码 → 日志/日历符号（与 web/TUI 显示层一致）
 STATUS_SYMBOL = {
@@ -220,6 +221,7 @@ STATUS_SYMBOL = {
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
     STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️",
+    STATUS_GLOBAL_PAUSED: "⏸",
 }
 
 # 凭据类失败关键词（熔断器计数用）：账号密码问题——连续失败达到阈值后暂停签到。
@@ -1877,6 +1879,13 @@ def main():
     if not args.only and datetime.now().weekday() == 6 and not SUNDAY_SIGN:
         logger.info("==== 周日签到未开启（系统设置中开启后周日也会尝试签到），跳过执行 ====")
         sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
+
+    # 全局暂停（管理员 Web UI 一键暂停）：下一轮生效，当前进程照常跑完。
+    # 手动签到（--only）不受限——用户主动触发应当放行（与周日开关语义一致）。
+    # YIBAN_GLOBAL_PAUSE 由 .env 写入，run.sh 加载后经环境变量传入。
+    if not args.only and str(os.environ.get("YIBAN_GLOBAL_PAUSE", "")).strip().lower() in ("1", "true", "on", "yes"):
+        logger.info("==== 签到已暂停（管理员通过 Web UI 一键暂停），跳过执行 ====")
+        sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，恢复后次日正常执行
 
     logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
     # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）
