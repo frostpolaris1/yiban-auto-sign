@@ -116,7 +116,7 @@
         </div>
         <label class="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">
           <input id="reg-agree" type="checkbox" class="mt-0.5 w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 accent-blue-500">
-          <span>我已阅读并同意 <a href="javascript:void(0)" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</a></span>
+          <span>我已阅读并同意 <a href="javascript:void(0)" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</a> 与 <a href="javascript:void(0)" onclick="showPrivacy()" class="text-blue-500 hover:underline">《隐私政策》</a></span>
         </label>
         <div id="reg-error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="register-btn"
@@ -130,7 +130,13 @@
       <div id="footer-icp" class="mb-1">{{ icp_info }}</div>
       {% endif %}
       <div onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</div>
-      <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="inline-block mt-1 text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
+      <div class="mt-1 flex items-center justify-center gap-3 text-blue-500 dark:text-blue-400">
+        <a href="/terms" target="_blank" rel="noopener" class="hover:text-blue-600 dark:hover:text-blue-300">用户协议</a>
+        <span class="text-zinc-300 dark:text-zinc-600">·</span>
+        <a href="/privacy" target="_blank" rel="noopener" class="hover:text-blue-600 dark:hover:text-blue-300">隐私政策</a>
+        <span class="text-zinc-300 dark:text-zinc-600">·</span>
+        <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）</a>
+      </div>
     </footer>
   </div>
 
@@ -272,6 +278,13 @@ function showAgreement() {
 function closeAgreement() {
   document.getElementById('agreement-modal').classList.add('hidden');
 }
+// 隐私政策弹窗
+function showPrivacy() {
+  document.getElementById('privacy-modal').classList.remove('hidden');
+}
+function closePrivacy() {
+  document.getElementById('privacy-modal').classList.add('hidden');
+}
 
 // 注册（注册成功后自动登录）
 document.getElementById('register-form').addEventListener('submit', async (e) => {
@@ -283,9 +296,9 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
   try {
     const email = regEmail.value.trim();
     const password = regPw.value;
-    // 必须勾选同意用户协议
+    // 必须勾选同意用户协议与隐私政策
     if (!document.getElementById('reg-agree').checked) {
-      showError(errorBox, '请先阅读并同意《用户协议》');
+      showError(errorBox, '请先阅读并同意《用户协议》和《隐私政策》');
       btn.disabled = false;
       return;
     }
@@ -300,7 +313,7 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
       btn.disabled = false;
       return;
     }
-    const [st, data] = await post('/api/register', {email, password});
+    const [st, data] = await post('/api/register', {email, password, agree: document.getElementById('reg-agree').checked});
     if (st !== 200) {
       showError(errorBox, data.error || '注册失败');
       return;
@@ -356,38 +369,23 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
     <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
     <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="agreement-content">
-      <p>欢迎使用易班自动签到服务。注册前请仔细阅读以下条款：</p>
-      <p>一、服务说明</p>
-      <p>本服务是一个自建的易班自动签到工具，用于在每日签到窗口内，代替你完成易班平台的早操签到打卡。你需要在本网页注册账号，并提交自己的易班登录信息（手机号、密码、设备型号与设备识别码），由系统定时自动执行签到。</p>
-      <p>本服务不提供人工客服，不保证签到一定成功，也不提供任何付费功能或会员服务。</p>
-      <p>二、账号提交与审核</p>
-      <p>注册并登录后，你可以在个人页面提交一套易班账号信息，每个用户仅限提交一套。提交后，管理员会人工审核你的账号信息，审核通过后该账号才会被纳入自动签到队列。</p>
-      <p>如果审核不通过，系统会注明拒绝理由，你可以根据理由修改信息后重新提交，直到审核通过为止。</p>
-      <p>三、信息收集与使用</p>
-      <p>本服务仅收集以下信息：你的注册邮箱与登录密码、易班账号手机号、易班登录密码、设备型号与设备唯一识别码。以上信息仅用于完成自动签到操作，不会用于任何其他用途，也不会向任何第三方提供、出售或共享。</p>
-      <p>我们不会收集你的姓名、学校、学号等与签到无关的个人信息。</p>
-      <p>四、信息安全与责任</p>
-      <p>你的易班登录密码以加密形式存储在服务器本地文件中（加密密钥仅保存在服务器本机，用于每日自动签到执行），包括管理员和站长在内的任何人都无法在网页界面上查看明文密码。网站登录密码以不可逆哈希形式存储。但请你理解：没有任何系统能做到绝对安全，使用本服务仍存在一定的密码泄露风险。</p>
-      <p>请勿将账号密码与他人共用，因共用导致的后果由你自行承担。</p>
-      <p>五、数据保留与删除</p>
-      <p>如果你提交的易班账号被管理员删除，该账号将进入 7 天保留期，7 天后自动彻底清除，不再可恢复。</p>
-      <p>删除你的注册账号即同时删除你提交的易班账号密码及相关信息。你可以随时在本服务中删除自己提交的易班账号；如需删除注册账号，可联系管理员处理。你有权向管理员请求查看或导出自己提交的数据。</p>
-      <p>六、未成年用户</p>
-      <p>未满 18 周岁的用户应在监护人知情并同意的前提下使用本服务；未满 14 周岁的未成年人不得使用本服务。监护人应对被监护人的使用行为及后果负责。</p>
-      <p>七、免责声明</p>
-      <p>自动签到操作处于易班平台规则的边缘地带，使用本服务存在账号被平台限制、处罚的风险。因使用本服务产生的一切后果，包括但不限于签到失败、账号受限、被学校通报等，均由你自愿承担。</p>
-      <p>本服务不保证签到必定成功，也不对任何间接损失负责。</p>
-      <p>八、用户义务</p>
-      <p>你应当提供真实、有效的账号信息，并遵守所在学校的规定和易班平台的使用规则。如果你的易班账号信息发生变更（如修改密码、更换设备），请及时在本服务中更新，否则由此导致的签到失败由你自行承担。</p>
-      <p>你不得利用本服务从事任何违法违规活动。</p>
-      <p>九、服务变更与终止</p>
-      <p>本服务属于个人运维的小规模工具，无固定域名，不保证服务的稳定性与可用性。我们可能因易班平台规则变化、技术故障或其他原因，随时调整或停止服务，恕不另行通知。</p>
-      <p>服务停止后，你的账号信息将被删除，我们不承担数据备份的责任。</p>
-      <p>十、其他</p>
-      <p>本协议可能随服务更新而修改，更新后继续使用即视为同意新协议。注册账号即表示你已阅读并同意以上全部条款。如你不同意本协议，请立即停止使用本服务。</p>
+      {{ agreement_html | safe }}
     </div>
     <div class="flex justify-end mt-4">
       <button onclick="closeAgreement()" class="btn-primary">我知道了</button>
+    </div>
+  </div>
+</div>
+<!-- 隐私政策弹窗 -->
+<div id="privacy-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closePrivacy()"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">隐私政策</div>
+    <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="privacy-content">
+      {{ privacy_html | safe }}
+    </div>
+    <div class="flex justify-end mt-4">
+      <button onclick="closePrivacy()" class="btn-primary">我知道了</button>
     </div>
   </div>
 </div>

@@ -170,7 +170,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         self.assertIn("user_self_delete_request", actions)
         self.assertIn("user_self_delete_confirm", actions)
         # 冷却期邮箱保护（安全审查 2026-08-16）：注销后 7 天内同邮箱注册被拒（恢复权不被抢占）
-        r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234"})
+        r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234", "agree": True})
         self.assertEqual(r.status_code, 400, "冷却期内同邮箱注册应被拒")
 
     # ---- 管理员视图（v0.20.1：注销不发通知，改主动查看）----
@@ -451,7 +451,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
         self._delete(c, token, password=USER_PASS)
-        r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234"})
+        r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234", "agree": True})
         self.assertEqual(r.status_code, 400, "冷却期内同邮箱注册应被拒")
         self.assertIn("冷却期", r.get_json()["error"])
         self.assertIsNone(db.find_user("user1@test.local"), "注册不应产生新活跃用户")
@@ -465,7 +465,7 @@ class UserDeregistrationWebTest(unittest.TestCase):
         conn.execute("UPDATE users SET deleted_at=? WHERE email=?", (old, "oldone@test.local"))
         conn.commit()
         c = self.webapp.create_app().test_client()
-        r = c.post("/api/register", json={"email": "oldone@test.local", "password": "newpass1234"})
+        r = c.post("/api/register", json={"email": "oldone@test.local", "password": "newpass1234", "agree": True})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("oldone@test.local"))
 

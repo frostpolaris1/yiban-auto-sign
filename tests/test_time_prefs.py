@@ -709,10 +709,10 @@ class TimePrefsTest(unittest.TestCase):
             app = self.webapp.create_app()
             c = app.test_client()
             # 第一个注册成功
-            r = c.post("/api/register", json={"email": "cap1@test.local", "password": "StrongPass1!"})
+            r = c.post("/api/register", json={"email": "cap1@test.local", "password": "StrongPass1!", "agree": True})
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             # 第二个被拒（已达上限）
-            r2 = c.post("/api/register", json={"email": "cap2@test.local", "password": "StrongPass1!"})
+            r2 = c.post("/api/register", json={"email": "cap2@test.local", "password": "StrongPass1!", "agree": True})
             self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
             self.assertIn("上限", r2.get_json()["error"])
         finally:

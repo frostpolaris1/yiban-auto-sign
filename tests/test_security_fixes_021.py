@@ -152,9 +152,21 @@ class SecurityFixes021Test(unittest.TestCase):
         r = c.post("/api/register", json={
             "email": BUILTIN_EMAIL,
             "password": "UserPass123!",
+            "agree": True,
         })
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNone(db.find_user_any(BUILTIN_EMAIL))
+
+    def test_register_requires_agree(self):
+        # 合规文档（0.21.2）：注册必须勾选同意《用户协议》《隐私政策》，后端强制校验
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/register", json={
+            "email": "agree@test.local",
+            "password": "UserPass123!",
+        })
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertIn("请先阅读并同意", r.get_json()["error"])
+        self.assertIsNone(db.find_user("agree@test.local"))
 
     def test_account_add_auto_register_rejects_builtin_admin_email(self):
         c = self.webapp.create_app().test_client()
@@ -329,6 +341,7 @@ class SecurityFixes021Test(unittest.TestCase):
             r = c.post("/api/register", json={
                 "email": "race@test.local",
                 "password": "UserPass123!",
+                "agree": True,
             })
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIn("该邮箱已注册", r.get_json()["error"])

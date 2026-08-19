@@ -103,6 +103,9 @@ build/
 # 品牌图标（版权来源不明，不入开源仓库；本地/服务器自行放入即可生效，见 README「自定义 Web 图标」）
 web/static/vendor/logo.png
 
+# 运营者本地完整版合规文档（不入库，仅自己的服务器用；仓库内相应文件为只含注释的空模板）
+deploy-local/
+
 # 根目录 agent 记忆入口（2026-08-16 归并：AI-HANDOFF / TODO / .workbuddy 记忆 / WORKFLOW / CONTRIBUTING，非开源）
 memory.md
 

@@ -180,7 +180,7 @@ class AdversarialTest(unittest.TestCase):
 
     def test_register_invalid_email_rejected(self):
         c = self.webapp.create_app().test_client()
-        r = c.post("/api/register", json={"email": "not-an-email", "password": "StrongPass123!"})
+        r = c.post("/api/register", json={"email": "not-an-email", "password": "StrongPass123!", "agree": True})
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
 
     def test_self_delete_endpoint_soft_deletes_user_and_accounts(self):

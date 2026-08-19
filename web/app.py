@@ -22,6 +22,7 @@ import argparse
 import calendar
 import contextlib
 import hashlib
+import html
 import json
 import logging
 import os
@@ -43,6 +44,133 @@ from werkzeug.security import check_password_hash, generate_password_hash
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
+
+# 合规文档（隐私政策 / 用户协议）渲染：从仓库根目录的 .md 文件读取并转为 HTML，
+# 供注册页弹窗与 /privacy、/terms 独立页共用，避免多份副本漂移。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DOC_FILES = {"USER_AGREEMENT.md", "PRIVACY_POLICY.md"}
+
+
+def _inline_md(text):
+    """行内格式：先转义 HTML，再处理 **粗体**、`代码`、[文本](链接)。"""
+    s = html.escape(text, quote=True)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
+    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
+    return s
+
+
+def _render_md(md_text):
+    """极简 Markdown → HTML（仅支持本项目合规文档用到的子集，无第三方依赖）。
+
+    支持：#~#### 标题、--- 分隔线、> 引用、有序/无序列表、- 段落合并。
+    """
+    lines = md_text.split("\n")
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if line.strip() == "":
+            i += 1
+            continue
+        if line.lstrip().startswith("<!--"):
+            # 跳过 HTML 注释：部署者模板说明留在文件中供编辑者阅读，但不渲染到页面
+            while i < n and "-->" not in lines[i]:
+                i += 1
+            i += 1  # 跳过含 --> 结束标记的行；未闭合则越界退出
+            continue
+        if line.strip() == "---":
+            out.append("<hr>")
+            i += 1
+            continue
+        m = re.match(r"^(#{1,4})\s+(.*)$", line)
+        if m:
+            lvl = len(m.group(1))
+            out.append(f"<h{lvl}>{_inline_md(m.group(2))}</h{lvl}>")
+            i += 1
+            continue
+        if line.lstrip().startswith(">"):
+            buf = []
+            while i < n and lines[i].lstrip().startswith(">"):
+                buf.append(lines[i].lstrip()[1:].strip())
+                i += 1
+            out.append("<blockquote>" + _inline_md(" ".join(s for s in buf if s)) + "</blockquote>")
+            continue
+        if re.match(r"^[-*]\s+", line):
+            items = []
+            while i < n and re.match(r"^[-*]\s+", lines[i]):
+                items.append("<li>" + _inline_md(re.sub(r"^[-*]\s+", "", lines[i])) + "</li>")
+                i += 1
+            out.append("<ul>" + "".join(items) + "</ul>")
+            continue
+        if re.match(r"^\d+\.\s+", line):
+            items = []
+            while i < n and re.match(r"^\d+\.\s+", lines[i]):
+                items.append("<li>" + _inline_md(re.sub(r"^\d+\.\s+", "", lines[i])) + "</li>")
+                i += 1
+            out.append("<ol>" + "".join(items) + "</ol>")
+            continue
+        para = []
+        while (
+            i < n
+            and lines[i].strip() != ""
+            and lines[i].strip() != "---"
+            and not lines[i].lstrip().startswith(">")
+            and not re.match(r"^(?:#{1,4})\s+", lines[i])
+            and not re.match(r"^[-*]\s+", lines[i])
+            and not re.match(r"^\d+\.\s+", lines[i])
+        ):
+            para.append(_inline_md(lines[i]))
+            i += 1
+        out.append("<p>" + " ".join(para) + "</p>")
+    return "\n".join(out)
+
+
+def _read_doc_html(filename):
+    """读取仓库根目录的合规文档并渲染为 HTML；缺失/空模板/出错均回退兜底提示。"""
+    if filename not in _DOC_FILES:
+        return "<p>未知文档。</p>"
+    path = os.path.join(_REPO_ROOT, filename)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rendered = _render_md(f.read())
+        # 模板未填（只剩注释/空白）时回退中性占位文案，不回显面向编辑者的开发注释
+        if not re.sub(r"<[^>]+>", "", rendered).strip():
+            return "<p>该文档尚未发布，请联系运营者。</p>"
+        return rendered
+    except Exception as exc:  # 文件缺失/编码异常不应拖垮页面
+        logger.warning("读取合规文档失败 %s: %s", filename, exc)
+        return "<p>文档暂时无法加载，请联系运营者。</p>"
+
+
+def _doc_page(title, body_html):
+    """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。"""
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} - 易班自动签到</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         max-width: 800px; margin: 40px auto; padding: 0 16px; color: #18181b; line-height: 1.75; }}
+  h1 {{ font-size: 26px; margin-bottom: 8px; }}
+  h2 {{ font-size: 19px; margin-top: 30px; border-left: 4px solid #2563eb; padding-left: 10px; }}
+  h3 {{ font-size: 16px; margin-top: 22px; }}
+  h4 {{ font-size: 15px; }}
+  a {{ color: #2563eb; }}
+  blockquote {{ border-left: 3px solid #d4d4d8; margin: 14px 0; padding: 6px 14px;
+               color: #52525b; background: #fafafa; border-radius: 4px; }}
+  code {{ background: #f4f4f5; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }}
+  hr {{ border: none; border-top: 1px solid #e4e4e7; margin: 28px 0; }}
+  .doc-back {{ margin-top: 36px; padding-top: 16px; border-top: 1px solid #e4e4e7; }}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+{body_html}
+<p class="doc-back"><a href="/login">&larr; 返回登录页</a></p>
+</body>
+</html>"""
 import account_crypto  # noqa: E402
 import db  # noqa: E402
 import env_lock  # noqa: E402
@@ -1031,7 +1159,9 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-17 全量审查第二批修复：AES弱密钥检测+CSP nonce+systemd加固+flock路径+migrate_v5+备份加密+测试补齐（0.20.10）
 # 2026-08-17 全量审查第三+四批修复：中/低严重度问题全面清理（0.20.11）
 # 2026-08-17 全量审查 0.21.0 修复：版本号更新
-APP_VERSION = "0.21.0"
+# 2026-08-17 全局暂停签到 + 备案信息预留区（0.21.1）
+# 2026-08-17 合规文档接入网页 + 部署者模板化 + 渲染修复（0.21.2）
+APP_VERSION = "0.21.2"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1229,7 +1359,24 @@ def create_app(host=None):
             if cnt < 4:
                 return redirect("/" if _current_role() == "admin" else "/user")
             logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", ip)
-        return render_template("login.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
+        return render_template(
+            "login.html",
+            web_version=WEB_VERSION,
+            app_version=APP_VERSION,
+            icp_info=icp_info(),
+            agreement_html=_read_doc_html("USER_AGREEMENT.md"),
+            privacy_html=_read_doc_html("PRIVACY_POLICY.md"),
+        )
+
+    @app.route("/terms")
+    def terms_page():
+        """用户协议独立页（footer / 隐私链接可指向）。"""
+        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"))
+
+    @app.route("/privacy")
+    def privacy_page():
+        """隐私政策独立页（footer / 隐私链接可指向）。"""
+        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"))
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -1360,6 +1507,9 @@ def create_app(host=None):
         data = _json_body()
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
+        # 后端同意校验：必须显式勾选《用户协议》与《隐私政策》（前端勾选仅为 UX，此处为强制）
+        if not data.get("agree"):
+            return jsonify({"error": "请先阅读并同意《用户协议》和《隐私政策》"}), 400
         if len(email.split("@")[0]) > EMAIL_USER_MAX:
             return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
         if not EMAIL_RE.match(email) or len(email) > 64:
