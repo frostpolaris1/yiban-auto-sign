@@ -529,6 +529,24 @@
         <span id="announcement-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
       </div>
     </div>
+
+    <!-- 危险区：一键暂停签到（仅主管理员；下一轮 cron 生效） -->
+    <div class="card mb-4 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-900/10">
+      <div class="text-sm font-medium text-red-800 dark:text-red-300 mb-1 flex items-center gap-2">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+        危险区 · 一键暂停签到
+      </div>
+      <p class="text-xs text-red-600 dark:text-red-400 mb-3">
+        暂停后所有账号停止自动签到（当前正在运行的进程会跑完，下一轮 cron 触发时跳过），手动签到不受影响。操作需二次确认。
+      </p>
+      <button id="global-pause-btn" type="button"
+              class="w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+        ⏸ 暂停自动签到
+      </button>
+      <p id="global-pause-hint" class="text-xs text-red-700 dark:text-red-300 mt-2 hidden">
+        ⏸ 签到当前处于暂停状态 — 自动签到不会执行，直至你手动恢复
+      </p>
+    </div>
   </section>
 
   <!-- ===== 用户管理 ===== -->
@@ -724,6 +742,18 @@
       </form>
     </div>
 </main>
+
+<!-- 页脚：备案信息（可选，YIBAN_ICP_INFO 留空则不显示）+ 版本/开源 -->
+<footer class="mt-8 pt-4 border-t border-zinc-200 dark:border-zinc-700 pb-4">
+  {% if icp_info %}
+  <div id="footer-icp" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2">{{ icp_info }}</div>
+  {% endif %}
+  <div class="text-center text-xs text-zinc-500 dark:text-zinc-400">
+    <span onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors">易班自动签到 v{{ app_version }}</span>
+    <span class="mx-1">·</span>
+    <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
+  </div>
+</footer>
 
 <!-- 账号编辑模态 -->
 <div id="modal-account" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
@@ -1615,6 +1645,8 @@ async function loadSettings() {
     renderSchedulePerm();  // 调度权限：仅主管理员可改
     state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
     renderSundaySignUI();
+    state.globalPause = !!data.global_pause;  // 全局暂停（一键暂停签到）
+    renderGlobalPauseUI();
     // 批量开关（会话级）不在此重置：state.batchMode 初始 false 已保证"刷新页面后关闭"；
     // 此前无条件重置导致"切 tab 再切回设置页开关失效"（2026-08-15 用户反馈）
     renderDelayUI();
@@ -1756,6 +1788,49 @@ function toggleSundaySign() {
   state.sundaySign = !state.sundaySign;
   renderSundaySignUI();
   saveSettings(true);  // 自动保存（写入 .env，cron 下次触发生效）
+}
+
+// 全局暂停（一键暂停签到）：仅主管理员；双重确认；下一轮 cron 生效
+function renderGlobalPauseUI() {
+  const btn = $('global-pause-btn');
+  const hint = $('global-pause-hint');
+  if (!btn) return;
+  // 仅主管理员可操作（后端 403 兜底）
+  btn.disabled = !state.isMasterAdmin;
+  if (state.globalPause) {
+    btn.textContent = '▶ 恢复自动签到';
+    btn.classList.remove('bg-red-600', 'hover:bg-red-700');
+    btn.classList.add('bg-green-600', 'hover:bg-green-700');
+  } else {
+    btn.textContent = '⏸ 暂停自动签到';
+    btn.classList.remove('bg-green-600', 'hover:bg-green-700');
+    btn.classList.add('bg-red-600', 'hover:bg-red-700');
+  }
+  if (hint) hint.classList.toggle('hidden', !state.globalPause);
+}
+
+async function toggleGlobalPause() {
+  if (!state.isMasterAdmin) return;
+  const next = !state.globalPause;
+  // 第一次确认：说明影响
+  const msg1 = next
+    ? '【暂停签到】\n\n所有账号将停止自动签到。\n· 当前正在运行的进程会跑完\n· 手动签到不受影响\n· 可随时恢复\n\n确认继续？'
+    : '【恢复签到】\n\n下一轮自动签到将恢复执行。\n\n确认继续？';
+  if (!confirm(msg1)) return;
+  // 第二次确认：明确选择
+  const msg2 = next
+    ? '⚠️ 再次确认：确定要【暂停】自动签到吗？\n\n此操作将立即写入配置，下一轮 cron 触发时生效。'
+    : '⚠️ 再次确认：确定要【恢复】自动签到吗？';
+  if (!confirm(msg2)) return;
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({ global_pause: next ? 1 : 0 }),
+    });
+    state.globalPause = next;
+    renderGlobalPauseUI();
+    toast(data.msg || (next ? '签到已暂停' : '签到已恢复'));
+  } catch (e) { toast(e.message, true); }
 }
 
 function renderBatchModeUI() {
@@ -1948,6 +2023,8 @@ function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
       document.querySelectorAll('.batch-admin-only').forEach(el => el.classList.add('hidden'));
     }
     await loadSettings();  // 先完成设置加载（末尾 renderAccounts 依赖），再切账号 tab 拉状态——防首次"待签"竞态
+    const pauseBtn = $('global-pause-btn');
+    if (pauseBtn) pauseBtn.addEventListener('click', toggleGlobalPause);
     switchTab('accounts');
     loadLogs();
     calibrateClock();
