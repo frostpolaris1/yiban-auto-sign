@@ -51,12 +51,27 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DOC_FILES = {"USER_AGREEMENT.md", "PRIVACY_POLICY.md"}
 
 
+# 行内链接协议白名单（防存储型 XSS）：javascript:/data:/vbscript: 等协议一律降级为纯文本。
+# 文档由部署者维护，但内容常从第三方模板/网文粘贴，协议不校验会把可执行链接投放到公开页面。
+_SAFE_LINK_SCHEMES = ("http://", "https://", "mailto:")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
 def _inline_md(text):
     """行内格式：先转义 HTML，再处理 **粗体**、`代码`、[文本](链接)。"""
     s = html.escape(text, quote=True)
     s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
     s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
-    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
+
+    def _safe_link(m):
+        # 仅放行 http/https/mailto；其余（javascript:/data:/vbscript: 等）按纯文本渲染，
+        # 不输出 href，避免把可执行协议注入 <a> 标签。
+        inner, url = m.group(1), m.group(2)
+        if url.strip().lower().startswith(_SAFE_LINK_SCHEMES):
+            return f'<a href="{url}" target="_blank" rel="noopener">{inner}</a>'
+        return inner
+
+    s = _LINK_RE.sub(_safe_link, s)
     return s
 
 
@@ -73,10 +88,20 @@ def _render_md(md_text):
             i += 1
             continue
         if line.lstrip().startswith("<!--"):
-            # 跳过 HTML 注释：部署者模板说明留在文件中供编辑者阅读，但不渲染到页面
-            while i < n and "-->" not in lines[i]:
+            # 跳过 HTML 注释：部署者模板说明留在文件中供编辑者阅读，但不渲染到页面。
+            # 未闭合（到文件末尾仍无 -->）时只跳过注释起始行并告警，正文继续渲染——
+            # 避免少写一个 --> 导致其后全部正文被吞、整份文档静默回退"尚未发布"（0.21.2 审查修复）。
+            if "-->" in line:
+                i += 1  # 单行注释
+                continue
+            j = i
+            while j < n and "-->" not in lines[j]:
+                j += 1
+            if j >= n:
+                logger.warning("合规文档存在未闭合的 <!-- 注释（起始行 %d），仅跳过该行", i + 1)
                 i += 1
-            i += 1  # 跳过含 --> 结束标记的行；未闭合则越界退出
+            else:
+                i = j + 1  # 多行注释：跳过整块（含闭合行）
             continue
         if line.strip() == "---":
             out.append("<hr>")
@@ -125,25 +150,39 @@ def _render_md(md_text):
     return "\n".join(out)
 
 
+# 合规文档渲染缓存（0.21.2 审查修复）：登录页为公开高频入口，每次请求读盘+全量正则渲染
+# 会放大 I/O 与 DoS 面。按 (mtime_ns, size) 缓存，部署者更新文件后自动失效。
+_doc_cache = {}  # filename -> ((mtime_ns, size), html)
+
+
 def _read_doc_html(filename):
     """读取仓库根目录的合规文档并渲染为 HTML；缺失/空模板/出错均回退兜底提示。"""
     if filename not in _DOC_FILES:
         return "<p>未知文档。</p>"
     path = os.path.join(_REPO_ROOT, filename)
     try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+        cached = _doc_cache.get(filename)
+        if cached is not None and cached[0] == key:
+            return cached[1]
         with open(path, "r", encoding="utf-8") as f:
             rendered = _render_md(f.read())
         # 模板未填（只剩注释/空白）时回退中性占位文案，不回显面向编辑者的开发注释
         if not re.sub(r"<[^>]+>", "", rendered).strip():
-            return "<p>该文档尚未发布，请联系运营者。</p>"
-        return rendered
+            out = "<p>该文档尚未发布，请联系运营者。</p>"
+        else:
+            out = rendered
+        _doc_cache[filename] = (key, out)
+        return out
     except Exception as exc:  # 文件缺失/编码异常不应拖垮页面
         logger.warning("读取合规文档失败 %s: %s", filename, exc)
         return "<p>文档暂时无法加载，请联系运营者。</p>"
 
 
-def _doc_page(title, body_html):
+def _doc_page(title, body_html, icp_text=""):
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。"""
+    icp_block = f'<p class="doc-icp">{icp_text}</p>' if icp_text else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -163,12 +202,14 @@ def _doc_page(title, body_html):
   code {{ background: #f4f4f5; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }}
   hr {{ border: none; border-top: 1px solid #e4e4e7; margin: 28px 0; }}
   .doc-back {{ margin-top: 36px; padding-top: 16px; border-top: 1px solid #e4e4e7; }}
+  .doc-icp {{ text-align: center; color: #a1a1aa; font-size: 12px; margin-top: 8px; }}
 </style>
 </head>
 <body>
 <h1>{title}</h1>
 {body_html}
 <p class="doc-back"><a href="/login">&larr; 返回登录页</a></p>
+{icp_block}
 </body>
 </html>"""
 import account_crypto  # noqa: E402
@@ -625,6 +666,40 @@ def icp_info():
     return read_env(ENV_FILE).get("YIBAN_ICP_INFO", "").strip()
 
 
+# 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度）：
+# 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）
+# 存在时映射为 front=back=旧值，保证升级前配置行为不变。范围 0~300 秒。
+def edge_config():
+    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数。"""
+    env = read_env(ENV_FILE)
+    old = env.get("YIBAN_WINDOW_EDGE_SEC", "")
+    def _get(key):
+        try:
+            v = int(env.get(key, "").strip())
+        except (TypeError, ValueError):
+            return None
+        return v if 0 <= v <= 300 else None
+    front = _get("YIBAN_WINDOW_EDGE_FRONT_SEC")
+    back = _get("YIBAN_WINDOW_EDGE_BACK_SEC")
+    if front is None or back is None:
+        try:
+            legacy = int(old) if old.strip() else None
+        except ValueError:
+            legacy = None
+        if legacy is not None and not (0 <= legacy <= 300):
+            legacy = None
+        if front is None:
+            front = legacy if legacy is not None else 60
+        if back is None:
+            back = legacy if legacy is not None else 60
+    return front, back
+
+
+def edge_front_sec():
+    """前裁秒数（兼容旧调用的便捷入口）。"""
+    return edge_config()[0]
+
+
 def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
     write_env_key(env_path, key, str(value) if value > 0 else "")
@@ -929,11 +1004,11 @@ def _estimate_slot(phone):
     if idx is None or not live:
         return None, ""
     sw = _sign_window()
-    edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
+    front_min, back_min = edge_config()[0] / 60.0, edge_config()[1] / 60.0
     start_min = sw[0][0] * 60 + sw[0][1]
     end_min = sw[1][0] * 60 + sw[1][1]
-    eff_lo = start_min + edge
-    eff_hi = end_min - edge
+    eff_lo = start_min + front_min
+    eff_hi = end_min - back_min
     span = eff_hi - eff_lo
 
     def fmt(m):
@@ -1161,7 +1236,8 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-17 全量审查 0.21.0 修复：版本号更新
 # 2026-08-17 全局暂停签到 + 备案信息预留区（0.21.1）
 # 2026-08-17 合规文档接入网页 + 部署者模板化 + 渲染修复（0.21.2）
-APP_VERSION = "0.21.2"
+# 2026-08-20 审查修复（XSS/同意校验/缓存/状态语义）+ 掐头去尾前后独立可配（0.21.3）
+APP_VERSION = "0.21.3"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1371,12 +1447,12 @@ def create_app(host=None):
     @app.route("/terms")
     def terms_page():
         """用户协议独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"))
+        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info())
 
     @app.route("/privacy")
     def privacy_page():
         """隐私政策独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"))
+        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info())
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -1394,7 +1470,7 @@ def create_app(host=None):
             "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'; object-src 'none'"
         )
-        if request.path in ("/", "/login", "/user"):
+        if request.path in ("/", "/login", "/user", "/terms", "/privacy"):
             resp.headers["Cache-Control"] = "no-store"
         elif request.path.startswith("/static/") and resp.status_code < 400:
             # 静态资源长缓存 30 天（版本变化由 ?v= 兜底）；404 等错误响应不缓存（防浏览器缓存 404）
@@ -1507,8 +1583,9 @@ def create_app(host=None):
         data = _json_body()
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
-        # 后端同意校验：必须显式勾选《用户协议》与《隐私政策》（前端勾选仅为 UX，此处为强制）
-        if not data.get("agree"):
+        # 后端同意校验：必须显式勾选《用户协议》与《隐私政策》（前端勾选仅为 UX，此处为强制）。
+        # 严格布尔判断（is not True）：真值判断会让 "0"/"false"/"no" 等非空字符串绕过同意校验。
+        if data.get("agree") is not True:
             return jsonify({"error": "请先阅读并同意《用户协议》和《隐私政策》"}), 400
         if len(email.split("@")[0]) > EMAIL_USER_MAX:
             return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
@@ -2522,17 +2599,37 @@ def create_app(host=None):
         return None
 
     def _pref_slots(sw):
-        """窗口内 16 个 5 分钟片（时钟对齐）：[{slot_min, label}]。"""
+        """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
+
+        0.22.0 掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
+        disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
+        标记 edge_note 提示且仍可点选（调度在可用部分内安排）。返回全部片（含 disabled），
+        前端据此渲染，保证"满 5 分钟才完全灰掉、不足时提示"的需求语义。
+        """
         start_min = sw[0][0] * 60 + sw[0][1]
         end_min = sw[1][0] * 60 + sw[1][1]
-        edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
+        span = end_min - start_min
+        front_min = edge_config()[0] / 60.0
+        back_min = edge_config()[1] / 60.0
         slots = []
         for b in range(start_min, end_min, 5):
-            lo = max(b, start_min + edge)
-            hi = min(b + 5, end_min - edge)
-            if hi > lo:
-                m = b - start_min
-                slots.append({"slot_min": m, "label": f"{b // 60:02d}:{b % 60:02d}"})
+            off = b - start_min  # 片起点相对窗口起点的分钟偏移
+            lo = max(off, front_min)
+            hi = min(off + 5, span - back_min)
+            disabled = hi <= lo  # 整片在裁剪区内（裁剪值 >= 5 分钟覆盖）
+            note = ""
+            if not disabled and (off < front_min or off + 5 > span - back_min):
+                # 部分裁剪：提示"开头/结尾保留 X 分钟"，仍可选
+                if off < front_min:
+                    note = f"开头 {front_min:g} 分钟保留"
+                else:
+                    note = f"结尾 {back_min:g} 分钟保留"
+            slots.append({
+                "slot_min": off,
+                "label": f"{b // 60:02d}:{b % 60:02d}",
+                "disabled": disabled,
+                "edge_note": note,
+            })
         return slots
 
     @app.route("/api/my-time-pref")
@@ -2557,8 +2654,15 @@ def create_app(host=None):
                 pct = 100 if count >= cap else min(90, round(count * 100 / cap / 10) * 10)
             else:
                 pct = 0
-            slots.append({"slot_min": s["slot_min"], "label": s["label"], "pct": pct})
+            slots.append({
+                "slot_min": s["slot_min"],
+                "label": s["label"],
+                "pct": pct,
+                "disabled": s["disabled"],     # 完全在裁剪区 → 灰色不可选（0.22.0）
+                "edge_note": s["edge_note"],   # 部分裁剪提示（如"开头 2 分钟保留"）
+            })
         estimated, estimate_note = _estimate_slot(phone) if phone else (None, "")
+        front_sec, back_sec = edge_config()
         return jsonify({
             "ok": True,
             "pref": _slot_to_label(pref["slot_min"]) if pref else None,
@@ -2566,7 +2670,9 @@ def create_app(host=None):
             "slots": slots,
             "allowed": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
             "window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
-            "edge_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60),
+            "edge_sec": front_sec,                    # 兼容旧前端（=前裁）
+            "edge_front_sec": front_sec,              # 0.22.0 前后独立
+            "edge_back_sec": back_sec,
             "has_account": bool(phone),
             "estimated": estimated,        # 预计签到时段（顺序排序可预期；随机为 None）
             "estimate_note": estimate_note,
@@ -2606,8 +2712,13 @@ def create_app(host=None):
                 return jsonify({"error": "时间片取值无效"}), 400
             sw = _sign_window()
             span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
-            edge = load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60) // 60
-            if slot % 5 != 0 or not (0 <= slot < span - 2 * edge):
+            front_min = edge_config()[0] / 60.0
+            back_min = edge_config()[1] / 60.0
+            # 0.22.0 前后独立裁剪：部分落入裁剪区的片（如首片剩 3 分钟）允许保存，
+            # 调度会在可用部分内安排；完全落入裁剪区（前端已置灰）拒绝。
+            if slot % 5 != 0 or not (0 <= slot < span) or not (
+                slot + 5 > front_min and slot < span - back_min
+            ):
                 # 不暴露"5 分钟对齐"等调度机制细节（信息分层，2026-08-15）
                 return jsonify({"error": "所选时间片不在可选范围内，请重新选择"}), 400
             # 弹性切换冷却（2026-08-15 用户反馈）：60s 窗口内自由次数内完全放行（浏览式
@@ -3557,7 +3668,10 @@ def create_app(host=None):
                     "random" if mode == "random" else "sequence"),
                 "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
                     "normal" if mode == "normal" else "uniform"),
-                "window_edge_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_SEC", 60),
+                # 掐头去尾（0.22.0 前后独立，秒；window_edge_sec 兼容旧前端 = 前裁）
+                "window_edge_sec": edge_config()[0],
+                "edge_front_sec": edge_config()[0],
+                "edge_back_sec": edge_config()[1],
                 "allow_time_pref": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
                 "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
                 # 容量状态（对抗性审查补）：注册/账号上限与当前使用量（管理员知情）
@@ -3586,6 +3700,7 @@ def create_app(host=None):
         is_master = _is_builtin_admin_session()
         if not is_master and any(
             k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
+                                "edge_front_sec", "edge_back_sec",
                                 "allow_time_pref", "sign_window", "sign_mode",
                                 "global_pause")
         ):
@@ -3611,17 +3726,31 @@ def create_app(host=None):
             return jsonify({"error": "排序方式取值应为 sequence 或 random"}), 400
         if sign_dist and sign_dist not in ("uniform", "normal"):
             return jsonify({"error": "分布方式取值应为 uniform 或 normal"}), 400
-        # 首尾缓冲（0=关闭，设置页需警示尾部风险）
-        # 注意：0 是合法配置值（关闭缓冲），不能用 write_env_int（其语义为 <=0 删除行）
+        # 掐头去尾（0.22.0 前后独立）：window_edge_sec 兼容旧前端（对称写）；
+        # edge_front_sec / edge_back_sec 各自独立（秒，0~300，30 的倍数 = 0.5 分钟粒度）。
+        # 0 是合法值（不裁切），不能用 write_env_int（其语义为 <=0 删除行）。
+        edge_front = edge_back = None
         edge_raw = data.get("window_edge_sec")
-        edge = None
         if edge_raw is not None:
             try:
                 edge = int(edge_raw)
             except (TypeError, ValueError):
                 return jsonify({"error": "首尾缓冲必须是整数秒"}), 400
-            if not (0 <= edge <= 600):
-                return jsonify({"error": "首尾缓冲应在 0~600 秒之间"}), 400
+            if not (0 <= edge <= 300 and edge % 30 == 0):
+                return jsonify({"error": "首尾缓冲应为 0~300 秒且为 30 的倍数（0.5 分钟粒度）"}), 400
+            edge_front = edge_back = edge
+        for _key, _field in (("edge_front_sec", "front"), ("edge_back_sec", "back")):
+            if _key in data:
+                try:
+                    v = int(data[_key])
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"{_field}裁剪秒数必须是整数"}), 400
+                if not (0 <= v <= 300 and v % 30 == 0):
+                    return jsonify({"error": f"{_field}裁剪应为 0~300 秒且为 30 的倍数（0.5 分钟粒度）"}), 400
+                if _key == "edge_front_sec":
+                    edge_front = v
+                else:
+                    edge_back = v
         # 用户自选总开关（0/1；0 同样需显式写入）
         pref_raw = data.get("allow_time_pref")
         pref = None
@@ -3661,8 +3790,15 @@ def create_app(host=None):
             updates["YIBAN_SIGN_ORDER"] = sign_order
         if sign_dist:
             updates["YIBAN_SIGN_DIST"] = sign_dist
-        if edge is not None:
-            updates["YIBAN_WINDOW_EDGE_SEC"] = str(edge)
+        if edge_front is not None or edge_back is not None:
+            # 只写其中一个时保持另一个现值；写入新键并删除旧键（迁移）
+            if edge_front is None:
+                edge_front = edge_config()[0]
+            if edge_back is None:
+                edge_back = edge_config()[1]
+            updates["YIBAN_WINDOW_EDGE_FRONT_SEC"] = str(edge_front)
+            updates["YIBAN_WINDOW_EDGE_BACK_SEC"] = str(edge_back)
+            updates["YIBAN_WINDOW_EDGE_SEC"] = ""  # 旧键删除（前后对称语义已拆分为两键）
         if pref is not None:
             updates["YIBAN_ALLOW_TIME_PREF"] = str(pref)
         if win_start_str is not None:
@@ -3675,11 +3811,17 @@ def create_app(host=None):
         write_env_batch(ENV_FILE, updates)
         sunday_display = "不变" if sunday_sign is None else sunday_sign
         pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
+        if edge_front is None and edge_back is None:
+            edge_display = "不变"
+        elif edge_front == edge_back:
+            edge_display = f"各{edge_front / 60:g}分钟"
+        else:
+            edge_display = f"前{edge_front / 60:g}后{edge_back / 60:g}分钟"
         # 批量多选为前端会话级开关，不写入配置
         logger.info(
-            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 缓冲=%s 自选=%s 窗口=%s 周日=%s 暂停=%s",
+            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 暂停=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
-            edge_raw if edge_raw is not None else "不变", pref_raw if pref_raw is not None else "不变",
+            edge_display, pref_raw if pref_raw is not None else "不变",
             win or "不变", sunday_display, pause_display,
         )
         # 设置变更审计（2026-08-16 补 P8：此前调度/系统设置保存无留痕，与其他管理操作不一致）
@@ -3688,7 +3830,7 @@ def create_app(host=None):
             "settings_save",
             "settings",
             f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
-            f"分布={sign_dist or '-'} 缓冲={edge_raw if edge_raw is not None else '-'} "
+            f"分布={sign_dist or '-'} 掐头去尾={edge_display} "
             f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
             f"全局暂停={pause_display}",
         )

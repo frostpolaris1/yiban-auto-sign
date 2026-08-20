@@ -168,6 +168,20 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertIn("请先阅读并同意", r.get_json()["error"])
         self.assertIsNone(db.find_user("agree@test.local"))
 
+    def test_register_agree_string_falsy_rejected(self):
+        # 审查发现（0.21.2）：真值判断会让 "0"/"false"/"no" 等非空字符串绕过同意校验，
+        # 现改为严格布尔判断（is not True），这些值必须与未勾选一样被拒绝。
+        c = self.webapp.create_app().test_client()
+        for falsy in ("0", "false", "no", "null", 0, False):
+            r = c.post("/api/register", json={
+                "email": f"agree{falsy}@test.local",
+                "password": "UserPass123!",
+                "agree": falsy,
+            })
+            self.assertEqual(r.status_code, 400, f"agree={falsy!r} 应被拒绝: {r.get_data(as_text=True)}")
+            self.assertIn("请先阅读并同意", r.get_json()["error"])
+            self.assertIsNone(db.find_user(f"agree{falsy}@test.local"), f"agree={falsy!r} 不应注册成功")
+
     def test_account_add_auto_register_rejects_builtin_admin_email(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)

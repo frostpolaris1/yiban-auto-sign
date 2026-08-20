@@ -477,9 +477,11 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(data["sign_order"], "sequence")
         self.assertEqual(data["sign_dist"], "uniform")
         self.assertEqual(data["window_edge_sec"], 60)
+        self.assertEqual(data["edge_front_sec"], 60)  # 0.22.0 前后独立（默认各 60s）
+        self.assertEqual(data["edge_back_sec"], 60)
         self.assertEqual(data["allow_time_pref"], 1)
         self.assertIn("06:30", data["sign_window"])
-        # 保存新参数 → .env 生效
+        # 保存新参数 → .env 生效（掐头去尾 0.22.0 起写前后两键，旧键删除）
         r = c.post("/api/settings", json={
             "sign_order": "random", "sign_dist": "normal",
             "window_edge_sec": 0, "allow_time_pref": 0,
@@ -488,8 +490,79 @@ class TimePrefsTest(unittest.TestCase):
         env = open(self.env_file, encoding="utf-8").read()
         self.assertIn("YIBAN_SIGN_ORDER=random", env)
         self.assertIn("YIBAN_SIGN_DIST=normal", env)
-        self.assertIn("YIBAN_WINDOW_EDGE_SEC=0", env)
+        self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC=0", env)
+        self.assertIn("YIBAN_WINDOW_EDGE_BACK_SEC=0", env)
+        self.assertNotIn("YIBAN_WINDOW_EDGE_SEC=", env)
         self.assertIn("YIBAN_ALLOW_TIME_PREF=0", env)
+
+    def test_api_settings_front_back_asymmetric(self):
+        """0.22.0：掐头去尾前后独立——POST 不同值 → env 写两键，GET 回读一致。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        h = self._csrf(token)
+        r = c.post("/api/settings", json={
+            "edge_front_sec": 30, "edge_back_sec": 300,
+        }, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC=30", env)
+        self.assertIn("YIBAN_WINDOW_EDGE_BACK_SEC=300", env)
+        data = c.get("/api/settings").get_json()
+        self.assertEqual(data["edge_front_sec"], 30)
+        self.assertEqual(data["edge_back_sec"], 300)
+
+    def test_api_settings_edge_validation(self):
+        """0.22.0：裁剪值必须 0~300 且 30 的倍数（0.5 分钟粒度）；非法拒绝且不落盘。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        h = self._csrf(token)
+        for bad in (15, 301, -30, 130):
+            r = c.post("/api/settings", json={"edge_front_sec": bad}, headers=h)
+            self.assertEqual(r.status_code, 400, f"edge_front_sec={bad} 应被拒")
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertNotIn("YIBAN_WINDOW_EDGE_FRONT_SEC=15", env)
+
+    def test_api_pref_slots_disabled_partial(self):
+        """0.22.0：前 2 分钟 + 后 5 分钟 → 首片 partial（可点+提示）、末片 disabled（灰）。"""
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write("YIBAN_WINDOW_EDGE_FRONT_SEC=120\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
+        try:
+            c = self.webapp.create_app().test_client()
+            self._login(c, "user1@test.local", USER_PASS)
+            data = c.get("/api/my-time-pref").get_json()
+            self.assertEqual(data["edge_front_sec"], 120)
+            self.assertEqual(data["edge_back_sec"], 300)
+            first = data["slots"][0]
+            last = data["slots"][-1]
+            self.assertFalse(first["disabled"], "首片部分保留应可选")
+            self.assertTrue(first["edge_note"], "首片应有裁剪提示")
+            self.assertTrue(last["disabled"], "末片完全在后裁区内应禁用")
+            self.assertFalse(last["edge_note"])
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace("YIBAN_WINDOW_EDGE_FRONT_SEC=120\n", "")
+                 .replace("YIBAN_WINDOW_EDGE_BACK_SEC=300\n", ""))
+
+    def test_api_pref_save_partial_ok_full_clip_rejected(self):
+        """0.22.0：部分裁剪片可保存（调度在可用部分安排）；完全裁剪片保存被拒。"""
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write("YIBAN_WINDOW_EDGE_FRONT_SEC=120\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
+        try:
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, "user1@test.local", USER_PASS)
+            h = self._csrf(token)
+            # 首片（0-5 分，前 2 分钟被裁）→ 部分可用，允许保存
+            r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            # 末片（75-80 分，完全在后裁 5 分钟内）→ 拒绝
+            r2 = c.put("/api/my-time-pref", json={"slot_min": 75}, headers=h)
+            self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(
+                s.replace("YIBAN_WINDOW_EDGE_FRONT_SEC=120\n", "")
+                 .replace("YIBAN_WINDOW_EDGE_BACK_SEC=300\n", ""))
 
     def test_api_settings_window_validation(self):
         c = self.webapp.create_app().test_client()

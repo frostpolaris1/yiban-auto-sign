@@ -398,14 +398,28 @@
           </select>
         </div>
         <div>
-          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">首尾缓冲</div>
-          <select id="edge-select"
-                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
-            <option value="60">掐头去尾各 1 分钟（推荐）</option>
-            <option value="0">不掐（尾部可能超时）</option>
-            <option value="120">各 2 分钟（更保守）</option>
-          </select>
-          <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn">⚠️ 无缓冲：窗口末尾时段的账号可能超时</p>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">掐头去尾（0-5 分钟，0.5 步进，前后独立）</div>
+          <div class="flex items-center gap-2">
+            <div class="flex-1">
+              <div class="text-[11px] text-zinc-400 dark:text-zinc-500 mb-0.5">前 n 分钟</div>
+              <input id="edge-front" type="number" min="0" max="5" step="0.5" value="1"
+                     class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            </div>
+            <div class="flex-1">
+              <div class="text-[11px] text-zinc-400 dark:text-zinc-500 mb-0.5">后 n 分钟</div>
+              <input id="edge-back" type="number" min="0" max="5" step="0.5" value="1"
+                     class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+            </div>
+          </div>
+          <div class="flex items-center gap-1.5 mt-1.5">
+            <span class="text-[11px] text-zinc-400 dark:text-zinc-500">快捷：</span>
+            <button type="button" data-edge-min="0" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">0</button>
+            <button type="button" data-edge-min="0.5" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">0.5</button>
+            <button type="button" data-edge-min="1" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">1</button>
+            <button type="button" data-edge-min="2" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">2</button>
+            <button type="button" data-edge-min="5" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">5</button>
+          </div>
+          <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn">⚠️ 前裁或后裁为 0：对应边缘时段的账号可能超时</p>
         </div>
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">签到窗口</div>
@@ -836,7 +850,8 @@ const state = {
   batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
   signOrder: 'sequence', // 调度 v2：排序方式（sequence/random）
   signDist: 'uniform',   // 调度 v2：分布方式（uniform/normal）
-  edgeSec: 60,           // 调度 v2：首尾缓冲秒数（0=关闭）
+  edgeFrontMin: 1,      // 掐头去尾（0.22.0 前后独立）：前裁剪分钟（0-5，0.5 步进）
+  edgeBackMin: 1,       // 后裁剪分钟
   allowTimePref: false,  // 调度 v2：用户自选时间片总开关
   signWindow: '',        // 调度 v2：签到窗口 "06:30 ~ 07:50"
   isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
@@ -1615,12 +1630,14 @@ async function loadSettings() {
     // 调度 v2：排序×分布×缓冲×自选总开关×窗口
     state.signOrder = data.sign_order || 'sequence';
     state.signDist = data.sign_dist || 'uniform';
-    state.edgeSec = data.window_edge_sec ?? 60;
+    state.edgeFrontMin = (data.edge_front_sec ?? data.window_edge_sec ?? 60) / 60;
+    state.edgeBackMin = (data.edge_back_sec ?? data.window_edge_sec ?? 60) / 60;
     state.allowTimePref = !!data.allow_time_pref;
     state.signWindow = data.sign_window || '';
     $('sign-order-select').value = state.signOrder;
     $('sign-dist-select').value = state.signDist;
-    $('edge-select').value = String(state.edgeSec);
+    $('edge-front').value = state.edgeFrontMin;
+    $('edge-back').value = state.edgeBackMin;
     // 顶部"签到窗口"静态展示与实际配置联动（2026-08-15 对抗性审查：原为写死默认值误导）
     const swEl = $('sign-window-static');
     if (swEl) swEl.textContent = state.signWindow || '--:-- ~ --:--';
@@ -1673,11 +1690,12 @@ function markSchedDirty() {
 // 调度权限：仅主管理员可改（后端 403 兜底，前端禁用控件）
 function renderSchedulePerm() {
   const disabled = !state.isMasterAdmin;
-  ['sign-order-select', 'sign-dist-select', 'edge-select', 'window-start', 'window-end',
+  ['sign-order-select', 'sign-dist-select', 'edge-front', 'edge-back', 'window-start', 'window-end',
    'time-pref-toggle-btn', 'schedule-reset-btn', 'schedule-save-btn'].forEach(id => {
     const el = $(id);
     if (el) el.disabled = disabled;
   });
+  document.querySelectorAll('.edge-chip').forEach(b => { b.disabled = disabled; });
   const tip = $('sched-perm-tip');
   if (tip) tip.classList.toggle('hidden', !disabled);
 }
@@ -1695,7 +1713,8 @@ async function saveScheduleSettings() {
       body: JSON.stringify({
         sign_order: state.signOrder,
         sign_dist: state.signDist,
-        window_edge_sec: state.edgeSec,
+        edge_front_sec: Math.round(state.edgeFrontMin * 60),
+        edge_back_sec: Math.round(state.edgeBackMin * 60),
         allow_time_pref: state.allowTimePref ? 1 : 0,
         sign_window: state.signWindow,
       }),
@@ -1721,10 +1740,29 @@ $('sign-dist-select').addEventListener('change', () => {
   state.signDist = $('sign-dist-select').value;
   markSchedDirty();
 });
-$('edge-select').addEventListener('change', () => {
-  state.edgeSec = parseInt($('edge-select').value, 10) || 60;
-  updateEdgeWarn();
-  markSchedDirty();
+// 掐头/去尾：改动只标记（显式保存），输入自动钳制 0-5 并对齐 0.5 步进
+['edge-front', 'edge-back'].forEach(id => {
+  $(id).addEventListener('change', () => {
+    const v = parseFloat($(id).value);
+    if (isNaN(v)) return;
+    const clamped = Math.min(5, Math.max(0, v));
+    const snapped = Math.round(clamped * 2) / 2;  // 0.5 分钟粒度
+    $(id).value = snapped;
+    if (id === 'edge-front') state.edgeFrontMin = snapped; else state.edgeBackMin = snapped;
+    updateEdgeWarn();
+    markSchedDirty();
+  });
+});
+// 快捷档位（一键设置前后相同值）
+document.querySelectorAll('.edge-chip').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const m = parseFloat(btn.dataset.edgeMin);
+    state.edgeFrontMin = state.edgeBackMin = m;
+    $('edge-front').value = m;
+    $('edge-back').value = m;
+    updateEdgeWarn();
+    markSchedDirty();
+  });
 });
 // 窗口起止（原生 time 选择器保证格式；改动只标记，保存走「保存调度设置」）
 ['window-start', 'window-end'].forEach(id => {
@@ -1754,19 +1792,21 @@ function toggleTimePref() {
 }
 function updateEdgeWarn() {
   const warn = $('edge-warn');
-  if (warn) warn.classList.toggle('hidden', state.edgeSec !== 0);
+  if (warn) warn.classList.toggle('hidden', state.edgeFrontMin !== 0 && state.edgeBackMin !== 0);
 }
 
-// 恢复默认调度设置（窗口/缓冲/排序/分布；自选开关不动——那是功能开关）；标记脏，随保存按钮提交
+// 恢复默认调度设置（窗口/掐头去尾/排序/分布；自选开关不动——那是功能开关）；标记脏，随保存按钮提交
 function resetScheduleSettings() {
-  if (!confirm('恢复默认调度设置？\n窗口 06:30 ~ 07:50 · 首尾缓冲 60s · 排序：顺序 · 分布：均匀')) return;
+  if (!confirm('恢复默认调度设置？\n窗口 06:30 ~ 07:50 · 掐头去尾各 1 分钟 · 排序：顺序 · 分布：均匀')) return;
   state.signOrder = 'sequence';
   state.signDist = 'uniform';
-  state.edgeSec = 60;
+  state.edgeFrontMin = 1;
+  state.edgeBackMin = 1;
   state.signWindow = '06:30 ~ 07:50';
   $('sign-order-select').value = state.signOrder;
   $('sign-dist-select').value = state.signDist;
-  $('edge-select').value = String(state.edgeSec);
+  $('edge-front').value = state.edgeFrontMin;
+  $('edge-back').value = state.edgeBackMin;
   $('window-start').value = '06:30';
   $('window-end').value = '07:50';
   updateEdgeWarn();
@@ -2356,6 +2396,18 @@ function renderMinePrefSlots(data) {
   data.slots.forEach((s, i) => {
     const sel = data.pref_slot === s.slot_min;
     const full = s.pct >= 100;  // 拥挤度百分比（2026-08-15：API 只下发 pct，与用户端一致）
+    // 完全落入掐头去尾裁剪区（0.22.0）：灰色禁用，不可选择
+    if (s.disabled) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.disabled = true;
+      btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
+      btn.title = '该时段被掐头去尾保留，不可选择';
+      btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已保留</div>`;
+      grid.appendChild(btn);
+      return;
+    }
+    const partial = !!s.edge_note;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center transition-colors duration-150 ' +
@@ -2363,15 +2415,20 @@ function renderMinePrefSlots(data) {
         ? 'bg-blue-600 border-blue-600 text-white'
         : full
           ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
-          : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
+          : partial
+            ? 'bg-amber-50/50 dark:bg-amber-900/10 border-dashed border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-400'
+            : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
+    if (partial) btn.title = s.edge_note + '，选中后将在可用部分签到';
     // 拥挤度：满员=100%+黄底警示已传达"已选满"，不再拼冗余前缀（移动端 4 列窄屏换行，2026-08-15）
     btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
     btn.onclick = () => pickMineTimePref(s.slot_min);
     grid.appendChild(btn);
     if (sel && (i === 0 || i === data.slots.length - 1)) {
-      const edgeTip = i === 0
-        ? '最早时段：窗口开始后最先为你签到'
-        : '最后时段：临近窗口截止执行，网络波动可能导致错过';
+      const edgeTip = s.edge_note
+        ? s.edge_note + '，选中后将在可用部分签到'
+        : i === 0
+          ? '最早时段：窗口开始后最先为你签到'
+          : '最后时段：临近窗口截止执行，网络波动可能导致错过';
       tip = data.allowed ? '⚠️ ' + edgeTip : '⚠️ 未开启：' + edgeTip;
     }
   });

@@ -106,7 +106,13 @@ _status_write() {
 if [ $EXIT_CODE -eq 0 ]; then
     _status_write "SUCCESS"
 elif [ $EXIT_CODE -eq 2 ]; then
-    _status_write "SKIPPED"
+    # 语义区分（0.22.0 审查修复）：全局暂停（YIBAN_GLOBAL_PAUSE=1）写 GLOBAL_PAUSED，
+    # 与窗口/配置导致的普通 SKIPPED 分开——运维/监控可直接区分"人为暂停"与"技术性跳过"
+    if [ "${YIBAN_GLOBAL_PAUSE:-0}" = "1" ]; then
+        _status_write "GLOBAL_PAUSED"
+    else
+        _status_write "SKIPPED"
+    fi
 fi
 
 # 记录脚本执行结果
