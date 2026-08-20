@@ -213,7 +213,11 @@ STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空�
 STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自取消（用户暂停自己的签到任务）
 STATUS_PENDING = "pending"               # 待签（未执行/无记录）
-STATUS_GLOBAL_PAUSED = "global_paused"   # 全局暂停（管理员 Web UI 一键暂停：整站停止自动签到）
+# 全局暂停（管理员 Web UI 一键暂停：整站停止自动签到）。
+# 注意：本进程不产此状态——暂停时 main() exit(2)，由 run.sh 依据 YIBAN_GLOBAL_PAUSE=1
+# 在「日状态文件」写入 GLOBAL_PAUSED（区别于普通 SKIPPED，供运维/监控区分）；
+# 此处保留常量与符号，供显示层/TUI 消费日状态时映射。
+STATUS_GLOBAL_PAUSED = "global_paused"
 
 # 状态码 → 日志/日历符号（与 web/TUI 显示层一致）
 STATUS_SYMBOL = {
@@ -295,7 +299,7 @@ def _schedule_config():
 
     兼容旧 YIBAN_SIGN_MODE：sequence→顺序×均匀、random→随机×均匀、normal→顺序×正态；
     新参数 YIBAN_SIGN_ORDER / YIBAN_SIGN_DIST 优先。
-    返回 dict：order/dist/edge_sec/block_cap/mu/sigma 百分比/
+    返回 dict：order/dist/edge_front_sec/edge_back_sec/block_cap/mu/sigma 百分比/
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
     """
     mode = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
@@ -322,10 +326,23 @@ def _schedule_config():
     if sigma_lo >= sigma_hi:
         logger.warning("σ 范围 %s~%s 非法，回退默认 15~25", sigma_lo, sigma_hi)
         sigma_lo, sigma_hi = _DEFAULT_SIGMA_MIN_PCT, _DEFAULT_SIGMA_MAX_PCT
+    old_edge = _env_int("YIBAN_WINDOW_EDGE_SEC", None, 0, 600)
     return {
         "order": order,
         "dist": dist,
-        "edge_sec": _env_int("YIBAN_WINDOW_EDGE_SEC", _DEFAULT_EDGE_SEC, 0, 600),
+        # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度；UI 按 0.5 分钟步进）：
+        # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC
+        # 存在时（升级前部署）映射为前后对称，保证旧配置行为不变。
+        "edge_front_sec": _env_int(
+            "YIBAN_WINDOW_EDGE_FRONT_SEC",
+            old_edge if old_edge is not None else _DEFAULT_EDGE_SEC,
+            0, 300,
+        ),
+        "edge_back_sec": _env_int(
+            "YIBAN_WINDOW_EDGE_BACK_SEC",
+            old_edge if old_edge is not None else _DEFAULT_EDGE_SEC,
+            0, 300,
+        ),
         "block_cap": _env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200),
         "mu_min_pct": mu_lo,
         "mu_max_pct": mu_hi,
@@ -1413,24 +1430,26 @@ def _sigma_eff(sigma, n, span_minutes):
 def _schedule_blocks(cfg):
     """按时钟 5 分钟对齐切块（首尾块各 4 分钟），返回 (blocks, eff_lo, eff_hi)。
 
-    blocks: [(lo_min, hi_min), ...]；eff_lo/eff_hi：有效窗口分钟边界（相对当天 0:00）。
-    有效窗口为空（缓冲 >= 窗口宽度）时回退默认窗口，保证调用方永不拿到空块列表。
+    blocks: [(lo_min, hi_min), ...]（浮点分钟，支持 0.5 分钟=30s 的裁剪粒度）；
+    eff_lo/eff_hi：有效窗口分钟边界（相对当天 0:00），由前后裁剪分别决定。
+    有效窗口为空（前裁+后裁 >= 窗口宽度）时回退默认窗口，保证调用方永不拿到空块列表。
     """
     start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
     end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
-    edge = max(0, cfg["edge_sec"] // 60)
-    eff_lo = start_min + edge
-    eff_hi = end_min - edge
+    front = cfg["edge_front_sec"] / 60.0
+    back = cfg["edge_back_sec"] / 60.0
+    eff_lo = start_min + front
+    eff_hi = end_min - back
     if eff_hi <= eff_lo:
         logger.warning(
-            "有效签到窗口为空（窗口 %s~%s、缓冲 %ss），回退默认窗口 06:30~07:50",
-            cfg["sign_start"], cfg["sign_end"], cfg["edge_sec"],
+            "有效签到窗口为空（窗口 %s~%s、前裁 %ss 后裁 %ss），回退默认窗口 06:30~07:50",
+            cfg["sign_start"], cfg["sign_end"], cfg["edge_front_sec"], cfg["edge_back_sec"],
         )
         start_min = _DEFAULT_SIGN_START[0] * 60 + _DEFAULT_SIGN_START[1]
         end_min = _DEFAULT_SIGN_END[0] * 60 + _DEFAULT_SIGN_END[1]
-        edge = max(0, _DEFAULT_EDGE_SEC // 60)
-        eff_lo = start_min + edge
-        eff_hi = end_min - edge
+        front = back = _DEFAULT_EDGE_SEC / 60.0
+        eff_lo = start_min + front
+        eff_hi = end_min - back
     blocks = []
     b = start_min
     while b < end_min:
@@ -1475,12 +1494,13 @@ def _slot_to_bi(cfg):
     """
     start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
     end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
-    edge = max(0, cfg["edge_sec"] // 60)
+    front = cfg["edge_front_sec"] / 60.0
+    back = cfg["edge_back_sec"] / 60.0
     m = {}
     bi = 0
     for b in range(start_min, end_min, 5):
-        lo = max(b, start_min + edge)
-        hi = min(b + 5, end_min - edge)
+        lo = max(b, start_min + front)
+        hi = min(b + 5, end_min - back)
         if hi > lo:
             m[b - start_min] = bi
             bi += 1
@@ -1798,7 +1818,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if schedule:
             now_sec = datetime.now().hour * 3600 + datetime.now().minute * 60 + datetime.now().second
             end_sec = sch_cfg["sign_end"][0] * 3600 + sch_cfg["sign_end"][1] * 60
-            if now_sec + sch_cfg["retry_min_interval"] >= end_sec - sch_cfg["edge_sec"]:
+            if now_sec + sch_cfg["retry_min_interval"] >= end_sec - sch_cfg["edge_back_sec"]:
                 results[phone] = (False, message, False, status)
                 logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
                 if notify_url:
@@ -1899,7 +1919,7 @@ def main():
         _span_min = (
             (_cfg["sign_end"][0] * 60 + _cfg["sign_end"][1])
             - (_cfg["sign_start"][0] * 60 + _cfg["sign_start"][1])
-            - 2 * (_cfg["edge_sec"] // 60)
+            - (_cfg["edge_front_sec"] + _cfg["edge_back_sec"]) / 60.0
         )
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
         if active_n * _cfg["avg_attempt_sec"] > _span_min * 60:
