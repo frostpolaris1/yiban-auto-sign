@@ -59,8 +59,14 @@ class TestGlobalPause(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_manual_signin_not_blocked(self):
-        """--only 手动签到不受全局暂停影响（不应 exit 2）。"""
-        with mock.patch.object(signin, "load_accounts") as m_load:
+        """--only 手动签到不受全局暂停影响（不应 exit 2）。
+
+        run_queue_retry 是真实网络签到路径，测试环境不触网——mock 掉，仅验证
+        "全局暂停检查放行 --only"这一分支语义（防止沙箱无外网时请求挂起）。
+        """
+        with mock.patch.object(signin, "load_accounts") as m_load, \
+             mock.patch.object(signin, "run_queue_retry", return_value={}), \
+             mock.patch.object(signin, "_save_cred_state"):
             m_load.return_value = [mock.Mock(phone="13800000000", user_paused=False)]
             code = _run_main({"YIBAN_GLOBAL_PAUSE": "1"}, argv=["--only", "13800000000"])
 

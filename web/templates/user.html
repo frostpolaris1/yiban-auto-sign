@@ -821,7 +821,19 @@ function renderPrefSlots(data) {
   data.slots.forEach((s, i) => {
     const sel = data.pref_slot === s.slot_min;
     const full = s.pct >= 100;
-    // 拥挤度百分比（2026-08-15 用户决策）：API 只下发 pct，不暴露真实人数防调研，且适配 K 调整
+    // 完全落入掐头去尾裁剪区（0.22.0）：灰色禁用，不可选择
+    if (s.disabled) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.disabled = true;
+      btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
+      btn.title = '该时段被掐头去尾保留，不可选择';
+      btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已保留</div>`;
+      grid.appendChild(btn);
+      return;
+    }
+    // 部分落入裁剪区（如开头 2 分钟保留）：可点选，虚线框 + title 提示，调度在可用部分内安排
+    const partial = !!s.edge_note;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.dataset.slot = s.slot_min;
@@ -831,17 +843,22 @@ function renderPrefSlots(data) {
         ? 'bg-blue-600 border-blue-600 text-white'
         : full
           ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
-          : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
+          : partial
+            ? 'bg-amber-50/50 dark:bg-amber-900/10 border-dashed border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-400'
+            : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
+    if (partial) btn.title = s.edge_note + '，选中后将在可用部分为你签到';
     // 拥挤度：满员=100%+黄底警示已传达"已选满"，不再拼冗余前缀（移动端 4 列窄屏换行，2026-08-15）
     // nowrap + 移动端 11px：390/360/320 视口实测单行放得下
     btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
     btn.onclick = () => pickTimePref(s.slot_min);
     grid.appendChild(btn);
-    // 首尾时段提醒（选中时；总开关关时与"暂不生效"提示拼接，两则信息都不丢）
+    // 首尾时段提醒（选中时；部分裁剪优先显示裁剪提示；总开关关时与"暂不生效"提示拼接，两则信息都不丢）
     if (sel && (i === 0 || i === data.slots.length - 1)) {
-      const edgeTip = i === 0
-        ? '最早时段：窗口开始后最先为你签到'
-        : '最后时段：临近窗口截止执行，网络波动可能导致错过';
+      const edgeTip = s.edge_note
+        ? s.edge_note + '，选中后将在可用部分签到'
+        : i === 0
+          ? '最早时段：窗口开始后最先为你签到'
+          : '最后时段：临近窗口截止执行，网络波动可能导致错过';
       tip = data.allowed ? '⚠️ ' + edgeTip : '⚠️ 未开启：' + edgeTip;
     }
   });

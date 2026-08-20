@@ -87,6 +87,26 @@ class LegalDocRenderTest(unittest.TestCase):
         html = web._read_doc_html("未知.md")
         self.assertIn("<p>未知文档。</p>", html)
 
+    def test_render_link_scheme_whitelist(self):
+        # 协议白名单回归（0.21.2 审查发现）：javascript:/data:/vbscript: 链接降级为纯文本，
+        # 不得输出可执行 href；http/https/mailto 正常渲染。
+        blocked = web._render_md("[点我](javascript:alert(1))")
+        self.assertNotIn("href", blocked, "javascript: 链接不应输出 href")
+        self.assertIn("点我", blocked, "链接文本应以纯文本保留")
+
+        blocked_data = web._render_md("[img](data:text/html,<script>alert(1)</script>)")
+        self.assertNotIn('href="data:', blocked_data)
+        self.assertNotIn("<script>", blocked_data, "data: 负载中的标签必须被转义")
+
+        blocked_vb = web._render_md("[x](vbscript:msgbox(1))")
+        self.assertNotIn('href="vbscript:', blocked_vb)
+
+        ok_https = web._render_md("[链接](https://example.com/a?x=1&y=2)")
+        self.assertIn('<a href="https://example.com/a?x=1&amp;y=2" target="_blank" rel="noopener">链接</a>', ok_https)
+
+        ok_mailto = web._render_md("[邮箱](mailto:admin@example.com)")
+        self.assertIn('<a href="mailto:admin@example.com"', ok_mailto)
+
     def test_local_full_docs_render_if_present(self):
         # 完整版仅供运营者本地/服务器使用（deploy-local/ 被 gitignore，CI 上不存在时直接跳过）
         full = os.path.join(DEPLOY_LOCAL, "PRIVACY_POLICY.md")
@@ -104,6 +124,48 @@ class LegalDocRenderTest(unittest.TestCase):
         self.assertIn("<p>正文</p>", page)
         self.assertIn('href="/login"', page)
         self.assertIn("返回登录页", page)
+
+    def test_unclosed_comment_skips_only_start_line(self):
+        # 0.21.2 审查修复：未闭合 <!-- 只跳过起始行，其后正文必须继续渲染（此前会整份吞掉）
+        html = web._render_md("<!-- 说明未闭合\n\n正文仍然可见。\n\n# 标题")
+        self.assertIn("<p>正文仍然可见。</p>", html)
+        self.assertIn("<h1>标题</h1>", html)
+        self.assertNotIn("<!--", html)
+
+    def test_single_line_comment_skips_comment_only(self):
+        # 单行 <!-- ... --> 注释整行跳过；闭合块后的正文正常
+        html = web._render_md("<!-- 单行说明 -->\n\n正文。")
+        self.assertIn("<p>正文。</p>", html)
+        self.assertNotIn("单行说明", html)
+
+    def test_doc_page_icp_block(self):
+        # 0.21.2 审查修复：#7 独立协议页显示备案信息（配置时）
+        page = web._doc_page("隐私政策", "<p>正文</p>", "京ICP备00000000号-1")
+        self.assertIn('<p class="doc-icp">京ICP备00000000号-1</p>', page)
+        page_empty = web._doc_page("隐私政策", "<p>正文</p>", "")
+        self.assertNotIn('class="doc-icp"', page_empty)
+
+    def test_doc_html_cached_and_invalidated(self):
+        # 0.21.2 审查修复：#6 渲染结果按 (mtime, size) 缓存；修改文件后 key 变化自动失效。
+        # 仓库模板为空模板（渲染结果恒为占位），故用缓存 key 而非渲染内容判断失效。
+        target = os.path.join(BASE, "USER_AGREEMENT.md")
+        with open(target, "r", encoding="utf-8") as f:
+            orig = f.read()
+        try:
+            web._doc_cache.clear()
+            web._read_doc_html("USER_AGREEMENT.md")
+            self.assertIn("USER_AGREEMENT.md", web._doc_cache, "首次渲染应写入缓存")
+            key1 = web._doc_cache["USER_AGREEMENT.md"][0]
+            web._read_doc_html("USER_AGREEMENT.md")
+            self.assertEqual(web._doc_cache["USER_AGREEMENT.md"][0], key1, "未变更时应命中缓存")
+            with open(target, "a", encoding="utf-8") as f:
+                f.write("\n<!-- 临时增量注释 -->\n")
+            web._read_doc_html("USER_AGREEMENT.md")
+            key2 = web._doc_cache["USER_AGREEMENT.md"][0]
+            self.assertNotEqual(key1, key2, "文件变更后缓存 key 应变化并重新渲染")
+        finally:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(orig)
 
 
 if __name__ == "__main__":
