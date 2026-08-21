@@ -25,9 +25,91 @@
 <link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css" media="(min-resolution: 1.5dppx)">
 <script src="/static/vendor/tailwind.js"></script>
 <script src="/static/vendor/md-render.js"></script>
-<script>tailwind.config = { darkMode: 'class' }</script>
+<script>
+  // ===== 主题色板：Tailwind 默认（原版配色，经 CSS 变量重映射生效）=====
+  // 类名不变，JS 动态拼接的类自动继承；RGB 三元组交由 <alpha-value> 支持透明度修饰符（如 /20）
+  // 换主题时：改下方 borderRadius 可调圆角；改 <style> 内 :root/.dark 变量可整体换色
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          zinc: {50:'rgb(var(--c-zinc-50)/<alpha-value>)',100:'rgb(var(--c-zinc-100)/<alpha-value>)',200:'rgb(var(--c-zinc-200)/<alpha-value>)',300:'rgb(var(--c-zinc-300)/<alpha-value>)',400:'rgb(var(--c-zinc-400)/<alpha-value>)',500:'rgb(var(--c-zinc-500)/<alpha-value>)',600:'rgb(var(--c-zinc-600)/<alpha-value>)',700:'rgb(var(--c-zinc-700)/<alpha-value>)',800:'rgb(var(--c-zinc-800)/<alpha-value>)',900:'rgb(var(--c-zinc-900)/<alpha-value>)'},
+          blue: {200:'rgb(var(--c-blue-200)/<alpha-value>)',300:'rgb(var(--c-blue-300)/<alpha-value>)',400:'rgb(var(--c-blue-400)/<alpha-value>)',500:'rgb(var(--c-blue-500)/<alpha-value>)',600:'rgb(var(--c-blue-600)/<alpha-value>)',700:'rgb(var(--c-blue-700)/<alpha-value>)',800:'rgb(var(--c-blue-800)/<alpha-value>)',900:'rgb(var(--c-blue-900)/<alpha-value>)'},
+          amber: {50:'rgb(var(--c-amber-50)/<alpha-value>)',100:'rgb(var(--c-amber-100)/<alpha-value>)',200:'rgb(var(--c-amber-200)/<alpha-value>)',300:'rgb(var(--c-amber-300)/<alpha-value>)',400:'rgb(var(--c-amber-400)/<alpha-value>)',500:'rgb(var(--c-amber-500)/<alpha-value>)',600:'rgb(var(--c-amber-600)/<alpha-value>)',700:'rgb(var(--c-amber-700)/<alpha-value>)',800:'rgb(var(--c-amber-800)/<alpha-value>)',900:'rgb(var(--c-amber-900)/<alpha-value>)'},
+          red: {50:'rgb(var(--c-red-50)/<alpha-value>)',200:'rgb(var(--c-red-200)/<alpha-value>)',300:'rgb(var(--c-red-300)/<alpha-value>)',400:'rgb(var(--c-red-400)/<alpha-value>)',500:'rgb(var(--c-red-500)/<alpha-value>)',600:'rgb(var(--c-red-600)/<alpha-value>)',700:'rgb(var(--c-red-700)/<alpha-value>)',800:'rgb(var(--c-red-800)/<alpha-value>)',900:'rgb(var(--c-red-900)/<alpha-value>)'},
+          green: {50:'rgb(var(--c-green-50)/<alpha-value>)',200:'rgb(var(--c-green-200)/<alpha-value>)',300:'rgb(var(--c-green-300)/<alpha-value>)',400:'rgb(var(--c-green-400)/<alpha-value>)',500:'rgb(var(--c-green-500)/<alpha-value>)',600:'rgb(var(--c-green-600)/<alpha-value>)',700:'rgb(var(--c-green-700)/<alpha-value>)',800:'rgb(var(--c-green-800)/<alpha-value>)',900:'rgb(var(--c-green-900)/<alpha-value>)'}
+        },
+        // 圆角体系（中度优化）：控件 10px / 卡片 14px / 模态 18px
+        borderRadius: { lg:'10px', xl:'14px', '2xl':'18px' }
+      }
+    }
+  };
+</script>
 <style>
+  /* Tailwind 默认色板（原版配色）。类名经 tailwind.config 色板重映射读取这些变量；
+     如需换主题，在 :root/.dark 分别覆盖对应 RGB 三元组即可（深浅模式可不同值）。 */
+  :root {
+    --c-zinc-50:250 250 250; --c-zinc-100:244 244 245; --c-zinc-200:228 228 231; --c-zinc-300:212 212 216;
+    --c-zinc-400:161 161 170; --c-zinc-500:113 113 122; --c-zinc-600:82 82 91; --c-zinc-700:63 63 70;
+    --c-zinc-800:39 39 42; --c-zinc-900:24 24 27;
+    --c-blue-200:191 219 254; --c-blue-300:147 197 253; --c-blue-400:96 165 250; --c-blue-500:59 130 246;
+    --c-blue-600:37 99 235; --c-blue-700:29 78 216; --c-blue-800:30 64 175; --c-blue-900:30 58 138;
+    --c-amber-50:255 251 235; --c-amber-100:254 243 199; --c-amber-200:253 230 138; --c-amber-300:252 211 77;
+    --c-amber-400:251 191 36; --c-amber-500:245 158 11; --c-amber-600:217 119 6; --c-amber-700:180 83 9; --c-amber-800:146 64 14; --c-amber-900:120 53 15;
+    --c-red-50:254 242 242; --c-red-200:254 202 202; --c-red-300:252 165 165; --c-red-400:248 113 113;
+    --c-red-500:239 68 68; --c-red-600:220 38 38; --c-red-700:185 28 28; --c-red-800:153 27 27; --c-red-900:127 29 29;
+    --c-green-50:240 253 244; --c-green-200:187 247 208; --c-green-300:134 239 172; --c-green-400:74 222 128;
+    --c-green-500:34 197 94; --c-green-600:22 163 74; --c-green-700:21 128 61; --c-green-800:22 101 52; --c-green-900:20 83 45;
+  }
+  /* 统一线性图标（currentColor 继承文字颜色，尺寸随字号） */
+  .ic { width: 1em; height: 1em; display: inline-block; vertical-align: -0.125em; flex-shrink: 0; }
+</style>
+<script>
+  // ===== 图标系统：按功能手绘的统一 SVG 线性图标 =====
+  // icon(name) 返回内联 SVG（currentColor 继承文字颜色）；[data-icon] 元素由 hydrateIcons() 填充。
+  window.icon = (function () {
+    var P = {
+      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+      moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      check: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.8-5"/>',
+      close: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',
+      retry: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/>',
+      ban: '<circle cx="12" cy="12" r="9"/><path d="m5.5 5.5 13 13"/>',
+      minus: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>',
+      pause: '<circle cx="12" cy="12" r="9"/><path d="M10 9v6m4-6v6"/>',
+      stop: '<circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
+      trash: '<path d="M4 7h16m-2 0-.9 12.1a2 2 0 0 1-2 1.9H8.9a2 2 0 0 1-2-1.9L6 7m3 0V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-6 4v6m4-6v6"/>',
+      warn: '<path d="M10.3 3.9 1.8 18.6a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 3.5v.1"/>',
+      cal: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4m8-4v4M3 11h18"/>',
+      play: '<path d="M7 5.5v13l11-6.5-11-6.5Z"/>',
+      dots: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+      xmark: '<path d="m6 6 12 12M18 6 6 18"/>',
+      chevL: '<path d="m15 6-6 6 6 6"/>',
+      chevR: '<path d="m9 6 6 6-6 6"/>',
+      chevD: '<path d="m6 9 6 6 6-6"/>'
+    };
+    return function (name, cls) {
+      return '<svg class="ic ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[name] || P.minus) + '</svg>';
+    };
+  })();
+  // 静态占位填充：<span data-icon="moon"></span> → 插入对应 SVG
+  window.hydrateIcons = function (root) {
+    (root || document).querySelectorAll('[data-icon]').forEach(function (el) {
+      if (!el._iconed) { el.innerHTML = window.icon(el.getAttribute('data-icon')); el._iconed = true; }
+    });
+  };
+</script>
+<style>
+  /* 正文：原版字体栈（MiSans 仅高分屏 web 加载；低分屏回退系统字体保 ClearType） */
   body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  /* 仅标题用阿里妈妈方圆体 VF（本机安装；可变字重轴平滑匹配 500/600，圆润亲和）
+     命中范围：页面 h1~h4 与品牌/卡片/模态标题（本项目统一携带 font-semibold tracking-tight）。
+     未安装该字体的设备自动回退 MiSans/系统字体。 */
+  h1, h2, h3, h4, .font-semibold.tracking-tight {
+    font-family: "Alimama FangYuanTi VF", "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
   /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
   @media (max-resolution: 1.5dppx) {
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -49,11 +131,15 @@
       @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
     .card {
-      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6;
+      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 md:p-6;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
     }
+    .dark .card { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
     .card-sm {
-      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4;
+      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
     }
+    .dark .card-sm { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
     /* iOS Safari 聚焦缩放修复（2026-08-15 审查）：输入控件 <16px 时聚焦自动放大页面 */
     @media (max-width: 767px) {
       input, select, textarea { font-size: 16px !important; }
@@ -80,7 +166,7 @@
     <div class="flex items-center gap-4">
       <span id="user-clock" class="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:inline">服务器时间：--:--:--</span>
       <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
-              class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">🌙</button>
+              class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150"><span data-icon="moon"></span></button>
       <span id="user-email" class="text-sm text-zinc-600 dark:text-zinc-300"></span>
       <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
     </div>
@@ -105,8 +191,8 @@
       <h1 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h1>
     </div>
     <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">
-      <span>⏳ 待签</span><span>✅ 成功</span><span>❌ 失败</span>
-      <span>🔄 重试</span><span>⛔ 跳过</span><span>➖ 无需</span><span>⏸️/⏹️ 暂停/已取消</span>
+      <span class="inline-flex items-center gap-1"><span data-icon="clock"></span>待签</span><span class="inline-flex items-center gap-1"><span data-icon="check"></span>成功</span><span class="inline-flex items-center gap-1"><span data-icon="close"></span>失败</span>
+      <span class="inline-flex items-center gap-1"><span data-icon="retry"></span>重试</span><span class="inline-flex items-center gap-1"><span data-icon="ban"></span>跳过</span><span class="inline-flex items-center gap-1"><span data-icon="minus"></span>无需</span><span class="inline-flex items-center gap-1"><span data-icon="pause"></span><span data-icon="stop"></span>暂停/已取消</span>
     </div>
 
     <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">
@@ -125,7 +211,7 @@
     <div class="flex items-center justify-between mb-1">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的签到时间</h2>
       <button id="pref-collapse-btn" type="button" onclick="togglePrefCollapse()"
-              class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">▾</button>
+              class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="chevD"></span></button>
     </div>
     <div id="pref-body">
       <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">签到窗口 <span id="pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始签到后修改，次日生效）</p>
@@ -149,11 +235,11 @@
 <!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗） -->
 <div id="account-form-modal" role="dialog" aria-modal="true" aria-labelledby="account-form-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[85vh] overflow-y-auto">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[85vh] overflow-y-auto">
     <div class="flex items-center justify-between mb-1">
       <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">提交我的易班账号</h2>
       <button type="button" onclick="closeAccountModal()" aria-label="关闭"
-              class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
+              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
     </div>
     <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号。</p>
     <form id="account-form" class="grid grid-cols-1 gap-3">
@@ -197,11 +283,11 @@
 <!-- 注销账号第一重确认（7 天宽限期说明；第二重为密码确认，2026-08-16 安全审查 3→7 天） -->
 <div id="delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
     <div class="flex items-center justify-between mb-1">
       <h2 id="delete-confirm-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">注销账号</h2>
       <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
-              class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
+              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
     </div>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">注销将删除你的网站账号、易班账号与自选签到时间。</p>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4"><span class="text-amber-600 dark:text-amber-400 font-medium">7 天内可撤销恢复</span>，超过 7 天将永久删除，无法找回。</p>
@@ -217,11 +303,11 @@
 <!-- 注销账号第二重确认（再次提醒 + 密码确认；软删除 7 天宽限期，2026-08-16） -->
 <div id="delete-account-modal" role="dialog" aria-modal="true" aria-labelledby="delete-account-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
     <div class="flex items-center justify-between mb-1">
       <h2 id="delete-account-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">最后确认</h2>
       <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
-              class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
+              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
     </div>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">真的要注销吗？注销后账号将无法登录，易班账号与自选签到时间会被删除。</p>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">7 天宽限期内可撤销，超过 7 天无法恢复。请输入当前密码完成注销。</p>
@@ -247,7 +333,7 @@
     <button type="button" onclick="togglePassword()" aria-expanded="false"
             class="w-full flex items-center justify-between text-left">
       <span class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">修改密码</span>
-      <span id="password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
+      <span id="password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200"><span data-icon="chevR"></span></span>
     </button>
     <div id="password-body" class="hidden mt-4">
       <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
@@ -392,9 +478,9 @@ document.addEventListener('keydown', (e) => {
 
 // 审核状态徽章
 function statusBadge(status) {
-  if (status === 'pending') return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5">待审核</span>';
-  if (status === 'rejected') return '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5">已拒绝</span>';
-  if (status === 'active') return '<span class="inline-flex items-center rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2 py-0.5">已生效</span>';
+  if (status === 'pending') return '<span class="inline-flex items-center rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2.5 py-0.5">待审核</span>';
+  if (status === 'rejected') return '<span class="inline-flex items-center rounded-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2.5 py-0.5">已拒绝</span>';
+  if (status === 'active') return '<span class="inline-flex items-center rounded-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2.5 py-0.5">已生效</span>';
   return esc(status);
 }
 
@@ -423,6 +509,14 @@ async function loadAccounts() {
     accounts = data.accounts;
     renderList();
   } catch (e) { toast(e.message, true); }
+}
+
+// 状态码 → SVG 图标（语义与后端 STATUS_ICON 一致；emoji 仅作 API 数据兼容，UI 一律用线性图标渲染）
+function stateIconSvg(st) {
+  const m = { success: 'check', already: 'check', no_task: 'minus', failed: 'close',
+    retrying: 'retry', skipped_window: 'ban', skipped_norange: 'ban',
+    paused: 'pause', user_cancelled: 'stop' };
+  return icon(m[st] || 'clock');
 }
 
 // 状态行文案（按状态码）：成功/已签到→绿；无需签到/时段外→中性；失败→红；重试→琥珀；待签→排队
@@ -478,7 +572,7 @@ function renderList() {
     card.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
-          <span class="text-lg leading-none" aria-hidden="true">${a.deleted ? '🗑️' : esc(a.state_icon)}</span><span class="sr-only">${stateAriaText(a)}</span>
+          <span class="text-lg leading-none inline-flex" aria-hidden="true">${a.deleted ? icon('trash') : stateIconSvg(a.state_status)}</span><span class="sr-only">${stateAriaText(a)}</span>
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
@@ -487,9 +581,9 @@ function renderList() {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          ${a.deleted ? '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2 py-0.5">已删除</span>'
+          ${a.deleted ? '<span class="inline-flex items-center rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2.5 py-0.5">已删除</span>'
             : a.user_paused
-              ? '<span class="inline-flex items-center rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2 py-0.5">已取消</span>'
+              ? '<span class="inline-flex items-center rounded-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2.5 py-0.5">已取消</span>'
               : statusBadge(a.status)}
           ${a.deleted
             ? '<span class="text-sm text-zinc-400 dark:text-zinc-500">待管理员处理</span>'
@@ -544,8 +638,8 @@ function renderCalendar(phone, key) {
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
-            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="上个月" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
-            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="下个月" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="上个月" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevL')}</button>
+            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="下个月" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevR')}</button>
           </div>
         </div>
         <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
@@ -683,7 +777,7 @@ function resetAccountForm() {
 function togglePassword() {
   const body = $('password-body');
   const hidden = body.classList.toggle('hidden');
-  $('password-arrow').textContent = hidden ? '▸' : '▾';
+  $('password-arrow').innerHTML = hidden ? icon('chevR') : icon('chevD');
   document.querySelector('[onclick="togglePassword()"]').setAttribute('aria-expanded', String(!hidden));
 }
 
@@ -829,7 +923,7 @@ let prefCollapsed = false;  // 自选卡片折叠态（未开启时默认折叠�
 function togglePrefCollapse() {
   prefCollapsed = !prefCollapsed;
   $('pref-body').classList.toggle('hidden', prefCollapsed);
-  $('pref-collapse-btn').textContent = prefCollapsed ? '▸ 未开启（点击展开预配置）' : '▾';
+  $('pref-collapse-btn').innerHTML = prefCollapsed ? icon('chevR') + ' 未开启（点击展开预配置）' : icon('chevD');
 }
 
 async function loadTimePref(preserve = false) {
@@ -849,7 +943,7 @@ async function loadTimePref(preserve = false) {
       est.textContent = '';
       est.classList.add('hidden');
     } else if (data.estimated) {
-      est.textContent = '📅 预计签到时段：' + data.estimated + (data.estimate_note || '')
+      est.innerHTML = icon('cal') + ' 预计签到时段：' + esc(data.estimated || '') + esc(data.estimate_note || '')
         + (data.allowed ? '' : '（自选未开启，按自动分配）');
       est.classList.remove('hidden');
     } else {
@@ -861,11 +955,11 @@ async function loadTimePref(preserve = false) {
       if (!data.allowed) {
         prefCollapsed = true;
         $('pref-body').classList.add('hidden');
-        $('pref-collapse-btn').textContent = '▸ 未开启（点击展开预配置）';
+        $('pref-collapse-btn').innerHTML = icon('chevR') + ' 未开启（点击展开预配置）';
       } else {
         prefCollapsed = false;
         $('pref-body').classList.remove('hidden');
-        $('pref-collapse-btn').textContent = '▾';
+        $('pref-collapse-btn').innerHTML = icon('chevD');
       }
     }
   } catch (e) { card.classList.add('hidden'); }
@@ -916,10 +1010,14 @@ function renderPrefSlots(data) {
         : i === 0
           ? '最早时段：窗口开始后最先为你签到'
           : '最后时段：临近窗口截止执行，网络波动可能导致错过';
-      tip = data.allowed ? '⚠️ ' + edgeTip : '⚠️ 未开启：' + edgeTip;
+      tip = (data.allowed ? '' : '未开启：') + edgeTip;
     }
   });
-  $('pref-tip').textContent = tip;
+  const tipEl = $('pref-tip');
+  tipEl.innerHTML = tip ? icon('warn') + ' ' + esc(tip) : '';
+  // 警示语义上色：有提示时琥珀色（原版警示色），无提示回归中性
+  tipEl.classList.toggle('text-amber-600', !!tip);
+  tipEl.classList.toggle('dark:text-amber-400', !!tip);
 }
 
 async function pickTimePref(slot) {
@@ -945,9 +1043,9 @@ function toggleTheme() {
 }
 function updateThemeBtn() {
   const dark = document.documentElement.classList.contains('dark');
-  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.textContent = dark ? '☀️' : '🌙'; });
+  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.innerHTML = icon(dark ? 'sun' : 'moon'); });
 }
-document.addEventListener('DOMContentLoaded', updateThemeBtn);
+document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); });
 </script>
 <script>
 // 全局公告：访问时加载一次（登录页也显示，无需登录）
@@ -1014,10 +1112,10 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
 <!-- 更新日志弹窗 -->
 <div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
     <div class="flex items-center justify-between mb-3">
       <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
-      <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
+      <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
     </div>
     <div class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed" id="changelog-content"></div>
   </div>
