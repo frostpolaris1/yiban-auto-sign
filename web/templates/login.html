@@ -68,9 +68,16 @@
 <style>
   /* 正文：原版字体栈（MiSans 仅高分屏 web 加载；低分屏回退系统字体保 ClearType） */
   body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  /* 仅标题用阿里妈妈方圆体 VF（本机安装；可变字重轴平滑匹配 500/600，圆润亲和）
-     命中范围：页面 h1~h4 与品牌/卡片/模态标题（本项目统一携带 font-semibold tracking-tight）。
-     未安装该字体的设备自动回退 MiSans/系统字体。 */
+  /* 仅标题用阿里妈妈方圆体 VF（可变字重轴 200-700 平滑匹配 500/600，圆润亲和）
+     命中范围：页面 h1~h4 与品牌/卡片/模态标题（本项目统一携带 font-semibold tracking-tight）。 */
+  /* 自托管下发：woff2 文件在 web/static/vendor/fonts/fangyuan/（不入库，部署时放置）；
+     local() 置顶——已安装字体的设备零下载，其余访客首次下载后缓存；swap 不阻塞首屏 */
+  @font-face {
+    font-family: "Alimama FangYuanTi VF";
+    src: local("Alimama FangYuanTi VF"), url("/static/vendor/fonts/fangyuan/AlimamaFangYuanTiVF.woff2") format("woff2-variations");
+    font-weight: 200 700;
+    font-display: swap;
+  }
   h1, h2, h3, h4, .font-semibold.tracking-tight {
     font-family: "Alimama FangYuanTi VF", "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   }

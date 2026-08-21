@@ -195,6 +195,13 @@ def _doc_page(title, body_html, icp_text=""):
   body {{ font-family: "MiSans", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
          max-width: 800px; margin: 40px auto; padding: 0 16px; color: #18181b; line-height: 1.75;
          background: #fafafa; }}
+  /* 标题字体自托管下发（woff2 不入库，部署时放置；local() 置顶零下载已装设备） */
+  @font-face {{
+    font-family: "Alimama FangYuanTi VF";
+    src: local("Alimama FangYuanTi VF"), url("/static/vendor/fonts/fangyuan/AlimamaFangYuanTiVF.woff2") format("woff2-variations");
+    font-weight: 200 700;
+    font-display: swap;
+  }}
   h1, h2, h3, h4 {{ font-family: "Alimama FangYuanTi VF", "MiSans", system-ui, -apple-system,
                     "PingFang SC", "Microsoft YaHei", sans-serif; }}
   .doc-card {{ background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px;

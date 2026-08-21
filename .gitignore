@@ -137,6 +137,10 @@ scripts/git-hooks/
 scripts/init_demo_credentials.py
 scripts/scan_ui_emoji.py
 
+# 标题 Web 字体文件（阿里妈妈方圆体，免费商用但体积大不入库；部署时放置，
+# 见 web/templates 标题 @font-face 与 AGENTS.md 字体小节，2026-08-22）
+web/static/vendor/fonts/fangyuan/
+
 # 本地工具配置目录（DSH 路由套件 / 模型 preset，非项目产物，2026-08-16 补忽略）
 dsh-routing-suite/
 v4-flash-godmode-opencode-go/
