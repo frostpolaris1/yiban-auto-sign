@@ -127,9 +127,8 @@ CONTRIBUTING.md
 .github/pull_request_template.md
 .github/workflows/ci.yml
 .github/workflows/mirror.yml
-# signin.yml 为 GitHub Actions 签到工作流（保持手动禁用状态，防海外 IP 风控；2026-08-22 移出版本控制）
-.github/workflows/signin.yml
-.github/dependabot.yml
+# signin.yml 必须入库：README「GitHub Actions 使用教程（备选）」的部署通道，
+# Fork 用户依赖此文件；仓库所有者侧通过 Actions 页面 Disable 控制不跑（2026-08-22 复核恢复）
 .commitlintrc.json
 scripts/git-hooks/
 
