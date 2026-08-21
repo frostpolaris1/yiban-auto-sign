@@ -1,0 +1,92 @@
+name: Yiban Sign-in
+
+on:
+  schedule:
+    # 早操签到窗口：北京时间 06:30-07:50
+    # GitHub Actions schedule 延迟分布 55-120 分钟（26 个样本，中位数约 80）
+    # 05:45 触发：延迟 <45 分钟才空跑（历史 0%），延迟 >125 分钟才超时（历史 0%）
+    # 实际执行约 06:40-07:45，安全落在窗口内
+    # UTC 时间 = 北京时间 - 8（前一天）
+    - cron: '45 21 * * *'   # 北京时间 05:45
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      YIBAN_ACCOUNTS:
+        required: false
+      YIBAN_PHONE:
+        required: false
+      YIBAN_PASSWORD:
+        required: false
+      YIBAN_NOTIFY_URL:
+        required: false
+      YIBAN_PROXY:
+        required: false
+      YIBAN_PHONE_MODEL:
+        required: false
+      YIBAN_PHONE_CODE:
+        required: false
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # 最小权限：本 job 仅需读取仓库代码，不授予任何写权限
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.lock
+
+      - name: Install dependencies (locked)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
+      - name: Diagnose runner network
+        run: |
+          echo "=== Runner 出口 IP / 地域（用于判断是否被易班地域风控）==="
+          curl -s --max-time 10 https://ipinfo.io/json || true
+          echo ""
+          echo "=== 代理配置状态 ===="
+          if [ -n "${{ secrets.YIBAN_PROXY }}" ]; then
+            echo "YIBAN_PROXY 已配置（隐藏具体内容）"
+          else
+            echo "⚠️ YIBAN_PROXY 未配置，如遇到 WAF 拦截请配置代理（国内出口）"
+          fi
+
+      - name: Run sign-in script
+        env:
+          YIBAN_ACCOUNTS: ${{ secrets.YIBAN_ACCOUNTS }}
+          YIBAN_PHONE: ${{ secrets.YIBAN_PHONE }}
+          YIBAN_PASSWORD: ${{ secrets.YIBAN_PASSWORD }}
+          YIBAN_NOTIFY_URL: ${{ secrets.YIBAN_NOTIFY_URL }}
+          YIBAN_PROXY: ${{ secrets.YIBAN_PROXY }}
+          YIBAN_PHONE_MODEL: ${{ secrets.YIBAN_PHONE_MODEL }}
+          YIBAN_PHONE_CODE: ${{ secrets.YIBAN_PHONE_CODE }}
+        run: python scripts/signin.py
+
+  # 在定时触发时调用 keepalive 防止工作流被 GitHub 自动禁用（60 天限制）
+  workflow-keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # 权限最小化：该 action 内部调用 gh api PUT .../actions/workflows/.../enable
+    # 重新启用被禁用的定时工作流，功能上必须 actions: write；已限定在
+    # job 级别，不授予 contents/secrets 等任何其他权限（与主 job 隔离）
+    permissions:
+      actions: write
+    steps:
+      # 固定完整 commit SHA（v1 tag → f72ff1a1，v1.2.1），避免可变 tag 被篡改
+      - uses: liskin/gh-workflow-keepalive@f72ff1a1336129f29bf0166c0fd0ca6cf1bcb38c
