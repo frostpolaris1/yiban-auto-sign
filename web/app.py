@@ -11,7 +11,7 @@
 - 系统设置：随机延迟开关（写入 .env）、连通性检测、服务器时间/签到窗口状态
 
 运行：
-    python3 -m web                 # 默认 0.0.0.0:8000
+    python3 -m web                 # 默认 127.0.0.1:17892（仅回环；生产用 systemd/gunicorn 模板）
     python3 -m web --port 9000     # 自定义端口
 
 管理员账号：首次启动自动生成 SECRET_KEY 并写入 .env；
@@ -212,7 +212,6 @@ def _doc_page(title, body_html, icp_text=""):
 {icp_block}
 </body>
 </html>"""
-import account_crypto  # noqa: E402
 import db  # noqa: E402
 import env_lock  # noqa: E402
 
@@ -295,6 +294,22 @@ TRUSTED_PROXIES = ("127.0.0.1", "::1")
 # 启动断言：TRUSTED_PROXIES 必须仅为回环地址，防止配置被改为非回环地址导致 XFF 伪造绕过速率限制
 assert all(p in ("127.0.0.1", "::1", "localhost") for p in TRUSTED_PROXIES), \
     f"TRUSTED_PROXIES 必须仅为回环地址，当前值: {TRUSTED_PROXIES}"
+
+
+def _stale_idx_guard(acc, data):
+    """防错位校验（2026-08-20 对抗性审查 P1）：mutation 按 idx 寻址时，客户端
+    携带的 phone 与服务端 idx 解析结果不一致 → 账号列表在视图快照后已漂移
+    （并发删除/移动等），放行会静默操作错误对象。返回 True 表示错位，调用方
+    应返回 409 引导刷新。未携带 phone 的请求（旧客户端/测试）保持兼容不校验。
+
+    比对前双侧 _mask_phone 归一：/api/accounts 出站即脱敏（mask_account），
+    浏览器回传的是 138****8000 形态；_mask_phone 幂等（含 * 原样返回），直连
+    API 发全号的旧客户端/测试同样归一可比；伪造他人号码仍因不等被拦。
+    """
+    phone = data.get("phone") if isinstance(data, dict) else None
+    if phone is None:
+        return False
+    return _mask_phone(str(phone).strip()) != _mask_phone(str(acc.get("phone", "")))
 
 
 def _json_body():
@@ -1136,6 +1151,16 @@ def verify_admin(username, password):
     """
     env = read_env(ENV_FILE)
     admin_user = env.get("YIBAN_ADMIN_USER", "").strip()
+    # 2026-08-20 对抗性审查修复（P1）：凭据未配置完整时直接拒绝——
+    # 原实现 admin_user/admin_pass 均为空串时 compare_digest(b"", b"") 恒真，
+    # "只配了用户名没配密码"（或完全未配置）的部署可用空口令登录管理员。
+    # 该状态 check_admin_configured() 明确判定为"未配置"，此处口径对齐。
+    if not admin_user or not (
+        env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
+        or env.get("YIBAN_ADMIN_PASSWORD", "").strip()
+    ):
+        _constant_time_dummy(password)  # 时延拉平：与真实比对等开销
+        return False
     if not secrets.compare_digest(
         username.strip().encode("utf-8"), admin_user.encode("utf-8")
     ):
@@ -1237,7 +1262,10 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-17 全局暂停签到 + 备案信息预留区（0.21.1）
 # 2026-08-17 合规文档接入网页 + 部署者模板化 + 渲染修复（0.21.2）
 # 2026-08-20 审查修复（XSS/同意校验/缓存/状态语义）+ 掐头去尾前后独立可配（0.21.3）
-APP_VERSION = "0.21.3"
+# 2026-08-21 对抗性审查修复：空凭据管理员登录 + idx 防错位 + 读路径清理外移 + 审计链
+#           BEGIN IMMEDIATE + 注册时延拉平 + my-* 单快照/日志脱敏 + HSTS/Permissions-Policy
+#           + --host 默认回环（0.21.4）
+APP_VERSION = "0.21.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1464,6 +1492,14 @@ def create_app(host=None):
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
+        # HSTS 仅在请求确实经 HTTPS 到达时下发（反代设置 X-Forwarded-Proto 后
+        # request.is_secure 为真）；纯 HTTP 内网部署不下发（避免浏览器强制升级
+        # 导致无法访问）。2026-08-20 对抗性审查 P2 补：原全站缺失，HTTPS 部署下
+        # 首访可被 SSL-Strip 截获明文凭据。
+        if request.is_secure:
+            resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # 关闭无关能力面（2026-08-20 对抗性审查 P3 补）
+        resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; img-src 'self'; "
@@ -1616,6 +1652,10 @@ def create_app(host=None):
                 _notify_capacity_once("users", max_users, "注册人数")
                 return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
             if db.find_user(email) is not None:
+                # 时延拉平（2026-08-20 对抗性审查 P2）：已注册邮箱在此提前返回，
+                # 跳过了后方的 scrypt 哈希（约百毫秒），响应时序差可被用于批量
+                # 枚举"哪些邮箱是本站注册用户"。与登录/恢复的 _constant_time_dummy 惯例对齐。
+                _constant_time_dummy(password)
                 return jsonify({"error": "该邮箱已注册"}), 400
             # 冷却期邮箱保护（安全审查 2026-08-16）：已注销账号 7 天冷却期内禁止同邮箱注册，
             # 否则恢复权会被新注册抢占（登录即恢复形同虚设）；宽限期结束后邮箱正常释放
@@ -1625,6 +1665,7 @@ def create_app(host=None):
                 and du.get("deleted")
                 and _delete_grace_remaining(du.get("deleted_at", "")) > 0
             ):
+                _constant_time_dummy(password)  # 时延拉平：同上，防探测"近期注销"邮箱
                 return jsonify({"error": "该邮箱账号正在注销冷却期（7 天内可登录恢复）"}), 400
             try:
                 created = db.create_user(
@@ -1712,6 +1753,14 @@ def create_app(host=None):
             )
             with _rate_lock:
                 _login_fails.pop(fail_key, None)
+            # 审计留痕（2026-08-20 对抗性审查 P2 补）：主管理员改密是最高权限的
+            # 关键事件，此前注册用户分支有审计而本分支缺席，防篡改链上无法追责
+            db.audit(
+                username or "builtin-admin",
+                "admin_password",
+                _mask_email(username) if username else "-",
+                "内置管理员自助改密",
+            )
             logger.info("内置管理员密码已更新")
             return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         # 注册用户（含提升的管理员）：db 单行更新（事务内，防并发覆盖）
@@ -2225,11 +2274,29 @@ def create_app(host=None):
             reason = str(data.get("reason", "")).strip()[:100]
             if action == "reject" and not reason:
                 return jsonify({"error": "批量拒绝需要填写理由"}), 400
+            # 2026-08-20 对抗性审查 P1：idx 寻址防错位——客户端随 ids 携带对齐的
+            # phones 数组，与服务端当前列表逐一比对，不一致整体拒绝（409 引导刷新）。
+            # 另修 bool 混淆：isinstance(True, int) 为真，ids 里的 JSON true 会被
+            # 当作索引 1，改用 type(i) is int 严格判定。
             valid = sorted(
-                {i for i in ids if isinstance(i, int) and 0 <= i < len(accounts)}
+                {i for i in ids if type(i) is int and 0 <= i < len(accounts)}
             )
             if not valid:
                 return jsonify({"error": "所选账号不存在"}), 404
+            phones_in = data.get("phones")
+            if isinstance(phones_in, list) and len(phones_in) == len(ids):
+                expect = {
+                    i: str(phones_in[k]).strip()
+                    for k, i in enumerate(ids)
+                    if type(i) is int
+                }
+                # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
+                if any(
+                    i in expect
+                    and _mask_phone(expect[i]) != _mask_phone(str(accounts[i].get("phone", "")))
+                    for i in valid
+                ):
+                    return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
 
             ops = []
             # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
@@ -2323,6 +2390,8 @@ def create_app(host=None):
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
             acc = accounts[idx]
+            if _stale_idx_guard(acc, _json_body()):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             db.set_account_deleted(
                 acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             )
@@ -2352,6 +2421,8 @@ def create_app(host=None):
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
             acc = accounts[idx]
+            if _stale_idx_guard(acc, _json_body()):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             if not acc.get("deleted"):
                 return jsonify({"error": "该账号不在待删除状态"}), 400
             # 防呆：归属用户名下已有其他未删除账号则拒绝恢复（每人限 1 个，防恢复后重复）
@@ -2384,6 +2455,8 @@ def create_app(host=None):
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
             acc = accounts[idx]
+            if _stale_idx_guard(acc, _json_body()):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             if not acc.get("deleted"):
                 return jsonify({"error": "该账号不在待删除状态"}), 400
             db.purge_account(acc["id"])
@@ -2412,8 +2485,11 @@ def create_app(host=None):
             accounts = load_accounts()
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
-            action = (_json_body()).get("action")
+            data = _json_body()
+            action = data.get("action")
             acc = accounts[idx]
+            if _stale_idx_guard(acc, data):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             if action == "approve":
                 # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
                 if acc.get("deleted") or acc.get("status") not in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
@@ -2433,7 +2509,7 @@ def create_app(host=None):
                     return jsonify({"error": "该账号无需拒绝"}), 400
                 # 理由清洗：换行/控制字符 → 空格（防日志注入伪造日志行）
                 reason = (
-                    str((_json_body()).get("reason", ""))
+                    str(data.get("reason", ""))
                     .strip()[:100]
                     .replace("\r", " ")
                     .replace("\n", " ")
@@ -2461,18 +2537,22 @@ def create_app(host=None):
             accounts = load_accounts()
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
+            data = _json_body()
+            acc = accounts[idx]
+            if _stale_idx_guard(acc, data):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             try:
-                direction = int((_json_body()).get("dir", 0))
+                direction = int(data.get("dir", 0))
             except (TypeError, ValueError):
                 return jsonify({"error": "无法移动"}), 400
             if direction not in (-1, 1):
                 return jsonify({"error": "无法移动"}), 400
-            if not db.move_account(accounts[idx]["id"], direction):
+            if not db.move_account(acc["id"], direction):
                 return jsonify({"error": "无法移动"}), 400
             db.audit(
                 session.get("username") or "?",
                 "account_move",
-                _mask_phone(accounts[idx].get("phone", "")),
+                _mask_phone(acc.get("phone", "")),
                 f"dir {direction}",
             )
             accounts = load_accounts()
@@ -2564,7 +2644,10 @@ def create_app(host=None):
                     "state_status": st_status,  # 状态码（前端按码映射文案）
                     "state_message": st.get("message", "") if isinstance(st, dict) else "",
                     "queue_ahead": queue_ahead,
-                    "logs": my_logs[-5:],
+                    # 出站脱敏（2026-08-20 对抗性审查 P3）：与 /api/my-logs、/api/logs
+                    # 统一口径——当前 signin.py 日志每行仅含本人手机号，但口径不设防时，
+                    # 未来出现一行多号的日志格式会把他人号码原样下发普通用户
+                    "logs": [_mask_log_phones(ln) for ln in my_logs[-5:]],
                     "deleted": bool(acc.get("deleted")),
                     "deleted_at": acc.get("deleted_at", ""),
                     "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
@@ -2577,8 +2660,11 @@ def create_app(host=None):
 
     @app.route("/api/my-accounts")
     def api_my_accounts():
+        # 单快照（2026-08-20 对抗性审查 P3 修复）：原实现 load_accounts() 后
+        # _my_account_indices() 内部再次读取，两次读之间其他线程的物理删除会使
+        # S2 的下标套在 S1 上错位，极端时短暂展示他人账号（含完整手机号）
         accounts = load_accounts()
-        indices = _my_account_indices()
+        indices = _my_account_indices_of(accounts)
         return jsonify({"ok": True, "accounts": _my_account_view(accounts, indices)})
 
     # ---- 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）----
@@ -2690,9 +2776,11 @@ def create_app(host=None):
                 # 2026-08-15 用户反馈：非正式用户不可选时间片——区分"未提交"与"已提交未生效"，
                 # 提示不给待审核用户误导（信息分层，不暴露审核细节）
                 # 低项：has_submitted 统一走 _my_account_indices，避免管理员/普通用户双口径漂移
+                # 单快照读取（2026-08-21 对抗性审查 P3：消除双读间列表漂移的越界/错判窗口）
+                _accounts_now = load_accounts()
                 has_submitted = any(
-                    not a.get("deleted")
-                    for a in (load_accounts()[i] for i in _my_account_indices())
+                    not _accounts_now[i].get("deleted")
+                    for i in _my_account_indices_of(_accounts_now)
                 )
                 if has_submitted:
                     return jsonify({"error": "账号审核通过后即可选择签到时间"}), 400
@@ -2856,7 +2944,7 @@ def create_app(host=None):
         except Exception:
             return jsonify({"error": "月份格式不正确，应为 YYYY-MM"}), 400
         accounts = load_accounts()
-        indices = _my_account_indices()
+        indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
         phones = [str(accounts[i].get("phone", "")) for i in indices]
         days_in_month = calendar.monthrange(year, mon)[1]
         result = {f"{year:04d}-{mon:02d}-{d:02d}": {} for d in range(1, days_in_month + 1)}
@@ -2896,7 +2984,7 @@ def create_app(host=None):
         if not date:
             date = _most_recent_log_date()
         accounts = load_accounts()
-        indices = _my_account_indices()
+        indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
         phones = [str(accounts[i].get("phone", "")) for i in indices]
         out = []
         for line in _log_lines_for(date):
@@ -3511,9 +3599,10 @@ def create_app(host=None):
         env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
         # 子进程读取与主进程相同的数据库（--db 自定义路径时保持一致）
         env["YIBAN_DB_FILE"] = DB_FILE
-        # 解密 yiban.db 需要同一密钥：显式注入（--env 自定义路径时保证一致）
-        if account_crypto.has_key(ENV_FILE) and not env.get("YIBAN_ACCOUNTS_KEY"):
-            env["YIBAN_ACCOUNTS_KEY"] = account_crypto.load_key(ENV_FILE).hex()
+        # 2026-08-21 对抗性审查修复：传 .env 路径而非密钥本身——此前把
+        # YIBAN_ACCOUNTS_KEY 明文注入子进程环境（同 uid 进程可读 /proc/<pid>/environ）；
+        # signin.py 现按 YIBAN_ENV_FILE 自行从 .env 读取密钥
+        env["YIBAN_ENV_FILE"] = ENV_FILE
         log_fh = None
         with contextlib.suppress(OSError):
             log_fh = open(
@@ -3570,11 +3659,22 @@ def create_app(host=None):
         if not isinstance(ids, list) or not ids:
             return jsonify({"error": "请先勾选要签到的账号"}), 400
         accounts = load_accounts()
+        # 防错位 + bool 混淆修复（同 /api/accounts/batch，2026-08-20 对抗性审查 P1）：
+        # 签到用错位下标取到的会是他人账号的凭据，危害比管理操作更直接
+        phones_in = data.get("phones")
+        expect = {}
+        if isinstance(phones_in, list) and len(phones_in) == len(ids):
+            expect = {
+                i: str(phones_in[k]).strip() for k, i in enumerate(ids) if type(i) is int
+            }
         phones = []
         for i in ids:
-            if not isinstance(i, int) or not 0 <= i < len(accounts):
+            if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(accounts):
                 continue
             acc = accounts[i]
+            # 双侧 _mask_phone 归一（出站为脱敏号，见 _stale_idx_guard 注释）
+            if i in expect and _mask_phone(expect[i]) != _mask_phone(str(acc.get("phone", ""))):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             if acc.get("deleted") or acc.get("status") != ACCOUNT_STATUS_ACTIVE:
                 continue
             phone = str(acc.get("phone", "")).strip()
@@ -3914,10 +4014,23 @@ def create_app(host=None):
         time.sleep(60)
         while True:
             try:
+                # 账号超期软删行物理清理（2026-08-20 随读路径清理外移而显式化，
+                # 见 db.purge_expired_deleted_accounts 注释——不再挂在 load_accounts 上）
+                db.purge_expired_deleted_accounts()
                 db.purge_deleted_users()
                 db.purge_old_delete_requests()
             except Exception as e:
                 logger.warning("每日自动清除注销用户失败: %s", e)
+            # 审计链外部锚点（2026-08-21 对抗性审查 P2 补）：每日把链头哈希追加到
+            # 独立于数据库的文件——重写库内审计链还需同步篡改该文件，抬高伪造成本；
+            # 该文件可另行纳入异地收集（与备份分离）
+            try:
+                _head = db.audit_head_hash()
+                if _head:
+                    with open(os.path.join(STATE_DIR, "audit-anchor.log"), "a", encoding="utf-8") as _af:
+                        _af.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {_head}\n")
+            except Exception as e:
+                logger.warning("审计链锚点写入失败: %s", e)
             time.sleep(24 * 3600)
 
     # 测试环境通过 YIBAN_DISABLE_PURGE_LOOP=1 禁止启动该线程（全量 pytest 会反复 create_app，
@@ -3940,7 +4053,10 @@ def create_app(host=None):
 def main():
     global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, STATE_DIR, DB_FILE
     parser = argparse.ArgumentParser(description="易班自动签到网页管理系统")
-    parser.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0）")
+    # 2026-08-20 对抗性审查 P2：默认改回环——werkzeug 开发服务器不应默认暴露
+    # 全网卡（明文 HTTP + 无反代防护）。生产走 systemd/gunicorn 模板不受影响；
+    # 确需直连局域网时显式传 --host 0.0.0.0（自担风险）。
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1，仅回环）")
     # 非常见端口（默认 17892）：避开 8000/5000/3000 等常见端口，防止与其他部署冲突
     parser.add_argument("--port", type=int, default=17892, help="监听端口（默认 17892）")
     parser.add_argument(

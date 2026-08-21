@@ -116,6 +116,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True):
         if cleanup:
             _audit_cleanup(_conn)
             _event_cleanup(_conn)
+            purge_expired_deleted_accounts()
             purge_deleted_users()
             purge_old_delete_requests()
         return _conn
@@ -878,11 +879,28 @@ def _purge_expired_deleted(conn):
         logger.warning("清理超期软删除账号失败: %s", e)
 
 
-def load_accounts():
-    """全部账号（按 sort_order 升序），已解密；顺带清除超期软删除行。"""
+def purge_expired_deleted_accounts():
+    """物理清除超过保留期的软删除账号（显式调用：init_db 启动清理 / web 每日线程 / signin 启动）。
+
+    2026-08-20 对抗性审查修复（P1）：原实现挂在 load_accounts() 读路径上，任何一次
+    列表读取都可能物理删行并使其后所有下标前移——web 层按 idx 寻址的 mutation 在
+    管理员持旧视图时会静默命中错误对象（"无人触发的索引漂移"）。移出读路径后，
+    清理只发生在显式时机，两次读取之间的列表顺序保持稳定。
+    """
     with _conn_lock:
         conn = get_conn()
         _purge_expired_deleted(conn)
+
+
+def load_accounts():
+    """全部账号（按 sort_order 升序），已解密。
+
+    注意：不再在读路径顺带清除超期软删除行（2026-08-20 对抗性审查 P1 修复）——
+    读中途物理删行会使 idx 寻址的 mutation 错位命中其他账号；清理改由
+    purge_expired_deleted_accounts() 在启动/每日线程/signin 启动时显式执行。
+    """
+    with _conn_lock:
+        conn = get_conn()
         rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
         return [_row_to_account(r) for r in rows]
 
@@ -890,11 +908,11 @@ def load_accounts():
 def load_accounts_raw():
     """全部账号原始行（password/phone_code 保持密文 JSON 串，不解密）。
 
-    供 db_export 等导出场景使用：避免生成明文凭据文件；顺带清除超期软删除行。
+    供 db_export 等导出场景使用：避免生成明文凭据文件。
+    （超期软删行清理已移出读路径，见 load_accounts 注释。）
     """
     with _conn_lock:
         conn = get_conn()
-        _purge_expired_deleted(conn)
         rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
         return [{**dict(r), "deleted": bool(r["deleted"])} for r in rows]
 
@@ -1362,8 +1380,13 @@ def purge_deleted_users_hard(emails):
             ]
             conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
             _delete_time_prefs_by_phones(conn, phones)
-            conn.execute("DELETE FROM users WHERE id=?", (row["id"],))
-            purged.append(email)
+            # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
+            # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
+            cur = conn.execute(
+                "DELETE FROM users WHERE id=? AND deleted=1", (row["id"],)
+            )
+            if cur.rowcount > 0:
+                purged.append(email)
     return purged
 
 
@@ -1506,12 +1529,23 @@ def audit(username, action, target="", detail=""):
     """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
 
     Phase 3：写入 HMAC 哈希链，prev_hash 取上一条 hash；签名保持不变。
+    2026-08-20 对抗性审查修复：prev_hash 读取纳入 BEGIN IMMEDIATE 写事务——
+    原实现"读上一条 hash"与 INSERT 之间无跨进程互斥（_conn_lock 仅进程内），
+    web 与 TUI 并发写审计会读到同一 prev_hash 造成链分叉（verify 断链）。
     """
+    conn = None
     try:
         with _conn_lock:
             conn = get_conn()
             ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             detail = detail[:200]
+            # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
+            # 未提交事务，先提交之——否则 BEGIN IMMEDIATE 会报 "within a transaction"
+            if conn.in_transaction:
+                logger.warning("audit 检测到遗留未提交事务，已先行提交")
+                conn.commit()
+            # IMMEDIATE：取 prev_hash 前先拿库级写锁，跨进程串行化"读尾→追加"
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -1524,9 +1558,29 @@ def audit(username, action, target="", detail=""):
             )
             conn.commit()
     except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.rollback()
         logger.warning("审计写入失败: %s", e)
+
+
+def audit_head_hash():
+    """返回审计链当前头哈希（空链返回空串）；供外部锚点导出（append-only 日志）。
+
+    2026-08-21 对抗性审查补充：HMAC 链密钥与数据同盘时"整体重算"零成本，
+    把链头哈希定期追加到独立文件（web 每日线程写 STATE_DIR/audit-anchor.log），
+    使重写库内审计链还需同步篡改锚点文件，外部锚定抬高伪造成本。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return row["hash"] if row else ""
+    except Exception as e:
+        logger.warning("读取审计链头失败: %s", e)
+        return ""
 
 
 def verify_audit_chain():

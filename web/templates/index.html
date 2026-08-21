@@ -77,6 +77,15 @@
     @media (max-width: 767px) {
       input, select, textarea { font-size: 16px !important; }
     }
+    /* 键盘焦点可见性（a11y 整改）：输入框/按钮/开关统一蓝色 focus-visible 光圈，
+       鼠标点击不触发（focus-visible 仅键盘聚焦），不改变现有 hover/focus 配色 */
+    .input:focus-visible,
+    .btn-primary:focus-visible,
+    .btn-ghost:focus-visible,
+    button:focus-visible,
+    [role="switch"]:focus-visible {
+      @apply outline-none ring-2 ring-blue-500;
+    }
   }
 </style>
 </head>
@@ -84,7 +93,7 @@
 
 <!-- 移动端顶栏 -->
 <div class="md:hidden fixed top-0 inset-x-0 z-30 bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 h-14 flex items-center px-4 gap-3">
-  <button onclick="toggleSidebar(true)" class="w-10 h-10 -ml-2 flex items-center justify-center rounded-lg text-xl text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150" aria-label="打开菜单">
+  <button onclick="toggleSidebar(true)" class="w-11 h-11 -ml-2 flex items-center justify-center rounded-lg text-xl text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150" aria-label="打开菜单">
     <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
     </svg>
@@ -107,7 +116,7 @@
     </svg>
     <div>
       <div class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 text-lg leading-tight">易班自动签到</div>
-      <div class="text-sm text-zinc-400 dark:text-zinc-500 leading-tight mt-0.5">管理后台</div>
+      <div class="text-sm text-zinc-500 dark:text-zinc-400 leading-tight mt-0.5">管理后台</div>
     </div>
   </div>
 
@@ -154,13 +163,13 @@
   <!-- 底部：服务器时间 + 退出 -->
   <div class="border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
     <div class="flex items-center justify-between mb-2">
-      <div id="sidebar-clock" class="text-xs text-zinc-400 dark:text-zinc-500">服务器时间：--:--:--</div>
+      <div id="sidebar-clock" class="text-xs text-zinc-500 dark:text-zinc-400">服务器时间：--:--:--</div>
       <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
               class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">🌙</button>
     </div>
     <!-- 当前登录账号（防登录错管理员账号，2026-08-16） -->
     <div class="mb-2 px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-100 dark:border-zinc-700">
-      <div class="text-[11px] text-zinc-400 dark:text-zinc-500 mb-0.5">当前账号</div>
+      <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">当前账号</div>
       <div id="sidebar-account-name" class="text-sm font-medium text-zinc-800 dark:text-zinc-200 truncate" title="">—</div>
     </div>
     <button onclick="doLogout()"
@@ -171,9 +180,9 @@
       退出登录
     </button>
     <!-- 版本号与源码链接拆分为独立行：各自独立点击区，消除换行误触（点源码不再误开更新日志） -->
-    <div class="text-center text-xs text-zinc-400 dark:text-zinc-400 mt-3">
-      <div onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</div>
-      <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="inline-block mt-1 text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
+    <div class="text-center text-xs text-zinc-500 dark:text-zinc-400 mt-3">
+      <button type="button" onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</button>
+      <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="inline-block mt-1 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
     </div>
   </div>
 </aside>
@@ -220,15 +229,15 @@
           <div class="text-sm font-medium text-amber-800 dark:text-amber-300">待处理账号</div>
           <span id="accounts-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
         </div>
-        <input id="pending-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
+        <input id="pending-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…" aria-label="搜索名称 / 手机号 / 用户名"
                class="w-full md:w-56 md:ml-auto input input-sm dark:bg-zinc-900">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-amber-100 dark:border-amber-800/50">待审核账号点「通过」生效；已拒绝账号可删除，或等用户修改后重新提交</p>
-      <div id="batch-bar-pending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-pending" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('pending','approve')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">通过</button> <button onclick="batchAccounts('pending','reject')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">拒绝</button> <button onclick="clearBatch('pending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div id="batch-bar-pending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-pending" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('pending','approve')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">通过</button> <button onclick="batchAccounts('pending','reject')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">拒绝</button> <button onclick="clearBatch('pending')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
     <table class="w-full text-sm min-w-[480px] md:min-w-[600px] lg:min-w-[760px] text-center">
           <thead>
-          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('pending', this)" class="accent-blue-500"></th>
+          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('pending', this)" aria-label="全选待处理账号" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">状态</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">名称</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">手机号</th>
@@ -239,7 +248,7 @@
           </thead>
           <tbody id="accounts-pending-tbody"></tbody>
         </table>
-        <div id="accounts-pending-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无待处理账号</div>
+        <div id="accounts-pending-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无待处理账号</div>
       </div>
     </div>
 
@@ -250,14 +259,14 @@
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
           <span id="accounts-active-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
-        <input id="active-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
+        <input id="active-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…" aria-label="搜索名称 / 手机号 / 用户名"
                class="w-full md:w-56 md:ml-auto input input-sm dark:bg-zinc-900">
       </div>
-      <div id="batch-bar-active" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-active" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('active','signin')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-blue-500 hover:bg-blue-600 text-white">签到</button> <button onclick="batchAccounts('active','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('active')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div id="batch-bar-active" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-active" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('active','signin')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-blue-500 hover:bg-blue-600 text-white">签到</button> <button onclick="batchAccounts('active','delete')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('active')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
    <table class="w-full text-sm min-w-[640px] md:min-w-[800px] lg:min-w-[1000px] text-center">
         <thead>
-          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('active', this)" class="accent-blue-500"></th>
+          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('active', this)" aria-label="全选正常账号" class="accent-blue-500"></th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">状态</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">#</th>
             <th class="px-4 py-3 font-medium whitespace-nowrap">名称</th>
@@ -271,7 +280,7 @@
         </thead>
         <tbody id="accounts-tbody"></tbody>
       </table>
-        <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">
+        <div id="accounts-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">
           暂无账号，点右上角「添加账号」配置
         </div>
       </div>
@@ -282,19 +291,19 @@
       <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="flex items-center gap-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待删除账号</div>
-          <span id="accounts-deleted-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+          <span id="accounts-deleted-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
           <button id="deleted-toggle-btn" onclick="toggleDeletedCollapsed()" title="折叠 / 展开表格"
-                  class="text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 text-sm leading-none px-1">▾</button>
+                  class="text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 text-sm leading-none px-1">▾</button>
         </div>
-        <input id="deleted-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…"
+        <input id="deleted-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…" aria-label="搜索名称 / 手机号 / 用户名"
                class="w-full md:w-56 md:ml-auto input input-sm dark:bg-zinc-900">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">已删除的账号保留 7 天，可随时恢复；超期将自动彻底清除</p>
-      <div id="batch-bar-deleted" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-deleted" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('deleted','restore')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">恢复</button> <button onclick="clearBatch('deleted')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div id="batch-bar-deleted" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-deleted" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('deleted','restore')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">恢复</button> <button onclick="clearBatch('deleted')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div id="accounts-deleted-table" class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
         <table class="w-full text-sm min-w-[480px] md:min-w-[600px] lg:min-w-[760px] text-center">
           <thead>
-          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('deleted', this)" class="accent-blue-500"></th>
+          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('deleted', this)" aria-label="全选待删除账号" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">状态</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">名称</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap">手机号</th>
@@ -305,7 +314,7 @@
           </thead>
           <tbody id="accounts-deleted-tbody"></tbody>
         </table>
-        <div id="accounts-deleted-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无待删除账号</div>
+        <div id="accounts-deleted-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无待删除账号</div>
       </div>
     </div>
   </section>
@@ -325,7 +334,7 @@
         <button onclick="doSigninFromSelect()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
           立即签到
         </button>
-        <span id="signin-tip" class="text-xs text-zinc-400 dark:text-zinc-500">后台执行，结果约 30 秒内出现在下方日志</span>
+        <span id="signin-tip" class="text-xs text-zinc-500 dark:text-zinc-400">后台执行，结果约 30 秒内出现在下方日志</span>
       </div>
     </div>
 
@@ -333,7 +342,7 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
       <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">最近日志</div>
-        <div class="text-xs text-zinc-400 dark:text-zinc-500">文件：<span id="log-file" class="font-mono">sign-YYYY-MM-DD.log</span></div>
+        <div class="text-xs text-zinc-500 dark:text-zinc-400">文件：<span id="log-file" class="font-mono">sign-YYYY-MM-DD.log</span></div>
       </div>
       <!-- 按日期查看（2026-08-16：日志按天分文件，可查任意日期） -->
       <div class="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40">
@@ -341,10 +350,10 @@
         <input type="date" id="log-date" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-2.5 py-1.5">
         <button onclick="viewLogDate()" class="bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">查看</button>
         <button id="log-back-today" onclick="backToTodayLogs()" class="hidden bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">回到今天</button>
-        <span id="log-date-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        <span id="log-date-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
       </div>
       <pre id="log-box" role="log" aria-label="签到日志" tabindex="0" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-320px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
-      <div id="log-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">（暂无签到日志，等待定时任务执行…）</div>
+      <div id="log-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">（暂无签到日志，等待定时任务执行…）</div>
     </div>
   </section>
 
@@ -360,8 +369,8 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周日是否签到见上方开关）</div>
-      <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">容量：<span id="capacity-status">--</span></div>
+      <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周日是否签到见上方开关）</div>
+      <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">容量：<span id="capacity-status">--</span></div>
     </div>
 
     <!-- 批量操作开关 -->
@@ -369,7 +378,7 @@
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">批量操作</div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">开启后账号与用户列表显示多选框，支持批量通过/删除/设管理员/重置密码等。仅本次会话有效，刷新后自动关闭</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">开启后账号与用户列表显示多选框，支持批量通过/删除/设管理员/重置密码等。仅本次会话有效，刷新后自动关闭</p>
         </div>
         <button id="batch-mode-btn" role="switch" aria-checked="false" onclick="toggleBatchMode()"
                 class="toggle" aria-label="批量操作"><span class="knob"></span></button>
@@ -379,7 +388,7 @@
     <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 自选总开关 + 窗口） -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">签到调度</div>
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">排序方式决定"谁先签"（顺序=列表序固定作息 / 随机=每天重排）；分布方式决定时间点形状。⚠️ <b>顺序 × 均匀 = 线性填块</b>：按列表顺序先到先签，账号集中在窗口前段（50 人约前 20 分钟）；想铺满窗口请选「随机 × 均匀」或正态。改动保存后下次自动签到时生效</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">排序方式决定"谁先签"（顺序=列表序固定作息 / 随机=每天重排）；分布方式决定时间点形状。⚠️ <b>顺序 × 均匀 = 线性填块</b>：按列表顺序先到先签，账号集中在窗口前段（50 人约前 20 分钟）；想铺满窗口请选「随机 × 均匀」或正态。改动保存后下次自动签到时生效</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">排序方式</div>
@@ -401,23 +410,23 @@
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">掐头去尾（0-5 分钟，0.5 步进，前后独立）</div>
           <div class="flex items-center gap-2">
             <div class="flex-1">
-              <div class="text-[11px] text-zinc-400 dark:text-zinc-500 mb-0.5">前 n 分钟</div>
+              <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">前 n 分钟</div>
               <input id="edge-front" type="number" min="0" max="5" step="0.5" value="1"
                      class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
             </div>
             <div class="flex-1">
-              <div class="text-[11px] text-zinc-400 dark:text-zinc-500 mb-0.5">后 n 分钟</div>
+              <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">后 n 分钟</div>
               <input id="edge-back" type="number" min="0" max="5" step="0.5" value="1"
                      class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
             </div>
           </div>
           <div class="flex items-center gap-1.5 mt-1.5">
-            <span class="text-[11px] text-zinc-400 dark:text-zinc-500">快捷：</span>
-            <button type="button" data-edge-min="0" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">0</button>
-            <button type="button" data-edge-min="0.5" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">0.5</button>
-            <button type="button" data-edge-min="1" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">1</button>
-            <button type="button" data-edge-min="2" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">2</button>
-            <button type="button" data-edge-min="5" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded px-1.5 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">5</button>
+            <span class="text-[11px] text-zinc-500 dark:text-zinc-400">快捷：</span>
+            <button type="button" data-edge-min="0" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded min-h-[44px] min-w-[44px] -my-3 px-2 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">0</button>
+            <button type="button" data-edge-min="0.5" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded min-h-[44px] min-w-[44px] -my-3 px-2 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">0.5</button>
+            <button type="button" data-edge-min="1" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded min-h-[44px] min-w-[44px] -my-3 px-2 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">1</button>
+            <button type="button" data-edge-min="2" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded min-h-[44px] min-w-[44px] -my-3 px-2 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">2</button>
+            <button type="button" data-edge-min="5" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded min-h-[44px] min-w-[44px] -my-3 px-2 text-[11px] text-zinc-600 dark:text-zinc-300 hover:border-blue-400">5</button>
           </div>
           <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn">⚠️ 前裁或后裁为 0：对应边缘时段的账号可能超时</p>
         </div>
@@ -426,11 +435,11 @@
           <div class="flex items-center gap-2">
             <input id="window-start" type="time" step="60"
                    class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
-            <span class="text-zinc-400">~</span>
+            <span class="text-zinc-500 dark:text-zinc-400">~</span>
             <input id="window-end" type="time" step="60"
                    class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
           </div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">原生时间选择器，无需手动输入；修改后点「保存调度设置」生效</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">原生时间选择器，无需手动输入；修改后点「保存调度设置」生效</p>
         </div>
       </div>
       <p class="text-xs text-amber-600 dark:text-amber-400 hidden" id="sched-perm-tip">仅主管理员可修改调度设置</p>
@@ -440,7 +449,7 @@
           <button id="time-pref-toggle-btn" role="switch" aria-checked="false" onclick="toggleTimePref()"
                   class="toggle" aria-label="用户自选时间片"><span class="knob"></span></button>
         </div>
-        <span class="text-xs text-zinc-400 dark:text-zinc-500">开启后普通用户可选 5 分钟时间片（未开启时用户可预配置但不生效）</span>
+        <span class="text-xs text-zinc-500 dark:text-zinc-400">开启后普通用户可选 5 分钟时间片（未开启时用户可预配置但不生效）</span>
         <button id="schedule-reset-btn" type="button" onclick="resetScheduleSettings()"
                 class="btn-ghost">恢复默认调度</button>
         <button id="schedule-save-btn" type="button" onclick="saveScheduleSettings()"
@@ -454,7 +463,7 @@
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周日签到</div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为「无需签到」</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为「无需签到」</p>
         </div>
         <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
                 class="toggle" aria-label="周日签到"><span class="knob"></span></button>
@@ -464,27 +473,27 @@
     <!-- 随机延迟 -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">随机延迟（仅手动签到生效）</div>
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">自动签到的时间已自动分散，无需此设置；仅手动签到生效</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">自动签到的时间已自动分散，无需此设置；仅手动签到生效</p>
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
-          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
+          <label for="start-delay-secs" class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
           <button id="start-delay-btn" role="switch" aria-checked="false" onclick="toggleDelay('start')"
                   class="toggle" aria-label="启动延迟"><span class="knob"></span></button>
           <input id="start-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
                  class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">启动后随机等待 0~N 秒再开始首个签到</span>
+          <span class="text-xs text-zinc-500 dark:text-zinc-400 basis-full md:basis-auto">启动后随机等待 0~N 秒再开始首个签到</span>
         </div>
         <div class="flex flex-wrap items-center gap-3">
-          <label class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">账号间隔</label>
+          <label for="gap-delay-secs" class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">账号间隔</label>
           <button id="gap-delay-btn" role="switch" aria-checked="false" onclick="toggleDelay('gap')"
                   class="toggle" aria-label="账号间隔"><span class="knob"></span></button>
           <input id="gap-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
                  class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-400 dark:text-zinc-500 basis-full md:basis-auto">账号间随机停顿 0~N 秒（顺序模式）</span>
+          <span class="text-xs text-zinc-500 dark:text-zinc-400 basis-full md:basis-auto">账号间随机停顿 0~N 秒（顺序模式）</span>
         </div>
       </div>
       <div class="flex items-center gap-3 mt-5">
-        <span class="text-xs text-zinc-400 dark:text-zinc-500">开关与秒数修改后自动保存</span>
+        <span class="text-xs text-zinc-500 dark:text-zinc-400">开关与秒数修改后自动保存</span>
         <span id="settings-saved-tip" class="text-xs text-green-600 dark:text-green-400 hidden">已自动保存</span>
       </div>
     </div>
@@ -508,20 +517,20 @@
         <span id="my-password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
       </button>
       <div id="my-password-body" class="hidden mt-4">
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
       <div class="space-y-3 max-w-sm">
         <div>
-          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
+          <label for="my-old-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
           <input id="my-old-password" type="password" autocomplete="current-password" placeholder="输入当前密码"
                  class="input">
         </div>
         <div>
-          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，含两类字符）</label>
+          <label for="my-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，含两类字符）</label>
           <input id="my-new-password" type="password" autocomplete="new-password" placeholder="新密码"
                  class="input">
         </div>
         <div>
-          <label class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
+          <label for="my-confirm-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
           <input id="my-confirm-password" type="password" autocomplete="new-password" placeholder="再次输入新密码"
                  class="input">
         </div>
@@ -535,12 +544,12 @@
     <!-- 全局公告 -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">全局公告</div>
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">显示在所有页面顶部（含登录页）；留空保存 = 清除公告</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">显示在所有页面顶部（含登录页）；留空保存 = 清除公告</p>
       <textarea id="announcement-input" rows="2" maxlength="200" placeholder="如：当前测试中，服务器可能不稳定"
                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2"></textarea>
       <div class="flex items-center gap-3 mt-3">
         <button onclick="saveAnnouncement()" class="btn-primary">保存公告</button>
-        <span id="announcement-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        <span id="announcement-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
       </div>
     </div>
 
@@ -576,15 +585,15 @@
           <div class="text-sm font-medium text-amber-800 dark:text-amber-300">待审核用户</div>
           <span id="users-pending-count" class="text-xs text-amber-700 dark:text-amber-400"></span>
         </div>
-        <input id="users-pending-search" type="search" placeholder="搜索邮箱…"
+        <input id="users-pending-search" type="search" placeholder="搜索邮箱…" aria-label="搜索邮箱"
                class="w-full md:w-56 md:ml-auto input input-sm dark:bg-zinc-900">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-amber-100 dark:border-amber-800/50">以下用户提交的易班账号等待审核，可在「账号管理」中点「通过」后参与签到</p>
-      <div id="batch-bar-usersPending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersPending" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersPending','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersPending','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersPending')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div id="batch-bar-usersPending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersPending" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersPending','reset_password')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersPending','delete')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersPending')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
-          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersPending', this)" class="accent-blue-500"></th>
+          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersPending', this)" aria-label="全选待审核用户" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[14%]">角色</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">注册时间</th>
@@ -593,7 +602,7 @@
           </thead>
           <tbody id="users-pending-tbody"></tbody>
         </table>
-        <div id="users-pending-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无待审核用户</div>
+        <div id="users-pending-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无待审核用户</div>
       </div>
     </div>
 
@@ -604,14 +613,14 @@
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">正式用户</div>
           <span id="users-normal-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
-        <input id="users-normal-search" type="search" placeholder="搜索邮箱…"
+        <input id="users-normal-search" type="search" placeholder="搜索邮箱…" aria-label="搜索邮箱"
                class="w-full md:w-56 md:ml-auto input input-sm dark:bg-zinc-900">
       </div>
-      <div id="batch-bar-usersNormal" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersNormal" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersNormal','set_admin')" class="batch-admin-only px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersNormal','unset_admin')" class="batch-admin-only px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersNormal','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersNormal','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersNormal')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div id="batch-bar-usersNormal" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersNormal" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersNormal','set_admin')" class="batch-admin-only px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">设为管理员</button> <button onclick="batchUsers('usersNormal','unset_admin')" class="batch-admin-only px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消管理员</button> <button onclick="batchUsers('usersNormal','reset_password')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersNormal','delete')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersNormal')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
-          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersNormal', this)" class="accent-blue-500"></th>
+          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersNormal', this)" aria-label="全选正式用户" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[14%]">角色</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">注册时间</th>
@@ -620,7 +629,7 @@
           </thead>
           <tbody id="users-tbody"></tbody>
         </table>
-        <div id="users-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无注册用户</div>
+        <div id="users-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无注册用户</div>
       </div>
     </div>
 
@@ -629,17 +638,17 @@
       <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="flex items-center gap-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">空用户</div>
-          <span id="users-vacant-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+          <span id="users-vacant-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
-        <input id="users-vacant-search" type="search" placeholder="搜索邮箱…"
+        <input id="users-vacant-search" type="search" placeholder="搜索邮箱…" aria-label="搜索邮箱"
                class="w-full md:w-56 md:ml-auto input input-sm dark:bg-zinc-900">
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700">已注册但未提交任何账号，可重置密码或删除</p>
-      <div id="batch-bar-usersVacant" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersVacant" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersVacant','reset_password')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersVacant','delete')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersVacant')" class="px-3 py-1 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div id="batch-bar-usersVacant" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersVacant" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersVacant','reset_password')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersVacant','delete')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersVacant')" class="px-3 py-2 min-h-[44px] -my-2 rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
           <thead>
-          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersVacant', this)" class="accent-blue-500"></th>
+          <tr class="text-center text-xs text-zinc-500 dark:text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-700 sticky top-0 z-10"><th class="px-4 py-3 w-12 batch-col hidden"><input type="checkbox" onclick="toggleSelectAll('usersVacant', this)" aria-label="全选空用户" class="accent-blue-500"></th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">邮箱</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[14%]">角色</th>
               <th class="px-4 py-3 font-medium whitespace-nowrap w-[34%]">注册时间</th>
@@ -648,7 +657,7 @@
           </thead>
           <tbody id="users-vacant-tbody"></tbody>
         </table>
-        <div id="users-vacant-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无空用户</div>
+        <div id="users-vacant-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无空用户</div>
       </div>
     </div>
 
@@ -656,7 +665,7 @@
     <div id="deleted-users-card" class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm mt-4 hidden">
       <button type="button" onclick="toggleDeletedUsers()" class="w-full flex items-center gap-2 px-4 py-3 text-left">
         <span class="text-sm font-medium text-zinc-700 dark:text-zinc-200">已注销用户</span>
-        <span id="users-deleted-count" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        <span id="users-deleted-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         <span id="deleted-arrow" class="ml-auto text-zinc-400 dark:text-zinc-500 transition-transform duration-200">▸</span>
       </button>
       <div id="deleted-users-body" class="hidden">
@@ -674,7 +683,7 @@
             </thead>
             <tbody id="users-deleted-tbody"></tbody>
           </table>
-          <div id="users-deleted-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">暂无已注销用户</div>
+          <div id="users-deleted-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无已注销用户</div>
         </div>
       </div>
     </div>
@@ -688,7 +697,7 @@
     </div>
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
-      <div id="mine-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">还没有提交账号</div>
+      <div id="mine-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">还没有提交账号</div>
       <div id="mine-list" class="space-y-3"></div>
     </div>
 
@@ -697,16 +706,16 @@
       <div class="flex items-center justify-between mb-1">
         <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">我的签到时间</div>
         <button id="mine-pref-collapse-btn" type="button" onclick="toggleMinePrefCollapse()"
-                class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">▾</button>
+                class="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">▾</button>
       </div>
       <div id="mine-pref-body">
-        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">签到窗口 <span id="mine-pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始签到后修改，次日生效）</p>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">签到窗口 <span id="mine-pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始签到后修改，次日生效）</p>
         <p id="mine-pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
         <div id="mine-pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
         <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
           <button id="mine-pref-clear-btn" type="button" onclick="clearMineTimePref()"
                   class="btn-ghost">清除选择（恢复自动分配）</button>
-          <span id="mine-pref-tip" class="text-zinc-400 dark:text-zinc-500"></span>
+          <span id="mine-pref-tip" class="text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <p id="mine-pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
           功能未开启：你的选择会保存，但暂不生效（开启后次日生效）
@@ -720,28 +729,28 @@
       </div>
       <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
+          <label for="m-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
           <input id="m-name" type="text" maxlength="50" placeholder="如：我的手机"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
 
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
-          <input id="m-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
+          <label for="m-phone" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
+          <input id="m-phone" type="tel" inputmode="numeric" maxlength="20" required placeholder="登录易班的手机号"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div class="md:col-span-2">
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
+          <label for="m-password" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
           <input id="m-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
+          <label for="m-model" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
           <input id="m-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+          <label for="m-code" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
           <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
           <button id="clear-mcode-btn" type="button" onclick="toggleMineClearCode()"
@@ -751,7 +760,7 @@
           <button id="mine-submit-btn" type="submit" class="btn-primary">提交账号</button>
           <button id="mine-cancel-btn" type="button" onclick="cancelMineEdit()"
                   class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
-          <span id="mine-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+          <span id="mine-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
       </form>
     </div>
@@ -763,25 +772,25 @@
   <div id="footer-icp" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2">{{ icp_info }}</div>
   {% endif %}
   <div class="text-center text-xs text-zinc-500 dark:text-zinc-400">
-    <span onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors">易班自动签到 v{{ app_version }}</span>
+    <button type="button" onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors">易班自动签到 v{{ app_version }}</button>
     <span class="mx-1">·</span>
-    <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
+    <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
   </div>
 </footer>
 
-<!-- 账号编辑模态 -->
-<div id="modal-account" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
+<!-- 账号编辑模态（role="dialog"：焦点圈闭/Esc 关闭/焦点归还见 openModal/closeModal） -->
+<div id="modal-account" role="dialog" aria-modal="true" aria-labelledby="form-title" tabindex="-1" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeForm()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
     <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
     <form id="account-form" class="space-y-3">
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
+        <label for="f-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：小明"
                class="input">
       </div>
       <div id="f-email-wrap">
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
+        <label for="f-email" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
           <select id="f-email"
                   class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
             <option value="">不绑定（管理员自有账号，直接生效）</option>
@@ -795,23 +804,23 @@
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-phone" type="text" maxlength="20" required placeholder="易班登录手机号"
+        <label for="f-phone" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <input id="f-phone" type="tel" inputmode="numeric" maxlength="20" required placeholder="易班登录手机号"
                class="input">
-        <p id="f-phone-mask-tip" class="hidden mt-1 text-xs text-zinc-400 dark:text-zinc-500">为保护隐私，手机号已打码显示；如需修改请填写完整新号码</p>
+        <p id="f-phone-mask-tip" class="hidden mt-1 text-xs text-zinc-500 dark:text-zinc-400">为保护隐私，手机号已打码显示；如需修改请填写完整新号码</p>
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <label for="f-password" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-password" type="password" autocomplete="new-password" placeholder="编辑时留空表示不修改"
                class="input">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
+        <label for="f-model" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
                class="input">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+        <label for="f-code" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                class="input">
         <button id="clear-code-btn" type="button" onclick="toggleModalClearCode()"
@@ -825,9 +834,25 @@
   </div>
 </div>
 
-<!-- Toast -->
-<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
+<!-- Toast（role="status" + aria-live="polite"：动态消息对屏幕阅读器可感知；toast() 只改 class/文本，属性保留） -->
+<div id="toast" role="status" aria-live="polite" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden
             bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md max-w-[90vw] text-center break-words"></div>
+
+<!-- 重置密码模态（a11y 整改：替代原生 prompt 明文录入——密码遮蔽输入 + 密码管理器可用；校验与后续 API 与原逻辑一致） -->
+<div id="modal-password" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="modal-password-title">
+  <div class="absolute inset-0 bg-black/30" onclick="closePasswordModal()" aria-hidden="true"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-sm p-5">
+    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1" id="modal-password-title">重置密码</div>
+    <p id="modal-password-desc" class="text-xs text-zinc-500 dark:text-zinc-400 mb-3"></p>
+    <form id="modal-password-form">
+      <input id="modal-password-input" type="password" autocomplete="new-password" placeholder="至少 10 位，含两类字符" class="input">
+      <div class="flex items-center gap-2 pt-4">
+        <button type="submit" class="btn-primary">确认重置</button>
+        <button type="button" onclick="closePasswordModal()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <script>
 // ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 完全一致，含 pending） =================
@@ -895,10 +920,80 @@ async function api(path, opts = {}, _retried = false) {
 function toast(msg, isError = false) {
   const el = $('toast');
   el.textContent = msg;
-  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
+  // a11y 整改：只更新 class 与文本。className 赋值不会触碰 role="status"/aria-live="polite" 属性，
+  // 动态消息对屏幕阅读器保持可感知；补回 max-w-[90vw]/text-center/break-words 防长文案溢出（与初始 class 一致）
+  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white max-w-[90vw] text-center break-words ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
   clearTimeout(el._timer);
   el._timer = setTimeout(() => el.classList.add('hidden'), 3000);
 }
+
+// ================= 模态焦点管理（a11y 整改：打开记录触发元素→聚焦首控件、Tab 圈闭、Esc 关闭、焦点归还） =================
+const _modalStack = [];  // [{ el, trigger }]，后进先出支持叠层
+
+function _modalFocusables(el) {
+  return Array.from(el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter(x => !x.disabled && x.offsetParent !== null);  // offsetParent 过滤 hidden/不可见元素
+}
+
+function openModal(el, trigger) {
+  if (!el || _modalStack.some(m => m.el === el)) return;
+  _modalStack.push({ el, trigger: trigger || document.activeElement });
+  el.classList.remove('hidden');
+  const first = _modalFocusables(el)[0];
+  if (first) first.focus();
+  else el.focus();  // 容器带 tabindex="-1" 兜底
+}
+
+function closeModal(el) {
+  const i = _modalStack.findIndex(m => m.el === el);
+  if (i === -1) return;
+  const { trigger } = _modalStack.splice(i, 1)[0];
+  el.classList.add('hidden');
+  // 焦点归还触发元素（列表重绘可能已移除该元素，contains 防护）
+  if (trigger && document.contains(trigger) && typeof trigger.focus === 'function') trigger.focus();
+}
+
+// 全局键盘：Esc 逐层关闭（行菜单 → 模态 → 侧栏抽屉遮罩）；Tab 在最上层模态内圈闭
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (_rowMenu) { closeRowMenu(true); return; }
+    if (_modalStack.length) { e.preventDefault(); closeModal(_modalStack[_modalStack.length - 1].el); return; }
+    const overlay = $('sidebar-overlay');
+    if (overlay && !overlay.classList.contains('hidden')) toggleSidebar(false);
+    return;
+  }
+  if (e.key === 'Tab' && _modalStack.length) {
+    const top = _modalStack[_modalStack.length - 1].el;
+    const items = _modalFocusables(top);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (!top.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+
+// ================= 重置密码模态（a11y 整改：替代原生 prompt 明文录入；校验与后续 API/Toast 与原逻辑一致） =================
+let _pwModalCb = null;
+function openPasswordModal(desc, cb) {
+  _pwModalCb = cb;
+  $('modal-password-desc').textContent = desc;  // textContent 赋值：动态数据（邮箱等）无注入面
+  $('modal-password-input').value = '';
+  openModal($('modal-password'));  // 打开即聚焦密码输入框（容器内首个可交互元素）
+}
+function closePasswordModal() {
+  _pwModalCb = null;
+  closeModal($('modal-password'));
+}
+$('modal-password-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const pw = $('modal-password-input').value;
+  if (!pw) return;  // 与原 prompt 行为一致：空值静默不提交
+  if (pw.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
+  const cb = _pwModalCb;
+  closePasswordModal();
+  if (cb) cb(pw);
+});
 
 // ================= 侧边栏（移动端抽屉） =================
 function toggleSidebar(open) {
@@ -1071,7 +1166,9 @@ function clearBatch(key) {
 function batchAccounts(key, action) {
   const ids = [...batchSel[key]];
   if (!ids.length) { toast('请先勾选要操作的账号', true); return; }
-  const body = { action, ids };
+  // 携带与 ids 对齐的 phones 供服务端防错位校验（列表漂移时整体 409 引导刷新）
+  const phones = ids.map(i => (state.accounts.find(a => a.index === i) || {}).phone);
+  const body = { action, ids, phones };
   if (action === 'reject') {
     const reason = prompt(`批量拒绝 ${ids.length} 个账号，请输入共同理由（用户会看到，最多 100 字）：`);
     if (reason === null) return;
@@ -1084,7 +1181,7 @@ function batchAccounts(key, action) {
   // 批量手动签到：独立端点，顺序逐个执行（防风控）
   if (action === 'signin') {
     if (!confirm(`确定对选中的 ${ids.length} 个账号执行手动签到吗？将按顺序逐个执行，结果稍后出现在下方日志。`)) return;
-    api('/api/signin/batch', { method: 'POST', body: JSON.stringify({ ids }) })
+    api('/api/signin/batch', { method: 'POST', body: JSON.stringify({ ids, phones }) })
       .then(data => { toast(data.msg || '已加入签到队列'); clearBatch(key); })
       .catch(e => toast(e.message, true));
     return;
@@ -1099,12 +1196,18 @@ function batchUsers(key, action) {
   if (!emails.length) { toast('请先勾选要操作的用户', true); return; }
   const body = { action, emails };
   if (action === 'reset_password') {
-    const pw = prompt(`为选中的 ${emails.length} 个用户设置新密码（至少 10 位，含两类字符）：`);
-    if (!pw) return;
-    if (pw.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
-    body.password = pw;
+    // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验与后续 API/Toast 与原逻辑一致
+    openPasswordModal(`为选中的 ${emails.length} 个用户设置新密码（至少 10 位，含两类字符）`, (pw) => {
+      body.password = pw;
+      submitBatchUsers(key, body);
+    });
+    return;
   }
   if (action === 'delete' && !confirm(`确定删除选中的 ${emails.length} 个用户吗？将连同其易班账号删除，不可恢复！`)) return;
+  submitBatchUsers(key, body);
+}
+
+function submitBatchUsers(key, body) {
   api('/api/users/batch', { method: 'POST', body: JSON.stringify(body) })
     .then(data => { toast(data.msg || '操作成功'); clearBatch(key); loadUsers(); })
     .catch(e => toast(e.message, true));
@@ -1195,14 +1298,14 @@ function renderAccounts() {
 function deletedAccountRow(a, key) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
-  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   tr.innerHTML = `
     ${cb}
     <td class="px-4 py-3 text-lg leading-none">🗑️</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
-    <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">${esc((a.deleted_at || '').replace('T', ' ').slice(0, 16))}</td>
+    <td class="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc((a.deleted_at || '').replace('T', ' ').slice(0, 16))}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center gap-1">
         <button onclick="restoreAccount(${a.index})" class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-150">恢复</button>
@@ -1213,8 +1316,10 @@ function deletedAccountRow(a, key) {
 }
 
 async function restoreAccount(idx) {
+  const a = state.accounts[idx];
   try {
-    const data = await api(`/api/accounts/${idx}/restore`, { method: 'POST' });
+    // 携带 phone 供服务端防错位校验（列表漂移时返回 409 引导刷新）
+    const data = await api(`/api/accounts/${idx}/restore`, { method: 'POST', body: JSON.stringify({ phone: a.phone }) });
     toast(data.msg || '已恢复');
     loadAccounts();
   } catch (e) { toast(e.message, true); }
@@ -1224,7 +1329,7 @@ async function purgeAccount(idx) {
   const a = state.accounts[idx];
   if (!confirm(`确定彻底删除「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？此操作不可恢复！`)) return;
   try {
-    const data = await api(`/api/accounts/${idx}/purge`, { method: 'POST' });
+    const data = await api(`/api/accounts/${idx}/purge`, { method: 'POST', body: JSON.stringify({ phone: a.phone }) });
     toast(data.msg || '已彻底删除');
     loadAccounts();
   } catch (e) { toast(e.message, true); }
@@ -1241,7 +1346,7 @@ function statusBadge(a) {
 function pendingAccountRow(a, key) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
-  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const reasonHtml = a.reject_reason
     ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
     : '';
@@ -1254,7 +1359,7 @@ function pendingAccountRow(a, key) {
     <td class="px-4 py-3">${statusBadge(a)}${reasonHtml}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center">
-        <button title="更多操作" onclick="openRowMenu(event, [
+        <button aria-label="更多操作" onclick="openRowMenu(event, [
           {label: '通过', cls: 'text-green-600 dark:text-green-400', fn: () => reviewAccount(${a.index}, 'approve')},
           {label: '拒绝', cls: 'text-red-600 dark:text-red-400', fn: () => reviewAccount(${a.index}, 'reject')},
           {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(${a.index})},
@@ -1275,7 +1380,7 @@ function accountRow(a, key) {
   const stTitle = baseTitle
     + (stMsg && stMsg !== baseTitle ? ' · ' + stMsg : '')
     + (stDur ? ' · 耗时 ' + Number(stDur).toFixed(1) + 's' : '');
-  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
@@ -1296,7 +1401,7 @@ function accountRow(a, key) {
     <td class="px-4 py-3">${statusBadge(a)}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center">
-        <button title="更多操作" onclick="accountRowMenu(event, this, ${a.index})"
+        <button aria-label="更多操作" onclick="accountRowMenu(event, this, ${a.index})"
                 class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
       </div>
     </td>`;
@@ -1310,12 +1415,12 @@ function accountRowMenu(evt, btn, idx) {
     {label: '手动签到', cls: 'text-blue-600 dark:text-blue-400', fn: () => doSigninByIndex(idx)},
     {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(idx)},
     {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(idx)},
-  ]);
+  ], btn);
 }
 
 async function reviewAccount(idx, action) {
   const a = state.accounts[idx];
-  let body = { action };
+  let body = { action, phone: a.phone };
   if (action === 'reject') {
     const reason = prompt(`拒绝「${jsEscape(a.display_name)}」(${maskPhone(a.phone)})，请输入理由（用户会看到，最多 100 字）：`, '');
     if (reason === null) return;  // 用户取消
@@ -1336,7 +1441,7 @@ async function reviewAccount(idx, action) {
 
 function card(label, value, color) {
   return `<div class="card-sm">
-            <div class="text-xs text-zinc-400 dark:text-zinc-500">${label}</div>
+            <div class="text-xs text-zinc-500 dark:text-zinc-400">${label}</div>
             <div class="text-xl md:text-2xl font-semibold tracking-tight ${color}">${value}</div>
           </div>`;
 }
@@ -1367,8 +1472,9 @@ function maskEmail(e) {
 }
 
 async function moveAccount(idx, dir) {
+  const a = state.accounts[idx];
   try {
-    const data = await api(`/api/accounts/${idx}/move`, { method: 'POST', body: JSON.stringify({ dir }) });
+    const data = await api(`/api/accounts/${idx}/move`, { method: 'POST', body: JSON.stringify({ dir, phone: a.phone }) });
     state.accounts = data.accounts;
     renderAccounts();
   } catch (e) { toast(e.message, true); }
@@ -1378,7 +1484,7 @@ async function deleteAccount(idx) {
   const a = state.accounts[idx];
   if (!confirm(`确定删除账号「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？`)) return;
   try {
-    await api(`/api/accounts/${idx}`, { method: 'DELETE' });
+    await api(`/api/accounts/${idx}`, { method: 'DELETE', body: JSON.stringify({ phone: a.phone }) });
     toast('已删除账号');
     loadAccounts();
   } catch (e) { toast(e.message, true); }
@@ -1404,6 +1510,7 @@ function toggleModalClearCode() {
 }
 
 async function openForm(index) {
+  const trigger = document.activeElement;  // 记录触发元素：模态关闭时归还焦点（a11y）
   state.editingIndex = index;
   state.editSnapshot = null;  // 乐观锁快照在详情取到完整号后设置
   const a = index === null ? null : state.accounts[index];
@@ -1446,16 +1553,22 @@ async function openForm(index) {
   $('f-code').placeholder = a && a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
   modalClearCodeFlag = false;
   $('clear-code-btn').classList.toggle('hidden', !(a && a.has_phone_code));
-  $('modal-account').classList.remove('hidden');
-  $('f-name').focus();
+  openModal($('modal-account'), trigger);  // 首个可交互元素即 f-name，打开自动聚焦
 }
 
 function closeForm() {
-  $('modal-account').classList.add('hidden');
+  closeModal($('modal-account'));
 }
 
+let accountSubmitting = false;  // 在途锁（参照 scheduleSaving 模式）：提交期间按钮禁用，防连点重复提交
 $('account-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (accountSubmitting) return;
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  const btnText = submitBtn.textContent;
+  accountSubmitting = true;
+  submitBtn.disabled = true;
+  submitBtn.textContent = '提交中…';
   // 手机号打码显示时（未修改）用内存中的完整号码提交，避免 **** 入库
   const phoneInput = $('f-phone');
   const phoneRaw = phoneInput.value.trim();
@@ -1488,6 +1601,11 @@ $('account-form').addEventListener('submit', async (e) => {
     closeForm();
     loadAccounts();
   } catch (err) { toast(err.message, true); }
+  finally {
+    accountSubmitting = false;
+    submitBtn.disabled = false;
+    submitBtn.textContent = btnText;  // 模态已关/仍开均可安全恢复，供下次打开
+  }
 });
 
 // ================= 日志与状态 =================
@@ -2008,34 +2126,59 @@ async function doLogout() {
   location.href = '/login';
 }
 
-// ============ 行操作省略号菜单（fixed 定位，点外部关闭） ============
+// ============ 行操作省略号菜单（fixed 定位；a11y 整改：基于触发元素定位 + role=menu + 焦点管理） ============
 let _rowMenu = null;
-function closeRowMenu() {
+let _rowMenuTrigger = null;
+// refocus=true：Esc 关闭时焦点归还触发按钮（键盘可达）
+function closeRowMenu(refocus) {
+  const t = _rowMenuTrigger;
   if (_rowMenu) { _rowMenu.remove(); _rowMenu = null; }
+  _rowMenuTrigger = null;
+  if (refocus && t && document.contains(t)) t.focus();
 }
-function openRowMenu(evt, items) {
-  evt.stopPropagation();
+function openRowMenu(evt, items, anchor) {
+  if (evt && evt.stopPropagation) evt.stopPropagation();
   closeRowMenu();
+  // 定位改为基于触发元素 getBoundingClientRect：键盘 Enter 触发时 evt.clientX/Y 为 0，
+  // 原实现菜单会飞到左上角；现始终出现在按钮旁
+  const btn = anchor || (evt && evt.currentTarget) || null;
+  _rowMenuTrigger = btn;
   const el = document.createElement('div');
+  el.setAttribute('role', 'menu');
+  el.setAttribute('aria-label', '更多操作');
   el.className = 'fixed z-50 bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-lg py-1 min-w-36';
-  el.style.left = Math.min(evt.clientX, window.innerWidth - 180) + 'px';
-  el.style.top = Math.min(evt.clientY, window.innerHeight - items.length * 40 - 12) + 'px';
+  let left = 16, top = 80;
+  if (btn && typeof btn.getBoundingClientRect === 'function') {
+    const r = btn.getBoundingClientRect();
+    left = Math.max(8, Math.min(r.left, window.innerWidth - 180));
+    top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - items.length * 40 - 12));
+  }
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
   items.forEach(it => {
     const b = document.createElement('button');
-    b.className = 'w-full text-left px-4 py-2 text-sm ' + it.cls + ' hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors duration-150';
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    b.className = 'w-full text-left px-4 py-2 min-h-[44px] text-sm ' + it.cls + ' hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors duration-150';
     b.textContent = it.label;
-    b.onclick = () => { closeRowMenu(); it.fn(); };
+    b.onclick = () => {
+      const t = _rowMenuTrigger;
+      closeRowMenu();
+      if (t && document.contains(t)) t.focus();  // 焦点先归还触发元素，后续动作（如打开模态）从那里接管焦点链
+      it.fn();
+    };
     el.appendChild(b);
   });
   document.body.appendChild(el);
   _rowMenu = el;
+  const first = el.querySelector('[role="menuitem"]');
+  if (first) first.focus();  // 打开即聚焦第一项，键盘可直接 Enter 确认
 }
-document.addEventListener('click', closeRowMenu);
+document.addEventListener('click', () => closeRowMenu(false));
 
 // 更新日志弹窗（版本号点击；Markdown 渲染）
 async function openChangelog() {
-  const modal = $('changelog-modal');
-  modal.classList.remove('hidden');
+  openModal($('changelog-modal'));  // 记录触发元素并聚焦模态内首控件；Esc 可关闭
   const content = $('changelog-content');
   content.innerHTML = '加载中…';
   try {
@@ -2043,7 +2186,7 @@ async function openChangelog() {
     content.innerHTML = window.renderMarkdown ? renderMarkdown(data.text || '暂无更新日志') : esc(data.text || '暂无更新日志');
   } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
 }
-function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
+function closeChangelog() { closeModal($('changelog-modal')); }
 
 // 初始化
 (async function init() {
@@ -2194,10 +2337,10 @@ function renderUsers(users, builtinAdmin) {
   builtin.className = 'border-b border-zinc-50 dark:border-zinc-700/50 bg-zinc-50/50 dark:bg-zinc-700/30';
   builtin.innerHTML = `
     ${state.batchMode ? '<td class="px-2 py-3 w-8"></td>' : ''}
-    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(builtinAdmin)}">${esc(builtinAdmin)} <span class="text-xs text-zinc-400 dark:text-zinc-500">（主管理员）</span></td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(builtinAdmin)}">${esc(builtinAdmin)} <span class="text-xs text-zinc-500 dark:text-zinc-400">（主管理员）</span></td>
     <td class="px-4 py-3"><span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span></td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
-    <td class="px-4 py-3 text-xs text-zinc-400 dark:text-zinc-500 sticky right-0 bg-zinc-50/50 dark:bg-zinc-700/30 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">不可改</td>`;
+    <td class="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400 sticky right-0 bg-zinc-50/50 dark:bg-zinc-700/30 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">不可改</td>`;
   tbody.appendChild(builtin);
   normalFiltered.forEach(u => tbody.appendChild(userRow(u, 'usersNormal')));
   // 第三组：空用户（未提交账号）
@@ -2247,7 +2390,7 @@ function userRow(u, key) {
   const tr = document.createElement('tr');
   tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50';
   const isAdmin = u.role === 'admin';
-  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" ${batchSel[key].has(u.email) ? 'checked' : ''} onchange="toggleRow('${key}', '${esc(u.email)}', this)"></td>` : '';
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择用户 ${esc(maskEmail(u.email))}" ${batchSel[key].has(u.email) ? 'checked' : ''} onchange="toggleRow('${key}', '${esc(u.email)}', this)"></td>` : '';
   const roleBadge = isAdmin
     ? '<span class="inline-flex items-center rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2 py-0.5">管理员</span>'
     : '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2 py-0.5">普通用户</span>';
@@ -2258,7 +2401,7 @@ function userRow(u, key) {
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
       <div class="flex items-center justify-center">
-        <button title="更多操作" data-email="${esc(u.email)}" data-role="${esc(u.role)}" data-key="${key}" onclick="userRowMenu(event, this)"
+        <button aria-label="更多操作" data-email="${esc(u.email)}" data-role="${esc(u.role)}" data-key="${key}" onclick="userRowMenu(event, this)"
                 class="px-3 py-1.5 rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">⋯</button>
       </div>
     </td>`;
@@ -2279,7 +2422,7 @@ function userRowMenu(evt, btn) {
     {label: '清空账号', cls: 'text-amber-600 dark:text-amber-400', fn: () => deleteUserAccounts(email)},
     {label: '删除用户', cls: 'text-red-600 dark:text-red-400', fn: () => deleteUserFull(email)},
   );
-  openRowMenu(evt, items);
+  openRowMenu(evt, items, btn);
 }
 
 async function setUserRole(email, role) {
@@ -2294,16 +2437,16 @@ async function setUserRole(email, role) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function resetUserPassword(email) {
-  const password = prompt(`为 ${email} 设置新密码（至少 10 位，含两类字符）：`);
-  if (!password) return;
-  if (password.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
-  try {
-    const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
-      method: 'POST', body: JSON.stringify({ password }),
-    });
-    toast(data.msg || '密码已重置');
-  } catch (e) { toast(e.message, true); }
+function resetUserPassword(email) {
+  // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验与后续 API/Toast 与原逻辑一致
+  openPasswordModal(`为 ${email} 设置新密码（至少 10 位，含两类字符）`, async (password) => {
+    try {
+      const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
+        method: 'POST', body: JSON.stringify({ password }),
+      });
+      toast(data.msg || '密码已重置');
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 async function deleteUserAccounts(email) {
@@ -2401,7 +2544,7 @@ function renderMinePrefSlots(data) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.disabled = true;
-      btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
+      btn.className = 'rounded-lg border px-2 py-1.5 min-h-[44px] text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
       btn.title = '该时段被掐头去尾保留，不可选择';
       btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已保留</div>`;
       grid.appendChild(btn);
@@ -2410,7 +2553,7 @@ function renderMinePrefSlots(data) {
     const partial = !!s.edge_note;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center transition-colors duration-150 ' +
+    btn.className = 'rounded-lg border px-2 py-1.5 min-h-[44px] text-xs text-center transition-colors duration-150 ' +
       (sel
         ? 'bg-blue-600 border-blue-600 text-white'
         : full
@@ -2475,27 +2618,27 @@ function renderMine() {
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
-            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，待管理员在账号列表的待删除区处理</div>'
+            ${a.deleted ? '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">已被管理员删除，待管理员在账号列表的待删除区处理</div>'
               : (a.status === 'active' ? (a.state_icon === '✅'
                 ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
-                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>') : '')}
+                : '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>') : '')}
           </div>
         </div>
         <div class="flex items-center gap-2">
           ${a.deleted ? '<span class="inline-flex items-center rounded-lg bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2 py-0.5">已删除</span>'
             : mineStatusBadge(a.status)}
           ${a.deleted
-            ? '<span class="text-sm text-zinc-400 dark:text-zinc-500">待管理员在账号列表的待删除区处理</span>'
+            ? '<span class="text-sm text-zinc-500 dark:text-zinc-400">待管理员在账号列表的待删除区处理</span>'
             : `<button onclick="openMineEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
           <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>`}
         </div>
       </div>
       ${a.logs && a.logs.length ? `
         <details class="mt-3">
-          <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
+          <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-400 dark:text-zinc-500">审核通过后即可查看签到日历</div>' : ''}<div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${calKey}"></div>
+      ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">审核通过后即可查看签到日历</div>' : ''}<div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${calKey}"></div>
     `;
     list.appendChild(card);
     if (!a.deleted && a.status === 'active') renderCalendar(a.phone, calKey);  // 已删除/未生效账号不显示日历
@@ -2541,7 +2684,7 @@ function renderCalendar(phone, key) {
     </div>`;
   const grid = $('cal-grid-' + key);
   grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
-    `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
+    `<div class="text-center text-xs text-zinc-500 dark:text-zinc-400 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
     state.sundaySign = !!data.sunday_sign;  // 与 user.html 一致：开启周日签到后周日正常显示/可查
     const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
@@ -2559,14 +2702,18 @@ function renderCalendar(phone, key) {
       else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
+      // a11y 整改：div onclick → button（键盘可达 + 全局 focus-visible 光圈）；
+      // 周日置灰日期补「休」角标与 aria-label 说明，不再仅靠颜色区分
+      const sundayOff = wd === 0 && !state.sundaySign;
       grid.insertAdjacentHTML('beforeend', `
-        <div onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
+        <button type="button" onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
+             aria-label="${date}${sundayOff ? '（周日不签到）' : '，查看签到记录'}"
              class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
-          <span>${d}</span>
-        </div>`);
+          <span>${d}</span>${sundayOff ? '<span class="absolute top-0.5 right-1 text-[8px] leading-none text-zinc-500 dark:text-zinc-400">休</span>' : ''}
+        </button>`);
     }
   }).catch(() => {
-    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-400 dark:text-zinc-500 py-4">日历加载失败，请稍后重试</div>';
+    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-500 dark:text-zinc-400 py-4">日历加载失败，请稍后重试</div>';
   });
 }
 
@@ -2578,7 +2725,7 @@ function calLoadLog(btn, date) {
     box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">周日无需签到</div>';
     return;
   }
-  box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">加载中…</div>';
+  box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400">加载中…</div>';
   api(`/api/my-logs?date=${date}`).then(data => {
     if (!data.logs || !data.logs.length) {
       box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${date} 暂无签到记录</div>`;
@@ -2659,8 +2806,15 @@ function toggleMyPassword() {
   document.querySelector('[onclick="toggleMyPassword()"]').setAttribute('aria-expanded', String(!hidden));
 }
 
+let mineSubmitting = false;  // 在途锁（参照 scheduleSaving 模式）：提交期间按钮禁用，防连点重复提交
 $('mine-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (mineSubmitting) return;
+  mineSubmitting = true;
+  const btn = $('mine-submit-btn');
+  const btnText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '提交中…';
   const tip = $('mine-tip');
   tip.textContent = '提交中…';
   try {
@@ -2676,13 +2830,18 @@ $('mine-form').addEventListener('submit', async (e) => {
       ? await api(`/api/my-accounts/${mineEditingIndex}`, { method: 'PUT', body: JSON.stringify(body) })
       : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
     tip.textContent = '';
-    resetMineForm();
+    resetMineForm();  // 成功路径由 resetMineForm 恢复按钮文案（「提交账号」）
     e.target.reset();
     toast(data.msg || '已保存');
     loadMine();
   } catch (err) {
     tip.textContent = '';
+    btn.textContent = btnText;  // 失败恢复原文案
     toast(err.message, true);
+  }
+  finally {
+    mineSubmitting = false;
+    btn.disabled = false;
   }
 });
 
@@ -2716,12 +2875,12 @@ async function loadAnnouncement() {
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
 <!-- 更新日志弹窗 -->
-<div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
+<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
     <div class="flex items-center justify-between mb-3">
-      <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
-      <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
+      <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
     </div>
     <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed"></div>
   </div>

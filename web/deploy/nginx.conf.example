@@ -1,0 +1,45 @@
+# nginx 反向代理配置模板（yiban-auto-sign Web 管理后台）
+#
+# 2026-08-20 对抗性审查补充：应用侧 _client_ip() 仅在 remote_addr 为回环时信任
+# X-Forwarded-For 的【第一个值】，安全性完全依赖本模板的"覆盖式"写法——
+#   proxy_set_header X-Forwarded-For $remote_addr;
+# ⚠️ 切勿改成网上教程常见的 $proxy_add_x_forwarded_for（追加式）：那会让客户端
+# 自报的伪造值留在 XFF 首位，登录锁定/API 限速/注册限速全部按伪造 IP 分桶而失效。
+#
+# 用法：替换 server_name 与证书路径后放入 /etc/nginx/conf.d/ 或 sites-available，
+# reload nginx。应用本身监听 127.0.0.1:17892（systemd 单元默认）。
+
+server {
+    # http2 写在 listen 行（旧语法，nginx ≥1.9.5 全兼容；`http2 on;` 新语法需 ≥1.25.1，
+    # Ubuntu 20.04/22.04 LTS 随附的 1.18 不支持会导致 nginx -t 失败）
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+
+    server_name yiban.example.com;          # ← 改成你的域名
+
+    # TLS 证书（Let's Encrypt / acme.sh 签发的路径）
+    ssl_certificate     /etc/ssl/yiban/fullchain.pem;   # ← 改成你的证书路径
+    ssl_certificate_key /etc/ssl/yiban/key.pem;         # ← 改成你的私钥路径
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # 管理后台仅一人使用，无需大上传体；64KB 与应用 MAX_CONTENT_LENGTH 对齐
+    client_max_body_size 64k;
+
+    location / {
+        proxy_pass http://127.0.0.1:17892;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+
+        # ↓↓↓ 关键：覆盖式 XFF（丢弃客户端自报值），应用按此取真实客户端 IP
+        proxy_set_header X-Forwarded-For $remote_addr;
+        # 应用据此判定 HTTPS（下发 HSTS、Secure Cookie 场景）
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 5s;
+    }
+
+    # 可选：HTTP 跳转 HTTPS
+    # server { listen 80; server_name yiban.example.com;
+    #          return 301 https://$host$request_uri; }
+}
