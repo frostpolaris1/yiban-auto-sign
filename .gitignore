@@ -71,29 +71,9 @@ MAINTENANCE.md
 PROXY_DEPLOY_GUIDE.md
 ADVERSARIAL_REVIEW_20260820.md
 hardening/
-docs/AI-HANDOFF.md
-docs/OPERATIONS-GUIDE.md
-docs/CHANGELOG-full.md
-docs/DEVELOPMENT_LOG.md
-docs/TODO.md
-# Git 协作速查（单人不接受 PR，无外部引用；2026-08-22 移出公开面，开放协作时再恢复）
-docs/GIT_QUICKSTART.md
-docs/fix-report-*.md
-docs/review-ui-ux-*.md
-docs/review-security-perf-*.md
-docs/web-console/DEPLOY-CHECKLIST.md
-docs/web-console/resources.md
-
-# 内部工作流文档（AI 实施计划/设计过程/提示词，本地保留不入库）
-docs/user-agreement-prompt.md
-docs/archive/
-docs/design-schedule-a.md
-docs/scheduler-research-20260814.md
-docs/design/
-docs/design-tui/
+# docs 目录一律不跟踪（内部运维/设计/调研文档仅本地留存，2026-08-22 起整体移出版本控制）
+docs/
 .superpowers/
-docs/superpowers/
-docs/web-console/design/
 
 # ZCode 工具目录
 .zcode/
@@ -119,9 +99,6 @@ deploy-local/
 # 根目录 agent 记忆入口（2026-08-16 归并：AI-HANDOFF / TODO / .workbuddy 记忆 / WORKFLOW / CONTRIBUTING，非开源）
 memory.md
 AGENTS.md
-
-# 命名/文档/死代码审查报告（2026-08-16 补忽略）
-docs/review-naming-docs-deadcode-*.md
 
 # 协作备用文件（未启用；等协作场景再决定入库，2026-08-16 补忽略）
 WORKFLOW.md
