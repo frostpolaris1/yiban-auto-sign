@@ -104,6 +104,12 @@ restore() {
         echo "错误：备份包含符号链接条目，已拒绝解包（防链接写出目标目录）" >&2
         exit 1
     fi
+    # 2026-08-21 对抗性审查加固：同时拒绝设备/字符设备/FIFO 条目——root 恢复时
+    # 恶意包可在目标目录创建设备节点（前提苛刻，属纵深防御）
+    if tar -tvzf "$archive" 2>/dev/null | grep -qE '^[bcp]'; then
+        echo "错误：备份包含设备/FIFO 特殊条目，已拒绝解包" >&2
+        exit 1
+    fi
     mkdir -p "$dest"
     tar -xzf "$archive" -C "$dest" --anchored --no-overwrite-dir 2>/dev/null || \
         tar -xzf "$archive" -C "$dest" --no-overwrite-dir 2>/dev/null || {
@@ -187,13 +193,24 @@ else
     log "跳过（不存在）：${APP_DIR}/${DB_FILE}"
 fi
 
-# 2) 密钥：优先 /etc/yiban/accounts-key（systemd EnvironmentFile）
-#    ——密钥与数据一起备份但分开放置（keys/ 子目录），恢复时可区分对待
+# 2) 密钥：优先 /etc/yiban/accounts-key（systemd EnvironmentFile，应含数据加密密钥
+#    YIBAN_ACCOUNTS_KEY）——密钥与数据一起备份但分开放置（keys/ 子目录）
 if [ -f "${KEY_FILE}" ]; then
     cp -p "${KEY_FILE}" "${TMPDIR_BAK}/keys/accounts-key"
     log "密钥来源：${KEY_FILE}"
+    # 2026-08-21 修复（密钥语义冲突）：历史部署可能按旧清单把会话签名密钥
+    # YIBAN_SECRET_KEY 写进了该文件——校验内容，缺数据密钥时从 .env 兜底提取
+    if ! grep -qE '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${KEY_FILE}"; then
+        log "警告：${KEY_FILE} 内未找到 YIBAN_ACCOUNTS_KEY（疑似旧清单写入的会话密钥），尝试从 .env 兜底提取"
+        if [ -f "${APP_DIR}/.env" ]; then
+            grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/accounts-key.env" \
+                && log "已从 ${APP_DIR}/.env 兜底提取 YIBAN_ACCOUNTS_KEY（keys/accounts-key.env）" \
+                || log "警告：.env 中也未找到 YIBAN_ACCOUNTS_KEY，数据密钥未备份！恢复时 yiban.db 密文将不可解！"
+        fi
+    fi
 else
-    # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（web 会话签名密钥，见 web/app.py ensure_secret_key）
+    # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（账号密码 AES-GCM 数据加密密钥，
+    # 见 scripts/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
     if [ -f "${APP_DIR}/.env" ]; then
         grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/secret-key.env" \
             && log "密钥来源：${APP_DIR}/.env 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \
@@ -244,6 +261,13 @@ if [ ${#archive_paths[@]} -eq 0 ]; then
 fi
 tar -czf "${ARCHIVE}" -C "${TMPDIR_BAK}" --owner=0 --group=0 "${archive_paths[@]}"
 chmod 0600 "${ARCHIVE}"
+# 2026-08-21 对抗性审查补充：生成 sha256 清单（fetch-backup.ps1 拉取后核对，
+# 防服务器侧备份包被静默替换后横向投递到开发机）
+if command -v sha256sum > /dev/null 2>&1; then
+    sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+    chmod 0600 "${ARCHIVE}.sha256"
+    log "已生成校验清单：${ARCHIVE}.sha256"
+fi
 log "本地备份完成：${ARCHIVE}（$(du -h "${ARCHIVE}" | cut -f1)）"
 
 # ------------------------------------------------------------
@@ -298,7 +322,11 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         # 或定期人工清理；本脚本只保证本地保留天数。
     fi
 else
-    log "REMOTE_BACKUP 未配置，仅保留本地备份（建议尽快配置异机加密副本）"
+    # 2026-08-21 对抗性审查加固：明文本地备份含全部密钥+口令哈希+数据库，
+    # 显著告警提示加密路径（不改变行为，保持兼容）
+    log "警告：REMOTE_BACKUP 未配置，本次为【明文】本地备份（内含 .env 全部密钥、管理员口令哈希与全量数据库）。" >&2
+    log "警告：请尽快配置 REMOTE_BACKUP（异机加密副本），或以 --require-encrypt 运行；明文归档务必确保 ${BACKUP_DIR} 目录访问受控。" >&2
+    log "REMOTE_BACKUP 未配置，仅保留本地备份"
 fi
 
 # ------------------------------------------------------------

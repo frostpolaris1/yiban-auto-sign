@@ -107,6 +107,21 @@ foreach ($name in $missing) {
         # gzip 完整性校验：能列出包内文件 = 压缩流完整可读
         $null = tar -tzf $local 2>$null
         if ($LASTEXITCODE -ne 0) { throw "tar 校验失败（包可能损坏）" }
+        # sha256 清单核对（2026-08-21 对抗性审查加固）：服务器端 backup.sh 会生成
+        # <包名>.sha256；存在则核对，防备份包在服务器侧被静默替换后横向投递。
+        # 清单不存在（旧版本备份）仅提示不阻断。
+        $shaRemote = "$RemoteDir/$name.sha256"
+        $shaOut = ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=$strictHostKeyChecking $Server "cat $shaRemote 2>/dev/null" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $shaOut) {
+            $expected = ([regex]::Match(($shaOut -join ' '), '^[0-9a-f]{64}')).Value
+            if ($expected) {
+                $actual = (Get-FileHash -Path $local -Algorithm SHA256).Hash.ToLower()
+                if ($actual -ne $expected) { throw "sha256 不匹配（期望 $expected，实际 $actual），备份包疑似被替换" }
+                Write-Log "sha256 核对通过：$name"
+            }
+        } else {
+            Write-Log "提示：$name 无 .sha256 清单（旧版本备份），仅完成 gzip 校验"
+        }
         Write-Log "已拉取并校验：$name"
         $okCount++
     }

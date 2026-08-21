@@ -172,13 +172,16 @@ class SmokeTest(unittest.TestCase):
             db.purge_account(a["id"])
         self.assertEqual([a["phone"] for a in db.load_accounts()], ["13800138000"])
 
-    # ---- 5. 软删除超期惰性清理 ----
+    # ---- 5. 软删除超期清理（2026-08-20 契约变更：移出读路径，显式调用）----
     def test_expired_soft_delete_cleaned(self):
         self._init_db()
         old = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
         db.add_account({"name": "A", "phone": "13800138000", "password": "p1", "status": "active"})
         db.set_account_deleted(db.load_accounts()[0]["id"], 1, old)
-        # load 时惰性清除超期行
+        # 读路径不再惰性清理（防 idx 寻址漂移）：超期行在列表中保持原位
+        self.assertEqual(len(db.load_accounts()), 1)
+        # 显式清理（启动/每日线程/signin 启动时调用）后物理删除
+        db.purge_expired_deleted_accounts()
         self.assertEqual(db.load_accounts(), [])
 
     # ---- 6. 用户表 CRUD（db 层）----

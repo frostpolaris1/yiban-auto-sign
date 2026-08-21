@@ -103,6 +103,63 @@ def _state_file_lock(path):
             fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
 
 
+# 进程级签到单实例锁：全量模式等待其他进程退出的上限（秒）。
+# 手动 --only 通常几十秒结束；cron 全量队列被手动阻塞时最多等这么久。
+_RUN_LOCK_WAIT_DEFAULT = 600
+
+
+class _RunLockHeld(Exception):
+    """签到锁被其他进程持有（--only 模式下由 _acquire_run_lock 抛出）。"""
+
+
+def _acquire_run_lock(only_mode):
+    """进程级签到单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。
+
+    对抗性审查（2026-08-20）P2：web 端防抖/terminate 只覆盖 web 自己 spawn 的
+    子进程，cron 全量队列与手动 --only 之间无任何互斥——同账号可被两个进程
+    并发登录易班（重复打卡/会话异常/风控画像）。锁文件 <STATE_DIR>/signin-run.lock：
+    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），超时告警后
+      无锁继续——漏签一整天的代价高于极小概率的重叠；
+    - --only 模式：立即尝试一次，被持有则抛 _RunLockHeld（调用方退出并留痕，
+      管理员稍后重试）——手动触发不应在 web 已返回的后台进程里排队阻塞。
+    返回持锁文件句柄（flock 随进程退出自动释放）；Windows 无 fcntl 或状态目录
+    不可写时返回 None（不互斥、不阻断，与 _state_file_lock 降级策略一致）。
+    """
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        fh = open(os.path.join(state_dir, "signin-run.lock"), "a+", encoding="utf-8")
+    except OSError:
+        return None
+    if fcntl is None:
+        return fh
+    wait_sec = 0.0
+    if not only_mode:
+        try:
+            wait_limit = float(
+                os.environ.get("YIBAN_RUN_LOCK_WAIT", _RUN_LOCK_WAIT_DEFAULT)
+            )
+        except (TypeError, ValueError):
+            wait_limit = _RUN_LOCK_WAIT_DEFAULT
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            pass
+        if only_mode:
+            fh.close()
+            raise _RunLockHeld()
+        if wait_sec >= wait_limit:
+            logger.warning(
+                "等待签到锁超时（%ss），本次无锁继续执行（可能与另一签到进程并发，请检查）",
+                wait_limit,
+            )
+            return fh
+        time.sleep(0.5)
+        wait_sec += 0.5
+
+
 # 按天日志文件路径（与 web/app.py log_path_for 一致）
 def _signin_log_path():
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -230,15 +287,17 @@ STATUS_SYMBOL = {
 
 # 凭据类失败关键词（熔断器计数用）：账号密码问题——连续失败达到阈值后暂停签到。
 # 注意：不含 WAF/风控关键词（那是环境问题不是凭据问题，不计入）。
+# 2026-08-21 对抗性审查修复：移除 "登录失败"/"登录响应异常"/"OAuth 页解析失败"
+# 三个泛化关键词——它们对应的环境类失败（OAuth 页解析不出、响应缺 reUrl 等，
+# 代码注释自认"通常是海外 IP 被风控"）此前被误计为凭据失败，连续 3 天即可把
+# 账号错误冻结并诱导用户无谓改密。真实口令错误的消息含 "账号或密码错误"
+# （signin 登录流程 raise 处），仍被首条关键词覆盖。
 CRED_FAIL_KEYWORDS = [
     "账号或密码错误",
     "e003",
     "无效的应用端",
     "e001",
     "origin invalid",
-    "登录失败",
-    "登录响应异常",
-    "OAuth 页解析失败",
 ]
 # 熔断参数：连续 N 天凭据失败 → 暂停；暂停后每 N 天半开试探 1 次
 CRED_FAIL_DAYS = 3          # 连续凭据失败天数阈值
@@ -502,22 +561,33 @@ def _mask_phone(phone):
 # ---------------------------------------------------------------------------
 # 账号配置加载
 # ---------------------------------------------------------------------------
+def _key_env_file():
+    """密钥来源 .env 路径：YIBAN_ENV_FILE 优先（与 web/TUI 子进程约定一致），回退默认 .env。
+
+    2026-08-21 对抗性审查修复：此前 web/TUI 为保证自定义 .env 路径下子进程能解密，
+    把 YIBAN_ACCOUNTS_KEY 明文注入子进程环境变量（同 uid 进程可读 /proc/<pid>/environ，
+    密钥暴露面扩大）。现统一改为传递【路径】而非密钥本身，本函数即子进程侧的解析入口。
+    """
+    return os.environ.get("YIBAN_ENV_FILE", "").strip() or None
+
+
 def _parse_account_dict(data):
     """将账号 JSON 对象解析为 Account，校验必填字段。
 
-    password/phone_code 支持 AES-GCM 密文对象（web/tui 存储层加密落盘，
-    accounts.json 内为密文，解密依赖同一密钥：环境变量 YIBAN_ACCOUNTS_KEY
-    → .env 同键；密钥缺失/解密失败抛明确错误，绝不静默使用错误数据）。
+    password/phone_code 支持 AES-GCM 密文对象（web/TUI 存储层加密落盘，
+    0.17+ 数据在 yiban.db（SQLite），accounts.json 仅存于迁移前——解密依赖
+    同一密钥：环境变量 YIBAN_ACCOUNTS_KEY → .env 同键（YIBAN_ENV_FILE 可指定
+    路径）；密钥缺失/解密失败抛明确错误，绝不静默使用错误数据）。
     """
     phone = str(data.get("phone") or data.get("account") or "").strip()
     password = data.get("password") or data.get("pwd") or ""
     phone_code = data.get("phone_code") or ""
     if account_crypto.is_encrypted(password) or account_crypto.is_encrypted(phone_code):
-        if not account_crypto.has_key():
+        if not account_crypto.has_key(_key_env_file()):
             raise RuntimeError(
                 "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 中配置或恢复密钥备份）"
             )
-        key = account_crypto.load_key()
+        key = account_crypto.load_key(_key_env_file())
         if account_crypto.is_encrypted(password):
             try:
                 password = account_crypto.decrypt_password(password, key, phone)
@@ -549,7 +619,7 @@ def _load_accounts_from_file():
 
     db 层返回已解密明文；此处只做审核状态过滤。
     """
-    db.init_db()
+    db.init_db(env_file=_key_env_file())
     all_accounts = db.load_accounts()
     # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）、
     # 被拒绝账号（status=rejected：管理员审核不通过，不得签到）与待删除账号
@@ -757,8 +827,9 @@ class YibanClient:
         )
         key_match = re.compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
         if not page_use_match or not key_match:
-            # 只落响应摘要（前 300 字符），避免整页 HTML/敏感内容进日志
-            body_preview = resp.text[:300].replace("\n", "\\n")
+            # 只落响应摘要（前 300 字符），避免整页 HTML/敏感内容进日志；
+            # _sanitize_text 同时处理 \r（防日志伪造）并脱敏 Account repr
+            body_preview = _sanitize_text(resp.text[:300].replace("\n", "\\n"))
             logger.error(f"[{self.account.phone}] OAuth 页解析失败诊断:")
             logger.error(f"  最终 URL: {resp.url}")
             logger.error(f"  状态码: {resp.status_code}")
@@ -803,7 +874,8 @@ class YibanClient:
         result = resp.json()
 
         if "reUrl" not in result:
-            body_preview = resp.text[:300].replace("\n", "\\n")
+            # 同上：_sanitize_text 处理 \r 与 Account repr 脱敏
+            body_preview = _sanitize_text(resp.text[:300].replace("\n", "\\n"))
             logger.error(f"[{self.account.phone}] usersure 响应无 reUrl 字段，诊断:")
             logger.error(f"  状态码: {resp.status_code}")
             logger.error(f"  响应前300字符: {body_preview}")
@@ -1230,13 +1302,20 @@ def _notify_url_desc(url):
 
 
 def send_notification(title, content, url):
-    """通过 Server 酱 / Bark / 企业微信等 webhook 发送通知。"""
+    """通过 Server 酱 / Bark / 企业微信等 webhook 发送通知。
+
+    2026-08-21 对抗性审查加固：禁用重定向——30x 会把通知内容 POST 到
+    重定向目标主机（webhook 服务被劫持/恶意 301 时内容外泄到第三方）。
+    """
     if not url:
         return
     url_desc = _notify_url_desc(url)
     try:
         if url.startswith("http"):
-            resp = requests.post(url, json={"title": title, "content": content}, timeout=10)
+            resp = requests.post(
+                url, json={"title": title, "content": content}, timeout=10,
+                allow_redirects=False,
+            )
             if resp.status_code < 400:
                 logger.info("通知发送成功: %s", title)
             else:
@@ -1277,8 +1356,9 @@ def attempt_signin(account):
             client.login()
         return client.signin()
     except Exception as e:
-        # exc_info 落堆栈（INFO 级别也可见）：登录/签到异常可定位具体失败步骤
-        # （日志审查 P1：原仅 debug 记录，默认 INFO 下堆栈丢失）
+        # 2026-08-21 注释修正：代码为 exc_info=False（不落堆栈）——堆栈可能包含
+        # 含敏感数据的源码上下文；异常消息经 _sanitize_text 脱敏后已足够定位
+        # （原注释与行为矛盾）
         # 脱敏：异常消息可能含敏感数据（密码/令牌），替换后记录
         safe_err = _sanitize_text(str(e))
         logger.error(f"[{phone}] ❌ 尝试失败: {safe_err}", exc_info=False)
@@ -1869,6 +1949,13 @@ def main():
         logger.error(f"配置加载失败: {e}")
         sys.exit(1)
 
+    # 超期软删账号物理清理（2026-08-20 随读路径清理外移而显式化）：cron/Actions
+    # 部署可能没有常驻 web 进程，每日签到进程是清理的唯一时机，失败不阻断签到
+    try:
+        db.purge_expired_deleted_accounts()
+    except Exception as e:
+        logger.debug("清理超期软删除账号失败（不影响签到）: %s", e)
+
     if not accounts:
         logger.error("未配置任何账号，请通过以下任一方式配置：")
         logger.error("  1. yiban.db 数据库（推荐，用网页后台或 TUI 配置工具添加）")
@@ -1906,6 +1993,15 @@ def main():
     if not args.only and str(os.environ.get("YIBAN_GLOBAL_PAUSE", "")).strip().lower() in ("1", "true", "on", "yes"):
         logger.info("==== 签到已暂停（管理员通过 Web UI 一键暂停），跳过执行 ====")
         sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，恢复后次日正常执行
+
+    # 进程级单实例锁（2026-08-20 对抗性审查 P2）：防 cron 全量队列与手动 --only
+    # 并发签到同一账号。--only 被持有 → 留痕退出；全量被持有 → 等待至多
+    # YIBAN_RUN_LOCK_WAIT 秒后继续（不因手动签到阻塞而漏签一整天）。
+    try:
+        _run_lock_fh = _acquire_run_lock(bool(args.only))
+    except _RunLockHeld:
+        logger.warning("已有签到进程在运行，本次手动签到跳过（防同账号并发，稍后可重试）")
+        sys.exit(0)
 
     logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
     # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）
@@ -1958,12 +2054,43 @@ def main():
             os.replace(_snap_tmp, _snap_path)
         except OSError:
             pass  # 标记不可写时 web 端回退旧分界，不影响签到
+
     # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
     cred_state = {} if args.only else _load_cred_state()
     results = run_queue_retry(
         accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
     )
-    _save_cred_state(cred_state)
+    # 2026-08-20 对抗性审查修复（P1）：--only 此前无条件以本次（仅含目标账号的）状态
+    # 整体覆盖保存——空 dict 时直接删除状态文件，其他账号的 fail_days/paused_since
+    # 全部丢失，账密熔断保护被任意一次手动签到全局重置。现改为：--only 只把本次
+    # 处理账号的熔断增量合并回存量状态（成功→清除该账号记录；凭据失败→按日累计；
+    # 其他失败→不动），未处理账号保持原状。全量模式语义不变（本轮本就基于存量计算）。
+    if args.only:
+        merged = _load_cred_state()
+        _merge_today = datetime.now().strftime("%Y-%m-%d")
+        for _acc in accounts:
+            _res = results.get(_acc.phone)
+            if _res is None:
+                continue
+            _ok, _msg, _skip, _status = _res
+            _was_paused = bool(merged.get(_acc.phone, {}).get("paused_since"))
+            _update_cred_state(merged, _acc.phone, _ok, _msg, _merge_today)
+            # 2026-08-21 对抗性审查补充：手动试探已暂停账号且凭据仍失败时，
+            # 顺延下次试探日（对齐全量模式语义）——否则存量过期 probe_date 会让
+            # 下一轮全量签到立即再试探，失去半开试探的间隔保护
+            if (
+                not _ok
+                and _was_paused
+                and _is_credential_failure(_msg)
+                and _probe_due(merged.get(_acc.phone, {}), _merge_today)
+            ):
+                merged[_acc.phone]["probe_date"] = (
+                    datetime.strptime(_merge_today, "%Y-%m-%d")
+                    + timedelta(days=PROBE_INTERVAL_DAYS)
+                ).strftime("%Y-%m-%d")
+        _save_cred_state(merged)
+    else:
+        _save_cred_state(cred_state)
 
     # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
     # 口径：成功=success/already；跳过=no_task+skipped（无需签到与时段外同列）；

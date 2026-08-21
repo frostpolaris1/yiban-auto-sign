@@ -52,6 +52,13 @@ demo-tmp/
 # 备份目录（防历史敏感文件被误提交）
 backup-*/
 .backup-*/
+# 2026-08-20 对抗性审查修复：复数形式 backups/ 此前漏网（内含 deploy-local
+# 敏感文档副本与源码快照，一次 git add -A 即泄露）
+backups/
+
+# 第三方站点产物（与本项目无关，无来源记录不入库）
+deepseek_platform.css
+deepseek_platform.js
 
 # 本地漏洞测试环境（隔离实例/模拟代理/模糊脚本，不入库）
 test-tmp/
@@ -62,6 +69,7 @@ test-tmp/
 # 内部运维文档（含服务器 IP/部署配置/漏洞细节，本地保留不入库）
 MAINTENANCE.md
 PROXY_DEPLOY_GUIDE.md
+ADVERSARIAL_REVIEW_20260820.md
 hardening/
 docs/AI-HANDOFF.md
 docs/OPERATIONS-GUIDE.md

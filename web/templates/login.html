@@ -37,15 +37,15 @@
   /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
   @layer components {
     .input {
-      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2;
+      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 px-3 py-2;
     }
     .input-sm { @apply px-3 py-1.5; }
     .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-all duration-200; }
     .btn-primary {
-      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
+      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
     .btn-ghost {
-      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200;
+      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
     .card {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6;
@@ -58,7 +58,7 @@
 </head>
 <body class="bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4 overscroll-y-none">
   <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
-          class="fixed top-4 right-4 z-50 w-9 h-9 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow">🌙</button>
+          class="fixed top-4 right-4 z-50 w-11 h-11 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow">🌙</button>
   <div class="w-full max-w-md">
 <!-- 全局公告条 -->
 <div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
@@ -68,10 +68,10 @@
     <!-- 登录/注册卡片 -->
     <div class="card">
       <!-- Tab 切换 -->
-      <div class="flex bg-zinc-100 dark:bg-zinc-700 rounded-lg p-1 mb-5 text-sm font-medium">
-        <button id="tab-login" onclick="switchMode('login')"
+      <div class="flex bg-zinc-100 dark:bg-zinc-700 rounded-lg p-1 mb-5 text-sm font-medium" role="tablist" aria-label="登录 / 注册切换">
+        <button id="tab-login" type="button" role="tab" aria-selected="true" aria-controls="login-form" onclick="switchMode('login')"
                 class="flex-1 py-1.5 rounded-lg bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm transition-colors duration-150">登录</button>
-        <button id="tab-register" onclick="switchMode('register')"
+        <button id="tab-register" type="button" role="tab" aria-selected="false" aria-controls="register-form" onclick="switchMode('register')"
                 class="flex-1 py-1.5 rounded-lg text-zinc-500 dark:text-zinc-300 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">注册</button>
       </div>
 
@@ -89,7 +89,7 @@
                  placeholder="输入密码"
                  class="input input-ring">
         </div>
-        <div id="error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <div id="error-box" role="alert" tabindex="-1" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="button" id="restore-btn" onclick="restoreAccount()"
                 class="hidden w-full mt-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">恢复我的账号（7 天内可撤销）</button>
         <button type="submit" id="login-btn"
@@ -102,23 +102,23 @@
       <form id="register-form" class="space-y-4 hidden">
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-email">邮箱 <span class="text-red-500 dark:text-red-400">*</span></label>
-          <input id="reg-email" type="email" required autocomplete="email" maxlength="64"
+          <input id="reg-email" type="email" required autocomplete="email" maxlength="64" aria-describedby="reg-email-error"
                  placeholder="输入邮箱地址"
                  class="input input-ring">
           <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">邮箱格式不正确（示例：name@example.com）</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-          <input id="reg-password" type="password" required autocomplete="new-password"
+          <input id="reg-password" type="password" required autocomplete="new-password" aria-describedby="reg-password-error"
                  placeholder="至少 10 位，含两类字符"
                  class="input input-ring">
           <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且含字母/数字/符号中至少两类</p>
         </div>
         <label class="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">
           <input id="reg-agree" type="checkbox" class="mt-0.5 w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 accent-blue-500">
-          <span>我已阅读并同意 <a href="javascript:void(0)" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</a> 与 <a href="javascript:void(0)" onclick="showPrivacy()" class="text-blue-500 hover:underline">《隐私政策》</a></span>
+          <span>我已阅读并同意 <button type="button" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</button> 与 <button type="button" onclick="showPrivacy()" class="text-blue-500 hover:underline">《隐私政策》</button></span>
         </label>
-        <div id="reg-error-box" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+        <div id="reg-error-box" role="alert" tabindex="-1" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
         <button type="submit" id="register-btn"
                 class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
           <span id="register-btn-text">注册并登录</span>
@@ -168,11 +168,14 @@ function switchMode(m) {
     (m === 'login' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
   rt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
     (m === 'register' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
+  lt.setAttribute('aria-selected', String(m === 'login'));
+  rt.setAttribute('aria-selected', String(m === 'register'));
 }
 
 function showError(el, msg) {
   el.textContent = msg;
   el.classList.remove('hidden');
+  el.focus();  // 提交失败聚焦错误框（配合 tabindex="-1"），读屏即时播报
 }
 
 // ---- 注册表单即时校验（输入时实时反馈，字段下方提示）----
@@ -271,20 +274,53 @@ async function restoreAccount() {
   }
 }
 
+// ---- 弹窗无障碍辅助（协议/隐私/更新日志三个模态共用）----
+// 打开：记录触发元素 → 聚焦模态内首个可交互元素；关闭：隐藏并把焦点归还触发元素。
+// Esc 关闭与 Tab 焦点圈定由下方全局 keydown 统一处理；遮罩点击关闭保持原逻辑。
+const LOGIN_MODAL_IDS = ['agreement-modal', 'privacy-modal', 'changelog-modal'];
+const loginModalOpeners = {};  // 模态 id -> 打开前的焦点元素
+function modalFocusables(modal) {
+  return Array.from(modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter(el => !el.disabled && !el.closest('.hidden'));
+}
+function openModal(id) {
+  const modal = document.getElementById(id);
+  if (!modal || !modal.classList.contains('hidden')) return;
+  loginModalOpeners[id] = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  modal.classList.remove('hidden');
+  const first = modalFocusables(modal)[0];
+  if (first) first.focus();
+}
+function closeModal(id) {
+  const modal = document.getElementById(id);
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  const opener = loginModalOpeners[id];
+  delete loginModalOpeners[id];
+  if (opener && opener.isConnected) opener.focus();
+}
+document.addEventListener('keydown', (e) => {
+  const modal = LOGIN_MODAL_IDS.map(id => document.getElementById(id)).find(m => m && !m.classList.contains('hidden'));
+  if (!modal) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeModal(modal.id);
+  } else if (e.key === 'Tab') {
+    const f = modalFocusables(modal);
+    if (!f.length) { e.preventDefault(); return; }
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (!modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  }
+});
+
 // 用户协议弹窗
-function showAgreement() {
-  document.getElementById('agreement-modal').classList.remove('hidden');
-}
-function closeAgreement() {
-  document.getElementById('agreement-modal').classList.add('hidden');
-}
+function showAgreement() { openModal('agreement-modal'); }
+function closeAgreement() { closeModal('agreement-modal'); }
 // 隐私政策弹窗
-function showPrivacy() {
-  document.getElementById('privacy-modal').classList.remove('hidden');
-}
-function closePrivacy() {
-  document.getElementById('privacy-modal').classList.add('hidden');
-}
+function showPrivacy() { openModal('privacy-modal'); }
+function closePrivacy() { closeModal('privacy-modal'); }
 
 // 注册（注册成功后自动登录）
 document.getElementById('register-form').addEventListener('submit', async (e) => {
@@ -348,8 +384,7 @@ async function loadAnnouncement() {
 }
 // 更新日志弹窗（版本号点击，登录页无需登录；Markdown 渲染）
 async function openChangelog() {
-  const modal = document.getElementById('changelog-modal');
-  modal.classList.remove('hidden');
+  openModal('changelog-modal');
   const content = document.getElementById('changelog-content');
   content.innerHTML = '加载中…';
   try {
@@ -358,16 +393,16 @@ async function openChangelog() {
     content.innerHTML = window.renderMarkdown ? renderMarkdown((data && data.text) || '暂无更新日志') : esc((data && data.text) || '暂无更新日志');
   } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
 }
-function closeChangelog() { document.getElementById('changelog-modal').classList.add('hidden'); }
+function closeChangelog() { closeModal('changelog-modal'); }
 
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
 
 <!-- 用户协议弹窗 -->
-<div id="agreement-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+<div id="agreement-modal" role="dialog" aria-modal="true" aria-labelledby="agreement-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeAgreement()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
-    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
+    <div id="agreement-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
     <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="agreement-content">
       {{ agreement_html | safe }}
     </div>
@@ -377,10 +412,10 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
   </div>
 </div>
 <!-- 隐私政策弹窗 -->
-<div id="privacy-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+<div id="privacy-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closePrivacy()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
-    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">隐私政策</div>
+    <div id="privacy-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">隐私政策</div>
     <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="privacy-content">
       {{ privacy_html | safe }}
     </div>
@@ -390,11 +425,11 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
   </div>
 </div>
 <!-- 更新日志弹窗 -->
-<div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
     <div class="flex items-center justify-between mb-3">
-      <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
       <button onclick="closeChangelog()" class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭">✕</button>
     </div>
     <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed"></div>
