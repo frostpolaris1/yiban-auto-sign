@@ -190,25 +190,35 @@ def _doc_page(title, body_html, icp_text=""):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} - 易班自动签到</title>
 <style>
-  body {{ font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-         max-width: 800px; margin: 40px auto; padding: 0 16px; color: #18181b; line-height: 1.75; }}
+  /* 协议/隐私文档页（Tailwind 默认配色；卡片容器与圆角为结构优化，随图标/圆角体系保留） */
+  /* 正文原版字体栈；仅 h1~h4 标题用阿里妈妈方圆体 VF（与 web/templates 标题策略一致） */
+  body {{ font-family: "MiSans", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         max-width: 800px; margin: 40px auto; padding: 0 16px; color: #18181b; line-height: 1.75;
+         background: #fafafa; }}
+  h1, h2, h3, h4 {{ font-family: "Alimama FangYuanTi VF", "MiSans", system-ui, -apple-system,
+                    "PingFang SC", "Microsoft YaHei", sans-serif; }}
+  .doc-card {{ background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px;
+               padding: 32px 36px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08); }}
   h1 {{ font-size: 26px; margin-bottom: 8px; }}
-  h2 {{ font-size: 19px; margin-top: 30px; border-left: 4px solid #2563eb; padding-left: 10px; }}
+  h2 {{ font-size: 19px; margin-top: 30px; border-left: 4px solid #2563eb; padding-left: 10px;
+       border-radius: 2px; }}
   h3 {{ font-size: 16px; margin-top: 22px; }}
   h4 {{ font-size: 15px; }}
   a {{ color: #2563eb; }}
   blockquote {{ border-left: 3px solid #d4d4d8; margin: 14px 0; padding: 6px 14px;
-               color: #52525b; background: #fafafa; border-radius: 4px; }}
-  code {{ background: #f4f4f5; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }}
+               color: #52525b; background: #fafafa; border-radius: 8px; }}
+  code {{ background: #f4f4f5; padding: 1px 5px; border-radius: 5px; font-size: 0.92em; }}
   hr {{ border: none; border-top: 1px solid #e4e4e7; margin: 28px 0; }}
   .doc-back {{ margin-top: 36px; padding-top: 16px; border-top: 1px solid #e4e4e7; }}
   .doc-icp {{ text-align: center; color: #a1a1aa; font-size: 12px; margin-top: 8px; }}
 </style>
 </head>
 <body>
+<div class="doc-card">
 <h1>{title}</h1>
 {body_html}
 <p class="doc-back"><a href="/login">&larr; 返回登录页</a></p>
+</div>
 {icp_block}
 </body>
 </html>"""
@@ -1179,22 +1189,23 @@ def verify_admin(username, password):
 def sign_status(now=None):
     """基于服务器时间计算签到状态（与 tui/app.py _sign_status 保持一致）。
 
-    返回 (显示文本, 颜色)。
+    返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
+    文案不含 emoji（UI 图标统一走前端 SVG 图标系统）。
     """
     now = now or datetime.now()
     if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
-        return "🌙 今日无需打卡（周日）", "#565f89"
+        return "今日无需打卡（周日）", "#565f89"
     sw = _sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
     start_h, start_m = sw[0]
     end_h, end_m = sw[1]
     start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
     end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     if now < start:
-        return f"⏳ 未到签到时间（{start_h:02d}:{start_m:02d} 开始）", "#7aa2f7"
+        return f"未到签到时间（{start_h:02d}:{start_m:02d} 开始）", "#7aa2f7"
     if now <= end:
-        return f"🔔 签到窗口（~{end_h:02d}:{end_m:02d} 结束）", "#9ece6a"
-    return "✅ 打卡时间已过", "#e0af68"
+        return f"签到窗口进行中（~{end_h:02d}:{end_m:02d} 结束）", "#9ece6a"
+    return "今日签到已结束", "#e0af68"
 
 
 def check_connectivity():
@@ -1265,7 +1276,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-21 对抗性审查修复：空凭据管理员登录 + idx 防错位 + 读路径清理外移 + 审计链
 #           BEGIN IMMEDIATE + 注册时延拉平 + my-* 单快照/日志脱敏 + HSTS/Permissions-Policy
 #           + --host 默认回环（0.21.4）
-APP_VERSION = "0.21.4"
+APP_VERSION = "0.21.5"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
