@@ -21,7 +21,7 @@
 | 目录 | `web/static/vendor/fonts/misans/` |
 | 字体 | 小米 MiSans（MiSans-Regular / MiSans-Demibold），woff2 按 unicode-range 分片 |
 | 来源 | 小米官方字体站：`https://hyperos.mi.com/font/`（MiSans 开源字体，SIL OFL 1.1 许可证） |
-| 用途 | 网页正文/标题字体；`misans.css` 声明分片 @font-face，浏览器按需下载分片 |
+| 用途 | 网页正文字体 + 标题回退（标题主字体为下方 fangyuan）；`misans.css` 声明分片 @font-face，浏览器按需下载分片 |
 | 许可证 | SIL Open Font License 1.1（许可证全文见 `fonts/misans/OFL.txt`，含版权声明与来源；OFL 要求重新分发附带许可证文本） |
 | 说明 | 分片文件 370 个 + `misans.css` 1 个 + `OFL.txt` 1 个；低分屏（<1.5x）回退系统字体（woff2 无 hinting 渲染模糊） |
 
@@ -39,4 +39,16 @@
 | 项 | 值 |
 |----|----|
 | 文件 | `web/static/vendor/logo.png` |
-| 来源 | 站点占位 logo（项目自有素材），非第三方资源 |
+| 来源 | 部署者自行放置的品牌图标（**不入库**，版权归属部署者；缺失时页面自动回退为内联 SVG 占位符，见 README「自定义 Web 图标」） |
+
+## 5. fonts/fangyuan/（阿里妈妈方圆体 VF · 标题 Web 字体）
+
+| 项 | 值 |
+|----|----|
+| 文件 | `web/static/vendor/fonts/fangyuan/AlimamaFangYuanTiVF.woff2` |
+| 版本 | 可变字体（wght 200–700；由官方 TTF 转 WOFF2） |
+| 来源 | 阿里妈妈官方免费商用字体「阿里妈妈方圆体」（官网 `https://www.alibabafonts.com/`，允许免费商用与自托管嵌入） |
+| 用途 | **仅页面标题**（h1~h4 与 `.font-semibold.tracking-tight` 标题组合）：三模板 + 文档页 CSS 内 @font-face 自托管下发，`local()` 置顶——访客设备已安装该字体时零下载 |
+| 大小 | 2934504 字节（2.8 MB） |
+| sha256 | `07a7bccae6d78f99fd3468a9c79832f49b13615ff7ab534b782233b6578c4b8f` |
+| 说明 | **不入库**（体积原因，.gitignore 已忽略目录）：新环境部署时需手动放置本文件，否则已安装字体的设备仍可用（local 分支），其余访客回退 MiSans/系统字体 |

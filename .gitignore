@@ -76,6 +76,8 @@ docs/OPERATIONS-GUIDE.md
 docs/CHANGELOG-full.md
 docs/DEVELOPMENT_LOG.md
 docs/TODO.md
+# Git 协作速查（单人不接受 PR，无外部引用；2026-08-22 移出公开面，开放协作时再恢复）
+docs/GIT_QUICKSTART.md
 docs/fix-report-*.md
 docs/review-ui-ux-*.md
 docs/review-security-perf-*.md
