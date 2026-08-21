@@ -524,10 +524,10 @@ YIBAN_ACCOUNT_GAP_MAX=10
 ```
 
 - `phone` / `password` 必填；`phone_model` / `phone_code` 可选（学校开启"设备绑定"时必填，每个账号可独立配置）
-- 服务器端可用 TUI 工具自动生成此文件：`python3 -m tui`
+- **0.17.0 起数据存储于 `yiban.db`（SQLite）**：网页后台 / TUI（`python3 -m tui`）保存的账号直接入库，无需手工维护 accounts.json（该 JSON 仅作为无数据库环境的备用导入格式，迁移后自动改名 .bak）
 - 检查配置（不发送任何请求）：`python scripts/signin.py --check-config`
 
-> ⚠️ 通过网页/TUI 保存的 `accounts.json`，其中 `password` / `phone_code` 为 **AES-GCM 密文对象**（非明文，`.gitignore` 已排除该文件）。解密密钥 `YIBAN_ACCOUNTS_KEY` 自动生成在 `.env`（chmod 600）：**密钥丢失 = 已加密账号密码不可恢复**，备份数据时必须连同 `.env` 一起备份（建议与数据分开放、分开打包）。
+> ⚠️ 通过网页/TUI 保存的账号存在 `yiban.db` 中，`password` / `phone_code` 字段为 **AES-GCM 密文对象**（非明文，`.gitignore` 已排除该文件）。解密密钥 `YIBAN_ACCOUNTS_KEY` 自动生成在 `.env`（chmod 600）：**密钥丢失 = 已加密账号密码不可恢复**，备份数据时必须连同 `.env` 一起备份（建议与数据分开放、分开打包；生产环境可用 `/etc/yiban/accounts-key` 分盘存放，见 `web/deploy/` 部署模板）。
 
 ### 消息通知（可选）
 

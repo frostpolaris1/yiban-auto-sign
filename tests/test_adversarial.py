@@ -62,7 +62,11 @@ class AdversarialTest(unittest.TestCase):
                 db._conn.close()
             db._conn = None
         shutil.rmtree(cls.tmp, ignore_errors=True)
-        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_LOG_FILE", "YIBAN_STATE_DIR"):
+        # 2026-08-21 修复：补齐环境变量清理（原仅 pop 3 个，其余指向已删除的
+        # 临时目录并泄漏到同进程后续测试模块，造成顺序依赖的假绿/假红）
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_LOG_FILE", "YIBAN_STATE_DIR",
+                  "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_FILE", "YIBAN_USERS_FILE",
+                  "YIBAN_DB_FILE"):
             os.environ.pop(k, None)
 
     def setUp(self):

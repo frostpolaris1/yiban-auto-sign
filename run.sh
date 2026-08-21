@@ -21,6 +21,13 @@ if [ -r /opt/yiban-auto-sign/.env ]; then
             echo "警告: .env 含非法键名，已跳过: $key" >&2
             continue
         fi
+        # 2026-08-21 对抗性审查加固：仅导出 YIBAN_* 前缀键——防止 .env 被写入
+        # PATH/LD_PRELOAD 等敏感变量覆盖后续命令解析（纵深防御；当前能写 .env 的
+        # web 设置页只产 YIBAN_* 键，此白名单同时约束未来变更）
+        if [[ ! "$key" =~ ^YIBAN_ ]]; then
+            echo "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key" >&2
+            continue
+        fi
         export "$key=$value"
     done < /opt/yiban-auto-sign/.env
 fi
@@ -38,8 +45,17 @@ LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 # 使用 /var/lock（仅 yiban 用户可写），避免 /tmp 下可被任意用户预测/占用导致 DoS
 LOCK_DIR="/var/lock/yiban"
 if [ ! -d "$LOCK_DIR" ]; then
-    mkdir -p "$LOCK_DIR" 2>/dev/null || { echo "警告: 无法创建 $LOCK_DIR，回退 /tmp" >&2; LOCK_DIR="/tmp/yiban-sign-$(id -u)"; mkdir -p "$LOCK_DIR"; }
-    chmod 700 "$LOCK_DIR" 2>/dev/null
+    if ! mkdir -p "$LOCK_DIR" 2>/dev/null; then
+        echo "警告: 无法创建 $LOCK_DIR，回退 /tmp" >&2
+        LOCK_DIR="/tmp/yiban-sign-$(id -u)"
+        mkdir -p "$LOCK_DIR"
+    fi
+    # 2026-08-21 对抗性审查加固：回退目录必须属主为本用户且 chmod 700 成功——
+    # 否则同机其他用户可预建目录/符号链接截断文件或抢占锁使签到静默跳过
+    if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
+        echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+        exit 1
+    fi
 fi
 exec 9>"$LOCK_DIR/sign.lock"
 flock -n 9 || {

@@ -38,15 +38,15 @@
   /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
   @layer components {
     .input {
-      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2;
+      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 px-3 py-2;
     }
     .input-sm { @apply px-3 py-1.5; }
     .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-all duration-200; }
     .btn-primary {
-      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
+      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
     .btn-ghost {
-      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200;
+      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
     .card {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm p-4 md:p-6;
@@ -102,7 +102,7 @@
   <section class="card mb-6">
     <!-- 图例独立成行（不与标题挤同一行）：手机宽度下 6 个状态单行排开，避免 5+1 折行 -->
     <div class="mb-2">
-      <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h2>
+      <h1 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h1>
     </div>
     <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">
       <span>⏳ 待签</span><span>✅ 成功</span><span>❌ 失败</span>
@@ -144,10 +144,10 @@
 
 <!-- 编辑模态 -->
 <!-- Toast -->
-<div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
+<div id="toast" role="status" aria-live="polite" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
 
 <!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗） -->
-<div id="account-form-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+<div id="account-form-modal" role="dialog" aria-modal="true" aria-labelledby="account-form-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[85vh] overflow-y-auto">
     <div class="flex items-center justify-between mb-1">
@@ -158,27 +158,27 @@
     <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号。</p>
     <form id="account-form" class="grid grid-cols-1 gap-3">
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：我的手机"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-phone">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-password">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（学校开启设备绑定时建议填写）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（学校开启设备绑定时建议填写）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         <button id="clear-code-btn" type="button" onclick="toggleClearCode()"
@@ -195,11 +195,11 @@
 </div>
 
 <!-- 注销账号第一重确认（7 天宽限期说明；第二重为密码确认，2026-08-16 安全审查 3→7 天） -->
-<div id="delete-confirm-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+<div id="delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
     <div class="flex items-center justify-between mb-1">
-      <h2 class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">注销账号</h2>
+      <h2 id="delete-confirm-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">注销账号</h2>
       <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
               class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
     </div>
@@ -215,11 +215,11 @@
 </div>
 
 <!-- 注销账号第二重确认（再次提醒 + 密码确认；软删除 7 天宽限期，2026-08-16） -->
-<div id="delete-account-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+<div id="delete-account-modal" role="dialog" aria-modal="true" aria-labelledby="delete-account-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
     <div class="flex items-center justify-between mb-1">
-      <h2 class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">最后确认</h2>
+      <h2 id="delete-account-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">最后确认</h2>
       <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
               class="px-2 py-1 rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">✕</button>
     </div>
@@ -227,7 +227,7 @@
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">7 天宽限期内可撤销，超过 7 天无法恢复。请输入当前密码完成注销。</p>
     <div class="grid grid-cols-1 gap-3">
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="delete-password">当前密码</label>
         <input id="delete-password" type="password" autocomplete="current-password" placeholder="请输入当前密码"
                onkeydown="if(event.key==='Enter')confirmDelete()"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-red-500 dark:focus:border-red-400 px-3 py-2">
@@ -253,17 +253,17 @@
       <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
       <form id="password-form" class="grid grid-cols-1 gap-3 max-w-sm">
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">当前密码</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-old">当前密码</label>
           <input id="p-old" type="password" autocomplete="current-password" required placeholder="输入当前密码"
                  class="input">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">新密码（至少 10 位，含两类字符）</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-new">新密码（至少 10 位，含两类字符）</label>
           <input id="p-new" type="password" autocomplete="new-password" required placeholder="新密码"
                  class="input">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">确认新密码</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-confirm">确认新密码</label>
           <input id="p-confirm" type="password" autocomplete="new-password" required placeholder="再次输入新密码"
                  class="input">
         </div>
@@ -283,7 +283,7 @@
         <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
       </div>
       <button type="button" onclick="openDeleteModal()"
-              class="text-sm text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors duration-150 whitespace-nowrap ml-4">注销账号</button>
+              class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors duration-150 whitespace-nowrap ml-4">注销账号</button>
     </div>
   </section>
 </main>
@@ -350,6 +350,46 @@ function jsEscape(s) {
   return String(s).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
 }
 
+// ===== 弹窗无障碍辅助（编辑/注销确认模态共用）=====
+// 打开：记录触发元素 → 聚焦模态内首个可交互元素（或指定初始焦点）；关闭：隐藏并把焦点归还触发元素。
+// Esc 关闭与 Tab 焦点圈定由下方全局 keydown 统一处理；遮罩点击关闭保持原逻辑。
+const USER_MODAL_IDS = ['account-form-modal', 'delete-confirm-modal', 'delete-account-modal'];
+const userModalOpeners = new Map();  // 模态元素 -> 打开前的焦点元素
+function modalFocusables(modal) {
+  return Array.from(modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter(el => !el.disabled && !el.closest('.hidden'));
+}
+function showModal(modal, initFocus, opener) {
+  if (!modal.classList.contains('hidden')) return;
+  userModalOpeners.set(modal,
+    opener instanceof HTMLElement ? opener : (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+  modal.classList.remove('hidden');
+  const first = initFocus || modalFocusables(modal)[0];
+  if (first) first.focus();
+}
+function hideModal(modal) {
+  if (modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  const opener = userModalOpeners.get(modal);
+  userModalOpeners.delete(modal);
+  if (opener && opener.isConnected) opener.focus();
+}
+document.addEventListener('keydown', (e) => {
+  const modal = USER_MODAL_IDS.map(id => document.getElementById(id)).find(m => m && !m.classList.contains('hidden'));
+  if (!modal) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    hideModal(modal);
+  } else if (e.key === 'Tab') {
+    const f = modalFocusables(modal);
+    if (!f.length) { e.preventDefault(); return; }
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (!modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  }
+});
+
 // 审核状态徽章
 function statusBadge(status) {
   if (status === 'pending') return '<span class="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5">待审核</span>';
@@ -412,6 +452,20 @@ function userStateLine(a) {
     + ' · 前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>';
 }
 
+// 状态 emoji 的读屏说明（emoji 本身 aria-hidden，仅装饰；文案与图例/状态行一致）
+function stateAriaText(a) {
+  if (a.deleted) return '状态：已被管理员删除';
+  const s = a.state_status || 'pending';
+  if (s === 'success' || s === 'already') return '状态：今日已完成签到';
+  if (s === 'no_task') return '状态：今日无需签到';
+  if (s === 'skipped_window' || s === 'skipped_norange') return '状态：未在签到时段';
+  if (s === 'failed') return '状态：今日签到失败';
+  if (s === 'paused') return '状态：账号密码异常，已暂停签到';
+  if (s === 'user_cancelled') return '状态：已取消签到';
+  if (s === 'retrying') return '状态：签到重试中';
+  return '状态：待签到';
+}
+
 function renderList() {
   const list = $('account-list');
   $('accounts-empty').classList.toggle('hidden', accounts.length > 0);
@@ -424,7 +478,7 @@ function renderList() {
     card.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
-          <span class="text-lg leading-none">${a.deleted ? '🗑️' : esc(a.state_icon)}</span>
+          <span class="text-lg leading-none" aria-hidden="true">${a.deleted ? '🗑️' : esc(a.state_icon)}</span><span class="sr-only">${stateAriaText(a)}</span>
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
@@ -490,8 +544,8 @@ function renderCalendar(phone, key) {
         <div class="flex items-center justify-between mb-2">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
-            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
-            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
+            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="上个月" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">←</button>
+            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="下个月" class="px-2 py-1 rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">→</button>
           </div>
         </div>
         <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
@@ -518,11 +572,13 @@ function renderCalendar(phone, key) {
       else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
+      // 日期格为原生 button（Enter/Space 可触发）；状态含义（✅/❌）写入 aria-label 供读屏
+      const sttLabel = stt === '✅' ? '，已签到' : stt === '❌' ? '，签到失败' : '';
       grid.insertAdjacentHTML('beforeend', `
-        <div onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
+        <button type="button" onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}" aria-label="${date}${isToday ? '，今天' : ''}${sttLabel}"
              class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
           <span>${d}</span>
-        </div>`);
+        </button>`);
     }
   }).catch(() => {
     grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-400 dark:text-zinc-500 py-4">日历加载失败，请稍后重试</div>';
@@ -554,8 +610,7 @@ let clearCodeFlag = false;
 // 内联编辑：复用提交表单（编辑时预填，保存走 PUT）；统一弹窗（2026-08-15 用户反馈：
 // 编辑不再滚到页底表单——提交/编辑都在模态内完成，新建走「提交我的易班账号」入口）
 function openAccountModal() {
-  $('account-form-modal').classList.remove('hidden');
-  $('f-name').focus();
+  showModal($('account-form-modal'), $('f-name'));
 }
 
 function openAccountModalForNew() {
@@ -565,7 +620,7 @@ function openAccountModalForNew() {
 }
 
 function closeAccountModal() {
-  $('account-form-modal').classList.add('hidden');
+  hideModal($('account-form-modal'));
   resetAccountForm();
 }
 
@@ -653,7 +708,7 @@ $('account-form').addEventListener('submit', async (e) => {
     resetAccountForm();
     e.target.reset();
     toast(data.msg || '已保存');
-    $('account-form-modal').classList.add('hidden');  // 成功即关模态（2026-08-15 弹窗改造）
+    hideModal($('account-form-modal'));  // 成功即关模态（2026-08-15 弹窗改造；焦点归还触发入口）
     loadAccounts();
   } catch (err) {
     tip.textContent = '';
@@ -694,18 +749,20 @@ setInterval(calibrateClock, 60000);
 
 // 注销账号（两次确认：先提示 7 天宽限期，再密码确认；均可取消；防连点，2026-08-16）
 function openDeleteModal() {
-  $('delete-confirm-modal').classList.remove('hidden');  // 第一重：7 天可撤销提示
+  showModal($('delete-confirm-modal'));  // 第一重：7 天可撤销提示
 }
 function closeDeleteModal() {
-  $('delete-confirm-modal').classList.add('hidden');
-  $('delete-account-modal').classList.add('hidden');
+  hideModal($('delete-confirm-modal'));
+  hideModal($('delete-account-modal'));
 }
 function proceedDelete() {
-  // 第一重 → 第二重（再次提醒 + 密码确认）
-  $('delete-confirm-modal').classList.add('hidden');
+  // 第一重 → 第二重（再次提醒 + 密码确认）；打开记录转移到第二重，关闭时焦点归还最初入口
+  const first = $('delete-confirm-modal');
+  const opener = userModalOpeners.get(first) || null;
+  first.classList.add('hidden');
+  userModalOpeners.delete(first);
   $('delete-password').value = '';
-  $('delete-account-modal').classList.remove('hidden');
-  setTimeout(() => $('delete-password').focus(), 50);
+  showModal($('delete-account-modal'), $('delete-password'), opener);
 }
 async function confirmDelete() {
   const btn = $('delete-confirm-btn');
@@ -826,7 +883,7 @@ function renderPrefSlots(data) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.disabled = true;
-      btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
+      btn.className = 'rounded-lg border min-h-[44px] px-2 py-1.5 text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
       btn.title = '该时段被掐头去尾保留，不可选择';
       btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已保留</div>`;
       grid.appendChild(btn);
@@ -838,7 +895,7 @@ function renderPrefSlots(data) {
     btn.type = 'button';
     btn.dataset.slot = s.slot_min;
     // 满员片仍可点选（先到先得+溢出顺延语义），但警示样式提示"会顺延"
-    btn.className = 'rounded-lg border px-2 py-1.5 text-xs text-center transition-colors duration-150 ' +
+    btn.className = 'rounded-lg border min-h-[44px] px-2 py-1.5 text-xs text-center transition-colors duration-150 ' +
       (sel
         ? 'bg-blue-600 border-blue-600 text-white'
         : full

@@ -38,7 +38,8 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Sta
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import account_crypto  # noqa: E402
+# 2026-08-21：account_crypto 导入已移除——子进程签到改传 YIBAN_ENV_FILE 路径，
+# TUI 自身不再直接解析密钥（密钥读取收敛到 db 层与 signin.py）
 import db  # noqa: E402
 import env_lock  # noqa: E402
 
@@ -471,13 +472,32 @@ class YibanTuiApp(App):
         self._refresh_log()
 
     # ---- 数据加载与展示 ----
+    @staticmethod
+    def _fingerprint(accounts):
+        """并发冲突检测指纹：取易变字段的稳定投影（覆盖 web 端写路径的变更面：
+        增删账号、审核状态、归属、名称、软删、用户暂停）。"""
+        return sorted(
+            (
+                str(a.get("phone", "")),
+                str(a.get("owner", "")),
+                str(a.get("status", "")),
+                str(a.get("name", "")),
+                bool(a.get("deleted")),
+                bool(a.get("user_paused")),
+            )
+            for a in accounts
+        )
+
     def _load(self) -> None:
         """从 SQLite 加载全部账号（db 层已解密为明文）；数据库异常时明确提示而非崩溃。"""
         try:
             db.init_db(env_file=self.env_path)
             self.accounts = db.load_accounts()
+            # 记录加载时基线指纹：保存前比对，防整表替换覆盖 web 端的并发变更
+            self._base_fingerprint = self._fingerprint(self.accounts)
         except Exception as e:
             self.accounts = []
+            self._base_fingerprint = []
             self.notify(f"数据库读取失败: {e}", severity="error", timeout=6)
         self._refresh_table()
 
@@ -660,8 +680,24 @@ class YibanTuiApp(App):
     def action_save(self) -> None:
         """保存账号到 SQLite（整表替换，敏感字段 db 层加密落盘），并把随机延迟写入 .env。
 
-        ⚠️ 整表替换语义：与 web 后台并发使用时以最后一次保存为准（勿同时编辑）。
+        ⚠️ 整表替换语义：保存前做冲突检测（2026-08-21 对抗性审查修复）——若数据库
+        在本次 TUI 打开期间被 web/另一 TUI 修改过（指纹不一致），拒绝保存并提示，
+        防止陈旧内存快照覆盖他人变更（新增账号被删、审核态回滚等）。
         """
+        # 0. 保存前冲突检测：重读库内现状与加载时基线比对
+        try:
+            current = db.load_accounts()
+        except Exception as e:
+            self.notify(f"保存前读取数据库失败: {e}", severity="error", timeout=6)
+            return
+        if self._fingerprint(current) != self._base_fingerprint:
+            self.notify(
+                "保存已阻止：数据库在本次 TUI 打开期间被其他端修改过，"
+                "直接保存会覆盖那些变更。请核对后重启 TUI 再编辑保存。",
+                severity="error",
+                timeout=10,
+            )
+            return
         # 1. 账号配置：整表替换（事务内清空重插，保留 sort_order=列表顺序）
         try:
             db.replace_accounts(self.accounts)
@@ -671,7 +707,20 @@ class YibanTuiApp(App):
         except Exception as e:
             self.notify(f"保存失败：{e}", severity="error", timeout=6)
             return
-        db.audit("tui", "tui_save", "", f"整表保存 {len(self.accounts)} 个账号")
+        # 审计粒度补充（2026-08-21 对抗性审查 P3）：记录与基线的账号集合差异，
+        # 使"整表保存"在审计链上可辨新增/移除了哪些账号（只记数量与脱敏号）
+        old_phones = {p for p, *_ in (self._base_fingerprint or [])}
+        new_phones = {str(a.get("phone", "")) for a in self.accounts}
+        added = sorted(new_phones - old_phones)
+        removed = sorted(old_phones - new_phones)
+        detail = f"整表保存 {len(self.accounts)} 个账号"
+        if added:
+            detail += f"；新增 {len(added)} 个"
+        if removed:
+            detail += f"；移除 {len(removed)} 个"
+        db.audit("tui", "tui_save", "", detail)
+        # 刷新基线：刚保存的状态即新的比对基准
+        self._base_fingerprint = self._fingerprint(self.accounts)
         # 2. 随机延迟（开启时读秒数输入框，非法值回退默认；关闭写 0 即删除该行）
         if self.start_delay_max > 0:
             try:
@@ -778,9 +827,9 @@ class YibanTuiApp(App):
         # 子进程使用与 TUI 相同的数据库与 .env（--env/--db 自定义路径时保证一致）
         env["YIBAN_DB_FILE"] = db._db_file
         env["YIBAN_ENV_FILE"] = self.env_path
-        # 解密 accounts.json 需要同一密钥：显式注入（--env 自定义路径时保证一致）
-        if account_crypto.has_key(self.env_path) and not env.get("YIBAN_ACCOUNTS_KEY"):
-            env["YIBAN_ACCOUNTS_KEY"] = account_crypto.load_key(self.env_path).hex()
+        # 2026-08-21 对抗性审查修复：不再把 YIBAN_ACCOUNTS_KEY 明文注入子进程环境
+        # （同 uid 进程可读 /proc/<pid>/environ）——signin.py 现按 YIBAN_ENV_FILE
+        # 路径自行从 .env 读取密钥，此处只传路径不传密钥。
         # 日志输出重定向到与 cron 相同的 sign.log（追加、行缓冲），
         # 否则日志被 DEVNULL 丢弃，TUI 日志区与状态图标无法更新
         log_fh = None
@@ -803,6 +852,9 @@ class YibanTuiApp(App):
         finally:
             if log_fh is not None:
                 log_fh.close()
+        # 审计留痕（2026-08-21 对抗性审查 P3 补）：TUI 手动签到此前不入审计链
+        _masked = phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
+        db.audit("tui", "signin_manual", _masked, "TUI 手动签到")
         self.notify(f"已触发 {phone} 手动签到（后台执行，详见右侧日志）", timeout=3)
 
     def _on_form_result(self, data) -> None:
