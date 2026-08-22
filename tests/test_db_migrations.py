@@ -140,7 +140,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_production_like_db()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 8)
         users_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         self.assertIn("deleted", users_cols)
         self.assertIn("deleted_at", users_cols)
@@ -159,7 +159,7 @@ class DbMigrationTest(unittest.TestCase):
     def test_new_db_gets_latest_version(self):
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 8)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -167,7 +167,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_accounts_table()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 8)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -183,7 +183,7 @@ class DbMigrationTest(unittest.TestCase):
             db._conn = None
         conn2 = db.init_db(self.db_file)
         version = conn2.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 8)
 
     def test_core_migration_failure_blocks_and_cleans_conn(self):
         def failing_migration(conn):
