@@ -2234,6 +2234,8 @@ def get_session_cache(phone):
     超过 TTL 的行读时顺手清除（updated_at 为定宽 %Y-%m-%d %H:%M:%S，字符串比较
     等价时间序，与库内其他 ts 比较口径一致）。缓存是可再生的优化数据，解密失败
     （换密钥/密文损坏）按未命中处理并清行，不阻断签到重新登录。
+    M14：csrf 列同为准密文（AES-GCM 对象）。读侧遇到旧版明文行（非密文对象）
+    一律视为失效——csrf 是免登录复用的关键凭据，明文残留行不可信，整行清除重登。
     """
     with _conn_lock:
         conn = get_conn()
@@ -2261,6 +2263,11 @@ def get_session_cache(phone):
             obj = json.loads(row["cookies_ct"])
             key = account_crypto.load_key(_env_file)
             cookies = account_crypto.decrypt_password(obj, key, phone)
+            # M14：csrf 解密（旧明文行在此抛错 → 整行按未命中清除）
+            csrf_obj = json.loads(row["csrf"])
+            if not account_crypto.is_encrypted(csrf_obj):
+                raise ValueError("csrf 字段不是密文对象（旧版明文行）")
+            csrf = account_crypto.decrypt_password(csrf_obj, key, phone)
         except (ValueError, TypeError, json.JSONDecodeError) as e:
             logger.warning("会话缓存解密失败（按未命中清除重登）: %s: %s", phone, e)
             with contextlib.suppress(Exception):
@@ -2269,7 +2276,7 @@ def get_session_cache(phone):
             return None
         return {
             "cookies": cookies,
-            "csrf": row["csrf"],
+            "csrf": csrf,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -2278,14 +2285,18 @@ def get_session_cache(phone):
 def set_session_cache(phone, cookie_json, csrf):
     """写入/更新会话缓存（UPSERT）。cookie_json 为明文 cookie jar JSON 串，
     落库前 AES-GCM 加密（AAD=phone，复用 account_crypto，与密码字段同体系）；
-    更新时保留首次 created_at，只刷新 updated_at。
+    M14：csrf 与 cookies 同等加密保护（csrf 也是免登录复用的认证凭据，
+    明文落库使库文件泄露即可直接伪造请求）；更新时保留首次 created_at，
+    只刷新 updated_at。
 
     BEGIN IMMEDIATE：跨进程写锁（signin 与 web 并存时串行化写路径）。
     """
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    key = account_crypto.load_key(_env_file)
     cookies_ct = json.dumps(
-        account_crypto.encrypt_password(str(cookie_json), account_crypto.load_key(_env_file), phone)
+        account_crypto.encrypt_password(str(cookie_json), key, phone)
     )
+    csrf_ct = json.dumps(account_crypto.encrypt_password(str(csrf), key, phone))
     conn = get_conn()
     with _conn_lock:
         try:
@@ -2295,7 +2306,7 @@ def set_session_cache(phone, cookie_json, csrf):
                 "VALUES (?,?,?,?,?) "
                 "ON CONFLICT(phone) DO UPDATE SET cookies_ct=excluded.cookies_ct, "
                 "csrf=excluded.csrf, updated_at=excluded.updated_at",
-                (phone, cookies_ct, csrf, now, now),
+                (phone, cookies_ct, csrf_ct, now, now),
             )
             conn.commit()
         except Exception:
