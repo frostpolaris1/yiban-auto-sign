@@ -213,6 +213,11 @@ def _doc_page(title, body_html, icp_text="", base_path=""):
   .doc-back {{ margin-top: 36px; padding-top: 16px; border-top: 1px solid #e4e4e7; }}
   .doc-icp {{ text-align: center; color: #a1a1aa; font-size: 12px; margin-top: 8px; }}
 </style>
+<script>
+  // 长文档页默认从顶部开始：关闭浏览器滚动位置记忆，页面每次出现（含回退/bfcache 恢复）都回到顶部
+  history.scrollRestoration = 'manual';
+  addEventListener('pageshow', () => window.scrollTo(0, 0));
+</script>
 </head>
 <body>
 <div class="doc-card">
@@ -1327,7 +1332,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-21 对抗性审查修复：空凭据管理员登录 + idx 防错位 + 读路径清理外移 + 审计链
 #           BEGIN IMMEDIATE + 注册时延拉平 + my-* 单快照/日志脱敏 + HSTS/Permissions-Policy
 #           + --host 默认回环（0.21.4）
-APP_VERSION = "0.21.9"
+APP_VERSION = "0.21.10"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
