@@ -9,6 +9,11 @@
   try { if (localStorage.getItem('yiban-theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
 </script>
 <script>
+  // 挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径/独立子域下为空串）。
+  // 所有跳转/静态资源/API 请求统一经 BASE 拼接，避免子路径部署时跳回主站根。
+  const BASE = '{{ request.script_root }}';
+</script>
+<script>
   // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
   // 防止部署更新后缓存旧页面导致登录/功能异常
   (function () {
@@ -17,14 +22,14 @@
       var prev = localStorage.getItem('web_version');
       localStorage.setItem('web_version', v);
       if (prev && prev !== v && !location.search.includes('v=' + v)) {
-        location.replace('/?v=' + v);
+        location.replace(BASE + '/?v=' + v);
       }
     } catch (e) {}
   })();
 </script>
-<link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css?v={{ web_version }}" media="(min-resolution: 1.5dppx) and (pointer: fine)">
-<script src="/static/vendor/tailwind.js?v={{ web_version }}"></script>
-<script src="/static/vendor/md-render.js?v={{ web_version }}"></script>
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/misans/misans.css?v={{ web_version }}" media="(min-resolution: 1.5dppx) and (pointer: fine)">
+<script src="{{ request.script_root }}/static/vendor/tailwind.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
 <script>
   // ===== 主题色板：Tailwind 默认（原版配色，经 CSS 变量重映射生效）=====
   // 类名不变，JS 动态拼接的类自动继承；RGB 三元组交由 <alpha-value> 支持透明度修饰符（如 /20）
@@ -151,7 +156,7 @@
     <div class="flex items-center gap-2">
       <!-- 品牌：优先显示 web/static/vendor/logo.png（本地/服务器放入即生效；开源仓库不含该文件
            ——版权来源不明，部署者自行放入，见 README「自定义 Web 图标」；文件缺失时回退占位图标） -->
-      <img src="/static/vendor/logo.png?v=2" alt="易班自动签到" class="w-9 h-9 rounded-lg object-cover shrink-0"
+      <img src="{{ request.script_root }}/static/vendor/logo.png?v=2" alt="易班自动签到" class="w-9 h-9 rounded-lg object-cover shrink-0"
            onerror="this.style.display='none';const f=document.getElementById('user-brand-fallback');f.classList.remove('hidden');f.style.display=''">
       <svg id="user-brand-fallback" viewBox="0 0 36 36" class="w-9 h-9 rounded-lg shrink-0 hidden" role="img" aria-label="易班自动签到（占位图标）">
         <rect width="36" height="36" rx="8" fill="#3b82f6"/>
@@ -391,20 +396,20 @@ async function api(path, opts = {}, _retried = false) {
     ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
     ...(opts.headers || {}),
   };
-  const resp = await fetch(path, {
+  const resp = await fetch(BASE + path, {
     ...opts,
     headers,
   });
   // 401 未登录才跳转；403（无权限/CSRF 失败）返回错误提示，由页面展示
   if (resp.status === 401) {
-    location.href = '/login';
+    location.href = BASE + '/login';
     throw new Error('未登录');
   }
   const data = await resp.json().catch(() => ({}));
   // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
   if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
     try {
-      const me = await fetch('/api/me').then(r => r.json());
+      const me = await fetch(BASE + '/api/me').then(r => r.json());
       csrfToken = me.csrf_token || '';
       return api(path, opts, true);
     } catch (e) { /* 重试失败则走下方错误提示 */ }
@@ -867,7 +872,7 @@ async function confirmDelete() {
     });
     toast(data.msg || '账号已注销');
     try { localStorage.clear(); } catch (e) { /* 受限环境忽略 */ }
-    setTimeout(() => { location.href = '/login'; }, 1200);
+    setTimeout(() => { location.href = BASE + '/login'; }, 1200);
   } catch (e) {
     // 错误文案由后端给出（400 密码不正确/不可注销、403、429 请稍后再试、500）
     toast(e.message || '注销失败，请稍后再试', true);
@@ -879,14 +884,14 @@ async function confirmDelete() {
 // 退出
 async function doLogout() {
   try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
-  location.href = '/login';
+  location.href = BASE + '/login';
 }
 
 // 初始化
 (async function init() {
   try {
     const me = await api('/api/me');
-    if (me.role !== 'user') { location.href = '/'; return; }  // 管理员访问用户页 → 后台
+    if (me.role !== 'user') { location.href = BASE + '/'; return; }  // 管理员访问用户页 → 后台
     csrfToken = me.csrf_token || '';
     // 顶部显示邮箱前缀（悬停显示完整邮箱）
     const email = me.email || '';
@@ -898,7 +903,7 @@ async function doLogout() {
     calibrateClock();
     tickClock();
   } catch (e) {
-    location.href = '/login';
+    location.href = BASE + '/login';
   }
 })();
 
@@ -1047,7 +1052,7 @@ document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateI
 // 全局公告：访问时加载一次（登录页也显示，无需登录）
 async function loadAnnouncement() {
   try {
-    const resp = await fetch('/api/announcement');
+    const resp = await fetch(BASE + '/api/announcement');
     const data = await resp.json().catch(() => ({}));
     const text = (data && data.text || '').trim();
     const bar = document.getElementById('announcement-bar');
