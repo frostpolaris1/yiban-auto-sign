@@ -23,6 +23,7 @@ import calendar
 import contextlib
 import hashlib
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -1225,14 +1226,50 @@ def check_connectivity():
     return ok, detail
 
 
+def _is_safe_notify_url(url):
+    """L-01 通知 URL 白名单：必须 https:// 且主机非回环/内网/链路本地。
+
+    YIBAN_NOTIFY_URL 携带告警内容（IP/用户名/时间）出站；http 明文或指向
+    回环/内网（127/8、10/8、172.16/12、192.168/16、169.254/16、::1、
+    localhost 字面量）的目标会变成 SSRF 探测跳板或明文外带通道，一律拒绝。
+    域名目标放行（不做解析级阻断，DNS rebinding 由出站请求侧超时兜底）。
+    """
+    from urllib.parse import urlparse
+
+    try:
+        o = urlparse(url)
+    except ValueError:
+        return False
+    if o.scheme != "https" or not o.hostname:
+        return False
+    host = o.hostname.strip().lower()
+    if host == "localhost":
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # 域名：非 IP 字面量，放行
+    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
+
+
 def send_notification(title, content):
     """通过 YIBAN_NOTIFY_URL webhook 发送告警通知（.env 优先，静默失败）。
 
     与 scripts/signin.py 的 send_notification 同款渠道：Server 酱 / Bark / 企业微信。
+    L-01：发送前过 _is_safe_notify_url 白名单（https + 非回环/内网），
+    违规拒绝发送并告警（不回显完整 URL，防 sendkey 泄露进日志）。
     """
     env = read_env(ENV_FILE)
     url = env.get("YIBAN_NOTIFY_URL", "").strip() or os.environ.get("YIBAN_NOTIFY_URL", "").strip()
     if not url:
+        return
+    if not _is_safe_notify_url(url):
+        from urllib.parse import urlparse
+
+        logger.warning(
+            "YIBAN_NOTIFY_URL 未通过白名单校验（需 https:// 且主机非回环/内网），已拒绝发送: host=%s",
+            urlparse(url).hostname,
+        )
         return
     try:
         requests.post(url, json={"title": title, "content": content}, timeout=10)
