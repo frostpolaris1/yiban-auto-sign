@@ -1215,7 +1215,7 @@ def sign_status(now=None):
     now = now or datetime.now()
     if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
-        return "今日无需打卡（周日）", "#565f89"
+        return "今日无需打卡（周日）", "#a1a1aa"
     sw = _sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
     start_h, start_m = sw[0]
     end_h, end_m = sw[1]
