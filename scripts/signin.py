@@ -231,6 +231,9 @@ class Account:
     """
 
     phone: str
+    # C-SIGN-04 已知局限：str 不可变无法原位清零，且重试队列需跨尝试复用，
+    # 密码 str 本体只能随 accounts 列表生命周期存活（客户端侧可变副本见
+    # YibanClient._wipe_credentials 的清零与局限说明）
     password: str
     phone_model: str = ""  # 设备型号（学校开启"设备绑定"时必填）
     phone_code: str = ""  # 设备唯一识别码（学校开启"设备绑定"时必填）
@@ -806,7 +809,9 @@ class YibanClient:
 
     def __init__(self, account):
         self.account = account
-        self.password = account.password.encode("UTF-8")
+        # C-SIGN-04：密码缓冲用可变 bytearray 持有（str 不可原位清零），
+        # 单次签到尝试结束由 _wipe_credentials 原位清零（attempt_signin finally）
+        self.password = bytearray(account.password.encode("UTF-8"))
         # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，实测绕过 e003）；
         # 旧流程（Auto-Test 继承的 iOS 伪造 UA）仅在 YIBAN_LEGACY_LOGIN=1 时启用（GitHub Actions 等场景备选）
         self.use_killyiban = os.environ.get("YIBAN_LEGACY_LOGIN", "") != "1"
@@ -849,7 +854,26 @@ class YibanClient:
                 "密码过长: RSA-1024 公钥单次最多加密 117 字节（约 39 个中文字符），"
                 "当前密码无法加密提交，请缩短密码或联系管理员处理"
             )
-        return b64encode(cipher.encrypt(self.password))
+        # bytes(...) 产生一个短暂不可变副本（pycryptodome 接口要求），交由 GC 回收；
+        # 可清零的 bytearray 本体在尝试结束后由 _wipe_credentials 原位覆写
+        return b64encode(cipher.encrypt(bytes(self.password)))
+
+    def _wipe_credentials(self):
+        """凭据内存尽力清零（C-SIGN-04）：单次签到尝试结束（成败均然）由 attempt_signin 调用。
+
+        - password 缓冲（bytearray）原位覆写 \\x00——唯一能保证失效的副本；
+        - 解除 account/phone_model/phone_code 引用，缩短凭据可回收窗口。
+        CPython 局限：不可变对象（str/bytes）无法原位清零，RSA 加密瞬态副本与
+        Account.password 本体只能等 GC；core dump / swap 场景仍可能残留。彻底
+        消除需全链路换可清零凭据容器（侵入 web/db/TUI 存储层，标注为已知限制）。
+        """
+        pwd = getattr(self, "password", None)
+        if isinstance(pwd, bytearray):
+            pwd[:] = b"\x00" * len(pwd)
+        self.password = None
+        self.phone_model = None
+        self.phone_code = None
+        self.account = None
 
     def login(self):
         """登录易班，成功返回 True，失败抛出异常。"""
@@ -1471,11 +1495,16 @@ def attempt_signin(account):
     phone = account.phone
     try:
         client = YibanClient(account)
-        if client.use_killyiban:
-            client.login_killyiban()
-        else:
-            client.login()
-        return client.signin()
+        try:
+            if client.use_killyiban:
+                client.login_killyiban()
+            else:
+                client.login()
+            return client.signin()
+        finally:
+            # C-SIGN-04：无论成败，尝试结束后立即清零/解除本客户端持有的凭据副本
+            # （重试由 run_queue_retry 重新构造客户端，Account 本体不受影响）
+            client._wipe_credentials()
     except Exception as e:
         # 2026-08-21 注释修正：代码为 exc_info=False（不落堆栈）——堆栈可能包含
         # 含敏感数据的源码上下文；异常消息经 _sanitize_text 脱敏后已足够定位
