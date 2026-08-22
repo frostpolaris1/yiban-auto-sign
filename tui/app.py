@@ -588,7 +588,7 @@ class YibanTuiApp(App):
         now = now or datetime.now()
         # 周日：仅当「周日签到」开启（.env YIBAN_SUNDAY_SIGN=1）时走正常窗口逻辑
         if now.weekday() == 6 and not load_env_int(self.env_path, "YIBAN_SUNDAY_SIGN", 0):
-            return "🌙 今日无需打卡（周日）", "#565f89"
+            return "🌙 今日无需打卡（周日）", "#a1a1aa"
         start_h, start_m = self._sign_window()[0]
         end_h, end_m = self._sign_window()[1]
         start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
