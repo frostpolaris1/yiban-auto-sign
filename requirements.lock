@@ -10,6 +10,8 @@
 #     requests>=2.32.0 / urllib3>=2.2.2 / pycryptodome>=3.19.1）
 #   - 传递依赖：按各包 requires_dist 元数据解析（无 extra），平台相关条目带 marker
 #   - CI 使用 Python 3.11，所有锁定版本 requires_python 均兼容
+#   - 2026-08-22 补录 gunicorn==26.1.0（M11：PyPI 当前最新，无传递依赖；
+#     .venv 本地未安装，无实测版本可引）
 # 恢复 pip-tools 后可用 pip-compile --output-file=requirements.lock requirements.txt 重新生成
 #
 blinker==1.9.0
@@ -18,6 +20,7 @@ charset-normalizer==3.5.0
 click==8.4.2
 colorama==0.4.6 ; platform_system == "Windows"
 flask==3.1.3
+gunicorn==26.1.0
 idna==3.18
 itsdangerous==2.2.0
 jinja2==3.1.6
