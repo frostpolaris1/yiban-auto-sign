@@ -22,9 +22,9 @@
     } catch (e) {}
   })();
 </script>
-<link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css" media="(min-resolution: 1.5dppx) and (pointer: fine)">
-<script src="/static/vendor/tailwind.js"></script>
-<script src="/static/vendor/md-render.js"></script>
+<link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css?v={{ web_version }}" media="(min-resolution: 1.5dppx) and (pointer: fine)">
+<script src="/static/vendor/tailwind.js?v={{ web_version }}"></script>
+<script src="/static/vendor/md-render.js?v={{ web_version }}"></script>
 <script>
   // ===== 主题色板：Tailwind 默认（原版配色，经 CSS 变量重映射生效）=====
   // 类名不变，JS 动态拼接的类自动继承；RGB 三元组交由 <alpha-value> 支持透明度修饰符（如 /20）
