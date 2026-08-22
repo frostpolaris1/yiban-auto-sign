@@ -1474,7 +1474,7 @@ function accountRow(a, key) {
   tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
     ${cb}
-    <td class="px-4 py-3 text-lg leading-none"><span class="inline-flex" title="${esc(stTitle)}">${s}</span></td>
+    <td class="px-4 py-3 text-lg leading-none text-zinc-500 dark:text-zinc-400"><span class="inline-flex" title="${esc(stTitle)}">${s}</span></td>
     <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
@@ -1484,7 +1484,7 @@ function accountRow(a, key) {
           ? '<span class="text-amber-600 dark:text-amber-400" title="最早时段：窗口首块，最先执行">最早 ' + esc(a.time_pref) + '</span>'
           : a.time_pref_edge === 'last'
             ? '<span class="text-amber-600 dark:text-amber-400" title="最后时段：临近截止，网络波动可能错过">最后 ' + esc(a.time_pref) + '</span>'
-            : esc(a.time_pref))
+            : '<span class="text-zinc-600 dark:text-zinc-300">' + esc(a.time_pref) + '</span>')
       : '<span class="text-zinc-300 dark:text-zinc-600">—</span>'}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}</td>
