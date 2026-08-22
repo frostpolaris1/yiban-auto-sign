@@ -173,6 +173,16 @@ def write_env_int(env_path, key, value):
         _write_env_int_locked(env_path, key, value)
 
 
+def _mask_phone(phone):
+    """展示层脱敏：11 位手机号 → 138****8000（与 signin._mask_phone 同口径）。
+
+    TUI 列表/通知不落完整号（规范审查 D2 同源要求）；编辑表单内仍可查看/修改
+    完整号，审计链沿用掩码形态。
+    """
+    p = str(phone)
+    return p[:3] + "****" + p[7:] if len(p) == 11 else p
+
+
 def _write_env_int_locked(env_path, key, value):
     """已持锁的写入：读-改-写 + 原子替换（tmp+os.replace 防半截）。"""
     lines = []
@@ -519,7 +529,8 @@ class YibanTuiApp(App):
                 str(idx + 1),
                 self._status_icon(acc),
                 self._display_name(acc, idx),
-                acc.get("phone", ""),
+                # 列表手机号掩码显示（138****8000）——展示层不落完整号
+                _mask_phone(acc.get("phone", "")),
                 acc.get("phone_model", ""),
             )
         self.sub_title = (
@@ -820,7 +831,19 @@ class YibanTuiApp(App):
         # 项目根目录（tui 的上一级）
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         script = os.path.join(base, "scripts", "signin.py")
-        env = dict(os.environ)
+        # 子进程环境白名单：只透传 YIBAN_* 业务变量与终端基本变量（PATH/HOME/TERM），
+        # 不把宿主全量环境带入子进程（signin.py 的密钥经 YIBAN_ENV_FILE 路径自行
+        # 读取，无需其余变量）。Windows 下 Python 解释器启动必需 SYSTEMROOT/
+        # TEMP/TMP/COMSPEC，一并放行。
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k.startswith("YIBAN_") or k in ("PATH", "HOME", "TERM")
+        }
+        if os.name == "nt":
+            for _k in ("SYSTEMROOT", "TEMP", "TMP", "COMSPEC"):
+                if _k in os.environ:
+                    env[_k] = os.environ[_k]
         # 单账号手动签到：关闭随机延迟，避免等待
         env["YIBAN_START_DELAY_MAX"] = "0"
         env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
@@ -853,9 +876,9 @@ class YibanTuiApp(App):
             if log_fh is not None:
                 log_fh.close()
         # 审计留痕（2026-08-21 对抗性审查 P3 补）：TUI 手动签到此前不入审计链
-        _masked = phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
+        _masked = _mask_phone(phone)
         db.audit("tui", "signin_manual", _masked, "TUI 手动签到")
-        self.notify(f"已触发 {phone} 手动签到（后台执行，详见右侧日志）", timeout=3)
+        self.notify(f"已触发 {_masked} 手动签到（后台执行，详见右侧日志）", timeout=3)
 
     def _on_form_result(self, data) -> None:
         """表单关闭回调：data=None 表示取消。"""
