@@ -191,19 +191,10 @@ def _doc_page(title, body_html, icp_text=""):
 <title>{title} - 易班自动签到</title>
 <style>
   /* 协议/隐私文档页（Tailwind 默认配色；卡片容器与圆角为结构优化，随图标/圆角体系保留） */
-  /* 正文原版字体栈；仅 h1~h4 标题用阿里妈妈方圆体 VF（与 web/templates 标题策略一致） */
+  /* 正文原版字体栈；标题不使用专属字体（2026-08-22 性能回退，与 web/templates 一致） */
   body {{ font-family: "MiSans", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
          max-width: 800px; margin: 40px auto; padding: 0 16px; color: #18181b; line-height: 1.75;
          background: #fafafa; }}
-  /* 标题字体自托管下发（woff2 不入库，部署时放置；local() 置顶零下载已装设备） */
-  @font-face {{
-    font-family: "Alimama FangYuanTi VF";
-    src: local("Alimama FangYuanTi VF"), url("/static/vendor/fonts/fangyuan/AlimamaFangYuanTiVF.woff2") format("woff2-variations");
-    font-weight: 200 700;
-    font-display: swap;
-  }}
-  h1, h2, h3, h4 {{ font-family: "Alimama FangYuanTi VF", "MiSans", system-ui, -apple-system,
-                    "PingFang SC", "Microsoft YaHei", sans-serif; }}
   .doc-card {{ background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px;
                padding: 32px 36px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08); }}
   h1 {{ font-size: 26px; margin-bottom: 8px; }}
@@ -1283,7 +1274,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-21 对抗性审查修复：空凭据管理员登录 + idx 防错位 + 读路径清理外移 + 审计链
 #           BEGIN IMMEDIATE + 注册时延拉平 + my-* 单快照/日志脱敏 + HSTS/Permissions-Policy
 #           + --host 默认回环（0.21.4）
-APP_VERSION = "0.21.6"
+APP_VERSION = "0.21.7"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 

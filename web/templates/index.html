@@ -22,7 +22,7 @@
     } catch (e) {}
   })();
 </script>
-<link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css" media="(min-resolution: 1.5dppx)">
+<link rel="stylesheet" href="/static/vendor/fonts/misans/misans.css" media="(min-resolution: 1.5dppx) and (pointer: fine)">
 <script src="/static/vendor/tailwind.js"></script>
 <script src="/static/vendor/md-render.js"></script>
 <script>
@@ -102,21 +102,10 @@
   };
 </script>
 <style>
-  /* 正文：原版字体栈（MiSans 仅高分屏 web 加载；低分屏回退系统字体保 ClearType） */
+  /* 正文：原版字体栈（MiSans 仅高分屏「桌面」加载——misans.css 的 media 含 pointer: fine；手机端与低分屏走系统字体保 ClearType） */
   body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  /* 仅标题用阿里妈妈方圆体 VF（可变字重轴 200-700 平滑匹配 500/600，圆润亲和）
-     命中范围：页面 h1~h4 与品牌/卡片/模态标题（本项目统一携带 font-semibold tracking-tight）。 */
-  /* 自托管下发：woff2 文件在 web/static/vendor/fonts/fangyuan/（不入库，部署时放置）；
-     local() 置顶——已安装字体的设备零下载，其余访客首次下载后缓存；swap 不阻塞首屏 */
-  @font-face {
-    font-family: "Alimama FangYuanTi VF";
-    src: local("Alimama FangYuanTi VF"), url("/static/vendor/fonts/fangyuan/AlimamaFangYuanTiVF.woff2") format("woff2-variations");
-    font-weight: 200 700;
-    font-display: swap;
-  }
-  h1, h2, h3, h4, .font-semibold.tracking-tight {
-    font-family: "Alimama FangYuanTi VF", "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  }
+  /* 标题不再使用专属字体（2026-08-22 性能回退）：h1~h4 等继承下方正文栈，避免 2.8MB web 字体拖垮窄带宽访问；
+     方圆体源文件与转换命令保留在本地，需要时可恢复 */
   /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
   @media (max-resolution: 1.5dppx) {
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -201,7 +190,7 @@
   <!-- 品牌：优先显示 web/static/vendor/logo.png（本地/服务器放入即生效；开源仓库不含该文件
        ——版权来源不明，部署者自行放入，见 README「自定义 Web 图标」；文件缺失时回退占位图标） -->
   <div class="px-4 py-4 border-b border-zinc-100 dark:border-zinc-700 flex items-center gap-2.5">
-    <img src="/static/vendor/logo.png" alt="易班自动签到" class="w-16 h-16 rounded-xl object-cover shrink-0"
+    <img src="/static/vendor/logo.png?v=2" alt="易班自动签到" class="w-16 h-16 rounded-xl object-cover shrink-0"
          onerror="this.style.display='none';const f=document.getElementById('brand-fallback');f.classList.remove('hidden');f.style.display=''">
     <svg id="brand-fallback" viewBox="0 0 64 64" class="w-16 h-16 rounded-xl shrink-0 hidden" role="img" aria-label="易班自动签到（占位图标）">
       <rect width="64" height="64" rx="14" fill="#3b82f6"/>
