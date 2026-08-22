@@ -1578,16 +1578,18 @@ def create_app(host=None):
         # nonce 存在时 'unsafe-inline' 会被浏览器忽略导致全部处理器失效（2026-08-17 线上事故）。
         # 后续可将内联事件迁移到 addEventListener 后再启用 nonce 防护。
         resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["Referrer-Policy"] = "no-referrer"
-        # HSTS 仅在请求确实经 HTTPS 到达时下发（反代设置 X-Forwarded-Proto 后
-        # request.is_secure 为真）；纯 HTTP 内网部署不下发（避免浏览器强制升级
-        # 导致无法访问）。2026-08-20 对抗性审查 P2 补：原全站缺失，HTTPS 部署下
-        # 首访可被 SSL-Strip 截获明文凭据。
-        if request.is_secure:
-            resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # 关闭无关能力面（2026-08-20 对抗性审查 P3 补）
-        resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # 与边缘 nginx 保持一致（SAMEORIGIN）：防止子路径(经 nginx 反代)下出现
+        # "应用 DENY / nginx SAMEORIGIN" 双头取值不一致。SAMEORIGIN 仍防点击劫持，
+        # 且对同源内嵌场景更兼容。
+        resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+        # 与 nginx 对齐：strict-origin-when-cross-origin（同源保留 referer，跨源最小化）
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # HSTS 移至边缘 nginx 统一下发（http_transport 一致性，疑自签过渡期阶段）。
+        # 本应用不再重复下发，避免与 nginx 的 max-age 取值不一致造成双头歧义。
+        # 注：若部署不经 nginx（如本地直连远程调试），可在此按需补回
+        #   if request.is_secure: resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # 关闭无关能力面（2026-08-20 对抗性审查 P3 补；payment 与 nginx 对齐）
+        resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; img-src 'self'; "
