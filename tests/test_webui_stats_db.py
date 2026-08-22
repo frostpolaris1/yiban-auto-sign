@@ -60,7 +60,7 @@ class WebuiStatsDbTest(unittest.TestCase):
 
     def test_migration_v6_schema(self):
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 7)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 8)
         sign_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sign_events)").fetchall()}
         self.assertIn("account_id", sign_cols)
         self.assertIn("dur_sec", sign_cols)
