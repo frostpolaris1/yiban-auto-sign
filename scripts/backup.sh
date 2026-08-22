@@ -13,14 +13,19 @@
 #   2. 异机加密副本（可选）：REMOTE_BACKUP 配置后，用 age（优先）或
 #      gpg --symmetric 加密备份包，再 rsync（优先）/ scp 到远端。
 #      REMOTE_BACKUP 未配置时仅保留本地副本。
-#   3. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete）。
-#   4. --restore 模式：从备份包恢复到指定目录（恢复演练 / 真实恢复）。
+#   3. 本地默认加密（M24，2026-08-22）：存在可用加密方式时本地归档即刻转为
+#      密文并删除明文 tar.gz——明文落盘需显式 BACKUP_PLAINTEXT=1（大字告警）。
+#      无可用加密方式（未配置口令/公钥且无交互终端）保持明文 + 大字告警，
+#      不改变既有部署行为。--restore 对 .tar.gz / .gpg / .age 均可直接恢复。
+#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete）。
+#   5. --restore 模式：从备份包恢复到指定目录（恢复演练 / 真实恢复）。
 #
 # 用法：
-#   ./backup.sh                      # 执行备份
-#   ./backup.sh --restore <tar.gz> <目标目录>   # 恢复演练/恢复
+#   ./backup.sh                      # 执行备份（有加密条件时本地默认密文）
+#   ./backup.sh --restore <备份包> <目标目录>   # 恢复演练/恢复（支持 .gpg/.age）
 #   REMOTE_BACKUP=user@host:/backup/yiban ./backup.sh
-#   REMOTE_BACKUP="user@host:/backup/yiban" BACKUP_AGE_PASSPHRASE=xxx ./backup.sh
+#   REMOTE_BACKUP="user@host:/backup/yiban" BACKUP_GPG_PASSPHRASE=xxx ./backup.sh
+#   BACKUP_PLAINTEXT=1 ./backup.sh   # 显式关闭默认加密（明文本地归档，大字告警）
 #
 # 安装（cron 每日 02:00，见 docs/web-console/DEPLOY-CHECKLIST.md 步骤 7）：
 #   sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh
@@ -29,7 +34,7 @@
 #
 # 依赖：
 #   - 本地打包：tar / find / sqlite3（系统自带）
-#   - 异机加密副本（可选）：age（apt install age）或 gpg（系统自带）；
+#   - 默认加密/异机副本：age（apt install age）或 gpg（系统自带）；
 #     rsync（apt install rsync）或 scp（系统自带）
 # ============================================================
 
@@ -47,6 +52,8 @@ REMOTE_BACKUP="${REMOTE_BACKUP:-}"                  # 异机目标，如 user@ho
 # 2026-08-16 审查轮：原 AGE_PASSPHRASE 命名与 age 工具混淆，实际用途是 gpg AES-256 对称加密）
 GPG_PASSPHRASE="${BACKUP_GPG_PASSPHRASE:-${BACKUP_AGE_PASSPHRASE:-}}"
 GPG_RECIPIENT="${BACKUP_GPG_RECIPIENT:-}"           # gpg 接收者（公钥 ID），配置后走 gpg 公钥加密
+# M24：本地归档默认加密的总开关——1 = 显式关闭（明文本地归档，大字告警）
+BACKUP_PLAINTEXT="${BACKUP_PLAINTEXT:-0}"
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
 DATA_FILES=(.env)
@@ -68,18 +75,57 @@ trap 'rm -rf "${TMPDIR_BAK}"' EXIT
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
-# 加密/同步失败时：未完成加密文件（.gpg/.age）始终清理；
-# 仅在 --require-encrypt 模式下删除本地明文归档，普通模式保留本地明文备份。
+# 加密/同步失败时的处置。M24 后语义调整：密文由 try_encrypt 产出并自清理
+# 半成品，能走到这里的失败只剩 rsync/scp 同步失败——本地已完成的归档
+# （明文或密文）必须保留，网络抖动不得摧毁唯一本地副本；
+# 仅 --require-encrypt 模式维持原严格策略（失败即清场）。
 remote_fail() {
     local msg="$1"
-    rm -f "$ARCHIVE.gpg" "$ARCHIVE.age"
     if [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
-        echo "错误：$msg；已删除本轮明文归档及未完成加密文件" >&2
-        rm -f "$ARCHIVE"
-    else
-        echo "错误：$msg；未完成加密文件已清理，本地明文归档已保留" >&2
+        echo "错误：$msg；--require-encrypt 模式：已删除本轮归档与未完成加密文件" >&2
+        rm -f "$ARCHIVE" "$ARCHIVE.gpg" "$ARCHIVE.age"
+        exit 1
     fi
+    echo "错误：$msg；本地归档（${FINAL_LOCAL:-$ARCHIVE}）已保留，请排查后重试同步" >&2
     exit 1
+}
+
+# M24：尝试按优先级对 $ARCHIVE 加密，成功则把密文路径写入全局 ENC_FILE 并返回 0；
+# 无可用加密方式或加密失败返回 1（半成品密文自行清理），由调用方决定明文策略。
+# 优先级与异机副本一致：
+#   1) GPG_RECIPIENT + gpg 公钥（cron 友好，无需口令）
+#   2) GPG_PASSPHRASE + gpg AES-256 对称（口令经 stdin，cron 友好）
+#   3) 交互终端 + age -p（仅手动执行时可用）
+try_encrypt() {
+    ENC_FILE=""
+    if [ -n "${GPG_RECIPIENT}" ] && command -v gpg > /dev/null 2>&1; then
+        if ! gpg --batch --yes --encrypt --recipient "${GPG_RECIPIENT}" \
+                -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
+            rm -f "${ARCHIVE}.gpg"
+            return 1
+        fi
+        ENC_FILE="${ARCHIVE}.gpg"
+        return 0
+    fi
+    if [ -n "${GPG_PASSPHRASE}" ] && command -v gpg > /dev/null 2>&1; then
+        if ! printf '%s\n' "${GPG_PASSPHRASE}" | \
+            gpg --batch --yes --symmetric --cipher-algo AES256 \
+                --passphrase-fd 0 -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
+            rm -f "${ARCHIVE}.gpg"
+            return 1
+        fi
+        ENC_FILE="${ARCHIVE}.gpg"
+        return 0
+    fi
+    if command -v age > /dev/null 2>&1 && [ -t 0 ]; then
+        if ! age -p -o "${ARCHIVE}.age" "${ARCHIVE}"; then
+            rm -f "${ARCHIVE}.age"
+            return 1
+        fi
+        ENC_FILE="${ARCHIVE}.age"
+        return 0
+    fi
+    return 1
 }
 
 # ------------------------------------------------------------
@@ -95,24 +141,45 @@ restore() {
         echo "错误：请指定恢复目标目录（恢复演练用临时目录，避免覆盖生产数据）" >&2
         exit 1
     fi
+    # M24：密文归档（.gpg/.age）先解密到 TMPDIR_BAK（顶层 trap 统一清理），
+    # 再走与明文完全相同的安全校验 + 解包——恢复流程对默认加密透明。
+    local plain="$archive"
+    case "$archive" in
+        *.gpg)
+            command -v gpg > /dev/null 2>&1 || { echo "错误：解密 .gpg 归档需要 gpg 命令" >&2; exit 1; }
+            plain="${TMPDIR_BAK}/restore-decrypted.tar.gz"
+            if [ -n "${GPG_PASSPHRASE}" ]; then
+                printf '%s\n' "${GPG_PASSPHRASE}" | gpg --batch --decrypt --passphrase-fd 0 \
+                    -o "$plain" "$archive" 2>/dev/null || { echo "错误：.gpg 解密失败（口令错误或包损坏；可经 BACKUP_GPG_PASSPHRASE 注入口令重试）" >&2; exit 1; }
+            else
+                gpg --batch --decrypt -o "$plain" "$archive" 2>/dev/null || \
+                    { echo "错误：.gpg 解密失败（对称加密需 BACKUP_GPG_PASSPHRASE 环境变量注入口令）" >&2; exit 1; }
+            fi
+            ;;
+        *.age)
+            command -v age > /dev/null 2>&1 || { echo "错误：解密 .age 归档需要 age 命令" >&2; exit 1; }
+            plain="${TMPDIR_BAK}/restore-decrypted.tar.gz"
+            age -d -o "$plain" "$archive" 2>/dev/null || { echo "错误：.age 解密失败（需交互输入口令或身份文件）" >&2; exit 1; }
+            ;;
+    esac
     # 安全校验：拒绝含路径穿越（../ 或绝对路径）或符号链接的条目，防止恶意备份包写出目标目录
-    if tar -tzf "$archive" 2>/dev/null | grep -E '(^|/)\.\.(/|$)|^/' | grep -q .; then
+    if tar -tzf "$plain" 2>/dev/null | grep -E '(^|/)\.\.(/|$)|^/' | grep -q .; then
         echo "错误：备份包含不安全条目（路径穿越/绝对路径），已拒绝解包" >&2
         exit 1
     fi
-    if tar -tvzf "$archive" 2>/dev/null | grep -qE '^l'; then
+    if tar -tvzf "$plain" 2>/dev/null | grep -qE '^l'; then
         echo "错误：备份包含符号链接条目，已拒绝解包（防链接写出目标目录）" >&2
         exit 1
     fi
     # 2026-08-21 对抗性审查加固：同时拒绝设备/字符设备/FIFO 条目——root 恢复时
     # 恶意包可在目标目录创建设备节点（前提苛刻，属纵深防御）
-    if tar -tvzf "$archive" 2>/dev/null | grep -qE '^[bcp]'; then
+    if tar -tvzf "$plain" 2>/dev/null | grep -qE '^[bcp]'; then
         echo "错误：备份包含设备/FIFO 特殊条目，已拒绝解包" >&2
         exit 1
     fi
     mkdir -p "$dest"
-    tar -xzf "$archive" -C "$dest" --anchored --no-overwrite-dir 2>/dev/null || \
-        tar -xzf "$archive" -C "$dest" --no-overwrite-dir 2>/dev/null || {
+    tar -xzf "$plain" -C "$dest" --anchored --no-overwrite-dir 2>/dev/null || \
+        tar -xzf "$plain" -C "$dest" --no-overwrite-dir 2>/dev/null || {
         echo "错误：解包失败（备份包可能损坏）" >&2
         exit 1
     }
@@ -261,51 +328,54 @@ if [ ${#archive_paths[@]} -eq 0 ]; then
 fi
 tar -czf "${ARCHIVE}" -C "${TMPDIR_BAK}" --owner=0 --group=0 "${archive_paths[@]}"
 chmod 0600 "${ARCHIVE}"
-# 2026-08-21 对抗性审查补充：生成 sha256 清单（fetch-backup.ps1 拉取后核对，
-# 防服务器侧备份包被静默替换后横向投递到开发机）
-if command -v sha256sum > /dev/null 2>&1; then
-    sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
-    chmod 0600 "${ARCHIVE}.sha256"
-    log "已生成校验清单：${ARCHIVE}.sha256"
+
+# ------------------------------------------------------------
+# M24 本地默认加密：有可用加密方式时，本地归档即刻转为密文并删除明文 tar.gz；
+# 明文落盘需显式 BACKUP_PLAINTEXT=1（大字告警）。无可用方式保持明文 + 大字告警，
+# 不改变既有部署行为；--restore 对密文归档透明支持。
+# ------------------------------------------------------------
+ENC_FILE=""
+if [ "${BACKUP_PLAINTEXT}" = "1" ]; then
+    log "════════════════════════════════════════════════════════════"
+    log "⚠⚠⚠ 已显式设置 BACKUP_PLAINTEXT=1：本轮生成【明文】本地归档 ⚠⚠⚠"
+    log "⚠⚠⚠ 归档内含 .env 全部密钥、管理员口令哈希与全量数据库！   ⚠⚠⚠"
+    log "════════════════════════════════════════════════════════════"
+elif try_encrypt; then
+    rm -f "${ARCHIVE}"
+    log "已启用本地默认加密：明文归档已移除，本轮密文为 ${ENC_FILE}"
+else
+    log "════════════════════════════════════════════════════════════" >&2
+    log "⚠⚠⚠ 无法加密本地归档（未配置 BACKUP_GPG_RECIPIENT/BACKUP_GPG_PASSPHRASE， ⚠⚠⚠" >&2
+    log "⚠⚠⚠ 且非交互终端无法使用 age）：本轮为【明文】归档，请尽快配置加密！     ⚠⚠⚠" >&2
+    log "════════════════════════════════════════════════════════════" >&2
 fi
-log "本地备份完成：${ARCHIVE}（$(du -h "${ARCHIVE}" | cut -f1)）"
+
+# 最终落盘产物 = 密文（默认）或明文（显式关闭/无法加密）；sha256 清单始终对应
+# 实际落盘文件。注意：fetch-backup.ps1 目前按 yiban-*.tar.gz 明文名拉取，启用
+# 默认加密后需按 docs/web-console/DEPLOY-CHECKLIST.md §7 调整二次副本流程。
+FINAL_LOCAL="${ENC_FILE:-${ARCHIVE}}"
+if command -v sha256sum > /dev/null 2>&1; then
+    sha256sum "${FINAL_LOCAL}" > "${FINAL_LOCAL}.sha256"
+    chmod 0600 "${FINAL_LOCAL}.sha256"
+    # 加密切换当天避免新旧两份清单并存混淆
+    [ -n "${ENC_FILE}" ] && rm -f "${ARCHIVE}.sha256"
+    log "已生成校验清单：${FINAL_LOCAL}.sha256"
+fi
+log "本地备份完成：${FINAL_LOCAL}（$(du -h "${FINAL_LOCAL}" | cut -f1)）"
 
 # ------------------------------------------------------------
 # 异机加密副本（REMOTE_BACKUP 未配置时跳过）
-# 加密优先级（cron 场景无终端，口令必须可注入，否则跳过加密副本）：
-#   1) BACKUP_GPG_RECIPIENT 已配置 → gpg 公钥加密（无需口令）
-#   2) BACKUP_GPG_PASSPHRASE 已配置 → gpg AES-256 对称加密（口令经 stdin 注入；旧名 BACKUP_AGE_PASSPHRASE 兼容）
-#   3) 终端交互且已装 age → age -p 交互式
-#   4) 均不可用 → 告警并仅保留本地备份
+# M24：本地默认加密已产出密文（ENC_FILE）时直接复用同一份密文，不再重复加密；
+# 本地为明文（显式关闭/无法加密）时仍尝试加密后再出站——异机副本绝不传明文。
 # ------------------------------------------------------------
 if [ -n "${REMOTE_BACKUP}" ]; then
-    log "REMOTE_BACKUP 已配置，准备加密并同步到 ${REMOTE_BACKUP} ..."
-    REMOTE_FILE=""
-    if [ -n "${GPG_RECIPIENT}" ] && command -v gpg > /dev/null 2>&1; then
-        # gpg 公钥加密（无需口令；2026-08-16 修正：原 --symmetric 与 --recipient 混用冗余）
-        if ! gpg --batch --yes --encrypt \
-            --recipient "${GPG_RECIPIENT}" -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
-            remote_fail "gpg 公钥加密失败"
+    log "REMOTE_BACKUP 已配置，准备同步到 ${REMOTE_BACKUP} ..."
+    REMOTE_FILE="${ENC_FILE}"
+    if [ -z "${REMOTE_FILE}" ] && [ "${BACKUP_PLAINTEXT}" != "1" ]; then
+        if try_encrypt; then
+            REMOTE_FILE="${ENC_FILE}"
         fi
-        REMOTE_FILE="${ARCHIVE}.gpg"
-    elif [ -n "${GPG_PASSPHRASE}" ] && command -v gpg > /dev/null 2>&1; then
-        # gpg 对称加密（非交互，口令从 stdin 读取；解密时用同一口令：
-        #   gpg --batch --decrypt --passphrase-fd 0 < yiban-*.tar.gz.gpg > yiban-*.tar.gz）
-        if ! printf '%s\n' "${GPG_PASSPHRASE}" | \
-            gpg --batch --yes --symmetric --cipher-algo AES256 \
-                --passphrase-fd 0 -o "${ARCHIVE}.gpg" "${ARCHIVE}"; then
-            remote_fail "gpg 对称加密失败"
-        fi
-        REMOTE_FILE="${ARCHIVE}.gpg"
-    elif command -v age > /dev/null 2>&1 && [ -t 0 ]; then
-        if ! age -p -o "${ARCHIVE}.age" "${ARCHIVE}"; then
-            remote_fail "age 交互加密失败"
-        fi
-        REMOTE_FILE="${ARCHIVE}.age"
-    else
-        log "警告：未提供可用加密方式（gpg/age），跳过异机加密副本；仅保留本地备份（备份包含密钥+数据，请确保本地存储安全）" >&2
     fi
-
     if [ -n "${REMOTE_FILE}" ]; then
         if command -v rsync > /dev/null 2>&1; then
             if ! rsync -az --chmod=600 "${REMOTE_FILE}" "${REMOTE_BACKUP}/"; then
@@ -320,13 +390,13 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         fi
         # 异机侧保留策略：建议在远端另配清理 cron（find ... -mtime +30 -delete），
         # 或定期人工清理；本脚本只保证本地保留天数。
+    else
+        log "警告：未提供可用加密方式（gpg/age），拒绝把【明文】备份传出本机；仅保留本地备份" >&2
+        log "警告：（备份包含密钥+数据；请配置 BACKUP_GPG_RECIPIENT 或 BACKUP_GPG_PASSPHRASE 后重试）" >&2
     fi
 else
-    # 2026-08-21 对抗性审查加固：明文本地备份含全部密钥+口令哈希+数据库，
-    # 显著告警提示加密路径（不改变行为，保持兼容）
-    log "警告：REMOTE_BACKUP 未配置，本次为【明文】本地备份（内含 .env 全部密钥、管理员口令哈希与全量数据库）。" >&2
-    log "警告：请尽快配置 REMOTE_BACKUP（异机加密副本），或以 --require-encrypt 运行；明文归档务必确保 ${BACKUP_DIR} 目录访问受控。" >&2
-    log "REMOTE_BACKUP 未配置，仅保留本地备份"
+    # M24 后此分支仅在 BACKUP_PLAINTEXT=1 或无可用加密方式时到达（均已有大字告警）
+    log "REMOTE_BACKUP 未配置，仅保留本地${ENC_FILE:+密文}备份"
 fi
 
 # ------------------------------------------------------------
@@ -337,5 +407,5 @@ find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz.age' -mtime "+${RETENTION
 find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz.gpg' -mtime "+${RETENTION_DAYS}" -delete
 log "本地清理完成（保留 ${RETENTION_DAYS} 天）"
 
-log "=== 备份完成：${ARCHIVE} ==="
-log "恢复演练：bash backup.sh --restore ${ARCHIVE} /tmp/yiban-restore-test"
+log "=== 备份完成：${FINAL_LOCAL} ==="
+log "恢复演练：bash backup.sh --restore ${FINAL_LOCAL} /tmp/yiban-restore-test"
