@@ -831,14 +831,22 @@ class YibanTuiApp(App):
         # 项目根目录（tui 的上一级）
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         script = os.path.join(base, "scripts", "signin.py")
-        # 子进程环境白名单：只透传 YIBAN_* 业务变量与终端基本变量（PATH/HOME/TERM），
+        # 子进程环境白名单：只透传 YIBAN_* 业务变量、终端基本变量（PATH/HOME/TERM）
+        # 与代理三件套 HTTP(S)_PROXY/NO_PROXY（大小写变体都收——requests 两种形态
+        # 均识别，漏透传会让代理宿主上手动签到子进程静默直连出网失败，审查回路1），
         # 不把宿主全量环境带入子进程（signin.py 的密钥经 YIBAN_ENV_FILE 路径自行
         # 读取，无需其余变量）。Windows 下 Python 解释器启动必需 SYSTEMROOT/
         # TEMP/TMP/COMSPEC，一并放行。
+        _proxy_vars = (
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "no_proxy",
+        )
         env = {
             k: v
             for k, v in os.environ.items()
-            if k.startswith("YIBAN_") or k in ("PATH", "HOME", "TERM")
+            if k.startswith("YIBAN_")
+            or k in ("PATH", "HOME", "TERM")
+            or k in _proxy_vars
         }
         if os.name == "nt":
             for _k in ("SYSTEMROOT", "TEMP", "TMP", "COMSPEC"):
