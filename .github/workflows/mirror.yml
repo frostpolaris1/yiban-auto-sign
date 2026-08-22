@@ -1,0 +1,31 @@
+name: Mirror to Gitee
+
+# 单向镜像：GitHub(origin) -> Gitee，避免双远程手动同步分歧
+# 触发：向 main / server-web push，或手动 workflow_dispatch
+on:
+  push:
+    branches: [main, server-web]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 使用前需在 GitHub 仓库 Secrets 配置：
+#   GITEE_PRIVATE_KEY  —— 一对 SSH 密钥的私钥（公钥添加到 Gitee 账号 SSH 密钥）
+#   GITEE_TOKEN        —— Gitee 个人访问令牌（用于 API）
+# 已固定为完整 commit SHA（2026-08-22 M10，原 @master 可变分支，防被篡改）。
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Mirror to Gitee
+        uses: Yikun/hub-mirror-action@ba51c01b28a6c9f95a25d4f1bcf6af2a147c0e18 # master
+        with:
+          src: github/frostpolaris1/yiban-auto-sign
+          dst: gitee/frostpolaris/yiban-auto-sign
+          dst_key: ${{ secrets.GITEE_PRIVATE_KEY }}
+          dst_token: ${{ secrets.GITEE_TOKEN }}
+          static_list: "yiban-auto-sign"
+          force_update: true
+          debug: true
