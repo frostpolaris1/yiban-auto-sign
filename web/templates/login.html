@@ -376,8 +376,11 @@ function openModal(id) {
   if (!modal || !modal.classList.contains('hidden')) return;
   loginModalOpeners[id] = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   modal.classList.remove('hidden');
+  // 每次打开从内容顶部开始：先重置滚动区，再 focus 首元素且不触发浏览器把它滚到末尾
+  // （协议/隐私为长文档，末尾「我知道了」按钮是首可聚焦元素，默认应展示文档开头而非结尾）
+  modal.querySelectorAll('.overflow-y-auto, .overflow-auto').forEach(el => el.scrollTop = 0);
   const first = modalFocusables(modal)[0];
-  if (first) first.focus();
+  if (first) first.focus({ preventScroll: true });
 }
 function closeModal(id) {
   const modal = document.getElementById(id);
