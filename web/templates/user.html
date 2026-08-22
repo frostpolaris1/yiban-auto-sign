@@ -6,7 +6,7 @@
 <title>我的账号 · 易班自动签到</title>
 <script>
   // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
-  try { if (localStorage.getItem('theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
+  try { if (localStorage.getItem('yiban-theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
 </script>
 <script>
   // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
@@ -1034,7 +1034,7 @@ async function clearTimePref() {
 // 暗色主题切换（localStorage 记忆）
 function toggleTheme() {
   const dark = document.documentElement.classList.toggle('dark');
-  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+  try { localStorage.setItem('yiban-theme', dark ? 'dark' : 'light'); } catch (e) {}
   updateThemeBtn();
 }
 function updateThemeBtn() {
