@@ -2195,10 +2195,18 @@ def _delete_time_prefs_by_phones(conn, phones):
 # 会话 TTL：服务端会话真实有效期未知，保守取值——宁多登一次，不可拿过期
 # 凭据撞风控。调度为每日一次签到，跨天复用需在 .env 调大本值（如 24~36）。
 SESSION_CACHE_TTL_HOURS_DEFAULT = 12
+# TTL 钳制边界（M13）：上限 72h（再大会把远过期凭据反复送去撞风控/已改密账号），
+# 下限 1h（低于 1h 缓存命中形同虚设）。越界不静默接受，回默认并告警。
+SESSION_CACHE_TTL_HOURS_MIN = 1.0
+SESSION_CACHE_TTL_HOURS_MAX = 72.0
 
 
 def _session_cache_ttl_hours():
-    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 12）：缺失/非法/非正回退默认。"""
+    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 12）：缺失/非法/非正回退默认。
+
+    M13：配置越界（<1h 或 >72h）同样回退默认并告警——此前可配 8760h 之类
+    超大值，把早已失效的会话凭据跨季反复复用，等于放大风控与撞库面。
+    """
     raw = os.environ.get("YIBAN_SESSION_TTL_HOURS", "").strip()
     if not raw:
         return SESSION_CACHE_TTL_HOURS_DEFAULT
@@ -2209,6 +2217,13 @@ def _session_cache_ttl_hours():
         return SESSION_CACHE_TTL_HOURS_DEFAULT
     if v <= 0:
         logger.warning("配置 YIBAN_SESSION_TTL_HOURS=%s 非正，回退默认 %s 小时", raw, SESSION_CACHE_TTL_HOURS_DEFAULT)
+        return SESSION_CACHE_TTL_HOURS_DEFAULT
+    if not (SESSION_CACHE_TTL_HOURS_MIN <= v <= SESSION_CACHE_TTL_HOURS_MAX):
+        logger.warning(
+            "配置 YIBAN_SESSION_TTL_HOURS=%s 超出钳制范围 [%s, %s]，回退默认 %s 小时",
+            raw, SESSION_CACHE_TTL_HOURS_MIN, SESSION_CACHE_TTL_HOURS_MAX,
+            SESSION_CACHE_TTL_HOURS_DEFAULT,
+        )
         return SESSION_CACHE_TTL_HOURS_DEFAULT
     return v
 
