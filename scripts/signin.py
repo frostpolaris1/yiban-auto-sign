@@ -34,7 +34,7 @@ from base64 import b64decode, b64encode
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 # 共享模块（同目录）：加密（web/tui/db 共用密钥与密文格式）与 SQLite 数据访问层
 import account_crypto
@@ -544,7 +544,7 @@ def clear_session_cache_quiet(phone):
         if db.is_initialized():
             db.clear_session_cache(phone)
     except Exception as e:
-        logger.debug(f"[{phone}] 清除会话缓存失败: {e}")
+        logger.debug(f"[{phone}] 清除会话缓存失败: {_sanitize_text(e)}")
 
 
 def random_delay(max_seconds, label):
@@ -561,10 +561,13 @@ def _sanitize_text(text):
     s = str(text).replace("\r", "\\r").replace("\n", "\\n")
     # 脱敏：异常消息可能含 Account dataclass repr（含明文密码/令牌）
     # 整体替换 Account(...) 对象（正则处理引号转义边界），并兜底替换 password/phone_code 字段
-    import re
     s = re.sub(r"Account\([^)]*\)", "Account(***)", s)
     s = re.sub(r"password\s*=\s*['\"][^'\"]*['\"]", "password='***'", s)
     s = re.sub(r"phone_code\s*=\s*['\"][^'\"]*['\"]", "phone_code='***'", s)
+    # dict/repr 形态兜底（C-SIGN-03）：'phone_code': 'xxx' / "password": "xxx"——
+    # kwarg 形态正则覆盖不到 dict repr（如 vars()/json.dumps 调试输出进异常链）
+    s = re.sub(r"(['\"])password\1\s*:\s*['\"][^'\"]*['\"]", r"\1password\1: '***'", s)
+    s = re.sub(r"(['\"])phone_code\1\s*:\s*['\"][^'\"]*['\"]", r"\1phone_code\1: '***'", s)
     return s
 
 
@@ -573,6 +576,43 @@ def _mask_phone(phone):
     对外 webhook 与 web 展示层不落完整号——规范审查 D2）。"""
     p = str(phone)
     return p[:3] + "****" + p[7:] if len(p) == 11 else p
+
+
+# URL query 敏感参数名片段（子串、不区分大小写匹配）：OAuth code/token、CSRF/session
+# 标识、签名票据类——最终 URL 进诊断日志前值统一打码（C-SIGN-01）
+_URL_SENSITIVE_KEY_PARTS = (
+    "code", "token", "csrf", "session", "ticket", "sign",
+    "auth", "key", "secret", "passwd", "password", "verify",
+)
+
+
+def _sanitize_url(url):
+    """URL 入日志前对 query 敏感参数脱敏（C-SIGN-01）。
+
+    诊断日志需要的是 scheme/host/path 与"带了哪些参数"，不是参数值：可能携带
+    凭据的（OAuth code、CSRF、session 标识等）一律替换为 ***；≥24 位连续
+    URL-safe 字符的高熵值无论参数名一律打码，兜底未知令牌参数名（阈值取 24：
+    真实 code/token 通常远长于此，避免误伤 client_id 这类恰好 16 位的公开标识）。
+    解析失败返回占位符，绝不抛异常影响主流程。
+    """
+    raw = str(url)
+    try:
+        parts = urlsplit(raw)
+        pairs = parse_qsl(parts.query, keep_blank_values=True)
+    except ValueError:
+        return "<url 解析失败已省略>"
+    if not pairs:
+        return raw
+
+    def _masked(key, value):
+        k = key.lower()
+        if any(part in k for part in _URL_SENSITIVE_KEY_PARTS):
+            return f"{key}=***"
+        if len(value) >= 24 and re.fullmatch(r"[A-Za-z0-9_\-]+", value):
+            return f"{key}=***"
+        return f"{key}={value}"
+
+    return urlunsplit(parts._replace(query="&".join(_masked(k, v) for k, v in pairs)))
 
 
 # ---------------------------------------------------------------------------
@@ -845,10 +885,11 @@ class YibanClient:
         key_match = re.compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
         if not page_use_match or not key_match:
             # 只落响应摘要（前 300 字符），避免整页 HTML/敏感内容进日志；
-            # _sanitize_text 同时处理 \r（防日志伪造）并脱敏 Account repr
+            # _sanitize_text 同时处理 \r（防日志伪造）并脱敏 Account repr；
+            # 最终 URL 的 query 可能带 OAuth code/CSRF，经 _sanitize_url 打码（C-SIGN-01）
             body_preview = _sanitize_text(resp.text[:300].replace("\n", "\\n"))
             logger.error(f"[{self.account.phone}] OAuth 页解析失败诊断:")
-            logger.error(f"  最终 URL: {resp.url}")
+            logger.error(f"  最终 URL: {_sanitize_url(resp.url)}")
             logger.error(f"  状态码: {resp.status_code}")
             logger.error(f"  响应长度: {len(resp.text)}")
             logger.error(f"  响应前300字符: {body_preview}")
@@ -1110,7 +1151,7 @@ class YibanClient:
         try:
             cached = db.get_session_cache(self.account.phone)
         except Exception as e:
-            logger.debug(f"[{self.account.phone}] 读取会话缓存失败（按未命中处理）: {e}")
+            logger.debug(f"[{self.account.phone}] 读取会话缓存失败（按未命中处理）: {_sanitize_text(e)}")
             return False
         if not cached:
             return False
@@ -1134,7 +1175,7 @@ class YibanClient:
         try:
             db.set_session_cache(self.account.phone, json.dumps(cookies), self.csrf)
         except Exception as e:
-            logger.warning(f"[{self.account.phone}] 保存会话缓存失败（不影响签到）: {e}")
+            logger.warning(f"[{self.account.phone}] 保存会话缓存失败（不影响签到）: {_sanitize_text(e)}")
 
     def _clear_session_cache(self):
         """清除本账号会话缓存（探针判死 / 风控类失败联动清除）。"""
@@ -1143,7 +1184,7 @@ class YibanClient:
         try:
             db.clear_session_cache(self.account.phone)
         except Exception as e:
-            logger.debug(f"[{self.account.phone}] 清除会话缓存失败: {e}")
+            logger.debug(f"[{self.account.phone}] 清除会话缓存失败: {_sanitize_text(e)}")
 
     def _is_ydclearance_challenge(self, resp):
         """判断响应是否触发 ydclearance 反爬挑战。
@@ -1493,8 +1534,9 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, path)
     except (OSError, ValueError, TypeError, AttributeError) as e:
-        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）
-        logger.debug("写入状态文件失败（%s）: %s", path, e)
+        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）；
+        # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值，C-SIGN-02）
+        logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(e))
 
 
 # ---------------------------------------------------------------------------
@@ -1535,7 +1577,7 @@ def _save_cred_state(data):
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, path)
     except (OSError, ValueError, TypeError, AttributeError) as e:
-        logger.debug("写入账密状态失败（%s）: %s", path, e)
+        logger.debug("写入账密状态失败（%s）: %s", path, _sanitize_text(e))
 
 
 def _is_credential_failure(message):
