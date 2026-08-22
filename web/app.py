@@ -1400,6 +1400,33 @@ def create_app(host=None):
             return False
         return (o.scheme, o.netloc) == (request.scheme, request.host)
 
+    # NEW-M1（反代转发头误诊断）：Origin 为 https 而应用侧 request.scheme 为 http
+    # 时，说明反向代理的 X-Forwarded-Proto 未生效（nginx 缺 proxy_set_header，或
+    # gunicorn 未信任代理头），同源校验会把全部正常登录/注册误判为跨站拒绝。
+    # 首次命中输出一次性 ERROR 指引排查（模块级标记，重启后重置）。
+    _forwarded_proto_mismatch_logged = False
+
+    def _log_forwarded_proto_mismatch_once():
+        """同源校验拒绝时附带 NEW-M1 一次性诊断（Origin=https / scheme=http）。"""
+        nonlocal _forwarded_proto_mismatch_logged
+        if _forwarded_proto_mismatch_logged:
+            return
+        origin = request.headers.get("Origin", "")
+        from urllib.parse import urlparse
+
+        try:
+            o = urlparse(origin)
+        except ValueError:
+            return
+        if o.scheme == "https" and request.scheme == "http":
+            _forwarded_proto_mismatch_logged = True
+            logger.error(
+                "NEW-M1：请求 Origin 为 https 但应用侧 scheme 为 http——反向代理转发头"
+                "未生效，同源校验将拒绝所有正常登录/注册。请检查：nginx 配置需含 "
+                "proxy_set_header X-Forwarded-Proto $scheme；gunicorn 需信任代理头"
+                "（forwarded_allow_ips 包含代理地址，如 --forwarded-allow-ips=127.0.0.1）"
+            )
+
     @app.before_request
     def check_csrf():
         if request.method not in ("POST", "PUT", "DELETE"):
@@ -1409,6 +1436,7 @@ def create_app(host=None):
         if request.path in ("/api/login", "/api/register", "/api/me/restore"):
             # 未登录态无 session token：用同源校验阻断跨站 CSRF（与登录/注册同等级）
             if not _is_same_origin():
+                _log_forwarded_proto_mismatch_once()  # NEW-M1 反代头未生效诊断
                 logger.warning(
                     "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
                     _client_ip(),
