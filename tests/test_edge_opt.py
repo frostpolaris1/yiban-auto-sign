@@ -37,11 +37,16 @@ def pop_env(keys):
 
 class EdgeScheduleTest(unittest.TestCase):
     def setUp(self):
-        pop_env((
+        keys = (
             "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST", "YIBAN_SIGN_MODE",
             "YIBAN_WINDOW_EDGE_SEC", "YIBAN_WINDOW_EDGE_FRONT_SEC",
             "YIBAN_WINDOW_EDGE_BACK_SEC", "YIBAN_SIGN_START", "YIBAN_SIGN_END",
-        ))
+        )
+        pop_env(keys)
+        # 用例各自再写入的键随测试结束一并清除：新键（FRONT/BACK）优先级高于
+        # 旧键 YIBAN_WINDOW_EDGE_SEC，泄漏会静默改写后续调度测试（schedule_v2
+        # 的旧键用例）的有效窗口——2026-08-22 全量跑查明的跨文件污染源
+        self.addCleanup(pop_env, keys)
 
     def test_asymmetric_front_back(self):
         """前 30s + 后 300s：所有计划时刻 ∈ [06:30.5, 07:45]（默认窗口 06:30~07:50）。"""
