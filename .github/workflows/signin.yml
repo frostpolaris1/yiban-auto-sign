@@ -53,7 +53,9 @@ jobs:
       - name: Audit dependencies for known vulnerabilities
         run: |
           pip install pip-audit
-          pip-audit -r requirements.txt
+          # 审计锁定清单（requirements.lock）而非下限清单（requirements.txt）：
+          # 锁定版本才是实际部署安装的版本（L-14，2026-08-22）
+          pip-audit -r requirements.lock
 
       - name: Diagnose runner network
         run: |
