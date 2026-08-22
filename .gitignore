@@ -104,8 +104,8 @@ AGENTS.md
 WORKFLOW.md
 CONTRIBUTING.md
 .github/pull_request_template.md
-.github/workflows/ci.yml
-.github/workflows/mirror.yml
+# 2026-08-22 M10：ci.yml / mirror.yml 解除忽略入库（文件内只有 secrets 名引用无值，
+# 入库安全），并全量 SHA 固定第三方 action（防可变 tag 被篡改）
 # signin.yml 必须入库：README「GitHub Actions 使用教程（备选）」的部署通道，
 # Fork 用户依赖此文件；仓库所有者侧通过 Actions 页面 Disable 控制不跑（2026-08-22 复核恢复）
 .commitlintrc.json
