@@ -1154,8 +1154,9 @@ def check_admin_configured():
 def verify_admin(username, password):
     """校验管理员账号（每次登录实时读 .env，修改立即生效）。
 
-    口令哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt）优先；未配置哈希时
-    回退旧明文（YIBAN_ADMIN_PASSWORD）比对，兼容存量部署。
+    口令哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt）优先；哈希缺失而明文仍在
+    （启动迁移失败态）按 M1 fail-closed 直接拒绝——明文比对路径已停用，
+    修复 .env 权限重启即自动补齐哈希。
     注意：compare_digest 不支持非 ASCII 直接比较，先编码为 UTF-8 字节。
     """
     env = read_env(ENV_FILE)
@@ -1179,6 +1180,19 @@ def verify_admin(username, password):
     if pw_hash:
         return check_password_hash(pw_hash, password)
     admin_pass = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
+    if admin_pass:
+        # M1 明文回退 fail-closed：走到这里 = 哈希缺失而明文仍在，即启动迁移
+        # （migrate_admin_password_to_hash）写 .env 失败的降级态。此前回退明文比对，
+        # 意味着迁移失败被静默容忍、明文口令路径长期可用；直接拒绝并指导修复，
+        # 修复 .env 权限/可写性后重启即自动补齐哈希（迁移逻辑本身不变）。
+        logger.error(
+            "管理员口令仍为明文存储（%s 缺 YIBAN_ADMIN_PASSWORD_HASH，启动迁移失败态），"
+            "明文比对已停用（fail-closed）。请修复 .env 的属主/权限（属主可写）后重启服务，"
+            "迁移会自动将口令转为哈希；或手工设置 YIBAN_ADMIN_PASSWORD_HASH",
+            ENV_FILE,
+        )
+        _constant_time_dummy(password)  # 时延拉平：与哈希比对等开销
+        return False
     return secrets.compare_digest(password.encode("utf-8"), admin_pass.encode("utf-8"))
 
 
