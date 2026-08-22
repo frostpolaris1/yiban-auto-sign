@@ -35,7 +35,7 @@ SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 
 # schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _normalize_limit(limit, default):
@@ -128,6 +128,15 @@ def get_conn():
     return _conn
 
 
+def is_initialized():
+    """db 层是否已显式初始化（不触发隐式 init_db）。
+
+    供 signin 判断会话缓存可用性：环境变量账号模式（CI 等）未初始化 db，
+    不启用缓存——避免 get_conn 隐式 init 在工作目录创建空库。
+    """
+    return _conn is not None
+
+
 # ---------------------------------------------------------------------------
 # 表结构
 # ---------------------------------------------------------------------------
@@ -203,7 +212,7 @@ def _create_tables(conn):
 # ---------------------------------------------------------------------------
 # 允许操作的表名白名单（防止 f-string SQL 注入）
 _ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
-                   "sign_events", "page_visits", "server_metrics"}
+                   "sign_events", "page_visits", "server_metrics", "session_cache"}
 
 
 def _table_columns(conn, table):
@@ -624,6 +633,27 @@ def migrate_v7(conn):
     )
 
 
+def migrate_v8(conn):
+    """v8：会话 Cookie 缓存表（OAuth 会话复用，降低登录频率 = 降低风控触发面）。
+
+    缓存对象为序列化 cookie jar + csrf（login_killyiban 完成后的完整认证态）；
+    cookies_ct 为 AES-GCM 密文 JSON 串（AAD=phone，复用 account_crypto），
+    库内绝不落明文 cookie。表结构见 docs/research-lumjiel-core-sign-20260822.md §七。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS session_cache (
+          phone        TEXT PRIMARY KEY,
+          cookies_ct   TEXT NOT NULL,
+          csrf         TEXT NOT NULL,
+          created_at   TEXT NOT NULL,
+          updated_at   TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -635,6 +665,7 @@ _MIGRATIONS = [
     (5, "v5_user_deregistration", migrate_v5, True),
     (6, "v6_webui_stats", migrate_v6, False),
     (7, "v7_delete_request_kind", migrate_v7, True),
+    (8, "v8_session_cache", migrate_v8, False),
 ]
 
 
@@ -2156,3 +2187,115 @@ def _delete_time_prefs_by_phones(conn, phones):
     if not phones:
         return
     conn.executemany("DELETE FROM time_prefs WHERE phone=?", [(p,) for p in phones])
+
+
+# ---------------------------------------------------------------------------
+# 会话 Cookie 缓存（v8，docs/research-lumjiel-core-sign-20260822.md §七）
+# ---------------------------------------------------------------------------
+# 会话 TTL：服务端会话真实有效期未知，保守取值——宁多登一次，不可拿过期
+# 凭据撞风控。调度为每日一次签到，跨天复用需在 .env 调大本值（如 24~36）。
+SESSION_CACHE_TTL_HOURS_DEFAULT = 12
+
+
+def _session_cache_ttl_hours():
+    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 12）：缺失/非法/非正回退默认。"""
+    raw = os.environ.get("YIBAN_SESSION_TTL_HOURS", "").strip()
+    if not raw:
+        return SESSION_CACHE_TTL_HOURS_DEFAULT
+    try:
+        v = float(raw)
+    except ValueError:
+        logger.warning("配置 YIBAN_SESSION_TTL_HOURS=%r 非法，回退默认 %s 小时", raw, SESSION_CACHE_TTL_HOURS_DEFAULT)
+        return SESSION_CACHE_TTL_HOURS_DEFAULT
+    if v <= 0:
+        logger.warning("配置 YIBAN_SESSION_TTL_HOURS=%s 非正，回退默认 %s 小时", raw, SESSION_CACHE_TTL_HOURS_DEFAULT)
+        return SESSION_CACHE_TTL_HOURS_DEFAULT
+    return v
+
+
+def get_session_cache(phone):
+    """读取会话缓存：返回 {"cookies": <明文 JSON 串>, "csrf": str, 时间戳}，未命中返回 None。
+
+    超过 TTL 的行读时顺手清除（updated_at 为定宽 %Y-%m-%d %H:%M:%S，字符串比较
+    等价时间序，与库内其他 ts 比较口径一致）。缓存是可再生的优化数据，解密失败
+    （换密钥/密文损坏）按未命中处理并清行，不阻断签到重新登录。
+    """
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT cookies_ct, csrf, created_at, updated_at FROM session_cache WHERE phone=?",
+            (phone,),
+        ).fetchone()
+        if row is None:
+            return None
+        cutoff = (
+            datetime.datetime.now()
+            - datetime.timedelta(hours=_session_cache_ttl_hours())
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        if row["updated_at"] <= cutoff:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
+                conn.commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                logger.warning("清理过期会话缓存失败: %s", phone)
+            return None
+        try:
+            obj = json.loads(row["cookies_ct"])
+            key = account_crypto.load_key(_env_file)
+            cookies = account_crypto.decrypt_password(obj, key, phone)
+        except (ValueError, TypeError, json.JSONDecodeError) as e:
+            logger.warning("会话缓存解密失败（按未命中清除重登）: %s: %s", phone, e)
+            with contextlib.suppress(Exception):
+                conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
+                conn.commit()
+            return None
+        return {
+            "cookies": cookies,
+            "csrf": row["csrf"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+
+def set_session_cache(phone, cookie_json, csrf):
+    """写入/更新会话缓存（UPSERT）。cookie_json 为明文 cookie jar JSON 串，
+    落库前 AES-GCM 加密（AAD=phone，复用 account_crypto，与密码字段同体系）；
+    更新时保留首次 created_at，只刷新 updated_at。
+
+    BEGIN IMMEDIATE：跨进程写锁（signin 与 web 并存时串行化写路径）。
+    """
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cookies_ct = json.dumps(
+        account_crypto.encrypt_password(str(cookie_json), account_crypto.load_key(_env_file), phone)
+    )
+    conn = get_conn()
+    with _conn_lock:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO session_cache (phone, cookies_ct, csrf, created_at, updated_at) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(phone) DO UPDATE SET cookies_ct=excluded.cookies_ct, "
+                "csrf=excluded.csrf, updated_at=excluded.updated_at",
+                (phone, cookies_ct, csrf, now, now),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def clear_session_cache(phone):
+    """清除单账号会话缓存（会话失效/风控类失败联动；行不存在时无操作）。"""
+    conn = get_conn()
+    with _conn_lock:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise

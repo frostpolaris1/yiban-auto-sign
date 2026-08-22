@@ -190,11 +190,16 @@ logging.basicConfig(
 logger = logging.getLogger("yiban")
 
 
+# 易班 App 版本特征：两处请求头（KILLYIBAN_HEADERS / usersure 提交）必须同值，
+# 不一致可能触发服务端一致性校验；旧流程 iOS UA 尾段同步引用。
+# 2026-08-22 由 5.1.2 升至应用商店真实最新版 5.2.2（下次升版只改这一行）
+YIBAN_APP_VERSION = "5.2.2"
+
 # 易班 iOS 客户端 UA（与 Auto-Test 保持一致）
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/4.0 "
-    "Chrome/104.0.5112.97 Mobile Safari/537.36 yiban_iOS/5.0.12",
+    "Chrome/104.0.5112.97 Mobile Safari/537.36 yiban_iOS/" + YIBAN_APP_VERSION,
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     "X-Requested-With": "com.yiban.app",
     "Origin": "https://app.uyiban.com",
@@ -207,7 +212,7 @@ HEADERS = {
 # 实测带 Origin → e001 无效应用端编号），其余请求用此头
 KILLYIBAN_HEADERS = {
     "User-Agent": "Yiban",
-    "AppVersion": "5.1.2",
+    "AppVersion": YIBAN_APP_VERSION,
     "Origin": "https://c.uyiban.com",
     "Referer": "https://c.uyiban.com/",
     "Connection": "close",
@@ -530,6 +535,18 @@ def classify_failure(message):
     return MAX_ATTEMPTS
 
 
+def clear_session_cache_quiet(phone):
+    """清除单账号会话缓存（模块级入口，供重试队列联动）；失败仅留痕不影响签到。
+
+    db 未初始化（环境变量账号模式）时为无操作。
+    """
+    try:
+        if db.is_initialized():
+            db.clear_session_cache(phone)
+    except Exception as e:
+        logger.debug(f"[{phone}] 清除会话缓存失败: {e}")
+
+
 def random_delay(max_seconds, label):
     """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。"""
     if max_seconds <= 0:
@@ -756,7 +773,7 @@ class YibanClient:
         if self.use_killyiban:
             self.csrf = secrets.token_hex(16)  # SecureRandom 真随机
             logger.debug(
-                f"[{account.phone}] 登录方式: 标准 App 特征（UA=Yiban/AppVersion=5.1.2/SecureRandom CSRF）"
+                f"[{account.phone}] 登录方式: 标准 App 特征（UA=Yiban/AppVersion={YIBAN_APP_VERSION}/SecureRandom CSRF）"
             )
         else:
             self.csrf = secrets.token_hex(16)  # 使用安全随机数替代可预测的时间戳 md5
@@ -958,8 +975,12 @@ class YibanClient:
         - 页面解析用 jsoup 等价正则（key 去掉 BEGIN/END 后按 X509 解码）
         """
         phone = self.account.phone
-        # 设置 csrf_token cookie（服务器用其校验 CSRF 参数，缺失会报 CSRF invalid）
-        self.session.cookies = cookiejar_from_dict({"csrf_token": self.csrf})
+        # 0. 会话缓存：命中则还原 cookies + csrf，复用第 1 步 OAuth 探针判活——
+        #    302 到 iapp7463 = 会话仍有效（免登录）；200 登录页 = 失效，清缓存走完整流程
+        restored = self._restore_session_cache()
+        if not restored:
+            # 设置 csrf_token cookie（服务器用其校验 CSRF 参数，缺失会报 CSRF invalid）
+            self.session.cookies = cookiejar_from_dict({"csrf_token": self.csrf})
         # session 头已是 KILLYIBAN_HEADERS，此处无需再改
 
         # 1. 打开 OAuth 登录页（client_id/redirect_uri 参数，无 CSRF）
@@ -972,9 +993,16 @@ class YibanClient:
         )
         # 若直接返回 iapp7463 说明已登录（正常流程是停留在登录页）
         if "iapp7463" in (resp.headers.get("Location", "")):
-            logger.info(f"[{phone}] 登录: 已登录状态（无需提交）")
+            if restored:
+                logger.info(f"[{phone}] 登录: 会话缓存命中，免登录复用")
+            else:
+                logger.info(f"[{phone}] 登录: 已登录状态（无需提交）")
             self.logged_in = True
             return
+        if restored:
+            # 缓存会话已被服务端判失效（探针返回登录页）：清缓存并还原干净初始会话
+            self._clear_session_cache()
+            self.session.cookies = cookiejar_from_dict({"csrf_token": self.csrf})
 
         # 2. 解析 RSA 公钥与 page_use（jsoup input#key 等价正则）
         key_match = re.compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"').findall(resp.text)
@@ -1000,7 +1028,7 @@ class YibanClient:
             params={"ajax_sign": page_use_match[0]},
             headers={
                 "User-Agent": "Yiban",
-                "AppVersion": "5.1.2",
+                "AppVersion": YIBAN_APP_VERSION,
                 "Origin": None,
                 "Referer": None,
                 "X-Requested-With": None,
@@ -1064,6 +1092,58 @@ class YibanClient:
             raise RuntimeError(f"最终认证失败: {_sanitize_text(data.get('msg'))}")
         self.logged_in = True
         logger.info(f"[{phone}] 登录成功")
+        # 完整登录成功：保存会话缓存供下次免登录复用（失败仅告警，不影响签到）
+        self._save_session_cache()
+
+    # ---- 会话 Cookie 缓存（SQLite 表版，db.session_cache，2026-08-22）----
+    # 我们的登录是 OAuth 会话 Cookie 流程（非 access_token）：login_killyiban 五步
+    # 完成后认证态落在 session.cookies + self.csrf 上。缓存序列化 cookie jar + csrf，
+    # 下次签到先探针判活复用会话——减少登录频率 = 降低风控触发面（调研吸收项，
+    # docs/research-lumjiel-core-sign-20260822.md §七）。仅 db 已初始化（数据库账号
+    # 模式）时启用；CI 环境变量账号模式不建缓存。
+    def _restore_session_cache(self):
+        """登录前查会话缓存：命中还原 cookies + csrf 并返回 True（会话是否仍有效
+        由 login_killyiban 第 1 步 OAuth 探针判定）。任何缓存读失败都按未命中
+        处理，绝不阻断正常登录。"""
+        if not db.is_initialized():
+            return False
+        try:
+            cached = db.get_session_cache(self.account.phone)
+        except Exception as e:
+            logger.debug(f"[{self.account.phone}] 读取会话缓存失败（按未命中处理）: {e}")
+            return False
+        if not cached:
+            return False
+        try:
+            cookies = json.loads(cached["cookies"])
+        except (TypeError, ValueError):
+            logger.warning(f"[{self.account.phone}] 会话缓存 cookies 非合法 JSON，已清除")
+            self._clear_session_cache()
+            return False
+        self.session.cookies = cookiejar_from_dict(cookies)
+        self.csrf = cached["csrf"]
+        return True
+
+    def _save_session_cache(self):
+        """完整登录成功后保存 cookie jar + csrf（密文落库）；失败仅告警不影响签到。"""
+        if not db.is_initialized():
+            return
+        cookies = dict_from_cookiejar(self.session.cookies)
+        if not cookies:
+            return  # 空会话无复用价值，不落库
+        try:
+            db.set_session_cache(self.account.phone, json.dumps(cookies), self.csrf)
+        except Exception as e:
+            logger.warning(f"[{self.account.phone}] 保存会话缓存失败（不影响签到）: {e}")
+
+    def _clear_session_cache(self):
+        """清除本账号会话缓存（探针判死 / 风控类失败联动清除）。"""
+        if not db.is_initialized():
+            return
+        try:
+            db.clear_session_cache(self.account.phone)
+        except Exception as e:
+            logger.debug(f"[{self.account.phone}] 清除会话缓存失败: {e}")
 
     def _is_ydclearance_challenge(self, resp):
         """判断响应是否触发 ydclearance 反爬挑战。
@@ -1885,6 +1965,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             continue
 
         max_attempts = classify_failure(message)
+        # 会话缓存联动（2026-08-22）：风控类失败（e003/WAF 等）清除该账号缓存，
+        # 避免下次签到复用已被服务端标记的会话；"授权设备"非风险关键词（属设备
+        # 配置问题仍可重试），但同样意味着当前会话不可信，单列一并清除
+        if max_attempts == RISK_MAX_ATTEMPTS or "授权设备" in message:
+            clear_session_cache_quiet(phone)
         if attempts[phone] >= max_attempts:
             results[phone] = (False, message, False, status)
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
