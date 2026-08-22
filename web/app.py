@@ -38,7 +38,7 @@ import time
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, abort, jsonify, redirect, render_template, request, session
+from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层
@@ -181,8 +181,10 @@ def _read_doc_html(filename):
         return "<p>文档暂时无法加载，请联系运营者。</p>"
 
 
-def _doc_page(title, body_html, icp_text=""):
-    """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。"""
+def _doc_page(title, body_html, icp_text="", base_path=""):
+    """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
+    base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
+    由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。"""
     icp_block = f'<p class="doc-icp">{icp_text}</p>' if icp_text else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -216,7 +218,7 @@ def _doc_page(title, body_html, icp_text=""):
 <div class="doc-card">
 <h1>{title}</h1>
 {body_html}
-<p class="doc-back"><a href="/login">&larr; 返回登录页</a></p>
+<p class="doc-back"><a href="{base_path}/login">&larr; 返回登录页</a></p>
 </div>
 {icp_block}
 </body>
@@ -1336,6 +1338,73 @@ def _is_loopback_host(host):
     return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
 
 
+# ---------------------------------------------------------------------------
+# 子路径 / 独立子域 前缀自适应中间件（2026-08-23）
+# ---------------------------------------------------------------------------
+# 背景：本应用可部署在域名根、独立子域、或主站子路径（如 /tools/yiban-auto-sign/demo/）下。
+# 部署契约：反向代理只需把完整 URI【原样透传】（proxy_pass 后面不要加 "/" 去剥前缀），
+# 本中间件即可自动感知挂载前缀并重写 SCRIPT_NAME / PATH_INFO，使：
+#   · url_for() 自动带上前缀（服务端 redirect 改用 url_for 即可，见页面路由）；
+#   · 应用内部 request.path 仍是干净路径（现有 /static/、/api/ 判断无需改动）；
+#   · Flask 的 strict_slashes 补斜杠跳转自动带前缀。
+# 前缀判定优先级：代理已传 SCRIPT_NAME（WSGI 契约，直接放行）> 环境变量 YIBAN_BASE_PATH > 自动探测。
+# 自动探测采用【最短（首个）命中】前缀：优先把 /api/、/static/、页面路由等应用自身路由留在
+# 剩余路径里（如 /tools/yiban-auto-sign/demo/api/login 应切成前缀 + /api/login，而非 .../api + /login）。
+# 若挂载前缀本身恰好含 /api、/static 或页面名等会与应用路由撞车的段，自动探测可能切错，
+# 此时请用 YIBAN_BASE_PATH 显式指定前缀（见 deploy 文档）。
+# 约定：子路径首页请带尾斜杠访问（.../demo/，url_for 生成的首页地址即带斜杠）；
+# 不带尾斜杠的裸路径无法可靠区分“子路径首页”与“根路径 404”，按 404 处理（防误伤根部署）。
+class BasePathMiddleware:
+    # 应用的扁平路由标记（新增顶层页面 / 接口前缀需同步追加）
+    _ROOT_MARKERS = ("/login", "/user", "/terms", "/privacy", "/api/", "/static/")
+
+    def __init__(self, wsgi_app, base_path=None):
+        self.wsgi_app = wsgi_app
+        self.base_path = base_path  # 显式前缀（优先于自动探测）；None 则自动
+
+    def __call__(self, environ, start_response):
+        # WSGI 契约：代理已设 SCRIPT_NAME 时，PATH_INFO 已相对该脚本路径，直接放行
+        if (environ.get("SCRIPT_NAME") or "").strip("/"):
+            return self.wsgi_app(environ, start_response)
+        path = environ.get("PATH_INFO", "/")
+        prefix = self._resolve_prefix(environ, path)
+        if prefix:
+            rest = path[len(prefix):]
+            if not rest:
+                rest = "/"
+            environ["SCRIPT_NAME"] = prefix
+            environ["PATH_INFO"] = rest
+        return self.wsgi_app(environ, start_response)
+
+    def _resolve_prefix(self, environ, path):
+        # 显式配置（构造参数 > 环境变量 YIBAN_BASE_PATH）；仅当路径确实以该前缀开头才生效
+        configured = (self.base_path or os.environ.get("YIBAN_BASE_PATH", "") or "").strip().strip("/")
+        if configured:
+            configured = "/" + configured
+            if path == configured or path.startswith(configured + "/"):
+                return configured
+        # 自动探测（零配置默认路径）
+        return self._detect_prefix(path)
+
+    @classmethod
+    def _detect_prefix(cls, path):
+        # 根路径部署：本身就是首页或已知路由 → 无前缀
+        if path == "/" or path in cls._ROOT_MARKERS:
+            return ""
+        if path.startswith("/api/") or path.startswith("/static/"):
+            return ""
+        # 按 "/" 边界切分，取【首个】命中：剩余部分为 "/"（子路径首页带尾斜杠）、
+        # 已知路由、或 /api/、/static/ 路由前缀时，切掉的部分即前缀（最短=最先命中）
+        pos = path.find("/", 1)
+        while pos != -1:
+            rest = path[pos:]
+            if (rest == "/" or rest in cls._ROOT_MARKERS
+                    or rest.startswith("/api/") or rest.startswith("/static/")):
+                return path[:pos]
+            pos = path.find("/", pos + 1)
+        return ""
+
+
 def create_app(host=None):
     global _purge_loop_started
     # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
@@ -1513,18 +1582,18 @@ def create_app(host=None):
     def index_page():
         role = _current_role()
         if role is None:
-            return redirect("/login")
+            return redirect(url_for("login_page"))
         if role != "admin":
-            return redirect("/user")
+            return redirect(url_for("user_page"))
         return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
 
     @app.route("/user")
     def user_page():
         role = _current_role()
         if role is None:
-            return redirect("/login")
+            return redirect(url_for("login_page"))
         if role != "user":
-            return redirect("/")
+            return redirect(url_for("index_page"))
         return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
 
     # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
@@ -1549,7 +1618,7 @@ def create_app(host=None):
             cnt += 1
             _login_loop[ip] = (cnt, first)
             if cnt < 4:
-                return redirect("/" if _current_role() == "admin" else "/user")
+                return redirect(url_for("index_page") if _current_role() == "admin" else url_for("user_page"))
             logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", ip)
         return render_template(
             "login.html",
@@ -1563,12 +1632,12 @@ def create_app(host=None):
     @app.route("/terms")
     def terms_page():
         """用户协议独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info())
+        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info(), request.script_root)
 
     @app.route("/privacy")
     def privacy_page():
         """隐私政策独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info())
+        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), request.script_root)
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -4133,6 +4202,10 @@ def create_app(host=None):
                 threading.Thread(
                     target=_daily_purge_loop, daemon=True, name="daily-purge"
                 ).start()
+
+    # 前缀自适应：把 WSGI 层包一层（app 本身仍是 Flask 对象，.run()/gunicorn 调用不受影响）。
+    # 支持子路径 / 独立子域 / 根路径三种部署；详见 BasePathMiddleware 类注释。
+    app.wsgi_app = BasePathMiddleware(app.wsgi_app)
 
     return app
 
