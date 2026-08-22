@@ -24,6 +24,8 @@ import threading
 # 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
 import account_crypto
 import env_lock
+from Crypto.Hash import SHA256
+from Crypto.Protocol.KDF import HKDF
 
 logger = logging.getLogger("yiban.db")
 
@@ -2200,6 +2202,27 @@ SESSION_CACHE_TTL_HOURS_DEFAULT = 12
 SESSION_CACHE_TTL_HOURS_MIN = 1.0
 SESSION_CACHE_TTL_HOURS_MAX = 72.0
 
+# L-03 密钥分离：session_cache 加密密钥不再直接复用账号凭据主密钥，
+# 改由 YIBAN_ACCOUNTS_KEY 经 HKDF-SHA256 派生（info/salt 固定常量）。
+# 主密钥泄露面的缩小之外，更防一类跨用途事故：cookie 缓存密文与账号密码密文
+# 同钥同体系，任一用途的密文/明文对（如已知自己密码的账号）可为攻击者提供
+# 验证主密钥的样本；派生隔离后互不可推。HKDF 每次现算（约 3 次 HMAC，开销
+# 微秒级），不缓存派生结果——主密钥轮换后立即生效。
+# 派生密钥变更后旧缓存解密必然失败 → 读侧按未命中清行，用户重登即可重建
+# （会话缓存本就是可再生优化数据，此失效路径可接受）。
+SESSION_CACHE_HKDF_INFO = b"yiban-session-cache-v1"
+
+
+def _session_cache_key():
+    """session_cache 专用加密密钥（HKDF-SHA256 派生，与账号凭据加密密钥隔离）。"""
+    return HKDF(
+        account_crypto.load_key(_env_file),
+        32,
+        salt=SESSION_CACHE_HKDF_INFO,
+        hashmod=SHA256,
+        context=SESSION_CACHE_HKDF_INFO,
+    )
+
 
 def _session_cache_ttl_hours():
     """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 12）：缺失/非法/非正回退默认。
@@ -2261,7 +2284,7 @@ def get_session_cache(phone):
             return None
         try:
             obj = json.loads(row["cookies_ct"])
-            key = account_crypto.load_key(_env_file)
+            key = _session_cache_key()  # L-03：HKDF 派生密钥，与账号凭据密钥隔离
             cookies = account_crypto.decrypt_password(obj, key, phone)
             # M14：csrf 解密（旧明文行在此抛错 → 整行按未命中清除）
             csrf_obj = json.loads(row["csrf"])
@@ -2292,7 +2315,7 @@ def set_session_cache(phone, cookie_json, csrf):
     BEGIN IMMEDIATE：跨进程写锁（signin 与 web 并存时串行化写路径）。
     """
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    key = account_crypto.load_key(_env_file)
+    key = _session_cache_key()  # L-03：HKDF 派生密钥，与账号凭据密钥隔离
     cookies_ct = json.dumps(
         account_crypto.encrypt_password(str(cookie_json), key, phone)
     )
