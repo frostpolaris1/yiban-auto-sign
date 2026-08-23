@@ -49,7 +49,10 @@
 | 部署方式 | 适用场景 | 稳定性 | 成本 |
 |---------|---------|--------|------|
 | **云服务器**（推荐） | 有国内服务器；主力签到通道 | 稳定（国内出口不被 WAF 拦截） | 需服务器费用 |
+| **Docker**（可选） | 已有 Docker 的服务器，一键容器化部署 | 稳定（Web / HTTPS / 定时签到开箱即用） | 需服务器费用 + Docker 环境 |
 | **GitHub Actions**（备选） | 无服务器；或作为冗余备份 | 受 WAF 拦截影响，不稳定 | 免费 |
+
+> **Docker 与「云服务器」方式二选一，不要同时启用**：两者都占用 80/443 端口（Docker 部署自带 nginx 反代），同时跑会端口冲突。
 
 > ⚠️ GitHub Actions 的海外 IP 可能被易班 WAF 风控拦截，且反复失败可能触发账号风控。**有云服务器时强烈建议使用服务器部署**。
 
@@ -254,6 +257,87 @@ crontab -l
 scp scripts/signin.py root@服务器IP:/opt/yiban-auto-sign/scripts/
 ```
 
+
+## Docker 部署教程（可选）
+
+> 适合已有 Docker 环境、想"一键起 Web + HTTPS + 定时签到"的服务器。**与上面的 systemd 部署二选一**（它们都占用 80/443，不要同时跑）。
+
+### 1. 前置条件
+- 已安装 Docker 与 Compose（验证：`docker --version`、`docker compose version`；Ubuntu 可参考 `curl -fsSL https://get.docker.com | sh`）
+- **x86_64** 架构（镜像暂仅构建 x86_64）
+- 资源建议 1 核 1G，端口 **80/443** 空闲
+
+### 2. 一键部署
+
+```bash
+# 1. 拉取代码
+git clone https://gitee.com/frostpolaris/yiban-auto-sign.git && cd yiban-auto-sign
+
+# 2. 准备数据目录与配置（数据全部落在 ./data，证书放 ./certs）
+mkdir -p data certs
+cp .env.docker.example data/.env
+vim data/.env      # 务必填写 YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD
+
+# 3. 生成 HTTPS 证书（自签，用于快速体验；生产请替换为受信证书）
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout certs/key.pem -out certs/fullchain.pem \
+  -subj "/CN=你的域名或IP"
+
+# 4. 启动（首次会构建镜像）
+docker compose up -d --build
+
+# 5. 验证
+docker compose ps
+docker compose logs -f yiban
+```
+
+浏览器打开 `https://你的域名或IP`（自签证书首访需点「继续访问」信任），用 `data/.env` 里的管理员账号登录，在后台添加易班账号即可。
+
+> **生产 HTTPS 建议**：用受信证书替换 `certs/fullchain.pem` 与 `certs/key.pem`，然后 `docker compose restart yiban-nginx`。申请免费证书可参考 `web/deploy/nginx.conf.example` 的提示（acme.sh / Let's Encrypt）。
+
+### 3. 日常运维
+
+```bash
+docker compose down            # 停止
+docker compose up -d           # 启动
+docker compose logs -f yiban   # 看应用/签到日志
+docker compose logs -f yiban-nginx   # 看反代日志
+
+# 更新代码后重建并重启
+git pull
+docker compose up -d --build
+```
+
+### 4. 备份与恢复
+数据（SQLite / 账号密文 / 加密密钥 / 日志）全部位于宿主的 `./data` 目录，**备份该目录即可**：
+
+```bash
+tar czf yiban-backup-$(date +%F).tar.gz data/
+```
+
+恢复：解压回仓库根目录（保持 `./data` 结构）后 `docker compose up -d` 即可。
+
+> ⚠️ 与 systemd 部署一致：加密密钥（`data/.env` 的密钥）要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
+
+### 5. 与现有哪些差异（Docker 内部已自动处理）
+- **定时签到**：不再依赖宿主 cron，由容器内 `supervisor` 常驻的 `docker/scheduler.py` 复刻"06:31 首签 + 07:10 补签 + 每日清理"语义。
+- **时区**：容器已固定 `Asia/Shanghai`，签到窗口按北京时间计算。
+- **安全模型**：nginx 通过 `network_mode: service` 与应用共享网络栈，应用仍只见回环、信任的 `X-Forwarded-For` 语义不变（限速/登录锁定按真实 IP 生效）。
+- **自定义 Web 图标**：取消 `docker-compose.yml` 中 `yiban` 服务里被注释的 `./logo.png` 挂载，把图标放到仓库根 `logo.png` 即可（不放则显示占位符）。
+
+### 6. 目录/文件说明
+| 文件 | 作用 |
+|---|---|
+| `docker/Dockerfile` | 应用镜像（x86_64） |
+| `docker-compose.yml` | 编排 `yiban`（应用）+ `yiban-nginx`（反代）双容器 |
+| `docker/nginx.conf` | 容器内 HTTPS 反代配置 |
+| `docker/supervisord.conf` | 容器内进程管理（Web + 调度） |
+| `docker/scheduler.py` | 容器内签到调度 |
+| `docker/entrypoint.sh` | 容器入口：准备数据卷后拉起 supervisor |
+| `.env.docker.example` | Docker 部署配置模板 |
+| `.dockerignore` | 阻止账号/密钥/数据库/日志进镜像 |
+
+---
 
 ## 网页管理系统
 

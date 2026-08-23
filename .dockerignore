@@ -1,0 +1,57 @@
+# ============================================================
+# Docker 构建上下文忽略清单
+# 目的：防止账号/密钥/数据库/日志等敏感文件被 COPY 进镜像。
+# 合规文档 *.md（USER_AGREEMENT.md / PRIVACY_POLICY.md）必须保留进镜像，
+# 因此本清单只精确排除敏感内容，不能整段忽略 *.md。
+# ============================================================
+# Git / 版本控制
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.so
+.venv
+venv
+env
+.pytest_cache
+.ruff_cache
+
+# 环境与密钥（严禁进镜像）
+.env
+.env.*
+config.local.py
+
+# 数据文件（SQLite / 账号 / 用户，严禁进镜像）
+accounts.json
+users.json
+yiban.db
+yiban.db-wal
+yiban.db-shm
+
+# 日志与数据目录
+*.log
+logs
+data
+demo-log
+demo-tmp
+test-tmp
+
+# 备份与内部运维
+backups
+backup-*
+deploy-local
+docs
+hardening
+certs
+MAINTENANCE.md
+ADVERSARIAL_REVIEW_20260820.md
+服务器访问信息.md
+memory.md
+
+# Docker 自身（不必进镜像）
+Dockerfile
+docker-compose.yml
+.dockerignore
