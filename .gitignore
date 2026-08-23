@@ -31,6 +31,9 @@ yiban.db-shm
 logs/
 data/
 
+# Docker 部署本地目录（含加密密钥/数据库/证书私钥，严禁入库）
+certs/
+
 # 部署打包文件（不应进仓库）
 *.tar.gz
 *.zip

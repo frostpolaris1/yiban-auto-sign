@@ -1,0 +1,63 @@
+# ============================================================
+# 易班自动签到 - Docker 部署编排
+# 用法：docker compose up -d --build
+# ------------------------------------------------------------
+# 服务组成：
+#   yiban        应用容器（supervisor 常驻：gunicorn Web + 签到调度）
+#   yiban-nginx  反代容器（共享 yiban 网络栈，对外 80/443 HTTPS）
+# 数据：./data 目录 bind mount 到 /data（SQLite/.env/日志/加密密钥）
+# ============================================================
+name: yiban-auto-sign
+
+services:
+  yiban:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: yiban
+    restart: unless-stopped
+
+    # yiban-nginx 会共享本容器的网络命名空间，因此 80/443 在这里声明。
+    # 注意：容器内 gunicorn 只监听回环 127.0.0.1:17892，不经共享栈的
+    # nginx 就访问不到——保证应用不直接暴露公网（沿用现有部署安全模型）。
+    ports:
+      - "80:80"
+      - "443:443"
+
+    environment:
+      - TZ=Asia/Shanghai          # 参与签到窗口计算，缺省会错 8 小时
+      - YIBAN_ENV_FILE=/data/.env
+      - YIBAN_DB_FILE=/data/yiban.db
+      - YIBAN_ACCOUNTS_FILE=/data/accounts.json
+      - YIBAN_STATE_DIR=/data/state
+      - YIBAN_LOG_FILE=/data/logs/sign.log
+      # 经容器内 nginx HTTPS 反代，强制会话 Cookie 仅经 HTTPS 发送
+      - YIBAN_COOKIE_SECURE=1
+
+    volumes:
+      - ./data:/data
+      # 可选：自定义 Web 图标（没有则显示占位符，不影响任何功能）
+      # 你自己的图标放 ./logo.png 后取消此行注释即可
+      # - ./logo.png:/app/web/static/vendor/logo.png:ro
+
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:17892/login', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  yiban-nginx:
+    image: nginx:1.27-alpine
+    container_name: yiban-nginx
+    restart: unless-stopped
+    # 关键：与应用共享网络命名空间。这样 nginx 到应用是回环 127.0.0.1，
+    # 与应用"仅信任回环 XFF"的安全契约完全一致，限速/登录锁定不失效。
+    network_mode: "service:yiban"
+    depends_on:
+      yiban:
+        condition: service_healthy
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/yiban/certs:ro   # 需 ./certs/fullchain.pem 和 ./certs/key.pem
