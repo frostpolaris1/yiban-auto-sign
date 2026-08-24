@@ -1333,7 +1333,8 @@ def _notify_capacity_once(kind, limit, label):
 #           BEGIN IMMEDIATE + 注册时延拉平 + my-* 单快照/日志脱敏 + HSTS/Permissions-Policy
 #           + --host 默认回环（0.21.4）
 # 2026-08-23 新增 Docker 部署能力（0.22.0）
-APP_VERSION = "0.22.0"
+# 2026-08-23 系统设置页容量统计口径修正（0.22.1）
+APP_VERSION = "0.22.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
