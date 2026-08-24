@@ -1283,9 +1283,11 @@ def send_notification(title, content):
     A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
     YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
     收件人 = ADMIN_TO（按个人开关过滤）+ 所有开启接收的管理员用户邮箱：
-    普通管理员自动获得告警收件权，关闭 mail_notify 后从收件人剔除。
+    普通管理员自动获得告警收件权，关闭 mail_notify 后从收件人剔除；
+    主管理员关闭 YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
     """
-    recipients = db.admin_mail_recipients(mailer.admin_recipients())
+    extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
+    recipients = db.admin_mail_recipients(extra)
     if recipients:
         mailer.send_admin_alert(title, content, to=",".join(recipients))
     env = read_env(ENV_FILE)
@@ -2220,6 +2222,7 @@ def create_app(host=None):
         return jsonify({
             "ok": True,
             "enabled": enabled,
+            "admin_notify": bool(cfg.get("admin_notify", True)),
             "smtp_host": cfg.get("host", ""),
             "smtp_port": cfg.get("port", 465),
             "user": cfg.get("user", ""),
@@ -2228,19 +2231,38 @@ def create_app(host=None):
 
     @app.route("/api/mail-config", methods=["PUT"])
     def api_mail_config_save():
-        """主管理员：切换全局邮件通知开关（写 .env YIBAN_MAIL_ENABLE）。"""
+        """主管理员：切换邮件配置开关（写 .env）。
+
+        支持：enabled（全局 YIBAN_MAIL_ENABLE）/ admin_notify（主管理员个人
+        接收 YIBAN_MAIL_ADMIN_NOTIFY）。两者可单独或同时提交，均为 bool。
+        """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可操作"}), 403
         data = _json_body()
-        enabled = data.get("enabled")
-        if not isinstance(enabled, bool):
-            return jsonify({"error": "取值无效"}), 400
-        write_env_key(ENV_FILE, "YIBAN_MAIL_ENABLE", "1" if enabled else "0")
+        resp = {"ok": True}
+        changed = False
+        if "enabled" in data:
+            v = data["enabled"]
+            if not isinstance(v, bool):
+                return jsonify({"error": "取值无效"}), 400
+            write_env_key(ENV_FILE, "YIBAN_MAIL_ENABLE", "1" if v else "0")
+            resp["enabled"] = v
+            changed = True
+        if "admin_notify" in data:
+            v = data["admin_notify"]
+            if not isinstance(v, bool):
+                return jsonify({"error": "取值无效"}), 400
+            write_env_key(ENV_FILE, "YIBAN_MAIL_ADMIN_NOTIFY", "1" if v else "0")
+            resp["admin_notify"] = v
+            changed = True
+        if not changed:
+            return jsonify({"error": "缺少有效配置项"}), 400
         db.audit(
             session.get("username") or "?",
-            "mail_config", "mail_enable", "on" if enabled else "off",
+            "mail_config", "mail_config",
+            json.dumps({k: v for k, v in resp.items() if k != "ok"}, ensure_ascii=False),
         )
-        return jsonify({"ok": True, "enabled": enabled})
+        return jsonify(resp)
 
     # ---- 账号管理 ----
     @app.route("/api/accounts")

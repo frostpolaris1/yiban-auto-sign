@@ -65,6 +65,7 @@ def get_config():
         "port": port,
         "user": _mask_addr(_get("USER")),
         "admin_to": _mask_addr(_get("ADMIN_TO")),
+        "admin_notify": admin_notify_enabled(),
     }
 
 
@@ -135,6 +136,15 @@ def admin_recipients():
     供调用方按收件人个人开关（users.mail_notify）过滤后回传给 send_admin_alert。
     """
     return [a.strip() for a in _get("ADMIN_TO").split(",") if a.strip()]
+
+
+def admin_notify_enabled():
+    """主管理员是否接收发到 ADMIN_TO 的告警邮件（YIBAN_MAIL_ADMIN_NOTIFY，默认接收）。
+
+    关闭（0）后：ADMIN_TO 列表不再收到 A 线告警邮件，但普通管理员自动收件人
+    （users.role=admin 且 mail_notify=1）不受影响。空值视为接收。
+    """
+    return _get("ADMIN_NOTIFY").strip().lower() in ("", "1", "true", "on", "yes")
 
 
 def send_user(to, subject, text):

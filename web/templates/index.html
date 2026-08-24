@@ -2198,13 +2198,12 @@ async function loadMailConfig() {
     $('mail-config-status').textContent = data.enabled
       ? `已开启 · 发件 ${data.user} · 告警收件 ${data.admin_to} · ${data.smtp_host}:${data.smtp_port}`
       : '未开启（需在 .env 配置 YIBAN_MAIL_* 后由主管理员开启）';
-    if (state.isMasterAdmin) {
-      $('mail-global-wrap').classList.remove('hidden');
-      $('mail-global-switch').checked = mailEnabled;
-    } else {
-      $('mail-self-wrap').classList.remove('hidden');
-      $('mail-self-switch').checked = mailSelfOn;
-    }
+    $('mail-global-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+    if (state.isMasterAdmin) $('mail-global-switch').checked = mailEnabled;
+    // 个人开关：主管理员 = YIBAN_MAIL_ADMIN_NOTIFY；普通管理员 = users.mail_notify
+    $('mail-self-wrap').classList.remove('hidden');
+    if (state.isMasterAdmin) mailSelfOn = !!data.admin_notify;
+    $('mail-self-switch').checked = mailSelfOn;
   } catch (e) { /* 配置读取失败不阻塞设置页 */ }
 }
 
@@ -2228,7 +2227,11 @@ async function toggleMailSelf() {
   const tip = $('mail-config-tip');
   tip.textContent = '保存中…';
   try {
-    await api('/api/my-mail-notify', { method: 'PUT', body: JSON.stringify({ enabled }) });
+    if (state.isMasterAdmin) {
+      await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ admin_notify: enabled }) });
+    } else {
+      await api('/api/my-mail-notify', { method: 'PUT', body: JSON.stringify({ enabled }) });
+    }
     mailSelfOn = enabled;
     tip.textContent = enabled ? '已开启接收邮件提醒' : '已关闭接收邮件提醒';
     setTimeout(() => { tip.textContent = ''; }, 3000);
