@@ -38,7 +38,7 @@ jobs:
       # 已固定为完整 commit SHA（2026-08-22 M10，防可变 tag 被篡改）。
       - name: Validate PR title
         if: github.event_name == 'pull_request'
-        uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5.x
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v5.x
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
