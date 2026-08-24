@@ -277,5 +277,53 @@ class MailNotifyApiTest(unittest.TestCase):
         self.assertEqual(actions, ["mail_notify"])
 
 
+class SignAdminMailSummaryTest(unittest.TestCase):
+    """A 线合并版：管理员邮件收集 → 任务结束汇总一封发送。"""
+
+    @classmethod
+    def setUpClass(cls):
+        global signin
+        import signin
+
+    def setUp(self):
+        signin._mail_summary.clear()
+
+    def test_flush_empty_skips(self):
+        with mock.patch.object(signin.mailer, "send_admin_alert") as m:
+            signin._flush_admin_mail_summary()
+        m.assert_not_called()
+
+    def test_collect_and_flush_merges_one_mail(self):
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0002\n原因: B")
+        with mock.patch.object(signin.mailer, "send_admin_alert") as m:
+            signin._flush_admin_mail_summary()
+        m.assert_called_once()
+        subject, text = m.call_args[0]
+        self.assertEqual(subject, "易班签到汇总")
+        self.assertIn("共 2 条异常", text)
+        self.assertIn("138****0001", text)
+        self.assertIn("138****0002", text)
+
+    def test_flush_groups_by_subject(self):
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
+        signin._collect_admin_mail("易班签到耗时告警", "账号: 138****0002\n耗时: 45.2s")
+        with mock.patch.object(signin.mailer, "send_admin_alert") as m:
+            signin._flush_admin_mail_summary()
+        subject, text = m.call_args[0]
+        self.assertIn("【易班签到失败】", text)
+        self.assertIn("【易班签到耗时告警】", text)
+        self.assertLess(
+            text.index("【易班签到失败】"), text.index("【易班签到耗时告警】"),
+            "按主题分组且保持首次出现顺序",
+        )
+
+    def test_flush_clears_collector(self):
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
+        with mock.patch.object(signin.mailer, "send_admin_alert"):
+            signin._flush_admin_mail_summary()
+        self.assertEqual(signin._mail_summary, [], "发送后应清空收集器")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
