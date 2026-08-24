@@ -39,6 +39,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 # 共享模块（同目录）：加密（web/tui/db 共用密钥与密文格式）与 SQLite 数据访问层
 import account_crypto
 import db  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
+import mailer  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
 import requests
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
@@ -239,6 +240,7 @@ class Account:
     phone_code: str = ""  # 设备唯一识别码（学校开启"设备绑定"时必填）
     name: str = ""  # 可选：自定义名称（TUI 输入，未填写时显示为"账号N"）
     user_paused: bool = False  # 用户自暂停签到（调度 v2；db.load_accounts 透传）
+    owner: str = ""  # 账号归属用户邮箱（B 线：签到失败时向 owner 发提醒邮件；JSON/legacy 来源为空）
 
     @property
     def has_device_info(self):
@@ -671,6 +673,8 @@ def _parse_account_dict(data):
         name=str(data.get("name") or "").strip(),
         # 用户自暂停（调度 v2）：显式解析 "1"/"true"/"on"/"yes"，避免 "0"/"false" 被 bool() 误判
         user_paused=str(data.get("user_paused", False)).strip().lower() in ("1", "true", "on", "yes"),
+        # 归属用户邮箱（B 线用户失败提醒用；JSON/legacy 环境变量来源无此字段）
+        owner=str(data.get("owner") or "").strip(),
     )
 
 
@@ -1451,7 +1455,10 @@ def send_notification(title, content, url):
 
     2026-08-21 对抗性审查加固：禁用重定向——30x 会把通知内容 POST 到
     重定向目标主机（webhook 服务被劫持/恶意 301 时内容外泄到第三方）。
+    A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
+    YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
     """
+    mailer.send_admin_alert(title, content)
     if not url:
         return
     url_desc = _notify_url_desc(url)
@@ -1475,6 +1482,32 @@ def send_notification(title, content, url):
             "通知发送失败（%s）: %s，URL %s",
             title, type(e).__name__, url_desc,
         )
+
+
+def send_user_fail_mail(owner, phone, message):
+    """B 线：向账号归属用户发送签到失败邮件。
+
+    仅当用户存在且开启 mail_notify（默认开）时发送；用户注销/关闭/未配置
+    邮件时静默跳过；发送失败不影响签到（mailer 内部捕获）。
+    内容脱敏：手机号打码、消息经 _sanitize_text 清洗（不含账号密码）。
+    """
+    if not owner:
+        return
+    try:
+        user = db.find_user(owner)
+    except Exception:
+        user = None
+    if not user:
+        return
+    if str(user.get("mail_notify", 1)).strip().lower() not in ("1", "true", "on", "yes"):
+        return
+    mailer.send_user(
+        owner,
+        "易班签到失败提醒",
+        f"您的易班账号 {_mask_phone(phone)} 今日签到失败：\n{_sanitize_text(message)}\n\n"
+        f"连续失败会被系统自动暂停；如账号正常，请登录网站检查或联系管理员。\n"
+        f"（可在「我的账号」页面关闭本邮件提醒）",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2048,6 +2081,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 send_notification(
                     "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
                 )
+            # B 线：向账号归属用户发失败提醒（未开启/未绑定用户则静默跳过）
+            send_user_fail_mail(acc.owner, phone, message)
             continue
 
         # 本地截止保护（调度 v2）：窗口剩余不足一个重试周期 → 不再回队，直接判失败
@@ -2061,6 +2096,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     send_notification(
                         "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
                     )
+                # B 线：向账号归属用户发失败提醒（未开启/未绑定用户则静默跳过）
+                send_user_fail_mail(acc.owner, phone, message)
                 continue
 
         # 放回队尾：单次 sleep 保证总间隔 ≥ retry_min_interval，

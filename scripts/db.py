@@ -172,7 +172,8 @@ def _create_tables(conn):
           created_at TEXT NOT NULL DEFAULT '',
           pw_version INTEGER NOT NULL DEFAULT 1,
           deleted INTEGER NOT NULL DEFAULT 0,
-          deleted_at TEXT NOT NULL DEFAULT ''
+          deleted_at TEXT NOT NULL DEFAULT '',
+          mail_notify INTEGER NOT NULL DEFAULT 1
         );
         -- 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
         -- 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
@@ -656,6 +657,15 @@ def migrate_v8(conn):
     conn.commit()
 
 
+def migrate_v9(conn):
+    """v9：用户邮箱通知开关（users.mail_notify，默认开启接收签到结果邮件）。
+
+    1=接收（默认）；0=关闭（不接收用户签到失败邮件 B 线）。
+    管理员告警邮件（A 线）不受此开关影响。旧库补列时默认置 1。
+    """
+    _ensure_column(conn, "users", "mail_notify", "mail_notify INTEGER NOT NULL DEFAULT 1")
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -668,6 +678,7 @@ _MIGRATIONS = [
     (6, "v6_webui_stats", migrate_v6, False),
     (7, "v7_delete_request_kind", migrate_v7, True),
     (8, "v8_session_cache", migrate_v8, False),
+    (9, "v9_user_mail_notify", migrate_v9, True),
 ]
 
 
@@ -1274,7 +1285,7 @@ def update_user(email, fields):
     conn = get_conn()
     with _conn_lock, conn:
         sets, vals = [], []
-        for k in ("password_hash", "role", "pw_version"):
+        for k in ("password_hash", "role", "pw_version", "mail_notify"):
             if k in fields:
                 sets.append(f"{k}=?")
                 vals.append(fields[k])
