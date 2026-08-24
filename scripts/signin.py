@@ -1513,9 +1513,10 @@ def _flush_admin_mail_summary():
         parts.append(f"【{subject}】")
         parts.extend(groups[subject])
         parts.append("")
-    # 收件人按个人开关过滤：普通用户/管理员关闭 mail_notify 后不再收告警邮件
-    # （内置主管理员不在 users 表，默认接收，由全局 YIBAN_MAIL_ENABLE 控制）
-    recipients = db.filter_mail_notify(mailer.admin_recipients())
+    # 收件人 = ADMIN_TO（按个人开关过滤） + 所有开启接收的管理员用户邮箱：
+    # 普通管理员自动获得告警收件权；关闭 mail_notify 后从收件人剔除。
+    # 内置主管理员不在 users 表，默认接收，由全局 YIBAN_MAIL_ENABLE 控制。
+    recipients = db.admin_mail_recipients(mailer.admin_recipients())
     if recipients:
         mailer.send_admin_alert("易班签到汇总", "\n".join(parts).rstrip(), to=",".join(recipients))
     _mail_summary.clear()

@@ -1289,6 +1289,31 @@ def filter_mail_notify(emails):
     return result
 
 
+def admin_mail_recipients(extra_emails=()):
+    """A 线告警邮件的完整收件人列表（去重）。
+
+    组成 = ADMIN_TO（.env，经 filter_mail_notify 按个人开关过滤） + 所有
+    「开启接收邮件」的管理员用户邮箱（users.role=admin 且 mail_notify=1）。
+
+    这样普通管理员自动获得告警收件权，无需手动加入 YIBAN_MAIL_ADMIN_TO；
+    普通管理员关闭 mail_notify 后即从收件人剔除。内置主管理员（.env 账号，
+    不在 users 表）由 extra_emails（ADMIN_TO）覆盖。
+    """
+    recipients = set(filter_mail_notify(extra_emails))
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            rows = conn.execute(
+                "SELECT email, mail_notify FROM users WHERE role='admin' AND deleted=0"
+            ).fetchall()
+    except Exception:
+        rows = []
+    for r in rows:
+        if str(r["mail_notify"] if r["mail_notify"] is not None else 1).strip().lower() in ("1", "true", "on", "yes"):
+            recipients.add(r["email"])
+    return sorted(recipients)
+
+
 def create_user(email, password_hash, role="user", created_at="", pw_version=1):
     conn = get_conn()
     with _conn_lock, conn:
