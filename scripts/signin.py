@@ -1451,14 +1451,13 @@ def _notify_url_desc(url):
 
 
 def send_notification(title, content, url):
-    """通过 Server 酱 / Bark / 企业微信等 webhook 发送通知。
+    """通过 Server 酱 / Bark / 企业微信等 webhook 发送通知（即时推送）。
 
     2026-08-21 对抗性审查加固：禁用重定向——30x 会把通知内容 POST 到
     重定向目标主机（webhook 服务被劫持/恶意 301 时内容外泄到第三方）。
-    A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
-    YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
+    说明：签到脚本给管理员的**邮件**不在此处发送（避免逐条轰炸），而是由
+    各触发点 _collect_admin_mail 收集、任务结束 _flush_admin_mail_summary 汇总。
     """
-    mailer.send_admin_alert(title, content)
     if not url:
         return
     url_desc = _notify_url_desc(url)
@@ -1482,6 +1481,40 @@ def send_notification(title, content, url):
             "通知发送失败（%s）: %s，URL %s",
             title, type(e).__name__, url_desc,
         )
+
+
+# A 线合并版收集器：签到脚本运行期把"发给管理员"的邮件先收集，任务结束统一汇总
+# 发送（避免多账号失败时逐封轰炸）。B 线用户邮件不在此收集，保持逐条即时。
+_mail_summary = []  # list[(subject, text)]
+
+
+def _collect_admin_mail(subject, text):
+    """把一条管理员告警并入任务结束汇总（不立即发送）。"""
+    _mail_summary.append((subject, text))
+
+
+def _flush_admin_mail_summary():
+    """签到任务结束：把运行期收集的管理员邮件汇总成一封发送。
+
+    无异常则不发送（成功不打扰）；按主题分组，每个账号独立条目；
+    mailer 内部静默失败，不影响退出码。发送后清空收集器。
+    """
+    if not _mail_summary:
+        return
+    groups = {}
+    order = []
+    for subject, text in _mail_summary:
+        if subject not in groups:
+            groups[subject] = []
+            order.append(subject)
+        groups[subject].append(text)
+    parts = [f"易班签到任务已结束，共 {len(_mail_summary)} 条异常/预警：\n"]
+    for subject in order:
+        parts.append(f"【{subject}】")
+        parts.extend(groups[subject])
+        parts.append("")
+    mailer.send_admin_alert("易班签到汇总", "\n".join(parts).rstrip())
+    _mail_summary.clear()
 
 
 def send_user_fail_mail(owner, phone, message):
@@ -2040,6 +2073,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if dur > slow_sec and phone not in slow_notified:
             slow_notified.add(phone)
             logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
+            # A 线合并：耗时预警并入任务结束汇总邮件（webhook 仍即时推送）
+            _collect_admin_mail(
+                "易班签到耗时告警",
+                f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
+            )
             if notify_url:
                 send_notification(
                     "易班签到耗时告警",
@@ -2077,6 +2115,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if attempts[phone] >= max_attempts:
             results[phone] = (False, message, False, status)
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
+            # A 线合并：失败并入任务结束汇总邮件（webhook 仍即时推送）
+            _collect_admin_mail(
+                "易班签到失败",
+                f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}",
+            )
             if notify_url:
                 send_notification(
                     "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
@@ -2092,6 +2135,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if now_sec + sch_cfg["retry_min_interval"] >= end_sec - sch_cfg["edge_back_sec"]:
                 results[phone] = (False, message, False, status)
                 logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
+                # A 线合并：失败并入任务结束汇总邮件（webhook 仍即时推送）
+                _collect_admin_mail(
+                    "易班签到失败",
+                    f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}",
+                )
                 if notify_url:
                     send_notification(
                         "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
@@ -2216,8 +2264,14 @@ def main():
                 "容量预检: %d 个账号 × 平均 %ds > 有效窗口 %d 秒，部分账号可能无法在窗口内完成",
                 active_n, _cfg["avg_attempt_sec"], _span_min * 60,
             )
-            # 超载提醒（对抗性审查补）：通知管理员，避免"超限只在日志里"无人知情
-            # （send_notification 内部已捕获异常，失败不影响签到）
+            # 超载提醒（对抗性审查补）：通知管理员，避免"超限只在日志里"无人知情。
+            # A 线合并：并入任务结束汇总邮件；webhook 仍即时推送。
+            _collect_admin_mail(
+                "易班签到容量超载",
+                f"当前 {active_n} 个账号 × 平均 {_cfg['avg_attempt_sec']}s "
+                f"> 有效窗口 {_span_min * 60}s，部分账号可能无法在窗口内完成签到。\n"
+                f"建议：增加窗口时长或减少账号数量（.env 调整）。",
+            )
             send_notification(
                 "易班签到容量超载",
                 f"当前 {active_n} 个账号 × 平均 {_cfg['avg_attempt_sec']}s "
@@ -2337,6 +2391,10 @@ def main():
             os.replace(daily_tmp, daily_path)
     except (OSError, ValueError, TypeError) as e:
         logger.warning("写入按日状态文件失败: %s", e)
+
+    # A 线合并：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
+    # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。
+    _flush_admin_mail_summary()
 
     # 退出码（run.sh 依据退出码写状态文件）：
     # 0 - 全部成功（有实际签到执行；含"已签到""窗口外部分跳过但至少执行过"）
