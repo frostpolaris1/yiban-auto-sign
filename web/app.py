@@ -1279,7 +1279,10 @@ def send_notification(title, content):
     与 scripts/signin.py 的 send_notification 同款渠道：Server 酱 / Bark / 企业微信。
     L-01：发送前过 _is_safe_notify_url 白名单（https + 非回环/内网），
     违规拒绝发送并告警（不回显完整 URL，防 sendkey 泄露进日志）。
+    A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
+    YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
     """
+    mailer.send_admin_alert(title, content)
     env = read_env(ENV_FILE)
     url = env.get("YIBAN_NOTIFY_URL", "").strip() or os.environ.get("YIBAN_NOTIFY_URL", "").strip()
     if not url:
@@ -1334,7 +1337,8 @@ def _notify_capacity_once(kind, limit, label):
 #           + --host 默认回环（0.21.4）
 # 2026-08-23 新增 Docker 部署能力（0.22.0）
 # 2026-08-23 系统设置页容量统计口径修正（0.22.1）
-APP_VERSION = "0.22.1"
+# 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
+APP_VERSION = "0.23.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2146,6 +2150,9 @@ def create_app(host=None):
         # 防止浏览器缓存旧页面时误判未登录导致刷新循环
         role = _current_role()
         username = session.get("username") or ""
+        # 邮箱通知开关（B 线：用户签到失败提醒，默认开；用户端可关）
+        _me = db.find_user(username) if username else None
+        mail_notify = bool(_me.get("mail_notify", 1)) if _me else True
         # 调度 v2：排序×分布模式与自选开关同步给用户（只读展示）
         env = read_env(ENV_FILE)
         mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
@@ -2164,6 +2171,7 @@ def create_app(host=None):
                 "username": username,
                 "email": username,  # 普通用户顶部显示邮箱前缀（管理员为用户名）
                 "admin": role == "admin",
+                "mail_notify": mail_notify,  # B 线：用户签到失败邮件开关
                 "is_builtin_admin": _is_builtin_admin_session(),  # 仅 .env 主管理员会话为 True
                 "csrf_token": get_csrf_token(),
                 # 调度 v2（docs/design/plan-scheduler-v2.md 2.1/2.2）
@@ -2173,6 +2181,30 @@ def create_app(host=None):
                 "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
             }
         )
+
+    # ---- 我的邮箱通知开关（B 线：用户签到失败邮件）----
+    @app.route("/api/my-mail-notify")
+    def api_my_mail_notify():
+        """读取当前用户邮箱通知开关。未登录默认视为开启（前端展示用）。"""
+        email = session.get("username") or ""
+        user = db.find_user(email) if email else None
+        return jsonify(
+            {"ok": True, "mail_notify": bool(user.get("mail_notify", 1)) if user else True}
+        )
+
+    @app.route("/api/my-mail-notify", methods=["PUT"])
+    def api_my_mail_notify_save():
+        """保存当前用户邮箱通知开关：{enabled: bool}。CSRF 由 before_request 统一校验。"""
+        email = session.get("username") or ""
+        if not email:
+            return jsonify({"error": "未登录"}), 401
+        data = _json_body()
+        enabled = data.get("enabled")
+        if not isinstance(enabled, bool):
+            return jsonify({"error": "取值无效"}), 400
+        db.update_user(email, {"mail_notify": 1 if enabled else 0})
+        db.audit(email, "mail_notify", email, "on" if enabled else "off")
+        return jsonify({"ok": True, "mail_notify": enabled})
 
     # ---- 账号管理 ----
     @app.route("/api/accounts")
