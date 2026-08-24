@@ -276,6 +276,30 @@ class MailNotifyApiTest(unittest.TestCase):
             conn.close()
         self.assertEqual(actions, ["mail_notify"])
 
+    # ---- 全局邮件开关（/api/mail-config）----
+    def test_mail_config_get_status(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin@test.local", ADMIN_PASS)
+        r = c.get("/api/mail-config")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("enabled", r.get_json())
+        self.assertIn("admin_to", r.get_json())
+
+    def test_mail_config_put_requires_master_admin(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin@test.local", ADMIN_PASS)  # 注册管理员，非主管理员
+        r = c.put("/api/mail-config", json={"enabled": True}, headers={"X-CSRF-Token": token})
+        self.assertEqual(r.status_code, 403, "仅主管理员可切换全局开关")
+
+    def test_mail_config_put_by_master_writes_env(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)  # 内置主管理员（.env）
+        r = c.put("/api/mail-config", json={"enabled": False}, headers={"X-CSRF-Token": token})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertFalse(r.get_json()["enabled"])
+        with open(self.env_file, encoding="utf-8") as f:
+            self.assertIn("YIBAN_MAIL_ENABLE=0", f.read(), "应写入 .env")
+
 
 class SignAdminMailSummaryTest(unittest.TestCase):
     """A 线合并版：管理员邮件收集 → 任务结束汇总一封发送。"""
@@ -323,6 +347,54 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "send_admin_alert"):
             signin._flush_admin_mail_summary()
         self.assertEqual(signin._mail_summary, [], "发送后应清空收集器")
+
+    def test_flush_uses_filtered_recipients(self):
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
+        with mock.patch.object(signin.db, "filter_mail_notify", return_value=["a@x.com"]) as f, \
+             mock.patch.object(signin.mailer, "admin_recipients", return_value=["a@x.com", "b@x.com"]), \
+             mock.patch.object(signin.mailer, "send_admin_alert") as m:
+            signin._flush_admin_mail_summary()
+        f.assert_called_once_with(["a@x.com", "b@x.com"])
+        m.assert_called_once()
+        self.assertEqual(m.call_args[1].get("to"), "a@x.com", "汇总邮件应只发给过滤后的收件人")
+
+
+class DbFilterMailNotifyTest(unittest.TestCase):
+    """db.filter_mail_notify：A 线收件人按个人开关过滤。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-mail-filter-")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + TEST_KEY + "\n")
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        global db
+        import db
+
+    @classmethod
+    def tearDownClass(cls):
+        _reset_db()
+        os.environ.pop("YIBAN_DB_FILE", None)
+        os.environ.pop("YIBAN_ENV_FILE", None)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        _reset_db()
+        _remove_db_files(self.db_file)
+        db.init_db(self.db_file, env_file=self.env_file)
+        db.create_user("on@x.com", "x")     # mail_notify 默认 1
+        db.create_user("off@x.com", "x")
+        db.update_user("off@x.com", {"mail_notify": 0})
+
+    def test_keeps_on_and_unknown_removes_off(self):
+        result = db.filter_mail_notify(["on@x.com", "off@x.com", "unknown@x.com"])
+        self.assertEqual(result, ["on@x.com", "unknown@x.com"], "开启者与非注册用户保留，关闭者剔除")
+
+    def test_empty(self):
+        self.assertEqual(db.filter_mail_notify([]), [])
 
 
 if __name__ == "__main__":
