@@ -3919,6 +3919,11 @@ def create_app(host=None):
         env = read_env(ENV_FILE)
         mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
         sw = _sign_window()
+        # 容量口径（2026-08-23 修正）：
+        #   账号 = 全部非删除账号（含 admin 直属账号，排除软删/注销宽限账号）
+        #   用户 = 至少持有 1 个非删除账号的活跃注册用户
+        _live_accts = [a for a in load_accounts() if not a["deleted"]]
+        _owners_with_account = {a.get("owner") for a in _live_accts if a.get("owner")}
         return jsonify(
             {
                 "ok": True,
@@ -3939,11 +3944,11 @@ def create_app(host=None):
                 "edge_back_sec": edge_config()[1],
                 "allow_time_pref": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
                 "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
-                # 容量状态（对抗性审查补）：注册/账号上限与当前使用量（管理员知情）
+                # 容量状态：注册/账号上限与当前使用量（管理员知情）
                 "capacity": {
-                    "users": len(db.load_users()),
+                    "users": sum(1 for u in db.load_users() if u["email"] in _owners_with_account),
                     "users_max": load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS),
-                    "accounts": len(load_accounts()),
+                    "accounts": len(_live_accts),
                     "accounts_max": load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS),
                 },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
