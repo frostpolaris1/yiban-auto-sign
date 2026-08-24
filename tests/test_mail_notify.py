@@ -300,6 +300,15 @@ class MailNotifyApiTest(unittest.TestCase):
         with open(self.env_file, encoding="utf-8") as f:
             self.assertIn("YIBAN_MAIL_ENABLE=0", f.read(), "应写入 .env")
 
+    def test_mail_config_put_admin_notify_by_master(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.put("/api/mail-config", json={"admin_notify": False}, headers={"X-CSRF-Token": token})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertFalse(r.get_json()["admin_notify"])
+        with open(self.env_file, encoding="utf-8") as f:
+            self.assertIn("YIBAN_MAIL_ADMIN_NOTIFY=0", f.read(), "应写入 .env")
+
 
 class SignAdminMailSummaryTest(unittest.TestCase):
     """A 线合并版：管理员邮件收集 → 任务结束汇总一封发送。"""
@@ -357,6 +366,15 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         f.assert_called_once_with(["a@x.com", "b@x.com"])
         m.assert_called_once()
         self.assertEqual(m.call_args[1].get("to"), "a@x.com", "汇总邮件应只发给合并后的收件人")
+
+    def test_flush_skips_admin_to_when_admin_notify_off(self):
+        signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
+        with mock.patch.object(signin.mailer, "admin_notify_enabled", return_value=False), \
+             mock.patch.object(signin.mailer, "admin_recipients", return_value=["master@x.com"]), \
+             mock.patch.object(signin.db, "admin_mail_recipients", return_value=["a@x.com"]) as f, \
+             mock.patch.object(signin.mailer, "send_admin_alert") as m:
+            signin._flush_admin_mail_summary()
+        f.assert_called_once_with([]), "主管理员关闭收件时不应传入 ADMIN_TO"
 
 
 class DbFilterMailNotifyTest(unittest.TestCase):

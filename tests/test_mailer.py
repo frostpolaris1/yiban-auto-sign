@@ -49,6 +49,18 @@ def test_is_enabled_true_when_complete(monkeypatch, tmp_path):
     assert mailer.is_enabled() is True
 
 
+def test_admin_notify_enabled_default_true(monkeypatch, tmp_path):
+    _isolate_env(monkeypatch, tmp_path)
+    _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret")
+    assert mailer.admin_notify_enabled() is True
+
+
+def test_admin_notify_enabled_off(monkeypatch, tmp_path):
+    _isolate_env(monkeypatch, tmp_path)
+    _set_mail(monkeypatch, ADMIN_NOTIFY="0")
+    assert mailer.admin_notify_enabled() is False
+
+
 def test_send_admin_alert_skipped_when_disabled(monkeypatch, tmp_path):
     _isolate_env(monkeypatch, tmp_path)
     _set_mail(monkeypatch, ENABLE="0", USER="sender@qq.com", PASS="secret", ADMIN_TO="admin@qq.com")
