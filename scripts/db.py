@@ -1269,6 +1269,26 @@ def find_user_any(email):
         return dict(row) if row else None
 
 
+def filter_mail_notify(emails):
+    """过滤出「接收邮件提醒」的邮箱列表（mail_notify=1 或非注册用户默认接收）。
+
+    供 A 线（管理员告警邮件）按收件人个人开关过滤：普通用户/管理员关闭
+    mail_notify 后，即使其邮箱位于 YIBAN_MAIL_ADMIN_TO，也不再接收告警邮件。
+    内置主管理员（.env 账号，users 表无记录）不受影响，由全局开关
+    YIBAN_MAIL_ENABLE 控制；查库异常时按「接收」处理（不误伤收件人）。
+    """
+    result = []
+    for e in emails:
+        u = None
+        try:
+            u = find_user(e)
+        except Exception:
+            u = None
+        if u is None or str(u.get("mail_notify", 1)).strip().lower() in ("1", "true", "on", "yes"):
+            result.append(e)
+    return result
+
+
 def create_user(email, password_hash, role="user", created_at="", pw_version=1):
     conn = get_conn()
     with _conn_lock, conn:

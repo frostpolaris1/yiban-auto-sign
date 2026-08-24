@@ -113,12 +113,13 @@ def _send(subject, text, to):
         return False
 
 
-def send_admin_alert(subject, text):
+def send_admin_alert(subject, text, to=None):
     """A 线：管理员告警邮件。收件人 YIBAN_MAIL_ADMIN_TO（逗号分隔支持多地址）。
 
-    未配置收件人或邮件未启用时静默跳过；与 Webhook 通知互不依赖。
+    to 缺省读取配置；传入 to 时使用传入列表（如调用方按收件人个人开关过滤后
+    的结果）。未配置收件人或邮件未启用时静默跳过；与 Webhook 通知互不依赖。
     """
-    to = _get("ADMIN_TO")
+    to = (to if to else _get("ADMIN_TO")).strip()
     if not to:
         return False
     sent = False
@@ -126,6 +127,14 @@ def send_admin_alert(subject, text):
         if _send(subject, text, addr):
             sent = True
     return sent
+
+
+def admin_recipients():
+    """YIBAN_MAIL_ADMIN_TO 拆分为邮箱列表（未配置返回空列表）。
+
+    供调用方按收件人个人开关（users.mail_notify）过滤后回传给 send_admin_alert。
+    """
+    return [a.strip() for a in _get("ADMIN_TO").split(",") if a.strip()]
 
 
 def send_user(to, subject, text):

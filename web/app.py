@@ -230,6 +230,7 @@ def _doc_page(title, body_html, icp_text="", base_path=""):
 </html>"""
 import db  # noqa: E402
 import env_lock  # noqa: E402
+import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
 
 # 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
@@ -1281,8 +1282,11 @@ def send_notification(title, content):
     违规拒绝发送并告警（不回显完整 URL，防 sendkey 泄露进日志）。
     A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
     YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
+    收件人按个人开关过滤：普通用户/管理员关闭 mail_notify 后不再收告警邮件。
     """
-    mailer.send_admin_alert(title, content)
+    recipients = db.filter_mail_notify(mailer.admin_recipients())
+    if recipients:
+        mailer.send_admin_alert(title, content, to=",".join(recipients))
     env = read_env(ENV_FILE)
     url = env.get("YIBAN_NOTIFY_URL", "").strip() or os.environ.get("YIBAN_NOTIFY_URL", "").strip()
     if not url:
@@ -2205,6 +2209,37 @@ def create_app(host=None):
         db.update_user(email, {"mail_notify": 1 if enabled else 0})
         db.audit(email, "mail_notify", email, "on" if enabled else "off")
         return jsonify({"ok": True, "mail_notify": enabled})
+
+    # ---- 邮件通知配置（全局开关，仅主管理员）----
+    @app.route("/api/mail-config")
+    def api_mail_config():
+        """邮件通知配置状态（脱敏：授权码不回显，地址打码），供管理后台显示。"""
+        cfg = mailer.get_config()
+        enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
+        return jsonify({
+            "ok": True,
+            "enabled": enabled,
+            "smtp_host": cfg.get("host", ""),
+            "smtp_port": cfg.get("port", 465),
+            "user": cfg.get("user", ""),
+            "admin_to": cfg.get("admin_to", ""),
+        })
+
+    @app.route("/api/mail-config", methods=["PUT"])
+    def api_mail_config_save():
+        """主管理员：切换全局邮件通知开关（写 .env YIBAN_MAIL_ENABLE）。"""
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可操作"}), 403
+        data = _json_body()
+        enabled = data.get("enabled")
+        if not isinstance(enabled, bool):
+            return jsonify({"error": "取值无效"}), 400
+        write_env_key(ENV_FILE, "YIBAN_MAIL_ENABLE", "1" if enabled else "0")
+        db.audit(
+            session.get("username") or "?",
+            "mail_config", "mail_enable", "on" if enabled else "off",
+        )
+        return jsonify({"ok": True, "enabled": enabled})
 
     # ---- 账号管理 ----
     @app.route("/api/accounts")

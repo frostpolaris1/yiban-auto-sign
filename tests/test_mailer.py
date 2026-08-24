@@ -129,6 +129,33 @@ def test_send_admin_alert_multi_recipients(monkeypatch, tmp_path):
     assert targets == ["a@qq.com", "b@qq.com"]
 
 
+def test_send_admin_alert_explicit_to(monkeypatch, tmp_path):
+    """显式 to 覆盖 ADMIN_TO：仅发给传入列表（调用方已按个人开关过滤）。"""
+    _isolate_env(monkeypatch, tmp_path)
+    _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret", ADMIN_TO="admin@qq.com")
+    targets = []
+
+    class FakeServer:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            targets.extend(to)
+
+    monkeypatch.setattr(mailer.smtplib, "SMTP_SSL", FakeServer)
+    mailer.send_admin_alert("告警", "内容", to="only@qq.com")
+    assert targets == ["only@qq.com"], "显式 to 应只发给传入地址"
+
+
 def test_get_config_never_exposes_password(monkeypatch, tmp_path):
     _isolate_env(monkeypatch, tmp_path)
     _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="topsecret", ADMIN_TO="admin@qq.com")

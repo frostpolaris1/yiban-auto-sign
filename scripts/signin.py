@@ -1513,7 +1513,11 @@ def _flush_admin_mail_summary():
         parts.append(f"【{subject}】")
         parts.extend(groups[subject])
         parts.append("")
-    mailer.send_admin_alert("易班签到汇总", "\n".join(parts).rstrip())
+    # 收件人按个人开关过滤：普通用户/管理员关闭 mail_notify 后不再收告警邮件
+    # （内置主管理员不在 users 表，默认接收，由全局 YIBAN_MAIL_ENABLE 控制）
+    recipients = db.filter_mail_notify(mailer.admin_recipients())
+    if recipients:
+        mailer.send_admin_alert("易班签到汇总", "\n".join(parts).rstrip(), to=",".join(recipients))
     _mail_summary.clear()
 
 
