@@ -1282,9 +1282,10 @@ def send_notification(title, content):
     违规拒绝发送并告警（不回显完整 URL，防 sendkey 泄露进日志）。
     A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
     YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
-    收件人按个人开关过滤：普通用户/管理员关闭 mail_notify 后不再收告警邮件。
+    收件人 = ADMIN_TO（按个人开关过滤）+ 所有开启接收的管理员用户邮箱：
+    普通管理员自动获得告警收件权，关闭 mail_notify 后从收件人剔除。
     """
-    recipients = db.filter_mail_notify(mailer.admin_recipients())
+    recipients = db.admin_mail_recipients(mailer.admin_recipients())
     if recipients:
         mailer.send_admin_alert(title, content, to=",".join(recipients))
     env = read_env(ENV_FILE)

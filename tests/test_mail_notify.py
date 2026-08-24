@@ -350,13 +350,13 @@ class SignAdminMailSummaryTest(unittest.TestCase):
 
     def test_flush_uses_filtered_recipients(self):
         signin._collect_admin_mail("易班签到失败", "账号: 138****0001\n原因: A")
-        with mock.patch.object(signin.db, "filter_mail_notify", return_value=["a@x.com"]) as f, \
+        with mock.patch.object(signin.db, "admin_mail_recipients", return_value=["a@x.com"]) as f, \
              mock.patch.object(signin.mailer, "admin_recipients", return_value=["a@x.com", "b@x.com"]), \
              mock.patch.object(signin.mailer, "send_admin_alert") as m:
             signin._flush_admin_mail_summary()
         f.assert_called_once_with(["a@x.com", "b@x.com"])
         m.assert_called_once()
-        self.assertEqual(m.call_args[1].get("to"), "a@x.com", "汇总邮件应只发给过滤后的收件人")
+        self.assertEqual(m.call_args[1].get("to"), "a@x.com", "汇总邮件应只发给合并后的收件人")
 
 
 class DbFilterMailNotifyTest(unittest.TestCase):
@@ -395,6 +395,22 @@ class DbFilterMailNotifyTest(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(db.filter_mail_notify([]), [])
+
+    def test_admin_mail_recipients_merges_admins(self):
+        # 普通管理员自动获得收件权；关闭 mail_notify 后剔除；与 ADMIN_TO 去重合并
+        db.create_user("admin1@x.com", "x", role="admin")   # mail_notify 默认 1
+        db.create_user("admin2@x.com", "x", role="admin")
+        db.update_user("admin2@x.com", {"mail_notify": 0})
+        result = db.admin_mail_recipients(["master@x.com", "off@x.com", "admin1@x.com"])
+        self.assertEqual(
+            result, ["admin1@x.com", "master@x.com"],
+            "开启接收的管理员 + ADMIN_TO（过滤后）合并去重",
+        )
+
+    def test_admin_mail_recipients_no_extra(self):
+        db.create_user("admin1@x.com", "x", role="admin")
+        result = db.admin_mail_recipients([])
+        self.assertEqual(result, ["admin1@x.com"], "无 ADMIN_TO 时仍收所有开启接收的管理员")
 
 
 if __name__ == "__main__":
