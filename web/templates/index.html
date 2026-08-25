@@ -858,6 +858,9 @@
   {% if icp_info %}
   <div id="footer-icp" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2">{{ icp_info }}</div>
   {% endif %}
+  {% if police_info %}
+  <div id="footer-police" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2">{{ police_info }}</div>
+  {% endif %}
   <div class="text-center text-xs text-zinc-500 dark:text-zinc-400">
     <button type="button" onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors">易班自动签到 v{{ app_version }}</button>
     <span class="mx-1">·</span>
