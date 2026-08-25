@@ -181,11 +181,12 @@ def _read_doc_html(filename):
         return "<p>文档暂时无法加载，请联系运营者。</p>"
 
 
-def _doc_page(title, body_html, icp_text="", base_path=""):
+def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
     由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。"""
     icp_block = f'<p class="doc-icp">{icp_text}</p>' if icp_text else ""
+    police_block = f'<p class="doc-icp">{police_text}</p>' if police_text else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -226,6 +227,7 @@ def _doc_page(title, body_html, icp_text="", base_path=""):
 <p class="doc-back"><a href="{base_path}/login">&larr; 返回登录页</a></p>
 </div>
 {icp_block}
+{police_block}
 </body>
 </html>"""
 import db  # noqa: E402
@@ -689,12 +691,20 @@ def load_env_int(env_path, key, default):
 
 
 def icp_info():
-    """网站备案信息（可选）：.env 的 YIBAN_ICP_INFO，留空不显示。
+    """网站 ICP 备案信息（可选）：.env 的 YIBAN_ICP_INFO，留空不显示。
 
     解耦设计：未配置时模板 `{% if icp_info %}` 块不输出，footer 保持旧样式；
     配置后所有页面底部显示该文本（模板经 Jinja autoescape 转义，无 XSS）。
     """
     return read_env(ENV_FILE).get("YIBAN_ICP_INFO", "").strip()
+
+
+def police_info():
+    """公安备案信息（可选）：.env 的 YIBAN_POLICE_INFO，留空不显示。
+
+    与 ICP 备案分开独立预留位；未配置时模板 `{% if police_info %}` 块不输出。
+    """
+    return read_env(ENV_FILE).get("YIBAN_POLICE_INFO", "").strip()
 
 
 # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度）：
@@ -1632,6 +1642,7 @@ def create_app(host=None):
             web_version=WEB_VERSION,
             app_version=APP_VERSION,
             icp_info=icp_info(),
+            police_info=police_info(),
             agreement_html=_read_doc_html("USER_AGREEMENT.md"),
             privacy_html=_read_doc_html("PRIVACY_POLICY.md"),
         )
@@ -1644,7 +1655,7 @@ def create_app(host=None):
     @app.route("/privacy")
     def privacy_page():
         """隐私政策独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), request.script_root)
+        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), police_info(), request.script_root)
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
