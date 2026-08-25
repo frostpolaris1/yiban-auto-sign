@@ -9,3 +9,8 @@
 import os
 
 os.environ.setdefault("YIBAN_DISABLE_PURGE_LOOP", "1")
+
+# 测试默认禁用邮件通知：mailer._get 环境变量优先于 .env 文件，此处设为 0
+# 可防止 signin/web 测试（如 send_notification("t","c",...)）意外真实发信。
+# test_mailer.py 自带 _isolate_env 清理 YIBAN_MAIL_* 后按用例显式设置，不受影响。
+os.environ.setdefault("YIBAN_MAIL_ENABLE", "0")

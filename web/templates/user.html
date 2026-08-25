@@ -229,6 +229,21 @@
     </div>
   </section>
 
+  <!-- 邮件提醒（B 线：账号签到失败邮件通知，用户可自行开关） -->
+  <section class="card mb-6">
+    <div class="flex items-center justify-between gap-3">
+      <div>
+        <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">邮件提醒</h2>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500">你的账号签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收签到失败邮件">
+        <input id="mail-notify-switch" type="checkbox" class="sr-only peer" onchange="toggleMailNotify()">
+        <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all after:duration-150 peer-checked:after:translate-x-5"></div>
+      </label>
+    </div>
+    <p id="mail-notify-tip" class="text-xs text-zinc-400 dark:text-zinc-500 mt-1"></p>
+  </section>
+
 <!-- 编辑模态 -->
 <!-- Toast -->
 <div id="toast" role="status" aria-live="polite" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 hidden rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
@@ -896,6 +911,9 @@ async function doLogout() {
     const me = await api('/api/me');
     if (me.role !== 'user') { location.href = BASE + '/'; return; }  // 管理员访问用户页 → 后台
     csrfToken = me.csrf_token || '';
+    // 邮件提醒开关：从 /api/me 读当前状态并渲染
+    mailNotifyOn = !!me.mail_notify;
+    renderMailNotify();
     // 顶部显示邮箱前缀（悬停显示完整邮箱）
     const email = me.email || '';
     $('user-email').textContent = email.split('@')[0];
@@ -928,6 +946,29 @@ function togglePrefCollapse() {
   prefCollapsed = !prefCollapsed;
   $('pref-body').classList.toggle('hidden', prefCollapsed);
   $('pref-collapse-btn').innerHTML = prefCollapsed ? icon('chevR') + ' 未开启（点击展开预配置）' : icon('chevD');
+}
+
+// 邮件提醒开关（B 线：账号签到失败邮件通知；默认开，可自行关闭）
+let mailNotifyOn = true;
+
+function renderMailNotify() {
+  const el = $('mail-notify-switch');
+  if (el) el.checked = mailNotifyOn;
+}
+
+async function toggleMailNotify() {
+  mailNotifyOn = $('mail-notify-switch').checked;
+  const tip = $('mail-notify-tip');
+  tip.textContent = '保存中…';
+  try {
+    await api('/api/my-mail-notify', { method: 'PUT', body: JSON.stringify({ enabled: mailNotifyOn }) });
+    tip.textContent = mailNotifyOn ? '已开启：签到失败时将邮件提醒你' : '已关闭：不再发送签到失败邮件';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+  } catch (e) {
+    mailNotifyOn = !mailNotifyOn;  // 保存失败回滚开关状态
+    $('mail-notify-switch').checked = mailNotifyOn;
+    tip.textContent = '保存失败：' + e.message;
+  }
 }
 
 async function loadTimePref(preserve = false) {

@@ -172,7 +172,8 @@ def _create_tables(conn):
           created_at TEXT NOT NULL DEFAULT '',
           pw_version INTEGER NOT NULL DEFAULT 1,
           deleted INTEGER NOT NULL DEFAULT 0,
-          deleted_at TEXT NOT NULL DEFAULT ''
+          deleted_at TEXT NOT NULL DEFAULT '',
+          mail_notify INTEGER NOT NULL DEFAULT 1
         );
         -- 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
         -- 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
@@ -656,6 +657,15 @@ def migrate_v8(conn):
     conn.commit()
 
 
+def migrate_v9(conn):
+    """v9：用户邮箱通知开关（users.mail_notify，默认开启接收签到结果邮件）。
+
+    1=接收（默认）；0=关闭（不接收用户签到失败邮件 B 线）。
+    管理员告警邮件（A 线）不受此开关影响。旧库补列时默认置 1。
+    """
+    _ensure_column(conn, "users", "mail_notify", "mail_notify INTEGER NOT NULL DEFAULT 1")
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -668,6 +678,7 @@ _MIGRATIONS = [
     (6, "v6_webui_stats", migrate_v6, False),
     (7, "v7_delete_request_kind", migrate_v7, True),
     (8, "v8_session_cache", migrate_v8, False),
+    (9, "v9_user_mail_notify", migrate_v9, True),
 ]
 
 
@@ -1258,6 +1269,51 @@ def find_user_any(email):
         return dict(row) if row else None
 
 
+def filter_mail_notify(emails):
+    """过滤出「接收邮件提醒」的邮箱列表（mail_notify=1 或非注册用户默认接收）。
+
+    供 A 线（管理员告警邮件）按收件人个人开关过滤：普通用户/管理员关闭
+    mail_notify 后，即使其邮箱位于 YIBAN_MAIL_ADMIN_TO，也不再接收告警邮件。
+    内置主管理员（.env 账号，users 表无记录）不受影响，由全局开关
+    YIBAN_MAIL_ENABLE 控制；查库异常时按「接收」处理（不误伤收件人）。
+    """
+    result = []
+    for e in emails:
+        u = None
+        try:
+            u = find_user(e)
+        except Exception:
+            u = None
+        if u is None or str(u.get("mail_notify", 1)).strip().lower() in ("1", "true", "on", "yes"):
+            result.append(e)
+    return result
+
+
+def admin_mail_recipients(extra_emails=()):
+    """A 线告警邮件的完整收件人列表（去重）。
+
+    组成 = ADMIN_TO（.env，经 filter_mail_notify 按个人开关过滤） + 所有
+    「开启接收邮件」的管理员用户邮箱（users.role=admin 且 mail_notify=1）。
+
+    这样普通管理员自动获得告警收件权，无需手动加入 YIBAN_MAIL_ADMIN_TO；
+    普通管理员关闭 mail_notify 后即从收件人剔除。内置主管理员（.env 账号，
+    不在 users 表）由 extra_emails（ADMIN_TO）覆盖。
+    """
+    recipients = set(filter_mail_notify(extra_emails))
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            rows = conn.execute(
+                "SELECT email, mail_notify FROM users WHERE role='admin' AND deleted=0"
+            ).fetchall()
+    except Exception:
+        rows = []
+    for r in rows:
+        if str(r["mail_notify"] if r["mail_notify"] is not None else 1).strip().lower() in ("1", "true", "on", "yes"):
+            recipients.add(r["email"])
+    return sorted(recipients)
+
+
 def create_user(email, password_hash, role="user", created_at="", pw_version=1):
     conn = get_conn()
     with _conn_lock, conn:
@@ -1274,7 +1330,7 @@ def update_user(email, fields):
     conn = get_conn()
     with _conn_lock, conn:
         sets, vals = [], []
-        for k in ("password_hash", "role", "pw_version"):
+        for k in ("password_hash", "role", "pw_version", "mail_notify"):
             if k in fields:
                 sets.append(f"{k}=?")
                 vals.append(fields[k])

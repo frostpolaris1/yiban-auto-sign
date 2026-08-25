@@ -232,6 +232,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
 </html>"""
 import db  # noqa: E402
 import env_lock  # noqa: E402
+import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
 
 # 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
@@ -1289,7 +1290,16 @@ def send_notification(title, content):
     与 scripts/signin.py 的 send_notification 同款渠道：Server 酱 / Bark / 企业微信。
     L-01：发送前过 _is_safe_notify_url 白名单（https + 非回环/内网），
     违规拒绝发送并告警（不回显完整 URL，防 sendkey 泄露进日志）。
+    A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
+    YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
+    收件人 = ADMIN_TO（按个人开关过滤）+ 所有开启接收的管理员用户邮箱：
+    普通管理员自动获得告警收件权，关闭 mail_notify 后从收件人剔除；
+    主管理员关闭 YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
     """
+    extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
+    recipients = db.admin_mail_recipients(extra)
+    if recipients:
+        mailer.send_admin_alert(title, content, to=",".join(recipients))
     env = read_env(ENV_FILE)
     url = env.get("YIBAN_NOTIFY_URL", "").strip() or os.environ.get("YIBAN_NOTIFY_URL", "").strip()
     if not url:
@@ -1344,7 +1354,8 @@ def _notify_capacity_once(kind, limit, label):
 #           + --host 默认回环（0.21.4）
 # 2026-08-23 新增 Docker 部署能力（0.22.0）
 # 2026-08-23 系统设置页容量统计口径修正（0.22.1）
-APP_VERSION = "0.22.1"
+# 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
+APP_VERSION = "0.23.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2157,6 +2168,9 @@ def create_app(host=None):
         # 防止浏览器缓存旧页面时误判未登录导致刷新循环
         role = _current_role()
         username = session.get("username") or ""
+        # 邮箱通知开关（B 线：用户签到失败提醒，默认开；用户端可关）
+        _me = db.find_user(username) if username else None
+        mail_notify = bool(_me.get("mail_notify", 1)) if _me else True
         # 调度 v2：排序×分布模式与自选开关同步给用户（只读展示）
         env = read_env(ENV_FILE)
         mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
@@ -2175,6 +2189,7 @@ def create_app(host=None):
                 "username": username,
                 "email": username,  # 普通用户顶部显示邮箱前缀（管理员为用户名）
                 "admin": role == "admin",
+                "mail_notify": mail_notify,  # B 线：用户签到失败邮件开关
                 "is_builtin_admin": _is_builtin_admin_session(),  # 仅 .env 主管理员会话为 True
                 "csrf_token": get_csrf_token(),
                 # 调度 v2（docs/design/plan-scheduler-v2.md 2.1/2.2）
@@ -2184,6 +2199,81 @@ def create_app(host=None):
                 "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
             }
         )
+
+    # ---- 我的邮箱通知开关（B 线：用户签到失败邮件）----
+    @app.route("/api/my-mail-notify")
+    def api_my_mail_notify():
+        """读取当前用户邮箱通知开关。未登录默认视为开启（前端展示用）。"""
+        email = session.get("username") or ""
+        user = db.find_user(email) if email else None
+        return jsonify(
+            {"ok": True, "mail_notify": bool(user.get("mail_notify", 1)) if user else True}
+        )
+
+    @app.route("/api/my-mail-notify", methods=["PUT"])
+    def api_my_mail_notify_save():
+        """保存当前用户邮箱通知开关：{enabled: bool}。CSRF 由 before_request 统一校验。"""
+        email = session.get("username") or ""
+        if not email:
+            return jsonify({"error": "未登录"}), 401
+        data = _json_body()
+        enabled = data.get("enabled")
+        if not isinstance(enabled, bool):
+            return jsonify({"error": "取值无效"}), 400
+        db.update_user(email, {"mail_notify": 1 if enabled else 0})
+        db.audit(email, "mail_notify", email, "on" if enabled else "off")
+        return jsonify({"ok": True, "mail_notify": enabled})
+
+    # ---- 邮件通知配置（全局开关，仅主管理员）----
+    @app.route("/api/mail-config")
+    def api_mail_config():
+        """邮件通知配置状态（脱敏：授权码不回显，地址打码），供管理后台显示。"""
+        cfg = mailer.get_config()
+        enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
+        return jsonify({
+            "ok": True,
+            "enabled": enabled,
+            "admin_notify": bool(cfg.get("admin_notify", True)),
+            "smtp_host": cfg.get("host", ""),
+            "smtp_port": cfg.get("port", 465),
+            "user": cfg.get("user", ""),
+            "admin_to": cfg.get("admin_to", ""),
+        })
+
+    @app.route("/api/mail-config", methods=["PUT"])
+    def api_mail_config_save():
+        """主管理员：切换邮件配置开关（写 .env）。
+
+        支持：enabled（全局 YIBAN_MAIL_ENABLE）/ admin_notify（主管理员个人
+        接收 YIBAN_MAIL_ADMIN_NOTIFY）。两者可单独或同时提交，均为 bool。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可操作"}), 403
+        data = _json_body()
+        resp = {"ok": True}
+        changed = False
+        if "enabled" in data:
+            v = data["enabled"]
+            if not isinstance(v, bool):
+                return jsonify({"error": "取值无效"}), 400
+            write_env_key(ENV_FILE, "YIBAN_MAIL_ENABLE", "1" if v else "0")
+            resp["enabled"] = v
+            changed = True
+        if "admin_notify" in data:
+            v = data["admin_notify"]
+            if not isinstance(v, bool):
+                return jsonify({"error": "取值无效"}), 400
+            write_env_key(ENV_FILE, "YIBAN_MAIL_ADMIN_NOTIFY", "1" if v else "0")
+            resp["admin_notify"] = v
+            changed = True
+        if not changed:
+            return jsonify({"error": "缺少有效配置项"}), 400
+        db.audit(
+            session.get("username") or "?",
+            "mail_config", "mail_config",
+            json.dumps({k: v for k, v in resp.items() if k != "ok"}, ensure_ascii=False),
+        )
+        return jsonify(resp)
 
     # ---- 账号管理 ----
     @app.route("/api/accounts")
