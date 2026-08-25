@@ -672,6 +672,54 @@
       <p id="mail-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
     </div>
 
+    <!-- 账号健康检查 / 探针模式（v0.23.x） -->
+    <div class="card mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">账号健康检查（探针模式）</div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+        非签到时段对全部账号做只读验证（登录+拉任务，不实际签到），提前发现图形验证墙/校本化失效等无法自愈问题并邮件预警；开启后提交账号时即时验证，有问题当场打回。
+      </p>
+      <!-- 注册时验证账号（任意管理员可开关） -->
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <span class="text-sm text-zinc-700 dark:text-zinc-200">注册时验证账号</span>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500">用户/管理员提交账号时即时验证，验证失败当场打回</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer shrink-0" title="注册时验证账号开关">
+          <input id="account-verify-switch" type="checkbox" class="sr-only peer" onchange="saveProbeSettings()">
+          <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all after:duration-150 peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+      <!-- 探针模式开关（任意管理员可开关） -->
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <span class="text-sm text-zinc-700 dark:text-zinc-200">开启探针模式</span>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500">按设定时间/频率对全部账号做健康检查，异常账号邮件预警</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer shrink-0" title="探针模式开关">
+          <input id="probe-enable-switch" type="checkbox" class="sr-only peer" onchange="saveProbeSettings()">
+          <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all after:duration-150 peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+      <!-- 触发时间 + 触发频率 -->
+      <div class="grid grid-cols-2 gap-3 mb-2">
+        <div>
+          <label for="probe-time" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">触发时间</label>
+          <input id="probe-time" type="time" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="saveProbeSettings()">
+        </div>
+        <div>
+          <label for="probe-interval" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">触发频率</label>
+          <select id="probe-interval" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="saveProbeSettings()">
+            <option value="1">每天</option>
+            <option value="2">每 2 天</option>
+            <option value="3">每 3 天</option>
+            <option value="7">每 7 天</option>
+            <option value="once">下一次计划时间单次执行（仅一次）</option>
+          </select>
+        </div>
+      </div>
+      <p id="probe-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
+    </div>
+
     <!-- 危险区：一键暂停签到（仅主管理员；下一轮 cron 生效） -->
     <div class="card mb-4 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-900/10">
       <div class="text-sm font-medium text-red-800 dark:text-red-300 mb-1 flex items-center gap-2">
@@ -1907,6 +1955,11 @@ async function loadSettings() {
     renderSundaySignUI();
     state.globalPause = !!data.global_pause;  // 全局暂停（一键暂停签到）
     renderGlobalPauseUI();
+    // 探针模式 + 注册账号验证（v0.23.x，任意管理员可改）
+    $('account-verify-switch').checked = !!data.account_verify;
+    $('probe-enable-switch').checked = !!data.probe_enable;
+    $('probe-time').value = (data.probe_time || '20:00').slice(0, 5);
+    $('probe-interval').value = data.probe_interval || '1';
     // 批量开关（会话级）不在此重置：state.batchMode 初始 false 已保证"刷新页面后关闭"；
     // 此前无条件重置导致"切 tab 再切回设置页开关失效"（2026-08-15 用户反馈）
     renderDelayUI();
@@ -2242,6 +2295,30 @@ async function toggleMailSelf() {
     $('mail-self-switch').checked = mailSelfOn;  // 回滚
     tip.textContent = '保存失败：' + e.message;
   }
+}
+
+// ===== 探针模式 + 注册账号验证（v0.23.x）：任意管理员可改，改动即保存 =====
+let probeSaving = false;
+async function saveProbeSettings() {
+  if (probeSaving) return;
+  const timeVal = $('probe-time').value;
+  if (!/^\d{2}:\d{2}$/.test(timeVal || '')) { toast('请选择触发时间', true); return; }
+  probeSaving = true;
+  try {
+    await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        account_verify: $('account-verify-switch').checked ? 1 : 0,
+        probe_enable: $('probe-enable-switch').checked ? 1 : 0,
+        probe_time: timeVal,
+        probe_interval: $('probe-interval').value,
+      }),
+    });
+    const tip = $('probe-config-tip');
+    tip.textContent = '已保存（探针按 cron 任务自动触发）';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+  } catch (e) { toast(e.message, true); }
+  finally { probeSaving = false; }
 }
 
 async function doPing() {

@@ -3,6 +3,11 @@ line-length = 100
 target-version = "py310"
 exclude = [".git", "__pycache__"]
 
+[tool.pytest.ini_options]
+# 只收集 tests/ 下的用例；scripts/ 下的独立安全压力测试（stress_security_test.py）
+# 需真实服务器地址、按脚本方式运行，不应被 pytest 默认收集（缺 base_url fixture）
+testpaths = ["tests"]
+
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "SIM", "RUF"]
 ignore = [

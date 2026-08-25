@@ -233,6 +233,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
 import db  # noqa: E402
 import env_lock  # noqa: E402
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
+import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
 # 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
@@ -1154,6 +1155,33 @@ def validate_account(data, require_password):
     }
 
 
+def _account_verify_enabled():
+    """注册/添加账号时是否做即时验证（YIBAN_ACCOUNT_VERIFY=1，任意管理员可开关）。"""
+    env = read_env(ENV_FILE)
+    return env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _verify_account_clean(clean):
+    """对清洗后的账号字段做只读验证（复用 signin.verify_account：登录+拉任务，不提交签到）。
+
+    返回错误信息 or None（验证通过）。message 来自 signin（已脱敏），此处再转义换行防注入。
+    """
+    try:
+        ok_v, msg_v = signin.verify_account(
+            signin.Account(
+                phone=clean["phone"],
+                password=clean.get("password", ""),
+                phone_model=clean.get("phone_model", ""),
+                phone_code=clean.get("phone_code", ""),
+            )
+        )
+    except Exception as e:
+        return f"账号验证异常：{str(e).replace(chr(10), ' ').replace(chr(13), ' ')}"
+    if not ok_v:
+        return f"账号验证未通过：{str(msg_v).replace(chr(10), ' ').replace(chr(13), ' ')}"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 管理员认证
 # ---------------------------------------------------------------------------
@@ -1355,7 +1383,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-23 新增 Docker 部署能力（0.22.0）
 # 2026-08-23 系统设置页容量统计口径修正（0.22.1）
 # 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
-APP_VERSION = "0.23.0"
+APP_VERSION = "0.24.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2356,6 +2384,11 @@ def create_app(host=None):
         err, clean = validate_account(data, require_password=True)
         if err:
             return jsonify({"error": err}), 400
+        # R1：添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）
+        if _account_verify_enabled():
+            verify_err = _verify_account_clean(clean)
+            if verify_err:
+                return jsonify({"error": verify_err}), 400
         email = str(data.get("email", "")).strip().lower()
         initial_hash = None  # 锁外预计算（scrypt ~100ms 不阻塞其他请求）
         if email:
@@ -3163,6 +3196,16 @@ def create_app(host=None):
 
         操作级锁：单账号限制与手机号唯一检查 + 写入原子（防并发双提交互相覆盖）。
         """
+        data = _json_body()
+        err, clean = validate_account(data, require_password=True)
+        if err:
+            return jsonify({"error": err}), 400
+        # R1：用户提交账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）
+        # 放锁外：verify 为网络操作，不阻塞其他请求
+        if _account_verify_enabled():
+            verify_err = _verify_account_clean(clean)
+            if verify_err:
+                return jsonify({"error": verify_err}), 400
         with _file_lock:
             accounts = load_accounts()
             # 容量兜底：账号总数上限（用户提交同样受限，对抗性审查补）
@@ -3176,10 +3219,6 @@ def create_app(host=None):
             has_live = any(a.get("owner") == email and not a.get("deleted") for a in accounts)
             if has_live:
                 return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
-            data = _json_body()
-            err, clean = validate_account(data, require_password=True)
-            if err:
-                return jsonify({"error": err}), 400
             if find_account_index(accounts, clean["phone"]) is not None:
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
             # 管理员提交的账号归属 'admin'（后台添加账号同理），直接生效免审核
@@ -4059,6 +4098,11 @@ def create_app(host=None):
                 "global_pause": load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
                 "batch_mode": False,
+                # 注册账号验证 + 探针模式（v0.23.x，任意管理员可改）
+                "account_verify": 1 if env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes") else 0,
+                "probe_enable": 1 if env.get("YIBAN_PROBE_ENABLE", "").strip().lower() in ("1", "true", "on", "yes") else 0,
+                "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
+                "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
             }
         )
 
@@ -4151,6 +4195,36 @@ def create_app(host=None):
         global_pause = None
         if "global_pause" in data:
             global_pause = 1 if str(data.get("global_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        # ---- 注册账号验证 + 探针模式（任意管理员可改；v0.23.x）----
+        account_verify = None
+        if "account_verify" in data:
+            account_verify = 1 if str(data.get("account_verify", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        probe_enable = None
+        if "probe_enable" in data:
+            probe_enable = 1 if str(data.get("probe_enable", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        probe_time = None
+        if "probe_time" in data:
+            pt = str(data.get("probe_time", "")).strip()
+            try:
+                ph, pm = (int(x) for x in pt.split(":"))
+            except (ValueError, AttributeError):
+                return jsonify({"error": "探针触发时间应为 HH:MM 格式"}), 400
+            if not (0 <= ph <= 23 and 0 <= pm <= 59):
+                return jsonify({"error": "探针触发时间非法（需 HH:MM）"}), 400
+            probe_time = f"{ph:02d}:{pm:02d}"
+        probe_interval = None
+        if "probe_interval" in data:
+            pi = str(data.get("probe_interval", "")).strip()
+            if pi.lower() == "once":
+                probe_interval = "once"
+            else:
+                try:
+                    n = int(pi)
+                except (TypeError, ValueError):
+                    return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
+                if n <= 0:
+                    return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
+                probe_interval = str(n)
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
         updates = {
             "YIBAN_START_DELAY_MAX": str(start) if start > 0 else "",
@@ -4180,6 +4254,14 @@ def create_app(host=None):
             updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
         if global_pause is not None:
             updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
+        if account_verify is not None:
+            updates["YIBAN_ACCOUNT_VERIFY"] = "1" if account_verify else ""
+        if probe_enable is not None:
+            updates["YIBAN_PROBE_ENABLE"] = "1" if probe_enable else ""
+        if probe_time is not None:
+            updates["YIBAN_PROBE_TIME"] = probe_time
+        if probe_interval is not None:
+            updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
         write_env_batch(ENV_FILE, updates)
         sunday_display = "不变" if sunday_sign is None else sunday_sign
         pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
@@ -4190,11 +4272,15 @@ def create_app(host=None):
         else:
             edge_display = f"前{edge_front / 60:g}后{edge_back / 60:g}分钟"
         # 批量多选为前端会话级开关，不写入配置
+        probe_display = "不变" if (probe_enable is None and probe_time is None and probe_interval is None) else \
+            f"启={'1' if probe_enable else '0'}/时={probe_time or '-'}/频={probe_interval or '-'}"
         logger.info(
-            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 暂停=%s",
+            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 暂停=%s 账号验证=%s 探针=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
             edge_display, pref_raw if pref_raw is not None else "不变",
             win or "不变", sunday_display, pause_display,
+            "不变" if account_verify is None else ("开" if account_verify else "关"),
+            probe_display,
         )
         # 设置变更审计（2026-08-16 补 P8：此前调度/系统设置保存无留痕，与其他管理操作不一致）
         db.audit(
@@ -4204,7 +4290,8 @@ def create_app(host=None):
             f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
             f"分布={sign_dist or '-'} 掐头去尾={edge_display} "
             f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
-            f"全局暂停={pause_display}",
+            f"全局暂停={pause_display} 账号验证={'开' if account_verify else '关'} "
+            f"探针={probe_display}",
         )
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
