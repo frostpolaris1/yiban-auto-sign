@@ -856,10 +856,10 @@
 <!-- 页脚：备案信息（可选，YIBAN_ICP_INFO 留空则不显示）+ 版本/开源 -->
 <footer class="mt-8 pt-4 border-t border-zinc-200 dark:border-zinc-700 pb-4">
   {% if icp_info %}
-  <div id="footer-icp" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2">{{ icp_info }}</div>
+  <div id="footer-icp" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300">{{ icp_info }}</a></div>
   {% endif %}
   {% if police_info %}
-  <div id="footer-police" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2">{{ police_info }}</div>
+  <div id="footer-police" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2"><a href="https://www.beian.gov.cn/" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300">{{ police_info }}</a></div>
   {% endif %}
   <div class="text-center text-xs text-zinc-500 dark:text-zinc-400">
     <button type="button" onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors">易班自动签到 v{{ app_version }}</button>

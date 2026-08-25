@@ -185,8 +185,8 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
     由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。"""
-    icp_block = f'<p class="doc-icp">{icp_text}</p>' if icp_text else ""
-    police_block = f'<p class="doc-icp">{police_text}</p>' if police_text else ""
+    icp_block = f'<p class="doc-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">{icp_text}</a></p>' if icp_text else ""
+    police_block = f'<p class="doc-icp"><a href="https://www.beian.gov.cn/" target="_blank" rel="noopener">{police_text}</a></p>' if police_text else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
