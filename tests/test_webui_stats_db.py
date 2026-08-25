@@ -60,7 +60,7 @@ class WebuiStatsDbTest(unittest.TestCase):
 
     def test_migration_v6_schema(self):
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 8)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 9)
         sign_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sign_events)").fetchall()}
         self.assertIn("account_id", sign_cols)
         self.assertIn("dur_sec", sign_cols)
@@ -118,8 +118,10 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(len(rows2), 0)
 
     def test_sign_event_peak(self):
-        db.add_sign_event("2026-08-16 06:30:00", "13800138000", "success")
-        db.add_sign_event("2026-08-16 06:31:00", "13900139000", "failed")
+        # 用"昨天"时间，确保落在 days=7 窗口内（避免写死日期随时间过期）
+        base = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        db.add_sign_event(base, "13800138000", "success")
+        db.add_sign_event(base, "13900139000", "failed")
         peak = db.sign_event_peak(days=7, bucket_minutes=5)
         self.assertTrue(peak)
         self.assertIn("bucket", peak[0])

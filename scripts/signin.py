@@ -39,6 +39,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 # 共享模块（同目录）：加密（web/tui/db 共用密钥与密文格式）与 SQLite 数据访问层
 import account_crypto
 import db  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
+import env_lock  # 探针 once 模式自动关闭 .env（跨进程写锁）
 import mailer  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
 import requests
 from Crypto.Cipher import PKCS1_v1_5
@@ -268,6 +269,25 @@ SIGN_MODE = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
 # 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
 # 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
 SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
+
+# ---- 探针模式 / 注册时账号验证（2026-08-25）----
+# 非签到时段对全部账号做只读健康检查（登录+拉任务，不提交签到），提前发现
+# 「图形验证墙 / 校本化失效 / 密码错误」等无法自愈问题；注册提交账号时亦可即时验证打回。
+# 配置经 web 系统设置写入 .env（YIBAN_PROBE_ENABLE / YIBAN_PROBE_TIME / YIBAN_PROBE_INTERVAL_DAYS /
+# YIBAN_ACCOUNT_VERIFY），run.sh / run_probe.sh 加载后经环境变量传入。
+PROBE_ENABLE = os.environ.get("YIBAN_PROBE_ENABLE", "").strip().lower() in ("1", "true", "on", "yes")
+PROBE_TIME = os.environ.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00"
+# 触发频率：正整数=每 N 天；once=下一次计划时间单次执行（执行后自动关闭）
+PROBE_INTERVAL = os.environ.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1"
+
+# 探针视为"无法自愈、需预警"的错误特征（复用错误分类思路；网络/Token 等可自愈失败不预警）
+PROBE_HARD_FAIL_RE = re.compile(
+    r"图形验证|图片验证|滑块验证|人机验证|captcha"
+    r"|校本化|未授权|授权失效|Auth Error|Get Night Attendance Sign Tasks Error"
+    r"|登录失败|密码错误|账号或密码"
+    r"|授权设备|获取登录入口失败|登录响应异常|最终认证失败"
+    r"|WAF|风控|拦截"
+)
 
 # 签到状态码（写 sign-state 状态文件，web/TUI 状态显示的事实源）与日志符号
 STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
@@ -1432,6 +1452,36 @@ class YibanClient:
             err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
         return False, f"签到失败: {err_msg}", False, STATUS_FAILED
 
+    def verify(self):
+        """只读健康检查（登录后）：拉取签到位置，**不提交签到**。
+
+        用于注册时预处理验证与探针模式。返回 (ok, message)：
+        - ok=True：账号可正常签到（能登录且能拉到任务，含校本化授权正常）
+        - ok=False：存在无法自愈的问题（登录失败/校本化失效/图形验证/WAF 等，
+          message 已脱敏，供用户可见提示或探针预警）
+        """
+        if not self.logged_in:
+            if self.use_killyiban:
+                self.login_killyiban()
+            else:
+                self.login()
+        if not self.use_killyiban:
+            self.session.headers.update(
+                Origin="https://app.uyiban.com", Referer="https://app.uyiban.com/"
+            )
+        resp = self.session.get(
+            "https://api.uyiban.com/nightAttendance/student/index/signPosition",
+            params={"CSRF": self.csrf},
+            allow_redirects=False,
+            timeout=15,
+        )
+        if is_waf_blocked(resp.text):
+            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
+        data = resp.json()
+        if data.get("code") != 0:
+            return False, f"获取签到任务失败: {_sanitize_text(data.get('msg'))}"
+        return True, "账号健康，可正常签到"
+
 
 # ---------------------------------------------------------------------------
 # 消息通知
@@ -1552,6 +1602,29 @@ def send_user_fail_mail(owner, phone, message):
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
+def verify_account(account):
+    """只读健康检查（登录 + 拉取任务，不提交签到）。
+
+    供注册时预处理验证（web 端）与探针模式（--probe）复用。
+    返回 (ok, message)：ok=False 表示存在无法自愈的问题；message 已脱敏。
+    """
+    phone = account.phone
+    try:
+        client = YibanClient(account)
+        try:
+            if client.use_killyiban:
+                client.login_killyiban()
+            else:
+                client.login()
+            return client.verify()
+        finally:
+            client._wipe_credentials()
+    except Exception as e:
+        safe_err = _sanitize_text(str(e))
+        logger.warning(f"[{phone}] 健康检查失败: {safe_err}", exc_info=False)
+        return False, safe_err
+
+
 def attempt_signin(account):
     """单次签到尝试（登录 + 签到），不重试。
 
@@ -2167,6 +2240,152 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     return results
 
 
+# ---------------------------------------------------------------------------
+# 探针模式（健康探测，2026-08-25）
+# ---------------------------------------------------------------------------
+def _probe_state_path():
+    """探针最近执行日状态文件（由探针进程独占维护，避免频繁写 .env）。"""
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    return os.path.join(state_dir, "probe-state.json")
+
+
+def _read_probe_state():
+    try:
+        with open(_probe_state_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_probe_state(state):
+    try:
+        path = _probe_state_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp" + str(os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        logger.warning("探针状态文件不可写（不影响本次探测）")
+
+
+def _health_probe_due(now=None):
+    """是否应在本次入口执行健康探针：开启 + 已达触发时间 + 满足频率（once=下一次单次）。"""
+    now = now or datetime.now()
+    if not PROBE_ENABLE:
+        return False
+    try:
+        hh, mm = (int(x) for x in PROBE_TIME.split(":"))
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return False
+    except (TypeError, ValueError):
+        return False
+    if (now.hour, now.minute) < (hh, mm):
+        return False
+    state = _read_probe_state()
+    last = state.get("last_run", "")
+    today = now.strftime("%Y-%m-%d")
+    if last == today:
+        return False
+    interval = PROBE_INTERVAL.strip().lower()
+    if interval == "once":
+        # 单次模式：开启且已到时间且今天未执行 → 本次执行（执行后自动关闭）
+        return True
+    try:
+        n = int(interval)
+        if n <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if not last:
+        return True
+    try:
+        last_dt = datetime.strptime(last, "%Y-%m-%d")
+    except ValueError:
+        return True
+    return (now.date() - last_dt.date()).days >= n
+
+
+def _env_update_probe(auto_disable=False):
+    """探针执行后更新 .env：once 模式自动关闭 YIBAN_PROBE_ENABLE（跨进程写锁）。
+
+    仅在 once 单次执行后调用；失败只记日志，不影响本次探测结果。
+    """
+    if not auto_disable:
+        return
+    env_path = os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
+    try:
+        with env_lock.env_write_lock(env_path):
+            lines = []
+            if os.path.exists(env_path):
+                with open(env_path, encoding="utf-8-sig") as f:
+                    lines = f.read().splitlines()
+            out = [ln for ln in lines if not ln.strip().startswith("YIBAN_PROBE_ENABLE=")]
+            out.append("YIBAN_PROBE_ENABLE=0")
+            tmp = env_path + ".tmp" + str(os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write("\n".join(out) + "\n")
+            os.replace(tmp, env_path)
+            try:
+                os.chmod(env_path, 0o600)
+            except OSError:
+                pass
+    except Exception as e:
+        logger.warning("探针 once 自动关闭 .env 失败（不影响本次探测）: %s", _sanitize_text(str(e)))
+
+
+def run_probe(accounts):
+    """探针模式主流程：对全部账号做只读健康检查。
+
+    - 未到触发时间/频率（或未开启）则直接返回（零请求）。
+    - 结果写入 sign_events（stage=probe，复用 db 写锁 _conn_lock，天然并发安全），
+      时间戳为当前时刻，追加在最近签到日志之后。
+    - 无法自愈问题：管理员合并预警邮件（复用 A 线 _collect/_flush）+ 对应用户个人
+      预警（复用 B 线 send_user_fail_mail，尊重用户开关）。
+    - 执行后更新 last_run；once 模式自动关闭探针（.env 写锁）。
+    """
+    if not _health_probe_due():
+        logger.info("==== 探针模式：未到触发时间/频率或未开启，跳过 ====")
+        return
+    logger.info(f"==== 探针模式：对 {len(accounts)} 个账号进行健康检查 ====")
+    now = datetime.now()
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+    hard_fail = []  # [(Account, message)]
+    healthy_n = 0
+    for acc in accounts:
+        ok, message = verify_account(acc)
+        hard = (not ok) and bool(PROBE_HARD_FAIL_RE.search(message or ""))
+        # 落库：stage=probe（复用 db.add_sign_event，内部 _conn_lock 并发保护）
+        try:
+            db.add_sign_event(
+                ts, acc.phone, "failed" if hard else "success",
+                _sanitize_text(message), stage="probe",
+            )
+        except Exception as e:
+            logger.debug("探针日志写入失败（不影响探测）: %s", e)
+        if hard:
+            hard_fail.append((acc, message))
+        else:
+            healthy_n += 1
+    # 预警（复用 A/B 线邮件机制）
+    for acc, message in hard_fail:
+        _collect_admin_mail(
+            "健康探测预警",
+            f"账号: {_mask_phone(acc.phone)}\n原因: {_sanitize_text(message)}",
+        )
+        send_user_fail_mail(acc.owner, acc.phone, message)
+    _flush_admin_mail_summary()
+    # 记录执行（last_run 写状态文件；once 自动关闭）
+    state = _read_probe_state()
+    state["last_run"] = now.strftime("%Y-%m-%d")
+    _write_probe_state(state)
+    if PROBE_INTERVAL.strip().lower() == "once":
+        _env_update_probe(auto_disable=True)
+        logger.info("==== 探针模式（单次）执行完成，已自动关闭探针 ====")
+    logger.info(f"==== 探针模式完成：健康 {healthy_n}，预警 {len(hard_fail)} ====")
+
+
 def main():
     """主函数：加载账号配置并执行签到。
 
@@ -2184,6 +2403,10 @@ def main():
     )
     parser.add_argument(
         "--only", default="", help="仅签到指定手机号（逗号分隔，用于 TUI 手动签到）"
+    )
+    parser.add_argument(
+        "--probe", action="store_true",
+        help="探针模式：非签到时段对全部账号做只读健康检查（需 .env 开启且到触发时间/频率）",
     )
     args = parser.parse_args()
 
@@ -2210,6 +2433,11 @@ def main():
         logger.error("  3. YIBAN_ACCOUNTS 环境变量（旧格式 phone:password#phone2:password2）")
         logger.error("  4. YIBAN_PHONE / YIBAN_PASSWORD 环境变量（单账号）")
         sys.exit(1)
+
+    # 探针模式：只读健康检查，不执行正常签到（不受时间窗/周日/暂停等限制，脚本内自判频率）
+    if args.probe:
+        run_probe(accounts)
+        sys.exit(0)
 
     # --only 过滤：只保留指定手机号（TUI 手动签到单个账号）
     if args.only:

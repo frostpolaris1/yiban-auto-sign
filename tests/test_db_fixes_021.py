@@ -198,7 +198,7 @@ class DbFixes021Test(unittest.TestCase):
 
         conn = db.init_db(self.db_file, env_file=self.env_file)
         self.assertEqual(
-            conn.execute("PRAGMA user_version").fetchone()[0], 8, "下次启动应重试到最新版本"
+            conn.execute("PRAGMA user_version").fetchone()[0], 9, "下次启动应重试到最新版本"
         )
 
     # ---- S5 复审：可选迁移失败必须回滚部分写入 ----

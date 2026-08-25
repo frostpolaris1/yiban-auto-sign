@@ -139,9 +139,12 @@ class LegalDocRenderTest(unittest.TestCase):
         self.assertNotIn("单行说明", html)
 
     def test_doc_page_icp_block(self):
-        # 0.21.2 审查修复：#7 独立协议页显示备案信息（配置时）
+        # 0.21.2 审查修复：#7 独立协议页显示备案信息（配置时）；f8e5676 起备案号带工信部超链接
         page = web._doc_page("隐私政策", "<p>正文</p>", "京ICP备00000000号-1")
-        self.assertIn('<p class="doc-icp">京ICP备00000000号-1</p>', page)
+        self.assertIn(
+            '<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">京ICP备00000000号-1</a>',
+            page,
+        )
         page_empty = web._doc_page("隐私政策", "<p>正文</p>", "")
         self.assertNotIn('class="doc-icp"', page_empty)
 
