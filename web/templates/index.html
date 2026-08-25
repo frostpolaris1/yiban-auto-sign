@@ -640,6 +640,38 @@
       </div>
     </div>
 
+    <!-- 邮箱通知（SMTP，v0.23.0） -->
+    <div class="card mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">邮箱通知</div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+        签到失败等告警合并汇总发管理员邮箱、用户失败提醒发本人邮箱（需在 .env 配置 YIBAN_MAIL_*）。
+      </p>
+      <p id="mail-config-status" class="text-xs text-zinc-500 dark:text-zinc-400 mb-3"></p>
+      <!-- 全局开关（仅主管理员） -->
+      <div id="mail-global-wrap" class="hidden flex items-center justify-between gap-3 mb-3">
+        <div>
+          <span class="text-sm text-zinc-700 dark:text-zinc-200">全局邮件通知</span>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（Webhook 不受影响）</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer shrink-0" title="全局邮件通知开关">
+          <input id="mail-global-switch" type="checkbox" class="sr-only peer" onchange="toggleMailGlobal()">
+          <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all after:duration-150 peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+      <!-- 个人开关（普通管理员，非内置主管理员） -->
+      <div id="mail-self-wrap" class="hidden flex items-center justify-between gap-3">
+        <div>
+          <span class="text-sm text-zinc-700 dark:text-zinc-200">接收发给我自己的邮件提醒</span>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后不再收到你的账号失败提醒与告警邮件</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收邮件提醒">
+          <input id="mail-self-switch" type="checkbox" class="sr-only peer" onchange="toggleMailSelf()">
+          <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all after:duration-150 peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+      <p id="mail-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
+    </div>
+
     <!-- 危险区：一键暂停签到（仅主管理员；下一轮 cron 生效） -->
     <div class="card mb-4 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-900/10">
       <div class="text-sm font-medium text-red-800 dark:text-red-300 mb-1 flex items-center gap-2">
@@ -1834,6 +1866,7 @@ async function loadSettings() {
     // 预填当前公告
     const ann = await fetch(BASE + '/api/announcement').then(r => r.json()).catch(() => ({}));
     if (ann && ann.text) $('announcement-input').value = ann.text;
+    await loadMailConfig();  // 邮箱通知状态（全局/个人开关）
     const data = await api('/api/settings');
     state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
@@ -2157,6 +2190,60 @@ async function saveAnnouncement() {
   } catch (e) { toast(e.message, true); }
 }
 
+// ===== 邮箱通知（v0.23.0）：全局开关（主管理员）+ 个人开关（普通管理员）=====
+let mailEnabled = false;   // 全局（YIBAN_MAIL_ENABLE）
+let mailSelfOn = true;     // 个人（users.mail_notify，普通管理员）
+
+async function loadMailConfig() {
+  try {
+    const data = await api('/api/mail-config');
+    mailEnabled = !!data.enabled;
+    $('mail-config-status').textContent = data.enabled
+      ? `已开启 · 发件 ${data.user} · 告警收件 ${data.admin_to} · ${data.smtp_host}:${data.smtp_port}`
+      : '未开启（需在 .env 配置 YIBAN_MAIL_* 后由主管理员开启）';
+    $('mail-global-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+    if (state.isMasterAdmin) $('mail-global-switch').checked = mailEnabled;
+    // 个人开关：主管理员 = YIBAN_MAIL_ADMIN_NOTIFY；普通管理员 = users.mail_notify
+    $('mail-self-wrap').classList.remove('hidden');
+    if (state.isMasterAdmin) mailSelfOn = !!data.admin_notify;
+    $('mail-self-switch').checked = mailSelfOn;
+  } catch (e) { /* 配置读取失败不阻塞设置页 */ }
+}
+
+async function toggleMailGlobal() {
+  const enabled = $('mail-global-switch').checked;
+  const tip = $('mail-config-tip');
+  tip.textContent = '保存中…';
+  try {
+    await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ enabled }) });
+    mailEnabled = enabled;
+    tip.textContent = enabled ? '已开启全局邮件通知' : '已关闭全局邮件通知';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+  } catch (e) {
+    $('mail-global-switch').checked = mailEnabled;  // 回滚
+    tip.textContent = '保存失败：' + e.message;
+  }
+}
+
+async function toggleMailSelf() {
+  const enabled = $('mail-self-switch').checked;
+  const tip = $('mail-config-tip');
+  tip.textContent = '保存中…';
+  try {
+    if (state.isMasterAdmin) {
+      await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ admin_notify: enabled }) });
+    } else {
+      await api('/api/my-mail-notify', { method: 'PUT', body: JSON.stringify({ enabled }) });
+    }
+    mailSelfOn = enabled;
+    tip.textContent = enabled ? '已开启接收邮件提醒' : '已关闭接收邮件提醒';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+  } catch (e) {
+    $('mail-self-switch').checked = mailSelfOn;  // 回滚
+    tip.textContent = '保存失败：' + e.message;
+  }
+}
+
 async function doPing() {
   const el = $('ping-result');
   el.textContent = '检测中…';
@@ -2289,6 +2376,7 @@ function closeChangelog() { closeModal($('changelog-modal')); }
     if (me.role !== 'admin') { location.href = BASE + '/user'; return; }  // 普通用户 → 用户页
     csrfToken = me.csrf_token || '';
     state.isMasterAdmin = !!me.is_builtin_admin;  // 主管理员才可设置/取消管理员
+    mailSelfOn = !!me.mail_notify;  // 普通管理员个人邮件开关（同普通用户）
     // 侧边栏显示当前账号名（防登录错管理员账号，2026-08-16）
     const acctName = me.username || me.email || '';
     $('sidebar-account-name').textContent = acctName + (state.isMasterAdmin ? '（主管理员）' : '');
