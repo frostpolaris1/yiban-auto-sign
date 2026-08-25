@@ -46,7 +46,10 @@ def _cleanup_logs():
 
 # 首签 / 补签 时间点（分钟级匹配，秒为 0 触发一次）
 FIRST, SECOND = (6, 31), (7, 10)
+# 探针模式入口时刻：signin.py --probe 内部自行判断是否到触发时间/频率（含 once 单次）
+PROBE_AT = (23, 55)
 _last_clean = None
+_last_probe = None
 
 while True:
     now = datetime.now()
@@ -54,6 +57,10 @@ while True:
     if hm in (FIRST, SECOND) and now.second == 0 and not _signed_today():
         # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重
         subprocess.run(["python3", "scripts/signin.py"], cwd="/app")
+    if hm == PROBE_AT and now.second == 0 and _last_probe != now.date():
+        # 探针：只读健康检查（未到配置触发时间/频率时 signin.py 内零请求退出）
+        subprocess.run(["python3", "scripts/signin.py", "--probe"], cwd="/app")
+        _last_probe = now.date()
     if now.hour == 3 and _last_clean != now.date():
         _cleanup_logs()
         _last_clean = now.date()
