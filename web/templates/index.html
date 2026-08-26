@@ -469,6 +469,13 @@
       </div>
       <pre id="log-box" role="log" aria-label="签到日志" tabindex="0" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-320px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
       <div id="log-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">（暂无签到日志，等待定时任务执行…）</div>
+      <!-- 探针（健康检查）当日结构化事件：v0.24.4 前仅落库无可见出口 -->
+      <div id="probe-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
+        <details>
+          <summary class="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-200 select-none">探针记录（<span id="probe-count">0</span> 条）</summary>
+          <pre id="probe-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
+        </details>
+      </div>
     </div>
   </section>
 
@@ -1835,7 +1842,19 @@ async function loadLogs() {
     const empty = $('log-empty');
     // 展示层脱敏：日志行内 [13800138000] 前缀 → [138****8000]（sign.log 文件保持完整供状态解析）
     const rendered = data.logs.map(l => l.replace(/\[(\d{11})\]/g, (m, p) => '[' + maskPhone(p) + ']')).join('\n');
-    const snap = data.logs.length ? rendered : '';
+    const renderedProbe = (data.probe_events || []).map(e =>
+      `${e.time} [${e.phone}] ${e.status === 'failed' ? '❌异常' : '✅正常'}${e.message ? ' · ' + e.message : ''}`
+    ).join('\n');
+    const probeBlock = $('probe-block');
+    if ((data.probe_events || []).length) {
+      $('probe-count').textContent = data.probe_events.length;
+      $('probe-box').textContent = renderedProbe;
+      probeBlock.classList.remove('hidden');
+    } else {
+      probeBlock.classList.add('hidden');
+    }
+    // 快照纳入探针区，内容变化时强制重渲染（否则轮询会因 logs 未变而跳过）
+    const snap = (data.logs.length ? rendered : '') + '\n@@PROBE@@' + renderedProbe;
     if (snap === _logLastSnap) return;  // 日志无变化：不重写 DOM
     _logLastSnap = snap;
     if (data.logs.length) {

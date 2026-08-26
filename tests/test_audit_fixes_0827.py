@@ -386,6 +386,126 @@ class MailSummaryTruncationTest(unittest.TestCase):
         self.assertEqual(len(signin._mail_summary), 0, "发送后清空收集器")
 
 
+class ProbeWordingTest(unittest.TestCase):
+    """P3：探针邮件措辞解耦——汇总带阶段标签、用户侧不再误报「今日签到失败」。"""
+
+    @classmethod
+    def setUpClass(cls):
+        global signin
+        import signin
+
+    def setUp(self):
+        signin._mail_summary.clear()
+        self.sent = []
+
+    def tearDown(self):
+        signin._mail_summary.clear()
+
+    def test_flush_phase_label(self):
+        with mock.patch.object(sys.modules["mailer"], "send_admin_alert",
+                               return_value=True,
+                               side_effect=lambda s, t, to=None: self.sent.append(t)), \
+             mock.patch.object(sys.modules["db"], "admin_mail_recipients",
+                               return_value=["a@test.local"]):
+            signin._collect_admin_mail("健康探测预警", "账号: 138****0001\n原因: 密码错误")
+            signin._flush_admin_mail_summary(phase="健康探测")
+            self.assertTrue(self.sent[0].startswith("易班健康探测已完成"),
+                            self.sent[0][:40])
+            self.assertNotIn("签到任务已结束", self.sent[0])
+            # 缺省沿用原签到文案（定时批次行为不变）
+            signin._collect_admin_mail("易班签到失败", "条目")
+            signin._flush_admin_mail_summary()
+            self.assertIn("易班签到任务已结束", self.sent[1])
+
+    def test_probe_scenario_mail_wording(self):
+        sent = []
+        with mock.patch.object(signin.mailer, "send_user",
+                               side_effect=lambda to, s, t: sent.append((s, t))):
+            signin.send_user_fail_mail("owner@test.local", "13800000000",
+                                       "图形验证墙", scenario="probe")
+        subject, text = sent[0]
+        self.assertEqual(subject, "易班账号健康预警")
+        self.assertNotIn("今日签到失败", text)
+        self.assertIn("138****0000", text)
+        self.assertNotIn("13800000000", text)
+
+
+class ProbeEventsOnTest(unittest.TestCase):
+    """P3：探针结构化事件可按日查询（此前 write-only）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        global db
+        import db
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-pev-")
+        self.db_file = os.path.join(self.tmp, "yiban.db")
+        self.env_file = os.path.join(self.tmp, ".env")
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        db.init_db(self.db_file, env_file=self.env_file)
+
+    def tearDown(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_only_probe_stage_returned_for_date(self):
+        db.add_sign_event("2026-08-27 09:00:00", "13800138001",
+                          "success", "", stage="")
+        db.add_sign_event("2026-08-27 23:55:30", "13900139002",
+                          "failed", "密码错误", stage="probe")
+        rows = db.probe_events_on("2026-08-27")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["phone"], "13900139002")
+        self.assertEqual(rows[0]["status"], "failed")
+        self.assertEqual(db.probe_events_on("2026-08-26"), [])
+
+
+class MailerPortFallbackTest(unittest.TestCase):
+    """P3：SMTP_PORT 非法/缺省时 get_config 显式暴露 port_fallback。"""
+
+    @classmethod
+    def setUpClass(cls):
+        global mailer_mod
+        import mailer as mailer_mod
+
+    def _cfg_with_port(self, raw):
+        env = dict(os.environ)
+        for k in list(os.environ):
+            if k.startswith("YIBAN_MAIL_"):
+                os.environ.pop(k, None)
+        os.environ["YIBAN_MAIL_ENABLE"] = "1"
+        os.environ["YIBAN_MAIL_USER"] = "sender@qq.com"
+        os.environ["YIBAN_MAIL_PASS"] = "secret"
+        if raw is not None:
+            os.environ["YIBAN_MAIL_SMTP_PORT"] = raw
+        try:
+            return mailer_mod.get_config()
+        finally:
+            os.environ.clear()
+            os.environ.update(env)
+
+    def test_invalid_and_missing_marked_fallback(self):
+        self.assertEqual(self._cfg_with_port("abc")["port"], 465)
+        self.assertTrue(self._cfg_with_port("abc")["port_fallback"])
+        self.assertTrue(self._cfg_with_port("")["port_fallback"])
+        cfg = self._cfg_with_port("587")
+        self.assertEqual(cfg["port"], 587)
+        self.assertFalse(cfg["port_fallback"])
+
+
 class SessionAbsoluteTTLTest(unittest.TestCase):
     """P2-5：会话绝对过期；旧会话就地补记；配置越界钳制。"""
 

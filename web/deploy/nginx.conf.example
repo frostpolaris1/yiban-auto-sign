@@ -30,6 +30,16 @@ server {
     ssl_certificate_key /etc/ssl/yiban/key.pem;         # ← 改成你的私钥路径
     ssl_protocols TLSv1.2 TLSv1.3;
 
+    # HSTS 阶梯启用指引（v0.24.4）：
+    #   自签证书期：保持 max-age=0（不发 HSTS），避免浏览器被锁死在证书报错页；
+    #   换用受信证书（Let's Encrypt / 云厂商 DV 等）后，按阶梯放开——
+    #     第 1 天观察期: add_header Strict-Transport-Security "max-age=86400" always;
+    #     稳定后加码:    add_header Strict-Transport-Security "max-age=2592000" always;
+    #     最终形态:      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    #   注意 nginx 的 add_header 不跨级继承：若下方 location 内出现任意 add_header，
+    #   此行需在该 location 内重申。
+    # add_header Strict-Transport-Security "max-age=86400" always;
+
     # 管理后台仅一人使用，无需大上传体；64KB 与应用 MAX_CONTENT_LENGTH 对齐
     client_max_body_size 64k;
 
