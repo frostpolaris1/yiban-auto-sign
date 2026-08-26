@@ -402,10 +402,20 @@ RATE_MAX = 60  # 窗口内最大 API 请求数（正常用户远低于此）
 REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
 REGISTER_MAX = 5  # 窗口内最大成功注册数
 
+# 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
+# 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
+VERIFY_MAX = 6  # 每用户窗口内最大验证尝试次数（正常添加流程远用不到）
+VERIFY_WINDOW = 600  # 窗口（秒）= 10 分钟
+
 # 注销账号冷却（防批量注销，user_delete_requests 表计数，v5）：
 # 每用户 60 秒内最多 1 次、每 IP 60 秒内最多 DELETE_MAX_REQUESTS_PER_IP 次；
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
 DELETE_COOLDOWN_SEC = 60
+
+# 会话绝对过期上限默认天数（2026-08-27 P2-5）：实际值在 create_app 内按
+# YIBAN_SESSION_ABS_DAYS 解析并钳制到 [1,30]；此处为 create_app 前引用兜底。
+SESSION_ABS_DAYS_DEFAULT = 7
+SESSION_ABS_TTL_SECONDS = SESSION_ABS_DAYS_DEFAULT * 86400
 DELETE_MAX_REQUESTS_PER_IP = 5
 # 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐（7 天，安全审查 2026-08-16）；
 # 与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
@@ -919,6 +929,25 @@ def _bump_login_failure(store, key, now):
         return fails
 
 
+def _verify_attempt_allowed(store, username):
+    """账号验证尝试配额（2026-08-27 对抗性审查 P1-2）。
+
+    「注册/添加账号即时验证」会让服务器代用户向易班发起真实登录，必须防止
+    被当作凭据试探的免费代理：在真正发起网络验证前按「会话用户名」扣减配额，
+    超过 VERIFY_MAX 次 / VERIFY_WINDOW 秒即拒绝。全局 IP 限速之外的账号维度
+    补充；计数语义与登录频率限制一致（先判后增）。store 由调用方传入
+    （create_app 内的 _verify_limits，随应用生命周期存在于内存）。
+    """
+    _, _, allowed = _bump_window_count(
+        store,
+        (username or "?").lower(),
+        time.time(),
+        VERIFY_WINDOW,
+        limit=VERIFY_MAX,
+    )
+    return allowed
+
+
 def _wait_signin_proc(proc, timeout=300):
     """等待手动签到子进程；超时则终止并回收，避免批量签到队列被卡死。
 
@@ -1312,6 +1341,16 @@ def _is_safe_notify_url(url):
     return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
 
 
+def _nl_safe(value):
+    """告警正文插值净化（2026-08-27 对抗性审查 P2-4）：压平 CR/LF。
+
+    外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前转义换行为字面量，
+    防止请求体夹带换行在告警正文中伪造额外行。对齐 signin._sanitize_text 的
+    换行纪律；正常值不含换行，显示语义不变。
+    """
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 def send_notification(title, content):
     """通过 YIBAN_NOTIFY_URL webhook 发送告警通知（.env 优先，静默失败）。
 
@@ -1384,7 +1423,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-23 系统设置页容量统计口径修正（0.22.1）
 # 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
 # 2026-08-26 界面动效审查修复：过渡属性收敛、抽屉遮罩淡入与曲线、登录页切换统一、Toast 动效、reduced-motion 支持（0.24.1）
-APP_VERSION = "0.24.2"
+APP_VERSION = "0.24.3"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1488,6 +1527,21 @@ def create_app(host=None):
             host,
         )
     app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 14  # 14 天（折中：安全与管理员便利平衡）
+
+    # ---- 会话绝对过期上限（2026-08-27 对抗性审查 P2-5）----
+    # 滑动续期防不了「被盗 Cookie 永久续命」：任何会话自登录起最多存活 N 天，
+    # 到期硬失效需重新登录。YIBAN_SESSION_ABS_DAYS 可配，越界回退默认并告警
+    # （风格对齐 M13 会话缓存 TTL 钳制）。判定逻辑见 _current_role。
+    global SESSION_ABS_TTL_SECONDS
+    _abs_days = load_env_int(ENV_FILE, "YIBAN_SESSION_ABS_DAYS", SESSION_ABS_DAYS_DEFAULT)
+    if _abs_days < 1 or _abs_days > 30:
+        logger.warning(
+            "YIBAN_SESSION_ABS_DAYS=%s 越界（允许 1~30 天），回退默认 %d 天",
+            _abs_days, SESSION_ABS_DAYS_DEFAULT,
+        )
+        _abs_days = SESSION_ABS_DAYS_DEFAULT
+    SESSION_ABS_TTL_SECONDS = _abs_days * 86400
+
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 请求体上限 64KB
 
     # 登录失败记录 {ip: [fail_count, lock_until]}
@@ -1496,8 +1550,10 @@ def create_app(host=None):
     _rate_limits = {}
     # 注册限速记录 {ip: [count, window_start]}
     _register_limits = {}
-    # 登录频率限制 {ip: [count, window_start]}：比全局限速更严，防脚本化密码喷洒
+    # 登录频率限制 {ip: [count, window_start]}：比全局限速更严，防换用户名密码喷洒
     _login_rate = {}
+    # 账号验证尝试配额 {username.lower(): (count, window_start)}（2026-08-27 P1-2）
+    _verify_limits = {}
 
     def _ip_store_trim(store, max_age):
         """IP 计数 dict 超限时清理过期条目：仅当长度超上限才遍历，避免每请求开销。
@@ -1805,6 +1861,8 @@ def create_app(host=None):
             session["username"] = username
             session["auth_source"] = auth_source
             session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
+            # 会话绝对过期基准（P2-5）：自此刻起最多 SESSION_ABS_TTL_SECONDS
+            session["login_ts"] = int(time.time())
             return jsonify({"ok": True, "role": role})
         if recoverable:
             # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
@@ -1821,7 +1879,8 @@ def create_app(host=None):
         if fails == LOGIN_FAIL_NOTIFY:
             send_notification(
                 "登录失败告警",
-                f"IP {ip} 连续 {fails} 次登录失败（尝试用户名: {username}）\n"
+                f"IP {_nl_safe(ip)} 连续 {fails} 次登录失败"
+                f"（尝试用户名: {_nl_safe(username)}）\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"如非本人操作，请检查是否有人尝试暴力破解",
             )
@@ -1950,7 +2009,8 @@ def create_app(host=None):
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
                     "改密失败告警",
-                    f"IP {ip} 连续 {nfails} 次修改密码失败（用户名: {username}）\n"
+                    f"IP {_nl_safe(ip)} 连续 {nfails} 次修改密码失败"
+                    f"（用户名: {_nl_safe(username)}）\n"
                     f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"如非本人操作，请检查是否有人尝试暴力破解",
                 )
@@ -2069,7 +2129,8 @@ def create_app(host=None):
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
                     "注销密码失败告警",
-                    f"IP {ip} 连续 {nfails} 次注销密码验证失败（用户名: {username}）\n"
+                    f"IP {_nl_safe(ip)} 连续 {nfails} 次注销密码验证失败"
+                    f"（用户名: {_nl_safe(username)}）\n"
                     f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"如非本人操作，请检查是否有人尝试注销该账号",
                 )
@@ -2165,7 +2226,8 @@ def create_app(host=None):
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
                     "恢复密码失败告警",
-                    f"IP {ip} 连续 {nfails} 次恢复密码验证失败（邮箱: {email}）\n"
+                    f"IP {_nl_safe(ip)} 连续 {nfails} 次恢复密码验证失败"
+                    f"（邮箱: {_nl_safe(email)}）\n"
                     f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"如非本人操作，请检查是否有人尝试冒充恢复已注销账号",
                 )
@@ -2188,6 +2250,8 @@ def create_app(host=None):
         session["username"] = email
         session["auth_source"] = "user"
         session["pw_version"] = u.get("pw_version", 1)
+        # 会话绝对过期基准（P2-5），与 api_login 同口径
+        session["login_ts"] = int(time.time())
         logger.info("用户 %s 已恢复注销账号", _mask_email(email))
         return jsonify({"ok": True, "role": role})
 
@@ -2385,8 +2449,25 @@ def create_app(host=None):
         err, clean = validate_account(data, require_password=True)
         if err:
             return jsonify({"error": err}), 400
-        # R1：添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）
+        # P1-2 预筛（同 api_my_account_add，2026-08-27）：容量/手机号占用/内置邮箱
+        # 占用先拦，注定失败的添加不再消耗易班网络验证。权威校验仍在下方写锁内。
+        with _file_lock:
+            accounts_pre = load_accounts()
+            max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
+            if max_accounts_pre > 0 and len(accounts_pre) >= max_accounts_pre:
+                _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
+                return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
+            if find_account_index(accounts_pre, clean["phone"]) is not None:
+                return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
+            email_screen = str(data.get("email", "")).strip().lower()
+            if email_screen and email_screen == _builtin_admin_email():
+                return jsonify({"error": "内置管理员邮箱不可注册"}), 400
+        # R1：添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
+        # 验证尝试受每用户配额限制（P1-2）
         if _account_verify_enabled():
+            if not _verify_attempt_allowed(
+                    _verify_limits, str(session.get("username", ""))):
+                return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_err = _verify_account_clean(clean)
             if verify_err:
                 return jsonify({"error": verify_err}), 400
@@ -3201,9 +3282,26 @@ def create_app(host=None):
         err, clean = validate_account(data, require_password=True)
         if err:
             return jsonify({"error": err}), 400
+        # P1-2 预筛（2026-08-27 对抗性审查）：资格校验全部前置到网络验证之前，
+        # 杜绝「先向易班发起真实登录、再发现根本没资格」的凭据试探滥用面。
+        # 权威校验仍保留在下方写入临界区（预筛通过≠最终名额，双检以锁内为准）。
+        email_pre = str(session.get("username", "")).lower()
+        with _file_lock:
+            accounts_pre = load_accounts()
+            max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
+            if max_accounts_pre > 0 and len(accounts_pre) >= max_accounts_pre:
+                _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
+                # 不向普通用户暴露容量数字（信息分层，2026-08-15）
+                return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
+            if any(a.get("owner") == email_pre and not a.get("deleted") for a in accounts_pre):
+                return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
+            if find_account_index(accounts_pre, clean["phone"]) is not None:
+                return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         # R1：用户提交账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）
-        # 放锁外：verify 为网络操作，不阻塞其他请求
+        # 放锁外：verify 为网络操作，不阻塞其他请求；验证尝试受每用户配额限制（P1-2）
         if _account_verify_enabled():
+            if not _verify_attempt_allowed(_verify_limits, email_pre):
+                return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_err = _verify_account_clean(clean)
             if verify_err:
                 return jsonify({"error": verify_err}), 400
@@ -3498,8 +3596,21 @@ def create_app(host=None):
         return None
 
     def _current_role():
-        """当前登录会话的实时角色；未登录 → None。"""
+        """当前登录会话的实时角色；未登录 → None。
+
+        会话绝对过期（2026-08-27 审查修复 P2-5）：滑动续期（14 天）之外另设
+        「自登录起最多 N 天」硬上限，防止被盗 Cookie 永久续命。时间戳在登录/
+        恢复时写入 session["login_ts"]；存量旧会话无该字段则就地补记当下
+        （升级日不强制全体重新登录）。超限即清空会话视为未登录。
+        """
         if not session.get("auth"):
+            return None
+        ts = session.get("login_ts")
+        now = time.time()
+        if not isinstance(ts, (int, float)) or ts <= 0:
+            session["login_ts"] = int(now)
+        elif now - ts > SESSION_ABS_TTL_SECONDS:
+            session.clear()
             return None
         return _effective_role(session.get("username"), session.get("pw_version"))
 

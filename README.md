@@ -312,12 +312,17 @@ docker compose up -d --build
 数据（SQLite / 账号密文 / 加密密钥 / 日志）全部位于宿主的 `./data` 目录，**备份该目录即可**：
 
 ```bash
+# 推荐：加密备份（口令经环境变量传入，磁盘不留明文；RETAIN_DAYS 自动轮转，默认 30 天）
+YIBAN_BACKUP_PASSPHRASE='你的备份口令' bash docker/backup-docker.sh
+
+# 也可手动裸 tar（明文落盘，请自行妥善保管）
 tar czf yiban-backup-$(date +%F).tar.gz data/
 ```
 
-恢复：解压回仓库根目录（保持 `./data` 结构）后 `docker compose up -d` 即可。
+恢复：加密包先解密再解压回仓库根目录（保持 `./data` 结构）后 `docker compose up -d` 即可：
+`gpg --batch --decrypt --passphrase '口令' 备份.tgz.gpg | tar -xzf -`
 
-> ⚠️ 与 systemd 部署一致：加密密钥（`data/.env` 的密钥）要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
+> ⚠️ 与 systemd 部署一致：加密密钥（`data/.env` 的密钥）与备份口令要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
 
 ### 5. 与现有哪些差异（Docker 内部已自动处理）
 - **定时签到**：不再依赖宿主 cron，由容器内 `supervisor` 常驻的 `docker/scheduler.py` 复刻"06:31 首签 + 07:10 补签 + 每日清理"语义。

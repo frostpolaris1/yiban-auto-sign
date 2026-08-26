@@ -117,11 +117,20 @@ def _send(subject, text, to):
 def send_admin_alert(subject, text, to=None):
     """A 线：管理员告警邮件。收件人 YIBAN_MAIL_ADMIN_TO（逗号分隔支持多地址）。
 
-    to 缺省读取配置；传入 to 时使用传入列表（如调用方按收件人个人开关过滤后
-    的结果）。未配置收件人或邮件未启用时静默跳过；与 Webhook 通知互不依赖。
+    to 必须由调用方合成后传入（ADMIN_TO 经收件人个人开关过滤 ∪ 开启接收的
+    管理员用户邮箱，见 db.admin_mail_recipients）。未配置收件人或邮件未启用时
+    静默跳过；与 Webhook 通知互不依赖。
+
+    2026-08-27 对抗性审查（P2）：to 缺省不再回退原始 ADMIN_TO——那会绕过
+    users.mail_notify 个人开关过滤，是留给未来调用方的隐私回归陷阱；改为
+    fail-closed 拒发并 warning 提示。
     """
-    to = (to if to else _get("ADMIN_TO")).strip()
+    to = (to or "").strip()
     if not to:
+        logger.warning(
+            "send_admin_alert 未提供过滤后的收件人列表，拒绝发送（fail-closed，"
+            "请经 db.admin_mail_recipients 合成后传入）: %s", subject,
+        )
         return False
     sent = False
     for addr in [a.strip() for a in to.split(",") if a.strip()]:

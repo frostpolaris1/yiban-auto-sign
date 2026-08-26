@@ -1537,6 +1537,11 @@ def send_notification(title, content, url):
 # 发送（避免多账号失败时逐封轰炸）。B 线用户邮件不在此收集，保持逐条即时。
 _mail_summary = []  # list[(subject, text)]
 
+# 汇总邮件条数/体积封顶（2026-08-27 审查修复 P2-2）：巨量账号全失败场景下
+# 不封顶会生成超大 MIME 被 SMTP 拒收，整封告警丢失。截断部分指引看后台日志。
+MAIL_SUMMARY_MAX_ENTRIES = 200
+MAIL_SUMMARY_MAX_CHARS = 200_000
+
 
 def _collect_admin_mail(subject, text):
     """把一条管理员告警并入任务结束汇总（不立即发送）。"""
@@ -1547,36 +1552,97 @@ def _flush_admin_mail_summary():
     """签到任务结束：把运行期收集的管理员邮件汇总成一封发送。
 
     无异常则不发送（成功不打扰）；按主题分组，每个账号独立条目；
-    mailer 内部静默失败，不影响退出码。发送后清空收集器。
+    条数超过 MAIL_SUMMARY_MAX_ENTRIES 或正文超长时截断并在尾部注明，
+    明细以按天签到日志为准；mailer 内部静默失败，不影响退出码。发送后清空收集器。
     """
     if not _mail_summary:
         return
+    total = len(_mail_summary)
+    entries = _mail_summary[:MAIL_SUMMARY_MAX_ENTRIES]
+    truncated = total - len(entries)
     groups = {}
     order = []
-    for subject, text in _mail_summary:
+    for subject, text in entries:
         if subject not in groups:
             groups[subject] = []
             order.append(subject)
         groups[subject].append(text)
-    parts = [f"易班签到任务已结束，共 {len(_mail_summary)} 条异常/预警：\n"]
+    parts = [f"易班签到任务已结束，共 {total} 条异常/预警：\n"]
     for subject in order:
         parts.append(f"【{subject}】")
         parts.extend(groups[subject])
         parts.append("")
+    if truncated > 0:
+        parts.append(
+            f"（其余 {truncated} 条已截断以免邮件过大被拒收，"
+            f"明细见管理后台「日志」页或 /var/log/yiban 按天日志）"
+        )
     # 收件人 = ADMIN_TO（按个人开关过滤） + 所有开启接收的管理员用户邮箱：
     # 普通管理员自动获得告警收件权；关闭 mail_notify 后从收件人剔除。
     # 内置主管理员关闭 YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
     extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
     recipients = db.admin_mail_recipients(extra)
     if recipients:
-        mailer.send_admin_alert("易班签到汇总", "\n".join(parts).rstrip(), to=",".join(recipients))
+        body = "\n".join(parts).rstrip()
+        if len(body) > MAIL_SUMMARY_MAX_CHARS:
+            body = body[:MAIL_SUMMARY_MAX_CHARS].rstrip() + "\n…（超长截断，明细见日志）"
+        mailer.send_admin_alert("易班签到汇总", body, to=",".join(recipients))
     _mail_summary.clear()
+
+
+# B 线用户失败提醒每日限频（2026-08-27 审查修复 P2-1）：README/更新日志承诺
+# 「每天每个账号最多 1 封」，原实现仅靠单次运行终态路径隐式保证——手动 --only
+# 签到与探针进程可在同日追加发送。现以按天状态文件显式去重（0 或负数 = 不限）。
+USER_FAIL_MAIL_DAILY_CAP = parse_env_int("YIBAN_MAIL_USER_FAIL_DAILY_CAP", 1)
+
+
+def _user_fail_mail_state_path(today_str):
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    return os.path.join(state_dir, f"mail-user-fail-{today_str}.json")
+
+
+def _user_fail_mail_allow_and_record(phone, today_str):
+    """检查该账号今日失败提醒额度：允许则占位并返回 True，超额返回 False。
+
+    读-改-写整体持 M12 文件锁；跨进程（签到主进程 / 手动 --only / 探针）一致。
+    文件按天命名自然轮转，无需清理历史。
+    """
+    cap = USER_FAIL_MAIL_DAILY_CAP
+    if cap <= 0:
+        return True
+    path = _user_fail_mail_state_path(today_str)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _state_file_lock(path):
+            data = {}
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding="utf-8-sig") as f:
+                        data = json.load(f)
+                except (OSError, ValueError, TypeError):
+                    data = {}
+            if not isinstance(data, dict):
+                data = {}
+            used = int(data.get(phone, 0))
+            if used >= cap:
+                return False
+            data[phone] = used + 1
+            tmp = path + ".tmp" + str(os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+        return True
+    except OSError:
+        # 状态目录不可写：退回不限频（不因限频设施故障吞掉真实失败告警）
+        return True
 
 
 def send_user_fail_mail(owner, phone, message):
     """B 线：向账号归属用户发送签到失败邮件。
 
-    仅当用户存在且开启 mail_notify（默认开）时发送；用户注销/关闭/未配置
+    仅当用户存在且开启 mail_notify（默认开）时发送；每账号每日上限
+    USER_FAIL_MAIL_DAILY_CAP 封（默认 1，定时/手动/探针三个入口统一计算；
+    发送成功才消耗额度，SMTP 故障不吞当日重试机会）；用户注销/关闭/未配置
     邮件时静默跳过；发送失败不影响签到（mailer 内部捕获）。
     内容脱敏：手机号打码、消息经 _sanitize_text 清洗（不含账号密码）。
     """
@@ -1589,6 +1655,12 @@ def send_user_fail_mail(owner, phone, message):
     if not user:
         return
     if str(user.get("mail_notify", 1)).strip().lower() not in ("1", "true", "on", "yes"):
+        return
+    if not _user_fail_mail_allow_and_record(phone, datetime.now().strftime("%Y-%m-%d")):
+        logger.info(
+            "账号 %s 今日失败提醒已达上限（%d 封），跳过发送",
+            _mask_phone(phone), USER_FAIL_MAIL_DAILY_CAP,
+        )
         return
     mailer.send_user(
         owner,
@@ -2251,7 +2323,8 @@ def _probe_state_path():
 
 def _read_probe_state():
     try:
-        with open(_probe_state_path(), encoding="utf-8") as f:
+        # utf-8-sig：容错 Windows 手工编辑留下的 BOM（对齐 _load_cred_state，2026-08-27 审查修复）
+        with open(_probe_state_path(), encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError, TypeError):
@@ -2268,6 +2341,17 @@ def _write_probe_state(state):
         os.replace(tmp, path)
     except OSError:
         logger.warning("探针状态文件不可写（不影响本次探测）")
+
+
+def _update_probe_state_run(today_str):
+    """记录探针当日已执行（读-改-写整体持 M12 文件锁，防并发覆盖丢写入）。
+
+    2026-08-27 对抗性审查修复：原实现裸读写，与其它状态文件口径不一致。
+    """
+    with _state_file_lock(_probe_state_path()):
+        state = _read_probe_state()
+        state["last_run"] = today_str
+        _write_probe_state(state)
 
 
 def _health_probe_due(now=None):
@@ -2356,6 +2440,7 @@ def run_probe(accounts):
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
     hard_fail = []  # [(Account, message)]
     healthy_n = 0
+    soft_fail_n = 0
     for acc in accounts:
         ok, message = verify_account(acc)
         hard = (not ok) and bool(PROBE_HARD_FAIL_RE.search(message or ""))
@@ -2369,8 +2454,17 @@ def run_probe(accounts):
             logger.debug("探针日志写入失败（不影响探测）: %s", e)
         if hard:
             hard_fail.append((acc, message))
-        else:
+        elif ok:
             healthy_n += 1
+        else:
+            # 网络类失败（超时/DNS 等）：不含硬失败特征、通常可自愈，不计入预警，
+            # 但必须与「确认健康」区分留痕——否则探针自身故障会被误读为全员健康
+            # （2026-08-27 审查修复 P2-8）
+            soft_fail_n += 1
+            logger.info(
+                "探针：账号 %s 网络类失败（不计预警）：%s",
+                _mask_phone(acc.phone), _sanitize_text(message),
+            )
     # 预警（复用 A/B 线邮件机制）
     for acc, message in hard_fail:
         _collect_admin_mail(
@@ -2378,15 +2472,22 @@ def run_probe(accounts):
             f"账号: {_mask_phone(acc.phone)}\n原因: {_sanitize_text(message)}",
         )
         send_user_fail_mail(acc.owner, acc.phone, message)
+    if soft_fail_n and not hard_fail:
+        # 无硬失败时单独提示，避免管理员把「零预警」误读为「全员可用」
+        _collect_admin_mail(
+            "健康探测提示",
+            f"{soft_fail_n} 个账号在探测期间出现网络类失败"
+            f"（超时/连接异常等，通常可自愈），未计入预警。",
+        )
     _flush_admin_mail_summary()
     # 记录执行（last_run 写状态文件；once 自动关闭）
-    state = _read_probe_state()
-    state["last_run"] = now.strftime("%Y-%m-%d")
-    _write_probe_state(state)
+    _update_probe_state_run(now.strftime("%Y-%m-%d"))
     if PROBE_INTERVAL.strip().lower() == "once":
         _env_update_probe(auto_disable=True)
         logger.info("==== 探针模式（单次）执行完成，已自动关闭探针 ====")
-    logger.info(f"==== 探针模式完成：健康 {healthy_n}，预警 {len(hard_fail)} ====")
+    logger.info(
+        f"==== 探针模式完成：健康 {healthy_n}，网络类失败 {soft_fail_n}，预警 {len(hard_fail)} ===="
+    )
 
 
 def main():
@@ -2422,6 +2523,14 @@ def main():
         logger.error(f"配置加载失败: {e}")
         sys.exit(1)
 
+    # 探针模式必须先于「零账号守卫」处理（2026-08-27 审查修复）：空账号部署
+    # 误开探针时此前会夜夜走「未配置任何账号」ERROR 分支且 once 永不关闭；
+    # 探针语义下零账号=无事可做，静默成功退出。
+    if args.probe:
+        if accounts:
+            run_probe(accounts)
+        sys.exit(0)
+
     # 超期软删账号物理清理（2026-08-20 随读路径清理外移而显式化）：cron/Actions
     # 部署可能没有常驻 web 进程，每日签到进程是清理的唯一时机，失败不阻断签到
     try:
@@ -2436,11 +2545,6 @@ def main():
         logger.error("  3. YIBAN_ACCOUNTS 环境变量（旧格式 phone:password#phone2:password2）")
         logger.error("  4. YIBAN_PHONE / YIBAN_PASSWORD 环境变量（单账号）")
         sys.exit(1)
-
-    # 探针模式：只读健康检查，不执行正常签到（不受时间窗/周日/暂停等限制，脚本内自判频率）
-    if args.probe:
-        run_probe(accounts)
-        sys.exit(0)
 
     # --only 过滤：只保留指定手机号（TUI 手动签到单个账号）
     if args.only:
