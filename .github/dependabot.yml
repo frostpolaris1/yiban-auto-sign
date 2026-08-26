@@ -1,12 +1,16 @@
-version: 2
-updates:
-  # Python 依赖：requirements.txt 下限更新 + requirements.lock 精确版本更新
-  - package-ecosystem: pip
-    directory: /
-    schedule:
-      interval: daily
-  # GitHub Actions：锁定 action 版本更新（配合 workflow 中固定 commit SHA 使用）
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: daily
+# Dependabot 依赖自动更新已禁用（2026-08-26，v0.24.2 期间整理）
+# 项目采用稳定优先策略：工作流 action 固定完整 commit SHA，依赖按需手动升级。
+# 如需恢复自动更新，取消下方注释即可。
+#
+# version: 2
+# updates:
+#   # Python 依赖
+#   - package-ecosystem: pip
+#     directory: /
+#     schedule:
+#       interval: daily
+#   # GitHub Actions
+#   - package-ecosystem: github-actions
+#     directory: /
+#     schedule:
+#       interval: daily
