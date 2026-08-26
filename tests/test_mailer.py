@@ -89,7 +89,8 @@ def test_send_admin_alert_success(monkeypatch, tmp_path):
             calls.append(("sendmail", frm, to, msg))
 
     monkeypatch.setattr(mailer.smtplib, "SMTP_SSL", FakeServer)
-    assert mailer.send_admin_alert("告警", "内容") is True
+    # 2026-08-27 契约变更：to 必须由调用方显式传入（缺省不再回退 ADMIN_TO）
+    assert mailer.send_admin_alert("告警", "内容", to="admin@qq.com") is True
     assert calls[0][0] == "login"
     assert calls[0][1] == "sender@qq.com"
     assert calls[0][2] == "secret"
@@ -107,11 +108,31 @@ def test_send_failure_logs_safe(monkeypatch, tmp_path, caplog):
 
     monkeypatch.setattr(mailer.smtplib, "SMTP_SSL", Boom)
     with caplog.at_level("WARNING", logger="mailer"):
-        assert mailer.send_admin_alert("告警", "内容") is False
+        assert mailer.send_admin_alert("告警", "内容", to="admin@qq.com") is False
     assert "OSError" in caplog.text
     assert "secret" not in caplog.text, "授权码不得出现在日志"
     assert "sender@qq.com" not in caplog.text, "完整发件地址不得回显"
     assert "告警" in caplog.text
+
+
+def test_send_admin_alert_requires_filtered_to(monkeypatch, tmp_path, caplog):
+    """P2-3 回归：to 缺省时 fail-closed 拒发（不回退 ADMIN_TO 绕过个人开关）。"""
+    _isolate_env(monkeypatch, tmp_path)
+    _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret",
+              ADMIN_TO="admin@qq.com")
+    attempted = []
+
+    class BoomShouldNotConstruct:
+        def __init__(self, *a, **k):
+            attempted.append(1)
+            raise AssertionError("拒发路径不得尝试建立 SMTP 连接")
+
+    monkeypatch.setattr(mailer.smtplib, "SMTP_SSL", BoomShouldNotConstruct)
+    with caplog.at_level("WARNING", logger="mailer"):
+        assert mailer.send_admin_alert("告警", "内容") is False
+        assert mailer.send_admin_alert("告警", "内容", to="   ") is False
+    assert not attempted, "缺省/空白收件人必须直接拒绝"
+    assert "拒绝发送" in caplog.text
 
 
 def test_send_admin_alert_multi_recipients(monkeypatch, tmp_path):
@@ -137,7 +158,7 @@ def test_send_admin_alert_multi_recipients(monkeypatch, tmp_path):
             targets.extend(to)
 
     monkeypatch.setattr(mailer.smtplib, "SMTP_SSL", FakeServer)
-    mailer.send_admin_alert("告警", "内容")
+    mailer.send_admin_alert("告警", "内容", to="a@qq.com,b@qq.com")
     assert targets == ["a@qq.com", "b@qq.com"]
 
 

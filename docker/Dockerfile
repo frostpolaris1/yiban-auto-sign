@@ -22,6 +22,11 @@ RUN apt-get update \
  && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
  && rm -rf /var/lib/apt/lists/*
 
+# 非 root 专用用户（2026-08-27 审查加固 P2-11）：业务子进程以此身份运行，
+# 入口脚本先做一次 /data 卷属主准备再交由 supervisord 按该用户拉起。
+RUN groupadd -r -g 10001 yiban \
+ && useradd -r -u 10001 -g yiban -d /nonexistent -s /usr/sbin/nologin yiban
+
 WORKDIR /app
 
 # 依赖（flask/gunicorn/requests/pycryptodome 等；textual 供容器内 python3 -m tui 可选使用）
@@ -40,7 +45,6 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scheduler.py ./scripts/container_scheduler.py
 
 RUN chmod +x /entrypoint.sh
-
 # 数据目录（SQLite / .env / 日志 / 加密密钥 / 状态文件），由 compose 挂载
 VOLUME ["/data"]
 

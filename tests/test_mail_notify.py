@@ -112,6 +112,10 @@ class SignUserFailMailTest(unittest.TestCase):
             f.write("YIBAN_ACCOUNTS_KEY=" + TEST_KEY + "\n")
         os.environ["YIBAN_DB_FILE"] = cls.db_file
         os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        # v0.24.3 起 B 线邮件有「每账号每日 1 封」的按天状态文件（STATE_DIR），
+        # 必须隔离到临时目录，否则同日第二次全量跑会因残留配额而失败
+        cls._old_state_dir = os.environ.get("YIBAN_STATE_DIR")
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
         global db
         import db
         global signin
@@ -122,6 +126,10 @@ class SignUserFailMailTest(unittest.TestCase):
         _reset_db()
         os.environ.pop("YIBAN_DB_FILE", None)
         os.environ.pop("YIBAN_ENV_FILE", None)
+        if cls._old_state_dir is None:
+            os.environ.pop("YIBAN_STATE_DIR", None)
+        else:
+            os.environ["YIBAN_STATE_DIR"] = cls._old_state_dir
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
