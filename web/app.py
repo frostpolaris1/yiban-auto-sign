@@ -1268,7 +1268,11 @@ def verify_admin(username, password):
         )
         _constant_time_dummy(password)  # 时延拉平：与哈希比对等开销
         return False
-    return secrets.compare_digest(password.encode("utf-8"), admin_pass.encode("utf-8"))
+    # 2026-08-27 审查 P3：此处两种既有分支均已返回——
+    # 哈希存在 → 已比对返回；明文存在 → M1 fail-closed 返回 False。
+    # 能走到这 = 哈希与明文都为空（配置在两次 read_env 之间被清空的极端竞态），
+    # 原 compare_digest 行在该态对空密码恒真，属理论上的失效盲区，显式拒绝。
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1423,7 +1427,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-23 系统设置页容量统计口径修正（0.22.1）
 # 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
 # 2026-08-26 界面动效审查修复：过渡属性收敛、抽屉遮罩淡入与曲线、登录页切换统一、Toast 动效、reduced-motion 支持（0.24.1）
-APP_VERSION = "0.24.3"
+APP_VERSION = "0.24.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -4152,6 +4156,22 @@ def create_app(host=None):
         if not date:
             date = _most_recent_log_date()
         logs = _log_lines_for(date)
+        # 探针结构化事件（v0.24.4）：此前 stage="probe" 只落库无任何可见出口，
+        # 现随日志接口附带当日探测记录（独立字段，不混入签到文本流；
+        # 手机号打码，条数封顶）。
+        probe_events = []
+        try:
+            for ev in db.probe_events_on(date, limit=100):
+                msg = str(ev.get("message") or "")
+                probe_events.append({
+                    "time": str(ev.get("ts", ""))[-8:] if ev.get("ts") else "",
+                    "phone": signin._mask_phone(str(ev.get("phone") or "")),
+                    "status": str(ev.get("status") or ""),
+                    "message": (msg[:160] + "…") if len(msg) > 160 else msg,
+                })
+        except Exception as e:
+            logger.warning("probe_events 查询失败（不影响日志页）: %s", e)
+            probe_events = []
         # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
         # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
         # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
@@ -4163,6 +4183,7 @@ def create_app(host=None):
                 "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
                 "date": date,
                 "is_today": date == datetime.now().strftime("%Y-%m-%d"),
+                "probe_events": probe_events,
             }
         )
 

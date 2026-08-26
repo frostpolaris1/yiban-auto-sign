@@ -127,7 +127,9 @@ class ProbeSigninTest(unittest.TestCase):
              mock.patch.object(self.s.db, "add_sign_event") as add:
             self.s.run_probe([ok_acc, bad_acc])
         col.assert_called_once()
-        suf.assert_called_once_with("owner@test.com", "13800138002", mock.ANY)
+        # v0.24.4：探针路径的用户邮件带 scenario="probe"（措辞与签到失败解耦）
+        suf.assert_called_once_with("owner@test.com", "13800138002",
+                                    mock.ANY, scenario="probe")
         fl.assert_called_once()
         wsp.assert_called_once()
         eup.assert_not_called()  # 非 once 不自动关闭

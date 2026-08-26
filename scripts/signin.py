@@ -1548,12 +1548,16 @@ def _collect_admin_mail(subject, text):
     _mail_summary.append((subject, text))
 
 
-def _flush_admin_mail_summary():
+def _flush_admin_mail_summary(phase=None):
     """签到任务结束：把运行期收集的管理员邮件汇总成一封发送。
 
     无异常则不发送（成功不打扰）；按主题分组，每个账号独立条目；
     条数超过 MAIL_SUMMARY_MAX_ENTRIES 或正文超长时截断并在尾部注明，
     明细以按天签到日志为准；mailer 内部静默失败，不影响退出码。发送后清空收集器。
+
+    phase：任务阶段标签。定时签到缺省 None → 沿用「签到任务」文案；
+    探针调用传「健康探测」，避免复用造成「并无当日签到却报签到结束」的误导
+    （2026-08-27 审查 P3 修复）。
     """
     if not _mail_summary:
         return
@@ -1567,7 +1571,10 @@ def _flush_admin_mail_summary():
             groups[subject] = []
             order.append(subject)
         groups[subject].append(text)
-    parts = [f"易班签到任务已结束，共 {total} 条异常/预警：\n"]
+    if phase:
+        parts = [f"易班{phase}已完成，共 {total} 条异常/预警：\n"]
+    else:
+        parts = [f"易班签到任务已结束，共 {total} 条异常/预警：\n"]
     for subject in order:
         parts.append(f"【{subject}】")
         parts.extend(groups[subject])
@@ -1637,8 +1644,12 @@ def _user_fail_mail_allow_and_record(phone, today_str):
         return True
 
 
-def send_user_fail_mail(owner, phone, message):
-    """B 线：向账号归属用户发送签到失败邮件。
+def send_user_fail_mail(owner, phone, message, scenario="signin"):
+    """B 线：向账号归属用户发送失败类提醒邮件。
+
+    scenario="signin"（默认）：签到最终失败提醒（原行为，主题/正文不变）；
+    scenario="probe"：健康探测发现账号异常——探测并无「当日签到」语义，
+    沿用签到措辞会误导用户（2026-08-27 审查 P3）。
 
     仅当用户存在且开启 mail_notify（默认开）时发送；每账号每日上限
     USER_FAIL_MAIL_DAILY_CAP 封（默认 1，定时/手动/探针三个入口统一计算；
@@ -1662,13 +1673,23 @@ def send_user_fail_mail(owner, phone, message):
             _mask_phone(phone), USER_FAIL_MAIL_DAILY_CAP,
         )
         return
-    mailer.send_user(
-        owner,
-        "易班签到失败提醒",
-        f"您的易班账号 {_mask_phone(phone)} 今日签到失败：\n{_sanitize_text(message)}\n\n"
-        f"连续失败会被系统自动暂停；如账号正常，请登录网站检查或联系管理员。\n"
-        f"（可在「我的账号」页面关闭本邮件提醒）",
-    )
+    if scenario == "probe":
+        subject = "易班账号健康预警"
+        body = (
+            f"您的易班账号 {_mask_phone(phone)} 在系统例行健康检查中未能正常登录。\n"
+            f"{_sanitize_text(message)}\n\n"
+            f"这不影响已完成的签到；请尽快核对账号密码是否变更、或按提示处理验证问题，"
+            f"避免下次签到失败。\n"
+            f"（可在「我的账号」页面关闭本邮件提醒）"
+        )
+    else:
+        subject = "易班签到失败提醒"
+        body = (
+            f"您的易班账号 {_mask_phone(phone)} 今日签到失败：\n{_sanitize_text(message)}\n\n"
+            f"连续失败会被系统自动暂停；如账号正常，请登录网站检查或联系管理员。\n"
+            f"（可在「我的账号」页面关闭本邮件提醒）"
+        )
+    mailer.send_user(owner, subject, body)
 
 
 # ---------------------------------------------------------------------------
@@ -2465,13 +2486,13 @@ def run_probe(accounts):
                 "探针：账号 %s 网络类失败（不计预警）：%s",
                 _mask_phone(acc.phone), _sanitize_text(message),
             )
-    # 预警（复用 A/B 线邮件机制）
+    # 预警（复用 A/B 线邮件机制；用户邮件按「健康探测」措辞，避免误报为当日签到失败）
     for acc, message in hard_fail:
         _collect_admin_mail(
             "健康探测预警",
             f"账号: {_mask_phone(acc.phone)}\n原因: {_sanitize_text(message)}",
         )
-        send_user_fail_mail(acc.owner, acc.phone, message)
+        send_user_fail_mail(acc.owner, acc.phone, message, scenario="probe")
     if soft_fail_n and not hard_fail:
         # 无硬失败时单独提示，避免管理员把「零预警」误读为「全员可用」
         _collect_admin_mail(
@@ -2479,7 +2500,7 @@ def run_probe(accounts):
             f"{soft_fail_n} 个账号在探测期间出现网络类失败"
             f"（超时/连接异常等，通常可自愈），未计入预警。",
         )
-    _flush_admin_mail_summary()
+    _flush_admin_mail_summary(phase="健康探测")
     # 记录执行（last_run 写状态文件；once 自动关闭）
     _update_probe_state_run(now.strftime("%Y-%m-%d"))
     if PROBE_INTERVAL.strip().lower() == "once":

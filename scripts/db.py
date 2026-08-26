@@ -2030,6 +2030,30 @@ def sign_events_since(since_ts, phone=None, limit=100):
         return []
 
 
+def probe_events_on(date_str, limit=100):
+    """指定日期（YYYY-MM-DD）的健康探测事件（stage="probe"，按时间正序）。
+
+    供 Web 日志页展示探针结构化记录（v0.24.4 前 stage 仅落库无消费方）。
+    查询失败返回空列表，不影响调用方。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            start = f"{date_str} 00:00:00"
+            end = f"{date_str} 23:59:59"
+            sql = (
+                "SELECT id, ts, phone, status, message, attempt "
+                "FROM sign_events WHERE stage='probe' AND ts BETWEEN ? AND ? "
+                "ORDER BY ts LIMIT ?"
+            )
+            params = [start, end, _normalize_limit(limit, 100)]
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("probe_events_on 失败: %s", e)
+        return []
+
+
 def sign_event_peak(days=7, bucket_minutes=5):
     """按时间桶统计签到事件数（第一版：近似并发/请求量）。"""
     try:
