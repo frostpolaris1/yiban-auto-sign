@@ -17,6 +17,20 @@ services:
     container_name: yiban
     restart: unless-stopped
 
+    # 运行时加固（2026-08-27 审查 P2-11）：入口做卷准备后按 yiban 用户拉起
+    # 业务进程；禁新特权并收敛 capabilities 至 supervisord 所需最小集。
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN        # 入口脚本调整 /data 卷属主
+      - DAC_OVERRIDE # 宿主卷属主受限时兜底读写
+      - FOWNER       # 应用 0600 敏感文件写入语义
+      - SETGID
+      - SETUID       # supervisord 切换到 yiban 用户
+      - KILL         # supervisord 停止子进程
+
     # yiban-nginx 会共享本容器的网络命名空间，因此 80/443 在这里声明。
     # 注意：容器内 gunicorn 只监听回环 127.0.0.1:17892，不经共享栈的
     # nginx 就访问不到——保证应用不直接暴露公网（沿用现有部署安全模型）。
@@ -61,3 +75,11 @@ services:
     volumes:
       - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certs:/etc/yiban/certs:ro   # 需 ./certs/fullchain.pem 和 ./certs/key.pem
+    # nginx 同样禁新特权；只读根文件系统 + tmpfs 承接运行时缓存/pid 目录
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=16m
+      - /var/run:size=1m
+      - /tmp:size=4m
