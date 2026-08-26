@@ -6,6 +6,7 @@ umask 077
 cd /opt/yiban-auto-sign
 
 # 加载环境变量（安全逐行解析，仅导出 YIBAN_* 前缀键；与 run.sh 一致，绝不用 source）
+_ENV_WARNINGS=""
 if [ -r /opt/yiban-auto-sign/.env ]; then
     while IFS='=' read -r key value || [ -n "$key$value" ]; do
         value=${value%$'\r'}
@@ -14,11 +15,13 @@ if [ -r /opt/yiban-auto-sign/.env ]; then
         [ -z "$key" ] && continue
         case "$key" in \#*) continue ;; esac
         if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-            echo "警告: .env 含非法键名，已跳过: $key" >&2
+            _ENV_WARNINGS="${_ENV_WARNINGS}警告: .env 含非法键名，已跳过: $key"$'
+'
             continue
         fi
         if [[ ! "$key" =~ ^YIBAN_ ]]; then
-            echo "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key" >&2
+            _ENV_WARNINGS="${_ENV_WARNINGS}警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key"$'
+'
             continue
         fi
         export "$key=$value"
@@ -33,6 +36,11 @@ LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 # 探针未开启时完全静默退出：不产生任何日志、不获取锁、不调用签到程序
 if [[ ! "${YIBAN_PROBE_ENABLE:-0}" =~ ^(1|true|on|yes)$ ]]; then
     exit 0
+fi
+
+# 已确认开启：此刻才放行解析期告警（探针关闭时保持完全静默）
+if [ -n "$_ENV_WARNINGS" ]; then
+    printf '%s' "$_ENV_WARNINGS" >&2
 fi
 
 # 与签到共用单实例锁：探针与签到进程互斥，防止并发操作同一批账号

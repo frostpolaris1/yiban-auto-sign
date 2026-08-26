@@ -18,6 +18,10 @@ logger = logging.getLogger("mailer")
 
 _PREFIX = "YIBAN_MAIL_"
 
+# SMTP_PORT 配置无效时的「回退 465」一次性告警（v0.24.4：原静默回退会让
+# 填错端口的用户在设置页看到 465 而误以为配置正确，排查困难）
+_port_warned = False
+
 
 def _mask_addr(addr):
     """邮箱打码：477929858@qq.com → 477****@qq.com（保留域名；非邮箱原样返回）。"""
@@ -54,15 +58,30 @@ def _get(key):
 
 
 def get_config():
-    """读取邮件配置概览（脱敏：不含授权码，发件地址打码），供设置页/日志展示。"""
+    """读取邮件配置概览（脱敏：不含授权码，发件地址打码），供设置页/日志展示。
+
+    port_fallback：SMTP_PORT 缺省或非法时为 True——展示层据此提示
+    「端口未按预期生效，实际按 465 处理」，不再无声回退（2026-08-27 审查 P3）。
+    """
+    global _port_warned
+    raw_port = _get("SMTP_PORT")
     try:
-        port = int(_get("SMTP_PORT") or "465")
+        port = int(raw_port or "465")
+        port_fallback = not raw_port.strip()
     except ValueError:
         port = 465
+        port_fallback = True
+        if raw_port and not _port_warned:
+            _port_warned = True
+            logger.warning(
+                "YIBAN_MAIL_SMTP_PORT=%r 不是合法端口，已回退 465；请修正 .env",
+                raw_port,
+            )
     return {
         "enable": _get("ENABLE"),
         "host": _get("SMTP_HOST") or "smtp.qq.com",
         "port": port,
+        "port_fallback": port_fallback,
         "user": _mask_addr(_get("USER")),
         "admin_to": _mask_addr(_get("ADMIN_TO")),
         "admin_notify": admin_notify_enabled(),
@@ -82,10 +101,17 @@ def _send(subject, text, to):
     if not to or not is_enabled():
         return False
     host = _get("SMTP_HOST") or "smtp.qq.com"
+    raw_port = _get("SMTP_PORT")
     try:
-        port = int(_get("SMTP_PORT") or "465")
+        port = int(raw_port or "465")
     except ValueError:
         port = 465
+        global _port_warned
+        if not _port_warned:
+            _port_warned = True
+            logger.warning(
+                "YIBAN_MAIL_SMTP_PORT=%r 不是合法端口，本次发送回退 465", raw_port,
+            )
     user = _get("USER")
     password = _get("PASS")
 
