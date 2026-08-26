@@ -114,7 +114,7 @@ class ProbeSigninTest(unittest.TestCase):
         ok_acc = self._mk_account("13800138001")
         bad_acc = self._mk_account("13800138002")
         bad_acc.owner = "owner@test.com"
-        with mock.patch.object(self.s, "_probe_due", return_value=True), \
+        with mock.patch.object(self.s, "_health_probe_due", return_value=True), \
              mock.patch.object(self.s, "verify_account", side_effect=[
                  (True, "账号健康，可正常签到"),
                  (False, "登录失败（账号或密码错误）"),
@@ -136,14 +136,31 @@ class ProbeSigninTest(unittest.TestCase):
     def test_run_probe_once_auto_disable(self):
         self._set_probe("1", "20:00", "once")
         acc = self._mk_account()
-        with mock.patch.object(self.s, "_probe_due", return_value=True), \
+        with mock.patch.object(self.s, "_health_probe_due", return_value=True), \
              mock.patch.object(self.s, "verify_account", return_value=(True, "健康")), \
              mock.patch.object(self.s, "_write_probe_state"), \
              mock.patch.object(self.s, "_env_update_probe") as eup:
             self.s.run_probe([acc])
         eup.assert_called_once_with(auto_disable=True)
 
-    def test_run_probe_skipped_when_not_due(self):
+    def test_run_probe_disabled_is_silent(self):
+        # 探针关闭：完全静默——不调到期判断、不探测、不落库、不写状态、不预警
+        acc = self._mk_account()
+        with mock.patch.object(self.s, "verify_account") as va, \
+             mock.patch.object(self.s, "_health_probe_due") as h, \
+             mock.patch.object(self.s, "_write_probe_state") as wsp, \
+             mock.patch.object(self.s, "_collect_admin_mail") as col, \
+             mock.patch.object(self.s.db, "add_sign_event") as add:
+            self.s.run_probe([acc])
+        va.assert_not_called()
+        h.assert_not_called()
+        wsp.assert_not_called()
+        col.assert_not_called()
+        add.assert_not_called()
+
+    def test_run_probe_skipped_when_enabled_but_not_due(self):
+        # 已开启但未到触发时间/频率：跳过且不探测、不写状态
+        self._set_probe("1", "20:00", "1")
         acc = self._mk_account()
         with mock.patch.object(self.s, "_health_probe_due", return_value=False), \
              mock.patch.object(self.s, "verify_account") as va, \
