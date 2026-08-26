@@ -186,7 +186,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
     由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。"""
     icp_block = f'<p class="doc-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">{icp_text}</a></p>' if icp_text else ""
-    police_block = f'<p class="doc-icp"><a href="https://www.beian.gov.cn/" target="_blank" rel="noopener">{police_text}</a></p>' if police_text else ""
+    police_block = f'<p class="doc-icp"><a href="https://beian.mps.gov.cn/#/query/webSearch?code=32110202000847" target="_blank" rel="noopener"><img src="/gongan-beian.png" alt="" width="12" height="14" style="vertical-align:-2px;margin-right:4px"> {police_text}</a></p>' if police_text else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1642,7 +1642,7 @@ def create_app(host=None):
             return redirect(url_for("login_page"))
         if role != "admin":
             return redirect(url_for("user_page"))
-        return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
+        return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info())
 
     @app.route("/user")
     def user_page():
@@ -1651,7 +1651,7 @@ def create_app(host=None):
             return redirect(url_for("login_page"))
         if role != "user":
             return redirect(url_for("index_page"))
-        return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info())
+        return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info())
 
     # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
     # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
@@ -1690,7 +1690,7 @@ def create_app(host=None):
     @app.route("/terms")
     def terms_page():
         """用户协议独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info(), request.script_root)
+        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info(), police_info(), request.script_root)
 
     @app.route("/privacy")
     def privacy_page():
