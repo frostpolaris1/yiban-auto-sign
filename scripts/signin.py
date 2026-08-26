@@ -2345,8 +2345,11 @@ def run_probe(accounts):
       预警（复用 B 线 send_user_fail_mail，尊重用户开关）。
     - 执行后更新 last_run；once 模式自动关闭探针（.env 写锁）。
     """
+    if not PROBE_ENABLE:
+        # 探针关闭：完全静默退出（不产生任何日志、不落库、不写状态）
+        return
     if not _health_probe_due():
-        logger.info("==== 探针模式：未到触发时间/频率或未开启，跳过 ====")
+        logger.info("==== 探针模式：已开启，但未到触发时间/频率，本次跳过 ====")
         return
     logger.info(f"==== 探针模式：对 {len(accounts)} 个账号进行健康检查 ====")
     now = datetime.now()

@@ -30,6 +30,11 @@ STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
+# 探针未开启时完全静默退出：不产生任何日志、不获取锁、不调用签到程序
+if [[ ! "${YIBAN_PROBE_ENABLE:-0}" =~ ^(1|true|on|yes)$ ]]; then
+    exit 0
+fi
+
 # 与签到共用单实例锁：探针与签到进程互斥，防止并发操作同一批账号
 LOCK_DIR="/var/lock/yiban"
 if [ ! -d "$LOCK_DIR" ]; then
