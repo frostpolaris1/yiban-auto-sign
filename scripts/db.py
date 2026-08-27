@@ -765,6 +765,7 @@ def _maybe_migrate(conn, json_base):
         return
     imported = 0
     key = account_crypto.load_key(_env_file) if accounts else None
+    had_plaintext = False  # 迁移源含明文字段 → .bak 逃生门需重写为加密版（2026-08-27 审查缺口 2）
     with _conn_lock, conn:
         if accounts:
             # 加密字段统一为库内 JSON 串格式：
@@ -776,10 +777,12 @@ def _maybe_migrate(conn, json_base):
                 phone_code = a.get("phone_code", "") or ""
                 if key is not None:
                     if password and not _is_encrypted_value(password):
+                        had_plaintext = True
                         password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
                     elif isinstance(password, dict):
                         password = json.dumps(password)  # 已是密文对象 → 序列化入库
                     if phone_code and not _is_encrypted_value(phone_code):
+                        had_plaintext = True
                         phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
                     elif isinstance(phone_code, dict):
                         phone_code = json.dumps(phone_code)
@@ -817,24 +820,60 @@ def _maybe_migrate(conn, json_base):
                 imported += cur.rowcount
     # 事务提交成功后统一改名，避免单个 JSON 导入失败时已把另一个改名
     if accounts:
-        _rename_backup(accounts_json)
+        _rename_backup(accounts_json, reencrypt=had_plaintext, key=key)
     if users:
         _rename_backup(users_json)
     logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
 
 
-def _rename_backup(path):
-    """JSON 迁移成功后改名保留（逃生门），避免被旧代码误写回。"""
+def _rename_backup(path, reencrypt=False, key=None):
+    """JSON 迁移成功后改名保留（逃生门），避免被旧代码误写回。
+
+    2026-08-27 审查缺口 2：.bak 一律落 0600；迁移源含明文字段时（更早格式/手工构造/
+    第三方导出），重写 .bak 为加密版，杜绝明文凭据以 .bak 形态驻留磁盘。
+    """
     if os.path.exists(path):
         bak = f"{path}.bak-{datetime.datetime.now().strftime('%Y%m%d')}"
         if not os.path.exists(bak):
             os.rename(path, bak)
+        try:
+            os.chmod(bak, 0o600)
+        except OSError:
+            pass  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
+        if reencrypt and key is not None:
+            try:
+                with open(bak, encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    changed = False
+                    for a in data:
+                        pwd = a.get("password", "") or ""
+                        if pwd and not _is_encrypted_value(pwd):
+                            a["password"] = json.dumps(
+                                account_crypto.encrypt_password(pwd, key, a.get("phone", ""))
+                            )
+                            changed = True
+                        code = a.get("phone_code", "") or ""
+                        if code and not _is_encrypted_value(code):
+                            a["phone_code"] = json.dumps(
+                                account_crypto.encrypt_password(code, key, a.get("phone", ""))
+                            )
+                            changed = True
+                    if changed:
+                        tmp = bak + ".tmp" + str(os.getpid())
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False)
+                        os.chmod(tmp, 0o600)
+                        os.replace(tmp, bak)
+                        logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
+            except (OSError, ValueError, TypeError):
+                logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
 
 
 # ---------------------------------------------------------------------------
 # accounts CRUD（单行操作，事务内）
 # ---------------------------------------------------------------------------
-def _row_to_account(row):
+def _row_to_account(row, conn=None):
     a = dict(row)
     a["deleted"] = bool(a["deleted"])
     a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
@@ -859,7 +898,21 @@ def _row_to_account(row):
                     # 与密钥缺失分支一致，由 web 层统一 JSON 错误处理（对抗性审查 L1）
                     raise RuntimeError(str(e)) from e
             else:
-                a[k] = v  # 明文（迁移前数据或未加密）
+                # 明文驻留检测（2026-08-27 审查缺口 1）：非密文值照常使用（不阻断业务），
+                # 但必须告警 + 持锁幂等加密回写——堵住"明文已进库"无人察觉；
+                # 对照 session_cache 对旧明文行抛错清除（M14），accounts 此前无对应策略。
+                phone = str(a.get("phone", ""))
+                phone_masked = phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
+                logger.warning(
+                    "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
+                    phone_masked, k,
+                )
+                a[k] = v
+                if conn is not None:
+                    enc = _encrypt_field(v, a.get("phone", ""))
+                    conn.execute(
+                        f"UPDATE accounts SET {k}=? WHERE id=?", (enc, a["id"])
+                    )
     return a
 
 
@@ -946,7 +999,11 @@ def load_accounts():
     with _conn_lock:
         conn = get_conn()
         rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-        return [_row_to_account(r) for r in rows]
+        accts = [_row_to_account(r, conn) for r in rows]
+        # 明文自愈回写持久化（2026-08-27 审查缺口 1）：UPDATE 不改变行数/顺序，
+        # 不会引发 idx 寻址漂移；未 commit 会在连接关闭时回滚导致自愈失效
+        conn.commit()
+        return accts
 
 
 def load_accounts_raw():
@@ -1025,7 +1082,7 @@ def update_account(account_id, fields, expect_snapshot=None):
         row = cur.fetchone()
         if row is None:
             return None if expect_snapshot is not None else False
-        cur_a = _row_to_account(row)  # 解密（AAD=库内当前手机号）
+        cur_a = _row_to_account(row, conn)  # 解密（AAD=库内当前手机号）；明文驻留自动加密回写
         if expect_snapshot is not None:
             snap = {
                 "name": cur_a.get("name", ""),
