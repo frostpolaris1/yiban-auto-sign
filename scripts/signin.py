@@ -740,9 +740,19 @@ def _load_accounts_from_json_env():
 
 
 def _load_accounts_from_legacy_env():
-    """旧格式兼容：YIBAN_ACCOUNTS（phone:password#...）与 YIBAN_PHONE/YIBAN_PASSWORD。"""
+    """旧格式兼容：YIBAN_ACCOUNTS（phone:password#...）与 YIBAN_PHONE/YIBAN_PASSWORD。
+
+    2026-08-27 审查缺口 3：此路径仍接受明文凭据环境变量——进库前会加密，但明文源
+    留在 .env 与进程环境（/proc/<pid>/environ 同 uid 可读）。保留兼容，但加载即告警，
+    提示改用 Web 管理台 / YIBAN_ACCOUNTS_JSON；告警内容不含任何凭据明文。
+    """
     accounts = []
     accounts_str = os.environ.get("YIBAN_ACCOUNTS", "")
+    if accounts_str or os.environ.get("YIBAN_PASSWORD", ""):
+        logger.warning(
+            "检测到旧格式明文账号配置（YIBAN_ACCOUNTS/YIBAN_PASSWORD）：凭据明文存在于 "
+            "环境变量与进程环境中，建议改用 Web 管理台或 YIBAN_ACCOUNTS_JSON 管理账号"
+        )
     for item in accounts_str.split("#"):
         item = item.strip()
         if not item:
