@@ -2143,6 +2143,36 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     return schedule
 
 
+def _window_closed(sch_cfg, now_dt):
+    """签到窗口是否已关闭：统一按 eff_hi = sign_end - edge_back 判定（P5，2026-08-27）。
+
+    与计划 horizon（_schedule_blocks 的 eff_hi）一致：首 pass 与重试同口径，
+    消除原"首 pass 裸 sign_end / 重试 end-edge_back"两处不一致。
+    """
+    now_sec = now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second
+    end_sec = sch_cfg["sign_end"][0] * 3600 + sch_cfg["sign_end"][1] * 60
+    return now_sec > end_sec - sch_cfg["edge_back_sec"]
+
+
+def _next_retry_at(now_dt, sch_cfg, rng=None):
+    """重试落点（调度 v2，2026-08-27）：失败账号重新采样到剩余有效窗口的偏早段。
+
+    - 下界 now + retry_min_interval（防连击，保留原安全语义）
+    - 上界 eff_hi = sign_end - edge_back（统一截止口径）
+    - 剩余窗口"偏早随机"采样（前 60% 均匀）：不尾端扎堆（P2）、无固定尾序（P7）、
+      不再回队尾立即执行（P1）；窗口不足返回 None → 调用方走放弃路径（P5）。
+    """
+    rng = rng or random.Random()
+    base = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_min = sch_cfg["sign_end"][0] * 60 + sch_cfg["sign_end"][1]
+    eff_hi = base + timedelta(minutes=end_min - sch_cfg["edge_back_sec"] / 60.0)
+    lo = now_dt + timedelta(seconds=sch_cfg["retry_min_interval"])
+    if lo >= eff_hi:
+        return None
+    window = (eff_hi - lo).total_seconds()
+    return lo + timedelta(seconds=rng.uniform(0, window * 0.6))
+
+
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None):
     """轮询队列 + 分散重试执行全部账号签到。
 
@@ -2151,8 +2181,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     每账号总尝试次数受 classify_failure 分级控制（风控类最多 2 次，其他最多 4 次）；
     同一账号两次尝试间隔不小于 RETRY_MIN_INTERVAL 秒，避免连击。
 
-    schedule 非空（自动错峰模式）：按 {phone: datetime} 时间点到点执行（已过点立即执行），
-    不再叠加启动/账号间随机延迟；重试仍按队列逻辑尽快进行（不等待计划）。
+    schedule 非空（自动错峰模式，调度 v2 时间驱动队列）：按 {phone: datetime} 时间点到点执行
+    （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新采样到
+    剩余有效窗口的偏早段后非阻塞重插（不再回队尾 + 阻塞等待），窗口不足时明确放弃；
+    相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护统一按 eff_hi（sign_end - edge_back）。
 
     cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
     执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
@@ -2180,6 +2212,132 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     # P6 耗时告警：阈值可配（YIBAN_SLOW_SIGN_SEC），每账号每轮最多告警 1 次
     slow_sec = _env_int("YIBAN_SLOW_SIGN_SEC", _DEFAULT_SLOW_SIGN_SEC, 1, 600)
     slow_notified = set()
+
+    # ---- 调度 v2 时间驱动队列（2026-08-27 阶段 2：重试重新尊重计划，P1-P5/P7）----
+    # pending: (next_at, seq, acc) 按下次尝试时刻排序；首 attempt 落点=计划时刻（已过点立即）；
+    # 重试经 _next_retry_at 重新采样落点后非阻塞重插，不再"回队尾 + 阻塞 sleep"（P4 消除）。
+    if schedule:
+        import heapq
+        pending = []
+        _seq = 0
+
+        def _push(_acc, _at):
+            nonlocal _seq
+            heapq.heappush(pending, (_at, _seq, _acc))
+            _seq += 1
+
+        _now0 = datetime.now()
+        for _acc in accounts:
+            _t = schedule.get(_acc.phone)
+            _push(_acc, _t if _t and _t > _now0 else _now0)
+        while pending:
+            _at_dt, _seq_no, acc = heapq.heappop(pending)
+            phone = acc.phone
+            # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
+            today = datetime.now().strftime("%Y-%m-%d")
+            now_dt = datetime.now()
+            # 截止保护（P5，统一 eff_hi 口径）：窗口关闭 → 剩余账号全部跳过
+            if _window_closed(sch_cfg, now_dt):
+                results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
+                _write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+                logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
+                for _rest in pending:
+                    _rp = _rest[2].phone
+                    results[_rp] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
+                    _write_sign_state(_rp, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+                break
+            # 到点执行（已过点立即）；重试落点已由 _next_retry_at 采样
+            wait = (_at_dt - now_dt).total_seconds()
+            if wait > 0:
+                time.sleep(wait)
+            # 请求最小间隔兜底（F1）：min_exec_gap 与 exec_gap_min（过点账号）取较大值
+            if last_done is not None:
+                min_gap = max(
+                    sch_cfg["min_exec_gap"],
+                    sch_cfg["exec_gap_min"] if wait <= 0 else 0,
+                )
+                gap = min_gap - (time.monotonic() - last_done)
+                if gap > 0:
+                    logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {min_gap}s）")
+                    time.sleep(gap)
+            first_round = False
+            # 用户自暂停（调度 v2）：零请求直接跳过，状态显示"已取消"
+            if getattr(acc, "user_paused", False):
+                results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
+                _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
+                continue
+            # 账密熔断：暂停中的账号零请求直接跳过（半开试探日除外——试探 1 次以验证恢复）
+            cred = cred_state.get(phone, {})
+            if cred.get("paused_since") and not _probe_due(cred, today):
+                results[phone] = (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED)
+                _write_sign_state(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
+                logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
+                continue
+            attempts[phone] += 1
+            logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
+            t0 = time.monotonic()  # 单次尝试耗时起点（P6：慢响应可判）
+            success, message, skip, status = attempt_signin(acc)
+            last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
+            dur = last_done - t0
+            _write_sign_state(phone, status, message, dur=dur)
+            # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知（原样）
+            if dur > slow_sec and phone not in slow_notified:
+                slow_notified.add(phone)
+                logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
+                _collect_admin_mail(
+                    "易班签到耗时告警",
+                    f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
+                )
+                if notify_url:
+                    send_notification(
+                        "易班签到耗时告警",
+                        f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
+                        notify_url,
+                    )
+            # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
+            _update_cred_state(cred_state, phone, success, message, today)
+            if cred.get("paused_since") and success:
+                logger.info(f"[{phone}] ✅ 半开试探成功，账密恢复，解除暂停")
+            elif cred.get("paused_since") and not success and _probe_due(cred, today):
+                next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+                cred_state[phone]["probe_date"] = next_probe
+                logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
+            if success:
+                results[phone] = (True, message, skip, status)
+                logger.info(f"[{phone}] {STATUS_SYMBOL[status]} {message}")
+                continue
+            # 失败：跳过类不重试；其余按分级重试
+            if skip:
+                results[phone] = (False, message, True, status)
+                logger.info(f"[{phone}] ⛔ {message}（不重试）")
+                continue
+            max_attempts = classify_failure(message)
+            # 会话缓存联动（2026-08-22）：风控类失败（e003/WAF 等）清除该账号缓存（原样）
+            if max_attempts == RISK_MAX_ATTEMPTS or "授权设备" in message:
+                clear_session_cache_quiet(phone)
+            if attempts[phone] >= max_attempts:
+                results[phone] = (False, message, False, status)
+                logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
+                _collect_admin_mail("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}")
+                if notify_url:
+                    send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
+                send_user_fail_mail(acc.owner, phone, message)
+                continue
+            # 重试落点（P1/P2/P3/P7）：窗口内重新采样，非阻塞重插；窗口不足 → 放弃（P5）
+            nxt = _next_retry_at(datetime.now(), sch_cfg)
+            if nxt is None:
+                results[phone] = (False, message, False, status)
+                logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
+                _collect_admin_mail("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}")
+                if notify_url:
+                    send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
+                send_user_fail_mail(acc.owner, phone, message)
+                continue
+            _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
+            _push(acc, nxt)
+            logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次，{nxt.strftime('%H:%M:%S')} 再试）")
+        return results
 
     while queue:
         acc = queue.pop(0)
