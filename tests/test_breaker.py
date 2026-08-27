@@ -141,6 +141,46 @@ class BreakerTest(unittest.TestCase):
         self._run_main(datetime(2026, 8, 26, 6, 40), dict(cred))
         self.assertEqual(self._calls, ["13800138000"], "试探日应执行一次")
 
+    def _run_probe_with_result(self, attempt_result):
+        """试探日跑一次单账号队列，attempt_signin 返回指定结果，返回变动后的 cred_state。"""
+        class FakeDT(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 26, 6, 40)  # = probe_date，试探日
+
+        cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
+                                 "paused_since": self.D3, "probe_date": "2026-08-26"}}
+        acc = signin.Account(phone="13800138000", password="p")
+        with mock.patch.object(signin, "datetime", FakeDT), \
+             mock.patch.object(signin, "attempt_signin", return_value=attempt_result), \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin.time, "sleep"):
+            signin.run_queue_retry([acc], None, 0, 0, cred_state=cred)
+        return cred
+
+    def test_probe_day_window_skip_unfreezes(self):
+        """试探日登录已成功但被签到时段跳过（窗口外）→ 凭据证实可用，应解冻而非再冻 7 天。"""
+        cred = self._run_probe_with_result(
+            (False, "未在签到时间内（08:00 ~ 22:00）", True, signin.STATUS_SKIPPED_WINDOW)
+        )
+        self.assertNotIn("13800138000", cred, "窗口跳过（登录已成功）应解除暂停")
+
+    def test_probe_day_norange_skip_unfreezes(self):
+        """试探日登录已成功但签到窗口缺失（Range 为空）→ 同样视为凭据可用，应解冻。"""
+        cred = self._run_probe_with_result(
+            (False, "签到时间窗口缺失（无 Range），已跳过", True, signin.STATUS_SKIPPED_NORANGE)
+        )
+        self.assertNotIn("13800138000", cred, "窗口缺失跳过（登录已成功）应解除暂停")
+
+    def test_probe_day_real_credential_failure_stays_paused(self):
+        """对照组：试探日仍是凭据类失败 → 保持暂停并顺延试探日（不受解冻修复影响）。"""
+        cred = self._run_probe_with_result(
+            (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED)
+        )
+        self.assertIn("13800138000", cred, "凭据类失败应保持暂停")
+        self.assertEqual(cred["13800138000"]["probe_date"], "2026-09-02",
+                         "试探失败应顺延 7 天（8-26 + 7）")
+
     # ---- 3. web 编辑账号清除 cred-state ----
     def test_account_edit_clears_cred_state(self):
         spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))

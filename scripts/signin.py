@@ -2307,9 +2307,17 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     )
             # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
             _update_cred_state(cred_state, phone, success, message, today)
-            if cred.get("paused_since") and success:
-                logger.info(f"[{phone}] ✅ 半开试探成功，账密恢复，解除暂停")
-            elif cred.get("paused_since") and not success and _probe_due(cred, today):
+            # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
+            # （SKIPPED_WINDOW/NORANGE 发生在登录并拉取任务之后，凭据已被证实可用）。
+            # 2026-08-27 修复：原实现仅 success 时解冻，窗口跳过被误判为试探失败再冻 7 天。
+            probe_healthy = success or (
+                skip and status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE)
+            )
+            if cred.get("paused_since") and probe_healthy:
+                if not success:  # success 时 _update_cred_state 已清除；窗口跳过需显式清除
+                    cred_state.pop(phone, None)
+                logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
+            elif cred.get("paused_since") and _probe_due(cred, today):
                 next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
                 cred_state[phone]["probe_date"] = next_probe
                 logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
@@ -2431,9 +2439,17 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 )
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
         _update_cred_state(cred_state, phone, success, message, today)
-        if cred.get("paused_since") and success:
-            logger.info(f"[{phone}] ✅ 半开试探成功，账密恢复，解除暂停")
-        elif cred.get("paused_since") and not success and _probe_due(cred, today):
+        # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
+        # （SKIPPED_WINDOW/NORANGE 发生在登录并拉取任务之后，凭据已被证实可用）。
+        # 2026-08-27 修复：原实现仅 success 时解冻，窗口跳过被误判为试探失败再冻 7 天。
+        probe_healthy = success or (
+            skip and status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE)
+        )
+        if cred.get("paused_since") and probe_healthy:
+            if not success:  # success 时 _update_cred_state 已清除；窗口跳过需显式清除
+                cred_state.pop(phone, None)
+            logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
+        elif cred.get("paused_since") and _probe_due(cred, today):
             # 试探失败：更新下次试探日，保持暂停
             next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
             cred_state[phone]["probe_date"] = next_probe
