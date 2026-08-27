@@ -156,9 +156,19 @@ class SigninFixes021Test(unittest.TestCase):
                                 "重试总间隔不得小于 RETRY_MIN_INTERVAL")
 
     def test_retry_wait_schedule_branch_respects_sch_cfg_retry_min_interval(self):
+        """P4（2026-08-27）：schedule 分支重试改为非阻塞重插——重试落点 ≥ now + retry_min_interval，
+        不再原地 sleep ≥5s 阻塞整条队列。"""
+        from random import Random as _R
         acc = signin.Account(phone="13800138000", password="p")
         sleeps = []
         scheduled_at = datetime.now()
+        captured = {}
+        orig_next = signin._next_retry_at
+
+        def spy(now_dt, sch_cfg, rng=None):
+            captured["nxt"] = orig_next(now_dt, sch_cfg, rng=_R(1))
+            return captured["nxt"]
+
         with mock.patch.dict(
             os.environ,
             {
@@ -172,18 +182,24 @@ class SigninFixes021Test(unittest.TestCase):
              mock.patch.object(signin, "attempt_signin",
                                return_value=(False, "网络超时", False, signin.STATUS_FAILED)), \
              mock.patch.object(signin, "classify_failure", return_value=2), \
-             mock.patch.object(signin, "random") as rnd, \
              mock.patch.object(signin.time, "sleep", side_effect=lambda s: sleeps.append(s)), \
              mock.patch.object(signin, "_write_sign_state"), \
              mock.patch.object(signin, "_update_cred_state"), \
-             mock.patch.object(signin, "send_notification"):
-            rnd.uniform.return_value = 0.0
+             mock.patch.object(signin, "send_notification"), \
+             mock.patch.object(signin, "_next_retry_at", side_effect=spy):
             signin.run_queue_retry(
                 [acc], "", 0, 0, schedule={acc.phone: scheduled_at}
             )
-        self.assertTrue(sleeps, "schedule 分支也应发生重试等待")
-        self.assertGreaterEqual(sleeps[0], 5,
-                                "schedule 分支重试总间隔不得小于 sch_cfg retry_min_interval")
+        self.assertIn("nxt", captured, "schedule 分支应计算重试落点")
+        # 落点距失败时刻 ≥ retry_min_interval（5s，容差 2s），且不超出窗口末端（eff_hi=23:59）
+        self.assertGreaterEqual(
+            captured["nxt"] - datetime.now(),
+            __import__("datetime").timedelta(seconds=3),
+            "重试落点不得早于 now + retry_min_interval",
+        )
+        # 落点 ≤ eff_hi = sign_end - edge_back = 23:59（当日）
+        eff_hi = datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
+        self.assertLessEqual(captured["nxt"], eff_hi, "重试落点不得越过窗口末端")
 
     # ---- M16 ----
     def test_send_notification_warns_on_non_2xx_with_safe_url(self):
