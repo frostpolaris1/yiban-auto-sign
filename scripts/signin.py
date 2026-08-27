@@ -209,7 +209,7 @@ HEADERS = {
     "Connection": "close",
 }
 
-# KillYiBan 同款请求头（默认登录方式）
+# KillYiBan 同款请求头（默认登录方式；与同作者的 FYIBAN 同源，KillYiBan 脱胎于 FYIBAN）
 # 注意：usersure 提交时会被显式覆盖为不带 Origin/Referer（见 login_killyiban 第 3 步，
 # 实测带 Origin → e001 无效应用端编号），其余请求用此头
 KILLYIBAN_HEADERS = {
@@ -846,7 +846,7 @@ class YibanClient:
         # C-SIGN-04：密码缓冲用可变 bytearray 持有（str 不可原位清零），
         # 单次签到尝试结束由 _wipe_credentials 原位清零（attempt_signin finally）
         self.password = bytearray(account.password.encode("UTF-8"))
-        # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，实测绕过 e003）；
+        # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，与同作者 FYIBAN 同源，实测绕过 e003）；
         # 旧流程（Auto-Test 继承的 iOS 伪造 UA）仅在 YIBAN_LEGACY_LOGIN=1 时启用（GitHub Actions 等场景备选）
         self.use_killyiban = os.environ.get("YIBAN_LEGACY_LOGIN", "") != "1"
         if self.use_killyiban:
