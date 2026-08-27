@@ -79,6 +79,40 @@ class PlaintextPatchTest(unittest.TestCase):
         with self.assertNoLogs("yiban.db", level="WARNING"):
             db.load_accounts()
 
+    def test_load_accounts_decrypt_error_rolls_back_dangling_txn(self):
+        """P1：某行解密抛错时不得在共享连接留下悬挂事务（2026-08-27）。
+
+        行1 明文（触发自愈 UPDATE，开启隐式事务）+ 行2 损坏密文（解密必失败）。
+        load_accounts 抛出后：后续 BEGIN IMMEDIATE 写路径必须仍可用，
+        且行1 的半自愈回写随整批回滚（原子性：要么全愈要么全不动）。
+        """
+        conn = db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        conn.execute(
+            "INSERT INTO accounts (sort_order, name, phone, password) "
+            "VALUES (1, '甲', '13800138000', 'PlainPass1')"
+        )
+        bad = json.dumps({
+            "v": 1, "nonce": "00" * 12, "ct": "ab" * 3, "tag": "00" * 16,
+        })
+        conn.execute(
+            "INSERT INTO accounts (sort_order, name, phone, password) "
+            "VALUES (2, '乙', '13800138001', ?)", (bad,)
+        )
+        conn.commit()
+        with self.assertRaises(RuntimeError):
+            db.load_accounts()
+        # 关键断言：悬挂事务已回滚——BEGIN IMMEDIATE 写路径不再连锁报错
+        c = db.get_conn()
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("UPDATE accounts SET name='ok' WHERE phone='13800138000'")
+        c.commit()
+        # 行1 的自愈回写随整批回滚，库内仍是明文（未残留半自愈状态）
+        raw = {r["phone"]: r for r in db.load_accounts_raw()}
+        self.assertFalse(
+            db._is_encrypted_value(raw["13800138000"]["password"]),
+            "整批解密失败时应整体回滚，不残留半自愈状态",
+        )
+
     # ---- 缺口 2：迁移 .bak ----
     def test_migrate_bak_reencrypted_and_0600(self):
         accounts_json = os.path.join(self.tmp, "accounts.json")
