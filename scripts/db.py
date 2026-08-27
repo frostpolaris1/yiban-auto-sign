@@ -999,7 +999,16 @@ def load_accounts():
     with _conn_lock:
         conn = get_conn()
         rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-        accts = [_row_to_account(r, conn) for r in rows]
+        try:
+            accts = [_row_to_account(r, conn) for r in rows]
+        except Exception:
+            # 自愈/解密中途抛错（如某行密文损坏）时，前面已执行的成功自愈/解密
+            # 会在共享连接上留下未提交的隐式事务；不回滚会让后续所有
+            # `BEGIN IMMEDIATE` 写路径报 "cannot start a transaction within a
+            # transaction"，夜间事件落库等连锁失效。先回滚清场再原样抛出（2026-08-27）。
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
         # 明文自愈回写持久化（2026-08-27 审查缺口 1）：UPDATE 不改变行数/顺序，
         # 不会引发 idx 寻址漂移；未 commit 会在连接关闭时回滚导致自愈失效
         conn.commit()
