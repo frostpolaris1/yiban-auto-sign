@@ -237,6 +237,20 @@ class MailNotifyApiTest(unittest.TestCase):
         r = c.put("/api/my-mail-notify", json={"enabled": False})
         self.assertEqual(r.status_code, 401)
 
+    def test_login_username_case_normalized(self):
+        """混合大小写邮箱登录：会话用户名归一小写，邮件开关读写不因大小写失配而失效（2026-08-27）。"""
+        c = self.webapp.create_app().test_client()
+        # 库内为小写 user1@test.local；以混合大小写登录
+        token = self._login(c, "User1@Test.Local", USER_PASS)
+        with c.session_transaction() as sess:
+            self.assertEqual(sess["username"], "user1@test.local",
+                             "会话用户名应归一小写，否则大小写敏感的库查询失配")
+        # 端到端：开关可正常持久化（修复前 PUT 更新 0 行、GET 仍返回默认值）
+        c.put("/api/my-mail-notify", json={"enabled": False},
+              headers={"X-CSRF-Token": token})
+        r = c.get("/api/my-mail-notify")
+        self.assertFalse(r.get_json()["mail_notify"], "混合大小写登录后开关应可持久化")
+
     def test_save_off_then_read(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)

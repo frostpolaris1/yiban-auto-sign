@@ -1862,7 +1862,11 @@ def create_app(host=None):
             session.permanent = True
             session["auth"] = True
             session["role"] = role
-            session["username"] = username
+            # 会话用户名统一小写（2026-08-27）：注册用户邮箱库内小写存储，而
+            # /api/me、邮件开关等接口以 session username 做大小写敏感的
+            # find_user/update_user 精确匹配——存原始大小写会静默失效。
+            # 内置管理员不受影响（_is_builtin_admin_session/_effective_role 比对端自行小写）。
+            session["username"] = username.lower()
             session["auth_source"] = auth_source
             session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
             # 会话绝对过期基准（P2-5）：自此刻起最多 SESSION_ABS_TTL_SECONDS
