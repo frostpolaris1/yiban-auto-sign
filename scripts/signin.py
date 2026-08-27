@@ -1671,7 +1671,11 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
         return
     try:
         user = db.find_user(owner)
-    except Exception:
+    except Exception as e:
+        # 留痕（2026-08-27 审查）：库瞬时故障时失败提醒被当"查无此人"静默跳过，
+        # 恰是用户最需要触达的时刻；区别于用户不存在（find_user 正常返回 None，
+        # 不走此分支）。打码手机号定位账号，不打印原始邮箱。
+        logger.warning("查询账号 %s 的归属用户失败，本次失败提醒未发送: %s", _mask_phone(phone), e)
         user = None
     if not user:
         return
@@ -2626,7 +2630,13 @@ def _env_update_probe(auto_disable=False):
             except OSError:
                 pass
     except Exception as e:
-        logger.warning("探针 once 自动关闭 .env 失败（不影响本次探测）: %s", _sanitize_text(str(e)))
+        # 升级为 ERROR（2026-08-27 审查）：once 自动关闭失败会让"单次探针"事实变成
+        # 每晚全量探测（反复真实登录扩大风控面 + 每日重复告警）；选了 once 的运维
+        # 不会回来盯日志，必须醒目留痕提示手动关闭。
+        logger.error(
+            "探针 once 自动关闭失败，YIBAN_PROBE_ENABLE 仍为开启——单次探针将变成每日重复执行，请手动关闭: %s",
+            _sanitize_text(str(e)),
+        )
 
 
 def run_probe(accounts):

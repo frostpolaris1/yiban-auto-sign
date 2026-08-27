@@ -504,8 +504,9 @@ def clear_fuse_pause(phone):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, path)
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as e:
+        # 留痕（2026-08-27 审查）：裸吞会让"改密后仍暂停"无从排查
+        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]", _mask_phone(phone), e)
 
 
 def load_sign_state(date_str=None):

@@ -279,7 +279,7 @@ def _maybe_add_account_columns(conn):
 # 审计哈希链（Phase 3）
 # ---------------------------------------------------------------------------
 def _parse_env_file(env_file):
-    """读取 .env 全部键值，返回 dict（文件缺失/非法行静默跳过）。"""
+    """读取 .env 全部键值，返回 dict（文件缺失返回空；非法行跳过）。"""
     result = {}
     try:
         with open(env_file, encoding="utf-8-sig") as f:
@@ -288,8 +288,14 @@ def _parse_env_file(env_file):
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
                     result[key.strip()] = value.strip()
-    except OSError:
-        pass
+    except FileNotFoundError:
+        pass  # 文件确实不存在 → 空配置
+    except OSError as e:
+        # 文件存在但读取失败：绝不静默当作"未配置"，否则 audit key / track salt
+        # 自动生成路径会误判无密钥而重新生成，致既有审计链/追踪盐失效。
+        # 宁可启动失败也不生成替代密钥（2026-08-27 审查）。
+        logger.error("环境变量文件存在但读取失败，按错误处理而非未配置（请检查权限）: %s [%s]", env_file, e)
+        raise
     return result
 
 
@@ -1417,8 +1423,11 @@ def admin_mail_recipients(extra_emails=()):
             rows = conn.execute(
                 "SELECT email, mail_notify FROM users WHERE role='admin' AND deleted=0"
             ).fetchall()
-    except Exception:
+    except Exception as e:
         rows = []
+        # 留痕（2026-08-27 审查）：否则库故障时普通管理员被无声剔出告警收件人，
+        # 事后无从回答"为何没人收到告警"（降级仍保留 .env 配置的 ADMIN_TO）
+        logger.warning("查询管理员告警收件人失败，仅保留 .env 配置的收件人: %s", e)
     for r in rows:
         if str(r["mail_notify"] if r["mail_notify"] is not None else 1).strip().lower() in ("1", "true", "on", "yes"):
             recipients.add(r["email"])

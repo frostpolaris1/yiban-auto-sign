@@ -36,7 +36,7 @@ _KEY_LOCK = threading.Lock()
 
 
 def _parse_env_file(env_file):
-    """读取 .env 全部键值，返回 dict（文件缺失/非法行静默跳过）。
+    """读取 .env 全部键值，返回 dict（文件缺失返回空；非法行跳过）。
 
     utf-8-sig：兼容带 BOM 的 .env（Windows 工具保存常见），否则首个键名带
     \ufeff 前缀会导致密钥读不到（误判未配置 → 静默生成新密钥 → 旧数据不可解）。
@@ -49,8 +49,14 @@ def _parse_env_file(env_file):
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
                     result[key.strip()] = value.strip()
-    except OSError:
-        pass
+    except FileNotFoundError:
+        pass  # 文件确实不存在 → 空配置（上游据此走"未配置"分支）
+    except OSError as e:
+        # 文件存在但读取失败（权限/占用等）：绝不静默当作"未配置"——否则
+        # load_key 会误判无密钥而自动生成新钥覆盖旧钥，致存量密文永久不可解。
+        # 宁可启动失败也不生成替代密钥（2026-08-27 审查）。
+        logger.error("密钥文件存在但读取失败，按错误处理而非未配置（请检查权限）: %s [%s]", env_file, e)
+        raise
     return result
 
 
