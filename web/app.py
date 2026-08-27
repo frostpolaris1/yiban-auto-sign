@@ -1428,7 +1428,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-23 系统设置页容量统计口径修正（0.22.1）
 # 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
 # 2026-08-26 界面动效审查修复：过渡属性收敛、抽屉遮罩淡入与曲线、登录页切换统一、Toast 动效、reduced-motion 支持（0.24.1）
-APP_VERSION = "0.24.5"
+APP_VERSION = "0.25.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -1800,7 +1800,7 @@ def create_app(host=None):
     # ---- 认证 API ----
     @app.route("/api/login", methods=["POST"])
     def api_login():
-        """登录：管理员（.env 配置）或普通用户（users.json 注册）。返回 role。"""
+        """登录：管理员（.env 配置）或普通用户（users 表注册）。返回 role。"""
         ip = _client_ip()
         now = time.time()
         data = _json_body()
@@ -1980,7 +1980,7 @@ def create_app(host=None):
         """所有用户自助修改自己的密码（账号不可修改）。
 
         内置管理员（.env）验证当前口令后写入新哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt），
-        并清理旧明文；注册用户（含提升的管理员）验证当前密码后更新 users.json 哈希。
+        并清理旧明文；注册用户（含提升的管理员）验证当前密码后更新 users 表密码哈希。
         失败计数与登录共用限速：达阈值（LOGIN_MAX_FAILS）锁定，超阈值返回 429；
         旧会话失效由 pw_version 递增实现（_effective_role 实时校验）。
         """
@@ -2978,7 +2978,7 @@ def create_app(host=None):
     def _my_account_view(accounts, indices):
         """用户视图：账号脱敏 + 今日状态（结构化状态文件）+ 审核状态 + 最近相关日志 + 排队信息。
 
-        排队说明：签到按 accounts.json 顺序执行（队列重试模式）；
+        排队说明：开启签到调度时按当日计划时间执行，否则按账号列表顺序（队列重试）；
         queue_ahead = 自己账号之前、今日尚未了结（未 success/already/no_task）的已生效账号数。
         """
         recent = parse_sign_log(log_path_for())  # 最近日志仅用于「最近签到记录」展示（按天文件 = 今天）
@@ -3283,7 +3283,7 @@ def create_app(host=None):
 
     @app.route("/api/my-accounts", methods=["POST"])
     def api_my_account_add():
-        """提交自己的易班账号：每个用户仅限 1 套，写入 accounts.json 状态 pending（待审核）。
+        """提交自己的易班账号：每个用户仅限 1 套，写入 accounts 表状态 pending（待审核）。
 
         操作级锁：单账号限制与手机号唯一检查 + 写入原子（防并发双提交互相覆盖）。
         """
@@ -3576,7 +3576,7 @@ def create_app(host=None):
 
     def _effective_role(username, pw_version=None):
         """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
-        内置管理员 → admin；注册用户 → users.json 的 role；查无此人 → None。
+        内置管理员 → admin；注册用户 → users 表的 role；查无此人 → None。
         管理员变更角色后，已登录用户的下一次请求立即生效，无需重新登录；
         被删除/取消权限的用户旧会话随之失效（None 视为未登录）；
         注册用户密码被重置/修改后（pw_version 递增）旧会话随之失效；
@@ -3887,7 +3887,7 @@ def create_app(host=None):
                     return jsonify({"error": "仅正式用户可设为管理员（需有已生效账号且无待审核）"}), 400
             if new_role == "user" and target.get("role") == "admin":
                 admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users.json 中的最后一个管理员
+                # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users 表中的最后一个管理员
                 if len(admins) <= 1 and not _builtin_admin_email():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             db.update_user(email, {"role": new_role})
@@ -3957,7 +3957,7 @@ def create_app(host=None):
                 return jsonify({"error": "仅主管理员可删除管理员"}), 403
             if mode == "full" and target.get("role") == "admin":
                 admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）兜底存在时可删除 users.json 中的最后一个管理员
+                # 内置管理员（.env）兜底存在时可删除 users 表中的最后一个管理员
                 if len(admins) <= 1 and not _builtin_admin_email():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）

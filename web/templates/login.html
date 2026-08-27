@@ -349,7 +349,8 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     }
     showError(errorBox, data.error || '登录失败，请重试');
   } catch (err) {
-    showError(errorBox, '网络错误：' + err.message);
+    console.warn('网络错误:', err);
+    showError(errorBox, '网络异常，请检查网络后重试');
   } finally {
     btn.disabled = false;
   }
@@ -372,7 +373,8 @@ async function restoreAccount() {
     showError(errorBox, data.error || '恢复失败，请稍后再试');
     btn.classList.add('hidden');
   } catch (err) {
-    showError(errorBox, '网络错误：' + err.message);
+    console.warn('网络错误:', err);
+    showError(errorBox, '网络异常，请检查网络后重试');
   } finally {
     btn.disabled = false;
   }
@@ -468,7 +470,8 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
     }
     showError(errorBox, '注册成功，但自动登录失败，请手动登录');
   } catch (err) {
-    showError(errorBox, '网络错误：' + err.message);
+    console.warn('网络错误:', err);
+    showError(errorBox, '网络异常，请检查网络后重试');
   } finally {
     btn.disabled = false;
   }
