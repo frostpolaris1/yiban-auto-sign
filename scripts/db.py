@@ -744,24 +744,39 @@ def _maybe_migrate(conn, json_base):
         return  # 已迁移过
     accounts = []
     users = []
+    load_errors = []
     if os.path.exists(accounts_json):
         try:
             with open(accounts_json, encoding="utf-8") as f:
                 accounts = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
             accounts = []
+            load_errors.append(accounts_json)
+            logger.error(
+                "账号数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
+                accounts_json, type(e).__name__, e,
+            )
         if not isinstance(accounts, list):
             accounts = []
     if os.path.exists(users_json):
         try:
             with open(users_json, encoding="utf-8") as f:
                 users = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
             users = []
+            load_errors.append(users_json)
+            logger.error(
+                "用户数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
+                users_json, type(e).__name__, e,
+            )
         if not isinstance(users, list):
             users = []
     if not accounts and not users:
-        logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
+        if load_errors:
+            logger.error("存在无法读取的数据文件，本次未完成迁移（请勿误判为无数据）: %s",
+                         ", ".join(load_errors))
+        else:
+            logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
         return
     imported = 0
     key = account_crypto.load_key(_env_file) if accounts else None
@@ -831,43 +846,52 @@ def _rename_backup(path, reencrypt=False, key=None):
 
     2026-08-27 审查缺口 2：.bak 一律落 0600；迁移源含明文字段时（更早格式/手工构造/
     第三方导出），重写 .bak 为加密版，杜绝明文凭据以 .bak 形态驻留磁盘。
+    同日已有同名 .bak 时追加递增序号，确保源文件总能离开原路径——此前目标已存在
+    即跳过 os.rename，会让含明文的源 JSON 以原文件名无限期驻留。
     """
-    if os.path.exists(path):
-        bak = f"{path}.bak-{datetime.datetime.now().strftime('%Y%m%d')}"
-        if not os.path.exists(bak):
-            os.rename(path, bak)
+    if not os.path.exists(path):
+        return
+    bak = f"{path}.bak-{datetime.datetime.now().strftime('%Y%m%d')}"
+    if os.path.exists(bak):
+        seq = 1
+        while os.path.exists(f"{bak}-{seq}"):
+            seq += 1
+        new_bak = f"{bak}-{seq}"
+        logger.warning("迁移备份目标 %s 已存在，源文件改存为 %s", bak, new_bak)
+        bak = new_bak
+    os.rename(path, bak)
+    try:
+        os.chmod(bak, 0o600)
+    except OSError:
+        pass  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
+    if reencrypt and key is not None:
         try:
-            os.chmod(bak, 0o600)
-        except OSError:
-            pass  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
-        if reencrypt and key is not None:
-            try:
-                with open(bak, encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, list):
-                    changed = False
-                    for a in data:
-                        pwd = a.get("password", "") or ""
-                        if pwd and not _is_encrypted_value(pwd):
-                            a["password"] = json.dumps(
-                                account_crypto.encrypt_password(pwd, key, a.get("phone", ""))
-                            )
-                            changed = True
-                        code = a.get("phone_code", "") or ""
-                        if code and not _is_encrypted_value(code):
-                            a["phone_code"] = json.dumps(
-                                account_crypto.encrypt_password(code, key, a.get("phone", ""))
-                            )
-                            changed = True
-                    if changed:
-                        tmp = bak + ".tmp" + str(os.getpid())
-                        with open(tmp, "w", encoding="utf-8") as f:
-                            json.dump(data, f, ensure_ascii=False)
-                        os.chmod(tmp, 0o600)
-                        os.replace(tmp, bak)
-                        logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
-            except (OSError, ValueError, TypeError):
-                logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
+            with open(bak, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                changed = False
+                for a in data:
+                    pwd = a.get("password", "") or ""
+                    if pwd and not _is_encrypted_value(pwd):
+                        a["password"] = json.dumps(
+                            account_crypto.encrypt_password(pwd, key, a.get("phone", ""))
+                        )
+                        changed = True
+                    code = a.get("phone_code", "") or ""
+                    if code and not _is_encrypted_value(code):
+                        a["phone_code"] = json.dumps(
+                            account_crypto.encrypt_password(code, key, a.get("phone", ""))
+                        )
+                        changed = True
+                if changed:
+                    tmp = bak + ".tmp" + str(os.getpid())
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False)
+                    os.chmod(tmp, 0o600)
+                    os.replace(tmp, bak)
+                    logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
+        except (OSError, ValueError, TypeError):
+            logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
 
 
 # ---------------------------------------------------------------------------
@@ -903,15 +927,21 @@ def _row_to_account(row, conn=None):
                 # 对照 session_cache 对旧明文行抛错清除（M14），accounts 此前无对应策略。
                 phone = str(a.get("phone", ""))
                 phone_masked = phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
-                logger.warning(
-                    "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
-                    phone_masked, k,
-                )
                 a[k] = v
                 if conn is not None:
                     enc = _encrypt_field(v, a.get("phone", ""))
                     conn.execute(
                         f"UPDATE accounts SET {k}=? WHERE id=?", (enc, a["id"])
+                    )
+                    logger.warning(
+                        "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
+                        phone_masked, k,
+                    )
+                else:
+                    logger.warning(
+                        "账号 %s 的 %s 为明文存储；本次读取未持连接上下文，未回写，"
+                        "将在下次带连接的读取时自动加密（现有调用方均传连接，此为防御分支）",
+                        phone_masked, k,
                     )
     return a
 
@@ -969,6 +999,7 @@ def _purge_expired_deleted(conn):
                 (cutoff,),
             )
             _delete_time_prefs_by_phones(conn, phones)
+            _clear_session_cache_by_phones(conn, phones)
             conn.commit()
     except Exception as e:
         with contextlib.suppress(Exception):
@@ -1105,6 +1136,8 @@ def update_account(account_id, fields, expect_snapshot=None):
         # 手机号变更且敏感字段未随本次提供 → 用旧手机号解密的明文按新手机号重加密
         new_phone = fields.get("phone")
         if new_phone is not None and new_phone != cur_a.get("phone"):
+            # 改绑手机号：旧手机号的会话缓存随之失效（主键/AAD 均按旧号，不复用）
+            _clear_session_cache_by_phones(conn, [cur_a.get("phone", "")])
             for k in ("password", "phone_code"):
                 if k not in fields:
                     fields = dict(fields)
@@ -1127,6 +1160,16 @@ def update_account(account_id, fields, expect_snapshot=None):
             conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
         except sqlite3.IntegrityError as e:
             conn.rollback()
+            # 主更新失败回滚会连带撤销 _row_to_account 的明文自愈；凭据不留明文优先，
+            # 用已解密值重放自愈并独立提交（幂等，仅原行确为明文时生效）。2026-08-27
+            for k in ("password", "phone_code"):
+                raw = row[k]
+                if raw and not _is_encrypted_value(raw) and cur_a.get(k):
+                    conn.execute(
+                        f"UPDATE accounts SET {k}=? WHERE id=?",
+                        (_encrypt_field(cur_a[k], cur_a.get("phone", "")), account_id),
+                    )
+            conn.commit()
             _convert_integrity_error(e)
         return True
 
@@ -1147,6 +1190,7 @@ def purge_account(account_id):
         conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
         if row is not None:
             _delete_time_prefs_by_phones(conn, [row["phone"]])  # 连带清理自选（调度 v2）
+            _clear_session_cache_by_phones(conn, [row["phone"]])  # 连带清理会话缓存
 
 
 def update_account_status(account_id, status, reject_reason=None):
@@ -1210,6 +1254,7 @@ def delete_user_with_accounts(email):
         rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (email,)).fetchall()
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
         _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（H2 对抗性审查补）
+        _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 连带清理会话缓存
         conn.execute("DELETE FROM users WHERE email=?", (email,))
         return cur.rowcount
 
@@ -1442,6 +1487,7 @@ def soft_delete_user_with_accounts(email):
             (now, email),
         )
         _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+        _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 注销后停用会话缓存
         conn.execute(
             "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
             (now, row["id"]),
@@ -1535,6 +1581,7 @@ def purge_deleted_users_hard(emails):
             ]
             conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
             _delete_time_prefs_by_phones(conn, phones)
+            _clear_session_cache_by_phones(conn, phones)  # 连带清理会话缓存
             # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
             # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
             cur = conn.execute(
@@ -2335,6 +2382,19 @@ def _delete_time_prefs_by_phones(conn, phones):
     if not phones:
         return
     conn.executemany("DELETE FROM time_prefs WHERE phone=?", [(p,) for p in phones])
+
+
+def _clear_session_cache_by_phones(conn, phones):
+    """按手机号批量清除会话缓存（账号删除/改绑时连带，须在调用方事务内）。
+
+    2026-08-27 审查残留：删除/改绑路径此前不清 session_cache，旧手机号的加密
+    cookie/csrf 行以手机号为主键永久驻留。与 _delete_time_prefs_by_phones 同款连带。
+    注意：不能用 clear_session_cache()（其自带 BEGIN IMMEDIATE 事务，嵌套会撞
+    "within a transaction"），故在调用方事务内直接 DELETE。
+    """
+    if not phones:
+        return
+    conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
 
 
 # ---------------------------------------------------------------------------
