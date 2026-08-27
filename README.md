@@ -13,7 +13,7 @@
 
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预
-- 🔐 **真实 App 登录特征**：登录流程参考 [OneFeiFan/fyiban](https://github.com/OneFeiFan/FYIBAN) 的真实 App 请求特征（UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
+- 🔐 **真实 App 登录特征**：登录流程复刻 KillYiBan 的真实 App 请求特征（与同作者的 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 同源，KillYiBan 脱胎于 FYIBAN；UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
 - 🖥️ **网页管理后台**：管理员在任意设备（手机/平板/电脑）登录管理——账号 CRUD/排序/手动签到、审核用户提交的账号、用户管理与权限分级、批量操作、全局公告、签到日志与日历
 - 🗄️ **SQLite 数据库存储**：账号与用户数据存于 SQLite（0.17+）——多人同时操作不互相覆盖、手机号全局唯一有保障；数据库结构启动时自动迁移升级；批量操作整体回滚；关键管理操作自动审计留痕（HMAC 防篡改）
 - 📍 **智能定位**：在签到范围内生成随机定位点，模拟真实 GPS（缩放质心算法）
@@ -1075,8 +1075,9 @@ workflow-keepalive:
 
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
 - Auto-Test - 易班登录流程（OAuth + RSA + ydclearance，已弃用并被本项目新登录特征取代）
+- KillYiBan - 默认登录流程的真实 App 请求特征来源（反编译 `p101w2/b.java`；与同作者 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 同源，KillYiBan 脱胎于 FYIBAN）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 定时工作流自动续期（避免 60 天无活动被禁用）
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、易班登录特征与 nightAttendance 签到流程
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、nightAttendance 签到流程
 - [Textualize/textual](https://github.com/Textualize/textual)（MIT）- TUI 终端面板框架（`tui/` 组件）
 
 ---
