@@ -347,7 +347,7 @@ _DEFAULT_MU_MIN_PCT = 40        # 正态高峰中心范围（有效窗口相对�
 _DEFAULT_MU_MAX_PCT = 60
 _DEFAULT_SIGMA_MIN_PCT = 15     # 正态分散程度范围（有效窗口宽度 %）
 _DEFAULT_SIGMA_MAX_PCT = 25
-_DEFAULT_MIN_EXEC_GAP = 5       # 压缩模式间隔下限（分钟）
+_DEFAULT_MIN_EXEC_GAP = 5       # 请求最小间隔下限（秒，压缩模式防请求过密；F1 接线于 run_queue_retry）
 _DEFAULT_AVG_ATTEMPT_SEC = 8    # 容量预检：单次执行平均耗时估算
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
@@ -2201,16 +2201,21 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 continue
             # 自动错峰：到点执行（已过时间点立即执行）；重试回队的账号时间点已过，直接执行
             t = schedule.get(phone)
-            if t:
-                wait = (t - now_dt).total_seconds()
-                if wait > 0:
-                    time.sleep(wait)
-                # 启动对齐（调度 v2）：已过点账号补足最小执行间隔，防开头连发
-                elif sch_cfg["exec_gap_min"] > 0 and last_done is not None:
-                    gap = sch_cfg["exec_gap_min"] - (time.monotonic() - last_done)
-                    if gap > 0:
-                        logger.debug(f"[{phone}] 启动对齐: 补间隔 {int(gap)}s")
-                        time.sleep(gap)
+            wait = (t - now_dt).total_seconds() if t else 0
+            if wait > 0:
+                time.sleep(wait)
+            # 请求最小间隔兜底（F1，2026-08-27 接线）：压缩模式块内间隔可低于 min_exec_gap
+            # （n=500 → 约 9.4s），强制相邻请求间隔 ≥ min_exec_gap 防请求过密触发风控；
+            # 过点账号另受 exec_gap_min（启动对齐）约束，两者取较大值，行为向后兼容。
+            if last_done is not None:
+                min_gap = max(
+                    sch_cfg["min_exec_gap"],
+                    sch_cfg["exec_gap_min"] if wait <= 0 else 0,
+                )
+                gap = min_gap - (time.monotonic() - last_done)
+                if gap > 0:
+                    logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {min_gap}s）")
+                    time.sleep(gap)
         elif not first_round:
             random_delay(gap_max, f"账号 {phone} 间隔")
         first_round = False
