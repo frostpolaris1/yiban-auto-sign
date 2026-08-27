@@ -6,7 +6,7 @@
   ——根治并发覆盖 / 索引漂移 / 进程外覆盖三个历史问题
 - 稳定 ID（id PK AUTOINCREMENT）：业务层用 id 寻址，不再受列表顺序漂移影响
 - 密码/识别码字段在库内仍为 AES-GCM 密文（复用 account_crypto，解密在 load 时）
-- 自动迁移：yiban.db 不存在且 accounts.json/users.json 存在 → 导入（幂等）→ JSON 改名 .bak 保留逃生门
+- 自动迁移：accounts/users 表为空且对应 JSON 存在 → 导入（幂等）→ JSON 改名 .bak 保留逃生门
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
 """
@@ -35,9 +35,6 @@ DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
 # 此前 web(app.py DELETED_RETENTION_DAYS) 与 db 各持一份同名不同单位常量，易改一处漏一处
 SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
-
-# schema 版本号（PRAGMA user_version）：0 = 未迁移；>=1 = 已应用对应迁移
-SCHEMA_VERSION = 8
 
 
 def _normalize_limit(limit, default):

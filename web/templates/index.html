@@ -510,7 +510,7 @@
     <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 自选总开关 + 窗口） -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">签到调度</div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">排序方式决定"谁先签"（顺序=列表序固定作息 / 随机=每天重排）；分布方式决定时间点形状。<span data-icon="warn" class="text-amber-400"></span> <b>顺序 × 均匀 = 线性填块</b>：按列表顺序先到先签，账号集中在窗口前段（50 人约前 20 分钟）；想铺满窗口请选「随机 × 均匀」或正态。改动保存后下次自动签到时生效</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">排序方式决定谁先签：「顺序」＝按列表固定作息，「随机」＝每天重排；分布方式决定时间点怎么铺开。<span data-icon="warn" class="text-amber-400"></span> <b>「顺序 × 均匀」会线性填块</b>：按列表先到先签，账号集中在窗口前段（50 人约前 20 分钟）；想铺满窗口请选「随机 × 均匀」或正态。改动保存后下次自动签到时生效</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">排序方式</div>
@@ -595,7 +595,7 @@
     <!-- 随机延迟 -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">随机延迟（仅手动签到生效）</div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">自动签到的时间已自动分散，无需此设置；仅手动签到生效</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">让每次手动签到的发起时间略有随机变化（自动签到的时间已由系统分散，无需此设置）</p>
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-3">
           <label for="start-delay-secs" class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
@@ -679,14 +679,14 @@
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">邮箱通知</div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-        签到失败等告警合并汇总发管理员邮箱、用户失败提醒发本人邮箱（需在 .env 配置 YIBAN_MAIL_*）。
+        签到失败等告警合并汇总发管理员邮箱、用户失败提醒发本人邮箱（需先由部署者完成发件邮箱配置后方可使用）。
       </p>
       <p id="mail-config-status" class="text-xs text-zinc-500 dark:text-zinc-400 mb-3"></p>
       <!-- 全局开关（仅主管理员） -->
       <div id="mail-global-wrap" class="hidden flex items-center justify-between gap-3 mb-3">
         <div>
           <span class="text-sm text-zinc-700 dark:text-zinc-200">全局邮件通知</span>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（Webhook 不受影响）</p>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）</p>
         </div>
         <label class="relative inline-flex items-center cursor-pointer shrink-0" title="全局邮件通知开关">
           <input id="mail-global-switch" type="checkbox" class="sr-only peer" onchange="toggleMailGlobal()">
@@ -711,7 +711,7 @@
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">账号健康检查（探针模式）</div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-        非签到时段对全部账号做只读验证（登录+拉任务，不实际签到），提前发现图形验证墙/校本化失效等无法自愈问题并邮件预警；开启后提交账号时即时验证，有问题当场打回。
+        非签到时段对全部账号做只读验证（登录+拉任务，不实际签到），提前发现验证码拦截、学校侧接口变更等账号自身无法恢复的问题，并通过邮件提醒；开启后提交账号时会即时验证，无法通过将当场提示。
       </p>
       <!-- 注册时验证账号（任意管理员可开关） -->
       <div class="flex items-center justify-between gap-3 mb-3">
@@ -762,7 +762,7 @@
         危险区 · 一键暂停签到
       </div>
       <p class="text-xs text-red-600 dark:text-red-400 mb-3">
-        暂停后所有账号停止自动签到（当前正在运行的进程会跑完，下一轮 cron 触发时跳过），手动签到不受影响。操作需二次确认。
+        暂停后所有账号停止自动签到（正在运行的一次会跑完，下一次自动签到起跳过），手动签到不受影响。操作需二次确认。
       </p>
       <button id="global-pause-btn" type="button"
               class="w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
@@ -1070,7 +1070,7 @@ const STATUS_ICON_NAME = {
 function stateIconSvg(st) { return icon(STATUS_ICON_NAME[st] || 'clock'); }
 const STATUS_TEXT = {
   success: '签到成功', already: '已签到', no_task: '无需签到', failed: '签到失败',
-  retrying: '重试中', skipped_window: '时段外', skipped_norange: '窗口缺失', paused: '暂停',
+  retrying: '重试中', skipped_window: '时段外', skipped_norange: '未设时段', paused: '暂停',
   user_cancelled: '已取消', pending: '待签',
 };
 // ================= 状态 =================
@@ -2206,7 +2206,7 @@ async function toggleGlobalPause() {
   if (!confirm(msg1)) return;
   // 第二次确认：明确选择
   const msg2 = next
-    ? '注意：再次确认，确定要【暂停】自动签到吗？\n\n此操作将立即写入配置，下一轮 cron 触发时生效。'
+    ? '注意：再次确认，确定要【暂停】自动签到吗？\n\n此操作将立即保存，下一次自动签到起生效。'
     : '注意：再次确认，确定要【恢复】自动签到吗？';
   if (!confirm(msg2)) return;
   try {
@@ -2301,8 +2301,8 @@ async function loadMailConfig() {
     const data = await api('/api/mail-config');
     mailEnabled = !!data.enabled;
     $('mail-config-status').textContent = data.enabled
-      ? `已开启 · 发件 ${data.user} · 告警收件 ${data.admin_to} · ${data.smtp_host}:${data.smtp_port}`
-      : '未开启（需在 .env 配置 YIBAN_MAIL_* 后由主管理员开启）';
+      ? `已开启 · 发件 ${data.user} · 告警收件 ${data.admin_to}`
+      : '未开启（需先由部署者完成发件邮箱配置，再由主管理员开启）';
     $('mail-global-wrap').classList.toggle('hidden', !state.isMasterAdmin);
     if (state.isMasterAdmin) $('mail-global-switch').checked = mailEnabled;
     // 个人开关：主管理员 = YIBAN_MAIL_ADMIN_NOTIFY；普通管理员 = users.mail_notify
@@ -2364,7 +2364,7 @@ async function saveProbeSettings() {
       }),
     });
     const tip = $('probe-config-tip');
-    tip.textContent = '已保存（探针按 cron 任务自动触发）';
+    tip.textContent = '已保存（将按设定的时间自动执行健康检查）';
     setTimeout(() => { tip.textContent = ''; }, 3000);
   } catch (e) { toast(e.message, true); }
   finally { probeSaving = false; }

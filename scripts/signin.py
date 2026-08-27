@@ -2,21 +2,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # 易班自动签到脚本（AGPL-3.0，见项目根 LICENSE）
 # 本项目为以下 AGPL-3.0 项目的衍生实现，保留上游版权与许可条款：
-#   - OneFeiFan/FYIBAN（多边形内随机定位点算法：缩放质心 + 射线法验证；易班登录特征与 nightAttendance 签到流程）
+#   - OneFeiFan/FYIBAN（多边形内随机定位点算法：缩放质心 + 射线法验证；nightAttendance 签到流程）
+#   - 同作者的 KillYiBan（脱胎于 FYIBAN）：默认登录流程的真实 App 请求特征来源
 """
 易班自动签到脚本
 
 功能：
-1. 自动登录易班（支持多账号，默认 fyiban 同款真实 App 特征登录）
+1. 自动登录易班（支持多账号，默认 KillYiBan 同款真实 App 特征登录，与同作者 FYIBAN 同源）
 2. 自动获取签到任务范围
 3. 在签到范围内生成随机定位点（模拟真实定位）
 4. 自动提交签到
 5. 支持消息通知（Server 酱、Bark、企业微信等）
-6. 重试逻辑：失败账号放队尾分散重试（风控类最多 2 次，其他最多 4 次）
+6. 重试逻辑：失败账号分散重试——开启签到调度时重新安排到窗口内合适时间，否则放回队尾（风控类最多 2 次，其他最多 4 次）
 7. 随机延迟：启动与账号间隔随机打散（YIBAN_START_DELAY_MAX / YIBAN_ACCOUNT_GAP_MAX）
 
 参考项目：
-- OneFeiFan/FYIBAN 模块（nightAttendance 签到流程与登录特征）
+- KillYiBan（默认登录流程的真实 App 请求特征来源；与同作者 FYIBAN 同源）
+- OneFeiFan/FYIBAN 模块（多边形定位算法与 nightAttendance 签到流程）
 - Auto-Test 项目（旧登录流程，YIBAN_LEGACY_LOGIN=1 启用）
 """
 
@@ -228,7 +230,7 @@ KILLYIBAN_HEADERS = {
 class Account:
     """单个易班账号配置。
 
-    通过 TUI 配置工具或直接编辑 accounts.json 创建，
+    通过 Web 管理后台或 TUI 配置工具添加（存于 SQLite 数据库），
     一次输入一个账号的完整信息，无需用符号分隔。
     """
 
@@ -1558,6 +1560,24 @@ def _collect_admin_mail(subject, text):
     _mail_summary.append((subject, text))
 
 
+def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
+    """P6 耗时告警：单次尝试超阈值 → warning 日志 + 管理员汇总邮件 + 即时通知。
+
+    堆队列与旧队列两个分支共用（2026-08-27 冗余合并），统一口径防漂移。
+    """
+    logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
+    _collect_admin_mail(
+        "易班签到耗时告警",
+        f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
+    )
+    if notify_url:
+        send_notification(
+            "易班签到耗时告警",
+            f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
+            notify_url,
+        )
+
+
 def _flush_admin_mail_summary(phase=None):
     """签到任务结束：把运行期收集的管理员邮件汇总成一封发送。
 
@@ -2274,7 +2294,6 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 if gap > 0:
                     logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {min_gap}s）")
                     time.sleep(gap)
-            first_round = False
             # 用户自暂停（调度 v2）：零请求直接跳过，状态显示"已取消"
             if getattr(acc, "user_paused", False):
                 results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
@@ -2298,17 +2317,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知（原样）
             if dur > slow_sec and phone not in slow_notified:
                 slow_notified.add(phone)
-                logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
-                _collect_admin_mail(
-                    "易班签到耗时告警",
-                    f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
-                )
-                if notify_url:
-                    send_notification(
-                        "易班签到耗时告警",
-                        f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
-                        notify_url,
-                    )
+                _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
             # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
             _update_cred_state(cred_state, phone, success, message, today)
             # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
@@ -2369,34 +2378,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         # 首轮（第一个账号）不等待，后续每个账号（含重试回队）先打散账号间间隔；
         # 标记在 pop 之后无条件置 False（原实现只在失败分支置 False，
         # 导致全成功路径账号间隔打散失效）
-        if schedule:
-            # 本地截止保护（调度 v2）：超过签到窗口末端 → 不再登录，直接跳过
-            now_dt = datetime.now()
-            if now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second > (
-                sch_cfg["sign_end"][0] * 3600 + sch_cfg["sign_end"][1] * 60
-            ):
-                results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
-                _write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
-                logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
-                continue
-            # 自动错峰：到点执行（已过时间点立即执行）；重试回队的账号时间点已过，直接执行
-            t = schedule.get(phone)
-            wait = (t - now_dt).total_seconds() if t else 0
-            if wait > 0:
-                time.sleep(wait)
-            # 请求最小间隔兜底（F1，2026-08-27 接线）：压缩模式块内间隔可低于 min_exec_gap
-            # （n=500 → 约 9.4s），强制相邻请求间隔 ≥ min_exec_gap 防请求过密触发风控；
-            # 过点账号另受 exec_gap_min（启动对齐）约束，两者取较大值，行为向后兼容。
-            if last_done is not None:
-                min_gap = max(
-                    sch_cfg["min_exec_gap"],
-                    sch_cfg["exec_gap_min"] if wait <= 0 else 0,
-                )
-                gap = min_gap - (time.monotonic() - last_done)
-                if gap > 0:
-                    logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {min_gap}s）")
-                    time.sleep(gap)
-        elif not first_round:
+        if not first_round:
             random_delay(gap_max, f"账号 {phone} 间隔")
         first_round = False
 
@@ -2429,18 +2411,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         # 此处主要覆盖"慢但成功"的接口劣化预警）。通知失败不影响签到（内部已捕获）。
         if dur > slow_sec and phone not in slow_notified:
             slow_notified.add(phone)
-            logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
-            # A 线合并：耗时预警并入任务结束汇总邮件（webhook 仍即时推送）
-            _collect_admin_mail(
-                "易班签到耗时告警",
-                f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
-            )
-            if notify_url:
-                send_notification(
-                    "易班签到耗时告警",
-                    f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
-                    notify_url,
-                )
+            _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
         _update_cred_state(cred_state, phone, success, message, today)
         # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
@@ -2493,30 +2464,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             send_user_fail_mail(acc.owner, phone, message)
             continue
 
-        # 本地截止保护（调度 v2）：窗口剩余不足一个重试周期 → 不再回队，直接判失败
-        if schedule:
-            now_sec = datetime.now().hour * 3600 + datetime.now().minute * 60 + datetime.now().second
-            end_sec = sch_cfg["sign_end"][0] * 3600 + sch_cfg["sign_end"][1] * 60
-            if now_sec + sch_cfg["retry_min_interval"] >= end_sec - sch_cfg["edge_back_sec"]:
-                results[phone] = (False, message, False, status)
-                logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
-                # A 线合并：失败并入任务结束汇总邮件（webhook 仍即时推送）
-                _collect_admin_mail(
-                    "易班签到失败",
-                    f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}",
-                )
-                if notify_url:
-                    send_notification(
-                        "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
-                    )
-                # B 线：向账号归属用户发失败提醒（未开启/未绑定用户则静默跳过）
-                send_user_fail_mail(acc.owner, phone, message)
-                continue
-
         # 放回队尾：单次 sleep 保证总间隔 ≥ retry_min_interval，
         # 随机部分只用于打散，不允许把最小间隔缩水
         _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
-        retry_min_interval = sch_cfg["retry_min_interval"] if schedule else RETRY_MIN_INTERVAL
+        retry_min_interval = RETRY_MIN_INTERVAL
         wait = max(retry_min_interval, retry_min_interval - gap_max + random.uniform(0, RETRY_GAP_MAX))
         logger.debug(f"[{phone}] 重试前等待 {wait:.1f}s（最小 {retry_min_interval}s）")
         time.sleep(wait)
@@ -2716,7 +2667,7 @@ def main():
     支持：
     - 数据库 yiban.db（SQLite，web 后台 / TUI 配置工具写入）与 YIBAN_ACCOUNTS_JSON
     - 旧格式 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（向后兼容）
-    - 队列重试：账号顺序执行，失败账号放队尾分散重试（分级上限）
+    - 队列重试：失败账号分散重试——开启签到调度时重新安排到窗口内合适时间，否则放回队尾（分级上限）
     - 随机延迟：YIBAN_START_DELAY_MAX（启动）/ YIBAN_ACCOUNT_GAP_MAX（账号间隔）
     - --only 指定手机号（逗号分隔），仅供 TUI 手动签到单个账号
     - --check-config 仅检查配置，不发任何网络请求
