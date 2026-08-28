@@ -136,6 +136,14 @@ def _acquire_run_lock(only_mode):
     except OSError:
         return None
     if fcntl is None:
+        # 2026-08-28 审查 F5：Windows 无 fcntl 时锁退化为无互斥，且此前无任何
+        # 提示——管理员在 Windows 上跑多进程（如 cron + 手动）时会静默出现
+        # 同账号并发签到的可能（重复打卡/风控）。明确告警一次（每进程一次）。
+        logger.warning(
+            "当前平台无 fcntl（Windows），签到单实例锁未生效："
+            "cron 全量队列与手动 --only 并发时可能对同一账号重复签到，"
+            "建议在 Linux/容器环境运行或避免同时触发手动与定时签到"
+        )
         return fh
     wait_sec = 0.0
     if not only_mode:
@@ -356,6 +364,11 @@ _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间�
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
 _DEFAULT_SLOW_SIGN_SEC = 30     # P6 耗时告警阈值（秒）：单次尝试耗时超此值 → warning + 通知
 
+# 签到窗口配置异常的一次性告警标记（2026-08-28 审查 F3）：
+# _schedule_config 每次调度都会调用，非法窗口回退默认窗口的告警只收集一次，
+# 避免同一个配置错误在每日汇总邮件里重复出现 N 次
+_invalid_window_notified = False
+
 
 def _parse_hhmm(value, default):
     """解析 HH:MM → (h, m)；非法返回 default。"""
@@ -405,7 +418,19 @@ def _schedule_config():
     start = _parse_hhmm(os.environ.get("YIBAN_SIGN_START", ""), _DEFAULT_SIGN_START)
     end = _parse_hhmm(os.environ.get("YIBAN_SIGN_END", ""), _DEFAULT_SIGN_END)
     if start >= end:
-        logger.warning("签到窗口 %s >= %s 非法，回退默认 06:30/07:50", start, end)
+        global _invalid_window_notified
+        if not _invalid_window_notified:
+            _invalid_window_notified = True
+            _msg = (
+                f"签到窗口 {start[0]:02d}:{start[1]:02d} ~ {end[0]:02d}:{end[1]:02d} 非法"
+                "（start>=end，跨零点窗口不受支持），已回退默认 06:30~07:50，"
+                "实际签到时间将与配置不符！请修改 YIBAN_SIGN_START / YIBAN_SIGN_END"
+            )
+            logger.error("%s", _msg)
+            # 2026-08-28 审查 F3：原实现只写 WARNING 日志，管理员在 Web 界面看到的
+            # 窗口设置"看起来生效"、实际签到时刻完全不同且无人知情。现并入当日
+            # 汇总邮件（A 线），确保配置错误可被管理员发现。
+            _collect_admin_mail("签到窗口配置异常", _msg)
         start, end = _DEFAULT_SIGN_START, _DEFAULT_SIGN_END
     mu_lo = _env_int("YIBAN_SCHEDULE_MU_MIN_PCT", _DEFAULT_MU_MIN_PCT, 0, 100)
     mu_hi = _env_int("YIBAN_SCHEDULE_MU_MAX_PCT", _DEFAULT_MU_MAX_PCT, 0, 100)
@@ -2083,7 +2108,12 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
                 slot = int(p.get("slot_min", -1))
             except (TypeError, ValueError):
                 continue
-            if not (0 <= slot < span):  # 片落窗外 → 回退自动分配
+            # 2026-08-28 审查 F4：原校验 `0 <= slot < span`（span = 有效窗口宽度），
+            # 而 _slot_to_bi 的键范围是完整窗口——窗口长度非 5 分钟整数倍时
+            # （如 06:30~07:52），末尾片在 Web 端可点选、此处却被判"落窗外"
+            # 而静默回退自动分配。改以 _slot_to_bi 的成员性为准（与 Web 端
+            # _pref_slots 同一套可用性判定）。
+            if slot not in slot_to_bi:  # 片无效/落窗外 → 回退自动分配
                 continue
             by_slot.setdefault(slot, []).append((str(p.get("updated_at", "")), phone))
         filled = [0] * len(blocks)
