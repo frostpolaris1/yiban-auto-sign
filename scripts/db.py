@@ -652,6 +652,11 @@ def migrate_v8(conn):
           created_at   TEXT NOT NULL,
           updated_at   TEXT NOT NULL
         );
+        -- 应用元数据（2026-08-28 审查 M3）：purge 时钟跳变保护的单调参照等
+        CREATE TABLE IF NOT EXISTS app_meta (
+          key   TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -989,6 +994,47 @@ def _encrypt_field(value, phone):
     return json.dumps(account_crypto.encrypt_password(str(value), key, phone))
 
 
+# 时钟跳变保护参数（2026-08-28 审查 M3）：
+# 允许的"时间前进"上限。软删保留期 7 天——系统时间被拨快 8 天，刚软删 1 秒的
+# 账号会在下次清理时被立即物理清除、7 天反悔窗口归零。取 72h：每日正常运行的
+# 服务不会超过；停机 >3 天后的首轮清理会被跳过（代价：清理推迟一天，安全方向）；
+# 拨快 >3 天被拦下（防数据丢失，危险方向）。
+_CLOCK_ALLOW_FWD_HOURS = 72
+# 允许的"时间回拨"上限（秒）：正常 NTP 校正是秒级，回拨超过 1h 视为异常
+_CLOCK_ALLOW_BACK_SECONDS = 3600
+
+
+def _clock_jump_guard(conn, key):
+    """以 app_meta 记录的最近一次 seen-now 为参照，检测系统时钟异常跳变。
+
+    返回 (ok, note)：ok=False 时调用方应跳过本次清理并告警（防"拨快后刚软删的
+    数据被立即物理清除"）；note 为告警文本或空串。
+    每次调用都会把当前时间 upsert 进 app_meta（ok 路径）——该 INSERT 同时充当
+    库级写锁（WAL 下 INSERT 即持 RESERVED 锁），调用方无需另开 BEGIN IMMEDIATE。
+    """
+    now = datetime.datetime.now()
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+    row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+    if row is None:
+        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
+        return True, ""
+    try:
+        last = datetime.datetime.strptime(row["value"], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
+        return True, ""
+    fwd = (now - last).total_seconds()
+    back = (last - now).total_seconds()
+    if fwd > _CLOCK_ALLOW_FWD_HOURS * 3600 or back > _CLOCK_ALLOW_BACK_SECONDS:
+        return False, (
+            f"系统时间异常跳变（上次记录 {row['value']}，当前 {ts}，"
+            f"前进 {fwd / 3600:.1f}h / 回拨 {back / 3600:.1f}h），"
+            "已跳过本次物理清理以防误删"
+        )
+    conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
+    return True, ""
+
+
 def _purge_expired_deleted(conn):
     """软删除超过保留期（>= 7 天）的行物理清除（web 原 load 惰性清理语义，库内必有 deleted_at）。
 
@@ -996,41 +1042,46 @@ def _purge_expired_deleted(conn):
     清理失败仅告警不阻断（规范审查 D6：原静默吞错无痕迹）。
     """
     try:
+        # 2026-08-28 审查 M3：时钟异常跳变（拨快 >72h / 回拨 >1h）时跳过清理，
+        # 防"系统时间被拨快后刚软删 1 秒的账号被立即物理清除、反悔窗口归零"。
+        # 守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作 M5 的事务边界。
+        ok, note = _clock_jump_guard(conn, "purge_accounts_clock")
+        if not ok:
+            logger.error("%s", note)
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            return
         cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
-        # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发写事务，
-        # 避免 1000 账号每 10s 轮询重复执行 DELETE+COMMIT
+        # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发 DELETE
+        # 事务，只提交守卫的时钟参照一行（每天 1~2 次调用，开销可忽略）
         probe = conn.execute(
             "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ? LIMIT 1",
             (cutoff,),
         ).fetchone()
         if not probe:
+            conn.commit()
             return
-        # 2026-08-28 审查 M5：读 phones → DELETE → 连带清理 整段纳入写锁事务。
+        # 2026-08-28 审查 M5：读 phones → DELETE → 连带清理 整段原子。
         # 原实现 SELECT 与 DELETE 之间跨进程无互斥，期间被管理员恢复的账号
         # （deleted=0）其行会被 WHERE deleted=1 正确保留，但 time_prefs /
         # session_cache 会被陈旧 phones 列表连带误删——用户自选签到时段被静默
-        # 重置为自动错峰。事务内重读 phones（不复用事务前列表），并持锁保证
-        # 读-删-清原子。
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            phones = [
-                r["phone"]
-                for r in conn.execute(
-                    "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
-                    (cutoff,),
-                ).fetchall()
-            ]
-            conn.execute(
-                "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+        # 重置为自动错峰。守卫 INSERT 已持写锁，事务内重读 phones（不复用事务
+        # 前列表），读-删-清对外原子。
+        phones = [
+            r["phone"]
+            for r in conn.execute(
+                "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
                 (cutoff,),
-            )
-            _delete_time_prefs_by_phones(conn, phones)
-            _clear_session_cache_by_phones(conn, phones)
-            conn.commit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
+            ).fetchall()
+        ]
+        conn.execute(
+            "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
+            (cutoff,),
+        )
+        _delete_time_prefs_by_phones(conn, phones)
+        _clear_session_cache_by_phones(conn, phones)
+        _delete_sign_events_by_phones(conn, phones)  # M2：物理清除时事件连带清理
+        conn.commit()
     except Exception as e:
         with contextlib.suppress(Exception):
             conn.rollback()
@@ -1251,6 +1302,7 @@ def purge_account(account_id):
         if row is not None:
             _delete_time_prefs_by_phones(conn, [row["phone"]])  # 连带清理自选（调度 v2）
             _clear_session_cache_by_phones(conn, [row["phone"]])  # 连带清理会话缓存
+            _delete_sign_events_by_phones(conn, [row["phone"]])  # 连带清理事件（M2）
 
 
 def update_account_status(account_id, status, reject_reason=None):
@@ -1308,6 +1360,7 @@ def delete_accounts_by_owner(owner):
         # 2026-08-28 审查 M1 补：原先漏清理会话缓存，已删账号的加密 cookie/csrf
         # 会以 phone 为主键永久驻留（密钥仍在 .env，等同凭据残留）
         _clear_session_cache_by_phones(conn, phones)
+        _delete_sign_events_by_phones(conn, phones)  # M2：明文事件连带清理
         return cur.rowcount
 
 
@@ -1319,7 +1372,9 @@ def delete_user_with_accounts(email):
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
         _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（H2 对抗性审查补）
         _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 连带清理会话缓存
+        _delete_sign_events_by_phones(conn, [r["phone"] for r in rows])  # M2
         conn.execute("DELETE FROM users WHERE email=?", (email,))
+        _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
         return cur.rowcount
 
 
@@ -1406,6 +1461,7 @@ def batch_account_ops(ops):
                         # 2026-08-28 审查 M1 补：批量彻底删除是 Web 唯一入口，
                         # 原先漏清理会话缓存（凭据残留，详见 delete_accounts_by_owner）
                         _clear_session_cache_by_phones(conn, [row["phone"]])
+                        _delete_sign_events_by_phones(conn, [row["phone"]])  # M2
                 else:
                     raise ValueError(f"未知批量账号操作: {kind}")
             conn.commit()
@@ -1638,8 +1694,20 @@ def purge_deleted_users(days=None):
     try:
         conn = get_conn()
         with _conn_lock, conn:
+            # M3 时钟保护：跳变时跳过，防注销宽限期被拨快吞掉
+            ok, note = _clock_jump_guard(conn, "purge_users_clock")
+            if not ok:
+                logger.error("%s", note)
+                return
             cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
+            )
+            # M4a：先清这些已注销用户的冷却计数（明文邮箱随用户行一并释放，
+            # 不再驻留 user_delete_requests 至 30 天保留期满）
+            conn.execute(
+                "DELETE FROM user_delete_requests WHERE username IN ("
+                "SELECT email FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?)",
+                (cutoff,),
             )
             conn.execute(
                 "DELETE FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
@@ -1681,6 +1749,7 @@ def purge_deleted_users_hard(emails):
             conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
             _delete_time_prefs_by_phones(conn, phones)
             _clear_session_cache_by_phones(conn, phones)  # 连带清理会话缓存
+            _delete_sign_events_by_phones(conn, phones)  # M2：事件连带清理
             # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
             # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
             cur = conn.execute(
@@ -1688,6 +1757,7 @@ def purge_deleted_users_hard(emails):
             )
             if cur.rowcount > 0:
                 purged.append(email)
+                _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
     return purged
 
 
@@ -1700,6 +1770,11 @@ def purge_old_delete_requests(days=30):
     try:
         conn = get_conn()
         with _conn_lock, conn:
+            # M3 时钟保护：跳变时跳过（该表是冷却计数，误删只影响限速；保守一致）
+            ok, note = _clock_jump_guard(conn, "purge_requests_clock")
+            if not ok:
+                logger.error("%s", note)
+                return
             cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
@@ -1836,7 +1911,9 @@ def batch_user_ops(ops):
                     # 2026-08-28 审查 M1 补：与 delete_user_with_accounts 对齐，
                     # 批量路径同样漏了会话缓存清理（凭据残留）
                     _clear_session_cache_by_phones(conn, phones)
+                    _delete_sign_events_by_phones(conn, phones)  # M2
                     conn.execute("DELETE FROM users WHERE email=?", (email,))
+                    _delete_user_delete_requests(conn, email)  # M4
                 else:
                     raise ValueError(f"未知批量用户操作: {kind}")
             conn.commit()
@@ -2714,6 +2791,29 @@ def _clear_session_cache_by_phones(conn, phones):
     if not phones:
         return
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
+
+
+def _delete_sign_events_by_phones(conn, phones):
+    """按手机号批量清除签到事件（账号物理删除时连带，须在调用方事务内）。
+
+    2026-08-28 审查 M2：sign_events 明文落 phone 且删号不清理——已删账号的
+    明文手机号会驻留至 180 天保留期满。与 time_prefs/session_cache 同款连带
+    （软删除不调用：宽限期内恢复后事件历史仍需保留）。
+    """
+    if not phones:
+        return
+    conn.executemany("DELETE FROM sign_events WHERE phone=?", [(p,) for p in phones])
+
+
+def _delete_user_delete_requests(conn, email):
+    """连带清除某邮箱的注销/恢复冷却计数（用户被物理删除时调用）。
+
+    2026-08-28 审查 M4：user_delete_requests 只按保留期（30 天）清理，用户被
+    物理删除（注销 purge / 管理员手动清除）后其明文邮箱仍驻留最多 30 天。
+    在用户行物理删除的同一事务内连带清除，不留隐私残留。
+    """
+    if email:
+        conn.execute("DELETE FROM user_delete_requests WHERE username=?", (email,))
 
 
 # ---------------------------------------------------------------------------
