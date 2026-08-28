@@ -420,7 +420,16 @@ SESSION_ABS_TTL_SECONDS = SESSION_ABS_DAYS_DEFAULT * 86400
 DELETE_MAX_REQUESTS_PER_IP = 5
 # 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐（7 天，安全审查 2026-08-16）；
 # 与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
-DELETE_GRACE_DAYS = 7
+# 2026-08-28 审查 C-1：原实现硬编码 7，与 db.SOFT_DELETE_RETENTION_DAYS（账号保留期
+# 唯一事实源）及 db.purge_deleted_users 默认值形成三份互不相干的"7"——运维按注释去调
+# SOFT_DELETE_RETENTION_DAYS 时，账号会被提前物理清除而恢复宽限期仍按 7 天，用户点
+# 恢复会看到"成功"实际账号已消失（静默数据丢失）。现统一取同一常量，并加启动自检
+# 防再次漂移（对齐 TRUSTED_PROXIES 的 assert 惯例）。
+DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
+assert DELETE_GRACE_DAYS == db.SOFT_DELETE_RETENTION_DAYS, (
+    f"DELETE_GRACE_DAYS 必须与 db.SOFT_DELETE_RETENTION_DAYS 同源: "
+    f"{DELETE_GRACE_DAYS} != {db.SOFT_DELETE_RETENTION_DAYS}"
+)
 
 # 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底）：
 # 注册用户上限默认 200（一人一号 ≈ 200 账号，远超班级/社团规模）；账号总数上限默认 500
@@ -4547,16 +4556,30 @@ def create_app(host=None):
                 db.purge_old_delete_requests()
             except Exception as e:
                 logger.warning("每日自动清除注销用户失败: %s", e)
-            # 审计链外部锚点（2026-08-21 对抗性审查 P2 补）：每日把链头哈希追加到
-            # 独立于数据库的文件——重写库内审计链还需同步篡改该文件，抬高伪造成本；
-            # 该文件可另行纳入异地收集（与备份分离）
+            # 审计可追溯性每日校验（2026-08-28 审查 B-3）：
+            # 此前 verify_audit_chain 生产环境从不调用、外部锚点只写不读——审计写入
+            # 可静默丢（B-1）、删前缀/删尾/清空验不出（B-2）也无人知晓。
+            # 现每日流程：先校验（链自洽 + 库外锚点比对 + 写入失败计数），任一异常
+            # 即告警；校验通过且清理已发生后，再追加新锚点（使锚点反映清理后的
+            # 合法状态，且记录 min_id/max_id 以覆盖删尾/清空检测，原两段格式不具备）。
             try:
-                _head = db.audit_head_hash()
-                if _head:
-                    with open(os.path.join(STATE_DIR, "audit-anchor.log"), "a", encoding="utf-8") as _af:
-                        _af.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {_head}\n")
+                _health = db.audit_health()
+                if not _health["healthy"]:
+                    _alert = (
+                        "审计可追溯性校验失败："
+                        f"链自洽={_health['chain_ok']}(broken={_health['broken']}) "
+                        f"锚点={_health['anchor_ok']}（{_health['anchor_msg']}） "
+                        f"审计写入失败次数={_health['write_failures']}。"
+                        "审计记录可能被篡改/删除，或存在未留痕的管理操作，请立即核查！"
+                    )
+                    logger.error("审计链异常告警: %s", _alert)
+                    send_notification("审计链异常告警", _alert)
+                elif _health["anchor_msg"]:
+                    # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
+                    logger.info("审计链提示: %s", _health["anchor_msg"])
+                db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
-                logger.warning("审计链锚点写入失败: %s", e)
+                logger.warning("审计链每日校验/锚点写入失败: %s", e)
             time.sleep(24 * 3600)
 
     # 测试环境通过 YIBAN_DISABLE_PURGE_LOOP=1 禁止启动该线程（全量 pytest 会反复 create_app，
