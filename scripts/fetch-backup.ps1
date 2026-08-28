@@ -3,9 +3,11 @@
 # ============================================================
 # 功能：
 #   1. ssh 列出服务器 /var/backups 下的常规备份包（yiban-YYYY-MM-DD.tar.gz，
-#      不含手工迁移包如 yiban-signlog-migrate-*）
+#      及启用默认加密后的密文 .tar.gz.gpg / .tar.gz.age（批次11 N4），
+#      不含手工迁移包如 yiban-signlog-migrate-* 与 .sha256 清单）
 #   2. 对比本机目录，拉取所有本地缺失的备份包（scp，逐文件）
-#   3. 拉取后用 tar -tzf 校验压缩包完整性（解包列表能读出 = gzip 完整）
+#   3. 拉取后校验：明文包 tar -tzf（gzip 完整性）；密文包以服务器端 .sha256
+#      清单核对为准（密文无法本地解包校验）
 #   4. 写日志：本机 <Dest>\fetch-backup.log（追加）
 #
 # 用法（本机 Windows 开发机；需已配置免密 ssh 到服务器）：
@@ -53,26 +55,27 @@ function Write-Log {
 }
 
 # ------------------------------------------------------------
-# 1) 列出服务器端常规备份包（精确匹配 yiban-YYYY-MM-DD.tar.gz，
-#    排除 yiban-signlog-migrate-* 等手工包）
+# 1) 列出服务器端常规备份包（明文 yiban-YYYY-MM-DD.tar.gz 与密文
+#    .tar.gz.gpg / .tar.gz.age，排除手工包与 .sha256 清单）。
+#    批次11 N4：backup.sh 默认加密后明文包被删除（仅剩 .tar.gz.gpg/.age），
+#    原先按明文名 glob 拉取会永久断供——改为列目录 + 远端 grep 过滤。
 # ------------------------------------------------------------
-$pattern = 'yiban-20[0-9][0-9]-[0-9][0-9]-[0-9][0-9].tar.gz'
-# 注意：glob 模式不能加引号，否则远端 shell 不展开（会按字面量查找而失败）
-$listOut = ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=$strictHostKeyChecking $Server "ls -la $RemoteDir/$pattern 2>/dev/null" 2>$null
+$remoteFilter = 'yiban-20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]\.tar\.gz(\.(gpg|age))?$'
+$listOut = ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=$strictHostKeyChecking $Server "ls -la $RemoteDir 2>/dev/null | grep -E '$remoteFilter'" 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "错误：无法连接服务器 $Server 或列出备份目录（ssh 失败，退出码 $LASTEXITCODE）" -ForegroundColor Red
     exit 1
 }
 if (-not $listOut) {
-    Write-Host "服务器上未找到常规备份包（$RemoteDir/$pattern），请检查 backup.sh cron 是否正常" -ForegroundColor Yellow
+    Write-Host "服务器上未找到常规备份包（$RemoteDir 下无 yiban-*.tar.gz[.gpg/.age]），请检查 backup.sh cron 是否正常" -ForegroundColor Yellow
     exit 1
 }
 
 # 解析每行：提取文件名（Linux ls 长格式，文件名在行尾）
 $remoteFiles = @()
 foreach ($line in $listOut) {
-    $m = [regex]::Match($line, 'yiban-\d{4}-\d{2}-\d{2}\.tar\.gz\s*$')
-    if ($m.Success) { $remoteFiles += $m.Value }
+    $m = [regex]::Match($line, 'yiban-\d{4}-\d{2}-\d{2}\.tar\.gz(\.(gpg|age))?\s*$')
+    if ($m.Success) { $remoteFiles += $m.Value.Trim() }
 }
 $remoteFiles = $remoteFiles | Sort-Object -Unique
 if ($remoteFiles.Count -eq 0) {
@@ -84,7 +87,10 @@ if ($remoteFiles.Count -eq 0) {
 # 2) 对比本机，收集缺失文件
 # ------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-$localNames = @(Get-ChildItem -Path $Dest -Filter "yiban-*.tar.gz" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+# 批次11 N4：本机清单同样覆盖密文名；.sha256 清单由正则排除（不算备份包本体）
+$mainNameRegex = '^yiban-\d{4}-\d{2}-\d{2}\.tar\.gz(\.(gpg|age))?$'
+$localNames = @(Get-ChildItem -Path $Dest -Filter "yiban-*.tar.gz*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match $mainNameRegex } | ForEach-Object { $_.Name })
 $missing = @($remoteFiles | Where-Object { $_ -notin $localNames })
 
 $dateToday = Get-Date -Format "yyyy-MM-dd"
@@ -104,12 +110,15 @@ foreach ($name in $missing) {
     try {
         scp -p -o StrictHostKeyChecking=$strictHostKeyChecking "$Server`:$RemoteDir/$name" $local
         if ($LASTEXITCODE -ne 0) { throw "scp 退出码 $LASTEXITCODE" }
-        # gzip 完整性校验：能列出包内文件 = 压缩流完整可读
-        $null = tar -tzf $local 2>$null
-        if ($LASTEXITCODE -ne 0) { throw "tar 校验失败（包可能损坏）" }
+        # gzip 完整性校验（仅明文包）：能列出包内文件 = 压缩流完整可读。
+        # 密文包（.gpg/.age）无法本地解包，完整性以服务器端 .sha256 清单核对为准。
+        if ($name -match '\.tar\.gz$') {
+            $null = tar -tzf $local 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "tar 校验失败（包可能损坏）" }
+        }
         # sha256 清单核对（2026-08-21 对抗性审查加固）：服务器端 backup.sh 会生成
-        # <包名>.sha256；存在则核对，防备份包在服务器侧被静默替换后横向投递。
-        # 清单不存在（旧版本备份）仅提示不阻断。
+        # <实际产物名>.sha256（密文包为 <名>.tar.gz.gpg.sha256 等）；存在则核对，
+        # 防备份包在服务器侧被静默替换后横向投递。
         $shaRemote = "$RemoteDir/$name.sha256"
         $shaOut = ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=$strictHostKeyChecking $Server "cat $shaRemote 2>/dev/null" 2>$null
         if ($LASTEXITCODE -eq 0 -and $shaOut) {
@@ -119,8 +128,10 @@ foreach ($name in $missing) {
                 if ($actual -ne $expected) { throw "sha256 不匹配（期望 $expected，实际 $actual），备份包疑似被替换" }
                 Write-Log "sha256 核对通过：$name"
             }
-        } else {
+        } elseif ($name -match '\.tar\.gz$') {
             Write-Log "提示：$name 无 .sha256 清单（旧版本备份），仅完成 gzip 校验"
+        } else {
+            Write-Log "警告：密文包 $name 无 .sha256 清单，无法核验完整性（请在服务器重跑 backup.sh 或手动核对）"
         }
         Write-Log "已拉取并校验：$name"
         $okCount++
@@ -132,19 +143,24 @@ foreach ($name in $missing) {
 }
 
 # ------------------------------------------------------------
-# 4) 本机保留策略（Keep > 0 时只保留最近 N 份；默认保留全部）
+# 4) 本机保留策略（Keep > 0 时只保留最近 N 份；默认保留全部）。
+#    批次11 N4：按备份包主体（明文或密文）计数，删除时连带其 .sha256 清单。
 # ------------------------------------------------------------
 if ($Keep -gt 0) {
-    $all = @(Get-ChildItem -Path $Dest -Filter "yiban-*.tar.gz" | Sort-Object Name -Descending)
+    $all = @(Get-ChildItem -Path $Dest -Filter "yiban-*.tar.gz*" |
+        Where-Object { $_.Name -match $mainNameRegex } | Sort-Object Name -Descending)
     if ($all.Count -gt $Keep) {
         $all | Select-Object -Skip $Keep | ForEach-Object {
-            Remove-Item $_.FullName -Force
+            Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+            $shaLocal = "$($_.FullName).sha256"
+            if (Test-Path $shaLocal) { Remove-Item $shaLocal -Force -ErrorAction SilentlyContinue }
             Write-Log "本机清理旧备份：$($_.Name)"
         }
     }
 }
 
-$localCount = @(Get-ChildItem -Path $Dest -Filter "yiban-*.tar.gz" -ErrorAction SilentlyContinue).Count
+$localCount = @(Get-ChildItem -Path $Dest -Filter "yiban-*.tar.gz*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match $mainNameRegex }).Count
 Write-Log "=== 拉取结束：成功 $okCount / 缺失 $($missing.Count)（本机现有 $localCount 份）==="
 if ($okCount -lt $missing.Count) {
     Write-Host "部分备份拉取失败，请检查网络后手动重跑本脚本" -ForegroundColor Yellow

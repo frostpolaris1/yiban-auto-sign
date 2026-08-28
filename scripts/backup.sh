@@ -357,8 +357,8 @@ else
 fi
 
 # 最终落盘产物 = 密文（默认）或明文（显式关闭/无法加密）；sha256 清单始终对应
-# 实际落盘文件。注意：fetch-backup.ps1 目前按 yiban-*.tar.gz 明文名拉取，启用
-# 默认加密后需按 docs/web-console/DEPLOY-CHECKLIST.md §7 调整二次副本流程。
+# 实际落盘文件。fetch-backup.ps1 已兼容密文产物（批次11 N4：按 .tar.gz/.tar.gz.gpg/
+# .tar.gz.age 拉取，密文包以 .sha256 清单核验完整性），二次副本流程无需人工调整。
 FINAL_LOCAL="${ENC_FILE:-${ARCHIVE}}"
 if command -v sha256sum > /dev/null 2>&1; then
     sha256sum "${FINAL_LOCAL}" > "${FINAL_LOCAL}.sha256"

@@ -2196,6 +2196,21 @@ def create_app(host=None):
                 session["sid"] = new_sid
                 with _rate_lock:
                     _login_fails.pop(fail_key, None)
+                # 批次11 N6：改密是核心安全事件——本人邮件（直接 send_user 绕过
+                # mail_notify 开关：开关本身可被攻击者关闭）+ 管理员告警（被盗号
+                # 改密时的可感知信号，审计之外的第一时间渠道）
+                mailer.send_user(
+                    username,
+                    "【易班签到】您的账号密码已被修改",
+                    "您的账号密码刚刚通过自助改密被修改。\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    "如非本人操作，请立即联系管理员重置密码并检查账号安全。",
+                )
+                send_notification(
+                    "账号安全事件告警",
+                    f"用户 {_mask_email(username)} 自助修改密码，"
+                    f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                )
                 logger.info("用户 %s 已修改自己的密码", _mask_email(username))
                 return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
         return jsonify({"error": "用户不存在"}), 404
@@ -2414,6 +2429,13 @@ def create_app(host=None):
         session["pw_version"] = u.get("pw_version", 1)
         # 会话绝对过期基准（P2-5），与 api_login 同口径
         session["login_ts"] = int(time.time())
+        # 批次11 N1：恢复即登录须与 api_login 同样签发 sid 并落库。注销与恢复
+        # （db.restore_user）均不轮换 sid，库内保留注销前登录签发的旧值——
+        # 此处不签发则新会话无 sid、与库内旧值不匹配，恢复成功后下个请求即 401；
+        # 且注销前被窃取的旧 cookie 会在恢复后原样复活，绕过整套 sid 吊销设计。
+        sid = secrets.token_hex(16)
+        session["sid"] = sid
+        db.set_user_sid(email, sid)
         logger.info("用户 %s 已恢复注销账号", _mask_email(email))
         return jsonify({"ok": True, "role": role})
 
@@ -2484,6 +2506,16 @@ def create_app(host=None):
                 "error": "当前账号不支持此设置（内置管理员请用管理员邮件配置）"
             }), 404
         db.audit(email, "mail_notify", email, "on" if enabled else "off")
+        if not enabled:
+            # 批次11 N6：关闭通知本身是"先静默关通知再作案"攻击链的一环——
+            # 确认邮件直接 send_user 绕过刚被关闭的开关，让本人知情
+            mailer.send_user(
+                email,
+                "【易班签到】签到失败邮件通知已被关闭",
+                "您的签到失败邮件通知已被关闭（本人操作确认）。\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "如非本人操作，请立即联系管理员（账号可能已被他人控制）。",
+            )
         return jsonify({"ok": True, "mail_notify": enabled})
 
     # ---- 邮件通知配置（全局开关，仅主管理员）----
@@ -2534,6 +2566,14 @@ def create_app(host=None):
             session.get("username") or "?",
             "mail_config", "mail_config",
             json.dumps({k: v for k, v in resp.items() if k != "ok"}, ensure_ascii=False),
+        )
+        # 批次11 N6：邮件配置是全部安全告警的送达通道，变更即时告警——
+        # 注意此时 .env 已写入新值，若管理员改劫持收件地址，本告警（按变更后
+        # 配置发送）可能到不了运营者，故 webhook 通知与审计为主要留痕手段
+        send_notification(
+            "邮件配置变更告警",
+            f"邮件通知配置已变更: {json.dumps({k: v for k, v in resp.items() if k != 'ok'}, ensure_ascii=False)}，"
+            f"操作者 {session.get('username', '?')}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         )
         return jsonify(resp)
 
@@ -3701,6 +3741,16 @@ def create_app(host=None):
                 session.get("username", ""),
                 _mask_phone(removed.get("phone", "")),
             )
+            # 批次11 N6：删号（软删）给本人留痕邮件（绕过 mail_notify 开关）
+            mailer.send_user(
+                session.get("username", ""),
+                "【易班签到】您的易班账号已删除（7 天内可撤销）",
+                f"您的易班账号（{_mask_phone(removed.get('phone', ''))}）已被删除，"
+                "进入 7 天宽限期。\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "宽限期内可在「我的账号」页自行撤销恢复；如非本人操作，"
+                "请立即联系管理员。",
+            )
             return jsonify({"ok": True, "msg": "已删除，7 天内可在本页撤销恢复，超期自动清除"})
 
     @app.route("/api/my-accounts/<int:idx>/restore", methods=["POST"])
@@ -3952,12 +4002,19 @@ def create_app(host=None):
 
     @app.route("/api/users/deleted/purge", methods=["POST"])
     def api_users_deleted_purge():
-        """管理员手动物理清除已注销用户（2026-08-17 需求：不留存已注销用户信息）。
+        """主管理员手动物理清除已注销用户（2026-08-17 需求：不留存已注销用户信息）。
 
         body: {"emails": [...]}——只清 deleted=1 的用户（db 层再校验，活跃用户传入即跳过）；
         冷却期内的用户也可被清除（管理员裁决权高于 7 天宽限承诺，审计留痕可追溯）。
         连带清理其全部易班账号行（含软删）与 time_prefs；单事务失败全部回滚。
+
+        批次11 N3：收归主管理员专属——物理清除不可逆且剥夺用户 7 天反悔权，
+        与角色变更/邮件配置等 master-only 口径对齐；普通管理员此前可绕过宽限
+        承诺清除用户（批次11 实测 200），现 403。过期清理由系统每日清理自动完成，
+        不受影响。同步即时告警（批次11 N6 缺口②）。
         """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可操作"}), 403
         data = _json_body()
         emails = data.get("emails") or []
         if not isinstance(emails, list) or not emails:
@@ -3977,7 +4034,16 @@ def create_app(host=None):
                     f"管理员手动清除 {len(purged)} 个已注销用户（含其易班账号与自选时间）",
                 )
         skipped = [e for e in emails if e not in purged]
-        logger.info("管理员手动清除已注销用户: 成功 %d 个", len(purged))
+        logger.info("主管理员手动清除已注销用户: 成功 %d 个", len(purged))
+        if purged:
+            # 批次11 N6：物理清除不可逆，与批量删除用户同级即时告警
+            send_notification(
+                "高危管理操作告警",
+                f"物理清除已注销用户 ×{len(purged)}: "
+                f"{', '.join(_mask_email(e) for e in purged[:20])}，"
+                f"操作者 {session.get('username', '?')}，时间 "
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            )
         return jsonify({
             "ok": True,
             "purged": purged,
@@ -4116,6 +4182,23 @@ def create_app(host=None):
                     for e in emails:
                         with contextlib.suppress(Exception):
                             db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
+                    # 批次11 N6：批量重置密码即时告警
+                    send_notification(
+                        "密码重置告警",
+                        f"批量重置密码 ×{done}: "
+                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
+                        f"操作者 {session.get('username', '?')}，时间 "
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    )
+                if action in ("set_admin", "unset_admin"):
+                    # 批次11 N6：提降权即时告警（权限面变更应可感知）
+                    send_notification(
+                        "权限变更告警",
+                        f"批量{'提权' if action == 'set_admin' else '降权'} ×{done}: "
+                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
+                        f"操作者 {session.get('username', '?')}，时间 "
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    )
             db.audit(
                 session.get("username") or "?",
                 "users_batch",
@@ -4187,6 +4270,12 @@ def create_app(host=None):
                 f"角色 → {new_role}",
             )
             logger.info("主管理员 %s 将用户 %s 角色 → %s", _mask_email(username), _mask_email(email), new_role)
+            # 批次11 N6：提降权即时告警（权限面变更应可感知）
+            send_notification(
+                "权限变更告警",
+                f"用户 {_mask_email(email)} 角色 → {new_role}，"
+                f"操作者 {username}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            )
             return jsonify(
                 {
                     "ok": True,
@@ -4229,6 +4318,13 @@ def create_app(host=None):
                 "管理员重置密码",
             )
             logger.info("已重置用户 %s 密码", _mask_email(email))
+            # 批次11 N6：重置他人密码即时告警（被盗号会话中的静默接管信号）
+            send_notification(
+                "密码重置告警",
+                f"用户 {_mask_email(email)} 的密码已被管理员重置，"
+                f"操作者 {session.get('username', '?')}，"
+                f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            )
             return jsonify({"ok": True, "msg": f"{email} 密码已重置"})
 
     @app.route("/api/users/<email>/delete", methods=["POST"])
@@ -4819,6 +4915,14 @@ def create_app(host=None):
             text or "（已清除）",
         )
         logger.info("公告已更新: %s", text[:50] or "（已清除）")
+        # 批次11 N6：公告变更是普通管理员可用的对外触达渠道（社工面），变更可感知
+        send_notification(
+            "公告变更告警",
+            f"全局公告已{'更新' if text else '清空'}，"
+            f"操作者 {session.get('username', '?')}，"
+            f"内容: {text[:80] or '（空）'}，"
+            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        )
         return jsonify({"ok": True, "msg": "公告已更新" if text else "公告已清除"})
 
     # ---- 连通性检测 ----
