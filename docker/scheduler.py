@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """容器内签到调度：复刻宿主 cron 的语义。
 
-- 06:31 首签 / 07:10 补签（当天已 SUCCESS 则跳过）
+- 06:31 首签 / 07:10 补签（闸门：当日全量标记 sched-run-<date>.json 不存在才跑
+  首签；标记缺失或存在 failed/retrying/pending 未了结账号才跑补签——批次7 P1-1，
+  旧「任一账号 success 即跳过」会误吞全站首签与失败账号的兜底）
 - 23:55 探针入口（signin.py --probe 内部自判触发时间/频率）
 - 每日 03:00 清理 /data/logs 下 365 天前的按天日志
 
@@ -17,91 +19,64 @@ tick 采用「分钟级到点闩锁」而非「秒==0 命中」：调度循环�
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime, timedelta
+
+# .env 解析与子进程环境构造与 run.sh / web 共用口径（批次7 P2-10 提为共享模块）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from child_env import build_child_env  # noqa: E402
 
 STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
 ENV_FILE = os.environ.get("YIBAN_ENV_FILE", "/data/.env")
 
 
-def _parse_env_file(path):
-    """逐行解析 .env：返回 {YIBAN_ 开头的合法键: 值}。
-
-    与 run.sh 同口径：忽略空行/# 注释行，按首个 = 切分并 strip；
-    非 YIBAN_ 前缀与非法键名一律丢弃（不向子进程注入无关变量）。
-    """
-    out = {}
-    try:
-        with open(path, encoding="utf-8-sig") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, val = line.partition("=")
-                key = key.strip()
-                if not key.startswith("YIBAN_"):
-                    continue
-                out[key] = val.strip()
-    except OSError:
-        pass
-    return out
-
-
-def build_child_env(env_file=ENV_FILE, base=None):
-    """构造签到/探针子进程环境：compose 环境为底座，.env 的 YIBAN_* 键覆盖注入。
-
-    仅白名单键（YIBAN_ 前缀）可覆盖；.env 缺失/损坏时安静退化为纯继承，
-    行为等同旧版。文件值优先于外部环境：这是 Web 设置页能生效的关键。
-    """
-    env = dict(base) if base is not None else dict(os.environ)
-    env.update(_parse_env_file(env_file))
-    return env
-
-
 def _state_file():
-    """容器内签到脚本写的当日结构化状态（signin.py:1801）。
-
-    历史 bug（2026-08-28 审查 F1）：此处原本读 `sign-status-<date>.txt`，但那个
-    文件只有**宿主** run.sh 会写；容器内 signin.py 写的是 `sign-state-<date>.json`。
-    导致容器内 _signed_today() 恒为 False，07:10 补签永不跳过，每天全量签到跑两遍。
-    """
+    """容器内签到脚本写的当日结构化状态（signin.py:1801）。"""
     return os.path.join(STATEDIR, f"sign-state-{datetime.now():%Y-%m-%d}.json")
 
 
-def _legacy_state_file():
-    """宿主 run.sh 写的旧格式状态文件（容器内不存在，仅为兼容保留）。"""
-    return os.path.join(STATEDIR, f"sign-status-{datetime.now():%Y-%m-%d}.txt")
+def _sched_run_file():
+    """当日全量签到完成标记（signin.py 全量收尾写，P1-1 闸门事实源）。"""
+    return os.path.join(STATEDIR, f"sched-run-{datetime.now():%Y-%m-%d}.json")
 
 
-# 视为"当天已完成签到"的状态码（与 signin.py STATUS_SUCCESS / STATUS_ALREADY 一致）
-_DONE_STATUSES = frozenset(("success", "already"))
+# 视为"未了结"的状态码：补签闸门据此判断当日是否需要重跑
+# （signin 侧有按账号防重与服务器 already 兜底，重跑幂等）
+_UNDONE_STATUSES = frozenset(("failed", "retrying", "pending"))
 
 
-def _signed_today():
-    """当天是否已有账号签到成功；已签则跳过补签。
+def _full_run_done_today():
+    """当日全量签到是否已运行过（sched-run-<date>.json 标记）。
 
-    兼容两种来源，任一为真即视为已签：
-    1. 容器内 signin.py 写的 sign-state-<date>.json（结构化，逐账号）；
-    2. 宿主 run.sh 写的 sign-status-<date>.txt（整日 SUCCESS 语义）。
+    批次7 P1-1：原 `_signed_today()`「任一账号 success 即视为已签」会把
+    用户手动签到、首签部分成功误判为全站已签——06:31 首签整体跳过（其余账号
+    全天无人代签）、07:10 补签也被跳过（失败账号失去当日兜底）。
+    新语义只认 signin 全量收尾写的标记；手动签到（--only）不写标记。
     """
-    # 1) 旧格式（宿主 run.sh 路径）
     try:
-        with open(_legacy_state_file(), encoding="utf-8") as fh:
-            if fh.read().strip() == "SUCCESS":
-                return True
-    except OSError:
-        pass
-    # 2) 新格式（容器内 signin.py 路径）
+        with open(_sched_run_file(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get("completed"))
+
+
+def _has_undone_today():
+    """当日是否存在未了结账号（failed/retrying/pending）。
+
+    标记存在但存在未了结账号 → 07:10 补签应重跑；无记录/文件缺失按「未跑过」
+    处理（允许触发，避免漏签）。"""
     try:
         with open(_state_file(), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return False
-    if not isinstance(data, dict):
-        return False
+        return True
+    if not isinstance(data, dict) or not data:
+        return True
     return any(
-        isinstance(v, dict) and str(v.get("status", "")).strip() in _DONE_STATUSES
+        isinstance(v, dict) and str(v.get("status", "")).strip() in _UNDONE_STATUSES
         for v in data.values()
     )
 
@@ -146,19 +121,24 @@ def main_loop(sleep_seconds=1):
         # 子进程环境原先只在启动时构造一次，管理员在 Web 后台改的 YIBAN_GLOBAL_PAUSE
         # （一键暂停）/ YIBAN_SUNDAY_SIGN / YIBAN_PROBE_* 在容器重启前静默不生效。
         # 解析成本仅在真正触发的那一刻产生（每天 3 次），轮询循环内不读盘。
-        if hm >= FIRST and done_sign_first != today and not _signed_today():
+        if hm >= FIRST and done_sign_first != today and not _full_run_done_today():
             # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重
             subprocess.run(["python3", "scripts/signin.py"], cwd="/app",
-                           env=build_child_env())
+                           env=build_child_env(ENV_FILE))
             done_sign_first = today
-        if hm >= SECOND and done_sign_second != today and not _signed_today():
+        if hm >= SECOND and done_sign_second != today and (
+            not _full_run_done_today() or _has_undone_today()
+        ):
+            # 补签闸门（批次7 P1-1）：全量未跑过（首签错过的补偿）或存在未了结
+            # 账号（failed/retrying/pending）才执行；全员了结则跳过，不再被
+            # 「任一账号成功」误导跳过失败账号的兜底
             subprocess.run(["python3", "scripts/signin.py"], cwd="/app",
-                           env=build_child_env())
+                           env=build_child_env(ENV_FILE))
             done_sign_second = today
         if hm >= PROBE_AT and done_probe != today:
             # 探针：只读健康检查（未到配置触发时间/频率时 signin.py 内零请求退出）
             subprocess.run(["python3", "scripts/signin.py", "--probe"], cwd="/app",
-                           env=build_child_env())
+                           env=build_child_env(ENV_FILE))
             done_probe = today
         if now.hour >= 3 and last_clean != today:
             _cleanup_logs()

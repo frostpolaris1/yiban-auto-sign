@@ -31,7 +31,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.db:
         os.environ["YIBAN_DB_FILE"] = args.db
-    db.init_db(env_file=args.env)
+    # 批次7 P2-2：导出是"逃生门"，绝不允许在导出前触发破坏性清理
+    # （init_db 缺省 cleanup=True 会物理清掉过期软删账号/注销用户/旧审计——
+    # 保留期边界导出的数据会静默缺一批且无法区分"本来没有"还是"被清理"）
+    db.init_db(env_file=args.env, cleanup=False)
     accounts = db.load_accounts() if args.plaintext else db.load_accounts_raw()
     users = db.load_users()
     os.makedirs(args.out, exist_ok=True)

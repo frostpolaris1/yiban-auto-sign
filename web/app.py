@@ -41,7 +41,7 @@ import requests
 from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层
+# 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层 + 子进程环境构造
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -231,6 +231,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
 </body>
 </html>"""
 import db  # noqa: E402
+import child_env  # noqa: E402
 import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
 import env_lock  # noqa: E402
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
@@ -863,20 +864,37 @@ def migrate_admin_password_to_hash(env_path):
     说明：仅改变口令的存储形态（明文 → 哈希），口令本身不变；已有哈希则跳过；
     明文回退比对路径（verify_admin）保留以兼容未迁移的存量部署。
     迁移失败（如 .env 对进程不可写）只告警不阻断启动——明文回退仍可登录。
+
+    批次7 A1（SSH 追回路径堵漏）：检测到「明文与现存哈希不一致」——即运维通过
+    SSH 重设了 YIBAN_ADMIN_PASSWORD（主管理员被盗后的追回操作）——重迁移哈希的
+    同时递增 YIBAN_ADMIN_PW_VERSION，使全部被盗旧会话立即失效。原实现哈希存在
+    即跳过，导致重设的明文被忽略（verify_admin 哈希优先）、攻击者旧密码 + 旧
+    cookie 双通道继续掌控。
     """
+    rotated = False
     try:
         env = read_env(env_path)
-        if env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip():
-            return
+        existing_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
         plain = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
         if not plain:
             return
+        updates = {
+            "YIBAN_ADMIN_PASSWORD_HASH": generate_password_hash(plain, method=SCRYPT_METHOD),
+            "YIBAN_ADMIN_PASSWORD": "",
+        }
+        if existing_hash:
+            try:
+                same = check_password_hash(existing_hash, plain)
+            except (ValueError, TypeError):
+                same = False
+            if same:
+                return  # 明文与哈希一致（重复启动），无需任何写入
+            cur_pwv = load_env_int(env_path, "YIBAN_ADMIN_PW_VERSION", 1)
+            updates["YIBAN_ADMIN_PW_VERSION"] = str(cur_pwv + 1)
+            rotated = True
         write_env_batch(
             env_path,
-            {
-                "YIBAN_ADMIN_PASSWORD_HASH": generate_password_hash(plain, method=SCRYPT_METHOD),
-                "YIBAN_ADMIN_PASSWORD": "",
-            },
+            updates,
         )
     except OSError as e:
         logger.warning(
@@ -886,11 +904,18 @@ def migrate_admin_password_to_hash(env_path):
             e,
         )
         return
-    logger.warning(
-        "检测到管理员口令明文存储（%s），已自动迁移为 scrypt 哈希并清空明文；"
-        "口令本身未变更，请确认其强度足够（弱口令仍可被猜测）",
-        env_path,
-    )
+    if rotated:
+        logger.warning(
+            "检测到管理员口令被外部更改（%s，明文与现存哈希不一致）：已重迁移哈希"
+            "并递增 YIBAN_ADMIN_PW_VERSION，全部旧会话已失效（SSH 追回场景）",
+            env_path,
+        )
+    else:
+        logger.warning(
+            "检测到管理员口令明文存储（%s），已自动迁移为 scrypt 哈希并清空明文；"
+            "口令本身未变更，请确认其强度足够（弱口令仍可被猜测）",
+            env_path,
+        )
 
 
 def _atomic_write(path, content, chmod_priv=False):
@@ -1899,6 +1924,13 @@ def create_app(host=None):
         if role:
             with _rate_lock:
                 _login_fails.pop(fail_key, None)
+            # 批次7 A6：登录成功写入审计（原实现成功登录零留痕，被盗会话无法还原
+            # 会话何时建立、来自哪个 IP；IP 经 hash_ip 匿名化，与审计侧口径一致）。
+            # 失败登录已有阈值邮件告警，不重复写审计（避免爆破刷爆审计表）。
+            db.audit(
+                username.lower(), "login", db.hash_ip(ip),
+                f"登录成功（{auth_source}）",
+            )
             # S1/复审：auth_source 记录实际认证来源，不用 role+邮箱反推
             # 防 session 固定：登录成功先清空再重建会话
             session.clear()
@@ -2737,6 +2769,10 @@ def create_app(host=None):
                 return jsonify({"error": "未知操作"}), 400
             if not isinstance(ids, list) or not ids:
                 return jsonify({"error": "请选择要操作的账号"}), 400
+            # 批次7 A3：单次批量上限——被盗 admin 会话原本可用一个请求清空全部
+            # 账号（≤500）；对齐 /api/users/deleted/purge 的 100 上限
+            if len(ids) > 100:
+                return jsonify({"error": "单次批量操作最多 100 个账号"}), 400
             reason = str(data.get("reason", "")).strip()[:100]
             if action == "reject" and not reason:
                 return jsonify({"error": "批量拒绝需要填写理由"}), 400
@@ -2765,6 +2801,7 @@ def create_app(host=None):
                     return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
 
             ops = []
+            batch_targets = []  # 批次7 B3：审计留目标清单（脱敏截断）
             # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
             live_owners = {
                 a.get("owner", "")
@@ -2804,6 +2841,7 @@ def create_app(host=None):
                     ops.append(
                         ("set_deleted", acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     )
+                batch_targets.append(acc.get("phone", ""))
             done = len(ops)
             if ops:
                 try:
@@ -2829,7 +2867,10 @@ def create_app(host=None):
                 session.get("username") or "?",
                 "account_batch",
                 action,
-                f"处理 {done} 个",
+                # 批次7 B3：批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
+                (f"处理 {done} 个: " + ",".join(
+                    _mask_phone(str(p)) for p in (batch_targets or [])[:20]
+                ))[:200],
             )
             accounts = load_accounts()
             logger.info("批量%s账号 %d 个", action, done)
@@ -3881,6 +3922,9 @@ def create_app(host=None):
             return jsonify({"error": "未知操作"}), 400
         if not isinstance(emails, list) or not emails:
             return jsonify({"error": "请选择要操作的用户"}), 400
+        if len(emails) > 100:
+            # 批次7 A2：单次批量上限——被盗 admin 会话原本可用一个请求物理删除全部用户
+            return jsonify({"error": "单次批量操作最多 100 个用户"}), 400
         if any(not isinstance(e, str) or len(e) > 64 for e in emails):
             return jsonify({"error": "邮箱格式不正确"}), 400
         password = str(data.get("password", ""))
@@ -3983,7 +4027,10 @@ def create_app(host=None):
                 session.get("username") or "?",
                 "users_batch",
                 action,
-                f"处理 {done} 个",
+                # 批次7 B3：批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
+                (f"处理 {done} 个: " + ",".join(
+                    _mask_email(e) for e in (emails or [])[:20]
+                ))[:200],
             )
             logger.info("批量%s用户 %d 个", action, done)
             msg = {
@@ -4132,6 +4179,35 @@ def create_app(host=None):
     _batch_signin_lock = threading.Lock()
 
     # ---- 手动签到（单个 / 批量）----
+    def _signin_run_lock_busy():
+        """非阻塞探测 signin 运行锁是否被其他进程持有（批次7 P2-9）。
+
+        全量签到/cron 运行期间，--only 子进程会拿锁失败并 exit 3 静默退出——
+        原实现 web 照样返回"已触发"，用户侧无感。现在 spawn 前先探测，忙时直接
+        429 如实提示（POSIX flock 试探；Windows 无 fcntl 返回 False 走旧行为，
+        与 _acquire_run_lock 的降级策略一致）。
+        """
+        path = os.path.join(STATE_DIR, "signin-run.lock")
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            return False
+        try:
+            try:
+                import fcntl
+            except ImportError:
+                return False
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True  # 被其他签到进程持有
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
     def _reap_signin(phone, proc):
         """M9：子进程结束后在锁内从 _signin_procs 移除同对象（防僵尸记录/重复 terminate）。"""
         try:
@@ -4154,6 +4230,8 @@ def create_app(host=None):
         acc = accounts[idx]
         if acc.get("deleted") or acc.get("status") != ACCOUNT_STATUS_ACTIVE:
             return False, f"账号 {phone} 不可手动签到（未生效或已删除）"
+        if _signin_run_lock_busy():
+            return False, "签到队列忙（定时签到进行中），请稍后再试"
         with _signin_lock:  # 原子检查+占位：并发请求不能同时通过防抖
             now = time.time()
             if phone in _last_trigger and now - _last_trigger[phone] < SIGN_MIN_INTERVAL:
@@ -4167,7 +4245,10 @@ def create_app(host=None):
         # 项目根目录（web 的上一级），与 TUI action_manual_sign 一致
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         script = os.path.join(base, "scripts", "signin.py")
-        env = dict(os.environ)
+        # 批次7 P2-10：与定时签到同口径——进程环境为底座、.env 的 YIBAN_* 键覆盖注入。
+        # 原实现只继承 gunicorn 启动快照，管理员事后在 .env 配的 YIBAN_PROXY /
+        # YIBAN_NOTIFY_URL / 登录方式对手动签到不生效（两路行为分叉，排障困难）。
+        env = child_env.build_child_env(ENV_FILE, base=dict(os.environ))
         # 单账号手动签到：关闭随机延迟，避免等待
         env["YIBAN_START_DELAY_MAX"] = "0"
         env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
@@ -4215,7 +4296,7 @@ def create_app(host=None):
                 return jsonify({"error": msg}), 404
             if "不可手动签到" in msg:
                 return jsonify({"error": msg}), 400
-            if "正在签到" in msg:
+            if "正在签到" in msg or "签到队列忙" in msg:
                 return jsonify({"error": msg}), 429
             return jsonify({"error": msg}), 500
         db.audit(session.get("username") or "?", "signin_manual", _mask_phone(phone), "手动签到")
@@ -4233,6 +4314,8 @@ def create_app(host=None):
         if not isinstance(ids, list) or not ids:
             return jsonify({"error": "请先勾选要签到的账号"}), 400
         accounts = load_accounts()
+        if _signin_run_lock_busy():
+            return jsonify({"error": "签到队列忙（定时签到进行中），请稍后再试"}), 429
         # 防错位 + bool 混淆修复（同 /api/accounts/batch，2026-08-20 对抗性审查 P1）：
         # 签到用错位下标取到的会是他人账号的凭据，危害比管理操作更直接
         phones_in = data.get("phones")
@@ -4395,7 +4478,9 @@ def create_app(host=None):
     def api_settings_save():
         data = _json_body()
         # 调度权限（2026-08-15 确认）：仅主管理员可改调度字段（排序/分布/缓冲/自选/窗口/旧版模式）；
-        # 普通管理员可改随机延迟/周日/公告等低风险项。
+        # 批次7 A5：随机延迟（start_delay_max/gap_max）同为调度核心参数——注册管理员
+        # 拉满 3600s 可把几乎全部账号挤出签到窗口（事实性停签），一并收归主管理员。
+        # 普通管理员可改周日/公告等低风险项。
         # sign_mode 为遗留字段（已无 UI 控件），但 signin.py 在未设 sign_order 时以其为回退，
         # 普通管理员改之可间接变更调度排序 → 同样仅主管理员可写（安全审查 2026-08）。
         is_master = _is_builtin_admin_session()
@@ -4403,9 +4488,13 @@ def create_app(host=None):
             k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
                                 "edge_front_sec", "edge_back_sec",
                                 "allow_time_pref", "sign_window", "sign_mode",
-                                "global_pause")
+                                "global_pause", "start_delay_max", "gap_max")
         ):
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
+        # 批次7 A4：字段携带才写——原实现缺省即 0 且无条件写两个键，
+        # "只改周日开关"之类的部分更新会把已配置的延迟静默清零
+        has_start = "start_delay_max" in data
+        has_gap = "gap_max" in data
         try:
             start = int(data.get("start_delay_max", 0))
             gap = int(data.get("gap_max", 0))
@@ -4511,10 +4600,12 @@ def create_app(host=None):
                     return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
                 probe_interval = str(n)
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
-        updates = {
-            "YIBAN_START_DELAY_MAX": str(start) if start > 0 else "",
-            "YIBAN_ACCOUNT_GAP_MAX": str(gap) if gap > 0 else "",
-        }
+        # 批次7 A4：仅请求携带的字段才写入（缺失不重置）
+        updates = {}
+        if has_start:
+            updates["YIBAN_START_DELAY_MAX"] = str(start) if start > 0 else ""
+        if has_gap:
+            updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
         if sign_mode:
             updates["YIBAN_SIGN_MODE"] = sign_mode
         if sign_order:
