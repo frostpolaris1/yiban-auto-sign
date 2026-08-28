@@ -11,6 +11,7 @@
 import logging
 import os
 import smtplib
+import ssl
 from email.header import Header
 from email.mime.text import MIMEText
 
@@ -121,11 +122,15 @@ def _send(subject, text, to):
     msg["To"] = to
 
     try:
+        # 批次7 P2-1：显式证书校验——smtplib 默认 context（ssl._create_stdlib_context）
+        # verify_mode=CERT_NONE 不校验服务器证书，SMTP 授权码可被中间人窃取后
+        # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
+        ctx = ssl.create_default_context()
         if port == 465:
-            server = smtplib.SMTP_SSL(host, port, timeout=15)
+            server = smtplib.SMTP_SSL(host, port, timeout=15, context=ctx)
         else:
             server = smtplib.SMTP(host, port, timeout=15)
-            server.starttls()
+            server.starttls(context=ctx)
         with server:
             server.login(user, password)
             server.sendmail(user, [to], msg.as_string())

@@ -1868,6 +1868,33 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
 # ---------------------------------------------------------------------------
 # 账密熔断器：连续凭据失败 → 暂停签到（零请求），周期性半开试探自动恢复
 # ---------------------------------------------------------------------------
+def _write_sched_done(counts=None):
+    """写入当日「全量签到已运行」标记（sched-run-<date>.json）——调度器闸门事实源。
+
+    批次7 P1-1：调度器原 `_signed_today()` 以「任一账号 success」判定当日已签，
+    手动签到/部分成功都会压制全站首签与补签。新契约：仅全量模式在收尾写本标记
+    （--only 手动签到与 --probe 探针不写），调度器据此判定：
+    - 首签：标记不存在 → 执行；
+    - 补签：标记不存在，或存在未了结账号（failed/retrying/pending）→ 执行。
+    """
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    path = os.path.join(state_dir, f"sched-run-{datetime.now().strftime('%Y-%m-%d')}.json")
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        payload = {
+            "completed": True,
+            "finished_at": datetime.now().strftime("%H:%M:%S"),
+        }
+        if isinstance(counts, dict):
+            payload.update(counts)
+        tmp = path + ".tmp" + str(os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning("写入全量完成标记失败（调度器可能重复触发当日签到）: %s", e)
+
+
 def _cred_state_path():
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
     return os.path.join(state_dir, "cred-state.json")
@@ -2636,6 +2663,9 @@ def run_probe(accounts):
     if not _health_probe_due():
         logger.info("==== 探针模式：已开启，但未到触发时间/频率，本次跳过 ====")
         return
+    # 批次7 P2-8：last_run 占位前置——探测开始前先记账，双探针/调度重启并发时
+    # 只放行一个（原实现探测结束后才写，两个探针都能通过 _health_probe_due 判定）
+    _update_probe_state_run(datetime.now().strftime("%Y-%m-%d"))
     logger.info(f"==== 探针模式：对 {len(accounts)} 个账号进行健康检查 ====")
     now = datetime.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -2681,8 +2711,7 @@ def run_probe(accounts):
             f"（超时/连接异常等，通常可自愈），未计入预警。",
         )
     _flush_admin_mail_summary(phase="健康探测")
-    # 记录执行（last_run 写状态文件；once 自动关闭）
-    _update_probe_state_run(now.strftime("%Y-%m-%d"))
+    # once 自动关闭（last_run 已在探测开始前置记录）
     if PROBE_INTERVAL.strip().lower() == "once":
         _env_update_probe(auto_disable=True)
         logger.info("==== 探针模式（单次）执行完成，已自动关闭探针 ====")
@@ -2728,6 +2757,13 @@ def main():
     # 误开探针时此前会夜夜走「未配置任何账号」ERROR 分支且 once 永不关闭；
     # 探针语义下零账号=无事可做，静默成功退出。
     if args.probe:
+        # 批次7 P2-8：探针会对全部账号做完整登录，必须与真实签到互斥——
+        # 原实现绕过运行锁，23:55 探针与手动签到并发时同一账号被两进程并发登录。
+        try:
+            _probe_lock_fh = _acquire_run_lock(only_mode=True)
+        except _RunLockHeld:
+            logger.warning("已有签到进程在运行，本轮探针跳过（防同账号并发）")
+            sys.exit(0)
         if accounts:
             run_probe(accounts)
         sys.exit(0)
@@ -2784,7 +2820,9 @@ def main():
         _run_lock_fh = _acquire_run_lock(bool(args.only))
     except _RunLockHeld:
         logger.warning("已有签到进程在运行，本次手动签到跳过（防同账号并发，稍后可重试）")
-        sys.exit(0)
+        # 批次7 P2-9：原 exit 0 让 web/TUI 把"静默跳过"当成功展示；3 = 队列忙，
+        # 调用方可据此向用户如实提示（退出码语义见文件头/退出码表）
+        sys.exit(3)
 
     logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
     # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）
@@ -2937,6 +2975,11 @@ def main():
     # A 线合并：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。
     _flush_admin_mail_summary()
+
+    # 全量运行完成标记（批次7 P1-1）：调度器首签/补签闸门的事实源。
+    # 仅全量模式写入；--only 手动签到不写——手动成功不得压制调度器当日判定。
+    if not args.only:
+        _write_sched_done({"ok_n": ok_n, "fail_n": fail_n, "skip_n": skip_n})
 
     # 退出码（run.sh 依据退出码写状态文件）：
     # 0 - 全部成功（有实际签到执行；含"已签到""窗口外部分跳过但至少执行过"）

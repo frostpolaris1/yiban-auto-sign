@@ -190,6 +190,9 @@ class CleanupResidueTest(unittest.TestCase):
         with db._conn_lock:
             conn.execute("UPDATE users SET deleted=1, deleted_at=? WHERE email=?",
                          ("2026-08-28 00:00:00", "victim3@test.local"))
+            # 批次8 P1-2：遗留未提交事务现在会被安全回滚（不再被盲提交）——
+            # 夹具自提交，不依赖任何后续函数的隐式提交
+            conn.commit()
         purged = db.purge_deleted_users_hard(["victim3@test.local"])
         self.assertEqual(purged, ["victim3@test.local"])
         self.assertEqual(self._req_count("victim3@test.local"), 0,

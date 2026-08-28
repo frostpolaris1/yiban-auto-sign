@@ -5,15 +5,14 @@
     py -m pytest tests/test_container_scheduler.py -v
     py tests/test_container_scheduler.py          # 无 pytest 也可直接运行
 
-覆盖 2026-08-28 对抗性审查批次 5 的两个阻断级缺陷：
+覆盖两代审查修复：
 
-- **F1 补签去重恒失效**：`_signed_today()` 原读 `sign-status-<date>.txt`，而该文件
-  只有**宿主** `run.sh:67` 会写；容器内 `signin.py:1801` 写的是 `sign-state-<date>.json`。
-  导致容器内去重判断恒为 False，07:10 补签永不跳过 —— **每天全量签到执行两遍**，
-  请求量翻倍，直接放大风控暴露（与调度 v2 的设计目标相悖）。
-- **F2 子进程环境只在启动时构造一次**：`build_child_env()` 原先写在 `while True` 之外，
-  管理员在 Web 后台改的 `YIBAN_GLOBAL_PAUSE`（一键暂停）/ `YIBAN_SUNDAY_SIGN` /
-  `YIBAN_PROBE_*` 在容器重启前**静默不生效**。
+- **批次5 F2**：`build_child_env()` 必须在每次触发时重新解析 .env（Web 后台
+  改的全局暂停/周日/探针开关即时生效）。
+- **批次7 P1-1**：调度器闸门改为「全量运行标记 sched-run-<date>.json」语义——
+  旧 `_signed_today()` 以「任一账号 success」判定已签，用户手动签到或首签部分
+  成功都会压制全站 06:31 首签与 07:10 补签（失败账号失去当日兜底）。
+  新语义：手动签到（--only）不写标记，不再影响调度器判定。
 """
 import importlib.util
 import json
@@ -57,8 +56,8 @@ def _today():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SignedTodayTest(unittest.TestCase):
-    """F1：补签去重必须同时认得容器内的 sign-state-*.json 与宿主的旧 txt。"""
+class FullRunGateTest(unittest.TestCase):
+    """P1-1：首签/补签闸门以 sched-run-*.json 全量标记为准，手动签到不得压制。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="sched-")
@@ -70,71 +69,134 @@ class SignedTodayTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- helpers --
+    def _marker_path(self):
+        return os.path.join(self.tmp, f"sched-run-{_today()}.json")
+
     def _state_path(self):
         return os.path.join(self.tmp, f"sign-state-{_today()}.json")
 
-    def _legacy_path(self):
-        return os.path.join(self.tmp, f"sign-status-{_today()}.txt")
+    def _write_marker(self, **extra):
+        with open(self._marker_path(), "w", encoding="utf-8") as f:
+            json.dump({"completed": True, **extra}, f)
 
     def _write_state(self, data):
         with open(self._state_path(), "w", encoding="utf-8") as f:
             json.dump(data, f)
 
-    # -- F1 核心 --
-    def test_container_json_success_marks_signed(self):
-        """容器内首签已成功 → 补签必须跳过（F1 的主断言）。"""
+    # -- 首签闸门：_full_run_done_today --
+    def test_no_marker_allows_first_sign(self):
+        """无标记（当日全量未跑）→ 首签闸门放行。"""
+        self.assertFalse(self.sched._full_run_done_today())
+
+    def test_marker_blocks_first_sign(self):
+        """全量已跑 → 首签跳过（调度器重启不再重跑）。"""
+        self._write_marker()
+        self.assertTrue(self.sched._full_run_done_today())
+
+    def test_manual_sign_state_does_not_write_marker(self):
+        """核心回归：手动签到只写 sign-state（success），不得生成全量标记。"""
         self._write_state({"13800000000": {"status": "success", "message": "签到成功"}})
-        self.assertTrue(
-            self.sched._signed_today(),
-            "容器内 sign-state-*.json 含 success 时 _signed_today() 应为 True，否则补签不会跳过",
+        self.assertFalse(
+            self.sched._full_run_done_today(),
+            "手动签到的 success 不能再压制全站首签（P1-1 主断言）",
         )
 
-    def test_container_json_already_marks_signed(self):
-        """服务器返回『今日已签到』同样视为已完成。"""
-        self._write_state({"13800000000": {"status": "already"}})
-        self.assertTrue(self.sched._signed_today())
+    def test_corrupt_marker_treated_as_not_done(self):
+        """标记文件损坏按「未跑过」处理（宁可重跑，不可漏签；signin 内部幂等）。"""
+        with open(self._marker_path(), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.assertFalse(self.sched._full_run_done_today())
 
-    def test_container_json_failed_allows_retry(self):
-        """首签失败 → 补签应当执行（不能一刀切跳过）。"""
-        self._write_state({"13800000000": {"status": "failed"}})
-        self.assertFalse(self.sched._signed_today())
+    def test_marker_non_dict_treated_as_not_done(self):
+        with open(self._marker_path(), "w", encoding="utf-8") as f:
+            json.dump(["unexpected"], f)
+        self.assertFalse(self.sched._full_run_done_today())
 
-    def test_container_json_retrying_allows_retry(self):
-        self._write_state({"13800000000": {"status": "retrying"}})
-        self.assertFalse(self.sched._signed_today())
-
-    def test_one_success_among_many_marks_signed(self):
-        """任一账号成功即视为当日已签到（补签是整批行为）。"""
+    # -- 补签闸门：_has_undone_today --
+    def test_failed_state_needs_second_sign(self):
+        """首签存在失败账号 → 补签必须重跑（旧 any-success 语义会误跳过）。"""
+        self._write_marker()
         self._write_state({
             "13800000001": {"status": "failed"},
             "13800000002": {"status": "success"},
         })
-        self.assertTrue(self.sched._signed_today())
+        self.assertTrue(self.sched._has_undone_today())
 
-    def test_no_state_file_not_signed(self):
-        self.assertFalse(self.sched._signed_today())
+    def test_retrying_state_needs_second_sign(self):
+        self._write_marker()
+        self._write_state({"13800000000": {"status": "retrying"}})
+        self.assertTrue(self.sched._has_undone_today())
 
-    def test_legacy_txt_still_honored(self):
-        """宿主 run.sh 写的旧格式仍然有效（向后兼容，不可回归）。"""
-        with open(self._legacy_path(), "w", encoding="utf-8") as f:
-            f.write("SUCCESS")
-        self.assertTrue(self.sched._signed_today())
+    def test_pending_state_counts_as_undone(self):
+        """计划已写（pending）但未执行 → 补签应跑。"""
+        self._write_marker()
+        self._write_state({"13800000000": {"status": "pending"}})
+        self.assertTrue(self.sched._has_undone_today())
 
-    def test_legacy_txt_other_value_not_signed(self):
-        with open(self._legacy_path(), "w", encoding="utf-8") as f:
-            f.write("FAILED")
-        self.assertFalse(self.sched._signed_today())
+    def test_all_done_skips_second_sign(self):
+        """全员了结（success/already/skip 类）→ 补签跳过，不再全天空跑两遍。"""
+        self._write_marker()
+        self._write_state({
+            "13800000001": {"status": "success"},
+            "13800000002": {"status": "already"},
+            "13800000003": {"status": "no_task"},
+            "13800000004": {"status": "skipped_window"},
+        })
+        self.assertFalse(self.sched._has_undone_today())
 
-    def test_corrupt_json_safely_not_signed(self):
-        """状态文件损坏不应抛异常，按『未签到』处理（触发补签，而非崩调度器）。"""
-        with open(self._state_path(), "w", encoding="utf-8") as f:
-            f.write("{not json")
-        self.assertFalse(self.sched._signed_today())
+    def test_manual_only_success_is_not_undone_but_first_gate_still_open(self):
+        """手动签到成功后：无失败记录 → 补签不跑；但首签闸门仍开（标记缺失）。"""
+        self._write_state({"13800000000": {"status": "success"}})
+        self.assertFalse(self.sched._has_undone_today())
+        self.assertFalse(self.sched._full_run_done_today())
 
-    def test_json_non_dict_safely_not_signed(self):
-        with open(self._state_path(), "w", encoding="utf-8") as f:
-            json.dump(["unexpected", "list"], f)
-        self.assertFalse(self.sched._signed_today())
+    def test_missing_or_empty_state_counts_as_undone(self):
+        """无状态记录 = 当天还没跑过 → 允许触发（防漏签）。"""
+        self.assertTrue(self.sched._has_undone_today())
+        self._write_state({})
+        self.assertTrue(self.sched._has_undone_today())
+
+
+class MainLoopGateTest(unittest.TestCase):
+    """main_loop 集成：闸门谓词与实际子进程触发的一致性。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="sched-")
+        self.sched = _load_sched()
+        self.sched.STATEDIR = self.tmp
+        self.env_file = os.path.join(self.tmp, ".env")
+        self.sched.ENV_FILE = self.env_file
+        # 三个触发点全部设为 (0,0)：hm >= (0,0) 恒真 → 首轮即全部到达触发判定
+        self.sched.FIRST = (0, 0)
+        self.sched.SECOND = (0, 0)
+        self.sched.PROBE_AT = (0, 0)
+        self.sched.LOGDIR = os.path.join(self.tmp, "logs")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run_loop_once(self):
+        runs = []
+        self.sched.subprocess = _stub_module(run=lambda cmd, **kw: runs.append(cmd))
+        self.sched.time = _stub_module(sleep=_stop_sleep)
+        with self.assertRaises(_Stop):
+            self.sched.main_loop(sleep_seconds=1)
+        return runs
+
+    def test_marker_blocks_both_signs_probe_still_runs(self):
+        """全量标记存在且全员了结 → 首签/补签都不触发，探针照常触发。"""
+        with open(os.path.join(self.tmp, f"sched-run-{_today()}.json"), "w") as f:
+            json.dump({"completed": True}, f)
+        with open(os.path.join(self.tmp, f"sign-state-{_today()}.json"), "w") as f:
+            json.dump({"13800000000": {"status": "success"}}, f)
+        runs = self._run_loop_once()
+        self.assertEqual(len(runs), 1, "只应触发探针一次")
+        self.assertIn("--probe", runs[0])
+
+    def test_no_marker_triggers_both_signs(self):
+        """无标记 → 首签与补签都触发（探针因探针未到触发时间在子进程内零请求退出）。"""
+        runs = self._run_loop_once()
+        self.assertEqual(len(runs), 3, "首签 / 补签 / 探针 三个触发点都应执行")
 
 
 class EnvReloadTest(unittest.TestCase):
@@ -146,11 +208,10 @@ class EnvReloadTest(unittest.TestCase):
         self.sched.STATEDIR = self.tmp
         self.env_file = os.path.join(self.tmp, ".env")
         self.sched.ENV_FILE = self.env_file
-        # 三个触发点全部设为 (0,0)：hm >= (0,0) 恒真 → 首轮即全部触发
         self.sched.FIRST = (0, 0)
         self.sched.SECOND = (0, 0)
         self.sched.PROBE_AT = (0, 0)
-        self.sched.LOGDIR = os.path.join(self.tmp, "logs")  # 目录不存在 → 清理直接返回
+        self.sched.LOGDIR = os.path.join(self.tmp, "logs")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -166,16 +227,13 @@ class EnvReloadTest(unittest.TestCase):
         def build_spy(*_a, **_kw):
             env = real_build(env_file=self.env_file, base={"PATH": "/x"})
             seen.append(env.get("YIBAN_TEST_MARKER", ""))
-            # 每次调用后改写 .env：下次若仍返回旧值，即证明没有重新读盘
             with open(self.env_file, "w", encoding="utf-8") as f:
                 f.write(f"YIBAN_TEST_MARKER=v{len(seen) + 1}\n")
             return env
 
         self.sched.build_child_env = build_spy
-        # 记录子进程调用（不真的 spawn）
         runs = []
         self.sched.subprocess = _stub_module(run=lambda cmd, **kw: runs.append(cmd))
-        # 首次 sleep 即跳出循环
         self.sched.time = _stub_module(sleep=_stop_sleep)
 
         with self.assertRaises(_Stop):
@@ -192,7 +250,6 @@ class EnvReloadTest(unittest.TestCase):
         """.env 缺失时安全退化为纯继承，不应抛异常。"""
         if os.path.exists(self.env_file):
             os.remove(self.env_file)
-        # 保持真实实现（只替换子进程与 sleep）
         self.sched.subprocess = _stub_module(run=lambda cmd, **kw: None)
         self.sched.time = _stub_module(sleep=_stop_sleep)
         with self.assertRaises(_Stop):

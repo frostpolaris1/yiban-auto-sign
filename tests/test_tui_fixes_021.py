@@ -164,7 +164,7 @@ class TuiFixes021Test(unittest.TestCase):
         ):
             db_export.main(["--out", out_dir, "--db", db_file, "--env", env_file])
 
-        init_db.assert_called_once_with(env_file=env_file)
+        init_db.assert_called_once_with(env_file=env_file, cleanup=False)
         for name in ("accounts.json", "users.json"):
             path = os.path.join(out_dir, name)
             self.assertTrue(os.path.exists(path), f"{name} 应已生成")

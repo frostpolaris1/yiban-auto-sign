@@ -278,6 +278,8 @@ class DbFixes021Test(unittest.TestCase):
         )
         h1 = _insert_audit_row(conn, old_ts, "admin", "old1", prev_hash="")
         _insert_audit_row(conn, old_ts, "admin", "old2", prev_hash=h1)
+        # 批次8 P1-2：遗留事务改为回滚语义——夹具自提交，不依赖 audit() 盲提交
+        conn.commit()
         db.audit("admin", "recent1", "target1", "detail1")
         db.audit("admin", "recent2", "target2", "detail2")
         conn.commit()

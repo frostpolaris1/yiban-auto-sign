@@ -592,8 +592,8 @@
       </div>
     </div>
 
-    <!-- 随机延迟 -->
-    <div class="card mb-4">
+    <!-- 随机延迟（批次7 A5：主管理员专属，普通管理员整卡隐藏） -->
+    <div class="card mb-4" id="delay-card">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">随机延迟（仅手动签到生效）</div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">让每次手动签到的发起时间略有随机变化（自动签到的时间已由系统分散，无需此设置）</p>
       <div class="space-y-4">
@@ -2233,6 +2233,9 @@ function toggleBatchMode() {
 }
 
 function renderDelayUI() {
+  // 批次7 A5：随机延迟属于调度核心参数，收归主管理员（普通管理员隐藏整卡，
+  // 服务端同门控 403）；与调度设置卡片的 disabled 模式一致
+  $('delay-card').classList.toggle('hidden', !state.isMasterAdmin);
   ['start', 'gap'].forEach(k => {
     const secs = $(k + '-delay-secs');
     const on = state.delays[k] > 0;
@@ -2255,16 +2258,21 @@ async function saveSettings(silent) {
     const v = parseInt($(k + '-delay-secs').value, 10);
     return state.delays[k] > 0 ? (isNaN(v) || v < 1 ? (k === 'start' ? 60 : 10) : v) : 0;
   };
+  // 批次7 A5：延迟参数仅主管理员提交（普通管理员 403）；批次7 A4：服务端改为
+  // 字段携带才写——非主管理员的保存请求不携带这两个键，不再被默认值静默清零
+  const payload = {
+    // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
+    // 静默覆盖 .env 中既有的 YIBAN_SIGN_MODE，且权限上仅主管理员可写
+    sunday_sign: state.sundaySign ? 1 : 0,
+  };
+  if (state.isMasterAdmin) {
+    payload.start_delay_max = read('start');
+    payload.gap_max = read('gap');
+  }
   try {
     const data = await api('/api/settings', {
       method: 'POST',
-      body: JSON.stringify({
-        start_delay_max: read('start'),
-        gap_max: read('gap'),
-        // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
-        // 静默覆盖 .env 中既有的 YIBAN_SIGN_MODE，且权限上仅主管理员可写
-        sunday_sign: state.sundaySign ? 1 : 0,
-      }),
+      body: JSON.stringify(payload),
     });
     state.delays.start = read('start');
     state.delays.gap = read('gap');
