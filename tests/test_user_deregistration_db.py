@@ -82,7 +82,7 @@ class UserDeregistrationDbTest(unittest.TestCase):
 
     def test_migration_v5_schema(self):
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 10)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 11)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         self.assertIn("deleted", cols)
         self.assertIn("deleted_at", cols)

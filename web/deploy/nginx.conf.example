@@ -17,6 +17,10 @@
 #   （此时只能靠 .env 的 YIBAN_BASE_PATH 显式指定前缀，见 README「部署形态」章节）。
 # 静态资源由应用自带 /static 提供（30 天缓存 + ?v= 版本号），子路径形态也无需单独配静态。
 
+# 批次7 P3-20：边缘限速——应用内限速仅覆盖登录/注册等端点，慢速泛洪
+# 可占满 gunicorn 单 worker 8 线程池；管理后台正常使用远低于此阈值
+limit_req_zone $binary_remote_addr zone=yiban_perip:10m rate=20r/s;
+
 server {
     # http2 写在 listen 行（旧语法，nginx ≥1.9.5 全兼容；`http2 on;` 新语法需 ≥1.25.1，
     # Ubuntu 20.04/22.04 LTS 随附的 1.18 不支持会导致 nginx -t 失败）
@@ -44,6 +48,8 @@ server {
     client_max_body_size 64k;
 
     location / {
+        limit_req zone=yiban_perip burst=40 nodelay;
+        limit_req_status 429;
         proxy_pass http://127.0.0.1:17892;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

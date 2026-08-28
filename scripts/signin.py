@@ -23,6 +23,7 @@
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import math
@@ -1190,7 +1191,9 @@ class YibanClient:
             timeout=15,
         )
         location = resp.headers.get("Location", "")
-        verify_match = re.compile(r"verify_request=(.*?)&").findall(location)
+        # 批次7 P3-9：宽容正则（与旧流程一致）——原 `(.*?)&` 要求令牌后必跟 &，
+        # 服务端把 verify_request 放 query 末位即全站性登录失败
+        verify_match = re.compile(r"verify_request=([^&]+)&?").findall(location)
         if not verify_match:
             # Location 的 query 中含 verify_request 令牌，错误消息只留 host/path
             loc_desc = ""
@@ -1435,59 +1438,82 @@ class YibanClient:
             )
 
         # 3. 解析多边形点（逐点容错：单个坏点跳过，不拖垮整个签到）
-        points_raw = position.get("Points", [])
-        polygon = []
-        for p in points_raw:
-            try:
-                parts = str(p).split(",")
-                if len(parts) >= 2:
-                    polygon.append((float(parts[0]), float(parts[1])))
-            except (TypeError, ValueError):
+        # 批次7 P3-10：遍历全部签到任务——原实现只签 position_list[0]，
+        # 多任务日第二个起静默漏签且状态仍显示 success
+        results_tasks = []  # [(task_name, ok, err_msg)]
+        for position in position_list:
+            task_name = str(position.get("Name", "") or f"任务{len(results_tasks) + 1}")
+            points_raw = position.get("Points", [])
+            polygon = []
+            for p in points_raw:
+                try:
+                    parts = str(p).split(",")
+                    if len(parts) >= 2:
+                        polygon.append((float(parts[0]), float(parts[1])))
+                except (TypeError, ValueError):
+                    continue
+
+            if not polygon:
+                results_tasks.append((task_name, False, "签到范围点解析失败"))
                 continue
 
-        if not polygon:
-            return False, "签到范围点解析失败", False, STATUS_FAILED
-
-        # 4. 在多边形内生成随机点
-        lng, lat = generate_position_in_polygon(polygon)
-        logger.info(
-            f"[{self.account.phone}] 生成定位: ({lng},{lat}) 地址: {position.get('Address', '')}"
-        )
-
-        # 5. 构建签到数据并提交
-        sign_info = {
-            "Reason": "",
-            "AttachmentFileName": "",
-            "LngLat": f"{lng},{lat}",
-            "Address": position.get("Address", ""),
-        }
-        if not self.phone_model or not self.phone_code:
-            logger.warning(
-                f"[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），"
-                "如学校开启了设备绑定，签到将失败"
+            # 4. 在多边形内生成随机点
+            lng, lat = generate_position_in_polygon(polygon)
+            logger.info(
+                f"[{self.account.phone}] 生成定位: ({lng},{lat}) 地址: {_sanitize_text(position.get('Address', ''))}"
             )
-        resp = self.session.post(
-            "https://api.uyiban.com/nightAttendance/student/index/signIn",
-            params={"CSRF": self.csrf},
-            data={
-                "Code": self.phone_code,
-                "PhoneModel": self.phone_model,
-                "SignInfo": json.dumps(sign_info, ensure_ascii=False),
-                # KillYiBan 用 MINI_VERSION="1"，原脚本用 "1.0"
-                "OutState": "1" if self.use_killyiban else "1.0",
-            },
-            allow_redirects=False,
-            timeout=15,
-        )
-        if is_waf_blocked(resp.text):
-            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False, STATUS_FAILED
-        result = resp.json()
-        if result.get("code") == 0 and result.get("data"):
-            return True, "签到成功", False, STATUS_SUCCESS
-        err_msg = _sanitize_text(result.get("msg", "未知错误"))
-        if "授权设备" in err_msg:
-            err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
-        return False, f"签到失败: {err_msg}", False, STATUS_FAILED
+
+            # 5. 构建签到数据并提交
+            sign_info = {
+                "Reason": "",
+                "AttachmentFileName": "",
+                "LngLat": f"{lng},{lat}",
+                "Address": position.get("Address", ""),
+            }
+            if not self.phone_model or not self.phone_code:
+                logger.warning(
+                    f"[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），"
+                    "如学校开启了设备绑定，签到将失败"
+                )
+            resp = self.session.post(
+                "https://api.uyiban.com/nightAttendance/student/index/signIn",
+                params={"CSRF": self.csrf},
+                data={
+                    "Code": self.phone_code,
+                    "PhoneModel": self.phone_model,
+                    "SignInfo": json.dumps(sign_info, ensure_ascii=False),
+                    # KillYiBan 用 MINI_VERSION="1"，原脚本用 "1.0"
+                    "OutState": "1" if self.use_killyiban else "1.0",
+                },
+                allow_redirects=False,
+                timeout=15,
+            )
+            if is_waf_blocked(resp.text):
+                return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False, STATUS_FAILED
+            result = resp.json()
+            if result.get("code") == 0 and result.get("data"):
+                results_tasks.append((task_name, True, ""))
+            else:
+                err_msg = _sanitize_text(result.get("msg", "未知错误"))
+                if "授权设备" in err_msg:
+                    err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
+                results_tasks.append((task_name, False, f"签到失败: {err_msg}"))
+
+        # 6. 汇总各任务结果（批次7 P3-10：多任务日不再漏签）
+        ok_tasks = [t for t in results_tasks if t[1]]
+        fail_tasks = [t for t in results_tasks if not t[1]]
+        if not fail_tasks:
+            suffix = f"（共 {len(ok_tasks)} 个任务）" if len(ok_tasks) > 1 else ""
+            return True, f"签到成功{suffix}", False, STATUS_SUCCESS
+        parts = "; ".join(f"{n}: {m}" for n, _ok, m in fail_tasks[:3])
+        detail = f"{len(fail_tasks)} 个任务失败: {parts}"
+        if ok_tasks:
+            # 有成功即视为当日已签（服务器对已签任务返回"已签到"），失败任务仅留痕
+            logger.warning(f"[{self.account.phone}] 部分任务失败: {detail}")
+            return True, (
+                f"签到成功（{len(ok_tasks)}/{len(results_tasks)} 个任务，{len(fail_tasks)} 个失败）"
+            ), False, STATUS_SUCCESS
+        return False, detail, False, STATUS_FAILED
 
     def verify(self):
         """只读健康检查（登录后）：拉取签到位置，**不提交签到**。
@@ -1772,7 +1798,8 @@ def verify_account(account):
         finally:
             client._wipe_credentials()
     except Exception as e:
-        safe_err = _sanitize_text(str(e))
+        # 批次7 P3-13：同 attempt_signin——异常消息统一过 _sanitize_url 打码
+        safe_err = _sanitize_text(_sanitize_url(str(e)))
         logger.warning(f"[{phone}] 健康检查失败: {safe_err}", exc_info=False)
         return False, safe_err
 
@@ -1807,7 +1834,9 @@ def attempt_signin(account):
         # 含敏感数据的源码上下文；异常消息经 _sanitize_text 脱敏后已足够定位
         # （原注释与行为矛盾）
         # 脱敏：异常消息可能含敏感数据（密码/令牌），替换后记录
-        safe_err = _sanitize_text(str(e))
+        # 批次7 P3-13：requests 异常消息内嵌完整请求 URL（含 CSRF 令牌）与代理
+        # userinfo，统一过 _sanitize_url 打码后再落日志
+        safe_err = _sanitize_text(_sanitize_url(str(e)))
         logger.error(f"[{phone}] ❌ 尝试失败: {safe_err}", exc_info=False)
         # 逐次失败不通知（避免通知风暴），仅最终放弃时由 run_queue_retry 通知一次
         return False, safe_err, False, STATUS_FAILED
@@ -2388,9 +2417,15 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     cred_state.pop(phone, None)
                 logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
             elif cred.get("paused_since") and _probe_due(cred, today):
-                next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
-                cred_state[phone]["probe_date"] = next_probe
-                logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
+                # 试探失败：仅凭据类失败才顺延试探日（批次7 P3-11：网络类瞬时失败
+                # 原来也顺延 7 天，把可自愈状态放大成周级停签）；网络类失败保持
+                # probe_date 不变，次日即再试探
+                if _is_credential_failure(message):
+                    next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+                    cred_state[phone]["probe_date"] = next_probe
+                    logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
+                else:
+                    logger.warning(f"[{phone}] ⏸️ 半开试探遇网络类失败，保持暂停（试探日不变，次日再试）")
             if success:
                 results[phone] = (True, message, skip, status)
                 logger.info(f"[{phone}] {STATUS_SYMBOL[status]} {message}")
@@ -2482,10 +2517,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 cred_state.pop(phone, None)
             logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
         elif cred.get("paused_since") and _probe_due(cred, today):
-            # 试探失败：更新下次试探日，保持暂停
-            next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
-            cred_state[phone]["probe_date"] = next_probe
-            logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
+            # 试探失败：仅凭据类失败才顺延试探日（批次7 P3-11，理由同上）
+            if _is_credential_failure(message):
+                next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
+                cred_state[phone]["probe_date"] = next_probe
+                logger.warning(f"[{phone}] ⏸️ 半开试探失败，保持暂停（下次 {next_probe} 试探）")
+            else:
+                logger.warning(f"[{phone}] ⏸️ 半开试探遇网络类失败，保持暂停（试探日不变，次日再试）")
 
         if success:
             results[phone] = (True, message, skip, status)
@@ -2667,6 +2705,10 @@ def run_probe(accounts):
     # 只放行一个（原实现探测结束后才写，两个探针都能通过 _health_probe_due 判定）
     _update_probe_state_run(datetime.now().strftime("%Y-%m-%d"))
     logger.info(f"==== 探针模式：对 {len(accounts)} 个账号进行健康检查 ====")
+    # 批次7 P3-11：探针确认健康 → 清除熔断暂停（原实现探针与熔断互不相通，
+    # 误冻账号即使每晚探针证明凭据可用也要熬到 7 天后半开试探）
+    cred_state = _load_cred_state()
+    fuse_cleared = False
     now = datetime.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
     hard_fail = []  # [(Account, message)]
@@ -2687,6 +2729,11 @@ def run_probe(accounts):
             hard_fail.append((acc, message))
         elif ok:
             healthy_n += 1
+            cred_entry = cred_state.get(acc.phone)
+            if isinstance(cred_entry, dict) and cred_entry.get("paused_since"):
+                cred_state.pop(acc.phone, None)
+                fuse_cleared = True
+                logger.info(f"[{_mask_phone(acc.phone)}] ✅ 探针确认凭据健康，解除熔断暂停")
         else:
             # 网络类失败（超时/DNS 等）：不含硬失败特征、通常可自愈，不计入预警，
             # 但必须与「确认健康」区分留痕——否则探针自身故障会被误读为全员健康
@@ -2697,6 +2744,9 @@ def run_probe(accounts):
                 _mask_phone(acc.phone), _sanitize_text(message),
             )
     # 预警（复用 A/B 线邮件机制；用户邮件按「健康探测」措辞，避免误报为当日签到失败）
+    if fuse_cleared:
+        with contextlib.suppress(Exception):
+            _save_cred_state(cred_state)
     for acc, message in hard_fail:
         _collect_admin_mail(
             "健康探测预警",
@@ -2721,6 +2771,10 @@ def run_probe(accounts):
 
 
 def main():
+    # 批次7 P3-15：进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
+    # 创建即 0600。宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器
+    # scheduler 与无宿主脚本的裸调路径（Windows 无实际效果，忽略）。
+    os.umask(0o077)
     """主函数：加载账号配置并执行签到。
 
     支持：

@@ -390,6 +390,10 @@ DEFAULT_ACCOUNT_GAP_MAX = 10
 # 登录失败限速：同一 IP 连续失败超过阈值后锁定
 LOGIN_MAX_FAILS = 5
 LOGIN_LOCK_SECONDS = 300
+# 批次7 P3-8：账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱 5 次锁定
+# 只约束单账号，攻击者可换邮箱继续；命中恢复即接管该账号与其易班凭据）
+RESTORE_FAIL_MAX = 30
+RESTORE_FAIL_WINDOW = 600
 # 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
 LOGIN_FAIL_NOTIFY = 3
 
@@ -1314,8 +1318,11 @@ def verify_admin(username, password):
     ):
         _constant_time_dummy(password)  # 时延拉平：与真实比对等开销
         return False
+    # 批次7 P3-7：用户名比较统一小写——登录成功后 session 存小写（历史修复），
+    # 而此处大小写敏感比对导致混合大小写 YIBAN_ADMIN_USER 永远无法自助改密，
+    # 且会被失败计数锁定（管理员被自己的改密界面锁死）
     if not secrets.compare_digest(
-        username.strip().encode("utf-8"), admin_user.encode("utf-8")
+        username.strip().lower().encode("utf-8"), admin_user.strip().lower().encode("utf-8")
     ):
         _constant_time_dummy(password)  # 时延拉平：防用户名枚举（与真实比对等开销）
         return False
@@ -1592,6 +1599,21 @@ def create_app(host=None):
         cookie_secure_raw = read_env(ENV_FILE).get("YIBAN_COOKIE_SECURE", "")
     cookie_secure = str(cookie_secure_raw).strip().lower() in ("1", "true", "yes", "on")
     app.config["SESSION_COOKIE_SECURE"] = cookie_secure
+    # 批次7 P3-6：HTTPS 反代自动升级 Secure——请求经 https（X-Forwarded-Proto）
+    # 到达而 Secure 未显式开启时，粘性开启会话 Cookie 的 Secure 标志（首次 https
+    # 请求即生效，无需重启）；显式配置 YIBAN_COOKIE_SECURE=0 的部署保持原行为。
+    _secure_auto_upgrade = {"done": not cookie_secure}  # 显式关闭时不自动升级
+
+    @app.before_request
+    def _auto_secure_on_https():
+        if not _secure_auto_upgrade["done"]:
+            if (
+                request.headers.get("X-Forwarded-Proto", "").strip().lower() == "https"
+                or request.is_secure
+            ):
+                app.config["SESSION_COOKIE_SECURE"] = True
+                _secure_auto_upgrade["done"] = True
+                logger.info("检测到 HTTPS 反代（X-Forwarded-Proto=https），会话 Cookie 已自动启用 Secure")
     if host is not None and not _is_loopback_host(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
@@ -1624,6 +1646,8 @@ def create_app(host=None):
     _register_limits = {}
     # 登录频率限制 {ip: [count, window_start]}：比全局限速更严，防换用户名密码喷洒
     _login_rate = {}
+    # 批次7 P3-8：账号恢复的每 IP 聚合失败窗口 {ip: [count, window_start]}
+    _restore_fail_rate = {}
     # 账号验证尝试配额 {username.lower(): (count, window_start)}（2026-08-27 P1-2）
     _verify_limits = {}
 
@@ -1946,6 +1970,13 @@ def create_app(host=None):
             session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
             # 会话绝对过期基准（P2-5）：自此刻起最多 SESSION_ABS_TTL_SECONDS
             session["login_ts"] = int(time.time())
+            # 批次7 P3-5 服务端会话吊销：注册用户登录签发 sid 并落库——登出/被
+            # 重置密码/被踢时轮换，被盗 cookie 重放即失效。内置管理员走 .env 的
+            # PW_VERSION 吊销机制，无需 sid。
+            if auth_source == "user":
+                sid = secrets.token_hex(16)
+                session["sid"] = sid
+                db.set_user_sid(username.lower(), sid)
             return jsonify({"ok": True, "role": role})
         if recoverable:
             # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
@@ -2050,6 +2081,17 @@ def create_app(host=None):
 
     @app.route("/api/logout", methods=["POST"])
     def api_logout():
+        # 批次7 P3-5：登出轮换服务端 sid——此前仅 session.clear()，此前被窃取的
+        # cookie 副本在登出后重放依然有效。轮换后所有旧会话（含当前）即时失效；
+        # 内置管理员走 PW_VERSION 机制，无需轮换。
+        if (
+            session.get("auth_source") == "user"
+            and session.get("username")
+        ):
+            with contextlib.suppress(Exception):
+                db.set_user_sid(
+                    session["username"].strip().lower(), secrets.token_hex(16)
+                )
         session.clear()
         return jsonify({"ok": True})
 
@@ -2141,6 +2183,11 @@ def create_app(host=None):
                     },
                 )
                 db.audit(username, "user_password", username, "自助改密")
+                # 批次7 P3-5：自助改密轮换 sid——当前会话保持有效（同步 session），
+                # 此前被窃取的 cookie 副本随旧 sid 失效
+                new_sid = secrets.token_hex(16)
+                db.set_user_sid(username.strip().lower(), new_sid)
+                session["sid"] = new_sid
                 with _rate_lock:
                     _login_fails.pop(fail_key, None)
                 logger.info("用户 %s 已修改自己的密码", _mask_email(username))
@@ -2312,6 +2359,15 @@ def create_app(host=None):
             # 账号密码，命中即恢复并建立会话；共用计数后登录侧锁定同样约束本接口
             now2 = time.time()
             nfails = _bump_login_failure(_login_fails, fail_key, now2)
+            # 批次7 P3-8：补每 IP 聚合失败窗口（30 次/10 分钟）——单邮箱 5 次锁定
+            # 只约束单账号，攻击者可跨邮箱喷洒（总速率仅受全局限速约束）；
+            # 命中即获得该冷静期账号的完整会话与其易班凭据，须有聚合闸门
+            _rc, _rs, ip_allowed = _bump_window_count(
+                _restore_fail_rate, ip, now2, RESTORE_FAIL_WINDOW, limit=RESTORE_FAIL_MAX
+            )
+            if not ip_allowed:
+                logger.warning("恢复密码尝试过于频繁（每 IP 聚合），IP %s 临时限制", ip)
+                return jsonify({"error": "尝试过于频繁，请稍后再试"}), 429
             if nfails >= LOGIN_MAX_FAILS:
                 with _rate_lock:
                     _login_fails[fail_key] = (0, now2 + LOGIN_LOCK_SECONDS, now2)
@@ -3789,6 +3845,12 @@ def create_app(host=None):
             # 旧数据（无 pw_version 字段）不做会话吊销校验，兼容存量会话
             if "pw_version" in u and pw_version != u.get("pw_version", 1):
                 return None
+            # 批次7 P3-5 服务端会话吊销：users.sid 为该用户当前唯一有效会话标识，
+            # 登录时签发、登出/被重置密码/被踢时轮换——被盗 cookie 重放即失效。
+            # sid 为空串视为未签发（升级日存量会话兼容），签发后不匹配即失效。
+            sid = u.get("sid", "")
+            if sid and session.get("sid") != sid:
+                return None
             return "admin" if u.get("role") == "admin" else "user"
         return None
 
@@ -4023,6 +4085,11 @@ def create_app(host=None):
                         "失败，已回滚",
                     )
                     return jsonify({"error": "批量操作失败，已全部回滚"}), 500
+                # 批次7 P3-5：批量重置密码后轮换各目标 sid（吊销被盗旧会话）
+                if action == "reset_password":
+                    for e in emails:
+                        with contextlib.suppress(Exception):
+                            db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
             db.audit(
                 session.get("username") or "?",
                 "users_batch",
@@ -4122,6 +4189,9 @@ def create_app(host=None):
                     "pw_version": target.get("pw_version", 1) + 1,  # 被重置用户的旧会话随之失效
                 },
             )
+            # 批次7 P3-5：轮换目标 sid，被盗 cookie 即便未因 pw_version 失效（如
+            # 旧版本客户端）也双重确保吊销
+            db.set_user_sid(email.strip().lower(), secrets.token_hex(16))
             db.audit(
                 session.get("username") or "?",
                 "user_password_reset",

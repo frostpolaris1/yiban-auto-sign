@@ -191,7 +191,7 @@ class AuditVerifyReadOnlyTest(unittest.TestCase):
         ver_after = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
         self.assertEqual(ver_after, 2, "只读校验不得执行迁移（迁移会重写审计链抹平篡改）")
-        self.assertEqual(ver_before, 10)
+        self.assertEqual(ver_before, 11)
 
 
 class AdminPasswordRotationTest(unittest.TestCase):
