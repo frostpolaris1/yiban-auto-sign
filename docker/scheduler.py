@@ -14,6 +14,7 @@ tick 采用「分钟级到点闩锁」而非「秒==0 命中」：调度循环�
 错过整分第 0 秒时，进入目标分钟后仍会补触发一次（同日去重防重复），
 不再整天丢失（P2-10）。
 """
+import json
 import os
 import subprocess
 import time
@@ -59,16 +60,50 @@ def build_child_env(env_file=ENV_FILE, base=None):
 
 
 def _state_file():
+    """容器内签到脚本写的当日结构化状态（signin.py:1801）。
+
+    历史 bug（2026-08-28 审查 F1）：此处原本读 `sign-status-<date>.txt`，但那个
+    文件只有**宿主** run.sh 会写；容器内 signin.py 写的是 `sign-state-<date>.json`。
+    导致容器内 _signed_today() 恒为 False，07:10 补签永不跳过，每天全量签到跑两遍。
+    """
+    return os.path.join(STATEDIR, f"sign-state-{datetime.now():%Y-%m-%d}.json")
+
+
+def _legacy_state_file():
+    """宿主 run.sh 写的旧格式状态文件（容器内不存在，仅为兼容保留）。"""
     return os.path.join(STATEDIR, f"sign-status-{datetime.now():%Y-%m-%d}.txt")
 
 
+# 视为"当天已完成签到"的状态码（与 signin.py STATUS_SUCCESS / STATUS_ALREADY 一致）
+_DONE_STATUSES = frozenset(("success", "already"))
+
+
 def _signed_today():
-    """对齐 run.sh 语义：当天状态文件为 SUCCESS 即视为已签到，跳过。"""
+    """当天是否已有账号签到成功；已签则跳过补签。
+
+    兼容两种来源，任一为真即视为已签：
+    1. 容器内 signin.py 写的 sign-state-<date>.json（结构化，逐账号）；
+    2. 宿主 run.sh 写的 sign-status-<date>.txt（整日 SUCCESS 语义）。
+    """
+    # 1) 旧格式（宿主 run.sh 路径）
+    try:
+        with open(_legacy_state_file(), encoding="utf-8") as fh:
+            if fh.read().strip() == "SUCCESS":
+                return True
+    except OSError:
+        pass
+    # 2) 新格式（容器内 signin.py 路径）
     try:
         with open(_state_file(), encoding="utf-8") as fh:
-            return fh.read().strip() == "SUCCESS"
-    except OSError:
+            data = json.load(fh)
+    except (OSError, ValueError):
         return False
+    if not isinstance(data, dict):
+        return False
+    return any(
+        isinstance(v, dict) and str(v.get("status", "")).strip() in _DONE_STATUSES
+        for v in data.values()
+    )
 
 
 def _cleanup_logs():
@@ -103,21 +138,27 @@ def main_loop(sleep_seconds=1):
     done_sign_second = None
     done_probe = None
     last_clean = None
-    child_env = build_child_env()
     while True:
         now = datetime.now()
         today = now.date()
         hm = (now.hour, now.minute)
+        # 每次触发前重新解析 .env（2026-08-28 审查 F2）：
+        # 子进程环境原先只在启动时构造一次，管理员在 Web 后台改的 YIBAN_GLOBAL_PAUSE
+        # （一键暂停）/ YIBAN_SUNDAY_SIGN / YIBAN_PROBE_* 在容器重启前静默不生效。
+        # 解析成本仅在真正触发的那一刻产生（每天 3 次），轮询循环内不读盘。
         if hm >= FIRST and done_sign_first != today and not _signed_today():
             # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重
-            subprocess.run(["python3", "scripts/signin.py"], cwd="/app", env=child_env)
+            subprocess.run(["python3", "scripts/signin.py"], cwd="/app",
+                           env=build_child_env())
             done_sign_first = today
         if hm >= SECOND and done_sign_second != today and not _signed_today():
-            subprocess.run(["python3", "scripts/signin.py"], cwd="/app", env=child_env)
+            subprocess.run(["python3", "scripts/signin.py"], cwd="/app",
+                           env=build_child_env())
             done_sign_second = today
         if hm >= PROBE_AT and done_probe != today:
             # 探针：只读健康检查（未到配置触发时间/频率时 signin.py 内零请求退出）
-            subprocess.run(["python3", "scripts/signin.py", "--probe"], cwd="/app", env=child_env)
+            subprocess.run(["python3", "scripts/signin.py", "--probe"], cwd="/app",
+                           env=build_child_env())
             done_probe = today
         if now.hour >= 3 and last_clean != today:
             _cleanup_logs()
