@@ -1172,6 +1172,23 @@ def find_account_index(accounts, phone):
     return None
 
 
+def _duplicate_phone_error(accounts, phone, email):
+    """重提手机号冲突的差异化文案（v10 用户删除软删化）。
+
+    冲突行是本人刚删除的账号（deleted_by=本人）时给撤销指引；其余统一口径，
+    不向调用方泄露该手机号的归属信息。返回 None 表示非本人待删除行冲突。
+    """
+    conflict = next((a for a in accounts if a.get("phone") == phone), None)
+    if (
+        conflict is not None
+        and conflict.get("owner") == email
+        and conflict.get("deleted")
+        and conflict.get("deleted_by", "") == email
+    ):
+        return "该手机号对应你刚删除的账号，可先撤销删除；或等 7 天自动清除后再提交"
+    return None
+
+
 def _owner_has_other_live(accounts, acc):
     """归属用户（非 admin）名下是否已有其他未删除账号（每人限 1 个，恢复/添加时校验）。"""
     owner = acc.get("owner", "admin")
@@ -2842,7 +2859,8 @@ def create_app(host=None):
             if _stale_idx_guard(acc, _json_body()):
                 return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             db.set_account_deleted(
-                acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                deleted_by="admin",
             )
             db.audit(
                 session.get("username") or "?",
@@ -3099,6 +3117,10 @@ def create_app(host=None):
                     "logs": [_mask_log_phones(ln) for ln in my_logs[-5:]],
                     "deleted": bool(acc.get("deleted")),
                     "deleted_at": acc.get("deleted_at", ""),
+                    # v10 用户删除可撤销：仅本人自删行（deleted_by=本人）前端展示撤销入口
+                    "deleted_by_me": bool(acc.get("deleted"))
+                    and acc.get("deleted_by", "")
+                    == (session.get("username", "") or "").strip().lower(),
                     "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
                     # 2026-08-15 用户确认：管理员账号（owner=admin）不支持自暂停——
                     # 暂停是普通用户管理自己账号的能力；该字段仅管理员视图可见（前端据此隐藏按钮）
@@ -3363,6 +3385,9 @@ def create_app(host=None):
             if any(a.get("owner") == email_pre and not a.get("deleted") for a in accounts_pre):
                 return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
             if find_account_index(accounts_pre, clean["phone"]) is not None:
+                err = _duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
+                if err:
+                    return jsonify({"error": err}), 400
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         # R1：用户提交账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）
         # 放锁外：verify 为网络操作，不阻塞其他请求；验证尝试受每用户配额限制（P1-2）
@@ -3386,6 +3411,9 @@ def create_app(host=None):
             if has_live:
                 return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
             if find_account_index(accounts, clean["phone"]) is not None:
+                err = _duplicate_phone_error(accounts, clean["phone"], email)
+                if err:
+                    return jsonify({"error": err}), 400
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
             # 管理员提交的账号归属 'admin'（后台添加账号同理），直接生效免审核
             clean["owner"] = (
@@ -3527,26 +3555,87 @@ def create_app(host=None):
 
     @app.route("/api/my-accounts/<int:idx>", methods=["DELETE"])
     def api_my_account_delete(idx):
+        """用户删除自己的账号：软删除进入 7 天宽限期，可在本页撤销恢复，超期自动清除。
+
+        2026-08-28 用户裁决（批次7）：原实现为立即物理清除（无反悔），与
+        「注销登录账号 7 天可恢复」的产品语义相反；现统一为软删 + 可撤销。
+        deleted_by 留痕操作者（v10）：仅本人自删行可自行撤销，管理员删除的
+        账号仍由管理员恢复/清除，防清退账号被用户一键复活。
+        """
         with _file_lock:
             accounts = load_accounts()
             indices = _my_account_indices_of(accounts)
             if not 0 <= idx < len(indices):
                 return jsonify({"error": "账号不存在"}), 404
             removed = accounts[indices[idx]]
-            # M7：用户对已软删除账号无权物理清除；由管理员处理（前端按钮将在 Task 5 移除）
             if removed.get("deleted"):
-                return jsonify({"error": "已删除账号由管理员处理，请等待恢复或清除"}), 400
-            db.purge_account(removed["id"])
+                return jsonify({"error": "该账号已在待删除状态，可在本页撤销恢复"}), 400
+            db.set_account_deleted(
+                removed["id"],
+                1,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                deleted_by=(session.get("username", "") or "").strip().lower(),
+            )
             db.audit(
                 session.get("username", "") or "?",
                 "my_account_delete",
                 _mask_phone(removed.get("phone", "")),
-                "用户删除",
+                "用户删除（软删除，宽限期内可撤销）",
             )
             logger.info(
-                "用户 %s 删除账号 %s", session.get("username", ""), _mask_phone(removed.get("phone", ""))
+                "用户 %s 删除账号 %s（软删除）",
+                session.get("username", ""),
+                _mask_phone(removed.get("phone", "")),
             )
-            return jsonify({"ok": True, "msg": "已删除"})
+            return jsonify({"ok": True, "msg": "已删除，7 天内可在本页撤销恢复，超期自动清除"})
+
+    @app.route("/api/my-accounts/<int:idx>/restore", methods=["POST"])
+    def api_my_account_restore(idx):
+        """用户撤销删除自己的账号：仅限本人自删（deleted_by=本人）且名下无其他生效账号。
+
+        与管理员 /api/accounts/<idx>/restore 同构，但收窄授权：
+        - 普通用户视图（_my_account_indices_of）含本人待删除行，idx 口径与展示一致；
+        - deleted_by != 本人（管理员删除/系统连带）一律 403，防清退账号被复活；
+        - 「每人限 1」防呆与管理员侧同源（_owner_has_other_live）。
+        """
+        with _file_lock:
+            accounts = load_accounts()
+            indices = _my_account_indices_of(accounts)
+            if not 0 <= idx < len(indices):
+                return jsonify({"error": "账号不存在"}), 404
+            acc = accounts[indices[idx]]
+            if not acc.get("deleted"):
+                return jsonify({"error": "该账号不在待删除状态"}), 400
+            if acc.get("deleted_by", "") != (session.get("username", "") or "").strip().lower():
+                return jsonify({"error": "该账号由管理员删除，如需恢复请联系管理员"}), 403
+            if _owner_has_other_live(accounts, acc):
+                return jsonify(
+                    {"error": "你已有生效账号，无法恢复（每人限 1 个）"}
+                ), 400
+            if _stale_idx_guard(acc, _json_body()):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+            db.set_account_deleted(acc["id"], 0)
+            db.audit(
+                session.get("username") or "?",
+                "my_account_restore",
+                _mask_phone(acc.get("phone", "")),
+                "用户撤销删除",
+            )
+            accounts = load_accounts()
+            logger.info(
+                "用户 %s 撤销删除账号 %s",
+                session.get("username", ""),
+                _mask_phone(acc.get("phone", "")),
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "msg": f"已恢复「{acc.get('name', '')}」",
+                    "accounts": _my_account_view(
+                        accounts, _my_account_indices_of(accounts)
+                    ),
+                }
+            )
 
     @app.route("/api/my-accounts/<int:idx>/pause", methods=["PUT"])
     def api_my_account_pause(idx):

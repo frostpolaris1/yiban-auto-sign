@@ -394,7 +394,8 @@ class SecurityFixes021Test(unittest.TestCase):
         token = self._login(c, user_email, USER_PASS)
         r = c.delete("/api/my-accounts/0", headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("已删除账号由管理员处理", r.get_json()["error"])
+        # 2026-08-28 批次7：用户删除已软删行仍 400（不 purge）；文案改为撤销指引
+        self.assertIn("待删除状态", r.get_json()["error"])
         accounts = db.load_accounts()
         self.assertEqual(len(accounts), 1, "普通用户不应物理删除已软删除账号")
         self.assertTrue(accounts[0]["deleted"])

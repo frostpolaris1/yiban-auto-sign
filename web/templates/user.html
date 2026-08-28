@@ -585,7 +585,7 @@ function userStateLine(a) {
 
 // 状态 emoji 的读屏说明（emoji 本身 aria-hidden，仅装饰；文案与图例/状态行一致）
 function stateAriaText(a) {
-  if (a.deleted) return '状态：已被管理员删除';
+  if (a.deleted) return a.deleted_by_me ? '状态：已删除（7 天内可撤销）' : '状态：已被管理员删除';
   const s = a.state_status || 'pending';
   if (s === 'success' || s === 'already') return '状态：今日已完成签到';
   if (s === 'no_task') return '状态：今日无需签到';
@@ -613,7 +613,10 @@ function renderList() {
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
-            ${a.deleted ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，待管理员处理</div>'
+            ${a.deleted
+              ? (a.deleted_by_me
+                ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">你已删除此账号，7 天内可撤销恢复，超期自动清除</div>'
+                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，待管理员处理</div>')
               : (a.status === 'active' ? userStateLine(a) : '')}
           </div>
         </div>
@@ -623,7 +626,9 @@ function renderList() {
               ? '<span class="inline-flex items-center rounded-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2.5 py-0.5">已取消</span>'
               : statusBadge(a.status)}
           ${a.deleted
-            ? '<span class="text-sm text-zinc-400 dark:text-zinc-500">待管理员处理</span>'
+            ? (a.deleted_by_me
+              ? `<button onclick="restoreAccount(${i})" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 transition-colors duration-150">撤销删除</button>`
+              : '<span class="text-sm text-zinc-400 dark:text-zinc-500">待管理员处理</span>')
             : (a.status === 'active' && !a.pause_forbidden
                 ? `<button onclick="togglePause(${i})" class="text-sm ${a.user_paused ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100'} transition-colors duration-150">${a.user_paused ? '恢复签到' : '暂停签到'}</button>`
                 : '')
@@ -848,13 +853,24 @@ $('account-form').addEventListener('submit', async (e) => {
 });
 
 // 编辑
-// 删除
+// 删除（软删除：7 天内可在本页撤销恢复，超期自动清除）
 async function deleteAccount(i) {
   const a = accounts[i];
-  if (!confirm(`确定删除「${jsEscape(a.display_name)}」(${a.phone}) 吗？`)) return;
+  if (!confirm(`确定删除「${jsEscape(a.display_name)}」(${a.phone}) 吗？删除后 7 天内可撤销恢复，超过 7 天将自动清除。`)) return;
   try {
     await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
-    toast('已删除');
+    toast('已删除，7 天内可撤销');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+// 撤销删除（仅本人自删的待删除账号；管理员删除的账号不显示此入口）
+async function restoreAccount(i) {
+  const a = accounts[i];
+  if (!confirm(`撤销删除「${jsEscape(a.display_name)}」(${a.phone})？将恢复到删除前的状态。`)) return;
+  try {
+    await api(`/api/my-accounts/${i}/restore`, { method: 'POST', body: JSON.stringify({}) });
+    toast('已恢复');
     loadAccounts();
   } catch (e) { toast(e.message, true); }
 }
