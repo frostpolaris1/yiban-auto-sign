@@ -20,6 +20,7 @@ import os
 import secrets
 import sqlite3
 import threading
+import time
 
 # 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
 import account_crypto
@@ -699,15 +700,32 @@ def _run_migrations(conn):
         if version >= target_version:
             continue
         try:
-            fn(conn)
-            if blocked:
-                # 不提升 user_version：后续启动会重跑本迁移（实现必须幂等）
-                logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
-            else:
-                conn.execute(f"PRAGMA user_version = {target_version}")
-                conn.commit()
-                version = target_version
-                logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
+            # 单个迁移全程持库级写锁（2026-08-28 审查 B-4）：
+            # migrate_v5 的表重建是 CREATE → INSERT → DROP → RENAME 四条 DDL，
+            # 而 Python sqlite3 对 DDL 不开隐式事务，原实现下每条语句各自
+            # autocommit——在 DROP TABLE users 与 RENAME 之间，其他连接执行
+            # SELECT ... FROM users 会直接报 "no such table: users"。该窗口在
+            # SSD 上是微秒级，但容器首启并发 / 网络盘 / 大表时完全可命中，
+            # 且若迁移在窗口中失败，核心迁移会一并阻断进程启动。
+            # 包进 BEGIN IMMEDIATE 后整段迁移原子，中间态对外不可见。
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                fn(conn)
+                if blocked:
+                    # 不提升 user_version：后续启动会重跑本迁移（实现必须幂等）。
+                    # 显式提交（原实现此处未提交，改动滞留在未决事务中，是否被
+                    # 后续某次 commit 带走取决于执行顺序——幂等迁移下显式提交可预期）
+                    conn.commit()
+                    logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
+                else:
+                    conn.execute(f"PRAGMA user_version = {target_version}")
+                    conn.commit()
+                    version = target_version
+                    logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
+            except Exception:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                raise
         except MigrationDeferred as e:
             if is_core:
                 logger.error("核心 schema 迁移延后: %s: %s", name, e)
@@ -1118,9 +1136,28 @@ def update_account(account_id, fields, expect_snapshot=None):
 
     手机号变更时自动用新手机号重加密 password/phone_code（旧密文 AAD 绑定旧手机号）；
     改 phone 撞 UNIQUE 抛 sqlite3.IntegrityError（业务层捕获）。
+
+    2026-08-28 审查 B-5：整个读-改-写过程纳入 BEGIN IMMEDIATE 事务。
+    原实现 SELECT（读行 + 解密）与 UPDATE 之间跨进程无互斥（_conn_lock 仅进程内），
+    中间还夹着解密与重加密——两个进程或两个标签页并发编辑同一账号时，后提交者
+    静默覆盖前者（实测：A 写 name=FROM_A、B 写 name=FROM_B，双方都收到成功，
+    最终只剩 FROM_B，A 的编辑被丢弃且无任何提示）。
+    危险的是 web 用户自编辑路径不传 expect_snapshot、且总把 old["password"] 回填，
+    覆盖时可能把用户刚改的密码静默回滚。持锁后读-改-写原子，即使调用方
+    不传乐观锁指纹，并发也不会丢更新。
     """
     conn = get_conn()
-    with _conn_lock, conn:
+
+    def _body():
+        """读-改-写事务体（在 BEGIN IMMEDIATE 写锁内执行）。
+
+        拆出闭包是为了让事务边界清晰：外层统一 commit/rollback，内层只负责
+        读-改-写。IntegrityError 分支需要"回滚主更新 → 重放密文自愈 → 独立提交"，
+        故该分支自行控制事务（_convert_integrity_error 必定抛出，不会走到末尾）。
+        """
+        # 改绑手机号时体内会重新绑定 fields（补齐待重加密的敏感字段）：
+        # 不加 nonlocal 会被当作 _body 的局部变量，首次读取即 UnboundLocalError。
+        nonlocal fields
         cur = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,))
         row = cur.fetchone()
         if row is None:
@@ -1175,6 +1212,17 @@ def update_account(account_id, fields, expect_snapshot=None):
             conn.commit()
             _convert_integrity_error(e)
         return True
+
+    with _conn_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = _body()
+            conn.commit()
+            return result
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
 
 def set_account_deleted(account_id, deleted, deleted_at=""):
@@ -1246,7 +1294,11 @@ def delete_accounts_by_owner(owner):
     with _conn_lock, conn:
         rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (owner,)).fetchall()
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
-        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（调度 v2）
+        phones = [r["phone"] for r in rows]
+        _delete_time_prefs_by_phones(conn, phones)  # 连带清理自选（调度 v2）
+        # 2026-08-28 审查 M1 补：原先漏清理会话缓存，已删账号的加密 cookie/csrf
+        # 会以 phone 为主键永久驻留（密钥仍在 .env，等同凭据残留）
+        _clear_session_cache_by_phones(conn, phones)
         return cur.rowcount
 
 
@@ -1274,7 +1326,11 @@ def replace_accounts(accounts):
         old = conn.execute("SELECT phone FROM accounts").fetchall()
         conn.execute("DELETE FROM accounts")
         keep = {a.get("phone", "") for a in accounts}
-        _delete_time_prefs_by_phones(conn, [r["phone"] for r in old if r["phone"] not in keep])
+        # 2026-08-28 审查 M1 补：整表替换时移除的账号原先只清 time_prefs，
+        # 漏清会话缓存（凭据残留）。保留的账号不动，避免无谓的重新登录。
+        removed = [r["phone"] for r in old if r["phone"] not in keep]
+        _delete_time_prefs_by_phones(conn, removed)
+        _clear_session_cache_by_phones(conn, removed)
         for i, a in enumerate(accounts):
             try:
                 conn.execute(
@@ -1338,6 +1394,9 @@ def batch_account_ops(ops):
                     conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
                     if row is not None:
                         _delete_time_prefs_by_phones(conn, [row["phone"]])
+                        # 2026-08-28 审查 M1 补：批量彻底删除是 Web 唯一入口，
+                        # 原先漏清理会话缓存（凭据残留，详见 delete_accounts_by_owner）
+                        _clear_session_cache_by_phones(conn, [row["phone"]])
                 else:
                     raise ValueError(f"未知批量账号操作: {kind}")
             conn.commit()
@@ -1535,13 +1594,20 @@ def restore_user(email):
         return True
 
 
-def purge_deleted_users(days=7):
-    """物理清除超过宽限期的已注销用户（默认 7 天）；失败仅告警。
+def purge_deleted_users(days=None):
+    """物理清除超过宽限期的已注销用户（默认取 SOFT_DELETE_RETENTION_DAYS）；失败仅告警。
+
+    2026-08-28 审查 C-1：原默认参数硬编码 `days=7`，与 SOFT_DELETE_RETENTION_DAYS
+    （账号侧保留期的唯一事实源）以及 web 侧 DELETE_GRACE_DAYS 形成三份互不相干的
+    "7"。运维按注释去调 SOFT_DELETE_RETENTION_DAYS 时，此处仍按 7 天清理，
+    而 web 的恢复宽限期又是另一份——三者的错位会造成静默数据丢失（详见
+    web/app.py DELETE_GRACE_DAYS 处的说明）。现改为取同一常量。
 
     2026-08-16 安全审查（用户提出错位问题）：宽限期 3 天 → 7 天，
     与账号软删除保留期（_purge_expired_deleted，7 天）对齐——第 7 天用户与
     账号同天清除，邮箱/手机号同时释放，消除"反悔窗口内资产被抢占"风险。
     """
+    days = SOFT_DELETE_RETENTION_DAYS if days is None else days
     try:
         conn = get_conn()
         with _conn_lock, conn:
@@ -1719,7 +1785,11 @@ def batch_user_ops(ops):
                         "SELECT phone FROM accounts WHERE owner=?", (email,)
                     ).fetchall()
                     conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-                    _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+                    phones = [r["phone"] for r in rows]
+                    _delete_time_prefs_by_phones(conn, phones)
+                    # 2026-08-28 审查 M1 补：与 delete_user_with_accounts 对齐，
+                    # 批量路径同样漏了会话缓存清理（凭据残留）
+                    _clear_session_cache_by_phones(conn, phones)
                     conn.execute("DELETE FROM users WHERE email=?", (email,))
                 else:
                     raise ValueError(f"未知批量用户操作: {kind}")
@@ -1733,6 +1803,23 @@ def batch_user_ops(ops):
 # ---------------------------------------------------------------------------
 # 操作审计
 # ---------------------------------------------------------------------------
+# 审计写入失败计数（进程内累计）。审计是唯一追溯凭据，写入失败若无人察觉，
+# 就会出现"业务操作已生效、审计表里却没有这条记录"且哈希链依然自洽的静默丢失。
+# 全仓 db.audit() 调用点众多且不检查返回值，故用此计数器兜底：由每日校验
+# （web 每日线程 / audit_verify.py）读取并告警，无需逐调用点改造。
+_AUDIT_FAIL_COUNT = 0
+_AUDIT_FAIL_LOCK = threading.Lock()
+# 审计写入重试（2026-08-28 审查 B-1）：锁竞争时的短暂失败值得重试
+_AUDIT_RETRIES = 3
+_AUDIT_RETRY_BASE_DELAY = 0.2
+
+
+def audit_write_failures():
+    """返回本进程累计的审计写入失败次数（供每日校验告警；0 = 无欠账）。"""
+    with _AUDIT_FAIL_LOCK:
+        return _AUDIT_FAIL_COUNT
+
+
 def audit(username, action, target="", detail=""):
     """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
 
@@ -1740,36 +1827,63 @@ def audit(username, action, target="", detail=""):
     2026-08-20 对抗性审查修复：prev_hash 读取纳入 BEGIN IMMEDIATE 写事务——
     原实现"读上一条 hash"与 INSERT 之间无跨进程互斥（_conn_lock 仅进程内），
     web 与 TUI 并发写审计会读到同一 prev_hash 造成链分叉（verify 断链）。
+
+    2026-08-28 审查 B-1（fail-loud）：原实现 `except Exception` 后只写一条
+    WARNING 并返回 None——锁等待超过 busy_timeout 时（长事务如 replace_accounts
+    整表重插、夜间批量签到与 web 争锁）业务接口照常返回 200，审计表里却没有
+    这条记录。因为是"没写进去"而非"写完被删"，哈希链依然自洽，verify 永远
+    验不出问题。现改为：失败重试 → 仍失败则计 ERROR + 累加失败计数（供每日
+    校验告警），并返回 bool 供关键路径在需要时显式判定。
+
+    返回 True 表示已落库；False 表示重试耗尽仍未写入（调用方据此决定是否
+    阻断业务）。既有调用点不检查返回值也不会出错，失败会由每日校验兜住。
     """
+    global _AUDIT_FAIL_COUNT
     conn = None
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            detail = detail[:200]
-            # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
-            # 未提交事务，先提交之——否则 BEGIN IMMEDIATE 会报 "within a transaction"
-            if conn.in_transaction:
-                logger.warning("audit 检测到遗留未提交事务，已先行提交")
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    detail = detail[:200]
+    last_err = None
+    for attempt in range(_AUDIT_RETRIES):
+        try:
+            with _conn_lock:
+                conn = get_conn()
+                # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
+                # 未提交事务，先提交之——否则 BEGIN IMMEDIATE 会报 "within a transaction"
+                if conn.in_transaction:
+                    logger.warning("audit 检测到遗留未提交事务，已先行提交")
+                    conn.commit()
+                # IMMEDIATE：取 prev_hash 前先拿库级写锁，跨进程串行化"读尾→追加"
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                prev_hash = row["hash"] if row else ""
+                h = _audit_hash(prev_hash, ts, username, action, target, detail)
+                conn.execute(
+                    "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (ts, username, action, target, detail, prev_hash, h),
+                )
                 conn.commit()
-            # IMMEDIATE：取 prev_hash 前先拿库级写锁，跨进程串行化"读尾→追加"
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            prev_hash = row["hash"] if row else ""
-            h = _audit_hash(prev_hash, ts, username, action, target, detail)
-            conn.execute(
-                "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (ts, username, action, target, detail, prev_hash, h),
-            )
-            conn.commit()
-    except Exception as e:
-        if conn is not None:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-        logger.warning("审计写入失败: %s", e)
+            return True
+        except Exception as e:  # noqa: BLE001 —— 审计失败不得影响业务主流程
+            last_err = e
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+            if attempt < _AUDIT_RETRIES - 1:
+                logger.warning(
+                    "审计写入失败，%.1fs 后重试（第 %d/%d 次）: %s",
+                    _AUDIT_RETRY_BASE_DELAY * (attempt + 1), attempt + 1, _AUDIT_RETRIES, e,
+                )
+                time.sleep(_AUDIT_RETRY_BASE_DELAY * (attempt + 1))
+    with _AUDIT_FAIL_LOCK:
+        _AUDIT_FAIL_COUNT += 1
+    logger.error(
+        "审计写入最终失败（业务操作已生效但无留痕，重试 %d 次）: %s | action=%s target=%s",
+        _AUDIT_RETRIES, last_err, action, target,
+    )
+    return False
 
 
 def audit_head_hash():
@@ -1836,6 +1950,159 @@ def verify_audit_chain():
     except Exception as e:
         logger.warning("审计链校验失败: %s", e)
         return False, -1, None
+
+
+# ---------------------------------------------------------------------------
+# 审计链外部锚点（2026-08-28 审查 B-2）
+# ---------------------------------------------------------------------------
+# verify_audit_chain() 只能检出"删中间"：首行以自身 prev_hash 自锚、空表直接判
+# 通过（见其实现）。于是「删前缀 / 删尾 / 清空整表」三类篡改全部验不出来。
+#
+# 锚点记录 (min_id, max_id, head_hash) 三元组即可覆盖：
+#   - 当前 max_id < 锚点 max_id            → 尾部被删（最危险：抹掉最近的记录）
+#   - 表空但锚点 max_id > 0                → 整表被清空
+#   - max_id 相同但 head_hash 不符          → 链尾内容被篡改
+#   - 当前 min_id > 锚点 min_id            → 前缀被删（**不判失败**）
+#
+# 前缀删除刻意降级为「信息」而非「失败」：_audit_cleanup（保留 180 天）本身就是
+# 删前缀的合法路径，判失败会让每日校验天天误报，反而淹没真告警。
+#
+# 锚点存放在**库外**：若存进 yiban.db，有写库权限者可连同审计表一起删掉，锚点
+# 形同虚设。库外文件使"整体重写审计链"还需同步篡改该文件。
+def audit_anchor_path():
+    """外部锚点文件路径（库外 append-only）。"""
+    state_dir = os.environ.get("YIBAN_STATE_DIR") or "."
+    return os.path.join(state_dir, "audit-anchor.log")
+
+
+def record_audit_anchor(path=None):
+    """把当前审计链的 (min_id, max_id, head_hash) 追加到外部锚点文件。
+
+    返回写入的锚点行；无审计记录或写入失败返回 None（不阻断调用方）。
+    建议在每日清理之后调用，使锚点反映清理后的合法状态。
+    """
+    path = path or audit_anchor_path()
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT MIN(id) AS min_id, MAX(id) AS max_id FROM audit_logs"
+            ).fetchone()
+        if not row or row["max_id"] is None:
+            return None
+        min_id, max_id = int(row["min_id"]), int(row["max_id"])
+        head = audit_head_hash()
+        line = (
+            f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+            f"{min_id} {max_id} {head}"
+        )
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return line
+    except Exception as e:  # noqa: BLE001 —— 锚点写入失败不得阻断业务
+        logger.warning("审计链锚点写入失败: %s", e)
+        return None
+
+
+def _last_audit_anchor(path):
+    """读取最后一条有效锚点行；无锚点或格式不符返回 None。
+
+    行格式为 `<ts> <min_id> <max_id> <head>`。注意时间戳本身含空格
+    （"2026-08-28 18:50:00"），故**从行尾**取固定字段（head / max_id / min_id），
+    不能按下标从头取——否则字段会整体错位一格。
+
+    兼容旧格式（仅 `ts head`，2026-08-21 起 web 写入）：旧行尾部只有一个
+    非数字段，int() 转换失败即跳过，不参与判定，避免升级后误报。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        return None
+    for ln in reversed(lines):
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+        try:
+            return {
+                "ts": " ".join(parts[:-3]),
+                "min_id": int(parts[-3]),
+                "max_id": int(parts[-2]),
+                "head": parts[-1],
+            }
+        except ValueError:
+            continue
+    return None
+
+
+def verify_audit_anchor(path=None):
+    """与库外锚点比对，检出「删尾 / 清空整表 / 篡改链尾」。
+
+    返回 (ok: bool, message: str)：
+    - ok=False → 确证异常，调用方应告警；
+    - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
+    无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
+    """
+    anchor = _last_audit_anchor(path or audit_anchor_path())
+    if anchor is None:
+        return True, ""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
+            ).fetchone()
+        n = int(row["n"] or 0)
+        cur_min = int(row["min_id"]) if row["min_id"] is not None else 0
+        cur_max = int(row["max_id"]) if row["max_id"] is not None else 0
+        if n == 0:
+            return False, (
+                f"审计表为空，但锚点（{anchor['ts']}）记录曾有 {anchor['max_id']} 条"
+                "——疑似整表被清空"
+            )
+        if cur_max < anchor["max_id"]:
+            return False, (
+                f"审计记录条数减少：锚点 max_id={anchor['max_id']}，当前 max_id={cur_max}"
+                f"——疑似删除了最近 {anchor['max_id'] - cur_max} 条记录"
+            )
+        cur_head = audit_head_hash()
+        if cur_max == anchor["max_id"] and cur_head != anchor["head"]:
+            return False, "审计链头哈希与锚点不符（链尾内容被篡改）"
+        if cur_min > anchor["min_id"]:
+            return True, (
+                f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
+                "（保留期清理的正常现象，非告警）"
+            )
+        return True, ""
+    except Exception as e:  # noqa: BLE001
+        return False, f"锚点校验异常: {e}"
+
+
+def audit_health(path=None):
+    """审计可追溯性综合体检（供每日线程 / audit_verify.py 调用）。
+
+    返回 dict：
+      chain_ok      链内哈希自洽（False = 有记录被篡改/删除）
+      broken        链内断链条数（-1 = 校验异常或密钥缺失）
+      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾）
+      anchor_msg    锚点判定的说明或提示信息
+      write_failures 本进程累计的审计写入失败次数（>0 = 有操作未留痕）
+      healthy       综合结论（上述全部正常且无写入欠账）
+    """
+    chain_ok, broken, _first = verify_audit_chain()
+    anchor_ok, anchor_msg = verify_audit_anchor(path)
+    write_failures = audit_write_failures()
+    return {
+        "chain_ok": chain_ok,
+        "broken": broken,
+        "anchor_ok": anchor_ok,
+        "anchor_msg": anchor_msg,
+        "write_failures": write_failures,
+        "healthy": bool(chain_ok and anchor_ok and write_failures == 0),
+    }
 
 
 def last_time_pref_set_at(phone):
