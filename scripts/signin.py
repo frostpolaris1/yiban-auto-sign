@@ -1680,6 +1680,35 @@ def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
         )
 
 
+def _maybe_alert_zero_success(accounts, results, ok_n):
+    """批次12 B12-2：全量签到「零成功且存在窗口外跳过」时的专项管理员告警。
+
+    场景：学校签到窗口晚于本地配置（或 Range 延迟放出），首签/补签全员落
+    skipped_window/skipped_norange。容器调度闸门（批次12 修复）已把 skip 类
+    计入未了结使补签得以重跑，但若补签后仍零成功，当天再无触发点——管理员
+    必须在当天得知，否则直到次日才发现全天漏签。失败类零成功已有逐账号失败
+    通知覆盖；全员 no_task/暂停/用户取消属有意状态，不打扰。
+    返回是否产生了告警（测试用）。
+    """
+    if ok_n > 0 or not accounts:
+        return False
+    window_skips = [
+        acc.phone for acc in accounts
+        if results.get(acc.phone, (False, "", False, ""))[3]
+        in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE)
+    ]
+    if not window_skips:
+        return False
+    _collect_admin_mail(
+        "当日零签到告警",
+        f"本次全量签到 0 个账号成功，{len(window_skips)} 个账号因窗口外/Range 缺失被跳过。\n"
+        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"
+        "（容器部署另需确认 YIBAN_RUN_TIMEOUT_SEC 未过早截断子进程）。",
+    )
+    return True
+
+
 def _flush_admin_mail_summary(phase=None):
     """签到任务结束：把运行期收集的管理员邮件汇总成一封发送。
 
@@ -2350,7 +2379,8 @@ def _next_retry_at(now_dt, sch_cfg, rng=None):
     return lo + timedelta(seconds=rng.uniform(0, window * 0.6))
 
 
-def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None):
+def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
+                    event_sink=None):
     """轮询队列 + 分散重试执行全部账号签到。
 
     流程（schedule 为空=原行为）：启动随机延迟 → 按签到模式（列表顺序 / 列表随机）
@@ -2365,6 +2395,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
     cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
     执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
+
+    event_sink（批次12 裁决，可选）：签到事件落库回调——每次尝试/状态迁移调用一次，
+    传入 dict 行（sign_events 表字段）。None 时不收集（行为与旧版一致）；
+    回调异常一律吞掉，事件留痕绝不影响签到主流程。
 
     返回结果字典 {手机号: (success, message, skip, status)}。
     """
@@ -2383,6 +2417,30 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     attempts = {acc.phone: 0 for acc in accounts}
     results = {}
     first_round = True
+
+    def _emit_event(phone, status, message, dur=None, attempt_no=None):
+        """签到事件留痕（批次12 裁决：v6 的 sign_events 表此前主流程零写入）。
+
+        每次尝试与状态迁移（含重试/跳过）落一行，stage="sign"；探针沿用既有
+        stage="probe" 写入口径。异常吞掉——留痕失败不得影响签到主流程。
+        """
+        if event_sink is None:
+            return
+        try:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            event_sink({
+                "ts": ts,
+                "phone": phone,
+                "status": status,
+                "message": _sanitize_text(str(message or ""))[:200],
+                "stage": "sign",
+                "attempt": attempts.get(phone, 0) if attempt_no is None else attempt_no,
+                "dur_sec": dur,
+                "finished_at": ts,
+            })
+        except Exception:
+            pass
+
     # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐
     sch_cfg = _schedule_config() if schedule else None
     last_done = None  # 上次尝试结束时刻（monotonic），启动对齐用
@@ -2417,11 +2475,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if _window_closed(sch_cfg, now_dt):
                 results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
                 _write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+                _emit_event(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
                 logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
                 for _rest in pending:
                     _rp = _rest[2].phone
                     results[_rp] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
                     _write_sign_state(_rp, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+                    _emit_event(_rp, STATUS_SKIPPED_WINDOW, "签到时段已结束")
                 break
             # 到点执行（已过点立即）；重试落点已由 _next_retry_at 采样
             wait = (_at_dt - now_dt).total_seconds()
@@ -2441,6 +2501,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if getattr(acc, "user_paused", False):
                 results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
                 _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                _emit_event(phone, STATUS_USER_CANCELLED, "用户已取消签到")
                 logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
                 continue
             # 账密熔断：暂停中的账号零请求直接跳过（半开试探日除外——试探 1 次以验证恢复）
@@ -2448,6 +2509,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if cred.get("paused_since") and not _probe_due(cred, today):
                 results[phone] = (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED)
                 _write_sign_state(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
+                _emit_event(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
                 logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
                 continue
             attempts[phone] += 1
@@ -2457,6 +2519,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
             dur = last_done - t0
             _write_sign_state(phone, status, message, dur=dur)
+            _emit_event(phone, status, message, dur=dur)
             # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知（原样）
             if dur > slow_sec and phone not in slow_notified:
                 slow_notified.add(phone)
@@ -2515,6 +2578,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 send_user_fail_mail(acc.owner, phone, message)
                 continue
             _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
+            _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
             _push(acc, nxt)
             logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次，{nxt.strftime('%H:%M:%S')} 再试）")
         return results
@@ -2535,6 +2599,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if getattr(acc, "user_paused", False):
             results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
             _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+            _emit_event(phone, STATUS_USER_CANCELLED, "用户已取消签到")
             logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
             continue
 
@@ -2543,6 +2608,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if cred.get("paused_since") and not _probe_due(cred, today):
             results[phone] = (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED)
             _write_sign_state(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
+            _emit_event(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
             logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
             continue
 
@@ -2555,6 +2621,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中；附耗时 dur）
         dur = last_done - t0
         _write_sign_state(phone, status, message, dur=dur)
+        _emit_event(phone, status, message, dur=dur)
         # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知。
         # 节流：每账号每轮最多 1 次（重试连击不刷屏；最终失败另有失败通知，
         # 此处主要覆盖"慢但成功"的接口劣化预警）。通知失败不影响签到（内部已捕获）。
@@ -2619,6 +2686,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         # 放回队尾：单次 sleep 保证总间隔 ≥ retry_min_interval，
         # 随机部分只用于打散，不允许把最小间隔缩水
         _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
+        _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
         retry_min_interval = RETRY_MIN_INTERVAL
         wait = max(retry_min_interval, retry_min_interval - gap_max + random.uniform(0, RETRY_GAP_MAX))
         logger.debug(f"[{phone}] 重试前等待 {wait:.1f}s（最小 {retry_min_interval}s）")
@@ -2995,8 +3063,12 @@ def main():
 
     # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
     cred_state = {} if args.only else _load_cred_state()
+    # 批次12 裁决：签到事件收集器——run_queue_retry 每次尝试/迁移经 sink 上报，
+    # 任务结束后单事务批量落库（见 results 赋值后的 add_sign_events_batch）。
+    event_rows = []
     results = run_queue_retry(
         accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
+        event_sink=event_rows.append,
     )
     # 2026-08-20 对抗性审查修复（P1）：--only 此前无条件以本次（仅含目标账号的）状态
     # 整体覆盖保存——空 dict 时直接删除状态文件，其他账号的 fail_days/paused_since
@@ -3051,6 +3123,16 @@ def main():
     if skip_n:
         summary += f"，➖ {skip_n} 跳过"
     logger.info(f"==== 签到汇总：{summary} ====")
+
+    # 批次12 B12-2：零成功专项告警（补签后仍全员窗口外跳过时，当天必须有人知道）
+    _maybe_alert_zero_success(accounts, results, ok_n)
+
+    # 批次12 裁决：签到事件落库——v6 建了 sign_events 表但签到主流程零写入
+    # （仅探针 stage=probe 有写入），统计/时间线读取函数零调用方，基础设施空转。
+    # 现每次尝试与状态迁移落一行（stage=sign），批量单事务写入；失败仅告警
+    # （add_sign_events_batch 内部捕获），不影响签到退出码。
+    if event_rows:
+        db.add_sign_events_batch(event_rows)
 
     # 写按日状态文件（供网页日历组件读取；窗口外跳过不写，当天留空）
     # 符号按状态码：success/already→✅、no_task→➖、failed→❌

@@ -476,6 +476,13 @@
           <pre id="probe-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
         </details>
       </div>
+      <!-- 签到事件（批次12：sign_events 补消费端）当日结构化时间线，含重试/跳过迁移 -->
+      <div id="signev-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
+        <details>
+          <summary class="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-200 select-none">签到事件（<span id="signev-count">0</span> 条）</summary>
+          <pre id="signev-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
+        </details>
+      </div>
     </div>
   </section>
 
@@ -1853,8 +1860,23 @@ async function loadLogs() {
     } else {
       probeBlock.classList.add('hidden');
     }
+    // 签到事件时间线（批次12：sign_events 补消费端），符号按状态码（与日志口径一致）
+    const _sievSym = { success: '✅', already: '✅', no_task: '➖', failed: '❌',
+      retrying: '🔄', pending: '🕐', skipped_window: '⛔', skipped_norange: '⛔',
+      paused: '⏸️', user_cancelled: '⏹️' };
+    const renderedSignEv = (data.sign_events || []).map(e =>
+      `${e.time} [${e.phone}] ${_sievSym[e.status] || '·'} ${e.status}${e.attempt > 1 ? '（第' + e.attempt + '次）' : ''}${e.message ? ' · ' + e.message : ''}`
+    ).join('\n');
+    const sievBlock = $('signev-block');
+    if ((data.sign_events || []).length) {
+      $('signev-count').textContent = data.sign_events.length;
+      $('signev-box').textContent = renderedSignEv;
+      sievBlock.classList.remove('hidden');
+    } else {
+      sievBlock.classList.add('hidden');
+    }
     // 快照纳入探针区，内容变化时强制重渲染（否则轮询会因 logs 未变而跳过）
-    const snap = (data.logs.length ? rendered : '') + '\n@@PROBE@@' + renderedProbe;
+    const snap = (data.logs.length ? rendered : '') + '\n@@PROBE@@' + renderedProbe + '\n@@SIGNEV@@' + renderedSignEv;
     if (snap === _logLastSnap) return;  // 日志无变化：不重写 DOM
     _logLastSnap = snap;
     if (data.logs.length) {

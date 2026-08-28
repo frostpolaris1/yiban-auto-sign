@@ -1582,8 +1582,50 @@ class BasePathMiddleware:
         return ""
 
 
+# 批次12 B12-13：仓库公开模板（.env.docker.example）自带的字面量默认口令。
+# 随仓库公开 = 众所周知字符串，忘改即后台口令为公开知识。
+_DEFAULT_ADMIN_LITERALS = frozenset((
+    "请修改为强密码",
+    "admin123",
+    "admin888",
+    "123456",
+    "12345678",
+    "password",
+    "admin",
+))
+_DEFAULT_ADMIN_MIN_LEN = 8
+
+
+def reject_default_admin_password(env_path):
+    """启动检测：内置管理员仍为公开模板默认字面量/弱口令时拒绝启动（fail-closed）。
+
+    批次12 B12-13：仓库公开，忘改 YIBAN_ADMIN_PASSWORD 即主管理员口令为众所周
+    知字符串，且此前应用侧无任何检测。仅检查明文口令（纯哈希部署无法逆向检查；
+    迁移会清空明文，故本检测必须在 migrate_admin_password_to_hash 之前执行）。
+    抛 SystemExit 使 gunicorn worker 退出——supervisor/systemd 会带清晰日志重启，
+    运维按提示改口令即可，宁可起不来也不能带着公开口令上线。
+    """
+    try:
+        plain = str(read_env(env_path).get("YIBAN_ADMIN_PASSWORD", "") or "").strip()
+    except Exception:  # noqa: BLE001 —— .env 不可读时交由既有启动路径处理
+        return
+    if not plain:
+        return
+    if plain in _DEFAULT_ADMIN_LITERALS or len(plain) < _DEFAULT_ADMIN_MIN_LEN:
+        logger.critical(
+            "拒绝启动：YIBAN_ADMIN_PASSWORD 为公开模板默认字面量或长度不足 %d 位。"
+            "请编辑 .env 将其改为强密码（或在设置哈希 YIBAN_ADMIN_PASSWORD_HASH 后"
+            "清空明文），再重启服务。",
+            _DEFAULT_ADMIN_MIN_LEN,
+        )
+        raise SystemExit(2)
+
+
 def create_app(host=None):
     global _purge_loop_started
+    # 批次12 B12-13：默认/弱口令启动检测（必须在口令明文→哈希迁移之前，
+    # 迁移会把明文清空导致无从检查）
+    reject_default_admin_password(ENV_FILE)
     # 启动安全迁移：管理员口令明文 → scrypt 哈希（幂等，多 worker 并发写同口令哈希无害）
     migrate_admin_password_to_hash(ENV_FILE)
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
@@ -1704,6 +1746,15 @@ def create_app(host=None):
             "/api/me/delete",
         ):
             return
+        # 批次12 B12-14：越权尝试留痕——已登录普通用户命中管理面路径是盗号/滥用
+        # 的最高信号之一，此前 403 零留痕。IP 经 hash_ip 匿名化；频次天然受
+        # /api/* 全局限速约束，且普通用户正常操作不会触达本分支。
+        db.audit(
+            (session.get("username") or "?")[:64],
+            "forbidden_path",
+            db.hash_ip(_client_ip()),
+            request.path[:120],
+        )
         return jsonify({"error": "无权限"}), 403
 
     # ---- CSRF 防护：登录后所有写请求（POST/PUT/DELETE）必须携带与 session 匹配的 token ----
@@ -1988,6 +2039,17 @@ def create_app(host=None):
             # 冷静期账号：密码正确但不建立会话，前端引导恢复（/api/me/restore）
             return jsonify({"ok": True, "recoverable": True, "msg": "账号已注销，7 天内可恢复"})
         fails = _bump_login_failure(_login_fails, fail_key, now)
+        # 批次12 B12-14：失败登录留痕审计链——原仅内存计数+日志，"被盗号溯源"
+        # 场景无法从审计还原爆破片段。刻意不在每次失败都写（防爆破刷爆审计表），
+        # 与阈值邮件/锁定同节奏：达到告警阈值（3 次）与锁定阈值（5 次）各留痕一条，
+        # IP 经 hash_ip 匿名化（与登录成功审计同口径）。用户名截断防长串刷审计。
+        if fails in (LOGIN_FAIL_NOTIFY, LOGIN_MAX_FAILS):
+            db.audit(
+                (username.lower() or "?")[:64],
+                "login_failed",
+                db.hash_ip(ip),
+                f"连续失败 {fails} 次（阈值留痕）",
+            )
         if fails >= LOGIN_MAX_FAILS:
             with _rate_lock:
                 _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
@@ -2172,6 +2234,16 @@ def create_app(host=None):
                 "admin_password",
                 _mask_email(username) if username else "-",
                 "内置管理员自助改密",
+            )
+            # 批次12 B12-8：主管理员即时告警——改密是「被盗号接管」最强信号
+            #（本人会话随 PW_VERSION 失效，攻击者以新密重登），此前仅审计+日志，
+            # 告警渠道存在却未接（批次11 N6 漏了本分支）。对齐注册用户分支口径。
+            send_notification(
+                "账号安全事件告警",
+                f"内置主管理员（{_mask_email(username) if username else 'builtin-admin'}）"
+                f"密码已通过自助改密修改，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}。\n"
+                "如非本人操作，请立即按 README「主管理员权限追回」流程处理"
+                "（SSH 重写 YIBAN_ADMIN_PASSWORD + PW_VERSION 递增）。",
             )
             logger.info("内置管理员密码已更新")
             return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
@@ -4132,7 +4204,7 @@ def create_app(host=None):
                     # 防呆：内置管理员不存在且这是最后一个注册管理员时跳过
                     if len(admins) <= 1 and not builtin:
                         continue
-                    ops.append(("update_user", email, {"role": "user"}))
+                    ops.append(("update_user", email, {"role": "user"}, bool(builtin)))
                     sim_users[email]["role"] = "user"
                 elif action == "reset_password":
                     ops.append(
@@ -4153,12 +4225,21 @@ def create_app(host=None):
                         admins = [u for u in sim_users.values() if u.get("role") == "admin"]
                         if len(admins) <= 1 and not builtin:
                             continue
-                    ops.append(("delete_user_with_accounts", email))
+                    ops.append(("delete_user_with_accounts", email, bool(builtin)))
                     sim_users.pop(email, None)
             done = len(ops)
             if ops:
                 try:
                     db.batch_user_ops(ops)
+                except db.LastAdminError:
+                    # 批次12 B12-7：db 事务内复核兜底（跨进程竞态时整体回滚转 400）
+                    db.audit(
+                        session.get("username") or "?",
+                        "users_batch",
+                        action,
+                        "被拒：批量操作命中最后一个注册管理员保护，已整体回滚",
+                    )
+                    return jsonify({"error": "批量操作包含最后一个注册管理员的删除/降权，已整体回滚"}), 400
                 except Exception as e:
                     logger.error("批量%s用户失败: %s（已回滚）", action, e)
                     db.audit(
@@ -4260,7 +4341,15 @@ def create_app(host=None):
                 # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users 表中的最后一个管理员
                 if len(admins) <= 1 and not _builtin_admin_email():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
-            if db.update_user(email, {"role": new_role}) == 0:
+            # 批次12 B12-7：改走事务内复核的 set_user_role——进程内预检挡不住
+            # 跨进程并发（web+TUI/多实例）同时把最后一个注册管理员降权
+            try:
+                changed = db.set_user_role(
+                    email, new_role, allow_last_admin=bool(_builtin_admin_email())
+                )
+            except db.LastAdminError:
+                return jsonify({"error": "至少保留 1 个管理员"}), 400
+            if changed == 0:
                 # 批次7 P4-4(C-M1 收尾)：0 行 = 目标已被并发删除，不得谎报成功
                 return jsonify({"error": "用户不存在"}), 404
             db.audit(
@@ -4352,7 +4441,14 @@ def create_app(host=None):
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
             if mode == "full":
-                db.delete_user_with_accounts(email)
+                # 批次12 B12-7：事务内复核最后一个注册管理员（allow 与原预检同语义：
+                # 内置管理员存在时允许删掉 users 表最后一个注册管理员）
+                try:
+                    db.delete_user_with_accounts(
+                        email, allow_last_admin=bool(_builtin_admin_email())
+                    )
+                except db.LastAdminError:
+                    return jsonify({"error": "至少保留 1 个管理员"}), 400
             else:
                 db.delete_accounts_by_owner(email)
             db.audit(
@@ -4610,6 +4706,23 @@ def create_app(host=None):
         except Exception as e:
             logger.warning("probe_events 查询失败（不影响日志页）: %s", e)
             probe_events = []
+        # 批次12 裁决：当日签到事件（stage="sign"）——sign_events 表此前主流程
+        # 零写入、读取函数零调用方（基础设施空转）；写入已在 signin 侧补齐，
+        # 此处与探针记录同口径脱敏展示（手机号打码、条数封顶）。
+        sign_events = []
+        try:
+            for ev in db.sign_events_on(date, limit=100):
+                msg = str(ev.get("message") or "")
+                sign_events.append({
+                    "time": str(ev.get("ts", ""))[-8:] if ev.get("ts") else "",
+                    "phone": signin._mask_phone(str(ev.get("phone") or "")),
+                    "status": str(ev.get("status") or ""),
+                    "attempt": int(ev.get("attempt") or 0),
+                    "message": (msg[:160] + "…") if len(msg) > 160 else msg,
+                })
+        except Exception as e:
+            logger.warning("sign_events 查询失败（不影响日志页）: %s", e)
+            sign_events = []
         # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
         # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
         # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
@@ -4622,6 +4735,54 @@ def create_app(host=None):
                 "date": date,
                 "is_today": date == datetime.now().strftime("%Y-%m-%d"),
                 "probe_events": probe_events,
+                "sign_events": sign_events,
+            }
+        )
+
+    # ---- 签到事件查询（管理员；批次12 裁决：sign_events 补消费端）----
+    @app.route("/api/admin/sign-events")
+    def api_admin_sign_events():
+        """sign_events 结构化查询：单账号时间线 / 实时事件流 / 按天统计。
+
+        权限：路径不在普通用户白名单，require_login 统一 403（普通用户越权访问
+        会另记 forbidden_path 审计）。手机号一律打码后返回，条数封顶 200。
+        """
+        phone = str(request.args.get("phone", "")).strip()
+        try:
+            days = min(max(int(request.args.get("days", 7)), 1), 90)
+        except (TypeError, ValueError):
+            days = 7
+        try:
+            limit = min(max(int(request.args.get("limit", 100)), 1), 200)
+        except (TypeError, ValueError):
+            limit = 100
+
+        def _mask(ev):
+            msg = str(ev.get("message") or "")
+            return {
+                "ts": str(ev.get("ts", "")),
+                "phone": signin._mask_phone(str(ev.get("phone") or "")),
+                "status": str(ev.get("status") or ""),
+                "message": (msg[:160] + "…") if len(msg) > 160 else msg,
+                "stage": str(ev.get("stage") or ""),
+                "attempt": int(ev.get("attempt") or 0),
+                "dur_sec": ev.get("dur_sec"),
+            }
+
+        events = []
+        if phone:
+            events = [_mask(ev) for ev in db.sign_events_by_phone(phone, days=days)][:limit]
+        else:
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            events = [_mask(ev) for ev in db.sign_events_since(cutoff, limit=limit)]
+        stats = db.sign_event_stats(days=days)
+        return jsonify(
+            {
+                "ok": True,
+                "days": days,
+                "count": len(events),
+                "events": events,
+                "daily_stats": stats,
             }
         )
 
@@ -4975,7 +5136,10 @@ def create_app(host=None):
             # 即告警；校验通过且清理已发生后，再追加新锚点（使锚点反映清理后的
             # 合法状态，且记录 min_id/max_id 以覆盖删尾/清空检测，原两段格式不具备）。
             try:
-                _health = db.audit_health()
+                # 批次12 B12-4：显式传入锚点路径——原调用走 db.audit_anchor_path()
+                # 默认解析（env 或 cwd），裸机部署下与本进程写锚点的 STATE_DIR 分裂，
+                # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
+                _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
                 if not _health["healthy"]:
                     _alert = (
                         "审计可追溯性校验失败："
@@ -4989,6 +5153,21 @@ def create_app(host=None):
                 elif _health["anchor_msg"]:
                     # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
                     logger.info("审计链提示: %s", _health["anchor_msg"])
+                # 批次12 B12-9：时钟守卫拦截后的持续告警——守卫拦截会把清理永久
+                # 冻结（人工重置前不恢复），每日线程在此读 app_meta 留痕并发邮件，
+                # 直到管理员运行 scripts/clock_guard_reset.py 重置为止（每日重发
+                # 是刻意的：冻结状态必须保持可见，防止静默腐烂）
+                _cg = db.clock_guard_alert()
+                if _cg:
+                    _cg_alert = (
+                        "时钟跳变守卫告警：系统时间异常跳变已被拦截，全部物理清理"
+                        f"处于冻结状态（告警时间 {_cg.get('ts', '?')}）。\n"
+                        f"{_cg.get('note', '')}\n"
+                        "请核实系统时间与 NTP；确认正确后运行 "
+                        "python3 scripts/clock_guard_reset.py --confirm 重置。"
+                    )
+                    logger.error("时钟守卫告警: %s", _cg.get("note", ""))
+                    send_notification("时钟跳变守卫告警", _cg_alert)
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
                 logger.warning("审计链每日校验/锚点写入失败: %s", e)

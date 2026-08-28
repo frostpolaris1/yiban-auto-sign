@@ -18,6 +18,7 @@ tick 采用「分钟级到点闩锁」而非「秒==0 命中」：调度循环�
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -44,7 +45,15 @@ def _sched_run_file():
 
 # 视为"未了结"的状态码：补签闸门据此判断当日是否需要重跑
 # （signin 侧有按账号防重与服务器 already 兜底，重跑幂等）
-_UNDONE_STATUSES = frozenset(("failed", "retrying", "pending"))
+# 批次12 B12-2：skipped_window / skipped_norange 计入未了结——学校签到窗口晚于
+# 本地配置（或 Range 延迟放出）时，06:31 首签可能全员落"窗口外跳过"；skip 类
+# 状态若不算未了结，sched-run 又无条件写 completed=True，07:10 补签会被闸门
+# 判为"全员了结"吞掉 → 全天零签到且无任何重试机会与告警。skip 既非"未了结"
+# 也非"已完成"，宿主 run.sh 用退出码 2 写 SKIPPED（cron 会重跑）无此洞。
+_UNDONE_STATUSES = frozenset((
+    "failed", "retrying", "pending",
+    "skipped_window", "skipped_norange",
+))
 
 
 def _full_run_done_today():
@@ -103,17 +112,41 @@ FIRST, SECOND = (6, 31), (7, 10)
 PROBE_AT = (23, 55)
 
 
+def _child_timeout(env):
+    """子进程超时：默认按签到窗口动态计算，与宿主 run.sh 同口径（批次12 B12-3）。
+
+    原固定 7200s 与可配置窗口脱钩：窗口整体晚于触发点约 2 小时（如 10:00~11:00）
+    时，首签/补签子进程在 sleep 等窗口途中即被杀，全天漏签。现默认 = 当日窗口
+    结束（YIBAN_SIGN_END，与 signin.py _schedule_config / run.sh 同一事实源，
+    默认 07:50）− 当前时刻 + 5 分钟余量，下限 600s；YIBAN_RUN_TIMEOUT_SEC 显式
+    设置时优先（管理员手动覆盖，进程环境与 .env 均认）。
+    """
+    raw = str(os.environ.get("YIBAN_RUN_TIMEOUT_SEC")
+              or env.get("YIBAN_RUN_TIMEOUT_SEC", "")).strip()
+    if raw:
+        try:
+            return max(600, int(raw))
+        except (TypeError, ValueError):
+            pass
+    end_hhmm = str(env.get("YIBAN_SIGN_END", "07:50")).strip()
+    # 格式校验与 run.sh / signin.py _parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
+    if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
+        end_hhmm = "07:50"
+    try:
+        end_dt = datetime.strptime(f"{datetime.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        end_dt = datetime.strptime(f"{datetime.now():%Y-%m-%d} 07:50", "%Y-%m-%d %H:%M")
+    return max(600, int((end_dt - datetime.now()).total_seconds()) + 300)
+
+
 def _run_signin_child(extra=None):
     """运行签到/探针子进程（批次7 P3-14：补超时——宿主 run.sh 有动态超时，
     容器内原实现无 timeout，单个子进程挂起即永久卡死全部调度且无告警）。"""
-    timeout = 7200
-    try:
-        timeout = max(600, int(os.environ.get("YIBAN_RUN_TIMEOUT_SEC", "7200")))
-    except (TypeError, ValueError):
-        pass
+    env = build_child_env(ENV_FILE)
+    timeout = _child_timeout(env)
     cmd = ["python3", "scripts/signin.py"] + (extra or [])
     try:
-        subprocess.run(cmd, cwd="/app", env=build_child_env(ENV_FILE), timeout=timeout)
+        subprocess.run(cmd, cwd="/app", env=env, timeout=timeout)
     except subprocess.TimeoutExpired:
         print(f"[scheduler] 签到子进程超时（>{timeout}s）被终止，已留痕继续调度", flush=True)
 
@@ -144,8 +177,9 @@ def main_loop(sleep_seconds=1):
             not _full_run_done_today() or _has_undone_today()
         ):
             # 补签闸门（批次7 P1-1）：全量未跑过（首签错过的补偿）或存在未了结
-            # 账号（failed/retrying/pending）才执行；全员了结则跳过，不再被
-            # 「任一账号成功」误导跳过失败账号的兜底
+            # 账号（failed/retrying/pending/skipped_window/skipped_norange，批次12
+            # B12-2）才执行；全员了结则跳过，不再被「任一账号成功」误导跳过失败
+            # 账号的兜底
             _run_signin_child()
             done_sign_second = today
         if hm >= PROBE_AT and done_probe != today:

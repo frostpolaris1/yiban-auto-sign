@@ -1105,18 +1105,78 @@ def _encrypt_field(value, phone):
 # 时钟跳变保护参数（2026-08-28 审查 M3）：
 # 允许的"时间前进"上限。软删保留期 7 天——系统时间被拨快 8 天，刚软删 1 秒的
 # 账号会在下次清理时被立即物理清除、7 天反悔窗口归零。取 72h：每日正常运行的
-# 服务不会超过；停机 >3 天后的首轮清理会被跳过（代价：清理推迟一天，安全方向）；
-# 拨快 >3 天被拦下（防数据丢失，危险方向）。
+# 服务不会超过；停机 >3 天后的首轮清理会被跳过并触发告警，需人工核实时钟后用
+# scripts/clock_guard_reset.py 显式重置（批次12 B12-9，用户裁决 2026-08-29：
+# 刻意不自动恢复——自动把参照点拨到当前时间等于给"拨快一次、下轮洗白"开通道）。
 _CLOCK_ALLOW_FWD_HOURS = 72
 # 允许的"时间回拨"上限（秒）：正常 NTP 校正是秒级，回拨超过 1h 视为异常
 _CLOCK_ALLOW_BACK_SECONDS = 3600
+# 守卫失败告警在 app_meta 的留痕键（web 每日线程读取并发邮件；人工重置后清除）
+_CLOCK_GUARD_ALERT_KEY = "clock_guard_alert"
+
+
+def _record_clock_guard_alert(note):
+    """守卫拦截时把告警落到 app_meta（批次12 B12-9）。
+
+    原实现 ok=False 仅 logger.error：无任何告警出口，且因不更新参照点，5 处清理
+    **永久**冻结（软删数据永不物理清除、审计/事件表无限膨胀）——与注释承诺的
+    「清理推迟一天」相悖，日志无人看时静默腐烂。此处用**独立短连接**写入：
+    守卫运行在调用方事务内，随后调用方会 rollback，同连接写入会被一起回滚。
+    写失败不影响主流程（只告警）。JSON 结构 {ts, note}。
+    """
+    try:
+        target_db = _db_file or os.environ.get("YIBAN_DB_FILE") or DB_DEFAULT
+        conn2 = sqlite3.connect(target_db, timeout=5)
+        try:
+            conn2.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                (
+                    _CLOCK_GUARD_ALERT_KEY,
+                    json.dumps(
+                        {
+                            "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "note": note,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+            conn2.commit()
+        finally:
+            conn2.close()
+    except Exception as e:  # noqa: BLE001 —— 告警留痕失败不得放大故障
+        logger.warning("时钟守卫告警留痕失败: %s", e)
+
+
+def clock_guard_alert():
+    """读取未清除的时钟守卫告警（供 web 每日线程/体检调用）。无告警返回 None。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            r = conn.execute(
+                "SELECT value FROM app_meta WHERE key=?", (_CLOCK_GUARD_ALERT_KEY,)
+            ).fetchone()
+        if r is None or not r["value"]:
+            return None
+        try:
+            data = json.loads(r["value"])
+            if isinstance(data, dict) and data.get("note"):
+                return data
+        except ValueError:
+            pass
+        return {"ts": "", "note": str(r["value"])}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("读取时钟守卫告警失败: %s", e)
+        return None
 
 
 def _clock_jump_guard(conn, key):
     """以 app_meta 记录的最近一次 seen-now 为参照，检测系统时钟异常跳变。
 
-    返回 (ok, note)：ok=False 时调用方应跳过本次清理并告警（防"拨快后刚软删的
-    数据被立即物理清除"）；note 为告警文本或空串。
+    返回 (ok, note)：ok=False 时调用方应跳过本次清理（防"拨快后刚软删的
+    数据被立即物理清除"）；note 为告警文本或空串。ok=False 时告警已由
+    _record_clock_guard_alert 落入 app_meta（web 每日线程发邮件），恢复清理
+    需人工确认时钟正确后运行 scripts/clock_guard_reset.py 显式重置参照点。
     每次调用都会把当前时间 upsert 进 app_meta（ok 路径）——该 INSERT 同时充当
     库级写锁（WAL 下 INSERT 即持 RESERVED 锁），调用方无需另开 BEGIN IMMEDIATE。
     """
@@ -1134,11 +1194,15 @@ def _clock_jump_guard(conn, key):
     fwd = (now - last).total_seconds()
     back = (last - now).total_seconds()
     if fwd > _CLOCK_ALLOW_FWD_HOURS * 3600 or back > _CLOCK_ALLOW_BACK_SECONDS:
-        return False, (
+        note = (
             f"系统时间异常跳变（上次记录 {row['value']}，当前 {ts}，"
             f"前进 {fwd / 3600:.1f}h / 回拨 {back / 3600:.1f}h），"
-            "已跳过本次物理清理以防误删"
+            "已跳过本次物理清理以防误删；请核实系统时间，确认正确后运行 "
+            "scripts/clock_guard_reset.py 重置（清理将保持冻结直至重置）"
         )
+        logger.error("%s", note)
+        _record_clock_guard_alert(note)
+        return False, note
     conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
     return True, ""
 
@@ -1484,18 +1548,79 @@ def delete_accounts_by_owner(owner):
         return cur.rowcount
 
 
-def delete_user_with_accounts(email):
-    """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。"""
+def _assert_not_last_admin(conn, email, allow_last_admin):
+    """「最后一个注册管理员不可删除/降权」复核——必须在 BEGIN IMMEDIATE 事务内调用。
+
+    批次12 B12-7：管理员侧删除/降权此前只在 web 进程内 _file_lock 下预检，
+    跨进程（web + TUI / 多实例共享同一库）两名操作者可同时通过预检，把最后一个
+    注册管理员清零（未配内置管理员的部署失去全部管理入口）。批次6 C-M3 已把
+    自助注销路径的复核下沉事务，本函数把管理员侧三个路径（单删/批量删/降权）
+    对齐同口径。命中即抛 LastAdminError（调用方事务回滚、web 转 400）。
+
+    allow_last_admin：内置管理员（.env）存在时允许删掉 users 表中最后一个注册
+    管理员（web 侧传 bool(_builtin_admin_email())，与原预检语义一致）。
+    """
+    row = conn.execute(
+        "SELECT role FROM users WHERE email=? AND deleted=0", (email,)
+    ).fetchone()
+    if row is not None and row["role"] == "admin" and not allow_last_admin:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
+        ).fetchone()[0]
+        if total <= 1:
+            raise LastAdminError(
+                "该用户是最后一个注册管理员，不可删除/降权（系统需保留至少一个管理入口）"
+            )
+
+
+def delete_user_with_accounts(email, allow_last_admin=False):
+    """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。
+
+    批次12 B12-7：allow_last_admin=False（默认）时，事务内复核目标是否最后一个
+    注册管理员（含跨进程并发窗口），命中抛 LastAdminError 且库保持原状；
+    仅「内置管理员存在」的调用方应显式传 True。
+    """
     conn = get_conn()
-    with _conn_lock, conn:
-        rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (email,)).fetchall()
-        cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（H2 对抗性审查补）
-        _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 连带清理会话缓存
-        _delete_sign_events_by_phones(conn, [r["phone"] for r in rows])  # M2
-        conn.execute("DELETE FROM users WHERE email=?", (email,))
-        _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
-        return cur.rowcount
+    with _conn_lock:
+        _begin_immediate(conn)
+        try:
+            _assert_not_last_admin(conn, email, allow_last_admin)
+            rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (email,)).fetchall()
+            cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
+            _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（H2 对抗性审查补）
+            _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 连带清理会话缓存
+            _delete_sign_events_by_phones(conn, [r["phone"] for r in rows])  # M2
+            conn.execute("DELETE FROM users WHERE email=?", (email,))
+            _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
+            conn.commit()
+            return cur.rowcount
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
+
+
+def set_user_role(email, new_role, allow_last_admin=False):
+    """单行角色变更（批次12 B12-7：降权最后一个注册管理员的复核下沉事务内）。
+
+    返回受影响行数（0 = 用户不存在/已删除）；降权最后一个注册管理员且
+    allow_last_admin=False 时抛 LastAdminError（库保持原状）。
+    """
+    conn = get_conn()
+    with _conn_lock:
+        _begin_immediate(conn)
+        try:
+            if new_role == "user":
+                _assert_not_last_admin(conn, email, allow_last_admin)
+            cur = conn.execute(
+                "UPDATE users SET role=? WHERE email=? AND deleted=0", (new_role, email)
+            )
+            conn.commit()
+            return cur.rowcount
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
 
 def replace_accounts(accounts):
@@ -2049,7 +2174,10 @@ def batch_user_ops(ops):
 
     ops 为 (op, params) 列表，op 支持：
       ("update_user", email, fields_dict)          # role/password_hash/pw_version
+      ("update_user", email, fields_dict, allow_last_admin)  # 批次12 B12-7：降权含
+                                                    # 最后管理员事务内复核的放行开关
       ("delete_user_with_accounts", email)
+      ("delete_user_with_accounts", email, allow_last_admin)  # 同上（批次12 B12-7）
     """
     conn = get_conn()
     with _conn_lock:
@@ -2058,7 +2186,11 @@ def batch_user_ops(ops):
             for op in ops:
                 kind = op[0]
                 if kind == "update_user":
-                    _, email, fields = op
+                    email, fields = op[1], op[2]
+                    # 批次12 B12-7：角色降级经同一事务内复核（预检在 web 进程内，
+                    # 挡不住跨进程并发把最后一个注册管理员降权）
+                    if fields.get("role") == "user":
+                        _assert_not_last_admin(conn, email, op[3] if len(op) > 3 else False)
                     sets, vals = [], []
                     for k in ("password_hash", "role", "pw_version"):
                         if k in fields:
@@ -2072,7 +2204,9 @@ def batch_user_ops(ops):
                         vals,
                     )
                 elif kind == "delete_user_with_accounts":
-                    _, email = op
+                    email = op[1]
+                    # 批次12 B12-7：删除管理员前事务内复核最后管理员
+                    _assert_not_last_admin(conn, email, op[2] if len(op) > 2 else False)
                     rows = conn.execute(
                         "SELECT phone FROM accounts WHERE owner=?", (email,)
                     ).fetchall()
@@ -2273,8 +2407,18 @@ def verify_audit_chain():
 # 锚点存放在**库外**：若存进 yiban.db，有写库权限者可连同审计表一起删掉，锚点
 # 形同虚设。库外文件使"整体重写审计链"还需同步篡改该文件。
 def audit_anchor_path():
-    """外部锚点文件路径（库外 append-only）。"""
-    state_dir = os.environ.get("YIBAN_STATE_DIR") or "."
+    """外部锚点文件路径（库外 append-only）。
+
+    批次12 B12-4：默认与 web/app.py 的 STATE_DIR 对齐（/var/log/yiban）——
+    原默认 "."（进程 cwd）使裸机部署下 web 把锚点写到 /var/log/yiban/audit-anchor.log，
+    而 audit_health 读 <cwd>/audit-anchor.log：每日误报「锚点文件被删除」淹没真告警，
+    且删尾/清空/链尾篡改检测从未比对过真实锚点（锚点防线整体致盲）。
+    Windows 开发/测试环境保留 "."（/var/log 不可写）；显式设置 YIBAN_STATE_DIR 时
+    两边一致（Docker compose 即此形态，不受影响）。
+    """
+    state_dir = os.environ.get("YIBAN_STATE_DIR") or (
+        "." if os.name == "nt" else "/var/log/yiban"
+    )
     return os.path.join(state_dir, "audit-anchor.log")
 
 
@@ -2361,26 +2505,27 @@ def verify_audit_anchor(path=None):
     - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
     无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
     批次7 P3-1：app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
-    不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。仅对默认路径
-    生效（显式传入 path 的测试/工具调用不比对元数据）。
+    不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。
+    批次12 B12-4：该元数据交叉检查此前仅对默认路径生效——web 每日线程改传
+    显式路径后会被跳过，锚点致盲问题换了个形式复发。现对显式路径同样生效
+    （仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用）。
     """
     anchor = _last_audit_anchor(path or audit_anchor_path())
     if anchor is None:
-        if path is None:
-            try:
-                with _conn_lock:
-                    conn = get_conn()
-                    r = conn.execute(
-                        "SELECT value FROM app_meta WHERE key='audit_anchor_last'"
-                    ).fetchone()
-                if r is not None and r["value"]:
-                    return False, (
-                        f"审计锚点文件缺失或不可读，但应用元数据记录曾于 "
-                        f"{r['value']} 写入锚点——疑似锚点文件被删除，"
-                        "删尾/清空检测已失效，请立即核查"
-                    )
-            except Exception:
-                pass  # app_meta 不存在（旧库/跳过迁移）→ 维持旧行为
+        try:
+            with _conn_lock:
+                conn = get_conn()
+                r = conn.execute(
+                    "SELECT value FROM app_meta WHERE key='audit_anchor_last'"
+                ).fetchone()
+            if r is not None and r["value"]:
+                return False, (
+                    f"审计锚点文件缺失或不可读，但应用元数据记录曾于 "
+                    f"{r['value']} 写入锚点——疑似锚点文件被删除，"
+                    "删尾/清空检测已失效，请立即核查"
+                )
+        except Exception:
+            pass  # app_meta 不存在（旧库/跳过迁移）→ 维持旧行为
         return True, ""
     try:
         with _conn_lock:
@@ -2780,6 +2925,31 @@ def probe_events_on(date_str, limit=100):
             return [dict(r) for r in rows]
     except Exception as e:
         logger.warning("probe_events_on 失败: %s", e)
+        return []
+
+
+def sign_events_on(date_str, limit=100):
+    """指定日期（YYYY-MM-DD）的签到事件（stage="sign"，按时间正序）。
+
+    批次12 裁决：sign_events 补消费端——随 /api/logs 附带当日签到事件
+    （与 probe_events_on 同口径：手机号脱敏、条数封顶由调用方处理）。
+    查询失败返回空列表，不影响调用方。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            start = f"{date_str} 00:00:00"
+            end = f"{date_str} 23:59:59"
+            sql = (
+                "SELECT id, ts, phone, status, message, attempt "
+                "FROM sign_events WHERE stage='sign' AND ts BETWEEN ? AND ? "
+                "ORDER BY ts LIMIT ?"
+            )
+            params = [start, end, _normalize_limit(limit, 100)]
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning("sign_events_on 失败: %s", e)
         return []
 
 
