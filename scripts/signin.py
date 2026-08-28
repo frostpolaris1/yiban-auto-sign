@@ -730,7 +730,7 @@ def _load_accounts_from_file():
 
     db 层返回已解密明文；此处只做审核状态过滤。
     """
-    db.init_db(env_file=_key_env_file())
+    db.init_db(env_file=_key_env_file(), cleanup=False)
     all_accounts = db.load_accounts()
     # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）、
     # 被拒绝账号（status=rejected：管理员审核不通过，不得签到）与待删除账号

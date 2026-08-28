@@ -114,11 +114,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True):
             _conn = None
             raise
         if cleanup:
-            _audit_cleanup(_conn)
-            _event_cleanup(_conn)
-            purge_expired_deleted_accounts()
-            purge_deleted_users()
-            purge_old_delete_requests()
+            run_daily_cleanup()
         return _conn
 
 
@@ -1003,11 +999,20 @@ def _purge_expired_deleted(conn):
         cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
         # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发写事务，
         # 避免 1000 账号每 10s 轮询重复执行 DELETE+COMMIT
-        row = conn.execute(
-            "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ? LIMIT 1",
+        probe = conn.execute(
+            "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ? LIMIT 1",
             (cutoff,),
         ).fetchone()
-        if row:
+        if not probe:
+            return
+        # 2026-08-28 审查 M5：读 phones → DELETE → 连带清理 整段纳入写锁事务。
+        # 原实现 SELECT 与 DELETE 之间跨进程无互斥，期间被管理员恢复的账号
+        # （deleted=0）其行会被 WHERE deleted=1 正确保留，但 time_prefs /
+        # session_cache 会被陈旧 phones 列表连带误删——用户自选签到时段被静默
+        # 重置为自动错峰。事务内重读 phones（不复用事务前列表），并持锁保证
+        # 读-删-清原子。
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             phones = [
                 r["phone"]
                 for r in conn.execute(
@@ -1022,6 +1027,10 @@ def _purge_expired_deleted(conn):
             _delete_time_prefs_by_phones(conn, phones)
             _clear_session_cache_by_phones(conn, phones)
             conn.commit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
     except Exception as e:
         with contextlib.suppress(Exception):
             conn.rollback()
@@ -1565,33 +1574,51 @@ def restore_user(email):
 
     2026-08-16 安全审查：联动恢复该用户的软删易班账号（deleted=0），
     保证反悔恢复 = 用户 + 账号完整回来（此前账号在注销时被物理删除，恢复残缺）。
+
+    2026-08-28 审查 M7：检查-写入整体纳入 BEGIN IMMEDIATE 写锁。原实现
+    `with _conn_lock, conn:` 下 SELECT 走 autocommit，检查（无活跃用户）与
+    UPDATE 之间跨进程无互斥——另一进程并发 create_user（同邮箱）可在检查
+    通过后抢注成功，本 UPDATE 撞 idx_users_email_live 唯一索引抛
+    IntegrityError，web 侧未捕获 → 500。持锁后并发注册被串行化；若仍撞约束
+    （防御纵深）由上层捕获转 409。
     """
     conn = get_conn()
-    with _conn_lock, conn:
-        active = conn.execute(
-            "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
-        ).fetchone()
-        if active is not None:
-            return False
-        deleted = conn.execute(
-            "SELECT id, deleted_at FROM users WHERE email=? AND deleted=1 "
-            "ORDER BY id DESC LIMIT 1",
-            (email,),
-        ).fetchone()
-        if deleted is None:
-            return False
-        conn.execute(
-            "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
-            (deleted["id"],),
-        )
-        # 只恢复同一注销事件的账号（deleted_at 与用户行一致），
-        # 避免把用户注销后单独软删的其他账号也一起恢复造成 owner 冲突。
-        conn.execute(
-            "UPDATE accounts SET deleted=0, deleted_at='' "
-            "WHERE owner=? AND deleted=1 AND deleted_at=?",
-            (email, deleted["deleted_at"]),
-        )
-        return True
+    with _conn_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            active = conn.execute(
+                "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
+            ).fetchone()
+            if active is not None:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                return False
+            deleted = conn.execute(
+                "SELECT id, deleted_at FROM users WHERE email=? AND deleted=1 "
+                "ORDER BY id DESC LIMIT 1",
+                (email,),
+            ).fetchone()
+            if deleted is None:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                return False
+            conn.execute(
+                "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
+                (deleted["id"],),
+            )
+            # 只恢复同一注销事件的账号（deleted_at 与用户行一致），
+            # 避免把用户注销后单独软删的其他账号也一起恢复造成 owner 冲突。
+            conn.execute(
+                "UPDATE accounts SET deleted=0, deleted_at='' "
+                "WHERE owner=? AND deleted=1 AND deleted_at=?",
+                (email, deleted["deleted_at"]),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
 
 def purge_deleted_users(days=None):
@@ -1685,6 +1712,25 @@ def purge_old_delete_requests(days=30):
         with contextlib.suppress(Exception):
             conn.rollback()
         logger.warning("清理注销请求记录失败: %s", e)
+
+
+def run_daily_cleanup():
+    """每日定期清理的集中入口（2026-08-28 审查 M6）。
+
+    审计/事件旧数据 + 过期软删账号 + 过期注销用户 + 注销请求记录的清理，
+    原先挂在 init_db(cleanup=True) 上——而 signin 子进程每天要跑 2~3 次
+    （Docker 调度器首签/补签/探针，宿主 cron 同理），每次都执行一轮
+    全表 DELETE + 多个 purge，与 web 的 8 个线程抢库级写锁，是审计写入
+    失败（B-1）与陈旧列表误删（M5）的主要诱因。
+    现改为：web 每日线程统一调用本函数；signin 侧 init_db(cleanup=False)
+    （其 main() 保留对超期软删账号的显式清理，覆盖无 web 的纯 cron 场景）。
+    """
+    conn = get_conn()
+    _audit_cleanup(conn)
+    _event_cleanup(conn)
+    purge_expired_deleted_accounts()
+    purge_deleted_users()
+    purge_old_delete_requests()
 
 
 def record_user_delete_request(username, ip_hash="", kind="delete"):

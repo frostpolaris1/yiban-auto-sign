@@ -2272,7 +2272,13 @@ def create_app(host=None):
             # 统一文案（2026-08-17 安全审查）：不区分"账号不存在/已过期"与"密码错误"，
             # 防无凭探测"哪些邮箱正处于注销冷却期"（注销用户警惕性低，是钓鱼高价值目标）
             return jsonify({"error": "邮箱或密码错误，或账号已过恢复期"}), 400
-        if not db.restore_user(email):
+        try:
+            _restored = db.restore_user(email)
+        except sqlite3.IntegrityError:
+            # 2026-08-28 审查 M7：并发注册抢注同邮箱（db 层已用写锁串行化，
+            # 此处为防御纵深）——提示占用而非笼统"恢复失败"
+            return jsonify({"error": "该邮箱已被注册，无法恢复"}), 409
+        if not _restored:
             return jsonify({"error": "恢复失败，请稍后再试"}), 500
         # 防批量计数仅在恢复成功后才记录（低项：失败不占冷却额度）
         db.record_user_delete_request(email, ip_hash=ip_hash, kind="restore")
@@ -4549,11 +4555,12 @@ def create_app(host=None):
         time.sleep(60)
         while True:
             try:
-                # 账号超期软删行物理清理（2026-08-20 随读路径清理外移而显式化，
-                # 见 db.purge_expired_deleted_accounts 注释——不再挂在 load_accounts 上）
-                db.purge_expired_deleted_accounts()
-                db.purge_deleted_users()
-                db.purge_old_delete_requests()
+                # 每日集中清理（2026-08-28 审查 M6 收口）：审计/事件旧数据 +
+                # 过期软删账号 + 过期注销用户 + 注销请求记录，统一走 db.run_daily_cleanup()。
+                # 此前 _audit_cleanup/_event_cleanup（全表 DELETE）只挂在 init_db 上，
+                # 而 signin 子进程每天 2~3 次 init_db 也各跑一轮，与 web 8 线程争锁；
+                # 现清理只在 web 每日线程执行，signin 侧 init_db(cleanup=False)。
+                db.run_daily_cleanup()
             except Exception as e:
                 logger.warning("每日自动清除注销用户失败: %s", e)
             # 审计可追溯性每日校验（2026-08-28 审查 B-3）：
