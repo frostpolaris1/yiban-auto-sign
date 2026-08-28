@@ -2185,7 +2185,14 @@ def create_app(host=None):
                 return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
             # 审计 + 软注销（db 单事务：账号/time_prefs 清除 + 用户标记）
             db.audit(username, "user_self_delete_request", email, "用户发起注销申请")
-            if not db.soft_delete_user_with_accounts(email):
+            try:
+                _deleted = db.soft_delete_user_with_accounts(email)
+            except db.LastAdminError:
+                # C-M3（2026-08-28）：事务内复核兜底——跨进程并发注销时
+                # 上面的 is_last_registered_admin 预检可能双双通过，db 层
+                # 复核拦截后转 400（原路径会 500）
+                return jsonify({"error": "当前账号不可注销（系统最后一个管理员）"}), 400
+            if not _deleted:
                 return jsonify({"error": "注销失败，请稍后再试"}), 500
             # 防批量计数仅在注销成功后才记录（低项：失败不占冷却额度）
             db.record_user_delete_request(email, ip_hash=ip_hash, kind="delete")
@@ -2357,7 +2364,14 @@ def create_app(host=None):
         enabled = data.get("enabled")
         if not isinstance(enabled, bool):
             return jsonify({"error": "取值无效"}), 400
-        db.update_user(email, {"mail_notify": 1 if enabled else 0})
+        affected = db.update_user(email, {"mail_notify": 1 if enabled else 0})
+        if affected == 0:
+            # C-M1（2026-08-28）：update_user 对不存在的邮箱是静默 no-op。
+            # 内置管理员（.env 账号，不在 users 表）原会收到 ok:true 但刷新后
+            # 开关弹回开启，还写入一条不存在的变更审计——改为明确 404 且不审计
+            return jsonify({
+                "error": "当前账号不支持此设置（内置管理员请用管理员邮件配置）"
+            }), 404
         db.audit(email, "mail_notify", email, "on" if enabled else "off")
         return jsonify({"ok": True, "mail_notify": enabled})
 

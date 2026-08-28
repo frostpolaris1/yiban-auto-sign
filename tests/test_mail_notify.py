@@ -237,6 +237,19 @@ class MailNotifyApiTest(unittest.TestCase):
         r = c.put("/api/my-mail-notify", json={"enabled": False})
         self.assertEqual(r.status_code, 401)
 
+    def test_put_builtin_admin_returns_404(self):
+        """内置管理员（.env 账号，不在 users 表）改邮件开关必须 404 而非谎报成功。
+
+        C-M1（2026-08-28）：update_user 对不存在的邮箱是静默 no-op，原实现返回
+        ok:true——刷新后开关弹回开启，还写入一条不存在的变更审计污染审计链。
+        """
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.put("/api/my-mail-notify", json={"enabled": False},
+                  headers={"X-CSRF-Token": token})
+        self.assertEqual(r.status_code, 404, r.get_data(as_text=True))
+        self.assertIn("内置管理员", r.get_json()["error"])
+
     def test_login_username_case_normalized(self):
         """混合大小写邮箱登录：会话用户名归一小写，邮件开关读写不因大小写失配而失效（2026-08-27）。"""
         c = self.webapp.create_app().test_client()

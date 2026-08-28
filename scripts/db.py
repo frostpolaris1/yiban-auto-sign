@@ -57,6 +57,10 @@ class DuplicateOwnerError(Exception):
 class MigrationDeferred(Exception):
     """迁移暂缓：本次不应用，下次启动重试（用于可选迁移遇到需人工处理的数据）。"""
 
+
+class LastAdminError(Exception):
+    """注销被拒绝：该用户是最后一个注册管理员（事务内复核，跨进程安全）。"""
+
 # 模块级共享（web 通过环境变量注入路径后调用 init_db）
 _conn = None
 # RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
@@ -1568,6 +1572,13 @@ def create_user(email, password_hash, role="user", created_at="", pw_version=1):
 
 
 def update_user(email, fields):
+    """更新用户字段；返回受影响行数。
+
+    2026-08-28 审查 C-M1：原实现返回 None，调用方无法区分"更新成功"与
+    "邮箱不存在/已注销"的静默 no-op——邮件通知开关等接口对内置管理员（不在
+    users 表）会谎报成功，刷新后开关弹回开启，还污染审计链。返回 rowcount
+    供调用方判 404。
+    """
     conn = get_conn()
     with _conn_lock, conn:
         sets, vals = [], []
@@ -1576,11 +1587,12 @@ def update_user(email, fields):
                 sets.append(f"{k}=?")
                 vals.append(fields[k])
         if not sets:
-            return
+            return 0
         vals.append(email)
-        conn.execute(
+        cur = conn.execute(
             f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0", vals
         )
+        return cur.rowcount
 
 
 def delete_user(email):
@@ -1599,30 +1611,55 @@ def soft_delete_user_with_accounts(email):
     与管理员删除账号的 7 天保留语义对齐——宽限期内 restore_user 可完整恢复
     （用户 + 账号）；软删账号不参与签到（signin _load_accounts_from_file 过滤 deleted）。
 
+    2026-08-28 审查 C-M3：'最后一个注册管理员不可注销'的复核从 web 进程内锁
+    下沉到本事务内——原实现 web 层用进程内 _file_lock 检查后调用本函数，TUI /
+    多容器共享同一库时两名管理员可同时通过检查双双注销，系统失去全部管理
+    入口（内置管理员未配置时彻底无法进入）。现于 BEGIN IMMEDIATE 后 COUNT 复核，
+    命中即抛 LastAdminError（web 捕获转 400）。
+
     返回是否找到并注销了有效用户。
     """
     conn = get_conn()
-    with _conn_lock, conn:
-        row = conn.execute(
-            "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
-        ).fetchone()
-        if row is None:
-            return False
-        rows = conn.execute(
-            "SELECT phone FROM accounts WHERE owner=? AND deleted=0", (email,)
-        ).fetchall()
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            "UPDATE accounts SET deleted=1, deleted_at=? WHERE owner=? AND deleted=0",
-            (now, email),
-        )
-        _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
-        _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 注销后停用会话缓存
-        conn.execute(
-            "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
-            (now, row["id"]),
-        )
-        return True
+    with _conn_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT id, role FROM users WHERE email=? AND deleted=0", (email,)
+            ).fetchone()
+            if row is None:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                return False
+            if row["role"] == "admin":
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
+                ).fetchone()[0]
+                if total <= 1:
+                    with contextlib.suppress(Exception):
+                        conn.rollback()
+                    raise LastAdminError(
+                        "该用户是最后一个注册管理员，不可注销（系统需保留至少一个管理入口）"
+                    )
+            rows = conn.execute(
+                "SELECT phone FROM accounts WHERE owner=? AND deleted=0", (email,)
+            ).fetchall()
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "UPDATE accounts SET deleted=1, deleted_at=? WHERE owner=? AND deleted=0",
+                (now, email),
+            )
+            _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+            _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 注销后停用会话缓存
+            conn.execute(
+                "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
+                (now, row["id"]),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
 
 
 def restore_user(email):
