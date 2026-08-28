@@ -39,9 +39,11 @@ mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%F)"
 OUT="$BACKUP_DIR/yiban-data-$STAMP.tar.gz.gpg"
 
+# 批次7 P3-21：口令经 stdin 注入（--passphrase-fd 0，与 scripts/backup.sh 同口径）——
+# 命令行 --passphrase 会在 gpg 运行期暴露于 ps //proc/<pid>/cmdline
 tar -C "$(dirname "$DATA_DIR")" -czf - "$(basename "$DATA_DIR")" \
-    | gpg --batch --yes --symmetric --cipher-algo AES256 \
-          --passphrase "$PASSPHRASE" -o "$OUT"
+    | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 0 \
+          -o "$OUT" <<< "$PASSPHRASE"
 chmod 600 "$OUT"
 sha256sum "$OUT" | awk '{print $1}' > "$OUT.sha256"
 

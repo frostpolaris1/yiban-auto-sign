@@ -104,7 +104,9 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
         _conn = sqlite3.connect(_db_file, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA busy_timeout=5000")
+        # 批次7 P3-3：5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
+        # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
+        _conn.execute("PRAGMA busy_timeout=15000")
         _conn.execute("PRAGMA foreign_keys=OFF")
         _create_tables(_conn)
         # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
@@ -380,19 +382,55 @@ def _audit_hash(prev_hash, ts, username, action, target, detail):
     return hmac.new(_audit_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _rechain_audit_logs(conn):
-    """按 id 升序重建审计哈希链（从空 prev_hash 开始）。"""
-    rows = conn.execute(
-        "SELECT id, ts, username, action, target, detail FROM audit_logs ORDER BY id LIMIT 10000"
-    ).fetchall()
-    prev = ""
-    for r in rows:
-        h = _audit_hash(prev, r["ts"], r["username"], r["action"], r["target"], r["detail"])
-        conn.execute(
-            "UPDATE audit_logs SET prev_hash=?, hash=? WHERE id=?",
-            (prev, h, r["id"]),
+def _begin_immediate(conn):
+    """统一的写事务入口（批次7 P3-2）：遗留未提交事务先安全回滚再 BEGIN。
+
+    原各写路径直接 BEGIN IMMEDIATE，一旦存在遗留事务（任何写路径漏 commit/rollback
+    的 bug）即抛 "within a transaction" 并连锁锁死全部写路径；audit() 的旧 M8 防御
+    只覆盖自己。统一走本函数：遗留半事务按安全默认丢弃并 ERROR 留痕定位根因。
+    """
+    if conn.in_transaction:
+        logger.error(
+            "检测到遗留未提交事务，已回滚解除写锁（未知半事务按安全默认丢弃）——"
+            "请检查此前调用路径是否有写操作未 commit/rollback"
         )
-        prev = h
+        conn.rollback()
+    conn.execute('BEGIN IMMEDIATE')
+
+
+def _rechain_audit_logs(conn):
+    """按 id 升序重建审计哈希链（从空 prev_hash 开始）。
+
+    批次7 P3-4：改为按 id 游标分批重链——原 LIMIT 10000 一次性截断，审计量超限
+    时第 10001 行起的旧 hash 未重算且其 prev 指向的行刚被改写，链永久断裂，
+    每日告警"狼来了"掩盖真实篡改。
+    """
+    _BATCH = 10000
+    last_id = 0
+    prev = ""
+    # prev 必须接续库内首行之前的链（重链从全表语义出发时为空串）
+    first = conn.execute(
+        "SELECT prev_hash FROM audit_logs ORDER BY id LIMIT 1"
+    ).fetchone()
+    if first is not None:
+        prev = first["prev_hash"] or ""
+    while True:
+        rows = conn.execute(
+            "SELECT id, ts, username, action, target, detail FROM audit_logs "
+            "WHERE id > ? ORDER BY id LIMIT ?",
+            (last_id, _BATCH),
+        ).fetchall()
+        if not rows:
+            break
+        for r in rows:
+            h = _audit_hash(prev, r["ts"], r["username"], r["action"], r["target"], r["detail"])
+            conn.execute(
+                "UPDATE audit_logs SET prev_hash=?, hash=? WHERE id=?",
+                (prev, h, r["id"]),
+            )
+            prev = h
+            last_id = r["id"]
+        conn.commit()  # 分批落盘：超大表迁移不因单事务超长而失败
     conn.commit()
 
 
@@ -400,10 +438,11 @@ def migrate_v3(conn):
     """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。"""
     _ensure_column(conn, "audit_logs", "prev_hash", "prev_hash TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "audit_logs", "hash", "hash TEXT NOT NULL DEFAULT ''")
-    rows = conn.execute(
-        "SELECT id, hash FROM audit_logs ORDER BY id LIMIT 10000"
-    ).fetchall()
-    if rows and any(r["hash"] == "" for r in rows):
+    # 批次7 P3-4：空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
+    empty = conn.execute(
+        "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
+    ).fetchone()["n"]
+    if empty:
         _rechain_audit_logs(conn)
 
 
@@ -702,6 +741,24 @@ def migrate_v10(conn):
     _ensure_column(conn, "accounts", "deleted_by", "deleted_by TEXT NOT NULL DEFAULT ''")
 
 
+def migrate_v11(conn):
+    """v11：服务端会话吊销（users.sid，批次7 P3-5）。
+
+    sid 为该用户当前唯一有效会话标识：登录时签发，登出/被重置密码/被踢时轮换；
+    会话内 sid 与库内不一致即视为未登录。空串=未签发（升级日存量兼容）。
+    """
+    _ensure_column(conn, "users", "sid", "sid TEXT NOT NULL DEFAULT ''")
+
+
+def set_user_sid(email, sid):
+    """写入用户当前有效会话标识（批次7 P3-5）；email 须为活跃用户。"""
+    conn = get_conn()
+    with _conn_lock, conn:
+        conn.execute(
+            "UPDATE users SET sid=? WHERE email=? AND deleted=0", (sid, email)
+        )
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -716,6 +773,7 @@ _MIGRATIONS = [
     (8, "v8_session_cache", migrate_v8, False),
     (9, "v9_user_mail_notify", migrate_v9, True),
     (10, "v10_account_deleted_by", migrate_v10, True),
+    (11, "v11_user_session_sid", migrate_v11, True),
 ]
 
 
@@ -741,7 +799,7 @@ def _run_migrations(conn):
             # SSD 上是微秒级，但容器首启并发 / 网络盘 / 大表时完全可命中，
             # 且若迁移在窗口中失败，核心迁移会一并阻断进程启动。
             # 包进 BEGIN IMMEDIATE 后整段迁移原子，中间态对外不可见。
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             try:
                 fn(conn)
                 if blocked:
@@ -1206,7 +1264,7 @@ def add_account(fields):
     conn = get_conn()
     with _conn_lock:
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             cur = conn.execute(
                 "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
@@ -1316,7 +1374,7 @@ def update_account(account_id, fields, expect_snapshot=None):
         return True
 
     with _conn_lock:
-        conn.execute("BEGIN IMMEDIATE")
+        _begin_immediate(conn)
         try:
             result = _body()
             conn.commit()
@@ -1372,7 +1430,7 @@ def move_account(account_id, direction):
     conn = get_conn()
     with _conn_lock:
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             rows = conn.execute(
                 "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
             ).fetchall()
@@ -1478,7 +1536,7 @@ def batch_account_ops(ops):
     conn = get_conn()
     with _conn_lock:
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             for op in ops:
                 kind = op[0]
                 if kind == "update_status":
@@ -1664,7 +1722,7 @@ def soft_delete_user_with_accounts(email):
     """
     conn = get_conn()
     with _conn_lock:
-        conn.execute("BEGIN IMMEDIATE")
+        _begin_immediate(conn)
         try:
             row = conn.execute(
                 "SELECT id, role FROM users WHERE email=? AND deleted=0", (email,)
@@ -1720,7 +1778,7 @@ def restore_user(email):
     """
     conn = get_conn()
     with _conn_lock:
-        conn.execute("BEGIN IMMEDIATE")
+        _begin_immediate(conn)
         try:
             active = conn.execute(
                 "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
@@ -1818,7 +1876,7 @@ def purge_deleted_users_hard(emails):
         # 与 restore_user 跨进程串行化。原 deferred 快照下 phones 列表可能陈旧
         # （M5 同族竞态：并发 restore 后升级写表现为 BUSY_SNAPSHOT 500，连带
         # 清理列表陈旧）；持 IMMEDIATE 后写锁期间列表不可能变化。
-        conn.execute("BEGIN IMMEDIATE")
+        _begin_immediate(conn)
         try:
             for email in emails:
                 row = conn.execute(
@@ -1980,7 +2038,7 @@ def batch_user_ops(ops):
     conn = get_conn()
     with _conn_lock:
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             for op in ops:
                 kind = op[0]
                 if kind == "update_user":
@@ -2082,7 +2140,7 @@ def audit(username, action, target="", detail=""):
                     )
                     conn.rollback()
                 # IMMEDIATE：取 prev_hash 前先拿库级写锁，跨进程串行化"读尾→追加"
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_immediate(conn)
                 row = conn.execute(
                     "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
                 ).fetchone()
@@ -2221,15 +2279,27 @@ def record_audit_anchor(path=None):
             return None
         min_id, max_id = int(row["min_id"]), int(row["max_id"])
         head = audit_head_hash()
-        line = (
-            f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
-            f"{min_id} {max_id} {head}"
-        )
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{ts} {min_id} {max_id} {head}"
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+        # 批次7 P3-1：锚点落盘成功后在 app_meta 留痕——锚点文件本身可被整删
+        # （删掉后校验降级为"通过"），库内元数据使其"应存在却消失"可被检出
+        try:
+            with _conn_lock:
+                conn = get_conn()
+                _begin_immediate(conn)
+                conn.execute(
+                    "INSERT OR REPLACE INTO app_meta (key, value) "
+                    "VALUES ('audit_anchor_last', ?)",
+                    (ts,),
+                )
+                conn.commit()
+        except Exception as meta_err:  # noqa: BLE001
+            logger.warning("锚点元数据留痕失败（不影响锚点本身）: %s", meta_err)
         return line
     except Exception as e:  # noqa: BLE001 —— 锚点写入失败不得阻断业务
         logger.warning("审计链锚点写入失败: %s", e)
@@ -2274,9 +2344,27 @@ def verify_audit_anchor(path=None):
     - ok=False → 确证异常，调用方应告警；
     - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
     无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
+    批次7 P3-1：app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
+    不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。仅对默认路径
+    生效（显式传入 path 的测试/工具调用不比对元数据）。
     """
     anchor = _last_audit_anchor(path or audit_anchor_path())
     if anchor is None:
+        if path is None:
+            try:
+                with _conn_lock:
+                    conn = get_conn()
+                    r = conn.execute(
+                        "SELECT value FROM app_meta WHERE key='audit_anchor_last'"
+                    ).fetchone()
+                if r is not None and r["value"]:
+                    return False, (
+                        f"审计锚点文件缺失或不可读，但应用元数据记录曾于 "
+                        f"{r['value']} 写入锚点——疑似锚点文件被删除，"
+                        "删尾/清空检测已失效，请立即核查"
+                    )
+            except Exception:
+                pass  # app_meta 不存在（旧库/跳过迁移）→ 维持旧行为
         return True, ""
     try:
         with _conn_lock:
@@ -2490,7 +2578,7 @@ def add_sign_events_batch(rows):
     with _conn_lock:
         try:
             conn = get_conn()
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             for r in rows:
                 conn.execute(
                     "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
@@ -2522,7 +2610,7 @@ def add_page_visits_batch(rows):
     with _conn_lock:
         try:
             conn = get_conn()
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             for r in rows:
                 conn.execute(
                     "INSERT INTO page_visits (ts, role, path, ip_hash, ua, dur_ms, user_id) "
@@ -3005,7 +3093,7 @@ def get_session_cache(phone):
         ).strftime("%Y-%m-%d %H:%M:%S")
         if row["updated_at"] <= cutoff:
             try:
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_immediate(conn)
                 conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
                 conn.commit()
             except Exception:
@@ -3054,7 +3142,7 @@ def set_session_cache(phone, cookie_json, csrf):
     conn = get_conn()
     with _conn_lock:
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             conn.execute(
                 "INSERT INTO session_cache (phone, cookies_ct, csrf, created_at, updated_at) "
                 "VALUES (?,?,?,?,?) "
@@ -3073,7 +3161,7 @@ def clear_session_cache(phone):
     conn = get_conn()
     with _conn_lock:
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            _begin_immediate(conn)
             conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
             conn.commit()
         except Exception:

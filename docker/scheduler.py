@@ -103,6 +103,21 @@ FIRST, SECOND = (6, 31), (7, 10)
 PROBE_AT = (23, 55)
 
 
+def _run_signin_child(extra=None):
+    """运行签到/探针子进程（批次7 P3-14：补超时——宿主 run.sh 有动态超时，
+    容器内原实现无 timeout，单个子进程挂起即永久卡死全部调度且无告警）。"""
+    timeout = 7200
+    try:
+        timeout = max(600, int(os.environ.get("YIBAN_RUN_TIMEOUT_SEC", "7200")))
+    except (TypeError, ValueError):
+        pass
+    cmd = ["python3", "scripts/signin.py"] + (extra or [])
+    try:
+        subprocess.run(cmd, cwd="/app", env=build_child_env(ENV_FILE), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print(f"[scheduler] 签到子进程超时（>{timeout}s）被终止，已留痕继续调度", flush=True)
+
+
 def main_loop(sleep_seconds=1):
     """调度主循环。闩锁按 (任务, 当日) 记账；进程重启视为新一天可再执行。
 
@@ -123,8 +138,7 @@ def main_loop(sleep_seconds=1):
         # 解析成本仅在真正触发的那一刻产生（每天 3 次），轮询循环内不读盘。
         if hm >= FIRST and done_sign_first != today and not _full_run_done_today():
             # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重
-            subprocess.run(["python3", "scripts/signin.py"], cwd="/app",
-                           env=build_child_env(ENV_FILE))
+            _run_signin_child()
             done_sign_first = today
         if hm >= SECOND and done_sign_second != today and (
             not _full_run_done_today() or _has_undone_today()
@@ -132,13 +146,11 @@ def main_loop(sleep_seconds=1):
             # 补签闸门（批次7 P1-1）：全量未跑过（首签错过的补偿）或存在未了结
             # 账号（failed/retrying/pending）才执行；全员了结则跳过，不再被
             # 「任一账号成功」误导跳过失败账号的兜底
-            subprocess.run(["python3", "scripts/signin.py"], cwd="/app",
-                           env=build_child_env(ENV_FILE))
+            _run_signin_child()
             done_sign_second = today
         if hm >= PROBE_AT and done_probe != today:
             # 探针：只读健康检查（未到配置触发时间/频率时 signin.py 内零请求退出）
-            subprocess.run(["python3", "scripts/signin.py", "--probe"], cwd="/app",
-                           env=build_child_env(ENV_FILE))
+            _run_signin_child(extra=["--probe"])
             done_probe = today
         if now.hour >= 3 and last_clean != today:
             _cleanup_logs()
