@@ -6,21 +6,35 @@
 运营者换钥后，若存量密文不重加密，新钥将无法解密旧数据（数据不可追回）；
 本工具在单事务内完成全量重加密并自校验，最后才更新 .env。
 
-用法（建议停服窗口执行：docker compose stop web scheduler，或停止对应 systemd
-服务——避免轮换期间签到/探针进程用旧钥写入新密文造成混合密钥状态）：
+用法（务必先停服——批次12 B12-6/B12-5：Docker 用 `docker compose stop yiban`，
+systemd 用 `systemctl stop yiban-web`；容器内 web/scheduler 是 supervisord 子进程，
+`stop web scheduler` 服务名不存在。不停服时签到/探针进程会用旧钥写入新密文，
+造成"混合密钥状态"：切钥后新行永久不可解。工具也会扫描进程并在发现存活的
+web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险））：
     python3 scripts/rekey_accounts.py --generate
     python3 scripts/rekey_accounts.py --new-key <64位十六进制>
     python3 scripts/rekey_accounts.py --new-key-file newkey.txt   # 文件内容为首行密钥
     可选：--db yiban.db --env .env（默认取环境变量/默认路径）
 
-流程（崩溃安全，.env 最后写）：
+流程（崩溃安全，.env 最后写；批次12 B12-5 加固）：
+    0. 新钥生成后**立即写入 0600 暂存文件**（<env>.rekey-staging）——
+       此前 --generate 的新钥只存在于内存，第 2 步提交后、第 4 步写 .env 前
+       崩溃 = 新钥永久丢失，库内密文随之整体不可解（仅剩 ≤24h 备份可救）。
     1. 全量读 accounts 表，旧钥解密全部 password/phone_code——任何一行失败
        立即中止且不写库（密钥不对就不动数据）
     2. 单事务（BEGIN IMMEDIATE，busy_timeout 15s）用新钥重加密写回全部行
     3. 事务提交后全量用新钥解密，与第 1 步明文逐一比对
-    4. 校验通过才更新 .env 的 YIBAN_ACCOUNTS_KEY（原子替换、0600）
-    崩溃恢复：若在第 4 步前中断，.env 仍是旧钥而库内已是新钥密文——把 .env 的
-    YIBAN_ACCOUNTS_KEY 临时改回旧钥即可恢复服务，随后重跑本工具补完第 4 步。
+    4. 校验通过才更新 .env 的 YIBAN_ACCOUNTS_KEY（原子替换、0600），随后
+       删除暂存文件
+    崩溃恢复（按中断点区分，批次12 修正——旧文案"改回旧钥即可恢复"对第 2 步
+    之后的中断是**错误**指引，库内已是新钥密文，旧钥解不开）：
+    - 第 2 步提交**前**中断：库未变更，.env 旧钥仍然有效，直接重跑本工具即可；
+    - 第 2 步提交**后**、第 4 步前中断：库内已是新钥密文，.env 仍是旧钥——
+      新钥就在暂存文件 <env>.rekey-staging（0600）里，把它写回 .env 的
+      YIBAN_ACCOUNTS_KEY（或重跑 `--env-only --new-key-file <暂存文件>` 补完），
+      服务即可恢复。
+    --env-only 补完前会用新钥**抽样试解一行库内密文**，密钥不对即拒绝写 .env
+    （防误传新生成的随机钥造成第三把钥、彻底不可恢复）。
 
 注意：
 - 轮换后须重启所有使用该库的进程（web/signin/scheduler/tui），并同步更新
@@ -40,6 +54,68 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import account_crypto
 import db
+
+
+# 进程探活的关键字：命中即认为可能有进程持旧钥运行（批次12 B12-5）。
+# 匹配对象是 /proc/*/cmdline（Linux）；覆盖容器（gunicorn web.app /
+# container_scheduler / scripts/signin.py）与裸机（web/app.py / tui）两种部署
+# 形态。刻意不含宽泛的 "yiban"（仓库路径本身含 yiban，会误报无关进程）。
+_PROCESS_HINTS = (
+    "gunicorn",
+    "web.app",
+    "web/app.py",
+    "signin.py",
+    "scheduler.py",
+    "tui",
+)
+
+
+def _yiban_processes_running():
+    """粗粒度探活：扫描 /proc 找可能持旧钥的存活进程。
+
+    返回 (supported, hits)：supported=False 表示当前平台无法判定（非 Linux /
+    无 /proc），调用方降级为警告；hits 为 [(pid, cmdline 前 120 字符)]。
+    刻意保守：宁可误报（有 --force 可跳过），不可漏报——不停服轮换的代价是
+    混合密钥态（新行切钥后永久不可解）。
+    """
+    if os.name == "nt" or not os.path.isdir("/proc"):
+        return False, []
+    hits = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            continue
+        if not cmd or "rekey_accounts" in cmd:
+            continue
+        low = cmd.lower()
+        if any(h in low for h in _PROCESS_HINTS):
+            hits.append((pid, cmd[:120]))
+    return True, hits
+
+
+def _staging_path(env_path):
+    return f"{env_path}.rekey-staging"
+
+
+def _write_staging_key(env_path, new_key):
+    """新钥落 0600 暂存文件（崩溃恢复的事实源，批次12 B12-5）。
+
+    返回暂存路径；写入失败抛 OSError（调用方中止——没有暂存就轮换等于
+    把"崩溃丢钥"窗口敞开）。
+    """
+    path = _staging_path(env_path)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(new_key.hex() + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+    return path
 
 
 def _read_new_key(args):
@@ -65,7 +141,15 @@ def _read_new_key(args):
 
 
 def rekey(db_path, old_key, new_key):
-    """全量重加密。返回 (ok, 摘要文本)；任何一步失败返回 False 且库保持旧状态。"""
+    """全量重加密。返回 (ok, 摘要文本)；任何一步失败返回 False 且库保持旧状态。
+
+    批次12 B12-5：自校验循环改用 .get 读轮换前明文映射——原实现 plain_map[r["id"]]
+    直接下标，快照 SELECT 与 BEGIN IMMEDIATE 之间如有进程写入新行（停服被忽略
+    时的竞态），新行不在映射内会抛 KeyError 且只捕获 sqlite3.Error → 崩溃，
+    库停留在混合密钥状态。现在：快照后出现的新行先按"旧钥能否解开"判定——
+    能解开则一并重加密，不能则中止（该行是旧钥写入，下一轮再轮换），
+    杜绝静默混合态。
+    """
     conn = sqlite3.connect(db_path, timeout=15)
     conn.row_factory = sqlite3.Row
     try:
@@ -99,6 +183,37 @@ def rekey(db_path, old_key, new_key):
         # 单事务重加密（AAD 仍绑手机号；手机号本轮不变更）
         conn.execute("PRAGMA busy_timeout=15000")
         conn.execute("BEGIN IMMEDIATE")
+        # 竞态防御：BEGIN IMMEDIATE 后重读一遍行清单，快照窗口期新写入的行
+        # 不在 plain_map 内——旧钥能解开的并入本轮重加密，解不开的说明是
+        # 无法用旧钥处理的异常状态，中止并回滚（绝不留下混合密钥态）
+        rows_now = conn.execute(
+            "SELECT id, phone, password, phone_code FROM accounts"
+        ).fetchall()
+        new_rows = [r for r in rows_now if r["id"] not in plain_map]
+        for r in new_rows:
+            for col in ("password", "phone_code"):
+                raw = r[col]
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                    if account_crypto.is_encrypted(obj):
+                        account_crypto.decrypt_password(obj, old_key, r["phone"])
+                    else:
+                        return False, (
+                            f"轮换窗口期发现新行 {r['id']} 的 {col} 为明文（并发写入）——"
+                            "已中止且库保持旧状态，请停服后重跑"
+                        )
+                except (TypeError, ValueError) as e:
+                    return False, (
+                        f"轮换窗口期发现新行 {r['id']} 的 {col} 无法用旧钥处理（并发写入）: {e}"
+                        "——已中止且库保持旧状态，请停服后重跑"
+                    )
+            plain_map[r["id"]] = (
+                _decrypted_or_empty(r, "password", old_key),
+                _decrypted_or_empty(r, "phone_code", old_key),
+            )
+            rows = rows + [r]
         for rid, (pw_plain, code_plain) in plain_map.items():
             row = next(r for r in rows if r["id"] == rid)
             for col, plain in (("password", pw_plain), ("phone_code", code_plain)):
@@ -112,6 +227,11 @@ def rekey(db_path, old_key, new_key):
             "SELECT id, phone, password, phone_code FROM accounts"
         ).fetchall()
         for r in rows2:
+            if r["id"] not in plain_map:
+                return False, (
+                    f"自校验发现未知行 {r['id']}（轮换期间被并发写入）——"
+                    "请立即用备份恢复并排查；该行未纳入本轮重加密"
+                )
             pw_plain, code_plain = plain_map[r["id"]]
             for col, expect in (("password", pw_plain), ("phone_code", code_plain)):
                 if not expect and not r[col]:
@@ -125,6 +245,55 @@ def rekey(db_path, old_key, new_key):
         with contextlib.suppress(Exception):
             conn.rollback()
         return False, f"数据库操作失败（已回滚）: {e}"
+    finally:
+        conn.close()
+
+
+def _decrypted_or_empty(row, col, key):
+    """竞态防御辅助：按列解密（已在上游验证可解），失败返回空串（保持原值语义）。"""
+    raw = row[col]
+    if not raw:
+        return ""
+    try:
+        obj = json.loads(raw)
+        if account_crypto.is_encrypted(obj):
+            return account_crypto.decrypt_password(obj, key, row["phone"])
+    except (TypeError, ValueError):
+        pass
+    return ""
+
+
+def sample_verify_key(db_path, key):
+    """用待写入 .env 的密钥抽样试解一行库内密文（批次12 B12-5）。
+
+    --env-only 原实现不校验即覆盖 .env：崩溃补完场景误传 --generate（新随机钥）
+    会造成"第三把钥"，全量数据彻底不可恢复。返回 (ok, message)。
+    """
+    conn = sqlite3.connect(db_path, timeout=15)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT id, phone, password FROM accounts WHERE password != '' LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return True, "库内无加密行可抽样（跳过样本校验）"
+        try:
+            obj = json.loads(row["password"])
+        except (TypeError, ValueError) as e:
+            return False, f"样本行 {row['id']} 的 password 不是合法 JSON（库可能已损坏）: {e}"
+        if not account_crypto.is_encrypted(obj):
+            return False, f"样本行 {row['id']} 的 password 不是密文对象（库内存在明文，请先完成加密自愈）"
+        try:
+            account_crypto.decrypt_password(obj, key, row["phone"])
+        except ValueError as e:
+            return False, (
+                f"样本校验失败：该密钥解不开库内密文（行 {row['id']}）: {e}\n"
+                "已拒绝更新 .env——若为崩溃补完，请确认密钥来源（勿传新生成的随机钥；"
+                "正确密钥应在 .rekey-staging 暂存文件中）"
+            )
+        return True, "样本校验通过（新钥可解开库内密文）"
+    except sqlite3.Error as e:
+        return False, f"样本校验查询失败: {e}"
     finally:
         conn.close()
 
@@ -151,6 +320,16 @@ def update_env_key(env_path, new_key):
             os.chmod(env_path, 0o600)
 
 
+def _audit_rotate(db_path, action, detail):
+    """轮换结果写入审计链（批次12 B12-14：rekey 此前全程零审计）。尽力而为：
+    审计失败不阻断轮换结果（失败会由每日校验的写入欠账告警兜住）。"""
+    try:
+        db.init_db(db_file=db_path, cleanup=False, migrate=False)
+        db.audit("rekey-tool", action, "", detail[:200])
+    except Exception as e:  # noqa: BLE001
+        print(f"提示：审计留痕失败（不影响轮换结果）: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="YIBAN_ACCOUNTS_KEY 轮换：旧钥解密 → 新钥重加密 → 自校验 → 更新 .env"
@@ -161,7 +340,10 @@ def main():
     parser.add_argument("--new-key-file", default="", help="从文件首行读取新密钥")
     parser.add_argument("--generate", action="store_true", help="自动生成随机新密钥")
     parser.add_argument("--env-only", action="store_true",
-                        help="仅更新 .env 密钥（不重加密；用于第 4 步中断后的补完）")
+                        help="仅更新 .env 密钥（不重加密；用于第 4 步中断后的补完，"
+                             "会先用新钥抽样试解库内密文）")
+    parser.add_argument("--force", action="store_true",
+                        help="跳过存活进程探活（确认已停服/接受混合密钥风险时使用）")
     args = parser.parse_args()
 
     db_path = args.db or os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
@@ -189,15 +371,60 @@ def main():
         print("错误：新密钥与当前密钥相同，无需轮换")
         sys.exit(2)
 
+    # 停服探活（批次12 B12-5）：不停服轮换 = 签到/探针用旧钥写新密文 → 混合密钥态
+    supported, hits = _yiban_processes_running()
+    if supported and hits:
+        print("错误：检测到可能仍在运行的 yiban 相关进程，拒绝轮换（防止混合密钥状态）：")
+        for pid, cmd in hits[:10]:
+            print(f"  pid={pid}  {cmd}")
+        print("请先停服：docker compose stop yiban（Docker）/ systemctl stop yiban-web（裸机），"
+              "或确认均为无关进程后用 --force 强制执行。")
+        sys.exit(2)
+    if not supported and not args.force:
+        print("警告：当前平台无法探活 yiban 进程，请自行确认已停服"
+              "（docker compose stop yiban / systemctl stop yiban-web）后再继续；"
+              "或用 --force 跳过本提示。")
+
+    staging = None
+    if os.path.exists(_staging_path(env_path)):
+        print(f"提示：发现此前的暂存文件 {_staging_path(env_path)}——上次轮换可能未完成，"
+              "其内容是上次生成的新钥，可用于恢复或补完。")
+    if not args.env_only:
+        try:
+            staging = _write_staging_key(env_path, new_key)
+            os.chmod(staging, 0o600)
+        except OSError as e:
+            print(f"错误：新钥暂存文件写入失败（中止轮换——没有暂存就没有崩溃恢复）: {e}")
+            sys.exit(1)
+        print(f"新钥已暂存: {staging}（0600；轮换完成后自动删除）")
+
     print(f"目标库: {db_path}\n目标 .env: {env_path}")
     if not args.env_only:
         ok, note = rekey(db_path, old_key, new_key)
         print(note)
         if not ok:
-            print("轮换中止：库未变更、.env 未变更。")
+            print("轮换中止：库未变更、.env 未变更。"
+                  f"新钥仍保留在暂存文件 {staging}，可核查后删除。")
+            _audit_rotate(db_path, "accounts_key_rekey_failed", note)
+            sys.exit(1)
+    else:
+        # --env-only 补完：先抽样验证新钥确实解得开库内密文，再写 .env
+        ok, note = sample_verify_key(db_path, new_key)
+        print(note)
+        if not ok:
+            print("--env-only 中止：.env 未变更。")
             sys.exit(1)
     update_env_key(env_path, new_key)
+    if staging:
+        with contextlib.suppress(OSError):
+            os.remove(staging)
+        print(f"已删除暂存文件: {staging}")
     print("已更新 .env 的 YIBAN_ACCOUNTS_KEY。")
+    _audit_rotate(
+        db_path,
+        "accounts_key_rekey",
+        "ENV-ONLY 补完" if args.env_only else "全量重加密完成并更新 .env",
+    )
     print("后续步骤：重启 web/signin/scheduler 等全部进程；若 shell/容器环境变量中"
           "仍设有旧 YIBAN_ACCOUNTS_KEY，请同步更新（环境变量优先于 .env）。")
     print("提醒：旧密钥应视为已泄露——若攻击者曾拷贝数据库文件，历史密文仍需按"
