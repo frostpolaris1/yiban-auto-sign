@@ -95,7 +95,10 @@ def _write_key_to_env_file(env_file, key):
         out = [ln for ln in lines if not ln.strip().startswith("YIBAN_ACCOUNTS_KEY=")]
         out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        with open(tmp, "w", encoding="utf-8") as f:
+        # 批次7 P2-4：创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
+        # 之间（及进程崩溃残留时）密钥对同机其他用户可读，AES-GCM 防线归零
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(out) + "\n")
             f.flush()
             os.fsync(f.fileno())

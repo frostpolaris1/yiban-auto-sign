@@ -83,13 +83,15 @@ _TRACK_SALT_CACHE = None
 _TRACK_SALT_LOCK = threading.Lock()
 
 
-def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True):
+def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True):
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
     env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
     None 时走 account_crypto 默认（.env 于当前工作目录）。
     cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
     校验类工具应传 False，避免只读校验改变数据。
+    migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
+    （v3 rechain）等，使"被校验对象在校验过程中被改动"（批次7 P2-6）。
     """
     global _conn, _db_file, _env_file
     _env_file = env_file
@@ -108,10 +110,11 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True):
         # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
         # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败继续后续迁移但不提升版本。
         try:
-            _run_migrations(_conn)
-            # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
-            if migrate_from:
-                _maybe_migrate(_conn, migrate_from)
+            if migrate:
+                _run_migrations(_conn)
+                # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
+                if migrate_from:
+                    _maybe_migrate(_conn, migrate_from)
         except Exception:
             with contextlib.suppress(Exception):
                 _conn.close()
@@ -326,7 +329,10 @@ def _write_audit_key_to_env_file(env_file, key):
         out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
         out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        with open(tmp, "w", encoding="utf-8") as f:
+        # 批次7 P2-4：创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
+        # 之间（及进程崩溃残留时）密钥对同机其他用户可读
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(out) + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -421,7 +427,9 @@ def _write_track_salt_to_env_file(env_file, salt):
         out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
         out.append(f"YIBAN_TRACK_SALT={salt}")
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        with open(tmp, "w", encoding="utf-8") as f:
+        # 批次7 P2-4：创建即 0600（盐泄漏 = IP/手机号哈希可离线枚举反查）
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(out) + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -976,9 +984,19 @@ def _row_to_account(row, conn=None):
                 a[k] = v
                 if conn is not None:
                     enc = _encrypt_field(v, a.get("phone", ""))
-                    conn.execute(
-                        f"UPDATE accounts SET {k}=? WHERE id=?", (enc, a["id"])
+                    # 批次7 P2-5：CAS 回写——并发进程可能刚改掉该行（如 update_account
+                    # 改密），无条件按 id 覆盖会把旧明文重新加密写回，静默回滚他人修改。
+                    # 以"仍处于本进程读到的明文原值"为条件，0 行命中即放弃并告警。
+                    cur = conn.execute(
+                        f"UPDATE accounts SET {k}=? WHERE id=? AND {k}=?",
+                        (enc, a["id"], v),
                     )
+                    if cur.rowcount == 0:
+                        logger.warning(
+                            "账号 %s 的 %s 已被并发修改，跳过明文自愈回写",
+                            phone_masked, k,
+                        )
+                        continue
                     logger.warning(
                         "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
                         phone_masked, k,
@@ -1795,31 +1813,42 @@ def purge_deleted_users_hard(emails):
         return []
     conn = get_conn()
     purged = []
-    with _conn_lock, conn:
-        for email in emails:
-            row = conn.execute(
-                "SELECT id FROM users WHERE email=? AND deleted=1", (email,)
-            ).fetchone()
-            if row is None:
-                continue
-            phones = [
-                r["phone"]
-                for r in conn.execute(
-                    "SELECT phone FROM accounts WHERE owner=? AND deleted=1", (email,)
-                ).fetchall()
-            ]
-            conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
-            _delete_time_prefs_by_phones(conn, phones)
-            _clear_session_cache_by_phones(conn, phones)  # 连带清理会话缓存
-            _delete_sign_events_by_phones(conn, phones)  # M2：事件连带清理
-            # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
-            # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
-            cur = conn.execute(
-                "DELETE FROM users WHERE id=? AND deleted=1", (row["id"],)
-            )
-            if cur.rowcount > 0:
-                purged.append(email)
-                _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
+    with _conn_lock:
+        # 批次7 P2-6：BEGIN IMMEDIATE 写锁内完成"读 phones → 删账号 → 连带清理"，
+        # 与 restore_user 跨进程串行化。原 deferred 快照下 phones 列表可能陈旧
+        # （M5 同族竞态：并发 restore 后升级写表现为 BUSY_SNAPSHOT 500，连带
+        # 清理列表陈旧）；持 IMMEDIATE 后写锁期间列表不可能变化。
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for email in emails:
+                row = conn.execute(
+                    "SELECT id FROM users WHERE email=? AND deleted=1", (email,)
+                ).fetchone()
+                if row is None:
+                    continue
+                phones = [
+                    r["phone"]
+                    for r in conn.execute(
+                        "SELECT phone FROM accounts WHERE owner=? AND deleted=1", (email,)
+                    ).fetchall()
+                ]
+                conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
+                _delete_time_prefs_by_phones(conn, phones)
+                _clear_session_cache_by_phones(conn, phones)  # 连带清理会话缓存
+                _delete_sign_events_by_phones(conn, phones)  # M2：事件连带清理
+                # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
+                # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
+                cur = conn.execute(
+                    "DELETE FROM users WHERE id=? AND deleted=1", (row["id"],)
+                )
+                if cur.rowcount > 0:
+                    purged.append(email)
+                    _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
+            conn.commit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
     return purged
 
 
@@ -1861,10 +1890,16 @@ def run_daily_cleanup():
     失败（B-1）与陈旧列表误删（M5）的主要诱因。
     现改为：web 每日线程统一调用本函数；signin 侧 init_db(cleanup=False)
     （其 main() 保留对超期软删账号的显式清理，覆盖无 web 的纯 cron 场景）。
+
+    批次7 P1-2：_audit_cleanup/_event_cleanup 直接在本模块共享连接上
+    execute+commit——必须持 _conn_lock，否则与 8 个请求线程的 BEGIN IMMEDIATE
+    事务交叠时，清理的 DELETE 会加入他人未提交事务、commit 把半程事务提前
+    发布（撕裂事务，破坏批次5 B-4/B-5/M5 的原子性投入）。
     """
-    conn = get_conn()
-    _audit_cleanup(conn)
-    _event_cleanup(conn)
+    with _conn_lock:
+        conn = get_conn()
+        _audit_cleanup(conn)
+        _event_cleanup(conn)
     purge_expired_deleted_accounts()
     purge_deleted_users()
     purge_old_delete_requests()
@@ -2033,17 +2068,19 @@ def audit(username, action, target="", detail=""):
             with _conn_lock:
                 conn = get_conn()
                 # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
-                # 未提交事务，先提交之——否则 BEGIN IMMEDIATE 会报 "within a transaction"。
+                # 未提交事务，先解除——否则 BEGIN IMMEDIATE 会报 "within a transaction"。
                 # 2026-08-28 审查 M8：盲提交会把"写了一半的事务"发布成持久数据。
-                # 两害相权：遗留事务持 RESERVED 锁会阻塞全部后续写入（更糟），故仍
-                # 先提交解除锁，但升级为 ERROR 并提示根因——遗留事务本身是某条写路径
-                # 未正确 commit/rollback 的 bug，应据堆栈定位修复，而非在此静默吞掉。
+                # 批次7 P1-2 修订：遗留锁用【回滚】解除同样有效（写锁本质由未完成
+                # 事务持有），而未知半事务按安全默认丢弃——提交可能把半程写入发布
+                # 为持久数据（如 replace_accounts 中途可见的残表）。遗留事务本身是
+                # 某条写路径未正确 commit/rollback 的 bug，应据堆栈定位修复。
                 if conn.in_transaction:
                     logger.error(
-                        "检测到遗留未提交事务，已先行提交解除写锁——请检查此前调用"
-                        "路径是否有写操作未 commit/rollback（in_transaction 状态残留）"
+                        "检测到遗留未提交事务，已回滚解除写锁（未知半事务按安全默认"
+                        "丢弃）——请检查此前调用路径是否有写操作未 commit/rollback"
+                        "（in_transaction 状态残留）"
                     )
-                    conn.commit()
+                    conn.rollback()
                 # IMMEDIATE：取 prev_hash 前先拿库级写锁，跨进程串行化"读尾→追加"
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
