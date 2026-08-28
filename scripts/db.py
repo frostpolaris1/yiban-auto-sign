@@ -2014,9 +2014,16 @@ def audit(username, action, target="", detail=""):
             with _conn_lock:
                 conn = get_conn()
                 # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
-                # 未提交事务，先提交之——否则 BEGIN IMMEDIATE 会报 "within a transaction"
+                # 未提交事务，先提交之——否则 BEGIN IMMEDIATE 会报 "within a transaction"。
+                # 2026-08-28 审查 M8：盲提交会把"写了一半的事务"发布成持久数据。
+                # 两害相权：遗留事务持 RESERVED 锁会阻塞全部后续写入（更糟），故仍
+                # 先提交解除锁，但升级为 ERROR 并提示根因——遗留事务本身是某条写路径
+                # 未正确 commit/rollback 的 bug，应据堆栈定位修复，而非在此静默吞掉。
                 if conn.in_transaction:
-                    logger.warning("audit 检测到遗留未提交事务，已先行提交")
+                    logger.error(
+                        "检测到遗留未提交事务，已先行提交解除写锁——请检查此前调用"
+                        "路径是否有写操作未 commit/rollback（in_transaction 状态残留）"
+                    )
                     conn.commit()
                 # IMMEDIATE：取 prev_hash 前先拿库级写锁，跨进程串行化"读尾→追加"
                 conn.execute("BEGIN IMMEDIATE")
