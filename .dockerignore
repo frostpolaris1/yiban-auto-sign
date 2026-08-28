@@ -55,3 +55,5 @@ memory.md
 Dockerfile
 docker-compose.yml
 .dockerignore
+# 内部 AI 工作记忆（与 .gitignore 同口径，缩构建上下文）
+.workbuddy/

@@ -186,8 +186,11 @@ def decrypt_password(entry, key, phone):
     cipher.update(str(phone).encode("utf-8"))  # AAD 必须与加密时一致
     try:
         plain = cipher.decrypt_and_verify(ct, tag)
-        return plain.decode("utf-8")
     except ValueError as e:
         raise ValueError("密码解密失败（密钥不匹配、密文被篡改或账号手机号不匹配）") from e
+    # 批次7 P4：原实现 UnicodeDecodeError 是 ValueError 子类，第二个 except
+    # 永不可达，UTF-8 损坏会被误报为"密钥不匹配"——拆开分别提示
+    try:
+        return plain.decode("utf-8")
     except UnicodeDecodeError as e:
         raise ValueError("密码解密失败（明文不是合法 UTF-8，密文已损坏）") from e

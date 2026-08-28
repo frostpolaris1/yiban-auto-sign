@@ -463,13 +463,15 @@ PAUSE_COOLDOWN_MAX = 120        # 弹性封顶（秒）
 PAUSE_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 
 # 普通用户邮箱格式校验（用户名部分（@ 前）限 32 字符：防超长用户名破坏界面显示）
-EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$")
+# 批次7 P4：re.ASCII——str 模式的 \w 匹配 Unicode 字母，同形字/IDN 域名可绕过
+# 一次性域名黑名单的字面匹配；限 ASCII 后此类注册直接被格式校验拦截
+EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$", re.ASCII)
 EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
 # 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
 PHONE_RE = re.compile(r"^1\d{10}$")
 
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
-SIGN_MIN_INTERVAL = 30
+SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 _spawn_signin docstring
 
 # 日志格式（与 signin.py / tui/app.py 相同）
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
@@ -1776,7 +1778,9 @@ def create_app(host=None):
             return
         token = request.headers.get("X-CSRF-Token", "")
         sess_token = session.get("csrf_token", "")
-        if not token or not secrets.compare_digest(token, sess_token):
+        # 批次7 P4-1：非 ASCII token 会让 compare_digest 抛 TypeError → 500；
+        # fail-closed 语义不变，但改为显式 403 且不刷异常日志
+        if not token or not token.isascii() or not secrets.compare_digest(token, sess_token):
             logger.warning(
                 "CSRF 校验失败: ip=%s path=%s token_len=%d session_token_len=%d",
                 _client_ip(),
@@ -1861,6 +1865,8 @@ def create_app(host=None):
         # "应用 DENY / nginx SAMEORIGIN" 双头取值不一致。SAMEORIGIN 仍防点击劫持，
         # 且对同源内嵌场景更兼容。
         resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+        # 批次7 P4-6：补 COOP，收敛跨窗口攻面（CSP/XFO 之外的最后一块）
+        resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         # 与 nginx 对齐：strict-origin-when-cross-origin（同源保留 referer，跨源最小化）
         resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         # HSTS 移至边缘 nginx 统一下发（http_transport 一致性，疑自签过渡期阶段）。
@@ -2025,7 +2031,7 @@ def create_app(host=None):
         if pw_err:
             return jsonify({"error": pw_err}), 400
         # S1：内置管理员邮箱保留给 .env 主管理员，开放注册/自动注册均不得占用
-        if email == _builtin_admin_email():
+        if email.strip().lower() == _builtin_admin_email().strip().lower():
             return jsonify({"error": "内置管理员邮箱不可注册"}), 400
         # 注册限速：同 IP 窗口内成功注册次数超限则拒绝（防邮箱批量注册）
         ip = _client_ip()
@@ -2668,7 +2674,7 @@ def create_app(host=None):
                 if dom_err:
                     return jsonify({"error": dom_err}), 400
                 # S1：内置管理员邮箱不可被自动注册占用
-                if email == _builtin_admin_email():
+                if email.strip().lower() == _builtin_admin_email().strip().lower():
                     return jsonify({"error": "内置管理员邮箱不可注册"}), 400
                 # 该用户已有账号（每人限 1 个）则拒绝（软删除的不占名额，与用户端一致）
                 if any(a.get("owner") == email and not a.get("deleted") for a in accounts):
@@ -2858,6 +2864,7 @@ def create_app(host=None):
 
             ops = []
             batch_targets = []  # 批次7 B3：审计留目标清单（脱敏截断）
+            purge_targets = []  # 批次7 B4：高危操作（物理删除）即时告警汇总
             # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
             live_owners = {
                 a.get("owner", "")
@@ -2880,6 +2887,7 @@ def create_app(host=None):
                     # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
                     if acc.get("deleted"):
                         ops.append(("purge", acc["id"]))
+                        purge_targets.append(_mask_phone(str(acc.get("phone", ""))))
                 elif action == "restore":
                     if acc.get("deleted"):
                         owner = acc.get("owner", "")
@@ -2902,6 +2910,15 @@ def create_app(host=None):
             if ops:
                 try:
                     db.batch_account_ops(ops)
+                    if purge_targets:
+                        # 批次7 B4：高危操作即时告警（不等每日审计体检）
+                        send_notification(
+                            "高危管理操作告警",
+                            f"批量彻底删除账号 ×{len(purge_targets)}: "
+                            f"{', '.join(purge_targets[:20])}，"
+                            f"操作者 {session.get('username', '?')}，时间 "
+                            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        )
                 except db.DuplicateOwnerError:
                     db.audit(
                         session.get("username") or "?",
@@ -4085,6 +4102,15 @@ def create_app(host=None):
                         "失败，已回滚",
                     )
                     return jsonify({"error": "批量操作失败，已全部回滚"}), 500
+                if action == "delete":
+                    # 批次7 B4：批量物理删除用户为不可逆高危操作，即时告警
+                    send_notification(
+                        "高危管理操作告警",
+                        f"批量删除用户 ×{done}: "
+                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
+                        f"操作者 {session.get('username', '?')}，时间 "
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    )
                 # 批次7 P3-5：批量重置密码后轮换各目标 sid（吊销被盗旧会话）
                 if action == "reset_password":
                     for e in emails:
@@ -4122,7 +4148,7 @@ def create_app(host=None):
         if new_role not in ("admin", "user"):
             return jsonify({"error": "未知角色"}), 400
         # 内置管理员（.env）不可修改角色
-        if email == _builtin_admin_email():
+        if email.strip().lower() == _builtin_admin_email().strip().lower():
             return jsonify({"error": "内置管理员不可修改角色"}), 400
         with _file_lock:
             target = db.find_user(email)
@@ -4151,7 +4177,9 @@ def create_app(host=None):
                 # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users 表中的最后一个管理员
                 if len(admins) <= 1 and not _builtin_admin_email():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
-            db.update_user(email, {"role": new_role})
+            if db.update_user(email, {"role": new_role}) == 0:
+                # 批次7 P4-4(C-M1 收尾)：0 行 = 目标已被并发删除，不得谎报成功
+                return jsonify({"error": "用户不存在"}), 404
             db.audit(
                 username,
                 "user_role",
@@ -4182,13 +4210,15 @@ def create_app(host=None):
                 return jsonify({"error": "用户不存在"}), 404
             if target.get("role") == "admin" and not is_master:
                 return jsonify({"error": "仅主管理员可重置管理员密码"}), 403
-            db.update_user(
+            if db.update_user(
                 email,
                 {
                     "password_hash": generate_password_hash(password, method=SCRYPT_METHOD),
                     "pw_version": target.get("pw_version", 1) + 1,  # 被重置用户的旧会话随之失效
                 },
-            )
+            ) == 0:
+                # 批次7 P4-4(C-M1 收尾)：0 行 = 目标已被并发删除
+                return jsonify({"error": "用户不存在"}), 404
             # 批次7 P3-5：轮换目标 sid，被盗 cookie 即便未因 pw_version 失效（如
             # 旧版本客户端）也双重确保吊销
             db.set_user_sid(email.strip().lower(), secrets.token_hex(16))
@@ -4210,7 +4240,7 @@ def create_app(host=None):
         mode = data.get("mode", "full")
         if mode not in ("accounts_only", "full"):
             return jsonify({"error": "未知操作"}), 400
-        if email == _builtin_admin_email():
+        if email.strip().lower() == _builtin_admin_email().strip().lower():
             return jsonify({"error": "内置管理员不可删除"}), 400
         is_master = _is_builtin_admin_session()
         with _file_lock:
@@ -4237,6 +4267,13 @@ def create_app(host=None):
             )
             if mode == "full":
                 logger.info("完全删除用户 %s（含易班账号）", _mask_email(email))
+                # 批次7 B4：完全删除（物理、不可逆）为高危操作，即时告警
+                send_notification(
+                    "高危管理操作告警",
+                    f"完全删除用户 {_mask_email(email)} 及其全部易班账号，"
+                    f"操作者 {session.get('username', '?')}，时间 "
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                )
                 return jsonify({"ok": True, "msg": f"{email} 已完全删除"})
             logger.info("清空用户 %s 的易班账号（保留用户）", _mask_email(email))
             return jsonify({"ok": True, "msg": f"{email} 的易班账号已清空（用户保留，可重新提交）"})
