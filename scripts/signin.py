@@ -601,7 +601,11 @@ def clear_session_cache_quiet(phone):
 
 
 def random_delay(max_seconds, label):
-    """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。"""
+    """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。
+
+    批次7 P4-7：上限 3600s——误配 YIBAN_START_DELAY_MAX=86400 会 sleep 一整天。
+    """
+    max_seconds = min(max_seconds, 3600)
     if max_seconds <= 0:
         return
     wait = random.uniform(0, max_seconds)
@@ -849,6 +853,26 @@ def print_config_summary(accounts):
 # ---------------------------------------------------------------------------
 # 易班登录
 # ---------------------------------------------------------------------------
+def _is_yiban_trusted_url(url):
+    """宽松白名单（批次7 P4-2 纵深防御）：仅放行 yiban.cn / uyiban.com 体系的 https 链接。
+
+    login() 旧流程跟随服务端可控的跳转 URL（OAuth Data/reUrl/Location）——
+    这些 URL 来自易班服务端自身，信任链成立，但与同文件 ydclearance 分支的
+    严格白名单口径不一致；此校验兜底防服务端被劫持时把登录态导流到任意域。
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    return (
+        parts.scheme == "https"
+        and (host == "yiban.cn" or host.endswith(".yiban.cn")
+             or host == "uyiban.com" or host.endswith(".uyiban.com"))
+        and parts.username is None
+    )
+
+
 def _is_fyiban_url(url):
     """严格校验易班跳转 URL：https + 主机精确为 f.yiban.cn + 不允许 userinfo。
 
@@ -959,7 +983,11 @@ class YibanClient:
             raise RuntimeError(f"获取登录入口失败: {_sanitize_text(data.get('msg'))}")
 
         # 2. 跳转到 OAuth 页面，解析 RSA 公钥与 page_use
-        resp = self.session.get(data["data"]["Data"], allow_redirects=True, timeout=15)
+        # 批次7 P4-2：跳转目标过宽松白名单（纵深防御，与 ydclearance 分支口径一致）
+        _oauth_url = data["data"]["Data"]
+        if not _is_yiban_trusted_url(_oauth_url):
+            raise RuntimeError(f"登录入口 URL 不在白名单: {_notify_url_desc(str(_oauth_url))}")
+        resp = self.session.get(_oauth_url, allow_redirects=True, timeout=15)
 
         # 检查是否被 WAF 拦截
         if is_waf_blocked(resp.text):
@@ -1029,6 +1057,8 @@ class YibanClient:
 
         # 4. 跳转回 f.yiban.cn，可能遇到 ydclearance 反爬
         self.session.headers.update(Referer="https://oauth.yiban.cn")
+        if not _is_yiban_trusted_url(str(result.get("reUrl", ""))):
+            raise RuntimeError("登录 reUrl 不在白名单")
         resp = self.session.get(result["reUrl"], allow_redirects=False, timeout=15)
 
         if self._is_ydclearance_challenge(resp):
@@ -1053,6 +1083,8 @@ class YibanClient:
                 f"获取 verify_request 失败: 上一步响应缺少 Location 头"
                 f"（状态码 {resp.status_code}，响应长度 {len(resp.text)}）"
             )
+        if not _is_yiban_trusted_url(location):
+            raise RuntimeError("verify_request 跳转不在白名单")
         resp = self.session.get(location, allow_redirects=False, timeout=15)
         verify_match = re.compile(r"verify_request=([^&]+)&?").findall(
             resp.headers.get("Location", "")
@@ -1573,6 +1605,25 @@ def send_notification(title, content, url):
     """
     if not url:
         return
+    # 批次7 P4-3：与 web 侧 _is_safe_notify_url 对齐——webhook 由管理员配置，
+    # 但配置失误（http 明文/内网地址）会把签到结果与账号信息外泄或被打回环
+    try:
+        _parts = urlsplit(url)
+        _host = _parts.hostname or ""
+        import ipaddress as _ipa
+        _is_private = False
+        try:
+            _is_private = _ipa.ip_address(_host).is_private or _ipa.ip_address(_host).is_loopback
+        except ValueError:
+            _is_private = _host in ("localhost",) or _host.endswith(".local")
+        if _parts.scheme != "https" or _is_private:
+            logger.error(
+                "通知 URL 不合规（仅允许 https 且非内网/回环地址），已拒发: %s",
+                _notify_url_desc(url),
+            )
+            return
+    except ValueError:
+        return
     url_desc = _notify_url_desc(url)
     try:
         if url.startswith("http"):
@@ -1711,7 +1762,11 @@ def _user_fail_mail_allow_and_record(phone, today_str):
                     data = {}
             if not isinstance(data, dict):
                 data = {}
-            used = int(data.get(phone, 0))
+            try:
+                used = int(data.get(phone, 0))
+            except (TypeError, ValueError):
+                # 批次7 P4-4：状态文件被手工改成非数字时不得冒泡中断整轮签到
+                used = 0
             if used >= cap:
                 return False
             data[phone] = used + 1
@@ -2170,6 +2225,8 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             # 而静默回退自动分配。改以 _slot_to_bi 的成员性为准（与 Web 端
             # _pref_slots 同一套可用性判定）。
             if slot not in slot_to_bi:  # 片无效/落窗外 → 回退自动分配
+                # 批次7 P4-6：留痕——退化窗口下自选片被丢弃此前完全静默
+                logger.warning(f"[{phone}] 自选时间片 {slot} 不在今日可选范围，回退自动分配")
                 continue
             by_slot.setdefault(slot, []).append((str(p.get("updated_at", "")), phone))
         filled = [0] * len(blocks)

@@ -28,4 +28,5 @@ jobs:
           dst_token: ${{ secrets.GITEE_TOKEN }}
           static_list: "yiban-auto-sign"
           force_update: true
-          debug: true
+          # 批次7 P4-13：debug 会把详细命令（可能含令牌）写进公开仓库日志
+debug: false
