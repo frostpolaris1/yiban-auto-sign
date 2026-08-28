@@ -2517,8 +2517,18 @@ def _audit_cleanup(conn):
 
     Phase 3 修订：删除旧行后不重建哈希链——剩余首行仍保留指向已删前序行的
     prev_hash 作为锚，verify_audit_chain 以该锚校验首行 hash。
+
+    批次11 N2：接入时钟跳变守卫——审计是篡改取证数据源，时钟被拨快（NTP 故障
+    或拿到服务器权限者掩盖痕迹）会让 cutoff 前移、审计链被一次性清空，且该清理
+    不动"最后一条"锚点，库外锚点校验不会报警。与三个短保留期 purge 同口径。
     """
     try:
+        ok, note = _clock_jump_guard(conn, "audit_cleanup_clock")
+        if not ok:
+            logger.error("%s", note)
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            return
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
         conn.commit()
@@ -2894,8 +2904,18 @@ def server_metric_latest(limit=60):
 
 
 def _event_cleanup(conn):
-    """清理可视化表超期数据；失败仅告警。"""
+    """清理可视化表超期数据；失败仅告警。
+
+    批次11 N2：接入时钟跳变守卫（同 _audit_cleanup）——sign_events 等表是
+    取证数据源，时钟跳变不应放大清理窗口。
+    """
     try:
+        ok, note = _clock_jump_guard(conn, "event_cleanup_clock")
+        if not ok:
+            logger.error("%s", note)
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            return
         now = datetime.datetime.now()
         sign_cutoff = (now - datetime.timedelta(days=SIGN_EVENTS_RETENTION_DAYS)).strftime(
             "%Y-%m-%d %H:%M:%S"
