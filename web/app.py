@@ -231,6 +231,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
 </body>
 </html>"""
 import db  # noqa: E402
+import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
 import env_lock  # noqa: E402
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
@@ -701,6 +702,21 @@ def load_env_int(env_path, key, default):
         return max(0, int(read_env(env_path).get(key, "")))
     except (TypeError, ValueError):
         return default
+
+
+def email_domain_error(email):
+    """邮箱域名可用性审查（白名单/黑名单）。通过返回 None，否则返回用户可读错误。
+
+    名单配置走 .env：YIBAN_EMAIL_DOMAIN_ALLOWLIST（可选白名单，逗号分隔，
+    非空则仅名单内域名可注册）、YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA（追加
+    黑名单）。内置保留域名与一次性邮箱域名数据在 email_policy 模块内维护。
+    """
+    env = read_env(ENV_FILE)
+    return email_policy.review_email(
+        email,
+        allowlist=env.get("YIBAN_EMAIL_DOMAIN_ALLOWLIST", ""),
+        blocklist_extra=env.get("YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA", ""),
+    )
 
 
 def icp_info():
@@ -1912,6 +1928,10 @@ def create_app(host=None):
             return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
         if not EMAIL_RE.match(email) or len(email) > 64:
             return jsonify({"error": "请输入有效的邮箱地址"}), 400
+        # 邮箱域名审查（2026-08-28）：占位/一次性域名在写库前排除，防挤占用户池
+        dom_err = email_domain_error(email)
+        if dom_err:
+            return jsonify({"error": dom_err}), 400
         pw_err = _password_policy_error(password)
         if pw_err:
             return jsonify({"error": pw_err}), 400
@@ -2471,6 +2491,11 @@ def create_app(host=None):
             email_screen = str(data.get("email", "")).strip().lower()
             if email_screen and email_screen == _builtin_admin_email():
                 return jsonify({"error": "内置管理员邮箱不可注册"}), 400
+            # 域名预筛（2026-08-28）：注定被拒的占位/一次性域名不消耗易班验证配额
+            if email_screen:
+                dom_err = email_domain_error(email_screen)
+                if dom_err:
+                    return jsonify({"error": dom_err}), 400
         # R1：添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
         # 验证尝试受每用户配额限制（P1-2）
         if _account_verify_enabled():
@@ -2504,6 +2529,10 @@ def create_app(host=None):
                     return jsonify({"error": f"邮箱用户名部分过长（最多 {EMAIL_USER_MAX} 字符）"}), 400
                 if not EMAIL_RE.match(email) or len(email) > 64:
                     return jsonify({"error": "用户邮箱格式不正确"}), 400
+                # 邮箱域名审查（2026-08-28）：与开放注册同规则，防自动注册路径绕过
+                dom_err = email_domain_error(email)
+                if dom_err:
+                    return jsonify({"error": dom_err}), 400
                 # S1：内置管理员邮箱不可被自动注册占用
                 if email == _builtin_admin_email():
                     return jsonify({"error": "内置管理员邮箱不可注册"}), 400
