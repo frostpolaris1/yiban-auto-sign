@@ -156,6 +156,7 @@ def _create_tables(conn):
           reject_reason TEXT NOT NULL DEFAULT '',
           deleted INTEGER NOT NULL DEFAULT 0,
           deleted_at TEXT NOT NULL DEFAULT '',
+          deleted_by TEXT NOT NULL DEFAULT '',
           user_paused INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner);
@@ -681,6 +682,18 @@ def migrate_v9(conn):
     _ensure_column(conn, "users", "mail_notify", "mail_notify INTEGER NOT NULL DEFAULT 1")
 
 
+def migrate_v10(conn):
+    """v10：软删除操作者留痕（accounts.deleted_by）。
+
+    区分删除来源，支撑「用户自删可撤销、管理员删除仅管理员可恢复」：
+    - 用户自行删除：deleted_by = 用户邮箱（宽限期内可在用户页自行撤销）；
+    - 管理员删除：deleted_by = 'admin'；
+    - 系统连带（注销联动 soft_delete_user_with_accounts 等）：置空串。
+    旧数据/旧路径默认空串 = 用户不可自行撤销（fail-closed，防越权恢复管理员清退的账号）。
+    """
+    _ensure_column(conn, "accounts", "deleted_by", "deleted_by TEXT NOT NULL DEFAULT ''")
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -694,6 +707,7 @@ _MIGRATIONS = [
     (7, "v7_delete_request_kind", migrate_v7, True),
     (8, "v8_session_cache", migrate_v8, False),
     (9, "v9_user_mail_notify", migrate_v9, True),
+    (10, "v10_account_deleted_by", migrate_v10, True),
 ]
 
 
@@ -1295,12 +1309,16 @@ def update_account(account_id, fields, expect_snapshot=None):
             raise
 
 
-def set_account_deleted(account_id, deleted, deleted_at=""):
+def set_account_deleted(account_id, deleted, deleted_at="", deleted_by=""):
+    """软删除/恢复账号；deleted_by 留痕删除来源（用户邮箱 / 'admin' / ''=系统），v10。
+
+    恢复（deleted=0）时 deleted_by 一并清空，避免残留旧来源被后续语义误读。
+    """
     conn = get_conn()
     with _conn_lock, conn:
         conn.execute(
-            "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
-            (1 if deleted else 0, deleted_at, account_id),
+            "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
+            (1 if deleted else 0, deleted_at, deleted_by if deleted else "", account_id),
         )
 
 
@@ -1454,9 +1472,10 @@ def batch_account_ops(ops):
                 elif kind == "set_deleted":
                     _, account_id, deleted, deleted_at = op
                     try:
+                        # 批量操作仅管理员可达：留痕 'admin'（v10 用户撤销仅限本人自删行）
                         conn.execute(
-                            "UPDATE accounts SET deleted=?, deleted_at=? WHERE id=?",
-                            (1 if deleted else 0, deleted_at, account_id),
+                            "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
+                            (1 if deleted else 0, deleted_at, "admin", account_id),
                         )
                     except sqlite3.IntegrityError as e:
                         _convert_integrity_error(e)
@@ -1708,7 +1727,7 @@ def restore_user(email):
             # 只恢复同一注销事件的账号（deleted_at 与用户行一致），
             # 避免把用户注销后单独软删的其他账号也一起恢复造成 owner 冲突。
             conn.execute(
-                "UPDATE accounts SET deleted=0, deleted_at='' "
+                "UPDATE accounts SET deleted=0, deleted_at='', deleted_by='' "
                 "WHERE owner=? AND deleted=1 AND deleted_at=?",
                 (email, deleted["deleted_at"]),
             )
