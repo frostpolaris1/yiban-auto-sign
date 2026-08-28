@@ -354,6 +354,25 @@ v0.26.0 起，通过 SSH 重写 `YIBAN_ADMIN_PASSWORD` 后重启，系统检测�
 **场景 B：仅会话 cookie 被盗（密码未失守）**：只需执行第 1 步的 PW_VERSION+1
 （实时生效）；如需全端下线再做第 4 步。
 
+**场景 C：`YIBAN_ACCOUNTS_KEY` 疑似泄露（账号凭据密钥轮换，批次11 N5）**
+
+SSH 失陷时攻击者可读取 `.env` 中的 `YIBAN_ACCOUNTS_KEY`，离线解密全部易班账号
+密码。轮换流程（建议停服窗口执行，`docker compose stop web scheduler` 或停止
+对应 systemd 服务）：
+
+1. 生成并轮换（一步完成解密→重加密→自校验→更新 .env）：
+   `python3 scripts/rekey_accounts.py --generate`（或 `--new-key <64位hex>` /
+   `--new-key-file <文件>`；可用 `--db`/`--env` 指定路径）；
+2. 重启全部进程（web/signin/scheduler/tui）；若 shell 或容器环境变量中仍设有
+   旧 `YIBAN_ACCOUNTS_KEY`，同步更新——环境变量优先级高于 `.env`；
+3. 事后取证与善后：`python3 scripts/audit_verify.py --db data/yiban.db` 校验
+   审计链是否被篡改。注意：旧密钥应视为已泄露——若攻击者曾拷贝数据库文件，
+   历史密文仍需按泄露处理（通知受影响用户修改易班密码）。
+
+崩溃恢复：工具在 `.env` 写入（最后一步）前中断时，库内已是新钥密文而 `.env`
+仍是旧钥——把 `.env` 的 `YIBAN_ACCOUNTS_KEY` 临时改回旧钥即可恢复服务，随后
+重跑工具补完（或用 `--env-only` 仅补写 `.env`）。
+
 **事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db` 校验审计链，
 比对 `YIBAN_STATE_DIR/audit-anchor.log` 外部锚点；批量操作审计含脱敏目标清单，
 登录成功留有匿名化 IP 审计。
@@ -369,6 +388,7 @@ v0.26.0 起，通过 SSH 重写 `YIBAN_ADMIN_PASSWORD` 后重启，系统检测�
 | 手动签到 / 批量签到 | ✓ | ✓ | ✗ |
 | 重置/删除普通用户 | ✓ | ✓ | ✗ |
 | 设为/取消管理员、重置/删除**其他管理员** | ✓ | ✗ | ✗ |
+| 物理清除已注销用户（剥夺 7 天反悔权，不可逆） | ✓ | ✗ | ✗ |
 | 调度设置（排序/分布/掐头去尾/窗口/自选开关/全局暂停/随机延迟） | ✓ | ✗ | ✗ |
 | 周日开关、公告、注册验证开关、探针开关 | ✓ | ✓ | ✗ |
 | SMTP 邮箱配置 | ✓ | ✗ | ✗ |

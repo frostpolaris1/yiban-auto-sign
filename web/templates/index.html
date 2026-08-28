@@ -2599,8 +2599,10 @@ function renderDeletedUsers() {
       <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(remainText)}</td>
       <td class="px-4 py-3 text-sm whitespace-nowrap"><span class="${statusCls}">${esc(statusText)}</span></td>
       <td class="px-4 py-3 text-sm whitespace-nowrap">
-        <button onclick="purgeDeletedUser('${jsEscape(u.email)}')"
-                class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">立即清除</button>
+        ${state.isMasterAdmin
+          ? `<button onclick="purgeDeletedUser('${jsEscape(u.email)}')"
+                class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">立即清除</button>`
+          : `<span class="text-xs text-zinc-400 dark:text-zinc-500">仅主管理员可清除</span>`}
       </td>`;
     tbody.appendChild(tr);
   });
