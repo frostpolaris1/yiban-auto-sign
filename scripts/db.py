@@ -453,9 +453,15 @@ def _track_salt():
 
 
 def hash_ip(ip):
-    """对 IP 加盐哈希（YIBAN_TRACK_SALT），返回十六进制字符串。"""
+    """对 IP 加盐哈希（YIBAN_TRACK_SALT），返回十六进制字符串。
+
+    2026-08-28 审查 M9：原实现为 `sha256(salt + ":" + ip)` 字符串拼接——
+    构造上接近 HMAC 但非标准；改用 HMAC-SHA256(salt, ip)（密钥前向填充，防
+    长度扩展类问题）。注意：盐与库同盘时（.env + yiban.db 同时被拿），IPv4
+    空间仍可离线枚举还原——本函数用于限速计数/统计，不承担凭据级保密。
+    """
     salt = _track_salt()
-    return hashlib.sha256(f"{salt}:{ip}".encode("utf-8")).hexdigest()
+    return hmac.new(salt.encode("utf-8"), str(ip).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def hash_phone(phone):
