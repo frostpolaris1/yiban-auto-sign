@@ -484,6 +484,10 @@ def _track_salt():
     env_file = _env_file or ".env"
     env_salt = os.environ.get("YIBAN_TRACK_SALT", "").strip()
     if env_salt:
+        if len(env_salt) < 16:
+            # 批次7 P4：弱盐告警（不拒绝——存量部署换盐会使既有哈希关联失效）；
+            # 盐被猜测即可离线反查 IP/手机号哈希
+            logger.warning("YIBAN_TRACK_SALT 长度过短（<16），易被枚举，建议更换为 32 位以上随机串")
         _TRACK_SALT_CACHE = env_salt
         return env_salt
     if _TRACK_SALT_CACHE is not None:
@@ -517,7 +521,11 @@ def hash_phone(phone):
 
     与审计脱敏不同：同一手机号总是得到相同哈希，可供 time_pref 冷却等
     需要按账号关联审计记录的逻辑使用，同时不把真实手机号写入审计 target。
-    格式 sha256(salt:phone)，复用 _track_salt 确保部署内稳定。
+
+    有意与 hash_ip 的 HMAC 口径不同：本函数的输出会作为**库内关联键**存储
+    （time_pref 冷却等），更换算法将使全部存量关联失效；等值查询用途下
+    sha256(salt:input) 无现实攻击面（长度扩展需要构造可验证的 MAC，此处
+    哈希仅用于存储比对）。批次7 P4 评审结论：保持口径并记录理由。
     """
     salt = _track_salt()
     return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
@@ -1151,6 +1159,14 @@ def _purge_expired_deleted(conn):
             with contextlib.suppress(Exception):
                 conn.rollback()
             return
+        # 批次7 P4-8：旧版本/手工写入的 deleted=1 且 deleted_at='' 行不参与保留期
+        # 判定（条件含 deleted_at != ''），成为不死僵尸——统一补记当前时间，
+        # 宽限期自此起算，下一保留期后正常清除
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE accounts SET deleted_at=? WHERE deleted=1 AND deleted_at=''",
+            (now_str,),
+        )
         cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
         # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发 DELETE
         # 事务，只提交守卫的时钟参照一行（每天 1~2 次调用，开销可忽略）

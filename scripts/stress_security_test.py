@@ -221,6 +221,19 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:17892", help="本地服务器地址")
     args = parser.parse_args()
 
+    # 批次7 P4-15：本脚本包含改写真实数据与触发限速的破坏性用例——
+    # 仅允许对回环/本机地址执行，防止误对生产打靶
+    from urllib.parse import urlparse as _urlparse
+    _host = (_urlparse(args.url if "://" in args.url else "http://" + args.url).hostname or "")
+    import ipaddress as _ipa
+    try:
+        _loopback = _ipa.ip_address(_host).is_loopback
+    except ValueError:
+        _loopback = _host in ("localhost",)
+    if not _loopback and os.environ.get("STRESS_TEST_ALLOW_REMOTE") != "1":
+        print(f"拒绝执行：目标 {_host} 非回环地址。确属隔离环境请设 STRESS_TEST_ALLOW_REMOTE=1")
+        sys.exit(2)
+
     tests = [
         ("并发GET", lambda: test_concurrent_get(args.url)),
         ("SQL注入", lambda: test_sql_injection(args.url)),

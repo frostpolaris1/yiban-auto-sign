@@ -2532,7 +2532,7 @@ function closeChangelog() { closeModal($('changelog-modal')); }
     setInterval(calibrateClock, 60000);  // 时钟校准 60s
     setInterval(tickClock, 1000);    // 时钟走秒 1s
   } catch (e) {
-    location.href = BASE + '/login?err=' + encodeURIComponent(String(e && e.message || e));
+    location.href = BASE + '/login';
   }
 })();
 // 暗色主题切换（localStorage 记忆）

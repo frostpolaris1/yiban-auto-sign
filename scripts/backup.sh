@@ -335,6 +335,12 @@ chmod 0600 "${ARCHIVE}"
 # 不改变既有部署行为；--restore 对密文归档透明支持。
 # ------------------------------------------------------------
 ENC_FILE=""
+if [ "${BACKUP_PLAINTEXT}" = "1" ] && [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
+    # 批次7 P4-11：两个 flag 并存时 --require-encrypt 的"不得生成明文归档"契约
+    # 被静默违背——显式互斥
+    echo "错误：BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥，请移除其一" >&2
+    exit 1
+fi
 if [ "${BACKUP_PLAINTEXT}" = "1" ]; then
     log "════════════════════════════════════════════════════════════"
     log "⚠⚠⚠ 已显式设置 BACKUP_PLAINTEXT=1：本轮生成【明文】本地归档 ⚠⚠⚠"

@@ -58,12 +58,16 @@ jobs:
           pip-audit -r requirements.lock
 
       - name: Diagnose runner network
+        # 批次7 P4-12：secrets 以文本内插进 run: 脚本是 GitHub 注入模式——
+        # 改经 env 传递（只暴露"是否配置"，不暴露内容）
+        env:
+          PROXY_PRESENCE: ${{ secrets.YIBAN_PROXY != '' }}
         run: |
           echo "=== Runner 出口 IP / 地域（用于判断是否被易班地域风控）==="
           curl -s --max-time 10 https://ipinfo.io/json || true
           echo ""
           echo "=== 代理配置状态 ===="
-          if [ -n "${{ secrets.YIBAN_PROXY }}" ]; then
+          if [ -n "$PROXY_PRESENCE" ]; then
             echo "YIBAN_PROXY 已配置（隐藏具体内容）"
           else
             echo "⚠️ YIBAN_PROXY 未配置，如遇到 WAF 拦截请配置代理（国内出口）"
