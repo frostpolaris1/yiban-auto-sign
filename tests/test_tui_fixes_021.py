@@ -161,10 +161,14 @@ class TuiFixes021Test(unittest.TestCase):
             mock.patch.object(db_export.db, "init_db", return_value=None) as init_db,
             mock.patch.object(db_export.db, "load_accounts_raw", return_value=[]),
             mock.patch.object(db_export.db, "load_users", return_value=[]),
+            # 批次12 B12-14：导出留痕审计（本用例 mock 掉连接层，审计一并 mock）
+            mock.patch.object(db_export.db, "audit", return_value=True) as audit,
         ):
             db_export.main(["--out", out_dir, "--db", db_file, "--env", env_file])
 
-        init_db.assert_called_once_with(env_file=env_file, cleanup=False)
+        # 批次12 B12-10：补 migrate=False（迁移会重写审计链，导出工具必须禁用）
+        init_db.assert_called_once_with(env_file=env_file, cleanup=False, migrate=False)
+        audit.assert_called_once()
         for name in ("accounts.json", "users.json"):
             path = os.path.join(out_dir, name)
             self.assertTrue(os.path.exists(path), f"{name} 应已生成")

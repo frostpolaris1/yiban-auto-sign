@@ -324,10 +324,17 @@ YIBAN_BACKUP_PASSPHRASE='你的备份口令' bash docker/backup-docker.sh
 tar czf yiban-backup-$(date +%F).tar.gz data/
 ```
 
-恢复：加密包先解密再解压回仓库根目录（保持 `./data` 结构）后 `docker compose up -d` 即可：
-`gpg --batch --decrypt --passphrase '口令' 备份.tgz.gpg | tar -xzf -`
+恢复（校验与解包一体；口令经环境变量注入，不出现在命令行/ps/shell history；
+解包前执行路径穿越/符号链接/设备节点三重安全校验，防被篡改的备份包逃逸）：
+`YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test`
 
 > ⚠️ 与 systemd 部署一致：加密密钥（`data/.env` 的密钥）与备份口令要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
+>
+> ⚠️ 威胁边界（批次12 明示）：口令与数据**同机**存放（root crontab/.env）时，
+> 加密只能防「备份介质单独失窃」——SSH/root 失陷即口令与全部备份（含异机副本）
+> 同时易手，离线可解。更高强度口径：用 systemd 部署 `scripts/backup.sh` 的
+> `BACKUP_GPG_RECIPIENT` 公钥模式（服务器只存公钥无私钥，密文只有你手里的
+> 私钥能解），或把口令/私钥保存在异机、仅在备份时注入。
 
 ### 5. 安全运维：主管理员权限追回（SSH 可信通道）
 
@@ -357,25 +364,41 @@ v0.26.0 起，通过 SSH 重写 `YIBAN_ADMIN_PASSWORD` 后重启，系统检测�
 **场景 C：`YIBAN_ACCOUNTS_KEY` 疑似泄露（账号凭据密钥轮换，批次11 N5）**
 
 SSH 失陷时攻击者可读取 `.env` 中的 `YIBAN_ACCOUNTS_KEY`，离线解密全部易班账号
-密码。轮换流程（建议停服窗口执行，`docker compose stop web scheduler` 或停止
-对应 systemd 服务）：
+密码。轮换流程（务必停服窗口执行：Docker 用 `docker compose stop yiban`——
+web/scheduler 是该容器内 supervisord 子进程，`stop web scheduler` 服务名不存在；
+裸机用 `systemctl stop yiban-web`。工具自身也会扫描进程并拒绝在存活的
+web/signin/scheduler 旁执行）：
 
-1. 生成并轮换（一步完成解密→重加密→自校验→更新 .env）：
+1. 生成并轮换（一步完成解密→重加密→自校验→更新 .env；新钥会先落 0600 暂存
+   文件 `<env>.rekey-staging` 作崩溃恢复之用，完成后自动删除）：
    `python3 scripts/rekey_accounts.py --generate`（或 `--new-key <64位hex>` /
-   `--new-key-file <文件>`；可用 `--db`/`--env` 指定路径）；
+   `--new-key-file <文件>`；可用 `--db`/`--env` 指定路径；`--force` 跳过存活
+   进程探活）；
 2. 重启全部进程（web/signin/scheduler/tui）；若 shell 或容器环境变量中仍设有
    旧 `YIBAN_ACCOUNTS_KEY`，同步更新——环境变量优先级高于 `.env`；
 3. 事后取证与善后：`python3 scripts/audit_verify.py --db data/yiban.db` 校验
-   审计链是否被篡改。注意：旧密钥应视为已泄露——若攻击者曾拷贝数据库文件，
-   历史密文仍需按泄露处理（通知受影响用户修改易班密码）。
+   审计链是否被篡改（轮换动作本身也会留痕审计链）。注意：旧密钥应视为已泄露——
+   若攻击者曾拷贝数据库文件，历史密文仍需按泄露处理（通知受影响用户修改易班密码）。
 
-崩溃恢复：工具在 `.env` 写入（最后一步）前中断时，库内已是新钥密文而 `.env`
-仍是旧钥——把 `.env` 的 `YIBAN_ACCOUNTS_KEY` 临时改回旧钥即可恢复服务，随后
-重跑工具补完（或用 `--env-only` 仅补写 `.env`）。
+崩溃恢复（批次12 修正，按中断点区分；旧文案「改回旧钥即可恢复」对提交后的
+中断是错误指引）：
+
+- 重加密事务提交**前**中断：库未变更，`.env` 旧钥仍有效，直接重跑本工具即可；
+- 重加密事务提交**后**、写 `.env` 前中断：库内已是新钥密文而 `.env` 仍是旧钥——
+  新钥就在暂存文件 `<env>.rekey-staging`（0600）里，把它写回 `.env` 的
+  `YIBAN_ACCOUNTS_KEY` 即恢复服务；或重跑
+  `python3 scripts/rekey_accounts.py --env-only --new-key-file <暂存文件>` 补完
+  （`--env-only` 会先用新钥抽样试解一行库内密文，密钥不对即拒绝写 `.env`）。
 
 **事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db` 校验审计链，
 比对 `YIBAN_STATE_DIR/audit-anchor.log` 外部锚点；批量操作审计含脱敏目标清单，
-登录成功留有匿名化 IP 审计。
+登录成功留有匿名化 IP 审计（批次12 起登录失败阈值/普通用户越权 403/密钥轮换/
+数据导出同样留痕）。
+
+**时钟守卫冻结恢复**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后
+都会触发）时，全部物理清理会被守卫冻结并发邮件告警。核实系统时间已正确后运行
+`python3 scripts/clock_guard_reset.py --confirm` 重置（不带 `--confirm` 仅查看
+状态；刻意不自动恢复——防"拨快一次、下轮洗白"）。
 
 > 若 `.env` 不可写，启动迁移失败后主管理员登录会被 fail-closed 拒绝（明文比对
 > 已停用）——修复文件属主/权限后重启即自动补齐哈希。
