@@ -196,5 +196,93 @@ class CleanupResidueTest(unittest.TestCase):
                          "管理员手动清除后冷却计数也应连带清除（M4a）")
 
 
+class LastAdminAndUpdateUserTest(unittest.TestCase):
+    """C-M1 update_user 行数 + C-M3 最后管理员事务内复核。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-lastadmin-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AUDIT_KEY={AUDIT_KEY}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_AUDIT_KEY"] = AUDIT_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        global db
+        import db
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for key in ("YIBAN_ACCOUNTS_KEY", "YIBAN_AUDIT_KEY", "YIBAN_ENV_FILE",
+                    "YIBAN_DB_FILE", "YIBAN_STATE_DIR"):
+            os.environ.pop(key, None)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            with contextlib.suppress(OSError):
+                os.remove(self.db_file + suffix)
+        db.init_db(cleanup=False)
+
+    # ---------------- C-M1 ----------------
+    def test_update_user_nonexistent_returns_zero(self):
+        affected = db.update_user("nobody@test.local", {"mail_notify": 0})
+        self.assertEqual(affected, 0, "不存在的邮箱 update_user 必须返回 0（原返回 None 静默 no-op）")
+
+    def test_update_user_existing_returns_one(self):
+        db.create_user("someone@test.local", "hash", role="user",
+                       created_at="2026-08-28 00:00:00", pw_version=1)
+        affected = db.update_user("someone@test.local", {"mail_notify": 0})
+        self.assertEqual(affected, 1)
+
+    def test_update_user_soft_deleted_returns_zero(self):
+        """已注销用户行也不可更新（deleted=0 过滤），返回 0。"""
+        db.create_user("gone@test.local", "hash", role="user",
+                       created_at="2026-08-28 00:00:00", pw_version=1)
+        db.soft_delete_user_with_accounts("gone@test.local")
+        affected = db.update_user("gone@test.local", {"mail_notify": 0})
+        self.assertEqual(affected, 0)
+
+    # ---------------- C-M3 ----------------
+    def test_last_registered_admin_cannot_soft_delete(self):
+        db.create_user("admin1@test.local", "hash", role="admin",
+                       created_at="2026-08-28 00:00:00", pw_version=1)
+        with self.assertRaises(db.LastAdminError):
+            db.soft_delete_user_with_accounts("admin1@test.local")
+        # 注销未发生
+        rows = [u for u in db.load_users(include_deleted=True)
+                if u["email"] == "admin1@test.local"]
+        self.assertTrue(rows and not rows[0].get("deleted"), "最后管理员不得被软注销")
+
+    def test_second_admin_can_soft_delete(self):
+        db.create_user("admin1@test.local", "hash", role="admin",
+                       created_at="2026-08-28 00:00:00", pw_version=1)
+        db.create_user("admin2@test.local", "hash", role="admin",
+                       created_at="2026-08-28 00:00:00", pw_version=1)
+        self.assertTrue(db.soft_delete_user_with_accounts("admin1@test.local"),
+                        "存在第二个管理员时允许注销")
+        rows = [u for u in db.load_users(include_deleted=True)
+                if u["email"] == "admin1@test.local"]
+        self.assertTrue(rows[0].get("deleted"))
+
+    def test_regular_user_soft_delete_unaffected(self):
+        db.create_user("admin1@test.local", "hash", role="admin",
+                       created_at="2026-08-28 00:00:00", pw_version=1)
+        db.create_user("user1@test.local", "hash", role="user",
+                       created_at="2026-08-28 00:00:00", pw_version=1)
+        self.assertTrue(db.soft_delete_user_with_accounts("user1@test.local"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
