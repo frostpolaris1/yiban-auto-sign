@@ -40,6 +40,7 @@ def _clear(monkeypatch):
     monkeypatch.setenv("YIBAN_ENV_FILE",
                        os.path.join(tempfile.gettempdir(), "yiban-notify-no-such.env"))
     notify._throttle_ts.clear()
+    notify._daily_state.update({"date": "", "count": 0})  # 重置每日预算
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_"):
             monkeypatch.delenv(k)
@@ -251,6 +252,112 @@ def test_legacy_url_uses_custom_channel(monkeypatch):
     monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(k.get("json")) or FakeResp())
     assert notify.send("告警", "内容") is True
     assert calls == [{"title": "告警", "content": "内容"}]
+
+
+# ---- 仅重要告警 ----
+
+def test_urgent_only_skips_non_urgent(monkeypatch):
+    _configure_serverchan(monkeypatch)
+    _set(monkeypatch, URGENT_ONLY="1")
+    calls = []
+
+    class FakeResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    assert notify.send("用户日常改密", "内容") is False          # 非紧急跳过
+    assert notify.send("用户日常改密", "内容", urgent=False) is False
+    assert notify.send("高危操作告警", "内容", urgent=True) is True  # 紧急放行
+    assert len(calls) == 1
+
+
+def test_urgent_only_off_pushes_all(monkeypatch):
+    _configure_serverchan(monkeypatch, cooldown=0)
+    calls = []
+
+    class FakeResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    assert notify.send("用户日常改密", "内容") is True   # 未开启时不区分紧急
+    assert notify.send("用户日常改密", "内容", urgent=True) is True
+    assert len(calls) == 2
+
+
+def test_urgent_only_force_bypasses(monkeypatch):
+    _configure_serverchan(monkeypatch)
+    _set(monkeypatch, URGENT_ONLY="1")
+    calls = []
+
+    class FakeResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    assert notify.send("测试", "内容", force=True) is True  # 测试推送不受紧急过滤
+    assert len(calls) == 1
+
+
+# ---- 每日预算 ----
+
+def test_daily_budget_stops_after_limit(monkeypatch):
+    _configure_serverchan(monkeypatch, cooldown=0)
+    _set(monkeypatch, DAILY_MAX="3")
+    calls = []
+
+    class FakeResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    for i in range(3):
+        assert notify.send(f"告警{i}", "内容") is True
+    assert notify.send("告警3", "内容") is False  # 预算耗尽
+    assert len(calls) == 3
+    assert notify.get_config()["daily_remaining"] == 0
+
+
+def test_daily_budget_force_bypasses(monkeypatch):
+    _configure_serverchan(monkeypatch, cooldown=0)
+    _set(monkeypatch, DAILY_MAX="1")
+    calls = []
+
+    class FakeResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    assert notify.send("告警1", "内容") is True
+    assert notify.send("告警2", "内容") is False
+    assert notify.send("测试", "内容", force=True) is True  # force 绕过预算
+    assert len(calls) == 2
+
+
+def test_daily_budget_zero_unlimited(monkeypatch):
+    _configure_serverchan(monkeypatch, cooldown=0)
+    _set(monkeypatch, DAILY_MAX="0")
+    calls = []
+
+    class FakeResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    for i in range(7):
+        assert notify.send(f"告警{i}", "内容") is True
+    assert len(calls) == 7
+    assert notify.get_config()["daily_remaining"] is None
+
+
+def test_get_config_exposes_urgent_and_daily(monkeypatch):
+    _configure_serverchan(monkeypatch)
+    _set(monkeypatch, URGENT_ONLY="1", DAILY_MAX="8")
+    cfg = notify.get_config()
+    assert cfg["urgent_only"] is True
+    assert cfg["daily_max"] == 8
+    assert cfg["daily_remaining"] == 8
 
 
 if __name__ == "__main__":
