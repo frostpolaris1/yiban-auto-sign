@@ -2,9 +2,12 @@
 """Webhook 推送组件（Server酱 / 自定义 URL）。
 
 配置与仓库代码解耦（存 .env，gitignored；密钥字段 AES-GCM 加密）：
-- YIBAN_NOTIFY_TYPE        : serverchan / custom / 空 = 不启用
-- YIBAN_NOTIFY_SECRET_ENC  : 加密后的密文 JSON（serverchan=SendKey；custom=URL）
-- YIBAN_NOTIFY_COOLDOWN    : 同类型告警节流秒数（默认 60，0=关闭）
+- YIBAN_NOTIFY_TYPE            : serverchan / custom / 空 = 不启用
+- YIBAN_NOTIFY_SECRET_ENC      : 加密后的密文 JSON（serverchan=SendKey；custom=URL）
+- YIBAN_NOTIFY_COOLDOWN        : 同类型告警节流秒数（默认 60，0=关闭）
+- YIBAN_NOTIFY_URGENT_ONLY     : 1 = 仅推送重要（urgent）告警；0/空 = 全部推送
+- YIBAN_NOTIFY_DAILY_MAX       : 每日推送条数上限（0=不限；默认 5，匹配 Server酱
+                                  免费版 5 条/天；超限后当日不再推送，邮件通道不受影响）
 
 兼容旧配置：未配置加密密文时回退明文 YIBAN_NOTIFY_URL（custom 语义），
 旧部署迁移后无需手动改 .env。
@@ -12,6 +15,10 @@
 防滥用（2026-08-29 被盗号滥用面加固）：
 - 同类型告警节流：窗口内同标题只推一条（防盗号/异常反复触发刷爆 Server酱等
   第三方配额与管理员手机）；
+- 每日预算硬上限：当天推满 YIBAN_NOTIFY_DAILY_MAX 后停止（邮件仍全量送达），
+  保证不超出 Server酱 免费额度；
+- 仅重要告警：YIBAN_NOTIFY_URGENT_ONLY 开启后，非紧急（如用户日常改密、签到
+  结果类）通知不推手机，把预算留给真正威胁系统/账号安全的事件；
 - 检查服务端响应：Server酱 code!=0 / 非 JSON 一律记日志（配额耗尽、限频可见），
   不再"发出即成功"地静默失败；
 - 自定义 URL 走 SSRF 白名单（https + 非回环/内网），与 web/signin 既有口径一致。
@@ -39,11 +46,17 @@ logger = logging.getLogger("notify")
 _PREFIX = "YIBAN_NOTIFY_"
 SERVERCHAN_TURBO_HOST = "sctapi.ftqq.com"
 DEFAULT_COOLDOWN = 60
+DEFAULT_DAILY_MAX = 5
 DEFAULT_URL_TIMEOUT = 10
 MAX_TITLE_CHARS = 32
 
 _throttle_ts = {}
 _throttle_lock = threading.Lock()
+
+# 每日推送预算（进程内计数，重启清零；Server酱免费 5 条/天由服务端自身响应兜底，
+# 本计数用于提前感知并停止，避免徒劳请求）
+_daily_state = {"date": "", "count": 0}
+_daily_lock = threading.Lock()
 
 
 def _read_env_file():
@@ -162,6 +175,9 @@ def get_config():
         "secret_masked": _mask_secret(secret) if enabled else "",
         "configured": bool(ntype or secret),
         "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN),
+        "urgent_only": bool(_env_int("URGENT_ONLY", 0)),
+        "daily_max": _env_int("DAILY_MAX", DEFAULT_DAILY_MAX),
+        "daily_remaining": _daily_remaining(),
     }
 
 
@@ -180,6 +196,38 @@ def _throttle_due(title):
         if now - last < cooldown:
             return False
         _throttle_ts[title] = now
+        return True
+
+
+def _daily_today():
+    """今日日期串（本地时区，与服务器日期一致）。"""
+    return time.strftime("%Y-%m-%d")
+
+
+def _daily_remaining():
+    """今日剩余可推送条数；无上限（DAILY_MAX<=0 或未配置上限）返回 None。"""
+    limit = _env_int("DAILY_MAX", DEFAULT_DAILY_MAX)
+    if limit <= 0:
+        return None
+    with _daily_lock:
+        if _daily_state["date"] != _daily_today():
+            _daily_state["date"] = _daily_today()
+            _daily_state["count"] = 0
+        return max(0, limit - _daily_state["count"])
+
+
+def _consume_daily_budget():
+    """尝试消耗一条当日预算；已超限返回 False（本次不发，邮件通道不受影响）。"""
+    limit = _env_int("DAILY_MAX", DEFAULT_DAILY_MAX)
+    if limit <= 0:
+        return True  # 0 = 不限
+    with _daily_lock:
+        if _daily_state["date"] != _daily_today():
+            _daily_state["date"] = _daily_today()
+            _daily_state["count"] = 0
+        if _daily_state["count"] >= limit:
+            return False
+        _daily_state["count"] += 1
         return True
 
 
@@ -235,11 +283,14 @@ def _send_custom(url, title, content):
     return False
 
 
-def send(title, content, force=False):
+def send(title, content, force=False, urgent=False):
     """发送一条 webhook 通知（serverchan / custom）。返回是否成功发送。
 
-    未配置 / 不启用 / 节流命中 / 发送失败均返回 False（静默，不拖累主流程）。
-    force=True 跳过节流（供"测试推送"用）。
+    未配置 / 不启用 / 非紧急（仅重要告警开启时）/ 每日预算耗尽 / 节流命中 /
+    发送失败均返回 False（静默，不拖累主流程）。
+    force=True 跳过节流与每日预算（供"测试推送"用）。
+    urgent=True 标记重要告警：YIBAN_NOTIFY_URGENT_ONLY 开启后仅此类会推送
+    （邮件通道不受影响）。
     """
     ntype = _env_str("TYPE").strip().lower()
     secret = get_secret()
@@ -249,7 +300,12 @@ def send(title, content, force=False):
         ntype = "custom"  # 兼容旧明文 YIBAN_NOTIFY_URL（未配 TYPE 但有 URL 时按 custom 发送）
     if not secret:
         return False
+    if not force and _env_int("URGENT_ONLY", 0) and not urgent:
+        return False  # 仅重要告警：非紧急跳过（不消耗每日预算）
     if not force and not _throttle_due(title):
+        return False
+    if not force and not _consume_daily_budget():
+        logger.warning("今日消息推送已达上限（YIBAN_NOTIFY_DAILY_MAX），本次不再推送，请查邮件")
         return False
     if ntype == "serverchan":
         return _send_serverchan(secret, title, content)
