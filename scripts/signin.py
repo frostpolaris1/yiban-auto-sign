@@ -280,6 +280,21 @@ SIGN_MODE = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
 # 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
 # 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
 SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
+# 周六签到开关：默认开启（周六照常签到，与周日不同——周日历史默认不签）。
+# 由网页系统设置页写入 .env（YIBAN_SATURDAY_SIGN=0 关闭 / =1 开启，缺省=1 保持既有行为）。
+def _parse_saturday_sign(raw=None):
+    """周六签到是否开启（fail-open）：缺省/空/非法一律开启，仅显式 0/false/off/no 关闭。
+
+    与周日（SUNDAY_SIGN，缺省=关）语义相反：周六历史默认签到，任何非显式关闭值
+    （含 .env 残留空值 / 手工误写 / 非法值）都按开启处理——漏签比多余一次尝试代价更高，
+    避免 .env 出现空值或脏值后静默丢失周六签到。
+    """
+    if raw is None:
+        raw = os.environ.get("YIBAN_SATURDAY_SIGN", "1")
+    return raw.strip().lower() not in ("0", "false", "off", "no")
+
+
+SATURDAY_SIGN = _parse_saturday_sign()
 
 # ---- 探针模式 / 注册时账号验证（2026-08-25）----
 # 非签到时段对全部账号做只读健康检查（登录+拉任务，不提交签到），提前发现
@@ -2983,6 +2998,12 @@ def main():
     # 手动签到（--only）不受限——用户主动触发应当放行
     if not args.only and datetime.now().weekday() == 6 and not SUNDAY_SIGN:
         logger.info("==== 周日签到未开启（系统设置中开启后周日也会尝试签到），跳过执行 ====")
+        sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
+
+    # 周六签到开关：默认开启（周六照常签到）；管理员关闭后周六跳过。
+    # 手动签到（--only）不受限——用户主动触发应当放行（与周日开关语义一致）。
+    if not args.only and datetime.now().weekday() == 5 and not SATURDAY_SIGN:
+        logger.info("==== 周六签到已关闭（系统设置中开启后周六也会尝试签到），跳过执行 ====")
         sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
 
     # 全局暂停（管理员 Web UI 一键暂停）：下一轮生效，当前进程照常跑完。

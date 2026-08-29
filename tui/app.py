@@ -583,12 +583,15 @@ class YibanTuiApp(App):
         - ⏳ 未到签到时间（每日 0 点 ~ 窗口开始）
         - 🔔 签到窗口（窗口内，绿色高亮）
         - ✅ 打卡时间已过（窗口结束后）
-        - 🌙 今日无需打卡（周日）
+        - 🌙 今日无需打卡（周六/周日，各自开关关闭时）
         """
         now = now or datetime.now()
         # 周日：仅当「周日签到」开启（.env YIBAN_SUNDAY_SIGN=1）时走正常窗口逻辑
         if now.weekday() == 6 and not load_env_int(self.env_path, "YIBAN_SUNDAY_SIGN", 0):
             return "🌙 今日无需打卡（周日）", "#a1a1aa"
+        # 周六：默认开启（.env YIBAN_SATURDAY_SIGN 缺省=1）；管理员关闭后周六跳过
+        if now.weekday() == 5 and not load_env_int(self.env_path, "YIBAN_SATURDAY_SIGN", 1):
+            return "🌙 今日无需打卡（周六）", "#a1a1aa"
         start_h, start_m = self._sign_window()[0]
         end_h, end_m = self._sign_window()[1]
         start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
