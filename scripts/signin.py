@@ -1485,8 +1485,11 @@ class YibanClient:
             )
 
         # 3. 解析多边形点（逐点容错：单个坏点跳过，不拖垮整个签到）
-        # 批次7 P3-10：遍历全部签到任务——原实现只签 position_list[0]，
-        # 多任务日第二个起静默漏签且状态仍显示 success
+        # 批次7 P3-10 修复了「只签 position_list[0]」导致的漏签，改为遍历全部任务。
+        # 2026-08-29 用户裁决：多任务通常为「同一打卡的多个点位，任取其一即可」——
+        # 先随机打乱任务顺序（避免固定只签第一个点位，贴近学生真实行为、降低固定
+        # 点位指纹），然后任一任务成功即停（下方 break），不再重复提交。
+        random.shuffle(position_list)
         results_tasks = []  # [(task_name, ok, err_msg)]
         for position in position_list:
             task_name = str(position.get("Name", "") or f"任务{len(results_tasks) + 1}")
@@ -1540,27 +1543,34 @@ class YibanClient:
             result = resp.json()
             if result.get("code") == 0 and result.get("data"):
                 results_tasks.append((task_name, True, ""))
+                # 2026-08-29 用户裁决：多任务「随机选点、任一成功即停」——命中任一
+                # 任务即视为当日已签，停止提交后续任务（省请求、降风控）
+                logger.info(
+                    f"[{self.account.phone}] 签到成功，剩余 "
+                    f"{len(position_list) - len(results_tasks)} 个任务不再重复提交"
+                )
+                break
             else:
                 err_msg = _sanitize_text(result.get("msg", "未知错误"))
                 if "授权设备" in err_msg:
                     err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
                 results_tasks.append((task_name, False, f"签到失败: {err_msg}"))
 
-        # 6. 汇总各任务结果（批次7 P3-10：多任务日不再漏签）
+        # 6. 汇总各任务结果（2026-08-29 语义：多任务「随机选点、任一成功即停」——
+        # 命中任一任务即视为当日已签；仅全部失败才判失败，保持重试兜底）
         ok_tasks = [t for t in results_tasks if t[1]]
         fail_tasks = [t for t in results_tasks if not t[1]]
-        if not fail_tasks:
-            suffix = f"（共 {len(ok_tasks)} 个任务）" if len(ok_tasks) > 1 else ""
-            return True, f"签到成功{suffix}", False, STATUS_SUCCESS
-        parts = "; ".join(f"{n}: {m}" for n, _ok, m in fail_tasks[:3])
-        detail = f"{len(fail_tasks)} 个任务失败: {parts}"
         if ok_tasks:
-            # 有成功即视为当日已签（服务器对已签任务返回"已签到"），失败任务仅留痕
-            logger.warning(f"[{self.account.phone}] 部分任务失败: {detail}")
-            return True, (
-                f"签到成功（{len(ok_tasks)}/{len(results_tasks)} 个任务，{len(fail_tasks)} 个失败）"
-            ), False, STATUS_SUCCESS
-        return False, detail, False, STATUS_FAILED
+            if fail_tasks:
+                # 前面任务失败、后续任务命中（随机序）——留痕失败原因，仍判成功
+                detail = "; ".join(f"{n}: {m}" for n, _ok, m in fail_tasks[:3])
+                logger.warning(
+                    f"[{self.account.phone}] 已成功签到（前面 {len(fail_tasks)} 个任务失败后命中）: {detail}"
+                )
+                return True, f"签到成功（{len(fail_tasks)} 个任务失败后命中）", False, STATUS_SUCCESS
+            return True, "签到成功", False, STATUS_SUCCESS
+        parts = "; ".join(f"{n}: {m}" for n, _ok, m in fail_tasks[:3])
+        return False, f"{len(fail_tasks)} 个任务均失败: {parts}", False, STATUS_FAILED
 
     def verify(self):
         """只读健康检查（登录后）：拉取签到位置，**不提交签到**。
