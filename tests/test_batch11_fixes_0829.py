@@ -211,7 +211,8 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
     def test_master_can_purge_with_alert(self):
         self._make_victim("victim2@test.local")
         ac, at = self._admin_client()
-        r = ac.post("/api/users/deleted/purge", json={"emails": ["victim2@test.local"]},
+        r = ac.post("/api/users/deleted/purge",
+                    json={"emails": ["victim2@test.local"], "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNone(self._user_row("victim2@test.local"), "主管理员清除生效")
