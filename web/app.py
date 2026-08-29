@@ -1365,6 +1365,9 @@ def sign_status(now=None):
     if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
         return "今日无需打卡（周日）", "#a1a1aa"
+    if now.weekday() == 5 and not load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 1):
+        # 周六：默认开启（周六照常签到）；关闭后周六提示无需打卡
+        return "今日无需打卡（周六）", "#a1a1aa"
     sw = _sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
     start_h, start_m = sw[0]
     end_h, end_m = sw[1]
@@ -3694,6 +3697,7 @@ def create_app(host=None):
             "month": month,
             "days": result,
             "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),  # 前端据此决定周日是否置灰/可查
+            "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 1),  # 前端据此决定周六是否置灰/可查
         })
 
     @app.route("/api/my-logs")
@@ -4826,6 +4830,8 @@ def create_app(host=None):
                 },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
                 "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
+                # 周六签到：1=开启（默认，周六照常签到），0=关闭（周六暂停）
+                "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 1),
                 # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
                 "global_pause": load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
@@ -4928,6 +4934,10 @@ def create_app(host=None):
         sunday_sign = None
         if "sunday_sign" in data:
             sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        # 周六签到开关（1=开启/0=关闭）：默认开启，仅请求携带时才更新，避免保存其他设置时误关
+        saturday_sign = None
+        if "saturday_sign" in data:
+            saturday_sign = 1 if str(data.get("saturday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
         # 全局暂停（一键暂停签到）：仅主管理员可写（上方 403 已拦），下一轮 cron 生效。
         # 1=暂停（signin.py 检测后 exit(2) 跳过），0/空=正常。
         global_pause = None
@@ -4992,6 +5002,9 @@ def create_app(host=None):
             updates["YIBAN_SIGN_END"] = win_end_str
         if sunday_sign is not None:
             updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
+        if saturday_sign is not None:
+            # 周六默认开启：关闭必须显式写 0（不能像周日那样删键——缺省会读回默认 1=开启）
+            updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
         if global_pause is not None:
             updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
         if account_verify is not None:
@@ -5004,6 +5017,7 @@ def create_app(host=None):
             updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
         write_env_batch(ENV_FILE, updates)
         sunday_display = "不变" if sunday_sign is None else sunday_sign
+        saturday_display = "不变" if saturday_sign is None else saturday_sign
         pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
         if edge_front is None and edge_back is None:
             edge_display = "不变"
@@ -5015,10 +5029,10 @@ def create_app(host=None):
         probe_display = "不变" if (probe_enable is None and probe_time is None and probe_interval is None) else \
             f"启={'1' if probe_enable else '0'}/时={probe_time or '-'}/频={probe_interval or '-'}"
         logger.info(
-            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 暂停=%s 账号验证=%s 探针=%s",
+            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 账号验证=%s 探针=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
             edge_display, pref_raw if pref_raw is not None else "不变",
-            win or "不变", sunday_display, pause_display,
+            win or "不变", sunday_display, saturday_display, pause_display,
             "不变" if account_verify is None else ("开" if account_verify else "关"),
             probe_display,
         )
@@ -5030,6 +5044,7 @@ def create_app(host=None):
             f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
             f"分布={sign_dist or '-'} 掐头去尾={edge_display} "
             f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
+            f"周六={saturday_display} "
             f"全局暂停={pause_display} 账号验证={'开' if account_verify else '关'} "
             f"探针={probe_display}",
         )

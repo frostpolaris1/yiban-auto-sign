@@ -599,6 +599,18 @@
       </div>
     </div>
 
+    <!-- 周六签到 -->
+    <div class="card mb-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周六签到</div>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">周六默认照常签到；如学校周六无需签到，可关闭此开关，周六将自动跳过</p>
+        </div>
+        <button id="saturday-sign-btn" role="switch" aria-checked="false" onclick="toggleSaturdaySign()"
+                class="toggle" aria-label="周六签到"><span class="knob"></span></button>
+      </div>
+    </div>
+
     <!-- 随机延迟（批次7 A5：主管理员专属，普通管理员整卡隐藏） -->
     <div class="card mb-4" id="delay-card">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">随机延迟（仅手动签到生效）</div>
@@ -1096,6 +1108,7 @@ const state = {
   signWindow: '',        // 调度 v2：签到窗口 "06:30 ~ 07:50"
   isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
   deletedCollapsed: false, // 待删除账号表格折叠状态（标题栏 ▾/▸ 切换）
+  saturdaySign: true,   // 周六签到开关（默认开启，照常签到；.env YIBAN_SATURDAY_SIGN=0 关闭）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -2024,6 +2037,8 @@ async function loadSettings() {
     renderSchedulePerm();  // 调度权限：仅主管理员可改
     state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
     renderSundaySignUI();
+    state.saturdaySign = data.saturday_sign !== 0;  // 周六签到开关（持久化 .env，默认开启）
+    renderSaturdaySignUI();
     state.globalPause = !!data.global_pause;  // 全局暂停（一键暂停签到）
     renderGlobalPauseUI();
     // 探针模式 + 注册账号验证（v0.23.x，任意管理员可改）
@@ -2197,6 +2212,16 @@ function toggleSundaySign() {
   saveSettings(true);  // 自动保存（写入 .env，cron 下次触发生效）
 }
 
+function renderSaturdaySignUI() {
+  renderToggle('saturday-sign-btn', state.saturdaySign);
+}
+
+function toggleSaturdaySign() {
+  state.saturdaySign = !state.saturdaySign;
+  renderSaturdaySignUI();
+  saveSettings(true);  // 自动保存（写入 .env，cron 下次触发生效）
+}
+
 // 全局暂停（一键暂停签到）：仅主管理员；双重确认；下一轮 cron 生效
 function renderGlobalPauseUI() {
   const btn = $('global-pause-btn');
@@ -2286,6 +2311,7 @@ async function saveSettings(silent) {
     // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
     // 静默覆盖 .env 中既有的 YIBAN_SIGN_MODE，且权限上仅主管理员可写
     sunday_sign: state.sundaySign ? 1 : 0,
+    saturday_sign: state.saturdaySign ? 1 : 0,
   };
   if (state.isMasterAdmin) {
     payload.start_delay_max = read('start');
@@ -3031,6 +3057,7 @@ function renderCalendar(phone, key) {
     `<div class="text-center text-xs text-zinc-500 dark:text-zinc-400 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
     state.sundaySign = !!data.sunday_sign;  // 与 user.html 一致：开启周日签到后周日正常显示/可查
+    state.saturdaySign = data.saturday_sign !== 0;  // 周六签到（默认开启），关闭后周六置灰/可查
     const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     const days = new Date(year, month, 0).getDate();
     for (let i = 0; i < firstDay; i++) {
@@ -3040,20 +3067,21 @@ function renderCalendar(phone, key) {
       const date = `${monthStr}-${calPad(d)}`;
       const stt = data.days && data.days[date] ? data.days[date][phone] || '' : '';
       const wd = new Date(year, month - 1, d).getDay();
-      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周日灰 / 无记录默认
+      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周末灰（周六/周日各自开关关闭时）/ 无记录默认
       let numCls = 'text-zinc-600 dark:text-zinc-300';
       if (wd === 0 && !state.sundaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
+      else if (wd === 6 && !state.saturdaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
       else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
       // a11y 整改：div onclick → button（键盘可达 + 全局 focus-visible 光圈）；
-      // 周日置灰日期补「休」角标与 aria-label 说明，不再仅靠颜色区分
-      const sundayOff = wd === 0 && !state.sundaySign;
+      // 周末停签日期补「休」角标与 aria-label 说明，不再仅靠颜色区分
+      const offDay = (wd === 0 && !state.sundaySign) ? '日' : (wd === 6 && !state.saturdaySign) ? '六' : '';
       grid.insertAdjacentHTML('beforeend', `
         <button type="button" onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
-             aria-label="${date}${sundayOff ? '（周日不签到）' : '，查看签到记录'}"
+             aria-label="${date}${offDay ? '（周' + offDay + '不签到）' : '，查看签到记录'}"
              class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
-          <span>${d}</span>${sundayOff ? '<span class="absolute top-0.5 right-1 text-[8px] leading-none text-zinc-500 dark:text-zinc-400">休</span>' : ''}
+          <span>${d}</span>${offDay ? '<span class="absolute top-0.5 right-1 text-[8px] leading-none text-zinc-500 dark:text-zinc-400">休</span>' : ''}
         </button>`);
     }
   }).catch(() => {
@@ -3064,9 +3092,10 @@ function renderCalendar(phone, key) {
 function calLoadLog(btn, date) {
   const key = btn.dataset.key;
   const box = $('cal-log-' + key);
-  // 周日无需签到（未开启周日签到），直接提示（不查询日志）
-  if (new Date(date + 'T00:00:00').getDay() === 0 && !state.sundaySign) {
-    box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">周日无需签到</div>';
+  // 周六/周日无需签到（各自开关关闭时），直接提示（不查询日志）
+  const wd0 = new Date(date + 'T00:00:00').getDay();
+  if ((wd0 === 0 && !state.sundaySign) || (wd0 === 6 && !state.saturdaySign)) {
+    box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${wd0 === 0 ? '周日' : '周六'}无需签到</div>`;
     return;
   }
   box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400">加载中…</div>';
