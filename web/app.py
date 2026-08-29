@@ -269,6 +269,11 @@ SCRYPT_METHOD = "scrypt:65536:8:1"
 # 账号编辑时识别码清空哨兵值（收到该值 = 显式删除设备识别码字段）
 CLEAR_SENTINEL = "__clear__"
 
+# 单次批量操作上限（2026-08-29 由 100 收紧为 10）：批量通过/删除/设管理员/重置密码
+# 与「清除已注销用户」共用同一上限——被盗管理员会话即使一个请求，一次最多影响 10 条，
+# 降低误操作与滥用影响范围。三处接口共用本常量，防单处调整后其他路径遗漏（批次7 A2/A3 收紧）。
+BATCH_OP_LIMIT = 10
+
 # 状态图标（与 tui/app.py 一致；前端渲染使用，后端仅用于日志解析）
 SIGN_START = (6, 30)
 SIGN_END = (7, 50)
@@ -2946,10 +2951,10 @@ def create_app(host=None):
                 return jsonify({"error": "未知操作"}), 400
             if not isinstance(ids, list) or not ids:
                 return jsonify({"error": "请选择要操作的账号"}), 400
-            # 批次7 A3：单次批量上限——被盗 admin 会话原本可用一个请求清空全部
-            # 账号（≤500）；对齐 /api/users/deleted/purge 的 100 上限
-            if len(ids) > 100:
-                return jsonify({"error": "单次批量操作最多 100 个账号"}), 400
+            # 批次7 A3 + 2026-08-29 收紧：单次批量上限——被盗 admin 会话原本可用一个
+            # 请求清空全部账号（≤500）；与 /api/users/deleted/purge 共用 BATCH_OP_LIMIT
+            if len(ids) > BATCH_OP_LIMIT:
+                return jsonify({"error": f"单次批量操作最多 {BATCH_OP_LIMIT} 个账号"}), 400
             reason = str(data.get("reason", "")).strip()[:100]
             if action == "reject" and not reason:
                 return jsonify({"error": "批量拒绝需要填写理由"}), 400
@@ -4095,8 +4100,8 @@ def create_app(host=None):
         emails = data.get("emails") or []
         if not isinstance(emails, list) or not emails:
             return jsonify({"error": "请选择要清除的用户"}), 400
-        if len(emails) > 100:
-            return jsonify({"error": "单次最多清除 100 个用户"}), 400
+        if len(emails) > BATCH_OP_LIMIT:
+            return jsonify({"error": f"单次最多清除 {BATCH_OP_LIMIT} 个用户"}), 400
         if any(not isinstance(e, str) or len(e) > 64 for e in emails):
             return jsonify({"error": "邮箱格式不正确"}), 400
         with _file_lock:
@@ -4143,9 +4148,10 @@ def create_app(host=None):
             return jsonify({"error": "未知操作"}), 400
         if not isinstance(emails, list) or not emails:
             return jsonify({"error": "请选择要操作的用户"}), 400
-        if len(emails) > 100:
-            # 批次7 A2：单次批量上限——被盗 admin 会话原本可用一个请求物理删除全部用户
-            return jsonify({"error": "单次批量操作最多 100 个用户"}), 400
+        if len(emails) > BATCH_OP_LIMIT:
+            # 批次7 A2 + 2026-08-29 收紧：单次批量上限——被盗 admin 会话原本可用一个
+            # 请求物理删除全部用户；与 accounts/batch 共用 BATCH_OP_LIMIT
+            return jsonify({"error": f"单次批量操作最多 {BATCH_OP_LIMIT} 个用户"}), 400
         if any(not isinstance(e, str) or len(e) > 64 for e in emails):
             return jsonify({"error": "邮箱格式不正确"}), 400
         password = str(data.get("password", ""))
