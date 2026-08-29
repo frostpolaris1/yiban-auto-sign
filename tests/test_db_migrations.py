@@ -140,7 +140,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_production_like_db()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 11)
+        self.assertEqual(version, 12)
         users_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         self.assertIn("deleted", users_cols)
         self.assertIn("deleted_at", users_cols)
@@ -159,7 +159,7 @@ class DbMigrationTest(unittest.TestCase):
     def test_new_db_gets_latest_version(self):
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 11)
+        self.assertEqual(version, 12)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -167,7 +167,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_accounts_table()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 11)
+        self.assertEqual(version, 12)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -183,7 +183,37 @@ class DbMigrationTest(unittest.TestCase):
             db._conn = None
         conn2 = db.init_db(self.db_file)
         version = conn2.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 11)
+        self.assertEqual(version, 12)
+
+    def test_v12_repairs_missing_app_meta(self):
+        """v12：修复历史部署缺 app_meta 表（2026-08-29 线上问题）。
+
+        完整迁移后删表 + 版本回拨到 11，模拟线上「v8 已发布后才往 v8 里补建
+        app_meta」导致旧库缺表的真实状态；再 init 应执行 v12 幂等重建。
+        """
+        conn = db.init_db(self.db_file)
+        conn.execute("DROP TABLE IF EXISTS app_meta")
+        conn.execute("PRAGMA user_version = 11")
+        conn.commit()
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        conn = db.init_db(self.db_file)
+        self.assertEqual(
+            conn.execute("PRAGMA user_version").fetchone()[0], 12,
+            "缺 app_meta 的旧库重启后应经 v12 补建并升到最新版本",
+        )
+        row = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_meta'"
+        ).fetchone()
+        self.assertEqual(row[0], 1, "v12 必须重建 app_meta")
+        # app_meta 可正常读写
+        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('k', 'v')")
+        conn.commit()
+        self.assertEqual(
+            conn.execute("SELECT value FROM app_meta WHERE key='k'").fetchone()[0], "v"
+        )
 
     def test_core_migration_failure_blocks_and_cleans_conn(self):
         def failing_migration(conn):
