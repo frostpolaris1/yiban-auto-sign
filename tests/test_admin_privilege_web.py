@@ -126,8 +126,12 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
         for mode in ("full", "accounts_only"):
+            body = {"mode": mode}
+            if mode == "full":
+                # 2026-08-29 二次鉴权：完全删除须输入当前管理员密码
+                body["confirm_password"] = ADMIN_PASS
             r = c.post("/api/users/admin3@test.local/delete",
-                       json={"mode": mode}, headers=self._csrf(token))
+                       json=body, headers=self._csrf(token))
             self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("admin3@test.local"), "管理员不应被删除")
 
@@ -135,7 +139,8 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
         r = c.post("/api/users/user1@test.local/delete",
-                   json={"mode": "full"}, headers=self._csrf(token))
+                   json={"mode": "full", "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNone(db.find_user("user1@test.local"))
 
@@ -147,7 +152,8 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._pw_version("admin3@test.local"), 2)
         r = c.post("/api/users/admin3@test.local/delete",
-                   json={"mode": "full"}, headers=self._csrf(token))
+                   json={"mode": "full", "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNone(db.find_user("admin3@test.local"))
 
@@ -170,7 +176,8 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
         r = c.post("/api/users/batch",
                    json={"action": "delete",
-                         "emails": ["admin3@test.local", "user1@test.local"]},
+                         "emails": ["admin3@test.local", "user1@test.local"],
+                         "confirm_password": ADMIN_PASS},
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("已删除 1 个用户", r.get_json()["msg"])

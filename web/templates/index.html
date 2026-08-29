@@ -734,6 +734,37 @@
       <p id="mail-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
     </div>
 
+    <!-- 消息推送（Webhook：Server酱/自定义 URL，v0.26.0） -->
+    <div class="card mb-4">
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">消息推送</div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+        发生告警时推送到手机 / 聊天工具（Server酱微信、Bark、企业微信等），与邮件通知并行；密钥加密存储，与邮件通知互不影响。
+      </p>
+      <div id="notify-master-wrap" class="hidden">
+        <div class="mb-3">
+          <select id="notify-type" class="input">
+            <option value="">关闭</option>
+            <option value="serverchan">Server酱（微信 / 方糖服务号）</option>
+            <option value="custom">自定义 Webhook 地址</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <input id="notify-secret" type="password" autocomplete="off"
+                 placeholder="Server酱 SendKey（SCT 开头）或自定义 https 地址" class="input">
+        </div>
+        <div class="flex items-center gap-2 mb-3">
+          <button onclick="saveNotifyConfig()" class="btn-primary">保存配置</button>
+          <button onclick="testNotify()"
+                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">发送测试消息</button>
+          <span id="notify-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
+        </div>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500">
+          密钥加密存储、不回显；同类告警默认 60 秒内只推一条（防刷屏，可在 .env 调整 YIBAN_NOTIFY_COOLDOWN）；Server酱免费版每天限 5 条。仅主管理员可修改。
+        </p>
+      </div>
+      <p id="notify-status" class="text-xs text-zinc-500 dark:text-zinc-400"></p>
+    </div>
+
     <!-- 账号健康检查 / 探针模式（v0.23.x） -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">账号健康检查（探针模式）</div>
@@ -1080,7 +1111,7 @@
     <form id="modal-password-form">
       <input id="modal-password-input" type="password" autocomplete="new-password" placeholder="至少 10 位，含两类字符" class="input">
       <div class="flex items-center gap-2 pt-4">
-        <button type="submit" class="btn-primary">确认重置</button>
+        <button type="submit" id="modal-password-submit" class="btn-primary">确认重置</button>
         <button type="button" onclick="closePasswordModal()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
       </div>
     </form>
@@ -1210,12 +1241,21 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ================= 重置密码模态（a11y 整改：替代原生 prompt 明文录入；校验与后续 API/Toast 与原逻辑一致） =================
+// ================= 密码模态（重置密码 / 高危操作二次确认共用） =================
 let _pwModalCb = null;
-function openPasswordModal(desc, cb) {
+let _pwModalMode = 'set';  // 'set'=设置新密码（≥10 位校验）；'confirm'=确认当前管理员密码
+function openPasswordModal(desc, cb) { openPwModal(desc, cb, 'set'); }
+function openConfirmPasswordModal(desc, cb) { openPwModal(desc, cb, 'confirm'); }
+function openPwModal(desc, cb, mode) {
   _pwModalCb = cb;
+  _pwModalMode = mode;
+  const isConfirm = mode === 'confirm';
+  $('modal-password-title').textContent = isConfirm ? '安全确认' : '重置密码';
   $('modal-password-desc').textContent = desc;  // textContent 赋值：动态数据（邮箱等）无注入面
   $('modal-password-input').value = '';
+  $('modal-password-input').placeholder = isConfirm ? '输入当前管理员密码' : '至少 10 位，含两类字符';
+  $('modal-password-input').autocomplete = isConfirm ? 'current-password' : 'new-password';
+  $('modal-password-submit').textContent = isConfirm ? '确认操作' : '确认重置';
   openModal($('modal-password'));  // 打开即聚焦密码输入框（容器内首个可交互元素）
 }
 function closePasswordModal() {
@@ -1225,8 +1265,8 @@ function closePasswordModal() {
 $('modal-password-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const pw = $('modal-password-input').value;
-  if (!pw) return;  // 与原 prompt 行为一致：空值静默不提交
-  if (pw.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
+  if (!pw) return;  // 空值静默不提交
+  if (_pwModalMode === 'set' && pw.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
   const cb = _pwModalCb;
   closePasswordModal();
   if (cb) cb(pw);
@@ -1440,7 +1480,14 @@ function batchUsers(key, action) {
     });
     return;
   }
-  if (action === 'delete' && !confirm(`确定删除选中的 ${emails.length} 个用户吗？将连同其易班账号删除，不可恢复！`)) return;
+  if (action === 'delete') {
+    // 2026-08-29 高危操作二次鉴权：删除用户不可恢复，须输入当前管理员密码确认
+    openConfirmPasswordModal(`批量删除选中的 ${emails.length} 个用户？\n将连同其易班账号删除，不可恢复！\n请输入当前管理员密码确认。`, (pw) => {
+      body.confirm_password = pw;
+      submitBatchUsers(key, body);
+    });
+    return;
+  }
   submitBatchUsers(key, body);
 }
 
@@ -2007,6 +2054,7 @@ async function loadSettings() {
     const ann = await fetch(BASE + '/api/announcement').then(r => r.json()).catch(() => ({}));
     if (ann && ann.text) $('announcement-input').value = ann.text;
     await loadMailConfig();  // 邮箱通知状态（全局/个人开关）
+    await loadNotifyConfig();  // 消息推送状态（Server酱/自定义 URL，v0.26.0）
     const data = await api('/api/settings');
     state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
@@ -2410,6 +2458,54 @@ async function toggleMailSelf() {
   }
 }
 
+// ===== 消息推送（Webhook：Server酱/自定义 URL，v0.26.0）=====
+async function loadNotifyConfig() {
+  if (!state.isMasterAdmin) {
+    $('notify-master-wrap').classList.add('hidden');
+    $('notify-status').textContent = '仅主管理员可配置消息推送';
+    return;
+  }
+  $('notify-master-wrap').classList.remove('hidden');
+  try {
+    const data = await api('/api/notify-config');
+    $('notify-type').value = data.type || '';
+    $('notify-secret').value = '';
+    $('notify-status').textContent = data.enabled
+      ? `已开启（${data.type === 'serverchan' ? 'Server酱' : '自定义地址'}，密钥 ${data.secret_masked}）`
+      : '未配置';
+  } catch (e) { /* 读取失败不阻塞设置页 */ }
+}
+
+async function saveNotifyConfig() {
+  const body = { type: $('notify-type').value };
+  const secret = $('notify-secret').value.trim();
+  if (secret) body.secret = secret;
+  if (!body.type && !secret) { toast('请选择类型或输入密钥', true); return; }
+  const tip = $('notify-tip');
+  tip.textContent = '保存中…';
+  try {
+    const data = await api('/api/notify-config', { method: 'PUT', body: JSON.stringify(body) });
+    $('notify-secret').value = '';
+    tip.textContent = data.enabled ? '已保存并开启' : '已关闭';
+    await loadNotifyConfig();
+  } catch (e) {
+    tip.textContent = '';
+    toast(e.message, true);
+  }
+}
+
+async function testNotify() {
+  const tip = $('notify-tip');
+  tip.textContent = '发送中…';
+  try {
+    const data = await api('/api/notify-test', { method: 'POST' });
+    tip.textContent = data.msg || '已发送';
+  } catch (e) {
+    tip.textContent = '';
+    toast(e.message, true);
+  }
+}
+
 // ===== 探针模式 + 注册账号验证（v0.23.x）：任意管理员可改，改动即保存 =====
 let probeSaving = false;
 async function saveProbeSettings() {
@@ -2665,15 +2761,17 @@ function renderDeletedUsers() {
 }
 
 // 管理员立即清除已注销用户（2026-08-17：物理删除用户+易班账号+自选时间，不可恢复）
+// 2026-08-29 高危操作二次鉴权：须输入当前管理员密码确认
 async function purgeDeletedUser(email) {
-  if (!confirm(`确定立即彻底清除用户 ${email} 吗？\n将物理删除其注册信息、易班账号与自选签到时间，此操作不可恢复！`)) return;
-  try {
-    const data = await api('/api/users/deleted/purge', {
-      method: 'POST', body: JSON.stringify({emails: [email]})
-    });
-    toast(data.msg || '已清除');
-    loadDeletedUsers();
-  } catch (e) { /* api() 已 toast 错误 */ }
+  openConfirmPasswordModal(`立即彻底清除用户 ${email}？\n将物理删除其注册信息、易班账号与自选签到时间，此操作不可恢复！\n请输入当前管理员密码确认。`, async (pw) => {
+    try {
+      const data = await api('/api/users/deleted/purge', {
+        method: 'POST', body: JSON.stringify({emails: [email], confirm_password: pw})
+      });
+      toast(data.msg || '已清除');
+      loadDeletedUsers();
+    } catch (e) { /* api() 已 toast 错误 */ }
+  });
 }
 
 function renderUsers(users, builtinAdmin) {
@@ -2837,15 +2935,17 @@ async function deleteUserAccounts(email) {
 
 async function deleteUserFull(email) {
   if (!confirm(`确定完全删除用户 ${email} 吗？\n将删除其账号和提交的易班账号，不可恢复！`)) return;
-  if (!confirm(`再次确认：完全删除 ${email}？（点确定继续）`)) return;
-  try {
-    const data = await api(`/api/users/${encodeURIComponent(email)}/delete`, {
-      method: 'POST', body: JSON.stringify({ mode: 'full' }),
-    });
-    toast(data.msg || '已删除');
-    loadUsers();
-    loadAccounts();
-  } catch (e) { toast(e.message, true); }
+  // 2026-08-29 高危操作二次鉴权：须输入当前管理员密码确认
+  openConfirmPasswordModal(`再次确认：完全删除 ${email}？\n请输入当前管理员密码确认。`, async (pw) => {
+    try {
+      const data = await api(`/api/users/${encodeURIComponent(email)}/delete`, {
+        method: 'POST', body: JSON.stringify({ mode: 'full', confirm_password: pw }),
+      });
+      toast(data.msg || '已删除');
+      loadUsers();
+      loadAccounts();
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 // ================= 我的账号（管理员）=================
