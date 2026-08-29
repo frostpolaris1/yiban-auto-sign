@@ -655,16 +655,14 @@ _most_recent_log_cache = {"history_date": None, "checked_day": ""}
 
 
 def _today_has_logs():
-    """今天的日志文件是否存在且含 yiban 日志行（每次调用都检查，开销小）。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    path = log_path_for(today)
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        return False
-    for line in _tail_lines(path, max_bytes=4096):
-        m = SIGN_LOG_RE.match(line.strip())
-        if m and m.group(3) == "yiban":
-            return True
-    return False
+    """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。
+
+    原实现只扫文件尾部 4096 字节——一旦尾部被其他 logger（如 web 每日清理循环的
+    yiban.db 告警）刷屏会误判「今天无日志」而回退到历史日期（2026-08-29 线上复现：
+    回到今天显示昨天）。按天文件体积有限，整读开销可忽略；判定口径与
+    _log_lines_for 一致（logger=yiban 且非 DEBUG）。
+    """
+    return bool(_log_lines_for(datetime.now().strftime("%Y-%m-%d")))
 
 
 def _most_recent_log_date(max_days=30):
@@ -683,15 +681,11 @@ def _most_recent_log_date(max_days=30):
         _most_recent_log_cache["history_date"] = None
         for i in range(1, max_days + 1):
             d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            path = log_path_for(d)
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                for line in _tail_lines(path, max_bytes=4096):
-                    m = SIGN_LOG_RE.match(line.strip())
-                    if m and m.group(3) == "yiban":
-                        _most_recent_log_cache["history_date"] = d
-                        break
-                if _most_recent_log_cache["history_date"]:
-                    break
+            # 整读判定（与 _today_has_logs 同口径）：尾部被其他 logger 刷屏时
+            # 同样会漏判，统一用 _log_lines_for 保证正确性（按天文件体积有限）
+            if _log_lines_for(d):
+                _most_recent_log_cache["history_date"] = d
+                break
     return _most_recent_log_cache["history_date"] or today
 
 

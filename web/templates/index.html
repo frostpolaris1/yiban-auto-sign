@@ -71,6 +71,14 @@
   }
   /* 统一线性图标（currentColor 继承文字颜色，尺寸随字号） */
   .ic { width: 1em; height: 1em; display: inline-block; vertical-align: -0.125em; flex-shrink: 0; }
+  /* 深色模式适配：原生 date/time 输入框的日历/时钟指示图标在 WebKit 下为黑色，
+     深色背景上看不清 → 反色（2026-08-29 用户反馈：日志页「按日期查看」日历图标；
+     同规则覆盖 window-start/window-end/probe-time 等所有 time 输入） */
+  .dark input[type="date"]::-webkit-calendar-picker-indicator,
+  .dark input[type="time"]::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    cursor: pointer;
+  }
 </style>
 <script>
   // ===== 图标系统：按功能手绘的统一 SVG 线性图标 =====
@@ -498,7 +506,7 @@
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周日是否签到见上方开关）</div>
+      <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周六/周日是否签到见下方「周末签到」开关）</div>
       <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">容量：<span id="capacity-status">--</span></div>
     </div>
 
@@ -587,27 +595,27 @@
       </div>
     </div>
 
-    <!-- 周日签到 -->
+    <!-- 周末签到（周六/周日，2026-08-29 合并为单卡片，便于后续扩展其他休息日） -->
     <div class="card mb-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周日签到</div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">部分学校周日也有签到任务。开启后周日也会尝试签到；若学校周日无需签到，将显示为「无需签到」</p>
+      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">周末签到</div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">部分学校周六日也有签到任务；按需开启对应日期的签到</p>
+      <div class="space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="text-sm text-zinc-700 dark:text-zinc-200">周日签到</div>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭，周日自动跳过；开启后周日也尝试签到</p>
+          </div>
+          <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
+                  class="toggle" aria-label="周日签到"><span class="knob"></span></button>
         </div>
-        <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
-                class="toggle" aria-label="周日签到"><span class="knob"></span></button>
-      </div>
-    </div>
-
-    <!-- 周六签到 -->
-    <div class="card mb-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">周六签到</div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">周六默认照常签到；如学校周六无需签到，可关闭此开关，周六将自动跳过</p>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="text-sm text-zinc-700 dark:text-zinc-200">周六签到</div>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认开启，周六照常签到；如无需签到可关闭，周六将自动跳过</p>
+          </div>
+          <button id="saturday-sign-btn" role="switch" aria-checked="false" onclick="toggleSaturdaySign()"
+                  class="toggle" aria-label="周六签到"><span class="knob"></span></button>
         </div>
-        <button id="saturday-sign-btn" role="switch" aria-checked="false" onclick="toggleSaturdaySign()"
-                class="toggle" aria-label="周六签到"><span class="knob"></span></button>
       </div>
     </div>
 

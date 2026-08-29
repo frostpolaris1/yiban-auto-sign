@@ -758,6 +758,27 @@ def migrate_v11(conn):
     _ensure_column(conn, "users", "sid", "sid TEXT NOT NULL DEFAULT ''")
 
 
+def migrate_v12(conn):
+    """v12：修复历史部署缺失的 app_meta 表（2026-08-29 线上发现）。
+
+    app_meta 建表原挂在 migrate_v8（2026-08-28 M3 时钟跳变），但 v8 早已随
+    session_cache 发布——旧部署 PRAGMA user_version 已 ≥8，迁移不会再重跑 v8，
+    导致时钟守卫/每日清理/审计锚点元数据全部因缺表报错（线上日志每 ~5 分钟刷
+    "no such table: app_meta"，并连带挤占签到日志尾部导致「回到今天」误判昨天）。
+    新增本迁移幂等补建，旧库自动补齐；新库 v8 已建则 IF NOT EXISTS 空操作。
+    教训：新表/新列必须新增迁移版本，不得修改已发布的旧迁移。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS app_meta (
+          key   TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+
+
 def set_user_sid(email, sid):
     """写入用户当前有效会话标识（批次7 P3-5）；email 须为活跃用户。"""
     conn = get_conn()
@@ -782,6 +803,7 @@ _MIGRATIONS = [
     (9, "v9_user_mail_notify", migrate_v9, True),
     (10, "v10_account_deleted_by", migrate_v10, True),
     (11, "v11_user_session_sid", migrate_v11, True),
+    (12, "v12_app_meta_repair", migrate_v12, True),
 ]
 
 
