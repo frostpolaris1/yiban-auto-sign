@@ -167,7 +167,8 @@ def main_loop(sleep_seconds=1):
         hm = (now.hour, now.minute)
         # 每次触发前重新解析 .env（2026-08-28 审查 F2）：
         # 子进程环境原先只在启动时构造一次，管理员在 Web 后台改的 YIBAN_GLOBAL_PAUSE
-        # （一键暂停）/ YIBAN_SUNDAY_SIGN / YIBAN_PROBE_* 在容器重启前静默不生效。
+        # （一键暂停）/ YIBAN_SUNDAY_SIGN / YIBAN_SATURDAY_SIGN / YIBAN_PROBE_* 在容器
+        # 重启前静默不生效。
         # 解析成本仅在真正触发的那一刻产生（每天 3 次），轮询循环内不读盘。
         if hm >= FIRST and done_sign_first != today and not _full_run_done_today():
             # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重

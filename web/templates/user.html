@@ -421,6 +421,7 @@
 const $ = (id) => document.getElementById(id);
 let accounts = [];
 let sundaySign = false;  // 周日签到开关（来自 /api/my-calendar 响应；开启后周日可查日志/不置灰）
+let saturdaySign = true; // 周六签到开关（默认开启；关闭后周六可查日志/不置灰）
 let editingIndex = null;
 
 let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
@@ -693,6 +694,7 @@ function renderCalendar(phone, key) {
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
     if (data.sunday_sign) sundaySign = true;  // 管理员开启周日签到后，周日正常显示与查询
+    if (data.saturday_sign === 0) saturdaySign = false;  // 管理员关闭周六签到后，周六置灰/不可查
     const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     const days = new Date(year, month, 0).getDate();
     for (let i = 0; i < firstDay; i++) {
@@ -702,9 +704,10 @@ function renderCalendar(phone, key) {
       const date = `${monthStr}-${calPad(d)}`;
       const stt = data.days && data.days[date] ? data.days[date][phone] || '' : '';
       const wd = new Date(year, month - 1, d).getDay();
-      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周日灰（未开启周日签到）/ 无记录默认
+      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周末灰（周六/周日各自开关关闭时）/ 无记录默认
       let numCls = 'text-zinc-600 dark:text-zinc-300';
       if (wd === 0 && !sundaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
+      else if (wd === 6 && !saturdaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
       else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
       else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
       const isToday = date === todayStr;
@@ -724,9 +727,10 @@ function renderCalendar(phone, key) {
 function calLoadLog(btn, date) {
   const key = btn.dataset.key;
   const box = $('cal-log-' + key);
-  // 周日无需签到（未开启周日签到），直接提示（不查询日志）
-  if (new Date(date + 'T00:00:00').getDay() === 0 && !sundaySign) {
-    box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">周日无需签到</div>';
+  // 周六/周日无需签到（各自开关关闭时），直接提示（不查询日志）
+  const wd0 = new Date(date + 'T00:00:00').getDay();
+  if ((wd0 === 0 && !sundaySign) || (wd0 === 6 && !saturdaySign)) {
+    box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${wd0 === 0 ? '周日' : '周六'}无需签到</div>`;
     return;
   }
   box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500">加载中…</div>';
