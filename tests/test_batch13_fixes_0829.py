@@ -94,7 +94,7 @@ class _B13WebBase(unittest.TestCase):
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
                 self.webapp, "send_notification",
-                side_effect=lambda t, c: self.alerts.append((t, c)),
+                side_effect=lambda t, c, urgent=False: self.alerts.append((t, c)),
             )
             p.start()
             self.addCleanup(p.stop)
@@ -280,6 +280,7 @@ class NotifyConfigApiTest(_B13WebBase):
             if k.startswith("YIBAN_NOTIFY_"):
                 os.environ.pop(k, None)
         self.webapp.notify._throttle_ts.clear()
+        self.webapp.notify._daily_state.update({"date": "", "count": 0})
 
     def test_get_config_default_off(self):
         c = self.webapp.create_app().test_client()
@@ -338,6 +339,41 @@ class NotifyConfigApiTest(_B13WebBase):
         r = c.put("/api/notify-config", json={"type": ""}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["enabled"])
+
+    def test_put_urgent_only_partial_preserves_channel(self):
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "admin", ADMIN_PASS)
+        c.put("/api/notify-config", json={
+            "type": "serverchan", "secret": "SCT406257TESTTESTTESTTESTTEST",
+        }, headers=self._csrf(t))
+        # 仅保存「仅重要告警」，不应清空已配置的通道与密钥（部分更新）
+        r = c.put("/api/notify-config", json={"urgent_only": True}, headers=self._csrf(t))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        data = r.get_json()
+        self.assertTrue(data["urgent_only"])
+        self.assertTrue(data["enabled"])
+        self.assertEqual(
+            self.webapp.notify.get_secret(), "SCT406257TESTTESTTESTTESTTEST",
+            "部分更新不得清除已配置密钥",
+        )
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_NOTIFY_URGENT_ONLY=1", env)
+        self.assertIn("YIBAN_NOTIFY_TYPE=serverchan", env)
+
+    def test_put_urgent_only_off(self):
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "admin", ADMIN_PASS)
+        c.put("/api/notify-config", json={"urgent_only": True}, headers=self._csrf(t))
+        r = c.put("/api/notify-config", json={"urgent_only": False}, headers=self._csrf(t))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertFalse(r.get_json()["urgent_only"])
+
+    def test_put_urgent_only_requires_master(self):
+        self._make_user("u@test.local")
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "u@test.local", USER_PASS)
+        r = c.put("/api/notify-config", json={"urgent_only": True}, headers=self._csrf(t))
+        self.assertEqual(r.status_code, 403)
 
     def test_notify_test_requires_config(self):
         c = self.webapp.create_app().test_client()

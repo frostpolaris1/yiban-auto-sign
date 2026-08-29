@@ -95,7 +95,7 @@ class _Batch11WebBase(unittest.TestCase):
         self.alerts = []
         self.user_mails = []
         p1 = mock.patch.object(self.webapp, "send_notification",
-                               side_effect=lambda t, c: self.alerts.append((t, c)))
+                               side_effect=lambda t, c, urgent=False: self.alerts.append((t, c)))
         p2 = mock.patch.object(self.webapp.mailer, "send_user",
                                side_effect=lambda to, s, c: self.user_mails.append((to, s)))
         p1.start(); p2.start()

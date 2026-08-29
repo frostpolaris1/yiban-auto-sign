@@ -1415,14 +1415,16 @@ def _nl_safe(value):
     return str(value).replace("\r", "\\r").replace("\n", "\\n")
 
 
-def send_notification(title, content):
+def send_notification(title, content, urgent=False):
     """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
 
     - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
       （按个人开关过滤）+ 所有开启接收的管理员用户邮箱；主管理员关闭
-      YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
+      YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。邮件不受 urgent 影响，始终发送。
     - Webhook：scripts/notify.py 组件（Server酱/自定义 URL，加密配置 +
-      同类型节流 + 响应检查，兼容旧明文 YIBAN_NOTIFY_URL）。未配置则静默跳过。
+      同类型节流 + 每日预算 + 响应检查，兼容旧明文 YIBAN_NOTIFY_URL）。未配置则静默跳过。
+      urgent=True 标记重要告警：设置页开启「仅推送重要告警」后，仅 urgent 通知会推手机，
+      其余（用户日常改密/签到结果类等）仅走邮件，把推送额度留给真正威胁系统/账号安全的事件。
     """
     extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
     recipients = db.admin_mail_recipients(extra)
@@ -1433,7 +1435,7 @@ def send_notification(title, content):
     elif recipients:
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, content)
+    notify.send(title, content, urgent=urgent)
 
 
 # 容量告警去重（进程内）：首次触顶通知一次，之后静默拒绝（防通知风暴；重启后重置）
@@ -1472,6 +1474,7 @@ def _notify_capacity_once(kind, limit, label):
         f"{label}已达上限",
         f"{label}已达上限（{limit}），新的注册/添加已被拒绝。\n"
         f"如需扩容请在 .env 调整 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS。",
+        urgent=True,
     )
 
 
@@ -2059,6 +2062,7 @@ def create_app(host=None):
                 f"（尝试用户名: {_nl_safe(username)}）\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"如非本人操作，请检查是否有人尝试暴力破解",
+                urgent=True,
             )
         return jsonify({"error": "用户名或密码错误"}), 401
 
@@ -2238,6 +2242,7 @@ def create_app(host=None):
                 f"密码已通过自助改密修改，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}。\n"
                 "如非本人操作，请立即按 README「主管理员权限追回」流程处理"
                 "（SSH 重写 YIBAN_ADMIN_PASSWORD + PW_VERSION 递增）。",
+                urgent=True,
             )
             logger.info("内置管理员密码已更新")
             return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
@@ -2653,8 +2658,10 @@ def create_app(host=None):
     def api_notify_config_save():
         """主管理员：保存消息推送配置（写 .env，密钥 AES-GCM 加密）。
 
-        body: {"type": "serverchan"|"custom"|"", "secret": "..."|"", "cooldown": 秒|省略}
-        type 为空 = 清除配置；secret 为空 = 清除密钥；cooldown 0 = 关闭同类型节流。
+        body: {"type": "serverchan"|"custom"|"", "secret": "..."|"", "cooldown": 秒|省略,
+               "urgent_only": true|false|省略, "daily_max": 条数|省略}
+        type 为空 = 清除配置；secret 为空 = 清除密钥；cooldown 0 = 关闭同类型节流；
+        urgent_only = 仅推送重要告警（非紧急仅走邮件）；daily_max 0 = 不限。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可操作"}), 403
@@ -2667,21 +2674,41 @@ def create_app(host=None):
             return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
         if ntype == "custom" and secret and not notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
-        updates = {"YIBAN_NOTIFY_TYPE": ntype}
-        if secret:
+        # 支持部分更新：仅在请求体出现的字段才写入（如「仅重要告警」开关单独保存时
+        # 不携带 type/secret，避免误清空已配置的推送通道）
+        updates = {}
+        if "type" in data:
+            updates["YIBAN_NOTIFY_TYPE"] = ntype
+            if secret:
+                try:
+                    enc = account_crypto.encrypt_text(secret, account_crypto.load_key(ENV_FILE))
+                    updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
+                except ValueError as e:
+                    return jsonify({"error": f"加密失败：{e}"}), 500
+            else:
+                updates["YIBAN_NOTIFY_SECRET_ENC"] = ""  # 空 = 删除键（关闭或换型不留旧钥）
+        elif secret:
+            # 仅带密钥（未带 type，如换钥）：保留类型，只更新密钥
             try:
                 enc = account_crypto.encrypt_text(secret, account_crypto.load_key(ENV_FILE))
                 updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
             except ValueError as e:
                 return jsonify({"error": f"加密失败：{e}"}), 500
-        else:
-            updates["YIBAN_NOTIFY_SECRET_ENC"] = ""  # 空 = 删除键
         if "cooldown" in data:
             try:
                 cd = max(0, int(data["cooldown"]))
             except (TypeError, ValueError):
                 return jsonify({"error": "冷却参数无效"}), 400
             updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd) if cd else ""  # 0 = 删除键（用默认）
+        if "urgent_only" in data:
+            # 仅重要告警：true → 非紧急通知不推手机（邮件不受影响）；false → 全部推送
+            updates["YIBAN_NOTIFY_URGENT_ONLY"] = "1" if data["urgent_only"] else ""
+        if "daily_max" in data:
+            try:
+                dm = max(0, int(data["daily_max"]))
+            except (TypeError, ValueError):
+                return jsonify({"error": "每日上限参数无效"}), 400
+            updates["YIBAN_NOTIFY_DAILY_MAX"] = "0" if dm == 0 else str(dm)  # 0 = 不限（显式写 0）
         write_env_batch(ENV_FILE, updates)
         db.audit(
             session.get("username") or "?",
@@ -3087,6 +3114,7 @@ def create_app(host=None):
                             f"{', '.join(purge_targets[:20])}，"
                             f"操作者 {session.get('username', '?')}，时间 "
                             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                            urgent=True,
                         )
                 except db.DuplicateOwnerError:
                     db.audit(
@@ -4073,6 +4101,7 @@ def create_app(host=None):
                 f"（会话用户: {_nl_safe(username)}）\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 "如非本人操作，可能是账号或会话被他人使用，请立即检查。",
+                urgent=True,
             )
         return jsonify({"error": "当前密码不正确，操作已取消"}), 400
 
@@ -4242,6 +4271,7 @@ def create_app(host=None):
                 f"{', '.join(_mask_email(e) for e in purged[:20])}，"
                 f"操作者 {session.get('username', '?')}，时间 "
                 f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
             )
         return jsonify({
             "ok": True,
@@ -4395,6 +4425,7 @@ def create_app(host=None):
                         f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
                         f"操作者 {session.get('username', '?')}，时间 "
                         f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        urgent=True,
                     )
                 # 批次7 P3-5：批量重置密码后轮换各目标 sid（吊销被盗旧会话）
                 if action == "reset_password":
@@ -4408,6 +4439,7 @@ def create_app(host=None):
                         f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
                         f"操作者 {session.get('username', '?')}，时间 "
                         f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        urgent=True,
                     )
                 if action in ("set_admin", "unset_admin"):
                     # 批次11 N6：提降权即时告警（权限面变更应可感知）
@@ -4417,6 +4449,7 @@ def create_app(host=None):
                         f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
                         f"操作者 {session.get('username', '?')}，时间 "
                         f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        urgent=True,
                     )
             db.audit(
                 session.get("username") or "?",
@@ -4502,6 +4535,7 @@ def create_app(host=None):
                 "权限变更告警",
                 f"用户 {_mask_email(email)} 角色 → {new_role}，"
                 f"操作者 {username}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
             )
             return jsonify(
                 {
@@ -4551,6 +4585,7 @@ def create_app(host=None):
                 f"用户 {_mask_email(email)} 的密码已被管理员重置，"
                 f"操作者 {session.get('username', '?')}，"
                 f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
             )
             return jsonify({"ok": True, "msg": f"{email} 密码已重置"})
 
@@ -4613,6 +4648,7 @@ def create_app(host=None):
                     f"完全删除用户 {_mask_email(email)} 及其全部易班账号，"
                     f"操作者 {session.get('username', '?')}，时间 "
                     f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    urgent=True,
                 )
                 return jsonify({"ok": True, "msg": f"{email} 已完全删除"})
             logger.info("清空用户 %s 的易班账号（保留用户）", _mask_email(email))
@@ -5308,7 +5344,7 @@ def create_app(host=None):
                         "审计记录可能被篡改/删除，或存在未留痕的管理操作，请立即核查！"
                     )
                     logger.error("审计链异常告警: %s", _alert)
-                    send_notification("审计链异常告警", _alert)
+                    send_notification("审计链异常告警", _alert, urgent=True)
                 elif _health["anchor_msg"]:
                     # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
                     logger.info("审计链提示: %s", _health["anchor_msg"])
@@ -5326,7 +5362,7 @@ def create_app(host=None):
                         "python3 scripts/clock_guard_reset.py --confirm 重置。"
                     )
                     logger.error("时钟守卫告警: %s", _cg.get("note", ""))
-                    send_notification("时钟跳变守卫告警", _cg_alert)
+                    send_notification("时钟跳变守卫告警", _cg_alert, urgent=True)
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
                 logger.warning("审计链每日校验/锚点写入失败: %s", e)
