@@ -9,7 +9,7 @@
 - P2-7  audit_verify 只读化：缺库报错退出、不执行迁移
 - P1-1/P2-10 child_env 共享模块：YIBAN_ 白名单 + 非法键名丢弃 + 覆盖注入
 - A1    SSH 重设主管理员密码 → 迁移检测明文与哈希不一致 → 递增 PW_VERSION
-- A2/A3 批量端点单次 100 上限（users/batch、accounts/batch）
+- A2/A3 批量端点单次 10 上限（users/batch、accounts/batch）
 - A4    settings 部分更新不再静默清空未提交的延迟字段
 - A5    start_delay_max/gap_max 收归主管理员（注册管理员 403）
 - A6    登录成功写审计（action=login，IP 匿名化）
@@ -331,23 +331,23 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         t = self._login(c, "reg-admin@test.local", USER_PASS)
         return c, t
 
-    def test_users_batch_cap_100(self):
+    def test_users_batch_cap_10(self):
         c, t = self._master()
         r = c.post("/api/users/batch", json={
             "action": "delete",
-            "emails": [f"u{i}@x.test" for i in range(101)],
+            "emails": [f"u{i}@x.test" for i in range(11)],
         }, headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("100", r.get_json()["error"])
+        self.assertIn("10", r.get_json()["error"])
 
-    def test_accounts_batch_cap_100(self):
+    def test_accounts_batch_cap_10(self):
         c, t = self._master()
         r = c.post("/api/accounts/batch", json={
             "action": "delete",
-            "ids": list(range(101)),
+            "ids": list(range(11)),
         }, headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("100", r.get_json()["error"])
+        self.assertIn("10", r.get_json()["error"])
 
     def test_settings_partial_update_preserves_delays(self):
         """A4：只提交 sunday_sign 不得清空已配置的延迟。"""
