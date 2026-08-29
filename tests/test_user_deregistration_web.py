@@ -245,7 +245,9 @@ class UserDeregistrationWebTest(unittest.TestCase):
 
     # ---- 管理员手动清除已注销用户（2026-08-17）----
     def _purge(self, c, token, emails):
-        return c.post("/api/users/deleted/purge", json={"emails": emails},
+        # 2026-08-29 二次鉴权：彻底清除不可逆，须输入当前管理员密码
+        return c.post("/api/users/deleted/purge",
+                      json={"emails": emails, "confirm_password": ADMIN_PASS},
                       headers={"X-CSRF-Token": token})
 
     def test_purge_deleted_users_success(self):

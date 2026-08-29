@@ -44,6 +44,7 @@ import account_crypto
 import db  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
 import env_lock  # 探针 once 模式自动关闭 .env（跨进程写锁）
 import mailer  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
+import notify  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import requests
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
@@ -1620,56 +1621,20 @@ def _notify_url_desc(url):
     return "<无法解析>"
 
 
-def send_notification(title, content, url):
-    """通过 Server 酱 / Bark / 企业微信等 webhook 发送通知（即时推送）。
+def send_notification(title, content, url=None):
+    """通过 Webhook 推送组件发送通知（Server酱/自定义 URL，见 scripts/notify.py）。
 
-    2026-08-21 对抗性审查加固：禁用重定向——30x 会把通知内容 POST 到
-    重定向目标主机（webhook 服务被劫持/恶意 301 时内容外泄到第三方）。
+    2026-08-29 组件化：Server酱适配（title+desp）、同类型告警节流、服务端响应
+    检查（配额/限频可见）、自定义 URL SSRF 白名单；兼容旧明文 YIBAN_NOTIFY_URL
+    （notify.get_secret 回退，url 参数与组件配置等价，由组件统一处理）。
     说明：签到脚本给管理员的**邮件**不在此处发送（避免逐条轰炸），而是由
     各触发点 _collect_admin_mail 收集、任务结束 _flush_admin_mail_summary 汇总。
     """
-    if not url:
-        return
-    # 批次7 P4-3：与 web 侧 _is_safe_notify_url 对齐——webhook 由管理员配置，
-    # 但配置失误（http 明文/内网地址）会把签到结果与账号信息外泄或被打回环
     try:
-        _parts = urlsplit(url)
-        _host = _parts.hostname or ""
-        import ipaddress as _ipa
-        _is_private = False
-        try:
-            _is_private = _ipa.ip_address(_host).is_private or _ipa.ip_address(_host).is_loopback
-        except ValueError:
-            _is_private = _host in ("localhost",) or _host.endswith(".local")
-        if _parts.scheme != "https" or _is_private:
-            logger.error(
-                "通知 URL 不合规（仅允许 https 且非内网/回环地址），已拒发: %s",
-                _notify_url_desc(url),
-            )
-            return
-    except ValueError:
-        return
-    url_desc = _notify_url_desc(url)
-    try:
-        if url.startswith("http"):
-            resp = requests.post(
-                url, json={"title": title, "content": content}, timeout=10,
-                allow_redirects=False,
-            )
-            if resp.status_code < 400:
-                logger.info("通知发送成功: %s", title)
-            else:
-                logger.warning(
-                    "通知发送失败（%s）: 状态码 %s，URL %s",
-                    title, resp.status_code, url_desc,
-                )
+        notify.send(title, content)
     except Exception as e:
-        # 不打印 exc_info，也不打印 str(e)：异常文本可能包含 webhook URL/token；
-        # 只记录异常类型名与脱敏后的 scheme://host[:port]
-        logger.warning(
-            "通知发送失败（%s）: %s，URL %s",
-            title, type(e).__name__, url_desc,
-        )
+        # 组件异常不得拖累签到主流程；只记类型名（异常文本可能含 URL/token）
+        logger.warning("通知推送组件调用失败: %s", type(e).__name__)
 
 
 # A 线合并版收集器：签到脚本运行期把"发给管理员"的邮件先收集，任务结束统一汇总

@@ -194,3 +194,55 @@ def decrypt_password(entry, key, phone):
         return plain.decode("utf-8")
     except UnicodeDecodeError as e:
         raise ValueError("密码解密失败（明文不是合法 UTF-8，密文已损坏）") from e
+
+
+# ---------------------------------------------------------------------------
+# 通用文本加解密（固定 AAD）：供非账号类敏感配置（如 webhook 密钥）复用
+# ---------------------------------------------------------------------------
+
+def encrypt_text(plain, key, aad=b"yiban-notify"):
+    """AES-256-GCM 加密任意文本为密文对象；空明文返回空字符串。
+
+    AAD 固定（默认 b"yiban-notify"）：与账号密码加密（AAD=手机号）区分，
+    用于通知类敏感配置（如 Server酱 SendKey / 自定义 webhook URL）的静态加密。
+    """
+    if not plain:
+        return ""
+    nonce = secrets.token_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    cipher.update(aad)
+    ct, tag = cipher.encrypt_and_digest(str(plain).encode("utf-8"))
+    return {
+        "v": SCHEMA_VERSION,
+        "nonce": nonce.hex(),
+        "ct": ct.hex(),
+        "tag": tag.hex(),
+    }
+
+
+def decrypt_text(entry, key, aad=b"yiban-notify"):
+    """解密密文对象为明文 str（AAD 固定）。
+
+    entry 不是密文对象 / 密文被篡改 / 密钥不匹配（tag 校验失败）时抛
+    ValueError——绝不静默返回错误结果。
+    """
+    if not is_encrypted(entry):
+        raise ValueError("密文对象格式非法（缺 v/ct 键）")
+    if entry.get("v") != SCHEMA_VERSION:
+        raise ValueError(f"不支持的密文版本: {entry.get('v')}（当前支持 v{SCHEMA_VERSION}）")
+    try:
+        nonce = bytes.fromhex(str(entry["nonce"]))
+        ct = bytes.fromhex(str(entry["ct"]))
+        tag = bytes.fromhex(str(entry["tag"]))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError("密文对象字段非法（nonce/ct/tag 应为十六进制字符串）") from e
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    cipher.update(aad)
+    try:
+        plain = cipher.decrypt_and_verify(ct, tag)
+    except ValueError as e:
+        raise ValueError("解密失败（密钥不匹配或密文被篡改）") from e
+    try:
+        return plain.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError("解密失败（明文不是合法 UTF-8，密文已损坏）") from e

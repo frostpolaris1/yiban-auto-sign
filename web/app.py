@@ -23,7 +23,6 @@ import calendar
 import contextlib
 import hashlib
 import html
-import ipaddress
 import json
 import logging
 import os
@@ -231,10 +230,12 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
 </body>
 </html>"""
 import db  # noqa: E402
+import account_crypto  # noqa: E402  # 敏感配置加密（AES-GCM，ACCOUNTS_KEY）
 import child_env  # noqa: E402
 import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
 import env_lock  # noqa: E402
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
+import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
 # 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
@@ -428,6 +429,12 @@ DELETE_COOLDOWN_SEC = 60
 SESSION_ABS_DAYS_DEFAULT = 7
 SESSION_ABS_TTL_SECONDS = SESSION_ABS_DAYS_DEFAULT * 86400
 DELETE_MAX_REQUESTS_PER_IP = 5
+# 高危删除操作冷却（2026-08-29 被盗号滥用面加固）：同一管理员在窗口内最多执行
+# ADMIN_DELETE_MAX 次删除类高危操作（批量删除/彻底清除/完全删除），防被盗会话
+# 快速反复删除用户并刷告警邮件。与注销冷却同语义，超限 429 且不暴露冷却参数。
+# .env 可调（YIBAN_ADMIN_DELETE_COOLDOWN_SEC / YIBAN_ADMIN_DELETE_MAX，0=关闭）。
+ADMIN_DELETE_COOLDOWN_SEC = 60
+ADMIN_DELETE_MAX = 5
 # 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐（7 天，安全审查 2026-08-16）；
 # 与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
 # 2026-08-28 审查 C-1：原实现硬编码 7，与 db.SOFT_DELETE_RETENTION_DAYS（账号保留期
@@ -1398,32 +1405,6 @@ def check_connectivity():
     return ok, detail
 
 
-def _is_safe_notify_url(url):
-    """L-01 通知 URL 白名单：必须 https:// 且主机非回环/内网/链路本地。
-
-    YIBAN_NOTIFY_URL 携带告警内容（IP/用户名/时间）出站；http 明文或指向
-    回环/内网（127/8、10/8、172.16/12、192.168/16、169.254/16、::1、
-    localhost 字面量）的目标会变成 SSRF 探测跳板或明文外带通道，一律拒绝。
-    域名目标放行（不做解析级阻断，DNS rebinding 由出站请求侧超时兜底）。
-    """
-    from urllib.parse import urlparse
-
-    try:
-        o = urlparse(url)
-    except ValueError:
-        return False
-    if o.scheme != "https" or not o.hostname:
-        return False
-    host = o.hostname.strip().lower()
-    if host == "localhost":
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return True  # 域名：非 IP 字面量，放行
-    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
-
-
 def _nl_safe(value):
     """告警正文插值净化（2026-08-27 对抗性审查 P2-4）：压平 CR/LF。
 
@@ -1435,42 +1416,50 @@ def _nl_safe(value):
 
 
 def send_notification(title, content):
-    """通过 YIBAN_NOTIFY_URL webhook 发送告警通知（.env 优先，静默失败）。
+    """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
 
-    与 scripts/signin.py 的 send_notification 同款渠道：Server 酱 / Bark / 企业微信。
-    L-01：发送前过 _is_safe_notify_url 白名单（https + 非回环/内网），
-    违规拒绝发送并告警（不回显完整 URL，防 sendkey 泄露进日志）。
-    A 线邮箱通知与 webhook 并存：即使未配置 YIBAN_NOTIFY_URL，配置了
-    YIBAN_MAIL_* 仍会发管理员告警邮件（mailer 内部静默失败，不影响本流程）。
-    收件人 = ADMIN_TO（按个人开关过滤）+ 所有开启接收的管理员用户邮箱：
-    普通管理员自动获得告警收件权，关闭 mail_notify 后从收件人剔除；
-    主管理员关闭 YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
+    - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
+      （按个人开关过滤）+ 所有开启接收的管理员用户邮箱；主管理员关闭
+      YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
+    - Webhook：scripts/notify.py 组件（Server酱/自定义 URL，加密配置 +
+      同类型节流 + 响应检查，兼容旧明文 YIBAN_NOTIFY_URL）。未配置则静默跳过。
     """
     extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
     recipients = db.admin_mail_recipients(extra)
-    if recipients:
+    # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
+    # SMTP 额度）；webhook 由 notify.py 独立节流
+    if recipients and _mail_alert_due(title):
         mailer.send_admin_alert(title, content, to=",".join(recipients))
-    env = read_env(ENV_FILE)
-    url = env.get("YIBAN_NOTIFY_URL", "").strip() or os.environ.get("YIBAN_NOTIFY_URL", "").strip()
-    if not url:
-        return
-    if not _is_safe_notify_url(url):
-        from urllib.parse import urlparse
-
-        logger.warning(
-            "YIBAN_NOTIFY_URL 未通过白名单校验（需 https:// 且主机非回环/内网），已拒绝发送: host=%s",
-            urlparse(url).hostname,
-        )
-        return
-    try:
-        requests.post(url, json={"title": title, "content": content}, timeout=10)
-        logger.info("告警通知已发送: %s", title)
-    except Exception as e:
-        logger.warning("告警通知发送失败: %s", e)
+    elif recipients:
+        logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
+    # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
+    notify.send(title, content)
 
 
 # 容量告警去重（进程内）：首次触顶通知一次，之后静默拒绝（防通知风暴；重启后重置）
 _capacity_alerts = {"users": False, "accounts": False}
+
+
+# 高危告警邮件节流（2026-08-29 被盗号滥用面加固）：同类型告警邮件在窗口内只发一封，
+# 防被盗管理员会话通过反复触发高危操作（批量删除等）耗尽 SMTP 发件额度；webhook
+# 保持实时逐条推送，不受影响。窗口可调：YIBAN_MAIL_ALERT_COOLDOWN（秒，0=关闭，默认 300）。
+DEFAULT_MAIL_ALERT_COOLDOWN = 300
+_mail_alert_ts = {}
+_mail_alert_lock = threading.Lock()
+
+
+def _mail_alert_due(title):
+    """同类型告警邮件节流判断：窗口内已发过返回 False（本次跳过邮件，仅走 webhook）。"""
+    window = load_env_int(ENV_FILE, "YIBAN_MAIL_ALERT_COOLDOWN", DEFAULT_MAIL_ALERT_COOLDOWN)
+    if window <= 0:
+        return True  # 0 = 关闭节流
+    now = time.time()
+    with _mail_alert_lock:
+        last = _mail_alert_ts.get(title, 0.0)
+        if now - last < window:
+            return False
+        _mail_alert_ts[title] = now
+        return True
 
 
 def _notify_capacity_once(kind, limit, label):
@@ -1506,6 +1495,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-23 系统设置页容量统计口径修正（0.22.1）
 # 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
 # 2026-08-26 界面动效审查修复：过渡属性收敛、抽屉遮罩淡入与曲线、登录页切换统一、Toast 动效、reduced-motion 支持（0.24.1）
+# 2026-08-29 通知推送与账户安全加固：消息推送组件（Server酱/自定义 URL，加密配置）+ 高危告警邮件节流 + 高危删除冷却 + 删除二次鉴权（0.26.0）
 APP_VERSION = "0.26.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -1696,6 +1686,8 @@ def create_app(host=None):
     _restore_fail_rate = {}
     # 账号验证尝试配额 {username.lower(): (count, window_start)}（2026-08-27 P1-2）
     _verify_limits = {}
+    # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
+    _admin_delete_limits = {}
 
     def _ip_store_trim(store, max_age):
         """IP 计数 dict 超限时清理过期条目：仅当长度超上限才遍历，避免每请求开销。
@@ -2650,6 +2642,69 @@ def create_app(host=None):
             f"操作者 {session.get('username', '?')}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         )
         return jsonify(resp)
+
+    # ---- 消息推送（Webhook 组件：Server酱/自定义 URL，2026-08-29）----
+    @app.route("/api/notify-config")
+    def api_notify_config():
+        """消息推送配置状态（脱敏：密钥打码），供管理后台显示。"""
+        return jsonify(notify.get_config())
+
+    @app.route("/api/notify-config", methods=["PUT"])
+    def api_notify_config_save():
+        """主管理员：保存消息推送配置（写 .env，密钥 AES-GCM 加密）。
+
+        body: {"type": "serverchan"|"custom"|"", "secret": "..."|"", "cooldown": 秒|省略}
+        type 为空 = 清除配置；secret 为空 = 清除密钥；cooldown 0 = 关闭同类型节流。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可操作"}), 403
+        data = _json_body()
+        ntype = str(data.get("type", "")).strip().lower()
+        secret = str(data.get("secret", "")).strip()
+        if ntype not in ("serverchan", "custom", ""):
+            return jsonify({"error": "未知的通知类型"}), 400
+        if ntype == "serverchan" and secret and not secret.startswith("SCT"):
+            return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
+        if ntype == "custom" and secret and not notify.is_safe_url(secret):
+            return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
+        updates = {"YIBAN_NOTIFY_TYPE": ntype}
+        if secret:
+            try:
+                enc = account_crypto.encrypt_text(secret, account_crypto.load_key(ENV_FILE))
+                updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
+            except ValueError as e:
+                return jsonify({"error": f"加密失败：{e}"}), 500
+        else:
+            updates["YIBAN_NOTIFY_SECRET_ENC"] = ""  # 空 = 删除键
+        if "cooldown" in data:
+            try:
+                cd = max(0, int(data["cooldown"]))
+            except (TypeError, ValueError):
+                return jsonify({"error": "冷却参数无效"}), 400
+            updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd) if cd else ""  # 0 = 删除键（用默认）
+        write_env_batch(ENV_FILE, updates)
+        db.audit(
+            session.get("username") or "?",
+            "notify_config", "notify_config",
+            json.dumps({"type": ntype or "off"}, ensure_ascii=False),
+        )
+        # 变更即时告警（走既有 A 线邮件 + webhook 双通道）
+        send_notification(
+            "消息推送配置变更告警",
+            f"消息推送配置已变更: 类型 {ntype or '关闭'}，"
+            f"操作者 {session.get('username', '?')}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        )
+        return jsonify(notify.get_config())
+
+    @app.route("/api/notify-test", methods=["POST"])
+    def api_notify_test():
+        """主管理员：发送一条测试消息验证推送配置。"""
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可操作"}), 403
+        ok = notify.send_test()
+        if not ok:
+            return jsonify({"error": "测试消息发送失败（未配置或推送被拒，详见服务日志）"}), 400
+        return jsonify({"ok": True, "msg": "测试消息已发送，请检查手机/接收端"})
 
     # ---- 账号管理 ----
     @app.route("/api/accounts")
@@ -3960,6 +4015,67 @@ def create_app(host=None):
             and str(session.get("username") or "").strip().lower() == _builtin_admin_email()
         )
 
+    def _admin_delete_limited():
+        """高危删除操作限速（2026-08-29）：同一管理员窗口内超限返回 True（应拒绝 429）。
+
+        键 = 会话用户名（统一小写）；窗口/上限由 .env 调整，0 = 关闭。
+        与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，之后拒绝。
+        """
+        window = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", ADMIN_DELETE_COOLDOWN_SEC)
+        limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
+        if window <= 0 or limit <= 0:
+            return False
+        cnt, _start, allowed = _bump_window_count(
+            _admin_delete_limits,
+            (session.get("username") or "?").strip().lower(),
+            time.time(),
+            window,
+            limit=limit,
+        )
+        return not allowed
+
+    def _reconfirm_admin_password(password, action_label):
+        """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
+
+        内置管理员（.env）走 verify_admin（哈希优先，fail-closed）；注册管理员
+        （users 表）走 password_hash 比对。失败计数与登录/改密共用 _login_fails
+        （达阈值锁定并告警）；成功清除失败计数。返回 None 表示通过，否则返回 4xx 响应。
+        """
+        if not session.get("auth"):
+            return jsonify({"error": "未登录"}), 401
+        username = session.get("username", "")
+        ip = _client_ip()
+        now = time.time()
+        fail_key = (ip, username.strip().lower())
+        with _rate_lock:
+            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
+            if now < lock_until:
+                return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
+        if _is_builtin_admin_session():
+            ok = verify_admin(username, password)
+        else:
+            u = db.find_user(username.strip().lower())
+            ok = bool(u) and check_password_hash(u.get("password_hash", ""), password)
+        if ok:
+            with _rate_lock:
+                _login_fails.pop(fail_key, None)
+            return None
+        nfails = _bump_login_failure(_login_fails, fail_key, now)
+        if nfails >= LOGIN_MAX_FAILS:
+            with _rate_lock:
+                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
+            logger.warning("二次鉴权失败次数过多，IP %s 锁定 %s 秒（%s）", ip, LOGIN_LOCK_SECONDS, action_label)
+            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+        if nfails == LOGIN_FAIL_NOTIFY:
+            send_notification(
+                "高危操作二次鉴权失败告警",
+                f"IP {_nl_safe(ip)} 对「{action_label}」连续 {nfails} 次口令验证失败"
+                f"（会话用户: {_nl_safe(username)}）\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "如非本人操作，可能是账号或会话被他人使用，请立即检查。",
+            )
+        return jsonify({"error": "当前密码不正确，操作已取消"}), 400
+
     def _effective_role(username, pw_version=None):
         """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
         内置管理员 → admin；注册用户 → users 表的 role；查无此人 → None。
@@ -4098,6 +4214,14 @@ def create_app(host=None):
             return jsonify({"error": f"单次最多清除 {BATCH_OP_LIMIT} 个用户"}), 400
         if any(not isinstance(e, str) or len(e) > 64 for e in emails):
             return jsonify({"error": "邮箱格式不正确"}), 400
+        # 被盗号滥用面加固（2026-08-29）：物理清除不可逆 → 二次鉴权 + 同管理员限速
+        if _admin_delete_limited():
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        pw_err = _reconfirm_admin_password(
+            str(data.get("confirm_password", "")), "彻底清除已注销用户"
+        )
+        if pw_err:
+            return pw_err
         with _file_lock:
             purged = db.purge_deleted_users_hard(emails)
             if purged:
@@ -4160,6 +4284,16 @@ def create_app(host=None):
         # （普通管理员可重置密码/删除普通用户，不可改权限、不可重置/删除其他管理员）
         if action in ("set_admin", "unset_admin") and not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
+        # 被盗号滥用面加固（2026-08-29）：删除用户 = 高危不可逆操作 → 二次鉴权 +
+        # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）
+        if action == "delete":
+            if _admin_delete_limited():
+                return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
+            pw_err = _reconfirm_admin_password(
+                str(data.get("confirm_password", "")), "批量删除用户"
+            )
+            if pw_err:
+                return pw_err
 
         with _file_lock:
             users = load_users()
@@ -4432,6 +4566,16 @@ def create_app(host=None):
         if email.strip().lower() == _builtin_admin_email().strip().lower():
             return jsonify({"error": "内置管理员不可删除"}), 400
         is_master = _is_builtin_admin_session()
+        # 被盗号滥用面加固（2026-08-29）：完全删除用户 = 高危不可逆 → 二次鉴权 +
+        # 同管理员限速（accounts_only 仅清空账号，保留用户，不做此限制）
+        if mode == "full":
+            if _admin_delete_limited():
+                return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
+            pw_err = _reconfirm_admin_password(
+                str(data.get("confirm_password", "")), "完全删除用户"
+            )
+            if pw_err:
+                return pw_err
         with _file_lock:
             target = db.find_user(email)
             if not target:

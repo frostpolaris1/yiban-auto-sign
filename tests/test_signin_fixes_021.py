@@ -201,34 +201,16 @@ class SigninFixes021Test(unittest.TestCase):
         eff_hi = datetime.now().replace(hour=23, minute=59, second=0, microsecond=0)
         self.assertLessEqual(captured["nxt"], eff_hi, "重试落点不得越过窗口末端")
 
-    # ---- M16 ----
-    def test_send_notification_warns_on_non_2xx_with_safe_url(self):
-        class FakeResp:
-            status_code = 500
+    # ---- 通知组件化（2026-08-29）----
+    def test_send_notification_delegates_to_notify_component(self):
+        """signin 侧 webhook 已组件化：send_notification 委托 scripts/notify.py。
 
-        warns = []
-        with mock.patch.object(signin.requests, "post", return_value=FakeResp()), \
-             mock.patch.object(signin.logger, "warning", side_effect=lambda *a, **k: warns.append((a, k))):
-            signin.send_notification(
-                "易班签到失败", "原因", "https://user:pass@example.com:8443/hook?token=1"
-            )
-        self.assertEqual(len(warns), 1)
-        args, kwargs = warns[0]
-        self.assertIn("500", str(args))
-        self.assertIn("https://example.com:8443", str(args))
-        self.assertNotIn("user:pass", str(args))
-        self.assertNotIn("token=1", str(args))
-        self.assertFalse(kwargs.get("exc_info", False), "异常/失败日志不应开启 exc_info")
-
-    def test_send_notification_exception_logs_without_exc_info(self):
-        warns = []
-        with mock.patch.object(signin.requests, "post", side_effect=RuntimeError("boom")), \
-             mock.patch.object(signin.logger, "warning", side_effect=lambda *a, **k: warns.append((a, k))):
-            signin.send_notification("t", "c", "https://example.com/hook")
-        self.assertEqual(len(warns), 1)
-        args, kwargs = warns[0]
-        self.assertFalse(kwargs.get("exc_info", False))
-        self.assertNotIn("boom", str(args), "异常分支不应记录原始异常消息")
+        webhook 的格式适配（Server酱 title+desp）、节流、响应检查与日志脱敏
+        测试见 tests/test_notify_0829.py（实现已从 signin 内联迁出）。
+        """
+        with mock.patch.object(signin.notify, "send", return_value=True) as m:
+            signin.send_notification("标题", "内容", "https://legacy.example.com/hook")
+        m.assert_called_once_with("标题", "内容")
 
     # ---- 低项：user_paused 显式布尔解析 ----
     def test_parse_account_dict_user_paused_explicit_truthy(self):
@@ -242,20 +224,6 @@ class SigninFixes021Test(unittest.TestCase):
                 {"phone": "13800138000", "password": "p", "user_paused": raw}
             )
             self.assertFalse(acc.user_paused, raw)
-
-
-def test_send_notification_exception_does_not_log_raw_url_or_exception_message(caplog):
-    """I2：异常消息含 webhook token 时，日志不得泄露原始 URL/异常文本。"""
-    with mock.patch.object(
-        signin.requests,
-        "post",
-        side_effect=RuntimeError("https://example.com/hook?token=secret"),
-    ), caplog.at_level("WARNING", logger="yiban"):
-        signin.send_notification("t", "c", "https://example.com/hook?token=secret")
-    assert "token=secret" not in caplog.text
-    assert "https://example.com/hook?token=secret" not in caplog.text
-    assert "RuntimeError" in caplog.text
-    assert "https://example.com" in caplog.text
 
 
 if __name__ == "__main__":
