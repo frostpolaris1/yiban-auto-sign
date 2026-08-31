@@ -67,7 +67,10 @@ _conn = None
 # 会触发 "cannot start a transaction" / InterfaceError misuse——2026-08-15 本地并发验证暴露）
 _conn_lock = threading.RLock()
 _db_file = DB_DEFAULT
-_env_file = None  # .env 路径（密钥来源；None=account_crypto 默认 .env）
+# .env 路径（加密密钥来源）：None = 未显式指定，由 _resolve_key_env_file 按
+# YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（批次14 P2-5；此时若回落值来自 cwd
+# 且文件不存在，生成新密钥会被 _assert_key_source_certain 拒绝，避免游离密钥）
+_env_file = None
 
 # 审计 HMAC 密钥缓存与互斥（Phase 3）
 _AUDIT_KEY_CACHE = None
@@ -87,7 +90,8 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
     env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
-    None 时走 account_crypto 默认（.env 于当前工作目录）。
+    None 时按 YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（批次14 P2-5：CLI/取证类
+    调用方应显式传入，勿让密钥来源依赖 cwd）。
     cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
     校验类工具应传 False，避免只读校验改变数据。
     migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
@@ -140,6 +144,38 @@ def is_initialized():
     不启用缓存——避免 get_conn 隐式 init 在工作目录创建空库。
     """
     return _conn is not None
+
+
+def resolve_env_file(cli_value=None):
+    """解析显式密钥来源路径：命令行 --env → YIBAN_ENV_FILE → None（批次14 P2-5）。
+
+    给 CLI/取证脚本传给 init_db(env_file=…) 用：这样密钥来源与进程 cwd 解耦。
+    刻意不回落成字面量 ".env"——那等于把"来源不确定"伪装成"来源已指定"，
+    会绕过 _assert_key_source_certain 的防游离落盘检查；返回 None 时由
+    _resolve_key_env_file 的有序回落链决定实际路径并在来源不确定时拒绝生成新钥。
+    """
+    v = (cli_value or "").strip()
+    if v:
+        return v
+    return (os.environ.get("YIBAN_ENV_FILE") or "").strip() or None
+
+
+def require_existing_env_file(cli_value=None):
+    """resolve_env_file + 显式来源存在性校验（批次14 修复轮1③）；不存在则抛 ValueError。
+
+    为什么必须校验：--env 一旦给出，db 层就认为"密钥来源已确定"，防游离落盘的
+    _assert_key_source_certain 对它不再生效。路径打错（少写一层目录、部署迁移后
+    旧路径）时，工具会在该位置新建 .env 并生成一把**新**审计密钥，把这次留痕用
+    第三把钥匙签名——真实哈希链从这条起判破，正是本任务要治的病症的新入口。
+    未显式给出（cli_value 为空）时不校验，交由回落链判定，保持既有行为。
+    """
+    path = resolve_env_file(cli_value)
+    if (cli_value or "").strip() and not os.path.exists(path):
+        raise ValueError(
+            f"--env 指定的 .env 不存在: {path}（拒绝在该路径新建 .env 并生成新审计密钥；"
+            "请核对路径，或去掉 --env 改用 YIBAN_ENV_FILE）"
+        )
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +350,28 @@ def _decode_audit_key(raw):
     return key
 
 
+def _resolve_key_env_file():
+    """解析密钥来源 .env 路径：_env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
+
+    批次14 P2-5：原写法 `env_file = _env_file or ".env"` 把密钥来源绑在 cwd 上——
+    取证/恢复类 CLI（rekey / audit_verify / clock_guard_reset /
+    list_duplicate_owners）未传 env_file 时，在应用根之外运行会读不到旧钥，进而
+    就地生成新钥落盘，同时产出"游离在错误目录的 .env"和"用错密钥签的审计行"
+    （真实审计链随即判破，而这正是取证要用的工具）。
+
+    返回 (path, from_cwd_default)：from_cwd_default=True 表示该路径纯粹靠 cwd 默认
+    ".env" 兜底（既无 init_db(env_file=...) 也无 YIBAN_ENV_FILE）——此时文件不存在
+    意味着密钥来源不确定，调用方须拒绝生成新密钥。
+    """
+    explicit = (_env_file or "").strip()
+    if explicit:
+        return explicit, False
+    env_var = (os.environ.get("YIBAN_ENV_FILE") or "").strip()
+    if env_var:
+        return env_var, False
+    return ".env", True
+
+
 def _write_audit_key_to_env_file(env_file, key):
     """把新生成的审计密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
 
@@ -344,14 +402,34 @@ def _write_audit_key_to_env_file(env_file, key):
         return key
 
 
+def _assert_key_source_certain(what, env_file, from_cwd):
+    """批次14 P2-5：密钥来源只能靠 cwd 默认 ".env" 兜底且该文件不存在时拒绝生成。
+
+    文件存在时行为完全不变（正常首启在应用根生成）；只有"来源不确定"（既无
+    显式 env_file 也无 YIBAN_ENV_FILE，且当前目录没有 .env）才抛错——宁可不写
+    也不要在错误目录留下第二个密钥源。
+    """
+    if from_cwd and not os.path.exists(env_file):
+        logger.error(
+            "%s生成中止：当前工作目录无 .env，且调用方未指定密钥来源"
+            "（既未传 init_db(env_file=…) 也未设 YIBAN_ENV_FILE）——"
+            "此时就地生成会在错误目录留下游离密钥，并使审计链/追踪哈希从此不可复现",
+            what,
+        )
+        raise ValueError(f"{what}来源不确定，拒绝生成新密钥；请用 --env 或 YIBAN_ENV_FILE 指定 .env 路径")
+
+
 def _audit_key(create=True):
     """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env。
 
+    .env 路径按 init_db(env_file=…) → YIBAN_ENV_FILE → 当前目录 ".env" 有序回落
+    （批次14 P2-5：不再无条件依赖 cwd）。
     create=True（默认）时缺失会生成并写入 .env；create=False 供只读校验，
-    密钥缺失返回 None，由调用方按 fail-closed 处理。
+    密钥缺失返回 None，由调用方按 fail-closed 处理。批次14 P2-5 起，生成前
+    若判定密钥来源只能靠 cwd 兜底且文件不存在，则拒绝生成并抛 ValueError。
     """
     global _AUDIT_KEY_CACHE
-    env_file = _env_file or ".env"
+    env_file, from_cwd = _resolve_key_env_file()
     env_key = os.environ.get("YIBAN_AUDIT_KEY", "").strip()
     if env_key:
         _AUDIT_KEY_CACHE = _decode_audit_key(env_key)
@@ -367,6 +445,7 @@ def _audit_key(create=True):
             return _AUDIT_KEY_CACHE
         if not create:
             return None
+        _assert_key_source_certain("审计密钥", env_file, from_cwd)
         logger.info("未找到 YIBAN_AUDIT_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
         _AUDIT_KEY_CACHE = _write_audit_key_to_env_file(env_file, secrets.token_bytes(32))
         return _AUDIT_KEY_CACHE
@@ -479,9 +558,13 @@ def _write_track_salt_to_env_file(env_file, salt):
 
 
 def _track_salt():
-    """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。"""
+    """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。
+
+    .env 路径回落顺序与审计密钥一致（批次14 P2-5）：init_db(env_file=…) →
+    YIBAN_ENV_FILE → 当前目录 ".env"；来源只能靠 cwd 兜底且文件不存在时拒绝生成。
+    """
     global _TRACK_SALT_CACHE
-    env_file = _env_file or ".env"
+    env_file, from_cwd = _resolve_key_env_file()
     env_salt = os.environ.get("YIBAN_TRACK_SALT", "").strip()
     if env_salt:
         if len(env_salt) < 16:
@@ -499,6 +582,7 @@ def _track_salt():
         if file_salt:
             _TRACK_SALT_CACHE = file_salt
             return file_salt
+        _assert_key_source_certain("追踪盐", env_file, from_cwd)
         logger.info("未找到 YIBAN_TRACK_SALT，已生成新盐并写入 %s（chmod 600）", env_file)
         _TRACK_SALT_CACHE = _write_track_salt_to_env_file(env_file, secrets.token_hex(32))
         return _TRACK_SALT_CACHE
@@ -1190,6 +1274,57 @@ def clock_guard_alert():
     except Exception as e:  # noqa: BLE001
         logger.warning("读取时钟守卫告警失败: %s", e)
         return None
+
+
+# ---------------------------------------------------------------------------
+# app_meta 通用单键读写（批次14 Task 3 修复轮 1 ④）
+# ---------------------------------------------------------------------------
+# app_meta 此前只有内联 SQL（见 _record_clock_guard_alert / record_audit_anchor）。
+# 告警通道健康日报需要一把"当日串键"做跨进程重启的每日去重——进程内 dict（如
+# _mail_alert_ts）重启即失效，兜不住"每次重启各发一封"。故在此收口一对最小读写：
+# 不新建表、不加迁移，值统一按 TEXT 存（调用方自行放日期串或 JSON）。
+def get_meta(key, default=""):
+    """读取 app_meta 单键值（str）。键不存在 / 表缺失（旧库未跑 v12）/ 读失败 → default。
+
+    刻意不抛：本函数的调用方是"尽力而为"的元数据留痕（如日报去重），读失败时按
+    "无记录"继续即可，不能把兜底路径变成新故障点。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+        if row is None or row["value"] is None:
+            return default
+        return str(row["value"])
+    except Exception as e:
+        logger.warning("读取 app_meta[%s] 失败（按无记录处理）: %s", key, e)
+        return default
+
+
+def set_meta(key, value):
+    """写入/更新 app_meta 单键值（INSERT OR REPLACE）。返回 True 表示已落库。
+
+    与其余写路径同口径走 _begin_immediate（WAL 下该 INSERT 即持 RESERVED 写锁）；
+    失败只告警并返回 False——元数据留痕不得放大故障，也不得留下未决事务。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            _begin_immediate(conn)
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                    (key, str(value)),
+                )
+                conn.commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                raise
+        return True
+    except Exception as e:
+        logger.warning("写入 app_meta[%s] 失败: %s", key, e)
+        return False
 
 
 def _clock_jump_guard(conn, key):
@@ -3241,9 +3376,15 @@ def _delete_user_delete_requests(conn, email):
 # ---------------------------------------------------------------------------
 # 会话 Cookie 缓存（v8，docs/research-lumjiel-core-sign-20260822.md §七）
 # ---------------------------------------------------------------------------
-# 会话 TTL：服务端会话真实有效期未知，保守取值——宁多登一次，不可拿过期
-# 凭据撞风控。调度为每日一次签到，跨天复用需在 .env 调大本值（如 24~36）。
-SESSION_CACHE_TTL_HOURS_DEFAULT = 12
+# 会话有效期两道判据（2026-08-31 公测复盘后重定）：
+# ① 主判据 = 同一业务日：签到是"一天一签"的业务，缓存只在当天内复用（同日重试 /
+#    首轮到兜底补签 / 当天手动重试）。隔夜缓存收益最小、风险最大——生产当天 3 个
+#    账号正是复用了前一晚 20:35 写入、被服务端作废的会话。
+# ② 护栏 = TTL 小时数：同一天内的附加上限，默认由 12 降到 6（同日窗口最长 80 分钟，
+#    6 小时已极宽）。旧口径"调大 TTL 以支持跨天复用"已被 ① 取代：再调大也解锁不了
+#    跨天复用，只能放宽同日内的时长。
+# 服务端会话真实有效期未知，取值原则不变：宁多登一次，不可拿过期凭据撞风控。
+SESSION_CACHE_TTL_HOURS_DEFAULT = 6
 # TTL 钳制边界（M13）：上限 72h（再大会把远过期凭据反复送去撞风控/已改密账号），
 # 下限 1h（低于 1h 缓存命中形同虚设）。越界不静默接受，回默认并告警。
 SESSION_CACHE_TTL_HOURS_MIN = 1.0
@@ -3258,6 +3399,23 @@ SESSION_CACHE_TTL_HOURS_MAX = 72.0
 # 派生密钥变更后旧缓存解密必然失败 → 读侧按未命中清行，用户重登即可重建
 # （会话缓存本就是可再生优化数据，此失效路径可接受）。
 SESSION_CACHE_HKDF_INFO = b"yiban-session-cache-v1"
+
+# 业务日界固定按东八区算，不用宿主本地时区：宿主为 UTC（Docker 镜像默认）时，
+# "本地自然日"要到北京时间 08:00 才切日，前一晚写入的隔夜缓存恰好还在同一个
+# UTC 日内，跨日判据形同虚设。
+SESSION_CACHE_BIZ_UTC_OFFSET_HOURS = 8
+_SESSION_CACHE_BIZ_TZ = datetime.timezone(
+    datetime.timedelta(hours=SESSION_CACHE_BIZ_UTC_OFFSET_HOURS)
+)
+
+
+def _session_cache_now():
+    """会话缓存统一时钟（东八区裸时间，与库内 %Y-%m-%d %H:%M:%S 串同制）。
+
+    写入与过期判定必须用同一个钟：宿主为 UTC 时若写入取北京时间、判定取本地时间，
+    updated_at 会凭空"领先"8 小时，TTL 判据永远不会命中。
+    """
+    return datetime.datetime.now(_SESSION_CACHE_BIZ_TZ).replace(tzinfo=None)
 
 
 def _session_cache_key():
@@ -3315,11 +3473,19 @@ def get_session_cache(phone):
         ).fetchone()
         if row is None:
             return None
-        cutoff = (
-            datetime.datetime.now()
-            - datetime.timedelta(hours=_session_cache_ttl_hours())
-        ).strftime("%Y-%m-%d %H:%M:%S")
-        if row["updated_at"] <= cutoff:
+        now = _session_cache_now()
+        ttl_hours = _session_cache_ttl_hours()
+        cutoff = (now - datetime.timedelta(hours=ttl_hours)).strftime("%Y-%m-%d %H:%M:%S")
+        today = now.strftime("%Y-%m-%d")
+        # 两道判据取更严者，且跨日判定排在前面：否则"昨晚 20:35 写的缓存今早 06:31
+        # 复用"会被报成"超出 TTL"，把业务日语义问题误读成秒数配置问题。
+        if row["updated_at"][:10] != today:
+            reason = f"跨业务日（缓存日 {row['updated_at'][:10]} ≠ 今日 {today}）"
+        elif row["updated_at"] <= cutoff:
+            reason = f"同日内超出 TTL {ttl_hours} 小时"
+        else:
+            reason = None
+        if reason:
             try:
                 _begin_immediate(conn)
                 conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
@@ -3328,6 +3494,7 @@ def get_session_cache(phone):
                 with contextlib.suppress(Exception):
                     conn.rollback()
                 logger.warning("清理过期会话缓存失败: %s", phone)
+            logger.info("会话缓存作废（%s）: %s，本次真实登录", reason, phone)
             return None
         try:
             obj = json.loads(row["cookies_ct"])
@@ -3361,7 +3528,7 @@ def set_session_cache(phone, cookie_json, csrf):
 
     BEGIN IMMEDIATE：跨进程写锁（signin 与 web 并存时串行化写路径）。
     """
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = _session_cache_now().strftime("%Y-%m-%d %H:%M:%S")
     key = _session_cache_key()  # L-03：HKDF 派生密钥，与账号凭据密钥隔离
     cookies_ct = json.dumps(
         account_crypto.encrypt_password(str(cookie_json), key, phone)

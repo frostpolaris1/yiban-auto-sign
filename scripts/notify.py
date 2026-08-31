@@ -6,8 +6,10 @@
 - YIBAN_NOTIFY_SECRET_ENC      : 加密后的密文 JSON（serverchan=SendKey；custom=URL）
 - YIBAN_NOTIFY_COOLDOWN        : 同类型告警节流秒数（默认 60，0=关闭）
 - YIBAN_NOTIFY_URGENT_ONLY     : 1 = 仅推送重要（urgent）告警；0/空 = 全部推送
-- YIBAN_NOTIFY_DAILY_MAX       : 每日推送条数上限（0=不限；默认 5，匹配 Server酱
-                                  免费版 5 条/天；超限后当日不再推送，邮件通道不受影响）
+- YIBAN_NOTIFY_DAILY_MAX       : 每日推送条数上限，语义收窄为「非紧急（general）账」
+                                  （0=不限；默认 5，匹配 Server酱 免费版 5 条/天；
+                                  超限后当日不再推送，邮件通道不受影响）
+- YIBAN_NOTIFY_URGENT_DAILY_MAX: 「紧急（urgent）账」每日上限（0=不限；默认 3）
 
 兼容旧配置：未配置加密密文时回退明文 YIBAN_NOTIFY_URL（custom 语义），
 旧部署迁移后无需手动改 .env。
@@ -15,8 +17,19 @@
 防滥用（2026-08-29 被盗号滥用面加固）：
 - 同类型告警节流：窗口内同标题只推一条（防盗号/异常反复触发刷爆 Server酱等
   第三方配额与管理员手机）；
-- 每日预算硬上限：当天推满 YIBAN_NOTIFY_DAILY_MAX 后停止（邮件仍全量送达），
-  保证不超出 Server酱 免费额度；
+- 每日预算硬上限（批次14 P2-1 拆两本账）：非紧急推满 YIBAN_NOTIFY_DAILY_MAX、
+  紧急推满 YIBAN_NOTIFY_URGENT_DAILY_MAX 后各自停手（邮件仍全量送达）。旧口径
+  两类共用一份额度，未认证攻击者用「登录失败告警」（urgent）约 5 分钟即可烧掉
+  当日全部额度，之后审计链异常等真告警在手机端全灭；
+- 失败退还：额度在发送成功后才最终扣减，HTTP 异常 / 服务端非零 code / 白名单拒发
+  一律退回，不浪费真告警的额度。退还按"占用时发出的凭证"执行——凭证带着账本标识与
+  占用当日，因此跨日（23:59:59 占用、次日才失败）不会退到次日账上，管理员中途改
+  上限也不会出现幻影退还 / 漏退；
+- 耗尽可见：某本账耗尽时在**消耗动作内部当场**记 warning 并挂一次性告知标记
+  （pop_exhaustion_notice，返回哪些账本耗尽；紧急 / 非紧急每日各一次），不等下一次
+  尝试被拒才补——否则"最后一条恰好打满、当日再无新告警"时告知永远发不出去，那正是
+  本档要治的静默失效。节流命中 / 额度耗尽 / 非紧急被过滤这三类静默跳过各有一行 info
+  日志（同原因在窗口内只记一次），运维能区分"配置没生效"与"本来就没额度"；
 - 仅重要告警：YIBAN_NOTIFY_URGENT_ONLY 开启后，非紧急（如用户日常改密、签到
   结果类）通知不推手机，把预算留给真正威胁系统/账号安全的事件；
 - 检查服务端响应：Server酱 code!=0 / 非 JSON 一律记日志（配额耗尽、限频可见），
@@ -47,21 +60,62 @@ _PREFIX = "YIBAN_NOTIFY_"
 SERVERCHAN_TURBO_HOST = "sctapi.ftqq.com"
 DEFAULT_COOLDOWN = 60
 DEFAULT_DAILY_MAX = 5
+# 批次14 P2-1：紧急告警另开一本独立额度，保证噪声烧完非紧急额度后仍有手机通道
+DEFAULT_URGENT_DAILY_MAX = 3
 DEFAULT_URL_TIMEOUT = 10
 MAX_TITLE_CHARS = 32
+# 跳过原因日志的去重窗口（秒）：同一原因窗口内只记一行，避免被刷爆日志
+SKIP_LOG_WINDOW = 60
 
 _throttle_ts = {}
 _throttle_lock = threading.Lock()
 
 # 每日推送预算（进程内计数，重启清零；Server酱免费 5 条/天由服务端自身响应兜底，
-# 本计数用于提前感知并停止，避免徒劳请求）
-_daily_state = {"date": "", "count": 0}
-_daily_lock = threading.Lock()
+# 本计数用于提前感知并停止，避免徒劳请求）。批次14 P2-1：拆成非紧急 / 紧急两本账，
+# 各自按日归零、各自持锁——signin 与 web 两个进程各持一份额度沿用既有事实，本轮不合并。
+# 账本用字符串标识（_LEDGER_IDS）而不是布尔：退还凭证要把"退到哪本账"写死在占用时刻，
+# 布尔在传参链上一旦取反就是静默错位；字符串标识在凭证与跳过日志里都能直接读出来。
+#
+# 每本账的 notice 子字典是"耗尽告知"的进程内状态（本组件只暴露状态，发邮件由调用方
+# （web）负责；标记按日重置，见 _roll_locked），三个字段语义各自独立：
+#   pending   待取走的告知（pop_exhaustion_notice 取走）
+#   notified  当日已交付给调用方——不再重复挂标记，保证"每本账每日各一次"
+#   warned    当日已记过 warning；额度被退还撤销时**不**撤销它，否则通道长期失败
+#             （每次占满都退还重来）会把 warning 刷成日志风暴
+#
+# 为什么 notice 与 count 共用同一把账本锁（批次14 修复轮2）：判定"是否虚警"要读 count、
+# 撤回告知要写 pending，两步必须在同一个临界区内完成。原先 pending 自持一把全局锁，
+# 判定与撤回之间留了一道缝——另一线程（web 是 Flask threaded=True，设置页/健康检查确有
+# 并发发送）可以在这道缝里把额度重新占满并挂上真实 pending，再被这一次陈旧 discard 抹掉；
+# 又因 warned 不撤销、已 notified 的账本不再重挂，当日恰无后续被拒尝试时"告知静默"就
+# 复现了。收进同一把锁后，挂标记与撤标记天然互斥；且仍是"一把锁管一件事"，
+# 全程不存在嵌套持锁或跨锁调用，无死锁面。
+_general_daily = {
+    "state": {"date": "", "count": 0},
+    "notice": {"pending": False, "notified": False, "warned": False},
+    "lock": threading.Lock(),
+}
+_urgent_daily = {
+    "state": {"date": "", "count": 0},
+    "notice": {"pending": False, "notified": False, "warned": False},
+    "lock": threading.Lock(),
+}
+_LEDGER_IDS = ("general", "urgent")
+_LEDGERS = {"general": _general_daily, "urgent": _urgent_daily}
+
+# 跳过原因日志去重表：{原因: 上次记录时间}
+_skip_logged = {}
+_skip_log_lock = threading.Lock()
+
+
+def _env_path():
+    """本模块解析 .env 的唯一口径：YIBAN_ENV_FILE 优先（去空白），否则当前目录 .env。"""
+    return os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
 
 
 def _read_env_file():
     """读取 .env（utf-8-sig 兼容 BOM），供读配置用。"""
-    path = os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
+    path = _env_path()
     result = {}
     try:
         with open(path, encoding="utf-8-sig") as f:
@@ -75,14 +129,24 @@ def _read_env_file():
     return result
 
 
-def _env_str(key):
-    """环境变量优先，回退 .env（与 web/signin 惯例一致）。"""
-    return os.environ.get(_PREFIX + key, "").strip() or _read_env_file().get(_PREFIX + key, "").strip()
+def _env_str(key, envs=None):
+    """环境变量优先，回退 .env（与 web/signin 惯例一致）。
+
+    envs：调用方本轮已解析好的 .env 快照（_read_env_file() 的返回值）。不传则本函数
+    自己读文件——一次调用读一遍全文件，get_config 里 6 个键就是 6 次磁盘 + 6 次解析
+    （批次14 修复轮⑤），故允许把同一轮的解析结果传进来复用。
+    """
+    value = os.environ.get(_PREFIX + key, "").strip()
+    if value:
+        return value
+    if envs is None:
+        envs = _read_env_file()
+    return envs.get(_PREFIX + key, "").strip()
 
 
-def _env_int(key, default):
+def _env_int(key, default, envs=None):
     try:
-        return max(0, int(_env_str(key)))
+        return max(0, int(_env_str(key, envs)))
     except (TypeError, ValueError):
         return default
 
@@ -141,43 +205,59 @@ def is_safe_url(url):
 # 配置读取（加密存储）
 # ---------------------------------------------------------------------------
 
-def get_secret():
+def get_secret(envs=None):
     """返回当前加密配置解出的明文密钥（serverchan=SendKey；custom=URL）。
 
     未配置 / 密文损坏 / 密钥不匹配均返回空（并记日志），绝不抛异常。
+    envs：调用方本轮已解析的 .env 快照，省略则自行读取（见 _env_str）。
     """
-    enc = _env_str("SECRET_ENC")
+    enc = _env_str("SECRET_ENC", envs)
     if not enc:
-        return _env_str("URL") or ""  # 兼容旧明文 YIBAN_NOTIFY_URL
+        return _env_str("URL", envs) or ""  # 兼容旧明文 YIBAN_NOTIFY_URL
     try:
         entry = json.loads(enc)
     except ValueError:
         logger.warning("YIBAN_NOTIFY_SECRET_ENC 解析失败，消息推送不可用")
         return ""
     try:
-        return account_crypto.decrypt_text(entry, account_crypto.load_key())
-    except ValueError as e:
+        # 批次14：必须显式传路径。load_key() 不带参数会回落到 cwd/.env，而本模块
+        # 的密文是按 YIBAN_ENV_FILE 读的——容器里 cwd=/app、真实配置在 /data/.env，
+        # 于是"cwd 下没有 .env"→ 就地生成一把游离新密钥并写盘（P2-5 同源），
+        # 结果是用错钥解密 → 推送通道静默死亡，还额外在镜像工作目录留下密钥文件。
+        return account_crypto.decrypt_text(entry, account_crypto.load_key(_env_path()))
+    except (ValueError, OSError) as e:
+        # OSError：密钥文件存在但读不到（权限/占用），按"解不出"处理而非炸主流程
         logger.warning("消息推送密钥解密失败: %s", e)
         return ""
 
 
 def get_config():
     """配置概览（脱敏），供设置页/日志展示。"""
-    ntype = _env_str("TYPE").strip().lower()
-    secret = get_secret()
+    # 本轮所有键共用一份 .env 解析结果：下面 6 个字段各读一遍文件是 6 次磁盘 + 6 次
+    # 全文件解析（批次14 修复轮⑤），设置页轮询时这笔开销并不便宜
+    envs = _read_env_file()
+    ntype = _env_str("TYPE", envs).strip().lower()
+    secret = get_secret(envs)
     if not ntype and secret:
         ntype = "custom"  # 兼容旧明文 YIBAN_NOTIFY_URL
     enabled = bool(ntype and secret)
+    # 上限各解析一次，紧接着复用给 daily_max / daily_remaining（原两者各自再读一遍文件）
+    general_max = _daily_limit("general", envs)
+    urgent_max = _daily_limit("urgent", envs)
     return {
         "ok": True,
         "enabled": enabled,
         "type": ntype if enabled else "",
         "secret_masked": _mask_secret(secret) if enabled else "",
         "configured": bool(ntype or secret),
-        "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN),
-        "urgent_only": bool(_env_int("URGENT_ONLY", 0)),
-        "daily_max": _env_int("DAILY_MAX", DEFAULT_DAILY_MAX),
-        "daily_remaining": _daily_remaining(),
+        "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN, envs),
+        "urgent_only": bool(_env_int("URGENT_ONLY", 0, envs)),
+        # 批次14 P2-1：daily_* 两字段语义收窄为「非紧急账」（字段名不变，前端与既有
+        # 调用方无需改），紧急账并列暴露为 urgent_daily_*
+        "daily_max": general_max,
+        "daily_remaining": _daily_remaining("general", general_max),
+        "urgent_daily_max": urgent_max,
+        "urgent_daily_remaining": _daily_remaining("urgent", urgent_max),
     }
 
 
@@ -204,31 +284,227 @@ def _daily_today():
     return time.strftime("%Y-%m-%d")
 
 
-def _daily_remaining():
-    """今日剩余可推送条数；无上限（DAILY_MAX<=0 或未配置上限）返回 None。"""
-    limit = _env_int("DAILY_MAX", DEFAULT_DAILY_MAX)
+def _ledger(ledger_id):
+    """账本字典（{"state","notice","lock"}），ledger_id 取 general / urgent。
+
+    threading.Lock 不可重入：调用方持有返回值的 lock 时只能直接读写 state / notice
+    （跨日与告知标记重置用 _roll_locked），不得再进入本模块任何取账本的函数。
+    """
+    return _LEDGERS[ledger_id]
+
+
+def _roll_locked(ledger_id, today):
+    """跨日归零（调用方必须已持有该账本的 lock）。
+
+    计数与耗尽告知标记同生同灭：换日时一起重置，才不会留下"昨日挂着的 pending
+    在今日仍被 pop 出来"的错位（告知标记按日重置的既有语义）。
+    """
+    led = _LEDGERS[ledger_id]
+    if led["state"]["date"] == today:
+        return
+    led["state"]["date"] = today
+    led["state"]["count"] = 0
+    led["notice"].update({"pending": False, "notified": False, "warned": False})
+
+
+def _daily_limit(ledger_id, envs=None):
+    """该本账的每日上限（0 = 不限）；紧急账用 URGENT_DAILY_MAX，非紧急用 DAILY_MAX。"""
+    if ledger_id == "urgent":
+        return _env_int("URGENT_DAILY_MAX", DEFAULT_URGENT_DAILY_MAX, envs)
+    return _env_int("DAILY_MAX", DEFAULT_DAILY_MAX, envs)
+
+
+def _daily_remaining(ledger_id, limit=None):
+    """该本账今日剩余可推送条数；无上限（对应键 <=0）返回 None。
+
+    limit 可由调用方传入已解析好的上限，避免同一次调用里重复解析 .env（见 get_config）。
+    """
+    if limit is None:
+        limit = _daily_limit(ledger_id)
     if limit <= 0:
         return None
-    with _daily_lock:
-        if _daily_state["date"] != _daily_today():
-            _daily_state["date"] = _daily_today()
-            _daily_state["count"] = 0
-        return max(0, limit - _daily_state["count"])
+    led = _ledger(ledger_id)
+    today = _daily_today()
+    with led["lock"]:
+        _roll_locked(ledger_id, today)
+        return max(0, limit - led["state"]["count"])
 
 
-def _consume_daily_budget():
-    """尝试消耗一条当日预算；已超限返回 False（本次不发，邮件通道不受影响）。"""
-    limit = _env_int("DAILY_MAX", DEFAULT_DAILY_MAX)
+class BudgetTicket:
+    """一次额度占用的凭证：由 _consume_daily_budget 发出，发送失败时交 _refund_daily_budget。
+
+    凭证自己带着三个事实（批次14 修复轮②③）：
+      allowed —— 本次是否放行；
+      ledger  —— 占了哪本账，None 表示本次没占额度（不限额 / 已被拒 / force）；
+      day     —— 占用当日的日期串，退还只在同一天内生效。
+    为什么不用"全局登记表 + 凭证号"：登记表要在发送成功时也保留条目才防得住重复退还，
+    于是每发出一条就永久多一条残留，日积月累顶到上限后反而开始漏退；而跨日清扫登记表
+    又要引入第三把锁。凭证随 send() 的局部变量生灭，没有这类状态。
+    凭证一次性：take() 取用一次即作废，同一笔占用退两次在这里被挡住；它只在单次 send()
+    调用内由同一线程传递，故不做加锁。
+    """
+
+    # 顺序按 ruff RUF023 要求排（自然序），与 __init__ 的形参顺序无对应关系
+    __slots__ = ("_used", "allowed", "day", "ledger")
+
+    def __init__(self, allowed, ledger, day):
+        self.allowed = allowed
+        self.ledger = ledger
+        self.day = day
+        self._used = False
+
+    def take(self):
+        """取用凭证换取退还资格；返回 (账本标识, 占用当日) 或 None（没占额度 / 已退过）。"""
+        if self._used or self.ledger is None:
+            return None
+        self._used = True
+        return self.ledger, self.day
+
+
+def _consume_daily_budget(ledger_id):
+    """尝试占一条该本账当日额度，返回 BudgetTicket。
+
+    - ticket.allowed=False：额度已耗尽，本次不发（邮件通道不受影响），且没占额度；
+    - allowed=True 且 ledger=None：该本账不限额（上限 <=0），本来就没占额度；
+    - ledger 非 None：确实占了一条，发送失败时凭它退还。
+    """
+    today = _daily_today()
+    limit = _daily_limit(ledger_id)
     if limit <= 0:
-        return True  # 0 = 不限
-    with _daily_lock:
-        if _daily_state["date"] != _daily_today():
-            _daily_state["date"] = _daily_today()
-            _daily_state["count"] = 0
-        if _daily_state["count"] >= limit:
-            return False
-        _daily_state["count"] += 1
-        return True
+        return BudgetTicket(True, None, today)  # 0 = 不限：不占额度，也就没有可退的东西
+    led = _ledger(ledger_id)
+    first_warning = False
+    with led["lock"]:
+        _roll_locked(ledger_id, today)
+        state = led["state"]
+        if state["count"] >= limit:
+            allowed, charged = False, None
+        else:
+            state["count"] += 1
+            allowed, charged = True, ledger_id
+        # 批次14 修复轮①：耗尽这件事必须在"本次消耗正好打满"或"本次直接被拒"时就记账，
+        # 不能等下一次尝试被拒才补标记。否则当日最后一条恰好把额度用光、之后再没有新告警，
+        # budget_exhausted_today() 一直为真而告知永远取不出来——"额度用尽"又变回静默失效，
+        # 正是本任务要治的那种病。跨日语义不变：由 _roll_locked 按日重置。
+        # 修复轮2：挂标记就写在这把账本锁的临界区内，与 _refund_daily_budget 里
+        # "判定虚警 + 撤回"共用同一把锁，两者不可能交错（原先锁外补标记会留下陈旧撤回的窗口）。
+        if state["count"] >= limit:  # 被拒（没占）与恰好占满此刻都等于"当日已耗尽"
+            first_warning = _mark_exhausted_locked(ledger_id)
+    if first_warning:  # 锁外落日志：logger 可能触发文件 I/O，不持锁执行
+        _log_exhaustion_warning(ledger_id)
+    return BudgetTicket(allowed, charged, today)
+
+
+def _refund_daily_budget(ticket):
+    """发送失败退还已占额度（批次14 P2-1：额度只在真发出去后才算花掉）。
+
+    只认占用时发出的凭证，不再重读上限、不再猜"当初占没占"：
+    - 批次14 修复轮②：凭证带着占用当日，跨日（23:59:59 占用、次日才失败）直接作废——
+      次日账本已被 _roll_locked 归零，再 -1 就是凭空吞掉次日一条额度；
+    - 批次14 修复轮③：发送途中管理员把上限从 N 改成 0（不限）或反向时，靠重读 limit
+      判断会出现幻影退还 / 漏退，凭证已固化"确实占了"这一事实。
+    """
+    taken = ticket.take() if ticket is not None else None
+    if taken is None:
+        return  # 没占过额度（force / 不限额 / 被拒）或已退过，没什么可退
+    ledger_id, day = taken
+    today = _daily_today()
+    if day != today:
+        return  # 跨日作废（占用当日那次归零已经把它算清了）
+    limit_now = _daily_limit(ledger_id)  # 锁外解析，别持锁做文件 I/O
+    led = _ledger(ledger_id)
+    with led["lock"]:
+        _roll_locked(ledger_id, today)
+        if led["state"]["count"] <= 0:
+            return
+        led["state"]["count"] -= 1
+        # 退完还有富余（或该账本已被改成不限额）→ 之前的"耗尽"是虚警，就地撤回。
+        # 批次14 修复轮2：判定与撤回必须写在同一个临界区里。旧写法是"锁内算 phantom、
+        # 锁外调 _unmark_exhausted"，这道缝足够另一线程把额度重新占满并挂上真实 pending，
+        # 再被这次基于陈旧 count 的撤回抹掉——真实耗尽的告知就此静默（warned 不撤销、
+        # 已 notified 不再重挂，当日无后续被拒尝试就不会再有机会发出去）。
+        if limit_now <= 0 or led["state"]["count"] < limit_now:
+            _unmark_exhausted_locked(ledger_id)
+
+
+def _mark_exhausted_locked(ledger_id):
+    """某本账当日耗尽：挂上待取走的告知标记（调用方必须已持有该账本的 lock）。
+
+    返回"当日是否首次 warning"，由调用方在锁外落日志：标记必须与额度计数同处一个
+    临界区（修复轮2），而 logger 可能触发文件 I/O，不宜持锁执行。
+    """
+    notice = _LEDGERS[ledger_id]["notice"]
+    # 已交付过（notified）就不再重挂：告知邮件每日每本账各一封
+    if not notice["notified"]:
+        notice["pending"] = True
+    first_warning = not notice["warned"]
+    if first_warning:
+        notice["warned"] = True
+    return first_warning
+
+
+def _log_exhaustion_warning(ledger_id):
+    """额度耗尽的那一行 warning（每天每本账只记一次，避免被反复触发的告警刷屏）。"""
+    logger.warning(
+        "今日%s消息推送额度已用尽（YIBAN_NOTIFY_%s），当日同类告警不再推手机，请查邮件",
+        "紧急" if ledger_id == "urgent" else "非紧急",
+        "URGENT_DAILY_MAX" if ledger_id == "urgent" else "DAILY_MAX",
+    )
+
+
+def _unmark_exhausted_locked(ledger_id):
+    """额度因失败退还而回到未耗尽：撤回还没被取走的告知（调用方必须已持有该账本 lock）。
+
+    只撤 pending：notified（调用方已取走、邮件已发出）无法撤销，warned 也不撤销，
+    以免通道长期失败时"占满→退还→再占满"把 warning 刷成日志风暴。
+    """
+    _LEDGERS[ledger_id]["notice"]["pending"] = False
+
+
+def budget_exhausted_today(urgent=None):
+    """该本账今日额度是否已用尽；urgent=None 表示"任一账用尽"。无上限恒 False。"""
+    if urgent is None:
+        return budget_exhausted_today(True) or budget_exhausted_today(False)
+    remaining = _daily_remaining("urgent" if urgent else "general")
+    return remaining is not None and remaining == 0
+
+
+def pop_exhaustion_notice():
+    """取走"当日有额度耗尽待告知"的标记，返回耗尽的账本标识列表，如 ["general", "urgent"]。
+
+    语义是**每本账每日各一次**（不是每天总共一次）：非紧急与紧急各自挂标记，一次 pop
+    把当次所有待告知的账本一并取走并置假。因此调用方应当**一次调用拿到整个列表**、
+    在告知邮件里逐项写清"紧急额度已用尽 / 非紧急额度已用尽"，不要反复调用到空为止
+    （那样两本账同日会发出两封信）。无待告知时返回空列表（falsy），
+    `if notify.pop_exhaustion_notice():` 这类旧写法依旧成立。
+    本组件不反向依赖邮件通道，只暴露状态。跨日未取走的标记不补发（按日重置）。
+    """
+    today = _daily_today()
+    kinds = []
+    # 逐本账各取一次：一次只持一把账本锁（绝不两把同持，也不在锁内套别的锁）。
+    # 批次14 修复轮2 把标记改入账本锁后，"两本账同时挂标记"这一瞬间不再被一把全局锁
+    # 覆盖，但每本账自己的"挂 / 撤 / 取走"仍是原子的——每本账每日各一封的语义不变。
+    for ledger_id in _LEDGER_IDS:
+        led = _ledger(ledger_id)
+        with led["lock"]:
+            _roll_locked(ledger_id, today)
+            notice = led["notice"]
+            if notice["pending"]:
+                notice["pending"] = False
+                notice["notified"] = True
+                kinds.append(ledger_id)
+    return kinds
+
+
+def _log_skip(reason, msg, *args):
+    """跳过发送的告知日志：同一原因在一个窗口内只记一行（可运维定位，不刷屏）。"""
+    now = time.time()
+    with _skip_log_lock:
+        last = _skip_logged.get(reason, 0.0)
+        if now - last < SKIP_LOG_WINDOW:
+            return
+        _skip_logged[reason] = now
+    logger.info(msg, *args)
 
 
 def _send_serverchan(sendkey, title, content):
@@ -287,35 +563,55 @@ def send(title, content, force=False, urgent=False):
     """发送一条 webhook 通知（serverchan / custom）。返回是否成功发送。
 
     未配置 / 不启用 / 非紧急（仅重要告警开启时）/ 每日预算耗尽 / 节流命中 /
-    发送失败均返回 False（静默，不拖累主流程）。
+    发送失败均返回 False（静默，不拖累主流程，但会在日志留一行可定位的原因）。
     force=True 跳过节流与每日预算（供"测试推送"用）。
-    urgent=True 标记重要告警：YIBAN_NOTIFY_URGENT_ONLY 开启后仅此类会推送
-    （邮件通道不受影响）。
+    urgent=True 标记重要告警：
+    - YIBAN_NOTIFY_URGENT_ONLY 开启后仅此类会推送（邮件通道不受影响）；
+    - 额度走紧急账（YIBAN_NOTIFY_URGENT_DAILY_MAX），与非紧急账互不挤占（批次14 P2-1）；
+    - 只有真正发送成功才扣额度，失败（含 HTTP 异常、服务端非零 code、白名单拒发）凭
+      占用时拿到的退还凭证退回。
     """
-    ntype = _env_str("TYPE").strip().lower()
-    secret = get_secret()
+    # 同一逻辑段内复用一份 .env 快照：TYPE / SECRET_ENC / URGENT_ONLY 三个键共用，
+    # 避免对同一文件重复解析。注意这不是"整次 send 只解析一次"——节流窗口
+    # （_throttle_due）与额度上限（_consume_daily_budget / _daily_limit）仍各自按需解析，
+    # 它们要读的是发送当刻的最新配置，把快照传下去反而会读到陈旧上限。
+    envs = _read_env_file()
+    ntype = _env_str("TYPE", envs).strip().lower()
+    secret = get_secret(envs)
     if not ntype:
         if not secret:
             return False
         ntype = "custom"  # 兼容旧明文 YIBAN_NOTIFY_URL（未配 TYPE 但有 URL 时按 custom 发送）
     if not secret:
         return False
-    if not force and _env_int("URGENT_ONLY", 0) and not urgent:
-        return False  # 仅重要告警：非紧急跳过（不消耗每日预算）
-    if not force and not _throttle_due(title):
-        return False
-    if not force and not _consume_daily_budget():
-        logger.warning("今日消息推送已达上限（YIBAN_NOTIFY_DAILY_MAX），本次不再推送，请查邮件")
-        return False
+    ledger_id = "urgent" if urgent else "general"
+    ticket = None  # None = 本次没占额度（force 路径），退还动作对它就是空操作
+    if not force:
+        if _env_int("URGENT_ONLY", 0, envs) and not urgent:
+            _log_skip("urgent_only", "非紧急告警未推手机（YIBAN_NOTIFY_URGENT_ONLY=1）: %s", title)
+            return False  # 仅重要告警：非紧急跳过（不消耗每日预算）
+        if not _throttle_due(title):
+            _log_skip("throttle", "推送节流命中（YIBAN_NOTIFY_COOLDOWN 窗口内同类已推）: %s", title)
+            return False
+        ticket = _consume_daily_budget(ledger_id)
+        if not ticket.allowed:
+            _log_skip("budget_exhausted_" + ledger_id,
+                      "今日推送额度（%s 账）已用尽，本次不推手机: %s", ledger_id, title)
+            return False
     if ntype == "serverchan":
-        return _send_serverchan(secret, title, content)
-    if ntype == "custom":
+        sent = _send_serverchan(secret, title, content)
+    elif ntype == "custom":
         if not is_safe_url(secret):
             logger.warning("自定义通知地址未通过白名单校验，已拒发: host=%s", _host_of(secret))
-            return False
-        return _send_custom(secret, title, content)
-    logger.warning("未知通知类型: %s", ntype)
-    return False
+            sent = False
+        else:
+            sent = _send_custom(secret, title, content)
+    else:
+        logger.warning("未知通知类型: %s", ntype)
+        sent = False
+    if not sent:
+        _refund_daily_budget(ticket)  # 没送到就不该花额度（批次14 P2-1）
+    return sent
 
 
 def send_test():

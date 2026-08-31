@@ -264,6 +264,18 @@ DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
 # 密码策略：至少 10 位且包含大写/小写/数字/符号中至少两类（只对新建/修改生效，存量密码不受影响）
 PASSWORD_MIN_LEN = 10
+# 口令"字符类别"单一事实源（批次14 Task 6）：四个类别正则按文案顺序排列，与 _PASSWORD_CLASS_LABELS
+# 同序同数。判定语义是"命中类别数 >= _PASSWORD_MIN_CLASSES 即通过"——符号算一类，不额外要求含符号。
+# 前端三个模板各内联一份同名同序的 PW_CLASS_PATTERNS（不跨文件共享脚本），由
+# tests/test_batch14_fixes_0829.py 的元测试从模板源码提取后与本元组逐字比对，任一侧漂移即红。
+_PASSWORD_CLASS_PATTERNS = (r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]")
+_PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
+# 类别下限：文案里的中文"两"须与本常量一致（元测试同时钉住数值与措辞，防只改一处）
+_PASSWORD_MIN_CLASSES = 2
+# 统一口径文案（前后端同句）：旧写法一处把下限写成易被读成"三类起"的中文比较词、另一处
+# 简写得像"数量恰好等于下限"。批次14 Task 6 起统一用"…中的至少两类"这一无歧义说法。
+_PASSWORD_CLASS_HINT = "、".join(_PASSWORD_CLASS_LABELS) + "中的至少两类"
+_PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
 # 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
 SCRYPT_METHOD = "scrypt:65536:8:1"
 
@@ -402,6 +414,9 @@ RESTORE_FAIL_MAX = 30
 RESTORE_FAIL_WINDOW = 600
 # 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
 LOGIN_FAIL_NOTIFY = 3
+# 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
+# （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
+LOGIN_SPRAY_USERS = 3
 
 # IP 计数 dict（限速/登录失败/注册）的条目上限与最长保留：防公网扫描器多 IP 打爆内存
 _IP_STORE_LIMIT = 10000
@@ -1090,14 +1105,17 @@ def _mask_email(e):
 
 
 def _password_policy_error(password):
-    """校验密码强度：至少 10 位且包含大写/小写/数字/符号中至少两类。返回错误信息 or None。"""
+    """校验密码强度：至少 PASSWORD_MIN_LEN 位且命中 _PASSWORD_CLASS_PATTERNS 中
+    _PASSWORD_MIN_CLASSES 个类别（符号算一类）。返回错误信息 or None。
+
+    类别正则与文案都取自模块级常量（本函数不再内联字面量）：前端 login/user/index
+    三模板各有一份同序的 PW_CLASS_PATTERNS 与 PW_POLICY_HINT，由批次14 元测试逐字比对防漂移。
+    """
     if len(password) < PASSWORD_MIN_LEN:
-        return f"密码至少 {PASSWORD_MIN_LEN} 位，且需包含两类以上字符"
-    classes = sum(
-        bool(re.search(pat, password)) for pat in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]")
-    )
-    if classes < 2:
-        return "密码需包含大写字母/小写字母/数字/符号中的至少两类"
+        return f"密码{_PASSWORD_POLICY_HINT}"
+    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
+    if classes < _PASSWORD_MIN_CLASSES:
+        return f"密码需包含{_PASSWORD_CLASS_HINT}"
     return None
 
 
@@ -1415,6 +1433,19 @@ def _nl_safe(value):
     return str(value).replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _alert_mail_recipients():
+    """A 线告警邮件的收件人（唯一算法）：ADMIN_TO（受个人接收开关约束）+ 开启接收的管理员。
+
+    刻意只留一份实现，由 send_notification、_exhaustion_notice_mail 与
+    _alert_channel_status() 共用：通道健康判据要回答的是"这一封日报到底发不发得出去"，
+    它与 send_notification 实际取收件人的算法必须严格一致，各算一套就会分叉——
+    批次14 修复轮 2 复评点名的组合变体（只关 admin_notify + 无其他接收管理员）正是
+    "邮件通道看着全绿、收件人却为空"，判据若另算一份就会报成"一切正常"。
+    """
+    extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
+    return db.admin_mail_recipients(extra)
+
+
 def send_notification(title, content, urgent=False):
     """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
 
@@ -1426,8 +1457,7 @@ def send_notification(title, content, urgent=False):
       urgent=True 标记重要告警：设置页开启「仅推送重要告警」后，仅 urgent 通知会推手机，
       其余（用户日常改密/签到结果类等）仅走邮件，把推送额度留给真正威胁系统/账号安全的事件。
     """
-    extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
-    recipients = db.admin_mail_recipients(extra)
+    recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
     # SMTP 额度）；webhook 由 notify.py 独立节流
     if recipients and _mail_alert_due(title):
@@ -1436,6 +1466,464 @@ def send_notification(title, content, urgent=False):
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
     notify.send(title, content, urgent=urgent)
+    # 批次14 P3-1：手机推送额度耗尽的"补一封"——notify 侧当日首次有账本耗尽时会挂上
+    # 待取走标记，pop_exhaustion_notice() 一次返回全部耗尽账本（如 ["general","urgent"]）。
+    # 必须一次取完拼成一封：循环 pop 到空会让两本账同日各发一封（重复打扰）。
+    # 告知只走邮件（推送额度正是刚用尽的东西），且整段兜异常——耗尽告知属附加信息，
+    # 绝不能把本次主告警带崩。
+    try:
+        exhausted = notify.pop_exhaustion_notice()
+    except Exception as e:  # 兜底：告知接线不得影响本次主告警
+        logger.warning("读取推送额度耗尽标记失败（忽略）: %s", e)
+        exhausted = None
+    if exhausted:
+        try:
+            _exhaustion_notice_mail(exhausted)
+        except Exception as e:  # 兜底：同上
+            logger.warning("推送额度耗尽告知邮件发送失败: %s", e)
+
+
+_NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急"}
+
+
+def _exhaustion_notice_mail(kinds):
+    """手机推送额度耗尽告知（批次14 P3-1）：一封邮件写清哪几本账耗尽、上限是多少。
+
+    kinds 为 notify.pop_exhaustion_notice() 返回的账本名列表（"general"/"urgent"），
+    每本账每日各一次，故本函数每天最多被调用两次且不会重复发同一本。
+    只走邮件通道（不经 send_notification，避免与本函数互相递归）。
+    """
+    try:
+        cfg = notify.get_config()
+    except Exception:  # 兜底：取额度概览失败时按"未知"出文，不抛
+        cfg = {}
+    max_keys = {"general": "daily_max", "urgent": "urgent_daily_max"}
+    parts = []
+    for kind in kinds:
+        label = _NOTIFY_LEDGER_LABELS.get(kind, kind)
+        limit = cfg.get(max_keys.get(kind, ""))
+        has_cap = isinstance(limit, int) and limit > 0
+        tail = f"（今日上限 {limit} 条已全部用尽）" if has_cap else "（今日额度已用尽）"
+        parts.append(f"{label}推送额度已用尽{tail}")
+    body = (
+        "手机消息推送" + "、".join(parts) + "。\n"
+        f"当日后续同类告警不再推手机，请改查管理员告警邮件（邮件通道不受影响）。\n"
+        f"如需调整请在 .env 修改 YIBAN_NOTIFY_DAILY_MAX / YIBAN_NOTIFY_URGENT_DAILY_MAX"
+        f"（0=不限），或关闭「仅推送重要告警」。\n"
+        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    logger.warning("手机推送%s，已补发告知邮件", "、".join(parts))
+    recipients = _alert_mail_recipients()
+    if not recipients:
+        logger.warning("推送额度耗尽告知无法送达（邮件收件人为空），请登录后台自查推送配置")
+        return
+    mailer.send_admin_alert("手机推送额度已用尽告警", body, to=",".join(recipients))
+
+
+# 两个邮件开关的中文名表（env_key → 可读名）：变更告警文案与高危动作标签共用，
+# 避免同一件事在两个地方各写一套字面量（评审 ⑤：告警标签必须按字段区分）
+_MAIL_FLAG_NAMES = {
+    "YIBAN_MAIL_ENABLE": "全局邮件通知",
+    "YIBAN_MAIL_ADMIN_NOTIFY": "主管理员个人接收",
+}
+
+
+def _mail_flags_desc(flags):
+    """邮件开关变更集（env_key → bool）→ 告警正文可读描述。
+
+    文案里带上"具体改了什么"（批次14 P1-1）：运营者只看一行标题无法判断是
+    全局关停下线、还是主管理员个人收件被拔线，两者的处置动作完全不同。
+    键名来自代码常量（非外部输入），无注入面。
+    """
+    return "；".join(
+        f"{_MAIL_FLAG_NAMES.get(k, k)}：{'开启' if v else '关闭'}" for k, v in flags.items()
+    )
+
+
+def _notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric):
+    """消息推送配置变更集 → 告警正文可读描述（批次14 P1-1）。
+
+    关闭通道与"只是换了个数"在告警里必须一眼可辨：前者是攻击者掩盖痕迹的必经动作，
+    后者是日常调参。ntype 已过白名单校验、numeric 为 int/bool，均无注入面。
+    """
+    parts = []
+    if close_channel:
+        parts.append("通道：关闭（⚠ 告警不再推手机）")
+    elif ntype:
+        parts.append(f"通道：{ntype}")
+    if swap_secret:
+        parts.append("密钥：已更换")
+    elif clear_secret and not close_channel:
+        parts.append("密钥：已清空（⚠ 通道随之失效）")
+    labels = {
+        "cooldown": "节流秒数", "urgent_only": "仅重要告警",
+        "daily_max": "非紧急每日上限", "urgent_daily_max": "紧急每日上限",
+    }
+    for key, value in numeric.items():
+        shown = ("开启" if value else "关闭") if isinstance(value, bool) else value
+        parts.append(f"{labels.get(key, key)}：{shown}")
+    return "；".join(parts) or "无实质变更"
+
+
+# 判定"推送这路是否曾配置过"的最轻事实来源：.env 里这两个键**存在且值非空**。
+# 口径（修复轮 3 裁定）：两键都不存在、或都在而值都为空 ⇒ 按"从未配置"处理，不算降级；
+# 设置页关闭通道会把两键一并删掉、手工"清空"则写成 `KEY=` 空值行，两者在配置文件里
+# 同形，一律落进"从未配置"这个合法终态。
+_PUSH_CONFIG_ENV_KEYS = ("YIBAN_NOTIFY_TYPE", "YIBAN_NOTIFY_SECRET_ENC")
+
+
+def _push_ever_configured(envs=None):
+    """手机推送通道在本部署历史上是否配置过（修复轮 3 的降级判据输入）。
+
+    轮 2 把"推送未配置"一并判为降级，于是**邮件单通道**这一刻意的终态配置每天落一条
+    channel_health 降级痕迹、日报每天挂 ⚠/urgent —— 天天喊降级就是告警疲劳，真出事时
+    这条痕迹反而没人看。降级只该回答"本应可用的出口现在不可用"，因此需要一个
+    "是否曾配置"的事实来源。刻意复用现成的 .env 解析结果，**不新增 app_meta 键、不新建
+    状态存储**："把推送配置拆掉"这个**动作**（设置页关闭/清钥、或直接改文件）本身已由
+    notify_config 审计行 + urgent=True 变更播报覆盖（批次14 P1-1 门禁），日报无需对一个
+    已经安静消失的通道天天重复定性。
+    代价照实记下：管理员用设置页"关闭推送"后两个键行都被删除，此后日报不再因此挂
+    降级旗标——该动作发生当时那一条 notify_config 审计 + urgent 播报就是痕迹本体。
+    .env 整个读不到（文件不存在）时按"可能配过"处理：宁可多判一次降级留痕，不可静默
+    当健康——与本函数调用方对"收件人读取失败"的取向完全一致。
+    """
+    if envs is None:
+        if not os.path.exists(ENV_FILE):
+            return True
+        envs = read_env(ENV_FILE)
+    return any(str(envs.get(k) or "").strip() for k in _PUSH_CONFIG_ENV_KEYS)
+
+
+def _alert_channel_status():
+    """两条告警通道的结构化可用性判据（批次14 修复轮 2 / 复评 Important-1）。
+
+    刻意把"通道到底可用不可用"从展示文案里拆出来单独算：是否降级决定日报按不按
+    urgent 发、以及要不要往审计链落痕迹，属安全判定，不能靠"正文里有没有 ⚠ 字符"
+    这种字符串嗅探——措辞改一次、或某条本该报的事实恰好不带 ⚠（旧写法里
+    「主管理员个人接收=否」与「推送通道：未配置」两行都不带），嗅探就会静默漏判。
+    本函数一次读清两侧与收件人，_channel_status_lines() 只负责把它翻译成人话，
+    判定与文案共用同一份数据，不可能再各说各话。
+    """
+    status = {
+        "mail_flag_on": False,      # YIBAN_MAIL_ENABLE 开关本身
+        "mail_usable": False,       # mailer.is_enabled()：开关 + 发件邮箱 + 授权码齐备
+        "mail_self_notify": True,   # 主管理员个人接收（YIBAN_MAIL_ADMIN_NOTIFY）
+        "mail_recipients": 0,       # 实际可送达收件人（为空 == 邮件这路等于不存在）
+        "mail_user": "",
+        "mail_admin_to": "",
+        "mail_error": "",
+        "push_usable": False,       # notify.get_config()["enabled"]：有 type 且密钥解得开
+        "push_configured": False,   # 配过（含"配过又被清钥"= 批次14 P2-2 病症）
+        # 是否曾配置过（.env 两键存在且值非空）：区分"从未启用推送"与"配过又被拆"（修复轮 3）
+        "push_ever_configured": False,
+        "push_type": "",
+        "push_secret_masked": "",
+        "push_urgent_only": False,
+        "push_error": "",
+        # 两本推送额度账（P2-1 分账后分开展示；键名与 notify.get_config 保持一致）
+        "daily_max": None,
+        "daily_remaining": None,
+        "urgent_daily_max": None,
+        "urgent_daily_remaining": None,
+    }
+    # ---- 邮件通道（A 线：全部安全告警的最后送达路径）----
+    try:
+        mcfg = mailer.get_config()
+        status["mail_flag_on"] = str(mcfg.get("enable", "")).strip().lower() in (
+            "1", "true", "on", "yes")
+        # 可用性判据必须是 mailer.is_enabled()：除 YIBAN_MAIL_ENABLE 外还要求发件 USER
+        # 与授权码 PASS 都在，缺任一项 mailer._send 就静默跳过、一封都不发
+        # （scripts/mailer.py:92-96、99-103）。只看 enable 真值会把"开了但发不出去"
+        # 误报成"一切正常"（修复轮 1 评审 ①）。
+        status["mail_usable"] = bool(mailer.is_enabled())
+        status["mail_self_notify"] = bool(mcfg.get("admin_notify", True))
+        status["mail_user"] = mcfg.get("user", "") or "-"
+        status["mail_admin_to"] = mcfg.get("admin_to", "") or "-"
+    except Exception as e:  # 兜底：日报不得因单通道读取失败整体缺席
+        status["mail_error"] = type(e).__name__
+    try:
+        # 收件人与 send_notification 同一套算法（_alert_mail_recipients）：开关与凭据
+        # 都齐、但 ADMIN_TO 被个人接收开关摘掉且无其他接收管理员时，recipients 为空，
+        # 邮件这路同样一封都发不出去——修复轮 2 复评点名的组合变体。
+        status["mail_recipients"] = len(_alert_mail_recipients())
+    except Exception as e:
+        # 读不动收件人按 0 处理（宁可多判一次降级留痕，不可静默当健康）
+        status["mail_error"] = status["mail_error"] or type(e).__name__
+    # ---- 手机推送通道（B 线：Webhook / Server酱）----
+    try:
+        ncfg = notify.get_config()
+        status["push_usable"] = bool(ncfg.get("enabled"))
+        status["push_configured"] = bool(ncfg.get("configured"))
+        status["push_type"] = ncfg.get("type", "")
+        status["push_secret_masked"] = ncfg.get("secret_masked", "")
+        status["push_urgent_only"] = bool(ncfg.get("urgent_only"))
+        for key in ("daily_max", "daily_remaining",
+                    "urgent_daily_max", "urgent_daily_remaining"):
+            status[key] = ncfg.get(key)
+        # 曾配置判据与 notify 侧读的是同一份 .env（两键存在且值非空），本函数唯一的额外
+        # 开销是一次 os.path.exists；抛错时上面的 push_error 已置位 ⇒ 直接判降级。
+        status["push_ever_configured"] = _push_ever_configured()
+    except Exception as e:  # 兜底：同上
+        status["push_error"] = type(e).__name__
+    return status
+
+
+def _channel_health_degraded(status, exhausted=()):
+    """本次通道状态是否算"降级"（决定日报 urgent 与要不要落审计痕迹）。
+
+    判据逐条取自结构化数据（_alert_channel_status() 的字段 + pop_exhaustion_notice()
+    返回的账本名列表），与正文里有没有 ⚠ 字符无关。
+
+    修复轮 3 口径修正：**降级只回答"本应可用的出口现在不可用"**。轮 2 把"推送从未
+    配置"也算降级，后果是邮件单通道部署（本项目真实生产在某个时点就是这样）每天落
+    一条 channel_health 降级痕迹、日报每天挂 ⚠/urgent —— 对一个刻意的终态配置天天
+    喊"降级"就是告警疲劳，正是本任务要消灭的病。"清空推送配置"这个**动作**本身已由
+    notify_config 审计行 + urgent 播报覆盖（批次14 P1-1 门禁），日报无需重复定性。
+    注意：本函数只管"要不要挂旗标"，两侧事实由 _channel_health_facts() **无条件**
+    落审计与 meta（无论是否降级），"事后核查"不因此少一个字。
+
+    成立条件（任一即降级）：
+      - 看不清状态：邮件侧或推送侧读取失败——报警器本身出了毛病；
+      - 当日有推送账本额度耗尽（exhausted 非空）：批次14 P3-1 病症，这路当天等于死了；
+      - (a) 邮件侧不可用：mailer.is_enabled() 为假（YIBAN_MAIL_ENABLE 开了却缺
+        USER/PASS，或整个开关被关），一封都发不出去；
+      - (b) 邮件侧可用却无任何可送达收件人（_alert_mail_recipients() 为空）——
+        "只关 admin_notify 且库里没有其他接收管理员"这个组合变体仍算降级；
+      - (c) 推送侧**曾配置过**而现在不可用：.env 里 type 或密文至少一个仍有值，却
+        已被清钥、或密文存在却解不出（push_configured 真而 push_usable 假
+        = 批次14 P2-2 病症）。
+    「从未配置过推送」不在 (c) 内：.env 里 YIBAN_NOTIFY_TYPE 与 YIBAN_NOTIFY_SECRET_ENC
+    两键都不存在、或都在而值都为空（设置页关闭通道是删键行、手工清空是空值行，二者在
+    配置文件里同形）—— 这样的部署日报照常用于每日一封，只是不挂降级旗标。
+    """
+    if status["mail_error"] or status["push_error"]:
+        return True  # 看不清通道状态本身就是报警器出了毛病
+    if exhausted:
+        return True
+    if not status["mail_usable"] or status["mail_recipients"] <= 0:
+        return True  # (a)(b)：邮件是全部安全告警的最后送达路径，任何时候都本应可用
+    # (c)：推送这路只有在"曾经配过"的前提下缺失才算被拆；从未启用手机推送是合法终态
+    return bool(status["push_ever_configured"]) and not status["push_usable"]
+
+
+def _channel_status_lines(status=None):
+    """两条告警通道的当前状态文本行（供每日健康日报使用）——纯展示层。
+
+    判据一律取自 _alert_channel_status()（或调用方传入的那一份），本函数只把结构化
+    事实翻译成人话；是否降级由 _channel_health_degraded() 直接看结构化字段，不回过来
+    嗅这里有没有 ⚠。
+
+    刻意"不依赖被改配置本身"：通道被关闭时照样输出"被关"这一行，而不是跳过——
+    攻击者关掉报警器后，日报里必须仍然看得见"被关"这个事实，否则关闭动作与
+    "一切正常"在运维眼里无法区分。读取失败也出一行（并标注读取失败），保证
+    日报每次都有这条状态，不会静默缺席。
+    """
+    st = status if status is not None else _alert_channel_status()
+    lines = []
+    # ---- 邮件通道 ----
+    if st["mail_error"]:
+        lines.append(f"邮件通道：⚠ 状态读取失败（{st['mail_error']}）")
+    elif st["mail_usable"] and st["mail_recipients"] <= 0:
+        lines.append(
+            "邮件通道：⚠ 已开启但无可送达收件人（0 人可收：主管理员个人接收已关、或未配置 "
+            "ADMIN_TO，且库里没有其他开启接收的管理员——全部告警邮件实际一封都发不出去）"
+        )
+    elif st["mail_usable"]:
+        lines.append(
+            f"邮件通道：已开启（发件 {_nl_safe(st['mail_user'])}，"
+            f"主管理员个人接收={'是' if st['mail_self_notify'] else '否（ADMIN_TO 不收）'}，"
+            f"告警收件 {_nl_safe(st['mail_admin_to'])}，今日可送达收件人 "
+            f"{st['mail_recipients']} 人）"
+        )
+    elif st["mail_flag_on"]:
+        lines.append(
+            "邮件通道：⚠ 已开启但不可用（YIBAN_MAIL_ENABLE=1，但发件邮箱或授权码缺失，"
+            "全部告警邮件实际一封都不会发出，需补齐 YIBAN_MAIL_USER / YIBAN_MAIL_PASS）"
+        )
+    else:
+        lines.append("邮件通道：⚠ 已关闭（YIBAN_MAIL_ENABLE=0，全部告警邮件不发送）")
+    # ---- 手机推送通道 ----
+    if st["push_error"]:
+        lines.append(f"推送通道：⚠ 状态读取失败（{st['push_error']}）")
+    else:
+        if st["push_usable"]:
+            lines.append(
+                f"推送通道：已开启（{_nl_safe(st['push_type'])}，"
+                f"密钥 {_nl_safe(st['push_secret_masked'])}，"
+                f"{'仅推送重要告警' if st['push_urgent_only'] else '全部告警均推送'}）"
+            )
+        elif st["push_configured"]:
+            # 配过但当前不可用（密钥被清 / 换钥后解不开 = 批次14 P2-2 的病症）
+            lines.append("推送通道：⚠ 已配置但不可用（密钥缺失或解密失败，需重新配置）")
+        else:
+            # 修复轮 2：「未配置」同样标 ⚠ 并计入降级。旧写法把它当正常文本，于是
+            # "只关 admin_notify + 关闭推送（type 置空后 configured 一并转假）" 这个
+            # 组合变体两行都不带 ⚠ —— 日报既发不出去、又一条痕迹不落。手机推送这路
+            # 不存在是真实的致盲风险（邮件一挂就零告警），必须看得见。
+            lines.append("推送通道：⚠ 未配置（手机推送这路不存在，告警只剩邮件一条出口）")
+        lines.append(_daily_budget_desc(st))
+    return lines
+
+
+def _daily_budget_desc(cfg):
+    """两本推送额度账的今日剩余描述（批次14 P2-1 分账后必须分开报，不能只报非紧急）。
+
+    入参可以是 notify.get_config() 的原始输出，也可以是 _alert_channel_status() 的
+    快照——后者刻意沿用同名键，展示层不再重复读一遍配置。
+    """
+    def _fmt(label, remaining, limit):
+        if remaining is None:
+            return f"{label}不限额"
+        cap = f"/{limit}" if isinstance(limit, int) and limit > 0 else ""
+        return f"{label}剩余 {remaining}{cap} 条"
+
+    return "今日推送额度：" + "，".join([
+        _fmt("非紧急", cfg.get("daily_remaining"), cfg.get("daily_max")),
+        _fmt("紧急", cfg.get("urgent_daily_remaining"), cfg.get("urgent_daily_max")),
+    ])
+
+
+# 通道健康日报"今日已播"标记（app_meta 键，批次14 评审 ④a）。刻意落库而非进程内 dict：
+# 每日线程在启动 60 秒后即跑第一轮，_mail_alert_ts 这类进程内状态重启即失效，
+# 频繁重启的环境会把"每日健康日报 + 每轮一封"变成"每次重启各发一封外发邮件"。
+_HEALTH_REPORT_META_KEY = "channel_health_last"
+
+
+def _health_report_sent_today(today):
+    """app_meta 里记录的最近一次日报是否就是今天（跨进程重启有效）。
+
+    读失败 / 无记录一律按"未发送"处理：宁可多播一封，也不能因为库读不动而让
+    报警器彻底沉默（漏播比重复打扰严重）。兼容两种写法：JSON 与裸日期串。
+    """
+    raw = db.get_meta(_HEALTH_REPORT_META_KEY, "")
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return raw.strip() == today
+    return isinstance(data, dict) and data.get("date") == today
+
+
+def _channel_health_facts(status, exhausted=()):
+    """两侧通道的压缩事实摘要（审计 detail 与 app_meta 记录共用这一份）。
+
+    修复轮 2 评审：旧 detail 只拼正文里含 ⚠ 的行，两通道全断的那个变体里恰好
+    两侧都不带 ⚠（或只有一侧带），detail 就只剩半条链，"推送侧也被拆了"这个关键
+    事实直接丢在取证之外。这里**无条件**把两侧各写一段，健康的那一侧也记——
+    事后要能回答"坏的是哪一路、另一路当时是不是好的"。
+    刻意用短串而不是整句人话：db.audit 会把 detail 截到 200 字符
+    （scripts/db.py:2429），拼完整句子在最坏情况下会把后半句（推送侧）截没，
+    等于重犯同一个错。
+    """
+    if status["mail_error"]:
+        mail = f"读取失败({status['mail_error']})"
+    elif not status["mail_usable"]:
+        mail = "开关开但凭据缺失" if status["mail_flag_on"] else "已关闭"
+    elif status["mail_recipients"] <= 0:
+        mail = "可用但收件人为空"
+    else:
+        mail = "可用"
+    if status["push_error"]:
+        push = f"读取失败({status['push_error']})"
+    elif status["push_usable"]:
+        push = "可用"
+    elif status["push_configured"]:
+        push = "已配置但不可用"
+    else:
+        push = "未配置"
+    facts = (f"邮件通道={mail}(收件人{status['mail_recipients']},"
+             f"主管理员接收={'是' if status['mail_self_notify'] else '否'})；"
+             f"推送通道={push}")
+    if exhausted:
+        facts += "；推送额度已用尽=" + "/".join(
+            _NOTIFY_LEDGER_LABELS.get(k, k) for k in exhausted)
+    return facts
+
+
+def _audit_channel_health_degraded(facts):
+    """把"通道处于降级"这一事实落到审计链（批次14 评审 ④b + 修复轮 2）。
+
+    两条通道同时被拆时，日报本身既发不出去也没有任何别的出口；没有库内痕迹，
+    事后就无法证明"系统曾检测到通道被拆"，攻击者的拔线动作与运维正常停机在
+    取证上完全同形。审计行会进入既有 HMAC 哈希链并被库外锚点覆盖（app_meta 不在
+    链内，所以痕迹刻意写审计而不是 meta）。db.audit 自身已含重试与失败计数。
+
+    facts 必须由 _channel_health_facts()（结构化状态）产出，不得改为拼正文里含 ⚠
+    的行——那正是修复轮 2 复评点名的失准来源。
+    """
+    detail = f"degraded=1 {facts}"[:200]
+    if not db.audit("system", "channel_health", "alert_channels", detail):
+        # 审计也写不进去时只剩日志这条退路（此时大概率两通道与库都在打架）
+        logger.error("告警通道降级痕迹未能落审计链，请人工核查: %s", detail)
+
+
+def _send_channel_health_report(force=False):
+    """告警通道健康日报（批次14 P1-1/P3-1，每日线程调用）。
+
+    三件事：① 固定附一行两条通道当前状态（被关闭也要看得见"被关"）；
+    ② 接线 Task 2 的 pop_exhaustion_notice()——当日有账本额度耗尽且尚未告知时，
+    在此把行补进日报。这里的 pop 必须在 send_notification 之前：pop 是取走语义，
+    先取走就不会再被本次 send_notification 内部的接线重复发一封（一次 pop 拿全列表）；
+    ③ 评审 ④（"日报本身不得依赖被改配置/进程内状态"）：
+      - 每日至多一封用 app_meta 落库去重（进程内 dict 重启即失效）；
+      - 通道降级时**先落一条审计痕迹再尝试发信**——两条通道同时被拆时这封日报
+        既发不出去也没有别的出口，没有库内痕迹就无法在事后证明"系统曾检测到
+        通道被拆"。审计行走既有 HMAC 哈希链 + 库外锚点覆盖范围（app_meta 不在链内，
+        故痕迹用 db.audit 而非只写 meta）。
+
+    降级判定（修复轮 2）：一律取自结构化状态 _alert_channel_status() + pop 出的账本
+    名列表，不看正文有没有 ⚠；痕迹摘要同样按结构化事实拼，两侧都记。
+
+    返回 True 表示本次已排出一封日报（含"发不出去但痕迹已落库"），
+    False 表示今日已播过、本次跳过。force=True 只越过"今日已播"判定，
+    仍会写入标记——人工补发同样算当日那一封。
+    发信抛异常时异常原样上抛（调用方记日志），且**不落**去重标记：当日稍后仍可重试。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not force and _health_report_sent_today(today):
+        logger.info("告警通道健康日报今日已播报（标记 %s），本次跳过", _HEALTH_REPORT_META_KEY)
+        return False
+    status = _alert_channel_status()
+    lines = _channel_status_lines(status)
+    try:
+        exhausted = notify.pop_exhaustion_notice() or []
+    except Exception as e:  # 兜底：告知接线不得影响日报
+        logger.warning("读取推送额度耗尽标记失败（日报内省略）: %s", e)
+        exhausted = []
+    for kind in exhausted:
+        lines.append(
+            f"⚠ 手机推送{_NOTIFY_LEDGER_LABELS.get(kind, kind)}额度今日已用尽，"
+            "当日后续同类告警请查邮件（本行每日每本账各一次）"
+        )
+    body = (
+        "告警通道每日健康报告（两条通道状态与今日额度）：\n"
+        + "\n".join(lines)
+        + f"\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    # 降级口径：健康日不占紧急额度——例行日报若每天都吃掉一格紧急预算，反而会把真正
+    # 的紧急告警挤出预算（那正是本批次要治的"该响的不响"）。判据是两条出口是否都活着
+    # （邮件可用且有收件人 + 推送可用）以及当日是否还有账本被用尽：攻击链第一步正是
+    # "只关邮件"，此时日报必须还能从手机推送那条通道被听见。
+    degraded = _channel_health_degraded(status, exhausted)
+    facts = _channel_health_facts(status, exhausted)
+    # 痕迹落在发信**之前**：下面这句 send_notification 在两条通道全断时既送不到也没
+    # 回执，先落库才谈得上"无论是否发出都留痕"。摘要（facts）与下面的 meta 共用一份，
+    # 两侧事实无条件都在，不再从正文里挑 ⚠ 行拼。
+    if degraded:
+        _audit_channel_health_degraded(facts)
+    send_notification("告警通道健康日报", body, urgent=degraded)
+    # 去重标记刻意落在发信**之后**（修复轮 2 Minor）：写在之前等于"今天只要想过一遍就
+    # 永久不再试"——send_notification 抛异常或 SMTP 瞬断时，当天这封日报既没出去、
+    # 标记又已落库，直到次日都不会再播，一次瞬断被放大成整天静默，与"宁可多播不少播"
+    # 的取向相反。目标仍是"跨重启每日至多一封"（成功即落标记，重启不会各发一封），
+    # 只是失败那一次不占名额：当日稍后（进程重启后的下一轮、或人工 force 补发）还能重试。
+    # 不为此另起第三套状态存储——仍用同一个 app_meta 键，只是写入时机后移。
+    db.set_meta(_HEALTH_REPORT_META_KEY, json.dumps(
+        {"date": today, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+         "degraded": degraded, "channels": len(lines),
+         "summary": facts}, ensure_ascii=False))
+    return True
 
 
 # 容量告警去重（进程内）：首次触顶通知一次，之后静默拒绝（防通知风暴；重启后重置）
@@ -1499,7 +1987,8 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-24 邮箱通知（SMTP）：管理员告警邮件 A 线 + 用户签到失败邮件 B 线 + 用户端开关（0.23.0）
 # 2026-08-26 界面动效审查修复：过渡属性收敛、抽屉遮罩淡入与曲线、登录页切换统一、Toast 动效、reduced-motion 支持（0.24.1）
 # 2026-08-29 通知推送与账户安全加固：消息推送组件（Server酱/自定义 URL，加密配置）+ 高危告警邮件节流 + 高危删除冷却 + 删除二次鉴权（0.26.0）
-APP_VERSION = "0.26.0"
+# 2026-08-31 批次14 第一档修复 + 公测反馈：告警通道二次鉴权、推送额度分账、账号清除门禁、登录留痕、口令策略口径、失效会话自动重登、新申请提醒（0.26.1）
+APP_VERSION = "0.26.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2005,8 +2494,23 @@ def create_app(host=None):
             # 批次7 A6：登录成功写入审计（原实现成功登录零留痕，被盗会话无法还原
             # 会话何时建立、来自哪个 IP；IP 经 hash_ip 匿名化，与审计侧口径一致）。
             # 失败登录已有阈值邮件告警，不重复写审计（避免爆破刷爆审计表）。
+            # 批次14/PROD-2：动作名由 login 收敛为 login_ok，与 login_failed /
+            # logout_ok 同组命名，并补齐登出端（logout_ok）与恢复入口（api_me_restore
+            # 的"恢复即登录"）两处留痕；成功路径的 username 补 64 字截断——该值直接
+            # 来自请求体，不截断等于把审计表当垃圾场。两条成功分支（内置管理员
+            # 走 .env 口令/哈希、注册用户走 users.password_hash）在 `if role:` 处汇合，
+            # 所以这一行同时覆盖两条分支、每次登录仍只有一行，走的哪条由 detail 里的
+            # auth_source 指明。成组之后取证侧一句 WHERE action='login_ok' 就能重建
+            # "谁的账号、何时、从哪个 IP 登录过"的时间线。查不到 login_ok 属正常：它只
+            # 说明本改动上线后还没人重新走过 /api/login，不代表这个汇合点以前没写过审计。
+            # 跨版本取证须写 action IN ('login','login_ok')：上面那句"登录成功写入
+            # 审计"自批次7 A6 起就以动作名 login 落在同一个汇合点，改名前写入的行
+            # （现网库与历史备份包内都是）只查 login_ok 会整段漏掉。
+            # 位置刻意留在校验通过后立即记录，早于 session 重建与下方 set_user_sid：
+            # 口令通过校验即一次既成的登录事实，即使后续 sid 落库失败也要留下这次
+            # 登录；且此时手上还没有 sid，本行天然不可能写进可重放的凭据。
             db.audit(
-                username.lower(), "login", db.hash_ip(ip),
+                (username.lower() or "?")[:64], "login_ok", db.hash_ip(ip),
                 f"登录成功（{auth_source}）",
             )
             # S1/复审：auth_source 记录实际认证来源，不用 role+邮箱反推
@@ -2056,13 +2560,21 @@ def create_app(host=None):
             ), 429
         # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解
         if fails == LOGIN_FAIL_NOTIFY:
+            # 2026-08-31 公测反馈：原实现把"输错 3 次密码"一律标成紧急告警，而紧急额度
+            # 默认只有 3 条/天——公测首日 07:59 就有一次学生忘密码触发锁定，等于用一个
+            # 常见误操作挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。改判据：
+            # 只有同一 IP 正对多个不同用户名失败（口令喷洒特征）才标紧急；单个账号
+            # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
+            with _rate_lock:
+                distinct_users = sum(1 for (fip, _u) in _login_fails if fip == ip)
             send_notification(
                 "登录失败告警",
                 f"IP {_nl_safe(ip)} 连续 {fails} 次登录失败"
                 f"（尝试用户名: {_nl_safe(username)}）\n"
+                f"该 IP 本窗口内尝试过 {distinct_users} 个不同用户名\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"如非本人操作，请检查是否有人尝试暴力破解",
-                urgent=True,
+                urgent=distinct_users >= LOGIN_SPRAY_USERS,
             )
         return jsonify({"error": "用户名或密码错误"}), 401
 
@@ -2147,6 +2659,17 @@ def create_app(host=None):
 
     @app.route("/api/logout", methods=["POST"])
     def api_logout():
+        # 批次14/PROD-2：登出留痕。生产 audit_logs 里 logout 类动作此前 0 条——
+        # "被盗号者用完会话有没有登出、本人何时从哪个 IP 结束登录"完全无从还原；
+        # 只有与 login_ok 成对，一次会话的起止两端才都钉在 HMAC 链上。
+        # 三元组口径与 forbidden_path/login_ok 逐字同构：target 只存 IP 的 HMAC
+        # （不落明文、不存 User-Agent）、username 截断 64、detail 只记认证来源，
+        # 绝不写入 sid/Cookie/CSRF 值（那些一旦进链就等于把可重放的凭据抄进日志）。
+        # 顺序刻意在 session.clear() 之前：清空后就再也取不到 username 与 auth_source。
+        db.audit(
+            (session.get("username") or "?")[:64], "logout_ok", db.hash_ip(_client_ip()),
+            f"登出（{session.get('auth_source') or 'builtin'}）",
+        )
         # 批次7 P3-5：登出轮换服务端 sid——此前仅 session.clear()，此前被窃取的
         # cookie 副本在登出后重放依然有效。轮换后所有旧会话（含当前）即时失效；
         # 内置管理员走 PW_VERSION 机制，无需轮换。
@@ -2507,6 +3030,14 @@ def create_app(host=None):
         sid = secrets.token_hex(16)
         session["sid"] = sid
         db.set_user_sid(email, sid)
+        # 批次14/PROD-2：恢复即登录也要留 login_ok。上面建立的是与 api_login 完全同款
+        # 的会话（sid 签发与 pw_version 语义一字未动），只记 user_self_delete_restore
+        # 会让"这条会话当时是怎么建立的"在链上缺一半——恢复入口同样是被认证认可的
+        # 登录成功路径，盗号者可借它取得带 sid 的完整会话。detail 用「恢复登录」区分
+        # 入口；三元组与 login_ok 同口径（target 为 IP 的 HMAC，不落明文，用户名截断）。
+        db.audit(
+            (email or "?")[:64], "login_ok", db.hash_ip(ip), "登录成功（恢复登录）",
+        )
         logger.info("用户 %s 已恢复注销账号", _mask_email(email))
         return jsonify({"ok": True, "role": role})
 
@@ -2611,47 +3142,77 @@ def create_app(host=None):
 
         支持：enabled（全局 YIBAN_MAIL_ENABLE）/ admin_notify（主管理员个人
         接收 YIBAN_MAIL_ADMIN_NOTIFY）。两者可单独或同时提交，均为 bool。
+
+        批次14 P1-1：邮件通道是全部安全告警的最后一条送达路径——"先关通知再作案"
+        是本批次活体复现的攻击链首步（拿到内置主管理员 Cookie 后一个 PUT 就能让所有
+        告警静默）。故**关闭**类改动纳入高危门禁：与批次13 三处高危删除同口径，
+        统一走 _high_risk_gate()（二次鉴权 + 复用同一份高危限速计数；修复轮 1 起
+        顺序为"先验口令，通过了才占用额度"）；
+        纯开启、以及不带开关的改动不要求口令（不得给正常成功路径加摩擦）。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可操作"}), 403
         data = _json_body()
-        resp = {"ok": True}
-        changed = False
-        if "enabled" in data:
-            v = data["enabled"]
+        # 先全量校验、再统一落盘（原实现边校验边 write_env_key：enabled 合法而
+        # admin_notify 非法时会留下"一半已生效"的写入）
+        flags = {}
+        for field, env_key in (("enabled", "YIBAN_MAIL_ENABLE"),
+                               ("admin_notify", "YIBAN_MAIL_ADMIN_NOTIFY")):
+            if field not in data:
+                continue
+            v = data[field]
             if not isinstance(v, bool):
                 return jsonify({"error": "取值无效"}), 400
-            write_env_key(ENV_FILE, "YIBAN_MAIL_ENABLE", "1" if v else "0")
-            resp["enabled"] = v
-            changed = True
-        if "admin_notify" in data:
-            v = data["admin_notify"]
-            if not isinstance(v, bool):
-                return jsonify({"error": "取值无效"}), 400
-            write_env_key(ENV_FILE, "YIBAN_MAIL_ADMIN_NOTIFY", "1" if v else "0")
-            resp["admin_notify"] = v
-            changed = True
-        if not changed:
+            flags[env_key] = v
+        if not flags:
             return jsonify({"error": "缺少有效配置项"}), 400
+        # 高危判定：任一开关被置为"关"即为关闭通道（admin_notify=false 只关主管理员
+        # 本人的 ADMIN_TO 收件，同样是给报警器拔线）
+        closing = [k for k, v in flags.items() if v is False]
+        if closing:
+            # 评审 ⑤：动作标签按字段区分——"全站告警邮件停发"与"只拔主管理员本人的
+            # ADMIN_TO 收件"危害面完全不同，二次鉴权失败告警里必须看得见对方当时
+            # 想关的是哪一路（键名来自代码常量，无注入面）
+            label = "关闭邮件告警通道（" + "、".join(_MAIL_FLAG_NAMES[k] for k in closing) + "）"
+            # 评审 ②：限速与鉴权的顺序由统一门禁保证——先验口令，通过了才占额度
+            gate = _high_risk_gate(data, label)
+            if gate:
+                return gate
+        write_env_batch(ENV_FILE, {k: ("1" if v else "0") for k, v in flags.items()})
+        detail = {
+            "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
+            for k, v in flags.items()
+        }
+        resp = {"ok": True}
+        resp.update(detail)
         db.audit(
             session.get("username") or "?",
             "mail_config", "mail_config",
-            json.dumps({k: v for k, v in resp.items() if k != "ok"}, ensure_ascii=False),
+            json.dumps(detail, ensure_ascii=False),
         )
         # 批次11 N6：邮件配置是全部安全告警的送达通道，变更即时告警——
         # 注意此时 .env 已写入新值，若管理员改劫持收件地址，本告警（按变更后
-        # 配置发送）可能到不了运营者，故 webhook 通知与审计为主要留痕手段
+        # 配置发送）可能到不了运营者，故 webhook 通知与审计为主要留痕手段。
+        # 批次14 P1-1：改为 urgent=True——原为非紧急，设置页开着「仅推送重要告警」时
+        # 根本不推手机，配合"邮件通道刚被关掉"就是实测的零外发（致盲无声音）。
         send_notification(
             "邮件配置变更告警",
-            f"邮件通知配置已变更: {json.dumps({k: v for k, v in resp.items() if k != 'ok'}, ensure_ascii=False)}，"
-            f"操作者 {session.get('username', '?')}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
+            f"操作者 {_nl_safe(session.get('username', '?'))}，"
+            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            urgent=True,
         )
         return jsonify(resp)
 
     # ---- 消息推送（Webhook 组件：Server酱/自定义 URL，2026-08-29）----
     @app.route("/api/notify-config")
     def api_notify_config():
-        """消息推送配置状态（脱敏：密钥打码），供管理后台显示。"""
+        """消息推送配置状态（脱敏：密钥打码），供管理后台显示。
+
+        响应含 cooldown / urgent_only 与两本账每日额度（批次14 P2-1 分账）：
+        daily_max / daily_remaining = 非紧急账，urgent_daily_max /
+        urgent_daily_remaining = 紧急账；上限为 0（不限）时对应 remaining 为 null。
+        """
         return jsonify(notify.get_config())
 
     @app.route("/api/notify-config", methods=["PUT"])
@@ -2659,9 +3220,16 @@ def create_app(host=None):
         """主管理员：保存消息推送配置（写 .env，密钥 AES-GCM 加密）。
 
         body: {"type": "serverchan"|"custom"|"", "secret": "..."|"", "cooldown": 秒|省略,
-               "urgent_only": true|false|省略, "daily_max": 条数|省略}
-        type 为空 = 清除配置；secret 为空 = 清除密钥；cooldown 0 = 关闭同类型节流；
-        urgent_only = 仅推送重要告警（非紧急仅走邮件）；daily_max 0 = 不限。
+               "urgent_only": true|false|省略, "daily_max": 条数|省略,
+               "urgent_daily_max": 条数|省略}
+        type 为空 = 清除配置；secret 为空 = 清除密钥；cooldown 0 = 关闭同类型节流
+        （0 显式落盘，不再"删键回落默认"）；urgent_only = 仅推送重要告警（非紧急仅走邮件）；
+        daily_max / urgent_daily_max 0 = 不限（两本账分账，批次14 P2-1）。
+
+        批次14 P1-1：推送通道与邮件通道是告警仅有的两条出口，"关闭推送 / 清空密钥 /
+        换密钥"三类动作等同给报警器拔线，与批次13 三处高危删除同口径加二次鉴权 +
+        限速（同窗口同上限，语义即"高危配置变更限速"，不新建第二套计数）；
+        纯数值/开关项（cooldown、urgent_only、daily_max、urgent_daily_max）不要求口令。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可操作"}), 403
@@ -2674,52 +3242,91 @@ def create_app(host=None):
             return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
         if ntype == "custom" and secret and not notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
+        # ---- 高危判定（批次14 P1-1）：只有会"让推送通道失效或改密钥"的请求才要口令 ----
+        # (a) type 置空 = 关闭推送；(b) 本次落盘后不再有密钥 = 清空密钥（含"只提交
+        # type 却不带 secret"这条隐蔽路径——它同样会删掉旧密文）；(c) 携带新密钥 = 换钥。
+        touches_channel = ("type" in data) or ("secret" in data)
+        close_channel = "type" in data and ntype == ""
+        clear_secret = touches_channel and not secret
+        swap_secret = bool(secret)
+        # 三类动作互斥，其并集恰好等于"触碰通道"的请求：带 type/secret 时要么有密钥
+        # （换钥）要么没有（关闭或清钥）
+        need_reconfirm = close_channel or clear_secret or swap_secret
         # 支持部分更新：仅在请求体出现的字段才写入（如「仅重要告警」开关单独保存时
         # 不携带 type/secret，避免误清空已配置的推送通道）
         updates = {}
+        numeric = {}
         if "type" in data:
             updates["YIBAN_NOTIFY_TYPE"] = ntype
-            if secret:
-                try:
-                    enc = account_crypto.encrypt_text(secret, account_crypto.load_key(ENV_FILE))
-                    updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
-                except ValueError as e:
-                    return jsonify({"error": f"加密失败：{e}"}), 500
-            else:
-                updates["YIBAN_NOTIFY_SECRET_ENC"] = ""  # 空 = 删除键（关闭或换型不留旧钥）
-        elif secret:
-            # 仅带密钥（未带 type，如换钥）：保留类型，只更新密钥
-            try:
-                enc = account_crypto.encrypt_text(secret, account_crypto.load_key(ENV_FILE))
-                updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
-            except ValueError as e:
-                return jsonify({"error": f"加密失败：{e}"}), 500
+            if not secret:
+                # 空 = 删除键（关闭或换型不留旧钥）；带密钥时由闸门之后的加密段填
+                updates["YIBAN_NOTIFY_SECRET_ENC"] = ""
         if "cooldown" in data:
             try:
                 cd = max(0, int(data["cooldown"]))
             except (TypeError, ValueError):
                 return jsonify({"error": "冷却参数无效"}), 400
-            updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd) if cd else ""  # 0 = 删除键（用默认）
+            # 批次14 口径修正：0 也要显式落盘。原实现 0 → 删键 → 回落 DEFAULT_COOLDOWN
+            # =60，于是设置页"关闭节流"点了个寂寞（想调成不节流反被节流 60 秒），
+            # 与 .env.example 里"0=关闭"的文档承诺相反。
+            updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd)
+            numeric["cooldown"] = cd
         if "urgent_only" in data:
             # 仅重要告警：true → 非紧急通知不推手机（邮件不受影响）；false → 全部推送
             updates["YIBAN_NOTIFY_URGENT_ONLY"] = "1" if data["urgent_only"] else ""
+            numeric["urgent_only"] = bool(data["urgent_only"])
         if "daily_max" in data:
             try:
                 dm = max(0, int(data["daily_max"]))
             except (TypeError, ValueError):
                 return jsonify({"error": "每日上限参数无效"}), 400
             updates["YIBAN_NOTIFY_DAILY_MAX"] = "0" if dm == 0 else str(dm)  # 0 = 不限（显式写 0）
+            numeric["daily_max"] = dm
+        if "urgent_daily_max" in data:
+            # 批次14 P2-1：紧急账此前只能在 .env 手改，分账后设置页必须能同时管两本账
+            try:
+                udm = max(0, int(data["urgent_daily_max"]))
+            except (TypeError, ValueError):
+                return jsonify({"error": "紧急每日上限参数无效"}), 400
+            updates["YIBAN_NOTIFY_URGENT_DAILY_MAX"] = "0" if udm == 0 else str(udm)
+            numeric["urgent_daily_max"] = udm
+        if need_reconfirm:
+            # 只有真正要改通道的请求才占用高危额度（纯数值改动不计数，
+            # 否则调一次节流秒数就把删除冷却吃掉一格）
+            label = (
+                "关闭消息推送通道" if close_channel
+                else "更换消息推送密钥" if swap_secret
+                else "清空消息推送密钥"
+            )
+            # 评审 ②：统一门禁——先验口令，通过了才占用额度（错口令尝试不得消耗预算）
+            gate = _high_risk_gate(data, label)
+            if gate:
+                return gate
+        # 密钥加密刻意排在闸门**之后**（评审 ③）：account_crypto.load_key 在既无
+        # YIBAN_ACCOUNTS_KEY 环境变量、.env 里也没有该键时会"生成随机密钥并原子写回
+        # .env"。放在闸门之前会让一次被拒绝的高危请求凭空留下写盘痕迹，与"鉴权失败
+        # 零写入"的口径相反（加密失败仍返回 500 且不落任何配置）。
+        if secret:
+            try:
+                enc = account_crypto.encrypt_text(secret, account_crypto.load_key(ENV_FILE))
+                updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
+            except ValueError as e:
+                return jsonify({"error": f"加密失败：{e}"}), 500
         write_env_batch(ENV_FILE, updates)
         db.audit(
             session.get("username") or "?",
             "notify_config", "notify_config",
-            json.dumps({"type": ntype or "off"}, ensure_ascii=False),
+            json.dumps({"type": ntype or "off", **numeric}, ensure_ascii=False),
         )
         # 变更即时告警（走既有 A 线邮件 + webhook 双通道）
+        # 批次14 P1-1：urgent=True——本告警正是"通道被人拆了"的信号，而设置页开着
+        # 「仅推送重要告警」时非紧急通知不推手机，等于拆完报警器还顺便把报警也静音。
         send_notification(
             "消息推送配置变更告警",
-            f"消息推送配置已变更: 类型 {ntype or '关闭'}，"
-            f"操作者 {session.get('username', '?')}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"消息推送配置已变更: {_notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric)}，"
+            f"操作者 {_nl_safe(session.get('username', '?'))}，"
+            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            urgent=True,
         )
         return jsonify(notify.get_config())
 
@@ -2957,6 +3564,22 @@ def create_app(host=None):
                     )
                 except json.JSONDecodeError:
                     snapshot = None
+            # 批次14 P3-2：防错位守卫补齐——/api/accounts/* 同族写端点里此前唯一漏接
+            # 的一个（对照同 idx 的 /restore 会正确 409）。目标行被物理清除（purge、
+            # 用户注销连带）后，旧列表里的 idx 会指到另一账号上，没有这层守卫就是
+            # "静默改写他人凭据 + 返回 200"。
+            # 比对基准优先用乐观锁快照里的 phone：编辑表单本来允许"填写完整新号码"
+            # 改绑手机号（db.update_account 还专门做了重加密），那是一次变更而不是
+            # 错位，直接拿 data["phone"] 比会把这条合法路径全部 409 掉。快照缺失或
+            # 不含 phone（旧客户端、直连 API）时退回与 /restore、/review 完全一致的
+            # data["phone"] 比对；未携带 phone 的请求保持既有语义不校验（不改 fail-closed）。
+            guard_src = (
+                {"phone": snapshot["phone"]}
+                if isinstance(snapshot, dict) and snapshot.get("phone")
+                else data
+            )
+            if _stale_idx_guard(old, guard_src):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             err, clean = validate_account(data, require_password=False)
             if err:
                 return jsonify({"error": err}), 400
@@ -3017,23 +3640,41 @@ def create_app(host=None):
 
         body: {"action": ..., "ids": [...], "reason": "批量拒绝理由"}
         Phase 1：整体事务，失败全部回滚；无效项软跳过。
+
+        批次14 P1-2（账号侧物理清除链路补齐门禁）：purge 与用户侧
+        /api/users/batch(delete)、/api/users/deleted/purge 属同一类"不可逆清除"，
+        此前却一处都没接——实测普通管理员会话不带 confirm_password 即可逐段跳过
+        防错位校验并 200，一个请求最多 BATCH_OP_LIMIT 条、连发即可在数十秒内把
+        全部易班凭据不可逆清零，且只有"真的删成"时才有告警。现要求二次鉴权 +
+        同管理员窗口限速（429）。其余动作门禁不变：approve/reject/restore 与
+        delete（软删）都可逆且已有 409 防错位 + 7 天宽限兜底，再加口令只会增加误伤。
         """
+        # 参数校验与高危门禁刻意留在 _file_lock 之外（与三处高危删除同口径）：
+        # scrypt 口令校验单次数百毫秒，放进全局文件锁里会让一次鉴权阻塞全进程的
+        # 账号读写（批次8 起该锁同时护着 JSON 与 SQLite 侧的读-改-写）。
+        data = _json_body()
+        action = data.get("action")
+        ids = data.get("ids") or []
+        if action not in ("approve", "reject", "purge", "restore", "delete"):
+            return jsonify({"error": "未知操作"}), 400
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"error": "请选择要操作的账号"}), 400
+        # 批次7 A3 + 2026-08-29 收紧：单次批量上限——被盗 admin 会话原本可用一个
+        # 请求清空全部账号（≤500）；与 /api/users/deleted/purge 共用 BATCH_OP_LIMIT
+        if len(ids) > BATCH_OP_LIMIT:
+            return jsonify({"error": f"单次批量操作最多 {BATCH_OP_LIMIT} 个账号"}), 400
+        reason = str(data.get("reason", "")).strip()[:100]
+        if action == "reject" and not reason:
+            return jsonify({"error": "批量拒绝需要填写理由"}), 400
+        if action == "purge":
+            # 批次14 评审 ②：统一走 _high_risk_gate（先验口令，通过了才占高危额度）；
+            # 429 文案与用户侧批量删除一致，运维只需记一句话
+            gate = _high_risk_gate(
+                data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+            if gate:
+                return gate
         with _file_lock:
             accounts = load_accounts()
-            data = _json_body()
-            action = data.get("action")
-            ids = data.get("ids") or []
-            if action not in ("approve", "reject", "purge", "restore", "delete"):
-                return jsonify({"error": "未知操作"}), 400
-            if not isinstance(ids, list) or not ids:
-                return jsonify({"error": "请选择要操作的账号"}), 400
-            # 批次7 A3 + 2026-08-29 收紧：单次批量上限——被盗 admin 会话原本可用一个
-            # 请求清空全部账号（≤500）；与 /api/users/deleted/purge 共用 BATCH_OP_LIMIT
-            if len(ids) > BATCH_OP_LIMIT:
-                return jsonify({"error": f"单次批量操作最多 {BATCH_OP_LIMIT} 个账号"}), 400
-            reason = str(data.get("reason", "")).strip()[:100]
-            if action == "reject" and not reason:
-                return jsonify({"error": "批量拒绝需要填写理由"}), 400
             # 2026-08-20 对抗性审查 P1：idx 寻址防错位——客户端随 ids 携带对齐的
             # phones 数组，与服务端当前列表逐一比对，不一致整体拒绝（409 引导刷新）。
             # 另修 bool 混淆：isinstance(True, int) 为真，ids 里的 JSON true 会被
@@ -3227,13 +3868,25 @@ def create_app(host=None):
 
     @app.route("/api/accounts/<int:idx>/purge", methods=["POST"])
     def api_account_purge(idx):
-        """彻底删除待删除账号：立即物理清除，不可恢复。"""
+        """彻底删除待删除账号：立即物理清除，不可恢复。
+
+        批次14 P1-2：单条物理清除此前完全裸奔——不要求 confirm_password、不受删除
+        冷却约束、成功也不发任何告警（实测连删多条零外发，比批量 purge 更安静）。
+        现与批量口径一致：二次鉴权 + 同管理员窗口限速（429），并补一条 urgent 告警。
+        """
+        # 门禁放在 _file_lock 之外（同 api_accounts_batch 与三处高危删除）：
+        # 口令校验耗时数百毫秒，放进全局锁里会凭一次尝试卡住全进程账号读写
+        data = _json_body()
+        gate = _high_risk_gate(
+            data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+        if gate:
+            return gate
         with _file_lock:
             accounts = load_accounts()
             if not 0 <= idx < len(accounts):
                 return jsonify({"error": "账号不存在"}), 404
             acc = accounts[idx]
-            if _stale_idx_guard(acc, _json_body()):
+            if _stale_idx_guard(acc, data):
                 return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             if not acc.get("deleted"):
                 return jsonify({"error": "该账号不在待删除状态"}), 400
@@ -3243,6 +3896,18 @@ def create_app(host=None):
                 "account_purge",
                 _mask_phone(acc.get("phone", "")),
                 "彻底删除",
+            )
+            # 批次14 P1-2：即时告警刻意排在 db.audit 之后、返回之前——先把证据落进
+            # 审计链（HMAC 哈希链 + 库外锚点），再尝试外发，外发失败不影响留痕。
+            # 标题与批量 purge / 用户侧清除完全相同：send_notification 的邮件节流
+            # 按标题计窗（_mail_alert_due），同标题才共享窗口——被盗会话快速连删
+            # 不会被刷爆 SMTP 额度，合法运维的批量清理也只留一封，两头的语义都保住。
+            send_notification(
+                "高危管理操作告警",
+                f"彻底删除账号: {_mask_phone(str(acc.get('phone', '')))}，"
+                f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
             )
             accounts = load_accounts()
             logger.info("彻底删除账号 %s", _mask_phone(acc.get("phone", "")))
@@ -3742,6 +4407,19 @@ def create_app(host=None):
                 f"用户提交 状态 {clean['status']}",
             )
             logger.info("用户 %s 提交账号 %s（待审核）", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
+            # 2026-08-31 公测反馈：申请入库后管理员侧零通知，只能靠主动打开后台发现，
+            # 于是出现"用户说交了申请、管理员说没收到"。补一条非紧急告警：邮件必达，
+            # 手机推送受「仅推送重要告警」与当日非紧急额度约束（不挤占紧急账）。
+            # 整段兜异常——账号已入库，通知失败不得把提交结果带崩成 500。
+            try:
+                send_notification(
+                    "新账号申请待审核",
+                    f"用户 {_nl_safe(str(clean['owner']))} 提交易班账号 "
+                    f"{_mask_phone(clean['phone'])}，请在管理台「待审核」列表中处理。"
+                    f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                )
+            except Exception as e:
+                logger.warning("新申请待审核通知发送失败（不影响提交结果）: %s", e)
             return jsonify({"ok": True, "msg": "已提交，等待管理员审核后参与签到"})
 
     @app.route("/api/my-calendar")
@@ -4044,10 +4722,20 @@ def create_app(host=None):
         )
 
     def _admin_delete_limited():
-        """高危删除操作限速（2026-08-29）：同一管理员窗口内超限返回 True（应拒绝 429）。
+        """高危操作限速（2026-08-29）：同一管理员窗口内超限返回 True（应拒绝 429）。
 
         键 = 会话用户名（统一小写）；窗口/上限由 .env 调整，0 = 关闭。
         与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，之后拒绝。
+
+        批次14 P1-1：调用点从"三处高危删除"扩到"两处告警通道的高危配置变更"
+        （关闭邮件通道 / 关闭推送 / 清空或更换推送密钥）。刻意共用同一套计数、
+        不另建第二套——在攻击者手里"删数据"与"拆报警器"是同一条链，合并计数才
+        真的限制得住一个被盗会话能造成多大静默。
+
+        批次14 修复轮 1（评审 ②）：本函数**判定即占用**，故必须在二次鉴权通过
+        之后调用（五个高危调用点统一走 _high_risk_gate，不再各自手搓顺序）。
+        原先放在口令校验之前，不知口令的被盗会话可以用错口令尝试把主管理员的
+        "删除 + 通道变更"预算（默认 5 次 / 60 秒）刷满，反过来让合法运维全程 429。
         """
         window = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", ADMIN_DELETE_COOLDOWN_SEC)
         limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
@@ -4104,6 +4792,26 @@ def create_app(host=None):
                 urgent=True,
             )
         return jsonify({"error": "当前密码不正确，操作已取消"}), 400
+
+    def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试"):
+        """高危动作统一门禁：先二次鉴权，**通过之后**才占用高危限速额度。
+
+        顺序即本次修复（批次14 评审 ②）：原五处调用都是"先判后增再鉴权"，于是
+        一个只拿到 Cookie、不知道口令的被盗会话，用错口令反复尝试就能把主管理员
+        的"删除 + 告警通道变更"预算（默认 5 次 / 60 秒）全部吃掉，反过来让合法
+        运维的每一次高危操作都撞 429（运维 DoS）。口令暴力的防护本就由
+        _reconfirm_admin_password 里的 _login_fails 承担（第 3 次告警、第 5 次锁定
+        15 分钟），不需要再借用高危额度；额度只该被**真实执行过**的高危动作消耗。
+
+        仍复用同一套计数（不新建第二套 store，评审口径），不改变"超限即 429"的语义。
+        返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
+        """
+        pw_err = _reconfirm_admin_password(str(data.get("confirm_password", "")), action_label)
+        if pw_err:
+            return pw_err
+        if _admin_delete_limited():
+            return jsonify({"error": limit_msg}), 429
+        return None
 
     def _effective_role(username, pw_version=None):
         """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
@@ -4244,13 +4952,10 @@ def create_app(host=None):
         if any(not isinstance(e, str) or len(e) > 64 for e in emails):
             return jsonify({"error": "邮箱格式不正确"}), 400
         # 被盗号滥用面加固（2026-08-29）：物理清除不可逆 → 二次鉴权 + 同管理员限速
-        if _admin_delete_limited():
-            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        pw_err = _reconfirm_admin_password(
-            str(data.get("confirm_password", "")), "彻底清除已注销用户"
-        )
-        if pw_err:
-            return pw_err
+        # （批次14 评审 ②：顺序统一为"先鉴权、通过了才占额度"）
+        gate = _high_risk_gate(data, "彻底清除已注销用户")
+        if gate:
+            return gate
         with _file_lock:
             purged = db.purge_deleted_users_hard(emails)
             if purged:
@@ -4317,13 +5022,11 @@ def create_app(host=None):
         # 被盗号滥用面加固（2026-08-29）：删除用户 = 高危不可逆操作 → 二次鉴权 +
         # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）
         if action == "delete":
-            if _admin_delete_limited():
-                return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
-            pw_err = _reconfirm_admin_password(
-                str(data.get("confirm_password", "")), "批量删除用户"
-            )
-            if pw_err:
-                return pw_err
+            # 批次14 评审 ②：顺序统一为"先鉴权、通过了才占额度"（429 文案保持原样）
+            gate = _high_risk_gate(
+                data, "批量删除用户", limit_msg="删除操作过于频繁，请稍后再试")
+            if gate:
+                return gate
 
         with _file_lock:
             users = load_users()
@@ -4604,13 +5307,11 @@ def create_app(host=None):
         # 被盗号滥用面加固（2026-08-29）：完全删除用户 = 高危不可逆 → 二次鉴权 +
         # 同管理员限速（accounts_only 仅清空账号，保留用户，不做此限制）
         if mode == "full":
-            if _admin_delete_limited():
-                return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
-            pw_err = _reconfirm_admin_password(
-                str(data.get("confirm_password", "")), "完全删除用户"
-            )
-            if pw_err:
-                return pw_err
+            # 批次14 评审 ②：顺序统一为"先鉴权、通过了才占额度"（429 文案保持原样）
+            gate = _high_risk_gate(
+                data, "完全删除用户", limit_msg="删除操作过于频繁，请稍后再试")
+            if gate:
+                return gate
         with _file_lock:
             target = db.find_user(email)
             if not target:
@@ -5366,6 +6067,20 @@ def create_app(host=None):
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
                 logger.warning("审计链每日校验/锚点写入失败: %s", e)
+            # 批次14 P1-1/P3-1：告警通道健康日报——本系统所有安全告警只有邮件 +
+            # 手机推送两条出口，两条同时失效时管理员将彻底失明（本批次活体复现的
+            # P1-1 正是"拿到大管理员 cookie 后两步关通道、零外发"）。除门禁外再加
+            # 一层兜底：每日固定报告两条通道当前状态与今日额度，通道被关也照样
+            # 发一封"已关闭"，让"报警器被拆"这件事本身有个可观测的周期性痕迹。
+            # 修复轮 1 ④：本线程在启动 60 秒后即跑第一轮，故"每日至多一封"的去重
+            # 标记与"通道降级"痕迹都在函数内落库（app_meta + db.audit），重启不重发、
+            # 两通道全断时也仍留得住证据。
+            # 修复轮 2：标记改在发信成功后才落——本处 except 吞掉的正是"今天没发出去"，
+            # 不落标记才能让下一次进程启动（同一日）再试一封，而不是静默到明天。
+            try:
+                _send_channel_health_report()
+            except Exception as e:
+                logger.warning("告警通道健康日报发送失败: %s", e)
             time.sleep(24 * 3600)
 
     # 测试环境通过 YIBAN_DISABLE_PURGE_LOOP=1 禁止启动该线程（全量 pytest 会反复 create_app，

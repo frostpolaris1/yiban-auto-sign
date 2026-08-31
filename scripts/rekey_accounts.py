@@ -14,7 +14,10 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
     python3 scripts/rekey_accounts.py --generate
     python3 scripts/rekey_accounts.py --new-key <64位十六进制>
     python3 scripts/rekey_accounts.py --new-key-file newkey.txt   # 文件内容为首行密钥
-    可选：--db yiban.db --env .env（默认取环境变量/默认路径）
+    可选：--db yiban.db --env .env（默认取环境变量/默认路径；显式指定的 --env
+           必须是已存在的文件，路径打错时工具直接拒绝，不会在该路径新建 .env
+           并生成新审计密钥，批次14 修复轮1③）
+    可选：--skip-notify（不迁移推送密文 YIBAN_NOTIFY_SECRET_ENC，批次14 P2-2）
 
 流程（崩溃安全，.env 最后写；批次12 B12-5 加固）：
     0. 新钥生成后**立即写入 0600 暂存文件**（<env>.rekey-staging）——
@@ -26,6 +29,16 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
     3. 事务提交后全量用新钥解密，与第 1 步明文逐一比对
     4. 校验通过才更新 .env 的 YIBAN_ACCOUNTS_KEY（原子替换、0600），随后
        删除暂存文件
+    4b. 推送密文随轮换迁移（批次14 P2-2）：.env 里的 YIBAN_NOTIFY_SECRET_ENC
+       （Server酱 SendKey / 自定义 webhook URL，用 YIBAN_ACCOUNTS_KEY 加密）
+       先以旧钥解密、再以新钥重加密，与账号密钥**同一次原子替换**落盘。
+       漏了这一步 = 换钥后 notify.get_secret() 解不开而静默返回空，推送通道
+       无声死亡（恰在盗号/异常告警最需要它的时候）。该键未配置或解不开时
+       不中止轮换（首要目标是账号凭据不丢），只记 ERROR 并在收尾自检行提示
+       "需在设置页重新配置消息推送"；--skip-notify 可显式跳过本步。
+       读-解密-重加密-写回整段在**同一把 env_lock 内**完成（批次14 修复轮1②）：
+       否则 --force 不停服轮换时，期间设置页改过的推送配置会被工具启动时的
+       陈旧快照覆盖回去。
     崩溃恢复（按中断点区分，批次12 修正——旧文案"改回旧钥即可恢复"对第 2 步
     之后的中断是**错误**指引，库内已是新钥密文，旧钥解不开）：
     - 第 2 步提交**前**中断：库未变更，.env 旧钥仍然有效，直接重跑本工具即可；
@@ -45,6 +58,7 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
 import argparse
 import contextlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -54,6 +68,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import account_crypto
 import db
+
+logger = logging.getLogger("yiban.rekey")
 
 
 # 进程探活的关键字：命中即认为可能有进程持旧钥运行（批次12 B12-5）。
@@ -298,33 +314,132 @@ def sample_verify_key(db_path, key):
         conn.close()
 
 
-def update_env_key(env_path, new_key):
-    """把新密钥写入 .env（原子替换、0600；持 env_lock 与 web/tui 写 .env 互斥）。"""
+def _write_env_key(env_path, new_key, extra=None):
+    """把新密钥（及 extra 里的其它键）原子写回 .env。
+
+    **调用方必须已持有 env_lock.env_write_lock(env_path)**——本函数不加锁，
+    目的是让"读现值 → 算新值 → 落盘"能整体收在同一把锁里（见 rotate_and_write_env）。
+    extra 值为 None/空串的项跳过不写（不删除既有键：删除语义归设置页）。
+    """
+    extra = {k: v for k, v in (extra or {}).items() if v}
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容 BOM
+            lines = f.read().splitlines()
+    changed = ["YIBAN_ACCOUNTS_KEY", *extra]
+    out = [ln for ln in lines if not ln.strip().startswith(tuple(f"{k}=" for k in changed))]
+    out.append(f"YIBAN_ACCOUNTS_KEY={new_key.hex()}")
+    for k, v in extra.items():
+        out.append(f"{k}={v}")
+    tmp = f"{env_path}.tmp{secrets.token_hex(4)}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, env_path)
+    with contextlib.suppress(OSError):
+        os.chmod(env_path, 0o600)
+
+
+def update_env_key(env_path, new_key, extra=None):
+    """把新密钥写入 .env（原子替换、0600；持 env_lock 与 web/tui 写 .env 互斥）。
+
+    extra：其它需一并落盘的 .env 键值（批次14 P2-2 用它写入用新钥重加密后的
+    YIBAN_NOTIFY_SECRET_ENC）。刻意与 YIBAN_ACCOUNTS_KEY 合进同一次原子替换——
+    分两次写就会出现"新钥已落盘、推送密文还是旧钥的"中间态（换钥后通道静默死亡）。
+    extra 的值必须是**调用方在锁内读到的现值算出来的**；若需要在写盘前读 .env，
+    请改用 rotate_and_write_env（批次14 修复轮1②）。
+    """
     import env_lock
 
     with env_lock.env_write_lock(env_path):
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容 BOM
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_ACCOUNTS_KEY=")]
-        out.append(f"YIBAN_ACCOUNTS_KEY={new_key.hex()}")
-        tmp = f"{env_path}.tmp{secrets.token_hex(4)}"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, env_path)
-        with contextlib.suppress(OSError):
-            os.chmod(env_path, 0o600)
+        _write_env_key(env_path, new_key, extra)
 
 
-def _audit_rotate(db_path, action, detail):
-    """轮换结果写入审计链（批次12 B12-14：rekey 此前全程零审计）。尽力而为：
-    审计失败不阻断轮换结果（失败会由每日校验的写入欠账告警兜住）。"""
+# 推送密钥在 .env 中的键名（值 = json.dumps(account_crypto.encrypt_text(...))）
+NOTIFY_ENC_KEY = "YIBAN_NOTIFY_SECRET_ENC"
+# 收尾自检行文案（批次14 P2-2）：键为 rotate_notify_secret 返回的状态
+NOTIFY_SELF_CHECK_NOTE = {
+    "rotated": "已随换钥迁移（消息推送无需重新配置）",
+    "unset": "未配置（无需迁移）",
+    "failed": "需重新配置：旧密文用换钥前的密钥解不开，请在设置页重新配置消息推送",
+    "skipped": "需重新配置：本次按 --skip-notify 未迁移，换钥后请在设置页重新配置消息推送",
+}
+
+
+def rotate_notify_secret(env_path, old_key, new_key, skip=False):
+    """换钥时同步重加密推送密文；返回 (state, new_raw)，new_raw=None 表示不改动该键。
+
+    为什么必须做（批次14 P2-2）：Server酱 SendKey / 自定义 webhook URL 是用
+    YIBAN_ACCOUNTS_KEY 加密后存进 .env 的。轮换账号密钥而不重加密，
+    notify.get_secret() 会解不开并返回空——推送通道【静默死亡】，运营者在最需要
+    通知的时候（盗号/异常告警）收不到任何消息，且日志里只有一条 WARNING。
+
+    刻意"尽力而为"（用户裁决）：首要目标是账号凭据不丢，本步骤任何失败都不得
+    让轮换本身失败，只记 ERROR 并在收尾自检行提示需在设置页重新配置。
+    因此连"读 .env"这一步也要包起来：account_crypto._parse_env_file 对"文件存在
+    但读取失败"（权限/占用）会**重抛 OSError**（那是 load_key 侧刻意的 fail-loud，
+    防误判未配置而生成新钥覆盖旧钥），而这里正处在"库里已是新钥、.env 尚未写"
+    的窗口——让它穿透 main 就会留下"库=新钥 / env=旧钥"的不一致态（修复轮1①）。
+    读失败同样报"未迁移，需在设置页重新配置"，轮换本身继续成功（--skip-notify 时
+    本就不迁移，读失败仍按"跳过"计）。
+
+    调用方必须在 env_lock 写锁内调用本函数（修复轮1②）：读到的必须是即将被
+    覆盖的那份 .env 的现值，否则不停服轮换时会用陈旧快照盖掉期间设置页改过的配置。
+    """
     try:
-        db.init_db(db_file=db_path, cleanup=False, migrate=False)
+        raw = account_crypto._parse_env_file(env_path).get(NOTIFY_ENC_KEY, "").strip()
+    except Exception as e:  # 尽力而为：读不到密文只影响推送通道，绝不拖垮账号凭据轮换
+        if skip:
+            # --skip-notify 本就不迁移，读失败不改变结论
+            return "skipped", None
+        logger.error(
+            "推送密钥无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置消息推送"
+            "（.env 读取失败）: %s", e
+        )
+        return "failed", None
+    if not raw:
+        return "unset", None
+    if skip:
+        return "skipped", None
+    try:
+        plain = account_crypto.decrypt_text(json.loads(raw), old_key)
+        enc = account_crypto.encrypt_text(plain, new_key)
+        return "rotated", json.dumps(enc, ensure_ascii=False)
+    except Exception as e:  # 尽力而为：不得因推送配置拖垮轮换（首要目标是账号凭据不丢）
+        logger.error(
+            "推送密钥无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置消息推送: %s", e
+        )
+        return "failed", None
+
+
+def rotate_and_write_env(env_path, new_key, old_key, skip_notify=False):
+    """在**同一把 env 写锁内**读现值 → 迁移推送密文 → 与新账号钥一次原子落盘。
+
+    返回收尾自检状态（NOTIFY_SELF_CHECK_NOTE 的键）。
+    为什么读也要放进锁里（批次14 修复轮1②）：本工具正常路径要求停服，但 --force
+    是文档允许的用法，不停服时设置页可能随时重写 YIBAN_NOTIFY_SECRET_ENC；
+    锁外快照 + 锁内写入 = 把用户期间的修改覆盖回旧值。
+    """
+    import env_lock
+
+    with env_lock.env_write_lock(env_path):
+        state, raw = rotate_notify_secret(env_path, old_key, new_key, skip=skip_notify)
+        _write_env_key(env_path, new_key, {NOTIFY_ENC_KEY: raw} if raw else None)
+    return state
+
+
+def _audit_rotate(db_path, action, detail, env_file=None):
+    """轮换结果写入审计链（批次12 B12-14：rekey 此前全程零审计）。尽力而为：
+    审计失败不阻断轮换结果（失败会由每日校验的写入欠账告警兜住）。
+
+    env_file 应由调用方显式传入（批次14 P2-5）：留痕要用真实密钥源。留空时 db 层只能按
+    YIBAN_ENV_FILE → 当前目录 ".env" 回落，在应用根之外运行会读不到旧钥、就地
+    生成游离密钥，这条审计行随之用错密钥签名——取证工具反过来破坏取证对象。
+    """
+    try:
+        db.init_db(db_file=db_path, cleanup=False, migrate=False, env_file=env_file)
         db.audit("rekey-tool", action, "", detail[:200])
     except Exception as e:  # noqa: BLE001
         print(f"提示：审计留痕失败（不影响轮换结果）: {e}")
@@ -335,10 +450,17 @@ def main():
         description="YIBAN_ACCOUNTS_KEY 轮换：旧钥解密 → 新钥重加密 → 自校验 → 更新 .env"
     )
     parser.add_argument("--db", default=None, help="yiban.db 路径（默认 YIBAN_DB_FILE/默认路径）")
-    parser.add_argument("--env", default=None, help=".env 路径（默认 YIBAN_ENV_FILE/.env）")
+    parser.add_argument("--env", default=None,
+                        help="密钥来源 .env 路径（默认 YIBAN_ENV_FILE/当前目录 .env）；"
+                             "既是账号密钥也是审计密钥来源，在应用根之外运行时请显式指定"
+                             "（批次14 P2-5）；显式指定时该文件必须已存在（修复轮1③，"
+                             "路径打错直接拒绝，不在错误位置新建密钥）")
     parser.add_argument("--new-key", default="", help="新密钥（64 位十六进制）")
     parser.add_argument("--new-key-file", default="", help="从文件首行读取新密钥")
     parser.add_argument("--generate", action="store_true", help="自动生成随机新密钥")
+    parser.add_argument("--skip-notify", action="store_true",
+                        help="不迁移推送密文 YIBAN_NOTIFY_SECRET_ENC（批次14 P2-2 默认会"
+                             "用新钥重加密；跳过则换钥后须在设置页重新配置消息推送）")
     parser.add_argument("--env-only", action="store_true",
                         help="仅更新 .env 密钥（不重加密；用于第 4 步中断后的补完，"
                              "会先用新钥抽样试解库内密文）")
@@ -347,7 +469,20 @@ def main():
     args = parser.parse_args()
 
     db_path = args.db or os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
-    env_path = args.env or os.environ.get("YIBAN_ENV_FILE", account_crypto.DEFAULT_ENV_FILE)
+    # 批次14 修复轮1④：--env / YIBAN_ENV_FILE 统一 strip 后**只解析一次**，账号钥与
+    # 审计钥共用同一结果。此前 env_path 不 strip、key_source 走 strip，
+    # YIBAN_ENV_FILE 为空串或带空白时两者会指向不同文件（账号钥写 A、审计钥读 B）。
+    # 无任何显式指定时 key_source=None（交给 db 层回落链判定并触发防游离检查），
+    # 而账号钥必须有一个具体路径可读写，故 env_path 才兜底到 DEFAULT_ENV_FILE。
+    try:
+        key_source = db.require_existing_env_file(args.env)
+    except ValueError as e:
+        # 修复轮1③：显式 --env 指向不存在的文件 → 立即退出。本工具随后会写 .env、
+        # 写暂存文件、写审计链，路径打错时若继续就会在该位置凭空造出一份密钥源，
+        # 把留痕用第三把钥匙签坏（正是本任务要治的病症）。
+        print(f"错误：{e}")
+        sys.exit(2)
+    env_path = key_source or account_crypto.DEFAULT_ENV_FILE
     if not os.path.exists(db_path):
         print(f"错误：数据库不存在: {db_path}（拒绝新建空库）")
         sys.exit(2)
@@ -405,7 +540,7 @@ def main():
         if not ok:
             print("轮换中止：库未变更、.env 未变更。"
                   f"新钥仍保留在暂存文件 {staging}，可核查后删除。")
-            _audit_rotate(db_path, "accounts_key_rekey_failed", note)
+            _audit_rotate(db_path, "accounts_key_rekey_failed", note, env_file=key_source)
             sys.exit(1)
     else:
         # --env-only 补完：先抽样验证新钥确实解得开库内密文，再写 .env
@@ -414,16 +549,25 @@ def main():
         if not ok:
             print("--env-only 中止：.env 未变更。")
             sys.exit(1)
-    update_env_key(env_path, new_key)
+    # 推送密文随换钥迁移（批次14 P2-2）：必须在写 .env 之前算好，与新钥同一次
+    # 原子替换落盘——否则新钥已生效而密文仍是旧钥的，通道静默死亡。
+    # 修复轮1②：读现值也搬进这把 env 锁（rotate_and_write_env），--force 不停服时
+    # 期间设置页改过的推送配置才不会被启动时的陈旧快照覆盖回去。
+    # 尽力而为：本步骤失败只提示，不改变轮换结果与退出码。
+    notify_state = rotate_and_write_env(
+        env_path, new_key, old_key, skip_notify=args.skip_notify)
     if staging:
         with contextlib.suppress(OSError):
             os.remove(staging)
         print(f"已删除暂存文件: {staging}")
     print("已更新 .env 的 YIBAN_ACCOUNTS_KEY。")
+    print(f"推送通道自检：{NOTIFY_SELF_CHECK_NOTE[notify_state]}")
     _audit_rotate(
         db_path,
         "accounts_key_rekey",
-        "ENV-ONLY 补完" if args.env_only else "全量重加密完成并更新 .env",
+        ("ENV-ONLY 补完" if args.env_only else "全量重加密完成并更新 .env")
+        + f"；推送通道：{NOTIFY_SELF_CHECK_NOTE[notify_state]}",
+        env_file=key_source,
     )
     print("后续步骤：重启 web/signin/scheduler 等全部进程；若 shell/容器环境变量中"
           "仍设有旧 YIBAN_ACCOUNTS_KEY，请同步更新（环境变量优先于 .env）。")

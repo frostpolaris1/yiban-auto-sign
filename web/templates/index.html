@@ -674,7 +674,7 @@
                  class="input">
         </div>
         <div>
-          <label for="my-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，含两类字符）</label>
+          <label for="my-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类）</label>
           <input id="my-new-password" type="password" autocomplete="new-password" placeholder="新密码"
                  class="input">
         </div>
@@ -713,7 +713,7 @@
       <div id="mail-global-wrap" class="hidden flex items-center justify-between gap-3 mb-3">
         <div>
           <span class="text-sm text-zinc-700 dark:text-zinc-200">全局邮件通知</span>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）</p>
+          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）；关闭属高危操作，需输入主管理员密码确认</p>
         </div>
         <label class="relative inline-flex items-center cursor-pointer shrink-0" title="全局邮件通知开关">
           <input id="mail-global-switch" type="checkbox" class="sr-only peer" onchange="toggleMailGlobal()">
@@ -768,8 +768,24 @@
                   class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">发送测试消息</button>
           <span id="notify-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
+        <!-- 每日推送额度：批次14 分账后非紧急/紧急各自独立计数，两本账同页可配 -->
+        <div class="grid grid-cols-2 gap-3 mb-2">
+          <div>
+            <label for="notify-daily-max" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">非紧急每日上限（0=不限）</label>
+            <input id="notify-daily-max" type="number" min="0" step="1" class="input">
+          </div>
+          <div>
+            <label for="notify-urgent-daily-max" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">紧急每日上限（0=不限）</label>
+            <input id="notify-urgent-daily-max" type="number" min="0" step="1" class="input">
+          </div>
+        </div>
+        <div class="flex items-center gap-2 mb-3">
+          <button onclick="saveNotifyBudget()"
+                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存额度</button>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">额度用尽后当日同类告警只走邮件，并补一封额度耗尽提醒邮件</span>
+        </div>
         <p class="text-xs text-zinc-400 dark:text-zinc-500">
-          密钥加密存储、不回显；同类告警默认 60 秒内只推一条（可在 .env 调整 YIBAN_NOTIFY_COOLDOWN）；每日最多推送 5 条（YIBAN_NOTIFY_DAILY_MAX，0=不限），防止超出 Server酱 免费额度。仅主管理员可修改。
+          密钥加密存储、不回显；同类告警默认 60 秒内只推一条（可在 .env 调整 YIBAN_NOTIFY_COOLDOWN，0=不节流）；推送额度按「非紧急 / 紧急」两本账各自计数（默认 5 条与 3 条，0=不限，上方可直接改），防止超出 Server酱 免费额度。仅主管理员可修改；关闭推送与更换密钥属高危操作，须再输入当前主管理员密码确认。
         </p>
       </div>
       <p id="notify-status" class="text-xs text-zinc-500 dark:text-zinc-400"></p>
@@ -1000,8 +1016,9 @@
       <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label for="m-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
-          <input id="m-name" type="text" maxlength="50" placeholder="如：我的手机"
+          <input id="m-name" type="text" maxlength="50" placeholder="如：小李的手机（建议用网名或代号）"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">该名称会显示给管理员，用于定位你的签到问题。建议用网名或代号，不必填真实姓名。</p>
         </div>
 
         <div>
@@ -1015,17 +1032,18 @@
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label for="m-model" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
-          <input id="m-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
+          <label for="m-model" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（可选，不清楚就留空）</label>
+          <input id="m-model" type="text" maxlength="50" placeholder="如：Vivo-V2454A"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label for="m-code" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+          <label for="m-code" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（可选，不清楚就留空）</label>
           <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
           <button id="clear-mcode-btn" type="button" onclick="toggleMineClearCode()"
                   class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
         </div>
+        <p class="md:col-span-2 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码只随「签到请求」提交，不参与登录。仅当学校开启设备绑定（签到时报“请使用授权设备进行签到”）时才需填，且必须与易班 App 上报的值完全一致：格式为“品牌-型号”，冒号写成 -，不要写商品名。不确定就留空。</p>
         <div class="md:col-span-2 flex items-center gap-3 pt-1">
           <button id="mine-submit-btn" type="submit" class="btn-primary">提交账号</button>
           <button id="mine-cancel-btn" type="button" onclick="cancelMineEdit()"
@@ -1036,8 +1054,10 @@
     </div>
 </main>
 
-<!-- 页脚：备案信息（可选，YIBAN_ICP_INFO 留空则不显示）+ 版本/开源 -->
-<footer class="mt-8 pt-4 border-t border-zinc-200 dark:border-zinc-700 pb-4">
+<!-- 页脚：备案信息（可选，YIBAN_ICP_INFO 留空则不显示）+ 版本/开源
+     与 main 同样让开固定侧栏并复用其水平内边距：否则 text-center 按整屏居中，
+     PC 端会相对正文区左偏半个侧栏宽度 -->
+<footer class="md:ml-64 px-4 md:px-6 lg:px-8 mt-8 pt-4 border-t border-zinc-200 dark:border-zinc-700 pb-4">
   {% if icp_info %}
   <div id="footer-icp" class="text-center text-xs text-zinc-500 dark:text-zinc-400 mb-2"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300">{{ icp_info }}</a></div>
   {% endif %}
@@ -1059,7 +1079,7 @@
     <form id="account-form" class="space-y-3">
       <div>
         <label for="f-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
-        <input id="f-name" type="text" maxlength="50" placeholder="如：小明"
+        <input id="f-name" type="text" maxlength="50" placeholder="如：小明同学（该名称对用户可见，建议用网名/代号）"
                class="input">
       </div>
       <div id="f-email-wrap">
@@ -1073,7 +1093,7 @@
           <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
           <input id="f-initial-password" type="password" maxlength="64" autocomplete="new-password"
-                 placeholder="该邮箱未注册：填写初始密码为其创建账号（至少 10 位）"
+                 placeholder="该邮箱未注册：填写初始密码为其创建账号（至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类）"
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
       <div>
@@ -1119,7 +1139,7 @@
     <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1" id="modal-password-title">重置密码</div>
     <p id="modal-password-desc" class="text-xs text-zinc-500 dark:text-zinc-400 mb-3"></p>
     <form id="modal-password-form">
-      <input id="modal-password-input" type="password" autocomplete="new-password" placeholder="至少 10 位，含两类字符" class="input">
+      <input id="modal-password-input" type="password" autocomplete="new-password" placeholder="至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类" class="input">
       <div class="flex items-center gap-2 pt-4">
         <button type="submit" id="modal-password-submit" class="btn-primary">确认重置</button>
         <button type="button" onclick="closePasswordModal()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
@@ -1251,9 +1271,19 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ================= 口令策略（本模板内单一事实源） =================
+// 与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS / _PASSWORD_POLICY_HINT 逐字同序同串——
+// tests/test_batch14_fixes_0829.py 的元测试会从本文件源码提取这四个正则与后端比对，漂移即红。
+// 判定语义：命中类别数 >= PW_MIN_CLASSES 即过（符号算一类，不额外要求必须含符号）。
+const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
+const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
+const PW_POLICY_HINT = '至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类';
+function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
+function passwordPolicyOk(v) { return v.length >= PW_MIN_LEN && passwordClasses(v) >= PW_MIN_CLASSES; }
+
 // ================= 密码模态（重置密码 / 高危操作二次确认共用） =================
 let _pwModalCb = null;
-let _pwModalMode = 'set';  // 'set'=设置新密码（≥10 位校验）；'confirm'=确认当前管理员密码
+let _pwModalMode = 'set';  // 'set'=设置新密码（走口令策略校验）；'confirm'=确认当前管理员密码
 function openPasswordModal(desc, cb) { openPwModal(desc, cb, 'set'); }
 function openConfirmPasswordModal(desc, cb) { openPwModal(desc, cb, 'confirm'); }
 function openPwModal(desc, cb, mode) {
@@ -1263,7 +1293,7 @@ function openPwModal(desc, cb, mode) {
   $('modal-password-title').textContent = isConfirm ? '安全确认' : '重置密码';
   $('modal-password-desc').textContent = desc;  // textContent 赋值：动态数据（邮箱等）无注入面
   $('modal-password-input').value = '';
-  $('modal-password-input').placeholder = isConfirm ? '输入当前管理员密码' : '至少 10 位，含两类字符';
+  $('modal-password-input').placeholder = isConfirm ? '输入当前管理员密码' : PW_POLICY_HINT;
   $('modal-password-input').autocomplete = isConfirm ? 'current-password' : 'new-password';
   $('modal-password-submit').textContent = isConfirm ? '确认操作' : '确认重置';
   openModal($('modal-password'));  // 打开即聚焦密码输入框（容器内首个可交互元素）
@@ -1276,7 +1306,9 @@ $('modal-password-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const pw = $('modal-password-input').value;
   if (!pw) return;  // 空值静默不提交
-  if (_pwModalMode === 'set' && pw.length < 10) { toast('密码至少 10 位，且含两类字符', true); return; }
+  // set 模式按完整口令策略校验（长度 + 至少两类）：与后端 _password_policy_error 及
+  // saveMyPassword 同口径，避免"前端放行、提交后才 400"；confirm 模式仍是只验非空
+  if (_pwModalMode === 'set' && !passwordPolicyOk(pw)) { toast(`密码${PW_POLICY_HINT}`, true); return; }
   const cb = _pwModalCb;
   closePasswordModal();
   if (cb) cb(pw);
@@ -1464,7 +1496,17 @@ function batchAccounts(key, action) {
   }
   if (action === 'approve' && !confirm(`确定通过选中的 ${ids.length} 个账号吗？通过后将参与定时签到。`)) return;
   if (action === 'delete' && !confirm(`确定删除选中的 ${ids.length} 个账号吗？将进入待删除列表，可恢复。`)) return;
-  if (action === 'purge' && !confirm(`确定彻底删除选中的 ${ids.length} 个账号吗？此操作不可恢复！`)) return;
+  if (action === 'purge') {
+    // 批次14 P1-2：彻底删除＝物理清除易班凭据，不可逆 → 与「批量删除用户」同口径走
+    // 密码模态二次鉴权（后端另加高危限速与 urgent 告警）；原生长确认由模态文案承担
+    openConfirmPasswordModal(
+      `彻底删除选中的 ${ids.length} 个账号？\n凭据将被物理清除，不可恢复！\n请输入当前管理员密码确认。`,
+      (pw) => {
+        body.confirm_password = pw;
+        submitBatchAccounts(key, body);
+      });
+    return;
+  }
   // 批量手动签到：独立端点，顺序逐个执行（防风控）
   if (action === 'signin') {
     if (!confirm(`确定对选中的 ${ids.length} 个账号执行手动签到吗？将按顺序逐个执行，结果稍后出现在下方日志。`)) return;
@@ -1473,6 +1515,10 @@ function batchAccounts(key, action) {
       .catch(e => toast(e.message, true));
     return;
   }
+  submitBatchAccounts(key, body);
+}
+
+function submitBatchAccounts(key, body) {
   api('/api/accounts/batch', { method: 'POST', body: JSON.stringify(body) })
     .then(data => { toast(data.msg || '操作成功'); clearBatch(key); loadAccounts(); })
     .catch(e => toast(e.message, true));
@@ -1483,8 +1529,9 @@ function batchUsers(key, action) {
   if (!emails.length) { toast('请先勾选要操作的用户', true); return; }
   const body = { action, emails };
   if (action === 'reset_password') {
-    // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验与后续 API/Toast 与原逻辑一致
-    openPasswordModal(`为选中的 ${emails.length} 个用户设置新密码（至少 10 位，含两类字符）`, (pw) => {
+    // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验口径见 openPasswordModal
+    // 的 set 分支（批次14 Task 6 补齐类别判定，与后端 _password_policy_error 一致）
+    openPasswordModal(`为选中的 ${emails.length} 个用户设置新密码（${PW_POLICY_HINT}）`, (pw) => {
       body.password = pw;
       submitBatchUsers(key, body);
     });
@@ -1619,11 +1666,21 @@ async function restoreAccount(idx) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function purgeAccount(idx) {
+function purgeAccount(idx) {
   const a = state.accounts[idx];
-  if (!confirm(`确定彻底删除「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？此操作不可恢复！`)) return;
+  if (!a) { toast('账号列表已变化，请刷新页面后重试', true); return; }
+  // 批次14 P1-2：单条物理清除此前直发请求、零鉴权零告警。现与"彻底清除已注销用户"
+  // 同口径：先经密码模态取当前管理员口令，再带 confirm_password 提交
+  openConfirmPasswordModal(
+    `彻底删除「${a.display_name}」(${maskPhone(a.phone)})？\n凭据将被物理清除，不可恢复！\n请输入当前管理员密码确认。`,
+    (pw) => submitPurgeAccount(idx, a, pw));
+}
+
+async function submitPurgeAccount(idx, a, pw) {
   try {
-    const data = await api(`/api/accounts/${idx}/purge`, { method: 'POST', body: JSON.stringify({ phone: a.phone }) });
+    // phone 供服务端防错位校验（列表漂移返回 409 引导刷新），confirm_password 为二次鉴权
+    const data = await api(`/api/accounts/${idx}/purge`, {
+      method: 'POST', body: JSON.stringify({ phone: a.phone, confirm_password: pw }) });
     toast(data.msg || '已彻底删除');
     loadAccounts();
   } catch (e) { toast(e.message, true); }
@@ -1859,17 +1916,26 @@ $('account-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (accountSubmitting) return;
   const submitBtn = e.target.querySelector('button[type="submit"]');
-  const btnText = submitBtn.textContent;
-  accountSubmitting = true;
-  submitBtn.disabled = true;
-  submitBtn.textContent = '提交中…';
   // 手机号打码显示时（未修改）用内存中的完整号码提交，避免 **** 入库
   const phoneInput = $('f-phone');
   const phoneRaw = phoneInput.value.trim();
+  // 批次14 P3-2：编辑态下 state.editSnapshot 为 null，说明详情接口失败——既拿不到完整
+  // 手机号，也拿不到乐观锁快照。原先此路径仍允许保存（不带 _snapshot 提交），列表
+  // 一旦漂移就会把改动落到另一账号上且后端无从校验；现一律禁止提交并提示刷新。
+  // 两道拦截都放在启用在途锁之前：命中时按钮与 accountSubmitting 均保持原状，
+  // 否则一次失败提交会把表单永久锁死（原实现的提前 return 漏了 finally）。
+  if (state.editingIndex !== null && !state.editSnapshot) {
+    toast('无法获取账号完整信息，请刷新页面后重试', true);
+    return;
+  }
   if (phoneRaw.includes('****') && !phoneInput.dataset.full) {
     toast('无法获取账号完整信息，请刷新页面后重试', true);
     return;
   }
+  const btnText = submitBtn.textContent;
+  accountSubmitting = true;
+  submitBtn.disabled = true;
+  submitBtn.textContent = '提交中…';
   const phone = phoneRaw.includes('****') && phoneInput.dataset.full ? phoneInput.dataset.full : phoneRaw;
   const body = {
     name: $('f-name').value,
@@ -2438,11 +2504,28 @@ async function loadMailConfig() {
 }
 
 async function toggleMailGlobal() {
-  const enabled = $('mail-global-switch').checked;
+  const el = $('mail-global-switch');
+  const enabled = el.checked;
+  // 批次14 P1-1：关闭全局邮件通道 = 给全部安全告警拔线（后端已要求二次口令）。
+  // 先把开关拨回原状，口令确认成功后再落——用户取消模态时界面不会出现"看着已关"的假象
+  if (!enabled) {
+    el.checked = mailEnabled;
+    openConfirmPasswordModal(
+      '关闭全局邮件通知？\n关闭后所有安全告警都不再发邮件，且"被关闭"这件事本身也可能没人知道！\n请输入当前主管理员密码确认。',
+      (pw) => { el.checked = false; submitMailGlobal(false, pw); }
+    );
+    return;
+  }
+  await submitMailGlobal(enabled, null);
+}
+
+async function submitMailGlobal(enabled, pw) {
   const tip = $('mail-config-tip');
   tip.textContent = '保存中…';
+  const body = { enabled };
+  if (pw) body.confirm_password = pw;
   try {
-    await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ enabled }) });
+    await api('/api/mail-config', { method: 'PUT', body: JSON.stringify(body) });
     mailEnabled = enabled;
     tip.textContent = enabled ? '已开启全局邮件通知' : '已关闭全局邮件通知';
     setTimeout(() => { tip.textContent = ''; }, 3000);
@@ -2453,12 +2536,29 @@ async function toggleMailGlobal() {
 }
 
 async function toggleMailSelf() {
-  const enabled = $('mail-self-switch').checked;
+  const el = $('mail-self-switch');
+  const enabled = el.checked;
+  // 批次14 P1-1：主管理员关闭个人接收（admin_notify=false）后 ADMIN_TO 告警邮件全部
+  // 停发，同样属"拔线"动作 → 二次口令；普通管理员的 my-mail-notify 只影响其本人，不变
+  if (state.isMasterAdmin && !enabled) {
+    el.checked = mailSelfOn;
+    openConfirmPasswordModal(
+      '关闭主管理员告警邮件接收？\n关闭后 ADMIN_TO 不再收到任何告警邮件（其他管理员收件不受影响）！\n请输入当前主管理员密码确认。',
+      (pw) => { el.checked = false; submitMailSelf(false, pw); }
+    );
+    return;
+  }
+  await submitMailSelf(enabled, null);
+}
+
+async function submitMailSelf(enabled, pw) {
   const tip = $('mail-config-tip');
   tip.textContent = '保存中…';
   try {
     if (state.isMasterAdmin) {
-      await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ admin_notify: enabled }) });
+      const body = { admin_notify: enabled };
+      if (pw) body.confirm_password = pw;
+      await api('/api/mail-config', { method: 'PUT', body: JSON.stringify(body) });
     } else {
       await api('/api/my-mail-notify', { method: 'PUT', body: JSON.stringify({ enabled }) });
     }
@@ -2486,14 +2586,20 @@ async function loadNotifyConfig() {
     $('notify-type').value = data.type || '';
     $('notify-secret').value = '';
     $('notify-urgent-switch').checked = !!data.urgent_only;
+    // 批次14 P2-1：额度已分成"非紧急 / 紧急"两本账，只报一个数字会被运维当成总额度
+    const gLeft = data.daily_remaining == null ? '不限' : `${data.daily_remaining} 条`;
+    const uLeft = data.urgent_daily_remaining == null ? '不限' : `${data.urgent_daily_remaining} 条`;
+    if (data.daily_max != null) $('notify-daily-max').value = data.daily_max;
+    if (data.urgent_daily_max != null) $('notify-urgent-daily-max').value = data.urgent_daily_max;
     const parts = [];
     if (data.enabled) {
       parts.push(`已开启（${data.type === 'serverchan' ? 'Server酱' : '自定义地址'}，密钥 ${data.secret_masked}）`);
       if (data.urgent_only) parts.push('仅推送重要告警');
-      if (data.daily_remaining != null) parts.push(`今日剩余 ${data.daily_remaining} 条`);
     } else {
-      parts.push('未配置');
+      parts.push(data.configured ? '已配置但不可用（密钥缺失或解密失败，请重新填写密钥）' : '未配置');
     }
+    // 两本账剩余无论通道开关都照报：额度耗尽本身就是要让运维看见的事实（批次14 P3-1）
+    parts.push(`今日推送额度：非紧急剩余 ${gLeft} / 紧急剩余 ${uLeft}`);
     $('notify-status').textContent = parts.join('；');
   } catch (e) { /* 读取失败不阻塞设置页 */ }
 }
@@ -2502,15 +2608,47 @@ async function saveNotifyConfig() {
   const body = { type: $('notify-type').value };
   const secret = $('notify-secret').value.trim();
   if (secret) body.secret = secret;
-  const tip = $('notify-tip');
   // 关闭推送：无需密钥，直接保存（后端清除类型与密钥，v0.26.0 修复原"关不掉"bug）
   // 开启推送：密钥不回显，须重新输入；同时防误点保存把已配置密钥清空
   if (body.type && !secret) { toast('开启推送请填写密钥', true); return; }
+  // 批次14 P1-1：关闭通道与换密钥等同"给报警器拔线"，后端要求二次口令后才落盘；
+  // 只改节流/额度/仅重要告警开关不走这里（见 saveNotifyBudget / saveNotifyUrgent）
+  openConfirmPasswordModal(
+    body.type
+      ? `保存消息推送配置（${body.type === 'serverchan' ? 'Server酱' : '自定义地址'} + 新密钥）？\n新密钥加密落盘，旧密钥立即失效。\n请输入当前主管理员密码确认。`
+      : '关闭消息推送？\n关闭后所有告警不再推送到手机（邮件通知不受影响）！\n请输入当前主管理员密码确认。',
+    (pw) => { body.confirm_password = pw; submitNotifyConfig(body); }
+  );
+}
+
+async function submitNotifyConfig(body) {
+  const tip = $('notify-tip');
   tip.textContent = '保存中…';
   try {
     const data = await api('/api/notify-config', { method: 'PUT', body: JSON.stringify(body) });
     $('notify-secret').value = '';
     tip.textContent = data.enabled ? '已保存并开启' : '已关闭';
+    await loadNotifyConfig();
+  } catch (e) {
+    tip.textContent = '';
+    toast(e.message, true);
+  }
+}
+
+// 两本账每日上限（批次14 P2-1 分账后紧急账也能在页面上配）：纯数值改动，无需二次口令
+async function saveNotifyBudget() {
+  const tip = $('notify-tip');
+  const gv = String($('notify-daily-max').value).trim();
+  const uv = String($('notify-urgent-daily-max').value).trim();
+  if (!/^\d+$/.test(gv) || !/^\d+$/.test(uv)) { toast('每日上限须为 0 或正整数（0=不限）', true); return; }
+  tip.textContent = '保存中…';
+  try {
+    await api('/api/notify-config', {
+      method: 'PUT',
+      body: JSON.stringify({ daily_max: Number(gv), urgent_daily_max: Number(uv) }),
+    });
+    tip.textContent = '已保存每日额度';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
     await loadNotifyConfig();
   } catch (e) {
     tip.textContent = '';
@@ -2588,8 +2726,7 @@ async function doPing() {
 async function saveMyPassword() {
   const oldPassword = $('my-old-password').value;
   const password = $('my-new-password').value;
-  const pwClasses = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(password)).length;
-  if (password.length < 10 || pwClasses < 2) { toast('新密码至少 10 位，且含两类字符', true); return; }
+  if (!passwordPolicyOk(password)) { toast(`新密码${PW_POLICY_HINT}`, true); return; }
   if (!oldPassword) { toast('请输入当前密码验证', true); return; }
   if (password !== $('my-confirm-password').value) { toast('两次输入的新密码不一致', true); return; }
   try {
@@ -2951,8 +3088,8 @@ async function setUserRole(email, role) {
 }
 
 function resetUserPassword(email) {
-  // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验与后续 API/Toast 与原逻辑一致
-  openPasswordModal(`为 ${email} 设置新密码（至少 10 位，含两类字符）`, async (password) => {
+  // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；口令策略校验见 openPasswordModal set 分支
+  openPasswordModal(`为 ${email} 设置新密码（${PW_POLICY_HINT}）`, async (password) => {
     try {
       const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
         method: 'POST', body: JSON.stringify({ password }),

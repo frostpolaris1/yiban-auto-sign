@@ -853,7 +853,14 @@ https://api.day.app/YOUR_KEY/易班签到通知
 **审计查询**（服务器上）：
 ```bash
 sqlite3 /opt/yiban-auto-sign/yiban.db "SELECT ts, username, action, target FROM audit_logs ORDER BY id DESC LIMIT 20"
+
+# 登录/登出时间线（IN 里的 login 是改名前写入的历史行，跨版本排查必须带上）
+sqlite3 /opt/yiban-auto-sign/yiban.db "SELECT ts, username, action, target FROM audit_logs WHERE action IN ('login','login_ok','login_failed','logout_ok') ORDER BY id"
 ```
+
+**登录/登出取证**：登录与登出的动作名为 `login_ok`（账号自助恢复 `/api/me/restore` 的"恢复即登录"同样记此名，`detail` 以「恢复登录」区分入口）、`login_failed`（连续失败达到告警阈值与锁定阈值各留一条，不逐次留痕）、`logout_ok`；三者的 `target` 存的都是 IP 的 HMAC（不落明文 IP，`detail` 不含口令、Cookie 与会话凭据）。两条运维口径：
+> - 跨版本排查要写 `WHERE action IN ('login','login_ok')`：登录成功审计自批次7 起就存在，动作名是批次14 才由 `login` 收敛为 `login_ok` 的，改名前写入的行（现网旧库与 `/var/backups/yiban-*.tar.gz` 历史备份包内）都叫 `login`，只查新名会把它们整段漏掉。
+> - 审计行按上表 180 天保留期清理，登录时间线的可取证窗口同样受此限制；更早的时间线只能回到历史备份包。
 
 **审计链校验**（检测操作记录是否被私下篡改，v0.20.0+）：`python3 scripts/audit_verify.py`——校验通过退出码 0，发现篡改退出码 1。
 

@@ -271,6 +271,8 @@ RISK_MAX_ATTEMPTS = 2
 RETRY_MIN_INTERVAL = 60
 # 网络/瞬时类失败重试间隔打散上限（秒），作为账号间随机延迟之外的补充
 RETRY_GAP_MAX = 30
+# 会话陈旧类失败（总尝试上限 2 次：1 次复用缓存 + 1 次强制真重登）
+SESSION_STALE_MAX_ATTEMPTS = 2
 
 # 随机延迟默认值在 web/app.py 与 tui/app.py 中维护（signin.py 不直接使用）。
 
@@ -602,6 +604,39 @@ def classify_failure(message):
         if kw in message:
             return RISK_MAX_ATTEMPTS
     return MAX_ATTEMPTS
+
+
+# 会话陈旧类失败特征（2026-08-31 生产复盘新增）：缓存会话已被服务端作废
+# （夜间自然过期、或本人用手机端易班登录把 Web 会话挤掉）。后四个是同一语义的
+# 措辞变体：服务端文案一改即被判"网络类"，重新空跑满 4 次。
+SESSION_STALE_FAIL_KEYWORDS = [
+    "未登录",
+    "登录已经超时",
+    "登录已超时",
+    "登录已失效",
+    "会话已过期",
+    "会话失效",
+]
+
+
+def _is_session_stale_failure(message):
+    """是否为"缓存会话已被服务端作废"类失败——账密本身没问题，不是凭据类失败。"""
+    return any(kw in message for kw in SESSION_STALE_FAIL_KEYWORDS)
+
+
+def _retry_budget(message):
+    """返回 (该失败下的最大尝试次数, 是否应清除该账号会话缓存)。
+
+    会话陈旧优先于 classify_failure：它既不在风控关键词里（原实现据此给满 4 次
+    上限），又不是"再试一次就可能好"的瞬时故障——不清缓存重登，重试只是把同一份
+    死缓存的失败原样复演。
+    """
+    if _is_session_stale_failure(message):
+        return SESSION_STALE_MAX_ATTEMPTS, True
+    max_attempts = classify_failure(message)
+    # 风控类（e003/WAF 等）会话已不可信；"授权设备"非风险关键词（属设备配置问题，
+    # 仍可重试），但同样意味着当前会话不可信，一并清除
+    return max_attempts, (max_attempts == RISK_MAX_ATTEMPTS or "授权设备" in message)
 
 
 def clear_session_cache_quiet(phone):
@@ -2545,9 +2580,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 results[phone] = (False, message, True, status)
                 logger.info(f"[{phone}] ⛔ {message}（不重试）")
                 continue
-            max_attempts = classify_failure(message)
-            # 会话缓存联动（2026-08-22）：风控类失败（e003/WAF 等）清除该账号缓存（原样）
-            if max_attempts == RISK_MAX_ATTEMPTS or "授权设备" in message:
+            max_attempts, clear_cache = _retry_budget(message)
+            # 会话缓存联动：风控类（e003/WAF）、"授权设备"、会话陈旧三类当前会话都不可信，
+            # 清掉缓存后下一次尝试会走真实登录（attempt_signin 每次新建 client）
+            if clear_cache:
                 clear_session_cache_quiet(phone)
             if attempts[phone] >= max_attempts:
                 results[phone] = (False, message, False, status)
@@ -2651,11 +2687,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             logger.info(f"[{phone}] ⛔ {message}（不重试）")
             continue
 
-        max_attempts = classify_failure(message)
-        # 会话缓存联动（2026-08-22）：风控类失败（e003/WAF 等）清除该账号缓存，
-        # 避免下次签到复用已被服务端标记的会话；"授权设备"非风险关键词（属设备
-        # 配置问题仍可重试），但同样意味着当前会话不可信，单列一并清除
-        if max_attempts == RISK_MAX_ATTEMPTS or "授权设备" in message:
+        max_attempts, clear_cache = _retry_budget(message)
+        # 会话缓存联动：与队列路径同口径——风控类/"授权设备"/会话陈旧都清缓存，
+        # 避免下次尝试复用已被服务端作废的会话
+        if clear_cache:
             clear_session_cache_quiet(phone)
         if attempts[phone] >= max_attempts:
             results[phone] = (False, message, False, status)

@@ -178,10 +178,11 @@
       <!-- 登录表单 -->
       <form id="login-form" class="space-y-4">
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="username">邮箱 / 管理员用户名</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="username">登录邮箱</label>
           <input id="username" name="username" type="text" required autocomplete="username" inputmode="email"
-                 placeholder="邮箱 / 管理员用户名"
+                 placeholder="注册时填写的邮箱"
                  class="input input-ring">
+          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">普通用户与普通管理员均用注册邮箱登录；管理员用户名仅内置主管理员可用。</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="password">密码</label>
@@ -216,12 +217,12 @@
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
           <div class="relative">
             <input id="reg-password" type="password" required autocomplete="new-password" aria-describedby="reg-password-error"
-                   placeholder="至少 10 位，含两类字符"
+                   placeholder="至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类"
                    class="input input-ring pr-10">
             <button type="button" data-pw-toggle="reg-password" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
           </div>
-          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且含字母/数字/符号中至少两类</p>
+          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password2">确认密码 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -306,6 +307,13 @@ function showError(el, msg) {
 
 // ---- 注册表单即时校验（输入时实时反馈，字段下方提示）----
 const EMAIL_RE = /^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$/;  // 用户名部分（@ 前）限 32 字符
+// 口令策略（本模板内单一事实源）：与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS /
+// _PASSWORD_POLICY_HINT 逐字同序同串——tests/test_batch14_fixes_0829.py 的元测试会
+// 从本文件源码提取这四个正则与后端比对，漂移即红。判定语义：命中 >= 2 类即过（符号算一类）。
+const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
+const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
+const PW_POLICY_HINT = '至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类';
+function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
 const regEmail = document.getElementById('reg-email');
 const regEmailErr = document.getElementById('reg-email-error');
 const regPw = document.getElementById('reg-password');
@@ -350,9 +358,9 @@ regEmail.addEventListener('input', () => {
 regPw.addEventListener('input', () => {
   const v = regPw.value;
   const n = v.length;
-  const classes = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(v)).length;
-  regPwErr.textContent = `密码至少 10 位且含两类字符（当前 ${n} 位，${classes} 类）`;
-  markField(regPw, regPwErr, n < 10 || classes < 2);
+  const classes = passwordClasses(v);
+  regPwErr.textContent = `密码${PW_POLICY_HINT}（当前 ${n} 位，${classes} 类）`;
+  markField(regPw, regPwErr, n < PW_MIN_LEN || classes < PW_MIN_CLASSES);
   validatePwMatch();
 });
 
@@ -495,8 +503,8 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
     // 与后端 _password_policy_error 对齐：至少 10 位 + 大写/小写/数字/符号中至少两类
     const emailInvalid = !(EMAIL_RE.test(email) && email.length <= 64);
     markField(regEmail, regEmailErr, emailInvalid);
-    const pwClasses = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(password)).length;
-    const pwInvalid = password.length < 10 || pwClasses < 2;
+    const pwClasses = passwordClasses(password);
+    const pwInvalid = password.length < PW_MIN_LEN || pwClasses < PW_MIN_CLASSES;
     markField(regPw, regPwErr, pwInvalid);
     // 确认密码兜底：即时校验优先，此处防绕过（原生 required 已保证非空）
     const pwMismatch = regPw2.value !== password;
