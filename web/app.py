@@ -463,12 +463,13 @@ assert DELETE_GRACE_DAYS == db.SOFT_DELETE_RETENTION_DAYS, (
     f"{DELETE_GRACE_DAYS} != {db.SOFT_DELETE_RETENTION_DAYS}"
 )
 
-# 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底）：
-# 注册用户上限默认 200（一人一号 ≈ 200 账号，远超班级/社团规模）；账号总数上限默认 500
-# （调度窗口 80min ÷ 单账号平均 8s ≈ 600 理论上限，留裕量防 web 解密/轮询劣化）。
+# 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底；2026-08-31 口径修订）：
+# 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
+# 账号 = 至少持有 1 个非删除账号的活跃注册用户，上限默认 200（一人一号 ≈ 200 活跃使用者，
+#   调度窗口 80min ÷ 单账号平均 8s ≈ 600 理论上限，留裕量防 web 解密/轮询劣化）。
 # 0 = 不限。可用 .env 的 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS 调整。
-DEFAULT_MAX_USERS = 200
-DEFAULT_MAX_ACCOUNTS = 500
+DEFAULT_MAX_USERS = 500
+DEFAULT_MAX_ACCOUNTS = 200
 
 # 自选时间片切换冷却（2026-08-15 用户反馈 → 弹性冷却）：
 # 60 秒窗口内前 TIME_PREF_COOLDOWN_FREE 次切换完全自由（浏览式"全点一遍再定"属正常行为）；
@@ -1930,6 +1931,34 @@ def _send_channel_health_report(force=False):
 _capacity_alerts = {"users": False, "accounts": False}
 
 
+def _capacity_stats():
+    """容量统计（2026-08-31 口径修订，显示与配额检查的唯一口径来源）：
+    users = 全部未删除注册用户数（含空用户）；accounts = 至少持有 1 个非删除账号的
+    活跃注册用户数。admin 直属裸账号（owner='admin'，非注册用户）不计入 accounts。
+    """
+    users = db.load_users()
+    live_accts = [a for a in load_accounts() if not a["deleted"]]
+    owners = {a.get("owner") for a in live_accts if a.get("owner")}
+    accounts = sum(1 for u in users if u["email"] in owners)
+    return len(users), accounts
+
+
+def _accounts_at_capacity(extra_holder=None):
+    """账号配额判定（新口径）：添加后活跃注册用户持有者数 > 上限 则 True。
+    extra_holder：本次将新增持有账号的注册用户邮箱；None 表示不新增活跃持有者
+    （如 admin 直属裸账号 owner='admin'，按口径不占配额）。
+    """
+    max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
+    if max_accounts <= 0:
+        return False
+    _, accounts = _capacity_stats()
+    if extra_holder:
+        live_accts = [a for a in load_accounts() if not a["deleted"]]
+        if extra_holder not in {a.get("owner") for a in live_accts}:
+            accounts += 1
+    return accounts > max_accounts
+
+
 # 高危告警邮件节流（2026-08-29 被盗号滥用面加固）：同类型告警邮件在窗口内只发一封，
 # 防被盗管理员会话通过反复触发高危操作（批量删除等）耗尽 SMTP 发件额度；webhook
 # 保持实时逐条推送，不受影响。窗口可调：YIBAN_MAIL_ALERT_COOLDOWN（秒，0=关闭，默认 300）。
@@ -2618,7 +2647,8 @@ def create_app(host=None):
                 return jsonify({"error": "注册过于频繁，请稍后再试"}), 429
         # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
         with _file_lock:
-            # 容量兜底：注册总人数上限（防分布式注册无限膨胀 users 表，对抗性审查补）
+            # 容量兜底：用户配额（2026-08-31 口径修订：全部未删除注册用户，含空用户；
+            # 防分布式注册无限膨胀 users 表，对抗性审查补）
             max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
             if max_users > 0 and len(db.load_users()) >= max_users:
                 _notify_capacity_once("users", max_users, "注册人数")
@@ -3426,12 +3456,14 @@ def create_app(host=None):
         with _file_lock:
             accounts_pre = load_accounts()
             max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            if max_accounts_pre > 0 and len(accounts_pre) >= max_accounts_pre:
+            email_screen = str(data.get("email", "")).strip().lower()
+            # 容量兜底（2026-08-31 口径修订）：账号配额 = 活跃注册用户持有者数；
+            # 本次将归属的邮箱视为新增持有者预判；admin 直属裸账号（无 email）不占配额
+            if _accounts_at_capacity(email_screen or None):
                 _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
                 return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
             if find_account_index(accounts_pre, clean["phone"]) is not None:
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
-            email_screen = str(data.get("email", "")).strip().lower()
             if email_screen and email_screen == _builtin_admin_email():
                 return jsonify({"error": "内置管理员邮箱不可注册"}), 400
             # 域名预筛（2026-08-28）：注定被拒的占位/一次性域名不消耗易班验证配额
@@ -3459,9 +3491,9 @@ def create_app(host=None):
                 initial_hash = generate_password_hash(initial, method=SCRYPT_METHOD)
         with _file_lock:
             accounts = load_accounts()
-            # 容量兜底：账号总数上限（防账号无限增长拖垮解密/轮询性能，对抗性审查补）
+            # 容量兜底：账号配额（新口径：活跃注册用户持有者数，防无限增长，对抗性审查补）
             max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            if max_accounts > 0 and len(accounts) >= max_accounts:
+            if _accounts_at_capacity(email or None):
                 _notify_capacity_once("accounts", max_accounts, "账号数量")
                 return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员扩容"}), 403
             if find_account_index(accounts, clean["phone"]) is not None:
@@ -3486,7 +3518,7 @@ def create_app(host=None):
                 if db.find_user(email) is None:
                     if initial_hash is None:
                         return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
-                    # H14：自动注册同样受用户容量与注销冷却期约束
+                    # H14：自动注册同样受用户容量（全部未删除用户）与注销冷却期约束
                     max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
                     if max_users > 0 and len(db.load_users()) >= max_users:
                         _notify_capacity_once("users", max_users, "注册人数")
@@ -4354,7 +4386,9 @@ def create_app(host=None):
         with _file_lock:
             accounts_pre = load_accounts()
             max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            if max_accounts_pre > 0 and len(accounts_pre) >= max_accounts_pre:
+            # 容量兜底（2026-08-31 口径修订）：账号配额 = 活跃注册用户持有者数；
+            # 提交者本人（注册用户、当前无账号）将新增为持有者
+            if _accounts_at_capacity(email_pre):
                 _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
                 # 不向普通用户暴露容量数字（信息分层，2026-08-15）
                 return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
@@ -4375,9 +4409,9 @@ def create_app(host=None):
                 return jsonify({"error": verify_err}), 400
         with _file_lock:
             accounts = load_accounts()
-            # 容量兜底：账号总数上限（用户提交同样受限，对抗性审查补）
+            # 容量兜底：账号配额（新口径：活跃注册用户持有者数；用户提交同样受限，对抗性审查补）
             max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            if max_accounts > 0 and len(accounts) >= max_accounts:
+            if _accounts_at_capacity(email_pre):
                 _notify_capacity_once("accounts", max_accounts, "账号数量")
                 # 不向普通用户暴露容量数字（信息分层，2026-08-15）
                 return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
@@ -5685,11 +5719,10 @@ def create_app(host=None):
         env = read_env(ENV_FILE)
         mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
         sw = _sign_window()
-        # 容量口径（2026-08-23 修正）：
-        #   账号 = 全部非删除账号（含 admin 直属账号，排除软删/注销宽限账号）
-        #   用户 = 至少持有 1 个非删除账号的活跃注册用户
-        _live_accts = [a for a in load_accounts() if not a["deleted"]]
-        _owners_with_account = {a.get("owner") for a in _live_accts if a.get("owner")}
+        # 容量口径（2026-08-31 修订，与配额检查同源 _capacity_stats）：
+        #   用户 = 全部未删除注册用户（含尚未添加账号的空用户）
+        #   账号 = 至少持有 1 个非删除账号的活跃注册用户（admin 直属裸账号不计入）
+        _cap_users, _cap_accounts = _capacity_stats()
         return jsonify(
             {
                 "ok": True,
@@ -5710,11 +5743,11 @@ def create_app(host=None):
                 "edge_back_sec": edge_config()[1],
                 "allow_time_pref": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
                 "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
-                # 容量状态：注册/账号上限与当前使用量（管理员知情）
+                # 容量状态：注册用户/活跃账号 当前使用量 vs 上限（管理员知情）
                 "capacity": {
-                    "users": sum(1 for u in db.load_users() if u["email"] in _owners_with_account),
+                    "users": _cap_users,
                     "users_max": load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS),
-                    "accounts": len(_live_accts),
+                    "accounts": _cap_accounts,
                     "accounts_max": load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS),
                 },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）

@@ -2148,7 +2148,7 @@ async function loadSettings() {
     // 顶部"签到窗口"静态展示与实际配置联动（2026-08-15 对抗性审查：原为写死默认值误导）
     const swEl = $('sign-window-static');
     if (swEl) swEl.textContent = state.signWindow || '--:-- ~ --:--';
-    // 容量状态（对抗性审查补）：注册用户/账号 当前使用量 vs 上限
+    // 容量状态（2026-08-31 口径修订）：用户=全部未删除注册用户、账号=活跃注册用户持有者
     const cap = data.capacity;
     if (cap) {
       const capEl = $('capacity-status');
