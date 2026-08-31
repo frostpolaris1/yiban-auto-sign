@@ -197,7 +197,10 @@ class AdversarialFixes0820Test(unittest.TestCase):
         c = self._client()
         token = self._login_admin(c)
         # idx1 是已软删的 139 账号；携带错误 phone 应 409（防漂移后误删他人）
-        r = c.post("/api/accounts/1/purge", json={"phone": "13800138000"},
+        # 批次14 P1-2 后 purge 先过二次鉴权，故补 confirm_password——本用例要钉的
+        # 仍是"口令正确时的防错位 409"，断言与尝试次序均未放宽
+        r = c.post("/api/accounts/1/purge",
+                   json={"phone": "13800138000", "confirm_password": ADMIN_PASS},
                    headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
         self.assertEqual(len(db.load_accounts()), 2, "409 后不应有账号被物理删除")

@@ -15,6 +15,10 @@ app_meta 的 clock_guard_alert 留痕并发送邮件）。
 用法：
     python3 scripts/clock_guard_reset.py [--db yiban.db]        # 仅显示当前状态
     python3 scripts/clock_guard_reset.py [--db yiban.db] --confirm  # 执行重置
+    可选 --env .env：审计密钥来源路径（批次14 P2-5；缺省取 YIBAN_ENV_FILE，
+    两者都没有才回落到当前目录 .env——在应用根之外运行请务必显式指定）。
+    显式指定时该文件必须已存在（批次14 修复轮1③：打错路径直接 exit 2，
+    不会在该位置新建 .env 并生成新审计密钥）。
 
 重置动作写入审计链（actor=clock-guard-reset），供事后追溯。
 """
@@ -75,9 +79,14 @@ def show_status(db_path):
         conn.close()
 
 
-def reset(db_path):
-    """重置全部守卫参照点为当前时间 + 清除告警 + 审计留痕。"""
-    db.init_db(db_file=db_path, cleanup=False, migrate=False)
+def reset(db_path, env_file=None):
+    """重置全部守卫参照点为当前时间 + 清除告警 + 审计留痕。
+
+    env_file：审计密钥来源 .env 路径（批次14 P2-5）——本函数经 db.audit() 写哈希链，
+    来源解析错目录会用新生成的游离密钥签名，使真实链从这条起判破（恢复动作本身
+    变成破坏取证）。None 时由 db 层按 YIBAN_ENV_FILE → 当前目录 ".env" 回落。
+    """
+    db.init_db(db_file=db_path, cleanup=False, migrate=False, env_file=env_file)
     conn = _open_conn(db_path)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -107,15 +116,27 @@ def main():
         description="时钟守卫人工重置：核实系统时间正确后恢复被冻结的物理清理"
     )
     parser.add_argument("--db", default=None, help="yiban.db 路径（默认 YIBAN_DB_FILE/默认路径）")
+    parser.add_argument("--env", default=None,
+                        help="审计密钥来源 .env 路径（默认取 YIBAN_ENV_FILE；批次14 P2-5 "
+                             "用于摆脱对当前目录的依赖，避免就地生成游离密钥签坏审计链；"
+                             "显式指定时必须已存在）")
     parser.add_argument("--confirm", action="store_true", help="执行重置（缺省仅显示状态）")
     args = parser.parse_args()
 
+    # 批次14 修复轮1③：显式 --env 指向不存在的文件时立即退出，且在打开/写库之前。
+    # 否则 db 层把该路径当作"来源已确定"，就地新建 .env 并生成新审计密钥，
+    # 这条重置留痕就用第三把钥匙签名——恢复动作反过来把真实链判破。
+    try:
+        env_file = db.require_existing_env_file(args.env)
+    except ValueError as e:
+        print(f"错误：{e}")
+        sys.exit(2)
     db_path = args.db or os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
     if not os.path.exists(db_path):
         print(f"错误：数据库不存在: {db_path}（拒绝新建空库）")
         sys.exit(2)
     if args.confirm:
-        reset(db_path)
+        reset(db_path, env_file=env_file)
     else:
         show_status(db_path)
 

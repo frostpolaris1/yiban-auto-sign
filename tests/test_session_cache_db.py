@@ -3,7 +3,9 @@
 
 覆盖 docs/research-lumjiel-core-sign-20260822.md §七：
 - CRUD：写入/读取（密文透明还原）/UPSERT（created_at 保留、updated_at 刷新）/清除幂等；
-- TTL：过期行读时顺手清除；YIBAN_SESSION_TTL_HOURS 环境变量覆盖默认 12h；
+- TTL：过期行读时顺手清除；YIBAN_SESSION_TTL_HOURS 环境变量覆盖默认 6h；
+- 业务日：跨业务日的缓存一律作废（调大 TTL 也解锁不了跨天复用），同日内仍受 TTL 护栏
+  约束，写入与判定同钟（2026-08-31 公测复盘：旧默认 12h 恰好横跨一夜）；
 - 密文落库：库内不得出现明文 cookie（AES-GCM 密文对象）；AAD=phone 绑定
   （密文跨账号搬运解密失败 → 按未命中清除，不阻断重登）；
 - 迁移：新库直达 v8；v7 旧库升级到 v8（建表 + 存量数据保留）。
@@ -17,6 +19,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -30,7 +33,9 @@ AUDIT_KEY = "b" * 64
 PHONE = "13800001234"
 
 
-class SessionCacheDbTest(unittest.TestCase):
+class _SessionCacheFixture(unittest.TestCase):
+    """两组用例共用的隔离夹具（自身无 test_ 方法，不会被收集）。"""
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="yiban-session-cache-")
@@ -81,7 +86,10 @@ class SessionCacheDbTest(unittest.TestCase):
         )
         conn.commit()
 
+
+class SessionCacheDbTest(_SessionCacheFixture):
     # ---- 新库直达 v8，表结构齐备 ----
+
     def test_fresh_db_reaches_v8_with_session_cache_table(self):
         conn = db.init_db(self.db_file, env_file=self.env_file)
         self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 12)
@@ -234,6 +242,88 @@ class SessionCacheDbTest(unittest.TestCase):
             [a["phone"] for a in db.load_accounts_raw()], [PHONE],
             "升级不得影响既有 accounts 数据",
         )
+
+
+class SessionCacheBusinessDayTest(_SessionCacheFixture):
+    """2026-08-31 公测复盘：会话缓存主判据由"多少小时"改为"是否同一业务日"。
+
+    生产当天 3 个账号复用的正是前一晚 20:35 写入、已被服务端作废的会话——旧默认
+    TTL 12h 恰好横跨一夜。时间戳全部相对被钉住的 _session_cache_now 构造，
+    用例不随挂钟时刻漂移（旧用例回拨 13h 的判定结果就取决于当天几点跑）。
+    """
+
+    NOW = datetime.datetime(2026, 8, 31, 6, 31, 0)
+
+    def _ts(self, hours_ago=None, day_offset=0, at="06:31:00"):
+        date = (self.NOW + datetime.timedelta(days=day_offset)).strftime("%Y-%m-%d")
+        if hours_ago is not None:
+            return (self.NOW - datetime.timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
+        return f"{date} {at}"
+
+    def _write_with_updated_at(self, updated_at):
+        db.init_db(self.db_file, env_file=self.env_file)
+        db.set_session_cache(PHONE, '{"a":"1"}', "c")
+        conn = db.get_conn()
+        conn.execute(
+            "UPDATE session_cache SET updated_at=? WHERE phone=?", (updated_at, PHONE)
+        )
+        conn.commit()
+
+    def _get(self):
+        with mock.patch.object(db, "_session_cache_now", return_value=self.NOW):
+            return db.get_session_cache(PHONE)
+
+    def test_default_ttl_lowered_to_six_hours(self):
+        # 同日窗口最长 80 分钟，护栏只该在同日内起兜底作用；12h 是当年"横跨一夜"的元凶
+        self.assertEqual(db.SESSION_CACHE_TTL_HOURS_DEFAULT, 6)
+
+    def test_cross_day_row_dies_even_with_seventy_two_hour_ttl(self):
+        """最硬的一条：调大 TTL 不再解锁跨天复用（旧口径 12h→24h 曾被用来支持它）。"""
+        self._write_with_updated_at(self._ts(day_offset=-1, at="23:59:59"))  # 仅 6.5h 前
+        os.environ["YIBAN_SESSION_TTL_HOURS"] = "72"
+        try:
+            self.assertIsNone(self._get(), "前一晚写入的缓存必须作废，与 TTL 大小无关")
+        finally:
+            os.environ.pop("YIBAN_SESSION_TTL_HOURS", None)
+        conn = db.get_conn()
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM session_cache").fetchone()[0], 0,
+            "跨日行应在读取时被顺手清除",
+        )
+
+    def test_same_day_five_hours_ago_still_reused(self):
+        """同日内照常复用——否则 06:31 首轮与 07:10 兜底之间的免登录收益就没了。"""
+        self._write_with_updated_at(self._ts(hours_ago=5))
+        got = self._get()
+        self.assertIsNotNone(got, "同日内 5 小时的缓存应仍有效")
+        self.assertEqual(got["csrf"], "c", "应透明还原密文，不得因判据改造而丢内容")
+
+    def test_same_day_beyond_ttl_guard_still_dies(self):
+        self._write_with_updated_at(self._ts(hours_ago=7))  # 同一天，但超 6h 护栏
+        self.assertIsNone(self._get(), "同日内仍受 TTL 护栏约束")
+
+    def test_discard_log_names_the_real_reason(self):
+        """管理员要能一眼看出"为什么今早多登录了一次"，不能只看到未命中。"""
+        self._write_with_updated_at(self._ts(day_offset=-1))
+        with self.assertLogs("yiban.db", level="INFO") as captured:
+            self.assertIsNone(self._get())
+        joined = "\n".join(captured.output)
+        self.assertIn("跨业务日", joined)
+        self.assertNotIn("超出 TTL", joined.split("跨业务日")[0],
+                         "跨日排在 TTL 之前判定，否则日志会把业务日问题报成秒数问题")
+
+    def test_write_and_read_share_one_clock(self):
+        """写入与判定必须同钟：宿主时区为 UTC 时否则 updated_at 凭空领先 8 小时永不过期。"""
+        db.init_db(self.db_file, env_file=self.env_file)
+        with mock.patch.object(db, "_session_cache_now", return_value=self.NOW):
+            db.set_session_cache(PHONE, '{"a":"1"}', "c")
+        conn = db.get_conn()
+        row = conn.execute(
+            "SELECT created_at, updated_at FROM session_cache WHERE phone=?", (PHONE,)
+        ).fetchone()
+        self.assertEqual(row["created_at"], "2026-08-31 06:31:00")
+        self.assertEqual(row["updated_at"], "2026-08-31 06:31:00")
+        self.assertIsNotNone(self._get(), "刚写入的缓存应可复用")
 
 
 if __name__ == "__main__":
