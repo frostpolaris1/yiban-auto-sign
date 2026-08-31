@@ -5401,6 +5401,51 @@ def create_app(host=None):
                 if _signin_procs.get(phone) is proc:
                     _signin_procs.pop(phone, None)
 
+    def _launch_signin_proc(only_arg):
+        """起一个 `signin.py --only <only_arg>` 子进程；only_arg 可为逗号分隔多号。
+
+        环境与定时签到同口径（进程环境为底座、.env 的 YIBAN_* 覆盖注入）；手动签到
+        关闭随机延迟；密钥经 YIBAN_ENV_FILE 由子进程自读，不注入明文（批次7 口径）。
+        返回 Popen；脚本缺失等启动失败返回 None。
+        """
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = os.path.join(base, "scripts", "signin.py")
+        env = child_env.build_child_env(ENV_FILE, base=dict(os.environ))
+        env["YIBAN_START_DELAY_MAX"] = "0"
+        env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
+        env["YIBAN_DB_FILE"] = DB_FILE
+        env["YIBAN_ENV_FILE"] = ENV_FILE
+        log_fh = None
+        with contextlib.suppress(OSError):
+            log_fh = open(log_path_for(), "a", encoding="utf-8", buffering=1)
+        try:
+            return subprocess.Popen(
+                [sys.executable, script, "--only", only_arg],
+                cwd=base, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            return None
+        finally:
+            if log_fh is not None:
+                log_fh.close()
+
+    def _spawn_signin_many(phones):
+        """批量手动签到合并为单个队列子进程（--only 逗号分隔）。
+
+        底层 signin.py --only 本就支持多号：一次登录批处理、一次队列重试、只发一封
+        汇总邮件——替代原"逐账号各起一个子进程、各发一封汇总"，N 个账号从 N 封降到 1 封。
+        返回 (ok: bool, msg: str, proc: Popen|None)。
+        """
+        if not phones:
+            return False, "无可签到账号", None
+        if _signin_run_lock_busy():
+            return False, "签到队列忙（定时签到进行中），请稍后再试", None
+        proc = _launch_signin_proc(",".join(phones))
+        if proc is None:
+            return False, "批量手动签到启动失败，请稍后重试", None
+        logger.info("触发批量手动签到（单队列）: %s 个账号", len(phones))
+        return True, "", proc
+
     def _spawn_signin(phone, accounts=None):
         """触发单账号手动签到子进程（signin.py --only）。
 
@@ -5426,46 +5471,15 @@ def create_app(host=None):
                 old.terminate()  # 仍在运行 → 终止旧进程，防止同账号并发签到
             _last_trigger[phone] = now
 
-        # 项目根目录（web 的上一级），与 TUI action_manual_sign 一致
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        script = os.path.join(base, "scripts", "signin.py")
-        # 批次7 P2-10：与定时签到同口径——进程环境为底座、.env 的 YIBAN_* 键覆盖注入。
-        # 原实现只继承 gunicorn 启动快照，管理员事后在 .env 配的 YIBAN_PROXY /
-        # YIBAN_NOTIFY_URL / 登录方式对手动签到不生效（两路行为分叉，排障困难）。
-        env = child_env.build_child_env(ENV_FILE, base=dict(os.environ))
-        # 单账号手动签到：关闭随机延迟，避免等待
-        env["YIBAN_START_DELAY_MAX"] = "0"
-        env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
-        # 子进程读取与主进程相同的数据库（--db 自定义路径时保持一致）
-        env["YIBAN_DB_FILE"] = DB_FILE
-        # 2026-08-21 对抗性审查修复：传 .env 路径而非密钥本身——此前把
-        # YIBAN_ACCOUNTS_KEY 明文注入子进程环境（同 uid 进程可读 /proc/<pid>/environ）；
-        # signin.py 现按 YIBAN_ENV_FILE 自行从 .env 读取密钥
-        env["YIBAN_ENV_FILE"] = ENV_FILE
-        log_fh = None
-        with contextlib.suppress(OSError):
-            log_fh = open(
-                log_path_for(), "a", encoding="utf-8", buffering=1
-            )  # 日志不可写时丢弃，不影响签到执行（按天文件：sign-当天.log）
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, script, "--only", phone],
-                cwd=base,
-                env=env,
-                stdout=log_fh,
-                stderr=subprocess.STDOUT,
-            )
-            with _signin_lock:
-                _signin_procs[phone] = proc  # 记录子进程，供下次触发时终止旧进程
-            # M9：daemon 回收线程，进程退出后自动从 _signin_procs 移除同对象
-            threading.Thread(target=_reap_signin, args=(phone, proc), daemon=True).start()
-        except FileNotFoundError:
+        proc = _launch_signin_proc(phone)
+        if proc is None:
             with _signin_lock:
                 _last_trigger.pop(phone, None)
             return False, f"账号 {phone} 手动签到启动失败，请稍后重试"
-        finally:
-            if log_fh is not None:
-                log_fh.close()  # 父进程关闭句柄（子进程已继承自身副本），防句柄累积
+        with _signin_lock:
+            _signin_procs[phone] = proc  # 记录子进程，供下次触发时终止旧进程
+        # M9：daemon 回收线程，进程退出后自动从 _signin_procs 移除同对象
+        threading.Thread(target=_reap_signin, args=(phone, proc), daemon=True).start()
         logger.info("触发手动签到: %s", _mask_phone(phone))
         return True, f"已触发 {phone} 手动签到（后台执行，日志约 30 秒内刷新）"
 
@@ -5531,18 +5545,12 @@ def create_app(host=None):
 
         def _run_batch():
             try:
-                ok_n = skip_n = 0
-                for phone in phones:
-                    ok, _ = _spawn_signin(phone, accounts=accounts)
-                    if ok:
-                        ok_n += 1
-                        proc = _signin_procs.get(phone)
-                        if proc:
-                            # M8：超时后 terminate + 回收，避免遗留子进程造成并发签到
-                            _wait_signin_proc(proc)
-                    else:
-                        skip_n += 1
-                logger.info("批量手动签到完成: 触发 %s 个，跳过 %s 个", ok_n, skip_n)
+                ok, msg, proc = _spawn_signin_many(phones)
+                if not ok:
+                    logger.warning("批量手动签到未启动: %s", msg)
+                    return
+                _wait_signin_proc(proc)
+                logger.info("批量手动签到完成: %s 个账号（单队列、单封汇总邮件）", len(phones))
             finally:
                 nonlocal _batch_signin_running
                 with _batch_signin_lock:
@@ -5557,7 +5565,7 @@ def create_app(host=None):
         )
         return jsonify({
             "ok": True,
-            "msg": f"已加入批量签到队列（{len(phones)} 个账号，将按顺序逐个执行，日志约几分钟内刷新）",
+            "msg": f"已加入批量签到队列（{len(phones)} 个账号，合并为一个队列执行、只发一封汇总邮件，日志约几分钟内刷新）",
         })
 
     # ---- 日志与状态 ----
