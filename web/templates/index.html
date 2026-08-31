@@ -822,7 +822,7 @@
       <!-- 触发时间 + 触发频率 -->
       <div class="grid grid-cols-2 gap-3 mb-2">
         <div>
-          <label for="probe-time" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">触发时间</label>
+          <label for="probe-time" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">触发时间（最早时刻）</label>
           <input id="probe-time" type="time" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm text-zinc-900 dark:text-zinc-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="saveProbeSettings()">
         </div>
         <div>
@@ -836,6 +836,7 @@
           </select>
         </div>
       </div>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">设定时间到达后，将在最近的调度周期执行（约 10 分钟内），每天最多一次；修改时间后次日生效。</p>
       <p id="probe-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
     </div>
 
@@ -2703,7 +2704,7 @@ async function saveProbeSettings() {
       }),
     });
     const tip = $('probe-config-tip');
-    tip.textContent = '已保存（将按设定的时间自动执行健康检查）';
+    tip.textContent = '已保存（将在设定时间后的调度周期自动执行健康检查）';
     setTimeout(() => { tip.textContent = ''; }, 3000);
   } catch (e) { toast(e.message, true); }
   finally { probeSaving = false; }

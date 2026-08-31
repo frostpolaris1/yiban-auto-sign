@@ -177,10 +177,14 @@ class MainLoopGateTest(unittest.TestCase):
         self.sched.STATEDIR = self.tmp
         self.env_file = os.path.join(self.tmp, ".env")
         self.sched.ENV_FILE = self.env_file
-        # 三个触发点全部设为 (0,0)：hm >= (0,0) 恒真 → 首轮即全部到达触发判定
+        # 首签/补签触发点设为 (0,0)：hm >= (0,0) 恒真 → 首轮即全部到达触发判定
         self.sched.FIRST = (0, 0)
         self.sched.SECOND = (0, 0)
-        self.sched.PROBE_AT = (0, 0)
+        # 探针为周期尝试（PROBE_TRY_SECONDS），首轮 last_probe_try=None 必尝试；
+        # 默认视为开启（stub 返回 PROBE_ENABLE=1），未开启短路在专门用例覆盖
+        self.sched.build_child_env = lambda env_file=None, base=None, **kw: {
+            "YIBAN_PROBE_ENABLE": "1",
+        }
         self.sched.LOGDIR = os.path.join(self.tmp, "logs")
 
     def tearDown(self):
@@ -195,7 +199,7 @@ class MainLoopGateTest(unittest.TestCase):
         return runs
 
     def test_marker_blocks_both_signs_probe_still_runs(self):
-        """全量标记存在且全员了结 → 首签/补签都不触发，探针照常触发。"""
+        """全量标记存在且全员了结 → 首签/补签都不触发，探针周期尝试照常触发。"""
         with open(os.path.join(self.tmp, f"sched-run-{_today()}.json"), "w") as f:
             json.dump({"completed": True}, f)
         with open(os.path.join(self.tmp, f"sign-state-{_today()}.json"), "w") as f:
@@ -205,9 +209,18 @@ class MainLoopGateTest(unittest.TestCase):
         self.assertIn("--probe", runs[0])
 
     def test_no_marker_triggers_both_signs(self):
-        """无标记 → 首签与补签都触发（探针因探针未到触发时间在子进程内零请求退出）。"""
+        """无标记 → 首签与补签都触发（探针开启时也周期尝试一次）。"""
         runs = self._run_loop_once()
         self.assertEqual(len(runs), 3, "首签 / 补签 / 探针 三个触发点都应执行")
+
+    def test_probe_disabled_skips_spawn(self):
+        """探针未开启（.env 无/为 0）：周期尝试时不 spawn 子进程，首签/补签不受影响。"""
+        self.sched.build_child_env = lambda env_file=None, base=None, **kw: {}
+        runs = self._run_loop_once()
+        self.assertEqual(len(runs), 2, "仅首签 / 补签触发")
+        self.assertFalse(
+            any("--probe" in r for r in runs), "探针未开启时不得 spawn --probe"
+        )
 
 
 class EnvReloadTest(unittest.TestCase):
@@ -221,14 +234,17 @@ class EnvReloadTest(unittest.TestCase):
         self.sched.ENV_FILE = self.env_file
         self.sched.FIRST = (0, 0)
         self.sched.SECOND = (0, 0)
-        self.sched.PROBE_AT = (0, 0)
         self.sched.LOGDIR = os.path.join(self.tmp, "logs")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_env_reread_on_every_trigger(self):
-        """每次触发都应重新读盘；否则 Web 后台改的设置要重启容器才生效。"""
+        """每次触发都应重新读盘；否则 Web 后台改的设置要重启容器才生效。
+
+        探针为周期尝试，同样每次重新解析 .env（未开启时不 spawn）——
+        spy 写回时保留 PROBE_ENABLE=1，使首签 / 补签 / 探针三个触发点都执行。
+        """
         with open(self.env_file, "w", encoding="utf-8") as f:
             f.write("YIBAN_TEST_MARKER=v1\n")
 
@@ -239,7 +255,10 @@ class EnvReloadTest(unittest.TestCase):
             env = real_build(env_file=self.env_file, base={"PATH": "/x"})
             seen.append(env.get("YIBAN_TEST_MARKER", ""))
             with open(self.env_file, "w", encoding="utf-8") as f:
-                f.write(f"YIBAN_TEST_MARKER=v{len(seen) + 1}\n")
+                f.write(
+                    "YIBAN_PROBE_ENABLE=1\n"
+                    f"YIBAN_TEST_MARKER=v{len(seen) + 1}\n"
+                )
             return env
 
         self.sched.build_child_env = build_spy
