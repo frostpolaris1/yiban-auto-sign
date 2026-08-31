@@ -4,7 +4,7 @@
 - 06:31 首签 / 07:10 补签（闸门：当日全量标记 sched-run-<date>.json 不存在才跑
   首签；标记缺失或存在 failed/retrying/pending 未了结账号才跑补签——批次7 P1-1，
   旧「任一账号 success 即跳过」会误吞全站首签与失败账号的兜底）
-- 23:55 探针入口（signin.py --probe 内部自判触发时间/频率）
+- 探针：每 10 分钟尝试一次入口（signin.py --probe 内部自判触发时间/频率/当日防重）
 - 每日 03:00 清理 /data/logs 下 365 天前的按天日志
 
 数据/配置路径由 compose 注入的 YIBAN_* 环境变量决定；同时把 YIBAN_ENV_FILE
@@ -105,11 +105,15 @@ def _cleanup_logs():
                     pass
 
 
-# 首签 / 补签 时间点（分钟级）；探针入口时刻：signin.py --probe 内部
-# 自行判断是否到触发时间/频率（含 once 单次）。三者都用「已进入该分钟且
-# 当天未执行过」的闩锁语义，见 main_loop。
+# 首签 / 补签 时间点（分钟级），用「已进入该分钟且当天未执行过」的闩锁语义，
+# 见 main_loop。
+# 探针为「周期尝试」而非固定时刻（2026-08-31 修复）：原 PROBE_AT=(23,55) 与
+# 设置页 YIBAN_PROBE_TIME 两套时钟脱钩——容器内改探针时间不生效（同宿主 cron
+# 写死 23:55 的问题）。现每 PROBE_TRY_SECONDS 尝试一次 --probe（探针未开启不
+# spawn），signin.py 内部按 PROBE_TIME / 频率 / 当日防重裁决是否真正探测，
+# 与宿主 cron */10 轮询语义对齐。
 FIRST, SECOND = (6, 31), (7, 10)
-PROBE_AT = (23, 55)
+PROBE_TRY_SECONDS = 600
 
 
 def _child_timeout(env):
@@ -139,10 +143,14 @@ def _child_timeout(env):
     return max(600, int((end_dt - datetime.now()).total_seconds()) + 300)
 
 
-def _run_signin_child(extra=None):
+def _run_signin_child(extra=None, env=None):
     """运行签到/探针子进程（批次7 P3-14：补超时——宿主 run.sh 有动态超时，
-    容器内原实现无 timeout，单个子进程挂起即永久卡死全部调度且无告警）。"""
-    env = build_child_env(ENV_FILE)
+    容器内原实现无 timeout，单个子进程挂起即永久卡死全部调度且无告警）。
+
+    env 由调用方传入时复用（探针周期尝试已为短路判断解析过一次），
+    避免同一触发点重复读盘。
+    """
+    env = env if env is not None else build_child_env(ENV_FILE)
     timeout = _child_timeout(env)
     cmd = ["python3", "scripts/signin.py"] + (extra or [])
     try:
@@ -159,7 +167,7 @@ def main_loop(sleep_seconds=1):
     """
     done_sign_first = None   # date | None
     done_sign_second = None
-    done_probe = None
+    last_probe_try = None    # datetime | None：上次尝试探针的时刻（周期尝试）
     last_clean = None
     while True:
         now = datetime.now()
@@ -183,10 +191,15 @@ def main_loop(sleep_seconds=1):
             # 账号的兜底
             _run_signin_child()
             done_sign_second = today
-        if hm >= PROBE_AT and done_probe != today:
-            # 探针：只读健康检查（未到配置触发时间/频率时 signin.py 内零请求退出）
-            _run_signin_child(extra=["--probe"])
-            done_probe = today
+        if last_probe_try is None or (now - last_probe_try).total_seconds() >= PROBE_TRY_SECONDS:
+            # 探针周期尝试：未开启不 spawn（避免无谓子进程）；开启则交由
+            # signin.py 内部 _health_probe_due（PROBE_TIME / 频率 / 当日防重）
+            # 裁决，未到触发点零请求退出。每次尝试重新解析 .env（F2），
+            # Web 后台改探针开关 / 时间即时生效，无需重启容器。
+            last_probe_try = now
+            env = build_child_env(ENV_FILE)
+            if str(env.get("YIBAN_PROBE_ENABLE", "0")).strip().lower() in ("1", "true", "on", "yes"):
+                _run_signin_child(extra=["--probe"], env=env)
         if now.hour >= 3 and last_clean != today:
             _cleanup_logs()
             last_clean = today
