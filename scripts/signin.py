@@ -263,8 +263,8 @@ class Account:
 # ---------------------------------------------------------------------------
 # 配置常量
 # ---------------------------------------------------------------------------
-# 队列重试配置：每账号"1 次初始尝试 + 最多 3 次队列重试"（总尝试上限 4 次）
-MAX_ATTEMPTS = 4
+# 队列重试配置：每账号"1 次初始尝试 + 最多 2 次队列重试"（总尝试上限 3 次）
+MAX_ATTEMPTS = 3
 # 风控类失败（e003/无效应用端等）加重标记风险，最多重试 1 次（总尝试上限 2 次）
 RISK_MAX_ATTEMPTS = 2
 # 同一账号两次尝试之间的最短间隔（秒），避免紧邻重试被识别为连击
@@ -273,6 +273,8 @@ RETRY_MIN_INTERVAL = 60
 RETRY_GAP_MAX = 30
 # 会话陈旧类失败（总尝试上限 2 次：1 次复用缓存 + 1 次强制真重登）
 SESSION_STALE_MAX_ATTEMPTS = 2
+# 易班侧无签到点位（总尝试上限 1 次）：属数据/任务配置问题，重试拿不到就是拿不到
+NO_POSITION_MAX_ATTEMPTS = 1
 
 # 随机延迟默认值在 web/app.py 与 tui/app.py 中维护（signin.py 不直接使用）。
 
@@ -618,6 +620,10 @@ SESSION_STALE_FAIL_KEYWORDS = [
     "会话失效",
 ]
 
+# 易班侧无签到点位特征：登录成功、signPosition 返回 code=0 但 Position 为空
+# （任务未配置/当日任务已关闭等），与凭据、会话均无关。
+NO_POSITION_FAIL_KEYWORDS = ["未找到签到位置数据"]
+
 
 def _is_session_stale_failure(message):
     """是否为"缓存会话已被服务端作废"类失败——账密本身没问题，不是凭据类失败。"""
@@ -629,8 +635,10 @@ def _retry_budget(message):
 
     会话陈旧优先于 classify_failure：它既不在风控关键词里（原实现据此给满 4 次
     上限），又不是"再试一次就可能好"的瞬时故障——不清缓存重登，重试只是把同一份
-    死缓存的失败原样复演。
+    死缓存的失败原样复演。无签到点位同理且更绝对：易班侧没有数据，重试无意义。
     """
+    if any(kw in message for kw in NO_POSITION_FAIL_KEYWORDS):
+        return NO_POSITION_MAX_ATTEMPTS, False
     if _is_session_stale_failure(message):
         return SESSION_STALE_MAX_ATTEMPTS, True
     max_attempts = classify_failure(message)
@@ -1500,7 +1508,19 @@ class YibanClient:
 
         position_list = data_obj.get("Position", [])
         if not position_list:
-            return False, "未找到签到位置数据", False, STATUS_FAILED
+            # 2026-08-31 公测：登录成功、signPosition 返回 code=0 但 Position 为空。
+            # 此前只报笼统一句"未找到签到位置数据"，Msg 原文被吞，管理员无从判断
+            # 是"任务未配置点位"还是"当日任务已关闭"。落一条带 Msg 的日志供取证。
+            logger.warning(
+                f"[{self.account.phone}] signPosition 无可用点位: "
+                f"Msg={_sanitize_text(msg)!r} Range={'有' if data_obj.get('Range') else '无'}"
+            )
+            return (
+                False,
+                "未找到签到位置数据（易班未返回该账号的签到点位，非账号密码问题）",
+                False,
+                STATUS_FAILED,
+            )
         position = position_list[0]
         range_obj = data_obj.get("Range", {})
 

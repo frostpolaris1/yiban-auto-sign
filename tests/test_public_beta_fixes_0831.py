@@ -58,9 +58,21 @@ class SessionStaleBudgetTest(unittest.TestCase):
                          (signin.MAX_ATTEMPTS, True))
 
     def test_network_failure_keeps_full_budget_without_clearing(self):
-        # 真瞬时故障保持 4 次上限且不动缓存（缓存本身没问题，清了反而多打一次登录）
+        # 真瞬时故障保持 3 次上限且不动缓存（缓存本身没问题，清了反而多打一次登录）
         self.assertEqual(signin._retry_budget("HTTPSConnectionPool 读超时"),
                          (signin.MAX_ATTEMPTS, False))
+
+    def test_network_budget_is_three_not_four(self):
+        # 2026-08-31：窗口为全体账号共享、每次重试间隔≥60s，重试越多越拖长队列
+        # （实证：把首轮拖过 07:10 兜底）。网络类上限由 4 收敛为 3。
+        self.assertEqual(signin.MAX_ATTEMPTS, 3)
+
+    def test_no_position_fails_fast_without_clearing_cache(self):
+        # 易班侧无点位是数据问题：1 次即止；会话本身没问题，不得清缓存
+        msg = "未找到签到位置数据（易班未返回该账号的签到点位，非账号密码问题）"
+        self.assertEqual(signin._retry_budget(msg),
+                         (signin.NO_POSITION_MAX_ATTEMPTS, False))
+        self.assertEqual(signin.NO_POSITION_MAX_ATTEMPTS, 1)
 
     def test_success_message_is_not_stale(self):
         self.assertFalse(signin._is_session_stale_failure("今日已签到（无需重复签到）"))
