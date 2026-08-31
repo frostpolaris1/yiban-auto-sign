@@ -278,8 +278,9 @@
     <form id="account-form" class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
-        <input id="f-name" type="text" maxlength="50" placeholder="如：我的手机"
+        <input id="f-name" type="text" maxlength="50" placeholder="如：小李的手机（建议用网名或代号）"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">该名称会显示给管理员，用于定位你的签到问题。建议用网名或代号，不必填真实姓名。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-phone">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -292,12 +293,13 @@
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（学校开启设备绑定时建议填写）</label>
-        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-XXXX"
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（可选，不清楚就留空）</label>
+        <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-V2454A"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码只随「签到请求」提交，不参与登录。仅当学校开启设备绑定（签到时报“请使用授权设备进行签到”）时才需填，且必须与易班 App 上报的值完全一致：格式为“品牌-型号”，冒号写成 -，不要写商品名。不确定就留空。</p>
       </div>
       <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（学校开启设备绑定时建议填写）</label>
+        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（可选，不清楚就留空）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         <button id="clear-code-btn" type="button" onclick="toggleClearCode()"
@@ -377,7 +379,7 @@
                  class="input">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-new">新密码（至少 10 位，含两类字符）</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-new">新密码（至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类）</label>
           <input id="p-new" type="password" autocomplete="new-password" required placeholder="新密码"
                  class="input">
         </div>
@@ -1159,6 +1161,14 @@ async function openChangelog() {
 }
 function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
 
+// 口令策略（本模板内单一事实源）：与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS /
+// _PASSWORD_POLICY_HINT 逐字同序同串——tests/test_batch14_fixes_0829.py 的元测试会
+// 从本文件源码提取这四个正则与后端比对，漂移即红。判定语义：命中 >= 2 类即过（符号算一类）。
+const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
+const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
+const PW_POLICY_HINT = '至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类';
+function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
+
 // 修改密码
 $('password-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1166,10 +1176,9 @@ $('password-form').addEventListener('submit', async (e) => {
   tip.textContent = '提交中…';
   try {
     const newPw = $('p-new').value;
-    const pwClasses = [ /[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/ ].filter(re => re.test(newPw)).length;
-    if (newPw.length < 10 || pwClasses < 2) {
+    if (newPw.length < PW_MIN_LEN || passwordClasses(newPw) < PW_MIN_CLASSES) {
       tip.textContent = '';
-      toast('新密码至少 10 位，且含两类字符', true);
+      toast(`新密码${PW_POLICY_HINT}`, true);
       return;
     }
     if (newPw !== $('p-confirm').value) {

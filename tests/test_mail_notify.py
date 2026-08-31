@@ -329,7 +329,9 @@ class MailNotifyApiTest(unittest.TestCase):
     def test_mail_config_put_by_master_writes_env(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)  # 内置主管理员（.env）
-        r = c.put("/api/mail-config", json={"enabled": False}, headers={"X-CSRF-Token": token})
+        # 批次14 P1-1：关闭全局邮件通道属高危 → 须带二次口令；落盘断言意图不变
+        r = c.put("/api/mail-config", json={"enabled": False, "confirm_password": ADMIN_PASS},
+                  headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["enabled"])
         with open(self.env_file, encoding="utf-8") as f:
@@ -338,7 +340,9 @@ class MailNotifyApiTest(unittest.TestCase):
     def test_mail_config_put_admin_notify_by_master(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)
-        r = c.put("/api/mail-config", json={"admin_notify": False}, headers={"X-CSRF-Token": token})
+        r = c.put("/api/mail-config",
+                  json={"admin_notify": False, "confirm_password": ADMIN_PASS},
+                  headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["admin_notify"])
         with open(self.env_file, encoding="utf-8") as f:

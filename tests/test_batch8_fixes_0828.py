@@ -12,7 +12,7 @@
 - A2/A3 批量端点单次 10 上限（users/batch、accounts/batch）
 - A4    settings 部分更新不再静默清空未提交的延迟字段
 - A5    start_delay_max/gap_max 收归主管理员（注册管理员 403）
-- A6    登录成功写审计（action=login，IP 匿名化）
+- A6    登录成功写审计（action=login_ok，IP 匿名化；动作名于批次14/PROD-2 由 login 收敛）
 
 用法（项目根目录）：
     py -m pytest tests/test_batch8_fixes_0828.py -v
@@ -377,10 +377,16 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_login_success_audited(self):
-        """A6：登录成功写审计（action=login），IP 匿名化。"""
+        """A6：登录成功写审计（action=login_ok），IP 匿名化。
+
+        批次14/PROD-2 把动作名由 login 收敛为 login_ok（与 login_failed/logout_ok 同组
+        命名，取证侧一句 WHERE action='login_ok' 即可拉出完整登录时间线）。本用例钉的是
+        "成功登录有没有留痕、IP 有没有匿名化"，与名字无关，故只随动字面量，
+        三条断言（有行 / username 精确 / target 为 64 位 hex）一字未放宽。
+        """
         c, _ = self._master()
         rows = db.get_conn().execute(
-            "SELECT username, action, target FROM audit_logs WHERE action='login'"
+            "SELECT username, action, target FROM audit_logs WHERE action='login_ok'"
         ).fetchall()
         self.assertTrue(rows, "登录成功应写审计")
         self.assertEqual(rows[-1]["username"], "admin@test.local")
