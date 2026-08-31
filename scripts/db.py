@@ -1794,9 +1794,14 @@ def replace_accounts(accounts):
         keep = {a.get("phone", "") for a in accounts}
         # 2026-08-28 审查 M1 补：整表替换时移除的账号原先只清 time_prefs，
         # 漏清会话缓存（凭据残留）。保留的账号不动，避免无谓的重新登录。
+        # 批次15 P2-1：同样漏清 sign_events——TUI 整表保存移除的账号，其
+        # 明文手机号（sign_events.phone 明文落库）会驻留至 180 天保留期满；
+        # 对齐 purge_account/delete_accounts_by_owner 等 7 条物理删除路径的
+        # 三连带清理（M2 覆盖清单外的第 8 条路径）。
         removed = [r["phone"] for r in old if r["phone"] not in keep]
         _delete_time_prefs_by_phones(conn, removed)
         _clear_session_cache_by_phones(conn, removed)
+        _delete_sign_events_by_phones(conn, removed)  # 批次15 P2-1
         for i, a in enumerate(accounts):
             try:
                 conn.execute(

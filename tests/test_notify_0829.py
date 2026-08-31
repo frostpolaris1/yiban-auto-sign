@@ -53,7 +53,15 @@ def _reset_notices():
 
 
 def _clear(monkeypatch):
-    """隔离环境：固定加密密钥 + 隔离 .env（不读项目根 .env）+ 清空 YIBAN_NOTIFY_*。"""
+    """隔离环境：固定加密密钥 + 隔离 .env（不读项目根 .env）+ 清空 YIBAN_NOTIFY_*。
+
+    批次15 P2-3：额外隔离账本目录（YIBAN_STATE_DIR 指向临时目录）并清掉旧账本
+    文件——每日预算改为磁盘持久化后，跨用例残留的 notify-ledger.json（旧测试
+    写入的当日计数）会让计数从非零起步，send 误判额度耗尽。每用例独立 tmpdir。
+    """
+    import tempfile as _tf
+    _tmp_ledger = _tf.mkdtemp(prefix="yiban-notify-ledger-")
+    monkeypatch.setenv("YIBAN_STATE_DIR", _tmp_ledger)
     monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", KEY)
     # 指向不存在的 .env，避免 notify 回退读取项目根 .env（含真实 Server酱 配置）
     monkeypatch.setenv("YIBAN_ENV_FILE",
