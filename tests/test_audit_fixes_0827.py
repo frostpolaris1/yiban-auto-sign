@@ -96,9 +96,11 @@ class SchedulerEnvMergeTest(unittest.TestCase):
 
     def test_latch_constants_present(self):
         # P2-10 分钟级闩锁重写的时间点常量保持既有语义
+        # 批次15 P3-1：探针由固定时刻（PROBE_AT=(23,55)）改为周期尝试
+        # （PROBE_TRY_SECONDS，64a273e），原断言随之更新，避免 CI 门禁恢复后红
         self.assertEqual(self.sched.FIRST, (6, 31))
         self.assertEqual(self.sched.SECOND, (7, 10))
-        self.assertEqual(self.sched.PROBE_AT, (23, 55))
+        self.assertEqual(self.sched.PROBE_TRY_SECONDS, 600)
 
 
 class ProbeStateBomLockTest(unittest.TestCase):

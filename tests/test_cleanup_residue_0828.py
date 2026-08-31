@@ -111,6 +111,25 @@ class CleanupResidueTest(unittest.TestCase):
         db.set_account_deleted(aid, True, "2026-08-28 06:35:00")
         self.assertEqual(self._event_count("13900000004"), 1, "软删除不应清理事件")
 
+    def test_replace_accounts_clears_sign_events(self):
+        """批次15 P2-1：TUI 整表保存（replace_accounts）移除的账号必须连带清 sign_events。"""
+        self._add("13900000005", owner="keep@test.local")
+        self._add("13900000006", owner="drop@test.local")
+        db.add_sign_event("2026-08-28 06:36:00", "13900000005", "success")
+        db.add_sign_event("2026-08-28 06:36:01", "13900000006", "success")
+        # 整表替换：只保留 13900000005（模拟 TUI 删除 13900000006 后保存）
+        from scripts import db as _db  # noqa: F401  (db 已在 setUpClass 导入)
+        rows = [r for r in db.load_accounts_raw() if r["phone"] == "13900000005"]
+        kept = {
+            "name": rows[0]["name"], "phone": rows[0]["phone"],
+            "password": "pw-1", "phone_model": "", "phone_code": "",
+            "owner": "keep@test.local", "status": "active",
+        }
+        db.replace_accounts([kept])
+        self.assertEqual(self._event_count("13900000005"), 1, "保留账号的事件不清理")
+        self.assertEqual(self._event_count("13900000006"), 0,
+                         "replace_accounts 移除账号后 sign_events 不应残留明文手机号（批次15 P2-1）")
+
     # ---------------- M3：时钟跳变保护 ----------------
     def test_clock_jump_forward_blocked(self):
         """系统时间比上次记录前进超过 72h → 必须跳过清理并告警。"""

@@ -1725,17 +1725,38 @@ def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
         )
 
 
-def _maybe_alert_zero_success(accounts, results, ok_n):
-    """批次12 B12-2：全量签到「零成功且存在窗口外跳过」时的专项管理员告警。
+def _sched_marker_exists():
+    """当日全量运行标记（sched-run-<date>.json）是否已存在。
 
-    场景：学校签到窗口晚于本地配置（或 Range 延迟放出），首签/补签全员落
+    批次15 P1-1 配套：告警函数用它区分「首签轮」与「补签轮」——
+    标记在首签轮收尾写入（_write_sched_done），因此：
+      - 首签轮调用本函数时标记尚不存在 → 本轮是首签；
+      - 补签轮（07:10）调用时标记已存在 → 本轮是补签。
+    与容器 scheduler.py 的 _full_run_done_today() 语义一致（同一事实源）。
+    """
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    path = os.path.join(state_dir, f"sched-run-{datetime.now().strftime('%Y-%m-%d')}.json")
+    return os.path.exists(path)
+
+
+def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
+    """批次12 B12-2 + 批次15 P1-1：窗口外未了结账号的管理员告警。
+
+    场景：学校签到窗口晚于本地配置（或 Range 延迟放出），账号落
     skipped_window/skipped_norange。容器调度闸门（批次12 修复）已把 skip 类
-    计入未了结使补签得以重跑，但若补签后仍零成功，当天再无触发点——管理员
-    必须在当天得知，否则直到次日才发现全天漏签。失败类零成功已有逐账号失败
-    通知覆盖；全员 no_task/暂停/用户取消属有意状态，不打扰。
+    计入未了结使补签得以重跑；宿主 run.sh 退出码语义（批次15）同样保证补签
+    不被「部分成功」吞掉。
+
+    告警时机（避免首签误报噪音）：
+      - 零成功（ok_n==0）且存在窗口外跳过：任何轮次都告警（批次12 原语义，
+        全员窗口外 = 当天可能无签，必须当天知情）；
+      - 部分成功 + 窗口外跳过：仅补签轮告警（is_second_run=True）——
+        首签有 skipped 属正常（07:10 会重跑），补签轮仍有 skipped 说明
+        当天已无下一触发点（宿主 cron 只有 06:31/07:10 两轮），需当天知情。
+
     返回是否产生了告警（测试用）。
     """
-    if ok_n > 0 or not accounts:
+    if not accounts:
         return False
     window_skips = [
         acc.phone for acc in accounts
@@ -1744,13 +1765,27 @@ def _maybe_alert_zero_success(accounts, results, ok_n):
     ]
     if not window_skips:
         return False
-    _collect_admin_mail(
-        "当日零签到告警",
-        f"本次全量签到 0 个账号成功，{len(window_skips)} 个账号因窗口外/Range 缺失被跳过。\n"
-        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"
-        "（容器部署另需确认 YIBAN_RUN_TIMEOUT_SEC 未过早截断子进程）。",
-    )
+    if is_second_run is None:
+        is_second_run = _sched_marker_exists()
+    if ok_n > 0 and not is_second_run:
+        # 首签轮部分成功 + 部分窗口外：07:10 补签会重跑，不打扰
+        return False
+    title = "当日签到异常告警" if ok_n == 0 else "签到窗口异常告警"
+    if ok_n == 0:
+        body = (
+            f"本次全量签到 0 个账号成功，{len(window_skips)} 个账号因窗口外/Range 缺失被跳过。\n"
+            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"
+            "（容器部署另需确认 YIBAN_RUN_TIMEOUT_SEC 未过早截断子进程）。"
+        )
+    else:
+        body = (
+            f"本次签到 {ok_n} 个账号成功，但仍有 {len(window_skips)} 个账号因窗口外/Range "
+            "缺失未了结（补签轮后仍未签到）。\n"
+            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配。"
+        )
+    _collect_admin_mail(title, body)
     return True
 
 
@@ -3158,6 +3193,12 @@ def main():
     # 已执行=已了结（success/already/no_task），窗口外等跳过不算（7:10 还会再跑）
     has_real_failure = False
     has_executed = False
+    # 批次15 P1-1：窗口外/缺失（skipped_window/skipped_norange）属"未了结"——
+    # 与容器调度器 _UNDONE_STATUSES（docker/scheduler.py）同一语义。宿主 run.sh 的
+    # 07:10 补签闸门只认状态文件 SUCCESS 文本：若本轮有成功就把 skipped 账号的
+    # 退出码判成 0，run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底
+    # （容器侧批次12 B12-2 已修此洞，宿主侧是本轮补齐）。
+    has_window_skip = False
     ok_n = fail_n = skip_n = 0
     for acc in accounts:
         _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
@@ -3165,6 +3206,8 @@ def main():
             ok_n += 1
         elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE, STATUS_PAUSED, STATUS_USER_CANCELLED):
             skip_n += 1
+            if status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE):
+                has_window_skip = True
         else:
             fail_n += 1
             has_real_failure = True
@@ -3175,8 +3218,12 @@ def main():
         summary += f"，➖ {skip_n} 跳过"
     logger.info(f"==== 签到汇总：{summary} ====")
 
-    # 批次12 B12-2：零成功专项告警（补签后仍全员窗口外跳过时，当天必须有人知道）
-    _maybe_alert_zero_success(accounts, results, ok_n)
+    # 批次12 B12-2 + 批次15 P1-1：窗口外未了结专项告警。
+    # is_second_run：sched-run 标记已存在 = 本轮是补签（07:10）——首签有 skipped
+    # 属正常（补签会重跑），补签轮仍有 skipped 说明当天无下一触发点，必须知情。
+    _maybe_alert_zero_success(
+        accounts, results, ok_n, is_second_run=_sched_marker_exists()
+    )
 
     # 批次12 裁决：签到事件落库——v6 建了 sign_events 表但签到主流程零写入
     # （仅探针 stage=probe 有写入），统计/时间线读取函数零调用方，基础设施空转。
@@ -3226,13 +3273,14 @@ def main():
         _write_sched_done({"ok_n": ok_n, "fail_n": fail_n, "skip_n": skip_n})
 
     # 退出码（run.sh 依据退出码写状态文件）：
-    # 0 - 全部成功（有实际签到执行；含"已签到""窗口外部分跳过但至少执行过"）
+    # 0 - 全部成功（有实际签到执行；含"已签到""无需签到"，且无窗口外未了结账号）
     # 1 - 有真正的失败（登录失败、签到失败等）
-    # 2 - 全部 skip（无实际执行：全部未在签到时间内/非签到日/窗口缺失），
+    # 2 - 全部 skip 或存在窗口外未了结账号（无实际执行，或首签窗口外账号需 07:10 补签
+    #     重跑；此时 run.sh 写 SKIPPED 而非 SUCCESS，补签 cron 才会继续尝试）
     #     由 run.sh 写 SKIPPED 而非 SUCCESS，避免备份等下游任务被吞
     if has_real_failure:
         sys.exit(1)
-    if not has_executed:
+    if not has_executed or has_window_skip:
         sys.exit(2)
     sys.exit(0)
 

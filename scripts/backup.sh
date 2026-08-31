@@ -61,7 +61,11 @@ DATA_FILES=(.env)
 DB_FILE="${DB_FILE:-yiban.db}"
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
-SIGN_STATE_DIR="${SIGN_STATE_DIR:-/var/log/yiban}"
+# 批次14 P3-5：应用侧统一键为 YIBAN_STATE_DIR（web/app.py、scripts/db.py、
+#     .env.example），原 SIGN_STATE_DIR 与其脱钩——自定义状态目录时
+#     sign-daily/sign-state/cred-state 静默不入备份包（影响"当天是否已签"的
+#     判定恢复）。现以 YIBAN_STATE_DIR 优先，SIGN_STATE_DIR 仅作旧部署回退。
+SIGN_STATE_DIR="${YIBAN_STATE_DIR:-${SIGN_STATE_DIR:-/var/log/yiban}}"
 # 可选：按天签到日志目录（sign-YYYY-MM-DD.log；过期清理由 yiban-cleanup.sh 负责，此处仅备份现存量）
 SIGN_LOG_DIR="${SIGN_LOG_DIR:-/var/log/yiban}"
 
@@ -350,6 +354,17 @@ elif try_encrypt; then
     rm -f "${ARCHIVE}"
     log "已启用本地默认加密：明文归档已移除，本轮密文为 ${ENC_FILE}"
 else
+    # 批次15 P2-2：--require-encrypt 契约必须 fail-closed——管理员显式要求加密时，
+    # 加密失败（gpg 密钥环损坏/口令错误/IO 错误）绝不允许静默回退明文归档。
+    # 原实现仅打印警告并保留明文（含 .env 全部密钥 + 数据库 + accounts-key 同包），
+    # 与脚本头"拒绝创建本地明文归档"的承诺相悖；且异机同步失败的 remote_fail()
+    # 在 REQUIRE_ENCRYPT=1 时已会清场，本地加密失败却无同等级处置——处置不对称。
+    # 取舍：宁可当天无备份（保留 30 天、错一天可容忍），不可把凭据明文落盘。
+    if [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
+        echo "错误：--require-encrypt 指定但加密失败（检查 BACKUP_GPG_RECIPIENT / BACKUP_GPG_PASSPHRASE 与 gpg 密钥环），已删除明文归档并拒绝继续" >&2
+        rm -f "${ARCHIVE}" "${ARCHIVE}.sha256"
+        exit 1
+    fi
     log "════════════════════════════════════════════════════════════" >&2
     log "⚠⚠⚠ 无法加密本地归档（未配置 BACKUP_GPG_RECIPIENT/BACKUP_GPG_PASSPHRASE， ⚠⚠⚠" >&2
     log "⚠⚠⚠ 且非交互终端无法使用 age）：本轮为【明文】归档，请尽快配置加密！     ⚠⚠⚠" >&2

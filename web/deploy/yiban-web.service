@@ -16,7 +16,9 @@
 #
 # gunicorn 安装二选一（本模板默认用虚拟环境 .venv/bin/gunicorn）：
 #   方式 A（推荐，隔离依赖）：cd /opt/yiban-auto-sign && python3 -m venv .venv \
-#         && .venv/bin/pip install -r requirements.txt gunicorn
+#         && .venv/bin/pip install -r requirements.lock gunicorn
+#   注：安装精确锁定的 requirements.lock（与 CI/Docker 镜像同源），
+#       保证部署版本 = 安全审计覆盖的版本；requirements.txt 仅作下限声明。
 #   方式 B（系统级）：sudo apt-get install -y gunicorn3
 #         （Debian/Ubuntu 的包名为 gunicorn3，可执行文件为 /usr/bin/gunicorn3；
 #          若通过 pipx/pip 全局安装 gunicorn，可执行文件为 /usr/bin/gunicorn）

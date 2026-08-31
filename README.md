@@ -101,7 +101,9 @@ pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 2. 拉取代码（服务器为主力签到，推荐国内网络直拉 Gitee 或上传压缩包）
 git clone https://gitee.com/frostpolaris/yiban-auto-sign.git /opt/yiban-auto-sign
-cd /opt/yiban-auto-sign && pip3 install -r requirements.txt
+cd /opt/yiban-auto-sign && pip3 install -r requirements.lock
+# 注：裸机部署安装精确锁定的 requirements.lock（与 CI/Docker 镜像同源），
+# 保证实际部署的依赖版本 = 安全审计覆盖的版本；requirements.txt 仅作下限声明。
 
 # 3. 配置账号（TUI 面板：名称/手机号/密码/设备识别码，一个账号一次输完）
 # 安装 yiban 命令（SSH 后输入 yiban 直接打开面板）
@@ -154,7 +156,7 @@ cd /opt/yiban-auto-sign
 tar -xzf /opt/yiban.tar.gz
 rm /opt/yiban.tar.gz
 pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-pip3 install -r requirements.txt
+pip3 install -r requirements.lock   # 精确锁定（与 CI/镜像同源，见上方安装说明）
 ```
 
 #### 3. 配置账号（推荐：TUI 配置工具）
@@ -890,7 +892,7 @@ git clone https://github.com/<你的用户名>/yiban-auto-sign.git
 cd yiban-auto-sign
 
 # 2. 安装依赖
-pip install -r requirements.txt
+pip install -r requirements.lock   # 精确锁定（与 CI/镜像同源，见上方安装说明）
 
 # 3. 配置账号（推荐 JSON，一次输入一个账号完整信息）
 $env:YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"your_password"}]'

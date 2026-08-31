@@ -45,7 +45,13 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager, nullcontext
 from urllib.parse import urlparse
+
+try:
+    import fcntl
+except ImportError:  # Windows 无 fcntl，跨进程锁退化为进程内
+    fcntl = None
 
 import requests
 
@@ -102,6 +108,131 @@ _urgent_daily = {
 }
 _LEDGER_IDS = ("general", "urgent")
 _LEDGERS = {"general": _general_daily, "urgent": _urgent_daily}
+
+# 批次15 P2-3：每日预算从「进程内内存」升级为「磁盘账本」——原实现 web（常驻）与
+# signin（每次 cron 新进程）各持一份独立计数，默认 5 条/天的上限实际可发 15 条
+# （web 5 + 首签 5 + 补签 5），且进程重启即清零。Server酱免费版 5 条/天是第三方
+# **全局**约束，进程级计数让系统侧"每日预算"承诺形同虚设。
+# 现把两本账的 state 与 notice 持久化到 $YIBAN_STATE_DIR/notify-ledger.json：
+# - 跨进程一致性：文件锁（fcntl.flock，POSIX）串行化 web 与 signin 的读-改-写；
+#   Windows 无 fcntl 退化为进程内锁（开发机单进程，接受）；
+# - 进程重启不丢：账本随文件存活，重启后从磁盘恢复当日计数；
+# - 跨日归零：_roll_locked 检测到磁盘账本日期 != 今日时清零并落盘。
+# 文件布局：{"general": {"date","count","pending","notified","warned"},
+#           "urgent": {...}}——与内存账本结构一一对应，每次读改写整体序列化。
+
+
+def _ledger_path():
+    """账本文件路径：$YIBAN_STATE_DIR/notify-ledger.json。
+
+    目录解析与 signin 的状态目录口径一致（YIBAN_STATE_DIR 环境变量优先，
+    回退 .env 同键，最后回落 .env 所在目录）——web（常驻，经 .env 读）与
+    signin（cron，经 run.sh 注入环境变量）两侧必须指向同一文件，否则
+    双进程共享额度的目标落空。
+    """
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "").strip()
+    if not state_dir:
+        state_dir = _read_env_file().get("YIBAN_STATE_DIR", "").strip()
+    if not state_dir:
+        state_dir = os.path.dirname(_env_path()) or "."
+    return os.path.join(state_dir, "notify-ledger.json")
+
+
+@contextmanager
+def _ledger_file_lock():
+    """账本文件锁：POSIX 用 fcntl.flock 跨进程互斥；Windows 退化为无操作。
+
+    锁文件单独使用 ``<path>.lock``（与 signin._state_file_lock 同款约定），
+    不与账本文件本身的读写句柄混用。
+    """
+    if fcntl is None:
+        with nullcontext():
+            yield
+        return
+    lock_path = _ledger_path() + ".lock"
+    lock_dir = os.path.dirname(lock_path) or "."
+    try:
+        os.makedirs(lock_dir, exist_ok=True)
+    except OSError:
+        pass
+    with open(lock_path, "a+", encoding="utf-8") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+
+
+def _load_ledger_file():
+    """读取磁盘账本（缺文件/损坏按空 dict 处理）。"""
+    try:
+        with open(_ledger_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_ledger_file(data):
+    """原子写磁盘账本（tmp + os.replace），失败仅告警不影响发送主流程。"""
+    try:
+        os.makedirs(os.path.dirname(_ledger_path()) or ".", exist_ok=True)
+        tmp = _ledger_path() + ".tmp" + str(os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, _ledger_path())
+    except OSError as e:
+        logger.warning("写入推送额度账本失败（额度仍按内存计数）: %s", e)
+
+
+def _roll_locked(ledger_id, today):
+    """跨日归零 + 磁盘同步（调用方必须已持有该账本的 lock 与文件锁）。
+
+    计数与耗尽告知标记同生同灭：换日时一起重置，才不会留下"昨日挂着的 pending
+    在今日仍被 pop 出来"的错位（告知标记按日重置的既有语义）。
+    批次15 P2-3：归零判定以**磁盘账本**为准（另一进程可能已把今日额度用掉），
+    内存态先对齐磁盘再判断，避免双进程各自归零造成"第二份额度"。
+    """
+    led = _LEDGERS[ledger_id]
+    with _ledger_file_lock():
+        disk = _load_ledger_file()
+        dled = disk.get(ledger_id, {})
+        disk_date = str(dled.get("date", "") or "")
+        if disk_date != today:
+            # 磁盘无当日账本（首次/跨日）：归零内存 + 落盘
+            led["state"]["date"] = today
+            led["state"]["count"] = 0
+            led["notice"].update({"pending": False, "notified": False, "warned": False})
+            disk[ledger_id] = {
+                "date": today, "count": 0,
+                "pending": False, "notified": False, "warned": False,
+            }
+            _save_ledger_file(disk)
+            return
+        # 磁盘已有当日账本：以磁盘为准刷新内存（本进程可能刚启动/另一进程刚扣过）
+        led["state"]["date"] = disk_date
+        led["state"]["count"] = int(dled.get("count", 0) or 0)
+        led["notice"]["pending"] = bool(dled.get("pending", False))
+        led["notice"]["notified"] = bool(dled.get("notified", False))
+        led["notice"]["warned"] = bool(dled.get("warned", False))
+
+
+def _sync_ledger_to_disk(ledger_id):
+    """把某本账内存态写回磁盘（调用方已持有账本 lock；内部拿文件锁）。
+
+    额度占用/退还/告知取走三处修改后调用，保证另一进程读到的始终是最新值。
+    """
+    led = _LEDGERS[ledger_id]
+    with _ledger_file_lock():
+        disk = _load_ledger_file()
+        disk[ledger_id] = {
+            "date": led["state"]["date"],
+            "count": led["state"]["count"],
+            "pending": led["notice"]["pending"],
+            "notified": led["notice"]["notified"],
+            "warned": led["notice"]["warned"],
+        }
+        _save_ledger_file(disk)
 
 # 跳过原因日志去重表：{原因: 上次记录时间}
 _skip_logged = {}
@@ -293,20 +424,6 @@ def _ledger(ledger_id):
     return _LEDGERS[ledger_id]
 
 
-def _roll_locked(ledger_id, today):
-    """跨日归零（调用方必须已持有该账本的 lock）。
-
-    计数与耗尽告知标记同生同灭：换日时一起重置，才不会留下"昨日挂着的 pending
-    在今日仍被 pop 出来"的错位（告知标记按日重置的既有语义）。
-    """
-    led = _LEDGERS[ledger_id]
-    if led["state"]["date"] == today:
-        return
-    led["state"]["date"] = today
-    led["state"]["count"] = 0
-    led["notice"].update({"pending": False, "notified": False, "warned": False})
-
-
 def _daily_limit(ledger_id, envs=None):
     """该本账的每日上限（0 = 不限）；紧急账用 URGENT_DAILY_MAX，非紧急用 DAILY_MAX。"""
     if ledger_id == "urgent":
@@ -390,6 +507,9 @@ def _consume_daily_budget(ledger_id):
         # "判定虚警 + 撤回"共用同一把锁，两者不可能交错（原先锁外补标记会留下陈旧撤回的窗口）。
         if state["count"] >= limit:  # 被拒（没占）与恰好占满此刻都等于"当日已耗尽"
             first_warning = _mark_exhausted_locked(ledger_id)
+        # 批次15 P2-3：占用即落盘——另一进程（web 常驻 vs signin cron）才能读到
+        # 最新计数，不再各自持一份进程内额度
+        _sync_ledger_to_disk(ledger_id)
     if first_warning:  # 锁外落日志：logger 可能触发文件 I/O，不持锁执行
         _log_exhaustion_warning(ledger_id)
     return BudgetTicket(allowed, charged, today)
@@ -425,6 +545,8 @@ def _refund_daily_budget(ticket):
         # 已 notified 不再重挂，当日无后续被拒尝试就不会再有机会发出去）。
         if limit_now <= 0 or led["state"]["count"] < limit_now:
             _unmark_exhausted_locked(ledger_id)
+        # 批次15 P2-3：退还即落盘（与 _consume 对称，另一进程读到最新余额）
+        _sync_ledger_to_disk(ledger_id)
 
 
 def _mark_exhausted_locked(ledger_id):
@@ -493,6 +615,8 @@ def pop_exhaustion_notice():
                 notice["pending"] = False
                 notice["notified"] = True
                 kinds.append(ledger_id)
+                # 批次15 P2-3：告知取走即落盘（已交付标记跨进程一致，防双进程各发一封）
+                _sync_ledger_to_disk(ledger_id)
     return kinds
 
 

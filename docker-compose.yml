@@ -63,7 +63,8 @@ services:
       start_period: 20s
 
   yiban-nginx:
-    image: nginx:1.27-alpine
+    # 批次14 P2-4：1.27 线 2025-06-24 已 EOL（无安全更新），升到当前 stable 1.30 线
+    image: nginx:1.30-alpine
     container_name: yiban-nginx
     restart: unless-stopped
     # 关键：与应用共享网络命名空间。这样 nginx 到应用是回环 127.0.0.1，
