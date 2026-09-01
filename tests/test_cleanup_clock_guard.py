@@ -138,6 +138,10 @@ class CleanupResidueTest(unittest.TestCase):
             yesterday = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("test_clock_fwd", yesterday))
+            # 2026-09-01 性能修复：INSERT 后立即提交释放写锁——否则守卫跳变分支
+            # 开第二连接写告警（_record_clock_guard_alert）与本连接未提交事务
+            # 争锁超时 5s（全量串行 3 用例各 +5s，生产调用点 guard 前无前置写）。
+            conn.commit()
             ok, note = db._clock_jump_guard(conn, "test_clock_fwd")
         self.assertFalse(ok, "前进 4 天（>72h）必须被判定为跳变")
         self.assertIn("跳变", note)
@@ -149,6 +153,7 @@ class CleanupResidueTest(unittest.TestCase):
             later = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("test_clock_back", later))
+            conn.commit()  # 同上：释放写锁，避免守卫告警连接争锁超时
             ok, _note = db._clock_jump_guard(conn, "test_clock_back")
         self.assertFalse(ok, "回拨 2h（>1h）必须被判定为跳变")
 
@@ -173,6 +178,7 @@ class CleanupResidueTest(unittest.TestCase):
         with db._conn_lock:
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("purge_accounts_clock", old))
+            conn.commit()  # 同上：释放写锁，避免 purge 内守卫告警连接争锁超时
         db.purge_expired_deleted_accounts()  # 应因跳变跳过，账号保留
         rows = db.load_accounts_raw()
         self.assertTrue(
