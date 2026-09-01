@@ -1135,19 +1135,19 @@ python -m pytest tests/ -q
 # 全量测试（并发，约 2-3 分钟，需 pytest-xdist）
 python -m pytest tests/ -q -n auto
 
-# 按功能域分类运行（pytest markers）
-python -m pytest tests/ -m notify   # 消息推送与告警
-python -m pytest tests/ -m web      # 网页管理后台
-python -m pytest tests/ -m signin   # 签到核心
-python -m pytest tests/ -m scheduler # 调度器
-python -m pytest tests/ -m db       # 数据库与迁移
-python -m pytest tests/ -m tui      # 终端面板
+# 按功能域分类运行（文件前缀 = 功能域）
+python -m pytest tests/test_notify_*.py     # 消息推送与告警
+python -m pytest tests/test_web_*.py        # 网页管理后台
+python -m pytest tests/test_scheduler*.py   # 调度器
+python -m pytest tests/test_signin*.py      # 签到核心
+python -m pytest tests/test_db_*.py         # 数据库与迁移
+python -m pytest tests/test_tui_*.py        # 终端面板
 
 # 单个测试文件（文件名 = 功能域，如 test_notify_throttle.py 为推送节流）
 python -m pytest tests/test_smoke.py -v
 ```
 
-测试文件按**功能域**命名（`test_<功能>.py`），便于按需运行与定位；`testpaths = ["tests"]` 由 pyproject.toml 配置，scripts/ 下的独立压力测试不参与默认收集。
+测试文件按**功能域**命名（`test_<功能>.py`），便于按需运行与定位；完整文件清单见 [`tests/README.md`](tests/README.md)。`testpaths = ["tests"]` 由 pyproject.toml 配置，scripts/ 下的独立压力测试不参与默认收集。
 
 **未覆盖场景**（请自行验证）：
 

@@ -9,16 +9,6 @@ exclude = [".git", "__pycache__"]
 testpaths = ["tests"]
 # 汇总报告：结尾列出全部 skipped/xfailed/xpass；失败时短 traceback
 addopts = "-ra --tb=short"
-# 功能分类 markers（按文件前缀/功能域分类汇总与选择性运行）：
-#   -m notify / -m web / -m signin / -m scheduler / -m db / -m tui
-markers = [
-    "web: 网页管理后台相关（web/app.py、templates）",
-    "signin: 签到核心（scripts/signin.py、run.sh）",
-    "scheduler: 调度器（docker/scheduler.py、探针、补签）",
-    "notify: 消息推送与告警（scripts/notify.py、mailer）",
-    "db: 数据库与迁移（scripts/db.py）",
-    "tui: 终端面板（tui/）",
-]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "SIM", "RUF"]
