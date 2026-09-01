@@ -574,6 +574,10 @@ fi
         gpg = os.path.join(fakebin, "gpg")
         with io.open(gpg, "w", encoding="utf-8", newline="\n") as f:
             f.write(self.FAKE_GPG)
+        # 2026-09-01 CI 修复：必须 chmod +x——Linux 上 bash 的 `command -v gpg`
+        # 会跳过不可执行文件，落到系统真 gpg（runner 预装），真 gpg 用错误口令
+        # 解密 → "解密失败"。Windows Git Bash 权限模拟宽松，此前侥幸通过。
+        os.chmod(gpg, 0o755)
         env = dict(os.environ)
         env["YIBAN_BACKUP_PASSPHRASE"] = "test-pass-123"
         env["DATA_DIR"] = "data"
