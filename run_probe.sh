@@ -70,6 +70,4 @@ else
     PY=/usr/bin/python3
 fi
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run_probe.sh 开始（探针健康检查）===" >> "$LOG_FILE"
 "$PY" scripts/signin.py --probe >> "$LOG_FILE" 2>&1
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run_probe.sh 结束 ===" >> "$LOG_FILE"

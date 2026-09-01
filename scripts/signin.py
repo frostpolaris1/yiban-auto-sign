@@ -2876,10 +2876,8 @@ def _env_update_probe(auto_disable=False):
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write("\n".join(out) + "\n")
             os.replace(tmp, env_path)
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(env_path, 0o600)
-            except OSError:
-                pass
     except Exception as e:
         # 升级为 ERROR（2026-08-27 审查）：once 自动关闭失败会让"单次探针"事实变成
         # 每晚全量探测（反复真实登录扩大风控面 + 每日重复告警）；选了 once 的运维
@@ -2904,7 +2902,11 @@ def run_probe(accounts):
         # 探针关闭：完全静默退出（不产生任何日志、不落库、不写状态）
         return
     if not _health_probe_due():
-        logger.info("==== 探针模式：已开启，但未到触发时间/频率，本次跳过 ====")
+        # 周期轮询的常态路径（容器调度器每 600s / 宿主 cron */10 都会走到）：
+        # "未到触发点"属预期行为而非异常，逐次 INFO 会刷屏（约 144 条/日）。
+        # 降为 DEBUG——默认级别下日志只保留签到结果与探针实际执行结果；
+        # 需排查轮询是否如期触发时，开 DEBUG 级别即可看到每次尝试轨迹。
+        logger.debug("==== 探针模式：已开启，但未到触发时间/频率，本次跳过 ====")
         return
     # 批次7 P2-8：last_run 占位前置——探测开始前先记账，双探针/调度重启并发时
     # 只放行一个（原实现探测结束后才写，两个探针都能通过 _health_probe_due 判定）
