@@ -92,9 +92,13 @@ OUT="$BACKUP_DIR/yiban-data-$STAMP.tar.gz.gpg"
 # 管道送入 gpg stdin 的 tar 数据流（同一命令上后出现的重定向胜出），gpg 实际
 # 加密的是口令字符串本身——产物约 70 字节的「空备份」，tar 侧 SIGPIPE，
 # Docker 部署唯一加密备份入口产出空包。fd 3 让 stdin 保留给 tar 数据流。
+# 2026-09-01 CI 修复：`|| true` 容忍 tar 的 SIGPIPE——加密器（gpg/假 gpg）
+# 提前关闭 stdin 时 tar 收 SIGPIPE(141)，`set -euo pipefail` 下管道非零会在
+# 自检前终止脚本，坏包残留且无「疑似空包」告警。容忍后必然走到下方尺寸
+# 下限检查：空包/坏包被检出并删除（B12-1 契约）。
 tar -C "$(dirname "$DATA_DIR")" -czf - "$(basename "$DATA_DIR")" \
     | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 \
-          -o "$OUT" 3<<< "$PASSPHRASE"
+          -o "$OUT" 3<<< "$PASSPHRASE" || true
 
 # 产物自检（B12-1）：先做尺寸下限，再流式解密+解包验证（解密输出直接进
 # tar -tzf 的 stdin，不在磁盘留明文副本）。自检失败删除产物并报错退出，

@@ -11,7 +11,9 @@
 用法（项目根目录）：py -m pytest tests/test_probe.py -v
 """
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from unittest import mock
@@ -25,11 +27,22 @@ sys.path.insert(0, os.path.join(BASE, "web"))
 class ProbeSigninTest(unittest.TestCase):
     """signin 层：verify_account 与探针调度/执行逻辑（mock 网络与邮件）。"""
 
+    @classmethod
+    def setUpClass(cls):
+        # 2026-09-01 CI 修复：STATE_DIR 必须隔离到临时目录——此前 setUp 里
+        # pop 掉后探针状态文件回退默认 /var/log/yiban，Linux CI（非 root）写
+        # 权限不足 → PermissionError；Windows 因 fcntl 退化 no-op 侥幸通过。
+        cls._state_dir = tempfile.mkdtemp(prefix="yiban-probe-state-")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls._state_dir, ignore_errors=True)
+
     def setUp(self):
         os.environ["YIBAN_PROBE_ENABLE"] = "0"
         os.environ["YIBAN_PROBE_TIME"] = "20:00"
         os.environ["YIBAN_PROBE_INTERVAL_DAYS"] = "1"
-        os.environ.pop("YIBAN_STATE_DIR", None)
+        os.environ["YIBAN_STATE_DIR"] = self._state_dir
         import signin
         self.s = signin
         # 重置模块级常量（_set_probe 会改动，防测试间污染）
