@@ -14,3 +14,12 @@ os.environ.setdefault("YIBAN_DISABLE_PURGE_LOOP", "1")
 # 可防止 signin/web 测试（如 send_notification("t","c",...)）意外真实发信。
 # test_mailer.py 自带 _isolate_env 清理 YIBAN_MAIL_* 后按用例显式设置，不受影响。
 os.environ.setdefault("YIBAN_MAIL_ENABLE", "0")
+
+# v0.26.3：web.create_app 会给 root logger 挂按天文件 handler（sign-*.log）。
+# 测试进程默认重定向到会话级临时目录——否则 Windows 开发机会意外创建
+# C:\var\log\yiban\（默认路径按当前盘符解析）。各测试类可显式覆盖该变量。
+if "YIBAN_LOG_FILE" not in os.environ:
+    import tempfile
+    os.environ["YIBAN_LOG_FILE"] = os.path.join(
+        tempfile.mkdtemp(prefix="yiban-test-logs-"), "sign.log"
+    )
