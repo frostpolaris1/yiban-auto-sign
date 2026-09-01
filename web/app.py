@@ -5499,6 +5499,11 @@ def create_app(host=None):
     _signin_lock = threading.Lock()  # 防抖检查+赋值原子化（TOCTOU 竞态防护）
     _batch_signin_running = False  # 批量签到队列互斥：同时只允许一个在跑
     _batch_signin_lock = threading.Lock()
+    # 批量签到冷却（2026-09-01 批次16 用户裁决）：队列完成时刻 + 冷却窗口内拒绝再次触发，
+    # 防被盗管理员会话循环触发全量真实登录打爆易班风控。窗口 YIBAN_BATCH_SIGN_COOLDOWN_SEC
+    # （默认 1800s，0=关闭）；进程内计数（单 worker 8 线程，重启复位可接受——被盗会话
+    # 无法重启进程来绕过）。
+    _last_batch_signin_ts = 0.0
 
     # ---- 手动签到（单个 / 批量）----
     def _signin_run_lock_busy():
@@ -5675,10 +5680,19 @@ def create_app(host=None):
                 phones.append(phone)
         if not phones:
             return jsonify({"error": "选中的账号均不可手动签到（未生效或已删除）"}), 400
-        nonlocal _batch_signin_running
+        nonlocal _batch_signin_running, _last_batch_signin_ts
         with _batch_signin_lock:
             if _batch_signin_running:
                 return jsonify({"error": "已有批量签到正在执行，请稍后再试"}), 429
+            # 批次16：批量签到冷却（防循环触发全量真实登录）——队列完成后窗口内拒绝
+            cooldown = load_env_int(ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC", 1800)
+            if cooldown > 0:
+                elapsed = time.time() - _last_batch_signin_ts
+                if elapsed < cooldown:
+                    remain = int(cooldown - elapsed)
+                    return jsonify({
+                        "error": f"批量签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
+                    }), 429
             _batch_signin_running = True
 
         def _run_batch():
@@ -5690,9 +5704,10 @@ def create_app(host=None):
                 _wait_signin_proc(proc)
                 logger.info("批量手动签到完成: %s 个账号（单队列、单封汇总邮件）", len(phones))
             finally:
-                nonlocal _batch_signin_running
+                nonlocal _batch_signin_running, _last_batch_signin_ts
                 with _batch_signin_lock:
                     _batch_signin_running = False
+                    _last_batch_signin_ts = time.time()  # 队列完成时刻 = 冷却基准
 
         threading.Thread(target=_run_batch, daemon=True).start()
         db.audit(
