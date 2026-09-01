@@ -356,6 +356,38 @@ class SignAdminMailSummaryTest(unittest.TestCase):
     def setUpClass(cls):
         global signin
         import signin
+        # 2026-09-01 CI 修复：_flush_admin_mail_summary 会调 db.admin_mail_recipients()
+        # 查询管理员收件人——DB 不可用或库内无 admin 用户时返回空收件人 →
+        # `if recipients:` 为假 → 不发送 → 断言失败。Linux CI 无残留 DB 环境即
+        # 暴露；Windows 本地因环境残留侥幸通过。补隔离 DB + 种子 admin 用户。
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-mail-summary-")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + TEST_KEY + "\n")
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        cls._old_state_dir = os.environ.get("YIBAN_STATE_DIR")
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        import db
+        db.init_db(cls.db_file, env_file=cls.env_file)
+        # 种子管理员：收件人查询依赖 users 表存在 role=admin 且 mail_notify=1 的用户
+        db.create_user("admin@summary.test", "hash", role="admin",
+                       created_at="2026-09-01 00:00:00", pw_version=1)
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        os.environ.pop("YIBAN_DB_FILE", None)
+        os.environ.pop("YIBAN_ENV_FILE", None)
+        if cls._old_state_dir is None:
+            os.environ.pop("YIBAN_STATE_DIR", None)
+        else:
+            os.environ["YIBAN_STATE_DIR"] = cls._old_state_dir
+        shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
         signin._mail_summary.clear()
