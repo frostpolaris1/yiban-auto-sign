@@ -81,6 +81,20 @@ class SessionStaleBudgetTest(unittest.TestCase):
 class LoginAlertUrgencyTest(_B14AlertGateBase):
     """R2：只有喷洒特征才升级紧急。"""
 
+    def setUp(self):
+        super().setUp()
+        # 2026-09-01 性能修复：登录失败用例每次都走 scrypt 时延拉平
+        # （_constant_time_dummy / check_password_hash，安全设计约 0.6s/次），
+        # spray 用例 10 次请求 ≈ 6.6s。本类被测对象是「告警分级与喷洒识别」，
+        # 与密码校验结果无关——统一 patch 掉 scrypt 为常数开销。
+        # 注：patch 对象是 self.webapp（模块名 "webapp"，非 "web.app"）。
+        p1 = mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None)
+        p1.start()
+        self.addCleanup(p1.stop)
+        p2 = mock.patch.object(self.webapp, "check_password_hash", lambda h, p: False)
+        p2.start()
+        self.addCleanup(p2.stop)
+
     def _alerts(self):
         return [a for a in self.alerts if a[0] == "登录失败告警"]
 
