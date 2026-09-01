@@ -11,13 +11,13 @@ python -m pytest tests/ -q
 # 全量（并发，约 2-3 分钟，需 pytest-xdist）
 python -m pytest tests/ -q -n auto
 
-# 按功能域分类运行（文件前缀 = 功能域，也可用 pytest markers）
+# 按功能域分类运行（文件前缀 = 功能域）
 python -m pytest tests/test_notify_*.py   # 消息推送与告警
 python -m pytest tests/test_web_*.py      # 网页管理后台
 python -m pytest tests/test_scheduler*.py # 调度器
 python -m pytest tests/test_db_*.py       # 数据库与迁移
-python -m pytest tests/ -m notify         # markers 分类（等价于 test_notify_*）
-python -m pytest tests/ -m web            # markers 分类
+python -m pytest tests/test_signin*.py    # 签到核心
+python -m pytest tests/test_tui*.py       # 终端面板
 
 # 单个文件
 python -m pytest tests/test_smoke.py -v
