@@ -283,15 +283,25 @@ class Batch9WebTest(unittest.TestCase):
 
     # ---- P3-8 恢复的每 IP 聚合失败窗口 ----
     def test_restore_per_ip_aggregate_rate_limit(self):
-        c = self.webapp.create_app().test_client()
-        got_429 = False
-        for i in range(40):
-            r = c.post("/api/me/restore", json={
-                "email": f"ghost{i}@x.test", "password": "WrongPass#1",
-            })
-            if r.status_code == 429:
-                got_429 = True
-                break
+        # 性能优化（2026-09-01）：本用例被测对象是「每 IP 聚合限速窗口」，而非
+        # 密码校验本身；40 次对不存在账号的请求每次都会走 scrypt 时延拉平
+        # （_constant_time_dummy，安全设计约 0.35s/次）→ 全量串行 14s。mock 掉
+        # scrypt 比对为常数时间开销，限速行为判定不受影响（429 来自
+        # user_delete_requests 每 IP 计数，与密码校验结果无关）。
+        # 注：patch 对象必须是 self.webapp（模块名 "webapp"，非 "web.app"）。
+        with mock.patch.object(
+                self.webapp, "_constant_time_dummy", lambda pwd: None), \
+             mock.patch.object(
+                self.webapp, "check_password_hash", lambda h, p: False):
+            c = self.webapp.create_app().test_client()
+            got_429 = False
+            for i in range(40):
+                r = c.post("/api/me/restore", json={
+                    "email": f"ghost{i}@x.test", "password": "WrongPass#1",
+                })
+                if r.status_code == 429:
+                    got_429 = True
+                    break
         self.assertTrue(got_429, "跨邮箱喷洒恢复请求必须在每 IP 聚合窗口处被 429")
 
     # ---- P3-11 探针清熔断 ----

@@ -13,7 +13,7 @@
 
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预
-- 🔐 **真实 App 登录特征**：登录流程复刻 KillYiBan 的真实 App 请求特征（与同作者的 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 同源，KillYiBan 脱胎于 FYIBAN；UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
+- 🔐 **真实 App 登录特征**：登录流程复刻 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 的真实 App 请求特征（UA=Yiban + AppVersion + SecureRandom CSRF），实测绕过易班风控 e003，新旧账号均稳定登录
 - 🖥️ **网页管理后台**：管理员在任意设备（手机/平板/电脑）登录管理——账号 CRUD/排序/手动签到、审核用户提交的账号、用户管理与权限分级、批量操作、全局公告、签到日志与日历
 - 🗄️ **SQLite 数据库存储**：账号与用户数据存于 SQLite（0.17+）——多人同时操作不互相覆盖、手机号全局唯一有保障；数据库结构启动时自动迁移升级；批量操作整体回滚；关键管理操作自动审计留痕（HMAC 防篡改）
 - 📍 **智能定位**：在签到范围内生成随机定位点，模拟真实 GPS（缩放质心算法）
@@ -1124,6 +1124,29 @@ workflow-keepalive:
 
 **已测试环境**：Ubuntu 22.04 服务器部署、Python 3.10+。
 
+### 运行测试
+
+```bash
+# 全量测试（串行，约 8 分钟）
+python -m pytest tests/ -q
+
+# 全量测试（并发，约 2-3 分钟，需 pytest-xdist）
+python -m pytest tests/ -q -n auto
+
+# 按功能域分类运行（pytest markers）
+python -m pytest tests/ -m notify   # 消息推送与告警
+python -m pytest tests/ -m web      # 网页管理后台
+python -m pytest tests/ -m signin   # 签到核心
+python -m pytest tests/ -m scheduler # 调度器
+python -m pytest tests/ -m db       # 数据库与迁移
+python -m pytest tests/ -m tui      # 终端面板
+
+# 单个测试文件（文件名 = 功能域，如 test_notify_throttle.py 为推送节流）
+python -m pytest tests/test_smoke.py -v
+```
+
+测试文件按**功能域**命名（`test_<功能>.py`），便于按需运行与定位；`testpaths = ["tests"]` 由 pyproject.toml 配置，scripts/ 下的独立压力测试不参与默认收集。
+
 **未覆盖场景**（请自行验证）：
 
 - **Docker / Windows 部署**：未测试（仅 Ubuntu 验证）
@@ -1183,10 +1206,11 @@ workflow-keepalive:
 
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
 - Auto-Test - 易班登录流程（OAuth + RSA + ydclearance，已弃用并被本项目新登录特征取代）
-- KillYiBan - 默认登录流程的真实 App 请求特征来源（反编译 `p101w2/b.java`；与同作者 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 同源，KillYiBan 脱胎于 FYIBAN）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 定时工作流自动续期（避免 60 天无活动被禁用）
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 多边形内随机定位点算法（缩放质心、射线法验证）、nightAttendance 签到流程
+- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 默认登录流程的真实 App 请求特征来源、多边形内随机定位点算法（缩放质心、射线法验证）、nightAttendance 签到流程
 - [Textualize/textual](https://github.com/Textualize/textual)（MIT）- TUI 终端面板框架（`tui/` 组件）
+
+特别感谢 [Lumjiel](https://github.com/Lumjiel) 对本项目的指导。
 
 ---
 
@@ -1210,10 +1234,7 @@ workflow-keepalive:
 
 本项目的代码与文档由 AI 辅助生成，非人工逐行编写：
 
-- **开发工具**：
-  - [ZCode](https://zcode.z.ai/)（基于 deepseek-v4-flash-0731 模型）
-  - [TRAE](https://www.trae.cn/)（基于 GLM-5.2 模型）
-  - [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（基于 deepseek-v4-pro-0813 模型）
+- **开发工具**：多种 AI 编程工具辅助开发
 - **AI 负责的工作**：
   - 核心签到脚本 `scripts/signin.py` 的编写与调试
   - GitHub Actions / Gitee Go 工作流配置
