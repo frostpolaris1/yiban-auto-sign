@@ -123,10 +123,12 @@ def _child_timeout(env):
     时，首签/补签子进程在 sleep 等窗口途中即被杀，全天漏签。现默认 = 当日窗口
     结束（YIBAN_SIGN_END，与 signin.py _schedule_config / run.sh 同一事实源，
     默认 07:50）− 当前时刻 + 5 分钟余量，下限 600s；YIBAN_RUN_TIMEOUT_SEC 显式
-    设置时优先（管理员手动覆盖，进程环境与 .env 均认）。
+    设置时优先（管理员手动覆盖）。键来源口径与 build_child_env 一致（批次16
+    P2-5）：.env（env，Web 设置页写入）优先于进程环境（compose 注入）——否则
+    compose 显式设置会让设置页修改静默失效。
     """
-    raw = str(os.environ.get("YIBAN_RUN_TIMEOUT_SEC")
-              or env.get("YIBAN_RUN_TIMEOUT_SEC", "")).strip()
+    raw = str(env.get("YIBAN_RUN_TIMEOUT_SEC")
+              or os.environ.get("YIBAN_RUN_TIMEOUT_SEC", "")).strip()
     if raw:
         try:
             return max(600, int(raw))
@@ -189,7 +191,13 @@ def main_loop(sleep_seconds=1):
             # 账号（failed/retrying/pending/skipped_window/skipped_norange，批次12
             # B12-2）才执行；全员了结则跳过，不再被「任一账号成功」误导跳过失败
             # 账号的兜底
-            _run_signin_child()
+            # 批次16 P2-4：补签轮注入 YIBAN_SECOND_RUN=1——与宿主 run.sh 补签轮
+            # 导出的同一信号，signin.py 据此判定 is_second_run（环境变量优先，
+            # sched-run 标记兜底），修复首签被 timeout 击杀时「部分成功+窗口外」
+            # 零告警（B12-2 分支复发）
+            env = build_child_env(ENV_FILE)
+            env["YIBAN_SECOND_RUN"] = "1"
+            _run_signin_child(env=env)
             done_sign_second = today
         if last_probe_try is None or (now - last_probe_try).total_seconds() >= PROBE_TRY_SECONDS:
             # 探针周期尝试：未开启不 spawn（避免无谓子进程）；开启则交由

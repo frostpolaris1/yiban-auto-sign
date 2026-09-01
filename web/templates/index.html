@@ -1540,10 +1540,14 @@ function batchUsers(key, action) {
   const body = { action, emails };
   if (action === 'reset_password') {
     // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验口径见 openPasswordModal
-    // 的 set 分支（批次14 Task 6 补齐类别判定，与后端 _password_policy_error 一致）
+    // 的 set 分支（批次14 Task 6 补齐类别判定，与后端 _password_policy_error 一致）。
+    // 批次16 P1-2：重置密码 = 账号控制权转移，须再经 confirm 模态输入当前管理员密码
     openPasswordModal(`为选中的 ${emails.length} 个用户设置新密码（${PW_POLICY_HINT}）`, (pw) => {
       body.password = pw;
-      submitBatchUsers(key, body);
+      openConfirmPasswordModal(`批量重置选中的 ${emails.length} 个用户密码？\n请输入当前管理员密码确认。`, (cpw) => {
+        body.confirm_password = cpw;
+        submitBatchUsers(key, body);
+      });
     });
     return;
   }
@@ -3145,13 +3149,16 @@ async function setUserRole(email, role) {
 
 function resetUserPassword(email) {
   // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；口令策略校验见 openPasswordModal set 分支
-  openPasswordModal(`为 ${email} 设置新密码（${PW_POLICY_HINT}）`, async (password) => {
-    try {
-      const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
-        method: 'POST', body: JSON.stringify({ password }),
-      });
-      toast(data.msg || '密码已重置');
-    } catch (e) { toast(e.message, true); }
+  // 批次16 P1-2：管理员重置他人密码须再经 confirm 模态输入当前管理员密码二次鉴权
+  openPasswordModal(`为 ${email} 设置新密码（${PW_POLICY_HINT}）`, (password) => {
+    openConfirmPasswordModal(`确认重置 ${email} 的密码？\n请输入当前管理员密码确认。`, async (cpw) => {
+      try {
+        const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
+          method: 'POST', body: JSON.stringify({ password, confirm_password: cpw }),
+        });
+        toast(data.msg || '密码已重置');
+      } catch (e) { toast(e.message, true); }
+    });
   });
 }
 

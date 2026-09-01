@@ -13,7 +13,7 @@
 3. 在签到范围内生成随机定位点（模拟真实定位）
 4. 自动提交签到
 5. 支持消息通知（Server 酱、Bark、企业微信等）
-6. 重试逻辑：失败账号分散重试——开启签到调度时重新安排到窗口内合适时间，否则放回队尾（风控类最多 2 次，其他最多 4 次）
+6. 重试逻辑：失败账号分散重试——开启签到调度时重新安排到窗口内合适时间，否则放回队尾（风控类最多 2 次，其他最多 3 次，MAX_ATTEMPTS 语义）
 7. 随机延迟：启动与账号间隔随机打散（YIBAN_START_DELAY_MAX / YIBAN_ACCOUNT_GAP_MAX）
 
 参考项目：
@@ -293,6 +293,9 @@ def _parse_saturday_sign(raw=None):
     与周日（SUNDAY_SIGN，缺省=关）语义相反：周六历史默认签到，任何非显式关闭值
     （含 .env 残留空值 / 手工误写 / 非法值）都按开启处理——漏签比多余一次尝试代价更高，
     避免 .env 出现空值或脏值后静默丢失周六签到。
+    即：raw.strip().lower() 不属于 ("0","false","off","no") 的任何值
+    （如 "1"/"true"/"yes"/"on"/任意其他字符串/空）一律视为开启——管理员若想关闭
+    必须显式写 0/false/off/no，写别的不会生效也不会报错。
     """
     if raw is None:
         raw = os.environ.get("YIBAN_SATURDAY_SIGN", "1")
@@ -1521,7 +1524,8 @@ class YibanClient:
                 False,
                 STATUS_FAILED,
             )
-        position = position_list[0]
+        # 多任务 shuffle 改造（2026-08-29）后首个点位不再特殊：
+        # 点位统一由下方遍历全部任务处理，此处不再取 position_list[0]。
         range_obj = data_obj.get("Range", {})
 
         # 2. 校验签到时间
@@ -1739,6 +1743,18 @@ def _sched_marker_exists():
     return os.path.exists(path)
 
 
+def _is_second_run():
+    """本轮是否为补签轮（07:10）：run.sh 补签轮 / 容器 scheduler SECOND 时段注入的
+    YIBAN_SECOND_RUN=1 优先，sched-run 标记兜底。
+
+    批次16 P2-4：首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run
+    标记不写，07:10 补签轮仅靠标记会误判为首签轮 → 部分成功+窗口外零告警（B12-2
+    分支复发）。环境变量由 run.sh 补签轮分支 / 容器 scheduler SECOND 时段显式注入，
+    不依赖首签收尾，天然免疫 exit 124。
+    """
+    return os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()
+
+
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
     """批次12 B12-2 + 批次15 P1-1：窗口外未了结账号的管理员告警。
 
@@ -1753,6 +1769,14 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
       - 部分成功 + 窗口外跳过：仅补签轮告警（is_second_run=True）——
         首签有 skipped 属正常（07:10 会重跑），补签轮仍有 skipped 说明
         当天已无下一触发点（宿主 cron 只有 06:31/07:10 两轮），需当天知情。
+
+    is_second_run 判定（批次16 P2-4 修订）：调用方（main()）传入
+    `os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()`——
+    环境变量优先（run.sh 补签轮 / 容器调度器 SECOND 时段注入，首签轮不设），
+    sched-run 标记兜底。二者均缺省时（本函数被单独调用，is_second_run=None）
+    回退到 _sched_marker_exists()。环境变量之所以优先：首签子进程被宿主 timeout
+    击杀（exit 124）时收尾未执行、sched-run 标记不写，07:10 补签轮仅靠标记
+    会误判为首签轮 → 部分成功+窗口外零告警（B12-2 分支复发）。
 
     返回是否产生了告警（测试用）。
     """
@@ -2465,8 +2489,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
     流程（schedule 为空=原行为）：启动随机延迟 → 按签到模式（列表顺序 / 列表随机）
     确定执行顺序逐个尝试（账号间随机间隔）；失败的账号不立即重试，放入队尾等待下一轮；
-    每账号总尝试次数受 classify_failure 分级控制（风控类最多 2 次，其他最多 4 次）；
-    同一账号两次尝试间隔不小于 RETRY_MIN_INTERVAL 秒，避免连击。
+    每账号总尝试次数受 classify_failure 分级控制（风控类最多 2 次，其他最多 3 次，
+    MAX_ATTEMPTS=3 语义）；同一账号两次尝试间隔不小于 RETRY_MIN_INTERVAL 秒，避免连击。
 
     schedule 非空（自动错峰模式，调度 v2 时间驱动队列）：按 {phone: datetime} 时间点到点执行
     （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新采样到
@@ -2977,6 +3001,21 @@ def run_probe(accounts):
     )
 
 
+def _apply_only_filter(accounts, only_arg):
+    """--only 过滤：只保留指定手机号，返回 (保留账号, 未命中号码列表)。
+
+    批次16 P2-6：对每个未命中号码落 warning 日志——此前仅"全部不命中"才报错，
+    `--only "存在号,手滑号"` 时未命中号码被静默丢弃，用户误以为全部已处理。
+    调用方负责"过滤后为空则报错退出"。
+    """
+    only_set = {p.strip() for p in only_arg.split(",") if p.strip()}
+    filtered = [a for a in accounts if a.phone in only_set]
+    missing = sorted(only_set - {a.phone for a in filtered})
+    for phone in missing:
+        logger.warning("--only 指定账号不在配置中: %s", phone)
+    return filtered, missing
+
+
 def main():
     # 批次7 P3-15：进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
     # 创建即 0600。宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器
@@ -3045,9 +3084,9 @@ def main():
         sys.exit(1)
 
     # --only 过滤：只保留指定手机号（TUI 手动签到单个账号）
+    # 未命中号码逐号 warning（批次16 P2-6）；全不命中时报错退出（既有行为）。
     if args.only:
-        only_set = {p.strip() for p in args.only.split(",") if p.strip()}
-        accounts = [a for a in accounts if a.phone in only_set]
+        accounts, _missing = _apply_only_filter(accounts, args.only)
         if not accounts:
             logger.error(f"--only 指定账号不在配置中: {args.only}")
             sys.exit(1)
@@ -3221,10 +3260,12 @@ def main():
     logger.info(f"==== 签到汇总：{summary} ====")
 
     # 批次12 B12-2 + 批次15 P1-1：窗口外未了结专项告警。
-    # is_second_run：sched-run 标记已存在 = 本轮是补签（07:10）——首签有 skipped
-    # 属正常（补签会重跑），补签轮仍有 skipped 说明当天无下一触发点，必须知情。
+    # is_second_run：run.sh 补签轮（07:10）导出的 YIBAN_SECOND_RUN=1 优先
+    # （批次16 P2-4：首签子进程被 timeout 击杀、exit 124 未写 sched-run 标记时，
+    # 标记兜底失效，必须靠 run.sh 的补签轮环境变量识别）；容器调度器 SECOND
+    # 时段同样注入该变量；sched-run 标记作为兜底（手动/其他启动路径）。
     _maybe_alert_zero_success(
-        accounts, results, ok_n, is_second_run=_sched_marker_exists()
+        accounts, results, ok_n, is_second_run=_is_second_run()
     )
 
     # 批次12 裁决：签到事件落库——v6 建了 sign_events 表但签到主流程零写入

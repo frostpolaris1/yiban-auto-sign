@@ -2432,7 +2432,9 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
                          "管理员重置端点前缀与状态码不变")
         self.assertEqual((db.find_user(email) or {}).get("pw_version"), 1,
                          "被拒重置不得动 pw_version（旧会话不得被无谓吊销）")
-        r2 = c.post(f"/api/users/{email}/password", json={"password": "!@#$%^&*()12"},
+        r2 = c.post(f"/api/users/{email}/password",
+                    json={"password": "!@#$%^&*()12",
+                          "confirm_password": ADMIN_PASS},  # 批次16 P1-2：管理员重置二次鉴权
                     headers=self._csrf(token))
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertEqual((db.find_user(email) or {}).get("pw_version"), 2,

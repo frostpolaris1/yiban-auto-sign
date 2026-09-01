@@ -101,8 +101,11 @@ class AdminPrivilegeWebTest(unittest.TestCase):
     def test_regular_admin_cannot_reset_admin_password(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
+        # 批次16 P1-2：门禁先于权限检查（与 delete 同口径）；携带正确口令通过二次
+        # 鉴权后，仍因"目标为管理员仅主管理员"返回 403
         r = c.post("/api/users/admin3@test.local/password",
-                   json={"password": NEW_PASS}, headers=self._csrf(token))
+                   json={"password": NEW_PASS, "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(token))
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertIn("仅主管理员", r.get_json()["error"])
         self.assertEqual(self._pw_version("admin3@test.local"), 1, "目标管理员 pw_version 不应变化")
@@ -114,8 +117,10 @@ class AdminPrivilegeWebTest(unittest.TestCase):
     def test_regular_admin_can_reset_normal_user(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
+        # 批次16 P1-2：管理员重置他人密码 = 账号控制权转移 → 二次鉴权
         r = c.post("/api/users/user1@test.local/password",
-                   json={"password": NEW_PASS}, headers=self._csrf(token))
+                   json={"password": NEW_PASS, "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._pw_version("user1@test.local"), 2)
         c1 = self.webapp.create_app().test_client()
@@ -148,7 +153,8 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)
         r = c.post("/api/users/admin3@test.local/password",
-                   json={"password": NEW_PASS}, headers=self._csrf(token))
+                   json={"password": NEW_PASS, "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._pw_version("admin3@test.local"), 2)
         r = c.post("/api/users/admin3@test.local/delete",
@@ -164,7 +170,8 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         r = c.post("/api/users/batch",
                    json={"action": "reset_password",
                          "emails": ["admin3@test.local", "user1@test.local"],
-                         "password": NEW_PASS},
+                         "password": NEW_PASS,
+                         "confirm_password": ADMIN_PASS},  # 批次16 P1-2：二次鉴权
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("已重置密码 1 个用户", r.get_json()["msg"])
@@ -190,7 +197,8 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         r = c.post("/api/users/batch",
                    json={"action": "reset_password",
                          "emails": ["admin2@test.local", "admin3@test.local"],
-                         "password": NEW_PASS},
+                         "password": NEW_PASS,
+                         "confirm_password": ADMIN_PASS},  # 批次16 P1-2：二次鉴权
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("已重置密码 2 个用户", r.get_json()["msg"])

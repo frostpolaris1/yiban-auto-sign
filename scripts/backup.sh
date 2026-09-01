@@ -226,6 +226,15 @@ if [ "$REQUIRE_ENCRYPT" -eq 1 ]; then
     fi
 fi
 
+# 批次17 P2-8：BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥检查前移到打包之前。
+# 原检查位于 tar 打包之后（下方 342-347 行），拒绝路径无 rm -f——明文归档
+# （含 .env 全部密钥 + 数据库 + accounts-key）已落盘 BACKUP_DIR，违反
+# --require-encrypt 的"不得生成明文归档"契约。此处提前拦截，不生成任何归档。
+if [ "${BACKUP_PLAINTEXT}" = "1" ] && [ "$REQUIRE_ENCRYPT" -eq 1 ]; then
+    echo "错误：BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥，请移除其一（已提前拦截，未生成任何归档）" >&2
+    exit 1
+fi
+
 # ------------------------------------------------------------
 # 本地打包
 # ------------------------------------------------------------
@@ -341,8 +350,11 @@ chmod 0600 "${ARCHIVE}"
 ENC_FILE=""
 if [ "${BACKUP_PLAINTEXT}" = "1" ] && [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
     # 批次7 P4-11：两个 flag 并存时 --require-encrypt 的"不得生成明文归档"契约
-    # 被静默违背——显式互斥
-    echo "错误：BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥，请移除其一" >&2
+    # 被静默违背——显式互斥。
+    # 批次17 P2-8：前置互斥检查已提前拦截本分支，此处仅作兜底清场——拒绝路径
+    # 必须删除已落盘明文归档再退出，与 remote_fail 清场同语义。
+    echo "错误：BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥，已删除本轮明文归档并退出" >&2
+    rm -f "$ARCHIVE"
     exit 1
 fi
 if [ "${BACKUP_PLAINTEXT}" = "1" ]; then

@@ -234,7 +234,8 @@ class Batch9WebTest(unittest.TestCase):
         ac = self.webapp.create_app().test_client()
         at = self._login(ac, "admin@test.local", ADMIN_PASS)
         r = ac.post(f"/api/users/{EMAIL}/password",
-                    json={"password": "NewPass#777"}, headers=self._csrf(at))
+                    json={"password": "NewPass#777", "confirm_password": ADMIN_PASS},
+                    headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         stolen2 = self._client_with_cookie(name, val)
         r = stolen2.get("/api/me")
