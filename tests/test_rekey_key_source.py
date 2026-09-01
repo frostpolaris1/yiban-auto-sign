@@ -77,7 +77,7 @@ logout_ok。三元组口径与既有 forbidden_path 逐字同构（target 只存
 动作名是 login。
 
 用法（项目根目录，勿设 PYTHONIOENCODING）：
-    py -m pytest tests/test_batch14_fixes_0829.py -v
+    py -m pytest tests/test_rekey_key_source.py -v
 """
 import contextlib
 import importlib.util

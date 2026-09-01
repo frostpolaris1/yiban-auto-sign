@@ -7,6 +7,18 @@ exclude = [".git", "__pycache__"]
 # 只收集 tests/ 下的用例；scripts/ 下的独立安全压力测试（stress_security_test.py）
 # 需真实服务器地址、按脚本方式运行，不应被 pytest 默认收集（缺 base_url fixture）
 testpaths = ["tests"]
+# 汇总报告：结尾列出全部 skipped/xfailed/xpass；失败时短 traceback
+addopts = "-ra --tb=short"
+# 功能分类 markers（按文件前缀/功能域分类汇总与选择性运行）：
+#   -m notify / -m web / -m signin / -m scheduler / -m db / -m tui
+markers = [
+    "web: 网页管理后台相关（web/app.py、templates）",
+    "signin: 签到核心（scripts/signin.py、run.sh）",
+    "scheduler: 调度器（docker/scheduler.py、探针、补签）",
+    "notify: 消息推送与告警（scripts/notify.py、mailer）",
+    "db: 数据库与迁移（scripts/db.py）",
+    "tui: 终端面板（tui/）",
+]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "SIM", "RUF"]

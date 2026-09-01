@@ -206,7 +206,7 @@ class SigninFixes021Test(unittest.TestCase):
         """signin 侧 webhook 已组件化：send_notification 委托 scripts/notify.py。
 
         webhook 的格式适配（Server酱 title+desp）、节流、响应检查与日志脱敏
-        测试见 tests/test_notify_0829.py（实现已从 signin 内联迁出）。
+        测试见 tests/test_notify_webhook.py（实现已从 signin 内联迁出）。
         """
         with mock.patch.object(signin.notify, "send", return_value=True) as m:
             signin.send_notification("标题", "内容", "https://legacy.example.com/hook")

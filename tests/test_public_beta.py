@@ -20,7 +20,7 @@ R3（web/app.py，公测问题 5）：用户提交账号申请入库后，管理
   "新账号申请待审核"告警，且整段兜异常——账号已入库，通知失败不得把提交带崩成 500。
 
 用法（项目根目录，勿设 PYTHONIOENCODING）：
-    py -m pytest tests/test_public_beta_fixes_0831.py -v
+    py -m pytest tests/test_public_beta.py -v
 """
 import os
 import sys
@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 sys.path.insert(0, os.path.join(BASE, "tests"))
 
 import signin  # noqa: E402
-from test_batch14_fixes_0829 import _B14AlertGateBase  # noqa: E402
+from test_rekey_key_source import _B14AlertGateBase  # noqa: E402
 
 # 生产 2026-08-31 的原始失败消息（signin.py 拼出的完整串，非构造）
 PROD_STALE_MSG = "获取签到任务失败: 未登录或登录已经超时"

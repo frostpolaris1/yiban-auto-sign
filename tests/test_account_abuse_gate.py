@@ -11,7 +11,7 @@
   失败计数，达阈值（LOGIN_FAIL_NOTIFY=3）告警、锁定（LOGIN_MAX_FAILS=5）。
 
 用法（项目根目录）：
-    py -m pytest tests/test_batch13_fixes_0829.py -v
+    py -m pytest tests/test_account_abuse_gate.py -v
 """
 import contextlib
 import importlib.util
@@ -128,7 +128,7 @@ class MailAlertThrottleTest(_B13WebBase):
         mails = []
         hooks = []
         # 邮件节流不应作用于 webhook：此处关闭 webhook 节流（YIBAN_NOTIFY_COOLDOWN=0）
-        # 隔离验证；webhook 组件（notify.py）自身节流测试见 test_notify_0829.py
+        # 隔离验证；webhook 组件（notify.py）自身节流测试见 test_notify_webhook.py
         with open(self.env_file, "a", encoding="utf-8") as f:
             f.write("YIBAN_NOTIFY_COOLDOWN=0\n")
         with mock.patch.object(self.webapp.mailer, "send_admin_alert",

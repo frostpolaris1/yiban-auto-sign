@@ -35,7 +35,8 @@ jobs:
           # 开发/门禁工具：与运行依赖分离，锁定版本保证 CI 可复现
           # ruff 0.15.22 = 0.15 系列最终版（0.16 起默认规则集大改，待迁移后再升）
           # pytest 9.1.1 = 含 CVE-2025-71176 修复（0~9.0.3 受影响）
-          pip install ruff==0.15.22 pytest==9.1.1
+          # pytest-xdist = 并发跑测试（-n auto 按 CI 核数分发；单测各自隔离临时目录）
+          pip install ruff==0.15.22 pytest==9.1.1 pytest-xdist==3.8.0
 
       # 提交/PR 标题规范校验（Conventional Commits）
       # 不符合 feat/fix/docs/... 前缀则门禁失败。
@@ -52,8 +53,9 @@ jobs:
 
       # ---- Test ----
       # 单元/回归测试（tests/，pyproject.toml testpaths=["tests"]）
+      # -n auto：按 runner 核数并发（GitHub 默认 2 核 → 提速约 2 倍）
       - name: Test (pytest)
-        run: pytest -q
+        run: pytest -q -n auto
 
       - name: Gate ready
         run: echo "Lint + Test gate active."
