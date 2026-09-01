@@ -82,6 +82,20 @@ if [ -f "$STATUS_FILE" ]; then
     fi
 fi
 
+# 批次16 P2-4：识别补签轮（07:10）。06:31 与 07:10 是同一脚本的两次 cron 调用，
+# 仅靠 sign-status 状态文件无法区分——首签轮被 timeout 击杀（exit 124）或异常失败
+# （exit 1）时不写状态文件，07:10 补签轮读到的状态文件可能不存在，与首签轮无异。
+# 因此在首签轮执行前先落「今日已运行」标记；补签轮（标记已存在）导出
+# YIBAN_SECOND_RUN=1，signin.py 据此判定 is_second_run，避免「部分成功+窗口外」
+# 零告警（B12-2 在首签被杀分支复发）。标记按日期命名，跨日自动失效；
+# flock 已保证同一时刻仅一个进程，写入无并发竞态。
+RUN_MARKER="$STATE_DIR/yiban-run-today-$(date +%Y-%m-%d).marker"
+if [ -f "$RUN_MARKER" ]; then
+    export YIBAN_SECOND_RUN=1
+else
+    : > "$RUN_MARKER"
+fi
+
 # 记录脚本开始执行
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run.sh 开始执行 ===" >> "$LOG_FILE"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 工作目录: $(pwd)" >> "$LOG_FILE"

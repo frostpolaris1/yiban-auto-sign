@@ -274,7 +274,8 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
     def test_single_reset_password_alerts(self):
         self._user_with_account(EMAIL, "13800138004")
         ac, at = self._admin_client()
-        r = ac.post(f"/api/users/{EMAIL}/password", json={"password": "Reset#12345"},
+        r = ac.post(f"/api/users/{EMAIL}/password",
+                    json={"password": "Reset#12345", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(any("密码重置告警" == t for t, _ in self.alerts),
@@ -285,6 +286,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         ac, at = self._admin_client()
         r = ac.post("/api/users/batch", json={
             "action": "reset_password", "emails": [EMAIL], "password": "Reset#12345",
+            "confirm_password": ADMIN_PASS,
         }, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(any("密码重置告警" == t for t, _ in self.alerts),

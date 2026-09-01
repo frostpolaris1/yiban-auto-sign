@@ -73,9 +73,18 @@ class BatchSignCooldownTest(unittest.TestCase):
         sys.modules["webapp"] = cls.webapp
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
+        # 批次16 主审修复：Popen patch 提升到类级——整个测试类（含后台队列线程的
+        # 任意调度时刻）都处于 fake Popen 之下。此前测试级 setUp/tearDown patch 在
+        # tearDown stop 时若后台线程尚未执行 _spawn_signin_many（全量负载下线程调度
+        # 延迟），会真实 spawn signin 子进程并持有 db 连接，下一个测试 setUp 删
+        # yiban.db 报 PermissionError（全量 test_single_signin 失败根因）。
+        cls._popen_patch = unittest.mock.patch.object(
+            cls.webapp.subprocess, "Popen", return_value=_FakeProc())
+        cls._popen_patch.start()
 
     @classmethod
     def tearDownClass(cls):
+        cls._popen_patch.stop()
         if db._conn is not None:
             with contextlib.suppress(Exception):
                 db._conn.close()
@@ -108,6 +117,13 @@ class BatchSignCooldownTest(unittest.TestCase):
                 "phone_code": "",
             })
 
+    def tearDown(self):
+        # db 连接由 setUp 与 tearDownClass 管理；这里只释放单测实例资源
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+
     def _set_cooldown(self, value):
         """写/删 .env 的冷却键（None=删键回默认）。"""
         with open(self.env_file, encoding="utf-8-sig") as f:
@@ -125,13 +141,29 @@ class BatchSignCooldownTest(unittest.TestCase):
         return c.get("/api/me").get_json()["csrf_token"]
 
     def _trigger_batch(self, c, csrf):
-        """触发批量签到（patch Popen 防真实 spawn）。"""
-        with unittest.mock.patch.object(
-                self.webapp.subprocess, "Popen", return_value=_FakeProc()):
-            return c.post("/api/signin/batch", json={
-                "ids": [0, 1, 2],
-                "phones": ["13800000001", "13800000002", "13800000003"],
-            }, headers={"X-CSRF-Token": csrf})
+        """触发批量签到（Popen 已在 setUp 级 patch，防真实 spawn 且覆盖后台线程）。"""
+        return c.post("/api/signin/batch", json={
+            "ids": [0, 1, 2],
+            "phones": ["13800000001", "13800000002", "13800000003"],
+        }, headers={"X-CSRF-Token": csrf})
+
+    def _trigger_until_batch_done(self, c, csrf, deadline_s=15):
+        """触发批量签到，若后台队列尚未完成（429"正在执行"）则轮询重试。
+
+        全量测试负载下后台线程可能晚于固定 sleep 完成——固定 sleep 会让第二次
+        触发撞上"队列正在执行"而非"冷却中"，断言错位（批次16 主审修复：时间敏感
+        测试改为轮询等待）。队列完成后返回本次触发响应。
+        """
+        deadline = time.time() + deadline_s
+        while True:
+            r = self._trigger_batch(c, csrf)
+            if r.status_code != 429:
+                return r
+            err = r.get_json().get("error", "")
+            if "正在执行" in err and time.time() < deadline:
+                time.sleep(0.5)
+                continue
+            return r
 
     # ---- 冷却 ----
     def test_cooldown_blocks_immediate_retry(self):
@@ -140,9 +172,8 @@ class BatchSignCooldownTest(unittest.TestCase):
         csrf = self._login(c)
         r1 = self._trigger_batch(c, csrf)
         self.assertEqual(r1.status_code, 200, r1.get_data(as_text=True))
-        # 等待后台队列线程完成并更新冷却时间戳（fake proc 立即返回，秒级足够）
-        time.sleep(1.0)
-        r2 = self._trigger_batch(c, csrf)
+        # 轮询等待后台队列线程完成（更新冷却时间戳）后再次触发 → 冷却 429
+        r2 = self._trigger_until_batch_done(c, csrf)
         self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
         self.assertIn("冷却中", r2.get_json()["error"])
 
@@ -153,8 +184,8 @@ class BatchSignCooldownTest(unittest.TestCase):
         csrf = self._login(c)
         r1 = self._trigger_batch(c, csrf)
         self.assertEqual(r1.status_code, 200, r1.get_data(as_text=True))
-        time.sleep(1.0)
-        r2 = self._trigger_batch(c, csrf)
+        # 冷却关闭：队列完成后可再次触发（200）
+        r2 = self._trigger_until_batch_done(c, csrf)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
 
     def test_cooldown_short_window(self):
@@ -163,10 +194,10 @@ class BatchSignCooldownTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         csrf = self._login(c)
         self.assertEqual(self._trigger_batch(c, csrf).status_code, 200)
-        time.sleep(1.0)
-        r = self._trigger_batch(c, csrf)
+        # 队列完成后（轮询）再触发 → 2s 冷却窗口内 429
+        r = self._trigger_until_batch_done(c, csrf)
         self.assertEqual(r.status_code, 429, "2s 冷却窗口内应拒绝")
-        time.sleep(2.0)
+        time.sleep(2.5)  # 等窗口过期
         r2 = self._trigger_batch(c, csrf)
         self.assertEqual(r2.status_code, 200, "冷却窗口过后应恢复")
 
@@ -175,13 +206,12 @@ class BatchSignCooldownTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         csrf = self._login(c)
         self.assertEqual(self._trigger_batch(c, csrf).status_code, 200)
-        time.sleep(1.0)
-        with unittest.mock.patch.object(
-                self.webapp.subprocess, "Popen", return_value=_FakeProc()):
-            r = c.post("/api/signin", json={"phone": "13800000001"},
-                       headers={"X-CSRF-Token": csrf})
-        self.assertIn(r.status_code, (200, 429),
-                      "单账号签到不应被批量冷却拦截（429 仅限队列互斥/定时锁）")
+        # 等批量队列完成（冷却已挂），再触发单账号签到——不应被冷却拦
+        self._trigger_until_batch_done(c, csrf)
+        r = c.post("/api/signin", json={"phone": "13800000001"},
+                   headers={"X-CSRF-Token": csrf})
+        self.assertIn(r.status_code, (200, 404),
+                      "单账号签到不应被批量冷却拦截（应返回签到结果或账号校验，而非冷却 429）")
 
 
 import unittest.mock  # noqa: E402

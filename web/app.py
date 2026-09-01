@@ -611,17 +611,26 @@ class _DailyFlockFileHandler(signin._FlockFileHandler):
         )
 
     def emit(self, record):
-        today = datetime.now().strftime("%Y-%m-%d")
-        if today != self._day:
-            self._day = today
-            self.close()  # 关闭旧日期文件句柄
-            # 换目标文件：FileHandler 在 stream 为 None 时按 baseFilename 惰性重开
-            self.baseFilename = os.path.abspath(
-                os.path.join(self._log_dir, f"sign-{today}.log")
-            )
-        if self.stream is None:
-            # 先打开再交给父类 emit：父类的 flock 依赖已打开的 stream
-            self._open()
+        # 批次16 P2-1：滚动分支（close/baseFilename 更新/_open）整体 try 兜底——
+        # 跨天滚动 + 日志目录故障（如目录被删）时，FileNotFoundError 不得传播到
+        # 业务请求线程引发 500；失败仅 handleError（降级不阻断业务），且 _day/
+        # stream 状态保证下一条日志仍会重试 _open（stream 置 None → 重新打开）。
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            if today != self._day:
+                self._day = today
+                self.close()  # 关闭旧日期文件句柄
+                # 换目标文件：FileHandler 在 stream 为 None 时按 baseFilename 惰性重开
+                self.baseFilename = os.path.abspath(
+                    os.path.join(self._log_dir, f"sign-{today}.log")
+                )
+                self.stream = None
+            if self.stream is None:
+                # 先打开再交给父类 emit：父类的 flock 依赖已打开的 stream
+                self._open()
+        except Exception:  # noqa: BLE001 —— 日志落盘故障只降级，不得阻断业务请求
+            self.handleError(record)
+            return
         super().emit(record)
 
 
@@ -909,8 +918,11 @@ def ensure_secret_key(env_path):
         # v0.26.3：全新部署判定必须在读取前——.env 不存在 = 首次初始化，
         # 默认写入「暂停注册」；既有部署（文件已存在，如升级安装）不写此键，
         # 注册行为保持不变（用户裁决：默认允许，新部署才默认暂停）。
-        new_deployment = not os.path.exists(env_path)
+        # 批次16 P2-7：touch 空 .env / 复制 .env.example 后文件存在但无任何有效键
+        # 仍视为全新部署（此前判定仅看文件存在性，会把空配置误判为既有部署
+        # 而不写暂停键，新部署默认开放注册）。
         env = read_env(env_path)
+        new_deployment = not os.path.exists(env_path) or not env
         key = env.get("YIBAN_SECRET_KEY", "").strip()
         if key:
             return key
@@ -2075,7 +2087,7 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-29 通知推送与账户安全加固：消息推送组件（Server酱/自定义 URL，加密配置）+ 高危告警邮件节流 + 高危删除冷却 + 删除二次鉴权（0.26.0）
 # 2026-08-31 批次14 第一档修复 + 公测反馈：告警通道二次鉴权、推送额度分账、账号清除门禁、登录留痕、口令策略口径、失效会话自动重登、新申请提醒（0.26.1）
 # 2026-09-01 批次14 C 组 + 批次15 全量修复：宿主补签闸门、备份加密 fail-closed、推送额度跨进程统一、账号移除隐私清理、依赖与反向代理升级（0.26.2）
-APP_VERSION = "0.26.2"
+APP_VERSION = "0.26.3"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2215,13 +2227,31 @@ def create_app(host=None):
             _existing_fh[0].close()
         _existing_fh = []
     if not _existing_fh:
-        _daily_fh = _DailyFlockFileHandler(_log_dir)
-        _daily_fh.setFormatter(logging.Formatter(
-            "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
-        _root_logger.addHandler(_daily_fh)
-        _root_logger.setLevel(logging.INFO)
+        try:
+            _daily_fh = _DailyFlockFileHandler(_log_dir)
+        except OSError:
+            # 批次16 P2-1：日志目录不可写时构造失败不得阻断 web 启动——仅告警降级
+            # （与上文注释"降级路径"口径一致：emit 失败不阻断业务，这里连挂载都失败）
+            logger.warning(
+                "无法创建按天日志 handler（目录 %s 不可写或不存在）——web 日志不落盘，"
+                "仅输出到 stderr/标准日志通道", _log_dir)
+            _daily_fh = None
+        if _daily_fh is not None:
+            _daily_fh.setFormatter(logging.Formatter(
+                "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            ))
+            _root_logger.addHandler(_daily_fh)
+    # 批次16 P3：root 保持 WARNING，避免 requests/urllib3/werkzeug 等第三方库 INFO
+    # 全量落盘且无轮转上限；仅对本项目自有组件单独放开 INFO（每次 create_app 幂等设置）
+    _root_logger.setLevel(logging.WARNING)
+    for _name in ("yiban", "web", "notify", "mailer", "db", "tui", "scheduler",
+                  "account_crypto"):
+        logging.getLogger(_name).setLevel(logging.INFO)
+    for _name in ("requests", "urllib3", "werkzeug", "gunicorn"):
+        _third = logging.getLogger(_name)
+        _third.setLevel(logging.WARNING)
+        _third.addHandler(logging.NullHandler())
     # 批次12 B12-13：默认/弱口令启动检测（必须在口令明文→哈希迁移之前，
     # 迁移会把明文清空导致无从检查）
     reject_default_admin_password(ENV_FILE)
@@ -5158,11 +5188,17 @@ def create_app(host=None):
         if action in ("set_admin", "unset_admin") and not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
         # 被盗号滥用面加固（2026-08-29）：删除用户 = 高危不可逆操作 → 二次鉴权 +
-        # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）
-        if action == "delete":
+        # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）。
+        # 批次16 P1-2：批量重置密码同为账号控制权转移操作（e2e 实锤：普通管理员
+        # 无口令即可批量接管用户登录），与 delete 同口径走高危门禁。
+        if action in ("delete", "reset_password"):
             # 批次14 评审 ②：顺序统一为"先鉴权、通过了才占额度"（429 文案保持原样）
             gate = _high_risk_gate(
-                data, "批量删除用户", limit_msg="删除操作过于频繁，请稍后再试")
+                data,
+                "批量删除用户" if action == "delete" else "批量重置密码",
+                limit_msg="删除操作过于频繁，请稍后再试"
+                if action == "delete" else "重置操作过于频繁，请稍后再试",
+            )
             if gate:
                 return gate
 
@@ -5394,6 +5430,14 @@ def create_app(host=None):
         pw_err = _password_policy_error(password)
         if pw_err:
             return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
+        # 批次16 P1-2：管理员重置他人密码 = 账号控制权转移 → 高危二次鉴权 + 同管理员
+        # 限速（与批量重置同口径）。普通用户自改密码走 /api/me/password（需验当前
+        # 旧密码，且 require_login 已把普通用户挡在管理面之外），不落此门禁。
+        if _current_role() == "admin":
+            gate = _high_risk_gate(
+                data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试")
+            if gate:
+                return gate
         is_master = _is_builtin_admin_session()
         with _file_lock:
             target = db.find_user(email)
