@@ -396,6 +396,38 @@ class ProbeWordingTest(unittest.TestCase):
     def setUpClass(cls):
         global signin
         import signin
+        # 2026-09-01 CI 修复：test_probe_scenario_mail_wording 走 send_user_fail_mail
+        # （B 线），依赖 db.find_user(owner) 命中用户——DB 不可用/无该用户时提前
+        # 返回不发送 → sent[0] IndexError。Linux CI 无残留 DB 环境即暴露。
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-probe-word-")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        cls._old_state_dir = os.environ.get("YIBAN_STATE_DIR")
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        import db
+        db.init_db(cls.db_file, env_file=cls.env_file)
+        # 种子用户：B 线邮件收件人查询需命中
+        db.create_user("owner@test.local", "hash", role="user",
+                       created_at="2026-09-01 00:00:00", pw_version=1)
+
+    @classmethod
+    def tearDownClass(cls):
+        import db
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        os.environ.pop("YIBAN_DB_FILE", None)
+        os.environ.pop("YIBAN_ENV_FILE", None)
+        if cls._old_state_dir is None:
+            os.environ.pop("YIBAN_STATE_DIR", None)
+        else:
+            os.environ["YIBAN_STATE_DIR"] = cls._old_state_dir
+        shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
         signin._mail_summary.clear()
@@ -483,6 +515,23 @@ class MailerPortFallbackTest(unittest.TestCase):
     def setUpClass(cls):
         global mailer_mod
         import mailer as mailer_mod
+        # 2026-09-01 修复：_get 在环境变量为空时回退读 .env 文件——本机工作区
+        # 若有 .env 含 YIBAN_MAIL_SMTP_PORT，`_cfg_with_port("")` 清掉环境变量后
+        # 仍取到文件值 → port_fallback 断言失败（CI 无 .env 反而通过）。隔离到
+        # 空 env 文件，使「缺省/非法端口」语义与部署环境无关。
+        cls._old_env_file = os.environ.get("YIBAN_ENV_FILE")
+        cls._env_tmp = tempfile.mkdtemp(prefix="yiban-mail-port-")
+        cls._env_file = os.path.join(cls._env_tmp, ".env")
+        open(cls._env_file, "w", encoding="utf-8").close()  # 空文件
+        os.environ["YIBAN_ENV_FILE"] = cls._env_file
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._old_env_file is None:
+            os.environ.pop("YIBAN_ENV_FILE", None)
+        else:
+            os.environ["YIBAN_ENV_FILE"] = cls._old_env_file
+        shutil.rmtree(cls._env_tmp, ignore_errors=True)
 
     def _cfg_with_port(self, raw):
         env = dict(os.environ)
