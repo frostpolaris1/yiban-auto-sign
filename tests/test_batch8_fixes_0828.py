@@ -161,10 +161,10 @@ class AuditVerifyReadOnlyTest(unittest.TestCase):
         import audit_verify
 
         missing = os.path.join(self.tmp, "no-such.db")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            with mock.patch.object(sys, "argv", ["audit_verify.py", "--db", missing]):
-                with self.assertRaises(SystemExit) as cm:
-                    audit_verify.main()
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+             mock.patch.object(sys, "argv", ["audit_verify.py", "--db", missing]), \
+             self.assertRaises(SystemExit) as cm:
+            audit_verify.main()
         self.assertEqual(cm.exception.code, 2)
         self.assertFalse(os.path.exists(missing), "不得新建空库")
         self.assertIn("不存在", out.getvalue())
@@ -180,13 +180,13 @@ class AuditVerifyReadOnlyTest(unittest.TestCase):
             db._conn = None
         # 模拟旧库：版本回拨到 v2（audit_verify 不应把迁移跑上去）
         conn = __import__("sqlite3").connect(db_file)
-        conn.execute(f"PRAGMA user_version = 2")
+        conn.execute("PRAGMA user_version = 2")
         conn.commit()
         conn.close()
-        with contextlib.redirect_stdout(io.StringIO()):
-            with mock.patch.object(sys, "argv", ["audit_verify.py", "--db", db_file]):
-                with contextlib.suppress(SystemExit):
-                    audit_verify.main()
+        with contextlib.redirect_stdout(io.StringIO()), \
+             mock.patch.object(sys, "argv", ["audit_verify.py", "--db", db_file]), \
+             contextlib.suppress(SystemExit):
+            audit_verify.main()
         conn = __import__("sqlite3").connect(db_file)
         ver_after = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
@@ -384,7 +384,7 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         "成功登录有没有留痕、IP 有没有匿名化"，与名字无关，故只随动字面量，
         三条断言（有行 / username 精确 / target 为 64 位 hex）一字未放宽。
         """
-        c, _ = self._master()
+        _c, _ = self._master()
         rows = db.get_conn().execute(
             "SELECT username, action, target FROM audit_logs WHERE action='login_ok'"
         ).fetchall()

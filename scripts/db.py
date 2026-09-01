@@ -182,71 +182,80 @@ def require_existing_env_file(cli_value=None):
 # 表结构
 # ---------------------------------------------------------------------------
 def _create_tables(conn):
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS accounts (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          sort_order INTEGER NOT NULL,
-          name TEXT NOT NULL DEFAULT '',
-          phone TEXT NOT NULL UNIQUE,
-          password TEXT NOT NULL DEFAULT '',
-          phone_model TEXT NOT NULL DEFAULT '',
-          phone_code TEXT NOT NULL DEFAULT '',
-          owner TEXT NOT NULL DEFAULT 'admin',
-          status TEXT NOT NULL DEFAULT 'pending',
-          reject_reason TEXT NOT NULL DEFAULT '',
-          deleted INTEGER NOT NULL DEFAULT 0,
-          deleted_at TEXT NOT NULL DEFAULT '',
-          deleted_by TEXT NOT NULL DEFAULT '',
-          user_paused INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner);
-        CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
-        CREATE INDEX IF NOT EXISTS idx_accounts_sort ON accounts(sort_order);
-
-        CREATE TABLE IF NOT EXISTS users (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          email TEXT NOT NULL,
-          password_hash TEXT NOT NULL,
-          role TEXT NOT NULL DEFAULT 'user',
-          created_at TEXT NOT NULL DEFAULT '',
-          pw_version INTEGER NOT NULL DEFAULT 1,
-          deleted INTEGER NOT NULL DEFAULT 0,
-          deleted_at TEXT NOT NULL DEFAULT '',
-          mail_notify INTEGER NOT NULL DEFAULT 1
-        );
-        -- 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
-        -- 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
-        -- 迁移执行前崩溃（对抗审查 2026-08-16 演练发现）。
-
-        CREATE TABLE IF NOT EXISTS audit_logs (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts TEXT NOT NULL,
-          username TEXT NOT NULL,
-          action TEXT NOT NULL,
-          target TEXT NOT NULL DEFAULT '',
-          detail TEXT NOT NULL DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts);
-        CREATE INDEX IF NOT EXISTS idx_audit_action_target ON audit_logs(action, target, id);
-
-        CREATE TABLE IF NOT EXISTS time_prefs (
-          phone TEXT PRIMARY KEY,
-          slot_min INTEGER NOT NULL,
-          updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_time_prefs_slot ON time_prefs(slot_min);
-
-        CREATE TABLE IF NOT EXISTS user_delete_requests (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          username TEXT NOT NULL,
-          ip_hash TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username);
-        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash);
-        """
+    # 批次17 P3-1：不用 executescript——其隐式 COMMIT 会把调用方已开启的事务
+    # （_run_migrations 的 BEGIN IMMEDIATE）提前提交，击穿迁移原子性；逐条
+    # execute 让 DDL 落在事务内，中途失败可整体回滚。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS accounts ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "sort_order INTEGER NOT NULL, "
+        "name TEXT NOT NULL DEFAULT '', "
+        "phone TEXT NOT NULL UNIQUE, "
+        "password TEXT NOT NULL DEFAULT '', "
+        "phone_model TEXT NOT NULL DEFAULT '', "
+        "phone_code TEXT NOT NULL DEFAULT '', "
+        "owner TEXT NOT NULL DEFAULT 'admin', "
+        "status TEXT NOT NULL DEFAULT 'pending', "
+        "reject_reason TEXT NOT NULL DEFAULT '', "
+        "deleted INTEGER NOT NULL DEFAULT 0, "
+        "deleted_at TEXT NOT NULL DEFAULT '', "
+        "deleted_by TEXT NOT NULL DEFAULT '', "
+        "user_paused INTEGER NOT NULL DEFAULT 0"
+        ")"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_sort ON accounts(sort_order)")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS users ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "email TEXT NOT NULL, "
+        "password_hash TEXT NOT NULL, "
+        "role TEXT NOT NULL DEFAULT 'user', "
+        "created_at TEXT NOT NULL DEFAULT '', "
+        "pw_version INTEGER NOT NULL DEFAULT 1, "
+        "deleted INTEGER NOT NULL DEFAULT 0, "
+        "deleted_at TEXT NOT NULL DEFAULT '', "
+        "mail_notify INTEGER NOT NULL DEFAULT 1"
+        ")"
+    )
+    # 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
+    # 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
+    # 迁移执行前崩溃（对抗审查 2026-08-16 演练发现）。
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_logs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts TEXT NOT NULL, "
+        "username TEXT NOT NULL, "
+        "action TEXT NOT NULL, "
+        "target TEXT NOT NULL DEFAULT '', "
+        "detail TEXT NOT NULL DEFAULT ''"
+        ")"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action_target ON audit_logs(action, target, id)")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS time_prefs ("
+        "phone TEXT PRIMARY KEY, "
+        "slot_min INTEGER NOT NULL, "
+        "updated_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_time_prefs_slot ON time_prefs(slot_min)")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_delete_requests ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "username TEXT NOT NULL, "
+        "ip_hash TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash)")
     conn.commit()
 
 
@@ -617,55 +626,59 @@ def hash_phone(phone):
 
 def migrate_v4(conn):
     """v4：创建可视化三表（可选迁移，失败只告警不阻断启动）。"""
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS sign_events (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts TEXT NOT NULL,
-          phone TEXT NOT NULL,
-          status TEXT NOT NULL,
-          message TEXT NOT NULL DEFAULT '',
-          stage TEXT NOT NULL DEFAULT '',
-          attempt INTEGER NOT NULL DEFAULT 0,
-          account_id INTEGER,
-          dur_sec REAL,
-          finished_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_sign_events_ts ON sign_events(ts);
-        CREATE INDEX IF NOT EXISTS idx_sign_events_phone ON sign_events(phone);
-        CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts ON sign_events(phone, ts);
-        CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts ON sign_events(account_id, ts);
-
-        CREATE TABLE IF NOT EXISTS page_visits (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts TEXT NOT NULL,
-          role TEXT NOT NULL DEFAULT '',
-          path TEXT NOT NULL,
-          ip_hash TEXT NOT NULL DEFAULT '',
-          ua TEXT NOT NULL DEFAULT '',
-          dur_ms INTEGER NOT NULL DEFAULT 0,
-          user_id INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_page_visits_ts ON page_visits(ts);
-        CREATE INDEX IF NOT EXISTS idx_page_visits_role ON page_visits(role);
-        CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts ON page_visits(path, ts);
-        CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts ON page_visits(role, ts);
-
-        CREATE TABLE IF NOT EXISTS server_metrics (
-          ts TEXT NOT NULL,
-          cpu REAL,
-          mem_pct REAL,
-          disk_pct REAL,
-          net_in REAL,
-          net_out REAL,
-          load1 REAL,
-          load5 REAL,
-          load15 REAL,
-          proc_count INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics(ts);
-        """
+    # 批次17 P3-1：逐条 execute 替代 executescript（隐式 COMMIT 击穿
+    # _run_migrations 的 BEGIN IMMEDIATE，失败时前半段 DDL 已提交无法回滚）
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sign_events ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts TEXT NOT NULL, "
+        "phone TEXT NOT NULL, "
+        "status TEXT NOT NULL, "
+        "message TEXT NOT NULL DEFAULT '', "
+        "stage TEXT NOT NULL DEFAULT '', "
+        "attempt INTEGER NOT NULL DEFAULT 0, "
+        "account_id INTEGER, "
+        "dur_sec REAL, "
+        "finished_at TEXT"
+        ")"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_ts ON sign_events(ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_phone ON sign_events(phone)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts ON sign_events(phone, ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts ON sign_events(account_id, ts)")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS page_visits ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts TEXT NOT NULL, "
+        "role TEXT NOT NULL DEFAULT '', "
+        "path TEXT NOT NULL, "
+        "ip_hash TEXT NOT NULL DEFAULT '', "
+        "ua TEXT NOT NULL DEFAULT '', "
+        "dur_ms INTEGER NOT NULL DEFAULT 0, "
+        "user_id INTEGER"
+        ")"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_ts ON page_visits(ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_role ON page_visits(role)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts ON page_visits(path, ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts ON page_visits(role, ts)")
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS server_metrics ("
+        "ts TEXT NOT NULL, "
+        "cpu REAL, "
+        "mem_pct REAL, "
+        "disk_pct REAL, "
+        "net_in REAL, "
+        "net_out REAL, "
+        "load1 REAL, "
+        "load5 REAL, "
+        "load15 REAL, "
+        "proc_count INTEGER"
+        ")"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics(ts)")
     conn.commit()
 
 
@@ -719,18 +732,17 @@ def migrate_v5(conn):
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
         "ON users(email) WHERE deleted = 0",
     )
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS user_delete_requests (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          username TEXT NOT NULL,
-          ip_hash TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username);
-        CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash);
-        """
+    # 批次17 P3-1：逐条 execute 替代 executescript（同上，保持迁移事务原子）
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_delete_requests ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "username TEXT NOT NULL, "
+        "ip_hash TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL"
+        ")"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash)")
     conn.commit()
 
 
@@ -793,21 +805,22 @@ def migrate_v8(conn):
     cookies_ct 为 AES-GCM 密文 JSON 串（AAD=phone，复用 account_crypto），
     库内绝不落明文 cookie。表结构见 docs/research-lumjiel-core-sign-20260822.md §七。
     """
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS session_cache (
-          phone        TEXT PRIMARY KEY,
-          cookies_ct   TEXT NOT NULL,
-          csrf         TEXT NOT NULL,
-          created_at   TEXT NOT NULL,
-          updated_at   TEXT NOT NULL
-        );
-        -- 应用元数据（2026-08-28 审查 M3）：purge 时钟跳变保护的单调参照等
-        CREATE TABLE IF NOT EXISTS app_meta (
-          key   TEXT PRIMARY KEY,
-          value TEXT NOT NULL
-        );
-        """
+    # 批次17 P3-1：逐条 execute 替代 executescript（同上，保持迁移事务原子）
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS session_cache ("
+        "phone        TEXT PRIMARY KEY, "
+        "cookies_ct   TEXT NOT NULL, "
+        "csrf         TEXT NOT NULL, "
+        "created_at   TEXT NOT NULL, "
+        "updated_at   TEXT NOT NULL"
+        ")"
+    )
+    # 应用元数据（2026-08-28 审查 M3）：purge 时钟跳变保护的单调参照等
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_meta ("
+        "key   TEXT PRIMARY KEY, "
+        "value TEXT NOT NULL"
+        ")"
     )
     conn.commit()
 
@@ -852,13 +865,12 @@ def migrate_v12(conn):
     新增本迁移幂等补建，旧库自动补齐；新库 v8 已建则 IF NOT EXISTS 空操作。
     教训：新表/新列必须新增迁移版本，不得修改已发布的旧迁移。
     """
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS app_meta (
-          key   TEXT PRIMARY KEY,
-          value TEXT NOT NULL
-        );
-        """
+    # 批次17 P3-1：逐条 execute 替代 executescript（同上，保持迁移事务原子）
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_meta ("
+        "key   TEXT PRIMARY KEY, "
+        "value TEXT NOT NULL"
+        ")"
     )
     conn.commit()
 
@@ -1086,10 +1098,8 @@ def _rename_backup(path, reencrypt=False, key=None):
         logger.warning("迁移备份目标 %s 已存在，源文件改存为 %s", bak, new_bak)
         bak = new_bak
     os.rename(path, bak)
-    try:
+    with contextlib.suppress(OSError):  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
         os.chmod(bak, 0o600)
-    except OSError:
-        pass  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
     if reencrypt and key is not None:
         try:
             with open(bak, encoding="utf-8") as f:
@@ -1250,7 +1260,7 @@ def _record_clock_guard_alert(note):
             conn2.commit()
         finally:
             conn2.close()
-    except Exception as e:  # noqa: BLE001 —— 告警留痕失败不得放大故障
+    except Exception as e:
         logger.warning("时钟守卫告警留痕失败: %s", e)
 
 
@@ -1271,7 +1281,7 @@ def clock_guard_alert():
         except ValueError:
             pass
         return {"ts": "", "note": str(r["value"])}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("读取时钟守卫告警失败: %s", e)
         return None
 
@@ -2465,7 +2475,7 @@ def audit(username, action, target="", detail=""):
                 )
                 conn.commit()
             return True
-        except Exception as e:  # noqa: BLE001 —— 审计失败不得影响业务主流程
+        except Exception as e:
             last_err = e
             if conn is not None:
                 with contextlib.suppress(Exception):
@@ -2620,10 +2630,10 @@ def record_audit_anchor(path=None):
                     (ts,),
                 )
                 conn.commit()
-        except Exception as meta_err:  # noqa: BLE001
+        except Exception as meta_err:
             logger.warning("锚点元数据留痕失败（不影响锚点本身）: %s", meta_err)
         return line
-    except Exception as e:  # noqa: BLE001 —— 锚点写入失败不得阻断业务
+    except Exception as e:
         logger.warning("审计链锚点写入失败: %s", e)
         return None
 
@@ -2717,7 +2727,7 @@ def verify_audit_anchor(path=None):
                 "（保留期清理的正常现象，非告警）"
             )
         return True, ""
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"锚点校验异常: {e}"
 
 

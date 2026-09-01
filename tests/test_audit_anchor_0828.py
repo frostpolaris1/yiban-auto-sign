@@ -25,7 +25,6 @@ import sqlite3
 import sys
 import tempfile
 import threading
-import time
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -268,7 +267,7 @@ class UpdateAccountLockTest(unittest.TestCase):
             try:
                 db.update_account(account_id, {"name": "被锁等待后写入"})
                 outcome["done"] = True
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 outcome["error"] = repr(e)
 
         t = threading.Thread(target=_worker, daemon=True)
@@ -306,7 +305,7 @@ class UpdateAccountLockTest(unittest.TestCase):
             try:
                 for _ in range(5):  # 多轮提高交错概率
                     db.update_account(account_id, dict(fields))
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 errors.append(repr(e))
 
         threads = [

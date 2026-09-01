@@ -16,6 +16,7 @@ tick 采用「分钟级到点闩锁」而非「秒==0 命中」：调度循环�
 错过整分第 0 秒时，进入目标分钟后仍会补触发一次（同日去重防重复），
 不再整天丢失（P2-10）。
 """
+import contextlib
 import json
 import os
 import re
@@ -26,7 +27,7 @@ from datetime import datetime, timedelta
 
 # .env 解析与子进程环境构造与 run.sh / web 共用口径（批次7 P2-10 提为共享模块）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from child_env import build_child_env  # noqa: E402
+from child_env import build_child_env
 
 STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
@@ -50,9 +51,16 @@ def _sched_run_file():
 # 状态若不算未了结，sched-run 又无条件写 completed=True，07:10 补签会被闸门
 # 判为"全员了结"吞掉 → 全天零签到且无任何重试机会与告警。skip 既非"未了结"
 # 也非"已完成"，宿主 run.sh 用退出码 2 写 SKIPPED（cron 会重跑）无此洞。
+# 批次16 no_position：易班侧无签到点位（登录成功但 Position 为空）为独立状态码，
+# **计入**未了结——与宿主 run.sh 语义对齐：无点位账号在 signin.py main() 汇总
+# 归 skip 且不触发失败告警，但退出码 2 → SKIPPED → 07:10 补签轮重跑兜底（学校
+# 上午任务未配置=无点位，07:10 已配置=顺带补上）。重试 1 次即止
+# （signin.NO_POSITION_MAX_ATTEMPTS=1，signin 内部 retry budget 不进入失败重试），
+# 无点位账号被 07:10 整轮顺带重跑一次幂等无害，不会白跑太多。
 _UNDONE_STATUSES = frozenset((
     "failed", "retrying", "pending",
     "skipped_window", "skipped_norange",
+    "no_position",
 ))
 
 
@@ -73,7 +81,9 @@ def _full_run_done_today():
 
 
 def _has_undone_today():
-    """当日是否存在未了结账号（failed/retrying/pending）。
+    """当日是否存在未了结账号（failed/retrying/pending/skipped_*/no_position；
+    no_position 与宿主 run.sh SKIPPED 语义一致计入未了结，07:10 顺带重试一次，
+    详见 _UNDONE_STATUSES 说明）。
 
     标记存在但存在未了结账号 → 07:10 补签应重跑；无记录/文件缺失按「未跑过」
     处理（允许触发，避免漏签）。"""
@@ -99,10 +109,8 @@ def _cleanup_logs():
         if name.startswith("sign-") and name.endswith(".log"):
             key = name[len("sign-"):-len(".log")]
             if key < cutoff:
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(os.path.join(LOGDIR, name))
-                except OSError:
-                    pass
 
 
 # 首签 / 补签 时间点（分钟级），用「已进入该分钟且当天未执行过」的闩锁语义，
@@ -188,9 +196,11 @@ def main_loop(sleep_seconds=1):
             not _full_run_done_today() or _has_undone_today()
         ):
             # 补签闸门（批次7 P1-1）：全量未跑过（首签错过的补偿）或存在未了结
-            # 账号（failed/retrying/pending/skipped_window/skipped_norange，批次12
-            # B12-2）才执行；全员了结则跳过，不再被「任一账号成功」误导跳过失败
-            # 账号的兜底
+            # 账号（failed/retrying/pending/skipped_window/skipped_norange/no_position，
+            # 批次12 B12-2 / 批次16）才执行；全员了结则跳过，不再被「任一账号
+            # 成功」误导跳过失败账号的兜底。no_position（无点位）视为未了结
+            # （批次16）：与宿主 run.sh 退出码 2 → SKIPPED → 07:10 重跑一致，
+            # 07:10 补签轮顺带重试一次（signin 内部 1 次即止，幂等无害）。
             # 批次16 P2-4：补签轮注入 YIBAN_SECOND_RUN=1——与宿主 run.sh 补签轮
             # 导出的同一信号，signin.py 据此判定 is_second_run（环境变量优先，
             # sched-run 标记兜底），修复首签被 timeout 击杀时「部分成功+窗口外」
