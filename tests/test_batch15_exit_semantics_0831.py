@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 
-import signin  # noqa: E402
+import signin
 
 
 class _Acc(SimpleNamespace):
@@ -162,11 +162,6 @@ class SchedDoneMixedTest(unittest.TestCase):
     @mock.patch.object(signin, "_maybe_alert_zero_success", return_value=False)
     def test_sched_done_written_in_mixed_case(self, m_alert, m_flush, m_done):
         """混合场景（部分成功+部分 skipped）仍写全量完成标记——容器闸门据此判定补签。"""
-        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
-        results = {
-            "13800000001": (True, "签到成功", False, signin.STATUS_SUCCESS),
-            "13800000002": (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW),
-        }
         ok_n = 1
         fail_n = 0
         skip_n = 1

@@ -180,14 +180,14 @@ class HighRiskDeleteTest(_B13WebBase):
         self._make_user("u2@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        for i in range(3):
+        for _i in range(3):
             r = c.post("/api/users/batch",
                        json={"action": "delete", "emails": ["u2@test.local"],
                              "confirm_password": "wrong-pass"},
                        headers=self._csrf(t))
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("u2@test.local"), "未通过鉴权不得删除")
-        self.assertTrue(any("高危操作二次鉴权失败告警" == x for x, _ in self.alerts),
+        self.assertTrue(any(x == "高危操作二次鉴权失败告警" for x, _ in self.alerts),
                         f"第 3 次失败应告警，实际 {self.alerts}")
 
     def test_batch_delete_correct_password_200(self):

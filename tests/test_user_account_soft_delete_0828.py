@@ -134,7 +134,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
     # ---- 1. 删除 → 软删 → 撤销恢复 ----
     def test_user_delete_soft_then_undo(self):
         c, token = self._user_client()
-        acc = self._submit_and_approve(c, token)
+        self._submit_and_approve(c, token)
         # 删除 → 软删：行保留，deleted_by=本人，状态字段原样保留
         r = c.delete("/api/my-accounts/0", headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -170,7 +170,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
     # ---- 3. 管理员删除的行：用户不可撤销，管理员可恢复 ----
     def test_undo_rejected_for_admin_deleted(self):
         c, token = self._user_client()
-        acc = self._submit_and_approve(c, token)
+        self._submit_and_approve(c, token)
         ac, atoken = self._admin_client()
         idx = next(i for i, a in enumerate(db.load_accounts()) if a["phone"] == PHONE)
         r = ac.delete(f"/api/accounts/{idx}", headers=self._csrf(atoken))

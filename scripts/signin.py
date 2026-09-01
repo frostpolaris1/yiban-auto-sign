@@ -331,6 +331,11 @@ STATUS_FAILED = "failed"                 # 最终失败（重试耗尽）
 STATUS_RETRYING = "retrying"             # 重试中
 STATUS_SKIPPED_WINDOW = "skipped_window"  # 未在签到时段（窗口外）
 STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空）
+# 易班侧无签到点位（2026-09-01 独立状态）：登录成功、signPosition 返回 code=0 但
+# Position 为空（任务未配置/当日任务已关闭）。此前并入 STATUS_FAILED——与凭据/网络
+# 真失败混淆：触发"签到失败"告警轰炸、把补签闸门判为未了结白跑一轮全量。
+# 独立状态后：展示可区分、不按失败告警、不触发补签重跑（重试拿不到就是拿不到）。
+STATUS_NO_POSITION = "no_position"
 STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自取消（用户暂停自己的签到任务）
 STATUS_PENDING = "pending"               # 待签（未执行/无记录）
@@ -345,6 +350,7 @@ STATUS_SYMBOL = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
     STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
+    STATUS_NO_POSITION: "🚫",
     STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️",
     STATUS_GLOBAL_PAUSED: "⏸",
 }
@@ -1514,6 +1520,8 @@ class YibanClient:
             # 2026-08-31 公测：登录成功、signPosition 返回 code=0 但 Position 为空。
             # 此前只报笼统一句"未找到签到位置数据"，Msg 原文被吞，管理员无从判断
             # 是"任务未配置点位"还是"当日任务已关闭"。落一条带 Msg 的日志供取证。
+            # 2026-09-01：状态独立为 STATUS_NO_POSITION——非账号/凭据问题，不按失败
+            # 告警、不触发补签重跑（NO_POSITION_MAX_ATTEMPTS=1，见 _retry_budget）。
             logger.warning(
                 f"[{self.account.phone}] signPosition 无可用点位: "
                 f"Msg={_sanitize_text(msg)!r} Range={'有' if data_obj.get('Range') else '无'}"
@@ -1522,7 +1530,7 @@ class YibanClient:
                 False,
                 "未找到签到位置数据（易班未返回该账号的签到点位，非账号密码问题）",
                 False,
-                STATUS_FAILED,
+                STATUS_NO_POSITION,
             )
         # 多任务 shuffle 改造（2026-08-29）后首个点位不再特殊：
         # 点位统一由下方遍历全部任务处理，此处不再取 position_list[0]。
@@ -2666,6 +2674,14 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 clear_session_cache_quiet(phone)
             if attempts[phone] >= max_attempts:
                 results[phone] = (False, message, False, status)
+                if status == STATUS_NO_POSITION:
+                    # 无点位=易班侧无数据（任务未配置/当日任务已关闭），非账号/凭据
+                    # 问题：管理员无从修复，不按"签到失败"告警轰炸；仅留日志与状态
+                    # （独立状态码供展示/统计），补签重试同样无意义。
+                    logger.warning(
+                        f"[{phone}] 🚫 易班未返回签到点位，当日不签到（重试无意义）: {message}"
+                    )
+                    continue
                 logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
                 _collect_admin_mail("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}")
                 if notify_url:
@@ -2773,6 +2789,12 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             clear_session_cache_quiet(phone)
         if attempts[phone] >= max_attempts:
             results[phone] = (False, message, False, status)
+            if status == STATUS_NO_POSITION:
+                # 同 schedule 分支：无点位非账号/凭据问题，不按"签到失败"告警轰炸。
+                logger.warning(
+                    f"[{phone}] 🚫 易班未返回签到点位，当日不签到（重试无意义）: {message}"
+                )
+                continue
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
             # A 线合并：失败并入任务结束汇总邮件（webhook 仍即时推送）
             _collect_admin_mail(
@@ -3231,7 +3253,11 @@ def main():
 
     # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
     # 口径：成功=success/already；跳过=no_task+skipped（无需签到与时段外同列）；
-    # 已执行=已了结（success/already/no_task），窗口外等跳过不算（7:10 还会再跑）
+    # 已执行=已了结（success/already/no_task），窗口外等跳过不算（7:10 还会再跑）。
+    # 2026-09-01：no_position（易班侧无点位）归入跳过计数但单独展示——非账号失败，
+    # 不参与 has_real_failure；但归入"未了结"（与容器调度器 _UNDONE_STATUSES 同语义），
+    # 宿主 exit 2 / 容器 07:10 补签轮均会重跑一次——学校延迟放位时仍有兜底
+    # （无点位账号 1 次即止、幂等无害）。
     has_real_failure = False
     has_executed = False
     # 批次15 P1-1：窗口外/缺失（skipped_window/skipped_norange）属"未了结"——
@@ -3240,15 +3266,18 @@ def main():
     # 退出码判成 0，run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底
     # （容器侧批次12 B12-2 已修此洞，宿主侧是本轮补齐）。
     has_window_skip = False
-    ok_n = fail_n = skip_n = 0
+    ok_n = fail_n = skip_n = no_pos_n = 0
     for acc in accounts:
         _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
         if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
-        elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE, STATUS_PAUSED, STATUS_USER_CANCELLED):
+        elif status in (STATUS_NO_TASK, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
+                        STATUS_PAUSED, STATUS_USER_CANCELLED, STATUS_NO_POSITION):
             skip_n += 1
             if status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE):
                 has_window_skip = True
+            if status == STATUS_NO_POSITION:
+                no_pos_n += 1
         else:
             fail_n += 1
             has_real_failure = True
@@ -3257,6 +3286,8 @@ def main():
     summary = f"✅ {ok_n} 成功，❌ {fail_n} 失败"
     if skip_n:
         summary += f"，➖ {skip_n} 跳过"
+    if no_pos_n:
+        summary += f"，🚫 {no_pos_n} 无点位"
     logger.info(f"==== 签到汇总：{summary} ====")
 
     # 批次12 B12-2 + 批次15 P1-1：窗口外未了结专项告警。
@@ -3276,7 +3307,7 @@ def main():
         db.add_sign_events_batch(event_rows)
 
     # 写按日状态文件（供网页日历组件读取；窗口外跳过不写，当天留空）
-    # 符号按状态码：success/already→✅、no_task→➖、failed→❌
+    # 符号按状态码：success/already→✅、no_task→➖、failed→❌、no_position→🚫
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
     try:
         os.makedirs(state_dir, exist_ok=True)
@@ -3296,7 +3327,8 @@ def main():
                 daily = {}
             for acc in accounts:
                 _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
-                if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK, STATUS_FAILED):
+                if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK,
+                              STATUS_FAILED, STATUS_NO_POSITION):
                     daily[acc.phone] = STATUS_SYMBOL[status]
             # M15：tmp + os.replace 原子写，避免半截文件
             daily_tmp = daily_path + ".tmp" + str(os.getpid())

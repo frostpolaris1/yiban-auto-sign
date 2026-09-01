@@ -43,10 +43,10 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 sys.path.insert(0, os.path.join(BASE, "web"))
 sys.path.insert(0, os.path.join(BASE, "docker"))
 
-import db  # noqa: E402
 import account_crypto  # noqa: E402
-import signin  # noqa: E402
+import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
+import signin  # noqa: E402
 
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64
@@ -333,7 +333,7 @@ class DbLayerB12Test(unittest.TestCase):
 
     # ---- B12-9 时钟守卫 ----
     def test_clock_guard_alert_recorded_and_readable(self):
-        ok, note = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        ok, _note = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertTrue(ok)
         # 模拟参照点为 100 小时前 → 守卫拦截并留痕
         old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
@@ -344,7 +344,7 @@ class DbLayerB12Test(unittest.TestCase):
                 ("purge_accounts_clock", old),
             )
             conn.commit()
-        ok2, note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        ok2, _note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertFalse(ok2)
         alert = db.clock_guard_alert()
         self.assertIsNotNone(alert)
@@ -587,7 +587,7 @@ fi
         posix_fakebin = conv.stdout.strip() or fakebin
         env["PATH"] = posix_fakebin + os.pathsep + env.get("PATH", "")
         script = os.path.join(BASE, "docker", "backup-docker.sh")
-        return subprocess.run([self.BASH, script] + args, capture_output=True,
+        return subprocess.run([self.BASH, script, *args], capture_output=True,
                               text=True, env=env, cwd=tmp, timeout=120)
 
     @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
@@ -634,7 +634,6 @@ fi
             evil = tarfile.open(os.path.join(tmp, "evil.tar.gz"), "w:gz")
             info = tarfile.TarInfo("../evil.txt")
             payload = b"pwned"
-            import tarfile as _tf
             info.size = len(payload)
             import io as _io
             evil.addfile(info, _io.BytesIO(payload))
@@ -751,7 +750,7 @@ class WebB12Test(unittest.TestCase):
             self.webapp.create_app()
 
     def test_strong_password_boots(self):
-        self.app  # setUp 已用强口令创建成功
+        self.assertTrue(self.app is not None)  # setUp 已用强口令创建成功
 
     # ---- B12-8 内置管理员改密告警 ----
     def test_builtin_admin_password_change_alerts(self):

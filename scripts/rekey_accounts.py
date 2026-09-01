@@ -12,7 +12,9 @@ systemd 用 `systemctl stop yiban-web`；容器内 web/scheduler 是 supervisord
 造成"混合密钥状态"：切钥后新行永久不可解。工具也会扫描进程并在发现存活的
 web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险））：
     python3 scripts/rekey_accounts.py --generate
-    python3 scripts/rekey_accounts.py --new-key <64位十六进制>
+    python3 scripts/rekey_accounts.py --new-key <64位十六进制>   # 批次17 P3-2：密钥会暴露在
+            # 进程列表（ps / /proc/<pid>/cmdline）与 shell 历史，同机其他用户可读；
+            # 工具会告警并尽力擦除 argv，仍建议优先使用 --new-key-file
     python3 scripts/rekey_accounts.py --new-key-file newkey.txt   # 文件内容为首行密钥
     可选：--db yiban.db --env .env（默认取环境变量/默认路径；显式指定的 --env
            必须是已存在的文件，路径打错时工具直接拒绝，不会在该路径新建 .env
@@ -135,7 +137,12 @@ def _write_staging_key(env_path, new_key):
 
 
 def _read_new_key(args):
-    """从 --new-key / --new-key-file / --generate 之一取得新密钥 bytes（校验格式）。"""
+    """从 --new-key / --new-key-file / --generate 之一取得新密钥 bytes（校验格式）。
+
+    批次17 P3-2：--new-key 把密钥写进进程 argv，对同机其他用户可见
+    （ps / /proc/<pid>/cmdline / shell 历史 / 终端回滚）——读钥时醒目告警并
+    建议改用 --new-key-file（0600 文件，首行为密钥）；调用方随后应 _wipe_argv()。
+    """
     if sum(bool(x) for x in (args.new_key, args.new_key_file, args.generate)) != 1:
         print("错误：--new-key / --new-key-file / --generate 必须且只能提供一个")
         sys.exit(2)
@@ -149,11 +156,47 @@ def _read_new_key(args):
         except OSError as e:
             print(f"错误：无法读取新密钥文件 {args.new_key_file}: {e}")
             sys.exit(2)
+    elif args.new_key:
+        print(
+            "警告：通过 --new-key 传入的新密钥会暴露在进程列表与 shell 历史中，"
+            "同机其他用户可读取；建议改用 --new-key-file 从 0600 文件读取"
+            "（文件首行为密钥），本工具会在读取后尽力擦除 argv。",
+            file=sys.stderr,
+        )
     try:
         return account_crypto._decode_key(raw)
     except ValueError as e:
         print(f"错误：新密钥格式非法: {e}")
         sys.exit(2)
+
+
+def _wipe_argv():
+    """尽力覆写 C argv 内存，使 /proc/<pid>/cmdline 不再显示 argv 里的密钥。
+
+    Python 层改 sys.argv 只改到解释器内部的 str 拷贝，内核按进程启动时的
+    C argv 内存区填充 /proc/<pid>/cmdline——要真正抹掉必须直接覆写那块内存。
+    Linux/glibc 下经 __libc_argv 取到 argv 指针数组逐串清零；其它 libc /
+    平台或失败时静默返回（无法判定是否成功，但暴露告警已在 _read_new_key 给出）。
+    返回 True 表示已执行覆写；False 表示本平台不可行或失败。
+    """
+    if os.name != "posix":
+        return False
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None)
+        argv_var = ctypes.c_void_p.in_dll(libc, "__libc_argv")
+        argv_base = ctypes.cast(argv_var, ctypes.POINTER(ctypes.c_void_p))[0]
+        argv = ctypes.cast(argv_base, ctypes.POINTER(ctypes.c_char_p))
+        for i in range(len(sys.argv)):
+            buf = argv[i]
+            if buf is None or buf.value is None:
+                continue
+            length = len(sys.argv[i].encode("utf-8", "replace"))
+            if length:
+                ctypes.memset(buf, 0, length)
+        return True
+    except Exception:
+        return False
 
 
 def rekey(db_path, old_key, new_key):
@@ -229,7 +272,7 @@ def rekey(db_path, old_key, new_key):
                 _decrypted_or_empty(r, "password", old_key),
                 _decrypted_or_empty(r, "phone_code", old_key),
             )
-            rows = rows + [r]
+            rows = [*rows, r]
         for rid, (pw_plain, code_plain) in plain_map.items():
             row = next(r for r in rows if r["id"] == rid)
             for col, plain in (("password", pw_plain), ("phone_code", code_plain)):
@@ -441,7 +484,7 @@ def _audit_rotate(db_path, action, detail, env_file=None):
     try:
         db.init_db(db_file=db_path, cleanup=False, migrate=False, env_file=env_file)
         db.audit("rekey-tool", action, "", detail[:200])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"提示：审计留痕失败（不影响轮换结果）: {e}")
 
 
@@ -455,7 +498,9 @@ def main():
                              "既是账号密钥也是审计密钥来源，在应用根之外运行时请显式指定"
                              "（批次14 P2-5）；显式指定时该文件必须已存在（修复轮1③，"
                              "路径打错直接拒绝，不在错误位置新建密钥）")
-    parser.add_argument("--new-key", default="", help="新密钥（64 位十六进制）")
+    parser.add_argument("--new-key", default="",
+                        help="新密钥（64 位十六进制）；会暴露在进程列表与 shell 历史，"
+                             "建议改用 --new-key-file（批次17 P3-2）")
     parser.add_argument("--new-key-file", default="", help="从文件首行读取新密钥")
     parser.add_argument("--generate", action="store_true", help="自动生成随机新密钥")
     parser.add_argument("--skip-notify", action="store_true",
@@ -488,6 +533,10 @@ def main():
         sys.exit(2)
 
     new_key = _read_new_key(args)
+    # 批次17 P3-2：密钥一旦读入内存就立刻擦除 argv——进程存活期间
+    # ps / /proc/<pid>/cmdline 对同机其他用户可见，越早抹越短暴露窗口。
+    # --new-key-file 路径同样调用（argv 里无密钥时是无害空操作）。
+    _wipe_argv()
 
     # 旧密钥：环境变量/ .env 当前值（与 load_key 同优先级，但禁止"缺失时自动生成"）
     old_raw = os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip()

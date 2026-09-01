@@ -11,8 +11,8 @@
 import os
 import sys
 import unittest
-from unittest import mock
 from datetime import datetime as _dt
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)

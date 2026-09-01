@@ -105,7 +105,7 @@ def reset(db_path, env_file=None):
     # 重置动作留痕审计链（尽力而为；失败由每日写入欠账告警兜住）
     try:
         db.audit("clock-guard-reset", "clock_guard_reset", "", f"守卫参照点重置为 {now}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"提示：审计留痕失败（不影响重置）: {e}")
     print(f"已重置 {len(GUARD_KEYS)} 个守卫参照点为 {now}，并清除告警标记。")
     print("物理清理将随下一次调度（web 每日线程 / 启动清理）恢复执行。")

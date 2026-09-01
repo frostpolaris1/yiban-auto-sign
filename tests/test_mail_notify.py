@@ -314,7 +314,7 @@ class MailNotifyApiTest(unittest.TestCase):
     # ---- 全局邮件开关（/api/mail-config）----
     def test_mail_config_get_status(self):
         c = self.webapp.create_app().test_client()
-        token = self._login(c, "admin@test.local", ADMIN_PASS)
+        self._login(c, "admin@test.local", ADMIN_PASS)
         r = c.get("/api/mail-config")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("enabled", r.get_json())
@@ -382,7 +382,7 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         signin._collect_admin_mail("易班签到耗时告警", "账号: 138****0002\n耗时: 45.2s")
         with mock.patch.object(signin.mailer, "send_admin_alert") as m:
             signin._flush_admin_mail_summary()
-        subject, text = m.call_args[0]
+        _subject, text = m.call_args[0]
         self.assertIn("【易班签到失败】", text)
         self.assertIn("【易班签到耗时告警】", text)
         self.assertLess(
@@ -411,7 +411,7 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "admin_notify_enabled", return_value=False), \
              mock.patch.object(signin.mailer, "admin_recipients", return_value=["master@x.com"]), \
              mock.patch.object(signin.db, "admin_mail_recipients", return_value=["a@x.com"]) as f, \
-             mock.patch.object(signin.mailer, "send_admin_alert") as m:
+             mock.patch.object(signin.mailer, "send_admin_alert") as _m:
             signin._flush_admin_mail_summary()
         f.assert_called_once_with([]), "主管理员关闭收件时不应传入 ADMIN_TO"
 

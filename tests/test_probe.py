@@ -10,7 +10,6 @@
 全程本地（mock 网络与邮件），无真实请求。
 用法（项目根目录）：py -m pytest tests/test_probe.py -v
 """
-import contextlib
 import os
 import sys
 import unittest
@@ -57,7 +56,7 @@ class ProbeSigninTest(unittest.TestCase):
             inst = m.return_value
             inst.use_killyiban = False
             inst.verify.return_value = (True, "账号健康，可正常签到")
-            ok, msg = self.s.verify_account(acc)
+            ok, _msg = self.s.verify_account(acc)
         self.assertTrue(ok)
         inst.login.assert_called_once()
 
@@ -67,7 +66,7 @@ class ProbeSigninTest(unittest.TestCase):
             inst = m.return_value
             inst.use_killyiban = False
             inst.verify.return_value = (False, "登录失败（账号或密码错误）")
-            ok, msg = self.s.verify_account(acc)
+            ok, _msg = self.s.verify_account(acc)
         self.assertFalse(ok)
 
     def test_verify_account_exception(self):

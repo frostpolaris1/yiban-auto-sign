@@ -98,8 +98,10 @@ class _Batch11WebBase(unittest.TestCase):
                                side_effect=lambda t, c, urgent=False: self.alerts.append((t, c)))
         p2 = mock.patch.object(self.webapp.mailer, "send_user",
                                side_effect=lambda to, s, c: self.user_mails.append((to, s)))
-        p1.start(); p2.start()
-        self.addCleanup(p1.stop); self.addCleanup(p2.stop)
+        p1.start()
+        p2.start()
+        self.addCleanup(p1.stop)
+        self.addCleanup(p2.stop)
 
     # ---- 工具 ----
     def _login(self, c, username, password):
@@ -216,7 +218,7 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNone(self._user_row("victim2@test.local"), "主管理员清除生效")
-        self.assertTrue(any("高危管理操作告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "高危管理操作告警" for t, _ in self.alerts),
                         f"purge 应即时告警，实际 {self.alerts}")
 
 
@@ -248,7 +250,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(any(to == EMAIL for to, _ in self.user_mails),
                         "改密必须给本人发安全邮件（绕过 mail_notify 开关）")
-        self.assertTrue(any("账号安全事件告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "账号安全事件告警" for t, _ in self.alerts),
                         f"改密应有管理员告警，实际 {self.alerts}")
 
     def test_mail_notify_off_sends_confirm_mail_to_owner(self):
@@ -278,7 +280,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
                     json={"password": "Reset#12345", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any("密码重置告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
                         f"重置密码应有告警，实际 {self.alerts}")
 
     def test_batch_reset_and_set_admin_alert(self):
@@ -289,14 +291,14 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
             "confirm_password": ADMIN_PASS,
         }, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any("密码重置告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
                         f"批量重置应有告警，实际 {self.alerts}")
         self.alerts.clear()
         r = ac.post("/api/users/batch", json={
             "action": "set_admin", "emails": [EMAIL],
         }, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any("权限变更告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "权限变更告警" for t, _ in self.alerts),
                         f"批量提权应有告警，实际 {self.alerts}")
 
     def test_role_change_alerts(self):
@@ -305,7 +307,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         r = ac.post(f"/api/users/{EMAIL}/role", json={"role": "admin"},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any("权限变更告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "权限变更告警" for t, _ in self.alerts),
                         f"角色变更应有告警，实际 {self.alerts}")
 
     def test_announcement_change_alerts(self):
@@ -313,14 +315,14 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         r = ac.put("/api/announcement", json={"text": "维护通知"},
                    headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any("公告变更告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "公告变更告警" for t, _ in self.alerts),
                         f"公告变更应有告警，实际 {self.alerts}")
 
     def test_mail_config_change_alerts(self):
         ac, at = self._admin_client()
         r = ac.put("/api/mail-config", json={"enabled": True}, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any("邮件配置变更告警" == t for t, _ in self.alerts),
+        self.assertTrue(any(t == "邮件配置变更告警" for t, _ in self.alerts),
                         f"邮件配置变更应有告警，实际 {self.alerts}")
 
 
@@ -412,7 +414,7 @@ class Batch11RekeyToolTest(_Batch11WebBase):
         before = conn.execute("SELECT password FROM accounts WHERE phone=?",
                               ("13900000002",)).fetchone()[0]
         conn.close()
-        ok, note = rekey_accounts.rekey(self.db_file, bytes.fromhex(NEW_KEY), bytes.fromhex("c" * 64))
+        ok, _note = rekey_accounts.rekey(self.db_file, bytes.fromhex(NEW_KEY), bytes.fromhex("c" * 64))
         self.assertFalse(ok, "旧钥不对必须拒绝")
         conn = sqlite3_connect(self.db_file)
         after = conn.execute("SELECT password FROM accounts WHERE phone=?",
