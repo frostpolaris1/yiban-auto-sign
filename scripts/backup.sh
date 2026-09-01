@@ -362,6 +362,9 @@ if [ "${BACKUP_PLAINTEXT}" = "1" ]; then
     log "⚠⚠⚠ 已显式设置 BACKUP_PLAINTEXT=1：本轮生成【明文】本地归档 ⚠⚠⚠"
     log "⚠⚠⚠ 归档内含 .env 全部密钥、管理员口令哈希与全量数据库！   ⚠⚠⚠"
     log "════════════════════════════════════════════════════════════"
+    # 批次17 P3-3：明文豁免只作用于【本地】归档；配置了 REMOTE_BACKUP 时
+    # 异机副本仍会加密后出站（异机副本绝不传明文），不是一并取消。
+    [ -n "${REMOTE_BACKUP}" ] && log "已配置 REMOTE_BACKUP：异机副本仍将加密后出站（非明文）"
 elif try_encrypt; then
     rm -f "${ARCHIVE}"
     log "已启用本地默认加密：明文归档已移除，本轮密文为 ${ENC_FILE}"
@@ -404,7 +407,11 @@ log "本地备份完成：${FINAL_LOCAL}（$(du -h "${FINAL_LOCAL}" | cut -f1)�
 if [ -n "${REMOTE_BACKUP}" ]; then
     log "REMOTE_BACKUP 已配置，准备同步到 ${REMOTE_BACKUP} ..."
     REMOTE_FILE="${ENC_FILE}"
-    if [ -z "${REMOTE_FILE}" ] && [ "${BACKUP_PLAINTEXT}" != "1" ]; then
+    # 批次17 P3-3：去掉原 `[ "${BACKUP_PLAINTEXT}" != "1" ]` 拦截——BACKUP_PLAINTEXT=1
+    # 只豁免【本地】归档的默认加密，异机副本契约不变：本地为明文时仍尝试加密后再
+    # 出站（异机副本绝不传明文）。原拦截让"显式明文 + 配置了异机"时异机副本被
+    # 整体静默丢弃，且告警文案误导（有 gpg 却报"未提供可用加密方式"）。
+    if [ -z "${REMOTE_FILE}" ]; then
         if try_encrypt; then
             REMOTE_FILE="${ENC_FILE}"
         fi
@@ -424,8 +431,15 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         # 异机侧保留策略：建议在远端另配清理 cron（find ... -mtime +30 -delete），
         # 或定期人工清理；本脚本只保证本地保留天数。
     else
-        log "警告：未提供可用加密方式（gpg/age），拒绝把【明文】备份传出本机；仅保留本地备份" >&2
-        log "警告：（备份包含密钥+数据；请配置 BACKUP_GPG_RECIPIENT 或 BACKUP_GPG_PASSPHRASE 后重试）" >&2
+        if [ "${BACKUP_PLAINTEXT}" = "1" ]; then
+            # 批次17 P3-3：明确区分"显式明文"与"无加密方式"——前者更该知道
+            # 明文豁免只作用于本地，异机副本因此缺位时需要的是配置加密而非关明文
+            log "警告：BACKUP_PLAINTEXT=1 只豁免本地归档的默认加密，异机副本绝不传明文（未配置/不可用加密时本轮无异机副本）" >&2
+            log "警告：请配置 BACKUP_GPG_RECIPIENT 或 BACKUP_GPG_PASSPHRASE 后重试（本地明文归档已保留）" >&2
+        else
+            log "警告：未提供可用加密方式（gpg/age），拒绝把【明文】备份传出本机；仅保留本地备份" >&2
+            log "警告：（备份包含密钥+数据；请配置 BACKUP_GPG_RECIPIENT 或 BACKUP_GPG_PASSPHRASE 后重试）" >&2
+        fi
     fi
 else
     # M24 后此分支仅在 BACKUP_PLAINTEXT=1 或无可用加密方式时到达（均已有大字告警）

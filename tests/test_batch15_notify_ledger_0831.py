@@ -12,7 +12,6 @@
 用法（项目根目录）：
     py -m pytest tests/test_batch15_notify_ledger_0831.py -v
 """
-import importlib
 import json
 import os
 import sys

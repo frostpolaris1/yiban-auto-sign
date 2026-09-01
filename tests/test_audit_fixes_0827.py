@@ -170,7 +170,7 @@ class ProbeMainZeroAccountsTest(unittest.TestCase):
             if probe_enabled:
                 env["YIBAN_PROBE_ENABLE"] = "1"
             proc = subprocess.run(
-                [sys.executable, os.path.join(BASE, "scripts", "signin.py")] + extra_args,
+                [sys.executable, os.path.join(BASE, "scripts", "signin.py"), *extra_args],
                 capture_output=True, text=True, timeout=120,
                 cwd=tmp, env=env)
             logs = ""
@@ -294,7 +294,8 @@ class UserFailMailDailyCapTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         global signin, db
-        import signin, db
+        import db
+        import signin
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-mailcap-")

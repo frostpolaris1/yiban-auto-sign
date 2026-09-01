@@ -80,7 +80,7 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
         with mock.patch.object(signin, "generate_position_in_polygon",
                                return_value=(118.0, 31.0)), \
              mock.patch.object(signin.random, "shuffle", side_effect=lambda lst: None):
-            ok, msg, skip, status = client.signin()
+            ok, msg, _skip, _status = client.signin()
         self.assertTrue(ok)
         self.assertIn("签到成功", msg)
         self.assertEqual(session.post.call_count, 1, "首个成功即停，不应提交第二个任务")
@@ -91,7 +91,7 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
         with mock.patch.object(signin, "generate_position_in_polygon",
                                return_value=(118.0, 31.0)), \
              mock.patch.object(signin.random, "shuffle", side_effect=lambda lst: None):
-            ok, msg, skip, status = client.signin()
+            ok, msg, _skip, _status = client.signin()
         self.assertTrue(ok)
         self.assertIn("签到成功", msg)
         self.assertIn("失败后命中", msg)
@@ -103,7 +103,7 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
         with mock.patch.object(signin, "generate_position_in_polygon",
                                return_value=(118.0, 31.0)), \
              mock.patch.object(signin.random, "shuffle", side_effect=lambda lst: None):
-            ok, msg, skip, status = client.signin()
+            ok, msg, _skip, status = client.signin()
         self.assertFalse(ok)
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("均失败", msg)
@@ -111,7 +111,7 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
 
     def test_tasks_are_shuffled_before_signing(self):
         """任务列表在提交前被随机打乱（不固定签第一个点位）。"""
-        client, session = _make_client([_signin_result(True)])
+        client, _session = _make_client([_signin_result(True)])
         captured = {}
 
         def fake_shuffle(lst):

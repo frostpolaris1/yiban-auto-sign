@@ -882,6 +882,30 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(cap3["users"], 3)
         self.assertEqual(cap3["accounts"], 1)
 
+    def test_users_at_capacity_semantics_unified(self):
+        """批次16 容量阈值语义统一：_users_at_capacity 与 _accounts_at_capacity
+        同构（"再注册 1 人后 > 上限才拒"，达到上限恰好填满、超过才拒）；
+        并与旧内联判定 len(users) >= max 逐值等价（统一语义不改变行为）。"""
+        cur = len(db.load_users())
+        # 0 = 不限：永不触发
+        self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", "0")
+        self.assertFalse(self.webapp._users_at_capacity())
+        # 上限 = 当前用户数：已满，再注册将超限 → 拒绝
+        self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur))
+        self.assertTrue(self.webapp._users_at_capacity())
+        # 上限 = 当前用户数 + 1：再注册 1 人恰好到顶（<= 上限）→ 放行
+        self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur + 1))
+        self.assertFalse(self.webapp._users_at_capacity())
+        # 上限 = 当前用户数 + 2：余位更足 → 放行
+        self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur + 2))
+        self.assertFalse(self.webapp._users_at_capacity())
+        # 与旧内联判定逐值等价（0 为不限需单独处理）
+        for maxv in (cur, cur + 1, cur + 2, 0):
+            self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(maxv))
+            expect = (maxv > 0 and len(db.load_users()) >= maxv)
+            self.assertEqual(self.webapp._users_at_capacity(), expect,
+                             f"max={maxv} 时语义必须与旧判定一致")
+
     def test_api_settings_sched_master_only(self):
         """调度字段仅主管理员可改；普通管理员 403，其他字段仍可改。"""
         app = self.webapp.create_app()

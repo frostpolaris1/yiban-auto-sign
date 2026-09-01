@@ -28,7 +28,6 @@ import os
 import sys
 import threading
 from contextlib import contextmanager
-from unittest import mock
 
 import pytest
 
@@ -82,7 +81,7 @@ def _write_disk(tmp_path, data):
 def test_consume_allows_until_limit_then_rejects(tmp_path, monkeypatch):
     """正常放行到上限，超限被拒；磁盘 count 与内存一致。"""
     monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "3")
-    for i in range(3):
+    for _ in range(3):
         t = notify._consume_daily_budget("general")
         assert t.allowed and t.ledger == "general"
     t = notify._consume_daily_budget("general")

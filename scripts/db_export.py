@@ -10,6 +10,7 @@
 - 导出文件以 0600 创建（含凭据数据，防同主机其他用户读取）。
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -50,7 +51,7 @@ def main(argv=None):
         os.chmod(path, 0o600)
     # 批次12 B12-14：导出动作留痕审计链（此前全程零审计，事后无法证明谁在
     # 何时导出过数据）。尽力而为：审计失败不阻断导出（每日写入欠账告警兜底）。
-    try:
+    with contextlib.suppress(Exception):
         db.audit(
             "db-export-tool",
             "db_export",
@@ -58,8 +59,6 @@ def main(argv=None):
             f"导出 {len(accounts)} 账号 / {len(users)} 用户"
             f"（{'明文凭据' if args.plaintext else '密文'}，escape hatch）",
         )
-    except Exception:
-        pass
     if args.plaintext:
         print("⚠️  已导出明文凭据（--plaintext），请立即转移到安全位置并删除该文件")
     print(f"已导出 {len(accounts)} 个账号 / {len(users)} 个用户 → {args.out}/")

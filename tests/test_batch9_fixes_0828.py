@@ -229,7 +229,7 @@ class Batch9WebTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
     def test_admin_password_reset_revokes_target_sessions(self):
-        c, t = self._user_with_account()
+        c, _t = self._user_with_account()
         name, val = self._session_cookie(c)
         ac = self.webapp.create_app().test_client()
         at = self._login(ac, "admin@test.local", ADMIN_PASS)

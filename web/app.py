@@ -229,9 +229,9 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
 {police_block}
 </body>
 </html>"""
-import db  # noqa: E402
 import account_crypto  # noqa: E402  # 敏感配置加密（AES-GCM，ACCOUNTS_KEY）
 import child_env  # noqa: E402
+import db  # noqa: E402
 import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
 import env_lock  # noqa: E402
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
@@ -628,7 +628,7 @@ class _DailyFlockFileHandler(signin._FlockFileHandler):
             if self.stream is None:
                 # 先打开再交给父类 emit：父类的 flock 依赖已打开的 stream
                 self._open()
-        except Exception:  # noqa: BLE001 —— 日志落盘故障只降级，不得阻断业务请求
+        except Exception:
             self.handleError(record)
             return
         super().emit(record)
@@ -2028,6 +2028,18 @@ def _accounts_at_capacity(extra_holder=None):
     return accounts > max_accounts
 
 
+def _users_at_capacity():
+    """用户配额判定（与 `_accounts_at_capacity` 同构的"超过上限才拒绝"语义，
+    2026-09 批次16 容量阈值语义统一）：再注册 1 人后全部未删除注册用户数
+    > 上限 则 True（注册每次恰好新增 1 用户；0 = 不限）。
+    users 口径 = 全部未删除注册用户（含空用户）。
+    """
+    max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
+    if max_users <= 0:
+        return False
+    return len(db.load_users()) + 1 > max_users
+
+
 # 高危告警邮件节流（2026-08-29 被盗号滥用面加固）：同类型告警邮件在窗口内只发一封，
 # 防被盗管理员会话通过反复触发高危操作（批量删除等）耗尽 SMTP 发件额度；webhook
 # 保持实时逐条推送，不受影响。窗口可调：YIBAN_MAIL_ALERT_COOLDOWN（秒，0=关闭，默认 300）。
@@ -2086,8 +2098,9 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-08-26 界面动效审查修复：过渡属性收敛、抽屉遮罩淡入与曲线、登录页切换统一、Toast 动效、reduced-motion 支持（0.24.1）
 # 2026-08-29 通知推送与账户安全加固：消息推送组件（Server酱/自定义 URL，加密配置）+ 高危告警邮件节流 + 高危删除冷却 + 删除二次鉴权（0.26.0）
 # 2026-08-31 批次14 第一档修复 + 公测反馈：告警通道二次鉴权、推送额度分账、账号清除门禁、登录留痕、口令策略口径、失效会话自动重登、新申请提醒（0.26.1）
-# 2026-09-01 批次14 C 组 + 批次15 全量修复：宿主补签闸门、备份加密 fail-closed、推送额度跨进程统一、账号移除隐私清理、依赖与反向代理升级（0.26.2）
-APP_VERSION = "0.26.3"
+# 2026-09-01 批次16/17：注册暂停开关、web 日志落盘、notify 账本单锁化、重置密码二次鉴权、
+# 批量签到冷却、无点位独立状态、节流跨进程化、迁移原子性、e2e 契约刷新（0.27.0）
+APP_VERSION = "0.27.0"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -2190,7 +2203,7 @@ def reject_default_admin_password(env_path):
     """
     try:
         plain = str(read_env(env_path).get("YIBAN_ADMIN_PASSWORD", "") or "").strip()
-    except Exception:  # noqa: BLE001 —— .env 不可读时交由既有启动路径处理
+    except Exception:
         return
     if not plain:
         return
@@ -2212,10 +2225,8 @@ def create_app(host=None):
     # 与 sign-*.log 里都看不到。挂载幂等：已挂且目录一致则复用；目录变化
     # （测试环境各用例独立 tmp）则替换，防句柄指向已删除目录反复写失败。
     _log_dir = os.path.dirname(LOG_FILE)
-    try:
-        os.makedirs(_log_dir, exist_ok=True)
-    except OSError:
-        pass  # 目录建不出来时交由 handler 的降级路径（emit 失败不阻断 web）
+    with contextlib.suppress(OSError):
+        os.makedirs(_log_dir, exist_ok=True)  # 目录建不出来时交由 handler 的降级路径（emit 失败不阻断 web）
     _root_logger = logging.getLogger()
     _existing_fh = [
         _h for _h in _root_logger.handlers
@@ -2279,14 +2290,16 @@ def create_app(host=None):
 
     @app.before_request
     def _auto_secure_on_https():
-        if not _secure_auto_upgrade["done"]:
-            if (
+        if (
+            not _secure_auto_upgrade["done"]
+            and (
                 request.headers.get("X-Forwarded-Proto", "").strip().lower() == "https"
                 or request.is_secure
-            ):
-                app.config["SESSION_COOKIE_SECURE"] = True
-                _secure_auto_upgrade["done"] = True
-                logger.info("检测到 HTTPS 反代（X-Forwarded-Proto=https），会话 Cookie 已自动启用 Secure")
+            )
+        ):
+            app.config["SESSION_COOKIE_SECURE"] = True
+            _secure_auto_upgrade["done"] = True
+            logger.info("检测到 HTTPS 反代（X-Forwarded-Proto=https），会话 Cookie 已自动启用 Secure")
     if host is not None and not _is_loopback_host(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
@@ -2782,9 +2795,10 @@ def create_app(host=None):
         # 操作级锁：邮箱唯一性检查与写入原子（UNIQUE 约束兜底并发注册）
         with _file_lock:
             # 容量兜底：用户配额（2026-08-31 口径修订：全部未删除注册用户，含空用户；
-            # 防分布式注册无限膨胀 users 表，对抗性审查补）
+            # 防分布式注册无限膨胀 users 表，对抗性审查补。批次16：与账号配额同构，
+            # 统一为"再注册 1 人后 > 上限才拒"语义，见 _users_at_capacity）
             max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
-            if max_users > 0 and len(db.load_users()) >= max_users:
+            if _users_at_capacity():
                 _notify_capacity_once("users", max_users, "注册人数")
                 return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
             if db.find_user(email) is not None:
@@ -3654,7 +3668,7 @@ def create_app(host=None):
                         return jsonify({"error": f"{email} 尚未注册，请填写「初始密码」为其创建首登密码"}), 400
                     # H14：自动注册同样受用户容量（全部未删除用户）与注销冷却期约束
                     max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
-                    if max_users > 0 and len(db.load_users()) >= max_users:
+                    if _users_at_capacity():
                         _notify_capacity_once("users", max_users, "注册人数")
                         return jsonify({"error": "注册人数已达上限，请联系管理员"}), 403
                     du = db.find_user_any(email)
@@ -4909,7 +4923,7 @@ def create_app(host=None):
         limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
         if window <= 0 or limit <= 0:
             return False
-        cnt, _start, allowed = _bump_window_count(
+        _cnt, _start, allowed = _bump_window_count(
             _admin_delete_limits,
             (session.get("username") or "?").strip().lower(),
             time.time(),

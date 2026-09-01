@@ -16,7 +16,9 @@
 
 防滥用（2026-08-29 被盗号滥用面加固）：
 - 同类型告警节流：窗口内同标题只推一条（防盗号/异常反复触发刷爆 Server酱等
-  第三方配额与管理员手机）；
+  第三方配额与管理员手机）；批次16 P2-9 起节流状态持久化到磁盘
+  （$YIBAN_STATE_DIR/notify-throttle.json，文件锁互斥）——web（常驻）与
+  signin（cron 新进程）共享同一节流窗口，不再各持一份进程内节流表、各放行一条；
 - 每日预算硬上限（批次14 P2-1 拆两本账）：非紧急推满 YIBAN_NOTIFY_DAILY_MAX、
   紧急推满 YIBAN_NOTIFY_URGENT_DAILY_MAX 后各自停手（邮件仍全量送达）。旧口径
   两类共用一份额度，未认证攻击者用「登录失败告警」（urgent）约 5 分钟即可烧掉
@@ -45,7 +47,7 @@ import logging
 import os
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 from urllib.parse import urlparse
 
 try:
@@ -73,6 +75,11 @@ MAX_TITLE_CHARS = 32
 # 跳过原因日志的去重窗口（秒）：同一原因窗口内只记一行，避免被刷爆日志
 SKIP_LOG_WINDOW = 60
 
+# 节流状态（批次16 P2-9 升级为磁盘持久化后）：
+# _throttle_ts / _throttle_lock 只承担「本进程快速路径」——本进程刚放行过的标题
+# 在窗口内直接跳过（省磁盘 IO）；跨进程一致性由磁盘 notify-throttle.json +
+# 文件锁保证（见 _throttle_due）。保持这两个符号名不变，既有测试的
+# `_throttle_ts.clear()` 复位口径仍可用（但注意它只清内存，不删磁盘节流文件）。
 _throttle_ts = {}
 _throttle_lock = threading.Lock()
 
@@ -122,45 +129,60 @@ _LEDGERS = {"general": _general_daily, "urgent": _urgent_daily}
 #           "urgent": {...}}——与内存账本结构一一对应，每次读改写整体序列化。
 
 
-def _ledger_path():
-    """账本文件路径：$YIBAN_STATE_DIR/notify-ledger.json。
-
-    目录解析与 signin 的状态目录口径一致（YIBAN_STATE_DIR 环境变量优先，
-    回退 .env 同键，最后回落 .env 所在目录）——web（常驻，经 .env 读）与
-    signin（cron，经 run.sh 注入环境变量）两侧必须指向同一文件，否则
-    双进程共享额度的目标落空。
-    """
+def _state_dir():
+    """状态目录解析唯一口径：YIBAN_STATE_DIR 环境变量优先，回退 .env 同键，
+    最后回落 .env 所在目录（与 signin 的状态目录口径一致）——web（常驻，
+    经 .env 读）与 signin（cron，经 run.sh 注入环境变量）两侧必须指向同一
+    目录，否则跨进程共享额度/节流窗口的目标落空。"""
     state_dir = os.environ.get("YIBAN_STATE_DIR", "").strip()
     if not state_dir:
         state_dir = _read_env_file().get("YIBAN_STATE_DIR", "").strip()
     if not state_dir:
         state_dir = os.path.dirname(_env_path()) or "."
-    return os.path.join(state_dir, "notify-ledger.json")
+    return state_dir
+
+
+def _ledger_path():
+    """账本文件路径：$YIBAN_STATE_DIR/notify-ledger.json。"""
+    return os.path.join(_state_dir(), "notify-ledger.json")
+
+
+def _throttle_path():
+    """节流状态文件路径：$YIBAN_STATE_DIR/notify-throttle.json（批次16 P2-9）。
+
+    与账本同目录：web 与 signin 共享同一文件，跨进程节流窗口才成立。
+    """
+    return os.path.join(_state_dir(), "notify-throttle.json")
 
 
 @contextmanager
-def _ledger_file_lock():
-    """账本文件锁：POSIX 用 fcntl.flock 跨进程互斥；Windows 退化为无操作。
+def _state_file_lock(filename):
+    """状态文件锁：POSIX 用 fcntl.flock 跨进程互斥；Windows 退化为无操作。
 
     锁文件单独使用 ``<path>.lock``（与 signin._state_file_lock 同款约定），
-    不与账本文件本身的读写句柄混用。
+    不与状态文件本身的读写句柄混用。账本与节流共用此锁机制，各自独立文件。
     """
     if fcntl is None:
         with nullcontext():
             yield
         return
-    lock_path = _ledger_path() + ".lock"
+    lock_path = os.path.join(_state_dir(), filename + ".lock")
     lock_dir = os.path.dirname(lock_path) or "."
-    try:
+    with suppress(OSError):
         os.makedirs(lock_dir, exist_ok=True)
-    except OSError:
-        pass
     with open(lock_path, "a+", encoding="utf-8") as lock_f:
         fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
             fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _ledger_file_lock():
+    """账本文件锁（`_state_file_lock` 的账本专用入口，锁文件与旧版一致）。"""
+    with _state_file_lock("notify-ledger.json"):
+        yield
 
 
 def _load_ledger_file():
@@ -184,17 +206,20 @@ def _load_ledger_file():
     except FileNotFoundError:
         return {}  # 首次运行 / 未初始化：正常缺文件，不是损坏
     except (OSError, ValueError, TypeError) as e:
-        _archive_corrupt_ledger(path)
+        _archive_corrupt_state_file(path)
         logger.warning("推送额度账本损坏或不可读，已归档并按空账处理: %s", e)
         return {}
 
 
-def _archive_corrupt_ledger(path):
-    """把损坏的账本文件改名留证（原路径随后会被重建为正常账本）。"""
+def _archive_corrupt_state_file(path):
+    """把损坏的状态文件改名留证（原路径随后会被重建为正常状态文件）。
+
+    账本与节流表共用：损坏文件不静默丢弃，归档留证便于排障。
+    """
     try:
         os.replace(path, f"{path}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}")
     except OSError as e:
-        logger.warning("归档损坏账本文件失败（继续按空账处理）: %s", e)
+        logger.warning("归档损坏状态文件失败（继续按空状态处理）: %s", e)
 
 
 def _save_ledger_file(data):
@@ -207,6 +232,57 @@ def _save_ledger_file(data):
         os.replace(tmp, _ledger_path())
     except OSError as e:
         logger.warning("写入推送额度账本失败（额度仍按内存计数）: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# 节流状态持久化（批次16 P2-9：跨进程共享节流窗口）
+# 文件布局：{"<title>": 上次放行时间戳}；与每日预算账本同款「文件锁临界区内
+# 读-改-写」保证 web 与 signin 不会各自持一份节流表。损坏/缺文件按空表处理
+# （最坏多放行一条同类告警，不超发），但同样归档留证 + warning，不静默。
+# ---------------------------------------------------------------------------
+
+def _load_throttle_file():
+    """读取磁盘节流表（缺文件按空 dict 处理）。
+
+    损坏/解析失败**不静默重置**：归档改名留证 + warning 后按空表处理——
+    与账本损坏的处理口径一致，避免"读不了就当全新"的静默失效无从排障。
+    """
+    path = _throttle_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("节流表顶层不是 JSON 对象")
+        return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, TypeError) as e:
+        _archive_corrupt_state_file(path)
+        logger.warning("推送节流状态损坏或不可读，已归档并按空表处理: %s", e)
+        return {}
+
+
+def _save_throttle_file(data):
+    """原子写磁盘节流表（tmp + os.replace），失败仅告警不影响发送主流程。"""
+    try:
+        os.makedirs(os.path.dirname(_throttle_path()) or ".", exist_ok=True)
+        tmp = _throttle_path() + ".tmp" + str(os.getpid()) + "-" + str(threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, _throttle_path())
+    except OSError as e:
+        logger.warning("写入推送节流状态失败（节流按内存态执行）: %s", e)
+
+
+def _prune_throttle_entries(data, now, cooldown):
+    """清理已过期的节流条目，防磁盘文件无限增长（标题可被动态拼接成天量）。
+
+    条目在写盘时顺带清理：早于 ``now - cooldown`` 的条目对后续判定已无意义
+    （窗口内必为 ``now - ts < cooldown``）。仅删过期条目，仍生效窗口不受影响。
+    """
+    expire_before = now - cooldown
+    for title in [t for t, ts in data.items() if ts < expire_before]:
+        del data[title]
 
 
 def _roll_locked_inner(ledger_id, disk, today):
@@ -474,15 +550,32 @@ def get_config():
 # ---------------------------------------------------------------------------
 
 def _throttle_due(title):
-    """同类型告警节流：窗口内已发过返回 False（本次跳过）。0 = 关闭。"""
+    """同类型告警节流：窗口内已发过返回 False（本次跳过）。0 = 关闭。
+
+    批次16 P2-9：节流状态持久化到磁盘（$YIBAN_STATE_DIR/notify-throttle.json，
+    文件锁互斥），web（常驻）与 signin（cron 新进程）共享同一节流窗口——
+    不再各持一份进程内节流表、各放行一条。内存 `_throttle_ts` 保留作快速路径：
+    本进程刚放行过的标题直接跳过（省磁盘 IO）；磁盘是唯一事实源，另一进程
+    放行过的窗口内标题在内存未命中后由磁盘判定兜住。Windows 无 fcntl 退化为
+    进程内节流（与账本同款取舍，开发机单进程可接受）。
+    """
     cooldown = _env_int("COOLDOWN", DEFAULT_COOLDOWN)
     if cooldown <= 0:
         return True
     now = time.time()
     with _throttle_lock:
-        last = _throttle_ts.get(title, 0.0)
-        if now - last < cooldown:
+        # 内存快速路径：本进程刚放行过，窗口内直接跳过（不读磁盘）
+        if now - _throttle_ts.get(title, 0.0) < cooldown:
             return False
+        # 磁盘权威：单次文件锁临界区内 读盘 → 判定 → 更新 → 写回。
+        # 与账本同构——另一进程放行过的窗口内标题会被这里拦下，双进程不双发。
+        with _state_file_lock("notify-throttle.json"):
+            disk = _load_throttle_file()
+            if now - disk.get(title, 0.0) < cooldown:
+                return False
+            disk[title] = now
+            _prune_throttle_entries(disk, now, cooldown)
+            _save_throttle_file(disk)
         _throttle_ts[title] = now
         return True
 
