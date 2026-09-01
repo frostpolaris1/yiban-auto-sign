@@ -840,14 +840,16 @@
       <p id="probe-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
     </div>
 
-    <!-- 危险区：一键暂停签到（仅主管理员；下一轮 cron 生效） -->
+    <!-- 危险区：一键暂停签到 / 暂停注册（仅主管理员） -->
     <div class="card mb-4 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-900/10" id="danger-zone-card">
       <div class="text-sm font-medium text-red-800 dark:text-red-300 mb-1 flex items-center gap-2">
         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
-        危险区 · 一键暂停签到
+        危险区 · 系统级开关
       </div>
       <p class="text-xs text-red-600 dark:text-red-400 mb-3">
-        暂停后所有账号停止自动签到（正在运行的一次会跑完，下一次自动签到起跳过），手动签到不受影响。操作需二次确认。
+        暂停签到：所有账号停止自动签到（正在运行的一次会跑完，下一次自动签到起跳过），手动签到不受影响。
+        暂停注册：登录页关闭注册入口，已注册用户登录不受影响，你仍可在「账号管理」为用户手动添加账号。
+        操作均需二次确认。
       </p>
       <button id="global-pause-btn" type="button"
               class="w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
@@ -855,6 +857,13 @@
       </button>
       <p id="global-pause-hint" class="text-xs text-red-700 dark:text-red-300 mt-2 hidden">
         <span data-icon="pause"></span> 签到当前处于暂停状态 — 自动签到不会执行，直至你手动恢复
+      </p>
+      <button id="reg-pause-btn" type="button"
+              class="mt-3 w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
+        <span id="reg-pause-btn-icon" class="text-base"></span><span id="reg-pause-btn-text">暂停注册</span>
+      </button>
+      <p id="reg-pause-hint" class="text-xs text-red-700 dark:text-red-300 mt-2 hidden">
+        <span data-icon="pause"></span> 注册当前处于暂停状态 — 新用户无法自助注册，已注册用户不受影响；可在「账号管理」为用户手动添加账号
       </p>
     </div>
   </section>
@@ -2174,6 +2183,8 @@ async function loadSettings() {
     renderSaturdaySignUI();
     state.globalPause = !!data.global_pause;  // 全局暂停（一键暂停签到）
     renderGlobalPauseUI();
+    state.registrationPause = !!data.registration_pause;  // 暂停注册（v0.26.3）
+    renderRegPauseUI();
     // 探针模式 + 注册账号验证（v0.23.x，任意管理员可改）
     $('account-verify-switch').checked = !!data.account_verify;
     $('probe-enable-switch').checked = !!data.probe_enable;
@@ -2400,6 +2411,48 @@ async function toggleGlobalPause() {
     state.globalPause = next;
     renderGlobalPauseUI();
     toast(data.msg || (next ? '签到已暂停' : '签到已恢复'));
+  } catch (e) { toast(e.message, true); }
+}
+
+// 暂停注册（v0.26.3）：仅主管理员；双重确认；立即生效（注册 API 即时拦截）
+function renderRegPauseUI() {
+  const btn = $('reg-pause-btn');
+  const hint = $('reg-pause-hint');
+  if (!btn) return;
+  btn.disabled = !state.isMasterAdmin;
+  if (state.registrationPause) {
+    $('reg-pause-btn-icon').innerHTML = icon('play');
+    $('reg-pause-btn-text').textContent = '开放注册';
+    btn.classList.remove('bg-red-600', 'hover:bg-red-700');
+    btn.classList.add('bg-green-600', 'hover:bg-green-700');
+  } else {
+    $('reg-pause-btn-icon').innerHTML = icon('pause');
+    $('reg-pause-btn-text').textContent = '暂停注册';
+    btn.classList.remove('bg-green-600', 'hover:bg-green-700');
+    btn.classList.add('bg-red-600', 'hover:bg-red-700');
+  }
+  if (hint) hint.classList.toggle('hidden', !state.registrationPause);
+}
+
+async function toggleRegPause() {
+  if (!state.isMasterAdmin) return;
+  const next = !state.registrationPause;
+  const msg1 = next
+    ? '【暂停注册】\n\n登录页将关闭注册入口，新用户无法自助注册。\n· 已注册用户登录不受影响\n· 你仍可在「账号管理」为用户手动添加账号\n\n确认继续？'
+    : '【开放注册】\n\n登录页将恢复注册入口，任何人可按现有规则注册。\n\n确认继续？';
+  if (!confirm(msg1)) return;
+  const msg2 = next
+    ? '注意：再次确认，确定要【暂停】注册吗？\n\n此操作立即生效。'
+    : '注意：再次确认，确定要【开放】注册吗？';
+  if (!confirm(msg2)) return;
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({ registration_pause: next ? 1 : 0 }),
+    });
+    state.registrationPause = next;
+    renderRegPauseUI();
+    toast(data.msg || (next ? '注册已暂停' : '注册已开放'));
   } catch (e) { toast(e.message, true); }
 }
 
@@ -2855,6 +2908,8 @@ function closeChangelog() { closeModal($('changelog-modal')); }
     await loadSettings();  // 先完成设置加载（末尾 renderAccounts 依赖），再切账号 tab 拉状态——防首次"待签"竞态
     const pauseBtn = $('global-pause-btn');
     if (pauseBtn) pauseBtn.addEventListener('click', toggleGlobalPause);
+    const regPauseBtn = $('reg-pause-btn');
+    if (regPauseBtn) regPauseBtn.addEventListener('click', toggleRegPause);
     switchTab('accounts');
     loadLogs();
     calibrateClock();

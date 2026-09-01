@@ -205,6 +205,9 @@
 
       <!-- 注册表单 -->
       <form id="register-form" class="space-y-4 hidden">
+        <p id="register-paused-hint" class="hidden text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
+          注册已暂停，请联系管理员添加账号。已注册用户可直接登录。
+        </p>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-email">邮箱 <span class="text-red-500 dark:text-red-400">*</span></label>
           <input id="reg-email" type="email" required autocomplete="email" maxlength="64" aria-describedby="reg-email-error"
@@ -280,9 +283,31 @@ function updateThemeBtn() {
   const dark = document.documentElement.classList.contains('dark');
   document.querySelectorAll('[data-theme-btn]').forEach(b => { b.innerHTML = icon(dark ? 'sun' : 'moon'); });
 }
-document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); });
+document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); applyRegistrationPause(); });
+
+// 注册暂停提示（v0.26.3）：管理端暂停注册时禁用注册入口并明示原因。
+// 仅按公开布尔渲染 UI；真正的拦截在后端 /api/register（403），此处被绕过也无效。
+async function applyRegistrationPause() {
+  try {
+    const r = await fetch(BASE + '/api/registration_paused', { credentials: 'same-origin' });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.paused) return;
+    const rt = document.getElementById('tab-register');
+    if (rt) {
+      rt.disabled = true;
+      rt.classList.add('opacity-40', 'cursor-not-allowed');
+      rt.removeAttribute('onclick');
+      rt.title = '注册已暂停';
+    }
+    const hint = document.getElementById('register-paused-hint');
+    if (hint) hint.classList.remove('hidden');
+  } catch (e) { /* 状态获取失败不阻断登录页；后端注册 API 仍会拦截 */ }
+}
 
 function switchMode(m) {
+  // 注册暂停时禁止切入注册表单（tab 已禁用，此处兜底键盘触发路径）
+  if (m === 'register' && document.getElementById('tab-register')?.disabled) return;
   mode = m;
   document.getElementById('login-form').classList.toggle('hidden', m !== 'login');
   document.getElementById('register-form').classList.toggle('hidden', m !== 'register');
