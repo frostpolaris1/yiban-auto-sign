@@ -589,6 +589,42 @@ def load_sign_state(date_str=None):
 logger = logging.getLogger("web")
 
 
+class _DailyFlockFileHandler(signin._FlockFileHandler):
+    """按天滚动 + 跨进程互斥的 web 日志 handler（v0.26.3）。
+
+    背景：gunicorn 走 create_app() 不执行 main()，此前 root logger 无任何文件
+    handler——INFO 级日志被 Python logging 的 lastResort（仅放行 WARNING+）
+    直接丢弃，WARNING+ 只进 stderr（journald），后台「日志」页与 sign-*.log
+    均不可见。现与 signin 子进程同口径写入按天文件 sign-YYYY-MM-DD.log：
+    - 继承 signin 的 flock 版 FileHandler：与 cron 子进程（run.sh / run_probe.sh
+      /探针）并发写同一文件时行不交错（Windows 无 fcntl 自动退化，同 signin）；
+    - emit 时按当前日期切换目标文件（常驻进程跨天自动滚动，与 signin「按天分
+      文件」口径一致）；rollover 后先重开文件再交父类 emit，保证 flock 覆盖
+      本次写入（否则首条日志逃过跨进程互斥）。
+    """
+
+    def __init__(self, log_dir):
+        self._log_dir = log_dir
+        self._day = datetime.now().strftime("%Y-%m-%d")
+        super().__init__(
+            os.path.join(log_dir, f"sign-{self._day}.log"), encoding="utf-8"
+        )
+
+    def emit(self, record):
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != self._day:
+            self._day = today
+            self.close()  # 关闭旧日期文件句柄
+            # 换目标文件：FileHandler 在 stream 为 None 时按 baseFilename 惰性重开
+            self.baseFilename = os.path.abspath(
+                os.path.join(self._log_dir, f"sign-{today}.log")
+            )
+        if self.stream is None:
+            # 先打开再交给父类 emit：父类的 flock 依赖已打开的 stream
+            self._open()
+        super().emit(record)
+
+
 # ---------------------------------------------------------------------------
 # 签到日志解析（与 tui/app.py parse_sign_log 保持一致）
 # ---------------------------------------------------------------------------
@@ -628,7 +664,13 @@ def parse_sign_log(path):
         if not m:
             continue
         _date, level, logger_name, _msg = m.groups()
-        if logger_name != "yiban" or level == "DEBUG":
+        if level == "DEBUG":
+            continue
+        if logger_name != "yiban" and level not in ("WARNING", "ERROR", "CRITICAL"):
+            # v0.26.3：签到日志（yiban）照旧全量展示；其他组件（web/notify/
+            # mailer/db）仅展示告警级输出——它们是"非签到功能留下的最终结果"
+            # （如邮件/推送发送失败），此前只进 journald 后台页看不到。
+            # INFO 级维持不展示，日志页洁净度不变。
             continue
         recent.append(line.strip())
     return recent
@@ -667,7 +709,10 @@ def _log_lines_for(date_str):
         if not m:
             continue
         _, level, logger_name, _msg = m.groups()
-        if logger_name != "yiban" or level == "DEBUG":
+        if level == "DEBUG":
+            continue
+        if logger_name != "yiban" and level not in ("WARNING", "ERROR", "CRITICAL"):
+            # v0.26.3：与 parse_sign_log 同口径——其他组件仅告警级入列
             continue
         out.append(line.strip())
     return out
@@ -861,6 +906,10 @@ def ensure_secret_key(env_path):
     与 migrate_admin_password_to_hash 的降级策略一致（对抗性审查 F4）。
     """
     with _env_write_lock(env_path):
+        # v0.26.3：全新部署判定必须在读取前——.env 不存在 = 首次初始化，
+        # 默认写入「暂停注册」；既有部署（文件已存在，如升级安装）不写此键，
+        # 注册行为保持不变（用户裁决：默认允许，新部署才默认暂停）。
+        new_deployment = not os.path.exists(env_path)
         env = read_env(env_path)
         key = env.get("YIBAN_SECRET_KEY", "").strip()
         if key:
@@ -872,6 +921,9 @@ def ensure_secret_key(env_path):
                 lines = f.read().splitlines()
         if not any(ln.strip().startswith("YIBAN_SECRET_KEY=") for ln in lines):
             lines.append(f"YIBAN_SECRET_KEY={key}")
+        if new_deployment:
+            # 常量字面量写入，无注入面；管理员完成初始配置后在设置页开启注册
+            lines.append("YIBAN_REGISTRATION_PAUSE=1")
         try:
             _atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
         except OSError as e:
@@ -882,6 +934,11 @@ def ensure_secret_key(env_path):
             )
             return key
         logger.info("已自动生成 YIBAN_SECRET_KEY 并写入 %s", env_path)
+        if new_deployment:
+            logger.info(
+                "新部署默认暂停注册（YIBAN_REGISTRATION_PAUSE=1），"
+                "完成初始配置后可在设置页开启"
+            )
         return key
 
 
@@ -2137,6 +2194,34 @@ def reject_default_admin_password(env_path):
 
 def create_app(host=None):
     global _purge_loop_started
+    # v0.26.3：web 进程日志并入按天日志文件（与 signin 子进程同口径）。
+    # gunicorn 走 create_app 不执行 main()，此前 root logger 无文件 handler：
+    # INFO 被丢弃、WARNING 只进 journald，邮件/推送/DB 的告警在后台日志页
+    # 与 sign-*.log 里都看不到。挂载幂等：已挂且目录一致则复用；目录变化
+    # （测试环境各用例独立 tmp）则替换，防句柄指向已删除目录反复写失败。
+    _log_dir = os.path.dirname(LOG_FILE)
+    try:
+        os.makedirs(_log_dir, exist_ok=True)
+    except OSError:
+        pass  # 目录建不出来时交由 handler 的降级路径（emit 失败不阻断 web）
+    _root_logger = logging.getLogger()
+    _existing_fh = [
+        _h for _h in _root_logger.handlers
+        if isinstance(_h, _DailyFlockFileHandler)
+    ]
+    if _existing_fh and _existing_fh[0]._log_dir != _log_dir:
+        _root_logger.removeHandler(_existing_fh[0])
+        with contextlib.suppress(Exception):
+            _existing_fh[0].close()
+        _existing_fh = []
+    if not _existing_fh:
+        _daily_fh = _DailyFlockFileHandler(_log_dir)
+        _daily_fh.setFormatter(logging.Formatter(
+            "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        _root_logger.addHandler(_daily_fh)
+        _root_logger.setLevel(logging.INFO)
     # 批次12 B12-13：默认/弱口令启动检测（必须在口令明文→哈希迁移之前，
     # 迁移会把明文清空导致无从检查）
     reject_default_admin_password(ENV_FILE)
@@ -2245,8 +2330,11 @@ def create_app(host=None):
             return
         if request.path in ("/api/login", "/api/register", "/api/me/restore"):
             return
-        # 公告/更新日志读取对所有用户开放（含未登录，登录页也显示）
+        # 公告/更新日志读取对所有用户开放（含未登录，登录页也显示）；
+        # 注册暂停状态（v0.26.3）供登录页决定是否禁用注册入口，同口径公开
         if request.path in ("/api/announcement", "/api/changelog") and request.method == "GET":
+            return
+        if request.path == "/api/registration_paused" and request.method == "GET":
             return
         role = _current_role()
         if role is None:
@@ -2608,12 +2696,27 @@ def create_app(host=None):
             )
         return jsonify({"error": "用户名或密码错误"}), 401
 
+    def _registration_paused():
+        """注册是否处于暂停状态（v0.26.3）。
+
+        YIBAN_REGISTRATION_PAUSE=1 视为暂停；未配置/空 = 允许——既有部署升级后
+        无此键，注册行为不变（用户裁决：默认允许，新部署才默认暂停）。新部署由
+        ensure_secret_key 首次创建 .env 时写入 1，管理员完成初始配置后在设置页
+        （危险区，仅主管理员）开启。与 YIBAN_GLOBAL_PAUSE 同款读写口径。
+        """
+        return load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0) == 1
+
     @app.route("/api/register", methods=["POST"])
     def api_register():
         """开放注册普通用户：邮箱 + 密码（哈希存储）。
 
         邮箱格式校验；邮箱全局唯一；不做验证码服务。无昵称体系（一人一号，账号备注名在账号表单中填写）。
         """
+        # v0.26.3：暂停注册时最先拦截——全局开关状态本身即公开信息（登录页
+        # 同步提示），早返回不产生枚举/时延侧信道；不占注册限速计数，不写审计
+        # （防机器人刷审计表）。
+        if _registration_paused():
+            return jsonify({"error": "注册已暂停，请联系管理员添加账号"}), 403
         data = _json_body()
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
@@ -5757,6 +5860,8 @@ def create_app(host=None):
                 "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 1),
                 # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
                 "global_pause": load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
+                # 暂停注册（v0.26.3）：1=暂停（登录页关闭注册入口），0/未配置=允许
+                "registration_pause": load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0),
                 # 批量多选：前端会话级开关（不持久化，每次进入页面默认关闭）
                 "batch_mode": False,
                 # 注册账号验证 + 探针模式（v0.23.x，任意管理员可改）
@@ -5781,7 +5886,8 @@ def create_app(host=None):
             k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
                                 "edge_front_sec", "edge_back_sec",
                                 "allow_time_pref", "sign_window", "sign_mode",
-                                "global_pause", "start_delay_max", "gap_max")
+                                "global_pause", "start_delay_max", "gap_max",
+                                "registration_pause")
         ):
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         # 批次7 A4：字段携带才写——原实现缺省即 0 且无条件写两个键，
@@ -5866,6 +5972,10 @@ def create_app(host=None):
         global_pause = None
         if "global_pause" in data:
             global_pause = 1 if str(data.get("global_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        # 暂停注册（v0.26.3）：仅主管理员可写（与全局暂停同权限口径）
+        registration_pause = None
+        if "registration_pause" in data:
+            registration_pause = 1 if str(data.get("registration_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
         # ---- 注册账号验证 + 探针模式（任意管理员可改；v0.23.x）----
         account_verify = None
         if "account_verify" in data:
@@ -5930,6 +6040,9 @@ def create_app(host=None):
             updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
         if global_pause is not None:
             updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
+        if registration_pause is not None:
+            # ""=开放（删键，读侧默认 0），与 global_pause 同口径；"1"=暂停
+            updates["YIBAN_REGISTRATION_PAUSE"] = "1" if registration_pause else ""
         if account_verify is not None:
             updates["YIBAN_ACCOUNT_VERIFY"] = "1" if account_verify else ""
         if probe_enable is not None:
@@ -5942,6 +6055,7 @@ def create_app(host=None):
         sunday_display = "不变" if sunday_sign is None else sunday_sign
         saturday_display = "不变" if saturday_sign is None else saturday_sign
         pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
+        reg_pause_display = "不变" if registration_pause is None else ("暂停" if registration_pause else "开放")
         if edge_front is None and edge_back is None:
             edge_display = "不变"
         elif edge_front == edge_back:
@@ -5952,10 +6066,11 @@ def create_app(host=None):
         probe_display = "不变" if (probe_enable is None and probe_time is None and probe_interval is None) else \
             f"启={'1' if probe_enable else '0'}/时={probe_time or '-'}/频={probe_interval or '-'}"
         logger.info(
-            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 账号验证=%s 探针=%s",
+            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
             edge_display, pref_raw if pref_raw is not None else "不变",
             win or "不变", sunday_display, saturday_display, pause_display,
+            reg_pause_display,
             "不变" if account_verify is None else ("开" if account_verify else "关"),
             probe_display,
         )
@@ -5968,7 +6083,8 @@ def create_app(host=None):
             f"分布={sign_dist or '-'} 掐头去尾={edge_display} "
             f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
             f"周六={saturday_display} "
-            f"全局暂停={pause_display} 账号验证={'开' if account_verify else '关'} "
+            f"全局暂停={pause_display} 注册={reg_pause_display} "
+            f"账号验证={'开' if account_verify else '关'} "
             f"探针={probe_display}",
         )
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
@@ -5993,6 +6109,15 @@ def create_app(host=None):
         if _announcement_cache[0] is None:
             _announcement_cache[0] = read_env(ENV_FILE).get("YIBAN_ANNOUNCEMENT", "").strip()
         return jsonify({"ok": True, "text": _announcement_cache[0]})
+
+    @app.route("/api/registration_paused")
+    def api_registration_paused():
+        """注册暂停状态（公开，v0.26.3）：供登录页决定是否禁用注册入口。
+
+        仅暴露一个布尔——暂停注册本就是面向访客的全局状态（提示文案公开显示），
+        无敏感信息，无需鉴权。
+        """
+        return jsonify({"paused": _registration_paused()})
 
     @app.route("/api/announcement", methods=["PUT"])
     def api_announcement_save():
@@ -6171,11 +6296,9 @@ def main():
     DB_FILE = args.db
     STATE_DIR = STATE_DIR_DEFAULT
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    # 日志 handler 统一由 create_app 配置（_DailyFlockFileHandler → 按天文件）；
+    # 此处不再 basicConfig(stderr)——双重 handler 会把每条日志写两遍。
+    app = create_app(host=args.host)
     logger.info(
         "启动网页管理系统: http://%s:%d（数据库: %s / 日志: %s / .env: %s）",
         args.host,
