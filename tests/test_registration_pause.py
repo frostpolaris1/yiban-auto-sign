@@ -238,7 +238,11 @@ class RegistrationPauseWebTest(unittest.TestCase):
         fh = [h for h in root.handlers
               if type(h).__name__ == "_DailyFlockFileHandler"]
         self.assertTrue(fh, "create_app 应为 root 挂载按天文件 handler")
-        self.assertEqual(root.level, logging.INFO, "root 级别应降为 INFO（否则 INFO 全被丢弃）")
+        # 批次16 P3：root 保持 WARNING（防 requests/urllib3/werkzeug 等第三方 INFO
+        # 全量落盘且无轮转上限），仅自有组件单独放开 INFO
+        self.assertEqual(root.level, logging.WARNING, "root 应保持 WARNING")
+        self.assertEqual(logging.getLogger("web").level, logging.INFO,
+                         "自有组件 web 应放开 INFO（否则 INFO 全被丢弃）")
         today = datetime.now().strftime("%Y-%m-%d")
         log_path = os.path.join(self.log_dir, f"sign-{today}.log")
         self.assertTrue(os.path.exists(log_path), "按天日志文件应已创建")
