@@ -283,7 +283,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
                         f"重置密码应有告警，实际 {self.alerts}")
 
-    def test_batch_reset_and_set_admin_alert(self):
+    def test_batch_reset_alerts_and_batch_role_removed(self):
         self._user_with_account(EMAIL, "13800138005")
         ac, at = self._admin_client()
         r = ac.post("/api/users/batch", json={
@@ -294,21 +294,33 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
                         f"批量重置应有告警，实际 {self.alerts}")
         self.alerts.clear()
+        # 2026-09-05 用户裁决：批量角色变更入口移除（提权/降权仅保留单个路径 + 二次鉴权）
         r = ac.post("/api/users/batch", json={
             "action": "set_admin", "emails": [EMAIL],
         }, headers=self._csrf(at))
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "权限变更告警" for t, _ in self.alerts),
-                        f"批量提权应有告警，实际 {self.alerts}")
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertFalse(any(t == "权限变更告警" for t, _ in self.alerts),
+                         "批量提权入口已移除，不应有告警")
 
     def test_role_change_alerts(self):
         self._user_with_account(EMAIL, "13800138006")
         ac, at = self._admin_client()
-        r = ac.post(f"/api/users/{EMAIL}/role", json={"role": "admin"},
+        # 2026-09-05：角色变更接入高危门禁，须携带当前管理员密码二次鉴权
+        r = ac.post(f"/api/users/{EMAIL}/role",
+                    json={"role": "admin", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(any(t == "权限变更告警" for t, _ in self.alerts),
                         f"角色变更应有告警，实际 {self.alerts}")
+
+    def test_role_change_without_reconfirm_rejected(self):
+        self._user_with_account(EMAIL, "13800138007")
+        ac, at = self._admin_client()
+        r = ac.post(f"/api/users/{EMAIL}/role", json={"role": "admin"},
+                    headers=self._csrf(at))
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        u = db.find_user(EMAIL)
+        self.assertEqual(u.get("role"), "user", "未过二次鉴权，角色不得变更")
 
     def test_announcement_change_alerts(self):
         ac, at = self._admin_client()
