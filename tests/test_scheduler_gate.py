@@ -753,6 +753,13 @@ class WebB12Test(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.webapp.create_app()
 
+    def test_admin_policy_12_chars_two_classes_rejected(self):
+        # 2026-09-05 主管理员口令提档：12 位但仅两类仍拒绝（普通用户口径不够用）
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(self._env_content.replace(ADMIN_PASS, "abcdefgh1234"))
+        with self.assertRaises(SystemExit):
+            self.webapp.create_app()
+
     def test_strong_password_boots(self):
         self.assertTrue(self.app is not None)  # setUp 已用强口令创建成功
 

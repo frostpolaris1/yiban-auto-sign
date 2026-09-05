@@ -1254,6 +1254,20 @@ def _password_policy_error(password):
     return None
 
 
+def _admin_password_policy_error(password):
+    """主管理员（内置 .env 管理员）口令策略：至少 12 位且命中至少三类。
+
+    2026-09-05 用户裁决：主管理员口令单独提档（普通用户维持原口径不变），
+    与 reject_default_admin_password 的启动 fail-closed 同一策略。
+    """
+    if len(password) < ADMIN_PASSWORD_MIN_LEN:
+        return f"至少 {ADMIN_PASSWORD_MIN_LEN} 位，且包含大写字母、小写字母、数字、符号中的至少三类"
+    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
+    if classes < ADMIN_PASSWORD_MIN_CLASSES:
+        return f"需包含{'、'.join(_PASSWORD_CLASS_LABELS)}中的至少三类"
+    return None
+
+
 def _owner_display_of(owner_email):
     """把账号归属邮箱映射为展示名（后台归属列用）：普通用户显示邮箱前缀（@ 前）。"""
     if owner_email in ("admin", ""):
@@ -2254,7 +2268,11 @@ _DEFAULT_ADMIN_LITERALS = frozenset((
     "password",
     "admin",
 ))
-_DEFAULT_ADMIN_MIN_LEN = 8
+# 主管理员（内置 .env 管理员）口令单独提档：12 位三类（2026-09-05 用户裁决）——
+# 最高权限账号的口令强度要求高于普通用户原口径，启动 fail-closed
+# 与自助改密（_admin_password_policy_error）共用本常量
+ADMIN_PASSWORD_MIN_LEN = 12
+ADMIN_PASSWORD_MIN_CLASSES = 3
 
 
 def reject_default_admin_password(env_path):
@@ -2272,12 +2290,21 @@ def reject_default_admin_password(env_path):
         return
     if not plain:
         return
-    if plain in _DEFAULT_ADMIN_LITERALS or len(plain) < _DEFAULT_ADMIN_MIN_LEN:
+    if plain in _DEFAULT_ADMIN_LITERALS:
         logger.critical(
-            "拒绝启动：YIBAN_ADMIN_PASSWORD 为公开模板默认字面量或长度不足 %d 位。"
+            "拒绝启动：YIBAN_ADMIN_PASSWORD 为公开模板默认字面量。"
             "请编辑 .env 将其改为强密码（或在设置哈希 YIBAN_ADMIN_PASSWORD_HASH 后"
             "清空明文），再重启服务。",
-            _DEFAULT_ADMIN_MIN_LEN,
+        )
+        raise SystemExit(2)
+    classes = sum(bool(re.search(pat, plain)) for pat in _PASSWORD_CLASS_PATTERNS)
+    if len(plain) < ADMIN_PASSWORD_MIN_LEN or classes < ADMIN_PASSWORD_MIN_CLASSES:
+        logger.critical(
+            "拒绝启动：YIBAN_ADMIN_PASSWORD 弱于主管理员口令策略（至少 %d 位，且包含"
+            "大写字母、小写字母、数字、符号中的至少 %d 类）。请编辑 .env 将其改为强密码"
+            "（或在设置哈希 YIBAN_ADMIN_PASSWORD_HASH 后清空明文），再重启服务。",
+            ADMIN_PASSWORD_MIN_LEN,
+            ADMIN_PASSWORD_MIN_CLASSES,
         )
         raise SystemExit(2)
 
@@ -2943,7 +2970,12 @@ def create_app(host=None):
         new_password = str(data.get("new_password", ""))
         if new_password != str(data.get("confirm_password", "")):
             return jsonify({"error": "两次输入的新密码不一致"}), 400
-        pw_err = _password_policy_error(new_password)
+        # 主管理员（内置 .env 管理员）口令走 12 位三类提档策略；注册用户维持原口径
+        pw_err = (
+            _admin_password_policy_error(new_password)
+            if _is_builtin_admin_session()
+            else _password_policy_error(new_password)
+        )
         if pw_err:
             return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
         username = session.get("username", "")
@@ -5259,16 +5291,17 @@ def create_app(host=None):
 
     @app.route("/api/users/batch", methods=["POST"])
     def api_users_batch():
-        """批量操作注册用户：set_admin/unset_admin/reset_password/delete。
+        """批量操作注册用户：reset_password/delete。
 
         body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
-        set_admin/unset_admin 仅主管理员（.env 内置管理员）可用；set_admin 仅限正式用户。
+        角色变更不支持批量（2026-09-05 用户裁决）：提权/降权仅保留
+        /api/users/<email>/role 单个路径，且须二次输入当前管理员密码确认。
         Phase 1：整体事务，失败全部回滚；无效项软跳过。
         """
         data = _json_body()
         action = data.get("action")
         emails = data.get("emails") or []
-        if action not in ("set_admin", "unset_admin", "reset_password", "delete"):
+        if action not in ("reset_password", "delete"):
             return jsonify({"error": "未知操作"}), 400
         if not isinstance(emails, list) or not emails:
             return jsonify({"error": "请选择要操作的用户"}), 400
@@ -5286,10 +5319,7 @@ def create_app(host=None):
                 return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
             # 在 _file_lock 外预计算 scrypt 哈希，避免长时间占用进程锁
             reset_hash = generate_password_hash(password, method=SCRYPT_METHOD)
-        # 权限：权限变更与"操作管理员目标"仅主管理员
-        # （普通管理员可重置密码/删除普通用户，不可改权限、不可重置/删除其他管理员）
-        if action in ("set_admin", "unset_admin") and not _is_builtin_admin_session():
-            return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
+
         # 被盗号滥用面加固（2026-08-29）：删除用户 = 高危不可逆操作 → 二次鉴权 +
         # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）。
         # 批次16 P1-2：批量重置密码同为账号控制权转移操作（e2e 实锤：普通管理员
@@ -5308,7 +5338,6 @@ def create_app(host=None):
         with _file_lock:
             users = load_users()
             builtin = _builtin_admin_email()
-            accounts = load_accounts() if action == "set_admin" else None
 
             # 内存模拟用户表，保持动态管理员数量判断
             sim_users = {u["email"]: dict(u) for u in users}
@@ -5325,36 +5354,7 @@ def create_app(host=None):
                     # 安全审查 2026-08：普通管理员不可重置/删除其他管理员（与单条 403 同口径；
                     # 批量沿用"无效项软跳过"惯例，与内置管理员跳过一致）
                     continue
-                if action == "set_admin":
-                    # 只能将正式用户（有生效账号且无待审核）设为管理员；
-                    # 正式用户判定仅 status==active 算（rejected 不算），且软删除不算
-                    has_pending = any(
-                        a.get("owner") == email
-                        and a.get("status") == ACCOUNT_STATUS_PENDING
-                        and not a.get("deleted")
-                        for a in accounts
-                    )
-                    has_active = any(
-                        a.get("owner") == email
-                        and a.get("status") == ACCOUNT_STATUS_ACTIVE
-                        and not a.get("deleted")
-                        for a in accounts
-                    )
-                    if not has_active or has_pending:
-                        continue
-                    ops.append(("update_user", email, {"role": "admin"}))
-                    sim_users[email]["role"] = "admin"
-                elif action == "unset_admin":
-                    if target.get("role") != "admin":
-                        continue
-                    # 每次循环内动态重算 admins：前一个被取消后，后续目标以最新模拟列表判定
-                    admins = [u for u in sim_users.values() if u.get("role") == "admin"]
-                    # 防呆：内置管理员不存在且这是最后一个注册管理员时跳过
-                    if len(admins) <= 1 and not builtin:
-                        continue
-                    ops.append(("update_user", email, {"role": "user"}, bool(builtin)))
-                    sim_users[email]["role"] = "user"
-                elif action == "reset_password":
+                if action == "reset_password":
                     ops.append(
                         (
                             "update_user",
@@ -5421,16 +5421,6 @@ def create_app(host=None):
                         f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         urgent=True,
                     )
-                if action in ("set_admin", "unset_admin"):
-                    # 批次11 N6：提降权即时告警（权限面变更应可感知）
-                    send_notification(
-                        "权限变更告警",
-                        f"批量{'提权' if action == 'set_admin' else '降权'} ×{done}: "
-                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
-                        f"操作者 {session.get('username', '?')}，时间 "
-                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                        urgent=True,
-                    )
             db.audit(
                 session.get("username") or "?",
                 "users_batch",
@@ -5442,8 +5432,6 @@ def create_app(host=None):
             )
             logger.info("批量%s用户 %d 个", action, done)
             msg = {
-                "set_admin": f"已设为管理员 {done} 个用户",
-                "unset_admin": f"已取消管理员 {done} 个用户",
                 "reset_password": f"已重置密码 {done} 个用户",
                 "delete": f"已删除 {done} 个用户",
             }[action]
@@ -5453,12 +5441,20 @@ def create_app(host=None):
     def api_user_role(email):
         """设为管理员 / 取消管理员。仅主管理员（.env 内置管理员）可操作；
         只能将「正式用户」（有生效账号且无待审核）设为管理员；
-        防呆：内置管理员不可改；至少保留 1 个管理员。"""
+        防呆：内置管理员不可改；至少保留 1 个管理员。
+
+        2026-09-05 用户裁决：角色变更是权限面变更，接入高危门禁（二次输入当前
+        管理员密码 + 限速）；批量角色变更入口已移除，本端点是唯一变更路径。
+        """
         # 权限：仅主管理员（普通管理员无管理员权限变更权）
         username = (session.get("username") or "").strip().lower()
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
         data = _json_body()
+        # 高危门禁：先二次鉴权（当前管理员密码），通过后才占限速额度（与删除/重置同口径）
+        gate = _high_risk_gate(data, "修改管理员权限")
+        if gate:
+            return gate
         new_role = data.get("role")
         if new_role not in ("admin", "user"):
             return jsonify({"error": "未知角色"}), 400
