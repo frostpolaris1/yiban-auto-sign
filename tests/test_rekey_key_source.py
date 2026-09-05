@@ -825,7 +825,8 @@ class _B14AlertGateBase(unittest.TestCase):
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
                 self.webapp, "send_notification",
-                side_effect=lambda t, c, urgent=False: self.alerts.append((t, c, urgent)),
+                # 批次18 刀1：send_notification 新增 force=（先告警后落盘），假实现同步接收
+                side_effect=lambda t, c, urgent=False, force=False: self.alerts.append((t, c, urgent)),
             )
             p.start()
             self.addCleanup(p.stop)
@@ -1003,54 +1004,66 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertTrue(urgent)
         self.assertIn("通道：关闭", content)
 
-    def test_notify_numeric_only_needs_no_password(self):
-        """只改 cooldown/urgent_only/daily_max/urgent_daily_max → 无口令 200，也不占高危额度。"""
-        self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")  # 额度只给 1 次：数值改动不得消耗它
+    def test_notify_numeric_changes_require_password(self):
+        """批次18 刀1（H-2a 全量收口）：cooldown/urgent_only/daily_max/urgent_daily_max
+        也纳入二次鉴权——无口令 400 且零写入；带口令 200 并落盘。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
+        before = _read_env(self.env_file)
         for body in ({"cooldown": 30}, {"urgent_only": True},
                      {"daily_max": 7}, {"urgent_daily_max": 2}):
             with self.subTest(body=body):
                 r = c.put("/api/notify-config", json=body, headers=self._csrf(t))
+                self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+                self.assertIn("当前密码不正确", r.get_json()["error"])
+        self.assertEqual(_read_env(self.env_file), before, "鉴权未通过不得留下任何写入")
+        # 带正确口令 → 逐项落盘
+        for body in ({"cooldown": 30}, {"urgent_only": True},
+                     {"daily_max": 7}, {"urgent_daily_max": 2}):
+            with self.subTest(body=body):
+                r = c.put("/api/notify-config",
+                          json={**body, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = _read_env(self.env_file)
         self.assertIn("YIBAN_NOTIFY_COOLDOWN=30", env)
         self.assertIn("YIBAN_NOTIFY_URGENT_ONLY=1", env)
         self.assertIn("YIBAN_NOTIFY_DAILY_MAX=7", env)
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX=2", env)
-        # 数值改动不占额度 → 紧随其后的高危关闭仍应放行（而不是被限速 429）
-        r = c.put("/api/notify-config",
-                  json={"type": "", "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_notify_cooldown_zero_is_persisted_not_deleted(self):
         """cooldown 口径修正：0 显式落盘（原实现删键 → 回落默认 60，"关不掉节流"）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         self._append_env("YIBAN_NOTIFY_COOLDOWN=30\n")
-        r = c.put("/api/notify-config", json={"cooldown": 0}, headers=self._csrf(t))
+        # 批次18 刀1（H-2a）：cooldown 属收口范围 → 带二次口令
+        r = c.put("/api/notify-config",
+                  json={"cooldown": 0, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = _read_env(self.env_file)
         self.assertIn("YIBAN_NOTIFY_COOLDOWN=0", env, "0 必须显式落盘，不能删键回落默认")
         self.assertEqual(self.webapp.notify.get_config()["cooldown"], 0)
 
     def test_notify_urgent_daily_max_write_rules(self):
-        """追加 B：urgent_daily_max 与 daily_max 同规则——整数、0 显式落盘、非法 400、缺省不写。"""
+        """追加 B：urgent_daily_max 与 daily_max 同规则——整数、0 显式落盘、非法 400、缺省不写。
+        （批次18 刀1 H-2a：数值项带二次口令；非法值在校验层即 400，无需口令）"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
-        r = c.put("/api/notify-config", json={"urgent_daily_max": 0}, headers=self._csrf(t))
+        r = c.put("/api/notify-config",
+                  json={"urgent_daily_max": 0, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX=0", _read_env(self.env_file))
         self.assertIsNone(self.webapp.notify.get_config()["urgent_daily_remaining"],
                          "0=不限 → 剩余应为 None（get_config 口径）")
-        r2 = c.put("/api/notify-config", json={"urgent_daily_max": -5}, headers=self._csrf(t))
+        r2 = c.put("/api/notify-config",
+                   json={"urgent_daily_max": -5, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))  # max(0,…) 与 daily_max 一致
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX=0", _read_env(self.env_file))
         r3 = c.put("/api/notify-config", json={"urgent_daily_max": "many"}, headers=self._csrf(t))
         self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
         # 不携带该字段时不写：只改 daily_max 不得动紧急账
         self._append_env("YIBAN_NOTIFY_URGENT_DAILY_MAX=9\n")
-        r4 = c.put("/api/notify-config", json={"daily_max": 11}, headers=self._csrf(t))
+        r4 = c.put("/api/notify-config",
+                   json={"daily_max": 11, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r4.status_code, 200, r4.get_data(as_text=True))
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX=9", _read_env(self.env_file))
         self.assertIn("YIBAN_NOTIFY_DAILY_MAX=11", _read_env(self.env_file))
@@ -1108,11 +1121,13 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                 self.assertNotIn(unwant, fails[0][1], "不得把另一路也写成被关闭")
 
     def test_audit_details_include_numeric_and_flag_changes(self):
-        """评审 ⑥：两个配置端点的审计详情须含具体变更项（只有 type 时事后无法还原）。"""
+        """评审 ⑥：两个配置端点的审计详情须含具体变更项（只有 type 时事后无法还原）。
+        （批次18 刀1 H-2a：数值项属收口范围，带二次口令）"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config", headers=self._csrf(t), json={
-            "cooldown": 0, "daily_max": 7, "urgent_daily_max": 1, "urgent_only": True})
+            "cooldown": 0, "daily_max": 7, "urgent_daily_max": 1, "urgent_only": True,
+            "confirm_password": ADMIN_PASS})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         rows = self._audit_rows("notify_config")
         self.assertTrue(rows, "notify_config 变更须留审计")

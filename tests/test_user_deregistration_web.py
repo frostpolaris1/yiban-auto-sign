@@ -455,7 +455,9 @@ class UserDeregistrationWebTest(unittest.TestCase):
         self._delete(c, token, password=USER_PASS)
         r = c.post("/api/register", json={"email": "user1@test.local", "password": "newpass1234", "agree": True})
         self.assertEqual(r.status_code, 400, "冷却期内同邮箱注册应被拒")
-        self.assertIn("冷却期", r.get_json()["error"])
+        # 批次18 刀1（M9 枚举文案）：冷却期文案与「该邮箱已注册」逐字一致，
+        # 不再泄露"该邮箱近期注销过"信号；恢复入口仍由登录页提供
+        self.assertEqual(r.get_json()["error"], "该邮箱已注册")
         self.assertIsNone(db.find_user("user1@test.local"), "注册不应产生新活跃用户")
 
     def test_register_allowed_after_grace(self):

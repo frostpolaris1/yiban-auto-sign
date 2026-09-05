@@ -131,12 +131,11 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
         for mode in ("full", "accounts_only"):
-            body = {"mode": mode}
-            if mode == "full":
-                # 2026-08-29 二次鉴权：完全删除须输入当前管理员密码
-                body["confirm_password"] = ADMIN_PASS
+            # 批次18 刀1（M3）：accounts_only 也接入二次鉴权，两种模式都带正确口令，
+            # 使请求到达"目标为管理员仅主管理员"的权限检查 → 403
             r = c.post("/api/users/admin3@test.local/delete",
-                       json=body, headers=self._csrf(token))
+                       json={"mode": mode, "confirm_password": ADMIN_PASS},
+                       headers=self._csrf(token))
             self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("admin3@test.local"), "管理员不应被删除")
 
