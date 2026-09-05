@@ -183,7 +183,16 @@ def _read_doc_html(filename):
 def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
-    由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。"""
+    由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。
+
+    批次18 刀1（H-1 反射型 XSS）：base_path 来自 request.script_root——攻击者可构造
+    形如 /x"><script>…/privacy 的任意前缀路径，未转义时脚本原样落进 href 与正文；
+    icp/police 文本来自 .env，含引号/尖括号时同样破坏 HTML 结构。三者统一
+    html.escape(quote=True)（同时覆盖文本与属性两种上下文）后才拼入模板，
+    转义收敛在本函数内，调用点（含传 request.script_root 的两处）无需各自处理。"""
+    base_path = html.escape(str(base_path), quote=True)
+    icp_text = html.escape(str(icp_text), quote=True)
+    police_text = html.escape(str(police_text), quote=True)
     icp_block = f'<p class="doc-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">{icp_text}</a></p>' if icp_text else ""
     police_block = f'<p class="doc-icp"><a href="https://beian.mps.gov.cn/#/query/webSearch?code=32110202000847" target="_blank" rel="noopener"><img src="/gongan-beian.png" alt="" width="12" height="14" style="vertical-align:-2px;margin-right:4px"> {police_text}</a></p>' if police_text else ""
     return f"""<!doctype html>
@@ -1595,7 +1604,7 @@ def _alert_mail_recipients():
     return db.admin_mail_recipients(extra)
 
 
-def send_notification(title, content, urgent=False):
+def send_notification(title, content, urgent=False, force=False):
     """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
 
     - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
@@ -1605,16 +1614,20 @@ def send_notification(title, content, urgent=False):
       同类型节流 + 每日预算 + 响应检查，兼容旧明文 YIBAN_NOTIFY_URL）。未配置则静默跳过。
       urgent=True 标记重要告警：设置页开启「仅推送重要告警」后，仅 urgent 通知会推手机，
       其余（用户日常改密/签到结果类等）仅走邮件，把推送额度留给真正威胁系统/账号安全的事件。
+    - force=True（批次18 刀1 H-2b）：跳过两侧节流（邮件同类节流 + webhook 的
+      节流/每日额度/仅重要开关），供"先告警后落盘"的配置变更告警等**必须送达**的
+      场景使用——此刻额度/节流参数仍为旧值，告警不会被本次刚提交的新参数吞掉。
+      默认 False，向后兼容（既有调用方行为不变）。
     """
     recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
-    # SMTP 额度）；webhook 由 notify.py 独立节流
-    if recipients and _mail_alert_due(title):
+    # SMTP 额度）；webhook 由 notify.py 独立节流。force=True 时绕过（必须送达场景）
+    if recipients and (force or _mail_alert_due(title)):
         mailer.send_admin_alert(title, content, to=",".join(recipients))
     elif recipients:
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, content, urgent=urgent)
+    notify.send(title, content, urgent=urgent, force=force)
     # 批次14 P3-1：手机推送额度耗尽的"补一封"——notify 侧当日首次有账本耗尽时会挂上
     # 待取走标记，pop_exhaustion_notice() 一次返回全部耗尽账本（如 ["general","urgent"]）。
     # 必须一次取完拼成一封：循环 pop 到空会让两本账同日各发一封（重复打扰）。
@@ -2375,6 +2388,15 @@ def create_app(host=None):
         cookie_secure_raw = read_env(ENV_FILE).get("YIBAN_COOKIE_SECURE", "")
     cookie_secure = str(cookie_secure_raw).strip().lower() in ("1", "true", "yes", "on")
     app.config["SESSION_COOKIE_SECURE"] = cookie_secure
+    # 批次18 刀1（M10）：子路径部署收窄会话 Cookie 作用域——读取 .env 的
+    # YIBAN_BASE_PATH（显式配置形态），值非空且非 "/" 时把 SESSION_COOKIE_PATH
+    # 设为该前缀（统一补尾斜杠），登录 Cookie 不再下发到同域其他路径下的应用。
+    # 说明：BasePathMiddleware 的"自动探测"形态（未设 YIBAN_BASE_PATH）在请求期
+    # 才能感知前缀，应用启动时无法可靠得知，故此处不强行处理——需要收窄 Cookie
+    # 的子路径部署请显式设置 YIBAN_BASE_PATH（同时可避免自动探测与应用路由段撞车）。
+    _base_path_env = read_env(ENV_FILE).get("YIBAN_BASE_PATH", "").strip()
+    if _base_path_env and _base_path_env != "/":
+        app.config["SESSION_COOKIE_PATH"] = "/" + _base_path_env.strip("/") + "/"
     # 批次7 P3-6：HTTPS 反代自动升级 Secure——请求经 https（X-Forwarded-Proto）
     # 到达而 Secure 未显式开启时，粘性开启会话 Cookie 的 Secure 标志（首次 https
     # 请求即生效，无需重启）；显式配置 YIBAN_COOKIE_SECURE=0 的部署保持原行为。
@@ -2910,7 +2932,11 @@ def create_app(host=None):
                 and _delete_grace_remaining(du.get("deleted_at", "")) > 0
             ):
                 _constant_time_dummy(password)  # 时延拉平：同上，防探测"近期注销"邮箱
-                return jsonify({"error": "该邮箱账号正在注销冷却期（7 天内可登录恢复）"}), 400
+                # 批次18 刀1（M9 枚举文案，用户裁决 A）：冷却期分支文案与「该邮箱已注册」
+                # 逐字一致——专属文案（"正在注销冷却期"）让攻击者批量探测"哪些邮箱近期
+                # 注销过"（低警惕期用户是钓鱼高价值目标）。恢复入口仍由登录页提供，
+                # 注册侧不给出任何差异信号。
+                return jsonify({"error": "该邮箱已注册"}), 400
             try:
                 created = db.create_user(
                     email,
@@ -3455,6 +3481,19 @@ def create_app(host=None):
             gate = _high_risk_gate(data, label)
             if gate:
                 return gate
+        # 批次18 刀1（H-2b 先告警后落盘）：本告警必须在 write_env_batch **之前**发出，
+        # 并带 force=True——若先落盘，额度/节流即按新值生效（如 YIBAN_MAIL_ENABLE=0
+        # 或 ADMIN_NOTIFY=0 刚写进去），随后这条"通道被人动了"的告警会被自己刚写入的
+        # 参数吞掉（致盲零外发）；此刻配置仍为旧值，force 又绕过两侧节流，确保必达。
+        # 批次14 P1-1：urgent=True——设置页开着「仅推送重要告警」时非紧急通知不推手机。
+        send_notification(
+            "邮件配置变更告警",
+            f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
+            f"操作者 {_nl_safe(session.get('username', '?'))}，"
+            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            urgent=True,
+            force=True,
+        )
         write_env_batch(ENV_FILE, {k: ("1" if v else "0") for k, v in flags.items()})
         detail = {
             "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
@@ -3466,18 +3505,6 @@ def create_app(host=None):
             session.get("username") or "?",
             "mail_config", "mail_config",
             json.dumps(detail, ensure_ascii=False),
-        )
-        # 批次11 N6：邮件配置是全部安全告警的送达通道，变更即时告警——
-        # 注意此时 .env 已写入新值，若管理员改劫持收件地址，本告警（按变更后
-        # 配置发送）可能到不了运营者，故 webhook 通知与审计为主要留痕手段。
-        # 批次14 P1-1：改为 urgent=True——原为非紧急，设置页开着「仅推送重要告警」时
-        # 根本不推手机，配合"邮件通道刚被关掉"就是实测的零外发（致盲无声音）。
-        send_notification(
-            "邮件配置变更告警",
-            f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
-            f"操作者 {_nl_safe(session.get('username', '?'))}，"
-            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            urgent=True,
         )
         return jsonify(resp)
 
@@ -3505,8 +3532,11 @@ def create_app(host=None):
 
         批次14 P1-1：推送通道与邮件通道是告警仅有的两条出口，"关闭推送 / 清空密钥 /
         换密钥"三类动作等同给报警器拔线，与批次13 三处高危删除同口径加二次鉴权 +
-        限速（同窗口同上限，语义即"高危配置变更限速"，不新建第二套计数）；
-        纯数值/开关项（cooldown、urgent_only、daily_max、urgent_daily_max）不要求口令。
+        限速（同窗口同上限，语义即"高危配置变更限速"，不新建第二套计数）。
+        批次18 刀1（H-2a 全量收口，用户裁决 A）：额度/节流参数（cooldown /
+        urgent_only / daily_max / urgent_daily_max）同样纳入二次鉴权——它们决定告警
+        推不推、何时推、推几条，调大 cooldown、打开 urgent_only、把 daily_max 压到 1
+        与"拔线"同效（给报警器装消音器），同口径收口。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可操作"}), 403
@@ -3519,16 +3549,21 @@ def create_app(host=None):
             return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
         if ntype == "custom" and secret and not notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
-        # ---- 高危判定（批次14 P1-1）：只有会"让推送通道失效或改密钥"的请求才要口令 ----
+        # ---- 高危判定（批次14 P1-1 + 批次18 H-2a）：会"让推送通道失效、改密钥，
+        # 或调整告警送达节奏/额度"的请求都要口令 ----
         # (a) type 置空 = 关闭推送；(b) 本次落盘后不再有密钥 = 清空密钥（含"只提交
-        # type 却不带 secret"这条隐蔽路径——它同样会删掉旧密文）；(c) 携带新密钥 = 换钥。
+        # type 却不带 secret"这条隐蔽路径——它同样会删掉旧密文）；(c) 携带新密钥 = 换钥；
+        # (d) 批次18：出现任一额度/节流键 = 调整告警送达参数（同样致盲面）。
         touches_channel = ("type" in data) or ("secret" in data)
         close_channel = "type" in data and ntype == ""
         clear_secret = touches_channel and not secret
         swap_secret = bool(secret)
+        weakens_alerting = any(
+            k in data for k in ("cooldown", "urgent_only", "daily_max", "urgent_daily_max")
+        )
         # 三类动作互斥，其并集恰好等于"触碰通道"的请求：带 type/secret 时要么有密钥
-        # （换钥）要么没有（关闭或清钥）
-        need_reconfirm = close_channel or clear_secret or swap_secret
+        # （换钥）要么没有（关闭或清钥）；(d) 与之可叠加（一次请求既换钥又调参数）
+        need_reconfirm = close_channel or clear_secret or swap_secret or weakens_alerting
         # 支持部分更新：仅在请求体出现的字段才写入（如「仅重要告警」开关单独保存时
         # 不携带 type/secret，避免误清空已配置的推送通道）
         updates = {}
@@ -3568,12 +3603,12 @@ def create_app(host=None):
             updates["YIBAN_NOTIFY_URGENT_DAILY_MAX"] = "0" if udm == 0 else str(udm)
             numeric["urgent_daily_max"] = udm
         if need_reconfirm:
-            # 只有真正要改通道的请求才占用高危额度（纯数值改动不计数，
-            # 否则调一次节流秒数就把删除冷却吃掉一格）
+            # 高危动作（含批次18 收口的额度/节流参数调整）通过后才占用高危额度
             label = (
                 "关闭消息推送通道" if close_channel
                 else "更换消息推送密钥" if swap_secret
-                else "清空消息推送密钥"
+                else "清空消息推送密钥" if clear_secret
+                else "调整推送限流/额度参数"
             )
             # 评审 ②：统一门禁——先验口令，通过了才占用额度（错口令尝试不得消耗预算）
             gate = _high_risk_gate(data, label)
@@ -3589,21 +3624,25 @@ def create_app(host=None):
                 updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
             except ValueError as e:
                 return jsonify({"error": f"加密失败：{e}"}), 500
-        write_env_batch(ENV_FILE, updates)
-        db.audit(
-            session.get("username") or "?",
-            "notify_config", "notify_config",
-            json.dumps({"type": ntype or "off", **numeric}, ensure_ascii=False),
-        )
-        # 变更即时告警（走既有 A 线邮件 + webhook 双通道）
-        # 批次14 P1-1：urgent=True——本告警正是"通道被人拆了"的信号，而设置页开着
-        # 「仅推送重要告警」时非紧急通知不推手机，等于拆完报警器还顺便把报警也静音。
+        # 批次18 刀1（H-2b 先告警后落盘）：变更告警必须在 write_env_batch **之前**发出，
+        # 并带 force=True——若先落盘，daily_max/urgent_daily_max/cooldown/urgent_only
+        # 即按新值生效（如 daily_max=1 且当日额度恰被占、cooldown 被调到天文数字、
+        # urgent_only 刚被打开），随后这条"通道被人动了"的告警会被刚写入的参数吞掉
+        # （实测过的致盲链）。此刻额度/节流仍为旧值，force 又绕过两侧节流，确保必达。
+        # 批次14 P1-1：urgent=True——本告警正是"通道被人拆了"的信号。
         send_notification(
             "消息推送配置变更告警",
             f"消息推送配置已变更: {_notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric)}，"
             f"操作者 {_nl_safe(session.get('username', '?'))}，"
             f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             urgent=True,
+            force=True,
+        )
+        write_env_batch(ENV_FILE, updates)
+        db.audit(
+            session.get("username") or "?",
+            "notify_config", "notify_config",
+            json.dumps({"type": ntype or "off", **numeric}, ensure_ascii=False),
         )
         return jsonify(notify.get_config())
 
@@ -3885,9 +3924,19 @@ def create_app(host=None):
                 clean.pop("phone_code", None)
             elif not clean["phone_code"]:
                 clean["phone_code"] = old.get("phone_code", "")
-            # 归属与审核状态保持不变（管理员编辑不改变提交者与生效状态）
+            # 归属保持不变（管理员编辑不改变提交者）
             clean["owner"] = old.get("owner", "admin")
-            clean["status"] = old.get("status", ACCOUNT_STATUS_ACTIVE)
+            # 批次18 刀1（M1 编辑回审，用户裁决 C）：改绑手机号一律回待审核重审——
+            # 手机号即凭据主体，原审核结论绑定的是旧号，改绑后若维持 ACTIVE 就等于
+            # "免审换号继续签到"。管理员改绑用户的号同样回 pending，由管理员再批；
+            # 仅密码/识别码变更（phone 不变）维持原状态不变。
+            rebind = clean["phone"] != old.get("phone")
+            if rebind:
+                clean["status"] = ACCOUNT_STATUS_PENDING
+                # 回审即清除旧拒绝理由（与用户侧重新提交同口径，避免 pending 行带旧理由）
+                clean["reject_reason"] = ""
+            else:
+                clean["status"] = old.get("status", ACCOUNT_STATUS_ACTIVE)
             try:
                 result = db.update_account(
                     old["id"],
@@ -3909,12 +3958,13 @@ def create_app(host=None):
             if clean["phone"] != old.get("phone"):
                 db.clear_time_pref(old.get("phone", ""))
             # 凭据变更（改密码/识别码）后清除熔断暂停，立即恢复签到
+            # （批次18 M1：pending 行不参与签到，此处清理无害，保留）
             clear_fuse_pause(clean["phone"])
             db.audit(
                 session.get("username") or "?",
                 "account_update",
                 _mask_phone(clean["phone"]),
-                "编辑账号",
+                "编辑账号 改绑回审" if rebind else "编辑账号",
             )
             accounts = load_accounts()
             logger.info("编辑账号 %s", _mask_phone(clean["phone"]))
@@ -4314,6 +4364,18 @@ def create_app(host=None):
 
     def _my_account_indices():
         return _my_account_indices_of(load_accounts())
+
+    def _my_active_phones(accounts, indices):
+        """历史查询用手机号（批次18 刀1 M2 历史数据隔离）：仅取已生效
+        （status=active）且未软删除账号——待审核/已拒绝/软删除行不参与签到，
+        其历史日历/日志也不再回显，防"提交个 pending 号就翻到该号全部历史"。
+        /api/my-accounts 列表展示口径不变（仍含 pending/deleted，展示状态用）。"""
+        return [
+            str(accounts[i].get("phone", ""))
+            for i in indices
+            if accounts[i].get("status") == ACCOUNT_STATUS_ACTIVE
+            and not accounts[i].get("deleted")
+        ]
 
     def _my_account_view(accounts, indices):
         """用户视图：账号脱敏 + 今日状态（结构化状态文件）+ 审核状态 + 最近相关日志 + 排队信息。
@@ -4737,7 +4799,8 @@ def create_app(host=None):
             return jsonify({"error": "月份格式不正确，应为 YYYY-MM"}), 400
         accounts = load_accounts()
         indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
-        phones = [str(accounts[i].get("phone", "")) for i in indices]
+        # 批次18 刀1（M2）：日历仅回显已生效账号的历史（pending/rejected/软删除不回显）
+        phones = _my_active_phones(accounts, indices)
         days_in_month = calendar.monthrange(year, mon)[1]
         result = {f"{year:04d}-{mon:02d}-{d:02d}": {} for d in range(1, days_in_month + 1)}
         # 聚合读取：单次目录遍历取本月全部日文件（替代每天一次 exists+open 共 30 次 IO）
@@ -4778,7 +4841,8 @@ def create_app(host=None):
             date = _most_recent_log_date()
         accounts = load_accounts()
         indices = _my_account_indices_of(accounts)  # 单快照：防两次读取间列表漂移（同 api_my_accounts）
-        phones = [str(accounts[i].get("phone", "")) for i in indices]
+        # 批次18 刀1（M2）：日志仅回显已生效账号的历史（pending/rejected/软删除不回显）
+        phones = _my_active_phones(accounts, indices)
         out = []
         for line in _log_lines_for(date):
             if any(f"[{p}]" in line for p in phones):
@@ -4788,7 +4852,8 @@ def create_app(host=None):
 
     @app.route("/api/my-accounts/<int:idx>", methods=["PUT"])
     def api_my_account_update(idx):
-        """编辑自己提交的账号：密码/识别码留空=保留；不影响已生效状态。"""
+        """编辑自己提交的账号：密码/识别码留空=保留；改绑手机号一律回待审核重审
+        （批次18 M1），仅密码/识别码变更不影响已生效状态。"""
         with _file_lock:
             accounts = load_accounts()
             indices = _my_account_indices_of(accounts)
@@ -4816,10 +4881,14 @@ def create_app(host=None):
             elif not clean["phone_code"]:
                 clean["phone_code"] = old.get("phone_code", "")
             clean["owner"] = old.get("owner", "")
-            # 被拒绝的账号编辑后 = 重新提交审核（回 pending，清除拒绝理由）
+            # 批次18 刀1（M1 编辑回审，用户裁决 C）：改绑手机号一律回待审核重审——
+            # 原 ACTIVE 号可被改绑成任意新号免审生效，历史审核结论不再可信。
+            # 无论原状态（含 ACTIVE）；REJECTED 本就回 pending，行为维持不变。
+            # 仅密码/识别码变更（phone 不变）→ 状态不变。
+            rebind = clean["phone"] != old.get("phone")
             clean["status"] = (
                 ACCOUNT_STATUS_PENDING
-                if old.get("status") == ACCOUNT_STATUS_REJECTED
+                if rebind or old.get("status") == ACCOUNT_STATUS_REJECTED
                 else old.get("status", ACCOUNT_STATUS_PENDING)
             )
             if clean["status"] == ACCOUNT_STATUS_PENDING:
@@ -4831,18 +4900,19 @@ def create_app(host=None):
             except sqlite3.IntegrityError:
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发改号兜底
             # M11：手机号变更 → 旧号自选时间片失效，必须在 update_account 成功后再清
-            if clean["phone"] != old.get("phone"):
+            if rebind:
                 db.clear_time_pref(old.get("phone", ""))
             db.audit(
                 clean["owner"],
                 "my_account_update",
                 _mask_phone(clean["phone"]),
-                "用户编辑",
+                "用户编辑 改绑回审" if rebind else "用户编辑",
             )
             # 用户改密码/识别码后清除熔断暂停，立即恢复签到
+            # （批次18 M1：pending 行不参与签到，此处清理无害，保留）
             clear_fuse_pause(clean["phone"])
             logger.info("用户 %s 编辑账号 %s", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
-            if old.get("status") == ACCOUNT_STATUS_REJECTED:
+            if rebind or old.get("status") == ACCOUNT_STATUS_REJECTED:
                 return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
             return jsonify({"ok": True, "msg": "已保存"})
 
@@ -5586,13 +5656,17 @@ def create_app(host=None):
             return jsonify({"error": "内置管理员不可删除"}), 400
         is_master = _is_builtin_admin_session()
         # 被盗号滥用面加固（2026-08-29）：完全删除用户 = 高危不可逆 → 二次鉴权 +
-        # 同管理员限速（accounts_only 仅清空账号，保留用户，不做此限制）
-        if mode == "full":
-            # 批次14 评审 ②：顺序统一为"先鉴权、通过了才占额度"（429 文案保持原样）
-            gate = _high_risk_gate(
-                data, "完全删除用户", limit_msg="删除操作过于频繁，请稍后再试")
-            if gate:
-                return gate
+        # 同管理员限速。
+        # 批次18 刀1（M3 accounts_only 门禁，用户裁决 A）：仅清空账号虽保留用户可重新
+        # 提交，但一次请求即把该用户**全部**易班凭据（不可逆）清零，滥用面与 full 同级；
+        # 两种模式统一接入 _high_risk_gate，响应语义与 full 模式对齐（口令错 400/未登录
+        # 401、冷却 429）。
+        gate = _high_risk_gate(
+            data,
+            "完全删除用户" if mode == "full" else "清空用户账号",
+            limit_msg="删除操作过于频繁，请稍后再试")
+        if gate:
+            return gate
         with _file_lock:
             target = db.find_user(email)
             if not target:
