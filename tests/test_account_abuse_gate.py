@@ -94,7 +94,8 @@ class _B13WebBase(unittest.TestCase):
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
                 self.webapp, "send_notification",
-                side_effect=lambda t, c, urgent=False: self.alerts.append((t, c)),
+                # 批次18 刀1：send_notification 新增 force=（先告警后落盘），假实现同步接收
+                side_effect=lambda t, c, urgent=False, force=False: self.alerts.append((t, c)),
             )
             p.start()
             self.addCleanup(p.stop)
@@ -240,11 +241,21 @@ class HighRiskDeleteTest(_B13WebBase):
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("s1@test.local"))
-        # accounts_only（仅清空账号，保留用户）不受二次鉴权约束
+        # 批次18 刀1（M3 accounts_only 门禁）：仅清空账号同样接入二次鉴权——
+        # 无口令 400；带正确口令放行
         r2 = c.post("/api/users/s1@test.local/delete",
                     json={"mode": "accounts_only"},
                     headers=self._csrf(t))
-        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
+        self.assertIsNotNone(db.find_user("s1@test.local"))
+        db.add_account({"name": "A", "phone": "13700137001", "password": "pw",
+                        "status": "active", "owner": "s1@test.local"})
+        r3 = c.post("/api/users/s1@test.local/delete",
+                    json={"mode": "accounts_only", "confirm_password": ADMIN_PASS},
+                    headers=self._csrf(t))
+        self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+        self.assertIsNotNone(db.find_user("s1@test.local"), "accounts_only 保留用户")
+        self.assertEqual(db.load_accounts(), [], "accounts_only 清空其全部账号")
 
     def test_purge_requires_password(self):
         self._make_user("p1@test.local")
@@ -355,8 +366,9 @@ class NotifyConfigApiTest(_B13WebBase):
             "confirm_password": ADMIN_PASS,  # 批次14 P1-1：换钥须二次口令
         }, headers=self._csrf(t))
         # 仅保存「仅重要告警」，不应清空已配置的通道与密钥（部分更新）
-        # 批次14 P1-1：纯开关改动刻意不带口令——仍须 200（不给正常路径加摩擦）
-        r = c.put("/api/notify-config", json={"urgent_only": True}, headers=self._csrf(t))
+        # 批次18 刀1（H-2a 收口）：urgent_only 属送达参数 → 需二次口令
+        r = c.put("/api/notify-config",
+                  json={"urgent_only": True, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         data = r.get_json()
         self.assertTrue(data["urgent_only"])
@@ -372,8 +384,11 @@ class NotifyConfigApiTest(_B13WebBase):
     def test_put_urgent_only_off(self):
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        c.put("/api/notify-config", json={"urgent_only": True}, headers=self._csrf(t))
-        r = c.put("/api/notify-config", json={"urgent_only": False}, headers=self._csrf(t))
+        # 批次18 刀1（H-2a 收口）：urgent_only 属送达参数 → 需二次口令
+        c.put("/api/notify-config",
+              json={"urgent_only": True, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        r = c.put("/api/notify-config",
+                  json={"urgent_only": False, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["urgent_only"])
 
