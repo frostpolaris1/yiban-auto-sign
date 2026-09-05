@@ -434,6 +434,22 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 VERIFY_MAX = 6  # 每用户窗口内最大验证尝试次数（正常添加流程远用不到）
 VERIFY_WINDOW = 600  # 窗口（秒）= 10 分钟
 
+# 账号验证认证失败冷却（2026-09-04 生产复盘）：同一手机号窗口内认证失败达到
+# 阈值后临时拒绝再验证。密码错误属确定性失败，重复验证每次都是一次真实易班
+# 登录，连续少量错误易班侧即返回「错误尝试过多」锁定账号（生产实测 6 次即锁），
+# 故按「被锁定对象 = 易班账号 = 手机号」设冷却；仅限 web 验证路径，探针与
+# cron 签到不受影响。
+VERIFY_FAIL_MAX = 2  # 窗口内第 2 次认证失败即触发冷却
+VERIFY_FAIL_WINDOW = 900  # 失败计数窗口（秒）= 15 分钟
+VERIFY_FAIL_COOLDOWN = 600  # 冷却时长（秒）= 10 分钟
+# 确定性认证失败特征（与 signin 登录流程的实际文案对应：usersure reUrl error →
+# 「登录失败（账号或密码错误）」，锁定 → msgCN「错误尝试过多…」）
+VERIFY_FAIL_AUTH_KEYWORDS = ("账号或密码错误", "密码错误", "错误尝试过多")
+VERIFY_FAIL_COOLDOWN_MSG = (
+    "该手机号验证失败次数过多，已被临时限制验证，请约 10 分钟后再试；"
+    "连续密码错误会导致易班账号被锁定，如密码有误请先在易班 APP 重置。"
+)
+
 # 注销账号冷却（防批量注销，user_delete_requests 表计数，v5）：
 # 每用户 60 秒内最多 1 次、每 IP 60 秒内最多 DELETE_MAX_REQUESTS_PER_IP 次；
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
@@ -537,19 +553,29 @@ def clear_fuse_pause(phone):
     2026-08-15 命名审查：原名 clear_cred_state 误导（"cred"易被理解为清除凭据/密钥，
     实际只删 cred-state.json 里的熔断暂停条目）；现名体现真实行为。
     """
+    path = os.path.join(STATE_DIR, "cred-state.json")
     try:
-        path = os.path.join(STATE_DIR, "cred-state.json")
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        if not isinstance(data, dict) or phone not in data:
-            return
+    except FileNotFoundError:
+        # 文件不存在 = 从未有账号触发过账密熔断（signin._save_cred_state 维持
+        # 「无暂停 = 文件不存在」语义），无可清除，静默返回——不能按 I/O 失败
+        # 告警：用户每次编辑账号都会走到这里，误报会刷屏（2026-09-04 生产复盘）
+        return
+    except (OSError, ValueError) as e:
+        # 留痕（2026-08-27 审查）：裸吞会让"改密后仍暂停"无从排查
+        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]", _mask_phone(phone), e)
+        return
+    if not isinstance(data, dict) or phone not in data:
+        return
+    try:
         del data[phone]
         # 唯一临时名：防与 signin 收尾 _save_cred_state 跨进程并发碰撞（对抗性审查 F5）
         tmp = f"{path}.tmp{secrets.token_hex(4)}"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, path)
-    except (OSError, ValueError) as e:
+    except OSError as e:
         # 留痕（2026-08-27 审查）：裸吞会让"改密后仍暂停"无从排查
         logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]", _mask_phone(phone), e)
 
@@ -1094,6 +1120,45 @@ def _verify_attempt_allowed(store, username):
         limit=VERIFY_MAX,
     )
     return allowed
+
+
+def _verify_fail_cooldown_remaining(store, phone, now):
+    """同一手机号验证冷却剩余秒数（0 = 不在冷却中）。
+
+    store 由调用方传入（create_app 内的 _verify_fails，随应用生命周期存在于
+    内存）；gunicorn 单进程多线程，读写统一走 _rate_lock。
+    """
+    with _rate_lock:
+        entry = store.get(phone)
+        if not entry:
+            return 0
+        return max(0, int(entry[2] - now))
+
+
+def _record_verify_failure(store, phone, message, now):
+    """记录一次 web 触发验证的失败，返回原因类别（供审计 detail，不含原始消息）。
+
+    仅「确定性认证失败」（密码错误/账号锁定）计入冷却——网络类失败不是用户
+    过错、重试也不增加易班锁定风险；冷却触发后窗口计数清零，冷却到期重新计数。
+    """
+    if not any(kw in message for kw in VERIFY_FAIL_AUTH_KEYWORDS):
+        return "其他失败"
+    with _rate_lock:
+        fails, window_start, cooldown_until = store.get(phone, (0, 0.0, 0.0))
+        if now - window_start > VERIFY_FAIL_WINDOW:
+            fails, window_start = 0, now
+        fails += 1
+        if fails >= VERIFY_FAIL_MAX:
+            cooldown_until = now + VERIFY_FAIL_COOLDOWN
+            fails, window_start = 0, now
+        store[phone] = (fails, window_start, cooldown_until)
+        # 防御性清理（同 _ip_store_trim 思路）：窗口与冷却均已过期的条目可回收，
+        # 判定用 window_start（冷却至多再延 VERIFY_FAIL_COOLDOWN，已并入 max_age）
+        if len(store) > _IP_STORE_LIMIT:
+            max_age = VERIFY_FAIL_WINDOW + VERIFY_FAIL_COOLDOWN + _IP_STORE_MAX_AGE
+            for k in [k for k, v in store.items() if now - v[1] > max_age]:
+                store.pop(k, None)
+    return "认证失败"
 
 
 def _wait_signin_proc(proc, timeout=300):
@@ -2336,6 +2401,8 @@ def create_app(host=None):
     _restore_fail_rate = {}
     # 账号验证尝试配额 {username.lower(): (count, window_start)}（2026-08-27 P1-2）
     _verify_limits = {}
+    # 账号验证认证失败冷却 {phone: (fails, window_start, cooldown_until)}（2026-09-04 生产复盘）
+    _verify_fails = {}
     # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
     _admin_delete_limits = {}
 
@@ -3620,13 +3687,22 @@ def create_app(host=None):
                 if dom_err:
                     return jsonify({"error": dom_err}), 400
         # R1：添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
-        # 验证尝试受每用户配额限制（P1-2）
+        # 验证尝试受每用户配额限制（P1-2），认证失败另有按手机号冷却（与用户提交路径同口径）
         if _account_verify_enabled():
+            if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
+                return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
             if not _verify_attempt_allowed(
                     _verify_limits, str(session.get("username", ""))):
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_err = _verify_account_clean(clean)
             if verify_err:
+                fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
+                db.audit(
+                    session.get("username") or "?",
+                    "account_add_verify_fail",
+                    _mask_phone(clean["phone"]),
+                    f"验证未通过（{fail_kind}）",
+                )
                 return jsonify({"error": verify_err}), 400
         email = str(data.get("email", "")).strip().lower()
         initial_hash = None  # 锁外预计算（scrypt ~100ms 不阻塞其他请求）
@@ -4548,12 +4624,25 @@ def create_app(host=None):
                     return jsonify({"error": err}), 400
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
         # R1：用户提交账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）
-        # 放锁外：verify 为网络操作，不阻塞其他请求；验证尝试受每用户配额限制（P1-2）
+        # 放锁外：verify 为网络操作，不阻塞其他请求；验证尝试受每用户配额限制（P1-2），
+        # 认证失败另有按手机号的冷却（2026-09-04 生产复盘：密码错误反复重交会把
+        # 易班账号打锁定，冷却同时给用户明确提示）
         if _account_verify_enabled():
+            if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
+                return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
             if not _verify_attempt_allowed(_verify_limits, email_pre):
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
             verify_err = _verify_account_clean(clean)
             if verify_err:
+                fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
+                # 验证失败同样留痕审计（2026-09-04 生产复盘）：否则无法还原
+                # 「某账号被反复试错锁定」事件的提交者与次数；detail 只记类别不记原始消息
+                db.audit(
+                    email_pre,
+                    "my_account_add_verify_fail",
+                    _mask_phone(clean["phone"]),
+                    f"验证未通过（{fail_kind}）",
+                )
                 return jsonify({"error": verify_err}), 400
         with _file_lock:
             accounts = load_accounts()
