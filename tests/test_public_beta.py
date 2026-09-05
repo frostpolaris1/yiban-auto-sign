@@ -52,7 +52,9 @@ class SessionStaleBudgetTest(unittest.TestCase):
                          "会话陈旧不是凭据问题，不得参与账密熔断累计")
 
     def test_risk_and_device_binding_still_clear_cache(self):
-        self.assertEqual(signin._retry_budget("登录失败: 账号或密码错误"), (2, True))
+        # 2026-09-05 起确定性认证失败（账号或密码错误）收敛为终态 1 次不重试
+        # （详见 test_verify_fail_cooldown.py SigninRetryBudgetTest），此处钉住
+        # WAF 风控与"授权设备"两类仍保留清缓存与既有预算
         self.assertEqual(signin._retry_budget("请求被 WAF 风控拦截"), (2, True))
         self.assertEqual(signin._retry_budget("签到失败: 请使用授权设备进行签到"),
                          (signin.MAX_ATTEMPTS, True))
