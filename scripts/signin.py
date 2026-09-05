@@ -585,6 +585,15 @@ def is_waf_blocked(response_text):
 # ---------------------------------------------------------------------------
 # 重试分级：判断一次失败是否值得重试、重试上限
 # ---------------------------------------------------------------------------
+# 确定性认证失败特征：账号密码本身错误或已被易班侧锁定（msgCN 原文），重试只会
+# 把同一次错误登录再提交一遍，还会加速触发易班「错误尝试过多」的账号锁定
+# （2026-09-04 生产复盘）——终态不重试。
+AUTH_FAIL_KEYWORDS = [
+    "账号或密码错误",
+    "错误尝试过多",
+]
+# 确定性认证失败的总尝试上限：仅首试 1 次
+AUTH_FAIL_MAX_ATTEMPTS = 1
 # 风控/凭据类失败特征：重试不仅无用，还可能加重账号标记
 RISK_FAIL_KEYWORDS = [
     "账号或密码错误",
@@ -608,6 +617,7 @@ def classify_failure(message):
 
     - 风控/凭据类：最多重试 1 次（RISK_MAX_ATTEMPTS），避免加重账号标记
     - 其他失败（网络/未知）：最多重试 MAX_ATTEMPTS 次
+    （确定性认证失败在 _retry_budget 处更早拦截，不会再走到这里）
     （2026-08-15 审查清理：原返回 (max_attempts, retryable) 的 retryable 恒为 True
     且无调用方使用——死返回值；TRANSIENT_FAIL_KEYWORDS 死常量一并删除）
     """
@@ -642,10 +652,15 @@ def _is_session_stale_failure(message):
 def _retry_budget(message):
     """返回 (该失败下的最大尝试次数, 是否应清除该账号会话缓存)。
 
-    会话陈旧优先于 classify_failure：它既不在风控关键词里（原实现据此给满 4 次
-    上限），又不是"再试一次就可能好"的瞬时故障——不清缓存重登，重试只是把同一份
-    死缓存的失败原样复演。无签到点位同理且更绝对：易班侧没有数据，重试无意义。
+    确定性认证失败优先于一切：密码错误/账号锁定重试无意义且有害（多一次真实
+    登录加速易班侧锁定）。会话陈旧次优先：它既不在风控关键词里（原实现据此给满
+    4 次上限），又不是"再试一次就可能好"的瞬时故障——不清缓存重登，重试只是把
+    同一份死缓存的失败原样复演。无签到点位同理且更绝对：易班侧没有数据，重试
+    无意义。
     """
+    if any(kw in message for kw in AUTH_FAIL_KEYWORDS):
+        # 清缓存同样成立：登录失败的会话残片没有复用价值
+        return AUTH_FAIL_MAX_ATTEMPTS, True
     if any(kw in message for kw in NO_POSITION_FAIL_KEYWORDS):
         return NO_POSITION_MAX_ATTEMPTS, False
     if _is_session_stale_failure(message):
@@ -2497,8 +2512,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
     流程（schedule 为空=原行为）：启动随机延迟 → 按签到模式（列表顺序 / 列表随机）
     确定执行顺序逐个尝试（账号间随机间隔）；失败的账号不立即重试，放入队尾等待下一轮；
-    每账号总尝试次数受 classify_failure 分级控制（风控类最多 2 次，其他最多 3 次，
-    MAX_ATTEMPTS=3 语义）；同一账号两次尝试间隔不小于 RETRY_MIN_INTERVAL 秒，避免连击。
+    每账号总尝试次数受 _retry_budget 分级控制（确定性认证失败 1 次不重试、
+    风控类最多 2 次，其他最多 3 次，MAX_ATTEMPTS=3 语义）；同一账号两次尝试间隔
+    不小于 RETRY_MIN_INTERVAL 秒，避免连击。
 
     schedule 非空（自动错峰模式，调度 v2 时间驱动队列）：按 {phone: datetime} 时间点到点执行
     （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新采样到
