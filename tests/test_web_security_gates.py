@@ -280,10 +280,10 @@ class Batch16FixesTest(unittest.TestCase):
 
     # ---- 版本号 ----
     def test_version_synced(self):
-        """APP_VERSION 与 web/__init__.py __version__ 同步为 0.27.0。"""
-        self.assertEqual(self.webapp.APP_VERSION, "0.27.0")
+        """APP_VERSION 与 web/__init__.py __version__ 同步为 0.28.0。"""
+        self.assertEqual(self.webapp.APP_VERSION, "0.28.0")
         with open(os.path.join(BASE, "web", "__init__.py"), encoding="utf-8") as f:
-            self.assertIn('__version__ = "0.27.0"', f.read())
+            self.assertIn('__version__ = "0.28.0"', f.read())
 
 
 import unittest.mock  # noqa: E402
