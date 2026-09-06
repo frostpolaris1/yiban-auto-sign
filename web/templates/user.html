@@ -260,8 +260,6 @@
     <p id="mail-notify-tip" class="text-xs text-zinc-400 dark:text-zinc-500 mt-1"></p>
   </section>
 
-<!-- 编辑模态 -->
-<!-- Toast -->
 <!-- Toast（动效同管理端：浮入 / 快速淡出 / 可中断，见上方 <style> #toast 规则；data-hidden 替代 hidden 以支持过渡） -->
 <div id="toast" role="status" aria-live="polite" data-hidden class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
 
@@ -296,7 +294,7 @@
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（可选，不清楚就留空）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="如：Vivo-V2454A"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码只随「签到请求」提交，不参与登录。仅当学校开启设备绑定（签到时报“请使用授权设备进行签到”）时才需填，且必须与易班 App 上报的值完全一致：格式为“品牌-型号”，冒号写成 -，不要写商品名。不确定就留空。</p>
+        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码只随签到请求提交，不用于登录。仅当学校开启设备绑定（签到提示“请使用授权设备进行签到”）时才需填写，且须与易班 App 上报的完全一致：格式“品牌-型号”，冒号写成 -，不要写商品名。不确定就留空。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（可选，不清楚就留空）</label>
