@@ -40,6 +40,27 @@ STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
+# 批次16 P2-4 引入、批次18 刀3 M6 前移：识别「当日已触发过」标记。
+# 06:31 与 07:10 是同一脚本的两次 cron 调用，仅靠 sign-status 状态文件无法区分——
+# 首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）时不写状态文件，07:10 补签
+# 轮读到的状态文件可能不存在，与首签轮无异。
+# 标记语义（M6 修订）：「当日 run.sh 已触发过」（而非「首签轮已抢到锁」）——标记
+# 写入前移到 flock 之前，06:31 触发被 flock 弹开（上一触发进程仍在运行）时同样
+# 留痕；此后任意一次成功拿到锁的触发读到标记即以补签轮身份运行（导出
+# YIBAN_SECOND_RUN=1，signin.py 的 _is_second_run 据此判定），解除「部分成功 +
+# 窗口外」告警被首签轮身份压制的缺陷（_maybe_alert_zero_success：补签轮才告警，
+# 而被弹开轮之后已无下一触发点）。因此 flock 弹开路径（exit 0）发生在标记写入
+# 之后——这正是目的：被弹开的触发也计入「当日已触发过」。
+# 标记按日期命名，跨日自动失效。本块在 flock 之前执行、无锁保护，故创建改用
+# noclobber 原子测试创建：并发触发时仅一次创建成功，其余一律按补签轮处理
+# （fail-safe 侧：宁可多告警、不可漏告警；实际执行仍由 flock 串行化）。
+RUN_MARKER="$STATE_DIR/yiban-run-today-$(date +%Y-%m-%d).marker"
+if ( set -o noclobber; : > "$RUN_MARKER" ) 2>/dev/null; then
+    : # 今日首次触发：本轮按首签轮运行
+else
+    export YIBAN_SECOND_RUN=1
+fi
+
 # 单实例锁：自动错峰模式下 06:31 进程可能 sleep 等待时间点，
 # 防止 07:10 的 cron 并发启动第二个进程（重复签到/并发竞争）
 # 使用 /var/lock（仅 yiban 用户可写），避免 /tmp 下可被任意用户预测/占用导致 DoS
@@ -82,19 +103,9 @@ if [ -f "$STATUS_FILE" ]; then
     fi
 fi
 
-# 批次16 P2-4：识别补签轮（07:10）。06:31 与 07:10 是同一脚本的两次 cron 调用，
-# 仅靠 sign-status 状态文件无法区分——首签轮被 timeout 击杀（exit 124）或异常失败
-# （exit 1）时不写状态文件，07:10 补签轮读到的状态文件可能不存在，与首签轮无异。
-# 因此在首签轮执行前先落「今日已运行」标记；补签轮（标记已存在）导出
-# YIBAN_SECOND_RUN=1，signin.py 据此判定 is_second_run，避免「部分成功+窗口外」
-# 零告警（B12-2 在首签被杀分支复发）。标记按日期命名，跨日自动失效；
-# flock 已保证同一时刻仅一个进程，写入无并发竞态。
-RUN_MARKER="$STATE_DIR/yiban-run-today-$(date +%Y-%m-%d).marker"
-if [ -f "$RUN_MARKER" ]; then
-    export YIBAN_SECOND_RUN=1
-else
-    : > "$RUN_MARKER"
-fi
+# 批次16 P2-4 / 批次18 刀3 M6：补签轮判定已前移至 flock 之前的 RUN_MARKER 块
+# （见文件头部），此处 STATUS_FILE 的 SUCCESS 幂等检查保持在标记块之后不变——
+# 已成功的当日无需再区分轮次，直接跳过。
 
 # 记录脚本开始执行
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run.sh 开始执行 ===" >> "$LOG_FILE"
@@ -107,7 +118,10 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python版本: $("$PY" --version 2>&1)" >> "
 # 与 signin.py _schedule_config 同一事实源，默认 07:50）− 当前时刻 + 5 分钟余量，
 # 下限 10 分钟。此前固定 1800s：06:31 启动 → 07:01 强杀，账号增多/自选开放后
 # 时间点排到窗口后段会被误杀漏签（07:10 备用 cron 重跑仍可能再杀，反复漏签）。
-# YIBAN_RUN_TIMEOUT_SEC 显式设置时优先（管理员手动覆盖）。
+# YIBAN_RUN_TIMEOUT_SEC 显式设置时优先（管理员手动覆盖）——批次18 刀3 P3-2：
+# 显式值必须为 ≥600 的整数（与 docker/scheduler.py _child_timeout 的 max(600,·)
+# 同口径），非法或过小（<600 会把子进程几乎立刻杀掉造成全员漏签）→ 打 WARNING
+# 并回退动态计算默认值；空值（未设置）走默认分支不动。
 END_HHMM="${YIBAN_SIGN_END:-07:50}"
 # 校验格式与 signin.py _parse_hhmm 一致（接受 7:50 与 07:50）；非法回退默认 07:50
 if ! echo "$END_HHMM" | grep -qE '^([01]?[0-9]|2[0-3]):[0-5][0-9]$'; then
@@ -118,8 +132,20 @@ END_TS=$(date -d "today $END_HHMM" +%s)
 NOW_TS=$(date +%s)
 RUN_TIMEOUT=$(( END_TS - NOW_TS + 300 ))
 [ "$RUN_TIMEOUT" -lt 600 ] && RUN_TIMEOUT=600
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] 签到超时: ${YIBAN_RUN_TIMEOUT_SEC:-$RUN_TIMEOUT}s（窗口至 $END_HHMM）" >> "$LOG_FILE"
-timeout "${YIBAN_RUN_TIMEOUT_SEC:-$RUN_TIMEOUT}" "$PY" scripts/signin.py >> "$LOG_FILE" 2>&1
+# P3-2 钳位：先去首尾空白（.env 逐行解析不裁剪值内空格，与 scheduler .strip() 对齐）
+RUN_TIMEOUT_SEC="$RUN_TIMEOUT"
+_TOS_RAW="${YIBAN_RUN_TIMEOUT_SEC:-}"
+_TOS_RAW="${_TOS_RAW#"${_TOS_RAW%%[![:space:]]*}"}"
+_TOS_RAW="${_TOS_RAW%"${_TOS_RAW##*[![:space:]]}"}"
+if [ -n "$_TOS_RAW" ]; then
+    if [[ "$_TOS_RAW" =~ ^[0-9]+$ ]] && [ "$_TOS_RAW" -ge 600 ] 2>/dev/null; then
+        RUN_TIMEOUT_SEC="$_TOS_RAW"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 警告: YIBAN_RUN_TIMEOUT_SEC=$_TOS_RAW 非法（须为 ≥600 的整数），回退动态计算 ${RUN_TIMEOUT}s" >> "$LOG_FILE"
+    fi
+fi
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 签到超时: ${RUN_TIMEOUT_SEC}s（窗口至 $END_HHMM）" >> "$LOG_FILE"
+timeout "$RUN_TIMEOUT_SEC" "$PY" scripts/signin.py >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
 # 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：

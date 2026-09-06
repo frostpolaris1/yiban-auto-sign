@@ -683,6 +683,8 @@ on:
 | `YIBAN_PHONE_MODEL` | 设备型号（如 `Vivo-XXXX`），账号未配置设备信息时全局回退 | 视情况 |
 | `YIBAN_PHONE_CODE` | 设备唯一识别码（64位十六进制字符串），账号未配置设备信息时全局回退 | 视情况 |
 | `YIBAN_NOTIFY_URL` | 通知 webhook URL | 可选 |
+| `YIBAN_LOGINFAIL_DAILY_MAX` | 登录失败告警独立推送日额度（默认 `3`，`0`=不限）：web 登录失败告警单独记账，与普通/紧急告警额度分账，防暴力破解类告警把当日额度烧完后审计链异常等真告警在手机端被静默吞掉（批次18 刀2） | 可选 |
+| `YIBAN_BATCH_SIGN_COOLDOWN_SEC` | 手动签到全局冷却秒数（默认 `1800`，`0`=关闭）：批量**与单条**手动签到共用同一冷却计数，队列/子进程成功触发后窗口内拒绝再次触发，防被盗管理员会话循环触发真实登录打爆易班风控（批次18 刀2：单条手动签到同样受此约束；60 秒同账号防抖语义另计） | 可选 |
 | `YIBAN_SIGN_START` / `YIBAN_SIGN_END` | 签到窗口（`HH:MM`，默认 `06:30` / `07:50`；网页「系统设置」修改后写入） | 可选 |
 | `YIBAN_SUNDAY_SIGN` | 周日签到开关：`1`=周日也执行，`0`/缺省=周日跳过（网页「系统设置」开关） | 可选 |
 | `YIBAN_SATURDAY_SIGN` | 周六签到开关：`1`/缺省=周六照常执行，`0`=周六跳过（网页「系统设置」开关） | 可选 |
@@ -875,7 +877,9 @@ sqlite3 /opt/yiban-auto-sign/yiban.db "SELECT ts, username, action, target FROM 
 
 **重复账号排查**（历史数据清理，v0.20.0+）：`python3 scripts/list_duplicate_owners.py` 列出"同一用户多个未删除账号"的记录，供人工清理后自动恢复"一人一号"约束。
 
-**备份**：`scripts/backup.sh`（每日 cron 02:00）——`sqlite3 .backup` 一致性快照 + 加密密钥 + 异机加密副本 + 30 天保留；恢复演练 `bash backup.sh --restore <包> <目录>`。
+**备份**：`scripts/backup.sh`（每日 cron 02:00）——`sqlite3 .backup` 一致性快照 + 加密密钥 + 30 天保留；恢复演练 `bash backup.sh --restore <包> <目录>`。本地归档自 M24（2026-08-22）起默认加密（age/gpg，明文落盘需显式 `BACKUP_PLAINTEXT=1`）。
+
+> ⚠️ **异机副本暂缓**（2026-09-05 用户裁决）：`REMOTE_BACKUP` 异机加密副本暂不启用，备份仅存本机。剩余风险：root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。恢复口令存于 `/etc/yiban/backup-passphrase`（0600，仅 root 可读）——**该口令文件必须另行离机保存一份**（密码管理器/离线介质），否则主机损毁 = 备份与口令同灭、密文不可恢复。后续如需恢复异地容灾，配置 `REMOTE_BACKUP` 即可启用（见 `scripts/backup.sh` 头部说明）。
 
 **回滚逃生门**：`python3 scripts/db_export.py --out /tmp/export` 可将数据库导出回 JSON 格式（降级/迁移用）。
 
@@ -1068,7 +1072,7 @@ workflow-keepalive:
 <details>
 <summary><b>Q5：报错 "遇到 ydclearance 反爬"</b></summary>
 
-- 已在 `requirements.txt` 中包含 `js2py`，正常情况下不会触发此错误
+- 此前依赖 `js2py` 在本机执行网页 JS 破解该反爬，但 js2py 存在无修复版本的沙箱逃逸漏洞 CVE-2024-28397（公开 PoC 可实现任意代码执行），已在批次14 移除，代码也不再依赖——默认登录流程已改为 fyiban 同款真实 App 请求特征，正常情况下不会走到该反爬页面
 - 若仍出现，可能是 GitHub Actions 的 IP 被风控，请改用服务器部署方案
 </details>
 

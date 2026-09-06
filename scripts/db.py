@@ -319,11 +319,6 @@ def migrate_v2(conn):
     )
 
 
-def _maybe_add_account_columns(conn):
-    """兼容旧入口：v1 迁移的薄封装（行为由 migrate_v1 负责）。"""
-    migrate_v1(conn)
-
-
 # ---------------------------------------------------------------------------
 # 审计哈希链（Phase 3）
 # ---------------------------------------------------------------------------
@@ -2007,12 +2002,6 @@ def update_user(email, fields):
             f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0", vals
         )
         return cur.rowcount
-
-
-def delete_user(email):
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute("DELETE FROM users WHERE email=? AND deleted=0", (email,))
 
 
 # ---------------------------------------------------------------------------

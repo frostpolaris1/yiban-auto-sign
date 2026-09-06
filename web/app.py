@@ -6605,7 +6605,10 @@ def main():
 
     # 日志 handler 统一由 create_app 配置（_DailyFlockFileHandler → 按天文件）；
     # 此处不再 basicConfig(stderr)——双重 handler 会把每条日志写两遍。
-    app = create_app(host=args.host)
+    # 批次18 刀3 P3-14：原实现先 create_app 一次、查完管理员配置后再 create_app
+    # 一次——第二次调用重复执行口令迁移 / init_db / 日志 handler 幂等装配等全部
+    # 启动逻辑（纯浪费，多 worker 下还加倍迁移竞态窗口）。现只调用一次；
+    # check_admin_configured 仅读 .env，置于其前行为等价。
     logger.info(
         "启动网页管理系统: http://%s:%d（数据库: %s / 日志: %s / .env: %s）",
         args.host,
