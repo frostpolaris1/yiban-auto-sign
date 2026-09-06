@@ -139,6 +139,10 @@
     .input {
       @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 px-3 py-2;
     }
+    /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
+    @media (max-width: 639px) {
+      .input { font-size: 16px; }
+    }
     .input-sm { @apply px-3 py-1.5; }
     .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
     .btn-primary {
@@ -276,9 +280,9 @@
     <form id="account-form" class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
-        <input id="f-name" type="text" maxlength="50" placeholder="如：小李的手机（建议用网名或代号）"
+        <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">该名称会显示给管理员，用于定位你的签到问题。建议用网名或代号，不必填真实姓名。</p>
+        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">备注会显示给管理员，用于审核与定位签到问题；填写要求以公告为准。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-phone">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>

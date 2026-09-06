@@ -167,6 +167,10 @@
     .input {
       @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2;
     }
+    /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
+    @media (max-width: 639px) {
+      .input { font-size: 16px; }
+    }
     .input-sm { @apply px-3 py-1.5; }
     .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
     .btn-primary {
@@ -1026,9 +1030,9 @@
       <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label for="m-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
-          <input id="m-name" type="text" maxlength="50" placeholder="如：小李的手机（建议用网名或代号）"
+          <input id="m-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
-          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">该名称会显示给管理员，用于定位你的签到问题。建议用网名或代号，不必填真实姓名。</p>
+          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">备注会显示给管理员，用于审核与定位签到问题；填写要求以公告为准。</p>
         </div>
 
         <div>
@@ -1089,7 +1093,7 @@
     <form id="account-form" class="space-y-3">
       <div>
         <label for="f-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
-        <input id="f-name" type="text" maxlength="50" placeholder="如：小明同学（该名称对用户可见，建议用网名/代号）"
+        <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
                class="input">
       </div>
       <div id="f-email-wrap">
@@ -1103,8 +1107,9 @@
           <input id="f-email-manual" type="email" maxlength="64" placeholder="输入未注册邮箱（自动注册并进入待审核）"
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
           <input id="f-initial-password" type="password" maxlength="64" autocomplete="new-password"
-                 placeholder="该邮箱未注册：填写初始密码为其创建账号（至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类）"
+                 placeholder="初始密码（至少 10 位）"
                  class="hidden mt-2 w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <p id="f-initial-password-hint" class="hidden mt-2 text-xs text-zinc-500 dark:text-zinc-400">至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类</p>
         </div>
       <div>
         <label for="f-phone" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -1149,7 +1154,7 @@
     <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-1" id="modal-password-title">重置密码</div>
     <p id="modal-password-desc" class="text-xs text-zinc-500 dark:text-zinc-400 mb-3"></p>
     <form id="modal-password-form">
-      <input id="modal-password-input" type="password" autocomplete="new-password" placeholder="至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类" class="input">
+      <input id="modal-password-input" type="password" autocomplete="new-password" placeholder="设置新密码（至少 10 位）" class="input">
       <div class="flex items-center gap-2 pt-4">
         <button type="submit" id="modal-password-submit" class="btn-primary">确认重置</button>
         <button type="button" onclick="closePasswordModal()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
@@ -1307,7 +1312,8 @@ function openPwModal(desc, cb, mode) {
   $('modal-password-title').textContent = isConfirm ? '安全确认' : '重置密码';
   $('modal-password-desc').textContent = desc;  // textContent 赋值：动态数据（邮箱等）无注入面
   $('modal-password-input').value = '';
-  $('modal-password-input').placeholder = isConfirm ? '输入当前管理员密码' : PW_POLICY_HINT;
+  // placeholder 保持短句：手机端输入框内不换行，完整口径由可换行的 desc 承载
+  $('modal-password-input').placeholder = isConfirm ? '输入当前管理员密码' : '设置新密码（至少 10 位）';
   $('modal-password-input').autocomplete = isConfirm ? 'current-password' : 'new-password';
   $('modal-password-submit').textContent = isConfirm ? '确认操作' : '确认重置';
   openModal($('modal-password'));  // 打开即聚焦密码输入框（容器内首个可交互元素）
@@ -1398,6 +1404,7 @@ $('f-email').addEventListener('change', () => {
   const manual = $('f-email').value === '__manual__';
   $('f-email-manual').classList.toggle('hidden', !manual);
   $('f-initial-password').classList.toggle('hidden', !manual);
+  $('f-initial-password-hint').classList.toggle('hidden', !manual);
 });
 
 function getEmailValue() {
@@ -1895,6 +1902,7 @@ async function openForm(index) {
   $('f-email-manual').classList.add('hidden');
   $('f-initial-password').value = '';
   $('f-initial-password').classList.add('hidden');
+  $('f-initial-password-hint').classList.add('hidden');
   $('f-email-wrap').classList.toggle('hidden', index !== null);  // 编辑时不显示邮箱（归属不变）
   if (index === null) loadAvailableUsers();  // 添加时加载可绑定用户
   if (a) {

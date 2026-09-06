@@ -96,6 +96,10 @@
     .input {
       @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 px-3 py-2;
     }
+    /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
+    @media (max-width: 639px) {
+      .input { font-size: 16px; }
+    }
     .input-sm { @apply px-3 py-1.5; }
     .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
     .btn-primary {
@@ -161,7 +165,7 @@
           class="fixed top-4 right-4 z-50 w-11 h-11 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow"><span data-icon="moon"></span></button>
   <div class="w-full max-w-md">
 <!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center pl-4 pr-16 py-2">
   <span id="announcement-text"></span>
 </div>
 
@@ -220,12 +224,13 @@
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
           <div class="relative">
             <input id="reg-password" type="password" required autocomplete="new-password" aria-describedby="reg-password-error"
-                   placeholder="至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类"
+                   placeholder="设置密码（至少 10 位）"
                    class="input input-ring pr-10">
             <button type="button" data-pw-toggle="reg-password" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
           </div>
           <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类</p>
+          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password2">确认密码 <span class="text-red-500 dark:text-red-400">*</span></label>
