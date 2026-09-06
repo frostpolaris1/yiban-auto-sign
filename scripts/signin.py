@@ -3123,13 +3123,6 @@ def _apply_only_filter(accounts, only_arg):
 
 
 def main():
-    # 批次7 P3-15：进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
-    # 创建即 0600。宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器
-    # scheduler 与无宿主脚本的裸调路径（Windows 无实际效果，忽略）。
-    os.umask(0o077)
-    # 批次18 刀3 P3-13：日志装配从模块导入期延迟到 CLI 入口（幂等；覆盖
-    # --check-config / --probe / --only 全部路径），模块导入零副作用。
-    _setup_cli_logging()
     """主函数：加载账号配置并执行签到。
 
     支持：
@@ -3140,6 +3133,13 @@ def main():
     - --only 指定手机号（逗号分隔），仅供 TUI 手动签到单个账号
     - --check-config 仅检查配置，不发任何网络请求
     """
+    # 批次7 P3-15：进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
+    # 创建即 0600。宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器
+    # scheduler 与无宿主脚本的裸调路径（Windows 无实际效果，忽略）。
+    os.umask(0o077)
+    # 批次18 刀3 P3-13：日志装配从模块导入期延迟到 CLI 入口（幂等；覆盖
+    # --check-config / --probe / --only 全部路径），模块导入零副作用。
+    _setup_cli_logging()
     parser = argparse.ArgumentParser(description="易班自动签到")
     parser.add_argument(
         "--check-config", action="store_true", help="仅检查账号配置（脱敏打印），不发起任何网络请求"

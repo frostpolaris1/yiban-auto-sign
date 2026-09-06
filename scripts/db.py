@@ -3434,7 +3434,7 @@ def _session_cache_key():
 
 
 def _session_cache_ttl_hours():
-    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 12）：缺失/非法/非正回退默认。
+    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 6）：缺失/非法/非正回退默认。
 
     M13：配置越界（<1h 或 >72h）同样回退默认并告警——此前可配 8760h 之类
     超大值，把早已失效的会话凭据跨季反复复用，等于放大风控与撞库面。
