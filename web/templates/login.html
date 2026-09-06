@@ -467,6 +467,24 @@ async function restoreAccount() {
 // Esc 关闭与 Tab 焦点圈定由下方全局 keydown 统一处理；遮罩点击关闭保持原逻辑。
 const LOGIN_MODAL_IDS = ['agreement-modal', 'privacy-modal', 'changelog-modal'];
 const loginModalOpeners = {};  // 模态 id -> 打开前的焦点元素
+// 背景滚动锁：模态打开期间锁 html/body 滚动，防止滚轮/触摸/键盘滚动穿透到背景页（滚动链）。
+// 计数支持叠层；锁死前补偿滚动条宽度，避免内容区横向跳动。
+const loginScrollLock = { count: 0 };
+function lockPageScroll() {
+  loginScrollLock.count++;
+  if (loginScrollLock.count > 1) return;
+  const gap = window.innerWidth - document.documentElement.clientWidth;
+  if (gap > 0) document.body.style.paddingRight = gap + 'px';
+  document.documentElement.style.overflow = 'hidden';
+  document.body.style.overflow = 'hidden';
+}
+function unlockPageScroll() {
+  if (loginScrollLock.count > 0) loginScrollLock.count--;
+  if (loginScrollLock.count > 0) return;
+  document.documentElement.style.overflow = '';
+  document.body.style.overflow = '';
+  document.body.style.paddingRight = '';
+}
 function modalFocusables(modal) {
   return Array.from(modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
     .filter(el => !el.disabled && !el.closest('.hidden'));
@@ -476,6 +494,7 @@ function openModal(id) {
   if (!modal || !modal.classList.contains('hidden')) return;
   loginModalOpeners[id] = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   modal.classList.remove('hidden');
+  lockPageScroll();
   // 每次打开从内容顶部开始：先重置滚动区，再 focus 首元素且不触发浏览器把它滚到末尾
   // （协议/隐私为长文档，末尾「我知道了」按钮是首可聚焦元素，默认应展示文档开头而非结尾）
   modal.querySelectorAll('.overflow-y-auto, .overflow-auto').forEach(el => el.scrollTop = 0);
@@ -486,6 +505,7 @@ function closeModal(id) {
   const modal = document.getElementById(id);
   if (!modal || modal.classList.contains('hidden')) return;
   modal.classList.add('hidden');
+  unlockPageScroll();
   const opener = loginModalOpeners[id];
   delete loginModalOpeners[id];
   if (opener && opener.isConnected) opener.focus();
@@ -596,7 +616,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
 <!-- 用户协议弹窗 -->
 <div id="agreement-modal" role="dialog" aria-modal="true" aria-labelledby="agreement-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeAgreement()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto overscroll-contain">
     <div id="agreement-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
     <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="agreement-content">
       {{ agreement_html | safe }}
@@ -609,7 +629,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
 <!-- 隐私政策弹窗 -->
 <div id="privacy-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closePrivacy()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto overscroll-contain">
     <div id="privacy-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">隐私政策</div>
     <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="privacy-content">
       {{ privacy_html | safe }}
@@ -627,7 +647,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
       <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
       <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
     </div>
-    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed"></div>
+    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed"></div>
   </div>
 </div>
 </body>

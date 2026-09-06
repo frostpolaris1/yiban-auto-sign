@@ -1094,7 +1094,7 @@
   <div class="absolute inset-0 bg-black/30" onclick="closeForm()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md">
     <form id="account-form" class="flex flex-col max-h-[90vh]">
-      <div class="overflow-y-auto p-5 pb-3 space-y-3">
+      <div class="overflow-y-auto overscroll-contain p-5 pb-3 space-y-3">
         <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
       <div>
         <label for="f-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
@@ -1249,6 +1249,25 @@ function toast(msg, isError = false) {
 // ================= 模态焦点管理（a11y 整改：打开记录触发元素→聚焦首控件、Tab 圈闭、Esc 关闭、焦点归还） =================
 const _modalStack = [];  // [{ el, trigger }]，后进先出支持叠层
 
+// 背景滚动锁：模态打开期间锁 html/body 滚动，防止滚轮/触摸/键盘滚动穿透到背景页（滚动链）。
+// 计数支持叠层；锁死前补偿滚动条宽度，避免内容区横向跳动。
+let _modalScrollLockCount = 0;
+function _lockPageScroll() {
+  _modalScrollLockCount++;
+  if (_modalScrollLockCount > 1) return;
+  const gap = window.innerWidth - document.documentElement.clientWidth;
+  if (gap > 0) document.body.style.paddingRight = gap + 'px';
+  document.documentElement.style.overflow = 'hidden';
+  document.body.style.overflow = 'hidden';
+}
+function _unlockPageScroll() {
+  if (_modalScrollLockCount > 0) _modalScrollLockCount--;
+  if (_modalScrollLockCount > 0) return;
+  document.documentElement.style.overflow = '';
+  document.body.style.overflow = '';
+  document.body.style.paddingRight = '';
+}
+
 function _modalFocusables(el) {
   return Array.from(el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
     .filter(x => !x.disabled && x.offsetParent !== null);  // offsetParent 过滤 hidden/不可见元素
@@ -1258,6 +1277,7 @@ function openModal(el, trigger) {
   if (!el || _modalStack.some(m => m.el === el)) return;
   _modalStack.push({ el, trigger: trigger || document.activeElement });
   el.classList.remove('hidden');
+  _lockPageScroll();
   const first = _modalFocusables(el)[0];
   if (first) first.focus();
   else el.focus();  // 容器带 tabindex="-1" 兜底
@@ -1268,6 +1288,7 @@ function closeModal(el) {
   if (i === -1) return;
   const { trigger } = _modalStack.splice(i, 1)[0];
   el.classList.add('hidden');
+  _unlockPageScroll();
   // 焦点归还触发元素（列表重绘可能已移除该元素，contains 防护）
   if (trigger && document.contains(trigger) && typeof trigger.focus === 'function') trigger.focus();
 }
@@ -3636,7 +3657,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
       <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
       <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
     </div>
-    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed"></div>
+    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed"></div>
   </div>
 </div>
 </body>
