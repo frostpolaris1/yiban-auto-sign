@@ -192,15 +192,36 @@ def _make_log_handler():
         return logging.StreamHandler()
 
 
-_handler = _make_log_handler()
-_handler.setFormatter(logging.Formatter(
-    "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-))
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    handlers=[_handler],
-)
+# 批次18 刀3 P3-13：CLI 日志装配幂等标记。原实现把 handler 装配放在模块导入期
+# （logging.basicConfig(handlers=[_handler])）——web/app.py 导入 signin 时即向 root
+# 挂 _FlockFileHandler，create_app 随后再挂 _DailyFlockFileHandler（其去重守卫只认
+# 自身类），root 上出现两个指向同一日志目录的 FileHandler，每条日志写两遍。
+_cli_logging_ready = False
+
+
+def _setup_cli_logging():
+    """CLI 入口日志装配（批次18 刀3 P3-13）：把按天文件 handler 挂到 root logger。
+
+    装配从模块导入期延迟到 main() 入口（--check-config / --probe / --only 均经
+    main()，覆盖全部 CLI 路径；TUI 不直接 import signin，经子进程调用 signin.py
+    同样走 main()）。模块导入自此零副作用：web 进程 import signin 不再向 root
+    挂 handler，双写症状（每条日志落盘两遍）消除；幂等保护重复调用不重复挂载。
+    """
+    global _cli_logging_ready
+    if _cli_logging_ready:
+        return
+    _cli_logging_ready = True
+    handler = _make_log_handler()
+    handler.setFormatter(logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        handlers=[handler],
+    )
+
+
 logger = logging.getLogger("yiban")
 
 
@@ -398,6 +419,11 @@ _DEFAULT_SLOW_SIGN_SEC = 30     # P6 耗时告警阈值（秒）：单次尝试�
 # _schedule_config 每次调度都会调用，非法窗口回退默认窗口的告警只收集一次，
 # 避免同一个配置错误在每日汇总邮件里重复出现 N 次
 _invalid_window_notified = False
+
+# 有效签到窗口为空的一次性告警标记（批次18 刀3 P3-3）：
+# _schedule_blocks 每次调度都会调用（多账号/多轮），前后裁剪吃满窗口回退默认
+# 窗口的邮件告警同样只收集一次（镜像上方 F3 去重模式），防汇总邮件刷屏
+_edge_empty_window_notified = False
 
 
 def _parse_hhmm(value, default):
@@ -2262,6 +2288,26 @@ def _schedule_blocks(cfg):
             "有效签到窗口为空（窗口 %s~%s、前裁 %ss 后裁 %ss），回退默认窗口 06:30~07:50",
             cfg["sign_start"], cfg["sign_end"], cfg["edge_front_sec"], cfg["edge_back_sec"],
         )
+        # 批次18 刀3 P3-3：镜像 _schedule_config 的 F3 模式（一次性去重）——原实现
+        # 只写 WARNING 日志，管理员在 Web 界面看到的裁剪设置"看起来生效"、实际
+        # 签到时刻完全不同且无人知情。现并入当日汇总邮件（A 线）一次，确保
+        # 前后裁剪配置错误可被管理员发现；去重防多账号/多轮调用刷屏。
+        global _edge_empty_window_notified
+        if not _edge_empty_window_notified:
+            _edge_empty_window_notified = True
+            _collect_admin_mail(
+                "签到窗口配置异常",
+                (
+                    f"有效签到窗口为空：窗口 "
+                    f"{cfg['sign_start'][0]:02d}:{cfg['sign_start'][1]:02d}"
+                    f"~{cfg['sign_end'][0]:02d}:{cfg['sign_end'][1]:02d}"
+                    f" 被前后裁剪吃满（前 {cfg['edge_front_sec']}s / 后 "
+                    f"{cfg['edge_back_sec']}s），已回退默认窗口 06:30~07:50，"
+                    "实际签到时间将与配置不符！请调小 "
+                    "YIBAN_WINDOW_EDGE_FRONT_SEC / YIBAN_WINDOW_EDGE_BACK_SEC"
+                    "（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
+                ),
+            )
         start_min = _DEFAULT_SIGN_START[0] * 60 + _DEFAULT_SIGN_START[1]
         end_min = _DEFAULT_SIGN_END[0] * 60 + _DEFAULT_SIGN_END[1]
         front = back = _DEFAULT_EDGE_SEC / 60.0
@@ -3081,6 +3127,9 @@ def main():
     # 创建即 0600。宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器
     # scheduler 与无宿主脚本的裸调路径（Windows 无实际效果，忽略）。
     os.umask(0o077)
+    # 批次18 刀3 P3-13：日志装配从模块导入期延迟到 CLI 入口（幂等；覆盖
+    # --check-config / --probe / --only 全部路径），模块导入零副作用。
+    _setup_cli_logging()
     """主函数：加载账号配置并执行签到。
 
     支持：

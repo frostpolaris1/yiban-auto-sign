@@ -30,19 +30,18 @@ if "YIBAN_LOG_FILE" not in os.environ:
 
 def _close_root_file_handlers():
     """关闭并移除 root logger 上全部文件 handler（_DailyFlockFileHandler /
-    signin._FlockFileHandler / 普通 FileHandler 均为 logging.FileHandler 子类）。
+    普通 FileHandler 均为 logging.FileHandler 子类）。
 
     create_app 会给 root logger 挂按天文件 handler，测试后不关闭会在 Windows 上
     持有 sign-*.log 文件句柄——test_logs_by_date 的 setUp 删除临时按天日志时抛
     PermissionError（全量回归 11 failed）。移除 handler 后，下一轮 create_app 的
     幂等逻辑会重新挂载，行为不受影响。
 
-    除 root 外还需处理 signin._handler：pytest 下 root 已有捕获 handler，
-    signin 模块顶层 logging.basicConfig 变成 no-op，其创建的 _FlockFileHandler
-    未挂到 root 却已打开当日日志文件，游离于 root 之外——同样要显式关闭。
+    批次18 刀3 P3-13 后 signin 的 handler 装配延迟到 main()（模块导入零副作用），
+    测试进程不再出现"游离于 root 之外"的 signin._handler；历史版本需显式关闭它
+    （import 期 basicConfig 被 pytest 捕获 handler 顶成 no-op、handler 未挂 root
+    却已打开日志文件）。
     """
-    import contextlib
-    import sys
     root = logging.getLogger()
     for h in list(root.handlers):
         if isinstance(h, logging.FileHandler):
@@ -50,25 +49,18 @@ def _close_root_file_handlers():
                 h.close()
             finally:
                 root.removeHandler(h)
-    sig = sys.modules.get("signin")
-    if sig is not None:
-        _h = getattr(sig, "_handler", None)
-        if _h is not None:
-            with contextlib.suppress(Exception):
-                _h.close()
 
 
 @pytest.fixture(autouse=True)
 def _close_root_file_handlers_after_each():
     """每个测试前后清理 root logger 残留文件 handler。
 
-    测试前清理：web/app.py 导入 signin 时，signin 模块顶层 _make_log_handler() 已
-    打开当日日志文件（pytest 下 root 已有捕获 handler，basicConfig 变 no-op，
-    _handler 游离于 root 之外）——若不清理，setUp 删除临时按天日志文件必
-    PermissionError。测试后清理：移除本轮 create_app 挂到 root 的 handler。
-    清理不破坏 test_registration_pause.py 的断言：其断言的是 create_app 之后
-    root 存在 _DailyFlockFileHandler，setup 清理后再 create_app 会由幂等逻辑
-    重新挂载。
+    测试前清理：create_app 挂到 root 的按天 handler 若指向已删除目录会反复写失败；
+    历史版本还需处理 signin 导入期游离打开的日志文件句柄（P3-13 后装配延迟到
+    main()，导入零副作用，此问题已消失）。测试后清理：移除本轮 create_app 挂到
+    root 的 handler。清理不破坏 test_registration_pause.py 的断言：其断言的是
+    create_app 之后 root 存在 _DailyFlockFileHandler，setup 清理后再 create_app
+    会由幂等逻辑重新挂载。
     """
     _close_root_file_handlers()
     yield
