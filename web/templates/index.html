@@ -1591,7 +1591,12 @@ function renderAccounts() {
     bar.classList.toggle('hidden', !state.batchMode || collapsed);
   });
   // 分组：待处理（待审核/已拒绝）置顶，正常账号一组
-  const pendingAccounts = state.accounts.filter(a => (a.status === 'pending' || a.status === 'rejected') && !a.deleted);
+  // 待审核在前（新提交置顶），已拒绝沉底（同样新→旧）：accounts 表无时间戳列，
+  // id 与提交先后单调一致，作时间代理。显示层排序不影响批量操作——批量提交按
+  // 各账号 index + phones 对齐校验，与渲染顺序解耦。
+  const pendingAccounts = state.accounts
+    .filter(a => (a.status === 'pending' || a.status === 'rejected') && !a.deleted)
+    .sort((a, b) => (a.status === b.status ? b.index - a.index : (a.status === 'pending' ? -1 : 1)));
   const activeAccounts = state.accounts.filter(a => a.status === 'active' && !a.deleted);
   const pendingFiltered = pendingAccounts.filter(a => accountMatch(a, pendingSearch));
   const activeFiltered = activeAccounts.filter(a => accountMatch(a, activeSearch));
