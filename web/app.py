@@ -4086,6 +4086,7 @@ def create_app(host=None):
             ops = []
             batch_targets = []  # 批次7 B3：审计留目标清单（脱敏截断）
             purge_targets = []  # 批次7 B4：高危操作（物理删除）即时告警汇总
+            reject_notify_owners = set()  # 2026-09-06 用户裁决：批量拒绝每户一封
             # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
             live_owners = {
                 a.get("owner", "")
@@ -4104,6 +4105,8 @@ def create_app(host=None):
                 elif action == "reject":
                     if acc.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
                         ops.append(("update_status", acc["id"], ACCOUNT_STATUS_REJECTED, reason))
+                        if acc.get("owner"):
+                            reject_notify_owners.add(acc["owner"])
                 elif action == "purge":
                     # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
                     if acc.get("deleted"):
@@ -4158,6 +4161,21 @@ def create_app(host=None):
                         "失败，已回滚",
                     )
                     return jsonify({"error": "批量操作失败，已全部回滚"}), 500
+            if action == "reject" and reject_notify_owners:
+                # 2026-09-06 用户裁决：批量拒绝每户一封、同样文案（批量拒绝必填理由，
+                # 无空理由分支）。刻意放在 batch_account_ops 成功之后——回滚路径已提前
+                # return，不会出现"状态没变先收拒信"。
+                for _owner in sorted(reject_notify_owners):
+                    mailer.send_user(
+                        _owner,
+                        "【易班签到】您提交的账号未通过审核",
+                        (
+                            "您提交的易班账号未通过管理员审核。\n"
+                            f"理由: {reason}\n"
+                            "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
+                            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        ),
+                    )
             db.audit(
                 session.get("username") or "?",
                 "account_batch",
@@ -4348,6 +4366,25 @@ def create_app(host=None):
                     _mask_phone(acc.get("phone", "")),
                     "reject" + (f" {reason[:60]}" if reason else ""),
                 )
+                # 2026-09-06 用户裁决：拒绝必须主动触达提交者——理由只挂「我的账号」页
+                # 属被动知情，提交者不回访即永远不知情；审核通过不发（登录即见生效，
+                # 节约额度）。send_user 未启用/无收件人静默跳过、失败仅记日志，不影响
+                # 审核流；绕过 mail_notify 开关与批次11 N6「本人知情权」口径一致。
+                _owner = acc.get("owner", "")
+                if _owner:
+                    mailer.send_user(
+                        _owner,
+                        "【易班签到】您提交的账号未通过审核",
+                        (
+                            f"您提交的易班账号（{_mask_phone(str(acc.get('phone', '')))}）"
+                            "未通过管理员审核。\n"
+                            "理由: "
+                            + (reason if reason else "管理员未填写，可联系管理员了解详情")
+                            + "\n"
+                            "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
+                            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        ),
+                    )
                 logger.info(
                     "拒绝账号 %s（提交者 %s，理由: %s）",
                     _mask_phone(acc.get("phone", "")),

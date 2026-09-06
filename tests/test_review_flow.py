@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -223,6 +224,73 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertIsNotNone(row, "设置保存应写审计")
         self.assertEqual(row[0], "settings_save")
         self.assertIn("启动延迟=30", row[1])
+
+    # ---- 7. 拒绝 → 邮件触达提交者（2026-09-06 用户裁决）；通过不发 ----
+    def test_reject_notifies_owner_mail(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._submit(c, token, "13800138011")
+        _c, data = self._admin_accounts()
+        acc = next(a for a in data["accounts"] if a["phone"] == "138****8011")
+        with mock.patch.object(self.webapp.mailer, "send_user") as m:
+            r = _c.post(f"/api/accounts/{acc['index']}/review",
+                        json={"action": "reject", "reason": "班级信息缺失"},
+                        headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(m.call_count, 1, "拒绝应给提交者恰好发一封邮件")
+        to, subject, body = m.call_args[0]
+        self.assertEqual(to, "user1@test.local")
+        self.assertIn("未通过审核", subject)
+        self.assertIn("班级信息缺失", body)
+        self.assertIn("138****8011", body)
+
+    def test_reject_without_reason_mail_notes_missing(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._submit(c, token, "13800138012")
+        _c, data = self._admin_accounts()
+        acc = next(a for a in data["accounts"] if a["phone"] == "138****8012")
+        with mock.patch.object(self.webapp.mailer, "send_user") as m:
+            r = _c.post(f"/api/accounts/{acc['index']}/review",
+                        json={"action": "reject"},
+                        headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(m.call_count, 1)
+        _to, _subject, body = m.call_args[0]
+        self.assertIn("未填写", body)
+
+    def test_approve_sends_no_owner_mail(self):
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._submit(c, token, "13800138013")
+        _c, data = self._admin_accounts()
+        acc = next(a for a in data["accounts"] if a["phone"] == "138****8013")
+        with mock.patch.object(self.webapp.mailer, "send_user") as m:
+            r = _c.post(f"/api/accounts/{acc['index']}/review",
+                        json={"action": "approve"},
+                        headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        m.assert_not_called()
+
+    def test_batch_reject_mails_each_owner_once(self):
+        for email, phone in (("user1@test.local", "13800138014"), ("user2@test.local", "13900139015")):
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, email, USER_PASS)
+            r = self._submit(c, token, phone)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        _c, data = self._admin_accounts()
+        ids = [a["index"] for a in data["accounts"]]
+        self.assertEqual(len(ids), 2)
+        with mock.patch.object(self.webapp.mailer, "send_user") as m:
+            r = _c.post("/api/accounts/batch",
+                        json={"action": "reject", "ids": ids, "reason": "批量复核不符"},
+                        headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(m.call_count, 2, "批量拒绝应每户恰好一封")
+        notified = {call[0][0] for call in m.call_args_list}
+        self.assertEqual(notified, {"user1@test.local", "user2@test.local"})
+        _to, _subject, body = m.call_args[0]
+        self.assertIn("批量复核不符", body)
 
 
 if __name__ == "__main__":
