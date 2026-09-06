@@ -3,7 +3,9 @@
 
 覆盖 docs/research-lumjiel-core-sign-20260822.md §七：
 - CRUD：写入/读取（密文透明还原）/UPSERT（created_at 保留、updated_at 刷新）/清除幂等；
-- TTL：过期行读时顺手清除；YIBAN_SESSION_TTL_HOURS 环境变量覆盖默认 6h；
+- TTL：过期行读时顺手清除；YIBAN_SESSION_TTL_HOURS 环境变量覆盖默认 6h；判定钟
+  钉死在 _session_cache_now 接缝上，回拨时间戳相对同一钉死时刻构造，用例不随挂钟
+  时刻漂移；
 - 业务日：跨业务日的缓存一律作废（调大 TTL 也解锁不了跨天复用），同日内仍受 TTL 护栏
   约束，写入与判定同钟（2026-08-31 公测复盘：旧默认 12h 恰好横跨一夜）；
 - 密文落库：库内不得出现明文 cookie（AES-GCM 密文对象）；AAD=phone 绑定
@@ -75,11 +77,17 @@ class _SessionCacheFixture(unittest.TestCase):
                 os.remove(p)
         os.environ.pop("YIBAN_SESSION_TTL_HOURS", None)
 
-    def _backdate_updated_at(self, hours):
-        """把当前缓存行的 updated_at 回拨指定小时数（构造 TTL 过期态）。"""
-        stale = (
-            datetime.datetime.now() - datetime.timedelta(hours=hours)
-        ).strftime("%Y-%m-%d %H:%M:%S")
+    def _backdate_updated_at(self, hours, base_now):
+        """把当前缓存行的 updated_at 回拨到 base_now-hours（构造过期态）。
+
+        base_now 必须与读取时钉住的 _session_cache_now 同值（读写同钟）：
+        时间戳落点完全由用例控制，不随挂钟时刻漂移。旧行为相对真实挂钟回拨——
+        2026-08-31 引入"跨业务日作废"后，13:00 前运行会落到昨日、被跨日判据
+        作废，判定结果取决于当天几点跑。
+        """
+        stale = (base_now - datetime.timedelta(hours=hours)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         conn = db.get_conn()
         conn.execute(
             "UPDATE session_cache SET updated_at=? WHERE phone=?", (stale, PHONE)
@@ -88,6 +96,19 @@ class _SessionCacheFixture(unittest.TestCase):
 
 
 class SessionCacheDbTest(_SessionCacheFixture):
+    # ---- 判定钟钉死（任意墙钟时刻运行结果一致）----
+    # 2026-08-31 起 get_session_cache 先判"跨业务日"再判同日 TTL。旧用例把
+    # updated_at 相对真实挂钟回拨 13h：13:00 前运行会落到昨日、被跨日判据作废，
+    # 用例结果取决于当天几点跑。现把判定钟钉在当日 15:00（_session_cache_now
+    # 接缝，与 SessionCacheBusinessDayTest 同法）：13h 回拨恒落在当日 02:00，
+    # "同日/跨日"完全由用例控制——本类显式覆盖"同日内 TTL 过期/续期"与
+    # "调大 TTL 解锁不了跨业务日"两类语义。
+    NOW = datetime.datetime(2026, 9, 1, 15, 0, 0)
+
+    def _get(self):
+        with mock.patch.object(db, "_session_cache_now", return_value=self.NOW):
+            return db.get_session_cache(PHONE)
+
     # ---- 新库直达 v8，表结构齐备 ----
 
     def test_fresh_db_reaches_v8_with_session_cache_table(self):
@@ -133,13 +154,17 @@ class SessionCacheDbTest(_SessionCacheFixture):
         self.assertIsNone(db.get_session_cache(PHONE))
         db.clear_session_cache(PHONE)  # 幂等：行不存在时不报错
 
-    # ---- TTL：过期行读时顺手清除 ----
+    # ---- TTL：过期行读时顺手清除（同日内 TTL 过期；判定钟钉死见类注释）----
     def test_ttl_expired_row_cleared_on_read(self):
         db.init_db(self.db_file, env_file=self.env_file)
         db.set_session_cache(PHONE, '{"a":"1"}', "c")
-        self._backdate_updated_at(hours=13)  # 默认 TTL 12h
+        self._backdate_updated_at(hours=13, base_now=self.NOW)  # 落在当日 02:00，默认 TTL 6h
 
-        self.assertIsNone(db.get_session_cache(PHONE), "超过默认 12h 应返回 None")
+        with self.assertLogs("yiban.db", level="INFO") as captured:
+            self.assertIsNone(self._get(), "同日内超出默认 TTL 6h 应返回 None")
+        joined = "\n".join(captured.output)
+        self.assertIn("同日内超出 TTL", joined, "应按同日 TTL 过期作废，而非跨业务日")
+        self.assertNotIn("跨业务日", joined)
         conn = db.get_conn()
         self.assertEqual(
             conn.execute("SELECT COUNT(*) FROM session_cache").fetchone()[0],
@@ -147,17 +172,46 @@ class SessionCacheDbTest(_SessionCacheFixture):
             "过期行应在读取时被顺手清除",
         )
 
-    # ---- TTL：YIBAN_SESSION_TTL_HOURS 环境变量覆盖 ----
+    # ---- TTL：YIBAN_SESSION_TTL_HOURS 环境变量覆盖（同日内放宽时长）----
     def test_ttl_env_override_extends_validity(self):
         db.init_db(self.db_file, env_file=self.env_file)
         db.set_session_cache(PHONE, '{"a":"1"}', "c")
-        self._backdate_updated_at(hours=13)
+        self._backdate_updated_at(hours=13, base_now=self.NOW)  # 落在当日 02:00
         os.environ["YIBAN_SESSION_TTL_HOURS"] = "24"  # 13h < 24h → 仍有效
         try:
-            got = db.get_session_cache(PHONE)
-            self.assertIsNotNone(got, "TTL 配置为 24h 时 13h 前的缓存应仍有效")
+            self.assertIsNotNone(
+                self._get(), "TTL 配置为 24h 时同日内 13h 前的缓存应仍有效"
+            )
         finally:
             os.environ.pop("YIBAN_SESSION_TTL_HOURS", None)
+
+    # ---- TTL 调大不解锁跨业务日（与上例对照，跨业务日作废在此显式覆盖）----
+    def test_ttl_override_cannot_unlock_cross_business_day(self):
+        db.init_db(self.db_file, env_file=self.env_file)
+        db.set_session_cache(PHONE, '{"a":"1"}', "c")
+        # 钉死钟的"昨日 23:59:59"：距 NOW 仅 15 小时余，远小于 72h——若按旧口径
+        # （只看小时数）应命中复用；跨业务日判据必须排在 TTL 之前将其作废。
+        yesterday = (self.NOW - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        conn = db.get_conn()
+        conn.execute(
+            "UPDATE session_cache SET updated_at=? WHERE phone=?",
+            (f"{yesterday} 23:59:59", PHONE),
+        )
+        conn.commit()
+        os.environ["YIBAN_SESSION_TTL_HOURS"] = "72"
+        try:
+            with self.assertLogs("yiban.db", level="INFO") as captured:
+                self.assertIsNone(
+                    self._get(), "跨业务日缓存必须作废，调大 TTL 也解锁不了"
+                )
+            self.assertIn("跨业务日", "\n".join(captured.output))
+        finally:
+            os.environ.pop("YIBAN_SESSION_TTL_HOURS", None)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM session_cache").fetchone()[0],
+            0,
+            "跨日行应在读取时被顺手清除",
+        )
 
     # ---- 密文落库：库内不得出现明文 cookie ----
     def test_cookies_stored_encrypted_not_plaintext(self):
