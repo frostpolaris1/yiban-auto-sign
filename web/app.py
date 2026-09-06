@@ -1055,9 +1055,14 @@ def _atomic_write(path, content, chmod_priv=False):
 
     chmod_priv=True 时写完后收紧为 0600（含密钥/口令的 .env 场景），
     防止默认 umask 下产生同主机其他用户可读的宽松权限。
+    批次18 刀2 P3-6：临时文件改为创建即 0600（os.open + fdopen，与
+    account_crypto._write_key_to_env_file 口径一致）——open("w") 在默认 umask 下
+    0644，写完到 replace 之间（及进程崩溃残留时）文件对同机其他用户可读；
+    收尾的 os.chmod 保留（对既有 0644 旧文件幂等收紧，无害）。
     """
     tmp = f"{path}.tmp{secrets.token_hex(4)}"
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
@@ -1079,6 +1084,22 @@ _rate_lock = threading.Lock()
 # 每日清理线程只允许同一进程启动一次（测试多次 create_app 时避免并发访问共享 SQLite 单例）
 _purge_loop_started = False
 _purge_loop_lock = threading.Lock()
+
+
+def _ip_store_trim(store, max_age):
+    """IP 计数 dict 超限时清理过期条目：仅当长度超上限才遍历，避免每请求开销。
+
+    各 store 的值为二元/三元组，末位统一是时间戳；防止公网扫描器用海量
+    不同 IP 打爆内存（无界增长 DoS）。
+    批次18 刀2 P3-1：由 create_app 内嵌套函数上提为模块级——_verify_attempt_allowed
+    等模块级写入路径也要在同一口径下 trim，嵌套作用域够不到。
+    """
+    if len(store) <= _IP_STORE_LIMIT:
+        return
+    now = time.time()
+    stale = [k for k, v in store.items() if now - v[-1] > max_age]
+    for k in stale:
+        store.pop(k, None)
 
 
 def _bump_window_count(store, key, now, window, limit=None):
@@ -1121,6 +1142,10 @@ def _verify_attempt_allowed(store, username):
     补充；计数语义与登录频率限制一致（先判后增）。store 由调用方传入
     （create_app 内的 _verify_limits，随应用生命周期存在于内存）。
     """
+    # 批次18 刀2 P3-1：写入前顺带 trim（键为会话用户名/邮箱，长度有界但基数无界），
+    # 与其余 IP 计数表同口径防无界增长
+    with _rate_lock:
+        _ip_store_trim(store, VERIFY_WINDOW + _IP_STORE_MAX_AGE)
     _, _, allowed = _bump_window_count(
         store,
         (username or "?").lower(),
@@ -1186,6 +1211,17 @@ def _wait_signin_proc(proc, timeout=300):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+def _batch_wait_timeout(count):
+    """批量签到队列的等待超时按账号数缩放（批次18 刀2 M5）。
+
+    固定 300s 在多账号场景过紧：每号真实登录+网络余量约 2 分钟，10 号队列
+    原本会被 300s 截断误杀。公式 max(300, 120 * count + 300)——单账号 420s、
+    10 号（BATCH_OP_LIMIT 上限）1500s；300s 下限兜底空队列/边界。
+    _wait_signin_proc 的默认参数保持 300 不动，由调用方传参缩放。
+    """
+    return max(300, 120 * count + 300)
 
 
 @contextlib.contextmanager
@@ -1604,7 +1640,7 @@ def _alert_mail_recipients():
     return db.admin_mail_recipients(extra)
 
 
-def send_notification(title, content, urgent=False, force=False):
+def send_notification(title, content, urgent=False, force=False, ledger=None):
     """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
 
     - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
@@ -1618,6 +1654,10 @@ def send_notification(title, content, urgent=False, force=False):
       节流/每日额度/仅重要开关），供"先告警后落盘"的配置变更告警等**必须送达**的
       场景使用——此刻额度/节流参数仍为旧值，告警不会被本次刚提交的新参数吞掉。
       默认 False，向后兼容（既有调用方行为不变）。
+    - ledger（批次18 刀2 M8）：None = 现行行为（按 urgent 归入 general/urgent 两本账）；
+      "login_fail" = 登录失败告警独立账本，日额度 YIBAN_LOGINFAIL_DAILY_MAX
+      （默认 3，0=不限），与 general/urgent 互不挤占——登录失败是公网最高频的
+      告警源，独占账本后喷洒类攻击烧不光紧急账的额度。
     """
     recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
@@ -1627,7 +1667,7 @@ def send_notification(title, content, urgent=False, force=False):
     elif recipients:
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, content, urgent=urgent, force=force)
+    notify.send(title, content, urgent=urgent, force=force, ledger=ledger)
     # 批次14 P3-1：手机推送额度耗尽的"补一封"——notify 侧当日首次有账本耗尽时会挂上
     # 待取走标记，pop_exhaustion_notice() 一次返回全部耗尽账本（如 ["general","urgent"]）。
     # 必须一次取完拼成一封：循环 pop 到空会让两本账同日各发一封（重复打扰）。
@@ -1645,7 +1685,7 @@ def send_notification(title, content, urgent=False, force=False):
             logger.warning("推送额度耗尽告知邮件发送失败: %s", e)
 
 
-_NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急"}
+_NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急", "login_fail": "登录失败告警"}
 
 
 def _exhaustion_notice_mail(kinds):
@@ -2455,18 +2495,8 @@ def create_app(host=None):
     # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
     _admin_delete_limits = {}
 
-    def _ip_store_trim(store, max_age):
-        """IP 计数 dict 超限时清理过期条目：仅当长度超上限才遍历，避免每请求开销。
-
-        各 store 的值为二元/三元组，末位统一是时间戳；防止公网扫描器用海量
-        不同 IP 打爆内存（无界增长 DoS）。
-        """
-        if len(store) <= _IP_STORE_LIMIT:
-            return
-        now = time.time()
-        stale = [k for k, v in store.items() if now - v[-1] > max_age]
-        for k in stale:
-            store.pop(k, None)
+    # _ip_store_trim（批次18 刀2 P3-1 上提为模块级，见 _bump_window_count 上方）：
+    # 各限速表写入路径统一调用，防公网扫描器用海量键打爆内存。
 
     # ---- 全局限速：防脚本轰炸 API（2026-08-16 用户决策：只对 /api/* 限速，
     # 页面/静态放宽，避免 302+200 双请求导致正常页面浏览被误伤）----
@@ -2721,7 +2751,9 @@ def create_app(host=None):
         password = str(data.get("password", ""))
         # 失败计数按 (IP, 用户名) 组合：同一出口 IP 的用户不因他人爆破尝试被连带锁定
         # 值三元组 (count, lock_until, last_ts)：last_ts 供超限清理
-        fail_key = (ip, username.lower())
+        # 批次18 刀2 P3-1：username 直接来自请求体、长度无界，fail_key 统一截断 [:128]
+        # （防公网扫描器用海量超长用户名打爆 _login_fails 内存表）
+        fail_key = (ip, username.lower()[:128])
         with _rate_lock:
             _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
             _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
@@ -2852,6 +2884,10 @@ def create_app(host=None):
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"如非本人操作，请检查是否有人尝试暴力破解",
                 urgent=distinct_users >= LOGIN_SPRAY_USERS,
+                # 批次18 刀2 M8：独立账本 YIBAN_LOGINFAIL_DAILY_MAX（默认 3，0=不限）——
+                # 登录失败是公网最高频告警源，不再与 general/urgent 两本账互挤，
+                # 喷洒类攻击烧光本账后审计链异常等真紧急告警仍可达手机
+                ledger="login_fail",
             )
         return jsonify({"error": "用户名或密码错误"}), 401
 
@@ -3255,7 +3291,9 @@ def create_app(host=None):
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
         # 密码失败锁定预检（2026-08-17）：与登录/注销共用 (ip, email) 计数与锁定窗口
-        fail_key = (ip, email)
+        # 批次18 刀2 P3-1：email 直接来自请求体、长度无界，fail_key 统一截断 [:128]
+        # （真实邮箱不可能超过 128；防公网扫描器用海量超长键打爆内存表）
+        fail_key = (ip, email[:128])
         with _rate_lock:
             _ip_store_trim(_login_fails, LOGIN_LOCK_SECONDS + _IP_STORE_MAX_AGE)
             _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
@@ -3280,6 +3318,10 @@ def create_app(host=None):
             # 批次7 P3-8：补每 IP 聚合失败窗口（30 次/10 分钟）——单邮箱 5 次锁定
             # 只约束单账号，攻击者可跨邮箱喷洒（总速率仅受全局限速约束）；
             # 命中即获得该冷静期账号的完整会话与其易班凭据，须有聚合闸门
+            # 批次18 刀2 P3-1：_restore_fail_rate 此前是唯一无 trim 的限速表，
+            # 写入路径补同口径清理（窗口 + 最大年龄）
+            with _rate_lock:
+                _ip_store_trim(_restore_fail_rate, RESTORE_FAIL_WINDOW + _IP_STORE_MAX_AGE)
             _rc, _rs, ip_allowed = _bump_window_count(
                 _restore_fail_rate, ip, now2, RESTORE_FAIL_WINDOW, limit=RESTORE_FAIL_MAX
             )
@@ -5114,6 +5156,9 @@ def create_app(host=None):
         limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
         if window <= 0 or limit <= 0:
             return False
+        # 批次18 刀2 P3-1：写入前顺带 trim（与其余限速表同口径防无界增长）
+        with _rate_lock:
+            _ip_store_trim(_admin_delete_limits, window + _IP_STORE_MAX_AGE)
         _cnt, _start, allowed = _bump_window_count(
             _admin_delete_limits,
             (session.get("username") or "?").strip().lower(),
@@ -5803,6 +5848,11 @@ def create_app(host=None):
         proc = _launch_signin_proc(",".join(phones))
         if proc is None:
             return False, "批量手动签到启动失败，请稍后重试", None
+        # 批次18 刀2 M4：冷却基准单源化——只有 spawn 真正成功才刷新（原实现写在
+        # _run_batch 的 finally 里，spawn 失败也刷新基准，失败后 30 分钟内合法重试被拒）
+        nonlocal _last_batch_signin_ts
+        with _batch_signin_lock:
+            _last_batch_signin_ts = time.time()
         logger.info("触发批量手动签到（单队列）: %s 个账号", len(phones))
         return True, "", proc
 
@@ -5810,6 +5860,11 @@ def create_app(host=None):
         """触发单账号手动签到子进程（signin.py --only）。
 
         防抖：60 秒内同账号不重复触发（SIGN_MIN_INTERVAL）；仍在运行的旧进程先终止。
+        批次18 刀2 M4：手动签到冷却单源化——单条与批量共用同一冷却计数
+        （YIBAN_BATCH_SIGN_COOLDOWN_SEC，默认 1800s，0=关闭）：spawn 成功前检查
+        冷却（与批量端点同口径拒绝），spawn 成功后刷新 _last_batch_signin_ts。
+        单条手动签到自此同样受全局冷却约束（a8e9c43 威胁模型：被盗会话循环触发
+        单号真实登录同样打爆易班风控）；60 秒 per-phone 防抖语义保持不变。
         返回 (ok: bool, msg: str)。
         """
         accounts = accounts if accounts is not None else load_accounts()
@@ -5821,6 +5876,14 @@ def create_app(host=None):
             return False, f"账号 {phone} 不可手动签到（未生效或已删除）"
         if _signin_run_lock_busy():
             return False, "签到队列忙（定时签到进行中），请稍后再试"
+        nonlocal _last_batch_signin_ts
+        with _batch_signin_lock:
+            cooldown = load_env_int(ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC", 1800)
+            if cooldown > 0:
+                elapsed = time.time() - _last_batch_signin_ts
+                if elapsed < cooldown:
+                    remain = int(cooldown - elapsed)
+                    return False, f"签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
         with _signin_lock:  # 原子检查+占位：并发请求不能同时通过防抖
             now = time.time()
             if phone in _last_trigger and now - _last_trigger[phone] < SIGN_MIN_INTERVAL:
@@ -5840,6 +5903,8 @@ def create_app(host=None):
             _signin_procs[phone] = proc  # 记录子进程，供下次触发时终止旧进程
         # M9：daemon 回收线程，进程退出后自动从 _signin_procs 移除同对象
         threading.Thread(target=_reap_signin, args=(phone, proc), daemon=True).start()
+        with _batch_signin_lock:
+            _last_batch_signin_ts = time.time()  # M4：spawn 成功 = 冷却基准（单条/批量同源）
         logger.info("触发手动签到: %s", _mask_phone(phone))
         return True, f"已触发 {phone} 手动签到（后台执行，日志约 30 秒内刷新）"
 
@@ -5854,6 +5919,8 @@ def create_app(host=None):
                 return jsonify({"error": msg}), 404
             if "不可手动签到" in msg:
                 return jsonify({"error": msg}), 400
+            if "冷却中" in msg:  # M4：单条与批量共用的全局签到冷却（批次18 刀2）
+                return jsonify({"error": msg}), 429
             if "正在签到" in msg or "签到队列忙" in msg:
                 return jsonify({"error": msg}), 429
             return jsonify({"error": msg}), 500
@@ -5897,7 +5964,12 @@ def create_app(host=None):
                 phones.append(phone)
         if not phones:
             return jsonify({"error": "选中的账号均不可手动签到（未生效或已删除）"}), 400
-        nonlocal _batch_signin_running, _last_batch_signin_ts
+        # 批次18 刀2 M5：单次批量签到账号数与 /api/accounts/batch 同口径（BATCH_OP_LIMIT）。
+        # 队列子进程的等待超时按账号数缩放，无上限的"全选"会把后台队列线程长时间占死；
+        # 超出上限 400，管理员分批触发（每批 ≤10 个）。
+        if len(phones) > BATCH_OP_LIMIT:
+            return jsonify({"error": f"单次批量签到最多 {BATCH_OP_LIMIT} 个账号"}), 400
+        nonlocal _batch_signin_running
         with _batch_signin_lock:
             if _batch_signin_running:
                 return jsonify({"error": "已有批量签到正在执行，请稍后再试"}), 429
@@ -5918,13 +5990,16 @@ def create_app(host=None):
                 if not ok:
                     logger.warning("批量手动签到未启动: %s", msg)
                     return
-                _wait_signin_proc(proc)
+                # M5：等待超时按账号数缩放（默认 300s 仅够单号，多号队列会被误杀）
+                _wait_signin_proc(proc, timeout=_batch_wait_timeout(len(phones)))
                 logger.info("批量手动签到完成: %s 个账号（单队列、单封汇总邮件）", len(phones))
             finally:
-                nonlocal _batch_signin_running, _last_batch_signin_ts
+                # 批次18 刀2 M4：此处不再无条件重置 _last_batch_signin_ts——冷却基准
+                # 由 _spawn_signin_many 在 spawn 成功时刷新（消除"失败也刷新基准"：
+                # spawn 失败后 30 分钟内合法重试不该被拒）。
+                nonlocal _batch_signin_running
                 with _batch_signin_lock:
                     _batch_signin_running = False
-                    _last_batch_signin_ts = time.time()  # 队列完成时刻 = 冷却基准
 
         threading.Thread(target=_run_batch, daemon=True).start()
         db.audit(
