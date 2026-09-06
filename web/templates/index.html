@@ -151,6 +151,7 @@
      不支持 @starting-style 的旧浏览器自动退化为无入场动画，功能不受影响。
      用 data-hidden 属性替代 hidden 类显示/隐藏，以保留过渡能力（aria-live 不受影响）。 */
   #toast { opacity: 1;
+    pointer-events: none;  /* 纯状态展示：隐藏态仅 opacity:0（保留过渡），不设会拦截底部点击 */
     transition: opacity 0.16s ease-out, transform 0.16s ease-out; }
   #toast[data-hidden] { opacity: 0; transform: translate(-50%, 0);
     transition: opacity 0.12s ease; }
@@ -1085,12 +1086,16 @@
   </div>
 </footer>
 
-<!-- 账号编辑模态（role="dialog"：焦点圈闭/Esc 关闭/焦点归还见 openModal/closeModal） -->
+<!-- 账号编辑模态（role="dialog"：焦点圈闭/Esc 关闭/焦点归还见 openModal/closeModal）。
+     结构 = 字段区内部滚动 + 操作行常驻 footer（同更新日志弹窗模式）：高分屏 + 浏览器缩放等
+     小视口下 90vh 截断内容，若按钮随内容滚出裁剪区，用户在按钮原位点击会落到遮罩上
+     （静默关窗）或穿透到 html（毫无反应）——按钮必须任何缩放比例下都可见可点。 -->
 <div id="modal-account" role="dialog" aria-modal="true" aria-labelledby="form-title" tabindex="-1" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeForm()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
-    <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
-    <form id="account-form" class="space-y-3">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md">
+    <form id="account-form" class="flex flex-col max-h-[90vh]">
+      <div class="overflow-y-auto p-5 pb-3 space-y-3">
+        <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
       <div>
         <label for="f-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
@@ -1134,7 +1139,8 @@
         <button id="clear-code-btn" type="button" onclick="toggleModalClearCode()"
                 class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
       </div>
-      <div class="flex items-center gap-2 pt-2">
+      </div>
+      <div class="flex items-center gap-2 px-5 py-3 border-t border-zinc-200 dark:border-zinc-700 shrink-0 bg-white dark:bg-zinc-800 rounded-b-2xl">
         <button type="submit" class="btn-primary">保存</button>
         <button type="button" onclick="closeForm()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
       </div>

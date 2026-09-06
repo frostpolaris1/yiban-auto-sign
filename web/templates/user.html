@@ -123,6 +123,7 @@
      不支持 @starting-style 的旧浏览器退化为无入场动画；「减弱动态效果」下去位移保留淡入。
      data-hidden 属性替代 hidden 类显示/隐藏，以保留过渡能力（aria-live 不受影响）。 */
   #toast { opacity: 1;
+    pointer-events: none;  /* 纯状态展示：隐藏态仅 opacity:0（保留过渡），不设会拦截底部点击 */
     transition: opacity 0.16s ease-out, transform 0.16s ease-out; }
   #toast[data-hidden] { opacity: 0; transform: translate(-50%, 0);
     transition: opacity 0.12s ease; }
@@ -267,17 +268,21 @@
 <!-- Toast（动效同管理端：浮入 / 快速淡出 / 可中断，见上方 <style> #toast 规则；data-hidden 替代 hidden 以支持过渡） -->
 <div id="toast" role="status" aria-live="polite" data-hidden class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
 
-<!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗） -->
+<!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗）。
+     结构 = 内容区内部滚动 + 提交行常驻 footer：小视口（高分屏 + 浏览器缩放）下 85vh 截断内容，
+     若按钮随内容滚出裁剪区，点击会落到遮罩上（静默关窗）或穿透到 html（毫无反应）。 -->
 <div id="account-form-modal" role="dialog" aria-modal="true" aria-labelledby="account-form-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[85vh] overflow-y-auto">
-    <div class="flex items-center justify-between mb-1">
-      <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">提交我的易班账号</h2>
-      <button type="button" onclick="closeAccountModal()" aria-label="关闭"
-              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
-    </div>
-    <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号。</p>
-    <form id="account-form" class="grid grid-cols-1 gap-3">
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg">
+    <form id="account-form" class="flex flex-col max-h-[85vh]">
+      <div class="overflow-y-auto p-5 pb-3">
+        <div class="flex items-center justify-between mb-1">
+          <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">提交我的易班账号</h2>
+          <button type="button" onclick="closeAccountModal()" aria-label="关闭"
+                  class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
+        </div>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号。</p>
+        <div class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
@@ -307,7 +312,9 @@
         <button id="clear-code-btn" type="button" onclick="toggleClearCode()"
                 class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
       </div>
-      <div class="flex items-center gap-3 pt-1">
+      </div>
+      </div>
+      <div class="flex items-center gap-3 px-5 py-3 border-t border-zinc-200 dark:border-zinc-700 shrink-0 bg-white dark:bg-zinc-800 rounded-b-2xl">
         <button id="account-submit-btn" type="submit" class="btn-primary">提交账号</button>
         <button id="cancel-edit-btn" type="button" onclick="cancelEdit()"
                 class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
