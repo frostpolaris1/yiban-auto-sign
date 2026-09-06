@@ -275,7 +275,7 @@
   <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg">
     <form id="account-form" class="flex flex-col max-h-[85vh]">
-      <div class="overflow-y-auto p-5 pb-3">
+      <div class="overflow-y-auto overscroll-contain p-5 pb-3">
         <div class="flex items-center justify-between mb-1">
           <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">提交我的易班账号</h2>
           <button type="button" onclick="closeAccountModal()" aria-label="关闭"
@@ -488,8 +488,26 @@ function jsEscape(s) {
 // ===== 弹窗无障碍辅助（编辑/注销确认模态共用）=====
 // 打开：记录触发元素 → 聚焦模态内首个可交互元素（或指定初始焦点）；关闭：隐藏并把焦点归还触发元素。
 // Esc 关闭与 Tab 焦点圈定由下方全局 keydown 统一处理；遮罩点击关闭保持原逻辑。
-const USER_MODAL_IDS = ['account-form-modal', 'delete-confirm-modal', 'delete-account-modal'];
+const USER_MODAL_IDS = ['account-form-modal', 'delete-confirm-modal', 'delete-account-modal', 'changelog-modal'];
 const userModalOpeners = new Map();  // 模态元素 -> 打开前的焦点元素
+// 背景滚动锁：模态打开期间锁 html/body 滚动，防止滚轮/触摸/键盘滚动穿透到背景页（滚动链）。
+// 计数支持叠层（注销两重确认）；锁死前补偿滚动条宽度，避免内容区横向跳动。
+const pageScrollLock = { count: 0 };
+function lockPageScroll() {
+  pageScrollLock.count++;
+  if (pageScrollLock.count > 1) return;
+  const gap = window.innerWidth - document.documentElement.clientWidth;
+  if (gap > 0) document.body.style.paddingRight = gap + 'px';
+  document.documentElement.style.overflow = 'hidden';
+  document.body.style.overflow = 'hidden';
+}
+function unlockPageScroll() {
+  if (pageScrollLock.count > 0) pageScrollLock.count--;
+  if (pageScrollLock.count > 0) return;
+  document.documentElement.style.overflow = '';
+  document.body.style.overflow = '';
+  document.body.style.paddingRight = '';
+}
 function modalFocusables(modal) {
   return Array.from(modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
     .filter(el => !el.disabled && !el.closest('.hidden'));
@@ -499,12 +517,14 @@ function showModal(modal, initFocus, opener) {
   userModalOpeners.set(modal,
     opener instanceof HTMLElement ? opener : (document.activeElement instanceof HTMLElement ? document.activeElement : null));
   modal.classList.remove('hidden');
+  lockPageScroll();
   const first = initFocus || modalFocusables(modal)[0];
   if (first) first.focus();
 }
 function hideModal(modal) {
   if (modal.classList.contains('hidden')) return;
   modal.classList.add('hidden');
+  unlockPageScroll();
   const opener = userModalOpeners.get(modal);
   userModalOpeners.delete(modal);
   if (opener && opener.isConnected) opener.focus();
@@ -918,11 +938,13 @@ function closeDeleteModal() {
   hideModal($('delete-account-modal'));
 }
 function proceedDelete() {
-  // 第一重 → 第二重（再次提醒 + 密码确认）；打开记录转移到第二重，关闭时焦点归还最初入口
+  // 第一重 → 第二重（再次提醒 + 密码确认）；打开记录转移到第二重，关闭时焦点归还最初入口。
+  // 直接 add('hidden') 而非 hideModal：避免焦点先闪回入口；但须手动释放滚动锁，否则计数泄漏
   const first = $('delete-confirm-modal');
   const opener = userModalOpeners.get(first) || null;
   first.classList.add('hidden');
   userModalOpeners.delete(first);
+  unlockPageScroll();
   $('delete-password').value = '';
   showModal($('delete-account-modal'), $('delete-password'), opener);
 }
@@ -1159,7 +1181,7 @@ async function loadAnnouncement() {
 // 更新日志弹窗（版本号点击；Markdown 渲染，与 login/index 同源——2026-08-15 修复：原 textContent 直出原始 markdown）
 async function openChangelog() {
   const modal = $('changelog-modal');
-  modal.classList.remove('hidden');
+  showModal(modal);  // 走统一开关：背景滚动锁 + 焦点管理 + Esc 关闭（并入 USER_MODAL_IDS）
   const content = $('changelog-content');
   content.innerHTML = '加载中…';
   try {
@@ -1168,7 +1190,7 @@ async function openChangelog() {
     content.innerHTML = window.renderMarkdown ? renderMarkdown(text) : esc(text);
   } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
 }
-function closeChangelog() { $('changelog-modal').classList.add('hidden'); }
+function closeChangelog() { hideModal($('changelog-modal')); }
 
 // 口令策略（本模板内单一事实源）：与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS /
 // _PASSWORD_POLICY_HINT 逐字同序同串——tests/test_batch14_fixes_0829.py 的元测试会
@@ -1218,7 +1240,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
       <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
       <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
     </div>
-    <div class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto break-all leading-relaxed" id="changelog-content"></div>
+    <div class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed" id="changelog-content"></div>
   </div>
 </div>
 </body>
