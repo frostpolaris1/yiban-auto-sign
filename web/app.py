@@ -296,7 +296,7 @@ CLEAR_SENTINEL = "__clear__"
 # 降低误操作与滥用影响范围。三处接口共用本常量，防单处调整后其他路径遗漏（批次7 A2/A3 收紧）。
 BATCH_OP_LIMIT = 10
 
-# 状态图标（与 tui/app.py 一致；前端渲染使用，后端仅用于日志解析）
+# 签到窗口默认值（06:30 ~ 07:50）：可被 .env 的 YIBAN_SIGN_START/END 覆盖（见 _sign_window）
 SIGN_START = (6, 30)
 SIGN_END = (7, 50)
 
@@ -542,6 +542,7 @@ STATUS_PAUSED = "paused"  # 账密异常暂停（signin 熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自暂停签到（调度 v2）
 STATUS_PENDING = "pending"  # 待签（未执行/无记录）；账号审核态已改名为 ACCOUNT_STATUS_PENDING（2026-08-16），命名空间已分离
 
+# 状态图标（与 tui/app.py 口径一致；经 /api/my-accounts 的 state_icon 下发，前端按码渲染）
 STATUS_ICON = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
@@ -5862,12 +5863,12 @@ def create_app(host=None):
     def _spawn_signin(phone, accounts=None):
         """触发单账号手动签到子进程（signin.py --only）。
 
-        防抖：60 秒内同账号不重复触发（SIGN_MIN_INTERVAL）；仍在运行的旧进程先终止。
+        防抖：30 秒内同账号不重复触发（SIGN_MIN_INTERVAL）；仍在运行的旧进程先终止。
         批次18 刀2 M4：手动签到冷却单源化——单条与批量共用同一冷却计数
         （YIBAN_BATCH_SIGN_COOLDOWN_SEC，默认 1800s，0=关闭）：spawn 成功前检查
         冷却（与批量端点同口径拒绝），spawn 成功后刷新 _last_batch_signin_ts。
         单条手动签到自此同样受全局冷却约束（a8e9c43 威胁模型：被盗会话循环触发
-        单号真实登录同样打爆易班风控）；60 秒 per-phone 防抖语义保持不变。
+        单号真实登录同样打爆易班风控）；30 秒 per-phone 防抖语义保持不变。
         返回 (ok: bool, msg: str)。
         """
         accounts = accounts if accounts is not None else load_accounts()
