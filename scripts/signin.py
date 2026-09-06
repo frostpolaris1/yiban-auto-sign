@@ -1703,17 +1703,20 @@ def _notify_url_desc(url):
     return "<无法解析>"
 
 
-def send_notification(title, content, url=None):
+def send_notification(title, content, url=None, urgent=False, force=False):
     """通过 Webhook 推送组件发送通知（Server酱/自定义 URL，见 scripts/notify.py）。
 
     2026-08-29 组件化：Server酱适配（title+desp）、同类型告警节流、服务端响应
     检查（配额/限频可见）、自定义 URL SSRF 白名单；兼容旧明文 YIBAN_NOTIFY_URL
     （notify.get_secret 回退，url 参数与组件配置等价，由组件统一处理）。
+    批次18 刀2 M7：透传 urgent/force 到 notify.send——汇总邮件发送失败降级
+    webhook 时以 urgent=True + force=True 调用（绕过节流与当日额度，保证兜底必达）；
+    默认 False，既有调用方行为不变。
     说明：签到脚本给管理员的**邮件**不在此处发送（避免逐条轰炸），而是由
     各触发点 _collect_admin_mail 收集、任务结束 _flush_admin_mail_summary 汇总。
     """
     try:
-        notify.send(title, content)
+        notify.send(title, content, urgent=urgent, force=force)
     except Exception as e:
         # 组件异常不得拖累签到主流程；只记类型名（异常文本可能含 URL/token）
         logger.warning("通知推送组件调用失败: %s", type(e).__name__)
@@ -1881,7 +1884,26 @@ def _flush_admin_mail_summary(phase=None):
         body = "\n".join(parts).rstrip()
         if len(body) > MAIL_SUMMARY_MAX_CHARS:
             body = body[:MAIL_SUMMARY_MAX_CHARS].rstrip() + "\n…（超长截断，明细见日志）"
-        mailer.send_admin_alert("易班签到汇总", body, to=",".join(recipients))
+        sent = False
+        try:
+            sent = mailer.send_admin_alert("易班签到汇总", body, to=",".join(recipients))
+        except Exception as e:
+            # mailer 自身承诺内部静默，此处兜底防调用链变化引入的异常外泄
+            logger.warning("签到汇总邮件发送异常（%s），降级走 webhook", type(e).__name__)
+        if not sent:
+            # 批次18 刀2 M7：邮件通道不可用（未配置/发送失败/异常）→ webhook 兜底
+            # （urgent=True + force=True 绕过节流与当日额度）。零成功/窗口外类告警
+            # （_maybe_alert_zero_success 等经 _collect_admin_mail 汇总至此）自此
+            # 双通道：不再单点依赖 SMTP 可用性。
+            send_notification("易班签到汇总", body, urgent=True, force=True)
+    else:
+        # 批次18 刀2 M7：收件人集为空原实现静默跳过——告警"看起来发了"实则全灭，
+        # 且无从排障。显式 warning 留痕（不走 webhook 兜底：无收件人是配置缺失而非
+        # 通道故障，每轮签到都推 webhook 反而轰炸手机；留痕供日志页/状态页排查）。
+        logger.warning(
+            "签到汇总告警无可用收件人（ADMIN_TO 与开启接收的管理员均为空），"
+            "%d 条告警未走邮件通道，请检查邮件配置", total,
+        )
     _mail_summary.clear()
 
 

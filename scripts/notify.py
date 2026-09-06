@@ -70,6 +70,10 @@ DEFAULT_COOLDOWN = 60
 DEFAULT_DAILY_MAX = 5
 # 批次14 P2-1：紧急告警另开一本独立额度，保证噪声烧完非紧急额度后仍有手机通道
 DEFAULT_URGENT_DAILY_MAX = 3
+# 批次18 刀2 M8：登录失败告警独立账本的日额度默认值；键名无 NOTIFY_ 前缀（独立
+# 命名），读取口径（环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
+DEFAULT_LOGINFAIL_DAILY_MAX = 3
+LOGINFAIL_DAILY_MAX_KEY = "YIBAN_LOGINFAIL_DAILY_MAX"
 DEFAULT_URL_TIMEOUT = 10
 MAX_TITLE_CHARS = 32
 # 跳过原因日志的去重窗口（秒）：同一原因窗口内只记一行，避免被刷爆日志
@@ -113,8 +117,17 @@ _urgent_daily = {
     "notice": {"pending": False, "notified": False, "warned": False},
     "lock": threading.Lock(),
 }
-_LEDGER_IDS = ("general", "urgent")
-_LEDGERS = {"general": _general_daily, "urgent": _urgent_daily}
+# 批次18 刀2 M8：登录失败告警独立账本。登录失败是公网最高频的告警源，web 侧
+# send_notification(ledger="login_fail") 让它单独记账（YIBAN_LOGINFAIL_DAILY_MAX，
+# 默认 3，0=不限），不再与 general/urgent 两本账互挤——喷洒类攻击把本账打满后，
+# 审计链异常等真紧急告警仍可达手机。
+_loginfail_daily = {
+    "state": {"date": "", "count": 0},
+    "notice": {"pending": False, "notified": False, "warned": False},
+    "lock": threading.Lock(),
+}
+_LEDGER_IDS = ("general", "urgent", "login_fail")
+_LEDGERS = {"general": _general_daily, "urgent": _urgent_daily, "login_fail": _loginfail_daily}
 
 # 批次15 P2-3：每日预算从「进程内内存」升级为「磁盘账本」——原实现 web（常驻）与
 # signin（每次 cron 新进程）各持一份独立计数，默认 5 条/天的上限实际可发 15 条
@@ -586,7 +599,7 @@ def _daily_today():
 
 
 def _ledger(ledger_id):
-    """账本字典（{"state","notice","lock"}），ledger_id 取 general / urgent。
+    """账本字典（{"state","notice","lock"}），ledger_id 取 general / urgent / login_fail。
 
     threading.Lock 不可重入：调用方持有返回值的 lock 时只能直接读写 state / notice
     （跨日与告知标记重置由 _with_ledger_locked 统一在文件锁内完成），不得再进入
@@ -595,10 +608,33 @@ def _ledger(ledger_id):
     return _LEDGERS[ledger_id]
 
 
+def _loginfail_daily_limit(envs=None):
+    """登录失败告警独立账本（M8）的每日上限；0 = 不限。
+
+    键 YIBAN_LOGINFAIL_DAILY_MAX 无 NOTIFY_ 前缀（独立命名），读取口径与其他
+    notify env 键一致：环境变量优先、回退 .env、非法/负值回退默认。
+    """
+    value = os.environ.get(LOGINFAIL_DAILY_MAX_KEY, "").strip()
+    if not value:
+        if envs is None:
+            envs = _read_env_file()
+        value = envs.get(LOGINFAIL_DAILY_MAX_KEY, "").strip()
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_LOGINFAIL_DAILY_MAX
+
+
 def _daily_limit(ledger_id, envs=None):
-    """该本账的每日上限（0 = 不限）；紧急账用 URGENT_DAILY_MAX，非紧急用 DAILY_MAX。"""
+    """该本账的每日上限（0 = 不限）。
+
+    urgent → YIBAN_NOTIFY_URGENT_DAILY_MAX；login_fail → YIBAN_LOGINFAIL_DAILY_MAX
+    （M8 独立账本）；其余（general）→ YIBAN_NOTIFY_DAILY_MAX。
+    """
     if ledger_id == "urgent":
         return _env_int("URGENT_DAILY_MAX", DEFAULT_URGENT_DAILY_MAX, envs)
+    if ledger_id == "login_fail":
+        return _loginfail_daily_limit(envs)
     return _env_int("DAILY_MAX", DEFAULT_DAILY_MAX, envs)
 
 
@@ -748,10 +784,15 @@ def _mark_exhausted_locked(ledger_id):
 
 def _log_exhaustion_warning(ledger_id):
     """额度耗尽的那一行 warning（每天每本账只记一次，避免被反复触发的告警刷屏）。"""
+    if ledger_id == "urgent":
+        label, env_key = "紧急", "YIBAN_NOTIFY_URGENT_DAILY_MAX"
+    elif ledger_id == "login_fail":
+        label, env_key = "登录失败告警", LOGINFAIL_DAILY_MAX_KEY
+    else:
+        label, env_key = "非紧急", "YIBAN_NOTIFY_DAILY_MAX"
     logger.warning(
-        "今日%s消息推送额度已用尽（YIBAN_NOTIFY_%s），当日同类告警不再推手机，请查邮件",
-        "紧急" if ledger_id == "urgent" else "非紧急",
-        "URGENT_DAILY_MAX" if ledger_id == "urgent" else "DAILY_MAX",
+        "今日%s消息推送额度已用尽（%s），当日该类告警不再推手机，请查邮件",
+        label, env_key,
     )
 
 
@@ -872,7 +913,7 @@ def _send_custom(url, title, content):
     return False
 
 
-def send(title, content, force=False, urgent=False):
+def send(title, content, force=False, urgent=False, ledger=None):
     """发送一条 webhook 通知（serverchan / custom）。返回是否成功发送。
 
     未配置 / 不启用 / 非紧急（仅重要告警开启时）/ 每日预算耗尽 / 节流命中 /
@@ -883,6 +924,10 @@ def send(title, content, force=False, urgent=False):
     - 额度走紧急账（YIBAN_NOTIFY_URGENT_DAILY_MAX），与非紧急账互不挤占（批次14 P2-1）；
     - 只有真正发送成功才扣额度，失败（含 HTTP 异常、服务端非零 code、白名单拒发）凭
       占用时拿到的退还凭证退回。
+    ledger（批次18 刀2 M8）：None = 现行行为（按 urgent 归入 general/urgent 两本账）；
+    具名账本（如 "login_fail"）→ 独立日额度（login_fail 用 YIBAN_LOGINFAIL_DAILY_MAX，
+    默认 3，0=不限），与 general/urgent 互不挤占。节流与「仅重要告警」开关仍按
+    全局口径执行，不受 ledger 影响。
     """
     # 同一逻辑段内复用一份 .env 快照：TYPE / SECRET_ENC / URGENT_ONLY 三个键共用，
     # 避免对同一文件重复解析。注意这不是"整次 send 只解析一次"——节流窗口
@@ -897,7 +942,7 @@ def send(title, content, force=False, urgent=False):
         ntype = "custom"  # 兼容旧明文 YIBAN_NOTIFY_URL（未配 TYPE 但有 URL 时按 custom 发送）
     if not secret:
         return False
-    ledger_id = "urgent" if urgent else "general"
+    ledger_id = ledger or ("urgent" if urgent else "general")
     ticket = None  # None = 本次没占额度（force 路径），退还动作对它就是空操作
     if not force:
         if _env_int("URGENT_ONLY", 0, envs) and not urgent:

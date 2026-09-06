@@ -4,7 +4,8 @@
 覆盖：
 - 队列完成后冷却窗口内再次触发 → 429（默认 1800s）；
 - YIBAN_BATCH_SIGN_COOLDOWN_SEC=0 → 关闭冷却（可立即再次触发）；
-- 单账号手动签到不受批量冷却影响。
+- 批次18 刀2 M4 起单条与批量共用同一冷却计数：单号触发成功即挂基准，
+  窗口内再触发任意号（单条或批量）→ 429。
 
 全程 mock subprocess.Popen（防真实 spawn signin 子进程），纯本地 Flask test client。
 用法（项目根目录）：
@@ -201,17 +202,33 @@ class BatchSignCooldownTest(unittest.TestCase):
         r2 = self._trigger_batch(c, csrf)
         self.assertEqual(r2.status_code, 200, "冷却窗口过后应恢复")
 
-    def test_single_signin_not_blocked_by_cooldown(self):
-        """单账号手动签到（/api/signin）不受批量冷却影响（复用冷却时间戳不生效）。"""
+    def test_single_signin_shares_global_cooldown(self):
+        """批次18 刀2 M4（行为变化）：单账号手动签到与批量共用同一全局冷却——
+        批量 spawn 成功后窗口内再触发单号 → 429 冷却提示（a8e9c43 威胁模型：
+        被盗会话循环触发单号真实登录同样打爆易班风控）。"""
         c = self.webapp.create_app().test_client()
         csrf = self._login(c)
         self.assertEqual(self._trigger_batch(c, csrf).status_code, 200)
-        # 等批量队列完成（冷却已挂），再触发单账号签到——不应被冷却拦
+        # 等批量队列完成（冷却基准已在 spawn 成功时刻挂上），再触发单账号签到
         self._trigger_until_batch_done(c, csrf)
         r = c.post("/api/signin", json={"phone": "13800000001"},
                    headers={"X-CSRF-Token": csrf})
-        self.assertIn(r.status_code, (200, 404),
-                      "单账号签到不应被批量冷却拦截（应返回签到结果或账号校验，而非冷却 429）")
+        self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
+        self.assertIn("冷却中", r.get_json()["error"],
+                      "单账号签到应被全局冷却拦截并给出冷却提示")
+
+    def test_single_signin_blocked_after_single_trigger(self):
+        """批次18 刀2 M4 验收：单条手动签到成功后立刻再触发任意号 → 429 冷却提示；
+        另一账号同样被拦（共用同一计数，非 per-phone）。"""
+        c = self.webapp.create_app().test_client()
+        csrf = self._login(c)
+        r1 = c.post("/api/signin", json={"phone": "13800000001"},
+                    headers={"X-CSRF-Token": csrf})
+        self.assertEqual(r1.status_code, 200, r1.get_data(as_text=True))
+        r2 = c.post("/api/signin", json={"phone": "13800000002"},
+                    headers={"X-CSRF-Token": csrf})
+        self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
+        self.assertIn("冷却中", r2.get_json()["error"])
 
 
 import unittest.mock  # noqa: E402

@@ -95,7 +95,8 @@ class _B13WebBase(unittest.TestCase):
             p = mock.patch.object(
                 self.webapp, "send_notification",
                 # 批次18 刀1：send_notification 新增 force=（先告警后落盘），假实现同步接收
-                side_effect=lambda t, c, urgent=False, force=False: self.alerts.append((t, c)),
+                # 批次18 刀2：新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
+                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c)),
             )
             p.start()
             self.addCleanup(p.stop)
