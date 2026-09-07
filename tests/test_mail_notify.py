@@ -374,7 +374,7 @@ class SignAdminMailSummaryTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        import db  # noqa: F401  setUpClass 内为局部导入，此处需同名局部导入才能引用
+        import db  # setUpClass 内为局部导入，此处需同名局部导入才能引用
         if db._conn is not None:
             with contextlib.suppress(Exception):
                 db._conn.close()
