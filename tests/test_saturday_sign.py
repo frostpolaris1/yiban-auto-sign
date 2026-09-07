@@ -277,12 +277,13 @@ class SaturdaySettingsWebTest(unittest.TestCase):
     def test_saturday_partial_update_preserves_delays(self):
         """只改 saturday_sign 不得清空已配置的延迟（复用批次7 A4 语义）。"""
         c, t = self._master()
-        r = c.post("/api/settings", json={"start_delay_max": 60, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        r = c.post("/api/settings", json={"gap_max": 60, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)
         r = c.post("/api/settings", json={"saturday_sign": 0}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)
         env = io.open(self.env_file, encoding="utf-8").read()
-        self.assertIn("YIBAN_START_DELAY_MAX=60", env)
+        self.assertIn("YIBAN_ACCOUNT_GAP_MAX=60", env)
+        self.assertNotIn("YIBAN_START_DELAY_MAX", env, "未携带的启动延迟键不得被写入")
 
 
 if __name__ == "__main__":

@@ -2564,7 +2564,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     event_sink=None):
     """轮询队列 + 分散重试执行全部账号签到。
 
-    流程（schedule 为空=原行为）：启动随机延迟 → 按签到模式（列表顺序 / 列表随机）
+    流程（schedule 为空=原行为）：按签到模式（列表顺序 / 列表随机）
     确定执行顺序逐个尝试（账号间随机间隔）；失败的账号不立即重试，放入队尾等待下一轮；
     每账号总尝试次数受 _retry_budget 分级控制（确定性认证失败 1 次不重试、
     风控类最多 2 次，其他最多 3 次，MAX_ATTEMPTS=3 语义）；同一账号两次尝试间隔
@@ -2586,9 +2586,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     """
     schedule = schedule or {}
     cred_state = cred_state or {}
-    # v0.29.0：启动随机延迟对自动调度同样生效（此前仅手动模式）——
-    # 调度 v2 的时间点分布负责"铺满窗口"，启动延迟在其之上整体错开一个随机相位
-    random_delay(start_delay_max, "启动延迟")
+    # 启动延迟已废弃（v0.29.0），调度 v2 时间点分布 + 掐头去尾取代；
+    # start_delay_max 参数仅为兼容旧调用签名保留（值不再使用）
     queue = list(accounts)
     if SIGN_MODE == "random" and not schedule:
         # 列表随机模式：每次运行打乱顺序（打破"固定顺序+固定时刻"的脚本指纹）；
@@ -3194,9 +3193,12 @@ def main():
         print_config_summary(accounts)
         sys.exit(0)
 
-    # 随机延迟（网页系统设置可开关；默认关闭，不影响现有行为）
+    # 启动延迟已废弃（v0.29.0）：仅保持旧签名兼容，值不再使用（read 后仅透传给
+    # run_queue_retry 的兼容参数位）；账号间隔 gap_max 仍生效
     start_delay_max = parse_env_int("YIBAN_START_DELAY_MAX", 0)
-    gap_max = parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 0)
+    # 缺省 10 与 web 设置页「默认开启 10 秒」口径一致（web 端 DEFAULT_ACCOUNT_GAP_MAX）：
+    # 纯 signin 部署（.env 未配置该键）升级后自动获得 10s 账号间隔
+    gap_max = parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 10)
 
     # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
     # 手动签到（--only）不受限——用户主动触发应当放行

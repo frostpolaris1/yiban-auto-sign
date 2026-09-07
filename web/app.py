@@ -1818,7 +1818,7 @@ def _alert_channel_status():
     """
     status = {
         "mail_flag_on": False,      # YIBAN_MAIL_ENABLE 开关本身
-        "mail_usable": False,       # mailer.is_enabled()：开关 + 发件邮箱 + 授权码齐备
+        "mail_usable": False,       # mailer.is_enabled()：开关 + SMTP 发信条目列表非空
         "mail_self_notify": True,   # 主管理员个人接收（YIBAN_MAIL_ADMIN_NOTIFY）
         "mail_recipients": 0,       # 实际可送达收件人（为空 == 邮件这路等于不存在）
         "mail_user": "",
@@ -1843,9 +1843,9 @@ def _alert_channel_status():
         mcfg = mailer.get_config()
         status["mail_flag_on"] = str(mcfg.get("enable", "")).strip().lower() in (
             "1", "true", "on", "yes")
-        # 可用性判据必须是 mailer.is_enabled()：除 YIBAN_MAIL_ENABLE 外还要求发件 USER
-        # 与授权码 PASS 都在，缺任一项 mailer._send 就静默跳过、一封都不发
-        # （scripts/mailer.py:92-96、99-103）。只看 enable 真值会把"开了但发不出去"
+        # 可用性判据必须是 mailer.is_enabled()：除 YIBAN_MAIL_ENABLE 外还要求 SMTP
+        # 发信条目列表非空（YIBAN_MAIL_SMTPS_ENC 或旧键 USER+PASS），否则
+        # mailer._send 就静默跳过、一封都不发。只看 enable 真值会把"开了但发不出去"
         # 误报成"一切正常"（修复轮 1 评审 ①）。
         status["mail_usable"] = bool(mailer.is_enabled())
         status["mail_self_notify"] = bool(mcfg.get("admin_notify", True))
@@ -1897,8 +1897,8 @@ def _channel_health_degraded(status, exhausted=()):
     成立条件（任一即降级）：
       - 看不清状态：邮件侧或推送侧读取失败——报警器本身出了毛病；
       - 当日有推送账本额度耗尽（exhausted 非空）：批次14 P3-1 病症，这路当天等于死了；
-      - (a) 邮件侧不可用：mailer.is_enabled() 为假（YIBAN_MAIL_ENABLE 开了却缺
-        USER/PASS，或整个开关被关），一封都发不出去；
+      - (a) 邮件侧不可用：mailer.is_enabled() 为假（YIBAN_MAIL_ENABLE 开了却没有
+        可用的 SMTP 发信条目，或整个开关被关），一封都发不出去；
       - (b) 邮件侧可用却无任何可送达收件人（_alert_mail_recipients() 为空）——
         "只关 admin_notify 且库里没有其他接收管理员"这个组合变体仍算降级；
       - (c) 推送侧**曾配置过**而现在不可用：.env 里 type 或密文至少一个仍有值，却
@@ -1949,8 +1949,9 @@ def _channel_status_lines(status=None):
         )
     elif st["mail_flag_on"]:
         lines.append(
-            "邮件通道：⚠ 已开启但不可用（YIBAN_MAIL_ENABLE=1，但发件邮箱或授权码缺失，"
-            "全部告警邮件实际一封都不会发出，需补齐 YIBAN_MAIL_USER / YIBAN_MAIL_PASS）"
+            "邮件通道：⚠ 已开启但不可用（YIBAN_MAIL_ENABLE=1，但没有可用的 SMTP 发信条目，"
+            "全部告警邮件实际一封都不会发出，请在设置页补齐 SMTP 列表或旧键 "
+            "YIBAN_MAIL_USER / YIBAN_MAIL_PASS）"
         )
     else:
         lines.append("邮件通道：⚠ 已关闭（YIBAN_MAIL_ENABLE=0，全部告警邮件不发送）")
@@ -2154,15 +2155,15 @@ def _capacity_stats():
     return len(users), accounts
 
 
-def _capacity_estimate(start_delay_max=0, gap_max=0):
-    """按当前签到窗口与随机延迟设置预估容量（v0.29.0 简单算法）。
+def _capacity_estimate(gap_max=0):
+    """按当前签到窗口与账号间隔设置预估容量（v0.29.1 口径：启动延迟已废弃不参与）。
 
-    公式（README「随机延迟与容量预估」同款）：
-        可容纳账号数 ≈ (窗口秒数 − 启动延迟 − 单账号耗时) ÷ (单账号耗时 + 账号间隔) + 1
-    账号容量按最大等待（启动延迟/间隔取配置上限）估最坏情况；
-    用户容量按随机值中位数（均匀分布取中点）估典型情况。
+    公式：
+        可容纳账号数 ≈ (窗口秒数 − 单账号耗时) ÷ (单账号耗时 + 账号间隔) + 1
+    账号容量按最大间隔（gap 取配置上限）估最坏情况；
+    用户容量按间隔中位数（均匀分布取中点 gap/2）估典型情况。
     单账号耗时复用 signin._schedule_config 的 avg_attempt_sec（默认 8s，容错取 8）。
-    返回 (账号容量, 用户容量)。窗口无法容纳 1 个账号时容量为 0（保存将被拒绝）。
+    返回 (账号容量, 用户容量)。窗口小于单账号耗时时容量为 0（保存将被拒绝）。
     """
     try:
         avg = int(signin._schedule_config().get("avg_attempt_sec") or 8)
@@ -2171,13 +2172,13 @@ def _capacity_estimate(start_delay_max=0, gap_max=0):
     sw = _sign_window()
     window_sec = max(0, (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])) * 60
 
-    def _cap(delay, gap):
-        slack = window_sec - delay - avg
+    def _cap(gap):
+        slack = window_sec - avg
         if slack < 0:
             return 0
         return int(slack / (avg + gap)) + 1
 
-    return _cap(start_delay_max, gap_max), _cap(start_delay_max // 2, gap_max // 2)
+    return _cap(gap_max), _cap(gap_max // 2)
 
 
 def _accounts_at_capacity(extra_holder=None):
@@ -3511,7 +3512,12 @@ def create_app(host=None):
     # ---- 邮件通知配置（全局开关，仅主管理员）----
     @app.route("/api/mail-config")
     def api_mail_config():
-        """邮件通知配置状态（脱敏：授权码不回显，地址打码），供管理后台显示。"""
+        """邮件通知配置状态（脱敏：授权码不回显，地址打码），供管理后台显示。
+
+        smtps：SMTP 发信条目列表（mailer.smtp_list 解密结果；pass 绝不回显，
+        仅以 has_pass 标记该条是否已有授权码；user/admin_to 同顶层字段口径
+        经 mailer._mask_addr 打码——发件账号也属敏感地址，编辑时留空即沿用）。
+        """
         cfg = mailer.get_config()
         enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
         return jsonify({
@@ -3522,14 +3528,29 @@ def create_app(host=None):
             "smtp_port": cfg.get("port", 465),
             "user": cfg.get("user", ""),
             "admin_to": cfg.get("admin_to", ""),
+            "smtps": [
+                {
+                    "host": str(e.get("host", "")),
+                    "port": e.get("port", 465),
+                    "user": mailer._mask_addr(e.get("user")),
+                    "admin_to": mailer._mask_addr(e.get("admin_to")),
+                    "has_pass": bool(e.get("pass")),
+                }
+                for e in mailer.smtp_list()
+            ],
         })
 
     @app.route("/api/mail-config", methods=["PUT"])
     def api_mail_config_save():
-        """主管理员：切换邮件配置开关（写 .env）。
+        """主管理员：切换邮件配置开关 / 保存 SMTP 发信条目列表（写 .env）。
 
         支持：enabled（全局 YIBAN_MAIL_ENABLE）/ admin_notify（主管理员个人
         接收 YIBAN_MAIL_ADMIN_NOTIFY）。两者可单独或同时提交，均为 bool。
+        smtps（v0.29.1）：SMTP 发信条目列表（主备 failover），每条
+        {host, port=465, user, pass, admin_to}；pass 留空且该索引旧条目已有
+        授权码 → 保留旧 pass（不改授权码时无需重输），user 留空同理按索引
+        沿用旧值（GET 打码后前端不回显完整地址），落盘前 AES-GCM 加密为
+        YIBAN_MAIL_SMTPS_ENC。
 
         批次14 P1-1：邮件通道是全部安全告警的最后一条送达路径——"先关通知再作案"
         是本批次活体复现的攻击链首步（拿到内置主管理员 Cookie 后一个 PUT 就能让所有
@@ -3537,6 +3558,8 @@ def create_app(host=None):
         统一走 _high_risk_gate()（二次鉴权 + 复用同一份高危限速计数；修复轮 1 起
         顺序为"先验口令，通过了才占用额度"）；
         纯开启、以及不带开关的改动不要求口令（不得给正常成功路径加摩擦）。
+        smtps 变更与开关关闭是两套并存的高危门禁（不合并）：smtps 单独走
+        _reconfirm_admin_password（"修改邮件 SMTP 配置"），不占高危限速额度。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可操作"}), 403
@@ -3552,7 +3575,51 @@ def create_app(host=None):
             if not isinstance(v, bool):
                 return jsonify({"error": "取值无效"}), 400
             flags[env_key] = v
-        if not flags:
+        # ---- SMTP 发信条目列表（smtps）：全量校验通过后才做口令二次确认 ----
+        smtps_list = None
+        if "smtps" in data:
+            raw_list = data["smtps"]
+            if not isinstance(raw_list, list):
+                return jsonify({"error": "smtps 应为列表"}), 400
+            # 旧列表取自改动前的解密结果：pass 留空且该索引旧条目已有授权码 → 保留旧值
+            old_entries = mailer.smtp_list()
+            smtps_list = []
+            for i, e in enumerate(raw_list):
+                if not isinstance(e, dict):
+                    return jsonify({"error": f"smtps 第 {i + 1} 条格式无效"}), 400
+                # or "" 兜底：JSON null（键存在值为 null 时 get 的默认值不生效）不得
+                # 经 str(None) 落盘为 "None"（与下方 pass/admin_to 同口径）
+                host = str(e.get("host") or "").strip()
+                user = str(e.get("user") or "").strip()
+                if not host:
+                    return jsonify({"error": f"smtps 第 {i + 1} 条 host 不能为空"}), 400
+                # user 留空 = 沿用该索引旧条目的 user（与 pass 的按索引保留一致：
+                # GET 已打码，前端不回显完整发件账号，留空提交才不会误清空）；
+                # 无旧值可沿用时存空串（同 pass 口径）
+                if not user and i < len(old_entries) and old_entries[i].get("user"):
+                    user = str(old_entries[i]["user"])
+                try:
+                    port = int(e.get("port", 465))
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"smtps 第 {i + 1} 条端口无效"}), 400
+                if not 1 <= port <= 65535:
+                    return jsonify({"error": f"smtps 第 {i + 1} 条端口应为 1~65535"}), 400
+                pwd = str(e.get("pass", "") or "")
+                if not pwd and i < len(old_entries) and old_entries[i].get("pass"):
+                    pwd = str(old_entries[i]["pass"])  # 留空 = 不修改该条授权码
+                smtps_list.append({
+                    "host": host,
+                    "port": port,
+                    "user": user,
+                    "pass": pwd,
+                    "admin_to": str(e.get("admin_to", "") or "").strip(),
+                })
+            # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
+            denied = _reconfirm_admin_password(
+                str(data.get("confirm_password", "")), "修改邮件 SMTP 配置")
+            if denied is not None:
+                return denied
+        if not flags and smtps_list is None:
             return jsonify({"error": "缺少有效配置项"}), 400
         # 高危判定：任一开关被置为"关"即为关闭通道（admin_notify=false 只关主管理员
         # 本人的 ADMIN_TO 收件，同样是给报警器拔线）
@@ -3571,19 +3638,42 @@ def create_app(host=None):
         # 或 ADMIN_NOTIFY=0 刚写进去），随后这条"通道被人动了"的告警会被自己刚写入的
         # 参数吞掉（致盲零外发）；此刻配置仍为旧值，force 又绕过两侧节流，确保必达。
         # 批次14 P1-1：urgent=True——设置页开着「仅推送重要告警」时非紧急通知不推手机。
-        send_notification(
-            "邮件配置变更告警",
-            f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
-            f"操作者 {_nl_safe(session.get('username', '?'))}，"
-            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            urgent=True,
-            force=True,
-        )
+        if flags:
+            send_notification(
+                "邮件配置变更告警",
+                f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
+                f"操作者 {_nl_safe(session.get('username', '?'))}，"
+                f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
+                force=True,
+            )
+        if smtps_list is not None:
+            # 先告警后落盘（同批次18 H-2b 口径，force 绕过节流确保必达）：
+            # SMTP 发信条目是告警邮件的送达路径，被人改动必须让管理员知情
+            send_notification(
+                "邮件 SMTP 配置变更告警",
+                f"邮件 SMTP 配置已变更: 发信 SMTP 条目 {len(smtps_list)} 条，"
+                f"操作者 {_nl_safe(session.get('username', '?'))}，"
+                f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
+                force=True,
+            )
+            # 加密排在口令确认之后（同 notify-config 评审 ③：失败请求零写盘痕迹）
+            try:
+                enc = account_crypto.encrypt_text(
+                    json.dumps(smtps_list, ensure_ascii=False),
+                    account_crypto.load_key(ENV_FILE),
+                )
+            except ValueError as e:
+                return jsonify({"error": f"加密失败：{e}"}), 500
+            write_env_key(ENV_FILE, "YIBAN_MAIL_SMTPS_ENC", json.dumps(enc, ensure_ascii=False))
         write_env_batch(ENV_FILE, {k: ("1" if v else "0") for k, v in flags.items()})
         detail = {
             "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
             for k, v in flags.items()
         }
+        if smtps_list is not None:
+            detail["smtps_count"] = len(smtps_list)
         resp = {"ok": True}
         resp.update(detail)
         db.audit(
@@ -5895,15 +5985,16 @@ def create_app(host=None):
     def _launch_signin_proc(only_arg):
         """起一个 `signin.py --only <only_arg>` 子进程；only_arg 可为逗号分隔多号。
 
-        环境与定时签到同口径（进程环境为底座、.env 的 YIBAN_* 覆盖注入）；手动签到
-        关闭随机延迟；密钥经 YIBAN_ENV_FILE 由子进程自读，不注入明文（批次7 口径）。
+        环境与定时签到同口径（进程环境为底座、.env 的 YIBAN_* 覆盖注入）；密钥经
+        YIBAN_ENV_FILE 由子进程自读，不注入明文（批次7 口径）。
         返回 Popen；脚本缺失等启动失败返回 None。
         """
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         script = os.path.join(base, "scripts", "signin.py")
         env = child_env.build_child_env(ENV_FILE, base=dict(os.environ))
-        env["YIBAN_START_DELAY_MAX"] = "0"
-        env["YIBAN_ACCOUNT_GAP_MAX"] = "0"
+        # 启动延迟已废弃（v0.29.0），不再注入 YIBAN_START_DELAY_MAX=0；账号间隔
+        # YIBAN_ACCOUNT_GAP_MAX 也不强制清零——按全局设置对自动+手动一致生效
+        # （手动单账号本无相邻请求，批量手动按 .env/缺省 10 生效，与文档口径一致）。
         env["YIBAN_DB_FILE"] = DB_FILE
         env["YIBAN_ENV_FILE"] = ENV_FILE
         log_fh = None
@@ -6257,9 +6348,11 @@ def create_app(host=None):
         #   用户 = 全部未删除注册用户（含尚未添加账号的空用户）
         #   账号 = 至少持有 1 个非删除账号的活跃注册用户（admin 直属裸账号不计入）
         _cap_users, _cap_accounts = _capacity_stats()
+        # 启动延迟字段仅保持旧前端/脚本兼容（容量公式已不参与，启动延迟 v0.29.1 废弃）；
+        # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
         _est_start = load_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
-        _est_gap = load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", 0)
-        _est_accounts, _est_users = _capacity_estimate(_est_start, _est_gap)
+        _est_gap = load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", DEFAULT_ACCOUNT_GAP_MAX)
+        _est_accounts, _est_users = _capacity_estimate(_est_gap)
         return jsonify(
             {
                 "ok": True,
@@ -6267,8 +6360,8 @@ def create_app(host=None):
                 "gap_max": _est_gap,
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
-                # 容量预估（v0.29.0）：账号=最大等待口径、用户=随机中位数口径；
-                # 前端 >80% 标红；保存延迟时超容量会被拒绝
+                # 容量预估（v0.29.1 口径）：账号=最大间隔口径、用户=间隔中位数口径
+                # （启动延迟已废弃不参与）；前端 >80% 标红；保存延迟时超容量会被拒绝
                 "capacity_estimate": {
                     "accounts_cap": _est_accounts,
                     "users_cap": _est_users,
@@ -6350,7 +6443,8 @@ def create_app(host=None):
             denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改签到随机延迟")
             if denied is not None:
                 return denied
-            est_accounts, est_users = _capacity_estimate(start, gap)
+            # v0.29.1：容量预估只看账号间隔（启动延迟已废弃不参与）
+            est_accounts, est_users = _capacity_estimate(gap)
             cur_users, cur_holders = _capacity_stats()
             if cur_users > est_users or cur_holders > est_accounts:
                 return jsonify({
