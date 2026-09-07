@@ -17,6 +17,7 @@ accounts.json
 # 通知额度/限速运行时状态（web 进程按 cwd 生成，严禁入库）
 notify-ledger.json
 notify-throttle.json
+*.local.lock
 
 # SQLite 数据库（含账号密文/用户哈希/审计日志，严禁入库）
 yiban.db
