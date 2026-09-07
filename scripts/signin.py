@@ -305,24 +305,11 @@ SIGN_MODE = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
 # 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
 # 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
 SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
-# 周六签到开关：默认开启（周六照常签到，与周日不同——周日历史默认不签）。
-# 由网页系统设置页写入 .env（YIBAN_SATURDAY_SIGN=0 关闭 / =1 开启，缺省=1 保持既有行为）。
-def _parse_saturday_sign(raw=None):
-    """周六签到是否开启（fail-open）：缺省/空/非法一律开启，仅显式 0/false/off/no 关闭。
-
-    与周日（SUNDAY_SIGN，缺省=关）语义相反：周六历史默认签到，任何非显式关闭值
-    （含 .env 残留空值 / 手工误写 / 非法值）都按开启处理——漏签比多余一次尝试代价更高，
-    避免 .env 出现空值或脏值后静默丢失周六签到。
-    即：raw.strip().lower() 不属于 ("0","false","off","no") 的任何值
-    （如 "1"/"true"/"yes"/"on"/任意其他字符串/空）一律视为开启——管理员若想关闭
-    必须显式写 0/false/off/no，写别的不会生效也不会报错。
-    """
-    if raw is None:
-        raw = os.environ.get("YIBAN_SATURDAY_SIGN", "1")
-    return raw.strip().lower() not in ("0", "false", "off", "no")
-
-
-SATURDAY_SIGN = _parse_saturday_sign()
+# 周六签到开关：2026-09-07（v0.29.0）起默认关闭，与周日同语义——
+# 缺省/空/非法一律视为关闭，仅显式 1/true/on/yes 开启（此前缺省=1 的 fail-open
+# 解析随默认反转一并废止，_parse_saturday_sign 已删）。需要在周六签到的部署
+# 在网页「系统设置 → 周末签到」开启，或 .env 显式写 YIBAN_SATURDAY_SIGN=1。
+SATURDAY_SIGN = os.environ.get("YIBAN_SATURDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
 
 # ---- 探针模式 / 注册时账号验证（2026-08-25）----
 # 非签到时段对全部账号做只读健康检查（登录+拉任务，不提交签到），提前发现

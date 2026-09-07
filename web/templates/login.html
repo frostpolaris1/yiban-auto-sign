@@ -218,7 +218,7 @@
                  placeholder="输入邮箱地址"
                  class="input input-ring">
           <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">邮箱格式不正确（示例：name@example.com）</p>
-          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">example.com 等占位域名和一次性邮箱无法注册，请使用常用邮箱</p>
+          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">请使用常用邮箱注册，尤其注意QQ邮箱格式</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -229,8 +229,8 @@
             <button type="button" data-pw-toggle="reg-password" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
           </div>
-          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类</p>
-          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类</p>
+          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
+          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password2">确认密码 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -259,7 +259,7 @@
       <div id="footer-icp" class="mb-1"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300">{{ icp_info }}</a></div>
       {% endif %}
       {% if police_info %}
-      <div id="footer-police" class="mb-1"><a href="https://beian.mps.gov.cn/#/query/webSearch?code=32110202000847" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300"><img src="/gongan-beian.png" alt="" width="12" height="13" class="inline-block -mt-0.5 me-1"> {{ police_info }}</a></div>
+      <div id="footer-police" class="mb-1"><a href="{{ police_link }}" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300"><img src="/gongan-beian.png" alt="" width="12" height="13" class="inline-block -mt-0.5 me-1"> {{ police_info }}</a></div>
       {% endif %}
       <div onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</div>
       <div class="mt-1 flex items-center justify-center gap-3 text-blue-500 dark:text-blue-400">
@@ -342,7 +342,7 @@ const EMAIL_RE = /^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$/;  // 用户名部分（@ �
 // 从本文件源码提取这四个正则与后端比对，漂移即红。判定语义：命中 >= 2 类即过（符号算一类）。
 const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
 const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
-const PW_POLICY_HINT = '至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类';
+const PW_POLICY_HINT = '至少 10 位，且包含大小写字母、数字、符号中的至少两类';
 function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
 const regEmail = document.getElementById('reg-email');
 const regEmailErr = document.getElementById('reg-email-error');
