@@ -2235,8 +2235,9 @@ class LoginTrailB14Test(_B14AlertGateBase):
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 PW_TEMPLATES = ("login.html", "user.html", "index.html")
 # 统一后的整句口径（后端 _PASSWORD_POLICY_HINT 与三个模板的 PW_POLICY_HINT 必须逐字相等）
-PW_HINT = "至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类"
-PW_CLASS_SENTENCE = "大写字母、小写字母、数字、符号中的至少两类"
+# 2026-09-07 起用户侧提示合并显示"大小写字母"（判定仍是四类；管理员三类消息保留完整列举）
+PW_HINT = "至少 10 位，且包含大小写字母、数字、符号中的至少两类"
+PW_CLASS_SENTENCE = "大小写字母、数字、符号中的至少两类"
 # 期望的四类正则：顺序与标签数组一一对应，元测试按序严格比对（换序也算漂移）
 PW_EXPECTED_PATTERNS = [r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]"]
 _PW_JS_ARRAY_RE = re.compile(r"const\s+PW_CLASS_PATTERNS\s*=\s*\[([^\n]*?)\]\s*;")
