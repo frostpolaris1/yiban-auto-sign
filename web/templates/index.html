@@ -163,9 +163,10 @@
     @starting-style { #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 0); } }
   }
   /* ===== 信息提示（ⓘ）：hover 与键盘 focus 显示的绝对定位浮层 =====
-     亮色主题深色底白字、暗色主题反转；max-width 72vw 防手机端溢出（桌面长文案也不超半屏） */
+     亮色主题深色底白字、暗色主题反转；max-width 72vw 防手机端溢出（桌面长文案也不超半屏）；
+     浮层贴齐图标右缘展开——三处 ⓘ 都在卡片头右端，左对齐会撑出屏幕右缘无法阅读 */
   .info-tip { position: relative; display: inline-flex; align-items: center; cursor: help; }
-  .info-pop { position: absolute; top: 100%; left: 0; z-index: 30; opacity: 0; visibility: hidden;
+  .info-pop { position: absolute; top: 100%; right: 0; z-index: 30; opacity: 0; visibility: hidden;
     transition: opacity 0.15s ease-out, visibility 0.15s ease-out; margin-top: 6px;
     width: max-content; max-width: 72vw; padding: 8px 10px; border-radius: 8px; text-align: left;
     background: rgb(24 24 27); color: #fff; font-size: 12px; line-height: 1.7;
@@ -560,10 +561,11 @@
       <div class="flex flex-wrap items-center justify-between gap-3 mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700">
         <div>
           <div class="text-sm text-zinc-700 dark:text-zinc-200">移动端显示完整表格</div>
-          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">手机上默认隐藏次要列以省空间；开启后窄屏也显示完整表格（记住选择，桌面端不受影响）</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">窄屏也显示完整表格（记住选择）</p>
         </div>
         <button id="full-tables-btn" role="switch" aria-checked="false" onclick="toggleFullTables()"
-                class="toggle" aria-label="移动端显示完整表格"><span class="knob"></span></button>
+                class="toggle" aria-label="移动端显示完整表格"
+                title="手机上默认隐藏次要列以省空间；开启后窄屏也显示完整表格，桌面端不受影响"><span class="knob"></span></button>
       </div>
     </div>
 
@@ -2720,7 +2722,7 @@ async function loadMailConfig() {
     mailEnabled = !!data.enabled;
     $('mail-config-status').textContent = data.enabled
       ? `已开启 · 发件 ${data.user} · 告警收件 ${data.admin_to}`
-      : '未开启（需先由部署者完成发件邮箱配置，再由主管理员开启）';
+      : '未开启（需先在下方配置发件 SMTP，再由主管理员开启）';
     $('mail-global-wrap').classList.toggle('hidden', !state.isMasterAdmin);
     if (state.isMasterAdmin) $('mail-global-switch').checked = mailEnabled;
     // 个人开关：主管理员 = YIBAN_MAIL_ADMIN_NOTIFY；普通管理员 = users.mail_notify
