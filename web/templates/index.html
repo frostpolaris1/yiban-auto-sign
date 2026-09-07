@@ -538,7 +538,7 @@
         <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">概览</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
           <span data-icon="info"></span>
-          <span class="info-pop">服务器时间：服务器当前时间，每秒刷新（60 秒校准一次）。签到状态：今日自动签到是否已执行/进行中。签到窗口：每日自动签到允许执行的时间段（在下方「签到调度」卡修改）。容量预估：按当前签到窗口与账号间隔估算还能容纳多少账号/用户——账号按最大间隔、用户按间隔中位数两档口径；占用超 80% 标红，已超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔。</span>
+          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<br><b>签到状态：</b>今日自动签到是否已执行/进行中<br><b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<br><b>容量预估：</b>按签到窗口与账号间隔估算还能容纳多少账号/用户（账号按最大间隔、用户按间隔中位数两档口径）；占用超 80% 标红，超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔</span>
         </button>
       </div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
@@ -576,7 +576,7 @@
         <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到调度</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="调度说明">
           <span data-icon="info"></span>
-          <span class="info-pop">排序方式决定谁先签：「顺序」= 按列表顺序，「随机」= 每天重新排序；分布方式决定时间点怎么铺开。<b>「顺序 × 均匀」线性填块</b>：按列表先到先签，账号集中在窗口前段；铺满窗口选「随机 × 均匀」或正态。账号间隔：相邻两次签到请求的最小间隔（秒），自动与手动签到均生效，默认 10，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但会占用更多签到窗口时间。以上改动保存后下次自动签到时生效。</span>
+          <span class="info-pop"><b>排序与分布：</b>「顺序」= 按列表顺序签，「随机」= 每天重新排序；分布方式决定时间点怎么铺开<br><b>「顺序 × 均匀」线性填块：</b>按列表先到先签，账号集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态<br><b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动签到均生效，默认 10，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但会占用更多签到窗口时间<br><b>生效时机：</b>以上改动保存后下次自动签到时生效</span>
         </button>
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">排序决定谁先签，分布决定怎么铺开；详见 ⓘ</p>
@@ -697,7 +697,7 @@
         <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">消息推送</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="消息推送说明">
           <span data-icon="info"></span>
-          <span class="info-pop">密钥加密存储、不回显；同类告警默认 60 秒内只推一条（可改配置文件调整）；推送额度按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度。仅主管理员可修改；高危操作，须再输入当前主管理员密码确认。</span>
+          <span class="info-pop"><b>密钥：</b>加密存储、不回显<br><b>频控：</b>同类告警默认 60 秒内只推一条（可改配置文件调整）<br><b>额度：</b>按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度<br><b>权限：</b>仅主管理员可修改<br><b>确认：</b>高危操作，须再输入当前主管理员密码<br><b>邮件：</b>授权码加密存储、永不回显；SMTP 各项与收件人留空 = 沿用旧值，含打码串的输入一律按空处理；保存 SMTP 配置需主管理员密码确认</span>
         </button>
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
@@ -761,7 +761,7 @@
         <div id="mail-global-wrap" class="hidden flex items-center justify-between gap-3 mb-3">
           <div>
             <span class="text-sm text-zinc-700 dark:text-zinc-200">全局邮件通知</span>
-            <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）；关闭属高危操作，需输入主管理员密码确认</p>
+            <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）</p>
           </div>
           <label class="relative inline-flex items-center cursor-pointer shrink-0" title="全局邮件通知开关">
             <input id="mail-global-switch" type="checkbox" class="sr-only peer" onchange="toggleMailGlobal()">
@@ -782,15 +782,14 @@
         <p id="mail-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
         <!-- SMTP 发信条目列表编辑器（v0.29.1：主备 failover，仅主管理员；打码值不回填输入框，
              留空提交 = 沿用旧值，授权码永不回显） -->
-        <div id="smtp-editor-wrap" class="hidden mt-4">
+        <div id="smtp-editor-wrap" class="hidden mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-700">
           <div class="flex items-center justify-between gap-2 mb-2">
-            <div class="text-xs text-zinc-500 dark:text-zinc-400 min-w-0">发件 SMTP 列表（按顺序主备切换；发件账号/收件人留空 = 沿用旧值，含打码串的输入一律按空处理）</div>
+            <div class="text-xs text-zinc-500 dark:text-zinc-400 min-w-0">发件 SMTP 列表（按顺序主备切换，留空 = 沿用旧值）</div>
             <button type="button" onclick="addSmtp()" class="btn-ghost shrink-0 whitespace-nowrap">添加备用 SMTP</button>
           </div>
           <div id="smtps-list" class="space-y-3"></div>
           <div class="flex flex-wrap items-center gap-2 mt-3">
             <button onclick="saveSmtps()" class="btn-primary">保存 SMTP 配置</button>
-            <span class="text-xs text-zinc-400 dark:text-zinc-500">授权码加密存储、永不回显；更换/清空邮件通道属敏感操作，保存需主管理员密码确认</span>
           </div>
         </div>
       </div>
@@ -802,7 +801,7 @@
         <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">健康检查</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="健康检查说明">
           <span data-icon="info"></span>
-          <span class="info-pop">服务器连通性：不登录，仅测试易班服务器是否可达，用于排查网络问题。探针模式：非签到时段对全部账号做只读健康检查（登录并拉取签到任务，不实际签到），提前发现问题并通过邮件提醒。「注册时验证账号」开启后，提交账号会即时验证，无法通过将当场提示。</span>
+          <span class="info-pop"><b>服务器连通性：</b>不登录，仅测试易班服务器是否可达，用于排查网络问题<br><b>探针模式：</b>非签到时段对全部账号做只读健康检查（登录并拉取签到任务，不实际签到），提前发现问题并通过邮件提醒<br><b>注册时验证账号：</b>开启后提交账号会即时验证，无法通过将当场提示</span>
         </button>
       </div>
       <!-- 服务器连通性（原独立卡并入，v0.29.1） -->
