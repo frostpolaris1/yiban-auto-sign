@@ -3172,8 +3172,8 @@ function renderUsers(users, builtinAdmin) {
   $('users-pending-empty').classList.toggle('hidden', pendingFiltered.length > 0);
   $('users-pending-empty').textContent = pendingFiltered.length ? '' : (pendingUsers.length ? '无匹配结果' : '暂无待审核用户');
   $('users-pending-count').textContent = usersPendingSearch
-    ? `（${pendingFiltered.length} 人匹配 / 共 ${pendingUsers.length} 人待审核）`
-    : (pendingUsers.length ? `（${pendingUsers.length} 人待审核）` : '');
+    ? `（${pendingFiltered.length} 人匹配 / 共 ${pendingUsers.length} 人待处理）`
+    : (pendingUsers.length ? `（${pendingUsers.length} 人待处理）` : '');
   pendingFiltered.forEach(u => ptbody.appendChild(userRow(u, 'usersPending')));
   // 第二组：正式用户（含内置管理员）
   const tbody = $('users-tbody');
