@@ -6,12 +6,10 @@
 - account_crypto._write_key_to_env_file 已存在密钥时不得覆盖（写前重读 + 锁内整体保护）
 """
 import os
-import sys
 import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import account_crypto  # noqa: E402
 import env_lock  # noqa: E402

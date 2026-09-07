@@ -14,13 +14,10 @@ import glob
 import json
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import db  # noqa: E402
 

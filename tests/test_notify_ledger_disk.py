@@ -20,7 +20,6 @@ import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 KEY = "f" * 64
 SCT_KEY = "SCT406257TESTTESTTESTTESTTEST"
@@ -111,7 +110,6 @@ class NotifyLedgerDiskTest(unittest.TestCase):
         for k in list(sys.modules):
             if k.startswith("notify"):
                 del sys.modules[k]
-        sys.path.insert(0, os.path.join(BASE, "scripts"))
         import notify as notify_b
         os.environ["YIBAN_STATE_DIR"] = self.tmp
         os.environ["YIBAN_ENV_FILE"] = self.env_file

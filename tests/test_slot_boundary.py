@@ -12,13 +12,10 @@ F4：窗口长度不是 5 分钟整数倍时（如 06:30~07:52，L=82），build
 修复：以 _slot_to_bi 的成员性为准（与 Web 端同一套可用性判定）。
 """
 import os
-import sys
 import unittest
 from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 

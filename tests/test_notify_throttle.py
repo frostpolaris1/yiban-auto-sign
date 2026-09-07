@@ -27,14 +27,12 @@
 import json
 import logging
 import os
-import sys
 import threading
 import types
 
 import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import account_crypto  # noqa: E402
 import notify  # noqa: E402

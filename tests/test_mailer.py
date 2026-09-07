@@ -6,11 +6,8 @@
 全程 mock smtplib，不发起真实网络请求。
 """
 import os
-import sys
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import mailer  # noqa: E402
 

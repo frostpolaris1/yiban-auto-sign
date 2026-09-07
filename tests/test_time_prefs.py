@@ -25,9 +25,6 @@ import unittest
 from datetime import datetime, timedelta  # 弹性冷却测试构造审计时间戳/窗口用
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
-sys.path.insert(0, os.path.join(BASE, "web"))
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"

@@ -11,12 +11,10 @@
   本机存在时做内容断言，避免在 CI 上依赖被 gitignore 的文件。
 """
 import os
-import sys
 import threading
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
 
 import web.app as web  # noqa: E402
 

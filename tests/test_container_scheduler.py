@@ -18,14 +18,11 @@ import importlib.util
 import json
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 _SCHED_PATH = os.path.join(BASE, "docker", "scheduler.py")
 

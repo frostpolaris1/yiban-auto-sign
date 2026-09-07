@@ -39,9 +39,6 @@ class BreakerTest(unittest.TestCase):
         os.environ["YIBAN_DB_FILE"] = os.path.join(cls.tmp, "yiban.db")
         os.environ["YIBAN_STATE_DIR"] = cls.tmp
         os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
-        sys.path.insert(0, BASE)
-        sys.path.insert(0, os.path.join(BASE, "scripts"))
-        sys.path.insert(0, os.path.join(BASE, "web"))
         global db, signin
         import db
         import signin

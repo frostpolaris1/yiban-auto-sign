@@ -14,8 +14,6 @@ import unittest
 import unittest.mock as mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 

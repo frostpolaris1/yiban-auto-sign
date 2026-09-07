@@ -7,14 +7,11 @@
 - P5：窗口不足 → 重试直接放弃（不再硬冲/无限等）
 """
 import os
-import sys
 import unittest
 from datetime import datetime as _dt
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 

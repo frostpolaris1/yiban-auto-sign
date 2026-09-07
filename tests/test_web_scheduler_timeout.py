@@ -28,9 +28,6 @@ from types import SimpleNamespace
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
-sys.path.insert(0, os.path.join(BASE, "web"))
 
 import db  # noqa: E402
 

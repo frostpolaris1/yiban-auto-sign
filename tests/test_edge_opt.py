@@ -11,12 +11,9 @@ web 层（设置读写 / 自选分块 disabled）测试见 tests/test_time_prefs
 """
 import os
 import random
-import sys
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 

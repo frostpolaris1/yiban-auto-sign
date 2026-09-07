@@ -25,15 +25,12 @@
 import json
 import logging
 import os
-import sys
 import threading
 from contextlib import contextmanager
 
 import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import notify  # noqa: E402
 
