@@ -2799,9 +2799,9 @@ async function submitMailSelf(enabled, pw) {
   }
 }
 
-// ===== SMTP 发信条目编辑器（v0.29.1：主备 failover 列表，仅主管理员） =====
-// GET 返回的 user/admin_to 已打码（含 *）、未配置为「<未配置>」占位——这两类串不允许
-// 作为真值提交（否则按字面落盘损坏配置），收集时一律归一为空串 = 后端沿用旧值
+// ===== SMTP 发信条目编辑器（v0.29.0：主备 failover 列表，仅主管理员） =====
+// GET 返回的 user/admin_to 已打码（含 *）、未配置为「<未配置>」占位——这两种形态的串
+// 不允许作为真值提交（否则按字面落盘损坏配置），收集时一律归一为空串 = 后端沿用旧值
 function _smtpClean(v) {
   const s = String(v || '').trim();
   return !s || s.includes('*') || s.startsWith('<') ? '' : s;
