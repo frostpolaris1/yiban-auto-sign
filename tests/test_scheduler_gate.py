@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次 12 修复回归测试（对抗性审查 2026-08-29）。
+"""修复回归测试（对抗性审查 2026-08-29）。
 
 覆盖：
 - B12-1  docker/backup-docker.sh 产出真实加密备份（herestring 截断管道的空备份
@@ -124,7 +124,7 @@ class SchedulerGateTest(unittest.TestCase):
 
 
 class ZeroSuccessAlertTest(unittest.TestCase):
-    """B12-2 + 批次15 P1-1：窗口外未了结专项告警。"""
+    """窗口外未了结专项告警。"""
 
     def setUp(self):
         signin._mail_summary.clear()
@@ -176,7 +176,7 @@ class ZeroSuccessAlertTest(unittest.TestCase):
 
 
 class SignEventWriteTest(unittest.TestCase):
-    """批次12 裁决：run_queue_retry 经 event_sink 上报签到事件。"""
+    """run_queue_retry 经 event_sink 上报签到事件。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="b12-events-")

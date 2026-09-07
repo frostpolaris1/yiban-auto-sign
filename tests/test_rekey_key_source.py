@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次14 第一档回归测试（2026-08-29）：密钥来源去 cwd 依赖 + rekey 迁移推送密文。
+"""回归测试（2026-08-29）：密钥来源去 cwd 依赖 + rekey 迁移推送密文。
 
 覆盖两条已活体复现的缺陷：
 
@@ -35,7 +35,7 @@ ChannelHealthReportB14Test / AlertChannelGateB14Test 内标了"评审 ①~⑥"�
   ① 日报邮件通道改用 mailer.is_enabled() 判可用——ENABLE=1 而缺 USER/PASS 时
     _send 静默跳过，旧写法会误报"一切正常"；现输出"⚠ 已开启但不可用"并触发降级 urgent。
   ② 限速额度只被"口令校验通过"的高危动作消耗（先鉴权、后计数），错口令尝试不得
-    把主管理员预算刷满造成运维 DoS；同口径覆盖批次13 三处高危删除。
+    把主管理员预算刷满造成运维 DoS；同口径覆盖三处高危删除。
   ③ 加密（缺键时 load_key 会自行生成密钥并写 .env）移到闸门之后，鉴权失败零写入。
   ④ 日报"不依赖被改配置本身"补齐：app_meta 落库做每日至多一封（跨重启有效）；
     通道降级时先落 db.audit 痕迹再尝试发信，两通道同时被拆也留得住证据。
@@ -54,7 +54,7 @@ Task 3 修复轮 2（复评压缩后的 1 项 Important + 1 项 Minor）：
   Minor：健康日报的"今日已播"去重标记改到 send_notification 成功返回之后落，
     发信抛异常当日可重试（由 test_dedupe_marker_written_only_after_successful_send 钉住）。
 
-Task 4（本文件末尾三组用例，2026-08-29 活体复现的 P1-2 / P3-2）：批次13 的三层加固
+Task 4（本文件末尾三组用例，2026-08-29 活体复现的 P1-2 / P3-2）：三层加固
 （告警节流 / 删除冷却 / 二次鉴权）只接在"删除用户"上，账号（易班凭据）侧的物理清除
 链路一处都没接——普通注册管理员会话凭 Cookie 即可 `POST /api/accounts/batch
 {"action":"purge","ids":[0]*10}`（不带 phones 连防错位都跳过）200 通过，单条
@@ -66,8 +66,8 @@ Task 4（本文件末尾三组用例，2026-08-29 活体复现的 P1-2 / P3-2）
 
 Task 5（本文件末尾 LoginTrailB14Test，2026-08-29 生产只读实测的 PROD-2）：盗号事件里
 "会话何时从哪个 IP 结束"与"恢复入口建立的会话"在 audit_logs 里完全无迹可查（logout 类
-动作 0 条，恢复即登录只留 user_self_delete_restore），page_visits 也 0 行；登录侧自批次7
-A6 起就有留痕，但动作名 login 与 login_failed 不成组。现补：① 成功登录的动作名由 login
+动作 0 条，恢复即登录只留 user_self_delete_restore），page_visits 也 0 行；登录侧
+早期即有留痕，但动作名 login 与 login_failed 不成组。现补：① 成功登录的动作名由 login
 收敛为 login_ok（写入点仍是两条成功分支的 `if role:` 汇合点，auth_source 落在 detail；
 username 补 64 字截断）；② /api/me/restore 的"恢复即登录"同样留 login_ok，
 detail 标「恢复登录」，sid 签发与 pw_version 语义一字未动；③ /api/logout 留
@@ -758,7 +758,7 @@ ADMIN_PASS = "MasterPass#2026"
 class _B14AlertGateBase(unittest.TestCase):
     """Task 3 的 web 夹具：隔离 .env + 数据库 + 内置主管理员会话。
 
-    send_notification 默认替换为记录 (title, content, urgent) 的假实现——本批次
+    send_notification 默认替换为记录 (title, content, urgent) 的假实现——本测试
     要钉住的正是"变更告警是否 urgent"（非紧急在「仅重要告警」下不推手机 = 致盲），
     同时顺带杜绝任何真实 SMTP/网络出口。需要走真实 send_notification 的用例
     （额度耗尽接线）把 PATCH_NOTIFY 置 False。
@@ -823,8 +823,8 @@ class _B14AlertGateBase(unittest.TestCase):
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
                 self.webapp, "send_notification",
-                # 批次18 刀1：send_notification 新增 force=（先告警后落盘），假实现同步接收
-                # 批次18 刀2：新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
+                # send_notification 新增 force=（先告警后落盘），假实现同步接收
+                # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
                 side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c, urgent)),
             )
             p.start()
@@ -895,7 +895,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertEqual(self.alerts, [], "被拒绝的关闭不应发出变更告警")
 
     def test_mail_close_wrong_password_alerts_on_third_try(self):
-        """错口令：连续 3 次触发"高危操作二次鉴权失败告警"（与批次13 同阈值/同计数）。"""
+        """错口令：连续 3 次触发"高危操作二次鉴权失败告警"（同阈值/同计数）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         # 快照必须在 create_app/登录之后取：启动会迁移管理员口令哈希并补 YIBAN_SECRET_KEY
@@ -1004,7 +1004,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertIn("通道：关闭", content)
 
     def test_notify_numeric_changes_require_password(self):
-        """批次18 刀1（H-2a 全量收口）：cooldown/urgent_only/daily_max/urgent_daily_max
+        """（参数收口）：cooldown/urgent_only/daily_max/urgent_daily_max
         也纳入二次鉴权——无口令 400 且零写入；带口令 200 并落盘。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
@@ -1034,7 +1034,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         self._append_env("YIBAN_NOTIFY_COOLDOWN=30\n")
-        # 批次18 刀1（H-2a）：cooldown 属收口范围 → 带二次口令
+        # cooldown 属收口范围 → 带二次口令
         r = c.put("/api/notify-config",
                   json={"cooldown": 0, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1044,7 +1044,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
 
     def test_notify_urgent_daily_max_write_rules(self):
         """追加 B：urgent_daily_max 与 daily_max 同规则——整数、0 显式落盘、非法 400、缺省不写。
-        （批次18 刀1 H-2a：数值项带二次口令；非法值在校验层即 400，无需口令）"""
+        （数值项带二次口令；非法值在校验层即 400，无需口令）"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config",
@@ -1121,7 +1121,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
 
     def test_audit_details_include_numeric_and_flag_changes(self):
         """评审 ⑥：两个配置端点的审计详情须含具体变更项（只有 type 时事后无法还原）。
-        （批次18 刀1 H-2a：数值项属收口范围，带二次口令）"""
+        （数值项属收口范围，带二次口令）"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config", headers=self._csrf(t), json={
@@ -1202,7 +1202,7 @@ class HighRiskGateOrderB14Test(_B14AlertGateBase):
         self.assertNotIn("YIBAN_MAIL_ADMIN_NOTIFY=0", _read_env(self.env_file))
 
     def test_batch_delete_wrong_password_does_not_consume_budget(self):
-        """既有三处高危删除同口径（批次13）：错口令尝试不得挤占删除额度。"""
+        """既有三处高危删除同口径：错口令尝试不得挤占删除额度。"""
         self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
         db.create_user("victim@test.local",
                        self.webapp.generate_password_hash(ADMIN_PASS))
@@ -1283,7 +1283,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         self.assertIn("推送通道：已开启", content)
 
     def test_health_report_flags_unusable_channel(self):
-        """配了类型却解不出密钥（批次14 P2-2 病症）→ 日报须标"已配置但不可用"。"""
+        """配了类型却解不出密钥（已知病症）→ 日报须标"已配置但不可用"。"""
         self._append_env("YIBAN_NOTIFY_TYPE=serverchan\n")
         lines = "\n".join(self.webapp._channel_status_lines())
         self.assertIn("已配置但不可用", lines)
@@ -1505,7 +1505,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         两键都不存在、或都在而值都为空/纯空白 ⇒ 从未配置（邮件单通道合法终态，不降级）；
         任一有值 ⇒ 曾配置，此后通道不可用就属"被拆"（条件 (c)）。刻意不新增 app_meta 键、
         不新建状态存储：设置页关闭通道会删掉两个键行，该动作当时已有 notify_config 审计
-        行 + urgent 播报覆盖（批次14 P1-1 门禁），日报不再重复定性。
+        行 + urgent 播报覆盖，日报不再重复定性。
         """
         cases = (
             ("两键都不存在（种子态）", [], False),
@@ -1521,7 +1521,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
                 self.assertIs(self.webapp._push_ever_configured(), want)
 
     def test_ever_configured_with_undecryptable_secret_is_degraded(self):
-        """曾配置（type + 密文都在而密文解不出）= 批次14 P2-2 病症 ⇒ 新口径不得豁免。
+        """曾配置（type + 密文都在而密文解不出）= 已知病症 ⇒ 新口径不得豁免。
 
         与"从未配置"的唯一差别就是 .env 里那两个键还有没有值：这条若一并判成健康，
         "配过又被拆"（换钥后解不开 / 密文被截断）就重新退回静默，(c) 白写。
@@ -1862,7 +1862,7 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
                          "429 时最后一条凭据必须原样保留（改前此处 200 且无痕）")
 
     def test_wrong_password_tries_do_not_consume_purge_budget(self):
-        """批次14 评审 ② 口径延伸到账号侧：错口令尝试不得吃掉合法运维的额度。"""
+        """同口径延伸到账号侧：错口令尝试不得吃掉合法运维的额度。"""
         self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
         self._one_deleted()
         c, h = self._master()
@@ -2005,9 +2005,9 @@ TRAIL_PASS = "TrailPass#2026"
 
 
 class LoginTrailB14Test(_B14AlertGateBase):
-    """批次14/PROD-2：成功登录与登出成对留痕，三元组与 forbidden_path 逐字同构。
+    """成功登录与登出成对留痕，三元组与 forbidden_path 逐字同构。
 
-    登录成功审计自批次7 A6 起就写在两条成功分支的 `if role:` 汇合点上，动作名 login；
+    登录成功审计早期即写在两条成功分支的 `if role:` 汇合点上，动作名 login；
     本组用例钉的是 PROD-2 补齐后的口径——登出端与恢复入口此前一行留痕都没有（audit_logs
     里 logout 类动作 0 条、恢复即登录只留 user_self_delete_restore），且登录侧动作名与
     login_failed 不成组。现网查不到 login_ok 只说明改动上线后还没人重新走过 /api/login，
@@ -2185,7 +2185,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         self.assertTrue(self._audit_rows("user_self_delete_restore"),
                         "原有恢复动作留痕不得被本次改动顶掉")
         sid_after = db.find_user(email)["sid"]
-        self.assertRegex(sid_after, r"^[0-9a-f]{32}$", "恢复即登录须重新签发 sid（批次11 N1）")
+        self.assertRegex(sid_after, r"^[0-9a-f]{32}$", "恢复即登录须重新签发 sid")
         self.assertNotEqual(sid_after, sid_before, "恢复不得复用注销前被窃取的旧 sid")
         self.assertEqual(c.get("/api/me").status_code, 200, "恢复后的新会话须立即可用")
         ok, broken, _first = db.verify_audit_chain()
@@ -2449,7 +2449,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
                          "被拒重置不得动 pw_version（旧会话不得被无谓吊销）")
         r2 = c.post(f"/api/users/{email}/password",
                     json={"password": "!@#$%^&*()12",
-                          "confirm_password": ADMIN_PASS},  # 批次16 P1-2：管理员重置二次鉴权
+                          "confirm_password": ADMIN_PASS},  #：管理员重置二次鉴权
                     headers=self._csrf(token))
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertEqual((db.find_user(email) or {}).get("pw_version"), 2,

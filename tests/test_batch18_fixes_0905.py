@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次18 刀1（安全核心）回归（2026-09-05 用户裁决 A/A/C/A）。
+"""安全核心回归（2026-09-05）。
 
 七项修复：
 1. H-1 XSS：_doc_page 对 base_path（request.script_root）/icp_text/police_text

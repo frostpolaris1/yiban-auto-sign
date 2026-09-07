@@ -98,7 +98,7 @@ class AdminPrivilegeWebTest(unittest.TestCase):
     def test_regular_admin_cannot_reset_admin_password(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
-        # 批次16 P1-2：门禁先于权限检查（与 delete 同口径）；携带正确口令通过二次
+        # 门禁先于权限检查（与 delete 同口径）；携带正确口令通过二次
         # 鉴权后，仍因"目标为管理员仅主管理员"返回 403
         r = c.post("/api/users/admin3@test.local/password",
                    json={"password": NEW_PASS, "confirm_password": ADMIN_PASS},
@@ -114,7 +114,7 @@ class AdminPrivilegeWebTest(unittest.TestCase):
     def test_regular_admin_can_reset_normal_user(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
-        # 批次16 P1-2：管理员重置他人密码 = 账号控制权转移 → 二次鉴权
+        # 管理员重置他人密码 = 账号控制权转移 → 二次鉴权
         r = c.post("/api/users/user1@test.local/password",
                    json={"password": NEW_PASS, "confirm_password": ADMIN_PASS},
                    headers=self._csrf(token))
@@ -128,7 +128,7 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)
         for mode in ("full", "accounts_only"):
-            # 批次18 刀1（M3）：accounts_only 也接入二次鉴权，两种模式都带正确口令，
+            # accounts_only 也接入二次鉴权，两种模式都带正确口令，
             # 使请求到达"目标为管理员仅主管理员"的权限检查 → 403
             r = c.post("/api/users/admin3@test.local/delete",
                        json={"mode": mode, "confirm_password": ADMIN_PASS},
@@ -167,7 +167,7 @@ class AdminPrivilegeWebTest(unittest.TestCase):
                    json={"action": "reset_password",
                          "emails": ["admin3@test.local", "user1@test.local"],
                          "password": NEW_PASS,
-                         "confirm_password": ADMIN_PASS},  # 批次16 P1-2：二次鉴权
+                         "confirm_password": ADMIN_PASS},  #：二次鉴权
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("已重置密码 1 个用户", r.get_json()["msg"])
@@ -194,7 +194,7 @@ class AdminPrivilegeWebTest(unittest.TestCase):
                    json={"action": "reset_password",
                          "emails": ["admin2@test.local", "admin3@test.local"],
                          "password": NEW_PASS,
-                         "confirm_password": ADMIN_PASS},  # 批次16 P1-2：二次鉴权
+                         "confirm_password": ADMIN_PASS},  #：二次鉴权
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("已重置密码 2 个用户", r.get_json()["msg"])

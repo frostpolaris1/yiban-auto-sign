@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# Docker 部署加密备份与恢复（2026-08-27 审查补缺 P2-11；批次12 B12-1/B12-11 加固）
+# Docker 部署加密备份与恢复（2026-08-27 审查补缺 P2-11；加固）
 #
 # 背景：容器部署的数据备份此前只有 README 的「裸 tar data/」路线，
 # 无 backup.sh（宿主 systemd 部署）的默认加密能力，备份明文落盘。
@@ -39,7 +39,7 @@ _TMP_PLAIN=""
 cleanup_tmp() { [ -n "$_TMP_PLAIN" ] && rm -f "$_TMP_PLAIN" || true; }
 trap cleanup_tmp EXIT
 
-# ---- 恢复模式（批次12 B12-11）----
+# ---- 恢复模式----
 # 原 README 恢复指引是一条裸 gpg|tar 管道：口令上命令行、且无 scripts/backup.sh
 # --restore 已有的三重安全校验——被篡改的备份包在 root 解包时可借 ../ 路径穿越、
 # 符号链接或设备节点逃逸出目标目录。现统一走本校验路径。
@@ -87,7 +87,7 @@ mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%F)"
 OUT="$BACKUP_DIR/yiban-data-$STAMP.tar.gz.gpg"
 
-# 批次12 B12-1：口令必须走独立 fd 3（--passphrase-fd 3 + 3<<<）。
+# 口令必须走独立 fd 3（--passphrase-fd 3 + 3<<<）。
 # 原实现 `--passphrase-fd 0 ... <<< "$PASSPHRASE"` 中 herestring 重定向覆盖了
 # 管道送入 gpg stdin 的 tar 数据流（同一命令上后出现的重定向胜出），gpg 实际
 # 加密的是口令字符串本身——产物约 70 字节的「空备份」，tar 侧 SIGPIPE，

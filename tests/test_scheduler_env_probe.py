@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""对抗性审查修复批次回归测试（v0.24.3，2026-08-27）。
+"""对抗性审查修复回归测试（v0.24.3，2026-08-27）。
 
-覆盖本批次八组修复：
+覆盖以下八组修复：
 - 容器调度器：.env 白名单注入子进程环境（P1-1）；分钟级到点闩锁语义常量齐备；
 - 探针：状态文件 BOM 容错 + M12 锁写（P2-9）；main() 中 --probe 先于零账号守卫
   （空账号部署静默 rc=0，签到模式仍 rc=1，防顺序回退）；
@@ -93,7 +93,7 @@ class SchedulerEnvMergeTest(unittest.TestCase):
 
     def test_latch_constants_present(self):
         # P2-10 分钟级闩锁重写的时间点常量保持既有语义
-        # 批次15 P3-1：探针由固定时刻（PROBE_AT=(23,55)）改为周期尝试
+        # 探针由固定时刻（PROBE_AT=(23,55)）改为周期尝试
         # （PROBE_TRY_SECONDS，64a273e），原断言随之更新，避免 CI 门禁恢复后红
         self.assertEqual(self.sched.FIRST, (6, 31))
         self.assertEqual(self.sched.SECOND, (7, 10))
