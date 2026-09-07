@@ -208,7 +208,7 @@ class ReviewFlowTest(unittest.TestCase):
     def test_settings_save_writes_audit(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)
-        r = c.post("/api/settings", json={"start_delay_max": 30, "gap_max": 5},
+        r = c.post("/api/settings", json={"start_delay_max": 30, "gap_max": 5, "confirm_password": ADMIN_PASS},
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 审计记录应包含 settings_save 动作

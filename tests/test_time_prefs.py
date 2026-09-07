@@ -950,6 +950,7 @@ class TimePrefsTest(unittest.TestCase):
         h = self._csrf(token)
         r = c.post("/api/settings", json={
             "start_delay_max": 300, "gap_max": 30, "sign_mode": "bogus",
+            "confirm_password": ADMIN_PASS,
         }, headers=h)
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         env = open(self.env_file, encoding="utf-8").read()
@@ -959,6 +960,7 @@ class TimePrefsTest(unittest.TestCase):
         # 用默认等价值避免污染后续测试对默认状态的断言）
         r = c.post("/api/settings", json={
             "start_delay_max": 300, "gap_max": 30, "sign_mode": "sequence",
+            "confirm_password": ADMIN_PASS,
         }, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = open(self.env_file, encoding="utf-8").read()
