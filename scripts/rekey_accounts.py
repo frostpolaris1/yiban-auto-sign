@@ -52,7 +52,7 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
     （防误传新生成的随机钥造成第三把钥、彻底不可恢复）。
 
 注意：
-- 轮换后须重启所有使用该库的进程（web/signin/scheduler/tui），并同步更新
+- 轮换后须重启所有使用该库的进程（web/signin/scheduler），并同步更新
   环境变量里的 YIBAN_ACCOUNTS_KEY（环境变量优先级高于 .env，旧值会压过新钥）。
 - 旧密钥视为已泄露：重加密不改变"泄露密钥曾可解密全部历史密文"的事实，
   攻击者若已拷贝数据库文件，历史数据仍应视为已泄露（需另行通知受影响用户改密）。
@@ -76,7 +76,7 @@ logger = logging.getLogger("yiban.rekey")
 
 # 进程探活的关键字：命中即认为可能有进程持旧钥运行（批次12 B12-5）。
 # 匹配对象是 /proc/*/cmdline（Linux）；覆盖容器（gunicorn web.app /
-# container_scheduler / scripts/signin.py）与裸机（web/app.py / tui）两种部署
+# container_scheduler / scripts/signin.py）与裸机（web/app.py）两种部署
 # 形态。刻意不含宽泛的 "yiban"（仓库路径本身含 yiban，会误报无关进程）。
 _PROCESS_HINTS = (
     "gunicorn",
@@ -84,7 +84,6 @@ _PROCESS_HINTS = (
     "web/app.py",
     "signin.py",
     "scheduler.py",
-    "tui",
 )
 
 
@@ -386,7 +385,7 @@ def _write_env_key(env_path, new_key, extra=None):
 
 
 def update_env_key(env_path, new_key, extra=None):
-    """把新密钥写入 .env（原子替换、0600；持 env_lock 与 web/tui 写 .env 互斥）。
+    """把新密钥写入 .env（原子替换、0600；持 env_lock 与 web 写 .env 互斥）。
 
     extra：其它需一并落盘的 .env 键值（批次14 P2-2 用它写入用新钥重加密后的
     YIBAN_NOTIFY_SECRET_ENC）。刻意与 YIBAN_ACCOUNTS_KEY 合进同一次原子替换——

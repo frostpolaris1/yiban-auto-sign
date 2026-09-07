@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-# 共享模块（同目录）：加密（web/tui/db 共用密钥与密文格式）与 SQLite 数据访问层
+# 共享模块（同目录）：加密（与 web 共用密钥与密文格式）与 SQLite 数据访问层
 import account_crypto
 import db  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
 import env_lock  # 探针 once 模式自动关闭 .env（跨进程写锁）
@@ -203,8 +203,7 @@ def _setup_cli_logging():
     """CLI 入口日志装配（批次18 刀3 P3-13）：把按天文件 handler 挂到 root logger。
 
     装配从模块导入期延迟到 main() 入口（--check-config / --probe / --only 均经
-    main()，覆盖全部 CLI 路径；TUI 不直接 import signin，经子进程调用 signin.py
-    同样走 main()）。模块导入自此零副作用：web 进程 import signin 不再向 root
+    main()，覆盖全部 CLI 路径）。模块导入自此零副作用：web 进程 import signin 不再向 root
     挂 handler，双写症状（每条日志落盘两遍）消除；幂等保护重复调用不重复挂载。
     """
     global _cli_logging_ready
@@ -261,7 +260,7 @@ KILLYIBAN_HEADERS = {
 class Account:
     """单个易班账号配置。
 
-    通过 Web 管理后台或 TUI 配置工具添加（存于 SQLite 数据库），
+    通过 Web 管理后台添加（存于 SQLite 数据库），
     一次输入一个账号的完整信息，无需用符号分隔。
     """
 
@@ -272,7 +271,7 @@ class Account:
     password: str
     phone_model: str = ""  # 设备型号（学校开启"设备绑定"时必填）
     phone_code: str = ""  # 设备唯一识别码（学校开启"设备绑定"时必填）
-    name: str = ""  # 可选：自定义名称（TUI 输入，未填写时显示为"账号N"）
+    name: str = ""  # 自定义名称（未填写时显示为"账号N"）
     user_paused: bool = False  # 用户自暂停签到（调度 v2；db.load_accounts 透传）
     owner: str = ""  # 账号归属用户邮箱（B 线：签到失败时向 owner 发提醒邮件；JSON/legacy 来源为空）
 
@@ -297,7 +296,7 @@ SESSION_STALE_MAX_ATTEMPTS = 2
 # 易班侧无签到点位（总尝试上限 1 次）：属数据/任务配置问题，重试拿不到就是拿不到
 NO_POSITION_MAX_ATTEMPTS = 1
 
-# 随机延迟默认值在 web/app.py 与 tui/app.py 中维护（signin.py 不直接使用）。
+# 随机延迟默认值在 web/app.py 中维护（signin.py 不直接使用）。
 
 # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
 # 由网页系统设置页写入 .env（YIBAN_SIGN_MODE），run.sh 加载后经环境变量传入
@@ -344,7 +343,7 @@ PROBE_HARD_FAIL_RE = re.compile(
     r"|WAF|风控|拦截"
 )
 
-# 签到状态码（写 sign-state 状态文件，web/TUI 状态显示的事实源）与日志符号
+# 签到状态码（写 sign-state 状态文件，web 状态显示的事实源）与日志符号
 STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
 STATUS_ALREADY = "already"               # 今日已签到（重复执行时服务器告知）
 STATUS_NO_TASK = "no_task"               # 今日无需签到（服务器确认今日无任务）
@@ -363,10 +362,10 @@ STATUS_PENDING = "pending"               # 待签（未执行/无记录）
 # 全局暂停（管理员 Web UI 一键暂停：整站停止自动签到）。
 # 注意：本进程不产此状态——暂停时 main() exit(2)，由 run.sh 依据 YIBAN_GLOBAL_PAUSE=1
 # 在「日状态文件」写入 GLOBAL_PAUSED（区别于普通 SKIPPED，供运维/监控区分）；
-# 此处保留常量与符号，供显示层/TUI 消费日状态时映射。
+# 此处保留常量与符号，供显示层消费日状态时映射。
 STATUS_GLOBAL_PAUSED = "global_paused"
 
-# 状态码 → 日志/日历符号（与 web/TUI 显示层一致）
+# 状态码 → 日志/日历符号（与 web 显示层一致）
 STATUS_SYMBOL = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
@@ -785,9 +784,9 @@ def _sanitize_url(url):
 # 账号配置加载
 # ---------------------------------------------------------------------------
 def _key_env_file():
-    """密钥来源 .env 路径：YIBAN_ENV_FILE 优先（与 web/TUI 子进程约定一致），回退默认 .env。
+    """密钥来源 .env 路径：YIBAN_ENV_FILE 优先（与 web 子进程约定一致），回退默认 .env。
 
-    2026-08-21 对抗性审查修复：此前 web/TUI 为保证自定义 .env 路径下子进程能解密，
+    2026-08-21 对抗性审查修复：此前 web 为保证自定义 .env 路径下子进程能解密，
     把 YIBAN_ACCOUNTS_KEY 明文注入子进程环境变量（同 uid 进程可读 /proc/<pid>/environ，
     密钥暴露面扩大）。现统一改为传递【路径】而非密钥本身，本函数即子进程侧的解析入口。
     """
@@ -797,7 +796,7 @@ def _key_env_file():
 def _parse_account_dict(data):
     """将账号 JSON 对象解析为 Account，校验必填字段。
 
-    password/phone_code 支持 AES-GCM 密文对象（web/TUI 存储层加密落盘，
+    password/phone_code 支持 AES-GCM 密文对象（web 存储层加密落盘，
     0.17+ 数据在 yiban.db（SQLite），accounts.json 仅存于迁移前——解密依赖
     同一密钥：环境变量 YIBAN_ACCOUNTS_KEY → .env 同键（YIBAN_ENV_FILE 可指定
     路径）；密钥缺失/解密失败抛明确错误，绝不静默使用错误数据）。
@@ -1060,7 +1059,7 @@ class YibanClient:
         - 解除 account/phone_model/phone_code 引用，缩短凭据可回收窗口。
         CPython 局限：不可变对象（str/bytes）无法原位清零，RSA 加密瞬态副本与
         Account.password 本体只能等 GC；core dump / swap 场景仍可能残留。彻底
-        消除需全链路换可清零凭据容器（侵入 web/db/TUI 存储层，标注为已知限制）。
+        消除需全链路换可清零凭据容器（侵入 web/db 存储层，标注为已知限制）。
         """
         pwd = getattr(self, "password", None)
         if isinstance(pwd, bytearray):
@@ -2102,7 +2101,7 @@ def attempt_signin(account):
 
 
 def _write_sign_state(phone, status, message, scheduled=None, dur=None):
-    """写按日结构化状态文件（web/TUI 状态显示的事实源，原子替换防半截文件）。
+    """写按日结构化状态文件（web 状态显示的事实源，原子替换防半截文件）。
 
     文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
@@ -3126,11 +3125,11 @@ def main():
     """主函数：加载账号配置并执行签到。
 
     支持：
-    - 数据库 yiban.db（SQLite，web 后台 / TUI 配置工具写入）与 YIBAN_ACCOUNTS_JSON
+    - 数据库 yiban.db（SQLite，web 后台写入）与 YIBAN_ACCOUNTS_JSON
     - 旧格式 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（向后兼容）
     - 队列重试：失败账号分散重试——开启签到调度时重新安排到窗口内合适时间，否则放回队尾（分级上限）
     - 随机延迟：YIBAN_START_DELAY_MAX（启动）/ YIBAN_ACCOUNT_GAP_MAX（账号间隔）
-    - --only 指定手机号（逗号分隔），仅供 TUI 手动签到单个账号
+    - --only 指定手机号（逗号分隔），仅供手动签到单个账号
     - --check-config 仅检查配置，不发任何网络请求
     """
     # 批次7 P3-15：进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
@@ -3145,7 +3144,7 @@ def main():
         "--check-config", action="store_true", help="仅检查账号配置（脱敏打印），不发起任何网络请求"
     )
     parser.add_argument(
-        "--only", default="", help="仅签到指定手机号（逗号分隔，用于 TUI 手动签到）"
+        "--only", default="", help="仅签到指定手机号（逗号分隔，用于手动签到）"
     )
     parser.add_argument(
         "--probe", action="store_true",
@@ -3186,13 +3185,13 @@ def main():
 
     if not accounts:
         logger.error("未配置任何账号，请通过以下任一方式配置：")
-        logger.error("  1. yiban.db 数据库（推荐，用网页后台或 TUI 配置工具添加）")
+        logger.error("  1. yiban.db 数据库（推荐，用网页后台添加）")
         logger.error("  2. YIBAN_ACCOUNTS_JSON 环境变量（JSON 数组）")
         logger.error("  3. YIBAN_ACCOUNTS 环境变量（旧格式 phone:password#phone2:password2）")
         logger.error("  4. YIBAN_PHONE / YIBAN_PASSWORD 环境变量（单账号）")
         sys.exit(1)
 
-    # --only 过滤：只保留指定手机号（TUI 手动签到单个账号）
+    # --only 过滤：只保留指定手机号（手动签到单个账号）
     # 未命中号码逐号 warning（批次16 P2-6）；全不命中时报错退出（既有行为）。
     if args.only:
         accounts, _missing = _apply_only_filter(accounts, args.only)
@@ -3205,7 +3204,7 @@ def main():
         print_config_summary(accounts)
         sys.exit(0)
 
-    # 随机延迟（TUI 设置栏可开关；默认关闭，不影响现有行为）
+    # 随机延迟（网页系统设置可开关；默认关闭，不影响现有行为）
     start_delay_max = parse_env_int("YIBAN_START_DELAY_MAX", 0)
     gap_max = parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 0)
 
@@ -3235,7 +3234,7 @@ def main():
         _run_lock_fh = _acquire_run_lock(bool(args.only))
     except _RunLockHeld:
         logger.warning("已有签到进程在运行，本次手动签到跳过（防同账号并发，稍后可重试）")
-        # 批次7 P2-9：原 exit 0 让 web/TUI 把"静默跳过"当成功展示；3 = 队列忙，
+        # 批次7 P2-9：原 exit 0 让 web 把"静默跳过"当成功展示；3 = 队列忙，
         # 调用方可据此向用户如实提示（退出码语义见文件头/退出码表）
         sys.exit(3)
 

@@ -17,16 +17,13 @@ python -m pytest tests/test_web_*.py      # 网页管理后台
 python -m pytest tests/test_scheduler*.py # 调度器
 python -m pytest tests/test_db_*.py       # 数据库与迁移
 python -m pytest tests/test_signin*.py    # 签到核心
-python -m pytest tests/test_tui*.py       # 终端面板
 
 # 单个文件
 python -m pytest tests/test_smoke.py -v
 ```
 
-功能域 markers 定义见 `pyproject.toml` 的 `[tool.pytest.ini_options].markers`：
-`web` / `signin` / `scheduler` / `notify` / `db` / `tui`。
-
-> 说明：`scripts/stress_security_test.py`（安全压力测试）需真实服务器地址、按脚本方式运行，**不参与** pytest 默认收集。
+> 说明：本仓库未在 `pyproject.toml` 注册自定义 markers（`-m` 过滤不可用），按文件名前缀分域运行。
+> `scripts/` 下的一次性运维脚本不作为 pytest 收集目标（`testpaths = ["tests"]`）。
 
 ## 文件清单（按功能域分组）
 
@@ -111,10 +108,9 @@ python -m pytest tests/test_smoke.py -v
 | `test_user_deregistration_db.py` | 用户注销数据库层（软删除 + 宽限期） |
 | `test_env_lock.py` | 共享 .env 文件锁 + 密钥生成竞态 |
 
-### 终端面板（tui/）与辅助脚本
+### 辅助脚本
 | 文件 | 说明 |
 |---|---|
-| `test_tui_fixes.py` | TUI 与辅助脚本修复 |
 | `test_env_mailer_tls.py` | 子进程 env + mailer TLS 上下文 |
 | `test_rekey_key_source.py` | 密钥来源去 cwd 依赖 + rekey 迁移推送密文 |
 | `test_p3_fixes.py` | 批次17 P3：迁移原子性、rekey argv 泄露、backup 明文警告 |

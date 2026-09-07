@@ -438,7 +438,7 @@ class TimePrefsTest(unittest.TestCase):
         self.assertIsNone(db.get_time_pref("13800138001"))
 
     def test_db_replace_accounts_cleans_orphan_pref(self):
-        """对抗（H2）：整表替换（TUI）后，被移除账号的 pref 一并清理（防孤儿虚高拥挤度）。"""
+        """对抗（H2）：整表替换后，被移除账号的 pref 一并清理（防孤儿虚高拥挤度）。"""
         # 13900139099 先作为正式账号入表，再被 replace_accounts 移除
         db.add_account({"name": "B", "phone": "13900139099", "password": "p2",
                         "status": "active", "owner": "admin"})
