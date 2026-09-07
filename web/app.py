@@ -898,28 +898,22 @@ def write_env_int(env_path, key, value):
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
+    单键形态 = write_env_batch({key: value})：换行注入校验、写锁、原子替换
+    均单源在 write_env_batch（防两份安全校验实现漂移）。
+    """
+    write_env_batch(env_path, {key: value})
+
+
+def write_env_batch(env_path, updates):
+    """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
+    避免多次独立写入时进程崩溃导致配置不一致。
+    updates: dict {key: value}，value 为空字符串则删除该键。
+
     写锁（_env_write_lock）：并发保存设置/公告时读-改-写互斥，防跨 worker 丢更新。
     安全约束（安全审查 2026-08）：.env 为逐行键值格式，键或值含换行符会注入出
     新的配置行（如经公告文本写入 YIBAN_ADMIN_PASSWORD_HASH 覆盖主管理员哈希提权）。
     此处为兜底硬校验（调用方应先自行校验并返回友好错误），违规直接抛 ValueError。
     """
-    if "\n" in key or "\r" in key or "\n" in value or "\r" in value:
-        raise ValueError(f"write_env_key 拒绝包含换行符的键值（.env 单行格式）: {key}")
-    with _env_write_lock(env_path):
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
-        if value:
-            out.append(f"{key}={value}")
-        _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
-
-
-def write_env_batch(env_path, updates):
-    """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
-    避免多次独立 write_env_key 调用时进程崩溃导致配置不一致。
-    updates: dict {key: value}，value 为空字符串则删除该键。"""
     with _env_write_lock(env_path):
         for key, value in updates.items():
             if "\n" in key or "\r" in key or "\n" in value or "\r" in value:
