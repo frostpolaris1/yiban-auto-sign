@@ -9,7 +9,7 @@
 - 文件锁获取失败（目录不可写等）退化为进程内锁，不阻断业务。
 
 所有 .env 的读-改-写替换路径都应通过 `env_write_lock(env_path)` 进入，
-避免 web / tui / 密钥生成多进程并发时互相覆盖。
+避免 web / 密钥轮换等多进程并发时互相覆盖。
 """
 import contextlib
 import os

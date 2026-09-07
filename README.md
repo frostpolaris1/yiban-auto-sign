@@ -9,7 +9,7 @@
 >
 > 本项目通过 Python 脚本自动完成这个签到过程——配置一次后，每天到点自动帮你打卡，无需手动操作、无需保持电脑开机。
 >
-> 支持 **国内云服务器**、**Docker 容器** 与 **GitHub Actions** 三种部署方式；提供 **网页管理后台** 与 **终端面板（TUI）** 两种管理界面。
+> 支持 **国内云服务器**、**Docker 容器** 与 **GitHub Actions** 三种部署方式；提供 **网页管理后台**（手机/平板/电脑任意设备访问）。
 
 
 - 🤖 **全自动签到**：每天定时执行，无需人工干预
@@ -106,15 +106,8 @@ cd /opt/yiban-auto-sign && pip3 install -r requirements.lock
 # 注：裸机部署安装精确锁定的 requirements.lock（与 CI/Docker 镜像同源），
 # 保证实际部署的依赖版本 = 安全审计覆盖的版本；requirements.txt 仅作下限声明。
 
-# 3. 配置账号（TUI 面板：名称/手机号/密码/设备识别码，一个账号一次输完）
-# 安装 yiban 命令（SSH 后输入 yiban 直接打开面板）
-cat > /usr/local/bin/yiban << 'EOF'
-#!/bin/bash
-cd /opt/yiban-auto-sign
-exec python3 -m tui "$@"
-EOF
-chmod +x /usr/local/bin/yiban
-yiban        #   A 添加 → 填写 → S 保存 → Q 退出；设置区可调随机延迟开关
+# 3. 配置账号（推荐：网页管理后台，见「网页管理系统」章节；
+#    无头环境/CI 可用 .env 的 YIBAN_ACCOUNTS_JSON，见「配置说明」章节）
 
 # 4. 配置定时任务（每天 6:31 + 7:10 两次；周六日是否执行由「周六/周日签到」开关控制）
 crontab -e   # 追加：
@@ -160,32 +153,18 @@ pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip3 install -r requirements.lock   # 精确锁定（与 CI/镜像同源，见上方安装说明）
 ```
 
-#### 3. 配置账号（推荐：TUI 配置工具）
+#### 3. 配置账号（推荐：网页管理后台）
 
-SSH 登录服务器后运行表单式配置工具，**一个账号的所有信息（名称、手机号、密码、设备型号、设备识别码）一次输入完成**，密码输入时自动掩码：
+按下方「网页管理系统」章节装好 Web 后台后，浏览器访问即可添加账号（存入 SQLite 数据库 `yiban.db`，AES-GCM 加密存储）。
+
+无头环境 / CI 可用环境变量直接注入（`.env` 中配置）：
 
 ```bash
-yiban            # 推荐：全局命令（已安装到 /usr/local/bin/yiban）
-# 或 python3 -m tui
+# 多账号 JSON：一个账号一次输入完整信息（手机号、密码、设备型号、设备识别码）
+YIBAN_ACCOUNTS_JSON='[{"phone":"13800138000","password":"你的密码","phone_model":"Vivo-XXXX","phone_code":"64位识别码"}]'
 ```
 
-**面板布局**：
-- **左侧**：账号列表——序号（决定顺序打卡顺序）、状态图标（⏳ 准备签到 / ✅ 今日成功 / ❌ 最终失败 / 🔄 重试中 / ➖ 跳过）、名称、手机号、设备型号
-- **右上**：签到日志（最近记录，自动刷新）
-- **右下**：设置区——随机延迟开关（启动延迟/账号间隔，各含秒数可调）、连通性检测、服务器时间与签到状态，均写入 `.env`
-
-**界面快捷键**：
-
-| 按键 | 功能 |
-|------|------|
-| `A` | 添加账号（名称 / 手机号 / 密码 / 设备型号 / 设备识别码） |
-| `E` / `D` | 编辑 / 删除选中账号（↑↓ 选择） |
-| `[` / `]` | 上移 / 下移选中账号（调整阅读与顺序打卡顺序） |
-| `M` | 手动签到选中账号（后台子进程执行，日志同步刷新） |
-| `S` | 保存（账号 → SQLite 数据库 `yiban.db`，随机延迟 → `.env`） |
-| `Q` | 退出 |
-
-保存后 `signin.py` 每次执行会自动从数据库读取账号（0.17+ 数据存于 SQLite；`accounts.json` 仅为旧版本迁移来源）。也可以不启动 TUI，直接用网页管理后台添加账号。
+保存后 `signin.py` 每次执行会自动从数据库读取账号（0.17+ 数据存于 SQLite；`accounts.json` 仅为旧版本迁移来源）。
 
 > 💡 **手动验证配置**（不发送任何网络请求）：
 > ```bash
@@ -202,7 +181,7 @@ YIBAN_PROXY=http://127.0.0.1:8888
 EOF
 ```
 
-账号已通过 TUI / 网页写入数据库（`yiban.db`），`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`，向后兼容）。
+账号已通过网页后台写入数据库（`yiban.db`），`.env` 只需配置代理等公共选项（单账号也可继续用 `YIBAN_PHONE` / `YIBAN_PASSWORD`，向后兼容）。
 
 #### 5. 运行脚本（仓库已自带，无需手写）
 
@@ -379,7 +358,7 @@ web/signin/scheduler 旁执行）：
    `python3 scripts/rekey_accounts.py --generate`（或 `--new-key <64位hex>` /
    `--new-key-file <文件>`；可用 `--db`/`--env` 指定路径；`--force` 跳过存活
    进程探活）；
-2. 重启全部进程（web/signin/scheduler/tui）；若 shell 或容器环境变量中仍设有
+2. 重启全部进程（web/signin/scheduler）；若 shell 或容器环境变量中仍设有
    旧 `YIBAN_ACCOUNTS_KEY`，同步更新——环境变量优先级高于 `.env`；
 3. 事后取证与善后：`python3 scripts/audit_verify.py --db data/yiban.db` 校验
    审计链是否被篡改（轮换动作本身也会留痕审计链）。注意：旧密钥应视为已泄露——
@@ -448,7 +427,7 @@ web/signin/scheduler 旁执行）：
 ## 网页管理系统
 
 
-除 SSH 打开 TUI 外，还提供浏览器管理界面（手机/平板/电脑任意设备访问）：
+提供浏览器管理界面（手机/平板/电脑任意设备访问）：
 
 ```bash
 # 1. 安装依赖
@@ -667,7 +646,7 @@ on:
 
 ### 环境变量一览
 
-账号数据存于 **SQLite 数据库（`yiban.db`）**，由网页管理后台 / TUI 写入（AES-GCM 加密存储）。`YIBAN_ACCOUNTS_JSON`、`YIBAN_ACCOUNTS`、`YIBAN_PHONE`+`YIBAN_PASSWORD` 为旧格式 / CI 场景的向后兼容加载方式。
+账号数据存于 **SQLite 数据库（`yiban.db`）**，由网页管理后台写入（AES-GCM 加密存储）。`YIBAN_ACCOUNTS_JSON`、`YIBAN_ACCOUNTS`、`YIBAN_PHONE`+`YIBAN_PASSWORD` 为旧格式 / CI 场景的向后兼容加载方式。
 
 | 变量名 | 说明 | 必填 |
 |--------|------|------|
@@ -705,7 +684,7 @@ on:
 
 随机延迟用于打散"每天固定秒级执行"的脚本特征，作为 [e003 修复](#q1报错-账号或密码错误e003但密码明明是对的)（真实 App 登录特征）之外的纵深防御。**默认关闭**，两种方式开启：
 
-1. **TUI 设置栏**（推荐）：`yiban` → 设置区 → 点「启动延迟 / 账号间隔」开关（开启自动填默认秒数，可改）→ `S` 保存
+1. **网页「系统设置」**（推荐）：管理员登录后台 → 「随机延迟」卡片开启（开启自动填默认秒数，可改）→ 保存
 2. **手动编辑 `.env`**（服务器 `/opt/yiban-auto-sign/.env`）：
 
 ```bash
@@ -730,7 +709,7 @@ YIBAN_ACCOUNT_GAP_MAX=10
 
 ### 账号配置格式（JSON，兼容旧格式 / CI）
 
-`YIBAN_ACCOUNTS_JSON` 使用如下 JSON 数组格式，一个账号一次输入完整信息（手机号、密码、设备型号、设备识别码），**无需用符号分隔**（网页后台/TUI 写入的数据库账号不依赖此格式）：
+`YIBAN_ACCOUNTS_JSON` 使用如下 JSON 数组格式，一个账号一次输入完整信息（手机号、密码、设备型号、设备识别码），**无需用符号分隔**（网页后台写入的数据库账号不依赖此格式）：
 
 ```json
 [
@@ -740,10 +719,10 @@ YIBAN_ACCOUNT_GAP_MAX=10
 ```
 
 - `phone` / `password` 必填；`phone_model` / `phone_code` 可选（学校开启"设备绑定"时必填，每个账号可独立配置）
-- **0.17.0 起数据存储于 `yiban.db`（SQLite）**：网页后台 / TUI（`python3 -m tui`）保存的账号直接入库，无需手工维护 accounts.json（该 JSON 仅作为无数据库环境的备用导入格式，迁移后自动改名 .bak）
+- **0.17.0 起数据存储于 `yiban.db`（SQLite）**：网页后台保存的账号直接入库，无需手工维护 accounts.json（该 JSON 仅作为无数据库环境的备用导入格式，迁移后自动改名 .bak）
 - 检查配置（不发送任何请求）：`python scripts/signin.py --check-config`
 
-> ⚠️ 通过网页/TUI 保存的账号存在 `yiban.db` 中，`password` / `phone_code` 字段为 **AES-GCM 密文对象**（非明文，`.gitignore` 已排除该文件）。解密密钥 `YIBAN_ACCOUNTS_KEY` 自动生成在 `.env`（chmod 600）：**密钥丢失 = 已加密账号密码不可恢复**，备份数据时必须连同 `.env` 一起备份（建议与数据分开放、分开打包；生产环境可用 `/etc/yiban/accounts-key` 分盘存放，见 `web/deploy/` 部署模板）。
+> ⚠️ 通过网页后台保存的账号存在 `yiban.db` 中，`password` / `phone_code` 字段为 **AES-GCM 密文对象**（非明文，`.gitignore` 已排除该文件）。解密密钥 `YIBAN_ACCOUNTS_KEY` 自动生成在 `.env`（chmod 600）：**密钥丢失 = 已加密账号密码不可恢复**，备份数据时必须连同 `.env` 一起备份（建议与数据分开放、分开打包；生产环境可用 `/etc/yiban/accounts-key` 分盘存放，见 `web/deploy/` 部署模板）。
 
 ### 消息通知（可选）
 
@@ -1158,7 +1137,6 @@ python -m pytest tests/test_web_*.py        # 网页管理后台
 python -m pytest tests/test_scheduler*.py   # 调度器
 python -m pytest tests/test_signin*.py      # 签到核心
 python -m pytest tests/test_db_*.py         # 数据库与迁移
-python -m pytest tests/test_tui_*.py        # 终端面板
 
 # 单个测试文件（文件名 = 功能域，如 test_notify_throttle.py 为推送节流）
 python -m pytest tests/test_smoke.py -v
@@ -1192,7 +1170,6 @@ python -m pytest tests/test_smoke.py -v
 
 | 组件 | 用途 | 许可证 |
 |------|------|--------|
-| [Textual](https://github.com/Textualize/textual) | TUI 终端面板（`tui/`） | MIT — Copyright (c) 2022 Textualize Inc. |
 | Flask / Werkzeug | Web 框架 | BSD-3-Clause |
 | requests / urllib3 | HTTP 客户端 | Apache-2.0 / MIT |
 | PySocks | SOCKS 代理 | MIT |
@@ -1227,7 +1204,6 @@ python -m pytest tests/test_smoke.py -v
 - Auto-Test - 易班登录流程（OAuth + RSA + ydclearance，已弃用并被本项目新登录特征取代）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 定时工作流自动续期（避免 60 天无活动被禁用）
 - [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 默认登录流程的真实 App 请求特征来源、多边形内随机定位点算法（缩放质心、射线法验证）、nightAttendance 签到流程
-- [Textualize/textual](https://github.com/Textualize/textual)（MIT）- TUI 终端面板框架（`tui/` 组件）
 
 特别感谢 [Lumjiel](https://github.com/Lumjiel) 对本项目的指导。
 

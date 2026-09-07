@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""易班账号敏感字段加密（AES-GCM）：web / signin / tui 三进程共享。
+"""易班账号敏感字段加密（AES-GCM）：web / signin 双进程共享。
 
 - 存储层加密：accounts.json 的 password/phone_code 为密文对象
 - 密钥：环境变量 YIBAN_ACCOUNTS_KEY → 回退 .env 同键 → 缺失时生成并持久化（0600）
@@ -81,7 +81,7 @@ def _decode_key(raw):
 def _write_key_to_env_file(env_file, key):
     """把新生成的密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
 
-    读-写-替换整体包进共享 env_lock：与 web/tui 写 .env 互斥，避免多进程首启
+    读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥，避免多进程首启
     同时生成不同密钥互相覆盖；锁内仍保留“写入前重读”的既有兜底。
     """
     with env_lock.env_write_lock(env_file):

@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """易班自动签到网页管理系统（服务器端）。
 
-在浏览器中替代 TUI 面板：管理员登录后，可在任意设备（手机/平板/电脑）
-查看和管理签到任务。功能与 TUI 对齐：
+网页管理后台：管理员登录后，可在任意设备（手机/平板/电脑）
+查看和管理签到任务。功能：
 
 - 账号管理：列表 / 添加 / 编辑 / 删除 / 排序（决定顺序打卡顺序）
 - 签到日志：解析 sign.log 展示最近记录与今日各账号状态图标
@@ -247,7 +247,7 @@ import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖�
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
-# 默认路径（与 tui/app.py / run.sh 保持一致，可用参数覆盖）
+# 默认路径（与 run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
 # 按日状态文件目录（signin.py 写入 sign-daily-YYYY-MM-DD.json，网页日历读取）
 STATE_DIR_DEFAULT = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
@@ -526,7 +526,7 @@ PHONE_RE = re.compile(r"^1\d{10}$")
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
 SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 _spawn_signin docstring
 
-# 日志格式（与 signin.py / tui/app.py 相同）
+# 日志格式（与 signin.py 相同）
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
 
@@ -542,7 +542,7 @@ STATUS_PAUSED = "paused"  # 账密异常暂停（signin 熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自暂停签到（调度 v2）
 STATUS_PENDING = "pending"  # 待签（未执行/无记录）；账号审核态已改名为 ACCOUNT_STATUS_PENDING（2026-08-16），命名空间已分离
 
-# 状态图标（与 tui/app.py 口径一致；经 /api/my-accounts 的 state_icon 下发，前端按码渲染）
+# 状态图标（全站统一口径；经 /api/my-accounts 的 state_icon 下发，前端按码渲染）
 STATUS_ICON = {
     STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
     STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
@@ -671,7 +671,7 @@ class _DailyFlockFileHandler(signin._FlockFileHandler):
 
 
 # ---------------------------------------------------------------------------
-# 签到日志解析（与 tui/app.py parse_sign_log 保持一致）
+# 签到日志解析
 # ---------------------------------------------------------------------------
 _LOG_TAIL_BYTES = 2 * 1024 * 1024  # 日志倒读上限 2MB（约 2 万行）
 
@@ -701,7 +701,7 @@ def parse_sign_log(path):
     2026-08-16 审查轮：原返回值 (states, recent) 的 states（日志符号 → 图标）从未被
     正确消费——账号状态的事实源是 sign-state 文件（load_sign_state，/api/accounts），
     日志符号与前端状态码语义不符，曾被 /api/logs 透传污染前端图标/统计卡（历史遗留）。
-    现与 tui 同构：仅返回 recent 行。
+    现仅返回 recent 行。
     """
     recent = []
     for line in _tail_lines(path):
@@ -803,7 +803,7 @@ def _most_recent_log_date(max_days=30):
 
 
 # ---------------------------------------------------------------------------
-# .env 读写（与 tui/app.py 保持一致）
+# .env 读写
 # ---------------------------------------------------------------------------
 def read_env(env_path):
     """读取 .env 全部键值，返回 dict。
@@ -1231,7 +1231,7 @@ def _env_write_lock(env_path):
 
     修复（对抗性审查 2026-08-15 实证）：并发保存设置/公告时 read-modify-write
     丢更新——gunicorn 多 worker 跨进程写 .env 需文件锁；同一把锁也供
-    TUI 与密钥生成使用，避免各写各的锁文件。
+    密钥生成等场景使用，避免各写各的锁文件。
     """
     with env_lock.env_write_lock(env_path):
         yield
@@ -1575,7 +1575,7 @@ def verify_admin(username, password):
 # 系统信息
 # ---------------------------------------------------------------------------
 def sign_status(now=None):
-    """基于服务器时间计算签到状态（与 tui/app.py _sign_status 保持一致）。
+    """基于服务器时间计算签到状态。
 
     返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
     文案不含 emoji（UI 图标统一走前端 SVG 图标系统）。
@@ -2406,7 +2406,7 @@ def create_app(host=None):
     # 批次16 P3：root 保持 WARNING，避免 requests/urllib3/werkzeug 等第三方库 INFO
     # 全量落盘且无轮转上限；仅对本项目自有组件单独放开 INFO（每次 create_app 幂等设置）
     _root_logger.setLevel(logging.WARNING)
-    for _name in ("yiban", "web", "notify", "mailer", "db", "tui", "scheduler",
+    for _name in ("yiban", "web", "notify", "mailer", "db", "scheduler",
                   "account_crypto"):
         logging.getLogger(_name).setLevel(logging.INFO)
     for _name in ("requests", "urllib3", "werkzeug", "gunicorn"):
@@ -5646,7 +5646,7 @@ def create_app(host=None):
                 if len(admins) <= 1 and not _builtin_admin_email():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             # 批次12 B12-7：改走事务内复核的 set_user_role——进程内预检挡不住
-            # 跨进程并发（web+TUI/多实例）同时把最后一个注册管理员降权
+            # 跨进程并发（多实例）同时把最后一个注册管理员降权
             try:
                 changed = db.set_user_role(
                     email, new_role, allow_last_admin=bool(_builtin_admin_email())
@@ -5952,7 +5952,7 @@ def create_app(host=None):
 
     @app.route("/api/signin", methods=["POST"])
     def api_signin():
-        """手动签到指定账号：子进程执行 signin.py --only（与 TUI M 键一致）。"""
+        """手动签到指定账号：子进程执行 signin.py --only。"""
         data = _json_body()
         phone = str(data.get("phone", "")).strip()
         ok, msg = _spawn_signin(phone)
