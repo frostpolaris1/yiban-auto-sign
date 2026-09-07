@@ -95,8 +95,6 @@ import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import account_crypto  # noqa: E402
 import db  # noqa: E402

@@ -23,13 +23,10 @@ R3（web/app.py，公测问题 5）：用户提交账号申请入库后，管理
     py -m pytest tests/test_public_beta.py -v
 """
 import os
-import sys
 import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "scripts"))
-sys.path.insert(0, os.path.join(BASE, "tests"))
 
 import signin  # noqa: E402
 from test_rekey_key_source import _B14AlertGateBase  # noqa: E402

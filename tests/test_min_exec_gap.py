@@ -9,14 +9,11 @@
 - exec_gap_min（启动对齐）语义保留
 """
 import os
-import sys
 import unittest
 from datetime import datetime as _dt
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 

@@ -12,15 +12,12 @@
 import json
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 import unittest.mock as mock
 from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import signin  # noqa: E402
 
