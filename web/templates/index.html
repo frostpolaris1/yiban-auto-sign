@@ -174,6 +174,9 @@
     box-shadow: 0 8px 24px -8px rgba(0,0,0,.25); }
   .dark .info-pop { background: rgb(24 24 27); color: rgb(250 250 250); border-color: rgb(63 63 70); }
   .info-tip:hover .info-pop, .info-tip:focus .info-pop { opacity: 1; visibility: visible; }
+  /* 分点排版：标签独占一行（块级），要点间留空隙，逐点阅读 */
+  .info-pop b { display: block; margin-top: 7px; font-weight: 600; }
+  .info-pop b:first-child { margin-top: 0; }
   /* 「移动端显示完整表格」开关：窄屏默认隐藏的 md:table-cell 列强制显示
      （仅 <767px 生效，桌面本就完整显示；记忆于 localStorage yiban-full-tables） */
   @media (max-width: 767px) {
@@ -404,7 +407,7 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
       <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="flex items-center gap-2">
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">正常账号</div>
+          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">正常账号</div>
           <span id="accounts-active-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <input id="active-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…" aria-label="搜索名称 / 手机号 / 用户名"
@@ -438,7 +441,7 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm mt-4">
       <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="flex items-center gap-2">
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">待删除账号</div>
+          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">待删除账号</div>
           <span id="accounts-deleted-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
           <button id="deleted-toggle-btn" onclick="toggleDeletedCollapsed()" title="折叠 / 展开表格"
                   class="text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 text-sm leading-none px-1"><span data-icon="chevD"></span></button>
@@ -476,7 +479,7 @@
 
     <!-- 手动签到 -->
     <div class="card-sm mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">手动签到</div>
+      <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">手动签到</div>
       <div class="flex flex-wrap items-center gap-2">
         <select id="signin-select" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 min-w-52"></select>
         <button onclick="doSigninFromSelect()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
@@ -489,7 +492,7 @@
     <!-- 日志面板 -->
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
       <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">最近日志</div>
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">最近日志</div>
         <div class="text-xs text-zinc-500 dark:text-zinc-400">文件：<span id="log-file" class="font-mono">sign-YYYY-MM-DD.log</span></div>
       </div>
       <!-- 按日期查看（2026-08-16：日志按天分文件，可查任意日期） -->
@@ -511,14 +514,14 @@
       <!-- 探针（健康检查）当日结构化事件：v0.24.4 前仅落库无可见出口 -->
       <div id="probe-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
         <details>
-          <summary class="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-200 select-none">探针记录（<span id="probe-count">0</span> 条）</summary>
+          <summary class="cursor-pointer text-sm font-semibold text-zinc-700 dark:text-zinc-200 select-none">探针记录（<span id="probe-count">0</span> 条）</summary>
           <pre id="probe-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
         </details>
       </div>
       <!-- 签到事件（sign_events 补消费端）当日结构化时间线，含重试/跳过迁移 -->
       <div id="signev-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
         <details>
-          <summary class="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-200 select-none">签到事件（<span id="signev-count">0</span> 条）</summary>
+          <summary class="cursor-pointer text-sm font-semibold text-zinc-700 dark:text-zinc-200 select-none">签到事件（<span id="signev-count">0</span> 条）</summary>
           <pre id="signev-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
         </details>
       </div>
@@ -535,10 +538,10 @@
     <!-- 概览卡（v0.29.1：原「服务器时间与签到窗口」卡 + 容量预估卡并入） -->
     <div class="card mb-4">
       <div class="flex items-center justify-between mb-3">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">概览</div>
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">概览</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<br><b>签到状态：</b>今日自动签到是否已执行/进行中<br><b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<br><b>容量预估：</b>按签到窗口与账号间隔估算还能容纳多少账号/用户（账号按最大间隔、用户按间隔中位数两档口径）；占用超 80% 标红，超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔</span>
+          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>容量预估：</b>按签到窗口与账号间隔估算还能容纳多少账号/用户（账号按最大间隔、用户按间隔中位数两档口径）；占用超 80% 标红，超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔</span>
         </button>
       </div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
@@ -552,7 +555,7 @@
     <div class="card mb-4">
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">批量操作</div>
+          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">批量操作</div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">开启后账号与用户列表显示多选框。仅本次会话有效，刷新后自动关闭</p>
         </div>
         <button id="batch-mode-btn" role="switch" aria-checked="false" onclick="toggleBatchMode()"
@@ -573,10 +576,10 @@
     <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 账号间隔 + 周末开关并入 + 自选总开关 + 窗口） -->
     <div class="card mb-4">
       <div class="flex items-center justify-between mb-1">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到调度</div>
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">签到调度</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="调度说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>排序与分布：</b>「顺序」= 按列表顺序签，「随机」= 每天重新排序；分布方式决定时间点怎么铺开<br><b>「顺序 × 均匀」线性填块：</b>按列表先到先签，账号集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态<br><b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动签到均生效，默认 10，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但会占用更多签到窗口时间<br><b>生效时机：</b>以上改动保存后下次自动签到时生效</span>
+          <span class="info-pop"><b>排序与分布：</b>「顺序」= 按列表顺序签，「随机」= 每天重新排序；分布方式决定时间点怎么铺开<b>「顺序 × 均匀」线性填块：</b>按列表先到先签，账号集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动签到均生效，默认 10，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但会占用更多签到窗口时间<b>生效时机：</b>以上改动保存后下次自动签到时生效</span>
         </button>
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">排序决定谁先签，分布决定怎么铺开；详见 ⓘ</p>
@@ -601,14 +604,14 @@
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">掐头去尾（0-5 分钟，0.5 步进，前后独立）</div>
           <div class="flex items-center gap-2">
             <div class="flex-1">
-              <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">前 n 分钟</div>
-              <input id="edge-front" type="number" min="0" max="5" step="0.5" value="1"
+              <input id="edge-front" type="number" min="0" max="5" step="0.5" value="1" placeholder="前 n 分钟"
                      class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+              <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">前 n 分钟</div>
             </div>
             <div class="flex-1">
-              <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">后 n 分钟</div>
-              <input id="edge-back" type="number" min="0" max="5" step="0.5" value="1"
+              <input id="edge-back" type="number" min="0" max="5" step="0.5" value="1" placeholder="后 n 分钟"
                      class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+              <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">后 n 分钟</div>
             </div>
           </div>
           <div class="flex items-center gap-2 mt-2 mb-1">
@@ -681,7 +684,7 @@
 
     <!-- 全局公告 -->
     <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">全局公告</div>
+      <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">全局公告</div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">显示在所有页面顶部（含登录页）；留空保存 = 清除公告</p>
       <textarea id="announcement-input" rows="2" maxlength="200" placeholder="如：当前测试中，服务器可能不稳定"
                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2"></textarea>
@@ -694,10 +697,10 @@
     <!-- 消息推送（Webhook：Server酱/自定义 URL，v0.26.0；v0.29.1 邮件通知与 SMTP 列表编辑器并入本卡，原邮箱通知独立卡删除） -->
     <div class="card mb-4" id="notify-card">
       <div class="flex items-center justify-between mb-1">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">消息推送</div>
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">消息推送</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="消息推送说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>密钥：</b>加密存储、不回显<br><b>频控：</b>同类告警默认 60 秒内只推一条（可改配置文件调整）<br><b>额度：</b>按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度<br><b>权限：</b>仅主管理员可修改<br><b>确认：</b>高危操作，须再输入当前主管理员密码<br><b>邮件：</b>授权码加密存储、永不回显；SMTP 各项与收件人留空 = 沿用旧值，含打码串的输入一律按空处理；保存 SMTP 配置需主管理员密码确认</span>
+          <span class="info-pop"><b>密钥：</b>加密存储、不回显<b>频控：</b>同类告警默认 60 秒内只推一条（可改配置文件调整）<b>额度：</b>按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度<b>权限：</b>仅主管理员可修改<b>确认：</b>高危操作，须再输入当前主管理员密码<b>邮件：</b>授权码加密存储、永不回显；SMTP 各项与收件人留空 = 沿用旧值，含打码串的输入一律按空处理；保存 SMTP 配置需主管理员密码确认</span>
         </button>
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
@@ -752,7 +755,7 @@
 
       <!-- ===== 邮件通知（v0.23.0，原邮箱通知独立卡并入；普通管理员要用个人开关，卡不再整卡隐藏） ===== -->
       <div class="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-700">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">邮件通知</div>
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">邮件通知</div>
         <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
           告警合并汇总发管理员邮箱、账号失败提醒发本人邮箱（需先在下方配置发件 SMTP 并开启全局开关）。
         </p>
@@ -798,10 +801,10 @@
     <!-- 健康检查（v0.29.1：原「账号健康检查（探针模式）」卡改名，连通性检测卡并入） -->
     <div class="card mb-4">
       <div class="flex items-center justify-between mb-3">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">健康检查</div>
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">健康检查</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="健康检查说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>服务器连通性：</b>不登录，仅测试易班服务器是否可达，用于排查网络问题<br><b>探针模式：</b>非签到时段对全部账号做只读健康检查（登录并拉取签到任务，不实际签到），提前发现问题并通过邮件提醒<br><b>注册时验证账号：</b>开启后提交账号会即时验证，无法通过将当场提示</span>
+          <span class="info-pop"><b>服务器连通性：</b>不登录，仅测试易班服务器是否可达，用于排查网络问题<b>探针模式：</b>非签到时段对全部账号做只读健康检查（登录并拉取签到任务，不实际签到），提前发现问题并通过邮件提醒<b>注册时验证账号：</b>开启后提交账号会即时验证，无法通过将当场提示</span>
         </button>
       </div>
       <!-- 服务器连通性（原独立卡并入，v0.29.1） -->
@@ -956,7 +959,7 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm mb-4">
       <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="flex items-center gap-2">
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">正式用户</div>
+          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">正式用户</div>
           <span id="users-normal-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <input id="users-normal-search" type="search" placeholder="搜索邮箱…" aria-label="搜索邮箱"
@@ -983,7 +986,7 @@
     <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
       <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
         <div class="flex items-center gap-2">
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">空用户</div>
+          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">空用户</div>
           <span id="users-vacant-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <input id="users-vacant-search" type="search" placeholder="搜索邮箱…" aria-label="搜索邮箱"
@@ -1010,7 +1013,7 @@
     <!-- 已注销用户组（软删除 7 天冷却期，v0.20.1；默认收起） -->
     <div id="deleted-users-card" class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm mt-4 hidden">
       <button type="button" onclick="toggleDeletedUsers()" class="w-full flex items-center gap-2 px-4 py-3 text-left">
-        <span class="text-sm font-medium text-zinc-700 dark:text-zinc-200">已注销用户</span>
+        <span class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">已注销用户</span>
         <span id="users-deleted-count" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         <span id="deleted-arrow" class="ml-auto text-zinc-400 dark:text-zinc-500 transition-transform duration-200"><span data-icon="chevR"></span></span>
       </button>
@@ -1042,7 +1045,7 @@
       <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">查看自己的易班账号签到情况</p>
     </div>
     <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
+      <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
       <div id="mine-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">还没有提交账号</div>
       <div id="mine-list" class="space-y-3"></div>
     </div>
@@ -1050,7 +1053,7 @@
     <!-- 修改密码（v0.29.1：普通管理员改密入口；主管理员隐藏——主管理员用「系统设置 → 危险区」。
          id 前缀 mine-password-* 与危险区的 my-password-* 两套并存不撞） -->
     <details class="card mb-4" id="mine-password-card">
-      <summary class="text-sm font-medium text-zinc-700 dark:text-zinc-200 cursor-pointer select-none">修改密码</summary>
+      <summary class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer select-none">修改密码</summary>
       <div class="mt-3">
         <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
         <div class="space-y-3 max-w-sm">
@@ -1079,7 +1082,7 @@
     <!-- 我的签到时间（调度 v2 自选；管理员同样可选时间片） -->
     <div class="card mb-4" id="mine-pref-card">
       <div class="flex items-center justify-between mb-1">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">我的签到时间</div>
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">我的签到时间</div>
         <button id="mine-pref-collapse-btn" type="button" onclick="toggleMinePrefCollapse()"
                 class="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="chevD"></span></button>
       </div>
@@ -1098,35 +1101,35 @@
       </div>
     </div>
     <div class="card">
-      <div id="mine-form-title" class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
+      <div id="mine-form-title" class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
       <div id="mine-done" class="hidden mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
         已提交账号，可编辑或删除后重新提交。
       </div>
       <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
-          <label for="m-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
+          <label for="m-name" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
           <input id="m-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
           <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">备注会显示给管理员，用于审核与定位签到问题；以公告为准。</p>
         </div>
 
         <div>
-          <label for="m-phone" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
+          <label for="m-phone" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
           <input id="m-phone" type="tel" inputmode="numeric" maxlength="20" required placeholder="登录易班的手机号"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div class="md:col-span-2">
-          <label for="m-password" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
+          <label for="m-password" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
           <input id="m-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label for="m-model" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（可选，不清楚就留空）</label>
+          <label for="m-model" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备型号（可选，不清楚就留空）</label>
           <input id="m-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
         </div>
         <div>
-          <label for="m-code" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（可选，不清楚就留空）</label>
+          <label for="m-code" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（可选，不清楚就留空）</label>
           <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
           <button id="clear-mcode-btn" type="button" onclick="toggleMineClearCode()"
@@ -1172,12 +1175,12 @@
       <div class="overflow-y-auto overscroll-contain p-5 pb-3 space-y-3">
         <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-4" id="form-title">添加账号</div>
       <div>
-        <label for="f-name" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
+        <label for="f-name" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">名称（可选，不填显示为 账号N）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
                class="input">
       </div>
       <div id="f-email-wrap">
-        <label for="f-email" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
+        <label for="f-email" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">绑定用户（可选，绑定后进入待审核）</label>
           <select id="f-email"
                   class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
             <option value="">不绑定（管理员自有账号，直接生效）</option>
@@ -1192,23 +1195,23 @@
           <p id="f-initial-password-hint" class="hidden mt-2 text-xs text-zinc-500 dark:text-zinc-400">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
         </div>
       <div>
-        <label for="f-phone" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <label for="f-phone" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-phone" type="tel" inputmode="numeric" maxlength="20" required placeholder="易班登录手机号"
                class="input">
         <p id="f-phone-mask-tip" class="hidden mt-1 text-xs text-zinc-500 dark:text-zinc-400">为保护隐私，手机号已打码显示；如需修改请填写完整新号码</p>
       </div>
       <div>
-        <label for="f-password" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
+        <label for="f-password" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-password" type="password" autocomplete="new-password" placeholder="编辑时留空表示不修改"
                class="input">
       </div>
       <div>
-        <label for="f-model" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
+        <label for="f-model" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备型号（学校开启设备绑定时建议填写）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
                class="input">
       </div>
       <div>
-        <label for="f-code" class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
+        <label for="f-code" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（学校开启设备绑定时建议填写）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
                class="input">
         <button id="clear-code-btn" type="button" onclick="toggleModalClearCode()"
@@ -2826,8 +2829,8 @@ function renderSmtps() {
         <span class="text-xs text-zinc-500 dark:text-zinc-400">SMTP ${i + 1}${i === 0 ? '（主）' : '（备用）'}</span>
         <button type="button" onclick="removeSmtp(${i})" class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">删除</button>
       </div>
-      <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
-        <div class="sm:col-span-2">
+      <div class="grid grid-cols-1 sm:grid-cols-6 gap-2">
+        <div class="sm:col-span-3">
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">服务器 host</label>
           <input data-f="host" value="${esc(e.host)}" placeholder="smtp.example.com" autocomplete="off" class="input input-sm">
         </div>
@@ -2835,11 +2838,11 @@ function renderSmtps() {
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">端口</label>
           <input data-f="port" type="number" min="1" max="65535" value="${esc(e.port)}" placeholder="465" class="input input-sm">
         </div>
-        <div>
+        <div class="sm:col-span-2">
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">发件账号（留空沿用）</label>
           <input data-f="user" value="" placeholder="${esc(e.user)}" autocomplete="off" class="input input-sm">
         </div>
-        <div>
+        <div class="sm:col-span-3">
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">授权码（永不回显）</label>
           <input data-f="pass" type="password" value="" placeholder="${e.has_pass ? '已配置，留空沿用' : '未配置'}" autocomplete="new-password" class="input input-sm">
         </div>
@@ -3678,7 +3681,7 @@ function renderCalendar(phone, key) {
     <div class="grid lg:grid-cols-2 gap-4">
       <div>
         <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
+          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
             <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevL')}</button>
             <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevR')}</button>
