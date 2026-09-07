@@ -180,21 +180,23 @@ def _read_doc_html(filename):
         return "<p>文档暂时无法加载，请联系运营者。</p>"
 
 
-def _doc_page(title, body_html, icp_text="", police_text="", base_path=""):
+def _doc_page(title, body_html, icp_text="", police_text="", base_path="", police_link="https://beian.mps.gov.cn/"):
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
     由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。
 
     批次18 刀1（H-1 反射型 XSS）：base_path 来自 request.script_root——攻击者可构造
     形如 /x"><script>…/privacy 的任意前缀路径，未转义时脚本原样落进 href 与正文；
-    icp/police 文本来自 .env，含引号/尖括号时同样破坏 HTML 结构。三者统一
+    icp/police 文本与 police_link 均来自 .env，含引号/尖括号时同样破坏 HTML 结构。
+    四者统一
     html.escape(quote=True)（同时覆盖文本与属性两种上下文）后才拼入模板，
     转义收敛在本函数内，调用点（含传 request.script_root 的两处）无需各自处理。"""
     base_path = html.escape(str(base_path), quote=True)
     icp_text = html.escape(str(icp_text), quote=True)
     police_text = html.escape(str(police_text), quote=True)
+    police_link = html.escape(str(police_link), quote=True)
     icp_block = f'<p class="doc-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">{icp_text}</a></p>' if icp_text else ""
-    police_block = f'<p class="doc-icp"><a href="https://beian.mps.gov.cn/#/query/webSearch?code=32110202000847" target="_blank" rel="noopener"><img src="/gongan-beian.png" alt="" width="12" height="14" style="vertical-align:-2px;margin-right:4px"> {police_text}</a></p>' if police_text else ""
+    police_block = f'<p class="doc-icp"><a href="{police_link}" target="_blank" rel="noopener"><img src="/gongan-beian.png" alt="" width="12" height="14" style="vertical-align:-2px;margin-right:4px"> {police_text}</a></p>' if police_text else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -284,7 +286,9 @@ _PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
 _PASSWORD_MIN_CLASSES = 2
 # 统一口径文案（前后端同句）：旧写法一处把下限写成易被读成"三类起"的中文比较词、另一处
 # 简写得像"数量恰好等于下限"。批次14 Task 6 起统一用"…中的至少两类"这一无歧义说法。
-_PASSWORD_CLASS_HINT = "、".join(_PASSWORD_CLASS_LABELS) + "中的至少两类"
+# 2026-09-07 起大小写合并显示（文案精简）；判定仍按上方四类（大写/小写/数字/符号各自独立），
+# 故 _PASSWORD_CLASS_LABELS 保持四元组——管理员"至少三类"消息（L1310）必须完整列举四类。
+_PASSWORD_CLASS_HINT = "大小写字母、数字、符号中的至少两类"
 _PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
 # 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
 SCRYPT_METHOD = "scrypt:65536:8:1"
@@ -854,6 +858,15 @@ def police_info():
     与 ICP 备案分开独立预留位；未配置时模板 `{% if police_info %}` 块不输出。
     """
     return read_env(ENV_FILE).get("YIBAN_POLICE_INFO", "").strip()
+
+
+def police_link():
+    """公安备案查询链接（可选）：.env 的 YIBAN_POLICE_LINK。
+
+    备案号属于运营者身份信息，不入仓库：模板与文档页外壳回落到公安部通用
+    门户，真实查询链接（含备案号）由部署方在 .env 配置（v0.29.0 脱敏）。
+    """
+    return read_env(ENV_FILE).get("YIBAN_POLICE_LINK", "").strip() or "https://beian.mps.gov.cn/"
 
 
 # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度）：
@@ -1570,8 +1583,8 @@ def sign_status(now=None):
     if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
         return "今日无需打卡（周日）", "#a1a1aa"
-    if now.weekday() == 5 and not load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 1):
-        # 周六：默认开启（周六照常签到）；关闭后周六提示无需打卡
+    if now.weekday() == 5 and not load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 0):
+        # 周六：2026-09-07（v0.29.0）起默认关闭；开启后走正常窗口逻辑
         return "今日无需打卡（周六）", "#a1a1aa"
     sw = _sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
     start_h, start_m = sw[0]
@@ -2635,7 +2648,7 @@ def create_app(host=None):
             return redirect(url_for("login_page"))
         if role != "admin":
             return redirect(url_for("user_page"))
-        return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info())
+        return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info(), police_link=police_link())
 
     @app.route("/user")
     def user_page():
@@ -2644,7 +2657,7 @@ def create_app(host=None):
             return redirect(url_for("login_page"))
         if role != "user":
             return redirect(url_for("index_page"))
-        return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info())
+        return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info(), police_link=police_link())
 
     # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
     # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
@@ -2676,6 +2689,7 @@ def create_app(host=None):
             app_version=APP_VERSION,
             icp_info=icp_info(),
             police_info=police_info(),
+            police_link=police_link(),
             agreement_html=_read_doc_html("USER_AGREEMENT.md"),
             privacy_html=_read_doc_html("PRIVACY_POLICY.md"),
         )
@@ -2683,12 +2697,12 @@ def create_app(host=None):
     @app.route("/terms")
     def terms_page():
         """用户协议独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info(), police_info(), request.script_root)
+        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info(), police_info(), request.script_root, police_link())
 
     @app.route("/privacy")
     def privacy_page():
         """隐私政策独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), police_info(), request.script_root)
+        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), police_info(), request.script_root, police_link())
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -4895,7 +4909,7 @@ def create_app(host=None):
             "month": month,
             "days": result,
             "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),  # 前端据此决定周日是否置灰/可查
-            "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 1),  # 前端据此决定周六是否置灰/可查
+            "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),  # 默认关闭（v0.29.0）；前端据此决定周六是否置灰/可查
         })
 
     @app.route("/api/my-logs")
@@ -6194,7 +6208,7 @@ def create_app(host=None):
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
                 "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
                 # 周六签到：1=开启（默认，周六照常签到），0=关闭（周六暂停）
-                "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 1),
+                "saturday_sign": load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),
                 # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
                 "global_pause": load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
                 # 暂停注册（v0.26.3）：1=暂停（登录页关闭注册入口），0/未配置=允许
@@ -6373,7 +6387,7 @@ def create_app(host=None):
         if sunday_sign is not None:
             updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
         if saturday_sign is not None:
-            # 周六默认开启：关闭必须显式写 0（不能像周日那样删键——缺省会读回默认 1=开启）
+            # 显式写 0/1（默认已是 0，显式落盘自文档化；不改写 sunday 的删键风格以保持各自历史口径）
             updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
         if global_pause is not None:
             updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""

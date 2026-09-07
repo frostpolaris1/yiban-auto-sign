@@ -236,7 +236,7 @@
               class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="chevD"></span></button>
     </div>
     <div id="pref-body">
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">签到窗口 <span id="pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始签到后修改，次日生效）</p>
+      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">签到窗口 <span id="pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始后修改次日生效）</p>
       <p id="pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
       <div id="pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
       <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
@@ -245,7 +245,7 @@
         <span id="pref-tip" class="text-zinc-400 dark:text-zinc-500"></span>
       </div>
       <p id="pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
-        功能未开启：你的选择会保存，但暂不生效（开启后次日生效）
+        功能未开启：你的选择会保存，但暂不生效
       </p>
     </div>
   </section>
@@ -255,7 +255,7 @@
     <div class="flex items-center justify-between gap-3">
       <div>
         <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">邮件提醒</h2>
-        <p class="text-xs text-zinc-400 dark:text-zinc-500">你的账号签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500">签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
       </div>
       <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收签到失败邮件">
         <input id="mail-notify-switch" type="checkbox" class="sr-only peer" onchange="toggleMailNotify()">
@@ -281,13 +281,13 @@
           <button type="button" onclick="closeAccountModal()" aria-label="关闭"
                   class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
         </div>
-        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即参与每日自动签到。每个用户限提交一个账号。</p>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。</p>
         <div class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">备注会显示给管理员，用于审核与定位签到问题；填写要求以公告为准。</p>
+        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">备注会显示给管理员，用于审核与定位签到问题。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-phone">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -303,7 +303,7 @@
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（可选，不清楚就留空）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码只随签到请求提交，不用于登录。仅当学校开启设备绑定（签到提示“请使用授权设备进行签到”）时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
+        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码随签到请求提交，仅提示“请使用授权设备进行签到”时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（可选，不清楚就留空）</label>
@@ -333,7 +333,7 @@
       <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
               class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
     </div>
-    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">注销将删除你的网站账号、易班账号与自选签到时间。</p>
+    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">注销将删除你的账号。</p>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4"><span class="text-amber-600 dark:text-amber-400 font-medium">7 天内可撤销恢复</span>，超过 7 天将永久删除，无法找回。</p>
     <div class="flex gap-3 mt-1">
       <button type="button" onclick="closeDeleteModal()"
@@ -388,7 +388,7 @@
                  class="input">
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-new">新密码（至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类）</label>
+          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-new">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
           <input id="p-new" type="password" autocomplete="new-password" required placeholder="新密码"
                  class="input">
         </div>
@@ -422,7 +422,7 @@
     <div id="footer-icp" class="mb-1"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300">{{ icp_info }}</a></div>
     {% endif %}
     {% if police_info %}
-    <div id="footer-police" class="mb-1"><a href="https://beian.mps.gov.cn/#/query/webSearch?code=32110202000847" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300"><img src="/gongan-beian.png" alt="" width="12" height="13" class="inline-block -mt-0.5 me-1"> {{ police_info }}</a></div>
+    <div id="footer-police" class="mb-1"><a href="{{ police_link }}" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300"><img src="/gongan-beian.png" alt="" width="12" height="13" class="inline-block -mt-0.5 me-1"> {{ police_info }}</a></div>
     {% endif %}
     <div onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</div>
     <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="inline-block mt-1 text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
@@ -432,7 +432,7 @@
 const $ = (id) => document.getElementById(id);
 let accounts = [];
 let sundaySign = false;  // 周日签到开关（来自 /api/my-calendar 响应；开启后周日可查日志/不置灰）
-let saturdaySign = true; // 周六签到开关（默认开启；关闭后周六可查日志/不置灰）
+let saturdaySign = false; // 周六签到开关（默认关闭，v0.29.0 起；开启后周六照常签到/可查）
 let editingIndex = null;
 
 let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
@@ -725,7 +725,7 @@ function renderCalendar(phone, key) {
     `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
     if (data.sunday_sign) sundaySign = true;  // 管理员开启周日签到后，周日正常显示与查询
-    if (data.saturday_sign === 0) saturdaySign = false;  // 管理员关闭周六签到后，周六置灰/不可查
+    saturdaySign = data.saturday_sign === 1;  // 默认关闭（v0.29.0 起）；管理员开启后周六照常/可查
     const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
     const days = new Date(year, month, 0).getDate();
     for (let i = 0; i < firstDay; i++) {
@@ -1197,7 +1197,7 @@ function closeChangelog() { hideModal($('changelog-modal')); }
 // 从本文件源码提取这四个正则与后端比对，漂移即红。判定语义：命中 >= 2 类即过（符号算一类）。
 const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
 const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
-const PW_POLICY_HINT = '至少 10 位，且包含大写字母、小写字母、数字、符号中的至少两类';
+const PW_POLICY_HINT = '至少 10 位，且包含大小写字母、数字、符号中的至少两类';
 function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
 
 // 修改密码

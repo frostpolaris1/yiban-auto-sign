@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""周六签到开关测试（2026-08-29，复用周日签到实现）。
+"""周六签到开关测试（2026-08-29；2026-09-07 v0.29.0 默认语义反转：默认关闭）。
 
 覆盖：
-- signin.main()：周六 + 开关关闭 → exit 2（SKIPPED）；周六 + 缺省（默认开启）→ 放行；
-  --only 手动签到不受限；周日语义回归
-- web sign_status：周六关闭 → 「今日无需打卡（周六）」；默认开启 → 走正常窗口逻辑
-- /api/settings：GET 返回 saturday_sign 默认 1；POST 写入/清空 YIBAN_SATURDAY_SIGN；
+- signin.main()：周六 + 缺省（默认关闭）→ exit 2（SKIPPED）；周六 + 显式开启 → 放行；
+  --only 手动签到不受限；周日语义回归（不变）
+- web sign_status：周六缺省 → 「今日无需打卡（周六）」；显式开启 → 走正常窗口逻辑
+- /api/settings：GET 返回 saturday_sign 默认 0；POST 显式写入 0/1；
   部分更新不清空其他设置；普通管理员可改（非主管理员专属）
 
 用法（项目根目录）：
-    py -m pytest tests/test_saturday_sign_0829.py -v
+    py -m pytest tests/test_saturday_sign.py -v
 """
 import contextlib
 import datetime as _dt
@@ -96,15 +96,20 @@ def _run_main(now_dt, const_override=None, argv=None):
 
 
 class SaturdaySigninGateTest(unittest.TestCase):
-    """signin.main() 周六早退门（复用周日语义，默认开启）。"""
+    """signin.main() 周六早退门（v0.29.0 起默认关闭，与周日同语义）。"""
+
+    def test_saturday_default_off_exits_2(self):
+        """周六 + SATURDAY_SIGN 缺省（False）→ exit 2（SKIPPED 语义，v0.29.0 反转）。"""
+        code = _run_main(_weekday_dt(5))
+        self.assertEqual(code, 2)
 
     def test_saturday_off_exits_2(self):
-        """周六 + SATURDAY_SIGN=False → exit 2（SKIPPED 语义）。"""
+        """周六 + SATURDAY_SIGN=False（显式关闭）→ exit 2。"""
         code = _run_main(_weekday_dt(5), {"SATURDAY_SIGN": False})
         self.assertEqual(code, 2)
 
-    def test_saturday_default_on_proceeds(self):
-        """周六 + SATURDAY_SIGN 缺省（True）→ 放行（不 exit 2，走到签到流程）。"""
+    def test_saturday_on_proceeds(self):
+        """周六 + SATURDAY_SIGN=True（显式开启）→ 放行（不 exit 2，走到签到流程）。"""
         code = _run_main(_weekday_dt(5), {"SATURDAY_SIGN": True})
         self.assertEqual(code, 0)
 
@@ -118,30 +123,9 @@ class SaturdaySigninGateTest(unittest.TestCase):
         code = _run_main(_weekday_dt(5), {"SATURDAY_SIGN": False}, argv=["--only", "13800000000"])
         self.assertNotEqual(code, 2)
 
-    def test_parse_saturday_sign_fail_open(self):
-        """解析语义（fail-open）：缺省/空/非法一律开启，仅显式 0/false/off/no 关闭。"""
-        # 缺省（env 无该键）→ 开启
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("YIBAN_SATURDAY_SIGN", None)
-            self.assertTrue(signin._parse_saturday_sign())
-        # 开启值 / 空值 / 非法值 → 开启
-        self.assertTrue(signin._parse_saturday_sign("1"))
-        self.assertTrue(signin._parse_saturday_sign("true"))
-        self.assertTrue(signin._parse_saturday_sign("on"))
-        self.assertTrue(signin._parse_saturday_sign("yes"))
-        self.assertTrue(signin._parse_saturday_sign(""))
-        self.assertTrue(signin._parse_saturday_sign("   "))
-        self.assertTrue(signin._parse_saturday_sign("abc"))
-        # 显式关闭 → 关闭（大小写不敏感）
-        self.assertFalse(signin._parse_saturday_sign("0"))
-        self.assertFalse(signin._parse_saturday_sign("false"))
-        self.assertFalse(signin._parse_saturday_sign("off"))
-        self.assertFalse(signin._parse_saturday_sign("no"))
-        self.assertFalse(signin._parse_saturday_sign("FALSE"))
-
 
 class SaturdaySignStatusTest(unittest.TestCase):
-    """web.sign_status 周六文案（默认开启走窗口逻辑，关闭提示无需打卡）。"""
+    """web.sign_status 周六文案（v0.29.0 起缺省=无需打卡，显式开启走窗口逻辑）。"""
 
     @classmethod
     def setUpClass(cls):
@@ -167,17 +151,17 @@ class SaturdaySignStatusTest(unittest.TestCase):
         with io.open(self.sat_env, "w", encoding="utf-8") as f:
             f.write(content)
 
-    def test_sign_status_saturday_off(self):
-        """周六 + YIBAN_SATURDAY_SIGN 关闭 → 「今日无需打卡（周六）」。"""
-        self._env("YIBAN_SATURDAY_SIGN=0\n")
+    def test_sign_status_saturday_default_off(self):
+        """周六 + 缺省（默认关闭）→ 「今日无需打卡（周六）」（v0.29.0 语义反转）。"""
+        self._env("")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
             text, color = self.webapp.sign_status(now=_weekday_dt(5))
         self.assertEqual(text, "今日无需打卡（周六）")
         self.assertEqual(color, "#a1a1aa")
 
-    def test_sign_status_saturday_default_on(self):
-        """周六 + 缺省（默认开启）→ 走正常窗口逻辑（此时 10:00 已过 07:50 → 已结束）。"""
-        self._env("")
+    def test_sign_status_saturday_on_proceeds(self):
+        """周六 + 显式开启 → 走正常窗口逻辑（此时 10:00 已过 07:50 → 已结束）。"""
+        self._env("YIBAN_SATURDAY_SIGN=1\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
             text, _ = self.webapp.sign_status(now=_weekday_dt(5))
         self.assertNotEqual(text, "今日无需打卡（周六）")
@@ -185,7 +169,7 @@ class SaturdaySignStatusTest(unittest.TestCase):
 
 
 class SaturdaySettingsWebTest(unittest.TestCase):
-    """/api/settings 周六开关读写（默认 1、POST 写入、部分更新不串改、普通管理员可改）。"""
+    """/api/settings 周六开关读写（默认 0、POST 显式写 0/1、部分更新不串改、普通管理员可改）。"""
 
     @classmethod
     def setUpClass(cls):
@@ -256,17 +240,24 @@ class SaturdaySettingsWebTest(unittest.TestCase):
         t = self._login(c, "reg-admin@test.local", USER_PASS)
         return c, t
 
-    def test_settings_get_default_saturday_on(self):
-        """GET /api/settings：saturday_sign 默认 1（周六照常签），sunday_sign 默认 0。"""
+    def test_settings_get_default_saturday_off(self):
+        """GET /api/settings：saturday_sign 默认 0（v0.29.0 起默认关闭），sunday_sign 默认 0。"""
+        # 先重置 env：同类内字母序更前的 toggle 用例会向共享 .env 写入显式开关值
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            )
         c, t = self._master()
         r = c.get("/api/settings", headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
-        self.assertEqual(data["saturday_sign"], 1)
+        self.assertEqual(data["saturday_sign"], 0)
         self.assertEqual(data["sunday_sign"], 0)
 
     def test_saturday_toggle_saves_env(self):
-        """POST saturday_sign=0 → 显式写 0（缺省=1 开启，不能删键）；=1 → 写入 1。"""
+        """POST saturday_sign=0/1 → 显式写 0/1（写值口径不变，关闭也显式落盘自文档化）。"""
         c, t = self._master()
         r = c.post("/api/settings", json={"saturday_sign": 0}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
