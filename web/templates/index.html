@@ -163,15 +163,16 @@
     @starting-style { #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 0); } }
   }
   /* ===== 信息提示（ⓘ）：hover 与键盘 focus 显示的绝对定位浮层 =====
-     亮色主题深色底白字、暗色主题反转；max-width 72vw 防手机端溢出（桌面长文案也不超半屏）；
-     浮层贴齐图标右缘展开——三处 ⓘ 都在卡片头右端，左对齐会撑出屏幕右缘无法阅读 */
+     配色跟随主题（浅色白底、深色黑底）；max-width 72vw 防手机端溢出（桌面长文案也不超半屏）；
+     浮层贴齐图标右缘展开——四处 ⓘ 都在卡片头右端，左对齐会撑出屏幕右缘无法阅读 */
   .info-tip { position: relative; display: inline-flex; align-items: center; cursor: help; }
   .info-pop { position: absolute; top: 100%; right: 0; z-index: 30; opacity: 0; visibility: hidden;
     transition: opacity 0.15s ease-out, visibility 0.15s ease-out; margin-top: 6px;
     width: max-content; max-width: 72vw; padding: 8px 10px; border-radius: 8px; text-align: left;
-    background: rgb(24 24 27); color: #fff; font-size: 12px; line-height: 1.7;
-    box-shadow: 0 8px 24px -8px rgba(0,0,0,.4); }
-  .dark .info-pop { background: rgb(250 250 250); color: rgb(24 24 27); }
+    background: rgb(255 255 255); color: rgb(24 24 27);
+    border: 1px solid rgb(228 228 231); font-size: 12px; line-height: 1.7;
+    box-shadow: 0 8px 24px -8px rgba(0,0,0,.25); }
+  .dark .info-pop { background: rgb(24 24 27); color: rgb(250 250 250); border-color: rgb(63 63 70); }
   .info-tip:hover .info-pop, .info-tip:focus .info-pop { opacity: 1; visibility: visible; }
   /* 「移动端显示完整表格」开关：窄屏默认隐藏的 md:table-cell 列强制显示
      （仅 <767px 生效，桌面本就完整显示；记忆于 localStorage yiban-full-tables） */
@@ -528,7 +529,7 @@
   <section id="tab-settings" class="hidden">
     <div class="mb-4">
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">系统设置</h1>
-      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">概览、调度、健康检查与消息推送（长说明见各卡 ⓘ）</p>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">概览、调度、健康检查与消息推送</p>
     </div>
 
     <!-- 概览卡（v0.29.1：原「服务器时间与签到窗口」卡 + 容量预估卡并入） -->
@@ -549,22 +550,22 @@
 
     <!-- 批量操作开关 -->
     <div class="card mb-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
           <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">批量操作</div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">开启后账号与用户列表显示多选框。仅本次会话有效，刷新后自动关闭</p>
         </div>
         <button id="batch-mode-btn" role="switch" aria-checked="false" onclick="toggleBatchMode()"
-                class="toggle" aria-label="批量操作"><span class="knob"></span></button>
+                class="toggle shrink-0" aria-label="批量操作"><span class="knob"></span></button>
       </div>
       <!-- 移动端完整表格开关（v0.29.1）：窄屏默认隐藏次要列，开启后强制显示并记忆 -->
-      <div class="flex flex-wrap items-center justify-between gap-3 mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700">
-        <div>
+      <div class="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700">
+        <div class="min-w-0">
           <div class="text-sm text-zinc-700 dark:text-zinc-200">移动端显示完整表格</div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">窄屏也显示完整表格（记住选择）</p>
         </div>
         <button id="full-tables-btn" role="switch" aria-checked="false" onclick="toggleFullTables()"
-                class="toggle" aria-label="移动端显示完整表格"
+                class="toggle shrink-0" aria-label="移动端显示完整表格"
                 title="手机上默认隐藏次要列以省空间；开启后窄屏也显示完整表格，桌面端不受影响"><span class="knob"></span></button>
       </div>
     </div>
@@ -644,21 +645,21 @@
       <details class="mt-3">
         <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">周末签到（周六/周日默认不签，点击展开设置）</summary>
         <div class="mt-3 space-y-3">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
               <div class="text-sm text-zinc-700 dark:text-zinc-200">周日签到</div>
               <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周日也尝试签到</p>
             </div>
             <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
-                    class="toggle" aria-label="周日签到"><span class="knob"></span></button>
+                    class="toggle shrink-0" aria-label="周日签到"><span class="knob"></span></button>
           </div>
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
               <div class="text-sm text-zinc-700 dark:text-zinc-200">周六签到</div>
               <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周六也尝试签到</p>
             </div>
             <button id="saturday-sign-btn" role="switch" aria-checked="false" onclick="toggleSaturdaySign()"
-                    class="toggle" aria-label="周六签到"><span class="knob"></span></button>
+                    class="toggle shrink-0" aria-label="周六签到"><span class="knob"></span></button>
           </div>
         </div>
       </details>
@@ -692,7 +693,13 @@
 
     <!-- 消息推送（Webhook：Server酱/自定义 URL，v0.26.0；v0.29.1 邮件通知与 SMTP 列表编辑器并入本卡，原邮箱通知独立卡删除） -->
     <div class="card mb-4" id="notify-card">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">消息推送</div>
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">消息推送</div>
+        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="消息推送说明">
+          <span data-icon="info"></span>
+          <span class="info-pop">密钥加密存储、不回显；同类告警默认 60 秒内只推一条（可改配置文件调整）；推送额度按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度。仅主管理员可修改；高危操作，须再输入当前主管理员密码确认。</span>
+        </button>
+      </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
         发生告警时推送到手机 / 聊天工具（Server酱微信、Bark、企业微信等），与邮件通知并行、互不影响。
       </p>
@@ -721,11 +728,11 @@
         <div class="flex items-center gap-2 mb-3">
           <button onclick="saveNotifyConfig()" class="btn-primary">保存配置</button>
           <button onclick="testNotify()"
-                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">发送测试消息</button>
+                  class="whitespace-nowrap bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">发送测试消息</button>
           <span id="notify-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
         <!-- 每日推送额度：分账后非紧急/紧急各自独立计数，两本账同页可配 -->
-        <div class="grid grid-cols-2 gap-3 mb-2">
+        <div class="grid grid-cols-2 gap-3 mb-2 pt-3 mt-3 border-t border-zinc-100 dark:border-zinc-700">
           <div>
             <label for="notify-daily-max" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">非紧急每日上限（0=不限）</label>
             <input id="notify-daily-max" type="number" min="0" step="1" class="input">
@@ -737,12 +744,9 @@
         </div>
         <div class="flex items-center gap-2 mb-3">
           <button onclick="saveNotifyBudget()"
-                  class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存额度</button>
+                  class="whitespace-nowrap bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存额度</button>
           <span class="text-xs text-zinc-400 dark:text-zinc-500">额度用尽后当日同类告警只走邮件，并补一封额度耗尽提醒邮件</span>
         </div>
-        <p class="text-xs text-zinc-400 dark:text-zinc-500">
-          密钥加密存储、不回显；同类告警默认 60 秒内只推一条（可改配置文件调整）；推送额度按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度。仅主管理员可修改；高危操作，须再输入当前主管理员密码确认。
-        </p>
       </div>
       <p id="notify-status" class="text-xs text-zinc-500 dark:text-zinc-400"></p>
 
@@ -779,9 +783,9 @@
         <!-- SMTP 发信条目列表编辑器（v0.29.1：主备 failover，仅主管理员；打码值不回填输入框，
              留空提交 = 沿用旧值，授权码永不回显） -->
         <div id="smtp-editor-wrap" class="hidden mt-4">
-          <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-            <div class="text-xs text-zinc-500 dark:text-zinc-400">发件 SMTP 列表（按顺序主备切换；发件账号/收件人留空 = 沿用旧值，含打码串的输入一律按空处理）</div>
-            <button type="button" onclick="addSmtp()" class="btn-ghost">添加备用 SMTP</button>
+          <div class="flex items-center justify-between gap-2 mb-2">
+            <div class="text-xs text-zinc-500 dark:text-zinc-400 min-w-0">发件 SMTP 列表（按顺序主备切换；发件账号/收件人留空 = 沿用旧值，含打码串的输入一律按空处理）</div>
+            <button type="button" onclick="addSmtp()" class="btn-ghost shrink-0 whitespace-nowrap">添加备用 SMTP</button>
           </div>
           <div id="smtps-list" class="space-y-3"></div>
           <div class="flex flex-wrap items-center gap-2 mt-3">
