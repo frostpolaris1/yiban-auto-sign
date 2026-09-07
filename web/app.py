@@ -242,6 +242,7 @@ import account_crypto  # noqa: E402  # 敏感配置加密（AES-GCM，ACCOUNTS_K
 import child_env  # noqa: E402
 import db  # noqa: E402
 import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
+import env_io  # noqa: E402  .env 解析单一实现（web/read_env 与 scripts 各模块共用）
 import env_lock  # noqa: E402
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
@@ -806,22 +807,13 @@ def _most_recent_log_date(max_days=30):
 # .env 读写
 # ---------------------------------------------------------------------------
 def read_env(env_path):
-    """读取 .env 全部键值，返回 dict。
+    """读取 .env 全部键值，返回 dict（宽松：文件缺失/读失败返回空 dict）。
 
-    utf-8-sig：兼容带 BOM 的 .env（Windows 记事本等工具保存时会带 BOM，
-    否则首个键名会带上 \ufeff 前缀导致读不到，管理员登录/改密会静默失败）。
+    解析实现单一来源见 scripts/env_io.py（utf-8-sig 兼容 BOM——Windows 记事本等
+    工具保存时会带 BOM，否则首个键名会带上 \ufeff 前缀导致读不到，
+    管理员登录/改密会静默失败）。
     """
-    result = {}
-    try:
-        with open(env_path, encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    result[key.strip()] = value.strip()
-    except OSError:
-        pass
-    return result
+    return env_io.parse_env_file(env_path)
 
 
 def load_env_int(env_path, key, default):

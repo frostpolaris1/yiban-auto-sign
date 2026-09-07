@@ -59,8 +59,10 @@ import requests
 
 try:
     from . import account_crypto
+    from . import env_io
 except ImportError:  # 非包上下文（scripts/ 直接 import）
     import account_crypto
+    import env_io
 
 logger = logging.getLogger("notify")
 
@@ -407,23 +409,12 @@ _skip_log_lock = threading.Lock()
 
 def _env_path():
     """本模块解析 .env 的唯一口径：YIBAN_ENV_FILE 优先（去空白），否则当前目录 .env。"""
-    return os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
+    return env_io.env_path()
 
 
 def _read_env_file():
-    """读取 .env（utf-8-sig 兼容 BOM），供读配置用。"""
-    path = _env_path()
-    result = {}
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    result[key.strip()] = value.strip()
-    except OSError:
-        pass
-    return result
+    """读取 .env（utf-8-sig 兼容 BOM），供读配置用（宽松策略，实现见 env_io）。"""
+    return env_io.parse_env_file(_env_path())
 
 
 def _env_str(key, envs=None):

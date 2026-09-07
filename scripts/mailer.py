@@ -15,6 +15,8 @@ import ssl
 from email.header import Header
 from email.mime.text import MIMEText
 
+import env_io  # noqa: E402  同目录共享模块：.env 解析单一实现
+
 logger = logging.getLogger("mailer")
 
 _PREFIX = "YIBAN_MAIL_"
@@ -35,22 +37,12 @@ def _mask_addr(addr):
 
 
 def _read_env_file():
-    """读取 .env 键值（utf-8-sig 兼容 BOM）；文件不存在返回空 dict。
+    """读取 .env 键值；文件不存在/读失败返回空 dict（宽松策略）。
 
     YIBAN_ENV_FILE 指定路径（与 web/signin 子进程约定一致），回退默认 .env。
+    解析实现单一来源见 env_io.parse_env_file。
     """
-    path = os.environ.get("YIBAN_ENV_FILE", "").strip() or ".env"
-    result = {}
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    result[key.strip()] = value.strip()
-    except OSError:
-        pass
-    return result
+    return env_io.parse_env_file(env_io.env_path())
 
 
 def _get(key):
