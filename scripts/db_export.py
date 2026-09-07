@@ -32,11 +32,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.db:
         os.environ["YIBAN_DB_FILE"] = args.db
-    # 批次7 P2-2：导出是"逃生门"，绝不允许在导出前触发破坏性清理
+    # 导出是"逃生门"，绝不允许在导出前触发破坏性清理
     # （init_db 缺省 cleanup=True 会物理清掉过期软删账号/注销用户/旧审计——
     # 保留期边界导出的数据会静默缺一批且无法区分"本来没有"还是"被清理"）
-    # 批次12 B12-10：补 migrate=False——迁移会用当前密钥重写审计链（v3 rechain），
-    # 使"被导出对象在校验/导出过程中被改动"（与批次8 audit_verify.py 同口径，
+    # 补 migrate=False——迁移会用当前密钥重写审计链（v3 rechain），
+    # 使"被导出对象在校验/导出过程中被改动"（与 audit_verify.py 同口径，
     # 本工具当时漏网）。旧 schema 库导出报错属预期：逃生门要求用配套版本工具。
     db.init_db(env_file=args.env, cleanup=False, migrate=False)
     accounts = db.load_accounts() if args.plaintext else db.load_accounts_raw()
@@ -49,7 +49,7 @@ def main(argv=None):
             json.dump(data, f, ensure_ascii=False, indent=2)
         # 显式收紧权限：新建时由 os.open 0600 保证，已存在文件也统一覆盖为 0600
         os.chmod(path, 0o600)
-    # 批次12 B12-14：导出动作留痕审计链（此前全程零审计，事后无法证明谁在
+    # 导出动作留痕审计链（此前全程零审计，事后无法证明谁在
     # 何时导出过数据）。尽力而为：审计失败不阻断导出（每日写入欠账告警兜底）。
     with contextlib.suppress(Exception):
         db.audit(

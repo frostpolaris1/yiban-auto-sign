@@ -190,7 +190,7 @@ class SmokeTest(unittest.TestCase):
         u = db.find_user("a@x.com")
         self.assertEqual(u["role"], "admin")
         self.assertEqual(u["pw_version"], 2)
-        # 批次18 刀3 P3-15：物理删除入口 delete_user 已删（无生产调用方），改用
+        # 物理删除入口 delete_user 已删（无生产调用方），改用
         # 软注销——语义保持"注销后 find_user 不再可见"（find_user 过滤 deleted=0）。
         # a@x.com 已提为 admin，须预置另一名 admin，否则触发"最后一个注册管理员
         # 不可注销"守卫（C-M3）抛 LastAdminError

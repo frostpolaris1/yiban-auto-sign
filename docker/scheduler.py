@@ -2,7 +2,7 @@
 """容器内签到调度：复刻宿主 cron 的语义。
 
 - 06:31 首签 / 07:10 补签（闸门：当日全量标记 sched-run-<date>.json 不存在才跑
-  首签；标记缺失或存在 failed/retrying/pending 未了结账号才跑补签——批次7 P1-1，
+  首签；标记缺失或存在 failed/retrying/pending 未了结账号才跑补签——
   旧「任一账号 success 即跳过」会误吞全站首签与失败账号的兜底）
 - 探针：每 10 分钟尝试一次入口（signin.py --probe 内部自判触发时间/频率/当日防重）
 - 每日 03:00 清理 /data/logs 下 365 天前的按天日志
@@ -25,7 +25,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-# .env 解析与子进程环境构造与 run.sh / web 共用口径（批次7 P2-10 提为共享模块）
+# .env 解析与子进程环境构造与 run.sh / web 共用口径（提为共享模块）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from child_env import build_child_env
 
@@ -46,12 +46,12 @@ def _sched_run_file():
 
 # 视为"未了结"的状态码：补签闸门据此判断当日是否需要重跑
 # （signin 侧有按账号防重与服务器 already 兜底，重跑幂等）
-# 批次12 B12-2：skipped_window / skipped_norange 计入未了结——学校签到窗口晚于
+# skipped_window / skipped_norange 计入未了结——学校签到窗口晚于
 # 本地配置（或 Range 延迟放出）时，06:31 首签可能全员落"窗口外跳过"；skip 类
 # 状态若不算未了结，sched-run 又无条件写 completed=True，07:10 补签会被闸门
 # 判为"全员了结"吞掉 → 全天零签到且无任何重试机会与告警。skip 既非"未了结"
 # 也非"已完成"，宿主 run.sh 用退出码 2 写 SKIPPED（cron 会重跑）无此洞。
-# 批次16 no_position：易班侧无签到点位（登录成功但 Position 为空）为独立状态码，
+# no_position：易班侧无签到点位（登录成功但 Position 为空）为独立状态码，
 # **计入**未了结——与宿主 run.sh 语义对齐：无点位账号在 signin.py main() 汇总
 # 归 skip 且不触发失败告警，但退出码 2 → SKIPPED → 07:10 补签轮重跑兜底（学校
 # 上午任务未配置=无点位，07:10 已配置=顺带补上）。重试 1 次即止
@@ -67,7 +67,7 @@ _UNDONE_STATUSES = frozenset((
 def _full_run_done_today():
     """当日全量签到是否已运行过（sched-run-<date>.json 标记）。
 
-    批次7 P1-1：原 `_signed_today()`「任一账号 success 即视为已签」会把
+    原 `_signed_today()`「任一账号 success 即视为已签」会把
     用户手动签到、首签部分成功误判为全站已签——06:31 首签整体跳过（其余账号
     全天无人代签）、07:10 补签也被跳过（失败账号失去当日兜底）。
     新语义只认 signin 全量收尾写的标记；手动签到（--only）不写标记。
@@ -125,14 +125,14 @@ PROBE_TRY_SECONDS = 600
 
 
 def _child_timeout(env):
-    """子进程超时：默认按签到窗口动态计算，与宿主 run.sh 同口径（批次12 B12-3）。
+    """子进程超时：默认按签到窗口动态计算，与宿主 run.sh 同口径。
 
     原固定 7200s 与可配置窗口脱钩：窗口整体晚于触发点约 2 小时（如 10:00~11:00）
     时，首签/补签子进程在 sleep 等窗口途中即被杀，全天漏签。现默认 = 当日窗口
     结束（YIBAN_SIGN_END，与 signin.py _schedule_config / run.sh 同一事实源，
     默认 07:50）− 当前时刻 + 5 分钟余量，下限 600s；YIBAN_RUN_TIMEOUT_SEC 显式
-    设置时优先（管理员手动覆盖）。键来源口径与 build_child_env 一致（批次16
-    P2-5）：.env（env，Web 设置页写入）优先于进程环境（compose 注入）——否则
+    设置时优先（管理员手动覆盖）。键来源口径与 build_child_env 一致：
+    .env（env，Web 设置页写入）优先于进程环境（compose 注入）——否则
     compose 显式设置会让设置页修改静默失效。
     """
     raw = str(env.get("YIBAN_RUN_TIMEOUT_SEC")
@@ -154,7 +154,7 @@ def _child_timeout(env):
 
 
 def _run_signin_child(extra=None, env=None):
-    """运行签到/探针子进程（批次7 P3-14：补超时——宿主 run.sh 有动态超时，
+    """运行签到/探针子进程（补超时——宿主 run.sh 有动态超时，
     容器内原实现无 timeout，单个子进程挂起即永久卡死全部调度且无告警）。
 
     env 由调用方传入时复用（探针周期尝试已为短路判断解析过一次），
@@ -195,13 +195,13 @@ def main_loop(sleep_seconds=1):
         if hm >= SECOND and done_sign_second != today and (
             not _full_run_done_today() or _has_undone_today()
         ):
-            # 补签闸门（批次7 P1-1）：全量未跑过（首签错过的补偿）或存在未了结
-            # 账号（failed/retrying/pending/skipped_window/skipped_norange/no_position，
-            # 批次12 B12-2 / 批次16）才执行；全员了结则跳过，不再被「任一账号
+            # 补签闸门：全量未跑过（首签错过的补偿）或存在未了结
+            # 账号（failed/retrying/pending/skipped_window/skipped_norange/no_position）
+            # 才执行；全员了结则跳过，不再被「任一账号
             # 成功」误导跳过失败账号的兜底。no_position（无点位）视为未了结
-            # （批次16）：与宿主 run.sh 退出码 2 → SKIPPED → 07:10 重跑一致，
+            # 与宿主 run.sh 退出码 2 → SKIPPED → 07:10 重跑一致，
             # 07:10 补签轮顺带重试一次（signin 内部 1 次即止，幂等无害）。
-            # 批次16 P2-4：补签轮注入 YIBAN_SECOND_RUN=1——与宿主 run.sh 补签轮
+            # 补签轮注入 YIBAN_SECOND_RUN=1——与宿主 run.sh 补签轮
             # 导出的同一信号，signin.py 据此判定 is_second_run（环境变量优先，
             # sched-run 标记兜底），修复首签被 timeout 击杀时「部分成功+窗口外」
             # 零告警（B12-2 分支复发）

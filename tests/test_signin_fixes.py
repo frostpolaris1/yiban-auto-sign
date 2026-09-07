@@ -207,7 +207,7 @@ class SigninFixes021Test(unittest.TestCase):
         """
         with mock.patch.object(signin.notify, "send", return_value=True) as m:
             signin.send_notification("标题", "内容", "https://legacy.example.com/hook")
-        # 批次18 刀2 M7：send_notification 透传 urgent/force（默认 False）
+        # send_notification 透传 urgent/force（默认 False）
         m.assert_called_once_with("标题", "内容", urgent=False, force=False)
 
     # ---- 低项：user_paused 显式布尔解析 ----

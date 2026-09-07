@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次16 P2-9 回归测试：notify 同类型告警节流跨进程化（磁盘持久化）。
+"""回归测试：notify 同类型告警节流跨进程化（磁盘持久化）。
 
 修复前的缺陷：
 - `_throttle_due` 只维护进程内 `_throttle_ts` 字典——web（常驻）与 signin

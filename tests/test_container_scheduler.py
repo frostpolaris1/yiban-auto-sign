@@ -7,9 +7,9 @@
 
 覆盖两代审查修复：
 
-- **批次5 F2**：`build_child_env()` 必须在每次触发时重新解析 .env（Web 后台
+- `build_child_env()` 必须在每次触发时重新解析 .env（Web 后台
   改的全局暂停/周日/探针开关即时生效）。
-- **批次7 P1-1**：调度器闸门改为「全量运行标记 sched-run-<date>.json」语义——
+- 调度器闸门改为「全量运行标记 sched-run-<date>.json」语义——
   旧 `_signed_today()` 以「任一账号 success」判定已签，用户手动签到或首签部分
   成功都会压制全站 06:31 首签与 07:10 补签（失败账号失去当日兜底）。
   新语义：手动签到（--only）不写标记，不再影响调度器判定。
@@ -133,7 +133,7 @@ class FullRunGateTest(unittest.TestCase):
     def test_all_done_skips_second_sign(self):
         """全员真正了结（success/already/no_task）→ 补签跳过，不再全天空跑两遍。
 
-        批次12 B12-2 语义修正：skipped_window/skipped_norange 不再视为"了结"
+        语义修正：skipped_window/skipped_norange 不再视为"了结"
         （学校窗口晚开时全员窗口外跳过必须触发补签重跑），已移出本用例。"""
         self._write_marker()
         self._write_state({
@@ -144,7 +144,7 @@ class FullRunGateTest(unittest.TestCase):
         self.assertFalse(self.sched._has_undone_today())
 
     def test_window_skip_is_undone(self):
-        """批次12 B12-2：窗口外跳过 = 未了结 → 补签闸门放行重跑。"""
+        """窗口外跳过 = 未了结 → 补签闸门放行重跑。"""
         self._write_marker()
         self._write_state({
             "13800000001": {"status": "success"},

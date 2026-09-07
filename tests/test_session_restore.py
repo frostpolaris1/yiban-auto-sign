@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次11 修复回归（2026-08-29，外部审查报告 N1-N6 处置）。
+"""修复回归（2026-08-29，外部审查报告 N1-N6 处置）。
 
 覆盖：
 - N1  注销恢复（/api/me/restore）签发 sid：恢复后新会话立即有效；注销前被窃取
@@ -92,8 +92,8 @@ class _Batch11WebBase(unittest.TestCase):
         self.alerts = []
         self.user_mails = []
         p1 = mock.patch.object(self.webapp, "send_notification",
-                               # 批次18 刀1：send_notification 新增 force=，假实现同步接收
-                               # 批次18 刀2：新增 ledger=（M8 登录失败告警独立账本）
+                               # send_notification 新增 force=，假实现同步接收
+                               # 新增 ledger=（M8 登录失败告警独立账本）
                                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c)))
         p2 = mock.patch.object(self.webapp.mailer, "send_user",
                                side_effect=lambda to, s, c: self.user_mails.append((to, s)))

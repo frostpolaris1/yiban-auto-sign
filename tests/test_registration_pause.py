@@ -235,7 +235,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
         fh = [h for h in root.handlers
               if type(h).__name__ == "_DailyFlockFileHandler"]
         self.assertTrue(fh, "create_app 应为 root 挂载按天文件 handler")
-        # 批次16 P3：root 保持 WARNING（防 requests/urllib3/werkzeug 等第三方 INFO
+        # root 保持 WARNING（防 requests/urllib3/werkzeug 等第三方 INFO
         # 全量落盘且无轮转上限），仅自有组件单独放开 INFO
         self.assertEqual(root.level, logging.WARNING, "root 应保持 WARNING")
         self.assertEqual(logging.getLogger("web").level, logging.INFO,

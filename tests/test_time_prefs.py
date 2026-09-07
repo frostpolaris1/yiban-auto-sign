@@ -880,7 +880,7 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(cap3["accounts"], 1)
 
     def test_users_at_capacity_semantics_unified(self):
-        """批次16 容量阈值语义统一：_users_at_capacity 与 _accounts_at_capacity
+        """容量阈值语义统一：_users_at_capacity 与 _accounts_at_capacity
         同构（"再注册 1 人后 > 上限才拒"，达到上限恰好填满、超过才拒）；
         并与旧内联判定 len(users) >= max 逐值等价（统一语义不改变行为）。"""
         cur = len(db.load_users())

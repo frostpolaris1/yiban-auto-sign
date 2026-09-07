@@ -33,7 +33,7 @@ _entry_port_warned = False
 
 
 def _mask_addr(addr):
-    """邮箱打码：477929858@qq.com → 477****@qq.com（保留域名；非邮箱原样返回）。"""
+    """邮箱打码：1234567890@qq.com → 123*******@qq.com（保留域名；非邮箱原样返回）。"""
     addr = str(addr or "").strip()
     if "@" not in addr:
         return addr or "<未配置>"
@@ -170,7 +170,7 @@ def _send(subject, text, to):
         msg["To"] = to
 
         try:
-            # 批次7 P2-1：显式证书校验——smtplib 默认 context（ssl._create_stdlib_context）
+            # 显式证书校验——smtplib 默认 context（ssl._create_stdlib_context）
             # verify_mode=CERT_NONE 不校验服务器证书，SMTP 授权码可被中间人窃取后
             # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
             ctx = ssl.create_default_context()

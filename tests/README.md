@@ -42,7 +42,7 @@ python -m pytest tests/test_smoke.py -v
 | `test_admin_creds_masked_ops.py` | 管理员空凭据拒绝、手机号脱敏操作（删除/批量/审核） |
 | `test_web_api_security.py` | Web API 安全边界：越权（IDOR）、mass assignment、输入校验、限速 |
 | `test_web_auth_security.py` | Web 认证 / 授权 / 安全配置（0.21.0 修复） |
-| `test_web_security_gates.py` | 批次16 web 修复验证：重置密码门禁、日志 handler、版本同步 |
+| `test_web_security_gates.py` | web 修复验证：重置密码门禁、日志 handler、版本同步 |
 | `test_account_abuse_gate.py` | 被盗号滥用面加固：告警节流、高危操作门禁 |
 | `test_session_restore.py` | 会话恢复（SID 吊销 / 恢复保持有效） |
 | `test_registration_pause.py` | 暂停注册（v0.26.3）+ web 日志落盘 |
@@ -75,10 +75,10 @@ python -m pytest tests/test_smoke.py -v
 | `test_edge_opt.py` | 掐头去尾前后独立调度 |
 | `test_retry_reschedule.py` | 重试重新尊重计划 |
 | `test_min_exec_gap.py` | 相邻请求最小间隔兜底 |
-| `test_sched_marker.py` | 批次16 调度修复（--only 过滤、补签轮判定） |
-| `test_scheduler_gate.py` | 批次12 调度闸门 + 零成功告警 |
+| `test_sched_marker.py` | 调度修复（--only 过滤、补签轮判定） |
+| `test_scheduler_gate.py` | 调度闸门 + 零成功告警 |
 | `test_scheduler_env_probe.py` | 调度 env 合并 + 探针状态锁 |
-| `test_web_scheduler_timeout.py` | Web 限速 + 调度超时（批次7 P3 系列） |
+| `test_web_scheduler_timeout.py` | Web 限速 + 调度超时 |
 | `test_probe.py` | 探针模式 + 注册时账号验证 |
 | `test_env_fail_loud.py` | .env 解析快速失败（防静默重建密钥） |
 
@@ -113,7 +113,7 @@ python -m pytest tests/test_smoke.py -v
 |---|---|
 | `test_env_mailer_tls.py` | 子进程 env + mailer TLS 上下文 |
 | `test_rekey_key_source.py` | 密钥来源去 cwd 依赖 + rekey 迁移推送密文 |
-| `test_p3_fixes.py` | 批次17 P3：迁移原子性、rekey argv 泄露、backup 明文警告 |
+| `test_p3_fixes.py` | 迁移原子性、rekey argv 泄露、backup 明文警告 |
 
 ### 用户操作相关
 | 文件 | 说明 |
@@ -123,5 +123,5 @@ python -m pytest tests/test_smoke.py -v
 ## 命名规范（2026-09-01 起）
 
 - 文件按**功能域**命名 `test_<功能>.py`，不再带审查批次日期后缀（如 `test_batch14_fixes_0829.py` → `test_rekey_key_source.py`）；
-- 遗留的批次/日期语义保留在文件 docstring 首行（如"批次14 第一档回归测试"），便于追溯审查历史；
+- 修复日期保留在文件 docstring 首行，便于追溯审查历史；
 - git 历史可经 `git log --follow tests/<文件>.py` 追溯旧名。

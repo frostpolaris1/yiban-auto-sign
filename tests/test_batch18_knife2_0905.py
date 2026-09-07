@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次18 刀2（通知/调度/内存卫生）回归（2026-09-05）。
+"""通知/调度/内存卫生回归（2026-09-05）。
 
 六项修复：
 1. M4 手动签到冷却单源化：单条与批量共用 YIBAN_BATCH_SIGN_COOLDOWN_SEC 计数——
@@ -85,7 +85,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
         sys.modules["webapp"] = cls.webapp
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
-        # Popen 类级 patch（沿用 test_batch_sign_cooldown 的批次16 修复口径）：
+        # Popen 类级 patch（口径沿用 test_batch_sign_cooldown）：
         # 覆盖后台队列线程的任意调度时刻，防真实 spawn signin 子进程。
         cls.wait_timeouts = []  # _RecordingProc 记录的 wait(timeout=...) 值
         cls._popen_patch = mock.patch.object(
