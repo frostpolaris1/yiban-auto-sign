@@ -37,7 +37,17 @@ import time
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import (
+    Flask,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层 + 子进程环境构造
