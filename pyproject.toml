@@ -4,8 +4,7 @@ target-version = "py310"
 exclude = [".git", "__pycache__"]
 
 [tool.pytest.ini_options]
-# 只收集 tests/ 下的用例；scripts/ 下的独立安全压力测试（stress_security_test.py）
-# 需真实服务器地址、按脚本方式运行，不应被 pytest 默认收集（缺 base_url fixture）
+# 只收集 tests/ 下的用例；scripts/ 下的一次性运维脚本不作为测试收集目标
 testpaths = ["tests"]
 # 汇总报告：结尾列出全部 skipped/xfailed/xpass；失败时短 traceback
 addopts = "-ra --tb=short"
