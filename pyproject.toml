@@ -6,9 +6,9 @@ exclude = [".git", "__pycache__"]
 [tool.pytest.ini_options]
 # 只收集 tests/ 下的用例；scripts/ 下的一次性运维脚本不作为测试收集目标
 testpaths = ["tests"]
-# 导入路径：仓库根（web 包）+ scripts（db/signin 等裸模块）+ tests，
-# 各测试文件无需再自插 sys.path 样板
-pythonpath = ["tests", ".", "scripts", "web"]
+# 导入路径：仓库根（web 包）+ scripts（db/signin 等裸模块）+ docker（scheduler）
+# + tests，各测试文件无需再自插 sys.path 样板
+pythonpath = ["tests", ".", "scripts", "web", "docker"]
 # 汇总报告：结尾列出全部 skipped/xfailed/xpass；失败时短 traceback
 addopts = "-ra --tb=short"
 
