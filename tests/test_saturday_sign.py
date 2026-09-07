@@ -277,7 +277,7 @@ class SaturdaySettingsWebTest(unittest.TestCase):
     def test_saturday_partial_update_preserves_delays(self):
         """只改 saturday_sign 不得清空已配置的延迟（复用批次7 A4 语义）。"""
         c, t = self._master()
-        r = c.post("/api/settings", json={"start_delay_max": 60}, headers=self._csrf(t))
+        r = c.post("/api/settings", json={"start_delay_max": 60, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)
         r = c.post("/api/settings", json={"saturday_sign": 0}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)

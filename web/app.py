@@ -37,7 +37,7 @@ import time
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层 + 子进程环境构造
@@ -2142,6 +2142,32 @@ def _capacity_stats():
     owners = {a.get("owner") for a in live_accts if a.get("owner")}
     accounts = sum(1 for u in users if u["email"] in owners)
     return len(users), accounts
+
+
+def _capacity_estimate(start_delay_max=0, gap_max=0):
+    """按当前签到窗口与随机延迟设置预估容量（v0.29.0 简单算法）。
+
+    公式（README「随机延迟与容量预估」同款）：
+        可容纳账号数 ≈ (窗口秒数 − 启动延迟 − 单账号耗时) ÷ (单账号耗时 + 账号间隔) + 1
+    账号容量按最大等待（启动延迟/间隔取配置上限）估最坏情况；
+    用户容量按随机值中位数（均匀分布取中点）估典型情况。
+    单账号耗时复用 signin._schedule_config 的 avg_attempt_sec（默认 8s，容错取 8）。
+    返回 (账号容量, 用户容量)。窗口无法容纳 1 个账号时容量为 0（保存将被拒绝）。
+    """
+    try:
+        avg = int(signin._schedule_config().get("avg_attempt_sec") or 8)
+    except Exception:
+        avg = 8
+    sw = _sign_window()
+    window_sec = max(0, (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])) * 60
+
+    def _cap(delay, gap):
+        slack = window_sec - delay - avg
+        if slack < 0:
+            return 0
+        return int(slack / (avg + gap)) + 1
+
+    return _cap(start_delay_max, gap_max), _cap(start_delay_max // 2, gap_max // 2)
 
 
 def _accounts_at_capacity(extra_holder=None):
@@ -5338,6 +5364,7 @@ def create_app(host=None):
         # 性能优化：单次遍历 accounts 预计算每个 owner 的计数，避免 O(用户数×账号数)
         owner_account_count = {}
         owner_pending_count = {}
+        owner_review_count = {}
         for a in accounts:
             if a.get("deleted"):
                 continue
@@ -5345,6 +5372,10 @@ def create_app(host=None):
             owner_account_count[owner] = owner_account_count.get(owner, 0) + 1
             if a.get("status") == ACCOUNT_STATUS_PENDING:
                 owner_pending_count[owner] = owner_pending_count.get(owner, 0) + 1
+            # review 口径 = 待审核 + 已拒绝，与账号管理「待处理账号」组一致
+            # （修复：仅有已拒绝账号的用户此前不出现在用户管理待处理栏）
+            if a.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
+                owner_review_count[owner] = owner_review_count.get(owner, 0) + 1
         result = [
             {
                 "email": u.get("email", ""),
@@ -5353,6 +5384,7 @@ def create_app(host=None):
                 # 计数排除软删除账号（删除后不占账号数/待审核数）
                 "account_count": owner_account_count.get(u.get("email", ""), 0),
                 "pending_count": owner_pending_count.get(u.get("email", ""), 0),
+                "review_count": owner_review_count.get(u.get("email", ""), 0),
             }
             for u in users
         ]
@@ -6058,6 +6090,22 @@ def create_app(host=None):
         })
 
     # ---- 日志与状态 ----
+    @app.route("/api/logs/export")
+    def api_logs_export():
+        """导出某日完整签到日志文件（管理员；v0.29.0）。
+
+        date 必填且强校验（防路径穿越），文件名仅含日期，路径由 log_path_for 内部
+        拼接 STATE_DIR，无用户可控成分。
+        """
+        date = str(request.args.get("date", "")).strip()
+        if not _is_valid_date_str(date):
+            return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
+        path = log_path_for(date)
+        if not os.path.exists(path):
+            return jsonify({"error": f"{date} 无签到日志"}), 404
+        return send_file(path, mimetype="text/plain", as_attachment=True,
+                         download_name=f"sign-{date}.log")
+
     @app.route("/api/logs")
     def api_logs():
         """签到日志与今日状态。
@@ -6072,6 +6120,23 @@ def create_app(host=None):
         if not date:
             date = _most_recent_log_date()
         logs = _log_lines_for(date)
+        # v0.29.0：检索与全量查看。q=子串过滤（大小写不敏感，作用于当日全量行）；
+        # all=1 返回当日全部行（封顶 5000 行防拖垮浏览器，truncated 标记）；
+        # 缺省仍返回最后 80 行（轮询口径不变，靠前日志经 all=1 或导出获取）。
+        q = str(request.args.get("q", "")).strip()
+        show_all = str(request.args.get("all", "")).strip() == "1"
+        masked_all = [_mask_log_phones(ln) for ln in logs]
+        total_lines = len(masked_all)
+        if q:
+            _ql = q.lower()
+            masked_all = [ln for ln in masked_all if _ql in ln.lower()]
+        if show_all:
+            _LOG_VIEW_CAP = 5000
+            out_lines = masked_all[:_LOG_VIEW_CAP]
+            truncated = len(masked_all) > _LOG_VIEW_CAP
+        else:
+            out_lines = masked_all[-80:]
+            truncated = False
         # 探针结构化事件（v0.24.4）：此前 stage="probe" 只落库无任何可见出口，
         # 现随日志接口附带当日探测记录（独立字段，不混入签到文本流；
         # 手机号打码，条数封顶）。
@@ -6112,7 +6177,11 @@ def create_app(host=None):
         return jsonify(
             {
                 "ok": True,
-                "logs": [_mask_log_phones(ln) for ln in logs[-80:]],
+                "logs": out_lines,
+                "total_lines": total_lines,
+                "returned": len(out_lines),
+                "truncated": truncated,
+                "q": q,
                 "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
                 "date": date,
                 "is_today": date == datetime.now().strftime("%Y-%m-%d"),
@@ -6178,13 +6247,24 @@ def create_app(host=None):
         #   用户 = 全部未删除注册用户（含尚未添加账号的空用户）
         #   账号 = 至少持有 1 个非删除账号的活跃注册用户（admin 直属裸账号不计入）
         _cap_users, _cap_accounts = _capacity_stats()
+        _est_start = load_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
+        _est_gap = load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", 0)
+        _est_accounts, _est_users = _capacity_estimate(_est_start, _est_gap)
         return jsonify(
             {
                 "ok": True,
-                "start_delay_max": load_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", 0),
-                "gap_max": load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", 0),
+                "start_delay_max": _est_start,
+                "gap_max": _est_gap,
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
+                # 容量预估（v0.29.0）：账号=最大等待口径、用户=随机中位数口径；
+                # 前端 >80% 标红；保存延迟时超容量会被拒绝
+                "capacity_estimate": {
+                    "accounts_cap": _est_accounts,
+                    "users_cap": _est_users,
+                    "current_users": _cap_users,
+                    "current_holders": _cap_accounts,
+                },
                 # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
                 "sign_mode": mode or "sequence",
                 # 调度 v2：排序×分布二级开关 + 首尾缓冲 + 自选总开关 + 窗口
@@ -6253,6 +6333,20 @@ def create_app(host=None):
         # 上限 1 小时：防止误填超大值破坏签到随机延迟
         start = min(max(start, 0), 3600)
         gap = min(max(gap, 0), 3600)
+        # v0.29.0：随机延迟影响自动+手动签到节奏，修改需主管理员密码二次确认，
+        # 且新设置预估容量不足（当前用户/持有者超过预估值）时拒绝保存。
+        if has_start or has_gap:
+            # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
+            denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改签到随机延迟")
+            if denied is not None:
+                return denied
+            est_accounts, est_users = _capacity_estimate(start, gap)
+            cur_users, cur_holders = _capacity_stats()
+            if cur_users > est_users or cur_holders > est_accounts:
+                return jsonify({
+                    "error": f"容量已满请清理用户数量后再试（按新设置预估可容纳用户 {est_users} 人、"
+                             f"账号 {est_accounts} 个；当前用户 {cur_users} 人、活跃持有者 {cur_holders} 人）"
+                }), 400
         # 安全审查 2026-08：先全量校验、再统一写入——此前边校验边写，
         # 后续字段非法返回 400 时前面的字段已落盘（"报错但设置变了"的部分写入）。
         # 签到模式（sequence/random）：写入 .env，cron 的 run.sh 加载后 signin.py 生效
