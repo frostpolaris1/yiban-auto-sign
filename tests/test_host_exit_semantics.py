@@ -15,7 +15,6 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-
 import signin
 
 
