@@ -2586,8 +2586,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     """
     schedule = schedule or {}
     cred_state = cred_state or {}
-    if not schedule:
-        random_delay(start_delay_max, "启动延迟")
+    # v0.29.0：启动随机延迟对自动调度同样生效（此前仅手动模式）——
+    # 调度 v2 的时间点分布负责"铺满窗口"，启动延迟在其之上整体错开一个随机相位
+    random_delay(start_delay_max, "启动延迟")
     queue = list(accounts)
     if SIGN_MODE == "random" and not schedule:
         # 列表随机模式：每次运行打乱顺序（打破"固定顺序+固定时刻"的脚本指纹）；
@@ -2669,11 +2670,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             wait = (_at_dt - now_dt).total_seconds()
             if wait > 0:
                 time.sleep(wait)
-            # 请求最小间隔兜底（F1）：min_exec_gap 与 exec_gap_min（过点账号）取较大值
+            # 请求最小间隔兜底（F1）：min_exec_gap 与 exec_gap_min（过点账号）取较大值；
+            # v0.29.0：账号间隔设置（gap_max）对自动调度同样生效，作为相邻请求间隔下限
             if last_done is not None:
                 min_gap = max(
                     sch_cfg["min_exec_gap"],
                     sch_cfg["exec_gap_min"] if wait <= 0 else 0,
+                    gap_max,
                 )
                 gap = min_gap - (time.monotonic() - last_done)
                 if gap > 0:

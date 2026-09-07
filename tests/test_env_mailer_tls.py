@@ -349,7 +349,7 @@ class BatchCapAndSettingsTest(unittest.TestCase):
     def test_settings_partial_update_preserves_delays(self):
         """A4：只提交 sunday_sign 不得清空已配置的延迟。"""
         c, t = self._master()
-        r = c.post("/api/settings", json={"start_delay_max": 60, "gap_max": 30},
+        r = c.post("/api/settings", json={"start_delay_max": 60, "gap_max": 30, "confirm_password": ADMIN_PASS},
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         r = c.post("/api/settings", json={"sunday_sign": 1}, headers=self._csrf(t))
@@ -358,7 +358,7 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         self.assertIn("YIBAN_START_DELAY_MAX=60", env)
         self.assertIn("YIBAN_ACCOUNT_GAP_MAX=30", env)
         # 显式清零仍可用（携带字段即写）
-        r = c.post("/api/settings", json={"start_delay_max": 0}, headers=self._csrf(t))
+        r = c.post("/api/settings", json={"start_delay_max": 0, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)
         env = io.open(self.env_file, encoding="utf-8").read()
         self.assertNotIn("YIBAN_START_DELAY_MAX=60", env)
@@ -366,7 +366,7 @@ class BatchCapAndSettingsTest(unittest.TestCase):
     def test_delay_settings_master_only(self):
         """A5：注册管理员改延迟/调度字段 → 403；改周日开关仍可。"""
         c, t = self._reg_admin()
-        r = c.post("/api/settings", json={"start_delay_max": 3600}, headers=self._csrf(t))
+        r = c.post("/api/settings", json={"start_delay_max": 3600, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 403)
         r = c.post("/api/settings", json={"gap_max": 3600}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 403)
