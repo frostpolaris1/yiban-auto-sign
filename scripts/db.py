@@ -24,6 +24,7 @@ import time
 
 # 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
 import account_crypto
+import env_io
 import env_lock
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
@@ -323,24 +324,18 @@ def migrate_v2(conn):
 # 审计哈希链（Phase 3）
 # ---------------------------------------------------------------------------
 def _parse_env_file(env_file):
-    """读取 .env 全部键值，返回 dict（文件缺失返回空；非法行跳过）。"""
-    result = {}
+    """读取 .env 全部键值，返回 dict（文件缺失返回空；非法行跳过）。
+
+    严格策略：文件存在但读取失败 → 记 ERROR 并重抛（解析实现在 env_io）。
+    """
     try:
-        with open(env_file, encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    result[key.strip()] = value.strip()
-    except FileNotFoundError:
-        pass  # 文件确实不存在 → 空配置
+        return env_io.parse_env_file(env_file, strict=True)
     except OSError as e:
         # 文件存在但读取失败：绝不静默当作"未配置"，否则 audit key / track salt
         # 自动生成路径会误判无密钥而重新生成，致既有审计链/追踪盐失效。
         # 宁可启动失败也不生成替代密钥（2026-08-27 审查）。
         logger.error("环境变量文件存在但读取失败，按错误处理而非未配置（请检查权限）: %s [%s]", env_file, e)
         raise
-    return result
 
 
 def _decode_audit_key(raw):
