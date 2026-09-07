@@ -200,9 +200,9 @@
         </div>
         <div id="error-box" role="alert" tabindex="-1" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2"></div>
         <button type="button" id="restore-btn" onclick="restoreAccount()"
-                class="hidden w-full mt-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200">恢复我的账号（7 天内可撤销）</button>
+                class="hidden w-full mt-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 disabled:opacity-60 disabled:cursor-not-allowed">恢复我的账号（7 天内可撤销）</button>
         <button type="submit" id="login-btn"
-                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
+                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed">
           <span id="login-btn-text">登录</span>
         </button>
       </form>
@@ -249,7 +249,7 @@
         </label>
         <div id="reg-error-box" role="alert" tabindex="-1" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2"></div>
         <button type="submit" id="register-btn"
-                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
+                class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-colors duration-200 px-3 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed">
           <span id="register-btn-text">注册并登录</span>
         </button>
       </form>
