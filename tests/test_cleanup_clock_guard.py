@@ -112,12 +112,12 @@ class CleanupResidueTest(unittest.TestCase):
         self.assertEqual(self._event_count("13900000004"), 1, "软删除不应清理事件")
 
     def test_replace_accounts_clears_sign_events(self):
-        """批次15 P2-1：TUI 整表保存（replace_accounts）移除的账号必须连带清 sign_events。"""
+        """批次15 P2-1：整表替换（replace_accounts）移除的账号必须连带清 sign_events。"""
         self._add("13900000005", owner="keep@test.local")
         self._add("13900000006", owner="drop@test.local")
         db.add_sign_event("2026-08-28 06:36:00", "13900000005", "success")
         db.add_sign_event("2026-08-28 06:36:01", "13900000006", "success")
-        # 整表替换：只保留 13900000005（模拟 TUI 删除 13900000006 后保存）
+        # 整表替换：只保留 13900000005（模拟删除 13900000006 后整表保存）
         from scripts import db as _db  # noqa: F401  (db 已在 setUpClass 导入)
         rows = [r for r in db.load_accounts_raw() if r["phone"] == "13900000005"]
         kept = {

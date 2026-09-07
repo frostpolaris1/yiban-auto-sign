@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""SQLite 数据访问层（web / signin / tui 三进程共用）。
+"""SQLite 数据访问层（web / signin 双进程共用）。
 
 - accounts/users 数据从 JSON 整文件读写迁移到 SQLite（yiban.db，WAL 模式）
   ——根治并发覆盖 / 索引漂移 / 进程外覆盖三个历史问题
@@ -379,7 +379,7 @@ def _resolve_key_env_file():
 def _write_audit_key_to_env_file(env_file, key):
     """把新生成的审计密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
 
-    读-写-替换整体包进共享 env_lock：与 web/tui 写 .env 互斥；锁内仍保留
+    读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥；锁内仍保留
     “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
     """
     with env_lock.env_write_lock(env_file):
@@ -535,7 +535,7 @@ def migrate_v3(conn):
 def _write_track_salt_to_env_file(env_file, salt):
     """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。
 
-    读-写-替换整体包进共享 env_lock：与 web/tui 写 .env 互斥；锁内仍保留
+    读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥；锁内仍保留
     “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
     """
     with env_lock.env_write_lock(env_file):
@@ -1714,7 +1714,7 @@ def _assert_not_last_admin(conn, email, allow_last_admin):
     """「最后一个注册管理员不可删除/降权」复核——必须在 BEGIN IMMEDIATE 事务内调用。
 
     批次12 B12-7：管理员侧删除/降权此前只在 web 进程内 _file_lock 下预检，
-    跨进程（web + TUI / 多实例共享同一库）两名操作者可同时通过预检，把最后一个
+    跨进程（web 多实例共享同一库）两名操作者可同时通过预检，把最后一个
     注册管理员清零（未配内置管理员的部署失去全部管理入口）。批次6 C-M3 已把
     自助注销路径的复核下沉事务，本函数把管理员侧三个路径（单删/批量删/降权）
     对齐同口径。命中即抛 LastAdminError（调用方事务回滚、web 转 400）。
@@ -1786,10 +1786,10 @@ def set_user_role(email, new_role, allow_last_admin=False):
 
 
 def replace_accounts(accounts):
-    """整表替换（TUI 保存专用）：事务内清空并重插，sort_order=列表顺序 1..N。
+    """整表替换：事务内清空并重插，sort_order=列表顺序 1..N。
 
     敏感字段密文化同 add_account（AAD=手机号）。
-    ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（TUI 与 web 勿同时编辑）。
+    ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（勿与其他写入方同时编辑）。
     不再存在的账号连带清理自选时间片（H2 对抗性审查补：防孤儿 pref 虚高拥挤度）。
     """
     conn = get_conn()
@@ -1799,7 +1799,7 @@ def replace_accounts(accounts):
         keep = {a.get("phone", "") for a in accounts}
         # 2026-08-28 审查 M1 补：整表替换时移除的账号原先只清 time_prefs，
         # 漏清会话缓存（凭据残留）。保留的账号不动，避免无谓的重新登录。
-        # 批次15 P2-1：同样漏清 sign_events——TUI 整表保存移除的账号，其
+        # 批次15 P2-1：同样漏清 sign_events——整表替换移除的账号，其
         # 明文手机号（sign_events.phone 明文落库）会驻留至 180 天保留期满；
         # 对齐 purge_account/delete_accounts_by_owner 等 7 条物理删除路径的
         # 三连带清理（M2 覆盖清单外的第 8 条路径）。
@@ -2015,7 +2015,7 @@ def soft_delete_user_with_accounts(email):
     （用户 + 账号）；软删账号不参与签到（signin _load_accounts_from_file 过滤 deleted）。
 
     2026-08-28 审查 C-M3：'最后一个注册管理员不可注销'的复核从 web 进程内锁
-    下沉到本事务内——原实现 web 层用进程内 _file_lock 检查后调用本函数，TUI /
+    下沉到本事务内——原实现 web 层用进程内 _file_lock 检查后调用本函数，其他写入方 /
     多容器共享同一库时两名管理员可同时通过检查双双注销，系统失去全部管理
     入口（内置管理员未配置时彻底无法进入）。现于 BEGIN IMMEDIATE 后 COUNT 复核，
     命中即抛 LastAdminError（web 捕获转 400）。
@@ -2415,7 +2415,7 @@ def audit(username, action, target="", detail=""):
     Phase 3：写入 HMAC 哈希链，prev_hash 取上一条 hash；签名保持不变。
     2026-08-20 对抗性审查修复：prev_hash 读取纳入 BEGIN IMMEDIATE 写事务——
     原实现"读上一条 hash"与 INSERT 之间无跨进程互斥（_conn_lock 仅进程内），
-    web 与 TUI 并发写审计会读到同一 prev_hash 造成链分叉（verify 断链）。
+    web 多进程并发写审计会读到同一 prev_hash 造成链分叉（verify 断链）。
 
     2026-08-28 审查 B-1（fail-loud）：原实现 `except Exception` 后只写一条
     WARNING 并返回 None——锁等待超过 busy_timeout 时（长事务如 replace_accounts
