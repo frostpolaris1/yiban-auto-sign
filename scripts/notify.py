@@ -58,8 +58,7 @@ except ImportError:  # Windows 无 fcntl，跨进程锁退化为进程内
 import requests
 
 try:
-    from . import account_crypto
-    from . import env_io
+    from . import account_crypto, env_io
 except ImportError:  # 非包上下文（scripts/ 直接 import）
     import account_crypto
     import env_io
