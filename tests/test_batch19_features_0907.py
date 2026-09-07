@@ -8,8 +8,9 @@
 - /api/users：review_count（待审核 + 已拒绝）——修复仅有已拒绝账号的用户
   不出现在用户管理待处理栏的口径差
 - /api/settings：延迟字段携带即需 confirm_password（缺失/错误 400）；容量预估
-  （账号=最大等待口径、用户=随机中位数口径）+ 超容量拒绝保存；GET 返回 capacity_estimate
-- _capacity_estimate：公式单测（README 同款）
+  （v0.29.1 口径：账号=最大间隔、用户=间隔中位数；启动延迟已废弃不参与）
+  + 超容量拒绝保存；GET 返回 capacity_estimate
+- _capacity_estimate：公式单测
 
 用法（项目根目录）：
     py -m pytest tests/test_batch19_features_0907.py -v
@@ -204,8 +205,10 @@ class CapacitySettingsTest(_Base):
         est = data["capacity_estimate"]
         for k in ("accounts_cap", "users_cap", "current_users", "current_holders"):
             self.assertIn(k, est)
-        # 默认窗口 80 分钟、无延迟：账号容量 = 用户容量 = (4800-0-8)/8+1 ≈ 600
-        self.assertEqual(est["accounts_cap"], est["users_cap"])
+        # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX=10：账号 = (4800-8)/18+1 = 267、
+        # 用户（间隔中位数 5）= (4800-8)/13+1 = 369
+        self.assertEqual(est["accounts_cap"], 267)
+        self.assertEqual(est["users_cap"], 369)
 
     def test_delay_requires_confirm_password(self):
         c, h = self._master()
@@ -226,8 +229,8 @@ class CapacitySettingsTest(_Base):
         self.assertIn("YIBAN_ACCOUNT_GAP_MAX=10", env)
 
     def test_delay_save_rejected_when_over_capacity(self):
-        # 恶性延迟：3600s 启动 + 3600s 间隔 → 窗口内预估容量 1；再灌 3 个用户 → 必超
-        for i in range(3):
+        # 恶性间隔 gap=3600 → 预估用户容量 = (4800-8)/1808+1 = 3；灌 4 个用户 → 必超
+        for i in range(4):
             self.db.create_user(f"u{i}@test.local", "x", role="user")
         c, h = self._master()
         r = c.post("/api/settings",
@@ -240,25 +243,24 @@ class CapacitySettingsTest(_Base):
 
 
 class CapacityFormulaTest(_Base):
-    """_capacity_estimate 公式（README 同款）。"""
+    """_capacity_estimate 公式（v0.29.1：启动延迟废弃，仅间隔参与）。"""
 
     def test_formula_and_median(self):
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
              mock.patch.object(self.webapp.signin, "_schedule_config",
                                return_value={"avg_attempt_sec": 8}):
-            # 4800s 窗口、无延迟：账号 = 用户 = (4800-0-8)/8+1 = 600
-            self.assertEqual(self.webapp._capacity_estimate(0, 0), (600, 600))
-            # 账号按最大等待：S=300,G=60 → (4800-300-8)/68+1 = 67
-            # 用户按中位数：S/2=150,G/2=30 → (4800-150-8)/38+1 = 123
-            cap_a, cap_u = self.webapp._capacity_estimate(300, 60)
-            self.assertEqual(cap_a, (4800 - 300 - 8) // 68 + 1)
-            self.assertEqual(cap_u, (4800 - 150 - 8) // 38 + 1)
+            # 4800s 窗口、无间隔：账号 = 用户 = (4800-8)/8+1 = 600
+            self.assertEqual(self.webapp._capacity_estimate(0), (600, 600))
+            # 账号按最大间隔 gap=10：(4800-8)/18+1 = 267
+            # 用户按间隔中位数 gap/2=5：(4800-8)/13+1 = 369
+            cap_a, cap_u = self.webapp._capacity_estimate(10)
+            self.assertEqual(cap_a, (4800 - 8) // 18 + 1)
+            self.assertEqual(cap_u, (4800 - 8) // 13 + 1)
             self.assertGreaterEqual(cap_u, cap_a)
-            # 3600/3600：剩余 4800-3600-8=1192s 仍可签 1 个（公式 +1）
-            self.assertEqual(self.webapp._capacity_estimate(3600, 3600)[0], 1)
-            # 窗口装不下 1 个账号（剩余 -3s）→ 0
-            self.assertEqual(self.webapp._capacity_estimate(4795, 0)[0], 0)
+            # gap=3600：账号 = 4792/3608+1 = 2、用户 = 4792/1808+1 = 3
+            # （W=4800 恒大于单账号耗时，新口径下不再出现"窗口装不下→0"）
+            self.assertEqual(self.webapp._capacity_estimate(3600), (2, 3))
 
 
 if __name__ == "__main__":

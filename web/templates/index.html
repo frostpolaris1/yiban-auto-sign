@@ -103,7 +103,8 @@
       xmark: '<path d="m6 6 12 12M18 6 6 18"/>',
       chevL: '<path d="m15 6-6 6 6 6"/>',
       chevR: '<path d="m9 6 6 6-6 6"/>',
-      chevD: '<path d="m6 9 6 6 6-6"/>'
+      chevD: '<path d="m6 9 6 6 6-6"/>',
+      info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8.5v.1"/>'
     };
     return function (name, cls) {
       return '<svg class="ic ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[name] || P.minus) + '</svg>';
@@ -160,6 +161,20 @@
   }
   @media (prefers-reduced-motion: reduce) {
     @starting-style { #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 0); } }
+  }
+  /* ===== 信息提示（ⓘ）：hover 与键盘 focus 显示的绝对定位浮层 =====
+     亮色主题深色底白字、暗色主题反转；max-width 72vw 防手机端溢出（桌面长文案也不超半屏） */
+  .info-tip { position: relative; display: inline-flex; align-items: center; cursor: help; }
+  .info-pop { position: absolute; top: 100%; left: 0; z-index: 30; display: none; margin-top: 6px;
+    width: max-content; max-width: 72vw; padding: 8px 10px; border-radius: 8px; text-align: left;
+    background: rgb(24 24 27); color: #fff; font-size: 12px; line-height: 1.7;
+    box-shadow: 0 8px 24px -8px rgba(0,0,0,.4); }
+  .dark .info-pop { background: rgb(250 250 250); color: rgb(24 24 27); }
+  .info-tip:hover .info-pop, .info-tip:focus .info-pop { display: block; }
+  /* 「移动端显示完整表格」开关：窄屏默认隐藏的 md:table-cell 列强制显示
+     （仅 <767px 生效，桌面本就完整显示；记忆于 localStorage yiban-full-tables） */
+  @media (max-width: 767px) {
+    body.full-tables .md\:table-cell { display: table-cell !important; }
   }
 </style>
 <style type="text/tailwindcss">
@@ -337,7 +352,7 @@
     </div>
 
     <!-- 待审核提示 -->
-    <div id="pending-tip" class="hidden mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+    <div id="pending-tip" class="hidden mb-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 text-sm text-amber-800 dark:text-amber-400">
       有 <span id="pending-count" class="font-semibold">0</span> 个账号待审核或已拒绝，通过后参与定时签到。
     </div>
 
@@ -509,25 +524,23 @@
   <section id="tab-settings" class="hidden">
     <div class="mb-4">
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">系统设置</h1>
-      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">签到随机延迟与容量预估、周末开关、调度与探针</p>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">概览、调度、健康检查与消息推送（长说明见各卡 ⓘ）</p>
     </div>
 
-    <!-- 容量预估（v0.29.0）：账号按最大等待、用户按随机中位数；超 80% 标红 -->
-    <div class="card mb-4" id="capacity-card">
-      <div class="flex items-center justify-between mb-1">
-        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">容量预估</div>
-        <span id="capacity-note" class="text-xs text-zinc-400 dark:text-zinc-500">超过 80% 标红；改小随机延迟可提升预估</span>
-      </div>
-      <div id="capacity-content" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm"></div>
-    </div>
-
-    <!-- 服务器时间与签到状态（置顶） -->
+    <!-- 概览卡（v0.29.1：原「服务器时间与签到窗口」卡 + 容量预估卡并入） -->
     <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">服务器时间与签到窗口</div>
+      <div class="flex items-center justify-between mb-3">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">概览</div>
+        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
+          <span data-icon="info"></span>
+          <span class="info-pop">服务器时间：服务器当前时间，每秒刷新（60 秒校准一次）。签到状态：今日自动签到是否已执行/进行中。签到窗口：每日自动签到允许执行的时间段（在下方「签到调度」卡修改）。容量预估：按当前签到窗口与账号间隔估算还能容纳多少账号/用户——账号按最大间隔、用户按间隔中位数两档口径；占用超 80% 标红，已超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔。</span>
+        </button>
+      </div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
-      <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周六/周日是否签到见下方「周末签到」开关）</div>
-      <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">容量：<span id="capacity-status">--</span></div>
+      <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周六/周日是否签到见「签到调度」卡内的「周末签到」设置）</div>
+      <!-- 容量预估两格（v0.29.0，原独立卡并入）：账号按最大间隔、用户按间隔中位数；超 80% 标红 -->
+      <div id="capacity-content" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm mt-3"></div>
     </div>
 
     <!-- 批量操作开关 -->
@@ -540,12 +553,27 @@
         <button id="batch-mode-btn" role="switch" aria-checked="false" onclick="toggleBatchMode()"
                 class="toggle" aria-label="批量操作"><span class="knob"></span></button>
       </div>
+      <!-- 移动端完整表格开关（v0.29.1）：窄屏默认隐藏次要列，开启后强制显示并记忆 -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700">
+        <div>
+          <div class="text-sm text-zinc-700 dark:text-zinc-200">移动端显示完整表格</div>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">手机上默认隐藏次要列以省空间；开启后窄屏也显示完整表格（记住选择，桌面端不受影响）</p>
+        </div>
+        <button id="full-tables-btn" role="switch" aria-checked="false" onclick="toggleFullTables()"
+                class="toggle" aria-label="移动端显示完整表格"><span class="knob"></span></button>
+      </div>
     </div>
 
-    <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 自选总开关 + 窗口） -->
+    <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 账号间隔 + 周末开关并入 + 自选总开关 + 窗口） -->
     <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">签到调度</div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">排序方式决定谁先签：「顺序」＝同列表，「随机」＝每天重排；分布方式决定时间点怎么铺开。<span data-icon="warn" class="text-amber-400"></span> <b>「顺序 × 均匀」线性填块</b>：按列表先到先签，账号集中在窗口前段；铺满窗口选「随机 × 均匀」或正态。改动保存后下次自动签到时生效</p>
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到调度</div>
+        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="调度说明">
+          <span data-icon="info"></span>
+          <span class="info-pop">排序方式决定谁先签：「顺序」= 按列表顺序，「随机」= 每天重新排序；分布方式决定时间点怎么铺开。<b>「顺序 × 均匀」线性填块</b>：按列表先到先签，账号集中在窗口前段；铺满窗口选「随机 × 均匀」或正态。账号间隔：相邻两次签到请求的最小间隔（秒），自动与手动签到均生效，默认 10，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但会占用更多签到窗口时间。以上改动保存后下次自动签到时生效。</span>
+        </button>
+      </div>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">排序决定谁先签，分布决定怎么铺开；详见 ⓘ</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">排序方式</div>
@@ -585,7 +613,14 @@
             <button type="button" data-edge-min="2" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded-lg h-11 min-w-[44px] px-3 text-xs text-zinc-600 dark:text-zinc-300 hover:border-blue-400">2</button>
             <button type="button" data-edge-min="5" class="edge-chip border border-zinc-300 dark:border-zinc-600 rounded-lg h-11 min-w-[44px] px-3 text-xs text-zinc-600 dark:text-zinc-300 hover:border-blue-400">5</button>
           </div>
-          <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn"><span data-icon="warn"></span> 前裁或后裁为 0：对应边缘时段的账号可能超时</p>
+          <p class="text-xs text-amber-600 dark:text-amber-400 mt-1 hidden" id="edge-warn"><span data-icon="warn"></span> 掐头或去尾设为 0：对应边缘时段的账号可能超时</p>
+        </div>
+        <!-- 账号间隔（v0.29.1 由随机延迟卡并入；0=关闭，修改需主管理员密码验证） -->
+        <div>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">账号间隔（秒，默认 10，0=关闭）</div>
+          <input id="gap-delay-secs" type="number" min="0" placeholder="10" onchange="saveSettings(true)"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">相邻请求最小间隔，自动与手动均生效；修改需主管理员密码验证</p>
         </div>
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">签到窗口</div>
@@ -599,6 +634,29 @@
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">修改后点「保存调度设置」生效</p>
         </div>
       </div>
+      <span id="settings-saved-tip" class="text-xs text-green-600 dark:text-green-400 hidden">已自动保存</span>
+      <!-- 周末签到（2026-08-29 合并为单卡片；v0.29.1 并入调度卡，默认折叠） -->
+      <details class="mt-3">
+        <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">周末签到（周六/周日默认不签，点击展开设置）</summary>
+        <div class="mt-3 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div class="text-sm text-zinc-700 dark:text-zinc-200">周日签到</div>
+              <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周日也尝试签到</p>
+            </div>
+            <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
+                    class="toggle" aria-label="周日签到"><span class="knob"></span></button>
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div class="text-sm text-zinc-700 dark:text-zinc-200">周六签到</div>
+              <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周六也尝试签到</p>
+            </div>
+            <button id="saturday-sign-btn" role="switch" aria-checked="false" onclick="toggleSaturdaySign()"
+                    class="toggle" aria-label="周六签到"><span class="knob"></span></button>
+          </div>
+        </div>
+      </details>
       <p class="text-xs text-amber-600 dark:text-amber-400 hidden" id="sched-perm-tip">仅主管理员可修改调度设置</p>
       <div class="mt-3 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
@@ -615,101 +673,6 @@
       </div>
     </div>
 
-    <!-- 周末签到（周六/周日，2026-08-29 合并为单卡片，便于后续扩展其他休息日） -->
-    <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">周末签到</div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">默认关闭；开启后周六也尝试签到</p>
-      <div class="space-y-3">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div class="text-sm text-zinc-700 dark:text-zinc-200">周日签到</div>
-            <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周日也尝试签到</p>
-          </div>
-          <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
-                  class="toggle" aria-label="周日签到"><span class="knob"></span></button>
-        </div>
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div class="text-sm text-zinc-700 dark:text-zinc-200">周六签到</div>
-            <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周六也尝试签到</p>
-          </div>
-          <button id="saturday-sign-btn" role="switch" aria-checked="false" onclick="toggleSaturdaySign()"
-                  class="toggle" aria-label="周六签到"><span class="knob"></span></button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 随机延迟（批次7 A5：主管理员专属，普通管理员整卡隐藏） -->
-    <div class="card mb-4" id="delay-card">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">签到随机延迟（自动 + 手动）</div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">自动与手动签到的启动延迟、账号间隔均按此设置随机打散；修改需主管理员密码验证，超容量时无法保存</p>
-      <div class="space-y-4">
-        <div class="flex flex-wrap items-center gap-3">
-          <label for="start-delay-secs" class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">启动延迟</label>
-          <button id="start-delay-btn" role="switch" aria-checked="false" onclick="toggleDelay('start')"
-                  class="toggle" aria-label="启动延迟"><span class="knob"></span></button>
-          <input id="start-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
-                 class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-500 dark:text-zinc-400 basis-full md:basis-auto">启动后随机等待 0~N 秒再开始首个签到</span>
-        </div>
-        <div class="flex flex-wrap items-center gap-3">
-          <label for="gap-delay-secs" class="text-sm text-zinc-600 dark:text-zinc-300 w-24 md:w-32">账号间隔</label>
-          <button id="gap-delay-btn" role="switch" aria-checked="false" onclick="toggleDelay('gap')"
-                  class="toggle" aria-label="账号间隔"><span class="knob"></span></button>
-          <input id="gap-delay-secs" type="number" min="1" placeholder="秒数" onchange="saveSettings(true)"
-                 class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 w-24">
-          <span class="text-xs text-zinc-500 dark:text-zinc-400 basis-full md:basis-auto">账号间随机停顿 0~N 秒（顺序模式）</span>
-        </div>
-      </div>
-      <div class="flex items-center gap-3 mt-5">
-        <span class="text-xs text-zinc-500 dark:text-zinc-400">开关与秒数修改后自动保存</span>
-        <span id="settings-saved-tip" class="text-xs text-green-600 dark:text-green-400 hidden">已自动保存</span>
-      </div>
-    </div>
-
-    <!-- 连通性检测 -->
-    <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">连通性检测（不登录，仅测试易班服务器连通）</div>
-      <div class="flex flex-wrap items-center gap-3">
-        <button onclick="doPing()" class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-4 py-2 text-sm">
-          开始检测
-        </button>
-        <span id="ping-result" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500"></span>
-      </div>
-    </div>
-
-    <!-- 修改我的密码（默认收起，点击标题展开） -->
-    <div class="card mb-4">
-      <button type="button" onclick="toggleMyPassword()" aria-expanded="false"
-              class="w-full flex items-center justify-between text-left">
-        <span id="my-password-title" class="text-sm font-medium text-zinc-700 dark:text-zinc-200">修改主管理员密码</span>
-        <span id="my-password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200"><span data-icon="chevR"></span></span>
-      </button>
-      <div id="my-password-body" class="hidden mt-4">
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
-      <div class="space-y-3 max-w-sm">
-        <div>
-          <label for="my-old-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
-          <input id="my-old-password" type="password" autocomplete="current-password" placeholder="输入当前密码"
-                 class="input">
-        </div>
-        <div>
-          <label for="my-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
-          <input id="my-new-password" type="password" autocomplete="new-password" placeholder="新密码"
-                 class="input">
-        </div>
-        <div>
-          <label for="my-confirm-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
-          <input id="my-confirm-password" type="password" autocomplete="new-password" placeholder="再次输入新密码"
-                 class="input">
-        </div>
-        <div class="flex items-center gap-3">
-          <button onclick="saveMyPassword()" class="btn-primary">保存新密码</button>
-        </div>
-      </div>
-      </div>
-    </div>
-
     <!-- 全局公告 -->
     <div class="card mb-4">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">全局公告</div>
@@ -722,39 +685,7 @@
       </div>
     </div>
 
-    <!-- 邮箱通知（SMTP，v0.23.0） -->
-    <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">邮箱通知</div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-        签到失败等告警合并汇总发管理员邮箱、用户失败提醒发本人邮箱（需先由部署者完成发件邮箱配置后方可使用）。
-      </p>
-      <p id="mail-config-status" class="text-xs text-zinc-500 dark:text-zinc-400 mb-3"></p>
-      <!-- 全局开关（仅主管理员） -->
-      <div id="mail-global-wrap" class="hidden flex items-center justify-between gap-3 mb-3">
-        <div>
-          <span class="text-sm text-zinc-700 dark:text-zinc-200">全局邮件通知</span>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）；关闭属高危操作，需输入主管理员密码确认</p>
-        </div>
-        <label class="relative inline-flex items-center cursor-pointer shrink-0" title="全局邮件通知开关">
-          <input id="mail-global-switch" type="checkbox" class="sr-only peer" onchange="toggleMailGlobal()">
-          <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform after:duration-150 peer-checked:after:translate-x-5"></div>
-        </label>
-      </div>
-      <!-- 个人开关（普通管理员，非内置主管理员） -->
-      <div id="mail-self-wrap" class="hidden flex items-center justify-between gap-3">
-        <div>
-          <span class="text-sm text-zinc-700 dark:text-zinc-200">接收发给我自己的邮件提醒</span>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后不再收到你的账号失败提醒与告警邮件</p>
-        </div>
-        <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收邮件提醒">
-          <input id="mail-self-switch" type="checkbox" class="sr-only peer" onchange="toggleMailSelf()">
-          <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform after:duration-150 peer-checked:after:translate-x-5"></div>
-        </label>
-      </div>
-      <p id="mail-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
-    </div>
-
-    <!-- 消息推送（Webhook：Server酱/自定义 URL，v0.26.0） -->
+    <!-- 消息推送（Webhook：Server酱/自定义 URL，v0.26.0；v0.29.1 邮件通知与 SMTP 列表编辑器并入本卡，原邮箱通知独立卡删除） -->
     <div class="card mb-4" id="notify-card">
       <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">消息推送</div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
@@ -809,14 +740,71 @@
         </p>
       </div>
       <p id="notify-status" class="text-xs text-zinc-500 dark:text-zinc-400"></p>
+
+      <!-- ===== 邮件通知（v0.23.0，原邮箱通知独立卡并入；普通管理员要用个人开关，卡不再整卡隐藏） ===== -->
+      <div class="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-700">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">邮件通知</div>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
+          告警合并汇总发管理员邮箱、账号失败提醒发本人邮箱（需先在下方配置发件 SMTP 并开启全局开关）。
+        </p>
+        <p id="mail-config-status" class="text-xs text-zinc-500 dark:text-zinc-400 mb-3"></p>
+        <!-- 全局开关（仅主管理员） -->
+        <div id="mail-global-wrap" class="hidden flex items-center justify-between gap-3 mb-3">
+          <div>
+            <span class="text-sm text-zinc-700 dark:text-zinc-200">全局邮件通知</span>
+            <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）；关闭属高危操作，需输入主管理员密码确认</p>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer shrink-0" title="全局邮件通知开关">
+            <input id="mail-global-switch" type="checkbox" class="sr-only peer" onchange="toggleMailGlobal()">
+            <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform after:duration-150 peer-checked:after:translate-x-5"></div>
+          </label>
+        </div>
+        <!-- 个人开关（普通管理员，非内置主管理员） -->
+        <div id="mail-self-wrap" class="hidden flex items-center justify-between gap-3">
+          <div>
+            <span class="text-sm text-zinc-700 dark:text-zinc-200">接收发给我自己的邮件提醒</span>
+            <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后不再收到你的账号失败提醒与告警邮件</p>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收邮件提醒">
+            <input id="mail-self-switch" type="checkbox" class="sr-only peer" onchange="toggleMailSelf()">
+            <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform after:duration-150 peer-checked:after:translate-x-5"></div>
+          </label>
+        </div>
+        <p id="mail-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
+        <!-- SMTP 发信条目列表编辑器（v0.29.1：主备 failover，仅主管理员；打码值不回填输入框，
+             留空提交 = 沿用旧值，授权码永不回显） -->
+        <div id="smtp-editor-wrap" class="hidden mt-4">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <div class="text-xs text-zinc-500 dark:text-zinc-400">发件 SMTP 列表（按顺序主备切换；发件账号/收件人留空 = 沿用旧值，含打码串的输入一律按空处理）</div>
+            <button type="button" onclick="addSmtp()" class="btn-ghost">添加备用 SMTP</button>
+          </div>
+          <div id="smtps-list" class="space-y-3"></div>
+          <div class="flex flex-wrap items-center gap-2 mt-3">
+            <button onclick="saveSmtps()" class="btn-primary">保存 SMTP 配置</button>
+            <span class="text-xs text-zinc-400 dark:text-zinc-500">授权码加密存储、永不回显；更换/清空邮件通道属敏感操作，保存需主管理员密码确认</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <!-- 账号健康检查 / 探针模式（v0.23.x） -->
+    <!-- 健康检查（v0.29.1：原「账号健康检查（探针模式）」卡改名，连通性检测卡并入） -->
     <div class="card mb-4">
-      <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">账号健康检查（探针模式）</div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
-        非签到时段对全部账号做仅登录验证，提前发现问题，并通过邮件提醒；开启后提交账号时会即时验证，无法通过将当场提示。
-      </p>
+      <div class="flex items-center justify-between mb-3">
+        <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">健康检查</div>
+        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="健康检查说明">
+          <span data-icon="info"></span>
+          <span class="info-pop">服务器连通性：不登录，仅测试易班服务器是否可达，用于排查网络问题。探针模式：非签到时段对全部账号做只读健康检查（登录并拉取签到任务，不实际签到），提前发现问题并通过邮件提醒。「注册时验证账号」开启后，提交账号会即时验证，无法通过将当场提示。</span>
+        </button>
+      </div>
+      <!-- 服务器连通性（原独立卡并入，v0.29.1） -->
+      <div class="mb-4">
+        <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">服务器连通性（不登录，仅测试易班服务器连通）</div>
+        <div class="flex flex-wrap items-center gap-3">
+          <button onclick="doPing()" class="btn-ghost">开始检测</button>
+          <span id="ping-result" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500"></span>
+        </div>
+      </div>
+      <!-- 探针模式说明已收纳至卡头 ⓘ；以下为原探针设置内容 -->
       <!-- 注册时验证账号（任意管理员可开关） -->
       <div class="flex items-center justify-between gap-3 mb-3">
         <div>
@@ -852,7 +840,7 @@
             <option value="2">每 2 天</option>
             <option value="3">每 3 天</option>
             <option value="7">每 7 天</option>
-            <option value="once">下一次计划时间单次执行（仅一次）</option>
+            <option value="once">下次计划时间单次执行（执行后自动关闭）</option>
           </select>
         </div>
       </div>
@@ -860,31 +848,65 @@
       <p id="probe-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
     </div>
 
-    <!-- 危险区：一键暂停签到 / 暂停注册（仅主管理员） -->
+    <!-- 危险区：系统级开关（一键暂停签到 / 暂停注册）+ 修改主管理员密码（v0.29.1 并入，原独立卡删除）。
+         仅主管理员可见（renderGlobalPauseUI 整卡隐藏）；普通管理员改密走「我的账号」tab -->
     <div class="card mb-4 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-900/10" id="danger-zone-card">
       <div class="text-sm font-medium text-red-800 dark:text-red-300 mb-1 flex items-center gap-2">
         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
-        危险区 · 系统级开关
+        危险区
       </div>
-      <p class="text-xs text-red-600 dark:text-red-400 mb-3">
-        暂停签到：所有账号停止自动签到（正在运行的一次会跑完，下一次自动签到起跳过），手动签到不受影响。
-        暂停注册：登录页关闭注册入口，已注册用户登录不受影响，你仍可在「账号管理」为用户手动添加账号。
-        操作均需二次确认。
-      </p>
-      <button id="global-pause-btn" type="button"
-              class="w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
-        <span id="global-pause-btn-icon" class="text-base"></span><span id="global-pause-btn-text">暂停自动签到</span>
-      </button>
-      <p id="global-pause-hint" class="text-xs text-red-700 dark:text-red-300 mt-2 hidden">
-        <span data-icon="pause"></span> 签到当前处于暂停状态 — 自动签到不会执行，直至你手动恢复
-      </p>
-      <button id="reg-pause-btn" type="button"
-              class="mt-3 w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
-        <span id="reg-pause-btn-icon" class="text-base"></span><span id="reg-pause-btn-text">暂停注册</span>
-      </button>
-      <p id="reg-pause-hint" class="text-xs text-red-700 dark:text-red-300 mt-2 hidden">
-        <span data-icon="pause"></span> 注册当前处于暂停状态 — 新用户无法自助注册，已注册用户不受影响；可在「账号管理」为用户手动添加账号
-      </p>
+      <details class="mt-2">
+        <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">系统级开关（暂停签到 / 暂停注册，点击展开）</summary>
+        <div class="mt-3">
+          <p class="text-xs text-red-600 dark:text-red-400 mb-3">
+            暂停签到：所有账号停止自动签到（正在运行的一轮会跑完，下一次自动签到起跳过），手动签到不受影响。
+            暂停注册：登录页关闭注册入口，已注册用户登录不受影响，你仍可在「账号管理」为用户手动添加账号。
+            操作均需二次确认。
+          </p>
+          <button id="global-pause-btn" type="button"
+                  class="w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
+            <span id="global-pause-btn-icon" class="text-base"></span><span id="global-pause-btn-text">暂停自动签到</span>
+          </button>
+          <p id="global-pause-hint" class="text-xs text-red-700 dark:text-red-300 mt-2 hidden">
+            <span data-icon="pause"></span> 签到当前处于暂停状态 — 自动签到不会执行，直至你手动恢复
+          </p>
+          <button id="reg-pause-btn" type="button"
+                  class="mt-3 w-full bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
+            <span id="reg-pause-btn-icon" class="text-base"></span><span id="reg-pause-btn-text">暂停注册</span>
+          </button>
+          <p id="reg-pause-hint" class="text-xs text-red-700 dark:text-red-300 mt-2 hidden">
+            <span data-icon="pause"></span> 注册当前处于暂停状态 — 新用户无法自助注册，已注册用户不受影响；可在「账号管理」为用户手动添加账号
+          </p>
+        </div>
+      </details>
+      <!-- 修改主管理员密码（原独立卡并入为第二个 details；id 前缀 my-password-* 不变，
+           saveMyPassword 不动；默认收起，原生 details 展开） -->
+      <details class="mt-3">
+        <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none"><span id="my-password-title">修改主管理员密码</span></summary>
+        <div class="mt-3">
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
+          <div class="space-y-3 max-w-sm">
+            <div>
+              <label for="my-old-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
+              <input id="my-old-password" type="password" autocomplete="current-password" placeholder="输入当前密码"
+                     class="input">
+            </div>
+            <div>
+              <label for="my-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
+              <input id="my-new-password" type="password" autocomplete="new-password" placeholder="新密码"
+                     class="input">
+            </div>
+            <div>
+              <label for="my-confirm-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
+              <input id="my-confirm-password" type="password" autocomplete="new-password" placeholder="再次输入新密码"
+                     class="input">
+            </div>
+            <div class="flex items-center gap-3">
+              <button onclick="saveMyPassword()" class="btn-primary">保存新密码</button>
+            </div>
+          </div>
+        </div>
+      </details>
     </div>
   </section>
 
@@ -904,7 +926,7 @@
         <input id="users-pending-search" type="search" placeholder="搜索邮箱…" aria-label="搜索邮箱"
                class="w-full md:w-56 md:ml-auto input input-sm dark:bg-zinc-900">
       </div>
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-amber-100 dark:border-amber-800/50">以下用户有待审核或已驳回的易班账号（与「账号管理 → 待处理账号」同口径）：待审核点「通过」生效，已驳回可等用户修改后重新提交</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 px-4 py-2 border-b border-amber-100 dark:border-amber-800/50">以下用户有待审核或已拒绝的易班账号（与「账号管理 → 待处理账号」同口径）：待审核点「通过」生效，已拒绝可等用户修改后重新提交</p>
       <div id="batch-bar-usersPending" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-usersPending" class="font-medium">0</span> 项</span> <button onclick="batchUsers('usersPending','reset_password')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">重置密码</button> <button onclick="batchUsers('usersPending','delete')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('usersPending')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
         <table class="w-full text-sm table-fixed min-w-[640px] md:min-w-[880px] text-center">
@@ -1017,6 +1039,35 @@
       <div id="mine-list" class="space-y-3"></div>
     </div>
 
+    <!-- 修改密码（v0.29.1：普通管理员改密入口；主管理员隐藏——主管理员用「系统设置 → 危险区」。
+         id 前缀 mine-password-* 与危险区的 my-password-* 两套并存不撞） -->
+    <details class="card mb-4" id="mine-password-card">
+      <summary class="text-sm font-medium text-zinc-700 dark:text-zinc-200 cursor-pointer select-none">修改密码</summary>
+      <div class="mt-3">
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
+        <div class="space-y-3 max-w-sm">
+          <div>
+            <label for="mine-password-now" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
+            <input id="mine-password-now" type="password" autocomplete="current-password" placeholder="输入当前密码"
+                   class="input">
+          </div>
+          <div>
+            <label for="mine-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
+            <input id="mine-new-password" type="password" autocomplete="new-password" placeholder="新密码"
+                   class="input">
+          </div>
+          <div>
+            <label for="mine-new-password2" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
+            <input id="mine-new-password2" type="password" autocomplete="new-password" placeholder="再次输入新密码"
+                   class="input">
+          </div>
+          <div class="flex items-center gap-3">
+            <button onclick="saveMinePassword()" class="btn-primary">保存新密码</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
     <!-- 我的签到时间（调度 v2 自选；管理员同样可选时间片） -->
     <div class="card mb-4" id="mine-pref-card">
       <div class="flex items-center justify-between mb-1">
@@ -1073,7 +1124,7 @@
           <button id="clear-mcode-btn" type="button" onclick="toggleMineClearCode()"
                   class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
         </div>
-        <p class="md:col-span-2 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码随签到请求提交，仅提示“请使用授权设备进行签到”时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
+        <p class="md:col-span-2 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码随签到请求提交，仅提示「请使用授权设备进行签到」时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
         <div class="md:col-span-2 flex items-center gap-3 pt-1">
           <button id="mine-submit-btn" type="submit" class="btn-primary">提交账号</button>
           <button id="mine-cancel-btn" type="button" onclick="cancelMineEdit()"
@@ -1082,6 +1133,7 @@
         </div>
       </form>
     </div>
+  </section>
 </main>
 
 <!-- 页脚：备案信息（可选，YIBAN_ICP_INFO 留空则不显示）+ 版本/开源
@@ -1203,7 +1255,8 @@ const state = {
   states: {},         // {phone: 'success'|'already'|'no_task'|'failed'|'retrying'|'skipped_*'}（状态码，来自 sign-state 文件）
   editingIndex: null, // null=添加
   editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
-  delays: { start: 0, gap: 0 },
+  delays: { gap: 0 }, // 账号间隔（秒，0=关闭；启动延迟 v0.29.1 废弃已删）
+  mailSmtps: [],      // SMTP 发信条目列表（GET /api/mail-config 的 smtps；主管理员编辑器数据源）
   batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
   signOrder: 'sequence', // 调度 v2：排序方式（sequence/random）
   signDist: 'uniform',   // 调度 v2：分布方式（uniform/normal）
@@ -1686,7 +1739,7 @@ function renderAccounts() {
     card('生效账号', activeAccounts.length, 'text-zinc-900 dark:text-zinc-100'),
     card('今日成功', success, 'text-green-600 dark:text-green-400'),
     card('今日失败', failed, 'text-red-600 dark:text-red-400'),
-    card('待签', waiting, 'text-blue-600'),
+    card('待签', waiting, 'text-blue-600 dark:text-blue-400'),
     card('跳过', skipped, 'text-zinc-400 dark:text-zinc-500'),
   ].join('');
 
@@ -1710,7 +1763,7 @@ function renderAccounts() {
 
 function deletedAccountRow(a, key) {
   const tr = document.createElement('tr');
-  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   tr.innerHTML = `
     ${cb}
@@ -1768,7 +1821,7 @@ function statusBadge(a) {
 
 function pendingAccountRow(a, key) {
   const tr = document.createElement('tr');
-  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const reasonHtml = a.reject_reason
     ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
@@ -1805,7 +1858,7 @@ function accountRow(a, key) {
     + (stDur ? ' · 耗时 ' + Number(stDur).toFixed(1) + 's' : '');
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   const tr = document.createElement('tr');
-  tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
   tr.innerHTML = `
     ${cb}
     <td class="px-4 py-3 text-lg leading-none text-zinc-500 dark:text-zinc-400"><span class="inline-flex" title="${esc(stTitle)}">${s}</span></td>
@@ -2245,11 +2298,11 @@ function renderCapacity(est) {
     return `<div class="rounded-lg border ${border} ${bg} p-3">
       <div class="text-xs text-zinc-500 dark:text-zinc-400">${label}</div>
       <div class="mt-1 font-semibold ${text}">当前 ${cur} <span class="text-xs font-normal text-zinc-500 dark:text-zinc-400">/ 预估可容纳 ${cap} ${unit}</span></div>
-      <div class="text-xs ${danger ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">占用 ${pct(cur, cap)}%${cur > cap ? '（已超容量：修改随机延迟将被拒绝，请清理用户数量后再试）' : (pct(cur, cap) > 80 ? '（已超 80%，容量告急）' : '')}</div>
+      <div class="text-xs ${danger ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">占用 ${pct(cur, cap)}%${cur > cap ? '（已超容量：保存新的账号间隔将被拒绝，请清理账号或用户数量后再试）' : (pct(cur, cap) > 80 ? '（已超 80%，容量告急）' : '')}</div>
     </div>`;
   };
-  box.innerHTML = cell('账号容量（按最大等待估算）', est.current_holders, est.accounts_cap, '个')
-    + cell('用户容量（按随机中位数估算）', est.current_users, est.users_cap, '人');
+  box.innerHTML = cell('账号容量（按最大间隔估算）', est.current_holders, est.accounts_cap, '个')
+    + cell('用户容量（按间隔中位数估算）', est.current_users, est.users_cap, '人');
 }
 
 async function loadSettings() {
@@ -2260,7 +2313,6 @@ async function loadSettings() {
     await loadMailConfig();  // 邮箱通知状态（全局/个人开关）
     await loadNotifyConfig();  // 消息推送状态（Server酱/自定义 URL，v0.26.0）
     const data = await api('/api/settings');
-    state.delays.start = data.start_delay_max;
     state.delays.gap = data.gap_max;
     renderCapacity(data.capacity_estimate);
     // 调度 v2：排序×分布×缓冲×自选总开关×窗口
@@ -2277,19 +2329,6 @@ async function loadSettings() {
     // 顶部"签到窗口"静态展示与实际配置联动（2026-08-15 对抗性审查：原为写死默认值误导）
     const swEl = $('sign-window-static');
     if (swEl) swEl.textContent = state.signWindow || '--:-- ~ --:--';
-    // 容量状态（2026-08-31 口径修订）：用户=全部未删除注册用户、账号=活跃注册用户持有者
-    const cap = data.capacity;
-    if (cap) {
-      const capEl = $('capacity-status');
-      if (capEl) {
-        const u = `${cap.users}/${cap.users_max || '∞'}`;
-        const a = `${cap.accounts}/${cap.accounts_max || '∞'}`;
-        const over = (cap.users_max && cap.users >= cap.users_max)
-          || (cap.accounts_max && cap.accounts >= cap.accounts_max);
-        capEl.textContent = `用户 ${u} · 账号 ${a}${over ? '（已达上限）' : ''}`;
-        if (over) capEl.className = 'text-xs text-red-500 mt-1';
-      }
-    }
     const win = state.signWindow.split('~').map(s => s.trim());
     $('window-start').value = (win[0] || '06:30').slice(0, 5);
     $('window-end').value = (win[1] || '07:50').slice(0, 5);
@@ -2311,7 +2350,8 @@ async function loadSettings() {
     $('probe-interval').value = data.probe_interval || '1';
     // 批量开关（会话级）不在此重置：state.batchMode 初始 false 已保证"刷新页面后关闭"；
     // 此前无条件重置导致"切 tab 再切回设置页开关失效"（2026-08-15 用户反馈）
-    renderDelayUI();
+    // 账号间隔（v0.29.1 由随机延迟卡并入调度卡）：0=关闭，直接回显现值
+    $('gap-delay-secs').value = state.delays.gap;
     renderBatchModeUI();
     updateSignModeHint();
     // 重置调度脏标记：重新加载以服务器值为准（防陈旧"未保存"提示，2026-08-15 对抗性审查 F-1）
@@ -2332,11 +2372,12 @@ function markSchedDirty() {
   $('sched-dirty-tip').classList.remove('hidden');
 }
 
-// 调度权限：仅主管理员可改（后端 403 兜底，前端禁用控件）
+// 调度权限：仅主管理员可改（后端 403 兜底，前端禁用控件）；
+// 账号间隔随随机延迟卡并入本卡（批次7 A5 同为主管理员专属），沿用同一禁用清单
 function renderSchedulePerm() {
   const disabled = !state.isMasterAdmin;
   ['sign-order-select', 'sign-dist-select', 'edge-front', 'edge-back', 'window-start', 'window-end',
-   'time-pref-toggle-btn', 'schedule-reset-btn', 'schedule-save-btn'].forEach(id => {
+   'gap-delay-secs', 'time-pref-toggle-btn', 'schedule-reset-btn', 'schedule-save-btn'].forEach(id => {
     const el = $(id);
     if (el) el.disabled = disabled;
   });
@@ -2587,52 +2628,45 @@ function toggleBatchMode() {
   // 会话级开关：不写入配置，刷新/重进页面自动恢复关闭
 }
 
-function renderDelayUI() {
-  // 批次7 A5：随机延迟属于调度核心参数，收归主管理员（普通管理员隐藏整卡，
-  // 服务端同门控 403）；与调度设置卡片的 disabled 模式一致
-  $('delay-card').classList.toggle('hidden', !state.isMasterAdmin);
-  ['start', 'gap'].forEach(k => {
-    const secs = $(k + '-delay-secs');
-    const on = state.delays[k] > 0;
-    // 图形开关（2026-08-15 用户反馈；原"显示点击后的动作"语义由滑块形态直观表达）
-    renderToggle(k + '-delay-btn', on);
-    secs.value = on ? state.delays[k] : '';
-    secs.placeholder = `默认 ${k === 'start' ? 60 : 10}`;
-  });
+// 移动端完整表格开关（v0.29.1）：body.full-tables 类驱动 CSS 强制显示 md:table-cell 列，
+// localStorage（yiban-full-tables）记忆；受限环境降级为不记忆、仅本次会话生效
+function toggleFullTables() {
+  const btn = $('full-tables-btn');
+  const on = btn.getAttribute('aria-checked') !== 'true';
+  try {
+    if (on) localStorage.setItem('yiban-full-tables', '1');
+    else localStorage.removeItem('yiban-full-tables');
+  } catch (e) {}
+  document.body.classList.toggle('full-tables', on);
+  btn.setAttribute('aria-checked', on ? 'true' : 'false');
 }
 
-function toggleDelay(k) {
-  const on = state.delays[k] > 0;
-  state.delays[k] = on ? 0 : (k === 'start' ? 60 : 10);
-  renderDelayUI();
-  saveSettings(true);  // 自动保存
+function initFullTables() {
+  let on = false;
+  try { on = localStorage.getItem('yiban-full-tables') === '1'; } catch (e) {}
+  document.body.classList.toggle('full-tables', on);
+  const btn = $('full-tables-btn');
+  if (btn) btn.setAttribute('aria-checked', on ? 'true' : 'false');
 }
 
 async function saveSettings(silent) {
-  const read = (k) => {
-    const v = parseInt($(k + '-delay-secs').value, 10);
-    return state.delays[k] > 0 ? (isNaN(v) || v < 1 ? (k === 'start' ? 60 : 10) : v) : 0;
-  };
-  // 批次7 A5：延迟参数仅主管理员提交（普通管理员 403）；批次7 A4：服务端改为
-  // 字段携带才写——非主管理员的保存请求不携带这两个键，不再被默认值静默清零
+  // 周末开关所有管理员可改；账号间隔属调度核心参数（批次7 A5 收归主管理员），仅主管理员
+  // 在间隔变化时携带 gap 键——后端「见键即要求主管理员密码确认 + 容量校验」，不带键则不改间隔
   const payload = {
     // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
     // 静默覆盖 .env 中既有的 YIBAN_SIGN_MODE，且权限上仅主管理员可写
     sunday_sign: state.sundaySign ? 1 : 0,
     saturday_sign: state.saturdaySign ? 1 : 0,
   };
-  const startV = read('start');
-  const gapV = read('gap');
-  // v0.29.0：延迟值真正变化时才携带键（后端见键即要求主管理员密码确认 + 容量校验），
-  // 仅切周末开关等操作不再触发密码弹窗
-  const delayChanged = state.isMasterAdmin && (startV !== state.delays.start || gapV !== state.delays.gap);
+  const gapRaw = parseInt($('gap-delay-secs').value, 10);
+  const gapV = isNaN(gapRaw) || gapRaw < 0 ? state.delays.gap : gapRaw;  // 空/非法 = 沿用现值；0=关闭
+  const gapChanged = state.isMasterAdmin && gapV !== state.delays.gap;
   try {
     let data;
-    if (delayChanged) {
+    if (gapChanged) {
       data = await new Promise((resolve, reject) => {
-        openConfirmPasswordModal('修改签到随机延迟：不合适的签到速度可能影响签到成功率，是否继续？\n请输入当前主管理员密码确认。', async (cpw) => {
+        openConfirmPasswordModal('调整账号间隔：不合适的节奏可能影响签到成功率，是否继续？\n请输入当前主管理员密码确认。', async (cpw) => {
           try {
-            payload.start_delay_max = startV;
             payload.gap_max = gapV;
             payload.confirm_password = cpw;
             resolve(await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) }));
@@ -2640,15 +2674,16 @@ async function saveSettings(silent) {
         });
       });
     } else {
-      if (state.isMasterAdmin) {
-        payload.start_delay_max = startV;
-        payload.gap_max = gapV;
-      }
+      // 未变更不带 gap 键（避免无谓触发后端口令/容量校验路径）
       data = await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
     }
-    state.delays.start = startV;
     state.delays.gap = gapV;
-    renderDelayUI();
+    $('gap-delay-secs').value = gapV;
+    if (gapChanged) {
+      // POST 返回体不含容量预估：间隔变化后补拉一次，概览卡两格保持新鲜
+      const fresh = await api('/api/settings');
+      renderCapacity(fresh.capacity_estimate);
+    }
     if (!silent) {
       toast(data.msg || '设置已保存');
     } else {
@@ -2689,6 +2724,10 @@ async function loadMailConfig() {
     $('mail-self-wrap').classList.remove('hidden');
     if (state.isMasterAdmin) mailSelfOn = !!data.admin_notify;
     $('mail-self-switch').checked = mailSelfOn;
+    // SMTP 发信条目列表（v0.29.1）：仅主管理员展示编辑器（user/admin_to 已打码，pass 不回显）
+    state.mailSmtps = data.smtps || [];
+    $('smtp-editor-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+    if (state.isMasterAdmin) renderSmtps();
   } catch (e) { /* 配置读取失败不阻塞设置页 */ }
 }
 
@@ -2760,16 +2799,92 @@ async function submitMailSelf(enabled, pw) {
   }
 }
 
+// ===== SMTP 发信条目编辑器（v0.29.1：主备 failover 列表，仅主管理员） =====
+// GET 返回的 user/admin_to 已打码（含 *）、未配置为「<未配置>」占位——这两类串不允许
+// 作为真值提交（否则按字面落盘损坏配置），收集时一律归一为空串 = 后端沿用旧值
+function _smtpClean(v) {
+  const s = String(v || '').trim();
+  return !s || s.includes('*') || s.startsWith('<') ? '' : s;
+}
+
+function renderSmtps() {
+  const box = $('smtps-list');
+  box.innerHTML = '';
+  state.mailSmtps.forEach((e, i) => {
+    const row = document.createElement('div');
+    row.className = 'rounded-lg border border-zinc-200 dark:border-zinc-700 p-3 space-y-2';
+    row.innerHTML = `
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-zinc-500 dark:text-zinc-400">SMTP ${i + 1}${i === 0 ? '（主）' : '（备用）'}</span>
+        <button type="button" onclick="removeSmtp(${i})" class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">删除</button>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
+        <div class="sm:col-span-2">
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">服务器 host</label>
+          <input data-f="host" value="${esc(e.host)}" placeholder="smtp.example.com" autocomplete="off" class="input input-sm">
+        </div>
+        <div>
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">端口</label>
+          <input data-f="port" type="number" min="1" max="65535" value="${esc(e.port)}" placeholder="465" class="input input-sm">
+        </div>
+        <div>
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">发件账号（留空沿用）</label>
+          <input data-f="user" value="" placeholder="${esc(e.user)}" autocomplete="off" class="input input-sm">
+        </div>
+        <div>
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">授权码（永不回显）</label>
+          <input data-f="pass" type="password" value="" placeholder="${e.has_pass ? '已配置，留空沿用' : '未配置'}" autocomplete="new-password" class="input input-sm">
+        </div>
+        <div class="sm:col-span-3">
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">管理员收件人（留空沿用）</label>
+          <input data-f="admin_to" value="" placeholder="${esc(e.admin_to)}" autocomplete="off" class="input input-sm">
+        </div>
+      </div>`;
+    box.appendChild(row);
+  });
+}
+
+function addSmtp() {
+  state.mailSmtps.push({ host: '', port: 465, user: '', admin_to: '', has_pass: false });
+  renderSmtps();
+}
+
+function removeSmtp(i) {
+  state.mailSmtps.splice(i, 1);
+  renderSmtps();
+}
+
+async function saveSmtps() {
+  const entries = [...document.querySelectorAll('#smtps-list > div')].map(row => ({
+    host: _smtpClean(row.querySelector('[data-f="host"]').value),
+    port: parseInt(row.querySelector('[data-f="port"]').value, 10) || 465,
+    user: _smtpClean(row.querySelector('[data-f="user"]').value),
+    pass: row.querySelector('[data-f="pass"]').value.trim(),  // 授权码仅过滤空白；是否沿用由后端按索引决定
+    admin_to: _smtpClean(row.querySelector('[data-f="admin_to"]').value),
+  }));
+  openConfirmPasswordModal('保存 SMTP 配置：更换/清空邮件通道属敏感操作。\n请输入当前主管理员密码确认。', async (pw) => {
+    const tip = $('mail-config-tip');
+    tip.textContent = '保存中…';
+    try {
+      await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ smtps: entries, confirm_password: pw }) });
+      tip.textContent = '已保存 SMTP 配置';
+      setTimeout(() => { tip.textContent = ''; }, 3000);
+      await loadMailConfig();  // 重拉打码值与全局状态（重渲染主备列表）
+    } catch (e) {
+      tip.textContent = '';
+      toast(e.message, true);
+    }
+  });
+}
+
 // ===== 消息推送（Webhook：Server酱/自定义 URL，v0.26.0）=====
 async function loadNotifyConfig() {
-  // 普通管理员：整卡隐藏（不可配置，可见无意义，v0.26.0）
+  // v0.29.1：卡对所有管理员可见（同卡「邮件通知」区的个人开关普通管理员要用）；
+  // 仅主管理员专属的 Webhook 配置块隐藏。普通管理员无需拉取主管理员专属配置。
   const card = $('notify-card');
-  if (!state.isMasterAdmin) {
-    if (card) card.classList.add('hidden');
-    return;
-  }
   if (card) card.classList.remove('hidden');
-  $('notify-master-wrap').classList.remove('hidden');
+  $('notify-master-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+  if (!state.isMasterAdmin) return;
   try {
     const data = await api('/api/notify-config');
     $('notify-type').value = data.type || '';
@@ -2932,6 +3047,26 @@ async function saveMyPassword() {
     $('my-confirm-password').value = '';
   } catch (e) { toast(e.message, true); }
 }
+
+// 普通管理员改密（「我的账号」tab，v0.29.1）：逻辑同 saveMyPassword、仅读 mine-* 前缀；
+// 入口仅非主管理员可见（主管理员走设置页危险区），故固定用普通口令策略（PW_POLICY_HINT）
+async function saveMinePassword() {
+  const oldPassword = $('mine-password-now').value;
+  const password = $('mine-new-password').value;
+  if (!passwordPolicyOk(password)) { toast(`新密码${PW_POLICY_HINT}`, true); return; }
+  if (!oldPassword) { toast('请输入当前密码验证', true); return; }
+  if (password !== $('mine-new-password2').value) { toast('两次输入的新密码不一致', true); return; }
+  try {
+    const data = await api('/api/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: password, confirm_password: $('mine-new-password2').value }),
+    });
+    toast(data.msg || '密码已更新');
+    $('mine-password-now').value = '';
+    $('mine-new-password').value = '';
+    $('mine-new-password2').value = '';
+  } catch (e) { toast(e.message, true); }
+}
 // ================= 时钟与签到状态（本地平滑走秒，60 秒校准一次） =================
 let clockOffset = 0;
 let tzOffsetMin = 0;
@@ -3044,6 +3179,9 @@ function closeChangelog() { closeModal($('changelog-modal')); }
     $('sidebar-account-name').title = acctName;
     // 修改密码卡片标题按角色区分：主管理员=修改主管理员密码，普通管理员=修改密码（改的是自己账号）
     $('my-password-title').textContent = state.isMasterAdmin ? '修改主管理员密码' : '修改密码';
+    // 「我的账号」改密入口：仅普通管理员可见（主管理员改密走设置页危险区，v0.29.1）
+    const minePwCard = $('mine-password-card');
+    if (minePwCard) minePwCard.classList.toggle('hidden', state.isMasterAdmin);
     if (!state.isMasterAdmin) {
       // 普通管理员：隐藏「设为/取消管理员」批量按钮（仅主管理员权限）
       document.querySelectorAll('.batch-admin-only').forEach(el => el.classList.add('hidden'));
@@ -3074,7 +3212,7 @@ function updateThemeBtn() {
   const dark = document.documentElement.classList.contains('dark');
   document.querySelectorAll('[data-theme-btn]').forEach(b => { b.innerHTML = icon(dark ? 'sun' : 'moon'); });
 }
-document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); renderGlobalPauseUI?.(); });
+document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); renderGlobalPauseUI?.(); initFullTables(); });
 // ================= 用户管理（仅管理员）=================
 async function loadUsers() {
   try {
@@ -3115,7 +3253,7 @@ function renderDeletedUsers() {
   tbody.innerHTML = '';
   deletedUsers.forEach(u => {
     const tr = document.createElement('tr');
-    tr.className = 'border-b border-zinc-50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+    tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
     // 剩余时间：冷却中 ≥1 天 → "剩余 X 天"；不足 1 天 → "不足一天"；待清除 → "—"
     const remainText = u.status === 'purge_pending' ? '—'
       : (u.remaining_days >= 1 ? `剩余 ${u.remaining_days} 天` : '不足一天');
@@ -3170,7 +3308,7 @@ function renderUsers(users, builtinAdmin) {
   const ptbody = $('users-pending-tbody');
   ptbody.innerHTML = '';
   $('users-pending-empty').classList.toggle('hidden', pendingFiltered.length > 0);
-  $('users-pending-empty').textContent = pendingFiltered.length ? '' : (pendingUsers.length ? '无匹配结果' : '暂无待审核用户');
+  $('users-pending-empty').textContent = pendingFiltered.length ? '' : (pendingUsers.length ? '无匹配结果' : '暂无待处理用户');
   $('users-pending-count').textContent = usersPendingSearch
     ? `（${pendingFiltered.length} 人匹配 / 共 ${pendingUsers.length} 人待处理）`
     : (pendingUsers.length ? `（${pendingUsers.length} 人待处理）` : '');
@@ -3661,13 +3799,8 @@ function resetMineForm() {
   $('clear-mcode-btn').classList.add('hidden');
 }
 
-// 修改主管理员密码：默认收起，点击标题展开/收起
-function toggleMyPassword() {
-  const body = $('my-password-body');
-  const hidden = body.classList.toggle('hidden');
-  $('my-password-arrow').innerHTML = hidden ? icon('chevR') : icon('chevD');
-  document.querySelector('[onclick="toggleMyPassword()"]').setAttribute('aria-expanded', String(!hidden));
-}
+// 修改主管理员密码折叠块（v0.29.1 起并入设置页危险区）改用原生 <details>，
+// 原 toggleMyPassword（button+hidden div 手工展开）随旧结构删除
 
 let mineSubmitting = false;  // 在途锁（参照 scheduleSaving 模式）：提交期间按钮禁用，防连点重复提交
 $('mine-form').addEventListener('submit', async (e) => {
