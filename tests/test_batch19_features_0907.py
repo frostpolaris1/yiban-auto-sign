@@ -15,10 +15,8 @@
     py -m pytest tests/test_batch19_features_0907.py -v
 """
 import contextlib
-import datetime
 import importlib.util
 import io
-import json
 import os
 import shutil
 import sys
