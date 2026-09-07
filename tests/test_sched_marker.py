@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次16 调度修复回归测试（2026-09-01）。
+"""调度修复回归测试（2026-09-01）。
 
 覆盖：
 - P2-4：YIBAN_SECOND_RUN=1（run.sh 补签轮 / 容器 scheduler SECOND 时段注入）

@@ -2,7 +2,7 @@
 """共享 .env 写锁：跨进程文件锁 + 进程内 per-path RLock。
 
 - POSIX：fcntl.flock(env_path + ".lock") 跨进程互斥；
-- Windows：msvcrt.locking 区域锁（LK_LOCK，约 10 秒内重试）——批次7 P2-3：
+- Windows：msvcrt.locking 区域锁（LK_LOCK，约 10 秒内重试）——
   原实现 Windows 完全无跨进程互斥，web 与 signin 同时首启会各自生成不同密钥
   并互相覆盖（os.replace 后到者胜），先入库的密文永久不可解；
   同一进程内再用 per-path RLock 保证同线程重入不阻塞。

@@ -88,7 +88,7 @@ def _write_key_to_env_file(env_file, key):
         out = [ln for ln in lines if not ln.strip().startswith("YIBAN_ACCOUNTS_KEY=")]
         out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 批次7 P2-4：创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
+        # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
         # 之间（及进程崩溃残留时）密钥对同机其他用户可读，AES-GCM 防线归零
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -181,7 +181,7 @@ def decrypt_password(entry, key, phone):
         plain = cipher.decrypt_and_verify(ct, tag)
     except ValueError as e:
         raise ValueError("密码解密失败（密钥不匹配、密文被篡改或账号手机号不匹配）") from e
-    # 批次7 P4：原实现 UnicodeDecodeError 是 ValueError 子类，第二个 except
+    # 原实现 UnicodeDecodeError 是 ValueError 子类，第二个 except
     # 永不可达，UTF-8 损坏会被误报为"密钥不匹配"——拆开分别提示
     try:
         return plain.decode("utf-8")

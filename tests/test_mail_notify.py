@@ -326,7 +326,7 @@ class MailNotifyApiTest(unittest.TestCase):
     def test_mail_config_put_by_master_writes_env(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)  # 内置主管理员（.env）
-        # 批次14 P1-1：关闭全局邮件通道属高危 → 须带二次口令；落盘断言意图不变
+        # 关闭全局邮件通道属高危 → 须带二次口令；落盘断言意图不变
         r = c.put("/api/mail-config", json={"enabled": False, "confirm_password": ADMIN_PASS},
                   headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))

@@ -58,7 +58,7 @@ jobs:
           pip-audit -r requirements.lock
 
       - name: Diagnose runner network
-        # 批次7 P4-12：secrets 以文本内插进 run: 脚本是 GitHub 注入模式——
+        # secrets 以文本内插进 run: 脚本是 GitHub 注入模式——
         # 改经 env 传递（只暴露"是否配置"，不暴露内容）
         env:
           PROXY_PRESENCE: ${{ secrets.YIBAN_PROXY != '' }}

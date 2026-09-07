@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次 8 修复回归测试（2026-08-28 深夜，批次7 P1/P2 + 补充审查 A 组）。
+"""修复回归测试（2026-08-28 深夜）。
 
 覆盖：
 - P2-1  mailer 显式 TLS 证书校验（SMTP_SSL/starttls 均传 create_default_context）
@@ -12,7 +12,7 @@
 - A2/A3 批量端点单次 10 上限（users/batch、accounts/batch）
 - A4    settings 部分更新不再静默清空未提交的延迟字段
 - A5    start_delay_max/gap_max 收归主管理员（注册管理员 403）
-- A6    登录成功写审计（action=login_ok，IP 匿名化；动作名于批次14/PROD-2 由 login 收敛）
+- A6    登录成功写审计（action=login_ok，IP 匿名化；动作名后来由 login 收敛）
 
 用法（项目根目录）：
     py -m pytest tests/test_batch8_fixes_0828.py -v
@@ -376,7 +376,7 @@ class BatchCapAndSettingsTest(unittest.TestCase):
     def test_login_success_audited(self):
         """A6：登录成功写审计（action=login_ok），IP 匿名化。
 
-        批次14/PROD-2 把动作名由 login 收敛为 login_ok（与 login_failed/logout_ok 同组
+        动作名后来由 login 收敛为 login_ok（与 login_failed/logout_ok 同组
         命名，取证侧一句 WHERE action='login_ok' 即可拉出完整登录时间线）。本用例钉的是
         "成功登录有没有留痕、IP 有没有匿名化"，与名字无关，故只随动字面量，
         三条断言（有行 / username 精确 / target 为 64 位 hex）一字未放宽。

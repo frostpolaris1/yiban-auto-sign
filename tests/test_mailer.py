@@ -27,8 +27,8 @@ def _set_mail(monkeypatch, **kwargs):
 
 
 def test_mask_addr_masks_local_part():
-    # 保留前 3 字符，其余打码（9 字符 → 6 个星）
-    assert mailer._mask_addr("477929858@qq.com") == "477******@qq.com"
+    # 保留前 3 字符，其余打码（10 字符 → 7 个星）
+    assert mailer._mask_addr("1234567890@qq.com") == "123*******@qq.com"
 
 
 def test_mask_addr_empty():

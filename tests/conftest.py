@@ -37,7 +37,7 @@ def _close_root_file_handlers():
     PermissionError（全量回归 11 failed）。移除 handler 后，下一轮 create_app 的
     幂等逻辑会重新挂载，行为不受影响。
 
-    批次18 刀3 P3-13 后 signin 的 handler 装配延迟到 main()（模块导入零副作用），
+    signin 的 handler 装配延迟到 main()（模块导入零副作用），
     测试进程不再出现"游离于 root 之外"的 signin._handler；历史版本需显式关闭它
     （import 期 basicConfig 被 pytest 捕获 handler 顶成 no-op、handler 未挂 root
     却已打开日志文件）。

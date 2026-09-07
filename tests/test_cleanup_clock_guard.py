@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""清理残留与时钟保护回归测试（2026-08-28 审查批次 6）。
+"""清理残留与时钟保护回归测试（2026-08-28 审查）。
 
 用法（在项目根目录）：
     py -m pytest tests/test_cleanup_residue_0828.py -v
@@ -109,7 +109,7 @@ class CleanupResidueTest(unittest.TestCase):
         self.assertEqual(self._event_count("13900000004"), 1, "软删除不应清理事件")
 
     def test_replace_accounts_clears_sign_events(self):
-        """批次15 P2-1：整表替换（replace_accounts）移除的账号必须连带清 sign_events。"""
+        """整表替换（replace_accounts）移除的账号必须连带清 sign_events。"""
         self._add("13900000005", owner="keep@test.local")
         self._add("13900000006", owner="drop@test.local")
         db.add_sign_event("2026-08-28 06:36:00", "13900000005", "success")
@@ -125,7 +125,7 @@ class CleanupResidueTest(unittest.TestCase):
         db.replace_accounts([kept])
         self.assertEqual(self._event_count("13900000005"), 1, "保留账号的事件不清理")
         self.assertEqual(self._event_count("13900000006"), 0,
-                         "replace_accounts 移除账号后 sign_events 不应残留明文手机号（批次15 P2-1）")
+                         "replace_accounts 移除账号后 sign_events 不应残留明文手机号")
 
     # ---------------- M3：时钟跳变保护 ----------------
     def test_clock_jump_forward_blocked(self):
@@ -212,7 +212,7 @@ class CleanupResidueTest(unittest.TestCase):
         with db._conn_lock:
             conn.execute("UPDATE users SET deleted=1, deleted_at=? WHERE email=?",
                          ("2026-08-28 00:00:00", "victim3@test.local"))
-            # 批次8 P1-2：遗留未提交事务现在会被安全回滚（不再被盲提交）——
+            # 遗留未提交事务现在会被安全回滚（不再被盲提交）——
             # 夹具自提交，不依赖任何后续函数的隐式提交
             conn.commit()
         purged = db.purge_deleted_users_hard(["victim3@test.local"])

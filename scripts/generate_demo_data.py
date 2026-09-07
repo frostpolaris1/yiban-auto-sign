@@ -63,7 +63,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.db)), exist_ok=True)
     random.seed(args.seed)
 
-    # 批次7 P2-2：与 db_export 同理——demo 脚本不得在初始化时触发破坏性清理
+    # 与 db_export 同理——demo 脚本不得在初始化时触发破坏性清理
     db.init_db(args.db, env_file=args.env, cleanup=False)
     conn = db.get_conn()
 

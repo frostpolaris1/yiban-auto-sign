@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次15 P1-1 回归测试：宿主 run.sh 补签闸门不被「部分成功」吞掉。
+"""回归测试：宿主 run.sh 补签闸门不被「部分成功」吞掉。
 
 覆盖：
 - 退出码语义：有 skipped_window/skipped_norange 未了结账号时（即使有成功）→ exit 2

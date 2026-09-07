@@ -275,7 +275,7 @@ class SaturdaySettingsWebTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_saturday_partial_update_preserves_delays(self):
-        """只改 saturday_sign 不得清空已配置的延迟（复用批次7 A4 语义）。"""
+        """只改 saturday_sign 不得清空已配置的延迟（沿用字段携带才写语义）。"""
         c, t = self._master()
         r = c.post("/api/settings", json={"gap_max": 60, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)

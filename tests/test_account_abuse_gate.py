@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批次13 被盗号滥用面加固回归测试（2026-08-29）。
+"""被盗号滥用面加固回归测试（2026-08-29）。
 
 针对「盗号 → 反复批量删除用户 → 耗尽告警邮件额度」攻击链的三层加固：
 
@@ -91,8 +91,8 @@ class _B13WebBase(unittest.TestCase):
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
                 self.webapp, "send_notification",
-                # 批次18 刀1：send_notification 新增 force=（先告警后落盘），假实现同步接收
-                # 批次18 刀2：新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
+                # send_notification 新增 force=（先告警后落盘），假实现同步接收
+                # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
                 side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c)),
             )
             p.start()
@@ -239,7 +239,7 @@ class HighRiskDeleteTest(_B13WebBase):
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("s1@test.local"))
-        # 批次18 刀1（M3 accounts_only 门禁）：仅清空账号同样接入二次鉴权——
+        # （accounts_only 门禁）：仅清空账号同样接入二次鉴权——
         # 无口令 400；带正确口令放行
         r2 = c.post("/api/users/s1@test.local/delete",
                     json={"mode": "accounts_only"},
@@ -289,7 +289,7 @@ class NotifyConfigApiTest(_B13WebBase):
             if k.startswith("YIBAN_NOTIFY_"):
                 os.environ.pop(k, None)
         self.webapp.notify._throttle_ts.clear()
-        # 批次14：每日额度已拆成非紧急 / 紧急两本账，复位时两本都要清
+        # 每日额度已拆成非紧急 / 紧急两本账，复位时两本都要清
         self.webapp.notify._general_daily["state"].update({"date": "", "count": 0})
         self.webapp.notify._urgent_daily["state"].update({"date": "", "count": 0})
 
@@ -303,7 +303,7 @@ class NotifyConfigApiTest(_B13WebBase):
     def test_put_serverchan_encrypts_and_persists(self):
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        # 批次14 P1-1：携带新密钥（换钥）属高危动作 → 须带二次口令；断言意图不变
+        # 携带新密钥（换钥）属高危动作 → 须带二次口令；断言意图不变
         r = c.put("/api/notify-config", json={
             "type": "serverchan", "secret": "SCT406257TESTTESTTESTTESTTEST",
             "confirm_password": ADMIN_PASS,
@@ -346,7 +346,7 @@ class NotifyConfigApiTest(_B13WebBase):
     def test_put_clear_disables(self):
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        # 批次14 P1-1：换钥与关闭通道均为高危 → 须带二次口令；"关得掉"的断言意图不变
+        # 换钥与关闭通道均为高危 → 须带二次口令；"关得掉"的断言意图不变
         c.put("/api/notify-config", json={
             "type": "serverchan", "secret": "SCT406257TESTTESTTESTTESTTEST",
             "confirm_password": ADMIN_PASS,
@@ -361,10 +361,10 @@ class NotifyConfigApiTest(_B13WebBase):
         t = self._login(c, "admin", ADMIN_PASS)
         c.put("/api/notify-config", json={
             "type": "serverchan", "secret": "SCT406257TESTTESTTESTTESTTEST",
-            "confirm_password": ADMIN_PASS,  # 批次14 P1-1：换钥须二次口令
+            "confirm_password": ADMIN_PASS,  #：换钥须二次口令
         }, headers=self._csrf(t))
         # 仅保存「仅重要告警」，不应清空已配置的通道与密钥（部分更新）
-        # 批次18 刀1（H-2a 收口）：urgent_only 属送达参数 → 需二次口令
+        # urgent_only 属送达参数 → 需二次口令
         r = c.put("/api/notify-config",
                   json={"urgent_only": True, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -382,7 +382,7 @@ class NotifyConfigApiTest(_B13WebBase):
     def test_put_urgent_only_off(self):
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        # 批次18 刀1（H-2a 收口）：urgent_only 属送达参数 → 需二次口令
+        # urgent_only 属送达参数 → 需二次口令
         c.put("/api/notify-config",
               json={"urgent_only": True, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         r = c.put("/api/notify-config",

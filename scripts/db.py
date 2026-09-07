@@ -69,7 +69,7 @@ _conn = None
 _conn_lock = threading.RLock()
 _db_file = DB_DEFAULT
 # .env 路径（加密密钥来源）：None = 未显式指定，由 _resolve_key_env_file 按
-# YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（批次14 P2-5；此时若回落值来自 cwd
+# YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（此时若回落值来自 cwd
 # 且文件不存在，生成新密钥会被 _assert_key_source_certain 拒绝，避免游离密钥）
 _env_file = None
 
@@ -91,12 +91,12 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
     env_file：.env 路径（加密密钥来源），须与调用方一致（web 用 --env 参数时必传），
-    None 时按 YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（批次14 P2-5：CLI/取证类
+    None 时按 YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（CLI/取证类
     调用方应显式传入，勿让密钥来源依赖 cwd）。
     cleanup：默认 True 执行启动清理（审计/事件旧数据、过期软删用户等）；
     校验类工具应传 False，避免只读校验改变数据。
     migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
-    （v3 rechain）等，使"被校验对象在校验过程中被改动"（批次7 P2-6）。
+    （v3 rechain）等，使"被校验对象在校验过程中被改动"。
     """
     global _conn, _db_file, _env_file
     _env_file = env_file
@@ -109,7 +109,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
         _conn = sqlite3.connect(_db_file, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
-        # 批次7 P3-3：5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
+        # 5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
         # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
         _conn.execute("PRAGMA busy_timeout=15000")
         _conn.execute("PRAGMA foreign_keys=OFF")
@@ -148,7 +148,7 @@ def is_initialized():
 
 
 def resolve_env_file(cli_value=None):
-    """解析显式密钥来源路径：命令行 --env → YIBAN_ENV_FILE → None（批次14 P2-5）。
+    """解析显式密钥来源路径：命令行 --env → YIBAN_ENV_FILE → None。
 
     给 CLI/取证脚本传给 init_db(env_file=…) 用：这样密钥来源与进程 cwd 解耦。
     刻意不回落成字面量 ".env"——那等于把"来源不确定"伪装成"来源已指定"，
@@ -162,7 +162,7 @@ def resolve_env_file(cli_value=None):
 
 
 def require_existing_env_file(cli_value=None):
-    """resolve_env_file + 显式来源存在性校验（批次14 修复轮1③）；不存在则抛 ValueError。
+    """resolve_env_file + 显式来源存在性校验；不存在则抛 ValueError。
 
     为什么必须校验：--env 一旦给出，db 层就认为"密钥来源已确定"，防游离落盘的
     _assert_key_source_certain 对它不再生效。路径打错（少写一层目录、部署迁移后
@@ -183,7 +183,7 @@ def require_existing_env_file(cli_value=None):
 # 表结构
 # ---------------------------------------------------------------------------
 def _create_tables(conn):
-    # 批次17 P3-1：不用 executescript——其隐式 COMMIT 会把调用方已开启的事务
+    # 不用 executescript——其隐式 COMMIT 会把调用方已开启的事务
     # （_run_migrations 的 BEGIN IMMEDIATE）提前提交，击穿迁移原子性；逐条
     # execute 让 DDL 落在事务内，中途失败可整体回滚。
     conn.execute(
@@ -352,7 +352,7 @@ def _decode_audit_key(raw):
 def _resolve_key_env_file():
     """解析密钥来源 .env 路径：_env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
 
-    批次14 P2-5：原写法 `env_file = _env_file or ".env"` 把密钥来源绑在 cwd 上——
+    原写法 `env_file = _env_file or ".env"` 把密钥来源绑在 cwd 上——
     取证/恢复类 CLI（rekey / audit_verify / clock_guard_reset /
     list_duplicate_owners）未传 env_file 时，在应用根之外运行会读不到旧钥，进而
     就地生成新钥落盘，同时产出"游离在错误目录的 .env"和"用错密钥签的审计行"
@@ -388,7 +388,7 @@ def _write_audit_key_to_env_file(env_file, key):
         out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
         out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 批次7 P2-4：创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
+        # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
         # 之间（及进程崩溃残留时）密钥对同机其他用户可读
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -402,7 +402,7 @@ def _write_audit_key_to_env_file(env_file, key):
 
 
 def _assert_key_source_certain(what, env_file, from_cwd):
-    """批次14 P2-5：密钥来源只能靠 cwd 默认 ".env" 兜底且该文件不存在时拒绝生成。
+    """密钥来源只能靠 cwd 默认 ".env" 兜底且该文件不存在时拒绝生成。
 
     文件存在时行为完全不变（正常首启在应用根生成）；只有"来源不确定"（既无
     显式 env_file 也无 YIBAN_ENV_FILE，且当前目录没有 .env）才抛错——宁可不写
@@ -422,9 +422,9 @@ def _audit_key(create=True):
     """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env。
 
     .env 路径按 init_db(env_file=…) → YIBAN_ENV_FILE → 当前目录 ".env" 有序回落
-    （批次14 P2-5：不再无条件依赖 cwd）。
+    （不再无条件依赖 cwd）。
     create=True（默认）时缺失会生成并写入 .env；create=False 供只读校验，
-    密钥缺失返回 None，由调用方按 fail-closed 处理。批次14 P2-5 起，生成前
+    密钥缺失返回 None，由调用方按 fail-closed 处理。生成前
     若判定密钥来源只能靠 cwd 兜底且文件不存在，则拒绝生成并抛 ValueError。
     """
     global _AUDIT_KEY_CACHE
@@ -461,7 +461,7 @@ def _audit_hash(prev_hash, ts, username, action, target, detail):
 
 
 def _begin_immediate(conn):
-    """统一的写事务入口（批次7 P3-2）：遗留未提交事务先安全回滚再 BEGIN。
+    """统一的写事务入口：遗留未提交事务先安全回滚再 BEGIN。
 
     原各写路径直接 BEGIN IMMEDIATE，一旦存在遗留事务（任何写路径漏 commit/rollback
     的 bug）即抛 "within a transaction" 并连锁锁死全部写路径；audit() 的旧 M8 防御
@@ -479,7 +479,7 @@ def _begin_immediate(conn):
 def _rechain_audit_logs(conn):
     """按 id 升序重建审计哈希链（从空 prev_hash 开始）。
 
-    批次7 P3-4：改为按 id 游标分批重链——原 LIMIT 10000 一次性截断，审计量超限
+    改为按 id 游标分批重链——原 LIMIT 10000 一次性截断，审计量超限
     时第 10001 行起的旧 hash 未重算且其 prev 指向的行刚被改写，链永久断裂，
     每日告警"狼来了"掩盖真实篡改。
     """
@@ -516,7 +516,7 @@ def migrate_v3(conn):
     """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。"""
     _ensure_column(conn, "audit_logs", "prev_hash", "prev_hash TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "audit_logs", "hash", "hash TEXT NOT NULL DEFAULT ''")
-    # 批次7 P3-4：空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
+    # 空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
     empty = conn.execute(
         "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
     ).fetchone()["n"]
@@ -544,7 +544,7 @@ def _write_track_salt_to_env_file(env_file, salt):
         out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
         out.append(f"YIBAN_TRACK_SALT={salt}")
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 批次7 P2-4：创建即 0600（盐泄漏 = IP/手机号哈希可离线枚举反查）
+        # 创建即 0600（盐泄漏 = IP/手机号哈希可离线枚举反查）
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(out) + "\n")
@@ -559,7 +559,7 @@ def _write_track_salt_to_env_file(env_file, salt):
 def _track_salt():
     """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。
 
-    .env 路径回落顺序与审计密钥一致（批次14 P2-5）：init_db(env_file=…) →
+    .env 路径回落顺序与审计密钥一致：init_db(env_file=…) →
     YIBAN_ENV_FILE → 当前目录 ".env"；来源只能靠 cwd 兜底且文件不存在时拒绝生成。
     """
     global _TRACK_SALT_CACHE
@@ -567,7 +567,7 @@ def _track_salt():
     env_salt = os.environ.get("YIBAN_TRACK_SALT", "").strip()
     if env_salt:
         if len(env_salt) < 16:
-            # 批次7 P4：弱盐告警（不拒绝——存量部署换盐会使既有哈希关联失效）；
+            # 弱盐告警（不拒绝——存量部署换盐会使既有哈希关联失效）；
             # 盐被猜测即可离线反查 IP/手机号哈希
             logger.warning("YIBAN_TRACK_SALT 长度过短（<16），易被枚举，建议更换为 32 位以上随机串")
         _TRACK_SALT_CACHE = env_salt
@@ -608,7 +608,7 @@ def hash_phone(phone):
     有意与 hash_ip 的 HMAC 口径不同：本函数的输出会作为**库内关联键**存储
     （time_pref 冷却等），更换算法将使全部存量关联失效；等值查询用途下
     sha256(salt:input) 无现实攻击面（长度扩展需要构造可验证的 MAC，此处
-    哈希仅用于存储比对）。批次7 P4 评审结论：保持口径并记录理由。
+    哈希仅用于存储比对）。评审结论：保持口径并记录理由。
     """
     salt = _track_salt()
     return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
@@ -616,7 +616,7 @@ def hash_phone(phone):
 
 def migrate_v4(conn):
     """v4：创建可视化三表（可选迁移，失败只告警不阻断启动）。"""
-    # 批次17 P3-1：逐条 execute 替代 executescript（隐式 COMMIT 击穿
+    # 逐条 execute 替代 executescript（隐式 COMMIT 击穿
     # _run_migrations 的 BEGIN IMMEDIATE，失败时前半段 DDL 已提交无法回滚）
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sign_events ("
@@ -722,7 +722,7 @@ def migrate_v5(conn):
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
         "ON users(email) WHERE deleted = 0",
     )
-    # 批次17 P3-1：逐条 execute 替代 executescript（同上，保持迁移事务原子）
+    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
     conn.execute(
         "CREATE TABLE IF NOT EXISTS user_delete_requests ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -795,7 +795,7 @@ def migrate_v8(conn):
     cookies_ct 为 AES-GCM 密文 JSON 串（AAD=phone，复用 account_crypto），
     库内绝不落明文 cookie。表结构见 docs/research-lumjiel-core-sign-20260822.md §七。
     """
-    # 批次17 P3-1：逐条 execute 替代 executescript（同上，保持迁移事务原子）
+    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
     conn.execute(
         "CREATE TABLE IF NOT EXISTS session_cache ("
         "phone        TEXT PRIMARY KEY, "
@@ -837,7 +837,7 @@ def migrate_v10(conn):
 
 
 def migrate_v11(conn):
-    """v11：服务端会话吊销（users.sid，批次7 P3-5）。
+    """v11：服务端会话吊销（users.sid）。
 
     sid 为该用户当前唯一有效会话标识：登录时签发，登出/被重置密码/被踢时轮换；
     会话内 sid 与库内不一致即视为未登录。空串=未签发（升级日存量兼容）。
@@ -855,7 +855,7 @@ def migrate_v12(conn):
     新增本迁移幂等补建，旧库自动补齐；新库 v8 已建则 IF NOT EXISTS 空操作。
     教训：新表/新列必须新增迁移版本，不得修改已发布的旧迁移。
     """
-    # 批次17 P3-1：逐条 execute 替代 executescript（同上，保持迁移事务原子）
+    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_meta ("
         "key   TEXT PRIMARY KEY, "
@@ -866,7 +866,7 @@ def migrate_v12(conn):
 
 
 def set_user_sid(email, sid):
-    """写入用户当前有效会话标识（批次7 P3-5）；email 须为活跃用户。"""
+    """写入用户当前有效会话标识；email 须为活跃用户。"""
     conn = get_conn()
     with _conn_lock, conn:
         conn.execute(
@@ -1156,7 +1156,7 @@ def _row_to_account(row, conn=None):
                 a[k] = v
                 if conn is not None:
                     enc = _encrypt_field(v, a.get("phone", ""))
-                    # 批次7 P2-5：CAS 回写——并发进程可能刚改掉该行（如 update_account
+                    # CAS 回写——并发进程可能刚改掉该行（如 update_account
                     # 改密），无条件按 id 覆盖会把旧明文重新加密写回，静默回滚他人修改。
                     # 以"仍处于本进程读到的明文原值"为条件，0 行命中即放弃并告警。
                     cur = conn.execute(
@@ -1212,7 +1212,7 @@ def _encrypt_field(value, phone):
 # 允许的"时间前进"上限。软删保留期 7 天——系统时间被拨快 8 天，刚软删 1 秒的
 # 账号会在下次清理时被立即物理清除、7 天反悔窗口归零。取 72h：每日正常运行的
 # 服务不会超过；停机 >3 天后的首轮清理会被跳过并触发告警，需人工核实时钟后用
-# scripts/clock_guard_reset.py 显式重置（批次12 B12-9，用户裁决 2026-08-29：
+# scripts/clock_guard_reset.py 显式重置（用户裁决 2026-08-29：
 # 刻意不自动恢复——自动把参照点拨到当前时间等于给"拨快一次、下轮洗白"开通道）。
 _CLOCK_ALLOW_FWD_HOURS = 72
 # 允许的"时间回拨"上限（秒）：正常 NTP 校正是秒级，回拨超过 1h 视为异常
@@ -1222,7 +1222,7 @@ _CLOCK_GUARD_ALERT_KEY = "clock_guard_alert"
 
 
 def _record_clock_guard_alert(note):
-    """守卫拦截时把告警落到 app_meta（批次12 B12-9）。
+    """守卫拦截时把告警落到 app_meta。
 
     原实现 ok=False 仅 logger.error：无任何告警出口，且因不更新参照点，5 处清理
     **永久**冻结（软删数据永不物理清除、审计/事件表无限膨胀）——与注释承诺的
@@ -1277,7 +1277,7 @@ def clock_guard_alert():
 
 
 # ---------------------------------------------------------------------------
-# app_meta 通用单键读写（批次14 Task 3 修复轮 1 ④）
+# app_meta 通用单键读写
 # ---------------------------------------------------------------------------
 # app_meta 此前只有内联 SQL（见 _record_clock_guard_alert / record_audit_anchor）。
 # 告警通道健康日报需要一把"当日串键"做跨进程重启的每日去重——进程内 dict（如
@@ -1380,7 +1380,7 @@ def _purge_expired_deleted(conn):
             with contextlib.suppress(Exception):
                 conn.rollback()
             return
-        # 批次7 P4-8：旧版本/手工写入的 deleted=1 且 deleted_at='' 行不参与保留期
+        # 旧版本/手工写入的 deleted=1 且 deleted_at='' 行不参与保留期
         # 判定（条件含 deleted_at != ''），成为不死僵尸——统一补记当前时间，
         # 宽限期自此起算，下一保留期后正常清除
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1708,9 +1708,9 @@ def delete_accounts_by_owner(owner):
 def _assert_not_last_admin(conn, email, allow_last_admin):
     """「最后一个注册管理员不可删除/降权」复核——必须在 BEGIN IMMEDIATE 事务内调用。
 
-    批次12 B12-7：管理员侧删除/降权此前只在 web 进程内 _file_lock 下预检，
+    管理员侧删除/降权此前只在 web 进程内 _file_lock 下预检，
     跨进程（web 多实例共享同一库）两名操作者可同时通过预检，把最后一个
-    注册管理员清零（未配内置管理员的部署失去全部管理入口）。批次6 C-M3 已把
+    注册管理员清零（未配内置管理员的部署失去全部管理入口）。已把
     自助注销路径的复核下沉事务，本函数把管理员侧三个路径（单删/批量删/降权）
     对齐同口径。命中即抛 LastAdminError（调用方事务回滚、web 转 400）。
 
@@ -1733,7 +1733,7 @@ def _assert_not_last_admin(conn, email, allow_last_admin):
 def delete_user_with_accounts(email, allow_last_admin=False):
     """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。
 
-    批次12 B12-7：allow_last_admin=False（默认）时，事务内复核目标是否最后一个
+    allow_last_admin=False（默认）时，事务内复核目标是否最后一个
     注册管理员（含跨进程并发窗口），命中抛 LastAdminError 且库保持原状；
     仅「内置管理员存在」的调用方应显式传 True。
     """
@@ -1758,7 +1758,7 @@ def delete_user_with_accounts(email, allow_last_admin=False):
 
 
 def set_user_role(email, new_role, allow_last_admin=False):
-    """单行角色变更（批次12 B12-7：降权最后一个注册管理员的复核下沉事务内）。
+    """单行角色变更（降权最后一个注册管理员的复核下沉事务内）。
 
     返回受影响行数（0 = 用户不存在/已删除）；降权最后一个注册管理员且
     allow_last_admin=False 时抛 LastAdminError（库保持原状）。
@@ -1794,14 +1794,14 @@ def replace_accounts(accounts):
         keep = {a.get("phone", "") for a in accounts}
         # 2026-08-28 审查 M1 补：整表替换时移除的账号原先只清 time_prefs，
         # 漏清会话缓存（凭据残留）。保留的账号不动，避免无谓的重新登录。
-        # 批次15 P2-1：同样漏清 sign_events——整表替换移除的账号，其
+        # 同样漏清 sign_events——整表替换移除的账号，其
         # 明文手机号（sign_events.phone 明文落库）会驻留至 180 天保留期满；
         # 对齐 purge_account/delete_accounts_by_owner 等 7 条物理删除路径的
         # 三连带清理（M2 覆盖清单外的第 8 条路径）。
         removed = [r["phone"] for r in old if r["phone"] not in keep]
         _delete_time_prefs_by_phones(conn, removed)
         _clear_session_cache_by_phones(conn, removed)
-        _delete_sign_events_by_phones(conn, removed)  # 批次15 P2-1
+        _delete_sign_events_by_phones(conn, removed)
         for i, a in enumerate(accounts):
             try:
                 conn.execute(
@@ -2169,7 +2169,7 @@ def purge_deleted_users_hard(emails):
     conn = get_conn()
     purged = []
     with _conn_lock:
-        # 批次7 P2-6：BEGIN IMMEDIATE 写锁内完成"读 phones → 删账号 → 连带清理"，
+        # BEGIN IMMEDIATE 写锁内完成"读 phones → 删账号 → 连带清理"，
         # 与 restore_user 跨进程串行化。原 deferred 快照下 phones 列表可能陈旧
         # （M5 同族竞态：并发 restore 后升级写表现为 BUSY_SNAPSHOT 500，连带
         # 清理列表陈旧）；持 IMMEDIATE 后写锁期间列表不可能变化。
@@ -2246,10 +2246,10 @@ def run_daily_cleanup():
     现改为：web 每日线程统一调用本函数；signin 侧 init_db(cleanup=False)
     （其 main() 保留对超期软删账号的显式清理，覆盖无 web 的纯 cron 场景）。
 
-    批次7 P1-2：_audit_cleanup/_event_cleanup 直接在本模块共享连接上
+    _audit_cleanup/_event_cleanup 直接在本模块共享连接上
     execute+commit——必须持 _conn_lock，否则与 8 个请求线程的 BEGIN IMMEDIATE
     事务交叠时，清理的 DELETE 会加入他人未提交事务、commit 把半程事务提前
-    发布（撕裂事务，破坏批次5 B-4/B-5/M5 的原子性投入）。
+    发布（撕裂事务，破坏原子性投入）。
     """
     with _conn_lock:
         conn = get_conn()
@@ -2330,10 +2330,10 @@ def batch_user_ops(ops):
 
     ops 为 (op, params) 列表，op 支持：
       ("update_user", email, fields_dict)          # role/password_hash/pw_version
-      ("update_user", email, fields_dict, allow_last_admin)  # 批次12 B12-7：降权含
+      ("update_user", email, fields_dict, allow_last_admin)  #：降权含
                                                     # 最后管理员事务内复核的放行开关
       ("delete_user_with_accounts", email)
-      ("delete_user_with_accounts", email, allow_last_admin)  # 同上（批次12 B12-7）
+      ("delete_user_with_accounts", email, allow_last_admin)  # 同上
     """
     conn = get_conn()
     with _conn_lock:
@@ -2343,7 +2343,7 @@ def batch_user_ops(ops):
                 kind = op[0]
                 if kind == "update_user":
                     email, fields = op[1], op[2]
-                    # 批次12 B12-7：角色降级经同一事务内复核（预检在 web 进程内，
+                    # 角色降级经同一事务内复核（预检在 web 进程内，
                     # 挡不住跨进程并发把最后一个注册管理员降权）
                     if fields.get("role") == "user":
                         _assert_not_last_admin(conn, email, op[3] if len(op) > 3 else False)
@@ -2361,7 +2361,7 @@ def batch_user_ops(ops):
                     )
                 elif kind == "delete_user_with_accounts":
                     email = op[1]
-                    # 批次12 B12-7：删除管理员前事务内复核最后管理员
+                    # 删除管理员前事务内复核最后管理员
                     _assert_not_last_admin(conn, email, op[2] if len(op) > 2 else False)
                     rows = conn.execute(
                         "SELECT phone FROM accounts WHERE owner=?", (email,)
@@ -2434,7 +2434,7 @@ def audit(username, action, target="", detail=""):
                 # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
                 # 未提交事务，先解除——否则 BEGIN IMMEDIATE 会报 "within a transaction"。
                 # 2026-08-28 审查 M8：盲提交会把"写了一半的事务"发布成持久数据。
-                # 批次7 P1-2 修订：遗留锁用【回滚】解除同样有效（写锁本质由未完成
+                # 修订：遗留锁用【回滚】解除同样有效（写锁本质由未完成
                 # 事务持有），而未知半事务按安全默认丢弃——提交可能把半程写入发布
                 # 为持久数据（如 replace_accounts 中途可见的残表）。遗留事务本身是
                 # 某条写路径未正确 commit/rollback 的 bug，应据堆栈定位修复。
@@ -2565,7 +2565,7 @@ def verify_audit_chain():
 def audit_anchor_path():
     """外部锚点文件路径（库外 append-only）。
 
-    批次12 B12-4：默认与 web/app.py 的 STATE_DIR 对齐（/var/log/yiban）——
+    默认与 web/app.py 的 STATE_DIR 对齐（/var/log/yiban）——
     原默认 "."（进程 cwd）使裸机部署下 web 把锚点写到 /var/log/yiban/audit-anchor.log，
     而 audit_health 读 <cwd>/audit-anchor.log：每日误报「锚点文件被删除」淹没真告警，
     且删尾/清空/链尾篡改检测从未比对过真实锚点（锚点防线整体致盲）。
@@ -2602,7 +2602,7 @@ def record_audit_anchor(path=None):
             os.makedirs(d, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
-        # 批次7 P3-1：锚点落盘成功后在 app_meta 留痕——锚点文件本身可被整删
+        # 锚点落盘成功后在 app_meta 留痕——锚点文件本身可被整删
         # （删掉后校验降级为"通过"），库内元数据使其"应存在却消失"可被检出
         try:
             with _conn_lock:
@@ -2660,9 +2660,9 @@ def verify_audit_anchor(path=None):
     - ok=False → 确证异常，调用方应告警；
     - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
     无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
-    批次7 P3-1：app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
+    app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
     不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。
-    批次12 B12-4：该元数据交叉检查此前仅对默认路径生效——web 每日线程改传
+    该元数据交叉检查此前仅对默认路径生效——web 每日线程改传
     显式路径后会被跳过，锚点致盲问题换了个形式复发。现对显式路径同样生效
     （仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用）。
     """
@@ -2819,7 +2819,7 @@ def _audit_cleanup(conn):
     Phase 3 修订：删除旧行后不重建哈希链——剩余首行仍保留指向已删前序行的
     prev_hash 作为锚，verify_audit_chain 以该锚校验首行 hash。
 
-    批次11 N2：接入时钟跳变守卫——审计是篡改取证数据源，时钟被拨快（NTP 故障
+    接入时钟跳变守卫——审计是篡改取证数据源，时钟被拨快（NTP 故障
     或拿到服务器权限者掩盖痕迹）会让 cutoff 前移、审计链被一次性清空，且该清理
     不动"最后一条"锚点，库外锚点校验不会报警。与三个短保留期 purge 同口径。
     """
@@ -3087,7 +3087,7 @@ def probe_events_on(date_str, limit=100):
 def sign_events_on(date_str, limit=100):
     """指定日期（YYYY-MM-DD）的签到事件（stage="sign"，按时间正序）。
 
-    批次12 裁决：sign_events 补消费端——随 /api/logs 附带当日签到事件
+    sign_events 补消费端——随 /api/logs 附带当日签到事件
     （与 probe_events_on 同口径：手机号脱敏、条数封顶由调用方处理）。
     查询失败返回空列表，不影响调用方。
     """
@@ -3232,7 +3232,7 @@ def server_metric_latest(limit=60):
 def _event_cleanup(conn):
     """清理可视化表超期数据；失败仅告警。
 
-    批次11 N2：接入时钟跳变守卫（同 _audit_cleanup）——sign_events 等表是
+    接入时钟跳变守卫（同 _audit_cleanup）——sign_events 等表是
     取证数据源，时钟跳变不应放大清理窗口。
     """
     try:

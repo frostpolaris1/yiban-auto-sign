@@ -17,7 +17,7 @@
 #   （此时只能靠 .env 的 YIBAN_BASE_PATH 显式指定前缀，见 README「部署形态」章节）。
 # 静态资源由应用自带 /static 提供（30 天缓存 + ?v= 版本号），子路径形态也无需单独配静态。
 
-# 批次7 P3-20：边缘限速——应用内限速仅覆盖登录/注册等端点，慢速泛洪
+# 边缘限速——应用内限速仅覆盖登录/注册等端点，慢速泛洪
 # 可占满 gunicorn 单 worker 8 线程池；管理后台正常使用远低于此阈值
 limit_req_zone $binary_remote_addr zone=yiban_perip:10m rate=20r/s;
 

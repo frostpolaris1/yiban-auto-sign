@@ -192,7 +192,7 @@ def _make_log_handler():
         return logging.StreamHandler()
 
 
-# 批次18 刀3 P3-13：CLI 日志装配幂等标记。原实现把 handler 装配放在模块导入期
+# CLI 日志装配幂等标记。原实现把 handler 装配放在模块导入期
 # （logging.basicConfig(handlers=[_handler])）——web/app.py 导入 signin 时即向 root
 # 挂 _FlockFileHandler，create_app 随后再挂 _DailyFlockFileHandler（其去重守卫只认
 # 自身类），root 上出现两个指向同一日志目录的 FileHandler，每条日志写两遍。
@@ -200,7 +200,7 @@ _cli_logging_ready = False
 
 
 def _setup_cli_logging():
-    """CLI 入口日志装配（批次18 刀3 P3-13）：把按天文件 handler 挂到 root logger。
+    """CLI 入口日志装配：把按天文件 handler 挂到 root logger。
 
     装配从模块导入期延迟到 main() 入口（--check-config / --probe / --only 均经
     main()，覆盖全部 CLI 路径）。模块导入自此零副作用：web 进程 import signin 不再向 root
@@ -406,7 +406,7 @@ _DEFAULT_SLOW_SIGN_SEC = 30     # P6 耗时告警阈值（秒）：单次尝试�
 # 避免同一个配置错误在每日汇总邮件里重复出现 N 次
 _invalid_window_notified = False
 
-# 有效签到窗口为空的一次性告警标记（批次18 刀3 P3-3）：
+# 有效签到窗口为空的一次性告警标记：
 # _schedule_blocks 每次调度都会调用（多账号/多轮），前后裁剪吃满窗口回退默认
 # 窗口的邮件告警同样只收集一次（镜像上方 F3 去重模式），防汇总邮件刷屏
 _edge_empty_window_notified = False
@@ -698,7 +698,7 @@ def clear_session_cache_quiet(phone):
 def random_delay(max_seconds, label):
     """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。
 
-    批次7 P4-7：上限 3600s——误配 YIBAN_START_DELAY_MAX=86400 会 sleep 一整天。
+    上限 3600s——误配 YIBAN_START_DELAY_MAX=86400 会 sleep 一整天。
     """
     max_seconds = min(max_seconds, 3600)
     if max_seconds <= 0:
@@ -949,7 +949,7 @@ def print_config_summary(accounts):
 # 易班登录
 # ---------------------------------------------------------------------------
 def _is_yiban_trusted_url(url):
-    """宽松白名单（批次7 P4-2 纵深防御）：仅放行 yiban.cn / uyiban.com 体系的 https 链接。
+    """宽松白名单（纵深防御）：仅放行 yiban.cn / uyiban.com 体系的 https 链接。
 
     login() 旧流程跟随服务端可控的跳转 URL（OAuth Data/reUrl/Location）——
     这些 URL 来自易班服务端自身，信任链成立，但与同文件 ydclearance 分支的
@@ -1078,7 +1078,7 @@ class YibanClient:
             raise RuntimeError(f"获取登录入口失败: {_sanitize_text(data.get('msg'))}")
 
         # 2. 跳转到 OAuth 页面，解析 RSA 公钥与 page_use
-        # 批次7 P4-2：跳转目标过宽松白名单（纵深防御，与 ydclearance 分支口径一致）
+        # 跳转目标过宽松白名单（纵深防御，与 ydclearance 分支口径一致）
         _oauth_url = data["data"]["Data"]
         if not _is_yiban_trusted_url(_oauth_url):
             raise RuntimeError(f"登录入口 URL 不在白名单: {_notify_url_desc(str(_oauth_url))}")
@@ -1318,7 +1318,7 @@ class YibanClient:
             timeout=15,
         )
         location = resp.headers.get("Location", "")
-        # 批次7 P3-9：宽容正则（与旧流程一致）——原 `(.*?)&` 要求令牌后必跟 &，
+        # 宽容正则（与旧流程一致）——原 `(.*?)&` 要求令牌后必跟 &，
         # 服务端把 verify_request 放 query 末位即全站性登录失败
         verify_match = re.compile(r"verify_request=([^&]+)&?").findall(location)
         if not verify_match:
@@ -1580,7 +1580,7 @@ class YibanClient:
             )
 
         # 3. 解析多边形点（逐点容错：单个坏点跳过，不拖垮整个签到）
-        # 批次7 P3-10 修复了「只签 position_list[0]」导致的漏签，改为遍历全部任务。
+        # 修复了「只签 position_list[0]」导致的漏签，改为遍历全部任务。
         # 2026-08-29 用户裁决：多任务通常为「同一打卡的多个点位，任取其一即可」——
         # 先随机打乱任务顺序（避免固定只签第一个点位，贴近学生真实行为、降低固定
         # 点位指纹），然后任一任务成功即停（下方 break），不再重复提交。
@@ -1721,7 +1721,7 @@ def send_notification(title, content, url=None, urgent=False, force=False):
     2026-08-29 组件化：Server酱适配（title+desp）、同类型告警节流、服务端响应
     检查（配额/限频可见）、自定义 URL SSRF 白名单；兼容旧明文 YIBAN_NOTIFY_URL
     （notify.get_secret 回退，url 参数与组件配置等价，由组件统一处理）。
-    批次18 刀2 M7：透传 urgent/force 到 notify.send——汇总邮件发送失败降级
+    透传 urgent/force 到 notify.send——汇总邮件发送失败降级
     webhook 时以 urgent=True + force=True 调用（绕过节流与当日额度，保证兜底必达）；
     默认 False，既有调用方行为不变。
     说明：签到脚本给管理员的**邮件**不在此处发送（避免逐条轰炸），而是由
@@ -1770,7 +1770,7 @@ def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
 def _sched_marker_exists():
     """当日全量运行标记（sched-run-<date>.json）是否已存在。
 
-    批次15 P1-1 配套：告警函数用它区分「首签轮」与「补签轮」——
+    告警函数用它区分「首签轮」与「补签轮」——
     标记在首签轮收尾写入（_write_sched_done），因此：
       - 首签轮调用本函数时标记尚不存在 → 本轮是首签；
       - 补签轮（07:10）调用时标记已存在 → 本轮是补签。
@@ -1785,7 +1785,7 @@ def _is_second_run():
     """本轮是否为补签轮（07:10）：run.sh 补签轮 / 容器 scheduler SECOND 时段注入的
     YIBAN_SECOND_RUN=1 优先，sched-run 标记兜底。
 
-    批次16 P2-4：首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run
+    首签子进程被宿主 timeout 击杀（exit 124）时收尾未执行、sched-run
     标记不写，07:10 补签轮仅靠标记会误判为首签轮 → 部分成功+窗口外零告警（B12-2
     分支复发）。环境变量由 run.sh 补签轮分支 / 容器 scheduler SECOND 时段显式注入，
     不依赖首签收尾，天然免疫 exit 124。
@@ -1794,21 +1794,21 @@ def _is_second_run():
 
 
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
-    """批次12 B12-2 + 批次15 P1-1：窗口外未了结账号的管理员告警。
+    """窗口外未了结账号的管理员告警。
 
     场景：学校签到窗口晚于本地配置（或 Range 延迟放出），账号落
-    skipped_window/skipped_norange。容器调度闸门（批次12 修复）已把 skip 类
-    计入未了结使补签得以重跑；宿主 run.sh 退出码语义（批次15）同样保证补签
+    skipped_window/skipped_norange。容器调度闸门已把 skip 类
+    计入未了结使补签得以重跑；宿主 run.sh 退出码语义同样保证补签
     不被「部分成功」吞掉。
 
     告警时机（避免首签误报噪音）：
-      - 零成功（ok_n==0）且存在窗口外跳过：任何轮次都告警（批次12 原语义，
+      - 零成功（ok_n==0）且存在窗口外跳过：任何轮次都告警（原语义，
         全员窗口外 = 当天可能无签，必须当天知情）；
       - 部分成功 + 窗口外跳过：仅补签轮告警（is_second_run=True）——
         首签有 skipped 属正常（07:10 会重跑），补签轮仍有 skipped 说明
         当天已无下一触发点（宿主 cron 只有 06:31/07:10 两轮），需当天知情。
 
-    is_second_run 判定（批次16 P2-4 修订）：调用方（main()）传入
+    is_second_run 判定：调用方（main()）传入
     `os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()`——
     环境变量优先（run.sh 补签轮 / 容器调度器 SECOND 时段注入，首签轮不设），
     sched-run 标记兜底。二者均缺省时（本函数被单独调用，is_second_run=None）
@@ -1903,13 +1903,13 @@ def _flush_admin_mail_summary(phase=None):
             # mailer 自身承诺内部静默，此处兜底防调用链变化引入的异常外泄
             logger.warning("签到汇总邮件发送异常（%s），降级走 webhook", type(e).__name__)
         if not sent:
-            # 批次18 刀2 M7：邮件通道不可用（未配置/发送失败/异常）→ webhook 兜底
+            # 邮件通道不可用（未配置/发送失败/异常）→ webhook 兜底
             # （urgent=True + force=True 绕过节流与当日额度）。零成功/窗口外类告警
             # （_maybe_alert_zero_success 等经 _collect_admin_mail 汇总至此）自此
             # 双通道：不再单点依赖 SMTP 可用性。
             send_notification("易班签到汇总", body, urgent=True, force=True)
     else:
-        # 批次18 刀2 M7：收件人集为空原实现静默跳过——告警"看起来发了"实则全灭，
+        # 收件人集为空原实现静默跳过——告警"看起来发了"实则全灭，
         # 且无从排障。显式 warning 留痕（不走 webhook 兜底：无收件人是配置缺失而非
         # 通道故障，每轮签到都推 webhook 反而轰炸手机；留痕供日志页/状态页排查）。
         logger.warning(
@@ -1955,7 +1955,7 @@ def _user_fail_mail_allow_and_record(phone, today_str):
             try:
                 used = int(data.get(phone, 0))
             except (TypeError, ValueError):
-                # 批次7 P4-4：状态文件被手工改成非数字时不得冒泡中断整轮签到
+                # 状态文件被手工改成非数字时不得冒泡中断整轮签到
                 used = 0
             if used >= cap:
                 return False
@@ -2043,7 +2043,7 @@ def verify_account(account):
         finally:
             client._wipe_credentials()
     except Exception as e:
-        # 批次7 P3-13：同 attempt_signin——异常消息统一过 _sanitize_url 打码
+        # 同 attempt_signin——异常消息统一过 _sanitize_url 打码
         safe_err = _sanitize_text(_sanitize_url(str(e)))
         logger.warning(f"[{phone}] 健康检查失败: {safe_err}", exc_info=False)
         return False, safe_err
@@ -2079,7 +2079,7 @@ def attempt_signin(account):
         # 含敏感数据的源码上下文；异常消息经 _sanitize_text 脱敏后已足够定位
         # （原注释与行为矛盾）
         # 脱敏：异常消息可能含敏感数据（密码/令牌），替换后记录
-        # 批次7 P3-13：requests 异常消息内嵌完整请求 URL（含 CSRF 令牌）与代理
+        # requests 异常消息内嵌完整请求 URL（含 CSRF 令牌）与代理
         # userinfo，统一过 _sanitize_url 打码后再落日志
         safe_err = _sanitize_text(_sanitize_url(str(e)))
         logger.error(f"[{phone}] ❌ 尝试失败: {safe_err}", exc_info=False)
@@ -2145,7 +2145,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
 def _write_sched_done(counts=None):
     """写入当日「全量签到已运行」标记（sched-run-<date>.json）——调度器闸门事实源。
 
-    批次7 P1-1：调度器原 `_signed_today()` 以「任一账号 success」判定当日已签，
+    调度器原 `_signed_today()` 以「任一账号 success」判定当日已签，
     手动签到/部分成功都会压制全站首签与补签。新契约：仅全量模式在收尾写本标记
     （--only 手动签到与 --probe 探针不写），调度器据此判定：
     - 首签：标记不存在 → 执行；
@@ -2274,7 +2274,7 @@ def _schedule_blocks(cfg):
             "有效签到窗口为空（窗口 %s~%s、前裁 %ss 后裁 %ss），回退默认窗口 06:30~07:50",
             cfg["sign_start"], cfg["sign_end"], cfg["edge_front_sec"], cfg["edge_back_sec"],
         )
-        # 批次18 刀3 P3-3：镜像 _schedule_config 的 F3 模式（一次性去重）——原实现
+        # 镜像 _schedule_config 的 F3 模式（一次性去重）——原实现
         # 只写 WARNING 日志，管理员在 Web 界面看到的裁剪设置"看起来生效"、实际
         # 签到时刻完全不同且无人知情。现并入当日汇总邮件（A 线）一次，确保
         # 前后裁剪配置错误可被管理员发现；去重防多账号/多轮调用刷屏。
@@ -2435,7 +2435,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             # 而静默回退自动分配。改以 _slot_to_bi 的成员性为准（与 Web 端
             # _pref_slots 同一套可用性判定）。
             if slot not in slot_to_bi:  # 片无效/落窗外 → 回退自动分配
-                # 批次7 P4-6：留痕——退化窗口下自选片被丢弃此前完全静默
+                # 留痕——退化窗口下自选片被丢弃此前完全静默
                 logger.warning(f"[{phone}] 自选时间片 {slot} 不在今日可选范围，回退自动分配")
                 continue
             by_slot.setdefault(slot, []).append((str(p.get("updated_at", "")), phone))
@@ -2578,7 +2578,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
     执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
 
-    event_sink（批次12 裁决，可选）：签到事件落库回调——每次尝试/状态迁移调用一次，
+    event_sink（可选）：签到事件落库回调——每次尝试/状态迁移调用一次，
     传入 dict 行（sign_events 表字段）。None 时不收集（行为与旧版一致）；
     回调异常一律吞掉，事件留痕绝不影响签到主流程。
 
@@ -2601,7 +2601,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     first_round = True
 
     def _emit_event(phone, status, message, dur=None, attempt_no=None):
-        """签到事件留痕（批次12 裁决：v6 的 sign_events 表此前主流程零写入）。
+        """签到事件留痕（v6 的 sign_events 表此前主流程零写入）。
 
         每次尝试与状态迁移（含重试/跳过）落一行，stage="sign"；探针沿用既有
         stage="probe" 写入口径。异常吞掉——留痕失败不得影响签到主流程。
@@ -2721,7 +2721,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     cred_state.pop(phone, None)
                 logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
             elif cred.get("paused_since") and _probe_due(cred, today):
-                # 试探失败：仅凭据类失败才顺延试探日（批次7 P3-11：网络类瞬时失败
+                # 试探失败：仅凭据类失败才顺延试探日（网络类瞬时失败
                 # 原来也顺延 7 天，把可自愈状态放大成周级停签）；网络类失败保持
                 # probe_date 不变，次日即再试探
                 if _is_credential_failure(message):
@@ -2834,7 +2834,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 cred_state.pop(phone, None)
             logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
         elif cred.get("paused_since") and _probe_due(cred, today):
-            # 试探失败：仅凭据类失败才顺延试探日（批次7 P3-11，理由同上）
+            # 试探失败：仅凭据类失败才顺延试探日（理由同上）
             if _is_credential_failure(message):
                 next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
                 cred_state[phone]["probe_date"] = next_probe
@@ -3026,11 +3026,11 @@ def run_probe(accounts):
         # 需排查轮询是否如期触发时，开 DEBUG 级别即可看到每次尝试轨迹。
         logger.debug("==== 探针模式：已开启，但未到触发时间/频率，本次跳过 ====")
         return
-    # 批次7 P2-8：last_run 占位前置——探测开始前先记账，双探针/调度重启并发时
+    # last_run 占位前置——探测开始前先记账，双探针/调度重启并发时
     # 只放行一个（原实现探测结束后才写，两个探针都能通过 _health_probe_due 判定）
     _update_probe_state_run(datetime.now().strftime("%Y-%m-%d"))
     logger.info(f"==== 探针模式：对 {len(accounts)} 个账号进行健康检查 ====")
-    # 批次7 P3-11：探针确认健康 → 清除熔断暂停（原实现探针与熔断互不相通，
+    # 探针确认健康 → 清除熔断暂停（原实现探针与熔断互不相通，
     # 误冻账号即使每晚探针证明凭据可用也要熬到 7 天后半开试探）
     cred_state = _load_cred_state()
     fuse_cleared = False
@@ -3098,7 +3098,7 @@ def run_probe(accounts):
 def _apply_only_filter(accounts, only_arg):
     """--only 过滤：只保留指定手机号，返回 (保留账号, 未命中号码列表)。
 
-    批次16 P2-6：对每个未命中号码落 warning 日志——此前仅"全部不命中"才报错，
+    对每个未命中号码落 warning 日志——此前仅"全部不命中"才报错，
     `--only "存在号,手滑号"` 时未命中号码被静默丢弃，用户误以为全部已处理。
     调用方负责"过滤后为空则报错退出"。
     """
@@ -3121,11 +3121,11 @@ def main():
     - --only 指定手机号（逗号分隔），仅供手动签到单个账号
     - --check-config 仅检查配置，不发任何网络请求
     """
-    # 批次7 P3-15：进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
+    # 进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
     # 创建即 0600。宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器
     # scheduler 与无宿主脚本的裸调路径（Windows 无实际效果，忽略）。
     os.umask(0o077)
-    # 批次18 刀3 P3-13：日志装配从模块导入期延迟到 CLI 入口（幂等；覆盖
+    # 日志装配从模块导入期延迟到 CLI 入口（幂等；覆盖
     # --check-config / --probe / --only 全部路径），模块导入零副作用。
     _setup_cli_logging()
     parser = argparse.ArgumentParser(description="易班自动签到")
@@ -3154,7 +3154,7 @@ def main():
     # 误开探针时此前会夜夜走「未配置任何账号」ERROR 分支且 once 永不关闭；
     # 探针语义下零账号=无事可做，静默成功退出。
     if args.probe:
-        # 批次7 P2-8：探针会对全部账号做完整登录，必须与真实签到互斥——
+        # 探针会对全部账号做完整登录，必须与真实签到互斥——
         # 原实现绕过运行锁，23:55 探针与手动签到并发时同一账号被两进程并发登录。
         try:
             _probe_lock_fh = _acquire_run_lock(only_mode=True)
@@ -3181,7 +3181,7 @@ def main():
         sys.exit(1)
 
     # --only 过滤：只保留指定手机号（手动签到单个账号）
-    # 未命中号码逐号 warning（批次16 P2-6）；全不命中时报错退出（既有行为）。
+    # 未命中号码逐号 warning；全不命中时报错退出（既有行为）。
     if args.only:
         accounts, _missing = _apply_only_filter(accounts, args.only)
         if not accounts:
@@ -3226,7 +3226,7 @@ def main():
         _run_lock_fh = _acquire_run_lock(bool(args.only))
     except _RunLockHeld:
         logger.warning("已有签到进程在运行，本次手动签到跳过（防同账号并发，稍后可重试）")
-        # 批次7 P2-9：原 exit 0 让 web 把"静默跳过"当成功展示；3 = 队列忙，
+        # 原 exit 0 让 web 把"静默跳过"当成功展示；3 = 队列忙，
         # 调用方可据此向用户如实提示（退出码语义见文件头/退出码表）
         sys.exit(3)
 
@@ -3290,7 +3290,7 @@ def main():
 
     # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
     cred_state = {} if args.only else _load_cred_state()
-    # 批次12 裁决：签到事件收集器——run_queue_retry 每次尝试/迁移经 sink 上报，
+    # 签到事件收集器——run_queue_retry 每次尝试/迁移经 sink 上报，
     # 任务结束后单事务批量落库（见 results 赋值后的 add_sign_events_batch）。
     event_rows = []
     results = run_queue_retry(
@@ -3338,11 +3338,11 @@ def main():
     # （无点位账号 1 次即止、幂等无害）。
     has_real_failure = False
     has_executed = False
-    # 批次15 P1-1：窗口外/缺失（skipped_window/skipped_norange）属"未了结"——
+    # 窗口外/缺失（skipped_window/skipped_norange）属"未了结"——
     # 与容器调度器 _UNDONE_STATUSES（docker/scheduler.py）同一语义。宿主 run.sh 的
     # 07:10 补签闸门只认状态文件 SUCCESS 文本：若本轮有成功就把 skipped 账号的
     # 退出码判成 0，run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底
-    # （容器侧批次12 B12-2 已修此洞，宿主侧是本轮补齐）。
+    # （容器侧已修此洞，宿主侧是本轮补齐）。
     has_window_skip = False
     ok_n = fail_n = skip_n = no_pos_n = 0
     for acc in accounts:
@@ -3368,16 +3368,16 @@ def main():
         summary += f"，🚫 {no_pos_n} 无点位"
     logger.info(f"==== 签到汇总：{summary} ====")
 
-    # 批次12 B12-2 + 批次15 P1-1：窗口外未了结专项告警。
+    # 窗口外未了结专项告警。
     # is_second_run：run.sh 补签轮（07:10）导出的 YIBAN_SECOND_RUN=1 优先
-    # （批次16 P2-4：首签子进程被 timeout 击杀、exit 124 未写 sched-run 标记时，
+    # （首签子进程被 timeout 击杀、exit 124 未写 sched-run 标记时，
     # 标记兜底失效，必须靠 run.sh 的补签轮环境变量识别）；容器调度器 SECOND
     # 时段同样注入该变量；sched-run 标记作为兜底（手动/其他启动路径）。
     _maybe_alert_zero_success(
         accounts, results, ok_n, is_second_run=_is_second_run()
     )
 
-    # 批次12 裁决：签到事件落库——v6 建了 sign_events 表但签到主流程零写入
+    # 签到事件落库——v6 建了 sign_events 表但签到主流程零写入
     # （仅探针 stage=probe 有写入），统计/时间线读取函数零调用方，基础设施空转。
     # 现每次尝试与状态迁移落一行（stage=sign），批量单事务写入；失败仅告警
     # （add_sign_events_batch 内部捕获），不影响签到退出码。
@@ -3420,7 +3420,7 @@ def main():
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。
     _flush_admin_mail_summary()
 
-    # 全量运行完成标记（批次7 P1-1）：调度器首签/补签闸门的事实源。
+    # 全量运行完成标记：调度器首签/补签闸门的事实源。
     # 仅全量模式写入；--only 手动签到不写——手动成功不得压制调度器当日判定。
     if not args.only:
         _write_sched_done({"ok_n": ok_n, "fail_n": fail_n, "skip_n": skip_n})

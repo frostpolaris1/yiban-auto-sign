@@ -513,7 +513,7 @@
           <pre id="probe-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
         </details>
       </div>
-      <!-- 签到事件（批次12：sign_events 补消费端）当日结构化时间线，含重试/跳过迁移 -->
+      <!-- 签到事件（sign_events 补消费端）当日结构化时间线，含重试/跳过迁移 -->
       <div id="signev-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
         <details>
           <summary class="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-200 select-none">签到事件（<span id="signev-count">0</span> 条）</summary>
@@ -722,7 +722,7 @@
                   class="bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">发送测试消息</button>
           <span id="notify-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
-        <!-- 每日推送额度：批次14 分账后非紧急/紧急各自独立计数，两本账同页可配 -->
+        <!-- 每日推送额度：分账后非紧急/紧急各自独立计数，两本账同页可配 -->
         <div class="grid grid-cols-2 gap-3 mb-2">
           <div>
             <label for="notify-daily-max" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">非紧急每日上限（0=不限）</label>
@@ -1616,7 +1616,7 @@ function batchAccounts(key, action) {
   if (action === 'approve' && !confirm(`确定通过选中的 ${ids.length} 个账号吗？通过后将参与定时签到。`)) return;
   if (action === 'delete' && !confirm(`确定删除选中的 ${ids.length} 个账号吗？将进入待删除列表，可恢复。`)) return;
   if (action === 'purge') {
-    // 批次14 P1-2：彻底删除＝物理清除易班凭据，不可逆 → 与「批量删除用户」同口径走
+    // 彻底删除＝物理清除易班凭据，不可逆 → 与「批量删除用户」同口径走
     // 密码模态二次鉴权（后端另加高危限速与 urgent 告警）；原生长确认由模态文案承担
     openConfirmPasswordModal(
       `彻底删除选中的 ${ids.length} 个账号？\n凭据将被物理清除，不可恢复！\n请输入当前管理员密码确认。`,
@@ -1649,8 +1649,8 @@ function batchUsers(key, action) {
   const body = { action, emails };
   if (action === 'reset_password') {
     // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验口径见 openPasswordModal
-    // 的 set 分支（批次14 Task 6 补齐类别判定，与后端 _password_policy_error 一致）。
-    // 批次16 P1-2：重置密码 = 账号控制权转移，须再经 confirm 模态输入当前管理员密码
+    // 的 set 分支（补齐类别判定，与后端 _password_policy_error 一致）。
+    // 重置密码 = 账号控制权转移，须再经 confirm 模态输入当前管理员密码
     openPasswordModal(`为选中的 ${emails.length} 个用户设置新密码（${PW_POLICY_HINT}）`, (pw) => {
       body.password = pw;
       openConfirmPasswordModal(`批量重置选中的 ${emails.length} 个用户密码？\n请输入当前管理员密码确认。`, (cpw) => {
@@ -1797,7 +1797,7 @@ async function restoreAccount(idx) {
 function purgeAccount(idx) {
   const a = state.accounts[idx];
   if (!a) { toast('账号列表已变化，请刷新页面后重试', true); return; }
-  // 批次14 P1-2：单条物理清除此前直发请求、零鉴权零告警。现与"彻底清除已注销用户"
+  // 单条物理清除此前直发请求、零鉴权零告警。现与"彻底清除已注销用户"
   // 同口径：先经密码模态取当前管理员口令，再带 confirm_password 提交
   openConfirmPasswordModal(
     `彻底删除「${a.display_name}」(${maskPhone(a.phone)})？\n凭据将被物理清除，不可恢复！\n请输入当前管理员密码确认。`,
@@ -2048,7 +2048,7 @@ $('account-form').addEventListener('submit', async (e) => {
   // 手机号打码显示时（未修改）用内存中的完整号码提交，避免 **** 入库
   const phoneInput = $('f-phone');
   const phoneRaw = phoneInput.value.trim();
-  // 批次14 P3-2：编辑态下 state.editSnapshot 为 null，说明详情接口失败——既拿不到完整
+  // 编辑态下 state.editSnapshot 为 null，说明详情接口失败——既拿不到完整
   // 手机号，也拿不到乐观锁快照。原先此路径仍允许保存（不带 _snapshot 提交），列表
   // 一旦漂移就会把改动落到另一账号上且后端无从校验；现一律禁止提交并提示刷新。
   // 两道拦截都放在启用在途锁之前：命中时按钮与 accountSubmitting 均保持原状，
@@ -2167,7 +2167,7 @@ async function loadLogs() {
     } else {
       probeBlock.classList.add('hidden');
     }
-    // 签到事件时间线（批次12：sign_events 补消费端），符号按状态码（与日志口径一致）
+    // 签到事件时间线（sign_events 补消费端），符号按状态码（与日志口径一致）
     const _sievSym = { success: '✅', already: '✅', no_task: '➖', failed: '❌',
       retrying: '🔄', pending: '🕐', skipped_window: '⛔', skipped_norange: '⛔',
       paused: '⏸️', user_cancelled: '⏹️' };
@@ -2376,7 +2376,7 @@ function markSchedDirty() {
 }
 
 // 调度权限：仅主管理员可改（后端 403 兜底，前端禁用控件）；
-// 账号间隔随随机延迟卡并入本卡（批次7 A5 同为主管理员专属），沿用同一禁用清单
+// 账号间隔随随机延迟卡并入本卡（同为主管理员专属），沿用同一禁用清单
 function renderSchedulePerm() {
   const disabled = !state.isMasterAdmin;
   ['sign-order-select', 'sign-dist-select', 'edge-front', 'edge-back', 'window-start', 'window-end',
@@ -2653,7 +2653,7 @@ function initFullTables() {
 }
 
 async function saveSettings(silent) {
-  // 周末开关所有管理员可改；账号间隔属调度核心参数（批次7 A5 收归主管理员），仅主管理员
+  // 周末开关所有管理员可改；账号间隔属调度核心参数（收归主管理员），仅主管理员
   // 在间隔变化时携带 gap 键——后端「见键即要求主管理员密码确认 + 容量校验」，不带键则不改间隔
   const payload = {
     // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
@@ -2737,7 +2737,7 @@ async function loadMailConfig() {
 async function toggleMailGlobal() {
   const el = $('mail-global-switch');
   const enabled = el.checked;
-  // 批次14 P1-1：关闭全局邮件通道 = 给全部安全告警拔线（后端已要求二次口令）。
+  // 关闭全局邮件通道 = 给全部安全告警拔线（后端已要求二次口令）。
   // 先把开关拨回原状，口令确认成功后再落——用户取消模态时界面不会出现"看着已关"的假象
   if (!enabled) {
     el.checked = mailEnabled;
@@ -2769,7 +2769,7 @@ async function submitMailGlobal(enabled, pw) {
 async function toggleMailSelf() {
   const el = $('mail-self-switch');
   const enabled = el.checked;
-  // 批次14 P1-1：主管理员关闭个人接收（admin_notify=false）后 ADMIN_TO 告警邮件全部
+  // 主管理员关闭个人接收（admin_notify=false）后 ADMIN_TO 告警邮件全部
   // 停发，同样属"拔线"动作 → 二次口令；普通管理员的 my-mail-notify 只影响其本人，不变
   if (state.isMasterAdmin && !enabled) {
     el.checked = mailSelfOn;
@@ -2893,7 +2893,7 @@ async function loadNotifyConfig() {
     $('notify-type').value = data.type || '';
     $('notify-secret').value = '';
     $('notify-urgent-switch').checked = !!data.urgent_only;
-    // 批次14 P2-1：额度已分成"非紧急 / 紧急"两本账，只报一个数字会被运维当成总额度
+    // 额度已分成"非紧急 / 紧急"两本账，只报一个数字会被运维当成总额度
     const gLeft = data.daily_remaining == null ? '不限' : `${data.daily_remaining} 条`;
     const uLeft = data.urgent_daily_remaining == null ? '不限' : `${data.urgent_daily_remaining} 条`;
     if (data.daily_max != null) $('notify-daily-max').value = data.daily_max;
@@ -2905,7 +2905,7 @@ async function loadNotifyConfig() {
     } else {
       parts.push(data.configured ? '已配置但不可用（密钥缺失或解密失败，请重新填写密钥）' : '未配置');
     }
-    // 两本账剩余无论通道开关都照报：额度耗尽本身就是要让运维看见的事实（批次14 P3-1）
+    // 两本账剩余无论通道开关都照报：额度耗尽本身就是要让运维看见的事实
     parts.push(`今日推送额度：非紧急剩余 ${gLeft} / 紧急剩余 ${uLeft}`);
     $('notify-status').textContent = parts.join('；');
   } catch (e) { /* 读取失败不阻塞设置页 */ }
@@ -2918,7 +2918,7 @@ async function saveNotifyConfig() {
   // 关闭推送：无需密钥，直接保存（后端清除类型与密钥，v0.26.0 修复原"关不掉"bug）
   // 开启推送：密钥不回显，须重新输入；同时防误点保存把已配置密钥清空
   if (body.type && !secret) { toast('开启推送请填写密钥', true); return; }
-  // 批次14 P1-1：关闭通道与换密钥等同"给报警器拔线"，后端要求二次口令后才落盘；
+  // 关闭通道与换密钥等同"给报警器拔线"，后端要求二次口令后才落盘；
   // 只改节流/额度/仅重要告警开关不走这里（见 saveNotifyBudget / saveNotifyUrgent）
   openConfirmPasswordModal(
     body.type
@@ -2942,7 +2942,7 @@ async function submitNotifyConfig(body) {
   }
 }
 
-// 两本账每日上限（批次14 P2-1 分账后紧急账也能在页面上配）：纯数值改动，无需二次口令
+// 两本账每日上限（分账后紧急账也能在页面上配）：纯数值改动，无需二次口令
 async function saveNotifyBudget() {
   const tip = $('notify-tip');
   const gv = String($('notify-daily-max').value).trim();
@@ -3431,7 +3431,7 @@ async function setUserRole(email, role) {
 
 function resetUserPassword(email) {
   // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；口令策略校验见 openPasswordModal set 分支
-  // 批次16 P1-2：管理员重置他人密码须再经 confirm 模态输入当前管理员密码二次鉴权
+  // 管理员重置他人密码须再经 confirm 模态输入当前管理员密码二次鉴权
   openPasswordModal(`为 ${email} 设置新密码（${PW_POLICY_HINT}）`, (password) => {
     openConfirmPasswordModal(`确认重置 ${email} 的密码？\n请输入当前管理员密码确认。`, async (cpw) => {
       try {

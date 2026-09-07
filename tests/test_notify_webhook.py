@@ -9,15 +9,15 @@
 - 自定义 URL：JSON {title,content}、SSRF 白名单拒绝不安全地址、非 2xx 失败
 - 同类型节流：窗口内同标题跳过、force 绕过、cooldown=0 关闭
 - 日志脱敏：SendKey / URL token / userinfo 一律不进日志
-- 批次14 P2-1：紧急 / 非紧急两本账互不挤占、发送失败退还额度、首次耗尽一次性告知
+- 紧急 / 非紧急两本账互不挤占、发送失败退还额度、首次耗尽一次性告知
   （budget_exhausted_today / pop_exhaustion_notice）、跨日两账同时归零、
   跳过原因日志同窗口去重
-- 批次14 修复轮1：额度"打满当次"即挂耗尽告知（不等下一次被拒）、退还按占用凭证执行
+- 额度"打满当次"即挂耗尽告知（不等下一次被拒）、退还按占用凭证执行
   （跨日凭证作废、发送途中改上限不多退不漏退、虚警撤回）、pop_exhaustion_notice
   返回哪些账本耗尽且每本账每日各一次、get_config 一轮只解析一次 .env
-- 批次14 修复轮2：虚警判定与告知撤回合并在同一把账本锁内（并发下真实 pending
+- 虚警判定与告知撤回合并在同一把账本锁内（并发下真实 pending
   不会被陈旧撤回抹掉）；耗尽告知标记与额度计数同属一本账（notify._*_daily["notice"]）
-- 批次14 P2-2 同源：get_secret 必须按 YIBAN_ENV_FILE 解析路径取钥，不在 cwd 生成游离密钥
+- get_secret 必须按 YIBAN_ENV_FILE 解析路径取钥，不在 cwd 生成游离密钥
 全程 mock requests，不发起真实网络请求。
 用法（项目根目录）：
     py -m pytest tests/test_notify_0829.py -v
@@ -42,7 +42,7 @@ SCT_KEY = "SCT406257TESTTESTTESTTESTTEST"
 def _reset_notices():
     """清空两本账的耗尽告知标记（进程内状态，用例之间必须互不串）。
 
-    批次14 修复轮2：pending/notified/warned 从全局 notify._exhaustion 挪进了
+    pending/notified/warned 从全局 notify._exhaustion 挪进了
     各本账自己的 notice 子字典（与 count 同一把账本锁），复位口径随之逐本清。
     """
     for ledger in (notify._general_daily, notify._urgent_daily):
@@ -52,7 +52,7 @@ def _reset_notices():
 def _clear(monkeypatch):
     """隔离环境：固定加密密钥 + 隔离 .env（不读项目根 .env）+ 清空 YIBAN_NOTIFY_*。
 
-    批次15 P2-3：额外隔离账本目录（YIBAN_STATE_DIR 指向临时目录）并清掉旧账本
+    额外隔离账本目录（YIBAN_STATE_DIR 指向临时目录）并清掉旧账本
     文件——每日预算改为磁盘持久化后，跨用例残留的 notify-ledger.json（旧测试
     写入的当日计数）会让计数从非零起步，send 误判额度耗尽。每用例独立 tmpdir。
     """
@@ -64,7 +64,7 @@ def _clear(monkeypatch):
     monkeypatch.setenv("YIBAN_ENV_FILE",
                        os.path.join(tempfile.gettempdir(), "yiban-notify-no-such.env"))
     notify._throttle_ts.clear()
-    # 重置进程内状态：两本账、耗尽告知标记、跳过日志去重表（批次14）
+    # 重置进程内状态：两本账、耗尽告知标记、跳过日志去重表
     notify._general_daily["state"].update({"date": "", "count": 0})
     notify._urgent_daily["state"].update({"date": "", "count": 0})
     _reset_notices()
@@ -454,7 +454,7 @@ def test_get_config_parses_env_file_once(monkeypatch):
     assert len(reads) == 1, f".env 被重复解析了 {len(reads)} 次"
 
 
-# ---- 批次14 P2-1：额度分两本账 ----
+# ---- 额度分两本账 ----
 
 def test_urgent_exhausted_does_not_block_general(monkeypatch):
     """紧急账打满不影响非紧急可达：两本账各自独立计数。"""
@@ -528,7 +528,7 @@ def test_cross_day_resets_both_ledgers(monkeypatch):
     assert len(calls) == 4
 
 
-# ---- 批次14 P2-1：失败退还 ----
+# ---- 失败退还 ----
 
 def test_send_rejected_refunds_budget(monkeypatch):
     """服务端拒绝（code!=0）不扣额度，退还后仍可再试（旧口径失败照扣=可被烧额度）。"""
@@ -749,7 +749,7 @@ def test_force_send_does_not_consume_or_refund(monkeypatch):
     assert notify._general_daily["state"]["count"] == 0
 
 
-# ---- 批次14 P2-1：首次耗尽一次性告知 ----
+# ---- 首次耗尽一次性告知 ----
 
 def test_last_message_filling_budget_still_notifies(monkeypatch, caplog):
     """修复轮①：最后一条恰好打满、之后不再有新的 send 调用时，告知仍必须能取到。
@@ -817,7 +817,7 @@ def test_each_ledger_notices_once_per_day(monkeypatch):
     assert notify.pop_exhaustion_notice() == []
 
 
-# ---- 批次14：跳过原因可见（同窗口去重） ----
+# ---- 跳过原因可见（同窗口去重） ----
 
 def test_skip_reason_logs_deduped_per_window(monkeypatch, caplog):
     """非紧急过滤 / 节流命中 / 额度耗尽各一行 info，且同原因窗口内只记一行。"""
@@ -877,7 +877,7 @@ def test_cooldown_explicit_zero_from_env_file_disables_throttle(monkeypatch, tmp
     assert not (elsewhere / ".env").exists(), "不得在 cwd 生成游离密钥文件"
 
 
-# ---- 批次14 P2-2 同源：get_secret 的密钥来源与不抛异常契约 ----
+# ---- get_secret 的密钥来源与不抛异常契约 ----
 
 def test_get_secret_reads_env_file_not_cwd(monkeypatch, tmp_path):
     """密文与密钥都在 YIBAN_ENV_FILE 指的文件里：解钥必须读同一个文件，不碰 cwd。"""

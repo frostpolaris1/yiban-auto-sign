@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """签到/探针子进程环境构造（run.sh、container_scheduler、web 共用口径）。
 
-批次7 P2-10：此前 web 手动签到子进程只继承 gunicorn 启动时的环境快照，
+此前 web 手动签到子进程只继承 gunicorn 启动时的环境快照，
 管理员事后在 .env 改的 YIBAN_PROXY / YIBAN_NOTIFY_URL / 登录方式等对手动签到
 不生效（定时签到经 run.sh/scheduler 每次重读 .env，两条路径行为分叉）。
 现统一为本模块：以进程环境为底座，.env 的 YIBAN_* 键覆盖注入。

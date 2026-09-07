@@ -40,7 +40,7 @@ STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
-# 批次16 P2-4 引入、批次18 刀3 M6 前移：识别「当日已触发过」标记。
+# 识别「当日已触发过」标记。
 # 06:31 与 07:10 是同一脚本的两次 cron 调用，仅靠 sign-status 状态文件无法区分——
 # 首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）时不写状态文件，07:10 补签
 # 轮读到的状态文件可能不存在，与首签轮无异。
@@ -103,7 +103,7 @@ if [ -f "$STATUS_FILE" ]; then
     fi
 fi
 
-# 批次16 P2-4 / 批次18 刀3 M6：补签轮判定已前移至 flock 之前的 RUN_MARKER 块
+# 补签轮判定已前移至 flock 之前的 RUN_MARKER 块
 # （见文件头部），此处 STATUS_FILE 的 SUCCESS 幂等检查保持在标记块之后不变——
 # 已成功的当日无需再区分轮次，直接跳过。
 
@@ -118,7 +118,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python版本: $("$PY" --version 2>&1)" >> "
 # 与 signin.py _schedule_config 同一事实源，默认 07:50）− 当前时刻 + 5 分钟余量，
 # 下限 10 分钟。此前固定 1800s：06:31 启动 → 07:01 强杀，账号增多/自选开放后
 # 时间点排到窗口后段会被误杀漏签（07:10 备用 cron 重跑仍可能再杀，反复漏签）。
-# YIBAN_RUN_TIMEOUT_SEC 显式设置时优先（管理员手动覆盖）——批次18 刀3 P3-2：
+# YIBAN_RUN_TIMEOUT_SEC 显式设置时优先（管理员手动覆盖）——
 # 显式值必须为 ≥600 的整数（与 docker/scheduler.py _child_timeout 的 max(600,·)
 # 同口径），非法或过小（<600 会把子进程几乎立刻杀掉造成全员漏签）→ 打 WARNING
 # 并回退动态计算默认值；空值（未设置）走默认分支不动。
@@ -151,7 +151,7 @@ EXIT_CODE=$?
 # 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：
 # 全部 skip（无实际执行，退出码 2）写 SKIPPED，避免把"没签到"记录成成功
 # 从而吞掉后续任务；其他失败（退出码 1）不写状态文件
-# 批次15 P1-1：退出码 2 同时覆盖「存在窗口外/缺失未了结账号」的混合场景
+# 退出码 2 同时覆盖「存在窗口外/缺失未了结账号」的混合场景
 # （部分成功 + 部分 skipped_window/norange）——signin.py 此时返回 2，
 # 这里写 SKIPPED 而非 SUCCESS，07:10 补签 cron 见非 SUCCESS 会重跑，
 # 窗口外账号不因"有账号成功"而失去当天兜底（容器调度器同语义）。

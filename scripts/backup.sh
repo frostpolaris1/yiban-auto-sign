@@ -61,7 +61,7 @@ DATA_FILES=(.env)
 DB_FILE="${DB_FILE:-yiban.db}"
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
-# 批次14 P3-5：应用侧统一键为 YIBAN_STATE_DIR（web/app.py、scripts/db.py、
+# 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、scripts/db.py、
 #     .env.example），原 SIGN_STATE_DIR 与其脱钩——自定义状态目录时
 #     sign-daily/sign-state/cred-state 静默不入备份包（影响"当天是否已签"的
 #     判定恢复）。现以 YIBAN_STATE_DIR 优先，SIGN_STATE_DIR 仅作旧部署回退。
@@ -226,7 +226,7 @@ if [ "$REQUIRE_ENCRYPT" -eq 1 ]; then
     fi
 fi
 
-# 批次17 P2-8：BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥检查前移到打包之前。
+# BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥检查前移到打包之前。
 # 原检查位于 tar 打包之后（下方 342-347 行），拒绝路径无 rm -f——明文归档
 # （含 .env 全部密钥 + 数据库 + accounts-key）已落盘 BACKUP_DIR，违反
 # --require-encrypt 的"不得生成明文归档"契约。此处提前拦截，不生成任何归档。
@@ -349,9 +349,9 @@ chmod 0600 "${ARCHIVE}"
 # ------------------------------------------------------------
 ENC_FILE=""
 if [ "${BACKUP_PLAINTEXT}" = "1" ] && [ "${REQUIRE_ENCRYPT:-0}" -eq 1 ]; then
-    # 批次7 P4-11：两个 flag 并存时 --require-encrypt 的"不得生成明文归档"契约
+    # 两个 flag 并存时 --require-encrypt 的"不得生成明文归档"契约
     # 被静默违背——显式互斥。
-    # 批次17 P2-8：前置互斥检查已提前拦截本分支，此处仅作兜底清场——拒绝路径
+    # 前置互斥检查已提前拦截本分支，此处仅作兜底清场——拒绝路径
     # 必须删除已落盘明文归档再退出，与 remote_fail 清场同语义。
     echo "错误：BACKUP_PLAINTEXT=1 与 --require-encrypt 互斥，已删除本轮明文归档并退出" >&2
     rm -f "$ARCHIVE"
@@ -362,14 +362,14 @@ if [ "${BACKUP_PLAINTEXT}" = "1" ]; then
     log "⚠⚠⚠ 已显式设置 BACKUP_PLAINTEXT=1：本轮生成【明文】本地归档 ⚠⚠⚠"
     log "⚠⚠⚠ 归档内含 .env 全部密钥、管理员口令哈希与全量数据库！   ⚠⚠⚠"
     log "════════════════════════════════════════════════════════════"
-    # 批次17 P3-3：明文豁免只作用于【本地】归档；配置了 REMOTE_BACKUP 时
+    # 明文豁免只作用于【本地】归档；配置了 REMOTE_BACKUP 时
     # 异机副本仍会加密后出站（异机副本绝不传明文），不是一并取消。
     [ -n "${REMOTE_BACKUP}" ] && log "已配置 REMOTE_BACKUP：异机副本仍将加密后出站（非明文）"
 elif try_encrypt; then
     rm -f "${ARCHIVE}"
     log "已启用本地默认加密：明文归档已移除，本轮密文为 ${ENC_FILE}"
 else
-    # 批次15 P2-2：--require-encrypt 契约必须 fail-closed——管理员显式要求加密时，
+    # --require-encrypt 契约必须 fail-closed——管理员显式要求加密时，
     # 加密失败（gpg 密钥环损坏/口令错误/IO 错误）绝不允许静默回退明文归档。
     # 原实现仅打印警告并保留明文（含 .env 全部密钥 + 数据库 + accounts-key 同包），
     # 与脚本头"拒绝创建本地明文归档"的承诺相悖；且异机同步失败的 remote_fail()
@@ -407,7 +407,7 @@ log "本地备份完成：${FINAL_LOCAL}（$(du -h "${FINAL_LOCAL}" | cut -f1)�
 if [ -n "${REMOTE_BACKUP}" ]; then
     log "REMOTE_BACKUP 已配置，准备同步到 ${REMOTE_BACKUP} ..."
     REMOTE_FILE="${ENC_FILE}"
-    # 批次17 P3-3：去掉原 `[ "${BACKUP_PLAINTEXT}" != "1" ]` 拦截——BACKUP_PLAINTEXT=1
+    # 去掉原 `[ "${BACKUP_PLAINTEXT}" != "1" ]` 拦截——BACKUP_PLAINTEXT=1
     # 只豁免【本地】归档的默认加密，异机副本契约不变：本地为明文时仍尝试加密后再
     # 出站（异机副本绝不传明文）。原拦截让"显式明文 + 配置了异机"时异机副本被
     # 整体静默丢弃，且告警文案误导（有 gpg 却报"未提供可用加密方式"）。
@@ -432,7 +432,7 @@ if [ -n "${REMOTE_BACKUP}" ]; then
         # 或定期人工清理；本脚本只保证本地保留天数。
     else
         if [ "${BACKUP_PLAINTEXT}" = "1" ]; then
-            # 批次17 P3-3：明确区分"显式明文"与"无加密方式"——前者更该知道
+            # 明确区分"显式明文"与"无加密方式"——前者更该知道
             # 明文豁免只作用于本地，异机副本因此缺位时需要的是配置加密而非关明文
             log "警告：BACKUP_PLAINTEXT=1 只豁免本地归档的默认加密，异机副本绝不传明文（未配置/不可用加密时本轮无异机副本）" >&2
             log "警告：请配置 BACKUP_GPG_RECIPIENT 或 BACKUP_GPG_PASSPHRASE 后重试（本地明文归档已保留）" >&2

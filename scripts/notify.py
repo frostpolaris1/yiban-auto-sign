@@ -16,10 +16,10 @@
 
 防滥用（2026-08-29 被盗号滥用面加固）：
 - 同类型告警节流：窗口内同标题只推一条（防盗号/异常反复触发刷爆 Server酱等
-  第三方配额与管理员手机）；批次16 P2-9 起节流状态持久化到磁盘
+  第三方配额与管理员手机）；节流状态已持久化到磁盘
   （$YIBAN_STATE_DIR/notify-throttle.json，文件锁互斥）——web（常驻）与
   signin（cron 新进程）共享同一节流窗口，不再各持一份进程内节流表、各放行一条；
-- 每日预算硬上限（批次14 P2-1 拆两本账）：非紧急推满 YIBAN_NOTIFY_DAILY_MAX、
+- 每日预算硬上限（拆成两本账）：非紧急推满 YIBAN_NOTIFY_DAILY_MAX、
   紧急推满 YIBAN_NOTIFY_URGENT_DAILY_MAX 后各自停手（邮件仍全量送达）。旧口径
   两类共用一份额度，未认证攻击者用「登录失败告警」（urgent）约 5 分钟即可烧掉
   当日全部额度，之后审计链异常等真告警在手机端全灭；
@@ -69,9 +69,9 @@ _PREFIX = "YIBAN_NOTIFY_"
 SERVERCHAN_TURBO_HOST = "sctapi.ftqq.com"
 DEFAULT_COOLDOWN = 60
 DEFAULT_DAILY_MAX = 5
-# 批次14 P2-1：紧急告警另开一本独立额度，保证噪声烧完非紧急额度后仍有手机通道
+# 紧急告警另开一本独立额度，保证噪声烧完非紧急额度后仍有手机通道
 DEFAULT_URGENT_DAILY_MAX = 3
-# 批次18 刀2 M8：登录失败告警独立账本的日额度默认值；键名无 NOTIFY_ 前缀（独立
+# 登录失败告警独立账本的日额度默认值；键名无 NOTIFY_ 前缀（独立
 # 命名），读取口径（环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
 DEFAULT_LOGINFAIL_DAILY_MAX = 3
 LOGINFAIL_DAILY_MAX_KEY = "YIBAN_LOGINFAIL_DAILY_MAX"
@@ -80,7 +80,7 @@ MAX_TITLE_CHARS = 32
 # 跳过原因日志的去重窗口（秒）：同一原因窗口内只记一行，避免被刷爆日志
 SKIP_LOG_WINDOW = 60
 
-# 节流状态（批次16 P2-9 升级为磁盘持久化后）：
+# 节流状态（升级为磁盘持久化后）：
 # _throttle_ts / _throttle_lock 只承担「本进程快速路径」——本进程刚放行过的标题
 # 在窗口内直接跳过（省磁盘 IO）；跨进程一致性由磁盘 notify-throttle.json +
 # 文件锁保证（见 _throttle_due）。保持这两个符号名不变，既有测试的
@@ -89,7 +89,7 @@ _throttle_ts = {}
 _throttle_lock = threading.Lock()
 
 # 每日推送预算（进程内计数，重启清零；Server酱免费 5 条/天由服务端自身响应兜底，
-# 本计数用于提前感知并停止，避免徒劳请求）。批次14 P2-1：拆成非紧急 / 紧急两本账，
+# 本计数用于提前感知并停止，避免徒劳请求）。：拆成非紧急 / 紧急两本账，
 # 各自按日归零、各自持锁——signin 与 web 两个进程各持一份额度沿用既有事实，本轮不合并。
 # 账本用字符串标识（_LEDGER_IDS）而不是布尔：退还凭证要把"退到哪本账"写死在占用时刻，
 # 布尔在传参链上一旦取反就是静默错位；字符串标识在凭证与跳过日志里都能直接读出来。
@@ -101,7 +101,7 @@ _throttle_lock = threading.Lock()
 #   warned    当日已记过 warning；额度被退还撤销时**不**撤销它，否则通道长期失败
 #             （每次占满都退还重来）会把 warning 刷成日志风暴
 #
-# 为什么 notice 与 count 共用同一把账本锁（批次14 修复轮2）：判定"是否虚警"要读 count、
+# 为什么 notice 与 count 共用同一把账本锁：判定"是否虚警"要读 count、
 # 撤回告知要写 pending，两步必须在同一个临界区内完成。原先 pending 自持一把全局锁，
 # 判定与撤回之间留了一道缝——另一线程（web 是 Flask threaded=True，设置页/健康检查确有
 # 并发发送）可以在这道缝里把额度重新占满并挂上真实 pending，再被这一次陈旧 discard 抹掉；
@@ -118,7 +118,7 @@ _urgent_daily = {
     "notice": {"pending": False, "notified": False, "warned": False},
     "lock": threading.Lock(),
 }
-# 批次18 刀2 M8：登录失败告警独立账本。登录失败是公网最高频的告警源，web 侧
+# 登录失败告警独立账本。登录失败是公网最高频的告警源，web 侧
 # send_notification(ledger="login_fail") 让它单独记账（YIBAN_LOGINFAIL_DAILY_MAX，
 # 默认 3，0=不限），不再与 general/urgent 两本账互挤——喷洒类攻击把本账打满后，
 # 审计链异常等真紧急告警仍可达手机。
@@ -130,7 +130,7 @@ _loginfail_daily = {
 _LEDGER_IDS = ("general", "urgent", "login_fail")
 _LEDGERS = {"general": _general_daily, "urgent": _urgent_daily, "login_fail": _loginfail_daily}
 
-# 批次15 P2-3：每日预算从「进程内内存」升级为「磁盘账本」——原实现 web（常驻）与
+# 每日预算从「进程内内存」升级为「磁盘账本」——原实现 web（常驻）与
 # signin（每次 cron 新进程）各持一份独立计数，默认 5 条/天的上限实际可发 15 条
 # （web 5 + 首签 5 + 补签 5），且进程重启即清零。Server酱免费版 5 条/天是第三方
 # **全局**约束，进程级计数让系统侧"每日预算"承诺形同虚设。
@@ -162,7 +162,7 @@ def _ledger_path():
 
 
 def _throttle_path():
-    """节流状态文件路径：$YIBAN_STATE_DIR/notify-throttle.json（批次16 P2-9）。
+    """节流状态文件路径：$YIBAN_STATE_DIR/notify-throttle.json。
 
     与账本同目录：web 与 signin 共享同一文件，跨进程节流窗口才成立。
     """
@@ -249,7 +249,7 @@ def _save_ledger_file(data):
 
 
 # ---------------------------------------------------------------------------
-# 节流状态持久化（批次16 P2-9：跨进程共享节流窗口）
+# 节流状态持久化（跨进程共享节流窗口）
 # 文件布局：{"<title>": 上次放行时间戳}；与每日预算账本同款「文件锁临界区内
 # 读-改-写」保证 web 与 signin 不会各自持一份节流表。损坏/缺文件按空表处理
 # （最坏多放行一条同类告警，不超发），但同样归档留证 + warning，不静默。
@@ -420,8 +420,8 @@ def _env_str(key, envs=None):
     """环境变量优先，回退 .env（与 web/signin 惯例一致）。
 
     envs：调用方本轮已解析好的 .env 快照（_read_env_file() 的返回值）。不传则本函数
-    自己读文件——一次调用读一遍全文件，get_config 里 6 个键就是 6 次磁盘 + 6 次解析
-    （批次14 修复轮⑤），故允许把同一轮的解析结果传进来复用。
+    自己读文件——一次调用读一遍全文件，get_config 里 6 个键就是 6 次磁盘 + 6 次解析，
+    故允许把同一轮的解析结果传进来复用。
     """
     value = os.environ.get(_PREFIX + key, "").strip()
     if value:
@@ -507,7 +507,7 @@ def get_secret(envs=None):
         logger.warning("YIBAN_NOTIFY_SECRET_ENC 解析失败，消息推送不可用")
         return ""
     try:
-        # 批次14：必须显式传路径。load_key() 不带参数会回落到 cwd/.env，而本模块
+        # 必须显式传路径。load_key() 不带参数会回落到 cwd/.env，而本模块
         # 的密文是按 YIBAN_ENV_FILE 读的——容器里 cwd=/app、真实配置在 /data/.env，
         # 于是"cwd 下没有 .env"→ 就地生成一把游离新密钥并写盘（P2-5 同源），
         # 结果是用错钥解密 → 推送通道静默死亡，还额外在镜像工作目录留下密钥文件。
@@ -521,7 +521,7 @@ def get_secret(envs=None):
 def get_config():
     """配置概览（脱敏），供设置页/日志展示。"""
     # 本轮所有键共用一份 .env 解析结果：下面 6 个字段各读一遍文件是 6 次磁盘 + 6 次
-    # 全文件解析（批次14 修复轮⑤），设置页轮询时这笔开销并不便宜
+    # 全文件解析，设置页轮询时这笔开销并不便宜
     envs = _read_env_file()
     ntype = _env_str("TYPE", envs).strip().lower()
     secret = get_secret(envs)
@@ -539,7 +539,7 @@ def get_config():
         "configured": bool(ntype or secret),
         "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN, envs),
         "urgent_only": bool(_env_int("URGENT_ONLY", 0, envs)),
-        # 批次14 P2-1：daily_* 两字段语义收窄为「非紧急账」（字段名不变，前端与既有
+        # daily_* 两字段语义收窄为「非紧急账」（字段名不变，前端与既有
         # 调用方无需改），紧急账并列暴露为 urgent_daily_*
         "daily_max": general_max,
         "daily_remaining": _daily_remaining("general", general_max),
@@ -555,7 +555,7 @@ def get_config():
 def _throttle_due(title):
     """同类型告警节流：窗口内已发过返回 False（本次跳过）。0 = 关闭。
 
-    批次16 P2-9：节流状态持久化到磁盘（$YIBAN_STATE_DIR/notify-throttle.json，
+    节流状态持久化到磁盘（$YIBAN_STATE_DIR/notify-throttle.json，
     文件锁互斥），web（常驻）与 signin（cron 新进程）共享同一节流窗口——
     不再各持一份进程内节流表、各放行一条。内存 `_throttle_ts` 保留作快速路径：
     本进程刚放行过的标题直接跳过（省磁盘 IO）；磁盘是唯一事实源，另一进程
@@ -647,7 +647,7 @@ def _daily_remaining(ledger_id, limit=None):
 class BudgetTicket:
     """一次额度占用的凭证：由 _consume_daily_budget 发出，发送失败时交 _refund_daily_budget。
 
-    凭证自己带着三个事实（批次14 修复轮②③）：
+    凭证自己带着三个事实：
       allowed —— 本次是否放行；
       ledger  —— 占了哪本账，None 表示本次没占额度（不限额 / 已被拒 / force）；
       day     —— 占用当日的日期串，退还只在同一天内生效。
@@ -688,7 +688,7 @@ def _consume_budget_locked(led, ledger_id, limit):
         state["count"] += 1
         allowed, charged = True, ledger_id
     first_warning = False
-    # 批次14 修复轮①：耗尽这件事必须在"本次消耗正好打满"或"本次直接被拒"时就记账，
+    # 耗尽这件事必须在"本次消耗正好打满"或"本次直接被拒"时就记账，
     # 不能等下一次尝试被拒才补标记。修复轮2：挂标记就写在这把账本锁的临界区内，
     # 与 _refund 里"判定虚警 + 撤回"共用同一把锁，两者不可能交错。
     if state["count"] >= limit:  # 被拒（没占）与恰好占满此刻都等于"当日已耗尽"
@@ -709,7 +709,7 @@ def _consume_daily_budget(ledger_id):
         return BudgetTicket(True, None, today)  # 0 = 不限：不占额度，也就没有可退的东西
     led = _ledger(ledger_id)
     with led["lock"]:
-        # 批次15 P2-3 → P1-1 修复：读盘-判定/修改-写回合并为单次文件锁临界区，
+        # 读盘-判定/修改-写回合并为单次文件锁临界区，
         # 占用即落盘——另一进程（web 常驻 vs signin cron）读到最新计数，
         # 不再各自持一份进程内额度，也不再在两次文件锁之间留出可被插入的窗口。
         allowed, charged, first_warning = _with_ledger_locked(
@@ -723,7 +723,7 @@ def _refund_budget_locked(led, ledger_id, limit_now):
     """锁内：按凭证退还一条该本账当日额度（调用方必须已持有账本 lock 与文件锁）。
 
     退完还有富余（或该账本已被改成不限额）→ 之前的"耗尽"是虚警，就地撤回
-    （批次14 修复轮2：判定与撤回必须写在同一个临界区里，防陈旧撤回抹掉真实 pending）。
+    （判定与撤回必须写在同一个临界区里，防陈旧撤回抹掉真实 pending）。
     """
     if led["state"]["count"] <= 0:
         return
@@ -733,12 +733,12 @@ def _refund_budget_locked(led, ledger_id, limit_now):
 
 
 def _refund_daily_budget(ticket):
-    """发送失败退还已占额度（批次14 P2-1：额度只在真发出去后才算花掉）。
+    """发送失败退还已占额度（额度只在真发出去后才算花掉）。
 
     只认占用时发出的凭证，不再重读上限、不再猜"当初占没占"：
-    - 批次14 修复轮②：凭证带着占用当日，跨日（23:59:59 占用、次日才失败）直接作废——
+    - 凭证带着占用当日，跨日（23:59:59 占用、次日才失败）直接作废——
       次日账本已被归零，再 -1 就是凭空吞掉次日一条额度；
-    - 批次14 修复轮③：发送途中管理员把上限从 N 改成 0（不限）或反向时，靠重读 limit
+    - 发送途中管理员把上限从 N 改成 0（不限）或反向时，靠重读 limit
       判断会出现幻影退还 / 漏退，凭证已固化"确实占了"这一事实。
     """
     taken = ticket.take() if ticket is not None else None
@@ -828,7 +828,7 @@ def pop_exhaustion_notice():
     """
     kinds = []
     # 逐本账各取一次：一次只持一把账本锁（绝不两把同持，也不在锁内套别的锁）。
-    # 批次14 修复轮2 把标记改入账本锁后，"两本账同时挂标记"这一瞬间不再被一把全局锁
+    # 把标记改入账本锁后，"两本账同时挂标记"这一瞬间不再被一把全局锁
     # 覆盖，但每本账自己的"挂 / 撤 / 取走"仍是原子的——每本账每日各一封的语义不变。
     for ledger_id in _LEDGER_IDS:
         led = _ledger(ledger_id)
@@ -911,10 +911,10 @@ def send(title, content, force=False, urgent=False, ledger=None):
     force=True 跳过节流与每日预算（供"测试推送"用）。
     urgent=True 标记重要告警：
     - YIBAN_NOTIFY_URGENT_ONLY 开启后仅此类会推送（邮件通道不受影响）；
-    - 额度走紧急账（YIBAN_NOTIFY_URGENT_DAILY_MAX），与非紧急账互不挤占（批次14 P2-1）；
+    - 额度走紧急账（YIBAN_NOTIFY_URGENT_DAILY_MAX），与非紧急账互不挤占；
     - 只有真正发送成功才扣额度，失败（含 HTTP 异常、服务端非零 code、白名单拒发）凭
       占用时拿到的退还凭证退回。
-    ledger（批次18 刀2 M8）：None = 现行行为（按 urgent 归入 general/urgent 两本账）；
+    ledger：None = 现行行为（按 urgent 归入 general/urgent 两本账）；
     具名账本（如 "login_fail"）→ 独立日额度（login_fail 用 YIBAN_LOGINFAIL_DAILY_MAX，
     默认 3，0=不限），与 general/urgent 互不挤占。节流与「仅重要告警」开关仍按
     全局口径执行，不受 ledger 影响。
@@ -958,7 +958,7 @@ def send(title, content, force=False, urgent=False, ledger=None):
         logger.warning("未知通知类型: %s", ntype)
         sent = False
     if not sent:
-        _refund_daily_budget(ticket)  # 没送到就不该花额度（批次14 P2-1）
+        _refund_daily_budget(ticket)  # 没送到就不该花额度
     return sent
 
 

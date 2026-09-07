@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""批量手动签到冷却（2026-09-01 批次16 用户裁决：30 分钟起步，可配置）。
+"""批量手动签到冷却（2026-09-01 用户裁决：30 分钟起步，可配置）。
 
 覆盖：
 - 队列完成后冷却窗口内再次触发 → 429（默认 1800s）；
 - YIBAN_BATCH_SIGN_COOLDOWN_SEC=0 → 关闭冷却（可立即再次触发）；
-- 批次18 刀2 M4 起单条与批量共用同一冷却计数：单号触发成功即挂基准，
+- 单条与批量共用同一冷却计数：单号触发成功即挂基准，
   窗口内再触发任意号（单条或批量）→ 429。
 
 全程 mock subprocess.Popen（防真实 spawn signin 子进程），纯本地 Flask test client。
@@ -71,7 +71,7 @@ class BatchSignCooldownTest(unittest.TestCase):
         sys.modules["webapp"] = cls.webapp
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
-        # 批次16 主审修复：Popen patch 提升到类级——整个测试类（含后台队列线程的
+        # 主审修复：Popen patch 提升到类级——整个测试类（含后台队列线程的
         # 任意调度时刻）都处于 fake Popen 之下。此前测试级 setUp/tearDown patch 在
         # tearDown stop 时若后台线程尚未执行 _spawn_signin_many（全量负载下线程调度
         # 延迟），会真实 spawn signin 子进程并持有 db 连接，下一个测试 setUp 删
@@ -149,7 +149,7 @@ class BatchSignCooldownTest(unittest.TestCase):
         """触发批量签到，若后台队列尚未完成（429"正在执行"）则轮询重试。
 
         全量测试负载下后台线程可能晚于固定 sleep 完成——固定 sleep 会让第二次
-        触发撞上"队列正在执行"而非"冷却中"，断言错位（批次16 主审修复：时间敏感
+        触发撞上"队列正在执行"而非"冷却中"，断言错位（主审修复：时间敏感
         测试改为轮询等待）。队列完成后返回本次触发响应。
         """
         deadline = time.time() + deadline_s
@@ -200,7 +200,7 @@ class BatchSignCooldownTest(unittest.TestCase):
         self.assertEqual(r2.status_code, 200, "冷却窗口过后应恢复")
 
     def test_single_signin_shares_global_cooldown(self):
-        """批次18 刀2 M4（行为变化）：单账号手动签到与批量共用同一全局冷却——
+        """行为变化：单账号手动签到与批量共用同一全局冷却——
         批量 spawn 成功后窗口内再触发单号 → 429 冷却提示（a8e9c43 威胁模型：
         被盗会话循环触发单号真实登录同样打爆易班风控）。"""
         c = self.webapp.create_app().test_client()
@@ -215,7 +215,7 @@ class BatchSignCooldownTest(unittest.TestCase):
                       "单账号签到应被全局冷却拦截并给出冷却提示")
 
     def test_single_signin_blocked_after_single_trigger(self):
-        """批次18 刀2 M4 验收：单条手动签到成功后立刻再触发任意号 → 429 冷却提示；
+        """验收：单条手动签到成功后立刻再触发任意号 → 429 冷却提示；
         另一账号同样被拦（共用同一计数，非 per-phone）。"""
         c = self.webapp.create_app().test_client()
         csrf = self._login(c)

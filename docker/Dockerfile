@@ -30,7 +30,7 @@ RUN groupadd -r -g 10001 yiban \
 WORKDIR /app
 
 # 依赖（flask/gunicorn/requests/pycryptodome 等）
-# 批次7 P3-19：镜像安装改用精确锁定的 requirements.lock——CI pip-audit 审计的
+# 镜像安装改用精确锁定的 requirements.lock——CI pip-audit 审计的
 # 就是它，浮动下限会让镜像依赖偏离审计结论且构建不可复现
 COPY requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
