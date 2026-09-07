@@ -22,14 +22,11 @@ import contextlib
 import os
 import shutil
 import sqlite3
-import sys
 import tempfile
 import threading
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 TEST_KEY = "a" * 64
 AUDIT_KEY = "b" * 64
