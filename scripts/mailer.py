@@ -15,7 +15,7 @@ import ssl
 from email.header import Header
 from email.mime.text import MIMEText
 
-import env_io  # noqa: E402  同目录共享模块：.env 解析单一实现
+import env_io  # 同目录共享模块：.env 解析单一实现
 
 logger = logging.getLogger("mailer")
 
