@@ -196,6 +196,8 @@
       .input { font-size: 16px; }
     }
     .input-sm { @apply px-3 py-1.5; }
+    /* 占位提示比输入文字略小一号（按 em 比例，16px 手机护栏不受影响） */
+    input::placeholder, textarea::placeholder { font-size: 0.92em; }
     .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
     .btn-primary {
       @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
@@ -700,7 +702,7 @@
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">消息推送</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="消息推送说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>密钥：</b>加密存储、不回显<b>频控：</b>同类告警默认 60 秒内只推一条（可改配置文件调整）<b>额度：</b>按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度<b>权限：</b>仅主管理员可修改<b>确认：</b>高危操作，须再输入当前主管理员密码<b>邮件：</b>授权码加密存储、永不回显；SMTP 各项与收件人留空 = 沿用旧值，含打码串的输入一律按空处理；保存 SMTP 配置需主管理员密码确认</span>
+          <span class="info-pop"><b>密钥：</b>加密存储、不回显<b>频控：</b>同类告警默认 60 秒内只推一条（可改配置文件调整）<b>额度：</b>按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度<b>权限：</b>仅主管理员可修改<b>确认：</b>高危操作，须再输入当前主管理员密码<b>邮件：</b>告警汇总发「管理员收件人」（可逗号分隔多个）；授权码加密存储、永不回显；SMTP 各项与收件人留空 = 沿用旧值，含打码串的输入一律按空处理；保存 SMTP 配置需主管理员密码确认</span>
         </button>
       </div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">
