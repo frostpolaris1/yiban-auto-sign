@@ -55,6 +55,7 @@ python -m pytest tests/test_smoke.py -v
 | `test_logs_by_date.py` | 按天日志读取与按日期查看 |
 | `test_logs_export_masking.py` | 日志导出脱敏副本（与视图同一过滤管线）+ 审计留痕 + 每 IP 限速；写入侧裸号/裸 IP 收口 |
 | `test_env_line_break_injection.py` | .env 行分隔符注入提权（宽/窄行模型、旧键折叠、主凭据歧义 fail-closed、启动歧义检测） |
+| `test_capacity_limits.py` | 容量口径单档化与容量上限设置：保存门单门化（活跃账号数）、裸账号占配额、max_users/max_accounts 主管理员专属/钳位/携带才写/热读、potential_load |
 | `test_webui_inline_context.py` | 前端注入面契约：police_link scheme 白名单、`<script>` 内 script_root tojson、onclick/onchange 不拼用户可控值（data-* + 事件委托） |
 
 ### 签到核心（scripts/signin.py、run.sh）
