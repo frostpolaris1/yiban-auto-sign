@@ -609,6 +609,18 @@ def clear_fuse_pause(phone):
         logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]", _mask_phone(phone), e)
 
 
+def clear_fuse_on_cred_change(old_phone, old_password, clean):
+    """仅凭据（密码/手机号）实际变更时清除熔断计数；只改备注/状态等不清。
+
+    此前任意编辑都触发 clear_fuse_pause → fail_days 清零 → 熔断永不跳闸。
+    改绑清旧号条目（账号主体已迁移），改密清当前号条目（立即恢复签到资格）。
+    """
+    if old_phone != clean["phone"]:
+        clear_fuse_pause(old_phone)
+    if clean["password"] != old_password:
+        clear_fuse_pause(clean["phone"])
+
+
 def load_sign_state(date_str=None):
     """读取按日结构化状态文件：{phone: {status, message, time, task}}。
 
@@ -1271,6 +1283,36 @@ def _batch_wait_timeout(count):
     _wait_signin_proc 的默认参数保持 300 不动，由调用方传参缩放。
     """
     return max(300, 120 * count + 300)
+
+
+# 手动签到子进程非 0 退出码 → 用户可见原因（与 signin.py 退出码表同口径）
+_SIGNIN_EXIT_REASONS = {
+    2: "子进程自行退出（时段外跳过/暂停/存在未了结账号），本轮未实际签到",
+    3: "签到队列忙（运行锁被其他签到进程持有），本轮未执行",
+}
+
+
+def _manual_sign_failure_reason(returncode):
+    """手动签到子进程退出码的用户可见原因；0/None 返回 None（正常）。"""
+    if not returncode:
+        return None
+    return _SIGNIN_EXIT_REASONS.get(
+        int(returncode), f"签到子进程异常退出（退出码 {returncode}）"
+    )
+
+
+def _log_manual_sign_exit(phone_label, returncode):
+    """手动签到子进程异常退出写入签到日志——前端「结果稍后出现在日志」的
+    唯一结果通道：exit 3（队列忙）等此前被静默吞掉，用户看到已触发实际没签。"""
+    reason = _manual_sign_failure_reason(returncode)
+    if not reason:
+        return
+    try:
+        with open(log_path_for(), "a", encoding="utf-8") as fh:
+            fh.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] "
+                     f"[{phone_label}] ⚠️ 手动签到未完成: {reason}\n")
+    except OSError:
+        logger.warning("手动签到退出码留痕失败: %s (returncode=%s)", phone_label, returncode)
 
 
 @contextlib.contextmanager
@@ -4290,9 +4332,9 @@ def create_app(host=None):
             # 避免更新失败时误删旧号自选（防孤儿 pref 占容量，对抗性审查补）
             if clean["phone"] != old.get("phone"):
                 db.clear_time_pref(old.get("phone", ""))
-            # 凭据变更（改密码/识别码）后清除熔断暂停，立即恢复签到
-            # （pending 行不参与签到，此处清理无害，保留）
-            clear_fuse_pause(clean["phone"])
+            # 凭据变更（改密码/改绑手机号）才清除熔断暂停，立即恢复签到；
+            # 仅改备注/状态等不动熔断计数（防任意编辑把 fail_days 清零、熔断永不跳闸）
+            clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
             db.audit(
                 session.get("username") or "?",
                 "account_update",
@@ -5280,9 +5322,9 @@ def create_app(host=None):
                 _mask_phone(clean["phone"]),
                 "用户编辑 改绑回审" if rebind else "用户编辑",
             )
-            # 用户改密码/识别码后清除熔断暂停，立即恢复签到
-            # （pending 行不参与签到，此处清理无害，保留）
-            clear_fuse_pause(clean["phone"])
+            # 用户改密码/改绑手机号（凭据变更）才清除熔断暂停；
+            # 仅改备注/状态等不动熔断计数（与管理员编辑路由同一口径）
+            clear_fuse_on_cred_change(old.get("phone", ""), old.get("password", ""), clean)
             logger.info("用户 %s 编辑账号 %s", _mask_email(clean["owner"]), _mask_phone(clean["phone"]))
             if rebind or old.get("status") == ACCOUNT_STATUS_REJECTED:
                 return jsonify({"ok": True, "msg": "已重新提交，等待管理员审核"})
@@ -6141,6 +6183,9 @@ def create_app(host=None):
             with _signin_lock:
                 if _signin_procs.get(phone) is proc:
                     _signin_procs.pop(phone, None)
+        # 退出码透传：exit 3（队列忙/运行锁占用）等非 0 退出此前被静默吞掉，
+        # 用户看到"已触发"实际没签——真实原因写入签到日志（日志页可见）
+        _log_manual_sign_exit(_mask_phone(phone), proc.returncode)
 
     def _launch_signin_proc(only_arg):
         """起一个 `signin.py --only <only_arg>` 子进程；only_arg 可为逗号分隔多号。
@@ -6330,6 +6375,9 @@ def create_app(host=None):
                 # M5：等待超时按账号数缩放（默认 300s 仅够单号，多号队列会被误杀）
                 _wait_signin_proc(proc, timeout=_batch_wait_timeout(len(phones)))
                 logger.info("批量手动签到完成: %s 个账号（单队列、单封汇总邮件）", len(phones))
+                # 非 0 退出码（如 exit 3 队列忙）如实留痕到签到日志，不冒充成功
+                _log_manual_sign_exit(
+                    f"批量签到 {len(phones)} 个账号", proc.returncode)
             finally:
                 # 此处不再无条件重置 _last_batch_signin_ts——冷却基准
                 # 由 _spawn_signin_many 在 spawn 成功时刷新（消除"失败也刷新基准"：
