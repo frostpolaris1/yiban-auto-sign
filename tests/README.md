@@ -90,8 +90,9 @@ python -m pytest tests/test_smoke.py -v
 | `test_notify_ledger_disk.py` | 每日预算磁盘持久化（跨进程共享额度） |
 | `test_notify_ledger_race.py` | 账本单次文件锁临界区（RMW 竞态修复） |
 | `test_notify_throttle.py` | 同类型告警节流跨进程化 |
-| `test_mailer.py` | 邮箱通知模块单元（A 线：管理员告警） |
+| `test_mailer.py` | 邮箱通知模块单元（A 线：管理员告警）+ 通道三态判定 |
 | `test_mail_notify.py` | 邮箱通知 B 线（用户签到失败邮件）+ 用户开关 |
+| `test_mail_failover_0907.py` | SMTP 条目列表化：smtp_list 回落/ENC 解密、mail-config 保存原子性与告警时机、发送 failover、GET 脱敏、通道三态日报渲染 |
 | `test_public_beta.py` | 公测反馈修复：会话陈旧预算、登录告警分级 |
 
 ### 数据库与迁移（scripts/db.py）
@@ -113,7 +114,7 @@ python -m pytest tests/test_smoke.py -v
 | 文件 | 说明 |
 |---|---|
 | `test_env_mailer_tls.py` | 子进程 env + mailer TLS 上下文 |
-| `test_rekey_key_source.py` | 密钥来源去 cwd 依赖 + rekey 迁移推送密文 |
+| `test_rekey_key_source.py` | 密钥来源去 cwd 依赖 + rekey 迁移推送/邮件密文 + 通道自检 |
 | `test_p3_fixes.py` | 迁移原子性、rekey argv 泄露、backup 明文警告 |
 
 ### 用户操作相关
