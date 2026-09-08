@@ -955,7 +955,7 @@ def write_env_batch(env_path, updates):
     安全约束（安全审查 2026-08）：.env 为逐行键值格式，键或值含换行符会注入出
     新的配置行（如经公告文本写入 YIBAN_ADMIN_PASSWORD_HASH 覆盖主管理员哈希提权）。
     此处为兜底硬校验（调用方应先自行校验并返回友好错误），违规直接抛 ValueError。
-    字符集口径（安全审查 2026-09-07 修订）：本函数自己用 splitlines() 读、
+    字符集口径（2026-09-07 修订）：本函数自己用 splitlines() 读、
     用 "\\n".join() 写，故校验必须覆盖 splitlines 认定的**全部**行分隔符
     （见 _ENV_LINE_BREAK_CHARS）——只挡 \\n \\r 会留下"潜伏分隔符 + 后续读改写
     实体化"这条同效路径。
@@ -1603,7 +1603,7 @@ def verify_admin(username, password):
             logger.error(
                 "拒绝管理员登录：%s 的 YIBAN_ADMIN_PASSWORD_HASH 无法确认为恰好一行"
                 "（统计得 %d 行，0 = 读取失败），解析器按后写覆盖先写取值——可能是"
-                "配置错误，也可能是 .env 行分隔符注入提权尝试（安全审查 2026-09-07）。"
+                "配置错误，也可能是 .env 行分隔符注入提权尝试（2026-09-07）。"
                 "请核对文件属主与内容，只保留唯一一行后恢复正常（无需重启）",
                 ENV_FILE, dup,
             )
@@ -3785,7 +3785,7 @@ def create_app(host=None):
             except ValueError as e:
                 return jsonify({"error": f"加密失败：{e}"}), 500
             smtps_enc = json.dumps(enc, ensure_ascii=False)
-        # 密文与开关合成**一次** write_env_batch 落盘（安全审查 2026-09-08）：
+        # 密文与开关合成**一次** write_env_batch 落盘（2026-09-08）：
         # 原先 write_env_key 写密文 + write_env_batch 写开关两次独立写，中间崩溃
         # 会留下"密文新/开关旧"的中间态。write_env_key 单键形态本就是本函数的
         # 一半，此处不再经由它。
@@ -3948,7 +3948,7 @@ def create_app(host=None):
                 updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
             except ValueError as e:
                 return jsonify({"error": f"加密失败：{e}"}), 500
-        # 变更告警在写入**成功之后**发出（与 mail-config 同口径，安全审查 2026-09-08）。
+        # 变更告警在写入**成功之后**发出（与 mail-config 同口径，2026-09-08）。
         # 原先放在落盘之前，理由是"若先落盘，daily_max/urgent_daily_max/cooldown/
         # urgent_only 即按新值生效（daily_max=1 且当日额度恰被占、cooldown 被调到
         # 天文数字等），这条'通道被人动了'的告警会被刚写入的参数吞掉"——但 force=True
@@ -6854,7 +6854,7 @@ def create_app(host=None):
             # 安全审查 2026-08：公告存入 .env 单行键值，换行会注入新配置行
             # （如 YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。
             # 前端为 textarea 但展示端换行本就折叠，直接拒绝（write_env_key 另有兜底）。
-            # 判据单源在 _has_line_break（安全审查 2026-09-07）：此处原先只挡
+            # 判据单源在 _has_line_break（2026-09-07）：此处原先只挡
             # \n \r，与 write_env_batch 读写用的 splitlines() 不同集，
             # \v \f \x1c \x1d \x1e \x85 \u2028 \u2029 会作为潜伏分隔符蒙混过关。
             return jsonify({"error": "公告内容不能包含换行或行分隔符（单行存储）"}), 400
