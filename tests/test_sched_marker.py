@@ -52,9 +52,14 @@ class OnlyFilterTest(unittest.TestCase):
             )
         self.assertEqual([a.phone for a in filtered], ["13800000001"])
         self.assertEqual(missing, ["13899999999"])
+        # 未命中号码落日志即脱敏（裸号不带 [] 定界符，web 展示层脱敏正则盖不住）
         self.assertTrue(
+            any("138****9999" in line for line in cm.output),
+            f"warning 日志应包含未命中号码的脱敏形态，实际: {cm.output}",
+        )
+        self.assertFalse(
             any("13899999999" in line for line in cm.output),
-            f"warning 日志应包含未命中号码，实际: {cm.output}",
+            f"warning 日志不得包含未命中号码完整号，实际: {cm.output}",
         )
 
     def test_all_missing_returns_empty(self):

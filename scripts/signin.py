@@ -885,8 +885,11 @@ def _load_accounts_from_legacy_env():
         if not item:
             continue
         if ":" not in item:
-            # 清洗后落日志：防畸形片段换行/回车注入（日志审查 P7）
-            logger.error(f"账号配置格式错误（应为 phone:password）: {_sanitize_text(item)}")
+            # 清洗后落日志：防畸形片段换行/回车注入（日志审查 P7）；片段缺 ":" 时
+            # 常见是裸手机号（漏输密码），纯数字片段按 11 位号脱敏后落盘
+            logger.error(
+                f"账号配置格式错误（应为 phone:password）: "
+                f"{_sanitize_text(_mask_phone(item) if item.isdigit() else item)}")
             continue
         phone, pwd = item.split(":", 1)
         accounts.append(Account(phone.strip(), pwd.strip()))
@@ -3106,7 +3109,10 @@ def _apply_only_filter(accounts, only_arg):
     filtered = [a for a in accounts if a.phone in only_set]
     missing = sorted(only_set - {a.phone for a in filtered})
     for phone in missing:
-        logger.warning("--only 指定账号不在配置中: %s", phone)
+        # 裸号不带 [] 定界符，web 侧 _mask_log_phones（只认 [11 位号]）盖不住，
+        # 落盘即脱敏——web 展示层/导出不得出现完整号（「本地日志保留完整号」
+        # 的设计约定仅覆盖 [号] 形态行，见 _mask_phone 注释）
+        logger.warning("--only 指定账号不在配置中: %s", _mask_phone(phone))
     return filtered, missing
 
 
@@ -3185,7 +3191,9 @@ def main():
     if args.only:
         accounts, _missing = _apply_only_filter(accounts, args.only)
         if not accounts:
-            logger.error(f"--only 指定账号不在配置中: {args.only}")
+            # 与 _apply_only_filter 同口径脱敏（args.only 是完整裸号）
+            logger.error("--only 指定账号不在配置中: %s",
+                         ", ".join(_mask_phone(p) for p in _missing))
             sys.exit(1)
 
     # 仅检查配置模式：不发任何网络请求，用于部署验证
