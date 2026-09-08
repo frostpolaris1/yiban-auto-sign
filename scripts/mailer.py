@@ -129,6 +129,21 @@ def get_config():
     }
 
 
+def _smtps_enc_decrypts_to_list():
+    """SMTPS_ENC 密文能否解出一个 JSON 列表（内容不限，元素有效性由 smtp_list 过滤）。
+
+    供 smtp_channel_state 区分「解密成功但无有效条目」（设置页允许 smtps: [] 的
+    合法清空/未配置）与「密文解不开」（换钥失配等真故障）——两者 smtp_list 都
+    返回空列表，病因却完全不同。
+    """
+    try:
+        entry = json.loads(_get("SMTPS_ENC"))
+        plain = account_crypto.decrypt_text(entry, account_crypto.load_key(env_io.env_path()))
+        return isinstance(json.loads(plain), list)
+    except (ValueError, OSError, TypeError):
+        return False
+
+
 def smtp_channel_state():
     """邮件发信通道三态判定：返回 (state, detail)。
 
@@ -149,9 +164,13 @@ def smtp_channel_state():
         return "off", "YIBAN_MAIL_ENABLE 未开启"
     entries = smtp_list()
     if _get("SMTPS_ENC"):
-        # 密文存在但条目为空 = smtp_list 已回落旧键仍空（解不开/不是列表/全是脏元素），
-        # 不得报可用（fail-open 到空旧键的回落在此暴露为 broken）
+        # 密文存在但条目为空 = smtp_list 已回落旧键仍空。两种病因分开报：
+        # 解密成功但无有效条目（含合法清空）只该补条目；解不开才指向密钥失配，
+        # 否则一次合法的 smtps: [] 清空会把 ops 引去排查换钥问题
         if not entries:
+            if _smtps_enc_decrypts_to_list():
+                return "broken", ("YIBAN_MAIL_SMTPS_ENC 解密成功但无有效发信条目"
+                                  "（未配置或已清空，请在设置页补齐 SMTP 列表）")
             return "broken", ("YIBAN_MAIL_SMTPS_ENC 无法解密或已损坏（换钥后密钥不匹配？），"
                               "旧单条键也未配置")
     elif not entries:

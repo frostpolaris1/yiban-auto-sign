@@ -7,6 +7,8 @@
 2. H-2 告警致盲（裁决 A 全量收口）：notify-config 的 cooldown/urgent_only/
    daily_max/urgent_daily_max 纳入二次鉴权；mail-config / notify-config 的
    "配置变更告警"改为**先告警后落盘**并 force=True（绕过节流与当日额度）；
+   （2026-09-08 修订：notify-config 告警时序与 mail-config 对齐为落盘后发，
+   见 test_notify_config_alert_sent_after_write_with_force）；
 3. M1 编辑回审（裁决 C）：用户/管理员改绑手机号一律回 pending 重审；
    仅密码/识别码变更（phone 不变）状态不变；
 4. M2 历史数据隔离：my-calendar / my-logs 仅回显 active 且未删除账号的历史
@@ -202,8 +204,13 @@ class Batch18FixesTest(unittest.TestCase):
         self.assertIsNotNone(detail)
         self.assertEqual(json.loads(detail)["cooldown"], 90000)
 
-    def test_notify_config_alert_sent_before_write_with_force(self):
-        """notify-config 变更告警必须先于 write_env_batch 发出，且 force=True。"""
+    def test_notify_config_alert_sent_after_write_with_force(self):
+        """notify-config 变更告警在落盘成功之后发出 + force=True。
+
+        原契约"先告警后落盘"（防新写入的额度/节流参数吞掉告警）不成立：
+        force=True 本就绕过两侧节流；先发反而让写入失败（500）时运营者收到
+        一条描述从未生效变更的通知。落盘成功后必须仍发告警、urgent=True。
+        """
         ac, at = self._admin_client()
         order = []
         real_write = self.webapp.write_env_batch
@@ -218,11 +225,28 @@ class Batch18FixesTest(unittest.TestCase):
             r = ac.put("/api/notify-config", json={"cooldown": 60, "confirm_password": ADMIN_PASS},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(order), 2, f"应恰好一次告警 + 一次落盘，实际 {order}")
-        self.assertEqual(order[0][0], "alert", "先告警后落盘")
-        self.assertTrue(order[0][1], "变更告警必须 force=True（绕过节流/额度）")
-        self.assertEqual(order[1], "write")
+        self.assertEqual(len(order), 2, f"应恰好一次落盘 + 一次告警，实际 {order}")
+        self.assertEqual(order[0], "write", "告警只能描述已落盘的事实：先写入后告警")
+        self.assertEqual(order[1][0], "alert", "落盘成功后必须发出变更告警")
+        self.assertTrue(order[1][1], "变更告警必须 force=True")
         self.assertEqual(sn.call_args.args[0], "消息推送配置变更告警")
+        self.assertTrue(sn.call_args.kwargs.get("urgent"))
+
+    def test_notify_config_write_failure_500_without_alert(self):
+        """落盘失败（磁盘错）→ 500、零告警、零审计：告警与留痕只能描述已生效的变更。"""
+        ac, at = self._admin_client()
+        before = self.webapp.read_env(self.env_file)
+        with mock.patch.object(self.webapp, "send_notification") as sn, \
+             mock.patch.object(self.webapp, "write_env_batch",
+                               side_effect=RuntimeError("disk full")):
+            r = ac.put("/api/notify-config", json={"cooldown": 60, "confirm_password": ADMIN_PASS},
+                       headers={"X-CSRF-Token": at})
+        self.assertEqual(r.status_code, 500, r.get_data(as_text=True))
+        sn.assert_not_called()
+        self.assertIsNone(self._last_audit_detail("notify_config"),
+                          "写入失败不得留下描述未生效变更的审计行")
+        self.assertEqual(self.webapp.read_env(self.env_file), before,
+                         "写入失败不得改动 .env")
 
     def test_mail_config_alert_sent_after_write_with_force(self):
         """mail-config 变更告警在落盘成功之后发出 + force=True（安全审查 2026-09-08）。

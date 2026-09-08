@@ -399,8 +399,9 @@ def update_env_key(env_path, new_key, extra=None):
     """把新密钥写入 .env（原子替换、0600；持 env_lock 与 web 写 .env 互斥）。
 
     extra：其它需一并落盘的 .env 键值（用它写入用新钥重加密后的
-    YIBAN_NOTIFY_SECRET_ENC）。刻意与 YIBAN_ACCOUNTS_KEY 合进同一次原子替换——
-    分两次写就会出现"新钥已落盘、推送密文还是旧钥的"中间态（换钥后通道静默死亡）。
+    YIBAN_NOTIFY_SECRET_ENC 与 YIBAN_MAIL_SMTPS_ENC）。刻意与 YIBAN_ACCOUNTS_KEY
+    合进同一次原子替换——分两次写就会出现"新钥已落盘、通道密文还是旧钥的"
+    中间态（换钥后推送/邮件通道静默死亡）。
     extra 的值必须是**调用方在锁内读到的现值算出来的**；若需要在写盘前读 .env，
     请改用 rotate_and_write_env。
     """
@@ -431,11 +432,13 @@ MAIL_SELF_CHECK_NOTE = {
 }
 
 
-def _rotate_enc_blob(env_path, env_key, old_key, new_key, skip, what):
+def _rotate_enc_blob(env_path, env_key, old_key, new_key, skip, what, reconfigure_hint):
     """换钥时同步重加密 .env 中一条 YIBAN_ACCOUNTS_KEY 密文；返回 (state, new_raw)。
 
     new_raw=None 表示不改动该键。state 是 SELF_CHECK_NOTE 字典的键
-    （rotated/unset/failed/skipped），what 是日志与人话提示里的条目称谓。
+    （rotated/unset/failed/skipped），what 是日志里的条目称谓，reconfigure_hint
+    是 ERROR 日志里"需在设置页重新配置 X"的通道名——两条 ERROR 与两条收尾
+    自检行必须能按通道对上号，泛化报错会让 ops 分不清哪条日志对应哪路。
 
     为什么必须做：这类密文（推送 SendKey/webhook URL、SMTP 发信条目）都用
     YIBAN_ACCOUNTS_KEY 加密后存进 .env。轮换账号密钥而不重加密，读取方会解不开
@@ -461,8 +464,8 @@ def _rotate_enc_blob(env_path, env_key, old_key, new_key, skip, what):
             # skip 本就不迁移，读失败不改变结论
             return "skipped", None
         logger.error(
-            "%s无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置"
-            "（.env 读取失败）: %s", what, e
+            "%s无法随轮换重加密（未配置或已损坏），换钥后需在设置页%s"
+            "（.env 读取失败）: %s", what, reconfigure_hint, e
         )
         return "failed", None
     if not raw:
@@ -475,7 +478,8 @@ def _rotate_enc_blob(env_path, env_key, old_key, new_key, skip, what):
         return "rotated", json.dumps(enc, ensure_ascii=False)
     except Exception as e:  # 尽力而为：不得因该通道配置拖垮轮换（首要目标是账号凭据不丢）
         logger.error(
-            "%s无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置: %s", what, e
+            "%s无法随轮换重加密（未配置或已损坏），换钥后需在设置页%s: %s",
+            what, reconfigure_hint, e
         )
         return "failed", None
 
@@ -487,7 +491,8 @@ def rotate_notify_secret(env_path, old_key, new_key, skip=False):
     轮换不重加密则 notify.get_secret() 解不开而静默返回空（推送通道静默死亡）。
     机理、尽力而为约束与锁内调用要求见 _rotate_enc_blob。
     """
-    return _rotate_enc_blob(env_path, NOTIFY_ENC_KEY, old_key, new_key, skip, "推送密钥")
+    return _rotate_enc_blob(env_path, NOTIFY_ENC_KEY, old_key, new_key, skip,
+                            "推送密钥", "重新配置消息推送")
 
 
 def rotate_mail_smtps(env_path, old_key, new_key, skip=False):
@@ -497,7 +502,8 @@ def rotate_mail_smtps(env_path, old_key, new_key, skip=False):
     重加密 = 换钥后 mailer 解不开而回落旧单条键（通常为空），is_enabled() 随之为假，
     邮件告警（安全告警的最后送达路径）静默死亡。机理与约束见 _rotate_enc_blob。
     """
-    return _rotate_enc_blob(env_path, MAIL_ENC_KEY, old_key, new_key, skip, "邮件 SMTP 密文")
+    return _rotate_enc_blob(env_path, MAIL_ENC_KEY, old_key, new_key, skip,
+                            "邮件 SMTP 密文", "重新配置 SMTP 发信条目")
 
 
 def rotate_and_write_env(env_path, new_key, old_key, skip_notify=False, skip_mail=False):

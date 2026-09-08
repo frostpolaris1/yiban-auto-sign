@@ -460,6 +460,24 @@ class MailChannelStateReportTest(_Base):
         self.assertIn("邮件通道：⚠ 已开启但不可用", lines)
         self.assertIn("缺发件账号/授权码", lines)
 
+    def test_empty_decrypted_list_reports_cleared_not_key_mismatch(self):
+        """解密成功但列表为空（端点允许 smtps: [] 的合法清空）→ 病因报「未配置/已清空」。
+
+        与"密文解不开"必须区分：清空列表是设置页的合法操作，误诊成
+        「换钥后密钥不匹配」会把 ops 引去排查密钥。三态仍为 broken
+        （邮件确实一封发不出），只是 detail 不得指向密钥。
+        """
+        enc = account_crypto.encrypt_text(
+            json.dumps([], ensure_ascii=False), account_crypto.load_key(self.env_file))
+        self._reset_env_file(
+            f"YIBAN_MAIL_SMTPS_ENC={json.dumps(enc, ensure_ascii=False)}\n")
+        with mock.patch.dict(os.environ, {"YIBAN_MAIL_ENABLE": "1"}):
+            state, detail = mailer.smtp_channel_state()
+        self.assertEqual(state, "broken")
+        self.assertIn("未配置", detail)
+        self.assertNotIn("换钥", detail, "合法清空不得误诊为密钥失配")
+        self.assertNotIn("无法解密", detail)
+
 
 class MailConfigSaveAtomicTest(_Base):
     """PUT /api/mail-config：密文与开关一次原子写入；变更告警只在写入成功后发。
