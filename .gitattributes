@@ -1,0 +1,21 @@
+# 行尾纪律：仓库文本一律 LF 入库与检出，杜绝 Windows core.autocrlf=true 引入的 CRLF 漂移。
+# 仓库现有提交树已全量 LF（2026-09-08 核验：HEAD 无任何含 CR 的 blob），本属性集不产生重整化 churn。
+* text=auto eol=lf
+
+# 显式二进制：禁止内容嗅探误判后做任何行尾/编码转换（损坏资源不可逆）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.gz binary
+*.zip binary
+*.7z binary
+*.db binary
+*.pdf binary
