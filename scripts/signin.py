@@ -1749,7 +1749,7 @@ def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
         "易班签到耗时告警",
         f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
     )
-    if notify_url:
+    if notify.is_configured():
         send_notification(
             "易班签到耗时告警",
             f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
@@ -1846,7 +1846,10 @@ def _flush_admin_mail_summary(phase=None):
 
     无异常则不发送（成功不打扰）；按主题分组，每个账号独立条目；
     条数超过 MAIL_SUMMARY_MAX_ENTRIES 或正文超长时截断并在尾部注明，
-    明细以按天签到日志为准；mailer 内部静默失败，不影响退出码。发送后清空收集器。
+    明细以按天签到日志为准；mailer 内部静默失败，不影响退出码。
+    收件人集为空且推送通道已配置时，同一份汇总改走推送兜底（urgent+force）——
+    「无收件人」本身不得成为第二处静默点，零成功且零收件人的一轮仍可被观测。
+    发送后清空收集器。
 
     phase：任务阶段标签。定时签到缺省 None → 沿用「签到任务」文案；
     探针调用传「健康探测」，避免复用造成「并无当日签到却报签到结束」的误导
@@ -1882,10 +1885,10 @@ def _flush_admin_mail_summary(phase=None):
     # 内置主管理员关闭 YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
     extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
     recipients = db.admin_mail_recipients(extra)
+    body = "\n".join(parts).rstrip()
+    if len(body) > MAIL_SUMMARY_MAX_CHARS:
+        body = body[:MAIL_SUMMARY_MAX_CHARS].rstrip() + "\n…（超长截断，明细见日志）"
     if recipients:
-        body = "\n".join(parts).rstrip()
-        if len(body) > MAIL_SUMMARY_MAX_CHARS:
-            body = body[:MAIL_SUMMARY_MAX_CHARS].rstrip() + "\n…（超长截断，明细见日志）"
         sent = False
         try:
             sent = mailer.send_admin_alert("易班签到汇总", body, to=",".join(recipients))
@@ -1899,13 +1902,18 @@ def _flush_admin_mail_summary(phase=None):
             # 双通道：不再单点依赖 SMTP 可用性。
             send_notification("易班签到汇总", body, urgent=True, force=True)
     else:
-        # 收件人集为空原实现静默跳过——告警"看起来发了"实则全灭，
-        # 且无从排障。显式 warning 留痕（不走 webhook 兜底：无收件人是配置缺失而非
-        # 通道故障，每轮签到都推 webhook 反而轰炸手机；留痕供日志页/状态页排查）。
+        # 收件人集为空原实现静默跳过——告警"看起来发了"实则全灭，且无从排障。
+        # 显式 warning 留痕；推送通道已配置时把同一份汇总整卷改推（urgent+force
+        # 绕过节流与当日额度），使"零成功 + 无收件人"的一轮仍可观测；推送也未
+        # 配置时无事可做，仅留痕供日志页/状态页排查。
         logger.warning(
             "签到汇总告警无可用收件人（ADMIN_TO 与开启接收的管理员均为空），"
             "%d 条告警未走邮件通道，请检查邮件配置", total,
         )
+        if notify.is_configured():
+            send_notification(
+                "易班签到汇总", "邮件无可用收件人，改推：\n" + body, urgent=True, force=True,
+            )
     _mail_summary.clear()
 
 
@@ -2750,7 +2758,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     continue
                 logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
                 _collect_admin_mail("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}")
-                if notify_url:
+                if notify.is_configured():
                     send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
                 send_user_fail_mail(acc.owner, phone, message)
                 continue
@@ -2760,7 +2768,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 results[phone] = (False, message, False, status)
                 logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
                 _collect_admin_mail("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}")
-                if notify_url:
+                if notify.is_configured():
                     send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
                 send_user_fail_mail(acc.owner, phone, message)
                 continue
@@ -2871,7 +2879,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 "易班签到失败",
                 f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}",
             )
-            if notify_url:
+            if notify.is_configured():
                 send_notification(
                     "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
                 )

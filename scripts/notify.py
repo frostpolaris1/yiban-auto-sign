@@ -548,6 +548,19 @@ def get_config():
     }
 
 
+def is_configured():
+    """推送通道是否已配置可用：类型已设（或回退旧明文 URL）且密钥可解出。
+
+    与 send() 自身的未配置短路同一口径——未配置时 send 必然返回 False，
+    先判定可省一次发送尝试。供调用方在发送前判断「推送出口是否存在」
+    （如 signin 的即时告警门控、汇总告警收件人为空时的推送兜底）。
+    """
+    envs = _read_env_file()
+    secret = get_secret(envs)
+    ntype = _env_str("TYPE", envs).strip().lower() or ("custom" if secret else "")
+    return bool(ntype and secret)
+
+
 # ---------------------------------------------------------------------------
 # 节流与发送
 # ---------------------------------------------------------------------------
