@@ -6755,6 +6755,13 @@ def create_app(host=None):
                 max_users_val = v
             else:
                 max_accounts_val = v
+        if max_users_val is not None or max_accounts_val is not None:
+            # 容量上限与调度参数同风险级：被窃主管理员会话可借此拆掉负载闸门，
+            # 变更同样要求口令二次确认（2026-09-08，前端确认框本就为此收集密码）；
+            # 与 start/gap 同时携带时走两次校验，密码相同无额外副作用
+            denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改容量上限")
+            if denied is not None:
+                return denied
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
         # 仅请求携带的字段才写入（缺失不重置）
         updates = {}
