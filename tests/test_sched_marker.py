@@ -139,7 +139,7 @@ class SecondRunEnvTest(unittest.TestCase):
 
         抑制语义依赖「07:10 补签会重跑」：已越过补签触发点（07:10）的首签身份轮
         是当天最后一轮（06:31 关机 07:10 起的场景），仍会告警——
-        见 test_batch19_knife6b_0908.LateFirstRunAlertTest。此处注入补签触发点
+        见 test_sign_round_guards.LateFirstRunAlertTest。此处注入补签触发点
         之前的固定时钟，用例不再随运行时刻漂移。
         """
         from datetime import datetime as _dt
