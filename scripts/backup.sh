@@ -203,25 +203,23 @@ if [ "${1:-}" = "--restore" ]; then
     exit 0
 fi
 
-# --require-encrypt：强制加密，未配置加密时拒绝执行（防未加密备份泄露全部凭证）
+# --require-encrypt：强制本轮归档加密，加密不可用时拒绝执行（防未加密备份泄露全部凭证）
 REQUIRE_ENCRYPT=0
 if [ "${1:-}" = "--require-encrypt" ]; then
     REQUIRE_ENCRYPT=1
 fi
 
-# --require-encrypt 前置校验：必须在打包前确认“异机目标已配置”且“加密工具可用”，
-# 不满足则直接退出，不得生成任何明文归档。
+# --require-encrypt 前置校验：打包前确认加密工具可用，不满足则直接退出。
+# 只强制"本轮归档必须加密成功"，与异机副本（REMOTE_BACKUP）解耦——未配异机的
+# 单机部署同样需要可用的强制加密（2026-09-08）：REMOTE_BACKUP 为空时不再阻止
+# 生成并保留本地密文归档；加密失败仍在打包后走 fail-closed 清场（见下方 M24 段）。
 if [ "$REQUIRE_ENCRYPT" -eq 1 ]; then
-    if [ -z "$REMOTE_BACKUP" ]; then
-        echo "错误：--require-encrypt 指定但 REMOTE_BACKUP 未配置，无法加密，拒绝创建本地明文归档" >&2
-        exit 1
-    fi
     if { [ -n "$GPG_RECIPIENT" ] || [ -n "$GPG_PASSPHRASE" ]; } && ! command -v gpg >/dev/null 2>&1; then
         echo "错误：--require-encrypt 指定且配置了 gpg，但未找到 gpg 命令，拒绝创建本地明文归档" >&2
         exit 1
     fi
     if [ -z "$GPG_RECIPIENT" ] && [ -z "$GPG_PASSPHRASE" ] && { ! command -v age >/dev/null 2>&1 || [ ! -t 0 ]; }; then
-        echo "错误：--require-encrypt 指定但无可用加密方式（需 REMOTE_BACKUP + gpg/age），拒绝创建本地明文归档" >&2
+        echo "错误：--require-encrypt 指定但无可用加密方式（需配置 BACKUP_GPG_RECIPIENT / BACKUP_GPG_PASSPHRASE，或交互终端 + age），拒绝创建本地明文归档" >&2
         exit 1
     fi
 fi
