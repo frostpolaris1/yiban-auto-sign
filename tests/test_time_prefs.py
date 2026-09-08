@@ -791,9 +791,9 @@ class TimePrefsTest(unittest.TestCase):
                 s.replace(f"YIBAN_MAX_USERS={limit}\n", ""))
 
     def test_api_capacity_accounts_limit(self):
-        """对抗性审查补：账号配额（YIBAN_MAX_ACCOUNTS，2026-08-31 口径修订后 = 活跃
-        注册用户持有者数）——新增持有者（管理员带 email 添加 / 新用户提交）受限；
-        admin 直属裸账号（owner='admin'）按口径不占配额。"""
+        """对抗性审查补：账号配额（YIBAN_MAX_ACCOUNTS，2026-09-08 口径后 = 活跃
+        账号数，含 admin 直属裸账号——裸账号同样参与签到占负载）——超限拒绝新增
+        （调小上限不删存量，只限制新增）。"""
         with open(self.env_file, "a", encoding="utf-8") as f:
             f.write("YIBAN_MAX_ACCOUNTS=1\n")
         try:
@@ -802,19 +802,19 @@ class TimePrefsTest(unittest.TestCase):
             self._login(c, "admin", ADMIN_PASS)
             token = c.get("/api/me").get_json()["csrf_token"]
             h = {"X-CSRF-Token": token}
-            # setUp 已有 user1@test.local 持 1 个 active 账号 → 活跃持有者已达 1/1
-            # 1) 管理员带新邮箱添加（新增持有者）→ 403 且不自动注册
+            # setUp 已有 user1@test.local 持 1 个 active 账号 → 活跃账号已达 1/1
+            # 1) 管理员带新邮箱添加 → 403 且不自动注册
             r = c.post("/api/accounts", json={
                 "name": "C1", "phone": "13700137001", "password": "p1",
                 "email": "capnew@test.local", "initial_password": "UserPass123!",
             }, headers=h)
             self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
             self.assertIsNone(db.find_user("capnew@test.local"), "配额拒绝不应自动注册")
-            # 2) admin 直属裸账号（无 email，owner='admin'）按口径不占配额 → 可添加
+            # 2) admin 直属裸账号（无 email，owner='admin'）同样占配额 → 403
             r2 = c.post("/api/accounts", json={
                 "name": "裸账号", "phone": "13700137002", "password": "p2",
             }, headers=h)
-            self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+            self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
             # 3) user1 再提交：已有账号 → 400（单账号限制，非容量拒绝）
             c2 = app.test_client()
             token2 = self._login(c2, "user1@test.local", USER_PASS)
@@ -823,7 +823,7 @@ class TimePrefsTest(unittest.TestCase):
             }, headers={"X-CSRF-Token": token2})
             self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
             self.assertIn("只能提交一个账号", r3.get_json()["error"])
-            # 4) 新注册用户提交（新增持有者）→ 403
+            # 4) 新注册用户提交 → 403
             db.create_user("capuser@test.local", self.webapp.generate_password_hash(USER_PASS))
             c4 = app.test_client()
             token4 = self._login(c4, "capuser@test.local", USER_PASS)
@@ -831,22 +831,29 @@ class TimePrefsTest(unittest.TestCase):
                 "name": "U4", "phone": "13700137004", "password": "p4",
             }, headers={"X-CSRF-Token": token4})
             self.assertEqual(r4.status_code, 403, r4.get_data(as_text=True))
-            # settings 容量状态（新口径：账号 = 活跃持有者，admin 裸账号不计入）
+            # 上限调大后裸账号放行（不删人，只限制新增）
+            self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "2")
+            r5 = c.post("/api/accounts", json={
+                "name": "裸账号", "phone": "13700137002", "password": "p2",
+            }, headers=h)
+            self.assertEqual(r5.status_code, 200, r5.get_data(as_text=True))
+            # settings 容量状态（2026-09-08 口径：账号 = 活跃账号数，含裸账号）
             c3 = app.test_client()
             self._login(c3, "admin", ADMIN_PASS)
             data = c3.get("/api/settings").get_json()
-            self.assertEqual(data["capacity"]["accounts_max"], 1)
-            self.assertEqual(data["capacity"]["accounts"], 1)
+            self.assertEqual(data["capacity"]["accounts_max"], 2)
+            self.assertEqual(data["capacity"]["accounts"], 2)
             self.assertEqual(data["capacity"]["users"], len(db.load_users()))
         finally:
             s = open(self.env_file, encoding="utf-8").read()
-            open(self.env_file, "w", encoding="utf-8").write(
-                s.replace("YIBAN_MAX_ACCOUNTS=1\n", ""))
+            # 兼清两档写入值（=1 原始追加 / =2 调大后的改写行），防泄漏到后续用例
+            s = s.replace("YIBAN_MAX_ACCOUNTS=1\n", "").replace("YIBAN_MAX_ACCOUNTS=2\n", "")
+            open(self.env_file, "w", encoding="utf-8").write(s)
 
     def test_capacity_stats_semantics(self):
-        """2026-08-31 口径修订：用户 = 全部未删除注册用户（含空用户，上限 500）；
-        账号 = 至少持有 1 个非删除账号的活跃注册用户（上限 200，排除空用户与
-        admin 直属裸账号）。"""
+        """2026-09-08 口径修订：用户 = 全部未删除注册用户（含空用户，上限 500）；
+        账号 = 全部非删除活跃账号（上限 200，含 admin 直属裸账号——同样参与签到
+        占负载），空用户不计入账号。"""
         self.assertEqual(self.webapp.DEFAULT_MAX_USERS, 500)
         self.assertEqual(self.webapp.DEFAULT_MAX_ACCOUNTS, 200)
         app = self.webapp.create_app()
@@ -869,7 +876,7 @@ class TimePrefsTest(unittest.TestCase):
         cap2 = c3.get("/api/settings").get_json()["capacity"]
         self.assertEqual(cap2["users"], 3)
         self.assertEqual(cap2["accounts"], 1)
-        # admin 直属裸账号不计入 accounts（owner='admin' 非注册用户）
+        # admin 直属裸账号计入 accounts（2026-09-08：容量约束请求负载，裸账号占配额）
         token = c3.get("/api/me").get_json()["csrf_token"]
         r3 = c3.post("/api/accounts", json={
             "name": "裸账号", "phone": "13700137005", "password": "p5",
@@ -877,7 +884,7 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         cap3 = c3.get("/api/settings").get_json()["capacity"]
         self.assertEqual(cap3["users"], 3)
-        self.assertEqual(cap3["accounts"], 1)
+        self.assertEqual(cap3["accounts"], 2)
 
     def test_users_at_capacity_semantics_unified(self):
         """容量阈值语义统一：_users_at_capacity 与 _accounts_at_capacity
