@@ -252,7 +252,9 @@ class BreakerTest(unittest.TestCase):
         import unittest.mock as mock
 
         accs = [signin.Account(phone="13800138001", password="p")]
-        seq = iter([100.0, 131.0, 200.0, 232.0])  # 两次尝试：31s / 32s 均超阈值
+        # 两次尝试：31s / 32s 均超阈值；第 3 个采样点是重试回队时的间隔对齐探测
+        # （gap_max=0 → 对齐差值必 ≤0，不产生等待，仅消耗一个时间点）
+        seq = iter([100.0, 131.0, 150.0, 200.0, 232.0])
         with mock.patch.object(signin, "time") as tm, \
              mock.patch.object(signin, "attempt_signin") as attempt, \
              mock.patch.object(signin, "_write_sign_state"), \
