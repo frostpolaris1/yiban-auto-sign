@@ -135,14 +135,28 @@ class SecondRunEnvTest(unittest.TestCase):
         m_mail.assert_called_once()
 
     def test_no_alert_partial_success_first_run(self):
-        """部分成功 + 窗口外：首签轮（无环境变量且标记缺失）不告警（避免误报噪音）。"""
+        """部分成功 + 窗口外：补签触发点之前的首签轮不告警（避免误报噪音）。
+
+        抑制语义依赖「07:10 补签会重跑」：已越过补签触发点（07:10）的首签身份轮
+        是当天最后一轮（06:31 关机 07:10 起的场景），仍会告警——
+        见 test_batch19_knife6b_0908.LateFirstRunAlertTest。此处注入补签触发点
+        之前的固定时钟，用例不再随运行时刻漂移。
+        """
+        from datetime import datetime as _dt
+
+        class _EarlyDT(_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 8, 6, 50)
+
         accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
         results = {
             "13800000001": (True, "签到成功", False, signin.STATUS_SUCCESS),
             "13800000002": (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW),
         }
         with mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
-             mock.patch.object(signin, "_sched_marker_exists", return_value=False):
+             mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             mock.patch.object(signin, "datetime", _EarlyDT):
             is_second = signin._is_second_run()
             alerted = signin._maybe_alert_zero_success(
                 accounts, results, 1, is_second_run=is_second

@@ -31,6 +31,7 @@ import os
 import random
 import re
 import secrets
+import signal
 import sys
 import time
 from base64 import b64decode, b64encode
@@ -1783,6 +1784,42 @@ def _is_second_run():
     return os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()
 
 
+def _second_run_drop_done(accounts):
+    """补签轮定向重跑：剔除当日已了结（success/already）的账号。
+
+    依据当日 sign-state 状态文件（与容器调度器 _has_undone_today 同一事实源）：
+    存在未了结账号才触发的补签轮此前会整站重跑，把当日已 success 的账号
+    再次完整登录（风控暴露）。文件缺失/损坏时按「无记录」处理返回全量
+    （宁可多跑，不可漏签）。
+    """
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    path = os.path.join(state_dir, f"sign-state-{datetime.now().strftime('%Y-%m-%d')}.json")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return accounts
+    if not isinstance(data, dict) or not data:
+        return accounts
+    done = {
+        p for p, v in data.items()
+        if isinstance(v, dict) and v.get("status") in (STATUS_SUCCESS, STATUS_ALREADY)
+    }
+    if not done:
+        return accounts
+    kept = [a for a in accounts if a.phone not in done]
+    logger.info(
+        "补签轮定向重跑：%d 个账号当日已了结不再重跑，本次执行 %d 个",
+        len(accounts) - len(kept), len(kept),
+    )
+    return kept
+
+
+# 当天最后一轮触发点（宿主 run.sh 补签 cron 与容器 scheduler.SECOND 同为 07:10）。
+# 逾此时刻的「疑似首签轮」不再有下一次触发兜底，告警抑制语义失效。
+_LAST_RETRY_HM = (7, 10)
+
+
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
     """窗口外未了结账号的管理员告警。
 
@@ -1820,8 +1857,13 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
     if is_second_run is None:
         is_second_run = _sched_marker_exists()
     if ok_n > 0 and not is_second_run:
-        # 首签轮部分成功 + 部分窗口外：07:10 补签会重跑，不打扰
-        return False
+        # 首签轮部分成功 + 部分窗口外：07:10 补签会重跑，不打扰。
+        # 例外：当前时刻已越过补签触发点（06:31 关机、07:10 才被补跑起的场景），
+        # 本轮虽挂首签身份（当日 run 触发标记此刻才首次创建）却是当天最后一轮，
+        # 不再有第三次触发兜底 → 仍告警，防真异常无声。
+        _now = datetime.now()
+        if (_now.hour, _now.minute) < _LAST_RETRY_HM:
+            return False
     title = "当日签到异常告警" if ok_n == 0 else "签到窗口异常告警"
     if ok_n == 0:
         body = (
@@ -1915,6 +1957,20 @@ def _flush_admin_mail_summary(phase=None):
                 "易班签到汇总", "邮件无可用收件人，改推：\n" + body, urgent=True, force=True,
             )
     _mail_summary.clear()
+
+
+def _flush_mail_on_sigterm(signum, frame):
+    """SIGTERM（run.sh timeout / 手动 terminate / 容器超时终止）兜底冲刷。
+
+    签到轮被超时击杀时进程内 _mail_summary 随进程死亡——整轮已收集的告警
+    （含部分成功的汇总）一并消失。信号处理器在退出前冲刷一次；汇总为空时
+    不产生任何发送（不重复告警），正常收尾路径已清空收集器。
+    """
+    try:
+        _flush_admin_mail_summary(phase="签到超时终止")
+    except Exception:
+        pass
+    sys.exit(128 + int(signum or 15))
 
 
 # B 线用户失败提醒每日限频（2026-08-27 审查修复 P2-1）：README/更新日志承诺
@@ -2667,6 +2723,22 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     _write_sign_state(_rp, STATUS_SKIPPED_WINDOW, "签到时段已结束")
                     _emit_event(_rp, STATUS_SKIPPED_WINDOW, "签到时段已结束")
                 break
+            # 先判后睡：将跳过的账号（用户自取消/熔断暂停）不睡到时段槽位——
+            # 死号排在后段时，此前会先睡满槽位间隔才发现可跳过，把活号挤出窗口
+            cred = cred_state.get(phone, {})
+            if getattr(acc, "user_paused", False):
+                results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
+                _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                _emit_event(phone, STATUS_USER_CANCELLED, "用户已取消签到")
+                logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
+                continue
+            # 账密熔断：暂停中的账号零请求直接跳过（半开试探日除外——试探 1 次以验证恢复）
+            if cred.get("paused_since") and not _probe_due(cred, today):
+                results[phone] = (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED)
+                _write_sign_state(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
+                _emit_event(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
+                logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
+                continue
             # 到点执行（已过点立即）；重试落点已由 _next_retry_at 采样
             wait = (_at_dt - now_dt).total_seconds()
             if wait > 0:
@@ -2683,21 +2755,6 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 if gap > 0:
                     logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {min_gap}s）")
                     time.sleep(gap)
-            # 用户自暂停（调度 v2）：零请求直接跳过，状态显示"已取消"
-            if getattr(acc, "user_paused", False):
-                results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
-                _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
-                _emit_event(phone, STATUS_USER_CANCELLED, "用户已取消签到")
-                logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
-                continue
-            # 账密熔断：暂停中的账号零请求直接跳过（半开试探日除外——试探 1 次以验证恢复）
-            cred = cred_state.get(phone, {})
-            if cred.get("paused_since") and not _probe_due(cred, today):
-                results[phone] = (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED)
-                _write_sign_state(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
-                _emit_event(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
-                logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
-                continue
             attempts[phone] += 1
             logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
             t0 = time.monotonic()  # 单次尝试耗时起点（P6：慢响应可判）
@@ -2783,25 +2840,16 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         phone = acc.phone
         # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
         today = datetime.now().strftime("%Y-%m-%d")
-        # 首轮（第一个账号）不等待，后续每个账号（含重试回队）对齐相邻请求的
-        # 最小间隔——与铺点路径、容量预估 (avg+gap) 同一「下限」语义。
-        # 标记在 pop 之后无条件置 False（原实现只在失败分支置 False，
-        # 导致全成功路径账号间隔失效）
-        if not first_round and last_done is not None:
-            gap = gap_max - (time.monotonic() - last_done)
-            if gap > 0:
-                logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {gap_max}s）")
-                time.sleep(gap)
+        is_first = first_round
         first_round = False
-
-        # 用户自暂停（调度 v2）：零请求直接跳过，状态显示"已取消"
+        # 先判后睡：将跳过的账号（用户自取消/熔断暂停）不占账号间隔——
+        # 此前先睡满间隔再判跳过，死号排在前段时会白烧窗口
         if getattr(acc, "user_paused", False):
             results[phone] = (False, "用户已取消签到", True, STATUS_USER_CANCELLED)
             _write_sign_state(phone, STATUS_USER_CANCELLED, "用户已取消签到")
             _emit_event(phone, STATUS_USER_CANCELLED, "用户已取消签到")
             logger.info(f"[{phone}] ⏹️ 用户已取消签到，跳过执行")
             continue
-
         # 账密熔断：暂停中的账号零请求直接跳过（半开试探日除外——试探 1 次以验证恢复）
         cred = cred_state.get(phone, {})
         if cred.get("paused_since") and not _probe_due(cred, today):
@@ -2810,6 +2858,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             _emit_event(phone, STATUS_PAUSED, "账密异常已暂停（连续失败），请修改密码")
             logger.info(f"[{phone}] ⏸️ 账密异常已暂停，跳过执行")
             continue
+        # 首轮（第一个账号）不等待，后续每个账号（含重试回队）对齐相邻请求的
+        # 最小间隔——与铺点路径、容量预估 (avg+gap) 同一「下限」语义。
+        if not is_first and last_done is not None:
+            gap = gap_max - (time.monotonic() - last_done)
+            if gap > 0:
+                logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {gap_max}s）")
+                time.sleep(gap)
 
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
@@ -3150,6 +3205,10 @@ def main():
     )
     args = parser.parse_args()
 
+    # 超时击杀前的告警兜底：宿主 run.sh timeout / 容器 / 手动 terminate 均以
+    # SIGTERM 结束子进程；注册在探针分支之前，签到与探针子进程同享。
+    signal.signal(signal.SIGTERM, _flush_mail_on_sigterm)
+
     notify_url = os.environ.get("YIBAN_NOTIFY_URL", "")
 
     # 加载账号配置（文件 > JSON 环境变量 > 旧格式，详见 load_accounts）
@@ -3163,6 +3222,14 @@ def main():
     # 误开探针时此前会夜夜走「未配置任何账号」ERROR 分支且 once 永不关闭；
     # 探针语义下零账号=无事可做，静默成功退出。
     if args.probe:
+        # 探针对全部账号做完整登录（等同一次真实签到，风控敏感）：一键暂停 /
+        # 周末签到关闭期间照跑会把暂停语义打穿。门在探针分支内部判定——
+        # 不上移全局门，保住「探针先于零账号守卫」的既有语义与 --check-config 路径。
+        _paused = str(os.environ.get("YIBAN_GLOBAL_PAUSE", "")).strip().lower() in ("1", "true", "on", "yes")
+        _weekday = datetime.now().weekday()
+        if _paused or (_weekday == 6 and not SUNDAY_SIGN) or (_weekday == 5 and not SATURDAY_SIGN):
+            logger.info("==== 签到已暂停/周末签到关闭，本轮探针跳过（避免暂停期完整登录） ====")
+            sys.exit(0)
         # 探针会对全部账号做完整登录，必须与真实签到互斥——
         # 原实现绕过运行锁，23:55 探针与手动签到并发时同一账号被两进程并发登录。
         try:
@@ -3229,6 +3296,16 @@ def main():
     if not args.only and str(os.environ.get("YIBAN_GLOBAL_PAUSE", "")).strip().lower() in ("1", "true", "on", "yes"):
         logger.info("==== 签到已暂停（管理员通过 Web UI 一键暂停），跳过执行 ====")
         sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，恢复后次日正常执行
+
+    # 补签轮定向重跑：存在未了结账号时补签闸门整站重跑，会把当日已 success 的
+    # 账号再次完整登录（风控暴露）。现剔除已了结账号（success/already），
+    # 只重跑未完成者；全部已了结则静默结束（退出码 0，不空跑一轮）。
+    # --only 手动签到不受影响。
+    if not args.only and _is_second_run():
+        accounts = _second_run_drop_done(accounts)
+        if not accounts:
+            logger.info("==== 补签轮：当日账号均已了结，无需重跑 ====")
+            sys.exit(0)
 
     # 进程级单实例锁（2026-08-20 对抗性审查 P2）：防 cron 全量队列与手动 --only
     # 并发签到同一账号。--only 被持有 → 留痕退出；全量被持有 → 等待至多
