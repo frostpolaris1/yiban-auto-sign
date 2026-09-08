@@ -543,13 +543,13 @@
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">概览</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>容量预估：</b>按签到窗口与账号间隔估算还能容纳多少账号/用户（账号按最大间隔、用户按间隔中位数两档口径）；占用超 80% 标红，超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔</span>
+          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>容量预估：</b>按签到窗口与账号间隔估算还能容纳多少账号/用户（账号按完整间隔、用户按间隔一半两档口径）；占用超 80% 标红，超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔</span>
         </button>
       </div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
       <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周六/周日是否签到见「签到调度」卡内的「周末签到」设置）</div>
-      <!-- 容量预估两格（v0.29.0，原独立卡并入）：账号按最大间隔、用户按间隔中位数；超 80% 标红 -->
+      <!-- 容量预估两格（v0.29.0，原独立卡并入）：账号按完整间隔、用户按间隔一半；超 80% 标红 -->
       <div id="capacity-content" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm mt-3"></div>
     </div>
 
@@ -2315,7 +2315,7 @@ function renderCapacity(est) {
     </div>`;
   };
   box.innerHTML = cell('账号容量（按最大间隔估算）', est.current_holders, est.accounts_cap, '个')
-    + cell('用户容量（按间隔中位数估算）', est.current_users, est.users_cap, '人');
+    + cell('用户容量（按间隔一半估算）', est.current_users, est.users_cap, '人');
 }
 
 async function loadSettings() {

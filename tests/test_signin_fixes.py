@@ -145,12 +145,58 @@ class SigninFixes021Test(unittest.TestCase):
              mock.patch.object(signin, "_write_sign_state"), \
              mock.patch.object(signin, "_update_cred_state"), \
              mock.patch.object(signin, "send_notification"):
-            # random_delay 里也调用 random.uniform；统一返回 0 使旧实现暴露出最小间隔不足
+            # 重试打散项 random.uniform(0, RETRY_GAP_MAX) 统一返回 0：排除随机抖动后
+            # 精确断言下限
             rnd.uniform.return_value = 0.0
             signin.run_queue_retry([acc], "", 0, 30)
         self.assertTrue(sleeps, "应发生重试等待")
         self.assertGreaterEqual(sleeps[0], signin.RETRY_MIN_INTERVAL,
                                 "重试总间隔不得小于 RETRY_MIN_INTERVAL")
+
+    def test_manual_queue_honors_account_gap_floor(self):
+        """手动队列（schedule=None）相邻请求间隔必须 ≥ 账号间隔设置（下限语义）。
+
+        手动路径与自动调度、容量预估 (avg+gap) 共用「最小间隔」口径；
+        原实现此处为 U(0, gap) 随机打散：期望仅 gap/2、下界 0，违背
+        「自动与手动签到均生效的最小间隔」承诺。"""
+        accs = [signin.Account(phone=f"1380000000{i}", password="p") for i in (1, 2)]
+        sleeps = []
+        with mock.patch.object(signin, "attempt_signin",
+                               return_value=(True, "已签到", False, "already")), \
+             mock.patch.object(signin.time, "sleep", side_effect=sleeps.append), \
+             mock.patch.object(signin.time, "monotonic", return_value=1000.0), \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin, "_update_cred_state"):
+            signin.run_queue_retry(accs, "", 0, 10, schedule=None, cred_state={})
+        # monotonic 冻结 → 账号 2 弹出时距上次尝试 elapsed=0，应补足整段间隔 10s；
+        # 首个账号不等待
+        self.assertEqual(sleeps, [10.0])
+
+    def test_manual_queue_gap_zero_no_wait(self):
+        """账号间隔 0=关闭：手动队列不得引入额外等待。"""
+        accs = [signin.Account(phone=f"1380000000{i}", password="p") for i in (3, 4)]
+        sleeps = []
+        with mock.patch.object(signin, "attempt_signin",
+                               return_value=(True, "已签到", False, "already")), \
+             mock.patch.object(signin.time, "sleep", side_effect=sleeps.append), \
+             mock.patch.object(signin.time, "monotonic", return_value=1000.0), \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin, "_update_cred_state"):
+            signin.run_queue_retry(accs, "", 0, 0, schedule=None, cred_state={})
+        self.assertEqual(sleeps, [])
+
+    def test_gap_max_clamped_to_3600(self):
+        """.env 直配超大值不得把队列睡死（与网页设置侧 3600 上限同口径）。"""
+        accs = [signin.Account(phone=f"1380000000{i}", password="p") for i in (5, 6)]
+        sleeps = []
+        with mock.patch.object(signin, "attempt_signin",
+                               return_value=(True, "已签到", False, "already")), \
+             mock.patch.object(signin.time, "sleep", side_effect=sleeps.append), \
+             mock.patch.object(signin.time, "monotonic", return_value=1000.0), \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin, "_update_cred_state"):
+            signin.run_queue_retry(accs, "", 0, 86400, schedule=None, cred_state={})
+        self.assertTrue(sleeps and max(sleeps) <= 3600)
 
     def test_retry_wait_schedule_branch_respects_sch_cfg_retry_min_interval(self):
         """P4（2026-08-27）：schedule 分支重试改为非阻塞重插——重试落点 ≥ now + retry_min_interval，
