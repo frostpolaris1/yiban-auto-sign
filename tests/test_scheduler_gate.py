@@ -142,14 +142,27 @@ class ZeroSuccessAlertTest(unittest.TestCase):
         self.assertTrue(any(s == "当日签到异常告警" for s, _t in signin._mail_summary))
 
     def test_silent_when_any_success_first_run(self):
-        """首签轮（is_second_run=False）部分成功+窗口外跳过：07:10 会补签，不打扰。"""
+        """首签轮（is_second_run=False）部分成功+窗口外跳过：07:10 会补签，不打扰。
+
+        抑制仅在补签触发点（07:10）之前成立——已越过触发点的首签身份轮是当天
+        最后一轮，仍告警（见 test_batch19_knife6b_0908.LateFirstRunAlertTest）。
+        注入补签触发点之前的固定时钟，用例不随运行时刻漂移。
+        """
+        from datetime import datetime as _dt
+
+        class _EarlyDT(_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 8, 6, 50)
+
         accounts = [SimpleNamespace(phone="13800000001"), SimpleNamespace(phone="13800000002")]
         results = {
             "13800000001": (True, "签到成功", False, "success"),
             "13800000002": (False, "签到时段已结束", True, "skipped_window"),
         }
-        self.assertFalse(signin._maybe_alert_zero_success(
-            accounts, results, ok_n=1, is_second_run=False))
+        with mock.patch.object(signin, "datetime", _EarlyDT):
+            self.assertFalse(signin._maybe_alert_zero_success(
+                accounts, results, ok_n=1, is_second_run=False))
         self.assertFalse(signin._mail_summary)
 
     def test_alerts_on_mixed_second_run(self):
