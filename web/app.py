@@ -879,8 +879,14 @@ def police_link():
 
     备案号属于运营者身份信息，不入仓库：模板与文档页外壳回落到公安部通用
     门户，真实查询链接（含备案号）由部署方在 .env 配置（v0.29.0 脱敏）。
+    scheme 白名单（复用 _SAFE_LINK_SCHEMES）：该值未经转义直接进公开页
+    href，配置 javascript:/data: 等即点击型 XSS——不在白名单（含空值）一律
+    回落公安部通用门户（2026-09-08）。
     """
-    return read_env(ENV_FILE).get("YIBAN_POLICE_LINK", "").strip() or "https://beian.mps.gov.cn/"
+    link = read_env(ENV_FILE).get("YIBAN_POLICE_LINK", "").strip()
+    if link and link.lower().startswith(_SAFE_LINK_SCHEMES):
+        return link
+    return "https://beian.mps.gov.cn/"
 
 
 # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度）：
@@ -3656,8 +3662,10 @@ def create_app(host=None):
         """邮件通知配置状态（脱敏：授权码不回显，地址打码），供管理后台显示。
 
         smtps：SMTP 发信条目列表（mailer.smtp_list 解密结果；pass 绝不回显，
-        仅以 has_pass 标记该条是否已有授权码；user/admin_to 同顶层字段口径
+        仅以 has_pass 标记该条是否已有授权码；user 同顶层字段口径
         经 mailer._mask_addr 打码——发件账号也属敏感地址，编辑时留空即沿用）。
+        条目级 admin_to 已摘除（2026-09-08）：发送路径只读顶层旧键 ADMIN_TO，
+        条目携带的收件人从不生效，历史死字段不再序列化/落盘。
         """
         cfg = mailer.get_config()
         enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
@@ -3668,13 +3676,11 @@ def create_app(host=None):
             "smtp_host": cfg.get("host", ""),
             "smtp_port": cfg.get("port", 465),
             "user": cfg.get("user", ""),
-            "admin_to": cfg.get("admin_to", ""),
             "smtps": [
                 {
                     "host": str(e.get("host", "")),
                     "port": e.get("port", 465),
                     "user": mailer._mask_addr(e.get("user")),
-                    "admin_to": mailer._mask_addr(e.get("admin_to")),
                     "has_pass": bool(e.get("pass")),
                 }
                 for e in mailer.smtp_list()
@@ -3688,10 +3694,11 @@ def create_app(host=None):
         支持：enabled（全局 YIBAN_MAIL_ENABLE）/ admin_notify（主管理员个人
         接收 YIBAN_MAIL_ADMIN_NOTIFY）。两者可单独或同时提交，均为 bool。
         smtps（v0.29.1）：SMTP 发信条目列表（主备 failover），每条
-        {host, port=465, user, pass, admin_to}；pass 留空且该索引旧条目已有
+        {host, port=465, user, pass}；pass 留空且该索引旧条目已有
         授权码 → 保留旧 pass（不改授权码时无需重输），user 留空同理按索引
         沿用旧值（GET 打码后前端不回显完整地址），落盘前 AES-GCM 加密为
-        YIBAN_MAIL_SMTPS_ENC。
+        YIBAN_MAIL_SMTPS_ENC。条目级 admin_to 不再接受/写入（2026-09-08，
+        发送路径从不读该键）。
 
         邮件通道是全部安全告警的最后一条送达路径——"先关通知再作案"
         是活体复现的攻击链首步（拿到内置主管理员 Cookie 后一个 PUT 就能让所有
@@ -3729,7 +3736,7 @@ def create_app(host=None):
                 if not isinstance(e, dict):
                     return jsonify({"error": f"smtps 第 {i + 1} 条格式无效"}), 400
                 # or "" 兜底：JSON null（键存在值为 null 时 get 的默认值不生效）不得
-                # 经 str(None) 落盘为 "None"（与下方 pass/admin_to 同口径）
+                # 经 str(None) 落盘为 "None"（与下方 pass 同口径）
                 host = str(e.get("host") or "").strip()
                 user = str(e.get("user") or "").strip()
                 if not host:
@@ -3753,7 +3760,6 @@ def create_app(host=None):
                     "port": port,
                     "user": user,
                     "pass": pwd,
-                    "admin_to": str(e.get("admin_to", "") or "").strip(),
                 })
             # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
             denied = _reconfirm_admin_password(
