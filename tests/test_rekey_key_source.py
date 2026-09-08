@@ -192,6 +192,18 @@ def _notify_enc(key_hex):
     return json.dumps(enc, ensure_ascii=False)
 
 
+# SMTP 发信条目列表（web 设置页经 YIBAN_MAIL_SMTPS_ENC 落盘的明文结构）
+MAIL_SMTPS = [{"host": "smtp.qq.com", "port": 465, "user": "alert@qq.com",
+               "pass": "smtp-auth-code", "admin_to": "boss@qq.com"}]
+
+
+def _mail_enc(key_hex):
+    """按 web 设置页同口径生成 YIBAN_MAIL_SMTPS_ENC 的值（固定 AAD 的密文 JSON）。"""
+    plain = json.dumps(MAIL_SMTPS, ensure_ascii=False)
+    enc = account_crypto.encrypt_text(plain, account_crypto._decode_key(key_hex))
+    return json.dumps(enc, ensure_ascii=False)
+
+
 def _close_db():
     if db._conn is not None:
         with contextlib.suppress(Exception):
@@ -256,13 +268,15 @@ class _B14Fixture(unittest.TestCase):
         _close_db()
         _clear_caches()
 
-    def seed(self, notify_line=None):
-        """写 .env（账号钥/审计钥/可选推送密文）并建库：1 个加密账号 + 2 行审计留痕。"""
+    def seed(self, notify_line=None, mail_line=None):
+        """写 .env（账号钥/审计钥/可选推送与邮件密文）并建库：1 个加密账号 + 2 行审计留痕。"""
         lines = [f"YIBAN_ACCOUNTS_KEY={OLD_KEY}", f"YIBAN_AUDIT_KEY={AUDIT_KEY}",
                  "YIBAN_OTHER_KEEP=1"]
         if notify_line:
             lines.append("YIBAN_NOTIFY_TYPE=serverchan")
             lines.append(f"YIBAN_NOTIFY_SECRET_ENC={notify_line}")
+        if mail_line:
+            lines.append(f"YIBAN_MAIL_SMTPS_ENC={mail_line}")
         _write_env(self.env_file, lines)
         _clear_caches()
         db.init_db(db_file=self.db_file, env_file=self.env_file, cleanup=False)
@@ -594,9 +608,10 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
                     held["n"] -= 1
 
         with mock.patch.object(env_lock, "env_write_lock", lock_that_sees_web_edit):
-            state = rekey_accounts.rotate_and_write_env(
+            notify_state, mail_state = rekey_accounts.rotate_and_write_env(
                 env, account_crypto._decode_key(NEW_KEY), account_crypto._decode_key(OLD_KEY))
-        self.assertEqual(state, "rotated")
+        self.assertEqual(notify_state, "rotated")
+        self.assertEqual(mail_state, "unset", ".env 无邮件密文时报未配置，不误报失败")
         self.assertEqual(held["n"], 0, "锁必须已释放")
         self.assertEqual(_env_value(env, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
         entry = json.loads(_env_value(env, "YIBAN_NOTIFY_SECRET_ENC"))
@@ -704,6 +719,93 @@ class RekeyNotifySecretB14Test(_B14Fixture):
         _clear_caches()
         with _cwd(self.work):
             self.assertEqual(notify.get_secret(), SCT_KEY)
+
+
+class RekeyMailSmtpsTest(_B14Fixture):
+    """换钥时 YIBAN_MAIL_SMTPS_ENC（SMTP 发信条目密文）必须随轮换重加密。
+
+    与推送密文同机理：漏迁 = 换钥后 mailer 解不开密文而回落旧单条键（通常为空），
+    mailer.is_enabled() 随之为假——邮件告警（安全告警的最后送达路径）静默死亡，
+    而轮换工具收尾自检只报推送通道，运营者看到的是"成功"。迁移纪律与推送一致：
+    同一把 env 写锁内读现值、与账号新钥**同一次原子替换**落盘；解密失败不中止
+    轮换（账号凭据优先），只记 ERROR 并在收尾自检行报"需重新配置"。
+    """
+
+    ENV_IN_CWD = True
+
+    def _run_rekey(self, *extra):
+        return _run_cli("rekey_accounts.py",
+                        ["--db", self.db_file, "--env", self.env_file,
+                         "--new-key", NEW_KEY, "--force", *extra], cwd=self.work)
+
+    def _smtp_list_in_fresh_process(self):
+        """另起进程跑 mailer.smtp_list()——排除进程内缓存，按部署口径验证 .env 可用。"""
+        env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONPATH"] = os.path.join(BASE, "scripts")
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import json, mailer; print(json.dumps(mailer.smtp_list(), ensure_ascii=False))"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=self.work, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)
+
+    def test_mail_blob_survives_rotation(self):
+        """正路：轮换后密文换成新钥可解、旧钥解不开，新进程 mailer.smtp_list() 回读同条目。"""
+        old_blob = _mail_enc(OLD_KEY)
+        self.seed(mail_line=old_blob)
+        # 前置确认：旧密文用新钥解不开（这正是漏迁时通道死亡的机理）
+        with self.assertRaises(ValueError):
+            account_crypto.decrypt_text(json.loads(old_blob),
+                                        account_crypto._decode_key(NEW_KEY))
+        r = self._run_rekey()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("推送通道自检：未配置", r.stdout, "收尾自检必须两条通道都报")
+        self.assertIn("邮件通道自检：已随换钥迁移", r.stdout)
+        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
+        self.assertIn("YIBAN_OTHER_KEEP=1", _read_env(self.env_file),
+                      "原子回写必须保留 .env 其它行")
+        entry = json.loads(_env_value(self.env_file, "YIBAN_MAIL_SMTPS_ENC"))
+        self.assertEqual(
+            json.loads(account_crypto.decrypt_text(entry, account_crypto._decode_key(NEW_KEY))),
+            MAIL_SMTPS, "密文必须已换成新钥可解且条目不丢")
+        with self.assertRaises(ValueError):
+            account_crypto.decrypt_text(entry, account_crypto._decode_key(OLD_KEY))
+        self.assertEqual(self._smtp_list_in_fresh_process(), MAIL_SMTPS,
+                         "换钥后新进程必须仍能读出发信条目（邮件告警通道不得静默死亡）")
+        self.assert_db_account_readable(NEW_KEY)
+
+    def test_corrupted_mail_blob_does_not_abort_rotation(self):
+        """密文损坏：不中止轮换（账号凭据优先），自检行报"需重新配置"，坏值不得被改写。"""
+        self.seed(mail_line="not-a-json-ciphertext")
+        r = self._run_rekey()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("邮件通道自检：需重新配置", r.stdout)
+        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
+        self.assertEqual(_env_value(self.env_file, "YIBAN_MAIL_SMTPS_ENC"),
+                         "not-a-json-ciphertext", "解不开时不得改写坏值")
+        self.assert_db_account_readable(NEW_KEY)
+
+    def test_skip_mail_keeps_old_ciphertext(self):
+        """--skip-mail：轮换照常成功，密文保持旧钥不动，自检行报"按 --skip-mail 未迁移"。"""
+        old_blob = _mail_enc(OLD_KEY)
+        self.seed(mail_line=old_blob)
+        r = self._run_rekey("--skip-mail")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("邮件通道自检：需重新配置：本次按 --skip-mail 未迁移", r.stdout)
+        self.assertEqual(_env_value(self.env_file, "YIBAN_MAIL_SMTPS_ENC"), old_blob,
+                         "跳过迁移就应保持原密文不动")
+        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
+
+    def test_unconfigured_mail_stays_unset(self):
+        """未配置 SMTP 密文：自检行报"未配置"，且不得往 .env 里塞空键。"""
+        self.seed()
+        r = self._run_rekey()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("邮件通道自检：未配置", r.stdout)
+        self.assertNotIn("YIBAN_MAIL_SMTPS_ENC", _read_env(self.env_file))
 
 
 class RekeyBestEffortB14Test(unittest.TestCase):

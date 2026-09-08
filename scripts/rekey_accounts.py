@@ -20,6 +20,7 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
            必须是已存在的文件，路径打错时工具直接拒绝，不会在该路径新建 .env
            并生成新审计密钥）
     可选：--skip-notify（不迁移推送密文 YIBAN_NOTIFY_SECRET_ENC）
+    可选：--skip-mail（不迁移邮件 SMTP 密文 YIBAN_MAIL_SMTPS_ENC）
 
 流程（崩溃安全，.env 最后写；加固）：
     0. 新钥生成后**立即写入 0600 暂存文件**（<env>.rekey-staging）——
@@ -41,6 +42,16 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
        读-解密-重加密-写回整段在**同一把 env_lock 内**完成：
        否则 --force 不停服轮换时，期间设置页改过的推送配置会被工具启动时的
        陈旧快照覆盖回去。
+    4c. 邮件 SMTP 密文随轮换迁移：.env 里的 YIBAN_MAIL_SMTPS_ENC（SMTP 发信
+       条目列表 {host, port, user, pass, admin_to}，v0.29.1 起由设置页写入，
+       同样用 YIBAN_ACCOUNTS_KEY 加密）与推送密文同口径迁移（同一把 env_lock
+       内读现值，与账号密钥**同一次原子替换**落盘）。漏了这步 = 换钥后
+       mailer 解不开密文而回落旧单条键（通常为空），is_enabled() 随之为假，
+       邮件告警（安全告警的最后送达路径）无声死亡。该键未配置或解不开时
+       不中止轮换（首要目标是账号凭据不丢），只记 ERROR 并在收尾自检行提示
+       "需在设置页重新配置 SMTP 发信条目"；--skip-mail 可显式跳过本步。
+       收尾自检对推送与邮件两条通道各报一行（未配置/已迁移/迁移失败需重配/
+       已跳过）——只报其一会把"另一条通道已死"掩盖成轮换成功。
     崩溃恢复（按中断点区分——旧文案"改回旧钥即可恢复"对第 2 步
     之后的中断是**错误**指引，库内已是新钥密文，旧钥解不开）：
     - 第 2 步提交**前**中断：库未变更，.env 旧钥仍然有效，直接重跑本工具即可；
@@ -401,6 +412,8 @@ def update_env_key(env_path, new_key, extra=None):
 
 # 推送密钥在 .env 中的键名（值 = json.dumps(account_crypto.encrypt_text(...))）
 NOTIFY_ENC_KEY = "YIBAN_NOTIFY_SECRET_ENC"
+# 邮件 SMTP 发信条目密文的键名（web 设置页 v0.29.1 起写入，同一把 YIBAN_ACCOUNTS_KEY）
+MAIL_ENC_KEY = "YIBAN_MAIL_SMTPS_ENC"
 # 收尾自检行文案：键为 rotate_notify_secret 返回的状态
 NOTIFY_SELF_CHECK_NOTE = {
     "rotated": "已随换钥迁移（消息推送无需重新配置）",
@@ -408,15 +421,26 @@ NOTIFY_SELF_CHECK_NOTE = {
     "failed": "需重新配置：旧密文用换钥前的密钥解不开，请在设置页重新配置消息推送",
     "skipped": "需重新配置：本次按 --skip-notify 未迁移，换钥后请在设置页重新配置消息推送",
 }
+# 邮件密文收尾自检行文案：键同 NOTIFY_SELF_CHECK_NOTE（换钥后该密文不迁移 =
+# mailer 解不开而回落空旧键，告警邮件静默停发）
+MAIL_SELF_CHECK_NOTE = {
+    "rotated": "已随换钥迁移（SMTP 发信条目无需重新配置）",
+    "unset": "未配置（无需迁移）",
+    "failed": "需重新配置：旧密文用换钥前的密钥解不开，请在设置页重新配置 SMTP 发信条目",
+    "skipped": "需重新配置：本次按 --skip-mail 未迁移，换钥后请在设置页重新配置 SMTP 发信条目",
+}
 
 
-def rotate_notify_secret(env_path, old_key, new_key, skip=False):
-    """换钥时同步重加密推送密文；返回 (state, new_raw)，new_raw=None 表示不改动该键。
+def _rotate_enc_blob(env_path, env_key, old_key, new_key, skip, what):
+    """换钥时同步重加密 .env 中一条 YIBAN_ACCOUNTS_KEY 密文；返回 (state, new_raw)。
 
-    为什么必须做：Server酱 SendKey / 自定义 webhook URL 是用
-    YIBAN_ACCOUNTS_KEY 加密后存进 .env 的。轮换账号密钥而不重加密，
-    notify.get_secret() 会解不开并返回空——推送通道【静默死亡】，运营者在最需要
-    通知的时候（盗号/异常告警）收不到任何消息，且日志里只有一条 WARNING。
+    new_raw=None 表示不改动该键。state 是 SELF_CHECK_NOTE 字典的键
+    （rotated/unset/failed/skipped），what 是日志与人话提示里的条目称谓。
+
+    为什么必须做：这类密文（推送 SendKey/webhook URL、SMTP 发信条目）都用
+    YIBAN_ACCOUNTS_KEY 加密后存进 .env。轮换账号密钥而不重加密，读取方会解不开
+    而静默回落空值——对应通道【静默死亡】，运营者在最需要通知的时候（盗号/异常
+    告警）收不到任何消息，且日志里只有一条 WARNING。
 
     刻意"尽力而为"（用户裁决）：首要目标是账号凭据不丢，本步骤任何失败都不得
     让轮换本身失败，只记 ERROR 并在收尾自检行提示需在设置页重新配置。
@@ -424,21 +448,21 @@ def rotate_notify_secret(env_path, old_key, new_key, skip=False):
     但读取失败"（权限/占用）会**重抛 OSError**（那是 load_key 侧刻意的 fail-loud，
     防误判未配置而生成新钥覆盖旧钥），而这里正处在"库里已是新钥、.env 尚未写"
     的窗口——让它穿透 main 就会留下"库=新钥 / env=旧钥"的不一致态（修复轮1①）。
-    读失败同样报"未迁移，需在设置页重新配置"，轮换本身继续成功（--skip-notify 时
-    本就不迁移，读失败仍按"跳过"计）。
+    读失败同样报"未迁移，需在设置页重新配置"，轮换本身继续成功（skip 时本就不
+    迁移，读失败仍按"跳过"计）。
 
     调用方必须在 env_lock 写锁内调用本函数（修复轮1②）：读到的必须是即将被
     覆盖的那份 .env 的现值，否则不停服轮换时会用陈旧快照盖掉期间设置页改过的配置。
     """
     try:
-        raw = account_crypto._parse_env_file(env_path).get(NOTIFY_ENC_KEY, "").strip()
-    except Exception as e:  # 尽力而为：读不到密文只影响推送通道，绝不拖垮账号凭据轮换
+        raw = account_crypto._parse_env_file(env_path).get(env_key, "").strip()
+    except Exception as e:  # 尽力而为：读不到密文只影响该通道，绝不拖垮账号凭据轮换
         if skip:
-            # --skip-notify 本就不迁移，读失败不改变结论
+            # skip 本就不迁移，读失败不改变结论
             return "skipped", None
         logger.error(
-            "推送密钥无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置消息推送"
-            "（.env 读取失败）: %s", e
+            "%s无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置"
+            "（.env 读取失败）: %s", what, e
         )
         return "failed", None
     if not raw:
@@ -449,27 +473,51 @@ def rotate_notify_secret(env_path, old_key, new_key, skip=False):
         plain = account_crypto.decrypt_text(json.loads(raw), old_key)
         enc = account_crypto.encrypt_text(plain, new_key)
         return "rotated", json.dumps(enc, ensure_ascii=False)
-    except Exception as e:  # 尽力而为：不得因推送配置拖垮轮换（首要目标是账号凭据不丢）
+    except Exception as e:  # 尽力而为：不得因该通道配置拖垮轮换（首要目标是账号凭据不丢）
         logger.error(
-            "推送密钥无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置消息推送: %s", e
+            "%s无法随轮换重加密（未配置或已损坏），换钥后需在设置页重新配置: %s", what, e
         )
         return "failed", None
 
 
-def rotate_and_write_env(env_path, new_key, old_key, skip_notify=False):
-    """在**同一把 env 写锁内**读现值 → 迁移推送密文 → 与新账号钥一次原子落盘。
+def rotate_notify_secret(env_path, old_key, new_key, skip=False):
+    """换钥时同步重加密推送密文；返回 (state, new_raw)，new_raw=None 表示不改动该键。
 
-    返回收尾自检状态（NOTIFY_SELF_CHECK_NOTE 的键）。
+    Server酱 SendKey / 自定义 webhook URL 用 YIBAN_ACCOUNTS_KEY 加密存 .env，
+    轮换不重加密则 notify.get_secret() 解不开而静默返回空（推送通道静默死亡）。
+    机理、尽力而为约束与锁内调用要求见 _rotate_enc_blob。
+    """
+    return _rotate_enc_blob(env_path, NOTIFY_ENC_KEY, old_key, new_key, skip, "推送密钥")
+
+
+def rotate_mail_smtps(env_path, old_key, new_key, skip=False):
+    """换钥时同步重加密邮件 SMTP 密文（YIBAN_MAIL_SMTPS_ENC）；语义同 rotate_notify_secret。
+
+    SMTP 发信条目列表（web 设置页写入）同样用 YIBAN_ACCOUNTS_KEY 加密：轮换不
+    重加密 = 换钥后 mailer 解不开而回落旧单条键（通常为空），is_enabled() 随之为假，
+    邮件告警（安全告警的最后送达路径）静默死亡。机理与约束见 _rotate_enc_blob。
+    """
+    return _rotate_enc_blob(env_path, MAIL_ENC_KEY, old_key, new_key, skip, "邮件 SMTP 密文")
+
+
+def rotate_and_write_env(env_path, new_key, old_key, skip_notify=False, skip_mail=False):
+    """在**同一把 env 写锁内**读现值 → 迁移推送/邮件密文 → 与新账号钥一次原子落盘。
+
+    返回 (推送自检状态, 邮件自检状态)（NOTIFY_SELF_CHECK_NOTE / MAIL_SELF_CHECK_NOTE 的键）。
     为什么读也要放进锁里：本工具正常路径要求停服，但 --force
-    是文档允许的用法，不停服时设置页可能随时重写 YIBAN_NOTIFY_SECRET_ENC；
+    是文档允许的用法，不停服时设置页可能随时重写这些密文；
     锁外快照 + 锁内写入 = 把用户期间的修改覆盖回旧值。
     """
     import env_lock
 
     with env_lock.env_write_lock(env_path):
-        state, raw = rotate_notify_secret(env_path, old_key, new_key, skip=skip_notify)
-        _write_env_key(env_path, new_key, {NOTIFY_ENC_KEY: raw} if raw else None)
-    return state
+        notify_state, notify_raw = rotate_notify_secret(
+            env_path, old_key, new_key, skip=skip_notify)
+        mail_state, mail_raw = rotate_mail_smtps(
+            env_path, old_key, new_key, skip=skip_mail)
+        # _write_env_key 自带 falsy 值过滤：未配置/迁移失败的键保持原状不写入
+        _write_env_key(env_path, new_key, {NOTIFY_ENC_KEY: notify_raw, MAIL_ENC_KEY: mail_raw})
+    return notify_state, mail_state
 
 
 def _audit_rotate(db_path, action, detail, env_file=None):
@@ -505,6 +553,9 @@ def main():
     parser.add_argument("--skip-notify", action="store_true",
                         help="不迁移推送密文 YIBAN_NOTIFY_SECRET_ENC（默认会"
                              "用新钥重加密；跳过则换钥后须在设置页重新配置消息推送）")
+    parser.add_argument("--skip-mail", action="store_true",
+                        help="不迁移邮件 SMTP 密文 YIBAN_MAIL_SMTPS_ENC（默认会"
+                             "用新钥重加密；跳过则换钥后须在设置页重新配置发信条目）")
     parser.add_argument("--env-only", action="store_true",
                         help="仅更新 .env 密钥（不重加密；用于第 4 步中断后的补完，"
                              "会先用新钥抽样试解库内密文）")
@@ -597,24 +648,28 @@ def main():
         if not ok:
             print("--env-only 中止：.env 未变更。")
             sys.exit(1)
-    # 推送密文随换钥迁移：必须在写 .env 之前算好，与新钥同一次
+    # 推送/邮件密文随换钥迁移：必须在写 .env 之前算好，与新钥同一次
     # 原子替换落盘——否则新钥已生效而密文仍是旧钥的，通道静默死亡。
     # 修复轮1②：读现值也搬进这把 env 锁（rotate_and_write_env），--force 不停服时
-    # 期间设置页改过的推送配置才不会被启动时的陈旧快照覆盖回去。
+    # 期间设置页改过的配置才不会被启动时的陈旧快照覆盖回去。
     # 尽力而为：本步骤失败只提示，不改变轮换结果与退出码。
-    notify_state = rotate_and_write_env(
-        env_path, new_key, old_key, skip_notify=args.skip_notify)
+    notify_state, mail_state = rotate_and_write_env(
+        env_path, new_key, old_key,
+        skip_notify=args.skip_notify, skip_mail=args.skip_mail)
     if staging:
         with contextlib.suppress(OSError):
             os.remove(staging)
         print(f"已删除暂存文件: {staging}")
     print("已更新 .env 的 YIBAN_ACCOUNTS_KEY。")
+    # 两条通道各报一行：只报其一会把"另一条通道已死"掩盖成轮换成功
     print(f"推送通道自检：{NOTIFY_SELF_CHECK_NOTE[notify_state]}")
+    print(f"邮件通道自检：{MAIL_SELF_CHECK_NOTE[mail_state]}")
     _audit_rotate(
         db_path,
         "accounts_key_rekey",
         ("ENV-ONLY 补完" if args.env_only else "全量重加密完成并更新 .env")
-        + f"；推送通道：{NOTIFY_SELF_CHECK_NOTE[notify_state]}",
+        + f"；推送通道：{NOTIFY_SELF_CHECK_NOTE[notify_state]}"
+        + f"；邮件通道：{MAIL_SELF_CHECK_NOTE[mail_state]}",
         env_file=key_source,
     )
     print("后续步骤：重启 web/signin/scheduler 等全部进程；若 shell/容器环境变量中"
