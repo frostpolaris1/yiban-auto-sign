@@ -43,7 +43,7 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
        否则 --force 不停服轮换时，期间设置页改过的推送配置会被工具启动时的
        陈旧快照覆盖回去。
     4c. 邮件 SMTP 密文随轮换迁移：.env 里的 YIBAN_MAIL_SMTPS_ENC（SMTP 发信
-       条目列表 {host, port, user, pass, admin_to}，v0.29.1 起由设置页写入，
+       条目列表 {host, port, user, pass}，v0.29.1 起由设置页写入，
        同样用 YIBAN_ACCOUNTS_KEY 加密）与推送密文同口径迁移（同一把 env_lock
        内读现值，与账号密钥**同一次原子替换**落盘）。漏了这步 = 换钥后
        mailer 解不开密文而回落旧单条键（通常为空），is_enabled() 随之为假，
