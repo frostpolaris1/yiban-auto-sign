@@ -112,7 +112,7 @@ class SubpathDeployTest(unittest.TestCase):
         r = self.c.get("/login")
         self.assertEqual(r.status_code, 200)
         body = r.get_data(as_text=True)
-        self.assertIn("const BASE = '';", body)
+        self.assertIn('const BASE = "";', body)  # tojson 渲染：空串带双引号
         self.assertIn('src="/static/vendor/tailwind.js', body)
         self.assertEqual(self.c.get("/foo").status_code, 404)      # 未知路径仍 404
         self.assertEqual(self.c.get("/static/vendor/tailwind.js").status_code, 200)
@@ -131,7 +131,7 @@ class SubpathDeployTest(unittest.TestCase):
         r = self.c.get(P + "/login")
         self.assertEqual(r.status_code, 200)
         body = r.get_data(as_text=True)
-        self.assertIn(f"const BASE = '{P}';", body)
+        self.assertIn(f'const BASE = "{P}";', body)  # tojson 渲染：JSON 字符串带双引号
         self.assertIn(f'src="{P}/static/vendor/tailwind.js', body)
         self.assertIn(f'href="{P}/terms"', body)
         self.assertEqual(self.c.get(P + "/static/vendor/tailwind.js").status_code, 200)
@@ -144,7 +144,7 @@ class SubpathDeployTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:120])
         r = self.c.get(P + "/")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(f"const BASE = '{P}';", r.get_data(as_text=True))
+        self.assertIn(f'const BASE = "{P}";', r.get_data(as_text=True))
 
 
 if __name__ == "__main__":

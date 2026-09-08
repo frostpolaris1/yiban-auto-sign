@@ -9,8 +9,9 @@ smtps 字段、发送 failover、GET 脱敏。
   解密回读；pass/user 留空按索引保留旧值；无 confirm → 400
 - 发送 failover：mock smtplib，首条 SMTPException、次条成功 → send 成功且日志含两次尝试；
   条目 port 非法回退 465 并只记一次告警
-- GET /api/mail-config：smtps 条目 has_pass=true、user/admin_to 打码，响应全文不含
-  pass 明文与完整邮箱
+- GET /api/mail-config：smtps 条目 has_pass=true、user 打码，响应全文不含
+  pass 明文与完整邮箱；条目级 admin_to 死字段已摘除（发送只读顶层 ADMIN_TO，
+  保存不再接受/写入，GET 不再序列化）
 
 脚手架照抄 tests/test_batch19_features_0907.py 的 _Base（临时 .env/DB/webapp/_master）。
 
@@ -184,6 +185,7 @@ class MailConfigSmtpsApiTest(_Base):
                  "admin_to": "boss@x.com"}]
 
     def test_put_smtps_writes_enc_and_roundtrips(self):
+        """PUT 传入含 admin_to 的条目：该死键不再落盘，保存结果只含有效字段。"""
         self._reset_env_file()
         c, h = self._master()
         r = c.put("/api/mail-config",
@@ -192,8 +194,9 @@ class MailConfigSmtpsApiTest(_Base):
         entries = self._read_enc_entries()
         self.assertEqual(entries, [{
             "host": "smtp.x.com", "port": 465, "user": "a@x.com",
-            "pass": "topsecret", "admin_to": "boss@x.com",
+            "pass": "topsecret",
         }])
+        self.assertNotIn("admin_to", entries[0], "条目级 admin_to 死字段不得落盘")
 
     def test_put_smtps_empty_pass_keeps_old(self):
         self._reset_env_file()
@@ -283,9 +286,9 @@ class MailConfigSmtpsApiTest(_Base):
         data = r.get_json()
         self.assertEqual(len(data["smtps"]), 1)
         self.assertEqual(data["smtps"][0]["host"], "smtp.x.com")
-        # user/admin_to 打码（与顶层字段同口径）：不含完整邮箱
+        # user 打码（与顶层字段同口径）：不含完整邮箱
         self.assertEqual(data["smtps"][0]["user"], "a***@x.com")
-        self.assertEqual(data["smtps"][0]["admin_to"], "bos***@x.com")
+        self.assertNotIn("admin_to", data["smtps"][0], "条目级 admin_to 死字段不得序列化")
         self.assertTrue(data["smtps"][0]["has_pass"])
         self.assertNotIn("pass", data["smtps"][0], "pass 键不得出现在响应条目中")
         body = r.get_data(as_text=True)

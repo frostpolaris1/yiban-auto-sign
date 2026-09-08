@@ -13,7 +13,8 @@
 <script>
   // 挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径/独立子域下为空串）。
   // 所有跳转/静态资源/API 请求统一经 BASE 拼接，避免子路径部署时跳回主站根。
-  const BASE = '{{ request.script_root }}';
+  // tojson 保证 <script> 字符串字面量里的反斜杠/引号被转义（同 index.html BASE）
+  const BASE = {{ request.script_root | tojson }};
 </script>
 <script>
   // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
