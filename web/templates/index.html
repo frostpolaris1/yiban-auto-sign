@@ -1250,7 +1250,7 @@
 
 <!-- Toast（role="status" + aria-live="polite"：动态消息对屏幕阅读器可感知；toast() 只改 class/data-hidden 与文本，属性保留。
      动效见上方 <style> 内 #toast 规则：浮入 / 快速淡出 / 可中断；data-hidden 替代 hidden 以支持过渡） -->
-<div id="toast" role="status" aria-live="polite" data-hidden class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50
+<div id="toast" role="status" aria-live="polite" data-hidden class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60]
             bg-zinc-900 dark:bg-zinc-700 text-white text-sm rounded-lg px-4 py-2 shadow-md max-w-[90vw] text-center break-words"></div>
 
 <!-- 重置密码模态（a11y 整改：替代原生 prompt 明文录入——密码遮蔽输入 + 密码管理器可用；校验与后续 API 与原逻辑一致） -->
@@ -1343,7 +1343,7 @@ function toast(msg, isError = false) {
   el.textContent = msg;
   // a11y 整改：只更新 class 与文本。className 赋值不会触碰 role="status"/aria-live="polite" 属性，
   // 动态消息对屏幕阅读器保持可感知；补回 max-w-[90vw]/text-center/break-words 防长文案溢出（与初始 class 一致）
-  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white max-w-[90vw] text-center break-words ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
+  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 shadow-md text-sm text-white max-w-[90vw] text-center break-words ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
   el.removeAttribute('data-hidden');  // 显示：配合 #toast 过渡自下方浮入
   clearTimeout(el._timer);
   el._timer = setTimeout(() => el.setAttribute('data-hidden', ''), 3000);  // 隐藏：快速淡出

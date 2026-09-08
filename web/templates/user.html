@@ -267,7 +267,7 @@
   </section>
 
 <!-- Toast（动效同管理端：浮入 / 快速淡出 / 可中断，见上方 <style> #toast 规则；data-hidden 替代 hidden 以支持过渡） -->
-<div id="toast" role="status" aria-live="polite" data-hidden class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
+<div id="toast" role="status" aria-live="polite" data-hidden class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
 
 <!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗）。
      结构 = 内容区内部滚动 + 提交行常驻 footer：小视口（高分屏 + 浏览器缩放）下 85vh 截断内容，
@@ -283,6 +283,7 @@
                   class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
         </div>
         <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。</p>
+        <div id="account-form-error" role="alert" class="hidden mb-3 rounded-lg border border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300"></div>
         <div class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
@@ -471,10 +472,24 @@ async function api(path, opts = {}, _retried = false) {
 function toast(msg, isError = false) {
   const el = $('toast');
   el.textContent = msg;
-  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
+  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
   el.removeAttribute('data-hidden');  // 显示：配合 #toast 过渡自下方浮入
   clearTimeout(el._timer);
   el._timer = setTimeout(() => el.setAttribute('data-hidden', ''), 3000);  // 隐藏：快速淡出
+}
+
+// 提交弹窗内错误条：模态遮挡 toast（同层 z 且 DOM 靠后者胜），且关弹窗让位会丢已填内容——
+// 探针校验失败等原因直接显示在弹窗内，提交重试时清除（与 toast 分工：弹窗内错误持久、toast 短暂）
+function showAccountFormError(msg) {
+  const el = $('account-form-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function hideAccountFormError() {
+  const el = $('account-form-error');
+  el.textContent = '';
+  el.classList.add('hidden');
 }
 
 function esc(s) {
@@ -799,6 +814,7 @@ function closeAccountModal() {
 function openEditInline(i) {
   editingIndex = i;
   const a = accounts[i];
+  hideAccountFormError();
   $('f-name').value = a.name;
   $('f-phone').value = a.phone;
   $('f-password').value = '';
@@ -841,6 +857,7 @@ function cancelEdit() {
 function resetAccountForm() {
   editingIndex = null;
   clearCodeFlag = false;
+  hideAccountFormError();
   $('account-form-title').textContent = '提交我的易班账号';
   $('account-submit-btn').textContent = '提交账号';
   $('cancel-edit-btn').classList.add('hidden');
@@ -864,6 +881,7 @@ $('account-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const tip = $('form-tip');
   tip.textContent = '提交中…';
+  hideAccountFormError();
   try {
     const body = {
       name: $('f-name').value,
@@ -884,7 +902,7 @@ $('account-form').addEventListener('submit', async (e) => {
     loadAccounts();
   } catch (err) {
     tip.textContent = '';
-    toast(err.message, true);
+    showAccountFormError(err.message);
   }
 });
 
