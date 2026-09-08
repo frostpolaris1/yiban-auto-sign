@@ -424,5 +424,124 @@ class MailFailoverTest(_Base):
             self.assertTrue(mailer.send_user("to@x.com", "subject", "body"))
 
 
+class MailChannelStateReportTest(_Base):
+    """日报邮件通道行由三态 smtp_channel_state 渲染：「已开启」只给 ok，broken 带病因。"""
+
+    def _lines(self):
+        return "\n".join(self.webapp._channel_status_lines())
+
+    def test_ok_channel_reports_enabled(self):
+        self._reset_env_file("YIBAN_MAIL_ADMIN_TO=admin@test.local\n")
+        with mock.patch.dict(os.environ, {"YIBAN_MAIL_ENABLE": "1",
+                                          "YIBAN_MAIL_USER": "alert@test.local",
+                                          "YIBAN_MAIL_PASS": "smtp-auth-code-fake"}):
+            lines = self._lines()
+        self.assertIn("邮件通道：已开启", lines)
+        self.assertNotIn("已开启但不可用", lines)
+
+    def test_broken_undecryptable_blob_names_the_cause(self):
+        """密文解不开且旧键为空：日报须点名病因并标 ⚠，不得报「已开启」。"""
+        self._reset_env_file("YIBAN_MAIL_SMTPS_ENC=not-a-json-ciphertext\n")
+        with mock.patch.dict(os.environ, {"YIBAN_MAIL_ENABLE": "1"}):
+            lines = self._lines()
+        self.assertIn("邮件通道：⚠ 已开启但不可用", lines)
+        self.assertIn("无法解密", lines)
+
+    def test_broken_entries_missing_credentials_names_the_cause(self):
+        """条目缺发件账号/授权码：日报须点名病因（与"未配置"区分处置）。"""
+        enc = account_crypto.encrypt_text(
+            json.dumps([{"host": "smtp.x.com", "port": 465, "user": "", "pass": ""}],
+                       ensure_ascii=False),
+            account_crypto.load_key(self.env_file))
+        self._reset_env_file(
+            f"YIBAN_MAIL_SMTPS_ENC={json.dumps(enc, ensure_ascii=False)}\n")
+        with mock.patch.dict(os.environ, {"YIBAN_MAIL_ENABLE": "1"}):
+            lines = self._lines()
+        self.assertIn("邮件通道：⚠ 已开启但不可用", lines)
+        self.assertIn("缺发件账号/授权码", lines)
+
+
+class MailConfigSaveAtomicTest(_Base):
+    """PUT /api/mail-config：密文与开关一次原子写入；变更告警只在写入成功后发。
+
+    原实现两次独立写（write_env_key 写密文 + write_env_batch 写开关），中间崩溃
+    留下"密文新/开关旧"中间态；且两条"配置变更"告警在加密/落盘**之前**外发，
+    加密失败（500）时运营者已收到一条描述从未生效变更的通知。
+    """
+
+    def smtps(self):
+        return [{"host": "smtp.x.com", "user": "a@x.com", "pass": "topsecret",
+                 "admin_to": ""}]
+
+    def _spy_write(self):
+        """记录含 YIBAN_MAIL_* 键的 write_env_batch 调用，其余照常透传。"""
+        real = self.webapp.write_env_batch
+        calls = []
+
+        def spy(env_path, updates):
+            if any(k.startswith("YIBAN_MAIL") for k in updates):
+                calls.append(dict(updates))
+            return real(env_path, updates)
+
+        return mock.patch.object(self.webapp, "write_env_batch", side_effect=spy), calls
+
+    def test_smtps_and_flags_in_one_atomic_write(self):
+        self._reset_env_file()
+        c, h = self._master()
+        p, calls = self._spy_write()
+        with p:
+            r = c.put("/api/mail-config",
+                      json={"enabled": False, "admin_notify": True,
+                            "smtps": self.smtps(), "confirm_password": ADMIN_PASS},
+                      headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(len(calls), 1, "密文与开关必须同一次 write_env_batch 落盘")
+        self.assertIn("YIBAN_MAIL_SMTPS_ENC", calls[0])
+        self.assertEqual(calls[0]["YIBAN_MAIL_ENABLE"], "0")
+        self.assertEqual(calls[0]["YIBAN_MAIL_ADMIN_NOTIFY"], "1")
+        self.assertEqual(self._read_enc_entries()[0]["user"], "a@x.com")
+        self.assertEqual(env_io.parse_env_file(self.env_file).get("YIBAN_MAIL_ENABLE"), "0")
+
+    def test_invalid_smtps_400_leaves_env_unchanged(self):
+        self._reset_env_file("YIBAN_MAIL_ENABLE=1\n")
+        c, h = self._master()  # 登录会把口令迁移成哈希并重写 .env，快照取在登录之后
+        with io.open(self.env_file, encoding="utf-8-sig") as f:
+            before = f.read()
+        r = c.put("/api/mail-config",
+                  json={"smtps": [{"user": "a@x.com"}], "confirm_password": ADMIN_PASS},
+                  headers=h)
+        self.assertEqual(r.status_code, 400)
+        with io.open(self.env_file, encoding="utf-8-sig") as f:
+            self.assertEqual(f.read(), before, "校验失败的请求不得动 .env")
+
+    def test_change_alert_fires_only_after_successful_write(self):
+        self._reset_env_file()
+        c, h = self._master()
+        alerts = []
+        with mock.patch.object(
+                self.webapp, "send_notification",
+                side_effect=lambda t, c_, urgent=False, force=False, ledger=None:
+                alerts.append(t)):
+            # 写入失败（模拟磁盘错）："配置已变更"告警不得外发——它只能描述已落盘的事实
+            with mock.patch.object(self.webapp, "write_env_batch",
+                                   side_effect=RuntimeError("disk full")):
+                r = c.put("/api/mail-config",
+                          json={"enabled": True, "smtps": self.smtps(),
+                                "confirm_password": ADMIN_PASS}, headers=h)
+            self.assertEqual(r.status_code, 500, r.get_data(as_text=True))
+            self.assertEqual(alerts, [], "写入失败不得外发「配置已变更」告警")
+            self.assertNotIn("YIBAN_MAIL_SMTPS_ENC",
+                             env_io.parse_env_file(self.env_file))
+            # 写入成功：两条变更告警在落盘之后发出（force=True 绕过节流，不因
+            # 新写入的参数被吞）
+            r = c.put("/api/mail-config",
+                      json={"enabled": True, "smtps": self.smtps(),
+                            "confirm_password": ADMIN_PASS}, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("邮件配置变更告警", alerts)
+        self.assertIn("邮件 SMTP 配置变更告警", alerts)
+        self.assertEqual(self._read_enc_entries()[0]["user"], "a@x.com")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
