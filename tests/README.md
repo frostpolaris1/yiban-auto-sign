@@ -53,6 +53,7 @@ python -m pytest tests/test_smoke.py -v
 | `test_webui_stats_db.py` | WebUI 统计/监控 DB 补齐 |
 | `test_global_pause.py` | 全局暂停（一键暂停签到） |
 | `test_logs_by_date.py` | 按天日志读取与按日期查看 |
+| `test_logs_export_masking.py` | 日志导出脱敏副本（与视图同一过滤管线）+ 审计留痕 + 每 IP 限速；写入侧裸号/裸 IP 收口 |
 | `test_env_line_break_injection.py` | .env 行分隔符注入提权（宽/窄行模型、旧键折叠、主凭据歧义 fail-closed、启动歧义检测） |
 
 ### 签到核心（scripts/signin.py、run.sh）

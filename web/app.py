@@ -39,12 +39,12 @@ from datetime import datetime, timedelta
 import requests
 from flask import (
     Flask,
+    Response,
     abort,
     jsonify,
     redirect,
     render_template,
     request,
-    send_file,
     session,
     url_for,
 )
@@ -452,6 +452,10 @@ RATE_MAX = 60  # 窗口内最大 API 请求数（正常用户远低于此）
 # 注册限速（防邮箱批量注册）：每 IP 窗口内最多 REGISTER_MAX 次成功注册
 REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
 REGISTER_MAX = 5  # 窗口内最大成功注册数
+# 日志导出限速：每 IP 窗口内最多 EXPORT_MAX 次（导出按日期可枚举且整份返回
+# 日志文本，限速防脚本化批量拉取历史日期）
+EXPORT_WINDOW = 60  # 窗口（秒）
+EXPORT_MAX = 6  # 窗口内最大导出次数
 
 # 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
@@ -2647,6 +2651,8 @@ def create_app(host=None):
     _verify_fails = {}
     # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
     _admin_delete_limits = {}
+    # 日志导出限速 {ip: (count, window_start)}
+    _export_limits = {}
 
     # _ip_store_trim（上提为模块级，见 _bump_window_count 上方）：
     # 各限速表写入路径统一调用，防公网扫描器用海量键打爆内存。
@@ -2765,9 +2771,12 @@ def create_app(host=None):
             # 未登录态无 session token：用同源校验阻断跨站 CSRF（与登录/注册同等级）
             if not _is_same_origin():
                 _log_forwarded_proto_mismatch_once()  # NEW-M1 反代头未生效诊断
+                # 告警行落按天 sign-*.log 并经 /api/logs 与导出可见：IP 与审计
+                # 同口径 hash_ip 匿名化（哈希形态足以关联同一来源的连续告警）；
+                # 限速等内存计数仍用裸 IP
                 logger.warning(
                     "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
-                    _client_ip(),
+                    db.hash_ip(_client_ip()),
                     request.path,
                     request.headers.get("Origin"),
                 )
@@ -2780,7 +2789,7 @@ def create_app(host=None):
         if not token or not token.isascii() or not secrets.compare_digest(token, sess_token):
             logger.warning(
                 "CSRF 校验失败: ip=%s path=%s token_len=%d session_token_len=%d",
-                _client_ip(),
+                db.hash_ip(_client_ip()),
                 request.path,
                 len(token),
                 len(sess_token),
@@ -2829,7 +2838,7 @@ def create_app(host=None):
             _login_loop[ip] = (cnt, first)
             if cnt < 4:
                 return redirect(url_for("index_page") if _current_role() == "admin" else url_for("user_page"))
-            logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", ip)
+            logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
         return render_template(
             "login.html",
             web_version=WEB_VERSION,
@@ -3017,7 +3026,7 @@ def create_app(host=None):
         if fails >= LOGIN_MAX_FAILS:
             with _rate_lock:
                 _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-            logger.warning("登录失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+            logger.warning("登录失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
             return jsonify(
                 {"error": f"密码错误次数过多，已锁定 {LOGIN_LOCK_SECONDS // 60} 分钟"}
             ), 429
@@ -3214,7 +3223,7 @@ def create_app(host=None):
             if nfails >= LOGIN_MAX_FAILS:
                 with _rate_lock:
                     _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-                logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
                 # 不暴露锁定时长分钟数（信息分层，2026-08-15）
                 return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
             if nfails == LOGIN_FAIL_NOTIFY:
@@ -3365,7 +3374,7 @@ def create_app(host=None):
             if nfails >= LOGIN_MAX_FAILS:
                 with _rate_lock:
                     _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-                logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
                 # 不暴露锁定时长（信息分层，2026-08-15）
                 return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
             if nfails == LOGIN_FAIL_NOTIFY:
@@ -3480,12 +3489,12 @@ def create_app(host=None):
                 _restore_fail_rate, ip, now2, RESTORE_FAIL_WINDOW, limit=RESTORE_FAIL_MAX
             )
             if not ip_allowed:
-                logger.warning("恢复密码尝试过于频繁（每 IP 聚合），IP %s 临时限制", ip)
+                logger.warning("恢复密码尝试过于频繁（每 IP 聚合），IP %s 临时限制", db.hash_ip(ip))
                 return jsonify({"error": "尝试过于频繁，请稍后再试"}), 429
             if nfails >= LOGIN_MAX_FAILS:
                 with _rate_lock:
                     _login_fails[fail_key] = (0, now2 + LOGIN_LOCK_SECONDS, now2)
-                logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", ip, LOGIN_LOCK_SECONDS)
+                logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), LOGIN_LOCK_SECONDS)
                 return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
@@ -5486,7 +5495,7 @@ def create_app(host=None):
         if nfails >= LOGIN_MAX_FAILS:
             with _rate_lock:
                 _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-            logger.warning("二次鉴权失败次数过多，IP %s 锁定 %s 秒（%s）", ip, LOGIN_LOCK_SECONDS, action_label)
+            logger.warning("二次鉴权失败次数过多，IP %s 锁定 %s 秒（%s）", db.hash_ip(ip), LOGIN_LOCK_SECONDS, action_label)
             return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         if nfails == LOGIN_FAIL_NOTIFY:
             send_notification(
@@ -6311,19 +6320,39 @@ def create_app(host=None):
     # ---- 日志与状态 ----
     @app.route("/api/logs/export")
     def api_logs_export():
-        """导出某日完整签到日志文件（管理员；v0.29.0）。
+        """导出某日签到日志（脱敏副本，管理员）。
 
-        date 必填且强校验（防路径穿越），文件名仅含日期，路径由 log_path_for 内部
-        拼接 STATE_DIR，无用户可控成分。
+        date 必填且强校验（防路径穿越），文件名仅含日期。响应体不是磁盘原
+        文件：按天日志在盘上按设计保留完整手机号（signin 状态解析 / run.sh
+        依赖），HTTP 出口必须与 /api/logs 展示层同一契约——经 _log_lines_for
+        （yiban 全量 + 其余组件仅告警级，同一尾部读取封顶）过滤后逐行
+        _mask_log_phones 脱敏，任何登录身份都无法经 HTTP 取得未脱敏号码。
+        成功导出写 logs_export 审计留痕（400/404 不写），并受每 IP 窗口限速。
         """
         date = str(request.args.get("date", "")).strip()
         if not _is_valid_date_str(date):
             return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-        path = log_path_for(date)
-        if not os.path.exists(path):
+        ip = _client_ip()
+        now = time.time()
+        with _rate_lock:
+            _ip_store_trim(_export_limits, EXPORT_WINDOW + _IP_STORE_MAX_AGE)
+        _cnt, _start, allowed = _bump_window_count(
+            _export_limits, ip, now, EXPORT_WINDOW, limit=EXPORT_MAX
+        )
+        if not allowed:
+            return jsonify({"error": "导出过于频繁，请稍后再试"}), 429
+        if not os.path.exists(log_path_for(date)):
             return jsonify({"error": f"{date} 无签到日志"}), 404
-        return send_file(path, mimetype="text/plain", as_attachment=True,
-                         download_name=f"sign-{date}.log")
+        text = "".join(_mask_log_phones(ln) + "\n" for ln in _log_lines_for(date))
+        db.audit(
+            session.get("username") or "?",
+            "logs_export",
+            date,
+            f"导出 {date} 签到日志（脱敏）",
+        )
+        return Response(text, mimetype="text/plain", headers={
+            "Content-Disposition": f"attachment; filename=sign-{date}.log",
+        })
 
     @app.route("/api/logs")
     def api_logs():
