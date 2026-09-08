@@ -100,6 +100,35 @@ def _has_undone_today():
     )
 
 
+def _slot_marker(kind):
+    """当日该触发点已 spawn 过子进程的落盘标记（sched-slot-<kind>-<date>.json）。
+
+    hm >= FIRST/SECOND 是无上界判定，而闩锁（done_sign_*）只存进程内存：
+    容器在 08:00/15:00 重启时闩锁归零，补签闸门（存在未了结账号）恒真 →
+    追加一轮必然 skipped_window 的全站负载并覆盖当日已 success 的状态。
+    落盘标记使「同一时段二次触发不重跑」跨重启成立；标记不可写时退化为
+    既有闩锁语义。按日命名，跨日自动失效。"""
+    return os.path.join(STATEDIR, f"sched-slot-{kind}-{datetime.now():%Y-%m-%d}.json")
+
+
+def _slot_done(kind):
+    try:
+        with open(_slot_marker(kind), encoding="utf-8") as fh:
+            json.load(fh)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _mark_slot(kind):
+    try:
+        os.makedirs(STATEDIR, exist_ok=True)
+        with open(_slot_marker(kind), "w", encoding="utf-8") as fh:
+            json.dump({"triggered_at": datetime.now().strftime("%H:%M:%S")}, fh)
+    except OSError:
+        pass
+
+
 def _cleanup_logs():
     """删除 365 天前的按天日志（sign-YYYY-MM-DD.log），对齐 scripts/yiban-cleanup.sh。"""
     cutoff = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
@@ -159,18 +188,29 @@ def _run_signin_child(extra=None, env=None):
 
     env 由调用方传入时复用（探针周期尝试已为短路判断解析过一次），
     避免同一触发点重复读盘。
+    超时先 SIGTERM 再 SIGKILL：signin 的 SIGTERM 处理器会把已收集的告警
+    汇总在进程死亡前发出（原 subprocess.run 超时直接 SIGKILL，整轮汇总丢失）。
     """
     env = env if env is not None else build_child_env(ENV_FILE)
     timeout = _child_timeout(env)
     cmd = ["python3", "scripts/signin.py"] + (extra or [])
+    proc = subprocess.Popen(cmd, cwd="/app", env=env)
     try:
-        subprocess.run(cmd, cwd="/app", env=env, timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
         print(f"[scheduler] 签到子进程超时（>{timeout}s）被终止，已留痕继续调度", flush=True)
 
 
 def main_loop(sleep_seconds=1):
-    """调度主循环。闩锁按 (任务, 当日) 记账；进程重启视为新一天可再执行。
+    """调度主循环。闩锁按 (任务, 当日) 记账，并落盘到 sched-slot 标记——
+    进程重启后当日已触发过的时段不再二次触发（闩锁内存态重启即丢），
+    未完成账号仍由另一时段的闸门（全量标记缺失/存在未了结）兜底。
 
     SECOND 不受 FIRST 影响：若首签子进程一直占用到越过 07:10，循环恢复后
     hm>=SECOND 仍会补一次（signin 内状态文件已防重），不再全天丢失补签。
@@ -188,13 +228,15 @@ def main_loop(sleep_seconds=1):
         # （一键暂停）/ YIBAN_SUNDAY_SIGN / YIBAN_SATURDAY_SIGN / YIBAN_PROBE_* 在容器
         # 重启前静默不生效。
         # 解析成本仅在真正触发的那一刻产生（每天 3 次），轮询循环内不读盘。
-        if hm >= FIRST and done_sign_first != today and not _full_run_done_today():
+        if (hm >= FIRST and done_sign_first != today
+                and not _full_run_done_today() and not _slot_done("first")):
             # 与 run.sh 唯一实质差异：容器内无需 flock/宿主绝对路径，状态文件已防重
             _run_signin_child()
+            _mark_slot("first")
             done_sign_first = today
-        if hm >= SECOND and done_sign_second != today and (
-            not _full_run_done_today() or _has_undone_today()
-        ):
+        if (hm >= SECOND and done_sign_second != today
+                and (not _full_run_done_today() or _has_undone_today())
+                and not _slot_done("second")):
             # 补签闸门：全量未跑过（首签错过的补偿）或存在未了结
             # 账号（failed/retrying/pending/skipped_window/skipped_norange/no_position）
             # 才执行；全员了结则跳过，不再被「任一账号
@@ -208,6 +250,7 @@ def main_loop(sleep_seconds=1):
             env = build_child_env(ENV_FILE)
             env["YIBAN_SECOND_RUN"] = "1"
             _run_signin_child(env=env)
+            _mark_slot("second")
             done_sign_second = today
         if last_probe_try is None or (now - last_probe_try).total_seconds() >= PROBE_TRY_SECONDS:
             # 探针周期尝试：未开启不 spawn（避免无谓子进程）；开启则交由
