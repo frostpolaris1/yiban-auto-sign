@@ -335,11 +335,24 @@ class SchedulerTimeoutTest(unittest.TestCase):
         sched = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(sched)
 
-        def _hang(*a, **kw):
-            raise sp.TimeoutExpired(cmd=a, timeout=1)
+        class _HangProc:
+            """wait(timeout) 恒超时（模拟挂起子进程）；kill 后的无超时 wait 正常返回。"""
+
+            returncode = -9
+
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    raise sp.TimeoutExpired(cmd="signin", timeout=timeout)
+                return self.returncode
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
 
         sched.subprocess = type(
-            "_Stub", (), {"run": staticmethod(_hang),
+            "_Stub", (), {"Popen": staticmethod(lambda cmd, **kw: _HangProc()),
                           "TimeoutExpired": sp.TimeoutExpired})()
         sched._run_signin_child()  # 不应抛异常（TimeoutExpired 被捕获留痕）
 
