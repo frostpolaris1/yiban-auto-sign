@@ -2498,6 +2498,19 @@ def audit_head_hash():
         return ""
 
 
+def audit_row_count():
+    """审计链当前记录总数（只读 COUNT，供日报锚点行等链状态对照）。
+
+    刻意不吞异常：与 audit_head_hash 的"记日志返回空"不同，本函数让读取失败
+    原样上抛，由调用方（日报的 try/except 纪律）决定省略——锚点行是取证对照
+    数据，宁缺毋滥。
+    """
+    with _conn_lock:
+        conn = get_conn()
+        row = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()
+        return row[0] if row else 0
+
+
 def verify_audit_chain():
     """校验审计哈希链。
 
