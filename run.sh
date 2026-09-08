@@ -12,9 +12,16 @@ if [ -r /opt/yiban-auto-sign/.env ]; then
     while IFS='=' read -r key value || [ -n "$key$value" ]; do
         # 兼容 CRLF 编辑产生的行尾 CR
         value=${value%$'\r'}
-        # key 首尾空白去除后校验
+        # 兼容 UTF-8 BOM 开头的 .env（Windows 记事本保存常见）：否则首行键名带 BOM
+        # 前缀被键名校验拒掉，宿主 cron 与 web 侧（utf-8-sig，见 scripts/env_io.py）
+        # 对同一文件读出不同配置（2026-09-08）
+        key="${key#$'\xEF\xBB\xBF'}"
+        # key/value 首尾空白去除（与 env_io.parse_env_file 的两侧 strip 同口径；
+        # 原实现 value 只剥尾部 CR，`KEY = v` / 值带尾随空格时两侧漂移）
         key="${key#"${key%%[![:space:]]*}"}"
         key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
         [ -z "$key" ] && continue
         case "$key" in \#*) continue ;; esac
         if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -132,7 +139,7 @@ END_TS=$(date -d "today $END_HHMM" +%s)
 NOW_TS=$(date +%s)
 RUN_TIMEOUT=$(( END_TS - NOW_TS + 300 ))
 [ "$RUN_TIMEOUT" -lt 600 ] && RUN_TIMEOUT=600
-# P3-2 钳位：先去首尾空白（.env 逐行解析不裁剪值内空格，与 scheduler .strip() 对齐）
+# P3-2 钳位：先去首尾空白（与 .env 解析的值剥空白口径一致，兼容旧值带空格的存量部署）
 RUN_TIMEOUT_SEC="$RUN_TIMEOUT"
 _TOS_RAW="${YIBAN_RUN_TIMEOUT_SEC:-}"
 _TOS_RAW="${_TOS_RAW#"${_TOS_RAW%%[![:space:]]*}"}"
