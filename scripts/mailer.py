@@ -33,12 +33,17 @@ _entry_port_warned = False
 
 
 def _mask_addr(addr):
-    """邮箱打码：1234567890@qq.com → 123*******@qq.com（保留域名；非邮箱原样返回）。"""
+    """邮箱打码（保留域名；非邮箱原样返回）。
+
+    口径：用户名 >6 位保留前 3 位，否则只保留第 1 位；星号数 = max(3,
+    用户名长度 - 可见位数)，打码段总宽与原用户名一致——固定保留前 3 位时
+    短名几乎全暴露（ab@x.com → ab***@x.com，2026-09-08）。
+    """
     addr = str(addr or "").strip()
     if "@" not in addr:
         return addr or "<未配置>"
     name, _, domain = addr.partition("@")
-    visible = name[:3]
+    visible = name[:3] if len(name) > 6 else name[:1]
     return visible + "*" * max(3, len(name) - len(visible)) + "@" + domain
 
 

@@ -51,8 +51,18 @@ def _set_mail(monkeypatch, **kwargs):
 
 
 def test_mask_addr_masks_local_part():
-    # 保留前 3 字符，其余打码（10 字符 → 7 个星）
+    # 长用户名保留前 3 字符，其余打码（10 字符 → 7 个星）
     assert mailer._mask_addr("1234567890@qq.com") == "123*******@qq.com"
+
+
+def test_mask_addr_short_name_keeps_one_char():
+    # 短用户名（<=6 位）只保留首位：固定保留前 3 位时短名几乎全暴露
+    assert mailer._mask_addr("ab@x.com") == "a***@x.com"
+    assert mailer._mask_addr("sender@qq.com") == "s*****@qq.com"  # 恰 6 位按短名处理；星号补足原宽
+
+
+def test_mask_addr_non_email_passthrough():
+    assert mailer._mask_addr("not-an-email") == "not-an-email"
 
 
 def test_mask_addr_empty():
@@ -215,7 +225,7 @@ def test_get_config_never_exposes_password(monkeypatch, tmp_path):
     _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="topsecret", ADMIN_TO="admin@qq.com")
     cfg = mailer.get_config()
     assert "topsecret" not in str(cfg), "get_config 不得泄露授权码"
-    assert cfg["user"] == "sen***@qq.com"
+    assert cfg["user"] == "s*****@qq.com"
 
 
 def test_channel_state_off_when_disabled(monkeypatch, tmp_path):
