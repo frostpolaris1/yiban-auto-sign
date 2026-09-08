@@ -39,6 +39,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import env_io  # pythonpath 已含 scripts/（pyproject.toml）
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -526,6 +528,79 @@ class AmbiguousAdminHashTest(_Base):
             self.assertTrue(self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
                             "修成唯一一行后应恢复正常认证能力")
         self.assertFalse(sn.called, "恢复后不得继续告警")
+
+
+# ---------------------------------------------------------------------------
+# 5. 启动检测：宽/窄行模型差 + 影子重复（只报告，不改写）
+# ---------------------------------------------------------------------------
+class FindEnvKeyCollisionsTest(unittest.TestCase):
+    """env_io.find_env_key_collisions：潜伏分隔符与影子重复逐态钉住，干净文件必须零误报。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-env-collide-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.env_file = os.path.join(self.tmp, ".env")
+
+    def _write(self, *lines):
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def test_clean_file_reports_nothing(self):
+        # 带空格写法本身不是问题（单行唯一键）：宽窄两口径都是 1 行
+        self._write("YIBAN_A=1", "# 注释 YIBAN_A=9 不算配置行", "YIBAN_B = 2", "无等号行")
+        self.assertEqual(env_io.find_env_key_collisions(self.env_file), {})
+
+    def test_latent_u2028_payload_reported(self):
+        self._write("YIBAN_ADMIN_PASSWORD_HASH=scrypt:good",
+                    "YIBAN_ANNOUNCEMENT=hi\u2028YIBAN_ADMIN_PASSWORD_HASH=scrypt:evil")
+        hits = env_io.find_env_key_collisions(self.env_file)
+        self.assertIn("YIBAN_ADMIN_PASSWORD_HASH", hits, f"潜伏载荷必须被点名: {hits}")
+        # 宽模型数出 2 行（真哈希 + 载荷撑出的第二行），窄模型只见 1 行
+        self.assertEqual(hits["YIBAN_ADMIN_PASSWORD_HASH"], (2, 1))
+
+    def test_padded_shadow_line_reported(self):
+        self._write("YIBAN_AUDIT_KEY=abc", "YIBAN_AUDIT_KEY = def")
+        hits = env_io.find_env_key_collisions(self.env_file)
+        self.assertIn("YIBAN_AUDIT_KEY", hits, f"影子重复行必须被点名: {hits}")
+        self.assertEqual(hits["YIBAN_AUDIT_KEY"], (2, 2))
+
+    def test_commented_duplicate_not_reported(self):
+        self._write("YIBAN_A=1", "# YIBAN_A=2 已注释的旧行")
+        self.assertEqual(env_io.find_env_key_collisions(self.env_file), {})
+
+    def test_missing_file_reports_nothing(self):
+        self.assertEqual(
+            env_io.find_env_key_collisions(os.path.join(self.tmp, "no-such.env")), {})
+
+
+class StartupCollisionReportTest(_Base):
+    """create_app 接线：检测先于一切 .env 写入，ERROR 日志 + 每进程一次 urgent 告警。"""
+
+    def test_create_app_reports_collision_once(self):
+        self._write_env(
+            f"YIBAN_ACCOUNTS_KEY={TEST_KEY}",
+            "YIBAN_ADMIN_USER=admin@test.local",
+            "YIBAN_SECRET_KEY=x",
+            "YIBAN_AUDIT_KEY=abc",
+            "YIBAN_AUDIT_KEY = def",
+        )
+        self.webapp._env_collision_reported = False   # 类内其他用例可能已置位
+        with self.assertLogs("web", level="ERROR") as logs, \
+                mock.patch.object(self.webapp, "send_notification") as sn:
+            self.webapp.create_app().test_client()
+        self.assertTrue(any("YIBAN_AUDIT_KEY" in m for m in logs.output),
+                        f"ERROR 日志应点名歧义键: {logs.output}")
+        self.assertTrue(sn.called, "启动检测到歧义键必须发告警")
+        self.assertTrue(sn.call_args.kwargs.get("urgent"),
+                        f"告警须为紧急，实际: {sn.call_args}")
+
+    def test_clean_env_startup_sends_no_collision_alert(self):
+        self.webapp._env_collision_reported = False
+        with mock.patch.object(self.webapp, "send_notification") as sn:
+            self.webapp.create_app().test_client()
+        for call in sn.call_args_list:
+            self.assertNotIn("歧义", call.args[0],
+                             f"干净配置不得触发歧义告警: {call.args}")
 
 
 if __name__ == "__main__":
