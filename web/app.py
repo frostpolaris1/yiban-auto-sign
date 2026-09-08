@@ -3240,14 +3240,20 @@ def create_app(host=None):
         if _is_builtin_admin_session():
             if not verify_admin(username, old_password):
                 return _handle_failed_login()
-            write_env_batch(
-                ENV_FILE,
-                {
-                    "YIBAN_ADMIN_PASSWORD_HASH": generate_password_hash(new_password, method=SCRYPT_METHOD),
-                    "YIBAN_ADMIN_PASSWORD": "",  # 清理旧明文口令，改由哈希校验
-                    "YIBAN_ADMIN_PW_VERSION": str(load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1),
-                },
-            )
+            # 哈希在锁外先算（scrypt 不该占住写锁）；现值读取必须与落盘同处一把
+            # 写锁临界区：写锁同线程可重入（write_env_batch 内部的再次加锁直接
+            # 放行），否则读在锁外时两个并发改密都会读到旧版本并写出同一个
+            # 递增值——一次递增被吞，本应随版本失效的旧会话继续有效。
+            new_hash = generate_password_hash(new_password, method=SCRYPT_METHOD)
+            with _env_write_lock(ENV_FILE):
+                write_env_batch(
+                    ENV_FILE,
+                    {
+                        "YIBAN_ADMIN_PASSWORD_HASH": new_hash,
+                        "YIBAN_ADMIN_PASSWORD": "",  # 清理旧明文口令，改由哈希校验
+                        "YIBAN_ADMIN_PW_VERSION": str(load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1),
+                    },
+                )
             with _rate_lock:
                 _login_fails.pop(fail_key, None)
             # 审计留痕（2026-08-20 对抗性审查 P2 补）：主管理员改密是最高权限的
