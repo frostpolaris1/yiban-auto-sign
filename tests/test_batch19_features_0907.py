@@ -8,8 +8,8 @@
 - /api/users：review_count（待审核 + 已拒绝）——修复仅有已拒绝账号的用户
   不出现在用户管理待处理栏的口径差
 - /api/settings：延迟字段携带即需 confirm_password（缺失/错误 400）；容量预估
-  （v0.29.1 口径：账号=最大间隔、用户=间隔中位数；启动延迟已废弃不参与）
-  + 超容量拒绝保存；GET 返回 capacity_estimate
+  （2026-09-08 单档口径：有效窗口扣除掐头去尾，仅账号间隔参与）
+  + 超容量拒绝保存（单门：活跃账号数）；GET 返回 capacity_estimate
 - _capacity_estimate：公式单测
 
 用法（项目根目录）：
@@ -203,12 +203,13 @@ class CapacitySettingsTest(_Base):
         c, h = self._master()
         data = c.get("/api/settings", headers=h).get_json()
         est = data["capacity_estimate"]
-        for k in ("accounts_cap", "users_cap", "current_users", "current_holders"):
+        for k in ("accounts_cap", "current_accounts", "potential_load"):
             self.assertIn(k, est)
-        # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX=10：账号 = (4800-8)/18+1 = 267、
-        # 用户（间隔中位数 5）= (4800-8)/13+1 = 369
-        self.assertEqual(est["accounts_cap"], 267)
-        self.assertEqual(est["users_cap"], 369)
+        # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX=10，掐头去尾缺省前后各 60s
+        # → 有效窗口 4800-120=4680：(4680-8)/18+1 = 260
+        self.assertEqual(est["accounts_cap"], 260)
+        self.assertEqual(est["current_accounts"], 0)
+        self.assertEqual(est["potential_load"], len(self.db.load_users()))
 
     def test_delay_requires_confirm_password(self):
         c, h = self._master()
@@ -229,38 +230,81 @@ class CapacitySettingsTest(_Base):
         self.assertIn("YIBAN_ACCOUNT_GAP_MAX=10", env)
 
     def test_delay_save_rejected_when_over_capacity(self):
-        # 恶性间隔 gap=3600 → 预估用户容量 = (4800-8)/1808+1 = 3；灌 4 个用户 → 必超
+        # 重置 env：字母序下 allows_many_users（写 3600）先于本用例执行，防残留误判
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            )
+        # 恶性间隔 gap=3600 → 预估账号容量 = (4680-8)/3608+1 = 2（默认掐头去尾前后各 60s）；
+        # 灌 3 个活跃账号（含裸账号，均占配额）→ 必超
+        for i in range(3):
+            self.db.add_account({"name": "N", "phone": f"1390013900{i}", "password": "pw",
+                                 "status": "active", "owner": "admin"})
+        c, h = self._master()
+        r = c.post("/api/settings",
+                   json={"start_delay_max": 3600, "gap_max": 3600, "confirm_password": ADMIN_PASS},
+                   headers=h)
+        self.assertEqual(r.status_code, 400)
+        err = r.get_json()["error"]
+        self.assertIn("容量", err)
+        # 报错必须给出去路：缩短间隔 / 延长窗口 / 清理账号
+        for kw in ("账号间隔", "签到窗口", "清理"):
+            self.assertIn(kw, err)
+        env = io.open(self.env_file, encoding="utf-8").read()
+        self.assertNotIn("YIBAN_START_DELAY_MAX=3600", env, "拒绝保存时不得落盘")
+
+    def test_delay_save_allows_many_users_few_accounts(self):
+        # 单门口径（2026-09-08）：注册用户多但活跃账号少不构成负载 → 放行
+        # （旧口径 users 分支已删除，不再因注册人数拒绝保存）
         for i in range(4):
             self.db.create_user(f"u{i}@test.local", "x", role="user")
         c, h = self._master()
         r = c.post("/api/settings",
                    json={"start_delay_max": 3600, "gap_max": 3600, "confirm_password": ADMIN_PASS},
                    headers=h)
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("容量已满", r.get_json()["error"])
-        env = io.open(self.env_file, encoding="utf-8").read()
-        self.assertNotIn("YIBAN_START_DELAY_MAX=3600", env, "拒绝保存时不得落盘")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
 
 class CapacityFormulaTest(_Base):
-    """_capacity_estimate 公式（v0.29.1：启动延迟废弃，仅间隔参与）。"""
+    """_capacity_estimate 公式（2026-09-08 单档：有效窗口扣除掐头去尾，仅间隔参与）。"""
 
-    def test_formula_and_median(self):
+    def test_formula_single_tier(self):
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(self.webapp.signin, "_schedule_config",
+                               return_value={"avg_attempt_sec": 8}):
+            # 4800s 窗口、无间隔：(4800-8)/8+1 = 600（单档返回单值 int）
+            self.assertEqual(self.webapp._capacity_estimate(0), 600)
+            # gap=10：(4800-8)/18+1 = 267
+            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
+            # gap=3600：4792/3608+1 = 2
+            self.assertEqual(self.webapp._capacity_estimate(3600), 2)
+
+    def test_edge_shrinks_capacity(self):
+        # 掐头去尾计入有效窗口：前后各裁 60s → 有效 4680s，容量较 4800s 变小
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
              mock.patch.object(self.webapp.signin, "_schedule_config",
                                return_value={"avg_attempt_sec": 8}):
-            # 4800s 窗口、无间隔：账号 = 用户 = (4800-8)/8+1 = 600
-            self.assertEqual(self.webapp._capacity_estimate(0), (600, 600))
-            # 账号按最大间隔 gap=10：(4800-8)/18+1 = 267
-            # 用户按间隔中位数 gap/2=5：(4800-8)/13+1 = 369
-            cap_a, cap_u = self.webapp._capacity_estimate(10)
-            self.assertEqual(cap_a, (4800 - 8) // 18 + 1)
-            self.assertEqual(cap_u, (4800 - 8) // 13 + 1)
-            self.assertGreaterEqual(cap_u, cap_a)
-            # gap=3600：账号 = 4792/3608+1 = 2、用户 = 4792/1808+1 = 3
-            # （W=4800 恒大于单账号耗时，新口径下不再出现"窗口装不下→0"）
-            self.assertEqual(self.webapp._capacity_estimate(3600), (2, 3))
+            with mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)):
+                full = self.webapp._capacity_estimate(10)
+            with mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
+                trimmed = self.webapp._capacity_estimate(10)
+            self.assertEqual(full, (4800 - 8) // 18 + 1)
+            self.assertEqual(trimmed, (4680 - 8) // 18 + 1)
+            self.assertLess(trimmed, full)
+
+    def test_window_too_small_returns_zero(self):
+        # 有效窗口不足单账号耗时（slack<0）→ 容量 0
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((7, 50), (7, 50))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(self.webapp.signin, "_schedule_config",
+                               return_value={"avg_attempt_sec": 8}):
+            self.assertEqual(self.webapp._capacity_estimate(0), 0)
 
 
 if __name__ == "__main__":
