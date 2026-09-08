@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""批次19 刀1 回归（2026-09-07）：.env 行分隔符注入提权（B19-4，CRITICAL，活体复现）。
+r""".env 行分隔符注入提权回归（2026-09-07 安全审查，CRITICAL，活体复现）。
 
 根因一句话：**校验用的行模型与写入用的行模型不是同一个**。
 write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的是
@@ -21,12 +21,13 @@ write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的�
   write_env_batch 与公告路由共用同一个"会不会注入出一行配置"的判据；
 - 更新键的旧行折叠认得 `KEY = value` 写法（键两侧可有空白、`=` 前可有空白），
   且不误伤更长的同前缀键（YIBAN_MAX_USERS vs YIBAN_MAX_USERS_EXTRA）；
-- verify_admin 对"多行 YIBAN_ADMIN_PASSWORD_HASH"fail-closed：主凭据歧义
-  要么是配错、要么就是上面的注入，两种都不能继续当作认证成功。
+- verify_admin 对"非恰好一行 YIBAN_ADMIN_PASSWORD_HASH（多行或统计读取失败）"
+  fail-closed：主凭据歧义要么是配错、要么就是上面的注入，两种都不能继续当作
+  认证成功。
 
 全程 mock / 纯本地（Flask test client + 临时 .env/DB），无任何网络请求。
 用法（项目根目录，勿设 PYTHONIOENCODING）：
-    py -m pytest tests/test_batch19_env_injection_20260907.py -v
+    py -m pytest tests/test_env_line_break_injection.py -v
 """
 import contextlib
 import importlib.util
@@ -61,6 +62,8 @@ def _load_webapp(tag):
     sys.modules[f"webapp_{tag}"] = mod
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
+    # 加载失败不能静默滑过去：届时报的是后文的 AttributeError，与真因隔了十万八千里
+    assert hasattr(mod, "write_env_batch"), "web/app.py 加载失败（exec_module 异常被抑制）"
     return _db, mod
 
 
@@ -79,8 +82,8 @@ def _physical_lines(path):
         return f.read().count(b"\n")
 
 
-def _env_line_texts(path):
-    """按解析器的行模型（普适换行）取出的行列表，用于数"某键占了几行"。"""
+def _wide_lines(path):
+    """按写入侧的宽行模型（str.splitlines()，比文件迭代多认 8 个分隔符）取出行列表。"""
     return _read(path).splitlines()
 
 
@@ -89,7 +92,9 @@ class _Base(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="yiban-b19-inj-")
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-env-inj-")
+        # tearDownClass 在 setUpClass 抛错时不会执行：清理挂 addClassCleanup 才不漏
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, True)
         cls.env_file = os.path.join(cls.tmp, ".env")
         cls._pristine_env = (
             f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
@@ -148,10 +153,6 @@ class _Base(unittest.TestCase):
     def _csrf(self, token):
         return {"X-CSRF-Token": token}
 
-    def _master(self):
-        c = self.webapp.create_app().test_client()
-        return c, self._csrf(self._login(c, "admin@test.local", ADMIN_PASS))
-
     def _sub_admin(self):
         """注册管理员（普通管理员）会话：主管理员凭据对它不可见，正是攻击者视角。"""
         self.db.create_user(SUB_ADMIN, self.webapp.generate_password_hash(SUB_PASS),
@@ -171,7 +172,7 @@ class _Base(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 1. write_env_batch / 谓词：与 splitlines() 同字符集
 # ---------------------------------------------------------------------------
-class LineBreakPredicateB19Test(_Base):
+class LineBreakPredicateTest(_Base):
     """`_has_line_break` 必须恰好等于"`str.splitlines()` 会把这段文本拆开"。"""
 
     def test_predicate_exists_and_rejects_all_breaks(self):
@@ -214,7 +215,7 @@ class LineBreakPredicateB19Test(_Base):
             "写入侧用 splitlines() 拆行，校验侧漏一个字符就留一条注入链")
 
 
-class WriteEnvBatchInjectionB19Test(_Base):
+class WriteEnvBatchInjectionTest(_Base):
     """兜底硬校验：值/键含任意行分隔符都必须 ValueError 且零写盘。"""
 
     def _poisoned_env(self):
@@ -266,8 +267,8 @@ class WriteEnvBatchInjectionB19Test(_Base):
 # ---------------------------------------------------------------------------
 # 2. 杀链端到端：注入 → 例行的自服务写入 → 提权
 # ---------------------------------------------------------------------------
-class EnvInjectionKillChainB19Test(_Base):
-    """B19-4 活体复现链必须整条死掉（普通管理员发起）。"""
+class EnvInjectionKillChainTest(_Base):
+    """活体复现链必须整条死掉（普通管理员发起）。"""
 
     def _attacker_hash(self):
         return self.webapp.generate_password_hash(
@@ -289,7 +290,8 @@ class EnvInjectionKillChainB19Test(_Base):
         self.assertEqual(r.status_code, 400,
                          f"含 U+2028 的公告必须 400（当前 {r.status_code}："
                          f"{r.get_data(as_text=True)}）")
-        self.assertIn("换行", r.get_json()["error"])
+        self.assertIn("行分隔符", r.get_json()["error"],
+                      "400 必须来自行分隔符守卫而非其他校验")
         self.assertEqual(_physical_lines(self.env_file), lines_before,
                          "被拒绝的请求不得改动 .env 物理行数")
         # 步骤 2：任意管理员都会做的例行自服务写入——修复前它负责"实体化"
@@ -321,6 +323,12 @@ class EnvInjectionKillChainB19Test(_Base):
                           json={"text": f"x{ch}YIBAN_ADMIN_PASSWORD_HASH={atk}"}, headers=h)
                 self.assertEqual(r.status_code, 400,
                                  f"U+{ord(ch):04X} 未被路由守卫拦下（{r.status_code}）")
+                # 状态码不够锋利：载荷也在 200 字上限内，若哈希串变长，400 会来自
+                # 长度校验而守卫漏了也照常绿。必须点名守卫、且不是"过长"
+                err = r.get_json()["error"]
+                self.assertIn("行分隔符", err,
+                              f"400 须来自行分隔符守卫而非长度上限（U+{ord(ch):04X}）：{err}")
+                self.assertNotIn("过长", err, f"400 来自长度校验 = 守卫没拦住 U+{ord(ch):04X}")
                 self.assertEqual(self._master_hash_line(), base_hash)
                 self.assertEqual(_physical_lines(self.env_file), base_lines)
         # 拦下的所有尝试之后，再走一次例行写入也不得冒出注入行
@@ -356,7 +364,7 @@ class EnvInjectionKillChainB19Test(_Base):
 # ---------------------------------------------------------------------------
 # 3. 重复键：折叠要认得 `KEY = value` 写法，且不误伤同前缀长键
 # ---------------------------------------------------------------------------
-class EnvDuplicateKeyFoldingB19Test(_Base):
+class EnvDuplicateKeyFoldingTest(_Base):
     """`KEY = value`（= 号前有空白）同样是配置行——折叠漏掉它就会积累出覆盖行。"""
 
     def test_padded_key_line_is_replaced_not_shadowed(self):
@@ -366,7 +374,7 @@ class EnvDuplicateKeyFoldingB19Test(_Base):
             "YIBAN_KEEP=1",
         )
         self.webapp.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
-        hits = [ln for ln in _env_line_texts(self.env_file)
+        hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_MAX_USERS"]
         self.assertEqual(len(hits), 1, f"旧行未被折叠，留下重复行: {hits}")
         self.assertEqual(hits[0], "YIBAN_MAX_USERS=5")
@@ -389,7 +397,7 @@ class EnvDuplicateKeyFoldingB19Test(_Base):
                         "YIBAN_SECRET_KEY=x")
         self.webapp.write_env_batch(
             self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": "scrypt:new"})
-        hits = [ln for ln in _env_line_texts(self.env_file)
+        hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_ADMIN_PASSWORD_HASH"]
         self.assertEqual(len(hits), 1, f"改密后仍留下多行主凭据: {hits}")
 
@@ -397,8 +405,8 @@ class EnvDuplicateKeyFoldingB19Test(_Base):
 # ---------------------------------------------------------------------------
 # 4. 主凭据歧义：verify_admin fail-closed
 # ---------------------------------------------------------------------------
-class AmbiguousAdminHashB19Test(_Base):
-    """.env 里多于一行 YIBAN_ADMIN_PASSWORD_HASH → 拒绝认证 + ERROR 日志 + 紧急告警。
+class AmbiguousAdminHashTest(_Base):
+    """.env 里该键非恰好一行（多行或统计读取失败）→ 拒绝认证 + ERROR 日志 + 紧急告警。
 
     用例的"锋利度"要求：歧义态下解析器 last-wins 生效的那一行必须是**合法**哈希——
     否则修复前 verify_admin 也会因口令不匹配而返回 False，断言就成了白过。
@@ -459,6 +467,30 @@ class AmbiguousAdminHashB19Test(_Base):
         with mock.patch.object(self.webapp, "send_notification"):
             self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
 
+    def test_latent_u2028_payload_counts_as_ambiguous(self):
+        """升级前埋下的潜伏载荷：解析器仍取到合法哈希（证明潜伏），宽模型计数照样数出第二行。
+
+        防线对这类载荷的全部价值就在这里——不等某次读-改-写实体化，verify_admin
+        就先拒绝认证（解析侧看不到注入行、宽模型看得到，两者必须同时成立）。
+        """
+        good = self._hash_of(ADMIN_PASS)
+        evil = self._hash_of(ATTACK_PASS)
+        self._write_env(
+            "YIBAN_ADMIN_USER=admin@test.local",
+            f"YIBAN_ADMIN_PASSWORD_HASH={good}",
+            f"YIBAN_ANNOUNCEMENT=notify\u2028YIBAN_ADMIN_PASSWORD_HASH={evil}",
+        )
+        # 解析侧（普适换行）看不到 U+2028 撑出的第二行 → 生效哈希仍是合法那份
+        self.assertEqual(self._master_hash_line(), good,
+                         "前置条件失败：潜伏态下解析器应仍取到合法哈希")
+        # 宽模型计数已能看到它：任何一次实体化之前认证就被拒
+        with mock.patch.object(self.webapp, "send_notification") as sn, \
+                self.assertLogs("web", level="ERROR"):
+            self.assertFalse(
+                self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
+                "潜伏分隔符撑出的第二行哈希 = 主凭据歧义，必须 fail-closed")
+        self.assertTrue(sn.called, "潜伏载荷构成的歧义同样要发紧急告警")
+
     def test_comment_line_is_not_counted_as_duplicate(self):
         """注释掉的同名行不是配置行：不得因它误判歧义而把主管理员锁在门外。"""
         good = self._hash_of(ADMIN_PASS)
@@ -487,7 +519,7 @@ class AmbiguousAdminHashB19Test(_Base):
             self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
         # 旧行折叠（同一处修复）保证一次写入就能清掉重复行
         self.webapp.write_env_batch(self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": effective})
-        hits = [ln for ln in _env_line_texts(self.env_file)
+        hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_ADMIN_PASSWORD_HASH"]
         self.assertEqual(len(hits), 1, f"折叠后仍有多行主凭据: {hits}")
         with mock.patch.object(self.webapp, "send_notification") as sn:
