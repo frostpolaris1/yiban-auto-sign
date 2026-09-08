@@ -224,8 +224,13 @@ class Batch18FixesTest(unittest.TestCase):
         self.assertEqual(order[1], "write")
         self.assertEqual(sn.call_args.args[0], "消息推送配置变更告警")
 
-    def test_mail_config_alert_sent_before_write_with_force(self):
-        """mail-config（含 enabled=false 关闭动作）变更告警同样先发后写 + force=True。"""
+    def test_mail_config_alert_sent_after_write_with_force(self):
+        """mail-config 变更告警在落盘成功之后发出 + force=True（安全审查 2026-09-08）。
+
+        原契约"先告警后落盘"的理由（防新写入的节流参数吞掉告警）不成立：
+        force=True 本就绕过两侧节流；先发反而会在加密/写盘失败（500）时外发一条
+        描述从未生效变更的"配置已变更"通知。落盘成功后必须仍发告警。
+        """
         ac, at = self._admin_client()
         order = []
         real_write = self.webapp.write_env_batch
@@ -240,10 +245,10 @@ class Batch18FixesTest(unittest.TestCase):
             r = ac.put("/api/mail-config", json={"enabled": False, "confirm_password": ADMIN_PASS},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(order), 2, f"应恰好一次告警 + 一次落盘，实际 {order}")
-        self.assertEqual(order[0][0], "alert", "关闭邮件通道的告警必须先于落盘发出")
-        self.assertTrue(order[0][1], "变更告警必须 force=True")
-        self.assertEqual(order[1], "write")
+        self.assertEqual(len(order), 2, f"应恰好一次落盘 + 一次告警，实际 {order}")
+        self.assertEqual(order[0], "write", "告警只能描述已落盘的事实：先写入后告警")
+        self.assertEqual(order[1][0], "alert", "落盘成功后必须发出变更告警")
+        self.assertTrue(order[1][1], "变更告警必须 force=True")
         self.assertEqual(sn.call_args.args[0], "邮件配置变更告警")
 
     def test_mail_config_close_without_password_400_no_alert(self):
