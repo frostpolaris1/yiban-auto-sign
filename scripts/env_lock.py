@@ -6,14 +6,17 @@
   原实现 Windows 完全无跨进程互斥，web 与 signin 同时首启会各自生成不同密钥
   并互相覆盖（os.replace 后到者胜），先入库的密文永久不可解；
   同一进程内再用 per-path RLock 保证同线程重入不阻塞。
-- 文件锁获取失败（目录不可写等）退化为进程内锁，不阻断业务。
+- 文件锁获取失败（目录不可写等）退化为进程内锁，不阻断业务；每次降级记 warning 留痕。
 
 所有 .env 的读-改-写替换路径都应通过 `env_write_lock(env_path)` 进入，
 避免 web / 密钥轮换等多进程并发时互相覆盖。
 """
 import contextlib
+import logging
 import os
 import threading
+
+logger = logging.getLogger("yiban.env_lock")
 
 # per-path 进程内 RLock：键为绝对路径，避免同一文件不同写法产生两把锁
 _LOCKS = {}
@@ -40,10 +43,16 @@ def _get_rlock(path):
 
 
 def _acquire_file_lock(key):
-    """跨进程文件锁，返回 (kind, fd) 句柄；失败返回 None（退化为进程内锁）。"""
+    """跨进程文件锁，返回 (kind, fd) 句柄；失败返回 None（退化为进程内锁）。
+
+    每条降级路径记一次 warning（2026-09-08）：降级意味着多 worker 间失去互斥，
+    读-改-写并发可互相覆盖（如丢 GLOBAL_PAUSE 等安全开关），必须留痕可排查。
+    """
     try:
         fd = os.open(key + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError:
+    except OSError as e:
+        logger.warning("文件锁打开失败（%s: %s），退化为进程内锁，跨进程互斥失效: %s.lock",
+                       type(e).__name__, e, key)
         return None
     try:
         import fcntl
@@ -51,18 +60,23 @@ def _acquire_file_lock(key):
         try:
             import msvcrt
         except ImportError:
+            logger.warning("fcntl 与 msvcrt 均不可用，文件锁退化为进程内锁，跨进程互斥失效: %s", key)
             os.close(fd)
             return None
         try:
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        except OSError:
+        except OSError as e:
+            logger.warning("msvcrt 区域锁加锁失败（%s: %s），退化为进程内锁: %s",
+                           type(e).__name__, e, key)
             os.close(fd)
             return None
         return ("win", fd)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-    except OSError:
+    except OSError as e:
+        logger.warning("flock 加锁失败（%s: %s），退化为进程内锁: %s",
+                       type(e).__name__, e, key)
         os.close(fd)
         return None
     return ("posix", fd)
