@@ -6,8 +6,11 @@
 - account_crypto._write_key_to_env_file 已存在密钥时不得覆盖（写前重读 + 锁内整体保护）
 """
 import os
+import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -39,6 +42,40 @@ class EnvLockTest(unittest.TestCase):
         with env_lock.env_write_lock(self.env_file):  # noqa: SIM117 - 嵌套 with 正是重入场景
             with env_lock.env_write_lock(self.env_file):
                 pass  # 能进入嵌套块即视为同线程重入不阻塞
+
+    # ---- 文件锁降级路径必须告警留痕（降级 = 跨进程互斥失效，静默降级会丢并发写入）----
+
+    def test_open_failure_logs_warning_and_degrades_to_inprocess_lock(self):
+        """os.open 失败（目录不可写等）：warning 留痕，仍返回进程内锁，业务不阻断。"""
+        with mock.patch.object(env_lock.os, "open", side_effect=OSError(13, "Permission denied")), \
+                self.assertLogs("yiban.env_lock", level="WARNING") as logs:
+            with env_lock.env_write_lock(self.env_file):
+                pass  # 能进入临界区 = 降级为进程内锁后仍可用
+        self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
+
+    def test_no_lock_module_logs_warning_and_degrades(self):
+        """fcntl 与 msvcrt 均不可用：warning 留痕，退化为进程内锁。"""
+        with mock.patch.dict(sys.modules, {"fcntl": None, "msvcrt": None}), \
+                self.assertLogs("yiban.env_lock", level="WARNING") as logs:
+            with env_lock.env_write_lock(self.env_file):
+                pass
+        self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
+
+    def test_lock_syscall_failure_logs_warning_and_degrades(self):
+        """加锁系统调用失败（msvcrt.locking OSError）：warning 留痕，退化为进程内锁。"""
+        fake = types.ModuleType("msvcrt")
+        fake.LK_LOCK = 1
+
+        def _boom(fd, mode, nbytes):
+            raise OSError(36, "Resource temporarily unavailable")
+
+        fake.locking = _boom
+        # fcntl 置 None 强制走 msvcrt 分支，POSIX/Windows 行为一致
+        with mock.patch.dict(sys.modules, {"fcntl": None, "msvcrt": fake}), \
+                self.assertLogs("yiban.env_lock", level="WARNING") as logs:
+            with env_lock.env_write_lock(self.env_file):
+                pass
+        self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
 
     @unittest.skipUnless(os.name == "posix", "跨进程 fcntl.flock 仅 POSIX 可用；Windows 退化为进程内锁")
     def test_env_write_lock_cross_process_posix(self):
