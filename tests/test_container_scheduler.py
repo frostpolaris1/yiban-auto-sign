@@ -44,6 +44,37 @@ def _stop_sleep(_seconds):
     raise _Stop()
 
 
+class _FakeProc:
+    """_run_signin_child 的 Popen 桩：wait() 立即正常返回（退出码 0）。"""
+
+    returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def _stub_subprocess(recorder=None):
+    """构造 subprocess 桩模块：Popen 返回立即退出的假进程。
+
+    _run_signin_child 使用 Popen + wait（超时先 SIGTERM 再 SIGKILL），
+    桩需同时提供 TimeoutExpired 供 except 分支引用。
+    """
+    import subprocess as _sp
+
+    def _popen(cmd, **kw):
+        if recorder is not None:
+            recorder.append(cmd)
+        return _FakeProc()
+
+    return _stub_module(Popen=_popen, TimeoutExpired=_sp.TimeoutExpired)
+
+
 def _stub_module(**members):
     """构造一个只含指定成员的模块桩，避免污染真实的 time / subprocess。"""
     return type("_Stub", (), {k: staticmethod(v) for k, v in members.items()})()
@@ -189,7 +220,7 @@ class MainLoopGateTest(unittest.TestCase):
 
     def _run_loop_once(self):
         runs = []
-        self.sched.subprocess = _stub_module(run=lambda cmd, **kw: runs.append(cmd))
+        self.sched.subprocess = _stub_subprocess(recorder=runs)
         self.sched.time = _stub_module(sleep=_stop_sleep)
         with self.assertRaises(_Stop):
             self.sched.main_loop(sleep_seconds=1)
@@ -260,7 +291,7 @@ class EnvReloadTest(unittest.TestCase):
 
         self.sched.build_child_env = build_spy
         runs = []
-        self.sched.subprocess = _stub_module(run=lambda cmd, **kw: runs.append(cmd))
+        self.sched.subprocess = _stub_subprocess(recorder=runs)
         self.sched.time = _stub_module(sleep=_stop_sleep)
 
         with self.assertRaises(_Stop):
@@ -277,7 +308,7 @@ class EnvReloadTest(unittest.TestCase):
         """.env 缺失时安全退化为纯继承，不应抛异常。"""
         if os.path.exists(self.env_file):
             os.remove(self.env_file)
-        self.sched.subprocess = _stub_module(run=lambda cmd, **kw: None)
+        self.sched.subprocess = _stub_subprocess()
         self.sched.time = _stub_module(sleep=_stop_sleep)
         with self.assertRaises(_Stop):
             self.sched.main_loop(sleep_seconds=1)
