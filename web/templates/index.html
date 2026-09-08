@@ -2326,7 +2326,8 @@ function renderCapacity(est) {
   if (!box) return;
   if (!est) { box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500 px-1 py-2">暂无预估数据</div>'; return; }
   const cur = est.current_accounts || 0, cap = est.accounts_cap || 0, load = est.potential_load || 0;
-  const over = cap > 0 && (cur > cap || cur + load > cap);
+  // cap=0（窗口退化到容纳不下一次签到）且已用>0 同样视为超限，不因 cap>0 短路漏报
+  const over = cur > cap || cur + load > cap;
   const border = over ? 'border-red-300 dark:border-red-800' : 'border-zinc-200 dark:border-zinc-700';
   const text = over ? 'text-red-600 dark:text-red-400' : 'text-zinc-900 dark:text-zinc-100';
   box.innerHTML = `<div class="rounded-lg border ${border} ${over ? 'bg-red-50 dark:bg-red-900/10' : ''} p-3">
