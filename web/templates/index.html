@@ -2314,7 +2314,7 @@ function renderCapacity(est) {
       <div class="text-xs ${danger ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">占用 ${pct(cur, cap)}%${cur > cap ? '（已超容量：保存新的账号间隔将被拒绝，请清理账号或用户数量后再试）' : (pct(cur, cap) > 80 ? '（已超 80%，容量告急）' : '')}</div>
     </div>`;
   };
-  box.innerHTML = cell('账号容量（按最大间隔估算）', est.current_holders, est.accounts_cap, '个')
+  box.innerHTML = cell('账号容量（按完整间隔估算）', est.current_holders, est.accounts_cap, '个')
     + cell('用户容量（按间隔一半估算）', est.current_users, est.users_cap, '人');
 }
 

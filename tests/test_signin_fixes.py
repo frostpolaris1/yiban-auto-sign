@@ -152,6 +152,11 @@ class SigninFixes021Test(unittest.TestCase):
         self.assertTrue(sleeps, "应发生重试等待")
         self.assertGreaterEqual(sleeps[0], signin.RETRY_MIN_INTERVAL,
                                 "重试总间隔不得小于 RETRY_MIN_INTERVAL")
+        # 重试回队的间隔对齐只补残差（elapsed 已含原地等待），不得二次等待：
+        # 总次数=原地等待+对齐残差，且合计仍 ≥ RETRY_MIN_INTERVAL
+        self.assertEqual(len(sleeps), 2)
+        self.assertLessEqual(sleeps[1], 30)
+        self.assertGreaterEqual(sleeps[0] + sleeps[1], signin.RETRY_MIN_INTERVAL)
 
     def test_manual_queue_honors_account_gap_floor(self):
         """手动队列（schedule=None）相邻请求间隔必须 ≥ 账号间隔设置（下限语义）。
