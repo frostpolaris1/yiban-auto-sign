@@ -3665,7 +3665,9 @@ def create_app(host=None):
         仅以 has_pass 标记该条是否已有授权码；user 同顶层字段口径
         经 mailer._mask_addr 打码——发件账号也属敏感地址，编辑时留空即沿用）。
         条目级 admin_to 已摘除（2026-09-08）：发送路径只读顶层旧键 ADMIN_TO，
-        条目携带的收件人从不生效，历史死字段不再序列化/落盘。
+        条目携带的收件人从不生效，历史死字段不再序列化/落盘。顶层 admin_to
+        是活字段（A 线告警收件算法的唯一来源，见 mailer._admin_tos），保留
+        序列化与状态行展示——管理员必须始终可见告警发往何处。
         """
         cfg = mailer.get_config()
         enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
@@ -3676,6 +3678,7 @@ def create_app(host=None):
             "smtp_host": cfg.get("host", ""),
             "smtp_port": cfg.get("port", 465),
             "user": cfg.get("user", ""),
+            "admin_to": cfg.get("admin_to", ""),
             "smtps": [
                 {
                     "host": str(e.get("host", "")),
