@@ -3948,12 +3948,13 @@ def create_app(host=None):
                 updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
             except ValueError as e:
                 return jsonify({"error": f"加密失败：{e}"}), 500
-        # （先告警后落盘）：变更告警必须在 write_env_batch **之前**发出，
-        # 并带 force=True——若先落盘，daily_max/urgent_daily_max/cooldown/urgent_only
-        # 即按新值生效（如 daily_max=1 且当日额度恰被占、cooldown 被调到天文数字、
-        # urgent_only 刚被打开），随后这条"通道被人动了"的告警会被刚写入的参数吞掉
-        # （实测过的致盲链）。此刻额度/节流仍为旧值，force 又绕过两侧节流，确保必达。
-        # urgent=True——本告警正是"通道被人拆了"的信号。
+        # 变更告警在写入**成功之后**发出（与 mail-config 同口径，安全审查 2026-09-08）。
+        # 原先放在落盘之前，理由是"若先落盘，daily_max/urgent_daily_max/cooldown/
+        # urgent_only 即按新值生效（daily_max=1 且当日额度恰被占、cooldown 被调到
+        # 天文数字等），这条'通道被人动了'的告警会被刚写入的参数吞掉"——但 force=True
+        # 本就绕过两侧节流与额度，该担忧不成立；先发反而让落盘失败（500）时运营者
+        # 已收到一条描述从未生效变更的通知。urgent=True——本告警正是"通道被人拆了"的信号。
+        write_env_batch(ENV_FILE, updates)
         send_notification(
             "消息推送配置变更告警",
             f"消息推送配置已变更: {_notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric)}，"
@@ -3962,11 +3963,17 @@ def create_app(host=None):
             urgent=True,
             force=True,
         )
-        write_env_batch(ENV_FILE, updates)
+        # 审计只记实际落盘的键：未提交 type 不得按 off 记录（把"没动通道"伪造成
+        # "关过通道"）；密文真的写入时补记去向，事后才能还原完整动作。
+        detail = dict(numeric)
+        if "type" in data:
+            detail["type"] = ntype or "off"
+        if "YIBAN_NOTIFY_SECRET_ENC" in updates:
+            detail["secret"] = "updated" if updates["YIBAN_NOTIFY_SECRET_ENC"] else "cleared"
         db.audit(
             session.get("username") or "?",
             "notify_config", "notify_config",
-            json.dumps({"type": ntype or "off", **numeric}, ensure_ascii=False),
+            json.dumps(detail, ensure_ascii=False),
         )
         return jsonify(notify.get_config())
 
