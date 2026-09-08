@@ -68,13 +68,14 @@ python -m pytest tests/test_smoke.py -v
 | `test_host_exit_semantics.py` | 宿主 run.sh 补签闸门退出码语义 |
 | `test_breaker.py` | 账密熔断器（circuit breaker）核心行为 |
 | `test_account_plaintext_patch.py` | 账号凭据明文驻留三缺口补丁 |
-| `test_batch19_knife6b_0908.py` | 业务逻辑缺陷修复回归（补签定向重跑/探针暂停门/熔断防误清/死号先判后睡/手动签到退出码透传/超时冲刷汇总/晚到首签告警） |
+| `test_sign_round_guards.py` | 签到轮守卫（补签定向重跑/探针暂停门/死号先判后睡/超时冲刷汇总/晚到首签告警） |
+| `test_manual_sign_reporting.py` | 手动签到退出码透传留痕 + 账号编辑仅凭据变更清熔断 |
 
 ### 调度器（docker/scheduler.py、调度 v2）
 | 文件 | 说明 |
 |---|---|
 | `test_container_scheduler.py` | 容器内签到调度器回归 |
-| `test_batch19_knife6b_0908.py` | 含容器调度槽位落盘标记（重启不二次触发）与 `_child_timeout` 下限钉版用例 |
+| `test_scheduler_slot_marks.py` | 容器调度槽位落盘标记（重启不二次触发）+ `_child_timeout` 下限钉版用例 |
 | `test_schedule_v2.py` | 调度 v2 build_schedule 统一填充框架 |
 | `test_time_prefs.py` | 自选时间片全链路（db + 调度 + API） |
 | `test_slot_boundary.py` | 自选时间片边界 |
