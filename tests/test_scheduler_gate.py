@@ -145,7 +145,7 @@ class ZeroSuccessAlertTest(unittest.TestCase):
         """首签轮（is_second_run=False）部分成功+窗口外跳过：07:10 会补签，不打扰。
 
         抑制仅在补签触发点（07:10）之前成立——已越过触发点的首签身份轮是当天
-        最后一轮，仍告警（见 test_batch19_knife6b_0908.LateFirstRunAlertTest）。
+        最后一轮，仍告警（见 test_sign_round_guards.LateFirstRunAlertTest）。
         注入补签触发点之前的固定时钟，用例不随运行时刻漂移。
         """
         from datetime import datetime as _dt
