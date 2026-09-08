@@ -129,11 +129,48 @@ def get_config():
     }
 
 
-def is_enabled():
-    """邮件通知是否启用：总开关=1 且发信条目列表非空（SMTPS_ENC 或旧键 USER+PASS）。"""
+def smtp_channel_state():
+    """邮件发信通道三态判定：返回 (state, detail)。
+
+    state：ok=已开启且有真正可发信的条目；broken=已开启但一封都发不出去
+    （未配置条目 / 条目缺发件账号或授权码 / 密文解不开且旧键也为空）；
+    off=总开关未开启。detail 为人话病因，供健康日报展示。
+
+    为什么需要三态：is_enabled 原先只判 smtp_list 非空——条目结构性残缺
+    （如 {"host":"x"} 缺 user/pass，每封必败）与"密文解不开回落空旧键"两种病态
+    同样非空或被当作正常（安全审查 2026-09-08：日报显示「已开启」而实际一封都
+    发不出去）。is_enabled() 与本函数单源，只有 ok 算启用；调用方需要区分
+    「没配置 / 坏了 / 可用」时用它而非 smtp_list()。
+
+    刻意保留：密文解不开但旧单条键可用时按 ok 报（沿用旧键发信确实可达），
+    解密失败的 WARNING 由 smtp_list 记录；不把"密文废但旧键活"误报成坏。
+    """
     if _get("ENABLE").strip().lower() not in ("1", "true", "on", "yes"):
-        return False
-    return bool(smtp_list())
+        return "off", "YIBAN_MAIL_ENABLE 未开启"
+    entries = smtp_list()
+    if _get("SMTPS_ENC"):
+        # 密文存在但条目为空 = smtp_list 已回落旧键仍空（解不开/不是列表/全是脏元素），
+        # 不得报可用（fail-open 到空旧键的回落在此暴露为 broken）
+        if not entries:
+            return "broken", ("YIBAN_MAIL_SMTPS_ENC 无法解密或已损坏（换钥后密钥不匹配？），"
+                              "旧单条键也未配置")
+    elif not entries:
+        return "broken", ("未配置 SMTP 发信条目（请在设置页补齐 SMTP 列表或旧键 "
+                          "YIBAN_MAIL_USER / YIBAN_MAIL_PASS）")
+    if not any(str(e.get("user") or "").strip() and str(e.get("pass") or "")
+               for e in entries):
+        return "broken", "SMTP 条目缺发件账号/授权码"
+    return "ok", f"{len(entries)} 条发信条目"
+
+
+def is_enabled():
+    """邮件通知是否启用：仅当通道状态为 ok（开关开且发信条目真正可用）。
+
+    原先只判 smtp_list 非空：条目缺 user/pass、或密文解不开且旧键也为空时照样
+    报启用——每日健康日报据此显示「已开启」而实际一封都发不出去；现在与
+    smtp_channel_state 单源，只有 ok 算启用。
+    """
+    return smtp_channel_state()[0] == "ok"
 
 
 def _send(subject, text, to):

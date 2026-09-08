@@ -5,11 +5,15 @@
 （不泄露授权码、不回显完整发件地址）；多收件人逗号分隔；邮箱打码。
 全程 mock smtplib，不发起真实网络请求。
 """
+import json
 import os
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+import account_crypto  # noqa: E402
 import mailer  # noqa: E402
+
+_KEY = "a" * 64
 
 
 def _isolate_env(monkeypatch, tmp_path):
@@ -18,6 +22,26 @@ def _isolate_env(monkeypatch, tmp_path):
     for k in list(os.environ):
         if k.startswith("YIBAN_MAIL_"):
             monkeypatch.delenv(k)
+
+
+def _env_with_blob(monkeypatch, tmp_path, smtps_enc_line):
+    """隔离 + 写真实 .env（账号钥 + 可选 SMTPS_ENC 行），YIBAN_ENV_FILE 指向它。"""
+    path = tmp_path / "deploy.env"
+    lines = [f"YIBAN_ACCOUNTS_KEY={_KEY}"]
+    if smtps_enc_line:
+        lines.append(f"YIBAN_MAIL_SMTPS_ENC={smtps_enc_line}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _isolate_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YIBAN_ENV_FILE", str(path))
+    # 密钥走环境变量（load_key 的最高优先档），不受进程内 _KEY_CACHE 残留影响
+    monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", _KEY)
+
+
+def _enc_blob(entries):
+    """按 web 设置页同口径生成 YIBAN_MAIL_SMTPS_ENC 的值。"""
+    return json.dumps(account_crypto.encrypt_text(
+        json.dumps(entries, ensure_ascii=False), account_crypto._decode_key(_KEY)),
+        ensure_ascii=False)
 
 
 def _set_mail(monkeypatch, **kwargs):
@@ -192,3 +216,67 @@ def test_get_config_never_exposes_password(monkeypatch, tmp_path):
     cfg = mailer.get_config()
     assert "topsecret" not in str(cfg), "get_config 不得泄露授权码"
     assert cfg["user"] == "sen***@qq.com"
+
+
+def test_channel_state_off_when_disabled(monkeypatch, tmp_path):
+    _env_with_blob(monkeypatch, tmp_path, None)
+    _set_mail(monkeypatch, ENABLE="0", USER="sender@qq.com", PASS="secret")
+    state, detail = mailer.smtp_channel_state()
+    assert state == "off"
+    assert "ENABLE" in detail
+
+
+def test_channel_state_ok_with_legacy_keys(monkeypatch, tmp_path):
+    _env_with_blob(monkeypatch, tmp_path, None)
+    _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret")
+    state, _ = mailer.smtp_channel_state()
+    assert state == "ok"
+
+
+def test_channel_state_ok_with_enc_blob(monkeypatch, tmp_path):
+    entries = [{"host": "smtp.x.com", "port": 465, "user": "a@x.com",
+                "pass": "p1", "admin_to": ""}]
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob(entries))
+    _set_mail(monkeypatch, ENABLE="1")
+    state, detail = mailer.smtp_channel_state()
+    assert state == "ok"
+    assert "1" in detail
+
+
+def test_channel_state_broken_when_entries_missing_credentials(monkeypatch, tmp_path):
+    """条目结构性残缺（有 host 缺 user/pass）：配了但每封必败，不得报 ok。"""
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob([{"host": "x"}]))
+    _set_mail(monkeypatch, ENABLE="1")
+    state, detail = mailer.smtp_channel_state()
+    assert state == "broken"
+    assert "缺发件账号/授权码" in detail
+
+
+def test_channel_state_broken_when_blob_undecryptable(monkeypatch, tmp_path):
+    """密文解不开且旧键也为空：不得 fail-open 报成可用。"""
+    _env_with_blob(monkeypatch, tmp_path, "not-a-json-ciphertext")
+    _set_mail(monkeypatch, ENABLE="1")
+    state, detail = mailer.smtp_channel_state()
+    assert state == "broken"
+    assert "无法解密" in detail
+
+
+def test_channel_state_broken_when_nothing_configured(monkeypatch, tmp_path):
+    _env_with_blob(monkeypatch, tmp_path, None)
+    _set_mail(monkeypatch, ENABLE="1")
+    state, detail = mailer.smtp_channel_state()
+    assert state == "broken"
+    assert "未配置" in detail
+
+
+def test_is_enabled_true_only_for_ok_state(monkeypatch, tmp_path):
+    """is_enabled 与三态单源：坏 blob / 关开关都不是启用；旧键齐全才是启用。"""
+    _env_with_blob(monkeypatch, tmp_path, _enc_blob([{"host": "x"}]))
+    _set_mail(monkeypatch, ENABLE="1")
+    assert mailer.is_enabled() is False, "条目缺账号/授权码不得报启用"
+    _set_mail(monkeypatch, ENABLE="0")
+    assert mailer.is_enabled() is False
+    # 密文优先于旧键：上一段的坏 blob 在场时旧键齐全也不算启用；换干净 .env 再验 ok
+    _env_with_blob(monkeypatch, tmp_path, None)
+    _set_mail(monkeypatch, ENABLE="1", USER="sender@qq.com", PASS="secret")
+    assert mailer.is_enabled() is True
