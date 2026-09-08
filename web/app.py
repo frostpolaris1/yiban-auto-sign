@@ -918,62 +918,19 @@ def write_env_int(env_path, key, value):
     write_env_key(env_path, key, str(value) if value > 0 else "")
 
 
-# .env 的"行分隔符"字符集：**必须与 str.splitlines() 认定的集合逐字相同**。
-# 为什么要点名列出：write_env_batch 读文件与回写用的是
-#   f.read().splitlines() + "\n".join(...)
-# 而 str.splitlines() 除了 \n \r 还把 \v \f \x1c \x1d \x1e \x85 \u2028 \u2029
-# 当行边界。校验侧若只挡 \n \r，含后 8 个字符的键/值就能过检，作为**潜伏分隔符**
-# 留在同一条物理行里；下一次任何代码读-改-写 .env 时 splitlines() 把它拆开、
-# "\n".join() 拼成两条真配置行——env_io.parse_env_file 按文件顺序建 dict 且
-# 后写覆盖先写，载荷就此实体化生效（安全审查 2026-09-07：普通管理员经公告
-# 文本注入 YIBAN_ADMIN_PASSWORD_HASH 顶掉主管理员哈希提权，已活体复现）。
-# 一句话：校验用的行模型与写入用的行模型必须同源。改动写入侧的行模型时同步改这里。
-_ENV_LINE_BREAK_CHARS = frozenset("\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029")
-
-
-def _has_line_break(s):
-    """s 是否含任何被 str.splitlines() 当作行边界的字符（= 能把一行撑成两行配置）。
-
-    唯一的"会不会注入出一行配置"判据：write_env_batch 的兜底硬校验与各路由的
-    友好前置校验都调它，防两处字符集再次各自漂移。非字符串入参按 str 处理
-    （调用方传的都是已 str() 的文本）。
-    """
-    return not _ENV_LINE_BREAK_CHARS.isdisjoint(str(s))
-
-
-def _env_key_line_re(key):
-    """构造"该物理行属于键 key"的正则（键在行首、'=' 前可有空白）。
-
-    env_io.parse_env_file 的解析口径是"按首个 = 切分 + 两侧 strip"，故
-    `KEY = v` 与 `KEY=v` 是同一个键的配置行——旧行折叠与重复检测都必须认得前者，
-    否则 `KEY = v` 永远折不掉，积累成一条影子行（后写覆盖先写）。
-    整键匹配由相邻的 `\\s*=` 保证：前缀更长的另一个键（YIBAN_MAX_USERS_EXTRA）
-    不会被 YIBAN_MAX_USERS 命中。re.escape 只是防御纵深——键名若出现 [A-Z_]
-    之外的正则元字符，仍按字面匹配。
-    传入已 strip 的行文本即可：行首是 # 的注释行天然不匹配，注释得以保留。
-    """
-    return re.compile(rf"^{re.escape(str(key))}\s*=")
-
-
-def _count_env_key_lines(env_path, key):
-    """.env 中属于 key 的行数（口径与 _env_key_line_re / write_env_batch 折叠同源）。
-
-    刻意按 splitlines()（写入侧的**宽**行模型）而非解析侧的普适换行计数：
-    潜伏在单行里的分隔符（见 _ENV_LINE_BREAK_CHARS 注释）在宽模型下就已经是
-    第二行——于是"已实体化"与"尚未实体化"两种歧义态都能在这里被抓出来，
-    不必等下一次写盘把载荷坐实。
-    OSError（含文件缺失）返回 0——调用方必须把 0 当作"未确认"而非"未配置"，
-    在凭据判定上 fail-closed（读失败 ≠ 键不存在，与 scripts/env_io 的 strict
-    口径同一立场）。UnicodeDecodeError 是 ValueError 不是 OSError，不会被这里
-    吞掉，原样抛出——损坏的 .env 宁可炸也不 fail-open。
-    """
-    try:
-        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-            content = f.read()
-    except OSError:
-        return 0
-    pat = _env_key_line_re(key)
-    return sum(1 for ln in content.splitlines() if pat.match(ln.strip()))
+# 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 scripts/env_io.py
+# （ENV_LINE_BREAK_CHARS / has_line_break / key_line_pattern / count_key_lines /
+# find_env_key_collisions）：读的一半（parse_env_file）本就在那里，写的一半随之
+# 落位，scripts/ 各 .env 写入方无需反向依赖 web 即可共用同一套判定。
+# 不变量（读写两侧同源）：新注入在写入口被 has_line_break 拦下；修复升级前
+# 已埋下的潜伏载荷不会被回溯改写——由 create_app 启动时的
+# _report_env_key_collisions（env_io.find_env_key_collisions）报告、运维手工清理。
+# 此处保留模块级别名：既有调用点与测试的探测口径
+# （webapp._has_line_break / webapp._ENV_LINE_BREAK_CHARS）保持不变。
+_ENV_LINE_BREAK_CHARS = env_io.ENV_LINE_BREAK_CHARS
+_has_line_break = env_io.has_line_break
+_env_key_line_re = env_io.key_line_pattern
+_count_env_key_lines = env_io.count_key_lines
 
 
 def write_env_key(env_path, key, value):
@@ -1040,8 +997,16 @@ def ensure_secret_key(env_path):
         if os.path.exists(env_path):
             with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
                 lines = f.read().splitlines()
-        if not any(ln.strip().startswith("YIBAN_SECRET_KEY=") for ln in lines):
-            lines.append(f"YIBAN_SECRET_KEY={key}")
+        # 旧键折叠与 key_line_pattern 同源：`YIBAN_SECRET_KEY = `（= 号前带空格、
+        # 值为空）此前被 startswith("YIBAN_SECRET_KEY=") 漏判，函数继续生成并追加
+        # 第二行，留下重复键影子行。走到这里 = 解析侧该键值为空，滤掉该键全部
+        # 旧行再落新行是安全的，任何写法都不会追加出重复。
+        # 这是日后把主凭据"歧义拒绝"扩大到 YIBAN_SECRET_KEY 的前提（现在不扩：
+        # scripts/ 各写入方尚未收敛到同一写入实现，此处拒绝会把写入侧缺陷
+        # 变成活体锁死）。
+        _sk_pat = _env_key_line_re("YIBAN_SECRET_KEY")
+        lines = [ln for ln in lines if not _sk_pat.match(ln.strip())]
+        lines.append(f"YIBAN_SECRET_KEY={key}")
         if new_deployment:
             # 常量字面量写入，无注入面；管理员完成初始配置后在设置页开启注册
             lines.append("YIBAN_REGISTRATION_PAUSE=1")
@@ -2380,6 +2345,45 @@ def _is_loopback_host(host):
     return h in ("127.0.0.1", "::1", "localhost") or h.startswith("127.")
 
 
+# .env 歧义键启动检测：每进程只报一次（同 _notify_capacity_once 的节流思路）。
+_env_collision_reported = False
+
+
+def _report_env_key_collisions(env_path):
+    """启动时报告 .env 的行模型歧义键（潜伏行分隔符 / 影子重复行）。只检测不改写。
+
+    刻意先于 create_app 里一切 .env 写入（口令迁移 / init_db 落盐 /
+    ensure_secret_key）：这些写入的读-改-写会把潜伏载荷实体化——升级后第一次
+    重启本身就是一个实体化器，报告必须赶在它前面，运维才能据此判断是否在
+    升级前被打。不做静默自动改写：归一化会连带改动其他键的存量值；
+    清理动作 = ERROR 日志 + 一次 urgent 告警点名键与清理方法。
+    """
+    global _env_collision_reported
+    if _env_collision_reported:
+        return
+    _env_collision_reported = True
+    hits = env_io.find_env_key_collisions(env_path)
+    if not hits:
+        return
+    keys = ", ".join(sorted(hits))
+    logger.error(
+        "%s 检测到行模型歧义配置键（值内潜伏行分隔符或同名键多行，"
+        "解析器按后写覆盖先写取值）：%s。请备份后手工把每个键清理为唯一一行；"
+        "本次启动只检测不改写",
+        env_path, keys,
+    )
+    send_notification(
+        ".env 配置歧义告警",
+        f"{env_path} 检测到行模型歧义配置键: {keys}\n"
+        "成因: 值内藏行分隔符（U+2028 等，任何一次读-改-写都会实体化成新配置行）"
+        "或同名键多行（含带空格 `KEY = v` 写法），解析器按后写覆盖先写取值，"
+        "生效值不可信。\n"
+        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        "请备份后手工编辑 .env，把列出的每个键清理为唯一一行；本检测不会自动改写文件。",
+        urgent=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 子路径 / 独立子域 前缀自适应中间件（2026-08-23）
 # ---------------------------------------------------------------------------
@@ -2545,6 +2549,10 @@ def create_app(host=None):
         _third = logging.getLogger(_name)
         _third.setLevel(logging.WARNING)
         _third.addHandler(logging.NullHandler())
+    # .env 歧义键检测必须先于一切 .env 写入（口令迁移 / init_db 落盐 /
+    # ensure_secret_key）——升级后第一次重启本身就是实体化器（见
+    # _report_env_key_collisions：只报告不改写，每进程一次）
+    _report_env_key_collisions(ENV_FILE)
     # 默认/弱口令启动检测（必须在口令明文→哈希迁移之前，
     # 迁移会把明文清空导致无从检查）
     reject_default_admin_password(ENV_FILE)
