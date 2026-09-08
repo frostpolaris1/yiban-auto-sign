@@ -832,6 +832,32 @@ class RekeyBestEffortB14Test(unittest.TestCase):
         self.assertEqual(rekey_accounts.rotate_notify_secret(tmp, old, new, skip=True),
                          ("skipped", None))
 
+    def test_rotate_error_messages_name_the_channel(self):
+        """迁移失败的 ERROR 日志必须点名通道（推送 → 重新配置消息推送，
+        邮件 → 重新配置 SMTP 发信条目）：两条 ERROR 与两条收尾自检行要能对上号，
+        泛化后丢了通道限定，ops 分不清哪条日志对应哪路。"""
+        import rekey_accounts
+
+        tmp = tempfile.mkdtemp(prefix="b14-channel-hint-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        env_file = os.path.join(tmp, ".env")
+        _write_env(env_file, [f"YIBAN_ACCOUNTS_KEY={OLD_KEY}",
+                              "YIBAN_NOTIFY_SECRET_ENC=not-a-json",
+                              "YIBAN_MAIL_SMTPS_ENC=not-a-json"])
+        old = account_crypto._decode_key(OLD_KEY)
+        new = account_crypto._decode_key(NEW_KEY)
+        with self.assertLogs("yiban.rekey", level="ERROR") as logs:
+            rekey_accounts.rotate_notify_secret(env_file, old, new)
+            rekey_accounts.rotate_mail_smtps(env_file, old, new)
+        push_lines = [ln for ln in logs.output if "推送密钥" in ln]
+        mail_lines = [ln for ln in logs.output if "邮件 SMTP 密文" in ln]
+        self.assertEqual(len(push_lines), 1, f"推送侧应恰一条 ERROR，实际 {logs.output}")
+        self.assertEqual(len(mail_lines), 1, f"邮件侧应恰一条 ERROR，实际 {logs.output}")
+        self.assertIn("重新配置消息推送", push_lines[0])
+        self.assertNotIn("SMTP 发信条目", push_lines[0], "推送日志不得混入邮件通道提示")
+        self.assertIn("重新配置 SMTP 发信条目", mail_lines[0])
+        self.assertNotIn("消息推送", mail_lines[0], "邮件日志不得混入推送通道提示")
+
     def test_require_existing_env_file_checks_only_explicit_source(self):
         """③+④：只校验显式 --env（去空白后比较），未显式给出时保持回落链现状。"""
         tmp = tempfile.mkdtemp(prefix="b14-require-env-")
@@ -1233,14 +1259,28 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         rows = self._audit_rows("notify_config")
         self.assertTrue(rows, "notify_config 变更须留审计")
         detail = json.loads(rows[-1]["detail"])
-        self.assertEqual(detail["type"], "off", "未提交 type → 按 off 记录（既有口径）")
+        self.assertNotIn("type", detail,
+                         "未提交 type 就不得记 type（审计只记实际落盘的键，"
+                         "按 off 记录会把「没动通道」伪造成「关过通道」）")
         self.assertEqual(detail["cooldown"], 0, "数值项 0 也须入审计（正是「关节流」这次动作）")
         self.assertEqual(detail["daily_max"], 7)
         self.assertEqual(detail["urgent_daily_max"], 1)
         self.assertIs(detail["urgent_only"], True)
-        r2 = c.put("/api/mail-config", headers=self._csrf(t),
-                   json={"enabled": False, "confirm_password": ADMIN_PASS})
+        # type+secret 一起提交：type 与密文去向都要如实入审计
+        r2 = c.put("/api/notify-config", headers=self._csrf(t), json={
+            "type": "serverchan", "secret": "SCT406257AUDITTEST000000",
+            "confirm_password": ADMIN_PASS})
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        detail2 = json.loads(self._audit_rows("notify_config")[-1]["detail"])
+        self.assertEqual(detail2, {"type": "serverchan", "secret": "updated"})
+        r3 = c.put("/api/notify-config", headers=self._csrf(t), json={
+            "type": "", "confirm_password": ADMIN_PASS})
+        self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+        detail3 = json.loads(self._audit_rows("notify_config")[-1]["detail"])
+        self.assertEqual(detail3, {"type": "off", "secret": "cleared"})
+        r4 = c.put("/api/mail-config", headers=self._csrf(t),
+                   json={"enabled": False, "confirm_password": ADMIN_PASS})
+        self.assertEqual(r4.status_code, 200, r4.get_data(as_text=True))
         mail_detail = json.loads(self._audit_rows("mail_config")[-1]["detail"])
         self.assertEqual(mail_detail, {"enabled": False})
 
