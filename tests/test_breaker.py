@@ -235,6 +235,7 @@ class BreakerTest(unittest.TestCase):
              mock.patch.object(signin, "attempt_signin") as attempt, \
              mock.patch.object(signin, "_write_sign_state"), \
              mock.patch.object(signin, "_update_cred_state"), \
+             mock.patch.object(signin.notify, "is_configured", return_value=True), \
              mock.patch.object(signin, "send_notification") as sn:
             tm.monotonic.side_effect = [100.0, 131.0]  # t0=100, last_done=131 → dur=31s
             tm.sleep = lambda *a, **k: None
@@ -260,6 +261,7 @@ class BreakerTest(unittest.TestCase):
              mock.patch.object(signin, "_write_sign_state"), \
              mock.patch.object(signin, "_update_cred_state"), \
              mock.patch.object(signin, "classify_failure", return_value=2) as cf, \
+             mock.patch.object(signin.notify, "is_configured", return_value=True), \
              mock.patch.object(signin, "send_notification") as sn:
             tm.monotonic.side_effect = lambda: next(seq)
             tm.sleep = lambda *a, **k: None
