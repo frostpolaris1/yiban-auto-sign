@@ -2231,8 +2231,8 @@ def _capacity_estimate(gap_max=0):
 
     公式：
         可容纳账号数 ≈ (窗口秒数 − 单账号耗时) ÷ (单账号耗时 + 账号间隔) + 1
-    账号容量按最大间隔（gap 取配置上限）估最坏情况；
-    用户容量按间隔中位数（均匀分布取中点 gap/2）估典型情况。
+    账号容量按完整间隔（gap 取配置上限）估保守情况；
+    用户容量按间隔一半（gap/2）估宽松情况（两档均为同一公式的参数档位）。
     单账号耗时复用 signin._schedule_config 的 avg_attempt_sec（默认 8s，容错取 8）。
     返回 (账号容量, 用户容量)。窗口小于单账号耗时时容量为 0（保存将被拒绝）。
     """
@@ -6507,7 +6507,7 @@ def create_app(host=None):
                 "gap_max": _est_gap,
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
-                # 容量预估（v0.29.1 口径）：账号=最大间隔口径、用户=间隔中位数口径
+                # 容量预估（v0.29.1 口径）：账号=完整间隔口径、用户=间隔一半口径
                 # （启动延迟已废弃不参与）；前端 >80% 标红；保存延迟时超容量会被拒绝
                 "capacity_estimate": {
                     "accounts_cap": _est_accounts,

@@ -195,8 +195,7 @@ class SignEventWriteTest(unittest.TestCase):
     def test_run_queue_retry_emits_events(self):
         accounts = [signin.Account(phone="13800000001", password="x")]
         rows = []
-        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")), \
-             mock.patch.object(signin, "random_delay"):
+        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")):
             results = signin.run_queue_retry(accounts, "", 0, 0, schedule=None, cred_state={},
                                              event_sink=rows.append)
         self.assertTrue(results["13800000001"][0])
@@ -210,8 +209,7 @@ class SignEventWriteTest(unittest.TestCase):
 
     def test_run_queue_retry_without_sink_unchanged(self):
         accounts = [signin.Account(phone="13800000002", password="x")]
-        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")), \
-             mock.patch.object(signin, "random_delay"):
+        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")):
             results = signin.run_queue_retry(accounts, "", 0, 0, schedule=None, cred_state={})
         self.assertTrue(results["13800000002"][0])
 

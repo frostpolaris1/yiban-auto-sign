@@ -14,7 +14,7 @@
 4. 自动提交签到
 5. 支持消息通知（Server 酱、Bark、企业微信等）
 6. 重试逻辑：失败账号分散重试——开启签到调度时重新安排到窗口内合适时间，否则放回队尾（风控类最多 2 次，其他最多 3 次，MAX_ATTEMPTS 语义）
-7. 随机延迟：启动与账号间隔随机打散（YIBAN_START_DELAY_MAX / YIBAN_ACCOUNT_GAP_MAX）
+7. 账号间隔：相邻请求最小间隔下限（YIBAN_ACCOUNT_GAP_MAX，自动调度与手动队列同一语义）
 
 参考项目：
 - KillYiBan（默认登录流程的真实 App 请求特征来源；与同作者 FYIBAN 同源）
@@ -693,19 +693,6 @@ def clear_session_cache_quiet(phone):
             db.clear_session_cache(phone)
     except Exception as e:
         logger.debug(f"[{phone}] 清除会话缓存失败: {_sanitize_text(e)}")
-
-
-def random_delay(max_seconds, label):
-    """随机等待 0~max_seconds 秒（打散固定执行规律，max_seconds<=0 时不等待）。
-
-    上限 3600s——误配 YIBAN_START_DELAY_MAX=86400 会 sleep 一整天。
-    """
-    max_seconds = min(max_seconds, 3600)
-    if max_seconds <= 0:
-        return
-    wait = random.uniform(0, max_seconds)
-    logger.debug(f"{label}: 随机延迟 {int(wait)} 秒（上限 {max_seconds} 秒）")
-    time.sleep(wait)
 
 
 def _sanitize_text(text):
@@ -2567,11 +2554,12 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     event_sink=None):
     """轮询队列 + 分散重试执行全部账号签到。
 
-    流程（schedule 为空=原行为）：按签到模式（列表顺序 / 列表随机）
-    确定执行顺序逐个尝试（账号间随机间隔）；失败的账号不立即重试，放入队尾等待下一轮；
+    流程（schedule 为空=手动签到）：按签到模式（列表顺序 / 列表随机）
+    确定执行顺序逐个尝试；失败的账号不立即重试，放入队尾等待下一轮；
     每账号总尝试次数受 _retry_budget 分级控制（确定性认证失败 1 次不重试、
     风控类最多 2 次，其他最多 3 次，MAX_ATTEMPTS=3 语义）；同一账号两次尝试间隔
-    不小于 RETRY_MIN_INTERVAL 秒，避免连击。
+    不小于 RETRY_MIN_INTERVAL 秒，避免连击。相邻账号请求间隔对齐到不小于
+    gap_max（与自动调度、容量预估同一「最小间隔」语义）。
 
     schedule 非空（自动错峰模式，调度 v2 时间驱动队列）：按 {phone: datetime} 时间点到点执行
     （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新采样到
@@ -2589,6 +2577,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     """
     schedule = schedule or {}
     cred_state = cred_state or {}
+    # .env 直配超大值不得把队列睡死——与网页设置侧 3600 上限同口径
+    # （该保护原本内置于共享随机延迟 helper，间隔改为确定性对齐后收口到入参处）
+    gap_max = min(gap_max, 3600)
     # 启动延迟已废弃（v0.29.0），调度 v2 时间点分布 + 掐头去尾取代；
     # start_delay_max 参数仅为兼容旧调用签名保留（值不再使用）
     queue = list(accounts)
@@ -2784,11 +2775,15 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         phone = acc.phone
         # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
         today = datetime.now().strftime("%Y-%m-%d")
-        # 首轮（第一个账号）不等待，后续每个账号（含重试回队）先打散账号间间隔；
+        # 首轮（第一个账号）不等待，后续每个账号（含重试回队）对齐相邻请求的
+        # 最小间隔——与铺点路径、容量预估 (avg+gap) 同一「下限」语义。
         # 标记在 pop 之后无条件置 False（原实现只在失败分支置 False，
-        # 导致全成功路径账号间隔打散失效）
-        if not first_round:
-            random_delay(gap_max, f"账号 {phone} 间隔")
+        # 导致全成功路径账号间隔失效）
+        if not first_round and last_done is not None:
+            gap = gap_max - (time.monotonic() - last_done)
+            if gap > 0:
+                logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {gap_max}s）")
+                time.sleep(gap)
         first_round = False
 
         # 用户自暂停（调度 v2）：零请求直接跳过，状态显示"已取消"
