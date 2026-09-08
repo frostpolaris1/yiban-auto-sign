@@ -245,6 +245,86 @@ class SecurityFixes021Test(unittest.TestCase):
                 "YIBAN_ADMIN_PASSWORD": ADMIN_PASS,
             })
 
+    def _restore_admin_env(self):
+        """改密用例共用复位：清哈希/版本键，恢复明文口令基线。"""
+        self.webapp.write_env_batch(self.env_file, {
+            "YIBAN_ADMIN_PASSWORD_HASH": "",
+            "YIBAN_ADMIN_PW_VERSION": "",
+            "YIBAN_ADMIN_PASSWORD": ADMIN_PASS,
+        })
+
+    def test_pw_version_read_happens_inside_env_write_lock(self):
+        """当前版本读取必须与落盘收进同一把 .env 写锁。
+
+        读在 write_env_batch 取锁之前时，两个并发改密都读到旧值并写出同一个
+        递增值——一次递增被吞，本应随版本失效的旧会话继续有效。用深度计数
+        探针断言不变量：PW_VERSION 的现值读取发生（可重入写锁）临界区内。
+        """
+        depth = {"n": 0}
+        reads = []
+        real_lock = self.webapp._env_write_lock
+
+        @contextlib.contextmanager
+        def spy_lock(path):
+            depth["n"] += 1
+            try:
+                with real_lock(path):
+                    yield
+            finally:
+                depth["n"] -= 1
+
+        real_read = self.webapp.load_env_int
+
+        def spy_read(env_path, key, default):
+            value = real_read(env_path, key, default)
+            if key == "YIBAN_ADMIN_PW_VERSION":
+                reads.append(depth["n"] > 0)
+            return value
+
+        new_pass = "InnerLock#2026x"
+        try:
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, BUILTIN_EMAIL, ADMIN_PASS)
+            with mock.patch.object(self.webapp, "_env_write_lock", spy_lock), \
+                 mock.patch.object(self.webapp, "load_env_int", spy_read):
+                r = c.post("/api/me/password", json={
+                    "old_password": ADMIN_PASS,
+                    "new_password": new_pass,
+                    "confirm_password": new_pass,
+                }, headers=self._csrf(token))
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertTrue(reads, "改密路径必须读取 PW_VERSION 现值一次")
+            self.assertTrue(any(reads),
+                            "PW_VERSION 现值读取必须发生在 .env 写锁临界区内（否则并发改密丢递增）")
+        finally:
+            self._restore_admin_env()
+
+    def test_sequential_password_changes_each_bump_pw_version(self):
+        """两个先后会话各改一次密：版本 1→2→3 每次落盘都递增，不留丢档。"""
+        p2, p3 = "SecondPass#2026", "ThirdPass#2026"
+        try:
+            c1 = self.webapp.create_app().test_client()
+            t1 = self._login(c1, BUILTIN_EMAIL, ADMIN_PASS)
+            r = c1.post("/api/me/password", json={
+                "old_password": ADMIN_PASS, "new_password": p2, "confirm_password": p2,
+            }, headers=self._csrf(t1))
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            with open(self.env_file, encoding="utf-8") as f:
+                self.assertIn("YIBAN_ADMIN_PW_VERSION=2", f.read())
+            c2 = self.webapp.create_app().test_client()
+            t2 = self._login(c2, BUILTIN_EMAIL, p2)
+            r = c2.post("/api/me/password", json={
+                "old_password": p2, "new_password": p3, "confirm_password": p3,
+            }, headers=self._csrf(t2))
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            with open(self.env_file, encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("YIBAN_ADMIN_PW_VERSION=3", content,
+                          "第二次改密必须把版本推到 3（递增丢失=应失效的会话存活）")
+            self.assertNotIn("YIBAN_ADMIN_PW_VERSION=2\n", content)
+        finally:
+            self._restore_admin_env()
+
     # ---- H7 ----
     def test_rate_helpers_atomic_under_concurrency(self):
         n_threads = 8
