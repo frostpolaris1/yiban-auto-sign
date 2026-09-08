@@ -2180,8 +2180,24 @@ def _send_channel_health_report(force=False):
             f"⚠ 手机推送{_NOTIFY_LEDGER_LABELS.get(kind, kind)}额度今日已用尽，"
             "当日后续同类告警请查邮件（本行每日每本账各一次）"
         )
+    # 审计链锚点随日报出箱：HMAC 链密钥、锚点文件、备份都在同一台机器上，
+    # 这封日报是唯一每天离开这台机器的链状态记录——运维拿昨日邮件对照今日库，
+    # 删链/篡改即可被发现。只读（不创建、不轮转锚点）；读取失败省略该行，
+    # 不影响日报本体的发送与降级判定。
+    try:
+        head = db.audit_head_hash()
+        count = db.audit_row_count()
+        if not head and count:
+            # 链头读取失败被 audit_head_hash 吞成空串、而记录数却非零：两侧读到的
+            # 不是同一份一致状态，锚点行宁缺毋滥
+            logger.warning("审计链头读取异常（记录数 %d 但链头为空），日报内省略锚点行", count)
+        else:
+            desc = f"{head[:12]}…" if head else "空链"
+            lines.append(f"审计链锚点：head_hash={desc}（记录数 {count}）")
+    except Exception as e:
+        logger.warning("读取审计链锚点失败（日报内省略该行）: %s", e)
     body = (
-        "告警通道每日健康报告（两条通道状态与今日额度）：\n"
+        "告警通道每日健康报告（两条通道状态、今日额度与审计链锚点）：\n"
         + "\n".join(lines)
         + f"\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )

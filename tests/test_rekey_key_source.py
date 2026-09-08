@@ -1391,6 +1391,36 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         self.assertIn("已配置但不可用", lines)
         self.assertIn("邮件通道：", lines)
 
+    def test_health_report_includes_audit_anchor_line(self):
+        """日报正文带审计链锚点行（链头哈希前缀 + 记录数）。
+
+        HMAC 链密钥/锚点文件/备份都同一台机器，日报是唯一每天离机的记录：
+        运维拿昨日邮件对照今日库即可发现删链/篡改。锚点行是只读旁证，
+        不得影响降级判定（是否 urgent 仍由通道状态决定）。
+        """
+        c = self._client()
+        self._login(c, "admin", ADMIN_PASS)  # 产生审计行，链非空
+        head = db.audit_head_hash()
+        self.assertTrue(head, "前置条件：库内已有审计行")
+        with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]):
+            self.assertTrue(self.webapp._send_channel_health_report())
+        _title, content, _urgent = self.alerts[-1]
+        self.assertIn("审计链锚点：", content)
+        self.assertIn(f"head_hash={head[:12]}…", content, "锚点行必须含链头哈希前 12 位")
+        self.assertIn("（记录数 ", content)
+
+    def test_health_report_omits_anchor_line_when_db_unavailable(self):
+        """db 读失败（db 不可用/查询抛错）→ 锚点行省略，日报本体照发。"""
+        with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
+             mock.patch.object(self.webapp.db, "audit_head_hash",
+                               side_effect=OSError("db locked")), \
+             mock.patch.object(self.webapp.db, "audit_row_count",
+                               side_effect=OSError("db locked")):
+            self.assertTrue(self.webapp._send_channel_health_report())
+        _title, content, _urgent = self.alerts[-1]
+        self.assertIn("邮件通道：", content, "日报本体不受锚点读取失败影响")
+        self.assertNotIn("审计链锚点：", content, "锚点行（含冒号的行前缀）必须整行省略")
+
     def test_health_report_flags_mail_enabled_but_unusable(self):
         """评审 ①：ENABLE=1 但发件邮箱/授权码缺失 → 日报不得报"已开启"（误报一切正常）。
 
