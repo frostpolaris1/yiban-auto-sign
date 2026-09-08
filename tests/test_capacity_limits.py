@@ -226,6 +226,16 @@ class MaxLimitsSettingsTest(_Base):
         self.assertEqual(env["YIBAN_MAX_USERS"], "0")
         self.assertEqual(env["YIBAN_MAX_ACCOUNTS"], "100000")
 
+    def test_max_limits_require_password_confirm(self):
+        # 携带 max_* 但缺 confirm_password → 口令二次确认拒绝（400），.env 不落盘
+        c, h = self._master()
+        r = c.post("/api/settings", json={"max_users": 10}, headers=h)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertNotIn("YIBAN_MAX_USERS", self._read_env())
+        r = c.post("/api/settings", json={"max_accounts": 10}, headers=h)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertNotIn("YIBAN_MAX_ACCOUNTS", self._read_env())
+
     def test_hot_read_roundtrip(self):
         # 热读链路：注册到上限被拒 → 设置调大（走 POST /api/settings）→ 再注册放行
         self.db.create_user("u1@test.local", "x", role="user")
