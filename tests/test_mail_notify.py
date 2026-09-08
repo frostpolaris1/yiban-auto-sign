@@ -315,8 +315,10 @@ class MailNotifyApiTest(unittest.TestCase):
         r = c.get("/api/mail-config")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("enabled", r.get_json())
-        self.assertNotIn("admin_to", r.get_json(),
-                         "mail-config 状态响应不再序列化 admin_to（发送只读顶层旧键 ADMIN_TO）")
+        self.assertIn("admin_to", r.get_json(),
+                      "顶层 ADMIN_TO 是活字段（A 线告警收件唯一来源），状态响应保留序列化")
+        self.assertNotIn("admin_to", r.get_json()["smtps"][0] if r.get_json()["smtps"] else {},
+                         "条目级 admin_to 死字段不得随条目序列化")
 
     def test_mail_config_put_requires_master_admin(self):
         c = self.webapp.create_app().test_client()
