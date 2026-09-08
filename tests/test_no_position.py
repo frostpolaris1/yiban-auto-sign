@@ -212,6 +212,7 @@ class NoPositionRetryNotificationTest(unittest.TestCase):
              mock.patch.object(signin, "_write_sign_state"), \
              mock.patch.object(signin, "_update_cred_state"), \
              mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
+             mock.patch.object(signin.notify, "is_configured", return_value=True), \
              mock.patch.object(signin, "send_notification") as m_notify, \
              mock.patch.object(signin, "send_user_fail_mail") as m_user, \
              mock.patch.object(signin.time, "sleep"):
