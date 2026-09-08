@@ -55,6 +55,7 @@ python -m pytest tests/test_smoke.py -v
 | `test_logs_by_date.py` | 按天日志读取与按日期查看 |
 | `test_logs_export_masking.py` | 日志导出脱敏副本（与视图同一过滤管线）+ 审计留痕 + 每 IP 限速；写入侧裸号/裸 IP 收口 |
 | `test_env_line_break_injection.py` | .env 行分隔符注入提权（宽/窄行模型、旧键折叠、主凭据歧义 fail-closed、启动歧义检测） |
+| `test_webui_inline_context.py` | 前端注入面契约：police_link scheme 白名单、`<script>` 内 script_root tojson、onclick/onchange 不拼用户可控值（data-* + 事件委托） |
 
 ### 签到核心（scripts/signin.py、run.sh）
 | 文件 | 说明 |
@@ -110,7 +111,7 @@ python -m pytest tests/test_smoke.py -v
 | `test_session_cache_db.py` | 会话 Cookie 缓存（v8 session_cache 表） |
 | `test_batch_transaction.py` | 批量操作事务化 |
 | `test_user_deregistration_db.py` | 用户注销数据库层（软删除 + 宽限期） |
-| `test_env_lock.py` | 共享 .env 文件锁 + 密钥生成竞态 |
+| `test_env_lock.py` | 共享 .env 文件锁 + 密钥生成竞态 + 文件锁降级进程内锁的告警留痕 |
 
 ### 辅助脚本
 | 文件 | 说明 |
@@ -118,6 +119,8 @@ python -m pytest tests/test_smoke.py -v
 | `test_env_mailer_tls.py` | 子进程 env + mailer TLS 上下文 |
 | `test_rekey_key_source.py` | 密钥来源去 cwd 依赖 + rekey 迁移推送/邮件密文 + 通道自检 |
 | `test_p3_fixes.py` | 迁移原子性、rekey argv 泄露、backup 明文警告 |
+| `test_backup_require_encrypt.py` | backup.sh 契约（静态核验 + bash -n）：--require-encrypt 与异机副本解耦、加密失败 fail-closed 清场 |
+| `test_runsh_env_parse.py` | run.sh 契约（静态核验 + bash -n）：.env 解析去 BOM、key/value 剥空白对齐 env_io |
 
 ### 用户操作相关
 | 文件 | 说明 |
