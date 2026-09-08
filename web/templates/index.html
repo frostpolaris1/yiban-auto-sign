@@ -2731,7 +2731,7 @@ async function loadMailConfig() {
     const data = await api('/api/mail-config');
     mailEnabled = !!data.enabled;
     $('mail-config-status').textContent = data.enabled
-      ? `已开启 · 发件 ${data.user}`
+      ? `已开启 · 发件 ${data.user} · 告警收件 ${data.admin_to}`
       : '未开启（需先在下方配置发件 SMTP，再由主管理员开启）';
     $('mail-global-wrap').classList.toggle('hidden', !state.isMasterAdmin);
     if (state.isMasterAdmin) $('mail-global-switch').checked = mailEnabled;
