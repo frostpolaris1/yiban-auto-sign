@@ -918,10 +918,64 @@ def write_env_int(env_path, key, value):
     write_env_key(env_path, key, str(value) if value > 0 else "")
 
 
+# .env 的"行分隔符"字符集：**必须与 str.splitlines() 认定的集合逐字相同**。
+# 为什么要点名列出：write_env_batch 读文件与回写用的是
+#   f.read().splitlines() + "\n".join(...)
+# 而 str.splitlines() 除了 \n \r 还把 \v \f \x1c \x1d \x1e \x85 \u2028 \u2029
+# 当行边界。校验侧若只挡 \n \r，含后 8 个字符的键/值就能过检，作为**潜伏分隔符**
+# 留在同一条物理行里；下一次任何代码读-改-写 .env 时 splitlines() 把它拆开、
+# "\n".join() 拼成两条真配置行——env_io.parse_env_file 按文件顺序建 dict 且
+# 后写覆盖先写，载荷就此实体化生效（安全审查 2026-09-07 B19-4：普通管理员经公告
+# 文本注入 YIBAN_ADMIN_PASSWORD_HASH 顶掉主管理员哈希提权，已活体复现）。
+# 一句话：校验用的行模型与写入用的行模型必须同源。改动写入侧的行模型时同步改这里。
+_ENV_LINE_BREAK_CHARS = frozenset("\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029")
+
+
+def _has_line_break(s):
+    """s 是否含任何被 str.splitlines() 当作行边界的字符（= 能把一行撑成两行配置）。
+
+    唯一的"会不会注入出一行配置"判据：write_env_batch 的兜底硬校验与各路由的
+    友好前置校验都调它，防两处字符集再次各自漂移。非字符串入参按 str 处理
+    （调用方传的都是已 str() 的文本）。
+    """
+    return not _ENV_LINE_BREAK_CHARS.isdisjoint(str(s))
+
+
+def _env_key_line_re(key):
+    """构造"该物理行属于键 key"的正则（键在行首、'=' 前可有空白）。
+
+    env_io.parse_env_file 的解析口径是"按首个 = 切分 + 两侧 strip"，故
+    `KEY = v` 与 `KEY=v` 是同一个键的配置行——旧行折叠与重复检测都必须认得前者，
+    否则 `KEY = v` 永远折不掉，积累成一条影子行（后写覆盖先写）。
+    re.escape(键名) 紧跟 `\\s*=` 保证整键匹配：前缀更长的另一个键
+    （YIBAN_MAX_USERS_EXTRA）不会被 YIBAN_MAX_USERS 命中。
+    传入已 strip 的行文本即可：行首是 # 的注释行天然不匹配，注释得以保留。
+    """
+    return re.compile(rf"^{re.escape(str(key))}\s*=")
+
+
+def count_env_key_lines(env_path, key):
+    """.env 中属于 key 的行数（口径与 _env_key_line_re / write_env_batch 折叠同源）。
+
+    刻意按 splitlines()（写入侧的**宽**行模型）而非解析侧的普适换行计数：
+    潜伏在单行里的分隔符（见 _ENV_LINE_BREAK_CHARS 注释）在宽模型下就已经是
+    第二行——于是"已实体化"与"尚未实体化"两种歧义态都能在这里被抓出来，
+    不必等下一次写盘把载荷坐实。
+    文件缺失/不可读返回 0：统计失败不得改变调用方既有的"未配置"判定。
+    """
+    try:
+        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
+            content = f.read()
+    except OSError:
+        return 0
+    pat = _env_key_line_re(key)
+    return sum(1 for ln in content.splitlines() if pat.match(ln.strip()))
+
+
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
-    单键形态 = write_env_batch({key: value})：换行注入校验、写锁、原子替换
+    单键形态 = write_env_batch({key: value})：行分隔符注入校验、写锁、原子替换
     均单源在 write_env_batch（防两份安全校验实现漂移）。
     """
     write_env_batch(env_path, {key: value})
@@ -936,17 +990,23 @@ def write_env_batch(env_path, updates):
     安全约束（安全审查 2026-08）：.env 为逐行键值格式，键或值含换行符会注入出
     新的配置行（如经公告文本写入 YIBAN_ADMIN_PASSWORD_HASH 覆盖主管理员哈希提权）。
     此处为兜底硬校验（调用方应先自行校验并返回友好错误），违规直接抛 ValueError。
+    字符集口径（安全审查 2026-09-07 B19-4 修订）：本函数自己用 splitlines() 读、
+    用 "\\n".join() 写，故校验必须覆盖 splitlines 认定的**全部**行分隔符
+    （见 _ENV_LINE_BREAK_CHARS）——只挡 \\n \\r 会留下"潜伏分隔符 + 后续读改写
+    实体化"这条同效路径。
     """
     with _env_write_lock(env_path):
         for key, value in updates.items():
-            if "\n" in key or "\r" in key or "\n" in value or "\r" in value:
-                raise ValueError(f"write_env_batch 拒绝包含换行符的键值: {key}")
+            if _has_line_break(key) or _has_line_break(value):
+                raise ValueError(f"write_env_batch 拒绝包含行分隔符的键值: {key}")
         lines = []
         if os.path.exists(env_path):
             with open(env_path, encoding="utf-8-sig") as f:
                 lines = f.read().splitlines()
         # 保留注释行和非更新键；过滤被更新键的旧行后追加新值
-        out = [ln for ln in lines if not ln.strip().startswith(tuple(f"{k}=" for k in updates))]
+        # （折叠用 _env_key_line_re，`KEY = v` 写法同样是该键的旧行）
+        pats = [_env_key_line_re(k) for k in updates]
+        out = [ln for ln in lines if not any(p.match(ln.strip()) for p in pats)]
         for key, value in updates.items():
             if value:
                 out.append(f"{key}={value}")
@@ -1534,6 +1594,8 @@ def verify_admin(username, password):
     口令哈希（YIBAN_ADMIN_PASSWORD_HASH，scrypt）优先；哈希缺失而明文仍在
     （启动迁移失败态）按 M1 fail-closed 直接拒绝——明文比对路径已停用，
     修复 .env 权限重启即自动补齐哈希。
+    主凭据歧义同样 fail-closed：该键在 .env 中多于一行时拒绝认证并告警
+    （生效行由"后写覆盖先写"决定，歧义即注入面），修成唯一一行即恢复，无需重启。
     注意：compare_digest 不支持非 ASCII 直接比较，先编码为 UTF-8 字节。
     """
     env = read_env(ENV_FILE)
@@ -1558,6 +1620,32 @@ def verify_admin(username, password):
         return False
     pw_hash = env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
     if pw_hash:
+        # 主凭据歧义 fail-closed（安全审查 2026-09-07 B19-4）：.env 里该键多于一行
+        # 时，解析器按"后写覆盖先写"取到的是哪一行取决于谁最后落盘——两种可能都不
+        # 能继续当作认证成功：要么运维配错（改密/迁移留下影子行），要么就是上面的
+        # 行分隔符注入（生效行是攻击者追加的那一行）。
+        # 刻意放在这个"即将拿哈希去比对"的决策点、而不是启动时炸掉：一个坏配置
+        # 不该把还在正常提供服务的部署直接 brick；把 .env 修成唯一一行即自动恢复，
+        # 无需重启。检测口径与 write_env_batch 的旧行折叠同源（count_env_key_lines）。
+        dup = count_env_key_lines(ENV_FILE, "YIBAN_ADMIN_PASSWORD_HASH")
+        if dup > 1:
+            logger.error(
+                "拒绝管理员登录：%s 存在 %d 行 YIBAN_ADMIN_PASSWORD_HASH（主凭据歧义），"
+                "解析器按后写覆盖先写取值——可能是配置错误，也可能是 .env 行分隔符注入"
+                "提权尝试（安全审查 2026-09-07 B19-4）。请核对文件属主与内容，"
+                "只保留唯一一行后恢复正常（无需重启）",
+                ENV_FILE, dup,
+            )
+            send_notification(
+                "主管理员凭据歧义告警",
+                f".env 中 YIBAN_ADMIN_PASSWORD_HASH 出现 {dup} 行，主管理员登录已被拒绝。\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "该状态要么是配置错误，要么是配置注入提权（批次19 B19-4）：\n"
+                "请立即核对 .env 内容与文件属主，只保留唯一一行，并排查近期登录与改密记录。",
+                urgent=True,
+            )
+            _constant_time_dummy(password)  # 时延拉平：与真实比对等开销
+            return False
         return check_password_hash(pw_hash, password)
     admin_pass = env.get("YIBAN_ADMIN_PASSWORD", "").strip()
     if admin_pass:
@@ -6674,11 +6762,14 @@ def create_app(host=None):
         text = str(data.get("text", "")).strip()
         if len(text) > 200:  # 后端长度限制（与前端 maxlength=200 一致）
             return jsonify({"error": "公告内容过长（最多 200 字）"}), 400
-        if "\n" in text or "\r" in text:
+        if _has_line_break(text):
             # 安全审查 2026-08：公告存入 .env 单行键值，换行会注入新配置行
             # （如 YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。
             # 前端为 textarea 但展示端换行本就折叠，直接拒绝（write_env_key 另有兜底）。
-            return jsonify({"error": "公告内容不能包含换行（单行存储）"}), 400
+            # 判据单源在 _has_line_break（安全审查 2026-09-07 B19-4）：此处原先只挡
+            # \n \r，与 write_env_batch 读写用的 splitlines() 不同集，
+            # \v \f \x1c \x1d \x1e \x85 \u2028 \u2029 会作为潜伏分隔符蒙混过关。
+            return jsonify({"error": "公告内容不能包含换行或行分隔符（单行存储）"}), 400
         write_env_key(ENV_FILE, "YIBAN_ANNOUNCEMENT", text)
         _announcement_cache[0] = text  # 同步内存缓存
         db.audit(
