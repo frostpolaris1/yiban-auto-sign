@@ -2236,58 +2236,46 @@ def _send_channel_health_report(force=False):
 _capacity_alerts = {"users": False, "accounts": False}
 
 
-def _capacity_stats():
-    """容量统计（2026-08-31 口径修订，显示与配额检查的唯一口径来源）：
-    users = 全部未删除注册用户数（含空用户）；accounts = 至少持有 1 个非删除账号的
-    活跃注册用户数。admin 直属裸账号（owner='admin'，非注册用户）不计入 accounts。
+def _active_account_count():
+    """活跃账号数（2026-09-08 占用口径）：全部非删除账号，含 owner='admin' 裸账号。
+
+    「账号容量」约束易班请求负载 = 实际参与签到的活跃凭据数，裸账号同样发起
+    签到请求，与注册用户持有的账号同权计入；显示/配额/预估三处同一源。
     """
-    users = db.load_users()
-    live_accts = [a for a in load_accounts() if not a["deleted"]]
-    owners = {a.get("owner") for a in live_accts if a.get("owner")}
-    accounts = sum(1 for u in users if u["email"] in owners)
-    return len(users), accounts
+    return sum(1 for a in load_accounts() if not a["deleted"])
 
 
-def _capacity_estimate(gap_max=0):
-    """按当前签到窗口与账号间隔设置预估容量（v0.29.1 口径：启动延迟已废弃不参与）。
+def _capacity_estimate(gap=0):
+    """按当前签到窗口与账号间隔设置预估可容纳账号数（2026-09-08 单档口径）。
 
-    公式：
-        可容纳账号数 ≈ (窗口秒数 − 单账号耗时) ÷ (单账号耗时 + 账号间隔) + 1
-    账号容量按完整间隔（gap 取配置上限）估保守情况；
-    用户容量按间隔一半（gap/2）估宽松情况（两档均为同一公式的参数档位）。
-    单账号耗时复用 signin._schedule_config 的 avg_attempt_sec（默认 8s，容错取 8）。
-    返回 (账号容量, 用户容量)。窗口小于单账号耗时时容量为 0（保存将被拒绝）。
+    公式：账号容量 = (有效窗口 − avg) ÷ (avg + gap) + 1（取整）
+    有效窗口 = _sign_window() 原始窗口 − edge_config()[0] − edge_config()[1]
+    （掐头去尾裁掉的秒数不参与签到，不占容量；秒，下限 0）。
+    avg 复用 signin._schedule_config 的 avg_attempt_sec（默认 8s，容错取 8）。
+    返回单值 int；有效窗口不足单账号耗时时容量为 0。
     """
     try:
         avg = int(signin._schedule_config().get("avg_attempt_sec") or 8)
     except Exception:
         avg = 8
     sw = _sign_window()
-    window_sec = max(0, (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])) * 60
-
-    def _cap(gap):
-        slack = window_sec - avg
-        if slack < 0:
-            return 0
-        return int(slack / (avg + gap)) + 1
-
-    return _cap(gap_max), _cap(gap_max // 2)
+    raw_sec = max(0, (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])) * 60
+    window_sec = max(0, raw_sec - edge_config()[0] - edge_config()[1])
+    slack = window_sec - avg
+    if slack < 0:
+        return 0
+    return int(slack / (avg + gap)) + 1
 
 
-def _accounts_at_capacity(extra_holder=None):
-    """账号配额判定（新口径）：添加后活跃注册用户持有者数 > 上限 则 True。
-    extra_holder：本次将新增持有账号的注册用户邮箱；None 表示不新增活跃持有者
-    （如 admin 直属裸账号 owner='admin'，按口径不占配额）。
+def _accounts_at_capacity(extra_accounts=0):
+    """账号配额判定（2026-09-08 口径）：占用 = 活跃账号数 + 本次将新增账号数，
+    > 上限则 True（0 = 不限）。调小上限不删除存量账号，只限制新增。
+    extra_accounts：本次提交将新增的非删除账号数（每次添加恰为 1 个）。
     """
     max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
     if max_accounts <= 0:
         return False
-    _, accounts = _capacity_stats()
-    if extra_holder:
-        live_accts = [a for a in load_accounts() if not a["deleted"]]
-        if extra_holder not in {a.get("owner") for a in live_accts}:
-            accounts += 1
-    return accounts > max_accounts
+    return _active_account_count() + extra_accounts > max_accounts
 
 
 def _users_at_capacity():
@@ -4083,9 +4071,12 @@ def create_app(host=None):
             accounts_pre = load_accounts()
             max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
             email_screen = str(data.get("email", "")).strip().lower()
-            # 容量兜底（2026-08-31 口径修订）：账号配额 = 活跃注册用户持有者数；
-            # 本次将归属的邮箱视为新增持有者预判；admin 直属裸账号（无 email）不占配额
-            if _accounts_at_capacity(email_screen or None):
+            # 容量兜底（2026-09-08 口径）：账号配额 = 活跃账号数（含裸账号）；
+            # 本次将新增 1 个非删除账号——归属邮箱已持有活跃账号的重复添加
+            # 不会新增（随后 400 拦截），不计增量，保持原错误优先级
+            holds_live = email_screen and any(
+                a.get("owner") == email_screen and not a["deleted"] for a in accounts_pre)
+            if _accounts_at_capacity(0 if holds_live else 1):
                 _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
                 return jsonify({"error": f"账号数量已达上限（{max_accounts_pre}），请联系管理员扩容"}), 403
             if find_account_index(accounts_pre, clean["phone"]) is not None:
@@ -4126,9 +4117,11 @@ def create_app(host=None):
                 initial_hash = generate_password_hash(initial, method=SCRYPT_METHOD)
         with _file_lock:
             accounts = load_accounts()
-            # 容量兜底：账号配额（新口径：活跃注册用户持有者数，防无限增长，对抗性审查补）
+            # 容量兜底：账号配额（2026-09-08 口径：活跃账号数含裸账号，防无限增长，对抗性审查补）；
+            # 归属邮箱已持有活跃账号的重复添加不新增，不计增量（保持原错误优先级）
             max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            if _accounts_at_capacity(email or None):
+            holds_live = email and any(a.get("owner") == email and not a["deleted"] for a in accounts)
+            if _accounts_at_capacity(0 if holds_live else 1):
                 _notify_capacity_once("accounts", max_accounts, "账号数量")
                 return jsonify({"error": f"账号数量已达上限（{max_accounts}），请联系管理员扩容"}), 403
             if find_account_index(accounts, clean["phone"]) is not None:
@@ -5081,13 +5074,14 @@ def create_app(host=None):
         with _file_lock:
             accounts_pre = load_accounts()
             max_accounts_pre = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            # 容量兜底（2026-08-31 口径修订）：账号配额 = 活跃注册用户持有者数；
-            # 提交者本人（注册用户、当前无账号）将新增为持有者
-            if _accounts_at_capacity(email_pre):
+            # 容量兜底（2026-09-08 口径）：账号配额 = 活跃账号数（含裸账号）；
+            # 提交者已持有未删除账号时不新增（随后 400 拦截），不计增量，保持原错误优先级
+            holds_live = any(a.get("owner") == email_pre and not a["deleted"] for a in accounts_pre)
+            if _accounts_at_capacity(0 if holds_live else 1):
                 _notify_capacity_once("accounts", max_accounts_pre, "账号数量")
                 # 不向普通用户暴露容量数字（信息分层，2026-08-15）
                 return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
-            if any(a.get("owner") == email_pre and not a.get("deleted") for a in accounts_pre):
+            if holds_live:
                 return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
             if find_account_index(accounts_pre, clean["phone"]) is not None:
                 err = _duplicate_phone_error(accounts_pre, clean["phone"], email_pre)
@@ -5117,15 +5111,16 @@ def create_app(host=None):
                 return jsonify({"error": verify_err}), 400
         with _file_lock:
             accounts = load_accounts()
-            # 容量兜底：账号配额（新口径：活跃注册用户持有者数；用户提交同样受限，对抗性审查补）
+            # 容量兜底：账号配额（2026-09-08 口径：活跃账号数含裸账号；用户提交同样受限，对抗性审查补）；
+            # 提交者已持有未删除账号时不新增，不计增量（保持原错误优先级）
             max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-            if _accounts_at_capacity(email_pre):
+            email = session.get("username", "").lower()
+            # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
+            has_live = any(a.get("owner") == email and not a["deleted"] for a in accounts)
+            if _accounts_at_capacity(0 if has_live else 1):
                 _notify_capacity_once("accounts", max_accounts, "账号数量")
                 # 不向普通用户暴露容量数字（信息分层，2026-08-15）
                 return jsonify({"error": "账号数量已达上限，请联系管理员"}), 403
-            # 单账号限制：已有未删除提交（含待审核/已生效）则拒绝；待删除（管理员已删）不占名额
-            email = session.get("username", "").lower()
-            has_live = any(a.get("owner") == email and not a.get("deleted") for a in accounts)
             if has_live:
                 return jsonify({"error": "每个用户只能提交一个账号，可编辑或删除后重新提交"}), 400
             if find_account_index(accounts, clean["phone"]) is not None:
@@ -6529,15 +6524,18 @@ def create_app(host=None):
         env = read_env(ENV_FILE)
         mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
         sw = _sign_window()
-        # 容量口径（2026-08-31 修订，与配额检查同源 _capacity_stats）：
-        #   用户 = 全部未删除注册用户（含尚未添加账号的空用户）
-        #   账号 = 至少持有 1 个非删除账号的活跃注册用户（admin 直属裸账号不计入）
-        _cap_users, _cap_accounts = _capacity_stats()
-        # 启动延迟字段仅保持旧前端/脚本兼容（容量公式已不参与，启动延迟 v0.29.1 废弃）；
+        # 容量口径（2026-09-08 修订，与配额检查同源 _active_account_count）：
+        #   用户 = 全部未删除注册用户（含尚未添加账号的空用户，仅注册名额口径）
+        #   账号 = 全部非删除活跃账号（含 admin 直属裸账号——同样参与签到占负载）
+        _cap_users = len(db.load_users())
+        _cur_accounts = _active_account_count()
+        # 潜在负载：已注册未提交人数（注册用户中尚无任何非删除账号者）
+        _owners = {a.get("owner") for a in load_accounts() if not a["deleted"] and a.get("owner")}
+        _potential = sum(1 for u in db.load_users() if u["email"] not in _owners)
         # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
         _est_start = load_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
         _est_gap = load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", DEFAULT_ACCOUNT_GAP_MAX)
-        _est_accounts, _est_users = _capacity_estimate(_est_gap)
+        _est_accounts = _capacity_estimate(_est_gap)
         return jsonify(
             {
                 "ok": True,
@@ -6545,13 +6543,12 @@ def create_app(host=None):
                 "gap_max": _est_gap,
                 "default_start_delay_max": DEFAULT_START_DELAY_MAX,
                 "default_gap_max": DEFAULT_ACCOUNT_GAP_MAX,
-                # 容量预估（v0.29.1 口径）：账号=完整间隔口径、用户=间隔一半口径
-                # （启动延迟已废弃不参与）；前端 >80% 标红；保存延迟时超容量会被拒绝
+                # 容量预估（2026-09-08 单档口径）：签到容量按当前账号间隔与有效窗口
+                # （已扣掐头去尾）估算；前端已用（或含潜在负载）超容量仅警示变色
                 "capacity_estimate": {
                     "accounts_cap": _est_accounts,
-                    "users_cap": _est_users,
-                    "current_users": _cap_users,
-                    "current_holders": _cap_accounts,
+                    "current_accounts": _cur_accounts,
+                    "potential_load": _potential,
                 },
                 # 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
                 "sign_mode": mode or "sequence",
@@ -6570,7 +6567,7 @@ def create_app(host=None):
                 "capacity": {
                     "users": _cap_users,
                     "users_max": load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS),
-                    "accounts": _cap_accounts,
+                    "accounts": _cur_accounts,
                     "accounts_max": load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS),
                 },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
@@ -6606,7 +6603,7 @@ def create_app(host=None):
                                 "edge_front_sec", "edge_back_sec",
                                 "allow_time_pref", "sign_window", "sign_mode",
                                 "global_pause", "start_delay_max", "gap_max",
-                                "registration_pause")
+                                "registration_pause", "max_users", "max_accounts")
         ):
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         # 字段携带才写——原实现缺省即 0 且无条件写两个键，
@@ -6622,19 +6619,21 @@ def create_app(host=None):
         start = min(max(start, 0), 3600)
         gap = min(max(gap, 0), 3600)
         # v0.29.0：随机延迟影响自动+手动签到节奏，修改需主管理员密码二次确认，
-        # 且新设置预估容量不足（当前用户/持有者超过预估值）时拒绝保存。
+        # 且新设置预估容量不足（当前活跃账号超过预估值）时拒绝保存。
         if has_start or has_gap:
             # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
             denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改签到随机延迟")
             if denied is not None:
                 return denied
-            # v0.29.1：容量预估只看账号间隔（启动延迟已废弃不参与）
-            est_accounts, est_users = _capacity_estimate(gap)
-            cur_users, cur_holders = _capacity_stats()
-            if cur_users > est_users or cur_holders > est_accounts:
+            # 2026-09-08 单门：容量口径收敛为活跃账号数（账号容量约束易班请求负载），
+            # 注册用户多但活跃账号少不构成负载；存量站点瞬间显示超限仅警示，
+            # 仅此处保存延迟时保留既有硬门
+            est_accounts = _capacity_estimate(gap)
+            cur_accounts = _active_account_count()
+            if cur_accounts > est_accounts:
                 return jsonify({
-                    "error": f"容量已满请清理用户数量后再试（按新设置预估可容纳用户 {est_users} 人、"
-                             f"账号 {est_accounts} 个；当前用户 {cur_users} 人、活跃持有者 {cur_holders} 人）"
+                    "error": f"按新设置预估账号容量仅 {est_accounts} 个，当前活跃账号 {cur_accounts} 个，"
+                             "保存被拒绝。请缩短账号间隔、延长签到窗口或清理不用的账号后再试"
                 }), 400
         # 安全审查 2026-08：先全量校验、再统一写入——此前边校验边写，
         # 后续字段非法返回 400 时前面的字段已落盘（"报错但设置变了"的部分写入）。
@@ -6740,6 +6739,22 @@ def create_app(host=None):
                 if n <= 0:
                     return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
                 probe_interval = str(n)
+        # 容量上限（2026-09-08 新增，主管理员专属；0=不限，钳位 0~100000）：
+        # 字段携带才写——部分更新不得把未携带的 max_* 静默清零
+        max_users_val = max_accounts_val = None
+        for _key, _label in (("max_users", "用户容量上限"), ("max_accounts", "账号容量上限")):
+            if _key not in data:
+                continue
+            try:
+                v = int(data[_key])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{_label}必须是整数"}), 400
+            if not (0 <= v <= 100000):
+                return jsonify({"error": f"{_label}应为 0~100000（0=不限）"}), 400
+            if _key == "max_users":
+                max_users_val = v
+            else:
+                max_accounts_val = v
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
         # 仅请求携带的字段才写入（缺失不重置）
         updates = {}
@@ -6785,6 +6800,11 @@ def create_app(host=None):
             updates["YIBAN_PROBE_TIME"] = probe_time
         if probe_interval is not None:
             updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
+        if max_users_val is not None:
+            # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
+            updates["YIBAN_MAX_USERS"] = str(max_users_val)
+        if max_accounts_val is not None:
+            updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
         write_env_batch(ENV_FILE, updates)
         sunday_display = "不变" if sunday_sign is None else sunday_sign
         saturday_display = "不变" if saturday_sign is None else saturday_sign
@@ -6799,14 +6819,18 @@ def create_app(host=None):
         # 批量多选为前端会话级开关，不写入配置
         probe_display = "不变" if (probe_enable is None and probe_time is None and probe_interval is None) else \
             f"启={'1' if probe_enable else '0'}/时={probe_time or '-'}/频={probe_interval or '-'}"
+        cap_limits_display = (
+            f"用户={'不变' if max_users_val is None else max_users_val}"
+            f"/账号={'不变' if max_accounts_val is None else max_accounts_val}"
+        )
         logger.info(
-            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s",
+            "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 容量上限=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
             edge_display, pref_raw if pref_raw is not None else "不变",
             win or "不变", sunday_display, saturday_display, pause_display,
             reg_pause_display,
             "不变" if account_verify is None else ("开" if account_verify else "关"),
-            probe_display,
+            probe_display, cap_limits_display,
         )
         # 设置变更审计（2026-08-16 补 P8：此前调度/系统设置保存无留痕，与其他管理操作不一致）
         db.audit(
@@ -6819,7 +6843,7 @@ def create_app(host=None):
             f"周六={saturday_display} "
             f"全局暂停={pause_display} 注册={reg_pause_display} "
             f"账号验证={'开' if account_verify else '关'} "
-            f"探针={probe_display}",
+            f"探针={probe_display} 容量上限={cap_limits_display}",
         )
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
