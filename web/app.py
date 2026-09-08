@@ -1877,7 +1877,9 @@ def _alert_channel_status():
     """
     status = {
         "mail_flag_on": False,      # YIBAN_MAIL_ENABLE 开关本身
-        "mail_usable": False,       # mailer.is_enabled()：开关 + SMTP 发信条目列表非空
+        "mail_usable": False,       # mailer.is_enabled()：开关 + SMTP 发信条目真正可用
+        "mail_state": "",           # mailer.smtp_channel_state()：ok/broken/off 三态
+        "mail_state_detail": "",    # broken 时的具体病因（供日报点名，不必翻日志）
         "mail_self_notify": True,   # 主管理员个人接收（YIBAN_MAIL_ADMIN_NOTIFY）
         "mail_recipients": 0,       # 实际可送达收件人（为空 == 邮件这路等于不存在）
         "mail_user": "",
@@ -1907,6 +1909,11 @@ def _alert_channel_status():
         # mailer._send 就静默跳过、一封都不发。只看 enable 真值会把"开了但发不出去"
         # 误报成"一切正常"（修复轮 1 评审 ①）。
         status["mail_usable"] = bool(mailer.is_enabled())
+        # 三态与病因同行取出（两次调用会重复解密一次）：broken 时日报按
+        # "已开启但不可用 + 具体病因"展示——密文解不开与未配置条目是两种不同处置
+        mail_state, mail_state_detail = mailer.smtp_channel_state()
+        status["mail_state"] = mail_state
+        status["mail_state_detail"] = mail_state_detail
         status["mail_self_notify"] = bool(mcfg.get("admin_notify", True))
         status["mail_user"] = mcfg.get("user", "") or "-"
         status["mail_admin_to"] = mcfg.get("admin_to", "") or "-"
@@ -2007,10 +2014,11 @@ def _channel_status_lines(status=None):
             f"{st['mail_recipients']} 人）"
         )
     elif st["mail_flag_on"]:
+        # 三态 broken（开关开但发不出去）：把具体病因（未配置条目 / 条目缺账号
+        # 授权码 / 密文解不开）带到日报行，运维不必翻日志就能区分处置
         lines.append(
-            "邮件通道：⚠ 已开启但不可用（YIBAN_MAIL_ENABLE=1，但没有可用的 SMTP 发信条目，"
-            "全部告警邮件实际一封都不会发出，请在设置页补齐 SMTP 列表或旧键 "
-            "YIBAN_MAIL_USER / YIBAN_MAIL_PASS）"
+            f"邮件通道：⚠ 已开启但不可用（{st['mail_state_detail']}），"
+            "需处理：全部告警邮件实际一封都不会发出"
         )
     else:
         lines.append("邮件通道：⚠ 已关闭（YIBAN_MAIL_ENABLE=0，全部告警邮件不发送）")
@@ -3735,10 +3743,29 @@ def create_app(host=None):
             gate = _high_risk_gate(data, label)
             if gate:
                 return gate
-        # （先告警后落盘）：本告警必须在 write_env_batch **之前**发出，
-        # 并带 force=True——若先落盘，额度/节流即按新值生效（如 YIBAN_MAIL_ENABLE=0
-        # 或 ADMIN_NOTIFY=0 刚写进去），随后这条"通道被人动了"的告警会被自己刚写入的
-        # 参数吞掉（致盲零外发）；此刻配置仍为旧值，force 又绕过两侧节流，确保必达。
+        # 加密排在口令确认之后（同 notify-config 评审 ③：失败请求零写盘痕迹）
+        smtps_enc = None
+        if smtps_list is not None:
+            try:
+                enc = account_crypto.encrypt_text(
+                    json.dumps(smtps_list, ensure_ascii=False),
+                    account_crypto.load_key(ENV_FILE),
+                )
+            except ValueError as e:
+                return jsonify({"error": f"加密失败：{e}"}), 500
+            smtps_enc = json.dumps(enc, ensure_ascii=False)
+        # 密文与开关合成**一次** write_env_batch 落盘（安全审查 2026-09-08）：
+        # 原先 write_env_key 写密文 + write_env_batch 写开关两次独立写，中间崩溃
+        # 会留下"密文新/开关旧"的中间态。write_env_key 单键形态本就是本函数的
+        # 一半，此处不再经由它。
+        updates = {k: ("1" if v else "0") for k, v in flags.items()}
+        if smtps_enc is not None:
+            updates["YIBAN_MAIL_SMTPS_ENC"] = smtps_enc
+        write_env_batch(ENV_FILE, updates)
+        # 变更告警在写入**成功之后**发出。原先放在落盘之前，理由是"若先落盘，
+        # 额度/节流即按新值生效，这条'通道被人动了'的告警会被自己刚写入的参数
+        # 吞掉"——但 force=True 本就绕过两侧节流，该担忧不成立；先发反而让
+        # 加密/写盘失败（500）时运营者已收到一条描述从未生效变更的通知。
         # urgent=True——设置页开着「仅推送重要告警」时非紧急通知不推手机。
         if flags:
             send_notification(
@@ -3750,7 +3777,6 @@ def create_app(host=None):
                 force=True,
             )
         if smtps_list is not None:
-            # 先告警后落盘（同口径，force 绕过节流确保必达）：
             # SMTP 发信条目是告警邮件的送达路径，被人改动必须让管理员知情
             send_notification(
                 "邮件 SMTP 配置变更告警",
@@ -3760,16 +3786,6 @@ def create_app(host=None):
                 urgent=True,
                 force=True,
             )
-            # 加密排在口令确认之后（同 notify-config 评审 ③：失败请求零写盘痕迹）
-            try:
-                enc = account_crypto.encrypt_text(
-                    json.dumps(smtps_list, ensure_ascii=False),
-                    account_crypto.load_key(ENV_FILE),
-                )
-            except ValueError as e:
-                return jsonify({"error": f"加密失败：{e}"}), 500
-            write_env_key(ENV_FILE, "YIBAN_MAIL_SMTPS_ENC", json.dumps(enc, ensure_ascii=False))
-        write_env_batch(ENV_FILE, {k: ("1" if v else "0") for k, v in flags.items()})
         detail = {
             "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
             for k, v in flags.items()
