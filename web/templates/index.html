@@ -545,14 +545,32 @@
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">概览</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>容量预估：</b>按签到窗口与账号间隔估算还能容纳多少账号/用户（账号按完整间隔、用户按间隔一半两档口径）；占用超 80% 标红，超容量后保存新的账号间隔会被拒绝，需清理账号数量或调大间隔</span>
+          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>签到容量：</b>按有效签到窗口（扣除掐头去尾）与账号间隔估算可容纳的活跃账号数；已用（或含潜在负载）超容量仅标红警示，不阻断操作；保存更大的账号间隔时若现有活跃账号超过预估容量会被拒绝<b>容量上限：</b>仅主管理员可设——0=不限；调小不删人，只限制新增；两个上限分别管归属注册（用户）与账号存量（账号，含主管理员直属裸账号）</span>
         </button>
       </div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
       <div class="text-sm mt-2" id="sign-status">…</div>
       <div class="text-xs text-zinc-500 dark:text-zinc-400 mt-3">签到窗口：<span id="sign-window-static" class="font-mono">--:-- ~ --:--</span>（周六/周日是否签到见「签到调度」卡内的「周末签到」设置）</div>
-      <!-- 容量预估两格（v0.29.0，原独立卡并入）：账号按完整间隔、用户按间隔一半；超 80% 标红 -->
-      <div id="capacity-content" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm mt-3"></div>
+      <!-- 容量统计（2026-09-08 单档口径）：签到容量 vs 活跃账号已用；超限仅警示变色 -->
+      <div id="capacity-content" class="text-sm mt-3"></div>
+      <!-- 容量上限（2026-09-08，主管理员专属；0=不限，调小不删人只限制新增）：
+           用户上限管归属注册、账号上限管账号存量（含裸账号） -->
+      <div id="capacity-limits" class="hidden mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+        <div>
+          <label for="max-users-input" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1 font-semibold">用户容量上限（注册人数）</label>
+          <input id="max-users-input" type="number" min="0" max="100000" step="1" placeholder="0=不限" onchange="saveSettings(true)"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2"
+                 style="font-size:0.92em">
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">管归属注册名额；调小不删存量用户</p>
+        </div>
+        <div>
+          <label for="max-accounts-input" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1 font-semibold">账号容量上限（活跃账号）</label>
+          <input id="max-accounts-input" type="number" min="0" max="100000" step="1" placeholder="0=不限" onchange="saveSettings(true)"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2"
+                 style="font-size:0.92em">
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">管账号存量（含主管理员直属裸账号）；调小不删存量账号</p>
+        </div>
+      </div>
     </div>
 
     <!-- 批量操作开关 -->
@@ -1271,6 +1289,8 @@ const state = {
   editingIndex: null, // null=添加
   editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
   delays: { gap: 0 }, // 账号间隔（秒，0=关闭；启动延迟 v0.29.1 废弃已删）
+  maxUsers: 0,        // 用户容量上限现值（GET /api/settings capacity.users_max；0=不限）
+  maxAccounts: 0,     // 账号容量上限现值（capacity.accounts_max；0=不限）
   mailSmtps: [],      // SMTP 发信条目列表（GET /api/mail-config 的 smtps；主管理员编辑器数据源）
   batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
   signOrder: 'sequence', // 调度 v2：排序方式（sequence/random）
@@ -2299,25 +2319,21 @@ async function doSignin(phone) {
 }
 
 // ================= 系统设置 =================
+// 容量统计（2026-09-08 单档口径）：签到容量 = 按有效窗口（已扣掐头去尾）与当前
+// 账号间隔估算的可容纳活跃账号数；已用（或含潜在负载）超容量仅警示变色，不阻断操作
 function renderCapacity(est) {
   const box = $('capacity-content');
   if (!box) return;
   if (!est) { box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500 px-1 py-2">暂无预估数据</div>'; return; }
-  const pct = (cur, cap) => (cap > 0 ? Math.min(999, Math.round(cur / cap * 100)) : (cur > 0 ? 999 : 0));
-  const hot = (cur, cap) => cur > cap || pct(cur, cap) > 80;
-  const cell = (label, cur, cap, unit) => {
-    const danger = hot(cur, cap);
-    const border = danger ? 'border-red-300 dark:border-red-800' : 'border-zinc-200 dark:border-zinc-700';
-    const bg = danger ? 'bg-red-50 dark:bg-red-900/10' : '';
-    const text = danger ? 'text-red-600 dark:text-red-400' : 'text-zinc-900 dark:text-zinc-100';
-    return `<div class="rounded-lg border ${border} ${bg} p-3">
-      <div class="text-xs text-zinc-500 dark:text-zinc-400">${label}</div>
-      <div class="mt-1 font-semibold ${text}">当前 ${cur} <span class="text-xs font-normal text-zinc-500 dark:text-zinc-400">/ 预估可容纳 ${cap} ${unit}</span></div>
-      <div class="text-xs ${danger ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">占用 ${pct(cur, cap)}%${cur > cap ? '（已超容量：保存新的账号间隔将被拒绝，请清理账号或用户数量后再试）' : (pct(cur, cap) > 80 ? '（已超 80%，容量告急）' : '')}</div>
-    </div>`;
-  };
-  box.innerHTML = cell('账号容量（按完整间隔估算）', est.current_holders, est.accounts_cap, '个')
-    + cell('用户容量（按间隔一半估算）', est.current_users, est.users_cap, '人');
+  const cur = est.current_accounts || 0, cap = est.accounts_cap || 0, load = est.potential_load || 0;
+  const over = cap > 0 && (cur > cap || cur + load > cap);
+  const border = over ? 'border-red-300 dark:border-red-800' : 'border-zinc-200 dark:border-zinc-700';
+  const text = over ? 'text-red-600 dark:text-red-400' : 'text-zinc-900 dark:text-zinc-100';
+  box.innerHTML = `<div class="rounded-lg border ${border} ${over ? 'bg-red-50 dark:bg-red-900/10' : ''} p-3">
+    <div class="text-xs text-zinc-500 dark:text-zinc-400">签到容量（按当前账号间隔估算）</div>
+    <div class="mt-1 font-semibold ${text}">已用 ${cur} <span class="text-xs font-normal text-zinc-500 dark:text-zinc-400">/ 容量 ${cap} 个</span></div>
+    <div class="text-xs ${over ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">另有 ${load} 人已注册未提交（潜在负载）${over ? '；已超容量：保存更大的账号间隔将被拒绝' : ''}</div>
+  </div>`;
 }
 
 async function loadSettings() {
@@ -2330,6 +2346,15 @@ async function loadSettings() {
     const data = await api('/api/settings');
     state.delays.gap = data.gap_max;
     renderCapacity(data.capacity_estimate);
+    // 容量上限（2026-09-08，主管理员专属控件；现值随 capacity 区块下发）
+    const capLimits = $('capacity-limits');
+    if (capLimits) {
+      capLimits.classList.toggle('hidden', !state.isMasterAdmin);
+      state.maxUsers = data.capacity?.users_max ?? 0;
+      state.maxAccounts = data.capacity?.accounts_max ?? 0;
+      $('max-users-input').value = state.maxUsers;
+      $('max-accounts-input').value = state.maxAccounts;
+    }
     // 调度 v2：排序×分布×缓冲×自选总开关×窗口
     state.signOrder = data.sign_order || 'sequence';
     state.signDist = data.sign_dist || 'uniform';
@@ -2665,8 +2690,9 @@ function initFullTables() {
 }
 
 async function saveSettings(silent) {
-  // 周末开关所有管理员可改；账号间隔属调度核心参数（收归主管理员），仅主管理员
-  // 在间隔变化时携带 gap 键——后端「见键即要求主管理员密码确认 + 容量校验」，不带键则不改间隔
+  // 周末开关所有管理员可改；账号间隔与容量上限属主管理员专属参数，仅主管理员
+  // 在变更时携带对应键——后端「见键即要求主管理员密码确认」（容量上限还并入
+  // 403 字段清单），不带键则不修改
   const payload = {
     // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
     // 静默覆盖 .env 中既有的 YIBAN_SIGN_MODE，且权限上仅主管理员可写
@@ -2676,26 +2702,43 @@ async function saveSettings(silent) {
   const gapRaw = parseInt($('gap-delay-secs').value, 10);
   const gapV = isNaN(gapRaw) || gapRaw < 0 ? state.delays.gap : gapRaw;  // 空/非法 = 沿用现值；0=关闭
   const gapChanged = state.isMasterAdmin && gapV !== state.delays.gap;
+  // 容量上限（2026-09-08）：仅主管理员可见可改；非法/空输入沿用现值
+  const capVal = (id, cur) => {
+    const v = parseInt($(id)?.value, 10);
+    return isNaN(v) || v < 0 ? cur : v;
+  };
+  const maxUserV = capVal('max-users-input', state.maxUsers);
+  const maxAccV = capVal('max-accounts-input', state.maxAccounts);
+  const maxUserChanged = state.isMasterAdmin && maxUserV !== state.maxUsers;
+  const maxAccChanged = state.isMasterAdmin && maxAccV !== state.maxAccounts;
   try {
     let data;
-    if (gapChanged) {
+    if (gapChanged || maxUserChanged || maxAccChanged) {
       data = await new Promise((resolve, reject) => {
-        openConfirmPasswordModal('调整账号间隔：不合适的节奏可能影响签到成功率，是否继续？\n请输入当前主管理员密码确认。', async (cpw) => {
+        openConfirmPasswordModal('调整签到节奏/容量上限：不合适的设置可能影响签到成功率，是否继续？\n请输入当前主管理员密码确认。', async (cpw) => {
           try {
-            payload.gap_max = gapV;
+            if (gapChanged) payload.gap_max = gapV;
+            if (maxUserChanged) payload.max_users = maxUserV;
+            if (maxAccChanged) payload.max_accounts = maxAccV;
             payload.confirm_password = cpw;
             resolve(await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) }));
           } catch (err) { reject(err); }
         });
       });
     } else {
-      // 未变更不带 gap 键（避免无谓触发后端口令/容量校验路径）
+      // 未变更不带 gap/max_* 键（避免无谓触发后端口令/容量校验路径）
       data = await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
     }
     state.delays.gap = gapV;
     $('gap-delay-secs').value = gapV;
-    if (gapChanged) {
-      // POST 返回体不含容量预估：间隔变化后补拉一次，概览卡两格保持新鲜
+    if (maxUserChanged || maxAccChanged) {
+      state.maxUsers = maxUserV;
+      state.maxAccounts = maxAccV;
+      $('max-users-input').value = maxUserV;
+      $('max-accounts-input').value = maxAccV;
+    }
+    if (gapChanged || maxUserChanged || maxAccChanged) {
+      // POST 返回体不含容量预估：间隔/上限变化后补拉一次，概览卡容量统计保持新鲜
       const fresh = await api('/api/settings');
       renderCapacity(fresh.capacity_estimate);
     }
