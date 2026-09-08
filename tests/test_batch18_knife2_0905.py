@@ -483,10 +483,11 @@ class Batch18Knife2SummaryMailTest(unittest.TestCase):
         self.assertEqual(signin._mail_summary, [])
 
     def test_m7_empty_recipients_logs_warning_and_skips_mail(self):
-        """收件人集为空：显式 warning 留痕、不调 mailer、不走 webhook、清空收集器。"""
+        """收件人集为空且推送未配置：显式 warning 留痕、不调 mailer、不走 webhook、清空收集器。"""
         signin._collect_admin_mail("当日签到异常告警", "零成功且窗口外")
         with mock.patch.object(signin.db, "admin_mail_recipients", return_value=[]), \
              mock.patch.object(signin.mailer, "send_admin_alert") as m_mail, \
+             mock.patch.object(signin.notify, "is_configured", return_value=False), \
              mock.patch.object(signin.notify, "send") as m_notify, \
              self.assertLogs("yiban", level="WARNING") as logs:
             signin._flush_admin_mail_summary()
