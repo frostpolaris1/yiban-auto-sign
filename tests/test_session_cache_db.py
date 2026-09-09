@@ -110,7 +110,7 @@ class SessionCacheDbTest(_SessionCacheFixture):
 
     def test_fresh_db_reaches_v8_with_session_cache_table(self):
         conn = db.init_db(self.db_file, env_file=self.env_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 12)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
         cols = {
             r["name"]
             for r in conn.execute("PRAGMA table_info(session_cache)").fetchall()
@@ -282,7 +282,7 @@ class SessionCacheDbTest(_SessionCacheFixture):
 
         conn = db.init_db(self.db_file, env_file=self.env_file)
         self.assertEqual(
-            conn.execute("PRAGMA user_version").fetchone()[0], 12,
+            conn.execute("PRAGMA user_version").fetchone()[0], 13,
             "v7 旧库重启后应升级到最新版本",
         )
         # v8 表立即可用

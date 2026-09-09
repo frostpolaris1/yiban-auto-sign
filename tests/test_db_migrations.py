@@ -137,7 +137,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_production_like_db()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 12)
+        self.assertEqual(version, 13)
         users_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         self.assertIn("deleted", users_cols)
         self.assertIn("deleted_at", users_cols)
@@ -156,7 +156,7 @@ class DbMigrationTest(unittest.TestCase):
     def test_new_db_gets_latest_version(self):
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 12)
+        self.assertEqual(version, 13)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -164,7 +164,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_accounts_table()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 12)
+        self.assertEqual(version, 13)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -180,7 +180,7 @@ class DbMigrationTest(unittest.TestCase):
             db._conn = None
         conn2 = db.init_db(self.db_file)
         version = conn2.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 12)
+        self.assertEqual(version, 13)
 
     def test_v12_repairs_missing_app_meta(self):
         """v12：修复历史部署缺 app_meta 表（2026-08-29 线上问题）。
@@ -198,7 +198,7 @@ class DbMigrationTest(unittest.TestCase):
             db._conn = None
         conn = db.init_db(self.db_file)
         self.assertEqual(
-            conn.execute("PRAGMA user_version").fetchone()[0], 12,
+            conn.execute("PRAGMA user_version").fetchone()[0], 13,
             "缺 app_meta 的旧库重启后应经 v12 补建并升到最新版本",
         )
         row = conn.execute(
@@ -211,6 +211,75 @@ class DbMigrationTest(unittest.TestCase):
         self.assertEqual(
             conn.execute("SELECT value FROM app_meta WHERE key='k'").fetchone()[0], "v"
         )
+
+    def test_v13_fixes_malformed_column_declarations(self):
+        """v13：修复 `col col TYPE` 畸形声明（2026-09-09 生产巡检发现）。
+
+        构造历史形态（列名被重复写进类型声明）+ 版本回拨到 12，再 init 应重建
+        表：声明恢复正常、数据与索引保留、AUTOINCREMENT 计数不重置。
+        """
+        conn = db.init_db(self.db_file)
+        conn.execute(
+            "CREATE TABLE legacy_bad ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "name TEXT NOT NULL DEFAULT '', "
+            "flag flag INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX idx_legacy_bad_name ON legacy_bad(name)")
+        conn.execute("INSERT INTO legacy_bad (name, flag) VALUES ('a', 1)")
+        conn.execute("PRAGMA user_version = 12")
+        conn.commit()
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+
+        conn = db.init_db(self.db_file)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
+        decls = {r["name"]: r["type"] for r in conn.execute("PRAGMA table_info(legacy_bad)")}
+        self.assertEqual(decls.get("flag"), "INTEGER", "畸形声明应恢复为纯类型")
+        # 数据与索引保留
+        row = conn.execute("SELECT name, flag FROM legacy_bad").fetchone()
+        self.assertEqual((row["name"], row["flag"]), ("a", 1))
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_legacy_bad_name'"
+        ).fetchone()
+        self.assertIsNotNone(idx, "v13 重建后索引必须原样重建")
+        # AUTOINCREMENT 计数不重置（否则新行会撞已删除的 id）
+        conn.execute("INSERT INTO legacy_bad (name) VALUES ('b')")
+        conn.commit()
+        self.assertEqual(
+            conn.execute("SELECT id FROM legacy_bad WHERE name='b'").fetchone()[0], 2)
+
+    def test_v13_idempotent_when_schema_clean(self):
+        """已修好的库再 init 不重复重建（无畸形表时空操作）。"""
+        conn = db.init_db(self.db_file)
+        before = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+        conn.execute("PRAGMA user_version = 12")
+        conn.commit()
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        conn = db.init_db(self.db_file)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
+        after = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+        self.assertEqual(before, after, "无畸形表时不应多出残留临时表")
+        self.assertEqual(
+            conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%__v13'"
+            ).fetchone()[0], 0)
+
+    def test_ensure_column_rejects_duplicated_name(self):
+        """防复发：_ensure_column 的 type_decl 不得再重复列名。"""
+        conn = db.init_db(self.db_file)
+        with self.assertRaises(ValueError):
+            db._ensure_column(conn, "accounts", "zzz_test", "zzz_test TEXT NOT NULL DEFAULT ''")
 
     def test_core_migration_failure_blocks_and_cleans_conn(self):
         def failing_migration(conn):
