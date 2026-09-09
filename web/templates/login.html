@@ -6,6 +6,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>登录 · 易班自动签到管理</title>
+<!-- 分享/搜索摘要（2026-09-09）：此前全站只有标题，分享出去的链接卡片没有简介文字。
+     文案取自 README 项目介绍，可用 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。 -->
+<meta name="description" content="{{ site_description }}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="易班自动签到">
+<meta property="og:title" content="易班自动签到 · 网页管理">
+<meta property="og:description" content="{{ site_description }}">
+{% if site_image %}<meta property="og:image" content="{{ site_image }}">{% endif %}
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="易班自动签到 · 网页管理">
+<meta name="twitter:description" content="{{ site_description }}">
 <script>
   // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
   try { if (localStorage.getItem('yiban-theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}

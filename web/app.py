@@ -190,10 +190,11 @@ def _read_doc_html(filename):
         return "<p>文档暂时无法加载，请联系运营者。</p>"
 
 
-def _doc_page(title, body_html, icp_text="", police_text="", base_path="", police_link="https://beian.mps.gov.cn/"):
+def _doc_page(title, body_html, icp_text="", police_text="", base_path="", police_link="https://beian.mps.gov.cn/", description=""):
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
     由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。
+    description：分享/搜索摘要（留空取 site_description() 默认文案）。
 
     （反射型 XSS 防护）：base_path 来自 request.script_root——攻击者可构造
     形如 /x"><script>…/privacy 的任意前缀路径，未转义时脚本原样落进 href 与正文；
@@ -205,6 +206,8 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
     icp_text = html.escape(str(icp_text), quote=True)
     police_text = html.escape(str(police_text), quote=True)
     police_link = html.escape(str(police_link), quote=True)
+    # 摘要同样来自 .env（可配置），与上面四项同口径转义后才进 content 属性
+    desc_attr = html.escape(str(description or site_description()), quote=True)
     icp_block = f'<p class="doc-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">{icp_text}</a></p>' if icp_text else ""
     police_block = f'<p class="doc-icp"><a href="{police_link}" target="_blank" rel="noopener"><img src="/gongan-beian.png" alt="" width="12" height="14" style="vertical-align:-2px;margin-right:4px"> {police_text}</a></p>' if police_text else ""
     return f"""<!doctype html>
@@ -213,6 +216,9 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} - 易班自动签到</title>
+<meta name="description" content="{desc_attr}">
+<meta property="og:title" content="{title} - 易班自动签到">
+<meta property="og:description" content="{desc_attr}">
 <style>
   /* 协议/隐私文档页（Tailwind 默认配色；卡片容器与圆角为结构优化，随图标/圆角体系保留） */
   /* 正文原版字体栈；标题不使用专属字体（2026-08-22 性能回退，与 web/templates 一致） */
@@ -899,6 +905,33 @@ def police_link():
     if link and link.lower().startswith(_SAFE_LINK_SCHEMES):
         return link
     return "https://beian.mps.gov.cn/"
+
+
+# 站点简介默认文案（分享预览用；措辞取自 README 项目介绍，勿写成营销语）。
+# 部署方可经 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。
+SITE_DESCRIPTION_DEFAULT = (
+    "易班自动签到辅助工具：配置一次后每天定时自动完成易班早操签到，"
+    "无需手动操作；提供网页管理后台，支持多账号管理、失败重试与告警通知。"
+)
+
+
+def site_description():
+    """站点简介（分享预览/搜索引擎摘要用）：.env 的 YIBAN_SITE_DESCRIPTION 优先。
+
+    2026-09-09：此前全站无 meta description 与 og:* 标签，分享链接解析出的
+    卡片只有标题、没有摘要。本值经 Jinja autoescape 进 content 属性，无注入面。
+    """
+    return read_env(ENV_FILE).get("YIBAN_SITE_DESCRIPTION", "").strip() or SITE_DESCRIPTION_DEFAULT
+
+
+def site_image():
+    """分享预览配图绝对地址（可选）：.env 的 YIBAN_SITE_IMAGE，留空不输出 og:image。
+
+    必须为绝对 https 地址（分享抓取方无法解析相对路径）；不在 https 白名单
+    一律忽略——该值进公开页 meta content，配置 javascript:/data: 无意义且有害。
+    """
+    url = read_env(ENV_FILE).get("YIBAN_SITE_IMAGE", "").strip()
+    return url if url.lower().startswith("https://") else ""
 
 
 # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度）：
@@ -2400,6 +2433,8 @@ def _notify_capacity_once(kind, limit, label):
 # write_env 安全校验单源化、删除未引用字体切片（0.29.0）
 # 2026-09-08 安全加固：.env 行边界判定单源化+提权链封堵、告警通道实际可用性判定、
 # 日志导出脱敏副本+审计限速、审计链锚点进健康日报、容量口径单档化（0.29.1）
+# 2026-09-09 告警收件人网页可编辑（admin_to 写路径+旧收件人变更通知）、
+# 站点分享摘要 meta/og、表单占位字号统一（0.29.1 内并入）
 APP_VERSION = "0.29.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -2900,6 +2935,8 @@ def create_app(host=None):
             icp_info=icp_info(),
             police_info=police_info(),
             police_link=police_link(),
+            site_description=site_description(),
+            site_image=site_image(),
             agreement_html=_read_doc_html("USER_AGREEMENT.md"),
             privacy_html=_read_doc_html("PRIVACY_POLICY.md"),
         )
@@ -3728,6 +3765,13 @@ def create_app(host=None):
 
         支持：enabled（全局 YIBAN_MAIL_ENABLE）/ admin_notify（主管理员个人
         接收 YIBAN_MAIL_ADMIN_NOTIFY）。两者可单独或同时提交，均为 bool。
+        admin_to（2026-09-09）：告警收件人（顶层 YIBAN_MAIL_ADMIN_TO，逗号
+        分隔多地址）——A 线告警收件算法的唯一来源（见 mailer.admin_recipients
+        / db.admin_mail_recipients），此前只有只读展示、无写入入口，改收件人
+        须登服务器改 .env。**键存在即以提交值为准**：空串 = 显式清空（删键）、
+        键缺失 = 不改动；前端输入框留空不提交（GET 已打码、不回显完整地址，
+        避免误清），清空走单独的「清空」按钮。不再需要收 ADMIN_TO 时优先用
+        同卡「接收发给我自己的邮件提醒」开关，那只是停止本人接收、不影响其他管理员。
         smtps（v0.29.1）：SMTP 发信条目列表（主备 failover），每条
         {host, port=465, user, pass}；pass 留空且该索引旧条目已有
         授权码 → 保留旧 pass（不改授权码时无需重输），user 留空同理按索引
@@ -3741,8 +3785,9 @@ def create_app(host=None):
         统一走 _high_risk_gate()（二次鉴权 + 复用同一份高危限速计数；修复轮 1 起
         顺序为"先验口令，通过了才占用额度"）；
         纯开启、以及不带开关的改动不要求口令（不得给正常成功路径加摩擦）。
-        smtps 变更与开关关闭是两套并存的高危门禁（不合并）：smtps 单独走
-        _reconfirm_admin_password（"修改邮件 SMTP 配置"），不占高危限速额度。
+        smtps/admin_to 变更与开关关闭是两套并存的高危门禁（不合并）：两者
+        同属"改告警送达路径"，共用一次 _reconfirm_admin_password，不占高危
+        限速额度；同时提交时只验一次口令。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可操作"}), 403
@@ -3758,6 +3803,24 @@ def create_app(host=None):
             if not isinstance(v, bool):
                 return jsonify({"error": "取值无效"}), 400
             flags[env_key] = v
+        # ---- 告警收件人（admin_to）：校验通过后才做口令二次确认 ----
+        # 键存在 = 本次以提交值为准（空串 = 显式清空）；键缺失 = 不改动。
+        # 前端输入框留空按"不改动"处理（不回显完整地址，避免误清），清空走单独按钮。
+        admin_to_val = None
+        if "admin_to" in data:
+            raw_to = str(data.get("admin_to") or "").strip()
+            if raw_to:
+                # 逗号分隔多地址：逐条校验格式与长度（EMAIL_RE 与注册同源，
+                # 上限 64 与 users.email 列口径一致），任一非法即整请求拒绝
+                addrs = [a.strip() for a in raw_to.split(",") if a.strip()]
+                if not addrs:
+                    return jsonify({"error": "告警收件人格式无效"}), 400
+                for a in addrs:
+                    if not EMAIL_RE.match(a) or len(a) > 64:
+                        return jsonify({"error": f"告警收件人格式无效：{a[:32]}"}), 400
+                admin_to_val = ",".join(addrs)
+            else:
+                admin_to_val = ""  # 显式清空（write_env_batch 空值 = 删键）
         # ---- SMTP 发信条目列表（smtps）：全量校验通过后才做口令二次确认 ----
         smtps_list = None
         if "smtps" in data:
@@ -3796,12 +3859,15 @@ def create_app(host=None):
                     "user": user,
                     "pass": pwd,
                 })
+        # smtps 与 admin_to 同属"改告警送达路径"，合并为一次口令确认
+        # （同时提交只验一次；两者都不涉及则不做口令校验）
+        if smtps_list is not None or admin_to_val is not None:
             # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
             denied = _reconfirm_admin_password(
                 str(data.get("confirm_password", "")), "修改邮件 SMTP 配置")
             if denied is not None:
                 return denied
-        if not flags and smtps_list is None:
+        if not flags and smtps_list is None and admin_to_val is None:
             return jsonify({"error": "缺少有效配置项"}), 400
         # 高危判定：任一开关被置为"关"即为关闭通道（admin_notify=false 只关主管理员
         # 本人的 ADMIN_TO 收件，同样是给报警器拔线）
@@ -3830,9 +3896,15 @@ def create_app(host=None):
         # 原先 write_env_key 写密文 + write_env_batch 写开关两次独立写，中间崩溃
         # 会留下"密文新/开关旧"的中间态。write_env_key 单键形态本就是本函数的
         # 一半，此处不再经由它。
+        # 改收件人前先记下旧地址：落盘后 _alert_mail_recipients() 读到的已是新值，
+        # 若不额外通知旧地址，被盗会话只要一次 PUT 就能把告警悄悄改投他人信箱，
+        # 而真正的管理员收不到任何"收件人被改了"的提示（与"关开关"同族的拔线动作）。
+        old_admin_to = mailer.admin_recipients()
         updates = {k: ("1" if v else "0") for k, v in flags.items()}
         if smtps_enc is not None:
             updates["YIBAN_MAIL_SMTPS_ENC"] = smtps_enc
+        if admin_to_val is not None:
+            updates["YIBAN_MAIL_ADMIN_TO"] = admin_to_val
         write_env_batch(ENV_FILE, updates)
         # 变更告警在写入**成功之后**发出。原先放在落盘之前，理由是"若先落盘，
         # 额度/节流即按新值生效，这条'通道被人动了'的告警会被自己刚写入的参数
@@ -3858,12 +3930,41 @@ def create_app(host=None):
                 urgent=True,
                 force=True,
             )
+        if admin_to_val is not None:
+            new_addrs = {a.strip() for a in admin_to_val.split(",") if a.strip()}
+            if new_addrs != set(old_admin_to):
+                # 变更后的收件人：走正常通道（落盘后 _alert_mail_recipients 已含新值）。
+                # 正文写新值但打码——告警正文不得回显完整邮箱（与 GET 同口径）。
+                shown = mailer._mask_addr(admin_to_val) if admin_to_val else "（已清空）"
+                send_notification(
+                    "邮件告警收件人变更告警",
+                    f"告警收件人已变更: 新收件人 {shown}，"
+                    f"操作者 {_nl_safe(session.get('username', '?'))}，"
+                    f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    urgent=True,
+                    force=True,
+                )
+                # 被摘掉的旧地址：绕过 send_notification 的收件人合成（此刻已解析
+                # 不到旧值），直接发给改动前的收件人。这是防"改收件人即致盲"的关键一封。
+                stale = [a for a in old_admin_to if a not in new_addrs]
+                if stale:
+                    mailer.send_admin_alert(
+                        "邮件告警收件人变更告警",
+                        f"你已不再是本系统的告警邮件收件人。\n"
+                        f"操作者 {_nl_safe(session.get('username', '?'))}，"
+                        f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"如非本人操作，请立即检查管理后台。",
+                        to=",".join(stale),
+                    )
         detail = {
             "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
             for k, v in flags.items()
         }
         if smtps_list is not None:
             detail["smtps_count"] = len(smtps_list)
+        if admin_to_val is not None:
+            # 审计记打码值：留痕要能回答"收件人被谁改到哪个域名"，但不落完整地址
+            detail["admin_to"] = mailer._mask_addr(admin_to_val)
         resp = {"ok": True}
         resp.update(detail)
         db.audit(
