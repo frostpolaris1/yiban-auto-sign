@@ -17,6 +17,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -275,15 +276,27 @@ def _table_columns(conn, table):
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def _ensure_column(conn, table, column, definition):
-    """缺列才 ALTER TABLE ADD COLUMN（幂等）。"""
+def _ensure_column(conn, table, column, type_decl):
+    """缺列才 ALTER TABLE ADD COLUMN（幂等）。
+
+    type_decl 是**纯类型声明**（如 "TEXT NOT NULL DEFAULT ''"），不含列名——
+    本函数自己拼 `ADD COLUMN {column} {type_decl}`。历史实现把列名一并写进了
+    type_decl，生成 `deleted_by deleted_by TEXT` 这类重复列名声明（SQLite 宽容
+    接受、亲和性碰巧不变，但 schema 可读性差、.dump 会把畸形带进新库）；
+    v13 迁移修复存量库，此处加断言防复发（见 migrate_v13）。
+    """
     if table not in _ALLOWED_TABLES:
         raise ValueError(f"非法表名: {table!r}")
     # 列名白名单：仅允许字母数字下划线，防止注入
     if not column.isidentifier() or not column.replace("_", "").isalnum():
         raise ValueError(f"非法列名: {column!r}")
+    # 防复发：type_decl 不得以列名开头（那正是历史畸形形态）
+    if str(type_decl).split()[0].lower() == column.lower():
+        raise ValueError(
+            f"_ensure_column type_decl 不应重复列名: {column!r} / {type_decl!r}"
+        )
     if column not in _table_columns(conn, table):
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_decl}")
         conn.commit()
 
 
@@ -295,7 +308,7 @@ def _ensure_index(conn, create_sql):
 
 def migrate_v1(conn):
     """v1：补齐 accounts.user_paused 列（现状基线迁移）。"""
-    _ensure_column(conn, "accounts", "user_paused", "user_paused INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "accounts", "user_paused", "INTEGER NOT NULL DEFAULT 0")
 
 
 def migrate_v2(conn):
@@ -514,8 +527,8 @@ def _rechain_audit_logs(conn):
 
 def migrate_v3(conn):
     """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。"""
-    _ensure_column(conn, "audit_logs", "prev_hash", "prev_hash TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "audit_logs", "hash", "hash TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "audit_logs", "prev_hash", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "audit_logs", "hash", "TEXT NOT NULL DEFAULT ''")
     # 空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
     empty = conn.execute(
         "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
@@ -739,10 +752,10 @@ def migrate_v5(conn):
 def migrate_v6(conn):
     """v6：WebUI 统计/监控补齐——sign_events 增加 account_id/dur_sec/finished_at，
     page_visits 增加 user_id，并补索引。可选迁移，失败不阻断启动。"""
-    _ensure_column(conn, "sign_events", "account_id", "account_id INTEGER")
-    _ensure_column(conn, "sign_events", "dur_sec", "dur_sec REAL")
-    _ensure_column(conn, "sign_events", "finished_at", "finished_at TEXT")
-    _ensure_column(conn, "page_visits", "user_id", "user_id INTEGER")
+    _ensure_column(conn, "sign_events", "account_id", "INTEGER")
+    _ensure_column(conn, "sign_events", "dur_sec", "REAL")
+    _ensure_column(conn, "sign_events", "finished_at", "TEXT")
+    _ensure_column(conn, "page_visits", "user_id", "INTEGER")
     _ensure_index(
         conn,
         "CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts "
@@ -784,7 +797,7 @@ def migrate_v7(conn):
     旧数据无 kind → 默认 'delete'（历史记录均为注销）。
     """
     _ensure_column(
-        conn, "user_delete_requests", "kind", "kind TEXT NOT NULL DEFAULT 'delete'"
+        conn, "user_delete_requests", "kind", "TEXT NOT NULL DEFAULT 'delete'"
     )
 
 
@@ -821,7 +834,7 @@ def migrate_v9(conn):
     1=接收（默认）；0=关闭（不接收用户签到失败邮件 B 线）。
     管理员告警邮件（A 线）不受此开关影响。旧库补列时默认置 1。
     """
-    _ensure_column(conn, "users", "mail_notify", "mail_notify INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "users", "mail_notify", "INTEGER NOT NULL DEFAULT 1")
 
 
 def migrate_v10(conn):
@@ -833,7 +846,7 @@ def migrate_v10(conn):
     - 系统连带（注销联动 soft_delete_user_with_accounts 等）：置空串。
     旧数据/旧路径默认空串 = 用户不可自行撤销（fail-closed，防越权恢复管理员清退的账号）。
     """
-    _ensure_column(conn, "accounts", "deleted_by", "deleted_by TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "accounts", "deleted_by", "TEXT NOT NULL DEFAULT ''")
 
 
 def migrate_v11(conn):
@@ -842,7 +855,7 @@ def migrate_v11(conn):
     sid 为该用户当前唯一有效会话标识：登录时签发，登出/被重置密码/被踢时轮换；
     会话内 sid 与库内不一致即视为未登录。空串=未签发（升级日存量兼容）。
     """
-    _ensure_column(conn, "users", "sid", "sid TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "users", "sid", "TEXT NOT NULL DEFAULT ''")
 
 
 def migrate_v12(conn):
@@ -862,6 +875,79 @@ def migrate_v12(conn):
         "value TEXT NOT NULL"
         ")"
     )
+    conn.commit()
+
+
+# 畸形列声明：`col col TYPE ...`（列名被重复写进类型声明）。
+# 形如 accounts.deleted_by 声明为 `deleted_by deleted_by TEXT NOT NULL DEFAULT ''`。
+# 成因见 _ensure_column 文档串（历史调用方把列名一并传进 type_decl）。
+_MALFORMED_COL_RE = re.compile(r"(?<=[(,])\s*([A-Za-z_][A-Za-z0-9_]*)\s+\1\b\s+")
+
+
+def _malformed_schema_tables(conn):
+    """返回声明类型重复列名的表 [(表名, 原始 DDL), ...]（跳过 sqlite_ 内部表）。"""
+    out = []
+    for row in conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
+    ):
+        name, sql = row["name"], row["sql"]
+        if name.startswith("sqlite_"):
+            continue
+        if _MALFORMED_COL_RE.search(sql):
+            out.append((name, sql))
+    return out
+
+
+def migrate_v13(conn):
+    """v13：修复畸形列声明（`col col TYPE`），重建受影响表。
+
+    2026-09-09 生产巡检发现：`accounts.deleted_by` 的声明类型是
+    `deleted_by TEXT`，即列名被重复写进类型声明。排查确认这是 _ensure_column
+    的历史 API 误用（调用方把列名一起塞进 type_decl 参数），影响面远不止一列——
+    存量库共 11 列 / 6 表（accounts.deleted_by+user_paused、users.mail_notify+sid、
+    audit_logs.prev_hash+hash、sign_events.account_id/dur_sec/finished_at、
+    page_visits.user_id、user_delete_requests.kind）。
+
+    **影响评估（实测）**：SQLite 对类型声明取子串匹配算亲和性，`deleted_by TEXT`
+    仍含 "TEXT" → 亲和性 TEXT，与正确声明完全一致；`typeof()` 与值强制转换实测
+    逐项相同，索引/约束/审计链均不受影响。故本迁移**不是修故障，而是修 schema
+    可读性与可移植性**（.dump 会把畸形带进新库；外部工具按 table_info 生成的 DDL
+    也会继承）。
+
+    做法：按 sqlite_master 里的 DDL 去掉重复列名后重建表 + 回填数据 + 重建索引
+    （CREATE TABLE → INSERT SELECT → DROP → RENAME，同 migrate_v5 的模式）。
+    SQLite 不允许改列声明，只能重建。**幂等**：无畸形表时空操作。
+    索引 DDL 从 sqlite_master 原样取回，不硬编码（避免与建表处漂移）。
+    AUTOINCREMENT 计数由 sqlite_sequence 随表名迁移保留，实测 max(id) 不变。
+    """
+    bad = _malformed_schema_tables(conn)
+    if not bad:
+        return
+    for name, sql in bad:
+        fixed = _MALFORMED_COL_RE.sub(r" \1 ", sql)
+        # 索引 DDL 先取回：DROP TABLE 会连带删除其索引，重建表后按原样重建
+        indexes = [
+            r["sql"]
+            for r in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
+                (name,),
+            )
+        ]
+        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({name})")]
+        tmp = f"{name}__v13"
+        conn.execute(f'DROP TABLE IF EXISTS "{tmp}"')
+        # 只替换首个表名出现处：DDL 里其余位置可能含同名子串（如索引名）
+        fixed_tmp = fixed.replace(f'TABLE "{name}"', f'TABLE "{tmp}"', 1)
+        if fixed_tmp == fixed:
+            fixed_tmp = fixed.replace(f"TABLE {name}", f"TABLE {tmp}", 1)
+        conn.execute(fixed_tmp)
+        collist = ", ".join(f'"{c}"' for c in cols)
+        conn.execute(f'INSERT INTO "{tmp}" ({collist}) SELECT {collist} FROM "{name}"')
+        conn.execute(f'DROP TABLE "{name}"')
+        conn.execute(f'ALTER TABLE "{tmp}" RENAME TO "{name}"')
+        for idx_sql in indexes:
+            conn.execute(idx_sql)
+        logger.info("schema 修复：重建表 %s（%d 列，%d 索引）", name, len(cols), len(indexes))
     conn.commit()
 
 
@@ -890,6 +976,7 @@ _MIGRATIONS = [
     (10, "v10_account_deleted_by", migrate_v10, True),
     (11, "v11_user_session_sid", migrate_v11, True),
     (12, "v12_app_meta_repair", migrate_v12, True),
+    (13, "v13_fix_malformed_column_decls", migrate_v13, True),
 ]
 
 
