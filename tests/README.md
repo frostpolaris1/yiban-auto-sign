@@ -106,7 +106,7 @@ python -m pytest tests/test_smoke.py -v
 ### 数据库与迁移（scripts/db.py）
 | 文件 | 说明 |
 |---|---|
-| `test_db_migrations.py` | 通用幂等迁移框架 |
+| `test_db_migrations.py` | 通用幂等迁移框架（含 v13 畸形列声明修复与 _ensure_column 防复发） |
 | `test_db_integrity.py` | 数据完整性与迁移修复（0.21.0 Task 3） |
 | `test_db_owner_constraint.py` | 每人限 1 账号 DB 约束 |
 | `test_db_residue.py` | 自愈收口 + 文件残留三类 |
