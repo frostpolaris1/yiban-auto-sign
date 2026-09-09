@@ -834,7 +834,7 @@ https://api.day.app/YOUR_KEY/易班签到通知
    YIBAN_MAIL_SMTP_PORT=465             # 465 走 SSL；其它端口自动 STARTTLS
    YIBAN_MAIL_USER=你的发件邮箱@qq.com
    YIBAN_MAIL_PASS=你的QQ邮箱授权码      # 敏感凭据：只填服务器本地 .env，勿提交仓库/镜像
-   YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 管理员告警邮件收件人（逗号分隔支持多个）
+   YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 管理员告警邮件收件人（逗号分隔支持多个；也可在网页「系统设置 → 消息推送 → 邮件通知」直接编辑）
    ```
 
 > ⚠️ `YIBAN_MAIL_PASS` 是**授权码**而非邮箱登录密码；属敏感凭据，只写入服务器本地 `.env`（已被 `.gitignore` 排除）。不配置邮箱通知时，原有 Webhook 通知不受任何影响。

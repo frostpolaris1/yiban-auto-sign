@@ -100,6 +100,7 @@ python -m pytest tests/test_smoke.py -v
 | `test_mailer.py` | 邮箱通知模块单元（A 线：管理员告警）+ 通道三态判定 |
 | `test_mail_notify.py` | 邮箱通知 B 线（用户签到失败邮件）+ 用户开关 |
 | `test_mail_failover_0907.py` | SMTP 条目列表化：smtp_list 回落/ENC 解密、mail-config 保存原子性与告警时机、发送 failover、GET 脱敏、通道三态日报渲染 |
+| `test_mail_admin_to_edit_0909.py` | 告警收件人网页可编辑（写入/多地址/清空/留空不改动/非法 400/权限 403/口令门禁/旧收件人变更通知/审计打码）+ 站点分享摘要 meta 与 og 标签 + 占位字号一致性 |
 | `test_public_beta.py` | 公测反馈修复：会话陈旧预算、登录告警分级 |
 
 ### 数据库与迁移（scripts/db.py）
