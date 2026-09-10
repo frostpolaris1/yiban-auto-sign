@@ -193,8 +193,8 @@
 <!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗）。
      结构 = 内容区内部滚动 + 提交行常驻 footer：小视口（高分屏 + 浏览器缩放）下 85vh 截断内容，
      若按钮随内容滚出裁剪区，点击会落到遮罩上（静默关窗）或穿透到 html（毫无反应）。 -->
-<div id="account-form-modal" role="dialog" aria-modal="true" aria-labelledby="account-form-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()"></div>
+<div id="account-form-modal" role="dialog" aria-modal="true" aria-labelledby="account-form-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg">
     <form id="account-form" class="flex flex-col max-h-[85vh]">
       <div class="overflow-y-auto overscroll-contain p-5 pb-3">
@@ -248,8 +248,8 @@
 </div>
 
 <!-- 注销账号第一重确认（7 天宽限期说明；第二重为密码确认，2026-08-16 安全审查 3→7 天） -->
-<div id="delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
+<div id="delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
     <div class="flex items-center justify-between mb-1">
       <h2 id="delete-confirm-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">注销账号</h2>
@@ -268,8 +268,8 @@
 </div>
 
 <!-- 注销账号第二重确认（再次提醒 + 密码确认；软删除 7 天宽限期，2026-08-16） -->
-<div id="delete-account-modal" role="dialog" aria-modal="true" aria-labelledby="delete-account-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()"></div>
+<div id="delete-account-modal" role="dialog" aria-modal="true" aria-labelledby="delete-account-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
     <div class="flex items-center justify-between mb-1">
       <h2 id="delete-account-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">最后确认</h2>
@@ -1173,11 +1173,11 @@ $('password-form').addEventListener('submit', async (e) => {
 document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
 <!-- 更新日志弹窗 -->
-<div id="changelog-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
+<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
     <div class="flex items-center justify-between mb-3">
-      <div class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
       <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
     </div>
     <div class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed" id="changelog-content"></div>
