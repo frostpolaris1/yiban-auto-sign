@@ -112,7 +112,15 @@
 <!-- 重置密码模态（a11y 整改：替代原生 prompt 明文录入——密码遮蔽输入 + 密码管理器可用；校验与后续 API 与原逻辑一致） -->
 {% include "partials/modals/password.html" %}
 
-<script src="{{ request.script_root }}/static/js/app.js?v={{ web_version }}"></script>
+<!-- 管理端脚本：7 个模块，**顺序不可调整**（classic script 共享全局作用域，
+     后加载者依赖前面已定义的变量/函数）。切分说明见各文件头 3 行。 -->
+<script src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/accounts.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/logs.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/settings.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/shared-ui.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/users.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/mine.js?v={{ web_version }}"></script>
 <!-- 更新日志弹窗 -->
 {% include "partials/modals/changelog.html" %}
 {% endblock %}
