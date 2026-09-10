@@ -12,6 +12,11 @@
 <script src="{{ request.script_root }}/static/vendor/tailwind.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
 {% include "partials/tailwind_config.html" %}
+{# daisyUI 5 组件层（定制子集，见 static/vendor/MANIFEST.md）。
+   位置敏感：必须在 tailwind.js 之后——Tailwind v3 的 Play CDN 产出无 layer 的普通 CSS，
+   而「无 layer 永远赢过有 layer」，若 daisyUI 在前会被其 preflight 压掉。
+   该子集已在构建时递归剥离 @layer，故与 Tailwind 处于同一层叠平面，由源码顺序决定胜负。 #}
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/daisyui/daisyui-subset.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
 {% block head_scripts %}{% endblock %}
 {% block head_styles_extra %}{% endblock %}
