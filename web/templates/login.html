@@ -59,31 +59,31 @@
 {% block tailwind_components %}
   /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
   @layer components {
-    .input {
+    .yb-input {
       @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 px-3 py-2;
     }
     /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
     @media (max-width: 639px) {
-      .input { font-size: 16px; }
+      .yb-input { font-size: 16px; }
     }
-    .input-sm { @apply px-3 py-1.5; }
-    .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
+    .yb-input-sm { @apply px-3 py-1.5; }
+    .yb-input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
     .btn-primary {
       @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
     .btn-ghost {
       @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
-    .card {
+    .yb-card {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 md:p-6;
       box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
     }
-    .dark .card { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
-    .card-sm {
+    .dark .yb-card { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
+    .yb-card-sm {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4;
       box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
     }
-    .dark .card-sm { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
+    .dark .yb-card-sm { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
   }
 {% endblock %}
 
@@ -141,7 +141,7 @@
 </div>
 
     <!-- 登录/注册卡片 -->
-    <div class="card">
+    <div class="yb-card">
       <!-- Tab 切换 -->
       <div class="flex bg-zinc-100 dark:bg-zinc-700 rounded-lg p-1 mb-5 text-sm font-medium" role="tablist" aria-label="登录 / 注册切换">
         <button id="tab-login" type="button" role="tab" aria-selected="true" aria-controls="login-form" onclick="switchMode('login')"
@@ -156,7 +156,7 @@
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="username">登录邮箱</label>
           <input id="username" name="username" type="text" required autocomplete="username" inputmode="email"
                  placeholder="注册时填写的邮箱"
-                 class="input input-ring">
+                 class="yb-input yb-input-ring">
           <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">还没有账号？请先点上方「注册」创建，再使用该邮箱登录。</p>
         </div>
         <div>
@@ -164,7 +164,7 @@
           <div class="relative">
             <input id="password" name="password" type="password" required autocomplete="current-password"
                    placeholder="输入密码"
-                   class="input input-ring pr-10">
+                   class="yb-input yb-input-ring pr-10">
             <button type="button" data-pw-toggle="password" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
           </div>
@@ -187,7 +187,7 @@
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-email">邮箱 <span class="text-red-500 dark:text-red-400">*</span></label>
           <input id="reg-email" type="email" required autocomplete="email" maxlength="64" aria-describedby="reg-email-error"
                  placeholder="输入邮箱地址"
-                 class="input input-ring">
+                 class="yb-input yb-input-ring">
           <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">邮箱格式不正确（示例：name@example.com）</p>
           <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">请使用常用邮箱注册，尤其注意QQ邮箱格式</p>
         </div>
@@ -196,7 +196,7 @@
           <div class="relative">
             <input id="reg-password" type="password" required autocomplete="new-password" aria-describedby="reg-password-error"
                    placeholder="设置密码（至少 10 位）"
-                   class="input input-ring pr-10">
+                   class="yb-input yb-input-ring pr-10">
             <button type="button" data-pw-toggle="reg-password" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
           </div>
@@ -208,7 +208,7 @@
           <div class="relative">
             <input id="reg-password2" type="password" required autocomplete="new-password" aria-describedby="reg-password2-error"
                    placeholder="再次输入密码"
-                   class="input input-ring pr-10">
+                   class="yb-input yb-input-ring pr-10">
             <button type="button" data-pw-toggle="reg-password2" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
           </div>

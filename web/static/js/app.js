@@ -689,7 +689,7 @@ async function reviewAccount(idx, action) {
 }
 
 function card(label, value, color) {
-  return `<div class="card-sm">
+  return `<div class="yb-card-sm">
             <div class="text-xs text-zinc-500 dark:text-zinc-400">${label}</div>
             <div class="text-xl md:text-2xl font-semibold tracking-tight ${color}">${value}</div>
           </div>`;
@@ -1691,19 +1691,19 @@ function renderSmtps() {
       <div class="grid grid-cols-1 sm:grid-cols-6 gap-2">
         <div class="sm:col-span-3">
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">服务器 host</label>
-          <input data-f="host" value="${esc(e.host)}" placeholder="smtp.example.com" autocomplete="off" class="input input-sm">
+          <input data-f="host" value="${esc(e.host)}" placeholder="smtp.example.com" autocomplete="off" class="yb-input yb-input-sm">
         </div>
         <div>
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">端口</label>
-          <input data-f="port" type="number" min="1" max="65535" value="${esc(e.port)}" placeholder="465" class="input input-sm">
+          <input data-f="port" type="number" min="1" max="65535" value="${esc(e.port)}" placeholder="465" class="yb-input yb-input-sm">
         </div>
         <div class="sm:col-span-2">
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">发件账号（留空沿用）</label>
-          <input data-f="user" value="" placeholder="${esc(e.user)}" autocomplete="off" class="input input-sm">
+          <input data-f="user" value="" placeholder="${esc(e.user)}" autocomplete="off" class="yb-input yb-input-sm">
         </div>
         <div class="sm:col-span-3">
           <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">授权码（永不回显）</label>
-          <input data-f="pass" type="password" value="" placeholder="${e.has_pass ? '已配置，留空沿用' : '未配置'}" autocomplete="new-password" class="input input-sm">
+          <input data-f="pass" type="password" value="" placeholder="${e.has_pass ? '已配置，留空沿用' : '未配置'}" autocomplete="new-password" class="yb-input yb-input-sm">
         </div>
       </div>`;
     box.appendChild(row);

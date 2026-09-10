@@ -5,7 +5,7 @@
     </div>
 
     <!-- 概览卡（v0.30.0：原「服务器时间与签到窗口」卡 + 容量预估卡并入） -->
-    <div class="card mb-4">
+    <div class="yb-card mb-4">
       <div class="flex items-center justify-between mb-3">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">概览</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
@@ -37,14 +37,14 @@
     </div>
 
     <!-- 批量操作开关 -->
-    <div class="card mb-4">
+    <div class="yb-card mb-4">
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
           <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">批量操作</div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">开启后账号与用户列表显示多选框。仅本次会话有效，刷新后自动关闭</p>
         </div>
         <button id="batch-mode-btn" role="switch" aria-checked="false" onclick="toggleBatchMode()"
-                class="toggle shrink-0" aria-label="批量操作"><span class="knob"></span></button>
+                class="yb-switch shrink-0" aria-label="批量操作"><span class="yb-knob"></span></button>
       </div>
       <!-- 移动端完整表格开关（v0.30.0）：窄屏默认隐藏次要列，开启后强制显示并记忆 -->
       <div class="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-zinc-100 dark:border-zinc-700">
@@ -53,13 +53,13 @@
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">窄屏也显示完整表格（记住选择）</p>
         </div>
         <button id="full-tables-btn" role="switch" aria-checked="false" onclick="toggleFullTables()"
-                class="toggle shrink-0" aria-label="移动端显示完整表格"
-                title="手机上默认隐藏次要列以省空间；开启后窄屏也显示完整表格，桌面端不受影响"><span class="knob"></span></button>
+                class="yb-switch shrink-0" aria-label="移动端显示完整表格"
+                title="手机上默认隐藏次要列以省空间；开启后窄屏也显示完整表格，桌面端不受影响"><span class="yb-knob"></span></button>
       </div>
     </div>
 
     <!-- 调度设置（调度 v2：排序 × 分布二级开关 + 缓冲 + 账号间隔 + 周末开关并入 + 自选总开关 + 窗口） -->
-    <div class="card mb-4">
+    <div class="yb-card mb-4">
       <div class="flex items-center justify-between mb-1">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">签到调度</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="调度说明">
@@ -139,7 +139,7 @@
               <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周日也尝试签到</p>
             </div>
             <button id="sunday-sign-btn" role="switch" aria-checked="false" onclick="toggleSundaySign()"
-                    class="toggle shrink-0" aria-label="周日签到"><span class="knob"></span></button>
+                    class="yb-switch shrink-0" aria-label="周日签到"><span class="yb-knob"></span></button>
           </div>
           <div class="flex items-center justify-between gap-3">
             <div class="min-w-0">
@@ -147,7 +147,7 @@
               <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">默认关闭；开启后周六也尝试签到</p>
             </div>
             <button id="saturday-sign-btn" role="switch" aria-checked="false" onclick="toggleSaturdaySign()"
-                    class="toggle shrink-0" aria-label="周六签到"><span class="knob"></span></button>
+                    class="yb-switch shrink-0" aria-label="周六签到"><span class="yb-knob"></span></button>
           </div>
         </div>
       </details>
@@ -156,7 +156,7 @@
         <div class="flex items-center gap-2">
           <span class="text-sm text-zinc-700 dark:text-zinc-200">用户自选时间片</span>
           <button id="time-pref-toggle-btn" role="switch" aria-checked="false" onclick="toggleTimePref()"
-                  class="toggle" aria-label="用户自选时间片"><span class="knob"></span></button>
+                  class="yb-switch" aria-label="用户自选时间片"><span class="yb-knob"></span></button>
         </div>
         <span class="text-xs text-zinc-500 dark:text-zinc-400 basis-full md:basis-auto">开启后普通用户可选 5 分钟时间片（未开启时用户可预配置但不生效）</span>
         <button id="schedule-reset-btn" type="button" onclick="resetScheduleSettings()"
@@ -168,7 +168,7 @@
     </div>
 
     <!-- 全局公告 -->
-    <div class="card mb-4">
+    <div class="yb-card mb-4">
       <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">全局公告</div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">显示在所有页面顶部（含登录页）；留空保存 = 清除公告</p>
       <textarea id="announcement-input" rows="2" maxlength="200" placeholder="如：当前测试中，服务器可能不稳定"
@@ -180,7 +180,7 @@
     </div>
 
     <!-- 消息推送（Webhook：Server酱/自定义 URL，v0.26.0；v0.30.0 邮件通知与 SMTP 列表编辑器并入本卡，原邮箱通知独立卡删除） -->
-    <div class="card mb-4" id="notify-card">
+    <div class="yb-card mb-4" id="notify-card">
       <div class="flex items-center justify-between mb-1">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">消息推送</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="消息推送说明">
@@ -193,7 +193,7 @@
       </p>
       <div id="notify-master-wrap" class="hidden">
         <div class="mb-3">
-          <select id="notify-type" class="input">
+          <select id="notify-type" class="yb-input">
             <option value="">关闭</option>
             <option value="serverchan">Server酱（微信 / 方糖服务号）</option>
             <option value="custom">自定义 Webhook 地址</option>
@@ -201,7 +201,7 @@
         </div>
         <div class="mb-3">
           <input id="notify-secret" type="password" autocomplete="off"
-                 placeholder="Server酱 SendKey（SCT 开头）或自定义 https 地址" class="input">
+                 placeholder="Server酱 SendKey（SCT 开头）或自定义 https 地址" class="yb-input">
         </div>
         <div class="flex items-center justify-between gap-3 mb-3">
           <div>
@@ -223,11 +223,11 @@
         <div class="grid grid-cols-2 gap-3 mb-2 pt-3 mt-3 border-t border-zinc-100 dark:border-zinc-700">
           <div>
             <label for="notify-daily-max" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">非紧急每日上限（0=不限）</label>
-            <input id="notify-daily-max" type="number" min="0" step="1" class="input">
+            <input id="notify-daily-max" type="number" min="0" step="1" class="yb-input">
           </div>
           <div>
             <label for="notify-urgent-daily-max" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">紧急每日上限（0=不限）</label>
-            <input id="notify-urgent-daily-max" type="number" min="0" step="1" class="input">
+            <input id="notify-urgent-daily-max" type="number" min="0" step="1" class="yb-input">
           </div>
         </div>
         <div class="flex items-center gap-2 mb-3">
@@ -275,7 +275,7 @@
           <label for="mail-admin-to" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">告警收件人（多个用英文逗号分隔，留空 = 不改动）</label>
           <div class="flex flex-wrap items-center gap-2">
             <input id="mail-admin-to" type="text" autocomplete="off" maxlength="320"
-                   placeholder="admin@example.com" class="input input-sm flex-1 min-w-[200px]">
+                   placeholder="admin@example.com" class="yb-input yb-input-sm flex-1 min-w-[200px]">
             <button type="button" onclick="saveAdminTo()" class="btn-primary shrink-0">保存收件人</button>
             <button type="button" onclick="clearAdminTo()" class="btn-ghost shrink-0">清空</button>
           </div>
@@ -297,7 +297,7 @@
     </div>
 
     <!-- 健康检查（v0.30.0：原「账号健康检查（探针模式）」卡改名，连通性检测卡并入） -->
-    <div class="card mb-4">
+    <div class="yb-card mb-4">
       <div class="flex items-center justify-between mb-3">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">健康检查</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="健康检查说明">
@@ -359,7 +359,7 @@
 
     <!-- 危险区：系统级开关（一键暂停签到 / 暂停注册）+ 修改主管理员密码（v0.30.0 并入，原独立卡删除）。
          仅主管理员可见（renderGlobalPauseUI 整卡隐藏）；普通管理员改密走「我的账号」tab -->
-    <div class="card mb-4 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-900/10" id="danger-zone-card">
+    <div class="yb-card mb-4 border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-900/10" id="danger-zone-card">
       <div class="text-sm font-medium text-red-800 dark:text-red-300 mb-1 flex items-center gap-2">
         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
         危险区
@@ -398,17 +398,17 @@
             <div>
               <label for="my-old-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
               <input id="my-old-password" type="password" autocomplete="current-password" placeholder="输入当前密码"
-                     class="input">
+                     class="yb-input">
             </div>
             <div>
               <label for="my-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
               <input id="my-new-password" type="password" autocomplete="new-password" placeholder="新密码"
-                     class="input">
+                     class="yb-input">
             </div>
             <div>
               <label for="my-confirm-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
               <input id="my-confirm-password" type="password" autocomplete="new-password" placeholder="再次输入新密码"
-                     class="input">
+                     class="yb-input">
             </div>
             <div class="flex items-center gap-3">
               <button onclick="saveMyPassword()" class="btn-primary">保存新密码</button>
