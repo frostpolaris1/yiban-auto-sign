@@ -1,0 +1,56 @@
+  <section id="tab-logs" class="hidden">
+    <div class="mb-4">
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">签到日志</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">实时查看签到结果与今日各账号状态（每 10 秒自动刷新）</p>
+    </div>
+
+    <!-- 手动签到 -->
+    <div class="card-sm mb-4">
+      <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">手动签到</div>
+      <div class="flex flex-wrap items-center gap-2">
+        <select id="signin-select" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2 min-w-52"></select>
+        <button onclick="doSigninFromSelect()" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
+          立即签到
+        </button>
+        <span id="signin-tip" class="text-xs text-zinc-500 dark:text-zinc-400">后台执行，结果约 30 秒内出现在下方日志</span>
+      </div>
+    </div>
+
+    <!-- 日志面板 -->
+    <div class="bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-sm">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-700">
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">最近日志</div>
+        <div class="text-xs text-zinc-500 dark:text-zinc-400">文件：<span id="log-file" class="font-mono">sign-YYYY-MM-DD.log</span></div>
+      </div>
+      <!-- 按日期查看（2026-08-16：日志按天分文件，可查任意日期） -->
+      <div class="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900/40">
+        <label for="log-date" class="text-xs text-zinc-500 dark:text-zinc-400">按日期查看</label>
+        <input type="date" id="log-date" class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-2.5 py-1.5">
+        <button onclick="viewLogDate()" class="bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">查看</button>
+        <button id="log-back-today" onclick="backToTodayLogs()" class="hidden bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">回到今天</button>
+        <span id="log-date-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-zinc-100 dark:border-zinc-700">
+        <input type="text" id="log-search" placeholder="检索当日日志（关键字）" class="flex-1 min-w-[180px] bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-2.5 py-1.5">
+        <button onclick="toggleLogAll()" id="log-all-btn" class="bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">显示全部</button>
+        <button onclick="exportLog()" class="bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-1.5 text-sm transition-colors duration-200">导出当日</button>
+        <span id="log-lines-info" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
+      </div>
+      <pre id="log-box" role="log" aria-label="签到日志" tabindex="0" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-320px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
+      <div id="log-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">（暂无签到日志，等待定时任务执行…）</div>
+      <!-- 探针（健康检查）当日结构化事件：v0.24.4 前仅落库无可见出口 -->
+      <div id="probe-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
+        <details>
+          <summary class="cursor-pointer text-sm font-semibold text-zinc-700 dark:text-zinc-200 select-none">探针记录（<span id="probe-count">0</span> 条）</summary>
+          <pre id="probe-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
+        </details>
+      </div>
+      <!-- 签到事件（sign_events 补消费端）当日结构化时间线，含重试/跳过迁移 -->
+      <div id="signev-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
+        <details>
+          <summary class="cursor-pointer text-sm font-semibold text-zinc-700 dark:text-zinc-200 select-none">签到事件（<span id="signev-count">0</span> 条）</summary>
+          <pre id="signev-box" class="log-text text-xs text-zinc-600 dark:text-zinc-300 mt-2 whitespace-pre-wrap break-all max-h-56 overflow-auto"></pre>
+        </details>
+      </div>
+    </div>
+  </section>

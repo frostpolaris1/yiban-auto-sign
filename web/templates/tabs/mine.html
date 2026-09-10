@@ -1,0 +1,106 @@
+  <section id="tab-mine" class="hidden">
+    <div class="mb-4">
+      <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号</h1>
+      <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">查看自己的易班账号签到情况</p>
+    </div>
+    <div class="card mb-4">
+      <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
+      <div id="mine-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">还没有提交账号</div>
+      <div id="mine-list" class="space-y-3"></div>
+    </div>
+
+    <!-- 修改密码（v0.30.0：普通管理员改密入口；主管理员隐藏——主管理员用「系统设置 → 危险区」。
+         id 前缀 mine-password-* 与危险区的 my-password-* 两套并存不撞） -->
+    <details class="card mb-4" id="mine-password-card">
+      <summary class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer select-none">修改密码</summary>
+      <div class="mt-3">
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
+        <div class="space-y-3 max-w-sm">
+          <div>
+            <label for="mine-password-now" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
+            <input id="mine-password-now" type="password" autocomplete="current-password" placeholder="输入当前密码"
+                   class="input">
+          </div>
+          <div>
+            <label for="mine-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
+            <input id="mine-new-password" type="password" autocomplete="new-password" placeholder="新密码"
+                   class="input">
+          </div>
+          <div>
+            <label for="mine-new-password2" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
+            <input id="mine-new-password2" type="password" autocomplete="new-password" placeholder="再次输入新密码"
+                   class="input">
+          </div>
+          <div class="flex items-center gap-3">
+            <button onclick="saveMinePassword()" class="btn-primary">保存新密码</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- 我的签到时间（调度 v2 自选；管理员同样可选时间片） -->
+    <div class="card mb-4" id="mine-pref-card">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">我的签到时间</div>
+        <button id="mine-pref-collapse-btn" type="button" onclick="toggleMinePrefCollapse()"
+                class="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="chevD"></span></button>
+      </div>
+      <div id="mine-pref-body">
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">签到窗口 <span id="mine-pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始后修改次日生效）</p>
+        <p id="mine-pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
+        <div id="mine-pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
+        <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
+          <button id="mine-pref-clear-btn" type="button" onclick="clearMineTimePref()"
+                  class="btn-ghost">清除选择（恢复自动分配）</button>
+          <span id="mine-pref-tip" class="text-zinc-500 dark:text-zinc-400"></span>
+        </div>
+        <p id="mine-pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
+          功能未开启：你的选择会保存，但暂不生效（开启后次日生效）
+        </p>
+      </div>
+    </div>
+    <div class="card">
+      <div id="mine-form-title" class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
+      <div id="mine-done" class="hidden mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
+        已提交账号，可编辑或删除后重新提交。
+      </div>
+      <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label for="m-name" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
+          <input id="m-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">备注会显示给管理员，用于审核与定位签到问题；以公告为准。</p>
+        </div>
+
+        <div>
+          <label for="m-phone" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
+          <input id="m-phone" type="tel" inputmode="numeric" maxlength="20" required placeholder="登录易班的手机号"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+        <div class="md:col-span-2">
+          <label for="m-password" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
+          <input id="m-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+        <div>
+          <label for="m-model" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备型号（可选，不清楚就留空）</label>
+          <input id="m-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+        </div>
+        <div>
+          <label for="m-code" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（可选，不清楚就留空）</label>
+          <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
+                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+          <button id="clear-mcode-btn" type="button" onclick="toggleMineClearCode()"
+                  class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
+        </div>
+        <p class="md:col-span-2 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码随签到请求提交，仅提示「请使用授权设备进行签到」时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
+        <div class="md:col-span-2 flex items-center gap-3 pt-1">
+          <button id="mine-submit-btn" type="submit" class="btn-primary">提交账号</button>
+          <button id="mine-cancel-btn" type="button" onclick="cancelMineEdit()"
+                  class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
+          <span id="mine-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
+        </div>
+      </form>
+    </div>
+  </section>
