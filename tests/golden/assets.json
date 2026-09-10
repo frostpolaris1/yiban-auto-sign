@@ -1,0 +1,20 @@
+{
+  "index": [
+    "link rel=icon href=/favicon.png",
+    "link rel=stylesheet href=/static/vendor/fonts/misans/misans.css?v=*",
+    "script src=/static/vendor/tailwind.js?v=*",
+    "script src=/static/vendor/md-render.js?v=*"
+  ],
+  "login": [
+    "link rel=icon href=/favicon.png",
+    "link rel=stylesheet href=/static/vendor/fonts/misans/misans.css?v=*",
+    "script src=/static/vendor/tailwind.js?v=*",
+    "script src=/static/vendor/md-render.js?v=*"
+  ],
+  "user": [
+    "link rel=icon href=/favicon.png",
+    "link rel=stylesheet href=/static/vendor/fonts/misans/misans.css?v=*",
+    "script src=/static/vendor/tailwind.js?v=*",
+    "script src=/static/vendor/md-render.js?v=*"
+  ]
+}
