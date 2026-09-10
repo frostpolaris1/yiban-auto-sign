@@ -555,8 +555,8 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
 </script>
 
 <!-- 用户协议弹窗 -->
-<div id="agreement-modal" role="dialog" aria-modal="true" aria-labelledby="agreement-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeAgreement()"></div>
+<div id="agreement-modal" role="dialog" aria-modal="true" aria-labelledby="agreement-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeAgreement()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto overscroll-contain">
     <div id="agreement-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
     <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="agreement-content">
@@ -568,8 +568,8 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
   </div>
 </div>
 <!-- 隐私政策弹窗 -->
-<div id="privacy-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closePrivacy()"></div>
+<div id="privacy-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closePrivacy()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto overscroll-contain">
     <div id="privacy-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">隐私政策</div>
     <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="privacy-content">
@@ -581,8 +581,8 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
   </div>
 </div>
 <!-- 更新日志弹窗 -->
-<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()"></div>
+<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()" aria-hidden="true"></div>
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
     <div class="flex items-center justify-between mb-3">
       <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
