@@ -2029,7 +2029,7 @@ document.addEventListener('change', (e) => {
 async function openChangelog() {
   openModal($('changelog-modal'));  // 记录触发元素并聚焦模态内首控件；Esc 可关闭
   const content = $('changelog-content');
-  content.innerHTML = '加载中…';
+  content.innerHTML = '<span class="inline-flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="yb-spinner"></span>加载中…</span>';
   try {
     const data = await api('/api/changelog');
     content.innerHTML = window.renderMarkdown ? renderMarkdown(data.text || '暂无更新日志') : esc(data.text || '暂无更新日志');
@@ -2603,7 +2603,7 @@ function calLoadLog(btn, date) {
     box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${wd0 === 0 ? '周日' : '周六'}无需签到</div>`;
     return;
   }
-  box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400">加载中…</div>';
+  box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400"><span class="yb-spinner"></span> 加载中…</div>';
   api(`/api/my-logs?date=${date}`).then(data => {
     if (!data.logs || !data.logs.length) {
       box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${date} 暂无签到记录</div>`;
