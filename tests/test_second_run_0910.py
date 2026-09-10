@@ -324,9 +324,15 @@ class HostContainerAgreementTest(unittest.TestCase):
         sys.path.insert(0, os.path.join(BASE, "docker"))
         import scheduler
         cls.scheduler = scheduler
+        # 全量跑时 scheduler 可能已被别的用例导入过，模块级 STATEDIR 绑定的是当时
+        # 那套环境——此处显式改指本类的临时目录再比对，否则是拿两个不同目录作对比
+        # （曾造成「已收尾+全成功」「已收尾+暂停」两个子用例在全量下误报不一致）。
+        cls._old_statedir = scheduler.STATEDIR
+        scheduler.STATEDIR = cls.tmp
 
     @classmethod
     def tearDownClass(cls):
+        cls.scheduler.STATEDIR = cls._old_statedir
         for k, v in cls._old_env.items():
             if v is None:
                 os.environ.pop(k, None)
