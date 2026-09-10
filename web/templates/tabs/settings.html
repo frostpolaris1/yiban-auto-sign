@@ -1,14 +1,14 @@
   <section id="tab-settings" class="hidden">
     <div class="mb-4">
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">系统设置</h1>
-      <p class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mt-1">概览、调度、健康检查与消息推送</p>
+      <p class="text-sm text-zinc-500 dark:text-zinc-500 dark:text-zinc-400 mt-1">概览、调度、健康检查与消息推送</p>
     </div>
 
     <!-- 概览卡（v0.30.0：原「服务器时间与签到窗口」卡 + 容量预估卡并入） -->
     <div class="yb-card mb-4">
       <div class="flex items-center justify-between mb-3">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">概览</div>
-        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
+        <button type="button" class="info-tip text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
           <span data-icon="info"></span>
           <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>签到容量：</b>按有效签到窗口（扣除掐头去尾）与账号间隔估算可容纳的活跃账号数；已用（或含潜在负载）超容量仅标红警示，不阻断操作；保存更大的账号间隔时若现有活跃账号超过预估容量会被拒绝<b>容量上限：</b>仅主管理员可设——0=不限；调小不删人，只限制新增；两个上限分别管归属注册（用户）与账号存量（账号，含主管理员直属裸账号）<b>账号容量拆解：</b>账号用量后的括号为三分类计数——正常 / 用户自暂停 / 账密故障暂停（熔断或半开试探中）；占额按全部未删除账号计，停签账号同样占名额，故名额紧张时可先清理长期停签账号</span>
         </button>
@@ -62,7 +62,7 @@
     <div class="yb-card mb-4">
       <div class="flex items-center justify-between mb-1">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">签到调度</div>
-        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="调度说明">
+        <button type="button" class="info-tip text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="调度说明">
           <span data-icon="info"></span>
           <span class="info-pop"><b>排序与分布：</b>「顺序」= 按列表顺序签，「随机」= 每天重新排序；分布方式决定时间点怎么铺开<b>「顺序 × 均匀」线性填块：</b>按列表先到先签，账号集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动签到均生效，默认 10，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但会占用更多签到窗口时间<b>生效时机：</b>以上改动保存后下次自动签到时生效</span>
         </button>
@@ -183,7 +183,7 @@
     <div class="yb-card mb-4" id="notify-card">
       <div class="flex items-center justify-between mb-1">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">消息推送</div>
-        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="消息推送说明">
+        <button type="button" class="info-tip text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="消息推送说明">
           <span data-icon="info"></span>
           <span class="info-pop"><b>密钥：</b>加密存储、不回显<b>频控：</b>同类告警默认 60 秒内只推一条（可改配置文件调整）<b>额度：</b>按「非紧急 / 紧急」各自计数，防止超出 Server酱 免费额度<b>权限：</b>仅主管理员可修改<b>确认：</b>高危操作，须再输入当前主管理员密码<b>邮件：</b>告警汇总发「告警收件人」（可逗号分隔多个，在下方邮件通知区配置）；授权码加密存储、永不回显；SMTP 各项留空 = 沿用旧值，含打码串的输入一律按空处理；保存 SMTP 配置或收件人需主管理员密码确认</span>
         </button>
@@ -206,7 +206,7 @@
         <div class="flex items-center justify-between gap-3 mb-3">
           <div>
             <span class="text-sm text-zinc-700 dark:text-zinc-200">仅推送重要告警</span>
-            <p class="text-xs text-zinc-400 dark:text-zinc-500">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度</p>
           </div>
           <label class="relative inline-flex items-center cursor-pointer shrink-0" title="仅推送重要告警开关">
             <input id="notify-urgent-switch" type="checkbox" class="sr-only peer" onchange="saveNotifyUrgent()">
@@ -233,7 +233,7 @@
         <div class="flex items-center gap-2 mb-3">
           <button onclick="saveNotifyBudget()"
                   class="whitespace-nowrap bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">保存额度</button>
-          <span class="text-xs text-zinc-400 dark:text-zinc-500">额度用尽后当日同类告警只走邮件，并补一封额度耗尽提醒邮件</span>
+          <span class="text-xs text-zinc-500 dark:text-zinc-400">额度用尽后当日同类告警只走邮件，并补一封额度耗尽提醒邮件</span>
         </div>
       </div>
       <p id="notify-status" class="text-xs text-zinc-500 dark:text-zinc-400"></p>
@@ -249,7 +249,7 @@
         <div id="mail-global-wrap" class="hidden flex items-center justify-between gap-3 mb-3">
           <div>
             <span class="text-sm text-zinc-700 dark:text-zinc-200">全局邮件通知</span>
-            <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后所有邮件都不发送（其他消息推送不受影响）</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">关闭后所有邮件都不发送（其他消息推送不受影响）</p>
           </div>
           <label class="relative inline-flex items-center cursor-pointer shrink-0" title="全局邮件通知开关">
             <input id="mail-global-switch" type="checkbox" class="sr-only peer" onchange="toggleMailGlobal()">
@@ -260,7 +260,7 @@
         <div id="mail-self-wrap" class="hidden flex items-center justify-between gap-3">
           <div>
             <span class="text-sm text-zinc-700 dark:text-zinc-200">接收发给我自己的邮件提醒</span>
-            <p class="text-xs text-zinc-400 dark:text-zinc-500">关闭后不再收到你的账号失败提醒与告警邮件</p>
+            <p class="text-xs text-zinc-500 dark:text-zinc-400">关闭后不再收到你的账号失败提醒与告警邮件</p>
           </div>
           <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收邮件提醒">
             <input id="mail-self-switch" type="checkbox" class="sr-only peer" onchange="toggleMailSelf()">
@@ -279,7 +279,7 @@
             <button type="button" onclick="saveAdminTo()" class="btn-primary shrink-0">保存收件人</button>
             <button type="button" onclick="clearAdminTo()" class="btn-ghost shrink-0">清空</button>
           </div>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">告警邮件（含安全告警）的送达地址；与下方发件 SMTP 配合使用。修改需主管理员密码确认。</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">告警邮件（含安全告警）的送达地址；与下方发件 SMTP 配合使用。修改需主管理员密码确认。</p>
         </div>
         <!-- SMTP 发信条目列表编辑器（v0.30.0：主备 failover，仅主管理员；打码值不回填输入框，
              留空提交 = 沿用旧值，授权码永不回显） -->
@@ -300,7 +300,7 @@
     <div class="yb-card mb-4">
       <div class="flex items-center justify-between mb-3">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">健康检查</div>
-        <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="健康检查说明">
+        <button type="button" class="info-tip text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="健康检查说明">
           <span data-icon="info"></span>
           <span class="info-pop"><b>服务器连通性：</b>不登录，仅测试易班服务器是否可达，用于排查网络问题<b>探针模式：</b>非签到时段对全部账号做只读健康检查（登录并拉取签到任务，不实际签到），提前发现问题并通过邮件提醒<b>注册时验证账号：</b>开启后提交账号会即时验证，无法通过将当场提示</span>
         </button>
@@ -310,7 +310,7 @@
         <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">服务器连通性（不登录，仅测试易班服务器连通）</div>
         <div class="flex flex-wrap items-center gap-3">
           <button onclick="doPing()" class="btn-ghost">开始检测</button>
-          <span id="ping-result" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500"></span>
+          <span id="ping-result" class="text-sm text-zinc-500 dark:text-zinc-500 dark:text-zinc-400"></span>
         </div>
       </div>
       <!-- 探针模式说明已收纳至卡头 ⓘ；以下为原探针设置内容 -->
@@ -318,7 +318,7 @@
       <div class="flex items-center justify-between gap-3 mb-3">
         <div>
           <span class="text-sm text-zinc-700 dark:text-zinc-200">注册时验证账号</span>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500">用户/管理员提交账号时即时验证，验证失败当场打回</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">用户/管理员提交账号时即时验证，验证失败当场打回</p>
         </div>
         <label class="relative inline-flex items-center cursor-pointer shrink-0" title="注册时验证账号开关">
           <input id="account-verify-switch" type="checkbox" class="sr-only peer" onchange="saveProbeSettings()">
@@ -329,7 +329,7 @@
       <div class="flex items-center justify-between gap-3 mb-3">
         <div>
           <span class="text-sm text-zinc-700 dark:text-zinc-200">开启探针模式</span>
-          <p class="text-xs text-zinc-400 dark:text-zinc-500">按设定时间/频率对全部账号做健康检查，异常账号邮件预警</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">按设定时间/频率对全部账号做健康检查，异常账号邮件预警</p>
         </div>
         <label class="relative inline-flex items-center cursor-pointer shrink-0" title="探针模式开关">
           <input id="probe-enable-switch" type="checkbox" class="sr-only peer" onchange="saveProbeSettings()">
@@ -353,7 +353,7 @@
           </select>
         </div>
       </div>
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">设定时间到达后，将在最近的调度周期执行（约 10 分钟内），每天最多一次；修改时间后次日生效。</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">设定时间到达后，将在最近的调度周期执行（约 10 分钟内），每天最多一次；修改时间后次日生效。</p>
       <p id="probe-config-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
     </div>
 
