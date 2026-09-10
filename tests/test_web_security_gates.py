@@ -7,11 +7,12 @@
 - P2-1 _DailyFlockFileHandler：跨天滚动 + 目录故障（_open 抛 OSError）不传播到
   调用方；下一条日志仍可重试；create_app 挂载构造失败降级不崩启动；
 - P2-7 ensure_secret_key：空 .env（无有效键）视为新部署写暂停键；有有效键不写；
-- 版本号同步：APP_VERSION == "0.26.3"。
+- 版本号同步：APP_VERSION 与 web/__init__.py 的 __version__ 一致且等于当前版本
+  （断言值随发版更新，当前 0.29.1）。
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
-    python -m pytest tests/test_batch16_fixes_091.py -v
+    python -m pytest tests/test_web_security_gates.py -v
 """
 import contextlib
 import importlib.util
