@@ -542,7 +542,7 @@ async function loadAnnouncement() {
 async function openChangelog() {
   openModal('changelog-modal');
   const content = document.getElementById('changelog-content');
-  content.innerHTML = '加载中…';
+  content.innerHTML = '<span class="inline-flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="yb-spinner"></span>加载中…</span>';
   try {
     const resp = await fetch(BASE + '/api/changelog');
     const data = await resp.json().catch(() => ({}));

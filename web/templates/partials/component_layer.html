@@ -101,3 +101,29 @@
       --tw-ring-offset-color: var(--yb-ring-offset);
     }
   }
+
+
+/* ---- 加载指示（旋转 spinner）----
+   ⚠ 为什么不用 daisyUI 的 .loading/.loading-spinner：
+   它的旋转**不是 CSS 动画**，而是 mask-image 里 SVG 内嵌的 SMIL
+   （<animateTransform rotate> + 动画 stroke-dasharray）。实测：
+     · 在 Chrome 里它确实会转（两个不同虚拟时刻的截图字节不同 ⇒ 存在时间相关渲染）；
+     · 但**无法用 CSS 尊重 prefers-reduced-motion** —— 试过提高特异性到
+       .loading.loading-spinner（0-2-0）也没赢：实测本页样式表序为
+       「Tailwind 注入的 <style> → daisyui-subset.css」，我们的组件层在前，
+       同特异度会被 daisyUI 后来者压掉；再上 !important 为一个 a11y 微调去打架不值得。
+   故改为自研 6 行 CSS spinner：更小、完全可控、prefers-reduced-motion 原生生效。
+   （daisyUI 的 loading 仍留在 vendored 子集里，将来若要其 SMIL 版本可直接用类名。） */
+.yb-spinner {
+  display: inline-block;
+  width: 1em; height: 1em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.125em;
+  animation: yb-spin 0.7s linear infinite;
+}
+@keyframes yb-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .yb-spinner { animation: none; }
+  }
