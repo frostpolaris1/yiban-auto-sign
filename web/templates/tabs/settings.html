@@ -24,13 +24,13 @@
         <div>
           <label for="max-users-input" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1 font-semibold">用户容量上限（注册人数）</label>
           <input id="max-users-input" type="number" min="0" max="100000" step="1" placeholder="0=不限" onchange="saveSettings(true)"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">管归属注册名额；调小不删存量用户</p>
         </div>
         <div>
           <label for="max-accounts-input" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1 font-semibold">账号容量上限（活跃账号）</label>
           <input id="max-accounts-input" type="number" min="0" max="100000" step="1" placeholder="0=不限" onchange="saveSettings(true)"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">管账号存量（含主管理员直属裸账号）；调小不删存量账号</p>
         </div>
       </div>
@@ -72,7 +72,7 @@
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">排序方式</div>
           <select id="sign-order-select"
-                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+                  class="yb-input">
             <option value="sequence">列表顺序（固定作息）</option>
             <option value="random">列表随机（每天重排）</option>
           </select>
@@ -80,7 +80,7 @@
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">分布方式</div>
           <select id="sign-dist-select"
-                  class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+                  class="yb-input">
             <option value="uniform">均匀分布</option>
             <option value="normal">正态分布（钟形拟人）</option>
           </select>
@@ -90,12 +90,12 @@
           <div class="flex items-center gap-2">
             <div class="flex-1">
               <input id="edge-front" type="number" min="0" max="5" step="0.5" value="1" placeholder="前 n 分钟"
-                     class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+                     class="yb-input">
               <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">前 n 分钟</div>
             </div>
             <div class="flex-1">
               <input id="edge-back" type="number" min="0" max="5" step="0.5" value="1" placeholder="后 n 分钟"
-                     class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2">
+                     class="yb-input">
               <div class="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">后 n 分钟</div>
             </div>
           </div>
@@ -113,17 +113,17 @@
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">账号间隔（秒，默认 10，0=关闭）</div>
           <input id="gap-delay-secs" type="number" min="0" placeholder="10" onchange="saveSettings(true)"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">相邻请求最小间隔，自动与手动均生效；修改需主管理员密码验证</p>
         </div>
         <div>
           <div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">签到窗口</div>
           <div class="flex items-center gap-2">
             <input id="window-start" type="time" step="60"
-                   class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
+                   class="yb-input font-mono">
             <span class="text-zinc-500 dark:text-zinc-400">~</span>
             <input id="window-end" type="time" step="60"
-                   class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-blue-500 px-3 py-2 font-mono">
+                   class="yb-input font-mono">
           </div>
           <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">修改后点「保存调度设置」生效</p>
         </div>
@@ -172,7 +172,7 @@
       <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">全局公告</div>
       <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">显示在所有页面顶部（含登录页）；留空保存 = 清除公告</p>
       <textarea id="announcement-input" rows="2" maxlength="200" placeholder="如：当前测试中，服务器可能不稳定"
-                class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2"></textarea>
+                class="yb-input"></textarea>
       <div class="flex items-center gap-3 mt-3">
         <button onclick="saveAnnouncement()" class="btn-primary">保存公告</button>
         <span id="announcement-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
@@ -340,11 +340,11 @@
       <div class="grid grid-cols-2 gap-3 mb-2">
         <div>
           <label for="probe-time" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">触发时间（最早时刻）</label>
-          <input id="probe-time" type="time" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm text-zinc-900 dark:text-zinc-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="saveProbeSettings()">
+          <input id="probe-time" type="time" class="yb-input" onchange="saveProbeSettings()">
         </div>
         <div>
           <label for="probe-interval" class="block text-xs text-zinc-500 dark:text-zinc-400 mb-1">触发频率</label>
-          <select id="probe-interval" class="w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm text-zinc-900 dark:text-zinc-100 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onchange="saveProbeSettings()">
+          <select id="probe-interval" class="yb-input" onchange="saveProbeSettings()">
             <option value="1">每天</option>
             <option value="2">每 2 天</option>
             <option value="3">每 3 天</option>
