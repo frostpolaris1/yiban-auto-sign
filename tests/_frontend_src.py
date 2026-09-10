@@ -33,6 +33,7 @@ TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 STATIC_DIR = os.path.join(BASE, "web", "static")
 
 _INCLUDE_RE = re.compile(r'{%-?\s*include\s+"([^"]+)"\s*-?%}')
+_EXTENDS_RE = re.compile(r'{%-?\s*extends\s+"([^"]+)"\s*-?%}')
 _ASSET_RE = re.compile(r'(?:src|href)="([^"]*?/static/[^"]*)"')
 _STATIC_REL_RE = re.compile(r"/static/(.+?)(?:\?.*)?$")
 _MAX_FILES = 64
@@ -76,6 +77,10 @@ def frontend_source(*parts):
         seen.add(path)
         src = _read(path)
         chunks.append(src)
+        # A2 起三模板 `{% extends "base.html" %}`：共享骨架在父模板里，必须一并纳入，
+        # 否则 head_boot / tailwind_config 等 partial 的契约会落空。
+        for m in _EXTENDS_RE.finditer(src):
+            walk(os.path.join(TEMPLATES_DIR, m.group(1).replace("/", os.sep)))
         for m in _INCLUDE_RE.finditer(src):
             walk(os.path.join(TEMPLATES_DIR, m.group(1).replace("/", os.sep)))
         for m in _ASSET_RE.finditer(src):

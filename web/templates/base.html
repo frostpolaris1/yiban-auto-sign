@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<link rel="icon" type="image/png" href="/favicon.png">
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}易班自动签到{% endblock %}</title>
+{% block head_meta %}{% endblock %}
+{% include "partials/head_boot.html" %}
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/misans/misans.css?v={{ web_version }}" media="(min-resolution: 1.5dppx) and (pointer: fine)">
+<script src="{{ request.script_root }}/static/vendor/tailwind.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
+{% include "partials/tailwind_config.html" %}
+{% block head_styles %}{% endblock %}
+{% block head_scripts %}{% endblock %}
+{% block head_styles_extra %}{% endblock %}
+<style type="text/tailwindcss">{% block tailwind_components %}{% endblock %}</style>
+{% block head_scripts_late %}{% endblock %}
+</head>
+<body class="{% block body_class %}bg-zinc-50 dark:bg-zinc-900 min-h-screen overscroll-y-none{% endblock %}">
+{% block body %}{% endblock %}
+</body>
+</html>

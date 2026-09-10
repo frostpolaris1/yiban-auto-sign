@@ -1,0 +1,25 @@
+<script>
+  // 暗色主题：尽早应用（防闪烁），localStorage 记忆（受限环境降级为不记忆）
+  try { if (localStorage.getItem('yiban-theme') === 'dark') { document.documentElement.classList.add('dark'); } } catch (e) {}
+</script>
+<script>
+  // 挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径/独立子域下为空串）。
+  // 所有跳转/静态资源/API 请求统一经 BASE 拼接，避免子路径部署时跳回主站根。
+  // tojson 保证 <script> 字符串字面量里的反斜杠/引号被转义（script_root 以 /\ 结尾时
+  // 裸拼接会产生 `const BASE = '\';` 语法错误，整页脚本瘫痪）
+  const BASE = {{ request.script_root | tojson }};
+</script>
+<script>
+  // 版本失效兜底：页面版本与上次不同 → 强制刷新（?v= 参数绕过浏览器缓存）
+  // 防止部署更新后缓存旧页面导致登录/功能异常
+  (function () {
+    try {
+      var v = '{{ web_version }}';
+      var prev = localStorage.getItem('web_version');
+      localStorage.setItem('web_version', v);
+      if (prev && prev !== v && !location.search.includes('v=' + v)) {
+        location.replace(BASE + '/?v=' + v);
+      }
+    } catch (e) {}
+  })();
+</script>
