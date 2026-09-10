@@ -3,7 +3,7 @@
 
 覆盖：
 - 迁移 v5：users 软删除列、部分唯一索引、注销请求表；
-- 软注销清理账号和 time_prefs；
+- 软注销软删除账号，并**保留** time_prefs（物理清除时才清，2026-09-10 批次20 起）；
 - 撤销注销；
 - 邮箱复用；
 - find_user 只返回有效用户；
@@ -113,7 +113,13 @@ class UserDeregistrationDbTest(unittest.TestCase):
         row = next(a for a in accs if a["phone"] == "13800138001")
         self.assertTrue(row["deleted"])
         self.assertTrue(row["deleted_at"])
-        self.assertIsNone(db.get_time_pref("13800138001"))
+        # 2026-09-10（批次20）：软注销**不再**清理 time_prefs——两条软删路径口径统一为
+        # "软删阶段保留、物理清除时连带清理"（可逆操作应完整可逆）。物理清除仍会清
+        # （见 test_db_integrity 的 purge 用例与 test_user_deregistration_web 的硬清用例）。
+        self.assertIsNotNone(
+            db.get_time_pref("13800138001"),
+            "软注销不应清除自选时间片（物理清除才清）",
+        )
 
     def test_restore_user(self):
         db.create_user("user2@test.local", "hash")
