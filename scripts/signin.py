@@ -2223,6 +2223,76 @@ def _write_sched_done(counts=None):
         logger.warning("写入全量完成标记失败（调度器可能重复触发当日签到）: %s", e)
 
 
+# ---------------------------------------------------------------------------
+# 补签轮判定（宿主 run.sh 与容器 docker/scheduler.py 共用的单一实现）
+# ---------------------------------------------------------------------------
+# 背景（2026-09-10 批次20 B3）：宿主原先靠**第二个独立 cron**（07:12）做补签，
+# 但首签进程要 sleep 到最晚自选时间片（生产实测 07:25）才结束，flock 由脚本持有至
+# 退出 → 07:12 的 cron 每天撞锁 `exit 0`，补签轮从未真正执行（生产日志 12/12 天实证）。
+# 修法（用户裁决方案一）：宿主改为与容器同语义——**同一进程内**首轮结束后再判定
+# 一次"是否需要补跑"，判定口径收敛到此处，两侧不再各写一份。
+#
+# 判定 = 「当日全量未收尾」或「当日存在未了结账号」：
+#   - 全量未收尾（sched-run-<date>.json 缺失/completed=false）：首轮被 timeout 击杀、
+#     崩溃或压根没跑起来 → 必须补跑；
+#   - 存在未了结账号 = 状态文件里任一账号落 UNDONE_STATUSES。
+# 无状态文件/文件损坏一律按"未了结"处理（宁多跑一轮，不漏签）。
+UNDONE_STATUSES = frozenset((
+    # 与本文件的状态常量一致（写成字面量是为了让 run.sh 侧只依赖本模块，不依赖枚举导入）
+    "failed", "retrying", "pending",
+    "skipped_window", "skipped_norange",
+    "no_position",
+))
+
+# `--second-run-check` 的退出码契约（run.sh 据此分支，勿随意改动）
+SECOND_RUN_CHECK_NEED = 10   # 需要补跑第二轮
+SECOND_RUN_CHECK_SKIP = 0    # 无需补跑
+
+
+def _state_dir():
+    return os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+
+
+def full_run_done_today(state_dir=None, day=None):
+    """当日全量签到是否已收尾（sched-run-<date>.json 的 completed 标记）。"""
+    d = state_dir or _state_dir()
+    today = day or datetime.now().strftime("%Y-%m-%d")
+    try:
+        # utf-8-sig：容错 Windows 手工/工具写入的 BOM（与 _load_cred_state 同口径）
+        with open(os.path.join(d, f"sched-run-{today}.json"), encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get("completed"))
+
+
+def has_undone_accounts_today(state_dir=None, day=None):
+    """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。"""
+    d = state_dir or _state_dir()
+    today = day or datetime.now().strftime("%Y-%m-%d")
+    try:
+        with open(os.path.join(d, f"sign-state-{today}.json"), encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return True
+    if not isinstance(data, dict) or not data:
+        return True
+    return any(
+        isinstance(v, dict) and str(v.get("status", "")).strip() in UNDONE_STATUSES
+        for v in data.values()
+    )
+
+
+def need_second_run(state_dir=None, day=None):
+    """是否需要补跑第二轮（宿主 run.sh 与容器调度器共用）。
+
+    True = 当日全量未收尾，或存在未了结账号。调用方（run.sh）在**首轮结束之后、
+    仍持锁期间**调用，因此不用担心与其它进程的竞态；容器侧在首轮子进程 wait()
+    返回后调用，语义一致。
+    """
+    return (not full_run_done_today(state_dir, day)) or has_undone_accounts_today(state_dir, day)
+
+
 def _cred_state_path():
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
     return os.path.join(state_dir, "cred-state.json")
@@ -3207,7 +3277,24 @@ def main():
         "--probe", action="store_true",
         help="探针模式：非签到时段对全部账号做只读健康检查（需 .env 开启且到触发时间/频率）",
     )
+    parser.add_argument(
+        "--second-run-check", action="store_true",
+        help=(
+            "补签轮判定（供宿主 run.sh 调用）：当日全量未收尾或存在未了结账号时"
+            f"退出码 {SECOND_RUN_CHECK_NEED}（需要补跑），否则 0。不读账号、不联网。"
+        ),
+    )
     args = parser.parse_args()
+
+    # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
+    # 宿主 run.sh 在首轮结束仍持锁时调用本开关，据退出码决定是否补跑第二轮
+    # （与容器 docker/scheduler.py 的 SECOND 闸门同语义，判定实现在 need_second_run）。
+    if args.second_run_check:
+        if need_second_run():
+            logger.info("补签轮判定：需要补跑（当日全量未收尾或存在未了结账号）")
+            sys.exit(SECOND_RUN_CHECK_NEED)
+        logger.info("补签轮判定：无需补跑（当日已收尾且无未了结账号）")
+        sys.exit(SECOND_RUN_CHECK_SKIP)
 
     # 超时击杀前的告警兜底：宿主 run.sh timeout / 容器 / 手动 terminate 均以
     # SIGTERM 结束子进程；注册在探针分支之前，签到与探针子进程同享。
