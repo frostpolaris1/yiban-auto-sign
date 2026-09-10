@@ -56,36 +56,6 @@
 </style>
 {% endblock %}
 
-{% block tailwind_components %}
-  /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
-  @layer components {
-    .yb-input {
-      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 px-3 py-2;
-    }
-    /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
-    @media (max-width: 639px) {
-      .yb-input { font-size: 16px; }
-    }
-    .yb-input-sm { @apply px-3 py-1.5; }
-    .yb-input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
-    .btn-primary {
-      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
-    }
-    .btn-ghost {
-      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
-    }
-    .yb-card {
-      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 md:p-6;
-      box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
-    }
-    .dark .yb-card { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
-    .yb-card-sm {
-      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4;
-      box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
-    }
-    .dark .yb-card-sm { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
-  }
-{% endblock %}
 
 {% block head_scripts_late %}
 <script>

@@ -10,8 +10,8 @@
     --c-zinc-50:250 250 250; --c-zinc-100:244 244 245; --c-zinc-200:228 228 231; --c-zinc-300:212 212 216;
     --c-zinc-400:161 161 170; --c-zinc-500:113 113 122; --c-zinc-600:82 82 91; --c-zinc-700:63 63 70;
     --c-zinc-800:39 39 42; --c-zinc-900:24 24 27;
-    --c-blue-200:191 219 254; --c-blue-300:147 197 253; --c-blue-400:96 165 250; --c-blue-500:59 130 246;
-    --c-blue-600:37 99 235; --c-blue-700:29 78 216; --c-blue-800:30 64 175; --c-blue-900:30 58 138;
+  --c-blue-200:191 219 254; --c-blue-300:147 197 253; --c-blue-400:96 165 250; --c-blue-500:66 105 224;
+  --c-blue-600:51 88 204; --c-blue-700:29 78 216; --c-blue-800:30 64 175; --c-blue-900:30 58 138;
     --c-amber-50:255 251 235; --c-amber-100:254 243 199; --c-amber-200:253 230 138; --c-amber-300:252 211 77;
     --c-amber-400:251 191 36; --c-amber-500:245 158 11; --c-amber-600:217 119 6; --c-amber-700:180 83 9; --c-amber-800:146 64 14; --c-amber-900:120 53 15;
     --c-red-50:254 242 242; --c-red-200:254 202 202; --c-red-300:252 165 165; --c-red-400:248 113 113;
@@ -95,4 +95,33 @@
     body.full-tables .md\:table-cell { display: table-cell !important; }
     /* 账号表另有 lg:/xl:table-cell 隐藏列（设备型号/自选）：不同步放开，移动端「完整表格」名不副实 */
     body.full-tables .lg\:table-cell, body.full-tables .xl\:table-cell { display: table-cell !important; }
+  }
+
+  /* ===== V3 设计 token（组件层的单一事实源）=====
+     组件类（partials/component_layer.html）只消费这些变量，不写死色值 —— 换肤改这一处。
+     深浅两套在这里给出，因为线条/填充/阴影在两种模式下必须不同（调色板本身不分模式：
+     深浅靠 Tailwind 的 dark: 变体换档位，故上面 :root 没有 .dark 覆写）。 */
+  :root {
+    --yb-primary: rgb(66 105 224);          /* #4269E0：白字 4.85:1，达标 */
+    --yb-primary-hover: rgb(51 88 204);
+    --yb-line: #ECECF1;                     /* 卡片描边：比 zinc-200 更浅更冷 */
+    --yb-field-bg: #F3F4F8;                 /* 输入框填充式底色（方案 C）*/
+    --yb-field-border: #E7E8EE;
+    --yb-shadow: 0 1px 2px rgba(0,0,0,.03), 0 2px 6px rgba(0,0,0,.03);   /* 平面柔和，替代原双层重阴影 */
+    --yb-switch-off: rgb(212 212 216);
+    --yb-ghost-bg: rgb(244 244 245);
+    --yb-ghost-bg-hover: rgb(228 228 231);
+    --yb-ghost-fg: rgb(63 63 70);
+    --yb-ring-offset: #FFFFFF;              /* 焦点光圈外圈：与所在卡片底色一致 */
+  }
+  .dark {
+    --yb-line: rgba(255,255,255,.10);
+    --yb-field-bg: rgba(255,255,255,.05);
+    --yb-field-border: rgba(255,255,255,.12);
+    --yb-shadow: 0 1px 2px rgba(0,0,0,.35);
+    --yb-switch-off: rgb(82 82 91);
+    --yb-ghost-bg: rgb(63 63 70);
+    --yb-ghost-bg-hover: rgb(82 82 91);
+    --yb-ghost-fg: rgb(228 228 231);
+    --yb-ring-offset: rgb(39 39 42);
   }

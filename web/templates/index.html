@@ -46,63 +46,6 @@
 </script>
 {% endblock %}
 
-{% block tailwind_components %}
-  /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
-  @layer components {
-    .yb-input {
-      @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2;
-    }
-    /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
-    @media (max-width: 639px) {
-      .yb-input { font-size: 16px; }
-    }
-    .yb-input-sm { @apply px-3 py-1.5; }
-    /* 占位提示与输入文字同字号（2026-09-09）：原先缩到 0.92em，导致空输入框
-       （显示 placeholder）比下拉框（显示已选值）明显小一号、同一行控件看着不齐。
-       手机端 16px 护栏由上方 .yb-input 媒体查询承担，此处不再按 em 缩放。 */
-    .yb-input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
-    .btn-primary {
-      @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
-    }
-    .btn-ghost {
-      @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200;
-    }
-    .yb-card {
-      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 md:p-6;
-      box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
-    }
-    .dark .yb-card { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
-    .yb-card-sm {
-      @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4;
-      box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
-    }
-    .dark .yb-card-sm { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
-    /* 图形开关（2026-08-15 用户反馈：文字按钮→直观图形开关；aria-checked 驱动形态，
-       开=蓝底滑块右移，关=灰底；disabled 半透明。审查后加大触控：w-12 h-7） */
-    .yb-switch {
-      @apply relative inline-flex w-12 h-7 rounded-full bg-zinc-300 dark:bg-zinc-600 transition-colors duration-150 shrink-0 cursor-pointer;
-    }
-    .yb-switch .yb-knob {
-      @apply absolute top-1 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-150;
-    }
-    .yb-switch[aria-checked="true"] { @apply bg-blue-500; }
-    .yb-switch[aria-checked="true"] .yb-knob { transform: translateX(1.5rem); }
-    .yb-switch[disabled] { @apply opacity-40 cursor-not-allowed; }
-    /* iOS Safari 聚焦缩放修复（2026-08-15 审查）：输入控件 <16px 时聚焦自动放大页面 */
-    @media (max-width: 767px) {
-      input, select, textarea { font-size: 16px !important; }
-    }
-    /* 键盘焦点可见性（a11y 整改）：输入框/按钮/开关统一蓝色 focus-visible 光圈，
-       鼠标点击不触发（focus-visible 仅键盘聚焦），不改变现有 hover/focus 配色 */
-    .yb-input:focus-visible,
-    .btn-primary:focus-visible,
-    .btn-ghost:focus-visible,
-    button:focus-visible,
-    [role="switch"]:focus-visible {
-      @apply outline-none ring-2 ring-blue-500;
-    }
-  }
-{% endblock %}
 
 {% block body %}
 <!-- 移动端顶栏 -->

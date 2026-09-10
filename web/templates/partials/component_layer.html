@@ -1,0 +1,103 @@
+{#- 组件层（@layer components，由 Tailwind 运行时编译）。
+
+    本文件是**全站唯一的组件类定义**——A2 之前它被复制在三份模板里并已漂移
+    （index 用组 focus-visible 规则、user/login 内联；.yb-switch 只在 index；
+    移动端 16px 规则只在 user/login）。V3-0 收敛为一份，取并集并统一。
+
+    ## 视觉 token 走 app.css 里的 CSS 变量
+    `--yb-line` / `--yb-field-bg` / `--yb-field-border` / `--yb-shadow` 在 app.css 的
+    `:root` / `.dark` 里定义，本文件的组件类只消费它们 —— 换肤只改一处。
+
+    ## ⚠ 主色与语义色为什么和画布稿不一样（改之前先读）
+    画布方案 C 挑的柔和色（主色 #6B8BF5、语义色 #3E9E6B/#5C7CE8/#C08341/#CE5A56）
+    是当**色块**看的；实测它们当**文字**用会掉到 AA 以下：
+      主色 #6B8BF5 白字 = 3.16:1；四个语义色 = 3.20~4.02:1（AA 正文需 ≥4.5）
+    而现状的语义文字色本来是达标的（success #15803D 5.02 / info #1D4ED8 6.70 /
+    warning #B45309 5.02 / error #B91C1C 6.47）。所以：
+      · 语义**文字色保持现状**（不动，本来就达标）；
+      · 主色改用 #4269E0 —— 白字 4.85:1、白底文字 4.85:1，既达标又比现状 #3B82F6
+        （3.68:1，其实已不达标）更收敛；
+      · 「柔和」由**结构**承担：更圆的角、更平的阴影、填充式输入框、更浅的描边。
+    **不要把语义文字色改浅**，那不是柔和，是降可读性。
+-#}
+  /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
+  @layer components {
+    /* ---- 输入类 ---- */
+    .yb-input {
+      /* 填充式：浅底 + 细描边（方案 C）。聚焦时描边转主色，不加白底反转。 */
+      @apply w-full rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none px-3 py-2;
+      background-color: var(--yb-field-bg);
+      border: 1px solid var(--yb-field-border);
+      transition: border-color .18s ease, background-color .18s ease;
+    }
+    .yb-input:focus { border-color: var(--yb-primary); }
+    /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
+    @media (max-width: 639px) {
+      .yb-input { font-size: 16px; }
+    }
+    .yb-input-sm { @apply px-3 py-1.5; }
+    .yb-input-ring { @apply transition-[border-color,box-shadow] duration-200; }
+    /* iOS Safari 聚焦缩放修复（2026-08-15 审查）：输入控件 <16px 时聚焦自动放大页面。
+       原先只在 user/login 有，index 靠 .yb-input 的媒体查询兜 —— 收敛后统一到元素级。 */
+    @media (max-width: 767px) {
+      input, select, textarea { font-size: 16px !important; }
+    }
+
+    /* ---- 按钮 ---- */
+    .btn-primary {
+      @apply text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
+      background-color: var(--yb-primary);
+    }
+    .btn-primary:hover { background-color: var(--yb-primary-hover); }
+    .btn-primary:disabled { @apply opacity-50 cursor-not-allowed; }
+    .btn-ghost {
+      @apply font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200;
+      background-color: var(--yb-ghost-bg);
+      color: var(--yb-ghost-fg);
+    }
+    .btn-ghost:hover { background-color: var(--yb-ghost-bg-hover); }
+
+    /* ---- 卡片 ---- */
+    .yb-card {
+      @apply bg-white dark:bg-zinc-800 rounded-xl p-4 md:p-6;
+      border: 1px solid var(--yb-line);
+      box-shadow: var(--yb-shadow);
+    }
+    .yb-card-sm {
+      @apply bg-white dark:bg-zinc-800 rounded-xl p-4;
+      border: 1px solid var(--yb-line);
+      box-shadow: var(--yb-shadow);
+    }
+
+    /* ---- 图形开关 ---- */
+    /* aria-checked 驱动形态：开=主色底滑块右移，关=灰底；disabled 半透明。
+       .yb-switch 原先只定义在 index.html，user/login 没有 —— 收敛后全站可用。 */
+    .yb-switch {
+      @apply relative inline-flex w-12 h-7 rounded-full transition-colors duration-150 shrink-0 cursor-pointer;
+      background-color: var(--yb-switch-off);
+    }
+    .yb-switch .yb-knob {
+      @apply absolute top-1 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-150;
+    }
+    .yb-switch[aria-checked="true"] { background-color: var(--yb-primary); }
+    .yb-switch[aria-checked="true"] .yb-knob { transform: translateX(1.5rem); }
+    .yb-switch[disabled] { @apply opacity-40 cursor-not-allowed; }
+
+    /* ---- 键盘焦点可见性（a11y，全站统一）---- */
+    /* 原先 index 用「button:focus-visible → ring-2」的组规则（**无 ring-offset**），
+       user/login 各自在 .yb-input/.btn-* 上内联「ring-2 + ring-offset-2」——
+       同一个 app 里按钮聚焦光圈长相不同。收敛为一条带 offset 的规则。 */
+    .yb-input:focus-visible,
+    .btn-primary:focus-visible,
+    .btn-ghost:focus-visible,
+    button:focus-visible,
+    select:focus-visible,
+    textarea:focus-visible,
+    [role="switch"]:focus-visible,
+    a:focus-visible {
+      @apply outline-none ring-2;
+      --tw-ring-color: var(--yb-primary);
+      --tw-ring-offset-width: 2px;
+      --tw-ring-offset-color: var(--yb-ring-offset);
+    }
+  }
