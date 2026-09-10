@@ -48,7 +48,8 @@ class TimePrefRestoreConsistencyTest(unittest.TestCase):
         os.environ["YIBAN_ENV_FILE"] = cls.env_file
         os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
         os.environ["YIBAN_DB_FILE"] = cls.db_file
-        os.environ["YIBAN_DISABLE_PURGE_LOOP"] = "1"
+        # setdefault（非硬赋值）：该键由 conftest 全局管理，本类只做兜底，绝不覆盖/清除
+        os.environ.setdefault("YIBAN_DISABLE_PURGE_LOOP", "1")
 
     @classmethod
     def tearDownClass(cls):
@@ -56,8 +57,14 @@ class TimePrefRestoreConsistencyTest(unittest.TestCase):
             with contextlib.suppress(Exception):
                 db._conn.close()
             db._conn = None
+        # 只清本类自己设置的键。**绝不清 YIBAN_DISABLE_PURGE_LOOP**——它由
+        # tests/conftest.py 在进程启动时 setdefault 设成 "1"，是"全量 pytest 反复
+        # create_app 时禁止启动 daily-purge 后台线程"的全局前提；一旦在此 pop 掉，
+        # 后续任何 create_app 都会真的起线程并把 web.app._purge_loop_started 置 True，
+        # 使 test_web_auth_security 的"该开关为 1 时不应启动 daily-purge"用例失败
+        # （2026-09-10 实际踩过：全量 1 failed，该用例在单跑时却通过）。
         for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_FILE",
-                  "YIBAN_DB_FILE", "YIBAN_DISABLE_PURGE_LOOP"):
+                  "YIBAN_DB_FILE"):
             os.environ.pop(k, None)
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
