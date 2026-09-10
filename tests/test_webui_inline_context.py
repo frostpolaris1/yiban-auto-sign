@@ -23,6 +23,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _frontend_src import frontend_source
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -101,13 +103,19 @@ class PoliceLinkSchemeTest(unittest.TestCase):
 
 
 class TemplateInlineContextTest(unittest.TestCase):
-    """模板静态契约：<script> 内 script_root 用 tojson；onclick/onchange 不拼用户可控值。"""
+    """模板静态契约：<script> 内 script_root 用 tojson；onclick/onchange 不拼用户可控值。
+
+    A1/A3 起模板被拆分（内联 JS 外提为 static/js/app.js、区块拆成 include）：
+    这里改用 frontend_source 聚合"模板 + include 片段 + 外链自研静态资源"。
+    否则 assertIn 会因目标串搬走而报红，assertNotIn（本组的安全契约）会因文件变空而恒真
+    ——后者是静默失去覆盖，比报红更危险。
+    """
 
     @classmethod
     def setUpClass(cls):
-        cls.index = _read("web", "templates", "index.html")
-        cls.login = _read("web", "templates", "login.html")
-        cls.user = _read("web", "templates", "user.html")
+        cls.index = frontend_source("index.html")
+        cls.login = frontend_source("login.html")
+        cls.user = frontend_source("user.html")
 
     def test_base_uses_tojson_in_all_templates(self):
         for name, tpl in (("index", self.index), ("login", self.login), ("user", self.user)):

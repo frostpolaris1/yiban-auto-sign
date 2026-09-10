@@ -94,6 +94,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _frontend_src import frontend_source
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import account_crypto  # noqa: E402
@@ -2436,6 +2438,17 @@ def _read_text(path):
         return f.read()
 
 
+def _frontend(name):
+    """某页的完整前端源码（模板 + include 片段 + 外链自研静态资源）。
+
+    A1/A3 起前端被拆分：`index.html` 的口令策略 JS 已外提到 `web/static/js/app.js`、
+    密码模态拆到 `templates/partials/modals/password.html`。若仍只读模板文件，
+    本组的 assertIn 会报红，而 assertNotIn（歧义措辞防回流）会因文件变空而恒真——
+    后者是静默失去覆盖，正是本组要防的"谁先漂移谁判红"失效。
+    """
+    return frontend_source(name)
+
+
 class PasswordPolicyParityB14Test(_B14AlertGateBase):
     """Task 6：口令策略前后端同口径，谁先漂移谁判红。
 
@@ -2467,7 +2480,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
     def test_templates_class_regexes_match_backend_constant(self):
         backend = list(self.webapp._PASSWORD_CLASS_PATTERNS)
         for name in PW_TEMPLATES:
-            src = _read_text(os.path.join(TEMPLATES_DIR, name))
+            src = _frontend(name)
             arr = _PW_JS_ARRAY_RE.search(src)
             self.assertIsNotNone(
                 arr,
@@ -2490,7 +2503,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(self.webapp._PASSWORD_POLICY_HINT, PW_HINT,
                          "后端 _PASSWORD_POLICY_HINT 与统一口径文案漂移")
         for name in PW_TEMPLATES:
-            src = _read_text(os.path.join(TEMPLATES_DIR, name))
+            src = _frontend(name)
             hint = _PW_JS_HINT_RE.search(src)
             self.assertIsNotNone(hint, f"{name} 缺少 `const PW_POLICY_HINT = '...'` 文案常量")
             self.assertEqual(
@@ -2508,7 +2521,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
     def test_ambiguous_wording_is_gone(self):
         """①文案歧义：旧措辞在随代码发布的四处文本里一律不得再现（含注释，防其回流）。"""
         targets = [("web/app.py", _read_text(os.path.join(BASE, "web", "app.py")))]
-        targets += [(n, _read_text(os.path.join(TEMPLATES_DIR, n))) for n in PW_TEMPLATES]
+        targets += [(n, _frontend(n)) for n in PW_TEMPLATES]
         for name, src in targets:
             for bad in ("两类以上", "含两类字符"):
                 self.assertNotIn(
@@ -2580,7 +2593,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
 
     def test_admin_password_modal_validates_classes(self):
         """②漏检修复：后台密码模态 set 分支必须按完整策略校验，不得只判长度。"""
-        src = _read_text(os.path.join(TEMPLATES_DIR, "index.html"))
+        src = _frontend("index.html")
         self.assertIn("function passwordPolicyOk(", src,
                       "index.html 缺少 passwordPolicyOk(v) 组合判定 helper")
         line = re.search(r"if \(_pwModalMode === 'set'[^\n]*", src)

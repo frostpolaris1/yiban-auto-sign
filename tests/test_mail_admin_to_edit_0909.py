@@ -29,6 +29,7 @@ import unittest
 from unittest import mock
 
 import env_io
+from _frontend_src import frontend_source
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -289,8 +290,11 @@ class PlaceholderFontParityTest(_Base):
     """占位文字字号：三模板不得再把 placeholder 缩到 0.92em（与输入值不一致）。"""
 
     def _read(self, name):
-        with io.open(os.path.join(BASE, "web", "templates", name), encoding="utf-8") as f:
-            return f.read()
+        # A1/A3 起前端被拆分（index.html 的内联 CSS 外提为 static/css/app.css、
+        # 设置区拆到 templates/tabs/settings.html）：改为聚合读取"模板 + include 片段 +
+        # 外链自研静态资源"。否则本组的 assertNotIn 会因目标文件变空而**恒真**——
+        # 占位字号缩放的防回流保护会静默失效。
+        return frontend_source(name)
 
     def test_no_placeholder_font_shrink(self):
         for name in ("index.html", "user.html", "login.html"):
