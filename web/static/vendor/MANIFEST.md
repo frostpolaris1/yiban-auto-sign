@@ -38,3 +38,31 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/tailwind.js, web/static/vendor/
 ```
 
 基线登记日期：2026-08-22（规范审查 M18）
+
+---
+
+## daisyui/daisyui-subset.css
+
+| 项 | 值 |
+| --- | --- |
+| 用途 | daisyUI 5 组件层（**定制子集**）。经 `templates/base.html` 以 `<link>` 引入，**必须放在 `tailwind.js` 之后**（顺序敏感） |
+| 来源 | `https://cdn.jsdelivr.net/npm/daisyui@5/`（MIT）。用 jsDelivr `combine` 只拼所需部件，不取全量 |
+| 组成 | `base/properties.css` + 24 个 `components/*.css`（alert badge button card checkbox divider dropdown fieldset input label link loading menu modal progress radio select stat status table textarea toast toggle tooltip）+ `theme/light.css` + `theme/dark.css` |
+| 本地改造 | ① **排除 `base/reset.css`**：经实测它就是 Tailwind **v4 的 preflight**（`*,:after,::backdrop,:before{box-sizing:border-box;border:0 solid;margin:0;padding:0}` + `html{font-family:var(--default-font-family,…)}`）。本项目已有 v3 preflight，引入会同时改变排版与字体栈。<br>② **排除 `base/rootcolor.css`**：它给 `:root` 设页面底色，会与 `body.bg-zinc-50` 抢。<br>③ **递归剥离全部 `@layer` 包装**：Tailwind v3 的 Play CDN 产出的是**无 layer 的普通 CSS**，而 CSS 级联里**「无 layer 的声明永远赢过任何 layer 内的声明」**；不剥离则 daisyUI 的组件会被 v3 preflight 整片压掉——实测 `.btn` 的 `padding` / `border-width` / `background-color` 全部落到 preflight 的 0 / transparent。 |
+| 大小 | **467,236 字节**（全量 `daisyui.css` 为 1,127,157 字节，本子集省 58%） |
+| SHA-256 | `49e3e6a2cc145934f0517b73dbe823fcb4e886cfded033d8f97dda13e70bbfb9` |
+| 验证 | 无头 Chrome 实测：`.btn` / `.badge` / `.card` 在 Tailwind v3 下 computed style 完整生效；子集内**无任何全局元素级规则**（不会波及现有元素）；`.yb-*` 自研类仍由本项目样式胜出。 |
+
+### 重建 / 升级命令
+
+构建脚本（**本地，不入库**，含个人路径）：`.superpowers/sdd/web-renewal/build-daisyui-subset.py`
+
+```bash
+<python> .superpowers/sdd/web-renewal/build-daisyui-subset.py web/static/vendor/daisyui/daisyui-subset.css
+```
+
+脚本用 jsDelivr `combine` 一次取齐全部部件，再递归剥离 `@layer`。
+**剥离 `@layer` 这一步不可省**，否则样式会被 Tailwind v3 的 preflight 压掉（原因见上表「本地改造 ③」）。
+升级后必须同步更新本表的「大小 / SHA-256」，并在浏览器复验 `.btn` 的 computed style。
+
+登记日期：2026-09-10（前端模块化 V1）
