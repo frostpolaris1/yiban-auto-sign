@@ -27,6 +27,9 @@ from datetime import datetime, timedelta
 
 # .env 解析与子进程环境构造与 run.sh / web 共用口径（提为共享模块）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# signin：补签轮判定与未了结状态码的单一事实源（宿主 run.sh 的进程内补签轮
+# 复用同一套函数，两侧不再各写一份判定）。
+import signin
 from child_env import build_child_env
 
 STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
@@ -34,14 +37,8 @@ LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log")
 ENV_FILE = os.environ.get("YIBAN_ENV_FILE", "/data/.env")
 
 
-def _state_file():
-    """容器内签到脚本写的当日结构化状态（signin.py:1801）。"""
-    return os.path.join(STATEDIR, f"sign-state-{datetime.now():%Y-%m-%d}.json")
-
-
-def _sched_run_file():
-    """当日全量签到完成标记（signin.py 全量收尾写，P1-1 闸门事实源）。"""
-    return os.path.join(STATEDIR, f"sched-run-{datetime.now():%Y-%m-%d}.json")
+# 当日状态/全量标记的路径与判定统一在 signin（full_run_done_today /
+# has_undone_accounts_today 接受 state_dir 参数），本模块不再各自拼路径。
 
 
 # 视为"未了结"的状态码：补签闸门据此判断当日是否需要重跑
@@ -57,11 +54,9 @@ def _sched_run_file():
 # 上午任务未配置=无点位，07:10 已配置=顺带补上）。重试 1 次即止
 # （signin.NO_POSITION_MAX_ATTEMPTS=1，signin 内部 retry budget 不进入失败重试），
 # 无点位账号被 07:10 整轮顺带重跑一次幂等无害，不会白跑太多。
-_UNDONE_STATUSES = frozenset((
-    "failed", "retrying", "pending",
-    "skipped_window", "skipped_norange",
-    "no_position",
-))
+# 未了结状态码集合：定义在 signin.UNDONE_STATUSES（单一事实源），此处仅别名引用。
+# 含义见上方长注释——skip 类若不视为未了结，补签会被闸门吞掉造成全天零签到。
+_UNDONE_STATUSES = signin.UNDONE_STATUSES
 
 
 def _full_run_done_today():
@@ -69,35 +64,25 @@ def _full_run_done_today():
 
     原 `_signed_today()`「任一账号 success 即视为已签」会把
     用户手动签到、首签部分成功误判为全站已签——06:31 首签整体跳过（其余账号
-    全天无人代签）、07:10 补签也被跳过（失败账号失去当日兜底）。
+    全天无人代签）、07:12 补签也被跳过（失败账号失去当日兜底）。
     新语义只认 signin 全量收尾写的标记；手动签到（--only）不写标记。
+
+    2026-09-10（批次20 B3）：判定实现收敛到 signin.full_run_done_today()——
+    宿主 run.sh 的进程内补签轮用同一套判定（signin.need_second_run），两侧共用
+    单一事实源，避免"宿主改了容器没改"的语义漂移。
     """
-    try:
-        with open(_sched_run_file(), encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, dict) and bool(data.get("completed"))
+    return signin.full_run_done_today(STATEDIR)
 
 
 def _has_undone_today():
     """当日是否存在未了结账号（failed/retrying/pending/skipped_*/no_position；
-    no_position 与宿主 run.sh SKIPPED 语义一致计入未了结，07:10 顺带重试一次，
-    详见 _UNDONE_STATUSES 说明）。
+    no_position 与宿主 run.sh SKIPPED 语义一致计入未了结，07:12 顺带重试一次，
+    详见 signin.UNDONE_STATUSES）。
 
-    标记存在但存在未了结账号 → 07:10 补签应重跑；无记录/文件缺失按「未跑过」
-    处理（允许触发，避免漏签）。"""
-    try:
-        with open(_state_file(), encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return True
-    if not isinstance(data, dict) or not data:
-        return True
-    return any(
-        isinstance(v, dict) and str(v.get("status", "")).strip() in _UNDONE_STATUSES
-        for v in data.values()
-    )
+    标记存在但存在未了结账号 → 补签应重跑；无记录/文件缺失按「未跑过」
+    处理（允许触发，避免漏签）。实现同 signin.has_undone_accounts_today()。
+    """
+    return signin.has_undone_accounts_today(STATEDIR)
 
 
 def _slot_marker(kind):
