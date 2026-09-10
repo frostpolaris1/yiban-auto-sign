@@ -7,7 +7,7 @@
           <span id="sign-mode-hint" class="hidden text-xs text-amber-600 dark:text-amber-400">（当前为随机签到模式，列表顺序不影响执行）</span>
         </p>
       </div>
-      <button onclick="openForm(null)" class="bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors duration-200 px-3 py-2 text-sm">
+      <button onclick="openForm(null)" class="btn-primary flex items-center gap-2 px-3">
         添加账号
       </button>
     </div>
@@ -66,7 +66,7 @@
         <input id="active-search" type="search" placeholder="搜索名称 / 手机号 / 用户名…" aria-label="搜索名称 / 手机号 / 用户名"
                class="w-full md:w-56 md:ml-auto yb-input yb-input-sm dark:bg-zinc-900">
       </div>
-      <div id="batch-bar-active" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-active" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('active','signin')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-blue-500 hover:bg-blue-600 text-white">签到</button> <button onclick="batchAccounts('active','delete')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('active')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
+      <div id="batch-bar-active" class="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-700/30"><span class="text-xs text-zinc-500">已选 <span id="batch-count-active" class="font-medium">0</span> 项</span> <button onclick="batchAccounts('active','signin')" class="btn-primary px-3 min-h-[44px] text-xs">签到</button> <button onclick="batchAccounts('active','delete')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">删除</button> <button onclick="clearBatch('active')" class="px-3 py-2 min-h-[44px] rounded-lg text-xs font-medium transition-colors duration-150 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700">取消选择</button></div>
       <div class="overflow-x-auto max-h-[420px] overflow-y-auto rounded-b-xl">
    <table class="w-full text-sm min-w-[640px] md:min-w-[800px] lg:min-w-[1000px] text-center">
         <thead>

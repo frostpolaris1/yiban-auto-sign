@@ -2484,12 +2484,12 @@ function renderMine() {
   $('mine-done').classList.toggle('hidden', mineAccounts.length === 0);
   mineAccounts.forEach((a, i) => {
     const card = document.createElement('div');
-    card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl bg-zinc-50/50 dark:bg-zinc-700/30 p-4';
+    card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl p-4';
     const calKey = 'mine-' + i;  // DOM id 用索引键（避免手机号进 id，可枚举泄露）
     card.innerHTML = `
-      <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
-          <span class="text-lg leading-none inline-flex text-zinc-500 dark:text-zinc-400">${a.deleted ? icon('trash') : stateIconSvg(a.state_status)}</span>
+          <span class="text-lg leading-none inline-flex text-zinc-500 dark:text-zinc-400" aria-hidden="true">${a.deleted ? icon('trash') : stateIconSvg(a.state_status)}</span>
           <div>
             <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
@@ -2511,7 +2511,7 @@ function renderMine() {
       ${a.logs && a.logs.length ? `
         <details class="mt-3">
           <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
-          <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
+          <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 yb-inset whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
       ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">审核通过后即可查看签到日历</div>' : ''}<div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${calKey}"></div>
     `;
@@ -2629,7 +2629,7 @@ function calLoadLog(btn, date) {
       return;
     }
     box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">${date} 签到记录（${data.logs.length} 条）</div>
-      <pre class="log-text text-zinc-600 dark:text-zinc-300 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(data.logs.join(String.fromCharCode(10)))}</pre>`;
+      <pre class="log-text text-zinc-600 dark:text-zinc-300 p-3 yb-inset whitespace-pre-wrap break-all">${esc(data.logs.join(String.fromCharCode(10)))}</pre>`;
   }).catch(e => { box.innerHTML = ''; toast(e.message, true); });
 }
 

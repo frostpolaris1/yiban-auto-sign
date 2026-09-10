@@ -56,6 +56,30 @@
       color: var(--yb-ghost-fg);
     }
     .btn-ghost:hover { background-color: var(--yb-ghost-bg-hover); }
+    /* ---- 危险按钮（.btn-danger）----
+       原为 2 处内联 `bg-red-500 hover:bg-red-600 text-white …`。实测白字 on red-500
+       只有 **3.76:1**（AA 正文需 ≥4.5）→ 改用 red-600（**4.83:1**）、hover red-700（6.47:1）。
+       刻意**不**引入 `--yb-*` 主题变量：红的取值不随深浅模式变化（与 --yb-primary 的动机不同）。 */
+    .btn-danger {
+      @apply text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200;
+      background-color: rgb(var(--c-red-600));
+    }
+    .btn-danger:hover { background-color: rgb(var(--c-red-700)); }
+    .btn-danger:disabled { @apply opacity-50 cursor-not-allowed; }
+
+    /* ---- 卡内嵌面板（.yb-inset）----
+       用于「卡片里再分一块」（目前是账号卡里的日志块）。层级固定为：
+         页面底 zinc-50/900 → .yb-card white/zinc-800 → .yb-inset zinc-50/zinc-900
+       即嵌面板比卡片**沉一档**，两种模式下都成立；再补一条描边，
+       避免只靠微弱色差区分。此前四个日志块各写一半（admin `bg-white dark:bg-zinc-900`、
+       user `bg-zinc-50 dark:bg-zinc-800`）—— 后者在 zinc-800 卡片上（暗色）**与卡片同色**，
+       等于没有底色；且四种写法里没有一套在两种模式下都可见。 */
+    .yb-inset {
+      @apply rounded-lg;
+      background-color: rgb(var(--c-zinc-50));
+      border: 1px solid var(--yb-line);
+    }
+    .dark .yb-inset { background-color: rgb(var(--c-zinc-900)); }
 
     /* ---- 卡片 ---- */
     .yb-card {
