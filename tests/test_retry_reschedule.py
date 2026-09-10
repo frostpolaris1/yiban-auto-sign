@@ -110,6 +110,68 @@ class RetryRescheduleTest(unittest.TestCase):
             self.assertEqual(attempt.call_count, 1, "窗口不足不应重试")
             self.assertFalse(results["13800138000"][0], "窗口不足应判失败")
 
+    def _run_status(self, reason, schedule):
+        """统一驱动：让某账号连续失败直到进入重试入队分支，返回 (_write_sign_state 调用, logger mock)。"""
+        def fake_attempt(acc):
+            return (False, reason, False, signin.STATUS_FAILED)
+
+        logmock = mock.Mock()
+        with mock.patch.object(signin, "datetime", FakeNow), \
+             mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
+             mock.patch.object(signin, "_write_sign_state") as ws, \
+             mock.patch.object(signin, "_update_cred_state"), \
+             mock.patch.object(signin, "logger", logmock), \
+             mock.patch.object(signin, "send_notification"), \
+             mock.patch.object(signin, "send_user_fail_mail"), \
+             mock.patch.object(signin, "_collect_admin_mail"), \
+             mock.patch.object(signin.time, "monotonic", return_value=100.0), \
+             mock.patch.object(signin.time, "sleep"):
+            signin.run_queue_retry([_acc("13800138000")], "", 0, 0, schedule=schedule)
+        return ws, logmock
+
+    def test_schedule_retry_state_and_log_include_reason(self):
+        """需求1（调度分支）：失败账号入队重试时，状态文件与 warning 日志都补记失败原因。"""
+        reason = "获取签到任务失败: 未登录或登录已经超时"
+        sched = {"13800138000": _dt(2026, 8, 27, 6, 40)}
+        ws, logmock = self._run_status(reason, sched)
+        retry_msgs = [c.args[2] for c in ws.call_args_list
+                      if c.args[1] == signin.STATUS_RETRYING]
+        self.assertTrue(retry_msgs, "未捕获到重试入队的状态写入")
+        self.assertTrue(all(reason in m for m in retry_msgs), "状态文件未补记失败原因")
+        warn_lines = [c.args[0] for c in logmock.warning.call_args_list
+                      if str(c.args[0]).startswith("[13800138000] ⏳ 待重试")]
+        self.assertTrue(warn_lines, "未捕获到重试入队日志")
+        self.assertTrue(all(reason in w for w in warn_lines), "warning 日志未补记失败原因")
+
+    def test_queue_retry_state_and_log_include_reason(self):
+        """需求1（队列回队尾分支）：同上，覆盖无计划（手动/列表）模式。"""
+        reason = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
+        ws, logmock = self._run_status(reason, None)
+        retry_msgs = [c.args[2] for c in ws.call_args_list
+                      if c.args[1] == signin.STATUS_RETRYING]
+        self.assertTrue(retry_msgs, "未捕获到重试入队的状态写入")
+        self.assertTrue(all(reason in m for m in retry_msgs), "状态文件未补记失败原因")
+        warn_lines = [c.args[0] for c in logmock.warning.call_args_list
+                      if str(c.args[0]).startswith("[13800138000] ⏳ 待重试")]
+        self.assertTrue(warn_lines, "未捕获到重试入队日志")
+        self.assertTrue(all(reason in w for w in warn_lines), "warning 日志未补记失败原因")
+
+    def test_retry_reason_sanitized_no_log_injection(self):
+        """需求1：含换行的原因经 _sanitize_text 转义，状态文件/日志不会被拆成多行。"""
+        reason = "获取签到任务失败\n未登录或登录已经超时"
+        sched = {"13800138000": _dt(2026, 8, 27, 6, 40)}
+        ws, logmock = self._run_status(reason, sched)
+        retry_msgs = [c.args[2] for c in ws.call_args_list
+                      if c.args[1] == signin.STATUS_RETRYING]
+        self.assertTrue(retry_msgs)
+        self.assertTrue(all(signin._sanitize_text(reason) in m for m in retry_msgs),
+                        "重试状态 message 应包含转义后的原因")
+        self.assertTrue(all("\n" not in m for m in retry_msgs), "原因含真实换行会污染状态文件")
+        warn_lines = [c.args[0] for c in logmock.warning.call_args_list
+                      if str(c.args[0]).startswith("[13800138000] ⏳ 待重试")]
+        self.assertTrue(all("\n" not in w for w in warn_lines),
+                        "原因换行会把日志拆成多行")
+
 
 if __name__ == "__main__":
     unittest.main()

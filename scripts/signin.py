@@ -2829,10 +2829,12 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
                 send_user_fail_mail(acc.owner, phone, message)
                 continue
-            _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
-            _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
+            # 重试入队统一兜底失败原因（用户需求）：把本次失败 message 原样补进
+            # 状态/事件/日志三处出口，原因经 _sanitize_text 防换行/回车注入（与 web 展示一致）。
+            _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
+            _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
             _push(acc, nxt)
-            logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次，{nxt.strftime('%H:%M:%S')} 再试）")
+            logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次，{nxt.strftime('%H:%M:%S')} 再试）: {_sanitize_text(message)}")
         return results
 
     while queue:
@@ -2944,14 +2946,16 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
         # 放回队尾：单次 sleep 保证总间隔 ≥ retry_min_interval，
         # 随机部分只用于打散，不允许把最小间隔缩水
-        _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
-        _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）")
+        # 重试入队统一兜底失败原因（用户需求）：把本次失败 message 原样补进
+        # 状态/事件/日志三处出口，原因经 _sanitize_text 防换行/回车注入（与 web 展示一致）。
+        _write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
+        _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
         retry_min_interval = RETRY_MIN_INTERVAL
         wait = max(retry_min_interval, retry_min_interval - gap_max + random.uniform(0, RETRY_GAP_MAX))
         logger.debug(f"[{phone}] 重试前等待 {wait:.1f}s（最小 {retry_min_interval}s）")
         time.sleep(wait)
         queue.append(acc)
-        logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次）")
+        logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次）: {_sanitize_text(message)}")
 
     return results
 
