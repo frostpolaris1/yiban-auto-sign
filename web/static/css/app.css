@@ -1,0 +1,98 @@
+/* 原 web/templates/index.html 内联样式外提（A1）：
+   第一段 = 原 58-84 行 <style>（:root/.dark 主题变量、#toast 动效等）
+   第二段 = 原 122-189 行 <style>（字体栈、tab 动效、抽屉/Toast、info-tip、移动端完整表格）
+   两段顺序与原文档一致，不可调换（后者覆盖前者的同名规则）。
+   注意：<style type="text/tailwindcss"> 那块仍留在模板内——vendor/tailwind.js 是浏览器
+   JIT 构建，只扫描文档内的该类型元素，外提即失效。 */
+  /* Tailwind 默认色板（原版配色）。类名经 tailwind.config 色板重映射读取这些变量；
+     如需换主题，在 :root/.dark 分别覆盖对应 RGB 三元组即可（深浅模式可不同值）。 */
+  :root {
+    --c-zinc-50:250 250 250; --c-zinc-100:244 244 245; --c-zinc-200:228 228 231; --c-zinc-300:212 212 216;
+    --c-zinc-400:161 161 170; --c-zinc-500:113 113 122; --c-zinc-600:82 82 91; --c-zinc-700:63 63 70;
+    --c-zinc-800:39 39 42; --c-zinc-900:24 24 27;
+    --c-blue-200:191 219 254; --c-blue-300:147 197 253; --c-blue-400:96 165 250; --c-blue-500:59 130 246;
+    --c-blue-600:37 99 235; --c-blue-700:29 78 216; --c-blue-800:30 64 175; --c-blue-900:30 58 138;
+    --c-amber-50:255 251 235; --c-amber-100:254 243 199; --c-amber-200:253 230 138; --c-amber-300:252 211 77;
+    --c-amber-400:251 191 36; --c-amber-500:245 158 11; --c-amber-600:217 119 6; --c-amber-700:180 83 9; --c-amber-800:146 64 14; --c-amber-900:120 53 15;
+    --c-red-50:254 242 242; --c-red-200:254 202 202; --c-red-300:252 165 165; --c-red-400:248 113 113;
+    --c-red-500:239 68 68; --c-red-600:220 38 38; --c-red-700:185 28 28; --c-red-800:153 27 27; --c-red-900:127 29 29;
+    --c-green-50:240 253 244; --c-green-200:187 247 208; --c-green-300:134 239 172; --c-green-400:74 222 128;
+    --c-green-500:34 197 94; --c-green-600:22 163 74; --c-green-700:21 128 61; --c-green-800:22 101 52; --c-green-900:20 83 45;
+  }
+  /* 统一线性图标（currentColor 继承文字颜色，尺寸随字号） */
+  .ic { width: 1em; height: 1em; display: inline-block; vertical-align: -0.125em; flex-shrink: 0; }
+  /* 深色模式适配：原生 date/time 输入框的日历/时钟指示图标在 WebKit 下为黑色，
+     深色背景上看不清 → 反色（2026-08-29 用户反馈：日志页「按日期查看」日历图标；
+     同规则覆盖 window-start/window-end/probe-time 等所有 time 输入） */
+  .dark input[type="date"]::-webkit-calendar-picker-indicator,
+  .dark input[type="time"]::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    cursor: pointer;
+  }
+
+  /* 正文：原版字体栈（MiSans 仅高分屏「桌面」加载——misans.css 的 media 含 pointer: fine；手机端与低分屏走系统字体保 ClearType） */
+  body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  /* 标题不再使用专属字体（2026-08-22 性能回退）：h1~h4 等继承下方正文栈，避免 2.8MB web 字体拖垮窄带宽访问；
+     方圆体源文件与转换命令保留在本地，需要时可恢复 */
+  /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
+  @media (max-resolution: 1.5dppx) {
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  }
+  pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+
+
+  /* Tab 切换淡入（克制动效）；系统开启「减弱动态效果」时保留纯淡入、去掉位移（动效审查修复③） */
+  @keyframes tab-fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    @keyframes tab-fade-in { from { opacity: 0; } to { opacity: 1; } }
+  }
+  .tab-enter { animation: tab-fade-in 0.18s ease-out; }
+  /* 表格 sticky 操作列：行 hover 时同步变色（否则滚动时背景穿帮） */
+  tr:hover td.sticky { background-color: rgb(250 250 250); }
+  .dark tr:hover td.sticky { background-color: rgb(39 39 42 / 0.5); }
+
+  /* ===== 动效审查修复：移动端抽屉与 Toast ===== */
+  /* 抽屉遮罩淡入（旧为瞬显，开抽屉时有明暗跳变）；md:hidden 在桌面隐藏，不受影响 */
+  #sidebar-overlay { opacity: 0; pointer-events: none; transition: opacity 0.18s ease-out; }
+  #sidebar-overlay.open { opacity: 1; pointer-events: auto; }
+  /* 「减弱动态效果」下面板瞬时开合（去平移），遮罩保留淡入 */
+  @media (prefers-reduced-motion: reduce) {
+    #sidebar { transition-duration: 0s; }
+  }
+  /* Toast（修复⑥）：入场自下方 10px 浮入（@starting-style），退出仅快速淡出；
+     全程 transition 可中断（淡出途中再次触发会平滑拉回）。
+     不支持 @starting-style 的旧浏览器自动退化为无入场动画，功能不受影响。
+     用 data-hidden 属性替代 hidden 类显示/隐藏，以保留过渡能力（aria-live 不受影响）。 */
+  #toast { opacity: 1;
+    pointer-events: none;  /* 纯状态展示：隐藏态仅 opacity:0（保留过渡），不设会拦截底部点击 */
+    transition: opacity 0.16s ease-out, transform 0.16s ease-out; }
+  #toast[data-hidden] { opacity: 0; transform: translate(-50%, 0);
+    transition: opacity 0.12s ease; }
+  @starting-style {
+    #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 10px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    @starting-style { #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 0); } }
+  }
+  /* ===== 信息提示（ⓘ）：hover 与键盘 focus 显示的绝对定位浮层 =====
+     配色跟随主题（浅色白底、深色黑底）；max-width 72vw 防手机端溢出（桌面长文案也不超半屏）；
+     浮层贴齐图标右缘展开——四处 ⓘ 都在卡片头右端，左对齐会撑出屏幕右缘无法阅读 */
+  .info-tip { position: relative; display: inline-flex; align-items: center; cursor: help; }
+  .info-pop { position: absolute; top: 100%; right: 0; z-index: 30; opacity: 0; visibility: hidden;
+    transition: opacity 0.15s ease-out, visibility 0.15s ease-out; margin-top: 6px;
+    width: max-content; max-width: 72vw; padding: 8px 10px; border-radius: 8px; text-align: left;
+    background: rgb(255 255 255); color: rgb(24 24 27);
+    border: 1px solid rgb(228 228 231); font-size: 12px; line-height: 1.7;
+    box-shadow: 0 8px 24px -8px rgba(0,0,0,.25); }
+  .dark .info-pop { background: rgb(24 24 27); color: rgb(250 250 250); border-color: rgb(63 63 70); }
+  .info-tip:hover .info-pop, .info-tip:focus .info-pop { opacity: 1; visibility: visible; }
+  /* 分点排版：标签独占一行（块级），要点间留空隙，逐点阅读 */
+  .info-pop b { display: block; margin-top: 7px; font-weight: 600; }
+  .info-pop b:first-child { margin-top: 0; }
+  /* 「移动端显示完整表格」开关：窄屏默认隐藏的 md:table-cell 列强制显示
+     （仅 <767px 生效，桌面本就完整显示；记忆于 localStorage yiban-full-tables） */
+  @media (max-width: 767px) {
+    body.full-tables .md\:table-cell { display: table-cell !important; }
+    /* 账号表另有 lg:/xl:table-cell 隐藏列（设备型号/自选）：不同步放开，移动端「完整表格」名不副实 */
+    body.full-tables .lg\:table-cell, body.full-tables .xl\:table-cell { display: table-cell !important; }
+  }
