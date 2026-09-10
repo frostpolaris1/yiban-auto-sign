@@ -586,10 +586,10 @@ async function submitPurgeAccount(idx, a, pw) {
 
 function statusBadge(a) {
   if (a.status === 'pending')
-    return '<span class="inline-flex items-center rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2.5 py-0.5 whitespace-nowrap">待审核</span>';
+    return '<span class="yb-badge yb-badge-warning">待审核</span>';
   if (a.status === 'rejected')
-    return '<span class="inline-flex items-center rounded-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2.5 py-0.5 whitespace-nowrap">已拒绝</span>';
-  return '<span class="inline-flex items-center rounded-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2.5 py-0.5 whitespace-nowrap">正常</span>';
+    return '<span class="yb-badge yb-badge-error">已拒绝</span>';
+  return '<span class="yb-badge yb-badge-success">正常</span>';
 }
 
 function pendingAccountRow(a, key) {
@@ -2203,7 +2203,7 @@ function renderUsers(users, builtinAdmin) {
   builtin.innerHTML = `
     ${state.batchMode ? '<td class="px-4 py-3 w-12"></td>' : ''}
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(builtinAdmin)}">${esc(builtinAdmin)} <span class="text-xs text-zinc-500 dark:text-zinc-400">（主管理员）</span></td>
-    <td class="px-4 py-3"><span class="inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2.5 py-0.5">管理员</span></td>
+    <td class="px-4 py-3"><span class="yb-badge yb-badge-info">管理员</span></td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
     <td class="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400 sticky right-0 bg-zinc-50/50 dark:bg-zinc-700/30 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">不可改</td>`;
   tbody.appendChild(builtin);
@@ -2257,8 +2257,8 @@ function userRow(u, key) {
   const isAdmin = u.role === 'admin';
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择用户 ${esc(maskEmail(u.email))}" ${batchSel[key].has(u.email) ? 'checked' : ''} data-batch-key="${key}" data-batch-id="${esc(u.email)}"></td>` : '';
   const roleBadge = isAdmin
-    ? '<span class="inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2.5 py-0.5">管理员</span>'
-    : '<span class="inline-flex items-center rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2.5 py-0.5">普通用户</span>';
+    ? '<span class="yb-badge yb-badge-info">管理员</span>'
+    : '<span class="yb-badge yb-badge-neutral">普通用户</span>';
   tr.innerHTML = `
     ${cb}
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(maskEmail(u.email))}">${esc(maskEmail(u.email))}</td>
@@ -2470,8 +2470,8 @@ async function clearMineTimePref() {
 }
 
 function mineStatusBadge(status) {
-  if (status === 'pending') return '<span class="inline-flex items-center rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2.5 py-0.5 whitespace-nowrap">待审核</span>';
-  if (status === 'active') return '<span class="inline-flex items-center rounded-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2.5 py-0.5 whitespace-nowrap">已生效</span>';
+  if (status === 'pending') return '<span class="yb-badge yb-badge-warning">待审核</span>';
+  if (status === 'active') return '<span class="yb-badge yb-badge-success">已生效</span>';
   return esc(status);
 }
 
@@ -2500,7 +2500,7 @@ function renderMine() {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          ${a.deleted ? '<span class="inline-flex items-center rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2.5 py-0.5">已删除</span>'
+          ${a.deleted ? '<span class="yb-badge yb-badge-neutral">已删除</span>'
             : mineStatusBadge(a.status)}
           ${a.deleted
             ? '<span class="text-sm text-zinc-500 dark:text-zinc-400">待管理员在账号列表的待删除区处理</span>'
