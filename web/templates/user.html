@@ -121,12 +121,12 @@
 
 <main class="max-w-4xl mx-auto px-4 py-6">
 <!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center px-4 py-2">
+<div id="announcement-bar" class="hidden mb-3 yb-banner yb-alert-warning text-center">
   <span id="announcement-text"></span>
 </div>
 
 <!-- 调度模式提示条（调度 v2：模式与开关状态对用户透明） -->
-<div id="schedule-banner" class="hidden mb-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-300 text-sm px-4 py-2 rounded-lg">
+<div id="schedule-banner" class="hidden mb-3 yb-alert yb-alert-info">
   <span id="schedule-banner-text"></span>
 </div>
 
@@ -204,7 +204,7 @@
                   class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
         </div>
         <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。</p>
-        <div id="account-form-error" role="alert" class="hidden mb-3 rounded-lg border border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300"></div>
+        <div id="account-form-error" role="alert" class="hidden mb-3 yb-alert yb-alert-error"></div>
         <div class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
@@ -606,7 +606,7 @@ function renderList() {
         </div>
       </div>
       ${a.status === 'rejected' ? `
-        <div class="mt-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">账号已被拒绝${a.reject_reason ? '：' + esc(a.reject_reason) : ''}。修改后点击「修改并重新提交」重新进入审核。</div>` : ''}
+        <div class="mt-2 yb-alert yb-alert-error yb-alert-sm">账号已被拒绝${a.reject_reason ? '：' + esc(a.reject_reason) : ''}。修改后点击「修改并重新提交」重新进入审核。</div>` : ''}
       ${a.logs && a.logs.length ? `
         <details class="mt-3">
           <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>

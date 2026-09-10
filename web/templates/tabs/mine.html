@@ -62,36 +62,36 @@
     </div>
     <div class="yb-card">
       <div id="mine-form-title" class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
-      <div id="mine-done" class="hidden mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
+      <div id="mine-done" class="hidden mb-4 yb-alert yb-alert-success">
         已提交账号，可编辑或删除后重新提交。
       </div>
       <form id="mine-form" class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label for="m-name" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">名称 / 备注（可选）</label>
           <input id="m-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
           <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">备注会显示给管理员，用于审核与定位签到问题；以公告为准。</p>
         </div>
 
         <div>
           <label for="m-phone" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">易班手机号 <span class="text-red-500">*</span></label>
           <input id="m-phone" type="tel" inputmode="numeric" maxlength="20" required placeholder="登录易班的手机号"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
         </div>
         <div class="md:col-span-2">
           <label for="m-password" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">易班密码 <span class="text-red-500">*</span></label>
           <input id="m-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
         </div>
         <div>
           <label for="m-model" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备型号（可选，不清楚就留空）</label>
           <input id="m-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
         </div>
         <div>
           <label for="m-code" class="block text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-1">设备识别码（可选，不清楚就留空）</label>
           <input id="m-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
-                 class="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 px-3 py-2">
+                 class="yb-input">
           <button id="clear-mcode-btn" type="button" onclick="toggleMineClearCode()"
                   class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
         </div>

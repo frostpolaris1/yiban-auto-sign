@@ -106,7 +106,7 @@
           class="fixed top-4 right-4 z-50 w-11 h-11 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow"><span data-icon="moon"></span></button>
   <div class="w-full max-w-md">
 <!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-400 text-sm text-center pl-4 pr-16 py-2">
+<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 yb-banner yb-alert-warning text-center pl-4 pr-16">
   <span id="announcement-text"></span>
 </div>
 
@@ -139,7 +139,7 @@
                     class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
           </div>
         </div>
-        <div id="error-box" role="alert" tabindex="-1" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2"></div>
+        <div id="error-box" role="alert" tabindex="-1" class="hidden yb-alert yb-alert-error"></div>
         <button type="button" id="restore-btn" onclick="restoreAccount()"
                 class="hidden w-full mt-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 disabled:opacity-60 disabled:cursor-not-allowed">恢复我的账号（7 天内可撤销）</button>
         <button type="submit" id="login-btn"
@@ -150,7 +150,7 @@
 
       <!-- 注册表单 -->
       <form id="register-form" class="space-y-4 hidden">
-        <p id="register-paused-hint" class="hidden text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
+        <p id="register-paused-hint" class="hidden yb-alert yb-alert-warning">
           注册已暂停，请联系管理员添加账号。已注册用户可直接登录。
         </p>
         <div>
@@ -188,7 +188,7 @@
           <input id="reg-agree" type="checkbox" class="mt-0.5 w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 accent-blue-500">
           <span>我已阅读并同意 <button type="button" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</button> 与 <button type="button" onclick="showPrivacy()" class="text-blue-500 hover:underline">《隐私政策》</button></span>
         </label>
-        <div id="reg-error-box" role="alert" tabindex="-1" class="hidden text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2"></div>
+        <div id="reg-error-box" role="alert" tabindex="-1" class="hidden yb-alert yb-alert-error"></div>
         <button type="submit" id="register-btn"
                 class="w-full btn-primary flex items-center justify-center gap-2 px-3">
           <span id="register-btn-text">注册并登录</span>
