@@ -1,3 +1,4 @@
+{% import "macros/ui.html" as ui %}
   <section id="tab-logs" class="hidden">
     <div class="mb-4">
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">签到日志</h1>
@@ -37,7 +38,7 @@
         <span id="log-lines-info" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
       </div>
       <pre id="log-box" role="log" aria-label="签到日志" tabindex="0" class="log-text text-zinc-700 dark:text-zinc-200 p-4 overflow-auto h-[calc(100vh-320px)] min-h-[300px] whitespace-pre-wrap break-all"></pre>
-      <div id="log-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">（暂无签到日志，等待定时任务执行…）</div>
+      {{ ui.empty("log-empty", "（暂无签到日志，等待定时任务执行…）") }}
       <!-- 探针（健康检查）当日结构化事件：v0.24.4 前仅落库无可见出口 -->
       <div id="probe-block" class="hidden border-t border-zinc-100 dark:border-zinc-700 px-4 py-3">
         <details>

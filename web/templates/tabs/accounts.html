@@ -1,3 +1,4 @@
+{% import "macros/ui.html" as ui %}
   <section id="tab-accounts">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
       <div>
@@ -51,7 +52,7 @@
           </thead>
           <tbody id="accounts-pending-tbody"></tbody>
         </table>
-        <div id="accounts-pending-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无待处理账号</div>
+        {{ ui.empty("accounts-pending-empty", "暂无待处理账号") }}
       </div>
     </div>
 
@@ -83,9 +84,7 @@
         </thead>
         <tbody id="accounts-tbody"></tbody>
       </table>
-        <div id="accounts-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">
-          暂无账号，点右上角「添加账号」配置
-        </div>
+        {{ ui.empty("accounts-empty", "暂无账号，点右上角「添加账号」配置") }}
       </div>
     </div>
 
@@ -117,7 +116,7 @@
           </thead>
           <tbody id="accounts-deleted-tbody"></tbody>
         </table>
-        <div id="accounts-deleted-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">暂无待删除账号</div>
+        {{ ui.empty("accounts-deleted-empty", "暂无待删除账号") }}
       </div>
     </div>
   </section>

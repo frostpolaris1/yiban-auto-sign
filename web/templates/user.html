@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 
+{% import "macros/ui.html" as ui %}
 {% block title %}我的账号 · 易班自动签到{% endblock %}
 
 {% block head_styles %}
@@ -174,9 +175,7 @@
       <span class="inline-flex items-center gap-1"><span data-icon="retry"></span>重试</span><span class="inline-flex items-center gap-1"><span data-icon="ban"></span>跳过</span><span class="inline-flex items-center gap-1"><span data-icon="minus"></span>无需</span><span class="inline-flex items-center gap-1"><span data-icon="pause"></span><span data-icon="stop"></span>暂停/已取消</span>
     </div>
 
-    <div id="accounts-empty" class="hidden text-center text-sm text-zinc-400 dark:text-zinc-500 py-8">
-      还没有提交账号
-    </div>
+    {{ ui.empty("accounts-empty", "还没有提交账号") }}
 
     <div id="account-list" class="space-y-3"></div>
 
