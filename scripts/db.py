@@ -2090,7 +2090,7 @@ def update_user(email, fields):
 # 用户主动注销（软删除 + 宽限期，Phase 5）
 # ---------------------------------------------------------------------------
 def soft_delete_user_with_accounts(email):
-    """软注销：标记用户 deleted=1，并软删除其易班账号与 time_prefs。
+    """软注销：标记用户 deleted=1，并软删除其易班账号。
 
     2026-08-16 安全审查（用户提出错位问题）：账号由物理删除改为软删除，
     与管理员删除账号的 7 天保留语义对齐——宽限期内 restore_user 可完整恢复
@@ -2101,6 +2101,16 @@ def soft_delete_user_with_accounts(email):
     多容器共享同一库时两名管理员可同时通过检查双双注销，系统失去全部管理
     入口（内置管理员未配置时彻底无法进入）。现于 BEGIN IMMEDIATE 后 COUNT 复核，
     命中即抛 LastAdminError（web 捕获转 400）。
+
+    2026-09-10（批次20 D 项）**不再物理删除 time_prefs**：原实现注销时物理删自选
+    时间片，而"账号级软删"路径（set_account_deleted）不删——两条同称"7 天内可反悔"
+    的可逆路径对自选命运的处置相反（账号级保留 / 注销丢失），用户无法预期。
+    统一为"软删阶段一律保留，仅在物理清除时连带清理"（_purge_expired_deleted 与
+    purge_deleted_users_hard 都会按 phone 清 prefs），因此不存在残留风险：
+    restore_user 后自选完整回来，与账号级恢复行为一致。
+    time_pref_stats 本就按 accounts.deleted=0 过滤，残留 pref 不会虚高拥挤度。
+    （本条为批次5 C-2"恢复不还自选=存储优化"裁决的**有意修正**：可逆操作应完整可逆，
+    且 prefs 行极小，优化收益可忽略。）
 
     返回是否找到并注销了有效用户。
     """
@@ -2133,7 +2143,8 @@ def soft_delete_user_with_accounts(email):
                 "UPDATE accounts SET deleted=1, deleted_at=? WHERE owner=? AND deleted=0",
                 (now, email),
             )
-            _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])
+            # 自选时间片刻意保留至物理清除（见 docstring）；会话缓存仍即时停用——
+            # 它是易班登录态凭据缓存，注销后保留会扩大凭据暴露面，且恢复时重新登录即可
             _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 注销后停用会话缓存
             conn.execute(
                 "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
