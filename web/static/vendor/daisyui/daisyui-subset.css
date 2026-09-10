@@ -156,7 +156,7 @@ color-scheme: dark;
 --depth: 1;
 --noise: 0;
 }
-/*# sourceMappingURL=/sm/caded8efea7fc24740a63e76b156d1b6b1f8d12707a19abbce553d005f6a9e55.map */
+
 /* ===== COMPAT：分片组装漏掉的变量补齐（勿删）=====
  * 为什么需要：daisyUI 的 --fx-noise 只定义在它**单体包**的 base 段里
  * （`:root{--fx-noise:url("data:image/svg+xml,...")}`），**不在任何 base/*.css 分片**，

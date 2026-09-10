@@ -49,8 +49,8 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/tailwind.js, web/static/vendor/
 | 来源 | `https://cdn.jsdelivr.net/npm/daisyui@5/`（MIT）。用 jsDelivr `combine` 只拼所需部件，不取全量 |
 | 组成 | `base/properties.css` + 24 个 `components/*.css`（alert badge button card checkbox divider dropdown fieldset input label link loading menu modal progress radio select stat status table textarea toast toggle tooltip）+ `theme/light.css` + `theme/dark.css` |
 | 本地改造 | ① **排除 `base/reset.css`**：经实测它就是 Tailwind **v4 的 preflight**（`*,:after,::backdrop,:before{box-sizing:border-box;border:0 solid;margin:0;padding:0}` + `html{font-family:var(--default-font-family,…)}`）。本项目已有 v3 preflight，引入会同时改变排版与字体栈。<br>② **排除 `base/rootcolor.css`**：它给 `:root` 设页面底色，会与 `body.bg-zinc-50` 抢。<br>③ **递归剥离全部 `@layer` 包装**：Tailwind v3 的 Play CDN 产出的是**无 layer 的普通 CSS**，而 CSS 级联里**「无 layer 的声明永远赢过任何 layer 内的声明」**；不剥离则 daisyUI 的组件会被 v3 preflight 整片压掉——实测 `.btn` 的 `padding` / `border-width` / `background-color` 全部落到 preflight 的 0 / transparent。 |
-| 大小 | **468,261 字节**（全量 `daisyui.css` 为 1,127,157 字节，本子集省约 58%） |
-| SHA-256 | `60581196bd16e1dbd71b5ddbba81d264a034641dcfdaed7409817766f40f68d2` |
+| 大小 | **468,165 字节**（全量 `daisyui.css` 为 1,127,157 字节，本子集省约 58%） |
+| SHA-256 | `6d9ae669e84bfd8b10aa937cfbf772bf50e3b97cc9742849a53e3f0d954fddc4` |
 | ⑤ 补齐分片组装漏掉的变量 | **`--fx-noise`**：它只定义在 daisyUI **单体包**的 base 段（`:root{--fx-noise:url("data:image/svg+xml,…")}`），**不在任何 `base/*.css` 分片**里，按分片 combine 必然漏掉；而 button/menu/toggle/checkbox/radio/badge/alert **七个已引入组件**都以 `background-image: none, var(--fx-noise)` **无回退**引用它，缺失会让整条声明作废。本项目 `--noise:0`（关闭噪点），故补 `none`。**`--color-black`** 则是**上游自身也从未定义**的变量（status 组件无回退引用），一并补上。补法见文件末尾 COMPAT 注释。 |
 | 验证 | 无头 Chrome 实测：`.btn` / `.badge` / `.card` 在 Tailwind v3 下 computed style 完整生效；子集内**无任何全局元素级规则**（不会波及现有元素）；`.yb-*` 自研类仍由本项目样式胜出。 |
 
