@@ -1934,7 +1934,14 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         self.assertEqual(len(self._rows()), 2, "409 后不得有任何物理清除")
 
     def test_batch_soft_delete_and_restore_still_need_no_password(self):
-        """反向保护：软删/恢复是可逆动作，不得被本次改动顺带要求口令。"""
+        """反向保护：软删/恢复是可逆动作，不得被本次改动顺带要求口令。
+
+        2026-09-10（批次20 Y1）口径变更：软删**仍然不要求口令**（用户裁决：软删可逆，
+        加口令只增误伤），但**必须发高危告警**——它虽可逆，却立即停止该用户代签且
+        受害者无法自助恢复（/api/my-accounts/<idx>/restore 对管理员删除行返回 403），
+        被盗的注册管理员会话可借此静默让全站停签。恢复（restore）仍是无副作用可逆
+        动作，不告警。
+        """
         self._add_account("13800138001", name="A1")
         self._add_account("13800138002", name="A2")
         phones = [a["phone"] for a in self._rows()]
@@ -1943,11 +1950,16 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
                    json={"action": "delete", "ids": [0, 1], "phones": phones}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(all(a.get("deleted") for a in self._rows()))
+        titles = self._titles()
+        self.assertEqual(len(titles), 1, f"软删应产生 1 条汇总高危告警，实际 {titles}")
+        self.assertEqual(titles[0], "高危管理操作告警")
+        self.assertIn("软删", self.alerts[0][1])
+        self.assertIn("138****8001", self.alerts[0][1], "汇总告警应含脱敏手机号")
         r2 = c.post("/api/accounts/batch",
                     json={"action": "restore", "ids": [0, 1], "phones": phones}, headers=h)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertFalse(any(a.get("deleted") for a in self._rows()))
-        self.assertEqual(self.alerts, [], "可逆动作既不要求口令，也不该触发高危告警")
+        self.assertEqual(self._titles(), titles, "恢复（restore）不应新增任何告警")
 
     def test_batch_param_errors_still_checked_before_gate(self):
         """既有 400 校验优先级不变：未知动作/空选择/超上限都不该被改成交给门禁判。"""
