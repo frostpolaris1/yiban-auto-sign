@@ -34,8 +34,9 @@
 # 环境变量（均可覆盖）：
 #   YIBAN_SSH_HOST       ssh 别名，默认 yiban（~/.ssh/config 中已配置，禁止直连 IP）
 #   REMOTE_BACKUP_DIR    生产备份目录，默认 /var/backups
-#   LOCAL_MIRROR_DIR     本地镜像目录，Windows 默认 D:/code/backups/yiban-prod-mirror，
-#                        其他平台默认 $HOME/yiban-prod-mirror
+#   LOCAL_MIRROR_DIR     本地镜像目录，默认 $HOME/yiban-prod-mirror
+#                        （运维若想落在别处——例如非系统盘——请显式传入该变量，
+#                        不要把个人目录布局写进脚本默认值：本仓库公开）
 #   LOCAL_KEEP           本地保留份数，默认 60（0=不清理）
 #   PULL_MAX_FETCH       单次最多拉取份数，默认 30（防止误配导致一次拉爆）
 #   STALE_DAYS           新鲜度阈值（天），默认 2；远端最新副本超过它、或本地落后于
@@ -51,12 +52,9 @@ LOCAL_KEEP="${LOCAL_KEEP:-60}"
 MAX_FETCH="${PULL_MAX_FETCH:-30}"
 STALE_DAYS="${STALE_DAYS:-2}"
 
-if [ -z "${LOCAL_MIRROR_DIR:-}" ]; then
-    case "$(uname -s)" in
-        MINGW*|MSYS*|CYGWIN*) LOCAL_MIRROR_DIR="D:/code/backups/yiban-prod-mirror" ;;
-        *)                    LOCAL_MIRROR_DIR="$HOME/yiban-prod-mirror" ;;
-    esac
-fi
+# 默认落在用户主目录下（Git Bash 的 $HOME 与 Linux 一致），保持跨平台中性；
+# 需要换盘/换目录的部署用 LOCAL_MIRROR_DIR 覆盖即可。
+LOCAL_MIRROR_DIR="${LOCAL_MIRROR_DIR:-$HOME/yiban-prod-mirror}"
 
 # 远端副本列表（--status/新鲜度自检可能在正式列举前引用它，先声明以配合 set -u）
 REMOTE_ARR=()

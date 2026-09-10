@@ -83,6 +83,18 @@ class PullProdBackupContractTest(unittest.TestCase):
         self.assertIn("增量", self.src)
         self.assertIn("补齐", self.src)
 
+    def test_default_mirror_dir_is_neutral(self):
+        """默认镜像目录不得写入某个运维者的个人目录布局（本仓库公开）。
+
+        2026-09-10 复检：脚本首版把 Windows 默认写成 D:/code/backups/...（本机路径），
+        属个人环境信息泄漏到公开仓库；现改为跨平台中性的 $HOME/yiban-prod-mirror，
+        需要换盘由 LOCAL_MIRROR_DIR 覆盖。此断言防止回退。
+        """
+        self.assertIn('LOCAL_MIRROR_DIR="${LOCAL_MIRROR_DIR:-$HOME/yiban-prod-mirror}"',
+                      self.src)
+        self.assertNotIn("D:/code/", self.src)
+        self.assertNotIn("C:/Users/", self.src)
+
 
 if __name__ == "__main__":
     unittest.main()
