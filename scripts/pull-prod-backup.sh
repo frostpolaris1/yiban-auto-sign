@@ -20,9 +20,16 @@
 #      "生产备份悄悄坏了近一个月才被发现"的情形。
 #
 # 用法：
-#   bash scripts/pull-prod-backup.sh              # 增量拉取 + 校验 + 清理
+#   bash scripts/pull-prod-backup.sh              # 增量拉取 + 校验 + 清理 + 新鲜度报告
 #   bash scripts/pull-prod-backup.sh --check      # 只报告（列出远端/本地差异，不下载）
 #   bash scripts/pull-prod-backup.sh --verify     # 只校验本地已有副本完整性
+#   bash scripts/pull-prod-backup.sh --status     # 只输出一行新鲜度（供定时任务快速判断）
+#
+# 触发方式与「开机时间不定」的适配（2026-09-10 用户约束）：
+#   拉取是**增量 + 补齐**的——任何一次运行都会把本地缺失的历史副本全部拉回，
+#   因此不需要"每天定时准点"：只要当天电脑开过机、脚本被触发过一次，就会自动补齐。
+#   配套做法：① 自动化按较短间隔反复触发（无新增时几乎零开销，见下）；
+#            ② 脚本自带新鲜度自检（STALE_DAYS），落后即非 0 退出，让触发方醒目告警。
 #
 # 环境变量（均可覆盖）：
 #   YIBAN_SSH_HOST       ssh 别名，默认 yiban（~/.ssh/config 中已配置，禁止直连 IP）
@@ -31,8 +38,10 @@
 #                        其他平台默认 $HOME/yiban-prod-mirror
 #   LOCAL_KEEP           本地保留份数，默认 60（0=不清理）
 #   PULL_MAX_FETCH       单次最多拉取份数，默认 30（防止误配导致一次拉爆）
+#   STALE_DAYS           新鲜度阈值（天），默认 2；远端最新副本超过它、或本地落后于
+#                        远端，均视为异常并非 0 退出
 #
-# 退出码：0=成功（或 --check 无差异）；1=失败/校验不过；2=用法错误
+# 退出码：0=成功且新鲜；1=失败/校验不过/不新鲜；2=用法错误
 umask 077
 set -u
 
@@ -40,6 +49,7 @@ SSH_HOST="${YIBAN_SSH_HOST:-yiban}"
 REMOTE_DIR="${REMOTE_BACKUP_DIR:-/var/backups}"
 LOCAL_KEEP="${LOCAL_KEEP:-60}"
 MAX_FETCH="${PULL_MAX_FETCH:-30}"
+STALE_DAYS="${STALE_DAYS:-2}"
 
 if [ -z "${LOCAL_MIRROR_DIR:-}" ]; then
     case "$(uname -s)" in
@@ -48,13 +58,17 @@ if [ -z "${LOCAL_MIRROR_DIR:-}" ]; then
     esac
 fi
 
+# 远端副本列表（--status/新鲜度自检可能在正式列举前引用它，先声明以配合 set -u）
+REMOTE_ARR=()
+
 MODE="pull"
 case "${1:-}" in
     "")        MODE="pull" ;;
     --check)   MODE="check" ;;
     --verify)  MODE="verify" ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
-    *)         echo "未知参数: $1（支持 --check / --verify）" >&2; exit 2 ;;
+    --status)  MODE="status" ;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
+    *)         echo "未知参数: $1（支持 --check / --verify / --status）" >&2; exit 2 ;;
 esac
 
 mkdir -p "$LOCAL_MIRROR_DIR" || { echo "无法创建本地镜像目录 $LOCAL_MIRROR_DIR" >&2; exit 1; }
@@ -83,6 +97,66 @@ _remote_sha256() {
         "sha256sum '$1' 2>/dev/null | awk '{print \$1}'"
 }
 
+_date_of_name() {
+    # 从 yiban-YYYY-MM-DD.tar.gz.gpg 抽出日期段（取不到则回空）
+    printf '%s' "$1" | sed -n 's/^yiban-\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\).*/\1/p'
+}
+
+_remote_latest_date() {
+    # 远端最新副本日期：优先复用本次已列出的列表，否则单独查一次（只读）
+    local first="${REMOTE_ARR[0]:-}"
+    if [ -n "$first" ]; then
+        _date_of_name "$(basename "$first")"
+        return 0
+    fi
+    local one
+    one="$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$SSH_HOST" \
+        "ls -1t ${REMOTE_DIR}/yiban-*.tar.gz.gpg 2>/dev/null | head -n 1" < /dev/null)"
+    [ -n "$one" ] && _date_of_name "$(basename "$one")"
+    return 0
+}
+
+_local_latest_date() {
+    local f
+    f="$(ls -1 "$LOCAL_MIRROR_DIR"/yiban-*.tar.gz.gpg 2>/dev/null | sort -r | head -n 1 || true)"
+    [ -n "$f" ] && _date_of_name "$(basename "$f")"
+    return 0
+}
+
+# 新鲜度自检：把"本地是否落后于远端 / 远端本身是否已停更"变成可被触发方看见的退出码。
+# 这正是"每天保证开机但时间不定"场景需要的能力——拉取本身是补齐式，缺的只是
+# "什么时候跑"；跑起来的这一次若发现异常，必须让定时任务醒目报出来。
+freshness_check() {
+    local rdate ldate today_epoch r_epoch age_days
+    rdate="$(_remote_latest_date)"
+    ldate="$(_local_latest_date)"
+    if [ -z "$rdate" ]; then
+        log "新鲜度：远端未找到任何副本（备份任务可能已停/路径变化）"
+        return 1
+    fi
+    if [ -z "$ldate" ]; then
+        log "新鲜度：本地镜像为空（尚未成功拉取过）"
+        return 1
+    fi
+    today_epoch="$(date +%s)"
+    r_epoch="$(date -d "$rdate" +%s 2>/dev/null || echo "")"
+    if [ -n "$r_epoch" ]; then
+        age_days=$(( (today_epoch - r_epoch) / 86400 ))
+    else
+        age_days="?"
+    fi
+    log "新鲜度：本地最新 $ldate，远端最新 $rdate，远端副本距今 ${age_days} 天（阈值 ${STALE_DAYS} 天）"
+    if [ "$ldate" \< "$rdate" ]; then
+        log "新鲜度异常：本地副本落后于远端（本次拉取未补齐，请检查上方的下载/校验失败信息）"
+        return 1
+    fi
+    if [ "$age_days" != "?" ] && [ "$age_days" -gt "$STALE_DAYS" ]; then
+        log "新鲜度异常：远端最新副本已 ${age_days} 天未更新——生产的每日备份链路疑似中断，请登机核查 /var/log/yiban/backup.log"
+        return 1
+    fi
+    return 0
+}
+
 verify_local() {
     # 校验本地全部副本：与随行的 .sha256 清单比对
     local bad=0 n=0 newest=""
@@ -106,8 +180,15 @@ verify_local() {
     return 0
 }
 
+if [ "$MODE" = "status" ]; then
+    # 一行式状态：供定时任务快速判断（不做下载/校验，只比日期）
+    freshness_check || exit 1
+    exit 0
+fi
+
 if [ "$MODE" = "verify" ]; then
     verify_local || exit 1
+    freshness_check || exit 1
     exit 0
 fi
 
@@ -164,7 +245,7 @@ done
 
 if [ "$MODE" = "check" ]; then
     log "=== 检查完成：待拉取 $fetched 份，已同步 $skipped 份 ==="
-    [ "$fetched" -eq 0 ] && exit 0
+    freshness_check
     exit 0
 fi
 
@@ -181,4 +262,6 @@ fi
 verify_local || { log "=== 拉取结束但本地校验存在异常 ==="; exit 1; }
 log "=== 拉取完成：新增 $fetched 份 / 已同步 $skipped 份 / 失败 $failed 份 ==="
 [ "$failed" -eq 0 ] || exit 1
+# 拉取成功还不够：本地可能"补齐了但远端早已停更"，故继续做新鲜度自检
+freshness_check || exit 1
 exit 0
