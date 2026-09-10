@@ -72,6 +72,10 @@ class RunShMarkerTest(unittest.TestCase):
         self.env = dict(os.environ)
         self.env.update({
             "YIBAN_STATE_DIR": self.state,
+            # run.sh 现在要求应用目录存在（进不去即拒绝运行，见 APP_DIR 注释）；
+            # 测试把 APP_DIR 指向临时目录即可——本类只关心标记/超时语义，
+            # 被 fake timeout 拦住的 signin 调用不会真的执行
+            "YIBAN_APP_DIR": self.tmp,
             "FAKE_TIMEOUT_LOG": self.timeout_log,
             "FAKE_FLOCK_EXIT": "0",
         })
@@ -173,6 +177,10 @@ class RunShTimeoutClampTest(unittest.TestCase):
         self.env = dict(os.environ)
         self.env.update({
             "YIBAN_STATE_DIR": self.state,
+            # run.sh 现在要求应用目录存在（进不去即拒绝运行，见 APP_DIR 注释）；
+            # 测试把 APP_DIR 指向临时目录即可——本类只关心标记/超时语义，
+            # 被 fake timeout 拦住的 signin 调用不会真的执行
+            "YIBAN_APP_DIR": self.tmp,
             "FAKE_TIMEOUT_LOG": self.timeout_log,
             "FAKE_FLOCK_EXIT": "0",
         })
@@ -212,7 +220,9 @@ class RunShTimeoutClampTest(unittest.TestCase):
         marker = os.path.join(self.state, f"yiban-run-today-{_today()}.marker")
         # 每个用例复用同一 state：前一轮已 SUCCESS 会幂等短路，须清状态文件
         status = os.path.join(self.state, f"sign-status-{_today()}.txt")
-        for p in (marker, status):
+        # 2026-09-10（批次20 B3）：当日收尾标记同理会短路后续触发，一并清理
+        settled = os.path.join(self.state, f"yiban-settled-{_today()}.marker")
+        for p in (marker, status, settled):
             if os.path.exists(p):
                 os.remove(p)
         if raw_value is not None:
