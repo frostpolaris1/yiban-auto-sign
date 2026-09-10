@@ -546,7 +546,7 @@
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">概览</div>
         <button type="button" class="info-tip text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="概览说明">
           <span data-icon="info"></span>
-          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>签到容量：</b>按有效签到窗口（扣除掐头去尾）与账号间隔估算可容纳的活跃账号数；已用（或含潜在负载）超容量仅标红警示，不阻断操作；保存更大的账号间隔时若现有活跃账号超过预估容量会被拒绝<b>容量上限：</b>仅主管理员可设——0=不限；调小不删人，只限制新增；两个上限分别管归属注册（用户）与账号存量（账号，含主管理员直属裸账号）</span>
+          <span class="info-pop"><b>服务器时间：</b>服务器当前时间，每秒刷新（60 秒校准一次）<b>签到状态：</b>今日自动签到是否已执行/进行中<b>签到窗口：</b>每日自动签到允许执行的时间段（在下方「签到调度」卡修改）<b>签到容量：</b>按有效签到窗口（扣除掐头去尾）与账号间隔估算可容纳的活跃账号数；已用（或含潜在负载）超容量仅标红警示，不阻断操作；保存更大的账号间隔时若现有活跃账号超过预估容量会被拒绝<b>容量上限：</b>仅主管理员可设——0=不限；调小不删人，只限制新增；两个上限分别管归属注册（用户）与账号存量（账号，含主管理员直属裸账号）<b>账号容量拆解：</b>账号用量后的括号为三分类计数——正常 / 用户自暂停 / 账密故障暂停（熔断或半开试探中）；占额按全部未删除账号计，停签账号同样占名额，故名额紧张时可先清理长期停签账号</span>
         </button>
       </div>
       <div class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100" id="clock-now">--:--:--</div>
@@ -2333,19 +2333,40 @@ async function doSignin(phone) {
 // ================= 系统设置 =================
 // 容量统计（2026-09-08 单档口径）：签到容量 = 按有效窗口（已扣掐头去尾）与当前
 // 账号间隔估算的可容纳活跃账号数；已用（或含潜在负载）超容量仅警示变色，不阻断操作
-function renderCapacity(est) {
+// 2026-09-10（需求3）：额外展示**名额占用**（账号 N/上限）及三分类拆解，帮助判断
+// 「停签/故障账号占满名额、新账号被拒但实际负载不高」。纯展示，不参与任何配额判定。
+function renderCapacity(est, cap) {
   const box = $('capacity-content');
   if (!box) return;
   if (!est) { box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500 px-1 py-2">暂无预估数据</div>'; return; }
-  const cur = est.current_accounts || 0, cap = est.accounts_cap || 0, load = est.potential_load || 0;
+  const cur = est.current_accounts || 0, capN = est.accounts_cap || 0, load = est.potential_load || 0;
   // cap=0（窗口退化到容纳不下一次签到）且已用>0 同样视为超限，不因 cap>0 短路漏报
-  const over = cur > cap || cur + load > cap;
+  const over = cur > capN || cur + load > capN;
   const border = over ? 'border-red-300 dark:border-red-800' : 'border-zinc-200 dark:border-zinc-700';
   const text = over ? 'text-red-600 dark:text-red-400' : 'text-zinc-900 dark:text-zinc-100';
+  // 名额占用行（三分类计数全部服务端下发；此处一律 Number() 归一，杜绝任何字符串
+  // 被拼进 innerHTML——即便后端将来误传字符串也不会形成注入面）
+  let quotaHtml = '';
+  if (cap && typeof cap === 'object') {
+    const used = Number(cap.accounts) || 0;
+    const lim = Number(cap.accounts_max) || 0;
+    const bd = cap.accounts_breakdown || {};
+    const nNormal = Number(bd.normal) || 0;
+    const nUserPaused = Number(bd.user_paused) || 0;
+    const nCredPaused = Number(bd.cred_paused) || 0;
+    const near = lim > 0 && used >= lim;
+    const quotaText = lim > 0 ? `${used}/${lim}` : `${used}/不限`;
+    quotaHtml = `<div class="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-700 text-xs">
+      <span class="${near ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-zinc-500 dark:text-zinc-400'}">账号容量 ${quotaText}</span>
+      <span class="text-zinc-400 dark:text-zinc-500">（正常 ${nNormal} · 自暂停 ${nUserPaused} · 账密故障暂停 ${nCredPaused}）</span>
+      <div class="text-zinc-400 dark:text-zinc-500">占额含自暂停与账密故障暂停账号；如需释放名额可在账号管理页清理</div>
+    </div>`;
+  }
   box.innerHTML = `<div class="rounded-lg border ${border} ${over ? 'bg-red-50 dark:bg-red-900/10' : ''} p-3">
     <div class="text-xs text-zinc-500 dark:text-zinc-400">签到容量（按当前账号间隔估算）</div>
-    <div class="mt-1 font-semibold ${text}">已用 ${cur} <span class="text-xs font-normal text-zinc-500 dark:text-zinc-400">/ 容量 ${cap} 个</span></div>
+    <div class="mt-1 font-semibold ${text}">已用 ${cur} <span class="text-xs font-normal text-zinc-500 dark:text-zinc-400">/ 容量 ${capN} 个</span></div>
     <div class="text-xs ${over ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">另有 ${load} 人已注册未提交（潜在负载）${over ? '；已超容量：保存更大的账号间隔将被拒绝' : ''}</div>
+    ${quotaHtml}
   </div>`;
 }
 
@@ -2358,7 +2379,7 @@ async function loadSettings() {
     await loadNotifyConfig();  // 消息推送状态（Server酱/自定义 URL，v0.26.0）
     const data = await api('/api/settings');
     state.delays.gap = data.gap_max;
-    renderCapacity(data.capacity_estimate);
+    renderCapacity(data.capacity_estimate, data.capacity);
     // 容量上限（2026-09-08，主管理员专属控件；现值随 capacity 区块下发）
     const capLimits = $('capacity-limits');
     if (capLimits) {
@@ -2753,7 +2774,7 @@ async function saveSettings(silent) {
     if (gapChanged || maxUserChanged || maxAccChanged) {
       // POST 返回体不含容量预估：间隔/上限变化后补拉一次，概览卡容量统计保持新鲜
       const fresh = await api('/api/settings');
-      renderCapacity(fresh.capacity_estimate);
+      renderCapacity(fresh.capacity_estimate, fresh.capacity);
     }
     if (!silent) {
       toast(data.msg || '设置已保存');
