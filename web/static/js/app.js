@@ -1,0 +1,2746 @@
+/* 原 web/templates/index.html 内联脚本外提（A1）：
+   第一段 = 原 1284-4006 行主 <script>（状态/api/toast/模态/账号/日志/设置/通知/用户/我的账号/日历）
+   第二段 = 原 4007-4023 行 <script>（loadAnnouncement）
+   两段顺序与原文档一致。
+
+   本文件必须是 classic script（<script src> 不带 type="module"）：
+   模板里有 137 个内联 onclick/onchange 直接调用本文件定义的全局函数，
+   模块作用域不进全局，会全部 ReferenceError。
+   依赖 index.html 内联脚本先定义的 BASE（= request.script_root），故 <script src>
+   的位置必须在 BASE 之后、且在 body 末尾（本文件含直接操作 DOM 的顶层语句）。 */
+// ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 语义一致，含 pending）=================
+// UI 一律用线性 SVG 图标渲染（stateIconSvg）；emoji 仅作后端 API 数据兼容，不再直接展示
+const STATUS_ICON_NAME = {
+  success: 'check', already: 'check', no_task: 'minus', failed: 'close', retrying: 'retry',
+  skipped_window: 'ban', skipped_norange: 'ban', paused: 'pause', user_cancelled: 'stop', pending: 'clock',
+};
+function stateIconSvg(st) { return icon(STATUS_ICON_NAME[st] || 'clock'); }
+const STATUS_TEXT = {
+  success: '签到成功', already: '已签到', no_task: '无需签到', failed: '签到失败',
+  retrying: '重试中', skipped_window: '时段外', skipped_norange: '未设时段', paused: '暂停',
+  user_cancelled: '已取消', pending: '待签',
+};
+// ================= 状态 =================
+const state = {
+  accounts: [],       // [{index,name,phone,phone_model,has_password,display_name}]
+  states: {},         // {phone: 'success'|'already'|'no_task'|'failed'|'retrying'|'skipped_*'}（状态码，来自 sign-state 文件）
+  editingIndex: null, // null=添加
+  editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
+  delays: { gap: 0 }, // 账号间隔（秒，0=关闭；启动延迟 v0.30.0 废弃已删）
+  maxUsers: 0,        // 用户容量上限现值（GET /api/settings capacity.users_max；0=不限）
+  maxAccounts: 0,     // 账号容量上限现值（capacity.accounts_max；0=不限）
+  mailSmtps: [],      // SMTP 发信条目列表（GET /api/mail-config 的 smtps；主管理员编辑器数据源）
+  batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
+  signOrder: 'sequence', // 调度 v2：排序方式（sequence/random）
+  signDist: 'uniform',   // 调度 v2：分布方式（uniform/normal）
+  edgeFrontMin: 1,      // 掐头去尾（0.22.0 前后独立）：前裁剪分钟（0-5，0.5 步进）
+  edgeBackMin: 1,       // 后裁剪分钟
+  allowTimePref: false,  // 调度 v2：用户自选时间片总开关
+  signWindow: '',        // 调度 v2：签到窗口 "06:30 ~ 07:50"
+  isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
+  deletedCollapsed: false, // 待删除账号表格折叠状态（标题栏 ▾/▸ 切换）
+  saturdaySign: false,  // 周六签到开关（默认关闭，v0.29.0 起；.env YIBAN_SATURDAY_SIGN=1 开启）
+};
+
+const $ = (id) => document.getElementById(id);
+
+// ================= 基础请求 =================
+let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
+
+async function api(path, opts = {}, _retried = false) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
+    ...(opts.headers || {}),
+  };
+  const resp = await fetch(BASE + path, {
+    ...opts,
+    headers,
+  });
+  if (resp.status === 401) {
+    location.href = BASE + '/login';
+    throw new Error('未登录');
+  }
+  const data = await resp.json().catch(() => ({}));
+  // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
+  if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
+    try {
+      const me = await fetch(BASE + '/api/me').then(r => r.json());
+      csrfToken = me.csrf_token || '';
+      return api(path, opts, true);
+    } catch (e) { /* 重试失败则走下方错误提示 */ }
+  }
+  if (!resp.ok || data.ok === false) {
+    throw new Error(data.error || `请求失败 (${resp.status})`);
+  }
+  return data;
+}
+
+function toast(msg, isError = false) {
+  const el = $('toast');
+  el.textContent = msg;
+  // a11y 整改：只更新 class 与文本。className 赋值不会触碰 role="status"/aria-live="polite" 属性，
+  // 动态消息对屏幕阅读器保持可感知；补回 max-w-[90vw]/text-center/break-words 防长文案溢出（与初始 class 一致）
+  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 shadow-md text-sm text-white max-w-[90vw] text-center break-words ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
+  el.removeAttribute('data-hidden');  // 显示：配合 #toast 过渡自下方浮入
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.setAttribute('data-hidden', ''), 3000);  // 隐藏：快速淡出
+}
+
+// ================= 模态焦点管理（a11y 整改：打开记录触发元素→聚焦首控件、Tab 圈闭、Esc 关闭、焦点归还） =================
+const _modalStack = [];  // [{ el, trigger }]，后进先出支持叠层
+
+// 背景滚动锁：模态打开期间锁 html/body 滚动，防止滚轮/触摸/键盘滚动穿透到背景页（滚动链）。
+// 计数支持叠层；锁死前补偿滚动条宽度，避免内容区横向跳动。
+let _modalScrollLockCount = 0;
+function _lockPageScroll() {
+  _modalScrollLockCount++;
+  if (_modalScrollLockCount > 1) return;
+  const gap = window.innerWidth - document.documentElement.clientWidth;
+  if (gap > 0) document.body.style.paddingRight = gap + 'px';
+  document.documentElement.style.overflow = 'hidden';
+  document.body.style.overflow = 'hidden';
+}
+function _unlockPageScroll() {
+  if (_modalScrollLockCount > 0) _modalScrollLockCount--;
+  if (_modalScrollLockCount > 0) return;
+  document.documentElement.style.overflow = '';
+  document.body.style.overflow = '';
+  document.body.style.paddingRight = '';
+}
+
+function _modalFocusables(el) {
+  return Array.from(el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter(x => !x.disabled && x.offsetParent !== null);  // offsetParent 过滤 hidden/不可见元素
+}
+
+function openModal(el, trigger) {
+  if (!el || _modalStack.some(m => m.el === el)) return;
+  _modalStack.push({ el, trigger: trigger || document.activeElement });
+  el.classList.remove('hidden');
+  _lockPageScroll();
+  const first = _modalFocusables(el)[0];
+  if (first) first.focus();
+  else el.focus();  // 容器带 tabindex="-1" 兜底
+}
+
+function closeModal(el) {
+  const i = _modalStack.findIndex(m => m.el === el);
+  if (i === -1) return;
+  const { trigger } = _modalStack.splice(i, 1)[0];
+  el.classList.add('hidden');
+  _unlockPageScroll();
+  // 焦点归还触发元素（列表重绘可能已移除该元素，contains 防护）
+  if (trigger && document.contains(trigger) && typeof trigger.focus === 'function') trigger.focus();
+}
+
+// 全局键盘：Esc 逐层关闭（行菜单 → 模态 → 侧栏抽屉遮罩）；Tab 在最上层模态内圈闭
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (_rowMenu) { closeRowMenu(true); return; }
+    if (_modalStack.length) { e.preventDefault(); closeModal(_modalStack[_modalStack.length - 1].el); return; }
+    const overlay = $('sidebar-overlay');
+    if (overlay && overlay.classList.contains('open')) toggleSidebar(false);
+    return;
+  }
+  if (e.key === 'Tab' && _modalStack.length) {
+    const top = _modalStack[_modalStack.length - 1].el;
+    const items = _modalFocusables(top);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (!top.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+
+// ================= 口令策略（本模板内单一事实源） =================
+// 与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS / _PASSWORD_POLICY_HINT 逐字同序同串——
+// tests/test_batch14_fixes_0829.py 的元测试会从本文件源码提取这四个正则与后端比对，漂移即红。
+// 判定语义：命中类别数 >= PW_MIN_CLASSES 即过（符号算一类，不额外要求必须含符号）。
+const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
+const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
+const PW_POLICY_HINT = '至少 10 位，且包含大小写字母、数字、符号中的至少两类';
+// 主管理员（内置 .env 管理员）口令单独提档：12 位三类（与后端 _admin_password_policy_error 同口径）
+const PW_ADMIN_MIN_LEN = 12, PW_ADMIN_MIN_CLASSES = 3;
+const PW_ADMIN_HINT = '至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类';
+function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
+function passwordPolicyOk(v) { return v.length >= PW_MIN_LEN && passwordClasses(v) >= PW_MIN_CLASSES; }
+function passwordPolicyOkAdmin(v) { return v.length >= PW_ADMIN_MIN_LEN && passwordClasses(v) >= PW_ADMIN_MIN_CLASSES; }
+
+// ================= 密码模态（重置密码 / 高危操作二次确认共用） =================
+let _pwModalCb = null;
+let _pwModalMode = 'set';  // 'set'=设置新密码（走口令策略校验）；'confirm'=确认当前管理员密码
+function openPasswordModal(desc, cb) { openPwModal(desc, cb, 'set'); }
+function openConfirmPasswordModal(desc, cb) { openPwModal(desc, cb, 'confirm'); }
+function openPwModal(desc, cb, mode) {
+  _pwModalCb = cb;
+  _pwModalMode = mode;
+  const isConfirm = mode === 'confirm';
+  $('modal-password-title').textContent = isConfirm ? '安全确认' : '重置密码';
+  $('modal-password-desc').textContent = desc;  // textContent 赋值：动态数据（邮箱等）无注入面
+  $('modal-password-input').value = '';
+  // placeholder 保持短句：手机端输入框内不换行，完整口径由可换行的 desc 承载
+  $('modal-password-input').placeholder = isConfirm ? '输入当前管理员密码' : '设置新密码（至少 10 位）';
+  $('modal-password-input').autocomplete = isConfirm ? 'current-password' : 'new-password';
+  $('modal-password-submit').textContent = isConfirm ? '确认操作' : '确认重置';
+  openModal($('modal-password'));  // 打开即聚焦密码输入框（容器内首个可交互元素）
+}
+function closePasswordModal() {
+  _pwModalCb = null;
+  closeModal($('modal-password'));
+}
+$('modal-password-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const pw = $('modal-password-input').value;
+  if (!pw) return;  // 空值静默不提交
+  // set 模式按完整口令策略校验（长度 + 至少两类）：与后端 _password_policy_error 及
+  // saveMyPassword 同口径，避免"前端放行、提交后才 400"；confirm 模式仍是只验非空
+  if (_pwModalMode === 'set' && !passwordPolicyOk(pw)) { toast(`密码${PW_POLICY_HINT}`, true); return; }
+  const cb = _pwModalCb;
+  closePasswordModal();
+  if (cb) cb(pw);
+});
+
+// ================= 侧边栏（移动端抽屉） =================
+function toggleSidebar(open) {
+  $('sidebar').classList.toggle('-translate-x-full', !open);
+  $('sidebar-overlay').classList.toggle('open', open);  // 遮罩经 CSS 淡入淡出（替代 hidden 瞬显）
+}
+
+// ================= Tab 切换 =================
+function switchTab(name) {
+  // 未保存的调度改动守卫（2026-08-15 对抗性审查 F-1）：切走会静默丢失，先确认
+  if (name !== 'settings' && schedDirty) {
+    if (!confirm('调度设置还有未保存的修改，切换页面将丢失。\n是否继续？')) return;
+    schedDirty = false;
+    $('schedule-save-btn').classList.add('hidden');
+    $('sched-dirty-tip').classList.add('hidden');
+  }
+  ['accounts', 'logs', 'settings', 'users', 'mine'].forEach(t => {
+    $('tab-' + t).classList.toggle('hidden', t !== name);
+  });
+  document.querySelectorAll('[data-tab-btn]').forEach(btn => {
+    const active = btn.dataset.tabBtn === name;
+    btn.classList.toggle('text-zinc-600', !active);
+    btn.classList.toggle('dark:text-zinc-300', !active);
+    btn.classList.toggle('text-zinc-900', active);
+    btn.classList.toggle('dark:text-zinc-100', active);
+    btn.classList.toggle('bg-zinc-100', active);
+    btn.classList.toggle('dark:bg-zinc-700', active);
+    btn.classList.toggle('border-l-blue-500', active);
+    btn.classList.toggle('border-l-2', active);
+  });
+  toggleSidebar(false);
+  const tabEl = $('tab-' + name);
+  tabEl.classList.remove('tab-enter');
+  void tabEl.offsetWidth;  // 重触发动画
+  tabEl.classList.add('tab-enter');
+  if (name === 'accounts') { loadAccounts(); updateSignModeHint(); }
+  if (name === 'logs') { initLogSearch(); loadLogs(); fillSigninSelect(); }
+  if (name === 'settings') { loadSettings(); calibrateClock(); tickClock(); }
+  if (name === 'users') loadUsers();
+  if (name === 'mine') loadMine();
+}
+
+// ================= 账号管理 =================
+// 绑定用户：下拉列出已注册但无易班账号的用户（/api/users 过滤 account_count==0）
+async function loadAvailableUsers() {
+  try {
+    const data = await api('/api/users');
+    const available = (data.users || []).filter(u => (u.account_count || 0) === 0);
+    const group = $('f-email-users');
+    group.innerHTML = '';
+    if (!available.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '（暂无）';
+      group.appendChild(opt);
+      return;
+    }
+    available.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.email;
+      opt.textContent = `${u.email.split('@')[0]}@${u.email.split('@')[1] || ''}`;
+      group.appendChild(opt);
+    });
+  } catch (e) { /* 静默：下拉为空也可手填 */ }
+}
+
+// 手填邮箱显示切换（初始密码随手动邮箱模式显示）
+$('f-email').addEventListener('change', () => {
+  const manual = $('f-email').value === '__manual__';
+  $('f-email-manual').classList.toggle('hidden', !manual);
+  $('f-initial-password').classList.toggle('hidden', !manual);
+  $('f-initial-password-hint').classList.toggle('hidden', !manual);
+});
+
+function getEmailValue() {
+  const v = $('f-email').value;
+  if (v === '__manual__') return $('f-email-manual').value.trim();
+  return v;
+}
+
+async function loadAccounts(_retried = false) {
+  try {
+    const data = await api('/api/accounts');
+    state.accounts = data.accounts;
+    state.states = data.states;  // /api/accounts 自带状态（键已脱敏），初始加载即填充（与轮询 refreshAccountsSilent 一致）
+    state.state_msgs = data.state_msgs || {};  // 状态原因/计划时间（表格 title 展示）
+    state.state_durs = data.state_durs || {};  // 单次签到耗时（P6，表格 title 展示）
+    $('config-file').textContent = data.config_file;
+    renderAccounts();
+    fillSigninSelect();
+  } catch (e) {
+    // 首次加载失败（如服务重启窗口/瞬时抖动）自动重试一次，避免整页显示"待签"误导
+    if (!_retried) {
+      setTimeout(() => loadAccounts(true), 2000);
+      return;
+    }
+    toast(e.message, true);
+  }
+}
+
+// 各表格搜索词（内存态：10 秒轮询刷新后过滤依然生效）
+let pendingSearch = '', activeSearch = '', deletedSearch = '';
+let usersPendingSearch = '', usersNormalSearch = '', usersVacantSearch = '';
+// 用户列表缓存（搜索事件触发时无需重新请求）
+let allUsers = [];
+let builtinAdminName = 'admin';
+
+function accountMatch(a, kw) {
+  if (!kw) return true;
+  // phone 列表值已脱敏（138****8000）：输入完整号时同样 mask 后匹配，保证搜索可用
+  return [a.name, maskPhone(a.phone), a.owner_display, a.owner].some(v => String(v || '').toLowerCase().includes(maskPhone(kw) || kw));
+}
+
+function userMatch(u, kw) {
+  if (!kw) return true;
+  return u.email.toLowerCase().includes(kw);
+}
+
+// ================= 批量多选（开关开启后生效） =================
+const batchSel = {
+  pending: new Set(), active: new Set(), deleted: new Set(),
+  usersPending: new Set(), usersNormal: new Set(), usersVacant: new Set(),
+};
+
+function updateBatchBar(key) {
+  const n = batchSel[key].size;
+  const bar = $('batch-bar-' + key);
+  if (!bar) return;
+  $('batch-count-' + key).textContent = n;
+}
+
+function toggleRow(key, id, el) {
+  if (el.checked) batchSel[key].add(id);
+  else batchSel[key].delete(id);
+  updateBatchBar(key);
+}
+
+function toggleSelectAll(key, el) {
+  const sel = batchSel[key];
+  sel.clear();
+  if (el.checked) {
+    // 仅当前组全部选中（账号按下标，用户按邮箱）
+    if (key.startsWith('users')) {
+      const group = key === 'usersPending'
+        ? (allUsers || []).filter(u => (u.review_count || 0) > 0)
+        : key === 'usersNormal'
+          ? (allUsers || []).filter(u => !((u.review_count || 0) > 0) && (u.account_count || 0) > 0)
+          : (allUsers || []).filter(u => !((u.review_count || 0) > 0) && (u.account_count || 0) === 0);
+      group.forEach(u => sel.add(u.email));
+    } else {
+      const group = key === 'pending'
+        ? state.accounts.filter(a => (a.status === 'pending' || a.status === 'rejected') && !a.deleted)
+        : key === 'active'
+          ? state.accounts.filter(a => a.status === 'active' && !a.deleted)
+          : state.accounts.filter(a => a.deleted);
+      group.forEach(a => sel.add(a.index));
+    }
+  }
+  updateBatchBar(key);
+  if (key.startsWith('users')) renderUsers(allUsers, builtinAdminName);
+  else renderAccounts();
+}
+
+function clearBatch(key) {
+  batchSel[key].clear();
+  updateBatchBar(key);
+  if (key.startsWith('users')) renderUsers(allUsers, builtinAdminName);
+  else renderAccounts();
+}
+
+function batchAccounts(key, action) {
+  const ids = [...batchSel[key]];
+  if (!ids.length) { toast('请先勾选要操作的账号', true); return; }
+  // 携带与 ids 对齐的 phones 供服务端防错位校验（列表漂移时整体 409 引导刷新）
+  const phones = ids.map(i => (state.accounts.find(a => a.index === i) || {}).phone);
+  const body = { action, ids, phones };
+  if (action === 'reject') {
+    const reason = prompt(`批量拒绝 ${ids.length} 个账号，请输入共同理由（用户会看到，最多 100 字）：`);
+    if (reason === null) return;
+    body.reason = reason.trim().slice(0, 100);
+    if (!body.reason) { toast('拒绝理由不能为空', true); return; }
+  }
+  if (action === 'approve' && !confirm(`确定通过选中的 ${ids.length} 个账号吗？通过后将参与定时签到。`)) return;
+  if (action === 'delete' && !confirm(`确定删除选中的 ${ids.length} 个账号吗？将进入待删除列表，可恢复。`)) return;
+  if (action === 'purge') {
+    // 彻底删除＝物理清除易班凭据，不可逆 → 与「批量删除用户」同口径走
+    // 密码模态二次鉴权（后端另加高危限速与 urgent 告警）；原生长确认由模态文案承担
+    openConfirmPasswordModal(
+      `彻底删除选中的 ${ids.length} 个账号？\n凭据将被物理清除，不可恢复！\n请输入当前管理员密码确认。`,
+      (pw) => {
+        body.confirm_password = pw;
+        submitBatchAccounts(key, body);
+      });
+    return;
+  }
+  // 批量手动签到：独立端点，顺序逐个执行（防风控）
+  if (action === 'signin') {
+    if (!confirm(`确定对选中的 ${ids.length} 个账号执行手动签到吗？将按顺序逐个执行，结果稍后出现在下方日志。`)) return;
+    api('/api/signin/batch', { method: 'POST', body: JSON.stringify({ ids, phones }) })
+      .then(data => { toast(data.msg || '已加入签到队列'); clearBatch(key); })
+      .catch(e => toast(e.message, true));
+    return;
+  }
+  submitBatchAccounts(key, body);
+}
+
+function submitBatchAccounts(key, body) {
+  api('/api/accounts/batch', { method: 'POST', body: JSON.stringify(body) })
+    .then(data => { toast(data.msg || '操作成功'); clearBatch(key); loadAccounts(); })
+    .catch(e => toast(e.message, true));
+}
+
+function batchUsers(key, action) {
+  const emails = [...batchSel[key]];
+  if (!emails.length) { toast('请先勾选要操作的用户', true); return; }
+  const body = { action, emails };
+  if (action === 'reset_password') {
+    // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；校验口径见 openPasswordModal
+    // 的 set 分支（补齐类别判定，与后端 _password_policy_error 一致）。
+    // 重置密码 = 账号控制权转移，须再经 confirm 模态输入当前管理员密码
+    openPasswordModal(`为选中的 ${emails.length} 个用户设置新密码（${PW_POLICY_HINT}）`, (pw) => {
+      body.password = pw;
+      openConfirmPasswordModal(`批量重置选中的 ${emails.length} 个用户密码？\n请输入当前管理员密码确认。`, (cpw) => {
+        body.confirm_password = cpw;
+        submitBatchUsers(key, body);
+      });
+    });
+    return;
+  }
+  if (action === 'delete') {
+    // 2026-08-29 高危操作二次鉴权：删除用户不可恢复，须输入当前管理员密码确认
+    openConfirmPasswordModal(`批量删除选中的 ${emails.length} 个用户？\n将连同其易班账号删除，不可恢复！\n请输入当前管理员密码确认。`, (pw) => {
+      body.confirm_password = pw;
+      submitBatchUsers(key, body);
+    });
+    return;
+  }
+  submitBatchUsers(key, body);
+}
+
+function submitBatchUsers(key, body) {
+  api('/api/users/batch', { method: 'POST', body: JSON.stringify(body) })
+    .then(data => { toast(data.msg || '操作成功'); clearBatch(key); loadUsers(); })
+    .catch(e => toast(e.message, true));
+}
+
+// 待删除账号表格折叠（标题栏 ▾/▸ 按钮）
+function toggleDeletedCollapsed() {
+  state.deletedCollapsed = !state.deletedCollapsed;
+  $('accounts-deleted-table').classList.toggle('hidden', state.deletedCollapsed);
+  $('deleted-toggle-btn').innerHTML = state.deletedCollapsed ? icon('chevR') : icon('chevD');
+  const bar = $('batch-bar-deleted');
+  if (state.deletedCollapsed) bar.classList.add('hidden');
+  else if (state.batchMode) bar.classList.remove('hidden');
+}
+
+function renderAccounts() {
+  // 批量开关：控制表头复选框列显示
+  document.querySelectorAll('.batch-col').forEach(th => th.classList.toggle('hidden', !state.batchMode));
+  document.querySelectorAll('[id^="batch-bar-"]').forEach(bar => {
+    // 待删除组折叠时批量条保持隐藏（即使批量模式开启）
+    const collapsed = bar.id === 'batch-bar-deleted' && state.deletedCollapsed;
+    bar.classList.toggle('hidden', !state.batchMode || collapsed);
+  });
+  // 分组：待处理（待审核/已拒绝）置顶，正常账号一组
+  // 待审核在前（新提交置顶），已拒绝沉底（同样新→旧）：accounts 表无时间戳列，
+  // id 与提交先后单调一致，作时间代理。显示层排序不影响批量操作——批量提交按
+  // 各账号 index + phones 对齐校验，与渲染顺序解耦。
+  const pendingAccounts = state.accounts
+    .filter(a => (a.status === 'pending' || a.status === 'rejected') && !a.deleted)
+    .sort((a, b) => (a.status === b.status ? b.index - a.index : (a.status === 'pending' ? -1 : 1)));
+  const activeAccounts = state.accounts.filter(a => a.status === 'active' && !a.deleted);
+  const pendingFiltered = pendingAccounts.filter(a => accountMatch(a, pendingSearch));
+  const activeFiltered = activeAccounts.filter(a => accountMatch(a, activeSearch));
+
+  // ---- 待处理组 ----
+  const pbody = $('accounts-pending-tbody');
+  const pempty = $('accounts-pending-empty');
+  pbody.innerHTML = '';
+  pempty.classList.toggle('hidden', pendingFiltered.length > 0);
+  pempty.textContent = pendingFiltered.length ? '' : (pendingAccounts.length ? '无匹配结果' : '暂无待处理账号');
+  $('accounts-pending-count').textContent = pendingSearch
+    ? `${pendingFiltered.length} 个匹配 / 共 ${pendingAccounts.length} 个待处理`
+    : (pendingAccounts.length ? pendingAccounts.length + ' 个待处理' : '');
+  pendingFiltered.forEach(a => pbody.appendChild(pendingAccountRow(a, 'pending')));
+
+  // ---- 正常账号组 ----
+  const tbody = $('accounts-tbody');
+  const empty = $('accounts-empty');
+  tbody.innerHTML = '';
+  empty.classList.toggle('hidden', activeFiltered.length > 0);
+  empty.textContent = activeFiltered.length ? '' : (activeAccounts.length ? '无匹配结果' : '暂无账号，点右上角「添加账号」配置');
+  $('accounts-active-count').textContent = activeSearch
+    ? `${activeFiltered.length} 个匹配 / 共 ${activeAccounts.length} 个`
+    : (activeAccounts.length ? activeAccounts.length + ' 个' : '');
+  activeFiltered.forEach(a => tbody.appendChild(accountRow(a, 'active')));
+
+  // 统计卡（仅统计参与签到的正常账号；五卡：总数/成功/失败/待签/跳过）
+  // 成功=success+already；待签=pending+retrying；跳过=no_task+skipped_*
+  let success = 0, failed = 0, waiting = 0, skipped = 0;
+  activeAccounts.forEach(a => {
+    const s = state.states[a.phone] || 'pending';
+    if (s === 'success' || s === 'already') success++;
+    else if (s === 'failed') failed++;
+    else if (s === 'no_task' || s === 'skipped_window' || s === 'skipped_norange' || s === 'paused' || s === 'user_cancelled') skipped++;
+    else waiting++;
+  });
+  $('stat-cards').innerHTML = [
+    card('生效账号', activeAccounts.length, 'text-zinc-900 dark:text-zinc-100'),
+    card('今日成功', success, 'text-green-600 dark:text-green-400'),
+    card('今日失败', failed, 'text-red-600 dark:text-red-400'),
+    card('待签', waiting, 'text-blue-600 dark:text-blue-400'),
+    card('跳过', skipped, 'text-zinc-400 dark:text-zinc-500'),
+  ].join('');
+
+  // ---- 待删除账号组（软删除，保留期内可恢复） ----
+  const deletedAccounts = state.accounts.filter(a => a.deleted);
+  const deletedFiltered = deletedAccounts.filter(a => accountMatch(a, deletedSearch));
+  const dbody = $('accounts-deleted-tbody');
+  const dempty = $('accounts-deleted-empty');
+  dbody.innerHTML = '';
+  dempty.classList.toggle('hidden', deletedFiltered.length > 0);
+  dempty.textContent = deletedFiltered.length ? '' : (deletedAccounts.length ? '无匹配结果' : '暂无待删除账号');
+  $('accounts-deleted-count').textContent = deletedSearch
+    ? `${deletedFiltered.length} 个匹配 / 共 ${deletedAccounts.length} 个`
+    : (deletedAccounts.length ? deletedAccounts.length + ' 个' : '');
+  deletedFiltered.forEach(a => dbody.appendChild(deletedAccountRow(a, 'deleted')));
+
+  // 顶部待处理提示
+  $('pending-count').textContent = pendingAccounts.length;
+  $('pending-tip').classList.toggle('hidden', pendingAccounts.length === 0);
+}
+
+function deletedAccountRow(a, key) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
+  tr.innerHTML = `
+    ${cb}
+    <td class="px-4 py-3 text-lg leading-none text-zinc-400 dark:text-zinc-500"><span class="inline-flex">${icon('trash')}</span></td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc((a.deleted_at || '').replace('T', ' ').slice(0, 16))}</td>
+    <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
+      <div class="flex items-center justify-center gap-1">
+        <button onclick="restoreAccount(${a.index})" class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-150">恢复</button>
+        <button onclick="purgeAccount(${a.index})" class="text-xs text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">彻底删除</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+async function restoreAccount(idx) {
+  const a = state.accounts[idx];
+  try {
+    // 携带 phone 供服务端防错位校验（列表漂移时返回 409 引导刷新）
+    const data = await api(`/api/accounts/${idx}/restore`, { method: 'POST', body: JSON.stringify({ phone: a.phone }) });
+    toast(data.msg || '已恢复');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+function purgeAccount(idx) {
+  const a = state.accounts[idx];
+  if (!a) { toast('账号列表已变化，请刷新页面后重试', true); return; }
+  // 单条物理清除此前直发请求、零鉴权零告警。现与"彻底清除已注销用户"
+  // 同口径：先经密码模态取当前管理员口令，再带 confirm_password 提交
+  openConfirmPasswordModal(
+    `彻底删除「${a.display_name}」(${maskPhone(a.phone)})？\n凭据将被物理清除，不可恢复！\n请输入当前管理员密码确认。`,
+    (pw) => submitPurgeAccount(idx, a, pw));
+}
+
+async function submitPurgeAccount(idx, a, pw) {
+  try {
+    // phone 供服务端防错位校验（列表漂移返回 409 引导刷新），confirm_password 为二次鉴权
+    const data = await api(`/api/accounts/${idx}/purge`, {
+      method: 'POST', body: JSON.stringify({ phone: a.phone, confirm_password: pw }) });
+    toast(data.msg || '已彻底删除');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+function statusBadge(a) {
+  if (a.status === 'pending')
+    return '<span class="inline-flex items-center rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2.5 py-0.5 whitespace-nowrap">待审核</span>';
+  if (a.status === 'rejected')
+    return '<span class="inline-flex items-center rounded-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2.5 py-0.5 whitespace-nowrap">已拒绝</span>';
+  return '<span class="inline-flex items-center rounded-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2.5 py-0.5 whitespace-nowrap">正常</span>';
+}
+
+function pendingAccountRow(a, key) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
+  const reasonHtml = a.reject_reason
+    ? `<div class="text-xs text-red-600 dark:text-red-400 mt-1">理由：${esc(a.reject_reason)}</div>`
+    : '';
+  tr.innerHTML = `
+    ${cb}
+    <td class="px-4 py-3 text-lg leading-none text-zinc-400 dark:text-zinc-500"><span class="inline-flex">${icon('minus')}</span></td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3">${statusBadge(a)}${reasonHtml}</td>
+    <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
+      <div class="flex items-center justify-center">
+        <button aria-label="更多操作" onclick="openRowMenu(event, [
+          {label: '通过', cls: 'text-green-600 dark:text-green-400', fn: () => reviewAccount(${a.index}, 'approve')},
+          {label: '拒绝', cls: 'text-red-600 dark:text-red-400', fn: () => reviewAccount(${a.index}, 'reject')},
+          {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(${a.index})},
+          {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(${a.index})},
+        ])" class="w-9 h-9 flex items-center justify-center rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">${icon('dots')}</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+function accountRow(a, key) {
+  const st = state.states[a.phone] || 'pending';
+  const s = stateIconSvg(st);
+  const stMsg = state.state_msgs ? (state.state_msgs[a.phone] || '') : '';
+  const stDur = state.state_durs ? state.state_durs[a.phone] : null;
+  const baseTitle = STATUS_TEXT[st] || '待签';
+  // 原因/计划仅在不同于状态名时拼接（避免"签到成功 · 签到成功"式重复）；耗时存在时追加
+  const stTitle = baseTitle
+    + (stMsg && stMsg !== baseTitle ? ' · ' + stMsg : '')
+    + (stDur ? ' · 耗时 ' + Number(stDur).toFixed(1) + 's' : '');
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+  tr.innerHTML = `
+    ${cb}
+    <td class="px-4 py-3 text-lg leading-none text-zinc-500 dark:text-zinc-400"><span class="inline-flex" title="${esc(stTitle)}">${s}</span></td>
+    <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
+    <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell">${esc(a.phone_model || '—')}</td>
+    <td class="px-4 py-3 text-sm whitespace-nowrap hidden xl:table-cell">${a.time_pref
+      ? (a.time_pref_edge === 'first'
+          ? '<span class="text-amber-600 dark:text-amber-400" title="最早时段：窗口首块，最先执行">最早 ' + esc(a.time_pref) + '</span>'
+          : a.time_pref_edge === 'last'
+            ? '<span class="text-amber-600 dark:text-amber-400" title="最后时段：临近截止，网络波动可能错过">最后 ' + esc(a.time_pref) + '</span>'
+            : '<span class="text-zinc-600 dark:text-zinc-300">' + esc(a.time_pref) + '</span>')
+      : '<span class="text-zinc-300 dark:text-zinc-600">—</span>'}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
+    <td class="px-4 py-3">${statusBadge(a)}</td>
+    <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
+      <div class="flex items-center justify-center">
+        <button aria-label="更多操作" onclick="accountRowMenu(event, this, ${a.index})"
+                class="w-9 h-9 flex items-center justify-center rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">${icon('dots')}</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+function accountRowMenu(evt, btn, idx) {
+  openRowMenu(evt, [
+    {label: '上移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, -1)},
+    {label: '下移', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => moveAccount(idx, 1)},
+    {label: '手动签到', cls: 'text-blue-600 dark:text-blue-400', fn: () => doSigninByIndex(idx)},
+    {label: '编辑', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => openForm(idx)},
+    {label: '删除', cls: 'text-red-600 dark:text-red-400', fn: () => deleteAccount(idx)},
+  ], btn);
+}
+
+async function reviewAccount(idx, action) {
+  const a = state.accounts[idx];
+  let body = { action, phone: a.phone };
+  if (action === 'reject') {
+    const reason = prompt(`拒绝「${jsEscape(a.display_name)}」(${maskPhone(a.phone)})，请输入理由（用户会看到，最多 100 字）：`, '');
+    if (reason === null) return;  // 用户取消
+    body.reason = reason.trim().slice(0, 100);
+    if (!body.reason) { toast('拒绝理由不能为空', true); return; }
+  } else if (action === 'approve' && !confirm(`确定通过「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？通过后将参与定时签到。`)) {
+    return;
+  }
+  try {
+    const data = await api(`/api/accounts/${idx}/review`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    toast(data.msg || (action === 'approve' ? '已通过' : '已拒绝'));
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+function card(label, value, color) {
+  return `<div class="card-sm">
+            <div class="text-xs text-zinc-500 dark:text-zinc-400">${label}</div>
+            <div class="text-xl md:text-2xl font-semibold tracking-tight ${color}">${value}</div>
+          </div>`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 手机号脱敏：13912341234 → 139****1234（列表/弹窗展示，防隐私泄露）；已脱敏（含 *）或非 11 位原样返回（幂等）
+function maskPhone(p) {
+  p = String(p || '');
+  if (p.includes('*')) return p;
+  // 11 位手机号 → 138****8000；其他长度保留前 3 后 4，中间用 **** 遮盖
+  return p.length >= 7 ? p.slice(0, 3) + '****' + p.slice(-4) : p;
+}
+
+// JS 模板字面量上下文转义：防用户可控数据（如账号名称）中的 `${...}`/反引号被执行（存储型 XSS）
+function jsEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+}
+
+// 邮箱脱敏：abc123@example.com → abc***@example.com（保留域名；超短用户名至少留 1 位）
+function maskEmail(e) {
+  const s = String(e || '');
+  const i = s.indexOf('@');
+  if (i <= 0) return s;
+  return s.slice(0, Math.min(3, i)) + '***' + s.slice(i);
+}
+
+async function moveAccount(idx, dir) {
+  const a = state.accounts[idx];
+  try {
+    const data = await api(`/api/accounts/${idx}/move`, { method: 'POST', body: JSON.stringify({ dir, phone: a.phone }) });
+    state.accounts = data.accounts;
+    renderAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteAccount(idx) {
+  const a = state.accounts[idx];
+  if (!confirm(`确定删除账号「${jsEscape(a.display_name)}」(${maskPhone(a.phone)}) 吗？`)) return;
+  try {
+    await api(`/api/accounts/${idx}`, { method: 'DELETE', body: JSON.stringify({ phone: a.phone }) });
+    toast('已删除账号');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ---- 账号表单（添加 / 编辑共用）----
+// 清除已配置识别码（编辑模式）：标记后提交 __clear__（后端并行流已支持该标记清空字段）
+let modalClearCodeFlag = false;
+function toggleModalClearCode() {
+  modalClearCodeFlag = !modalClearCodeFlag;
+  const input = $('f-code');
+  const btn = $('clear-code-btn');
+  if (modalClearCodeFlag) {
+    input.value = '';
+    input.readOnly = true;
+    input.placeholder = '提交后将清除已配置识别码';
+    btn.textContent = '取消清除';
+  } else {
+    input.readOnly = false;
+    input.placeholder = '64 位十六进制识别码';
+    btn.textContent = '清除已配置识别码';
+  }
+}
+
+async function openForm(index) {
+  const trigger = document.activeElement;  // 记录触发元素：模态关闭时归还焦点（a11y）
+  state.editingIndex = index;
+  state.editSnapshot = null;  // 乐观锁快照在详情取到完整号后设置
+  const a = index === null ? null : state.accounts[index];
+  $('form-title').textContent = a ? `编辑账号 #${index + 1}` : '添加账号';
+  $('f-name').value = a ? a.name : '';
+  $('f-email').value = '';
+  $('f-email-manual').value = '';
+  $('f-email-manual').classList.add('hidden');
+  $('f-initial-password').value = '';
+  $('f-initial-password').classList.add('hidden');
+  $('f-initial-password-hint').classList.add('hidden');
+  $('f-email-wrap').classList.toggle('hidden', index !== null);  // 编辑时不显示邮箱（归属不变）
+  if (index === null) loadAvailableUsers();  // 添加时加载可绑定用户
+  if (a) {
+    // 编辑：列表已脱敏，按需从详情接口取完整手机号（仅存内存，提交时还原）
+    try {
+      const d = await api(`/api/accounts/${index}/detail`);
+      $('f-phone').value = maskPhone(d.account.phone);
+      $('f-phone').dataset.full = d.account.phone;
+      // 乐观锁快照：编辑打开时的账号指纹，提交时后端比对，防止并发编辑互相覆盖
+      state.editSnapshot = JSON.stringify({
+        name: d.account.name, phone: d.account.phone, phone_model: d.account.phone_model,
+        status: d.account.status, deleted: d.account.deleted,
+      });
+    } catch (e) {
+      $('f-phone').value = maskPhone(a.phone);  // 详情接口异常时退化为脱敏列表值
+      $('f-phone').dataset.full = '';
+      state.editSnapshot = null;  // 拿不到完整指纹 → 不携带快照（不做冲突校验）
+      toast('无法获取账号完整信息', true);
+    }
+  } else {
+    $('f-phone').value = '';
+    $('f-phone').dataset.full = '';
+  }
+  $('f-phone-mask-tip').classList.toggle('hidden', index === null);  // 仅编辑时提示打码
+  $('f-password').value = '';
+  $('f-password').placeholder = a ? '留空表示不修改密码' : '易班登录密码';
+  $('f-model').value = a ? a.phone_model : '';
+  $('f-code').value = '';
+  $('f-code').readOnly = false;
+  $('f-code').placeholder = a && a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  modalClearCodeFlag = false;
+  $('clear-code-btn').classList.toggle('hidden', !(a && a.has_phone_code));
+  openModal($('modal-account'), trigger);  // 首个可交互元素即 f-name，打开自动聚焦
+}
+
+function closeForm() {
+  closeModal($('modal-account'));
+}
+
+let accountSubmitting = false;  // 在途锁（参照 scheduleSaving 模式）：提交期间按钮禁用，防连点重复提交
+$('account-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (accountSubmitting) return;
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  // 手机号打码显示时（未修改）用内存中的完整号码提交，避免 **** 入库
+  const phoneInput = $('f-phone');
+  const phoneRaw = phoneInput.value.trim();
+  // 编辑态下 state.editSnapshot 为 null，说明详情接口失败——既拿不到完整
+  // 手机号，也拿不到乐观锁快照。原先此路径仍允许保存（不带 _snapshot 提交），列表
+  // 一旦漂移就会把改动落到另一账号上且后端无从校验；现一律禁止提交并提示刷新。
+  // 两道拦截都放在启用在途锁之前：命中时按钮与 accountSubmitting 均保持原状，
+  // 否则一次失败提交会把表单永久锁死（原实现的提前 return 漏了 finally）。
+  if (state.editingIndex !== null && !state.editSnapshot) {
+    toast('无法获取账号完整信息，请刷新页面后重试', true);
+    return;
+  }
+  if (phoneRaw.includes('****') && !phoneInput.dataset.full) {
+    toast('无法获取账号完整信息，请刷新页面后重试', true);
+    return;
+  }
+  const btnText = submitBtn.textContent;
+  accountSubmitting = true;
+  submitBtn.disabled = true;
+  submitBtn.textContent = '提交中…';
+  const phone = phoneRaw.includes('****') && phoneInput.dataset.full ? phoneInput.dataset.full : phoneRaw;
+  const body = {
+    name: $('f-name').value,
+    email: getEmailValue(),
+    initial_password: $('f-initial-password').value,  // 手填未注册邮箱时的首登密码（替代明文临时密码）
+    phone,
+    password: $('f-password').value,
+    phone_model: $('f-model').value.trim(),
+    // 已标记清除识别码 → 提交 __clear__ 由后端清空字段；否则留空表示不修改
+    phone_code: modalClearCodeFlag ? '__clear__' : $('f-code').value.trim(),
+  };
+  try {
+    if (state.editingIndex === null) {
+      const data = await api('/api/accounts', { method: 'POST', body: JSON.stringify(body) });
+      toast(data.msg || '账号已添加', !data.msg);
+    } else {
+      // 编辑：携带乐观锁快照（打开表单时的账号指纹），后端比对不一致返回 409 阻止覆盖
+      if (state.editSnapshot) body._snapshot = state.editSnapshot;
+      await api(`/api/accounts/${state.editingIndex}`, { method: 'PUT', body: JSON.stringify(body) });
+      toast('账号已更新');
+    }
+    state.editSnapshot = null;
+    closeForm();
+    loadAccounts();
+  } catch (err) { toast(err.message, true); }
+  finally {
+    accountSubmitting = false;
+    submitBtn.disabled = false;
+    submitBtn.textContent = btnText;  // 模态已关/仍开均可安全恢复，供下次打开
+  }
+});
+
+// ================= 日志与状态 =================
+let _logFirstLoad = true;
+let _logViewDate = '';  // 空 = 今天（10s 轮询）；非空 = 历史日期（静态，不轮询）
+let _lastRenderSnap = '';  // 轮询条件渲染：accounts+states 快照，无变化不重建 DOM
+let _logLastSnap = null;  // 日志渲染快照：内容未变化时跳过重写，避免 10s 轮询全量 DOM 重建
+let _logSearch = '';
+let _logShowAll = false;
+let _logCurDate = '';
+function initLogSearch() {
+  const inp = $('log-search');
+  if (!inp || inp._bound) return;
+  inp._bound = true;
+  inp.addEventListener('input', () => {
+    clearTimeout(inp._t);
+    inp._t = setTimeout(() => { _logSearch = inp.value.trim(); _logFirstLoad = true; loadLogs(); }, 300);
+  });
+}
+function toggleLogAll() {
+  _logShowAll = !_logShowAll;
+  const btn = $('log-all-btn');
+  if (btn) btn.textContent = _logShowAll ? '回到最近' : '显示全部';
+  _logFirstLoad = true;
+  loadLogs();
+}
+function exportLog() {
+  const d = _logViewDate || _logCurDate;
+  if (!d) { toast('暂无可导出的日志日期', true); return; }
+  window.open('/api/logs/export?date=' + encodeURIComponent(d), '_blank');
+}
+async function loadLogs() {
+  try {
+    const params = new URLSearchParams();
+    if (_logViewDate) params.set('date', _logViewDate);
+    if (_logSearch) params.set('q', _logSearch);
+    if (_logShowAll) params.set('all', '1');
+    const qs = params.toString();
+    const data = await api('/api/logs' + (qs ? '?' + qs : ''));
+    _logCurDate = data.date;
+    $('log-lines-info').textContent = _logSearch
+      ? `${data.returned} 行匹配 / 共 ${data.total_lines} 行`
+      : (data.truncated
+        ? `已截断：显示前 ${data.returned} / 共 ${data.total_lines} 行（导出可取完整文件）`
+        : (data.total_lines > 80 ? `共 ${data.total_lines} 行（默认显示最后 80 行，可显示全部或导出）` : `共 ${data.total_lines} 行`));
+    // 注意：不再写 state.states——账号表格图标/统计卡的事实源是 /api/accounts 轮询
+    // （sign-state 文件状态码）；/api/logs 只提供日志行（2026-08-16 审查轮修复）
+    $('log-file').textContent = data.log_file;
+    // 日期视图提示：历史日期静态展示 + 「回到今天」按钮
+    // 当今天无日志时，后端返回最近有日志的一天（is_today=false）
+    if (_logViewDate || !data.is_today) {
+      $('log-date-tip').textContent = `正在查看 ${data.date} 的日志（历史日期不自动刷新）`;
+      $('log-back-today').classList.remove('hidden');
+    } else {
+      $('log-date-tip').textContent = '';
+      $('log-back-today').classList.add('hidden');
+    }
+    const box = $('log-box');
+    const empty = $('log-empty');
+    // 展示层脱敏：日志行内 [13800138000] 前缀 → [138****8000]（sign.log 文件保持完整供状态解析）
+    const rendered = data.logs.map(l => l.replace(/\[(\d{11})\]/g, (m, p) => '[' + maskPhone(p) + ']')).join('\n');
+    const renderedProbe = (data.probe_events || []).map(e =>
+      `${e.time} [${e.phone}] ${e.status === 'failed' ? '❌异常' : '✅正常'}${e.message ? ' · ' + e.message : ''}`
+    ).join('\n');
+    const probeBlock = $('probe-block');
+    if ((data.probe_events || []).length) {
+      $('probe-count').textContent = data.probe_events.length;
+      $('probe-box').textContent = renderedProbe;
+      probeBlock.classList.remove('hidden');
+    } else {
+      probeBlock.classList.add('hidden');
+    }
+    // 签到事件时间线（sign_events 补消费端），符号按状态码（与日志口径一致）
+    const _sievSym = { success: '✅', already: '✅', no_task: '➖', failed: '❌',
+      retrying: '🔄', pending: '🕐', skipped_window: '⛔', skipped_norange: '⛔',
+      paused: '⏸️', user_cancelled: '⏹️' };
+    const renderedSignEv = (data.sign_events || []).map(e =>
+      `${e.time} [${e.phone}] ${_sievSym[e.status] || '·'} ${e.status}${e.attempt > 1 ? '（第' + e.attempt + '次）' : ''}${e.message ? ' · ' + e.message : ''}`
+    ).join('\n');
+    const sievBlock = $('signev-block');
+    if ((data.sign_events || []).length) {
+      $('signev-count').textContent = data.sign_events.length;
+      $('signev-box').textContent = renderedSignEv;
+      sievBlock.classList.remove('hidden');
+    } else {
+      sievBlock.classList.add('hidden');
+    }
+    // 快照纳入探针区，内容变化时强制重渲染（否则轮询会因 logs 未变而跳过）
+    const snap = (data.logs.length ? rendered : '') + '\n@@PROBE@@' + renderedProbe + '\n@@SIGNEV@@' + renderedSignEv + '\n@@INFO@@' + $('log-lines-info').textContent;
+    if (snap === _logLastSnap) return;  // 日志无变化：不重写 DOM
+    _logLastSnap = snap;
+    if (data.logs.length) {
+      const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      box.textContent = rendered;
+      box.classList.remove('hidden');
+      empty.classList.add('hidden');
+      if (nearBottom || _logFirstLoad) { box.scrollTop = box.scrollHeight; _logFirstLoad = false; }
+    } else {
+      box.classList.add('hidden');
+      empty.textContent = _logSearch ? '（无匹配日志行）' : (_logViewDate ? `（${_logViewDate} 无签到日志）` : '（暂无签到日志，等待定时任务执行…）');
+      empty.classList.remove('hidden');
+    }
+  } catch (e) { /* 静默：轮询失败不打扰 */ }
+}
+
+function viewLogDate() {
+  const v = $('log-date').value;
+  if (!v) { toast('请先选择日期', true); return; }
+  _logViewDate = v;
+  _logLastSnap = null;  // 强制重渲染（历史日期内容可能与当前快照相同）
+  _logFirstLoad = true;
+  loadLogs();
+}
+
+function backToTodayLogs() {
+  _logViewDate = '';
+  $('log-date').value = '';
+  _logLastSnap = null;
+  _logFirstLoad = true;
+  loadLogs();
+}
+
+async function refreshAccountsSilent() {
+  // 轮询拉取账号列表（静默失败）：管理员停留页面时同步审核状态/分组/统计卡
+  // 条件渲染：数据（accounts + states）无变化时不重建 DOM，避免 10s 全量 reflow
+  try {
+    const data = await api('/api/accounts');
+    state.states = data.states;  // /api/accounts 自带状态（键已脱敏），账号表格图标不再依赖日志轮询
+    state.state_msgs = data.state_msgs || {};  // 状态原因/计划时间（表格 title 展示）
+    state.state_durs = data.state_durs || {};  // 单次签到耗时（P6，表格 title 展示）
+    const snap = JSON.stringify(data.accounts) + '|' + JSON.stringify(data.states);
+    if (snap !== _lastRenderSnap) {
+      _lastRenderSnap = snap;
+      state.accounts = data.accounts;
+      renderAccounts();
+    }
+  } catch (e) { /* 轮询失败不打扰 */ }
+}
+
+// 可见性轮询：仅当前可见的 tab 才请求对应接口（logs/accounts 都不可见时零请求），
+// 避免后台页停留时持续拉日志/解密账号列表的服务端放大
+function pollVisible() {
+  const logsVisible = !$('tab-logs').classList.contains('hidden');
+  const accountsVisible = !$('tab-accounts').classList.contains('hidden');
+  // 历史日期日志静态展示：仅当天视图参与 10s 轮询（历史内容不会变化）
+  if (logsVisible && !_logViewDate) loadLogs();
+  if (accountsVisible) refreshAccountsSilent();
+}
+
+function fillSigninSelect() {
+  const sel = $('signin-select');
+  const current = sel.value;
+  sel.innerHTML = '';
+  // 只列可签到账号：已生效（active）且未被软删除；待审核/已拒绝/已删除不可手动签到
+  const signable = state.accounts.filter(a => a.status === 'active' && !a.deleted);
+  if (!signable.length) {
+    sel.innerHTML = '<option value="">暂无签到账号</option>';
+    return;
+  }
+  signable.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.index;  // value 用索引（列表已脱敏，完整号按需从详情接口取）
+    opt.textContent = `${a.display_name} (${maskPhone(a.phone)})`;
+    sel.appendChild(opt);
+  });
+  if (current) sel.value = current;
+}
+
+// 手动签到（下拉）：value 为账号索引 → 按需取完整手机号
+async function doSigninFromSelect() {
+  const v = $('signin-select').value;
+  if (!v) { toast('请先在账号管理中配置账号', true); return; }
+  doSigninByIndex(Number(v));
+}
+
+// 手动签到（行菜单/下拉）：通过详情接口取完整手机号后触发
+async function doSigninByIndex(idx) {
+  try {
+    const d = await api(`/api/accounts/${idx}/detail`);
+    doSignin(d.account.phone);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function doSignin(phone) {
+  if (!phone) { toast('请先在账号管理中配置账号', true); return; }
+  try {
+    const data = await api('/api/signin', { method: 'POST', body: JSON.stringify({ phone }) });
+    toast(data.msg || '已触发签到');
+  } catch (e) { toast(e.message, true); }
+}
+
+// ================= 系统设置 =================
+// 容量统计（2026-09-08 单档口径）：签到容量 = 按有效窗口（已扣掐头去尾）与当前
+// 账号间隔估算的可容纳活跃账号数；已用（或含潜在负载）超容量仅警示变色，不阻断操作
+// 2026-09-10（需求3）：额外展示**名额占用**（账号 N/上限）及三分类拆解，帮助判断
+// 「停签/故障账号占满名额、新账号被拒但实际负载不高」。纯展示，不参与任何配额判定。
+function renderCapacity(est, cap) {
+  const box = $('capacity-content');
+  if (!box) return;
+  if (!est) { box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500 px-1 py-2">暂无预估数据</div>'; return; }
+  const cur = est.current_accounts || 0, capN = est.accounts_cap || 0, load = est.potential_load || 0;
+  // cap=0（窗口退化到容纳不下一次签到）且已用>0 同样视为超限，不因 cap>0 短路漏报
+  const over = cur > capN || cur + load > capN;
+  const border = over ? 'border-red-300 dark:border-red-800' : 'border-zinc-200 dark:border-zinc-700';
+  const text = over ? 'text-red-600 dark:text-red-400' : 'text-zinc-900 dark:text-zinc-100';
+  // 名额占用行（三分类计数全部服务端下发；此处一律 Number() 归一，杜绝任何字符串
+  // 被拼进 innerHTML——即便后端将来误传字符串也不会形成注入面）
+  let quotaHtml = '';
+  if (cap && typeof cap === 'object') {
+    const used = Number(cap.accounts) || 0;
+    const lim = Number(cap.accounts_max) || 0;
+    const bd = cap.accounts_breakdown || {};
+    const nNormal = Number(bd.normal) || 0;
+    const nUserPaused = Number(bd.user_paused) || 0;
+    const nCredPaused = Number(bd.cred_paused) || 0;
+    const near = lim > 0 && used >= lim;
+    const quotaText = lim > 0 ? `${used}/${lim}` : `${used}/不限`;
+    quotaHtml = `<div class="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-700 text-xs">
+      <span class="${near ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-zinc-500 dark:text-zinc-400'}">账号容量 ${quotaText}</span>
+      <span class="text-zinc-400 dark:text-zinc-500">（正常 ${nNormal} · 自暂停 ${nUserPaused} · 账密故障暂停 ${nCredPaused}）</span>
+      <div class="text-zinc-400 dark:text-zinc-500">占额含自暂停与账密故障暂停账号；如需释放名额可在账号管理页清理</div>
+    </div>`;
+  }
+  box.innerHTML = `<div class="rounded-lg border ${border} ${over ? 'bg-red-50 dark:bg-red-900/10' : ''} p-3">
+    <div class="text-xs text-zinc-500 dark:text-zinc-400">签到容量（按当前账号间隔估算）</div>
+    <div class="mt-1 font-semibold ${text}">已用 ${cur} <span class="text-xs font-normal text-zinc-500 dark:text-zinc-400">/ 容量 ${capN} 个</span></div>
+    <div class="text-xs ${over ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">另有 ${load} 人已注册未提交（潜在负载）${over ? '；已超容量：保存更大的账号间隔将被拒绝' : ''}</div>
+    ${quotaHtml}
+  </div>`;
+}
+
+async function loadSettings() {
+  try {
+    // 预填当前公告
+    const ann = await fetch(BASE + '/api/announcement').then(r => r.json()).catch(() => ({}));
+    if (ann && ann.text) $('announcement-input').value = ann.text;
+    await loadMailConfig();  // 邮箱通知状态（全局/个人开关）
+    await loadNotifyConfig();  // 消息推送状态（Server酱/自定义 URL，v0.26.0）
+    const data = await api('/api/settings');
+    state.delays.gap = data.gap_max;
+    renderCapacity(data.capacity_estimate, data.capacity);
+    // 容量上限（2026-09-08，主管理员专属控件；现值随 capacity 区块下发）
+    const capLimits = $('capacity-limits');
+    if (capLimits) {
+      capLimits.classList.toggle('hidden', !state.isMasterAdmin);
+      state.maxUsers = data.capacity?.users_max ?? 0;
+      state.maxAccounts = data.capacity?.accounts_max ?? 0;
+      $('max-users-input').value = state.maxUsers;
+      $('max-accounts-input').value = state.maxAccounts;
+    }
+    // 调度 v2：排序×分布×缓冲×自选总开关×窗口
+    state.signOrder = data.sign_order || 'sequence';
+    state.signDist = data.sign_dist || 'uniform';
+    state.edgeFrontMin = (data.edge_front_sec ?? data.window_edge_sec ?? 60) / 60;
+    state.edgeBackMin = (data.edge_back_sec ?? data.window_edge_sec ?? 60) / 60;
+    state.allowTimePref = !!data.allow_time_pref;
+    state.signWindow = data.sign_window || '';
+    $('sign-order-select').value = state.signOrder;
+    $('sign-dist-select').value = state.signDist;
+    $('edge-front').value = state.edgeFrontMin;
+    $('edge-back').value = state.edgeBackMin;
+    // 顶部"签到窗口"静态展示与实际配置联动（2026-08-15 对抗性审查：原为写死默认值误导）
+    const swEl = $('sign-window-static');
+    if (swEl) swEl.textContent = state.signWindow || '--:-- ~ --:--';
+    const win = state.signWindow.split('~').map(s => s.trim());
+    $('window-start').value = (win[0] || '06:30').slice(0, 5);
+    $('window-end').value = (win[1] || '07:50').slice(0, 5);
+    renderTimePrefUI();
+    updateEdgeWarn();
+    renderSchedulePerm();  // 调度权限：仅主管理员可改
+    state.sundaySign = !!data.sunday_sign;  // 周日签到开关（持久化 .env）
+    renderSundaySignUI();
+    state.saturdaySign = data.saturday_sign === 1;  // 周六签到开关（持久化 .env，默认关闭）
+    renderSaturdaySignUI();
+    state.globalPause = !!data.global_pause;  // 全局暂停（一键暂停签到）
+    renderGlobalPauseUI();
+    state.registrationPause = !!data.registration_pause;  // 暂停注册（v0.26.3）
+    renderRegPauseUI();
+    // 探针模式 + 注册账号验证（v0.23.x，任意管理员可改）
+    $('account-verify-switch').checked = !!data.account_verify;
+    $('probe-enable-switch').checked = !!data.probe_enable;
+    $('probe-time').value = (data.probe_time || '20:00').slice(0, 5);
+    $('probe-interval').value = data.probe_interval || '1';
+    // 批量开关（会话级）不在此重置：state.batchMode 初始 false 已保证"刷新页面后关闭"；
+    // 此前无条件重置导致"切 tab 再切回设置页开关失效"（2026-08-15 用户反馈）
+    // 账号间隔（v0.30.0 由随机延迟卡并入调度卡）：0=关闭，直接回显现值
+    $('gap-delay-secs').value = state.delays.gap;
+    renderBatchModeUI();
+    updateSignModeHint();
+    // 重置调度脏标记：重新加载以服务器值为准（防陈旧"未保存"提示，2026-08-15 对抗性审查 F-1）
+    schedDirty = false;
+    $('schedule-save-btn').classList.add('hidden');
+    $('sched-dirty-tip').classList.add('hidden');
+    // 批量开关影响表格复选框渲染：加载完成后重绘（页面初始加载也会执行）
+    renderAccounts();
+    renderUsers(allUsers, builtinAdminName);
+  } catch (e) { toast(e.message, true); }
+}
+
+// 调度设置：显式保存 + 确认（2026-08-15 确认）；改动只标记脏，点「保存调度设置」才写入
+let schedDirty = false;
+function markSchedDirty() {
+  schedDirty = true;
+  $('schedule-save-btn').classList.remove('hidden');
+  $('sched-dirty-tip').classList.remove('hidden');
+}
+
+// 调度权限：仅主管理员可改（后端 403 兜底，前端禁用控件）；
+// 账号间隔随随机延迟卡并入本卡（同为主管理员专属），沿用同一禁用清单
+function renderSchedulePerm() {
+  const disabled = !state.isMasterAdmin;
+  ['sign-order-select', 'sign-dist-select', 'edge-front', 'edge-back', 'window-start', 'window-end',
+   'gap-delay-secs', 'time-pref-toggle-btn', 'schedule-reset-btn', 'schedule-save-btn'].forEach(id => {
+    const el = $(id);
+    if (el) el.disabled = disabled;
+  });
+  document.querySelectorAll('.edge-chip').forEach(b => { b.disabled = disabled; });
+  const tip = $('sched-perm-tip');
+  if (tip) tip.classList.toggle('hidden', !disabled);
+}
+
+// 在途锁：防连点重复 confirm/POST（2026-08-15 对抗性审查 F-16）
+let scheduleSaving = false;
+async function saveScheduleSettings() {
+  if (scheduleSaving) return;
+  if (!confirm('保存调度设置？\n修改将在下次自动签到时生效。')) return;
+  scheduleSaving = true;
+  $('schedule-save-btn').disabled = true;
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        sign_order: state.signOrder,
+        sign_dist: state.signDist,
+        edge_front_sec: Math.round(state.edgeFrontMin * 60),
+        edge_back_sec: Math.round(state.edgeBackMin * 60),
+        allow_time_pref: state.allowTimePref ? 1 : 0,
+        sign_window: state.signWindow,
+      }),
+    });
+    schedDirty = false;
+    $('schedule-save-btn').classList.add('hidden');
+    $('sched-dirty-tip').classList.add('hidden');
+    toast(data.msg || '调度设置已保存');
+  } catch (e) { toast(e.message, true); }
+  finally {
+    scheduleSaving = false;
+    // 仅主管理员才恢复可点（renderSchedulePerm 权限语义）
+    if (state.isMasterAdmin) $('schedule-save-btn').disabled = false;
+  }
+}
+
+// 排序/分布/缓冲/窗口：改动只标记（显式保存）
+$('sign-order-select').addEventListener('change', () => {
+  state.signOrder = $('sign-order-select').value;
+  markSchedDirty();
+});
+$('sign-dist-select').addEventListener('change', () => {
+  state.signDist = $('sign-dist-select').value;
+  markSchedDirty();
+});
+// 掐头/去尾：改动只标记（显式保存），输入自动钳制 0-5 并对齐 0.5 步进
+['edge-front', 'edge-back'].forEach(id => {
+  $(id).addEventListener('change', () => {
+    const v = parseFloat($(id).value);
+    if (isNaN(v)) return;
+    const clamped = Math.min(5, Math.max(0, v));
+    const snapped = Math.round(clamped * 2) / 2;  // 0.5 分钟粒度
+    $(id).value = snapped;
+    if (id === 'edge-front') state.edgeFrontMin = snapped; else state.edgeBackMin = snapped;
+    updateEdgeWarn();
+    markSchedDirty();
+  });
+});
+// 快捷档位（一键设置前后相同值）
+document.querySelectorAll('.edge-chip').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const m = parseFloat(btn.dataset.edgeMin);
+    state.edgeFrontMin = state.edgeBackMin = m;
+    $('edge-front').value = m;
+    $('edge-back').value = m;
+    updateEdgeWarn();
+    markSchedDirty();
+  });
+});
+// 窗口起止（原生 time 选择器保证格式；改动只标记，保存走「保存调度设置」）
+['window-start', 'window-end'].forEach(id => {
+  $(id).addEventListener('change', () => {
+    const s = $('window-start').value || '06:30';
+    const e = $('window-end').value || '07:50';
+    state.signWindow = `${s} ~ ${e}`;
+    markSchedDirty();
+  });
+});
+
+// 图形开关渲染（2026-08-15 用户反馈：文字按钮→直观图形开关；aria-checked 驱动形态）
+function renderToggle(id, on) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+// 用户自选时间片总开关（显式保存；关闭时用户可预配置但不激活）
+function renderTimePrefUI() {
+  renderToggle('time-pref-toggle-btn', state.allowTimePref);
+}
+function toggleTimePref() {
+  state.allowTimePref = !state.allowTimePref;
+  renderTimePrefUI();
+  markSchedDirty();  // 显式保存：不直接写入
+}
+function updateEdgeWarn() {
+  const warn = $('edge-warn');
+  if (warn) warn.classList.toggle('hidden', state.edgeFrontMin !== 0 && state.edgeBackMin !== 0);
+}
+
+// 恢复默认调度设置（窗口/掐头去尾/排序/分布；自选开关不动——那是功能开关）；标记脏，随保存按钮提交
+function resetScheduleSettings() {
+  if (!confirm('恢复默认调度设置？\n窗口 06:30 ~ 07:50 · 掐头去尾各 1 分钟 · 排序：顺序 · 分布：均匀')) return;
+  state.signOrder = 'sequence';
+  state.signDist = 'uniform';
+  state.edgeFrontMin = 1;
+  state.edgeBackMin = 1;
+  state.signWindow = '06:30 ~ 07:50';
+  $('sign-order-select').value = state.signOrder;
+  $('sign-dist-select').value = state.signDist;
+  $('edge-front').value = state.edgeFrontMin;
+  $('edge-back').value = state.edgeBackMin;
+  $('window-start').value = '06:30';
+  $('window-end').value = '07:50';
+  updateEdgeWarn();
+  markSchedDirty();
+  toast('已恢复默认值，点击「保存调度设置」生效');
+}
+
+// 随机模式下账号管理页提示：顺序不影响执行（调度 v2 判定来源为 sign_order，2026-08-15 对抗性审查 F-9）
+function updateSignModeHint() {
+  const hint = $('sign-mode-hint');
+  if (hint) hint.classList.toggle('hidden', state.signOrder !== 'random');
+}
+
+function renderSundaySignUI() {
+  renderToggle('sunday-sign-btn', state.sundaySign);
+}
+
+function toggleSundaySign() {
+  state.sundaySign = !state.sundaySign;
+  renderSundaySignUI();
+  saveSettings(true);  // 自动保存（写入 .env，cron 下次触发生效）
+}
+
+function renderSaturdaySignUI() {
+  renderToggle('saturday-sign-btn', state.saturdaySign);
+}
+
+function toggleSaturdaySign() {
+  state.saturdaySign = !state.saturdaySign;
+  renderSaturdaySignUI();
+  saveSettings(true);  // 自动保存（写入 .env，cron 下次触发生效）
+}
+
+// 全局暂停（一键暂停签到）：仅主管理员；双重确认；下一轮 cron 生效
+function renderGlobalPauseUI() {
+  // 普通管理员：危险区整卡隐藏（仅主管理员可一键暂停，v0.26.0）
+  const card = $('danger-zone-card');
+  if (card) card.classList.toggle('hidden', !state.isMasterAdmin);
+  const btn = $('global-pause-btn');
+  const hint = $('global-pause-hint');
+  if (!btn) return;
+  // 仅主管理员可操作（后端 403 兜底）
+  btn.disabled = !state.isMasterAdmin;
+  if (state.globalPause) {
+    $('global-pause-btn-icon').innerHTML = icon('play');
+    $('global-pause-btn-text').textContent = '恢复自动签到';
+    btn.classList.remove('bg-red-600', 'hover:bg-red-700');
+    btn.classList.add('bg-green-600', 'hover:bg-green-700');
+  } else {
+    $('global-pause-btn-icon').innerHTML = icon('pause');
+    $('global-pause-btn-text').textContent = '暂停自动签到';
+    btn.classList.remove('bg-green-600', 'hover:bg-green-700');
+    btn.classList.add('bg-red-600', 'hover:bg-red-700');
+  }
+  if (hint) hint.classList.toggle('hidden', !state.globalPause);
+}
+
+async function toggleGlobalPause() {
+  if (!state.isMasterAdmin) return;
+  const next = !state.globalPause;
+  // 第一次确认：说明影响
+  const msg1 = next
+    ? '【暂停签到】\n\n所有账号将停止自动签到。\n· 当前正在运行的进程会跑完\n· 手动签到不受影响\n· 可随时恢复\n\n确认继续？'
+    : '【恢复签到】\n\n下一轮自动签到将恢复执行。\n\n确认继续？';
+  if (!confirm(msg1)) return;
+  // 第二次确认：明确选择
+  const msg2 = next
+    ? '注意：再次确认，确定要【暂停】自动签到吗？\n\n此操作将立即保存，下一次自动签到起生效。'
+    : '注意：再次确认，确定要【恢复】自动签到吗？';
+  if (!confirm(msg2)) return;
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({ global_pause: next ? 1 : 0 }),
+    });
+    state.globalPause = next;
+    renderGlobalPauseUI();
+    toast(data.msg || (next ? '签到已暂停' : '签到已恢复'));
+  } catch (e) { toast(e.message, true); }
+}
+
+// 暂停注册（v0.26.3）：仅主管理员；双重确认；立即生效（注册 API 即时拦截）
+function renderRegPauseUI() {
+  const btn = $('reg-pause-btn');
+  const hint = $('reg-pause-hint');
+  if (!btn) return;
+  btn.disabled = !state.isMasterAdmin;
+  if (state.registrationPause) {
+    $('reg-pause-btn-icon').innerHTML = icon('play');
+    $('reg-pause-btn-text').textContent = '开放注册';
+    btn.classList.remove('bg-red-600', 'hover:bg-red-700');
+    btn.classList.add('bg-green-600', 'hover:bg-green-700');
+  } else {
+    $('reg-pause-btn-icon').innerHTML = icon('pause');
+    $('reg-pause-btn-text').textContent = '暂停注册';
+    btn.classList.remove('bg-green-600', 'hover:bg-green-700');
+    btn.classList.add('bg-red-600', 'hover:bg-red-700');
+  }
+  if (hint) hint.classList.toggle('hidden', !state.registrationPause);
+}
+
+async function toggleRegPause() {
+  if (!state.isMasterAdmin) return;
+  const next = !state.registrationPause;
+  const msg1 = next
+    ? '【暂停注册】\n\n登录页将关闭注册入口，新用户无法自助注册。\n· 已注册用户登录不受影响\n· 你仍可在「账号管理」为用户手动添加账号\n\n确认继续？'
+    : '【开放注册】\n\n登录页将恢复注册入口，任何人可按现有规则注册。\n\n确认继续？';
+  if (!confirm(msg1)) return;
+  const msg2 = next
+    ? '注意：再次确认，确定要【暂停】注册吗？\n\n此操作立即生效。'
+    : '注意：再次确认，确定要【开放】注册吗？';
+  if (!confirm(msg2)) return;
+  try {
+    const data = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({ registration_pause: next ? 1 : 0 }),
+    });
+    state.registrationPause = next;
+    renderRegPauseUI();
+    toast(data.msg || (next ? '注册已暂停' : '注册已开放'));
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderBatchModeUI() {
+  renderToggle('batch-mode-btn', state.batchMode);
+}
+
+function toggleBatchMode() {
+  state.batchMode = !state.batchMode;
+  renderBatchModeUI();
+  renderAccounts();
+  renderUsers(allUsers, builtinAdminName);
+  // 会话级开关：不写入配置，刷新/重进页面自动恢复关闭
+}
+
+// 移动端完整表格开关（v0.30.0）：body.full-tables 类驱动 CSS 强制显示 md:table-cell 列，
+// localStorage（yiban-full-tables）记忆；受限环境降级为不记忆、仅本次会话生效
+function toggleFullTables() {
+  const btn = $('full-tables-btn');
+  const on = btn.getAttribute('aria-checked') !== 'true';
+  try {
+    if (on) localStorage.setItem('yiban-full-tables', '1');
+    else localStorage.removeItem('yiban-full-tables');
+  } catch (e) {}
+  document.body.classList.toggle('full-tables', on);
+  btn.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+function initFullTables() {
+  let on = false;
+  try { on = localStorage.getItem('yiban-full-tables') === '1'; } catch (e) {}
+  document.body.classList.toggle('full-tables', on);
+  const btn = $('full-tables-btn');
+  if (btn) btn.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+async function saveSettings(silent) {
+  // 周末开关所有管理员可改；账号间隔与容量上限属主管理员专属参数，仅主管理员
+  // 在变更时携带对应键——后端「见键即要求主管理员密码确认」（容量上限还并入
+  // 403 字段清单），不带键则不修改
+  const payload = {
+    // 注意：不发送 sign_mode——遗留字段（已无控件），发送默认值 'sequence' 会
+    // 静默覆盖 .env 中既有的 YIBAN_SIGN_MODE，且权限上仅主管理员可写
+    sunday_sign: state.sundaySign ? 1 : 0,
+    saturday_sign: state.saturdaySign ? 1 : 0,
+  };
+  const gapRaw = parseInt($('gap-delay-secs').value, 10);
+  const gapV = isNaN(gapRaw) || gapRaw < 0 ? state.delays.gap : gapRaw;  // 空/非法 = 沿用现值；0=关闭
+  const gapChanged = state.isMasterAdmin && gapV !== state.delays.gap;
+  // 容量上限（2026-09-08）：仅主管理员可见可改；非法/空输入沿用现值
+  const capVal = (id, cur) => {
+    const v = parseInt($(id)?.value, 10);
+    return isNaN(v) || v < 0 ? cur : v;
+  };
+  const maxUserV = capVal('max-users-input', state.maxUsers);
+  const maxAccV = capVal('max-accounts-input', state.maxAccounts);
+  const maxUserChanged = state.isMasterAdmin && maxUserV !== state.maxUsers;
+  const maxAccChanged = state.isMasterAdmin && maxAccV !== state.maxAccounts;
+  try {
+    let data;
+    if (gapChanged || maxUserChanged || maxAccChanged) {
+      data = await new Promise((resolve, reject) => {
+        openConfirmPasswordModal('调整签到节奏/容量上限：不合适的设置可能影响签到成功率，是否继续？\n请输入当前主管理员密码确认。', async (cpw) => {
+          try {
+            if (gapChanged) payload.gap_max = gapV;
+            if (maxUserChanged) payload.max_users = maxUserV;
+            if (maxAccChanged) payload.max_accounts = maxAccV;
+            payload.confirm_password = cpw;
+            resolve(await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) }));
+          } catch (err) { reject(err); }
+        });
+      });
+    } else {
+      // 未变更不带 gap/max_* 键（避免无谓触发后端口令/容量校验路径）
+      data = await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    state.delays.gap = gapV;
+    $('gap-delay-secs').value = gapV;
+    if (maxUserChanged || maxAccChanged) {
+      state.maxUsers = maxUserV;
+      state.maxAccounts = maxAccV;
+      $('max-users-input').value = maxUserV;
+      $('max-accounts-input').value = maxAccV;
+    }
+    if (gapChanged || maxUserChanged || maxAccChanged) {
+      // POST 返回体不含容量预估：间隔/上限变化后补拉一次，概览卡容量统计保持新鲜
+      const fresh = await api('/api/settings');
+      renderCapacity(fresh.capacity_estimate, fresh.capacity);
+    }
+    if (!silent) {
+      toast(data.msg || '设置已保存');
+    } else {
+      const tip = $('settings-saved-tip');
+      tip.classList.remove('hidden');
+      clearTimeout(tip._t);
+      tip._t = setTimeout(() => tip.classList.add('hidden'), 2000);
+    }
+  } catch (e) { if (!silent) toast(e.message, true); }
+}
+
+// 全局公告编辑（管理员）：保存到 .env；loadSettings 时预填当前公告
+async function saveAnnouncement() {
+  const text = $('announcement-input').value.trim();
+  try {
+    const data = await api('/api/announcement', {
+      method: 'PUT', body: JSON.stringify({ text }),
+    });
+    $('announcement-tip').textContent = data.msg || '已更新';
+    setTimeout(() => { $('announcement-tip').textContent = ''; }, 3000);
+  } catch (e) { toast(e.message, true); }
+}
+
+// ===== 邮箱通知（v0.23.0）：全局开关（主管理员）+ 个人开关（普通管理员）=====
+let mailEnabled = false;   // 全局（YIBAN_MAIL_ENABLE）
+let mailSelfOn = true;     // 个人（users.mail_notify，普通管理员）
+
+async function loadMailConfig() {
+  try {
+    const data = await api('/api/mail-config');
+    mailEnabled = !!data.enabled;
+    $('mail-config-status').textContent = data.enabled
+      ? `已开启 · 发件 ${data.user} · 告警收件 ${data.admin_to}`
+      : '未开启（需先在下方配置发件 SMTP，再由主管理员开启）';
+    $('mail-global-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+    if (state.isMasterAdmin) $('mail-global-switch').checked = mailEnabled;
+    // 个人开关：主管理员 = YIBAN_MAIL_ADMIN_NOTIFY；普通管理员 = users.mail_notify
+    $('mail-self-wrap').classList.remove('hidden');
+    if (state.isMasterAdmin) mailSelfOn = !!data.admin_notify;
+    $('mail-self-switch').checked = mailSelfOn;
+    // SMTP 发信条目列表（v0.30.0）：仅主管理员展示编辑器（user 已打码，pass 不回显）
+    state.mailSmtps = data.smtps || [];
+    $('smtp-editor-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+    if (state.isMasterAdmin) renderSmtps();
+    // 告警收件人（v0.30.0 修复）：仅主管理员；打码值只作 placeholder，输入框恒为空
+    $('mail-admin-to-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+    if (state.isMasterAdmin) {
+      const toEl = $('mail-admin-to');
+      toEl.value = '';
+      toEl.placeholder = data.admin_to || 'admin@example.com';
+    }
+  } catch (e) { /* 配置读取失败不阻塞设置页 */ }
+}
+
+// 保存告警收件人（v0.30.0 修复）：改收件人 = 改告警送达路径，须主管理员口令确认。
+// 留空不提交（避免误清空已配置地址），清空走 clearAdminTo。
+function saveAdminTo() {
+  const el = $('mail-admin-to');
+  const val = (el.value || '').trim();
+  if (!val) { toast('请填写收件人邮箱；如需清空请点「清空」', true); return; }
+  openConfirmPasswordModal(
+    '修改告警收件人？\n告警邮件将改发到新地址，原收件人会被通知。\n请输入当前主管理员密码确认。',
+    async (pw) => {
+      const tip = $('mail-config-tip');
+      tip.textContent = '保存中…';
+      try {
+        await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ admin_to: val, confirm_password: pw }) });
+        tip.textContent = '已保存告警收件人';
+        setTimeout(() => { tip.textContent = ''; }, 3000);
+        await loadMailConfig();
+      } catch (e) {
+        tip.textContent = '';
+        toast(e.message, true);
+      }
+    }
+  );
+}
+
+// 清空告警收件人：显式提交空串（后端键存在即按提交值落盘）
+function clearAdminTo() {
+  if (!confirm('清空告警收件人？\n清空后将不再发送管理员告警邮件（除非另有开启接收的管理员）。')) return;
+  openConfirmPasswordModal(
+    '清空告警收件人？\n清空后管理员告警邮件将无人接收！\n请输入当前主管理员密码确认。',
+    async (pw) => {
+      const tip = $('mail-config-tip');
+      tip.textContent = '保存中…';
+      try {
+        await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ admin_to: '', confirm_password: pw }) });
+        tip.textContent = '已清空告警收件人';
+        setTimeout(() => { tip.textContent = ''; }, 3000);
+        await loadMailConfig();
+      } catch (e) {
+        tip.textContent = '';
+        toast(e.message, true);
+      }
+    }
+  );
+}
+
+async function toggleMailGlobal() {
+  const el = $('mail-global-switch');
+  const enabled = el.checked;
+  // 关闭全局邮件通道 = 给全部安全告警拔线（后端已要求二次口令）。
+  // 先把开关拨回原状，口令确认成功后再落——用户取消模态时界面不会出现"看着已关"的假象
+  if (!enabled) {
+    el.checked = mailEnabled;
+    openConfirmPasswordModal(
+      '关闭全局邮件通知？\n关闭后所有安全告警都不再发邮件，且"被关闭"这件事本身也可能没人知道！\n请输入当前主管理员密码确认。',
+      (pw) => { el.checked = false; submitMailGlobal(false, pw); }
+    );
+    return;
+  }
+  await submitMailGlobal(enabled, null);
+}
+
+async function submitMailGlobal(enabled, pw) {
+  const tip = $('mail-config-tip');
+  tip.textContent = '保存中…';
+  const body = { enabled };
+  if (pw) body.confirm_password = pw;
+  try {
+    await api('/api/mail-config', { method: 'PUT', body: JSON.stringify(body) });
+    mailEnabled = enabled;
+    tip.textContent = enabled ? '已开启全局邮件通知' : '已关闭全局邮件通知';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+  } catch (e) {
+    $('mail-global-switch').checked = mailEnabled;  // 回滚
+    tip.textContent = '保存失败：' + e.message;
+  }
+}
+
+async function toggleMailSelf() {
+  const el = $('mail-self-switch');
+  const enabled = el.checked;
+  // 主管理员关闭个人接收（admin_notify=false）后 ADMIN_TO 告警邮件全部
+  // 停发，同样属"拔线"动作 → 二次口令；普通管理员的 my-mail-notify 只影响其本人，不变
+  if (state.isMasterAdmin && !enabled) {
+    el.checked = mailSelfOn;
+    openConfirmPasswordModal(
+      '关闭主管理员告警邮件接收？\n关闭后 ADMIN_TO 不再收到任何告警邮件（其他管理员收件不受影响）！\n请输入当前主管理员密码确认。',
+      (pw) => { el.checked = false; submitMailSelf(false, pw); }
+    );
+    return;
+  }
+  await submitMailSelf(enabled, null);
+}
+
+async function submitMailSelf(enabled, pw) {
+  const tip = $('mail-config-tip');
+  tip.textContent = '保存中…';
+  try {
+    if (state.isMasterAdmin) {
+      const body = { admin_notify: enabled };
+      if (pw) body.confirm_password = pw;
+      await api('/api/mail-config', { method: 'PUT', body: JSON.stringify(body) });
+    } else {
+      await api('/api/my-mail-notify', { method: 'PUT', body: JSON.stringify({ enabled }) });
+    }
+    mailSelfOn = enabled;
+    tip.textContent = enabled ? '已开启接收邮件提醒' : '已关闭接收邮件提醒';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+  } catch (e) {
+    $('mail-self-switch').checked = mailSelfOn;  // 回滚
+    tip.textContent = '保存失败：' + e.message;
+  }
+}
+
+// ===== SMTP 发信条目编辑器（v0.29.0：主备 failover 列表，仅主管理员） =====
+// GET 返回的 user 已打码（含 *）、未配置为「<未配置>」占位——这两种形态的串
+// 不允许作为真值提交（否则按字面落盘损坏配置），收集时一律归一为空串 = 后端沿用旧值
+function _smtpClean(v) {
+  const s = String(v || '').trim();
+  return !s || s.includes('*') || s.startsWith('<') ? '' : s;
+}
+
+function renderSmtps() {
+  const box = $('smtps-list');
+  box.innerHTML = '';
+  state.mailSmtps.forEach((e, i) => {
+    const row = document.createElement('div');
+    row.className = 'rounded-lg border border-zinc-200 dark:border-zinc-700 p-3 space-y-2';
+    row.innerHTML = `
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-zinc-500 dark:text-zinc-400">SMTP ${i + 1}${i === 0 ? '（主）' : '（备用）'}</span>
+        <button type="button" onclick="removeSmtp(${i})" class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">删除</button>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-6 gap-2">
+        <div class="sm:col-span-3">
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">服务器 host</label>
+          <input data-f="host" value="${esc(e.host)}" placeholder="smtp.example.com" autocomplete="off" class="input input-sm">
+        </div>
+        <div>
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">端口</label>
+          <input data-f="port" type="number" min="1" max="65535" value="${esc(e.port)}" placeholder="465" class="input input-sm">
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">发件账号（留空沿用）</label>
+          <input data-f="user" value="" placeholder="${esc(e.user)}" autocomplete="off" class="input input-sm">
+        </div>
+        <div class="sm:col-span-3">
+          <label class="block text-[11px] text-zinc-500 dark:text-zinc-400 mb-0.5">授权码（永不回显）</label>
+          <input data-f="pass" type="password" value="" placeholder="${e.has_pass ? '已配置，留空沿用' : '未配置'}" autocomplete="new-password" class="input input-sm">
+        </div>
+      </div>`;
+    box.appendChild(row);
+  });
+}
+
+function addSmtp() {
+  state.mailSmtps.push({ host: '', port: 465, user: '', has_pass: false });
+  renderSmtps();
+}
+
+function removeSmtp(i) {
+  state.mailSmtps.splice(i, 1);
+  renderSmtps();
+}
+
+async function saveSmtps() {
+  const entries = [...document.querySelectorAll('#smtps-list > div')].map(row => ({
+    host: _smtpClean(row.querySelector('[data-f="host"]').value),
+    port: parseInt(row.querySelector('[data-f="port"]').value, 10) || 465,
+    user: _smtpClean(row.querySelector('[data-f="user"]').value),
+    pass: row.querySelector('[data-f="pass"]').value.trim(),  // 授权码仅过滤空白；是否沿用由后端按索引决定
+  }));
+  openConfirmPasswordModal('保存 SMTP 配置：更换/清空邮件通道属敏感操作。\n请输入当前主管理员密码确认。', async (pw) => {
+    const tip = $('mail-config-tip');
+    tip.textContent = '保存中…';
+    try {
+      await api('/api/mail-config', { method: 'PUT', body: JSON.stringify({ smtps: entries, confirm_password: pw }) });
+      tip.textContent = '已保存 SMTP 配置';
+      setTimeout(() => { tip.textContent = ''; }, 3000);
+      await loadMailConfig();  // 重拉打码值与全局状态（重渲染主备列表）
+    } catch (e) {
+      tip.textContent = '';
+      toast(e.message, true);
+    }
+  });
+}
+
+// ===== 消息推送（Webhook：Server酱/自定义 URL，v0.26.0）=====
+async function loadNotifyConfig() {
+  // v0.30.0：卡对所有管理员可见（同卡「邮件通知」区的个人开关普通管理员要用）；
+  // 仅主管理员专属的 Webhook 配置块隐藏。普通管理员无需拉取主管理员专属配置。
+  const card = $('notify-card');
+  if (card) card.classList.remove('hidden');
+  $('notify-master-wrap').classList.toggle('hidden', !state.isMasterAdmin);
+  if (!state.isMasterAdmin) return;
+  try {
+    const data = await api('/api/notify-config');
+    $('notify-type').value = data.type || '';
+    $('notify-secret').value = '';
+    $('notify-urgent-switch').checked = !!data.urgent_only;
+    // 额度已分成"非紧急 / 紧急"两本账，只报一个数字会被运维当成总额度
+    const gLeft = data.daily_remaining == null ? '不限' : `${data.daily_remaining} 条`;
+    const uLeft = data.urgent_daily_remaining == null ? '不限' : `${data.urgent_daily_remaining} 条`;
+    if (data.daily_max != null) $('notify-daily-max').value = data.daily_max;
+    if (data.urgent_daily_max != null) $('notify-urgent-daily-max').value = data.urgent_daily_max;
+    const parts = [];
+    if (data.enabled) {
+      parts.push(`已开启（${data.type === 'serverchan' ? 'Server酱' : '自定义地址'}，密钥 ${data.secret_masked}）`);
+      if (data.urgent_only) parts.push('仅推送重要告警');
+    } else {
+      parts.push(data.configured ? '已配置但不可用（密钥缺失或解密失败，请重新填写密钥）' : '未配置');
+    }
+    // 两本账剩余无论通道开关都照报：额度耗尽本身就是要让运维看见的事实
+    parts.push(`今日推送额度：非紧急剩余 ${gLeft} / 紧急剩余 ${uLeft}`);
+    $('notify-status').textContent = parts.join('；');
+  } catch (e) { /* 读取失败不阻塞设置页 */ }
+}
+
+async function saveNotifyConfig() {
+  const body = { type: $('notify-type').value };
+  const secret = $('notify-secret').value.trim();
+  if (secret) body.secret = secret;
+  // 关闭推送：无需密钥，直接保存（后端清除类型与密钥，v0.26.0 修复原"关不掉"bug）
+  // 开启推送：密钥不回显，须重新输入；同时防误点保存把已配置密钥清空
+  if (body.type && !secret) { toast('开启推送请填写密钥', true); return; }
+  // 关闭通道与换密钥等同"给报警器拔线"，后端要求二次口令后才落盘；
+  // 只改节流/额度/仅重要告警开关不走这里（见 saveNotifyBudget / saveNotifyUrgent）
+  openConfirmPasswordModal(
+    body.type
+      ? `保存消息推送配置（${body.type === 'serverchan' ? 'Server酱' : '自定义地址'} + 新密钥）？\n新密钥加密落盘，旧密钥立即失效。\n请输入当前主管理员密码确认。`
+      : '关闭消息推送？\n关闭后所有告警不再推送到手机（邮件通知不受影响）！\n请输入当前主管理员密码确认。',
+    (pw) => { body.confirm_password = pw; submitNotifyConfig(body); }
+  );
+}
+
+async function submitNotifyConfig(body) {
+  const tip = $('notify-tip');
+  tip.textContent = '保存中…';
+  try {
+    const data = await api('/api/notify-config', { method: 'PUT', body: JSON.stringify(body) });
+    $('notify-secret').value = '';
+    tip.textContent = data.enabled ? '已保存并开启' : '已关闭';
+    await loadNotifyConfig();
+  } catch (e) {
+    tip.textContent = '';
+    toast(e.message, true);
+  }
+}
+
+// 两本账每日上限（分账后紧急账也能在页面上配）：纯数值改动，无需二次口令
+async function saveNotifyBudget() {
+  const tip = $('notify-tip');
+  const gv = String($('notify-daily-max').value).trim();
+  const uv = String($('notify-urgent-daily-max').value).trim();
+  if (!/^\d+$/.test(gv) || !/^\d+$/.test(uv)) { toast('每日上限须为 0 或正整数（0=不限）', true); return; }
+  tip.textContent = '保存中…';
+  try {
+    await api('/api/notify-config', {
+      method: 'PUT',
+      body: JSON.stringify({ daily_max: Number(gv), urgent_daily_max: Number(uv) }),
+    });
+    tip.textContent = '已保存每日额度';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+    await loadNotifyConfig();
+  } catch (e) {
+    tip.textContent = '';
+    toast(e.message, true);
+  }
+}
+
+async function testNotify() {
+  const tip = $('notify-tip');
+  tip.textContent = '发送中…';
+  try {
+    const data = await api('/api/notify-test', { method: 'POST' });
+    tip.textContent = data.msg || '已发送';
+  } catch (e) {
+    tip.textContent = '';
+    toast(e.message, true);
+  }
+}
+
+async function saveNotifyUrgent() {
+  const tip = $('notify-tip');
+  tip.textContent = '保存中…';
+  try {
+    const data = await api('/api/notify-config', {
+      method: 'PUT',
+      body: JSON.stringify({ urgent_only: $('notify-urgent-switch').checked }),
+    });
+    tip.textContent = data.urgent_only ? '已开启仅重要告警' : '已关闭（全部推送）';
+    await loadNotifyConfig();
+  } catch (e) {
+    $('notify-urgent-switch').checked = !$('notify-urgent-switch').checked;  // 回滚
+    tip.textContent = '';
+    toast(e.message, true);
+  }
+}
+
+// ===== 探针模式 + 注册账号验证（v0.23.x）：任意管理员可改，改动即保存 =====
+let probeSaving = false;
+async function saveProbeSettings() {
+  if (probeSaving) return;
+  const timeVal = $('probe-time').value;
+  if (!/^\d{2}:\d{2}$/.test(timeVal || '')) { toast('请选择触发时间', true); return; }
+  probeSaving = true;
+  try {
+    await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        account_verify: $('account-verify-switch').checked ? 1 : 0,
+        probe_enable: $('probe-enable-switch').checked ? 1 : 0,
+        probe_time: timeVal,
+        probe_interval: $('probe-interval').value,
+      }),
+    });
+    const tip = $('probe-config-tip');
+    tip.textContent = '已保存（将在设定时间后的调度周期自动执行健康检查）';
+    setTimeout(() => { tip.textContent = ''; }, 3000);
+  } catch (e) { toast(e.message, true); }
+  finally { probeSaving = false; }
+}
+
+async function doPing() {
+  const el = $('ping-result');
+  el.textContent = '检测中…';
+  try {
+    const data = await api('/api/ping', { method: 'POST' });
+    el.innerHTML = data.reachable
+      ? `<span class="text-green-600 dark:text-green-400 inline-flex items-center gap-1">${icon('check')} 易班 API 可达（${esc(data.detail)}）</span>`
+      : `<span class="text-red-600 dark:text-red-400 inline-flex items-center gap-1">${icon('close')} 不可达（${esc(data.detail)}）</span>`;
+  } catch (e) {
+    el.innerHTML = `<span class="text-red-600 dark:text-red-400 inline-flex items-center gap-1">${icon('close')} 检测失败（${esc(e.message)}）</span>`;
+  }
+}
+
+// 修改管理员账号（验证当前密码，写入 .env）
+async function saveMyPassword() {
+  const oldPassword = $('my-old-password').value;
+  const password = $('my-new-password').value;
+  // 主管理员口令单独提档（12 位三类），与后端 _admin_password_policy_error 同口径
+  const adminPolicy = !!state.isMasterAdmin;
+  const hint = adminPolicy ? PW_ADMIN_HINT : PW_POLICY_HINT;
+  if (adminPolicy ? !passwordPolicyOkAdmin(password) : !passwordPolicyOk(password)) { toast(`新密码${hint}`, true); return; }
+  if (!oldPassword) { toast('请输入当前密码验证', true); return; }
+  if (password !== $('my-confirm-password').value) { toast('两次输入的新密码不一致', true); return; }
+  try {
+    const data = await api('/api/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: password, confirm_password: $('my-confirm-password').value }),
+    });
+    toast(data.msg || '密码已更新');
+    $('my-old-password').value = '';
+    $('my-new-password').value = '';
+    $('my-confirm-password').value = '';
+  } catch (e) { toast(e.message, true); }
+}
+
+// 普通管理员改密（「我的账号」tab，v0.30.0）：逻辑同 saveMyPassword、仅读 mine-* 前缀；
+// 入口仅非主管理员可见（主管理员走设置页危险区），故固定用普通口令策略（PW_POLICY_HINT）
+async function saveMinePassword() {
+  const oldPassword = $('mine-password-now').value;
+  const password = $('mine-new-password').value;
+  if (!passwordPolicyOk(password)) { toast(`新密码${PW_POLICY_HINT}`, true); return; }
+  if (!oldPassword) { toast('请输入当前密码验证', true); return; }
+  if (password !== $('mine-new-password2').value) { toast('两次输入的新密码不一致', true); return; }
+  try {
+    const data = await api('/api/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: password, confirm_password: $('mine-new-password2').value }),
+    });
+    toast(data.msg || '密码已更新');
+    $('mine-password-now').value = '';
+    $('mine-new-password').value = '';
+    $('mine-new-password2').value = '';
+  } catch (e) { toast(e.message, true); }
+}
+// ================= 时钟与签到状态（本地平滑走秒，60 秒校准一次） =================
+let clockOffset = 0;
+let tzOffsetMin = 0;
+async function calibrateClock() {
+  try {
+    const data = await api('/api/clock');
+    clockOffset = data.server_ts - Math.floor(Date.now() / 1000);
+    tzOffsetMin = Number(data.tz_offset_min) || 0;
+    if (!$('tab-settings').classList.contains('hidden')) {
+      // 颜色白名单校验：仅接受 #rrggbb（防属性上下文逃逸，纵深防御）
+      const color = /^#[0-9a-f]{6}$/i.test(String(data.color || '')) ? data.color : '#7aa2f7';
+      $('sign-status').innerHTML = `<span style="color:${color}">${esc(data.sign_status)}</span>`;
+    }
+  } catch (e) { /* 静默 */ }
+}
+function tickClock() {
+  // 服务器本地时间：epoch + 服务器时区偏移后按 UTC 字段格式化（toISOString 即服务器墙上时间）
+  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset + tzOffsetMin * 60) * 1000);
+  const str = t.toISOString().slice(0, 19).replace('T', ' ');
+  $('sidebar-clock').textContent = '服务器时间：' + str;
+  if (!$('tab-settings').classList.contains('hidden')) {
+    $('clock-now').textContent = str;
+  }
+}
+
+// ================= 退出 =================
+async function doLogout() {
+  try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
+  location.href = BASE + '/login';
+}
+
+// ============ 行操作省略号菜单（fixed 定位；a11y 整改：基于触发元素定位 + role=menu + 焦点管理） ============
+let _rowMenu = null;
+let _rowMenuTrigger = null;
+// refocus=true：Esc 关闭时焦点归还触发按钮（键盘可达）
+function closeRowMenu(refocus) {
+  const t = _rowMenuTrigger;
+  if (_rowMenu) { _rowMenu.remove(); _rowMenu = null; }
+  _rowMenuTrigger = null;
+  if (refocus && t && document.contains(t)) t.focus();
+}
+function openRowMenu(evt, items, anchor) {
+  if (evt && evt.stopPropagation) evt.stopPropagation();
+  closeRowMenu();
+  // 定位改为基于触发元素 getBoundingClientRect：键盘 Enter 触发时 evt.clientX/Y 为 0，
+  // 原实现菜单会飞到左上角；现始终出现在按钮旁
+  const btn = anchor || (evt && evt.currentTarget) || null;
+  _rowMenuTrigger = btn;
+  const el = document.createElement('div');
+  el.setAttribute('role', 'menu');
+  el.setAttribute('aria-label', '更多操作');
+  el.className = 'fixed z-50 bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-lg py-1 min-w-36';
+  let left = 16, top = 80;
+  if (btn && typeof btn.getBoundingClientRect === 'function') {
+    const r = btn.getBoundingClientRect();
+    left = Math.max(8, Math.min(r.left, window.innerWidth - 180));
+    top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - items.length * 40 - 12));
+  }
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+  items.forEach(it => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    b.className = 'w-full text-left px-4 py-2 min-h-[44px] text-sm ' + it.cls + ' hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors duration-150';
+    b.textContent = it.label;
+    b.onclick = () => {
+      const t = _rowMenuTrigger;
+      closeRowMenu();
+      if (t && document.contains(t)) t.focus();  // 焦点先归还触发元素，后续动作（如打开模态）从那里接管焦点链
+      it.fn();
+    };
+    el.appendChild(b);
+  });
+  document.body.appendChild(el);
+  _rowMenu = el;
+  const first = el.querySelector('[role="menuitem"]');
+  if (first) first.focus();  // 打开即聚焦第一项，键盘可直接 Enter 确认
+}
+document.addEventListener('click', () => closeRowMenu(false));
+
+// 动态行内控件统一事件委托（2026-09-08）：用户可控值（邮箱）只经 esc() 放 data-* 属性，
+// 不再拼进 onclick/onchange 的 JS 字符串——属性值不进 JS 解析器，无从借引号/二次解码逃逸。
+// 账号行的批量复选框仍用内联 onchange（id 为数字下标，无注入面），不带 data-batch-key，不会重复触发。
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-purge-email]');
+  if (btn) purgeDeletedUser(btn.dataset.purgeEmail);
+});
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (el && el.matches && el.matches('[data-batch-key]')) toggleRow(el.dataset.batchKey, el.dataset.batchId, el);
+});
+
+// 更新日志弹窗（版本号点击；Markdown 渲染）
+async function openChangelog() {
+  openModal($('changelog-modal'));  // 记录触发元素并聚焦模态内首控件；Esc 可关闭
+  const content = $('changelog-content');
+  content.innerHTML = '加载中…';
+  try {
+    const data = await api('/api/changelog');
+    content.innerHTML = window.renderMarkdown ? renderMarkdown(data.text || '暂无更新日志') : esc(data.text || '暂无更新日志');
+  } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
+}
+function closeChangelog() { closeModal($('changelog-modal')); }
+
+// 初始化
+(async function init() {
+  try {
+    const me = await api('/api/me');
+    if (me.role !== 'admin') { location.href = BASE + '/user'; return; }  // 普通用户 → 用户页
+    csrfToken = me.csrf_token || '';
+    state.isMasterAdmin = !!me.is_builtin_admin;  // 主管理员才可设置/取消管理员
+    if (state.isMasterAdmin) {
+      // 主管理员改密卡片提示提档（12 位三类，与后端口令策略同口径）
+      const lbl = document.querySelector('label[for="my-new-password"]');
+      if (lbl) lbl.textContent = `新密码（${PW_ADMIN_HINT}）`;
+    }
+    mailSelfOn = !!me.mail_notify;  // 普通管理员个人邮件开关（同普通用户）
+    // 侧边栏显示当前账号名（防登录错管理员账号，2026-08-16）
+    const acctName = me.username || me.email || '';
+    $('sidebar-account-name').textContent = acctName + (state.isMasterAdmin ? '（主管理员）' : '');
+    $('sidebar-account-name').title = acctName;
+    // 修改密码卡片标题按角色区分：主管理员=修改主管理员密码，普通管理员=修改密码（改的是自己账号）
+    $('my-password-title').textContent = state.isMasterAdmin ? '修改主管理员密码' : '修改密码';
+    // 「我的账号」改密入口：仅普通管理员可见（主管理员改密走设置页危险区，v0.30.0）
+    const minePwCard = $('mine-password-card');
+    if (minePwCard) minePwCard.classList.toggle('hidden', state.isMasterAdmin);
+    if (!state.isMasterAdmin) {
+      // 普通管理员：隐藏「设为/取消管理员」批量按钮（仅主管理员权限）
+      document.querySelectorAll('.batch-admin-only').forEach(el => el.classList.add('hidden'));
+    }
+    await loadSettings();  // 先完成设置加载（末尾 renderAccounts 依赖），再切账号 tab 拉状态——防首次"待签"竞态
+    const pauseBtn = $('global-pause-btn');
+    if (pauseBtn) pauseBtn.addEventListener('click', toggleGlobalPause);
+    const regPauseBtn = $('reg-pause-btn');
+    if (regPauseBtn) regPauseBtn.addEventListener('click', toggleRegPause);
+    switchTab('accounts');
+    loadLogs();
+    calibrateClock();
+    tickClock();
+    setInterval(pollVisible, 10000);    // 可见性轮询：仅当前 tab 可见时请求（日志/账号）10s
+    setInterval(calibrateClock, 60000);  // 时钟校准 60s
+    setInterval(tickClock, 1000);    // 时钟走秒 1s
+  } catch (e) {
+    location.href = BASE + '/login';
+  }
+})();
+// 暗色主题切换（localStorage 记忆）
+function toggleTheme() {
+  const dark = document.documentElement.classList.toggle('dark');
+  try { localStorage.setItem('yiban-theme', dark ? 'dark' : 'light'); } catch (e) {}
+  updateThemeBtn();
+}
+function updateThemeBtn() {
+  const dark = document.documentElement.classList.contains('dark');
+  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.innerHTML = icon(dark ? 'sun' : 'moon'); });
+}
+document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); renderGlobalPauseUI?.(); initFullTables(); });
+// ================= 用户管理（仅管理员）=================
+async function loadUsers() {
+  try {
+    const data = await api('/api/users');
+    allUsers = data.users || [];
+    builtinAdminName = data.builtin_admin || 'admin';
+    renderUsers(allUsers, builtinAdminName);
+  } catch (e) { toast(e.message, true); }
+  loadDeletedUsers();  // v0.20.1：已注销用户冷却视图（失败静默，非关键）
+}
+
+// 已注销用户（软删除 7 天冷却期；天粒度剩余时间，v0.20.1）
+let deletedUsers = [];
+let deletedUsersCollapsed = true;  // 默认收起，不占空间
+
+async function loadDeletedUsers() {
+  try {
+    const data = await api('/api/users/deleted');
+    deletedUsers = data.items || [];
+    renderDeletedUsers();
+  } catch (e) { /* 静默：视图非关键 */ }
+}
+
+function toggleDeletedUsers() {
+  deletedUsersCollapsed = !deletedUsersCollapsed;
+  $('deleted-users-body').classList.toggle('hidden', deletedUsersCollapsed);
+  $('deleted-arrow').innerHTML = deletedUsersCollapsed ? icon('chevR') : icon('chevD');
+}
+
+function renderDeletedUsers() {
+  const card = $('deleted-users-card');
+  card.classList.toggle('hidden', deletedUsers.length === 0);  // 无注销用户整卡隐藏
+  if (!deletedUsers.length) return;
+  $('users-deleted-count').textContent = `（${deletedUsers.length} 人）`;
+  $('deleted-users-body').classList.toggle('hidden', deletedUsersCollapsed);
+  $('deleted-arrow').innerHTML = deletedUsersCollapsed ? icon('chevR') : icon('chevD');
+  const tbody = $('users-deleted-tbody');
+  tbody.innerHTML = '';
+  deletedUsers.forEach(u => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700/50';
+    // 剩余时间：冷却中 ≥1 天 → "剩余 X 天"；不足 1 天 → "不足一天"；待清除 → "—"
+    const remainText = u.status === 'purge_pending' ? '—'
+      : (u.remaining_days >= 1 ? `剩余 ${u.remaining_days} 天` : '不足一天');
+    const statusText = u.status === 'purge_pending' ? '待清除' : '冷却中';
+    const statusCls = u.status === 'purge_pending'
+      ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400';
+    tr.innerHTML = `
+      <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap truncate" title="${esc(u.email)}">${esc(u.email)}</td>
+      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.deleted_at || '—')}</td>
+      <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(remainText)}</td>
+      <td class="px-4 py-3 text-sm whitespace-nowrap"><span class="${statusCls}">${esc(statusText)}</span></td>
+      <td class="px-4 py-3 text-sm whitespace-nowrap">
+        ${state.isMasterAdmin
+          ? `<button data-purge-email="${esc(u.email)}"
+                class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">立即清除</button>`
+          : `<span class="text-xs text-zinc-400 dark:text-zinc-500">仅主管理员可清除</span>`}
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// 管理员立即清除已注销用户（2026-08-17：物理删除用户+易班账号+自选时间，不可恢复）
+// 2026-08-29 高危操作二次鉴权：须输入当前管理员密码确认
+async function purgeDeletedUser(email) {
+  openConfirmPasswordModal(`立即彻底清除用户 ${email}？\n将物理删除其注册信息、易班账号与自选签到时间，此操作不可恢复！\n请输入当前管理员密码确认。`, async (pw) => {
+    try {
+      const data = await api('/api/users/deleted/purge', {
+        method: 'POST', body: JSON.stringify({emails: [email], confirm_password: pw})
+      });
+      toast(data.msg || '已清除');
+      loadDeletedUsers();
+    } catch (e) { /* api() 已 toast 错误 */ }
+  });
+}
+
+function renderUsers(users, builtinAdmin) {
+  // 批量开关：控制表头复选框列显示
+  document.querySelectorAll('.batch-col').forEach(th => th.classList.toggle('hidden', !state.batchMode));
+  document.querySelectorAll('[id^="batch-bar-"]').forEach(bar => {
+    // 待删除组折叠时批量条保持隐藏（即使批量模式开启）
+    const collapsed = bar.id === 'batch-bar-deleted' && state.deletedCollapsed;
+    bar.classList.toggle('hidden', !state.batchMode || collapsed);
+  });
+  // review 口径 = 待审核 + 已拒绝（与账号管理「待处理账号」组一致；v0.29.0 修复）
+  const pendingUsers = users.filter(u => (u.review_count || 0) > 0);
+  const normalUsers = users.filter(u => !((u.review_count || 0) > 0) && (u.account_count || 0) > 0);
+  const emptyUsers = users.filter(u => !((u.review_count || 0) > 0) && (u.account_count || 0) === 0);
+  const pendingFiltered = pendingUsers.filter(u => userMatch(u, usersPendingSearch));
+  const normalFiltered = normalUsers.filter(u => userMatch(u, usersNormalSearch));
+  const emptyFiltered = emptyUsers.filter(u => userMatch(u, usersVacantSearch));
+  // 第一组：待审核用户
+  const ptbody = $('users-pending-tbody');
+  ptbody.innerHTML = '';
+  $('users-pending-empty').classList.toggle('hidden', pendingFiltered.length > 0);
+  $('users-pending-empty').textContent = pendingFiltered.length ? '' : (pendingUsers.length ? '无匹配结果' : '暂无待处理用户');
+  $('users-pending-count').textContent = usersPendingSearch
+    ? `（${pendingFiltered.length} 人匹配 / 共 ${pendingUsers.length} 人待处理）`
+    : (pendingUsers.length ? `（${pendingUsers.length} 人待处理）` : '');
+  pendingFiltered.forEach(u => ptbody.appendChild(userRow(u, 'usersPending')));
+  // 第二组：正式用户（含内置管理员）
+  const tbody = $('users-tbody');
+  tbody.innerHTML = '';
+  $('users-empty').classList.toggle('hidden', normalFiltered.length > 0);
+  $('users-empty').textContent = normalFiltered.length ? '' : (normalUsers.length ? '无匹配结果' : '暂无注册用户');
+  $('users-normal-count').textContent = usersNormalSearch
+    ? `（${normalFiltered.length} 人匹配 / 共 ${normalUsers.length} 人）`
+    : (normalUsers.length ? `（${normalUsers.length} 人）` : '');
+  const builtin = document.createElement('tr');
+  builtin.className = 'border-b border-zinc-50 dark:border-zinc-700/50 bg-zinc-50/50 dark:bg-zinc-700/30';
+  builtin.innerHTML = `
+    ${state.batchMode ? '<td class="px-4 py-3 w-12"></td>' : ''}
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(builtinAdmin)}">${esc(builtinAdmin)} <span class="text-xs text-zinc-500 dark:text-zinc-400">（主管理员）</span></td>
+    <td class="px-4 py-3"><span class="inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2.5 py-0.5">管理员</span></td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">—</td>
+    <td class="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400 sticky right-0 bg-zinc-50/50 dark:bg-zinc-700/30 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">不可改</td>`;
+  tbody.appendChild(builtin);
+  normalFiltered.forEach(u => tbody.appendChild(userRow(u, 'usersNormal')));
+  // 第三组：空用户（未提交账号）
+  const vbody = $('users-vacant-tbody');
+  vbody.innerHTML = '';
+  $('users-vacant-empty').classList.toggle('hidden', emptyFiltered.length > 0);
+  $('users-vacant-empty').textContent = emptyFiltered.length ? '' : (emptyUsers.length ? '无匹配结果' : '暂无空用户');
+  $('users-vacant-count').textContent = usersVacantSearch
+    ? `（${emptyFiltered.length} 人匹配 / 共 ${emptyUsers.length} 人）`
+    : (emptyUsers.length ? `（${emptyUsers.length} 人）` : '');
+  emptyFiltered.forEach(u => vbody.appendChild(userRow(u, 'usersVacant')));
+}
+
+// 搜索框实时过滤（输入即过滤；只过滤当前组，不影响其他组）
+// 150ms 防抖：每 keystroke 全量重建 DOM 开销大，停顿后再渲染
+function debounceSearch(fn) {
+  clearTimeout(fn._t);
+  fn._t = setTimeout(fn, 150);
+}
+$('pending-search').addEventListener('input', e => {
+  pendingSearch = e.target.value.trim().toLowerCase();
+  debounceSearch(() => renderAccounts());
+});
+$('active-search').addEventListener('input', e => {
+  activeSearch = e.target.value.trim().toLowerCase();
+  debounceSearch(() => renderAccounts());
+});
+$('deleted-search').addEventListener('input', e => {
+  deletedSearch = e.target.value.trim().toLowerCase();
+  debounceSearch(() => renderAccounts());
+});
+$('users-pending-search').addEventListener('input', e => {
+  usersPendingSearch = e.target.value.trim().toLowerCase();
+  debounceSearch(() => renderUsers(allUsers, builtinAdminName));
+});
+$('users-normal-search').addEventListener('input', e => {
+  usersNormalSearch = e.target.value.trim().toLowerCase();
+  debounceSearch(() => renderUsers(allUsers, builtinAdminName));
+});
+$('users-vacant-search').addEventListener('input', e => {
+  usersVacantSearch = e.target.value.trim().toLowerCase();
+  debounceSearch(() => renderUsers(allUsers, builtinAdminName));
+});
+
+// 用户行渲染（待审核组/正式组共用）
+function userRow(u, key) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-zinc-50 dark:border-zinc-700/50 hover:bg-zinc-50 dark:hover:bg-zinc-700/50';
+  const isAdmin = u.role === 'admin';
+  const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择用户 ${esc(maskEmail(u.email))}" ${batchSel[key].has(u.email) ? 'checked' : ''} data-batch-key="${key}" data-batch-id="${esc(u.email)}"></td>` : '';
+  const roleBadge = isAdmin
+    ? '<span class="inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 text-xs px-2.5 py-0.5">管理员</span>'
+    : '<span class="inline-flex items-center rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 text-xs px-2.5 py-0.5">普通用户</span>';
+  tr.innerHTML = `
+    ${cb}
+    <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap max-w-[220px] truncate" title="${esc(maskEmail(u.email))}">${esc(maskEmail(u.email))}</td>
+    <td class="px-4 py-3">${roleBadge}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">${esc(u.created_at || '—')}</td>
+    <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
+      <div class="flex items-center justify-center">
+        <button aria-label="更多操作" data-email="${esc(u.email)}" data-role="${esc(u.role)}" data-key="${key}" onclick="userRowMenu(event, this)"
+                class="w-9 h-9 flex items-center justify-center rounded-lg text-xl leading-none text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors duration-150">${icon('dots')}</button>
+      </div>
+    </td>`;
+  return tr;
+}
+
+function userRowMenu(evt, btn) {
+  const email = btn.dataset.email;
+  const isAdmin = btn.dataset.role === 'admin';
+  const key = btn.dataset.key;
+  const items = [];
+  // 管理员权限变更：仅主管理员 + 正式用户组可用（待审核/空用户不可设管理员）
+  if (state.isMasterAdmin && key === 'usersNormal') {
+    items.push({label: isAdmin ? '取消管理员' : '设为管理员', cls: isAdmin ? 'text-zinc-600 dark:text-zinc-300' : 'text-blue-600 dark:text-blue-400', fn: () => setUserRole(email, isAdmin ? 'user' : 'admin')});
+  }
+  items.push(
+    {label: '重置密码', cls: 'text-zinc-600 dark:text-zinc-300', fn: () => resetUserPassword(email)},
+    {label: '清空账号', cls: 'text-amber-600 dark:text-amber-400', fn: () => deleteUserAccounts(email)},
+    {label: '删除用户', cls: 'text-red-600 dark:text-red-400', fn: () => deleteUserFull(email)},
+  );
+  openRowMenu(evt, items, btn);
+}
+
+async function setUserRole(email, role) {
+  const action = role === 'admin' ? '设为管理员' : '取消管理员';
+  // 2026-09-05：角色变更是权限面变更，接入高危门禁——须输入当前管理员密码确认
+  //（批量角色变更入口已移除，本路径是唯一变更方式）
+  openConfirmPasswordModal(`确定将 ${email} ${action}吗？\n请输入当前管理员密码确认。`, (cpw) => {
+    api(`/api/users/${encodeURIComponent(email)}/role`, {
+      method: 'POST', body: JSON.stringify({ role, confirm_password: cpw }),
+    })
+      .then(data => { toast(data.msg || '已更新'); loadUsers(); })
+      .catch(e => toast(e.message, true));
+  });
+}
+
+function resetUserPassword(email) {
+  // a11y 整改：原生 prompt 弹窗 → 密码模态（遮蔽输入）；口令策略校验见 openPasswordModal set 分支
+  // 管理员重置他人密码须再经 confirm 模态输入当前管理员密码二次鉴权
+  openPasswordModal(`为 ${email} 设置新密码（${PW_POLICY_HINT}）`, (password) => {
+    openConfirmPasswordModal(`确认重置 ${email} 的密码？\n请输入当前管理员密码确认。`, async (cpw) => {
+      try {
+        const data = await api(`/api/users/${encodeURIComponent(email)}/password`, {
+          method: 'POST', body: JSON.stringify({ password, confirm_password: cpw }),
+        });
+        toast(data.msg || '密码已重置');
+      } catch (e) { toast(e.message, true); }
+    });
+  });
+}
+
+async function deleteUserAccounts(email) {
+  if (!confirm(`确定清空 ${email} 的易班账号吗？\n将解除其签到服务，用户账号保留（可重新提交）。`)) return;
+  try {
+    const data = await api(`/api/users/${encodeURIComponent(email)}/delete`, {
+      method: 'POST', body: JSON.stringify({ mode: 'accounts_only' }),
+    });
+    toast(data.msg || '已清空');
+    loadUsers();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteUserFull(email) {
+  if (!confirm(`确定完全删除用户 ${email} 吗？\n将删除其账号和提交的易班账号，不可恢复！`)) return;
+  // 2026-08-29 高危操作二次鉴权：须输入当前管理员密码确认
+  openConfirmPasswordModal(`再次确认：完全删除 ${email}？\n请输入当前管理员密码确认。`, async (pw) => {
+    try {
+      const data = await api(`/api/users/${encodeURIComponent(email)}/delete`, {
+        method: 'POST', body: JSON.stringify({ mode: 'full', confirm_password: pw }),
+      });
+      toast(data.msg || '已删除');
+      loadUsers();
+      loadAccounts();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+// ================= 我的账号（管理员）=================
+let mineAccounts = [];
+
+async function loadMine() {
+  try {
+    const data = await api('/api/my-accounts');
+    mineAccounts = data.accounts || [];
+    renderMine();
+  } catch (e) { toast(e.message, true); }
+  loadMineTimePref();  // 调度 v2：管理员自选时间片（失败不阻塞）
+}
+
+// ===== 调度 v2：管理端自选时间片（与用户端同接口，管理员绑定 owner=admin 账号） =====
+let minePrefCollapsed = false;
+
+function toggleMinePrefCollapse() {
+  minePrefCollapsed = !minePrefCollapsed;
+  $('mine-pref-body').classList.toggle('hidden', minePrefCollapsed);
+  $('mine-pref-collapse-btn').innerHTML = minePrefCollapsed ? icon('chevR') + ' 未开启（点击展开预配置）' : icon('chevD');
+}
+
+async function loadMineTimePref(preserve = false) {
+  // preserve=true：修改后的局部刷新——不重置折叠状态，避免页面跳动
+  const card = $('mine-pref-card');
+  try {
+    const data = await api('/api/my-time-pref');
+    if (!data.has_account) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    $('mine-pref-window').textContent = data.window;
+    renderMinePrefSlots(data);
+    $('mine-pref-disabled-hint').classList.toggle('hidden', data.allowed);
+    // 预计签到时段：开启且有自选 → 以自选片为准；未开启时预选不激活 → 显示真实调度时段
+    const est = $('mine-pref-estimate');
+    if (data.allowed && data.pref) {
+      est.textContent = '';
+      est.classList.add('hidden');
+    } else if (data.estimated) {
+      est.innerHTML = icon('cal') + ' 预计签到时段：' + esc(data.estimated || '') + esc(data.estimate_note || '')
+        + (data.allowed ? '' : '（自选未开启，按自动分配）');
+      est.classList.remove('hidden');
+    } else {
+      est.textContent = data.estimate_note || '';
+      est.classList.remove('hidden');
+    }
+    if (!preserve) {
+      if (!data.allowed) {
+        minePrefCollapsed = true;
+        $('mine-pref-body').classList.add('hidden');
+        $('mine-pref-collapse-btn').innerHTML = icon('chevR') + ' 未开启（点击展开预配置）';
+      } else {
+        minePrefCollapsed = false;
+        $('mine-pref-body').classList.remove('hidden');
+        $('mine-pref-collapse-btn').innerHTML = icon('chevD');
+      }
+    }
+  } catch (e) { card.classList.add('hidden'); }
+}
+
+function renderMinePrefSlots(data) {
+  const grid = $('mine-pref-slot-grid');
+  grid.innerHTML = '';
+  let tip = '';  // 未开启时底部提示默认为空——黄字提示（mine-pref-disabled-hint）承担完整说明（2026-08-15 文案审查去重）
+  data.slots.forEach((s, i) => {
+    const sel = data.pref_slot === s.slot_min;
+    const full = s.pct >= 100;  // 拥挤度百分比（2026-08-15：API 只下发 pct，与用户端一致）
+    // 完全落入掐头去尾裁剪区（0.22.0）：灰色禁用，不可选择
+    if (s.disabled) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.disabled = true;
+      btn.className = 'rounded-lg border px-2 py-1.5 min-h-[44px] text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
+      btn.title = '该时段被掐头去尾保留，不可选择';
+      btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已保留</div>`;
+      grid.appendChild(btn);
+      return;
+    }
+    const partial = !!s.edge_note;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rounded-lg border px-2 py-1.5 min-h-[44px] text-xs text-center transition-colors duration-150 ' +
+      (sel
+        ? 'bg-blue-600 border-blue-600 text-white'
+        : full
+          ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
+          : partial
+            ? 'bg-amber-50/50 dark:bg-amber-900/10 border-dashed border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-400'
+            : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
+    if (partial) btn.title = s.edge_note + '，选中后将在可用部分签到';
+    // 拥挤度：满员=100%+黄底警示已传达"已选满"，不再拼冗余前缀（移动端 4 列窄屏换行，2026-08-15）
+    btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
+    btn.onclick = () => pickMineTimePref(s.slot_min);
+    grid.appendChild(btn);
+    if (sel && (i === 0 || i === data.slots.length - 1)) {
+      const edgeTip = s.edge_note
+        ? s.edge_note + '，选中后将在可用部分签到'
+        : i === 0
+          ? '最早时段：窗口开始后最先为你签到'
+          : '最后时段：临近窗口截止执行，网络波动可能导致错过';
+      tip = (data.allowed ? '' : '未开启：') + edgeTip;
+    }
+  });
+  const tipEl = $('mine-pref-tip');
+  tipEl.innerHTML = tip ? icon('warn') + ' ' + esc(tip) : '';
+  // 警示语义上色：有提示时琥珀色（原版警示色），无提示回归中性
+  tipEl.classList.toggle('text-amber-600', !!tip);
+  tipEl.classList.toggle('dark:text-amber-400', !!tip);
+}
+
+async function pickMineTimePref(slot) {
+  try {
+    const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: slot }) });
+    toast(data.msg || '已保存');
+    loadMineTimePref(true);  // 局部刷新：保留当前展开态
+  } catch (e) { toast(e.message, true); }
+}
+
+async function clearMineTimePref() {
+  try {
+    const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: null }) });
+    toast(data.msg || '已清除');
+    loadMineTimePref(true);  // 局部刷新：保留当前展开态
+  } catch (e) { toast(e.message, true); }
+}
+
+function mineStatusBadge(status) {
+  if (status === 'pending') return '<span class="inline-flex items-center rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2.5 py-0.5 whitespace-nowrap">待审核</span>';
+  if (status === 'active') return '<span class="inline-flex items-center rounded-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2.5 py-0.5 whitespace-nowrap">已生效</span>';
+  return esc(status);
+}
+
+function renderMine() {
+  const list = $('mine-list');
+  list.innerHTML = '';
+  $('mine-empty').classList.toggle('hidden', mineAccounts.length > 0);
+  // 存在未删除账号时隐藏提交表单；全部被管理员删除时仍显示表单供重新提交（软删除不死路）
+  $('mine-form').classList.toggle('hidden', mineAccounts.some(a => !a.deleted));
+  $('mine-done').classList.toggle('hidden', mineAccounts.length === 0);
+  mineAccounts.forEach((a, i) => {
+    const card = document.createElement('div');
+    card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl bg-zinc-50/50 dark:bg-zinc-700/30 p-4';
+    const calKey = 'mine-' + i;  // DOM id 用索引键（避免手机号进 id，可枚举泄露）
+    card.innerHTML = `
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <span class="text-lg leading-none inline-flex text-zinc-500 dark:text-zinc-400">${a.deleted ? icon('trash') : stateIconSvg(a.state_status)}</span>
+          <div>
+            <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
+            <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
+            ${a.deleted ? '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">已被管理员删除，待管理员在账号列表的待删除区处理</div>'
+              : (a.status === 'active' ? ((a.state_status === 'success' || a.state_status === 'already')
+                ? '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>'
+                : '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>') : '')}
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          ${a.deleted ? '<span class="inline-flex items-center rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2.5 py-0.5">已删除</span>'
+            : mineStatusBadge(a.status)}
+          ${a.deleted
+            ? '<span class="text-sm text-zinc-500 dark:text-zinc-400">待管理员在账号列表的待删除区处理</span>'
+            : `<button onclick="openMineEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">编辑</button>
+          <button onclick="deleteMineAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">删除</button>`}
+        </div>
+      </div>
+      ${a.logs && a.logs.length ? `
+        <details class="mt-3">
+          <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
+          <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
+        </details>` : ''}
+      ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">审核通过后即可查看签到日历</div>' : ''}<div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${calKey}"></div>
+    `;
+    list.appendChild(card);
+    if (!a.deleted && a.status === 'active') renderCalendar(a.phone, calKey);  // 已删除/未生效账号不显示日历
+  });
+}
+
+// ================= 签到日历（按日状态文件 + 日志，与用户端一致） =================
+const calState = {};  // phone -> {year, month}（内存键用手机号防排序变化错位；DOM id 仍用索引键避免手机号进 id）
+
+function calPad(n) { return String(n).padStart(2, '0'); }
+
+function calShift(btn, delta) {
+  const key = btn.dataset.key;     // DOM 查询键（索引）
+  const phone = btn.dataset.phone; // 内存状态键（手机号）
+  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  st.month += delta;
+  if (st.month < 1) { st.month = 12; st.year--; }
+  if (st.month > 12) { st.month = 1; st.year++; }
+  renderCalendar(phone, key);
+}
+
+function renderCalendar(phone, key) {
+  const wrap = $('cal-wrap-' + key);
+  if (!wrap) return;
+  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
+  const { year, month } = st;
+  const monthStr = `${year}-${calPad(month)}`;
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${calPad(today.getMonth() + 1)}-${calPad(today.getDate())}`;
+  wrap.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
+          <div class="flex items-center gap-1">
+            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevL')}</button>
+            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevR')}</button>
+          </div>
+        </div>
+        <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
+      </div>
+      <div id="cal-log-${key}" class="lg:pt-8"></div>
+    </div>`;
+  const grid = $('cal-grid-' + key);
+  grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
+    `<div class="text-center text-xs text-zinc-500 dark:text-zinc-400 py-1">${w}</div>`).join('');
+  api(`/api/my-calendar?month=${monthStr}`).then(data => {
+    state.sundaySign = !!data.sunday_sign;  // 与 user.html 一致：开启周日签到后周日正常显示/可查
+    state.saturdaySign = data.saturday_sign === 1;  // 周六签到（默认关闭，v0.29.0 起），开启后照常/可查
+    const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
+    const days = new Date(year, month, 0).getDate();
+    for (let i = 0; i < firstDay; i++) {
+      grid.insertAdjacentHTML('beforeend', '<div></div>');
+    }
+    for (let d = 1; d <= days; d++) {
+      const date = `${monthStr}-${calPad(d)}`;
+      const stt = data.days && data.days[date] ? data.days[date][phone] || '' : '';
+      const wd = new Date(year, month - 1, d).getDay();
+      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周末灰（周六/周日各自开关关闭时）/ 无记录默认
+      let numCls = 'text-zinc-600 dark:text-zinc-300';
+      if (wd === 0 && !state.sundaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
+      else if (wd === 6 && !state.saturdaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
+      else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
+      else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
+      const isToday = date === todayStr;
+      // a11y 整改：div onclick → button（键盘可达 + 全局 focus-visible 光圈）；
+      // 周末停签日期补「休」角标与 aria-label 说明，不再仅靠颜色区分
+      const offDay = (wd === 0 && !state.sundaySign) ? '日' : (wd === 6 && !state.saturdaySign) ? '六' : '';
+      grid.insertAdjacentHTML('beforeend', `
+        <button type="button" onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
+             aria-label="${date}${offDay ? '（周' + offDay + '不签到）' : '，查看签到记录'}"
+             class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
+          <span>${d}</span>${offDay ? '<span class="absolute top-0.5 right-1 text-[8px] leading-none text-zinc-500 dark:text-zinc-400">休</span>' : ''}
+        </button>`);
+    }
+  }).catch(() => {
+    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-500 dark:text-zinc-400 py-4">日历加载失败，请稍后重试</div>';
+  });
+}
+
+function calLoadLog(btn, date) {
+  const key = btn.dataset.key;
+  const box = $('cal-log-' + key);
+  // 周六/周日无需签到（各自开关关闭时），直接提示（不查询日志）
+  const wd0 = new Date(date + 'T00:00:00').getDay();
+  if ((wd0 === 0 && !state.sundaySign) || (wd0 === 6 && !state.saturdaySign)) {
+    box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${wd0 === 0 ? '周日' : '周六'}无需签到</div>`;
+    return;
+  }
+  box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400">加载中…</div>';
+  api(`/api/my-logs?date=${date}`).then(data => {
+    if (!data.logs || !data.logs.length) {
+      box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${date} 暂无签到记录</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">${date} 签到记录（${data.logs.length} 条）</div>
+      <pre class="log-text text-zinc-600 dark:text-zinc-300 p-3 bg-white dark:bg-zinc-900 rounded-lg whitespace-pre-wrap break-all">${esc(data.logs.join(String.fromCharCode(10)))}</pre>`;
+  }).catch(e => { box.innerHTML = ''; toast(e.message, true); });
+}
+
+// 我的账号内联编辑（与普通用户一致：复用提交表单，编辑时预填）
+// 清除已配置识别码（我的账号编辑）：标记后提交 __clear__（后端并行流已支持该标记清空字段）
+let mineClearCodeFlag = false;
+function toggleMineClearCode() {
+  mineClearCodeFlag = !mineClearCodeFlag;
+  const input = $('m-code');
+  const btn = $('clear-mcode-btn');
+  if (mineClearCodeFlag) {
+    input.value = '';
+    input.readOnly = true;
+    input.placeholder = '提交后将清除已配置识别码';
+    btn.textContent = '取消清除';
+  } else {
+    input.readOnly = false;
+    input.placeholder = '64 位十六进制识别码';
+    btn.textContent = '清除已配置识别码';
+  }
+}
+
+let mineEditingIndex = null;
+function openMineEditInline(i) {
+  mineEditingIndex = i;
+  const a = mineAccounts[i];
+  $('m-name').value = a.name;
+  $('m-phone').value = a.phone;
+  $('m-password').value = '';
+  $('m-password').placeholder = '留空表示不修改密码';
+  $('m-password').removeAttribute('required');  // 编辑模式密码可留空（留空=不修改），添加模式保留必填
+  $('m-model').value = a.phone_model;
+  $('m-code').value = '';
+  $('m-code').readOnly = false;
+  $('m-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
+  mineClearCodeFlag = false;
+  $('clear-mcode-btn').classList.toggle('hidden', !a.has_phone_code);
+  $('mine-form-title').textContent = '编辑我的易班账号';
+  $('mine-submit-btn').textContent = '保存修改';
+  $('mine-cancel-btn').classList.remove('hidden');
+  $('mine-done').classList.add('hidden');
+  $('mine-form').classList.remove('hidden');
+  $('mine-form').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });  // 减弱动效偏好下瞬时定位（修复④）
+}
+
+// 取消编辑：恢复提交态并收起表单（loadMine 按账号数重新隐藏）
+function cancelMineEdit() {
+  resetMineForm();
+  loadMine();
+  toast('已取消编辑');
+}
+
+function resetMineForm() {
+  mineEditingIndex = null;
+  mineClearCodeFlag = false;
+  $('mine-form-title').textContent = '提交我的易班账号';
+  $('mine-submit-btn').textContent = '提交账号';
+  $('mine-cancel-btn').classList.add('hidden');
+  $('m-password').placeholder = '用于自动登录签到';
+  $('m-password').setAttribute('required', '');
+  $('m-code').readOnly = false;
+  $('m-code').placeholder = '64 位十六进制识别码';
+  $('clear-mcode-btn').classList.add('hidden');
+}
+
+// 修改主管理员密码折叠块（v0.30.0 起并入设置页危险区）改用原生 <details>，
+// 原 toggleMyPassword（button+hidden div 手工展开）随旧结构删除
+
+let mineSubmitting = false;  // 在途锁（参照 scheduleSaving 模式）：提交期间按钮禁用，防连点重复提交
+$('mine-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (mineSubmitting) return;
+  mineSubmitting = true;
+  const btn = $('mine-submit-btn');
+  const btnText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+  const tip = $('mine-tip');
+  tip.textContent = '提交中…';
+  try {
+    const body = {
+      name: $('m-name').value,
+      phone: $('m-phone').value.trim(),
+      password: $('m-password').value,
+      phone_model: $('m-model').value.trim(),
+      // 已标记清除识别码 → 提交 __clear__ 由后端清空字段；否则留空表示不修改
+      phone_code: mineClearCodeFlag ? '__clear__' : $('m-code').value.trim(),
+    };
+    const data = mineEditingIndex !== null
+      ? await api(`/api/my-accounts/${mineEditingIndex}`, { method: 'PUT', body: JSON.stringify(body) })
+      : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
+    tip.textContent = '';
+    resetMineForm();  // 成功路径由 resetMineForm 恢复按钮文案（「提交账号」）
+    e.target.reset();
+    toast(data.msg || '已保存');
+    loadMine();
+  } catch (err) {
+    tip.textContent = '';
+    btn.textContent = btnText;  // 失败恢复原文案
+    toast(err.message, true);
+  }
+  finally {
+    mineSubmitting = false;
+    btn.disabled = false;
+  }
+});
+
+async function deleteMineAccount(i) {
+  const a = mineAccounts[i];
+  if (!confirm(`确定删除「${jsEscape(a.display_name)}」(${a.phone}) 吗？`)) return;
+  try {
+    await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
+    toast('已删除');
+    loadMine();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+// 全局公告：访问时加载一次（登录页也显示，无需登录）
+async function loadAnnouncement() {
+  try {
+    const resp = await fetch(BASE + '/api/announcement');
+    const data = await resp.json().catch(() => ({}));
+    const text = (data && data.text || '').trim();
+    const bar = document.getElementById('announcement-bar');
+    const el = document.getElementById('announcement-text');
+    if (text && bar && el) {
+      el.textContent = text;  // textContent 防 XSS
+      bar.classList.remove('hidden');
+    }
+  } catch (e) { /* 静默 */ }
+}
+document.addEventListener('DOMContentLoaded', loadAnnouncement);
