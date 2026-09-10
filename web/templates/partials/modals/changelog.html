@@ -1,0 +1,10 @@
+<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()" aria-hidden="true"></div>
+  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
+    <div class="flex items-center justify-between mb-3">
+      <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
+      <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
+    </div>
+    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed"></div>
+  </div>
+</div>
