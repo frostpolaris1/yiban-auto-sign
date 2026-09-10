@@ -20,7 +20,11 @@
 {% block head_styles %}{% endblock %}
 {% block head_scripts %}{% endblock %}
 {% block head_styles_extra %}{% endblock %}
-<style type="text/tailwindcss">{% block tailwind_components %}{% endblock %}</style>
+{# 组件类（@layer components）。V3-0 起收敛为**单一文件**：此前它被复制在三份模板里
+   且已漂移（index 用组 focus-visible 规则、user/login 内联；.yb-switch 只在 index；
+   移动端 16px 规则只在 user/login）。现在三页共用同一份，不再有每页的
+   tailwind_components 块。 #}
+<style type="text/tailwindcss">{% include "partials/component_layer.html" %}</style>
 {% block head_scripts_late %}{% endblock %}
 </head>
 <body class="{% block body_class %}bg-zinc-50 dark:bg-zinc-900 min-h-screen overscroll-y-none{% endblock %}">

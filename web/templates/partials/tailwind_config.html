@@ -14,7 +14,12 @@
           green: {50:'rgb(var(--c-green-50)/<alpha-value>)',200:'rgb(var(--c-green-200)/<alpha-value>)',300:'rgb(var(--c-green-300)/<alpha-value>)',400:'rgb(var(--c-green-400)/<alpha-value>)',500:'rgb(var(--c-green-500)/<alpha-value>)',600:'rgb(var(--c-green-600)/<alpha-value>)',700:'rgb(var(--c-green-700)/<alpha-value>)',800:'rgb(var(--c-green-800)/<alpha-value>)',900:'rgb(var(--c-green-900)/<alpha-value>)'}
         },
         // 圆角体系（中度优化）：控件 10px / 卡片 14px / 模态 18px
-        borderRadius: { lg:'10px', xl:'14px', '2xl':'18px' }
+        // 圆角体系（V3 方案 C）：控件 14px / 卡片 22px / 模态 24px
+        //   rounded-lg  → 控件（按钮、输入框、下拉）
+        //   rounded-xl  → 卡片/面板
+        //   rounded-2xl → 模态与更大容器
+        // 不带档位的 rounded 保持默认（代码 chip 等小元素用）
+        borderRadius: { lg:'14px', xl:'22px', '2xl':'24px' }
       }
     }
   };
