@@ -114,7 +114,7 @@
       <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
               class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150"><span data-icon="moon"></span></button>
       <span id="user-email" class="text-sm text-zinc-600 dark:text-zinc-300 truncate"></span>
-      <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
+      <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
     </div>
   </div>
 </header>
@@ -136,7 +136,7 @@
     <div class="mb-2">
       <h1 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h1>
     </div>
-    <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-500 dark:text-zinc-400 mb-4">
+    <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 mb-4">
       <span class="inline-flex items-center gap-1"><span data-icon="clock"></span>待签</span><span class="inline-flex items-center gap-1"><span data-icon="check"></span>成功</span><span class="inline-flex items-center gap-1"><span data-icon="close"></span>失败</span>
       <span class="inline-flex items-center gap-1"><span data-icon="retry"></span>重试</span><span class="inline-flex items-center gap-1"><span data-icon="ban"></span>跳过</span><span class="inline-flex items-center gap-1"><span data-icon="minus"></span>无需</span><span class="inline-flex items-center gap-1"><span data-icon="pause"></span><span data-icon="stop"></span>暂停/已取消</span>
     </div>
@@ -209,29 +209,29 @@
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">备注会显示给管理员，用于审核与定位签到问题。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-phone">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-password">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
         <input id="f-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（可选，不清楚就留空）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">设备型号与识别码随签到请求提交，仅提示「请使用授权设备进行签到」时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（可选，不清楚就留空）</label>
         <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
-               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
+               class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
         <button id="clear-code-btn" type="button" onclick="toggleClearCode()"
                 class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
       </div>
@@ -599,9 +599,9 @@ function renderList() {
               ? `<button onclick="restoreAccount(${i})" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 transition-colors duration-150">撤销删除</button>`
               : '<span class="text-sm text-zinc-500 dark:text-zinc-400">待管理员处理</span>')
             : (a.status === 'active' && !a.pause_forbidden
-                ? `<button onclick="togglePause(${i})" class="text-sm ${a.user_paused ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100'} transition-colors duration-150">${a.user_paused ? '恢复签到' : '暂停签到'}</button>`
+                ? `<button onclick="togglePause(${i})" class="text-sm ${a.user_paused ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'} transition-colors duration-150">${a.user_paused ? '恢复签到' : '暂停签到'}</button>`
                 : '')
-            + `<button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
+            + `<button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
           <button onclick="deleteAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">删除</button>`}
         </div>
       </div>
@@ -609,7 +609,7 @@ function renderList() {
         <div class="mt-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">账号已被拒绝${a.reject_reason ? '：' + esc(a.reject_reason) : ''}。修改后点击「修改并重新提交」重新进入审核。</div>` : ''}
       ${a.logs && a.logs.length ? `
         <details class="mt-3">
-          <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:text-zinc-300 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
+          <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
       ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">审核通过后即可查看签到日历</div>' : ''}
