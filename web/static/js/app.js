@@ -2535,6 +2535,34 @@ function calShift(btn, delta) {
   renderCalendar(phone, key);
 }
 
+// ==== 签到日历 · 日期格（admin=app.js 与 user=user.html 各有一份，**两份必须逐字相同**；
+//      由 tests/test_web_calendar_parity.py 钉住 —— 改一边必须同步改另一边，否则门禁会红）====
+// 视觉借自 daisyUI 日历的状态手法（**用底色表达状态，而不是只改文字颜色**），
+// 但通道分配按本项目的**信息层级**重排：
+//   ① 底色  = 签到结果（用户最想扫读的信息，给最强的视觉通道）：
+//              ✅ green-50/700  ❌ red-50/700  周末停签 zinc-100/600（中性）
+//   ② ring  = 今天（不占布局，与底色互不争夺，可叠加）；
+//   ③ 角标  = 「休」（周末停签），不单靠颜色区分。
+// 注：daisyUI 把「今天」做成实心主色底；**我们没照抄** —— 那会与「已签到」的绿底
+// 抢同一个通道。底色留给签到结果，今天改用 ring。
+// ⚠ 周末停签**不**沿用旧的「把数字做很浅」（那是 zinc-300 = 1.42:1，连日期都读不出）：
+//   该格仍可点（点了提示「周日无需签到」），属**有信息**的格子，不是 WCAG 1.4.3 豁免的
+//   非活动控件，故一并改用底色表达，数字保持 7.03:1（浅）/ 10.08:1（暗）。
+function calDayCell(o) {
+  let cls = 'relative aspect-square rounded-lg flex items-center justify-center text-xs transition-colors duration-150 cursor-pointer ';
+  if (o.off) cls += 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700';
+  else if (o.state === '✅') cls += 'bg-green-50 dark:bg-green-900/25 text-green-700 dark:text-green-400 font-medium hover:bg-green-100 dark:hover:bg-green-900/40';
+  else if (o.state === '❌') cls += 'bg-red-50 dark:bg-red-900/25 text-red-700 dark:text-red-400 font-medium hover:bg-red-100 dark:hover:bg-red-900/40';
+  else cls += 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700';
+  if (o.isToday) cls += ' ring-2 ring-inset ring-blue-500 dark:ring-blue-400';
+  const off = o.offDay ? '（周' + o.offDay + '不签到）' : '';
+  const label = o.date + (o.isToday ? '，今天' : '')
+    + (o.state === '✅' ? '，已签到' : o.state === '❌' ? '，签到失败' : (off ? '' : '，查看签到记录'))
+    + off;
+  const badge = o.offDay ? '<span class="absolute top-0.5 right-1 text-[10px] leading-none text-zinc-600 dark:text-zinc-400">休</span>' : '';
+  return `<button type="button" onclick="calLoadLog(this, '${o.date}')" data-key="${esc(o.key)}" data-phone="${esc(o.phone)}" title="${o.date}" aria-label="${label}" class="${cls}"><span>${o.d}</span>${badge}</button>`;
+}
+
 function renderCalendar(phone, key) {
   const wrap = $('cal-wrap-' + key);
   if (!wrap) return;
@@ -2547,10 +2575,10 @@ function renderCalendar(phone, key) {
     <div class="grid lg:grid-cols-2 gap-4">
       <div>
         <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
+          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
           <div class="flex items-center gap-1">
-            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevL')}</button>
-            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevR')}</button>
+            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="上个月" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevL')}</button>
+            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="下个月" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevR')}</button>
           </div>
         </div>
         <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
@@ -2572,22 +2600,13 @@ function renderCalendar(phone, key) {
       const date = `${monthStr}-${calPad(d)}`;
       const stt = data.days && data.days[date] ? data.days[date][phone] || '' : '';
       const wd = new Date(year, month - 1, d).getDay();
-      // 状态直接体现在日期数字颜色：✅绿 / ❌红 / 周末灰（周六/周日各自开关关闭时）/ 无记录默认
-      let numCls = 'text-zinc-600 dark:text-zinc-300';
-      if (wd === 0 && !state.sundaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
-      else if (wd === 6 && !state.saturdaySign) numCls = 'text-zinc-300 dark:text-zinc-600';
-      else if (stt === '✅') numCls = 'text-green-600 dark:text-green-400 font-medium';
-      else if (stt === '❌') numCls = 'text-red-600 dark:text-red-400 font-medium';
-      const isToday = date === todayStr;
-      // a11y 整改：div onclick → button（键盘可达 + 全局 focus-visible 光圈）；
-      // 周末停签日期补「休」角标与 aria-label 说明，不再仅靠颜色区分
-      const offDay = (wd === 0 && !state.sundaySign) ? '日' : (wd === 6 && !state.saturdaySign) ? '六' : '';
-      grid.insertAdjacentHTML('beforeend', `
-        <button type="button" onclick="calLoadLog(this, '${date}')" data-key="${esc(key)}" data-phone="${esc(phone)}" title="${date}"
-             aria-label="${date}${offDay ? '（周' + offDay + '不签到）' : '，查看签到记录'}"
-             class="relative aspect-square rounded-lg border ${isToday ? 'border-blue-500 dark:border-blue-400' : 'border-transparent'} flex items-center justify-center text-xs ${numCls} cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">
-          <span>${d}</span>${offDay ? '<span class="absolute top-0.5 right-1 text-[8px] leading-none text-zinc-500 dark:text-zinc-400">休</span>' : ''}
-        </button>`);
+      const sunOff = wd === 0 && !state.sundaySign;    // 周日停签且开关关闭
+      const satOff = wd === 6 && !state.saturdaySign;  // 周六停签且开关关闭（v0.29.0 起默认关）
+      const off = sunOff || satOff;
+      grid.insertAdjacentHTML('beforeend', calDayCell({
+        d, date, key, phone, state: stt, off,
+        offDay: off ? (sunOff ? '日' : '六') : '', isToday: date === todayStr,
+      }));
     }
   }).catch(() => {
     grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-500 dark:text-zinc-400 py-4">日历加载失败，请稍后重试</div>';
