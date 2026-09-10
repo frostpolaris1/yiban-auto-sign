@@ -513,7 +513,7 @@ function renderAccounts() {
     card('今日成功', success, 'text-green-600 dark:text-green-400'),
     card('今日失败', failed, 'text-red-600 dark:text-red-400'),
     card('待签', waiting, 'text-blue-600 dark:text-blue-400'),
-    card('跳过', skipped, 'text-zinc-400 dark:text-zinc-500'),
+    card('跳过', skipped, 'text-zinc-500 dark:text-zinc-400'),
   ].join('');
 
   // ---- 待删除账号组（软删除，保留期内可恢复） ----
@@ -540,7 +540,7 @@ function deletedAccountRow(a, key) {
   const cb = state.batchMode ? `<td class="px-4 py-3 w-12"><input type="checkbox" class="accent-blue-500" aria-label="选择账号 ${esc(a.display_name)}" ${batchSel[key].has(a.index) ? 'checked' : ''} onchange="toggleRow('${key}', ${a.index}, this)"></td>` : '';
   tr.innerHTML = `
     ${cb}
-    <td class="px-4 py-3 text-lg leading-none text-zinc-400 dark:text-zinc-500"><span class="inline-flex">${icon('trash')}</span></td>
+    <td class="px-4 py-3 text-lg leading-none text-zinc-500 dark:text-zinc-400"><span class="inline-flex">${icon('trash')}</span></td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
@@ -601,7 +601,7 @@ function pendingAccountRow(a, key) {
     : '';
   tr.innerHTML = `
     ${cb}
-    <td class="px-4 py-3 text-lg leading-none text-zinc-400 dark:text-zinc-500"><span class="inline-flex">${icon('minus')}</span></td>
+    <td class="px-4 py-3 text-lg leading-none text-zinc-500 dark:text-zinc-400"><span class="inline-flex">${icon('minus')}</span></td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
@@ -635,7 +635,7 @@ function accountRow(a, key) {
   tr.innerHTML = `
     ${cb}
     <td class="px-4 py-3 text-lg leading-none text-zinc-500 dark:text-zinc-400"><span class="inline-flex" title="${esc(stTitle)}">${s}</span></td>
-    <td class="px-4 py-3 text-zinc-400 dark:text-zinc-500">${a.index + 1}</td>
+    <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400">${a.index + 1}</td>
     <td class="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(a.display_name)}</td>
     <td class="px-4 py-3 font-mono text-sm text-zinc-900 dark:text-zinc-100 whitespace-nowrap">${esc(maskPhone(a.phone))}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell">${esc(a.phone_model || '—')}</td>
@@ -645,7 +645,7 @@ function accountRow(a, key) {
           : a.time_pref_edge === 'last'
             ? '<span class="text-amber-600 dark:text-amber-400" title="最后时段：临近截止，网络波动可能错过">最后 ' + esc(a.time_pref) + '</span>'
             : '<span class="text-zinc-600 dark:text-zinc-300">' + esc(a.time_pref) + '</span>')
-      : '<span class="text-zinc-300 dark:text-zinc-600">—</span>'}</td>
+      : '<span class="text-zinc-500 dark:text-zinc-400">—</span>'}</td>
     <td class="px-4 py-3 text-zinc-500 dark:text-zinc-400 text-sm whitespace-nowrap max-w-[160px] truncate hidden md:table-cell" title="${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}">${esc(a.owner_display || (a.owner === 'admin' ? '管理员' : a.owner))}</td>
     <td class="px-4 py-3">${statusBadge(a)}</td>
     <td class="px-4 py-3 sticky right-0 bg-white dark:bg-zinc-800 shadow-[-4px_0_6px_-4px_rgba(0,0,0,0.15)]">
@@ -1064,7 +1064,7 @@ async function doSignin(phone) {
 function renderCapacity(est, cap) {
   const box = $('capacity-content');
   if (!box) return;
-  if (!est) { box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500 px-1 py-2">暂无预估数据</div>'; return; }
+  if (!est) { box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400 px-1 py-2">暂无预估数据</div>'; return; }
   const cur = est.current_accounts || 0, capN = est.accounts_cap || 0, load = est.potential_load || 0;
   // cap=0（窗口退化到容纳不下一次签到）且已用>0 同样视为超限，不因 cap>0 短路漏报
   const over = cur > capN || cur + load > capN;
@@ -1084,14 +1084,14 @@ function renderCapacity(est, cap) {
     const quotaText = lim > 0 ? `${used}/${lim}` : `${used}/不限`;
     quotaHtml = `<div class="mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-700 text-xs">
       <span class="${near ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-zinc-500 dark:text-zinc-400'}">账号容量 ${quotaText}</span>
-      <span class="text-zinc-400 dark:text-zinc-500">（正常 ${nNormal} · 自暂停 ${nUserPaused} · 账密故障暂停 ${nCredPaused}）</span>
-      <div class="text-zinc-400 dark:text-zinc-500">占额含自暂停与账密故障暂停账号；如需释放名额可在账号管理页清理</div>
+      <span class="text-zinc-500 dark:text-zinc-400">（正常 ${nNormal} · 自暂停 ${nUserPaused} · 账密故障暂停 ${nCredPaused}）</span>
+      <div class="text-zinc-500 dark:text-zinc-400">占额含自暂停与账密故障暂停账号；如需释放名额可在账号管理页清理</div>
     </div>`;
   }
   box.innerHTML = `<div class="rounded-lg border ${border} ${over ? 'bg-red-50 dark:bg-red-900/10' : ''} p-3">
     <div class="text-xs text-zinc-500 dark:text-zinc-400">签到容量（按当前账号间隔估算）</div>
     <div class="mt-1 font-semibold ${text}">已用 ${cur} <span class="text-xs font-normal text-zinc-500 dark:text-zinc-400">/ 容量 ${capN} 个</span></div>
-    <div class="text-xs ${over ? 'text-red-500 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}">另有 ${load} 人已注册未提交（潜在负载）${over ? '；已超容量：保存更大的账号间隔将被拒绝' : ''}</div>
+    <div class="text-xs ${over ? 'text-red-500 dark:text-red-400' : 'text-zinc-500 dark:text-zinc-400'}">另有 ${load} 人已注册未提交（潜在负载）${over ? '；已超容量：保存更大的账号间隔将被拒绝' : ''}</div>
     ${quotaHtml}
   </div>`;
 }
@@ -2146,7 +2146,7 @@ function renderDeletedUsers() {
         ${state.isMasterAdmin
           ? `<button data-purge-email="${esc(u.email)}"
                 class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors duration-150">立即清除</button>`
-          : `<span class="text-xs text-zinc-400 dark:text-zinc-500">仅主管理员可清除</span>`}
+          : `<span class="text-xs text-zinc-500 dark:text-zinc-400">仅主管理员可清除</span>`}
       </td>`;
     tbody.appendChild(tr);
   });

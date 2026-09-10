@@ -110,11 +110,11 @@
       <span class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 text-sm">易班自动签到</span>
     </div>
     <div class="flex items-center gap-4 min-w-0">
-      <span id="user-clock" class="text-xs text-zinc-400 dark:text-zinc-500 hidden sm:inline">服务器时间：--:--:--</span>
+      <span id="user-clock" class="text-xs text-zinc-500 dark:text-zinc-400 hidden sm:inline">服务器时间：--:--:--</span>
       <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
               class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150"><span data-icon="moon"></span></button>
       <span id="user-email" class="text-sm text-zinc-600 dark:text-zinc-300 truncate"></span>
-      <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
+      <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
     </div>
   </div>
 </header>
@@ -136,7 +136,7 @@
     <div class="mb-2">
       <h1 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h1>
     </div>
-    <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 dark:text-zinc-500 mb-4">
+    <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-500 dark:text-zinc-400 mb-4">
       <span class="inline-flex items-center gap-1"><span data-icon="clock"></span>待签</span><span class="inline-flex items-center gap-1"><span data-icon="check"></span>成功</span><span class="inline-flex items-center gap-1"><span data-icon="close"></span>失败</span>
       <span class="inline-flex items-center gap-1"><span data-icon="retry"></span>重试</span><span class="inline-flex items-center gap-1"><span data-icon="ban"></span>跳过</span><span class="inline-flex items-center gap-1"><span data-icon="minus"></span>无需</span><span class="inline-flex items-center gap-1"><span data-icon="pause"></span><span data-icon="stop"></span>暂停/已取消</span>
     </div>
@@ -155,16 +155,16 @@
     <div class="flex items-center justify-between mb-1">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的签到时间</h2>
       <button id="pref-collapse-btn" type="button" onclick="togglePrefCollapse()"
-              class="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="chevD"></span></button>
+              class="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="chevD"></span></button>
     </div>
     <div id="pref-body">
-      <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-3">签到窗口 <span id="pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始后修改次日生效）</p>
+      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">签到窗口 <span id="pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始后修改次日生效）</p>
       <p id="pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
       <div id="pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
       <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
         <button id="pref-clear-btn" type="button" onclick="clearTimePref()"
                 class="btn-ghost">清除选择（恢复自动分配）</button>
-        <span id="pref-tip" class="text-zinc-400 dark:text-zinc-500"></span>
+        <span id="pref-tip" class="text-zinc-500 dark:text-zinc-400"></span>
       </div>
       <p id="pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
         功能未开启：你的选择会保存，但暂不生效
@@ -177,14 +177,14 @@
     <div class="flex items-center justify-between gap-3">
       <div>
         <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">邮件提醒</h2>
-        <p class="text-xs text-zinc-400 dark:text-zinc-500">签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400">签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
       </div>
       <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收签到失败邮件">
         <input id="mail-notify-switch" type="checkbox" class="sr-only peer" onchange="toggleMailNotify()">
         <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform after:duration-150 peer-checked:after:translate-x-5"></div>
       </label>
     </div>
-    <p id="mail-notify-tip" class="text-xs text-zinc-400 dark:text-zinc-500 mt-1"></p>
+    <p id="mail-notify-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
   </section>
 
 <!-- Toast（动效同管理端：浮入 / 快速淡出 / 可中断，见上方 <style> #toast 规则；data-hidden 替代 hidden 以支持过渡） -->
@@ -201,16 +201,16 @@
         <div class="flex items-center justify-between mb-1">
           <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">提交我的易班账号</h2>
           <button type="button" onclick="closeAccountModal()" aria-label="关闭"
-                  class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
+                  class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
         </div>
-        <p class="text-xs text-zinc-400 dark:text-zinc-500 mb-4">提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。</p>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。</p>
         <div id="account-form-error" role="alert" class="hidden mb-3 rounded-lg border border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300"></div>
         <div class="grid grid-cols-1 gap-3">
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
         <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">备注会显示给管理员，用于审核与定位签到问题。</p>
+        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">备注会显示给管理员，用于审核与定位签到问题。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-phone">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
@@ -226,7 +226,7 @@
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（可选，不清楚就留空）</label>
         <input id="f-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
                class="w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 dark:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 px-3 py-2">
-        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">设备型号与识别码随签到请求提交，仅提示「请使用授权设备进行签到」时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
+        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">设备型号与识别码随签到请求提交，仅提示「请使用授权设备进行签到」时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（可选，不清楚就留空）</label>
@@ -241,7 +241,7 @@
         <button id="account-submit-btn" type="submit" class="btn-primary">提交账号</button>
         <button id="cancel-edit-btn" type="button" onclick="cancelEdit()"
                 class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
-        <span id="form-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+        <span id="form-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
       </div>
     </form>
   </div>
@@ -254,7 +254,7 @@
     <div class="flex items-center justify-between mb-1">
       <h2 id="delete-confirm-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">注销账号</h2>
       <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
-              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
+              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
     </div>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">注销将删除你的账号。</p>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4"><span class="text-amber-600 dark:text-amber-400 font-medium">7 天内可撤销恢复</span>，超过 7 天将永久删除，无法找回。</p>
@@ -274,7 +274,7 @@
     <div class="flex items-center justify-between mb-1">
       <h2 id="delete-account-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">最后确认</h2>
       <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
-              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
+              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
     </div>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">真的要注销吗？注销后账号将无法登录，易班账号与自选签到时间会被删除。</p>
     <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">7 天宽限期内可撤销，超过 7 天无法恢复。请输入当前密码完成注销。</p>
@@ -300,7 +300,7 @@
     <button type="button" onclick="togglePassword()" aria-expanded="false"
             class="w-full flex items-center justify-between text-left">
       <span class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">修改密码</span>
-      <span id="password-arrow" class="text-zinc-400 dark:text-zinc-500 transition-transform duration-200"><span data-icon="chevR"></span></span>
+      <span id="password-arrow" class="text-zinc-500 dark:text-zinc-400 transition-transform duration-200"><span data-icon="chevR"></span></span>
     </button>
     <div id="password-body" class="hidden mt-4">
       <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
@@ -322,7 +322,7 @@
         </div>
         <div class="flex items-center gap-3">
           <button type="submit" class="btn-primary">保存新密码</button>
-          <span id="p-tip" class="text-xs text-zinc-400 dark:text-zinc-500"></span>
+          <span id="p-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
         </div>
       </form>
     </div>
@@ -333,7 +333,7 @@
     <div class="flex items-center justify-between">
       <div>
         <p class="text-sm font-medium text-zinc-900 dark:text-zinc-100">注销账号</p>
-        <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
+        <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
       </div>
       <button type="button" onclick="openDeleteModal()"
               class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors duration-150 whitespace-nowrap ml-4">注销账号</button>
@@ -531,7 +531,7 @@ function userStateLine(a) {
   if (s === 'success' || s === 'already')
     return '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>';
   if (s === 'no_task')
-    return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">今日无需签到</div>';
+    return '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">今日无需签到</div>';
   if (s === 'skipped_window' || s === 'skipped_norange')
     return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">未在签到时段</div>';
   if (s === 'failed') {
@@ -548,7 +548,7 @@ function userStateLine(a) {
   // 待签：显示今日计划时间（自动错峰分配，来自 sign-state 的 message="计划 HH:MM"）
   // esc：state_message 来自状态文件，防御性转义防存储型 XSS（2026-08-15 对抗性审查 L2）
   const plan = a.state_message && a.state_message.startsWith('计划') ? ' · 今日' + esc(a.state_message) : '';
-  return '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">待签到' + plan
+  return '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">待签到' + plan
     + ' · 前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>';
 }
 
@@ -584,8 +584,8 @@ function renderList() {
             <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
             ${a.deleted
               ? (a.deleted_by_me
-                ? '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">你已删除此账号，7 天内可撤销恢复，超期自动清除</div>'
-                : '<div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">已被管理员删除，待管理员处理</div>')
+                ? '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">你已删除此账号，7 天内可撤销恢复，超期自动清除</div>'
+                : '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">已被管理员删除，待管理员处理</div>')
               : (a.status === 'active' ? userStateLine(a) : '')}
           </div>
         </div>
@@ -597,7 +597,7 @@ function renderList() {
           ${a.deleted
             ? (a.deleted_by_me
               ? `<button onclick="restoreAccount(${i})" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 transition-colors duration-150">撤销删除</button>`
-              : '<span class="text-sm text-zinc-400 dark:text-zinc-500">待管理员处理</span>')
+              : '<span class="text-sm text-zinc-500 dark:text-zinc-400">待管理员处理</span>')
             : (a.status === 'active' && !a.pause_forbidden
                 ? `<button onclick="togglePause(${i})" class="text-sm ${a.user_paused ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100'} transition-colors duration-150">${a.user_paused ? '恢复签到' : '暂停签到'}</button>`
                 : '')
@@ -609,10 +609,10 @@ function renderList() {
         <div class="mt-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">账号已被拒绝${a.reject_reason ? '：' + esc(a.reject_reason) : ''}。修改后点击「修改并重新提交」重新进入审核。</div>` : ''}
       ${a.logs && a.logs.length ? `
         <details class="mt-3">
-          <summary class="text-xs text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:text-zinc-300 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
+          <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:text-zinc-300 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
           <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
         </details>` : ''}
-      ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-400 dark:text-zinc-500">审核通过后即可查看签到日历</div>' : ''}
+      ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">审核通过后即可查看签到日历</div>' : ''}
       <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-u-${i}"></div>
     `;
     list.appendChild(card);
@@ -659,7 +659,7 @@ function renderCalendar(phone, key) {
     </div>`;
   const grid = $('cal-grid-' + key);
   grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
-    `<div class="text-center text-xs text-zinc-400 dark:text-zinc-500 py-1">${w}</div>`).join('');
+    `<div class="text-center text-xs text-zinc-500 dark:text-zinc-400 py-1">${w}</div>`).join('');
   api(`/api/my-calendar?month=${monthStr}`).then(data => {
     if (data.sunday_sign) sundaySign = true;  // 管理员开启周日签到后，周日正常显示与查询
     saturdaySign = data.saturday_sign === 1;  // 默认关闭（v0.29.0 起）；管理员开启后周六照常/可查
@@ -688,7 +688,7 @@ function renderCalendar(phone, key) {
         </button>`);
     }
   }).catch(() => {
-    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-400 dark:text-zinc-500 py-4">日历加载失败，请稍后重试</div>';
+    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-500 dark:text-zinc-400 py-4">日历加载失败，请稍后重试</div>';
   });
 }
 
@@ -701,7 +701,7 @@ function calLoadLog(btn, date) {
     box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${wd0 === 0 ? '周日' : '周六'}无需签到</div>`;
     return;
   }
-  box.innerHTML = '<div class="text-xs text-zinc-400 dark:text-zinc-500"><span class="yb-spinner"></span> 加载中…</div>';
+  box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400"><span class="yb-spinner"></span> 加载中…</div>';
   api(`/api/my-logs?date=${date}`).then(data => {
     if (!data.logs || !data.logs.length) {
       box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${date} 暂无签到记录</div>`;
@@ -1178,7 +1178,7 @@ document.addEventListener('DOMContentLoaded', loadAnnouncement);
   <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
     <div class="flex items-center justify-between mb-3">
       <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
-      <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-400 dark:text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
+      <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
     </div>
     <div class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed" id="changelog-content"></div>
   </div>
