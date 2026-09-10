@@ -1,12 +1,13 @@
 /*! daisyUI 5 定制子集（本项目专用）
  * 来源：https://cdn.jsdelivr.net/npm/daisyui@5/（MIT）
- * 组成：base/properties + 24 个 components + theme/light+dark
+ * 组成：base/properties + 24 个 components + theme/light+dark + 变量补齐
  * 本地改造：① 排除 base/reset.css（Tailwind v4 的 preflight，与 v3 冲突）
  *           ② 排除 base/rootcolor.css（页面底色由本项目自己控制）
  *           ③ 递归剥离全部 @layer 包装 —— Tailwind v3 产出无 layer 的 CSS，
  *              而「无 layer 永远赢过有 layer」，不去 layer 会被 v3 preflight 压掉
+ *           ④ 补齐 2 个分片组装会漏掉的变量（见文件末尾 COMPAT 注释）
  * 引用：必须放在 tailwind.js **之后**加载，顺序敏感
- * 重建：见 scripts/../tools/build-daisyui-subset（或 MANIFEST.md 记录的命令）
+ * 重建：见 static/vendor/MANIFEST.md 记录的命令
  */
 /**
  * Combined by jsDelivr.
@@ -156,3 +157,16 @@ color-scheme: dark;
 --noise: 0;
 }
 /*# sourceMappingURL=/sm/caded8efea7fc24740a63e76b156d1b6b1f8d12707a19abbce553d005f6a9e55.map */
+/* ===== COMPAT：分片组装漏掉的变量补齐（勿删）=====
+ * 为什么需要：daisyUI 的 --fx-noise 只定义在它**单体包**的 base 段里
+ * （`:root{--fx-noise:url("data:image/svg+xml,...")}`），**不在任何 base/*.css 分片**，
+ * 而「按分片 combine」的组装方式因此会漏掉它。button / menu / toggle / checkbox /
+ * radio / badge / alert 七个组件都以 `background-image: none, var(--fx-noise)`
+ * 的形式**无回退**地引用它 —— 变量缺失会让整条 background-image 声明作废。
+ * 本项目主题里 --noise:0（关闭噪点纹理），故给 none 语义正确且体积最小；
+ * 若将来要噪点纹理，从上游单体包复制那条 data URI 替换本行即可。
+ *
+ * --color-black 则是**上游自身也从未定义**的变量（status 组件无回退引用它），
+ * 同样在这里补上，避免整条声明被丢。
+ */
+:root{--fx-noise:none;--color-black:#000}
