@@ -582,6 +582,31 @@ STATUS_TEXT = {
 }
 
 
+def _cred_paused_phones():
+    """处于「账密故障暂停」（熔断/半开试探中）的手机号集合，供设置页容量拆解展示。
+
+    数据源：STATE_DIR/cred-state.json（signin 维护，{phone: {fail_days, last_fail,
+    paused_since, probe_date}}）。判定口径与 signin 一致：`paused_since` 非空即暂停中。
+    **必须容错**：该文件由签到进程按"无暂停=文件不存在"语义维护，随时可能缺失、被删或
+    半写；设置页不能因为一个可选状态文件读不出来就 500，故一切异常都退化为空集合
+    （展示层显示 0，判定逻辑不受影响——本函数只服务显示，绝不参与配额判定）。
+    utf-8-sig 容错 Windows 手工编辑留下的 BOM（与 signin._load_cred_state 同口径）。
+    """
+    path = os.path.join(STATE_DIR, "cred-state.json")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    return {
+        str(phone)
+        for phone, rec in data.items()
+        if isinstance(rec, dict) and str(rec.get("paused_since", "") or "").strip()
+    }
+
+
 def clear_fuse_pause(phone):
     """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
 
@@ -4464,6 +4489,9 @@ def create_app(host=None):
         全部易班凭据不可逆清零，且只有"真的删成"时才有告警。现要求二次鉴权 +
         同管理员窗口限速（429）。其余动作门禁不变：approve/reject/restore 与
         delete（软删）都可逆且已有 409 防错位 + 7 天宽限兜底，再加口令只会增加误伤。
+        （2026-09-10 批次20 Y1 修订：**delete（软删）不再是"无门禁"**——它虽可逆，
+        但立即停止该用户代签且受害者无法自助恢复，故接入同一份高危限速并逐次告警；
+        仍不要求二次口令。审批/恢复类动作维持无门禁。）
         """
         # 参数校验与高危门禁刻意留在 _file_lock 之外（与三处高危删除同口径）：
         # scrypt 口令校验单次数百毫秒，放进全局文件锁里会让一次鉴权阻塞全进程的
@@ -4489,6 +4517,15 @@ def create_app(host=None):
                 data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
             if gate:
                 return gate
+        # 2026-09-10（批次20 Y1）：软删也占用同一份高危额度。
+        # 软删虽可逆（7 天内可恢复），但它立即让该用户当天起停止代签，且**受害者
+        # 无法自助恢复**（/api/my-accounts/<idx>/restore 对管理员删除的行返回 403），
+        # 因此被盗的注册管理员会话可用几十次调用在数秒内静默让全站停签——与
+        # "删数据 / 拆报警器是同一条链" 同风险。这里**仍然不要求二次口令**
+        # （保留既有裁决"可逆不加口令，加了口令只增误伤"），只限制速率并逐次告警
+        # （告警在 ops 落库与审计之后发送，见下方）。
+        if action == "delete" and _admin_delete_limited():
+            return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
         with _file_lock:
             accounts = load_accounts()
             # 2026-08-20 对抗性审查 P1：idx 寻址防错位——客户端随 ids 携带对齐的
@@ -4518,6 +4555,7 @@ def create_app(host=None):
             ops = []
             batch_targets = []  #：审计留目标清单（脱敏截断）
             purge_targets = []  #：高危操作（物理删除）即时告警汇总
+            soft_delete_targets = []  #：软删即时告警汇总（批次20 Y1）
             reject_notify_owners = set()  # 2026-09-06 用户裁决：批量拒绝每户一封
             # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
             live_owners = {
@@ -4561,6 +4599,7 @@ def create_app(host=None):
                     ops.append(
                         ("set_deleted", acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     )
+                    soft_delete_targets.append(_mask_phone(str(acc.get("phone", ""))))
                 batch_targets.append(acc.get("phone", ""))
             done = len(ops)
             if ops:
@@ -4617,6 +4656,23 @@ def create_app(host=None):
                     _mask_phone(str(p)) for p in (batch_targets or [])[:20]
                 ))[:200],
             )
+            if action == "delete" and soft_delete_targets:
+                # 2026-09-10（批次20 Y1）软删即时告警：刻意排在 db.audit 之后、
+                # 返回之前——先把证据落进审计链（HMAC 链 + 库外锚点），再尝试外发，
+                # 外发失败不影响留痕（与 api_account_purge 同顺序、同理由）。
+                # 标题沿用「高危管理操作告警」：send_notification 的邮件节流按**标题**
+                # 计窗（见 _mail_alert_due），因此被盗会话快速连删不会刷爆 SMTP 额度、
+                # 合法运维的批量清理也只留一封邮件；webhook 仍逐条实时推送（告警实时性
+                # 由 webhook 保证），两头的语义都保住。
+                send_notification(
+                    "高危管理操作告警",
+                    f"批量删除账号（软删）×{len(soft_delete_targets)}: "
+                    f"{', '.join(soft_delete_targets[:20])}，"
+                    f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
+                    urgent=True,
+                )
             accounts = load_accounts()
             logger.info("批量%s账号 %d 个", action, done)
             msg = {
@@ -4636,7 +4692,17 @@ def create_app(host=None):
 
     @app.route("/api/accounts/<int:idx>", methods=["DELETE"])
     def api_account_delete(idx):
-        """删除账号（软删除）：进入待删除状态，保留期内可恢复，超期自动彻底清除。"""
+        """删除账号（软删除）：进入待删除状态，保留期内可恢复，超期自动彻底清除。
+
+        2026-09-10（批次20 Y1）：软删占用高危额度并即时告警——理由见
+        /api/accounts/batch 的 action=="delete" 分支注释（软删可逆但立即停签、
+        受害者无法自助恢复，被盗注册管理员会话可借此静默让全站停签）。
+        仍不要求二次口令，保留"可逆操作不加口令"的既有裁决。
+        """
+        # 门禁刻意留在 _file_lock 之外：_admin_delete_limited 只做内存计数与判速，
+        # 放进全局文件锁会白占锁（与批量 purge 的门禁位置同口径）。
+        if _admin_delete_limited():
+            return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
         with _file_lock:
             accounts = load_accounts()
             if not 0 <= idx < len(accounts):
@@ -4653,6 +4719,16 @@ def create_app(host=None):
                 "account_delete",
                 _mask_phone(acc.get("phone", "")),
                 "软删除",
+            )
+            # 先落审计再外发：外发失败不影响留痕（与 api_account_purge 同顺序）。
+            # 标题沿用「高危管理操作告警」以共享邮件节流窗口（见批量分支注释）。
+            send_notification(
+                "高危管理操作告警",
+                f"删除账号（软删）: {_mask_phone(str(acc.get('phone', '')))}，"
+                f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}，"
+                f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
+                urgent=True,
             )
             accounts = load_accounts()
             logger.info(
@@ -6680,6 +6756,23 @@ def create_app(host=None):
         #   账号 = 全部非删除活跃账号（含 admin 直属裸账号——同样参与签到占负载）
         _cap_users = len(db.load_users())
         _cur_accounts = _active_account_count()
+        # 账号容量拆解（2026-09-10 需求3，**纯展示**）：名额制下"停签/故障账号占满名额、
+        # 新账号被拒但实际负载不高"是管理者的真实困惑，故在设置页展示三分类计数。
+        # 口径与配额判定**完全解耦**：判定仍只看"非删除账号总数"（_active_account_count），
+        # 本处只做展示拆分，不参与任何 reject/accept 决策。
+        # 三桶互斥且求和 = _cur_accounts，优先级：用户自暂停 > 账密故障暂停 > 正常
+        # （同一账号两者都命中时归"用户自暂停"——那是用户主动行为，先说清楚"是他自己要停的"）。
+        _cred_paused = _cred_paused_phones()
+        _bd_normal = _bd_user_paused = _bd_cred_paused = 0
+        for _a in load_accounts():
+            if _a.get("deleted"):
+                continue
+            if _a.get("user_paused"):
+                _bd_user_paused += 1
+            elif str(_a.get("phone", "")) in _cred_paused:
+                _bd_cred_paused += 1
+            else:
+                _bd_normal += 1
         # 潜在负载：已注册未提交人数（注册用户中尚无任何非删除账号者）
         _owners = {a.get("owner") for a in load_accounts() if not a["deleted"] and a.get("owner")}
         _potential = sum(1 for u in db.load_users() if u["email"] not in _owners)
@@ -6720,6 +6813,13 @@ def create_app(host=None):
                     "users_max": load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS),
                     "accounts": _cur_accounts,
                     "accounts_max": load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS),
+                    # 账号容量拆解（2026-09-10 需求3，仅展示）：三桶互斥、求和 = accounts。
+                    # 定义见 api_settings 顶部注释；配额判定不看这里。
+                    "accounts_breakdown": {
+                        "normal": _bd_normal,
+                        "user_paused": _bd_user_paused,
+                        "cred_paused": _bd_cred_paused,
+                    },
                 },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
                 "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
