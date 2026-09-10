@@ -8,7 +8,7 @@
   调用方；下一条日志仍可重试；create_app 挂载构造失败降级不崩启动；
 - P2-7 ensure_secret_key：空 .env（无有效键）视为新部署写暂停键；有有效键不写；
 - 版本号同步：APP_VERSION 与 web/__init__.py 的 __version__ 一致且等于当前版本
-  （断言值随发版更新，当前 0.29.1）。
+  （断言值随发版更新，当前 0.30.0）。
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
@@ -278,10 +278,10 @@ class Batch16FixesTest(unittest.TestCase):
 
     # ---- 版本号 ----
     def test_version_synced(self):
-        """APP_VERSION 与 web/__init__.py __version__ 同步为 0.29.1。"""
-        self.assertEqual(self.webapp.APP_VERSION, "0.29.1")
+        """APP_VERSION 与 web/__init__.py __version__ 同步为 0.30.0。"""
+        self.assertEqual(self.webapp.APP_VERSION, "0.30.0")
         with open(os.path.join(BASE, "web", "__init__.py"), encoding="utf-8") as f:
-            self.assertIn('__version__ = "0.29.1"', f.read())
+            self.assertIn('__version__ = "0.30.0"', f.read())
 
 
 import unittest.mock  # noqa: E402
