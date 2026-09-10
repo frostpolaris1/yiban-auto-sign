@@ -31,7 +31,13 @@
 都属有意弱化或 WCAG 豁免，**刻意不在扫描范围内**：
   · `cursor-not-allowed` 的禁用按钮 2 处：WCAG 1.4.3 明确豁免非活动控件；
   · login 页页脚的两个装饰性「·」分隔符：装饰内容，且两端对称弱化；
-  · 签到日历里「周末不签到」的日期数字 4 处：最接近禁用态，待 V3-4 日历重做时统一。
+  · 签到日历里「周末不签到」的日期数字 4 处 —— **V3-4 已处理**：实测 1.42:1（浅）根本读不出日期，
+    而该格仍可点（点了提示「周日无需签到」），属**有信息**的格子、不是 WCAG 1.4.3 豁免的
+    非活动控件；故其配色已改为「底色表达」并纳入下方日历配色用例。
+
+另外，本文件末尾还钉住**签到日历日期格**的配色（V3-4 引入）：那里改用「底色」表达状态
+（✅ 绿底 / ❌ 红底 / 周末停签 中性底 / 今天 ring），故其对比度是「文字 on 格底」
+而非「文字 on 页面底」，单独一组用例计算。
 """
 
 import os
@@ -53,13 +59,75 @@ BG_DARK = "zinc-900"
 
 AA_NORMAL_TEXT = 4.5  # WCAG 2.1 AA 正文阈值
 
+# ---- 签到日历日期格（V3-4）：状态由「底色」表达，对比度须按「文字 on 格底」算 ----
+CALENDAR_SRC = os.path.join(WEB, "templates", "user.html")
+
+# (说明, 源码里必须存在的片段, 浅色底, 浅色字, 暗色底, 暗色底透明度, 暗色字)
+# 暗色底若是 `bg-<c>-<n>/<alpha>`，需先与页面底 BG_DARK 做 alpha 混合再算对比度。
+CALENDAR_CELL_STATES = (
+    (
+        "已签到",
+        "bg-green-50 dark:bg-green-900/25 text-green-700 dark:text-green-400",
+        "green-50",
+        "green-700",
+        "green-900",
+        0.25,
+        "green-400",
+    ),
+    (
+        "签到失败",
+        "bg-red-50 dark:bg-red-900/25 text-red-700 dark:text-red-400",
+        "red-50",
+        "red-700",
+        "red-900",
+        0.25,
+        "red-400",
+    ),
+    (
+        "周末停签",
+        "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300",
+        "zinc-100",
+        "zinc-600",
+        "zinc-800",
+        1.0,
+        "zinc-300",
+    ),
+    (
+        "「休」角标",
+        '<span class="absolute top-0.5 right-1 text-[10px] leading-none text-zinc-600 '
+        'dark:text-zinc-400">休</span>',
+        "zinc-100",
+        "zinc-600",
+        "zinc-800",
+        1.0,
+        "zinc-400",
+    ),
+    (
+        "无记录（无底色，落在页面底上）",
+        "else cls += 'text-zinc-600 dark:text-zinc-300",
+        BG_LIGHT,
+        "zinc-600",
+        BG_DARK,
+        1.0,
+        "zinc-300",
+    ),
+)
+
+
+def _blend(fg, bg, alpha):
+    """把带透明度的前景色与背景色做 alpha 混合（Tailwind 的 `bg-x/25` 语义）。"""
+    return tuple(fg[i] * alpha + bg[i] * (1 - alpha) for i in range(3))
+
 
 def _load_palette():
-    """从 app.css 读取 `--c-zinc-N: R G B` 调色板（保持与实现同源）。"""
+    """从 app.css 读取 `--c-<族>-<档>: R G B` 调色板（保持与实现同源）。
+
+    返回的键形如 `zinc-500` / `green-700`（不限 zinc —— 日历配色会用到 green/red）。
+    """
     with open(os.path.join(WEB, "static", "css", "app.css"), encoding="utf-8") as fh:
         css = fh.read()
     palette = {}
-    for m in re.finditer(r"--c-(zinc-\d+):\s*(\d+)\s+(\d+)\s+(\d+)", css):
+    for m in re.finditer(r"--c-([a-z]+-\d+):\s*(\d+)\s+(\d+)\s+(\d+)", css):
         palette[m.group(1)] = tuple(int(m.group(i)) for i in (2, 3, 4))
     return palette
 
@@ -160,6 +228,32 @@ class WebTextContrastTest(unittest.TestCase):
             100,
             f"正确形态 {CANONICAL!r} 只剩 {count} 处，疑似被整体误替换，请复核",
         )
+
+    def test_calendar_day_cell_colors_meet_aa(self):
+        """签到日历日期格的配色：既要在源码里就位，也要在两个模式下都达 AA。
+
+        这一步同时钉住两件事：① 日历确实按「底色表达状态」实现（片段必须存在，
+        片段被改掉本用例即报"请同步本测试"）；② 那些配色的对比度达标 ——
+        按「文字 on 格底」算，暗色底色带透明度时先与页面底做 alpha 混合。
+        """
+        with open(CALENDAR_SRC, encoding="utf-8") as fh:
+            src = fh.read()
+        palette = _load_palette()
+        problems = []
+        for name, fragment, l_bg, l_fg, d_bg, d_alpha, d_fg in CALENDAR_CELL_STATES:
+            if fragment not in src:
+                problems.append(
+                    f"  {name}: 日历日期格里找不到片段 {fragment!r} —— 配色被改动？请同步本测试"
+                )
+                continue
+            light = _contrast(palette[l_fg], palette[l_bg])
+            dark = _contrast(palette[d_fg], _blend(palette[d_bg], palette[BG_DARK], d_alpha))
+            if round(light, 2) < AA_NORMAL_TEXT:
+                problems.append(f"  {name}: 浅色 {light:.2f}:1 低于 AA {AA_NORMAL_TEXT}:1")
+            if round(dark, 2) < AA_NORMAL_TEXT:
+                problems.append(f"  {name}: 暗色 {dark:.2f}:1 低于 AA {AA_NORMAL_TEXT}:1")
+        if problems:
+            self.fail("签到日历日期格配色不达标：\n" + "\n".join(problems))
 
 
 if __name__ == "__main__":
