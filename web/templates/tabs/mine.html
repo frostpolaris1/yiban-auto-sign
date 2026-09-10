@@ -3,7 +3,7 @@
       <h1 class="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号</h1>
       <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">查看自己的易班账号签到情况</p>
     </div>
-    <div class="card mb-4">
+    <div class="yb-card mb-4">
       <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">我的账号与签到情况</div>
       <div id="mine-empty" class="hidden text-center text-sm text-zinc-500 dark:text-zinc-400 py-8">还没有提交账号</div>
       <div id="mine-list" class="space-y-3"></div>
@@ -11,7 +11,7 @@
 
     <!-- 修改密码（v0.30.0：普通管理员改密入口；主管理员隐藏——主管理员用「系统设置 → 危险区」。
          id 前缀 mine-password-* 与危险区的 my-password-* 两套并存不撞） -->
-    <details class="card mb-4" id="mine-password-card">
+    <details class="yb-card mb-4" id="mine-password-card">
       <summary class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer select-none">修改密码</summary>
       <div class="mt-3">
         <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
@@ -19,17 +19,17 @@
           <div>
             <label for="mine-password-now" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
             <input id="mine-password-now" type="password" autocomplete="current-password" placeholder="输入当前密码"
-                   class="input">
+                   class="yb-input">
           </div>
           <div>
             <label for="mine-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
             <input id="mine-new-password" type="password" autocomplete="new-password" placeholder="新密码"
-                   class="input">
+                   class="yb-input">
           </div>
           <div>
             <label for="mine-new-password2" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
             <input id="mine-new-password2" type="password" autocomplete="new-password" placeholder="再次输入新密码"
-                   class="input">
+                   class="yb-input">
           </div>
           <div class="flex items-center gap-3">
             <button onclick="saveMinePassword()" class="btn-primary">保存新密码</button>
@@ -39,7 +39,7 @@
     </details>
 
     <!-- 我的签到时间（调度 v2 自选；管理员同样可选时间片） -->
-    <div class="card mb-4" id="mine-pref-card">
+    <div class="yb-card mb-4" id="mine-pref-card">
       <div class="flex items-center justify-between mb-1">
         <div class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">我的签到时间</div>
         <button id="mine-pref-collapse-btn" type="button" onclick="toggleMinePrefCollapse()"
@@ -59,7 +59,7 @@
         </p>
       </div>
     </div>
-    <div class="card">
+    <div class="yb-card">
       <div id="mine-form-title" class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">提交我的易班账号</div>
       <div id="mine-done" class="hidden mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-3 text-sm text-green-700 dark:text-green-400">
         已提交账号，可编辑或删除后重新提交。

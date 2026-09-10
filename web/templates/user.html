@@ -95,31 +95,31 @@
 {% block tailwind_components %}
   /* ===== 组件类（@layer components，由 tailwind 运行时编译）===== */
   @layer components {
-    .input {
+    .yb-input {
       @apply w-full bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded-lg text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 px-3 py-2;
     }
     /* 手机端输入字号提至 16px：Safari 聚焦 <16px 输入框会自动缩放视口 */
     @media (max-width: 639px) {
-      .input { font-size: 16px; }
+      .yb-input { font-size: 16px; }
     }
-    .input-sm { @apply px-3 py-1.5; }
-    .input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
+    .yb-input-sm { @apply px-3 py-1.5; }
+    .yb-input-ring { @apply focus:ring-1 focus:ring-blue-500 transition-[border-color,box-shadow] duration-200; }
     .btn-primary {
       @apply bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
     .btn-ghost {
       @apply bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-zinc-800;
     }
-    .card {
+    .yb-card {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 md:p-6;
       box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
     }
-    .dark .card { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
-    .card-sm {
+    .dark .yb-card { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
+    .yb-card-sm {
       @apply bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 p-4;
       box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px -6px rgba(0,0,0,.08);
     }
-    .dark .card-sm { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
+    .dark .yb-card-sm { box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px -8px rgba(0,0,0,.35); }
     /* iOS Safari 聚焦缩放修复（2026-08-15 审查）：输入控件 <16px 时聚焦自动放大页面 */
     @media (max-width: 767px) {
       input, select, textarea { font-size: 16px !important; }
@@ -164,7 +164,7 @@
 </div>
 
   <!-- 我的账号与运行情况 -->
-  <section class="card mb-6">
+  <section class="yb-card mb-6">
     <!-- 图例独立成行（不与标题挤同一行）：手机宽度下 6 个状态单行排开，避免 5+1 折行 -->
     <div class="mb-2">
       <h1 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h1>
@@ -186,7 +186,7 @@
   </section>
 
   <!-- 我的签到时间（调度 v2 自选；未开启时折叠，展开可预配置但不激活） -->
-  <section id="time-pref-card" class="card mb-6 hidden">
+  <section id="time-pref-card" class="yb-card mb-6 hidden">
     <div class="flex items-center justify-between mb-1">
       <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的签到时间</h2>
       <button id="pref-collapse-btn" type="button" onclick="togglePrefCollapse()"
@@ -208,7 +208,7 @@
   </section>
 
   <!-- 邮件提醒（B 线：账号签到失败邮件通知，用户可自行开关） -->
-  <section class="card mb-6">
+  <section class="yb-card mb-6">
     <div class="flex items-center justify-between gap-3">
       <div>
         <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">邮件提醒</h2>
@@ -331,7 +331,7 @@
 </div>
 
   <!-- 修改密码（默认收起，点击标题展开） -->
-  <section class="card">
+  <section class="yb-card">
     <button type="button" onclick="togglePassword()" aria-expanded="false"
             class="w-full flex items-center justify-between text-left">
       <span class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">修改密码</span>
@@ -343,17 +343,17 @@
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-old">当前密码</label>
           <input id="p-old" type="password" autocomplete="current-password" required placeholder="输入当前密码"
-                 class="input">
+                 class="yb-input">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-new">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
           <input id="p-new" type="password" autocomplete="new-password" required placeholder="新密码"
-                 class="input">
+                 class="yb-input">
         </div>
         <div>
           <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-confirm">确认新密码</label>
           <input id="p-confirm" type="password" autocomplete="new-password" required placeholder="再次输入新密码"
-                 class="input">
+                 class="yb-input">
         </div>
         <div class="flex items-center gap-3">
           <button type="submit" class="btn-primary">保存新密码</button>
@@ -364,7 +364,7 @@
   </section>
 
   <!-- 注销账号（危险操作，置底防误触；软删除 7 天宽限期可撤销，2026-08-16） -->
-  <section class="card mt-6">
+  <section class="yb-card mt-6">
     <div class="flex items-center justify-between">
       <div>
         <p class="text-sm font-medium text-zinc-900 dark:text-zinc-100">注销账号</p>
