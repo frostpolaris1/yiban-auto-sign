@@ -66,6 +66,63 @@
     }
     .btn-danger:hover { background-color: rgb(var(--c-red-700)); }
     .btn-danger:disabled { @apply opacity-50 cursor-not-allowed; }
+    /* ---- 提示条（.yb-alert 盒式 / .yb-alert-sm 小号 / .yb-banner 通栏）----
+       收敛前 13 处共 10 种写法：盒式与通栏两种形状族混用、圆角 lg/xl/无 三档、
+       文字色 -600/-700/-800/-300 四档 —— 都是复制粘贴后各改一处造成的漂移。
+       这里把**形状**与**语义色**拆成两组正交的类：形状决定圆角/内距/边框方向，
+       语义色只决定 底/边/字 三个色值（4 语义 × 深浅两模式）。于是通栏也能复用同一套语义色。
+       文字色取 -700（浅）/ -400（暗）：实测在 -50 / -900-20 底上均达 AA
+       （red 5.91 / amber 4.84 / green 4.79 / blue 见 badge 同类断言；暗色 6.0~9.7）。 */
+    .yb-alert {
+      display: block;
+      border-radius: 14px;                 /* = 方案 C 控件圆角 */
+      border-width: 1px; border-style: solid;
+      padding: 0.5rem 0.75rem;             /* = py-2 px-3 */
+      font-size: 0.875rem; line-height: 1.25rem;
+    }
+    .yb-alert-sm {
+      border-radius: 10px;
+      padding: 0.25rem 0.5rem;             /* = py-1 px-2 */
+      font-size: 0.75rem; line-height: 1rem;
+    }
+    .yb-banner {
+      display: block;
+      border-bottom-width: 1px; border-bottom-style: solid;
+      padding: 0.5rem 1rem;                /* = py-2 px-4 */
+      font-size: 0.875rem; line-height: 1.25rem;
+    }
+    .yb-alert-error {
+      background-color: rgb(var(--c-red-50)); border-color: rgb(var(--c-red-200));
+      color: rgb(var(--c-red-700));
+    }
+    .yb-alert-success {
+      background-color: rgb(var(--c-green-50)); border-color: rgb(var(--c-green-200));
+      color: rgb(var(--c-green-700));
+    }
+    .yb-alert-warning {
+      background-color: rgb(var(--c-amber-50)); border-color: rgb(var(--c-amber-200));
+      color: rgb(var(--c-amber-700));
+    }
+    .yb-alert-info {
+      background-color: rgb(var(--c-blue-50)); border-color: rgb(var(--c-blue-200));
+      color: rgb(var(--c-blue-700));
+    }
+    .dark .yb-alert-error {
+      background-color: rgb(var(--c-red-900) / 0.2); border-color: rgb(var(--c-red-800));
+      color: rgb(var(--c-red-400));
+    }
+    .dark .yb-alert-success {
+      background-color: rgb(var(--c-green-900) / 0.2); border-color: rgb(var(--c-green-800));
+      color: rgb(var(--c-green-400));
+    }
+    .dark .yb-alert-warning {
+      background-color: rgb(var(--c-amber-900) / 0.2); border-color: rgb(var(--c-amber-800));
+      color: rgb(var(--c-amber-400));
+    }
+    .dark .yb-alert-info {
+      background-color: rgb(var(--c-blue-900) / 0.2); border-color: rgb(var(--c-blue-800));
+      color: rgb(var(--c-blue-400));
+    }
 
     /* ---- 卡内嵌面板（.yb-inset）----
        用于「卡片里再分一块」（目前是账号卡里的日志块）。层级固定为：
