@@ -2,8 +2,8 @@
 """回归守卫（2026-09-10）：签到日历在 admin 与 user 两份实现之间不得再漂移。
 
 背景（V3-4 实测）：
-「签到日历」有两份几乎独立的实现 —— admin 在 `web/static/js/app.js`（index.html 引），
-user 在 `web/templates/user.html` 的内联脚本里（**user 端不引 app.js**，无共享 JS 文件）。
+「签到日历」有两份几乎独立的实现 —— admin 在管理端脚本里（A4-2 前是 `web/static/js/app.js`，现按内容查找到 `web/static/js/pages/mine.js`），
+user 在 `web/templates/user.html` 的内联脚本里（**user 端不引管理端脚本**，无共享 JS 文件）。
 两份是各自维护的，于是长期漂移，V3-4 前实测到的差异包括：
 
     · 日期格：user 端**没有**「休」角标、aria-label 只报「今天/已签到」，
@@ -31,9 +31,31 @@ import os
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-ADMIN = os.path.join(BASE, "web", "static", "js", "app.js")
+JS_DIR = os.path.join(BASE, "web", "static", "js")
 USER = os.path.join(BASE, "web", "templates", "user.html")
+
+
+def _find_admin_calendar_src():
+    """按**内容**找 admin 侧那份 `calDayCell` 所在文件。
+
+    A4-2 之后管理端脚本已按连续区间拆成 7 个模块（`web/static/js/` 下），
+    `app.js` 不再存在。写死文件名会让本测试随拆分而碎，故改为按内容定位。
+    """
+    for dirpath, _dirnames, filenames in os.walk(JS_DIR):
+        for name in sorted(filenames):
+            if not name.endswith(".js"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="utf-8") as fh:
+                if "function calDayCell(o)" in fh.read():
+                    return path
+    raise AssertionError(
+        f"在 {os.path.relpath(JS_DIR, BASE)} 下找不到含 `function calDayCell(o)` 的文件 ——"
+        "admin 侧的签到日历实现去哪了？"
+    )
+
+
+ADMIN = _find_admin_calendar_src()
 
 # 共享块的起止标记
 BLOCK_START = "// ==== 签到日历 · 日期格"
@@ -96,7 +118,7 @@ class CalendarParityTest(unittest.TestCase):
                     )
                     break
             self.fail(
-                "签到日历的 calDayCell 共享块在 admin(app.js) 与 user(user.html) 之间不一致 ——"
+                "签到日历的 calDayCell 共享块在 admin 侧脚本与 user(user.html) 之间不一致 ——"
                 f"请把两边改成逐字相同{detail}"
             )
 
@@ -106,7 +128,7 @@ class CalendarParityTest(unittest.TestCase):
         missing = []
         for snippet in REQUIRED_IN_BOTH:
             if snippet not in admin:
-                missing.append(f"  admin(app.js) 缺: {snippet!r}")
+                missing.append(f"  admin 侧脚本 缺: {snippet!r}")
             if snippet not in user:
                 missing.append(f"  user(user.html) 缺: {snippet!r}")
         if missing:

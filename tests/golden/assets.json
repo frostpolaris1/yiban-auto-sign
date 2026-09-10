@@ -6,7 +6,13 @@
     "script src=/static/vendor/md-render.js?v=*",
     "link rel=stylesheet href=/static/vendor/daisyui/daisyui-subset.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
-    "script src=/static/js/app.js?v=*"
+    "script src=/static/js/core.js?v=*",
+    "script src=/static/js/pages/accounts.js?v=*",
+    "script src=/static/js/pages/logs.js?v=*",
+    "script src=/static/js/pages/settings.js?v=*",
+    "script src=/static/js/shared-ui.js?v=*",
+    "script src=/static/js/pages/users.js?v=*",
+    "script src=/static/js/pages/mine.js?v=*"
   ],
   "login": [
     "link rel=icon href=/favicon.png",
