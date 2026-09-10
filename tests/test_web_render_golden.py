@@ -4,8 +4,11 @@
 ## 为什么需要它
 
 本仓前端**零自动化覆盖**：`tests/` 全是 Python，没有任何模板渲染断言。而
-`web/templates/index.html` 有 4036 行（内联 JS 2722 行），接下来要做 CSS/JS 外提、
-`base.html` 抽取、tab/模态拆 `{% include %}`、JS 细拆 —— 没有回归网时每一步都只能靠肉眼冒烟。
+`web/templates/index.html` 原本是 4036 行的单文件（内联 JS 2722 行），现已经历
+A1（内联 CSS/JS 外提为 `static/css/app.css` 与 `static/js/app.js`）与
+A3（5 个 tab + 3 个模态拆成 `templates/tabs|partials` 的 include）；后面还有
+P4（Tailwind v4）、U1（类名解耦）、V1–V4（daisyUI 视觉替换）等刀。
+没有回归网时每一步都只能靠肉眼冒烟。
 
 本测试立一条不变量：**页面结构指纹零变化**。
 用 Flask `test_client` 真渲染三个页面 → 归一化 → 与 `tests/golden/*.rendered.html` 比对。
