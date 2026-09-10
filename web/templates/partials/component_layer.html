@@ -100,6 +100,63 @@
       --tw-ring-offset-width: 2px;
       --tw-ring-offset-color: var(--yb-ring-offset);
     }
+    /* ---- 状态徽标（.yb-badge + 语义变体）----
+       为什么收敛：这段 class 串曾被复制 **14 处、出现 9 种写法**，并已产生四项缺陷 ——
+         · `whitespace-nowrap` 7 处有、7 处无 → 长徽标会折行，同一 app 里长相不一致；
+         · error 变体用 `text-red-600`，在 `bg-red-50` 上只有 **4.41:1**
+           （AA 正文需 ≥4.5；而 success/warning 用的是 -700）—— 真不达标；
+         · neutral 变体用 `text-zinc-500`，在 `bg-zinc-100` 上只有 **4.40:1** —— 同样不达标；
+         · info 变体用 `bg-blue-50`，而该档位在 tailwind config 与调色板里**都不存在**
+           → **底色为空**（V3-5a 已把该档位补上）。
+       现收敛到这里，四项一并修掉。**改配色前先读这一段**；改完跑
+       tests/test_web_badge_contract.py（该测试禁止再出现内联徽标写法）。
+       变体：neutral（角色 / 中性状态）/ info / success / warning / error。 */
+    .yb-badge {
+      display: inline-flex; align-items: center;
+      white-space: nowrap;
+      border-radius: 9999px;
+      border-width: 1px; border-style: solid;
+      padding: 0.125rem 0.625rem;              /* = py-0.5 px-2.5 */
+      font-size: 0.75rem; line-height: 1rem;   /* = text-xs */
+    }
+    .yb-badge-neutral {
+      background-color: rgb(var(--c-zinc-100));
+      border-color: transparent;
+      color: rgb(var(--c-zinc-600));
+    }
+    .yb-badge-info {
+      background-color: rgb(var(--c-blue-50)); border-color: rgb(var(--c-blue-200));
+      color: rgb(var(--c-blue-700));
+    }
+    .yb-badge-success {
+      background-color: rgb(var(--c-green-50)); border-color: rgb(var(--c-green-200));
+      color: rgb(var(--c-green-700));
+    }
+    .yb-badge-warning {
+      background-color: rgb(var(--c-amber-50)); border-color: rgb(var(--c-amber-200));
+      color: rgb(var(--c-amber-700));
+    }
+    .yb-badge-error {
+      background-color: rgb(var(--c-red-50)); border-color: rgb(var(--c-red-200));
+      color: rgb(var(--c-red-700));
+    }
+    .dark .yb-badge-neutral { background-color: rgb(var(--c-zinc-700)); color: rgb(var(--c-zinc-300)); }
+    .dark .yb-badge-info {
+      background-color: rgb(var(--c-blue-900) / 0.2); border-color: rgb(var(--c-blue-800));
+      color: rgb(var(--c-blue-400));
+    }
+    .dark .yb-badge-success {
+      background-color: rgb(var(--c-green-900) / 0.2); border-color: rgb(var(--c-green-800));
+      color: rgb(var(--c-green-400));
+    }
+    .dark .yb-badge-warning {
+      background-color: rgb(var(--c-amber-900) / 0.2); border-color: rgb(var(--c-amber-800));
+      color: rgb(var(--c-amber-400));
+    }
+    .dark .yb-badge-error {
+      background-color: rgb(var(--c-red-900) / 0.2); border-color: rgb(var(--c-red-800));
+      color: rgb(var(--c-red-400));
+    }
   }
 
 

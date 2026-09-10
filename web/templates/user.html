@@ -484,9 +484,9 @@ document.addEventListener('keydown', (e) => {
 
 // 审核状态徽章
 function statusBadge(status) {
-  if (status === 'pending') return '<span class="inline-flex items-center rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs px-2.5 py-0.5">待审核</span>';
-  if (status === 'rejected') return '<span class="inline-flex items-center rounded-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2.5 py-0.5">已拒绝</span>';
-  if (status === 'active') return '<span class="inline-flex items-center rounded-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 text-xs px-2.5 py-0.5">已生效</span>';
+  if (status === 'pending') return '<span class="yb-badge yb-badge-warning">待审核</span>';
+  if (status === 'rejected') return '<span class="yb-badge yb-badge-error">已拒绝</span>';
+  if (status === 'active') return '<span class="yb-badge yb-badge-success">已生效</span>';
   return esc(status);
 }
 
@@ -590,9 +590,9 @@ function renderList() {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          ${a.deleted ? '<span class="inline-flex items-center rounded-full bg-zinc-100 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 text-xs px-2.5 py-0.5">已删除</span>'
+          ${a.deleted ? '<span class="yb-badge yb-badge-neutral">已删除</span>'
             : a.user_paused
-              ? '<span class="inline-flex items-center rounded-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-xs px-2.5 py-0.5">已取消</span>'
+              ? '<span class="yb-badge yb-badge-error">已取消</span>'
               : statusBadge(a.status)}
           ${a.deleted
             ? (a.deleted_by_me
