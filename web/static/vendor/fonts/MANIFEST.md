@@ -103,6 +103,7 @@ grep -rniE "https?://|fonts\.googleapis|fonts\.gstatic" web/static/vendor/fonts 
 # 期望：无输出
 ```
 
-> 备注：`fonts/misans/`（4.6 MB，许可存疑）为历史遗留，**本次未触碰**，后续步骤单独处理移除。
+> 说明：`fonts/misans/`（4.6 MB）已删除——MiSans 官方条款不允许再分发，随目录带出的 `OFL.txt` 亦不成立。
+> 自托管中文字体现为 `fonts/notosanssc/`（子集化 + 字频重切片）。
 
 登记日期：2026-09-12（前端模块化 / Adminator 设计系统）
