@@ -17,6 +17,13 @@
     });
   }
   function svgUse(name) { return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+  // 手机号展示层脱敏（幂等）：已含 * 原样返回；长度 >=7 保留前 3 后 4。
+  // 各页面统一走本助手，避免脱敏口径在页面脚本里各写一份。
+  function maskPhone(p) {
+    p = String(p || "");
+    if (p.indexOf("*") !== -1) return p;
+    return p.length >= 7 ? p.slice(0, 3) + "****" + p.slice(-4) : p;
+  }
   // 常量 SVG 片段走 html；动态文本一律走 text，避免把不可信数据交给 innerHTML
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -807,6 +814,7 @@
     el: el,
     $: $,
     escapeHtml: escapeHtml,
+    maskPhone: maskPhone,
     openModal: openModal,
     closeModal: closeModal,
     confirmDialog: confirmDialog,
@@ -849,6 +857,7 @@
   window.el = el;
   window.esc = escapeHtml;
   window.escapeHtml = escapeHtml;
+  window.maskPhone = maskPhone;
   window.openModal = openModal;
   window.closeModal = closeModal;
   window.confirmDialog = confirmDialog;
