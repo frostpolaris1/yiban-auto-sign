@@ -42,16 +42,11 @@
       timer = setTimeout(fn, ms);
     };
   }
-  // 列表已脱敏：输入完整号时同样 mask 后匹配，保证搜索可用
-  function maskPhone(p) {
-    p = String(p || "");
-    if (p.indexOf("*") !== -1) return p;
-    return p.length >= 7 ? p.slice(0, 3) + "****" + p.slice(-4) : p;
-  }
+  // 列表已脱敏：输入完整号时同样 mask 后匹配，保证搜索可用（脱敏口径取共享 YB.maskPhone）
   function accountMatch(a, kw) {
     if (!kw) return true;
     var q = String(kw).toLowerCase();
-    var masked = maskPhone(q);
+    var masked = YB.maskPhone(q);
     return [a.name, a.phone, a.owner_display, a.owner].some(function (v) {
       var s = String(v || "").toLowerCase();
       return s.indexOf(q) !== -1 || s.indexOf(masked) !== -1;

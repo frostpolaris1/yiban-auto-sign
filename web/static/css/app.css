@@ -1703,6 +1703,31 @@ html[data-theme="dark"] {
 /* 开关：track 本体 34×20，热区低于 WCAG 2.5.8 的 24px；用等量负外边距抬高热区、保持视觉位置不变 */
 .switch { padding: 6px 4px; margin: -6px -4px; }
 
+/* 状态徽标的语义色调档位（全站通用，配 .badge 使用：class="badge badge--ok"）。
+   为什么不直接用 Adminator 的 .badge.success/.danger/.warning/.info：那几档以原始语义色
+   （--success #10B981 等）作前景、软底作背景，实测仅 2.07–3.44:1，达不到正文 AA；
+   这里改用同色系深/浅两套独立取值（浅色深字、深色亮字），全部 ≥4.5:1。
+   两套互不影响，旧档位留给未改造的调用方。改色值会被 test_web_text_contrast 实测报红。 */
+:root {
+  --badge-ok-fg: #166534;    --badge-ok-bg: #DCFCE7;
+  --badge-bad-fg: #B91C1C;   --badge-bad-bg: #FEE2E2;
+  --badge-warn-fg: #92400E;  --badge-warn-bg: #FEF3C7;
+  --badge-info-fg: #075985;  --badge-info-bg: #E0F2FE;
+  --badge-muted-fg: #475569; --badge-muted-bg: #F1F5F9;
+}
+html[data-theme="dark"] {
+  --badge-ok-fg: #6EE7B7;    --badge-ok-bg: #14342A;
+  --badge-bad-fg: #FCA5A5;   --badge-bad-bg: #3A1A1A;
+  --badge-warn-fg: #FCD34D;  --badge-warn-bg: #2B1F08;
+  --badge-info-fg: #7DD3FC;  --badge-info-bg: #0D2232;
+  --badge-muted-fg: #94A3B8; --badge-muted-bg: #1A2237;
+}
+.badge--ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
+.badge--bad { background: var(--badge-bad-bg); color: var(--badge-bad-fg); }
+.badge--warn { background: var(--badge-warn-bg); color: var(--badge-warn-fg); }
+.badge--info { background: var(--badge-info-bg); color: var(--badge-info-fg); }
+.badge--muted { background: var(--badge-muted-bg); color: var(--badge-muted-fg); }
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -1753,9 +1778,11 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
    按钮 + grid-template-rows 0fr↔1fr 是唯一跨浏览器都能做出双向高度动画的做法
    （grid 行插值 Chrome 107+/FF 66+/Safari 16+，不需要 JS 量高度、不触发 layout 抖动）。 */
 .collapse-head { cursor: pointer; }
-.collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 200ms var(--ease-out-strong); transform: rotate(-90deg); }
+/* 双曲线：本条（收起=退出）用 ease-in-strong，展开态在下方覆盖为 ease-out-strong（进入）。
+   一条 transition 写死的曲线会两个方向都用，不符合 22 节「进入/退出分别用曲线」。 */
+.collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 200ms var(--ease-in-strong); transform: rotate(-90deg); }
 .collapse-arrow svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none; }
-[aria-expanded="true"] .collapse-arrow { transform: rotate(0deg); }
+[aria-expanded="true"] .collapse-arrow { transform: rotate(0deg); transition-timing-function: var(--ease-out-strong); }
 .collapse-body {
   display: grid;
   grid-template-rows: 1fr;
@@ -1765,11 +1792,12 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   grid-template-columns: minmax(0, 1fr);
   /* 与面板头之间的 16px 由 margin-top 承担并**随展开一起长出来**：
      常驻会让折叠态留 16px 空档（面板头 margin-bottom 与 .panel-stack 相邻规则都会如此），
-     只在展开时给又会在动画起点跳 16px；一起过渡则两头都没有问题。 */
+     只在展开时给又会在动画起点跳 16px；一起过渡则两头都没有问题。
+     曲线同样分向：收起（退出）ease-in-strong，展开（进入）由 .is-open 覆盖为 ease-out-strong。 */
   margin-top: 0;
-  transition: grid-template-rows 220ms var(--ease-out-strong), margin-top 220ms var(--ease-out-strong);
+  transition: grid-template-rows 220ms var(--ease-in-strong), margin-top 220ms var(--ease-in-strong);
 }
-.collapse-body.is-open { margin-top: 16px; }
+.collapse-body.is-open { margin-top: 16px; transition-timing-function: var(--ease-out-strong); }
 /* 折叠卡的面板头不再自带下边距（间距交给上面那条动画边距） */
 #time-pref-card > .panel-head { margin-bottom: 0; }
 .collapse-body > .collapse-inner { overflow: clip; min-height: 0; min-width: 0; visibility: visible; }
@@ -2062,6 +2090,9 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   .collapse-body { transition: none; }
   /* 收起后延迟 220ms 隐藏的 visibility 过渡也要关掉，否则 reduced-motion 下仍有延迟 */
   .collapse-body > .collapse-inner { transition: none; }
+  /* Adminator 的 .grid 自带 rise-in 入场动画（600ms + 260ms 延迟），本层不覆盖就不受
+     reduced-motion 约束：管理端各页的内容网格在开启"减少动效"后仍会上浮入场。 */
+  .grid { animation: none; }
 }
 
 /* ==========================================================================
@@ -2146,7 +2177,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 /* 组头折叠：宽屏箭头绝对定位在组头行右上角，故行内留出右侧空间、避免与搜索框重叠。 */
 body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 .acct-group-head .panel-head-row { position: relative; padding-right: 44px; }
-.acct-collapse { position: absolute; top: 0; right: 0; }
+/* 折叠箭头绝对定位在行右上角。**必须用 top:0;bottom:0;margin:auto 0 竖直居中**，不能只写
+   top:0：36px 的按钮在只有标题（23.3px 行盒）的行里会从顶端向下溢出，实测中心比标题低
+   6.4px（只有标题的行）；账号页组头因含 34px 搜索框才凑巧只差 1px。 */
+.acct-collapse { position: absolute; top: 0; bottom: 0; margin: auto 0; right: 0; }
 .acct-collapse .collapse-arrow svg { width: 18px; height: 18px; }
 
 /* KPI 4 张：Adminator 原生 4 列、≤1200 两列；仅本页在 ≤720 覆盖为两列
@@ -2341,3 +2375,98 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
   #accounts-root { transition: none; }
   #accounts-root.is-swapping { opacity: 1; transform: none; }
 }
+
+/* ==========================================================================
+   25. 签到日志页（管理端 /logs）
+   --------------------------------------------------------------------------
+   日志主卡（检索/显示全部/导出/按日期查看/自动刷新）+ 探针记录 + 签到事件两张可折叠卡。
+   分隔线遵守 23 节白名单：卡头用 .panel-head 两段式（标题行 + 整宽说明，不画线），
+   只有事件时间线的重复行（.ev-row）保留行分隔线。
+   事件徽标复用全站的 `.badge` + `.badge--ok/bad/warn/info/muted` 色调档位（定义见 19.6），
+   不再自建一套徽标类；那五档「彩色文字 + 软底」已纳入 test_web_text_contrast.py 实测 AA。
+   ========================================================================== */
+
+/* ---- 页头主操作：账号下拉 + 立即签到 ---- */
+.log-signin { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
+.log-signin__select { width: auto; min-width: 180px; max-width: 260px; height: 34px; padding: 4px 10px; font-size: 12.5px; }
+/* .btn 自然高度 39.5px（padding 11 + border 1 + 13px 行盒），与同排 34px 下拉参差；
+   min-height 只设下限、压不低自然高度，故同时把纵向 padding 归零，落到 34px 与
+   .log-tools / .log-datebar 的控件同高。 */
+.log-signin .btn { min-height: 34px; padding-top: 0; padding-bottom: 0; }
+
+/* ---- 日志卡头：标题 + 文件名；右侧工具行 ---- */
+body[data-page="logs"] .panel-title { min-width: 0; }
+.log-file { font-family: var(--font-mono); font-size: 12px; font-weight: 400; color: var(--t-muted); }
+.log-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
+.log-search { display: block; }
+.log-search .input { height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
+.log-search .input::placeholder { color: var(--t-muted); }
+/* 同排控件统一 34px：桌面 .btn--sm 约 31.2px，与 34px 搜索框并排会参差 */
+.log-tools .btn { min-height: 34px; }
+
+/* ---- 日期行 ---- */
+.log-datebar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.log-datebar__label { font-size: 12.5px; color: var(--t-sub); }
+.log-datebar__date { width: auto; min-width: 150px; height: 34px; padding: 4px 10px; font-size: 12.5px; }
+.log-datebar .btn { min-height: 34px; }
+.log-date-tip { flex: 1 1 160px; min-width: 0; font-size: 12.5px; color: var(--t-sub); }
+.log-auto { margin-left: auto; }
+.log-auto__text { font-size: 12.5px; color: var(--t-sub); }
+
+/* ---- 日志正文：固定高 + 等宽 + 内滚动（页面永不因日志而横向滚动） ---- */
+.log-box {
+  height: clamp(280px, 52vh, 620px);
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--t-base);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* ---- 折叠卡（探针 / 签到事件）：宽屏箭头绝对定位在右上角 ---- */
+.log-fold > .panel-head { margin-bottom: 0; }   /* 间距由 .collapse-body.is-open 的动画 margin-top 承担 */
+.log-fold .panel-head-row { position: relative; padding-right: 44px; }
+.log-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
+/* 同 .acct-collapse：绝对定位的 36px 按钮必须上下都锚定再 auto 居中，
+   折页卡头行只有标题（23.3px 行盒），只写 top:0 会让箭头低 6.4px。 */
+.log-collapse { position: absolute; top: 0; bottom: 0; margin: auto 0; right: 0; }
+.log-collapse .collapse-arrow svg { width: 18px; height: 18px; }
+
+/* ---- 事件时间线：重复行分隔线（白名单第 1 类） ---- */
+.ev-list { list-style: none; margin: 0; padding: 0; }
+.ev-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+.ev-row:last-child { border-bottom: 0; }
+.ev-time { font-family: var(--font-mono); font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+.ev-phone { font-family: var(--font-mono); font-size: 12px; color: var(--t-base); white-space: nowrap; }
+.ev-msg { flex: 1 1 200px; min-width: 0; font-size: 12.5px; color: var(--t-sub); overflow-wrap: anywhere; }
+/* 行内间距由 .ev-row 的 flex gap 提供，抵消 vendor `.badge{margin-left:6px}` */
+.ev-row .badge { margin-left: 0; }
+
+@media (max-width: 720px) {
+  /* 页头主操作换行到第二行右对齐（保持"右上角主操作"语义） */
+  .log-signin { margin-left: auto; }
+  /* 卡头工具行独占第二行、搜索框用满整行 */
+  body[data-page="logs"] .log-main-card .panel-head-row { flex-wrap: wrap; }
+  .log-tools { width: 100%; }
+  .log-search { flex: 1 1 100%; }
+  .log-search .input { width: 100%; min-width: 0; }
+  /* 折叠箭头与标题同处第 1 行：显式 grid 放置（必须用 grid-column/row，靠自动放置会把
+     静态化的箭头挤到下一行）；宽屏 (>720) 仍走上面的绝对定位。 */
+  body[data-page="logs"] .log-fold .panel-head-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    padding-right: 0;
+  }
+  body[data-page="logs"] .log-fold .panel-title { grid-column: 1; grid-row: 1; }
+  body[data-page="logs"] .log-fold .log-collapse { position: static; grid-column: 2; grid-row: 1; }
+}
+
