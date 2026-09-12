@@ -2439,10 +2439,13 @@ PW_SHARED_JS = os.path.join("static", "js", "core.js")
 # 管理端口令提交路径所在的静态 JS（换壳后从 index.html 内联/外部 app.js 迁出）。
 # 这些文件引用 PW_POLICY_HINT / passwordPolicyOk 等共享定义，用于覆盖"重置口令必须走
 # 完整策略而非只判长度"这一不变量（定义应由共享脚本提供，见 test_admin_... 的说明）。
+# 2026-09-12：改密表单已收敛为**共享组件** `components/change-password.js`（管理端 /mine
+# 与用户端 /user 共用，替代此前散落的三份实现），策略判定随之搬进该组件 —— 载体换锚，
+# 判据意图不变。settings.js 不再持有改密逻辑（个人域已迁到 /mine）。
 # 账号管理页原切片曾夹带「用户批量重置密码」（batchUsers），重写为独立页面后该能力
 # 归用户管理页（users.js），账号页不再有设置口令的入口，故不再列入本清单。
 ADMIN_PW_JS = (
-    os.path.join("static", "js", "pages", "settings.js"),
+    os.path.join("static", "js", "components", "change-password.js"),
     os.path.join("static", "js", "pages", "users.js"),
 )
 # 共享密码模态：管理端"重置密码 / 高危二次确认"的唯一点击输入载体。
@@ -2651,8 +2654,9 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         partials/modals/password.html + static/js/pages/*.js。
         新保护目标（等效）：在这些真实载体上钉同一不变量——
           ① 共享模态仍是唯一的密码输入载体（type=password，且不含内联“只判长度”校验）；
-          ② 管理端提交路径 settings.js 必须调用完整策略 helper（passwordPolicyOk /
-             passwordPolicyOkAdmin，长度+类别），且整文件不出现裸长度比较；
+          ② 管理端提交路径（共享组件 components/change-password.js，/mine 与 /user 共用）
+             必须调用完整策略 helper（passwordPolicyOk / passwordPolicyOkAdmin，长度+类别），
+             且整文件不出现裸长度比较；
           ③ 重置口令入口 users.js / accounts.js 必须把统一口径 PW_POLICY_HINT 交给模态，
              防止文案在换壳后各自漂移。
         与原始断言等强：原断言只禁“set 分支退化为只判长度”，这里在真实调用点禁同一退化；

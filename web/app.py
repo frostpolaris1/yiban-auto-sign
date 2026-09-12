@@ -2965,7 +2965,7 @@ def create_app(host=None):
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/dashboard.html", "dashboard", ["工作台", "数据总览"])
+        return _render_admin_page("pages/dashboard.html", "dashboard", ["数据", "数据总览"])
 
     def _user_page_redirect():
         """用户端页面守卫：未登录 → 登录页；管理员 → 管理端首页。合规时返回 None。
@@ -3071,7 +3071,7 @@ def create_app(host=None):
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/logs.html", "logs", ["工作台", "签到日志"])
+        return _render_admin_page("pages/logs.html", "logs", ["数据", "签到日志"])
 
     @app.route("/users")
     def users_page():
@@ -3092,7 +3092,16 @@ def create_app(host=None):
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/mine.html", "mine", ["工作台", "我的账号"])
+        return _render_admin_page("pages/mine.html", "mine", ["我的", "我的账号"])
+
+    # 管理员本人的签到日历（与用户端 /user/calendar 同源）；个人域的一部分，
+    # 数据取本人邮箱归属账号（与 /mine 同口径，一人一号）。
+    @app.route("/mine/calendar")
+    def mine_calendar_page():
+        blocked = _admin_page_redirect()
+        if blocked:
+            return blocked
+        return _render_admin_page("pages/mine_calendar.html", "mine-calendar", ["我的", "签到日历"])
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -5055,18 +5064,16 @@ def create_app(host=None):
     def _my_account_indices_of(accounts):
         """按账号列表快照计算当前用户的账号下标（锁内调用，避免重复读文件）。
 
-        管理员：内置管理员（.env）显示 owner 'admin' + 本人邮箱；注册管理员仅本人邮箱
-        （不显示他人/内置管理员添加的账号）；均不含待删除。
+        管理员：**仅本人邮箱归属**的账号（一人一号）。无人认领的裸账号（owner='admin'）
+        属「代管」，只在账号管理页（/api/accounts）维护，不进「我的账号」视图 ——
+        否则内置管理员会把名下全部裸账号当成"我的账号"列出，与一人一号口径冲突。
         普通用户：本人邮箱（含待删除，用于展示「已删除」状态；单账号限制在提交处另行排除）。
+
+        注意：裸账号的 owner 是字面量 `admin`，当 YIBAN_ADMIN_USER 也取 `admin`（默认值）
+        时两者不可区分；生产建议把 YIBAN_ADMIN_USER 设为管理员本人邮箱。
         """
         email = session.get("username", "").lower()
         if _current_role() == "admin":
-            if _is_builtin_admin_session():
-                return [
-                    i
-                    for i, a in enumerate(accounts)
-                    if a.get("owner") in ("admin", email) and not a.get("deleted")
-                ]
             return [
                 i for i, a in enumerate(accounts) if a.get("owner") == email and not a.get("deleted")
             ]
@@ -5178,7 +5185,8 @@ def create_app(host=None):
     def _my_phone():
         """当前用户的自选绑定账号（2026-08-15 修复：与「我的账号」视图同口径）。
 
-        普通用户=本人账号；内置管理员=归属 admin/本人邮箱的账号；注册管理员=归属本人邮箱的账号。
+        普通用户=本人账号；内置管理员=本人邮箱归属的账号（一人一号，裸账号不参与）；
+        注册管理员=归属本人邮箱的账号。
         ——此前 admin 分支硬编码 owner='admin'，导致注册管理员也绑定到内置管理员的账号，
         选片显示/保存互相覆盖（用户实测报告）。
         仅 status=active（正式进入签到列表）才算——pending/rejected 的"注册但未生效"
