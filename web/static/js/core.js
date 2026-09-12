@@ -776,6 +776,29 @@
     document.addEventListener("keydown", function (e) {
       var wrap = document.querySelector(".dd-wrap.is-open");
       var active = document.activeElement;
+      // 分区 tab 的方向键导航（WAI-ARIA tabs 模式）：焦点在 .tab 上时接管左右/Home/End，
+      // 切换分区并把焦点移到新 tab；未命中时完全不影响其它键盘行为。
+      var tabEl = active && active.closest ? active.closest(".tab[data-tab-target]") : null;
+      if (tabEl) {
+        var tgroup = tabEl.closest("[data-tab-group]");
+        if (tgroup) {
+          var tabList = Array.prototype.filter.call(
+            tgroup.querySelectorAll(".tab[data-tab-target]"),
+            function (x) { return !x.hidden; }
+          );
+          var ti = tabList.indexOf(tabEl), to = null;
+          if (e.key === "ArrowRight") to = tabList[(ti + 1) % tabList.length];
+          else if (e.key === "ArrowLeft") to = tabList[(ti - 1 + tabList.length) % tabList.length];
+          else if (e.key === "Home") to = tabList[0];
+          else if (e.key === "End") to = tabList[tabList.length - 1];
+          if (to) {
+            e.preventDefault();
+            activateTab(tgroup, to.getAttribute("data-tab-target"));
+            to.focus();
+            return;
+          }
+        }
+      }
       if (!wrap) {
         if (active && active.matches && active.matches("[data-dropdown]") && active.tagName !== "BUTTON" &&
             (e.key === "Enter" || e.key === " " || e.key === "ArrowDown")) {

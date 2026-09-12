@@ -6,19 +6,20 @@
    （旧版把日志塞进日历右半栏且初始高度为 0，被用户判定为"没有留空显示日志"）。
 
    账号卡由共享组件 components/sign-calendar-view.js 按 /api/my-accounts 动态生成，
-   日历本体由 static/js/calendar.js 渲染。两端渲染的是同一段模板。 #}
-{% macro body() %}
+   日历本体由 static/js/calendar.js 渲染。两端渲染的是同一段模板，只有页头文案不同。 #}
+{% macro body(page_title, page_sub) %}
 {% from "macros/ui.html" import icon with context %}
 
 <div class="page-head">
-  <h1 class="page-title">签到日历</h1>
-  <p class="page-sub">按日查看每个账号的签到结果，点击日期查看当天记录。</p>
+  <h1 class="page-title">{{ page_title }}</h1>
+  <p class="page-sub">{{ page_sub }}</p>
 </div>
 
 <div class="user-grid">
-  {# 左侧：账号日历卡（JS 插入）；初始占位卡在无账号时被替换为空态 #}
+  {# 左侧：账号日历卡（JS 插入）；初始占位卡在无账号时被替换为空态。
+     .cal-placeholder 与真实日历卡同高，避免数据到达时左列高度跳变。 #}
   <div class="col-6 cal-column" data-cal-list>
-    <section class="card">
+    <section class="card cal-placeholder">
       <p class="empty">
         <span class="empty__icon">{{ icon('calendar') }}</span>
         <span class="empty__msg">正在加载账号…</span>
