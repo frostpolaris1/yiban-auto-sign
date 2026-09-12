@@ -1,0 +1,39 @@
+{# 顶栏：抽屉开关 + 面包屑 + 公告 + 主题切换 + 账号菜单。
+   主题按钮必须保留 id="themeToggle"（core.js 依此接管，避免与 Adminator 的
+   init.js 抢同一节点）。 #}
+{% from "macros/ui.html" import icon with context %}
+<header class="d-topbar">
+  <div class="crumbs">
+    <button type="button" class="hamburger" data-drawer-open aria-label="打开导航">{{ icon('menu') }}</button>
+    {% set trail = crumbs | default([]) %}
+    {% for part in trail %}
+      {% if not loop.first %}<span class="sep" aria-hidden="true">{{ icon('chevron-right') }}</span>{% endif %}
+      <span{% if loop.last %} class="current"{% endif %}>{{ part }}</span>
+    {% endfor %}
+  </div>
+
+  <div class="topbar-actions">
+    {# 公告：有内容时由 core.js 显示为可点开的提示条 #}
+    <button type="button" class="icon-btn" id="announcementBtn" hidden aria-label="查看公告">
+      {{ icon('bell') }}<span class="count info" data-announcement-dot hidden></span>
+    </button>
+
+    <button type="button" class="icon-btn" id="themeToggle" aria-label="切换亮/暗主题" title="切换亮/暗主题"></button>
+
+    <div class="dd-wrap">
+      <div class="avatar" data-dropdown tabindex="0" role="button" aria-label="账号菜单" aria-haspopup="menu">
+        <span data-account-avatar>—</span>
+      </div>
+      <div class="dd-menu dd-profile" role="menu">
+        <div class="dd-profile-head">
+          <div class="dd-profile-name" data-account-name>—</div>
+          <div class="dd-profile-email" data-account-email>—</div>
+        </div>
+        <a class="dd-menu-item" role="menuitem" href="{{ request.script_root }}/mine">我的账号</a>
+        <a class="dd-menu-item" role="menuitem" href="{{ request.script_root }}/settings">系统设置</a>
+        <div class="dd-divider"></div>
+        <button type="button" class="dd-menu-item danger" role="menuitem" onclick="doLogout()">退出登录</button>
+      </div>
+    </div>
+  </div>
+</header>
