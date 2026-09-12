@@ -222,8 +222,8 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 <meta property="og:description" content="{desc_attr}">
 <style>
   /* 协议/隐私文档页（Tailwind 默认配色；卡片容器与圆角为结构优化，随图标/圆角体系保留） */
-  /* 正文原版字体栈；标题不使用专属字体（2026-08-22 性能回退，与 web/templates 一致） */
-  body {{ font-family: "MiSans", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 独立内联页不引 app.css，字体用系统中文栈 */
+  body {{ font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
          max-width: 800px; margin: 40px auto; padding: 0 16px; color: #18181b; line-height: 1.75;
          background: #fafafa; }}
   .doc-card {{ background: #ffffff; border: 1px solid #e4e4e7; border-radius: 14px;

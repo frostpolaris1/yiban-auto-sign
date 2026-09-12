@@ -23,11 +23,6 @@
 | 大小 | 2,733 字节 |
 | SHA-256 | `0aea228c79e519058214fda93d2d92337f86c27730e5e25357b196d37ba4c3b2` |
 
-## 字体（fonts/misans/）
-
-MiSans Demibold 子集化 woff2 分片（编号分片由子集化工具产出），本地加载不出网。
-分片数量多，不逐一登记哈希；替换字体需整目录原子替换并在此处补充说明。
-
 ## 校验方法
 
 ```bash
@@ -126,5 +121,7 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/tailwind.js, web/static/vendor/
 
 ## 迁移期共存说明
 
-`tailwind.js`、`daisyui/daisyui-subset.css`、`fonts/misans/` 仍被 `login.html` / `user.html` / `index.html` 使用（旧栈），
-待这三页迁移到 Adminator 后一并移除。迁移期间两套样式层严格隔离：旧栈走 `static/css/legacy.css`，管理端走 `static/css/app.css`。
+`tailwind.js`、`daisyui/daisyui-subset.css` 目前只被已退役、无路由渲染的 `base.html` / `index.html` 引用，
+待旧栈退役时一并移除。`fonts/misans/`（4.6 MB，许可不实：MiSans 官方条款不允许再分发）已整体删除，
+自托管中文字体只有 `fonts/{inter,jetbrains-mono,notosanssc}/`。
+迁移期间两套样式层严格隔离：旧栈走 `static/css/legacy.css`，管理端走 `static/css/app.css`。
