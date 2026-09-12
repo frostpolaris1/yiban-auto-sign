@@ -1,0 +1,10 @@
+{% extends "layout_admin.html" %}
+{% from "pages/_stub_macro.html" import stub with context %}
+{% block title %}我的账号 · 易班自动签到{% endblock %}
+{% block content %}{{ stub('我的账号', [
+  '管理员本人的易班账号：新增 / 编辑 / 删除 / 恢复',
+  '自选签到时间片（5 分钟粒度，含拥挤度与冷却）',
+  '签到日历：按日查看签到结果，点日期看当日日志',
+  '修改密码：主管理员与注册管理员策略不同（12 位 3 类 / 10 位 2 类）',
+  '邮件提醒开关',
+]) }}{% endblock %}

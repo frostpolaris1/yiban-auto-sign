@@ -1,0 +1,10 @@
+{% extends "layout_admin.html" %}
+{% from "pages/_stub_macro.html" import stub with context %}
+{% block title %}用户管理 · 易班自动签到{% endblock %}
+{% block content %}{{ stub('用户管理', [
+  '待处理 / 正式 / 空用户 / 已注销四组表（含账号数、待审核数）',
+  '角色变更（仅主管理员）',
+  '重置密码（需管理员口令，重置后旧会话立即失效）',
+  '删除用户账号 / 彻底删除用户（需管理员口令）',
+  '已注销用户：冷静期剩余天数、彻底清除',
+]) }}{% endblock %}

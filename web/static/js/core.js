@@ -1,248 +1,704 @@
-// 易班自动签到 · 管理端脚本 —— 基础设施：全局状态 / api 请求与 CSRF / toast / 模态与焦点管理 / 口令策略 / 密码模态 / 侧栏抽屉 / Tab 切换
-// 本文件是 web/static/js/app.js 的**连续区间** L1-L245，内容一字未改（仅加这 3 行头）。
-// classic script、共享全局作用域：加载顺序见 templates/index.html，**顺序不可随意调整**。
-/* 原 web/templates/index.html 内联脚本外提（A1）：
-   第一段 = 原 1284-4006 行主 <script>（状态/api/toast/模态/账号/日志/设置/通知/用户/我的账号/日历）
-   第二段 = 原 4007-4023 行 <script>（loadAnnouncement）
-   两段顺序与原文档一致。
+// 项目交互层（Adminator 4.3.0 外壳）— 全局 api/toast/modal/时钟/身份/导航行为。
+// 契约区间 L1-L245（tests/test_web_js_modules.py 钉住本文件与 pages/ 的加载顺序）。
+// classic script（非 module）：依赖 partials/theme_boot.html 先行定义的全局 BASE。
+(function () {
+  "use strict";
+  if (window.YB && window.YB.__ready) return; // base.html 与页面可能各引一次
 
-   本文件必须是 classic script（<script src> 不带 type="module"）：
-   模板里有 137 个内联 onclick/onchange 直接调用本文件定义的全局函数，
-   模块作用域不进全局，会全部 ReferenceError。
-   依赖 index.html 内联脚本先定义的 BASE（= request.script_root），故 <script src>
-   的位置必须在 BASE 之后、且在 body 末尾（本文件含直接操作 DOM 的顶层语句）。 */
-// ================= 签到状态码 → 图标/文案（与后端 STATUS_ICON/STATUS_TEXT 语义一致，含 pending）=================
-// UI 一律用线性 SVG 图标渲染（stateIconSvg）；emoji 仅作后端 API 数据兼容，不再直接展示
-const STATUS_ICON_NAME = {
-  success: 'check', already: 'check', no_task: 'minus', failed: 'close', retrying: 'retry',
-  skipped_window: 'ban', skipped_norange: 'ban', paused: 'pause', user_cancelled: 'stop', pending: 'clock',
-};
-function stateIconSvg(st) { return icon(STATUS_ICON_NAME[st] || 'clock'); }
-const STATUS_TEXT = {
-  success: '签到成功', already: '已签到', no_task: '无需签到', failed: '签到失败',
-  retrying: '重试中', skipped_window: '时段外', skipped_norange: '未设时段', paused: '暂停',
-  user_cancelled: '已取消', pending: '待签',
-};
-// ================= 状态 =================
-const state = {
-  accounts: [],       // [{index,name,phone,phone_model,has_password,display_name}]
-  states: {},         // {phone: 'success'|'already'|'no_task'|'failed'|'retrying'|'skipped_*'}（状态码，来自 sign-state 文件）
-  editingIndex: null, // null=添加
-  editSnapshot: null, // 乐观锁：编辑打开时的账号快照 JSON（提交时校验是否被其他管理员修改）
-  delays: { gap: 0 }, // 账号间隔（秒，0=关闭；启动延迟 v0.30.0 废弃已删）
-  maxUsers: 0,        // 用户容量上限现值（GET /api/settings capacity.users_max；0=不限）
-  maxAccounts: 0,     // 账号容量上限现值（capacity.accounts_max；0=不限）
-  mailSmtps: [],      // SMTP 发信条目列表（GET /api/mail-config 的 smtps；主管理员编辑器数据源）
-  batchMode: false,   // 批量多选开关（会话级：每次进入默认关闭，手动开启仅本次有效，不持久化）
-  signOrder: 'sequence', // 调度 v2：排序方式（sequence/random）
-  signDist: 'uniform',   // 调度 v2：分布方式（uniform/normal）
-  edgeFrontMin: 1,      // 掐头去尾（0.22.0 前后独立）：前裁剪分钟（0-5，0.5 步进）
-  edgeBackMin: 1,       // 后裁剪分钟
-  allowTimePref: false,  // 调度 v2：用户自选时间片总开关
-  signWindow: '',        // 调度 v2：签到窗口 "06:30 ~ 07:50"
-  isMasterAdmin: false, // 主管理员（.env 内置管理员）：仅主管理员可设置/取消管理员
-  deletedCollapsed: false, // 待删除账号表格折叠状态（标题栏 ▾/▸ 切换）
-  saturdaySign: false,  // 周六签到开关（默认关闭，v0.29.0 起；.env YIBAN_SATURDAY_SIGN=1 开启）
-};
+  var APP_BASE = (typeof BASE === "string") ? BASE : "";
 
-const $ = (id) => document.getElementById(id);
-
-// ================= 基础请求 =================
-let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
-
-async function api(path, opts = {}, _retried = false) {
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
-    ...(opts.headers || {}),
-  };
-  const resp = await fetch(BASE + path, {
-    ...opts,
-    headers,
-  });
-  if (resp.status === 401) {
-    location.href = BASE + '/login';
-    throw new Error('未登录');
+  /* ---------- 基础工具 ---------- */
+  function forEach(list, fn) { Array.prototype.forEach.call(list || [], fn); }
+  function $(id) { return document.getElementById(id); }
+  function url(path) { return (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.charAt(0) !== "/") ? path : APP_BASE + path; }
+  function escapeHtml(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
   }
-  const data = await resp.json().catch(() => ({}));
-  // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
-  if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
-    try {
-      const me = await fetch(BASE + '/api/me').then(r => r.json());
-      csrfToken = me.csrf_token || '';
-      return api(path, opts, true);
-    } catch (e) { /* 重试失败则走下方错误提示 */ }
+  function svgUse(name) { return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+  // 常量 SVG 片段走 html；动态文本一律走 text，避免把不可信数据交给 innerHTML
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) forEach(Object.keys(attrs), function (k) {
+      var v = attrs[k];
+      if (v == null || v === false) return;
+      if (k === "class" || k === "className") node.className = v;
+      else if (k === "text") node.textContent = v;
+      else if (k === "html") node.innerHTML = v;
+      else if (k === "dataset") forEach(Object.keys(v), function (d) { node.dataset[d] = v[d]; });
+      else if (k === "style" && typeof v === "object") forEach(Object.keys(v), function (s) { node.style[s] = v[s]; });
+      else if (k === "for") node.htmlFor = v;
+      else if (k.indexOf("on") === 0 && typeof v === "function") node.addEventListener(k.slice(2).toLowerCase(), v);
+      else node.setAttribute(k, v === true ? "" : v);
+    });
+    if (children != null) forEach([].concat(children), function (c) {
+      if (c == null) return;
+      node.appendChild(c.nodeType ? c : document.createTextNode(String(c)));
+    });
+    return node;
   }
-  if (!resp.ok || data.ok === false) {
-    throw new Error(data.error || `请求失败 (${resp.status})`);
+  function setText(selector, value) { forEach(document.querySelectorAll(selector), function (n) { n.textContent = value; }); }
+  function onReady(fn) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn);
+    else fn();
   }
-  return data;
-}
+  function reducedMotion() { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
 
-function toast(msg, isError = false) {
-  const el = $('toast');
-  el.textContent = msg;
-  // a11y 整改：只更新 class 与文本。className 赋值不会触碰 role="status"/aria-live="polite" 属性，
-  // 动态消息对屏幕阅读器保持可感知；补回 max-w-[90vw]/text-center/break-words 防长文案溢出（与初始 class 一致）
-  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 shadow-md text-sm text-white max-w-[90vw] text-center break-words ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
-  el.removeAttribute('data-hidden');  // 显示：配合 #toast 过渡自下方浮入
-  clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.setAttribute('data-hidden', ''), 3000);  // 隐藏：快速淡出
-}
-
-// ================= 模态焦点管理（a11y 整改：打开记录触发元素→聚焦首控件、Tab 圈闭、Esc 关闭、焦点归还） =================
-const _modalStack = [];  // [{ el, trigger }]，后进先出支持叠层
-
-// 背景滚动锁：模态打开期间锁 html/body 滚动，防止滚轮/触摸/键盘滚动穿透到背景页（滚动链）。
-// 计数支持叠层；锁死前补偿滚动条宽度，避免内容区横向跳动。
-let _modalScrollLockCount = 0;
-function _lockPageScroll() {
-  _modalScrollLockCount++;
-  if (_modalScrollLockCount > 1) return;
-  const gap = window.innerWidth - document.documentElement.clientWidth;
-  if (gap > 0) document.body.style.paddingRight = gap + 'px';
-  document.documentElement.style.overflow = 'hidden';
-  document.body.style.overflow = 'hidden';
-}
-function _unlockPageScroll() {
-  if (_modalScrollLockCount > 0) _modalScrollLockCount--;
-  if (_modalScrollLockCount > 0) return;
-  document.documentElement.style.overflow = '';
-  document.body.style.overflow = '';
-  document.body.style.paddingRight = '';
-}
-
-function _modalFocusables(el) {
-  return Array.from(el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
-    .filter(x => !x.disabled && x.offsetParent !== null);  // offsetParent 过滤 hidden/不可见元素
-}
-
-function openModal(el, trigger) {
-  if (!el || _modalStack.some(m => m.el === el)) return;
-  _modalStack.push({ el, trigger: trigger || document.activeElement });
-  el.classList.remove('hidden');
-  _lockPageScroll();
-  const first = _modalFocusables(el)[0];
-  if (first) first.focus();
-  else el.focus();  // 容器带 tabindex="-1" 兜底
-}
-
-function closeModal(el) {
-  const i = _modalStack.findIndex(m => m.el === el);
-  if (i === -1) return;
-  const { trigger } = _modalStack.splice(i, 1)[0];
-  el.classList.add('hidden');
-  _unlockPageScroll();
-  // 焦点归还触发元素（列表重绘可能已移除该元素，contains 防护）
-  if (trigger && document.contains(trigger) && typeof trigger.focus === 'function') trigger.focus();
-}
-
-// 全局键盘：Esc 逐层关闭（行菜单 → 模态 → 侧栏抽屉遮罩）；Tab 在最上层模态内圈闭
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    if (_rowMenu) { closeRowMenu(true); return; }
-    if (_modalStack.length) { e.preventDefault(); closeModal(_modalStack[_modalStack.length - 1].el); return; }
-    const overlay = $('sidebar-overlay');
-    if (overlay && overlay.classList.contains('open')) toggleSidebar(false);
-    return;
+  /* ---------- 请求层：CSRF / 401 重试 / 非 JSON 兜底 ---------- */
+  var csrfToken = "";
+  var mePromise = null;
+  function httpError(status, message, data) {
+    var e = new Error(message || ("请求失败 (" + status + ")"));
+    e.status = status; e.error = e.message; e.data = data; e.isHttp = true; return e;
   }
-  if (e.key === 'Tab' && _modalStack.length) {
-    const top = _modalStack[_modalStack.length - 1].el;
-    const items = _modalFocusables(top);
-    if (!items.length) return;
-    const first = items[0], last = items[items.length - 1];
-    if (!top.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  function networkError(cause) {
+    var e = new Error("网络连接失败，请检查网络后重试");
+    e.network = true; e.isNetwork = true; e.cause = cause; return e;
+  }
+  function genericMessage(status) {
+    return status === 413 ? "请求内容过大，已拒绝"
+      : status === 400 ? "请求参数有误"
+      : status === 429 ? "请求过于频繁，请稍后再试"
+      : status >= 500 ? "服务器内部错误"
+      : "请求失败 (" + status + ")";
+  }
+  function fetchMe() {
+    if (!mePromise) {
+      mePromise = fetch(url("/api/me"), { credentials: "same-origin", headers: { Accept: "application/json" } })
+        .then(function (r) { return r.text(); })
+        .then(function (t) { try { return t ? JSON.parse(t) : {}; } catch (e) { return {}; } })
+        .then(function (d) { if (d && d.csrf_token) csrfToken = d.csrf_token; return d || {}; })
+        .catch(function () { return {}; })
+        .then(function (d) { mePromise = null; return d; });
+    }
+    return mePromise;
+  }
+  function perform(req, retried) {
+    var headers = { Accept: "application/json" };
+    var body = req.body;
+    if (body != null && typeof body !== "string") { headers["Content-Type"] = "application/json"; body = JSON.stringify(body); }
+    else if (typeof body === "string" && body) { headers["Content-Type"] = "application/json"; }
+    var write = req.method === "POST" || req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH";
+    if (write && csrfToken) headers["X-CSRF-Token"] = csrfToken;
+    if (req.headers) forEach(Object.keys(req.headers), function (k) { headers[k] = req.headers[k]; });
+    return fetch(url(req.path), { method: req.method, headers: headers, body: body, credentials: "same-origin" })
+      .then(function (resp) {
+        return resp.text().then(function (txt) { return handleResponse(resp, txt, req, retried); });
+      }, function (err) { throw networkError(err); });
+  }
+  function handleResponse(resp, txt, req, retried) {
+    var data = null;
+    try { data = txt ? JSON.parse(txt) : {}; } catch (e) { data = null; }
+    if (data === null) {
+      if (resp.status === 401 && !retried) return refreshThenRetry(req);
+      throw httpError(resp.status, genericMessage(resp.status));
+    }
+    if (resp.status === 401 && !retried) return refreshThenRetry(req);
+    if (resp.status === 403 && !retried && /校验失败|CSRF|令牌/.test(String(data.error || ""))) {
+      return refreshThenRetry(req).catch(function () { throw httpError(403, "请刷新页面后重试"); });
+    }
+    if (!resp.ok || data.ok === false) throw httpError(resp.status, data.error, data);
+    return data;
+  }
+  function refreshThenRetry(req) {
+    csrfToken = "";
+    return fetchMe().then(function () { return perform(req, true); });
+  }
+  function normalizeRequest(method, path, body) {
+    if (typeof method === "string" && method.charAt(0) === "/") { // 兼容 api(path, {method, body})
+      var opts = (path && typeof path === "object") ? path : {};
+      return { method: (opts.method || "GET").toUpperCase(), path: method, body: opts.body, headers: opts.headers };
+    }
+    return { method: (method || "GET").toUpperCase(), path: path, body: body };
+  }
+  function api(method, path, body) {
+    return perform(normalizeRequest(method, path, body), false);
+  }
+
+  /* ---------- Toast ---------- */
+  var TOAST_ICON = { success: "circle-check", error: "circle-x", danger: "circle-x", warning: "triangle-alert", info: "info" };
+  var toastNodes = [];
+  function toastHost() {
+    var h = $("toast-host");
+    if (!h) { h = el("div", { id: "toast-host", class: "toast-host", "aria-live": "polite", "aria-atomic": "true" }); document.body.appendChild(h); }
+    return h;
+  }
+  function dismissToast(rec) {
+    if (!rec || rec.dead) return;
+    rec.dead = true;
+    clearTimeout(rec.timer);
+    rec.node.classList.remove("is-shown");
+    rec.node.classList.add("is-hiding");
+    toastNodes = toastNodes.filter(function (t) { return t !== rec; });
+    setTimeout(function () { if (rec.node.parentNode) rec.node.parentNode.removeChild(rec.node); }, 220);
+  }
+  function showToast(type, msg, opts) {
+    type = TOAST_ICON[type] ? type : "info";
+    msg = String(msg == null ? "" : msg);
+    opts = opts || {};
+    var duration = opts.duration || 3200;
+    for (var i = 0; i < toastNodes.length; i++) { // 相同消息高频重复时延长现有提示
+      var old = toastNodes[i];
+      if (!old.dead && old.type === type && old.msg === msg && Date.now() - old.at < 1500) {
+        clearTimeout(old.timer);
+        old.timer = setTimeout(function () { dismissToast(old); }, duration);
+        return old.node;
+      }
+    }
+    var node = el("div", { class: "toast toast--" + type, role: "status" });
+    var close = el("button", { type: "button", class: "toast__close", "aria-label": "关闭", html: svgUse("x") });
+    var rec = { node: node, type: type, msg: msg, at: Date.now(), timer: null, dead: false };
+    close.addEventListener("click", function () { dismissToast(rec); });
+    node.appendChild(el("span", { class: "toast__icon", html: svgUse(TOAST_ICON[type]) }));
+    node.appendChild(el("div", { class: "toast__msg", text: msg }));
+    node.appendChild(close);
+    toastHost().appendChild(node);
+    toastNodes.push(rec);
+    if (reducedMotion()) node.classList.add("is-shown");
+    else requestAnimationFrame(function () { node.classList.add("is-shown"); });
+    rec.timer = setTimeout(function () { dismissToast(rec); }, duration);
+    return node;
+  }
+  function toast(msg, isError) { return showToast(isError ? "error" : "info", msg); }
+  toast.success = function (m, o) { return showToast("success", m, o); };
+  toast.error = function (m, o) { return showToast("error", m, o); };
+  toast.warning = function (m, o) { return showToast("warning", m, o); };
+  toast.info = function (m, o) { return showToast("info", m, o); };
+  toast.dismiss = dismissToast;
+
+  /* ---------- 模态管理器（叠层 / Esc / Tab 圈闭 / 滚动锁 / 焦点归还） ---------- */
+  var modalStack = [];
+  var scrollLocks = 0;
+  function lockScroll() {
+    scrollLocks++;
+    if (scrollLocks > 1) return;
+    var gap = window.innerWidth - document.documentElement.clientWidth;
+    if (gap > 0) document.body.style.paddingRight = gap + "px";
+    document.documentElement.classList.add("pm-scroll-lock");
+  }
+  function unlockScroll() {
+    if (scrollLocks > 0) scrollLocks--;
+    if (scrollLocks > 0) return;
+    document.documentElement.classList.remove("pm-scroll-lock");
+    document.body.style.paddingRight = "";
+  }
+  function focusables(root) {
+    var sel = 'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])';
+    return Array.prototype.filter.call(root.querySelectorAll(sel), function (x) { return !x.disabled && x.offsetParent !== null; });
+  }
+  function appendBody(container, body) {
+    if (body == null) return;
+    if (body.nodeType) container.appendChild(body);
+    else if (typeof body === "string") container.innerHTML = body; // 调用方保证为可信/已转义标记
+    else container.appendChild(document.createTextNode(String(body)));
+  }
+  var uidSeq = 0;
+  function openModal(arg, trigger) {
+    if (arg && arg.nodeType === 1) return adoptModal(arg, trigger);
+    var cfg = arg || {};
+    trigger = trigger || document.activeElement;
+    var titleId = "pm-title-" + (++uidSeq);
+    var panel = el("div", { class: "pm-panel" + (cfg.size === "lg" ? " pm-panel--lg" : ""), role: "dialog", "aria-modal": "true", tabindex: "-1" });
+    if (cfg.labelledBy) panel.setAttribute("aria-labelledby", cfg.labelledBy);
+    else if (cfg.title) panel.setAttribute("aria-labelledby", titleId);
+    var head = el("div", { class: "modal-head" });
+    var titleEl = el("div", { class: "modal-title", id: titleId, text: cfg.title || "" });
+    head.appendChild(titleEl);
+    var handle = {
+      el: panel, panel: panel, backdrop: null, trigger: trigger,
+      dismissible: cfg.dismissible !== false, onClose: cfg.onClose,
+      titleEl: titleEl,
+      close: function () { closeModal(handle); },
+      setTitle: function (t) { titleEl.textContent = t; },
+      setBody: function (b) { body.innerHTML = ""; appendBody(body, b); }
+    };
+    panel.appendChild(head);
+    var body = el("div", { class: "modal-body" });
+    appendBody(body, cfg.body);
+    panel.appendChild(body);
+    if (cfg.actions && cfg.actions.length) {
+      var foot = el("div", { class: "modal-foot" });
+      forEach(cfg.actions, function (action) {
+        var btn = el("button", { type: "button", class: "btn btn--" + (action.variant || "ghost"), text: action.label || "" });
+        btn.addEventListener("click", function () {
+          var result = action.onClick ? action.onClick(handle) : undefined;
+          if (result !== false && action.close !== false) closeModal(handle);
+        });
+        foot.appendChild(btn);
+      });
+      panel.appendChild(foot);
+    }
+    if (cfg.dismissible !== false) {
+      var closeBtn = el("button", { type: "button", class: "pm-panel-close", "aria-label": "关闭", html: svgUse("x") });
+      closeBtn.addEventListener("click", function () { closeModal(handle); });
+      head.appendChild(closeBtn);
+    }
+    var backdrop = el("div", { class: "pm-backdrop", hidden: true, "data-modal-backdrop": "" });
+    if (modalStack.length) backdrop.classList.add("pm-backdrop--stacked");
+    backdrop.appendChild(panel);
+    backdrop.addEventListener("mousedown", function (e) {
+      if (e.target === backdrop && handle.dismissible) closeModal(handle);
+    });
+    $("#modal-host") ? $("#modal-host").appendChild(backdrop) : document.body.appendChild(backdrop);
+    handle.backdrop = backdrop;
+    modalStack.push(handle);
+    lockScroll();
+    backdrop.hidden = false;
+    if (reducedMotion()) backdrop.classList.add("is-open");
+    else requestAnimationFrame(function () { backdrop.classList.add("is-open"); });
+    var first = focusables(panel)[0];
+    if (first) first.focus(); else panel.focus();
+    if (typeof cfg.onOpen === "function") cfg.onOpen(handle);
+    return handle;
+  }
+  function adoptModal(node, trigger) {
+    var existing = modalStack.filter(function (m) { return m.el === node; })[0];
+    if (existing) return existing;
+    trigger = trigger || document.activeElement;
+    node.classList.remove("hidden");
+    var handle = {
+      el: node, panel: node, backdrop: null, trigger: trigger,
+      dismissible: true, _adopted: true,
+      close: function () { closeModal(handle); },
+      setTitle: function (t) { var tt = node.querySelector(".modal-title"); if (tt) tt.textContent = t; },
+      setBody: function (b) {
+        var body = node.querySelector(".modal-body") || node;
+        body.innerHTML = ""; appendBody(body, b);
+      }
+    };
+    modalStack.push(handle);
+    lockScroll();
+    var first = focusables(node)[0];
+    if (first) first.focus(); else if (typeof node.focus === "function") node.focus();
+    return handle;
+  }
+  function closeModal(target) {
+    var handle;
+    if (!target) handle = modalStack[modalStack.length - 1];
+    else if (target.nodeType === 1) handle = modalStack.filter(function (m) { return m.el === target; })[0];
+    else handle = modalStack.indexOf(target) !== -1 ? target : null;
+    if (!handle) return false;
+    modalStack = modalStack.filter(function (m) { return m !== handle; });
+    if (handle._adopted) {
+      handle.el.classList.add("hidden");
+    } else if (handle.backdrop) {
+      var bd = handle.backdrop;
+      bd.classList.remove("is-open");
+      setTimeout(function () {
+        bd.hidden = true;
+        if (bd.parentNode) bd.parentNode.removeChild(bd);
+      }, reducedMotion() ? 0 : 200);
+    }
+    unlockScroll();
+    if (typeof handle.onClose === "function") { try { handle.onClose(); } catch (e) {} }
+    var trig = handle.trigger;
+    if (trig && document.contains(trig) && typeof trig.focus === "function") trig.focus();
+    return true;
+  }
+  function trapTab(e, handle) {
+    var root = handle.panel || handle.el;
+    var items = focusables(root);
+    if (!items.length) { e.preventDefault(); if (root.focus) root.focus(); return; }
+    var first = items[0], last = items[items.length - 1];
+    if (!root.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
     else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
-});
 
-// ================= 口令策略（本模板内单一事实源） =================
-// 与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS / _PASSWORD_POLICY_HINT 逐字同序同串——
-// tests/test_batch14_fixes_0829.py 的元测试会从本文件源码提取这四个正则与后端比对，漂移即红。
-// 判定语义：命中类别数 >= PW_MIN_CLASSES 即过（符号算一类，不额外要求必须含符号）。
-const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
-const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
-const PW_POLICY_HINT = '至少 10 位，且包含大小写字母、数字、符号中的至少两类';
-// 主管理员（内置 .env 管理员）口令单独提档：12 位三类（与后端 _admin_password_policy_error 同口径）
-const PW_ADMIN_MIN_LEN = 12, PW_ADMIN_MIN_CLASSES = 3;
-const PW_ADMIN_HINT = '至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类';
-function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
-function passwordPolicyOk(v) { return v.length >= PW_MIN_LEN && passwordClasses(v) >= PW_MIN_CLASSES; }
-function passwordPolicyOkAdmin(v) { return v.length >= PW_ADMIN_MIN_LEN && passwordClasses(v) >= PW_ADMIN_MIN_CLASSES; }
-
-// ================= 密码模态（重置密码 / 高危操作二次确认共用） =================
-let _pwModalCb = null;
-let _pwModalMode = 'set';  // 'set'=设置新密码（走口令策略校验）；'confirm'=确认当前管理员密码
-function openPasswordModal(desc, cb) { openPwModal(desc, cb, 'set'); }
-function openConfirmPasswordModal(desc, cb) { openPwModal(desc, cb, 'confirm'); }
-function openPwModal(desc, cb, mode) {
-  _pwModalCb = cb;
-  _pwModalMode = mode;
-  const isConfirm = mode === 'confirm';
-  $('modal-password-title').textContent = isConfirm ? '安全确认' : '重置密码';
-  $('modal-password-desc').textContent = desc;  // textContent 赋值：动态数据（邮箱等）无注入面
-  $('modal-password-input').value = '';
-  // placeholder 保持短句：手机端输入框内不换行，完整口径由可换行的 desc 承载
-  $('modal-password-input').placeholder = isConfirm ? '输入当前管理员密码' : '设置新密码（至少 10 位）';
-  $('modal-password-input').autocomplete = isConfirm ? 'current-password' : 'new-password';
-  $('modal-password-submit').textContent = isConfirm ? '确认操作' : '确认重置';
-  openModal($('modal-password'));  // 打开即聚焦密码输入框（容器内首个可交互元素）
-}
-function closePasswordModal() {
-  _pwModalCb = null;
-  closeModal($('modal-password'));
-}
-$('modal-password-form').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const pw = $('modal-password-input').value;
-  if (!pw) return;  // 空值静默不提交
-  // set 模式按完整口令策略校验（长度 + 至少两类）：与后端 _password_policy_error 及
-  // saveMyPassword 同口径，避免"前端放行、提交后才 400"；confirm 模式仍是只验非空
-  if (_pwModalMode === 'set' && !passwordPolicyOk(pw)) { toast(`密码${PW_POLICY_HINT}`, true); return; }
-  const cb = _pwModalCb;
-  closePasswordModal();
-  if (cb) cb(pw);
-});
-
-// ================= 侧边栏（移动端抽屉） =================
-function toggleSidebar(open) {
-  $('sidebar').classList.toggle('-translate-x-full', !open);
-  $('sidebar-overlay').classList.toggle('open', open);  // 遮罩经 CSS 淡入淡出（替代 hidden 瞬显）
-}
-
-// ================= Tab 切换 =================
-function switchTab(name) {
-  // 未保存的调度改动守卫（2026-08-15 对抗性审查 F-1）：切走会静默丢失，先确认
-  if (name !== 'settings' && schedDirty) {
-    if (!confirm('调度设置还有未保存的修改，切换页面将丢失。\n是否继续？')) return;
-    schedDirty = false;
-    $('schedule-save-btn').classList.add('hidden');
-    $('sched-dirty-tip').classList.add('hidden');
+  function confirmDialog(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var settled = false;
+      function done(v) { if (!settled) { settled = true; resolve(v); } }
+      openModal({
+        title: opts.title || "请确认",
+        body: el("div", { class: "pm-confirm-text", text: opts.body || "" }),
+        dismissible: opts.dismissible !== false,
+        onClose: function () { done(false); },
+        actions: [
+          { label: opts.cancelText || "取消", variant: "ghost", onClick: function () { done(false); } },
+          { label: opts.confirmText || "确定", variant: opts.danger ? "danger" : "primary", onClick: function () { done(true); } }
+        ]
+      });
+    });
   }
-  ['accounts', 'logs', 'settings', 'users', 'mine'].forEach(t => {
-    $('tab-' + t).classList.toggle('hidden', t !== name);
-  });
-  document.querySelectorAll('[data-tab-btn]').forEach(btn => {
-    const active = btn.dataset.tabBtn === name;
-    btn.classList.toggle('text-zinc-600', !active);
-    btn.classList.toggle('dark:text-zinc-300', !active);
-    btn.classList.toggle('text-zinc-900', active);
-    btn.classList.toggle('dark:text-zinc-100', active);
-    btn.classList.toggle('bg-zinc-100', active);
-    btn.classList.toggle('dark:bg-zinc-700', active);
-    btn.classList.toggle('border-l-blue-500', active);
-    btn.classList.toggle('border-l-2', active);
-  });
-  toggleSidebar(false);
-  const tabEl = $('tab-' + name);
-  tabEl.classList.remove('tab-enter');
-  void tabEl.offsetWidth;  // 重触发动画
-  tabEl.classList.add('tab-enter');
-  if (name === 'accounts') { loadAccounts(); updateSignModeHint(); }
-  if (name === 'logs') { initLogSearch(); loadLogs(); fillSigninSelect(); }
-  if (name === 'settings') { loadSettings(); calibrateClock(); tickClock(); }
-  if (name === 'users') loadUsers();
-  if (name === 'mine') loadMine();
-}
+  function promptDialog(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var settled = false;
+      function done(v) { if (!settled) { settled = true; resolve(v); } }
+      var inputId = "pm-prompt-" + (++uidSeq);
+      var input = el("input", {
+        id: inputId, class: "input", type: opts.password ? "password" : "text",
+        placeholder: opts.placeholder || "", maxlength: opts.maxlength || null,
+        autocomplete: opts.autocomplete || "off"
+      });
+      if (opts.defaultValue != null) input.value = opts.defaultValue;
+      var err = el("div", { class: "field-error", hidden: true });
+      var field = el("div", { class: "field" });
+      if (opts.label) field.appendChild(el("label", { class: "field-label", for: inputId, text: opts.label }));
+      field.appendChild(input);
+      field.appendChild(err);
+      openModal({
+        title: opts.title || "请输入",
+        body: field,
+        dismissible: opts.dismissible !== false,
+        onClose: function () { done(null); },
+        onOpen: function () { input.focus(); if (input.select) input.select(); },
+        actions: [
+          { label: opts.cancelText || "取消", variant: "ghost", onClick: function () { done(null); } },
+          {
+            label: opts.confirmText || "确定", variant: "primary",
+            onClick: function () {
+              var v = input.value;
+              if (opts.required && !String(v).trim()) {
+                err.textContent = opts.requiredMessage || "此项为必填";
+                err.hidden = false;
+                input.classList.add("is-invalid");
+                input.focus();
+                return false; // 阻止关闭
+              }
+              done(v);
+            }
+          }
+        ]
+      });
+    });
+  }
 
+  /* ---------- 主题 ---------- */
+  function currentTheme() { return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"; }
+  function updateThemeIcons(theme) {
+    var name = (theme || currentTheme()) === "dark" ? "sun" : "moon";
+    forEach(document.querySelectorAll("#themeToggle, [data-theme-btn]"), function (btn) { btn.innerHTML = svgUse(name); });
+  }
+  function applyTheme(theme, persist) {
+    theme = theme === "dark" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme);
+    if (persist !== false) { try { localStorage.setItem("yiban-theme", theme); } catch (e) {} }
+    updateThemeIcons(theme);
+    try { document.dispatchEvent(new CustomEvent("yiban:theme", { detail: { theme: theme } })); } catch (e) {}
+  }
+  function toggleTheme() { applyTheme(currentTheme() === "dark" ? "light" : "dark"); }
+
+  /* ---------- 抽屉 ---------- */
+  function toggleDrawer(open) {
+    if (open === undefined) open = !document.body.classList.contains("has-drawer-open");
+    document.body.classList.toggle("has-drawer-open", !!open);
+  }
+
+  /* ---------- 下拉菜单 ---------- */
+  function closeDropdowns(except) {
+    forEach(document.querySelectorAll(".dd-wrap.is-open"), function (w) { if (w !== except) w.classList.remove("is-open"); });
+  }
+  function focusItem(items, index) {
+    if (!items.length) return;
+    items[((index % items.length) + items.length) % items.length].focus();
+  }
+  function toggleDropdown(trigger) {
+    var wrap = trigger && trigger.closest ? trigger.closest(".dd-wrap") : null;
+    if (!wrap) return;
+    var willOpen = !wrap.classList.contains("is-open");
+    closeDropdowns(wrap);
+    wrap.classList.toggle("is-open", willOpen);
+  }
+
+  /* ---------- 导航分组（桌面手风琴 + 721–1100px rail 浮层定位） ---------- */
+  function isRailMode() { return window.innerWidth > 720 && window.innerWidth <= 1100; }
+  function positionRailFlyout(sub, trigger) {
+    var r = trigger.getBoundingClientRect();
+    sub.style.top = Math.max(8, Math.min(r.top, window.innerHeight - 60)) + "px";
+  }
+  function relayoutRail() {
+    var groups = document.querySelectorAll("[data-nav-group].is-open");
+    if (!isRailMode()) { forEach(groups, function (g) { var s = g.querySelector(".nav-submenu"); if (s) s.style.top = ""; }); return; }
+    forEach(groups, function (g) {
+      var s = g.querySelector(".nav-submenu"), t = g.querySelector("[data-nav-toggle]");
+      if (s && t) positionRailFlyout(s, t);
+    });
+  }
+  /* ---------- Tab（容器 [data-tab-group] + .tab[data-tab-target] + .tab-panel[data-tab-id]） ---------- */
+  function activateTab(group, target) {
+    forEach(group.querySelectorAll(".tab[data-tab-target]"), function (t) {
+      var on = t.getAttribute("data-tab-target") === target;
+      t.classList.toggle("is-active", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    forEach(group.querySelectorAll(".tab-panel[data-tab-id]"), function (p) {
+      p.classList.toggle("is-active", p.getAttribute("data-tab-id") === target);
+    });
+  }
+  function cssEscape(s) { return String(s).replace(/["\\]/g, "\\$&"); }
+  function switchTab(name) {
+    if (!name) return;
+    var panel = document.querySelector('[data-tab-group] [data-tab-id="' + cssEscape(name) + '"]');
+    if (panel) activateTab(panel.closest("[data-tab-group]"), name);
+    forEach(document.querySelectorAll('[id^="tab-"]'), function (p) { p.classList.toggle("hidden", p.id !== "tab-" + name); });
+    forEach(document.querySelectorAll("[data-tab-btn]"), function (b) { b.classList.toggle("is-active", b.getAttribute("data-tab-btn") === name); });
+    try { document.dispatchEvent(new CustomEvent("yiban:tab", { detail: { name: name } })); } catch (e) {}
+  }
+
+  /* ---------- 更新日志 ---------- */
+  function openChangelog() {
+    var bodyEl = el("div", { class: "md-body", text: "加载中…" });
+    var handle = openModal({
+      title: "更新日志", size: "lg", body: bodyEl,
+      actions: [{ label: "关闭", variant: "ghost" }]
+    });
+    api("GET", "/api/changelog").then(function (data) {
+      var text = (data && data.text) || "暂无更新日志";
+      if (window.renderMarkdown) bodyEl.innerHTML = window.renderMarkdown(text); // 内部已转义
+      else bodyEl.textContent = text;
+    }).catch(function (err) {
+      bodyEl.textContent = (err && err.message) || "加载失败，请稍后重试";
+    });
+    return handle;
+  }
+
+  /* ---------- 退出 ---------- */
+  function doLogout() {
+    return api("POST", "/api/logout").catch(function () {}).then(function () {
+      location.href = url("/login");
+    });
+  }
+
+  /* ---------- 身份 ---------- */
+  var me = null;
+  function roleLabel(m) {
+    if (!m) return "";
+    if (m.is_builtin_admin) return "主管理员";
+    return m.role === "admin" ? "管理员" : m.role === "user" ? "普通用户" : (m.role || "");
+  }
+  function hydrateIdentity() {
+    return api("GET", "/api/me").then(function (data) {
+      me = data;
+      if (data && data.csrf_token) csrfToken = data.csrf_token;
+      var name = data.username || data.email || "";
+      setText("[data-account-name]", name + (data.is_builtin_admin ? "（主管理员）" : ""));
+      setText("[data-account-email]", data.email || "");
+      setText("[data-account-role]", roleLabel(data));
+      var initial = String(data.username || data.email || "?").replace(/\s+/g, "").slice(0, 2).toUpperCase();
+      setText("[data-account-avatar]", initial || "?");
+      return data;
+    }).catch(function () { return null; });
+  }
+  /* ---------- 服务器时钟 ---------- */
+  var clock = { offset: 0, tz: 0, status: "", color: "" };
+  function serverNow() {
+    var epoch = Math.floor(Date.now() / 1000) + clock.offset + clock.tz * 60;
+    return new Date(epoch * 1000);
+  }
+  function clockString() { return serverNow().toISOString().slice(0, 19).replace("T", " "); }
+  function renderClock() {
+    var s = clockString();
+    setText("[data-clock-text]", s);
+    setText("[data-clock-now]", s);
+  }
+  function reflectSignStatus() {
+    if (!clock.status) return;
+    forEach(document.querySelectorAll("[data-sign-status]"), function (n) {
+      n.textContent = clock.status;
+      if (clock.color) n.style.color = clock.color;
+    });
+  }
+  function clockInfo() {
+    return { now: clockString(), server_ts: Math.floor(serverNow().getTime() / 1000), tz_offset_min: clock.tz, sign_status: clock.status, color: clock.color };
+  }
+  function calibrateClock() {
+    return api("GET", "/api/clock").then(function (data) {
+      if (!data) return null;
+      var ts = Number(data.server_ts);
+      if (isFinite(ts)) clock.offset = ts - Math.floor(Date.now() / 1000);
+      clock.tz = Number(data.tz_offset_min) || 0;
+      clock.status = data.sign_status || "";
+      clock.color = /^#[0-9a-f]{6}$/i.test(String(data.color || "")) ? data.color : "";
+      renderClock(); reflectSignStatus();
+      try { document.dispatchEvent(new CustomEvent("yiban:clock", { detail: clockInfo() })); } catch (e) {}
+      return data;
+    }).catch(function () { return null; });
+  }
+
+  /* ---------- 导航徽标（仅管理员） ---------- */
+  function setNavBadge(key, count) {
+    forEach(document.querySelectorAll('[data-nav-badge="' + cssEscape(key) + '"]'), function (node) {
+      if (!count || count <= 0) { node.hidden = true; node.textContent = ""; return; }
+      node.textContent = String(count); node.hidden = false;
+    });
+  }
+  function loadNavBadges(identity) {
+    if (!identity || identity.role !== "admin") return;
+    api("GET", "/api/accounts").then(function (data) {
+      var list = (data && data.accounts) || [];
+      // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。
+      // 只数 pending 会让徽标数小于页面里的待处理条数，同一条目两处不一致。
+      setNavBadge("accounts", list.filter(function (a) {
+        return a && !a.deleted && (a.status === "pending" || a.status === "rejected");
+      }).length);
+    }).catch(function () {});
+    api("GET", "/api/users").then(function (data) {
+      var list = (data && data.users) || [];
+      // 待处理用户 = 名下有「待审核或已拒绝」账号的用户数。
+      // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
+      var review = list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
+      setNavBadge("users", review);
+    }).catch(function () {});
+  }
+
+  /* ---------- 公告 ---------- */
+  function showAnnouncement(text) {
+    openModal({ title: "公告", body: el("div", { class: "pm-announce", text: text }), actions: [{ label: "关闭", variant: "ghost" }] });
+  }
+  function initAnnouncement() {
+    api("GET", "/api/announcement").then(function (data) {
+      var text = String((data && data.text) || "").trim();
+      if (!text) return;
+      var btn = $("announcementBtn");
+      if (btn) { btn.hidden = false; btn.addEventListener("click", function () { showAnnouncement(text); }); }
+      var dot = document.querySelector("[data-announcement-dot]");
+      if (dot) dot.hidden = false;
+    }).catch(function () {});
+  }
+
+  /* ---------- 全局事件委托 ---------- */
+  function initGlobalHandlers() {
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        if (modalStack.length) { e.preventDefault(); closeModal(); return; }
+        if (document.body.classList.contains("has-drawer-open")) { toggleDrawer(false); return; }
+        closeDropdowns();
+        return;
+      }
+      if (e.key === "Tab" && modalStack.length) trapTab(e, modalStack[modalStack.length - 1]);
+    });
+
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+      var drawerOpen = t.closest("[data-drawer-open]");
+      if (drawerOpen) { e.preventDefault(); toggleDrawer(true); return; }
+      if (t.closest("[data-drawer-close]")) { toggleDrawer(false); return; }
+      var drawerLink = t.closest(".d-sidebar a[href]");
+      if (drawerLink && !drawerLink.hasAttribute("data-nav-toggle") && window.innerWidth <= 720) toggleDrawer(false);
+
+      var ddTrigger = t.closest("[data-dropdown]");
+      if (ddTrigger) { e.preventDefault(); toggleDropdown(ddTrigger); return; }
+      if (t.closest(".dd-menu-item")) { closeDropdowns(); return; }
+      if (!t.closest(".dd-wrap")) closeDropdowns();
+
+      var navToggle = t.closest("[data-nav-toggle]");
+      if (navToggle) {
+        e.preventDefault();
+        var group = navToggle.closest("[data-nav-group]");
+        if (!group) return;
+        var willOpen = !group.classList.contains("is-open");
+        if (isRailMode()) {
+          forEach(document.querySelectorAll("[data-nav-group].is-open"), function (g) { if (g !== group) g.classList.remove("is-open"); });
+        }
+        group.classList.toggle("is-open", willOpen);
+        if (willOpen && isRailMode()) {
+          var sub = group.querySelector(".nav-submenu");
+          if (sub) positionRailFlyout(sub, navToggle);
+        }
+        return;
+      }
+      if (isRailMode() && !t.closest("[data-nav-group]")) {
+        forEach(document.querySelectorAll("[data-nav-group].is-open"), function (g) { g.classList.remove("is-open"); });
+      }
+
+      var tab = t.closest('.tab[data-tab-target]');
+      if (tab) {
+        var grp = tab.closest("[data-tab-group]");
+        if (grp) { e.preventDefault(); activateTab(grp, tab.getAttribute("data-tab-target")); }
+        return;
+      }
+      var acc = t.closest("[data-accordion-trigger]");
+      if (acc) { var item = acc.closest("[data-accordion]"); if (item) item.classList.toggle("is-open"); }
+    });
+
+    document.addEventListener("keydown", function (e) {
+      var wrap = document.querySelector(".dd-wrap.is-open");
+      var active = document.activeElement;
+      if (!wrap) {
+        if (active && active.matches && active.matches("[data-dropdown]") && active.tagName !== "BUTTON" &&
+            (e.key === "Enter" || e.key === " " || e.key === "ArrowDown")) {
+          e.preventDefault();
+          toggleDropdown(active);
+          focusItem(active.closest(".dd-wrap").querySelectorAll(".dd-menu-item"), 0);
+        }
+        return;
+      }
+      var items = wrap.querySelectorAll(".dd-menu-item");
+      var idx = Array.prototype.indexOf.call(items, active);
+      if (e.key === "ArrowDown") { e.preventDefault(); focusItem(items, idx + 1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); focusItem(items, idx - 1); }
+      else if (e.key === "Home") { e.preventDefault(); focusItem(items, 0); }
+      else if (e.key === "End") { e.preventDefault(); focusItem(items, items.length - 1); }
+    });
+
+    window.addEventListener("resize", function () { relayoutRail(); if (window.innerWidth > 720) toggleDrawer(false); });
+    window.addEventListener("scroll", relayoutRail, true);
+  }
+
+  onReady(function () {
+    initGlobalHandlers();
+    var themeBtn = $("themeToggle");
+    if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
+    updateThemeIcons();
+    hydrateIdentity().then(function (identity) { if (identity) loadNavBadges(identity); });
+    initAnnouncement();
+    calibrateClock();
+    renderClock();
+    setInterval(renderClock, 1000);
+    setInterval(calibrateClock, 60000);
+  });
+
+  /* ---------- 公开面 ---------- */
+  var YB = {
+    __ready: true,
+    BASE: APP_BASE,
+    url: url,
+    api: api,
+    toast: toast,
+    el: el,
+    $: $,
+    escapeHtml: escapeHtml,
+    openModal: openModal,
+    closeModal: closeModal,
+    confirmDialog: confirmDialog,
+    promptDialog: promptDialog,
+    toggleTheme: toggleTheme,
+    applyTheme: applyTheme,
+    currentTheme: currentTheme,
+    toggleDrawer: toggleDrawer,
+    switchTab: switchTab,
+    doLogout: doLogout,
+    openChangelog: openChangelog,
+    calibrateClock: calibrateClock,
+    renderClock: renderClock,
+    getServerNow: serverNow,
+    clockString: clockString,
+    clockInfo: clockInfo,
+    setNavBadge: setNavBadge,
+    loadNavBadges: loadNavBadges
+  };
+  window.YB = YB;
+  // 兼容内联 onclick / 既有页面脚本引用的裸全局名
+  window.api = api;
+  window.toast = toast;
+  window.$ = $;
+  window.el = el;
+  window.esc = escapeHtml;
+  window.escapeHtml = escapeHtml;
+  window.openModal = openModal;
+  window.closeModal = closeModal;
+  window.confirmDialog = confirmDialog;
+  window.promptDialog = promptDialog;
+  window.toggleTheme = toggleTheme;
+  window.toggleSidebar = toggleDrawer;
+  window.switchTab = switchTab;
+  window.doLogout = doLogout;
+  window.openChangelog = openChangelog;
+  window.calibrateClock = calibrateClock;
+  window.getServerNow = serverNow;
+})();

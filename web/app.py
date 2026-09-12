@@ -48,6 +48,7 @@ from flask import (
     session,
     url_for,
 )
+from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层 + 子进程环境构造
@@ -2691,6 +2692,19 @@ def create_app(host=None):
     # JSON 改名 .bak 保留逃生门）；多 worker 各自调用幂等（模块级连接缓存）
     db.init_db(DB_FILE, migrate_from=ACCOUNTS_FILE, env_file=ENV_FILE)
     app = Flask(__name__)
+    # Lucide 图标精灵图：启动时一次性读入并注册为 Jinja 全局 `lucide_sprite`，
+    # 模板经 macros/ui.html 的 sprite() 宏原样输出（每次渲染零文件 I/O，见 ui.html 顶部说明）。
+    # 读取失败只降级为空串（图标不显示、页面不报错），不阻断启动。
+    try:
+        with open(
+            os.path.join(app.static_folder, "vendor", "lucide", "_sprite.svg"),
+            "r",
+            encoding="utf-8",
+        ) as _sprite_f:
+            app.jinja_env.globals["lucide_sprite"] = Markup(_sprite_f.read())
+    except OSError as _sprite_err:
+        app.jinja_env.globals["lucide_sprite"] = Markup("")
+        logger.warning("Lucide 图标精灵图读取失败，图标将不可见：%s", _sprite_err)
     app.config["SECRET_KEY"] = ensure_secret_key(ENV_FILE)
     app.config["SESSION_COOKIE_NAME"] = "yiban_admin"
     app.config["SESSION_COOKIE_HTTPONLY"] = True  # JS 不可读 session cookie（防 XSS 窃取）
@@ -2914,14 +2928,44 @@ def create_app(host=None):
             return jsonify({"error": "请求校验失败，请刷新页面后重试"}), 403
 
     # ---- 页面（服务端按登录态重定向，避免未登录时先渲染后台造成闪烁）----
-    @app.route("/")
-    def index_page():
+    # ---- 管理端多页：一页一模板，外壳（侧栏/顶栏/页脚）由 base.html 服务端渲染 ----
+    def _render_admin_page(template, nav_key, crumbs):
+        """管理端页面统一上下文：版本 / 备案 / 导航高亮 / 面包屑 / 当前身份。
+
+        身份显式下发（而非模板内读 session），便于侧栏常驻显示当前账号——
+        这是防误操作设计：登录错账号后误删数据的代价高。
+        """
+        return render_template(
+            template,
+            web_version=WEB_VERSION,
+            app_version=APP_VERSION,
+            icp_info=icp_info(),
+            police_info=police_info(),
+            police_link=police_link(),
+            nav_active=nav_key,
+            crumbs=crumbs,
+            current_username=session.get("username", ""),
+            current_role=_current_role() or "",
+        )
+
+    def _admin_page_redirect():
+        """管理端页面守卫：未登录 → 登录页；非管理员 → 用户页。合规时返回 None。
+
+        返回而非装饰，是因为三处守卫各自需要不同模板/导航键，装饰器会增加一层间接。
+        """
         role = _current_role()
         if role is None:
             return redirect(url_for("login_page"))
         if role != "admin":
             return redirect(url_for("user_page"))
-        return render_template("index.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info(), police_link=police_link())
+        return None
+
+    @app.route("/")
+    def index_page():
+        blocked = _admin_page_redirect()
+        if blocked:
+            return blocked
+        return _render_admin_page("pages/dashboard.html", "dashboard", ["工作台", "数据总览"])
 
     @app.route("/user")
     def user_page():
@@ -2979,6 +3023,43 @@ def create_app(host=None):
         """隐私政策独立页（footer / 隐私链接可指向）。"""
         return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), police_info(), request.script_root, police_link())
 
+    # 管理端各功能页。拆页而非单页 tab：URL 可书签/可分享、刷新不丢状态，
+    # 且每页只加载自己的脚本（单页方案需一次性加载全部 5 个功能域的 JS）。
+    @app.route("/accounts")
+    def accounts_page():
+        blocked = _admin_page_redirect()
+        if blocked:
+            return blocked
+        return _render_admin_page("pages/accounts.html", "accounts", ["工作台", "账号管理"])
+
+    @app.route("/logs")
+    def logs_page():
+        blocked = _admin_page_redirect()
+        if blocked:
+            return blocked
+        return _render_admin_page("pages/logs.html", "logs", ["工作台", "签到日志"])
+
+    @app.route("/users")
+    def users_page():
+        blocked = _admin_page_redirect()
+        if blocked:
+            return blocked
+        return _render_admin_page("pages/users.html", "users", ["工作台", "用户管理"])
+
+    @app.route("/settings")
+    def settings_page():
+        blocked = _admin_page_redirect()
+        if blocked:
+            return blocked
+        return _render_admin_page("pages/settings.html", "settings", ["工作台", "系统设置"])
+
+    @app.route("/mine")
+    def mine_page():
+        blocked = _admin_page_redirect()
+        if blocked:
+            return blocked
+        return _render_admin_page("pages/mine.html", "mine", ["工作台", "我的账号"])
+
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
     def no_cache(resp):
@@ -3007,7 +3088,8 @@ def create_app(host=None):
             "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'; object-src 'none'"
         )
-        if request.path in ("/", "/login", "/user", "/terms", "/privacy"):
+        if request.path in ("/", "/login", "/user", "/terms", "/privacy",
+                            "/accounts", "/logs", "/users", "/settings", "/mine"):
             resp.headers["Cache-Control"] = "no-store"
         elif request.path.startswith("/static/") and resp.status_code < 400:
             # 静态资源长缓存 30 天（版本变化由 ?v= 兜底）；404 等错误响应不缓存（防浏览器缓存 404）
@@ -6718,6 +6800,12 @@ def create_app(host=None):
             limit = min(max(int(request.args.get("limit", 100)), 1), 200)
         except (TypeError, ValueError):
             limit = 100
+        # stage 过滤：sign=真实签到、probe=健康探针；缺省不过滤（两者混算，保持旧行为）。
+        # 两种事件共用 sign_events 表，不区分会让探针的成功/失败污染签到成功率，
+        # 故需要「签到口径」的调用方显式传 stage=sign。取值走白名单 + 参数绑定。
+        stage = str(request.args.get("stage", "")).strip().lower()
+        if stage not in ("sign", "probe"):
+            stage = ""
 
         def _mask(ev):
             msg = str(ev.get("message") or "")
@@ -6737,11 +6825,16 @@ def create_app(host=None):
         else:
             cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
             events = [_mask(ev) for ev in db.sign_events_since(cutoff, limit=limit)]
-        stats = db.sign_event_stats(days=days)
+        if stage:
+            # 事件流本身不带 stage 过滤（sign_events_since 无该参数），故在此收口；
+            # 代价是过滤后条数可能少于 limit，对展示样本无影响。
+            events = [ev for ev in events if ev["stage"] == stage]
+        stats = db.sign_event_stats(days=days, stage=stage or None)
         return jsonify(
             {
                 "ok": True,
                 "days": days,
+                "stage": stage,
                 "count": len(events),
                 "events": events,
                 "daily_stats": stats,

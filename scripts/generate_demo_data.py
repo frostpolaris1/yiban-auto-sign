@@ -141,8 +141,10 @@ def main():
         )
 
     print("生成签到事件 ...")
-    statuses = ["success", "failed", "retrying", "paused", "skip"]
-    stages = ["login", "signin", "queue"]
+    # 取值必须与 scripts/signin.py 的 STATUS_* 常量、以及 stage 的两种口径对齐，
+    # 否则前端的分类统计会得到与真实运行不符的演示结果（stage 只有 sign/probe 两种）。
+    statuses = ["success", "already", "no_task", "failed", "retrying",
+                "skipped_window", "no_position", "paused", "user_cancelled"]
     for day in range(args.days):
         for _ in range(args.events_per_day):
             db.add_sign_event(
@@ -150,8 +152,19 @@ def main():
                 _phone(random.randrange(users)),
                 random.choice(statuses),
                 "demo",
-                random.choice(stages),
+                "sign",
                 random.randint(1, 3),
+            )
+        # 探针按固定周期执行，量级远小于签到；与签到共用 sign_events 表，
+        # 保留少量样本用于验证前端是否按 stage 正确区分统计口径。
+        for _ in range(random.randint(2, 4)):
+            db.add_sign_event(
+                _ts(days_ago=day, hour=random.randint(0, 23), minute=random.randint(0, 59)),
+                _phone(random.randrange(users)),
+                random.choice(["success", "failed"]),
+                "demo probe",
+                "probe",
+                1,
             )
 
     print("生成页面访问事件 ...")

@@ -1,0 +1,25 @@
+{# 占位页公共块：外壳（导航/身份/主题/时钟/通知）已就绪，主体待按功能清单填充。
+   旧实现完整保留在分支 server-web 的 index.html 对应 tab；
+   功能契约见 docs/refactor/02-frontend-inventory.md 与 01-api-inventory.md。 #}
+{% macro stub(title, planned) %}
+{% from "macros/ui.html" import icon with context %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow">工作台</div>
+    <h1 class="page-title">{{ title }}</h1>
+  </div>
+</div>
+<div class="alert">
+  <span class="ico">{{ icon('info') }}</span>
+  <div class="body">
+    <strong>此页正在迁移中。</strong>
+    外壳与导航已就绪，页面主体将按下列功能块逐项填充，接口契约已归档，不会丢失功能。
+  </div>
+</div>
+<div class="card">
+  <div class="card-head"><h2 class="card-title">待迁移功能块</h2></div>
+  <ul class="stub-list">
+    {% for item in planned %}<li>{{ item }}</li>{% endfor %}
+  </ul>
+</div>
+{% endmacro %}

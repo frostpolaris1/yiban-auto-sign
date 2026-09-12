@@ -1,127 +1,922 @@
-/* 原 web/templates/index.html 内联样式外提（A1）：
-   第一段 = 原 58-84 行 <style>（:root/.dark 主题变量、#toast 动效等）
-   第二段 = 原 122-189 行 <style>（字体栈、tab 动效、抽屉/Toast、info-tip、移动端完整表格）
-   两段顺序与原文档一致，不可调换（后者覆盖前者的同名规则）。
-   注意：<style type="text/tailwindcss"> 那块仍留在模板内——vendor/tailwind.js 是浏览器
-   JIT 构建，只扫描文档内的该类型元素，外提即失效。 */
-  /* Tailwind 默认色板（原版配色）。类名经 tailwind.config 色板重映射读取这些变量；
-     如需换主题，在 :root/.dark 分别覆盖对应 RGB 三元组即可（深浅模式可不同值）。 */
-  :root {
-    --c-zinc-50:250 250 250; --c-zinc-100:244 244 245; --c-zinc-200:228 228 231; --c-zinc-300:212 212 216;
-    --c-zinc-400:161 161 170; --c-zinc-500:113 113 122; --c-zinc-600:82 82 91; --c-zinc-700:63 63 70;
-    --c-zinc-800:39 39 42; --c-zinc-900:24 24 27;
-  --c-blue-50:239 246 255; --c-blue-200:191 219 254; --c-blue-300:147 197 253; --c-blue-400:96 165 250; --c-blue-500:66 105 224;
-  --c-blue-600:51 88 204; --c-blue-700:29 78 216; --c-blue-800:30 64 175; --c-blue-900:30 58 138;
-    --c-amber-50:255 251 235; --c-amber-100:254 243 199; --c-amber-200:253 230 138; --c-amber-300:252 211 77;
-    --c-amber-400:251 191 36; --c-amber-500:245 158 11; --c-amber-600:217 119 6; --c-amber-700:180 83 9; --c-amber-800:146 64 14; --c-amber-900:120 53 15;
-    --c-red-50:254 242 242; --c-red-100:254 226 226; --c-red-200:254 202 202; --c-red-300:252 165 165; --c-red-400:248 113 113;
-    --c-red-500:239 68 68; --c-red-600:220 38 38; --c-red-700:185 28 28; --c-red-800:153 27 27; --c-red-900:127 29 29;
-    --c-green-50:240 253 244; --c-green-100:220 252 231; --c-green-200:187 247 208; --c-green-300:134 239 172; --c-green-400:74 222 128;
-    --c-green-500:34 197 94; --c-green-600:22 163 74; --c-green-700:21 128 61; --c-green-800:22 101 52; --c-green-900:20 83 45;
-  }
-  /* 统一线性图标（currentColor 继承文字颜色，尺寸随字号） */
-  .ic { width: 1em; height: 1em; display: inline-block; vertical-align: -0.125em; flex-shrink: 0; }
-  /* 深色模式适配：原生 date/time 输入框的日历/时钟指示图标在 WebKit 下为黑色，
-     深色背景上看不清 → 反色（2026-08-29 用户反馈：日志页「按日期查看」日历图标；
-     同规则覆盖 window-start/window-end/probe-time 等所有 time 输入） */
-  .dark input[type="date"]::-webkit-calendar-picker-indicator,
-  .dark input[type="time"]::-webkit-calendar-picker-indicator {
-    filter: invert(1);
-    cursor: pointer;
-  }
+/* 项目层样式：在 adminator.css 之后加载，只做设计系统没有覆盖、或需要按本项目
+   语义扩展的部分。所有颜色/阴影/圆角一律取 Adminator 的 36 个主题 token，
+   以便深浅两套主题自动成立；不得改写 .shell / .main / .content / .d-sidebar
+   的布局（仅字体栈例外）。 */
 
-  /* 正文：原版字体栈（MiSans 仅高分屏「桌面」加载——misans.css 的 media 含 pointer: fine；手机端与低分屏走系统字体保 ClearType） */
-  body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  /* 标题不再使用专属字体（2026-08-22 性能回退）：h1~h4 等继承下方正文栈，避免 2.8MB web 字体拖垮窄带宽访问；
-     方圆体源文件与转换命令保留在本地，需要时可恢复 */
-  /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
-  @media (max-resolution: 1.5dppx) {
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-  }
-  pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+/* ==========================================================================
+   1. 字体栈
+   Adminator 的 body 只列 Inter + 系统字体；中文需要显式落到自托管的
+   Noto Sans SC，再退回系统中文字体。button/input/select/textarea 自带
+   font-family:inherit，这里一并显式声明，避免组件层各自覆盖后漂移。
+   ========================================================================== */
+body,
+button,
+input,
+select,
+textarea {
+  font-family: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei",
+    "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu,
+    Cantarell, "Noto Sans", sans-serif;
+}
 
+/* ==========================================================================
+   2. 侧边栏扩展（服务于 partials/sidebar.html）
+   ========================================================================== */
+/* 品牌图缺失时的占位字符：嵌在 .brand-logo（32×32，grid 居中）内，
+   尺寸对齐其 svg 规则（18×18）。inline style 控制初显，故此处不写 display。 */
+.brand-logo .brand-fallback {
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+}
 
-  /* Tab 切换淡入（克制动效）；系统开启「减弱动态效果」时保留纯淡入、去掉位移（动效审查修复③） */
-  @keyframes tab-fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-  @media (prefers-reduced-motion: reduce) {
-    @keyframes tab-fade-in { from { opacity: 0; } to { opacity: 1; } }
-  }
-  .tab-enter { animation: tab-fade-in 0.18s ease-out; }
-  /* 表格 sticky 操作列：行 hover 时同步变色（否则滚动时背景穿帮） */
-  tr:hover td.sticky { background-color: rgb(250 250 250); }
-  .dark tr:hover td.sticky { background-color: rgb(39 39 42 / 0.5); }
+/* 服务器时钟：图标 + 等宽时间，弱化配色，用于判断签到窗口 */
+.sidebar-clock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 0 2px;
+  color: var(--t-muted);
+  font-size: 11.5px;
+}
+.sidebar-clock svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+.sidebar-clock [data-clock-text] {
+  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}
 
-  /* ===== 动效审查修复：移动端抽屉与 Toast ===== */
-  /* 抽屉遮罩淡入（旧为瞬显，开抽屉时有明暗跳变）；md:hidden 在桌面隐藏，不受影响 */
-  #sidebar-overlay { opacity: 0; pointer-events: none; transition: opacity 0.18s ease-out; }
-  #sidebar-overlay.open { opacity: 1; pointer-events: auto; }
-  /* 「减弱动态效果」下面板瞬时开合（去平移），遮罩保留淡入 */
-  @media (prefers-reduced-motion: reduce) {
-    #sidebar { transition-duration: 0s; }
-  }
-  /* Toast（修复⑥）：入场自下方 10px 浮入（@starting-style），退出仅快速淡出；
-     全程 transition 可中断（淡出途中再次触发会平滑拉回）。
-     不支持 @starting-style 的旧浏览器自动退化为无入场动画，功能不受影响。
-     用 data-hidden 属性替代 hidden 类显示/隐藏，以保留过渡能力（aria-live 不受影响）。 */
-  #toast { opacity: 1;
-    pointer-events: none;  /* 纯状态展示：隐藏态仅 opacity:0（保留过渡），不设会拦截底部点击 */
-    transition: opacity 0.16s ease-out, transform 0.16s ease-out; }
-  #toast[data-hidden] { opacity: 0; transform: translate(-50%, 0);
-    transition: opacity 0.12s ease; }
-  @starting-style {
-    #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 10px); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    @starting-style { #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 0); } }
-  }
-  /* ===== 信息提示（ⓘ）：hover 与键盘 focus 显示的绝对定位浮层 =====
-     配色跟随主题（浅色白底、深色黑底）；max-width 72vw 防手机端溢出（桌面长文案也不超半屏）；
-     浮层贴齐图标右缘展开——四处 ⓘ 都在卡片头右端，左对齐会撑出屏幕右缘无法阅读 */
-  .info-tip { position: relative; display: inline-flex; align-items: center; cursor: help; }
-  .info-pop { position: absolute; top: 100%; right: 0; z-index: 30; opacity: 0; visibility: hidden;
-    transition: opacity 0.15s ease-out, visibility 0.15s ease-out; margin-top: 6px;
-    width: max-content; max-width: 72vw; padding: 8px 10px; border-radius: 8px; text-align: left;
-    background: rgb(255 255 255); color: rgb(24 24 27);
-    border: 1px solid rgb(228 228 231); font-size: 12px; line-height: 1.7;
-    box-shadow: 0 8px 24px -8px rgba(0,0,0,.25); }
-  .dark .info-pop { background: rgb(24 24 27); color: rgb(250 250 250); border-color: rgb(63 63 70); }
-  .info-tip:hover .info-pop, .info-tip:focus .info-pop { opacity: 1; visibility: visible; }
-  /* 分点排版：标签独占一行（块级），要点间留空隙，逐点阅读 */
-  .info-pop b { display: block; margin-top: 7px; font-weight: 600; }
-  .info-pop b:first-child { margin-top: 0; }
-  /* 「移动端显示完整表格」开关：窄屏默认隐藏的 md:table-cell 列强制显示
-     （仅 <767px 生效，桌面本就完整显示；记忆于 localStorage yiban-full-tables） */
-  @media (max-width: 767px) {
-    body.full-tables .md\:table-cell { display: table-cell !important; }
-    /* 账号表另有 lg:/xl:table-cell 隐藏列（设备型号/自选）：不同步放开，移动端「完整表格」名不副实 */
-    body.full-tables .lg\:table-cell, body.full-tables .xl\:table-cell { display: table-cell !important; }
-  }
+/* 底部动作行（退出登录） */
+.sidebar-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.sidebar-actions .btn {
+  width: 100%;
+  justify-content: center;
+  border-radius: 8px;
+}
 
-  /* ===== V3 设计 token（组件层的单一事实源）=====
-     组件类（partials/component_layer.html）只消费这些变量，不写死色值 —— 换肤改这一处。
-     深浅两套在这里给出，因为线条/填充/阴影在两种模式下必须不同（调色板本身不分模式：
-     深浅靠 Tailwind 的 dark: 变体换档位，故上面 :root 没有 .dark 覆写）。 */
-  :root {
-    --yb-primary: rgb(66 105 224);          /* #4269E0：白字 4.85:1，达标 */
-    --yb-primary-hover: rgb(51 88 204);
-    --yb-line: #ECECF1;                     /* 卡片描边：比 zinc-200 更浅更冷 */
-    --yb-field-bg: #F3F4F8;                 /* 输入框填充式底色（方案 C）*/
-    --yb-field-border: #E7E8EE;
-    --yb-shadow: 0 1px 2px rgba(0,0,0,.03), 0 2px 6px rgba(0,0,0,.03);   /* 平面柔和，替代原双层重阴影 */
-    --yb-switch-off: rgb(212 212 216);
-    --yb-ghost-bg: rgb(244 244 245);
-    --yb-ghost-bg-hover: rgb(228 228 231);
-    --yb-ghost-fg: rgb(63 63 70);
-    --yb-ring-offset: #FFFFFF;              /* 焦点光圈外圈：与所在卡片底色一致 */
+/* 工作区头像承载 1–2 个字符的首字母，保证可读 */
+.workspace-avatar {
+  text-transform: uppercase;
+  letter-spacing: 0;
+  line-height: 1;
+}
+/* ==========================================================================
+   3. 页脚兼容类（footer.html 用 .footer-*，Adminator 定义的是 .d-footer-meta）
+   ========================================================================== */
+.d-footer .footer-legal {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.d-footer .footer-legal img {
+  display: inline-block;
+  vertical-align: -1px;
+}
+.d-footer .footer-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--t-light);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+
+/* ==========================================================================
+   4. Toast 通知
+   host 只做定位与堆叠，pointer-events 透传；消息本体自己接收点击。
+   ========================================================================== */
+.toast-host {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(92vw, 380px);
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 14px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  color: var(--t-base);
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.toast.is-shown {
+  opacity: 1;
+  transform: translateY(0);
+}
+.toast.is-hiding {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.toast__icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.toast__icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.toast__msg {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.toast__close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -2px -2px 0 0;
+  flex-shrink: 0;
+  border-radius: 5px;
+  color: var(--t-light);
+  transition: background 150ms, color 150ms;
+}
+.toast__close:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.toast__close svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.toast--success {
+  border-left-color: var(--success);
+}
+.toast--success .toast__icon {
+  color: var(--success);
+}
+.toast--danger {
+  border-left-color: var(--danger);
+}
+.toast--danger .toast__icon {
+  color: var(--danger);
+}
+.toast--warning {
+  border-left-color: var(--warning);
+}
+.toast--warning .toast__icon {
+  color: var(--warning);
+}
+.toast--info {
+  border-left-color: var(--info);
+}
+.toast--info .toast__icon {
+  color: var(--info);
+}
+
+/* ==========================================================================
+   5. 模态（Adminator 无该组件；内层复用 .modal-head/.modal-title/.modal-body/.modal-foot）
+   ========================================================================== */
+.pm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.pm-backdrop[hidden] {
+  display: none;
+}
+.pm-backdrop.is-open {
+  opacity: 1;
+}
+.pm-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 480px;
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(8px) scale(0.99);
+  transition: transform 180ms ease;
+}
+@supports (height: 100dvh) {
+  .pm-panel { max-height: calc(100dvh - 32px); }
+}
+.pm-backdrop.is-open .pm-panel {
+  transform: none;
+}
+/* body 滚动而非整面板滚动：footer 操作行始终留在视口内，
+   高分屏 / 浏览器缩放导致视口偏矮时按钮不会被裁掉。 */
+.pm-panel .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.pm-panel--lg {
+  max-width: 760px;
+}
+.pm-panel .pm-panel-close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: var(--t-light);
+  transition: background 150ms, color 150ms;
+}
+.pm-panel .pm-panel-close:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.pm-panel .pm-panel-close svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.pm-backdrop--stacked {
+  z-index: 1000;
+}
+.pm-panel .pm-confirm-text {
+  white-space: pre-wrap;
+}
+/* 滚动锁：配合 JS 的滚动条宽度补偿，避免锁定时内容横向跳动 */
+.pm-scroll-lock,
+.pm-scroll-lock body {
+  overflow: hidden;
+}
+@media (max-width: 720px) {
+  .pm-backdrop {
+    padding: 0;
+    place-items: stretch;
   }
-  .dark {
-    --yb-line: rgba(255,255,255,.10);
-    --yb-field-bg: rgba(255,255,255,.05);
-    --yb-field-border: rgba(255,255,255,.12);
-    --yb-shadow: 0 1px 2px rgba(0,0,0,.35);
-    --yb-switch-off: rgb(82 82 91);
-    --yb-ghost-bg: rgb(63 63 70);
-    --yb-ghost-bg-hover: rgb(82 82 91);
-    --yb-ghost-fg: rgb(228 228 231);
-    --yb-ring-offset: rgb(39 39 42);
+  .pm-panel,
+  .pm-panel--lg {
+    max-width: none;
+    max-height: 100vh;
+    border-radius: 0;
+    transform: translateY(12px);
   }
+  @supports (height: 100dvh) {
+    .pm-panel,
+    .pm-panel--lg { max-height: 100dvh; }
+  }
+}
+@media (max-width: 480px) {
+  /* 窄屏操作行改为纵向满宽，避免两个按钮挤在一行 */
+  .pm-panel .modal-foot {
+    flex-direction: column-reverse;
+  }
+  .pm-panel .modal-foot .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* ==========================================================================
+   6. 分页控件（旧表格靠内层滚动，无分页；此为新增能力）
+   ========================================================================== */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.pager__info {
+  color: var(--t-muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+}
+.pager__info strong {
+  color: var(--t-base);
+}
+.pager__btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pager__btn {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--t-muted);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 160ms, color 160ms;
+}
+.pager__btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.pager__btn.is-active {
+  background: var(--primary);
+  color: #fff;
+}
+.pager__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pager__btn svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+/* ==========================================================================
+   7. 日志查看器
+   ========================================================================== */
+.log-view {
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--t-base);
+  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-view__line {
+  display: block;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+.log-view__line--error {
+  color: var(--danger);
+}
+.log-view__line--warn {
+  color: var(--warning);
+}
+.log-view__line--ok {
+  color: var(--success);
+}
+.log-view__line--info {
+  color: var(--info);
+}
+.log-view__line--muted {
+  color: var(--t-light);
+}
+
+/* ==========================================================================
+   8. 5 分钟时间片网格
+   ========================================================================== */
+.slot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: 6px;
+}
+.slot {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--t-base);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms, color 150ms;
+}
+.slot:hover:not(.is-disabled) {
+  background: var(--bg-hover);
+}
+.slot.is-disabled {
+  background: var(--bg-muted);
+  color: var(--t-light);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.slot.is-chosen {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+.slot.is-mine {
+  border-color: var(--success);
+  background: var(--success-soft);
+  color: var(--success);
+  font-weight: 600;
+}
+.slot-load {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  overflow: hidden;
+}
+.slot-load > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+}
+.slot.is-chosen .slot-load > i {
+  background: var(--primary);
+}
+.slot.is-mine .slot-load > i {
+  background: var(--success);
+}
+.slot.is-disabled .slot-load > i {
+  background: var(--t-light);
+}
+
+/* ==========================================================================
+   9. 签到月历状态（Adminator 只有 is-other/is-today/has-event）
+   ========================================================================== */
+.mini-cal-day.is-ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.mini-cal-day.is-fail {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.mini-cal-day.is-none {
+  color: var(--t-light);
+}
+.mini-cal-day.is-future {
+  background: var(--bg-muted);
+  color: var(--t-light);
+}
+/* is-today 用实心底色，叠加签到结果后仍保持高对比可辨 */
+.mini-cal-day.is-today.is-ok {
+  background: var(--success);
+  color: #fff;
+}
+.mini-cal-day.is-today.is-fail {
+  background: var(--danger);
+  color: #fff;
+}
+.mini-cal-day.is-today.is-none,
+.mini-cal-day.is-today.is-future {
+  background: var(--primary);
+  color: #fff;
+}
+.mini-cal-day.is-ok.has-event::after {
+  background: var(--success);
+}
+.mini-cal-day.is-fail.has-event::after {
+  background: var(--danger);
+}
+
+/* ==========================================================================
+   10. 按钮样式的行内文字链接
+   ========================================================================== */
+.linklike {
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  cursor: pointer;
+}
+.linklike:hover {
+  text-decoration: underline;
+}
+
+/* ==========================================================================
+   11. 统一键盘焦点环
+   Adminator 未定义任何 :focus-visible；缺省环在浅/深两套底色上都不稳定。
+   用 :where() 保持零特异性，便于组件自身状态类继续生效。
+   ========================================================================== */
+:where(
+  .btn,
+  .nav-link,
+  .icon-btn,
+  .tab,
+  .dd-menu-item,
+  .slot,
+  .mini-cal-day,
+  .pager__btn,
+  .linklike,
+  .accordion-trigger,
+  .hamburger,
+  .pm-panel .pm-panel-close
+):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+:where(.mini-cal-day, .slot, .nav-link):focus-visible {
+  outline-offset: 1px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ==========================================================================
+   12. 空状态
+   ========================================================================== */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--t-muted);
+}
+.empty__icon {
+  width: 34px;
+  height: 34px;
+  color: var(--t-light);
+}
+.empty__icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+.empty__msg {
+  max-width: 42ch;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.empty__action {
+  margin-top: 4px;
+}
+
+/* ==========================================================================
+   13. 骨架屏与加载指示
+   ========================================================================== */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  min-height: 12px;
+  border-radius: 6px;
+  background: var(--bg-muted);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--t-light) 20%, transparent),
+    transparent
+  );
+  transform: translateX(-100%);
+  animation: pm-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes pm-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.skeleton--text {
+  height: 12px;
+  margin: 6px 0;
+}
+.skeleton--title {
+  height: 18px;
+  margin: 8px 0;
+}
+
+/* ==========================================================================
+   14. 减弱动效
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .toast,
+  .pm-backdrop,
+  .pm-panel,
+  .skeleton::after {
+    transition: none;
+    animation: none;
+  }
+  .toast {
+    opacity: 1;
+    transform: none;
+  }
+  .pm-panel {
+    transform: none;
+  }
+  .skeleton::after {
+    display: none;
+  }
+  .spinner {
+    animation: none;
+    border-top-color: var(--t-light);
+  }
+}
+
+/* ==========================================================================
+   15. Tailwind 调色板与遗留工具类
+   模板尚未全部迁移到 Adminator；这些 `--c-*` 变量被 Tailwind 配置、
+   partials/component_layer.html 与 tests/_wcag.py 共同依赖，必须保留。
+   ========================================================================== */
+:root {
+  --c-zinc-50: 250 250 250; --c-zinc-100: 244 244 245; --c-zinc-200: 228 228 231; --c-zinc-300: 212 212 216;
+  --c-zinc-400: 161 161 170; --c-zinc-500: 113 113 122; --c-zinc-600: 82 82 91; --c-zinc-700: 63 63 70;
+  --c-zinc-800: 39 39 42; --c-zinc-900: 24 24 27;
+  --c-blue-50: 239 246 255; --c-blue-200: 191 219 254; --c-blue-300: 147 197 253; --c-blue-400: 96 165 250;
+  --c-blue-500: 66 105 224; --c-blue-600: 51 88 204; --c-blue-700: 29 78 216; --c-blue-800: 30 64 175; --c-blue-900: 30 58 138;
+  --c-amber-50: 255 251 235; --c-amber-100: 254 243 199; --c-amber-200: 253 230 138; --c-amber-300: 252 211 77;
+  --c-amber-400: 251 191 36; --c-amber-500: 245 158 11; --c-amber-600: 217 119 6; --c-amber-700: 180 83 9;
+  --c-amber-800: 146 64 14; --c-amber-900: 120 53 15;
+  --c-red-50: 254 242 242; --c-red-100: 254 226 226; --c-red-200: 254 202 202; --c-red-300: 252 165 165;
+  --c-red-400: 248 113 113; --c-red-500: 239 68 68; --c-red-600: 220 38 38; --c-red-700: 185 28 28;
+  --c-red-800: 153 27 27; --c-red-900: 127 29 29;
+  --c-green-50: 240 253 244; --c-green-100: 220 252 231; --c-green-200: 187 247 208; --c-green-300: 134 239 172;
+  --c-green-400: 74 222 128; --c-green-500: 34 197 94; --c-green-600: 22 163 74; --c-green-700: 21 128 61;
+  --c-green-800: 22 101 52; --c-green-900: 20 83 45;
+}
+
+/* 线性图标尺寸工具类（模板 52 处 data-icon / icon 宏共用） */
+.ic {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+}
+
+/* 原生 date/time 控件在暗色下指示图标为黑色，反色保证可见 */
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   16. 数据总览页（pages/dashboard.html + pages/dashboard.js）
+   仅补充 Adminator 未定义、本页专用的容器与状态；颜色一律取主题 token。
+   ========================================================================== */
+/* [hidden] 优先于组件自身的 display（本页多处用隐藏切换加载/空态/图表） */
+.dash-page [hidden] {
+  display: none !important;
+}
+.dash-page .dash-skel {
+  display: inline-block;
+  width: 4.5rem;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.dash-page .dash-muted {
+  color: var(--t-muted);
+}
+.dash-page .dash-error-text {
+  color: var(--danger);
+  font-size: 12.5px;
+}
+.dash-page .dash-trend {
+  display: inline-flex;
+  vertical-align: -2px;
+}
+.dash-page .dash-trend svg {
+  width: 13px;
+  height: 13px;
+}
+.dash-page .dash-trend svg.up {
+  color: var(--success);
+}
+.dash-page .dash-trend svg.down {
+  color: var(--danger);
+}
+.dash-page .dash-trend svg.flat {
+  color: var(--t-muted);
+}
+
+/* 图表加载 / 空态 / 错误遮罩：覆盖在 canvas 上，避免空白画布 */
+.dash-page .chart-canvas-wrap {
+  position: relative;
+}
+.dash-page .dash-chart-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+
+/* 签到热力图：窄屏可横向滚动，图例与说明置底 */
+.dash-page .dash-cal-scroll {
+  overflow-x: auto;
+}
+.dash-page .dash-cal-scroll .mini-cal-grid {
+  min-width: 280px;
+}
+.dash-page .dash-cal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 18px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.dash-page .dash-cal-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--t-muted);
+  font-size: 11.5px;
+}
+.dash-page .dash-cal-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dash-page .dash-cal-key i {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.dash-page .dash-cal-key i.is-ok {
+  background: var(--success-soft);
+  border-color: var(--success);
+}
+.dash-page .dash-cal-key i.is-fail {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+.dash-page .dash-cal-key i.is-none {
+  background: transparent;
+  border-color: var(--border);
+}
+.dash-page .dash-cal-key i.is-future {
+  background: var(--bg-muted);
+  border-color: var(--border-soft);
+}
+.dash-page .dash-cal-note {
+  color: var(--t-light);
+  font-size: 11px;
+}
+
+/* 系统状态列表 */
+.dash-page .dash-health {
+  display: flex;
+  flex-direction: column;
+}
+.dash-page .dash-health-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding: 11px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.dash-page .dash-health-row:last-child {
+  border-bottom: 0;
+}
+.dash-page .dash-health-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  color: var(--t-muted);
+  font-size: 12.5px;
+}
+.dash-page .dash-health-label svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+.dash-page .dash-health-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  color: var(--t-base);
+  font-size: 13px;
+  text-align: right;
+}
+.dash-page .dash-health-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dash-page .dash-health-row--wrap {
+  align-items: flex-start;
+}
+
+/* 375px 窄屏：日历数字与图例收紧，保证 7 列不挤压 */
+@media (max-width: 480px) {
+  .dash-page .mini-cal-grid {
+    gap: 0;
+  }
+  .dash-page .mini-cal-day {
+    font-size: 11px;
+  }
+  .dash-page .dash-health-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .dash-page .dash-health-value {
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+/* ==========================================================================
+   页面级补充（Adminator 未覆盖的部分）
+   ========================================================================== */
+
+/* 面包屑分隔符：Adminator 只给了 .crumbs .sep 容器样式，未给其中的 svg 设尺寸。
+   项目图标宏输出的是不带 width/height 的 <svg>，缺省尺寸会被拉伸至整屏，故显式收口。 */
+.crumbs .sep { display: inline-flex; align-items: center; }
+.crumbs .sep svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: 2; fill: none; }
+
+/* 页头：工作台小标签 + 页面主标题 */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.page-title { margin: 4px 0 0; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; color: var(--t-base); }
+
+/* 页脚两栏：备案信息靠左、版本与开源入口靠右（Adminator 的 .d-footer 已是 space-between） */
+.footer-legal { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.footer-legal a { display: inline-flex; align-items: center; gap: 4px; }
+.footer-meta { display: inline-flex; align-items: center; gap: 6px; }
+
+/* 迁移占位页的功能清单 */
+.stub-list { margin: 0; padding: 0 0 0 18px; list-style: disc; color: var(--t-muted); font-size: 13px; line-height: 1.9; }
+.stub-list li::marker { color: var(--primary); }
+
+/* KPI 卡入场动画改为只做位移、不动透明度。
+   Adminator 的 rise-in 以 opacity:0 起步并带 60/120/180/240ms 错峰延迟；卡片内容由
+   前端刷新时重建节点，动画随之重放，导致刷新瞬间整排卡片透明（实测 opacity:0）。
+   去掉透明度维度后仍有入场位移，但不会再出现"卡片消失"的观感。 */
+@keyframes yb-card-in { from { transform: translateY(10px); } to { transform: translateY(0); } }
+.kpi-card { animation: yb-card-in 320ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+@media (prefers-reduced-motion: reduce) { .kpi-card { animation: none; } }
+
+/* Adminator 的小标签样式按大写拉丁文设计（带 letter-spacing + uppercase），
+   中文会出现字间空隙且读数变慢。中文标签统一收敛字距、取消大小写转换。 */
+.chart-meta-label,
+.stat-cell-label,
+.kpi-label {
+  text-transform: none;
+  letter-spacing: 0;
+}

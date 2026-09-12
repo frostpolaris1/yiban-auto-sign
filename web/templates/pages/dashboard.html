@@ -1,0 +1,197 @@
+{# 数据总览（管理端首页 /）。
+   设计目标：把「账号/用户/签到结果/待处理/系统状态」在一屏内汇总，填补旧管理端
+   「无统计、无法一眼看数据」的缺口。
+
+   数据全部客户端拉取（服务端不新增查询上下文）：
+     GET /api/settings               → 账号/用户容量与拆解、全局/注册暂停
+     GET /api/admin/sign-events      → daily_stats/events（趋势、分布、日历、成功率）
+     GET /api/time-prefs/stats       → 自选时间片人数
+     GET /api/accounts + /api/users  → 待处理事项
+     GET /api/clock /api/announcement、POST /api/ping → 系统状态
+   每个请求独立 try/catch：单个接口失败只降级对应卡片（骨架 → 错误说明），不整页报错。
+
+   手机号一律脱敏展示：本页不请求、不渲染完整号码；事件样本里的 phone 是
+   `138****8000` 形态，仅作为文本写入，绝不通过 innerHTML 注入。 #}
+{% extends "layout_admin.html" %}
+{% from "macros/ui.html" import icon with context %}
+
+{% block title %}数据总览 · 易班自动签到{% endblock %}
+
+{% macro kpi(card) %}
+<article class="kpi-card c-{{ card.color }}">
+  <div class="kpi-top">
+    <div class="kpi-identity">
+      <div class="kpi-icon {{ card.icon_color }}">{{ icon(card.icon) }}</div>
+      <div class="kpi-label">{{ card.label }}</div>
+    </div>
+    {% if card.pill_id %}<span class="kpi-pill {{ card.pill_class }}" id="{{ card.pill_id }}" hidden></span>{% endif %}
+  </div>
+  <div class="kpi-value" id="{{ card.value_id }}">
+    <span class="skeleton skeleton--title dash-skel" aria-hidden="true"></span>
+  </div>
+  <div class="kpi-compare" id="{{ card.sub_id }}">
+    <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
+  </div>
+</article>
+{% endmacro %}
+
+{% macro chart_card(id, eyebrow, title, height, extra_class='col-12') %}
+<section class="{{ extra_class }} card">
+  <div class="card-head">
+    <div class="card-title-wrap">
+      <span class="eyebrow">{{ eyebrow }}</span>
+      <h2 class="card-title">{{ title }}</h2>
+    </div>
+    <span class="card-action" id="{{ id }}-coverage"></span>
+  </div>
+  <div class="chart-canvas-wrap" style="height: {{ height }}px;">
+    <canvas id="chart-{{ id }}" role="img" aria-label="{{ title }}"></canvas>
+    <div class="dash-chart-overlay" data-overlay="{{ id }}">
+      <span class="spinner" aria-hidden="true"></span>
+    </div>
+  </div>
+  <div class="chart-meta-row" id="{{ id }}-meta" hidden></div>
+</section>
+{% endmacro %}
+
+{% block content %}
+<div class="dash-page" id="dashboard-root">
+
+  <section class="kpi-grid" aria-label="关键指标">
+    {{ kpi({
+      'color': 'primary', 'icon_color': 'primary', 'icon': 'list',
+      'label': '活跃账号', 'pill_id': 'kpi-accounts-pill', 'pill_class': 'info',
+      'value_id': 'kpi-accounts-value', 'sub_id': 'kpi-accounts-sub',
+    }) }}
+    {{ kpi({
+      'color': 'purple', 'icon_color': 'purple', 'icon': 'users',
+      'label': '注册用户', 'pill_id': 'kpi-users-pill', 'pill_class': 'info',
+      'value_id': 'kpi-users-value', 'sub_id': 'kpi-users-sub',
+    }) }}
+    {{ kpi({
+      'color': 'success', 'icon_color': 'success', 'icon': 'circle-check',
+      'label': '今日签到成功率', 'pill_id': 'kpi-rate-pill', 'pill_class': 'flat',
+      'value_id': 'kpi-rate-value', 'sub_id': 'kpi-rate-sub',
+    }) }}
+    {{ kpi({
+      'color': 'danger', 'icon_color': 'danger', 'icon': 'triangle-alert',
+      'label': '待处理事项', 'pill_id': '', 'pill_class': '',
+      'value_id': 'kpi-pending-value', 'sub_id': 'kpi-pending-sub',
+    }) }}
+  </section>
+
+  <div class="grid">
+    {{ chart_card('trend', '近 30 天', '每日签到结果', 300) }}
+
+    <section class="col-6 card">
+      <div class="card-head">
+        <div class="card-title-wrap">
+          <span class="eyebrow">近 30 天</span>
+          <h2 class="card-title">签到结果分布</h2>
+        </div>
+        <span class="card-action" id="dist-coverage"></span>
+      </div>
+      <div class="chart-canvas-wrap" style="height: 280px;">
+        <canvas id="chart-dist" role="img" aria-label="签到结果分布"></canvas>
+        <div class="dash-chart-overlay" data-overlay="dist">
+          <span class="spinner" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="chart-meta-row" id="dist-meta" hidden></div>
+    </section>
+
+    <section class="col-6 card">
+      <div class="card-head">
+        <div class="card-title-wrap">
+          <span class="eyebrow">自选时间片</span>
+          <h2 class="card-title">各时段自选人数</h2>
+        </div>
+        <span class="card-action" id="slots-coverage"></span>
+      </div>
+      <div class="chart-canvas-wrap" style="height: 280px;">
+        <canvas id="chart-slots" role="img" aria-label="自选时间片已选人数"></canvas>
+        <div class="dash-chart-overlay" data-overlay="slots">
+          <span class="spinner" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="chart-meta-row" id="slots-meta" hidden></div>
+    </section>
+
+    <section class="col-12 card">
+      <div class="card-head">
+        <div class="card-title-wrap">
+          <span class="eyebrow">签到日历</span>
+          <h2 class="card-title">每日签到结果热力图</h2>
+        </div>
+        <div class="btn-group" role="group" aria-label="切换月份">
+          <button type="button" class="btn btn--ghost btn--sm" id="cal-prev" aria-label="上一月">{{ icon('chevron-left') }}</button>
+          <span class="btn btn--ghost btn--sm is-active" id="cal-label" aria-live="polite">—</span>
+          <button type="button" class="btn btn--ghost btn--sm" id="cal-next" aria-label="下一月">{{ icon('chevron-right') }}</button>
+        </div>
+      </div>
+      <div class="dash-cal-scroll">
+        <div class="mini-cal-grid" id="mini-cal" role="grid" aria-label="签到结果日历"></div>
+      </div>
+      <div class="dash-cal-foot">
+        <div class="dash-cal-legend">
+          <span class="dash-cal-key"><i class="is-ok"></i>有成功</span>
+          <span class="dash-cal-key"><i class="is-fail"></i>有失败</span>
+          <span class="dash-cal-key"><i class="is-none"></i>仅跳过或无记录</span>
+          <span class="dash-cal-key"><i class="is-future"></i>未来</span>
+        </div>
+        <span class="dash-cal-note" id="cal-note">数据来自真实签到事件（不含健康探针），覆盖最近 30 天</span>
+      </div>
+    </section>
+
+    <section class="col-12 card">
+      <div class="card-head">
+        <div class="card-title-wrap">
+          <span class="eyebrow">系统状态</span>
+          <h2 class="card-title">运行状态与公告</h2>
+        </div>
+        <button type="button" class="btn btn--ghost btn--sm" id="ping-btn">
+          {{ icon('activity') }}<span>检测易班接口</span>
+        </button>
+      </div>
+
+      <div class="dash-health">
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('clock') }}<span>服务器时钟</span></div>
+          <div class="dash-health-value" id="health-clock">
+            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('server') }}<span>易班接口连通性</span></div>
+          <div class="dash-health-value" id="health-ping">
+            <span class="dash-muted">尚未检测（点击右上角「检测易班接口」）</span>
+          </div>
+        </div>
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('pause') }}<span>全局签到暂停</span></div>
+          <div class="dash-health-value" id="health-global-pause">
+            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('user') }}<span>新用户注册暂停</span></div>
+          <div class="dash-health-value" id="health-reg-pause">
+            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="dash-health-row dash-health-row--wrap">
+          <div class="dash-health-label">{{ icon('bell') }}<span>站点公告</span></div>
+          <div class="dash-health-value" id="health-announcement">
+            <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ request.script_root }}/static/vendor/chartjs/chart.min.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/dashboard.js?v={{ web_version }}"></script>
+{% endblock %}
