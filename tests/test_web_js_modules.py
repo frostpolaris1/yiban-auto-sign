@@ -1,69 +1,68 @@
 # -*- coding: utf-8 -*-
-"""管理端脚本分模块的守卫（2026-09-10，A4-2）。
+"""前端脚本装配守卫（多页 MPA + 组件化后的等价判据）。
 
-## 背景
-`web/static/js/app.js`（2765 行）已按**连续区间**拆成 7 个模块（原文件删除），
-在 `templates/index.html` 里按序以 classic `<script src>` 加载。
-拆分方式见 `web/static/js/` 下每个文件的头 3 行；当时的逐字节等价证明见 A4-2 的提交信息
-（7 个文件去掉 3 行文件头后按序拼接 == 原 app.js）。原文件已删，那份证明无法在测试里复现，
-故本文件改为钉住**拆分之后新引入的、最容易静默炸掉的风险**。
+## 为什么替换旧的「7 个连续切片」守卫
+
+旧守卫钉的是 `web/static/js/app.js`（2765 行单页脚本）按**连续源区间**拆成 7 个
+classic 切片、由 `templates/index.html` 按序加载。前端换壳为多页 MPA 后：
+
+  · `index.html` 已无路由渲染（`/` 由 `pages/dashboard.html` + `layout_admin.html` 承载），
+    它的加载顺序不再是运行前提；
+  · 页面脚本重写为 IIFE 页面模块（`pages/*.js`）与共享组件（`components/*.js`），
+    文件间不再有「原 app.js 的连续区间」关系，源区间连续性无从声明也无意义。
+
+旧守卫保护的两件事仍然有效，必须继续钉住，只是载体迁移：
+  ① **不靠索引误加载/漏加载**：classic script 共享同一全局词法作用域，任一实际渲染的
+     页面里，`core.js` 必须先于组件与页面模块；引用的自研 JS 必须真实存在（无悬空 src）。
+  ② **不因拆文件撞名**：多个文件顶层用同一个 `const/let/function/class` 名会让整段
+     script SyntaxError、页面静默失去全部交互——拆得越碎越要查。
 
 ## 本文件钉住的四件事
 
-1. **`app.js` 不应复活、原 7 个切片模块必须在位** —— 否则说明有人回滚了一半。
-2. **`index.html` 的加载顺序必须与期望一致** —— classic script 共享全局作用域，
-   顺序错了会出现"函数还没定义就被调用"（只在运行时、且可能只在某个 tab 才暴露）。
-3. **跨模块顶层声明不得重名** —— 这是分模块**新引入**的头号风险：
-   同一份文件里不可能重名，但拆成多份后，两个文件顶层用同一个 `const/let/function/class` 名
-   → **整个脚本 SyntaxError 直接不执行**，页面静默失去全部交互。静态扫描即可抓住。
-4. **各切片模块头声明的源区间必须连续递增** —— 保证"分区切割、无重叠无遗漏"这件事仍然成立，
-   也让人一眼能看出每个模块对应原文件的哪一段。
-
-## 2026-09-12：新增模块与旧切片的区分
-
-签到日历被抽成 `web/static/js/calendar.js`（全站唯一实现，用户页与旧管理端的
-「我的账号」共用），加载在 `mine.js` 之前。它是**新代码、不是原 `app.js` 的切片**，
-因此没有 `L<起>-L<止>` 源区间声明，第 4 条只约束 `EXPECTED_MODULES`；
-但它与旧模块同处一个全局词法作用域（同为 classic script），故第 3 条的重名检查
-必须把它一并纳入（见 `EXTRA_MODULES`）。
+1. `app.js` 不得复活；核心与共享组件模块必须在位。
+2. 每个**活模板**（`layout_*.html` / `pages/*.html` / `login.html`）`{% block scripts %}`
+   引用的 `/static/js/...` 都必须存在；且按 extends 展开后的有效加载顺序里
+   `core.js` 先于其它模块。
+3. 全部自研 JS（排除 `static/vendor/`）的顶层声明不得重名。
+4. `pages/accounts.js`（重写对象）不得再引用已退役的单页脚本 `app.js`。
 """
 
+import glob
 import os
 import re
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_DIR = os.path.join(BASE, "web", "static", "js")
-INDEX = os.path.join(BASE, "web", "templates", "index.html")
+TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 
-# 原 app.js 的 7 个连续切片（含头 3 行声明的源区间；改动前请同步本表并说明原因）
-EXPECTED_MODULES = (
-    ("core.js", 1, 245),
-    ("pages/accounts.js", 246, 869),
-    ("pages/logs.js", 870, 1058),
-    ("pages/settings.js", 1059, 1934),
-    ("shared-ui.js", 1935, 2093),
-    ("pages/users.js", 2094, 2359),
-    ("pages/mine.js", 2360, 2765),
-)
-
-# 新架构下新增、与原 app.js 无切片关系的共享模块（无源区间声明，但同处全局作用域）
-EXTRA_MODULES = ("calendar.js",)
-
-# index.html 里 /static/js/ 的期望加载顺序（新模块排在它所服务的模块之前）
-LOAD_ORDER = (
+# 核心与共享组件模块：缺失即页面初始化失败，必须存在。
+REQUIRED_MODULES = (
     "core.js",
     "calendar.js",
+    "components/account-form.js",
+    "components/time-pref.js",
+    "components/account-table.js",
+    "components/account-ops.js",
     "pages/accounts.js",
-    "pages/logs.js",
-    "pages/settings.js",
-    "shared-ui.js",
-    "pages/users.js",
-    "pages/mine.js",
+    "pages/user_accounts.js",
 )
 
+# 实际渲染的页面模板：layout_*.html（外壳，自带 core.js）+ pages/*.html（正文，含 block scripts）
+# + login.html（认证页正文，extends layout_auth.html）。
+def _active_templates():
+    out = sorted(glob.glob(os.path.join(TEMPLATES_DIR, "layout_*.html")))
+    out += sorted(glob.glob(os.path.join(TEMPLATES_DIR, "pages", "*.html")))
+    login = os.path.join(TEMPLATES_DIR, "login.html")
+    if os.path.isfile(login):
+        out.append(login)
+    return [p for p in out if os.path.basename(p) != "_stub_macro.html"]
+
+_JS_REF_RE = re.compile(r"/static/js/([^\"'?\s]+)")
+_EXTENDS_RE = re.compile(r'{%-?\s*extends\s+"([^"]+)"\s*-?%}')
+
 # 顶层声明：只认**行首**（列 0）的声明，这才落在共享的全局词法作用域里；
-# 缩进的（函数体内）各自独立，不参与重名检查。
+# 缩进的（函数体内/IIFE 内）各自独立，不参与重名检查。
 _TOP_DECL_RE = re.compile(
     r"^(?:async\s+)?function\s+(\w+)"
     r"|^(?:let|const|var)\s+(\w+)"
@@ -71,52 +70,98 @@ _TOP_DECL_RE = re.compile(
 )
 
 
-def _module_path(rel):
-    return os.path.join(JS_DIR, rel.replace("/", os.sep))
-
-
 def _read(path):
     with open(path, encoding="utf-8") as fh:
         return fh.read()
 
 
-class JsModuleSplitTest(unittest.TestCase):
-    def test_app_js_is_gone_and_modules_exist(self):
-        """`app.js` 不应复活；7 个模块都必须在。"""
+def _js_refs(path):
+    return [m.group(1) for m in _JS_REF_RE.finditer(_read(path))]
+
+
+def _effective_js_order(path):
+    """展开 extends 链后的 /static/js 引用顺序（外壳在前、页面在后）。
+
+    layout_*.html 均为根模板（不 extends 其它），故一层解析足够；仍保留递归以容忍
+    将来出现「页面 → 中间壳 → 根壳」的层级。
+    """
+    src = _read(path)
+    own = _js_refs(path)
+    ext = _EXTENDS_RE.search(src)
+    if not ext:
+        return own
+    parent = os.path.join(TEMPLATES_DIR, ext.group(1).replace("/", os.sep))
+    if not os.path.isfile(parent):
+        return own
+    return _effective_js_order(parent) + own
+
+
+def _iter_authored_js():
+    for dirpath, _dirnames, filenames in os.walk(JS_DIR):
+        if os.sep + "vendor" + os.sep in dirpath + os.sep:
+            continue
+        for name in sorted(filenames):
+            if name.endswith(".js"):
+                yield os.path.join(dirpath, name)
+
+
+class JsAssemblyGuardTest(unittest.TestCase):
+    def test_app_js_is_gone_and_required_modules_exist(self):
+        """`app.js` 不应复活；核心与共享组件模块必须在位。"""
         problems = []
         if os.path.exists(os.path.join(JS_DIR, "app.js")):
-            problems.append("  web/static/js/app.js 又出现了 —— 拆分被回滚了一半？")
-        for rel, _start, _end in EXPECTED_MODULES:
-            if not os.path.exists(_module_path(rel)):
+            problems.append("  web/static/js/app.js 又出现了 —— 单页脚本已退役，不应回滚")
+        for rel in REQUIRED_MODULES:
+            if not os.path.exists(os.path.join(JS_DIR, rel.replace("/", os.sep))):
                 problems.append(f"  web/static/js/{rel} 缺失")
-        for rel in EXTRA_MODULES:
-            if not os.path.exists(_module_path(rel)):
-                problems.append(f"  web/static/js/{rel} 缺失（新增的共享模块）")
         if problems:
-            self.fail("管理端脚本模块清单不对：\n" + "\n".join(problems))
+            self.fail("前端脚本模块清单不对：\n" + "\n".join(problems))
 
-    def test_index_loads_modules_in_the_expected_order(self):
-        """index.html 的 classic script 顺序必须与期望一致（顺序错了只在运行时才炸）。"""
-        html = _read(INDEX)
-        found = [
-            m.group(1)
-            for m in re.finditer(r'<script src="[^"]*/static/js/([^"?]+)\?', html)
-        ]
-        self.assertEqual(
-            found,
-            list(LOAD_ORDER),
-            "index.html 里 /static/js/ 的加载顺序与期望不符 ——"
-            " classic script 共享全局作用域，顺序改动会让「后加载者依赖的定义」落空：\n"
-            f"  实际：{found}\n  期望：{list(LOAD_ORDER)}",
-        )
+    def test_active_templates_reference_only_existing_scripts(self):
+        """活模板引用的自研 JS 必须真实存在（无悬空 src）。"""
+        problems = []
+        for tpl in _active_templates():
+            for ref in _effective_js_order(tpl):
+                disk = os.path.join(JS_DIR, ref.replace("/", os.sep))
+                if not os.path.isfile(disk):
+                    problems.append(
+                        f"  {os.path.relpath(tpl, BASE)}: /static/js/{ref} 悬空（磁盘无此文件）"
+                    )
+        if problems:
+            self.fail(
+                "模板引用了不存在的自研脚本 —— classic script 共享全局作用域，"
+                "悬空 src 会让后续依赖它的页面脚本在运行时才炸：\n" + "\n".join(problems)
+            )
 
-    def test_no_duplicate_top_level_declarations_across_modules(self):
-        """跨模块顶层声明不得重名（重名 → 整个脚本 SyntaxError，页面静默失去交互）。"""
+    def test_core_js_loads_before_components_and_page_modules(self):
+        """按 extends 展开后的有效顺序里，`core.js` 必须先于其它自研模块。"""
+        problems = []
+        for tpl in _active_templates():
+            order = _effective_js_order(tpl)
+            if "core.js" not in order:
+                problems.append(f"  {os.path.relpath(tpl, BASE)}: 有效顺序里没有 core.js")
+                continue
+            core_at = order.index("core.js")
+            for i, ref in enumerate(order):
+                if ref == "core.js":
+                    continue
+                if i < core_at:
+                    problems.append(
+                        f"  {os.path.relpath(tpl, BASE)}: {ref} 排在 core.js 之前"
+                    )
+        if problems:
+            self.fail(
+                "core.js（YB 命名空间与共享能力）必须在组件/页面模块之前加载 ——"
+                " 顺序错了只在运行时暴露，且可能只在某个页面才炸：\n" + "\n".join(problems)
+            )
+
+    def test_no_duplicate_top_level_declarations_across_authored_js(self):
+        """全部自研 JS 顶层声明不得重名（重名 → 整个 script SyntaxError，页面静默失交互）。"""
         seen = {}
         dupes = []
-        order = [rel for rel, _s, _e in EXPECTED_MODULES] + list(EXTRA_MODULES)
-        for rel in order:
-            for lineno, line in enumerate(_read(_module_path(rel)).split("\n"), 1):
+        for path in _iter_authored_js():
+            rel = os.path.relpath(path, JS_DIR)
+            for lineno, line in enumerate(_read(path).split("\n"), 1):
                 m = _TOP_DECL_RE.match(line)
                 if not m:
                     continue
@@ -130,34 +175,19 @@ class JsModuleSplitTest(unittest.TestCase):
                     seen[name] = (rel, lineno)
         if dupes:
             self.fail(
-                "发现跨模块重名的顶层声明 —— classic script 共享同一个全局词法作用域，"
+                "发现跨文件重名的顶层声明 —— classic script 共享同一个全局词法作用域，"
                 "同名 const/let 会让**整个脚本直接 SyntaxError**（页面静默失去全部交互）：\n"
                 + "\n".join(dupes)
             )
 
-    def test_module_headers_declare_contiguous_source_ranges(self):
-        """原 app.js 的切片模块，头 3 行声明的源区间必须连续递增（证明「分区切割」未被破坏）。
-
-        只约束 `EXPECTED_MODULES`：`EXTRA_MODULES`（如 calendar.js）是新写的共享模块，
-        不是原 `app.js` 的一段，没有也不应有源区间声明。
-        """
-        expected_start = 1
-        problems = []
-        for rel, start, end in EXPECTED_MODULES:
-            text = _read(_module_path(rel))
-            head = "\n".join(text.split("\n")[:3])
-            m = re.search(r"L(\d+)-L(\d+)", head)
-            if not m:
-                problems.append(f"  {rel}：头 3 行里没有 `L<起>-L<止>` 形式的源区间声明")
-                continue
-            got = (int(m.group(1)), int(m.group(2)))
-            if got != (start, end):
-                problems.append(f"  {rel}：声明 {got}，期望 {(start, end)}")
-            if start != expected_start:
-                problems.append(f"  {rel}：起点 {start}，但上一段结束于 {expected_start - 1}（不连续）")
-            expected_start = end + 1
-        if problems:
-            self.fail("模块头声明的源区间不对：\n" + "\n".join(problems))
+    def test_accounts_page_module_does_not_reference_retired_app_js(self):
+        """重写后的 `pages/accounts.js` 不得再引用已退役的 `app.js` 或旧切片区间标记。"""
+        src = _read(os.path.join(JS_DIR, "pages", "accounts.js"))
+        for bad in ("app.js", "L246-L869", "L870-L1058"):
+            self.assertNotIn(
+                bad, src,
+                f"pages/accounts.js 仍引用退役的旧栈标记 {bad!r}：页面脚本应为独立 IIFE 模块",
+            )
 
 
 if __name__ == "__main__":
