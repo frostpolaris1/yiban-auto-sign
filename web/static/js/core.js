@@ -427,10 +427,13 @@
   // partials/modals/password.html，沿用旧 DOM id（modal-password）会在真实页面 ReferenceError。
   // set 模式走完整口令策略（长度 + 类别）；confirm 模式只验非空，当前口令由后端最终核对。
   // 动态文案（邮箱等）只经 el 的 text 选项写入 textContent，无 innerHTML 注入面。
-  function openPasswordModal(desc, cb) { return openPwModal(desc, cb, "set"); }
-  function openConfirmPasswordModal(desc, cb) { return openPwModal(desc, cb, "confirm"); }
-  function openPwModal(desc, cb, mode) {
+  function openPasswordModal(desc, cb, onCancel) { return openPwModal(desc, cb, "set", onCancel); }
+  function openConfirmPasswordModal(desc, cb, onCancel) { return openPwModal(desc, cb, "confirm", onCancel); }
+  // onCancel（可选）：用户取消/关闭口令框时回调 —— 调用方据此把"未提交"这条路径走完
+  // （例如把一次显式保存标记为取消，而不是让外层等待一个永不落定的 Promise）。
+  function openPwModal(desc, cb, mode, onCancel) {
     var isConfirm = mode === "confirm";
+    var submitted = false;
     var inputId = "pm-pw-" + (++uidSeq);
     var input = el("input", {
       id: inputId, class: "input", type: "password",
@@ -457,6 +460,7 @@
       // 避免"前端放行、提交后才 400"；confirm 模式只验非空。
       if (!isConfirm && !passwordPolicyOk(pw)) return reject("密码" + PW_POLICY_HINT);
       var fn = cb;
+      submitted = true;
       closeModal(pwHandle); // 先关本层再回调：回调常紧接着叠开第二个模态
       if (fn) fn(pw);
       return false; // 已手动关闭
@@ -465,6 +469,7 @@
       title: isConfirm ? "安全确认" : "重置密码",
       body: field,
       onOpen: function () { input.focus(); },
+      onClose: function () { if (!submitted && onCancel) onCancel(); },
       actions: [
         { label: "取消", variant: "ghost" },
         { label: isConfirm ? "确认操作" : "确认重置", variant: "primary", onClick: submit }

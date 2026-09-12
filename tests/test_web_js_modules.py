@@ -52,6 +52,8 @@ REQUIRED_MODULES = (
     "components/my-mail-notify.js",
     "components/my-accounts-page.js",
     "components/time-field.js",
+    "components/select-field.js",
+    "components/range-field.js",
     "components/sign-calendar-view.js",
     "components/settings-schedule.js",
     "components/settings-health.js",
