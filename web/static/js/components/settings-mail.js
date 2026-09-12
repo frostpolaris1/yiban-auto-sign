@@ -48,27 +48,37 @@
     return (!s || s.indexOf("*") !== -1 || s.charAt(0) === "<") ? "" : s;
   }
 
-  function cellInput(name, type, placeholder, ariaLabel, isPass) {
+  // 非敏感字段（host / port）回填当前值，便于在原配置上修改
+  function cellInput(name, type, placeholder, ariaLabel, value) {
     var input = YB.el("input", {
       class: "input", type: type, placeholder: placeholder,
-      autocomplete: isPass ? "new-password" : "off", "data-f": name,
-      "aria-label": ariaLabel
+      autocomplete: "off", "data-f": name, "aria-label": ariaLabel
     });
     if (type === "number") { input.min = "1"; input.max = "65535"; }
+    if (value !== "" && value != null) input.value = String(value);
     return input;
+  }
+
+  // 脱敏字段：后端下发的 user 已打码、授权码永不回显 —— **绝不回填 value**，只作 placeholder
+  // （回填会让保存把打码串当真实值落盘，损坏配置）。
+  function maskedCellInput(name, type, placeholder, ariaLabel) {
+    return YB.el("input", {
+      class: "input", type: type, placeholder: placeholder,
+      autocomplete: type === "password" ? "new-password" : "off",
+      "data-f": name, "aria-label": ariaLabel
+    });
   }
 
   function smtpRow(entry, index) {
     var tr = YB.el("tr");
     var tdHost = YB.el("td");
-    // user 已由后端打码：只作 placeholder，输入框恒为空（留空=沿用旧值，避免误清）
-    tdHost.appendChild(cellInput("host", "text", "smtp.example.com", "SMTP " + (index + 1) + " 服务器 host", false));
+    tdHost.appendChild(cellInput("host", "text", "smtp.example.com", "SMTP " + (index + 1) + " 服务器 host", entry.host || ""));
     var tdPort = YB.el("td");
-    tdPort.appendChild(cellInput("port", "number", "465", "SMTP " + (index + 1) + " 端口", false));
+    tdPort.appendChild(cellInput("port", "number", "465", "SMTP " + (index + 1) + " 端口", entry.port || 465));
     var tdUser = YB.el("td");
-    tdUser.appendChild(cellInput("user", "text", entry.user || "留空沿用", "SMTP " + (index + 1) + " 发件账号", false));
+    tdUser.appendChild(maskedCellInput("user", "text", entry.user || "留空沿用", "SMTP " + (index + 1) + " 发件账号"));
     var tdPass = YB.el("td");
-    tdPass.appendChild(cellInput("pass", "password", entry.has_pass ? "已配置，留空沿用" : "未配置", "SMTP " + (index + 1) + " 授权码", true));
+    tdPass.appendChild(maskedCellInput("pass", "password", entry.has_pass ? "已配置，留空沿用" : "未配置", "SMTP " + (index + 1) + " 授权码"));
     var tdOps = YB.el("td");
     var del = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm btn--danger-ghost", text: "删除" });
     del.setAttribute("aria-label", "删除 SMTP " + (index + 1));
@@ -114,6 +124,7 @@
   }
 
   function load() {
+    if (!ctx.isMaster) return Promise.resolve();   // 非主管理员不拉（整卡已禁用，避免渲染出"看似可编辑"的行）
     return YB.api("GET", "/api/mail-config").then(function (data) {
       var status = $("sm-status");
       if (status) {

@@ -20,6 +20,7 @@
   var state = { isMaster: false, capacityEst: null };
 
   /* ---------------- 页面级状态条（加载中 / 失败 + 重试） ---------------- */
+  var statusTimer = null;
   function setStatus(tone, text, retry) {
     var box = $("set-status");
     if (!box) return;
@@ -29,9 +30,17 @@
     if (t) t.textContent = text;
     var btn = box.querySelector("[data-set-retry]");
     if (btn) btn.hidden = !retry;
-    box.hidden = false;
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+    // 短请求（本地通常 <80ms）不显示加载条：状态条在文档流内，显示即把 tabs 下推，
+    // 「闪一下 + 顶一下」比不提示更差。失败态立即显示（用户需要看到错误与重试入口）。
+    if (retry) { box.hidden = false; return; }
+    statusTimer = setTimeout(function () { box.hidden = false; }, 200);
   }
-  function hideStatus() { var box = $("set-status"); if (box) box.hidden = true; }
+  function hideStatus() {
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+    var box = $("set-status");
+    if (box) box.hidden = true;
+  }
 
   /* ---------------- 分区与深链 ?tab= ---------------- */
   function tabLinks() {
@@ -126,9 +135,11 @@
     });
   }
 
-  // 首屏与页面级重试共用：核心设置 + 两张主管理员专属卡（各自失败就地提示 + 重试）
+  // 首屏与页面级重试共用：核心设置 + 两张主管理员专属卡。非主管理员不拉通知/邮件
+  // （整 tab 已禁用，拉回来只会渲染出"看起来可编辑"的行；后端 GET 也会返回脱敏数据）。
   function startLoad() {
     return loadAll().then(function () {
+      if (!state.isMaster) return;
       YB.settingsNotify.load();
       YB.settingsMail.load();
     });

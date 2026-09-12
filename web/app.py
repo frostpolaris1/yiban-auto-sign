@@ -3101,7 +3101,7 @@ def create_app(host=None):
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/mine_calendar.html", "mine-calendar", ["我的", "签到日历"])
+        return _render_admin_page("pages/mine_calendar.html", "mine-calendar", ["我的", "我的日历"])
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
     @app.after_request
@@ -5476,10 +5476,10 @@ def create_app(host=None):
                 if err:
                     return jsonify({"error": err}), 400
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400
-            # 管理员提交的账号归属 'admin'（后台添加账号同理），直接生效免审核
-            clean["owner"] = (
-                "admin" if _current_role() == "admin" else session.get("username", "").lower()
-            )
+            # 归属一律取本人邮箱（与「我的账号」视图同口径，一人一号）；无人认领的裸账号
+            # （owner='admin'）只由账号管理页的「不填邮箱」分支创建。此前管理员提交写死
+            # 'admin'，在「仅本人邮箱」口径下会让注册管理员自提交的账号立刻从个人视图消失。
+            clean["owner"] = session.get("username", "").lower()
             clean["status"] = ACCOUNT_STATUS_PENDING if _current_role() != "admin" else ACCOUNT_STATUS_ACTIVE
             try:
                 db.add_account(clean)

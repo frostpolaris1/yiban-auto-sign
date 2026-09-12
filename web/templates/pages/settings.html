@@ -53,18 +53,24 @@
 <div data-tab-group>
   {# 窄屏 tab 条可横滑：外层滚动容器，避免整页横向滚动 #}
   <div class="tabs-scroll">
-    <div class="tabs" role="tablist">
-      <a class="tab is-active" href="#" data-tab-target="schedule">签到调度</a>
-      <a class="tab" href="#" data-tab-target="announcement">公告</a>
-      <a class="tab" href="#" data-tab-target="notify">通知通道</a>
-      <a class="tab" href="#" data-tab-target="quota">容量配额</a>
-      <a class="tab" href="#" data-tab-target="health">健康与探针</a>
-      <a class="tab" href="#" data-tab-target="switches" id="set-tab-switches" hidden>系统开关</a>
+    <div class="tabs" role="tablist" aria-label="设置分区">
+      <a class="tab is-active" role="tab" id="set-tab-schedule" aria-selected="true"
+         aria-controls="set-panel-schedule" href="#" data-tab-target="schedule">签到调度</a>
+      <a class="tab" role="tab" id="set-tab-announcement" aria-selected="false"
+         aria-controls="set-panel-announcement" href="#" data-tab-target="announcement">公告</a>
+      <a class="tab" role="tab" id="set-tab-notify" aria-selected="false"
+         aria-controls="set-panel-notify" href="#" data-tab-target="notify">通知通道</a>
+      <a class="tab" role="tab" id="set-tab-quota" aria-selected="false"
+         aria-controls="set-panel-quota" href="#" data-tab-target="quota">容量配额</a>
+      <a class="tab" role="tab" id="set-tab-health" aria-selected="false"
+         aria-controls="set-panel-health" href="#" data-tab-target="health">健康与探针</a>
+      <a class="tab" role="tab" id="set-tab-switches" aria-selected="false"
+         aria-controls="set-panel-switches" href="#" data-tab-target="switches" hidden>系统开关</a>
     </div>
   </div>
 
   <!-- 1. 签到调度：排序/分布/掐头去尾/间隔/窗口（主管理员）+ 周六·周日（任意管理员） -->
-  <div class="tab-panel is-active" data-tab-id="schedule">
+  <div class="tab-panel is-active" role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
     <section class="card" id="set-schedule">
       <div class="card-head">
         <div class="card-title-wrap">
@@ -78,7 +84,7 @@
       </div>
       <p class="alert info" id="ss-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <div class="body">仅主管理员可修改排序、分布、掐头去尾、账号间隔与签到窗口；周末开关任意管理员可改。</div>
+        <span class="body">仅主管理员可修改排序、分布、掐头去尾、账号间隔与签到窗口；周末开关任意管理员可改。</span>
       </p>
       <div class="form-grid">
         <div class="field">
@@ -185,7 +191,7 @@
   </div>
 
   <!-- 2. 全局公告：任意管理员 -->
-  <div class="tab-panel" data-tab-id="announcement">
+  <div class="tab-panel" role="tabpanel" id="set-panel-announcement" aria-labelledby="set-tab-announcement" data-tab-id="announcement">
     <section class="card" id="set-announcement-card">
       <div class="card-head">
         <div class="card-title-wrap">
@@ -208,7 +214,7 @@
   </div>
 
   <!-- 3. 通知通道：推送 + 邮件两段，仅主管理员 -->
-  <div class="tab-panel" data-tab-id="notify">
+  <div class="tab-panel" role="tabpanel" id="set-panel-notify" aria-labelledby="set-tab-notify" data-tab-id="notify">
     <section class="card" id="set-notify">
       <div class="card-head">
         <div class="card-title-wrap">
@@ -221,7 +227,7 @@
       </div>
       <p class="alert info" id="sn-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <div class="body">仅主管理员可配置消息推送与邮件通道，受限控件已禁用；如需调整请联系主管理员。</div>
+        <span class="body">仅主管理员可配置消息推送与邮件通道，受限控件已禁用；如需调整请联系主管理员。</span>
       </p>
 
       <h3 class="set-sub set-sub--first">消息推送</h3>
@@ -341,7 +347,7 @@
   </div>
 
   <!-- 4. 容量配额：只保留上限编辑，仅主管理员 -->
-  <div class="tab-panel" data-tab-id="quota">
+  <div class="tab-panel" role="tabpanel" id="set-panel-quota" aria-labelledby="set-tab-quota" data-tab-id="quota">
     <section class="card" id="set-quota">
       <div class="card-head">
         <div class="card-title-wrap">
@@ -351,7 +357,7 @@
       </div>
       <p class="alert info" id="set-cap-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <div class="body">仅主管理员可修改容量上限，控件已禁用；如需调整请联系主管理员。</div>
+        <span class="body">仅主管理员可修改容量上限，控件已禁用；如需调整请联系主管理员。</span>
       </p>
       <div class="form-grid">
         <div class="field">
@@ -379,7 +385,7 @@
   </div>
 
   <!-- 5. 健康与探针：任意管理员，改动立即保存 -->
-  <div class="tab-panel" data-tab-id="health">
+  <div class="tab-panel" role="tabpanel" id="set-panel-health" aria-labelledby="set-tab-health" data-tab-id="health">
     <section class="card" id="set-health">
       <div class="card-head">
         <div class="card-title-wrap">
@@ -431,7 +437,7 @@
   </div>
 
   <!-- 6. 系统开关：危险语义，仅主管理员整 tab 可见 -->
-  <div class="tab-panel" data-tab-id="switches">
+  <div class="tab-panel" role="tabpanel" id="set-panel-switches" aria-labelledby="set-tab-switches" data-tab-id="switches">
     <section class="card set-danger" id="set-switches">
       <div class="card-head">
         <div class="card-title-wrap">

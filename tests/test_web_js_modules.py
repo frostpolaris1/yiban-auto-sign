@@ -337,16 +337,22 @@ class JsAssemblyGuardTest(unittest.TestCase):
 
         后端 GET /api/mail-config 下发的 smtps[].user / has_pass 是打码或占位串；
         一旦作为 `value` 回填，保存时会按字面落盘并损坏配置（或把打码串当授权码）。
-        本测试钉住取值函数本身不回填：`cellInput` 体内不得出现 `.value`，且组件必须
-        保留打码值清洗函数 `clean()`。
+        判据落在**脱敏字段专用构造器**上：`maskedCellInput` 体内不得出现 `.value`，
+        且 user / pass 两列必须走它（host / port 是非敏感字段，允许回填）。
         """
         src = _read(os.path.join(JS_DIR, "components", "settings-mail.js"))
-        m = re.search(r"function cellInput\(.*?\n  \}", src, re.S)
-        self.assertIsNotNone(m, "settings-mail.js 未找到 cellInput（写法变了？请同步本测试）")
+        m = re.search(r"function maskedCellInput\(.*?\n  \}", src, re.S)
+        self.assertIsNotNone(
+            m, "settings-mail.js 未找到 maskedCellInput（脱敏字段专用构造器，写法变了？请同步本测试）"
+        )
         self.assertNotIn(
             ".value", m.group(0),
-            "cellInput 回填了 value —— 脱敏值只允许作 placeholder，不得写进输入框",
+            "maskedCellInput 回填了 value —— 脱敏值只允许作 placeholder，不得写进输入框",
         )
+        self.assertIn('maskedCellInput("user"', src,
+                      "发件账号列必须走 maskedCellInput（后端已打码，不得回填）")
+        self.assertIn('maskedCellInput("pass"', src,
+                      "授权码列必须走 maskedCellInput（绝不回显）")
         self.assertIn("function clean(", src, "settings-mail.js 缺少打码值清洗函数 clean()")
 
     def test_user_ops_batch_limit_matches_backend(self):
