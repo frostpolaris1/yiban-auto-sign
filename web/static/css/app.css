@@ -2929,3 +2929,63 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   .set-more::details-content { transition: none; }
 }
 
+
+/* ==========================================================================
+   28. 仪表盘 KPI 四卡校准（横屏 1212 实测）
+   --------------------------------------------------------------------------
+   1) 卡 1/2 标题被挤成 8–9px 残条：.kpi-top 是 space-between 且 .kpi-pill flex-shrink:0，
+      1212 视口下 4 列每卡内容宽仅 ≈148px，pill 独占 ≈96px 后标题被 ellipsis 吃掉。
+      修法：允许换行 —— 宽度不够时 pill 落到第二行，标题保住整行。
+   2) 单位（/200）与数字基线差 12–14px：vendor 用 vertical-align:top + line-height:2.1，
+      对 44px/line-height:1 的值做顶对齐。改为共享基线。
+   3) 空值复用 44px 粗体渲染 "—"，实测成 58×5 的黑横杠：空态给专属字号/颜色。
+   4) .kpi-compare 的分隔线是 dashed，违反 23 号白名单（全站禁虚线分隔线）。
+   ========================================================================== */
+.kpi-top { flex-wrap: wrap; }
+.kpi-identity { flex: 1 1 auto; }
+.kpi-value sup { font-size: 16px; font-weight: 500; vertical-align: baseline; line-height: 1; color: var(--t-muted); }
+.kpi-compare { border-top-style: solid; }
+.kpi-value--empty { font-size: 20px; font-weight: 600; color: var(--t-muted); letter-spacing: 0; }
+
+/* ==========================================================================
+   29. 设置页输入刻度与卡片节奏校准（横屏 8 图实测）
+   --------------------------------------------------------------------------
+   A) 输入刻度：独占单行字段不超过 680px —— 与 .set-row/.set-danger 同刻度，
+      这样开关、输入框、危险说明共用同一条右缘（实测原来开关 x1072 / 输入 x1406 /
+      表格墨迹 x1091 三套右缘）。列内字段本来 ≤465，不受影响。
+   B) .select 与 .input 等高：实测 select 36 / input 40（差 5px），统一 min-height。
+   C) 组间距：.set-row 与后续 .field 之间补 16px —— 原来只有 .set-row + .set-row 有规则，
+      实测「说明 → 下一字段标签」只剩 8px（组间 < 组内，字段组失去边界）。
+   D) 开关行锚定标签行：align-items:flex-start 让开关与标题行对齐，
+      不再对「标签 + 多行说明」整块居中（实测偏低 18px）。
+   E) 空表体不留底边线：空态行 + .form-actions 上边线会形成「双线夹空带」。
+   ========================================================================== */
+.field { max-width: 680px; }
+.input, .select, .textarea, .input-group { min-height: 40px; }
+/* 组间距：开关行与后续「字段组」之间 —— 结构可能是 .field，也可能是整个 .form-grid
+   （健康卡即后者，实测只写 .field 时组间距为 0） */
+.set-row + .field, .field + .set-row,
+.set-row + .form-grid, .form-grid + .set-row,
+.set-row + .data-toolbar { margin-top: 16px; }
+.set-row { align-items: flex-start; }
+.set-row .switch { margin-top: 1px; }          /* 与标签行光学居中 */
+#sm-smtps .sm-empty-row td { border-bottom: 0; }
+/* SMTP 表：固定列宽 + 左缘与字段对齐（表头不再缩进 14px） */
+#sm-smtps { table-layout: fixed; }
+#sm-smtps th:nth-child(1) { width: 36%; }
+#sm-smtps th:nth-child(2) { width: 108px; }
+#sm-smtps th:nth-child(3) { width: 26%; }
+#sm-smtps th:nth-child(5) { width: 60px; }
+#sm-smtps thead th:first-child, #sm-smtps tbody td:first-child { padding-left: 0; }
+#sm-smtps thead th { padding-top: 0; }
+
+/* ---- 时间字段（时/分两个 .select，取代原生 input[type=time]）----
+   原生时间选择器由 UA 渲染，高亮色/黑框/圆角都不可控（实测高亮 #0075FF ≠ 项目主色）。 */
+.time-field .select { width: auto; flex: 1 1 auto; min-width: 0; text-align: center; border: 0; background: transparent; }
+.time-field .select:focus { box-shadow: none; }
+.time-field .addon { border-right: 0; border-left: 0; background: transparent; padding: 0 6px; }
+
+/* 时间字段容器：两个「时:分」组同行，窄屏换行 */
+.time-field-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.time-field-wrap .input-group { flex: 1 1 150px; min-width: 0; }
+.time-sep { color: var(--t-muted); font-size: 12.5px; flex: 0 0 auto; }
