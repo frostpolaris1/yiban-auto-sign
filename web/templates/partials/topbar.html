@@ -14,9 +14,24 @@
 
   <div class="topbar-actions">
     {# 公告：有内容时由 core.js 显示为可点开的提示条 #}
-    <button type="button" class="icon-btn" id="announcementBtn" hidden aria-label="查看公告">
-      {{ icon('bell') }}<span class="count info" data-announcement-dot hidden></span>
-    </button>
+    {# 通知中心：与用户端一致的下拉面板（不再用全屏公告弹窗）。
+       公告置顶；账号异常与邮件通知两节待后端接口接入（见 docs/refactor 的 PENDING）。 #}
+    <div class="dd-wrap">
+      <button type="button" class="icon-btn" id="announcementBtn" data-dropdown
+              data-notif-always="1" aria-label="通知" aria-haspopup="true">
+        {{ icon('bell') }}<span class="count info" data-announcement-dot hidden></span>
+      </button>
+      <div class="dd-menu notif-menu" role="region" aria-label="通知">
+        <div class="notif-head">通知</div>
+        <div class="notif-list">
+          <div class="notif-section" data-announcement-block hidden>
+            <div class="notif-label">{{ icon('triangle-alert') }}公告</div>
+            <p class="notif-body" data-announcement-text></p>
+          </div>
+          <p class="notif-note">账号异常与邮件通知将在后续版本接入。</p>
+        </div>
+      </div>
+    </div>
 
     <button type="button" class="icon-btn" id="themeToggle" aria-label="切换亮/暗主题" title="切换亮/暗主题"></button>
 

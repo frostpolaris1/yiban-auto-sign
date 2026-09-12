@@ -35,16 +35,8 @@
         {{ icon('plus') }}提交我的易班账号
       </button>
     </div>
-    {# 状态图例：与「签到日历」的图例同一套语义（颜色之外另有图标冗余） #}
-    <ul class="status-legend" aria-label="签到状态图例">
-      <li>{{ icon('clock') }}待签</li>
-      <li>{{ icon('circle-check') }}成功</li>
-      <li>{{ icon('circle-x') }}失败</li>
-      <li>{{ icon('refresh-cw') }}重试</li>
-      <li>{{ icon('ban') }}跳过</li>
-      <li>{{ icon('circle-minus') }}无需</li>
-      <li>{{ icon('circle-pause') }}{{ icon('circle-stop') }}暂停/已取消</li>
-    </ul>
+    {# 签到状态图例/状态行已迁到「签到日历」页：本页只管账号本身（提交/编辑/暂停/删除），
+       避免与日历页重复同一套状态 UI（用户反馈"疑似复用了签到日历组件"）。 #}
     <p id="accounts-empty" class="empty" hidden>
       <span class="empty__icon">{{ icon('user') }}</span>
       <span class="empty__msg">还没有提交账号。提交后等待管理员审核，通过即自动签到。</span>

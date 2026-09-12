@@ -17,7 +17,24 @@
     return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>';
   }
 
-  /* 一张账号日历卡：卡头是账号名 + 脱敏信息，卡体是共享日历挂载点 */
+  /* 当前签到状态（含排队位次）：签到状态属于"结果"信息，从账号页迁到此处 */
+  function statusLine(a) {
+    var s = a.state_status || "pending";
+    if (s === "success" || s === "already") return { cls: "state-line--ok", text: "今日已完成签到" };
+    if (s === "no_task") return { cls: "state-line--muted", text: "今日无需签到" };
+    if (s === "skipped_window" || s === "skipped_norange") return { cls: "state-line--warn", text: "未在签到时段" };
+    if (s === "failed") {
+      return { cls: "state-line--bad", text: "今日签到失败" + (a.state_message ? "：" + a.state_message : "") };
+    }
+    if (s === "paused") return { cls: "state-line--bad", text: "账号密码异常，签到已暂停，请到「账号与设置」修改密码" };
+    if (s === "user_cancelled") return { cls: "state-line--bad", text: "已取消签到（可在「账号与设置」恢复）" };
+    if (s === "retrying") return { cls: "state-line--warn", text: "签到重试中" };
+    // 待签：state_message 形如"计划 HH:MM"（自动错峰），其余情况不展示
+    var plan = a.state_message && a.state_message.indexOf("计划") === 0 ? " · 今日" + a.state_message : "";
+    return { cls: "state-line--muted", text: "待签到" + plan + " · 前方排队 " + a.queue_ahead + " 人" };
+  }
+
+  /* 一张账号日历卡：卡头是账号名 + 当前状态，卡体是共享日历挂载点 */
   function calCard(a, i) {
     var card = YB.el("section", { class: "card cal-card" });
     var head = YB.el("div", { class: "panel-head" });
@@ -25,8 +42,10 @@
     text.appendChild(YB.el("h2", { class: "panel-title", text: a.display_name }));
     text.appendChild(YB.el("p", {
       class: "panel-sub",
-      text: String(a.phone || "") + " · 已生效"
+      text: String(a.phone || "") + (a.phone_model ? " · " + a.phone_model : "")
     }));
+    var line = statusLine(a);
+    text.appendChild(YB.el("p", { class: "panel-sub " + line.cls, text: line.text }));
     head.appendChild(text);
     card.appendChild(head);
     var mount = YB.el("div", { class: "sc-mount" });
