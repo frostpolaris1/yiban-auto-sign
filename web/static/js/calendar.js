@@ -85,18 +85,18 @@
   // selectDate（可选）：渲染完成后自动选中该日并回显日志。
   // 「今天」按钮必须走这条路径——render 是异步的（要等 /api/my-calendar），
   // 在 render 之后同步查格子必然查不到（曾因此点了"今天"只换月份不选中）。
-  function render(mount, phone, selectDate) {
-    if (typeof mount === "string") mount = $(mount);
-    if (!mount) return;
-    var st = monthOf(phone);
-    var year = st.year, month = st.month;
-    var monthStr = year + "-" + pad(month);
-    var selected = selectDate || mount.getAttribute("data-sc-selected") || "";
-    mount.setAttribute("data-sc-phone", phone);
+  var ROWS = 6;                 // 固定 6 行（42 格）：任意月份等高，换月不跳
+  var CELLS = ROWS * 7;
+  var ANIM_MIN_MS = 80;         // 短于此值的请求不播进入动画（加载越短越不该动）
+
+  // 建壳（只建一次）：工具栏与星期表头不随月份重绘，之后只更新标题与网格内容
+  function shell(mount) {
+    var grid = mount.querySelector("[data-sc-grid]");
+    if (grid) return grid;
     mount.innerHTML =
       '<div class="sc-toolbar">'
       + '<div class="sc-toolbar-left">'
-      + '<h3 class="sc-month">' + monthLabel(year, month) + "</h3>"
+      + '<h3 class="sc-month">—</h3>'
       + '<div class="sc-nav">'
       + '<button type="button" class="btn btn--ghost btn--icon sc-nav-btn" data-sc-shift="-1" aria-label="上个月">' + svg("chevron-left") + "</button>"
       + '<button type="button" class="btn btn--ghost btn--icon sc-nav-btn" data-sc-shift="1" aria-label="下个月">' + svg("chevron-right") + "</button>"
@@ -107,34 +107,80 @@
       + WEEK.map(function (w) { return "<span>" + w + "</span>"; }).join("")
       + "</div>"
       + '<div class="sc-grid" data-sc-grid aria-busy="true"></div>';
-    var grid = mount.querySelector("[data-sc-grid]");
+    return mount.querySelector("[data-sc-grid]");
+  }
+
+  // 首屏骨架格：与真实格同尺寸（静态，不做逐格动画）
+  function skeletonHtml() {
+    var out = "";
+    for (var i = 0; i < CELLS; i++) {
+      out += '<span class="sc-cell sc-cell--skeleton" aria-hidden="true"></span>';
+    }
+    return out;
+  }
+
+  // 固定 42 格：前置空位 + 当月日期 + 尾部补齐 → 每个月都是 6 行，卡片高度恒定
+  function gridHtml(data, phone, year, month, monthStr, selected) {
+    var firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
+    var days = new Date(year, month, 0).getDate();
+    var today = todayStr();
+    var cells = [];
+    var lead;
+    for (lead = 0; lead < firstDay; lead++) cells.push('<span class="sc-blank"></span>');
+    for (var d = 1; d <= days; d++) {
+      var date = monthStr + "-" + pad(d);
+      var stt = data.days && data.days[date] ? data.days[date][phone] || "" : "";
+      var wd = new Date(year, month - 1, d).getDay();
+      var sunOff = wd === 0 && !flags.sunday;
+      var satOff = wd === 6 && !flags.saturday;
+      var off = sunOff || satOff;
+      cells.push(dayCell({
+        d: d, date: date, state: stt, off: off, selected: date === selected,
+        offDay: off ? (sunOff ? "日" : "六") : "", isToday: date === today,
+      }));
+    }
+    while (cells.length < CELLS) cells.push('<span class="sc-blank"></span>');
+    return cells.join("");
+  }
+
+  function render(mount, phone, selectDate) {
+    if (typeof mount === "string") mount = $(mount);
+    if (!mount) return;
+    var st = monthOf(phone);
+    var year = st.year, month = st.month;
+    var monthStr = year + "-" + pad(month);
+    var selected = selectDate || mount.getAttribute("data-sc-selected") || "";
+    mount.setAttribute("data-sc-phone", phone);
+    var grid = shell(mount);
+    var label = mount.querySelector(".sc-month");
+    if (!grid.innerHTML) grid.innerHTML = skeletonHtml();
+    grid.setAttribute("aria-busy", "true");
+    var t0 = performance.now();
     YB.api("GET", "/api/my-calendar?month=" + monthStr).then(function (data) {
       flags.sunday = !!data.sunday_sign;          // 管理员开启后周日照常显示/可查
       flags.saturday = data.saturday_sign === 1;  // 默认关闭（v0.29.0 起），开启后周六照常
-      var html = "";
-      var firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
-      var days = new Date(year, month, 0).getDate();
-      for (var i = 0; i < firstDay; i++) html += '<span class="sc-blank"></span>';
-      var today = todayStr();
-      for (var d = 1; d <= days; d++) {
-        var date = monthStr + "-" + pad(d);
-        var cell = data.days && data.days[date] ? data.days[date][phone] || "" : "";
-        var wd = new Date(year, month - 1, d).getDay();
-        var sunOff = wd === 0 && !flags.sunday;
-        var satOff = wd === 6 && !flags.saturday;
-        var off = sunOff || satOff;
-        html += dayCell({
-          d: d, date: date, state: cell, off: off, selected: date === selected,
-          offDay: off ? (sunOff ? "日" : "六") : "", isToday: date === today,
+      // 旧格保留到数据到达：只在慢请求时做一次整体淡出淡入；快请求直接替换（否则只是闪一下）
+      var slow = performance.now() - t0 > ANIM_MIN_MS;
+      if (slow) {
+        grid.classList.add("is-swapping");
+        if (label) label.classList.add("is-swapping");
+      }
+      if (label) label.textContent = monthLabel(year, month);
+      grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected);
+      grid.removeAttribute("aria-busy");
+      if (slow) {
+        requestAnimationFrame(function () {
+          grid.classList.remove("is-swapping");
+          if (label) label.classList.remove("is-swapping");
         });
       }
-      grid.innerHTML = html;
-      grid.removeAttribute("aria-busy");
       if (selectDate) {
         mount.setAttribute("data-sc-selected", selectDate);
         loadLog(mount, selectDate);
       }
     }).catch(function () {
+      grid.classList.remove("is-swapping");
+      if (label) label.classList.remove("is-swapping");
       grid.innerHTML = '<p class="sc-error">日历加载失败，请稍后重试</p>';
       grid.removeAttribute("aria-busy");
     });
@@ -147,38 +193,53 @@
   }
   function logBody() { return document.querySelector("[data-sc-log]"); }
 
-  // 与 pages/user_calendar.html 的服务端静态空态保持同一结构（图标 + 文案）
-  function emptyHtml(text) {
+  // 空态结构（与 pages/user_calendar.html 的服务端静态块一致）。
+  // note 只在"首次进入、还没选日期"时给：按日期的空结果再加一句说明是冗余。
+  function emptyHtml(text, note) {
     return '<p class="sc-empty"><span class="sc-empty-icon" aria-hidden="true">'
-      + svg("calendar") + "</span><span>" + text
-      + '</span><span class="sc-empty-note">签到结果会在每天调度完成后写入日志</span></p>';
+      + svg("calendar") + "</span><span>" + text + "</span>"
+      + (note ? '<span class="sc-empty-note">' + note + "</span>" : "") + "</p>";
   }
 
   function showLogPlaceholder() {
     var box = logBody();
-    if (box) box.innerHTML = emptyHtml("点击左侧日历中的日期，这里会显示当天的签到记录");
+    if (box) box.innerHTML = emptyHtml("点击日历中的日期，查看当天签到记录", "签到结果在每天调度后写入");
     logDate("选择日期查看当天记录");
   }
 
+  // 写入日志面板内容；animate=true 时做一次淡入（仅慢请求调用）
+  function setLogContent(box, html, animate) {
+    box.innerHTML = html;
+    if (animate) {
+      box.classList.add("is-fresh");
+      requestAnimationFrame(function () { box.classList.remove("is-fresh"); });
+    }
+  }
+
   function loadLog(mount, date) {
+    if (typeof mount === "string") mount = $(mount);
     var box = logBody();
     if (!box) return;
     var wd = new Date(date + "T00:00:00").getDay();
     logDate(date);
     // 周六/周日无需签到（各自开关关闭时）直接提示，不查日志
     if ((wd === 0 && !flags.sunday) || (wd === 6 && !flags.saturday)) {
-      box.innerHTML = emptyHtml((wd === 0 ? "周日" : "周六") + "无需签到");
+      setLogContent(box, emptyHtml((wd === 0 ? "周日" : "周六") + "无需签到"));
       return;
     }
-    box.innerHTML = '<p class="sc-empty">' + svg("loader", "sc-ico sc-spin") + " 加载中…</p>";
+    // 取数期间**不替换内容**（否则"加载中 → 结果"会让面板高度与位置跳一下）：
+    // 只把当前内容降透明度表示"正在取"，数据到达后整块换掉并淡入。
+    box.classList.add("is-loading");
+    var t0 = performance.now();
     YB.api("GET", "/api/my-logs?date=" + date).then(function (data) {
-      if (!data.logs || !data.logs.length) {
-        box.innerHTML = emptyHtml(esc(date) + " 暂无签到记录");
-        return;
-      }
-      box.innerHTML = '<pre class="log-view sc-log-text">' + esc(data.logs.join("\n")) + "</pre>";
+      var html = (!data.logs || !data.logs.length)
+        ? emptyHtml(esc(date) + " 暂无签到记录")
+        : '<pre class="log-view sc-log-text">' + esc(data.logs.join(String.fromCharCode(10))) + "</pre>";
+      box.classList.remove("is-loading");
+      setLogContent(box, html, performance.now() - t0 > ANIM_MIN_MS);
     }).catch(function (err) {
-      box.innerHTML = emptyHtml("读取失败，请稍后重试");
+      box.classList.remove("is-loading");
+      setLogContent(box, emptyHtml("读取失败，请稍后重试"));
       YB.toast.error(err && err.message ? err.message : "日志加载失败");
     });
   }
@@ -217,10 +278,8 @@
       st.month += delta;
       if (st.month < 1) { st.month = 12; st.year--; }
       if (st.month > 12) { st.month = 1; st.year++; }
-      var keep = host.getAttribute("data-sc-selected") || "";
+      // 选中态由 data-sc-selected 带给下一次渲染，不再同步查 DOM（render 是异步的）
       render(host, phone);
-      var back = keep ? host.querySelector('[data-sc-date="' + keep + '"]') : null;
-      if (back) select(host, back);
       return;
     }
     if (t.closest("[data-sc-today]")) {
