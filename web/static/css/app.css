@@ -1216,6 +1216,18 @@ html[data-theme="dark"] .auth-aside {
    初版 .auth-card 无底色/边框，直接浮在页面背景上。补底 + 1px 边 + 圆角 + 双层阴影。
    注：相邻表面亮度差只有约 1.1:1（token 决定），可辨识度来自边框与阴影，
    不能用 3:1 去卡"表面"——那是给图形/文字的标准。 */
+.auth-main-center {
+  /* 公告 + 表单同宽成组、整体在主列里居中：
+     · margin:auto 让整组在顶栏与页脚之间居中（不再让卡片单独吃掉全部余量）；
+     · padding-top 保证与顶部工具条至少 16px，窄屏也不会顶上去。 */
+  width: 100%;
+  max-width: 400px;
+  margin: auto;
+  padding-top: 16px;
+}
+/* 组内卡片不再自己居中（否则会与公告错开宽度/位置） */
+.auth-main-center > .auth-card { margin: 0; }
+
 .auth-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -1313,8 +1325,8 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
    必须写成 .alert.auth-announce（0,2,0）才能盖掉 Adminator 的 .alert.warning（0,2,0），
    只写 .auth-announce（0,1,0）会输给 .alert.warning 的底色。 */
 .alert.auth-announce {
-  /* 已移出 .auth-card（与表单剥离）：自带下外边距，卡片仍由 margin:auto 居中 */
-  margin: 0 0 18px;
+  /* 与表单同宽、紧贴其上方（见 .auth-main-center）；不再作为独立块飘在顶部 */
+  margin: 0 0 16px;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -1529,11 +1541,14 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
    面板改用无分隔线的轻量卡头，层级靠 .page-title(22) → .panel-title(15) 拉。 */
 /* 控件（开关/按钮/箭头）必须与左侧文字块**垂直居中**：flex-start 会让控件贴顶，
    与两行文字的整体重心错位（用户反馈「开关和外框没有垂直居中对齐」的根因）。 */
-/* 控件固定在同一行右侧：文字块可自行折行（min-width:0），但**不得挤压控件**
-   （flex-shrink:0）——否则文字一长就把按钮顶到下一行（用户实测截图）。 */
-.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-.panel-head-text { min-width: 0; }
-.panel-head > :last-child:not(.panel-head-text) { flex-shrink: 0; }
+/* 面板头 = 「标题行（标题 + 控件）」+「整宽说明」两段。
+   为什么不让控件与整块垂直居中：说明折行后整块中心会比标题低 11px，控件看起来"悬在
+   标题与说明之间"（用户标注的实测截图）。控件与标题同行居中才是稳定的锚点；
+   说明占整行宽度，也不再被右侧控件挤压（此前文字一长就把按钮顶到下一行）。 */
+.panel-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
+.panel-head-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+.panel-head-row > :last-child { flex-shrink: 0; }   /* 控件固定右侧，不被文字压缩 */
+.panel-head .panel-sub { margin: 0; }
 .panel-title {
   margin: 0;
   font-family: var(--font-sans);
@@ -1542,7 +1557,8 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
   letter-spacing: -0.012em;
   color: var(--t-base);
 }
-.panel-sub { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
+/* 注意：<p> 的 UA 默认外边距是 1em（11.5px），会破坏面板/表单节奏，故一律显式归零 */
+.panel-sub { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
 .panel-stack { display: flex; flex-direction: column; }
 .panel-head:last-child { margin-bottom: 0; }
 /* 折叠卡收起时，summary 之后无内容，不该留 16px ；展开时由 collapse-body 自带间距 */
@@ -1681,7 +1697,15 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
   white-space: nowrap;
   border: 0;
 }
+/* 表单节奏（单一刻度）：
+     字段之间 16 / 标签→控件 6 / 控件→帮助 4 / 末字段→动作行 24（含分隔线与内距）
+   实测过的两处不等：.field-help 作为 <p> 带 11.5px 上下边距（帮助→下个字段变 28px）、
+   Adminator 的 .form-actions 自带 18px 上边距 + 18px 上内距（末字段→按钮变 34px）。 */
 .form-stack { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
+.form-stack .field-help,
+.form-stack .field-error { margin: 0; }
+.form-stack .field-help { margin-top: -2px; }   /* 6(字段内 gap) - 2 = 视觉 4px */
+body[data-page="user"] .form-actions { margin-top: 8px; }   /* 16(栈 gap) + 8 = 24 */
 .form-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .schedule-banner { margin: 0 0 24px; }
 .pref-estimate { margin: 0 0 12px; }
@@ -1695,23 +1719,35 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
 .btn--danger-ghost:hover { background: var(--danger-soft); }
 html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(252, 165, 165, 0.35); }
 
-/* ---- 19.7 折叠区（改密等）：原生 <details>，箭头随展开旋转 ---- */
-.user-collapse > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  cursor: pointer;
-  list-style: none;
-}
-.user-collapse > summary::-webkit-details-marker { display: none; }
-/* 收起态指向右、展开态指向下：同一枚 chevron-down 用旋转表达两种状态 */
-.collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 180ms; transform: rotate(-90deg); }
+/* ---- 19.7 折叠区（签到时间 / 修改密码）----
+   统一用「button[aria-expanded] + .collapse-body.is-open」而不是原生 <details>：
+   <details> 的内容在关闭时不渲染，CSS 无法对"开→关"两向插值（height:auto 不可插值）；
+   按钮 + grid-template-rows 0fr↔1fr 是唯一跨浏览器都能做出双向高度动画的做法
+   （grid 行插值 Chrome 107+/FF 66+/Safari 16+，不需要 JS 量高度、不触发 layout 抖动）。 */
+.collapse-head { cursor: pointer; }
+.collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 200ms var(--ease-out-strong); transform: rotate(-90deg); }
 .collapse-arrow svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none; }
-.user-collapse[open] .collapse-arrow,
-[aria-expanded="true"] > .collapse-arrow,
 [aria-expanded="true"] .collapse-arrow { transform: rotate(0deg); }
-.collapse-body { margin-top: 16px; }
+.collapse-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  /* 与面板头之间的 16px 由 margin-top 承担并**随展开一起长出来**：
+     常驻会让折叠态留 16px 空档（面板头 margin-bottom 与 .panel-stack 相邻规则都会如此），
+     只在展开时给又会在动画起点跳 16px；一起过渡则两头都没有问题。 */
+  margin-top: 0;
+  transition: grid-template-rows 220ms var(--ease-out-strong), margin-top 220ms var(--ease-out-strong);
+}
+body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
+/* 折叠卡的面板头不再自带下边距（间距交给上面那条动画边距） */
+#time-pref-card > .panel-head,
+.user-collapse > .panel-head { margin-bottom: 0; }
+.collapse-body > .collapse-inner { overflow: clip; min-height: 0; visibility: visible; }
+.collapse-body:not(.is-open) { grid-template-rows: 0fr; }
+/* 收起后（动画结束）才隐藏，避免 Tab 还能聚焦到看不见的输入框 */
+.collapse-body:not(.is-open) > .collapse-inner { visibility: hidden; transition: visibility 0s linear 220ms; }
+/* 与说明之间的 16px 由 .panel-head 的 margin-bottom 提供（折叠态该间距仍在，属可接受余量；
+   曾经试过放在 .collapse-inner 的 padding 上，但 padding 会成为网格行的最小高度，
+   折叠态反而留下 16px 空档）。 */
 
 /* ---- 19.8 自选签到时段（5 分钟粒度网格） ---- */
 .slot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
@@ -1954,18 +1990,6 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .switch:active .track { transform: scale(0.96); }
 .switch .track { transition: background-color 200ms var(--theme-ease), border-color 200ms var(--theme-ease), transform 100ms var(--ease-out-strong); }
 
-/* 折叠区：渐进增强。::details-content + interpolate-size 支持时才有高度动画，
-   不支持的浏览器保持瞬时展开（不会更糟）；不用 max-height（布局动画 + 收起后仍可聚焦）。 */
-@supports (interpolate-size: allow-keywords) {
-  .user-collapse { interpolate-size: allow-keywords; }
-  .user-collapse::details-content {
-    block-size: 0;
-    overflow: clip;
-    transition: block-size 220ms var(--ease-out-strong), content-visibility 220ms allow-discrete;
-  }
-  .user-collapse[open]::details-content { block-size: auto; }
-}
-
 /* 模态：进入 200ms 强 ease-out / 退出 160ms ease-in；位移收到 6px */
 .pm-backdrop { transition: opacity 160ms var(--ease-in-strong); }
 .pm-backdrop.is-open { transition: opacity 200ms var(--ease-out-strong); }
@@ -1999,7 +2023,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   .sc-grid.is-swapping { opacity: 1; transform: none; }
   .sc-month.is-swapping { opacity: 1; }
   .sc-log.is-fresh > * { animation: none; }
-  .user-collapse::details-content { transition: none; }
+  .collapse-body { transition: none; }
 }
 
 /* ==========================================================================

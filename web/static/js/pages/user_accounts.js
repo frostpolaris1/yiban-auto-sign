@@ -432,11 +432,28 @@
     tipEl.classList.toggle("state-line--warn", !!tip);
   }
 
+  // 折叠区统一实现（签到时间 / 修改密码共用）：
+  // 用 button[aria-expanded] + .collapse-body.is-open 驱动，高度动画由 CSS 的
+  // grid-template-rows 0fr↔1fr 完成（见 app.css 19.7）——开与关都有动画。
+  function setCollapsed(btnId, bodyId, labelId, collapsed) {
+    var btn = $(btnId), body = $(bodyId);
+    if (!btn || !body) return;
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    body.classList.toggle("is-open", !collapsed);
+    if (labelId) $(labelId).textContent = collapsed ? "展开配置" : "收起";
+  }
+
   function setPrefCollapsed(collapsed) {
     prefCollapsed = collapsed;
-    $("pref-body").hidden = collapsed;
-    $("pref-collapse-btn").setAttribute("aria-expanded", String(!collapsed));
-    $("pref-collapse-label").textContent = collapsed ? "展开配置" : "收起";
+    setCollapsed("pref-collapse-btn", "pref-body", "pref-collapse-label", collapsed);
+  }
+
+  // 修改密码（默认收起）：setCollapsed 收的是"目标状态"，此处取反后再传
+  function togglePasswordCard() {
+    var btn = $("password-collapse-btn");
+    if (!btn) return;
+    var expand = btn.getAttribute("aria-expanded") !== "true";
+    setCollapsed("password-collapse-btn", "password-body", null, !expand);
   }
 
   function pickTimePref(slot) {
@@ -510,6 +527,8 @@
 
     var collapseBtn = $("pref-collapse-btn");
     if (collapseBtn) collapseBtn.addEventListener("click", function () { setPrefCollapsed(!prefCollapsed); });
+    var pwBtn = $("password-collapse-btn");
+    if (pwBtn) pwBtn.addEventListener("click", togglePasswordCard);
     var clearBtn = $("pref-clear-btn");
     if (clearBtn) clearBtn.addEventListener("click", clearTimePref);
 
