@@ -135,7 +135,7 @@
       rej.appendChild(YB.el("span", { class: "ico", html: iconUse("circle-alert") }));
       rej.appendChild(YB.el("span", {
         class: "body",
-        text: "账号已被拒绝" + (a.reject_reason ? "：" + a.reject_reason : "") + "。修改后点「修改并重新提交」重新进入审核。"
+        text: "账号已被拒绝" + (a.reject_reason ? "：" + a.reject_reason : "") + "。修改后点「修改并重新提交」。"
       }));
       card.appendChild(rej);
     }
@@ -152,7 +152,7 @@
       card.appendChild(det);
     }
     if (!a.deleted && a.status === "pending") {
-      card.appendChild(YB.el("p", { class: "account-pending-hint", text: "审核通过后自动开始签到，签到结果见「签到日历」。" }));
+      card.appendChild(YB.el("p", { class: "account-pending-hint", text: "审核通过后自动签到，结果见「签到日历」。" }));
     }
     return card;
   }
@@ -255,8 +255,8 @@
     body.appendChild(YB.el("p", {
       class: "panel-sub",
       text: editing
-        ? "修改后需重新提交审核，审核通过即自动签到。"
-        : "提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。"
+        ? "修改后需重新提交审核。"
+        : "提交后等待管理员审核，通过即自动签到。"
     }));
     var err = YB.el("div", { class: "alert danger", role: "alert", hidden: true });
     err.appendChild(YB.el("span", { class: "ico", html: iconUse("circle-alert") }));
@@ -268,7 +268,7 @@
     var name = inputField({
       id: "f-name", label: "名称 / 备注（可选）", maxlength: 50,
       value: editing ? a.name : "", placeholder: "如：我的易班账号",
-      help: "备注会显示给管理员，用于审核与定位签到问题。"
+      help: "会显示给管理员，便于审核。"
     });
     var phone = inputField({
       id: "f-phone", label: "易班手机号", required: true, maxlength: 20,
@@ -282,7 +282,7 @@
     var model = inputField({
       id: "f-model", label: "设备型号（可选，不清楚就留空）", maxlength: 50,
       value: editing ? a.phone_model : "", placeholder: "按易班 App 设备绑定页填写",
-      help: "仅在提示「请使用授权设备进行签到」时才需填写，不确定就留空。"
+      help: "仅在提示「请使用授权设备」时填写，不确定就留空。"
     });
     var code = inputField({
       id: "f-code", label: "设备识别码（可选，不清楚就留空）", maxlength: 100,
