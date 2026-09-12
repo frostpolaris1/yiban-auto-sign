@@ -89,6 +89,13 @@ CONTRAST_PAIRS = (
     ("账号页·批量条文字", "t-sub", "bg-muted"),
     ("账号页·批量条计数强调", "t-base", "bg-muted"),
     ("账号页·页头副标题", "t-sub", "bg-body"),
+    # 状态徽标语义色调档位（`.badge--ok/bad/warn/info/muted`，令牌定义在 app.css 19.6
+    # 通用小件，浅/深两套独立取值）；日志页事件时间线在用。改色值或令牌名会被重新实测。
+    ("日志页·事件徽标·成功", "badge-ok-fg", "badge-ok-bg"),
+    ("日志页·事件徽标·失败", "badge-bad-fg", "badge-bad-bg"),
+    ("日志页·事件徽标·警示", "badge-warn-fg", "badge-warn-bg"),
+    ("日志页·事件徽标·信息", "badge-info-fg", "badge-info-bg"),
+    ("日志页·事件徽标·中性", "badge-muted-fg", "badge-muted-bg"),
 )
 
 
