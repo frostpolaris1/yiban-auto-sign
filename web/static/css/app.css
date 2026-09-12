@@ -1600,6 +1600,13 @@ html[data-theme="dark"] {
 @media (max-width: 1100px) {
   .col-6, .col-8, .col-4 { grid-column: span 12; }
 }
+/* 日历页例外：860–1100px 仍保留「左日历 + 右日志」双栏。
+   Adminator 的 .col-6 在 ≤1100 一律塌成整行，对普通卡片是对的（两栏会太挤），
+   但日历页两栏是「窄日历 + 窄日志」，塌行后日志被压到日历下方 —— 点日期后日志在
+   视口外，看起来"什么都没发生"。860 以下才堆叠（此时两栏各约 380px 已过窄）。 */
+@media (min-width: 861px) and (max-width: 1100px) {
+  .user-grid.cal-layout > .col-6 { grid-column: span 6; }
+}
 @media (max-width: 720px) {
   /* 竖屏弹窗别贴边占满：上下各留 ≥48px 可见背景 */
   .pm-backdrop { padding: 24px 16px; }
@@ -1870,6 +1877,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 /* 首屏「正在加载账号…」占位与真实日历卡同高：否则数据到达时左列从 ~150px 跳到
    ~470px，整页 CLS 明显（日历内部切月的零跳变机制覆盖不到这一层）。 */
 .cal-placeholder { min-height: 440px; display: flex; align-items: center; justify-content: center; }
+/* 无生效账号时日志面板隐藏，左列独占整行 —— 否则空卡片只占 6 列、右侧留 6 列死区
+   （实测 1280 下空卡 472px 而图例被排到 x=776 的同一行）。is-solo 由
+   components/sign-calendar-view.js 在隐藏日志面板时打上。 */
+.user-grid.is-solo > .cal-column { grid-column: 1 / -1; }
 
 /* 工具条：月份 + 上/下月 + 今天 */
 .sc-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -2721,11 +2732,15 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .info-pop b:first-child { margin-top: 0; }
 
 /* ---- 27.2 「说明 + 开关」行（模板无此布局） ---- */
+/* 限宽：说明与开关是同一组，铺满整卡会让控件离说明 300px+（实测 953px 宽行下
+   说明右缘 863 / 开关左缘 1172，与「近接」原则冲突且难扫读）。680px 是表单可读刻度，
+   行仍是 space-between，开关与说明最多一个短距。 */
 .set-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  max-width: 680px;
 }
 .set-row + .set-row { margin-top: 16px; }
 .set-row-text { min-width: 0; }

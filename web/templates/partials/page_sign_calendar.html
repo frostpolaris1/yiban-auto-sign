@@ -15,7 +15,7 @@
   <p class="page-sub">{{ page_sub }}</p>
 </div>
 
-<div class="user-grid">
+<div class="user-grid cal-layout">
   {# 左侧：账号日历卡（JS 插入）；初始占位卡在无账号时被替换为空态。
      .cal-placeholder 与真实日历卡同高，避免数据到达时左列高度跳变。 #}
   <div class="col-6 cal-column" data-cal-list>
@@ -44,8 +44,10 @@
     </div>
   </section>
 
-  {# 图例：全宽一行，与日历状态一一对应（颜色之外另有形状/角标冗余） #}
-  <ul class="col-6 sc-legend" aria-label="签到状态图例">
+  {# 图例：整行独占（col-12），与日历状态一一对应（颜色之外另有形状/角标冗余）。
+     不能写成 col-6：日志面板隐藏时（无生效账号）它会被自动排到空卡片右侧同一行，
+     留下 6 列死区（实测：空卡 472px，图例 x=776 且同 y）。 #}
+  <ul class="col-12 sc-legend" aria-label="签到状态图例">
     <li><i class="sc-swatch sc-swatch--ok" aria-hidden="true"></i>已签到</li>
     <li><i class="sc-swatch sc-swatch--bad" aria-hidden="true"></i>签到失败</li>
     <li><i class="sc-swatch sc-swatch--off" aria-hidden="true">休</i>周末停签</li>
