@@ -113,6 +113,36 @@
     });
   }
 
+  /* ---------------- 未保存改动的站内离场守卫 ---------------- */
+  // 有未保存的调度改动时，点侧边栏/面包屑等站内链接先弹**项目自己的**确认框。
+  // 不能只靠浏览器原生 beforeunload：部分内嵌浏览器不渲染该原生弹窗，表现为
+  // 「点了链接没反应、也没有任何提示」。原生守卫仍在 settings-schedule.js 里
+  // 作为关标签页/刷新的兜底；用户确认后由 markLeaving() 放行，避免二次拦截。
+  function bindLeaveGuard() {
+    document.addEventListener("click", function (e) {
+      var sched = YB.settingsSchedule;
+      if (!sched || !sched.isDirty || !sched.isDirty()) return;
+      var t = e.target;
+      var a = t && t.closest ? t.closest("a[href]") : null;
+      if (!a) return;
+      var raw = a.getAttribute("href") || "";
+      if (!raw || raw.charAt(0) === "#") return;                    // 分区 tab / 页内锚点不拦
+      if (a.target === "_blank" || a.hasAttribute("download")) return;
+      if (/^(mailto:|tel:|javascript:)/i.test(raw)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      YB.confirmDialog({
+        title: "有未保存的修改",
+        body: "离开将丢失未保存的调度改动。确定离开吗？",
+        confirmText: "离开", danger: true
+      }).then(function (ok) {
+        if (!ok) return;
+        sched.markLeaving();
+        location.href = a.href;                                     // a.href 已是绝对地址
+      });
+    }, true);
+  }
+
   /* ---------------- 装配与加载 ---------------- */
   function applySettings(data) {
     state.capacityEst = data.capacity_estimate || null;
@@ -175,6 +205,7 @@
       YB.settingsSwitches.mount({ isMaster: state.isMaster });
       bindAnnouncement();
       initTabs();
+      bindLeaveGuard();
       // 状态条重试走事件委托（按钮是模板静态节点，无需逐次绑定）
       document.addEventListener("click", function (e) {
         var t = e.target;

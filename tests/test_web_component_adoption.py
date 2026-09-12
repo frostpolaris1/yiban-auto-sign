@@ -54,8 +54,9 @@ FORBIDDEN = {
     "带底色的日志块": (re.compile(r'log-text[^"]*\bbg-(?:white|zinc-50)\b'), "yb-inset"),
 }
 
-# 输入类元素：这些 type 是"选择控件/隐藏域"，不走输入框样式
-INPUT_TYPE_EXEMPT = {"checkbox", "radio", "file", "hidden"}
+# 输入类元素：这些 type 是"选择控件/隐藏域/区间控件"，不走文本输入框样式
+# （range 由项目级 `.range` 滑杆样式承担，见 app.css「数值滑杆」）
+INPUT_TYPE_EXEMPT = {"checkbox", "radio", "file", "hidden", "range"}
 
 # 输入框的组件类（两套设计系统并存期各有一个事实源）：
 #   · `yb-input`  —— 旧栈（component_layer.html 的 .yb-input）；

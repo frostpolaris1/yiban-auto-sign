@@ -102,31 +102,22 @@
           </select>
           <p class="field-help">「顺序 × 均匀」会集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态。</p>
         </div>
+        {# 掐头/去尾改成滑块：原来两个数字框各占 648px 只放一位数、快捷档位按钮组又空置 85%
+           宽度（用户实拍指出"利用率低"）。滑块是标量刻度的自然控件：整条即"0–5 分钟"的量程，
+           当前值就地在标签里回显，快捷档位随之取消（滑杆本身就是连续档位）。 #}
         <div class="field">
-          <label class="field-label" for="ss-edge-front">掐头</label>
-          <div class="input-group">
-            <input class="input" id="ss-edge-front" type="number" min="0" max="5" step="0.5" placeholder="0">
-            <span class="addon">分钟</span>
-          </div>
+          <label class="field-label" for="ss-edge-front">掐头
+            <output class="range-val mono" id="ss-edge-front-out" for="ss-edge-front">1</output> 分钟</label>
+          <input class="range" id="ss-edge-front" type="range" min="0" max="5" step="0.5" value="1"
+                 aria-describedby="ss-edge-help">
         </div>
         <div class="field">
-          <label class="field-label" for="ss-edge-back">去尾</label>
-          <div class="input-group">
-            <input class="input" id="ss-edge-back" type="number" min="0" max="5" step="0.5" placeholder="0">
-            <span class="addon">分钟</span>
-          </div>
+          <label class="field-label" for="ss-edge-back">去尾
+            <output class="range-val mono" id="ss-edge-back-out" for="ss-edge-back">1</output> 分钟</label>
+          <input class="range" id="ss-edge-back" type="range" min="0" max="5" step="0.5" value="1"
+                 aria-describedby="ss-edge-help">
         </div>
-        <div class="field span-2">
-          <span class="field-label" id="ss-edge-quick">快捷设置（前后同时应用）</span>
-          <div class="btn-group" role="group" aria-labelledby="ss-edge-quick">
-            <button type="button" class="btn btn--ghost btn--sm" data-ss-edge="0">0</button>
-            <button type="button" class="btn btn--ghost btn--sm" data-ss-edge="30">0.5</button>
-            <button type="button" class="btn btn--ghost btn--sm" data-ss-edge="60">1</button>
-            <button type="button" class="btn btn--ghost btn--sm" data-ss-edge="120">2</button>
-            <button type="button" class="btn btn--ghost btn--sm" data-ss-edge="300">5</button>
-          </div>
-          <p class="field-help">裁掉窗口首尾各 n 分钟以避开边界超时；前后独立、0.5 分钟粒度。</p>
-        </div>
+        <p class="field-help span-2" id="ss-edge-help">裁掉窗口首尾各 n 分钟以避开边界超时；前后独立、0.5 分钟粒度，0 = 不裁切。</p>
         <div class="field">
           <label class="field-label" for="ss-gap">账号间隔</label>
           <div class="input-group">

@@ -24,6 +24,7 @@
   var snap = null;          // 服务器快照（用于只提交改动字段）
   var dirty = false;
   var saving = false;
+  var leaving = false;      // 页面已就"离开"征得用户同意（由 markLeaving() 置位）
 
   function $(id) { return document.getElementById(id); }
   function num(el, fallback) {
@@ -39,7 +40,20 @@
   function setEdge(id, sec) {
     var el = $(id);
     if (el) el.value = String((Math.round(sec / 30) * 30) / 60);
+    syncRangeLabel(id);
   }
+  // 滑块当前值就地回显（<output> + aria-valuetext）：滑杆无法从形状读出具体数值，
+  // 必须给文本读数；读屏也据此播报（"1 分钟"而不是裸 "1"）。
+  function syncRangeLabel(id) {
+    var el = $(id);
+    if (!el) return;
+    var v = parseFloat(el.value);
+    var text = (isNaN(v) ? 0 : v) + " 分钟";
+    var out = $(id + "-out");
+    if (out) out.textContent = String(isNaN(v) ? 0 : v);
+    el.setAttribute("aria-valuetext", text);
+  }
+  function syncEdgeLabels() { syncRangeLabel("ss-edge-front"); syncRangeLabel("ss-edge-back"); }
   function windowParts() {
     var s = ($("ss-window-start") || {}).value || DEFAULTS.start;
     var e = ($("ss-window-end") || {}).value || DEFAULTS.end;
@@ -72,9 +86,6 @@
     if (isNaN(v)) return 0;
     return Math.min(3600, Math.max(0, v));
   }
-  function quickButtons() {
-    return [].slice.call(document.querySelectorAll("#set-schedule .btn-group [data-ss-edge]"));
-  }
   function isMaster() { return !!(ctx && ctx.isMaster); }
 
   function markDirty() {
@@ -87,15 +98,6 @@
     dirty = false;
     setHidden($("ss-save"), true);
     setHidden($("ss-dirty"), true);
-  }
-
-  // 快捷值按钮的选中态：前后裁剪值一致时才点亮对应档位
-  function syncQuickActive() {
-    var f = edgeVal("ss-edge-front"), b = edgeVal("ss-edge-back");
-    quickButtons().forEach(function (btn) {
-      var sec = parseInt(btn.getAttribute("data-ss-edge"), 10);
-      btn.classList.toggle("is-active", f === b && sec === f);
-    });
   }
 
   // 窗口容量警示：掐头去尾为 0 时边缘账号可能超时；窗口扣除掐头去尾与
@@ -127,7 +129,6 @@
      "ss-window-start", "ss-window-end", "ss-time-pref", "ss-reset", "ss-save"].forEach(function (id) {
       setDisabled(id, !master);
     });
-    quickButtons().forEach(function (b) { b.disabled = !master; });
     setHidden($("ss-perm"), master);
     setHidden($("ss-save"), !master || !dirty);
     setHidden($("ss-dirty"), !master || !dirty);
@@ -233,7 +234,7 @@
       var s = $("ss-window-start"), e = $("ss-window-end");
       if (s) s.value = DEFAULTS.start;
       if (e) e.value = DEFAULTS.end;
-      syncQuickActive();
+      syncEdgeLabels();
       updateEdgeWarn();
       markDirty();
     });
@@ -269,7 +270,7 @@
       if (el) el.addEventListener("change", function () {
         var v = Math.min(5, Math.max(0, parseFloat(el.value) || 0));
         el.value = String(Math.round(v * 2) / 2);
-        syncQuickActive(); updateEdgeWarn(); markDirty();
+        syncEdgeLabels(); updateEdgeWarn(); markDirty();
       });
     });
     var gap = $("ss-gap");
@@ -280,15 +281,10 @@
     });
     var pref = $("ss-time-pref");
     if (pref) pref.addEventListener("change", markDirty);
-    quickButtons().forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        if (btn.disabled) return;
-        var sec = parseInt(btn.getAttribute("data-ss-edge"), 10);
-        if (!isFinite(sec)) return;
-        setEdge("ss-edge-front", sec);
-        setEdge("ss-edge-back", sec);
-        syncQuickActive(); updateEdgeWarn(); markDirty();
-      });
+    // 滑块：拖动中实时更新读数（input），松手才标脏并重算警示（change，见上）
+    ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
+      var el = $(id);
+      if (el) el.addEventListener("input", function () { syncRangeLabel(id); });
     });
     // 周六/周日：主管理员并入显式保存；非主管理员（保存按钮不可用）改动即保存
     [["ss-sat", "saturday_sign"], ["ss-sun", "sunday_sign"]].forEach(function (pair) {
@@ -304,8 +300,11 @@
     if (saveBtn) saveBtn.addEventListener("click", save);
     var resetBtn = $("ss-reset");
     if (resetBtn) resetBtn.addEventListener("click", reset);
+    // 兜底守卫：关闭标签页/刷新。站内跳转由页面脚本的确认弹窗接管（见 pages/settings.js
+    // 的 bindLeaveGuard）—— 原生 beforeunload 弹窗在部分内嵌浏览器里不渲染，表现为
+    // "点侧边栏没反应且无提示"，故不能只依赖它；用户确认离开后由 markLeaving() 放行。
     window.addEventListener("beforeunload", function (e) {
-      if (!dirty) return;
+      if (!dirty || leaving) return;
       e.preventDefault();
       e.returnValue = "";
     });
@@ -343,7 +342,7 @@
     if (s) s.value = (parts[0] || DEFAULTS.start).trim().slice(0, 5) || DEFAULTS.start;
     if (e) e.value = (parts[1] || DEFAULTS.end).trim().slice(0, 5) || DEFAULTS.end;
     applyPerm();
-    syncQuickActive();
+    syncEdgeLabels();
     updateEdgeWarn();
     setTip("", false);
     clearDirty();
@@ -362,6 +361,7 @@
     mount: mount,
     apply: apply,
     refreshWarn: refreshWarn,
-    isDirty: function () { return dirty; }
+    isDirty: function () { return dirty; },
+    markLeaving: function () { leaving = true; }
   };
 })();

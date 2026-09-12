@@ -2758,6 +2758,74 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .set-row-label { display: block; font-size: 13px; color: var(--t-base); }
 .set-help { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
 
+/* 数值滑杆（模板无滑杆组件）：用于「0–5 分钟」这类标量刻度。
+   轨道用 --bg-muted，拇指用 --primary；读数由 <output> 就地回显（见 settings-schedule.js）。
+   只在需要"连续档位"时用；精确数值仍用 .input[type=number]。 */
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  cursor: pointer;
+}
+.range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;                       /* (6+2) 轨高/2 - 拇指/2 */
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
+}
+.range::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+}
+.range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid var(--bg-card);
+}
+.range:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+.range:disabled { cursor: not-allowed; opacity: .5; }
+.range-val { font-weight: 600; color: var(--t-base); min-width: 2ch; display: inline-block; text-align: right; }
+
+/* 首屏加载指示：服务端已渲染正文，故**不遮内容**，只在顶部提示"样式/脚本仍在就绪"。
+   120ms 内就绪则完全不出现（快加载不闪一下）；就绪后淡出。缺省不可见，由内联脚本加 is-visible。 */
+.boot-loader {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 70;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms var(--ease-out-strong);
+}
+.boot-loader.is-visible { opacity: 1; }
+.boot-loader .progress { height: 4px; border-radius: 0; }
+.boot-fill { width: 40%; background: var(--primary); animation: boot-slide 1.1s ease-in-out infinite; }
+@keyframes boot-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(260%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-fill { animation: none; width: 100%; opacity: .55; }
+}
+
 /* ---- 27.3 就地状态文字与软警示 ---- */
 .set-tip { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
 .set-tip:empty { display: none; }

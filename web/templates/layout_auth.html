@@ -93,6 +93,23 @@
 
 <div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true"></div>
 <div id="modal-host"></div>
+{# 首屏加载指示：120ms 内就绪则完全不出现（快加载不闪）；core.js 就绪或 window.load 后淡出。
+   服务端已渲染正文，故不遮内容，只在顶部提示"样式/脚本仍在就绪"。样式见 app.css「首屏加载指示」。 #}
+<div id="boot-loader" class="boot-loader" role="status" aria-live="polite">
+  <div class="progress thin"><div class="progress-fill boot-fill"></div></div>
+  <span class="sr-only">正在加载页面…</span>
+</div>
+<script>
+  (function () {
+    var el = document.getElementById("boot-loader");
+    if (!el) return;
+    var t1 = setTimeout(function () { if (!el.classList.contains("is-ready")) el.classList.add("is-visible"); }, 120);
+    function done() { clearTimeout(t1); el.classList.remove("is-visible"); el.classList.add("is-ready"); }
+    window.addEventListener("load", done);
+    var t2 = setInterval(function () { if (window.YB && window.YB.__ready) { clearInterval(t2); done(); } }, 60);
+    setTimeout(function () { clearInterval(t2); done(); }, 5000);   // 兜底：异常时不常驻
+  })();
+</script>
 <script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
 {% block scripts %}{% endblock %}
