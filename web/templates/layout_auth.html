@@ -60,10 +60,14 @@
     </div>
 
     <div class="auth-card">
-      {# 全局公告条：有公告时由 core.js 填入并显形（textContent 防 XSS）。
-         无顶栏页面无法用公告按钮承载，故直接在表单上方展示。 #}
+      {# 全局公告横幅：有公告时由 core.js 填入并显形（textContent 防 XSS）。
+         无顶栏页面没有公告按钮可承载，故在表单上方以横幅展示；
+         关闭位由 core.js 绑定，仅本次会话内记住（换了公告内容会重新显示）。 #}
       <div class="alert warning auth-announce" data-announcement-bar role="status" hidden>
+        <span class="ico">{{ icon('triangle-alert') }}</span>
         <span class="body" data-announcement-text></span>
+        <button type="button" class="close" data-announcement-dismiss
+                title="关闭公告" aria-label="关闭公告">{{ icon('x') }}</button>
       </div>
       {% block content %}{% endblock %}
     </div>

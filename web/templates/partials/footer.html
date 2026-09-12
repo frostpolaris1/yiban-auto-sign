@@ -1,5 +1,7 @@
 {# 页脚：备案信息（可选，YIBAN_ICP_INFO / YIBAN_POLICE_INFO 留空则不显示）
-   + 版本（点击看更新日志）+ 开源入口。 #}
+   + 版本（点击看更新日志）+ 开源入口。
+   备案槽位：未配置时输出一个不可见占位，配合 app.css 的 .footer-legal{min-height}
+   保持行高稳定，避免"有无备案"两种状态下页脚高度跳变；不显示任何假备案号。 #}
 <footer class="d-footer">
   <div class="footer-legal">
     {% if icp_info %}
@@ -9,6 +11,9 @@
     <a id="footer-police" href="{{ police_link }}" target="_blank" rel="noopener">
       <img src="{{ request.script_root }}/gongan-beian.png" alt="" width="12" height="13">{{ police_info }}
     </a>
+    {% endif %}
+    {% if not icp_info and not police_info %}
+    <span class="footer-legal-slot" aria-hidden="true"></span>
     {% endif %}
   </div>
   <div class="footer-meta">

@@ -634,6 +634,16 @@
   function showAnnouncement(text) {
     openModal({ title: "公告", body: el("div", { class: "pm-announce", text: text }), actions: [{ label: "关闭", variant: "ghost" }] });
   }
+  // 公告关闭只记在本次会话（sessionStorage），按文本区分：
+  // 同一公告不再重复打扰，但换了内容会重新显示（避免"永久静音"掉重要通知）。
+  var ANNOUNCE_DISMISS_KEY = "yiban-announce-dismissed";
+  function announceIsDismissed(text) {
+    try { return sessionStorage.getItem(ANNOUNCE_DISMISS_KEY) === text; } catch (e) { return false; }
+  }
+  function dismissAnnouncement(text) {
+    try { sessionStorage.setItem(ANNOUNCE_DISMISS_KEY, text); } catch (e) {}
+    forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) { bar.hidden = true; });
+  }
   function initAnnouncement() {
     api("GET", "/api/announcement").then(function (data) {
       var text = String((data && data.text) || "").trim();
@@ -642,11 +652,13 @@
       if (btn) { btn.hidden = false; btn.addEventListener("click", function () { showAnnouncement(text); }); }
       var dot = document.querySelector("[data-announcement-dot]");
       if (dot) dot.hidden = false;
-      // 页面内公告条（无顶栏的整页，如登录页）：有文本才显形。textContent 防 XSS。
+      // 页面内公告横幅（无顶栏的整页，如登录页）：textContent 防 XSS；已关闭过则不再显示。
       forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
         var txt = bar.querySelector("[data-announcement-text]");
         if (txt) txt.textContent = text;
-        bar.hidden = false;
+        var closeBtn = bar.querySelector("[data-announcement-dismiss]");
+        if (closeBtn) closeBtn.addEventListener("click", function () { dismissAnnouncement(text); });
+        if (!announceIsDismissed(text)) bar.hidden = false;
       });
     }).catch(function () {});
   }
