@@ -10,14 +10,22 @@
 
 ## 本文件钉住的四件事
 
-1. **`app.js` 不应复活、7 个模块必须在位** —— 否则说明有人回滚了一半。
+1. **`app.js` 不应复活、原 7 个切片模块必须在位** —— 否则说明有人回滚了一半。
 2. **`index.html` 的加载顺序必须与期望一致** —— classic script 共享全局作用域，
    顺序错了会出现"函数还没定义就被调用"（只在运行时、且可能只在某个 tab 才暴露）。
 3. **跨模块顶层声明不得重名** —— 这是分模块**新引入**的头号风险：
    同一份文件里不可能重名，但拆成多份后，两个文件顶层用同一个 `const/let/function/class` 名
    → **整个脚本 SyntaxError 直接不执行**，页面静默失去全部交互。静态扫描即可抓住。
-4. **各模块头声明的源区间必须连续递增** —— 保证"分区切割、无重叠无遗漏"这件事仍然成立，
+4. **各切片模块头声明的源区间必须连续递增** —— 保证"分区切割、无重叠无遗漏"这件事仍然成立，
    也让人一眼能看出每个模块对应原文件的哪一段。
+
+## 2026-09-12：新增模块与旧切片的区分
+
+签到日历被抽成 `web/static/js/calendar.js`（全站唯一实现，用户页与旧管理端的
+「我的账号」共用），加载在 `mine.js` 之前。它是**新代码、不是原 `app.js` 的切片**，
+因此没有 `L<起>-L<止>` 源区间声明，第 4 条只约束 `EXPECTED_MODULES`；
+但它与旧模块同处一个全局词法作用域（同为 classic script），故第 3 条的重名检查
+必须把它一并纳入（见 `EXTRA_MODULES`）。
 """
 
 import os
@@ -28,7 +36,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_DIR = os.path.join(BASE, "web", "static", "js")
 INDEX = os.path.join(BASE, "web", "templates", "index.html")
 
-# 期望的加载顺序（与各文件头声明的源区间一致；改动前请同步本表并说明原因）
+# 原 app.js 的 7 个连续切片（含头 3 行声明的源区间；改动前请同步本表并说明原因）
 EXPECTED_MODULES = (
     ("core.js", 1, 245),
     ("pages/accounts.js", 246, 869),
@@ -37,6 +45,21 @@ EXPECTED_MODULES = (
     ("shared-ui.js", 1935, 2093),
     ("pages/users.js", 2094, 2359),
     ("pages/mine.js", 2360, 2765),
+)
+
+# 新架构下新增、与原 app.js 无切片关系的共享模块（无源区间声明，但同处全局作用域）
+EXTRA_MODULES = ("calendar.js",)
+
+# index.html 里 /static/js/ 的期望加载顺序（新模块排在它所服务的模块之前）
+LOAD_ORDER = (
+    "core.js",
+    "calendar.js",
+    "pages/accounts.js",
+    "pages/logs.js",
+    "pages/settings.js",
+    "shared-ui.js",
+    "pages/users.js",
+    "pages/mine.js",
 )
 
 # 顶层声明：只认**行首**（列 0）的声明，这才落在共享的全局词法作用域里；
@@ -66,6 +89,9 @@ class JsModuleSplitTest(unittest.TestCase):
         for rel, _start, _end in EXPECTED_MODULES:
             if not os.path.exists(_module_path(rel)):
                 problems.append(f"  web/static/js/{rel} 缺失")
+        for rel in EXTRA_MODULES:
+            if not os.path.exists(_module_path(rel)):
+                problems.append(f"  web/static/js/{rel} 缺失（新增的共享模块）")
         if problems:
             self.fail("管理端脚本模块清单不对：\n" + "\n".join(problems))
 
@@ -76,20 +102,20 @@ class JsModuleSplitTest(unittest.TestCase):
             m.group(1)
             for m in re.finditer(r'<script src="[^"]*/static/js/([^"?]+)\?', html)
         ]
-        expected = [rel for rel, _s, _e in EXPECTED_MODULES]
         self.assertEqual(
             found,
-            expected,
+            list(LOAD_ORDER),
             "index.html 里 /static/js/ 的加载顺序与期望不符 ——"
             " classic script 共享全局作用域，顺序改动会让「后加载者依赖的定义」落空：\n"
-            f"  实际：{found}\n  期望：{expected}",
+            f"  实际：{found}\n  期望：{list(LOAD_ORDER)}",
         )
 
     def test_no_duplicate_top_level_declarations_across_modules(self):
         """跨模块顶层声明不得重名（重名 → 整个脚本 SyntaxError，页面静默失去交互）。"""
         seen = {}
         dupes = []
-        for rel, _s, _e in EXPECTED_MODULES:
+        order = [rel for rel, _s, _e in EXPECTED_MODULES] + list(EXTRA_MODULES)
+        for rel in order:
             for lineno, line in enumerate(_read(_module_path(rel)).split("\n"), 1):
                 m = _TOP_DECL_RE.match(line)
                 if not m:
@@ -110,7 +136,11 @@ class JsModuleSplitTest(unittest.TestCase):
             )
 
     def test_module_headers_declare_contiguous_source_ranges(self):
-        """各模块头 3 行声明的源区间必须连续递增（证明「分区切割」未被破坏）。"""
+        """原 app.js 的切片模块，头 3 行声明的源区间必须连续递增（证明「分区切割」未被破坏）。
+
+        只约束 `EXPECTED_MODULES`：`EXTRA_MODULES`（如 calendar.js）是新写的共享模块，
+        不是原 `app.js` 的一段，没有也不应有源区间声明。
+        """
         expected_start = 1
         problems = []
         for rel, start, end in EXPECTED_MODULES:

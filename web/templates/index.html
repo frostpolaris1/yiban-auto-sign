@@ -112,9 +112,11 @@
 <!-- 重置密码模态（a11y 整改：替代原生 prompt 明文录入——密码遮蔽输入 + 密码管理器可用；校验与后续 API 与原逻辑一致） -->
 {% include "partials/modals/password.html" %}
 
-<!-- 管理端脚本：7 个模块，**顺序不可调整**（classic script 共享全局作用域，
-     后加载者依赖前面已定义的变量/函数）。切分说明见各文件头 3 行。 -->
+<!-- 管理端脚本：7 个模块 + 共享日历，**顺序不可调整**（classic script 共享全局作用域，
+     后加载者依赖前面已定义的变量/函数）。切分说明见各文件头 3 行。
+     calendar.js 是签到日历的唯一实现，mine.js 按裸全局名 renderCalendar 调用。 -->
 <script src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/pages/accounts.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/pages/logs.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/pages/settings.js?v={{ web_version }}"></script>
