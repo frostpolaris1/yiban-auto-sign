@@ -37,18 +37,20 @@
         <span class="sr-only">{{ search_label }}</span>
         <input type="search" class="input" id="{{ search_id }}" placeholder="名称 / 手机号 / 用户名">
       </label>
-      <button type="button" class="icon-btn acct-collapse" aria-expanded="true"
-              aria-controls="{{ body_id }}" aria-label="{{ title }}折叠开关">
-        <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
-      </button>
     </div>
+    {# 折叠按钮必须是 .panel-head-row 的直接子元素：≤720 的 grid 显式放置（grid-column:2/grid-row:1）
+       才命中得到，否则它会作为 .acct-tools 的内容被放进第 2 行，箭头与标题错行。 #}
+    <button type="button" class="icon-btn acct-collapse" aria-expanded="true"
+            aria-controls="{{ body_id }}" aria-label="折叠或展开{{ title }}" title="{{ title }}折叠">
+      <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
+    </button>
   </div>
   <p class="panel-sub">{{ sub }}</p>
 </div>
 {% endmacro %}
 
 {% block content %}
-<div class="page-head">
+<div class="page-head page-head--split">
   <div class="page-head-text">
     <h1 class="page-title">账号管理</h1>
     <p class="page-sub">审核、排序、手动签到与容量管理。</p>
