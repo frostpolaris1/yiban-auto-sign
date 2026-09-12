@@ -58,19 +58,25 @@ FORBIDDEN = {
 INPUT_TYPE_EXEMPT = {"checkbox", "radio", "file", "hidden"}
 
 # 输入框的组件类（两套设计系统并存期各有一个事实源）：
-#   · `yb-input` —— 旧栈（component_layer.html 的 .yb-input）；
-#   · `input`    —— Adminator 设计系统（adminator.css 的 .input）。
+#   · `yb-input`  —— 旧栈（component_layer.html 的 .yb-input）；
+#   · `input`     —— Adminator 设计系统（adminator.css 的 .input）。
 # 判据仍是"按元素"：任何文本类输入元素必须命中其中之一，不得裸写样式。
-INPUT_CLASS_TOKENS = ("yb-input", "input")
+# 2026-09-12：Adminator 对 `<select>`/`<textarea>` 另有同族类 `.select`/`.textarea`
+# （同一条组规则定义、同一套禁用/无效态），故按元素各自接受 —— 否则模板正确写法会被误报。
+INPUT_CLASS_TOKENS = {
+    "input": ("yb-input", "input"),
+    "select": ("select", "yb-input", "input"),
+    "textarea": ("textarea", "yb-input", "input"),
+}
 
 
-def _input_class_ok(tag):
-    """标签的 class 属性里是否含任一输入框组件类（按 token 精确匹配，不做子串包含）。"""
+def _input_class_ok(tag, tag_name):
+    """标签的 class 属性里是否含该元素对应的输入框组件类（按 token 精确匹配）。"""
     m = re.search(r'class="([^"]*)"', tag)
     if not m:
         return False
     tokens = m.group(1).split()
-    return any(t in INPUT_CLASS_TOKENS for t in tokens)
+    return any(t in INPUT_CLASS_TOKENS[tag_name] for t in tokens)
 
 # 提示条的语义组合：`bg-<语义>-50` 与 `border-<语义>-<档>` 同时出现 → 必须走 .yb-alert-*
 _SEMANTIC = r"(?:red|green|amber|blue)"
@@ -176,18 +182,19 @@ class ComponentAdoptionTest(unittest.TestCase):
         for rel, lineno, text in _scan_sources():
             for m in re.finditer(r"<(input|textarea|select)\b[^>]*?>", text, re.S):
                 tag = m.group(0)
-                if _input_class_ok(tag):
+                tag_name = m.group(1)
+                if _input_class_ok(tag, tag_name):
                     continue
                 typ_m = re.search(r'type="(\w+)"', tag)
                 typ = typ_m.group(1) if typ_m else (
-                    "textarea" if m.group(1) == "textarea" else "text"
+                    "textarea" if tag_name == "textarea" else "text"
                 )
                 if typ in INPUT_TYPE_EXEMPT:
                     continue
                 line = lineno + text.count("\n", 0, m.start())
                 offenders.append(
-                    f"  {rel}:{line}  <{m.group(1)} type={typ}> 缺 "
-                    + "/".join(INPUT_CLASS_TOKENS)
+                    f"  {rel}:{line}  <{tag_name} type={typ}> 缺 "
+                    + "/".join(INPUT_CLASS_TOKENS[tag_name])
                 )
         if offenders:
             self.fail(

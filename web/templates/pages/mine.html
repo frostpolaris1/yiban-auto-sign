@@ -1,140 +1,23 @@
-{# 管理端「我的账号」（/mine）。
+{# 管理端：我的账号（/mine）。
+   正文与用户端「账号与设置」（/user）**同一份实现** —— partials/page_my_accounts.html：
+   账号增删改恢复、自选签到时间、邮件提醒、修改密码、显示偏好都渲染同一段模板，
+   两端只在「是否可注销」「归属邮箱偏好」「日历链接目标」上分叉。
 
-   个人域：只放**管理员本人**的易班账号与登录凭据，不放系统级配置（系统级在 /settings）。
-   卡头用模板 .card-head（.card-title-wrap + .card-title）—— 依据 docs/refactor/23 分隔线
-   白名单，卡头是「容器 chrome 边界」，与正文之间允许一条线；因此卡头内不放副标题，
-   说明文字降为字段帮助或 .alert（避免出现「标题-副标题之间画线」的禁用形态）。
+   个人域落点（系统设置页不再承载）：修改密码、接收发给我的邮件提醒、竖屏归属邮箱偏好。
+   签到日志走独立的 /mine/calendar 页（复用用户端日历页结构与日志面板）。
 
-   组件复用（全站唯一实现，禁止第二份）：
-     · YB.myAccounts  账号卡片列表（inline 模式 = 卡内挂共享签到日历）
-     · YB.accountForm 新增/编辑账号弹窗（owner 作用域端点 /api/my-accounts）
-     · YB.timePref    自选签到时段（5 分钟粒度）
-     · YB.myMailNotify 邮件提醒开关（主管理员走 admin_notify，注册管理员走 my-mail-notify）
-     · YB.changePassword 修改密码弹窗（主/注册管理员策略不同）
-     · calendar.js    签到日历（唯一实现）
-
-   功能去向（本批从 /settings 迁入个人域三项）：
-     修改密码、接收发给我的邮件提醒、竖屏显示归属邮箱（本机 localStorage 偏好）。
    安全：全页零 innerHTML；动态文本走 YB.el；写请求一律 YB.api（自带 CSRF）。 #}
 {% extends "layout_admin.html" %}
-{% from "macros/ui.html" import icon with context %}
+{% from "partials/page_my_accounts.html" import body with context %}
 
 {% block title %}我的账号 · 易班自动签到{% endblock %}
 
 {% block content %}
-<div class="page-head">
-  <h1 class="page-title">我的账号</h1>
-  <p class="page-sub">管理员本人的易班账号、自选签到时间、邮件提醒与登录凭据。</p>
-</div>
-
-<div class="grid">
-
-  <!-- 我的易班账号：审核通过后自动签到；生效账号卡内联签到日历 -->
-  <section class="col-12 card" id="mine-accounts">
-    <div class="card-head">
-      <div class="card-title-wrap">
-        <span class="eyebrow">签到账号</span>
-        <h2 class="card-title">我的易班账号</h2>
-      </div>
-      {# 有未删除账号时隐藏（由 my-accounts.js 控制）；全部被删除时保留，软删除不死路 #}
-      <button id="mine-open-account-btn" type="button" class="btn btn--primary" hidden>
-        {{ icon('plus') }}提交我的易班账号
-      </button>
-    </div>
-    <p id="mine-accounts-empty" class="empty" hidden>
-      <span class="empty__icon">{{ icon('user') }}</span>
-      <span class="empty__msg">还没有提交账号。审核通过后自动签到。</span>
-    </p>
-    <div id="mine-account-list" class="account-list"></div>
-  </section>
-
-  <!-- 签到时间：未提交账号 / 未开启自选时由 time-pref.js 控制显隐与折叠 -->
-  <section id="time-pref-card" class="col-12 card panel-stack" hidden>
-    <div class="card-head">
-      <div class="card-title-wrap">
-        <span class="eyebrow">调度</span>
-        <h2 class="card-title">签到时间</h2>
-      </div>
-      <button id="pref-collapse-btn" type="button" class="btn btn--ghost btn--sm"
-              aria-expanded="false" aria-controls="pref-body">
-        <span id="pref-collapse-label">展开配置</span>
-        <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
-      </button>
-    </div>
-    <p class="field-help">窗口 <span class="mono" id="pref-window"></span> · 选择 5 分钟时段（今日已开始则次日生效）</p>
-    <div id="pref-body" class="collapse-body">
-      <div class="collapse-inner">
-        <p id="pref-estimate" class="field-help pref-estimate" hidden></p>
-        <div id="pref-slot-grid" class="slot-grid" role="group" aria-label="自选签到时段"></div>
-        <div class="form-actions pref-foot">
-          <button id="pref-clear-btn" type="button" class="btn btn--ghost btn--sm">清除选择（恢复自动分配）</button>
-          <span id="pref-tip" class="field-help" aria-live="polite"></span>
-        </div>
-        <p id="pref-disabled-hint" class="alert warning pref-hint" hidden>
-          <span class="ico">{{ icon('triangle-alert') }}</span>
-          <span class="body">功能未开启：你的选择会保存，但暂不生效</span>
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 邮件提醒：签到失败/告警邮件；主管理员关闭需当前密码（后端高危门禁） -->
-  <section class="col-6 card panel-stack">
-    <div class="card-head">
-      <div class="card-title-wrap">
-        <span class="eyebrow">通知</span>
-        <h2 class="card-title">邮件提醒</h2>
-      </div>
-      <label class="switch" title="接收发给我的邮件提醒">
-        <input id="mail-notify-switch" type="checkbox">
-        <span class="track" aria-hidden="true"></span>
-        <span class="sr-only">接收发给我的邮件提醒</span>
-      </label>
-    </div>
-    <p id="mail-notify-tip" class="field-help" aria-live="polite"></p>
-  </section>
-
-  <!-- 修改密码：表单在弹窗内（三份实现已收敛为共享组件） -->
-  <section class="col-6 card panel-stack">
-    <div class="card-head">
-      <div class="card-title-wrap">
-        <span class="eyebrow">凭据</span>
-        <h2 class="card-title">修改密码</h2>
-      </div>
-      <button type="button" id="password-modal-btn" class="btn btn--ghost btn--sm">
-        {{ icon('key') }}修改密码
-      </button>
-    </div>
-    <p class="field-help">改后下次登录使用新密码，当前会话随即失效。</p>
-  </section>
-
-  <!-- 显示偏好：本机浏览器偏好，不写服务器配置 -->
-  <section class="col-12 card panel-stack">
-    <div class="card-head">
-      <div class="card-title-wrap">
-        <span class="eyebrow">本机</span>
-        <h2 class="card-title">显示偏好</h2>
-      </div>
-    </div>
-    <div class="set-row">
-      <div class="set-row-text">
-        <span class="set-row-label">竖屏显示归属邮箱</span>
-        <p class="set-help">窄屏账号表在名称下方补一行归属邮箱（后端已脱敏），便于竖屏管理；关闭后宽屏归属列不受影响。</p>
-      </div>
-      <label class="switch" title="竖屏显示归属邮箱">
-        <input id="mine-owner-email" type="checkbox">
-        <span class="track" aria-hidden="true"></span>
-        <span class="sr-only">竖屏显示归属邮箱</span>
-      </label>
-    </div>
-    <p class="set-tip" id="mine-owner-email-tip"></p>
-  </section>
-
-</div>
+{{ body('我的账号', '管理员本人的易班账号、自选签到时间与登录凭据。',
+        request.script_root + '/mine/calendar', false, true) }}
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/account-form.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/time-pref.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/my-accounts.js?v={{ web_version }}"></script>

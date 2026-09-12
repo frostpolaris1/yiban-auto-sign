@@ -46,9 +46,13 @@ CALENDAR_JS = os.path.join(JS_DIR, "calendar.js")
 USER_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_calendar.html")
 USER_CAL_JS = os.path.join(JS_DIR, "pages", "user_calendar.js")
 USER_ACCOUNTS_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_accounts.html")
-# 管理端「我的账号」：日历内联模式的真实载体（换了 index.html 单页之后）
+# 管理端对应页（与用户端同源：正文来自共享 partial，行为来自共享组件）
 MINE_PAGE = os.path.join(TEMPLATES_DIR, "pages", "mine.html")
-MY_ACCOUNTS_JS = os.path.join(JS_DIR, "components", "my-accounts.js")
+MINE_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "mine_calendar.html")
+# 两端「我的账号」共用的正文 partial：日历不得出现在这里
+ACCOUNTS_BODY_PARTIAL = os.path.join(TEMPLATES_DIR, "partials", "page_my_accounts.html")
+# 两端日历页共用的视图组件：调用共享渲染接口的唯一载体
+SIGN_CAL_VIEW = os.path.join(JS_DIR, "components", "sign-calendar-view.js")
 
 DAY_CELL_MARK = "function dayCell(o)"
 
@@ -126,42 +130,46 @@ class CalendarSingleSourceTest(unittest.TestCase):
             + "\n".join(f"  {os.path.relpath(p, BASE)}" for p in hits),
         )
 
-    def test_calendar_page_loads_the_shared_module(self):
-        """日历页必须引入共享日历，并由页面脚本调用共享渲染接口。"""
-        html = _read(USER_CAL_PAGE)
-        self.assertIn("/static/js/calendar.js", html, "签到日历页未引入共享 calendar.js")
-        self.assertIn("/static/js/pages/user_calendar.js", html, "签到日历页未引入 pages/user_calendar.js")
-        js = _read(USER_CAL_JS)
-        self.assertIn("SignCalendar.render", js, "pages/user_calendar.js 未调用共享渲染接口")
-        self.assertNotIn("dayCell", js, "pages/user_calendar.js 不应自带日期格实现")
+    def test_calendar_pages_load_the_shared_module(self):
+        """两端日历页都必须引入共享日历，并由共享视图组件调用渲染接口。
 
-    def test_accounts_page_does_not_embed_a_calendar(self):
-        """账号与设置页不得再内嵌日历（日历已独立成页，避免同一组件两处维护）。"""
-        html = _read(USER_ACCOUNTS_PAGE)
-        for mark in ("data-sc-mount", "data-sc-log", "calendar.js"):
-            self.assertNotIn(mark, html, f"账号与设置页不应出现日历相关标记：{mark}")
-
-    def test_admin_mine_page_wires_the_shared_calendar(self):
-        """管理端「我的账号」必须把共享日历排在调用它的组件之前。
-
-        换壳后管理端不再有 index.html 单页：`/mine` 的日历改为**内联模式** ——
-        `pages/mine.html` 引入 `calendar.js`，`components/my-accounts.js` 在生效账号卡里
-        调 `window.SignCalendar.render`。classic script 共享全局作用域：calendar.js 未先
-        加载时该调用会在运行时 ReferenceError。
-
-        判据意图（管理端必须接线共享日历、且顺序正确）不变，仅载体从退役的
-        `index.html` + `pages/mine.js` 换到 `pages/mine.html` + `components/my-accounts.js`。
+        2026-09-12：管理端新增 /mine/calendar，与 /user/calendar 共用
+        partials/page_sign_calendar.html + components/sign-calendar-view.js；
+        classic script 共享全局作用域，calendar.js 必须排在视图组件之前。
         """
-        html = _read(MINE_PAGE)
-        cal = html.find("/static/js/calendar.js")
-        acct = html.find("/static/js/components/my-accounts.js")
-        self.assertNotEqual(cal, -1, "pages/mine.html 未引入共享日历 calendar.js")
-        self.assertNotEqual(acct, -1, "pages/mine.html 未引入 components/my-accounts.js")
-        self.assertLess(cal, acct, "calendar.js 必须在 my-accounts.js 之前加载（共享作用域依赖）")
-        self.assertIn(
-            "SignCalendar.render", _read(MY_ACCOUNTS_JS),
-            "components/my-accounts.js 未调用共享日历渲染接口 SignCalendar.render",
-        )
+        for page, script in ((USER_CAL_PAGE, "pages/user_calendar.js"),
+                             (MINE_CAL_PAGE, "pages/mine_calendar.js")):
+            name = os.path.basename(page)
+            html = _read(page)
+            self.assertIn("/static/js/calendar.js", html, f"{name} 未引入共享 calendar.js")
+            self.assertIn("/static/js/components/sign-calendar-view.js", html,
+                          f"{name} 未引入共享视图组件 sign-calendar-view.js")
+            self.assertIn(f"/static/js/{script}", html, f"{name} 未引入 {script}")
+            cal = html.find("/static/js/calendar.js")
+            view = html.find("/static/js/components/sign-calendar-view.js")
+            self.assertLess(cal, view, f"{name}: calendar.js 必须在视图组件之前加载（共享作用域依赖）")
+        view_src = _read(SIGN_CAL_VIEW)
+        self.assertIn("SignCalendar.render", view_src, "共享视图组件未调用共享渲染接口")
+        self.assertNotIn("dayCell", view_src, "共享视图组件不应自带日期格实现")
+
+    def test_accounts_pages_do_not_embed_a_calendar(self):
+        """两端「我的账号」页（含共享正文 partial）不得内嵌日历。
+
+        日历已独立成页；账号页只放「签到日历」链接（calendar_href），
+        避免同一组件两处维护（历史缺陷见模块 docstring）。
+        """
+        for path in (USER_ACCOUNTS_PAGE, MINE_PAGE, ACCOUNTS_BODY_PARTIAL):
+            text = _read(path)
+            for mark in ("data-sc-mount", "data-sc-log", "calendar.js"):
+                self.assertNotIn(
+                    mark, text,
+                    f"{os.path.relpath(path, BASE)} 不应出现日历相关标记：{mark}",
+                )
+
+    def test_admin_mine_page_links_to_the_admin_calendar(self):
+        """管理端账号页的日历链接必须指向 /mine/calendar（而不是用户端路由）。"""
+        js = _read(os.path.join(JS_DIR, "pages", "mine.js"))
+        self.assertIn("/mine/calendar", js, "pages/mine.js 的日历链接未指向 /mine/calendar")
 
     def test_shared_implementation_keeps_the_a11y_and_state_contract(self):
         """共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。"""

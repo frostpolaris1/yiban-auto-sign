@@ -40,6 +40,7 @@
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/core.js?v=*",
     "script src=/static/js/calendar.js?v=*",
+    "script src=/static/js/components/sign-calendar-view.js?v=*",
     "script src=/static/js/pages/user_calendar.js?v=*"
   ]
 }

@@ -1,0 +1,16 @@
+{# 管理端：签到日历（/mine/calendar）。
+   正文与用户端 /user/calendar **同一份实现** —— partials/page_sign_calendar.html；
+   行为编排在共享组件 components/sign-calendar-view.js（含日志面板 [data-sc-log]）。
+   管理员看的是本人邮箱归属账号（与 /mine 同口径，一人一号）。 #}
+{% extends "layout_admin.html" %}
+{% from "partials/page_sign_calendar.html" import body with context %}
+
+{% block title %}签到日历 · 易班自动签到{% endblock %}
+
+{% block content %}{{ body() }}{% endblock %}
+
+{% block scripts %}
+<script src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/sign-calendar-view.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/mine_calendar.js?v={{ web_version }}"></script>
+{% endblock %}

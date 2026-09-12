@@ -9,8 +9,9 @@
 1. `assertIn` 类 —— 目标串搬走了，测试**报红**。显式可见，好处理。
 2. `assertNotIn` 类 —— 文件里已经没有那段代码了，断言**恒真**。**静默失去覆盖**，这才是危险的。
 
-本模块把"某页的完整前端源码"聚合出来（模板 + 递归 include 的片段 + 该页外链的**自研**静态资源），
-让这些契约断言继续覆盖真实源码。后续再拆分文件（A4 拆 JS、V3 增 include）**无需再改测试**。
+本模块把"某页的完整前端源码"聚合出来（模板 + 递归 extends/include/`{% from ... import %}`
+的片段 + 该页外链的**自研**静态资源），让这些契约断言继续覆盖真实源码。后续再拆分文件
+（A4 拆 JS、V3 增 include、正文抽共享宏）**无需再改测试**。
 
 ## 边界（有意为之）
 
@@ -34,6 +35,9 @@ STATIC_DIR = os.path.join(BASE, "web", "static")
 
 _INCLUDE_RE = re.compile(r'{%-?\s*include\s+"([^"]+)"\s*-?%}')
 _EXTENDS_RE = re.compile(r'{%-?\s*extends\s+"([^"]+)"\s*-?%}')
+# `{% from "partials/x.html" import body %}`：页面正文抽成共享宏后，契约就住在那份 partial 里，
+# 不跟随它会让 assertNotIn 类断言恒真（静默失去覆盖）。
+_FROM_IMPORT_RE = re.compile(r'{%-?\s*from\s+"([^"]+)"\s+import\s')
 _ASSET_RE = re.compile(r'(?:src|href)="([^"]*?/static/[^"]*)"')
 _STATIC_REL_RE = re.compile(r"/static/(.+?)(?:\?.*)?$")
 _MAX_FILES = 64
@@ -82,6 +86,8 @@ def frontend_source(*parts):
         for m in _EXTENDS_RE.finditer(src):
             walk(os.path.join(TEMPLATES_DIR, m.group(1).replace("/", os.sep)))
         for m in _INCLUDE_RE.finditer(src):
+            walk(os.path.join(TEMPLATES_DIR, m.group(1).replace("/", os.sep)))
+        for m in _FROM_IMPORT_RE.finditer(src):
             walk(os.path.join(TEMPLATES_DIR, m.group(1).replace("/", os.sep)))
         for m in _ASSET_RE.finditer(src):
             disk = _asset_disk_path(m.group(1))

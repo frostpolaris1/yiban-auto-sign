@@ -1,61 +1,15 @@
 {# 用户端：签到日历（/user/calendar）。
-   左列（col-6）按账号纵向排列月历卡，右列（col-6）是常驻的「签到记录」面板——
-   未选日期时显示引导空态，选中后回显当天日志；面板在宽屏下 sticky 跟随。
-   日志面板刻意**服务端渲染**空态，保证 JS 未执行时也留着"日志放这里"的位置
-   （旧版把日志塞进日历右半栏且初始高度为 0，被用户判定为"没有留空显示日志"）。
-
-   账号卡由 user_calendar.js 按 /api/my-accounts 动态生成（数量可变），
-   日历本体由共享模块 static/js/calendar.js 渲染。 #}
+   正文与管理端 /mine/calendar **同一份实现** —— partials/page_sign_calendar.html；
+   行为编排在共享组件 components/sign-calendar-view.js。 #}
 {% extends "layout_user.html" %}
-{% from "macros/ui.html" import icon with context %}
+{% from "partials/page_sign_calendar.html" import body with context %}
 
 {% block title %}签到日历 · 易班自动签到{% endblock %}
 
-{% block content %}
-<div class="page-head">
-  <h1 class="page-title">签到日历</h1>
-  <p class="page-sub">按日查看每个账号的签到结果，点击日期查看当天记录。</p>
-</div>
-
-<div class="user-grid">
-  {# 左侧：账号日历卡（JS 插入）；初始占位卡在无账号时被替换为空态 #}
-  <div class="col-6 cal-column" data-cal-list>
-    <section class="card">
-      <p class="empty">
-        <span class="empty__icon">{{ icon('calendar') }}</span>
-        <span class="empty__msg">正在加载账号…</span>
-      </p>
-    </section>
-  </div>
-
-  {# 右侧：签到记录面板（常驻，保证"日志显示区"始终可见） #}
-  <section class="card col-6 sc-log-card" data-sc-log-card>
-    <div class="panel-head">
-      <div class="panel-head-row">
-        <h2 class="panel-title">签到记录</h2>
-      </div>
-      <p class="panel-sub" data-sc-log-date>选择日期查看当天记录</p>
-    </div>
-    <div class="sc-log" data-sc-log aria-live="polite">
-      <p class="sc-empty">
-        <span class="sc-empty-icon" aria-hidden="true">{{ icon('calendar') }}</span>
-        <span>点击日历中的日期，查看当天签到记录</span>
-        <span class="sc-empty-note">签到结果在每天调度后写入</span>
-      </p>
-    </div>
-  </section>
-
-  {# 图例：全宽一行，与日历状态一一对应（颜色之外另有形状/角标冗余） #}
-  <ul class="col-6 sc-legend" aria-label="签到状态图例">
-    <li><i class="sc-swatch sc-swatch--ok" aria-hidden="true"></i>已签到</li>
-    <li><i class="sc-swatch sc-swatch--bad" aria-hidden="true"></i>签到失败</li>
-    <li><i class="sc-swatch sc-swatch--off" aria-hidden="true">休</i>周末停签</li>
-    <li><i class="sc-swatch sc-swatch--today" aria-hidden="true"></i>今天</li>
-  </ul>
-</div>
-{% endblock %}
+{% block content %}{{ body() }}{% endblock %}
 
 {% block scripts %}
 <script src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/sign-calendar-view.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/pages/user_calendar.js?v={{ web_version }}"></script>
 {% endblock %}

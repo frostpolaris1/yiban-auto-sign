@@ -1,5 +1,7 @@
-/* 系统设置 · 消息推送卡（管理端 /settings）。
-   挂载到 window.YB.settingsNotify；classic script。邮件通知卡拆在 settings-mail.js。
+/* 系统设置 · 消息推送段（管理端 /settings 的「通知通道」分区）。
+
+   挂载到 window.YB.settingsNotify；classic script。邮件段拆在 settings-mail.js，
+   两段同处一个 .card（#set-notify），故非主管理员的禁用由本组件对整卡统一处理。
 
    权限：配置与测试均仅主管理员；关闭通道、更换/清空密钥、调整额度节流都需
    confirm_password（后端 _high_risk_gate，前端先收口令再提交；UI 不是安全边界）。
@@ -99,7 +101,7 @@
   }
 
   function save() {
-    if (busy) return;
+    if (busy || !isMaster) return;
     var body = collect();
     if (!Object.keys(body).length) { YB.toast.info("没有需要保存的改动"); return; }
     if (body.type && !body.secret && !snap.configured) { YB.toast.error("开启推送请填写密钥"); return; }
@@ -120,13 +122,13 @@
           setTip((e && e.message) || "保存失败，请稍后重试", true);
         }).then(function () {
           busy = false;
-          if (btn) btn.disabled = false;
+          if (btn && isMaster) btn.disabled = false;
         });
       });
   }
 
   function test() {
-    if (busy) return;
+    if (busy || !isMaster) return;
     busy = true;
     var btn = $("sn-test"); if (btn) btn.disabled = true;
     setTip("发送中…", false);
@@ -136,7 +138,7 @@
       setTip((e && e.message) || "发送失败，请稍后重试", true);
     }).then(function () {
       busy = false;
-      if (btn) btn.disabled = false;
+      if (btn && isMaster) btn.disabled = false;
     });
   }
 
@@ -145,9 +147,9 @@
     var saveBtn = $("sn-save"); if (saveBtn) saveBtn.addEventListener("click", save);
     var testBtn = $("sn-test"); if (testBtn) testBtn.addEventListener("click", test);
     if (!isMaster) {
+      // 整卡（推送 + 邮件两段）禁用：容器做 group 并把禁用原因 #sn-perm 关联给读屏
       var card = $("set-notify");
       if (card) {
-        // 整卡控件禁用：容器做 group 并把禁用原因 #sn-perm 关联给读屏
         disableAll(card);
         card.setAttribute("role", "group");
         card.setAttribute("aria-describedby", "sn-perm");

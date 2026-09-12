@@ -50,15 +50,20 @@ REQUIRED_MODULES = (
     "components/change-password.js",
     "components/my-accounts.js",
     "components/my-mail-notify.js",
+    "components/my-accounts-page.js",
+    "components/sign-calendar-view.js",
     "components/settings-schedule.js",
     "components/settings-health.js",
     "components/settings-notify.js",
     "components/settings-mail.js",
+    "components/settings-quota.js",
+    "components/settings-switches.js",
     "pages/accounts.js",
     "pages/user_accounts.js",
     "pages/users.js",
     "pages/settings.js",
     "pages/mine.js",
+    "pages/mine_calendar.js",
 )
 
 # 实际渲染的页面模板：layout_*.html（外壳，自带 core.js）+ pages/*.html（正文，含 block scripts）
@@ -91,7 +96,6 @@ _SVG_RHS_RE = re.compile(r"^\s*svg\(")
 # 旧文件待 P3/P4 重写时清理（settings.js / mine.js 已重写，故移出清单）。
 _LEGACY_INNERHTML_PAGES = frozenset({
     "dashboard.js", "login.js",
-    "user_accounts.js", "user_calendar.js",
 })
 _REVIEWED_PAGES = ("users.js", "accounts.js", "settings.js")
 
@@ -302,6 +306,48 @@ class JsAssemblyGuardTest(unittest.TestCase):
             "user-ops.js 出现 data.msg —— 单目标成功提示会把完整邮箱经 toast 写入 DOM；"
             "本组件只允许 batch/purge 的计数型 msg 上屏",
         )
+
+    # 唯一的裸 fetch 例外：日志导出是**文件下载**（blob），YB.api 只处理 JSON 响应，
+    # 无法替代。登记在此并在判据里说明原因，避免把"绕过 CSRF"的写法混进来。
+    _BARE_FETCH_ALLOW = frozenset({"logs.js"})
+
+    def test_pages_and_components_do_not_use_bare_fetch(self):
+        """`pages/*.js` 与 `components/*.js` 不得裸用 `fetch` —— 必须走 `YB.api`。
+
+        `YB.api` 承担 CSRF 头、统一错误与 401 跳转；裸 fetch 会静默绕过这几层
+        （写请求尤其危险）。日志导出的 blob 下载是唯一例外，见 `_BARE_FETCH_ALLOW`。
+        """
+        offenders = []
+        for sub in ("pages", "components"):
+            for path in sorted(glob.glob(os.path.join(JS_DIR, sub, "*.js"))):
+                name = os.path.basename(path)
+                if name in self._BARE_FETCH_ALLOW:
+                    continue
+                if re.search(r"\bfetch\s*\(", _read(path)):
+                    offenders.append(f"  {sub}/{name}")
+        if offenders:
+            self.fail(
+                "页面/组件裸用 fetch（绕过 YB.api 的 CSRF、统一错误与 401 处理）：\n"
+                + "\n".join(offenders)
+                + "\n确需下载文件（blob）时，请在本测试的 _BARE_FETCH_ALLOW 里显式登记并说明原因"
+            )
+
+    def test_settings_mail_never_backfills_masked_values(self):
+        """SMTP 行内编辑不得把脱敏值写进输入框 —— 打码值只允许作 placeholder。
+
+        后端 GET /api/mail-config 下发的 smtps[].user / has_pass 是打码或占位串；
+        一旦作为 `value` 回填，保存时会按字面落盘并损坏配置（或把打码串当授权码）。
+        本测试钉住取值函数本身不回填：`cellInput` 体内不得出现 `.value`，且组件必须
+        保留打码值清洗函数 `clean()`。
+        """
+        src = _read(os.path.join(JS_DIR, "components", "settings-mail.js"))
+        m = re.search(r"function cellInput\(.*?\n  \}", src, re.S)
+        self.assertIsNotNone(m, "settings-mail.js 未找到 cellInput（写法变了？请同步本测试）")
+        self.assertNotIn(
+            ".value", m.group(0),
+            "cellInput 回填了 value —— 脱敏值只允许作 placeholder，不得写进输入框",
+        )
+        self.assertIn("function clean(", src, "settings-mail.js 缺少打码值清洗函数 clean()")
 
     def test_user_ops_batch_limit_matches_backend(self):
         """前端 LIMIT 必须与后端 BATCH_OP_LIMIT 同值（防两处上限漂移）。"""

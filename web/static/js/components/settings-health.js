@@ -1,16 +1,17 @@
-/* 系统设置 · 健康检查卡（管理端 /settings）。
-   挂载到 window.YB.settingsHealth；classic script。
+/* 系统设置 · 健康与探针分区（管理端 /settings）。
 
+   挂载到 window.YB.settingsHealth；classic script。
    任意管理员可改（后端 POST /api/settings 对 account_verify / probe_enable /
    probe_time / probe_interval 不限主管理员），故无禁用逻辑。
    改动即保存：每次只提交被改的那一个字段（后端按字段携带写入）。
-   连通性探测 POST /api/ping：请求在途禁用按钮并给出结果（reachable + detail）。 */
+
+   服务器连通性探测（POST /api/ping）已删除：管理端总览页 `/` 的运行状态卡已有同款
+   能力，设置页不再重复入口。 */
 (function () {
   "use strict";
   var YB = window.YB;
   if (!YB) return;
 
-  var pingBusy = false;
   var saving = false;
 
   function $(id) { return document.getElementById(id); }
@@ -19,33 +20,6 @@
     if (!el) return;
     el.textContent = text || "";
     el.className = bad ? "set-tip set-bad" : "set-tip";
-  }
-
-  function setPing(text, cls) {
-    var el = $("sh-ping-result");
-    if (!el) return;
-    el.textContent = text;
-    // 不能整体替换 className：会丢掉 set-hint 的 12px 字号，结果文字与相邻控件不一致
-    el.classList.remove("set-ok", "set-bad");
-    if (cls) el.classList.add(cls);
-  }
-
-  function ping() {
-    if (pingBusy) return;
-    pingBusy = true;
-    var btn = $("sh-ping");
-    if (btn) btn.disabled = true;
-    setPing("检测中…", "");
-    YB.api("POST", "/api/ping").then(function (data) {
-      var detail = data && data.detail ? String(data.detail) : "";
-      if (data && data.reachable) setPing("易班 API 可达（" + detail + "）", "set-ok");
-      else setPing("不可达（" + detail + "）", "set-bad");
-    }).catch(function (e) {
-      setPing("检测失败（" + ((e && e.message) || "请稍后重试") + "）", "set-bad");
-    }).then(function () {
-      pingBusy = false;
-      if (btn) btn.disabled = false;
-    });
   }
 
   // 单字段提交：只发送本次改动的键；失败回滚到服务器值并就地提示。
@@ -101,8 +75,6 @@
   }
 
   function mount() {
-    var btn = $("sh-ping");
-    if (btn) btn.addEventListener("click", ping);
     bindToggle("sh-verify", "account_verify");
     bindToggle("sh-probe-enable", "probe_enable");
     bindTime();

@@ -1,43 +1,32 @@
-/* 系统设置 · 邮件通知卡（管理端 /settings）。
-   挂载到 window.YB.settingsMail；classic script。从 settings-notify.js 拆出以控文件长度。
+/* 系统设置 · 邮件段（管理端 /settings 的「通知通道」分区）。
 
-   权限（与后端内联判定 / 高危门禁逐条对齐）：
-     · 全局开关、告警收件人、SMTP 列表：仅主管理员；PUT /api/mail-config 的关闭类开关
-       与 smtps/admin_to 变更需 confirm_password。
-     · 「接收发给我自己的邮件提醒」任意管理员：主管理员走 /api/mail-config {admin_notify}，
-       普通管理员走 /api/my-mail-notify。
+   挂载到 window.YB.settingsMail；classic script。消息推送段在 settings-notify.js，
+   两段同处 #set-notify 一张卡；非主管理员的整卡禁用由 settings-notify 统一处理，
+   本组件不再重复判定（动作里仍做 isMaster 早退，UI 不是安全边界）。
 
-   脱敏：GET /api/mail-config 的 user/admin_to 与 smtps[].user 已由后端打码；授权码绝不
-   回显（pass 输入框恒为空，留空=沿用旧值；user 留空同理）。动态节点一律 YB.el。 */
+   权限（与后端高危门禁逐条对齐）：
+     · 全局开关、告警收件人、SMTP 列表：仅主管理员；PUT /api/mail-config 的关闭类
+       开关与 smtps/admin_to 变更需 confirm_password。
+     · 「接收发给我自己的邮件提醒」是**个人域**，已迁到 /mine，本页不再有。
+
+   脱敏：GET /api/mail-config 的 admin_to 与 smtps[].user 已由后端打码；授权码绝不
+   回显（pass 输入框恒为空，留空=沿用旧值；user 留空同理，打码值只作 placeholder）。
+   SMTP 列表用模板 .data-table 行内编辑。动态节点一律 YB.el。 */
 (function () {
   "use strict";
   var YB = window.YB;
   if (!YB) return;
 
-  var ctx = { isMaster: false, mailNotify: true };
+  var ctx = { isMaster: false };
   var busy = false;
 
   function $(id) { return document.getElementById(id); }
+  function tbody() { return document.querySelector("#sm-smtps tbody"); }
   function setTip(text, bad) {
     var el = $("sm-tip");
     if (!el) return;
     el.textContent = text || "";
     el.className = bad ? "set-tip set-bad" : "set-tip";
-  }
-  function disableAll(root) {
-    if (!root) return;
-    [].forEach.call(root.querySelectorAll("input,select,button,textarea"), function (n) { n.disabled = true; });
-  }
-  // 非主管理员：主管理员专属区整块禁用，并把禁用原因 #sm-perm 关联给读屏（group + describedby）
-  function applyPerm() {
-    if (ctx.isMaster) return;
-    var box = $("sm-master-only");
-    disableAll(box);
-    if (box) {
-      box.setAttribute("role", "group");
-      box.setAttribute("aria-describedby", "sm-perm");
-    }
-    var perm = $("sm-perm"); if (perm) perm.hidden = false;
   }
   // 读取失败就地提示 + 重试（不能只置灰，用户无法区分"未配置"与"没读到"）
   function showLoadError(msg) {
@@ -59,43 +48,69 @@
     return (!s || s.indexOf("*") !== -1 || s.charAt(0) === "<") ? "" : s;
   }
 
-  function field(name, label, placeholder, value, type, span, isPass) {
-    var wrap = YB.el("div", { class: span || null });
-    wrap.appendChild(YB.el("label", { class: "set-label", text: label }));
+  function cellInput(name, type, placeholder, ariaLabel, isPass) {
     var input = YB.el("input", {
       class: "input", type: type, placeholder: placeholder,
-      autocomplete: isPass ? "new-password" : "off", "data-f": name
+      autocomplete: isPass ? "new-password" : "off", "data-f": name,
+      "aria-label": ariaLabel
     });
     if (type === "number") { input.min = "1"; input.max = "65535"; }
-    if (value !== "" && value != null) input.value = String(value);
-    wrap.appendChild(input);
-    return wrap;
+    return input;
   }
 
   function smtpRow(entry, index) {
-    var box = YB.el("div", { class: "set-smtp" });
-    var head = YB.el("div", { class: "set-smtp-head" });
-    head.appendChild(YB.el("span", { class: "set-smtp-name", text: "SMTP " + (index + 1) + (index === 0 ? "（主）" : "（备用）") }));
-    var del = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm btn--danger-ghost", text: "删除" });
-    del.addEventListener("click", function () { if (ctx.isMaster && box.parentNode) box.parentNode.removeChild(box); });
-    head.appendChild(del);
-    box.appendChild(head);
-    var grid = YB.el("div", { class: "set-smtp-grid" });
-    grid.appendChild(field("host", "服务器 host", "smtp.example.com", entry.host || "", "text", "set-span-3", false));
-    grid.appendChild(field("port", "端口", "465", entry.port || 465, "number", "", false));
+    var tr = YB.el("tr");
+    var tdHost = YB.el("td");
     // user 已由后端打码：只作 placeholder，输入框恒为空（留空=沿用旧值，避免误清）
-    grid.appendChild(field("user", "发件账号（留空沿用）", entry.user || "", "", "text", "set-span-2", false));
-    grid.appendChild(field("pass", "授权码（永不回显）", entry.has_pass ? "已配置，留空沿用" : "未配置", "", "password", "set-span-3", true));
-    box.appendChild(grid);
-    return box;
+    tdHost.appendChild(cellInput("host", "text", "smtp.example.com", "SMTP " + (index + 1) + " 服务器 host", false));
+    var tdPort = YB.el("td");
+    tdPort.appendChild(cellInput("port", "number", "465", "SMTP " + (index + 1) + " 端口", false));
+    var tdUser = YB.el("td");
+    tdUser.appendChild(cellInput("user", "text", entry.user || "留空沿用", "SMTP " + (index + 1) + " 发件账号", false));
+    var tdPass = YB.el("td");
+    tdPass.appendChild(cellInput("pass", "password", entry.has_pass ? "已配置，留空沿用" : "未配置", "SMTP " + (index + 1) + " 授权码", true));
+    var tdOps = YB.el("td");
+    var del = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm btn--danger-ghost", text: "删除" });
+    del.setAttribute("aria-label", "删除 SMTP " + (index + 1));
+    del.addEventListener("click", function () {
+      if (!ctx.isMaster) return;
+      if (tr.parentNode) tr.parentNode.removeChild(tr);
+      renumber();
+    });
+    tdOps.appendChild(del);
+    tr.appendChild(tdHost);
+    tr.appendChild(tdPort);
+    tr.appendChild(tdUser);
+    tr.appendChild(tdPass);
+    tr.appendChild(tdOps);
+    return tr;
+  }
+
+  // 删除后重排行内 aria-label（保持读屏序号与服务端顺序一致）
+  function renumber() {
+    var rows = tbody() ? tbody().querySelectorAll("tr") : [];
+    [].forEach.call(rows, function (tr, i) {
+      [].forEach.call(tr.querySelectorAll("[data-f]"), function (inp) {
+        var map = { host: "服务器 host", port: "端口", user: "发件账号", pass: "授权码" };
+        inp.setAttribute("aria-label", "SMTP " + (i + 1) + " " + (map[inp.getAttribute("data-f")] || "字段"));
+      });
+    });
+  }
+
+  function emptyRow() {
+    var tr = YB.el("tr", { class: "sm-empty-row" });
+    var td = YB.el("td", { colspan: "5" });
+    td.appendChild(YB.el("p", { class: "field-help", text: "尚未配置发件 SMTP；添加后告警邮件才可送达。" }));
+    tr.appendChild(td);
+    return tr;
   }
 
   function renderSmtps(list) {
-    var box = $("sm-smtps");
-    if (!box) return;
-    while (box.firstChild) box.removeChild(box.firstChild);
-    list.forEach(function (e, i) { box.appendChild(smtpRow(e, i)); });
-    if (!list.length) box.appendChild(YB.el("p", { class: "set-hint", text: "尚未配置发件 SMTP；添加后告警邮件才可送达。" }));
+    var body = tbody();
+    if (!body) return;
+    while (body.firstChild) body.removeChild(body.firstChild);
+    if (!list.length) { body.appendChild(emptyRow()); return; }
+    list.forEach(function (e, i) { body.appendChild(smtpRow(e, i)); });
   }
 
   function load() {
@@ -109,11 +124,9 @@
             : "未开启（未配置发件 SMTP）");
       }
       var g = $("sm-global"); if (g) g.checked = !!data.enabled;
-      var self = $("sm-self"); if (self) self.checked = ctx.isMaster ? !!data.admin_notify : !!ctx.mailNotify;
       var to = $("sm-to");
       if (to) { to.value = ""; to.placeholder = data.admin_to || "admin@example.com"; }
       renderSmtps(data.smtps || []);
-      applyPerm();
     }).catch(function (e) {
       showLoadError((e && e.message) || "邮件配置读取失败，请稍后重试");
     });
@@ -134,13 +147,13 @@
   }
   function changeGlobal() {
     var el = $("sm-global");
-    if (!el || busy) return;
+    if (!el || busy || !ctx.isMaster) return;
     var next = el.checked;
     // 关闭 = 给全部安全告警拔线（后端高危门禁），先收口令再落盘；开启无口令。
-    // change 已把 checked 翻成"关闭"：这里先回滚 UI，取消口令即保持开启态，仅确认成功
+    // change 已把 checked 翻成"关闭"：先回滚 UI，取消口令即保持开启态，仅确认成功
     // 后由 load() 按服务端结果落定为关闭 —— 避免"界面显示已关闭但后端仍开着"。
     if (!next) {
-      el.checked = !next;
+      el.checked = true;
       YB.openConfirmPasswordModal(
         "关闭全局邮件通知？\n关闭后所有安全告警都不再发邮件，且“被关闭”这件事本身也可能没人知道！\n请输入当前管理员密码确认。",
         function (pw) { submitGlobal(next, pw); });
@@ -149,43 +162,9 @@
     }
   }
 
-  function submitSelf(next, pw) {
-    busy = true;
-    var el = $("sm-self");
-    var p;
-    if (ctx.isMaster) {
-      var body = { admin_notify: next };
-      if (pw) body.confirm_password = pw;
-      p = YB.api("PUT", "/api/mail-config", body);
-    } else {
-      p = YB.api("PUT", "/api/my-mail-notify", { enabled: next });
-    }
-    p.then(function () {
-      ctx.mailNotify = next;
-      setTip(next ? "已开启接收邮件提醒" : "已关闭接收邮件提醒", false);
-    }).catch(function (e) {
-      if (el) el.checked = !next;
-      setTip((e && e.message) || "保存失败，请稍后重试", true);
-    }).then(function () { busy = false; });
-  }
-  function changeSelf() {
-    var el = $("sm-self");
-    if (!el || busy) return;
-    var next = el.checked;
-    if (ctx.isMaster && !next) {
-      // 同 changeGlobal：先回滚 UI，口令确认成功后再由 load() 落定为关闭
-      el.checked = !next;
-      YB.openConfirmPasswordModal(
-        "关闭主管理员告警邮件接收？\n关闭后 ADMIN_TO 不再收到任何告警邮件（其他管理员收件不受影响）！\n请输入当前管理员密码确认。",
-        function (pw) { submitSelf(next, pw); });
-      return;
-    }
-    submitSelf(next, null);
-  }
-
   function saveAdminTo() {
     var el = $("sm-to");
-    if (!el || busy) return;
+    if (!el || busy || !ctx.isMaster) return;
     var val = (el.value || "").trim();
     if (!val) { YB.toast.error("请填写收件人邮箱；如需清空请点「清空」"); return; }
     YB.openConfirmPasswordModal(
@@ -202,7 +181,7 @@
   }
 
   function clearAdminTo() {
-    if (busy) return;
+    if (busy || !ctx.isMaster) return;
     YB.confirmDialog({
       title: "清空告警收件人",
       body: "清空后管理员告警邮件将无人接收（除非另有开启接收的管理员）。确定继续？",
@@ -224,19 +203,22 @@
   }
 
   function collectSmtps() {
-    var rows = document.querySelectorAll("#sm-smtps .set-smtp");
-    return [].map.call(rows, function (row) {
+    var body = tbody();
+    if (!body) return [];
+    return [].map.call(body.querySelectorAll("tr"), function (row) {
+      var host = row.querySelector('[data-f="host"]');
+      if (!host) return null;
       return {
-        host: clean(row.querySelector('[data-f="host"]').value),
+        host: clean(host.value),
         port: parseInt(row.querySelector('[data-f="port"]').value, 10) || 465,
         user: clean(row.querySelector('[data-f="user"]').value),
         pass: (row.querySelector('[data-f="pass"]').value || "").trim()
       };
-    });
+    }).filter(Boolean);
   }
 
   function saveSmtps() {
-    if (busy) return;
+    if (busy || !ctx.isMaster) return;
     var entries = collectSmtps();
     if (entries.length && entries.some(function (e) { return !e.host; })) {
       YB.toast.error("每条 SMTP 都必须填写服务器 host");
@@ -257,25 +239,20 @@
 
   function addSmtp() {
     if (!ctx.isMaster) return;
-    var box = $("sm-smtps");
-    if (!box) return;
-    var empty = box.querySelector(".set-hint");
-    if (empty) box.removeChild(empty);
-    box.appendChild(smtpRow({ host: "", port: 465, user: "", has_pass: false }, box.children.length));
+    var body = tbody();
+    if (!body) return;
+    var empty = body.querySelector(".sm-empty-row");
+    if (empty) body.removeChild(empty);
+    body.appendChild(smtpRow({ host: "", port: 465, user: "", has_pass: false }, body.children.length));
   }
 
   function mount(options) {
-    ctx = {
-      isMaster: !!(options && options.isMaster),
-      mailNotify: options && options.mailNotify != null ? !!options.mailNotify : true
-    };
+    ctx = { isMaster: !!(options && options.isMaster) };
     var g = $("sm-global"); if (g) g.addEventListener("change", changeGlobal);
-    var self = $("sm-self"); if (self) self.addEventListener("change", changeSelf);
     var toSave = $("sm-to-save"); if (toSave) toSave.addEventListener("click", saveAdminTo);
     var toClear = $("sm-to-clear"); if (toClear) toClear.addEventListener("click", clearAdminTo);
     var add = $("sm-add-smtp"); if (add) add.addEventListener("click", addSmtp);
     var saveS = $("sm-save-smtp"); if (saveS) saveS.addEventListener("click", saveSmtps);
-    applyPerm();
   }
 
   YB.settingsMail = { mount: mount, load: load };
