@@ -525,6 +525,7 @@ textarea {
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  margin: 0;   /* <p class="empty"> 的 UA 1em 上下边距会凭空多出 14px */
   padding: 32px 16px;
   text-align: center;
   color: var(--t-muted);
@@ -721,7 +722,7 @@ textarea {
   flex-wrap: wrap;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px dashed var(--border);
+  border-top: 1px solid var(--border-soft);
 }
 .dash-page .dash-cal-legend {
   display: flex;
@@ -775,7 +776,7 @@ textarea {
   justify-content: space-between;
   gap: 12px 20px;
   padding: 11px 0;
-  border-bottom: 1px dashed var(--border);
+  border-bottom: 1px solid var(--border-soft);
 }
 .dash-page .dash-health-row:last-child {
   border-bottom: 0;
@@ -1553,19 +1554,18 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
    为什么不让控件与整块垂直居中：说明折行后整块中心会比标题低 11px，控件看起来"悬在
    标题与说明之间"（用户标注的实测截图）。控件与标题同行居中才是稳定的锚点；
    说明占整行宽度，也不再被右侧控件挤压（此前文字一长就把按钮顶到下一行）。 */
-/* 标题行与说明之间加一条分隔线（同 .form-actions 的按钮前分隔线一套视觉）：
-   线宽 = 卡片内容宽度，因此与标题左边界、右侧控件右边界、下方表单字段完全对齐。 */
-.panel-head { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+/* 标题行：标题 + 右侧控件同行**垂直居中**（align-items:center 是唯一行内对齐规则）。
+   标题与说明之间**不画分隔线**：下边框必然靠 padding-bottom 把标题行重心压低，且线到
+   控件与线到标题的留白无法同时对称（用户实测「分隔线不垂直居中、按钮不居中」）。
+   层级改由 22/15/12.5 的字号与色阶承担，标题↔说明靠 4px 紧邻成组。 */
+.panel-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
 .panel-head-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   min-width: 0;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-soft);
 }
-.panel-head-row:last-child { padding-bottom: 0; border-bottom: 0; }
 .panel-head-row > :last-child { flex-shrink: 0; }   /* 控件固定右侧，不被文字压缩 */
 .panel-head .panel-sub { margin: 0; }
 .panel-title {
@@ -1717,17 +1717,26 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
   border: 0;
 }
 /* 表单节奏（单一刻度）：
-     字段之间 16 / 标签→控件 6 / 控件→帮助 4 / 末字段→动作行 24（含分隔线与内距）
-   实测过的两处不等：.field-help 作为 <p> 带 11.5px 上下边距（帮助→下个字段变 28px）、
-   Adminator 的 .form-actions 自带 18px 上边距 + 18px 上内距（末字段→按钮变 34px）。 */
+     字段之间 16 / 标签→控件 6 / 控件→帮助 4
+   实测过的偏差：.field-help 作为 <p> 带 11.5px 上下边距（帮助→下个字段变 28px）。 */
 .form-stack { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
 /* 弹窗内表单铺满正文宽度：字段、分隔线、按钮行共用同一左右边界 */
 .pm-panel .form-stack { max-width: none; }
 .form-stack .field-help,
 .form-stack .field-error { margin: 0; }
 .form-stack .field-help { margin-top: -2px; }   /* 6(字段内 gap) - 2 = 视觉 4px */
-body[data-page="user"] .form-actions { margin-top: 8px; }   /* 16(栈 gap) + 8 = 24 */
-.form-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* 表单正文 → 操作行：全站唯一保留的「提交边界」分隔线（Adminator 原生有，属模板线语言）。
+   线要看起来居中，上下留白必须相等：margin-top（线以上）与 padding-top（线以下）同为 16px。
+   此前被 body 作用域压成 8/18，正是「分隔线不垂直居中、按钮与线不居中」的根因。 */
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
 .schedule-banner { margin: 0 0 24px; }
 .pref-estimate { margin: 0 0 12px; }
 .pref-foot { margin-top: 16px; }
@@ -2082,7 +2091,7 @@ body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
 .notif-note {
   margin: 0;
   padding: 10px 16px 12px;
-  border-top: 1px dashed var(--border);
+  /* 不再画线：公告可见时 .notif-section 的下边框就在它上方，两条线会叠成 2px */
   font-size: 11.5px;
   line-height: 1.55;
   color: var(--t-muted);
