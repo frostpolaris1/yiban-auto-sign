@@ -1083,6 +1083,9 @@ body {
    服务端 _render_md 只产出 h1~h4 / p / ul / ol / li / blockquote / hr / code / strong / a。
    Adminator 的 reset 把 ul/ol 的 list-style 清成 none，此处按语义恢复符号。 */
 .md-body { font-size: 13px; line-height: 1.75; color: var(--t-muted); }
+/* 文档正文的首个 H1 与模态标题重复（更新日志、用户协议、隐私政策都是同一段文案），
+   隐藏它以免读者看到两遍同一句话。 */
+.pm-panel .md-body > h1:first-child { display: none; }
 .md-body > :first-child { margin-top: 0; }
 .md-body h1, .md-body h2, .md-body h3, .md-body h4 {
   color: var(--t-base);
@@ -1310,6 +1313,8 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
    必须写成 .alert.auth-announce（0,2,0）才能盖掉 Adminator 的 .alert.warning（0,2,0），
    只写 .auth-announce（0,1,0）会输给 .alert.warning 的底色。 */
 .alert.auth-announce {
+  /* 已移出 .auth-card（与表单剥离）：自带下外边距，卡片仍由 margin:auto 居中 */
+  margin: 0 0 18px;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -1516,7 +1521,7 @@ body[data-page="user"] .page-title {
 }
 body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: var(--t-sub); }
 /* 内容区撑满，短页时页脚不会浮在页面中间（.main 已是 flex column） */
-body[data-page="user"] .content { flex: 1; }
+
 
 /* ---- 19.2 面板（卡内区块）--------------------------------------------------
    .card-head 自带 padding-bottom:16 + margin-bottom:20 + 1px 分隔线，在"标题 + 一行
@@ -1554,6 +1559,9 @@ body[data-page="user"] .content { flex: 1; }
   .col-6, .col-8, .col-4 { grid-column: span 12; }
 }
 @media (max-width: 720px) {
+  /* 竖屏弹窗别贴边占满：上下各留 ≥48px 可见背景 */
+  .pm-backdrop { padding: 24px 16px; }
+  .pm-panel { max-height: calc(100dvh - 96px); border-radius: 16px; }
   .user-grid { gap: 16px; }
   /* 窄屏下「标题+说明」与右侧操作按钮同行会互相挤压，改为换行堆叠；
      换行后控件靠右对齐（与未换行时的右端位保持一致） */
@@ -1561,6 +1569,21 @@ body[data-page="user"] .content { flex: 1; }
   .panel-head > .switch,
   .panel-head > .btn { margin-left: auto; }
 }
+
+/* 页脚贴底：.main 已是 flex column，但 .content 不撑满时页脚浮在内容下方
+   （管理端占位页实测页脚下方留 283–357px 空白）。两个外壳共用这条。 */
+.main > .content { flex: 1; }
+
+/* 竖屏页脚居中（Adminator 的 .d-footer 在 ≤720 是 flex-start 左对齐） */
+@media (max-width: 720px) {
+  .d-footer { align-items: center; justify-content: flex-start; text-align: center; }
+  .d-footer .footer-legal,
+  .d-footer .footer-meta { justify-content: center; }
+}
+
+/* 侧栏品牌区不画分隔线：它与顶栏的分割线不可能对齐（侧栏 padding 与顶栏高度不同），
+   而下方 .nav-label 已足够分隔。用户明确建议直接去掉。 */
+.d-sidebar .brand { border-bottom: 0; padding: 4px 10px 0; }
 
 /* ---- 19.4 侧边栏可读性修正 ---- */
 .nav-label { color: var(--t-muted); }     /* Adminator 用 --t-light：浅色侧栏上 2.56:1 */
@@ -1729,7 +1752,16 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 
 /* 日期格：**固定行高**（不再用 aspect-ratio——行高由容器决定，宽高比会失控），
    7 列等分随容器自适应；状态由底色 + 圆点双重编码，今天用 inset ring 不占布局。 */
-.sc-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: 56px; gap: 4px; }
+.sc-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: 56px;
+  gap: 4px;
+  /* 钉死 6 行高度：换月/首屏加载时网格不会塌成 0 高（这是"跳变"的根因） */
+  min-height: calc(6 * 56px + 5 * 4px);
+}
+/* 载入骨架格：与真实格同尺寸，保证高度恒定（静态，不做逐格动画） */
+.sc-cell--skeleton { background: var(--bg-muted); border-color: transparent; cursor: default; }
 .sc-blank { display: block; }
 .sc-cell {
   position: relative;
@@ -1745,9 +1777,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 140ms, border-color 140ms, color 140ms;
 }
-.sc-cell:hover { border-color: var(--primary); }
 .sc-cell:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 /* 开关的 input 不可见，焦点环必须画在 track 上 */
 .switch input:focus-visible + .track { outline: 2px solid var(--primary); outline-offset: 2px; }
@@ -1818,13 +1848,16 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 /* 日志面板：常驻 + 宽屏 sticky（顶栏 60px + 24 gap），空态占位保证日志区始终可见 */
 /* 与日历卡等高：不加 sticky/align-self（那会按内容高度收缩，横屏下两卡不齐） */
 .sc-log-card { display: flex; flex-direction: column; }
-.sc-log { flex: 1; min-height: 240px; }
+.sc-log { flex: 1; min-height: 240px; display: flex; flex-direction: column; }
 .sc-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-muted); }
 /* 空态图标是装饰（aria-hidden），不承载信息，故可用 --t-light */
 .sc-empty-icon { display: inline-flex; color: var(--t-light); }
 .sc-empty-icon svg { width: 22px; height: 22px; stroke: currentColor; stroke-width: 1.6; fill: none; }
 .sc-empty-note { font-size: 11.5px; color: var(--t-sub); }
-.sc-log > .sc-empty { display: grid; place-items: center; min-height: 200px; max-width: 30ch; margin: 0 auto; text-align: center; }
+/* margin:auto 让空态/加载态在整块面板里居中（相对面板外框，而不是自身小盒）；
+   日志正文是普通 flex 子项，仍从顶部开始。 */
+.sc-log > .sc-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 30ch; margin: auto; text-align: center; }
+
 .sc-log-text { margin-top: 2px; }
 @media (max-width: 720px) {
   .sc-grid { grid-auto-rows: 44px; gap: 2px; }
@@ -1836,6 +1869,105 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   .sc-weekdays { gap: 3px; }
 }
 
+
+/* ==========================================================================
+   22. 交互动效（展开 / 选中 / 切换 / 载入）
+   --------------------------------------------------------------------------
+   原则（依据 UI 动效规范）：
+     · 只过渡 transform / opacity 与颜色，**不做布局属性动画**（height/width/margin 掉帧）；
+     · 进入用强 ease-out，退出用 ease-in；对称位移复用既有 --theme-ease(0.2,0.7,0.2,1)；
+     · 高频操作（选日期 / 今天 / 开关）反馈 ≤160ms——迟滞感比"好看"重要；
+     · 大面积元素位移 ≤6px / ≤200ms；不做逐格 stagger（35 个格子一起动又慢又喧宾夺主）；
+     · **短请求不播进入动画**：加载越短越不该动，否则只是闪一下（由 JS 按 80ms 阈值加
+       .is-swapping / .is-fresh）；
+     · 颜色一律走 background-color（本项目曾因过渡 background-image 的渐变插值经过灰带翻车）；
+     · 新动效统一并入本节末尾的 prefers-reduced-motion 分支（变色保留、位移去除）。
+   ========================================================================== */
+:root {
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-strong: cubic-bezier(0.4, 0, 1, 1);
+}
+
+/* 日期格：按压反馈 + 选中环（环不占布局，可与"今天"的 inset ring 叠加） */
+.sc-cell {
+  transition: background-color 140ms, border-color 140ms, color 140ms,
+    box-shadow 140ms var(--theme-ease), transform 120ms var(--theme-ease);
+}
+.sc-cell:active { transform: scale(0.96); }
+.sc-cell.is-selected { box-shadow: 0 0 0 3px var(--primary-ring); }
+.sc-cell--today.is-selected { box-shadow: inset 0 0 0 2px var(--primary), 0 0 0 3px var(--primary-ring); }
+/* hover 只在真有指针的设备生效，避免触屏点按出现"假 hover" */
+@media (hover: hover) and (pointer: fine) {
+  .sc-cell:hover { border-color: var(--primary); }
+}
+/* 换月：旧格保留到新数据到达，期间只做整体淡出（不清空，故高度与位置都不动） */
+.sc-grid.is-swapping { opacity: 0; transform: translateY(3px); }
+.sc-grid { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
+.sc-month { transition: opacity 120ms var(--ease-out-strong); }
+.sc-month.is-swapping { opacity: 0; }
+
+/* 日志面板：慢请求的内容替换做一次淡入 + 3px 上浮 */
+.sc-log.is-fresh > * { animation: sc-in 160ms var(--ease-out-strong) both; }
+/* 取数期间不替换内容，只降透明表示"正在取"（避免内容先消失再出现的跳变） */
+.sc-log { transition: opacity 120ms var(--theme-ease); }
+.sc-log.is-loading { opacity: 0.55; }
+@keyframes sc-in { from { opacity: 0; transform: translateY(3px); } }
+
+/* 时段按钮：按压反馈（颜色过渡沿用 19.8） */
+.slot { transition: background-color 140ms, border-color 140ms, color 140ms, transform 120ms var(--theme-ease); }
+.slot:active:not(:disabled) { transform: scale(0.96); }
+
+/* 开关：按下时轨道轻微缩小（滑块位移由 Adminator 的 200ms transform 承担，不加 overshoot） */
+.switch:active .track { transform: scale(0.96); }
+.switch .track { transition: background-color 200ms var(--theme-ease), border-color 200ms var(--theme-ease), transform 100ms var(--ease-out-strong); }
+
+/* 折叠区：渐进增强。::details-content + interpolate-size 支持时才有高度动画，
+   不支持的浏览器保持瞬时展开（不会更糟）；不用 max-height（布局动画 + 收起后仍可聚焦）。 */
+@supports (interpolate-size: allow-keywords) {
+  .user-collapse { interpolate-size: allow-keywords; }
+  .user-collapse::details-content {
+    block-size: 0;
+    overflow: clip;
+    transition: block-size 220ms var(--ease-out-strong), content-visibility 220ms allow-discrete;
+  }
+  .user-collapse[open]::details-content { block-size: auto; }
+}
+
+/* 模态：进入 200ms 强 ease-out / 退出 160ms ease-in；位移收到 6px */
+.pm-backdrop { transition: opacity 160ms var(--ease-in-strong); }
+.pm-backdrop.is-open { transition: opacity 200ms var(--ease-out-strong); }
+.pm-panel { transform: translateY(6px) scale(0.99); transition: transform 160ms var(--ease-in-strong); }
+.pm-backdrop.is-open .pm-panel { transition: transform 200ms var(--ease-out-strong); }
+
+/* 下拉（通知/账号菜单）：必须锚在触发器右下角，否则像从面板中间长出来 */
+.dd-menu {
+  transform-origin: top right;
+  transform: translateY(-4px) scale(0.98);
+  transition: opacity 140ms var(--ease-in-strong), transform 140ms var(--ease-in-strong), visibility 140ms;
+}
+.dd-wrap.is-open .dd-menu {
+  transform: none;
+  transition: opacity 180ms var(--ease-out-strong), transform 180ms var(--ease-out-strong), visibility 180ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sc-grid,
+  .sc-grid.is-swapping,
+  .sc-month,
+  .sc-cell,
+  .slot,
+  .switch .track,
+  .pm-backdrop,
+  .pm-panel,
+  .dd-menu { transition: none; }
+  .sc-cell:active,
+  .slot:active:not(:disabled),
+  .switch:active .track { transform: none; }
+  .sc-grid.is-swapping { opacity: 1; transform: none; }
+  .sc-month.is-swapping { opacity: 1; }
+  .sc-log.is-fresh > * { animation: none; }
+  .user-collapse::details-content { transition: none; }
+}
 
 /* ==========================================================================
    21. 通知中心下拉（用户端顶栏铃铛）

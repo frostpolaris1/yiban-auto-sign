@@ -28,7 +28,7 @@
     <div class="panel-head">
       <div class="panel-head-text">
         <h2 class="panel-title">我的账号</h2>
-        <p class="panel-sub">审核通过后自动签到；暂停与删除可随时在此操作。</p>
+        <p class="panel-sub">审核通过后自动签到。</p>
       </div>
       {# 无有效账号时显示；全部被删除时也显示（软删除不死路），由 user_accounts.js 控制显隐 #}
       <button id="open-account-btn" type="button" class="btn btn--primary" hidden>
@@ -39,7 +39,7 @@
        避免与日历页重复同一套状态 UI（用户反馈"疑似复用了签到日历组件"）。 #}
     <p id="accounts-empty" class="empty" hidden>
       <span class="empty__icon">{{ icon('user') }}</span>
-      <span class="empty__msg">还没有提交账号。提交后等待管理员审核，通过即自动签到。</span>
+      <span class="empty__msg">还没有提交账号。审核通过后自动签到。</span>
     </p>
     <div id="account-list" class="account-list"></div>
   </section>
@@ -50,8 +50,7 @@
       <div class="panel-head-text">
         <h2 class="panel-title">签到时间</h2>
         <p class="panel-sub">
-          签到窗口 <span class="mono" id="pref-window"></span> · 选一个 5 分钟时段，
-          系统按你的选择安排签到（今日已开始后修改次日生效）
+          窗口 <span class="mono" id="pref-window"></span> · 选择 5 分钟时段（今日已开始则次日生效）
         </p>
       </div>
       <button id="pref-collapse-btn" type="button" class="btn btn--ghost btn--sm"
@@ -79,7 +78,7 @@
     <div class="panel-head">
       <div class="panel-head-text">
         <h2 class="panel-title">邮件提醒</h2>
-        <p class="panel-sub">签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
+        <p class="panel-sub">签到失败时向注册邮箱发送提醒（成功不打扰）</p>
       </div>
       <label class="switch" title="接收签到失败邮件">
         <input id="mail-notify-switch" type="checkbox">
@@ -142,7 +141,7 @@
     <div class="panel-head">
       <div class="panel-head-text">
         <h2 class="panel-title">注销账号</h2>
-        <p class="panel-sub">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
+        <p class="panel-sub">账号与自选时间一并删除，7 天内可撤销</p>
       </div>
       <button type="button" class="btn btn--ghost btn--danger-ghost" data-delete-account>
         {{ icon('trash') }}注销账号
