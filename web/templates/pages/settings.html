@@ -183,7 +183,8 @@
       </div>
       <p class="set-tip" id="ss-tip" role="status"></p>
 
-      <div class="form-actions">
+      {# 保存行吸底：调度卡字段多，保存按钮在卡底时改完要滑到底才够得着（教程 #16「目标要近」） #}
+      <div class="form-actions is-sticky">
         <button type="button" class="btn btn--primary btn--sm" id="ss-save" hidden>保存调度设置</button>
         <button type="button" class="btn btn--ghost btn--sm" id="ss-reset">恢复默认调度</button>
       </div>
@@ -215,22 +216,24 @@
 
   <!-- 3. 通知通道：推送 + 邮件两段，仅主管理员 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-notify" aria-labelledby="set-tab-notify" data-tab-id="notify">
-    <section class="card" id="set-notify">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">告警送达</span>
-          <h2 class="card-title">通知通道</h2>
-        </div>
-        <div class="set-head-actions">
-          {% call info('通知通道说明', 'set-pop-notify') %}<b>密钥：</b>加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。<b>频控：</b>同类告警在冷却时间内只推一条。<b>额度：</b>按「非紧急 / 紧急」两本账各自计数。<b>权限：</b>仅主管理员可修改。<b>确认：</b>关闭通道、更换/清空密钥、调整额度节流均需当前管理员密码。{% endcall %}
-        </div>
-      </div>
+    {# 拆两张卡（推送 / 邮件）：单卡塞三段（推送 + 邮件 + SMTP 表）字段数超表单刻度，
+       拆开后每卡只讲一件事。#set-notify 留在外层容器上 —— settings-notify.js 的
+       「非主管理员整卡禁用 + 权限说明」仍覆盖两张卡内的全部控件。 #}
+    <div id="set-notify" class="set-cards">
       <p class="alert info" id="sn-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
         <span class="body">仅主管理员可配置消息推送与邮件通道，受限控件已禁用；如需调整请联系主管理员。</span>
       </p>
-
-      <h3 class="set-sub set-sub--first">消息推送</h3>
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title-wrap">
+            <span class="eyebrow">告警送达</span>
+            <h2 class="card-title">消息推送</h2>
+          </div>
+          <div class="set-head-actions">
+            {% call info('通知通道说明', 'set-pop-notify') %}<b>密钥：</b>加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。<b>频控：</b>同类告警在冷却时间内只推一条。<b>额度：</b>按「非紧急 / 紧急」两本账各自计数。<b>权限：</b>仅主管理员可修改。<b>确认：</b>关闭通道、更换/清空密钥、调整额度节流均需当前管理员密码。{% endcall %}
+          </div>
+        </div>
       <div class="form-grid">
         <div class="field">
           <label class="field-label" for="sn-type">推送渠道</label>
@@ -291,7 +294,15 @@
         <span class="set-tip" id="sn-tip" role="status"></span>
       </div>
 
-      <h3 class="set-sub">邮件通知</h3>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title-wrap">
+            <span class="eyebrow">告警送达</span>
+            <h2 class="card-title">邮件通知</h2>
+          </div>
+        </div>
       <p class="field-help" id="sm-status"></p>
       <div class="set-row">
         <div class="set-row-text">
@@ -330,7 +341,7 @@
           <thead>
             <tr>
               <th scope="col">服务器 host</th>
-              <th scope="col">端口</th>
+              <th scope="col" class="num">端口</th>
               <th scope="col">发件账号</th>
               <th scope="col">授权码</th>
               <th scope="col"><span class="sr-only">操作</span></th>
@@ -343,7 +354,8 @@
         <button type="button" class="btn btn--primary btn--sm" id="sm-save-smtp">保存 SMTP 配置</button>
         <span class="set-tip" id="sm-tip" role="status"></span>
       </div>
-    </section>
+      </section>
+    </div>
   </div>
 
   <!-- 4. 容量配额：只保留上限编辑，仅主管理员 -->

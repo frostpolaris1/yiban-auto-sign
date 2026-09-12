@@ -2743,6 +2743,17 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   max-width: 680px;
 }
 .set-row + .set-row { margin-top: 16px; }
+/* 一个 tab 里并排/堆叠多张卡（通知通道 = 推送卡 + 邮件卡）：卡间留白由容器承担 */
+.set-cards { display: flex; flex-direction: column; gap: 20px; }
+/* 长卡的保存行吸底：字段多时保存按钮在卡底，改完要滑到底才够得着（教程 #16「目标要近」）。
+   只给显式标 .is-sticky 的操作行；底衬不透明，避免字段从按钮下透出。 */
+.form-actions.is-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  background: var(--bg-card);
+  padding-bottom: 12px;
+}
 .set-row-text { min-width: 0; }
 .set-row-label { display: block; font-size: 13px; color: var(--t-base); }
 .set-help { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
@@ -2763,7 +2774,6 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 
 /* ---- 27.4 卡内子段标题 / 窄屏 tab 横滑 / 输入组尾缀 ---- */
 .set-sub { margin: 28px 0 14px; font-size: 14px; font-weight: 700; color: var(--t-base); }
-.set-sub--first { margin-top: 4px; }
 /* 低频项收进 <details>：模板无折叠小件。项目其它折叠区（button + .collapse-body）需 JS 绑定，
    这里用原生 details + 渐进增强高度过渡（不支持 interpolate-size 的浏览器即时展开，不更糟），
    摘要下间距随展开过渡而非瞬跳。理由：低频项一次性展开，不值得再引入第三份折叠绑定。 */
@@ -2800,14 +2810,25 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .input-group .input { flex: 1 1 auto; width: auto; min-width: 0; }
 .input-group .addon:last-child { border-right: 0; border-left: 1px solid var(--border); }
 
-/* ---- 27.5 SMTP 行内编辑（模板 .data-table） ---- */
+/* ---- 27.5 SMTP 行内编辑（模板 .data-table）+ 数值列对齐 ---- */
 #sm-smtps .input { min-width: 110px; }
+/* 数值右对齐 + 等宽：条目间可比、可扫读（教程 #15「数字对齐」）。端口列同时含表头。 */
+#sm-smtps .num,
+#sm-smtps .num .input { text-align: right; }
+#sm-smtps .num .input { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* 数值型输入统一右对齐等宽（账号间隔 / 掐头去尾 / 额度 / 上限） */
+.field .input[type="number"] {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---- 27.6 危险区 ---- */
 .set-danger .card-title { color: var(--state-bad-fg); }
-.set-danger-actions { display: flex; flex-direction: column; gap: 12px; }
+.set-danger-actions { display: flex; flex-direction: column; gap: 12px; max-width: 680px; }
 .set-danger-btn { width: 100%; justify-content: center; }
-.set-danger-note { margin: 0 0 16px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
+/* 说明限宽：整卡宽（953px）下行长过久，扫读困难（教程 #15/#18）；680px 与 .set-row 同刻度 */
+.set-danger-note { margin: 0 0 16px; max-width: 680px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
 
 /* ---- 27.7 动效收敛 ----
    模板 .tab-panel.is-active 自带 keyframes rise-in 320ms ease + 位移 10px，且模板文件里
@@ -2822,6 +2843,14 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 /* 快捷档位（.btn-group 的 .is-active 切换）是高频反馈：走全局 .btn 的 220ms 主题换色时长偏慢 */
 .btn-group .btn {
   transition: background-color 140ms, border-color 140ms, color 140ms;
+}
+/* 分区多、窄屏放不下时 tab 条横滑：右缘渐隐提示"还有更多"（教程 #29 横滚可发现性）。
+   只在可能溢出的宽度启用，宽屏 tab 全显示时不加遮罩。 */
+@media (max-width: 900px) {
+  .tabs-scroll {
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
