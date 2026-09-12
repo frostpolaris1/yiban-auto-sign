@@ -71,6 +71,8 @@
 
   <!-- 1. 签到调度：排序/分布/掐头去尾/间隔/窗口（主管理员）+ 周六·周日（任意管理员） -->
   <div class="tab-panel is-active" role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
+    {# 同一 tab 下三张并列卡（调度 / 周末与自选 / 维护）：每卡只讲一件事，与「通知通道」的推送卡+邮件卡同构。 #}
+    <div class="set-cards">
     <section class="card" id="set-schedule">
       <div class="card-head">
         <div class="card-title-wrap">
@@ -126,19 +128,47 @@
           </div>
           <p class="field-help">自动与手动签到均生效，0 = 关闭；修改需当前管理员密码确认。</p>
         </div>
-        <div class="field">
-          <label class="field-label" for="ss-window-start">签到窗口开始</label>
-          <input class="input mono" id="ss-window-start" type="time" step="60">
-        </div>
-        <div class="field">
-          <label class="field-label" for="ss-window-end">签到窗口结束</label>
-          <input class="input mono" id="ss-window-end" type="time" step="60">
+        {# 窗口起止是同一个逻辑对：同行同宽、中间「至」（原来被拆到两列两行，右列第二行全空）。
+           时间用 .time-field（时/分两个模板 .select）取代原生 input[type=time]——
+           原生选时列表由 UA 渲染，高亮色/黑框/圆角不可控（实测高亮 #0075FF ≠ 项目主色）。 #}
+        <div class="field span-2">
+          <span class="field-label" id="ss-window-label">签到窗口（开始早于结束）</span>
+          <div class="time-field-wrap">
+            <div class="input-group time-field" data-time-field="ss-window-start" role="group" aria-labelledby="ss-window-label">
+              <select class="select" data-part="hour" aria-label="窗口开始 · 小时"></select>
+              <span class="addon">:</span>
+              <select class="select" data-part="minute" aria-label="窗口开始 · 分钟"></select>
+              <input type="hidden" id="ss-window-start" value="06:30">
+            </div>
+            <span class="time-sep" aria-hidden="true">至</span>
+            <div class="input-group time-field" data-time-field="ss-window-end" role="group" aria-label="窗口结束（时:分）">
+              <select class="select" data-part="hour" aria-label="窗口结束 · 小时"></select>
+              <span class="addon">:</span>
+              <select class="select" data-part="minute" aria-label="窗口结束 · 分钟"></select>
+              <input type="hidden" id="ss-window-end" value="07:50">
+            </div>
+          </div>
           <p class="field-help">开始必须早于结束；保存后下次自动签到时生效。</p>
         </div>
       </div>
       <p class="set-warn" id="ss-edge-warn" hidden></p>
 
-      <h3 class="set-sub">周末与自选时间</h3>
+      <p class="set-tip" id="ss-tip" role="status"></p>
+
+      {# 保存行吸底：调度卡字段多，保存按钮在卡底时改完要滑到底才够得着（教程 #16「目标要近」） #}
+      <div class="form-actions is-sticky">
+        <button type="button" class="btn btn--primary btn--sm" id="ss-save" hidden>保存调度设置</button>
+      </div>
+      </section>
+
+      {# 周末与自选独立成卡：原来用 .set-sub 卡内分节（通知通道已拆卡，这是唯一残留） #}
+      <section class="card" id="set-weekend">
+        <div class="card-head">
+          <div class="card-title-wrap">
+            <span class="eyebrow">日历策略</span>
+            <h2 class="card-title">周末与自选时间</h2>
+          </div>
+        </div>
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">周六签到</span>
@@ -172,14 +202,23 @@
           <span class="sr-only">允许用户自选签到时间</span>
         </label>
       </div>
-      <p class="set-tip" id="ss-tip" role="status"></p>
+      <p class="set-tip" id="ss-weekend-tip" role="status"></p>
+      </section>
 
-      {# 保存行吸底：调度卡字段多，保存按钮在卡底时改完要滑到底才够得着（教程 #16「目标要近」） #}
-      <div class="form-actions is-sticky">
-        <button type="button" class="btn btn--primary btn--sm" id="ss-save" hidden>保存调度设置</button>
-        <button type="button" class="btn btn--ghost btn--sm" id="ss-reset">恢复默认调度</button>
-      </div>
-    </section>
+      {# 全局重置独立成卡：维护动作不该混在某个设置组里（原来与周末开关同段，仅隔一条线） #}
+      <section class="card" id="set-maintenance">
+        <div class="card-head">
+          <div class="card-title-wrap">
+            <span class="eyebrow">维护</span>
+            <h2 class="card-title">调度维护</h2>
+          </div>
+        </div>
+        <p class="field-help">把排序、分布、掐头去尾、账号间隔、签到窗口恢复为默认值；不涉及周末/自选开关、账号、通知与容量配置。</p>
+        <div class="form-actions">
+          <button type="button" class="btn btn--ghost btn--sm" id="ss-reset">恢复默认调度</button>
+        </div>
+      </section>
+    </div>
   </div>
 
   <!-- 2. 全局公告：任意管理员 -->
@@ -294,7 +333,6 @@
             <h2 class="card-title">邮件通知</h2>
           </div>
         </div>
-      <p class="field-help" id="sm-status"></p>
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">全局邮件通知</span>
@@ -319,6 +357,8 @@
         <button type="button" class="btn btn--ghost btn--sm" id="sm-to-clear">清空</button>
       </div>
 
+      {# 状态行描述的是「发件 SMTP 是否配置」，原来贴在卡头下方读起来像全局开关的状态 #}
+      <p class="field-help" id="sm-status"></p>
       <div class="data-toolbar">
         <div class="data-toolbar-left">
           <span class="field-label">发件 SMTP（按顺序主备切换，留空 = 沿用旧值）</span>
@@ -421,7 +461,12 @@
       <div class="form-grid">
         <div class="field">
           <label class="field-label" for="sh-probe-time">触发时间（最早时刻）</label>
-          <input class="input mono" id="sh-probe-time" type="time">
+          <div class="input-group time-field" data-time-field="sh-probe-time" role="group" aria-label="触发时间（时:分）">
+            <select class="select" data-part="hour" aria-label="触发时间 · 小时"></select>
+            <span class="addon">:</span>
+            <select class="select" data-part="minute" aria-label="触发时间 · 分钟"></select>
+            <input type="hidden" id="sh-probe-time" value="20:00">
+          </div>
         </div>
         <div class="field">
           <label class="field-label" for="sh-probe-interval">触发频率</label>
@@ -466,6 +511,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ request.script_root }}/static/js/components/time-field.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/settings-schedule.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/settings-health.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/settings-notify.js?v={{ web_version }}"></script>

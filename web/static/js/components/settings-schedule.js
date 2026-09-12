@@ -74,8 +74,9 @@
 
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
   function setDisabled(id, v) { var el = $(id); if (el) el.disabled = !!v; }
-  function setTip(text, bad) {
-    var n = $("ss-tip");
+  // tip 目标可指定：调度卡的保存提示在 ss-tip，周末卡的立即保存提示在 ss-weekend-tip
+  function setTip(text, bad, id) {
+    var n = $(id || "ss-tip");
     if (!n) return;
     n.textContent = text || "";
     n.className = bad ? "set-tip set-bad" : "set-tip";
@@ -231,9 +232,10 @@
       if (d) d.value = DEFAULTS.dist;
       setEdge("ss-edge-front", DEFAULTS.edge);
       setEdge("ss-edge-back", DEFAULTS.edge);
-      var s = $("ss-window-start"), e = $("ss-window-end");
-      if (s) s.value = DEFAULTS.start;
-      if (e) e.value = DEFAULTS.end;
+      if (YB.timeField) {
+        YB.timeField.set("ss-window-start", DEFAULTS.start);
+        YB.timeField.set("ss-window-end", DEFAULTS.end);
+      }
       syncEdgeLabels();
       updateEdgeWarn();
       markDirty();
@@ -247,13 +249,13 @@
     var el = $(id);
     var body = {};
     body[field] = el && el.checked ? 1 : 0;
-    setTip("保存中…", false);
+    setTip("保存中…", false, "ss-weekend-tip");
     YB.api("POST", "/api/settings", body).then(function () {
       if (snap) snap[field === "saturday_sign" ? "sat" : "sun"] = body[field];
-      setTip("已保存（下次自动签到时生效）", false);
+      setTip("已保存（下次自动签到时生效）", false, "ss-weekend-tip");
     }).catch(function (e) {
       if (revert) revert();
-      setTip((e && e.message) || "保存失败，请稍后重试", true);
+      setTip((e && e.message) || "保存失败，请稍后重试", true, "ss-weekend-tip");
     }).then(function () { saving = false; });
   }
 
@@ -338,9 +340,10 @@
     if (sat) sat.checked = !!snap.sat;
     if (sun) sun.checked = !!snap.sun;
     var parts = String(snap.window).split("~");
-    var s = $("ss-window-start"), e = $("ss-window-end");
-    if (s) s.value = (parts[0] || DEFAULTS.start).trim().slice(0, 5) || DEFAULTS.start;
-    if (e) e.value = (parts[1] || DEFAULTS.end).trim().slice(0, 5) || DEFAULTS.end;
+    if (YB.timeField) {
+      YB.timeField.set("ss-window-start", (parts[0] || DEFAULTS.start).trim().slice(0, 5) || DEFAULTS.start);
+      YB.timeField.set("ss-window-end", (parts[1] || DEFAULTS.end).trim().slice(0, 5) || DEFAULTS.end);
+    }
     applyPerm();
     syncEdgeLabels();
     updateEdgeWarn();
