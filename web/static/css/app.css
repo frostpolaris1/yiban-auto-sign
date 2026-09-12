@@ -258,6 +258,14 @@ textarea {
 }
 /* body 滚动而非整面板滚动：footer 操作行始终留在视口内，
    高分屏 / 浏览器缩放导致视口偏矮时按钮不会被裁掉。 */
+.modal-sub {
+  /* 与模态标题同处头部：副标题紧贴标题下方，而不是隔着整段正文内距 */
+  margin-top: 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--t-muted);
+}
+
 .pm-panel .modal-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -1545,8 +1553,19 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
    为什么不让控件与整块垂直居中：说明折行后整块中心会比标题低 11px，控件看起来"悬在
    标题与说明之间"（用户标注的实测截图）。控件与标题同行居中才是稳定的锚点；
    说明占整行宽度，也不再被右侧控件挤压（此前文字一长就把按钮顶到下一行）。 */
-.panel-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
-.panel-head-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+/* 标题行与说明之间加一条分隔线（同 .form-actions 的按钮前分隔线一套视觉）：
+   线宽 = 卡片内容宽度，因此与标题左边界、右侧控件右边界、下方表单字段完全对齐。 */
+.panel-head { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.panel-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.panel-head-row:last-child { padding-bottom: 0; border-bottom: 0; }
 .panel-head-row > :last-child { flex-shrink: 0; }   /* 控件固定右侧，不被文字压缩 */
 .panel-head .panel-sub { margin: 0; }
 .panel-title {
@@ -1702,6 +1721,8 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
    实测过的两处不等：.field-help 作为 <p> 带 11.5px 上下边距（帮助→下个字段变 28px）、
    Adminator 的 .form-actions 自带 18px 上边距 + 18px 上内距（末字段→按钮变 34px）。 */
 .form-stack { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
+/* 弹窗内表单铺满正文宽度：字段、分隔线、按钮行共用同一左右边界 */
+.pm-panel .form-stack { max-width: none; }
 .form-stack .field-help,
 .form-stack .field-error { margin: 0; }
 .form-stack .field-help { margin-top: -2px; }   /* 6(字段内 gap) - 2 = 视觉 4px */
@@ -1739,8 +1760,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 }
 body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
 /* 折叠卡的面板头不再自带下边距（间距交给上面那条动画边距） */
-#time-pref-card > .panel-head,
-.user-collapse > .panel-head { margin-bottom: 0; }
+#time-pref-card > .panel-head { margin-bottom: 0; }
 .collapse-body > .collapse-inner { overflow: clip; min-height: 0; visibility: visible; }
 .collapse-body:not(.is-open) { grid-template-rows: 0fr; }
 /* 收起后（动画结束）才隐藏，避免 Tab 还能聚焦到看不见的输入框 */
@@ -1753,6 +1773,10 @@ body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
 .slot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 @media (min-width: 640px) { .slot-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
 .slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;   /* min-height 盒内内容垂直居中，不贴顶 */
   min-height: 44px;
   padding: 6px 8px;
   border: 1px solid var(--border);
