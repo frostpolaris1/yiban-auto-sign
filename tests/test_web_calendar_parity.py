@@ -17,13 +17,14 @@
 ## 现在的判据
 
 日历整体外提为 `web/static/js/calendar.js`：**全站唯一实现**，用户端「签到日历」页
-（`pages/user_calendar.html` + `pages/user_calendar.js`）与旧管理端「我的账号」都调它。
+（`pages/user_calendar.html` + `pages/user_calendar.js`）与管理端「我的账号」
+（`pages/mine.html` 内联模式 + `components/my-accounts.js`）都调它。
 本测试钉住"只能有一份"：
 
 1. `web/static/js/` 下**恰好一个**文件定义 `function dayCell(`，且必须是 calendar.js；
 2. `web/templates/` 下**零个**文件内联日历实现；
 3. 加载关系成立：日历页引入 calendar.js 并由页面脚本调 `SignCalendar.render`；
-   旧管理端 index.html 在 mine.js 之前引入 calendar.js（classic script 共享作用域）；
+   管理端「我的账号」在 my-accounts.js 之前引入 calendar.js（classic script 共享作用域）；
 4. 视觉/无障碍要点仍在共享实现里（星期表头、月份按钮读屏名、「休」角标、失败提示、
    状态类名），防止被"顺手"删掉；
 5. **类名前缀不得与 Adminator 撞车**：Adminator 自带事件月历（`.cal-grid` 有
@@ -45,7 +46,9 @@ CALENDAR_JS = os.path.join(JS_DIR, "calendar.js")
 USER_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_calendar.html")
 USER_CAL_JS = os.path.join(JS_DIR, "pages", "user_calendar.js")
 USER_ACCOUNTS_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_accounts.html")
-LEGACY_INDEX = os.path.join(TEMPLATES_DIR, "index.html")
+# 管理端「我的账号」：日历内联模式的真实载体（换了 index.html 单页之后）
+MINE_PAGE = os.path.join(TEMPLATES_DIR, "pages", "mine.html")
+MY_ACCOUNTS_JS = os.path.join(JS_DIR, "components", "my-accounts.js")
 
 DAY_CELL_MARK = "function dayCell(o)"
 
@@ -138,19 +141,27 @@ class CalendarSingleSourceTest(unittest.TestCase):
         for mark in ("data-sc-mount", "data-sc-log", "calendar.js"):
             self.assertNotIn(mark, html, f"账号与设置页不应出现日历相关标记：{mark}")
 
-    def test_legacy_admin_page_still_wires_the_shared_calendar(self):
-        """旧管理端（index.html + pages/mine.js）仍存在，必须把共享日历排在 mine.js 之前。
+    def test_admin_mine_page_wires_the_shared_calendar(self):
+        """管理端「我的账号」必须把共享日历排在调用它的组件之前。
 
-        classic script 共享全局作用域：calendar.js 未先加载时，mine.js 的
-        renderCalendar 调用会在运行时 ReferenceError。
+        换壳后管理端不再有 index.html 单页：`/mine` 的日历改为**内联模式** ——
+        `pages/mine.html` 引入 `calendar.js`，`components/my-accounts.js` 在生效账号卡里
+        调 `window.SignCalendar.render`。classic script 共享全局作用域：calendar.js 未先
+        加载时该调用会在运行时 ReferenceError。
+
+        判据意图（管理端必须接线共享日历、且顺序正确）不变，仅载体从退役的
+        `index.html` + `pages/mine.js` 换到 `pages/mine.html` + `components/my-accounts.js`。
         """
-        html = _read(LEGACY_INDEX)
+        html = _read(MINE_PAGE)
         cal = html.find("/static/js/calendar.js")
-        mine = html.find("/static/js/pages/mine.js")
-        self.assertNotEqual(cal, -1, "index.html 未引入共享日历 calendar.js")
-        self.assertNotEqual(mine, -1, "index.html 未引入 pages/mine.js")
-        self.assertLess(cal, mine, "calendar.js 必须在 mine.js 之前加载（共享作用域依赖）")
-        self.assertIn("renderCalendar(", _read(os.path.join(JS_DIR, "pages", "mine.js")))
+        acct = html.find("/static/js/components/my-accounts.js")
+        self.assertNotEqual(cal, -1, "pages/mine.html 未引入共享日历 calendar.js")
+        self.assertNotEqual(acct, -1, "pages/mine.html 未引入 components/my-accounts.js")
+        self.assertLess(cal, acct, "calendar.js 必须在 my-accounts.js 之前加载（共享作用域依赖）")
+        self.assertIn(
+            "SignCalendar.render", _read(MY_ACCOUNTS_JS),
+            "components/my-accounts.js 未调用共享日历渲染接口 SignCalendar.render",
+        )
 
     def test_shared_implementation_keeps_the_a11y_and_state_contract(self):
         """共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。"""

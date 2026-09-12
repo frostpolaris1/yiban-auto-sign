@@ -119,48 +119,13 @@
   </section>
 
 </div>
-
-{# 改密表单（惰性内容，由 user_accounts.js 克隆进弹窗；在 <template> 里不参与渲染） #}
-<template id="tpl-password-form">
-  <form class="form-stack" novalidate>
-    <div class="alert danger" role="alert" hidden>
-      <span class="ico">{{ icon('circle-alert') }}</span>
-      <span class="body"></span>
-    </div>
-    <div class="field">
-      <label class="field-label" for="p-old">当前密码</label>
-      <div class="input-affix">
-        <input id="p-old" type="password" class="input" autocomplete="current-password"
-               required placeholder="输入当前密码">
-        <button type="button" class="affix-btn" data-pw-toggle="p-old"
-                aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
-      </div>
-    </div>
-    <div class="field">
-      <label class="field-label" for="p-new">新密码</label>
-      <div class="input-affix">
-        <input id="p-new" type="password" class="input" autocomplete="new-password"
-               required placeholder="新密码" aria-describedby="p-new-help">
-        <button type="button" class="affix-btn" data-pw-toggle="p-new"
-                aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
-      </div>
-      <p id="p-new-help" class="field-help">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
-    </div>
-    <div class="field">
-      <label class="field-label" for="p-confirm">确认新密码</label>
-      <div class="input-affix">
-        <input id="p-confirm" type="password" class="input" autocomplete="new-password"
-               required placeholder="再次输入新密码">
-        <button type="button" class="affix-btn" data-pw-toggle="p-confirm"
-                aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
-      </div>
-    </div>
-  </form>
-</template>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ request.script_root }}/static/js/components/account-form.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/time-pref.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/my-accounts.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/my-mail-notify.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/change-password.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/pages/user_accounts.js?v={{ web_version }}"></script>
 {% endblock %}
