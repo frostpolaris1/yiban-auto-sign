@@ -24,6 +24,16 @@
     if (p.indexOf("*") !== -1) return p;
     return p.length >= 7 ? p.slice(0, 3) + "****" + p.slice(-4) : p;
   }
+  // 邮箱展示层脱敏（幂等，与后端 _mask_email 同口径）：保留最多 3 个字符 + 域名；
+  // 已含 * 或非邮箱（无 @ / @ 在首位）原样返回。完整邮箱只允许存在于 JS 内存态与
+  // 请求体/URL path，禁止写入 DOM 文本或属性（用户管理页据此渲染，见 pages/users.js）。
+  function maskEmail(e) {
+    e = String(e == null ? "" : e);
+    if (e.indexOf("*") !== -1) return e;
+    var i = e.indexOf("@");
+    if (i <= 0) return e;
+    return e.slice(0, Math.min(3, i)) + "***" + e.slice(i);
+  }
   // 常量 SVG 片段走 html；动态文本一律走 text，避免把不可信数据交给 innerHTML
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -804,6 +814,31 @@
     setInterval(calibrateClock, 60000);
   });
 
+  /* ---------- 慢请求的「整体淡出 → 换内容 → 淡入」 ----------
+     统一口径：加 is-swapping → 等退出过渡跑完（主元素的 transitionend 或 SWAP_MS
+     兜底，先到者）→ 执行 render 回调 → 再移除 is-swapping 走进入过渡。
+     为什么不能同帧/单帧移除：移除类会立刻取消 opacity 过渡，内容在 opacity 只掉到
+     0.4–0.7 时就被拉回，看起来只是闪一下。主元素取数组首项（其 160ms 过渡即交换窗口），
+     其余元素只同步切换类名，避免较短的过渡（如月份标题 120ms）提前打断主元素淡出。 */
+  var SWAP_MS = 160;
+  function swapOut(el, cb) {
+    var els = [].concat(el || []).filter(Boolean);
+    if (!els.length) { cb(); return; }
+    var primary = els[0];
+    var done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      primary.removeEventListener("transitionend", onEnd);
+      if (cb) cb();
+      els.forEach(function (n) { n.classList.remove("is-swapping"); });
+    }
+    function onEnd(e) { if (e.target === primary) finish(); }
+    primary.addEventListener("transitionend", onEnd);
+    els.forEach(function (n) { n.classList.add("is-swapping"); });
+    setTimeout(finish, SWAP_MS);
+  }
+
   /* ---------- 公开面 ---------- */
   var YB = {
     __ready: true,
@@ -815,6 +850,7 @@
     $: $,
     escapeHtml: escapeHtml,
     maskPhone: maskPhone,
+    maskEmail: maskEmail,
     openModal: openModal,
     closeModal: closeModal,
     confirmDialog: confirmDialog,
@@ -847,7 +883,9 @@
     clockString: clockString,
     clockInfo: clockInfo,
     setNavBadge: setNavBadge,
-    loadNavBadges: loadNavBadges
+    loadNavBadges: loadNavBadges,
+    SWAP_MS: SWAP_MS,
+    swapOut: swapOut
   };
   window.YB = YB;
   // 兼容内联 onclick / 既有页面脚本引用的裸全局名
@@ -858,6 +896,7 @@
   window.esc = escapeHtml;
   window.escapeHtml = escapeHtml;
   window.maskPhone = maskPhone;
+  window.maskEmail = maskEmail;
   window.openModal = openModal;
   window.closeModal = closeModal;
   window.confirmDialog = confirmDialog;

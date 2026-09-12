@@ -96,6 +96,15 @@ CONTRAST_PAIRS = (
     ("日志页·事件徽标·警示", "badge-warn-fg", "badge-warn-bg"),
     ("日志页·事件徽标·信息", "badge-info-fg", "badge-info-bg"),
     ("日志页·事件徽标·中性", "badge-muted-fg", "badge-muted-bg"),
+    # 用户管理页（/users）新引入的文字色对：表头 / 计数 / 时间 / 参与者提示（落在卡片底）、
+    # 批量条文字与计数（落在 inset 底）、冷却中/待清除状态徽标。均为既有语义令牌，
+    # 改令牌值或改这几条规则用色都会被这里重新实测。
+    ("用户管理页·表头与次要单元格", "t-muted", "bg-card"),
+    ("用户管理页·主管理员行次要文字", "t-sub", "bg-muted"),
+    ("用户管理页·批量条文字", "t-sub", "bg-muted"),
+    ("用户管理页·批量条计数强调", "t-base", "bg-muted"),
+    ("用户管理页·状态徽标·冷却中", "badge-warn-fg", "badge-warn-bg"),
+    ("用户管理页·状态徽标·待清除", "badge-bad-fg", "badge-bad-bg"),
 )
 
 

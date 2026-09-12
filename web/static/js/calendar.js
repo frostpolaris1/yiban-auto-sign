@@ -159,25 +159,21 @@
     YB.api("GET", "/api/my-calendar?month=" + monthStr).then(function (data) {
       flags.sunday = !!data.sunday_sign;          // 管理员开启后周日照常显示/可查
       flags.saturday = data.saturday_sign === 1;  // 默认关闭（v0.29.0 起），开启后周六照常
-      // 旧格保留到数据到达：只在慢请求时做一次整体淡出淡入；快请求直接替换（否则只是闪一下）
+      // 旧格保留到数据到达：慢请求先整体淡出，等过渡跑完再换内容并淡入（时长见 YB.SWAP_MS）；
+      // 快请求直接替换。绝不能同帧/单帧移除 is-swapping —— 那会取消退出过渡，内容在
+      // opacity 只掉到约 0.4–0.7 时就被拉回，看起来只是闪一下。
       var slow = performance.now() - t0 > ANIM_MIN_MS;
-      if (slow) {
-        grid.classList.add("is-swapping");
-        if (label) label.classList.add("is-swapping");
-      }
-      if (label) label.textContent = monthLabel(year, month);
-      grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected);
-      grid.removeAttribute("aria-busy");
-      if (slow) {
-        requestAnimationFrame(function () {
-          grid.classList.remove("is-swapping");
-          if (label) label.classList.remove("is-swapping");
-        });
-      }
-      if (selectDate) {
-        mount.setAttribute("data-sc-selected", selectDate);
-        loadLog(mount, selectDate);
-      }
+      var apply = function () {
+        if (label) label.textContent = monthLabel(year, month);
+        grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected);
+        grid.removeAttribute("aria-busy");
+        if (selectDate) {
+          mount.setAttribute("data-sc-selected", selectDate);
+          loadLog(mount, selectDate);
+        }
+      };
+      if (slow) YB.swapOut([grid, label], apply);
+      else apply();
     }).catch(function () {
       grid.classList.remove("is-swapping");
       if (label) label.classList.remove("is-swapping");
@@ -210,10 +206,19 @@
   // 写入日志面板内容；animate=true 时做一次淡入（仅慢请求调用）
   function setLogContent(box, html, animate) {
     box.innerHTML = html;
-    if (animate) {
-      box.classList.add("is-fresh");
-      requestAnimationFrame(function () { box.classList.remove("is-fresh"); });
+    if (!animate) return;
+    // 关键帧是 160ms（.sc-log.is-fresh > *），一旦移除 is-fresh 即移除 animation →
+    // 动画被截断（运气好只闪一帧）。故等 animationend（或 200ms 兜底）后再移除类。
+    box.classList.add("is-fresh");
+    var done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      box.removeEventListener("animationend", finish);
+      box.classList.remove("is-fresh");
     }
+    box.addEventListener("animationend", finish);
+    setTimeout(finish, 200);
   }
 
   function loadLog(mount, date) {

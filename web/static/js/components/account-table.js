@@ -109,110 +109,15 @@
     ];
   }
 
-  // 行菜单浮动态：打开时把 .dd-menu portal 到 document.body 并用 fixed 定位，彻底绕开
-  // .table-scroll / .collapse-inner 的 overflow 裁剪，以及祖先 transform 对 fixed 包含块的污染。
-  // core.js 不提供开关回调，故用限定在本 wrap 上的 MutationObserver 观察 class：
-  // 出现 is-open 即浮起并定位，消失即按记录的原父节点还原。菜单项数各组不同（待处理 4、
-  // 正常 5、待删除 2），每次打开都按实际 offsetWidth/offsetHeight 重新定位。
-  var GAP = 8; // 菜单与视口/触发器的安全边距
-
-  function watchRowMenu(wrap) {
-    if (!window.MutationObserver) return;
-    var menu = wrap.querySelector(".dd-menu");
-    if (!menu) return;
-    var home = menu.parentNode;   // 原父节点（= wrap），关闭时按此还原，不做全局重建
-
-    function place(trigger) {
-      var tr = trigger.getBoundingClientRect();
-      var mw = menu.offsetWidth, mh = menu.offsetHeight;
-      var vw = window.innerWidth, vh = window.innerHeight;
-      // 水平右对齐触发按钮右缘，再夹进视口（左 ≥ GAP）
-      var left = Math.min(tr.right - mw, vw - mw - GAP);
-      if (left < GAP) left = GAP;
-      // 垂直默认向下；越界则翻到上方，再夹进视口（上 ≥ GAP）
-      var top = tr.bottom + GAP;
-      var up = top + mh > vh - GAP;
-      if (up) top = tr.top - mh - GAP;
-      if (top < GAP) top = GAP;
-      menu.style.left = left + "px";
-      menu.style.top = top + "px";
-      menu.style.right = "auto";
-      menu.style.bottom = "auto";
-      menu.style.transformOrigin = up ? "bottom right" : "top right";
-    }
-
-    function floatMenu(trigger) {
-      if (!trigger) return;
-      if (menu.parentNode !== document.body) document.body.appendChild(menu);
-      menu.classList.add("acct-menu--floating");
-      place(trigger); // 先定位再显示：fixed + visibility:hidden 下 offsetWidth/Height 已可测
-      requestAnimationFrame(function () {
-        if (!menu.classList.contains("acct-menu--floating")) return;
-        menu.classList.add("is-shown");
-        // 菜单已 portal 到 body，Tab 不会再自然进入；打开时把焦点移入首项，
-        // 配合下面的方向键处理与原生 Enter/Space，键盘可完整操作。
-        var items = menu.querySelectorAll(".dd-menu-item");
-        if (items.length) items[0].focus();
-      });
-    }
-
-    function restoreMenu() {
-      if (!menu.classList.contains("acct-menu--floating")) return;
-      menu.classList.remove("is-shown", "acct-menu--floating");
-      menu.style.left = menu.style.top = menu.style.right = menu.style.bottom = "";
-      menu.style.transformOrigin = "";
-      if (home && menu.parentNode !== home) home.appendChild(menu);
-    }
-
-    // core.js 的箭头键导航按 `.dd-wrap.is-open` 查 `.dd-menu-item`，菜单 portal 后查不到，
-    // 故在浮动态内补一份同样的键位处理，避免 a11y 回退；Esc 仍由 core.js 的 document 监听关闭。
-    menu.addEventListener("keydown", function (e) {
-      var items = menu.querySelectorAll(".dd-menu-item");
-      if (!items.length) return;
-      var i = Array.prototype.indexOf.call(items, document.activeElement);
-      if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1 + items.length) % items.length].focus(); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
-      else if (e.key === "Home") { e.preventDefault(); items[0].focus(); }
-      else if (e.key === "End") { e.preventDefault(); items[items.length - 1].focus(); }
-    });
-
-    var observer = new MutationObserver(function () {
-      if (wrap.classList.contains("is-open")) {
-        floatMenu(wrap.querySelector("[data-dropdown]"));
-      } else {
-        // 关闭路径（点菜单项 / Esc / 点外部都由 core.js 去掉 is-open）：按原父节点还原。
-        restoreMenu();
-      }
-    });
-    observer.observe(wrap, { attributes: true, attributeFilter: ["class"] });
-  }
-
+  // 行菜单的浮动态（portal 到 body + fixed 定位 + 视口钳制 + 还原）由共享组件
+  // YB.rowMenu 提供；本模块只把「动作清单」交给它，宽窄两版共用同一份 handlers。
   function dropdownCell(group, account, handlers) {
-    var wrap = YB.el("div", { class: "dd-wrap acct-row-menu" });
-    var trigger = YB.el("button", {
-      type: "button", class: "btn btn--ghost btn--icon",
-      "data-dropdown": "", "aria-haspopup": "menu", "aria-label": "更多操作", title: "更多操作"
+    return YB.rowMenu.cell({
+      items: menuSpec(group, account, handlers),
+      cellClass: "acct-cell-actions",
+      wrapClass: "dd-wrap acct-row-menu",
+      label: "更多操作"
     });
-    trigger.innerHTML = svg("ellipsis");
-    wrap.appendChild(trigger);
-    var menu = YB.el("div", { class: "dd-menu", role: "menu" });
-    var first = true;
-    menuSpec(group, account, handlers).forEach(function (it) {
-      // 破坏性项前加分隔线（.dd-divider），与既有下拉的普通项/危险项惯例一致
-      if (it.danger && !first) menu.appendChild(YB.el("div", { class: "dd-divider" }));
-      first = false;
-      var item = YB.el("button", {
-        type: "button", role: "menuitem",
-        class: "dd-menu-item" + (it.danger ? " danger" : "")
-      });
-      item.innerHTML = svg(it.icon);
-      item.appendChild(YB.el("span", { text: it.label }));
-      item.addEventListener("click", function () { it.run(); });
-      menu.appendChild(item);
-    });
-    wrap.appendChild(menu);
-    watchRowMenu(wrap);
-    return td([wrap], "acct-cell-actions");
   }
 
   function actionsCell(group, account, handlers) {

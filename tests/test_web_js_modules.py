@@ -42,10 +42,13 @@ REQUIRED_MODULES = (
     "calendar.js",
     "components/account-form.js",
     "components/time-pref.js",
+    "components/row-menu.js",
     "components/account-table.js",
     "components/account-ops.js",
+    "components/user-ops.js",
     "pages/accounts.js",
     "pages/user_accounts.js",
+    "pages/users.js",
 )
 
 # 实际渲染的页面模板：layout_*.html（外壳，自带 core.js）+ pages/*.html（正文，含 block scripts）
@@ -68,6 +71,22 @@ _TOP_DECL_RE = re.compile(
     r"|^(?:let|const|var)\s+(\w+)"
     r"|^class\s+(\w+)"
 )
+
+# 组件里 innerHTML 赋值的右值：必须是常量 SVG（svg(...)）或清空容器（""/''）
+_INNERHTML_ASSIGN_RE = re.compile(r"\.innerHTML\s*=\s*([^\n;]+)")
+_SVG_RHS_RE = re.compile(r"^\s*svg\(")
+
+# 已存在的历史 innerHTML 用法（旧栈 / 早期页面）。守卫价值是阻止**新写**的页面脚本
+# 再引入数据拼接；受本批审查的 users.js / accounts.js 必须为空。旧文件待 P4/P3 重写时清理。
+_LEGACY_INNERHTML_PAGES = frozenset({
+    "dashboard.js", "login.js", "mine.js", "settings.js",
+    "user_accounts.js", "user_calendar.js",
+})
+_REVIEWED_PAGES = ("users.js", "accounts.js")
+
+# user-ops.js 的 LIMIT 与 web/app.py 的 BATCH_OP_LIMIT 必须同源
+_JS_LIMIT_RE = re.compile(r"\bvar\s+LIMIT\s*=\s*(\d+)\s*;")
+_PY_BATCH_LIMIT_RE = re.compile(r"^BATCH_OP_LIMIT\s*=\s*(\d+)\s*$", re.M)
 
 
 def _read(path):
@@ -188,6 +207,75 @@ class JsAssemblyGuardTest(unittest.TestCase):
                 bad, src,
                 f"pages/accounts.js 仍引用退役的旧栈标记 {bad!r}：页面脚本应为独立 IIFE 模块",
             )
+
+    def test_reviewed_pages_do_not_concat_data_with_innerhtml(self):
+        """`pages/*.js` 不得用 `.innerHTML` 拼接（受审的 users/accounts 必须为零）。
+
+        旧栈页面（dashboard/login/mine/settings/user_*）仍有历史 innerHTML 用法，记入
+        `_LEGACY_INNERHTML_PAGES` 允许清单（待 P3/P4 重写时清理）；除此之外任何页面
+        新增 `.innerHTML` 都会在这里报红——本页数据脱敏靠 YB.el/textContent 保证。
+        """
+        offenders = []
+        for path in sorted(glob.glob(os.path.join(JS_DIR, "pages", "*.js"))):
+            name = os.path.basename(path)
+            if name in _LEGACY_INNERHTML_PAGES:
+                continue
+            if ".innerHTML" in _read(path):
+                offenders.append(f"  pages/{name}")
+        if offenders:
+            self.fail(
+                "页面脚本出现 .innerHTML —— 动态文本必须走 YB.el/textContent，"
+                "禁止把（哪怕是脱敏后的）数据拼进 HTML：\n" + "\n".join(offenders)
+            )
+
+    def test_components_innerhtml_only_from_constant_svg(self):
+        """`components/*.js` 的 innerHTML 赋值右值只允许常量 SVG 或清空容器。"""
+        problems = []
+        for path in sorted(glob.glob(os.path.join(JS_DIR, "components", "*.js"))):
+            name = os.path.basename(path)
+            for lineno, line in enumerate(_read(path).split("\n"), 1):
+                m = _INNERHTML_ASSIGN_RE.search(line)
+                if not m:
+                    continue
+                rhs = m.group(1).strip()
+                if rhs in ('""', "''"):
+                    continue  # 清空容器，不含数据
+                if not _SVG_RHS_RE.match(m.group(1)):
+                    problems.append(
+                        f"  components/{name}:{lineno} innerHTML 右值非 svg(...)：{rhs[:80]}"
+                    )
+        if problems:
+            self.fail(
+                "组件用 innerHTML 写入了非常量 SVG（可能引入注入面）：\n"
+                + "\n".join(problems)
+            )
+
+    def test_user_ops_never_puts_server_msg_on_screen(self):
+        """`components/user-ops.js` 不得出现 `data.msg`（钉住单目标 PII 修复）。
+
+        后端 role/password/delete 的成功 msg 含**完整邮箱**，一旦用后端 msg 上屏，
+        完整邮箱就进入 DOM；本组件只允许 batch/purge（msg 仅数量）使用后端 msg。
+        """
+        src = _read(os.path.join(JS_DIR, "components", "user-ops.js"))
+        self.assertNotIn(
+            "data.msg", src,
+            "user-ops.js 出现 data.msg —— 单目标成功提示会把完整邮箱经 toast 写入 DOM；"
+            "本组件只允许 batch/purge 的计数型 msg 上屏",
+        )
+
+    def test_user_ops_batch_limit_matches_backend(self):
+        """前端 LIMIT 必须与后端 BATCH_OP_LIMIT 同值（防两处上限漂移）。"""
+        ops = _read(os.path.join(JS_DIR, "components", "user-ops.js"))
+        m = _JS_LIMIT_RE.search(ops)
+        self.assertIsNotNone(m, "user-ops.js 未找到 `var LIMIT = <n>;`")
+        app_src = _read(os.path.join(BASE, "web", "app.py"))
+        m2 = _PY_BATCH_LIMIT_RE.search(app_src)
+        self.assertIsNotNone(m2, "web/app.py 未找到顶层 `BATCH_OP_LIMIT = <n>`")
+        self.assertEqual(
+            m.group(1), m2.group(1),
+            f"前端 LIMIT={m.group(1)} 与后端 BATCH_OP_LIMIT={m2.group(1)} 不一致，"
+            "超限请求会直接落到后端 400",
+        )
 
 
 if __name__ == "__main__":

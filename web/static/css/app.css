@@ -136,12 +136,14 @@ textarea {
   line-height: 1.5;
   pointer-events: auto;
   opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 180ms ease, transform 180ms ease;
+  transform: translateY(6px);
+  /* 基类即退出方向：位移 6px + ease-in；进入方向由 .is-shown 覆盖为 ease-out */
+  transition: opacity 180ms var(--ease-in-strong), transform 180ms var(--ease-in-strong);
 }
 .toast.is-shown {
   opacity: 1;
   transform: translateY(0);
+  transition-timing-function: var(--ease-out-strong);
 }
 .toast.is-hiding {
   opacity: 0;
@@ -228,7 +230,7 @@ textarea {
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
   opacity: 0;
-  transition: opacity 180ms ease;
+  /* 动效见 §22 覆盖（进入 200ms ease-out / 退出 160ms ease-in） */
 }
 .pm-backdrop[hidden] {
   display: none;
@@ -247,8 +249,7 @@ textarea {
   border-radius: 14px;
   background: var(--bg-card);
   box-shadow: var(--shadow-lg);
-  transform: translateY(8px) scale(0.99);
-  transition: transform 180ms ease;
+  /* 位移/时长动效见 §22 覆盖（translateY(6px) + 160ms 退出 / 200ms 进入） */
 }
 @supports (height: 100dvh) {
   .pm-panel { max-height: calc(100dvh - 32px); }
@@ -871,7 +872,11 @@ textarea {
    前端刷新时重建节点，动画随之重放，导致刷新瞬间整排卡片透明（实测 opacity:0）。
    去掉透明度维度后仍有入场位移，但不会再出现"卡片消失"的观感。 */
 @keyframes yb-card-in { from { transform: translateY(10px); } to { transform: translateY(0); } }
-.kpi-card { animation: yb-card-in 320ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.kpi-card { animation: yb-card-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+/* vendor 的 .kpi-card:nth-child(n) 逐卡 stagger（60–240ms）特异度高于 .kpi-card，
+   只在 .kpi-card 上写 animation-delay 覆盖不到；必须用同特异度的 nth-child(n) 归零，
+   否则实际入场最坏 = 240ms 延迟 + 200ms 动画。 */
+.kpi-card:nth-child(n) { animation-delay: 0ms; }
 @media (prefers-reduced-motion: reduce) { .kpi-card { animation: none; } }
 
 /* Adminator 的小标签样式按大写拉丁文设计（带 letter-spacing + uppercase），
@@ -1827,7 +1832,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   font-size: 12px;
   text-align: center;
   cursor: pointer;
-  transition: background 150ms, border-color 150ms, color 150ms;
+  /* 动效见 §22 覆盖（颜色 140ms + 按压 scale，避免同一属性两处时长漂移） */
 }
 .slot:hover:not(:disabled) { border-color: var(--primary); }
 .slot--on { border-color: var(--primary); background: var(--primary); color: var(--t-inverse); font-weight: 600; }
@@ -2033,11 +2038,12 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 @media (hover: hover) and (pointer: fine) {
   .sc-cell:hover { border-color: var(--primary); }
 }
-/* 换月：旧格保留到新数据到达，期间只做整体淡出（不清空，故高度与位置都不动） */
-.sc-grid.is-swapping { opacity: 0; transform: translateY(3px); }
+/* 换月：旧格保留到新数据到达，期间只做整体淡出（不清空，故高度与位置都不动）。
+   is-swapping 是退出方向 → 覆盖为 ease-in-strong；基类的 ease-out-strong 留给移除类后的进入。 */
+.sc-grid.is-swapping { opacity: 0; transform: translateY(3px); transition-timing-function: var(--ease-in-strong); }
 .sc-grid { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
 .sc-month { transition: opacity 120ms var(--ease-out-strong); }
-.sc-month.is-swapping { opacity: 0; }
+.sc-month.is-swapping { opacity: 0; transition-timing-function: var(--ease-in-strong); }
 
 /* 日志面板：慢请求的内容替换做一次淡入 + 3px 上浮 */
 .sc-log.is-fresh > * { animation: sc-in 160ms var(--ease-out-strong) both; }
@@ -2084,6 +2090,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   .sc-cell:active,
   .slot:active:not(:disabled),
   .switch:active .track { transform: none; }
+  /* 滑块位移由 Adminator 的 .track::after 承担，不在 .track 上，需单独关掉 */
+  .switch .track::after { transition: none; }
+  /* vendor 的 .kpi-card:hover 有 -2px 上浮位移，同样在 reduced-motion 下移除 */
+  .kpi-card:hover { transform: none; }
   .sc-grid.is-swapping { opacity: 1; transform: none; }
   .sc-month.is-swapping { opacity: 1; }
   .sc-log.is-fresh > * { animation: none; }
@@ -2320,7 +2330,8 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
   opacity: 1;
   visibility: visible;
   transform: none;
-  transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong), visibility 160ms;
+  /* 与 .dd-menu 的进入时长对齐（同为下拉浮层，进入一律 180ms） */
+  transition: opacity 180ms var(--ease-out-strong), transform 180ms var(--ease-out-strong), visibility 180ms;
 }
 @media (prefers-reduced-motion: reduce) {
   .acct-menu--floating,
@@ -2335,9 +2346,10 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
   cursor: pointer;
 }
 
-/* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变） */
+/* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变）。
+   is-swapping 是退出方向 → ease-in-strong；基类 ease-out-strong 留给进入。 */
 #accounts-root { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
-#accounts-root.is-swapping { opacity: 0; transform: translateY(3px); }
+#accounts-root.is-swapping { opacity: 0; transform: translateY(3px); transition-timing-function: var(--ease-in-strong); }
 
 /* 归属邮箱行内小字：默认（宽屏，归属列可见）隐藏，避免与归属列重复；
    ≤900 归属列整列隐藏后，改在名称下方展示（取值见 account-table.js 的 ownerMailText，
@@ -2468,5 +2480,132 @@ body[data-page="logs"] .panel-title { min-width: 0; }
   }
   body[data-page="logs"] .log-fold .panel-title { grid-column: 1; grid-row: 1; }
   body[data-page="logs"] .log-fold .log-collapse { position: static; grid-column: 2; grid-row: 1; }
+}
+
+/* ==========================================================================
+   26. 用户管理页（管理端 /users）
+   --------------------------------------------------------------------------
+   四组表：待处理 / 正式 / 空用户 / 已注销，可折叠。分隔线遵守 23 节白名单：
+   组头用 .panel-head 两段式（标题行 + 整宽说明，不画线），行分隔由 .data-table 承担，
+   批量条用 --bg-muted inset 底色区分。角色/状态徽标复用全站 `.badge--info/muted/warn/bad`
+   （令牌定义见 19.6），本页不新造徽标色。
+   行操作统一为「更多操作」图标 + 下拉（复用 YB.rowMenu 的 portal 浮层），
+   浮动态样式沿用 .acct-menu--floating，故不再重复定义一份。
+   安全：邮箱一律以 YB.maskEmail() 结果渲染（等宽字体），完整邮箱不进入 DOM。
+   本页次要文字色对（表头/计数/时间 --t-muted on --bg-card、批量条 --t-sub on --bg-muted）
+   已纳入 test_web_text_contrast.py 的 CONTRAST_PAIRS 实测 AA，改色值会直接报红。
+   ========================================================================== */
+
+body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 .collapse-body.is-open 的动画 margin-top */
+/* 页面级加载/失败状态条：复用 Adminator .alert 骨架，失败时 JS 切 .info→.danger。
+   align-items:center 让正文与重试按钮垂直居中（.alert 默认 start）。 */
+.usr-status { margin: 0 0 16px; align-items: center; }
+.usr-group-head .panel-head-row { position: relative; padding-right: 44px; }
+/* 折叠箭头绝对定位在组头行右上角。必须上下双锚定再 auto 居中：36px 的按钮在只有标题
+   （23.3px 行盒）的行里只写 top:0 会向下溢出，实测中心比标题低 6.4px。 */
+.usr-collapse { position: absolute; top: 0; bottom: 0; margin: auto 0; right: 0; }
+.usr-collapse .collapse-arrow svg { width: 18px; height: 18px; }
+
+.usr-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
+.usr-search { display: block; }
+/* 同排控件并非同高：搜索框 34px、折叠按钮 .icon-btn 36px（vendor 原生）、批量条
+   .btn--sm 31.2px（min-height 只在 ≤720 才抬到 34）。三者靠 .panel-head-row / 
+   .usr-batch-actions 的 align-items:center 居中，不为凑同高去覆写全站的 .icon-btn。 */
+.usr-search .input { height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
+.usr-search .input::placeholder { color: var(--t-muted); }
+
+/* 批量条：选中 >0 才显示；inset 底色表达「作用于以上选中项」，不画分隔线。
+   文字用 --t-sub（--t-muted on --bg-muted 仅 4.34:1，不达 AA）。 */
+.usr-batch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg-muted);
+}
+.usr-batch-count { font-size: 12.5px; color: var(--t-sub); }
+.usr-batch-count strong { color: var(--t-base); }
+.usr-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 表格：表头吸顶、操作列吸右；行分隔线由 .data-table tbody td 承担。
+   本页**不设 max-height**：四组各自滚动会叠出 4 条滚动条、页面级滚动几乎失效；
+   改为交给页面滚动 + 表头 position:sticky 吸顶（accounts 页单表仍保留 max-height）。 */
+.usr-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  white-space: nowrap;
+  color: var(--t-muted);
+}
+.usr-table tbody td { vertical-align: middle; }
+.usr-cell-check { width: 40px; }
+.usr-check { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; }
+.usr-cell-mail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  min-width: 190px;
+}
+.usr-cell-role { white-space: nowrap; }
+.usr-cell-count { width: 96px; color: var(--t-muted); white-space: nowrap; }
+.usr-cell-time,
+.usr-cell-remain { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+.usr-cell-time { min-width: 150px; }
+.usr-cell-status { white-space: nowrap; }
+/* 操作列：按内容收缩（width:1% + nowrap），富余宽度让给文本列。
+   **不用 position:sticky**：本页四组表在 1440/1024/768/390 实测都不横滚
+   （scrollWidth==clientWidth），没有可吸的滚动区；sticky 反而让该列脱离自然列位、
+   盖住角色列——390 下 elementFromPoint 在角色徽标中心命中的是操作按钮，
+   等于移动端看不到谁是管理员。 */
+.usr-cell-actions {
+  white-space: nowrap;
+  width: 1%;
+}
+.usr-row-master td { background: var(--bg-muted); }
+/* 主管理员行的次要文字落在 --bg-muted 上：--t-muted 仅 4.34:1 不达 AA，统一用
+   --t-sub（6.92:1）。普通行落在白卡上仍用 --t-muted（4.76:1，达 AA）。 */
+.usr-muted { font-size: 12px; color: var(--t-sub); }
+.usr-row-master .usr-cell-count,
+.usr-row-master .usr-cell-time { color: var(--t-sub); }
+
+/* 行操作下拉：复用 core.js 的 .dd-wrap/.dd-menu 机制；浮动态类由 YB.rowMenu 挂载
+   （.acct-menu--floating，见 24 节），此处只定尺寸与按钮形态。 */
+.usr-row-menu { display: inline-block; }
+.usr-row-menu .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
+.usr-row-menu .dd-menu { min-width: 168px; width: auto; right: 0; }
+.usr-row-menu .dd-menu-item {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 响应式：窄屏收敛次要列（计数 / 时间），邮箱列允许折行但保留脱敏前缀 */
+@media (max-width: 900px) {
+  .usr-col-md { display: none; }
+  /* 窄屏脱敏串本身很短，放开 190px 最小宽，避免表格内部横滚（判据：scrollWidth==clientWidth） */
+  .usr-cell-mail { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
+}
+@media (max-width: 720px) {
+  /* 窄屏组头显式 grid 放置：标题与箭头同处第 1 行居中，搜索框独占第 2 行用满整行。
+     折叠按钮必须是 .panel-head-row 的直接子元素，grid-column/row 才命得中。 */
+  body[data-page="users"] .usr-group-head .panel-head-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    row-gap: 10px;
+    padding-right: 0;
+  }
+  body[data-page="users"] .usr-group-head .panel-title { grid-column: 1; grid-row: 1; }
+  body[data-page="users"] .usr-group-head .usr-collapse { position: static; grid-column: 2; grid-row: 1; }
+  body[data-page="users"] .usr-group-head .usr-search { grid-column: 1 / -1; grid-row: 2; }
+  .usr-search .input { width: 100%; min-width: 0; }
 }
 

@@ -137,11 +137,37 @@ class TemplateInlineContextTest(unittest.TestCase):
         self.assertNotIn("onchange=\"toggleRow('${key}', '${esc(u.email)}', this)\"", self.index)
 
     def test_delegated_data_attribute_form_present(self):
-        # 正确形态：data-* 属性（普通 HTML 转义即安全）+ 事件委托读 dataset
-        self.assertIn('data-purge-email="${esc(u.email)}"', self.index)
-        self.assertIn('data-batch-key="${key}" data-batch-id="${esc(u.email)}"', self.index)
-        self.assertIn("e.target.closest('[data-purge-email]')", self.index)
-        self.assertIn("el.matches('[data-batch-key]')", self.index)
+        # 正确形态：data-* 属性（普通 HTML 转义即安全）+ 事件委托读 dataset，属性值不进
+        # JS 解析器。旧载体（index.html 的用户 tab 内联切片）已随前端的用户管理页重写退役，
+        # 判据意图不变、换锚到当前真实产物：管理端账号页与用户管理页。
+        accounts_tpl = _read("web", "templates", "pages", "accounts.html")
+        accounts_js = _read("web", "static", "js", "pages", "accounts.js")
+        users_tpl = _read("web", "templates", "pages", "users.html")
+        users_js = _read("web", "static", "js", "pages", "users.js")
+        # 模板侧：动作以 data-* 承载（非内联 onclick 拼接）
+        self.assertIn('data-batch="pending:approve"', accounts_tpl)
+        self.assertIn("data-add-account", accounts_tpl)
+        self.assertIn('data-usr-batch="{{ group }}:', users_tpl)
+        self.assertIn("data-usr-batch-clear", users_tpl)
+        # 脚本侧：事件委托读 data-*（不经 JS 解析器解析用户可控值）
+        self.assertIn('t.closest("[data-batch]")', accounts_js)
+        self.assertIn('t.closest("[data-usr-batch]")', users_js)
+        self.assertIn('t.closest("[data-usr-batch-clear]")', users_js)
+
+    def test_no_inline_event_handlers_in_reviewed_page_templates(self):
+        """负例：账号页与用户管理页不得回退到内联事件处理器属性。
+
+        上一轮"换锚"只补了 data-* 的正向存在性断言，一旦有人把 data-* 改回
+        onclick/onchange，正向断言仍可因别处存在而通过 —— 这里补回负例，按属性形态直接
+        禁止 on(click|change|input|submit|error)=，判据不依赖具体动作名。
+        """
+        pattern = r"on(click|change|input|submit|error)\s*="
+        for name in (os.path.join("pages", "users.html"), os.path.join("pages", "accounts.html")):
+            src = _read("web", "templates", name)
+            self.assertNotRegex(
+                src, pattern,
+                f"{name} 出现内联事件处理器属性 —— 动作须走 data-* + 事件委托",
+            )
 
 
 if __name__ == "__main__":
