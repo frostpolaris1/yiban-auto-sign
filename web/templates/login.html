@@ -22,7 +22,7 @@
 <h2 id="auth-title">登录</h2>
 <p class="sub" id="auth-sub">使用注册邮箱进入签到管理面板。</p>
 
-<div class="tabs pills auth-tabs" role="tablist" aria-label="登录 / 注册切换">
+<div class="tabs pills auth-tabs auth-seg" role="tablist" aria-label="登录 / 注册切换">
   <button type="button" class="tab is-active" id="tab-login" role="tab"
           aria-selected="true" aria-controls="login-form" data-auth-tab="login">登录</button>
   <button type="button" class="tab" id="tab-register" role="tab"
@@ -36,13 +36,13 @@
   <span class="body">注册已暂停，请联系管理员添加账号。已注册用户可直接登录。</span>
 </p>
 
+<div class="auth-pane" id="login-pane">
 <!-- 登录表单 -->
 <form id="login-form" class="auth-form" novalidate>
   <div class="field">
     <label class="field-label" for="username">登录邮箱</label>
     <input id="username" name="username" type="text" class="input" required
            autocomplete="username" inputmode="email" placeholder="注册时填写的邮箱">
-    <p class="field-help">还没有账号？请先切到上方「注册」创建，再使用该邮箱登录。</p>
   </div>
   <div class="field">
     <label class="field-label" for="password">密码</label>
@@ -67,9 +67,17 @@
     <span id="login-btn-text">登录</span>
   </button>
 </form>
+{# 切换提示放在表单之外：它是"去哪"的导航提示，不是字段帮助；
+   放在字段之间会切断字段分组（初版即此问题）。
+   提示与表单同处一个 .auth-pane：切页签时整组显隐，避免出现"表单已隐藏、提示还在"的双提示。 #}
+<p class="auth-switch-hint">还没有账号？
+  <button type="button" data-auth-switch="register">创建账号</button>
+</p>
+</div>
 
+<div class="auth-pane" id="register-pane" hidden>
 <!-- 注册表单 -->
-<form id="register-form" class="auth-form" novalidate hidden>
+<form id="register-form" class="auth-form" novalidate>
   <div class="field">
     <label class="field-label" for="reg-email">邮箱 <span class="req" aria-hidden="true">*</span></label>
     <input id="reg-email" type="email" class="input" required autocomplete="email"
@@ -119,6 +127,10 @@
     <span id="register-btn-text">注册并登录</span>
   </button>
 </form>
+<p class="auth-switch-hint">已有账号？
+  <button type="button" data-auth-switch="login">直接登录</button>
+</p>
+</div>
 
 {# 协议/隐私正文：<template> 内容惰性、不参与渲染，由 login.js 克隆进模态。
    服务端已渲染为 HTML（_read_doc_html），此处原样注入，.md-body 排版类在 JS 侧套上。 #}
