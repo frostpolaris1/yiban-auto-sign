@@ -22,8 +22,10 @@
 <link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
 </head>
-{# data-page="auth"：core.js 据此跳过对匿名请求返回 401 的身份/时钟初始化 #}
-<body data-page="auth">
+{# data-page：core.js 据此决定是否初始化身份/时钟。
+   auth = 登录/注册等匿名页（跳过 /api/me、/api/clock，避免 401 噪音）；
+   user = 已登录的用户自助页（继承块覆盖为 "user"，走完整初始化）。 #}
+<body data-page="{% block page_id %}auth{% endblock %}">
 {{ sprite() }}
 <div class="auth-shell">
   <aside class="auth-aside">
@@ -49,6 +51,9 @@
   </aside>
 
   <main class="auth-main">
+    {# 顶部条：登录页只放品牌兜底与主题开关；用户页覆盖本块，换成
+       「服务器时钟 + 账号邮箱 + 主题 + 退出」（见 user.html）——避免再写一套外壳。 #}
+    {% block main_top %}
     <div class="auth-main-top">
       {# 窄屏（≤900px）品牌区被隐藏，此处补一个可辨识的品牌标识 #}
       <div class="auth-mobile-brand">
@@ -58,6 +63,7 @@
       <button type="button" class="btn btn--ghost btn--icon" id="themeToggle"
               title="切换亮/暗主题" aria-label="切换亮/暗主题">{{ icon('moon') }}</button>
     </div>
+    {% endblock %}
 
     <div class="auth-card">
       {# 全局公告横幅：有公告时由 core.js 填入并显形（textContent 防 XSS）。

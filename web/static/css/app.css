@@ -1506,3 +1506,294 @@ body,
    会被推到最左。改为 flex-end，并让移动端品牌位用 margin-right:auto 占住左侧。 */
 .auth-main-top { justify-content: flex-end; }
 .auth-mobile-brand { margin-right: auto; }
+
+/* ==========================================================================
+   19. 用户自助页（user.html）与签到日历共享组件
+   --------------------------------------------------------------------------
+   用户页复用 layout_auth.html 外壳：左侧保留已定稿的品牌栏，右侧主列改为整宽
+   内容区（登录页是 400px 窄表单，这里放得下账号卡片 + 日历 + 时间片网格）。
+   本节同时定义签到日历（static/js/calendar.js）的样式与语义色令牌。
+   ========================================================================== */
+
+/* ---- 19.0 日历 / 状态行 / 时段按钮的语义色令牌 ----
+   全部为"文字 on 底色"的配对，必须达 WCAG AA（正文 ≥4.5:1）。
+   浅/深两套独立取值，由 tests/test_web_text_contrast.py 从本文件实测，
+   改色值前先跑该测试。--cal-cell-bg 是"无底色格/卡片文字"的参照面，值等于 --bg-card
+   （此处显式写出，便于对比度用例直接取用，不必解析 adminator.css）。 */
+:root {
+  --cal-ok-bg: #F0FDF4;   /* 成功：绿 50 */
+  --cal-ok-fg: #166534;   /* on ok-bg = 6.81:1 */
+  --cal-bad-bg: #FEF2F2;  /* 失败：红 50 */
+  --cal-bad-fg: #B91C1C;  /* on bad-bg = 5.91:1 */
+  --cal-off-bg: #F1F5F9;  /* 周末停签：中性 */
+  --cal-off-fg: #475569;  /* on off-bg = 6.92:1（--t-muted 在此底上只有 4.34:1，不可用） */
+  --cal-cell-bg: #FFFFFF; /* = --bg-card */
+  --cal-cell-fg: #334155; /* on cell-bg = 10.35:1 */
+  --state-ok-fg: #047857;   /* 状态行：成功 on 卡片 = 5.48:1 */
+  --state-warn-fg: #B45309; /* 警示 = 5.02:1 */
+  --state-bad-fg: #B91C1C;  /* 失败 = 6.47:1 */
+  --slot-full-bg: #FEF3C7;      /* 满员时段（可点，提示会顺延） */
+  --slot-full-border: #FDE68A;
+  --slot-full-fg: #92400E;      /* = 6.37:1 */
+  --slot-partial-bg: #FFFBEB;   /* 部分落入裁剪区（虚线框） */
+  --slot-partial-border: #FCD34D;
+  --slot-partial-fg: #92400E;   /* = 6.84:1 */
+}
+html[data-theme="dark"] {
+  --cal-ok-bg: #0F2A20;
+  --cal-ok-fg: #6EE7B7;   /* 10.04:1 */
+  --cal-bad-bg: #2B1414;
+  --cal-bad-fg: #FCA5A5;  /* 9.12:1 */
+  --cal-off-bg: #1A2237;
+  --cal-off-fg: #94A3B8;  /* 6.17:1 */
+  --cal-cell-bg: #141B2D; /* = --bg-card */
+  --cal-cell-fg: #E2E8F0; /* 13.91:1 */
+  --state-ok-fg: #34D399;
+  --state-warn-fg: #FCD34D;
+  --state-bad-fg: #FCA5A5;
+  --slot-full-bg: #2B1F08;
+  --slot-full-border: #5C3D0A;
+  --slot-full-fg: #FCD34D;
+  --slot-partial-bg: #2B1F08;
+  --slot-partial-border: #A16207;
+  --slot-partial-fg: #FCD34D;
+}
+
+/* ---- 19.1 外壳覆盖：右列整宽、卡片容器透明（内容自带 .card 表面） ---- */
+body[data-page="user"] .auth-shell { grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); }
+body[data-page="user"] .auth-main { padding: 24px 32px 32px; }
+body[data-page="user"] .auth-card {
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+@media (max-width: 900px) {
+  body[data-page="user"] .auth-shell { grid-template-columns: 1fr; }
+  body[data-page="user"] .auth-main { padding: 20px 16px 28px; }
+}
+
+/* ---- 19.2 顶栏账号条（服务器时钟 + 邮箱 + 主题 + 退出） ---- */
+.user-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }.user-clock { font-size: 11.5px; color: var(--t-muted); white-space: nowrap; }
+.user-email {
+  max-width: 170px;
+  font-size: 12.5px;
+  color: var(--t-base);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 720px) {
+  .user-clock { display: none; }
+  .user-email { max-width: 110px; }
+}
+
+/* ---- 19.3 内容区栅格与卡片 ---- */
+.user-page { display: flex; flex-direction: column; gap: 18px; }
+.user-section { gap: 0; }
+.user-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+.card-sub { margin: 4px 0 0; font-size: 12px; color: var(--t-muted); }
+.user-danger .card-title { color: var(--danger); }
+.empty { padding: 24px 0; text-align: center; font-size: 12.5px; color: var(--t-muted); }
+
+/* 仅读屏可见：Adminator 未提供（开关等无文字控件需要可读名称） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 表单纵向排布（Adminator 的 .field 只定内部结构，不负责间距） */
+.form-stack { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
+.form-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pref-estimate { margin: 0 0 12px; }
+.pref-foot { margin-top: 14px; }
+.pref-hint { margin-top: 14px; }
+
+/* 危险操作的"文字按钮"：Adminator 的 .btn--outline-danger 用 --danger 作文字色，
+   在浅色卡片上只有 3.76:1（正文需 ≥4.5:1）。此处改用更深的红，深浅两套各自达标。 */
+.btn--danger-ghost { color: #B91C1C; border-color: rgba(185, 28, 28, 0.35); }
+.btn--danger-ghost:hover { background: var(--danger-soft); }
+html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(252, 165, 165, 0.35); }
+
+/* 状态图例：7 个状态单行可排，窄屏自动折行 */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  color: var(--t-muted);
+}
+.legend li { display: inline-flex; align-items: center; gap: 4px; }
+.legend svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 2; fill: none; }
+
+/* ---- 19.4 账号卡片 ---- */
+.account-list { display: flex; flex-direction: column; gap: 12px; }
+.account-card {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+.account-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.account-ident { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.account-icon { display: inline-flex; flex-shrink: 0; color: var(--t-muted); }
+.account-icon svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.8; fill: none; }
+.account-name { font-size: 13px; font-weight: 600; color: var(--t-base); }
+.account-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--t-muted); word-break: break-all; }
+.account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.account-note { margin-top: 2px; font-size: 12px; color: var(--t-muted); }
+.account-reject { margin-top: 10px; }
+.account-pending-hint { margin-top: 12px; font-size: 12px; color: var(--t-muted); }
+.account-details { margin-top: 10px; }
+.account-details > summary {
+  font-size: 12px;
+  color: var(--t-muted);
+  cursor: pointer;
+  transition: color 150ms;
+}
+.account-details > summary:hover { color: var(--t-base); }
+
+/* 状态行：语义三档 + 中性（色值见 19.0 的 --state-*-fg） */
+.state-line { margin-top: 2px; font-size: 12px; }
+.state-line--ok { color: var(--state-ok-fg); }
+.state-line--warn { color: var(--state-warn-fg); }
+.state-line--bad { color: var(--state-bad-fg); }
+.state-line--muted { color: var(--t-muted); }
+
+/* 日志块：嵌面板 + 等宽。字体走 --font-mono（中文字体兜底见第 1 节守卫） */
+.log-view {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-muted);
+  color: var(--t-base);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---- 19.5 签到日历（static/js/calendar.js 的样式） ---- */
+.cal { display: grid; gap: 16px; min-width: 0; }
+@media (min-width: 1024px) { .cal { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.cal-main { min-width: 0; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cal-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--t-base); }
+.cal-nav { display: flex; gap: 4px; }
+.cal-weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-weekdays span {
+  padding: 4px 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--t-muted);
+}
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-blank { aspect-ratio: 1; }
+.cal-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cal-cell-fg);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms, color 150ms;
+}
+.cal-cell--ok { background: var(--cal-ok-bg); color: var(--cal-ok-fg); font-weight: 600; }
+.cal-cell--bad { background: var(--cal-bad-bg); color: var(--cal-bad-fg); font-weight: 600; }
+.cal-cell--off { background: var(--cal-off-bg); color: var(--cal-off-fg); }
+.cal-cell--none:hover,
+.cal-cell--ok:hover,
+.cal-cell--bad:hover { border-color: var(--primary); }
+.cal-cell--off:hover { border-color: var(--border); }
+.cal-cell--today { box-shadow: inset 0 0 0 2px var(--primary); }
+.cal-off-badge {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--cal-off-fg);
+}
+.cal-ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; stroke-width: 2; fill: none; }
+.cal-spin { animation: cal-rotate 900ms linear infinite; }
+@keyframes cal-rotate { to { transform: rotate(360deg); } }
+.cal-error {
+  grid-column: 1 / -1;
+  padding: 14px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.cal-log { min-width: 0; }
+.cal-log-empty { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; color: var(--t-muted); }
+.cal-log-head { margin: 0 0 6px; font-size: 11.5px; color: var(--t-muted); }
+
+/* ---- 19.6 自选签到时段（5 分钟粒度网格） ---- */
+.slot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+@media (min-width: 640px) { .slot-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+.slot {
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--t-base);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms, color 150ms;
+}
+.slot:hover:not(:disabled) { border-color: var(--primary); }
+.slot--on { border-color: var(--primary); background: var(--primary); color: var(--t-inverse); font-weight: 600; }
+.slot--full { border-color: var(--slot-full-border); background: var(--slot-full-bg); color: var(--slot-full-fg); }
+.slot--partial { border: 1px dashed var(--slot-partial-border); background: var(--slot-partial-bg); color: var(--slot-partial-fg); }
+/* 禁用片：WCAG 1.4.3 豁免非活动控件，故不参与对比度用例 */
+.slot--off { border-color: var(--border-soft); background: var(--bg-muted); color: var(--t-light); cursor: not-allowed; }
+.slot-name { font-weight: 600; }
+.slot-pct { font-size: 11px; opacity: 0.75; white-space: nowrap; }
+
+/* ---- 19.7 折叠区（改密等）：原生 <details>，箭头随展开旋转 ---- */
+.user-collapse > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.user-collapse > summary::-webkit-details-marker { display: none; }
+/* 收起态指向右、展开态指向下：同一枚 chevron-down 用旋转表达两种状态 */
+.collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 180ms; transform: rotate(-90deg); }
+.collapse-arrow svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none; }
+.user-collapse[open] .collapse-arrow,
+[aria-expanded="true"] > .collapse-arrow,
+[aria-expanded="true"] .collapse-arrow { transform: rotate(0deg); }
+.collapse-body { margin-top: 16px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cal-cell,
+  .slot,
+  .collapse-arrow { transition: none; }
+  .cal-spin { animation: none; }
+}

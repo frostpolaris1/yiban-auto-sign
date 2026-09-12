@@ -550,6 +550,7 @@
 
   /* ---------- 身份 ---------- */
   var me = null;
+  var mePending = null;
   function roleLabel(m) {
     if (!m) return "";
     if (m.is_builtin_admin) return "主管理员";
@@ -567,6 +568,15 @@
       setText("[data-account-avatar]", initial || "?");
       return data;
     }).catch(function () { return null; });
+  }
+  // 去重的身份读取：外壳初始化与页面脚本都要用 /api/me 的结果，共享一次请求。
+  // 失败（401/网络）返回 null，调用方自行决定跳登录还是降级。
+  function identity() {
+    if (me) return Promise.resolve(me);
+    if (!mePending) {
+      mePending = hydrateIdentity().then(function (d) { mePending = null; return d; });
+    }
+    return mePending;
   }
   /* ---------- 服务器时钟 ---------- */
   var clock = { offset: 0, tz: 0, status: "", color: "" };
@@ -753,7 +763,7 @@
     // 认证页（layout_auth.html 的 data-page="auth"）没有身份/时钟需求，而 /api/me 与
     // /api/clock 对匿名请求返回 401；跳过可避免登录页每次加载产生无谓的失败请求。
     if (document.body.getAttribute("data-page") === "auth") return;
-    hydrateIdentity().then(function (identity) { if (identity) loadNavBadges(identity); });
+    identity().then(function (data) { if (data) loadNavBadges(data); });
     calibrateClock();
     renderClock();
     setInterval(renderClock, 1000);
@@ -795,6 +805,7 @@
     switchTab: switchTab,
     doLogout: doLogout,
     openChangelog: openChangelog,
+    identity: identity,
     calibrateClock: calibrateClock,
     renderClock: renderClock,
     getServerNow: serverNow,
