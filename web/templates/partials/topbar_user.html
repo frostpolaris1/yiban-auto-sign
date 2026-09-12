@@ -1,0 +1,23 @@
+{# 用户端顶栏：抽屉开关 + 面包屑 + 公告 + 主题切换。
+   账号区在侧边栏底部（本外壳不重复放账号菜单）；
+   主题按钮必须保留 id="themeToggle"（core.js 依此接管）。 #}
+{% from "macros/ui.html" import icon with context %}
+<header class="d-topbar">
+  <div class="crumbs">
+    <button type="button" class="hamburger" data-drawer-open aria-label="打开导航">{{ icon('menu') }}</button>
+    {% set trail = crumbs | default([]) %}
+    {% for part in trail %}
+      {% if not loop.first %}<span class="sep" aria-hidden="true">{{ icon('chevron-right') }}</span>{% endif %}
+      <span{% if loop.last %} class="current"{% endif %}>{{ part }}</span>
+    {% endfor %}
+  </div>
+
+  <div class="topbar-actions">
+    {# 公告：有内容时由 core.js 显示为可点开的提示条。刻意不放计数圆点——
+       公告没有"条数"语义，空圆点浮在铃铛上只会造成视觉噪音；按钮可见本身即信号。 #}
+    <button type="button" class="icon-btn" id="announcementBtn" hidden aria-label="查看公告">
+      {{ icon('bell') }}
+    </button>
+    <button type="button" class="icon-btn" id="themeToggle" aria-label="切换亮/暗主题" title="切换亮/暗主题"></button>
+  </div>
+</header>

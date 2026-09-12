@@ -423,70 +423,6 @@ textarea {
   color: var(--t-light);
 }
 
-/* ==========================================================================
-   8. 5 分钟时间片网格
-   ========================================================================== */
-.slot-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
-  gap: 6px;
-}
-.slot {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 7px 8px 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-card);
-  color: var(--t-base);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-  transition: background 150ms, border-color 150ms, color 150ms;
-}
-.slot:hover:not(.is-disabled) {
-  background: var(--bg-hover);
-}
-.slot.is-disabled {
-  background: var(--bg-muted);
-  color: var(--t-light);
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.slot.is-chosen {
-  border-color: var(--primary);
-  background: var(--primary-soft);
-  color: var(--primary);
-  font-weight: 600;
-}
-.slot.is-mine {
-  border-color: var(--success);
-  background: var(--success-soft);
-  color: var(--success);
-  font-weight: 600;
-}
-.slot-load {
-  height: 4px;
-  border-radius: 999px;
-  background: var(--bg-muted);
-  overflow: hidden;
-}
-.slot-load > i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--primary);
-}
-.slot.is-chosen .slot-load > i {
-  background: var(--primary);
-}
-.slot.is-mine .slot-load > i {
-  background: var(--success);
-}
-.slot.is-disabled .slot-load > i {
-  background: var(--t-light);
-}
 
 /* ==========================================================================
    9. 签到月历状态（Adminator 只有 is-other/is-today/has-event）
@@ -1508,28 +1444,32 @@ body,
 .auth-mobile-brand { margin-right: auto; }
 
 /* ==========================================================================
-   19. 用户自助页（user.html）与签到日历共享组件
+   19. 用户端页面（layout_user.html 外壳 + pages/user_accounts|user_calendar）
    --------------------------------------------------------------------------
-   用户页复用 layout_auth.html 外壳：左侧保留已定稿的品牌栏，右侧主列改为整宽
-   内容区（登录页是 400px 窄表单，这里放得下账号卡片 + 日历 + 时间片网格）。
-   本节同时定义签到日历（static/js/calendar.js）的样式与语义色令牌。
+   用户页复用 Adminator 的 .shell 网格（248px 侧栏 + 1fr 主列），与登录页的营销外壳
+   .auth-shell 职责不同（后者只在 login.html 使用）。本节定义：
+     · 版式层级：页头 22px / 区块标题 15px / 正文 13-14px / 辅助 12.5px
+     · 间距刻度：4 / 8 / 12 / 16 / 20 / 24 / 32（页块间距 24 ≥ 卡内 16-22）
+     · 12 列网格（补 Adminator 只有 .col-6/.col-12 的缺口）
+     · 侧边栏可读性修正（Adminator 的 .nav-label/.brand-tag 用 --t-light，
+       在浅色侧栏底 #FFFFFF 上仅 2.56:1，不达 AA）
    ========================================================================== */
 
-/* ---- 19.0 日历 / 状态行 / 时段按钮的语义色令牌 ----
-   全部为"文字 on 底色"的配对，必须达 WCAG AA（正文 ≥4.5:1）。
-   浅/深两套独立取值，由 tests/test_web_text_contrast.py 从本文件实测，
-   改色值前先跑该测试。--cal-cell-bg 是"无底色格/卡片文字"的参照面，值等于 --bg-card
-   （此处显式写出，便于对比度用例直接取用，不必解析 adminator.css）。 */
+/* ---- 19.0 语义色令牌 ----
+   全部为"文字 on 底色"配对，必须达 WCAG AA（正文 ≥4.5:1）；浅/深两套独立取值，
+   由 tests/test_web_text_contrast.py 从本文件实测。改色值前先跑该测试。
+   --cal-cell-bg / --cal-cell-fg 是"无底色格 + 卡片正文"的参照面（= --bg-card）。 */
 :root {
-  --cal-ok-bg: #F0FDF4;   /* 成功：绿 50 */
-  --cal-ok-fg: #166534;   /* on ok-bg = 6.81:1 */
-  --cal-bad-bg: #FEF2F2;  /* 失败：红 50 */
-  --cal-bad-fg: #B91C1C;  /* on bad-bg = 5.91:1 */
-  --cal-off-bg: #F1F5F9;  /* 周末停签：中性 */
-  --cal-off-fg: #475569;  /* on off-bg = 6.92:1（--t-muted 在此底上只有 4.34:1，不可用） */
-  --cal-cell-bg: #FFFFFF; /* = --bg-card */
-  --cal-cell-fg: #334155; /* on cell-bg = 10.35:1 */
-  --state-ok-fg: #047857;   /* 状态行：成功 on 卡片 = 5.48:1 */
+  --t-sub: #475569;         /* 页面底(--bg-body #F0F4F8)上的辅助文字 = 6.9:1（--t-muted 仅 4.31:1） */
+  --cal-ok-bg: #DCFCE7;     /* 日历·成功：绿 100（50 档对白卡仅 1.05:1，色块几乎不可见） */
+  --cal-ok-fg: #166534;     /* on ok-bg = 6.49:1 */
+  --cal-bad-bg: #FEE2E2;    /* 日历·失败：红 100（再深一档 #FECACA 会让文字降到 4.47:1） */
+  --cal-bad-fg: #B91C1C;    /* on bad-bg = 5.30:1 */
+  --cal-off-bg: #F1F5F9;    /* 周末停签：中性 */
+  --cal-off-fg: #475569;    /* on off-bg = 6.92:1（--t-muted 在此底上只有 4.34:1，不可用） */
+  --cal-cell-bg: #FFFFFF;   /* = --bg-card */
+  --cal-cell-fg: #334155;   /* on 卡片 = 10.35:1 */
+  --state-ok-fg: #047857;   /* 状态行·成功 on 卡片 = 5.48:1 */
   --state-warn-fg: #B45309; /* 警示 = 5.02:1 */
   --state-bad-fg: #B91C1C;  /* 失败 = 6.47:1 */
   --slot-full-bg: #FEF3C7;      /* 满员时段（可点，提示会顺延） */
@@ -1540,14 +1480,15 @@ body,
   --slot-partial-fg: #92400E;   /* = 6.84:1 */
 }
 html[data-theme="dark"] {
-  --cal-ok-bg: #0F2A20;
-  --cal-ok-fg: #6EE7B7;   /* 10.04:1 */
-  --cal-bad-bg: #2B1414;
-  --cal-bad-fg: #FCA5A5;  /* 9.12:1 */
+  --t-sub: #94A3B8;
+  --cal-ok-bg: #14342A;
+  --cal-ok-fg: #6EE7B7;     /* 8.86:1 */
+  --cal-bad-bg: #3A1A1A;
+  --cal-bad-fg: #FCA5A5;    /* 8.24:1 */
   --cal-off-bg: #1A2237;
-  --cal-off-fg: #94A3B8;  /* 6.17:1 */
-  --cal-cell-bg: #141B2D; /* = --bg-card */
-  --cal-cell-fg: #E2E8F0; /* 13.91:1 */
+  --cal-off-fg: #94A3B8;    /* 6.17:1 */
+  --cal-cell-bg: #141B2D;   /* = --bg-card */
+  --cal-cell-fg: #E2E8F0;   /* 13.91:1 */
   --state-ok-fg: #34D399;
   --state-warn-fg: #FCD34D;
   --state-bad-fg: #FCA5A5;
@@ -1559,86 +1500,82 @@ html[data-theme="dark"] {
   --slot-partial-fg: #FCD34D;
 }
 
-/* ---- 19.1 外壳覆盖：右列整宽、卡片容器透明（内容自带 .card 表面） ---- */
-body[data-page="user"] .auth-shell { grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); }
-body[data-page="user"] .auth-main { padding: 24px 32px 32px; }
-body[data-page="user"] .auth-card {
-  max-width: 100%;
+/* ---- 19.1 版式层级 ----
+   旧栈的 .page-head/.page-title 是"标签 + 大标题"的 flex 行（迁移占位页仍在用），
+   用户端要的是"标题在上、说明在下"的块级页头，故按 data-page 作用域覆盖，
+   不改占位页的形态（曾因全局覆盖导致说明文字被挤到标题右侧同一行）。 */
+body[data-page="user"] .page-head { display: block; margin: 0 0 24px; }
+body[data-page="user"] .page-title {
   margin: 0;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-@media (max-width: 900px) {
-  body[data-page="user"] .auth-shell { grid-template-columns: 1fr; }
-  body[data-page="user"] .auth-main { padding: 20px 16px 28px; }
-}
-
-/* ---- 19.2 顶栏账号条（服务器时钟 + 邮箱 + 主题 + 退出） ---- */
-.user-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }.user-clock { font-size: 11.5px; color: var(--t-muted); white-space: nowrap; }
-.user-email {
-  max-width: 170px;
-  font-size: 12.5px;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: -0.022em;
   color: var(--t-base);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: var(--t-sub); }
+/* 内容区撑满，短页时页脚不会浮在页面中间（.main 已是 flex column） */
+body[data-page="user"] .content { flex: 1; }
+
+/* ---- 19.2 面板（卡内区块）--------------------------------------------------
+   .card-head 自带 padding-bottom:16 + margin-bottom:20 + 1px 分隔线，在"标题 + 一行
+   说明"上会造出 36px 死白，且每张卡都长得像页头（旧版 5 张卡各一条线即此问题）。
+   面板改用无分隔线的轻量卡头，层级靠 .page-title(22) → .panel-title(15) 拉。 */
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.panel-head-text { min-width: 0; }
+.panel-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.012em;
+  color: var(--t-base);
+}
+.panel-sub { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
+.panel-stack { display: flex; flex-direction: column; }
+.panel-head:last-child { margin-bottom: 0; }
+/* 折叠卡收起时，summary 之后无内容，不该留 16px ；展开时由 collapse-body 自带间距 */
+.user-collapse > summary.panel-head { margin-bottom: 0; }
+/* 面板内：间距交给"相邻兄弟"，空元素（display:none）不产生空隙 */
+.panel-stack > .panel-head { margin-bottom: 0; }
+.panel-stack > * + * { margin-top: 16px; }
+.panel-sub:empty { display: none; }
+.panel-stack > :last-child { margin-top: auto; }
+
+/* ---- 19.3 12 列网格（Adminator 只有 .col-6/.col-12） ---- */
+.user-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 24px; }
+.user-grid > * { min-width: 0; }
+.col-8 { grid-column: span 8; }
+.col-4 { grid-column: span 4; }
+@media (max-width: 1100px) {
+  .col-6, .col-8, .col-4 { grid-column: span 12; }
 }
 @media (max-width: 720px) {
-  .user-clock { display: none; }
-  .user-email { max-width: 110px; }
+  .user-grid { gap: 16px; }
+  /* 窄屏下"标题+说明"与右侧操作按钮同行会互相挤压，改为换行堆叠 */
+  .panel-head { flex-wrap: wrap; }
 }
 
-/* ---- 19.3 内容区栅格与卡片 ---- */
-.user-page { display: flex; flex-direction: column; gap: 18px; }
-.user-section { gap: 0; }
-.user-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
-.card-sub { margin: 4px 0 0; font-size: 12px; color: var(--t-muted); }
-.user-danger .card-title { color: var(--danger); }
-.empty { padding: 24px 0; text-align: center; font-size: 12.5px; color: var(--t-muted); }
+/* ---- 19.4 侧边栏可读性修正 ---- */
+.nav-label { color: var(--t-muted); }     /* Adminator 用 --t-light：浅色侧栏上 2.56:1 */
+.brand-tag { color: var(--t-muted); }
+.workspace-role { color: var(--t-muted); }
 
-/* 仅读屏可见：Adminator 未提供（开关等无文字控件需要可读名称） */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* 表单纵向排布（Adminator 的 .field 只定内部结构，不负责间距） */
-.form-stack { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
-.form-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.pref-estimate { margin: 0 0 12px; }
-.pref-foot { margin-top: 14px; }
-.pref-hint { margin-top: 14px; }
-
-/* 危险操作的"文字按钮"：Adminator 的 .btn--outline-danger 用 --danger 作文字色，
-   在浅色卡片上只有 3.76:1（正文需 ≥4.5:1）。此处改用更深的红，深浅两套各自达标。 */
-.btn--danger-ghost { color: #B91C1C; border-color: rgba(185, 28, 28, 0.35); }
-.btn--danger-ghost:hover { background: var(--danger-soft); }
-html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(252, 165, 165, 0.35); }
-
-/* 状态图例：7 个状态单行可排，窄屏自动折行 */
-.legend {
+/* ---- 19.5 状态图例 / 账号卡片 / 日志块 ---- */
+.status-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
-  margin: 0 0 14px;
+  margin: 0 0 16px;
   padding: 0;
   list-style: none;
   font-size: 11.5px;
   color: var(--t-muted);
 }
-.legend li { display: inline-flex; align-items: center; gap: 4px; }
-.legend svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 2; fill: none; }
+.status-legend li { display: inline-flex; align-items: center; gap: 4px; }
+.status-legend svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 2; fill: none; }
 
-/* ---- 19.4 账号卡片 ---- */
 .account-list { display: flex; flex-direction: column; gap: 12px; }
 .account-card {
   padding: 16px;
@@ -1657,22 +1594,17 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .account-reject { margin-top: 10px; }
 .account-pending-hint { margin-top: 12px; font-size: 12px; color: var(--t-muted); }
 .account-details { margin-top: 10px; }
-.account-details > summary {
-  font-size: 12px;
-  color: var(--t-muted);
-  cursor: pointer;
-  transition: color 150ms;
-}
+.account-details > summary { font-size: 12px; color: var(--t-muted); cursor: pointer; transition: color 150ms; }
 .account-details > summary:hover { color: var(--t-base); }
 
-/* 状态行：语义三档 + 中性（色值见 19.0 的 --state-*-fg） */
+/* 状态行：语义三档 + 中性（色值见 19.0） */
 .state-line { margin-top: 2px; font-size: 12px; }
 .state-line--ok { color: var(--state-ok-fg); }
 .state-line--warn { color: var(--state-warn-fg); }
 .state-line--bad { color: var(--state-bad-fg); }
 .state-line--muted { color: var(--t-muted); }
 
-/* 日志块：嵌面板 + 等宽。字体走 --font-mono（中文字体兜底见第 1 节守卫） */
+/* 日志块：嵌面板 + 等宽（账号卡内与日历页共用） */
 .log-view {
   margin: 0;
   padding: 10px 12px;
@@ -1687,68 +1619,54 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   word-break: break-all;
 }
 
-/* ---- 19.5 签到日历（static/js/calendar.js 的样式） ---- */
-.cal { display: grid; gap: 16px; min-width: 0; }
-@media (min-width: 1024px) { .cal { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
-.cal-main { min-width: 0; }
-.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.cal-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--t-base); }
-.cal-nav { display: flex; gap: 4px; }
-.cal-weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
-.cal-weekdays span {
-  padding: 4px 0;
-  text-align: center;
-  font-size: 11px;
-  color: var(--t-muted);
-}
-.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
-.cal-blank { aspect-ratio: 1; }
-.cal-cell {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  aspect-ratio: 1;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--cal-cell-fg);
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 150ms, border-color 150ms, color 150ms;
-}
-.cal-cell--ok { background: var(--cal-ok-bg); color: var(--cal-ok-fg); font-weight: 600; }
-.cal-cell--bad { background: var(--cal-bad-bg); color: var(--cal-bad-fg); font-weight: 600; }
-.cal-cell--off { background: var(--cal-off-bg); color: var(--cal-off-fg); }
-.cal-cell--none:hover,
-.cal-cell--ok:hover,
-.cal-cell--bad:hover { border-color: var(--primary); }
-.cal-cell--off:hover { border-color: var(--border); }
-.cal-cell--today { box-shadow: inset 0 0 0 2px var(--primary); }
-.cal-off-badge {
-  position: absolute;
-  top: 2px;
-  right: 3px;
-  font-size: 9px;
-  line-height: 1;
-  color: var(--cal-off-fg);
-}
-.cal-ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; stroke-width: 2; fill: none; }
-.cal-spin { animation: cal-rotate 900ms linear infinite; }
-@keyframes cal-rotate { to { transform: rotate(360deg); } }
-.cal-error {
-  grid-column: 1 / -1;
-  padding: 14px 0;
-  text-align: center;
-  font-size: 12px;
-  color: var(--t-muted);
-}
-.cal-log { min-width: 0; }
-.cal-log-empty { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; color: var(--t-muted); }
-.cal-log-head { margin: 0 0 6px; font-size: 11.5px; color: var(--t-muted); }
+/* ---- 19.6 通用小件 ---- */
+/* 开关：track 本体 34×20，热区低于 WCAG 2.5.8 的 24px；用等量负外边距抬高热区、保持视觉位置不变 */
+.switch { padding: 6px 4px; margin: -6px -4px; }
 
-/* ---- 19.6 自选签到时段（5 分钟粒度网格） ---- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.form-stack { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
+.form-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.schedule-banner { margin: 0 0 24px; }
+.pref-estimate { margin: 0 0 12px; }
+.pref-foot { margin-top: 16px; }
+.pref-hint { margin-top: 16px; }
+.user-danger .panel-title { color: var(--danger); }
+
+/* 危险操作的"文字按钮"：Adminator 的 .btn--outline-danger 用 --danger 作文字色，
+   在浅色卡片上只有 3.76:1（正文需 ≥4.5:1）。此处改用更深的红，深浅两套各自达标。 */
+.btn--danger-ghost { color: #B91C1C; border-color: rgba(185, 28, 28, 0.35); }
+.btn--danger-ghost:hover { background: var(--danger-soft); }
+html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(252, 165, 165, 0.35); }
+
+/* ---- 19.7 折叠区（改密等）：原生 <details>，箭头随展开旋转 ---- */
+.user-collapse > summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.user-collapse > summary::-webkit-details-marker { display: none; }
+/* 收起态指向右、展开态指向下：同一枚 chevron-down 用旋转表达两种状态 */
+.collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 180ms; transform: rotate(-90deg); }
+.collapse-arrow svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none; }
+.user-collapse[open] .collapse-arrow,
+[aria-expanded="true"] > .collapse-arrow,
+[aria-expanded="true"] .collapse-arrow { transform: rotate(0deg); }
+.collapse-body { margin-top: 16px; }
+
+/* ---- 19.8 自选签到时段（5 分钟粒度网格） ---- */
 .slot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 @media (min-width: 640px) { .slot-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
 .slot {
@@ -1773,27 +1691,161 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .slot-name { font-weight: 600; }
 .slot-pct { font-size: 11px; opacity: 0.75; white-space: nowrap; }
 
-/* ---- 19.7 折叠区（改密等）：原生 <details>，箭头随展开旋转 ---- */
-.user-collapse > summary {
+/* ==========================================================================
+   20. 签到日历（static/js/calendar.js 的样式）
+   --------------------------------------------------------------------------
+   类名一律用 sc- 前缀：Adminator 自带一套事件月历（.cal-grid 有
+   grid-auto-rows:minmax(110px,1fr)，.cal-cell 带 border-right/bottom 与
+   flex-direction:column），沿用同名类会被其未覆盖属性渗透——实测曾把日期格撑成
+   62×110 的竖长条（宽高比失控、数字悬在空盒中央）。本组件语义是"按日状态 + 日志"，
+   与事件月历不同，故与设计系统零共享。
+   ========================================================================== */
+
+.cal-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.cal-card { display: flex; flex-direction: column; }
+.sc-mount { min-width: 0; }
+
+/* 工具条：月份 + 上/下月 + 今天 */
+.sc-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.sc-toolbar-left { display: flex; align-items: center; gap: 12px; }
+.sc-month {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.018em;
+  color: var(--t-base);
+  white-space: nowrap;
+}
+.sc-nav { display: flex; gap: 2px; }
+.sc-nav-btn { width: 30px; height: 30px; padding: 0; justify-content: center; }
+.sc-nav-btn svg { width: 15px; height: 15px; }
+.sc-ico { width: 14px; height: 14px; flex-shrink: 0; stroke: currentColor; stroke-width: 2; fill: none; }
+
+/* 星期表头：等宽小字 + 中性色（Adminator 的 .cal-weekdays 用 --t-light，仅 2.56:1） */
+.sc-weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 4px; }
+.sc-weekdays span {
+  padding: 6px 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--t-muted);
+}
+
+/* 日期格：**固定行高**（不再用 aspect-ratio——行高由容器决定，宽高比会失控），
+   7 列等分随容器自适应；状态由底色 + 圆点双重编码，今天用 inset ring 不占布局。 */
+.sc-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: 56px; gap: 4px; }
+.sc-blank { display: block; }
+.sc-cell {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: center;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cal-cell-fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
   cursor: pointer;
-  list-style: none;
+  transition: background 140ms, border-color 140ms, color 140ms;
 }
-.user-collapse > summary::-webkit-details-marker { display: none; }
-/* 收起态指向右、展开态指向下：同一枚 chevron-down 用旋转表达两种状态 */
-.collapse-arrow { display: inline-flex; color: var(--t-muted); transition: transform 180ms; transform: rotate(-90deg); }
-.collapse-arrow svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none; }
-.user-collapse[open] .collapse-arrow,
-[aria-expanded="true"] > .collapse-arrow,
-[aria-expanded="true"] .collapse-arrow { transform: rotate(0deg); }
-.collapse-body { margin-top: 16px; }
+.sc-cell:hover { border-color: var(--primary); }
+.sc-cell:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* 开关的 input 不可见，焦点环必须画在 track 上 */
+.switch input:focus-visible + .track { outline: 2px solid var(--primary); outline-offset: 2px; }
+.sc-cell--ok { background: var(--cal-ok-bg); color: var(--cal-ok-fg); border-color: transparent; }
+.sc-cell--bad { background: var(--cal-bad-bg); color: var(--cal-bad-fg); border-color: transparent; }
+.sc-cell--off { background: var(--cal-off-bg); color: var(--cal-off-fg); border-color: transparent; }
+.sc-cell--today { box-shadow: inset 0 0 0 2px var(--primary); }
+/* 选中：主色实框 + 主色浅底，与"今天"的 ring 可叠加（不同通道） */
+.sc-cell.is-selected { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+.sc-num { line-height: 1; }
+.sc-dot { position: absolute; right: 5px; bottom: 5px; width: 5px; height: 5px; border-radius: 50%; }
+.sc-dot--ok { background: var(--success); }
+.sc-dot--bad { background: var(--danger); }
+.sc-off {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  font-size: 10.5px;
+  font-style: normal;
+  line-height: 1;
+  color: var(--cal-off-fg);
+}
+.sc-error { grid-column: 1 / -1; padding: 16px 0; text-align: center; font-size: 12.5px; color: var(--t-muted); }
+.sc-spin { animation: sc-rotate 900ms linear infinite; }
+@keyframes sc-rotate { to { transform: rotate(360deg); } }
+
+/* 图例：全宽一行（在日志面板下方） */
+.sc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  /* 图例贴在页面底（不是卡片）上：--t-muted 在此只有 4.31:1，必须用 --t-sub(6.86:1) */
+  color: var(--t-sub);
+}
+.sc-legend li { display: inline-flex; align-items: center; gap: 6px; }
+/* 色块底在页面底上几乎同色（#DCFCE7 on #F0F4F8 = 1.01:1），故必须留形状边界 */
+.sc-swatch {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1;
+}
+.sc-swatch--ok { position: relative; background: var(--cal-ok-bg); color: var(--cal-ok-fg); }
+.sc-swatch--bad { position: relative; background: var(--cal-bad-bg); color: var(--cal-bad-fg); }
+.sc-swatch--ok::after, .sc-swatch--bad::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+.sc-swatch--ok::after { background: var(--success); }
+.sc-swatch--bad::after { background: var(--danger); }
+.sc-swatch--off { background: var(--cal-off-bg); color: var(--cal-off-fg); }
+.sc-swatch--today { background: transparent; box-shadow: inset 0 0 0 2px var(--primary); }
+
+/* 日志面板：常驻 + 宽屏 sticky（顶栏 60px + 24 gap），空态占位保证日志区始终可见 */
+.sc-log-card { display: flex; flex-direction: column; position: sticky; top: 84px; align-self: start; }
+.sc-log { flex: 1; min-height: 240px; }
+.sc-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-muted); }
+/* 空态图标是装饰（aria-hidden），不承载信息，故可用 --t-light */
+.sc-empty-icon { display: inline-flex; color: var(--t-light); }
+.sc-empty-icon svg { width: 22px; height: 22px; stroke: currentColor; stroke-width: 1.6; fill: none; }
+.sc-empty-note { font-size: 11.5px; color: var(--t-sub); }
+.sc-log > .sc-empty { display: grid; place-items: center; min-height: 200px; max-width: 30ch; margin: 0 auto; text-align: center; }
+.sc-log-text { margin-top: 2px; }
+@media (max-width: 720px) {
+  .sc-grid { grid-auto-rows: 44px; gap: 2px; }
+  .sc-nav-btn { width: 40px; height: 40px; }
+  .btn--sm { min-height: 36px; }
+  .account-actions { gap: 8px; }
+  .status-legend { font-size: 11px; gap: 4px 10px; }
+  .sc-weekdays { gap: 3px; }
+}
+@media (max-width: 1100px) {
+  .sc-log-card { position: static; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .cal-cell,
+  .sc-cell,
   .slot,
   .collapse-arrow { transition: none; }
-  .cal-spin { animation: none; }
+  .sc-spin { animation: none; }
 }

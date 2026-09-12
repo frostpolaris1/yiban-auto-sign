@@ -115,10 +115,16 @@ class TemplateInlineContextTest(unittest.TestCase):
     def setUpClass(cls):
         cls.index = frontend_source("index.html")
         cls.login = frontend_source("login.html")
-        cls.user = frontend_source("user.html")
+        cls.user_accounts = frontend_source(os.path.join("pages", "user_accounts.html"))
+        cls.user_calendar = frontend_source(os.path.join("pages", "user_calendar.html"))
 
     def test_base_uses_tojson_in_all_templates(self):
-        for name, tpl in (("index", self.index), ("login", self.login), ("user", self.user)):
+        for name, tpl in (
+            ("index", self.index),
+            ("login", self.login),
+            ("pages/user_accounts", self.user_accounts),
+            ("pages/user_calendar", self.user_calendar),
+        ):
             self.assertIn("const BASE = {{ request.script_root | tojson }};", tpl,
                           f"{name}.html 的 BASE 须经 tojson 转义")
             self.assertNotIn("const BASE = '{{ request.script_root }}'", tpl,
