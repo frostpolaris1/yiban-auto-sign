@@ -160,7 +160,8 @@ function renderMine() {
       ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">审核通过后即可查看签到日历</div>' : ''}<div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-${calKey}"></div>
     `;
     list.appendChild(card);
-    if (!a.deleted && a.status === 'active') renderCalendar(a.phone, calKey);  // 已删除/未生效账号不显示日历
+    // 共享日历的新签名：renderCalendar(mount, phone)（mount 为元素或元素 id）
+    if (!a.deleted && a.status === 'active') renderCalendar('cal-wrap-' + calKey, a.phone);  // 已删除/未生效账号不显示日历
   });
 }
 

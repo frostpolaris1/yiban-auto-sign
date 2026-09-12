@@ -2423,16 +2423,17 @@ class LoginTrailB14Test(_B14AlertGateBase):
 # static/js/core.js（登录/注册页、用户自助改密、管理端重置/新增口令全部从它取）。
 # 页面不再各自内联一份数组——那正是历史上多份副本互相漂移的成因。
 # 本组以 `frontend_source(页面)` 聚合"模板 + include/extends 片段 + 外链自研静态资源"，
-# 故断言入口仍是真实承载页（login.html / user.html），而常量来源是它们加载的 core.js。
+# 故断言入口仍是真实承载页（login.html / pages/user_accounts.html），而常量来源是它们加载的 core.js。
 # 管理端改密的**提交路径**落在 static/js/pages/{settings,users,accounts}.js，共享输入载体
 # 是 partials/modals/password.html。下面分别按"定义处"（元测试逐字比对 core.js 常量）
 # 与"提交路径"（完整策略 helper 调用 + 统一文案）覆盖，保护目标不变：谁先漂移谁判红。
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 # 前端口令策略的真实承载页（聚合后包含 core.js 里的常量定义）：
-#   · login.html —— 注册表单（GET /login 渲染，密码输入实时提示 + 提交前校验）；
-#   · user.html  —— 普通用户自助改密（GET /user 渲染）。
-# 旧 index.html 已无路由渲染，不再列入。定义落在 core.js，故聚合读取即可读到。
-PW_TEMPLATES = ("login.html", "user.html")
+#   · login.html            —— 注册表单（GET /login 渲染，密码输入实时提示 + 提交前校验）；
+#   · pages/user_accounts.html —— 普通用户自助改密（GET /user 渲染）。
+# 旧 index.html 已无路由渲染、旧 user.html 已拆页退役，均不列入。
+# 定义落在 core.js，故聚合读取即可读到。
+PW_TEMPLATES = ("login.html", os.path.join("pages", "user_accounts.html"))
 # 口令策略常量的唯一定义源（换壳重写 core.js 时收敛到这里，供全站复用）。
 PW_SHARED_JS = os.path.join("static", "js", "core.js")
 # 管理端口令提交路径所在的静态 JS（换壳后从 index.html 内联/外部 app.js 迁出）。
@@ -2472,7 +2473,7 @@ def _frontend(name):
     后者是静默失去覆盖，正是本组要防的"谁先漂移谁判红"失效。
 
     注意（换壳后）：index.html 已不再定义策略常量，故 `PW_TEMPLATES` 只含仍内联定义的
-    login/user 两页；管理端那半边由下方直接读 static/js 的真实提交路径覆盖。
+    login / pages/user_accounts 两页；管理端那半边由下方直接读 static/js 的真实提交路径覆盖。
     """
     return frontend_source(name)
 
@@ -2513,8 +2514,8 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
     def test_templates_class_regexes_match_backend_constant(self):
         """类别正则的单一事实源：真实承载页（聚合 core.js）vs 后端常量（漂移即红）。
 
-        换壳后前端只有一份定义，落在 static/js/core.js；login.html（注册）与 user.html
-        （自助改密）通过 `<script src>` 加载它，故 frontend_source 聚合后即可读到该数组。
+        换壳后前端只有一份定义，落在 static/js/core.js；login.html（注册）与
+        pages/user_accounts.html（自助改密）通过 `<script src>` 加载它，故 frontend_source 聚合后即可读到该数组。
         管理端改名/重置路径复用同一份共享 helper，其提交路径由
         test_admin_password_modal_validates_classes 覆盖。
         """

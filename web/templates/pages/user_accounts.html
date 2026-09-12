@@ -1,0 +1,166 @@
+{# 用户端：账号与设置（/user）。
+   页面结构走 Adminator 的 .shell（侧栏在 layout_user）+ 12 列网格；
+   区块标题用 .panel-title（15px）而非 .card-title（16px）——后者是页级主卡标题，
+   一页放 5 个会让每张卡都像页头（旧版即此问题）。
+
+   功能清单（迁移自旧 user.html，逐项保留）见 docs/refactor/20-user-pages-split.md。 #}
+{% extends "layout_user.html" %}
+{% from "macros/ui.html" import icon with context %}
+
+{% block title %}账号与设置 · 易班自动签到{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">账号与设置</h1>
+  <p class="page-sub">管理你的易班账号、自选签到时间与登录凭据。</p>
+</div>
+
+{# 调度模式提示条：登录后由 /api/me 填充（签到方式 / 窗口 / 是否可自选），失败不阻塞页面 #}
+<p class="alert info schedule-banner" role="status" data-schedule-banner hidden>
+  <span class="ico">{{ icon('info') }}</span>
+  <span class="body" data-schedule-banner-text></span>
+</p>
+
+<div class="user-grid">
+
+  <!-- 我的账号 -->
+  <section class="card col-12">
+    <div class="panel-head">
+      <div class="panel-head-text">
+        <h2 class="panel-title">我的账号</h2>
+        <p class="panel-sub">审核通过后自动签到；暂停与删除可随时在此操作。</p>
+      </div>
+      {# 无有效账号时显示；全部被删除时也显示（软删除不死路），由 user_accounts.js 控制显隐 #}
+      <button id="open-account-btn" type="button" class="btn btn--primary" hidden>
+        {{ icon('plus') }}提交我的易班账号
+      </button>
+    </div>
+    {# 状态图例：与「签到日历」的图例同一套语义（颜色之外另有图标冗余） #}
+    <ul class="status-legend" aria-label="签到状态图例">
+      <li>{{ icon('clock') }}待签</li>
+      <li>{{ icon('circle-check') }}成功</li>
+      <li>{{ icon('circle-x') }}失败</li>
+      <li>{{ icon('refresh-cw') }}重试</li>
+      <li>{{ icon('ban') }}跳过</li>
+      <li>{{ icon('circle-minus') }}无需</li>
+      <li>{{ icon('circle-pause') }}{{ icon('circle-stop') }}暂停/已取消</li>
+    </ul>
+    <p id="accounts-empty" class="empty" hidden>
+      <span class="empty__icon">{{ icon('user') }}</span>
+      <span class="empty__msg">还没有提交账号。提交后等待管理员审核，通过即自动签到。</span>
+    </p>
+    <div id="account-list" class="account-list"></div>
+  </section>
+
+  <!-- 自选签到时间（5 分钟粒度；未开启时可展开预配置但不生效） -->
+  <section id="time-pref-card" class="card col-12" hidden>
+    <div class="panel-head">
+      <div class="panel-head-text">
+        <h2 class="panel-title">签到时间</h2>
+        <p class="panel-sub">
+          签到窗口 <span class="mono" id="pref-window"></span> · 选一个 5 分钟时段，
+          系统按你的选择安排签到（今日已开始后修改次日生效）
+        </p>
+      </div>
+      <button id="pref-collapse-btn" type="button" class="btn btn--ghost btn--sm"
+              aria-expanded="true" aria-controls="pref-body">
+        <span id="pref-collapse-label">收起</span>
+        <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
+      </button>
+    </div>
+    <div id="pref-body">
+      <p id="pref-estimate" class="panel-sub pref-estimate" hidden></p>
+      <div id="pref-slot-grid" class="slot-grid" role="group" aria-label="自选签到时段"></div>
+      <div class="form-actions pref-foot">
+        <button id="pref-clear-btn" type="button" class="btn btn--ghost btn--sm">清除选择（恢复自动分配）</button>
+        <span id="pref-tip" class="panel-sub" aria-live="polite"></span>
+      </div>
+      <p id="pref-disabled-hint" class="alert warning pref-hint" hidden>
+        <span class="ico">{{ icon('triangle-alert') }}</span>
+        <span class="body">功能未开启：你的选择会保存，但暂不生效</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- 邮件提醒 -->
+  <section class="card col-6 panel-stack">
+    <div class="panel-head">
+      <div class="panel-head-text">
+        <h2 class="panel-title">邮件提醒</h2>
+        <p class="panel-sub">签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
+      </div>
+      <label class="switch" title="接收签到失败邮件">
+        <input id="mail-notify-switch" type="checkbox">
+        <span class="track" aria-hidden="true"></span>
+        <span class="sr-only">接收签到失败邮件提醒</span>
+      </label>
+    </div>
+    <p id="mail-notify-tip" class="panel-sub" aria-live="polite"></p>
+  </section>
+
+  <!-- 修改密码（原生 <details> 折叠：键盘可达、无需 JS 维护展开态） -->
+  <details class="card col-6 panel-stack user-collapse">
+    <summary class="panel-head">
+      <div class="panel-head-text">
+        <h2 class="panel-title">修改密码</h2>
+        <p class="panel-sub">改后下次登录使用新密码</p>
+      </div>
+      <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
+    </summary>
+    <div class="collapse-body">
+      <form id="password-form" class="form-stack" novalidate>
+        <div class="field">
+          <label class="field-label" for="p-old">当前密码</label>
+          <div class="input-affix">
+            <input id="p-old" type="password" class="input" autocomplete="current-password"
+                   required placeholder="输入当前密码">
+            <button type="button" class="affix-btn" data-pw-toggle="p-old"
+                    aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="p-new">新密码</label>
+          <div class="input-affix">
+            <input id="p-new" type="password" class="input" autocomplete="new-password"
+                   required placeholder="新密码" aria-describedby="p-new-help">
+            <button type="button" class="affix-btn" data-pw-toggle="p-new"
+                    aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+          </div>
+          <p id="p-new-help" class="field-help">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="p-confirm">确认新密码</label>
+          <div class="input-affix">
+            <input id="p-confirm" type="password" class="input" autocomplete="new-password"
+                   required placeholder="再次输入新密码">
+            <button type="button" class="affix-btn" data-pw-toggle="p-confirm"
+                    aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn--primary">保存新密码</button>
+          <span id="p-tip" class="panel-sub" aria-live="polite"></span>
+        </div>
+      </form>
+    </div>
+  </details>
+
+  <!-- 注销账号（危险区独占一行、置底） -->
+  <section class="card col-12 user-danger">
+    <div class="panel-head">
+      <div class="panel-head-text">
+        <h2 class="panel-title">注销账号</h2>
+        <p class="panel-sub">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
+      </div>
+      <button type="button" class="btn btn--ghost btn--danger-ghost" data-delete-account>
+        {{ icon('trash') }}注销账号
+      </button>
+    </div>
+  </section>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ request.script_root }}/static/js/pages/user_accounts.js?v={{ web_version }}"></script>
+{% endblock %}

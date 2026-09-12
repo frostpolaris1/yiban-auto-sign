@@ -8,43 +8,46 @@
 
     · 日期格：user 端**没有**「休」角标、aria-label 只报「今天/已签到」，
       admin 端则只报「周末不签到/查看记录」——**两边各缺一半信息**；
-    · 标题：admin `font-semibold` vs user `font-medium`；
     · 月份切换按钮：user 端有 `aria-label="上个月/下个月"`，admin 端**完全没有**；
     · 星期表头与「日历加载失败」文案：user 端曾用写反的色对（V3-3 修）。
 
-当时的处置是把日期格抽成**两份逐字相同**的 `calDayCell(o)` 并钉住"必须一致"。那只是
-把漂移从"随时发生"变成"改一边会报红"，根因（两份实现）仍在。
+当时的处置是把日期格抽成**两份逐字相同**的 `calDayCell(o)` 并钉住"必须一致"；那只是把
+漂移从"随时发生"变成"改一边会报红"，根因（两份实现）仍在。
 
 ## 现在的判据
 
-用户自助页迁移到 Adminator 时，日历整体外提为 `web/static/js/calendar.js`：
-**全站唯一实现**，用户页与旧管理端「我的账号」都调它（`window.renderCalendar`）。
-于是本测试从"两份必须一致"改成"只能有一份"：
+日历整体外提为 `web/static/js/calendar.js`：**全站唯一实现**，用户端「签到日历」页
+（`pages/user_calendar.html` + `pages/user_calendar.js`）与旧管理端「我的账号」都调它。
+本测试钉住"只能有一份"：
 
-1. `web/static/js/` 下**恰好一个**文件定义 `function calDayCell(`，且必须是 calendar.js；
-2. `web/templates/` 下**零个**文件内联日历实现（模板只放挂载容器 `#cal-wrap-<key>`）；
-3. 加载关系成立：user.html 引入 calendar.js、pages/user.js 调用共享渲染函数、
+1. `web/static/js/` 下**恰好一个**文件定义 `function dayCell(`，且必须是 calendar.js；
+2. `web/templates/` 下**零个**文件内联日历实现；
+3. 加载关系成立：日历页引入 calendar.js 并由页面脚本调 `SignCalendar.render`；
    旧管理端 index.html 在 mine.js 之前引入 calendar.js（classic script 共享作用域）；
-4. 视觉/无障碍要点仍在共享实现里（星期表头、月份按钮读屏名、「休」角标、
-   失败提示、状态类名），防止被"顺手"删掉；
-5. 旧的逐字副本残留写法（`border-transparent'} flex …`）不再出现。
-
-注意：本测试**只钉"唯一实现 + 要点在位"**，不规定视觉长什么样 —— 颜色由 app.css 的
-`--cal-*` 令牌决定，对比度由 `test_web_text_contrast.py` 实测。
+4. 视觉/无障碍要点仍在共享实现里（星期表头、月份按钮读屏名、「休」角标、失败提示、
+   状态类名），防止被"顺手"删掉；
+5. **类名前缀不得与 Adminator 撞车**：Adminator 自带事件月历（`.cal-grid` 有
+   `grid-auto-rows:minmax(110px,1fr)`、`.cal-cell` 带 border-right/bottom 与
+   flex-direction:column）。自研签到日历沿用同名类时，其未覆盖属性会渗透进来 ——
+   实测把日期格撑成 62×110 的竖长条（宽高比失控、数字悬在空盒中央）。
+   故本测试钉住：自研源码里不得出现 `.cal-grid` / `.cal-cell` / `.cal-weekdays`
+   这类 Adminator 月历类名（calendar.js 一律用 `sc-` 前缀）。
 """
 
 import os
+import re
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_DIR = os.path.join(BASE, "web", "static", "js")
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 CALENDAR_JS = os.path.join(JS_DIR, "calendar.js")
-USER_TEMPLATE = os.path.join(TEMPLATES_DIR, "user.html")
-USER_JS = os.path.join(JS_DIR, "pages", "user.js")
+USER_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_calendar.html")
+USER_CAL_JS = os.path.join(JS_DIR, "pages", "user_calendar.js")
+USER_ACCOUNTS_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_accounts.html")
 LEGACY_INDEX = os.path.join(TEMPLATES_DIR, "index.html")
 
-DAY_CELL_MARK = "function calDayCell(o)"
+DAY_CELL_MARK = "function dayCell(o)"
 
 # 共享实现里必须同时保留的要点（改其一即报红，说明有人只改了一处契约）
 REQUIRED_IN_SHARED = (
@@ -54,17 +57,30 @@ REQUIRED_IN_SHARED = (
     # 星期表头（周一起始）
     '["一", "二", "三", "四", "五", "六", "日"]',
     # 「休」角标：不单靠颜色区分周末停签
-    "cal-off-badge",
+    "sc-off",
     # 加载失败提示（同一句文案）
     "日历加载失败，请稍后重试",
     # 状态类名（颜色由 app.css 的 --cal-* 令牌给出）
-    "cal-cell--ok",
-    "cal-cell--bad",
-    "cal-cell--off",
-    "cal-cell--today",
+    "sc-cell--ok",
+    "sc-cell--bad",
+    "sc-cell--off",
+    "sc-cell--today",
+    # 选中态：日期格与日志面板的联动标记
+    "is-selected",
 )
 
-# 旧的逐字副本残留写法（应已消失）
+# Adminator 自带月历的类名：自研签到日历一律不得使用（见模块 docstring 第 5 条）
+ADMINATOR_CALENDAR_CLASSES = ("cal-grid", "cal-cell", "cal-weekdays", "cal-main", "cal-toolbar")
+
+# 注释剥离：calendar.js 的说明性注释里会引用这些类名来解释"为什么不能撞车"，
+# 不剥会把解释本身判成违规（同 test_web_component_adoption 的做法）。
+_COMMENT_RE = re.compile(r"/\*.*?\*/|<!--.*?-->|//[^\n]*", re.S)
+
+
+def _strip_comments(text):
+    return _COMMENT_RE.sub(" ", text)
+
+# 旧的内联拼日期格残留写法（应已消失）
 OLD_INLINE_MARKUP = "border-transparent'} flex items-center justify-center text-xs"
 
 
@@ -73,17 +89,16 @@ def _read(path):
         return fh.read()
 
 
-def _files_defining(mark, *roots):
-    hits = []
+def _iter_sources(*roots):
     for root in roots:
         for dirpath, _dirnames, filenames in os.walk(root):
             for name in sorted(filenames):
-                if not name.endswith((".js", ".html")):
-                    continue
-                path = os.path.join(dirpath, name)
-                if mark in _read(path):
-                    hits.append(path)
-    return hits
+                if name.endswith((".js", ".html")):
+                    yield os.path.join(dirpath, name)
+
+
+def _files_defining(mark, *roots):
+    return [p for p in _iter_sources(*roots) if mark in _read(p)]
 
 
 class CalendarSingleSourceTest(unittest.TestCase):
@@ -104,19 +119,24 @@ class CalendarSingleSourceTest(unittest.TestCase):
         self.assertEqual(
             hits,
             [],
-            "模板里出现了内联的日历实现 —— 签到日历只在 web/static/js/calendar.js 里实现，"
-            '页面只需提供 id="cal-wrap-<key>" 的容器：\n'
+            "模板里出现了内联的日历实现 —— 签到日历只在 web/static/js/calendar.js 里实现：\n"
             + "\n".join(f"  {os.path.relpath(p, BASE)}" for p in hits),
         )
 
-    def test_user_page_loads_the_shared_module(self):
-        """用户页必须引入共享日历，并由页面脚本调用共享渲染函数。"""
-        html = _read(USER_TEMPLATE)
-        self.assertIn("/static/js/calendar.js", html, "user.html 未引入共享 calendar.js")
-        self.assertIn("/static/js/pages/user.js", html, "user.html 未引入 pages/user.js")
-        js = _read(USER_JS)
-        self.assertIn("window.renderCalendar", js, "pages/user.js 未调用共享的 renderCalendar")
-        self.assertNotIn("calDayCell", js, "pages/user.js 不应自带日期格实现")
+    def test_calendar_page_loads_the_shared_module(self):
+        """日历页必须引入共享日历，并由页面脚本调用共享渲染接口。"""
+        html = _read(USER_CAL_PAGE)
+        self.assertIn("/static/js/calendar.js", html, "签到日历页未引入共享 calendar.js")
+        self.assertIn("/static/js/pages/user_calendar.js", html, "签到日历页未引入 pages/user_calendar.js")
+        js = _read(USER_CAL_JS)
+        self.assertIn("SignCalendar.render", js, "pages/user_calendar.js 未调用共享渲染接口")
+        self.assertNotIn("dayCell", js, "pages/user_calendar.js 不应自带日期格实现")
+
+    def test_accounts_page_does_not_embed_a_calendar(self):
+        """账号与设置页不得再内嵌日历（日历已独立成页，避免同一组件两处维护）。"""
+        html = _read(USER_ACCOUNTS_PAGE)
+        for mark in ("data-sc-mount", "data-sc-log", "calendar.js"):
+            self.assertNotIn(mark, html, f"账号与设置页不应出现日历相关标记：{mark}")
 
     def test_legacy_admin_page_still_wires_the_shared_calendar(self):
         """旧管理端（index.html + pages/mine.js）仍存在，必须把共享日历排在 mine.js 之前。
@@ -142,21 +162,36 @@ class CalendarSingleSourceTest(unittest.TestCase):
                 + "\n".join(f"  {s!r}" for s in missing)
             )
 
+    def test_no_adminator_calendar_class_names_in_our_sources(self):
+        """自研源码不得使用 Adminator 事件月历的类名（属性渗透会让日期格失控）。
+
+        判据按 **class token 边界**匹配（前后不得是 `\\w`/`-`）：`mini-cal-grid` 这类
+        项目自有的近似名不误伤；注释里对该类名的解释性引用也不算违规。
+        """
+        offenders = []
+        for path in _iter_sources(JS_DIR, TEMPLATES_DIR):
+            src = _strip_comments(_read(path))
+            for cls in ADMINATOR_CALENDAR_CLASSES:
+                if re.search(r"(?<![\w-])" + re.escape(cls) + r"(?![\w-])", src):
+                    offenders.append(f"  {os.path.relpath(path, BASE)}: 出现 {cls!r}")
+        if offenders:
+            self.fail(
+                "签到日历复用了 Adminator 事件月历的类名 —— 其未被覆盖的属性（grid-auto-rows、"
+                "border-right/bottom、flex-direction）会渗透进来，实测会把日期格撑成竖长条。"
+                "自研日历一律用 sc- 前缀：\n" + "\n".join(offenders)
+            )
+
     def test_old_inline_cell_markup_is_gone(self):
         """旧的内联拼日期格写法不得复活。"""
-        offenders = []
-        for root in (JS_DIR, TEMPLATES_DIR):
-            for dirpath, _dirnames, filenames in os.walk(root):
-                for name in filenames:
-                    if not name.endswith((".js", ".html")):
-                        continue
-                    path = os.path.join(dirpath, name)
-                    if OLD_INLINE_MARKUP in _read(path):
-                        offenders.append(os.path.relpath(path, BASE))
+        offenders = [
+            os.path.relpath(p, BASE)
+            for p in _iter_sources(JS_DIR, TEMPLATES_DIR)
+            if OLD_INLINE_MARKUP in _read(p)
+        ]
         self.assertEqual(
             offenders,
             [],
-            "仍有文件残留内联拼日期格的旧写法，应改为调用共享的 calDayCell/renderCalendar：\n"
+            "仍有文件残留内联拼日期格的旧写法，应改为调用共享的 dayCell/render：\n"
             + "\n".join(f"  {p}" for p in offenders),
         )
 

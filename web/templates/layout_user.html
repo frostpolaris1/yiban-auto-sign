@@ -1,0 +1,47 @@
+{# 用户端外壳骨架（普通用户登录后的两页共用：账号与设置 / 签到日历）。
+
+   与管理端同构，复用 Adminator 的 .shell 网格（248px 侧栏 + 1fr 主列）：
+   ≤1100px 侧栏自动收成 72px 图标栏，≤720px 转抽屉（body.has-drawer-open 驱动）。
+   **刻意不复用 .auth-shell**——那是登录页的营销外壳（左栏是"产品的第一次说服"），
+   登录后的左栏职责是导航，两者信息职责不同（旧版把用户页塞进 .auth-shell 已被否决）。
+
+   侧栏/顶栏/页脚一律服务端渲染，不使用 Adminator 的 mountShell()。 #}
+{% from "macros/ui.html" import sprite with context %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<link rel="icon" type="image/png" href="{{ request.script_root }}/favicon.png">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}用户中心 · 易班自动签到{% endblock %}</title>
+{% block head_meta %}{% endblock %}
+{% include "partials/theme_boot.html" %}
+{# 自托管字体与设计系统，全部本地加载，不引用外网 CDN #}
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/fonts.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/adminator/adminator.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
+{% block head_styles %}{% endblock %}
+</head>
+{# data-page="user"：core.js 据此执行身份/时钟初始化（"auth" 会提前返回） #}
+<body data-page="user">
+{{ sprite() }}
+<div class="shell">
+  {% include "partials/sidebar_user.html" %}
+  <div class="main">
+    {% include "partials/topbar_user.html" %}
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+    {% include "partials/footer.html" %}
+  </div>
+</div>
+{# 移动端抽屉遮罩：点击关闭；Adminator 靠 body.has-drawer-open 控制显隐 #}
+<div class="drawer-backdrop" data-drawer-close></div>
+{# 全局提示与模态挂载点（core.js 填充） #}
+<div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true"></div>
+<div id="modal-host"></div>
+<script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
