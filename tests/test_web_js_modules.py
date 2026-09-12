@@ -46,6 +46,10 @@ REQUIRED_MODULES = (
     "components/account-table.js",
     "components/account-ops.js",
     "components/user-ops.js",
+    # 个人域共享组件（/user 与 /mine 共用，禁止第二份实现）
+    "components/change-password.js",
+    "components/my-accounts.js",
+    "components/my-mail-notify.js",
     "components/settings-schedule.js",
     "components/settings-health.js",
     "components/settings-notify.js",
@@ -54,6 +58,7 @@ REQUIRED_MODULES = (
     "pages/user_accounts.js",
     "pages/users.js",
     "pages/settings.js",
+    "pages/mine.js",
 )
 
 # 实际渲染的页面模板：layout_*.html（外壳，自带 core.js）+ pages/*.html（正文，含 block scripts）
@@ -82,10 +87,10 @@ _INNERHTML_ASSIGN_RE = re.compile(r"\.innerHTML\s*=\s*([^\n;]+)")
 _SVG_RHS_RE = re.compile(r"^\s*svg\(")
 
 # 已存在的历史 innerHTML 用法（旧栈 / 早期页面）。守卫价值是阻止**新写**的页面脚本
-# 再引入数据拼接；受本批审查的 users.js / accounts.js / settings.js 必须为空。
-# 旧文件待 P3/P4 重写时清理（settings.js 已重写，故移出清单）。
+# 再引入数据拼接；受本批审查的 users.js / accounts.js / settings.js / mine.js 必须为空。
+# 旧文件待 P3/P4 重写时清理（settings.js / mine.js 已重写，故移出清单）。
 _LEGACY_INNERHTML_PAGES = frozenset({
-    "dashboard.js", "login.js", "mine.js",
+    "dashboard.js", "login.js",
     "user_accounts.js", "user_calendar.js",
 })
 _REVIEWED_PAGES = ("users.js", "accounts.js", "settings.js")
