@@ -765,12 +765,12 @@ textarea {
   font-size: 11px;
 }
 
-/* 系统状态列表 */
-.dash-page .dash-health {
+/* 系统状态/容量列表（共享类：dashboard 系统状态卡与账号页容量卡复用同一套行式） */
+.dash-health {
   display: flex;
   flex-direction: column;
 }
-.dash-page .dash-health-row {
+.dash-health-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -778,10 +778,10 @@ textarea {
   padding: 11px 0;
   border-bottom: 1px solid var(--border-soft);
 }
-.dash-page .dash-health-row:last-child {
+.dash-health-row:last-child {
   border-bottom: 0;
 }
-.dash-page .dash-health-label {
+.dash-health-label {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -789,14 +789,14 @@ textarea {
   color: var(--t-muted);
   font-size: 12.5px;
 }
-.dash-page .dash-health-label svg {
+.dash-health-label svg {
   width: 14px;
   height: 14px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
 }
-.dash-page .dash-health-value {
+.dash-health-value {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -807,11 +807,11 @@ textarea {
   font-size: 13px;
   text-align: right;
 }
-.dash-page .dash-health-text {
+.dash-health-text {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.dash-page .dash-health-row--wrap {
+.dash-health-row--wrap {
   align-items: flex-start;
 }
 
@@ -823,12 +823,12 @@ textarea {
   .dash-page .mini-cal-day {
     font-size: 11px;
   }
-  .dash-page .dash-health-row {
+  .dash-health-row {
     flex-direction: column;
     align-items: flex-start;
     gap: 6px;
   }
-  .dash-page .dash-health-value {
+  .dash-health-value {
     justify-content: flex-start;
     text-align: left;
   }
@@ -843,9 +843,19 @@ textarea {
 .crumbs .sep { display: inline-flex; align-items: center; }
 .crumbs .sep svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: 2; fill: none; }
 
-/* 页头：工作台小标签 + 页面主标题 */
-.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.page-title { margin: 4px 0 0; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; color: var(--t-base); }
+/* 页头：标题在上、说明在下的块级默认版式（管理端与用户端共用）。
+   历史遗留的 flex 行版式会把 <p class="page-sub"> 推到标题右侧同一行，故统一为块级。 */
+.page-head { display: block; margin: 0 0 24px; }
+.page-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: -0.022em;
+  color: var(--t-base);
+}
+.page-sub { margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: var(--t-sub); }
 
 /* 页脚两栏：备案信息靠左、版本与开源入口靠右（Adminator 的 .d-footer 已是 space-between） */
 .footer-legal { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
@@ -1527,20 +1537,8 @@ html[data-theme="dark"] {
 }
 
 /* ---- 19.1 版式层级 ----
-   旧栈的 .page-head/.page-title 是"标签 + 大标题"的 flex 行（迁移占位页仍在用），
-   用户端要的是"标题在上、说明在下"的块级页头，故按 data-page 作用域覆盖，
-   不改占位页的形态（曾因全局覆盖导致说明文字被挤到标题右侧同一行）。 */
-body[data-page="user"] .page-head { display: block; margin: 0 0 24px; }
-body[data-page="user"] .page-title {
-  margin: 0;
-  font-family: var(--font-sans);
-  font-weight: 700;
-  font-size: 22px;
-  line-height: 1.25;
-  letter-spacing: -0.022em;
-  color: var(--t-base);
-}
-body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: var(--t-sub); }
+   页头块级版式已在「页面级补充」一节提升为全局默认（管理端与用户端同款），
+   此处不再按 data-page 覆盖。 */
 /* 内容区撑满，短页时页脚不会浮在页面中间（.main 已是 flex column） */
 
 
@@ -1761,6 +1759,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .collapse-body {
   display: grid;
   grid-template-rows: 1fr;
+  /* 显式单列 minmax(0,1fr)：不写时网格隐式列按 max-content 计算，折叠区里
+     overflow-x:auto 的宽表格（如账号页待删除表）会把网格顶宽，导致整页横向滚动。
+     收缩下限给 0 后，宽内容由 .table-scroll 自己滚动，不再外溢。 */
+  grid-template-columns: minmax(0, 1fr);
   /* 与面板头之间的 16px 由 margin-top 承担并**随展开一起长出来**：
      常驻会让折叠态留 16px 空档（面板头 margin-bottom 与 .panel-stack 相邻规则都会如此），
      只在展开时给又会在动画起点跳 16px；一起过渡则两头都没有问题。 */
@@ -1770,7 +1772,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
 /* 折叠卡的面板头不再自带下边距（间距交给上面那条动画边距） */
 #time-pref-card > .panel-head { margin-bottom: 0; }
-.collapse-body > .collapse-inner { overflow: clip; min-height: 0; visibility: visible; }
+.collapse-body > .collapse-inner { overflow: clip; min-height: 0; min-width: 0; visibility: visible; }
 .collapse-body:not(.is-open) { grid-template-rows: 0fr; }
 /* 收起后（动画结束）才隐藏，避免 Tab 还能聚焦到看不见的输入框 */
 .collapse-body:not(.is-open) > .collapse-inner { visibility: hidden; transition: visibility 0s linear 220ms; }
@@ -2104,4 +2106,122 @@ body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
   .slot,
   .collapse-arrow { transition: none; }
   .sc-spin { animation: none; }
+}
+
+/* ==========================================================================
+   24. 账号管理页（管理端 /accounts）
+   --------------------------------------------------------------------------
+   三组表格（待处理 / 正常 / 待删除）+ 统计与容量卡。分隔线遵守 23 节白名单：
+   组头用 .panel-head 两段式（标题行 + 整宽说明，不画线），组内工具栏（批量条）用
+   --bg-muted inset 底色区分，不额外画线。本页的次要文字色对（表头/单元格 --t-muted
+   on --bg-card、批量条 --t-sub on --bg-muted、页头副标题 --t-sub on --bg-body、
+   状态图标 --state-*-fg）均已纳入 test_web_text_contrast.py 的 CONTRAST_PAIRS 实测
+   AA，改色值会直接报红。
+   ========================================================================== */
+
+/* KPI 值/图标的语义色补充：Adminator 只定义了 primary/purple/success/danger 的 .c-*，
+   这里补齐 info/muted，避免「待签/跳过」两卡落在无样式的兜底色上。 */
+.c-info { color: var(--info); }
+.c-muted { color: var(--t-muted); }
+.kpi-icon.info { background: var(--info-soft); color: var(--info); }
+.kpi-icon.muted { background: var(--bg-muted); color: var(--t-muted); }
+
+.acct-pending-tip { margin: 0 0 20px; }
+
+/* 5 张 KPI：显式五列并给出 2/1 列兜底（Adminator 的 .kpi-grid 默认四列） */
+.kpi-grid--5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .kpi-grid--5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .kpi-grid--5 { grid-template-columns: 1fr; } }
+
+.acct-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
+
+.acct-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.acct-search { display: block; }
+/* 同一工具行内的控件统一 34px 控制高度：桌面档 .btn--sm 实际 31.2px（min-height 只在 ≤720
+   才抬到 34），与 34px 的搜索框并排会差 2.8px，肉眼可见参差。 */
+.acct-search .input {
+  height: 34px;
+  min-width: 200px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+.acct-tools .btn { min-height: 34px; }
+.acct-search .input::placeholder { color: var(--t-muted); }
+
+/* 批量条：选中 >0 才显示；用 inset 底色表达「作用于以上选中项」，不画分隔线。
+   文字用 --t-sub（--t-muted on --bg-muted 仅 4.34:1，不达 AA）。 */
+.acct-batch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg-muted);
+}
+.acct-batch-count { font-size: 12.5px; color: var(--t-sub); }
+.acct-batch-count strong { color: var(--t-base); }
+.acct-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 状态图例：图标 + 文本，颜色语义与表格状态列一致 */
+.acct-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 0 0 12px; }
+.acct-state { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; }
+.acct-state svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 2; fill: none; }
+.acct-state--ok { color: var(--state-ok-fg); }
+.acct-state--bad { color: var(--state-bad-fg); }
+.acct-state--warn { color: var(--state-warn-fg); }
+.acct-state--muted { color: var(--t-muted); }
+
+/* 表格：表头吸顶、操作列吸右；行分隔线由 .data-table tbody td 承担（白名单第 1 类） */
+#accounts-root .table-scroll { max-height: 560px; }
+.acct-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  white-space: nowrap;
+  color: var(--t-muted);
+}
+.acct-table tbody td { vertical-align: middle; }
+.acct-cell-check { width: 40px; }
+.acct-check { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; }
+.acct-cell-state { width: 44px; }
+.acct-cell-idx { width: 44px; color: var(--t-muted); }
+.acct-cell-name { font-weight: 600; color: var(--t-base); white-space: nowrap; }
+.acct-cell-phone { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.acct-cell-owner,
+.acct-cell-model,
+.acct-cell-pref,
+.acct-cell-time { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+.acct-cell-actions {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--bg-card);
+  white-space: nowrap;
+}
+.acct-table thead .acct-cell-actions { z-index: 3; }
+.acct-row-actions { display: flex; align-items: center; gap: 4px; }
+.acct-row-actions .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
+.acct-row-actions .btn--sm { min-height: 30px; }
+
+/* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变） */
+#accounts-root { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
+#accounts-root.is-swapping { opacity: 0; transform: translateY(3px); }
+
+/* 响应式：窄屏优先保留「选择 / 状态 / 名称 / 手机号 / 操作」，其余列按档隐藏 */
+@media (max-width: 1280px) { .acct-col-xl { display: none; } }
+@media (max-width: 1100px) { .acct-col-lg { display: none; } }
+@media (max-width: 900px) { .acct-col-md { display: none; } }
+@media (max-width: 720px) {
+  .acct-search .input { min-width: 0; width: 100%; }
+  .acct-tools { width: 100%; }
+  .acct-tools .acct-search { flex: 1 1 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #accounts-root { transition: none; }
+  #accounts-root.is-swapping { opacity: 1; transform: none; }
 }

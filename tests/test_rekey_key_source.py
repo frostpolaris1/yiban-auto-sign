@@ -2424,7 +2424,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
 # 页面不再各自内联一份数组——那正是历史上多份副本互相漂移的成因。
 # 本组以 `frontend_source(页面)` 聚合"模板 + include/extends 片段 + 外链自研静态资源"，
 # 故断言入口仍是真实承载页（login.html / pages/user_accounts.html），而常量来源是它们加载的 core.js。
-# 管理端改密的**提交路径**落在 static/js/pages/{settings,users,accounts}.js，共享输入载体
+# 管理端改密的**提交路径**落在 static/js/pages/{settings,users}.js，共享输入载体
 # 是 partials/modals/password.html。下面分别按"定义处"（元测试逐字比对 core.js 常量）
 # 与"提交路径"（完整策略 helper 调用 + 统一文案）覆盖，保护目标不变：谁先漂移谁判红。
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
@@ -2439,10 +2439,11 @@ PW_SHARED_JS = os.path.join("static", "js", "core.js")
 # 管理端口令提交路径所在的静态 JS（换壳后从 index.html 内联/外部 app.js 迁出）。
 # 这些文件引用 PW_POLICY_HINT / passwordPolicyOk 等共享定义，用于覆盖"重置口令必须走
 # 完整策略而非只判长度"这一不变量（定义应由共享脚本提供，见 test_admin_... 的说明）。
+# 账号管理页原切片曾夹带「用户批量重置密码」（batchUsers），重写为独立页面后该能力
+# 归用户管理页（users.js），账号页不再有设置口令的入口，故不再列入本清单。
 ADMIN_PW_JS = (
     os.path.join("static", "js", "pages", "settings.js"),
     os.path.join("static", "js", "pages", "users.js"),
-    os.path.join("static", "js", "pages", "accounts.js"),
 )
 # 共享密码模态：管理端"重置密码 / 高危二次确认"的唯一点击输入载体。
 PW_MODAL_PARTIAL = os.path.join(TEMPLATES_DIR, "partials", "modals", "password.html")
