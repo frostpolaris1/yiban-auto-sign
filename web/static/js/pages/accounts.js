@@ -173,7 +173,6 @@
                s === "paused" || s === "user_cancelled") skipped++;
       else waiting++;
     });
-    setVal("stat-active", active.length);
     setVal("stat-success", success);
     setVal("stat-failed", failed);
     setVal("stat-waiting", waiting);
@@ -272,7 +271,15 @@
         renderAll();
         return;
       }
-      if (t.closest("[data-add-account]")) addAccount();
+    });
+  }
+
+  // 「添加账号」为页面级入口（模板中唯一一处），用事件委托覆盖所有 [data-add-account]，
+  // 不依赖具体 id 或所在容器。
+  function bindAdd() {
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      if (t && t.closest && t.closest("[data-add-account]")) addAccount();
     });
   }
 
@@ -291,14 +298,16 @@
   }
 
   function bindCollapse() {
-    // 待删除组折叠：button[aria-expanded] + .collapse-body.is-open（高度动画由 CSS 承担）
-    var btn = $("deleted-collapse-btn"), body = $("deleted-body"), label = $("deleted-collapse-label");
-    if (!btn || !body) return;
-    btn.addEventListener("click", function () {
-      var open = btn.getAttribute("aria-expanded") !== "true";
-      btn.setAttribute("aria-expanded", String(open));
-      body.classList.toggle("is-open", open);
-      if (label) label.textContent = open ? "收起" : "展开";
+    // 三组通用折叠：button.acct-collapse[aria-expanded] + 由 aria-controls 指定的 .collapse-body
+    //（高度动画由 CSS 的 grid-template-rows 承担）。按钮在模板中、不随表格重渲染，绑定一次即可。
+    Array.prototype.forEach.call(document.querySelectorAll(".acct-collapse"), function (btn) {
+      var body = document.getElementById(btn.getAttribute("aria-controls"));
+      if (!body) return;
+      btn.addEventListener("click", function () {
+        var open = btn.getAttribute("aria-expanded") !== "true";
+        btn.setAttribute("aria-expanded", String(open));
+        body.classList.toggle("is-open", open);
+      });
     });
   }
 
@@ -338,6 +347,8 @@
     if (document.visibilityState !== "visible") return;
     if (state.busy) return;
     if (document.querySelector(".pm-backdrop")) return;
+    // 行菜单打开时（含已 portal 到 body 的浮动态）不要重建行 DOM：会把 menu 的原父节点抽走。
+    if (document.querySelector(".dd-wrap.is-open, .acct-menu--floating")) return;
     load(true);
   }
 
@@ -345,6 +356,7 @@
   function init() {
     bindSearch();
     bindBatch();
+    bindAdd();
     bindSelectAll();
     bindCollapse();
     YB.identity().then(function (me) {
@@ -353,6 +365,13 @@
       loadCapacity();
       setInterval(pollTick, 10000);
       document.addEventListener("visibilitychange", function () { pollTick(); });
+      // 行操作在 ≤900 为图标下拉、宽屏为并列按钮：跨断点需要重建行 DOM。
+      if (window.matchMedia) {
+        var narrow = window.matchMedia("(max-width: 900px)");
+        var onBreak = function () { if (state.accounts.length) renderAll(); };
+        if (narrow.addEventListener) narrow.addEventListener("change", onBreak);
+        else if (narrow.addListener) narrow.addListener(onBreak);
+      }
     }).catch(function () { location.href = YB.BASE + "/login"; });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
