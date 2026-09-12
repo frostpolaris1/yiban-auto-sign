@@ -158,6 +158,22 @@
   function countCell(n) { return YB.el("td", { class: "usr-cell-count usr-col-md", text: String(n) }); }
   function timeCell(v) { return YB.el("td", { class: "usr-cell-time usr-col-md", text: v || "—" }); }
 
+  // 窄屏（≤900）「待处理数 / 账号数 / 时间」三列被隐藏且本页无第二入口：在邮箱名称下
+  // 补一行补充信息（始终渲染、由 CSS 断点控制 display，JS 不感知断点；同 account-table.js
+  // 的 .acct-owner-inline 先例）。有内容才插入节点（无则不占位）；时间列改挂 title
+  // （只放时间字符串，绝不含邮箱）。
+  function mailCell(u, group) {
+    var cell = YB.el("td", { class: "usr-cell-mail" });
+    cell.appendChild(document.createTextNode(YB.maskEmail(u.email)));
+    var parts = [];
+    if (group === "pending" && u.review_count > 0) parts.push("待处理 " + u.review_count);
+    if ((group === "normal" || group === "vacant") && u.account_count > 0) parts.push("账号 " + u.account_count);
+    if (parts.length) cell.appendChild(YB.el("span", { class: "usr-inline-meta", text: parts.join(" · ") }));
+    var time = u.created_at || u.deleted_at;
+    if (time) cell.title = time;
+    return cell;
+  }
+
   function checkCell(u, group) {
     var wrap = YB.el("label", { class: "usr-check" });
     var cb = YB.el("input", { type: "checkbox", "aria-label": "选择用户 " + YB.maskEmail(u.email) });
@@ -221,7 +237,7 @@
   function userRow(u, group) {
     var tr = YB.el("tr");
     tr.appendChild(checkCell(u, group));
-    tr.appendChild(YB.el("td", { class: "usr-cell-mail", text: YB.maskEmail(u.email) }));
+    tr.appendChild(mailCell(u, group));
     tr.appendChild(YB.el("td", { class: "usr-cell-role" }, [roleBadge(u.role)]));
     if (group === "pending") tr.appendChild(countCell(u.review_count));
     else if (group === "normal") tr.appendChild(countCell(u.account_count));
@@ -251,7 +267,7 @@
   function deletedRow(u) {
     var tr = YB.el("tr");
     tr.appendChild(checkCell(u, "deleted"));
-    tr.appendChild(YB.el("td", { class: "usr-cell-mail", text: YB.maskEmail(u.email) }));
+    tr.appendChild(mailCell(u, "deleted"));
     tr.appendChild(timeCell(u.deleted_at));
     tr.appendChild(YB.el("td", { class: "usr-cell-remain usr-col-md", text: remainText(u) }));
     tr.appendChild(YB.el("td", { class: "usr-cell-status" },

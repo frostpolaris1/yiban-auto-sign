@@ -169,11 +169,17 @@
 
   // 名称单元格：名称（删除组带「待删除」徽章，与名称同行）+ 窄屏补充的归属邮箱小字。
   // 读屏顺序为「名称 → 归属邮箱」（邮箱节点在名称之后）。
+  // 窄屏归属邮箱由浏览器级偏好（设置页「竖屏显示归属邮箱」）控制显隐：偏好读取集中在
+  // YB.prefs.ownerEmailVisible()，此处与 ownerMailText() 是唯一的取用对；宽屏归属列不受影响。
   function nameCell(account, withDeletedBadge) {
     var main = YB.el("div", { class: "acct-name-main" });
     main.appendChild(document.createTextNode(String(account.display_name || "")));
     if (withDeletedBadge) main.appendChild(YB.el("span", { class: "badge danger", text: "待删除" }));
-    return td([main, YB.el("span", { class: "acct-owner-inline", text: ownerMailText(account) })], "acct-cell-name");
+    var cell = td([main], "acct-cell-name");
+    if (!YB.prefs || YB.prefs.ownerEmailVisible()) {
+      cell.appendChild(YB.el("span", { class: "acct-owner-inline", text: ownerMailText(account) }));
+    }
+    return cell;
   }
 
   function row(opts) {

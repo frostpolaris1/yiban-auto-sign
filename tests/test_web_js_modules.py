@@ -46,9 +46,14 @@ REQUIRED_MODULES = (
     "components/account-table.js",
     "components/account-ops.js",
     "components/user-ops.js",
+    "components/settings-schedule.js",
+    "components/settings-health.js",
+    "components/settings-notify.js",
+    "components/settings-mail.js",
     "pages/accounts.js",
     "pages/user_accounts.js",
     "pages/users.js",
+    "pages/settings.js",
 )
 
 # 实际渲染的页面模板：layout_*.html（外壳，自带 core.js）+ pages/*.html（正文，含 block scripts）
@@ -77,12 +82,13 @@ _INNERHTML_ASSIGN_RE = re.compile(r"\.innerHTML\s*=\s*([^\n;]+)")
 _SVG_RHS_RE = re.compile(r"^\s*svg\(")
 
 # 已存在的历史 innerHTML 用法（旧栈 / 早期页面）。守卫价值是阻止**新写**的页面脚本
-# 再引入数据拼接；受本批审查的 users.js / accounts.js 必须为空。旧文件待 P4/P3 重写时清理。
+# 再引入数据拼接；受本批审查的 users.js / accounts.js / settings.js 必须为空。
+# 旧文件待 P3/P4 重写时清理（settings.js 已重写，故移出清单）。
 _LEGACY_INNERHTML_PAGES = frozenset({
-    "dashboard.js", "login.js", "mine.js", "settings.js",
+    "dashboard.js", "login.js", "mine.js",
     "user_accounts.js", "user_calendar.js",
 })
-_REVIEWED_PAGES = ("users.js", "accounts.js")
+_REVIEWED_PAGES = ("users.js", "accounts.js", "settings.js")
 
 # user-ops.js 的 LIMIT 与 web/app.py 的 BATCH_OP_LIMIT 必须同源
 _JS_LIMIT_RE = re.compile(r"\bvar\s+LIMIT\s*=\s*(\d+)\s*;")
@@ -152,6 +158,35 @@ class JsAssemblyGuardTest(unittest.TestCase):
                 "悬空 src 会让后续依赖它的页面脚本在运行时才炸：\n" + "\n".join(problems)
             )
 
+    def test_active_templates_have_no_duplicate_element_ids(self):
+        """活模板内 `id="..."` 不得重复 —— 同 id 会让 `YB.$`（getElementById）只取文档序第一个。
+
+        `pages/settings.html` 曾同时存在 `<section id="set-announcement">` 与
+        `<textarea id="set-announcement">`：回填写进 section（textarea 恒空）、保存读
+        `section.value`（undefined）→ 每次保存都等同清空公告。浏览器对此零报错，
+        写代码时也看不出，只有本守卫能静态拦下。
+        Jinja 占位 id（值含 `{`）由调用方各自传入，静态无法比较，跳过。
+        """
+        id_re = re.compile(r'id="([^"]*)"')
+        problems = []
+        for tpl in _active_templates():
+            counts = {}
+            for m in id_re.finditer(_read(tpl)):
+                value = m.group(1)
+                if not value or "{" in value:
+                    continue
+                counts[value] = counts.get(value, 0) + 1
+            for value, n in counts.items():
+                if n > 1:
+                    problems.append(
+                        f"  {os.path.relpath(tpl, BASE)}: id={value!r} 出现 {n} 次"
+                    )
+        if problems:
+            self.fail(
+                "活模板内出现重复 id —— getElementById 只取文档序第一个，"
+                "读写回填会落到错误节点上（数据静默丢失）：\n" + "\n".join(problems)
+            )
+
     def test_core_js_loads_before_components_and_page_modules(self):
         """按 extends 展开后的有效顺序里，`core.js` 必须先于其它自研模块。"""
         problems = []
@@ -209,9 +244,9 @@ class JsAssemblyGuardTest(unittest.TestCase):
             )
 
     def test_reviewed_pages_do_not_concat_data_with_innerhtml(self):
-        """`pages/*.js` 不得用 `.innerHTML` 拼接（受审的 users/accounts 必须为零）。
+        """`pages/*.js` 不得用 `.innerHTML` 拼接（受审的 users/accounts/settings 必须为零）。
 
-        旧栈页面（dashboard/login/mine/settings/user_*）仍有历史 innerHTML 用法，记入
+        旧栈页面（dashboard/login/mine/user_*）仍有历史 innerHTML 用法，记入
         `_LEGACY_INNERHTML_PAGES` 允许清单（待 P3/P4 重写时清理）；除此之外任何页面
         新增 `.innerHTML` 都会在这里报红——本页数据脱敏靠 YB.el/textContent 保证。
         """

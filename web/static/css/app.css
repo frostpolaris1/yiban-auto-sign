@@ -1753,6 +1753,9 @@ html[data-theme="dark"] {
 .form-stack .field-help,
 .form-stack .field-error { margin: 0; }
 .form-stack .field-help { margin-top: -2px; }   /* 6(字段内 gap) - 2 = 视觉 4px */
+/* vendor 的 .field-error 以前景 --danger(#EF4444) 落在白卡上，实测仅 3.76:1 不达 AA；
+   它是正文级错误文字，改用达标的 --state-bad-fg（浅 6.47 / 深 12.0 档）。 */
+.field-error { color: var(--state-bad-fg); }
 /* 表单正文 → 操作行：全站唯一保留的「提交边界」分隔线（Adminator 原生有，属模板线语言）。
    线要看起来居中，上下留白必须相等：margin-top（线以上）与 padding-top（线以下）同为 16px。
    此前被 body 作用域压成 8/18，正是「分隔线不垂直居中、按钮与线不居中」的根因。 */
@@ -2103,6 +2106,9 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   /* Adminator 的 .grid 自带 rise-in 入场动画（600ms + 260ms 延迟），本层不覆盖就不受
      reduced-motion 约束：管理端各页的内容网格在开启"减少动效"后仍会上浮入场。 */
   .grid { animation: none; }
+  /* vendor 侧栏的折叠是 max-height 布局过渡 + .chev 旋转；reduce 下两者都应即时完成。 */
+  .nav-submenu { transition: none; }
+  .nav-item-group .nav-link .chev { transition: none; }
 }
 
 /* ==========================================================================
@@ -2587,11 +2593,23 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   cursor: pointer;
 }
 
+/* 窄屏补充信息（计数 / 时间）：宽屏由独立列承载，行内小字隐藏；
+   ≤900 三列隐藏后改在邮箱名下展示。始终渲染 + 断点控制 display，JS 不感知断点
+   （同 account-table.js 的 .acct-owner-inline）。 */
+.usr-inline-meta { display: none; }
+
 /* 响应式：窄屏收敛次要列（计数 / 时间），邮箱列允许折行但保留脱敏前缀 */
 @media (max-width: 900px) {
   .usr-col-md { display: none; }
   /* 窄屏脱敏串本身很短，放开 190px 最小宽，避免表格内部横滚（判据：scrollWidth==clientWidth） */
   .usr-cell-mail { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
+  .usr-inline-meta {
+    display: block;
+    margin-top: 2px;
+    font-size: 11.5px;
+    font-weight: 400;
+    color: var(--t-muted);
+  }
 }
 @media (max-width: 720px) {
   /* 窄屏组头显式 grid 放置：标题与箭头同处第 1 行居中，搜索框独占第 2 行用满整行。
@@ -2607,5 +2625,204 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   body[data-page="users"] .usr-group-head .usr-collapse { position: static; grid-column: 2; grid-row: 1; }
   body[data-page="users"] .usr-group-head .usr-search { grid-column: 1 / -1; grid-row: 2; }
   .usr-search .input { width: 100%; min-width: 0; }
+}
+
+/* ==========================================================================
+   27. 系统设置页（管理端 /settings）
+   --------------------------------------------------------------------------
+   九块按主题分组：概览与容量 / 调度 / 周末签到 / 公告 / 健康检查 /
+   消息推送 / 邮件通知 / 显示偏好 / 危险区。表单刻度沿用 19.2 的单一刻度
+   （字段间 16 / 标签→控件 6 / 控件→帮助 4 / 末字段→动作行 24，由 .form-actions 承担）。
+   分隔线遵守 23 白名单：卡头用 .panel-head 两段式（不画线），只有 .form-actions
+   提交边界保留线；容量上限/权限提示用 --bg-muted inset 底色表达「成组/受限」，不画线。
+
+   权限呈现（本页最重要的事）：非主管理员时专属控件**禁用而非隐藏**（可见即理解权限），
+   禁用原因由 .set-perm 就地给出；危险区例外——整区仅主管理员可见（含改密入口）。
+   信息浮层 .info-tip/.info-pop：hover + focus 双触发（键盘可达），文案为短标签 + <b> 分点。
+
+   同排控件锁定 34px：.btn 自然高 39.5px，与 34px 的 .input 并排会参差，靠归零纵向
+   padding 落到 34px；图标按钮沿用全站 .icon-btn 36px，不在此覆写。
+   ========================================================================== */
+
+/* ---- 27.1 信息浮层（键盘可达：hover 与 focus 都显示） ---- */
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--t-muted);
+  cursor: help;
+}
+.info-tip:hover { color: var(--t-base); }
+.info-tip svg { width: 16px; height: 16px; }
+.info-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: max-content;
+  max-width: min(72vw, 420px);
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--t-base);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.7;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, .25);
+  opacity: 0;
+  visibility: hidden;
+  /* 基类 = 退出方向（隐藏时）用 ease-in-strong；进入在触发态覆盖为 ease-out-strong。
+     位移方向与 .dd-menu 一致：收起时 -2px，展开归零。 */
+  transform: translateY(-2px);
+  transition: opacity 120ms var(--ease-in-strong), transform 120ms var(--ease-in-strong), visibility 120ms;
+}
+.info-tip:hover .info-pop,
+.info-tip:focus .info-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-timing-function: var(--ease-out-strong);
+}
+.info-pop b { display: block; margin-top: 7px; font-weight: 600; color: var(--t-base); }
+.info-pop b:first-child { margin-top: 0; }
+
+/* ---- 27.2 概览与容量 ---- */
+.set-clock {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--t-base);
+}
+.set-status { margin: 8px 0 0; font-size: 13px; color: var(--t-base); }
+.set-window { margin: 12px 0 0; font-size: 12.5px; color: var(--t-muted); }
+.set-mono { font-family: var(--font-mono); }
+.set-cap { margin-top: 16px; padding: 12px 14px; border-radius: 10px; background: var(--bg-muted); }
+/* 容量标题落在 --bg-muted 上：--t-muted 仅 4.34:1，用 --t-sub（6.92:1）。 */
+.set-cap-title { font-size: 12.5px; color: var(--t-sub); }
+.set-cap-main { margin-top: 4px; font-size: 15px; font-weight: 600; color: var(--t-base); }
+.set-cap-sub { margin: 4px 0 0; font-size: 12.5px; color: var(--t-sub); }
+.set-cap--over { background: var(--badge-bad-bg); }
+.set-cap--over .set-cap-main { color: var(--badge-bad-fg); }
+/* 超限态的标题落在 --badge-bad-bg 上：--t-sub 在此底上不达标，随主数值改用 --badge-bad-fg。 */
+.set-cap--over .set-cap-title { color: var(--badge-bad-fg); }
+.set-breakdown { margin-top: 6px; font-size: 12.5px; color: var(--t-sub); }
+.set-limits { margin-top: 16px; padding: 14px; border-radius: 10px; background: var(--bg-muted); }
+.set-limits-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* 提交线在 --bg-muted 上默认的 --border-soft 几乎不可见：改用 --border（线型不变，仍属
+   23 白名单第 4 类「表单正文→操作行」）。 */
+.set-limits .form-actions { margin-top: 16px; border-top-color: var(--border); }
+
+/* 页面级加载/失败状态条：复用 .alert 骨架，失败时 JS 把 .info 切成 .danger。
+   align-items:center 让正文与重试按钮垂直居中（.alert 默认 start）。
+   不复用 .set-status（那是概览卡的签到状态文字，类名语义不同）。 */
+.set-load { margin: 0 0 16px; align-items: center; }
+
+/* ---- 27.3 通用行 / 字段 ---- */
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.set-row + .set-row { margin-top: 16px; }
+.set-row-text { min-width: 0; }
+.set-row-label { font-size: 13px; color: var(--t-base); }
+.set-help { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
+.set-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.set-label { font-size: 12.5px; font-weight: 600; color: var(--t-sub); }
+/* 帮助文字可能落在 --bg-muted（.set-limits）上：--t-muted 仅 4.34:1，统一用 --t-sub。 */
+.set-hint { margin: 0; font-size: 12px; line-height: 1.55; color: var(--t-sub); }
+/* 字段内 控件→帮助 应为 4px 刻度：.set-field 的 gap 是 6，靠 -2 补齐（同 .field-help 口径）。 */
+.set-field > .set-hint { margin-top: -2px; }
+.set-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.set-grid2 > * { min-width: 0; }
+/* 同排控件同高 34px：归零 .btn 的纵向 padding（自然高 39.5px） */
+.set-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.set-inline .input { width: auto; }
+.set-inline .btn { min-height: 34px; padding-top: 0; padding-bottom: 0; }
+.set-inline .input { min-height: 34px; height: 34px; }
+/* 权限原因 / 就地反馈：inset 底色，不画线 */
+.set-perm, .set-tip, .set-hint-box {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--t-sub);
+}
+.set-perm { margin-top: 12px; }
+.set-tip { margin-top: 12px; }
+.set-tip:empty { display: none; }
+.set-warn { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--badge-warn-bg); color: var(--badge-warn-fg); font-size: 12.5px; line-height: 1.55; }
+.set-ok { color: var(--state-ok-fg); }
+.set-bad { color: var(--state-bad-fg); }
+.set-actions { margin-top: 16px; }
+
+/* ---- 27.4 调度 / 快捷 chips ---- */
+.set-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.set-chip {
+  min-width: 44px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--t-sub);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 140ms, color 140ms, transform 120ms var(--theme-ease);
+}
+.set-chip:hover { border-color: var(--primary); color: var(--t-base); }
+.set-chip:active { transform: scale(0.96); }
+.set-dirty { color: var(--badge-warn-fg); font-size: 12.5px; }
+
+/* ---- 27.5 公告 ---- */
+.set-textarea { width: 100%; resize: vertical; min-height: 64px; }
+
+/* ---- 27.6 SMTP 列表编辑器 ---- */
+.set-smtps { display: flex; flex-direction: column; gap: 12px; }
+.set-smtp { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); }
+.set-smtp-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.set-smtp-name { font-size: 12.5px; font-weight: 600; color: var(--t-sub); }
+.set-smtp-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.set-smtp-grid > * { min-width: 0; }
+.set-span-2 { grid-column: span 2; }
+.set-span-3 { grid-column: span 3; }
+.set-smtp .set-label { display: block; margin-bottom: 4px; }
+/* 邮件卡内的子区块（收件人 / SMTP）用间距成组，不画分隔线（23 白名单之外） */
+.set-mail-section { margin-top: 24px; }
+
+/* ---- 27.7 危险区 ---- */
+.set-danger .panel-title { color: var(--state-bad-fg); }
+.set-danger-actions { display: flex; flex-direction: column; gap: 12px; }
+.set-danger-btn { width: 100%; justify-content: center; }
+.set-danger-note { margin: 0 0 12px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
+.set-pw-grid { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
+
+/* ---- 27.8 响应式 ---- */
+@media (max-width: 720px) {
+  .set-grid2, .set-limits-grid { grid-template-columns: 1fr; }
+  .set-smtp-grid { grid-template-columns: 1fr 1fr; }
+  .set-span-2, .set-span-3 { grid-column: 1 / -1; }
+  /* .info-tip 贴卡右缘，基类 right:0 向左展开本就安全（max-width:min(72vw,420px) 限宽）；
+     曾经在窄屏改成 left:0 让它向右展开，390 下右缘约 611px 越出视口 → 整页横滚。 */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .info-pop, .set-chip { transition: none; }
+  .set-chip:active { transform: none; }
 }
 

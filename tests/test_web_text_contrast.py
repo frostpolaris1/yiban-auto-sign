@@ -105,6 +105,20 @@ CONTRAST_PAIRS = (
     ("用户管理页·批量条计数强调", "t-base", "bg-muted"),
     ("用户管理页·状态徽标·冷却中", "badge-warn-fg", "badge-warn-bg"),
     ("用户管理页·状态徽标·待清除", "badge-bad-fg", "badge-bad-bg"),
+    # 系统设置页（/settings）新引入的文字色对：信息浮层文字（落在卡片底）、危险区
+    # 警示文字（落在卡片底）、权限/就地提示（落在 inset 底）、调度容量警示（软底）。
+    # 均为既有语义令牌，改令牌值或改这几条规则用色都会被这里重新实测。
+    ("设置页·信息浮层文字", "t-base", "bg-card"),
+    ("设置页·危险区警示文字", "state-bad-fg", "bg-card"),
+    ("设置页·权限与提示文字", "t-sub", "bg-muted"),
+    ("设置页·调度容量警示", "badge-warn-fg", "badge-warn-bg"),
+    # 本批对比度修复新增：容量标题/字段帮助落在 inset 底（--t-muted 仅 4.34:1 → --t-sub）、
+    # 超限容量标题落在软红底（→ --badge-bad-fg）、全站表单错误文字覆盖 vendor --danger
+    # （白卡上仅 3.76:1 → --state-bad-fg）。改令牌值或把规则改回旧色都会在这里报红。
+    ("设置页·容量标题", "t-sub", "bg-muted"),
+    ("设置页·字段帮助文字", "t-sub", "bg-muted"),
+    ("设置页·容量超限标题", "badge-bad-fg", "badge-bad-bg"),
+    ("全站·表单错误文字", "state-bad-fg", "bg-card"),
 )
 
 
