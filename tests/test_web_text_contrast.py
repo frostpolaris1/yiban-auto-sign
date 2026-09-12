@@ -81,6 +81,14 @@ CONTRAST_PAIRS = (
     ("状态行·失败（落在卡片底）", "state-bad-fg", "cal-cell-bg"),
     ("时段·满员", "slot-full-fg", "slot-full-bg"),
     ("时段·部分裁剪", "slot-partial-fg", "slot-partial-bg"),
+    # 账号管理页（/accounts）新引入的文字色对：表头/次要单元格、搜索 placeholder、
+    # 批量条、页头副标题、计数强调。全部为既有语义令牌（--t-* / --bg-*），
+    # 改令牌值或改这几条规则用色都会在这里被重新实测。
+    ("账号页·表头与次要单元格", "t-muted", "bg-card"),
+    ("账号页·搜索 placeholder", "t-muted", "bg-card"),
+    ("账号页·批量条文字", "t-sub", "bg-muted"),
+    ("账号页·批量条计数强调", "t-base", "bg-muted"),
+    ("账号页·页头副标题", "t-sub", "bg-body"),
 )
 
 

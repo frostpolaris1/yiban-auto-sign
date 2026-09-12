@@ -160,5 +160,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ request.script_root }}/static/js/components/account-form.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/time-pref.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/pages/user_accounts.js?v={{ web_version }}"></script>
 {% endblock %}

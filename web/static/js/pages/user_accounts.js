@@ -1,12 +1,14 @@
 /* 用户端「账号与设置」页（/user）行为。
    依赖 core.js 的公开面：YB.api / YB.identity / YB.toast / YB.el / YB.confirmDialog /
-   YB.openModal / YB.openConfirmPasswordModal / YB.doLogout / YB.passwordClasses / YB.PW_*。
+   YB.openConfirmPasswordModal / YB.doLogout / YB.passwordClasses / YB.PW_*。
+   账号表单与自选时段网格复用共享组件（components/account-form.js、components/time-pref.js），
+   本文件只保留本页特有编排：账号卡列表、暂停/撤销删除、邮件开关、改密弹窗、注销。
 
    迁移自旧 user.html 的内联脚本，除日历外功能逐项保留（日历已拆到 /user/calendar）：
      · 调度模式提示条（/api/me 的 sign_order / sign_window / time_pref_allowed）
      · 我的账号列表：状态图标 + 语义状态行 + 审核徽章 + 暂停/恢复 + 编辑 + 软删除 + 撤销删除
-     · 提交/编辑账号弹窗（编辑走 PUT，新建走 POST，支持清除已配置识别码）
-     · 自选签到时段网格（拥挤度/裁剪/满员/禁用四态，clear 恢复自动分配）
+     · 提交/编辑账号弹窗（共享组件；编辑走 PUT，新建走 POST，支持清除已配置识别码）
+     · 自选签到时段网格（共享组件；拥挤度/裁剪/满员/禁用四态，clear 恢复自动分配）
      · 邮件提醒开关（失败回滚）
      · 修改密码（口令策略与后端同一口径）
      · 注销账号（两次确认：宽限期说明 → 密码确认）
@@ -19,12 +21,9 @@
   var $ = YB.$;
 
   var accounts = [];
-  var editingIndex = null;      // null = 新建
-  var clearCodeFlag = false;    // 标记清除已配置设备识别码
   var pauseBusy = false;        // 暂停/恢复的连点保护
-  var submitting = false;       // 账号表单提交中
   var mailNotifyOn = true;
-  var prefCollapsed = false;
+  var pref = null;              // 共享时段网格控制器
 
   /* ---------------- 小工具 ---------------- */
   function iconUse(name) {
@@ -42,8 +41,8 @@
     var txt = document.querySelector("[data-schedule-banner-text]");
     if (!bar || !txt) return;
     var order = me.sign_order === "random" ? "每天随机安排" : "按固定顺序安排";
-    var pref = me.time_pref_allowed ? "可自选签到时间" : "暂不可自选签到时间";
-    txt.textContent = "签到方式：" + order + " · 窗口 " + (me.sign_window || "") + " · " + pref;
+    var prefText = me.time_pref_allowed ? "可自选签到时间" : "暂不可自选签到时间";
+    txt.textContent = "签到方式：" + order + " · 窗口 " + (me.sign_window || "") + " · " + prefText;
     bar.hidden = false;
   }
 
@@ -66,6 +65,10 @@
     var b = YB.el("button", { type: "button", class: cls, text: label });
     b.addEventListener("click", onClick);
     return b;
+  }
+
+  function actionLink(label, cls, href) {
+    return YB.el("a", { class: cls, href: href, text: label });
   }
 
   function accountCard(a, i) {
@@ -157,10 +160,6 @@
     return card;
   }
 
-  function actionLink(label, cls, href) {
-    return YB.el("a", { class: cls, href: href, text: label });
-  }
-
   function renderList() {
     var list = $("account-list");
     list.innerHTML = "";
@@ -229,231 +228,17 @@
     });
   }
 
-  /* ---------------- 提交 / 编辑账号（模态） ---------------- */
-  function inputField(o) {
-    var field = YB.el("div", { class: "field" });
-    var label = YB.el("label", { class: "field-label", for: o.id, text: o.label });
-    if (o.required) {
-      label.appendChild(YB.el("span", { class: "req", "aria-hidden": "true", text: "*" }));
-    }
-    var input = YB.el("input", {
-      id: o.id, class: "input", type: o.type || "text",
-      placeholder: o.placeholder || "", autocomplete: o.autocomplete || null
-    });
-    if (o.value) input.value = o.value;
-    if (o.maxlength) input.maxLength = o.maxlength;
-    if (o.required) input.required = true;
-    field.appendChild(label);
-    field.appendChild(input);
-    if (o.help) field.appendChild(YB.el("p", { class: "field-help", text: o.help }));
-    return { field: field, input: input };
-  }
-
-  function buildAccountForm(a) {
-    var editing = !!a;
-    var body = YB.el("div");
-    var err = YB.el("div", { class: "alert danger", role: "alert", hidden: true });
-    err.appendChild(YB.el("span", { class: "ico", html: iconUse("circle-alert") }));
-    var errText = YB.el("span", { class: "body" });
-    err.appendChild(errText);
-    body.appendChild(err);
-
-    var stack = YB.el("div", { class: "form-stack" });
-    var name = inputField({
-      id: "f-name", label: "名称 / 备注（可选）", maxlength: 50,
-      value: editing ? a.name : "", placeholder: "如：我的易班账号",
-      help: "会显示给管理员，便于审核。"
-    });
-    var phone = inputField({
-      id: "f-phone", label: "易班手机号", required: true, maxlength: 20,
-      value: editing ? a.phone : "", placeholder: "登录易班的手机号"
-    });
-    var password = inputField({
-      id: "f-password", label: "易班密码", type: "password", required: !editing,
-      placeholder: editing ? "留空表示不修改密码" : "用于自动登录签到",
-      autocomplete: "new-password"
-    });
-    var model = inputField({
-      id: "f-model", label: "设备型号（可选，不清楚就留空）", maxlength: 50,
-      value: editing ? a.phone_model : "", placeholder: "按易班 App 设备绑定页填写",
-      help: "仅在提示「请使用授权设备」时填写，不确定就留空。"
-    });
-    var code = inputField({
-      id: "f-code", label: "设备识别码（可选，不清楚就留空）", maxlength: 100,
-      placeholder: editing && a.has_phone_code ? "留空表示不修改（已配置）" : "64 位十六进制识别码"
-    });
-    var clearBtn = YB.el("button", {
-      type: "button", class: "btn btn--ghost btn--sm", text: "清除已配置识别码",
-      hidden: !(editing && a.has_phone_code)
-    });
-    clearBtn.addEventListener("click", function () {
-      clearCodeFlag = !clearCodeFlag;
-      if (clearCodeFlag) {
-        code.input.value = "";
-        code.input.readOnly = true;
-        code.input.placeholder = "提交后将清除已配置识别码";
-        clearBtn.textContent = "取消清除";
-      } else {
-        code.input.readOnly = false;
-        code.input.placeholder = "64 位十六进制识别码";
-        clearBtn.textContent = "清除已配置识别码";
-      }
-    });
-    code.field.appendChild(clearBtn);
-    code.field.appendChild(YB.el("p", {
-      class: "field-help",
-      text: "仅在提示「请使用授权设备」时填写，不确定就留空。"
-    }));
-
-    [name, phone, password, model, code].forEach(function (f) { stack.appendChild(f.field); });
-    body.appendChild(stack);
-
-    return {
-      node: body, name: name.input, phone: phone.input, password: password.input,
-      model: model.input, code: code.input,
-      showError: function (msg) { errText.textContent = msg; err.hidden = false; },
-      hideError: function () { errText.textContent = ""; err.hidden = true; }
-    };
-  }
-
-  function submitAccountForm(form) {
-    if (submitting) return false;
-    form.hideError();
-    var phone = form.phone.value.trim();
-    var password = form.password.value;
-    if (!phone) { form.showError("请填写易班手机号"); form.phone.focus(); return false; }
-    if (editingIndex === null && !password) { form.showError("请填写易班密码"); form.password.focus(); return false; }
-    var payload = {
-      name: form.name.value.trim(),
-      phone: phone,
-      password: password,
-      phone_model: form.model.value.trim(),
-      // 已标记清除 → 传 __clear__ 由后端清空；留空表示不修改
-      phone_code: clearCodeFlag ? "__clear__" : form.code.value.trim()
-    };
-    submitting = true;
-    var req = editingIndex === null
-      ? YB.api("POST", "/api/my-accounts", payload)
-      : YB.api("PUT", "/api/my-accounts/" + editingIndex, payload);
-    req.then(function (data) {
-      submitting = false;
-      YB.closeModal();
-      YB.toast.success(data.msg || "已保存");
-      loadAccounts();
-    }).catch(function (e) {
-      submitting = false;
-      form.showError(e.message || "保存失败，请稍后再试");
-    });
-    return false;   // 由请求结果决定是否关闭，校验/失败时保持打开
-  }
-
+  /* ---------------- 提交 / 编辑账号（共享组件） ---------------- */
   function openAccountForm(index) {
-    editingIndex = typeof index === "number" ? index : null;
-    clearCodeFlag = false;
-    var a = editingIndex === null ? null : accounts[editingIndex];
-    var form = buildAccountForm(a);
-    YB.openModal({
-      title: editingIndex === null ? "提交我的易班账号" : "编辑我的易班账号",
-      subtitle: editingIndex === null ? "提交后等待管理员审核，通过即自动签到。" : "修改后需重新提交审核。",
-      body: form.node,
-      actions: [
-        { label: "取消", variant: "ghost" },
-        {
-          label: editingIndex === null ? "提交账号" : "保存修改", variant: "primary",
-          onClick: function () { return submitAccountForm(form); }
-        }
-      ]
+    var editing = typeof index === "number";
+    YB.accountForm.open({
+      variant: "user",
+      index: editing ? index : null,
+      account: editing ? accounts[index] : null,
+      endpoints: { create: "/api/my-accounts", update: "/api/my-accounts/" },
+      lockButton: false,           // 用户端沿用原实现：仅用在途标志防连点，不改按钮
+      onSaved: function () { loadAccounts(); }
     });
-  }
-
-  /* ---------------- 自选签到时段 ---------------- */
-  function loadTimePref(preserve) {
-    var card = $("time-pref-card");
-    YB.api("GET", "/api/my-time-pref").then(function (data) {
-      if (!data.has_account) { card.hidden = true; return; }
-      card.hidden = false;
-      $("pref-window").textContent = data.window || "";
-      renderPrefSlots(data);
-      $("pref-disabled-hint").hidden = !!data.allowed;
-      var est = $("pref-estimate");
-      if (data.allowed && data.pref) {
-        est.textContent = "";
-        est.hidden = true;
-      } else if (data.estimated) {
-        est.textContent = "预计签到时段：" + data.estimated + (data.estimate_note || "")
-          + (data.allowed ? "" : "（自选未开启，按自动分配）");
-        est.hidden = false;
-      } else {
-        est.textContent = data.estimate_note || "";
-        est.hidden = !data.estimate_note;
-      }
-      // 未开启时默认收起；修改后的局部刷新保留用户当前展开态，避免页面跳动
-      if (!preserve) setPrefCollapsed(!data.allowed);
-    }).catch(function () { card.hidden = true; });
-  }
-
-  function renderPrefSlots(data) {
-    var grid = $("pref-slot-grid");
-    grid.innerHTML = "";
-    var tip = "";
-    var slots = data.slots || [];
-    slots.forEach(function (s, i) {
-      var btn = YB.el("button", { type: "button" });
-      if (s.disabled) {
-        // 完全落入掐头去尾裁剪区：不可选
-        btn.className = "slot slot--off";
-        btn.disabled = true;
-        btn.title = "该时段被掐头去尾保留，不可选择";
-        btn.appendChild(YB.el("div", { class: "slot-name", text: s.label }));
-        btn.appendChild(YB.el("div", { class: "slot-pct", text: "已保留" }));
-        grid.appendChild(btn);
-        return;
-      }
-      var sel = data.pref_slot === s.slot_min;
-      var full = s.pct >= 100;          // 满员仍可选（先到先得 + 溢出顺延），用警示色提示
-      var partial = !!s.edge_note;      // 部分落入裁剪区：虚线框，调度在可用部分执行
-      btn.className = "slot" + (sel ? " slot--on" : full ? " slot--full" : partial ? " slot--partial" : "");
-      if (partial) btn.title = s.edge_note + "，选中后将在可用部分为你签到";
-      btn.appendChild(YB.el("div", { class: "slot-name", text: s.label }));
-      btn.appendChild(YB.el("div", { class: "slot-pct", text: "已选" + s.pct + "%" }));
-      btn.addEventListener("click", function () { pickTimePref(s.slot_min); });
-      grid.appendChild(btn);
-      // 首尾时段提醒（选中时）；部分裁剪的提示优先，未开启时与"暂不生效"拼接，两则信息都不丢
-      if (sel && (i === 0 || i === slots.length - 1)) {
-        var edgeTip = s.edge_note ? s.edge_note + "，选中后将在可用部分签到"
-          : i === 0 ? "最早时段：窗口开始后最先为你签到"
-            : "最后时段：临近窗口截止执行，网络波动可能导致错过";
-        tip = (data.allowed ? "" : "未开启：") + edgeTip;
-      }
-    });
-    var tipEl = $("pref-tip");
-    tipEl.textContent = tip;
-    tipEl.classList.toggle("state-line--warn", !!tip);
-  }
-
-  // 折叠区（签到时间）：用 button[aria-expanded] + .collapse-body.is-open 驱动，
-  // 高度动画由 CSS 的 grid-template-rows 0fr↔1fr 完成（见 app.css 19.7）——开与关都有动画。
-  function setPrefCollapsed(collapsed) {
-    prefCollapsed = collapsed;
-    var btn = $("pref-collapse-btn"), body = $("pref-body");
-    if (!btn || !body) return;
-    btn.setAttribute("aria-expanded", String(!collapsed));
-    body.classList.toggle("is-open", !collapsed);
-    $("pref-collapse-label").textContent = collapsed ? "展开配置" : "收起";
-  }
-
-  function pickTimePref(slot) {
-    YB.api("PUT", "/api/my-time-pref", { slot_min: slot }).then(function (data) {
-      YB.toast.success(data.msg || "已保存");
-      loadTimePref(true);   // 局部刷新：保留展开态
-    }).catch(function (e) { YB.toast.error(e.message); });
-  }
-
-  function clearTimePref() {
-    YB.api("PUT", "/api/my-time-pref", { slot_min: null }).then(function (data) {
-      YB.toast.success(data.msg || "已清除");
-      loadTimePref(true);
-    }).catch(function (e) { YB.toast.error(e.message); });
   }
 
   /* ---------------- 邮件提醒 ---------------- */
@@ -501,6 +286,20 @@
   }
 
   /* ---------------- 静态控件绑定 ---------------- */
+  // 密码可见性切换：把三个框共用的切换逻辑抽出来，绑定在容器上
+  function bindPwToggle(root) {
+    Array.prototype.forEach.call(root.querySelectorAll("[data-pw-toggle]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var input = $(btn.getAttribute("data-pw-toggle"));
+        var show = input.type === "password";
+        input.type = show ? "text" : "password";
+        btn.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
+        btn.setAttribute("aria-pressed", String(show));
+        btn.innerHTML = iconUse(show ? "eye-off" : "eye");
+      });
+    });
+  }
+
   function bindStatic() {
     var logout = document.querySelector("[data-user-logout]");
     if (logout) logout.addEventListener("click", function () { YB.doLogout(); });
@@ -511,22 +310,7 @@
     var mail = $("mail-notify-switch");
     if (mail) mail.addEventListener("change", onMailNotifyChange);
 
-    var collapseBtn = $("pref-collapse-btn");
-    if (collapseBtn) collapseBtn.addEventListener("click", function () { setPrefCollapsed(!prefCollapsed); });
-    var clearBtn = $("pref-clear-btn");
-    if (clearBtn) clearBtn.addEventListener("click", clearTimePref);
-
-    // 密码可见性切换（三个框共用）
-    Array.prototype.forEach.call(document.querySelectorAll("[data-pw-toggle]"), function (btn) {
-      btn.addEventListener("click", function () {
-        var input = $(btn.getAttribute("data-pw-toggle"));
-        var show = input.type === "password";
-        input.type = show ? "text" : "password";
-        btn.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
-        btn.setAttribute("aria-pressed", String(show));
-        btn.innerHTML = iconUse(show ? "eye-off" : "eye");
-      });
-    });
+    bindPwToggle(document);
 
     var del = document.querySelector("[data-delete-account]");
     if (del) del.addEventListener("click", onDeleteAccount);
@@ -535,24 +319,7 @@
     if (pwEntry) pwEntry.addEventListener("click", openPasswordModal);
   }
 
-  /* ---------------- 修改密码（弹窗，与编辑账号同一形态） ---------------- */
-  // 表单本体在模板的 <template id="tpl-password-form"> 里（惰性内容），
-  // 打开时克隆进弹窗并按需接线，避免页面常驻一份改密表单。
-  function bindPasswordForm(form) {
-    Array.prototype.forEach.call(form.querySelectorAll("[data-pw-toggle]"), function (btn) {
-      btn.addEventListener("click", function () {
-        var input = $(btn.getAttribute("data-pw-toggle"));
-        var show = input.type === "password";
-        input.type = show ? "text" : "password";
-        btn.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
-        btn.setAttribute("aria-pressed", String(show));
-        btn.innerHTML = iconUse(show ? "eye-off" : "eye");
-      });
-    });
-    // 回车提交（弹窗底部的主按钮由 core.js 渲染，这里兜住表单自身的 submit）
-    form.addEventListener("submit", function (e) { e.preventDefault(); });
-  }
-
+  /* ---------------- 修改密码（弹窗，表单本体在模板 <template> 内） ---------------- */
   function pwError(form, msg) {
     var box = form.querySelector(".alert.danger");
     if (!box) return;
@@ -592,7 +359,9 @@
     var wrap = YB.el("div");
     wrap.appendChild(tpl.content.cloneNode(true));
     var form = wrap.querySelector("form");
-    bindPasswordForm(form);
+    bindPwToggle(form);
+    // 回车提交（弹窗底部的主按钮由 core.js 渲染，这里兜住表单自身的 submit）
+    form.addEventListener("submit", function (e) { e.preventDefault(); });
     YB.openModal({
       title: "修改密码",
       subtitle: "账号（注册邮箱）不可修改，改后下次登录使用新密码。",
@@ -607,6 +376,7 @@
   /* ---------------- 启动 ---------------- */
   function init() {
     bindStatic();
+    pref = YB.timePref.mount();
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
       if (me.role !== "user") { location.href = YB.BASE + "/"; return; }  // 管理员回后台
@@ -620,7 +390,7 @@
       renderMailNotify();
       renderScheduleBanner(me);
       loadAccounts();
-      loadTimePref();
+      pref.load();
     }).catch(function () { location.href = YB.BASE + "/login"; });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
