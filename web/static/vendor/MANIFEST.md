@@ -67,3 +67,57 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/tailwind.js, web/static/vendor/
 升级后必须同步更新本表的「大小 / SHA-256」，并在浏览器复验 `.btn` 的 computed style。
 
 登记日期：2026-09-10（前端模块化 V1）
+
+## Adminator 设计系统（adminator/）
+
+| 项 | 值 |
+| --- | --- |
+| 用途 | 管理端设计系统：设计 token（含暗色）、外壳布局、组件类（卡片/KPI/表格/表单/下拉/标签页/手风琴/月历）。经 `static/css/app.css` 引入，登录页与用户页暂时仍用 tailwind.js + daisyui 旧栈（两套样式层隔离，见 `static/css/legacy.css`） |
+| 来源 | https://github.com/puikinsh/Adminator-admin-dashboard |
+| 版本 | 4.3.0，commit `3ec0b93b05a3d540e3562e4dd5e22fa58642e26c`（MIT，见同目录 LICENSE） |
+| 构建 | 该仓库 `npm ci && npm run build`（Node >= 22.22.2），再以裁剪入口 `src/assets/styles/2026/index.scss` 重建：仅保留 tokens/base/animations/shell/dropdowns/components/forms/ui/auth/error/data/charts/dashboard/calendar/responsive，剔除演示页专用的 chat/email/palette/fullcalendar。**只入库编译产物**，部署期不需要 Node。未入库其 JS：其 `mountShell()` 以 outerHTML 覆盖占位元素且导航取自内置常量，无法承载按角色渲染的导航，交互层改由本项目 `static/js/core.js` 实现 |
+| 体积 | 68956 字节（gzip 12669 字节） |
+| SHA-256 | `c94aa111a7a769f273e03e8a90bb266811965b305ce340a451e4e7268d52acbe` |
+
+## Chart.js（chartjs/）
+
+| 项 | 值 |
+| --- | --- |
+| 用途 | 统计页图表（折线/柱状/环形）。仅数据总览页加载 |
+| 来源 | https://www.npmjs.com/package/chart.js（同目录 LICENSE.md，MIT） |
+| 版本 | 4.5.1 |
+| 构建 | 按需注册构建：仅注册 Line/Bar/Doughnut 控制器与 Category/Linear 刻度、Point/Line/Bar/Arc 元素及 Tooltip/Legend/Filler，避免整包（完整版 513075 字节）。构建命令记录于 `docs/refactor/04-asset-research.md` |
+| 体积 | 190568 字节（gzip 66327 字节） |
+| SHA-256 | `0817eece20f7f8c1efc44f49f5ac9673828fa9fa4babe14a5a5c9759cb4059fd` |
+
+## 图标精灵图（lucide/）
+
+| 项 | 值 |
+| --- | --- |
+| 用途 | 全站线性图标。经 `macros/ui.html` 的 `sprite()`/`icon()` 使用；symbol 用 `stroke="currentColor"`，随文字色适配暗色 |
+| 来源 | https://github.com/lucide-icons/lucide（同目录 LICENSE，ISC；部分图标源自 Feather，MIT） |
+| 版本 | 1.45.0，commit `b998e2892b90b88004d62da2d0b64dab9959a520` |
+| 构建 | `python3 scripts/build_lucide_sprite.py <lucide 仓库目录> web/static/vendor/lucide/_sprite.svg`，子集化出 70 个图标，可复现 |
+| 体积 | 19112 字节（gzip 3372 字节） |
+| SHA-256 | `c48ed989c0ac455b105d51a5a2d2aa1ce582ac2b878c9dbb45ed3695b43b0afa` |
+
+## 自托管字体（fonts/）
+
+三方均为 **SIL OFL-1.1**（许可证全文见 `fonts/OFL.txt`），允许自托管与再分发；详细来源、下载命令与逐字重体积见 `fonts/MANIFEST.md`。
+
+| 目录 | 文件数 | 总体积 | 聚合 SHA-256 |
+| --- | --- | --- | --- |
+| `inter/*.woff2` | 8 | 534816 | `29adf4e22d86348703104aab38f1229bc1e88b976d4b1ea4c53758f37732a44d` |
+| `jetbrains-mono/*.woff2` | 1 | 21168 | `b346d592a3e572324ee55023406624bc0f1454e2ed0dbd7cde1d4bc7bd3546bb` |
+| `notosanssc/*.woff2` | 202 | 9033016 | `6e60993674c4ab09358aa549c579df3907a0f723bc697e52851a40d24aef80ee` |
+
+> 中文按 `unicode-range` 分片下发：浏览器只取页面实际用到的分片，故单页 CJK 载荷远小于目录总体积。
+> 注意：`fonts/notosanssc/` 的分片粒度较粗，实测本项目界面文本需 23/101 片 ≈ 1.28 MiB/字重，
+> 是否保留待定（备选：改用系统中文栈，或重新细切片）。该结论与取舍记录于 `docs/refactor/07-fonts-vendoring.md`。
+
+> 体积与 gzip 的测量方法：`gzip -9c <file> | wc -c`（与 `docs/refactor/04-asset-research.md` 一致）。
+
+## 迁移期共存说明
+
+`tailwind.js`、`daisyui/daisyui-subset.css`、`fonts/misans/` 仍被 `login.html` / `user.html` / `index.html` 使用（旧栈），
+待这三页迁移到 Adminator 后一并移除。迁移期间两套样式层严格隔离：旧栈走 `static/css/legacy.css`，管理端走 `static/css/app.css`。
