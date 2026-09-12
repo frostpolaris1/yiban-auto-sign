@@ -1,7 +1,11 @@
 # vendor/static 字体基线（Adminator 4.3.0 设计系统）
 
 本目录为 **自托管 Web 字体**，页面不得引用外网 CDN（离线可用 + 供应链可控）。
-三个家族均由 Google Fonts CSS API v2 取得 woff2，URL 改写为本地相对路径后入库。
+Inter、JetBrains Mono 两个家族由 Google Fonts CSS API v2 取得 woff2、URL 改写为本地相对路径后入库。
+**Noto Sans SC 为例外**：其 Google Fonts 网页子集覆盖不全（基本区约 12,258/20,992）、
+分片粒度过粗（单页命中 23/101 片 ≈ 1.28 MiB/字重），已改为从上游**完整**可变字体
+`NotoSansSC[wght].ttf` 实例化 400/700 后按字频重切片（见下文「Noto Sans SC」一节），
+不再使用 Google Fonts CSS API。
 
 ## 许可（OFL-1.1）
 
@@ -20,9 +24,10 @@ curl -sS -H "User-Agent: $UA" -H "Accept: text/css,*/*;q=0.1" \
   "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" -o inter.css
 ```
 
-- 子集化方式：**不做二次子集化**，直接采用 Google Fonts 的 unicode-range 分片；下载器逐条
-  `@font-face` 拉取 woff2、重写 `src` 为本地相对文件名，**完整保留 `unicode-range` /
-  `font-weight` / `font-style` / `font-display: swap`**。
+- 子集化方式（**适用于 Inter / JetBrains Mono**）：**不做二次子集化**，直接采用 Google Fonts 的
+  unicode-range 分片；下载器逐条 `@font-face` 拉取 woff2、重写 `src` 为本地相对文件名，
+  **完整保留 `unicode-range` / `font-weight` / `font-style` / `font-display: swap`**。
+  Noto Sans SC 不走此路径，改用 `scripts/build_cjk_font_slices.py` 重切片（见其小节）。
 - 网络出口实测将 `fonts.gstatic.com` 重写为镜像主机 `fonts.gstatic.font.im`；文件内容为 Google
   Fonts 原始 woff2（`wOF2` 魔数校验通过），仅 URL 主机不同，不影响自托管产物。
 
@@ -63,12 +68,14 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | 项 | 值 |
 | --- | --- |
 | 用途 | 中文（含用户动态中文：账号名 / 邮箱 / 驳回原因 / 日志）正文字体；400 与 700，normal |
-| 来源 | 官方 CSS API v2：`https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400%3B700&display=swap`（`;` 须编码为 `%3B`；经镜像主机 `fonts.gstatic.font.im`） |
-| 构建与子集化 | **不得按已知 UI 字符串做字符子集**（动态中文会缺字变豆腐块）；采用 Google Fonts 标准 **unicode-range 切片**：每字重 101 个 woff2 连续 CJK 区段，每片带 `unicode-range`，浏览器按页面实际码点按需加载 |
-| 文件 | `noto-sans-sc-{400,700}-{0..100}.woff2` 共 202 个；`notosanssc.css`（206,541 B） |
-| 覆盖 | 每字重 101 片 / 16,279 码点；单片 2,080 – 76,800 B，均值 44,717 B |
-| 体积 | woff2 合计 **9,033,016 字节**（含 CSS 目录合计 9,239,557 字节） |
-| SHA-256 基线 | 聚合 `04b95381a395614745c9588fa35683127e1c32be4aa4f614c2ce55db455567b7`（命令见上） |
+| 来源 | 上游**完整**可变字体 `google/fonts` 仓库 `ofl/notosanssc/NotoSansSC[wght].ttf`，commit `2894aab31764f10f29c421bdfd2340d3b382d384`（SIL OFL-1.1）；下载文件 SHA-256 `a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da`（17,772,300 B） |
+| 构建方式 | **可复现脚本** `scripts/build_cjk_font_slices.py`：`fontTools.varLib.instancer` 实例化 400/700 → 覆盖集合按「项目字频（模板实际用字）→ hanziDB 字频前 3,000 → 其余按码点」排序 → `pyftsubset` + brotli 产出 woff2。构建期依赖 `pip install fonttools brotli`（**不写入** `requirements.txt` / `requirements.lock`） |
+| 分片策略 | 每字重 48 片：项目字频热区 300 字/片（893 字 ≈ 前 3 片）、高频区 300 字/片、其余按码点 500 字/片；`unicode-range` 由分片内容精确生成（逐片 cmap 与声明区段实测一致） |
+| 覆盖 | 每字重 **21,341 码点**：CJK 基本区 20,976 / 20,992、CJK 标点 64 / 64、全角 224 / 240、扩展 A 77（《通用规范汉字表》收录的常用部分）；缺失项均为上游字体本身无字形（U+9FF0–9FFF 等）。动态中文不再回退到系统字体 |
+| 文件 | `noto-sans-sc-{400,700}-{000..047}.woff2` 共 96 个；`notosanssc.css`（120,482 B） |
+| 体积 | 400 字重 **3,622,396 字节**、700 字重 **3,710,524 字节**；woff2 合计 **7,332,920 字节**（含 CSS 目录合计 **7,453,402 字节**） |
+| 单页载荷（实测） | 用本项目 28 个模板的 893 个不同 CJK/全角码点：400 命中 3 片 **132,220 B（0.126 MiB）**、700 命中 3 片 **134,808 B（0.129 MiB）**；旧基线为 23/101 片 ≈ 1.28 MiB/字重 |
+| SHA-256 基线 | 聚合 `6bb360727d8daa7ecc2fd34436f19e825d81dfe4bed4d5e4ae3ed7150e79cec1`（命令见上） |
 
 ## fonts.css 聚合入口
 

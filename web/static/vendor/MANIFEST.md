@@ -109,11 +109,13 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/tailwind.js, web/static/vendor/
 | --- | --- | --- | --- |
 | `inter/*.woff2` | 8 | 534816 | `29adf4e22d86348703104aab38f1229bc1e88b976d4b1ea4c53758f37732a44d` |
 | `jetbrains-mono/*.woff2` | 1 | 21168 | `b346d592a3e572324ee55023406624bc0f1454e2ed0dbd7cde1d4bc7bd3546bb` |
-| `notosanssc/*.woff2` | 202 | 9033016 | `6e60993674c4ab09358aa549c579df3907a0f723bc697e52851a40d24aef80ee` |
+| `notosanssc/*.woff2` | 96 | 7332920 | `71cd5aafb18ca42cbaa86fe6c93aa2a4051f5461b05cb926477f6629c5ed6c74` |
 
 > 中文按 `unicode-range` 分片下发：浏览器只取页面实际用到的分片，故单页 CJK 载荷远小于目录总体积。
-> 注意：`fonts/notosanssc/` 的分片粒度较粗，实测本项目界面文本需 23/101 片 ≈ 1.28 MiB/字重，
-> 是否保留待定（备选：改用系统中文栈，或重新细切片）。该结论与取舍记录于 `docs/refactor/07-fonts-vendoring.md`。
+> `fonts/notosanssc/` 已从上游完整可变字体按字频重切片，实测本项目界面文本（893 个 CJK/全角码点）
+> 单字重命中 3 片 ≈ **0.126 MiB**（旧方案 23/101 片 ≈ 1.28 MiB）；覆盖基本区 20,976/20,992、
+> 标点 64/64、全角 224/240、扩展 A 常用 77。来源、构建脚本与覆盖明细见 `fonts/MANIFEST.md`，
+> 完整重构说明见 `docs/refactor/11-cjk-font-reslice.md`。
 
 > 体积与 gzip 的测量方法：`gzip -9c <file> | wc -c`（与 `docs/refactor/04-asset-research.md` 一致）。
 

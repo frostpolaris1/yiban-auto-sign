@@ -131,3 +131,11 @@ web/static/vendor/fonts/fangyuan/
 # 本地工具配置目录（DSH 路由套件 / 模型 preset，非项目产物，2026-08-16 补忽略）
 dsh-routing-suite/
 v4-flash-godmode-opencode-go/
+
+# 设计/调研文稿与 AI 记忆文件：一律本地留存，不入版本控制
+# （docs/ 已有同类规则，此处显式覆盖根目录记忆锚点与后续可能新增的文稿目录）
+PROMPT.md
+PROMPT_*.md
+MEMORY.md
+memory/
+HANDOFF*.md
