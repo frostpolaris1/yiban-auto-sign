@@ -85,20 +85,10 @@
       if (silent && snap === state.lastSnap) return;   // 无变化不重建 DOM
       state.lastSnap = snap;
       var slow = silent && (performance.now() - t0 > ANIM_MIN_MS);
-      var root = $("accounts-root");
-      if (slow && root) {
-        // 先挂 is-swapping（透明度过渡起步），隔两帧再渲染并移除：中间留出至少一帧，
-        // 160ms 的过渡才来得及被浏览器采样；同帧 add→render→remove 只会闪一下。
-        root.classList.add("is-swapping");
-        requestAnimationFrame(function () {
-          requestAnimationFrame(function () {
-            renderAll();
-            root.classList.remove("is-swapping");
-          });
-        });
-      } else {
-        renderAll();
-      }
+      // 慢请求：整体淡出 → 换内容 → 淡入。必须等退出过渡跑完再移除 is-swapping：
+      // 同帧/单帧移除会取消过渡（opacity 只掉到约 0.4–0.7 就被拉回）。时长见 YB.SWAP_MS。
+      if (slow) YB.swapOut($("accounts-root"), renderAll);
+      else renderAll();
     }).catch(function (e) {
       if (!silent) YB.toast.error(e.message);
     });
