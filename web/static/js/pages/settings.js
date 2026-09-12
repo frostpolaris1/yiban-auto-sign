@@ -194,6 +194,7 @@
       var panel = document.querySelector('[data-tab-group] .tab-panel[data-tab-id="switches"]');
       if (panel) panel.hidden = !state.isMaster;
 
+      if (YB.timeField) YB.timeField.mount();   // 时/分 select 初始化（须在组件读写之前）
       YB.settingsSchedule.mount({
         isMaster: state.isMaster,
         capacity: function () { return state.capacityEst; }

@@ -50,8 +50,15 @@
   }
   function setValue(node, value, sup) {
     if (!node) return; clear(node);
+    node.classList.remove("kpi-value--empty");   // 真实数值回来时撤掉空态字号
     node.appendChild(document.createTextNode(String(value)));
     if (sup != null) node.appendChild(el("sup", { text: String(sup) }));
+  }
+  // 空态数值：不复用 44px 粗体（会把 "—" 渲染成一条 58×5 的黑横杠），改用专属字号/颜色
+  function setEmptyValue(node, text) {
+    if (!node) return; clear(node);
+    node.classList.add("kpi-value--empty");
+    txt(node, text || "—");
   }
   function setPill(node, text, cls) {
     if (!node) return;
@@ -262,7 +269,7 @@
     var rt = rateOf(m), v = $("kpi-rate-value"), sub = $("kpi-rate-sub");
     clear(v);
     if (rt == null) {
-      txt(v, "—");
+      setEmptyValue(v, "—");
       v.title = "";
       clear(sub);
       sub.appendChild(el("span", { class: "dash-muted", text: noResultText() }));

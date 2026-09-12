@@ -68,8 +68,8 @@
     var verify = $("sh-verify"), probe = $("sh-probe-enable");
     if (verify) verify.checked = !!data.account_verify;
     if (probe) probe.checked = !!data.probe_enable;
-    var time = $("sh-probe-time");
-    if (time) time.value = (data.probe_time || "20:00").slice(0, 5);
+    // 模板时间控件：写隐藏值不会更新两个 select，必须走 YB.timeField.set
+    if (YB.timeField) YB.timeField.set("sh-probe-time", (data.probe_time || "20:00").slice(0, 5));
     var interval = $("sh-probe-interval");
     if (interval) interval.value = data.probe_interval || "1";
   }
