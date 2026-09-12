@@ -73,7 +73,7 @@
     var tr = YB.el("tr");
     var tdHost = YB.el("td");
     tdHost.appendChild(cellInput("host", "text", "smtp.example.com", "SMTP " + (index + 1) + " 服务器 host", entry.host || ""));
-    var tdPort = YB.el("td");
+    var tdPort = YB.el("td", { class: "num" });
     tdPort.appendChild(cellInput("port", "number", "465", "SMTP " + (index + 1) + " 端口", entry.port || 465));
     var tdUser = YB.el("td");
     tdUser.appendChild(maskedCellInput("user", "text", entry.user || "留空沿用", "SMTP " + (index + 1) + " 发件账号"));
