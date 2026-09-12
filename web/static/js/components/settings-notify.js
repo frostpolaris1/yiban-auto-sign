@@ -1,11 +1,15 @@
 /* 系统设置 · 消息推送段（管理端 /settings 的「通知通道」分区）。
 
    挂载到 window.YB.settingsNotify；classic script。邮件段拆在 settings-mail.js，
-   两段同处一个 .card（#set-notify），故非主管理员的禁用由本组件对整卡统一处理。
+   两段各占一张卡，故非主管理员的禁用由本组件对整卡统一处理。
 
    权限：配置与测试均仅主管理员；关闭通道、更换/清空密钥、调整额度节流都需
    confirm_password（后端 _high_risk_gate，前端先收口令再提交；UI 不是安全边界）。
-   脱敏：密钥只读展示 secret_masked，输入框恒为空（留空=不改动），绝不回显。 */
+   脱敏：密钥只读展示 secret_masked，输入框恒为空（留空=不改动），绝不回显。
+
+   保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存推送配置」
+   才提交，只发送相对快照真正变化的字段。
+   对外面：mount/load/apply(load 同义)、save() → Promise<boolean>、isDirty()。 */
 (function () {
   "use strict";
   var YB = window.YB;
@@ -14,13 +18,26 @@
   var isMaster = false;
   var snap = null;
   var busy = false;
+  var dirty = false;
 
   function $(id) { return document.getElementById(id); }
+  function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
   function setTip(text, bad) {
     var el = $("sn-tip");
     if (!el) return;
     el.textContent = text || "";
     el.className = bad ? "set-tip set-bad" : "set-tip";
+  }
+  function markDirty() {
+    if (dirty) return;
+    dirty = true;
+    setHidden($("sn-save"), false);
+    setHidden($("sn-dirty"), false);
+  }
+  function clearDirty() {
+    dirty = false;
+    setHidden($("sn-save"), true);
+    setHidden($("sn-dirty"), true);
   }
   function disableAll(root) {
     if (!root) return;
@@ -71,13 +88,15 @@
         urgent_daily_max: data.urgent_daily_max != null ? Number(data.urgent_daily_max) : null,
         configured: !!data.configured
       };
-      var t = $("sn-type"); if (t) t.value = snap.type;
+      YB.selectField.set("sn-type", snap.type);
       var sec = $("sn-secret"); if (sec) sec.value = "";
       var cd = $("sn-cooldown"); if (cd && snap.cooldown != null) cd.value = String(snap.cooldown);
       var ur = $("sn-urgent"); if (ur) ur.checked = snap.urgent_only;
       var dm = $("sn-daily-max"); if (dm && snap.daily_max != null) dm.value = String(snap.daily_max);
       var um = $("sn-urgent-max"); if (um && snap.urgent_daily_max != null) um.value = String(snap.urgent_daily_max);
       renderStatus(data);
+      clearDirty();
+      setTip("", false);
     }).catch(function (e) {
       showLoadError((e && e.message) || "消息推送配置加载失败，请稍后重试");
     });
@@ -100,31 +119,45 @@
     return body;
   }
 
+  function submit(body) {
+    return new Promise(function (resolve) {
+      YB.openConfirmPasswordModal(
+        "保存消息推送配置属于高危操作（关闭通道 / 更换密钥 / 调整额度节流）。\n请输入当前管理员密码确认。",
+        function (pw) {
+          body.confirm_password = pw;
+          busy = true;
+          var btn = $("sn-save"); if (btn) btn.disabled = true;
+          setTip("保存中…", false);
+          YB.api("PUT", "/api/notify-config", body).then(function () {
+            var sec = $("sn-secret"); if (sec) sec.value = "";
+            resolve(true);
+            return load();
+          }, function (e) {
+            setTip((e && e.message) || "保存失败，请稍后重试", true);
+            resolve(false);
+          }).then(function () {
+            busy = false;
+            if (btn && isMaster) btn.disabled = false;
+          });
+        },
+        function () { resolve(false); });     // 取消口令 = 本次不保存
+    });
+  }
+
+  // 返回 Promise<boolean>：true = 已提交（或本就无改动）；false = 取消或失败。
   function save() {
-    if (busy || !isMaster) return;
+    if (busy || !isMaster) return Promise.resolve(false);
     var body = collect();
-    if (!Object.keys(body).length) { YB.toast.info("没有需要保存的改动"); return; }
-    if (body.type && !body.secret && !snap.configured) { YB.toast.error("开启推送请填写密钥"); return; }
-    if (body.secret && body.type === "serverchan" && body.secret.slice(0, 3).toUpperCase() !== "SCT") {
-      YB.toast.error("Server酱 SendKey 应以 SCT 开头"); return;
+    if (!Object.keys(body).length) {
+      clearDirty();
+      YB.toast.info("没有需要保存的改动");
+      return Promise.resolve(true);
     }
-    YB.openConfirmPasswordModal(
-      "保存消息推送配置属于高危操作（关闭通道 / 更换密钥 / 调整额度节流）。\n请输入当前管理员密码确认。",
-      function (pw) {
-        body.confirm_password = pw;
-        busy = true;
-        var btn = $("sn-save"); if (btn) btn.disabled = true;
-        YB.api("PUT", "/api/notify-config", body).then(function () {
-          setTip("已保存", false);
-          var sec = $("sn-secret"); if (sec) sec.value = "";
-          return load();
-        }).catch(function (e) {
-          setTip((e && e.message) || "保存失败，请稍后重试", true);
-        }).then(function () {
-          busy = false;
-          if (btn && isMaster) btn.disabled = false;
-        });
-      });
+    if (body.type && !body.secret && !snap.configured) { YB.toast.error("开启推送请填写密钥"); return Promise.resolve(false); }
+    if (body.secret && body.type === "serverchan" && body.secret.slice(0, 3).toUpperCase() !== "SCT") {
+      YB.toast.error("Server酱 SendKey 应以 SCT 开头"); return Promise.resolve(false);
+    }
+    return submit(body);
   }
 
   function test() {
@@ -144,8 +177,16 @@
 
   function mount(options) {
     isMaster = !!(options && options.isMaster);
-    var saveBtn = $("sn-save"); if (saveBtn) saveBtn.addEventListener("click", save);
+    var saveBtn = $("sn-save"); if (saveBtn) saveBtn.addEventListener("click", function () { save(); });
     var testBtn = $("sn-test"); if (testBtn) testBtn.addEventListener("click", test);
+    ["sn-secret", "sn-cooldown", "sn-daily-max", "sn-urgent-max"].forEach(function (id) {
+      var el = $(id);
+      if (el) el.addEventListener("input", markDirty);
+    });
+    var urgent = $("sn-urgent");
+    if (urgent) urgent.addEventListener("change", markDirty);
+    var type = $("sn-type");
+    if (type) type.addEventListener("change", markDirty);
     if (!isMaster) {
       // 整卡（推送 + 邮件两段）禁用：容器做 group 并把禁用原因 #sn-perm 关联给读屏
       var card = $("set-notify");
@@ -159,5 +200,8 @@
     }
   }
 
-  YB.settingsNotify = { mount: mount, load: load };
+  YB.settingsNotify = {
+    mount: mount, load: load, save: save,
+    isDirty: function () { return dirty; }
+  };
 })();

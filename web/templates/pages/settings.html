@@ -8,18 +8,25 @@
    个人域（改密 / 接收邮件提醒 / 归属邮箱显示偏好）已迁到 /mine；只读容量三分类与
    连通性 ping 已删除（前者 /accounts 容量卡已有，后者 / 运行状态已有），本页不再重复。
 
+   **保存语义（全页统一）**：目录里的字段一律"改动只标脏、点各自卡片的保存按钮才提交"，
+   没有哪个字段会在改动瞬间偷偷落盘；带破坏性的按钮（清空收件人 / 恢复默认调度 /
+   暂停签到）是**动作**而非表单值，保持即时执行 + 二次确认。脏状态下切换分区或点站内
+   链接离开，由 settings.js 统一弹「保存并继续 / 放弃修改 / 取消」。
+
    字段级权限（后端 POST /api/settings 内联判定，必须逐字段复刻）：
      · 任意管理员可改：saturday_sign / sunday_sign / account_verify / probe_*
      · 仅主管理员可改：sign_order / sign_dist / edge_* / allow_time_pref / sign_window /
        gap_max / max_users / max_accounts / 推送配置 / 邮件全局与 SMTP / 全局开关
-   非主管理员：调度/公告/健康正常；通知通道与容量配额**可见但控件禁用**（面板顶部
-   .alert.info 说明原因）；系统开关整 tab 隐藏。禁用不是安全边界，后端仍 403 兜底。
+   非主管理员：调度/公告/健康正常（调度卡里只有周六/周日可改，其余控件禁用且保存按钮
+   只提交自己改得动的字段）；通知通道与容量配额**可见但控件禁用**（面板顶部 .alert.info
+   说明原因）；系统开关整 tab 隐藏。禁用不是安全边界，后端仍 403 兜底。
 
    模板素材复用：.tabs / .card / .card-head / .card-title-wrap / .card-title /
-   .form-grid(.span-2) / .field(.field-label/.field-help) / .input/.select/.textarea /
+   .form-grid(.span-2) / .field(.field-label/.field-help) / .input / .textarea /
    .input-group(.addon) / .btn-group / .switch / .data-table(.table-scroll) /
-   .alert / .badge / .form-actions / .spinner。仅保留确无模板对应的少量项目类
-   （.set-tip/.set-ok/.set-bad 就地状态文字、.set-row* 开关行、.set-danger* 危险区语义）。
+   .alert / .badge / .form-actions / .spinner。仅保留确无模板对应的项目类：
+   .set-tip/.set-ok/.set-bad 就地状态文字、.set-row* 开关行、.set-danger* 危险区语义、
+   自研选择控件（.select-field / .range-field，见 app.css 第 30 节）。
 
    安全：零 innerHTML 拼后端数据；密钥/授权码只读脱敏、绝不回填输入框；写请求一律
    走 YB.api（自带 CSRF）；一页内 id 不得重复（有元测试守卫）。 #}
@@ -36,6 +43,21 @@
   <span class="info-pop" id="{{ pop_id }}" role="tooltip">{{ caller() }}</span>
 </button>
 {% endmacro %}
+
+{# 下拉选项：静态写在模板里（Jinja 友好、无 JSON 转义），自研 listbox 接管交互。
+   触发器由 JS 构建，故此处只需隐藏 input（值契约）+ 选项容器。 #}
+{% macro select_field(id, value, options, labelledby) %}
+<div class="select-field" data-select-field="{{ id }}"{% if labelledby %} aria-labelledby="{{ labelledby }}"{% endif %}>
+  <input type="hidden" id="{{ id }}" value="{{ value }}">
+  <div class="select-menu" role="listbox" hidden>
+    {% for opt_v, opt_t in options %}
+    <button type="button" class="select-option" role="option" data-v="{{ opt_v }}">{{ opt_t }}</button>
+    {% endfor %}
+  </div>
+</div>
+{% endmacro %}
+
+{% macro dirty_badge(id) %}<span class="badge badge--warn" id="{{ id }}" hidden>有未保存的修改</span>{% endmacro %}
 
 {% block content %}
 <div class="page-head">
@@ -69,10 +91,8 @@
     </div>
   </div>
 
-  <!-- 1. 签到调度：排序/分布/掐头去尾/间隔/窗口（主管理员）+ 周六·周日（任意管理员） -->
+  <!-- 1. 签到调度：排序/分布/掐头去尾/间隔/窗口 + 周六·周日·自选（同一张卡） -->
   <div class="tab-panel is-active" role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
-    {# 同一 tab 下三张并列卡（调度 / 周末与自选 / 维护）：每卡只讲一件事，与「通知通道」的推送卡+邮件卡同构。 #}
-    <div class="set-cards">
     <section class="card" id="set-schedule">
       <div class="card-head">
         <div class="card-title-wrap">
@@ -81,108 +101,77 @@
         </div>
         <div class="set-head-actions">
           {% call info('调度说明', 'set-pop-schedule') %}<b>排序与分布：</b>「顺序」按列表先到先签，「随机」每天重排；分布决定时间点怎么铺开，「顺序 × 均匀」会集中在窗口前段，要铺满窗口选「随机 × 均匀」或正态。<b>掐头去尾：</b>裁掉窗口首尾各 n 分钟，避开边界超时；前后独立、0.5 分钟粒度。<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动均生效，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但占用更多窗口时间。<b>生效时机：</b>保存后下次自动签到时生效。{% endcall %}
-          <span class="badge badge--warn" id="ss-dirty" hidden>有未保存的修改</span>
+          {{ dirty_badge('ss-dirty') }}
         </div>
       </div>
       <p class="alert info" id="ss-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <span class="body">仅主管理员可修改排序、分布、掐头去尾、账号间隔与签到窗口；周末开关任意管理员可改。</span>
+        <span class="body">仅主管理员可修改排序、分布、掐头去尾、账号间隔、签到窗口与自选时间；周六、周日开关任意管理员可改。</span>
       </p>
       <div class="form-grid">
         <div class="field">
-          <label class="field-label" for="ss-order">排序方式</label>
-          <select class="select" id="ss-order">
-            <option value="sequence">列表顺序（固定作息）</option>
-            <option value="random">列表随机（每天重排）</option>
-          </select>
+          <span class="field-label" id="ss-order-label">排序方式</span>
+          {{ select_field('ss-order', 'sequence',
+             [('sequence', '列表顺序（固定作息）'), ('random', '列表随机（每天重排）')], 'ss-order-label') }}
         </div>
         <div class="field">
-          <label class="field-label" for="ss-dist">分布方式</label>
-          <select class="select" id="ss-dist">
-            <option value="uniform">均匀分布</option>
-            <option value="normal">正态分布（钟形拟人）</option>
-          </select>
+          <span class="field-label" id="ss-dist-label">分布方式</span>
+          {{ select_field('ss-dist', 'uniform',
+             [('uniform', '均匀分布'), ('normal', '正态分布（钟形拟人）')], 'ss-dist-label') }}
           <p class="field-help">「顺序 × 均匀」会集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态。</p>
         </div>
-        {# 掐头/去尾改成滑块：原来两个数字框各占 648px 只放一位数、快捷档位按钮组又空置 85%
-           宽度（用户实拍指出"利用率低"）。滑块是标量刻度的自然控件：整条即"0–5 分钟"的量程，
-           当前值就地在标签里回显，快捷档位随之取消（滑杆本身就是连续档位）。 #}
+        {# 掐头/去尾：页面只显示数值，点击在弹窗里用数字框或滑杆调整（见 range-field.js） #}
         <div class="field">
-          <label class="field-label" for="ss-edge-front">掐头
-            <output class="range-val mono" id="ss-edge-front-out" for="ss-edge-front">1</output> 分钟</label>
-          <input class="range" id="ss-edge-front" type="range" min="0" max="5" step="0.5" value="1"
-                 aria-describedby="ss-edge-help">
-          <div class="range-scale" role="group" aria-label="常用刻度（分钟）">
-            <button type="button" class="range-tick" data-ss-edge="0">0</button>
-            <button type="button" class="range-tick" data-ss-edge="60">1</button>
-            <button type="button" class="range-tick" data-ss-edge="120">2</button>
-            <button type="button" class="range-tick" data-ss-edge="180">3</button>
-            <button type="button" class="range-tick" data-ss-edge="240">4</button>
-            <button type="button" class="range-tick" data-ss-edge="300">5</button>
+          <span class="field-label" id="ss-edge-front-label">掐头</span>
+          <div class="range-field" data-range-field="ss-edge-front" data-min="0" data-max="5"
+               data-step="0.5" data-unit="分钟" data-title="掐头"
+               data-hint="裁掉签到窗口开头的一段，避开整点边界超时；0 = 不裁切。"
+               aria-labelledby="ss-edge-front-label">
+            <input type="hidden" id="ss-edge-front" value="1">
           </div>
+          <p class="field-help">裁掉窗口开头的 n 分钟以避开边界超时；0 = 不裁切。</p>
         </div>
         <div class="field">
-          <label class="field-label" for="ss-edge-back">去尾
-            <output class="range-val mono" id="ss-edge-back-out" for="ss-edge-back">1</output> 分钟</label>
-          <input class="range" id="ss-edge-back" type="range" min="0" max="5" step="0.5" value="1"
-                 aria-describedby="ss-edge-help">
-          <div class="range-scale" role="group" aria-label="常用刻度（分钟）">
-            <button type="button" class="range-tick" data-ss-edge="0">0</button>
-            <button type="button" class="range-tick" data-ss-edge="60">1</button>
-            <button type="button" class="range-tick" data-ss-edge="120">2</button>
-            <button type="button" class="range-tick" data-ss-edge="180">3</button>
-            <button type="button" class="range-tick" data-ss-edge="240">4</button>
-            <button type="button" class="range-tick" data-ss-edge="300">5</button>
+          <span class="field-label" id="ss-edge-back-label">去尾</span>
+          <div class="range-field" data-range-field="ss-edge-back" data-min="0" data-max="5"
+               data-step="0.5" data-unit="分钟" data-title="去尾"
+               data-hint="裁掉签到窗口末尾的一段；与「掐头」各自独立设置。"
+               aria-labelledby="ss-edge-back-label">
+            <input type="hidden" id="ss-edge-back" value="1">
           </div>
+          <p class="field-help">裁掉窗口末尾的 n 分钟，前后独立设置。</p>
         </div>
-        <p class="field-help span-2" id="ss-edge-help">裁掉窗口首尾各 n 分钟以避开边界超时；前后独立、0.5 分钟粒度，0 = 不裁切。</p>
+        {# 短标量字段收窄（原与整列同宽，一个 1~4 位数字占 550px） #}
         <div class="field field--narrow">
-          <label class="field-label" for="ss-gap">账号间隔</label>
+          <span class="field-label" id="ss-gap-label">账号间隔</span>
           <div class="input-group">
-            <input class="input" id="ss-gap" type="number" min="0" max="3600" placeholder="10">
+            <input class="input" id="ss-gap" type="number" min="0" max="3600" placeholder="10"
+                   aria-labelledby="ss-gap-label">
             <span class="addon">秒</span>
           </div>
           <p class="field-help">自动与手动签到均生效，0 = 关闭；修改需当前管理员密码确认。</p>
         </div>
-        {# 窗口起止是同一个逻辑对：同行同宽、中间「至」（原来被拆到两列两行，右列第二行全空）。
-           时间用 .time-field（时/分两个模板 .select）取代原生 input[type=time]——
-           原生选时列表由 UA 渲染，高亮色/黑框/圆角不可控（实测高亮 #0075FF ≠ 项目主色）。 #}
+        {# 窗口起止是同一个逻辑对：共用一个触发器与一个弹窗（弹窗里滚轮选时并校验先后） #}
         <div class="field">
           <span class="field-label" id="ss-window-label">签到窗口（开始早于结束）</span>
-          <div class="time-field-wrap">
-            <div class="wheel-field" data-time-field="ss-window-start" role="group" aria-labelledby="ss-window-label">
+          <div class="time-pair" data-time-pair data-title="签到窗口"
+               data-hint="上下滚动选择；开始必须早于结束，保存后下次自动签到时生效。"
+               aria-labelledby="ss-window-label">
+            <div class="time-field" data-time-field="ss-window-start">
               <input type="hidden" id="ss-window-start" value="06:30">
             </div>
-            <span class="time-sep" aria-hidden="true">至</span>
-            <div class="wheel-field" data-time-field="ss-window-end" role="group" aria-label="窗口结束（时:分）">
+            <div class="time-field" data-time-field="ss-window-end">
               <input type="hidden" id="ss-window-end" value="07:50">
             </div>
           </div>
-          <p class="field-help">上下滚动选择；开始必须早于结束，保存后下次自动签到时生效。</p>
         </div>
       </div>
       <p class="set-warn" id="ss-edge-warn" hidden></p>
 
-      <p class="set-tip" id="ss-tip" role="status"></p>
-
-      {# 保存行吸底：调度卡字段多，保存按钮在卡底时改完要滑到底才够得着（教程 #16「目标要近」） #}
-      <div class="form-actions is-sticky">
-        <button type="button" class="btn btn--primary btn--sm" id="ss-save" hidden>保存调度设置</button>
-      </div>
-      </section>
-
-      {# 周末与自选独立成卡：原来用 .set-sub 卡内分节（通知通道已拆卡，这是唯一残留） #}
-      <section class="card" id="set-weekend">
-        <div class="card-head">
-          <div class="card-title-wrap">
-            <span class="eyebrow">日历策略</span>
-            <h2 class="card-title">周末与自选时间</h2>
-          </div>
-        </div>
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">周六签到</span>
-          <p class="set-help">开启后周六也尝试签到（默认关闭）。任意管理员可改，改动立即保存。</p>
+          <p class="set-help">开启后周六也尝试签到（默认关闭）。任意管理员可改，随「保存调度设置」一并提交。</p>
         </div>
         <label class="switch" title="周六签到">
           <input id="ss-sat" type="checkbox">
@@ -193,7 +182,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">周日签到</span>
-          <p class="set-help">开启后周日也尝试签到（默认关闭）。任意管理员可改，改动立即保存。</p>
+          <p class="set-help">开启后周日也尝试签到（默认关闭）。任意管理员可改，随「保存调度设置」一并提交。</p>
         </div>
         <label class="switch" title="周日签到">
           <input id="ss-sun" type="checkbox">
@@ -204,7 +193,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">允许用户自选签到时间</span>
-          <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。随「保存调度设置」一并提交。</p>
+          <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。仅主管理员可改，随「保存调度设置」一并提交。</p>
         </div>
         <label class="switch" title="允许用户自选签到时间">
           <input id="ss-time-pref" type="checkbox">
@@ -212,23 +201,17 @@
           <span class="sr-only">允许用户自选签到时间</span>
         </label>
       </div>
-      <p class="set-tip" id="ss-weekend-tip" role="status"></p>
-      </section>
 
-      {# 全局重置独立成卡：维护动作不该混在某个设置组里（原来与周末开关同段，仅隔一条线） #}
-      <section class="card" id="set-maintenance">
-        <div class="card-head">
-          <div class="card-title-wrap">
-            <span class="eyebrow">维护</span>
-            <h2 class="card-title">调度维护</h2>
-          </div>
-        </div>
-        <p class="field-help">把排序、分布、掐头去尾、账号间隔、签到窗口恢复为默认值；不涉及周末/自选开关、账号、通知与容量配置。</p>
-        <div class="form-actions">
-          <button type="button" class="btn btn--ghost btn--sm" id="ss-reset">恢复默认调度</button>
-        </div>
-      </section>
-    </div>
+      <p class="set-tip" id="ss-tip" role="status"></p>
+
+      {# 保存行吸底：调度卡字段多，保存按钮在卡底时改完要滑到底才够得着（教程 #16「目标要近」）。
+         「恢复默认调度」是维护动作，退到同一行的右下角，不再单独占一张卡。 #}
+      <div class="form-actions is-sticky">
+        <button type="button" class="btn btn--primary btn--sm" id="ss-save" hidden>保存调度设置</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn--ghost btn--sm" id="ss-reset">恢复默认调度</button>
+      </div>
+    </section>
   </div>
 
   <!-- 2. 全局公告：任意管理员 -->
@@ -239,6 +222,7 @@
           <span class="eyebrow">全站</span>
           <h2 class="card-title">全局公告</h2>
         </div>
+        <div class="set-head-actions">{{ dirty_badge('set-ann-dirty') }}</div>
       </div>
       <div class="field">
         <label class="field-label" for="set-announcement">公告文字</label>
@@ -246,19 +230,17 @@
                   placeholder="例如：今晚 22:00–23:00 例行维护，签到可能延迟"></textarea>
         <p class="field-help">显示在所有页面顶部（含登录页）；限 200 字、禁止换行；留空保存 = 清除公告。</p>
       </div>
+      <p class="set-tip" id="set-ann-tip" role="status"></p>
       <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="set-ann-save">保存公告</button>
-        <button type="button" class="btn btn--ghost btn--sm" id="set-ann-clear">清除</button>
-        <span class="set-tip" id="set-ann-tip" role="status"></span>
+        <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" hidden>保存公告</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn--ghost btn--sm" id="set-ann-clear">清除公告</button>
       </div>
     </section>
   </div>
 
-  <!-- 3. 通知通道：推送 + 邮件两段，仅主管理员 -->
+  <!-- 3. 通知通道：推送卡 + 邮件卡，每卡一个保存动作，仅主管理员 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-notify" aria-labelledby="set-tab-notify" data-tab-id="notify">
-    {# 拆两张卡（推送 / 邮件）：单卡塞三段（推送 + 邮件 + SMTP 表）字段数超表单刻度，
-       拆开后每卡只讲一件事。#set-notify 留在外层容器上 —— settings-notify.js 的
-       「非主管理员整卡禁用 + 权限说明」仍覆盖两张卡内的全部控件。 #}
     <div id="set-notify" class="set-cards">
       <p class="alert info" id="sn-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
@@ -272,68 +254,66 @@
           </div>
           <div class="set-head-actions">
             {% call info('通知通道说明', 'set-pop-notify') %}<b>密钥：</b>加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。<b>频控：</b>同类告警在冷却时间内只推一条。<b>额度：</b>按「非紧急 / 紧急」两本账各自计数。<b>权限：</b>仅主管理员可修改。<b>确认：</b>关闭通道、更换/清空密钥、调整额度节流均需当前管理员密码。{% endcall %}
+            {{ dirty_badge('sn-dirty') }}
           </div>
         </div>
-      <div class="form-grid">
-        <div class="field">
-          <label class="field-label" for="sn-type">推送渠道</label>
-          <select class="select" id="sn-type">
-            <option value="">关闭</option>
-            <option value="serverchan">Server酱（微信 / 方糖服务号）</option>
-            <option value="custom">自定义 Webhook 地址</option>
-          </select>
-        </div>
-        <div class="field">
-          <label class="field-label" for="sn-secret">密钥（留空 = 不改动）</label>
-          <input class="input" id="sn-secret" type="password" autocomplete="off"
-                 placeholder="SCT 开头的 SendKey 或自定义 https 地址">
-          <p class="field-help">加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。</p>
-        </div>
-      </div>
-      <div class="set-row">
-        <div class="set-row-text">
-          <span class="set-row-label">仅推送重要告警</span>
-          <p class="set-help">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度。</p>
-        </div>
-        <label class="switch" title="仅推送重要告警">
-          <input id="sn-urgent" type="checkbox">
-          <span class="track" aria-hidden="true"></span>
-          <span class="sr-only">仅推送重要告警</span>
-        </label>
-      </div>
-      <details class="set-more">
-        <summary>额度与节流（低频）</summary>
         <div class="form-grid">
           <div class="field">
-            <label class="field-label" for="sn-cooldown">同类冷却</label>
-            <div class="input-group">
-              <input class="input" id="sn-cooldown" type="number" min="0" step="1">
-              <span class="addon">秒</span>
-            </div>
+            <span class="field-label" id="sn-type-label">推送渠道</span>
+            {{ select_field('sn-type', '',
+               [('', '关闭'), ('serverchan', 'Server酱（微信 / 方糖服务号）'), ('custom', '自定义 Webhook 地址')],
+               'sn-type-label') }}
           </div>
           <div class="field">
-            <label class="field-label" for="sn-daily-max">非紧急每日上限</label>
-            <div class="input-group">
-              <input class="input" id="sn-daily-max" type="number" min="0" step="1">
-              <span class="addon">条</span>
-            </div>
-          </div>
-          <div class="field">
-            <label class="field-label" for="sn-urgent-max">紧急每日上限</label>
-            <div class="input-group">
-              <input class="input" id="sn-urgent-max" type="number" min="0" step="1">
-              <span class="addon">条</span>
-            </div>
+            <label class="field-label" for="sn-secret">密钥（留空 = 不改动）</label>
+            <input class="input" id="sn-secret" type="password" autocomplete="off"
+                   placeholder="SCT 开头的 SendKey 或自定义 https 地址">
+            <p class="field-help">加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。</p>
           </div>
         </div>
-      </details>
-      <p class="field-help" id="sn-status"></p>
-      <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="sn-save">保存配置</button>
-        <button type="button" class="btn btn--ghost btn--sm" id="sn-test">发送测试消息</button>
-        <span class="set-tip" id="sn-tip" role="status"></span>
-      </div>
-
+        <div class="set-row">
+          <div class="set-row-text">
+            <span class="set-row-label">仅推送重要告警</span>
+            <p class="set-help">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度。</p>
+          </div>
+          <label class="switch" title="仅推送重要告警">
+            <input id="sn-urgent" type="checkbox">
+            <span class="track" aria-hidden="true"></span>
+            <span class="sr-only">仅推送重要告警</span>
+          </label>
+        </div>
+        <details class="set-more">
+          <summary>额度与节流（低频）</summary>
+          <div class="form-grid form-grid--3">
+            <div class="field">
+              <label class="field-label" for="sn-cooldown">同类冷却</label>
+              <div class="input-group">
+                <input class="input" id="sn-cooldown" type="number" min="0" step="1">
+                <span class="addon">秒</span>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="sn-daily-max">非紧急每日上限</label>
+              <div class="input-group">
+                <input class="input" id="sn-daily-max" type="number" min="0" step="1">
+                <span class="addon">条</span>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="sn-urgent-max">紧急每日上限</label>
+              <div class="input-group">
+                <input class="input" id="sn-urgent-max" type="number" min="0" step="1">
+                <span class="addon">条</span>
+              </div>
+            </div>
+          </div>
+        </details>
+        <p class="field-help" id="sn-status"></p>
+        <p class="set-tip" id="sn-tip" role="status"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn--primary btn--sm" id="sn-save" hidden>保存推送配置</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="sn-test">发送测试消息</button>
+        </div>
       </section>
 
       <section class="card">
@@ -342,59 +322,58 @@
             <span class="eyebrow">告警送达</span>
             <h2 class="card-title">邮件通知</h2>
           </div>
+          <div class="set-head-actions">{{ dirty_badge('sm-dirty') }}</div>
         </div>
-      <div class="set-row">
-        <div class="set-row-text">
-          <span class="set-row-label">全局邮件通知</span>
-          <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码。</p>
+        <div class="set-row">
+          <div class="set-row-text">
+            <span class="set-row-label">全局邮件通知</span>
+            <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码，随「保存邮件配置」提交。</p>
+          </div>
+          <label class="switch" title="全局邮件通知">
+            <input id="sm-global" type="checkbox">
+            <span class="track" aria-hidden="true"></span>
+            <span class="sr-only">全局邮件通知</span>
+          </label>
         </div>
-        <label class="switch" title="全局邮件通知">
-          <input id="sm-global" type="checkbox">
-          <span class="track" aria-hidden="true"></span>
-          <span class="sr-only">全局邮件通知</span>
-        </label>
-      </div>
-      <div class="field">
-        <label class="field-label" for="sm-to">告警收件人</label>
-        <div class="input-group">
-          <input class="input" id="sm-to" type="text" maxlength="320" autocomplete="off" placeholder="admin@example.com">
-          <span class="addon">邮箱</span>
+        <div class="field">
+          <label class="field-label" for="sm-to">告警收件人</label>
+          <div class="input-group">
+            <input class="input" id="sm-to" type="text" maxlength="320" autocomplete="off" placeholder="admin@example.com">
+            <span class="addon">邮箱</span>
+          </div>
+          <p class="field-help">告警邮件（含安全告警）的送达地址；多个用英文逗号分隔。留空 = 不改动，清空走下方「清空收件人」。</p>
         </div>
-        <p class="field-help">告警邮件（含安全告警）的送达地址；多个用英文逗号分隔，留空 = 不改动。修改与清空需当前管理员密码确认。</p>
-      </div>
-      <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="sm-to-save">保存收件人</button>
-        <button type="button" class="btn btn--ghost btn--sm" id="sm-to-clear">清空</button>
-      </div>
 
-      {# 状态行描述的是「发件 SMTP 是否配置」，原来贴在卡头下方读起来像全局开关的状态 #}
-      <p class="field-help" id="sm-status"></p>
-      <div class="data-toolbar">
-        <div class="data-toolbar-left">
-          <span class="field-label">发件 SMTP（按顺序主备切换，留空 = 沿用旧值）</span>
+        {# 状态行描述的是「发件 SMTP 是否配置」，放在 SMTP 表上方才读得通 #}
+        <p class="field-help" id="sm-status"></p>
+        <div class="data-toolbar">
+          <div class="data-toolbar-left">
+            <span class="field-label">发件 SMTP（按顺序主备切换，留空 = 沿用旧值）</span>
+          </div>
+          <div class="data-toolbar-right">
+            <button type="button" class="btn btn--ghost btn--sm" id="sm-add-smtp">添加备用 SMTP</button>
+          </div>
         </div>
-        <div class="data-toolbar-right">
-          <button type="button" class="btn btn--ghost btn--sm" id="sm-add-smtp">添加备用 SMTP</button>
+        <div class="table-scroll">
+          <table class="data-table" id="sm-smtps">
+            <thead>
+              <tr>
+                <th scope="col">服务器 host</th>
+                <th scope="col" class="num">端口</th>
+                <th scope="col">发件账号</th>
+                <th scope="col">授权码</th>
+                <th scope="col"><span class="sr-only">操作</span></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
         </div>
-      </div>
-      <div class="table-scroll">
-        <table class="data-table" id="sm-smtps">
-          <thead>
-            <tr>
-              <th scope="col">服务器 host</th>
-              <th scope="col" class="num">端口</th>
-              <th scope="col">发件账号</th>
-              <th scope="col">授权码</th>
-              <th scope="col"><span class="sr-only">操作</span></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="sm-save-smtp">保存 SMTP 配置</button>
-        <span class="set-tip" id="sm-tip" role="status"></span>
-      </div>
+        <p class="set-tip" id="sm-tip" role="status"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn--primary btn--sm" id="sm-save" hidden>保存邮件配置</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn--ghost btn--sm" id="sm-to-clear" hidden>清空收件人</button>
+        </div>
       </section>
     </div>
   </div>
@@ -407,13 +386,14 @@
           <span class="eyebrow">名额</span>
           <h2 class="card-title">容量配额</h2>
         </div>
+        <div class="set-head-actions">{{ dirty_badge('set-cap-dirty') }}</div>
       </div>
       <p class="alert info" id="set-cap-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
         <span class="body">仅主管理员可修改容量上限，控件已禁用；如需调整请联系主管理员。</span>
       </p>
       <div class="form-grid">
-        <div class="field">
+        <div class="field field--narrow">
           <label class="field-label" for="set-max-users">用户容量上限</label>
           <div class="input-group">
             <input class="input" id="set-max-users" type="number" min="0" max="100000" step="1" placeholder="0">
@@ -421,7 +401,7 @@
           </div>
           <p class="field-help">管归属注册名额；0 = 不限。调小只限制新增，不删存量用户。</p>
         </div>
-        <div class="field">
+        <div class="field field--narrow">
           <label class="field-label" for="set-max-accounts">账号容量上限</label>
           <div class="input-group">
             <input class="input" id="set-max-accounts" type="number" min="0" max="100000" step="1" placeholder="0">
@@ -430,14 +410,14 @@
           <p class="field-help">管账号存量（含主管理员直属裸账号）；0 = 不限。调小只限制新增，不删存量账号。</p>
         </div>
       </div>
+      <p class="set-tip" id="set-cap-tip" role="status"></p>
       <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="set-cap-save">保存容量上限</button>
-        <span class="set-tip" id="set-cap-tip" role="status"></span>
+        <button type="button" class="btn btn--primary btn--sm" id="set-cap-save" hidden>保存容量上限</button>
       </div>
     </section>
   </div>
 
-  <!-- 5. 健康与探针：任意管理员，改动立即保存 -->
+  <!-- 5. 健康与探针：任意管理员 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-health" aria-labelledby="set-tab-health" data-tab-id="health">
     <section class="card" id="set-health">
       <div class="card-head">
@@ -445,11 +425,12 @@
           <span class="eyebrow">自检</span>
           <h2 class="card-title">健康与探针</h2>
         </div>
+        <div class="set-head-actions">{{ dirty_badge('sh-dirty') }}</div>
       </div>
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">注册时验证账号</span>
-          <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。任意管理员可改，改动立即保存。</p>
+          <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。任意管理员可改，随「保存探针设置」一并提交。</p>
         </div>
         <label class="switch" title="注册时验证账号">
           <input id="sh-verify" type="checkbox">
@@ -470,28 +451,29 @@
       </div>
       <div class="form-grid">
         <div class="field">
-          <label class="field-label" for="sh-probe-time">触发时间（最早时刻）</label>
-          <div class="wheel-field" data-time-field="sh-probe-time" role="group" aria-label="触发时间（时:分）">
+          <span class="field-label" id="sh-probe-time-label">触发时间（最早时刻）</span>
+          <div class="time-field" data-time-field="sh-probe-time" data-title="触发时间"
+               data-hint="设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。"
+               aria-labelledby="sh-probe-time-label">
             <input type="hidden" id="sh-probe-time" value="20:00">
           </div>
         </div>
         <div class="field">
-          <label class="field-label" for="sh-probe-interval">触发频率</label>
-          <select class="select" id="sh-probe-interval">
-            <option value="1">每天</option>
-            <option value="2">每 2 天</option>
-            <option value="3">每 3 天</option>
-            <option value="7">每 7 天</option>
-            <option value="once">下次计划时间单次执行（执行后自动关闭）</option>
-          </select>
+          <span class="field-label" id="sh-probe-interval-label">触发频率</span>
+          {{ select_field('sh-probe-interval', '1',
+             [('1', '每天'), ('2', '每 2 天'), ('3', '每 3 天'), ('7', '每 7 天'),
+              ('once', '下次计划时间单次执行（执行后自动关闭）')], 'sh-probe-interval-label') }}
           <p class="field-help">设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。</p>
         </div>
       </div>
       <p class="set-tip" id="sh-tip" role="status"></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn--primary btn--sm" id="sh-save" hidden>保存探针设置</button>
+      </div>
     </section>
   </div>
 
-  <!-- 6. 系统开关：危险语义，仅主管理员整 tab 可见 -->
+  <!-- 6. 系统开关：动作型（非表单值），危险语义，仅主管理员整 tab 可见 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-switches" aria-labelledby="set-tab-switches" data-tab-id="switches">
     <section class="card set-danger" id="set-switches">
       <div class="card-head">
@@ -502,7 +484,7 @@
       </div>
       <p class="set-danger-note">暂停签到：所有账号停止自动签到（正在运行的一轮会跑完，下一轮跳过），手动签到不受影响。
         暂停注册：登录页关闭注册入口，已注册用户登录不受影响，仍可在「账号管理」手动添加账号。
-        两项操作均需二次确认 + 当前管理员密码。</p>
+        两项都是立即生效的动作（不属于表单值，无「保存」概念），均需二次确认 + 当前管理员密码。</p>
       <div class="set-danger-actions">
         <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-global-pause">
           {{ icon('pause') }}<span id="set-global-pause-text">暂停自动签到</span>
@@ -518,6 +500,8 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ request.script_root }}/static/js/components/select-field.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/range-field.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/time-field.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/settings-schedule.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/settings-health.js?v={{ web_version }}"></script>

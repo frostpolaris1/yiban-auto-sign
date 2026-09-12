@@ -1,13 +1,18 @@
 /* 系统设置 · 邮件段（管理端 /settings 的「通知通道」分区）。
 
    挂载到 window.YB.settingsMail；classic script。消息推送段在 settings-notify.js，
-   两段同处 #set-notify 一张卡；非主管理员的整卡禁用由 settings-notify 统一处理，
+   两段各占一张卡；非主管理员的整卡禁用由 settings-notify 统一处理，
    本组件不再重复判定（动作里仍做 isMaster 早退，UI 不是安全边界）。
 
-   权限（与后端高危门禁逐条对齐）：
-     · 全局开关、告警收件人、SMTP 列表：仅主管理员；PUT /api/mail-config 的关闭类
-       开关与 smtps/admin_to 变更需 confirm_password。
+   权限（与后端 PUT /api/mail-config 的高危门禁逐条对齐）：
+     · 全局开关、告警收件人、SMTP 列表：仅主管理员；
+     · 关闭类开关、admin_to 与 smtps 变更需 confirm_password（后端一次请求只验一次）。
      · 「接收发给我自己的邮件提醒」是**个人域**，已迁到 /mine，本页不再有。
+
+   保存语义（与全页统一）：全局开关、收件人、SMTP 列表合并为**一个**「保存邮件配置」，
+   只提交相对快照真正变化的键；纯"开启"不带口令（后端同口径：不给正常成功路径加摩擦），
+   关闭/改地址/改 SMTP 才收管理员口令。「清空收件人」是动作（不属表单值），单独确认。
+   对外面：mount/load/apply(load 同义)、save() → Promise<boolean>、isDirty()。
 
    脱敏：GET /api/mail-config 的 admin_to 与 smtps[].user 已由后端打码；授权码绝不
    回显（pass 输入框恒为空，留空=沿用旧值；user 留空同理，打码值只作 placeholder）。
@@ -18,15 +23,31 @@
   if (!YB) return;
 
   var ctx = { isMaster: false };
+  var snap = { enabled: false, hasTo: false };
   var busy = false;
+  var dirty = false;
+  var tableDirty = false;
 
   function $(id) { return document.getElementById(id); }
   function tbody() { return document.querySelector("#sm-smtps tbody"); }
+  function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
   function setTip(text, bad) {
     var el = $("sm-tip");
     if (!el) return;
     el.textContent = text || "";
     el.className = bad ? "set-tip set-bad" : "set-tip";
+  }
+  function markDirty() {
+    if (dirty) return;
+    dirty = true;
+    setHidden($("sm-save"), false);
+    setHidden($("sm-dirty"), false);
+  }
+  function clearDirty() {
+    dirty = false;
+    tableDirty = false;
+    setHidden($("sm-save"), true);
+    setHidden($("sm-dirty"), true);
   }
   // 读取失败就地提示 + 重试（不能只置灰，用户无法区分"未配置"与"没读到"）
   function showLoadError(msg) {
@@ -86,6 +107,8 @@
       if (!ctx.isMaster) return;
       if (tr.parentNode) tr.parentNode.removeChild(tr);
       renumber();
+      tableDirty = true;
+      markDirty();
     });
     tdOps.appendChild(del);
     tr.appendChild(tdHost);
@@ -126,6 +149,13 @@
   function load() {
     if (!ctx.isMaster) return Promise.resolve();   // 非主管理员不拉（整卡已禁用，避免渲染出"看似可编辑"的行）
     return YB.api("GET", "/api/mail-config").then(function (data) {
+      // admin_to 是打码后的展示串：未配置时后端给 "<未配置>" 哨兵，已配置则形如 abc***@x.com。
+      // 故"是否已配置"只排除哨兵与空串 —— 用 clean() 会把打码真值也当成空（那是给输入框用的口径）。
+      var toShown = String((data && data.admin_to) || "");
+      snap = {
+        enabled: !!data.enabled,
+        hasTo: !!toShown && toShown.charAt(0) !== "<"
+      };
       var status = $("sm-status");
       if (status) {
         status.textContent = data.enabled
@@ -134,61 +164,93 @@
             ? "未开启（已配置发件 SMTP，可由主管理员开启）"
             : "未开启（未配置发件 SMTP）");
       }
-      var g = $("sm-global"); if (g) g.checked = !!data.enabled;
+      var g = $("sm-global"); if (g) g.checked = snap.enabled;
       var to = $("sm-to");
       if (to) { to.value = ""; to.placeholder = data.admin_to || "admin@example.com"; }
+      setHidden($("sm-to-clear"), !snap.hasTo);
       renderSmtps(data.smtps || []);
+      clearDirty();
+      setTip("", false);
     }).catch(function (e) {
       showLoadError((e && e.message) || "邮件配置读取失败，请稍后重试");
     });
   }
 
-  function submitGlobal(next, pw) {
-    busy = true;
-    var el = $("sm-global");
-    var body = { enabled: next };
-    if (pw) body.confirm_password = pw;
-    YB.api("PUT", "/api/mail-config", body).then(function () {
-      setTip(next ? "已开启全局邮件通知" : "已关闭全局邮件通知", false);
-      return load();
-    }).catch(function (e) {
-      if (el) el.checked = !next;
-      setTip((e && e.message) || "保存失败，请稍后重试", true);
-    }).then(function () { busy = false; });
-  }
-  function changeGlobal() {
-    var el = $("sm-global");
-    if (!el || busy || !ctx.isMaster) return;
-    var next = el.checked;
-    // 关闭 = 给全部安全告警拔线（后端高危门禁），先收口令再落盘；开启无口令。
-    // change 已把 checked 翻成"关闭"：先回滚 UI，取消口令即保持开启态，仅确认成功
-    // 后由 load() 按服务端结果落定为关闭 —— 避免"界面显示已关闭但后端仍开着"。
-    if (!next) {
-      el.checked = true;
-      YB.openConfirmPasswordModal(
-        "关闭全局邮件通知？\n关闭后所有安全告警都不再发邮件，且“被关闭”这件事本身也可能没人知道！\n请输入当前管理员密码确认。",
-        function (pw) { submitGlobal(next, pw); });
-    } else {
-      submitGlobal(next, null);
-    }
+  function collectSmtps() {
+    var body = tbody();
+    if (!body) return [];
+    return [].map.call(body.querySelectorAll("tr"), function (row) {
+      var host = row.querySelector('[data-f="host"]');
+      if (!host) return null;
+      return {
+        host: clean(host.value),
+        port: parseInt(row.querySelector('[data-f="port"]').value, 10) || 465,
+        user: clean(row.querySelector('[data-f="user"]').value),
+        pass: (row.querySelector('[data-f="pass"]').value || "").trim()
+      };
+    }).filter(Boolean);
   }
 
-  function saveAdminTo() {
-    var el = $("sm-to");
-    if (!el || busy || !ctx.isMaster) return;
-    var val = (el.value || "").trim();
-    if (!val) { YB.toast.error("请填写收件人邮箱；如需清空请点「清空」"); return; }
-    YB.openConfirmPasswordModal(
-      "修改告警收件人？\n告警邮件将改发到新地址，原收件人会被通知。\n请输入当前管理员密码确认。",
-      function (pw) {
-        busy = true;
-        YB.api("PUT", "/api/mail-config", { admin_to: val, confirm_password: pw }).then(function () {
-          setTip("已保存告警收件人", false);
-          return load();
-        }).catch(function (e) {
-          setTip((e && e.message) || "保存失败，请稍后重试", true);
-        }).then(function () { busy = false; });
-      });
+  // 只提交真正变化的键：开关单独变时不重写 SMTP 列表（避免把未改动的行也落盘一遍）
+  function collect() {
+    var body = {};
+    var g = $("sm-global");
+    if (g && !!g.checked !== snap.enabled) body.enabled = !!g.checked;
+    var to = $("sm-to");
+    var toVal = to ? String(to.value || "").trim() : "";
+    if (toVal) body.admin_to = toVal;
+    if (tableDirty) body.smtps = collectSmtps();
+    return body;
+  }
+
+  function submit(body) {
+    var needPw = Object.prototype.hasOwnProperty.call(body, "admin_to") ||
+      Object.prototype.hasOwnProperty.call(body, "smtps") || body.enabled === false;
+    if (!needPw) return write(body);
+    return new Promise(function (resolve) {
+      YB.openConfirmPasswordModal(
+        "保存邮件配置：关闭全局通知、修改告警收件人或更换 SMTP 通道属敏感操作。\n请输入当前管理员密码确认。",
+        function (pw) { write(body, pw).then(resolve); },
+        function () { resolve(false); });     // 取消口令 = 本次不保存
+    });
+  }
+
+  function write(body, pw) {
+    if (pw) body.confirm_password = pw;
+    busy = true;
+    var btn = $("sm-save"); if (btn) btn.disabled = true;
+    setTip("保存中…", false);
+    return YB.api("PUT", "/api/mail-config", body).then(function () {
+      var to = $("sm-to"); if (to) to.value = "";
+      setTip("邮件配置已保存", false);
+      return load().then(function () { return true; });
+    }, function (e) {
+      setTip((e && e.message) || "保存失败，请稍后重试", true);
+      return false;
+    }).then(function (ok) {
+      busy = false;
+      if (btn && ctx.isMaster) btn.disabled = false;
+      return ok;
+    });
+  }
+
+  // 返回 Promise<boolean>：true = 已提交（或本就无改动）；false = 取消或失败。
+  function save() {
+    if (busy || !ctx.isMaster) return Promise.resolve(false);
+    var body = collect();
+    if (!Object.keys(body).length) {
+      clearDirty();
+      YB.toast.info("没有需要保存的改动");
+      return Promise.resolve(true);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "smtps")) {
+      var entries = body.smtps;
+      if (entries.some(function (e) { return !e.host; })) {
+        YB.toast.error("每条 SMTP 都必须填写服务器 host");
+        return Promise.resolve(false);
+      }
+    }
+    return submit(body);
   }
 
   function clearAdminTo() {
@@ -213,41 +275,6 @@
     });
   }
 
-  function collectSmtps() {
-    var body = tbody();
-    if (!body) return [];
-    return [].map.call(body.querySelectorAll("tr"), function (row) {
-      var host = row.querySelector('[data-f="host"]');
-      if (!host) return null;
-      return {
-        host: clean(host.value),
-        port: parseInt(row.querySelector('[data-f="port"]').value, 10) || 465,
-        user: clean(row.querySelector('[data-f="user"]').value),
-        pass: (row.querySelector('[data-f="pass"]').value || "").trim()
-      };
-    }).filter(Boolean);
-  }
-
-  function saveSmtps() {
-    if (busy || !ctx.isMaster) return;
-    var entries = collectSmtps();
-    if (entries.length && entries.some(function (e) { return !e.host; })) {
-      YB.toast.error("每条 SMTP 都必须填写服务器 host");
-      return;
-    }
-    YB.openConfirmPasswordModal(
-      "保存 SMTP 配置：更换/清空邮件通道属敏感操作。\n请输入当前管理员密码确认。",
-      function (pw) {
-        busy = true;
-        YB.api("PUT", "/api/mail-config", { smtps: entries, confirm_password: pw }).then(function () {
-          setTip("已保存 SMTP 配置", false);
-          return load();
-        }).catch(function (e) {
-          setTip((e && e.message) || "保存失败，请稍后重试", true);
-        }).then(function () { busy = false; });
-      });
-  }
-
   function addSmtp() {
     if (!ctx.isMaster) return;
     var body = tbody();
@@ -255,16 +282,23 @@
     var empty = body.querySelector(".sm-empty-row");
     if (empty) body.removeChild(empty);
     body.appendChild(smtpRow({ host: "", port: 465, user: "", has_pass: false }, body.children.length));
+    tableDirty = true;
+    markDirty();
   }
 
   function mount(options) {
     ctx = { isMaster: !!(options && options.isMaster) };
-    var g = $("sm-global"); if (g) g.addEventListener("change", changeGlobal);
-    var toSave = $("sm-to-save"); if (toSave) toSave.addEventListener("click", saveAdminTo);
+    var g = $("sm-global"); if (g) g.addEventListener("change", markDirty);
+    var to = $("sm-to"); if (to) to.addEventListener("input", markDirty);
+    var body = tbody();
+    if (body) body.addEventListener("input", function () { tableDirty = true; markDirty(); });
+    var saveBtn = $("sm-save"); if (saveBtn) saveBtn.addEventListener("click", function () { save(); });
     var toClear = $("sm-to-clear"); if (toClear) toClear.addEventListener("click", clearAdminTo);
     var add = $("sm-add-smtp"); if (add) add.addEventListener("click", addSmtp);
-    var saveS = $("sm-save-smtp"); if (saveS) saveS.addEventListener("click", saveSmtps);
   }
 
-  YB.settingsMail = { mount: mount, load: load };
+  YB.settingsMail = {
+    mount: mount, load: load, save: save,
+    isDirty: function () { return dirty; }
+  };
 })();
