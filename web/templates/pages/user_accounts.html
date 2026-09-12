@@ -92,55 +92,16 @@
     <p id="mail-notify-tip" class="panel-sub" aria-live="polite"></p>
   </section>
 
-  <!-- 修改密码（折叠区：按钮 + aria-expanded，见 app.css 19.7） -->
-  <section class="card col-6 panel-stack user-collapse">
+  <!-- 修改密码（与编辑账号一致：卡片只放入口，表单在弹窗里完成） -->
+  <section class="card col-6 panel-stack">
     <div class="panel-head">
       <div class="panel-head-row">
         <h2 class="panel-title">修改密码</h2>
-        <button type="button" id="password-collapse-btn" class="btn btn--ghost btn--sm"
-                aria-expanded="false" aria-controls="password-body" aria-label="展开修改密码">
-          <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
+        <button type="button" id="password-modal-btn" class="btn btn--ghost btn--sm">
+          {{ icon('key') }}修改密码
         </button>
       </div>
       <p class="panel-sub">改后下次登录使用新密码</p>
-    </div>
-    <div id="password-body" class="collapse-body">
-      <div class="collapse-inner">
-        <form id="password-form" class="form-stack" novalidate>
-          <div class="field">
-            <label class="field-label" for="p-old">当前密码</label>
-            <div class="input-affix">
-              <input id="p-old" type="password" class="input" autocomplete="current-password"
-                     required placeholder="输入当前密码">
-              <button type="button" class="affix-btn" data-pw-toggle="p-old"
-                      aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
-            </div>
-          </div>
-          <div class="field">
-            <label class="field-label" for="p-new">新密码</label>
-            <div class="input-affix">
-              <input id="p-new" type="password" class="input" autocomplete="new-password"
-                     required placeholder="新密码" aria-describedby="p-new-help">
-              <button type="button" class="affix-btn" data-pw-toggle="p-new"
-                      aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
-            </div>
-            <p id="p-new-help" class="field-help">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
-          </div>
-          <div class="field">
-            <label class="field-label" for="p-confirm">确认新密码</label>
-            <div class="input-affix">
-              <input id="p-confirm" type="password" class="input" autocomplete="new-password"
-                     required placeholder="再次输入新密码">
-              <button type="button" class="affix-btn" data-pw-toggle="p-confirm"
-                      aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button type="submit" class="btn btn--primary">保存新密码</button>
-            <span id="p-tip" class="panel-sub" aria-live="polite"></span>
-          </div>
-        </form>
-      </div>
     </div>
   </section>
 
@@ -158,6 +119,44 @@
   </section>
 
 </div>
+
+{# 改密表单（惰性内容，由 user_accounts.js 克隆进弹窗；在 <template> 里不参与渲染） #}
+<template id="tpl-password-form">
+  <form class="form-stack" novalidate>
+    <div class="alert danger" role="alert" hidden>
+      <span class="ico">{{ icon('circle-alert') }}</span>
+      <span class="body"></span>
+    </div>
+    <div class="field">
+      <label class="field-label" for="p-old">当前密码</label>
+      <div class="input-affix">
+        <input id="p-old" type="password" class="input" autocomplete="current-password"
+               required placeholder="输入当前密码">
+        <button type="button" class="affix-btn" data-pw-toggle="p-old"
+                aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="p-new">新密码</label>
+      <div class="input-affix">
+        <input id="p-new" type="password" class="input" autocomplete="new-password"
+               required placeholder="新密码" aria-describedby="p-new-help">
+        <button type="button" class="affix-btn" data-pw-toggle="p-new"
+                aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+      </div>
+      <p id="p-new-help" class="field-help">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
+    </div>
+    <div class="field">
+      <label class="field-label" for="p-confirm">确认新密码</label>
+      <div class="input-affix">
+        <input id="p-confirm" type="password" class="input" autocomplete="new-password"
+               required placeholder="再次输入新密码">
+        <button type="button" class="affix-btn" data-pw-toggle="p-confirm"
+                aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+      </div>
+    </div>
+  </form>
+</template>
 {% endblock %}
 
 {% block scripts %}

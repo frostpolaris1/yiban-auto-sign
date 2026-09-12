@@ -252,12 +252,6 @@
   function buildAccountForm(a) {
     var editing = !!a;
     var body = YB.el("div");
-    body.appendChild(YB.el("p", {
-      class: "panel-sub",
-      text: editing
-        ? "修改后需重新提交审核。"
-        : "提交后等待管理员审核，通过即自动签到。"
-    }));
     var err = YB.el("div", { class: "alert danger", role: "alert", hidden: true });
     err.appendChild(YB.el("span", { class: "ico", html: iconUse("circle-alert") }));
     var errText = YB.el("span", { class: "body" });
@@ -306,6 +300,10 @@
       }
     });
     code.field.appendChild(clearBtn);
+    code.field.appendChild(YB.el("p", {
+      class: "field-help",
+      text: "仅在提示「请使用授权设备」时填写，不确定就留空。"
+    }));
 
     [name, phone, password, model, code].forEach(function (f) { stack.appendChild(f.field); });
     body.appendChild(stack);
@@ -356,6 +354,7 @@
     var form = buildAccountForm(a);
     YB.openModal({
       title: editingIndex === null ? "提交我的易班账号" : "编辑我的易班账号",
+      subtitle: editingIndex === null ? "提交后等待管理员审核，通过即自动签到。" : "修改后需重新提交审核。",
       body: form.node,
       actions: [
         { label: "取消", variant: "ghost" },
@@ -432,28 +431,15 @@
     tipEl.classList.toggle("state-line--warn", !!tip);
   }
 
-  // 折叠区统一实现（签到时间 / 修改密码共用）：
-  // 用 button[aria-expanded] + .collapse-body.is-open 驱动，高度动画由 CSS 的
-  // grid-template-rows 0fr↔1fr 完成（见 app.css 19.7）——开与关都有动画。
-  function setCollapsed(btnId, bodyId, labelId, collapsed) {
-    var btn = $(btnId), body = $(bodyId);
+  // 折叠区（签到时间）：用 button[aria-expanded] + .collapse-body.is-open 驱动，
+  // 高度动画由 CSS 的 grid-template-rows 0fr↔1fr 完成（见 app.css 19.7）——开与关都有动画。
+  function setPrefCollapsed(collapsed) {
+    prefCollapsed = collapsed;
+    var btn = $("pref-collapse-btn"), body = $("pref-body");
     if (!btn || !body) return;
     btn.setAttribute("aria-expanded", String(!collapsed));
     body.classList.toggle("is-open", !collapsed);
-    if (labelId) $(labelId).textContent = collapsed ? "展开配置" : "收起";
-  }
-
-  function setPrefCollapsed(collapsed) {
-    prefCollapsed = collapsed;
-    setCollapsed("pref-collapse-btn", "pref-body", "pref-collapse-label", collapsed);
-  }
-
-  // 修改密码（默认收起）：setCollapsed 收的是"目标状态"，此处取反后再传
-  function togglePasswordCard() {
-    var btn = $("password-collapse-btn");
-    if (!btn) return;
-    var expand = btn.getAttribute("aria-expanded") !== "true";
-    setCollapsed("password-collapse-btn", "password-body", null, !expand);
+    $("pref-collapse-label").textContent = collapsed ? "展开配置" : "收起";
   }
 
   function pickTimePref(slot) {
@@ -527,8 +513,6 @@
 
     var collapseBtn = $("pref-collapse-btn");
     if (collapseBtn) collapseBtn.addEventListener("click", function () { setPrefCollapsed(!prefCollapsed); });
-    var pwBtn = $("password-collapse-btn");
-    if (pwBtn) pwBtn.addEventListener("click", togglePasswordCard);
     var clearBtn = $("pref-clear-btn");
     if (clearBtn) clearBtn.addEventListener("click", clearTimePref);
 
@@ -544,35 +528,80 @@
       });
     });
 
-    $("password-form").addEventListener("submit", function (e) {
-      e.preventDefault();
-      var tip = $("p-tip");
-      var np = $("p-new").value;
-      if (np.length < YB.PW_MIN_LEN || YB.passwordClasses(np) < YB.PW_MIN_CLASSES) {
-        tip.textContent = "";
-        YB.toast.error("新密码" + YB.PW_POLICY_HINT);
-        return;
-      }
-      if (np !== $("p-confirm").value) {
-        tip.textContent = "";
-        YB.toast.error("两次输入的新密码不一致");
-        return;
-      }
-      tip.textContent = "提交中…";
-      YB.api("POST", "/api/me/password", {
-        old_password: $("p-old").value, new_password: np, confirm_password: $("p-confirm").value
-      }).then(function (data) {
-        tip.textContent = "";
-        e.target.reset();
-        YB.toast.success(data.msg || "密码已更新");
-      }).catch(function (err) {
-        tip.textContent = "";
-        YB.toast.error(err.message);
-      });
-    });
-
     var del = document.querySelector("[data-delete-account]");
     if (del) del.addEventListener("click", onDeleteAccount);
+
+    var pwEntry = $("password-modal-btn");
+    if (pwEntry) pwEntry.addEventListener("click", openPasswordModal);
+  }
+
+  /* ---------------- 修改密码（弹窗，与编辑账号同一形态） ---------------- */
+  // 表单本体在模板的 <template id="tpl-password-form"> 里（惰性内容），
+  // 打开时克隆进弹窗并按需接线，避免页面常驻一份改密表单。
+  function bindPasswordForm(form) {
+    Array.prototype.forEach.call(form.querySelectorAll("[data-pw-toggle]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var input = $(btn.getAttribute("data-pw-toggle"));
+        var show = input.type === "password";
+        input.type = show ? "text" : "password";
+        btn.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
+        btn.setAttribute("aria-pressed", String(show));
+        btn.innerHTML = iconUse(show ? "eye-off" : "eye");
+      });
+    });
+    // 回车提交（弹窗底部的主按钮由 core.js 渲染，这里兜住表单自身的 submit）
+    form.addEventListener("submit", function (e) { e.preventDefault(); });
+  }
+
+  function pwError(form, msg) {
+    var box = form.querySelector(".alert.danger");
+    if (!box) return;
+    box.hidden = !msg;
+    var body = box.querySelector(".body");
+    if (body) body.textContent = msg || "";
+  }
+
+  function submitPasswordForm(form) {
+    var np = form.querySelector("#p-new").value;
+    if (np.length < YB.PW_MIN_LEN || YB.passwordClasses(np) < YB.PW_MIN_CLASSES) {
+      pwError(form, "新密码" + YB.PW_POLICY_HINT);
+      return false;
+    }
+    if (np !== form.querySelector("#p-confirm").value) {
+      pwError(form, "两次输入的新密码不一致");
+      return false;
+    }
+    pwError(form, "");
+    YB.api("POST", "/api/me/password", {
+      old_password: form.querySelector("#p-old").value,
+      new_password: np,
+      confirm_password: np
+    }).then(function (data) {
+      YB.closeModal();
+      YB.toast.success(data.msg || "密码已更新");
+    }).catch(function (err) {
+      // 错误就显示在弹窗里（toast 的层级低于模态，用户看不到）
+      pwError(form, err.message || "修改失败，请稍后再试");
+    });
+    return false;   // 由请求结果决定是否关闭
+  }
+
+  function openPasswordModal() {
+    var tpl = $("tpl-password-form");
+    if (!tpl) return;
+    var wrap = YB.el("div");
+    wrap.appendChild(tpl.content.cloneNode(true));
+    var form = wrap.querySelector("form");
+    bindPasswordForm(form);
+    YB.openModal({
+      title: "修改密码",
+      subtitle: "账号（注册邮箱）不可修改，改后下次登录使用新密码。",
+      body: wrap,
+      actions: [
+        { label: "取消", variant: "ghost" },
+        { label: "保存新密码", variant: "primary", onClick: function () { return submitPasswordForm(form); } }
+      ]
+    });
   }
 
   /* ---------------- 启动 ---------------- */
