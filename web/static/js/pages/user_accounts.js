@@ -30,11 +30,8 @@
   function iconUse(name) {
     return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>';
   }
-  var STATE_ICON = {
-    success: "circle-check", already: "circle-check", no_task: "circle-minus",
-    failed: "circle-x", retrying: "refresh-cw", skipped_window: "ban",
-    skipped_norange: "ban", paused: "circle-pause", user_cancelled: "circle-stop"
-  };
+  // 账号卡的图标表达**审核状态**（签到状态已迁到「签到日历」页，本页只谈账号本身）
+  var AUDIT_ICON = { pending: "clock", rejected: "circle-x", active: "circle-check" };
   function badge(text, variant) {
     return YB.el("span", { class: "badge" + (variant ? " " + variant : ""), text: text });
   }
@@ -58,32 +55,11 @@
     }).catch(function (e) { YB.toast.error(e.message); });
   }
 
-  function stateLine(a) {
-    var s = a.state_status || "pending";
-    if (s === "success" || s === "already") return { cls: "state-line--ok", text: "今日已完成签到" };
-    if (s === "no_task") return { cls: "state-line--muted", text: "今日无需签到" };
-    if (s === "skipped_window" || s === "skipped_norange") return { cls: "state-line--warn", text: "未在签到时段" };
-    if (s === "failed") {
-      return { cls: "state-line--bad", text: "今日签到失败" + (a.state_message ? "：" + a.state_message : "") };
-    }
-    if (s === "paused") return { cls: "state-line--bad", text: "账号密码异常，已暂停签到，请修改密码" };
-    if (s === "user_cancelled") return { cls: "state-line--bad", text: "已取消签到（可点「恢复签到」重新开启）" };
-    if (s === "retrying") return { cls: "state-line--warn", text: "签到重试中" };
-    // 待签：state_message 形如"计划 HH:MM"（自动错峰），其余情况不展示
-    var plan = a.state_message && a.state_message.indexOf("计划") === 0 ? " · 今日" + a.state_message : "";
-    return { cls: "state-line--muted", text: "待签到" + plan + " · 前方排队 " + a.queue_ahead + " 人" };
-  }
-
-  function stateAriaText(a) {
+  function auditAriaText(a) {
     if (a.deleted) return a.deleted_by_me ? "状态：已删除（7 天内可撤销）" : "状态：已被管理员删除";
-    var s = a.state_status || "pending";
-    var map = {
-      success: "今日已完成签到", already: "今日已完成签到", no_task: "今日无需签到",
-      skipped_window: "未在签到时段", skipped_norange: "未在签到时段",
-      failed: "今日签到失败", paused: "账号密码异常，已暂停签到",
-      user_cancelled: "已取消签到", retrying: "签到重试中"
-    };
-    return "状态：" + (map[s] || "待签到");
+    if (a.user_paused) return "状态：已取消（可恢复签到）";
+    var map = { pending: "待审核", rejected: "已拒绝", active: "已生效" };
+    return "状态：" + (map[a.status] || "未知");
   }
 
   function actionButton(label, cls, onClick) {
@@ -98,12 +74,18 @@
     var ident = YB.el("div", { class: "account-ident" });
 
     var iconBox = YB.el("span", { class: "account-icon" });
-    iconBox.innerHTML = iconUse(a.deleted ? "trash" : (STATE_ICON[a.state_status] || "clock"));
+    iconBox.innerHTML = iconUse(a.deleted ? "trash" : (AUDIT_ICON[a.status] || "clock"));
     ident.appendChild(iconBox);
-    ident.appendChild(YB.el("span", { class: "sr-only", text: stateAriaText(a) }));
+    ident.appendChild(YB.el("span", { class: "sr-only", text: auditAriaText(a) }));
 
     var info = YB.el("div");
-    info.appendChild(YB.el("div", { class: "account-name", text: a.display_name }));
+    // 名称 + 审核徽章同一行：徽章不再占用操作行，竖屏下按钮才排得下
+    var titleRow = YB.el("div", { class: "account-title-row" });
+    titleRow.appendChild(YB.el("span", { class: "account-name", text: a.display_name }));
+    if (a.deleted) titleRow.appendChild(badge("已删除"));
+    else if (a.user_paused) titleRow.appendChild(badge("已取消", "danger"));
+    else titleRow.appendChild(statusBadge(a.status));
+    info.appendChild(titleRow);
     info.appendChild(YB.el("div", {
       class: "account-meta",
       text: String(a.phone || "") + (a.phone_model ? " · " + a.phone_model : "")
@@ -115,23 +97,17 @@
           ? "你已删除此账号，7 天内可撤销恢复，超期自动清除"
           : "已被管理员删除，待管理员处理"
       }));
-    } else if (a.status === "active") {
-      var line = stateLine(a);
-      info.appendChild(YB.el("div", { class: "state-line " + line.cls, text: line.text }));
     }
     ident.appendChild(info);
 
     var actions = YB.el("div", { class: "account-actions" });
     if (a.deleted) {
-      actions.appendChild(badge("已删除"));
       if (a.deleted_by_me) {
         actions.appendChild(actionButton("撤销删除", "btn btn--ghost btn--sm", function () { restoreAccount(i); }));
       } else {
         actions.appendChild(YB.el("span", { class: "account-note", text: "待管理员处理" }));
       }
     } else {
-      if (a.user_paused) actions.appendChild(badge("已取消", "danger"));
-      else actions.appendChild(statusBadge(a.status));
       if (a.status === "active") {
         actions.appendChild(actionLink("签到日历", "btn btn--ghost btn--sm", YB.BASE + "/user/calendar"));
         if (!a.pause_forbidden) {
@@ -153,6 +129,7 @@
     head.appendChild(actions);
     card.appendChild(head);
 
+    // 只保留"需要用户本人处理"的异常提示（例行签到状态属于「签到日历」页）
     if (a.status === "rejected") {
       var rej = YB.el("div", { class: "alert danger account-reject", role: "status" });
       rej.appendChild(YB.el("span", { class: "ico", html: iconUse("circle-alert") }));
@@ -162,14 +139,20 @@
       }));
       card.appendChild(rej);
     }
+    if (!a.deleted && a.status === "active" && a.state_status === "paused") {
+      var bad = YB.el("div", { class: "alert danger account-reject", role: "status" });
+      bad.appendChild(YB.el("span", { class: "ico", html: iconUse("circle-alert") }));
+      bad.appendChild(YB.el("span", { class: "body", text: "账号密码异常，签到已暂停，请编辑账号更新密码。" }));
+      card.appendChild(bad);
+    }
     if (a.logs && a.logs.length) {
       var det = YB.el("details", { class: "account-details" });
       det.appendChild(YB.el("summary", { text: "最近签到记录（" + a.logs.length + " 条）" }));
-      det.appendChild(YB.el("pre", { class: "log-view", text: a.logs.join("\n") }));
+      det.appendChild(YB.el("pre", { class: "log-view", text: a.logs.join(String.fromCharCode(10)) }));
       card.appendChild(det);
     }
     if (!a.deleted && a.status === "pending") {
-      card.appendChild(YB.el("p", { class: "account-pending-hint", text: "审核通过后即可查看签到日历" }));
+      card.appendChild(YB.el("p", { class: "account-pending-hint", text: "审核通过后自动开始签到，签到结果见「签到日历」。" }));
     }
     return card;
   }

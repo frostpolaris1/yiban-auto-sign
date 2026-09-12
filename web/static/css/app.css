@@ -1522,7 +1522,9 @@ body[data-page="user"] .content { flex: 1; }
    .card-head 自带 padding-bottom:16 + margin-bottom:20 + 1px 分隔线，在"标题 + 一行
    说明"上会造出 36px 死白，且每张卡都长得像页头（旧版 5 张卡各一条线即此问题）。
    面板改用无分隔线的轻量卡头，层级靠 .page-title(22) → .panel-title(15) 拉。 */
-.panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+/* 控件（开关/按钮/箭头）必须与左侧文字块**垂直居中**：flex-start 会让控件贴顶，
+   与两行文字的整体重心错位（用户反馈「开关和外框没有垂直居中对齐」的根因）。 */
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .panel-head-text { min-width: 0; }
 .panel-title {
   margin: 0;
@@ -1553,8 +1555,11 @@ body[data-page="user"] .content { flex: 1; }
 }
 @media (max-width: 720px) {
   .user-grid { gap: 16px; }
-  /* 窄屏下"标题+说明"与右侧操作按钮同行会互相挤压，改为换行堆叠 */
+  /* 窄屏下「标题+说明」与右侧操作按钮同行会互相挤压，改为换行堆叠；
+     换行后控件靠右对齐（与未换行时的右端位保持一致） */
   .panel-head { flex-wrap: wrap; }
+  .panel-head > .switch,
+  .panel-head > .btn { margin-left: auto; }
 }
 
 /* ---- 19.4 侧边栏可读性修正 ---- */
@@ -1562,20 +1567,7 @@ body[data-page="user"] .content { flex: 1; }
 .brand-tag { color: var(--t-muted); }
 .workspace-role { color: var(--t-muted); }
 
-/* ---- 19.5 状态图例 / 账号卡片 / 日志块 ---- */
-.status-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0 0 16px;
-  padding: 0;
-  list-style: none;
-  font-size: 11.5px;
-  color: var(--t-muted);
-}
-.status-legend li { display: inline-flex; align-items: center; gap: 4px; }
-.status-legend svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 2; fill: none; }
-
+/* ---- 19.5 账号卡片 / 状态行 / 日志块 ---- */
 .account-list { display: flex; flex-direction: column; gap: 12px; }
 .account-card {
   padding: 16px;
@@ -1584,7 +1576,9 @@ body[data-page="user"] .content { flex: 1; }
   background: var(--bg-card);
 }
 .account-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.account-ident { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.account-ident { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* 名称 + 审核徽章同一行（徽章从操作行移出，竖屏才放得下按钮） */
+.account-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .account-icon { display: inline-flex; flex-shrink: 0; color: var(--t-muted); }
 .account-icon svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.8; fill: none; }
 .account-name { font-size: 13px; font-weight: 600; color: var(--t-base); }
@@ -1651,7 +1645,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 /* ---- 19.7 折叠区（改密等）：原生 <details>，箭头随展开旋转 ---- */
 .user-collapse > summary {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   cursor: pointer;
@@ -1822,7 +1816,8 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-swatch--today { background: transparent; box-shadow: inset 0 0 0 2px var(--primary); }
 
 /* 日志面板：常驻 + 宽屏 sticky（顶栏 60px + 24 gap），空态占位保证日志区始终可见 */
-.sc-log-card { display: flex; flex-direction: column; position: sticky; top: 84px; align-self: start; }
+/* 与日历卡等高：不加 sticky/align-self（那会按内容高度收缩，横屏下两卡不齐） */
+.sc-log-card { display: flex; flex-direction: column; }
 .sc-log { flex: 1; min-height: 240px; }
 .sc-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-muted); }
 /* 空态图标是装饰（aria-hidden），不承载信息，故可用 --t-light */
@@ -1834,14 +1829,53 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 @media (max-width: 720px) {
   .sc-grid { grid-auto-rows: 44px; gap: 2px; }
   .sc-nav-btn { width: 40px; height: 40px; }
-  .btn--sm { min-height: 36px; }
-  .account-actions { gap: 8px; }
-  .status-legend { font-size: 11px; gap: 4px 10px; }
+  /* 竖屏：操作按钮必须在同一行——收窄内距与字号并禁止换行（宽度已实测放得下） */
+  .account-actions { flex-wrap: nowrap; gap: 6px; }
+  .account-actions .btn--sm { padding: 5px 8px; font-size: 11px; min-height: 32px; }
+  .btn--sm { min-height: 34px; }
   .sc-weekdays { gap: 3px; }
 }
-@media (max-width: 1100px) {
-  .sc-log-card { position: static; }
+
+
+/* ==========================================================================
+   21. 通知中心下拉（用户端顶栏铃铛）
+   --------------------------------------------------------------------------
+   取代「全屏公告弹窗」：面板复用 Adminator 的 .dd-wrap/.dd-menu（淡入 + 点击外部/Esc
+   关闭由 core.js 统一处理），内部是分节列表——公告置顶，账号异常与邮件通知待后端接口接入。
+   ========================================================================== */
+.notif-menu { max-width: 360px; }
+.notif-head {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--t-base);
 }
+.notif-list { max-height: 60vh; overflow-y: auto; }
+.notif-section { padding: 12px 16px; border-bottom: 1px solid var(--border-soft); }
+.notif-section:last-child { border-bottom: 0; }
+.notif-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--t-muted);
+}
+.notif-label svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 2; fill: none; }
+.notif-body { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-base); white-space: pre-wrap; word-break: break-word; }
+.notif-note {
+  margin: 0;
+  padding: 10px 16px 12px;
+  border-top: 1px dashed var(--border);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--t-muted);
+}
+/* 未读圆点：无文字时收成小圆点（Adminator 的 .count 是给数字徽标用的） */
+.icon-btn .count[data-announcement-dot] { min-width: 8px; width: 8px; height: 8px; padding: 0; top: 7px; right: 7px; border-width: 1px; }
 
 @media (prefers-reduced-motion: reduce) {
   .sc-cell,

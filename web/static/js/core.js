@@ -655,22 +655,40 @@
     forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) { bar.hidden = true; });
   }
   function initAnnouncement() {
+    function showBell() {
+      var btn = $("announcementBtn");
+      if (!btn) return null;
+      // data-notif-always：通知中心入口常驻（用户端下拉面板）；其余页面沿用"有公告才显示"
+      if (btn.getAttribute("data-notif-always") === "1") btn.hidden = false;
+      return btn;
+    }
     api("GET", "/api/announcement").then(function (data) {
       var text = String((data && data.text) || "").trim();
-      if (!text) return;
       var btn = $("announcementBtn");
-      if (btn) { btn.hidden = false; btn.addEventListener("click", function () { showAnnouncement(text); }); }
+      if (btn && text && !btn.closest(".dd-wrap")) {
+        // 没有通知下拉的页面（管理端顶栏）：沿用可点开的公告弹窗
+        btn.hidden = false;
+        btn.addEventListener("click", function () { showAnnouncement(text); });
+      }
+      showBell();
+      if (!text) return;
       var dot = document.querySelector("[data-announcement-dot]");
       if (dot) dot.hidden = false;
-      // 页面内公告横幅（无顶栏的整页，如登录页）：textContent 防 XSS；已关闭过则不再显示。
+      // 所有公告文本挂点统一填充（通知中心分节、页面横幅都用 data-announcement-text）
+      forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
+      // 通知中心里的公告分节（用户端）
+      forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = false; });
+      // 页面内公告横幅（无顶栏的整页，如登录页）：文本已由上面的统一填充写入；
+      // 关闭按钮绑定 + 「本次会话已关闭」判定只对横幅做。
       forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
-        var txt = bar.querySelector("[data-announcement-text]");
-        if (txt) txt.textContent = text;
         var closeBtn = bar.querySelector("[data-announcement-dismiss]");
         if (closeBtn) closeBtn.addEventListener("click", function () { dismissAnnouncement(text); });
         if (!announceIsDismissed(text)) bar.hidden = false;
       });
-    }).catch(function () {});
+    }).catch(function () {
+      // 公告接口失败也不能让通知入口消失（用户端下拉是常驻入口）
+      showBell();
+    });
   }
 
   /* ---------- 全局事件委托 ---------- */
