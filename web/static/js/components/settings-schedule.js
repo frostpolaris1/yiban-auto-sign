@@ -1,21 +1,24 @@
-/* 系统设置 · 签到调度卡（管理端 /settings）。
-   挂载到 window.YB.settingsSchedule；classic script。仅主管理员可改（后端 403 兜底），
-   非主管理员时控件全部 disabled + 就地给出原因（可见而不改，便于理解权限）。
+/* 系统设置 · 签到调度分区（管理端 /settings）。
 
-   显式保存：改动只标脏（.set-dirty + 保存/重置按钮出现），点「保存调度设置」才提交；
-   脏时离开页面触发 beforeunload 守卫。提交**只发送实际改动的字段**（后端按字段携带写入），
-   其中 gap_max 属容量硬门，额外走 YB.openConfirmPasswordModal 收集当前管理员口令。
+   挂载到 window.YB.settingsSchedule；classic script。分区按**逐字段权限**复刻后端
+   POST /api/settings 的内联判定（app.py:6982-6989）：
+     · 仅主管理员：sign_order / sign_dist / edge_front_sec / edge_back_sec /
+       sign_window / gap_max / allow_time_pref
+     · 任意管理员：saturday_sign / sunday_sign
+   非主管理员：主管理员专属控件全部 disabled + 就地说明（可见而不改），
+   周六/周日开关保持可用且**改动即保存**；主管理员的全部字段走显式保存。
 
-   接口契约（不得改）：GET /api/settings 回填；POST /api/settings 部分更新，
-   字段 sign_order / sign_dist / edge_front_sec / edge_back_sec / allow_time_pref /
-   sign_window / gap_max（+ confirm_password）。 */
+   显式保存（主管理员）：改动只标脏（.badge--warn 脏标记 + 保存按钮出现），点
+   「保存调度设置」才提交；脏时离开页面触发 beforeunload 守卫。提交只发送实际改动的
+   字段；其中 gap_max 属容量硬门，额外走 YB.openConfirmPasswordModal 收集管理员口令。
+
+   接口契约（不得改）：GET /api/settings 回填；POST /api/settings 部分更新。 */
 (function () {
   "use strict";
   var YB = window.YB;
   if (!YB) return;
 
   var DEFAULTS = { order: "sequence", dist: "uniform", edge: 60, start: "06:30", end: "07:50" };
-  var EDGES = [0, 30, 60, 120, 300]; // 秒：0 / 0.5 / 1 / 2 / 5 分钟
 
   var ctx = null;
   var snap = null;          // 服务器快照（用于只提交改动字段）
@@ -56,12 +59,23 @@
   }
 
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
+  function setDisabled(id, v) { var el = $(id); if (el) el.disabled = !!v; }
+  function setTip(text, bad) {
+    var n = $("ss-tip");
+    if (!n) return;
+    n.textContent = text || "";
+    n.className = bad ? "set-tip set-bad" : "set-tip";
+  }
   // 账号间隔上界 3600 与后端钳位一致：避免前端按未钳位值提示"已保存"而后端静默改小
   function clampGap(v) {
     v = parseInt(v, 10);
     if (isNaN(v)) return 0;
     return Math.min(3600, Math.max(0, v));
   }
+  function quickButtons() {
+    return [].slice.call(document.querySelectorAll("#set-schedule .btn-group [data-ss-edge]"));
+  }
+  function isMaster() { return !!(ctx && ctx.isMaster); }
 
   function markDirty() {
     if (dirty) return;
@@ -73,6 +87,15 @@
     dirty = false;
     setHidden($("ss-save"), true);
     setHidden($("ss-dirty"), true);
+  }
+
+  // 快捷值按钮的选中态：前后裁剪值一致时才点亮对应档位
+  function syncQuickActive() {
+    var f = edgeVal("ss-edge-front"), b = edgeVal("ss-edge-back");
+    quickButtons().forEach(function (btn) {
+      var sec = parseInt(btn.getAttribute("data-ss-edge"), 10);
+      btn.classList.toggle("is-active", f === b && sec === f);
+    });
   }
 
   // 窗口容量警示：掐头去尾为 0 时边缘账号可能超时；窗口扣除掐头去尾与
@@ -97,36 +120,30 @@
     warn.hidden = msgs.length === 0;
   }
 
-  function syncWindowStatic() {
-    var p = windowParts();
-    var el = $("set-window-static");
-    if (el) el.textContent = p[0] + " ~ " + p[1];
-  }
-
-  // 非主管理员：可见但不可改，原因就地可见（不是隐藏）。
+  // 逐字段权限：主管理员专属控件在非主管理员下禁用（周六/周日始终可用）。
   function applyPerm() {
-    var disabled = !(ctx && ctx.isMaster);
+    var master = isMaster();
     ["ss-order", "ss-dist", "ss-edge-front", "ss-edge-back", "ss-gap",
      "ss-window-start", "ss-window-end", "ss-time-pref", "ss-reset", "ss-save"].forEach(function (id) {
-      var el = $(id);
-      if (el) el.disabled = disabled;
+      setDisabled(id, !master);
     });
-    var chips = document.querySelectorAll("#set-schedule .set-chip");
-    [].forEach.call(chips, function (b) { b.disabled = disabled; });
-    setHidden($("ss-perm"), !disabled);
-    // 整卡禁用：容器做 group 并把禁用原因 #ss-perm 关联给读屏（可见但不改的权限呈现）
+    quickButtons().forEach(function (b) { b.disabled = !master; });
+    setHidden($("ss-perm"), master);
+    setHidden($("ss-save"), !master || !dirty);
+    setHidden($("ss-dirty"), !master || !dirty);
     var card = $("set-schedule");
     if (card) {
-      if (disabled) {
-        card.setAttribute("role", "group");
-        card.setAttribute("aria-describedby", "ss-perm");
-      } else {
+      if (master) {
         card.removeAttribute("role");
         card.removeAttribute("aria-describedby");
+      } else {
+        card.setAttribute("role", "group");
+        card.setAttribute("aria-describedby", "ss-perm");
       }
     }
   }
 
+  /* ---------------- 主管理员：显式保存 ---------------- */
   function collect() {
     var body = {};
     var order = ($("ss-order") || {}).value || DEFAULTS.order;
@@ -134,6 +151,8 @@
     var f = edgeVal("ss-edge-front"), b = edgeVal("ss-edge-back");
     var gap = clampGap(num($("ss-gap"), snap ? snap.gap : 0));
     var pref = $("ss-time-pref") && $("ss-time-pref").checked ? 1 : 0;
+    var sat = $("ss-sat") && $("ss-sat").checked ? 1 : 0;
+    var sun = $("ss-sun") && $("ss-sun").checked ? 1 : 0;
     var win = windowParts();
     var winStr = win[0] + " ~ " + win[1];
     if (order !== snap.order) body.sign_order = order;
@@ -141,14 +160,11 @@
     if (f !== snap.edgeFront) body.edge_front_sec = f;
     if (b !== snap.edgeBack) body.edge_back_sec = b;
     if (pref !== snap.pref) body.allow_time_pref = pref;
+    if (sat !== snap.sat) body.saturday_sign = sat;
+    if (sun !== snap.sun) body.sunday_sign = sun;
     if (winStr !== snap.window) body.sign_window = winStr;
     if (gap !== snap.gap) body.gap_max = gap;
     return body;
-  }
-
-  function afterSave() {
-    snap = snapshotFromDom();
-    clearDirty();
   }
 
   function snapshotFromDom() {
@@ -159,34 +175,37 @@
       edgeBack: edgeVal("ss-edge-back"),
       gap: clampGap(num($("ss-gap"), 0)),
       pref: $("ss-time-pref") && $("ss-time-pref").checked ? 1 : 0,
+      sat: $("ss-sat") && $("ss-sat").checked ? 1 : 0,
+      sun: $("ss-sun") && $("ss-sun").checked ? 1 : 0,
       window: windowParts().join(" ~ ")
     };
   }
 
-  function post(body) {
-    return YB.api("POST", "/api/settings", body);
+  function afterSave() {
+    snap = snapshotFromDom();
+    clearDirty();
   }
 
   function save() {
-    if (saving) return;
+    if (saving || !isMaster()) return;
     var body = collect();
-    var keys = Object.keys(body);
-    if (!keys.length) { YB.toast.info("没有需要保存的改动"); return; }
-    if (!(ctx && ctx.isMaster)) { YB.toast.error("仅主管理员可修改调度设置"); return; }
+    if (!Object.keys(body).length) { YB.toast.info("没有需要保存的改动"); return; }
     var needPw = Object.prototype.hasOwnProperty.call(body, "gap_max");
     var submit = function (pw) {
       if (pw) body.confirm_password = pw;
       saving = true;
-      setDisabled($("ss-save"), true);
-      post(body).then(function (data) {
+      setTip("保存中…", false);
+      setDisabled("ss-save", true);
+      YB.api("POST", "/api/settings", body).then(function (data) {
         afterSave();
-        YB.toast.success((data && data.msg) || "调度设置已保存");
+        setTip((data && data.msg) || "调度设置已保存", false);
         if (ctx.onSaved) ctx.onSaved();
       }).catch(function (e) {
-        YB.toast.error((e && e.message) || "保存失败，请稍后重试");
+        setTip((e && e.message) || "保存失败，请稍后重试", true);
       }).then(function () {
         saving = false;
-        if (ctx && ctx.isMaster) setDisabled($("ss-save"), false);
+        setDisabled("ss-save", false);
+        applyPerm();
       });
     };
     if (needPw) {
@@ -198,34 +217,51 @@
     }
   }
 
-  function setDisabled(el, v) { if (el) el.disabled = !!v; }
-
   function reset() {
+    if (!isMaster()) return;
     YB.confirmDialog({
       title: "恢复默认调度",
       body: "恢复为：窗口 06:30 ~ 07:50 · 掐头去尾各 1 分钟 · 排序顺序 · 分布均匀。\n（账号间隔与自选开关不在恢复范围，可点保存生效）",
       confirmText: "恢复默认"
     }).then(function (ok) {
       if (!ok) return;
-      setSelect("ss-order", DEFAULTS.order);
-      setSelect("ss-dist", DEFAULTS.dist);
+      var o = $("ss-order"), d = $("ss-dist");
+      if (o) o.value = DEFAULTS.order;
+      if (d) d.value = DEFAULTS.dist;
       setEdge("ss-edge-front", DEFAULTS.edge);
       setEdge("ss-edge-back", DEFAULTS.edge);
       var s = $("ss-window-start"), e = $("ss-window-end");
       if (s) s.value = DEFAULTS.start;
       if (e) e.value = DEFAULTS.end;
-      syncWindowStatic();
+      syncQuickActive();
       updateEdgeWarn();
       markDirty();
     });
   }
-  function setSelect(id, v) { var el = $(id); if (el) el.value = v; }
 
+  /* ---------------- 任意管理员：周末开关改动即保存 ---------------- */
+  function saveWeekend(id, field, revert) {
+    if (saving) { if (revert) revert(); return; }
+    saving = true;
+    var el = $(id);
+    var body = {};
+    body[field] = el && el.checked ? 1 : 0;
+    setTip("保存中…", false);
+    YB.api("POST", "/api/settings", body).then(function () {
+      if (snap) snap[field === "saturday_sign" ? "sat" : "sun"] = body[field];
+      setTip("已保存（下次自动签到时生效）", false);
+    }).catch(function (e) {
+      if (revert) revert();
+      setTip((e && e.message) || "保存失败，请稍后重试", true);
+    }).then(function () { saving = false; });
+  }
+
+  /* ---------------- 绑定 ---------------- */
   function bind() {
     ["ss-order", "ss-dist", "ss-window-start", "ss-window-end"].forEach(function (id) {
       var el = $(id);
       if (el) el.addEventListener("change", function () {
-        syncWindowStatic(); updateEdgeWarn(); markDirty();
+        updateEdgeWarn(); markDirty();
       });
     });
     ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
@@ -233,7 +269,7 @@
       if (el) el.addEventListener("change", function () {
         var v = Math.min(5, Math.max(0, parseFloat(el.value) || 0));
         el.value = String(Math.round(v * 2) / 2);
-        updateEdgeWarn(); markDirty();
+        syncQuickActive(); updateEdgeWarn(); markDirty();
       });
     });
     var gap = $("ss-gap");
@@ -244,15 +280,24 @@
     });
     var pref = $("ss-time-pref");
     if (pref) pref.addEventListener("change", markDirty);
-    var chips = document.querySelectorAll("#set-schedule .set-chip");
-    [].forEach.call(chips, function (btn) {
+    quickButtons().forEach(function (btn) {
       btn.addEventListener("click", function () {
         if (btn.disabled) return;
         var sec = parseInt(btn.getAttribute("data-ss-edge"), 10);
         if (!isFinite(sec)) return;
         setEdge("ss-edge-front", sec);
         setEdge("ss-edge-back", sec);
-        updateEdgeWarn(); markDirty();
+        syncQuickActive(); updateEdgeWarn(); markDirty();
+      });
+    });
+    // 周六/周日：主管理员并入显式保存；非主管理员（保存按钮不可用）改动即保存
+    [["ss-sat", "saturday_sign"], ["ss-sun", "sunday_sign"]].forEach(function (pair) {
+      var cb = $(pair[0]);
+      if (!cb) return;
+      cb.addEventListener("change", function () {
+        if (isMaster()) { markDirty(); return; }
+        var on = cb.checked;
+        saveWeekend(pair[0], pair[1], function () { cb.checked = !on; });
       });
     });
     var saveBtn = $("ss-save");
@@ -266,7 +311,7 @@
     });
   }
 
-  // 用服务器数据回填（首次加载与保存后重拉共用）。仅当非脏时覆盖，避免抹掉用户输入。
+  // 用服务器数据回填（首次加载与保存后重拉共用）。
   function apply(data) {
     snap = {
       order: data.sign_order || DEFAULTS.order,
@@ -277,23 +322,30 @@
         : (data.window_edge_sec != null ? data.window_edge_sec : DEFAULTS.edge)),
       gap: Number(data.gap_max != null ? data.gap_max : 0),
       pref: data.allow_time_pref ? 1 : 0,
+      sat: data.saturday_sign ? 1 : 0,
+      sun: data.sunday_sign ? 1 : 0,
       window: data.sign_window || (DEFAULTS.start + " ~ " + DEFAULTS.end)
     };
-    setSelect("ss-order", snap.order);
-    setSelect("ss-dist", snap.dist);
+    var o = $("ss-order"), d = $("ss-dist");
+    if (o) o.value = snap.order;
+    if (d) d.value = snap.dist;
     setEdge("ss-edge-front", snap.edgeFront);
     setEdge("ss-edge-back", snap.edgeBack);
     var gap = $("ss-gap");
     if (gap) gap.value = String(snap.gap);
     var pref = $("ss-time-pref");
     if (pref) pref.checked = !!snap.pref;
+    var sat = $("ss-sat"), sun = $("ss-sun");
+    if (sat) sat.checked = !!snap.sat;
+    if (sun) sun.checked = !!snap.sun;
     var parts = String(snap.window).split("~");
     var s = $("ss-window-start"), e = $("ss-window-end");
     if (s) s.value = (parts[0] || DEFAULTS.start).trim().slice(0, 5) || DEFAULTS.start;
     if (e) e.value = (parts[1] || DEFAULTS.end).trim().slice(0, 5) || DEFAULTS.end;
     applyPerm();
-    syncWindowStatic();
+    syncQuickActive();
     updateEdgeWarn();
+    setTip("", false);
     clearDirty();
   }
 

@@ -21,10 +21,25 @@ user / login 只有一份，是 index 独有的漂移。修复后统一留在页
 
 **新判据（保护意图不变）**：入口的"可见性"不再能依赖客户端显隐开关——
   · 导航项必须是真实 `<a href>`，且 href 指向 `web/app.py` 已注册的路由；
-  · 新外壳与各页正文不得出现 `data-tab-group`/`data-tab-btn`/`switchTab` 这类
-    "内容靠客户端切换显隐"的机制；
+  · 新外壳与各页正文不得出现 `data-tab-btn`/`switchTab` 这类"整页内容靠客户端切换
+    显隐"的机制；
   · 版本/开源这类整页唯一条目只由共享页脚承载 **一次**，页面正文模板里 **零次**
     （按页复制才会造成某页缺失或多出——正是原缺陷的成因）。
+
+## 2026-09-12 收窄（判据意图不放宽，只放开合法用法）
+
+`/settings` 按功能重做后改用模板 `.tabs` 做**页内分区**（六个配置分区，契约
+`[data-tab-group]` + `.tab[data-tab-target]` + `.tab-panel[data-tab-id]`，切换由 core.js
+承担）。原先一刀切禁止 `data-tab-group` 会误伤这个合法用法，故收窄为：
+
+  · **外壳/片段**（layout_*/partials）：仍禁止全部 tab 标记 —— 导航必须是真实链接；
+  · **页面正文**（pages/*.html）：允许 `data-tab-group` 做页内分区，但必须
+    ① 每个 `data-tab-target` 在同文件内有对应 `data-tab-id`（否则分区点不开/内容消失）；
+    ② 页面级标题 `.page-title` 仍恰好 1 个（分区不得把整页标题吞进某个 tab）；
+    ③ `data-tab-btn` / `switchTab(` 这类整页显隐机制仍全部禁止。
+
+即：**页内分区可，整页内容/导航藏进 tab 不可** —— 原缺陷（入口随 tab 显隐而消失）
+仍在保护范围内。
 
 ## 保留的判据
 
@@ -64,10 +79,20 @@ ADMIN_PAGES = (
     "pages/users.html",
     "pages/settings.html",
     "pages/mine.html",
+    "pages/mine_calendar.html",
 )
 
-# 客户端 tab 显隐机制的特征串（多页架构下页面级内容不得靠它显隐）
+# 客户端 tab 显隐机制的特征串。
+# 外壳/片段：**全部禁止** —— 导航必须是真实 <a href> 页面链接，不能靠 data-* + JS 切换。
 TAB_MECHANISM_MARKERS = ("data-tab-group", "data-tab-btn", "data-tab-target", "switchTab(")
+
+# 页面正文：只禁「整页内容/导航藏进 tab、随 tab 显隐而消失」的老机制。
+# 模板 .tabs 的**页内分区**是允许的（它是模板现成组件，非整页显隐开关），
+# 但必须满足：每个 data-tab-target 在本文件有对应 data-tab-id，且页面级标题仍恰好 1 个。
+PAGE_FORBIDDEN_TAB_MARKERS = ("data-tab-btn", "switchTab(")
+_TAB_TARGET_RE = re.compile(r'data-tab-target="([^"]+)"')
+_TAB_ID_RE = re.compile(r'data-tab-id="([^"]+)"')
+_PAGE_TITLE_RE = re.compile(r'class="page-title"')
 
 # 整页唯一标记 → 说明
 UNIQUE_MARKERS = {
@@ -140,18 +165,45 @@ class PageConsistencyTest(unittest.TestCase):
             "侧栏导航项必须用 href 指向真实路由（不能靠 data-* + JS 切换）",
         )
 
-        # ② 新外壳/正文不得靠客户端 tab 显隐
+        # ② 新外壳/片段不得靠客户端 tab 显隐（导航一律真实链接）
         offenders = []
-        for name in ADMIN_SHELL + ADMIN_PAGES:
+        for name in ADMIN_SHELL:
             text = _read(os.path.join(TEMPLATES, name))
             for marker in TAB_MECHANISM_MARKERS:
                 if marker in text:
                     offenders.append(f"  {name}: 含 {marker!r}")
         if offenders:
             self.fail(
-                "新管理端出现客户端 tab 显隐机制 —— 页面级内容与入口不得靠 tab 切换"
-                "显隐（多页架构下这会让某些入口/正文在特定状态消失）：\n"
+                "新管理端外壳/片段出现客户端 tab 显隐机制 —— 导航与整页入口不得靠 tab 切换"
+                "显隐（多页架构下这会让某些入口在特定状态消失）：\n"
                 + "\n".join(offenders)
+            )
+
+        # ②b 页面正文：允许模板 .tabs 做**页内分区**（2026-09-12 /settings 重做起），
+        #     仍禁止「整页内容/导航藏进 tab」的老机制；分区必须成对且不吞掉页面级标题。
+        page_offenders, pair_problems = [], []
+        for name in ADMIN_PAGES:
+            text = _read(os.path.join(TEMPLATES, name))
+            for marker in PAGE_FORBIDDEN_TAB_MARKERS:
+                if marker in text:
+                    page_offenders.append(f"  {name}: 含 {marker!r}")
+            targets = _TAB_TARGET_RE.findall(text)
+            ids = set(_TAB_ID_RE.findall(text))
+            for t in targets:
+                if t not in ids:
+                    pair_problems.append(f"  {name}: data-tab-target={t!r} 无对应 data-tab-id")
+            if targets and len(_PAGE_TITLE_RE.findall(text)) != 1:
+                pair_problems.append(
+                    f"  {name}: 用了页内分区，页面级标题 .page-title 应恰好 1 个"
+                    f"（实际 {len(_PAGE_TITLE_RE.findall(text))}）"
+                )
+        if page_offenders or pair_problems:
+            self.fail(
+                "页面正文的分区机制不合规 —— 判据：**页内分区可、整页内容/导航藏进 tab 不可**。"
+                "允许模板 .tabs（[data-tab-group] + .tab[data-tab-target] + "
+                ".tab-panel[data-tab-id]）做页内分区，但每个 target 必须在本文件有对应 id，"
+                "且页面级标题不得被分区吞掉；data-tab-btn / switchTab( 这类整页显隐机制"
+                "仍全部禁止：\n" + "\n".join(page_offenders + pair_problems)
             )
 
         # ③ 整页唯一条目：共享页脚一次、页面正文零次

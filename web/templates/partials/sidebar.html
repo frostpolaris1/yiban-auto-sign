@@ -17,16 +17,26 @@
     </div>
   </div>
 
-  <nav class="nav-section" aria-label="主导航">
-    <div class="nav-label">工作台</div>
-    {% set items = [
-      ('dashboard', '/',         'layout-dashboard', '数据总览'),
-      ('accounts',  '/accounts', 'list',             '账号管理'),
-      ('logs',      '/logs',     'file-text',        '签到日志'),
-      ('users',     '/users',    'users',            '用户管理'),
-      ('settings',  '/settings', 'settings',         '系统设置'),
-      ('mine',      '/mine',     'user',             '我的账号'),
-    ] %}
+  {# 导航分三组（用户 2026-09-12 指定）：数据看板 / 工作台（系统级管理）/ 我的（个人域，
+     与用户端同源的两页）。分组既便于使用，也让「复用 user 页面与组件」的边界一目了然。 #}
+  {% set nav_groups = [
+    ('数据', [
+      ('dashboard', '/',      'layout-dashboard', '数据总览'),
+      ('logs',      '/logs',  'file-text',        '签到日志'),
+    ]),
+    ('工作台', [
+      ('accounts', '/accounts', 'list',     '账号管理'),
+      ('users',    '/users',    'users',    '用户管理'),
+      ('settings', '/settings', 'settings', '系统设置'),
+    ]),
+    ('我的', [
+      ('mine',          '/mine',          'user',     '我的账号'),
+      ('mine-calendar', '/mine/calendar', 'calendar', '我的日历'),
+    ]),
+  ] %}
+  {% for group_label, items in nav_groups %}
+  <nav class="nav-section" aria-label="{{ group_label }}">
+    <div class="nav-label">{{ group_label }}</div>
     {% for key, href, ico, text in items %}
     <a class="nav-link{% if nav_active == key %} is-active{% endif %}"
        href="{{ request.script_root }}{{ href }}"
@@ -38,6 +48,7 @@
     </a>
     {% endfor %}
   </nav>
+  {% endfor %}
 
   <div class="sidebar-footer">
     {# 服务器时间：与 /api/clock 校准，用于判断签到窗口 #}

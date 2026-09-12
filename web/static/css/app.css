@@ -1655,6 +1655,8 @@ html[data-theme="dark"] {
 
 /* ---- 19.4 侧边栏可读性修正 ---- */
 .nav-label { color: var(--t-muted); }     /* Adminator 用 --t-light：浅色侧栏上 2.56:1 */
+/* 导航分组（数据 / 工作台 / 我的）：组与组之间留白，组内由 .nav-section 的 gap 收紧 */
+.nav-section + .nav-section { margin-top: 18px; }
 .brand-tag { color: var(--t-muted); }
 .workspace-role { color: var(--t-muted); }
 
@@ -2630,18 +2632,21 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 /* ==========================================================================
    27. 系统设置页（管理端 /settings）
    --------------------------------------------------------------------------
-   九块按主题分组：概览与容量 / 调度 / 周末签到 / 公告 / 健康检查 /
-   消息推送 / 邮件通知 / 显示偏好 / 危险区。表单刻度沿用 19.2 的单一刻度
-   （字段间 16 / 标签→控件 6 / 控件→帮助 4 / 末字段→动作行 24，由 .form-actions 承担）。
-   分隔线遵守 23 白名单：卡头用 .panel-head 两段式（不画线），只有 .form-actions
-   提交边界保留线；容量上限/权限提示用 --bg-muted inset 底色表达「成组/受限」，不画线。
-
-   权限呈现（本页最重要的事）：非主管理员时专属控件**禁用而非隐藏**（可见即理解权限），
-   禁用原因由 .set-perm 就地给出；危险区例外——整区仅主管理员可见（含改密入口）。
-   信息浮层 .info-tip/.info-pop：hover + focus 双触发（键盘可达），文案为短标签 + <b> 分点。
-
-   同排控件锁定 34px：.btn 自然高 39.5px，与 34px 的 .input 并排会参差，靠归零纵向
-   padding 落到 34px；图标按钮沿用全站 .icon-btn 36px，不在此覆写。
+   按功能分六个 .tabs 分区（签到调度 / 公告 / 通知通道 / 容量配额 / 健康与探针 /
+   系统开关），卡头与表单一律用模板现成类：.card-head(.card-title-wrap/.card-title)、
+   .form-grid(.span-2)、.field(.field-label/.field-help)、.input/.select/.textarea、
+   .input-group(.addon)、.btn-group(.btn.is-active)、.switch、
+   .data-table(.table-scroll/.data-toolbar)、.alert、.badge、.form-actions。
+   本节只保留**确无模板对应**的项目类：
+     · .info-tip/.info-pop       详细信息浮层（模板无此概念，hover + focus 双触发）
+     · .set-row*                 「说明 + 开关」行布局
+     · .set-tip/.set-ok/.set-bad 就地状态文字（成功/失败上色）
+     · .set-warn                 软警示底（容量超限、暂停提示）
+     · .set-danger*              危险区语义（红标题、整宽按钮）
+     · .set-sub                  卡内子段标题（通知通道的推送 / 邮件两段）
+     · .tabs-scroll              窄屏 tab 条横滑容器
+   分隔线遵守 23 白名单：卡头用模板 .card-head（容器 chrome 边界，第 2 类），
+   卡内只有 .form-actions 提交边界保留线（第 4 类）。
    ========================================================================== */
 
 /* ---- 27.1 信息浮层（键盘可达：hover 与 focus 都显示） ---- */
@@ -2681,8 +2686,7 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   box-shadow: 0 8px 24px -8px rgba(0, 0, 0, .25);
   opacity: 0;
   visibility: hidden;
-  /* 基类 = 退出方向（隐藏时）用 ease-in-strong；进入在触发态覆盖为 ease-out-strong。
-     位移方向与 .dd-menu 一致：收起时 -2px，展开归零。 */
+  /* 基类 = 退出方向（隐藏时）用 ease-in-strong；进入在触发态覆盖为 ease-out-strong。 */
   transform: translateY(-2px);
   transition: opacity 120ms var(--ease-in-strong), transform 120ms var(--ease-in-strong), visibility 120ms;
 }
@@ -2696,39 +2700,7 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .info-pop b { display: block; margin-top: 7px; font-weight: 600; color: var(--t-base); }
 .info-pop b:first-child { margin-top: 0; }
 
-/* ---- 27.2 概览与容量 ---- */
-.set-clock {
-  font-family: var(--font-mono);
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--t-base);
-}
-.set-status { margin: 8px 0 0; font-size: 13px; color: var(--t-base); }
-.set-window { margin: 12px 0 0; font-size: 12.5px; color: var(--t-muted); }
-.set-mono { font-family: var(--font-mono); }
-.set-cap { margin-top: 16px; padding: 12px 14px; border-radius: 10px; background: var(--bg-muted); }
-/* 容量标题落在 --bg-muted 上：--t-muted 仅 4.34:1，用 --t-sub（6.92:1）。 */
-.set-cap-title { font-size: 12.5px; color: var(--t-sub); }
-.set-cap-main { margin-top: 4px; font-size: 15px; font-weight: 600; color: var(--t-base); }
-.set-cap-sub { margin: 4px 0 0; font-size: 12.5px; color: var(--t-sub); }
-.set-cap--over { background: var(--badge-bad-bg); }
-.set-cap--over .set-cap-main { color: var(--badge-bad-fg); }
-/* 超限态的标题落在 --badge-bad-bg 上：--t-sub 在此底上不达标，随主数值改用 --badge-bad-fg。 */
-.set-cap--over .set-cap-title { color: var(--badge-bad-fg); }
-.set-breakdown { margin-top: 6px; font-size: 12.5px; color: var(--t-sub); }
-.set-limits { margin-top: 16px; padding: 14px; border-radius: 10px; background: var(--bg-muted); }
-.set-limits-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-/* 提交线在 --bg-muted 上默认的 --border-soft 几乎不可见：改用 --border（线型不变，仍属
-   23 白名单第 4 类「表单正文→操作行」）。 */
-.set-limits .form-actions { margin-top: 16px; border-top-color: var(--border); }
-
-/* 页面级加载/失败状态条：复用 .alert 骨架，失败时 JS 把 .info 切成 .danger。
-   align-items:center 让正文与重试按钮垂直居中（.alert 默认 start）。
-   不复用 .set-status（那是概览卡的签到状态文字，类名语义不同）。 */
-.set-load { margin: 0 0 16px; align-items: center; }
-
-/* ---- 27.3 通用行 / 字段 ---- */
+/* ---- 27.2 「说明 + 开关」行（模板无此布局） ---- */
 .set-row {
   display: flex;
   align-items: center;
@@ -2737,92 +2709,55 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 }
 .set-row + .set-row { margin-top: 16px; }
 .set-row-text { min-width: 0; }
-.set-row-label { font-size: 13px; color: var(--t-base); }
+.set-row-label { display: block; font-size: 13px; color: var(--t-base); }
 .set-help { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
-.set-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.set-label { font-size: 12.5px; font-weight: 600; color: var(--t-sub); }
-/* 帮助文字可能落在 --bg-muted（.set-limits）上：--t-muted 仅 4.34:1，统一用 --t-sub。 */
-.set-hint { margin: 0; font-size: 12px; line-height: 1.55; color: var(--t-sub); }
-/* 字段内 控件→帮助 应为 4px 刻度：.set-field 的 gap 是 6，靠 -2 补齐（同 .field-help 口径）。 */
-.set-field > .set-hint { margin-top: -2px; }
-.set-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.set-grid2 > * { min-width: 0; }
-/* 同排控件同高 34px：归零 .btn 的纵向 padding（自然高 39.5px） */
-.set-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.set-inline .input { width: auto; }
-.set-inline .btn { min-height: 34px; padding-top: 0; padding-bottom: 0; }
-.set-inline .input { min-height: 34px; height: 34px; }
-/* 权限原因 / 就地反馈：inset 底色，不画线 */
-.set-perm, .set-tip, .set-hint-box {
-  margin: 0;
+
+/* ---- 27.3 就地状态文字与软警示 ---- */
+.set-tip { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
+.set-tip:empty { display: none; }
+.set-warn {
+  margin-top: 12px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: var(--bg-muted);
+  background: var(--badge-warn-bg);
+  color: var(--badge-warn-fg);
   font-size: 12.5px;
   line-height: 1.55;
-  color: var(--t-sub);
 }
-.set-perm { margin-top: 12px; }
-.set-tip { margin-top: 12px; }
-.set-tip:empty { display: none; }
-.set-warn { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--badge-warn-bg); color: var(--badge-warn-fg); font-size: 12.5px; line-height: 1.55; }
 .set-ok { color: var(--state-ok-fg); }
 .set-bad { color: var(--state-bad-fg); }
-.set-actions { margin-top: 16px; }
 
-/* ---- 27.4 调度 / 快捷 chips ---- */
-.set-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.set-chip {
-  min-width: 44px;
-  min-height: 34px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-card);
-  color: var(--t-sub);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: border-color 140ms, color 140ms, transform 120ms var(--theme-ease);
-}
-.set-chip:hover { border-color: var(--primary); color: var(--t-base); }
-.set-chip:active { transform: scale(0.96); }
-.set-dirty { color: var(--badge-warn-fg); font-size: 12.5px; }
+/* ---- 27.4 卡内子段标题 / 窄屏 tab 横滑 / 输入组尾缀 ---- */
+.set-sub { margin: 28px 0 14px; font-size: 14px; font-weight: 700; color: var(--t-base); }
+.set-sub--first { margin-top: 4px; }
+/* 低频项收进 <details>（模板无折叠小件，用原生 details + 轻量摘要样式） */
+.set-more { margin-top: 16px; }
+.set-more > summary { cursor: pointer; font-size: 12.5px; color: var(--t-sub); }
+.set-more[open] > summary { margin-bottom: 14px; }
+/* 卡头右侧控件组：模板 .card-head 只留一个 last-child 弹性，多个控件需自组一行 */
+.set-head-actions { display: inline-flex; align-items: center; gap: 10px; }
+/* tab 条在窄屏横滑：外层滚动容器，避免整页横向滚动 */
+.tabs-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tabs-scroll::-webkit-scrollbar { height: 4px; }
+.tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.tabs-scroll .tabs { margin-bottom: 18px; }
+.tabs-scroll .tab { white-space: nowrap; }
+/* 模板 .addon 只有 border-right（前缀形态）；尾缀单位去掉右边线、改在左侧画分隔 */
+.input-group .addon:last-child { border-right: 0; border-left: 1px solid var(--border); }
 
-/* ---- 27.5 公告 ---- */
-.set-textarea { width: 100%; resize: vertical; min-height: 64px; }
+/* ---- 27.5 SMTP 行内编辑（模板 .data-table） ---- */
+#sm-smtps .input { min-width: 110px; }
 
-/* ---- 27.6 SMTP 列表编辑器 ---- */
-.set-smtps { display: flex; flex-direction: column; gap: 12px; }
-.set-smtp { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); }
-.set-smtp-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.set-smtp-name { font-size: 12.5px; font-weight: 600; color: var(--t-sub); }
-.set-smtp-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
-.set-smtp-grid > * { min-width: 0; }
-.set-span-2 { grid-column: span 2; }
-.set-span-3 { grid-column: span 3; }
-.set-smtp .set-label { display: block; margin-bottom: 4px; }
-/* 邮件卡内的子区块（收件人 / SMTP）用间距成组，不画分隔线（23 白名单之外） */
-.set-mail-section { margin-top: 24px; }
-
-/* ---- 27.7 危险区 ---- */
-.set-danger .panel-title { color: var(--state-bad-fg); }
+/* ---- 27.6 危险区 ---- */
+.set-danger .card-title { color: var(--state-bad-fg); }
 .set-danger-actions { display: flex; flex-direction: column; gap: 12px; }
 .set-danger-btn { width: 100%; justify-content: center; }
-.set-danger-note { margin: 0 0 12px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
-.set-pw-grid { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
+.set-danger-note { margin: 0 0 16px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
 
-/* ---- 27.8 响应式 ---- */
-@media (max-width: 720px) {
-  .set-grid2, .set-limits-grid { grid-template-columns: 1fr; }
-  .set-smtp-grid { grid-template-columns: 1fr 1fr; }
-  .set-span-2, .set-span-3 { grid-column: 1 / -1; }
-  /* .info-tip 贴卡右缘，基类 right:0 向左展开本就安全（max-width:min(72vw,420px) 限宽）；
-     曾经在窄屏改成 left:0 让它向右展开，390 下右缘约 611px 越出视口 → 整页横滚。 */
-}
-
+/* ---- 27.7 动效收敛 ---- */
+/* 模板 .tab-panel.is-active 自带 rise-in 320ms，模板自身无 reduced-motion 处理，此处补齐 */
 @media (prefers-reduced-motion: reduce) {
-  .info-pop, .set-chip { transition: none; }
-  .set-chip:active { transform: none; }
+  .info-pop { transition: none; }
+  .tab-panel.is-active { animation: none; }
 }
 
