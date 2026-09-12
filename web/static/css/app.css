@@ -1776,9 +1776,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .collapse-body:not(.is-open) { grid-template-rows: 0fr; }
 /* 收起后（动画结束）才隐藏，避免 Tab 还能聚焦到看不见的输入框 */
 .collapse-body:not(.is-open) > .collapse-inner { visibility: hidden; transition: visibility 0s linear 220ms; }
-/* 与说明之间的 16px 由 .panel-head 的 margin-bottom 提供（折叠态该间距仍在，属可接受余量；
-   曾经试过放在 .collapse-inner 的 padding 上，但 padding 会成为网格行的最小高度，
-   折叠态反而留下 16px 空档）。 */
+/* 与说明之间的间距由 `.collapse-body.is-open` 的动画 margin-top 提供，故折叠卡的面板头
+   margin-bottom 归零（见 #time-pref-card、accounts 的 .acct-group-head），折叠态不留空档；
+   曾试过放在 .collapse-inner 的 padding 上，但 padding 会成为网格行的最小高度，
+   折叠态反而留下 16px 空档。 */
 
 /* ---- 19.8 自选签到时段（5 分钟粒度网格） ---- */
 .slot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
@@ -2059,6 +2060,8 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   .sc-month.is-swapping { opacity: 1; }
   .sc-log.is-fresh > * { animation: none; }
   .collapse-body { transition: none; }
+  /* 收起后延迟 220ms 隐藏的 visibility 过渡也要关掉，否则 reduced-motion 下仍有延迟 */
+  .collapse-body > .collapse-inner { transition: none; }
 }
 
 /* ==========================================================================
@@ -2128,19 +2131,19 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 
 .acct-pending-tip { margin: 0 0 20px; }
 
-/* 页头：本页为「文字块 + 右侧主操作」的 flex 行（全局默认是块级）。仅本页生效。 */
-body[data-page="accounts"] .page-head {
+/* 页头变体：文字块 + 右侧页级主操作。全局默认 .page-head 是块级（标题在上、说明在下），
+   需要页级主按钮的页面（accounts，后续 logs/users/settings/mine）在页头加本类即可复用。 */
+.page-head--split {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
 }
-body[data-page="accounts"] .page-head-text { min-width: 0; }
-body[data-page="accounts"] .page-head > .btn { flex-shrink: 0; }
+.page-head--split .page-head-text { min-width: 0; }
+.page-head--split > .btn { flex-shrink: 0; }
 
-/* 组头折叠：箭头绝对定位在组头行右上角，故行内留出右侧空间、避免与搜索框重叠。
-   ≤720 组头换行时箭头仍锚在第一行右上角（绝对定位相对 .panel-head-row）。 */
+/* 组头折叠：宽屏箭头绝对定位在组头行右上角，故行内留出右侧空间、避免与搜索框重叠。 */
 body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 .acct-group-head .panel-head-row { position: relative; padding-right: 44px; }
 .acct-collapse { position: absolute; top: 0; right: 0; }
@@ -2152,13 +2155,35 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
   body[data-page="accounts"] .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* 窄屏：文字块独占一行，主操作按钮落到第二行右对齐（保持"右上角主操作"的语义，
      不做整行 —— 整行会与下方 KPI 争夺视觉重心）。 */
-  body[data-page="accounts"] .page-head-text { flex: 1 1 100%; }
-  body[data-page="accounts"] .page-head > .btn { margin-left: auto; }
+  .page-head--split .page-head-text { flex: 1 1 100%; }
+  .page-head--split > .btn { margin-left: auto; }
+  /* 窄屏组头显式 grid 放置：第 2 行（工具行）不再被 44px 死区占用、可用满整行；
+     箭头与标题同处第 1 行并由 align-items:center 居中。必须显式指定 grid-column/row，
+     靠自动放置会把绝对定位改回静态后的箭头挤到第 3 行。宽屏 (>720) 仍走上面的绝对定位。 */
+  body[data-page="accounts"] .acct-group-head .panel-head-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    row-gap: 10px;
+    padding-right: 0;
+  }
+  body[data-page="accounts"] .acct-group-head .panel-title { grid-column: 1; grid-row: 1; }
+  body[data-page="accounts"] .acct-group-head .acct-collapse {
+    position: static;
+    grid-column: 2;
+    grid-row: 1;
+  }
+  body[data-page="accounts"] .acct-group-head .acct-tools {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    padding-right: 0;
+  }
 }
 
 .acct-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
 
-.acct-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.acct-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
 .acct-search { display: block; }
 /* 同一工具行内的控件统一 34px 控制高度：桌面档 .btn--sm 实际 31.2px（min-height 只在 ≤720
    才抬到 34），与 34px 的搜索框并排会差 2.8px，肉眼可见参差。 */
@@ -2280,10 +2305,29 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 #accounts-root { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
 #accounts-root.is-swapping { opacity: 0; transform: translateY(3px); }
 
+/* 归属邮箱行内小字：默认（宽屏，归属列可见）隐藏，避免与归属列重复；
+   ≤900 归属列整列隐藏后，改在名称下方展示（取值见 account-table.js 的 ownerMailText，
+   日后设置页开关只改该取值处）。
+   对比度：--t-muted on 白卡 4.76:1，达 AA。 */
+.acct-owner-inline { display: none; }
+
 /* 响应式：窄屏优先保留「选择 / 状态 / 名称 / 手机号 / 操作」，其余列按档隐藏 */
 @media (max-width: 1280px) { .acct-col-xl { display: none; } }
 @media (max-width: 1100px) { .acct-col-lg { display: none; } }
-@media (max-width: 900px) { .acct-col-md { display: none; } }
+@media (max-width: 900px) {
+  .acct-col-md { display: none; }
+  /* 名称单元格允许两行（默认白列表头/单元格是 nowrap）；行高由内容撑开，不写死 */
+  .acct-cell-name { white-space: normal; }
+  .acct-owner-inline {
+    display: block;
+    margin-top: 2px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 400;
+    color: var(--t-muted);
+    word-break: break-all;
+  }
+}
 @media (max-width: 720px) {
   /* 竖屏：标题与工具行分两行，工具行（已 width:100%）落到第二行。
      只在本页放开换行——桌面端「标题左、控件右同行」是既定规范，不可全局 wrap。 */

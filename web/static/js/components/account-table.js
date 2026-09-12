@@ -254,6 +254,23 @@
     return account.owner_display || (account.owner === "admin" ? "管理员" : (account.owner || "—"));
   }
 
+  // 归属邮箱：列表态 a.owner 已由后端 _mask_email 脱敏为 use***@example.com，直接展示即可，
+  // 不在前端还原/请求完整邮箱。非邮箱归属（admin/无）回落 ownerText。
+  // 取值只在此一处，日后设置页加「是否显示归属邮箱」开关时只改这里或包一层布尔判断。
+  function ownerMailText(account) {
+    var owner = String((account && account.owner) || "");
+    return owner.indexOf("@") !== -1 ? owner : ownerText(account);
+  }
+
+  // 名称单元格：名称（删除组带「待删除」徽章，与名称同行）+ 窄屏补充的归属邮箱小字。
+  // 读屏顺序为「名称 → 归属邮箱」（邮箱节点在名称之后）。
+  function nameCell(account, withDeletedBadge) {
+    var main = YB.el("div", { class: "acct-name-main" });
+    main.appendChild(document.createTextNode(String(account.display_name || "")));
+    if (withDeletedBadge) main.appendChild(YB.el("span", { class: "badge danger", text: "待删除" }));
+    return td([main, YB.el("span", { class: "acct-owner-inline", text: ownerMailText(account) })], "acct-cell-name");
+  }
+
   function row(opts) {
     var a = opts.account;
     var group = opts.group;
@@ -262,12 +279,12 @@
     tr.appendChild(checkCell(opts.selected, a, function (on) { opts.onToggle(a, on); }));
     if (group === "pending") {
       tr.appendChild(td([badge(a.status)], "acct-cell-audit"));
-      tr.appendChild(td([a.display_name], "acct-cell-name"));
+      tr.appendChild(nameCell(a, false));
       tr.appendChild(td([String(a.phone || "")], "acct-cell-phone"));
       tr.appendChild(td([ownerText(a)], "acct-cell-owner acct-col-md"));
       tr.appendChild(actionsCell(group, a, handlers));
     } else if (group === "deleted") {
-      tr.appendChild(td([a.display_name, YB.el("span", { class: "badge danger", text: "待删除" })], "acct-cell-name"));
+      tr.appendChild(nameCell(a, true));
       tr.appendChild(td([String(a.phone || "")], "acct-cell-phone"));
       tr.appendChild(td([ownerText(a)], "acct-cell-owner acct-col-md"));
       tr.appendChild(td([String(a.deleted_at || "").replace("T", " ").slice(0, 16)], "acct-cell-time"));
@@ -275,7 +292,7 @@
     } else {
       tr.appendChild(stateCell(a.phone, opts.states, opts.stateMsgs, opts.stateDurs));
       tr.appendChild(td([String((a.index != null ? a.index : 0) + 1)], "acct-cell-idx"));
-      tr.appendChild(td([a.display_name], "acct-cell-name"));
+      tr.appendChild(nameCell(a, false));
       tr.appendChild(td([String(a.phone || "")], "acct-cell-phone"));
       tr.appendChild(td([a.phone_model || "—"], "acct-cell-model acct-col-lg"));
       tr.appendChild(td([prefText(a)], "acct-cell-pref acct-col-xl"));

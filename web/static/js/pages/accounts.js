@@ -243,13 +243,35 @@
   }
 
   /* ---------------- 事件绑定 ---------------- */
+  // 组名与折叠体 id 一一对应（pending-body / active-body / deleted-body）
+  function groupOfBody(bodyId) { return String(bodyId || "").replace(/-body$/, ""); }
+
+  // 统一的展开/收起路径：点击箭头与「搜索非空自动展开」共用，避免复制两份逻辑。
+  // 收起时清空该组选择，防止隐藏的选中项在重新展开后“复活”；
+  // 展开不改选择，由调用方决定是否重渲染。
+  function setGroupOpen(group, open) {
+    var btn = document.querySelector('.acct-collapse[aria-controls="' + group + '-body"]');
+    var body = document.getElementById(group + "-body");
+    if (!btn || !body) return;
+    btn.setAttribute("aria-expanded", String(open));
+    body.classList.toggle("is-open", open);
+    if (!open) {
+      state.sel[group] = {};
+      renderAll();
+    }
+  }
+
   function bindSearch() {
-    [["pending-search", "pendingSearch"], ["active-search", "activeSearch"], ["deleted-search", "deletedSearch"]]
+    [["pending-search", "pendingSearch", "pending"],
+     ["active-search", "activeSearch", "active"],
+     ["deleted-search", "deletedSearch", "deleted"]]
       .forEach(function (pair) {
         var input = $(pair[0]);
         if (!input) return;
         input.addEventListener("input", debounce(function () {
           state[pair[1]] = input.value.trim();
+          // 搜索非空时自动展开该组（清空输入不自动收起）
+          if (state[pair[1]]) setGroupOpen(pair[2], true);
           renderAll();
         }, 150));
       });
@@ -301,12 +323,9 @@
     // 三组通用折叠：button.acct-collapse[aria-expanded] + 由 aria-controls 指定的 .collapse-body
     //（高度动画由 CSS 的 grid-template-rows 承担）。按钮在模板中、不随表格重渲染，绑定一次即可。
     Array.prototype.forEach.call(document.querySelectorAll(".acct-collapse"), function (btn) {
-      var body = document.getElementById(btn.getAttribute("aria-controls"));
-      if (!body) return;
+      var group = groupOfBody(btn.getAttribute("aria-controls"));
       btn.addEventListener("click", function () {
-        var open = btn.getAttribute("aria-expanded") !== "true";
-        btn.setAttribute("aria-expanded", String(open));
-        body.classList.toggle("is-open", open);
+        setGroupOpen(group, btn.getAttribute("aria-expanded") !== "true");
       });
     });
   }
