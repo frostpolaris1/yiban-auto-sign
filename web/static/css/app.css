@@ -920,3 +920,86 @@ textarea {
   text-transform: none;
   letter-spacing: 0;
 }
+
+/* ==========================================================================
+   X. 字体栈收口（中文回退到宋体的根因修复）
+   --------------------------------------------------------------------------
+   Adminator 在组件级大量声明自己的字体栈，且多数以通用族结尾：
+     "Inter Tight","Inter",sans-serif   -> .card-title / .kpi-value 等 4 处
+     "Inter Tight",sans-serif           -> .chart-meta-value / .cal-month 等 20 处
+     "JetBrains Mono",monospace         -> .chart-meta-label / .brand-tag 等 31 处
+     "Inter",sans-serif                 -> .nav-badge
+   这些栈里没有中文字体，中文会落到通用 sans-serif / monospace —— 中文 Windows 下
+   通用族由浏览器按系统字体设置解析，实际命中宋体(SimSun/NSimSun)，于是出现
+   「部分文字变宋体」。仅覆盖 body 不足以修复：组件级声明优先于继承。
+   故按 Adminator 的选择器逐组重写，并在"等宽"栈里也插入中文黑体 —— 日志、事件
+   消息、表格等宽单元格里都含中文，通用 monospace 同样会落到宋体。
+   注：未入库 Inter Tight（仅拉丁标题用的窄体变体），标题/大数字改用已入库的 Inter，
+   换取零额外字体体积；若日后需要该窄体观感，补入库后在下面两处栈首替换即可。
+   ========================================================================== */
+
+/* 正文/标题栈：26 个选择器 */
+.auth-aside h1,
+.auth-brand .name,
+.auth-card h2,
+.brand-name,
+.cal-day-num,
+.cal-month,
+.cal-rail-title,
+.card-title,
+.chart-meta-value,
+.error-code,
+.error-title,
+.hero-title,
+.kpi-value,
+.modal-title,
+.nav-badge,
+.sales-summary h4,
+.sales-summary-total,
+.section-h,
+.stat-cell-value,
+.sv-radial-chart .pct,
+.sv-region-value,
+.upc-date .day,
+.wx-date h5,
+.wx-stat-value,
+.wx-temp,
+body {
+  font-family: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* 等宽栈：32 个选择器 */
+.auth-aside-eyebrow,
+.auth-aside-footer,
+.auth-divider,
+.brand-tag,
+.cal-chip-time,
+.cal-list-count,
+.cal-weekdays>div,
+.chart-meta-label,
+.chart-svg .axis-label,
+.chat-ts,
+.d-footer-meta,
+.data-cell-mono,
+.data-cell-user-email,
+.data-table thead th,
+.dd-profile-email,
+.dd-time,
+.error-eyebrow,
+.error-meta,
+.eyebrow,
+.input-group .addon,
+.kbd,
+.kpi-compare strong,
+.kpi-pill,
+.mini-cal-wd,
+.mono,
+.nav-label,
+.section-h .num,
+.sv-region-value .pct,
+.table thead th,
+.upc-date .mo,
+.upc-time .mono,
+.wx-date p {
+  font-family: "JetBrains Mono", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", ui-monospace, "SFMono-Regular", monospace;
+}
