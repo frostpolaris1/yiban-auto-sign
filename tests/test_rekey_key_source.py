@@ -2419,21 +2419,22 @@ class LoginTrailB14Test(_B14AlertGateBase):
 #   ③ 后端 1 处 + 前端 4 处共五份内联类别正则，无任何防漂移保护。
 # 本组用例钉的就是：判定语义一字未动（≥10 位、≥2 类）+ 各实现锁成一处事实源。
 #
-# 2026-09-12 前端换壳（Adminator + MPA）后的载体迁移：管理端从"单页 index.html 内联
-# 策略块"改为"多页外壳 + static/js 分模块"。策略常量的**定义处**只剩仍在旧栈、但仍有
-# 真实路由的 login.html（注册）与 user.html（自助改密）；管理端改密的**提交路径**落在
-# static/js/pages/{settings,users,accounts}.js，共享输入载体是
-# partials/modals/password.html。下面分别按"定义处"（元测试逐字比对）与"提交路径"
-# （完整策略 helper 调用 + 统一文案）覆盖，保护目标不变：谁先漂移谁判红。
+# 2026-09-12 前端换壳（Adminator + MPA）后的载体迁移：策略常量的**唯一定义处**收敛到
+# static/js/core.js（登录/注册页、用户自助改密、管理端重置/新增口令全部从它取）。
+# 页面不再各自内联一份数组——那正是历史上多份副本互相漂移的成因。
+# 本组以 `frontend_source(页面)` 聚合"模板 + include/extends 片段 + 外链自研静态资源"，
+# 故断言入口仍是真实承载页（login.html / user.html），而常量来源是它们加载的 core.js。
+# 管理端改密的**提交路径**落在 static/js/pages/{settings,users,accounts}.js，共享输入载体
+# 是 partials/modals/password.html。下面分别按"定义处"（元测试逐字比对 core.js 常量）
+# 与"提交路径"（完整策略 helper 调用 + 统一文案）覆盖，保护目标不变：谁先漂移谁判红。
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
-# 前端仍**内联定义**口令策略常量的真实页面（新架构下的两处事实源）：
+# 前端口令策略的真实承载页（聚合后包含 core.js 里的常量定义）：
 #   · login.html —— 注册表单（GET /login 渲染，密码输入实时提示 + 提交前校验）；
 #   · user.html  —— 普通用户自助改密（GET /user 渲染）。
-# 旧 index.html 已无路由渲染；它的策略块原在 static/js/app.js，A4 拆分时随区间并入
-# core.js，Adminator 换壳重写 core.js 时该块被删（管理端改密调用点仍在，见
-# ADMIN_PW_JS）——故 index.html 不再是"定义处"，把它留在 PW_TEMPLATES 里只会读到
-# 引用不到定义的空壳，元测试会因 findall 落空而失去意义。
+# 旧 index.html 已无路由渲染，不再列入。定义落在 core.js，故聚合读取即可读到。
 PW_TEMPLATES = ("login.html", "user.html")
+# 口令策略常量的唯一定义源（换壳重写 core.js 时收敛到这里，供全站复用）。
+PW_SHARED_JS = os.path.join("static", "js", "core.js")
 # 管理端口令提交路径所在的静态 JS（换壳后从 index.html 内联/外部 app.js 迁出）。
 # 这些文件引用 PW_POLICY_HINT / passwordPolicyOk 等共享定义，用于覆盖"重置口令必须走
 # 完整策略而非只判长度"这一不变量（定义应由共享脚本提供，见 test_admin_... 的说明）。
@@ -2452,7 +2453,7 @@ PW_CLASS_SENTENCE = "大小写字母、数字、符号中的至少两类"
 PW_EXPECTED_PATTERNS = [r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]"]
 _PW_JS_ARRAY_RE = re.compile(r"const\s+PW_CLASS_PATTERNS\s*=\s*\[([^\n]*?)\]\s*;")
 _PW_JS_REGEX_RE = re.compile(r"/([^/]+)/")
-_PW_JS_HINT_RE = re.compile(r"const\s+PW_POLICY_HINT\s*=\s*'([^']*)'")
+_PW_JS_HINT_RE = re.compile(r"""const\s+PW_POLICY_HINT\s*=\s*['"]([^'"]*)['"]""")
 _PW_JS_LIMITS_RE = re.compile(
     r"const\s+PW_MIN_LEN\s*=\s*(\d+)\s*,\s*PW_MIN_CLASSES\s*=\s*(\d+)")
 
@@ -2508,13 +2509,13 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
                       "_password_policy_error 必须由模块级常量派生，不得自带一份正则")
         self.assertNotIn("A-Za-z0-9", fn, "_password_policy_error 内不得内联类别正则")
 
-    # ---- ③ 之前端半边（元测试核心）：仍内联定义策略的两页与后端常量逐字同序同串 ----
+    # ---- ③ 之前端半边（元测试核心）：承载页聚合出的定义 vs 后端常量逐字同序同串 ----
     def test_templates_class_regexes_match_backend_constant(self):
-        """类别正则的单一事实源：真实承载页 vs 后端常量（漂移即红）。
+        """类别正则的单一事实源：真实承载页（聚合 core.js）vs 后端常量（漂移即红）。
 
-        换壳后前端仍内联定义该数组的只有 login.html（注册表单）与 user.html（自助改密）
-        ——两页都有真实路由、都是真实密码输入界面。管理端改名/重置路径改用共享 helper
-        （定义应由共享脚本提供），不再各写一份数组，故不在此逐字比对；其提交路径由
+        换壳后前端只有一份定义，落在 static/js/core.js；login.html（注册）与 user.html
+        （自助改密）通过 `<script src>` 加载它，故 frontend_source 聚合后即可读到该数组。
+        管理端改名/重置路径复用同一份共享 helper，其提交路径由
         test_admin_password_modal_validates_classes 覆盖。
         """
         backend = list(self.webapp._PASSWORD_CLASS_PATTERNS)
@@ -2523,40 +2524,44 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
             arr = _PW_JS_ARRAY_RE.search(src)
             self.assertIsNotNone(
                 arr,
-                f"{name} 找不到 `const PW_CLASS_PATTERNS = [...]`：模板内的字符类别判定"
-                f"必须以这一个数组声明（既不得退回逐处内联，也不得删掉——元测试要读得到它）")
+                f"{name} 聚合源码里找不到 `const PW_CLASS_PATTERNS = [...]`：字符类别判定"
+                f"必须以这一个数组声明（定义在 {PW_SHARED_JS}，既不得退回逐处内联，"
+                f"也不得删掉——元测试要读得到它）")
             found = _PW_JS_REGEX_RE.findall(arr.group(1))
             self.assertEqual(
                 found, backend,
-                f"{name} 的类别判定正则与后端漂移：模板 {found} != 后端 {backend}"
-                f"（后端定义见 web/app.py 的 _PASSWORD_CLASS_PATTERNS）。两侧须同序同串，"
-                f"要改判定就同时改 web/app.py 与 {', '.join(PW_TEMPLATES)}")
+                f"{name} 的类别判定正则与后端漂移：前端 {found} != 后端 {backend}"
+                f"（后端定义见 web/app.py 的 _PASSWORD_CLASS_PATTERNS，前端定义见 "
+                f"{PW_SHARED_JS}）。两侧须同序同串")
             self.assertEqual(
                 src.count("[^A-Za-z0-9]"), 1,
-                f"{name} 有多处内联类别正则：符号类只允许写在 PW_CLASS_PATTERNS 里一次")
+                f"{name} 的聚合源码里出现多处类别正则：符号类只允许写在 {PW_SHARED_JS} "
+                f"的 PW_CLASS_PATTERNS 里一次")
             self.assertIn("function passwordClasses(", src,
-                          f"{name} 缺少本地 passwordClasses(v) helper（helper 须替代内联正则）")
+                          f"{name} 聚合源码里缺少共享的 passwordClasses(v) helper")
 
     def test_templates_copy_and_limits_match_backend(self):
         """文案与两个下限常量的前后端一致性：JS 拿不到 Python 常量，只能靠本用例锁。
 
-        承载页同 test_templates_class_regexes_match_backend_constant（login/user）。
-        管理端重置口令的文案不在这里锁——它由调用点把 PW_POLICY_HINT 传给共享模态，
-        见 test_admin_password_modal_validates_classes 的文案断言。
+        承载页同 test_templates_class_regexes_match_backend_constant（login/user 聚合
+        core.js）。管理端重置口令的文案不在这里锁——它由调用点把 PW_POLICY_HINT 传给
+        共享模态，见 test_admin_password_modal_validates_classes 的文案断言。
         """
         self.assertEqual(self.webapp._PASSWORD_POLICY_HINT, PW_HINT,
                          "后端 _PASSWORD_POLICY_HINT 与统一口径文案漂移")
         for name in PW_TEMPLATES:
             src = _frontend(name)
             hint = _PW_JS_HINT_RE.search(src)
-            self.assertIsNotNone(hint, f"{name} 缺少 `const PW_POLICY_HINT = '...'` 文案常量")
+            self.assertIsNotNone(
+                hint, f"{name} 聚合源码里缺少 `const PW_POLICY_HINT = '...'` 文案常量"
+                      f"（定义在 {PW_SHARED_JS}）")
             self.assertEqual(
                 hint.group(1), PW_HINT,
-                f"{name} 的 PW_POLICY_HINT 与后端 _PASSWORD_POLICY_HINT 文案漂移："
-                f"模板「{hint.group(1)}」vs 后端「{self.webapp._PASSWORD_POLICY_HINT}」")
+                f"{name} 聚合出的 PW_POLICY_HINT 与后端 _PASSWORD_POLICY_HINT 文案漂移："
+                f"前端「{hint.group(1)}」vs 后端「{self.webapp._PASSWORD_POLICY_HINT}」")
             limits = _PW_JS_LIMITS_RE.search(src)
             self.assertIsNotNone(
-                limits, f"{name} 的 PW_MIN_LEN / PW_MIN_CLASSES 须在同一行成对声明")
+                limits, f"{name} 聚合源码里 PW_MIN_LEN / PW_MIN_CLASSES 须在同一行成对声明")
             self.assertEqual(int(limits.group(1)), self.webapp.PASSWORD_MIN_LEN,
                              f"{name} 的长度下限与后端 PASSWORD_MIN_LEN 漂移")
             self.assertEqual(int(limits.group(2)), self.webapp._PASSWORD_MIN_CLASSES,

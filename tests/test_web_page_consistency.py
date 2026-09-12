@@ -28,13 +28,20 @@ user / login 只有一份，是 index 独有的漂移。修复后统一留在页
 
 ## 保留的判据
 
-`test_version_and_source_appear_exactly_once_per_page` 继续扫仍整页渲染的
-`index.html` / `user.html` / `login.html`（旧栈页面在迁移完成前仍是真实路由）。
+`test_version_and_source_appear_exactly_once_per_page` 继续覆盖每个整页模板，但改用
+`frontend_source` 聚合读取（模板 + extends/include 片段 + 外链自研静态资源）：
+  · `index.html` —— 旧栈单页（已无路由渲染，文件暂留）；
+  · `login.html` —— 已迁到 `layout_auth.html` 外壳，页脚由 `partials/footer.html` 承载；
+  · `user.html`  —— 旧栈，整页自含。
+只有聚合读取才能让"整页唯一条目恰好一次"在"条目搬进共享页脚"后的新形态继续成立
+（否则 login 会读到 0 次而误报缺失）。
 """
 
 import os
 import re
 import unittest
+
+from _frontend_src import frontend_source
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(BASE, "web", "templates")
@@ -80,10 +87,14 @@ def _read(path):
 
 class PageConsistencyTest(unittest.TestCase):
     def test_version_and_source_appear_exactly_once_per_page(self):
-        """每个整页模板里，版本号与开源入口都必须**恰好 1 处**。"""
+        """每个整页（含其共享外壳/页脚）里，版本号与开源入口都必须**恰好 1 处**。
+
+        按聚合源码判定：整页唯一条目可以住在共享页脚（登录页即如此），
+        只要该页最终渲染出的整份源码里恰好出现一次。
+        """
         problems = []
         for name in PAGE_TEMPLATES:
-            text = _read(os.path.join(TEMPLATES, name))
+            text = frontend_source(name)
             for marker, label in UNIQUE_MARKERS.items():
                 n = len(re.findall(re.escape(marker), text))
                 if n != 1:

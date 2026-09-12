@@ -113,9 +113,12 @@ class SubpathDeployTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         body = r.get_data(as_text=True)
         self.assertIn('const BASE = "";', body)  # tojson 渲染：空串带双引号
-        self.assertIn('src="/static/vendor/tailwind.js', body)
+        # 承载断言改用当前登录页真实引用的自托管资源（换壳后旧栈 tailwind.js 已退役）。
+        # 意图不变：登录页的静态资源必须走 /static/ 且能取到。
+        self.assertIn('src="/static/js/core.js', body)
+        self.assertIn('href="/static/vendor/adminator/adminator.css', body)
         self.assertEqual(self.c.get("/foo").status_code, 404)      # 未知路径仍 404
-        self.assertEqual(self.c.get("/static/vendor/tailwind.js").status_code, 200)
+        self.assertEqual(self.c.get("/static/js/core.js").status_code, 200)
         self.assertEqual(self.c.get("/api/me").status_code, 401)
 
     # ---- 3. 子路径部署契约 ----
@@ -132,9 +135,10 @@ class SubpathDeployTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         body = r.get_data(as_text=True)
         self.assertIn(f'const BASE = "{P}";', body)  # tojson 渲染：JSON 字符串带双引号
-        self.assertIn(f'src="{P}/static/vendor/tailwind.js', body)
+        self.assertIn(f'src="{P}/static/js/core.js', body)
+        self.assertIn(f'href="{P}/static/vendor/adminator/adminator.css', body)
         self.assertIn(f'href="{P}/terms"', body)
-        self.assertEqual(self.c.get(P + "/static/vendor/tailwind.js").status_code, 200)
+        self.assertEqual(self.c.get(P + "/static/js/core.js").status_code, 200)
         self.assertEqual(self.c.get(P + "/api/me").status_code, 401)
         self.assertEqual(self.c.get(P + "/foo").status_code, 404)
 
