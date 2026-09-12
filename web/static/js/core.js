@@ -203,14 +203,23 @@
     if (cfg.labelledBy) panel.setAttribute("aria-labelledby", cfg.labelledBy);
     else if (cfg.title) panel.setAttribute("aria-labelledby", titleId);
     var head = el("div", { class: "modal-head" });
+    var headText = el("div", { class: "modal-head-text" });
     var titleEl = el("div", { class: "modal-title", id: titleId, text: cfg.title || "" });
-    head.appendChild(titleEl);
+    headText.appendChild(titleEl);
+    // 副标题（可选）：与标题同处头部、紧贴其下，而不是隔着整段正文内距
+    if (cfg.subtitle) headText.appendChild(el("div", { class: "modal-sub", text: cfg.subtitle }));
+    head.appendChild(headText);
     var handle = {
       el: panel, panel: panel, backdrop: null, trigger: trigger,
       dismissible: cfg.dismissible !== false, onClose: cfg.onClose,
       titleEl: titleEl,
       close: function () { closeModal(handle); },
       setTitle: function (t) { titleEl.textContent = t; },
+      setSubtitle: function (t) {
+        var sub = headText.querySelector(".modal-sub");
+        if (sub) sub.textContent = t;
+        else headText.appendChild(el("div", { class: "modal-sub", text: t }));
+      },
       setBody: function (b) { body.innerHTML = ""; appendBody(body, b); }
     };
     panel.appendChild(head);
