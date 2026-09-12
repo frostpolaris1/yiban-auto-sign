@@ -53,7 +53,21 @@
     if (out) out.textContent = String(isNaN(v) ? 0 : v);
     el.setAttribute("aria-valuetext", text);
   }
-  function syncEdgeLabels() { syncRangeLabel("ss-edge-front"); syncRangeLabel("ss-edge-back"); }
+  function syncEdgeLabels() { syncRangeLabel("ss-edge-front"); syncRangeLabel("ss-edge-back"); syncTickActive(); }
+  // 刻度条：既是量程尺，也可点击直接取值；当前值对应的刻度高亮
+  function ticksOf(id) {
+    var el = $(id);
+    var field = el && el.closest ? el.closest(".field") : null;
+    return field ? [].slice.call(field.querySelectorAll(".range-tick")) : [];
+  }
+  function syncTickActive() {
+    ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
+      var cur = edgeVal(id);
+      ticksOf(id).forEach(function (btn) {
+        btn.classList.toggle("is-active", parseInt(btn.getAttribute("data-ss-edge"), 10) === cur);
+      });
+    });
+  }
   function windowParts() {
     var s = ($("ss-window-start") || {}).value || DEFAULTS.start;
     var e = ($("ss-window-end") || {}).value || DEFAULTS.end;
@@ -129,6 +143,9 @@
     ["ss-order", "ss-dist", "ss-edge-front", "ss-edge-back", "ss-gap",
      "ss-window-start", "ss-window-end", "ss-time-pref", "ss-reset", "ss-save"].forEach(function (id) {
       setDisabled(id, !master);
+    });
+    ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
+      ticksOf(id).forEach(function (btn) { btn.disabled = !master; });
     });
     setHidden($("ss-perm"), master);
     setHidden($("ss-save"), !master || !dirty);
@@ -286,7 +303,17 @@
     // 滑块：拖动中实时更新读数（input），松手才标脏并重算警示（change，见上）
     ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
       var el = $(id);
-      if (el) el.addEventListener("input", function () { syncRangeLabel(id); });
+      if (el) el.addEventListener("input", function () { syncRangeLabel(id); syncTickActive(); });
+      ticksOf(id).forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (btn.disabled) return;
+          var sec = parseInt(btn.getAttribute("data-ss-edge"), 10);
+          if (!isFinite(sec)) return;
+          setEdge(id, sec);            // setEdge 会同步读数与刻度高亮
+          updateEdgeWarn();
+          markDirty();
+        });
+      });
     });
     // 周六/周日：主管理员并入显式保存；非主管理员（保存按钮不可用）改动即保存
     [["ss-sat", "saturday_sign"], ["ss-sun", "sunday_sign"]].forEach(function (pair) {

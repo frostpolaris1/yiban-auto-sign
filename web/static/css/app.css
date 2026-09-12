@@ -2740,7 +2740,6 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  max-width: 680px;
 }
 .set-row + .set-row { margin-top: 16px; }
 /* 一个 tab 里并排/堆叠多张卡（通知通道 = 推送卡 + 邮件卡）：卡间留白由容器承担 */
@@ -2893,10 +2892,11 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 
 /* ---- 27.6 危险区 ---- */
 .set-danger .card-title { color: var(--state-bad-fg); }
-.set-danger-actions { display: flex; flex-direction: column; gap: 12px; max-width: 680px; }
-.set-danger-btn { width: 100%; justify-content: center; }
+/* 危险区用满卡宽：两个开关并排（原来整宽堆叠，右侧大片空白没用上） */
+.set-danger-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.set-danger-btn { flex: 1 1 220px; justify-content: center; }
 /* 说明限宽：整卡宽（953px）下行长过久，扫读困难（教程 #15/#18）；680px 与 .set-row 同刻度 */
-.set-danger-note { margin: 0 0 16px; max-width: 680px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
+.set-danger-note { margin: 0 0 16px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
 
 /* ---- 27.7 动效收敛 ----
    模板 .tab-panel.is-active 自带 keyframes rise-in 320ms ease + 位移 10px，且模板文件里
@@ -2941,11 +2941,12 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
    3) 空值复用 44px 粗体渲染 "—"，实测成 58×5 的黑横杠：空态给专属字号/颜色。
    4) .kpi-compare 的分隔线是 dashed，违反 23 号白名单（全站禁虚线分隔线）。
    ========================================================================== */
-.kpi-top { flex-wrap: wrap; }
-.kpi-identity { flex: 1 1 auto; }
 .kpi-value sup { font-size: 16px; font-weight: 500; vertical-align: baseline; line-height: 1; color: var(--t-muted); }
 .kpi-compare { border-top-style: solid; }
 .kpi-value--empty { font-size: 20px; font-weight: 600; color: var(--t-muted); letter-spacing: 0; }
+/* 回退模板的单行头部（pill 文案缩短后不再换行）；但标题仍可能被窄卡挤掉，
+   故把模板的 nowrap+ellipsis 改成允许折行 —— 宁可两行，也不要把标题吃掉。 */
+.kpi-label { white-space: normal; overflow: visible; text-overflow: clip; }
 
 /* ==========================================================================
    29. 设置页输入刻度与卡片节奏校准（横屏 8 图实测）
@@ -2960,8 +2961,10 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
       不再对「标签 + 多行说明」整块居中（实测偏低 18px）。
    E) 空表体不留底边线：空态行 + .form-actions 上边线会形成「双线夹空带」。
    ========================================================================== */
-.field { max-width: 680px; }
 .input, .select, .textarea, .input-group { min-height: 40px; }
+/* 短标量字段（账号间隔等）收窄：原来与整列同宽，一个 1~4 位数字占 550px（用户判"框太大"）。
+   其余字段仍铺满列宽 —— 这样各卡的左右缘与其它页面一致（撤销此前的 680px 全局限宽）。 */
+.field--narrow .input-group, .field--narrow .input { max-width: 176px; }
 /* 组间距：开关行与后续「字段组」之间 —— 结构可能是 .field，也可能是整个 .form-grid
    （健康卡即后者，实测只写 .field 时组间距为 0） */
 .set-row + .field, .field + .set-row,
@@ -2979,13 +2982,69 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 #sm-smtps thead th:first-child, #sm-smtps tbody td:first-child { padding-left: 0; }
 #sm-smtps thead th { padding-top: 0; }
 
-/* ---- 时间字段（时/分两个 .select，取代原生 input[type=time]）----
-   原生时间选择器由 UA 渲染，高亮色/黑框/圆角都不可控（实测高亮 #0075FF ≠ 项目主色）。 */
-.time-field .select { width: auto; flex: 1 1 auto; min-width: 0; text-align: center; border: 0; background: transparent; }
-.time-field .select:focus { box-shadow: none; }
-.time-field .addon { border-right: 0; border-left: 0; background: transparent; padding: 0 6px; }
 
 /* 时间字段容器：两个「时:分」组同行，窄屏换行 */
 .time-field-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .time-field-wrap .input-group { flex: 1 1 150px; min-width: 0; }
 .time-sep { color: var(--t-muted); font-size: 12.5px; flex: 0 0 auto; }
+
+/* ---- 滑块刻度（常用值）：滑块下方一排可点的刻度，既当量程尺又当快捷选择 ----
+   0–5 分钟、0.5 步进是均匀刻度，故用等分 flex 排布（不是近似位置）。 */
+.range-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -2px;
+  padding: 0 1px;
+}
+.range-tick {
+  min-width: 26px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--t-muted);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 140ms, background-color 140ms;
+}
+.range-tick:hover { color: var(--t-base); background: var(--bg-muted); }
+.range-tick.is-active { color: var(--primary); font-weight: 600; }
+.range-tick:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* ---- 滚动时间轮（时 / 分，取代原生 input[type=time] 与 <select>）----
+   上下滚动选择（scroll-snap）；中间一行是当前值，上下淡出表示"可继续滚动"。 */
+.wheel-field { display: flex; align-items: center; gap: 8px; }
+.wheel {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 132px;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  outline: 0;
+}
+.wheel::-webkit-scrollbar { display: none; }
+.wheel:focus-visible { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.wheel-pad { height: 44px; }                    /* 首尾留白：让首/末项也能滚到中线 */
+.wheel-item {
+  height: 44px;
+  line-height: 44px;
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  color: var(--t-muted);
+  scroll-snap-align: center;
+  cursor: pointer;
+  transition: color 140ms, font-weight 140ms;
+}
+.wheel-item.is-sel { color: var(--t-base); font-weight: 700; }
+.wheel-sep { color: var(--t-muted); font-size: 17px; font-family: var(--font-mono); }
+@media (prefers-reduced-motion: reduce) { .wheel { scroll-behavior: auto; } }

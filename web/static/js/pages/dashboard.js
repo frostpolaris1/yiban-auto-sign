@@ -185,12 +185,12 @@
     var bd = cap.accounts_breakdown || {};
     setValue(av, num(acc), amax > 0 ? "/" + num(amax) : null);
     txt(as, "正常 " + num(bd.normal) + " · 用户暂停 " + num(bd.user_paused) + " · 账密故障 " + num(bd.cred_paused) + "（均不含已删除）");
-    setPill($("kpi-accounts-pill"), amax > 0 ? "名额占用 " + pctOf(acc, amax) + "%" : "未设上限", pctOf(acc, amax) >= 90 ? "down" : "info");
+    setPill($("kpi-accounts-pill"), amax > 0 ? pctOf(acc, amax) + "%" : "未设上限", pctOf(acc, amax) >= 90 ? "down" : "info");
 
     var users = Number(cap.users) || 0, umax = Number(cap.users_max) || 0;
     setValue(uv, num(users), umax > 0 ? "/" + num(umax) : null);
     txt(us, umax > 0 ? "剩余注册名额 " + num(Math.max(0, umax - users)) + "（含未提交账号的空用户）" : "未设上限");
-    setPill($("kpi-users-pill"), umax > 0 ? "名额占用 " + pctOf(users, umax) + "%" : "未设上限", pctOf(users, umax) >= 90 ? "down" : "info");
+    setPill($("kpi-users-pill"), umax > 0 ? pctOf(users, umax) + "%" : "未设上限", pctOf(users, umax) >= 90 ? "down" : "info");
   }
   function pauseBadge(node, paused, labels) {
     if (!node) return; clear(node);
