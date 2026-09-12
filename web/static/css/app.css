@@ -1003,3 +1003,173 @@ body {
 .wx-date p {
   font-family: "JetBrains Mono", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", ui-monospace, "SFMono-Regular", monospace;
 }
+
+/* ==========================================================================
+   17. 认证页（layout_auth.html 外壳；login.html / user.html 共用）
+   --------------------------------------------------------------------------
+   布局主体沿用 Adminator 的 .auth-shell（左品牌区 + 右表单区，≤900px 收成单列），
+   这里只补模板未覆盖的部分：控件宽度、密码可见性按钮、协议勾选、页脚排布。
+   ========================================================================== */
+
+/* hidden 属性必须优先于组件自身的 display。
+   Adminator 的 .alert{display:grid} / .tabs.pills{display:inline-flex} 会盖掉浏览器
+   默认的 [hidden]{display:none}，导致"靠 hidden 切换显隐"的元素常驻显示
+   （认证页的错误框、注册暂停提示、公告条都依赖它）。全局收口一次。 */
+[hidden] { display: none !important; }
+
+/* 整宽按钮：Adminator 的 .btn 是 inline-flex 自适应宽，表单主操作需占满一行 */
+.btn--block { width: 100%; justify-content: center; }
+
+/* 密码可见性切换：Adminator 只提供左侧图标的 .input-icon，右侧按钮为项目新增 */
+.input-affix { position: relative; }
+.input-affix .input { padding-right: 38px; }
+.input-affix .affix-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--t-light);
+  transition: background 160ms, color 160ms;
+}
+.input-affix .affix-btn:hover { background: var(--bg-hover); color: var(--t-base); }
+.input-affix .affix-btn svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  fill: none;
+}
+
+/* 登录/注册切换：复用 Adminator 的 .tabs.pills，整行等分 */
+.auth-tabs { display: flex; width: 100%; margin-bottom: 20px; }
+.auth-tabs .tab { flex: 1 1 0; text-align: center; justify-content: center; }
+.auth-tabs .tab:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.auth-form .alert { margin-top: 2px; }
+
+/* 协议勾选：复选框与说明文字是兄弟节点。
+   说明文字里的《用户协议》/《隐私政策》是 <button>，若整行套 <label>，点按钮会
+   连带切换勾选状态（label 的默认激活行为），故只让复选框自己裹在 label 里。 */
+.auth-agree { display: flex; align-items: flex-start; gap: 8px; }
+.auth-agree .check { padding-top: 1px; }
+.auth-agree-text { font-size: 11.5px; color: var(--t-muted); line-height: 1.6; }
+.auth-agree-text button { color: var(--primary); font-weight: 600; font-size: inherit; }
+.auth-agree-text button:hover { text-decoration: underline; }
+
+/* 左栏功能清单 */
+.auth-points { display: flex; flex-direction: column; gap: 12px; }
+.auth-points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13.5px;
+  color: rgba(255, 255, 255, 0.88);
+  line-height: 1.5;
+}
+.auth-points li svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  fill: none;
+}
+
+/* 窄屏品牌标识：≤900px 时 Adminator 隐藏 .auth-aside，此处补回品牌名 */
+.auth-mobile-brand { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--t-base); }
+.auth-mobile-brand .logo {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  display: grid;
+  place-items: center;
+}
+.auth-mobile-brand .logo svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.9; fill: none; }
+@media (min-width: 901px) { .auth-mobile-brand { display: none; } }
+
+/* 公告条：单列提示条，不需要 Adminator 的图标列 */
+.auth-announce { grid-template-columns: 1fr; margin-bottom: 16px; }
+
+/* 认证页页脚：复用共享 partials/footer.html，排布改为居中的窄栏 */
+.auth-main-bottom .d-footer {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+.auth-main-bottom .d-footer .footer-legal,
+.auth-main-bottom .d-footer .footer-meta { justify-content: center; }
+.auth-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11.5px;
+}
+.auth-links a { color: var(--primary); font-weight: 600; }
+.auth-links .sep { color: var(--t-light); }
+
+/* 提交中/暂停态：Adminator 的 .btn 未定义 :disabled，需显式收口，
+   否则禁用后按钮外观不变，用户会重复点击。 */
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* 登录/注册切换淡入（迁移自旧栈内联样式）。
+   「减弱动态效果」下只淡入不位移，避免前庭不适。 */
+@keyframes tab-fade-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes tab-fade-in { from { opacity: 0; } to { opacity: 1; } }
+}
+.tab-enter { animation: tab-fade-in 0.18s ease-out; }
+
+/* 文档正文排印：core.js 的更新日志模态与登录页的协议/隐私模态共用。
+   服务端 _render_md 只产出 h1~h4 / p / ul / ol / li / blockquote / hr / code / strong / a。
+   Adminator 的 reset 把 ul/ol 的 list-style 清成 none，此处按语义恢复符号。 */
+.md-body { font-size: 13px; line-height: 1.75; color: var(--t-muted); }
+.md-body > :first-child { margin-top: 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  color: var(--t-base);
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 18px 0 8px;
+}
+.md-body h1 { font-size: 18px; }
+.md-body h2 { font-size: 16px; }
+.md-body h3 { font-size: 14.5px; }
+.md-body h4 { font-size: 13.5px; }
+.md-body p { margin: 0 0 10px; }
+.md-body ul { margin: 0 0 10px; padding-left: 20px; list-style: disc; }
+.md-body ol { margin: 0 0 10px; padding-left: 20px; list-style: decimal; }
+.md-body li { margin: 3px 0; }
+.md-body blockquote {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-muted);
+  border-radius: 0 8px 8px 0;
+}
+.md-body hr { margin: 16px 0; border: 0; border-top: 1px solid var(--border); }
+.md-body code {
+  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  font-size: 12px;
+  background: var(--bg-muted);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.md-body a { color: var(--primary); font-weight: 600; }
+.md-body a:hover { text-decoration: underline; }
+.md-body strong { color: var(--t-base); font-weight: 600; }

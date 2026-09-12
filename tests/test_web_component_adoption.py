@@ -54,8 +54,23 @@ FORBIDDEN = {
     "带底色的日志块": (re.compile(r'log-text[^"]*\bbg-(?:white|zinc-50)\b'), "yb-inset"),
 }
 
-# 输入类元素：这些 type 是"选择控件/隐藏域"，不走 .yb-input
+# 输入类元素：这些 type 是"选择控件/隐藏域"，不走输入框样式
 INPUT_TYPE_EXEMPT = {"checkbox", "radio", "file", "hidden"}
+
+# 输入框的组件类（两套设计系统并存期各有一个事实源）：
+#   · `yb-input` —— 旧栈（component_layer.html 的 .yb-input）；
+#   · `input`    —— Adminator 设计系统（adminator.css 的 .input）。
+# 判据仍是"按元素"：任何文本类输入元素必须命中其中之一，不得裸写样式。
+INPUT_CLASS_TOKENS = ("yb-input", "input")
+
+
+def _input_class_ok(tag):
+    """标签的 class 属性里是否含任一输入框组件类（按 token 精确匹配，不做子串包含）。"""
+    m = re.search(r'class="([^"]*)"', tag)
+    if not m:
+        return False
+    tokens = m.group(1).split()
+    return any(t in INPUT_CLASS_TOKENS for t in tokens)
 
 # 提示条的语义组合：`bg-<语义>-50` 与 `border-<语义>-<档>` 同时出现 → 必须走 .yb-alert-*
 _SEMANTIC = r"(?:red|green|amber|blue)"
@@ -146,17 +161,22 @@ class ComponentAdoptionTest(unittest.TestCase):
             )
 
     def test_text_inputs_must_use_yb_input(self):
-        """**按元素判**：文本类 `<input>`/`<textarea>`/`<select>` 必须带 `yb-input`。
+        """**按元素判**：文本类 `<input>`/`<textarea>`/`<select>` 必须带输入框组件类。
 
         比"认某个 class 串"强的地方：换任何新写法（新的底色变体、ring 焦点、小尺寸内距）
         都躲不过 —— V3-5c 的字符串式判据就是这么漏掉后来那 4 种写法的（共 18 处）。
         复选框/单选/文件/隐藏域是"选择控件"，不走输入框样式，故豁免。
+
+        组件类有两套并存（换壳过渡期各页归属不同设计系统）：
+          · 旧栈 `yb-input`（component_layer.html）；
+          · Adminator `input`（adminator.css）。
+        判据只认"是该元素自带的输入框类"，不认裸写的底色/边框组合。
         """
         offenders = []
         for rel, lineno, text in _scan_sources():
             for m in re.finditer(r"<(input|textarea|select)\b[^>]*?>", text, re.S):
                 tag = m.group(0)
-                if "yb-input" in tag:
+                if _input_class_ok(tag):
                     continue
                 typ_m = re.search(r'type="(\w+)"', tag)
                 typ = typ_m.group(1) if typ_m else (
@@ -165,10 +185,13 @@ class ComponentAdoptionTest(unittest.TestCase):
                 if typ in INPUT_TYPE_EXEMPT:
                     continue
                 line = lineno + text.count("\n", 0, m.start())
-                offenders.append(f"  {rel}:{line}  <{m.group(1)} type={typ}> 缺 yb-input")
+                offenders.append(
+                    f"  {rel}:{line}  <{m.group(1)} type={typ}> 缺 "
+                    + "/".join(INPUT_CLASS_TOKENS)
+                )
         if offenders:
             self.fail(
-                f"发现 {len(offenders)} 个文本类输入元素没走 .yb-input ——"
+                f"发现 {len(offenders)} 个文本类输入元素没走输入框组件类 ——"
                 " 它们是同一个东西却各写一套底色/边框/焦点（实测曾出现 5 种写法）：\n"
                 + "\n".join(offenders)
             )

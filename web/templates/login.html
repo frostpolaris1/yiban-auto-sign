@@ -1,10 +1,11 @@
-{% extends "base.html" %}
+{% extends "layout_auth.html" %}
+{% from "macros/ui.html" import icon with context %}
 
-{% block title %}登录 · 易班自动签到管理{% endblock %}
+{% block title %}登录 · 易班自动签到{% endblock %}
 
 {% block head_meta %}
-<!-- 分享/搜索摘要（2026-09-09）：此前全站只有标题，分享出去的链接卡片没有简介文字。
-     文案取自 README 项目介绍，可用 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。 -->
+{# 分享/搜索摘要：标题之外补简介文字，文案取自 README 项目介绍，
+   可用 .env 的 YIBAN_SITE_DESCRIPTION 覆盖。 #}
 <meta name="description" content="{{ site_description }}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="易班自动签到">
@@ -16,579 +17,115 @@
 <meta name="twitter:description" content="{{ site_description }}">
 {% endblock %}
 
-{% block head_styles %}
-<style>
-  /* Tailwind 默认色板（原版配色）。类名经 tailwind.config 色板重映射读取这些变量；
-     如需换主题，在 :root/.dark 分别覆盖对应 RGB 三元组即可（深浅模式可不同值）。 */
-  :root {
-    --c-zinc-50:250 250 250; --c-zinc-100:244 244 245; --c-zinc-200:228 228 231; --c-zinc-300:212 212 216;
-    --c-zinc-400:161 161 170; --c-zinc-500:113 113 122; --c-zinc-600:82 82 91; --c-zinc-700:63 63 70;
-    --c-zinc-800:39 39 42; --c-zinc-900:24 24 27;
-    --c-blue-200:191 219 254; --c-blue-300:147 197 253; --c-blue-400:96 165 250; --c-blue-500:59 130 246;
-    --c-blue-600:37 99 235; --c-blue-700:29 78 216; --c-blue-800:30 64 175; --c-blue-900:30 58 138;
-    --c-amber-50:255 251 235; --c-amber-100:254 243 199; --c-amber-200:253 230 138; --c-amber-300:252 211 77;
-    --c-amber-400:251 191 36; --c-amber-500:245 158 11; --c-amber-600:217 119 6; --c-amber-700:180 83 9; --c-amber-800:146 64 14; --c-amber-900:120 53 15;
-    --c-red-50:254 242 242; --c-red-200:254 202 202; --c-red-300:252 165 165; --c-red-400:248 113 113;
-    --c-red-500:239 68 68; --c-red-600:220 38 38; --c-red-700:185 28 28; --c-red-800:153 27 27; --c-red-900:127 29 29;
-    --c-green-50:240 253 244; --c-green-200:187 247 208; --c-green-300:134 239 172; --c-green-400:74 222 128;
-    --c-green-500:34 197 94; --c-green-600:22 163 74; --c-green-700:21 128 61; --c-green-800:22 101 52; --c-green-900:20 83 45;
-  }
-  /* 统一线性图标（currentColor 继承文字颜色，尺寸随字号） */
-  .ic { width: 1em; height: 1em; display: inline-block; vertical-align: -0.125em; flex-shrink: 0; }
-</style>
-<style>
-  /* 正文：原版字体栈（MiSans 仅高分屏「桌面」加载——misans.css 的 media 含 pointer: fine；手机端与低分屏走系统字体保 ClearType） */
-  body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  /* 标题不再使用专属字体（2026-08-22 性能回退）：h1~h4 等继承下方正文栈，避免 2.8MB web 字体拖垮窄带宽访问；
-     方圆体源文件与转换命令保留在本地，需要时可恢复 */
-  /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
-  @media (max-resolution: 1.5dppx) {
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-  }
-</style>
-<style>
-  /* 登录/注册切换淡入：与管理端 .tab-enter 统一（动效审查修复⑤）；「减弱动态效果」下只淡入不位移 */
-  @keyframes tab-fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-  @media (prefers-reduced-motion: reduce) {
-    @keyframes tab-fade-in { from { opacity: 0; } to { opacity: 1; } }
-  }
-  .tab-enter { animation: tab-fade-in 0.18s ease-out; }
-</style>
+{% block content %}
+{# 页内标题随 tab 切换（登录/注册），交由 login.js 更新，避免出现"标题说登录、表单是注册" #}
+<h2 id="auth-title">登录</h2>
+<p class="sub" id="auth-sub">使用注册邮箱进入签到管理面板。</p>
+
+<div class="tabs pills auth-tabs" role="tablist" aria-label="登录 / 注册切换">
+  <button type="button" class="tab is-active" id="tab-login" role="tab"
+          aria-selected="true" aria-controls="login-form" data-auth-tab="login">登录</button>
+  <button type="button" class="tab" id="tab-register" role="tab"
+          aria-selected="false" aria-controls="register-form" data-auth-tab="register">注册</button>
+</div>
+
+{# 注册暂停提示：管理端暂停注册时显形并禁用注册 tab。
+   仅按公开布尔渲染 UI，真正拦截在后端 /api/register（403）。 #}
+<p id="register-paused-hint" class="alert warning" role="status" hidden>
+  <span class="ico">{{ icon('triangle-alert') }}</span>
+  <span class="body">注册已暂停，请联系管理员添加账号。已注册用户可直接登录。</span>
+</p>
+
+<!-- 登录表单 -->
+<form id="login-form" class="auth-form" novalidate>
+  <div class="field">
+    <label class="field-label" for="username">登录邮箱</label>
+    <input id="username" name="username" type="text" class="input" required
+           autocomplete="username" inputmode="email" placeholder="注册时填写的邮箱">
+    <p class="field-help">还没有账号？请先切到上方「注册」创建，再使用该邮箱登录。</p>
+  </div>
+  <div class="field">
+    <label class="field-label" for="password">密码</label>
+    <div class="input-affix">
+      <input id="password" name="password" type="password" class="input" required
+             autocomplete="current-password" placeholder="输入密码">
+      <button type="button" class="affix-btn" data-pw-toggle="password"
+              aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码">{{ icon('eye') }}</button>
+    </div>
+  </div>
+  {# 提交失败提示：整块由 hidden 控制显隐；文案走 textContent（防 XSS），
+     tabindex="-1" 让 showError 能聚焦并触发读屏播报。 #}
+  <div id="error-box" class="alert danger" role="alert" tabindex="-1" hidden>
+    <span class="ico">{{ icon('circle-alert') }}</span>
+    <span class="body" id="login-error-text"></span>
+  </div>
+  {# 冷静期恢复入口：仅当登录响应携带 recoverable 时显形（账号已注销且 7 天内） #}
+  <button type="button" id="restore-btn" class="btn btn--warning btn--block" hidden>
+    恢复我的账号（7 天内可撤销）
+  </button>
+  <button type="submit" id="login-btn" class="btn btn--primary btn--block auth-submit">
+    <span id="login-btn-text">登录</span>
+  </button>
+</form>
+
+<!-- 注册表单 -->
+<form id="register-form" class="auth-form" novalidate hidden>
+  <div class="field">
+    <label class="field-label" for="reg-email">邮箱 <span class="req" aria-hidden="true">*</span></label>
+    <input id="reg-email" type="email" class="input" required autocomplete="email"
+           maxlength="64" aria-describedby="reg-email-error" placeholder="输入邮箱地址">
+    <p id="reg-email-error" class="field-error" hidden>邮箱格式不正确（示例：name@example.com）</p>
+    <p class="field-help">请使用常用邮箱注册，尤其注意 QQ 邮箱格式。</p>
+  </div>
+  <div class="field">
+    <label class="field-label" for="reg-password">密码 <span class="req" aria-hidden="true">*</span></label>
+    <div class="input-affix">
+      <input id="reg-password" type="password" class="input" required
+             autocomplete="new-password" aria-describedby="reg-password-error"
+             placeholder="设置密码（至少 10 位）">
+      <button type="button" class="affix-btn" data-pw-toggle="reg-password"
+              aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码">{{ icon('eye') }}</button>
+    </div>
+    <p id="reg-password-error" class="field-error" hidden>密码至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
+    <p class="field-help">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
+  </div>
+  <div class="field">
+    <label class="field-label" for="reg-password2">确认密码 <span class="req" aria-hidden="true">*</span></label>
+    <div class="input-affix">
+      <input id="reg-password2" type="password" class="input" required
+             autocomplete="new-password" aria-describedby="reg-password2-error"
+             placeholder="再次输入密码">
+      <button type="button" class="affix-btn" data-pw-toggle="reg-password2"
+              aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码">{{ icon('eye') }}</button>
+    </div>
+    <p id="reg-password2-error" class="field-error" hidden>两次输入的密码不一致</p>
+  </div>
+  {# 协议勾选：说明文字里的两个 <button> 不能包在 label 内，否则点按钮会连带切换勾选 #}
+  <div class="auth-agree">
+    <label class="check">
+      <input id="reg-agree" type="checkbox"
+             aria-label="我已阅读并同意《用户协议》与《隐私政策》">
+      <span class="box"></span>
+    </label>
+    <span class="auth-agree-text">我已阅读并同意
+      <button type="button" data-doc="agreement">《用户协议》</button> 与
+      <button type="button" data-doc="privacy">《隐私政策》</button></span>
+  </div>
+  <div id="reg-error-box" class="alert danger" role="alert" tabindex="-1" hidden>
+    <span class="ico">{{ icon('circle-alert') }}</span>
+    <span class="body" id="reg-error-text"></span>
+  </div>
+  <button type="submit" id="register-btn" class="btn btn--primary btn--block auth-submit">
+    <span id="register-btn-text">注册并登录</span>
+  </button>
+</form>
+
+{# 协议/隐私正文：<template> 内容惰性、不参与渲染，由 login.js 克隆进模态。
+   服务端已渲染为 HTML（_read_doc_html），此处原样注入，.md-body 排版类在 JS 侧套上。 #}
+<template id="doc-agreement">{{ agreement_html | safe }}</template>
+<template id="doc-privacy">{{ privacy_html | safe }}</template>
 {% endblock %}
 
-
-{% block head_scripts_late %}
-<script>
-  // ===== 图标系统：按功能手绘的统一 SVG 线性图标 =====
-  // icon(name) 返回内联 SVG（currentColor 继承文字颜色）；[data-icon] 元素由 hydrateIcons() 填充。
-  // 替代原 emoji（🌙⏳✅❌🔄⛔➖⏸️⏹️🗑️⚠️📅✕▸▾←→ 等），双主题一致、读屏友好（aria-hidden 装饰）。
-  window.icon = (function () {
-    var P = {
-      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
-      moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>',
-      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-      check: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.8-5"/>',
-      close: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',
-      retry: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/>',
-      ban: '<circle cx="12" cy="12" r="9"/><path d="m5.5 5.5 13 13"/>',
-      minus: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>',
-      pause: '<circle cx="12" cy="12" r="9"/><path d="M10 9v6m4-6v6"/>',
-      stop: '<circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
-      trash: '<path d="M4 7h16m-2 0-.9 12.1a2 2 0 0 1-2 1.9H8.9a2 2 0 0 1-2-1.9L6 7m3 0V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-6 4v6m4-6v6"/>',
-      warn: '<path d="M10.3 3.9 1.8 18.6a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 3.5v.1"/>',
-      cal: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4m8-4v4M3 11h18"/>',
-      play: '<path d="M7 5.5v13l11-6.5-11-6.5Z"/>',
-      dots: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
-      xmark: '<path d="m6 6 12 12M18 6 6 18"/>',
-      chevL: '<path d="m15 6-6 6 6 6"/>',
-      chevR: '<path d="m9 6 6 6-6 6"/>',
-      chevD: '<path d="m6 9 6 6 6-6"/>',
-      eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
-      eyeOff: '<path d="m4 4 16 16"/><path d="M10.7 5.7c.4-.1.9-.2 1.3-.2 6 0 9.5 6.5 9.5 6.5a17.4 17.4 0 0 1-2.5 3.3M6.6 6.7C4.1 8.7 2.5 12 2.5 12S6 18.5 12 18.5c1.4 0 2.7-.3 3.8-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'
-    };
-    return function (name, cls) {
-      return '<svg class="ic ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[name] || P.minus) + '</svg>';
-    };
-  })();
-  // 静态占位填充：<span data-icon="moon"></span> → 插入对应 SVG
-  window.hydrateIcons = function (root) {
-    (root || document).querySelectorAll('[data-icon]').forEach(function (el) {
-      if (!el._iconed) { el.innerHTML = window.icon(el.getAttribute('data-icon')); el._iconed = true; }
-    });
-  };
-</script>
-{% endblock %}
-
-{% block body_class %}bg-zinc-50 dark:bg-zinc-900 min-h-screen flex items-center justify-center px-4 overscroll-y-none{% endblock %}
-
-{% block body %}
-  <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
-          class="fixed top-4 right-4 z-50 w-11 h-11 flex items-center justify-center rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 shadow-sm hover:shadow-md transition-shadow"><span data-icon="moon"></span></button>
-  <div class="w-full max-w-md">
-<!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden sticky top-0 z-20 mb-3 yb-banner yb-alert-warning text-center pl-4 pr-16">
-  <span id="announcement-text"></span>
-</div>
-
-    <!-- 登录/注册卡片 -->
-    <div class="yb-card">
-      <!-- Tab 切换 -->
-      <div class="flex bg-zinc-100 dark:bg-zinc-700 rounded-lg p-1 mb-5 text-sm font-medium" role="tablist" aria-label="登录 / 注册切换">
-        <button id="tab-login" type="button" role="tab" aria-selected="true" aria-controls="login-form" onclick="switchMode('login')"
-                class="flex-1 py-1.5 rounded-lg bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm transition-colors duration-150">登录</button>
-        <button id="tab-register" type="button" role="tab" aria-selected="false" aria-controls="register-form" onclick="switchMode('register')"
-                class="flex-1 py-1.5 rounded-lg text-zinc-500 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">注册</button>
-      </div>
-
-      <!-- 登录表单 -->
-      <form id="login-form" class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="username">登录邮箱</label>
-          <input id="username" name="username" type="text" required autocomplete="username" inputmode="email"
-                 placeholder="注册时填写的邮箱"
-                 class="yb-input yb-input-ring">
-          <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">还没有账号？请先点上方「注册」创建，再使用该邮箱登录。</p>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="password">密码</label>
-          <div class="relative">
-            <input id="password" name="password" type="password" required autocomplete="current-password"
-                   placeholder="输入密码"
-                   class="yb-input yb-input-ring pr-10">
-            <button type="button" data-pw-toggle="password" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
-                    class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
-          </div>
-        </div>
-        <div id="error-box" role="alert" tabindex="-1" class="hidden yb-alert yb-alert-error"></div>
-        <button type="button" id="restore-btn" onclick="restoreAccount()"
-                class="hidden w-full mt-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg px-3 py-2 text-sm transition-colors duration-200 disabled:opacity-60 disabled:cursor-not-allowed">恢复我的账号（7 天内可撤销）</button>
-        <button type="submit" id="login-btn"
-                class="w-full btn-primary flex items-center justify-center gap-2 px-3">
-          <span id="login-btn-text">登录</span>
-        </button>
-      </form>
-
-      <!-- 注册表单 -->
-      <form id="register-form" class="space-y-4 hidden">
-        <p id="register-paused-hint" class="hidden yb-alert yb-alert-warning">
-          注册已暂停，请联系管理员添加账号。已注册用户可直接登录。
-        </p>
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-email">邮箱 <span class="text-red-500 dark:text-red-400">*</span></label>
-          <input id="reg-email" type="email" required autocomplete="email" maxlength="64" aria-describedby="reg-email-error"
-                 placeholder="输入邮箱地址"
-                 class="yb-input yb-input-ring">
-          <p id="reg-email-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">邮箱格式不正确（示例：name@example.com）</p>
-          <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">请使用常用邮箱注册，尤其注意QQ邮箱格式</p>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password">密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-          <div class="relative">
-            <input id="reg-password" type="password" required autocomplete="new-password" aria-describedby="reg-password-error"
-                   placeholder="设置密码（至少 10 位）"
-                   class="yb-input yb-input-ring pr-10">
-            <button type="button" data-pw-toggle="reg-password" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
-                    class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
-          </div>
-          <p id="reg-password-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">密码至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
-          <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="reg-password2">确认密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-          <div class="relative">
-            <input id="reg-password2" type="password" required autocomplete="new-password" aria-describedby="reg-password2-error"
-                   placeholder="再次输入密码"
-                   class="yb-input yb-input-ring pr-10">
-            <button type="button" data-pw-toggle="reg-password2" aria-label="显示密码" aria-pressed="false" title="显示/隐藏密码"
-                    class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 rounded-r-lg"><span data-icon="eye"></span></button>
-          </div>
-          <p id="reg-password2-error" class="hidden mt-1 text-xs text-red-500 dark:text-red-400">两次输入的密码不一致</p>
-        </div>
-        <label class="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer select-none">
-          <input id="reg-agree" type="checkbox" class="mt-0.5 w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 accent-blue-500">
-          <span>我已阅读并同意 <button type="button" onclick="showAgreement()" class="text-blue-500 hover:underline">《用户协议》</button> 与 <button type="button" onclick="showPrivacy()" class="text-blue-500 hover:underline">《隐私政策》</button></span>
-        </label>
-        <div id="reg-error-box" role="alert" tabindex="-1" class="hidden yb-alert yb-alert-error"></div>
-        <button type="submit" id="register-btn"
-                class="w-full btn-primary flex items-center justify-center gap-2 px-3">
-          <span id="register-btn-text">注册并登录</span>
-        </button>
-      </form>
-    </div>
-    <footer class="text-center text-xs text-zinc-400 dark:text-zinc-400 py-4 mt-4">
-      {% if icp_info %}
-      <div id="footer-icp" class="mb-1"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300">{{ icp_info }}</a></div>
-      {% endif %}
-      {% if police_info %}
-      <div id="footer-police" class="mb-1"><a href="{{ police_link }}" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300"><img src="/gongan-beian.png" alt="" width="12" height="13" class="inline-block -mt-0.5 me-1"> {{ police_info }}</a></div>
-      {% endif %}
-      <div onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</div>
-      <div class="mt-1 flex items-center justify-center gap-3 text-blue-500 dark:text-blue-400">
-        <a href="{{ request.script_root }}/terms" target="_blank" rel="noopener" class="hover:text-blue-600 dark:hover:text-blue-300">用户协议</a>
-        <span class="text-zinc-300 dark:text-zinc-600">·</span>
-        <a href="{{ request.script_root }}/privacy" target="_blank" rel="noopener" class="hover:text-blue-600 dark:hover:text-blue-300">隐私政策</a>
-        <span class="text-zinc-300 dark:text-zinc-600">·</span>
-        <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）</a>
-      </div>
-    </footer>
-  </div>
-
-<script>
-let mode = 'login';
-// HTML 转义（changelog 兜底渲染等文本上下文）
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-// 暗色主题切换（localStorage 记忆）
-function toggleTheme() {
-  const dark = document.documentElement.classList.toggle('dark');
-  try { localStorage.setItem('yiban-theme', dark ? 'dark' : 'light'); } catch (e) {}
-  updateThemeBtn();
-}
-function updateThemeBtn() {
-  const dark = document.documentElement.classList.contains('dark');
-  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.innerHTML = icon(dark ? 'sun' : 'moon'); });
-}
-document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); applyRegistrationPause(); });
-
-// 注册暂停提示（v0.26.3）：管理端暂停注册时禁用注册入口并明示原因。
-// 仅按公开布尔渲染 UI；真正的拦截在后端 /api/register（403），此处被绕过也无效。
-async function applyRegistrationPause() {
-  try {
-    const r = await fetch(BASE + '/api/registration_paused', { credentials: 'same-origin' });
-    if (!r.ok) return;
-    const data = await r.json();
-    if (!data.paused) return;
-    const rt = document.getElementById('tab-register');
-    if (rt) {
-      rt.disabled = true;
-      rt.classList.add('opacity-40', 'cursor-not-allowed');
-      rt.removeAttribute('onclick');
-      rt.title = '注册已暂停';
-    }
-    const hint = document.getElementById('register-paused-hint');
-    if (hint) hint.classList.remove('hidden');
-  } catch (e) { /* 状态获取失败不阻断登录页；后端注册 API 仍会拦截 */ }
-}
-
-function switchMode(m) {
-  // 注册暂停时禁止切入注册表单（tab 已禁用，此处兜底键盘触发路径）
-  if (m === 'register' && document.getElementById('tab-register')?.disabled) return;
-  mode = m;
-  document.getElementById('login-form').classList.toggle('hidden', m !== 'login');
-  document.getElementById('register-form').classList.toggle('hidden', m !== 'register');
-  const lt = document.getElementById('tab-login');
-  const rt = document.getElementById('tab-register');
-  lt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
-    (m === 'login' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
-  rt.className = 'flex-1 py-1.5 rounded-lg transition-colors duration-150 ' +
-    (m === 'register' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:text-zinc-100 dark:hover:text-zinc-100');
-  lt.setAttribute('aria-selected', String(m === 'login'));
-  rt.setAttribute('aria-selected', String(m === 'register'));
-  // 切换淡入与管理端统一：重触发动画（移除类 → 强制回流 → 加回）
-  const form = document.getElementById(m === 'login' ? 'login-form' : 'register-form');
-  form.classList.remove('tab-enter'); void form.offsetWidth; form.classList.add('tab-enter');
-}
-
-function showError(el, msg) {
-  el.textContent = msg;
-  el.classList.remove('hidden');
-  el.focus();  // 提交失败聚焦错误框（配合 tabindex="-1"），读屏即时播报
-}
-
-// ---- 注册表单即时校验（输入时实时反馈，字段下方提示）----
-const EMAIL_RE = /^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$/;  // 用户名部分（@ 前）限 32 字符
-// 口令策略（本模板内单一事实源）：与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS /
-// _PASSWORD_POLICY_HINT 逐字同序同串——tests/test_batch14_fixes_0829.py 的元测试会
-// 从本文件源码提取这四个正则与后端比对，漂移即红。判定语义：命中 >= 2 类即过（符号算一类）。
-const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
-const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
-const PW_POLICY_HINT = '至少 10 位，且包含大小写字母、数字、符号中的至少两类';
-function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
-const regEmail = document.getElementById('reg-email');
-const regEmailErr = document.getElementById('reg-email-error');
-const regPw = document.getElementById('reg-password');
-const regPwErr = document.getElementById('reg-password-error');
-const regPw2 = document.getElementById('reg-password2');
-const regPw2Err = document.getElementById('reg-password2-error');
-
-function markField(input, errEl, invalid) {
-  input.classList.toggle('border-red-400', invalid);
-  input.classList.toggle('focus:border-red-400', invalid);
-  errEl.classList.toggle('hidden', !invalid);
-}
-
-// 两次密码一致性：确认框为空时不提示（提交由 required 原生校验兜底），非空即实时比对
-function validatePwMatch() {
-  markField(regPw2, regPw2Err, regPw2.value !== '' && regPw2.value !== regPw.value);
-}
-
-// 密码可见切换：默认密文，点击眼睛图标切换明文/密文（登录/注册/确认密码框共用）
-document.querySelectorAll('[data-pw-toggle]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const input = document.getElementById(btn.getAttribute('data-pw-toggle'));
-    const show = input.type === 'password';
-    input.type = show ? 'text' : 'password';
-    btn.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
-    btn.setAttribute('aria-pressed', String(show));
-    btn.querySelector('[data-icon]').innerHTML = icon(show ? 'eyeOff' : 'eye');
-  });
-});
-
-regEmail.addEventListener('input', () => {
-  const v = regEmail.value.trim();
-  const invalid = v !== '' && !(EMAIL_RE.test(v) && v.length <= 64);
-  if (v.includes('@') && v.split('@')[0].length > 32) {
-    regEmailErr.textContent = '邮箱用户名部分过长（最多 32 字符）';
-  } else {
-    regEmailErr.textContent = '邮箱格式不正确（示例：name@example.com）';
-  }
-  markField(regEmail, regEmailErr, invalid);
-});
-
-regPw.addEventListener('input', () => {
-  const v = regPw.value;
-  const n = v.length;
-  const classes = passwordClasses(v);
-  regPwErr.textContent = `密码${PW_POLICY_HINT}（当前 ${n} 位，${classes} 类）`;
-  markField(regPw, regPwErr, n < PW_MIN_LEN || classes < PW_MIN_CLASSES);
-  validatePwMatch();
-});
-
-regPw2.addEventListener('input', validatePwMatch);
-
-async function post(path, body) {
-  const resp = await fetch(BASE + path, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-  });
-  return [resp.status, await resp.json().catch(() => ({}))];
-}
-
-// 登录
-document.getElementById('login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const errorBox = document.getElementById('error-box');
-  errorBox.classList.add('hidden');
-  const btn = document.getElementById('login-btn');
-  btn.disabled = true;
-  try {
-    const [st, data] = await post('/api/login', {
-      username: document.getElementById('username').value,
-      password: document.getElementById('password').value,
-    });
-    // 冷静期恢复（2026-08-16 用户裁决）：账号已注销且 7 天内、密码正确 → 引导恢复
-    // 必须先于 data.ok 判断——recoverable 响应同时携带 ok:true，先查 ok 会误走
-    // 普通登录跳转（/user 未登录被弹回 /login，表现为"刷新无提示"），此分支即为死代码
-    if (st === 200 && data.recoverable) {
-      showError(errorBox, data.msg || '账号已注销，7 天内可恢复');
-      document.getElementById('restore-btn').classList.remove('hidden');
-      return;
-    }
-    if (st === 200 && data.ok) {
-      location.href = BASE + (data.role === 'admin' ? '/' : '/user');
-      return;
-    }
-    showError(errorBox, data.error || '登录失败，请重试');
-  } catch (err) {
-    console.warn('网络错误:', err);
-    showError(errorBox, '网络异常，请检查网络后重试');
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-// 冷静期恢复（2026-08-16）：账号注销 7 天内可恢复，密码已在登录步骤验证
-async function restoreAccount() {
-  const btn = document.getElementById('restore-btn');
-  const errorBox = document.getElementById('error-box');
-  btn.disabled = true;
-  try {
-    const [st, data] = await post('/api/me/restore', {
-      email: document.getElementById('username').value.trim(),
-      password: document.getElementById('password').value,
-    });
-    if (st === 200 && data.ok) {
-      location.href = BASE + (data.role === 'admin' ? '/' : '/user');
-      return;
-    }
-    showError(errorBox, data.error || '恢复失败，请稍后再试');
-    btn.classList.add('hidden');
-  } catch (err) {
-    console.warn('网络错误:', err);
-    showError(errorBox, '网络异常，请检查网络后重试');
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-// ---- 弹窗无障碍辅助（协议/隐私/更新日志三个模态共用）----
-// 打开：记录触发元素 → 聚焦模态内首个可交互元素；关闭：隐藏并把焦点归还触发元素。
-// Esc 关闭与 Tab 焦点圈定由下方全局 keydown 统一处理；遮罩点击关闭保持原逻辑。
-const LOGIN_MODAL_IDS = ['agreement-modal', 'privacy-modal', 'changelog-modal'];
-const loginModalOpeners = {};  // 模态 id -> 打开前的焦点元素
-// 背景滚动锁：模态打开期间锁 html/body 滚动，防止滚轮/触摸/键盘滚动穿透到背景页（滚动链）。
-// 计数支持叠层；锁死前补偿滚动条宽度，避免内容区横向跳动。
-const loginScrollLock = { count: 0 };
-function lockPageScroll() {
-  loginScrollLock.count++;
-  if (loginScrollLock.count > 1) return;
-  const gap = window.innerWidth - document.documentElement.clientWidth;
-  if (gap > 0) document.body.style.paddingRight = gap + 'px';
-  document.documentElement.style.overflow = 'hidden';
-  document.body.style.overflow = 'hidden';
-}
-function unlockPageScroll() {
-  if (loginScrollLock.count > 0) loginScrollLock.count--;
-  if (loginScrollLock.count > 0) return;
-  document.documentElement.style.overflow = '';
-  document.body.style.overflow = '';
-  document.body.style.paddingRight = '';
-}
-function modalFocusables(modal) {
-  return Array.from(modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
-    .filter(el => !el.disabled && !el.closest('.hidden'));
-}
-function openModal(id) {
-  const modal = document.getElementById(id);
-  if (!modal || !modal.classList.contains('hidden')) return;
-  loginModalOpeners[id] = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  modal.classList.remove('hidden');
-  lockPageScroll();
-  // 每次打开从内容顶部开始：先重置滚动区，再 focus 首元素且不触发浏览器把它滚到末尾
-  // （协议/隐私为长文档，末尾「我知道了」按钮是首可聚焦元素，默认应展示文档开头而非结尾）
-  modal.querySelectorAll('.overflow-y-auto, .overflow-auto').forEach(el => el.scrollTop = 0);
-  const first = modalFocusables(modal)[0];
-  if (first) first.focus({ preventScroll: true });
-}
-function closeModal(id) {
-  const modal = document.getElementById(id);
-  if (!modal || modal.classList.contains('hidden')) return;
-  modal.classList.add('hidden');
-  unlockPageScroll();
-  const opener = loginModalOpeners[id];
-  delete loginModalOpeners[id];
-  if (opener && opener.isConnected) opener.focus();
-}
-document.addEventListener('keydown', (e) => {
-  const modal = LOGIN_MODAL_IDS.map(id => document.getElementById(id)).find(m => m && !m.classList.contains('hidden'));
-  if (!modal) return;
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    closeModal(modal.id);
-  } else if (e.key === 'Tab') {
-    const f = modalFocusables(modal);
-    if (!f.length) { e.preventDefault(); return; }
-    const first = f[0], last = f[f.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    else if (!modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
-  }
-});
-
-// 用户协议弹窗
-function showAgreement() { openModal('agreement-modal'); }
-function closeAgreement() { closeModal('agreement-modal'); }
-// 隐私政策弹窗
-function showPrivacy() { openModal('privacy-modal'); }
-function closePrivacy() { closeModal('privacy-modal'); }
-
-// 注册（注册成功后自动登录）
-document.getElementById('register-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const errorBox = document.getElementById('reg-error-box');
-  errorBox.classList.add('hidden');
-  const btn = document.getElementById('register-btn');
-  btn.disabled = true;
-  try {
-    const email = regEmail.value.trim();
-    const password = regPw.value;
-    // 必须勾选同意用户协议与隐私政策
-    if (!document.getElementById('reg-agree').checked) {
-      showError(errorBox, '请先阅读并同意《用户协议》和《隐私政策》');
-      btn.disabled = false;
-      return;
-    }
-    // 提交前兜底：字段级即时校验优先（错误显示在字段下方，不弹顶部错误框）
-    // 与后端 _password_policy_error 对齐：至少 10 位 + 大写/小写/数字/符号中至少两类
-    const emailInvalid = !(EMAIL_RE.test(email) && email.length <= 64);
-    markField(regEmail, regEmailErr, emailInvalid);
-    const pwClasses = passwordClasses(password);
-    const pwInvalid = password.length < PW_MIN_LEN || pwClasses < PW_MIN_CLASSES;
-    markField(regPw, regPwErr, pwInvalid);
-    // 确认密码兜底：即时校验优先，此处防绕过（原生 required 已保证非空）
-    const pwMismatch = regPw2.value !== password;
-    markField(regPw2, regPw2Err, pwMismatch);
-    if (emailInvalid || pwInvalid || pwMismatch) {
-      btn.disabled = false;
-      return;
-    }
-    const [st, data] = await post('/api/register', {email, password, agree: document.getElementById('reg-agree').checked});
-    if (st !== 200) {
-      showError(errorBox, data.error || '注册失败');
-      return;
-    }
-    const [st2, data2] = await post('/api/login', {username: email, password});
-    if (st2 === 200 && data2.ok) {
-      location.href = BASE + '/user';
-      return;
-    }
-    showError(errorBox, '注册成功，但自动登录失败，请手动登录');
-  } catch (err) {
-    console.warn('网络错误:', err);
-    showError(errorBox, '网络异常，请检查网络后重试');
-  } finally {
-    btn.disabled = false;
-  }
-});
-</script>
-<script>
-// 全局公告：访问时加载一次（登录页也显示，无需登录）
-async function loadAnnouncement() {
-  try {
-    const resp = await fetch(BASE + '/api/announcement');
-    const data = await resp.json().catch(() => ({}));
-    const text = (data && data.text || '').trim();
-    const bar = document.getElementById('announcement-bar');
-    const el = document.getElementById('announcement-text');
-    if (text && bar && el) {
-      el.textContent = text;  // textContent 防 XSS
-      bar.classList.remove('hidden');
-    }
-  } catch (e) { /* 静默 */ }
-}
-// 更新日志弹窗（版本号点击，登录页无需登录；Markdown 渲染）
-async function openChangelog() {
-  openModal('changelog-modal');
-  const content = document.getElementById('changelog-content');
-  content.innerHTML = '<span class="inline-flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="yb-spinner"></span>加载中…</span>';
-  try {
-    const resp = await fetch(BASE + '/api/changelog');
-    const data = await resp.json().catch(() => ({}));
-    content.innerHTML = window.renderMarkdown ? renderMarkdown((data && data.text) || '暂无更新日志') : esc((data && data.text) || '暂无更新日志');
-  } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
-}
-function closeChangelog() { closeModal('changelog-modal'); }
-
-document.addEventListener('DOMContentLoaded', loadAnnouncement);
-</script>
-
-<!-- 用户协议弹窗 -->
-<div id="agreement-modal" role="dialog" aria-modal="true" aria-labelledby="agreement-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeAgreement()" aria-hidden="true"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto overscroll-contain">
-    <div id="agreement-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">用户协议</div>
-    <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="agreement-content">
-      {{ agreement_html | safe }}
-    </div>
-    <div class="flex justify-end mt-4">
-      <button onclick="closeAgreement()" class="btn-primary">我知道了</button>
-    </div>
-  </div>
-</div>
-<!-- 隐私政策弹窗 -->
-<div id="privacy-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closePrivacy()" aria-hidden="true"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] overflow-y-auto overscroll-contain">
-    <div id="privacy-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-3">隐私政策</div>
-    <div class="text-sm text-zinc-600 dark:text-zinc-300 space-y-3 leading-relaxed" id="privacy-content">
-      {{ privacy_html | safe }}
-    </div>
-    <div class="flex justify-end mt-4">
-      <button onclick="closePrivacy()" class="btn-primary">我知道了</button>
-    </div>
-  </div>
-</div>
-<!-- 更新日志弹窗 -->
-<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()" aria-hidden="true"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
-    <div class="flex items-center justify-between mb-3">
-      <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
-      <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
-    </div>
-    <div id="changelog-content" class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed"></div>
-  </div>
-</div>
+{% block scripts %}
+<script src="{{ request.script_root }}/static/js/pages/login.js?v={{ web_version }}"></script>
 {% endblock %}

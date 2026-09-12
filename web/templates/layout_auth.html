@@ -1,0 +1,88 @@
+{# 认证页外壳（登录页 / 用户自助页共用）。
+
+   结构用 Adminator 自带的 .auth-shell 两栏网格：左侧品牌展示区（.auth-aside，
+   ≤900px 自动隐藏）、右侧表单区（.auth-main）。**不含侧栏与顶栏**——这两页在
+   登录态之外或属于普通用户，没有管理端导航可渲染。
+
+   与管理端外壳一致：不引入 Adminator 的 mountShell()（它会 outerHTML 覆盖占位元素），
+   品牌区与页脚一律服务端渲染。 #}
+{% from "macros/ui.html" import sprite, icon with context %}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<link rel="icon" type="image/png" href="{{ request.script_root }}/favicon.png">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}易班自动签到{% endblock %}</title>
+{% block head_meta %}{% endblock %}
+{% include "partials/theme_boot.html" %}
+{# 自托管字体与设计系统，全部本地加载，不引用外网 CDN #}
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/fonts.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/adminator/adminator.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
+{% block head_styles %}{% endblock %}
+</head>
+{# data-page="auth"：core.js 据此跳过对匿名请求返回 401 的身份/时钟初始化 #}
+<body data-page="auth">
+{{ sprite() }}
+<div class="auth-shell">
+  <aside class="auth-aside">
+    <div class="auth-brand">
+      <span class="logo">{{ icon('shield') }}</span>
+      <span class="name">易班自动签到</span>
+    </div>
+    <div class="auth-aside-body">
+      <span class="auth-aside-eyebrow">YIBAN AUTO SIGN-IN</span>
+      <h1>把每天的签到<br>交给调度器</h1>
+      <p>{{ site_description | default('自动完成易班签到，多账号统一管理、失败重试与告警通知。', true) }}</p>
+      <ul class="auth-points">
+        <li>{{ icon('calendar') }}<span>按时间偏好自动签到，失败自动重试</span></li>
+        <li>{{ icon('bell') }}<span>签到结果推送与异常告警通知</span></li>
+        <li>{{ icon('chart-line') }}<span>签到记录与成功率统计一目了然</span></li>
+        <li>{{ icon('lock') }}<span>账号凭据加密存储，本机自托管</span></li>
+      </ul>
+    </div>
+    <div class="auth-aside-footer">
+      <span>AGPL-3.0</span>
+      <span>SELF-HOSTED</span>
+    </div>
+  </aside>
+
+  <main class="auth-main">
+    <div class="auth-main-top">
+      {# 窄屏（≤900px）品牌区被隐藏，此处补一个可辨识的品牌标识 #}
+      <div class="auth-mobile-brand">
+        <span class="logo">{{ icon('shield') }}</span>
+        <span>易班自动签到</span>
+      </div>
+      <button type="button" class="btn btn--ghost btn--icon" id="themeToggle"
+              title="切换亮/暗主题" aria-label="切换亮/暗主题">{{ icon('moon') }}</button>
+    </div>
+
+    <div class="auth-card">
+      {# 全局公告条：有公告时由 core.js 填入并显形（textContent 防 XSS）。
+         无顶栏页面无法用公告按钮承载，故直接在表单上方展示。 #}
+      <div class="alert warning auth-announce" data-announcement-bar role="status" hidden>
+        <span class="body" data-announcement-text></span>
+      </div>
+      {% block content %}{% endblock %}
+    </div>
+
+    <div class="auth-main-bottom">
+      {% include "partials/footer.html" %}
+      <nav class="auth-links" aria-label="法律与项目链接">
+        <a href="{{ request.script_root }}/terms" target="_blank" rel="noopener">用户协议</a>
+        <span class="sep" aria-hidden="true">·</span>
+        <a href="{{ request.script_root }}/privacy" target="_blank" rel="noopener">隐私政策</a>
+      </nav>
+    </div>
+  </main>
+</div>
+
+<div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true"></div>
+<div id="modal-host"></div>
+<script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

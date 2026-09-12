@@ -240,7 +240,10 @@
     backdrop.addEventListener("mousedown", function (e) {
       if (e.target === backdrop && handle.dismissible) closeModal(handle);
     });
-    $("#modal-host") ? $("#modal-host").appendChild(backdrop) : document.body.appendChild(backdrop);
+    // 挂载到 #modal-host（各外壳都提供的模态挂载点）；页面没提供时退回 body。
+    // 注意 $() 是 getElementById 的别名，传 id 不带 "#"，带前缀会永远取到 null。
+    var host = $("modal-host");
+    (host || document.body).appendChild(backdrop);
     handle.backdrop = backdrop;
     modalStack.push(handle);
     lockScroll();
@@ -368,16 +371,18 @@
   }
 
   /* ---------- 口令策略（管理端与后端 web/app.py 同一口径） ---------- */
+  // 全站唯一一份口令判定：登录/注册页、用户自助改密、管理端重置/新增口令都从这里取，
+  // 不再各自内联一份数组（历史上多份副本互相漂移过）。
   // 与后端 _PASSWORD_CLASS_PATTERNS / _PASSWORD_POLICY_HINT 逐字同序同串：判定语义是
   // "命中类别数 >= PW_MIN_CLASSES 即过"（符号自成一类，不额外要求必须含符号）。
-  // tests/test_rekey_key_source.py 从 login.html / user.html 提取同名字面量与后端比对；
-  // 管理端调用点（settings/users/accounts）用的正是本文件的共享实现，口径不得漂移。
-  var PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
-  var PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
-  var PW_POLICY_HINT = "至少 10 位，且包含大小写字母、数字、符号中的至少两类";
+  // tests/test_rekey_key_source.py 通过 frontend_source 聚合本文件与后端常量比对，
+  // 故这里必须用 const 声明（元测试按 `const PW_CLASS_PATTERNS = [...]` 提取）。
+  const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
+  const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
+  const PW_POLICY_HINT = "至少 10 位，且包含大小写字母、数字、符号中的至少两类";
   // 内置主管理员（.env）口令单独提档：12 位三类，与后端 _admin_password_policy_error 同口径
-  var PW_ADMIN_MIN_LEN = 12, PW_ADMIN_MIN_CLASSES = 3;
-  var PW_ADMIN_HINT = "至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类";
+  const PW_ADMIN_MIN_LEN = 12, PW_ADMIN_MIN_CLASSES = 3;
+  const PW_ADMIN_HINT = "至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类";
   function passwordClasses(v) {
     var s = String(v == null ? "" : v);
     return PW_CLASS_PATTERNS.filter(function (re) { return re.test(s); }).length;
@@ -637,6 +642,12 @@
       if (btn) { btn.hidden = false; btn.addEventListener("click", function () { showAnnouncement(text); }); }
       var dot = document.querySelector("[data-announcement-dot]");
       if (dot) dot.hidden = false;
+      // 页面内公告条（无顶栏的整页，如登录页）：有文本才显形。textContent 防 XSS。
+      forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
+        var txt = bar.querySelector("[data-announcement-text]");
+        if (txt) txt.textContent = text;
+        bar.hidden = false;
+      });
     }).catch(function () {});
   }
 
@@ -725,8 +736,12 @@
     var themeBtn = $("themeToggle");
     if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
     updateThemeIcons();
-    hydrateIdentity().then(function (identity) { if (identity) loadNavBadges(identity); });
+    // 公告是公开只读接口，认证页也要显示，故放在提前返回之前。
     initAnnouncement();
+    // 认证页（layout_auth.html 的 data-page="auth"）没有身份/时钟需求，而 /api/me 与
+    // /api/clock 对匿名请求返回 401；跳过可避免登录页每次加载产生无谓的失败请求。
+    if (document.body.getAttribute("data-page") === "auth") return;
+    hydrateIdentity().then(function (identity) { if (identity) loadNavBadges(identity); });
     calibrateClock();
     renderClock();
     setInterval(renderClock, 1000);
