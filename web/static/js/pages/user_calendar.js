@@ -38,15 +38,15 @@
   function calCard(a, i) {
     var card = YB.el("section", { class: "card cal-card" });
     var head = YB.el("div", { class: "panel-head" });
-    var text = YB.el("div", { class: "panel-head-text" });
-    text.appendChild(YB.el("h2", { class: "panel-title", text: a.display_name }));
-    text.appendChild(YB.el("p", {
+    var row = YB.el("div", { class: "panel-head-row" });
+    row.appendChild(YB.el("h2", { class: "panel-title", text: a.display_name }));
+    head.appendChild(row);
+    head.appendChild(YB.el("p", {
       class: "panel-sub",
       text: String(a.phone || "") + (a.phone_model ? " · " + a.phone_model : "")
     }));
     var line = statusLine(a);
-    text.appendChild(YB.el("p", { class: "panel-sub " + line.cls, text: line.text }));
-    head.appendChild(text);
+    head.appendChild(YB.el("p", { class: "panel-sub " + line.cls, text: line.text }));
     card.appendChild(head);
     var mount = YB.el("div", { class: "sc-mount" });
     mount.setAttribute("data-sc-mount", "");

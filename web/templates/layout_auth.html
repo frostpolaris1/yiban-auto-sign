@@ -65,18 +65,19 @@
     </div>
     {% endblock %}
 
-    {# 全局公告横幅：放在卡片**之外**——公告与表单分属不同性质的信息，
-       同处一张卡会把表单的视觉重心拉偏（用户反馈）。有公告时由 core.js 填入并显形
-       （textContent 防 XSS）；关闭位由 core.js 绑定，仅本次会话内记住。 #}
-    <div class="alert warning auth-announce" data-announcement-bar role="status" hidden>
-      <span class="ico">{{ icon('triangle-alert') }}</span>
-      <span class="body" data-announcement-text></span>
-      <button type="button" class="close" data-announcement-dismiss
-              title="关闭公告" aria-label="关闭公告">{{ icon('x') }}</button>
-    </div>
-
-    <div class="auth-card">
-      {% block content %}{% endblock %}
+    {# 公告与卡片成组居中：公告紧贴表单上方 16px，且与顶部工具条保持 ≥16px 距离
+       （曾把公告直接放在主列首元素：与顶部组件零间距、与表单隔着一个 auto 外边距 → 
+        实测"离上面太近、离表单太远"，窄屏还会顶到工具条上）。 #}
+    <div class="auth-main-center">
+      <div class="alert warning auth-announce" data-announcement-bar role="status" hidden>
+        <span class="ico">{{ icon('triangle-alert') }}</span>
+        <span class="body" data-announcement-text></span>
+        <button type="button" class="close" data-announcement-dismiss
+                title="关闭公告" aria-label="关闭公告">{{ icon('x') }}</button>
+      </div>
+      <div class="auth-card">
+        {% block content %}{% endblock %}
+      </div>
     </div>
 
     <div class="auth-main-bottom">
