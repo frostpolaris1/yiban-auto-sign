@@ -11,8 +11,8 @@
 | 用途 | Tailwind CSS Play CDN 构建：浏览器内即时编译工具类，模板经 `<script src="/static/vendor/tailwind.js?v={{ web_version }}">` 引入（login/index/user） |
 | 来源 | 官方 Play CDN `https://cdn.tailwindcss.com/3.x`（下载时的最新 3.x 构建产物；文件内含其特征警告串 "cdn.tailwindcss.com should not be used in production"，可据此辨识真伪） |
 | 构建 | 无需本地构建——官方预编译 IIFE 单文件；升级 = 重新从上述 URL 下载后重算哈希并更新本表。注意：该构建官方定位为开发/原型用途，生产推荐 PostCSS 插件/CLI 预编译，当前体量下接受此权衡 |
-| 大小 | 407,362 字节 |
-| SHA-256 | `f095de8d799a0281a19b0e349553ecb105c4b16dd4b94a2d568ad5fbd172cd79` |
+| 大小 | 407,279 字节 |
+| SHA-256 | `176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15` |
 
 ## md-render.js
 
@@ -20,8 +20,8 @@
 | --- | --- |
 | 用途 | 迷你 Markdown 渲染器（仅渲染更新日志 CHANGELOG 用到的语法：标题 / 列表 / 加粗 / 行内代码），与 tailwind.js 同页引入 |
 | 来源/构建 | **本项目自研**（零依赖、无构建步骤，手写 IIFE）；安全设计：先整体 HTML 转义再应用标记 → 无 XSS；`[^*\n]+` 不跨行匹配，防脱敏手机号 `138****8000` 的 `****` 与跨行 `**` 误加粗。修改后直接提交源文件即可 |
-| 大小 | 2,786 字节 |
-| SHA-256 | `ac58221422d603e844405a05d474fe6a810d38176a74be7f0433b89799628c61` |
+| 大小 | 2,733 字节 |
+| SHA-256 | `0aea228c79e519058214fda93d2d92337f86c27730e5e25357b196d37ba4c3b2` |
 
 ## 字体（fonts/misans/）
 
@@ -109,13 +109,18 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/tailwind.js, web/static/vendor/
 | --- | --- | --- | --- |
 | `inter/*.woff2` | 8 | 534816 | `29adf4e22d86348703104aab38f1229bc1e88b976d4b1ea4c53758f37732a44d` |
 | `jetbrains-mono/*.woff2` | 1 | 21168 | `b346d592a3e572324ee55023406624bc0f1454e2ed0dbd7cde1d4bc7bd3546bb` |
-| `notosanssc/*.woff2` | 96 | 7332920 | `71cd5aafb18ca42cbaa86fe6c93aa2a4051f5461b05cb926477f6629c5ed6c74` |
+| `notosanssc/*.woff2` | 96 | 7145564 | `3d0dbd37bbc9cbbdcb47e0c0ecb24715e0fd9e4805a0725feb79351b2364d6af` |
 
 > 中文按 `unicode-range` 分片下发：浏览器只取页面实际用到的分片，故单页 CJK 载荷远小于目录总体积。
-> `fonts/notosanssc/` 已从上游完整可变字体按字频重切片，实测本项目界面文本（893 个 CJK/全角码点）
-> 单字重命中 3 片 ≈ **0.126 MiB**（旧方案 23/101 片 ≈ 1.28 MiB）；覆盖基本区 20,976/20,992、
+> `fonts/notosanssc/` 从 npm `md2note-fonts@1.0.0`（OFL-1.1）内嵌的完整 Noto Sans SC
+> Regular/Bold 静态字体按字频重切片，实测本项目界面文本（893 个 CJK/全角码点）
+> 单字重命中 3 片 ≈ **0.121 MiB**（400）/ **0.122 MiB**（700）
+> （旧 Google Fonts 方案 23/101 片 ≈ 1.28 MiB）；覆盖基本区 20,976/20,992、
 > 标点 64/64、全角 224/240、扩展 A 常用 77。来源、构建脚本与覆盖明细见 `fonts/MANIFEST.md`，
-> 完整重构说明见 `docs/refactor/11-cjk-font-reslice.md`。
+> 换源说明见 `docs/refactor/15-font-source-npm.md`。
+> 2026-09 评估 npm `noto-sans-sc@37.0.0` 后确认**不换源**：该包实为 Google 网页子集再分发
+> （并集覆盖基本区 12,242/20,992，低于本基线），其余完整字体候选成熟度不更优。
+> 评估明细见 `docs/refactor/16-font-source-mature.md`。
 
 > 体积与 gzip 的测量方法：`gzip -9c <file> | wc -c`（与 `docs/refactor/04-asset-research.md` 一致）。
 
