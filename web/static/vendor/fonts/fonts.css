@@ -1,0 +1,13 @@
+/* Self-hosted webfont aggregator.
+ *
+ * 相对路径引用，无任何外网 CDN。三个家族均为 SIL OFL-1.1（见 OFL.txt）。
+ *   inter/          Inter 400/500/600/700，latin + latin-ext
+ *   jetbrains-mono/ JetBrains Mono 400，latin（等宽数值：手机号 / 日志 / ID）
+ *   notosanssc/     Noto Sans SC 400/700，unicode-range 分片（动态中文内容）
+ *
+ * 引入方式：<link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+ * 各分片 unicode-range 保留，浏览器按页面实际码点按需加载。
+ */
+@import url('inter/inter.css');
+@import url('jetbrains-mono/jetbrains-mono.css');
+@import url('notosanssc/notosanssc.css');

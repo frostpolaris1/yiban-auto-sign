@@ -1,0 +1,10 @@
+{% extends "layout_admin.html" %}
+{% from "pages/_stub_macro.html" import stub with context %}
+{% block title %}签到日志 · 易班自动签到{% endblock %}
+{% block content %}{{ stub('签到日志', [
+  '手动签到：按账号触发 / 批量触发，含冷却与队列忙提示',
+  '当日日志：关键字检索、行数截断提示、自动刷新（仅页面可见时）',
+  '历史日志：按日期查看（URL 可分享）',
+  '日志导出：按日期下载脱敏副本（限速）',
+  '探针记录与签到事件时间线（含耗时、尝试次数）',
+]) }}{% endblock %}

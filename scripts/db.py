@@ -3070,19 +3070,29 @@ def add_page_visits_batch(rows):
             logger.warning("批量写入 page_visits 失败: %s", e)
 
 
-def sign_event_stats(days=30):
-    """按天统计签到事件数量/状态分布；失败返回空列表。"""
+def sign_event_stats(days=30, stage=None):
+    """按天统计签到事件数量/状态分布；失败返回空列表。
+
+    stage 为可选过滤开关：sign_events 同时承载真实签到（stage="sign"）与健康探针
+    （stage="probe"），不传时两者混算。需要「签到口径」的调用方必须显式传
+    stage="sign"，否则探针的成功/失败会被计入签到成功率。
+    """
     try:
         with _conn_lock:
             conn = get_conn()
             cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
-            rows = conn.execute(
+            sql = (
                 "SELECT substr(ts, 1, 10) AS day, status, COUNT(*) AS cnt "
-                "FROM sign_events WHERE ts >= ? GROUP BY day, status ORDER BY day",
-                (cutoff,),
-            ).fetchall()
+                "FROM sign_events WHERE ts >= ?"
+            )
+            params = [cutoff]
+            if stage:
+                sql += " AND stage = ?"
+                params.append(stage)
+            sql += " GROUP BY day, status ORDER BY day"
+            rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
     except Exception as e:
         logger.warning("sign_events 统计失败: %s", e)

@@ -59,3 +59,53 @@ V2 原计划还包含 button / card / modal / field / badge_state / stat。实�
 若某类组件在替换过程中确实形成了稳定形态，再补进本文件 —— 那时它有真实的第二个使用场景，
 而不是凭猜测先建。
 -#}
+
+
+{#- ===================== 图标（Lucide 子集精灵图，2026-09-12）=====================
+
+    资源：`web/static/vendor/lucide/_sprite.svg`（Lucide 1.45.0 子集，70 个 symbol；
+    来源、构建、哈希见同目录 `MANIFEST.md`，许可见同目录 `LICENSE`）。
+
+    用法（两步，缺一不可）：
+        1) 在 base 模板 `<body>` 之后调用一次 `{{ ui.sprite() }}` 注入精灵图（同一页只准一次）。
+        2) 任意位置 `{{ ui.icon('trash', 'w-4 h-4') }}`。
+
+    为什么 sprite() 不做 run-time 读盘：
+        `lucide_sprite` 是 **应用启动时一次性读入** 的 Jinja 全局（`create_app()` 里
+        `Markup(...)` 注册），`sprite()` 只是把它原样输出。因此每次渲染都 **零文件 I/O**，
+        也不存在模板内 open() 的路径/编码问题。若该全局缺失（例如单测未走 create_app），
+        Jinja 的 Undefined 会渲染为空串——图标不显示，但页面不报错。
+
+    ⚠ 同一页 **只能** 调一次 sprite()：`<use href="#i-x">` 按 id 全局解析，
+      重复内联会让同一 id 出现多次（DOM 非法，且浏览器只认第一个）。
+      需要多处放图标时，只在 `<body>` 后放一次精灵，其余位置照常用 icon()。
+
+    ⚠ 图标名必须是 **symbol id**（`_sprite.svg` 里 `i-<name>` 的 `<name>`），
+      如 `trash` / `chevron-down` / `circle-check`。**旧的废弃别名不算**：
+      filter→funnel、more-vertical→ellipsis-vertical、more-horizontal→ellipsis、
+      unlock→lock-open、check-circle→circle-check、x-circle→circle-x、
+      alert-triangle→triangle-alert、alert-circle→circle-alert、
+      circle-help→circle-question-mark、bar-chart→chart-bar、pie-chart→chart-pie、
+      line-chart→chart-line。完整「概念 → Lucide 名」对照见
+      `docs/refactor/08-icons-vendoring.md`。
+
+    主题适配：symbol 上写的是 `stroke="currentColor"`，颜色继承自 `<use>` 所在的
+      文本上下文。因此图标自动跟随文字色——暗色模式无需任何额外样式。
+
+    无障碍：默认 `aria-hidden="true"`（装饰性，旁边通常有文字）。
+      图标 **单独承载语义**（没有相邻文字）时传第三个参数 label：
+          {{ ui.icon('circle-check', 'w-4 h-4', '已通过') }}
+      此时输出 `role="img"` + `<title>`，读屏可念出 label。
+-#}
+{%- macro sprite() -%}
+{{ lucide_sprite }}
+{%- endmacro -%}
+
+
+{%- macro icon(name, class='', label='') -%}
+{%- if label -%}
+<svg class="{{ class }}" role="img"><title>{{ label }}</title><use href="#i-{{ name }}"/></svg>
+{%- else -%}
+<svg class="{{ class }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>
+{%- endif -%}
+{%- endmacro -%}
