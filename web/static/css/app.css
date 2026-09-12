@@ -1529,8 +1529,11 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
    面板改用无分隔线的轻量卡头，层级靠 .page-title(22) → .panel-title(15) 拉。 */
 /* 控件（开关/按钮/箭头）必须与左侧文字块**垂直居中**：flex-start 会让控件贴顶，
    与两行文字的整体重心错位（用户反馈「开关和外框没有垂直居中对齐」的根因）。 */
+/* 控件固定在同一行右侧：文字块可自行折行（min-width:0），但**不得挤压控件**
+   （flex-shrink:0）——否则文字一长就把按钮顶到下一行（用户实测截图）。 */
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .panel-head-text { min-width: 0; }
+.panel-head > :last-child:not(.panel-head-text) { flex-shrink: 0; }
 .panel-title {
   margin: 0;
   font-family: var(--font-sans);
@@ -1563,11 +1566,7 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
   .pm-backdrop { padding: 24px 16px; }
   .pm-panel { max-height: calc(100dvh - 96px); border-radius: 16px; }
   .user-grid { gap: 16px; }
-  /* 窄屏下「标题+说明」与右侧操作按钮同行会互相挤压，改为换行堆叠；
-     换行后控件靠右对齐（与未换行时的右端位保持一致） */
-  .panel-head { flex-wrap: wrap; }
-  .panel-head > .switch,
-  .panel-head > .btn { margin-left: auto; }
+  /* 窄屏也不把控件换行：文字折行、按钮留在右侧同一行（见上） */
 }
 
 /* 页脚贴底：.main 已是 flex column，但 .content 不撑满时页脚浮在内容下方
@@ -1584,6 +1583,37 @@ body[data-page="user"] .page-sub { margin: 8px 0 0; font-size: 13px; line-height
 /* 侧栏品牌区不画分隔线：它与顶栏的分割线不可能对齐（侧栏 padding 与顶栏高度不同），
    而下方 .nav-label 已足够分隔。用户明确建议直接去掉。 */
 .d-sidebar .brand { border-bottom: 0; padding: 4px 10px 0; }
+
+/* ---- 19.3b 侧栏的 721–1100px 中间态 ----
+   Adminator 在 721–1100px 把侧栏收成 72px 图标栏（≤720 才转抽屉）。两个问题：
+     ① 它只隐藏自己的文字元素，**不认识本项目新增的时钟与退出按钮** → 文字留在 72px 里
+        溢出裁切（实测截图：时钟竖排、"退出登录"压边）；
+     ② 用户端只有 2 个导航项，图标栏既省不出空间又难辨认，属"完全不可用"的中间态。
+   处置：① 把项目新增区块也切成图标态（两个外壳通用）；② 用户端直接不做图标栏，
+   721px 以上保持完整侧栏、≤720 走抽屉（只剩"完整/抽屉"两种状态）。 */
+@media (min-width: 721px) and (max-width: 1100px) {
+  /* ① 项目新增区块的图标态：时钟整块隐藏（只留图标无法传达时间），退出按钮只留图标 */
+  .d-sidebar .sidebar-clock { display: none; }
+  .d-sidebar .sidebar-actions { display: flex; justify-content: center; }
+  .d-sidebar .sidebar-actions .btn { padding: 10px; }
+  .d-sidebar .sidebar-actions .btn span { display: none; }
+
+  /* ② 用户端保留完整侧栏（覆盖 Adminator 的图标栏规则；均为 body 作用域，特异性更高） */
+  body[data-page="user"] .shell { grid-template-columns: 248px 1fr; }
+  body[data-page="user"] .d-sidebar { padding: 22px 16px 18px; }
+  body[data-page="user"] .brand { justify-content: flex-start; padding: 4px 10px 0; }
+  body[data-page="user"] .brand-text,
+  body[data-page="user"] .brand-tag,
+  body[data-page="user"] .nav-label { display: block; }
+  body[data-page="user"] .nav-link { justify-content: flex-start; padding: 9px 12px; }
+  body[data-page="user"] .nav-link > span { display: inline; }
+  body[data-page="user"] .workspace { justify-content: flex-start; }
+  body[data-page="user"] .workspace-text { display: block; }
+  body[data-page="user"] .sidebar-clock { display: flex; }
+  body[data-page="user"] .sidebar-actions { justify-content: flex-start; }
+  body[data-page="user"] .sidebar-actions .btn { padding: 6px 10px; }
+  body[data-page="user"] .sidebar-actions .btn span { display: inline; }
+}
 
 /* ---- 19.4 侧边栏可读性修正 ---- */
 .nav-label { color: var(--t-muted); }     /* Adminator 用 --t-light：浅色侧栏上 2.56:1 */
@@ -1755,10 +1785,13 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-auto-rows: 56px;
-  gap: 4px;
+  /* 行高/间距抽成变量：min-height 由它们推导，移动端改一处即可，避免两处漂移 */
+  --sc-row: 56px;
+  --sc-gap: 4px;
+  grid-auto-rows: var(--sc-row);
+  gap: var(--sc-gap);
   /* 钉死 6 行高度：换月/首屏加载时网格不会塌成 0 高（这是"跳变"的根因） */
-  min-height: calc(6 * 56px + 5 * 4px);
+  min-height: calc(6 * var(--sc-row) + 5 * var(--sc-gap));
 }
 /* 载入骨架格：与真实格同尺寸，保证高度恒定（静态，不做逐格动画） */
 .sc-cell--skeleton { background: var(--bg-muted); border-color: transparent; cursor: default; }
@@ -1860,7 +1893,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 
 .sc-log-text { margin-top: 2px; }
 @media (max-width: 720px) {
-  .sc-grid { grid-auto-rows: 44px; gap: 2px; }
+  .sc-grid { --sc-row: 44px; --sc-gap: 2px; }
   .sc-nav-btn { width: 40px; height: 40px; }
   /* 竖屏：操作按钮必须在同一行——收窄内距与字号并禁止换行（宽度已实测放得下） */
   .account-actions { flex-wrap: nowrap; gap: 6px; }

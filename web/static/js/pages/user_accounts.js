@@ -436,7 +436,7 @@
     prefCollapsed = collapsed;
     $("pref-body").hidden = collapsed;
     $("pref-collapse-btn").setAttribute("aria-expanded", String(!collapsed));
-    $("pref-collapse-label").textContent = collapsed ? "未开启（展开预配置）" : "收起";
+    $("pref-collapse-label").textContent = collapsed ? "展开配置" : "收起";
   }
 
   function pickTimePref(slot) {
