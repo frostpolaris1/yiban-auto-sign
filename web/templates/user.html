@@ -1,1207 +1,185 @@
-{% extends "base.html" %}
+{# 用户自助页（/user，普通用户登录后进入）。
+   复用 layout_auth.html 外壳：左侧沿用已定稿的品牌栏，右侧主列由 app.css 第 19 节
+   改为整宽内容区。原页面的内联 CSS/JS（Tailwind 运行时 + 4 个手写模态 + 手写图标表）
+   全部退役，改为 Adminator 组件 + core.js 共享交互层：
 
-{% import "macros/ui.html" as ui %}
+     · 身份/邮箱/服务器时钟/主题/退出 → core.js（layout_auth 的 main_top 块覆盖）；
+     · 公告横幅 → layout_auth 的 .auth-announce，core.js 填充并记忆关闭；
+     · 更新日志 → core.js 的 openChangelog（页脚版本号触发），本页不再自建模态；
+     · 账号表单/注销确认/改密二次确认 → core.js 的 openModal / confirmDialog /
+       openConfirmPasswordModal（统一 Esc、焦点圈闭、滚动锁、焦点归还）；
+     · 签到日历 → static/js/calendar.js（全站唯一实现）。
+
+   功能清单（迁移自旧 user.html，逐项保留）见 docs/refactor/19-user-migration.md。 #}
+{% extends "layout_auth.html" %}
+{% from "macros/ui.html" import icon with context %}
+
 {% block title %}我的账号 · 易班自动签到{% endblock %}
+{% block page_id %}user{% endblock %}
 
-{% block head_styles %}
-<style>
-  /* Tailwind 默认色板（原版配色）。类名经 tailwind.config 色板重映射读取这些变量；
-     如需换主题，在 :root/.dark 分别覆盖对应 RGB 三元组即可（深浅模式可不同值）。 */
-  :root {
-    --c-zinc-50:250 250 250; --c-zinc-100:244 244 245; --c-zinc-200:228 228 231; --c-zinc-300:212 212 216;
-    --c-zinc-400:161 161 170; --c-zinc-500:113 113 122; --c-zinc-600:82 82 91; --c-zinc-700:63 63 70;
-    --c-zinc-800:39 39 42; --c-zinc-900:24 24 27;
-    --c-blue-200:191 219 254; --c-blue-300:147 197 253; --c-blue-400:96 165 250; --c-blue-500:59 130 246;
-    --c-blue-600:37 99 235; --c-blue-700:29 78 216; --c-blue-800:30 64 175; --c-blue-900:30 58 138;
-    --c-amber-50:255 251 235; --c-amber-100:254 243 199; --c-amber-200:253 230 138; --c-amber-300:252 211 77;
-    --c-amber-400:251 191 36; --c-amber-500:245 158 11; --c-amber-600:217 119 6; --c-amber-700:180 83 9; --c-amber-800:146 64 14; --c-amber-900:120 53 15;
-    --c-red-50:254 242 242; --c-red-200:254 202 202; --c-red-300:252 165 165; --c-red-400:248 113 113;
-    --c-red-500:239 68 68; --c-red-600:220 38 38; --c-red-700:185 28 28; --c-red-800:153 27 27; --c-red-900:127 29 29;
-    --c-green-50:240 253 244; --c-green-200:187 247 208; --c-green-300:134 239 172; --c-green-400:74 222 128;
-    --c-green-500:34 197 94; --c-green-600:22 163 74; --c-green-700:21 128 61; --c-green-800:22 101 52; --c-green-900:20 83 45;
-  }
-  /* 统一线性图标（currentColor 继承文字颜色，尺寸随字号） */
-  .ic { width: 1em; height: 1em; display: inline-block; vertical-align: -0.125em; flex-shrink: 0; }
-</style>
-{% endblock %}
-
-{% block head_scripts %}
-<script>
-  // ===== 图标系统：按功能手绘的统一 SVG 线性图标 =====
-  // icon(name) 返回内联 SVG（currentColor 继承文字颜色）；[data-icon] 元素由 hydrateIcons() 填充。
-  window.icon = (function () {
-    var P = {
-      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
-      moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>',
-      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-      check: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.8-5"/>',
-      close: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',
-      retry: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/>',
-      ban: '<circle cx="12" cy="12" r="9"/><path d="m5.5 5.5 13 13"/>',
-      minus: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>',
-      pause: '<circle cx="12" cy="12" r="9"/><path d="M10 9v6m4-6v6"/>',
-      stop: '<circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
-      trash: '<path d="M4 7h16m-2 0-.9 12.1a2 2 0 0 1-2 1.9H8.9a2 2 0 0 1-2-1.9L6 7m3 0V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-6 4v6m4-6v6"/>',
-      warn: '<path d="M10.3 3.9 1.8 18.6a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 3.5v.1"/>',
-      cal: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4m8-4v4M3 11h18"/>',
-      play: '<path d="M7 5.5v13l11-6.5-11-6.5Z"/>',
-      dots: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
-      xmark: '<path d="m6 6 12 12M18 6 6 18"/>',
-      chevL: '<path d="m15 6-6 6 6 6"/>',
-      chevR: '<path d="m9 6 6 6-6 6"/>',
-      chevD: '<path d="m6 9 6 6 6-6"/>'
-    };
-    return function (name, cls) {
-      return '<svg class="ic ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[name] || P.minus) + '</svg>';
-    };
-  })();
-  // 静态占位填充：<span data-icon="moon"></span> → 插入对应 SVG
-  window.hydrateIcons = function (root) {
-    (root || document).querySelectorAll('[data-icon]').forEach(function (el) {
-      if (!el._iconed) { el.innerHTML = window.icon(el.getAttribute('data-icon')); el._iconed = true; }
-    });
-  };
-</script>
-{% endblock %}
-
-{% block head_styles_extra %}
-<style>
-  /* 正文：原版字体栈（MiSans 仅高分屏「桌面」加载——misans.css 的 media 含 pointer: fine；手机端与低分屏走系统字体保 ClearType） */
-  body { font-family: "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  /* 标题不再使用专属字体（2026-08-22 性能回退）：h1~h4 等继承下方正文栈，避免 2.8MB web 字体拖垮窄带宽访问；
-     方圆体源文件与转换命令保留在本地，需要时可恢复 */
-  /* 低分屏（<1.5x，Windows 桌面等）回退系统字体：woff2 无 hinting 低分屏渲染模糊，系统字体有 ClearType 优化 */
-  @media (max-resolution: 1.5dppx) {
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-  }
-  pre.log-text { font-family: ui-monospace, SFMono-Regular, Consolas, "Noto Sans SC", "Microsoft YaHei", "PingFang SC", monospace; font-size: 12px; line-height: 1.6; }
-
-  /* Toast 动效（动效审查修复⑥）：入场自下方浮入（@starting-style），退出仅快速淡出；transition 可中断。
-     不支持 @starting-style 的旧浏览器退化为无入场动画；「减弱动态效果」下去位移保留淡入。
-     data-hidden 属性替代 hidden 类显示/隐藏，以保留过渡能力（aria-live 不受影响）。 */
-  #toast { opacity: 1;
-    pointer-events: none;  /* 纯状态展示：隐藏态仅 opacity:0（保留过渡），不设会拦截底部点击 */
-    transition: opacity 0.16s ease-out, transform 0.16s ease-out; }
-  #toast[data-hidden] { opacity: 0; transform: translate(-50%, 0);
-    transition: opacity 0.12s ease; }
-  @starting-style {
-    #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 10px); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    @starting-style { #toast:not([data-hidden]) { opacity: 0; transform: translate(-50%, 0); } }
-  }
-</style>
-{% endblock %}
-
-
-{% block body %}
-<!-- 顶栏 -->
-<header class="bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 sticky top-0 z-20">
-  <div class="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
-    <div class="flex items-center gap-2">
-      <!-- 品牌：优先显示 web/static/vendor/logo.png（本地/服务器放入即生效；开源仓库不含该文件
-           ——版权来源不明，部署者自行放入，见 README「自定义 Web 图标」；文件缺失时回退占位图标） -->
-      <img src="{{ request.script_root }}/static/vendor/logo.png?v=2" alt="易班自动签到" class="w-9 h-9 rounded-lg object-cover shrink-0"
-           onerror="this.style.display='none';const f=document.getElementById('user-brand-fallback');f.classList.remove('hidden');f.style.display=''">
-      <svg id="user-brand-fallback" viewBox="0 0 36 36" class="w-9 h-9 rounded-lg shrink-0 hidden" role="img" aria-label="易班自动签到（占位图标）">
-        <rect width="36" height="36" rx="8" fill="#3b82f6"/>
-        <text x="18" y="25" text-anchor="middle" font-size="17" fill="#ffffff" font-family="sans-serif">签</text>
-      </svg>
-      <span class="font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 text-sm">易班自动签到</span>
-    </div>
-    <div class="flex items-center gap-4 min-w-0">
-      <span id="user-clock" class="text-xs text-zinc-500 dark:text-zinc-400 hidden sm:inline">服务器时间：--:--:--</span>
-      <button onclick="toggleTheme()" data-theme-btn title="切换亮/暗主题" aria-label="切换亮/暗主题"
-              class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150"><span data-icon="moon"></span></button>
-      <span id="user-email" class="text-sm text-zinc-600 dark:text-zinc-300 truncate"></span>
-      <button onclick="doLogout()" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">退出</button>
-    </div>
+{% block main_top %}
+<div class="auth-main-top">
+  <div class="auth-mobile-brand">
+    <span class="logo">{{ icon('shield') }}</span>
+    <span>易班自动签到</span>
   </div>
-</header>
-
-<main class="max-w-4xl mx-auto px-4 py-6">
-<!-- 全局公告条 -->
-<div id="announcement-bar" class="hidden mb-3 yb-banner yb-alert-warning text-center">
-  <span id="announcement-text"></span>
+  <div class="user-bar">
+    {# 服务器时钟：core.js 每秒写入 [data-clock-text]（用于判断是否在签到窗口） #}
+    <span class="user-clock">服务器时间：<span class="mono" data-clock-text>--:--:--</span></span>
+    {# 只显示邮箱前缀，完整地址放在 title，避免窄屏被长邮箱撑破 #}
+    <span class="user-email" data-account-email title=""></span>
+    <button type="button" class="btn btn--ghost btn--icon" id="themeToggle"
+            title="切换亮/暗主题" aria-label="切换亮/暗主题">{{ icon('moon') }}</button>
+    <button type="button" class="btn btn--ghost btn--sm" data-user-logout>
+      {{ icon('log-out') }}退出
+    </button>
+  </div>
 </div>
+{% endblock %}
 
-<!-- 调度模式提示条（调度 v2：模式与开关状态对用户透明） -->
-<div id="schedule-banner" class="hidden mb-3 yb-alert yb-alert-info">
-  <span id="schedule-banner-text"></span>
-</div>
+{% block content %}
+<div class="user-page">
 
-  <!-- 我的账号与运行情况 -->
-  <section class="yb-card mb-6">
-    <!-- 图例独立成行（不与标题挤同一行）：手机宽度下 6 个状态单行排开，避免 5+1 折行 -->
-    <div class="mb-2">
-      <h1 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的账号与签到情况</h1>
+  {# 调度模式提示条：登录后由 /api/me 填充（签到方式 / 窗口 / 是否可自选），失败不阻塞页面 #}
+  <div class="alert info" role="status" data-schedule-banner hidden>
+    <span class="ico">{{ icon('info') }}</span>
+    <span class="body" data-schedule-banner-text></span>
+  </div>
+
+  <!-- 我的账号与签到情况 -->
+  <section class="card user-section">
+    <div class="card-head">
+      <div class="card-title-wrap">
+        <h2 class="card-title">我的账号与签到情况</h2>
+        <p class="card-sub">审核通过后自动签到；暂停与删除可随时在此操作。</p>
+      </div>
+      {# 无有效账号时显示；全部被删除时也显示（软删除不死路），由 user.js 控制显隐 #}
+      <button id="open-account-btn" type="button" class="btn btn--primary" hidden>
+        {{ icon('plus') }}提交我的易班账号
+      </button>
     </div>
-    <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400 mb-4">
-      <span class="inline-flex items-center gap-1"><span data-icon="clock"></span>待签</span><span class="inline-flex items-center gap-1"><span data-icon="check"></span>成功</span><span class="inline-flex items-center gap-1"><span data-icon="close"></span>失败</span>
-      <span class="inline-flex items-center gap-1"><span data-icon="retry"></span>重试</span><span class="inline-flex items-center gap-1"><span data-icon="ban"></span>跳过</span><span class="inline-flex items-center gap-1"><span data-icon="minus"></span>无需</span><span class="inline-flex items-center gap-1"><span data-icon="pause"></span><span data-icon="stop"></span>暂停/已取消</span>
-    </div>
-
-    {{ ui.empty("accounts-empty", "还没有提交账号") }}
-
-    <div id="account-list" class="space-y-3"></div>
-
-    <!-- 提交账号入口（无有效账号时显示；编辑统一走弹窗，2026-08-15 用户反馈） -->
-    <button id="open-account-btn" type="button" onclick="openAccountModalForNew()"
-            class="hidden w-full sm:w-auto btn-primary">提交我的易班账号</button>
+    {# 图例独立成行：窄屏 7 项自动折行，不与标题挤在一行 #}
+    <ul class="legend" aria-label="签到状态图例">
+      <li>{{ icon('clock') }}待签</li>
+      <li>{{ icon('circle-check') }}成功</li>
+      <li>{{ icon('circle-x') }}失败</li>
+      <li>{{ icon('refresh-cw') }}重试</li>
+      <li>{{ icon('ban') }}跳过</li>
+      <li>{{ icon('circle-minus') }}无需</li>
+      <li>{{ icon('circle-pause') }}{{ icon('circle-stop') }}暂停/已取消</li>
+    </ul>
+    <p id="accounts-empty" class="empty" hidden>还没有提交账号</p>
+    <div id="account-list" class="account-list"></div>
   </section>
 
-  <!-- 我的签到时间（调度 v2 自选；未开启时折叠，展开可预配置但不激活） -->
-  <section id="time-pref-card" class="yb-card mb-6 hidden">
-    <div class="flex items-center justify-between mb-1">
-      <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">我的签到时间</h2>
-      <button id="pref-collapse-btn" type="button" onclick="togglePrefCollapse()"
-              class="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="chevD"></span></button>
+  <!-- 我的签到时间（5 分钟粒度自选；未开启时可展开预配置但不生效） -->
+  <section id="time-pref-card" class="card user-section" hidden>
+    <div class="card-head">
+      <div class="card-title-wrap">
+        <h2 class="card-title">我的签到时间</h2>
+        <p class="card-sub">
+          签到窗口 <span class="mono" id="pref-window"></span> · 选一个 5 分钟时段，
+          系统按你的选择安排签到（今日已开始后修改次日生效）
+        </p>
+      </div>
+      <button id="pref-collapse-btn" type="button" class="btn btn--ghost btn--sm"
+              aria-expanded="true" aria-controls="pref-body">
+        <span id="pref-collapse-label">收起</span>
+        <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
+      </button>
     </div>
     <div id="pref-body">
-      <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-3">签到窗口 <span id="pref-window"></span> · 选一个 5 分钟时段，系统按你的选择安排签到（今日已开始后修改次日生效）</p>
-      <p id="pref-estimate" class="text-xs text-blue-600 dark:text-blue-400 mb-2 hidden"></p>
-      <div id="pref-slot-grid" class="grid grid-cols-4 sm:grid-cols-8 gap-2"></div>
-      <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
-        <button id="pref-clear-btn" type="button" onclick="clearTimePref()"
-                class="btn-ghost">清除选择（恢复自动分配）</button>
-        <span id="pref-tip" class="text-zinc-500 dark:text-zinc-400"></span>
+      <p id="pref-estimate" class="card-sub pref-estimate" hidden></p>
+      <div id="pref-slot-grid" class="slot-grid" role="group" aria-label="自选签到时段"></div>
+      <div class="form-actions pref-foot">
+        <button id="pref-clear-btn" type="button" class="btn btn--ghost btn--sm">清除选择（恢复自动分配）</button>
+        <span id="pref-tip" class="card-sub" aria-live="polite"></span>
       </div>
-      <p id="pref-disabled-hint" class="hidden mt-2 text-xs text-amber-600 dark:text-amber-400">
-        功能未开启：你的选择会保存，但暂不生效
+      <p id="pref-disabled-hint" class="alert warning pref-hint" hidden>
+        <span class="ico">{{ icon('triangle-alert') }}</span>
+        <span class="body">功能未开启：你的选择会保存，但暂不生效</span>
       </p>
     </div>
   </section>
 
-  <!-- 邮件提醒（B 线：账号签到失败邮件通知，用户可自行开关） -->
-  <section class="yb-card mb-6">
-    <div class="flex items-center justify-between gap-3">
-      <div>
-        <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">邮件提醒</h2>
-        <p class="text-xs text-zinc-500 dark:text-zinc-400">签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
+  <!-- 邮件提醒（签到失败邮件通知，可自行开关） -->
+  <section class="card user-section">
+    <div class="user-row">
+      <div class="card-title-wrap">
+        <h2 class="card-title">邮件提醒</h2>
+        <p class="card-sub">签到失败时，向注册邮箱发送提醒邮件（成功不打扰）</p>
       </div>
-      <label class="relative inline-flex items-center cursor-pointer shrink-0" title="接收签到失败邮件">
-        <input id="mail-notify-switch" type="checkbox" class="sr-only peer" onchange="toggleMailNotify()">
-        <div class="w-11 h-6 bg-zinc-300 dark:bg-zinc-600 rounded-full peer-checked:bg-blue-500 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 transition-colors duration-150 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform after:duration-150 peer-checked:after:translate-x-5"></div>
+      <label class="switch" title="接收签到失败邮件">
+        <input id="mail-notify-switch" type="checkbox">
+        <span class="track" aria-hidden="true"></span>
+        <span class="sr-only">接收签到失败邮件提醒</span>
       </label>
     </div>
-    <p id="mail-notify-tip" class="text-xs text-zinc-500 dark:text-zinc-400 mt-1"></p>
+    <p id="mail-notify-tip" class="card-sub" aria-live="polite"></p>
   </section>
 
-<!-- Toast（动效同管理端：浮入 / 快速淡出 / 可中断，见上方 <style> #toast 规则；data-hidden 替代 hidden 以支持过渡） -->
-<div id="toast" role="status" aria-live="polite" data-hidden class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 shadow-md text-sm text-white bg-zinc-900 dark:bg-zinc-700 max-w-[90vw] text-center break-words"></div>
-
-<!-- 提交 / 编辑账号模态（2026-08-15 用户反馈：编辑不再滚到页底表单，统一弹窗）。
-     结构 = 内容区内部滚动 + 提交行常驻 footer：小视口（高分屏 + 浏览器缩放）下 85vh 截断内容，
-     若按钮随内容滚出裁剪区，点击会落到遮罩上（静默关窗）或穿透到 html（毫无反应）。 -->
-<div id="account-form-modal" role="dialog" aria-modal="true" aria-labelledby="account-form-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeAccountModal()" aria-hidden="true"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg">
-    <form id="account-form" class="flex flex-col max-h-[85vh]">
-      <div class="overflow-y-auto overscroll-contain p-5 pb-3">
-        <div class="flex items-center justify-between mb-1">
-          <h2 id="account-form-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">提交我的易班账号</h2>
-          <button type="button" onclick="closeAccountModal()" aria-label="关闭"
-                  class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
+  <!-- 修改密码（原生 <details> 折叠：键盘可达、无需 JS 维护展开态） -->
+  <details class="card user-section user-collapse">
+    <summary>
+      <span class="card-title">修改密码</span>
+      <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
+    </summary>
+    <div class="collapse-body">
+      <p class="card-sub">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
+      <form id="password-form" class="form-stack" novalidate>
+        <div class="field">
+          <label class="field-label" for="p-old">当前密码</label>
+          <div class="input-affix">
+            <input id="p-old" type="password" class="input" autocomplete="current-password"
+                   required placeholder="输入当前密码">
+            <button type="button" class="affix-btn" data-pw-toggle="p-old"
+                    aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+          </div>
         </div>
-        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。</p>
-        <div id="account-form-error" role="alert" class="hidden mb-3 yb-alert yb-alert-error"></div>
-        <div class="grid grid-cols-1 gap-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-name">名称 / 备注（可选）</label>
-        <input id="f-name" type="text" maxlength="50" placeholder="如：武陵123庄方宜"
-               class="yb-input">
-        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">备注会显示给管理员，用于审核与定位签到问题。</p>
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-phone">易班手机号 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-phone" type="text" maxlength="20" required placeholder="登录易班的手机号"
-               class="yb-input">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-password">易班密码 <span class="text-red-500 dark:text-red-400">*</span></label>
-        <input id="f-password" type="password" autocomplete="new-password" required placeholder="用于自动登录签到"
-               class="yb-input">
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-model">设备型号（可选，不清楚就留空）</label>
-        <input id="f-model" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写"
-               class="yb-input">
-        <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">设备型号与识别码随签到请求提交，仅提示「请使用授权设备进行签到」时才需填写：请按易班 App「设备绑定」页面显示的信息原样填写。不确定就留空。</p>
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="f-code">设备识别码（可选，不清楚就留空）</label>
-        <input id="f-code" type="text" maxlength="100" placeholder="64 位十六进制识别码"
-               class="yb-input">
-        <button id="clear-code-btn" type="button" onclick="toggleClearCode()"
-                class="hidden mt-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors duration-150">清除已配置识别码</button>
-      </div>
-      </div>
-      </div>
-      <div class="flex items-center gap-3 px-5 py-3 border-t border-zinc-200 dark:border-zinc-700 shrink-0 bg-white dark:bg-zinc-800 rounded-b-2xl">
-        <button id="account-submit-btn" type="submit" class="btn-primary">提交账号</button>
-        <button id="cancel-edit-btn" type="button" onclick="cancelEdit()"
-                class="hidden bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 font-medium rounded-lg px-4 py-2 text-sm transition-colors duration-200">取消</button>
-        <span id="form-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
-      </div>
-    </form>
-  </div>
-</div>
-
-<!-- 注销账号第一重确认（7 天宽限期说明；第二重为密码确认，2026-08-16 安全审查 3→7 天） -->
-<div id="delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()" aria-hidden="true"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
-    <div class="flex items-center justify-between mb-1">
-      <h2 id="delete-confirm-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">注销账号</h2>
-      <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
-              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
-    </div>
-    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">注销将删除你的账号。</p>
-    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4"><span class="text-amber-600 dark:text-amber-400 font-medium">7 天内可撤销恢复</span>，超过 7 天将永久删除，无法找回。</p>
-    <div class="flex gap-3 mt-1">
-      <button type="button" onclick="closeDeleteModal()"
-              class="flex-1 btn-ghost">取消</button>
-      <button type="button" onclick="proceedDelete()"
-              class="flex-1 btn-danger">继续注销</button>
-    </div>
-  </div>
-</div>
-
-<!-- 注销账号第二重确认（再次提醒 + 密码确认；软删除 7 天宽限期，2026-08-16） -->
-<div id="delete-account-modal" role="dialog" aria-modal="true" aria-labelledby="delete-account-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeDeleteModal()" aria-hidden="true"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-md p-5">
-    <div class="flex items-center justify-between mb-1">
-      <h2 id="delete-account-title" class="text-base font-semibold tracking-tight text-red-600 dark:text-red-400">最后确认</h2>
-      <button type="button" onclick="closeDeleteModal()" aria-label="关闭"
-              class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150"><span data-icon="xmark"></span></button>
-    </div>
-    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-2">真的要注销吗？注销后账号将无法登录，易班账号与自选签到时间会被删除。</p>
-    <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">7 天宽限期内可撤销，超过 7 天无法恢复。请输入当前密码完成注销。</p>
-    <div class="grid grid-cols-1 gap-3">
-      <div>
-        <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="delete-password">当前密码</label>
-        <input id="delete-password" type="password" autocomplete="current-password" placeholder="请输入当前密码"
-               onkeydown="if(event.key==='Enter')confirmDelete()"
-               class="yb-input">
-      </div>
-      <div class="flex gap-3 mt-1">
-        <button type="button" onclick="closeDeleteModal()"
-                class="flex-1 btn-ghost">取消</button>
-        <button id="delete-confirm-btn" type="button" onclick="confirmDelete()"
-                class="flex-1 btn-danger">确认注销</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-  <!-- 修改密码（默认收起，点击标题展开） -->
-  <section class="yb-card">
-    <button type="button" onclick="togglePassword()" aria-expanded="false"
-            class="w-full flex items-center justify-between text-left">
-      <span class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">修改密码</span>
-      <span id="password-arrow" class="text-zinc-500 dark:text-zinc-400 transition-transform duration-200"><span data-icon="chevR"></span></span>
-    </button>
-    <div id="password-body" class="hidden mt-4">
-      <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">账号（注册邮箱）不可修改，仅可修改密码。改后下次登录使用新密码。</p>
-      <form id="password-form" class="grid grid-cols-1 gap-3 max-w-sm">
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-old">当前密码</label>
-          <input id="p-old" type="password" autocomplete="current-password" required placeholder="输入当前密码"
-                 class="yb-input">
+        <div class="field">
+          <label class="field-label" for="p-new">新密码</label>
+          <div class="input-affix">
+            <input id="p-new" type="password" class="input" autocomplete="new-password"
+                   required placeholder="新密码" aria-describedby="p-new-help">
+            <button type="button" class="affix-btn" data-pw-toggle="p-new"
+                    aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+          </div>
+          <p id="p-new-help" class="field-help">至少 10 位，且包含大小写字母、数字、符号中的至少两类</p>
         </div>
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-new">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
-          <input id="p-new" type="password" autocomplete="new-password" required placeholder="新密码"
-                 class="yb-input">
+        <div class="field">
+          <label class="field-label" for="p-confirm">确认新密码</label>
+          <div class="input-affix">
+            <input id="p-confirm" type="password" class="input" autocomplete="new-password"
+                   required placeholder="再次输入新密码">
+            <button type="button" class="affix-btn" data-pw-toggle="p-confirm"
+                    aria-label="显示密码" aria-pressed="false">{{ icon('eye') }}</button>
+          </div>
         </div>
-        <div>
-          <label class="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1" for="p-confirm">确认新密码</label>
-          <input id="p-confirm" type="password" autocomplete="new-password" required placeholder="再次输入新密码"
-                 class="yb-input">
-        </div>
-        <div class="flex items-center gap-3">
-          <button type="submit" class="btn-primary">保存新密码</button>
-          <span id="p-tip" class="text-xs text-zinc-500 dark:text-zinc-400"></span>
+        <div class="form-actions">
+          <button type="submit" class="btn btn--primary">保存新密码</button>
+          <span id="p-tip" class="card-sub" aria-live="polite"></span>
         </div>
       </form>
     </div>
-  </section>
+  </details>
 
-  <!-- 注销账号（危险操作，置底防误触；软删除 7 天宽限期可撤销，2026-08-16） -->
-  <section class="yb-card mt-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <p class="text-sm font-medium text-zinc-900 dark:text-zinc-100">注销账号</p>
-        <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
+  <!-- 注销账号（危险操作置底；软删除 7 天宽限期，二次确认走 core.js 的密码模态） -->
+  <section class="card user-section user-danger">
+    <div class="user-row">
+      <div class="card-title-wrap">
+        <h2 class="card-title">注销账号</h2>
+        <p class="card-sub">删除本账号、易班账号与自选签到时间，7 天内可撤销</p>
       </div>
-      <button type="button" onclick="openDeleteModal()"
-              class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors duration-150 whitespace-nowrap ml-4">注销账号</button>
+      <button type="button" class="btn btn--ghost btn--danger-ghost" data-delete-account>
+        {{ icon('trash') }}注销账号
+      </button>
     </div>
   </section>
-</main>
-<footer class="text-center text-xs text-zinc-400 dark:text-zinc-400 py-4">
-    {% if icp_info %}
-    <div id="footer-icp" class="mb-1"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300">{{ icp_info }}</a></div>
-    {% endif %}
-    {% if police_info %}
-    <div id="footer-police" class="mb-1"><a href="{{ police_link }}" target="_blank" rel="noopener" class="hover:text-blue-500 dark:hover:text-blue-300"><img src="/gongan-beian.png" alt="" width="12" height="13" class="inline-block -mt-0.5 me-1"> {{ police_info }}</a></div>
-    {% endif %}
-    <div onclick="openChangelog()" title="点击查看更新日志" class="cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">易班自动签到 v{{ app_version }}</div>
-    <a href="https://github.com/frostpolaris1/yiban-auto-sign" target="_blank" rel="noopener" class="inline-block mt-1 text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300">开源（AGPL-3.0）· 源码</a>
-  </footer>
 
-<script>
-const $ = (id) => document.getElementById(id);
-let accounts = [];
-let sundaySign = false;  // 周日签到开关（来自 /api/my-calendar 响应；开启后周日可查日志/不置灰）
-let saturdaySign = false; // 周六签到开关（默认关闭，v0.29.0 起；开启后周六照常签到/可查）
-let editingIndex = null;
-
-let csrfToken = '';  // 登录后从 /api/me 获取，写请求统一携带（CSRF 防护）
-
-async function api(path, opts = {}, _retried = false) {
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(csrfToken ? {'X-CSRF-Token': csrfToken} : {}),
-    ...(opts.headers || {}),
-  };
-  const resp = await fetch(BASE + path, {
-    ...opts,
-    headers,
-  });
-  // 401 未登录才跳转；403（无权限/CSRF 失败）返回错误提示，由页面展示
-  if (resp.status === 401) {
-    location.href = BASE + '/login';
-    throw new Error('未登录');
-  }
-  const data = await resp.json().catch(() => ({}));
-  // CSRF token 不同步（如服务重启/会话更新）：自动重新获取 token 并重试一次，用户无感
-  if (resp.status === 403 && !_retried && data.error && data.error.includes('校验失败')) {
-    try {
-      const me = await fetch(BASE + '/api/me').then(r => r.json());
-      csrfToken = me.csrf_token || '';
-      return api(path, opts, true);
-    } catch (e) { /* 重试失败则走下方错误提示 */ }
-  }
-  if (!resp.ok || data.ok === false) {
-    throw new Error(data.error || `请求失败 (${resp.status})`);
-  }
-  return data;
-}
-
-function toast(msg, isError = false) {
-  const el = $('toast');
-  el.textContent = msg;
-  el.className = `fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] rounded-lg px-4 py-2 shadow-md text-sm text-white ${isError ? 'bg-red-600' : 'bg-zinc-900 dark:bg-zinc-700'}`;
-  el.removeAttribute('data-hidden');  // 显示：配合 #toast 过渡自下方浮入
-  clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.setAttribute('data-hidden', ''), 3000);  // 隐藏：快速淡出
-}
-
-// 提交弹窗内错误条：模态遮挡 toast（同层 z 且 DOM 靠后者胜），且关弹窗让位会丢已填内容——
-// 探针校验失败等原因直接显示在弹窗内，提交重试时清除（与 toast 分工：弹窗内错误持久、toast 短暂）
-function showAccountFormError(msg) {
-  const el = $('account-form-error');
-  el.textContent = msg;
-  el.classList.remove('hidden');
-}
-
-function hideAccountFormError() {
-  const el = $('account-form-error');
-  el.textContent = '';
-  el.classList.add('hidden');
-}
-
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-// JS 模板字面量上下文转义：防用户可控数据（如账号名称）中的 `${...}`/反引号被误执行（与 index.html 一致）
-function jsEscape(s) {
-  return String(s).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
-}
-
-// ===== 弹窗无障碍辅助（编辑/注销确认模态共用）=====
-// 打开：记录触发元素 → 聚焦模态内首个可交互元素（或指定初始焦点）；关闭：隐藏并把焦点归还触发元素。
-// Esc 关闭与 Tab 焦点圈定由下方全局 keydown 统一处理；遮罩点击关闭保持原逻辑。
-const USER_MODAL_IDS = ['account-form-modal', 'delete-confirm-modal', 'delete-account-modal', 'changelog-modal'];
-const userModalOpeners = new Map();  // 模态元素 -> 打开前的焦点元素
-// 背景滚动锁：模态打开期间锁 html/body 滚动，防止滚轮/触摸/键盘滚动穿透到背景页（滚动链）。
-// 计数支持叠层（注销两重确认）；锁死前补偿滚动条宽度，避免内容区横向跳动。
-const pageScrollLock = { count: 0 };
-function lockPageScroll() {
-  pageScrollLock.count++;
-  if (pageScrollLock.count > 1) return;
-  const gap = window.innerWidth - document.documentElement.clientWidth;
-  if (gap > 0) document.body.style.paddingRight = gap + 'px';
-  document.documentElement.style.overflow = 'hidden';
-  document.body.style.overflow = 'hidden';
-}
-function unlockPageScroll() {
-  if (pageScrollLock.count > 0) pageScrollLock.count--;
-  if (pageScrollLock.count > 0) return;
-  document.documentElement.style.overflow = '';
-  document.body.style.overflow = '';
-  document.body.style.paddingRight = '';
-}
-function modalFocusables(modal) {
-  return Array.from(modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
-    .filter(el => !el.disabled && !el.closest('.hidden'));
-}
-function showModal(modal, initFocus, opener) {
-  if (!modal.classList.contains('hidden')) return;
-  userModalOpeners.set(modal,
-    opener instanceof HTMLElement ? opener : (document.activeElement instanceof HTMLElement ? document.activeElement : null));
-  modal.classList.remove('hidden');
-  lockPageScroll();
-  const first = initFocus || modalFocusables(modal)[0];
-  if (first) first.focus();
-}
-function hideModal(modal) {
-  if (modal.classList.contains('hidden')) return;
-  modal.classList.add('hidden');
-  unlockPageScroll();
-  const opener = userModalOpeners.get(modal);
-  userModalOpeners.delete(modal);
-  if (opener && opener.isConnected) opener.focus();
-}
-document.addEventListener('keydown', (e) => {
-  const modal = USER_MODAL_IDS.map(id => document.getElementById(id)).find(m => m && !m.classList.contains('hidden'));
-  if (!modal) return;
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    hideModal(modal);
-  } else if (e.key === 'Tab') {
-    const f = modalFocusables(modal);
-    if (!f.length) { e.preventDefault(); return; }
-    const first = f[0], last = f[f.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    else if (!modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
-  }
-});
-
-// 审核状态徽章
-function statusBadge(status) {
-  if (status === 'pending') return '<span class="yb-badge yb-badge-warning">待审核</span>';
-  if (status === 'rejected') return '<span class="yb-badge yb-badge-error">已拒绝</span>';
-  if (status === 'active') return '<span class="yb-badge yb-badge-success">已生效</span>';
-  return esc(status);
-}
-
-// 在途锁：防连点重复 PUT（2026-08-15 对抗性审查 F-16）
-let pauseBusy = false;
-async function togglePause(i) {
-  if (pauseBusy) return;
-  const a = accounts[i];
-  const next = !a.user_paused;
-  if (next && !confirm(`确定暂停「${esc(a.display_name)}」的签到吗？\n暂停后系统将不再自动签到，可随时恢复。`)) return;
-  pauseBusy = true;
-  try {
-    const data = await api(`/api/my-accounts/${i}/pause`, {
-      method: 'PUT', body: JSON.stringify({ paused: next }),
-    });
-    toast(data.msg || (next ? '已暂停' : '已恢复'));
-    loadAccounts();
-  } catch (e) { toast(e.message, true); }
-  finally { pauseBusy = false; }
-}
-
-// 加载我的账号
-async function loadAccounts() {
-  try {
-    const data = await api('/api/my-accounts');
-    accounts = data.accounts;
-    renderList();
-  } catch (e) { toast(e.message, true); }
-}
-
-// 状态码 → SVG 图标（语义与后端 STATUS_ICON 一致；emoji 仅作 API 数据兼容，UI 一律用线性图标渲染）
-function stateIconSvg(st) {
-  const m = { success: 'check', already: 'check', no_task: 'minus', failed: 'close',
-    retrying: 'retry', skipped_window: 'ban', skipped_norange: 'ban',
-    paused: 'pause', user_cancelled: 'stop' };
-  return icon(m[st] || 'clock');
-}
-
-// 状态行文案（按状态码）：成功/已签到→绿；无需签到/时段外→中性；失败→红；重试→琥珀；待签→排队
-function userStateLine(a) {
-  const s = a.state_status || 'pending';
-  if (s === 'success' || s === 'already')
-    return '<div class="text-xs text-green-600 dark:text-green-400 mt-0.5">今日已完成签到</div>';
-  if (s === 'no_task')
-    return '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">今日无需签到</div>';
-  if (s === 'skipped_window' || s === 'skipped_norange')
-    return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">未在签到时段</div>';
-  if (s === 'failed') {
-    // 显示失败原因（如"登录失败: 账号或密码错误"），引导用户修改密码/识别码
-    const reason = a.state_message ? '：' + esc(a.state_message) : '';
-    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">今日签到失败' + reason + '</div>';
-  }
-  if (s === 'paused')
-    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">账号密码异常，已暂停签到，请修改密码</div>';
-  if (s === 'user_cancelled')
-    return '<div class="text-xs text-red-600 dark:text-red-400 mt-0.5">已取消签到（可点「恢复签到」重新开启）</div>';
-  if (s === 'retrying')
-    return '<div class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">签到重试中</div>';
-  // 待签：显示今日计划时间（自动错峰分配，来自 sign-state 的 message="计划 HH:MM"）
-  // esc：state_message 来自状态文件，防御性转义防存储型 XSS（2026-08-15 对抗性审查 L2）
-  const plan = a.state_message && a.state_message.startsWith('计划') ? ' · 今日' + esc(a.state_message) : '';
-  return '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">待签到' + plan
-    + ' · 前方排队 <span class="font-medium text-zinc-600 dark:text-zinc-300">' + esc(a.queue_ahead) + '</span> 人</div>';
-}
-
-// 状态 emoji 的读屏说明（emoji 本身 aria-hidden，仅装饰；文案与图例/状态行一致）
-function stateAriaText(a) {
-  if (a.deleted) return a.deleted_by_me ? '状态：已删除（7 天内可撤销）' : '状态：已被管理员删除';
-  const s = a.state_status || 'pending';
-  if (s === 'success' || s === 'already') return '状态：今日已完成签到';
-  if (s === 'no_task') return '状态：今日无需签到';
-  if (s === 'skipped_window' || s === 'skipped_norange') return '状态：未在签到时段';
-  if (s === 'failed') return '状态：今日签到失败';
-  if (s === 'paused') return '状态：账号密码异常，已暂停签到';
-  if (s === 'user_cancelled') return '状态：已取消签到';
-  if (s === 'retrying') return '状态：签到重试中';
-  return '状态：待签到';
-}
-
-function renderList() {
-  const list = $('account-list');
-  $('accounts-empty').classList.toggle('hidden', accounts.length > 0);
-  // 存在未删除账号时隐藏「提交账号」入口（编辑统一走卡片内按钮+弹窗）；全部被管理员删除时仍显示供重新提交（软删除不死路）
-  $('open-account-btn').classList.toggle('hidden', accounts.some(a => !a.deleted));
-  list.innerHTML = '';
-  accounts.forEach((a, i) => {
-    const card = document.createElement('div');
-    card.className = 'border border-zinc-200 dark:border-zinc-700 rounded-xl p-4';
-    card.innerHTML = `
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-3">
-          <span class="text-lg leading-none inline-flex text-zinc-500 dark:text-zinc-400" aria-hidden="true">${a.deleted ? icon('trash') : stateIconSvg(a.state_status)}</span><span class="sr-only">${stateAriaText(a)}</span>
-          <div>
-            <div class="font-medium text-zinc-900 dark:text-zinc-100 text-sm">${esc(a.display_name)}</div>
-            <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${esc(a.phone)}${a.phone_model ? ' · ' + esc(a.phone_model) : ''}</div>
-            ${a.deleted
-              ? (a.deleted_by_me
-                ? '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">你已删除此账号，7 天内可撤销恢复，超期自动清除</div>'
-                : '<div class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">已被管理员删除，待管理员处理</div>')
-              : (a.status === 'active' ? userStateLine(a) : '')}
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
-          ${a.deleted ? '<span class="yb-badge yb-badge-neutral">已删除</span>'
-            : a.user_paused
-              ? '<span class="yb-badge yb-badge-error">已取消</span>'
-              : statusBadge(a.status)}
-          ${a.deleted
-            ? (a.deleted_by_me
-              ? `<button onclick="restoreAccount(${i})" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 transition-colors duration-150">撤销删除</button>`
-              : '<span class="text-sm text-zinc-500 dark:text-zinc-400">待管理员处理</span>')
-            : (a.status === 'active' && !a.pause_forbidden
-                ? `<button onclick="togglePause(${i})" class="text-sm ${a.user_paused ? 'text-blue-600 dark:text-blue-400 hover:text-blue-700' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'} transition-colors duration-150">${a.user_paused ? '恢复签到' : '暂停签到'}</button>`
-                : '')
-            + `<button onclick="openEditInline(${i})" class="text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors duration-150">${a.status === 'rejected' ? '修改并重新提交' : '编辑'}</button>
-          <button onclick="deleteAccount(${i})" class="text-sm text-red-600 dark:text-red-400 hover:text-red-700 transition-colors duration-150">删除</button>`}
-        </div>
-      </div>
-      ${a.status === 'rejected' ? `
-        <div class="mt-2 yb-alert yb-alert-error yb-alert-sm">账号已被拒绝${a.reject_reason ? '：' + esc(a.reject_reason) : ''}。修改后点击「修改并重新提交」重新进入审核。</div>` : ''}
-      ${a.logs && a.logs.length ? `
-        <details class="mt-3">
-          <summary class="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150">最近签到记录（${a.logs.length} 条）</summary>
-          <pre class="log-text text-zinc-600 dark:text-zinc-300 mt-2 p-3 yb-inset whitespace-pre-wrap break-all">${esc(a.logs.join('\n'))}</pre>
-        </details>` : ''}
-      ${!a.deleted && a.status === 'pending' ? '<div class="mt-4 text-xs text-zinc-500 dark:text-zinc-400">审核通过后即可查看签到日历</div>' : ''}
-      <div class="mt-4 max-w-sm lg:max-w-none" id="cal-wrap-u-${i}"></div>
-    `;
-    list.appendChild(card);
-    if (!a.deleted && a.status === 'active') renderCalendar(a.phone, 'u-' + i);  // 已删除/未生效账号不显示日历
-  });
-}
-
-// ================= 签到日历（按日状态文件 + 日志） =================
-const calState = {};  // phone -> {year, month}（内存键用手机号防排序变化错位；DOM id 仍用索引键避免手机号入 id）
-
-function calPad(n) { return String(n).padStart(2, '0'); }
-
-function calShift(btn, delta) {
-  const key = btn.dataset.key;     // DOM 查询键（索引）
-  const phone = btn.dataset.phone; // 内存状态键（手机号）
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
-  st.month += delta;
-  if (st.month < 1) { st.month = 12; st.year--; }
-  if (st.month > 12) { st.month = 1; st.year++; }
-  renderCalendar(phone, key);
-}
-
-// ==== 签到日历 · 日期格（admin=app.js 与 user=user.html 各有一份，**两份必须逐字相同**；
-//      由 tests/test_web_calendar_parity.py 钉住 —— 改一边必须同步改另一边，否则门禁会红）====
-// 视觉借自 daisyUI 日历的状态手法（**用底色表达状态，而不是只改文字颜色**），
-// 但通道分配按本项目的**信息层级**重排：
-//   ① 底色  = 签到结果（用户最想扫读的信息，给最强的视觉通道）：
-//              ✅ green-50/700  ❌ red-50/700  周末停签 zinc-100/600（中性）
-//   ② ring  = 今天（不占布局，与底色互不争夺，可叠加）；
-//   ③ 角标  = 「休」（周末停签），不单靠颜色区分。
-// 注：daisyUI 把「今天」做成实心主色底；**我们没照抄** —— 那会与「已签到」的绿底
-// 抢同一个通道。底色留给签到结果，今天改用 ring。
-// ⚠ 周末停签**不**沿用旧的「把数字做很浅」（那是 zinc-300 = 1.42:1，连日期都读不出）：
-//   该格仍可点（点了提示「周日无需签到」），属**有信息**的格子，不是 WCAG 1.4.3 豁免的
-//   非活动控件，故一并改用底色表达，数字保持 7.03:1（浅）/ 10.08:1（暗）。
-function calDayCell(o) {
-  let cls = 'relative aspect-square rounded-lg flex items-center justify-center text-xs transition-colors duration-150 cursor-pointer ';
-  if (o.off) cls += 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700';
-  else if (o.state === '✅') cls += 'bg-green-50 dark:bg-green-900/25 text-green-700 dark:text-green-400 font-medium hover:bg-green-100 dark:hover:bg-green-900/40';
-  else if (o.state === '❌') cls += 'bg-red-50 dark:bg-red-900/25 text-red-700 dark:text-red-400 font-medium hover:bg-red-100 dark:hover:bg-red-900/40';
-  else cls += 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700';
-  if (o.isToday) cls += ' ring-2 ring-inset ring-blue-500 dark:ring-blue-400';
-  const off = o.offDay ? '（周' + o.offDay + '不签到）' : '';
-  const label = o.date + (o.isToday ? '，今天' : '')
-    + (o.state === '✅' ? '，已签到' : o.state === '❌' ? '，签到失败' : (off ? '' : '，查看签到记录'))
-    + off;
-  const badge = o.offDay ? '<span class="absolute top-0.5 right-1 text-[10px] leading-none text-zinc-600 dark:text-zinc-400">休</span>' : '';
-  return `<button type="button" onclick="calLoadLog(this, '${o.date}')" data-key="${esc(o.key)}" data-phone="${esc(o.phone)}" title="${o.date}" aria-label="${label}" class="${cls}"><span>${o.d}</span>${badge}</button>`;
-}
-
-function renderCalendar(phone, key) {
-  const wrap = $('cal-wrap-' + key);
-  if (!wrap) return;
-  const st = calState[phone] || (calState[phone] = (() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; })());
-  const { year, month } = st;
-  const monthStr = `${year}-${calPad(month)}`;
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}-${calPad(today.getMonth() + 1)}-${calPad(today.getDate())}`;
-  wrap.innerHTML = `
-    <div class="grid lg:grid-cols-2 gap-4">
-      <div>
-        <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-medium text-zinc-700 dark:text-zinc-200">签到日历 · ${year}年${month}月</div>
-          <div class="flex items-center gap-1">
-            <button onclick="calShift(this, -1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="上个月" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevL')}</button>
-            <button onclick="calShift(this, 1)" data-key="${esc(key)}" data-phone="${esc(phone)}" aria-label="下个月" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors duration-150">${icon('chevR')}</button>
-          </div>
-        </div>
-        <div id="cal-grid-${key}" class="grid grid-cols-7 gap-1"></div>
-      </div>
-      <div id="cal-log-${key}" class="lg:pt-8"></div>
-    </div>`;
-  const grid = $('cal-grid-' + key);
-  grid.innerHTML = ['一','二','三','四','五','六','日'].map(w =>
-    `<div class="text-center text-xs text-zinc-500 dark:text-zinc-400 py-1">${w}</div>`).join('');
-  api(`/api/my-calendar?month=${monthStr}`).then(data => {
-    if (data.sunday_sign) sundaySign = true;  // 管理员开启周日签到后，周日正常显示与查询
-    saturdaySign = data.saturday_sign === 1;  // 默认关闭（v0.29.0 起）；管理员开启后周六照常/可查
-    const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;  // 周一起始
-    const days = new Date(year, month, 0).getDate();
-    for (let i = 0; i < firstDay; i++) {
-      grid.insertAdjacentHTML('beforeend', '<div></div>');
-    }
-    for (let d = 1; d <= days; d++) {
-      const date = `${monthStr}-${calPad(d)}`;
-      const stt = data.days && data.days[date] ? data.days[date][phone] || '' : '';
-      const wd = new Date(year, month - 1, d).getDay();
-      const sunOff = wd === 0 && !sundaySign;    // 周日停签且开关关闭
-      const satOff = wd === 6 && !saturdaySign;  // 周六停签且开关关闭（v0.29.0 起默认关）
-      const off = sunOff || satOff;
-      grid.insertAdjacentHTML('beforeend', calDayCell({
-        d, date, key, phone, state: stt, off,
-        offDay: off ? (sunOff ? '日' : '六') : '', isToday: date === todayStr,
-      }));
-    }
-  }).catch(() => {
-    grid.innerHTML = '<div class="col-span-7 text-center text-xs text-zinc-500 dark:text-zinc-400 py-4">日历加载失败，请稍后重试</div>';
-  });
-}
-
-function calLoadLog(btn, date) {
-  const key = btn.dataset.key;
-  const box = $('cal-log-' + key);
-  // 周六/周日无需签到（各自开关关闭时），直接提示（不查询日志）
-  const wd0 = new Date(date + 'T00:00:00').getDay();
-  if ((wd0 === 0 && !sundaySign) || (wd0 === 6 && !saturdaySign)) {
-    box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${wd0 === 0 ? '周日' : '周六'}无需签到</div>`;
-    return;
-  }
-  box.innerHTML = '<div class="text-xs text-zinc-500 dark:text-zinc-400"><span class="yb-spinner"></span> 加载中…</div>';
-  api(`/api/my-logs?date=${date}`).then(data => {
-    if (!data.logs || !data.logs.length) {
-      box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg">${date} 暂无签到记录</div>`;
-      return;
-    }
-    box.innerHTML = `<div class="text-xs text-zinc-500 dark:text-zinc-400 mb-1">${date} 签到记录（${data.logs.length} 条）</div>
-      <pre class="log-text text-zinc-600 dark:text-zinc-300 p-3 yb-inset whitespace-pre-wrap break-all">${esc(data.logs.join(String.fromCharCode(10)))}</pre>`;
-  }).catch(e => { box.innerHTML = ''; toast(e.message, true); });
-}
-
-// 清除已配置识别码：点击后标记提交时传 __clear__（后端并行流已支持该标记清空字段）
-let clearCodeFlag = false;
-
-// 内联编辑：复用提交表单（编辑时预填，保存走 PUT）；统一弹窗（2026-08-15 用户反馈：
-// 编辑不再滚到页底表单——提交/编辑都在模态内完成，新建走「提交我的易班账号」入口）
-function openAccountModal() {
-  showModal($('account-form-modal'), $('f-name'));
-}
-
-function openAccountModalForNew() {
-  $('account-form').reset();  // 清残留输入
-  resetAccountForm();
-  openAccountModal();
-}
-
-function closeAccountModal() {
-  hideModal($('account-form-modal'));
-  resetAccountForm();
-}
-
-function openEditInline(i) {
-  editingIndex = i;
-  const a = accounts[i];
-  hideAccountFormError();
-  $('f-name').value = a.name;
-  $('f-phone').value = a.phone;
-  $('f-password').value = '';
-  $('f-password').placeholder = '留空表示不修改密码';
-  $('f-password').removeAttribute('required');  // 编辑模式密码可留空（留空=不修改），添加模式保留必填
-  $('f-model').value = a.phone_model;
-  $('f-code').value = '';
-  $('f-code').readOnly = false;
-  $('f-code').placeholder = a.has_phone_code ? '留空表示不修改（已配置）' : '64 位十六进制识别码';
-  clearCodeFlag = false;
-  $('clear-code-btn').classList.toggle('hidden', !a.has_phone_code);
-  $('account-form-title').textContent = '编辑我的易班账号';
-  $('account-submit-btn').textContent = '保存修改';
-  $('cancel-edit-btn').classList.remove('hidden');
-  openAccountModal();
-}
-
-function toggleClearCode() {
-  clearCodeFlag = !clearCodeFlag;
-  const input = $('f-code');
-  const btn = $('clear-code-btn');
-  if (clearCodeFlag) {
-    input.value = '';
-    input.readOnly = true;
-    input.placeholder = '提交后将清除已配置识别码';
-    btn.textContent = '取消清除';
-  } else {
-    input.readOnly = false;
-    input.placeholder = '64 位十六进制识别码';
-    btn.textContent = '清除已配置识别码';
-  }
-}
-
-// 取消编辑：关闭模态并恢复提交态
-function cancelEdit() {
-  closeAccountModal();
-  toast('已取消编辑');
-}
-
-function resetAccountForm() {
-  editingIndex = null;
-  clearCodeFlag = false;
-  hideAccountFormError();
-  $('account-form-title').textContent = '提交我的易班账号';
-  $('account-submit-btn').textContent = '提交账号';
-  $('cancel-edit-btn').classList.add('hidden');
-  $('f-password').placeholder = '用于自动登录签到';
-  $('f-password').setAttribute('required', '');
-  $('f-code').readOnly = false;
-  $('f-code').placeholder = '64 位十六进制识别码';
-  $('clear-code-btn').classList.add('hidden');
-}
-
-// 修改密码：默认收起，点击标题展开/收起
-function togglePassword() {
-  const body = $('password-body');
-  const hidden = body.classList.toggle('hidden');
-  $('password-arrow').innerHTML = hidden ? icon('chevR') : icon('chevD');
-  document.querySelector('[onclick="togglePassword()"]').setAttribute('aria-expanded', String(!hidden));
-}
-
-// 提交账号（无账号=新建；编辑模式=更新）
-$('account-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const tip = $('form-tip');
-  tip.textContent = '提交中…';
-  hideAccountFormError();
-  try {
-    const body = {
-      name: $('f-name').value,
-      phone: $('f-phone').value.trim(),
-      password: $('f-password').value,
-      phone_model: $('f-model').value.trim(),
-      // 已标记清除识别码 → 提交 __clear__ 由后端清空字段；否则留空表示不修改
-      phone_code: clearCodeFlag ? '__clear__' : $('f-code').value.trim(),
-    };
-    const data = editingIndex !== null
-      ? await api(`/api/my-accounts/${editingIndex}`, { method: 'PUT', body: JSON.stringify(body) })
-      : await api('/api/my-accounts', { method: 'POST', body: JSON.stringify(body) });
-    tip.textContent = '';
-    resetAccountForm();
-    e.target.reset();
-    toast(data.msg || '已保存');
-    hideModal($('account-form-modal'));  // 成功即关模态（2026-08-15 弹窗改造；焦点归还触发入口）
-    loadAccounts();
-  } catch (err) {
-    tip.textContent = '';
-    showAccountFormError(err.message);
-  }
-});
-
-// 编辑
-// 删除（软删除：7 天内可在本页撤销恢复，超期自动清除）
-async function deleteAccount(i) {
-  const a = accounts[i];
-  if (!confirm(`确定删除「${jsEscape(a.display_name)}」(${a.phone}) 吗？删除后 7 天内可撤销恢复，超过 7 天将自动清除。`)) return;
-  try {
-    await api(`/api/my-accounts/${i}`, { method: 'DELETE' });
-    toast('已删除，7 天内可撤销');
-    loadAccounts();
-  } catch (e) { toast(e.message, true); }
-}
-
-// 撤销删除（仅本人自删的待删除账号；管理员删除的账号不显示此入口）
-async function restoreAccount(i) {
-  const a = accounts[i];
-  if (!confirm(`撤销删除「${jsEscape(a.display_name)}」(${a.phone})？将恢复到删除前的状态。`)) return;
-  try {
-    await api(`/api/my-accounts/${i}/restore`, { method: 'POST', body: JSON.stringify({}) });
-    toast('已恢复');
-    loadAccounts();
-  } catch (e) { toast(e.message, true); }
-}
-
-// 服务器时间：本地平滑走秒，60 秒校准一次
-let clockOffset = 0;
-let tzOffsetMin = 0;
-async function calibrateClock() {
-  try {
-    const data = await api('/api/clock');
-    clockOffset = data.server_ts - Math.floor(Date.now() / 1000);
-    tzOffsetMin = Number(data.tz_offset_min) || 0;
-  } catch (e) { /* 静默 */ }
-}
-function tickClock() {
-  // 服务器本地时间：epoch + 服务器时区偏移后按 UTC 字段格式化（toISOString 即服务器墙上时间）
-  const t = new Date((Math.floor(Date.now() / 1000) + clockOffset + tzOffsetMin * 60) * 1000);
-  const str = t.toISOString().slice(0, 19).replace('T', ' ');
-  $('user-clock').textContent = '服务器时间：' + str;
-}
-setInterval(tickClock, 1000);
-setInterval(calibrateClock, 60000);
-
-// 注销账号（两次确认：先提示 7 天宽限期，再密码确认；均可取消；防连点，2026-08-16）
-function openDeleteModal() {
-  showModal($('delete-confirm-modal'));  // 第一重：7 天可撤销提示
-}
-function closeDeleteModal() {
-  hideModal($('delete-confirm-modal'));
-  hideModal($('delete-account-modal'));
-}
-function proceedDelete() {
-  // 第一重 → 第二重（再次提醒 + 密码确认）；打开记录转移到第二重，关闭时焦点归还最初入口。
-  // 直接 add('hidden') 而非 hideModal：避免焦点先闪回入口；但须手动释放滚动锁，否则计数泄漏
-  const first = $('delete-confirm-modal');
-  const opener = userModalOpeners.get(first) || null;
-  first.classList.add('hidden');
-  userModalOpeners.delete(first);
-  unlockPageScroll();
-  $('delete-password').value = '';
-  showModal($('delete-account-modal'), $('delete-password'), opener);
-}
-async function confirmDelete() {
-  const btn = $('delete-confirm-btn');
-  const pw = $('delete-password').value;
-  if (!pw) { toast('请输入当前密码', true); return; }
-  btn.disabled = true;
-  btn.textContent = '处理中…';
-  try {
-    const data = await api('/api/me/delete', {
-      method: 'POST',
-      body: JSON.stringify({ password: pw }),
-    });
-    toast(data.msg || '账号已注销');
-    try { localStorage.clear(); } catch (e) { /* 受限环境忽略 */ }
-    setTimeout(() => { location.href = BASE + '/login'; }, 1200);
-  } catch (e) {
-    // 错误文案由后端给出（400 密码不正确/不可注销、403、429 请稍后再试、500）
-    toast(e.message || '注销失败，请稍后再试', true);
-    btn.disabled = false;
-    btn.textContent = '确认注销';
-  }
-}
-
-// 退出
-async function doLogout() {
-  try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
-  location.href = BASE + '/login';
-}
-
-// 初始化
-(async function init() {
-  try {
-    const me = await api('/api/me');
-    if (me.role !== 'user') { location.href = BASE + '/'; return; }  // 管理员访问用户页 → 后台
-    csrfToken = me.csrf_token || '';
-    // 邮件提醒开关：从 /api/me 读当前状态并渲染
-    mailNotifyOn = !!me.mail_notify;
-    renderMailNotify();
-    // 顶部显示邮箱前缀（悬停显示完整邮箱）
-    const email = me.email || '';
-    $('user-email').textContent = email.split('@')[0];
-    $('user-email').title = email;
-    loadAccounts();  // 排队/状态：访问时加载一次（静态实时，不轮询）
-    loadScheduleBanner();  // 调度 v2：模式提示条（失败不阻塞页面）
-    loadTimePref();        // 调度 v2：自选时间片卡片
-    calibrateClock();
-    tickClock();
-  } catch (e) {
-    location.href = BASE + '/login';
-  }
-})();
-
-// ===== 调度 v2：模式提示条 + 自选时间片（docs/design/plan-scheduler-v2.md 2.1/2.2） =====
-async function loadScheduleBanner() {
-  try {
-    const me = await api('/api/me');
-    const orderLabel = me.sign_order === 'random' ? '每天随机安排' : '按固定顺序安排';
-    const pref = me.time_pref_allowed ? '可自选签到时间' : '暂不可自选签到时间';
-    $('schedule-banner-text').textContent =
-      `签到方式：${orderLabel} · 窗口 ${me.sign_window} · ${pref}`;
-    $('schedule-banner').classList.remove('hidden');
-  } catch (e) { /* 提示条加载失败不阻塞页面 */ }
-}
-
-let prefCollapsed = false;  // 自选卡片折叠态（未开启时默认折叠，展开可预配置）
-
-function togglePrefCollapse() {
-  prefCollapsed = !prefCollapsed;
-  $('pref-body').classList.toggle('hidden', prefCollapsed);
-  $('pref-collapse-btn').innerHTML = prefCollapsed ? icon('chevR') + ' 未开启（点击展开预配置）' : icon('chevD');
-}
-
-// 邮件提醒开关（B 线：账号签到失败邮件通知；默认开，可自行关闭）
-let mailNotifyOn = true;
-
-function renderMailNotify() {
-  const el = $('mail-notify-switch');
-  if (el) el.checked = mailNotifyOn;
-}
-
-async function toggleMailNotify() {
-  mailNotifyOn = $('mail-notify-switch').checked;
-  const tip = $('mail-notify-tip');
-  tip.textContent = '保存中…';
-  try {
-    await api('/api/my-mail-notify', { method: 'PUT', body: JSON.stringify({ enabled: mailNotifyOn }) });
-    tip.textContent = mailNotifyOn ? '已开启：签到失败时将邮件提醒你' : '已关闭：不再发送签到失败邮件';
-    setTimeout(() => { tip.textContent = ''; }, 3000);
-  } catch (e) {
-    mailNotifyOn = !mailNotifyOn;  // 保存失败回滚开关状态
-    $('mail-notify-switch').checked = mailNotifyOn;
-    tip.textContent = '保存失败：' + e.message;
-  }
-}
-
-async function loadTimePref(preserve = false) {
-  // preserve=true：修改后的局部刷新——不重置折叠状态，避免页面跳动/操作不连贯
-  const card = $('time-pref-card');
-  try {
-    const data = await api('/api/my-time-pref');
-    if (!data.has_account) { card.classList.add('hidden'); return; }
-    card.classList.remove('hidden');
-    $('pref-window').textContent = data.window;
-    renderPrefSlots(data);
-    $('pref-disabled-hint').classList.toggle('hidden', data.allowed);
-    // 预计签到时段：开启且有自选 → 以自选片为准；否则显示真实调度时段
-    // （未开启时预选不激活，预计时段才是真实情况）
-    const est = $('pref-estimate');
-    if (data.allowed && data.pref) {
-      est.textContent = '';
-      est.classList.add('hidden');
-    } else if (data.estimated) {
-      est.innerHTML = icon('cal') + ' 预计签到时段：' + esc(data.estimated || '') + esc(data.estimate_note || '')
-        + (data.allowed ? '' : '（自选未开启，按自动分配）');
-      est.classList.remove('hidden');
-    } else {
-      est.textContent = data.estimate_note || '';
-      est.classList.remove('hidden');
-    }
-    // 折叠状态：仅首次/非 preserve 时按开关重置；修改后保留用户当前展开态
-    if (!preserve) {
-      if (!data.allowed) {
-        prefCollapsed = true;
-        $('pref-body').classList.add('hidden');
-        $('pref-collapse-btn').innerHTML = icon('chevR') + ' 未开启（点击展开预配置）';
-      } else {
-        prefCollapsed = false;
-        $('pref-body').classList.remove('hidden');
-        $('pref-collapse-btn').innerHTML = icon('chevD');
-      }
-    }
-  } catch (e) { card.classList.add('hidden'); }
-}
-
-function renderPrefSlots(data) {
-  const grid = $('pref-slot-grid');
-  grid.innerHTML = '';
-  let tip = '';  // 未开启时底部提示默认为空——黄字提示（pref-disabled-hint）承担完整说明（2026-08-15 文案审查去重）
-  data.slots.forEach((s, i) => {
-    const sel = data.pref_slot === s.slot_min;
-    const full = s.pct >= 100;
-    // 完全落入掐头去尾裁剪区（0.22.0）：灰色禁用，不可选择
-    if (s.disabled) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.disabled = true;
-      btn.className = 'rounded-lg border min-h-[44px] px-2 py-1.5 text-xs text-center cursor-not-allowed bg-zinc-100 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-600';
-      btn.title = '该时段被掐头去尾保留，不可选择';
-      btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已保留</div>`;
-      grid.appendChild(btn);
-      return;
-    }
-    // 部分落入裁剪区（如开头 2 分钟保留）：可点选，虚线框 + title 提示，调度在可用部分内安排
-    const partial = !!s.edge_note;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.dataset.slot = s.slot_min;
-    // 满员片仍可点选（先到先得+溢出顺延语义），但警示样式提示"会顺延"
-    btn.className = 'rounded-lg border min-h-[44px] px-2 py-1.5 text-xs text-center transition-colors duration-150 ' +
-      (sel
-        ? 'bg-blue-600 border-blue-600 text-white'
-        : full
-          ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
-          : partial
-            ? 'bg-amber-50/50 dark:bg-amber-900/10 border-dashed border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-400'
-            : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-blue-400');
-    if (partial) btn.title = s.edge_note + '，选中后将在可用部分为你签到';
-    // 拥挤度：满员=100%+黄底警示已传达"已选满"，不再拼冗余前缀（移动端 4 列窄屏换行，2026-08-15）
-    // nowrap + 移动端 11px：390/360/320 视口实测单行放得下
-    btn.innerHTML = `<div class="font-medium">${esc(s.label)}</div><div class="opacity-70 whitespace-nowrap text-[11px] sm:text-xs">已选${s.pct}%</div>`;
-    btn.onclick = () => pickTimePref(s.slot_min);
-    grid.appendChild(btn);
-    // 首尾时段提醒（选中时；部分裁剪优先显示裁剪提示；总开关关时与"暂不生效"提示拼接，两则信息都不丢）
-    if (sel && (i === 0 || i === data.slots.length - 1)) {
-      const edgeTip = s.edge_note
-        ? s.edge_note + '，选中后将在可用部分签到'
-        : i === 0
-          ? '最早时段：窗口开始后最先为你签到'
-          : '最后时段：临近窗口截止执行，网络波动可能导致错过';
-      tip = (data.allowed ? '' : '未开启：') + edgeTip;
-    }
-  });
-  const tipEl = $('pref-tip');
-  tipEl.innerHTML = tip ? icon('warn') + ' ' + esc(tip) : '';
-  // 警示语义上色：有提示时琥珀色（原版警示色），无提示回归中性
-  tipEl.classList.toggle('text-amber-600', !!tip);
-  tipEl.classList.toggle('dark:text-amber-400', !!tip);
-}
-
-async function pickTimePref(slot) {
-  try {
-    const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: slot }) });
-    toast(data.msg || '已保存');
-    loadTimePref(true);  // 局部刷新：保留当前展开态，不跳页
-  } catch (e) { toast(e.message, true); }
-}
-
-async function clearTimePref() {
-  try {
-    const data = await api('/api/my-time-pref', { method: 'PUT', body: JSON.stringify({ slot_min: null }) });
-    toast(data.msg || '已清除');
-    loadTimePref(true);  // 局部刷新：保留当前展开态，不跳页
-  } catch (e) { toast(e.message, true); }
-}
-// 暗色主题切换（localStorage 记忆）
-function toggleTheme() {
-  const dark = document.documentElement.classList.toggle('dark');
-  try { localStorage.setItem('yiban-theme', dark ? 'dark' : 'light'); } catch (e) {}
-  updateThemeBtn();
-}
-function updateThemeBtn() {
-  const dark = document.documentElement.classList.contains('dark');
-  document.querySelectorAll('[data-theme-btn]').forEach(b => { b.innerHTML = icon(dark ? 'sun' : 'moon'); });
-}
-document.addEventListener('DOMContentLoaded', () => { updateThemeBtn(); hydrateIcons(); });
-</script>
-<script>
-// 全局公告：访问时加载一次（登录页也显示，无需登录）
-async function loadAnnouncement() {
-  try {
-    const resp = await fetch(BASE + '/api/announcement');
-    const data = await resp.json().catch(() => ({}));
-    const text = (data && data.text || '').trim();
-    const bar = document.getElementById('announcement-bar');
-    const el = document.getElementById('announcement-text');
-    if (text && bar && el) {
-      el.textContent = text;  // textContent 防 XSS
-      bar.classList.remove('hidden');
-    }
-  } catch (e) { /* 静默 */ }
-}
-// 更新日志弹窗（版本号点击；Markdown 渲染，与 login/index 同源——2026-08-15 修复：原 textContent 直出原始 markdown）
-async function openChangelog() {
-  const modal = $('changelog-modal');
-  showModal(modal);  // 走统一开关：背景滚动锁 + 焦点管理 + Esc 关闭（并入 USER_MODAL_IDS）
-  const content = $('changelog-content');
-  content.innerHTML = '<span class="inline-flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="yb-spinner"></span>加载中…</span>';
-  try {
-    const data = await api('/api/changelog');
-    const text = (data && data.text) || '暂无更新日志';
-    content.innerHTML = window.renderMarkdown ? renderMarkdown(text) : esc(text);
-  } catch (e) { content.innerHTML = '加载失败，请稍后重试'; }
-}
-function closeChangelog() { hideModal($('changelog-modal')); }
-
-// 口令策略（本模板内单一事实源）：与后端 web/app.py 的 _PASSWORD_CLASS_PATTERNS /
-// _PASSWORD_POLICY_HINT 逐字同序同串——tests/test_batch14_fixes_0829.py 的元测试会
-// 从本文件源码提取这四个正则与后端比对，漂移即红。判定语义：命中 >= 2 类即过（符号算一类）。
-const PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
-const PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
-const PW_POLICY_HINT = '至少 10 位，且包含大小写字母、数字、符号中的至少两类';
-function passwordClasses(v) { return PW_CLASS_PATTERNS.filter(re => re.test(v)).length; }
-
-// 修改密码
-$('password-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const tip = $('p-tip');
-  tip.textContent = '提交中…';
-  try {
-    const newPw = $('p-new').value;
-    if (newPw.length < PW_MIN_LEN || passwordClasses(newPw) < PW_MIN_CLASSES) {
-      tip.textContent = '';
-      toast(`新密码${PW_POLICY_HINT}`, true);
-      return;
-    }
-    if (newPw !== $('p-confirm').value) {
-      tip.textContent = '';
-      toast('两次输入的新密码不一致', true);
-      return;
-    }
-    const data = await api('/api/me/password', {
-      method: 'POST',
-      body: JSON.stringify({ old_password: $('p-old').value, new_password: $('p-new').value, confirm_password: $('p-confirm').value }),
-    });
-    tip.textContent = '';
-    e.target.reset();
-    toast(data.msg || '密码已更新');
-  } catch (err) {
-    tip.textContent = '';
-    toast(err.message, true);
-  }
-});
-
-document.addEventListener('DOMContentLoaded', loadAnnouncement);
-</script>
-<!-- 更新日志弹窗 -->
-<div id="changelog-modal" role="dialog" aria-modal="true" aria-labelledby="changelog-title" tabindex="-1" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-  <div class="absolute inset-0 bg-black/30" onclick="closeChangelog()" aria-hidden="true"></div>
-  <div class="relative bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700 shadow-md w-full max-w-lg p-5 max-h-[80vh] flex flex-col">
-    <div class="flex items-center justify-between mb-3">
-      <div id="changelog-title" class="text-base font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">更新日志</div>
-      <button onclick="closeChangelog()" class="w-8 h-8 flex items-center justify-center rounded-lg text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors duration-150" aria-label="关闭"><span data-icon="xmark"></span></button>
-    </div>
-    <div class="md-body text-xs text-zinc-600 dark:text-zinc-300 overflow-auto overscroll-contain break-all leading-relaxed" id="changelog-content"></div>
-  </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/user.js?v={{ web_version }}"></script>
 {% endblock %}

@@ -75,6 +75,32 @@ def load_config_shades():
     return declared
 
 
+def load_theme_colors():
+    """读取 app.css 里项目自定义的**十六进制**主题色 → {'light': {...}, 'dark': {...}}。
+
+    用途：Adminator 换壳后新增的组件（签到日历日期格、状态行、时段按钮）直接用
+    app.css 的 `--cal-*` / 语义色十六进制令牌，不再走 Tailwind 的 `--c-<族>-<档>`
+    调色板。这些令牌按主题分块声明（`:root` 为浅色、`html[data-theme="dark"]` 为深色），
+    故这里按块解析而不是全局正则：同名令牌在深色块里覆盖浅色值。
+
+    app.css 是手写非压缩 CSS（规则无嵌套），因此按 `选择器 { ... }` 逐块解析是安全的。
+    """
+    with open(os.path.join(WEB, "static", "css", "app.css"), encoding="utf-8") as fh:
+        css = fh.read()
+    blocks = re.findall(r'(:root|html\[data-theme="dark"\])\s*\{([^}]*)\}', css)
+    colors = {"light": {}, "dark": {}}
+    for selector, body in blocks:
+        mode = "dark" if "dark" in selector else "light"
+        for name, value in re.findall(r"--([\w-]+):\s*(#[0-9A-Fa-f]{6})\b", body):
+            colors[mode][name] = _hex_to_rgb(value)
+    return colors
+
+
+def _hex_to_rgb(value):
+    value = value.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
+
 def rel_luminance(rgb):
     def channel(v):
         c = v / 255.0

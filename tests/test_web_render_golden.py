@@ -24,12 +24,12 @@ P4（Tailwind v4）、U1（类名解耦）、V1–V4（daisyUI 视觉替换）�
 |---|---|---|
 | `login` | `/login` | `login.html` + `layout_auth.html`（**已迁移**，认证页外壳） |
 | `index` | `/` | `pages/dashboard.html` + `layout_admin.html`（**新管理端**） |
-| `user`  | `/user` | `user.html`（旧栈，GET 渲染） |
+| `user`  | `/user` | `user.html` + `layout_auth.html`（**已迁移**，认证页外壳 + 整宽内容区） |
 
 `index.rendered.html` / `assets.json["index"]` 因此记录的是**新管理端的真实产物**；
 `index` 只是沿用旧键名（保留 `test_index_structure_golden` 这一 node id），内容不再是
-退役的 `index.html`。登录页完成迁移后，`login.rendered.html` / `assets.json["login"]`
-随之翻新为认证页外壳的产物；用户页仍在旧栈，样本保持不变继续防漂移。
+退役的 `index.html`。登录页与用户页先后完成迁移，`login`/`user` 两份样本随之为
+认证页外壳的真实产物；三个样本都持续防结构漂移。
 
 ## 归一化规则（逐条 + 理由，2026-09-10 实证）
 
@@ -270,10 +270,10 @@ class WebRenderGoldenTest(unittest.TestCase):
 
         存在的理由：CSS/JS 外提后标签位置不变，结构指纹察觉不到 —— 那类改动必须在这里被看见。
         清单是**从当前真实渲染产物生成**的（不是手写）：`index` 键即新管理端 `/`，
-        覆盖 adminator/chartjs/fonts/app.css/core.js 等；`login` 键已随迁移改为认证页
-        资源栈（fonts/adminator/app.css/core.js/pages/login.js）；`user` 键仍覆盖旧栈
-        tailwind.js/daisyui/misans。除与金标准逐条比对外，再断言每个本仓 `/static/`
-        资源都真实存在于 `web/static/` 下（清单与磁盘一致，防"清单漂移/文件被删"）。
+        覆盖 adminator/chartjs/fonts/app.css/core.js 等；`login` 与 `user` 键已随迁移改为
+        认证页资源栈（fonts/adminator/app.css/core.js + pages/*.js，用户页另加共享
+        calendar.js）。除与金标准逐条比对外，再断言每个本仓 `/static/` 资源都真实存在于
+        `web/static/` 下（清单与磁盘一致，防"清单漂移/文件被删"）。
         """
         _ASSET_REF_RE = re.compile(r"/(static/.+?)(?:\?v=\*)?$")
         actual = {p: asset_manifest(self._render(p)) for p in ("index", "login", "user")}

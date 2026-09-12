@@ -32,9 +32,9 @@ user / login 只有一份，是 index 独有的漂移。修复后统一留在页
 `frontend_source` 聚合读取（模板 + extends/include 片段 + 外链自研静态资源）：
   · `index.html` —— 旧栈单页（已无路由渲染，文件暂留）；
   · `login.html` —— 已迁到 `layout_auth.html` 外壳，页脚由 `partials/footer.html` 承载；
-  · `user.html`  —— 旧栈，整页自含。
+  · `user.html`  —— 已迁到 `layout_auth.html` 外壳（整宽内容区），页脚同样来自共享片段。
 只有聚合读取才能让"整页唯一条目恰好一次"在"条目搬进共享页脚"后的新形态继续成立
-（否则 login 会读到 0 次而误报缺失）。
+（否则 login/user 会读到 0 次而误报缺失）。
 """
 
 import os

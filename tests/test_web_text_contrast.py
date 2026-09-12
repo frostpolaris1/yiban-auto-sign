@@ -35,15 +35,26 @@
     而该格仍可点（点了提示「周日无需签到」），属**有信息**的格子、不是 WCAG 1.4.3 豁免的
     非活动控件；故其配色已改为「底色表达」并纳入下方日历配色用例。
 
-另外，本文件末尾还钉住**签到日历日期格**的配色（V3-4 引入）：那里改用「底色」表达状态
-（✅ 绿底 / ❌ 红底 / 周末停签 中性底 / 今天 ring），故其对比度是「文字 on 格底」
-而非「文字 on 页面底」，单独一组用例计算。
+另外，本文件末尾还钉住**签到日历日期格**（V3-4 引入、2026-09-12 抽成共享实现）与
+用户页状态行/时段按钮的配色：日历用「底色」表达状态（✅ 绿底 / ❌ 红底 / 周末停签 中性底 /
+今天 inset ring），故其对比度是「文字 on 格底」而非「文字 on 页面底」。
+这些颜色已全部收敛为 app.css 的十六进制令牌（`--cal-*` / `--state-*` / `--slot-*`），
+浅色在 `:root`、深色在 `html[data-theme="dark"]`，本文件按主题解析后逐个实数。
 """
 
 import os
 import unittest
 
-from _wcag import AA_NORMAL_TEXT, BASE, BG_DARK, BG_LIGHT, WEB, blend, contrast, load_palette
+from _wcag import (
+    AA_NORMAL_TEXT,
+    BASE,
+    BG_DARK,
+    BG_LIGHT,
+    WEB,
+    contrast,
+    load_palette,
+    load_theme_colors,
+)
 
 CANONICAL = "text-zinc-500 dark:text-zinc-400"
 REVERSED = "text-zinc-400 dark:text-zinc-500"
@@ -51,58 +62,25 @@ REVERSED = "text-zinc-400 dark:text-zinc-500"
 SCAN_DIRS = (os.path.join(WEB, "templates"), os.path.join(WEB, "static", "js"))
 SCAN_EXTS = (".html", ".js")
 
-# ---- 签到日历日期格（V3-4）：状态由「底色」表达，对比度须按「文字 on 格底」算 ----
-CALENDAR_SRC = os.path.join(WEB, "templates", "user.html")
+# ---- 签到日历 / 状态行 / 时段按钮（V3-4 起）：状态由「底色」表达 ----
+# 2026-09-12 起日历抽成共享实现（static/js/calendar.js），颜色收敛为 app.css 的
+# 十六进制令牌；本组用例按「文字 on 底色」实测，浅/深两套分别取令牌值。
+CALENDAR_SRC = os.path.join(WEB, "static", "js", "calendar.js")
 
-# (说明, 源码里必须存在的片段, 浅色底, 浅色字, 暗色底, 暗色底透明度, 暗色字)
-# 暗色底若是 `bg-<c>-<n>/<alpha>`，需先与页面底 BG_DARK 做 alpha 混合再算对比度。
-CALENDAR_CELL_STATES = (
-    (
-        "已签到",
-        "bg-green-50 dark:bg-green-900/25 text-green-700 dark:text-green-400",
-        "green-50",
-        "green-700",
-        "green-900",
-        0.25,
-        "green-400",
-    ),
-    (
-        "签到失败",
-        "bg-red-50 dark:bg-red-900/25 text-red-700 dark:text-red-400",
-        "red-50",
-        "red-700",
-        "red-900",
-        0.25,
-        "red-400",
-    ),
-    (
-        "周末停签",
-        "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300",
-        "zinc-100",
-        "zinc-600",
-        "zinc-800",
-        1.0,
-        "zinc-300",
-    ),
-    (
-        "「休」角标",
-        '<span class="absolute top-0.5 right-1 text-[10px] leading-none text-zinc-600 '
-        'dark:text-zinc-400">休</span>',
-        "zinc-100",
-        "zinc-600",
-        "zinc-800",
-        1.0,
-        "zinc-400",
-    ),
-    (
-        "无记录（无底色，落在页面底上）",
-        "else cls += 'text-zinc-600 dark:text-zinc-300",
-        BG_LIGHT,
-        "zinc-600",
-        BG_DARK,
-        1.0,
-        "zinc-300",
-    ),
+# 共享实现里必须存在的状态类名（片段被改名/删除即报"请同步本测试"）
+CALENDAR_CLASSES = ("cal-cell--ok", "cal-cell--bad", "cal-cell--off", "cal-cell--today")
+
+# (说明, 文字令牌, 底色令牌) —— 两者都在 :root / html[data-theme=dark] 里定义
+CONTRAST_PAIRS = (
+    ("日历·已签到", "cal-ok-fg", "cal-ok-bg"),
+    ("日历·签到失败", "cal-bad-fg", "cal-bad-bg"),
+    ("日历·周末停签", "cal-off-fg", "cal-off-bg"),
+    ("日历·无记录格（落在卡片底）", "cal-cell-fg", "cal-cell-bg"),
+    ("状态行·成功（落在卡片底）", "state-ok-fg", "cal-cell-bg"),
+    ("状态行·警示（落在卡片底）", "state-warn-fg", "cal-cell-bg"),
+    ("状态行·失败（落在卡片底）", "state-bad-fg", "cal-cell-bg"),
+    ("时段·满员", "slot-full-fg", "slot-full-bg"),
+    ("时段·部分裁剪", "slot-partial-fg", "slot-partial-bg"),
 )
 
 
@@ -188,31 +166,39 @@ class WebTextContrastTest(unittest.TestCase):
             f"正确形态 {CANONICAL!r} 只剩 {count} 处，疑似被整体误替换，请复核",
         )
 
-    def test_calendar_day_cell_colors_meet_aa(self):
-        """签到日历日期格的配色：既要在源码里就位，也要在两个模式下都达 AA。
+    def test_calendar_and_state_colors_meet_aa(self):
+        """签到日历 / 状态行 / 时段按钮的配色：既要在源码里就位，也要在两个模式下达 AA。
 
-        这一步同时钉住两件事：① 日历确实按「底色表达状态」实现（片段必须存在，
-        片段被改掉本用例即报"请同步本测试"）；② 那些配色的对比度达标 ——
-        按「文字 on 格底」算，暗色底色带透明度时先与页面底做 alpha 混合。
+        这一步同时钉住两件事：① 日历确实按「底色表达状态」实现（状态类名必须存在，
+        被改掉本用例即报"请同步本测试"）；② app.css 的语义色令牌按「文字 on 底色」
+        实测达标 —— 令牌缺失或色值被改到不达标都会报红。
         """
         with open(CALENDAR_SRC, encoding="utf-8") as fh:
             src = fh.read()
-        palette = load_palette()
+        colors = load_theme_colors()
         problems = []
-        for name, fragment, l_bg, l_fg, d_bg, d_alpha, d_fg in CALENDAR_CELL_STATES:
-            if fragment not in src:
-                problems.append(
-                    f"  {name}: 日历日期格里找不到片段 {fragment!r} —— 配色被改动？请同步本测试"
-                )
-                continue
-            light = contrast(palette[l_fg], palette[l_bg])
-            dark = contrast(palette[d_fg], blend(palette[d_bg], palette[BG_DARK], d_alpha))
-            if round(light, 2) < AA_NORMAL_TEXT:
-                problems.append(f"  {name}: 浅色 {light:.2f}:1 低于 AA {AA_NORMAL_TEXT}:1")
-            if round(dark, 2) < AA_NORMAL_TEXT:
-                problems.append(f"  {name}: 暗色 {dark:.2f}:1 低于 AA {AA_NORMAL_TEXT}:1")
+        for cls in CALENDAR_CLASSES:
+            if cls not in src:
+                problems.append(f"  共享日历实现里找不到状态类名 {cls!r} —— 改名了？请同步本测试")
         if problems:
-            self.fail("签到日历日期格配色不达标：\n" + "\n".join(problems))
+            self.fail("签到日历的实现契约变了：\n" + "\n".join(problems))
+
+        problems = []
+        for mode, label in (("light", "浅色"), ("dark", "暗色")):
+            table = colors[mode]
+            for name, fg_name, bg_name in CONTRAST_PAIRS:
+                missing = [t for t in (fg_name, bg_name) if t not in table]
+                if missing:
+                    problems.append(f"  {name} / {label}：app.css 里缺令牌 {missing}")
+                    continue
+                ratio = contrast(table[fg_name], table[bg_name])
+                if round(ratio, 2) < AA_NORMAL_TEXT:
+                    problems.append(
+                        f"  {name} / {label}：{fg_name} on {bg_name}"
+                        f" = {ratio:.2f}:1 < AA {AA_NORMAL_TEXT}:1"
+                    )
+        if problems:
+            self.fail("日历 / 状态行 / 时段配色不达标：\n" + "\n".join(problems))
 
 
 if __name__ == "__main__":
