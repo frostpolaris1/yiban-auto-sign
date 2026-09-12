@@ -1,0 +1,52 @@
+{# 用户端侧边栏：品牌 + 导航（2 项）+ 底部（服务器时间 / 当前账号 / 退出）。
+   与管理端 sidebar.html 同构，但只放普通用户可达的页面；
+   当前账号常驻显示是防误操作设计（避免登录错账号后误操作），不可省略。 #}
+{% from "macros/ui.html" import icon with context %}
+<aside class="d-sidebar">
+  <div class="brand">
+    <div class="brand-logo">
+      <img src="{{ request.script_root }}/static/vendor/logo.png?v=2" alt=""
+           onerror="this.style.display='none';var f=document.getElementById('brand-fallback');if(f){f.style.display='grid'}">
+      <span id="brand-fallback" class="brand-fallback" style="display:none">签</span>
+    </div>
+    <div class="brand-text">
+      <div class="brand-name">易班自动签到</div>
+      <div class="brand-tag">用户中心</div>
+    </div>
+  </div>
+
+  <nav class="nav-section" aria-label="主导航">
+    <div class="nav-label">我的</div>
+    {% set items = [
+      ('user-calendar', '/user/calendar', 'calendar', '签到日历'),
+      ('user-accounts', '/user',          'user',     '账号与设置'),
+    ] %}
+    {% for key, href, ico, text in items %}
+    {# ≤1100px 侧栏收成 72px 图标栏时文字会被隐藏，靠 title 保留可读名称 #}
+    <a class="nav-link{% if nav_active == key %} is-active{% endif %}"
+       href="{{ request.script_root }}{{ href }}" title="{{ text }}"
+       {% if nav_active == key %}aria-current="page"{% endif %}>
+      {{ icon(ico) }}
+      <span>{{ text }}</span>
+    </a>
+    {% endfor %}
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-clock">
+      {{ icon('clock') }}<span data-clock-text>--:--:--</span>
+    </div>
+    <div class="workspace">
+      <div class="workspace-avatar" data-account-avatar>—</div>
+      <div class="workspace-text">
+        <div class="workspace-name" data-account-email title="">—</div>
+        <div class="workspace-role">普通用户</div>
+      </div>
+    </div>
+    <div class="sidebar-actions">
+      <button type="button" class="btn btn--ghost btn--sm" data-user-logout>
+        {{ icon('log-out') }}<span>退出登录</span>
+      </button>
+    </div>
+  </div>
+</aside>

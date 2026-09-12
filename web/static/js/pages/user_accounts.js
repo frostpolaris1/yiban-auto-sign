@@ -1,13 +1,11 @@
-/* 用户自助页（/user）行为。
+/* 用户端「账号与设置」页（/user）行为。
    依赖 core.js 的公开面：YB.api / YB.identity / YB.toast / YB.el / YB.confirmDialog /
-   YB.openModal / YB.openConfirmPasswordModal / YB.doLogout / YB.passwordClasses / YB.PW_*；
-   签到日历由 static/js/calendar.js 提供（window.renderCalendar）。
+   YB.openModal / YB.openConfirmPasswordModal / YB.doLogout / YB.passwordClasses / YB.PW_*。
 
-   迁移自旧 user.html 的内联脚本，功能逐项保留：
-     · 身份与邮箱前缀、服务器时钟（core.js 写入 [data-clock-text]）
+   迁移自旧 user.html 的内联脚本，除日历外功能逐项保留（日历已拆到 /user/calendar）：
      · 调度模式提示条（/api/me 的 sign_order / sign_window / time_pref_allowed）
      · 我的账号列表：状态图标 + 语义状态行 + 审核徽章 + 暂停/恢复 + 编辑 + 软删除 + 撤销删除
-     · 提交/编辑账号弹窗（core.js 模态；编辑走 PUT，新建走 POST；支持清除已配置识别码）
+     · 提交/编辑账号弹窗（编辑走 PUT，新建走 POST，支持清除已配置识别码）
      · 自选签到时段网格（拥挤度/裁剪/满员/禁用四态，clear 恢复自动分配）
      · 邮件提醒开关（失败回滚）
      · 修改密码（口令策略与后端同一口径）
@@ -41,22 +39,7 @@
     return YB.el("span", { class: "badge" + (variant ? " " + variant : ""), text: text });
   }
 
-  /* ---------------- 身份 / 提示条 ---------------- */
-  function onIdentity(me) {
-    if (!me) { location.href = YB.BASE + "/login"; return; }
-    if (me.role !== "user") { location.href = YB.BASE + "/"; return; }  // 管理员回后台
-    var email = me.email || "";
-    Array.prototype.forEach.call(document.querySelectorAll("[data-account-email]"), function (n) {
-      n.textContent = email.split("@")[0];   // 顶栏只显示前缀，悬停看全量
-      n.title = email;
-    });
-    mailNotifyOn = !!me.mail_notify;
-    renderMailNotify();
-    renderScheduleBanner(me);
-    loadAccounts();
-    loadTimePref();
-  }
-
+  /* ---------------- 调度提示条 ---------------- */
   function renderScheduleBanner(me) {
     var bar = document.querySelector("[data-schedule-banner]");
     var txt = document.querySelector("[data-schedule-banner-text]");
@@ -149,12 +132,15 @@
     } else {
       if (a.user_paused) actions.appendChild(badge("已取消", "danger"));
       else actions.appendChild(statusBadge(a.status));
-      if (a.status === "active" && !a.pause_forbidden) {
-        actions.appendChild(actionButton(
-          a.user_paused ? "恢复签到" : "暂停签到",
-          "btn btn--ghost btn--sm",
-          function () { togglePause(i); }
-        ));
+      if (a.status === "active") {
+        actions.appendChild(actionLink("签到日历", "btn btn--ghost btn--sm", YB.BASE + "/user/calendar"));
+        if (!a.pause_forbidden) {
+          actions.appendChild(actionButton(
+            a.user_paused ? "恢复签到" : "暂停签到",
+            "btn btn--ghost btn--sm",
+            function () { togglePause(i); }
+          ));
+        }
       }
       actions.appendChild(actionButton(
         a.status === "rejected" ? "修改并重新提交" : "编辑",
@@ -185,10 +171,11 @@
     if (!a.deleted && a.status === "pending") {
       card.appendChild(YB.el("p", { class: "account-pending-hint", text: "审核通过后即可查看签到日历" }));
     }
-    if (!a.deleted && a.status === "active") {
-      card.appendChild(YB.el("div", { class: "account-calendar", id: "cal-wrap-u-" + i }));
-    }
     return card;
+  }
+
+  function actionLink(label, cls, href) {
+    return YB.el("a", { class: cls, href: href, text: label });
   }
 
   function renderList() {
@@ -197,13 +184,7 @@
     $("accounts-empty").hidden = accounts.length > 0;
     // 还有未删除账号时隐藏入口；全部被删除时保留（软删除不死路）
     $("open-account-btn").hidden = accounts.some(function (a) { return !a.deleted; });
-    accounts.forEach(function (a, i) {
-      list.appendChild(accountCard(a, i));
-      // 日历容器入 DOM 后再渲染（renderCalendar 内部按 id 查找）
-      if (!a.deleted && a.status === "active" && window.renderCalendar) {
-        window.renderCalendar(a.phone, "u-" + i);
-      }
-    });
+    accounts.forEach(function (a, i) { list.appendChild(accountCard(a, i)); });
   }
 
   function statusBadge(status) {
@@ -289,7 +270,7 @@
     var editing = !!a;
     var body = YB.el("div");
     body.appendChild(YB.el("p", {
-      class: "card-sub",
+      class: "panel-sub",
       text: editing
         ? "修改后需重新提交审核，审核通过即自动签到。"
         : "提交后等待管理员审核，审核通过即自动签到。每个用户限提交一个账号。"
@@ -346,13 +327,12 @@
     [name, phone, password, model, code].forEach(function (f) { stack.appendChild(f.field); });
     body.appendChild(stack);
 
-    var api = {
+    return {
       node: body, name: name.input, phone: phone.input, password: password.input,
       model: model.input, code: code.input,
       showError: function (msg) { errText.textContent = msg; err.hidden = false; },
       hideError: function () { errText.textContent = ""; err.hidden = true; }
     };
-    return api;
   }
 
   function submitAccountForm(form) {
@@ -510,6 +490,30 @@
     });
   }
 
+  /* ---------------- 注销账号 ---------------- */
+  function onDeleteAccount() {
+    YB.confirmDialog({
+      title: "注销账号",
+      body: "注销将删除你的账号、易班账号与自选签到时间。7 天内可撤销恢复，超过 7 天将永久删除，无法找回。",
+      confirmText: "继续注销", danger: true
+    }).then(function (ok) {
+      if (!ok) return;
+      YB.openConfirmPasswordModal(
+        "注销后账号将无法登录，易班账号与自选签到时间会被删除；7 天宽限期内可撤销。请输入当前密码完成注销。",
+        function (pw) {
+          YB.api("POST", "/api/me/delete", { password: pw }).then(function (data) {
+            YB.toast.success(data.msg || "账号已注销");
+            try { localStorage.clear(); } catch (e) { /* 受限环境忽略 */ }
+            setTimeout(function () { location.href = YB.BASE + "/login"; }, 1200);
+          }).catch(function (e) {
+            // 文案由后端给出（400 密码不正确 / 403 / 429 请稍后再试 / 500）
+            YB.toast.error(e.message || "注销失败，请稍后再试");
+          });
+        }
+      );
+    });
+  }
+
   /* ---------------- 静态控件绑定 ---------------- */
   function bindStatic() {
     var logout = document.querySelector("[data-user-logout]");
@@ -569,33 +573,24 @@
     if (del) del.addEventListener("click", onDeleteAccount);
   }
 
-  function onDeleteAccount() {
-    YB.confirmDialog({
-      title: "注销账号",
-      body: "注销将删除你的账号、易班账号与自选签到时间。7 天内可撤销恢复，超过 7 天将永久删除，无法找回。",
-      confirmText: "继续注销", danger: true
-    }).then(function (ok) {
-      if (!ok) return;
-      YB.openConfirmPasswordModal(
-        "注销后账号将无法登录，易班账号与自选签到时间会被删除；7 天宽限期内可撤销。请输入当前密码完成注销。",
-        function (pw) {
-          YB.api("POST", "/api/me/delete", { password: pw }).then(function (data) {
-            YB.toast.success(data.msg || "账号已注销");
-            try { localStorage.clear(); } catch (e) { /* 受限环境忽略 */ }
-            setTimeout(function () { location.href = YB.BASE + "/login"; }, 1200);
-          }).catch(function (e) {
-            // 文案由后端给出（400 密码不正确 / 403 / 429 请稍后再试 / 500）
-            YB.toast.error(e.message || "注销失败，请稍后再试");
-          });
-        }
-      );
-    });
-  }
-
   /* ---------------- 启动 ---------------- */
   function init() {
     bindStatic();
-    YB.identity().then(onIdentity).catch(function () { location.href = YB.BASE + "/login"; });
+    YB.identity().then(function (me) {
+      if (!me) { location.href = YB.BASE + "/login"; return; }
+      if (me.role !== "user") { location.href = YB.BASE + "/"; return; }  // 管理员回后台
+      var email = me.email || "";
+      // 侧栏账号区只显示邮箱前缀，完整地址放 title（窄栏不撑破）
+      Array.prototype.forEach.call(document.querySelectorAll("[data-account-email]"), function (n) {
+        n.textContent = email.split("@")[0];
+        n.title = email;
+      });
+      mailNotifyOn = !!me.mail_notify;
+      renderMailNotify();
+      renderScheduleBanner(me);
+      loadAccounts();
+      loadTimePref();
+    }).catch(function () { location.href = YB.BASE + "/login"; });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();

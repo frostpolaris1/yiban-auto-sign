@@ -2967,14 +2967,48 @@ def create_app(host=None):
             return blocked
         return _render_admin_page("pages/dashboard.html", "dashboard", ["工作台", "数据总览"])
 
-    @app.route("/user")
-    def user_page():
+    def _user_page_redirect():
+        """用户端页面守卫：未登录 → 登录页；管理员 → 管理端首页。合规时返回 None。
+
+        与管理端守卫同构：返回而非装饰，便于各页按需处理。
+        """
         role = _current_role()
         if role is None:
             return redirect(url_for("login_page"))
         if role != "user":
             return redirect(url_for("index_page"))
-        return render_template("user.html", web_version=WEB_VERSION, app_version=APP_VERSION, icp_info=icp_info(), police_info=police_info(), police_link=police_link())
+        return None
+
+    def _render_user_page(template, nav_key, crumbs):
+        """用户端页面统一上下文（与管理端同构：版本 / 备案 / 导航高亮 / 面包屑）。
+
+        身份不在此下发：用户端外壳由 core.js 的 /api/me 填充账号区，
+        避免服务端再走一次会话取值（管理员页下发的理由见 _render_admin_page）。
+        """
+        return render_template(
+            template,
+            web_version=WEB_VERSION,
+            app_version=APP_VERSION,
+            icp_info=icp_info(),
+            police_info=police_info(),
+            police_link=police_link(),
+            nav_active=nav_key,
+            crumbs=crumbs,
+        )
+
+    @app.route("/user")
+    def user_page():
+        blocked = _user_page_redirect()
+        if blocked:
+            return blocked
+        return _render_user_page("pages/user_accounts.html", "user-accounts", ["用户中心", "账号与设置"])
+
+    @app.route("/user/calendar")
+    def user_calendar_page():
+        blocked = _user_page_redirect()
+        if blocked:
+            return blocked
+        return _render_user_page("pages/user_calendar.html", "user-calendar", ["用户中心", "签到日历"])
 
     # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
     # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环

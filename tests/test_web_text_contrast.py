@@ -68,7 +68,7 @@ SCAN_EXTS = (".html", ".js")
 CALENDAR_SRC = os.path.join(WEB, "static", "js", "calendar.js")
 
 # 共享实现里必须存在的状态类名（片段被改名/删除即报"请同步本测试"）
-CALENDAR_CLASSES = ("cal-cell--ok", "cal-cell--bad", "cal-cell--off", "cal-cell--today")
+CALENDAR_CLASSES = ("sc-cell--ok", "sc-cell--bad", "sc-cell--off", "sc-cell--today")
 
 # (说明, 文字令牌, 底色令牌) —— 两者都在 :root / html[data-theme=dark] 里定义
 CONTRAST_PAIRS = (
