@@ -506,6 +506,7 @@ textarea {
   .linklike,
   .accordion-trigger,
   .hamburger,
+  .info-tip,
   .pm-panel .pm-panel-close
 ):focus-visible {
   outline: 2px solid var(--primary);
@@ -1755,6 +1756,11 @@ html[data-theme="dark"] {
 .form-stack .field-help,
 .form-stack .field-error { margin: 0; }
 .form-stack .field-help { margin-top: -2px; }   /* 6(字段内 gap) - 2 = 视觉 4px */
+/* 模板 .field（.form-grid 的字段容器）同理：<p class="field-help"> 带 UA 1em 上下边距，
+   会把「控件→帮助」从 4px 撑成 ~17.5px（实测 11.5+6），并推高字段块。 */
+.field .field-help,
+.field .field-error { margin: 0; }
+.field .field-help { margin-top: -2px; }
 /* vendor 的 .field-error 以前景 --danger(#EF4444) 落在白卡上，实测仅 3.76:1 不达 AA；
    它是正文级错误文字，改用达标的 --state-bad-fg（浅 6.47 / 深 12.0 档）。 */
 .field-error { color: var(--state-bad-fg); }
@@ -1861,6 +1867,9 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .cal-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .cal-card { display: flex; flex-direction: column; }
 .sc-mount { min-width: 0; }
+/* 首屏「正在加载账号…」占位与真实日历卡同高：否则数据到达时左列从 ~150px 跳到
+   ~470px，整页 CLS 明显（日历内部切月的零跳变机制覆盖不到这一层）。 */
+.cal-placeholder { min-height: 440px; display: flex; align-items: center; justify-content: center; }
 
 /* 工具条：月份 + 上/下月 + 今天 */
 .sc-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -2639,11 +2648,15 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
    .data-table(.table-scroll/.data-toolbar)、.alert、.badge、.form-actions。
    本节只保留**确无模板对应**的项目类：
      · .info-tip/.info-pop       详细信息浮层（模板无此概念，hover + focus 双触发）
-     · .set-row*                 「说明 + 开关」行布局
-     · .set-tip/.set-ok/.set-bad 就地状态文字（成功/失败上色）
-     · .set-warn                 软警示底（容量超限、暂停提示）
+     · .set-row*                 「说明 + 开关」行布局（模板 .switch 只管开关本体，无整行布局）
+     · .set-tip/.set-bad         就地状态文字（中性/失败上色；模板 .alert 是带图标的块级提示，
+                                 一行小字用它过重）
+     · .set-warn                 软警示底。模板 .alert.warning 亦可表达同类语义，但带图标与
+                                 左语义边、体积更大；此处只用于「一行容量/暂停提示」，故保留
      · .set-danger*              危险区语义（红标题、整宽按钮）
      · .set-sub                  卡内子段标题（通知通道的推送 / 邮件两段）
+     · .set-head-actions         .card-head 右侧多控件成组（模板只给 last-child 弹性）
+     · .set-more                 卡内低频项折叠（原生 details + 渐进增强高度过渡）
      · .tabs-scroll              窄屏 tab 条横滑容器
    分隔线遵守 23 白名单：卡头用模板 .card-head（容器 chrome 边界，第 2 类），
    卡内只有 .form-actions 提交边界保留线（第 4 类）。
@@ -2665,8 +2678,7 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   cursor: help;
 }
 .info-tip:hover { color: var(--t-base); }
-.info-tip svg { width: 16px; height: 16px; }
-.info-pop {
+.info-tip svg { width: 16px; height: 16px; }.info-pop {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
@@ -2690,12 +2702,20 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   transform: translateY(-2px);
   transition: opacity 120ms var(--ease-in-strong), transform 120ms var(--ease-in-strong), visibility 120ms;
 }
-.info-tip:hover .info-pop,
 .info-tip:focus .info-pop {
   opacity: 1;
   visibility: visible;
   transform: none;
   transition-timing-function: var(--ease-out-strong);
+}
+/* hover 触发只在精确指针设备启用：触屏点按会产生"假 hover"并可能让浮层粘滞 */
+@media (hover: hover) and (pointer: fine) {
+  .info-tip:hover .info-pop {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    transition-timing-function: var(--ease-out-strong);
+  }
 }
 .info-pop b { display: block; margin-top: 7px; font-weight: 600; color: var(--t-base); }
 .info-pop b:first-child { margin-top: 0; }
@@ -2716,7 +2736,7 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .set-tip { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
 .set-tip:empty { display: none; }
 .set-warn {
-  margin-top: 12px;
+  margin: 12px 0 0;
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--badge-warn-bg);
@@ -2724,16 +2744,32 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   font-size: 12.5px;
   line-height: 1.55;
 }
-.set-ok { color: var(--state-ok-fg); }
 .set-bad { color: var(--state-bad-fg); }
 
 /* ---- 27.4 卡内子段标题 / 窄屏 tab 横滑 / 输入组尾缀 ---- */
 .set-sub { margin: 28px 0 14px; font-size: 14px; font-weight: 700; color: var(--t-base); }
 .set-sub--first { margin-top: 4px; }
-/* 低频项收进 <details>（模板无折叠小件，用原生 details + 轻量摘要样式） */
+/* 低频项收进 <details>：模板无折叠小件。项目其它折叠区（button + .collapse-body）需 JS 绑定，
+   这里用原生 details + 渐进增强高度过渡（不支持 interpolate-size 的浏览器即时展开，不更糟），
+   摘要下间距随展开过渡而非瞬跳。理由：低频项一次性展开，不值得再引入第三份折叠绑定。 */
 .set-more { margin-top: 16px; }
-.set-more > summary { cursor: pointer; font-size: 12.5px; color: var(--t-sub); }
+.set-more > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--t-sub);
+  margin-bottom: 0;
+  transition: margin-bottom 220ms var(--ease-out-strong);
+}
 .set-more[open] > summary { margin-bottom: 14px; }
+@supports (interpolate-size: allow-keywords) {
+  .set-more { interpolate-size: allow-keywords; }
+  .set-more::details-content {
+    block-size: 0;
+    overflow: hidden;
+    transition: block-size 220ms var(--ease-out-strong), content-visibility 220ms allow-discrete;
+  }
+  .set-more[open]::details-content { block-size: auto; }
+}
 /* 卡头右侧控件组：模板 .card-head 只留一个 last-child 弹性，多个控件需自组一行 */
 .set-head-actions { display: inline-flex; align-items: center; gap: 10px; }
 /* tab 条在窄屏横滑：外层滚动容器，避免整页横向滚动 */
@@ -2754,10 +2790,26 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .set-danger-btn { width: 100%; justify-content: center; }
 .set-danger-note { margin: 0 0 16px; font-size: 12.5px; line-height: 1.6; color: var(--state-bad-fg); }
 
-/* ---- 27.7 动效收敛 ---- */
-/* 模板 .tab-panel.is-active 自带 rise-in 320ms，模板自身无 reduced-motion 处理，此处补齐 */
+/* ---- 27.7 动效收敛 ----
+   模板 .tab-panel.is-active 自带 keyframes rise-in 320ms ease + 位移 10px，且模板文件里
+   `prefers-reduced-motion` 出现 0 次。分区切换属高频操作，项目规矩是 ≤160ms、进入用
+   --ease-out-strong、大面位移 ≤6px；此处按属性选择器提高特异度覆盖 vendor（不用 !important）。 */
+@keyframes set-panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+[data-tab-group] .tab-panel.is-active {
+  animation: set-panel-in 160ms var(--ease-out-strong) both;
+}
+/* 快捷档位（.btn-group 的 .is-active 切换）是高频反馈：走全局 .btn 的 220ms 主题换色时长偏慢 */
+.btn-group .btn {
+  transition: background-color 140ms, border-color 140ms, color 140ms;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .info-pop { transition: none; }
-  .tab-panel.is-active { animation: none; }
+  [data-tab-group] .tab-panel.is-active { animation: none; }
+  .btn-group .btn { transition: none; }
+  .set-more > summary,
+  .set-more::details-content { transition: none; }
 }
 
