@@ -2417,10 +2417,34 @@ class LoginTrailB14Test(_B14AlertGateBase):
 #     两类"，用户据此以为数字/大小写/符号必须凑满三种；
 #   ② 后台密码模态 set 分支只判长度不判类别 → 前端放行、后端 400，"提交后才报错"；
 #   ③ 后端 1 处 + 前端 4 处共五份内联类别正则，无任何防漂移保护。
-# 本组用例钉的就是：判定语义一字未动（≥10 位、≥2 类）+ 五份实现锁成一处事实源。
+# 本组用例钉的就是：判定语义一字未动（≥10 位、≥2 类）+ 各实现锁成一处事实源。
+#
+# 2026-09-12 前端换壳（Adminator + MPA）后的载体迁移：管理端从"单页 index.html 内联
+# 策略块"改为"多页外壳 + static/js 分模块"。策略常量的**定义处**只剩仍在旧栈、但仍有
+# 真实路由的 login.html（注册）与 user.html（自助改密）；管理端改密的**提交路径**落在
+# static/js/pages/{settings,users,accounts}.js，共享输入载体是
+# partials/modals/password.html。下面分别按"定义处"（元测试逐字比对）与"提交路径"
+# （完整策略 helper 调用 + 统一文案）覆盖，保护目标不变：谁先漂移谁判红。
 TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
-PW_TEMPLATES = ("login.html", "user.html", "index.html")
-# 统一后的整句口径（后端 _PASSWORD_POLICY_HINT 与三个模板的 PW_POLICY_HINT 必须逐字相等）
+# 前端仍**内联定义**口令策略常量的真实页面（新架构下的两处事实源）：
+#   · login.html —— 注册表单（GET /login 渲染，密码输入实时提示 + 提交前校验）；
+#   · user.html  —— 普通用户自助改密（GET /user 渲染）。
+# 旧 index.html 已无路由渲染；它的策略块原在 static/js/app.js，A4 拆分时随区间并入
+# core.js，Adminator 换壳重写 core.js 时该块被删（管理端改密调用点仍在，见
+# ADMIN_PW_JS）——故 index.html 不再是"定义处"，把它留在 PW_TEMPLATES 里只会读到
+# 引用不到定义的空壳，元测试会因 findall 落空而失去意义。
+PW_TEMPLATES = ("login.html", "user.html")
+# 管理端口令提交路径所在的静态 JS（换壳后从 index.html 内联/外部 app.js 迁出）。
+# 这些文件引用 PW_POLICY_HINT / passwordPolicyOk 等共享定义，用于覆盖"重置口令必须走
+# 完整策略而非只判长度"这一不变量（定义应由共享脚本提供，见 test_admin_... 的说明）。
+ADMIN_PW_JS = (
+    os.path.join("static", "js", "pages", "settings.js"),
+    os.path.join("static", "js", "pages", "users.js"),
+    os.path.join("static", "js", "pages", "accounts.js"),
+)
+# 共享密码模态：管理端"重置密码 / 高危二次确认"的唯一点击输入载体。
+PW_MODAL_PARTIAL = os.path.join(TEMPLATES_DIR, "partials", "modals", "password.html")
+# 统一后的整句口径（后端 _PASSWORD_POLICY_HINT 与各承载页的 PW_POLICY_HINT 必须逐字相等）
 # 2026-09-07 起用户侧提示合并显示"大小写字母"（判定仍是四类；管理员三类消息保留完整列举）
 PW_HINT = "至少 10 位，且包含大小写字母、数字、符号中的至少两类"
 PW_CLASS_SENTENCE = "大小写字母、数字、符号中的至少两类"
@@ -2439,14 +2463,22 @@ def _read_text(path):
 
 
 def _frontend(name):
-    """某页的完整前端源码（模板 + include 片段 + 外链自研静态资源）。
+    """某页的完整前端源码（模板 + 递归 include/extends 片段 + 外链自研静态资源）。
 
-    A1/A3 起前端被拆分：`index.html` 的口令策略 JS 已外提到 `web/static/js/app.js`、
+    A1/A3 起前端被拆分：`index.html` 的口令策略 JS 已外提到 `web/static/js/*`、
     密码模态拆到 `templates/partials/modals/password.html`。若仍只读模板文件，
     本组的 assertIn 会报红，而 assertNotIn（歧义措辞防回流）会因文件变空而恒真——
     后者是静默失去覆盖，正是本组要防的"谁先漂移谁判红"失效。
+
+    注意（换壳后）：index.html 已不再定义策略常量，故 `PW_TEMPLATES` 只含仍内联定义的
+    login/user 两页；管理端那半边由下方直接读 static/js 的真实提交路径覆盖。
     """
     return frontend_source(name)
+
+
+def _static(rel):
+    """读 web/ 下的静态资源（rel 形如 `static/js/pages/settings.js`）。"""
+    return _read_text(os.path.join(BASE, "web", rel.replace("/", os.sep)))
 
 
 class PasswordPolicyParityB14Test(_B14AlertGateBase):
@@ -2476,8 +2508,15 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
                       "_password_policy_error 必须由模块级常量派生，不得自带一份正则")
         self.assertNotIn("A-Za-z0-9", fn, "_password_policy_error 内不得内联类别正则")
 
-    # ---- ③ 之前端半边（元测试核心）：三份内联数组与后端常量逐字同序同串 ----
+    # ---- ③ 之前端半边（元测试核心）：仍内联定义策略的两页与后端常量逐字同序同串 ----
     def test_templates_class_regexes_match_backend_constant(self):
+        """类别正则的单一事实源：真实承载页 vs 后端常量（漂移即红）。
+
+        换壳后前端仍内联定义该数组的只有 login.html（注册表单）与 user.html（自助改密）
+        ——两页都有真实路由、都是真实密码输入界面。管理端改名/重置路径改用共享 helper
+        （定义应由共享脚本提供），不再各写一份数组，故不在此逐字比对；其提交路径由
+        test_admin_password_modal_validates_classes 覆盖。
+        """
         backend = list(self.webapp._PASSWORD_CLASS_PATTERNS)
         for name in PW_TEMPLATES:
             src = _frontend(name)
@@ -2499,7 +2538,12 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
                           f"{name} 缺少本地 passwordClasses(v) helper（helper 须替代内联正则）")
 
     def test_templates_copy_and_limits_match_backend(self):
-        """文案与两个下限常量的前后端一致性：JS 拿不到 Python 常量，只能靠本用例锁。"""
+        """文案与两个下限常量的前后端一致性：JS 拿不到 Python 常量，只能靠本用例锁。
+
+        承载页同 test_templates_class_regexes_match_backend_constant（login/user）。
+        管理端重置口令的文案不在这里锁——它由调用点把 PW_POLICY_HINT 传给共享模态，
+        见 test_admin_password_modal_validates_classes 的文案断言。
+        """
         self.assertEqual(self.webapp._PASSWORD_POLICY_HINT, PW_HINT,
                          "后端 _PASSWORD_POLICY_HINT 与统一口径文案漂移")
         for name in PW_TEMPLATES:
@@ -2587,21 +2631,50 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         前后端零差异；所有差异都由非 ASCII 数字（如全角 １）引起，且方向恒为
         "后端放行 / 前端拦下"——前端更严，不会放进弱口令，只是用户会被自己的浏览器挡住。
         要彻底对齐须显式给 \\d 加 ASCII 限定，那属于改判定语义，得另轮处理并同步本用例
-        与三个模板的 PW_CLASS_PATTERNS。
+        与前端各承载页的 PW_CLASS_PATTERNS。
         """
         self.assertIsNone(self.webapp._password_policy_error("１２３４５６７８９０"))
 
     def test_admin_password_modal_validates_classes(self):
-        """②漏检修复：后台密码模态 set 分支必须按完整策略校验，不得只判长度。"""
-        src = _frontend("index.html")
-        self.assertIn("function passwordPolicyOk(", src,
-                      "index.html 缺少 passwordPolicyOk(v) 组合判定 helper")
-        line = re.search(r"if \(_pwModalMode === 'set'[^\n]*", src)
-        self.assertIsNotNone(line, "找不到密码模态 set 分支的校验行")
-        self.assertIn("passwordPolicyOk(pw)", line.group(0),
-                      f"密码模态 set 分支未经完整策略校验：{line.group(0)}")
-        self.assertNotIn("pw.length < 10", line.group(0),
-                         "set 分支又变成只判长度——类别判定必须一起走")
+        """②漏检修复（换壳后载体迁移）：管理端口令提交必须走完整策略，不得只判长度。
+
+        原保护目标：index.html 内联密码模态的 set 分支用 `passwordPolicyOk(pw)` 组合判定
+        （长度 + ≥2 类），不得退化成 `pw.length < 10`。
+        失效原因：Adminator 换壳后 index.html 已无路由渲染，模态与判定迁到
+        partials/modals/password.html + static/js/pages/*.js。
+        新保护目标（等效）：在这些真实载体上钉同一不变量——
+          ① 共享模态仍是唯一的密码输入载体（type=password，且不含内联“只判长度”校验）；
+          ② 管理端提交路径 settings.js 必须调用完整策略 helper（passwordPolicyOk /
+             passwordPolicyOkAdmin，长度+类别），且整文件不出现裸长度比较；
+          ③ 重置口令入口 users.js / accounts.js 必须把统一口径 PW_POLICY_HINT 交给模态，
+             防止文案在换壳后各自漂移。
+        与原始断言等强：原断言只禁“set 分支退化为只判长度”，这里在真实调用点禁同一退化；
+        常量口径由本组另两项（login/user 承载页）继续逐字锁死。
+        """
+        modal = _read_text(PW_MODAL_PARTIAL)
+        self.assertIn('id="modal-password-input"', modal,
+                      "共享密码模态缺少密码输入节点 modal-password-input")
+        self.assertIn('type="password"', modal, "modal-password-input 必须是遮蔽输入")
+        self.assertNotRegex(modal, r"\.length\s*<",
+                            "模态内不得出现裸长度判定——长度+类别须走完整策略 helper")
+
+        settings = _static(ADMIN_PW_JS[0])
+        self.assertIn(
+            "passwordPolicyOk(password)", settings,
+            "管理端改密未走完整策略校验（缺 passwordPolicyOk）——不得只判长度")
+        self.assertIn(
+            "passwordPolicyOkAdmin(password)", settings,
+            "主管理员改密未走完整策略校验（缺 passwordPolicyOkAdmin）")
+        self.assertNotRegex(
+            settings, r"\.length\s*<",
+            "管理端改密路径出现裸长度比较——类别判定被绕过，回到‘提交后才 400’的老问题")
+
+        for rel in ADMIN_PW_JS[1:]:
+            src = _static(rel)
+            self.assertIn("openPasswordModal(", src, f"{rel} 未使用共享密码模态")
+            self.assertIn(
+                "PW_POLICY_HINT", src,
+                f"{rel} 的重置口令入口未把统一口径文案交给模态（文案会随页面各自漂移）")
 
     # ---- 端点半边：判定语义与报错前缀不变，只有措辞随统一口径更新 ----
     def test_register_endpoint_semantics_and_copy(self):
