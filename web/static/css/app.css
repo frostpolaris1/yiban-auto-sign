@@ -9,14 +9,21 @@
    Noto Sans SC，再退回系统中文字体。button/input/select/textarea 自带
    font-family:inherit，这里一并显式声明，避免组件层各自覆盖后漂移。
    ========================================================================== */
+:root {
+  /* 全站字体栈的单一事实源。
+     中文必须排在通用族（sans-serif/monospace）之前，否则中文 Windows 会把通用族解析成
+     宋体(SimSun)。新增任何 font-family 声明一律写 var(--font-sans)/var(--font-mono)，
+     不要再内联字面量——本项目就出现过后加的兼容类自行声明裸等宽栈、绕过收口而回退宋体。
+     由 tests/test_web_font_closure.py 静态守卫（含"Adminator 全部通用族选择器都已被收口"对账）。 */
+  --font-sans: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --font-mono: "JetBrains Mono", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", ui-monospace, "SFMono-Regular", monospace;
+}
 body,
 button,
 input,
 select,
 textarea {
-  font-family: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei",
-    "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu,
-    Cantarell, "Noto Sans", sans-serif;
+  font-family: var(--font-sans);
 }
 
 /* ==========================================================================
@@ -53,7 +60,7 @@ textarea {
   stroke-width: 1.8;
 }
 .sidebar-clock [data-clock-text] {
-  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   letter-spacing: 0.02em;
 }
@@ -94,7 +101,7 @@ textarea {
   align-items: center;
   gap: 10px;
   color: var(--t-light);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.06em;
 }
@@ -333,7 +340,7 @@ textarea {
 }
 .pager__info {
   color: var(--t-muted);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   letter-spacing: 0.03em;
 }
@@ -389,7 +396,7 @@ textarea {
   border-radius: 10px;
   background: var(--bg-muted);
   color: var(--t-base);
-  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -965,7 +972,7 @@ textarea {
 .wx-stat-value,
 .wx-temp,
 body {
-  font-family: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
 }
 
 /* 等宽栈：32 个选择器 */
@@ -1001,7 +1008,7 @@ body {
 .upc-date .mo,
 .upc-time .mono,
 .wx-date p {
-  font-family: "JetBrains Mono", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", ui-monospace, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
 }
 
 /* ==========================================================================
@@ -1164,7 +1171,7 @@ body {
 }
 .md-body hr { margin: 16px 0; border: 0; border-top: 1px solid var(--border); }
 .md-body code {
-  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   background: var(--bg-muted);
   padding: 1px 5px;
@@ -1173,3 +1180,329 @@ body {
 .md-body a { color: var(--primary); font-weight: 600; }
 .md-body a:hover { text-decoration: underline; }
 .md-body strong { color: var(--t-base); font-weight: 600; }
+
+/* ==========================================================================
+   18. 认证页视觉打磨（覆盖第 17 节初版）
+   --------------------------------------------------------------------------
+   初版直接沿用 Adminator 的 .auth-aside（--primary→--purple 饱和渐变 + 硬编码白字），
+   存在四个问题：浅色下过深、深色下过亮晃眼、白字不随主题自适应、右侧卡片无表面而
+   与背景糊在一起。本节按「浅色珠光 / 深色深夜蓝」重做左栏，并补齐卡片表面、
+   分段控件、字段节奏、横幅与主题过渡。
+   ========================================================================== */
+
+/* ---- 18.1 左栏极光（aurora） ----
+   浅色：比 --bg-body 更亮更冷的珠光底 + 4 层低透明彩晕，文字用深色 token；
+   深色：近黑的深底 + 低亮度彩晕（不刺眼），文字用浅色 token。
+   文字一律走 --t-base/--t-muted/--t-light，不再硬编码 #fff —— 那是「深色下白字
+   压亮蓝晃眼、浅色下白字压浅底读不出」的根因。 */
+.auth-aside {
+  --aside-chip-bg: rgba(255, 255, 255, 0.7);
+  --aside-chip-border: rgba(30, 41, 59, 0.1);
+  color: var(--t-base);
+  border-right: 1px solid var(--border);
+  background-color: #f7faff;
+  background-image:
+    radial-gradient(60% 55% at 12% 8%, rgba(37, 99, 235, 0.2), transparent 62%),
+    radial-gradient(55% 50% at 88% 4%, rgba(139, 92, 246, 0.18), transparent 60%),
+    radial-gradient(60% 55% at 78% 92%, rgba(20, 184, 166, 0.15), transparent 62%),
+    radial-gradient(50% 45% at 8% 88%, rgba(236, 72, 153, 0.1), transparent 60%);
+}
+
+/* 深色极光：整层「不透明底 + 低亮光晕」覆盖，用 opacity 交叉淡入。
+   不直接过渡 background-image —— 两个渐变之间插值会经过灰带（"发灰"的根因）。
+   必须显式复位 Adminator 给 ::before 设的 width:80%/aspect-ratio:1，否则
+   与本节的 inset:0 冲突导致覆盖层只有 80% 宽。 */
+.auth-aside::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  aspect-ratio: auto;
+  z-index: 0;
+  pointer-events: none;
+  background-color: #080d1a;
+  background-image:
+    radial-gradient(58% 52% at 14% 10%, rgba(37, 99, 235, 0.3), transparent 64%),
+    radial-gradient(52% 48% at 86% 6%, rgba(124, 58, 237, 0.26), transparent 62%),
+    radial-gradient(58% 54% at 76% 90%, rgba(13, 148, 136, 0.18), transparent 64%),
+    radial-gradient(46% 42% at 6% 86%, rgba(219, 39, 119, 0.12), transparent 62%);
+  opacity: 0;
+  transition: opacity 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+html[data-theme="dark"] .auth-aside::before { opacity: 1; }
+
+/* 缓慢漂移的柔光层：只动 transform（合成器属性），幅度 ±1.5%、周期 32s，不抢注意力。
+   同样需复位 Adminator ::after 的 width:80%/aspect-ratio:1。 */
+.auth-aside::after {
+  content: "";
+  position: absolute;
+  inset: -25%;
+  width: auto;
+  height: auto;
+  aspect-ratio: auto;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(40% 40% at 60% 40%, rgba(255, 255, 255, 0.35), transparent 65%);
+  animation: auth-aurora-drift 32s ease-in-out infinite alternate;
+}
+html[data-theme="dark"] .auth-aside::after {
+  background: radial-gradient(40% 40% at 60% 40%, rgba(96, 165, 250, 0.1), transparent 68%);
+}
+@keyframes auth-aurora-drift {
+  from { transform: translate3d(-1.5%, -1%, 0); }
+  to { transform: translate3d(1.5%, 1.5%, 0); }
+}
+
+/* 极光层是绝对定位的伪元素，子内容需抬到其上（Adminator 只给部分子元素设了 z-index） */
+.auth-aside > * { position: relative; z-index: 1; }
+
+/* 主题自适应文字：覆盖 Adminator 的 rgba(255,255,255,*) 硬编码 */
+.auth-aside p { color: var(--t-muted); }
+.auth-aside-eyebrow,
+.auth-aside-footer { color: var(--t-light); }
+.auth-points li { color: var(--t-muted); }
+.auth-brand .logo {
+  background: var(--aside-chip-bg);
+  border: 1px solid var(--aside-chip-border);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none; /* 大面积毛玻璃成本高，浅底珠光面上也无必要 */
+}
+html[data-theme="dark"] .auth-aside {
+  --aside-chip-bg: rgba(255, 255, 255, 0.06);
+  --aside-chip-border: rgba(255, 255, 255, 0.14);
+}
+
+/* ---- 18.2 表单卡片表面 ----
+   初版 .auth-card 无底色/边框，直接浮在页面背景上。补底 + 1px 边 + 圆角 + 双层阴影。
+   注：相邻表面亮度差只有约 1.1:1（token 决定），可辨识度来自边框与阴影，
+   不能用 3:1 去卡"表面"——那是给图形/文字的标准。 */
+.auth-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 26px;
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 0.04),
+    0 12px 32px -16px rgb(15 23 42 / 0.18);
+}
+html[data-theme="dark"] .auth-card {
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.4),
+    0 16px 40px -20px rgb(0 0 0 / 0.6);
+}
+
+/* ---- 18.3 登录/注册分段控件 ----
+   初版是 Adminator 的 .tabs.pills（选中态=白底胶囊），在浅色轨道上区分度太弱，
+   且未选中文字用 --t-muted 在 --bg-muted 上只有 4.34:1，不达 WCAG AA。
+   改为品牌色实心胶囊：选中 --primary 底 + --t-inverse 字（浅 5.17:1 / 深 7.41:1），
+   未选中用 #475569（浅 6.92:1）/ #94A3B8（深 6.17:1）。
+   覆盖限定在 .auth-tabs.auth-seg 下，不改动 Adminator 的 .tabs.pills 全局行为。 */
+.auth-tabs.auth-seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  width: 100%;
+  padding: 4px;
+  margin-bottom: 22px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+.auth-tabs.auth-seg .tab {
+  --seg-fg: #475569;
+  top: 0;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--seg-fg);
+  background: transparent;
+  transition:
+    background-color 160ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    color 160ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    box-shadow 160ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
+.auth-tabs.auth-seg .tab:hover:not(.is-active):not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.auth-tabs.auth-seg .tab.is-active {
+  background: var(--primary);
+  color: var(--t-inverse);
+  box-shadow: var(--shadow-sm);
+}
+.auth-tabs.auth-seg .tab:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.auth-tabs.auth-seg .tab:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---- 18.4 字段纵向节奏 ----
+   初版把「还没有账号？…」当成邮箱字段的 .field-help，夹在两组字段之间形成断点。
+   该文案是导航提示而非字段帮助，已移出表单、改为表单下方的 .auth-switch-hint。
+   节奏：组内 6、组间 18（3×组内，形成分组）、主按钮前 ≈24。 */
+.auth-form { gap: 18px; }
+.auth-form .field { gap: 6px; }
+.auth-form .field-help,
+.auth-form .field-error { font-size: 12px; line-height: 1.5; }
+.auth-submit { margin-top: 6px; }
+
+.auth-switch-hint {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--t-muted);
+}
+.auth-switch-hint button {
+  padding: 0 2px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--primary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.auth-switch-hint button:hover { text-decoration: underline; }
+
+/* ---- 18.5 公告横幅 ----
+   Adminator 没有 .banner/.notice，最接近的是 .alert（已带 .ico/.body/.close 骨架），
+   故沿用 .alert 并收窄为「整行细高 + 左图标 + 左语义边 + 右关闭」。
+   必须写成 .alert.auth-announce（0,2,0）才能盖掉 Adminator 的 .alert.warning（0,2,0），
+   只写 .auth-announce（0,1,0）会输给 .alert.warning 的底色。 */
+.alert.auth-announce {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  background: var(--warning-soft);
+  color: var(--t-base);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.alert.auth-announce .ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-top: 1px;
+  color: var(--warning);
+}
+.alert.auth-announce .ico svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  fill: none;
+}
+.alert.auth-announce .body { flex: 1 1 auto; min-width: 0; }
+.alert.auth-announce .close {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: var(--t-light);
+  background: none;
+  cursor: pointer;
+  transition: background-color 150ms, color 150ms;
+}
+.alert.auth-announce .close:hover { background: var(--bg-hover); color: var(--t-base); }
+.alert.auth-announce .close svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+/* ---- 18.6 深浅色切换过渡 ----
+   只给「会随主题换色的实体表面/文字」加过渡，不用 * 通配（会波及布局属性）。
+   渐变不参与过渡：background-image 在两个色标间插值会经过灰带（发灰的根因），
+   深色极光改由上面的 opacity 交叉淡入承担。
+   表面 220ms / 文字 170ms：文字先稳定，避免出现"浅字压浅底"的可感知中间态。
+   不做错峰 stagger——主题切换是全局单次动作，错峰会有"组件分批变色"的拼贴感。
+   分段控件的 .tab 不列入此白名单：它有自己更快的 160ms 交互过渡（见 18.3）。 */
+:root {
+  --theme-dur-surface: 220ms;
+  --theme-dur-text: 170ms;
+  --theme-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+body,
+.auth-shell,
+.auth-main,
+.auth-card,
+.input,
+.alert,
+.check .box,
+.d-footer,
+.linklike,
+.auth-links,
+.auth-links a,
+.auth-aside,
+.auth-aside p,
+.auth-aside h1,
+.auth-points li,
+.auth-aside-eyebrow,
+.auth-aside-footer,
+.auth-brand .name,
+.auth-mobile-brand {
+  transition:
+    background-color var(--theme-dur-surface) var(--theme-ease),
+    border-color var(--theme-dur-surface) var(--theme-ease),
+    color var(--theme-dur-text) var(--theme-ease),
+    box-shadow var(--theme-dur-surface) var(--theme-ease);
+}
+/* Adminator 的 .btn 是 transition:all 180ms ease，会与分属性过渡冲突，显式覆盖 */
+.btn {
+  transition:
+    background-color var(--theme-dur-surface) var(--theme-ease),
+    border-color var(--theme-dur-surface) var(--theme-ease),
+    color var(--theme-dur-text) var(--theme-ease),
+    box-shadow var(--theme-dur-surface) var(--theme-ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  body,
+  .auth-shell,
+  .auth-main,
+  .auth-card,
+  .input,
+  .btn,
+  .alert,
+  .check .box,
+  .d-footer,
+  .linklike,
+  .auth-links,
+  .auth-links a,
+  .auth-aside,
+  .auth-aside p,
+  .auth-aside h1,
+  .auth-points li,
+  .auth-aside-eyebrow,
+  .auth-aside-footer,
+  .auth-brand .name,
+  .auth-mobile-brand { transition: none; }
+  .auth-aside::before { transition: none; }
+  .auth-aside::after { animation: none; }
+}
+
+/* ---- 18.7 页脚备案槽位 ----
+   部署后此处填 ICP 与公安备案号。未配置时用不可见占位 + min-height 保持行高稳定，
+   避免页脚在"有无备案"两种状态下高度跳变；不显示任何假备案号。
+   不用 :empty 判断——Jinja 的 {% if %} 会留下空白文本节点，:empty 判定失败。 */
+.footer-legal { min-height: 18px; }
+.footer-legal-slot { display: inline-block; width: 1px; height: 13px; }
+
+/* ---- 18.8 顶栏主题开关靠右 ----
+   .auth-main-top 是 space-between；桌面下移动端品牌位被隐藏后只剩主题开关一个 flex 项，
+   会被推到最左。改为 flex-end，并让移动端品牌位用 margin-right:auto 占住左侧。 */
+.auth-main-top { justify-content: flex-end; }
+.auth-mobile-brand { margin-right: auto; }

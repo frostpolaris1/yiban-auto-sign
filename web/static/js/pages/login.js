@@ -27,8 +27,10 @@
     var regTab = $("tab-register");
     if (m === "register" && regTab && regTab.disabled) return;
     mode = m;
-    $("login-form").hidden = m !== "login";
-    $("register-form").hidden = m !== "register";
+    // 整组显隐（表单 + 该模式下的切换提示）：只切表单会让另一个模式的提示残留，
+    // 出现「表单已隐藏、提示还在」的双提示。
+    $("login-pane").hidden = m !== "login";
+    $("register-pane").hidden = m !== "register";
     var titles = { login: ["登录", "使用注册邮箱进入签到管理面板。"],
                    register: ["注册", "创建账号后即可添加并管理易班签到。"] };
     $("auth-title").textContent = titles[m][0];
@@ -56,6 +58,11 @@
         rt.disabled = true;
         rt.title = "注册已暂停";
       }
+      // 表单下方的「创建账号」提示同样要禁用，否则用户会被引导到打不开的注册表单
+      Array.prototype.forEach.call(
+        document.querySelectorAll('[data-auth-switch="register"]'),
+        function (b) { b.disabled = true; b.title = "注册已暂停"; }
+      );
       var hint = $("register-paused-hint");
       if (hint) hint.hidden = false;
     }).catch(function () { /* 状态获取失败不阻断登录页；后端注册 API 仍会拦截 */ });
@@ -122,6 +129,11 @@
   /* ---------------- tab 点击绑定 ---------------- */
   $("tab-login").addEventListener("click", function () { switchMode("login"); });
   $("tab-register").addEventListener("click", function () { switchMode("register"); });
+  // 表单下方的切换提示（《创建账号》/《直接登录》）走同一 switchMode，
+  // 但用独立属性 data-auth-switch 标记：它们不是 role=tab，不参与 tab 的选中态切换。
+  Array.prototype.forEach.call(document.querySelectorAll("[data-auth-switch]"), function (btn) {
+    btn.addEventListener("click", function () { switchMode(btn.getAttribute("data-auth-switch")); });
+  });
 
   /* ---------------- 登录 ---------------- */
   $("login-form").addEventListener("submit", function (e) {
