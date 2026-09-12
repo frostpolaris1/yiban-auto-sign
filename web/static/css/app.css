@@ -1769,7 +1769,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   margin-top: 0;
   transition: grid-template-rows 220ms var(--ease-out-strong), margin-top 220ms var(--ease-out-strong);
 }
-body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
+.collapse-body.is-open { margin-top: 16px; }
 /* 折叠卡的面板头不再自带下边距（间距交给上面那条动画边距） */
 #time-pref-card > .panel-head { margin-bottom: 0; }
 .collapse-body > .collapse-inner { overflow: clip; min-height: 0; min-width: 0; visibility: visible; }
@@ -2128,10 +2128,33 @@ body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
 
 .acct-pending-tip { margin: 0 0 20px; }
 
-/* 5 张 KPI：显式五列并给出 2/1 列兜底（Adminator 的 .kpi-grid 默认四列） */
-.kpi-grid--5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-@media (max-width: 1200px) { .kpi-grid--5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 720px) { .kpi-grid--5 { grid-template-columns: 1fr; } }
+/* 页头：本页为「文字块 + 右侧主操作」的 flex 行（全局默认是块级）。仅本页生效。 */
+body[data-page="accounts"] .page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+body[data-page="accounts"] .page-head-text { min-width: 0; }
+body[data-page="accounts"] .page-head > .btn { flex-shrink: 0; }
+
+/* 组头折叠：箭头绝对定位在组头行右上角，故行内留出右侧空间、避免与搜索框重叠。
+   ≤720 组头换行时箭头仍锚在第一行右上角（绝对定位相对 .panel-head-row）。 */
+body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
+.acct-group-head .panel-head-row { position: relative; padding-right: 44px; }
+.acct-collapse { position: absolute; top: 0; right: 0; }
+.acct-collapse .collapse-arrow svg { width: 18px; height: 18px; }
+
+/* KPI 4 张：Adminator 原生 4 列、≤1200 两列；仅本页在 ≤720 覆盖为两列
+   （原生 ≤720 落 1 列，会把 4 张卡摊成 4 屏高）。作用域限定 accounts，不影响 dashboard。 */
+@media (max-width: 720px) {
+  body[data-page="accounts"] .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 窄屏：文字块独占一行，主操作按钮落到第二行右对齐（保持"右上角主操作"的语义，
+     不做整行 —— 整行会与下方 KPI 争夺视觉重心）。 */
+  body[data-page="accounts"] .page-head-text { flex: 1 1 100%; }
+  body[data-page="accounts"] .page-head > .btn { margin-left: auto; }
+}
 
 .acct-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
 
@@ -2189,23 +2212,69 @@ body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
 .acct-check { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; }
 .acct-cell-state { width: 44px; }
 .acct-cell-idx { width: 44px; color: var(--t-muted); }
-.acct-cell-name { font-weight: 600; color: var(--t-base); white-space: nowrap; }
-.acct-cell-phone { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.acct-cell-name { font-weight: 600; color: var(--t-base); white-space: nowrap; min-width: 150px; }
+.acct-cell-phone { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; min-width: 190px; }
 .acct-cell-owner,
 .acct-cell-model,
 .acct-cell-pref,
 .acct-cell-time { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+.acct-cell-owner { min-width: 150px; }
 .acct-cell-actions {
   position: sticky;
   right: 0;
   z-index: 1;
   background: var(--bg-card);
   white-space: nowrap;
+  /* width:1% + nowrap：列宽按内容收缩，富余宽度让给文本列，避免操作列右侧留大片空白 */
+  width: 1%;
 }
 .acct-table thead .acct-cell-actions { z-index: 3; }
 .acct-row-actions { display: flex; align-items: center; gap: 4px; }
 .acct-row-actions .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
 .acct-row-actions .btn--sm { min-height: 30px; }
+
+/* 窄屏行操作收纳为图标下拉：复用 core.js 的 .dd-wrap/.dd-menu 机制
+   （触发器 data-dropdown、菜单项 .dd-menu-item、Esc/点外部/点菜单项关闭都由 core.js 处理）。 */
+.acct-row-menu { display: inline-block; }
+.acct-row-menu .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
+.acct-row-menu .dd-menu { min-width: 168px; width: auto; right: 0; }
+/* 浮动态：菜单打开时被 portal 到 document.body（脱离 .dd-wrap 与所有裁剪祖先：
+   .table-scroll 的 overflow-x:auto 会让 overflow-y 也变 auto、.collapse-inner 是 overflow:clip，
+   且祖先的 transform 会污染 fixed 包含块——故挂到无 transform 的 body 上），用 fixed 定位。
+   z-index 50 介于吸顶表头(3)与模态(1000)/Toast(1200)之间；显隐由 .is-shown 自控
+   （移出 .dd-wrap 后 `.dd-wrap.is-open .dd-menu` 不再命中）。 */
+.acct-menu--floating {
+  position: fixed;
+  z-index: 50;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  min-width: 168px;
+  width: auto;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 140ms var(--ease-in-strong), transform 140ms var(--ease-in-strong), visibility 140ms;
+}
+.acct-menu--floating.is-shown {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong), visibility 160ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .acct-menu--floating,
+  .acct-menu--floating.is-shown { transition: none; }
+}
+.acct-row-menu .dd-menu-item {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 
 /* 轮询静默刷新：慢请求只做整体淡出（内容不清空，避免高度与位置跳变） */
 #accounts-root { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
@@ -2216,6 +2285,9 @@ body[data-page="user"] .collapse-body.is-open { margin-top: 16px; }
 @media (max-width: 1100px) { .acct-col-lg { display: none; } }
 @media (max-width: 900px) { .acct-col-md { display: none; } }
 @media (max-width: 720px) {
+  /* 竖屏：标题与工具行分两行，工具行（已 width:100%）落到第二行。
+     只在本页放开换行——桌面端「标题左、控件右同行」是既定规范，不可全局 wrap。 */
+  body[data-page="accounts"] .panel-head-row { flex-wrap: wrap; }
   .acct-search .input { min-width: 0; width: 100%; }
   .acct-tools { width: 100%; }
   .acct-tools .acct-search { flex: 1 1 100%; }
