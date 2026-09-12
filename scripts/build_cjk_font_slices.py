@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""重建 Noto Sans SC 自托管分片：上游完整字体 + 按字频重切片。
+"""重建 Noto Sans SC 自托管分片：npm OFL 上游字体 + 按字频重切片。
 
 背景与动机
 ----------
@@ -11,7 +11,28 @@ Google Fonts CSS API v2 下发的 Noto Sans SC 分片存在两个已实测问题
 2. 该网页子集本身不完整，CJK 基本区仅覆盖约 12,258 / 20,992，标点/全角/
    扩展 A 亦有缺口，未覆盖字符会回退到系统字体。
 
-本脚本改用上游**完整**可变字体 `NotoSansSC[wght].ttf`，实例化 400 / 700 两个字重，
+`@fontsource(-variable)/noto-sans-sc@5.3.0` 只是同一套 Google 网页子集的再分发：
+实测其 101 个分片并集仅覆盖 CJK 基本区 12,242 / 20,992、标点 32 / 64、
+全角 149 / 240，以其为上游会**降级覆盖**，故不采用。
+
+npm `noto-sans-sc@37.0.0`（14 个版本、2019–2024 持续发布，看似更成熟）经实测
+同样是 Google Fonts CSS API v2 网页子集的再分发：每字重 101 个编号 woff2，
+其 `scripts/download.py` 直接从 `fonts.googleapis.com/css2` 抓取；包内**没有**
+完整字体文件。其实测分片并集与 `@fontsource` 完全一致（基本区 12,242 / 20,992、
+标点 32 / 64、全角 149 / 240、扩展 A 27），采用即覆盖降级，故不采用。
+其它实测候选（`@betteroffice/fonts-cjk@0.1.0` 仅含 Regular 且为 0.1.0 双版本同日出包、
+`@electron-fonts/noto-sans-sc@1.2.0` 为 electron 注入用途且仅 2 个版本）均不更成熟，
+详见 `docs/refactor/16-font-source-mature.md`。
+
+本脚本改用 **npm 上的完整 Noto Sans SC 静态字体**（OFL-1.1）：
+`md2note-fonts@1.0.0` 的 `vfs_fonts.js` 内嵌 `NotoSansSC-Regular.otf`（400）与
+`NotoSansSC-Bold.otf`（700），均为完整 31,036 字形版本（基本区 20,976、
+扩展 A 6,582），与旧 `google/fonts` 可变字体同源同覆盖。
+下载与切片**分离**：`--fetch` 只取回并校验字体文件；切片对本地文件
+（`--weight-font W=路径`）或可变字体（`--font`，走 instancer）离线执行。
+上游为 CFF/OTF 时，切片前先用 cu2qu 转成 glyf/TTF——同覆盖下 woff2 对 CFF 的
+压缩明显差于 glyf（本项目实测单页载荷高约 35%）。
+
 再按「真实字频 + 规范字表」重切片：
 
 * 覆盖集合 = CJK 基本区 U+4E00–U+9FFF ∪ CJK 标点 U+3000–U+303F ∪
@@ -25,7 +46,16 @@ Google Fonts CSS API v2 下发的 Noto Sans SC 分片存在两个已实测问题
 
 用法
 ----
-    python scripts/build_cjk_font_slices.py <上游字体.ttf> <输出目录> [选项]
+    # 1) 取上游字体（联网，写入本地目录，逐文件 SHA-256 校验）
+    python scripts/build_cjk_font_slices.py --fetch build-fonts
+
+    # 2) 离线切片（整目录原子替换）
+    python scripts/build_cjk_font_slices.py web/static/vendor/fonts/notosanssc \
+        --weight-font 400=build-fonts/NotoSansSC-Regular.otf \
+        --weight-font 700=build-fonts/NotoSansSC-Bold.otf --strict-source
+
+    # 兼容路径：从可变字体实例化各字重
+    python scripts/build_cjk_font_slices.py <输出目录> --font "NotoSansSC[wght].ttf"
 
 构建期依赖（**不写入** requirements.txt / requirements.lock，仅构建机安装）：
 
@@ -33,8 +63,14 @@ Google Fonts CSS API v2 下发的 Noto Sans SC 分片存在两个已实测问题
 
 数据来源与许可
 --------------
-* 上游字体：`google/fonts` 仓库 `ofl/notosanssc/NotoSansSC[wght].ttf`，
-  commit 2894aab31764f10f29c421bdfd2340d3b382d384（SIL OFL-1.1）。
+* 上游包：`md2note-fonts@1.0.0`（npm，`license: OFL-1.1`），tarball
+  `https://registry.npmmirror.com/md2note-fonts/-/md2note-fonts-1.0.0.tgz`
+  （实测可达；备选 `mirrors.cloud.tencent.com/npm/...`、`cdn.jsdelivr.net/npm/...`、
+  `unpkg.com/...`）。包内 `vfs_fonts.js` 内嵌 Noto Sans SC 完整静态字重
+  `NotoSansSC-Regular.otf`（400）/ `NotoSansSC-Bold.otf`（700），SIL OFL-1.1。
+  固定版本、URL 形态与逐文件 SHA-256 见 `UPSTREAM_*` 常量。
+  保留理由：本轮评估的 `noto-sans-sc@37.0.0` 等 npm 候选均为 Google 网页子集，
+  采用会降级覆盖；完整字体的候选包成熟度不优于本包，故来源保持不变。
 * `FREQ_ORDER`：hanziDB.csv（github.com/ruddfawcett/hanziDB.csv，MIT License），
   取 frequency_rank 升序去重后的汉字序列。固化于本文件，运行时不需要网络。
 * `STD_ORDER`：《通用规范汉字表》（GF 0013-2013，国务院 2013 年发布）一/二/三级
@@ -44,25 +80,130 @@ Google Fonts CSS API v2 下发的 Noto Sans SC 分片存在两个已实测问题
 from __future__ import annotations
 
 import argparse
+import base64
 import glob
 import hashlib
+import io
 import os
+import re
 import shutil
 import sys
+import tarfile
 import tempfile
+import urllib.request
 
 try:
-    from fontTools.ttLib import TTFont
+    from fontTools.ttLib import TTFont, newTable
     from fontTools.varLib import instancer
     from fontTools import subset
 except ImportError:  # pragma: no cover
     sys.exit("缺少构建依赖：pip install fonttools brotli")
 
-# 上游来源（供人工核对；默认仅告警不阻断）
-UPSTREAM_REPO = "https://github.com/google/fonts"
-UPSTREAM_COMMIT = "2894aab31764f10f29c421bdfd2340d3b382d384"
-UPSTREAM_PATH = "ofl/notosanssc/NotoSansSC[wght].ttf"
-UPSTREAM_SHA256 = "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"
+# 上游来源（npm OFL，固定版本 + 逐文件 SHA-256；供复现与 --strict-source 校验）
+UPSTREAM_PKG = "md2note-fonts@1.0.0"
+UPSTREAM_TARBALL_URLS = (
+    "https://registry.npmmirror.com/md2note-fonts/-/md2note-fonts-1.0.0.tgz",
+    "https://mirrors.cloud.tencent.com/npm/md2note-fonts/-/md2note-fonts-1.0.0.tgz",
+)
+UPSTREAM_RAW_URLS = (
+    "https://cdn.jsdelivr.net/npm/md2note-fonts@1.0.0/vfs_fonts.js",
+    "https://unpkg.com/md2note-fonts@1.0.0/vfs_fonts.js",
+)
+UPSTREAM_TARBALL_SHA256 = "5bc75738d0bfac431a9bd0a202e97466211664e9235b5244e4095effb34d91c8"
+UPSTREAM_VFS_NAME = "vfs_fonts.js"
+UPSTREAM_VFS_SHA256 = "c1a9afc628ed138e1830032b0974a52dd8c0ebe3bf6196f89918830d631a53f3"
+#: 固定写入 head.created / head.modified，消除构建时钟差异 → woff2 字节级可复现。
+#: 取值来自上游 `NotoSansSC-Regular.otf` 的 head 时间戳。
+HEAD_TIMESTAMP = 3702559316
+# 字重 -> (vfs_fonts.js 内文件名, SHA-256, 字节数)
+UPSTREAM_WEIGHT_FILES = {
+    400: ("NotoSansSC-Regular.otf",
+          "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9", 8331336),
+    700: ("NotoSansSC-Bold.otf",
+          "c6cb5a93abaa9edc8ee7463b7ebb7f42d618d40e6ed2f7a5371c97b0b64767c0", 8543168),
+}
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _download(urls, timeout=120):
+    """依次尝试若干 URL，返回第一个成功下载的字节内容。"""
+    last = None
+    for url in urls:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "build-cjk-font-slices/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+            print("  已下载 %s（%d 字节）" % (url, len(data)))
+            return data
+        except Exception as exc:  # noqa: BLE001 - 逐个回退，最后统一报错
+            last = exc
+            print("  下载失败 %s：%s" % (url, exc))
+    raise SystemExit("错误：上游 URL 均不可达（最后错误：%s）" % last)
+
+
+def _extract_vfs(tarball):
+    with tarfile.open(fileobj=io.BytesIO(tarball)) as tar:
+        for member in tar.getmembers():
+            if member.isfile() and member.name.endswith("/" + UPSTREAM_VFS_NAME):
+                return tar.extractfile(member).read()
+    raise SystemExit("错误：tarball 内未找到 %s" % UPSTREAM_VFS_NAME)
+
+
+def fetch_upstream(dest_dir):
+    """从 npm 上游取回完整 Noto Sans SC 各字重（联网步骤，与切片分离）。
+
+    优先取 tarball 并校验 SHA-256；失败则回退裸文件 URL。随后从
+    `vfs_fonts.js`（pdfmake VFS，base64 内嵌字体）解出各字重 OTF，
+    逐文件核对 SHA-256 / 字节数后写入 dest_dir。
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    print("上游包：%s" % UPSTREAM_PKG)
+    vfs = None
+    try:
+        tar_data = _download(UPSTREAM_TARBALL_URLS)
+        got = sha256_bytes(tar_data)
+        if got == UPSTREAM_TARBALL_SHA256:
+            vfs = _extract_vfs(tar_data)
+        else:
+            print("  警告：tarball SHA-256=%s 与记录不一致，改用裸文件源" % got)
+    except SystemExit as exc:
+        print("  警告：%s" % exc)
+    if vfs is None:
+        vfs = _download(UPSTREAM_RAW_URLS)
+    got = sha256_bytes(vfs)
+    if got != UPSTREAM_VFS_SHA256:
+        sys.exit("错误：%s SHA-256=%s 与记录 %s 不一致"
+                 % (UPSTREAM_VFS_NAME, got, UPSTREAM_VFS_SHA256))
+    print("  %s SHA-256 校验通过（%d 字节）" % (UPSTREAM_VFS_NAME, len(vfs)))
+
+    data = vfs.decode("utf-8")
+    for weight, (name, sha, size) in sorted(UPSTREAM_WEIGHT_FILES.items()):
+        m = re.search(r'"%s"\s*:\s*"([A-Za-z0-9+/=]+)"' % re.escape(name), data)
+        if not m:
+            sys.exit("错误：%s 内未找到 %s" % (UPSTREAM_VFS_NAME, name))
+        raw = base64.b64decode(m.group(1))
+        got = sha256_bytes(raw)
+        if got != sha or len(raw) != size:
+            sys.exit("错误：%s 实为 SHA-256=%s/%d 字节，与记录 %s/%d 不一致"
+                     % (name, got, len(raw), sha, size))
+        out = os.path.join(dest_dir, name)
+        with open(out, "wb") as fh:
+            fh.write(raw)
+        print("  %s -> %s（%d 字节，SHA-256 校验通过）" % (name, out, size))
+    print("完成：本地字体目录 %s" % dest_dir)
 
 # 覆盖区（闭区间）
 BLOCKS = {
@@ -341,6 +482,66 @@ def instantiate_static(font_path, weight, out_path):
     font.close()
 
 
+def _has_cff(font_path):
+    font = TTFont(font_path, lazy=True)
+    try:
+        return "CFF " in font or "CFF2" in font
+    finally:
+        font.close()
+
+
+def otf_to_ttf(src_path, out_path, max_err=1.0):
+    """CFF/OTF → glyf/TTF：用 cu2qu 把三次曲线转为二次曲线。
+
+    同形同覆盖下，woff2 对 CFF 的压缩明显差于 glyf（本项目实测单页载荷高约 35%），
+    故切片前统一转为 glyf。转换只影响曲线的数学表达（cu2qu 近似），视觉一致。
+    """
+    from fontTools.pens.cu2quPen import Cu2QuPen
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    font = TTFont(src_path)
+    glyph_order = font.getGlyphOrder()
+    glyph_set = font.getGlyphSet()
+    glyf = newTable("glyf")
+    glyf.glyphOrder = glyph_order
+    glyf.glyphs = {}
+    for name in glyph_order:
+        pen = TTGlyphPen(glyph_set)
+        glyph_set[name].draw(Cu2QuPen(pen, max_err, reverse_direction=True))
+        glyf[name] = pen.glyph()
+    font["glyf"] = glyf
+    font["loca"] = newTable("loca")
+    for name in glyph_order:
+        glyf[name].recalcBounds(glyf)
+    maxp = font["maxp"]
+    maxp.tableVersion = 0x00010000
+    maxp.recalc(font)
+    maxp.maxZones = 1
+    maxp.maxTwilightPoints = 0
+    maxp.maxStorage = 0
+    maxp.maxFunctionDefs = 0
+    maxp.maxInstructionDefs = 0
+    maxp.maxStackElements = 0
+    maxp.maxSizeOfInstructions = 0
+    font["head"].indexToLocFormat = 1
+    font["head"].glyphDataFormat = 0
+    font["post"].formatType = 3.0
+    del font["CFF "]
+    font.sfntVersion = "\x00\x01\x00\x00"
+    font.save(out_path)
+    font.close()
+
+
+def ensure_glyf_source(path, workdir, weight, max_err):
+    """若为 CFF/OTF 源则转成 glyf/TTF（切片前统一轮廓类型）。"""
+    if not _has_cff(path):
+        return path
+    out = os.path.join(workdir, "NotoSansSC-%d-glyf.ttf" % weight)
+    print("  CFF/OTF 源转 glyf/TTF（cu2qu max_err=%s）…" % max_err)
+    otf_to_ttf(path, out, max_err)
+    return out
+
+
 def subset_to_woff2(src_path, codepoints, out_path):
     """用 pyftsubset 产出 woff2；CJK 正文不需要 OpenType 布局特性。"""
     opts = subset.Options()
@@ -353,6 +554,9 @@ def subset_to_woff2(src_path, codepoints, out_path):
         s = subset.Subsetter(options=opts)
         s.populate(unicodes=codepoints)
         s.subset(font)
+        if "head" in font:  # 固定时间戳，保证产物字节级可复现
+            font["head"].created = HEAD_TIMESTAMP
+            font["head"].modified = HEAD_TIMESTAMP
         subset.save_font(font, out_path, opts)
     finally:
         font.close()
@@ -386,10 +590,46 @@ def write_css(css_path, by_weight):
         fh.write("\n".join(parts))
 
 
+def parse_weight_sources(items):
+    """解析 --weight-font 的 W=PATH 列表。"""
+    out = {}
+    for item in items:
+        if "=" not in item:
+            sys.exit("错误：--weight-font 需要 W=PATH 形式：%s" % item)
+        weight, path = item.split("=", 1)
+        out[int(weight)] = path
+    return out
+
+
+def verify_weight_source(weight, path, strict):
+    """校验静态字重源是否命中记录的上游文件与 SHA-256。"""
+    name = os.path.basename(path)
+    rec = UPSTREAM_WEIGHT_FILES.get(weight)
+    digest = sha256_file(path)
+    if rec and name == rec[0]:
+        if digest == rec[1]:
+            print("字重 %d 源 SHA-256 校验通过：%s" % (weight, name))
+            return
+        msg = ("字重 %d 源 %s SHA-256=%s 与记录 %s 不一致"
+               % (weight, name, digest, rec[1]))
+        if strict:
+            sys.exit("错误：" + msg)
+        print("警告：" + msg)
+        return
+    if strict:
+        recorded = ", ".join(v[0] for v in UPSTREAM_WEIGHT_FILES.values())
+        sys.exit("错误：字重 %d 源 %s 不在上游记录表（%s）中" % (weight, name, recorded))
+    print("警告：字重 %d 源 %s 未经上游哈希校验（--strict-source 可强制）" % (weight, name))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("font", help="上游完整字体路径（NotoSansSC[wght].ttf 或静态 TTF/OTF）")
-    ap.add_argument("outdir", help="输出目录（整目录原子替换）")
+    ap.add_argument("outdir", nargs="?", help="输出目录（整目录原子替换）")
+    ap.add_argument("--fetch", metavar="DIR",
+                    help="仅从 npm 上游取回各字重字体到 DIR 后退出（与切片分离）")
+    ap.add_argument("--font", help="完整可变字体路径（各字重由 instancer 实例化）")
+    ap.add_argument("--weight-font", action="append", default=[], metavar="W=PATH",
+                    help="各字重静态字体源，可重复（如 --weight-font 400=Regular.otf）")
     ap.add_argument("--weights", default="400,700", help="字重列表，默认 400,700")
     ap.add_argument("--project-glob", default="web/templates/**/*.html",
                     help="项目模板 glob（项目字频热区来源）")
@@ -399,29 +639,40 @@ def main(argv=None):
     ap.add_argument("--freq-top", type=int, default=3000,
                     help="hanziDB 频率序纳入高频区的字数，默认 3000")
     ap.add_argument("--css-name", default="notosanssc.css", help="产出 CSS 文件名")
+    ap.add_argument("--max-err", type=float, default=1.0,
+                    help="CFF→glyf 时 cu2qu 的最大近似误差（字体单位，默认 1.0）")
     ap.add_argument("--strict-source", action="store_true",
                     help="上游文件 SHA-256 不匹配则中止")
     args = ap.parse_args(argv)
 
-    weights = [int(w) for w in args.weights.split(",") if w.strip()]
+    if args.fetch:
+        fetch_upstream(args.fetch)
+        return 0
 
-    h = hashlib.sha256()
-    with open(args.font, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    src_sha = h.hexdigest()
-    if src_sha != UPSTREAM_SHA256:
-        msg = ("上游字体 SHA-256=%s 与脚本记录的 %s 不一致（可能换了版本）；"
-               "产物仍会生成，但请在报告/MANIFEST 中更新来源与哈希。"
-               % (src_sha, UPSTREAM_SHA256))
-        if args.strict_source:
-            sys.exit("错误：" + msg)
-        print("警告：" + msg)
+    if not args.outdir:
+        ap.error("需要输出目录（--fetch 模式除外）")
+    weights = [int(w) for w in args.weights.split(",") if w.strip()]
+    weight_sources = parse_weight_sources(args.weight_font)
+    if args.font and weight_sources:
+        ap.error("--font 与 --weight-font 不能同时使用")
+    if not args.font and not weight_sources:
+        ap.error("需要 --font（可变字体）或 --weight-font W=PATH（各字重静态字体）")
+    if weight_sources:
+        missing = [w for w in weights if w not in weight_sources]
+        if missing:
+            ap.error("缺少字重字体源：%s" % ", ".join(str(w) for w in missing))
+
+    for weight in weights:
+        if weight_sources:
+            verify_weight_source(weight, weight_sources[weight], args.strict_source)
+        else:
+            print("字重 %d：由 %s 实例化" % (weight, args.font))
 
     project_cps, project_files = read_project_codepoints(args.project_glob)
     print("项目模板：%d 个文件，%d 个不同码点" % (len(project_files), len(project_cps)))
 
-    font = TTFont(args.font, lazy=True)
+    cmap_source = args.font or weight_sources[weights[0]]
+    font = TTFont(cmap_source, lazy=True)
     cmap = set(font.getBestCmap())
     slices, groups, covered = build_slices(
         cmap, project_cps, args.hot_size, args.freq_size, args.rest_size, args.freq_top
@@ -444,8 +695,12 @@ def main(argv=None):
     by_weight = {}
     try:
         for weight in weights:
-            static = os.path.join(workdir, "NotoSansSC-%d.ttf" % weight)
-            instantiate_static(args.font, weight, static)
+            if weight_sources:
+                src = weight_sources[weight]
+            else:
+                src = os.path.join(workdir, "NotoSansSC-%d.ttf" % weight)
+                instantiate_static(args.font, weight, src)
+            static = ensure_glyf_source(src, workdir, weight, args.max_err)
             faces = []
             total = 0
             for idx, (_tag, cps) in enumerate(slices):

@@ -367,6 +367,86 @@
     });
   }
 
+  /* ---------- 口令策略（管理端与后端 web/app.py 同一口径） ---------- */
+  // 与后端 _PASSWORD_CLASS_PATTERNS / _PASSWORD_POLICY_HINT 逐字同序同串：判定语义是
+  // "命中类别数 >= PW_MIN_CLASSES 即过"（符号自成一类，不额外要求必须含符号）。
+  // tests/test_rekey_key_source.py 从 login.html / user.html 提取同名字面量与后端比对；
+  // 管理端调用点（settings/users/accounts）用的正是本文件的共享实现，口径不得漂移。
+  var PW_CLASS_PATTERNS = [/[A-Z]/, /[a-z]/, /\d/, /[^A-Za-z0-9]/];
+  var PW_MIN_LEN = 10, PW_MIN_CLASSES = 2;
+  var PW_POLICY_HINT = "至少 10 位，且包含大小写字母、数字、符号中的至少两类";
+  // 内置主管理员（.env）口令单独提档：12 位三类，与后端 _admin_password_policy_error 同口径
+  var PW_ADMIN_MIN_LEN = 12, PW_ADMIN_MIN_CLASSES = 3;
+  var PW_ADMIN_HINT = "至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类";
+  function passwordClasses(v) {
+    var s = String(v == null ? "" : v);
+    return PW_CLASS_PATTERNS.filter(function (re) { return re.test(s); }).length;
+  }
+  function passwordPolicyOk(v) {
+    var s = String(v == null ? "" : v);
+    return s.length >= PW_MIN_LEN && passwordClasses(s) >= PW_MIN_CLASSES;
+  }
+  function passwordPolicyOkAdmin(v) {
+    var s = String(v == null ? "" : v);
+    return s.length >= PW_ADMIN_MIN_LEN && passwordClasses(s) >= PW_ADMIN_MIN_CLASSES;
+  }
+
+  /* ---------- 密码模态（重置密码 / 高危操作二次确认共用） ---------- */
+  // 动态构建在 openModal 之上：新 MPA 外壳 layout_admin.html 不再 include
+  // partials/modals/password.html，沿用旧 DOM id（modal-password）会在真实页面 ReferenceError。
+  // set 模式走完整口令策略（长度 + 类别）；confirm 模式只验非空，当前口令由后端最终核对。
+  // 动态文案（邮箱等）只经 el 的 text 选项写入 textContent，无 innerHTML 注入面。
+  function openPasswordModal(desc, cb) { return openPwModal(desc, cb, "set"); }
+  function openConfirmPasswordModal(desc, cb) { return openPwModal(desc, cb, "confirm"); }
+  function openPwModal(desc, cb, mode) {
+    var isConfirm = mode === "confirm";
+    var inputId = "pm-pw-" + (++uidSeq);
+    var input = el("input", {
+      id: inputId, class: "input", type: "password",
+      autocomplete: isConfirm ? "current-password" : "new-password",
+      // placeholder 保持短句：手机端输入框内不换行，完整口径由可换行的 desc 承载
+      placeholder: isConfirm ? "输入当前管理员密码" : "设置新密码（至少 10 位）"
+    });
+    var err = el("div", { class: "field-error", hidden: true });
+    var field = el("div", { class: "field" });
+    field.appendChild(el("div", { class: "pm-confirm-text", text: desc || "" }));
+    field.appendChild(input);
+    field.appendChild(err);
+    function reject(msg) {
+      err.textContent = msg;
+      err.hidden = false;
+      input.classList.add("is-invalid");
+      input.focus();
+      return false; // 返回 false 阻止 openModal 关闭
+    }
+    function submit() {
+      var pw = input.value;
+      if (!pw) return reject("请输入密码");
+      // set 模式按完整策略校验，与后端 _password_policy_error 同口径，
+      // 避免"前端放行、提交后才 400"；confirm 模式只验非空。
+      if (!isConfirm && !passwordPolicyOk(pw)) return reject("密码" + PW_POLICY_HINT);
+      var fn = cb;
+      closeModal(pwHandle); // 先关本层再回调：回调常紧接着叠开第二个模态
+      if (fn) fn(pw);
+      return false; // 已手动关闭
+    }
+    var pwHandle = openModal({
+      title: isConfirm ? "安全确认" : "重置密码",
+      body: field,
+      onOpen: function () { input.focus(); },
+      actions: [
+        { label: "取消", variant: "ghost" },
+        { label: isConfirm ? "确认操作" : "确认重置", variant: "primary", onClick: submit }
+      ]
+    });
+    return pwHandle;
+  }
+  // 兼容退役 index.html 的 partials/modals/password.html 内联 onclick；新 MPA 页面不 include 该片段。
+  function closePasswordModal() {
+    var legacy = $("modal-password");
+    if (legacy) closeModal(legacy);
+  }
+
   /* ---------- 主题 ---------- */
   function currentTheme() { return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"; }
   function updateThemeIcons(theme) {
@@ -667,6 +747,20 @@
     closeModal: closeModal,
     confirmDialog: confirmDialog,
     promptDialog: promptDialog,
+    PW_CLASS_PATTERNS: PW_CLASS_PATTERNS,
+    PW_MIN_LEN: PW_MIN_LEN,
+    PW_MIN_CLASSES: PW_MIN_CLASSES,
+    PW_POLICY_HINT: PW_POLICY_HINT,
+    PW_ADMIN_MIN_LEN: PW_ADMIN_MIN_LEN,
+    PW_ADMIN_MIN_CLASSES: PW_ADMIN_MIN_CLASSES,
+    PW_ADMIN_HINT: PW_ADMIN_HINT,
+    passwordClasses: passwordClasses,
+    passwordPolicyOk: passwordPolicyOk,
+    passwordPolicyOkAdmin: passwordPolicyOkAdmin,
+    openPasswordModal: openPasswordModal,
+    openConfirmPasswordModal: openConfirmPasswordModal,
+    closePasswordModal: closePasswordModal,
+    openPwModal: openPwModal,
     toggleTheme: toggleTheme,
     applyTheme: applyTheme,
     currentTheme: currentTheme,
@@ -694,6 +788,21 @@
   window.closeModal = closeModal;
   window.confirmDialog = confirmDialog;
   window.promptDialog = promptDialog;
+  // 口令策略 / 密码模态的裸全局出口：classic 页面脚本（pages/*.js、shared-ui.js）按此名直呼
+  window.PW_CLASS_PATTERNS = PW_CLASS_PATTERNS;
+  window.PW_MIN_LEN = PW_MIN_LEN;
+  window.PW_MIN_CLASSES = PW_MIN_CLASSES;
+  window.PW_POLICY_HINT = PW_POLICY_HINT;
+  window.PW_ADMIN_MIN_LEN = PW_ADMIN_MIN_LEN;
+  window.PW_ADMIN_MIN_CLASSES = PW_ADMIN_MIN_CLASSES;
+  window.PW_ADMIN_HINT = PW_ADMIN_HINT;
+  window.passwordClasses = passwordClasses;
+  window.passwordPolicyOk = passwordPolicyOk;
+  window.passwordPolicyOkAdmin = passwordPolicyOkAdmin;
+  window.openPasswordModal = openPasswordModal;
+  window.openConfirmPasswordModal = openConfirmPasswordModal;
+  window.closePasswordModal = closePasswordModal;
+  window.openPwModal = openPwModal;
   window.toggleTheme = toggleTheme;
   window.toggleSidebar = toggleDrawer;
   window.switchTab = switchTab;
