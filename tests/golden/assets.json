@@ -30,6 +30,7 @@
     "script src=/static/js/components/my-accounts.js?v=*",
     "script src=/static/js/components/my-mail-notify.js?v=*",
     "script src=/static/js/components/change-password.js?v=*",
+    "script src=/static/js/components/my-accounts-page.js?v=*",
     "script src=/static/js/pages/user_accounts.js?v=*"
   ],
   "user_calendar": [

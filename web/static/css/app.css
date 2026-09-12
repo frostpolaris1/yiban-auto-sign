@@ -2778,7 +2778,11 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .tabs-scroll .tabs { margin-bottom: 18px; }
 .tabs-scroll .tab { white-space: nowrap; }
-/* 模板 .addon 只有 border-right（前缀形态）；尾缀单位去掉右边线、改在左侧画分隔 */
+/* 模板 .addon 只有 border-right（前缀形态）；尾缀单位去掉右边线、改在左侧画分隔。
+   同时必须给 addon 禁换行/禁压缩、并让 .input 可伸缩 —— 否则单位被挤成竖排
+   （实测「分钟」在 2 字宽里折成两行，「秒」单字也被压窄）。 */
+.input-group .addon { white-space: nowrap; flex-shrink: 0; }
+.input-group .input { flex: 1 1 auto; width: auto; min-width: 0; }
 .input-group .addon:last-child { border-right: 0; border-left: 1px solid var(--border); }
 
 /* ---- 27.5 SMTP 行内编辑（模板 .data-table） ---- */

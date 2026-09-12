@@ -355,6 +355,50 @@ class JsAssemblyGuardTest(unittest.TestCase):
                       "授权码列必须走 maskedCellInput（绝不回显）")
         self.assertIn("function clean(", src, "settings-mail.js 缺少打码值清洗函数 clean()")
 
+    # 组件导出的公开面：`YB.<name> = ...`（components/*.js）→ name 由哪个组件提供
+    _YB_EXPORT_RE = re.compile(r"\bYB\.([A-Za-z_$][\w$]*)\s*=")
+    # 调用点：`YB.<name>(...)` 或 `YB.<name>.prop(...)`（组件公开面多为 `YB.xxx.mount(...)`）
+    _YB_USE_RE = re.compile(r"\bYB\.([A-Za-z_$][\w$]*)\s*[.(]")
+
+    def _component_exports(self):
+        out = {}
+        for path in sorted(glob.glob(os.path.join(JS_DIR, "components", "*.js"))):
+            for m in self._YB_EXPORT_RE.finditer(_read(path)):
+                out.setdefault(m.group(1), os.path.basename(path))
+        return out
+
+    def test_page_scripts_load_the_components_they_use(self):
+        """页面脚本调用的 `YB.<组件>` 必须在同一页的脚本顺序里被引入。
+
+        漏引一个 `<script>` 的后果不是"某功能缺失"，而是页面脚本里
+        `YB.xxx.mount(...)` 首行就 TypeError —— **整页交互静默全死**、DOM 停在服务端骨架。
+        实测：`/user` 与 `/mine` 曾漏引 `components/my-accounts-page.js`，账号区既无空态
+        也无提交按钮，而既有守卫只查"引用的文件是否存在"、查不出"该引的没引"。
+        """
+        exports = self._component_exports()
+        problems = []
+        for tpl in _active_templates():
+            order = _effective_js_order(tpl)
+            loaded = {os.path.basename(r) for r in order}
+            for ref in order:
+                if not ref.startswith(("pages/", "components/")):
+                    continue
+                path = os.path.join(JS_DIR, ref.replace("/", os.sep))
+                if not os.path.isfile(path):
+                    continue  # 悬空引用由另一条守卫负责
+                for m in self._YB_USE_RE.finditer(_read(path)):
+                    owner = exports.get(m.group(1))
+                    if owner and owner not in loaded:
+                        problems.append(
+                            f"  {os.path.relpath(tpl, BASE)}: {ref} 调用 YB.{m.group(1)}，"
+                            f"但未引入 components/{owner}"
+                        )
+        if problems:
+            self.fail(
+                "页面脚本调用了未引入的共享组件 —— 会在首行 TypeError、整页交互静默全死：\n"
+                + "\n".join(sorted(set(problems)))
+            )
+
     def test_user_ops_batch_limit_matches_backend(self):
         """前端 LIMIT 必须与后端 BATCH_OP_LIMIT 同值（防两处上限漂移）。"""
         ops = _read(os.path.join(JS_DIR, "components", "user-ops.js"))
