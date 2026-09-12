@@ -1,10 +1,14 @@
 /* 系统设置页（管理端 /settings）行为编排。
 
-   依赖 core.js 与 components/{settings-schedule,settings-health,settings-notify,
-   settings-mail,settings-quota,settings-switches}.js。
+   依赖 core.js 与 components/{select-field,range-field,time-field,settings-schedule,
+   settings-health,settings-notify,settings-mail,settings-quota,settings-switches}.js。
 
    职责：身份判定（is_builtin_admin）→ 分区（模板 .tabs，切换由 core.js 承担）与
-   ?tab= 深链 → 拉取 GET /api/settings 回填各分区 → 公告读写 → 装配六个组件。
+   ?tab= 深链 → 拉取 GET /api/settings 回填各分区 → 公告读写 → 装配各组件。
+
+   **保存语义（本页唯一口径）**：每个分区/卡片的字段改动只标脏，由各自的保存按钮提交；
+   页面级只做两件事 —— 汇总脏分区、在"要离开这些改动"时问一句。带破坏性的按钮
+   （清空收件人 / 恢复默认调度 / 暂停签到）不属于表单值，保持即时执行 + 二次确认。
 
    字段级权限（逐字段复刻后端内联判定；UI 禁用不是安全边界，高危请求仍带 confirm_password）：
      · 任意管理员：周六/周日、account_verify / probe_*、公告
@@ -42,6 +46,149 @@
     if (box) box.hidden = true;
   }
 
+  /* ---------------- 公告（任意管理员） ---------------- */
+  var annBusy = false;
+  var ann = { text: "", dirty: false };
+  function annSetDirty(on) {
+    ann.dirty = !!on;
+    var btn = $("set-ann-save");
+    if (btn) btn.hidden = !on;
+    var badge = $("set-ann-dirty");
+    if (badge) badge.hidden = !on;
+  }
+  function annTip(text, bad) {
+    var tip = $("set-ann-tip");
+    if (!tip) return;
+    tip.textContent = text || "";
+    tip.className = bad ? "set-tip set-bad" : "set-tip";
+  }
+  function loadAnnouncement() {
+    return YB.api("GET", "/api/announcement").then(function (data) {
+      ann.text = (data && data.text) || "";
+      var input = $("set-announcement");
+      if (input) input.value = ann.text;
+      annSetDirty(false);
+      annTip("", false);
+    }).catch(function () { /* 公告读取失败不阻塞整页 */ });
+  }
+  // 返回 Promise<boolean>：true = 已提交（或本就无改动）；false = 失败。
+  function saveAnnouncement(text) {
+    if (annBusy) return Promise.resolve(false);
+    if (text === ann.text) {
+      annSetDirty(false);
+      YB.toast.info("没有需要保存的改动");
+      return Promise.resolve(true);
+    }
+    annBusy = true;
+    annTip("保存中…", false);
+    return YB.api("PUT", "/api/announcement", { text: text }).then(function (data) {
+      ann.text = text;
+      annSetDirty(false);
+      annTip((data && data.msg) || (text ? "公告已更新" : "公告已清除"), false);
+      return true;
+    }, function (e) {
+      annTip((e && e.message) || "保存失败，请稍后重试", true);
+      return false;
+    }).then(function (ok) { annBusy = false; return ok; });
+  }
+  function bindAnnouncement() {
+    var input = $("set-announcement");
+    if (input) {
+      // 后端禁换行：前端也拦住粘贴/输入的换行（避免提交后才 400）
+      input.addEventListener("input", function () {
+        var v = input.value.replace(/[\r\n\u2028\u2029]+/g, " ");
+        if (v !== input.value) input.value = v;
+        annSetDirty(v !== ann.text);
+      });
+    }
+    var save = $("set-ann-save");
+    if (save) save.addEventListener("click", function () {
+      saveAnnouncement((($("set-announcement") || {}).value || "").trim());
+    });
+    var clr = $("set-ann-clear");
+    if (clr) clr.addEventListener("click", function () {
+      YB.confirmDialog({
+        title: "清除公告",
+        body: "清除后所有页面（含登录页）顶部的公告条都会消失。确定继续？",
+        confirmText: "清除", danger: true
+      }).then(function (ok) {
+        if (!ok) return;
+        var input2 = $("set-announcement");
+        if (input2) input2.value = "";
+        saveAnnouncement("");
+      });
+    });
+  }
+
+  /* ---------------- 未保存改动的统一守卫 ----------------
+     各组件自报 isDirty()，页面只做汇总；切换分区、点站内链接离开时先问一句：
+     保存并继续 / 放弃修改 / 取消。关标签页与刷新走组件的 beforeunload 兜底。 */
+  function stores() {
+    return [
+      { name: "签到调度", get: function () { return YB.settingsSchedule; } },
+      { name: "全局公告", get: function () { return { isDirty: function () { return ann.dirty; }, save: function () { return saveAnnouncement((($("set-announcement") || {}).value || "").trim()); } }; } },
+      { name: "消息推送", get: function () { return YB.settingsNotify; } },
+      { name: "邮件通知", get: function () { return YB.settingsMail; } },
+      { name: "容量配额", get: function () { return YB.settingsQuota; } },
+      { name: "健康与探针", get: function () { return YB.settingsHealth; } }
+    ];
+  }
+  function dirtyStores() {
+    return stores().filter(function (s) {
+      var api = s.get();
+      return !!(api && api.isDirty && api.isDirty());
+    });
+  }
+  function openUnsavedDialog(names) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      function pick(v) { if (!settled) { settled = true; resolve(v); } }
+      var body = YB.el("div", { class: "pm-confirm-text" });
+      body.appendChild(YB.el("p", { text: "以下分区有尚未保存的修改：" + names.join("、") + "。" }));
+      body.appendChild(YB.el("p", { text: "「保存并继续」会先提交这些改动；「放弃修改」会还原为服务器上的当前值。" }));
+      YB.openModal({
+        title: "有未保存的修改",
+        body: body,
+        onClose: function () { pick("cancel"); },
+        actions: [
+          { label: "取消", variant: "ghost", onClick: function () { pick("cancel"); } },
+          { label: "放弃修改", variant: "danger", onClick: function () { pick("discard"); } },
+          { label: "保存并继续", variant: "primary", onClick: function () { pick("save"); } }
+        ]
+      });
+    });
+  }
+  // 依次提交每个脏分区；任一取消/失败即中止（已提交的保持已提交，未提交的保留脏状态）
+  function saveDirty(list) {
+    return list.reduce(function (p, s) {
+      return p.then(function (ok) {
+        if (!ok) return false;
+        var api = s.get();
+        if (!api || !api.save) return true;
+        return api.save();
+      });
+    }, Promise.resolve(true));
+  }
+  // 放弃修改 = 重新拉一遍服务端值覆盖本地（比重放每个组件的回滚逻辑更不容易漏）
+  function reloadAll() {
+    return Promise.all([
+      YB.api("GET", "/api/settings").then(function (data) { applySettings(data); }),
+      loadAnnouncement(),
+      state.isMaster ? YB.settingsNotify.load() : Promise.resolve(),
+      state.isMaster ? YB.settingsMail.load() : Promise.resolve()
+    ]).catch(function () {});
+  }
+
+  function guardThen(run) {
+    var list = dirtyStores();
+    if (!list.length) { run(); return; }
+    openUnsavedDialog(list.map(function (s) { return s.name; })).then(function (choice) {
+      if (choice === "cancel") return;
+      if (choice === "discard") { reloadAll().then(run); return; }
+      saveDirty(list).then(function (ok) { if (ok) run(); });
+    });
+  }
+
   /* ---------------- 分区与深链 ?tab= ---------------- */
   function tabLinks() {
     return [].slice.call(document.querySelectorAll("[data-tab-group] .tab[data-tab-target]"));
@@ -65,7 +212,7 @@
   function initTabs() {
     tabLinks().forEach(function (t) {
       t.addEventListener("click", function () {
-        selectTab(t.getAttribute("data-tab-target"), true);
+        guardThen(function () { selectTab(t.getAttribute("data-tab-target"), true); });
       });
     });
     var want = null;
@@ -73,55 +220,13 @@
     if (want && validTab(want)) selectTab(want, false);
   }
 
-  /* ---------------- 公告（任意管理员） ---------------- */
-  var annBusy = false;
-  function loadAnnouncement() {
-    return YB.api("GET", "/api/announcement").then(function (data) {
-      var input = $("set-announcement");
-      if (input) input.value = (data && data.text) || "";
-    }).catch(function () { /* 公告读取失败不阻塞整页 */ });
-  }
-  function saveAnnouncement(text) {
-    if (annBusy) return;
-    annBusy = true;
-    var tip = $("set-ann-tip");
-    if (tip) { tip.textContent = "保存中…"; tip.className = "set-tip"; }
-    YB.api("PUT", "/api/announcement", { text: text }).then(function (data) {
-      if (tip) tip.textContent = (data && data.msg) || (text ? "公告已更新" : "公告已清除");
-    }).catch(function (e) {
-      if (tip) { tip.textContent = (e && e.message) || "保存失败，请稍后重试"; tip.className = "set-tip set-bad"; }
-    }).then(function () { annBusy = false; });
-  }
-  function bindAnnouncement() {
-    var input = $("set-announcement");
-    if (input) {
-      // 后端禁换行：前端也拦住粘贴/输入的换行（避免提交后才 400）
-      input.addEventListener("input", function () {
-        var v = input.value.replace(/[\r\n\u2028\u2029]+/g, " ");
-        if (v !== input.value) input.value = v;
-      });
-    }
-    var save = $("set-ann-save");
-    if (save) save.addEventListener("click", function () {
-      saveAnnouncement((($("set-announcement") || {}).value || "").trim());
-    });
-    var clr = $("set-ann-clear");
-    if (clr) clr.addEventListener("click", function () {
-      var input2 = $("set-announcement");
-      if (input2) input2.value = "";
-      saveAnnouncement("");
-    });
-  }
-
   /* ---------------- 未保存改动的站内离场守卫 ---------------- */
-  // 有未保存的调度改动时，点侧边栏/面包屑等站内链接先弹**项目自己的**确认框。
+  // 有未保存改动时，点侧边栏/面包屑等站内链接先弹**项目自己的**确认框（三分支）。
   // 不能只靠浏览器原生 beforeunload：部分内嵌浏览器不渲染该原生弹窗，表现为
   // 「点了链接没反应、也没有任何提示」。原生守卫仍在 settings-schedule.js 里
   // 作为关标签页/刷新的兜底；用户确认后由 markLeaving() 放行，避免二次拦截。
   function bindLeaveGuard() {
     document.addEventListener("click", function (e) {
-      var sched = YB.settingsSchedule;
-      if (!sched || !sched.isDirty || !sched.isDirty()) return;
       var t = e.target;
       var a = t && t.closest ? t.closest("a[href]") : null;
       if (!a) return;
@@ -129,15 +234,11 @@
       if (!raw || raw.charAt(0) === "#") return;                    // 分区 tab / 页内锚点不拦
       if (a.target === "_blank" || a.hasAttribute("download")) return;
       if (/^(mailto:|tel:|javascript:)/i.test(raw)) return;
+      if (!dirtyStores().length) return;
       e.preventDefault();
       e.stopPropagation();
-      YB.confirmDialog({
-        title: "有未保存的修改",
-        body: "离开将丢失未保存的调度改动。确定离开吗？",
-        confirmText: "离开", danger: true
-      }).then(function (ok) {
-        if (!ok) return;
-        sched.markLeaving();
+      guardThen(function () {
+        if (YB.settingsSchedule && YB.settingsSchedule.markLeaving) YB.settingsSchedule.markLeaving();
         location.href = a.href;                                     // a.href 已是绝对地址
       });
     }, true);
@@ -194,7 +295,10 @@
       var panel = document.querySelector('[data-tab-group] .tab-panel[data-tab-id="switches"]');
       if (panel) panel.hidden = !state.isMaster;
 
-      if (YB.timeField) YB.timeField.mount();   // 时/分 select 初始化（须在组件读写之前）
+      // 自研控件必须先建出可见体：各组件随后要按权限禁用它们（隐藏 input 上置 disabled 不可见）
+      if (YB.selectField) YB.selectField.mount();
+      if (YB.rangeField) YB.rangeField.mount();
+      if (YB.timeField) YB.timeField.mount();
       YB.settingsSchedule.mount({
         isMaster: state.isMaster,
         capacity: function () { return state.capacityEst; }

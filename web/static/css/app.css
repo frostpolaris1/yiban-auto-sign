@@ -2654,9 +2654,10 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
    --------------------------------------------------------------------------
    按功能分六个 .tabs 分区（签到调度 / 公告 / 通知通道 / 容量配额 / 健康与探针 /
    系统开关），卡头与表单一律用模板现成类：.card-head(.card-title-wrap/.card-title)、
-   .form-grid(.span-2)、.field(.field-label/.field-help)、.input/.select/.textarea、
-   .input-group(.addon)、.btn-group(.btn.is-active)、.switch、
-   .data-table(.table-scroll/.data-toolbar)、.alert、.badge、.form-actions。
+   .form-grid(.span-2)、.field(.field-label/.field-help)、.input/.textarea、
+   .input-group(.addon)、.switch、.data-table(.table-scroll/.data-toolbar)、
+   .alert、.badge、.form-actions。下拉与数值滑杆走项目自研控件（第 30 节），
+   原生 <select> 与 input[type=range] 的弹出层是 UA 渲染的，颜色/圆角/阴影不可控。
    本节只保留**确无模板对应**的项目类：
      · .info-tip/.info-pop       详细信息浮层（模板无此概念，hover + focus 双触发）
      · .set-row*                 「说明 + 开关」行布局（模板 .switch 只管开关本体，无整行布局）
@@ -2665,10 +2666,10 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
      · .set-warn                 软警示底。模板 .alert.warning 亦可表达同类语义，但带图标与
                                  左语义边、体积更大；此处只用于「一行容量/暂停提示」，故保留
      · .set-danger*              危险区语义（红标题、整宽按钮）
-     · .set-sub                  卡内子段标题（通知通道的推送 / 邮件两段）
      · .set-head-actions         .card-head 右侧多控件成组（模板只给 last-child 弹性）
      · .set-more                 卡内低频项折叠（原生 details + 渐进增强高度过渡）
      · .tabs-scroll              窄屏 tab 条横滑容器
+     · .form-grid--3             三列表单网格（额度与节流三个标量；模板只有两列）
    分隔线遵守 23 白名单：卡头用模板 .card-head（容器 chrome 边界，第 2 类），
    卡内只有 .form-actions 提交边界保留线（第 4 类）。
    ========================================================================== */
@@ -2800,7 +2801,6 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 }
 .range:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
 .range:disabled { cursor: not-allowed; opacity: .5; }
-.range-val { font-weight: 600; color: var(--t-base); min-width: 2ch; display: inline-block; text-align: right; }
 
 /* 首屏加载指示：服务端已渲染正文，故**不遮内容**，只在顶部提示"样式/脚本仍在就绪"。
    120ms 内就绪则完全不出现（快加载不闪一下）；就绪后淡出。缺省不可见，由内联脚本加 is-visible。 */
@@ -2840,7 +2840,6 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .set-bad { color: var(--state-bad-fg); }
 
 /* ---- 27.4 卡内子段标题 / 窄屏 tab 横滑 / 输入组尾缀 ---- */
-.set-sub { margin: 28px 0 14px; font-size: 14px; font-weight: 700; color: var(--t-base); }
 /* 低频项收进 <details>：模板无折叠小件。项目其它折叠区（button + .collapse-body）需 JS 绑定，
    这里用原生 details + 渐进增强高度过渡（不支持 interpolate-size 的浏览器即时展开，不更糟），
    摘要下间距随展开过渡而非瞬跳。理由：低频项一次性展开，不值得再引入第三份折叠绑定。 */
@@ -2883,9 +2882,10 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 #sm-smtps .num,
 #sm-smtps .num .input { text-align: right; }
 #sm-smtps .num .input { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-/* 数值型输入统一右对齐等宽（账号间隔 / 掐头去尾 / 额度 / 上限） */
+/* 数值型输入统一等宽；**左对齐**（不是右对齐）—— 单值字段左对齐后与上方标签左缘同列，
+   扫读有共同锚点；右对齐只在同列多值需要按位比较时成立（那是表格的 .num 列，见上一条）。 */
 .field .input[type="number"] {
-  text-align: right;
+  text-align: left;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
@@ -2965,11 +2965,14 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 /* 短标量字段（账号间隔等）收窄：原来与整列同宽，一个 1~4 位数字占 550px（用户判"框太大"）。
    其余字段仍铺满列宽 —— 这样各卡的左右缘与其它页面一致（撤销此前的 680px 全局限宽）。 */
 .field--narrow .input-group, .field--narrow .input { max-width: 176px; }
-/* 组间距：开关行与后续「字段组」之间 —— 结构可能是 .field，也可能是整个 .form-grid
-   （健康卡即后者，实测只写 .field 时组间距为 0） */
+/* 组间距：开关行与「字段组」之间 —— 结构可能是 .field、整个 .form-grid，也可能中间
+   夹着一条软警示（#ss-edge-warn），故把相邻选择器写全（隐藏元素同样参与相邻选择器匹配）。 */
 .set-row + .field, .field + .set-row,
-.set-row + .form-grid, .form-grid + .set-row,
+.set-row + .form-grid, .form-grid + .set-row, .set-warn + .set-row,
 .set-row + .data-toolbar { margin-top: 16px; }
+/* 三列标量网格（额度与节流）：三项本会落在「两列 + 一个孤格」上，窄屏退回单列 */
+.form-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 720px) { .form-grid--3 { grid-template-columns: 1fr; } }
 .set-row { align-items: flex-start; }
 .set-row .switch { margin-top: 1px; }          /* 与标签行光学居中 */
 #sm-smtps .sm-empty-row td { border-bottom: 0; }
@@ -2983,10 +2986,19 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 #sm-smtps thead th { padding-top: 0; }
 
 
-/* 时间字段容器：两个「时:分」组同行，窄屏换行 */
-.time-field-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.time-field-wrap .input-group { flex: 1 1 150px; min-width: 0; }
-.time-sep { color: var(--t-muted); font-size: 12.5px; flex: 0 0 auto; }
+/* ---- 30.3 时间字段（触发器 + 弹窗内的滚动轮） ----
+   页面只放一个触发器显示当前时间；滚轮移进弹窗，故不再有"常驻 132px 高"的占位。 */
+.time-field, .time-pair { display: block; }
+.time-trigger-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+/* 弹窗内的滚轮组：一组「时:分」一行，区间形态两行 */
+.time-groups { display: flex; flex-direction: column; gap: 16px; }
+.time-group { display: flex; flex-direction: column; gap: 6px; }
+.time-group-label { font-size: 12px; font-weight: 600; color: var(--t-sub); }
+.time-modal .field-error { margin: 12px 0 0; font-size: 12.5px; }
 
 /* ---- 滑块刻度（常用值）：滑块下方一排可点的刻度，既当量程尺又当快捷选择 ----
    0–5 分钟、0.5 步进是均匀刻度，故用等分 flex 排布（不是近似位置）。 */
@@ -3015,11 +3027,21 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 
 /* ---- 滚动时间轮（时 / 分，取代原生 input[type=time] 与 <select>）----
    上下滚动选择（scroll-snap）；中间一行是当前值，上下淡出表示"可继续滚动"。 */
-.wheel-field { display: flex; align-items: center; gap: 8px; }
+/* 滚轮容器：必须自带 flex-grow —— 滚轮本体是 `flex-basis:0` 的弹性项，
+   父级"不长大"就会把两份滚轮一起压成 min-content（实测 22px，数字竖着叠成一列）。 */
+.wheel-field {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+}
 .wheel {
   position: relative;
   flex: 1 1 0;
   min-width: 0;
+  max-width: 116px;
   height: 132px;
   overflow-y: auto;
   scroll-snap-type: y mandatory;
@@ -3048,3 +3070,167 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .wheel-item.is-sel { color: var(--t-base); font-weight: 700; }
 .wheel-sep { color: var(--t-muted); font-size: 17px; font-family: var(--font-mono); }
 @media (prefers-reduced-motion: reduce) { .wheel { scroll-behavior: auto; } }
+
+
+/* ==========================================================================
+   30. 自研选择控件（下拉 listbox + 数值滑块弹窗）
+   --------------------------------------------------------------------------
+   原生 <select> 的下拉面板与 input[type=range] 的滑块本体同属"UA 渲染部分"：
+   高亮色 / 圆角 / 投影 / 分隔线都不可控，与设计系统必然不一致。故：
+     · 下拉改为自研 listbox（触发器沿用模板控件外观，面板用项目令牌）；
+     · 数值滑杆收进弹窗（页面上只留一个"数值 + 调整"的触发器）。
+   触发器外观对齐模板 .input/.select（同高 40px、同边框与焦点环），
+   这样与同排其它控件共用同一条基线（同排控件同高是项目硬规范）。
+   ========================================================================== */
+
+/* ---- 30.1 下拉选择 ---- */
+.select-field { position: relative; }
+/* 三个触发器（下拉 / 数值 / 时间）共用同一份控件外观：它们在同一张卡里并排出现，
+   各写一套必然漂移（高度、边框、焦点环、禁用态）。差异只在内部排布，见各分节。 */
+.select-trigger,
+.range-trigger,
+.time-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--t-base);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms, box-shadow 180ms, background-color 180ms;
+}
+.select-trigger:hover, .range-trigger:hover, .time-trigger:hover { border-color: var(--t-light); }
+.select-trigger:focus-visible,
+.range-trigger:focus-visible,
+.time-trigger:focus-visible {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  outline: 0;
+}
+.select-trigger:disabled, .range-trigger:disabled, .time-trigger:disabled {
+  background: var(--bg-muted);
+  color: var(--t-light);
+  cursor: not-allowed;
+}
+.select-trigger-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-caret {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--t-muted);
+  transition: transform 160ms var(--ease-out-strong);
+}
+.select-caret svg { width: 14px; height: 14px; }
+.select-field.is-open .select-caret { transform: rotate(180deg); }
+.select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 264px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: 0 12px 28px -10px rgba(0, 0, 0, .28);
+  animation: select-menu-in 140ms var(--ease-out-strong) both;
+}
+@keyframes select-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+.select-option {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--t-base);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+.select-option:hover,
+.select-option:focus-visible { background: var(--bg-hover); outline: 0; }
+.select-option.is-sel { color: var(--primary); font-weight: 600; }
+.select-search { margin-bottom: 4px; min-height: 34px; }
+.select-empty { padding: 8px 10px; font-size: 12px; color: var(--t-muted); }
+
+/* ---- 30.2 数值滑块字段（触发器 + 弹窗） ---- */
+.range-field { display: block; }
+.range-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--t-base);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms, box-shadow 180ms, background-color 180ms;
+}
+.range-trigger:hover { border-color: var(--t-light); }
+.range-trigger:focus-visible {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  outline: 0;
+}
+.range-trigger:disabled {
+  background: var(--bg-muted);
+  color: var(--t-light);
+  cursor: not-allowed;
+}
+.range-trigger-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.range-trigger-unit { color: var(--t-muted); }
+/* 「调整」提示：靠右、弱化；图标与文字同高 */
+.range-trigger-hint,
+.time-trigger-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--t-muted);
+  font-size: 12px;
+}
+.range-trigger-hint svg, .time-trigger-hint svg { width: 13px; height: 13px; }
+.range-modal-row { display: flex; align-items: center; gap: 12px; }
+.range-modal-group { flex: 0 0 auto; max-width: 176px; }
+.range-modal-group .input { text-align: left; }
+.range-modal-tip {
+  font-size: 12.5px;
+  color: var(--t-muted);
+  font-variant-numeric: tabular-nums;
+}
+.range-modal .range { margin-top: 18px; }
+.range-modal .range-scale { margin-top: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  .select-menu { animation: none; }
+  .select-caret { transition: none; }
+}
