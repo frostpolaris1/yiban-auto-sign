@@ -15,6 +15,21 @@ P4（Tailwind v4）、U1（类名解耦）、V1–V4（daisyUI 视觉替换）�
 第二个不变量是**静态资源引用清单**（见 `test_asset_manifest_golden`）；它单独存在是因为
 "CSS/JS 外提"这类改动会被结构指纹悄悄抹平（外提后标签位置不变），必须让它显式可见。
 
+## 2026-09-12 换壳（Adminator + MPA）后的样本指向
+
+`/` 已改渲染 `pages/dashboard.html`（经 `layout_admin.html` 外壳），旧的
+`index.html` 单页模板退役（无路由渲染）。三个渲染样本按键位含义如下：
+
+| 键 | 路由 | 实际模板 |
+|---|---|---|
+| `login` | `/login` | `login.html`（旧栈，GET 渲染） |
+| `index` | `/` | `pages/dashboard.html` + `layout_admin.html`（**新管理端**） |
+| `user`  | `/user` | `user.html`（旧栈，GET 渲染） |
+
+`index.rendered.html` / `assets.json["index"]` 因此记录的是**新管理端的真实产物**；
+`index` 只是沿用旧键名（保留 `test_index_structure_golden` 这一 node id），内容不再是
+退役的 `index.html`。用户页/登录页在迁移完成前仍是旧栈，样本保持不变即可继续防漂移。
+
 ## 归一化规则（逐条 + 理由，2026-09-10 实证）
 
 实测方法：三个页面各渲染两次并逐字符比对，结果在剥离 script/style 内容后**完全一致**
@@ -239,17 +254,43 @@ class WebRenderGoldenTest(unittest.TestCase):
         self._assert_golden("login.rendered.html", normalize(self._render("login")))
 
     def test_index_structure_golden(self):
+        """`/` 的结构指纹（换壳后即 layout_admin.html + pages/dashboard.html 的渲染产物）。
+
+        键名沿用 `index` 只为保留本 node id；样本内容已是新管理端，不再指向退役的
+        index.html 单页模板。结构漂移会在这里被逐字符抓住。
+        """
         self._assert_golden("index.rendered.html", normalize(self._render("index")))
 
     def test_user_structure_golden(self):
         self._assert_golden("user.rendered.html", normalize(self._render("user")))
 
     def test_asset_manifest_golden(self):
-        """静态资源引用清单（顺序敏感）。
+        """静态资源引用清单（顺序敏感）+ 清单与磁盘一致。
 
         存在的理由：CSS/JS 外提后标签位置不变，结构指纹察觉不到 —— 那类改动必须在这里被看见。
+        清单是**从当前真实渲染产物生成**的（不是手写）：`index` 键即新管理端 `/`，
+        覆盖 adminator/chartjs/fonts/app.css/core.js 等；`login`/`user` 键覆盖旧栈
+        tailwind.js/daisyui/misans。除与金标准逐条比对外，再断言每个本仓 `/static/`
+        资源都真实存在于 `web/static/` 下（清单与磁盘一致，防"清单漂移/文件被删"）。
         """
+        _ASSET_REF_RE = re.compile(r"/(static/.+?)(?:\?v=\*)?$")
         actual = {p: asset_manifest(self._render(p)) for p in ("index", "login", "user")}
+
+        # 先做磁盘一致性校验（与金标准是否已更新无关，始终生效）
+        missing = []
+        for page, refs in actual.items():
+            for ref in refs:
+                m = _ASSET_REF_RE.search(ref)
+                if not m:
+                    continue  # /favicon.png 等非 /static/ 资源
+                rel = m.group(1)
+                if not os.path.isfile(os.path.join(BASE, "web", rel.replace("/", os.sep))):
+                    missing.append(f"  {page}: {ref} → web/{rel} 不存在")
+        if missing:
+            self.fail(
+                "页面引用了磁盘上不存在的静态资源（清单与磁盘不一致）：\n" + "\n".join(missing)
+            )
+
         path = self._golden_path("assets.json")
         if self.update_golden or not os.path.exists(path):
             with open(path, "w", encoding="utf-8", newline="\n") as f:
