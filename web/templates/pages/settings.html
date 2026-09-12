@@ -112,15 +112,31 @@
             <output class="range-val mono" id="ss-edge-front-out" for="ss-edge-front">1</output> 分钟</label>
           <input class="range" id="ss-edge-front" type="range" min="0" max="5" step="0.5" value="1"
                  aria-describedby="ss-edge-help">
+          <div class="range-scale" role="group" aria-label="常用刻度（分钟）">
+            <button type="button" class="range-tick" data-ss-edge="0">0</button>
+            <button type="button" class="range-tick" data-ss-edge="60">1</button>
+            <button type="button" class="range-tick" data-ss-edge="120">2</button>
+            <button type="button" class="range-tick" data-ss-edge="180">3</button>
+            <button type="button" class="range-tick" data-ss-edge="240">4</button>
+            <button type="button" class="range-tick" data-ss-edge="300">5</button>
+          </div>
         </div>
         <div class="field">
           <label class="field-label" for="ss-edge-back">去尾
             <output class="range-val mono" id="ss-edge-back-out" for="ss-edge-back">1</output> 分钟</label>
           <input class="range" id="ss-edge-back" type="range" min="0" max="5" step="0.5" value="1"
                  aria-describedby="ss-edge-help">
+          <div class="range-scale" role="group" aria-label="常用刻度（分钟）">
+            <button type="button" class="range-tick" data-ss-edge="0">0</button>
+            <button type="button" class="range-tick" data-ss-edge="60">1</button>
+            <button type="button" class="range-tick" data-ss-edge="120">2</button>
+            <button type="button" class="range-tick" data-ss-edge="180">3</button>
+            <button type="button" class="range-tick" data-ss-edge="240">4</button>
+            <button type="button" class="range-tick" data-ss-edge="300">5</button>
+          </div>
         </div>
         <p class="field-help span-2" id="ss-edge-help">裁掉窗口首尾各 n 分钟以避开边界超时；前后独立、0.5 分钟粒度，0 = 不裁切。</p>
-        <div class="field">
+        <div class="field field--narrow">
           <label class="field-label" for="ss-gap">账号间隔</label>
           <div class="input-group">
             <input class="input" id="ss-gap" type="number" min="0" max="3600" placeholder="10">
@@ -131,24 +147,18 @@
         {# 窗口起止是同一个逻辑对：同行同宽、中间「至」（原来被拆到两列两行，右列第二行全空）。
            时间用 .time-field（时/分两个模板 .select）取代原生 input[type=time]——
            原生选时列表由 UA 渲染，高亮色/黑框/圆角不可控（实测高亮 #0075FF ≠ 项目主色）。 #}
-        <div class="field span-2">
+        <div class="field">
           <span class="field-label" id="ss-window-label">签到窗口（开始早于结束）</span>
           <div class="time-field-wrap">
-            <div class="input-group time-field" data-time-field="ss-window-start" role="group" aria-labelledby="ss-window-label">
-              <select class="select" data-part="hour" aria-label="窗口开始 · 小时"></select>
-              <span class="addon">:</span>
-              <select class="select" data-part="minute" aria-label="窗口开始 · 分钟"></select>
+            <div class="wheel-field" data-time-field="ss-window-start" role="group" aria-labelledby="ss-window-label">
               <input type="hidden" id="ss-window-start" value="06:30">
             </div>
             <span class="time-sep" aria-hidden="true">至</span>
-            <div class="input-group time-field" data-time-field="ss-window-end" role="group" aria-label="窗口结束（时:分）">
-              <select class="select" data-part="hour" aria-label="窗口结束 · 小时"></select>
-              <span class="addon">:</span>
-              <select class="select" data-part="minute" aria-label="窗口结束 · 分钟"></select>
+            <div class="wheel-field" data-time-field="ss-window-end" role="group" aria-label="窗口结束（时:分）">
               <input type="hidden" id="ss-window-end" value="07:50">
             </div>
           </div>
-          <p class="field-help">开始必须早于结束；保存后下次自动签到时生效。</p>
+          <p class="field-help">上下滚动选择；开始必须早于结束，保存后下次自动签到时生效。</p>
         </div>
       </div>
       <p class="set-warn" id="ss-edge-warn" hidden></p>
@@ -461,10 +471,7 @@
       <div class="form-grid">
         <div class="field">
           <label class="field-label" for="sh-probe-time">触发时间（最早时刻）</label>
-          <div class="input-group time-field" data-time-field="sh-probe-time" role="group" aria-label="触发时间（时:分）">
-            <select class="select" data-part="hour" aria-label="触发时间 · 小时"></select>
-            <span class="addon">:</span>
-            <select class="select" data-part="minute" aria-label="触发时间 · 分钟"></select>
+          <div class="wheel-field" data-time-field="sh-probe-time" role="group" aria-label="触发时间（时:分）">
             <input type="hidden" id="sh-probe-time" value="20:00">
           </div>
         </div>

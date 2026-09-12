@@ -58,17 +58,19 @@
   <button type="button" class="btn btn--primary" data-add-account>{{ icon('plus') }}添加账号</button>
 </div>
 
-<p class="alert warning acct-pending-tip" id="pending-tip" role="status" hidden>
-  <span class="ico">{{ icon('clock') }}</span>
-  <span class="body">有 <strong id="pending-count">0</strong> 个账号待处理，请及时审核。</span>
-</p>
-
 <section class="kpi-grid" aria-label="账号统计">
   {{ kpi('今日成功', 'stat-success', 'circle-check', 'success') }}
   {{ kpi('今日失败', 'stat-failed', 'circle-x', 'danger') }}
   {{ kpi('待签', 'stat-waiting', 'clock', 'info') }}
   {{ kpi('跳过', 'stat-skipped', 'circle-slash', 'muted') }}
 </section>
+
+{# 待处理提醒放在 KPI 与表格之间：原来在 KPI 之上，数据回来时显示会把整排卡片顶下去（CLS）；
+   放在这里既不打乱统计区，又正好接在「待处理账号」表的上方。 #}
+<p class="alert warning acct-pending-tip" id="pending-tip" role="status" hidden>
+  <span class="ico">{{ icon('clock') }}</span>
+  <span class="body">有 <strong id="pending-count">0</strong> 个账号待处理，请及时审核。</span>
+</p>
 
 <div class="grid" id="accounts-root">
 
