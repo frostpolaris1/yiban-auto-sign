@@ -181,6 +181,10 @@ class ComponentAdoptionTest(unittest.TestCase):
         """
         offenders = []
         for rel, lineno, text in _scan_sources():
+            # 剥注释：JS/CSS 注释里会**提到** `<select>` 这类标签名来解释取舍
+            # （如 components/time-field.js 写「取代原生 input[type=time] 与 <select>」），
+            # 那不是真控件。与上面两处判据一致地先剥注释。
+            text = _strip_comments(text)
             for m in re.finditer(r"<(input|textarea|select)\b[^>]*?>", text, re.S):
                 tag = m.group(0)
                 tag_name = m.group(1)
