@@ -839,6 +839,20 @@
     setTimeout(finish, SWAP_MS);
   }
 
+  /* ---------- 浏览器级显示偏好（localStorage） ----------
+     仅影响本机显示密度，不涉及任何后端策略，故与 yiban-theme 同层使用 localStorage。
+     归属邮箱开关（P10）：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
+     默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在
+     components/account-table.js 一处，改后下次渲染即生效（无需后端往返）。 */
+  var PREF_OWNER_EMAIL = "yiban-owner-email";
+  function ownerEmailVisible() {
+    try { return localStorage.getItem(PREF_OWNER_EMAIL) !== "0"; } catch (e) { return true; }
+  }
+  function setOwnerEmailVisible(v) {
+    try { localStorage.setItem(PREF_OWNER_EMAIL, v ? "1" : "0"); } catch (e) {}
+    try { document.dispatchEvent(new CustomEvent("yiban:owner-email-pref", { detail: { visible: !!v } })); } catch (e) {}
+  }
+
   /* ---------- 公开面 ---------- */
   var YB = {
     __ready: true,
@@ -885,7 +899,11 @@
     setNavBadge: setNavBadge,
     loadNavBadges: loadNavBadges,
     SWAP_MS: SWAP_MS,
-    swapOut: swapOut
+    swapOut: swapOut,
+    prefs: {
+      ownerEmailVisible: ownerEmailVisible,
+      setOwnerEmailVisible: setOwnerEmailVisible
+    }
   };
   window.YB = YB;
   // 兼容内联 onclick / 既有页面脚本引用的裸全局名
