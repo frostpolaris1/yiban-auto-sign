@@ -82,13 +82,17 @@
       var active = ((data && data.accounts) || []).filter(function (a) {
         return !a.deleted && a.status === "active";
       });
+      var grid = list.closest(".user-grid");
       list.innerHTML = "";
       if (!active.length) {
         if (logCard) logCard.hidden = true;   // 没有日历就没有日志可看
+        // 日志面板隐藏后左列独占整行：否则空卡片只占 6 列、右侧留 6 列死区
+        if (grid) grid.classList.add("is-solo");
         list.appendChild(emptyCard());
         return;
       }
       if (logCard) logCard.hidden = false;
+      if (grid) grid.classList.remove("is-solo");
       var mounts = [];
       active.forEach(function (a, i) {
         list.appendChild(calCard(a, i));

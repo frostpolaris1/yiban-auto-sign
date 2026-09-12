@@ -249,6 +249,20 @@
     });
   }
 
+  // 堆叠布局（窄屏）下日志面板位于日历下方、可能在视口外：选中日期后就地把它带进视野，
+  // 否则"点了日期却什么都没发生"（变化盲）。面板已在视野内时不动，避免无谓滚动。
+  function revealLog() {
+    var box = logBody();
+    if (!box) return;
+    var card = box.closest(".sc-log-card") || box;
+    var r = card.getBoundingClientRect();
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    if (r.top < vh * 0.9 && r.bottom > 0) return;   // 已经看得到
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    try { card.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" }); }
+    catch (e) { card.scrollIntoView(); }
+  }
+
   function select(mount, cell) {
     var prev = mount.querySelector(".sc-cell.is-selected");
     if (prev) {
@@ -260,6 +274,7 @@
     var date = cell.getAttribute("data-sc-date");
     mount.setAttribute("data-sc-selected", date);
     loadLog(mount, date);
+    revealLog();
   }
 
   function gotoMonth(mount, phone, date) {
