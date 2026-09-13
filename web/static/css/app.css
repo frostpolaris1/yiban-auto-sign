@@ -29,6 +29,13 @@ textarea {
   font-family: var(--font-sans);
 }
 
+/* 字重约束（自托管 Noto Sans SC 只注册 400 / 700 两档）：
+   · font-weight:400 正常；
+   · font-weight:500 对中文无可用字面，浏览器实渲为 400（与正文无差别）；
+   · font-weight:600 同样无字面，实渲为 700（等同加粗）。
+   故中文要「中等」层次时不要写 500，改用颜色（--t-base / --t-muted / --t-sub）或
+   直接用 700；600 只在纯拉丁/数字元素上才有真实的中等档（Inter 有 400/500/600/700）。 */
+
 /* ==========================================================================
    2. 侧边栏扩展（服务于 partials/sidebar.html）
    ========================================================================== */
@@ -903,7 +910,7 @@ textarea {
   font-weight: 700;
   font-size: 22px;
   line-height: 1.25;
-  letter-spacing: -0.022em;
+  letter-spacing: 0;   /* 中文方块字不套拉丁负字距（原 -0.022em 会让标题发挤） */
   color: var(--t-base);
 }
 .page-sub { margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: var(--t-sub); }
@@ -913,8 +920,10 @@ textarea {
 .footer-legal a { display: inline-flex; align-items: center; gap: 4px; }
 .footer-meta { display: inline-flex; align-items: center; gap: 6px; }
 
-/* 迁移占位页的功能清单 */
+/* 迁移占位页的功能清单。li 用「负 text-indent + 等量 padding-left」做悬挂缩进：
+   项目符号与首行位置不变，中文整句折行按文字起点对齐，不再顶到符号列。 */
 .stub-list { margin: 0; padding: 0 0 0 18px; list-style: disc; color: var(--t-muted); font-size: 13px; line-height: 1.9; }
+.stub-list li { padding-left: 1.4em; text-indent: -1.4em; }
 .stub-list li::marker { color: var(--primary); }
 
 /* KPI 卡入场动画改为只做位移、不动透明度。
@@ -933,8 +942,54 @@ textarea {
    中文会出现字间空隙且读数变慢。中文标签统一收敛字距、取消大小写转换。 */
 .chart-meta-label,
 .stat-cell-label,
-.kpi-label {
+.kpi-label,
+.eyebrow,
+.nav-label,
+.brand-tag,
+.mini-cal-wd {
   text-transform: none;
+  letter-spacing: 0;
+}
+/* 中文小标签字号下限：原 9.5–10px 是拉丁小字的下限，中文方块字在该尺寸下笔画发糊，
+   统一提到 11px。只动这四类，其余标签字号保持原档位（不改变层级关系）。 */
+.eyebrow,
+.nav-label,
+.brand-tag,
+.mini-cal-wd {
+  font-size: 11px;
+}
+
+/* 中文断行：line-break:strict 让「、。，）」等标点按 clreq 避头尾，不落行首；
+   text-wrap:pretty 在支持的浏览器里避免末行只剩一个标点/孤字（不支持则忽略）。
+   只给正文/说明类；含 ID、邮箱、手机号的等宽类不加（那里的换行由 overflow-wrap 控制）。 */
+.panel-sub,
+.field-help,
+.empty__msg,
+.set-help,
+.md-body,
+.auth-agree-text {
+  line-break: strict;
+}
+.kpi-label,
+.panel-sub,
+.field-help {
+  text-wrap: pretty;
+}
+
+/* 数值/时间：等宽数字（tabular-nums）让逐行小数点/位数对齐，便于纵向比较。
+   只影响数字字形宽度，不改字号与颜色。 */
+.kpi-value,
+.stat-cell-value,
+.chart-meta-value,
+.sc-num,
+.slot-pct {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 中文标题不套拉丁负字距（Adminator 的 Inter Tight 靠负字距收紧，中文方块字会发挤）。
+   仅归零字距，字号/字重/颜色一律不动。 */
+.brand-name,
+.auth-card h2 {
   letter-spacing: 0;
 }
 
@@ -1171,7 +1226,9 @@ body {
 .md-body h2 { font-size: 16px; }
 .md-body h3 { font-size: 14.5px; }
 .md-body h4 { font-size: 13.5px; }
-.md-body p { margin: 0 0 10px; }
+/* 段距：段间视觉空白 = 行高 22.75px + margin，16px 让段边界明显强于行边界
+   （原 10px 与行距太接近，长文档里分不出段）。列表项间距另算，不跟着放大。 */
+.md-body p { margin: 0 0 16px; }
 .md-body ul { margin: 0 0 10px; padding-left: 20px; list-style: disc; }
 .md-body ol { margin: 0 0 10px; padding-left: 20px; list-style: decimal; }
 .md-body li { margin: 3px 0; }
@@ -1626,7 +1683,7 @@ html[data-theme="dark"] {
   font-family: var(--font-sans);
   font-weight: 700;
   font-size: 15px;
-  letter-spacing: -0.012em;
+  letter-spacing: 0;   /* 中文标题不继承拉丁负字距（Adminator 原为 -0.012em） */
   color: var(--t-base);
 }
 /* 注意：<p> 的 UA 默认外边距是 1em（11.5px），会破坏面板/表单节奏，故一律显式归零 */
@@ -1739,6 +1796,10 @@ html[data-theme="dark"] {
 
 /* ---- 19.4 侧边栏可读性修正 ---- */
 .nav-label { color: var(--t-muted); }     /* Adminator 用 --t-light：浅色侧栏上 2.56:1 */
+/* 导航项：Adminator 写 font-weight:500 想要的"中等"对中文无效（实渲 400，与正文无差别）。
+   侧栏层级已由颜色承担（--t-muted → 悬停 --t-base → 选中 --primary + 主色浅底 + 左描边），
+   故显式落回 400，避免以后误以为 500 在起作用。 */
+.nav-link { font-weight: 400; }
 /* 导航分组（数据 / 工作台 / 我的）：组与组之间留白，组内由 .nav-section 的 gap 收紧。
    首组与品牌之间也要一段独立留白：只写 `.nav-section + .nav-section` 时，首组的「数据」
    标签紧贴品牌块，视觉上偏上（用户实拍指出「与上方标题垂直间距较小」）。 */
@@ -1762,7 +1823,7 @@ html[data-theme="dark"] {
 .account-icon { display: inline-flex; flex-shrink: 0; color: var(--t-muted); }
 .account-icon svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.8; fill: none; }
 .account-name { font-size: 13px; font-weight: 600; color: var(--t-base); }
-.account-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--t-muted); word-break: break-all; }
+.account-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--t-muted); word-break: normal; overflow-wrap: anywhere; }
 .account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .account-note { margin-top: 2px; font-size: 12px; color: var(--t-muted); }
 .account-reject { margin-top: 10px; }
@@ -1792,7 +1853,10 @@ html[data-theme="dark"] {
   font-size: 11.5px;
   line-height: 1.6;
   white-space: pre-wrap;
-  word-break: break-all;
+  /* 不硬拆：break-all 会把号码/URL 从任意字符处切开；日常按词换行，仅当整词
+     确实放不下时才允许断开（overflow-wrap:anywhere） */
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /* ---- 19.6 通用小件 ---- */
@@ -1973,7 +2037,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   font-family: var(--font-sans);
   font-weight: 700;
   font-size: 16px;
-  letter-spacing: -0.018em;
+  letter-spacing: 0;   /* 中文标题不继承拉丁负字距（Adminator 原为 -0.018em） */
   color: var(--t-base);
   white-space: nowrap;
 }
@@ -1987,9 +2051,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-weekdays span {
   padding: 6px 0;
   text-align: center;
-  font-family: var(--font-mono);
+  /* 星期表头是纯中文（一/二/…），不用等宽栈（等宽只服务拉丁数字）；字距归零 */
+  font-family: var(--font-sans);
   font-size: 10.5px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--t-muted);
 }
 
@@ -2021,7 +2086,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   color: var(--cal-cell-fg);
   font-family: inherit;
   font-size: 12.5px;
-  font-weight: 500;
+  /* 不用 font-weight:500：对中文无字面（实渲 400），日期格层级由状态色 + 圆点承担 */
   cursor: pointer;
 }
 .sc-cell:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
@@ -2238,9 +2303,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   align-items: center;
   gap: 6px;
   margin-bottom: 6px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  /* 中文小标签不套拉丁字距（同 .eyebrow 一组），字号抬到 11px 保住可读性 */
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
   color: var(--t-muted);
 }
 .notif-label svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 2; fill: none; }
@@ -2393,13 +2459,15 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-cell-check { width: 40px; }
 .acct-check { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; }
 .acct-cell-state { width: 44px; }
-.acct-cell-idx { width: 44px; color: var(--t-muted); }
+.acct-cell-idx { width: 44px; color: var(--t-muted); text-align: right; font-variant-numeric: tabular-nums; }
 .acct-cell-name { font-weight: 600; color: var(--t-base); white-space: nowrap; min-width: 150px; }
 .acct-cell-phone { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; min-width: 190px; }
 .acct-cell-owner,
 .acct-cell-model,
 .acct-cell-pref,
 .acct-cell-time { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+/* 时间列逐行数字对齐：等宽字号 + tabular-nums（不参与比较的其余文本列保持原字体） */
+.acct-cell-time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .acct-cell-owner { min-width: 150px; }
 .acct-cell-actions {
   position: sticky;
@@ -2484,7 +2552,9 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
     font-size: 11.5px;
     font-weight: 400;
     color: var(--t-muted);
-    word-break: break-all;
+    /* 脱敏邮箱是等宽串：允许在任意位置换行，但不要用 break-all 硬拆词 */
+    word-break: normal;
+    overflow-wrap: anywhere;
   }
 }
 @media (max-width: 720px) {
@@ -2688,10 +2758,10 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   min-width: 190px;
 }
 .usr-cell-role { white-space: nowrap; }
-.usr-cell-count { width: 96px; color: var(--t-muted); white-space: nowrap; }
+.usr-cell-count { width: 96px; color: var(--t-muted); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 .usr-cell-time,
 .usr-cell-remain { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
-.usr-cell-time { min-width: 150px; }
+.usr-cell-time { min-width: 150px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .usr-cell-status { white-space: nowrap; }
 /* 操作列：按内容收缩（width:1% + nowrap），富余宽度让给文本列。
    **不用 position:sticky**：本页四组表在 1440/1024/768/390 实测都不横滚

@@ -60,6 +60,11 @@
 {% block content %}
 <div class="dash-page" id="dashboard-root">
 
+  <div class="page-head">
+    <h1 class="page-title">数据总览</h1>
+    <p class="page-sub">账号、用户与签到结果的一屏汇总；待处理账号与异常排查入口就在对应卡片上。</p>
+  </div>
+
   <section class="kpi-grid" aria-label="关键指标">
     {{ kpi({
       'color': 'primary', 'icon_color': 'primary', 'icon': 'list',
