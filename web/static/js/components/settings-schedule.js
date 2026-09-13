@@ -59,16 +59,55 @@
   }
 
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
-  // 禁用要落到"可见控件"上：自研下拉/滑块的可见体是 JS 构建的触发器，隐藏 input 上
-  // 置 disabled 既不可见也不阻断交互，必须走各自组件的 setDisabled。
-  function setDisabled(id, v) {
+  // aria-describedby 只增删本组件关心的 id，保留控件原有说明（如滑块触发器的当前值 id）。
+  function associate(el, id, on) {
+    if (!el || !el.getAttribute) return;
+    var ids = (el.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    var i = ids.indexOf(id);
+    if (on && i === -1) ids.push(id);
+    else if (!on && i !== -1) ids.splice(i, 1);
+    if (ids.length) el.setAttribute("aria-describedby", ids.join(" "));
+    else el.removeAttribute("aria-describedby");
+  }
+  // 禁用要落到"可见控件"上：自研控件与原生控件分离出可聚焦代理（下拉/滑块触发器、
+  // 时间区间的 pair 触发器；原生控件是它自己），隐藏 input 上置 disabled 既不可见
+  // 也不阻断交互。descId（权限说明）关联到该代理，读屏才能听到"为什么禁用"。
+  function proxyOf(id) {
+    var root = document.querySelector('[data-select-field="' + id + '"]');
+    if (root) return root.querySelector(".select-trigger");
+    root = document.querySelector('[data-range-field="' + id + '"]');
+    if (root) return root.querySelector(".range-trigger");
+    var tf = document.querySelector('[data-time-field="' + id + '"]');
+    if (tf) {
+      var host = tf.closest ? (tf.closest("[data-time-pair]") || tf) : tf;
+      return host.querySelector(".time-trigger");
+    }
+    return $(id);
+  }
+  // descId 只在"权限禁用"时传入；保存中等瞬时禁用不关联权限说明。
+  function setDisabled(id, v, descId) {
     var el = $(id);
     if (!el) return;
     var kind = document.querySelector('[data-select-field="' + id + '"]');
-    if (kind && YB.selectField) { YB.selectField.setDisabled(id, v); return; }
-    var range = document.querySelector('[data-range-field="' + id + '"]');
-    if (range && YB.rangeField) { YB.rangeField.setDisabled(id, v); return; }
-    el.disabled = !!v;
+    if (kind && YB.selectField) {
+      YB.selectField.setDisabled(id, v);
+    } else {
+      var range = document.querySelector('[data-range-field="' + id + '"]');
+      if (range && YB.rangeField) {
+        YB.rangeField.setDisabled(id, v);
+      } else {
+        var tf = document.querySelector('[data-time-field="' + id + '"]');
+        if (tf && YB.timeField && YB.timeField.setDisabled) {
+          // 时间字段：禁用交给组件落到触发器上（区间两个 id 共用一个触发器）
+          YB.timeField.setDisabled(id, v);
+        } else {
+          var proxy = proxyOf(id);
+          if (proxy && proxy !== el) proxy.disabled = !!v;   // 兜底：触发器挂在其隐藏 input 之外
+          el.disabled = !!v;
+        }
+      }
+    }
+    if (descId) associate(proxyOf(id), descId, v);
   }
   function setTip(text, bad) {
     var n = $("ss-tip");
@@ -123,9 +162,9 @@
     var master = isMaster();
     ["ss-order", "ss-dist", "ss-edge-front", "ss-edge-back", "ss-gap",
      "ss-window-start", "ss-window-end", "ss-time-pref"].forEach(function (id) {
-      setDisabled(id, !master);
+      setDisabled(id, !master, "ss-perm");
     });
-    setDisabled("ss-reset", !master);
+    setDisabled("ss-reset", !master, "ss-perm");
     setHidden($("ss-perm"), master);
     setHidden($("ss-save"), !dirty);
     setHidden($("ss-dirty"), !dirty);

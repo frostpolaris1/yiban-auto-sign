@@ -724,13 +724,53 @@ textarea {
   background: var(--bg-card);
 }
 
-/* 签到热力图：窄屏可横向滚动，图例与说明置底 */
+/* 签到热力图：窄屏可横向滚动，图例与说明置底。
+   整块限宽 420px ≈ 7×56px + 6×4px，让日期格回到日历页的 ~56px 档位；
+   不限宽时 1fr 会把格子拉到 ~130px，vendor 的 aspect-ratio:1 再把整块撑到 ~780px 高。
+   gap 抽成 --mini-cal-gap，且变量声明在低特异度选择器上——否则窄屏覆盖（同属性、
+   特异度更低）会被这里的高特异度声明压掉，只在同一档位（0,2,0）才是后写者生效。 */
+.dash-page .mini-cal-grid {
+  --mini-cal-gap: 4px;
+}
 .dash-page .dash-cal-scroll {
   overflow-x: auto;
 }
 .dash-page .dash-cal-scroll .mini-cal-grid {
+  max-width: 420px;
   min-width: 280px;
+  gap: var(--mini-cal-gap);
 }
+/* 日期格：加圆角 + 间隙后，相邻同色格不再连成一片（"边缘不清晰"的来源）。
+   状态底色改用日历页的 --cal-*-bg/fg；今天照 .sc-cell--today 用 inset 描边（不占布局），
+   实心底会盖掉状态色、也与日历页"今天 = 描边"的口径不一致。 */
+.dash-page .mini-cal-day {
+  border-radius: 8px;
+}
+.dash-page .mini-cal-day.is-ok {
+  background: var(--cal-ok-bg);
+  color: var(--cal-ok-fg);
+}
+.dash-page .mini-cal-day.is-fail {
+  background: var(--cal-bad-bg);
+  color: var(--cal-bad-fg);
+}
+.dash-page .mini-cal-day.is-today {
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+.dash-page .mini-cal-day.is-today.is-ok { background: var(--cal-ok-bg); color: var(--cal-ok-fg); }
+.dash-page .mini-cal-day.is-today.is-fail { background: var(--cal-bad-bg); color: var(--cal-bad-fg); }
+.dash-page .mini-cal-day.is-today.is-none { background: transparent; color: var(--t-light); }
+.dash-page .mini-cal-day.is-today.is-future { background: var(--bg-muted); color: var(--t-light); }
+/* 右下角圆点与日历页 .sc-dot（5px / 距右下各 5px）统一；原 6px / 8px 在缩小后的格上偏大 */
+.dash-page .mini-cal-day.is-ok::after,
+.dash-page .mini-cal-day.is-fail::after {
+  right: 5px;
+  bottom: 5px;
+  width: 5px;
+  height: 5px;
+}
+.dash-page .mini-cal-day.is-today.is-ok::after { background: var(--cal-ok-fg); }
+.dash-page .mini-cal-day.is-today.is-fail::after { background: var(--cal-bad-fg); }
 .dash-page .dash-cal-foot {
   display: flex;
   align-items: center;
@@ -762,12 +802,12 @@ textarea {
   border-radius: 4px;
 }
 .dash-page .dash-cal-key i.is-ok {
-  background: var(--success-soft);
-  border-color: var(--success);
+  background: var(--cal-ok-bg);
+  border-color: var(--cal-ok-fg);
 }
 .dash-page .dash-cal-key i.is-fail {
-  background: var(--danger-soft);
-  border-color: var(--danger);
+  background: var(--cal-bad-bg);
+  border-color: var(--cal-bad-fg);
 }
 .dash-page .dash-cal-key i.is-none {
   background: transparent;
@@ -781,7 +821,8 @@ textarea {
   color: var(--t-light);
   font-size: 11px;
 }
-/* 图例色块同步带圆点，与热力图日期格的形状编码一致（不只靠底色/描边） */
+/* 图例色块同步带圆点，与热力图日期格的形状编码一致（不只靠底色/描边）；
+   圆点距右下各 2px，对齐日历页 .sc-swatch 的约定 */
 .dash-page .dash-cal-key i {
   position: relative;
 }
@@ -789,8 +830,8 @@ textarea {
 .dash-page .dash-cal-key i.is-fail::after {
   content: "";
   position: absolute;
-  right: 1px;
-  bottom: 1px;
+  right: 2px;
+  bottom: 2px;
   width: 4px;
   height: 4px;
   border-radius: 50%;
@@ -879,10 +920,10 @@ textarea {
   align-items: flex-start;
 }
 
-/* 375px 窄屏：日历数字与图例收紧，保证 7 列不挤压 */
+/* 375px 窄屏：日历数字与图例收紧，保证 7 列不挤压（gap 只收不必为 0，否则同色格又粘连） */
 @media (max-width: 480px) {
   .dash-page .mini-cal-grid {
-    gap: 0;
+    --mini-cal-gap: 2px;
   }
   .dash-page .mini-cal-day {
     font-size: 11px;
@@ -1869,6 +1910,11 @@ html[data-theme="dark"] {
 /* ---- 19.6 通用小件 ---- */
 /* 开关：track 本体 34×20，热区低于 WCAG 2.5.8 的 24px；用等量负外边距抬高热区、保持视觉位置不变 */
 .switch { padding: 6px 4px; margin: -6px -4px; }
+/* 开关禁用态：Adminator 只定义了 .check input:disabled+.box，缺 .switch 的对应规则，
+   禁用后轨道仍高饱和、标签仍显示手型（与同页自研控件的灰底禁用观感不一致）。
+   轨道降透明并去掉点击热区，标签（label 本身）鼠标样式随之一致。 */
+.switch input:disabled + .track { opacity: .5; cursor: not-allowed; pointer-events: none; }
+.switch:has(input:disabled) { cursor: not-allowed; }
 
 /* 状态徽标的语义色调档位（全站通用，配 .badge 使用：class="badge badge--ok"）。
    为什么不直接用 Adminator 的 .badge.success/.danger/.warning/.info：那几档以原始语义色
