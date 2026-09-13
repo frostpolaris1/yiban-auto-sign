@@ -45,7 +45,6 @@ user / login 只有一份，是 index 独有的漂移。修复后统一留在页
 
 `test_version_and_source_appear_exactly_once_per_page` 继续覆盖每个整页模板，但改用
 `frontend_source` 聚合读取（模板 + extends/include 片段 + 外链自研静态资源）：
-  · `index.html` —— 旧栈单页（已无路由渲染，文件暂留）；
   · `login.html` —— 已迁到 `layout_auth.html` 外壳，页脚由 `partials/footer.html` 承载；
   · `user_account.html` —— 用户端「账号与设置」，外壳 `layout_user.html`（复用 Adminator .shell）；
   · `user_calendar.html` —— 用户端「签到日历」，同一外壳，页脚同样来自共享片段。
@@ -63,7 +62,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(BASE, "web", "templates")
 APP_PY = os.path.join(BASE, "web", "app.py")
 
-PAGE_TEMPLATES = ("index.html", "login.html", "pages/user_account.html", "pages/user_calendar.html")
+# 认证页与用户端两页（本清单里的页面在共享页脚里恰好各出现一次）；
+# 管理端七页由下方 ADMIN_PAGES 覆盖 —— 两份清单页面集互斥，不是重复断言。
+PAGE_TEMPLATES = ("login.html", "pages/user_account.html", "pages/user_calendar.html")
 
 # 新管理端外壳与页面模板（换壳后路由实际渲染的载体），用于"无 tab 显隐"判据。
 ADMIN_SHELL = (

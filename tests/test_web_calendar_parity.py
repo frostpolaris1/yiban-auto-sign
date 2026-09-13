@@ -54,15 +54,17 @@ ACCOUNTS_BODY_PARTIAL = os.path.join(TEMPLATES_DIR, "partials", "page_my_account
 # 两端日历页共用的视图组件：调用共享渲染接口的唯一载体
 SIGN_CAL_VIEW = os.path.join(JS_DIR, "components", "sign-calendar-view.js")
 
-DAY_CELL_MARK = "function dayCell(o)"
+# 检测锚用**渲染契约**（日期格必须带 data-sc-date）而不是函数名：重命名内部函数
+# 不该触发"实现不唯一"的误报，而第二个实现仍必然要产出这个属性。
+DAY_CELL_MARK = 'data-sc-date="'
 
 # 共享实现里必须同时保留的要点（改其一即报红，说明有人只改了一处契约）
 REQUIRED_IN_SHARED = (
     # 月份切换按钮的读屏名称
     'aria-label="上个月"',
     'aria-label="下个月"',
-    # 星期表头（周一起始）
-    '["一", "二", "三", "四", "五", "六", "日"]',
+    # 星期表头（周一起始）：用户可见契约；比对时源码会先压掉空白，故换行/空格写法变化不误报
+    '["一","二","三","四","五","六","日"]',
     # 「休」角标：不单靠颜色区分周末停签
     "sc-off",
     # 加载失败提示（同一句文案）
@@ -174,7 +176,10 @@ class CalendarSingleSourceTest(unittest.TestCase):
     def test_shared_implementation_keeps_the_a11y_and_state_contract(self):
         """共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。"""
         src = _read(CALENDAR_JS)
-        missing = [s for s in REQUIRED_IN_SHARED if s not in src]
+        # 逐条按字面子串比对；同时比对"压掉空白"的版本，
+        # 避免只因换行/空格调整就判红（星期表头的数组字面量即此类）
+        compact = re.sub(r"\s+", "", src)
+        missing = [s for s in REQUIRED_IN_SHARED if s not in src and s not in compact]
         if missing:
             self.fail(
                 "共享日历实现缺少这些契约片段（被改动或删除？）：\n"
