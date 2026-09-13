@@ -2531,8 +2531,10 @@ def _report_env_key_collisions(env_path):
 # 约定：子路径首页请带尾斜杠访问（.../demo/，url_for 生成的首页地址即带斜杠）；
 # 不带尾斜杠的裸路径无法可靠区分“子路径首页”与“根路径 404”，按 404 处理（防误伤根部署）。
 class BasePathMiddleware:
-    # 应用的扁平路由标记（新增顶层页面 / 接口前缀需同步追加）
-    _ROOT_MARKERS = ("/login", "/user", "/terms", "/privacy", "/api/", "/static/")
+    # 应用的扁平路由标记（新增顶层页面 / 接口前缀需同步追加）。
+    # _ROOT_PREFIXES 按"路径段前缀"比对，覆盖 `/组/页面` 两级路由（data/work/my 为分组）。
+    _ROOT_MARKERS = ("/login", "/user", "/terms", "/privacy")
+    _ROOT_PREFIXES = ("/api/", "/static/", "/data/", "/work/", "/my/", "/user/")
 
     def __init__(self, wsgi_app, base_path=None):
         self.wsgi_app = wsgi_app
@@ -2567,16 +2569,26 @@ class BasePathMiddleware:
         # 根路径部署：本身就是首页或已知路由 → 无前缀
         if path == "/" or path in cls._ROOT_MARKERS:
             return ""
-        if path.startswith("/api/") or path.startswith("/static/"):
+        # 以 "//" 开头的路径不是合法挂载前缀：切出来的前缀会进 SCRIPT_NAME，
+        # 而 url_for() 会把它拼成协议相对地址（`//evil.com/login`）——开放重定向。
+        # 反代通常合并重复斜杠（nginx merge_slashes on）故难触发，但直连时成立，直接拒绝。
+        if path.startswith("//"):
+            return ""
+        if path.startswith(cls._ROOT_PREFIXES):
             return ""
         # 按 "/" 边界切分，取【首个】命中：剩余部分为 "/"（子路径首页带尾斜杠）、
-        # 已知路由、或 /api/、/static/ 路由前缀时，切掉的部分即前缀（最短=最先命中）
+        # 已知路由、或应用自身的路由前缀时，切掉的部分即前缀（最短=最先命中）
         pos = path.find("/", 1)
         while pos != -1:
             rest = path[pos:]
             if (rest == "/" or rest in cls._ROOT_MARKERS
-                    or rest.startswith("/api/") or rest.startswith("/static/")):
-                return path[:pos]
+                    or rest.startswith(cls._ROOT_PREFIXES)):
+                prefix = path[:pos]
+                # 前缀本身必须是规范的绝对路径（无空段、无 ".."、"。"、反斜杠），
+                # 否则一律当根部署处理，不回填 SCRIPT_NAME
+                if "//" in prefix or any(seg in (".", "..") for seg in prefix.split("/")) or "\\" in prefix:
+                    return ""
+                return prefix
             pos = path.find("/", pos + 1)
         return ""
 
@@ -2957,15 +2969,59 @@ def create_app(host=None):
         if role is None:
             return redirect(url_for("login_page"))
         if role != "admin":
-            return redirect(url_for("user_page"))
+            return redirect(url_for("user_account_page"))
         return None
 
-    @app.route("/")
-    def index_page():
+    # ---- 页面路径：`组/页面`（数据 / 工作台 / 我的 + 用户端）----
+    # 分组标题与首段一致，页面与第二段一致，便于按 URL 反推归属。
+    @app.route("/data/dashboard")
+    def dashboard_page():
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/dashboard.html", "dashboard", ["数据", "数据总览"])
+        return _render_admin_page("pages/data_dashboard.html", "data-dashboard", ["数据", "数据总览"])
+
+    # 旧路径 → 新路径：书签/分享链接不失效。用 302 而非 308：本项目仍在演进，
+    # 永久重定向会被浏览器长期缓存，路径再调整时无法纠正。
+    # 值写**端点名**而不是路径字面量：redirect() 不做 SCRIPT_NAME 拼接，子路径部署
+    # （/tools/yiban-…/）下写死 "/work/accounts" 会把用户甩回域名根。
+    _MOVED_PAGES = {
+        "/logs": "logs_page",
+        "/accounts": "accounts_page",
+        "/users": "users_page",
+        "/settings": "settings_page",
+        "/mine": "my_account_page",
+        "/mine/calendar": "my_calendar_page",
+        "/user": "user_account_page",
+    }
+
+    def _moved_page_view(endpoint):
+        def view():
+            # 保留查询串：head_boot 的版本兜底跳 `/?v=<版本>`，丢掉 ?v= 会让它反复重试
+            qs = request.query_string.decode("utf-8", "ignore")
+            return redirect(url_for(endpoint) + (("?" + qs) if qs else ""), code=302)
+        return view
+
+    for _old, _target in _MOVED_PAGES.items():
+        app.add_url_rule(
+            _old,
+            endpoint="moved_" + _old.strip("/").replace("/", "_"),
+            view_func=_moved_page_view(_target),
+        )
+
+    @app.route("/")
+    def root_page():
+        """根路径：按登录态**一步**转到对应首页。
+
+        不做成到 /data/dashboard 的盲跳：未登录时会多一跳（/ → /data/dashboard → /login），
+        而 head_boot 的版本兜底跳的正是 `/?v=`，链越长越容易在弱网下闪现中间态。
+        """
+        role = _current_role()
+        if role is None:
+            return redirect(url_for("login_page"))
+        if role == "admin":
+            return redirect(url_for("dashboard_page"))
+        return redirect(url_for("user_account_page"))
 
     def _user_page_redirect():
         """用户端页面守卫：未登录 → 登录页；管理员 → 管理端首页。合规时返回 None。
@@ -2976,7 +3032,7 @@ def create_app(host=None):
         if role is None:
             return redirect(url_for("login_page"))
         if role != "user":
-            return redirect(url_for("index_page"))
+            return redirect(url_for("dashboard_page"))
         return None
 
     def _render_user_page(template, nav_key, crumbs):
@@ -2996,12 +3052,12 @@ def create_app(host=None):
             crumbs=crumbs,
         )
 
-    @app.route("/user")
-    def user_page():
+    @app.route("/user/account")
+    def user_account_page():
         blocked = _user_page_redirect()
         if blocked:
             return blocked
-        return _render_user_page("pages/user_accounts.html", "user-accounts", ["用户中心", "账号与设置"])
+        return _render_user_page("pages/user_account.html", "user-account", ["用户中心", "账号与设置"])
 
     @app.route("/user/calendar")
     def user_calendar_page():
@@ -3032,7 +3088,7 @@ def create_app(host=None):
             cnt += 1
             _login_loop[ip] = (cnt, first)
             if cnt < 4:
-                return redirect(url_for("index_page") if _current_role() == "admin" else url_for("user_page"))
+                return redirect(url_for("dashboard_page") if _current_role() == "admin" else url_for("user_account_page"))
             logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
         return render_template(
             "login.html",
@@ -3059,51 +3115,60 @@ def create_app(host=None):
 
     # 管理端各功能页。拆页而非单页 tab：URL 可书签/可分享、刷新不丢状态，
     # 且每页只加载自己的脚本（单页方案需一次性加载全部 5 个功能域的 JS）。
-    @app.route("/accounts")
+    @app.route("/work/accounts")
     def accounts_page():
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/accounts.html", "accounts", ["工作台", "账号管理"])
+        return _render_admin_page("pages/work_accounts.html", "work-accounts", ["工作台", "账号管理"])
 
-    @app.route("/logs")
+    @app.route("/data/logs")
     def logs_page():
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/logs.html", "logs", ["数据", "签到日志"])
+        return _render_admin_page("pages/data_logs.html", "data-logs", ["数据", "签到日志"])
 
-    @app.route("/users")
+    @app.route("/work/users")
     def users_page():
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/users.html", "users", ["工作台", "用户管理"])
+        return _render_admin_page("pages/work_users.html", "work-users", ["工作台", "用户管理"])
 
-    @app.route("/settings")
+    @app.route("/work/settings")
     def settings_page():
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/settings.html", "settings", ["工作台", "系统设置"])
+        return _render_admin_page("pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
 
-    @app.route("/mine")
-    def mine_page():
+    @app.route("/my/account")
+    def my_account_page():
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/mine.html", "mine", ["我的", "我的账号"])
+        return _render_admin_page("pages/my_account.html", "my-account", ["我的", "我的账号"])
 
     # 管理员本人的签到日历（与用户端 /user/calendar 同源）；个人域的一部分，
-    # 数据取本人邮箱归属账号（与 /mine 同口径，一人一号）。
-    @app.route("/mine/calendar")
-    def mine_calendar_page():
+    # 数据取本人邮箱归属账号（与 /my/account 同口径，一人一号）。
+    @app.route("/my/calendar")
+    def my_calendar_page():
         blocked = _admin_page_redirect()
         if blocked:
             return blocked
-        return _render_admin_page("pages/mine_calendar.html", "mine-calendar", ["我的", "我的日历"])
+        return _render_admin_page("pages/my_calendar.html", "my-calendar", ["我的", "我的日历"])
 
     # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
+    # 需要禁缓存的页面路径：全部页面路由 + 旧的被重定向路径（含根路径）
+    _NO_STORE_PAGES = set(_MOVED_PAGES) | {
+        "/", "/login", "/terms", "/privacy",
+        "/data/dashboard", "/data/logs",
+        "/work/accounts", "/work/users", "/work/settings",
+        "/my/account", "/my/calendar",
+        "/user/account", "/user/calendar",
+    }
+
     @app.after_request
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
@@ -3131,8 +3196,8 @@ def create_app(host=None):
             "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'; object-src 'none'"
         )
-        if request.path in ("/", "/login", "/user", "/terms", "/privacy",
-                            "/accounts", "/logs", "/users", "/settings", "/mine"):
+        # 页面一律禁缓存（含旧的被重定向路径），防止浏览器缓存旧版 HTML/JS 造成登录循环
+        if request.path in _NO_STORE_PAGES:
             resp.headers["Cache-Control"] = "no-store"
         elif request.path.startswith("/static/") and resp.status_code < 400:
             # 静态资源长缓存 30 天（版本变化由 ?v= 兜底）；404 等错误响应不缓存（防浏览器缓存 404）

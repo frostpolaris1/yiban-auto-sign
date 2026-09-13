@@ -126,9 +126,10 @@ class SubpathDeployTest(unittest.TestCase):
         r = self.c.get(P + "/")
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers.get("Location"), P + "/login")
+        # 旧路径 /user 先 302 到新路径（前缀必须带上），再由页面守卫转登录页
         r = self.c.get(P + "/user")
         self.assertEqual(r.status_code, 302)
-        self.assertEqual(r.headers.get("Location"), P + "/login")
+        self.assertEqual(r.headers.get("Location"), P + "/user/account")
 
     def test_subpath_page_static_api_prefixed(self):
         r = self.c.get(P + "/login")
@@ -143,10 +144,13 @@ class SubpathDeployTest(unittest.TestCase):
         self.assertEqual(self.c.get(P + "/foo").status_code, 404)
 
     def test_subpath_login_then_index(self):
-        # 前端在子路径下用 BASE 拼接登录接口；登录后访问子路径首页应渲染 200
+        # 前端在子路径下用 BASE 拼接登录接口；登录后访问根路径应转到数据总览并渲染 200
         r = self.c.post(P + "/api/login", json={"username": "admin", "password": "TestPass12345"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:120])
         r = self.c.get(P + "/")
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers.get("Location"), P + "/data/dashboard")
+        r = self.c.get(P + "/data/dashboard")
         self.assertEqual(r.status_code, 200)
         self.assertIn(f'const BASE = "{P}";', r.get_data(as_text=True))
 

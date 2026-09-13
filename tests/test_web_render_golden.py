@@ -222,8 +222,8 @@ class WebRenderGoldenTest(unittest.TestCase):
         }[page]()
         path = {
             "login": "/login",
-            "index": "/",
-            "user": "/user",
+            "index": "/data/dashboard",
+            "user": "/user/account",
             "user_calendar": "/user/calendar",
         }[page]
         r = client.get(path)

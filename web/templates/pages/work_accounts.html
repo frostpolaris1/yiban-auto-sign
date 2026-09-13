@@ -1,0 +1,214 @@
+{# 账号管理（管理端 /work/accounts）。
+   数据全部客户端拉取：
+     GET /api/accounts                  → 账号列表与签到状态
+     GET /api/users                     → 新增账号时的可绑定用户下拉
+     GET /api/accounts/<idx>/detail     → 编辑/手动签到前按需取完整手机号
+   手机号在列表层一律脱敏展示；完整号只存在于编辑弹窗的 dataset.full 与提交请求中。
+
+   信息架构：三组各自成标签页（待处理 / 正常 / 待删除），统计 KPI 与「待处理提醒」跟
+   待处理账号同页（用户要求：三者在同一页上）；容量信息并入数据总览页，本页不再重复展示。
+   标签切换由 core.js 的 [data-tab-group] 机制承担，故组内不再需要折叠态 —— 但保留
+   `.collapse-body/.collapse-inner` 这层包裹：它们是宽表格防横向溢出的守卫
+   （grid-template-columns 用 minmax(0,1fr) + min-width:0），去掉会让表格把整页顶宽。
+   「添加账号」是页面级主操作，独立于各表格，只在本页页头出现一次。 #}
+{% extends "layout_admin.html" %}
+{% from "macros/ui.html" import icon with context %}
+
+{% block title %}账号管理 · 易班自动签到{% endblock %}
+
+{% macro kpi(label, value_id, icon_name, tone) %}
+<article class="kpi-card c-{{ tone }}">
+  <div class="kpi-top">
+    <div class="kpi-identity">
+      <div class="kpi-icon {{ tone }}">{{ icon(icon_name) }}</div>
+      <div class="kpi-label">{{ label }}</div>
+    </div>
+  </div>
+  <div class="kpi-value" id="{{ value_id }}"><span class="skeleton skeleton--title dash-skel" aria-hidden="true"></span></div>
+</article>
+{% endmacro %}
+
+{% macro group_head(title, search_id, search_label, sub) %}
+<div class="panel-head acct-group-head">
+  <div class="panel-head-row">
+    <h2 class="panel-title">{{ title }}</h2>
+    <div class="acct-tools">
+      <label class="acct-search">
+        <span class="sr-only">{{ search_label }}</span>
+        <input type="search" class="input" id="{{ search_id }}" placeholder="名称 / 手机号 / 用户名">
+      </label>
+    </div>
+  </div>
+  <p class="panel-sub">{{ sub }}</p>
+</div>
+{% endmacro %}
+
+{% macro batch_bar(group, actions) %}
+<div class="acct-batch" id="batch-bar-{{ group }}" role="status" aria-live="polite" hidden>
+  <span class="acct-batch-count">已选 <strong id="batch-count-{{ group }}">0</strong> 个</span>
+  <div class="acct-batch-actions">
+    {% for label, key, cls in actions %}
+    <button type="button" class="btn {{ cls }} btn--sm" data-batch="{{ group }}:{{ key }}">{{ label }}</button>
+    {% endfor %}
+    <button type="button" class="btn btn--ghost btn--sm" data-batch-clear="{{ group }}">取消选择</button>
+  </div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="page-head page-head--split">
+  <div class="page-head-text">
+    <h1 class="page-title">账号管理</h1>
+    <p class="page-sub">审核、排序与手动签到；删除进入待删除列表（7 天内可恢复）。</p>
+  </div>
+  <button type="button" class="btn btn--primary" data-add-account>{{ icon('plus') }}添加账号</button>
+</div>
+
+{# 数据刷新的淡出/重渲染目标：包含三个标签页，切换标签不重建 DOM（搜索与勾选状态不丢） #}
+<div id="accounts-root">
+<div data-tab-group>
+  <div class="tabs-scroll">
+    <div class="tabs" role="tablist" aria-label="账号管理分区">
+      {# 计数放在标签上：切标签前就能看到各组的量 #}
+      <a class="tab is-active" role="tab" id="acct-tab-pending" aria-selected="true"
+         aria-controls="acct-panel-pending" href="#" data-tab-target="pending">
+        待处理账号 <span class="acct-count" id="accounts-pending-count"></span></a>
+      <a class="tab" role="tab" id="acct-tab-active" aria-selected="false"
+         aria-controls="acct-panel-active" href="#" data-tab-target="active">
+        正常账号 <span class="acct-count" id="accounts-active-count"></span></a>
+      <a class="tab" role="tab" id="acct-tab-deleted" aria-selected="false"
+         aria-controls="acct-panel-deleted" href="#" data-tab-target="deleted">
+        待删除账号 <span class="acct-count" id="accounts-deleted-count"></span></a>
+    </div>
+  </div>
+
+  <!-- 待处理账号：统计 KPI + 待处理提醒 + 待处理表（同一页） -->
+  <div class="tab-panel is-active" role="tabpanel" id="acct-panel-pending"
+       aria-labelledby="acct-tab-pending" data-tab-id="pending">
+    <section class="kpi-grid" aria-label="今日签到统计">
+      {{ kpi('今日成功', 'stat-success', 'circle-check', 'success') }}
+      {{ kpi('今日失败', 'stat-failed', 'circle-x', 'danger') }}
+      {{ kpi('待签', 'stat-waiting', 'clock', 'info') }}
+      {{ kpi('跳过', 'stat-skipped', 'circle-slash', 'muted') }}
+    </section>
+
+    {# 待处理提醒紧跟 KPI：数据回来时才显示，不把上面的卡片顶下去 #}
+    <p class="alert warning acct-pending-tip" id="pending-tip" role="status" hidden>
+      <span class="ico">{{ icon('clock') }}</span>
+      <span class="body">有 <strong id="pending-count">0</strong> 个账号待处理，请及时审核。</span>
+    </p>
+
+    <section class="card">
+      {{ group_head('待处理账号', 'pending-search', '搜索待处理账号',
+                    '通过后参与定时签到；驳回必须填写理由（将通知提交者）。') }}
+      <div id="pending-body" class="collapse-body is-open">
+        <div class="collapse-inner">
+          {{ batch_bar('pending', [('通过', 'approve', 'btn--primary'), ('驳回', 'reject', 'btn--ghost')]) }}
+          <div class="table-scroll">
+            <table class="data-table acct-table" aria-label="待处理账号">
+              <thead>
+                <tr>
+                  <th scope="col" class="acct-cell-check"><input type="checkbox" id="select-all-pending" aria-label="全选待处理账号"></th>
+                  <th scope="col">审核</th>
+                  <th scope="col" class="acct-cell-name">名称</th>
+                  <th scope="col" class="acct-cell-phone">手机号</th>
+                  <th scope="col" class="acct-col-md acct-cell-owner">归属</th>
+                  <th scope="col" class="acct-cell-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-pending-tbody"></tbody>
+            </table>
+          </div>
+          <p id="accounts-pending-empty" class="empty" hidden>
+            <span class="empty__icon">{{ icon('list') }}</span>
+            <span class="empty__msg">暂无待处理账号</span>
+          </p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 正常账号 -->
+  <div class="tab-panel" role="tabpanel" id="acct-panel-active"
+       aria-labelledby="acct-tab-active" data-tab-id="active">
+    <section class="card">
+      {{ group_head('正常账号', 'active-search', '搜索正常账号',
+                    '签到状态、排序与手动操作；删除进入待删除列表（7 天内可恢复）。') }}
+      <div id="active-body" class="collapse-body is-open">
+        <div class="collapse-inner">
+          <p class="acct-legend" aria-hidden="true">
+            <span class="acct-state acct-state--muted">{{ icon('clock') }}待签</span>
+            <span class="acct-state acct-state--ok">{{ icon('circle-check') }}成功</span>
+            <span class="acct-state acct-state--bad">{{ icon('circle-x') }}失败</span>
+            <span class="acct-state acct-state--warn">{{ icon('refresh-cw') }}重试/跳过</span>
+            <span class="acct-state acct-state--muted">{{ icon('circle-minus') }}无需/已取消</span>
+          </p>
+          {{ batch_bar('active', [('手动签到', 'signin', 'btn--primary'), ('删除', 'delete', 'btn--ghost')]) }}
+          <div class="table-scroll">
+            <table class="data-table acct-table" aria-label="正常账号">
+              <thead>
+                <tr>
+                  <th scope="col" class="acct-cell-check"><input type="checkbox" id="select-all-active" aria-label="全选正常账号"></th>
+                  <th scope="col">状态</th><th scope="col">#</th>
+                  <th scope="col" class="acct-cell-name">名称</th>
+                  <th scope="col" class="acct-cell-phone">手机号</th>
+                  <th scope="col" class="acct-col-lg">设备型号</th><th scope="col" class="acct-col-xl">自选</th>
+                  <th scope="col" class="acct-col-md acct-cell-owner">归属</th>
+                  <th scope="col">审核</th><th scope="col" class="acct-cell-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-tbody"></tbody>
+            </table>
+          </div>
+          <p id="accounts-empty" class="empty" hidden>
+            <span class="empty__icon">{{ icon('list') }}</span>
+            <span class="empty__msg">暂无账号，点右上角「添加账号」配置</span>
+          </p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 待删除账号（软删除保留期内） -->
+  <div class="tab-panel" role="tabpanel" id="acct-panel-deleted"
+       aria-labelledby="acct-tab-deleted" data-tab-id="deleted">
+    <section class="card">
+      {{ group_head('待删除账号', 'deleted-search', '搜索待删除账号',
+                    '软删除保留 7 天，期内可恢复；彻底删除将物理清除凭据（需管理员口令）。') }}
+      <div id="deleted-body" class="collapse-body is-open">
+        <div class="collapse-inner">
+          {{ batch_bar('deleted', [('恢复', 'restore', 'btn--primary'), ('彻底删除', 'purge', 'btn--ghost btn--danger-ghost')]) }}
+          <div class="table-scroll">
+            <table class="data-table acct-table" aria-label="待删除账号">
+              <thead>
+                <tr>
+                  <th scope="col" class="acct-cell-check"><input type="checkbox" id="select-all-deleted" aria-label="全选待删除账号"></th>
+                  <th scope="col" class="acct-cell-name">名称</th>
+                  <th scope="col" class="acct-cell-phone">手机号</th>
+                  <th scope="col" class="acct-col-md acct-cell-owner">归属</th>
+                  <th scope="col">删除时间</th>
+                  <th scope="col" class="acct-cell-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-deleted-tbody"></tbody>
+            </table>
+          </div>
+          <p id="accounts-deleted-empty" class="empty" hidden>
+            <span class="empty__icon">{{ icon('list') }}</span>
+            <span class="empty__msg">暂无待删除账号</span>
+          </p>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ request.script_root }}/static/js/components/account-form.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/row-menu.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/account-table.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/account-ops.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/work_accounts.js?v={{ web_version }}"></script>
+{% endblock %}

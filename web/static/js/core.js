@@ -26,7 +26,7 @@
   }
   // 邮箱展示层脱敏（幂等，与后端 _mask_email 同口径）：保留最多 3 个字符 + 域名；
   // 已含 * 或非邮箱（无 @ / @ 在首位）原样返回。完整邮箱只允许存在于 JS 内存态与
-  // 请求体/URL path，禁止写入 DOM 文本或属性（用户管理页据此渲染，见 pages/users.js）。
+  // 请求体/URL path，禁止写入 DOM 文本或属性（用户管理页据此渲染，见 pages/work_users.js）。
   function maskEmail(e) {
     e = String(e == null ? "" : e);
     if (e.indexOf("*") !== -1) return e;
@@ -592,7 +592,8 @@
       me = data;
       if (data && data.csrf_token) csrfToken = data.csrf_token;
       var name = data.username || data.email || "";
-      setText("[data-account-name]", name + (data.is_builtin_admin ? "（主管理员）" : ""));
+      // 名字只留本身：角色由下一行 [data-account-role] 表达，不再重复后缀
+      setText("[data-account-name]", name);
       setText("[data-account-email]", data.email || "");
       setText("[data-account-role]", roleLabel(data));
       var initial = String(data.username || data.email || "?").replace(/\s+/g, "").slice(0, 2).toUpperCase();
@@ -658,7 +659,7 @@
       var list = (data && data.accounts) || [];
       // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。
       // 只数 pending 会让徽标数小于页面里的待处理条数，同一条目两处不一致。
-      setNavBadge("accounts", list.filter(function (a) {
+      setNavBadge("work-accounts", list.filter(function (a) {
         return a && !a.deleted && (a.status === "pending" || a.status === "rejected");
       }).length);
     }).catch(function () {});
@@ -667,7 +668,7 @@
       // 待处理用户 = 名下有「待审核或已拒绝」账号的用户数。
       // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
       var review = list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
-      setNavBadge("users", review);
+      setNavBadge("work-users", review);
     }).catch(function () {});
   }
 

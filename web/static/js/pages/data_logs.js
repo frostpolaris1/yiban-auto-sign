@@ -1,9 +1,9 @@
 /* 签到日志页（管理端 /logs）行为。
    依赖 core.js（YB.api/el/$/toast/identity/maskPhone）与共享组件
-   components/account-ops.js（手动签到的「详情取号 → 提交」链路）。
+   components/date-field.js（自研日期选择，取代原生 input[type=date] 的 UA 面板）。
 
-   职责：手动签到下拉（只列生效未删账号）→ 日志检索/显示全部/导出/按日期查看/自动刷新
-   → 探针与签到事件的结构化时间线；页面可见且今天视图时 10s 静默轮询。
+   职责：日志检索/显示全部/导出/按日期查看/自动刷新 + 探针与签到事件的结构化时间线
+   （三块各自成标签页）；页面可见、日志标签激活且今天视图时 10s 静默轮询。
 
    脱敏：列表与日志行内的手机号均经 YB.maskPhone 幂等脱敏；手动签到的完整号只在
    account-ops 的请求体里流转，不写入 DOM。所有后端数据一律经 YB.el/textContent 写入。 */
@@ -25,8 +25,8 @@
   // __default 兜住未来可能新增的非失败状态；原始状态码始终保留在 title，信息不丢。
   var PROBE_MAP = { failed: ["异常", "bad"], __default: ["正常", "ok"] };
   var state = {
-    accounts: [], viewDate: "", search: "", all: false, autoRefresh: true,
-    curDate: "", busy: false, exporting: false, firstLoad: true, snap: ""
+    viewDate: "", search: "", all: false, autoRefresh: true,
+    curDate: "", exporting: false, firstLoad: true, snap: ""
   };
 
   /* ---------------- 小工具 ---------------- */
@@ -58,10 +58,6 @@
       history.replaceState(null, "", u.pathname + u.search + u.hash);  // 不 pushState：不堆历史
     } catch (e) { /* 无 history/URL 的环境静默降级 */ }
   }
-  function findAccount(idx) {
-    return state.accounts.filter(function (a) { return a && a.index === idx; })[0];
-  }
-
   /* ---------------- 日志渲染 ---------------- */
   function infoText(data) {
     if (state.search) return data.returned + " 行匹配 / 共 " + data.total_lines + " 行";
@@ -168,60 +164,8 @@
     });
   }
 
-  /* ---------------- 账号下拉与手动签到 ---------------- */
-  function syncSigninBtn() {
-    var sel = $("signin-select"), btn = $("signin-btn");
-    if (btn) btn.disabled = state.busy || !(sel && sel.value);
-  }
-
-  function fillSigninSelect() {
-    var sel = $("signin-select");
-    if (!sel) return;
-    var current = sel.value;
-    clear(sel);
-    var signable = state.accounts.filter(function (a) {
-      return a && a.status === "active" && !a.deleted;
-    });
-    if (!signable.length) {
-      sel.appendChild(YB.el("option", { value: "", text: "暂无签到账号" }));
-    } else {
-      signable.forEach(function (a) {
-        sel.appendChild(YB.el("option", {
-          value: String(a.index),
-          text: (a.display_name || ("账号" + a.index)) + " (" + YB.maskPhone(a.phone) + ")"
-        }));
-      });
-      if (current) sel.value = current;
-    }
-    syncSigninBtn();
-  }
-
-  function loadAccounts() {
-    return YB.api("GET", "/api/accounts").then(function (data) {
-      state.accounts = (data && data.accounts) || [];
-      fillSigninSelect();
-    }).catch(function () { /* 下拉失败静默：日志仍可用 */ });
-  }
-
-  function refreshAll() { loadAccounts(); loadLogs(); }
-
-  // 手动签到走共享组件：内部按需取详情拿完整手机号，完整号只在请求体里流转。
-  var ops = YB.accountOps.create({
-    busy: function (on) {
-      var was = state.busy;
-      state.busy = on;
-      syncSigninBtn();
-      if (was && !on) refreshAll();   // 请求结束后刷新下拉与日志（结果约 30 秒后落盘）
-    },
-    refresh: refreshAll
-  });
-
-  function doSignin() {
-    var sel = $("signin-select");
-    var acc = sel && sel.value ? findAccount(Number(sel.value)) : null;
-    if (!acc) { YB.toast.error("请先选择要签到的账号"); return; }
-    ops.signin(acc);
-  }
+  // 手动签到已移出本页：能力与「账号管理」的单账号/批量手动签到重复，只保留一处。
+  // 页面因此不再请求 /api/accounts，也不再引入 account-ops 组件。
 
   /* ---------------- 导出（fetch 下载，429/404 可提示） ---------------- */
   function exportLogs() {
@@ -275,8 +219,6 @@
   function on(id, evt, fn) { var n = $(id); if (n) n.addEventListener(evt, fn); }
 
   function bind() {
-    on("signin-select", "change", syncSigninBtn);
-    on("signin-btn", "click", doSignin);
     on("export-btn", "click", exportLogs);
 
     var search = $("log-search"), timer = null;
@@ -304,7 +246,7 @@
     });
     on("log-today-btn", "click", function () {
       state.viewDate = ""; writeUrlDate("");
-      var d = $("log-date"); if (d) d.value = "";
+      if (YB.dateField) YB.dateField.set("log-date", ""); else { var d = $("log-date"); if (d) d.value = ""; }
       resetSnap(); loadLogs();
     });
     on("log-auto-refresh", "change", function () {
@@ -312,21 +254,13 @@
       try { localStorage.setItem(AUTO_KEY, state.autoRefresh ? "1" : "0"); } catch (e) { /* 隐私模式忽略 */ }
       if (state.autoRefresh) loadLogs();
     });
-
-    Array.prototype.forEach.call(document.querySelectorAll(".log-collapse"), function (btn) {
-      btn.addEventListener("click", function () {
-        var open = btn.getAttribute("aria-expanded") !== "true";
-        btn.setAttribute("aria-expanded", String(open));
-        var body = document.getElementById(btn.getAttribute("aria-controls"));
-        if (body) body.classList.toggle("is-open", open);
-      });
-    });
   }
 
   function init() {
     state.viewDate = readUrlDate();
-    var dateInput = $("log-date");
-    if (dateInput && state.viewDate) dateInput.value = state.viewDate;
+    // 日期控件先挂载：原生 input[type=date] 由它接管（同 id 同值，取值仍是 $(id).value）
+    if (YB.dateField) YB.dateField.mount();
+    if (state.viewDate && YB.dateField) YB.dateField.set("log-date", state.viewDate);
     try {
       var saved = localStorage.getItem(AUTO_KEY);
       state.autoRefresh = saved === null ? true : saved === "1";
@@ -337,7 +271,6 @@
     bind();
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
-      loadAccounts();
       loadLogs();
       setInterval(pollTick, 10000);
       document.addEventListener("visibilitychange", function () { pollTick(); });

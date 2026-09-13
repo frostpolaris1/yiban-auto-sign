@@ -166,11 +166,40 @@
   function loadSettings() {
     return YB.api("GET", "/api/settings").then(function (d) {
       renderCapacity((d && d.capacity) || null);
+      renderCapacityRows(d || null);
       renderPause(d || null);
     }).catch(function () {
       renderCapacity(null);
+      renderCapacityRows(null);
       renderPause(null);
     });
+  }
+  /* ---------------- 容量卡（原在账号管理页，并入总览后管理端只此一处） ---------------- */
+  function capacityText(cur, max, breakdown) {
+    var used = String(cur);
+    if (!(Number(max) > 0)) return used + " / 不限";
+    var parts = [];
+    if (breakdown) {
+      parts.push("正常 " + (breakdown.normal || 0));
+      parts.push("用户暂停 " + (breakdown.user_paused || 0));
+      parts.push("账密暂停 " + (breakdown.cred_paused || 0));
+    }
+    return used + " / " + max + (parts.length ? "（" + parts.join(" · ") + "）" : "");
+  }
+  function renderCapacityRows(d) {
+    var acc = $("capacity-accounts"), usr = $("capacity-users"), est = $("capacity-estimate");
+    if (!acc || !usr || !est) return;
+    if (!d) {
+      failNote(acc, "加载失败"); failNote(usr, "加载失败"); failNote(est, "加载失败");
+      return;
+    }
+    var c = d.capacity || {};
+    txt(acc, capacityText(c.accounts, c.accounts_max, c.accounts_breakdown));
+    txt(usr, capacityText(c.users, c.users_max, null));
+    var e = d.capacity_estimate || {};
+    txt(est, "容量 " + (e.accounts_cap != null ? e.accounts_cap : "—") +
+      " · 当前 " + (e.current_accounts != null ? e.current_accounts : "—") +
+      " · 潜在 " + (e.potential_load != null ? e.potential_load : "—"));
   }
   function renderCapacity(cap) {
     var av = $("kpi-accounts-value"), as = $("kpi-accounts-sub");
@@ -436,28 +465,24 @@
     ]);
   }
 
-  /* ---------------- KPI：待处理事项 ---------------- */
+  /* ---------------- KPI：待处理账号 ---------------- */
   function loadPending() {
-    // 待处理账号口径 = 账号管理「待处理账号」组：待审核 + 已拒绝，单一口径不叠加。
-    // 待处理用户 = 名下有上述账号的用户数（/api/users 的 review_count 正是该口径）。
-    // 不可把 review_count 与 pending_count 相加：review_count 已是 pending+rejected 的
-    // 超集，相加会把同一批待审核账号算两遍。
-    var pendingAccounts = YB.api("GET", "/api/accounts").then(function (d) {
+    // 口径与账号管理「待处理账号」组、侧栏徽标完全一致：待审核 + 已拒绝，单一口径不叠加。
+    // 「名下有此类账号的用户数」不再上屏：全量数据下它与账号数相等，读起来是同一件事说两遍。
+    YB.api("GET", "/api/accounts").then(function (d) {
+      var v = $("kpi-pending-value"), sub = $("kpi-pending-sub");
       var list = (d && d.accounts) || [];
-      return list.filter(function (a) {
-        return a && !a.deleted && (a.status === "pending" || a.status === "rejected");
-      }).length;
-    }).catch(function () { return null; });
-    var pendingUsers = YB.api("GET", "/api/users").then(function (d) {
-      var list = (d && d.users) || [];
-      return list.filter(function (u) { return Number(u && u.review_count) > 0; }).length;
-    }).catch(function () { return null; });
-    Promise.all([pendingAccounts, pendingUsers]).then(function (res) {
-      var a = res[0], u = res[1], v = $("kpi-pending-value"), sub = $("kpi-pending-sub");
-      if (a === null && u === null) { failNote(v, "—"); failNote(sub, "待处理数据加载失败"); return; }
-      a = a || 0; u = u || 0;
-      setValue(v, num(a + u), null);
-      txt(sub, "待处理账号 " + num(a) + " · 待处理用户 " + num(u) + "（账号含已拒绝）");
+      var pending = 0, rejected = 0;
+      list.forEach(function (a) {
+        if (!a || a.deleted) return;
+        if (a.status === "pending") pending += 1;
+        else if (a.status === "rejected") rejected += 1;
+      });
+      setValue(v, num(pending + rejected), null);
+      txt(sub, "待审核 " + num(pending) + " · 已拒绝 " + num(rejected));
+    }).catch(function () {
+      failNote($("kpi-pending-value"), "—");
+      failNote($("kpi-pending-sub"), "待处理账号加载失败");
     });
   }
 

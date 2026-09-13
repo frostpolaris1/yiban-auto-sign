@@ -28,7 +28,7 @@ user / login 只有一份，是 index 独有的漂移。修复后统一留在页
 
 ## 2026-09-12 收窄（判据意图不放宽，只放开合法用法）
 
-`/settings` 按功能重做后改用模板 `.tabs` 做**页内分区**（六个配置分区，契约
+`/work/settings` 按功能重做后改用模板 `.tabs` 做**页内分区**（六个配置分区，契约
 `[data-tab-group]` + `.tab[data-tab-target]` + `.tab-panel[data-tab-id]`，切换由 core.js
 承担）。原先一刀切禁止 `data-tab-group` 会误伤这个合法用法，故收窄为：
 
@@ -47,7 +47,7 @@ user / login 只有一份，是 index 独有的漂移。修复后统一留在页
 `frontend_source` 聚合读取（模板 + extends/include 片段 + 外链自研静态资源）：
   · `index.html` —— 旧栈单页（已无路由渲染，文件暂留）；
   · `login.html` —— 已迁到 `layout_auth.html` 外壳，页脚由 `partials/footer.html` 承载；
-  · `user_accounts.html` —— 用户端「账号与设置」，外壳 `layout_user.html`（复用 Adminator .shell）；
+  · `user_account.html` —— 用户端「账号与设置」，外壳 `layout_user.html`（复用 Adminator .shell）；
   · `user_calendar.html` —— 用户端「签到日历」，同一外壳，页脚同样来自共享片段。
 只有聚合读取才能让"整页唯一条目恰好一次"在"条目搬进共享页脚"后的新形态继续成立
 （否则 login/user 会读到 0 次而误报缺失）。
@@ -63,7 +63,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(BASE, "web", "templates")
 APP_PY = os.path.join(BASE, "web", "app.py")
 
-PAGE_TEMPLATES = ("index.html", "login.html", "pages/user_accounts.html", "pages/user_calendar.html")
+PAGE_TEMPLATES = ("index.html", "login.html", "pages/user_account.html", "pages/user_calendar.html")
 
 # 新管理端外壳与页面模板（换壳后路由实际渲染的载体），用于"无 tab 显隐"判据。
 ADMIN_SHELL = (
@@ -73,13 +73,13 @@ ADMIN_SHELL = (
     "partials/footer.html",
 )
 ADMIN_PAGES = (
-    "pages/dashboard.html",
-    "pages/accounts.html",
-    "pages/logs.html",
-    "pages/users.html",
-    "pages/settings.html",
-    "pages/mine.html",
-    "pages/mine_calendar.html",
+    "pages/data_dashboard.html",
+    "pages/data_logs.html",
+    "pages/work_accounts.html",
+    "pages/work_users.html",
+    "pages/work_settings.html",
+    "pages/my_account.html",
+    "pages/my_calendar.html",
 )
 
 # 客户端 tab 显隐机制的特征串。
@@ -101,7 +101,7 @@ UNIQUE_MARKERS = {
 }
 
 # 侧栏 items 元组：('key', '/href', 'icon', '文案')
-_NAV_ITEM_RE = re.compile(r"\(\s*'(\w+)'\s*,\s*'(/[^']*)'\s*,")
+_NAV_ITEM_RE = re.compile(r"\(\s*'([\w-]+)'\s*,\s*'(/[^']*)'\s*,")
 # 页面路由：只取静态路径（含 <参数> 的动态路由不可能是导航目标）
 _ROUTE_RE = re.compile(r'@app\.route\(\s*["\'](/[^"\'<>]*)["\']')
 

@@ -311,7 +311,7 @@
   });
 
   window.SignCalendar = { render: render, placeholder: showLogPlaceholder };
-  window.renderCalendar = render;   // 兼容旧调用名（pages/mine.js 等）
+  window.renderCalendar = render;   // 兼容旧调用名（pages/my_account.js 等）
   // 页面里没有日志面板时不显示占位（由页面模板自带空态）
   document.addEventListener("DOMContentLoaded", function () {
     if (logBody() && !logBody().querySelector(".sc-empty, .log-view")) showLogPlaceholder();

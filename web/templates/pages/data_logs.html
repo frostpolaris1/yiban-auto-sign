@@ -1,0 +1,137 @@
+{# 签到日志（管理端 /data/logs）。
+   数据全部客户端拉取：
+     GET /api/logs                      → 日志正文 + 行数信息 + 探针/签到事件
+     GET /api/logs/export               → 按日期下载脱敏副本（限速）
+   手机号在列表与日志层一律脱敏展示；探针/签到事件用结构化列表渲染（非 emoji 文本流），
+   所有后端数据经 YB.el/textContent 写入，不用 innerHTML。
+
+   信息架构：三块内容各自成标签页（日志 / 探针记录 / 签到事件），一次只渲染一屏，
+   长列表在卡内滚动而不是把整页拉长。手动签到已移除 —— 它的能力与「账号管理」的
+   单账号/批量手动签到重复，留一处即可（页头因此也不再有主操作按钮）。
+   卡头统一 .panel-head 两段式（标题行 + 整宽说明，不画分隔线）。 #}
+{% extends "layout_admin.html" %}
+{% from "macros/ui.html" import icon with context %}
+
+{% block title %}签到日志 · 易班自动签到{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">签到日志</h1>
+  <p class="page-sub">检索、导出与按日期查看；探针记录与签到事件各自成标签页。</p>
+</div>
+
+<div data-tab-group>
+  {# 窄屏 tab 条可横滑：外层滚动容器，避免整页横向滚动 #}
+  <div class="tabs-scroll">
+    <div class="tabs" role="tablist" aria-label="签到日志分区">
+      <a class="tab is-active" role="tab" id="log-tab-main" aria-selected="true"
+         aria-controls="log-panel-main" href="#" data-tab-target="main">日志</a>
+      {# 计数直接放在标签上：省掉卡内一行「共 N 条」，切标签前就能看到量 #}
+      <a class="tab" role="tab" id="log-tab-probe" aria-selected="false"
+         aria-controls="log-panel-probe" href="#" data-tab-target="probe">
+        探针记录 <span class="log-count" id="probe-count">0</span></a>
+      <a class="tab" role="tab" id="log-tab-signev" aria-selected="false"
+         aria-controls="log-panel-signev" href="#" data-tab-target="signev">
+        签到事件 <span class="log-count" id="signev-count">0</span></a>
+    </div>
+  </div>
+
+  <!-- 日志：检索 / 显示全部 / 导出 / 按日期查看 / 自动刷新。
+       行数信息（#log-info）与检索、按钮同处一条工具行 —— 曾单独占一整行（.panel-sub），
+       把工具行与日期行硬生生隔开，573px 下同卡出现 5 段各占一行。 -->
+  <div class="tab-panel is-active" role="tabpanel" id="log-panel-main"
+       aria-labelledby="log-tab-main" data-tab-id="main">
+    <section class="card log-main-card">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">签到日志 <span class="log-file" id="log-file">sign-YYYY-MM-DD.log</span></h2>
+          <div class="log-tools">
+            <label class="log-search">
+              <span class="sr-only">检索日志</span>
+              <input type="search" class="input" id="log-search" placeholder="检索日志关键字">
+            </label>
+            <button type="button" class="btn btn--ghost btn--sm" id="log-all-btn" aria-pressed="false">显示全部</button>
+            <button type="button" class="btn btn--ghost btn--sm" id="export-btn">导出</button>
+            <span class="log-info" id="log-info" role="status">正在加载日志…</span>
+          </div>
+        </div>
+      </div>
+
+      {# 日期行：左侧「选日期 + 查看 + 回到今天」一组，右侧自动刷新开关。
+         历史日期提示（#log-date-tip）另起一行 —— 与开关同排时，提示折行会把开关挤到
+         视觉"悬空"的位置（573px 实拍）。 #}
+      <div class="log-datebar">
+        <div class="log-datebar__group">
+          <label class="log-datebar__label" for="log-date">按日期查看</label>
+          <div class="date-field" data-date-field="log-date" data-title="按日期查看日志"
+               data-placeholder="选择日期">
+            <input type="date" id="log-date" class="input log-datebar__date">
+          </div>
+          <button type="button" class="btn btn--ghost btn--sm" id="log-view-btn">查看</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="log-today-btn" hidden>回到今天</button>
+        </div>
+        <label class="switch log-auto" title="自动刷新日志">
+          <input id="log-auto-refresh" type="checkbox" checked>
+          <span class="track" aria-hidden="true"></span>
+          <span class="log-auto__text">自动刷新</span>
+        </label>
+      </div>
+      <p class="log-date-tip" id="log-date-tip"></p>
+
+      <!-- role="log" 隐含 aria-live=polite；但本区 10s 轮询会整段改写，读屏会被反复播报。
+           显式 aria-live="off"：日志由管理员主动阅读，不做实时播报。 -->
+      <pre id="log-box" class="log-box" role="log" aria-live="off"
+           aria-label="签到日志" tabindex="0"></pre>
+      <p class="empty" id="log-empty" hidden>
+        <span class="empty__icon">{{ icon('list') }}</span>
+        <span class="empty__msg">暂无签到日志，等待定时任务执行…</span>
+      </p>
+    </section>
+  </div>
+
+  <!-- 探针记录：健康检查对易班接口的探测结果 -->
+  <div class="tab-panel" role="tabpanel" id="log-panel-probe"
+       aria-labelledby="log-tab-probe" data-tab-id="probe">
+    <section class="card log-fold">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">探针记录</h2>
+        </div>
+        <p class="panel-sub">健康检查对易班接口的探测结果（非 failed 一律记为正常，原始状态码见行尾 title）。</p>
+      </div>
+      <div class="ev-scroll" role="region" aria-label="探针记录列表" tabindex="0">
+        <ul class="ev-list" id="probe-list"></ul>
+        <p class="empty" id="probe-empty" hidden>
+          <span class="empty__icon">{{ icon('activity') }}</span>
+          <span class="empty__msg">当日无探针记录</span>
+        </p>
+      </div>
+    </section>
+  </div>
+
+  <!-- 签到事件：当日时间线（含重试与跳过迁移、尝试次数） -->
+  <div class="tab-panel" role="tabpanel" id="log-panel-signev"
+       aria-labelledby="log-tab-signev" data-tab-id="signev">
+    <section class="card log-fold">
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">签到事件</h2>
+        </div>
+        <p class="panel-sub">当日签到事件时间线（含重试与跳过迁移，尝试次数）。</p>
+      </div>
+      <div class="ev-scroll" role="region" aria-label="签到事件列表" tabindex="0">
+        <ul class="ev-list" id="signev-list"></ul>
+        <p class="empty" id="signev-empty" hidden>
+          <span class="empty__icon">{{ icon('activity') }}</span>
+          <span class="empty__msg">当日无签到事件</span>
+        </p>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ request.script_root }}/static/js/components/date-field.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/data_logs.js?v={{ web_version }}"></script>
+{% endblock %}

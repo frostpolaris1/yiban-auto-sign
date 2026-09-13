@@ -6,7 +6,7 @@
 旧守卫钉的是 `web/static/js/app.js`（2765 行单页脚本）按**连续源区间**拆成 7 个
 classic 切片、由 `templates/index.html` 按序加载。前端换壳为多页 MPA 后：
 
-  · `index.html` 已无路由渲染（`/` 由 `pages/dashboard.html` + `layout_admin.html` 承载），
+  · `index.html` 已无路由渲染（`/data/dashboard` 由 `pages/data_dashboard.html` + `layout_admin.html` 承载），
     它的加载顺序不再是运行前提；
   · 页面脚本重写为 IIFE 页面模块（`pages/*.js`）与共享组件（`components/*.js`），
     文件间不再有「原 app.js 的连续区间」关系，源区间连续性无从声明也无意义。
@@ -24,7 +24,7 @@ classic 切片、由 `templates/index.html` 按序加载。前端换壳为多页
    引用的 `/static/js/...` 都必须存在；且按 extends 展开后的有效加载顺序里
    `core.js` 先于其它模块。
 3. 全部自研 JS（排除 `static/vendor/`）的顶层声明不得重名。
-4. `pages/accounts.js`（重写对象）不得再引用已退役的单页脚本 `app.js`。
+4. `pages/work_accounts.js`（重写对象）不得再引用已退役的单页脚本 `app.js`。
 """
 
 import glob
@@ -46,7 +46,7 @@ REQUIRED_MODULES = (
     "components/account-table.js",
     "components/account-ops.js",
     "components/user-ops.js",
-    # 个人域共享组件（/user 与 /mine 共用，禁止第二份实现）
+    # 个人域共享组件（/user/account 与 /my/account 共用，禁止第二份实现）
     "components/change-password.js",
     "components/my-accounts.js",
     "components/my-mail-notify.js",
@@ -54,6 +54,7 @@ REQUIRED_MODULES = (
     "components/time-field.js",
     "components/select-field.js",
     "components/range-field.js",
+    "components/date-field.js",
     "components/sign-calendar-view.js",
     "components/settings-schedule.js",
     "components/settings-health.js",
@@ -61,12 +62,12 @@ REQUIRED_MODULES = (
     "components/settings-mail.js",
     "components/settings-quota.js",
     "components/settings-switches.js",
-    "pages/accounts.js",
-    "pages/user_accounts.js",
-    "pages/users.js",
-    "pages/settings.js",
-    "pages/mine.js",
-    "pages/mine_calendar.js",
+    "pages/work_accounts.js",
+    "pages/user_account.js",
+    "pages/work_users.js",
+    "pages/work_settings.js",
+    "pages/my_account.js",
+    "pages/my_calendar.js",
 )
 
 # 实际渲染的页面模板：layout_*.html（外壳，自带 core.js）+ pages/*.html（正文，含 block scripts）
@@ -98,9 +99,9 @@ _SVG_RHS_RE = re.compile(r"^\s*svg\(")
 # 再引入数据拼接；受本批审查的 users.js / accounts.js / settings.js / mine.js 必须为空。
 # 旧文件待 P3/P4 重写时清理（settings.js / mine.js 已重写，故移出清单）。
 _LEGACY_INNERHTML_PAGES = frozenset({
-    "dashboard.js", "login.js",
+    "data_dashboard.js", "login.js",
 })
-_REVIEWED_PAGES = ("users.js", "accounts.js", "settings.js")
+_REVIEWED_PAGES = ("work_users.js", "work_accounts.js", "work_settings.js")
 
 # user-ops.js 的 LIMIT 与 web/app.py 的 BATCH_OP_LIMIT 必须同源
 _JS_LIMIT_RE = re.compile(r"\bvar\s+LIMIT\s*=\s*(\d+)\s*;")
@@ -173,7 +174,7 @@ class JsAssemblyGuardTest(unittest.TestCase):
     def test_active_templates_have_no_duplicate_element_ids(self):
         """活模板内 `id="..."` 不得重复 —— 同 id 会让 `YB.$`（getElementById）只取文档序第一个。
 
-        `pages/settings.html` 曾同时存在 `<section id="set-announcement">` 与
+        `pages/work_settings.html` 曾同时存在 `<section id="set-announcement">` 与
         `<textarea id="set-announcement">`：回填写进 section（textarea 恒空）、保存读
         `section.value`（undefined）→ 每次保存都等同清空公告。浏览器对此零报错，
         写代码时也看不出，只有本守卫能静态拦下。
@@ -247,12 +248,12 @@ class JsAssemblyGuardTest(unittest.TestCase):
             )
 
     def test_accounts_page_module_does_not_reference_retired_app_js(self):
-        """重写后的 `pages/accounts.js` 不得再引用已退役的 `app.js` 或旧切片区间标记。"""
-        src = _read(os.path.join(JS_DIR, "pages", "accounts.js"))
+        """重写后的 `pages/work_accounts.js` 不得再引用已退役的 `app.js` 或旧切片区间标记。"""
+        src = _read(os.path.join(JS_DIR, "pages", "work_accounts.js"))
         for bad in ("app.js", "L246-L869", "L870-L1058"):
             self.assertNotIn(
                 bad, src,
-                f"pages/accounts.js 仍引用退役的旧栈标记 {bad!r}：页面脚本应为独立 IIFE 模块",
+                f"pages/work_accounts.js 仍引用退役的旧栈标记 {bad!r}：页面脚本应为独立 IIFE 模块",
             )
 
     def test_reviewed_pages_do_not_concat_data_with_innerhtml(self):
@@ -312,7 +313,7 @@ class JsAssemblyGuardTest(unittest.TestCase):
 
     # 唯一的裸 fetch 例外：日志导出是**文件下载**（blob），YB.api 只处理 JSON 响应，
     # 无法替代。登记在此并在判据里说明原因，避免把"绕过 CSRF"的写法混进来。
-    _BARE_FETCH_ALLOW = frozenset({"logs.js"})
+    _BARE_FETCH_ALLOW = frozenset({"data_logs.js"})
 
     def test_pages_and_components_do_not_use_bare_fetch(self):
         """`pages/*.js` 与 `components/*.js` 不得裸用 `fetch` —— 必须走 `YB.api`。
