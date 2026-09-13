@@ -978,16 +978,23 @@ textarea {
 .stub-list li { padding-left: 1.4em; text-indent: -1.4em; }
 .stub-list li::marker { color: var(--primary); }
 
-/* KPI 卡入场动画改为只做位移、不动透明度。
-   Adminator 的 rise-in 以 opacity:0 起步并带 60/120/180/240ms 错峰延迟；卡片内容由
-   前端刷新时重建节点，动画随之重放，导致刷新瞬间整排卡片透明（实测 opacity:0）。
-   去掉透明度维度后仍有入场位移，但不会再出现"卡片消失"的观感。 */
-@keyframes yb-card-in { from { transform: translateY(10px); } to { transform: translateY(0); } }
-.kpi-card { animation: yb-card-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+/* 卡片/网格入场动画：只做位移、不动透明度（P23 同族收敛）。
+   Adminator 的 rise-in 以 opacity:0 起步；卡片内容由前端刷新时重建节点，动画随之
+   重放，会导致刷新瞬间整排卡片透明（实测 opacity:0）。去掉透明度维度后仍有入场
+   位移，但不会再出现"卡片消失"的观感。位移 10px → 6px（大面积元素 ≤6px 的项目规矩）。
+   节奏统一 200ms 单段 --ease-out-strong（面板/卡片入场 160–240ms 标准档），
+   曲线不再用 --theme-ease，与 .grid 覆盖保持同一族。 */
+@keyframes yb-card-in { from { transform: translateY(6px); } to { transform: translateY(0); } }
+.kpi-card { animation: yb-card-in 200ms var(--ease-out-strong) both; }
 /* vendor 的 .kpi-card:nth-child(n) 逐卡 stagger（60–240ms）特异度高于 .kpi-card，
    只在 .kpi-card 上写 animation-delay 覆盖不到；必须用同特异度的 nth-child(n) 归零，
    否则实际入场最坏 = 240ms 延迟 + 200ms 动画。 */
 .kpi-card:nth-child(n) { animation-delay: 0ms; }
+/* vendor 的 .grid 入场是 rise-in 600ms + 260ms 延迟（合计 860ms），远超标准节奏。
+   同特异度后加载覆盖：animation 简写同时把 260ms delay 归零；vendor .grid 无逐格
+   stagger，无需另处理。本条必须留在第 20 节 reduce 大媒询之前，否则会覆盖 reduce
+   分支里的 animation:none（同特异度后者胜）。 */
+.grid { animation: yb-card-in 200ms var(--ease-out-strong) both; }
 @media (prefers-reduced-motion: reduce) { .kpi-card { animation: none; } }
 
 /* Adminator 的小标签样式按大写拉丁文设计（带 letter-spacing + uppercase），
@@ -1869,6 +1876,16 @@ html[data-theme="dark"] {
 
 /* ---- 19.5 账号卡片 / 状态行 / 日志块 ---- */
 .account-list { display: flex; flex-direction: column; gap: 12px; }
+/* 「我的账号」列表整段重渲染（保存后 reload / 失败重试）的交换过渡（P23）：
+   慢请求才播（JS 侧 80ms 阈值，同 #accounts-root 口径）。只动 opacity/transform；
+   is-swapping 是退出方向 → ease-in-strong，基类 ease-out-strong 留给进入。
+   reduce 全禁（对齐 #accounts-root 的就地媒询）。 */
+#account-list { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
+#account-list.is-swapping { opacity: 0; transform: translateY(3px); transition-timing-function: var(--ease-in-strong); }
+@media (prefers-reduced-motion: reduce) {
+  #account-list { transition: none; }
+  #account-list.is-swapping { opacity: 1; transform: none; }
+}
 .account-card {
   padding: 16px;
   border: 1px solid var(--border);
