@@ -158,7 +158,10 @@ textarea {
   place-items: center;
   width: 18px;
   height: 18px;
-  margin-top: 1px;
+  /* 单行文案下图标盒中心 == 文字墨迹盒中心（实测 dC +0.05px；原 1px 补偿使图标
+     相对首行墨迹低 1.05px）。多行文案同样成立：flex-start 下图标锚首行，
+     图标盒(18px) 中心与首行墨迹中心本就重合，无需额外补偿。 */
+  margin-top: 0;
   flex-shrink: 0;
 }
 .toast__icon svg {
@@ -3680,3 +3683,50 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 .tab-panel > .alert + .card { margin-top: 16px; }
 /* 面板内的组头不再承担折叠间距（折叠改由标签页承担），下边距归零交给 .collapse-body */
 body[data-page="work-users"] .tab-panel .usr-group-head { margin-bottom: 0; }
+
+/* ==========================================================================
+   32. 行内图标/徽标与文字的基线对齐（全站共享规则，P16 图二/图三）
+   --------------------------------------------------------------------------
+   根因（playwright 实测：getBoundingClientRect + Range 文字盒 + canvas 墨迹）：
+   行盒基线由字体栈第一支的 strut（Inter，ascent 0.969em）决定，而 CJK 墨迹
+   挂在基线上方（墨迹中心 ≈ 基线上 0.38em）——于是「行盒中心 ≠ 文字墨迹中心」，
+   偏差随字号/行高/字体族在 0.06–1.41px 间变化：
+     · flex 行（align-items:center）把图标盒中心对到**行盒中心**，图标比文字
+       墨迹**低**：.acct-state(11.5px) +0.91 / .btn--sm(11.5px) +0.91 /
+       .nav-link(13px, lh1.2) +0.80 / .range|.time-trigger-hint(12px) +0.80 /
+       .notif-label +0.52 / .sc-swatch 与 .dash-cal-key 色块(11.5px) +0.91 /
+       .dash-health-label(12.5px) +0.19 / .btn(13px) +0.06（均为 Range 盒口径）；
+     · 文本行里的 inline-flex 徽标按**基线**对齐（徽标内文字基线 == 外部文字
+       基线），徽标盒中心比名称墨迹中心**低** 2.34px（.acct-name-main 的
+       「待删除」徽标 = P16 图三）；
+   例外：.sidebar-clock 的文字走等宽栈（JetBrains Mono strut 更高），实测墨迹
+   本就与图标盒对齐（−0.09px）；.brand-logo 是 32px 品牌方块与两行文字块的
+   块级配对，不属行内图标。
+   处置 = 两条共享规则（不改配色 / 不改间距节奏 / 不改 DOM 结构）：
+     A. 行内图标/色块统一光学上移 0.5px（translate 不参与布局，行高与盒尺寸
+        不变）。改后全部位点 |dC| ≤ 0.44px（改前最大 0.91px，P16 图二）。
+     B. 徽标基线补偿：.badge 按自身字号上抬 0.24em（实测 2.5px @10.5px，
+        改后 dC −0.16px）。flex 行内 vertical-align 不生效（无副作用）；表格
+        单元格内 td vertical-align:middle 会让整行盒重新居中（实测审核列徽标
+        对格心偏差恒为 0，不受影响）。
+   判据：|图标/徽标盒中心Y − 文字墨迹盒(Range)中心Y| ≤ 0.5px
+   （docs/refactor/28-polish-backlog.md 图二/图三）。
+   ========================================================================== */
+:where(
+  .btn > svg,
+  .nav-link > svg,
+  .acct-state > svg,
+  .dash-health-label > svg,
+  .notif-label > svg,
+  .range-trigger-hint > svg,
+  .time-trigger-hint > svg,
+  .dd-menu-item > svg,
+  .dash-trend > svg,
+  .sc-legend li > i,
+  .dash-cal-key > i
+) {
+  translate: 0 -0.5px;
+}
+.badge {
+  vertical-align: 0.24em;
+}
