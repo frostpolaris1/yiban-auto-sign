@@ -5,7 +5,11 @@
    页面 settings.js 对非主管理员隐藏 tab 按钮与面板）。
 
    两个开关都是危险语义：先 confirmDialog 写明影响范围，再由
-   YB.openConfirmPasswordModal 收当前管理员口令，只提交被改的那一个字段。 */
+   YB.openConfirmPasswordModal 收当前管理员口令，只提交被改的那一个字段。
+   口令回调返回请求 Promise：弹窗保持打开直至后端落定——后端对开关变更做
+   真口令校验（2026-09 前 confirm_password 只收不验，形同假门），缺口令/错口令
+   返回 403 时错误显示在弹窗内，可直接改口令重试。state 仅在成功分支更新，
+   失败/取消时开关视觉状态保持原状（无需额外回滚）。 */
 (function () {
   "use strict";
   var YB = window.YB;
@@ -34,6 +38,8 @@
   }
 
   // 危险开关：确认写明影响范围 → 当前管理员口令 → 只提交被改的字段。
+  // 回调返回请求 Promise（弹窗保持打开）：403（缺口令/口令错）与其余失败的
+  // 错误都显示在弹窗内供改口令重试；state 仅成功分支更新，视觉状态无需回滚。
   function pauseAction(field, next) {
     if (!isMaster) return;
     var what = field === "global_pause" ? "签到" : "注册";
@@ -52,14 +58,12 @@
         function (pw) {
           var body = { confirm_password: pw };
           body[field] = next ? 1 : 0;
-          YB.api("POST", "/api/settings", body).then(function () {
+          return YB.api("POST", "/api/settings", body).then(function () {
             if (field === "global_pause") state.globalPause = next;
             else state.regPause = next;
             sync();
             YB.toast.success(next ? what + "已暂停" : what + "已恢复");
-          }).catch(function (e) {
-            YB.toast.error((e && e.message) || "操作失败，请稍后重试");
-          });
+          }); // 拒绝原样上抛：openConfirmPasswordModal 在弹窗内显示错误
         });
     });
   }
