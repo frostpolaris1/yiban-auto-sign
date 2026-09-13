@@ -87,11 +87,36 @@
 
     function notifyChanged() { if (onChanged) onChanged(); }
 
+    // 失败态借用空态位展示错误文案 + 重试入口，避免「只弹一个 toast、列表区留白」
+    // 被误读成没有账号（对齐 work_users 的状态条口径）。文案初值在 mount 时缓存，
+    // 恢复成功后还原，防止下次真正的空列表沿用错误文案。
+    var emptyText0 = emptyEl && emptyEl.querySelector(".empty__msg")
+      ? emptyEl.querySelector(".empty__msg").textContent : "";
+    function showLoadFailure(msg) {
+      if (!emptyEl) return;
+      var node = emptyEl.querySelector(".empty__msg");
+      if (node) node.textContent = msg || "账号列表加载失败，请检查网络后重试";
+      var rb = emptyEl.querySelector("[data-acct-retry]");
+      if (rb) rb.hidden = false;
+      emptyEl.hidden = false;
+    }
+    function clearLoadFailure() {
+      if (!emptyEl) return;
+      var node = emptyEl.querySelector(".empty__msg");
+      if (node) node.textContent = emptyText0;
+      var rb = emptyEl.querySelector("[data-acct-retry]");
+      if (rb) rb.hidden = true;
+    }
+
     function loadAccounts() {
       return YB.api("GET", "/api/my-accounts").then(function (data) {
         accounts = (data && data.accounts) || [];
+        clearLoadFailure();
         renderList();
-      }).catch(function (e) { YB.toast.error(e.message); });
+      }).catch(function (e) {
+        YB.toast.error(e.message);
+        showLoadFailure();
+      });
     }
 
     function actionLink(label, cls, href) {
@@ -372,6 +397,12 @@
 
     if (openBtn) {
       openBtn.addEventListener("click", function () { openAccountForm(); });
+    }
+
+    // 加载失败错误态的重试入口（空态位内，见 showLoadFailure/clearLoadFailure）
+    if (emptyEl) {
+      var rb = emptyEl.querySelector("[data-acct-retry]");
+      if (rb) rb.addEventListener("click", function () { loadAccounts(); });
     }
 
     return {
