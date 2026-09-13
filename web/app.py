@@ -6379,10 +6379,11 @@ def create_app(host=None):
                 f"操作者 {username}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
             )
+            # 成功 msg 出站即脱敏（与日志/告警口径一致），完整邮箱不回显
             return jsonify(
                 {
                     "ok": True,
-                    "msg": f"{email} 已{'设为管理员' if new_role == 'admin' else '取消管理员'}",
+                    "msg": f"{_mask_email(email)} 已{'设为管理员' if new_role == 'admin' else '取消管理员'}",
                 }
             )
 
@@ -6437,7 +6438,7 @@ def create_app(host=None):
                 f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
             )
-            return jsonify({"ok": True, "msg": f"{email} 密码已重置"})
+            return jsonify({"ok": True, "msg": f"{_mask_email(email)} 密码已重置"})
 
     @app.route("/api/users/<email>/delete", methods=["POST"])
     def api_user_delete(email):
@@ -6502,9 +6503,9 @@ def create_app(host=None):
                     f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                     urgent=True,
                 )
-                return jsonify({"ok": True, "msg": f"{email} 已完全删除"})
+                return jsonify({"ok": True, "msg": f"{_mask_email(email)} 已完全删除"})
             logger.info("清空用户 %s 的易班账号（保留用户）", _mask_email(email))
-            return jsonify({"ok": True, "msg": f"{email} 的易班账号已清空（用户保留，可重新提交）"})
+            return jsonify({"ok": True, "msg": f"{_mask_email(email)} 的易班账号已清空（用户保留，可重新提交）"})
 
     # ---- 手动签到 ----
     _last_trigger = {}  # phone -> 上次触发时间戳
