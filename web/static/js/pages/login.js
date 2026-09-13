@@ -122,7 +122,8 @@
       input.type = show ? "text" : "password";
       btn.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
       btn.setAttribute("aria-pressed", String(show));
-      btn.innerHTML = '<svg aria-hidden="true"><use href="#i-' + (show ? "eye-off" : "eye") + '"/></svg>';
+      while (btn.firstChild) btn.removeChild(btn.firstChild);
+      btn.appendChild(YB.iconEl(show ? "eye-off" : "eye"));
     });
   });
 

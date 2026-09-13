@@ -2,7 +2,8 @@
 """回归守卫（2026-09-10）：Web「次要文字」的深浅档位不得写反。
 
 背景（V3-3 实测）：
-浅色模式正文底是 zinc-50、暗色是 zinc-900（见 base.html 的 body class），因此本项目
+浅色模式正文底是 zinc-50、暗色是 zinc-900（旧栈 body class；P4 后由 Adminator 的
+`--bg-body` 等语义令牌承担），因此本项目
 对「次要文字」（表单提示、页面说明、空态文案等**用户需要读**的文字）的既有约定是：
 
     text-zinc-500 dark:text-zinc-400        ← 浅色用较深档、暗色用较浅档
@@ -149,8 +150,6 @@ def _scan_reversed():
             for name in filenames:
                 if not name.endswith(SCAN_EXTS):
                     continue
-                if name == "index.html" or "tabs" in dirpath.split(os.sep):
-                    continue   # 退役旧栈（无路由渲染）：不给死文件套活页规则
                 path = os.path.join(dirpath, name)
                 with open(path, encoding="utf-8") as fh:
                     for lineno, line in enumerate(fh, 1):
@@ -217,16 +216,18 @@ class WebTextContrastTest(unittest.TestCase):
             )
 
     def test_canonical_pair_still_in_use(self):
-        """反向守卫：正确形态仍在被使用（防一次误替换把约定整体改掉）。
+        """反向守卫：正确形态仍未被整体误替换（防一次全局替换把约定悄悄清空）。
 
-        基线 100：P17 前退役旧栈（templates/tabs/）死改密表单删除后减 2（98）。
-        死表单清理是合法减量；再降需核对 diff 是否仍是"删死代码/迁移形态"。
+        P4（2026-09-13）旧栈退役后，Tailwind 的 `text-zinc-500 dark:text-zinc-400`
+        约定只余 `macros/ui.html` 空态宏一处——旧栈（tabs/index/modals/shared-ui）原带
+        97 处随文件退役，新 MPA 页面改用 Adminator 语义令牌（`--t-sub`/`--t-muted`），
+        不再走这套 Tailwind 色对。故下限从 98 收敛为 1：约定若被整体清掉仍会报红。
         """
         count = _count_occurrences(CANONICAL)
         self.assertGreaterEqual(
             count,
-            98,
-            f"正确形态 {CANONICAL!r} 只剩 {count} 处，疑似被整体误替换，请复核",
+            1,
+            f"正确形态 {CANONICAL!r} 已归零，疑似被整体误替换，请复核",
         )
 
     def test_calendar_and_state_colors_meet_aa(self):

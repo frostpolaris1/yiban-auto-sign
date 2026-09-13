@@ -15,7 +15,8 @@ import re
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(BASE, "web")
 
-# base.html 的 body class：bg-zinc-50 dark:bg-zinc-900
+# 页面正文底色（浅/暗）：Adminator 外壳下由语义令牌承担，此处沿用调色板名做 WCAG 底色基。
+# 旧栈 base.html 的 body class 已随 P4 退役。
 BG_LIGHT = "zinc-50"
 BG_DARK = "zinc-900"
 

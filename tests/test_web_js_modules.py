@@ -4,10 +4,9 @@
 ## 为什么替换旧的「7 个连续切片」守卫
 
 旧守卫钉的是 `web/static/js/app.js`（2765 行单页脚本）按**连续源区间**拆成 7 个
-classic 切片、由 `templates/index.html` 按序加载。前端换壳为多页 MPA 后：
-
-  · `index.html` 已无路由渲染（`/data/dashboard` 由 `pages/data_dashboard.html` + `layout_admin.html` 承载），
-    它的加载顺序不再是运行前提；
+classic 切片、由旧单页壳 `templates/index.html` 按序加载。前端换壳为多页 MPA 后：
+  · P4（2026-09-13）旧栈整体退役——`index.html`/`base.html`/`tabs/*`/`partials/modals/*`
+    与 `shared-ui.js` 均已删除，旧加载顺序不再存在；
   · 页面脚本重写为 IIFE 页面模块（`pages/*.js`）与共享组件（`components/*.js`），
     文件间不再有「原 app.js 的连续区间」关系，源区间连续性无从声明也无意义。
 
@@ -94,13 +93,6 @@ _TOP_DECL_RE = re.compile(
 # 组件里 innerHTML 赋值的右值：必须是常量 SVG（svg(...)）或清空容器（""/''）
 _INNERHTML_ASSIGN_RE = re.compile(r"\.innerHTML\s*=\s*([^\n;]+)")
 _SVG_RHS_RE = re.compile(r"^\s*svg\(")
-
-# 已存在的历史 innerHTML 用法（旧栈 / 早期页面）。守卫价值是阻止**新写**的页面脚本
-# 再引入数据拼接；受本批审查的 users.js / accounts.js / settings.js / mine.js 必须为空。
-# 旧文件待 P3/P4 重写时清理（settings.js / mine.js 已重写，故移出清单）。
-_LEGACY_INNERHTML_PAGES = frozenset({
-    "data_dashboard.js", "login.js",
-})
 
 # user-ops.js 的 LIMIT 与 web/app.py 的 BATCH_OP_LIMIT 必须同源
 _JS_LIMIT_RE = re.compile(r"\bvar\s+LIMIT\s*=\s*(\d+)\s*;")
@@ -255,18 +247,17 @@ class JsAssemblyGuardTest(unittest.TestCase):
                 f"pages/work_accounts.js 仍引用退役的旧栈标记 {bad!r}：页面脚本应为独立 IIFE 模块",
             )
 
-    def test_reviewed_pages_do_not_concat_data_with_innerhtml(self):
-        """`pages/*.js` 不得用 `.innerHTML` 拼接（受审的 users/accounts/settings 必须为零）。
+    def test_pages_never_use_innerhtml(self):
+        """`pages/*.js` 全量不得出现 `.innerHTML`（P4 后零允许清单）。
 
-        旧栈页面（dashboard/login/mine/user_*）仍有历史 innerHTML 用法，记入
-        `_LEGACY_INNERHTML_PAGES` 允许清单（待 P3/P4 重写时清理）；除此之外任何页面
-        新增 `.innerHTML` 都会在这里报红——本页数据脱敏靠 YB.el/textContent 保证。
+        旧栈页面脚本（dashboard/login）的历史 innerHTML 常量 SVG 已在 P4 就地改为
+        DOM 构造（`YB.iconEl` / 页面自建 `svgIcon`），允许清单随之删除；此后任何页面
+        新增 `.innerHTML` 都会在这里报红——动态文本一律走 YB.el/textContent，数据脱敏
+        不能依赖「先拼 HTML 再转义」。
         """
         offenders = []
         for path in sorted(glob.glob(os.path.join(JS_DIR, "pages", "*.js"))):
             name = os.path.basename(path)
-            if name in _LEGACY_INNERHTML_PAGES:
-                continue
             if ".innerHTML" in _read(path):
                 offenders.append(f"  pages/{name}")
         if offenders:
@@ -500,7 +491,7 @@ class TabDeepLinkGuardTest(unittest.TestCase):
 
 
 # 改密弹窗的唯一实现钉在 components/change-password.js（YB.changePassword.open）。
-# 历史上旧 SPA 外壳（templates/tabs/）另有两份三字段表单（saveMyPassword /
+# 历史上旧 SPA 外壳（templates/tabs/，P4 已整体退役）曾有两份三字段表单（saveMyPassword /
 # saveMinePassword），页面 JS 退役后按钮 onclick 悬空成死 UI；本守卫防止第二份
 # 实现借任何载体复活 —— 两份三字段表单会各自漂移校验口径/文案，且新表单不再走
 # 统一弹窗的错误显示与 toast/会话轮换流向。
