@@ -38,14 +38,16 @@
 </article>
 {% endmacro %}
 
-{% macro chart_card(id, eyebrow, title, height, extra_class='col-12') %}
+{# 图表卡卡头：与全站统一用项目 .panel-head 两段式（标题行 + 整宽说明，不画分隔线）。
+   右侧 .card-action 覆盖率文本由 data_dashboard.js 填充（如「最近 30 天 · 仅真实签到」），
+   .panel-head-row > :last-child 的弹性规则保证它不被标题压缩。 #}
+{% macro chart_card(id, title, height, extra_class='col-12') %}
 <section class="{{ extra_class }} card">
-  <div class="card-head">
-    <div class="card-title-wrap">
-      <span class="eyebrow">{{ eyebrow }}</span>
-      <h2 class="card-title">{{ title }}</h2>
+  <div class="panel-head">
+    <div class="panel-head-row">
+      <h2 class="panel-title">{{ title }}</h2>
+      <span class="card-action" id="{{ id }}-coverage"></span>
     </div>
-    <span class="card-action" id="{{ id }}-coverage"></span>
   </div>
   <div class="chart-canvas-wrap" style="height: {{ height }}px;">
     <canvas id="chart-{{ id }}" role="img" aria-label="{{ title }}"></canvas>
@@ -90,15 +92,16 @@
   </section>
 
   <div class="grid">
-    {{ chart_card('trend', '近 30 天', '每日签到结果', 300) }}
+    {# 各卡原 eyebrow 均删：趋势/分布的「近 30 天」与右侧 JS 填充的覆盖率文本重复，
+       其余（自选时间片/签到日历/容量/系统状态）与卡标题同义，无独立信息。 #}
+    {{ chart_card('trend', '每日签到结果', 300) }}
 
     <section class="col-6 card">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">近 30 天</span>
-          <h2 class="card-title">签到结果分布</h2>
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">签到结果分布</h2>
+          <span class="card-action" id="dist-coverage"></span>
         </div>
-        <span class="card-action" id="dist-coverage"></span>
       </div>
       <div class="chart-canvas-wrap" style="height: 280px;">
         <canvas id="chart-dist" role="img" aria-label="签到结果分布"></canvas>
@@ -110,12 +113,11 @@
     </section>
 
     <section class="col-6 card">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">自选时间片</span>
-          <h2 class="card-title">各时段自选人数</h2>
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">各时段自选人数</h2>
+          <span class="card-action" id="slots-coverage"></span>
         </div>
-        <span class="card-action" id="slots-coverage"></span>
       </div>
       <div class="chart-canvas-wrap" style="height: 280px;">
         <canvas id="chart-slots" role="img" aria-label="自选时间片已选人数"></canvas>
@@ -127,15 +129,14 @@
     </section>
 
     <section class="col-6 card">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">签到日历</span>
-          <h2 class="card-title">每日签到结果热力图</h2>
-        </div>
-        <div class="btn-group" role="group" aria-label="切换月份">
-          <button type="button" class="btn btn--ghost btn--sm" id="cal-prev" aria-label="上一月">{{ icon('chevron-left') }}</button>
-          <span class="btn btn--ghost btn--sm is-active" id="cal-label" aria-live="polite">—</span>
-          <button type="button" class="btn btn--ghost btn--sm" id="cal-next" aria-label="下一月">{{ icon('chevron-right') }}</button>
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">每日签到结果热力图</h2>
+          <div class="btn-group" role="group" aria-label="切换月份">
+            <button type="button" class="btn btn--ghost btn--sm" id="cal-prev" aria-label="上一月">{{ icon('chevron-left') }}</button>
+            <span class="btn btn--ghost btn--sm is-active" id="cal-label" aria-live="polite">—</span>
+            <button type="button" class="btn btn--ghost btn--sm" id="cal-next" aria-label="下一月">{{ icon('chevron-right') }}</button>
+          </div>
         </div>
       </div>
       <div class="dash-cal-scroll">
@@ -155,13 +156,12 @@
          名额上限的修改仍在「系统设置 → 容量配额」。 -->
     {# dash-card--fit：本卡内容比同排的热力图矮，不贴合内容会被网格拉成等高、卡内留一大片空白 #}
     <section class="col-6 card dash-card--fit">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">容量</span>
-          <h2 class="card-title">账号与用户容量</h2>
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">账号与用户容量</h2>
         </div>
+        <p class="panel-sub">名额用量与三分类拆解。</p>
       </div>
-      <p class="panel-sub">名额用量与三分类拆解。</p>
       <div class="dash-health" id="capacity-rows">
         <div class="dash-health-row">
           <div class="dash-health-label">{{ icon('list') }}<span>账号容量</span></div>
@@ -183,14 +183,13 @@
     </section>
 
     <section class="col-12 card">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">系统状态</span>
-          <h2 class="card-title">运行状态与公告</h2>
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">运行状态与公告</h2>
+          <button type="button" class="btn btn--ghost btn--sm" id="ping-btn">
+            {{ icon('activity') }}<span>检测易班接口</span>
+          </button>
         </div>
-        <button type="button" class="btn btn--ghost btn--sm" id="ping-btn">
-          {{ icon('activity') }}<span>检测易班接口</span>
-        </button>
       </div>
 
       <div class="dash-health">
