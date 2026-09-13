@@ -12,8 +12,8 @@
   function init() {
     YB.signCalendarView.mount({
       role: "user",
-      denyRedirect: YB.BASE + "/",       // 管理员回后台
-      emptyHref: YB.BASE + "/user"
+      denyRedirect: YB.BASE + "/data/dashboard",       // 管理员回后台
+      emptyHref: YB.BASE + "/user/account"
     });
   }
 

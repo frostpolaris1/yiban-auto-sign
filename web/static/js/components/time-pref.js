@@ -5,7 +5,7 @@
    四态（由后端 slots 字段驱动）：禁用（完全落入掐头去尾裁剪区）/ 满员（pct>=100，
    仍可选、先到先得）/ 部分裁剪（edge_note，虚线框提示）/ 常规；选中态再叠加。
 
-   容器 id 通过 opts.ids 配置，默认即用户端 pages/user_accounts.html 的取值；
+   容器 id 通过 opts.ids 配置，默认即用户端 pages/user_account.html 的取值；
    换页面复用只需换一组 id。所有动态文本走 textContent，不拼 innerHTML。 */
 (function () {
   "use strict";

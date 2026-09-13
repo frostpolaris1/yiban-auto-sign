@@ -7,7 +7,7 @@
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/core.js?v=*",
     "script src=/static/vendor/chartjs/chart.min.js?v=*",
-    "script src=/static/js/pages/dashboard.js?v=*"
+    "script src=/static/js/pages/data_dashboard.js?v=*"
   ],
   "login": [
     "link rel=icon href=/favicon.png",
@@ -31,7 +31,7 @@
     "script src=/static/js/components/my-mail-notify.js?v=*",
     "script src=/static/js/components/change-password.js?v=*",
     "script src=/static/js/components/my-accounts-page.js?v=*",
-    "script src=/static/js/pages/user_accounts.js?v=*"
+    "script src=/static/js/pages/user_account.js?v=*"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png",

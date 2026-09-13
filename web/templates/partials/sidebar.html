@@ -17,21 +17,22 @@
     </div>
   </div>
 
-  {# 导航分三组（用户 2026-09-12 指定）：数据看板 / 工作台（系统级管理）/ 我的（个人域，
-     与用户端同源的两页）。分组既便于使用，也让「复用 user 页面与组件」的边界一目了然。 #}
+  {# 导航分三组（用户 2026-09-12 指定）：数据 / 工作台 / 我的（个人域，与用户端同源的两页）。
+     路径与分组同构：`/<组>/<页面>`，组的英文与标题一一对应（data / work / my），
+     因此从 URL 就能反推页面归属。 #}
   {% set nav_groups = [
     ('数据', [
-      ('dashboard', '/',      'layout-dashboard', '数据总览'),
-      ('logs',      '/logs',  'file-text',        '签到日志'),
+      ('data-dashboard', '/data/dashboard', 'layout-dashboard', '数据总览'),
+      ('data-logs',      '/data/logs',      'file-text',        '签到日志'),
     ]),
     ('工作台', [
-      ('accounts', '/accounts', 'list',     '账号管理'),
-      ('users',    '/users',    'users',    '用户管理'),
-      ('settings', '/settings', 'settings', '系统设置'),
+      ('work-accounts', '/work/accounts', 'list',     '账号管理'),
+      ('work-users',    '/work/users',    'users',    '用户管理'),
+      ('work-settings', '/work/settings', 'settings', '系统设置'),
     ]),
     ('我的', [
-      ('mine',          '/mine',          'user',     '我的账号'),
-      ('mine-calendar', '/mine/calendar', 'calendar', '我的日历'),
+      ('my-calendar', '/my/calendar', 'calendar', '我的日历'),
+      ('my-account',  '/my/account',  'user',     '我的账号'),
     ]),
   ] %}
   {% for group_label, items in nav_groups %}
@@ -55,8 +56,8 @@
     <div class="sidebar-clock" id="sidebar-clock">
       {{ icon('clock') }}<span data-clock-text>--:--:--</span>
     </div>
+    {# 不放头像：首字母块与下方「名字 / 角色」两行重复占位，去掉后底部信息更紧凑 #}
     <div class="workspace">
-      <div class="workspace-avatar" data-account-avatar>—</div>
       <div class="workspace-text">
         <div class="workspace-name" data-account-name title="">—</div>
         <div class="workspace-role" data-account-role>—</div>

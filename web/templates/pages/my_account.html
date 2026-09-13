@@ -14,7 +14,7 @@
 
 {% block content %}
 {{ body('我的账号', '管理员本人的易班账号、自选签到时间与登录凭据。',
-        request.script_root + '/mine/calendar', false, true) }}
+        request.script_root + '/my/calendar', false, true) }}
 {% endblock %}
 
 {% block scripts %}
@@ -24,5 +24,5 @@
 <script src="{{ request.script_root }}/static/js/components/my-mail-notify.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/change-password.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/my-accounts-page.js?v={{ web_version }}"></script>
-<script src="{{ request.script_root }}/static/js/pages/mine.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/my_account.js?v={{ web_version }}"></script>
 {% endblock %}
