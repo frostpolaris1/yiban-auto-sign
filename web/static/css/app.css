@@ -695,6 +695,8 @@ textarea {
   color: var(--danger);
   font-size: 12.5px;
 }
+/* 页级加载状态条（P61-B5 兜底）：形态与 .usr-status 一致 —— 失败才出现，成功即隐藏 */
+.dash-page .dash-status { margin: 0 0 16px; align-items: center; }
 .dash-page .dash-trend {
   display: inline-flex;
   vertical-align: -2px;
@@ -2189,7 +2191,18 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   line-height: 1;
   color: var(--cal-off-fg);
 }
-.sc-error { grid-column: 1 / -1; padding: 16px 0; text-align: center; font-size: 12.5px; color: var(--t-muted); }
+/* 错误态（P61-B5）：文案 + 重试按钮纵向居中排布；grid-column 让它占满 42 格区 */
+.sc-error {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--t-muted);
+}
 .sc-spin { animation: sc-rotate 900ms linear infinite; }
 @keyframes sc-rotate { to { transform: rotate(360deg); } }
 

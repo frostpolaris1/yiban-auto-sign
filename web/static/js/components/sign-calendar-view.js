@@ -78,11 +78,11 @@
   }
 
   function render() {
+    var grid = list.closest(".user-grid");   // then/catch 两分支共用（失败态也要收 is-solo）
     YB.api("GET", "/api/my-accounts").then(function (data) {
       var active = ((data && data.accounts) || []).filter(function (a) {
         return !a.deleted && a.status === "active";
       });
-      var grid = list.closest(".user-grid");
       list.innerHTML = "";
       if (!active.length) {
         if (logCard) logCard.hidden = true;   // 没有日历就没有日志可看
@@ -103,9 +103,21 @@
         if (m.el) window.SignCalendar.render(m.el, m.phone);
       });
     }).catch(function (e) {
+      // 账号列表失败：错误文案 + 重试入口（同 my-accounts 组件「借空态位给错误态」的形态），
+      // 并按空态口径收起日志面板 —— 没有日历就没有可查看的记录。
       list.innerHTML = "";
+      if (logCard) logCard.hidden = true;
+      if (grid) grid.classList.add("is-solo");
       var card = YB.el("section", { class: "card" });
-      card.appendChild(YB.el("p", { class: "empty__msg", text: "账号列表加载失败，请稍后重试。" }));
+      var box = YB.el("div", { class: "empty" });
+      box.appendChild(YB.el("span", { class: "empty__msg", text: "账号列表加载失败，请稍后重试。" }));
+      var action = YB.el("span", { class: "empty__action" });
+      action.appendChild(YB.el("button", {
+        type: "button", class: "btn btn--ghost btn--sm", text: "重试",
+        onclick: function () { render(); },
+      }));
+      box.appendChild(action);
+      card.appendChild(box);
       list.appendChild(card);
       YB.toast.error(e.message);
     });

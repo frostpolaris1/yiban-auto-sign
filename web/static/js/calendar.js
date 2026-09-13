@@ -207,7 +207,8 @@
     mount.setAttribute("data-sc-phone", phone);
     var grid = shell(mount);
     var label = mount.querySelector(".sc-month");
-    if (!grid.innerHTML) grid.innerHTML = skeletonHtml();
+    // 上次失败留下的错误块换成骨架格（重试/切月同路径），别让错误文案陪加载转圈
+    if (!grid.innerHTML || grid.querySelector(".sc-error")) grid.innerHTML = skeletonHtml();
     grid.setAttribute("aria-busy", "true");
     var t0 = performance.now();
     YB.api("GET", "/api/my-calendar?month=" + monthStr).then(function (data) {
@@ -253,10 +254,14 @@
         if (slow) YB.swapOut([grid, label], function () { apply(); commit(); });
         else { apply(); commit(); }
       }
-    }).catch(function () {
+    }).catch(function (err) {
+      // 卡内错误态 + 重试（P61-B5）：只换格内容，工具栏仍在（切月/今天也隐式重试）。
+      // 文案用 YB.api 的友好消息（429/500/断网各有固定中文），不带堆栈与内部细节。
+      var reason = (err && err.message) ? String(err.message) : "请稍后重试";
       clearShift(grid);
       clearShift(label);
-      grid.innerHTML = '<p class="sc-error">日历加载失败，请稍后重试</p>';
+      grid.innerHTML = '<p class="sc-error"><span>日历加载失败：' + esc(reason) + "</span>"
+        + '<button type="button" class="btn btn--ghost btn--sm" data-sc-retry>重试</button></p>';
       grid.removeAttribute("aria-busy");
     });
   }
@@ -371,6 +376,10 @@
     var host = t.closest("[data-sc-phone]");
     if (!host) return;
     var phone = host.getAttribute("data-sc-phone");
+    if (t.closest("[data-sc-retry]")) {
+      render(host, phone);   // 错误态重试：按当前月份重拉 /api/my-calendar
+      return;
+    }
     if (t.closest("[data-sc-shift]")) {
       var delta = Number(t.closest("[data-sc-shift]").getAttribute("data-sc-shift"));
       var st = monthOf(phone);

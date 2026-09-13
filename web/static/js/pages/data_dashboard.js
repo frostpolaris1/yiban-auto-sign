@@ -8,7 +8,7 @@
 
   var REDUCED = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   var charts = {};
-  var state = { dailyMap: {}, dailyDays: [], byStatus: {}, calMonth: null, signLoaded: false, slots: [] };
+  var state = { dailyMap: {}, dailyDays: [], byStatus: {}, calMonth: null, signLoaded: false, signFailed: false, slots: [] };
 
   /* ---------------- 基础工具 ---------------- */
   function $(id) { return document.getElementById(id); }
@@ -39,6 +39,8 @@
   function monthStart(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
   function todayStr() { return fmtDate(serverDate()); }
   function yesterdayStr() { var d = serverDate(); d.setDate(d.getDate() - 1); return fmtDate(d); }
+  // 热力图脚注的初始文案（模板里带口径说明）：签到事件加载失败会改写它，重试成功后按此还原
+  var CAL_NOTE0 = "";
 
   function skel(node, title) {
     if (!node) return; clear(node);
@@ -175,10 +177,12 @@
       renderCapacity((d && d.capacity) || null);
       renderCapacityRows(d || null);
       renderPause(d || null);
-    }).catch(function () {
+    }).catch(function (err) {
+      // 卡内错误行先落位（复用各 render 的失败分支），再重抛给页级状态条计数
       renderCapacity(null);
       renderCapacityRows(null);
       renderPause(null);
+      throw err;
     });
   }
   /* ---------------- 容量卡（原在账号管理页，并入总览后管理端只此一处） ---------------- */
@@ -256,15 +260,18 @@
     return YB.api("GET", "/api/admin/sign-events?days=30&stage=sign").then(function (d) {
       normalizeDaily((d && d.daily_stats) || []);
       state.signLoaded = true;
+      state.signFailed = false;
       var days = Number((d && d.days) || 30);
       txt($("trend-coverage"), "最近 " + days + " 天 · 仅真实签到");
       txt($("dist-coverage"), "最近 " + days + " 天 · 仅真实签到");
+      txt($("cal-note"), CAL_NOTE0);   // 还原上次失败改写的脚注
       renderRateKpi();
       renderTrend();
       renderDist();
       renderCalendar();
     }).catch(function (err) {
       state.signLoaded = false;
+      state.signFailed = true;
       var msg = (err && err.message) || "请求失败";
       overlay("trend", "error", "签到事件加载失败：" + msg);
       overlay("dist", "error", "签到事件加载失败：" + msg);
@@ -273,6 +280,7 @@
       setPill($("kpi-rate-pill"), "", "");
       renderCalendar();
       txt($("cal-note"), "签到事件加载失败：" + msg);
+      throw err;   // 重抛给页级状态条计数
     });
   }
   function normalizeDaily(rows) {
@@ -305,6 +313,9 @@
     return "今日暂无签到结果";
   }
   function renderRateKpi() {
+    // 签到事件失败时本卡保持 failNote 错误行：设置先到会触发这里的重算，
+    // 不能让「今日暂无签到结果」把「签到事件加载失败」盖掉（失败 ≠ 没有结果）。
+    if (state.signFailed) return;
     var today = todayStr(), m = state.dailyMap[today], ry = rateOf(state.dailyMap[yesterdayStr()]);
     var rt = rateOf(m), v = $("kpi-rate-value"), sub = $("kpi-rate-sub");
     clear(v);
@@ -442,6 +453,7 @@
       renderSlots(slots);
     }).catch(function (err) {
       overlay("slots", "error", "时间片数据加载失败：" + ((err && err.message) || "请求失败"));
+      throw err;   // 重抛给页级状态条计数
     });
   }
   function renderSlots(slots) {
@@ -483,7 +495,7 @@
       var card = v && v.closest(".kpi-card");
       if (card) card.classList.toggle("is-alert", !!active);
     }
-    YB.api("GET", "/api/accounts").then(function (d) {
+    return YB.api("GET", "/api/accounts").then(function (d) {
       var v = $("kpi-pending-value"), sub = $("kpi-pending-sub");
       var list = (d && d.accounts) || [];
       var pending = 0, rejected = 0;
@@ -497,17 +509,25 @@
       setSub(sub, "待审核 " + num(pending) + " · 已拒绝 " + num(rejected));
       // 有可处置项时才把这张卡升级为唯一强调；0 或失败保持中性
       setAlert(total > 0);
-    }).catch(function () {
+    }).catch(function (err) {
       setAlert(false);
       failNote($("kpi-pending-value"), "—");
       failNote($("kpi-pending-sub"), "待处理账号加载失败");
+      throw err;   // 重抛给页级状态条计数
     });
   }
 
   /* ---------------- 系统状态 ---------------- */
   function loadHealth() {
-    YB.api("GET", "/api/clock").then(renderClock).catch(function () { failNote($("health-clock"), "时间校准失败"); });
-    YB.api("GET", "/api/announcement").then(renderAnnouncement).catch(function () { failNote($("health-announcement"), "公告加载失败"); });
+    var clock = YB.api("GET", "/api/clock").then(renderClock).catch(function (err) {
+      failNote($("health-clock"), "时间校准失败");
+      throw err;   // 重抛给页级状态条计数
+    });
+    var ann = YB.api("GET", "/api/announcement").then(renderAnnouncement).catch(function (err) {
+      failNote($("health-announcement"), "公告加载失败");
+      throw err;
+    });
+    return Promise.all([clock, ann]);
   }
   function renderClock(d) {
     var node = $("health-clock");
@@ -548,6 +568,36 @@
     }).then(function () { if (btn) btn.disabled = false; });
   }
 
+  /* ---------------- 页级加载状态（部分卡失败时的统一重试出口） ----------------
+     总览 8 个数据点分属 6 张卡，卡内已有轻量错误行（dash-error-text / 图表 overlay），
+     逐卡再放重试按钮会喧宾夺主：页级一条状态条汇总失败并重跑全部加载点（与 work_users
+     的状态条重试同一形态）。首屏不显示加载中 —— 卡片骨架已表达。 */
+  function setStatus(tone, text, retry) {
+    var box = $("dash-status");
+    if (!box) return;
+    box.classList.remove("info", "danger");
+    box.classList.add(tone);
+    txt($("dash-status-text"), text);
+    var btn = $("dash-retry-btn");
+    if (btn) btn.hidden = !retry;
+    box.hidden = false;
+  }
+  function hideStatus() { var box = $("dash-status"); if (box) box.hidden = true; }
+  // 各 load* 内部已渲染卡内错误行并把错误重抛上来；这里只按「是否全成功」收放状态条。
+  function settled(p) { return p.then(function () { return true; }, function () { return false; }); }
+  function loadAll() {
+    var tasks = [loadSettings(), loadSign(), loadSlots(), loadPending(), loadHealth()];
+    return Promise.all(tasks.map(settled)).then(function (rs) {
+      var fails = rs.filter(function (ok) { return !ok; }).length;
+      if (fails > 0) setStatus("danger", "部分数据加载失败（" + fails + " 项），卡片内已标注", true);
+      else hideStatus();
+    });
+  }
+  function retryAll() {
+    setStatus("info", "正在重新加载数据…", false);
+    loadAll();
+  }
+
   /* ---------------- 主题切换：重建读取 CSS 变量的图表 ---------------- */
   document.addEventListener("yiban:theme", function () {
     if (state.signLoaded && state.dailyDays.length) { renderTrend(); renderDist(); }
@@ -556,12 +606,15 @@
 
   function init() {
     state.calMonth = fmtMonth(serverDate());
+    var noteNode = $("cal-note");
+    CAL_NOTE0 = noteNode ? noteNode.textContent : "";
     renderCalendar();
-    var prev = $("cal-prev"), next = $("cal-next"), ping = $("ping-btn");
+    var prev = $("cal-prev"), next = $("cal-next"), ping = $("ping-btn"), retry = $("dash-retry-btn");
     if (prev) prev.addEventListener("click", function () { shiftMonth(-1); });
     if (next) next.addEventListener("click", function () { shiftMonth(1); });
     if (ping) ping.addEventListener("click", doPing);
-    loadSettings(); loadSign(); loadSlots(); loadPending(); loadHealth();
+    if (retry) retry.addEventListener("click", retryAll);
+    loadAll();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();

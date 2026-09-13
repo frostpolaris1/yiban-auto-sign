@@ -68,6 +68,15 @@
     <p class="page-sub">账号、用户与签到结果的一屏汇总；待处理账号与异常排查入口就在对应卡片上。</p>
   </div>
 
+  {# 页级状态条：总览 8 个数据点分属 6 张卡，卡内已有轻量错误行（dash-error-text /
+     图表 overlay），逐卡再放重试按钮会喧宾夺主 —— 这里只给一条汇总 + 一个重试入口
+     （重跑全部加载点）。首屏不显示（骨架已表达加载中），任一加载点失败才出现。 #}
+  <p class="alert danger dash-status" id="dash-status" role="status" hidden>
+    <span class="ico">{{ icon('triangle-alert') }}</span>
+    <span class="body" id="dash-status-text">部分数据加载失败</span>
+    <button type="button" class="btn btn--ghost btn--sm" id="dash-retry-btn" hidden>重试</button>
+  </p>
+
   {# 深链 ?tab= 由 core.js 共享助手支持（P50）；tab id 已核对 work_accounts.html
      的 data-tab-target：pending / active / deleted（没有 review）。 #}
   <section class="kpi-grid" aria-label="关键指标">
