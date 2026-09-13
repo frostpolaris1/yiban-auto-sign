@@ -1746,7 +1746,11 @@ html[data-theme="dark"] {
 @media (max-width: 720px) {
   /* 竖屏弹窗别贴边占满：上下各留 ≥48px 可见背景 */
   .pm-backdrop { padding: 24px 16px; }
-  .pm-panel { max-height: calc(100dvh - 96px); border-radius: 16px; }
+  /* 面板贴合内容：窄屏 backdrop 是 place-items:stretch，会把面板拉到 max-height
+     （实测 844 视口下面板 748 / 滚轮仅 132，中间大片空白、操作行被推到底）。
+     align-self:center 让高度回到内容尺寸；超长内容仍由 .modal-body 的
+     overflow-y:auto 在面板触顶后自行滚动，不会裁切。 */
+  .pm-panel { max-height: calc(100dvh - 96px); border-radius: 16px; align-self: center; height: auto; }
   .user-grid { gap: 16px; }
   /* 窄屏也不把控件换行：文字折行、按钮留在右侧同一行（见上） */
 }
@@ -3465,6 +3469,7 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   left: 0;
   z-index: 30;
   width: 272px;
+  max-width: calc(100vw - 24px);   /* 窄屏不越出视口；列宽 minmax(0,1fr) 会随之收窄 */
   padding: 10px;
   border: 1px solid var(--border-soft);
   border-radius: 12px;
@@ -3472,6 +3477,7 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   box-shadow: 0 12px 28px -10px rgba(0, 0, 0, .28);
   animation: select-menu-in 140ms var(--ease-out-strong) both;
 }
+/* 触发器贴右缘时翻转对齐（钳制在 date-field.js 的 clampPop）：防止弹层右缘越界 */
 .date-pop-head {
   display: flex;
   align-items: center;

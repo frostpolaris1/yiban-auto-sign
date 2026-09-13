@@ -148,6 +148,21 @@
     }
   }
 
+  // 弹层钳制到视口内。算法要"目标位置 − 锚点位置"一次算准：
+  // 弹层是 .date-field 的绝对定位子元素，left 相对该字段；若先换锚（右对齐）再按旧位置
+  // 补偏移，两者会打架（实测越界方向从左侧换到右侧）。故只保留 left 一种锚定方式。
+  var POP_PAD = 8;
+  function clampPop(root) {
+    var pop = popOf(root);
+    if (!pop) return;
+    pop.style.left = "";
+    var vw = document.documentElement.clientWidth || window.innerWidth || 0;
+    var fb = root.getBoundingClientRect();
+    var w = pop.offsetWidth || 272;
+    var want = Math.min(Math.max(fb.left, POP_PAD), Math.max(POP_PAD, vw - POP_PAD - w));
+    pop.style.left = Math.round(want - fb.left) + "px";
+  }
+
   function open(root) {
     var pop = popOf(root), trigger = triggerOf(root);
     if (!pop || !trigger || trigger.disabled) return;
@@ -157,6 +172,8 @@
     pop.hidden = false;
     root.classList.add("is-open");
     trigger.setAttribute("aria-expanded", "true");
+    // 必须在 hidden=false 之后量宽（display:none 下 offsetWidth 为 0）
+    clampPop(root);
     focusNoScroll(focusTarget(root));
   }
 
@@ -251,9 +268,11 @@
     head.appendChild(YB.el("span", { class: "date-month", "aria-live": "polite" }));
     head.appendChild(next);
     pop.appendChild(head);
-    pop.appendChild(YB.el("div", {
-      class: "date-week", "aria-hidden": "true", text: WEEK.join(" ")
-    }));
+    // 星期表头必须逐字成项：.date-week 是 7 列 grid，单个文本节点会被当成一个
+    // 匿名网格项塞进第一列（窄列里逐字折行，行高从 ~16px 涨到 68px）。
+    var week = YB.el("div", { class: "date-week", "aria-hidden": "true" });
+    for (var w = 0; w < WEEK.length; w++) week.appendChild(YB.el("span", { text: WEEK[w] }));
+    pop.appendChild(week);
     pop.appendChild(YB.el("div", { class: "date-grid" }));
     var foot = YB.el("div", { class: "date-pop-foot" });
     foot.appendChild(YB.el("button", {
@@ -318,6 +337,13 @@
     document.addEventListener("click", function (e) {
       roots().forEach(function (root) {
         if (!root.contains(e.target)) close(root, false);
+      });
+    });
+    // 视口变化后重新钳制：横竖屏切换/地址栏收起都会改变可用宽度，
+    // 不重算的话弹层会停在旧位置上越界。只处理已打开的那些。
+    window.addEventListener("resize", function () {
+      roots().forEach(function (root) {
+        if (root.classList.contains("is-open")) clampPop(root);
       });
     });
   }
