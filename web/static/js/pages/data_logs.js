@@ -101,6 +101,12 @@
     empty.hidden = false;
   }
 
+  // 重试出口只属于「加载失败」错误态：成功渲染（含空列表）一律收起
+  function setRetryShown(shown) {
+    var rb = $("log-retry-btn");
+    if (rb) rb.hidden = !shown;
+  }
+
   function loadLogs(silent) {
     var params = new URLSearchParams();
     if (state.viewDate) params.set("date", state.viewDate);
@@ -109,6 +115,7 @@
     var qs = params.toString();
     return YB.api("GET", "/api/logs" + (qs ? "?" + qs : "")).then(function (data) {
       if (!data) return;
+      setRetryShown(false);
       state.curDate = data.date || "";
       var info = infoText(data);
       var logs = data.logs || [];
@@ -160,6 +167,7 @@
         var box = $("log-box");
         if (box) box.hidden = true;
         renderEmpty($("log-empty"), msg);
+        setRetryShown(true);   // 错误态给出重试出口（同 work_users 的状态条重试）
       }
     });
   }
@@ -247,6 +255,10 @@
     on("log-today-btn", "click", function () {
       state.viewDate = ""; writeUrlDate("");
       if (YB.dateField) YB.dateField.set("log-date", ""); else { var d = $("log-date"); if (d) d.value = ""; }
+      resetSnap(); loadLogs();
+    });
+    // 首载失败错误态的重试出口（log-empty 内）
+    on("log-retry-btn", "click", function () {
       resetSnap(); loadLogs();
     });
     on("log-auto-refresh", "change", function () {
