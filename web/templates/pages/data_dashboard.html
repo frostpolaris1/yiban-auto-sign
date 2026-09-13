@@ -17,8 +17,12 @@
 
 {% block title %}数据总览 · 易班自动签到{% endblock %}
 
+{# KPI 卡即 <a>（P61 整卡可点）：真链接语义，Enter 直达、中键/Cmd+点可新开；
+   卡内不再放「去账号管理 →」文字链。vendor 全局 a 已去下划线并继承色，
+   卡面色仍由 .kpi-card.c-* 提供（喂 ::before 径向渐变），焦点环走 app.css
+   第 11 节统一令牌（:where 列表里的 a.kpi-card）。 #}
 {% macro kpi(card) %}
-<article class="kpi-card c-{{ card.color }}">
+<a class="kpi-card c-{{ card.color }}" href="{{ request.script_root }}{{ card.href }}">
   <div class="kpi-top">
     <div class="kpi-identity">
       <div class="kpi-icon {{ card.icon_color }}">{{ icon(card.icon) }}</div>
@@ -32,10 +36,7 @@
   <div class="kpi-compare" id="{{ card.sub_id }}">
     <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
   </div>
-  {% if card.action_href %}
-  <a class="kpi-action" href="{{ request.script_root }}{{ card.action_href }}">{{ card.action_label }} →</a>
-  {% endif %}
-</article>
+</a>
 {% endmacro %}
 
 {# 图表卡卡头：与全站统一用项目 .panel-head 两段式（标题行 + 整宽说明，不画分隔线）。
@@ -67,27 +68,32 @@
     <p class="page-sub">账号、用户与签到结果的一屏汇总；待处理账号与异常排查入口就在对应卡片上。</p>
   </div>
 
+  {# 深链 ?tab= 由 core.js 共享助手支持（P50）；tab id 已核对 work_accounts.html
+     的 data-tab-target：pending / active / deleted（没有 review）。 #}
   <section class="kpi-grid" aria-label="关键指标">
     {{ kpi({
       'color': 'primary', 'icon_color': 'primary', 'icon': 'list',
       'label': '活跃账号', 'pill_id': 'kpi-accounts-pill', 'pill_class': 'info',
       'value_id': 'kpi-accounts-value', 'sub_id': 'kpi-accounts-sub',
+      'href': '/work/accounts?tab=active',
     }) }}
     {{ kpi({
       'color': 'purple', 'icon_color': 'purple', 'icon': 'users',
       'label': '注册用户', 'pill_id': 'kpi-users-pill', 'pill_class': 'info',
       'value_id': 'kpi-users-value', 'sub_id': 'kpi-users-sub',
+      'href': '/work/users',
     }) }}
     {{ kpi({
       'color': 'success', 'icon_color': 'success', 'icon': 'circle-check',
       'label': '今日签到成功率', 'pill_id': 'kpi-rate-pill', 'pill_class': 'flat',
       'value_id': 'kpi-rate-value', 'sub_id': 'kpi-rate-sub',
+      'href': '/data/logs',
     }) }}
     {{ kpi({
       'color': 'danger', 'icon_color': 'danger', 'icon': 'triangle-alert',
       'label': '待处理账号', 'pill_id': '', 'pill_class': '',
       'value_id': 'kpi-pending-value', 'sub_id': 'kpi-pending-sub',
-      'action_href': '/work/accounts', 'action_label': '去账号管理',
+      'href': '/work/accounts?tab=pending',
     }) }}
   </section>
 
