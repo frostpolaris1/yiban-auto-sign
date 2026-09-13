@@ -48,6 +48,13 @@
     if (!node) return; clear(node);
     node.appendChild(el("span", { class: "dash-error-text", text: msg || "加载失败" }));
   }
+  // KPI 副文案统一走这里：内容包一层 span 收敛为单行（超宽省略，见 app.css 第 28 节），
+  // 四卡说明盒高度才能严格相等；完整口径（含从副文案删掉的括号注）进 title 兜底。
+  function setSub(node, text, title, cls) {
+    if (!node) return; clear(node);
+    node.title = title || "";
+    node.appendChild(el("span", { class: "kpi-compare-text" + (cls ? " " + cls : ""), text: text == null ? "" : String(text) }));
+  }
   function setValue(node, value, sup) {
     if (!node) return; clear(node);
     node.classList.remove("kpi-value--empty");   // 真实数值回来时撤掉空态字号
@@ -213,12 +220,15 @@
     var acc = Number(cap.accounts) || 0, amax = Number(cap.accounts_max) || 0;
     var bd = cap.accounts_breakdown || {};
     setValue(av, num(acc), amax > 0 ? "/" + num(amax) : null);
-    txt(as, "正常 " + num(bd.normal) + " · 用户暂停 " + num(bd.user_paused) + " · 账密故障 " + num(bd.cred_paused) + "（均不含已删除）");
+    // 「（均不含已删除）」括号注删出副文案（行数对齐），口径挪进 title 提示
+    setSub(as, "正常 " + num(bd.normal) + " · 用户暂停 " + num(bd.user_paused) + " · 账密故障 " + num(bd.cred_paused), "均不含已删除账号");
     setPill($("kpi-accounts-pill"), amax > 0 ? pctOf(acc, amax) + "%" : "未设上限", pctOf(acc, amax) >= 90 ? "down" : "info");
 
     var users = Number(cap.users) || 0, umax = Number(cap.users_max) || 0;
     setValue(uv, num(users), umax > 0 ? "/" + num(umax) : null);
-    txt(us, umax > 0 ? "剩余注册名额 " + num(Math.max(0, umax - users)) + "（含未提交账号的空用户）" : "未设上限");
+    // 「（含未提交账号的空用户）」同理：只在有名额数字时才相关，随名额一起进 title
+    if (umax > 0) setSub(us, "剩余注册名额 " + num(Math.max(0, umax - users)), "按含未提交账号的空用户计");
+    else setSub(us, "未设上限", "");
     setPill($("kpi-users-pill"), umax > 0 ? pctOf(users, umax) + "%" : "未设上限", pctOf(users, umax) >= 90 ? "down" : "info");
   }
   function pauseBadge(node, paused, labels) {
@@ -301,8 +311,7 @@
     if (rt == null) {
       setEmptyValue(v, "—");
       v.title = "";
-      clear(sub);
-      sub.appendChild(el("span", { class: "dash-muted", text: noResultText() }));
+      setSub(sub, noResultText(), "", "dash-muted");
       setPill($("kpi-rate-pill"), "", "");
       return;
     }
@@ -311,8 +320,7 @@
     // 口径说明放 tooltip：写进副文案会把卡片挤成多行；「较昨日」已由右上角药丸表达，
     // 副文案只保留结果构成，避免同一信息在卡内出现两次。
     v.title = "成功率 = 成功 ÷（成功 + 失败），跳过不计入";
-    clear(sub);
-    sub.appendChild(el("span", { text: "成功 " + num(m.success) + " · 失败 " + num(m.fail) + (m.skip > 0 ? " · 跳过 " + num(m.skip) : "") }));
+    setSub(sub, "成功 " + num(m.success) + " · 失败 " + num(m.fail) + (m.skip > 0 ? " · 跳过 " + num(m.skip) : ""));
     if (ry != null) {
       var diff = Math.round((rt - ry) * 10) / 10;
       var cls = diff > 0 ? "up" : diff < 0 ? "down" : "flat";
@@ -486,7 +494,7 @@
       });
       var total = pending + rejected;
       setValue(v, num(total), null);
-      txt(sub, "待审核 " + num(pending) + " · 已拒绝 " + num(rejected));
+      setSub(sub, "待审核 " + num(pending) + " · 已拒绝 " + num(rejected));
       // 有可处置项时才把这张卡升级为唯一强调；0 或失败保持中性
       setAlert(total > 0);
     }).catch(function () {

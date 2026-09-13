@@ -525,6 +525,7 @@ textarea {
   .accordion-trigger,
   .hamburger,
   .info-tip,
+  a.kpi-card,
   .pm-panel .pm-panel-close
 ):focus-visible {
   outline: 2px solid var(--primary);
@@ -858,17 +859,9 @@ textarea {
 .dash-page .kpi-card.is-alert { border-color: var(--danger); }
 .dash-page .kpi-card.is-alert .kpi-value { color: var(--danger); }
 
-/* KPI 内的处置出口：文案是「动作 + 对象」，指向已注册路由（带 script_root 前缀） */
-.dash-page .kpi-action {
-  display: inline-flex;
-  align-items: center;
-  margin-top: -2px;
-  color: var(--primary);
-  font-size: 12.5px;
-  font-weight: 600;
-  text-decoration: none;
-}
-.dash-page .kpi-action:hover { text-decoration: underline; }
+/* KPI 整卡可点（P61）：卡片本体即 <a class="kpi-card">，卡内不再有 .kpi-action 文字链。
+   vendor 全局 a 已 text-decoration:none 且 color:inherit，卡面强调色仍由
+   .kpi-card.c-* 提供（喂 ::before 径向渐变），焦点环走第 11 节统一令牌。 */
 
 /* 容量卡下方的异常排查出口（同一行，窄屏自行换行） */
 .dash-page .dash-cap-links {
@@ -3271,6 +3264,20 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
    故把模板的 nowrap+ellipsis 改成允许折行 —— 宁可两行，也不要把标题吃掉。 */
 .kpi-label { white-space: normal; overflow: visible; text-overflow: clip; }
 
+/* P61 说明行数统一：四张 KPI 卡的副文案由 JS 包进 .kpi-compare-text（见 data_dashboard.js
+   的 setSub），收敛为单行 —— 1212 档 4 列每卡内容宽仅 ≈148px，「正常/用户暂停/账密故障」
+   拆解行必然折成两行，与右侧三卡错位且窄屏更糟。单行后四卡说明盒高度严格相等；
+   被截断的尾部与删掉的口径括号注都在 title 里（hover 可见全文）。 */
+.dash-page .kpi-compare-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 行高锁 20px：错误态的 dash-error-text 是 12.5px（正常副文案 12px），不锁会差出约 1px，
+   「说明盒高度一致」在部分卡加载失败的混合态也会破功。 */
+.dash-page .kpi-compare > span { line-height: 20px; }
+
 /* ==========================================================================
    29. 设置页输入刻度与卡片节奏校准（横屏 8 图实测）
    --------------------------------------------------------------------------
@@ -3806,8 +3813,8 @@ body[data-page="work-users"] .tab-panel .usr-group-head { margin-bottom: 0; }
        .range 滑块拇指（非文字非白图形）；
      · 主色作前景文字：.linklike、.md-body a、.auth-links a、.auth-agree-text
        button、.auth-switch-hint button、.select-option.is-sel、
-       .range-tick.is-active、.kpi-action、.sc-cell.is-selected（浅蓝字压深底
-       ≥7:1）；
+       .range-tick.is-active、.sc-cell.is-selected（浅蓝字压深底
+       ≥7:1；.kpi-action 文字链已随 P61 整卡可点移除，卡内不再有主色文字）；
      · vendor 遗留且本项目未使用：.nav-badge.pro / .pager-btn.is-active /
        .todo-check / .wx-day.is-today / .chat-row.me / .chat-send /
        .cal-quickadd / .cal-cell.is-today / .cal-chip.solid.work 不改动；
