@@ -180,7 +180,7 @@
        aria-labelledby="acct-tab-deleted" data-tab-id="deleted">
     <section class="card">
       {{ group_head('待删除账号', 'deleted-search', '搜索待删除账号',
-                    '软删除保留 7 天，期内可恢复；彻底删除将物理清除凭据（需管理员口令）。') }}
+                    '软删除保留 7 天，期内可恢复；彻底删除需管理员口令。') }}
       <div id="deleted-body" class="collapse-body is-open">
         <div class="collapse-inner">
           {{ batch_bar('deleted', [('恢复', 'restore', 'btn--primary'), ('彻底删除', 'purge', 'btn--ghost btn--danger-ghost')]) }}

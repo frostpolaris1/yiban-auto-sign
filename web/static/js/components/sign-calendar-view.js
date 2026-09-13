@@ -117,7 +117,7 @@
     logCard = document.querySelector("[data-sc-log-card]");
     if (!list) return;
     emptyHref = opts.emptyHref || (YB.BASE + "/data/dashboard");
-    emptyText = opts.emptyText || "还没有生效的易班账号。提交账号并通过管理员审核后，这里会显示签到日历。";
+    emptyText = opts.emptyText || "还没有生效的账号。提交账号并通过管理员审核后，这里会显示签到日历。";
     var logout = document.querySelector("[data-user-logout]");
     if (logout) logout.addEventListener("click", function () { YB.doLogout(); });
 

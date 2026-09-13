@@ -134,7 +134,7 @@
   function submit(body) {
     return new Promise(function (resolve) {
       YB.openConfirmPasswordModal(
-        "保存消息推送配置属于高危操作（关闭通道 / 更换密钥 / 调整额度节流）。\n请输入当前管理员密码确认。",
+        "保存消息推送配置属于高危操作。\n请输入当前管理员密码确认。",
         function (pw) {
           body.confirm_password = pw;
           busy = true;

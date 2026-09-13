@@ -109,7 +109,7 @@
     if (clr) clr.addEventListener("click", function () {
       YB.confirmDialog({
         title: "清除公告",
-        body: "清除后所有页面（含登录页）顶部的公告条都会消失。确定继续？",
+        body: "清除后所有页面顶部的公告都会消失。确定继续？",
         confirmText: "清除", danger: true
       }).then(function (ok) {
         if (!ok) return;
@@ -174,9 +174,9 @@
       function pick(v) { if (!settled) { settled = true; resolve(v); } }
       var body = YB.el("div", { class: "pm-confirm-text" });
       body.appendChild(YB.el("p", { text: "以下分区有尚未保存的修改：" + names.join("、") + "。" }));
-      body.appendChild(YB.el("p", { text: "「保存并继续」会先提交这些改动；「放弃修改」会还原为服务器上的当前值。" }));
+      body.appendChild(YB.el("p", { text: "「保存并继续」先提交修改；「放弃修改」恢复原始值。" }));
       if (withKeep) {
-        body.appendChild(YB.el("p", { text: "「保留修改继续查看」只切换分区，改动仍留在本地未提交。" }));
+        body.appendChild(YB.el("p", { text: "「保留修改继续查看」只切换分区，改动暂不提交。" }));
       }
       var actions = [
         { label: "取消", variant: "ghost", onClick: function () { pick("cancel"); } }
