@@ -98,6 +98,10 @@ class SubpathDeployTest(unittest.TestCase):
             mw = self.webapp.BasePathMiddleware(stub)
             mw({"PATH_INFO": P + "/login"}, lambda *a, **k: None)
             self.assertEqual(captured, {"SCRIPT_NAME": P, "PATH_INFO": "/login"})
+            # 显式配置时，**不带尾斜杠**的子路径根也能进首页：前缀切完剩空串 → 归一成 "/"，
+            # 由 root_page 按登录态转（否则用户手输 `https://host/tools/.../demo` 会 404）
+            mw({"PATH_INFO": P}, lambda *a, **k: None)
+            self.assertEqual(captured, {"SCRIPT_NAME": P, "PATH_INFO": "/"})
             # 显式配置但路径不匹配 → 回落根路径（不误伤根部署）
             mw({"PATH_INFO": "/login"}, lambda *a, **k: None)
             self.assertEqual(captured, {"SCRIPT_NAME": "", "PATH_INFO": "/login"})
