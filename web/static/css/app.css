@@ -386,7 +386,7 @@ textarea {
   color: var(--t-base);
 }
 .pager__btn.is-active {
-  background: var(--primary);
+  background: var(--primary-solid);   /* 白字压主色实心面：dark 下 --primary 是浅蓝，白字仅 2.54:1（见 §33） */
   color: #fff;
 }
 .pager__btn:disabled {
@@ -469,7 +469,7 @@ textarea {
 }
 .mini-cal-day.is-today.is-none,
 .mini-cal-day.is-today.is-future {
-  background: var(--primary);
+  background: var(--primary-solid);   /* is-none 原为白字压 --primary，同 §33 改深蓝实心面 */
   color: #fff;
 }
 /* 状态不只靠底色：色觉障碍下 --success-soft 与 --danger-soft 明度接近。
@@ -1214,7 +1214,7 @@ body {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: var(--primary);
+  background: var(--primary-solid);   /* 白色品牌图标压主色实心面（非文字图形 3:1 口径），见 §33 */
   color: #fff;
   display: grid;
   place-items: center;
@@ -3730,3 +3730,51 @@ body[data-page="work-users"] .tab-panel .usr-group-head { margin-bottom: 0; }
 .badge {
   vertical-align: 0.24em;
 }
+
+/* ==========================================================================
+   33. 主色实心面与白字对比度（P16 图四：dark 白字 2.54:1 → 5.17:1）
+   --------------------------------------------------------------------------
+   vendor 在深色主题把 --primary 提亮为 #60A5FA（服务「主色作前景」的场景：
+   主色文字 / 描边 / 焦点环在深底上需要亮蓝），但 .btn--primary 等实心面叠的是
+   **白字**——白字 on #60A5FA 实测 2.54:1，不达 AA 4.5:1；hover 落
+   --primary-dark(#3B82F6) 也只有 3.68:1。处置走「改背景不改文字色」：
+   新增实心面令牌 --primary-solid / --primary-solid-hover（深一档蓝，两主题
+   同值：白字 5.17 / 6.70），只替换**有白字或白图形叠在主色上**的表面；
+   light 下两令牌与 vendor --primary / --primary-dark 同值，零影响。
+   无白字的复用面逐一评估后**保留浅蓝**：
+     · 纯色填充：.progress-fill / .boot-fill（无文字）；
+     · tab 激活态：.tab.is-active 是主色**文字**+下划线（非实心底）；
+     · 分段控件选中 / 时段选中 / 日期选中：.auth-tabs.auth-seg .tab.is-active、
+       .slot--on、.date-day.is-sel 的字是 --t-inverse（深色主题下为深字压浅蓝，
+       7.41:1 ✅；.date-day.is-sel:hover 深字压 #3B82F6 5.12:1 ✅）；
+     · 焦点环 / 描边 / 圆点：:focus-visible outline、.slot:hover 边框、
+       .sc-cell--today 与 .date-day.is-today 的 inset ring、.wheel:focus-visible、
+       .range 滑块拇指（非文字非白图形）；
+     · 主色作前景文字：.linklike、.md-body a、.auth-links a、.auth-agree-text
+       button、.auth-switch-hint button、.select-option.is-sel、
+       .range-tick.is-active、.kpi-action、.sc-cell.is-selected（浅蓝字压深底
+       ≥7:1）；
+     · vendor 遗留且本项目未使用：.nav-badge.pro / .pager-btn.is-active /
+       .todo-check / .wx-day.is-today / .chat-row.me / .chat-send /
+       .cal-quickadd / .cal-cell.is-today / .cal-chip.solid.work 不改动；
+       .mini-cal-day 仅数据总览页使用，today 必伴随 ok/fail/none/future 之一且
+       均被 16 节 dash-page 覆盖为软底/描边，可达面无白字压主色（9 节的
+       .is-today.is-none 已同步改 solid 防回潮）。
+   ========================================================================== */
+:root {
+  --primary-solid: #2563EB;        /* 白字 5.17:1；light = vendor --primary */
+  --primary-solid-hover: #1D4ED8;  /* 白字 6.70:1；light = vendor --primary-dark */
+}
+html[data-theme="dark"] {
+  /* 与 light 同值：深一档蓝在两主题下白字都达标（5.17/6.70），深色不再用浅蓝承载白字 */
+  --primary-solid: #2563EB;
+  --primary-solid-hover: #1D4ED8;
+}
+/* vendor 规则的同名覆盖（app.css 后加载，同特异度后者胜） */
+.btn--primary { background: var(--primary-solid); }
+.btn--primary:hover { background: var(--primary-solid-hover); }
+::selection { background: var(--primary-solid); }          /* 选区是白字压主色 */
+.check input:checked + .box { background: var(--primary-solid); border-color: var(--primary-solid); }          /* 白色对勾图形 */
+.switch input:checked + .track { background: var(--primary-solid); border-color: var(--primary-solid); }       /* 白色滑块图形 */
+.brand-logo { background: var(--primary-solid); }          /* 白色品牌图形（logotype 豁免，随实心面统一取深蓝） */
+.badge.solid { background: var(--primary-solid); }         /* 当前未使用（vendor 遗留），防回潮 */

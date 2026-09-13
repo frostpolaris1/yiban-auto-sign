@@ -121,6 +121,16 @@ CONTRAST_PAIRS = (
     ("全站·表单错误文字", "state-bad-fg", "bg-card"),
 )
 
+# P16 图四（2026-09-13）：深色模式下「白字压主色实心面」的对比度修复。
+# vendor 深色 --primary 提亮为 #60A5FA（服务主色文字/描边/焦点环），白字压上只有
+# 2.54:1。处置走「改背景不改文字色」：新增 --primary-solid / --primary-solid-hover
+# （app.css §33，两主题同值深一档蓝），替换 .btn--primary / ::selection /
+# .pager__btn.is-active / .check 勾选 / .switch 勾选 / .brand-logo 等白字白图形实心面；
+# 无白字的复用面（progress-fill、tab 激活文字、焦点环等）保留浅蓝。
+SOLID_SURFACE_TOKENS = ("primary-solid", "primary-solid-hover")
+WHITE = (255, 255, 255)
+DARK_PRIMARY_KEEP = (0x60, 0xA5, 0xFA)  # --primary 在深色下必须仍是浅蓝（前景场景用）
+
 
 def _scan_reversed():
     """扫描 web 前端源里的写反形态，返回 [(相对路径, 行号, 行内容)]。"""
@@ -239,6 +249,56 @@ class WebTextContrastTest(unittest.TestCase):
                     )
         if problems:
             self.fail("日历 / 状态行 / 时段配色不达标：\n" + "\n".join(problems))
+
+    def test_primary_solid_surface_meets_aa(self):
+        """P16 图四：承载白字的主色实心面在两个主题下都必须达 AA。
+
+        app.css §33 引入 --primary-solid / --primary-solid-hover 承载白字（白图形）
+        的主色表面：改前深色下 .btn--primary 白字压 #60A5FA 仅 2.54:1（hover 压
+        #3B82F6 为 3.68:1）；改后两令牌固定为深一档蓝（白字 5.17 / 6.70:1），
+        light 下与 vendor --primary/--primary-dark 同值（零影响）。
+        同时钉住深色 --primary 保持 #60A5FA 不动——浅蓝仍服务主色文字/描边/焦点环。
+        """
+        colors = load_theme_colors()
+        problems = []
+        for mode, label in (("light", "浅色"), ("dark", "暗色")):
+            for token in SOLID_SURFACE_TOKENS:
+                if token not in colors[mode]:
+                    problems.append(f"  {label}：app.css 缺令牌 --{token}")
+                    continue
+                ratio = contrast(WHITE, colors[mode][token])
+                if round(ratio, 2) < AA_NORMAL_TEXT:
+                    problems.append(
+                        f"  {label}：白字 on --{token}"
+                        f" = {ratio:.2f}:1 < AA {AA_NORMAL_TEXT}:1"
+                    )
+        if problems:
+            self.fail("主色实心面（白字）对比度不达标：\n" + "\n".join(problems))
+
+        dark_primary = colors["dark"].get("primary")
+        self.assertEqual(
+            dark_primary, DARK_PRIMARY_KEEP,
+            f"深色 --primary 应保持 {DARK_PRIMARY_KEEP}（浅蓝服务文字色/描边/焦点环），"
+            f"实测 {dark_primary}——若确要改主色令牌，请同步复核 §33 的复用面清单",
+        )
+
+    def test_dark_primary_solid_usages_in_css(self):
+        """守卫本体：白字/白图形压主色的实心面必须走 --primary-solid，不得回流 --primary。"""
+        import re
+
+        with open(os.path.join(WEB, "static", "css", "app.css"), encoding="utf-8") as fh:
+            css = fh.read()
+        # 这些规则带白字/白图形，vendor 原用 --primary，必须被 §33 覆盖为 --primary-solid
+        required_overrides = (
+            ".btn--primary", "::selection", ".pager__btn.is-active",
+            ".check input:checked + .box", ".switch input:checked + .track",
+            ".brand-logo",
+        )
+        missing = [sel for sel in required_overrides
+                   if not re.search(re.escape(sel) + r"[^{]*\{[^}]*--primary-solid", css)]
+        if missing:
+            self.fail("以下白字/白图形主色实心面未使用 --primary-solid（会回流出 2.54:1）:\n  "
+                      + "\n  ".join(missing))
 
 
 if __name__ == "__main__":
