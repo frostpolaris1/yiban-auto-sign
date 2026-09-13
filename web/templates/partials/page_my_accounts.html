@@ -44,6 +44,8 @@
     <p id="accounts-empty" class="empty" hidden>
       <span class="empty__icon">{{ icon('user') }}</span>
       <span class="empty__msg">还没有提交账号。审核通过后自动签到。</span>
+      {# 加载失败时借用空态位展示错误文案与重试入口（成功态由 JS 收起） #}
+      <button type="button" class="btn btn--ghost btn--sm" data-acct-retry hidden>重试</button>
     </p>
     <div id="account-list" class="account-list"></div>
   </section>
