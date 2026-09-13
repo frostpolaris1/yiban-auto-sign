@@ -975,6 +975,9 @@ textarea {
 .field-help {
   text-wrap: pretty;
 }
+/* 小字说明行高：原继承 vendor 的 1.45（11.5px → 16.7px），中文小字偏挤；
+   与正文同口径抬到 1.6，让两行以上的说明读起来有节奏。 */
+.field-help { line-height: 1.6; }
 
 /* 数值/时间：等宽数字（tabular-nums）让逐行小数点/位数对齐，便于纵向比较。
    只影响数字字形宽度，不改字号与颜色。 */
