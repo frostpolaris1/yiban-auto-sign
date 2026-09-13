@@ -223,7 +223,8 @@
   }
   function pauseBadge(node, paused, labels) {
     if (!node) return; clear(node);
-    node.appendChild(el("span", { class: "badge " + (paused ? "danger" : "success") + " dot", text: paused ? labels[0] : labels[1] }));
+    // 徽标用 .badge--* AA 档位：暂停=bad（负面）、运行=ok
+    node.appendChild(el("span", { class: "badge " + (paused ? "badge--bad" : "badge--ok") + " dot", text: paused ? labels[0] : labels[1] }));
   }
   function renderPause(d) {
     if (!d) {
@@ -507,7 +508,8 @@
     if (!d || d.server_ts == null) { failNote(node, "时间校准失败"); return; }
     var drift = Math.round(Number(d.server_ts) - Date.now() / 1000);
     var abs = Math.abs(drift);
-    var cls = abs <= 5 ? "success" : abs <= 60 ? "warning" : "danger";
+    // 徽标用 .badge--* AA 档位：同步=ok、小偏差=warn、大偏差=bad
+    var cls = abs <= 5 ? "badge--ok" : abs <= 60 ? "badge--warn" : "badge--bad";
     node.appendChild(el("span", { class: "badge " + cls + " dot", text: abs <= 5 ? "时钟已同步" : "偏差 " + (drift > 0 ? "+" : "") + drift + " 秒" }));
     var tz = Number(d.tz_offset_min) || 0;
     node.appendChild(el("span", { class: "dash-health-text", text: String(d.now || "") + "（UTC" + (tz >= 0 ? "+" : "") + (tz / 60) + "）" }));
@@ -529,11 +531,11 @@
     YB.api("POST", "/api/ping").then(function (d) {
       clear(out);
       var ok = !!(d && d.reachable);
-      out.appendChild(el("span", { class: "badge " + (ok ? "success" : "danger") + " dot", text: ok ? "可达" : "不可达" }));
+      out.appendChild(el("span", { class: "badge " + (ok ? "badge--ok" : "badge--bad") + " dot", text: ok ? "可达" : "不可达" }));
       if (d && d.detail) out.appendChild(el("span", { class: "dash-health-text", text: String(d.detail) }));
     }).catch(function (err) {
       clear(out);
-      out.appendChild(el("span", { class: "badge danger dot", text: "检测失败" }));
+      out.appendChild(el("span", { class: "badge badge--bad dot", text: "检测失败" }));
       out.appendChild(el("span", { class: "dash-health-text", text: (err && err.message) || "请求失败" }));
     }).then(function () { if (btn) btn.disabled = false; });
   }

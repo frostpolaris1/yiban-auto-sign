@@ -119,6 +119,15 @@ CONTRAST_PAIRS = (
     ("设置页·字段帮助文字", "t-sub", "bg-muted"),
     ("设置页·容量超限标题", "badge-bad-fg", "badge-bad-bg"),
     ("全站·表单错误文字", "state-bad-fg", "bg-card"),
+    # P11（2026-09-13）：管理端旧档位徽标（.badge.success/.danger/.warning）统一到
+    # `.badge--*`（account-table.js / data_dashboard.js），文案与语义不变，仅换档位。
+    # 档位令牌与上面各页相同，此处按调用点补对照：改回旧档位或改色值都会报红。
+    ("账号页·状态徽标·正常", "badge-ok-fg", "badge-ok-bg"),
+    ("账号页·状态徽标·待审核", "badge-warn-fg", "badge-warn-bg"),
+    ("账号页·状态徽标·已拒绝/待删除", "badge-bad-fg", "badge-bad-bg"),
+    ("总览·健康徽标·运行/可达/时钟同步", "badge-ok-fg", "badge-ok-bg"),
+    ("总览·健康徽标·暂停/不可达/检测失败", "badge-bad-fg", "badge-bad-bg"),
+    ("总览·健康徽标·时钟小偏差", "badge-warn-fg", "badge-warn-bg"),
 )
 
 # P16 图四（2026-09-13）：深色模式下「白字压主色实心面」的对比度修复。
