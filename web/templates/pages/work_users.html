@@ -96,7 +96,7 @@
        aria-labelledby="usr-tab-pending" data-tab-id="pending">
     <section class="card">
       {{ group_head('待处理用户', 'usr-pending-search', '搜索待处理用户',
-                    '以下用户名下有待审核或已拒绝的易班账号（与「账号管理 → 待处理账号」同口径）。',
+                    '以下用户名下有待审核或已拒绝的易班账号。',
                     true) }}
       <div id="usr-pending-body" class="collapse-body is-open">
         <div class="collapse-inner">
@@ -127,7 +127,7 @@
        aria-labelledby="usr-tab-normal" data-tab-id="normal">
     <section class="card">
       {{ group_head('正式用户', 'usr-normal-search', '搜索正式用户',
-                    '已提交账号且无待审核的用户；首行内置主管理员不可修改。', true) }}
+                    '已提交账号且无待审核的用户；内置主管理员不可被修改。', true) }}
       <div id="usr-normal-body" class="collapse-body is-open">
         <div class="collapse-inner">
           {{ batch_bar('normal', false) }}
@@ -186,7 +186,7 @@
        aria-labelledby="usr-tab-deleted" data-tab-id="deleted">
     <section class="card" id="usr-deleted-card" hidden>
       {{ group_head('已注销用户', null, null,
-                    '用户自助注销后进入 7 天冷却期，期内可由主管理员立即清除；到期由系统自动物理清除。',
+                    '用户自助注销后进入 7 天冷却期，期内可由主管理员清除；到期系统自动清除。',
                     false) }}
       <div id="usr-deleted-body" class="collapse-body is-open">
         <div class="collapse-inner">
