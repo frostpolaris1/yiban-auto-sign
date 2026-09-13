@@ -36,6 +36,11 @@
 
     function node(key) { return $(ids[key]); }
 
+    // 内联 SVG 片段是常量；动态文本一律 textContent
+    function svg(name) {
+      return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+    }
+
     // 折叠区：button[aria-expanded] + .collapse-body.is-open，高度动画由 CSS 的
     // grid-template-rows 0fr↔1fr 完成（开与关都有动画）。
     function setCollapsed(next) {
@@ -90,10 +95,33 @@
       }
     }
 
+    // 读取失败不隐藏卡片：留在屏上给「加载失败 + 重试」，避免用户以为功能不存在
+    function clearLoadError() {
+      var card = node("card");
+      var old = card && card.querySelector("[data-pref-load-error]");
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+    }
+    function showLoadError() {
+      var card = node("card");
+      if (!card) return;
+      clearLoadError();
+      var alert = YB.el("p", { class: "alert danger pref-load-error", role: "alert" });
+      alert.setAttribute("data-pref-load-error", "");
+      var ico = YB.el("span", { class: "ico" });
+      ico.innerHTML = svg("circle-alert");
+      alert.appendChild(ico);
+      alert.appendChild(YB.el("span", { class: "body", text: "签到时间加载失败，请重试" }));
+      var retry = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "重试" });
+      retry.addEventListener("click", function () { retry.disabled = true; load(); });
+      alert.appendChild(retry);
+      card.appendChild(alert);
+    }
+
     // preserve=true 时保留用户当前展开态，用于选择后的局部刷新，避免页面跳动
     function load(preserve) {
       var card = node("card");
       return YB.api("GET", getPath).then(function (data) {
+        clearLoadError();
         if (!data.has_account) { if (card) card.hidden = true; return; }
         if (card) card.hidden = false;
         var win = node("window");
@@ -117,7 +145,9 @@
         }
         // 未开启时默认收起；修改后的局部刷新保留用户当前展开态
         if (!preserve) setCollapsed(!data.allowed);
-      }).catch(function () { if (card) card.hidden = true; });
+      }).catch(function () {
+        if (card) { card.hidden = false; showLoadError(); }
+      });
     }
 
     function pick(slot) {

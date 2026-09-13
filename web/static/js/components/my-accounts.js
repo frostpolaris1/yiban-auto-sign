@@ -10,6 +10,8 @@
      calendarMode   "link"（默认，出链接）| "inline"（卡内挂 [data-sc-mount] 并调共享日历）
      showState      是否在生效账号卡上补一行今日状态（今日已完成签到 / 前方排队 N 人）。
                     管理端 /mine 需要该信息（旧页在卡片内联展示），用户端不显示。
+     deletedRowsInList  列表视图是否包含软删除行（普通用户 true，管理端 false）。
+                    决定删除成功后原地替换该卡还是移除并重排后续下标。
      onChanged      任一写操作成功后回调（可空）
 
    接口契约（/api/my-accounts + 账号表单）与 pages/user_account.js 原实现逐字等价。
@@ -48,7 +50,8 @@
 
   function actionButton(label, cls, onClick) {
     var b = YB.el("button", { type: "button", class: cls, text: label });
-    b.addEventListener("click", onClick);
+    // 把按钮本身交给处理函数：成功/失败时可就地置 disabled + 文案，无需查 DOM
+    b.addEventListener("click", function () { onClick(b); });
     return b;
   }
 
@@ -65,7 +68,9 @@
     var onChanged = typeof opts.onChanged === "function" ? opts.onChanged : null;
 
     var accounts = [];
-    var pauseBusy = false;   // 暂停/恢复连点保护
+    var opBusy = false;   // 暂停/恢复、删除、撤销删除共用的在途守卫（防连点/双发）
+    // 普通用户视图含软删除行（撤销入口留在卡内）；管理端视图按后端口径排除已删除行
+    var keepDeleted = opts.deletedRowsInList !== false;
 
     function notifyChanged() { if (onChanged) onChanged(); }
 
@@ -122,7 +127,7 @@
       var actions = YB.el("div", { class: "account-actions" });
       if (a.deleted) {
         if (a.deleted_by_me) {
-          actions.appendChild(actionButton("撤销删除", "btn btn--ghost btn--sm", function () { restoreAccount(i); }));
+          actions.appendChild(actionButton("撤销删除", "btn btn--ghost btn--sm", function (btn) { restoreAccount(i, btn); }));
         } else {
           actions.appendChild(YB.el("span", { class: "account-note", text: "待管理员处理" }));
         }
@@ -136,7 +141,7 @@
             actions.appendChild(actionButton(
               a.user_paused ? "恢复签到" : "暂停签到",
               "btn btn--ghost btn--sm",
-              function () { togglePause(i); }
+              function (btn) { togglePause(i, btn); }
             ));
           }
         }
@@ -145,11 +150,15 @@
           "btn btn--ghost btn--sm",
           function () { openAccountForm(i); }
         ));
-        actions.appendChild(actionButton("删除", "btn btn--ghost btn--danger-ghost btn--sm", function () { deleteAccount(i); }));
+        actions.appendChild(actionButton("删除", "btn btn--ghost btn--danger-ghost btn--sm", function (btn) { deleteAccount(i, btn); }));
       }
       head.appendChild(ident);
       head.appendChild(actions);
       card.appendChild(head);
+      // 写操作成功后的就地状态：不整表重写，故用一次性标记把结果留在原卡内
+      if (a._justDeleted && a.deleted) {
+        card.appendChild(YB.el("p", { class: "state-line state-line--ok", role: "status", text: "✓ 已删除，7 天内可撤销" }));
+      }
 
       // 只保留"需要用户本人处理"的异常提示（例行签到状态在「签到日历」）
       if (a.status === "rejected") {
@@ -185,28 +194,71 @@
       return card;
     }
 
-    function renderList() {
-      listEl.innerHTML = "";
+    // 外壳显隐（空态 / 提交入口）与卡片内容解耦：局部更新时只同步这两处
+    function syncChrome() {
       if (emptyEl) emptyEl.hidden = accounts.length > 0;
       // 还有未删除账号时隐藏入口；全部被删除时保留（软删除不死路）
       if (openBtn) openBtn.hidden = accounts.some(function (a) { return !a.deleted; });
+    }
+
+    function mountInline(node, a) {
+      if (!inline || !window.SignCalendar || a.deleted || a.status !== "active") return;
+      var box = node && node.querySelector("[data-sc-mount]");
+      if (box) window.SignCalendar.render(box, a.phone);
+    }
+
+    function renderList() {
+      listEl.innerHTML = "";
+      syncChrome();
       accounts.forEach(function (a, i) {
         listEl.appendChild(accountCard(a, i));
       });
-      if (inline && window.SignCalendar) {
-        accounts.forEach(function (a, i) {
-          if (a.deleted || a.status !== "active") return;
-          var card = listEl.children[i];
-          var box = card && card.querySelector("[data-sc-mount]");
-          if (box) window.SignCalendar.render(box, a.phone);
-        });
-      }
+      if (inline) accounts.forEach(function (a, i) { mountInline(listEl.children[i], a); });
     }
 
-    function togglePause(i) {
-      if (pauseBusy) return;
+    // 原地替换单张卡：不整表重写，滚动位置与其它卡的键盘焦点不受影响
+    function replaceCard(i) {
+      var old = listEl.children[i];
+      var next = accountCard(accounts[i], i);
+      if (old && old.parentNode === listEl) listEl.replaceChild(next, old);
+      else listEl.appendChild(next);
+      syncChrome();
+      mountInline(next, accounts[i]);
+      // 操作按钮已被替换/禁用，把焦点交回新卡首个可操作元素（键盘用户不丢位）
+      var f = next.querySelector("button:not([disabled]), a[href]");
+      if (f && typeof f.focus === "function") f.focus();
+    }
+
+    // 删除后该行离开视图（管理端视图排除软删除行）：移除卡片并重排后续下标
+    function removeCard(i) {
+      accounts.splice(i, 1);
+      var old = listEl.children[i];
+      if (old && old.parentNode === listEl) listEl.removeChild(old);
+      for (var j = i; j < accounts.length; j++) {
+        var node = listEl.children[j];
+        var next = accountCard(accounts[j], j);
+        if (node && node.parentNode === listEl) listEl.replaceChild(next, node);
+        else listEl.appendChild(next);
+        mountInline(next, accounts[j]);
+      }
+      syncChrome();
+      var f = listEl.querySelector("button:not([disabled]), a[href]");
+      if (f && typeof f.focus === "function") f.focus();
+    }
+
+    function setRowBusy(btn, label) {
+      if (!btn) return;
+      btn.disabled = true;
+      btn.textContent = label || "处理中…";
+      btn.setAttribute("aria-busy", "true");
+    }
+
+    function togglePause(i, btn) {
+      if (opBusy) return;
+      opBusy = true;
       var a = accounts[i];
       var next = !a.user_paused;
+      var busyLabel = a.user_paused ? "恢复签到" : "暂停签到";
       var ask = next
         ? YB.confirmDialog({
             title: "暂停签到",
@@ -215,46 +267,79 @@
           })
         : Promise.resolve(true);
       ask.then(function (ok) {
-        if (!ok) return;
-        pauseBusy = true;
+        if (!ok) { opBusy = false; return; }
+        setRowBusy(btn);
         YB.api("PUT", "/api/my-accounts/" + i + "/pause", { paused: next }).then(function (data) {
           YB.toast.success(data.msg || (next ? "已暂停" : "已恢复"));
+          a.user_paused = (data && typeof data.paused === "boolean") ? data.paused : next;
           notifyChanged();
-          loadAccounts();
-        }).catch(function (e) { YB.toast.error(e.message); })
-          .then(function () { pauseBusy = false; });
+          replaceCard(i);
+        }).catch(function (e) {
+          YB.toast.error(e.message);
+          if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = busyLabel; btn.removeAttribute("aria-busy"); }
+        }).then(function () { opBusy = false; });
       });
     }
 
-    function deleteAccount(i) {
+    function deleteAccount(i, btn) {
+      if (opBusy) return;
+      opBusy = true;
       var a = accounts[i];
       YB.confirmDialog({
         title: "删除账号",
         body: "确定删除「" + a.display_name + "」(" + a.phone + ") 吗？删除后 7 天内可撤销恢复，超过 7 天将自动清除。",
         confirmText: "删除", danger: true
       }).then(function (ok) {
-        if (!ok) return;
-        YB.api("DELETE", "/api/my-accounts/" + i).then(function () {
-          YB.toast.success("已删除，7 天内可撤销");
+        if (!ok) { opBusy = false; return; }
+        setRowBusy(btn);
+        YB.api("DELETE", "/api/my-accounts/" + i).then(function (data) {
+          // 视图含软删除行：后端仍保留该行，故只改本地字段并原地替换
+          // 视图不含（管理端）：该行已离开列表，移除并重排
+          YB.toast.success(keepDeleted
+            ? ((data && data.msg) || "已删除，7 天内可撤销")
+            : "已删除，可在账号管理页恢复");
+          a.deleted = true;
+          a.deleted_by_me = true;
+          a._justDeleted = true;
           notifyChanged();
-          loadAccounts();
-        }).catch(function (e) { YB.toast.error(e.message); });
+          if (keepDeleted) replaceCard(i);
+          else removeCard(i);
+        }).catch(function (e) {
+          YB.toast.error(e.message);
+          if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "删除"; btn.removeAttribute("aria-busy"); }
+        }).then(function () { opBusy = false; });
       });
     }
 
-    function restoreAccount(i) {
+    function restoreAccount(i, btn) {
+      if (opBusy) return;
+      opBusy = true;
       var a = accounts[i];
       YB.confirmDialog({
         title: "撤销删除",
         body: "撤销删除「" + a.display_name + "」(" + a.phone + ")？将恢复到删除前的状态。",
         confirmText: "撤销删除"
       }).then(function (ok) {
-        if (!ok) return;
-        YB.api("POST", "/api/my-accounts/" + i + "/restore", {}).then(function () {
-          YB.toast.success("已恢复");
+        if (!ok) { opBusy = false; return; }
+        setRowBusy(btn);
+        YB.api("POST", "/api/my-accounts/" + i + "/restore", {}).then(function (data) {
+          YB.toast.success((data && data.msg) || "已恢复");
+          // 接口同时回传刷新后的视图：按手机号对回本行，字段与原状态一致
+          var fresh = data && data.accounts;
+          var match = fresh && fresh.filter(function (x) { return x.phone === a.phone; })[0];
+          if (match) {
+            Object.keys(match).forEach(function (k) { a[k] = match[k]; });
+          } else {
+            a.deleted = false;
+            a.deleted_by_me = false;
+          }
+          a._justDeleted = false;
           notifyChanged();
-          loadAccounts();
-        }).catch(function (e) { YB.toast.error(e.message); });
+          replaceCard(i);
+        }).catch(function (e) {
+          YB.toast.error(e.message);
+          if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "撤销删除"; btn.removeAttribute("aria-busy"); }
+        }).then(function () { opBusy = false; });
       });
     }
 

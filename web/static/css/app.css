@@ -1777,6 +1777,8 @@ html[data-theme="dark"] {
 .state-line--warn { color: var(--state-warn-fg); }
 .state-line--bad { color: var(--state-bad-fg); }
 .state-line--muted { color: var(--t-muted); }
+/* 卡片内就地结果行（如删除后的「✓ 已删除」）：与卡头拉开一点，不贴线 */
+.account-card > .state-line { margin-top: 10px; }
 
 /* 日志块：嵌面板 + 等宽（账号卡内与日历页共用） */
 .log-view {
@@ -1866,6 +1868,8 @@ html[data-theme="dark"] {
 .pref-estimate { margin: 0 0 12px; }
 .pref-foot { margin-top: 16px; }
 .pref-hint { margin-top: 16px; }
+/* 时段卡读取失败：卡不隐藏，卡内就地给错误与重试入口 */
+.pref-load-error { margin-top: 16px; }
 .user-danger .panel-title { color: var(--danger); }
 
 /* 危险操作的"文字按钮"：Adminator 的 .btn--outline-danger 用 --danger 作文字色，
@@ -2981,6 +2985,18 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 .tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .tabs-scroll .tabs { margin-bottom: 18px; }
 .tabs-scroll .tab { white-space: nowrap; }
+/* 脏分区标记：脏徽标只在卡内，切到别的分区就看不见；分区标签右上角补一个警示点，
+   由 JS 按 dirtyStores() 汇总打 .is-dirty（无动画，prefers-reduced-motion 无需处理）。 */
+.tab.is-dirty::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
 /* 模板 .addon 只有 border-right（前缀形态）；尾缀单位去掉右边线、改在左侧画分隔。
    同时必须给 addon 禁换行/禁压缩、并让 .input 可伸缩 —— 否则单位被挤成竖排
    （实测「分钟」在 2 字宽里折成两行，「秒」单字也被压窄）。 */
