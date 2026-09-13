@@ -3481,6 +3481,36 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 .select-option.is-sel { color: var(--primary); font-weight: 600; }
 .select-search { margin-bottom: 4px; min-height: 34px; }
 .select-empty { padding: 8px 10px; font-size: 12px; color: var(--t-muted); }
+/* 不可选小节头（原 optgroup label 语义）：弱化排印、上缘细分隔线区分节 */
+.select-group {
+  padding: 8px 10px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--t-muted);
+  text-align: left;
+  cursor: default;
+}
+.select-group:first-child { margin-top: 0; border-top: 0; }
+/* 浮动态（模态内）：.pm-panel overflow:hidden 与 .modal-body overflow-y:auto 都会裁掉
+   absolute 面板，故打开时由 JS portal 到 body 用 fixed 定位；z-index 1010 压过模态遮罩
+   (1000)、低于 Toast(1200)。top/left/width 由 JS 按触发器矩形钳制写入，这里只解除
+   absolute 态的 top/left/right 约束。 */
+.select-menu--floating {
+  position: fixed;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  z-index: 1010;
+}
+/* 向上展开时进入动画反向（向下 4px 淡入），与展开方向一致 */
+.select-menu--floating.is-up { animation-name: select-menu-in-up; }
+@keyframes select-menu-in-up {
+  from { opacity: 0; transform: translateY(4px); }
+}
 
 /* ---- 30.2 数值滑块字段（触发器 + 弹窗） ---- */
 .range-field { display: block; }
@@ -3540,7 +3570,7 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 .range-modal .range { margin-top: 18px; }
 .range-modal .range-scale { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) {
-  .select-menu { animation: none; }
+  .select-menu, .select-menu--floating { animation: none; }
   .select-caret { transition: none; }
 }
 

@@ -5,7 +5,10 @@
      set(id, value)         写入选项值：同步隐藏 input、触发器文案与选中态
      read(id)               读取隐藏 input 的值
      setDisabled(id, on)    启用/禁用（整组置灰、触发键不可点）
-     setOptions(id, items)  重建选项（动态列表用；items = [{v, t}, …]）
+     setOptions(id, items)  重建选项（动态列表用），items 条目三形态：
+                              { v, t }      可选选项
+                              { group: 题 } 不可选小节头（原 optgroup label 语义）
+                              { empty: 文 } 不可选空态行（如「（暂无）」）
 
    为什么不用原生 <select>：下拉面板由 UA 渲染，高亮色 / 圆角 / 阴影 / 分隔线都不可控，
    与设计系统不一致（实测 Windows 下高亮为系统蓝、面板带系统投影）。自研 listbox 的面板
@@ -18,7 +21,16 @@
    可访问性：触发器 role=combobox + aria-expanded + aria-controls；面板 role=listbox、
    选项 role=option + aria-selected；↑/↓ 移动、Home/End 首末、Enter/Space 选择、
    Esc 收起并归还焦点、焦点移出整组时自动收起。选项静态写在模板里（Jinja 友好），
-   也可由 setOptions() 注入；列表较长时面板顶部给筛选框。 */
+   也可由 setOptions() 注入；列表较长时面板顶部给筛选框。
+
+   弹层防裁剪（portal）：模态壳 .pm-panel 是 overflow:hidden、.modal-body 是
+   overflow-y:auto，面板 absolute 定位必被裁掉；且 .pm-backdrop 的 backdrop-filter
+   会创建层叠上下文。故打开时若 root 处于 .pm-panel 内，把面板 portal 到
+   document.body 用 position:fixed 定位（z-index 1010 压过遮罩 1000、低于 Toast
+   1200，与 row-menu 的 portal 先例同思路），宽度对齐触发器、上下空间不足时向上翻、
+   一律钳制进视口；关闭时按记录的原父节点还原并清掉内联定位。页面场景（无模态壳）
+   保持 absolute 原路径零变化。fixed 面板不随 .modal-body 滚动，故浮动期间监听
+   scroll/resize：滚动源不是面板自身就立即关闭，避免面板与触发器脱节。 */
 (function () {
   "use strict";
   var YB = window.YB;
@@ -26,18 +38,33 @@
 
   var uid = 0;
   var globalBound = false;
+  var GAP = 8;                                 // 浮动面板与视口的安全边距
+  var FLOAT_CLASS = "select-menu--floating";   // 浮动态（fixed + portal 到 body）
+  var UP_CLASS = "is-up";                      // 向上展开（进入动画换方向）
+  var floatGuard = null;                       // 浮动期间的 scroll/resize 关闭监听
 
   function svg(name) { return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
   function roots() { return [].slice.call(document.querySelectorAll("[data-select-field]")); }
   function rootOf(id) { return document.querySelector('[data-select-field="' + id + '"]'); }
   function hiddenOf(root) { return root.querySelector("input[type=hidden]"); }
-  function menuOf(root) { return root.querySelector(".select-menu"); }
+  /* 浮动期间面板不在 root 子树内，root.querySelector 查不到——portal 时把引用记到
+     root.__floatMenu，还原时清掉。所有取面板/选项的路径都经这里，才与浮动兼容。 */
+  function menuOf(root) {
+    return root.__floatMenu || root.querySelector(".select-menu");
+  }
   function triggerOf(root) { return root.querySelector(".select-trigger"); }
   function optionsOf(root) {
-    return [].slice.call(root.querySelectorAll(".select-option"));
+    var menu = menuOf(root);
+    return menu ? [].slice.call(menu.querySelectorAll(".select-option")) : [];
   }
   function visibleOptions(root) {
     return optionsOf(root).filter(function (o) { return !o.hidden; });
+  }
+  // 命中判定要覆盖浮动面板：焦点/点击落在 portal 出去的面板上也算"落在整组内"
+  function holdsFocus(root, node) {
+    if (!node) return false;
+    var menu = menuOf(root);
+    return root.contains(node) || !!(menu && menu.contains(node));
   }
 
   // 触发器要能被读屏关联到字段标签：优先用显式 aria-labelledby，否则就近取 .field-label
@@ -98,6 +125,14 @@
     if (!menu || menu.hidden) return;
     menu.hidden = true;
     root.classList.remove("is-open");
+    // 浮动态收场：面板搬回 root 原位、清掉内联定位，供下次打开重新测量
+    if (menu.classList.contains(FLOAT_CLASS)) {
+      menu.classList.remove(FLOAT_CLASS, UP_CLASS);
+      menu.style.left = menu.style.top = menu.style.width = "";
+      if (menu.__home && menu.parentNode !== menu.__home) menu.__home.appendChild(menu);
+      root.__floatMenu = null;
+      disarmFloatGuard();
+    }
     if (trigger) {
       trigger.setAttribute("aria-expanded", "false");
       if (back) trigger.focus();
@@ -112,6 +147,44 @@
     focusNoScroll(sel);
   }
 
+  // 浮动定位：宽度对齐触发器（下拉语义等宽），水平夹进视口；垂直默认向下展开、
+  // 下方放不下翻到上方，仍放不下（矮视口）就钳到能容纳的极限位置
+  function placeFloat(root, menu) {
+    var tr = triggerOf(root).getBoundingClientRect();
+    var vw = window.innerWidth, vh = window.innerHeight;
+    menu.style.width = Math.round(tr.width) + "px";
+    var mw = menu.offsetWidth, mh = menu.offsetHeight;
+    var left = tr.left;
+    if (left + mw > vw - GAP) left = vw - GAP - mw;
+    if (left < GAP) left = GAP;
+    var top = tr.bottom + 4;                       // 与 absolute 态 top:calc(100% + 4px) 同距
+    var up = top + mh > vh - GAP;
+    if (up) top = tr.top - mh - 4;
+    if (top + mh > vh - GAP) top = vh - GAP - mh;
+    if (top < GAP) top = GAP;
+    menu.style.left = Math.round(left) + "px";
+    menu.style.top = Math.round(top) + "px";
+    menu.classList.toggle(UP_CLASS, up);
+  }
+
+  // fixed 面板不随 .modal-body 滚动：滚动/缩放的源不是面板自身就关闭，
+  // 面板内部滚动（scroll target 在面板内）是正常交互，放行
+  function armFloatGuard(root, menu) {
+    disarmFloatGuard();
+    floatGuard = function (e) {
+      if (menu.contains(e.target)) return;
+      close(root, false);
+    };
+    document.addEventListener("scroll", floatGuard, true);
+    window.addEventListener("resize", floatGuard);
+  }
+  function disarmFloatGuard() {
+    if (!floatGuard) return;
+    document.removeEventListener("scroll", floatGuard, true);
+    window.removeEventListener("resize", floatGuard);
+    floatGuard = null;
+  }
+
   function open(root) {
     var menu = menuOf(root), trigger = triggerOf(root);
     if (!menu || !trigger || trigger.disabled) return;
@@ -119,6 +192,16 @@
     menu.hidden = false;
     root.classList.add("is-open");
     trigger.setAttribute("aria-expanded", "true");
+    // 模态壳内 absolute 面板必被 .pm-panel(overflow:hidden)/.modal-body(overflow-y:auto)
+    // 裁剪 → portal 到 body 用 fixed；页面场景保持 absolute，行为零变化
+    if (root.closest && root.closest(".pm-panel") && menu.parentNode !== document.body) {
+      menu.__home = menu.parentNode;
+      root.__floatMenu = menu;
+      document.body.appendChild(menu);
+      menu.classList.add(FLOAT_CLASS);
+      placeFloat(root, menu);
+      armFloatGuard(root, menu);
+    }
     var search = menu.querySelector(".select-search");
     if (search) { focusNoScroll(search); if (search.select) search.select(); return; }
     focusSel(root);
@@ -197,7 +280,7 @@
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(root); }
     });
     root.addEventListener("focusout", function (e) {
-      if (!root.contains(e.relatedTarget)) close(root, false);
+      if (!holdsFocus(root, e.relatedTarget)) close(root, false);
     });
   }
 
@@ -232,6 +315,16 @@
     });
   }
 
+  // 不可选小节头：不是 .select-option，天然不进键盘导航与 paint 选中态（原 optgroup label 语义）
+  function groupNode(title) {
+    return YB.el("div", { class: "select-group", role: "presentation", text: title });
+  }
+
+  // 不可选空态行（如「（暂无）」）：与筛选态的 .select-empty 同款样式，类名即语义
+  function emptyNode(text) {
+    return YB.el("div", { class: "select-empty", text: text });
+  }
+
   function setOptions(id, items) {
     var root = rootOf(id);
     var menu = root && menuOf(root);
@@ -241,7 +334,12 @@
     if (root.hasAttribute("data-search") && list.length > 8) {
       menu.appendChild(searchBox(root));
     }
-    list.forEach(function (it) { menu.appendChild(optionNode(it)); });
+    list.forEach(function (it) {
+      if (!it) return;
+      if (it.group != null) menu.appendChild(groupNode(String(it.group)));
+      else if (it.empty != null) menu.appendChild(emptyNode(String(it.empty)));
+      else menu.appendChild(optionNode(it));
+    });
     if (root.hasAttribute("data-search") && list.length > 8) {
       menu.appendChild(YB.el("div", { class: "select-empty", hidden: true, text: "无匹配项" }));
     }
@@ -278,7 +376,7 @@
     globalBound = true;
     document.addEventListener("click", function (e) {
       roots().forEach(function (root) {
-        if (!root.contains(e.target)) close(root, false);
+        if (!holdsFocus(root, e.target)) close(root, false);
       });
     });
   }

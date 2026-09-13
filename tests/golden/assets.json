@@ -25,6 +25,7 @@
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/core.js?v=*",
+    "script src=/static/js/components/select-field.js?v=*",
     "script src=/static/js/components/account-form.js?v=*",
     "script src=/static/js/components/time-pref.js?v=*",
     "script src=/static/js/components/my-accounts.js?v=*",
