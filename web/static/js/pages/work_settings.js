@@ -4,7 +4,8 @@
    settings-health,settings-notify,settings-mail,settings-quota,settings-switches}.js。
 
    职责：身份判定（is_builtin_admin）→ 分区（模板 .tabs，切换由 core.js 承担）与
-   ?tab= 深链 → 拉取 GET /api/settings 回填各分区 → 公告读写 → 装配各组件。
+   ?tab= 深链（core.js 共享助手 tabDeepLink/selectTab，写 URL 时机由本页脏守卫控制）→
+   拉取 GET /api/settings 回填各分区 → 公告读写 → 装配各组件。
 
    **保存语义（本页唯一口径）**：每个分区/卡片的字段改动只标脏，由各自的保存按钮提交；
    页面级只做两件事 —— 汇总脏分区、在"要离开这些改动"时问一句。带破坏性的按钮
@@ -228,34 +229,20 @@
   }
 
   /* ---------------- 分区与深链 ?tab= ---------------- */
+  // 深链与 URL 同步已收进 core.js 的共享助手（tabDeepLink / selectTab / tabSyncUrl，
+  // 全站唯一一份）；本页组在模板上标 data-tab-url-own（自管），因为切换要过脏守卫：
+  // 写 URL 的时机必须等守卫放行，由下面的 selectTab(…, { syncUrl: true }) 显式触发，
+  // 委托路径不写 —— 守卫取消时地址栏不残留 ?tab=。
   function tabLinks() {
     return [].slice.call(document.querySelectorAll("[data-tab-group] .tab[data-tab-target]"));
-  }
-  function validTab(id) {
-    return tabLinks().some(function (t) {
-      return t.getAttribute("data-tab-target") === id && !t.hidden;
-    });
-  }
-  function selectTab(id, writeUrl) {
-    if (!validTab(id)) return;
-    YB.switchTab(id);
-    if (writeUrl === false) return;
-    // 与 /logs?date= 同口径：replaceState 不产生历史堆积
-    try {
-      var u = new URL(location.href);
-      u.searchParams.set("tab", id);
-      history.replaceState(null, "", u.pathname + u.search + u.hash);
-    } catch (e) { /* 受限环境忽略 */ }
   }
   function initTabs() {
     tabLinks().forEach(function (t) {
       t.addEventListener("click", function () {
-        guardThen(function () { selectTab(t.getAttribute("data-tab-target"), true); }, true);
+        guardThen(function () { YB.selectTab(t.getAttribute("data-tab-target"), { syncUrl: true }); }, true);
       });
     });
-    var want = null;
-    try { want = new URLSearchParams(location.search).get("tab"); } catch (e) { want = null; }
-    if (want && validTab(want)) selectTab(want, false);
+    YB.tabDeepLink();
   }
 
   /* ---------------- 未保存改动的站内离场守卫 ---------------- */

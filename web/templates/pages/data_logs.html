@@ -24,14 +24,15 @@
   {# 窄屏 tab 条可横滑：外层滚动容器，避免整页横向滚动 #}
   <div class="tabs-scroll">
     <div class="tabs" role="tablist" aria-label="签到日志分区">
+      {# tabindex：WAI-ARIA tabs roving 模式的服务端初始值（活动 0、其余 -1），切换由 core.js 同步；
+         计数直接放在标签上：省掉卡内一行「共 N 条」，切标签前就能看到量 #}
       <a class="tab is-active" role="tab" id="log-tab-main" aria-selected="true"
-         aria-controls="log-panel-main" href="#" data-tab-target="main">日志</a>
-      {# 计数直接放在标签上：省掉卡内一行「共 N 条」，切标签前就能看到量 #}
+         aria-controls="log-panel-main" href="#" data-tab-target="main" tabindex="0">日志</a>
       <a class="tab" role="tab" id="log-tab-probe" aria-selected="false"
-         aria-controls="log-panel-probe" href="#" data-tab-target="probe">
+         aria-controls="log-panel-probe" href="#" data-tab-target="probe" tabindex="-1">
         探针记录 <span class="log-count" id="probe-count">0</span></a>
       <a class="tab" role="tab" id="log-tab-signev" aria-selected="false"
-         aria-controls="log-panel-signev" href="#" data-tab-target="signev">
+         aria-controls="log-panel-signev" href="#" data-tab-target="signev" tabindex="-1">
         签到事件 <span class="log-count" id="signev-count">0</span></a>
     </div>
   </div>

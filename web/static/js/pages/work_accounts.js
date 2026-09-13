@@ -348,6 +348,8 @@
     bindAdd();
     bindEmptyTabs();
     bindSelectAll();
+    // ?tab= 深链（core.js 共享助手）：待处理/正常/待删除三区可直链打开，初始不写 URL
+    YB.tabDeepLink();
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
       load();

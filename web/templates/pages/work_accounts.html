@@ -69,15 +69,16 @@
 <div data-tab-group>
   <div class="tabs-scroll">
     <div class="tabs" role="tablist" aria-label="账号管理分区">
-      {# 计数放在标签上：切标签前就能看到各组的量 #}
+      {# 计数放在标签上：切标签前就能看到各组的量
+         tabindex：WAI-ARIA tabs roving 模式的服务端初始值（活动 0、其余 -1），切换由 core.js 同步 #}
       <a class="tab is-active" role="tab" id="acct-tab-pending" aria-selected="true"
-         aria-controls="acct-panel-pending" href="#" data-tab-target="pending">
+         aria-controls="acct-panel-pending" href="#" data-tab-target="pending" tabindex="0">
         待处理账号 <span class="acct-count" id="accounts-pending-count"></span></a>
       <a class="tab" role="tab" id="acct-tab-active" aria-selected="false"
-         aria-controls="acct-panel-active" href="#" data-tab-target="active">
+         aria-controls="acct-panel-active" href="#" data-tab-target="active" tabindex="-1">
         正常账号 <span class="acct-count" id="accounts-active-count"></span></a>
       <a class="tab" role="tab" id="acct-tab-deleted" aria-selected="false"
-         aria-controls="acct-panel-deleted" href="#" data-tab-target="deleted">
+         aria-controls="acct-panel-deleted" href="#" data-tab-target="deleted" tabindex="-1">
         待删除账号 <span class="acct-count" id="accounts-deleted-count"></span></a>
     </div>
   </div>

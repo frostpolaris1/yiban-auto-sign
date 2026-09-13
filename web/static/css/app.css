@@ -3208,6 +3208,12 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 [data-tab-group] .tab-panel.is-active {
   animation: set-panel-in 160ms var(--ease-out-strong) both;
 }
+/* 键盘方向键切分区（roving tabindex）是高频操作：跳过进入动效，避免连续切换时面板
+   反复浮动 —— 与下方 prefers-reduced-motion 分支同口径。data-tab-instant 由 core.js
+   在键盘激活时打上、下一次鼠标/程序化激活时清除（动画自动恢复，无定时器清理）。 */
+[data-tab-group] .tab-panel.is-active[data-tab-instant] {
+  animation: none;
+}
 /* 快捷档位（.btn-group 的 .is-active 切换）是高频反馈：走全局 .btn 的 220ms 主题换色时长偏慢 */
 .btn-group .btn {
   transition: background-color 140ms, border-color 140ms, color 140ms;
