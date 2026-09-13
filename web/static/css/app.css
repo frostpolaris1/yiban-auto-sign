@@ -736,6 +736,9 @@ textarea {
   overflow-x: auto;
 }
 .dash-page .dash-cal-scroll .mini-cal-grid {
+  /* 流体宽度 + 420px 上限：热力图卡现在是半宽（col-6），固定宽会在窄一档的
+     断点下比卡片还宽、把 .dash-cal-scroll 顶出横向滚动。 */
+  width: 100%;
   max-width: 420px;
   min-width: 280px;
   gap: var(--mini-cal-gap);
@@ -743,6 +746,11 @@ textarea {
 /* 日期格：加圆角 + 间隙后，相邻同色格不再连成一片（"边缘不清晰"的来源）。
    状态底色改用日历页的 --cal-*-bg/fg；今天照 .sc-cell--today 用 inset 描边（不占布局），
    实心底会盖掉状态色、也与日历页"今天 = 描边"的口径不一致。 */
+/* 同排卡片贴合内容：网格默认把同排卡片拉成等高，内容少的那张会在卡内留一大片空白
+   （实测容量卡内容 263px 被拉到 529px）。只给明确偏矮的卡加这个类；
+   热力图与日历那种"等高更好看"的场景不要加。 */
+.dash-page .dash-card--fit { align-self: start; }
+
 .dash-page .mini-cal-day {
   border-radius: 8px;
 }

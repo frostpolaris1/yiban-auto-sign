@@ -126,7 +126,7 @@
       <div class="chart-meta-row" id="slots-meta" hidden></div>
     </section>
 
-    <section class="col-12 card">
+    <section class="col-6 card">
       <div class="card-head">
         <div class="card-title-wrap">
           <span class="eyebrow">签到日历</span>
@@ -150,6 +150,36 @@
         </div>
         <span class="dash-cal-note" id="cal-note">数据来自真实签到事件（不含健康探针），覆盖最近 30 天</span>
       </div>
+    </section>
+    <!-- 账号与用户容量：原在账号管理页（那里只作展示），并入总览后管理端只此一处；
+         名额上限的修改仍在「系统设置 → 容量配额」。 -->
+    {# dash-card--fit：本卡内容比同排的热力图矮，不贴合内容会被网格拉成等高、卡内留一大片空白 #}
+    <section class="col-6 card dash-card--fit">
+      <div class="card-head">
+        <div class="card-title-wrap">
+          <span class="eyebrow">容量</span>
+          <h2 class="card-title">账号与用户容量</h2>
+        </div>
+      </div>
+      <p class="panel-sub">名额用量与三分类拆解（仅展示，不参与配额判定）。</p>
+      <div class="dash-health" id="capacity-rows">
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('list') }}<span>账号容量</span></div>
+          <div class="dash-health-value" id="capacity-accounts"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
+        </div>
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('user') }}<span>用户容量</span></div>
+          <div class="dash-health-value" id="capacity-users"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
+        </div>
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('chart-bar') }}<span>容量估算</span></div>
+          <div class="dash-health-value" id="capacity-estimate"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
+        </div>
+      </div>
+      <p class="dash-cap-links">
+        <a class="linklike" href="{{ request.script_root }}/work/accounts">排查账号异常 →</a>
+        <a class="linklike" href="{{ request.script_root }}/data/logs">排查签到日志 →</a>
+      </p>
     </section>
 
     <section class="col-12 card">
@@ -197,35 +227,6 @@
       </div>
     </section>
 
-    <!-- 账号与用户容量：原在账号管理页（那里只作展示），并入总览后管理端只此一处；
-         名额上限的修改仍在「系统设置 → 容量配额」。 -->
-    <section class="col-12 card">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">容量</span>
-          <h2 class="card-title">账号与用户容量</h2>
-        </div>
-      </div>
-      <p class="panel-sub">名额用量与三分类拆解（仅展示，不参与配额判定）。</p>
-      <div class="dash-health" id="capacity-rows">
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('list') }}<span>账号容量</span></div>
-          <div class="dash-health-value" id="capacity-accounts"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
-        </div>
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('user') }}<span>用户容量</span></div>
-          <div class="dash-health-value" id="capacity-users"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
-        </div>
-        <div class="dash-health-row">
-          <div class="dash-health-label">{{ icon('chart-bar') }}<span>容量估算</span></div>
-          <div class="dash-health-value" id="capacity-estimate"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
-        </div>
-      </div>
-      <p class="dash-cap-links">
-        <a class="linklike" href="{{ request.script_root }}/work/accounts">排查账号异常 →</a>
-        <a class="linklike" href="{{ request.script_root }}/data/logs">排查签到日志 →</a>
-      </p>
-    </section>
   </div>
 </div>
 {% endblock %}
