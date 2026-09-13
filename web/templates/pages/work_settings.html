@@ -106,7 +106,7 @@
       </div>
       <p class="alert info" id="ss-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <span class="body">仅主管理员可修改排序、分布、掐头去尾、账号间隔、签到窗口与自选时间；周六、周日开关任意管理员可改。</span>
+        <span class="body">仅主管理员可修改核心配置；周末开关任意管理员可改。</span>
       </p>
       <div class="form-grid">
         <div class="field">
@@ -118,14 +118,14 @@
           <span class="field-label" id="ss-dist-label">分布方式</span>
           {{ select_field('ss-dist', 'uniform',
              [('uniform', '均匀分布'), ('normal', '正态分布（钟形拟人）')], 'ss-dist-label') }}
-          <p class="field-help">「顺序 × 均匀」会集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态。</p>
+          <p class="field-help">「顺序 × 均匀」集中在窗口前段；其余铺满窗口。</p>
         </div>
         {# 掐头/去尾：页面只显示数值，点击在弹窗里用数字框或滑杆调整（见 range-field.js） #}
         <div class="field">
           <span class="field-label" id="ss-edge-front-label">掐头</span>
           <div class="range-field" data-range-field="ss-edge-front" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="掐头"
-               data-hint="裁掉签到窗口开头的一段，避开整点边界超时；0 = 不裁切。"
+               data-hint="裁掉签到窗口开头段，避开整点边界超时；0 = 不裁切。"
                aria-labelledby="ss-edge-front-label">
             <input type="hidden" id="ss-edge-front" value="1">
           </div>
@@ -135,7 +135,7 @@
           <span class="field-label" id="ss-edge-back-label">去尾</span>
           <div class="range-field" data-range-field="ss-edge-back" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="去尾"
-               data-hint="裁掉签到窗口末尾的一段；与「掐头」各自独立设置。"
+               data-hint="裁掉签到窗口末尾段；不影响「掐头」。"
                aria-labelledby="ss-edge-back-label">
             <input type="hidden" id="ss-edge-back" value="1">
           </div>
@@ -149,13 +149,13 @@
                    aria-labelledby="ss-gap-label">
             <span class="addon">秒</span>
           </div>
-          <p class="field-help">自动与手动签到均生效，0 = 关闭；修改需当前管理员密码确认。</p>
+          <p class="field-help">自动手动均生效，0 = 关闭；修改需当前管理员密码确认。</p>
         </div>
         {# 窗口起止是同一个逻辑对：共用一个触发器与一个弹窗（弹窗里滚轮选时并校验先后） #}
         <div class="field">
           <span class="field-label" id="ss-window-label">签到窗口（开始早于结束）</span>
           <div class="time-pair" data-time-pair data-title="签到窗口"
-               data-hint="上下滚动选择；开始必须早于结束，保存后下次自动签到时生效。"
+               data-hint="滚动选择；开始必须早于结束，保存后下次生效。"
                aria-labelledby="ss-window-label">
             <div class="time-field" data-time-field="ss-window-start">
               <input type="hidden" id="ss-window-start" value="06:30">
@@ -171,7 +171,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">周六签到</span>
-          <p class="set-help">开启后周六也尝试签到（默认关闭）。任意管理员可改，随「保存调度设置」一并提交。</p>
+          <p class="set-help">开启后周六也签到（默认关闭）。</p>
         </div>
         <label class="switch" title="周六签到">
           <input id="ss-sat" type="checkbox">
@@ -182,7 +182,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">周日签到</span>
-          <p class="set-help">开启后周日也尝试签到（默认关闭）。任意管理员可改，随「保存调度设置」一并提交。</p>
+          <p class="set-help">开启后周日也签到（默认关闭）。</p>
         </div>
         <label class="switch" title="周日签到">
           <input id="ss-sun" type="checkbox">
@@ -193,7 +193,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">允许用户自选签到时间</span>
-          <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。仅主管理员可改，随「保存调度设置」一并提交。</p>
+          <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。仅主管理员可改。</p>
         </div>
         <label class="switch" title="允许用户自选签到时间">
           <input id="ss-time-pref" type="checkbox">
@@ -268,7 +268,7 @@
             <label class="field-label" for="sn-secret">密钥（留空 = 不改动）</label>
             <input class="input" id="sn-secret" type="password" autocomplete="off"
                    placeholder="SCT 开头的 SendKey 或自定义 https 地址">
-            <p class="field-help">加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。</p>
+            <p class="field-help">加密存储、不回显；自定义地址须 HTTPS 且非内网。</p>
           </div>
         </div>
         <div class="set-row">
@@ -327,7 +327,7 @@
         <div class="set-row">
           <div class="set-row-text">
             <span class="set-row-label">全局邮件通知</span>
-            <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码，随「保存邮件配置」提交。</p>
+            <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码。</p>
           </div>
           <label class="switch" title="全局邮件通知">
             <input id="sm-global" type="checkbox">
@@ -341,7 +341,7 @@
             <input class="input" id="sm-to" type="text" maxlength="320" autocomplete="off" placeholder="admin@example.com">
             <span class="addon">邮箱</span>
           </div>
-          <p class="field-help">告警邮件（含安全告警）的送达地址；多个用英文逗号分隔。留空 = 不改动，清空走下方「清空收件人」。</p>
+          <p class="field-help">告警邮件的送达地址；多个用英文逗号分隔。留空 = 不改动，清空走下方「清空收件人」。</p>
         </div>
 
         {# 状态行描述的是「发件 SMTP 是否配置」，放在 SMTP 表上方才读得通 #}
@@ -430,7 +430,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">注册时验证账号</span>
-          <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。任意管理员可改，随「保存探针设置」一并提交。</p>
+          <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。任意管理员可改。</p>
         </div>
         <label class="switch" title="注册时验证账号">
           <input id="sh-verify" type="checkbox">
@@ -441,7 +441,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">开启探针模式</span>
-          <p class="set-help">非签到时段对全部账号做只读健康检查（登录并拉取签到任务，不实际签到），异常账号邮件预警。</p>
+          <p class="set-help">非签到时段对全部账号做健康检查（仅登录，不实际签到），异常账号提前预警。</p>
         </div>
         <label class="switch" title="探针模式">
           <input id="sh-probe-enable" type="checkbox">
@@ -453,7 +453,7 @@
         <div class="field">
           <span class="field-label" id="sh-probe-time-label">触发时间（最早时刻）</span>
           <div class="time-field" data-time-field="sh-probe-time" data-title="触发时间"
-               data-hint="设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。"
+               data-hint="到达设定时间将在最近的调度周期执行，每天最多一次。"
                aria-labelledby="sh-probe-time-label">
             <input type="hidden" id="sh-probe-time" value="20:00">
           </div>
@@ -463,7 +463,7 @@
           {{ select_field('sh-probe-interval', '1',
              [('1', '每天'), ('2', '每 2 天'), ('3', '每 3 天'), ('7', '每 7 天'),
               ('once', '下次计划时间单次执行（执行后自动关闭）')], 'sh-probe-interval-label') }}
-          <p class="field-help">设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。</p>
+          <p class="field-help">设定时间到达后将在最近的调度周期执行，每天最多一次。</p>
         </div>
       </div>
       <p class="set-tip" id="sh-tip" role="status"></p>
@@ -482,9 +482,9 @@
           <h2 class="card-title">系统开关</h2>
         </div>
       </div>
-      <p class="set-danger-note">暂停签到：所有账号停止自动签到（正在运行的一轮会跑完，下一轮跳过），手动签到不受影响。
-        暂停注册：登录页关闭注册入口，已注册用户登录不受影响，仍可在「账号管理」手动添加账号。
-        两项都是立即生效的动作（不属于表单值，无「保存」概念），均需二次确认 + 当前管理员密码。</p>
+      <p class="set-danger-note">暂停签到：所有账号停止自动签到（从下次开始），手动签到不受影响。
+        暂停注册：登录页关闭注册入口，已注册用户登录不受影响，需在「账号管理」手动添加账号。
+        两项都立即生效（不属于表单值，无「保存」概念），均需二次确认 + 当前管理员密码。</p>
       <div class="set-danger-actions">
         <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-global-pause">
           {{ icon('pause') }}<span id="set-global-pause-text">暂停自动签到</span>
