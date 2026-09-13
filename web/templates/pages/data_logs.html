@@ -86,6 +86,8 @@
       <p class="empty" id="log-empty" hidden>
         <span class="empty__icon">{{ icon('list') }}</span>
         <span class="empty__msg">暂无签到日志，等待定时任务执行…</span>
+        {# 加载失败的可读错误态里给出重试出口（成功渲染/空列表态保持隐藏） #}
+        <button type="button" class="btn btn--ghost btn--sm" id="log-retry-btn" hidden>重试</button>
       </p>
     </section>
   </div>
