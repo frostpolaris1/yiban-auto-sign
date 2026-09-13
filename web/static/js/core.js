@@ -535,24 +535,80 @@
     });
   }
   /* ---------- Tab（容器 [data-tab-group] + .tab[data-tab-target] + .tab-panel[data-tab-id]） ---------- */
-  function activateTab(group, target) {
+  // 深链参数名与同步口径自 /work/settings 的原实现提炼（全站唯一一份）：?tab=<分区 id>，
+  // 切换时 history.replaceState 同步（不产生历史堆积）。settings 页分区切换带脏守卫，
+  // 写 URL 的时机必须等守卫放行 —— 该组在模板上标 data-tab-url-own（自管），委托路径
+  // 不写 URL，由页面经 selectTab(…, { syncUrl: true }) 显式写；其余页面每次激活即同步。
+  var TAB_URL_PARAM = "tab";
+  function tabFromUrl() {
+    try { return new URLSearchParams(location.search).get(TAB_URL_PARAM); } catch (e) { return null; }
+  }
+  function tabSyncUrl(name) {
+    try {
+      var u = new URL(location.href);
+      u.searchParams.set(TAB_URL_PARAM, name);
+      history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch (e) { /* 受限环境忽略 */ }
+  }
+  // 可见性校验（settings 原 validTab 语义）：存在未 hidden 的同名 tab 才允许深链/切换。
+  // 遍历所有匹配而非只看第一个 —— 多分组时第一个匹配可能 hidden 而后续可见。
+  function tabVisible(name) {
+    var found = false;
+    forEach(document.querySelectorAll('[data-tab-group] .tab[data-tab-target="' + cssEscape(name) + '"]'), function (t) {
+      if (!t.hidden) found = true;
+    });
+    return found;
+  }
+  function activateTab(group, target, opts) {
+    opts = opts || {};
     forEach(group.querySelectorAll(".tab[data-tab-target]"), function (t) {
       var on = t.getAttribute("data-tab-target") === target;
       t.classList.toggle("is-active", on);
       t.setAttribute("aria-selected", on ? "true" : "false");
+      // roving tabindex（WAI-ARIA tabs）：活动 tab 是 Tab 键序唯一停止点，其余 -1 仍可点击聚焦
+      t.setAttribute("tabindex", on ? "0" : "-1");
     });
     forEach(group.querySelectorAll(".tab-panel[data-tab-id]"), function (p) {
-      p.classList.toggle("is-active", p.getAttribute("data-tab-id") === target);
+      var on = p.getAttribute("data-tab-id") === target;
+      p.classList.toggle("is-active", on);
+      // 键盘方向键属高频切换：激活面板打 data-tab-instant 供 CSS 跳过进入动效；
+      // 下一次鼠标/程序化激活会清掉标记，动画自动恢复（无需定时器清理）。
+      if (on && opts.instant) p.setAttribute("data-tab-instant", "");
+      else p.removeAttribute("data-tab-instant");
     });
+    if (!opts.skipUrl && (opts.syncUrl || !group.hasAttribute("data-tab-url-own"))) tabSyncUrl(target);
   }
   function cssEscape(s) { return String(s).replace(/["\\]/g, "\\$&"); }
-  function switchTab(name) {
+  function switchTab(name, opts) {
     if (!name) return;
     var panel = document.querySelector('[data-tab-group] [data-tab-id="' + cssEscape(name) + '"]');
-    if (panel) activateTab(panel.closest("[data-tab-group]"), name);
+    if (panel) activateTab(panel.closest("[data-tab-group]"), name, opts);
     forEach(document.querySelectorAll('[id^="tab-"]'), function (p) { p.classList.toggle("hidden", p.id !== "tab-" + name); });
     forEach(document.querySelectorAll("[data-tab-btn]"), function (b) { b.classList.toggle("is-active", b.getAttribute("data-tab-btn") === name); });
     try { document.dispatchEvent(new CustomEvent("yiban:tab", { detail: { name: name } })); } catch (e) {}
+  }
+  // 校验并切换（settings 原 selectTab 语义）：opts.syncUrl 强制写 URL（自管分组），
+  // opts.skipUrl / opts.instant 透传 activateTab。返回是否真的切换了。
+  function selectTab(name, opts) {
+    if (!tabVisible(name)) return false;
+    switchTab(name, opts);
+    return true;
+  }
+  // 页面 init 调用一次：读 ?tab= 直链选中对应分区。初始选中不写 URL —— 地址栏本就
+  // 处于该状态（与 settings 原实现的 replaceState 时机一致）。
+  function tabDeepLink() {
+    var want = tabFromUrl();
+    return !!(want && selectTab(want, { skipUrl: true }));
+  }
+  // 初始 roving tabindex 归一：模板已服务端渲染初始值，这里兜底修正模板漏写/动态分组。
+  function initTabRoving() {
+    forEach(document.querySelectorAll("[data-tab-group]"), function (g) {
+      var tabs = Array.prototype.filter.call(g.querySelectorAll(".tab[data-tab-target]"), function (t) { return !t.hidden; });
+      var active = tabs.filter(function (t) { return t.classList.contains("is-active"); })[0] || tabs[0];
+      forEach(g.querySelectorAll(".tab[data-tab-target]"), function (t) {
+        t.setAttribute("tabindex", t === active ? "0" : "-1");
+      });
+    });
   }
 
   /* ---------- 更新日志 ---------- */
@@ -799,7 +855,8 @@
           else if (e.key === "End") to = tabList[tabList.length - 1];
           if (to) {
             e.preventDefault();
-            activateTab(tgroup, to.getAttribute("data-tab-target"));
+            // instant：键盘高频切换跳过面板进入动效（与 prefers-reduced-motion 同口径）
+            activateTab(tgroup, to.getAttribute("data-tab-target"), { instant: true });
             to.focus();
             return;
           }
@@ -828,6 +885,7 @@
 
   onReady(function () {
     initGlobalHandlers();
+    initTabRoving();
     var themeBtn = $("themeToggle");
     if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
     updateThemeIcons();
@@ -917,6 +975,11 @@
     currentTheme: currentTheme,
     toggleDrawer: toggleDrawer,
     switchTab: switchTab,
+    selectTab: selectTab,
+    tabFromUrl: tabFromUrl,
+    tabSyncUrl: tabSyncUrl,
+    tabVisible: tabVisible,
+    tabDeepLink: tabDeepLink,
     doLogout: doLogout,
     openChangelog: openChangelog,
     identity: identity,

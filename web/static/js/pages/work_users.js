@@ -462,6 +462,8 @@
     bindSearch();
     bindBatch();
     bindSelectAll();
+    // ?tab= 深链（core.js 共享助手）：已注销 tab 初始 hidden，直链会被可见性校验拒绝
+    YB.tabDeepLink();
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
       state.isMaster = !!me.is_builtin_admin;

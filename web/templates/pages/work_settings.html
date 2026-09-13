@@ -2,8 +2,8 @@
 
    分区按使用频率排序，危险项（全局开关）置末并标红；分区切换用模板 .tabs
    （契约 [data-tab-group] + .tab[data-tab-target] + .tab-panel[data-tab-id]，
-   切换行为由 core.js 承担，本页零新增切换 JS）。深链 ?tab=<id> 由 settings.js
-   用 history.replaceState 落定（与 /logs?date= 同口径）。
+   切换行为由 core.js 承担，本页零新增切换 JS）。深链 ?tab=<id> 走 core.js 共享助手
+   （tabDeepLink 初始选中、selectTab 守卫放行后 replaceState 落定，本组标 data-tab-url-own）。
 
    个人域（改密 / 接收邮件提醒 / 归属邮箱显示偏好）已迁到 /mine；只读容量三分类与
    连通性 ping 已删除（前者 /accounts 容量卡已有，后者 / 运行状态已有），本页不再重复。
@@ -72,22 +72,25 @@
   <button type="button" class="btn btn--ghost btn--sm" data-set-retry hidden>重试</button>
 </p>
 
-<div data-tab-group>
+<div data-tab-group data-tab-url-own>
+  {# data-tab-url-own：本组深链自管 —— 切换要过脏守卫，写 ?tab= 的时机由
+     work_settings.js 的 selectTab(…, { syncUrl: true }) 控制，core.js 委托路径不写。
+     tabindex 按 WAI-ARIA tabs roving 模式服务端渲染：活动分区 0、其余 -1（含隐藏项）。 #}
   {# 窄屏 tab 条可横滑：外层滚动容器，避免整页横向滚动 #}
   <div class="tabs-scroll">
     <div class="tabs" role="tablist" aria-label="设置分区">
       <a class="tab is-active" role="tab" id="set-tab-schedule" aria-selected="true"
-         aria-controls="set-panel-schedule" href="#" data-tab-target="schedule">签到调度</a>
+         aria-controls="set-panel-schedule" href="#" data-tab-target="schedule" tabindex="0">签到调度</a>
       <a class="tab" role="tab" id="set-tab-announcement" aria-selected="false"
-         aria-controls="set-panel-announcement" href="#" data-tab-target="announcement">公告</a>
+         aria-controls="set-panel-announcement" href="#" data-tab-target="announcement" tabindex="-1">公告</a>
       <a class="tab" role="tab" id="set-tab-notify" aria-selected="false"
-         aria-controls="set-panel-notify" href="#" data-tab-target="notify">通知通道</a>
+         aria-controls="set-panel-notify" href="#" data-tab-target="notify" tabindex="-1">通知通道</a>
       <a class="tab" role="tab" id="set-tab-quota" aria-selected="false"
-         aria-controls="set-panel-quota" href="#" data-tab-target="quota">容量配额</a>
+         aria-controls="set-panel-quota" href="#" data-tab-target="quota" tabindex="-1">容量配额</a>
       <a class="tab" role="tab" id="set-tab-health" aria-selected="false"
-         aria-controls="set-panel-health" href="#" data-tab-target="health">健康与探针</a>
+         aria-controls="set-panel-health" href="#" data-tab-target="health" tabindex="-1">健康与探针</a>
       <a class="tab" role="tab" id="set-tab-switches" aria-selected="false"
-         aria-controls="set-panel-switches" href="#" data-tab-target="switches" hidden>系统开关</a>
+         aria-controls="set-panel-switches" href="#" data-tab-target="switches" tabindex="-1" hidden>系统开关</a>
     </div>
   </div>
 

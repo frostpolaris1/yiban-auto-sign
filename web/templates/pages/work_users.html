@@ -74,19 +74,20 @@
 <div data-tab-group>
   <div class="tabs-scroll">
     <div class="tabs" role="tablist" aria-label="用户管理分区">
-      {# 计数放在标签上：切标签前就能看到各组的量 #}
+      {# 计数放在标签上：切标签前就能看到各组的量
+         tabindex：WAI-ARIA tabs roving 模式的服务端初始值（活动 0、其余 -1），切换由 core.js 同步 #}
       <a class="tab is-active" role="tab" id="usr-tab-pending" aria-selected="true"
-         aria-controls="usr-panel-pending" href="#" data-tab-target="pending">
+         aria-controls="usr-panel-pending" href="#" data-tab-target="pending" tabindex="0">
         待处理用户 <span class="usr-count" id="usr-pending-count"></span></a>
       <a class="tab" role="tab" id="usr-tab-normal" aria-selected="false"
-         aria-controls="usr-panel-normal" href="#" data-tab-target="normal">
+         aria-controls="usr-panel-normal" href="#" data-tab-target="normal" tabindex="-1">
         正式用户 <span class="usr-count" id="usr-normal-count"></span></a>
       <a class="tab" role="tab" id="usr-tab-vacant" aria-selected="false"
-         aria-controls="usr-panel-vacant" href="#" data-tab-target="vacant">
+         aria-controls="usr-panel-vacant" href="#" data-tab-target="vacant" tabindex="-1">
         空用户 <span class="usr-count" id="usr-vacant-count"></span></a>
       {# 已注销：无数据时整组隐藏（含本标签），由 work_users.js 同步 hidden #}
       <a class="tab" role="tab" id="usr-tab-deleted" aria-selected="false" hidden
-         aria-controls="usr-panel-deleted" href="#" data-tab-target="deleted">
+         aria-controls="usr-panel-deleted" href="#" data-tab-target="deleted" tabindex="-1">
         已注销用户 <span class="usr-count" id="usr-deleted-count"></span></a>
     </div>
   </div>
