@@ -121,7 +121,10 @@
           </div>
           <p id="accounts-pending-empty" class="empty" hidden>
             <span class="empty__icon">{{ icon('list') }}</span>
-            <span class="empty__msg">暂无待处理账号</span>
+            <span class="empty__msg">已全部审核 · 今日签到见『正常账号』</span>
+            <span class="empty__action">
+              <button type="button" class="btn btn--ghost btn--sm" data-empty-tab="active">查看正常账号</button>
+            </span>
           </p>
         </div>
       </div>
@@ -163,6 +166,9 @@
           <p id="accounts-empty" class="empty" hidden>
             <span class="empty__icon">{{ icon('list') }}</span>
             <span class="empty__msg">暂无账号，点右上角「添加账号」配置</span>
+            <span class="empty__action">
+              <button type="button" class="btn btn--ghost btn--sm" data-add-account>添加账号</button>
+            </span>
           </p>
         </div>
       </div>
@@ -196,6 +202,9 @@
           <p id="accounts-deleted-empty" class="empty" hidden>
             <span class="empty__icon">{{ icon('list') }}</span>
             <span class="empty__msg">暂无待删除账号</span>
+            <span class="empty__action">
+              <button type="button" class="btn btn--ghost btn--sm" data-empty-tab="active">返回正常账号</button>
+            </span>
           </p>
         </div>
       </div>

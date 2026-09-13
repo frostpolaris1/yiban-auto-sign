@@ -113,7 +113,7 @@
     return state.accounts.filter(function (a) { return a.deleted; });
   }
   function emptyDefault(group) {
-    if (group === "pending") return "暂无待处理账号";
+    if (group === "pending") return "已全部审核 · 今日签到见『正常账号』";
     if (group === "deleted") return "暂无待删除账号";
     return "暂无账号，点右上角「添加账号」配置";
   }
@@ -121,6 +121,10 @@
   function renderGroup(group, all, filtered) {
     var refs = GROUPS[group];
     var tbody = $(refs.tbody);
+    // 组内表格是独立滚动容器：整表重建前存 scrollTop、渲染后还原，
+    // 否则静默轮询一旦刷新就把长表弹回顶部（丢空间记忆）。
+    var scroller = tbody.closest(".table-scroll");
+    var scrollTop = scroller ? scroller.scrollTop : 0;
     clear(tbody);
     filtered.forEach(function (a) {
       tbody.appendChild(YB.accountTable.row({
@@ -140,7 +144,11 @@
     if (msg) {
       msg.textContent = filtered.length ? "" : (all.length ? "无匹配结果" : emptyDefault(group));
     }
+    // 空态里的「下一步」只在真的空（而非检索无匹配）时给出，避免误导
+    var action = empty.querySelector(".empty__action");
+    if (action) action.hidden = all.length > 0;
     empty.hidden = filtered.length > 0;
+    if (scroller) scroller.scrollTop = scrollTop;
     var kw = state[group + "Search"];
     var label = kw ? filtered.length + " 个匹配 / 共 " + all.length + " 个" : all.length + " 个";
     $(refs.count).textContent = all.length ? label : "";
@@ -177,6 +185,16 @@
     setVal("pending-count", pending.length);
   }
 
+  // 只重渲染当前组（检索用）：不触碰其它标签页的 DOM，
+  // 保留它们的滚动位置与键盘焦点；数据刷新/批量操作仍走 renderAll。
+  function renderOne(group) {
+    YB.rowMenu.closeAll();
+    var all = groupAll(group);
+    renderGroup(group, all, all.filter(function (a) {
+      return accountMatch(a, state[group + "Search"]);
+    }));
+  }
+
   function updateBatchBar(group) {
     var refs = GROUPS[group];
     var n = selectedIds(group).length;
@@ -195,11 +213,30 @@
   /* ---------------- 写操作（委托 account-ops） ---------------- */
   var ops = YB.accountOps.create({
     busy: function (on) { state.busy = on; },
-    refresh: function () { load(); },
+    // 返回 Promise：account-ops 的 after 钩子要等重渲染完成才能按索引找回新行
+    refresh: function () { return load(); },
     onBatchSuccess: function () {
       Object.keys(state.sel).forEach(function (g) { state.sel[g] = {}; });
-    }
+    },
+    // 批量删除（仅正常账号组）后就地给出恢复入口
+    onBatchDelete: showDeletedHint
   });
+
+  // 批量删除完成后，在「批量条原位」渲染一条带标签切换入口的状态条。
+  // 批量条此时因选择被清空而隐藏，状态条正好落在它原来的位置。
+  function showDeletedHint() {
+    var bar = $("batch-bar-active");
+    var host = bar && bar.parentNode;
+    if (!host) return;
+    var old = host.querySelector("[data-deleted-hint]");
+    if (old) host.removeChild(old);
+    var hint = YB.el("p", { class: "alert info acct-deleted-hint", "data-deleted-hint": "active", role: "status" });
+    hint.appendChild(YB.el("span", { class: "body", text: "已移入『待删除账号』，7 天内可恢复。" }));
+    var go = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "去待删除账号" });
+    go.addEventListener("click", function () { YB.switchTab("deleted"); });
+    hint.appendChild(go);
+    host.insertBefore(hint, bar.nextSibling);
+  }
 
   var handlers = {
     approve: function (a) { ops.review(a, "approve"); },
@@ -237,7 +274,7 @@
         if (!input) return;
         input.addEventListener("input", debounce(function () {
           state[pair[1]] = input.value.trim();
-          renderAll();
+          renderOne(pair[2]);
         }, 150));
       });
   }
@@ -267,6 +304,15 @@
     document.addEventListener("click", function (e) {
       var t = e.target;
       if (t && t.closest && t.closest("[data-add-account]")) addAccount();
+    });
+  }
+
+  // 空态「下一步」：同页标签切换（不新增页面跳转）
+  function bindEmptyTabs() {
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      var btn = t && t.closest && t.closest("[data-empty-tab]");
+      if (btn) YB.switchTab(btn.getAttribute("data-empty-tab"));
     });
   }
 
@@ -300,6 +346,7 @@
     bindSearch();
     bindBatch();
     bindAdd();
+    bindEmptyTabs();
     bindSelectAll();
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
