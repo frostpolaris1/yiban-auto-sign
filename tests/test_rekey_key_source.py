@@ -2518,59 +2518,61 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
     def test_templates_class_regexes_match_backend_constant(self):
         """类别正则的单一事实源：真实承载页（聚合 core.js）vs 后端常量（漂移即红）。
 
-        换壳后前端只有一份定义，落在 static/js/core.js；login.html（注册）与
-        pages/user_account.html（自助改密）通过 `<script src>` 加载它，故 frontend_source 聚合后即可读到该数组。
+        换壳后前端只有一份定义，落在 static/js/core.js；页面 `PW_TEMPLATES` 只负责
+        `<script src>` 加载它，故直接读该文件即可 —— 「两页确实加载了 core.js」由
+        tests/test_web_js_modules.py 的装配守卫覆盖（引用存在 + core.js 在组件之前），
+        此处不再按页面数重复遍历同一份源码。
         管理端改名/重置路径复用同一份共享 helper，其提交路径由
         test_admin_password_modal_validates_classes 覆盖。
         """
         backend = list(self.webapp._PASSWORD_CLASS_PATTERNS)
-        for name in PW_TEMPLATES:
-            src = _frontend(name)
-            arr = _PW_JS_ARRAY_RE.search(src)
-            self.assertIsNotNone(
-                arr,
-                f"{name} 聚合源码里找不到 `const PW_CLASS_PATTERNS = [...]`：字符类别判定"
-                f"必须以这一个数组声明（定义在 {PW_SHARED_JS}，既不得退回逐处内联，"
-                f"也不得删掉——元测试要读得到它）")
-            found = _PW_JS_REGEX_RE.findall(arr.group(1))
-            self.assertEqual(
-                found, backend,
-                f"{name} 的类别判定正则与后端漂移：前端 {found} != 后端 {backend}"
-                f"（后端定义见 web/app.py 的 _PASSWORD_CLASS_PATTERNS，前端定义见 "
-                f"{PW_SHARED_JS}）。两侧须同序同串")
-            self.assertEqual(
-                src.count("[^A-Za-z0-9]"), 1,
-                f"{name} 的聚合源码里出现多处类别正则：符号类只允许写在 {PW_SHARED_JS} "
-                f"的 PW_CLASS_PATTERNS 里一次")
-            self.assertIn("function passwordClasses(", src,
-                          f"{name} 聚合源码里缺少共享的 passwordClasses(v) helper")
+        name = PW_SHARED_JS
+        src = _static(PW_SHARED_JS)
+        arr = _PW_JS_ARRAY_RE.search(src)
+        self.assertIsNotNone(
+            arr,
+            f"{name} 聚合源码里找不到 `const PW_CLASS_PATTERNS = [...]`：字符类别判定"
+            f"必须以这一个数组声明（定义在 {PW_SHARED_JS}，既不得退回逐处内联，"
+            f"也不得删掉——元测试要读得到它）")
+        found = _PW_JS_REGEX_RE.findall(arr.group(1))
+        self.assertEqual(
+            found, backend,
+            f"{name} 的类别判定正则与后端漂移：前端 {found} != 后端 {backend}"
+            f"（后端定义见 web/app.py 的 _PASSWORD_CLASS_PATTERNS，前端定义见 "
+            f"{PW_SHARED_JS}）。两侧须同序同串")
+        self.assertEqual(
+            src.count("[^A-Za-z0-9]"), 1,
+            f"{name} 的聚合源码里出现多处类别正则：符号类只允许写在 {PW_SHARED_JS} "
+            f"的 PW_CLASS_PATTERNS 里一次")
+        self.assertIn("function passwordClasses(", src,
+                      f"{name} 聚合源码里缺少共享的 passwordClasses(v) helper")
 
     def test_templates_copy_and_limits_match_backend(self):
         """文案与两个下限常量的前后端一致性：JS 拿不到 Python 常量，只能靠本用例锁。
 
-        承载页同 test_templates_class_regexes_match_backend_constant（login/user 聚合
-        core.js）。管理端重置口令的文案不在这里锁——它由调用点把 PW_POLICY_HINT 传给
+        承载位置同 test_templates_class_regexes_match_backend_constant（core.js 单一
+        事实源）。管理端重置口令的文案不在这里锁——它由调用点把 PW_POLICY_HINT 传给
         共享模态，见 test_admin_password_modal_validates_classes 的文案断言。
         """
         self.assertEqual(self.webapp._PASSWORD_POLICY_HINT, PW_HINT,
                          "后端 _PASSWORD_POLICY_HINT 与统一口径文案漂移")
-        for name in PW_TEMPLATES:
-            src = _frontend(name)
-            hint = _PW_JS_HINT_RE.search(src)
-            self.assertIsNotNone(
-                hint, f"{name} 聚合源码里缺少 `const PW_POLICY_HINT = '...'` 文案常量"
-                      f"（定义在 {PW_SHARED_JS}）")
-            self.assertEqual(
-                hint.group(1), PW_HINT,
-                f"{name} 聚合出的 PW_POLICY_HINT 与后端 _PASSWORD_POLICY_HINT 文案漂移："
-                f"前端「{hint.group(1)}」vs 后端「{self.webapp._PASSWORD_POLICY_HINT}」")
-            limits = _PW_JS_LIMITS_RE.search(src)
-            self.assertIsNotNone(
-                limits, f"{name} 聚合源码里 PW_MIN_LEN / PW_MIN_CLASSES 须在同一行成对声明")
-            self.assertEqual(int(limits.group(1)), self.webapp.PASSWORD_MIN_LEN,
-                             f"{name} 的长度下限与后端 PASSWORD_MIN_LEN 漂移")
-            self.assertEqual(int(limits.group(2)), self.webapp._PASSWORD_MIN_CLASSES,
-                             f"{name} 的类别下限与后端 _PASSWORD_MIN_CLASSES 漂移")
+        name = PW_SHARED_JS
+        src = _static(PW_SHARED_JS)
+        hint = _PW_JS_HINT_RE.search(src)
+        self.assertIsNotNone(
+            hint, f"{name} 聚合源码里缺少 `const PW_POLICY_HINT = '...'` 文案常量"
+                  f"（定义在 {PW_SHARED_JS}）")
+        self.assertEqual(
+            hint.group(1), PW_HINT,
+            f"{name} 聚合出的 PW_POLICY_HINT 与后端 _PASSWORD_POLICY_HINT 文案漂移："
+            f"前端「{hint.group(1)}」vs 后端「{self.webapp._PASSWORD_POLICY_HINT}」")
+        limits = _PW_JS_LIMITS_RE.search(src)
+        self.assertIsNotNone(
+            limits, f"{name} 聚合源码里 PW_MIN_LEN / PW_MIN_CLASSES 须在同一行成对声明")
+        self.assertEqual(int(limits.group(1)), self.webapp.PASSWORD_MIN_LEN,
+                         f"{name} 的长度下限与后端 PASSWORD_MIN_LEN 漂移")
+        self.assertEqual(int(limits.group(2)), self.webapp._PASSWORD_MIN_CLASSES,
+                         f"{name} 的类别下限与后端 _PASSWORD_MIN_CLASSES 漂移")
 
     def test_ambiguous_wording_is_gone(self):
         """①文案歧义：旧措辞在随代码发布的四处文本里一律不得再现（含注释，防其回流）。"""

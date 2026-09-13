@@ -130,6 +130,8 @@ def _scan_reversed():
             for name in filenames:
                 if not name.endswith(SCAN_EXTS):
                     continue
+                if name == "index.html" or "tabs" in dirpath.split(os.sep):
+                    continue   # 退役旧栈（无路由渲染）：不给死文件套活页规则
                 path = os.path.join(dirpath, name)
                 with open(path, encoding="utf-8") as fh:
                     for lineno, line in enumerate(fh, 1):

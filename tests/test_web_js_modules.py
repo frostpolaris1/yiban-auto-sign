@@ -101,7 +101,6 @@ _SVG_RHS_RE = re.compile(r"^\s*svg\(")
 _LEGACY_INNERHTML_PAGES = frozenset({
     "data_dashboard.js", "login.js",
 })
-_REVIEWED_PAGES = ("work_users.js", "work_accounts.js", "work_settings.js")
 
 # user-ops.js 的 LIMIT 与 web/app.py 的 BATCH_OP_LIMIT 必须同源
 _JS_LIMIT_RE = re.compile(r"\bvar\s+LIMIT\s*=\s*(\d+)\s*;")
