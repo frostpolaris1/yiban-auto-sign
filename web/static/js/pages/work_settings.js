@@ -139,22 +139,59 @@
       return !!(api && api.isDirty && api.isDirty());
     });
   }
-  function openUnsavedDialog(names) {
+  // 分区标签 → 该分区承载的脏源名（一个分区可含多个脏源：通知通道 = 推送 + 邮件）
+  var DIRTY_TAB_STORES = {
+    schedule: ["签到调度"],
+    announcement: ["全局公告"],
+    notify: ["消息推送", "邮件通知"],
+    quota: ["容量配额"],
+    health: ["健康与探针"]
+  };
+  // 脏徽标只在各自卡内 → 切到别的分区就看不见。按 dirtyStores() 汇总到分区标签的脏点上。
+  function refreshTabDirty() {
+    var names = dirtyStores().map(function (s) { return s.name; });
+    tabLinks().forEach(function (t) {
+      var owners = DIRTY_TAB_STORES[t.getAttribute("data-tab-target")];
+      var dirty = !!owners && owners.some(function (n) { return names.indexOf(n) !== -1; });
+      t.classList.toggle("is-dirty", dirty);
+      if (dirty) t.title = "有未保存的修改";
+      else t.removeAttribute("title");
+    });
+  }
+  // 各组件在标脏/清脏时切换卡内徽标的 hidden；监听它即可在一次改动后同步标签脏点
+  function observeDirtyBadges() {
+    if (!window.MutationObserver) return;
+    var badgeIds = ["ss-dirty", "set-ann-dirty", "sn-dirty", "sm-dirty", "set-cap-dirty", "sh-dirty"];
+    var obs = new MutationObserver(refreshTabDirty);
+    badgeIds.forEach(function (id) {
+      var badge = $(id);
+      if (badge) obs.observe(badge, { attributes: true, attributeFilter: ["hidden"] });
+    });
+  }
+  function openUnsavedDialog(names, withKeep) {
     return new Promise(function (resolve) {
       var settled = false;
       function pick(v) { if (!settled) { settled = true; resolve(v); } }
       var body = YB.el("div", { class: "pm-confirm-text" });
       body.appendChild(YB.el("p", { text: "以下分区有尚未保存的修改：" + names.join("、") + "。" }));
       body.appendChild(YB.el("p", { text: "「保存并继续」会先提交这些改动；「放弃修改」会还原为服务器上的当前值。" }));
+      if (withKeep) {
+        body.appendChild(YB.el("p", { text: "「保留修改继续查看」只切换分区，改动仍留在本地未提交。" }));
+      }
+      var actions = [
+        { label: "取消", variant: "ghost", onClick: function () { pick("cancel"); } }
+      ];
+      // 第四分支仅用于分区切换：切过去但不清脏、不提交，便于对照另一个分区
+      if (withKeep) {
+        actions.push({ label: "保留修改继续查看", variant: "ghost", onClick: function () { pick("keep"); } });
+      }
+      actions.push({ label: "放弃修改", variant: "danger", onClick: function () { pick("discard"); } });
+      actions.push({ label: "保存并继续", variant: "primary", onClick: function () { pick("save"); } });
       YB.openModal({
         title: "有未保存的修改",
         body: body,
         onClose: function () { pick("cancel"); },
-        actions: [
-          { label: "取消", variant: "ghost", onClick: function () { pick("cancel"); } },
-          { label: "放弃修改", variant: "danger", onClick: function () { pick("discard"); } },
-          { label: "保存并继续", variant: "primary", onClick: function () { pick("save"); } }
-        ]
+        actions: actions
       });
     });
   }
@@ -176,16 +213,17 @@
       loadAnnouncement(),
       state.isMaster ? YB.settingsNotify.load() : Promise.resolve(),
       state.isMaster ? YB.settingsMail.load() : Promise.resolve()
-    ]).catch(function () {});
+    ]).catch(function () {}).then(function () { refreshTabDirty(); });
   }
 
-  function guardThen(run) {
+  function guardThen(run, withKeep) {
     var list = dirtyStores();
     if (!list.length) { run(); return; }
-    openUnsavedDialog(list.map(function (s) { return s.name; })).then(function (choice) {
+    openUnsavedDialog(list.map(function (s) { return s.name; }), withKeep).then(function (choice) {
       if (choice === "cancel") return;
+      if (choice === "keep") { run(); return; }   // 保留修改，仅切换视图
       if (choice === "discard") { reloadAll().then(run); return; }
-      saveDirty(list).then(function (ok) { if (ok) run(); });
+      saveDirty(list).then(function (ok) { refreshTabDirty(); if (ok) run(); });
     });
   }
 
@@ -212,7 +250,7 @@
   function initTabs() {
     tabLinks().forEach(function (t) {
       t.addEventListener("click", function () {
-        guardThen(function () { selectTab(t.getAttribute("data-tab-target"), true); });
+        guardThen(function () { selectTab(t.getAttribute("data-tab-target"), true); }, true);
       });
     });
     var want = null;
@@ -240,7 +278,7 @@
       guardThen(function () {
         if (YB.settingsSchedule && YB.settingsSchedule.markLeaving) YB.settingsSchedule.markLeaving();
         location.href = a.href;                                     // a.href 已是绝对地址
-      });
+      }, false);
     }, true);
   }
 
@@ -311,6 +349,11 @@
       bindAnnouncement();
       initTabs();
       bindLeaveGuard();
+      // 脏点同步双保险：徽标 hidden 变化（MutationObserver）+ 输入/变更事件
+      observeDirtyBadges();
+      document.addEventListener("input", refreshTabDirty, true);
+      document.addEventListener("change", refreshTabDirty, true);
+      refreshTabDirty();
       // 状态条重试走事件委托（按钮是模板静态节点，无需逐次绑定）
       document.addEventListener("click", function (e) {
         var t = e.target;

@@ -33,29 +33,129 @@
     bar.hidden = false;
   }
 
-  /* ---------------- 注销账号（仅用户端渲染该按钮时绑定） ---------------- */
-  function bindDeleteAccount() {
+  /* ---------------- 注销账号（仅用户端渲染该按钮时绑定） ----------------
+     注销是软删除 + 7 天宽限。成功后不立即跳登录：先在卡片区就地渲染终态
+     「账号已注销 · 7 天内可撤销」与撤销入口，停留一段供反悔，再延迟登出。
+     撤销走既有 POST /api/me/restore（邮箱 + 密码；该接口对未登录态开放），
+     缺少邮箱时给登录页恢复入口的明确链接，不承诺本页做不到的能力。 */
+  var LOGOUT_DELAY_MS = 8000;
+  var logoutTimer = null;
+  var logoutTick = null;
+
+  function cancelLogout() {
+    if (logoutTimer) { clearTimeout(logoutTimer); logoutTimer = null; }
+    if (logoutTick) { clearInterval(logoutTick); logoutTick = null; }
+  }
+  function finishLogout() {
+    cancelLogout();
+    try { localStorage.clear(); } catch (e) { /* 受限环境忽略 */ }
+    location.href = YB.BASE + "/login";
+  }
+  function scheduleLogout(statusEl, canRestore) {
+    cancelLogout();
+    var remain = LOGOUT_DELAY_MS / 1000;
+    function paint() {
+      if (!statusEl) return;
+      statusEl.textContent = canRestore
+        ? "将在 " + remain + " 秒后退出登录；可先点「撤销注销」恢复账号。"
+        : "将在 " + remain + " 秒后退出登录。";
+    }
+    paint();
+    logoutTick = setInterval(function () {
+      remain -= 1;
+      if (remain <= 0) { finishLogout(); return; }
+      paint();
+    }, 1000);
+    logoutTimer = setTimeout(finishLogout, LOGOUT_DELAY_MS);
+  }
+
+  function renderDeletedState(me, del) {
+    if (del) { del.disabled = true; del.textContent = "已注销"; }
+    var grid = document.querySelector(".user-grid");
+    if (!grid) { scheduleLogout(null, false); return; }
+    var email = (me && me.email) || "";
+
+    var card = YB.el("section", { class: "card col-12" });
+    var head = YB.el("div", { class: "panel-head panel-head--center" });
+    var text = YB.el("div", { class: "panel-head-text" });
+    text.appendChild(YB.el("h2", { class: "panel-title", text: "账号已注销" }));
+    text.appendChild(YB.el("p", {
+      class: "panel-sub",
+      text: "账号、易班账号与自选签到时间已删除；7 天内可撤销恢复，超期将永久删除。"
+    }));
+    head.appendChild(text);
+
+    if (email) {
+      var rBusy = false;
+      var restoreBtn = YB.el("button", { type: "button", class: "btn btn--primary btn--sm", text: "撤销注销" });
+      restoreBtn.addEventListener("click", function () {
+        if (rBusy) return;
+        YB.openConfirmPasswordModal(
+          "撤销注销将恢复你的账号、易班账号与自选签到时间。请输入当前密码确认。",
+          function (pw) {
+            rBusy = true;
+            restoreBtn.disabled = true;
+            restoreBtn.textContent = "处理中…";
+            YB.api("POST", "/api/me/restore", { email: email, password: pw }).then(function () {
+              cancelLogout();
+              YB.toast.success("已撤销注销，账号已恢复");
+              location.reload();
+            }).catch(function (e) {
+              YB.toast.error((e && e.message) || "撤销失败，请稍后再试");
+              rBusy = false;
+              restoreBtn.disabled = false;
+              restoreBtn.textContent = "撤销注销";
+            });
+          }
+        );
+      });
+      head.appendChild(restoreBtn);
+    }
+    card.appendChild(head);
+
+    var status = YB.el("p", { class: "panel-sub", role: "status", "aria-live": "polite" });
+    card.appendChild(status);
+    if (!email) {
+      card.appendChild(YB.el("a", {
+        class: "btn btn--primary btn--sm",
+        href: YB.BASE + "/login",
+        text: "去登录页恢复账号"
+      }));
+    }
+    grid.insertBefore(card, grid.firstChild);
+    scheduleLogout(status, !!email);
+  }
+
+  function bindDeleteAccount(me) {
     var del = document.querySelector("[data-delete-account]");
     if (!del) return;
+    var busy = false;
     del.addEventListener("click", function () {
+      if (busy) return;
       YB.confirmDialog({
         title: "注销账号",
         body: "注销将删除你的账号、易班账号与自选签到时间。7 天内可撤销恢复，超过 7 天将永久删除，无法找回。",
         confirmText: "继续注销", danger: true
       }).then(function (ok) {
         if (!ok) return;
+        busy = true;
         YB.openConfirmPasswordModal(
           "注销后账号将无法登录，易班账号与自选签到时间会被删除；7 天宽限期内可撤销。请输入当前密码完成注销。",
           function (pw) {
+            del.disabled = true;
+            del.textContent = "处理中…";
             YB.api("POST", "/api/me/delete", { password: pw }).then(function (data) {
               YB.toast.success(data.msg || "账号已注销");
-              try { localStorage.clear(); } catch (e) { /* 受限环境忽略 */ }
-              setTimeout(function () { location.href = YB.BASE + "/login"; }, 1200);
+              renderDeletedState(me, del);
             }).catch(function (e) {
               // 文案由后端给出（400 密码不正确 / 403 / 429 请稍后再试 / 500）
               YB.toast.error(e.message || "注销失败，请稍后再试");
+              busy = false;
+              del.disabled = false;
+              del.textContent = "注销账号";
             });
-          }
+          },
+          function () { busy = false; }   // 取消口令框：未提交，恢复可点
         );
       });
     });
@@ -86,7 +186,6 @@
     opts = opts || {};
     var logout = document.querySelector("[data-user-logout]");
     if (logout) logout.addEventListener("click", function () { YB.doLogout(); });
-    bindDeleteAccount();
     bindOwnerEmail();
     var pref = YB.timePref.mount();
 
@@ -96,6 +195,8 @@
         location.href = opts.denyRedirect || (YB.BASE + "/data/dashboard");
         return;
       }
+      // 注销入口需要登录邮箱：/api/me 带 email，就地渲染撤销入口时复用
+      bindDeleteAccount(me);
       var isMaster = !!me.is_builtin_admin;
       var pwEntry = $("password-modal-btn");
       if (pwEntry) pwEntry.addEventListener("click", function () {
@@ -109,6 +210,8 @@
         formVariant: opts.formVariant || "user",
         calendarHref: opts.calendarHref || null,
         calendarMode: "link",
+        // 管理端 /mine 的后端视图排除软删除行（恢复走 /work/accounts），用户端保留
+        deletedRowsInList: opts.role !== "admin",
         // 管理端卡片补今日状态（今日已完成 / 前方排队 N 人）；用户端由日历页承担
         showState: opts.showState === true
       });
