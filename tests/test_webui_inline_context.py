@@ -113,14 +113,13 @@ class TemplateInlineContextTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.index = frontend_source("index.html")
+        # 旧栈单页 index.html 已无路由渲染，不再作为审查载体（暂留文件不参与判定）
         cls.login = frontend_source("login.html")
         cls.user_accounts = frontend_source(os.path.join("pages", "user_account.html"))
         cls.user_calendar = frontend_source(os.path.join("pages", "user_calendar.html"))
 
     def test_base_uses_tojson_in_all_templates(self):
         for name, tpl in (
-            ("index", self.index),
             ("login", self.login),
             ("pages/user_account", self.user_accounts),
             ("pages/user_calendar", self.user_calendar),
@@ -129,12 +128,6 @@ class TemplateInlineContextTest(unittest.TestCase):
                           f"{name}.html 的 BASE 须经 tojson 转义")
             self.assertNotIn("const BASE = '{{ request.script_root }}'", tpl,
                              f"{name}.html 的 BASE 裸插入仍存在")
-
-    def test_no_user_value_in_inline_handlers(self):
-        # 原实现 onclick="purgeDeletedUser('${jsEscape(u.email)}')"：jsEscape 不转义引号，
-        # 属性值经 HTML 解码后引号复原，逃逸即成立
-        self.assertNotIn('onclick="purgeDeletedUser(', self.index)
-        self.assertNotIn("onchange=\"toggleRow('${key}', '${esc(u.email)}', this)\"", self.index)
 
     def test_delegated_data_attribute_form_present(self):
         # 正确形态：data-* 属性（普通 HTML 转义即安全）+ 事件委托读 dataset，属性值不进

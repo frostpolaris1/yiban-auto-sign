@@ -297,14 +297,19 @@ class PlaceholderFontParityTest(_Base):
         return frontend_source(name)
 
     def test_no_placeholder_font_shrink(self):
-        for name in ("index.html", "user.html", "login.html"):
+        # 载体换锚：user.html 已随用户端拆页退役、index.html 已无路由渲染；
+        # 判据（有输入框的页面不得对 placeholder 缩字号）不变，改扫现役含输入框的页面。
+        pages = ("login.html", os.path.join("pages", "work_settings.html"),
+                 os.path.join("pages", "work_accounts.html"),
+                 os.path.join("pages", "user_account.html"))
+        for name in pages:
             src = self._read(name)
             self.assertNotIn("::placeholder { font-size", src, f"{name} 仍有 placeholder 字号缩放")
             self.assertNotIn("::placeholder{font-size", src, f"{name} 仍有 placeholder 字号缩放")
 
     def test_capacity_inputs_no_inline_shrink(self):
         """容量上限输入框不得再用内联 0.92em（与同卡其它输入框不一致）。"""
-        src = self._read("index.html")
+        src = self._read(os.path.join("pages", "work_settings.html"))
         self.assertNotIn('style="font-size:0.92em"', src)
 
 
