@@ -1,5 +1,5 @@
 // 数据总览页脚本（classic script，非 module）。
-// 依赖 base.html 先载入的 core.js（YB.api/el/toast/getServerNow）与本地 Chart.js 4.5.1。
+// 依赖外壳（layout_admin.html）先载入的 core.js（YB.api/el/toast/getServerNow）与本地 Chart.js 4.5.1。
 // 所有图表颜色从 CSS 自定义属性读取，主题切换（document 的 yiban:theme 事件）时重建。
 (function () {
   "use strict";
@@ -17,6 +17,23 @@
   function num(n) { n = Number(n); return isFinite(n) ? n.toLocaleString("zh-CN") : "0"; }
   function pctOf(a, b) { return b > 0 ? Math.round(a / b * 1000) / 10 : 0; }
   function el(tag, attrs, children) { return YB.el(tag, attrs, children); }
+  // SVG 图标元素必须经 createElementNS 构造（HTML 命名空间下 <svg>/<path> 不渲染）；
+  // 图标为页面自绘常量线稿，viewBox / 描边参数与旧内联 SVG 串逐字一致。
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  function svgIcon(cls, strokeWidth, ds) {
+    var s = document.createElementNS(SVG_NS, "svg");
+    if (cls) s.setAttribute("class", cls);
+    s.setAttribute("viewBox", "0 0 24 24");
+    s.setAttribute("fill", "none");
+    s.setAttribute("stroke", "currentColor");
+    s.setAttribute("stroke-width", strokeWidth);
+    ds.forEach(function (d) {
+      var p = document.createElementNS(SVG_NS, "path");
+      p.setAttribute("d", d);
+      s.appendChild(p);
+    });
+    return s;
+  }
 
   function token(name) {
     var v = getComputedStyle(document.documentElement).getPropertyValue(name);
@@ -78,7 +95,7 @@
   function emptyNode(msg) {
     var box = el("div", { class: "empty" });
     var ico = el("span", { class: "empty__icon" });
-    ico.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>';
+    ico.appendChild(svgIcon(null, "1.6", ["M3 3v18h18", "M18 17V9", "M13 17V5", "M8 17v-3"]));
     box.appendChild(ico);
     box.appendChild(el("div", { class: "empty__msg", text: msg || "暂无数据" }));
     return box;
@@ -86,7 +103,7 @@
   function trendArrow(cls) {
     var paths = { up: "M7 17l10-10M7 7h10v10", down: "M7 7l10 10M7 17h10V7", flat: "M5 12h14" };
     var span = el("span", { class: "dash-trend" });
-    span.innerHTML = '<svg class="' + cls + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="' + paths[cls] + '"/></svg>';
+    span.appendChild(svgIcon(cls, "2.5", [paths[cls]]));
     return span;
   }
 

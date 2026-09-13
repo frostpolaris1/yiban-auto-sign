@@ -2940,7 +2940,7 @@ def create_app(host=None):
             return jsonify({"error": "请求校验失败，请刷新页面后重试"}), 403
 
     # ---- 页面（服务端按登录态重定向，避免未登录时先渲染后台造成闪烁）----
-    # ---- 管理端多页：一页一模板，外壳（侧栏/顶栏/页脚）由 base.html 服务端渲染 ----
+    # ---- 管理端多页：一页一模板，外壳（侧栏/顶栏/页脚）由 layout_admin.html 服务端渲染 ----
     def _render_admin_page(template, nav_key, crumbs):
         """管理端页面统一上下文：版本 / 备案 / 导航高亮 / 面包屑 / 当前身份。
 
@@ -2997,7 +2997,7 @@ def create_app(host=None):
 
     def _moved_page_view(endpoint):
         def view():
-            # 保留查询串：head_boot 的版本兜底跳 `/?v=<版本>`，丢掉 ?v= 会让它反复重试
+            # 保留查询串：theme_boot 的版本兜底跳 `/?v=<版本>`，丢掉 ?v= 会让它反复重试
             qs = request.query_string.decode("utf-8", "ignore")
             return redirect(url_for(endpoint) + (("?" + qs) if qs else ""), code=302)
         return view
@@ -3014,7 +3014,7 @@ def create_app(host=None):
         """根路径：按登录态**一步**转到对应首页。
 
         不做成到 /data/dashboard 的盲跳：未登录时会多一跳（/ → /data/dashboard → /login），
-        而 head_boot 的版本兜底跳的正是 `/?v=`，链越长越容易在弱网下闪现中间态。
+        而 theme_boot 的版本兜底跳的正是 `/?v=`，链越长越容易在弱网下闪现中间态。
         """
         role = _current_role()
         if role is None:

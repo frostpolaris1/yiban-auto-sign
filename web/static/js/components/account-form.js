@@ -22,7 +22,7 @@
   var CODE_CLEAR = "__clear__";
   var busy = false;
 
-  // 用户端文案沿用已确认版本；管理端沿用旧弹窗（partials/modals/account.html）口径。
+  // 用户端文案沿用已确认版本；管理端沿用旧弹窗（P4 已随旧栈退役）的既有口径。
   var TEXTS = {
     user: {
       nameLabel: "名称 / 备注（可选）", namePlaceholder: "如：我的易班账号",
