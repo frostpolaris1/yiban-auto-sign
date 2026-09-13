@@ -5913,12 +5913,27 @@ def create_app(host=None):
         )
         return not allowed
 
+    def _verify_session_password(password):
+        """当前会话管理员口令纯比对（不读写失败计数、不判定锁定）。
+
+        口令核对语义的单一来源：内置管理员（.env）走 verify_admin（哈希优先，
+        fail-closed）；注册管理员（users 表）走 password_hash 比对。
+        失败处置由调用方自行决定——_reconfirm_admin_password 在此之上叠加与
+        登录共用的 _login_fails 失败计数；系统开关门禁只比对不计数（P18 教训：
+        持 Cookie 者若能写共享计数，可反复试错把管理员锁出登录）。
+        """
+        username = session.get("username", "")
+        if _is_builtin_admin_session():
+            return verify_admin(username, password)
+        u = db.find_user(username.strip().lower())
+        return bool(u) and check_password_hash(u.get("password_hash", ""), password)
+
     def _reconfirm_admin_password(password, action_label):
         """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
 
-        内置管理员（.env）走 verify_admin（哈希优先，fail-closed）；注册管理员
-        （users 表）走 password_hash 比对。失败计数与登录/改密共用 _login_fails
-        （达阈值锁定并告警）；成功清除失败计数。返回 None 表示通过，否则返回 4xx 响应。
+        口令比对语义见 _verify_session_password。失败计数与登录/改密共用
+        _login_fails（达阈值锁定并告警）；成功清除失败计数。
+        返回 None 表示通过，否则返回 4xx 响应。
         """
         if not session.get("auth"):
             return jsonify({"error": "未登录"}), 401
@@ -5930,12 +5945,7 @@ def create_app(host=None):
             _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
             if now < lock_until:
                 return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
-        if _is_builtin_admin_session():
-            ok = verify_admin(username, password)
-        else:
-            u = db.find_user(username.strip().lower())
-            ok = bool(u) and check_password_hash(u.get("password_hash", ""), password)
-        if ok:
+        if _verify_session_password(password):
             with _rate_lock:
                 _login_fails.pop(fail_key, None)
             return None
@@ -7166,6 +7176,32 @@ def create_app(host=None):
         registration_pause = None
         if "registration_pause" in data:
             registration_pause = 1 if str(data.get("registration_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
+        # 系统开关口令门禁（2026-09）：global_pause / registration_pause 是一键停摆
+        # 的系统级开关，此前前端口令框收集的 confirm_password 后端并不校验（假门），
+        # 被窃的主管理员会话可无口令直接翻转。现口径：仅当请求值与当前值**不同**时
+        # 才要求口令复核；值未变（或未携带这两个字段）不要求——其它字段的保存流程
+        # 零影响。当前值读取与 GET /api/settings（上方 403 列表同源）一致，取
+        # load_env_int（==1 视为暂停），与读写两侧口径对齐。
+        _cur_gp = 1 if load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0) == 1 else 0
+        _cur_rp = 1 if load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else 0
+        if (global_pause is not None and global_pause != _cur_gp) or \
+                (registration_pause is not None and registration_pause != _cur_rp):
+            # 只比对不计数：不写与登录共用的 _login_fails（P18 教训——持 Cookie 者
+            # 可借共享计数反复试错把管理员锁出登录），失败仅审计留痕；成功同样
+            # 不动计数（清计数只属于真实登录/既有二次鉴权路径）。
+            if not _verify_session_password(str(data.get("confirm_password", ""))):
+                db.audit(
+                    session.get("username") or "?",
+                    "settings_switch_pw_fail",
+                    "settings",
+                    "系统开关口令复核未通过（全局暂停=%s 注册暂停=%s）" % (
+                        "未携带" if global_pause is None else
+                        ("无变更" if global_pause == _cur_gp else "尝试变更"),
+                        "未携带" if registration_pause is None else
+                        ("无变更" if registration_pause == _cur_rp else "尝试变更"),
+                    ),
+                )
+                return jsonify({"error": "口令校验未通过，设置未生效"}), 403
         # ---- 注册账号验证 + 探针模式（任意管理员可改；v0.23.x）----
         account_verify = None
         if "account_verify" in data:

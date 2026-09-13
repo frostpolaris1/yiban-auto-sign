@@ -179,14 +179,18 @@ class RegistrationPauseWebTest(unittest.TestCase):
         self.assertIn("registration_pause", r.get_json())
 
     def test_master_admin_can_toggle_pause(self):
+        # 2026-09：开关变更加口令真校验（此前为假门），翻转需带正确 confirm_password；
+        # 未变值不要求的口径见 tests/test_switch_password_gate.py
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)
-        r = c.post("/api/settings", json={"registration_pause": 1},
+        r = c.post("/api/settings", json={"registration_pause": 1,
+                                          "confirm_password": ADMIN_PASS},
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         with open(self.env_file, encoding="utf-8") as f:
             self.assertIn("YIBAN_REGISTRATION_PAUSE=1", f.read())
-        r2 = c.post("/api/settings", json={"registration_pause": 0},
+        r2 = c.post("/api/settings", json={"registration_pause": 0,
+                                           "confirm_password": ADMIN_PASS},
                     headers=self._csrf(token))
         self.assertEqual(r2.status_code, 200)
         with open(self.env_file, encoding="utf-8") as f:
