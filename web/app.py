@@ -2969,7 +2969,7 @@ def create_app(host=None):
         if role is None:
             return redirect(url_for("login_page"))
         if role != "admin":
-            return redirect(url_for("user_account_page"))
+            return redirect(url_for("user_calendar_page"))
         return None
 
     # ---- 页面路径：`组/页面`（数据 / 工作台 / 我的 + 用户端）----
@@ -3021,7 +3021,9 @@ def create_app(host=None):
             return redirect(url_for("login_page"))
         if role == "admin":
             return redirect(url_for("dashboard_page"))
-        return redirect(url_for("user_account_page"))
+        # 普通用户的首页是「签到日历」而不是「账号与设置」：进站第一眼要看到今天的签到结果，
+        # 账号本身是低频维护对象（用户 2026-09-13 指定）
+        return redirect(url_for("user_calendar_page"))
 
     def _user_page_redirect():
         """用户端页面守卫：未登录 → 登录页；管理员 → 管理端首页。合规时返回 None。
@@ -3088,7 +3090,7 @@ def create_app(host=None):
             cnt += 1
             _login_loop[ip] = (cnt, first)
             if cnt < 4:
-                return redirect(url_for("dashboard_page") if _current_role() == "admin" else url_for("user_account_page"))
+                return redirect(url_for("dashboard_page") if _current_role() == "admin" else url_for("user_calendar_page"))
             logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
         return render_template(
             "login.html",
