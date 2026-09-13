@@ -299,5 +299,18 @@
     }
   }
 
-  YB.timeField = { mount: mount, set: set, read: read };
+  // 禁用必须落到**可见控件**（触发器）上：只把隐藏 input 置 disabled 拦不住点击触发器
+  // （曾因此在「签到窗口」上出现「看起来禁用、实际还能点开弹窗」）。区间形态两个 id 共用
+  // 一个触发器，传任一 id 都作用于该触发器；隐藏 input 一并同步，供表单与校验读取。
+  function setDisabled(id, on) {
+    var root = fieldOf(id);
+    if (!root) return;
+    var host = root.closest ? (root.closest("[data-time-pair]") || root) : root;
+    var trigger = triggerOf(host);
+    if (trigger) trigger.disabled = !!on;
+    var input = hiddenOf(root);
+    if (input) input.disabled = !!on;
+  }
+
+  YB.timeField = { mount: mount, set: set, read: read, setDisabled: setDisabled };
 })();
