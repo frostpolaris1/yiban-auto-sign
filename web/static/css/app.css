@@ -2928,8 +2928,9 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
    27. 系统设置页（管理端 /settings）
    --------------------------------------------------------------------------
    按功能分六个 .tabs 分区（签到调度 / 公告 / 通知通道 / 容量配额 / 健康与探针 /
-   系统开关），卡头与表单一律用模板现成类：.card-head(.card-title-wrap/.card-title)、
-   .form-grid(.span-2)、.field(.field-label/.field-help)、.input/.textarea、
+   系统开关），卡头与表单一律用模板现成类：.panel-head(.panel-head-row/.panel-title，
+   与全站统一的两段式卡头)、.form-grid(.span-2)、.field(.field-label/.field-help)、
+   .input/.textarea、
    .input-group(.addon)、.switch、.data-table(.table-scroll/.data-toolbar)、
    .alert、.badge、.form-actions。下拉与数值滑杆走项目自研控件（第 30 节），
    原生 <select> 与 input[type=range] 的弹出层是 UA 渲染的，颜色/圆角/阴影不可控。
@@ -2941,11 +2942,11 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
      · .set-warn                 软警示底。模板 .alert.warning 亦可表达同类语义，但带图标与
                                  左语义边、体积更大；此处只用于「一行容量/暂停提示」，故保留
      · .set-danger*              危险区语义（红标题、整宽按钮）
-     · .set-head-actions         .card-head 右侧多控件成组（模板只给 last-child 弹性）
+     · .set-head-actions         .panel-head-row 右侧多控件成组（行内只给 last-child 弹性）
      · .set-more                 卡内低频项折叠（原生 details + 渐进增强高度过渡）
      · .tabs-scroll              窄屏 tab 条横滑容器
      · .form-grid--3             三列表单网格（额度与节流三个标量；模板只有两列）
-   分隔线遵守 23 白名单：卡头用模板 .card-head（容器 chrome 边界，第 2 类），
+   分隔线遵守 23 白名单：卡头用模板 .panel-head 两段式（标题行 + 整宽说明，不画线），
    卡内只有 .form-actions 提交边界保留线（第 4 类）。
    ========================================================================== */
 
@@ -3144,7 +3145,7 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   }
   .set-more[open]::details-content { block-size: auto; }
 }
-/* 卡头右侧控件组：模板 .card-head 只留一个 last-child 弹性，多个控件需自组一行 */
+/* 卡头右侧控件组：.panel-head-row 只留一个 last-child 弹性，多个控件需自组一行 */
 .set-head-actions { display: inline-flex; align-items: center; gap: 10px; }
 /* tab 条在窄屏横滑：外层滚动容器，避免整页横向滚动 */
 .tabs-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -3186,7 +3187,8 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 }
 
 /* ---- 27.6 危险区 ---- */
-.set-danger .card-title { color: var(--state-bad-fg); }
+/* 卡头已并入 .panel-head 家族：红标题随卡头类一起指向 .panel-title */
+.set-danger .panel-title { color: var(--state-bad-fg); }
 /* 危险区用满卡宽：两个开关并排（原来整宽堆叠，右侧大片空白没用上） */
 .set-danger-actions { display: flex; flex-wrap: wrap; gap: 12px; }
 .set-danger-btn { flex: 1 1 220px; justify-content: center; }
