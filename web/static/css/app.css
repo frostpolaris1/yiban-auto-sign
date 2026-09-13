@@ -719,6 +719,11 @@ textarea {
 .dash-page .chart-canvas-wrap {
   position: relative;
 }
+/* 固定高度修饰类：总览两图卡（分布/时段）共用的 280px 画布高度，
+   替代手写内联 style="height: 280px"（动态高度仍由 chart_card 宏参数下发） */
+.dash-page .chart-canvas-wrap--h280 {
+  height: 280px;
+}
 .dash-page .dash-chart-overlay {
   position: absolute;
   inset: 0;

@@ -57,12 +57,7 @@
     var badge = $("set-ann-dirty");
     if (badge) badge.hidden = !on;
   }
-  function annTip(text, bad) {
-    var tip = $("set-ann-tip");
-    if (!tip) return;
-    tip.textContent = text || "";
-    tip.className = bad ? "set-tip set-bad" : "set-tip";
-  }
+  function annTip(text, bad) { YB.setTip("set-ann-tip", text, bad); }
   function loadAnnouncement() {
     return YB.api("GET", "/api/announcement").then(function (data) {
       ann.text = (data && data.text) || "";

@@ -10,34 +10,9 @@
       <div id="mine-list" class="space-y-3"></div>
     </div>
 
-    <!-- 修改密码（v0.30.0：普通管理员改密入口；主管理员隐藏——主管理员用「系统设置 → 危险区」。
-         id 前缀 mine-password-* 与危险区的 my-password-* 两套并存不撞） -->
-    <details class="yb-card mb-4" id="mine-password-card">
-      <summary class="text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer select-none">修改密码</summary>
-      <div class="mt-3">
-        <p class="text-xs text-zinc-500 dark:text-zinc-400 mb-4">仅可修改密码；账号（用户名）不可修改。改后下次登录使用新密码。</p>
-        <div class="space-y-3 max-w-sm">
-          <div>
-            <label for="mine-password-now" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">当前密码</label>
-            <input id="mine-password-now" type="password" autocomplete="current-password" placeholder="输入当前密码"
-                   class="yb-input">
-          </div>
-          <div>
-            <label for="mine-new-password" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">新密码（至少 10 位，且包含大小写字母、数字、符号中的至少两类）</label>
-            <input id="mine-new-password" type="password" autocomplete="new-password" placeholder="新密码"
-                   class="yb-input">
-          </div>
-          <div>
-            <label for="mine-new-password2" class="block text-sm text-zinc-600 dark:text-zinc-300 mb-1">确认新密码</label>
-            <input id="mine-new-password2" type="password" autocomplete="new-password" placeholder="再次输入新密码"
-                   class="yb-input">
-          </div>
-          <div class="flex items-center gap-3">
-            <button onclick="saveMinePassword()" class="btn-primary">保存新密码</button>
-          </div>
-        </div>
-      </div>
-    </details>
+    <!-- 修改密码：旧 SPA 的三字段表单已退役（saveMinePassword 随 pages/mine.js 删除）。
+         自助改密唯一实现在 components/change-password.js（YB.changePassword.open），
+         由活页 /user、/mine 的 my-accounts-page.js 接线（见 tests/test_web_js_modules.py 守卫）。 -->
 
     <!-- 我的签到时间（调度 v2 自选；管理员同样可选时间片） -->
     <div class="yb-card mb-4" id="mine-pref-card">

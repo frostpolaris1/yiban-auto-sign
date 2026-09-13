@@ -24,12 +24,7 @@
 
   function $(id) { return document.getElementById(id); }
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
-  function tip(text, bad) {
-    var el = $("sh-tip");
-    if (!el) return;
-    el.textContent = text || "";
-    el.className = bad ? "set-tip set-bad" : "set-tip";
-  }
+  function tip(text, bad) { YB.setTip("sh-tip", text, bad); }
   function markDirty() {
     if (dirty) return;
     dirty = true;

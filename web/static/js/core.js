@@ -396,6 +396,17 @@
     });
   }
 
+  /* ---------- 设置页就地状态条（.set-tip / .set-bad，语义见 app.css） ---------- */
+  // 系统设置页各分区组件（settings-* / work_settings 公告区）共用的唯一实现：
+  // 写 textContent + 切换 className 两步即全部语义，bad 时追加 set-bad 失败配色。
+  // 元素缺失是常态（分区未渲染/无该条），静默返回。
+  function setTip(elId, text, bad) {
+    var n = $(elId);
+    if (!n) return;
+    n.textContent = text || "";
+    n.className = bad ? "set-tip set-bad" : "set-tip";
+  }
+
   /* ---------- 口令策略（管理端与后端 web/app.py 同一口径） ---------- */
   // 全站唯一一份口令判定：登录/注册页、用户自助改密、管理端重置/新增口令都从这里取，
   // 不再各自内联一份数组（历史上多份副本互相漂移过）。
@@ -982,6 +993,7 @@
     closeModal: closeModal,
     confirmDialog: confirmDialog,
     promptDialog: promptDialog,
+    setTip: setTip,
     PW_CLASS_PATTERNS: PW_CLASS_PATTERNS,
     PW_MIN_LEN: PW_MIN_LEN,
     PW_MIN_CLASSES: PW_MIN_CLASSES,
