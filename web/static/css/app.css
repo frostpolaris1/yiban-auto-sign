@@ -1896,6 +1896,10 @@ html[data-theme="dark"] {
 .state-line--muted { color: var(--t-muted); }
 /* 卡片内就地结果行（如删除后的「✓ 已删除」）：与卡头拉开一点，不贴线 */
 .account-card > .state-line { margin-top: 10px; }
+/* 暂停/恢复/删除等就地反馈：数秒后淡出（JS 定时加 .is-fading）。
+   只过渡 opacity；reduced-motion 由第 14 节统一取消过渡，JS 仍会移除节点。 */
+.state-line--flash { transition: opacity 300ms var(--ease-in-strong); }
+.state-line--flash.is-fading { opacity: 0; }
 
 /* 日志块：嵌面板 + 等宽（账号卡内与日历页共用） */
 .log-view {

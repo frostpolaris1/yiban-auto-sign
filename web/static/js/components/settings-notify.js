@@ -48,6 +48,9 @@
   function disableAll(root, descId) {
     if (!root) return;
     [].forEach.call(root.querySelectorAll("input,select,button,textarea"), function (n) {
+      // .info-tip 是"为什么禁用"的说明入口，禁用后键盘/触摸都打不开（只剩鼠标 hover），
+      // 恰恰把唯一的解释渠道掐掉了 —— 权限禁用不得连带禁用帮助入口。
+      if (n.closest && n.closest(".info-tip")) return;
       n.disabled = true;
       if (descId) associate(n, descId);
     });

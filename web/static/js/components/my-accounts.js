@@ -55,6 +55,19 @@
     return b;
   }
 
+  // 写操作成功后的就地状态行：不整表重写，只往**本卡**追加一行，
+  // 数秒后淡出移除（reduced-motion 由第 14 节统一取消过渡，仍在定时后移除），
+  // 避免长期与卡片徽章重复。动态文本只走 text。
+  var FLASH_MS = 4000;
+  function flashLine(card, text) {
+    var line = YB.el("p", { class: "state-line state-line--ok state-line--flash", role: "status", text: text });
+    card.appendChild(line);
+    setTimeout(function () {
+      line.classList.add("is-fading");
+      setTimeout(function () { if (line.parentNode) line.parentNode.removeChild(line); }, 300);
+    }, FLASH_MS);
+  }
+
   function mount(opts) {
     opts = opts || {};
     var listEl = $(opts.listSel);
@@ -155,10 +168,9 @@
       head.appendChild(ident);
       head.appendChild(actions);
       card.appendChild(head);
-      // 写操作成功后的就地状态：不整表重写，故用一次性标记把结果留在原卡内
-      if (a._justDeleted && a.deleted) {
-        card.appendChild(YB.el("p", { class: "state-line state-line--ok", role: "status", text: "✓ 已删除，7 天内可撤销" }));
-      }
+      // 写操作成功后的就地状态：不整表重写，故用一次性标记把结果留在原卡内；
+      // 读完即清，后续因其它卡重排而重建本卡时不会重复出线
+      if (a._flash) { flashLine(card, a._flash); a._flash = null; }
 
       // 只保留"需要用户本人处理"的异常提示（例行签到状态在「签到日历」）
       if (a.status === "rejected") {
@@ -272,6 +284,8 @@
         YB.api("PUT", "/api/my-accounts/" + i + "/pause", { paused: next }).then(function (data) {
           YB.toast.success(data.msg || (next ? "已暂停" : "已恢复"));
           a.user_paused = (data && typeof data.paused === "boolean") ? data.paused : next;
+          // 就地反馈与删除同款：本卡内追加状态行，按卡替换而非整表重排
+          a._flash = a.user_paused ? "✓ 已暂停签到" : "✓ 已恢复签到";
           notifyChanged();
           replaceCard(i);
         }).catch(function (e) {
@@ -300,7 +314,7 @@
             : "已删除，可在账号管理页恢复");
           a.deleted = true;
           a.deleted_by_me = true;
-          a._justDeleted = true;
+          a._flash = "✓ 已删除，7 天内可撤销";
           notifyChanged();
           if (keepDeleted) replaceCard(i);
           else removeCard(i);
@@ -333,7 +347,7 @@
             a.deleted = false;
             a.deleted_by_me = false;
           }
-          a._justDeleted = false;
+          a._flash = "✓ 已恢复账号";
           notifyChanged();
           replaceCard(i);
         }).catch(function (e) {
