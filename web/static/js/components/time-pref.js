@@ -77,7 +77,7 @@
         btn.className = "slot" + (sel ? " slot--on" : full ? " slot--full" : partial ? " slot--partial" : "");
         if (partial) btn.title = s.edge_note + "，选中后将在可用部分为你签到";
         btn.appendChild(YB.el("div", { class: "slot-name", text: s.label }));
-        btn.appendChild(YB.el("div", { class: "slot-pct", text: "已选" + s.pct + "%" }));
+        btn.appendChild(YB.el("div", { class: "slot-pct", text: "已选 " + s.pct + "%" }));
         btn.addEventListener("click", function () { pick(s.slot_min); });
         grid.appendChild(btn);
         // 首尾时段提醒（选中时）；部分裁剪提示优先，未开启时与「暂不生效」拼接
