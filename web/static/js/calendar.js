@@ -28,6 +28,7 @@
   var WEEK = ["一", "二", "三", "四", "五", "六", "日"];
   var months = {};                                   // phone -> {year, month}
   var flags = { sunday: false, saturday: false };    // 来自 /api/my-calendar 的停签开关
+  var autoLoadedDate = "";                           // 已自动加载过日志的日期（多账号共享日志面板时去重）
 
   function svg(name, cls) {
     return '<svg class="' + (cls || "sc-ico") + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
@@ -150,6 +151,16 @@
     var year = st.year, month = st.month;
     var monthStr = year + "-" + pad(month);
     var selected = selectDate || mount.getAttribute("data-sc-selected") || "";
+    // 当月且没有任何选中日：默认选中今天。提交后只看当天结果的用户进页即可见结果。
+    // 选中落地必须走下面的 selectDate 路径（render 异步，渲染前查不到格子）。
+    var autoToday = false;
+    if (!selected) {
+      var now = new Date();
+      if (year === now.getFullYear() && month === now.getMonth() + 1) {
+        selected = todayStr();
+        autoToday = true;
+      }
+    }
     mount.setAttribute("data-sc-phone", phone);
     var grid = shell(mount);
     var label = mount.querySelector(".sc-month");
@@ -164,12 +175,23 @@
       // opacity 只掉到约 0.4–0.7 时就被拉回，看起来只是闪一下。
       var slow = performance.now() - t0 > ANIM_MIN_MS;
       var apply = function () {
+        // 默认选中今天是"无人操作时"的兜底：若请求期间用户已点选，尊重用户选择，
+        // 用已落库的 data-sc-selected 重绘选中态（否则会把用户的日期改回今天）。
+        var picked = mount.getAttribute("data-sc-selected");
+        if (autoToday && picked) { selected = picked; autoToday = false; }
         if (label) label.textContent = monthLabel(year, month);
         grid.innerHTML = gridHtml(data, phone, year, month, monthStr, selected);
         grid.removeAttribute("aria-busy");
         if (selectDate) {
           mount.setAttribute("data-sc-selected", selectDate);
           loadLog(mount, selectDate);
+        } else if (autoToday) {
+          mount.setAttribute("data-sc-selected", selected);
+          // 日志面板全页共享：多账号同时自动选中今天时只发一次请求
+          if (autoLoadedDate !== selected) {
+            autoLoadedDate = selected;
+            loadLog(mount, selected);
+          }
         }
       };
       if (slow) YB.swapOut([grid, label], apply);

@@ -469,6 +469,11 @@
   function loadPending() {
     // 口径与账号管理「待处理账号」组、侧栏徽标完全一致：待审核 + 已拒绝，单一口径不叠加。
     // 「名下有此类账号的用户数」不再上屏：全量数据下它与账号数相等，读起来是同一件事说两遍。
+    function setAlert(active) {
+      var v = $("kpi-pending-value");
+      var card = v && v.closest(".kpi-card");
+      if (card) card.classList.toggle("is-alert", !!active);
+    }
     YB.api("GET", "/api/accounts").then(function (d) {
       var v = $("kpi-pending-value"), sub = $("kpi-pending-sub");
       var list = (d && d.accounts) || [];
@@ -478,9 +483,13 @@
         if (a.status === "pending") pending += 1;
         else if (a.status === "rejected") rejected += 1;
       });
-      setValue(v, num(pending + rejected), null);
+      var total = pending + rejected;
+      setValue(v, num(total), null);
       txt(sub, "待审核 " + num(pending) + " · 已拒绝 " + num(rejected));
+      // 有可处置项时才把这张卡升级为唯一强调；0 或失败保持中性
+      setAlert(total > 0);
     }).catch(function () {
+      setAlert(false);
       failNote($("kpi-pending-value"), "—");
       failNote($("kpi-pending-sub"), "待处理账号加载失败");
     });

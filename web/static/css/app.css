@@ -462,12 +462,23 @@ textarea {
   background: var(--primary);
   color: #fff;
 }
-.mini-cal-day.is-ok.has-event::after {
-  background: var(--success);
+/* 状态不只靠底色：色觉障碍下 --success-soft 与 --danger-soft 明度接近。
+   is-ok / is-fail 各补一个右下角圆点（圆点颜色取日历专用 --cal-* 前景令牌，随主题走）。 */
+.mini-cal-day.is-ok::after,
+.mini-cal-day.is-fail::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
 }
-.mini-cal-day.is-fail.has-event::after {
-  background: var(--danger);
-}
+.mini-cal-day.is-ok::after { background: var(--cal-ok-fg); }
+.mini-cal-day.is-fail::after { background: var(--cal-bad-fg); }
+/* 今天为实心底，圆点改用反相令牌，避免与实心底同色而消失 */
+.mini-cal-day.is-today.is-ok::after,
+.mini-cal-day.is-today.is-fail::after { background: var(--t-inverse); }
 
 /* ==========================================================================
    10. 按钮样式的行内文字链接
@@ -763,6 +774,53 @@ textarea {
   color: var(--t-light);
   font-size: 11px;
 }
+/* 图例色块同步带圆点，与热力图日期格的形状编码一致（不只靠底色/描边） */
+.dash-page .dash-cal-key i {
+  position: relative;
+}
+.dash-page .dash-cal-key i.is-ok::after,
+.dash-page .dash-cal-key i.is-fail::after {
+  content: "";
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+.dash-page .dash-cal-key i.is-ok::after { background: var(--cal-ok-fg); }
+.dash-page .dash-cal-key i.is-fail::after { background: var(--cal-bad-fg); }
+
+/* KPI 权重：四卡同尺寸（值 44px），仅「待处理账号」> 0 时该卡升级为唯一强调。
+   vendor 的 .kpi-card.c-* 只设卡级 color，会被 .kpi-value 的直接 color 声明盖掉，
+   故强调色必须直接命中 .kpi-value；.is-alert 由 JS 在数据到达后切换，0 或失败保持中性。
+   **不改字号**：数值随数据变化会让整排卡片行高跳动（本项目为此专门修过 CLS），
+   强调只走颜色 + 描边，四个数字始终同一光学尺寸。 */
+.dash-page .kpi-card.is-alert { border-color: var(--danger); }
+.dash-page .kpi-card.is-alert .kpi-value { color: var(--danger); }
+
+/* KPI 内的处置出口：文案是「动作 + 对象」，指向已注册路由（带 script_root 前缀） */
+.dash-page .kpi-action {
+  display: inline-flex;
+  align-items: center;
+  margin-top: -2px;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.dash-page .kpi-action:hover { text-decoration: underline; }
+
+/* 容量卡下方的异常排查出口（同一行，窄屏自行换行） */
+.dash-page .dash-cap-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  margin: 12px 0 0;
+  font-size: 12.5px;
+}
+.dash-page .dash-cap-links .linklike { font-weight: 600; }
 
 /* 系统状态/容量列表（共享类：dashboard 系统状态卡与账号页容量卡复用同一套行式） */
 .dash-health {

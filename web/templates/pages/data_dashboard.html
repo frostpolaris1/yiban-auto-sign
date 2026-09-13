@@ -32,6 +32,9 @@
   <div class="kpi-compare" id="{{ card.sub_id }}">
     <span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span>
   </div>
+  {% if card.action_href %}
+  <a class="kpi-action" href="{{ request.script_root }}{{ card.action_href }}">{{ card.action_label }} →</a>
+  {% endif %}
 </article>
 {% endmacro %}
 
@@ -77,6 +80,7 @@
       'color': 'danger', 'icon_color': 'danger', 'icon': 'triangle-alert',
       'label': '待处理账号', 'pill_id': '', 'pill_class': '',
       'value_id': 'kpi-pending-value', 'sub_id': 'kpi-pending-sub',
+      'action_href': '/work/accounts', 'action_label': '去账号管理',
     }) }}
   </section>
 
@@ -134,7 +138,7 @@
       </div>
       <div class="dash-cal-foot">
         <div class="dash-cal-legend">
-          <span class="dash-cal-key"><i class="is-ok"></i>有成功</span>
+          <span class="dash-cal-key"><i class="is-ok"></i>全部成功</span>
           <span class="dash-cal-key"><i class="is-fail"></i>有失败</span>
           <span class="dash-cal-key"><i class="is-none"></i>仅跳过或无记录</span>
           <span class="dash-cal-key"><i class="is-future"></i>未来</span>
@@ -212,6 +216,10 @@
           <div class="dash-health-value" id="capacity-estimate"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
         </div>
       </div>
+      <p class="dash-cap-links">
+        <a class="linklike" href="{{ request.script_root }}/work/accounts">排查账号异常 →</a>
+        <a class="linklike" href="{{ request.script_root }}/data/logs">排查签到日志 →</a>
+      </p>
     </section>
   </div>
 </div>
