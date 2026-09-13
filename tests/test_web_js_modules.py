@@ -417,5 +417,87 @@ class JsAssemblyGuardTest(unittest.TestCase):
         )
 
 
+# 分区（tab）机制的共享面：深链助手 + roving tabindex 必须只住在 core.js，
+# 页面脚本只允许调用（YB.tabDeepLink / YB.selectTab），不允许再抄一份实现。
+# 历史：?tab= 深链最早由 pages/work_settings.js 自带一份（参数名/replaceState 时机
+# 页面私有），accounts/users/logs 三页则完全没有 —— 提炼进 core.js 后四页统一，
+# 本守卫防止"哪天又有人把 URLSearchParams/replaceState 抄回页面"。
+_TAB_DEEPLINK_HELPERS = ("tabFromUrl", "tabSyncUrl", "tabVisible", "selectTab", "tabDeepLink")
+# 页面/组件里的第二份深链实现特征（读参数、写参数各一个口径）
+_TAB_DEEPLINK_PRIVATE_MARKERS = (
+    'URLSearchParams(location.search).get("tab")',
+    'searchParams.set("tab"',
+)
+# 三个"无页面级 tab 管理"的分区页：深链启用只许这一行（settings 自管深链走 YB.selectTab）
+_TAB_DEEPLINK_PAGES = ("pages/work_accounts.js", "pages/work_users.js", "pages/data_logs.js")
+
+
+class TabDeepLinkGuardTest(unittest.TestCase):
+    def test_tab_deeplink_and_roving_live_only_in_core(self):
+        """`?tab=` 深链与 roving tabindex 必须只由 core.js 承担（全站唯一一份实现）。
+
+        core.js 要提供：tabFromUrl/tabSyncUrl/tabVisible/selectTab/tabDeepLink 五个共享
+        助手、参数名钉在 `tab`、activateTab 内同步 roving tabindex（活动 0 其余 -1）、
+        键盘方向键走 instant（高频键盘切换跳过面板进入动效）。页面脚本出现第二份
+        URLSearchParams/replaceState 深链实现即报红 —— 两份实现会各自漂移（settings 的
+        原页面私有版本就是这样长出来的）。
+        """
+        core = _read(os.path.join(JS_DIR, "core.js"))
+        for helper in _TAB_DEEPLINK_HELPERS:
+            self.assertIn(
+                f"function {helper}(", core,
+                f"core.js 缺少共享分区助手 {helper}() —— 深链/可见性校验只允许这一份实现",
+            )
+        self.assertIn(
+            'var TAB_URL_PARAM = "tab";', core,
+            "core.js 深链参数名必须钉在 `tab`（settings 原实现的参数名，URL 已对外可见）",
+        )
+        self.assertIn(
+            't.setAttribute("tabindex", on ? "0" : "-1")', core,
+            "core.js activateTab 必须同步 roving tabindex（活动 tab 0、其余 -1）——"
+            "WAI-ARIA tabs 模式下 Tab 键序只应停在活动分区一个停止点",
+        )
+        self.assertIn(
+            "{ instant: true }", core,
+            "core.js 键盘方向键切换必须带 instant（跳过面板进入动效）——"
+            "键盘高频切换播 160ms 动画会让面板反复浮动",
+        )
+        offenders = []
+        for dirpath, _dirnames, filenames in os.walk(JS_DIR):
+            if os.sep + "vendor" + os.sep in dirpath + os.sep:
+                continue
+            for name in sorted(filenames):
+                if not name.endswith(".js"):
+                    continue
+                path = os.path.join(dirpath, name)
+                rel = os.path.relpath(path, JS_DIR)
+                if rel == "core.js":
+                    continue
+                src = _read(path)
+                for marker in _TAB_DEEPLINK_PRIVATE_MARKERS:
+                    if marker in src:
+                        offenders.append(f"  {rel}: 含 {marker!r}")
+        if offenders:
+            self.fail(
+                "core.js 之外出现 ?tab= 深链的私有实现 —— 读参数/写 URL 只允许"
+                " core.js 的 tabFromUrl/tabSyncUrl 一份，页面请改用 YB.tabDeepLink()/"
+                "YB.selectTab()（两份实现会各自漂移，历史上 settings 就曾页面私有）：\n"
+                + "\n".join(offenders)
+            )
+
+    def test_partition_pages_enable_deeplink_via_shared_helper(self):
+        """三个分区页必须在 init 里调用 YB.tabDeepLink()（一行启用，不自带实现）。"""
+        missing = []
+        for rel in _TAB_DEEPLINK_PAGES:
+            path = os.path.join(JS_DIR, rel.replace("/", os.sep))
+            if "YB.tabDeepLink()" not in _read(path):
+                missing.append(f"  {rel}")
+        if missing:
+            self.fail(
+                "分区页未调用 YB.tabDeepLink() —— ?tab= 直链在这些页面会失效"
+                "（刷新/分享不保留当前分区）：\n" + "\n".join(missing)
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

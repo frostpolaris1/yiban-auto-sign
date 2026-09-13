@@ -269,6 +269,8 @@
     if (auto) auto.checked = state.autoRefresh;
 
     bind();
+    // ?tab= 深链（core.js 共享助手）：日志/探针/签到事件三区可直链打开，初始不写 URL
+    YB.tabDeepLink();
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
       loadLogs();
