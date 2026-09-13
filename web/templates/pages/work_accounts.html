@@ -216,6 +216,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ request.script_root }}/static/js/components/select-field.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/account-form.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/row-menu.js?v={{ web_version }}"></script>
 <script src="{{ request.script_root }}/static/js/components/account-table.js?v={{ web_version }}"></script>

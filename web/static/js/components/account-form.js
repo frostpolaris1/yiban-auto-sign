@@ -7,7 +7,8 @@
      index            编辑下标；null=新增
      endpoints        { create, update }，update 为前缀（后接 index）
      detail           编辑时是否先取 GET /api/accounts/<idx>/detail（admin 需要完整手机号与乐观锁快照）
-     allowEmail       admin 新增时可绑定已注册用户或手填邮箱
+     allowEmail       admin 新增时可绑定已注册用户或手填邮箱（下拉走 YB.selectField 自研
+                      listbox：隐藏 input 保留 id/值契约，面板在模态内由组件 portal 到 body 防裁剪）
      onSaved(data)    保存成功回调（页面据此重新拉列表）
      lockButton       提交期间是否禁用主按钮（用户端沿用原实现不禁用，默认 true）
 
@@ -92,11 +93,15 @@
 
     var email = null, manual = null, initial = null, manualWrap = null;
     if (opts.allowEmail && !editing) {
-      email = YB.el("select", { id: "af-email", class: "input" });
-      email.appendChild(YB.el("option", { value: "", text: "不绑定（管理员自有账号，直接生效）" }));
-      email.appendChild(YB.el("option", { value: "__manual__", text: "手填邮箱（未注册用户自动注册）" }));
-      email.appendChild(YB.el("optgroup", { label: "已注册用户（无账号）", id: "af-email-users" }));
-      stack.appendChild(field("绑定用户（可选，绑定后进入待审核）", email, false, null));
+      /* 绑定用户下拉：自研 listbox（原生 select 面板样式不可控）。结构对齐
+         work_settings.html 的静态用法——root[data-select-field] 内是隐藏 input（原
+         #af-email，值契约不变，提交读取零改动）+ 空面板；触发器由 select-field.mount() 补。
+         固定两目 + 分组头先就位，用户列表由 loadAvailableUsers 异步灌入（见下）。 */
+      email = YB.el("input", { type: "hidden", id: "af-email", value: "" });
+      var emailRoot = YB.el("div", { class: "select-field", "data-select-field": "af-email" });
+      emailRoot.appendChild(email);
+      emailRoot.appendChild(YB.el("div", { class: "select-menu", role: "listbox", hidden: true }));
+      stack.appendChild(field("绑定用户（可选，绑定后进入待审核）", emailRoot, false, null));
 
       manual = textInput("af-email-manual", {
         type: "email", maxlength: 64, placeholder: "输入未注册邮箱（自动注册并进入待审核）"
@@ -154,32 +159,43 @@
     view.err.hidden = !msg;
   }
 
-  function loadAvailableUsers(select) {
+  // 绑定用户下拉的固定条目 + 分组头；分组用户列表由 loadAvailableUsers 异步补齐。
+  // 可见文本仍是邮箱 local part（脱敏口径不变），完整邮箱只进 value（既有行为）。
+  function emailBaseItems() {
+    return [
+      { v: "", t: "不绑定（管理员自有账号，直接生效）" },
+      { v: "__manual__", t: "手填邮箱（未注册用户自动注册）" },
+      { group: "已注册用户（无账号）" }
+    ];
+  }
+
+  function loadAvailableUsers() {
     YB.api("GET", "/api/users").then(function (data) {
-      var group = select.querySelector("#af-email-users");
-      if (!group) return;
+      var items = emailBaseItems();
       var list = ((data && data.users) || []).filter(function (u) {
         return (u.account_count || 0) === 0;
       });
       if (!list.length) {
-        group.appendChild(YB.el("option", { value: "", text: "（暂无）" }));
-        return;
+        items.push({ empty: "（暂无）" });   // 不可选空态行，替代原 optgroup 里的凑数 option
+      } else {
+        list.forEach(function (u) {
+          var email = String(u.email || "");
+          items.push({ v: email, t: email.split("@")[0] });
+        });
       }
-      list.forEach(function (u) {
-        var email = String(u.email || "");
-        group.appendChild(YB.el("option", { value: email, text: email.split("@")[0] }));
-      });
-    }).catch(function () { /* 静默：下拉为空仍可手填 */ });
+      YB.selectField.setOptions("af-email", items);
+    }).catch(function () { /* 静默：下拉为空仍可手填（保持初始固定条目 + 空分组） */ });
   }
 
+  // 提交读取走组件 read（隐藏 input 值契约）：__manual__ 时取手填邮箱，其余原样返回
   function emailValue(nodes) {
-    var v = nodes.email ? nodes.email.value : "";
+    var v = YB.selectField.read("af-email");
     return v === "__manual__" ? (nodes.manual ? nodes.manual.value.trim() : "") : v;
   }
 
   function toggleManual(nodes) {
     if (!nodes.manualWrap) return;
-    nodes.manualWrap.hidden = !(nodes.email && nodes.email.value === "__manual__");
+    nodes.manualWrap.hidden = !(nodes.email && YB.selectField.read("af-email") === "__manual__");
   }
 
   function bindCodeClear(nodes, state) {
@@ -242,7 +258,7 @@
     };
     if (n.email) {
       var email = emailValue(n);
-      if (n.email.value === "__manual__") {
+      if (YB.selectField.read("af-email") === "__manual__") {
         if (!email) { showError(view, "请填写邮箱"); return false; }
         if (!YB.passwordPolicyOk(n.initial.value)) {
           showError(view, "初始密码" + YB.PW_POLICY_HINT);
@@ -286,11 +302,6 @@
 
     function mount() {
       bindCodeClear(view.nodes, state);
-      if (view.nodes.email) {
-        view.nodes.email.addEventListener("change", function () { toggleManual(view.nodes); });
-        loadAvailableUsers(view.nodes.email);
-        toggleManual(view.nodes);
-      }
       var submitLabel = opts.submitLabel || (editing ? "保存修改" : (isUser ? "提交账号" : "保存"));
       var handle = YB.openModal({
         title: opts.title || (editing
@@ -308,6 +319,16 @@
           }
         ]
       });
+      if (view.nodes.email) {
+        // 绑定用户下拉：openModal 之后才能 mount——select-field 按文档查询 [data-select-field]。
+        // change 只由组件在用户选择时派发（程序化 set 不派发），联动展开/收起手填字段。
+        view.nodes.email.addEventListener("change", function () { toggleManual(view.nodes); });
+        YB.selectField.mount();
+        // 接口在途先把固定条目灌进面板，避免用户抢先打开看到空下拉
+        YB.selectField.setOptions("af-email", emailBaseItems());
+        loadAvailableUsers();
+        toggleManual(view.nodes);
+      }
     }
 
     if (editing && opts.detail) {
