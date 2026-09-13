@@ -109,12 +109,7 @@
     }
     if (descId) associate(proxyOf(id), descId, v);
   }
-  function setTip(text, bad) {
-    var n = $("ss-tip");
-    if (!n) return;
-    n.textContent = text || "";
-    n.className = bad ? "set-tip set-bad" : "set-tip";
-  }
+  function setTip(text, bad) { YB.setTip("ss-tip", text, bad); }
   // 账号间隔上界 3600 与后端钳位一致：避免前端按未钳位值提示"已保存"而后端静默改小
   function clampGap(v) {
     v = parseInt(v, 10);

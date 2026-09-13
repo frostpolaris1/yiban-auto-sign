@@ -499,5 +499,72 @@ class TabDeepLinkGuardTest(unittest.TestCase):
             )
 
 
+# 改密弹窗的唯一实现钉在 components/change-password.js（YB.changePassword.open）。
+# 历史上旧 SPA 外壳（templates/tabs/）另有两份三字段表单（saveMyPassword /
+# saveMinePassword），页面 JS 退役后按钮 onclick 悬空成死 UI；本守卫防止第二份
+# 实现借任何载体复活 —— 两份三字段表单会各自漂移校验口径/文案，且新表单不再走
+# 统一弹窗的错误显示与 toast/会话轮换流向。
+_PASSWORD_CHANGE_ID = "components/change-password.js"
+# 自助改密的后端提交口（前端唯一点）：old_password 三元组只允许在唯一实现里出现
+_PASSWORD_FIELDS = ("old_password", "new_password")
+# 模板层第二份实现的特征：唯一实现的 label 不经模板下发，模板出现即手抄表单
+_TEMPLATE_FORM_MARKERS = ("确认新密码", "再次输入新密码", "saveMyPassword", "saveMinePassword")
+
+
+class ChangePasswordSingleImplementationTest(unittest.TestCase):
+    def test_password_change_submit_lives_only_in_shared_component(self):
+        """/api/me/password 的请求字段只允许出现在 change-password.js。
+
+        自助改密的校验（口令策略/两次一致）、错误显示（弹窗内 role=alert）与
+        成功流向（会话轮换后跳登录页）都耦合在提交逻辑里 —— 绕开共享组件直接
+        POST 意味着这些行为各写一份。
+        """
+        offenders = []
+        for dirpath, _dirnames, filenames in os.walk(JS_DIR):
+            if os.sep + "vendor" + os.sep in dirpath + os.sep:
+                continue
+            for name in sorted(filenames):
+                if not name.endswith(".js"):
+                    continue
+                path = os.path.join(dirpath, name)
+                rel = os.path.relpath(path, JS_DIR).replace(os.sep, "/")
+                if rel == _PASSWORD_CHANGE_ID:
+                    continue
+                src = _read(path)
+                hits = [f for f in _PASSWORD_FIELDS if f in src]
+                if hits:
+                    offenders.append(f"  static/js/{rel}: 含 {', '.join(hits)}")
+        if offenders:
+            self.fail(
+                "改密请求字段（old_password/new_password）出现在共享组件之外 —— "
+                "自助改密只允许 components/change-password.js 一份实现，"
+                "新入口请改调 YB.changePassword.open({ builtinAdmin, policyOk? })：\n"
+                + "\n".join(offenders)
+            )
+
+    def test_templates_host_no_inline_password_change_form(self):
+        """模板层不得再出现三字段改密表单或旧 onclick 函数名。"""
+        offenders = []
+        for dirpath, _dirnames, filenames in os.walk(TEMPLATES_DIR):
+            for name in sorted(filenames):
+                if not name.endswith(".html"):
+                    continue
+                path = os.path.join(dirpath, name)
+                rel = os.path.relpath(path, BASE)
+                # 剥 HTML 注释再匹配：注释里的说明性提及不是实现，只抓活的 markup
+                src = re.sub(r"<!--.*?-->", " ", _read(path), flags=re.S)
+                for marker in _TEMPLATE_FORM_MARKERS:
+                    if marker in src:
+                        offenders.append(f"  {rel}: 含 {marker!r}")
+        if offenders:
+            self.fail(
+                "模板里出现改密表单残留/第二实现（「确认新密码」等三字段表单特征或 "
+                "已退役的 saveMyPassword/saveMinePassword）—— 弹窗形态、口令策略提示、"
+                "成功/失败文案与流向都钉在 components/change-password.js，"
+                "改密入口一律给按钮接 YB.changePassword.open(...)：\n"
+                + "\n".join(offenders)
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

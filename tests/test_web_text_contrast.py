@@ -217,11 +217,15 @@ class WebTextContrastTest(unittest.TestCase):
             )
 
     def test_canonical_pair_still_in_use(self):
-        """反向守卫：正确形态仍在被使用（防一次误替换把约定整体改掉）。"""
+        """反向守卫：正确形态仍在被使用（防一次误替换把约定整体改掉）。
+
+        基线 100：P17 前退役旧栈（templates/tabs/）死改密表单删除后减 2（98）。
+        死表单清理是合法减量；再降需核对 diff 是否仍是"删死代码/迁移形态"。
+        """
         count = _count_occurrences(CANONICAL)
         self.assertGreaterEqual(
             count,
-            100,
+            98,
             f"正确形态 {CANONICAL!r} 只剩 {count} 处，疑似被整体误替换，请复核",
         )
 
