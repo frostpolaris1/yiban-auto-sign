@@ -39,9 +39,18 @@
     setHidden($("sn-save"), true);
     setHidden($("sn-dirty"), true);
   }
-  function disableAll(root) {
+  // 权限说明追加到被禁用控件的 aria-describedby：保留控件原有说明（如 info-tip 的浮层），
+  // 读屏聚焦/浏览到禁用控件时能听到"为什么禁用"。
+  function associate(el, id) {
+    var ids = (el.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    if (ids.indexOf(id) === -1) { ids.push(id); el.setAttribute("aria-describedby", ids.join(" ")); }
+  }
+  function disableAll(root, descId) {
     if (!root) return;
-    [].forEach.call(root.querySelectorAll("input,select,button,textarea"), function (n) { n.disabled = true; });
+    [].forEach.call(root.querySelectorAll("input,select,button,textarea"), function (n) {
+      n.disabled = true;
+      if (descId) associate(n, descId);
+    });
   }
   function value(id) { return ($(id) || {}).value || ""; }
 
@@ -191,7 +200,7 @@
       // 整卡（推送 + 邮件两段）禁用：容器做 group 并把禁用原因 #sn-perm 关联给读屏
       var card = $("set-notify");
       if (card) {
-        disableAll(card);
+        disableAll(card, "sn-perm");
         card.setAttribute("role", "group");
         card.setAttribute("aria-describedby", "sn-perm");
       }
