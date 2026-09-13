@@ -213,6 +213,29 @@ class WebRenderGoldenTest(unittest.TestCase):
             s["sid"] = "0" * 32
         return c
 
+    # 2026-09-13 用户裁决：普通用户进站第一眼应看到签到结果（日历），而不是账号与设置。
+    # 三个入口（根路径 / 已登录访问 /login / 非管理员被管理端守卫打回）必须同口径。
+    def test_user_lands_on_calendar(self):
+        c = self._user_client()
+        r = c.get("/")
+        self.assertEqual(r.status_code, 302, "根路径应重定向而不是直接渲染")
+        self.assertTrue(
+            r.headers.get("Location", "").endswith("/user/calendar"),
+            f"普通用户首页应为 /user/calendar，实际 {r.headers.get('Location')}",
+        )
+        r = c.get("/login")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(
+            r.headers.get("Location", "").endswith("/user/calendar"),
+            f"已登录用户访问 /login 应转日历页，实际 {r.headers.get('Location')}",
+        )
+        r = c.get("/work/settings")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(
+            r.headers.get("Location", "").endswith("/user/calendar"),
+            f"普通用户被管理端守卫打回应去日历页，实际 {r.headers.get('Location')}",
+        )
+
     def _render(self, page):
         client = {
             "login": lambda: self.webapp.create_app().test_client(),
