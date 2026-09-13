@@ -8,6 +8,6 @@
  * 引入方式：<link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
  * 各分片 unicode-range 保留，浏览器按页面实际码点按需加载。
  */
-@import url('inter/inter.css');
-@import url('jetbrains-mono/jetbrains-mono.css');
-@import url('notosanssc/notosanssc.css');
+@import url('inter/inter.css?v=63bc3b91');
+@import url('jetbrains-mono/jetbrains-mono.css?v=b0e65736');
+@import url('notosanssc/notosanssc.css?v=fc8181d5');

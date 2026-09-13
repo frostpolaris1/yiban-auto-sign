@@ -49,7 +49,7 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | 用途 | 拉丁 UI 正文字体；400/500/600/700 四档字重，normal 样式 |
 | 来源 | 官方 CSS API v2：`https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap`（经镜像主机 `fonts.gstatic.font.im` 取回实际 woff2） |
 | 构建与子集化 | Google Fonts 原生 unicode-range 分片，仅保留 `latin` + `latin-ext` 两个子集（丢弃 cyrillic / greek / vietnamese，减小体积）；8 个 woff2 |
-| 文件 | `Inter-{400,500,600,700}-latin.woff2`（各 48,432 B）、`Inter-{400,500,600,700}-latin-ext.woff2`（各 85,272 B）；`inter.css`（3,188 B） |
+| 文件 | `Inter-{400,500,600,700}-latin.woff2`（各 48,432 B）、`Inter-{400,500,600,700}-latin-ext.woff2`（各 85,272 B）；`inter.css`（3,276 B，含内容哈希版本查询串） |
 | 体积 | woff2 合计 **534,816 字节**（含 CSS 目录合计 538,004 字节） |
 | SHA-256 基线 | 聚合 `6bb4c04f96481569719088f3ee70e114b0149524223502a730d7e0d2dd32b3ff`（命令见上） |
 
@@ -60,7 +60,7 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | 用途 | 等宽数值字体（手机号 / 日志行 / ID）；400，normal |
 | 来源 | 官方 CSS API v2：`https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&display=swap`（经镜像主机 `fonts.gstatic.font.im`） |
 | 构建与子集化 | Google Fonts 原生 unicode-range 分片，**仅保留 `latin`**（丢弃 latin-ext / cyrillic / greek / vietnamese）；1 个 woff2 |
-| 文件 | `JetBrainsMono-400-latin.woff2`（21,168 B）；`jetbrains-mono.css`（580 B） |
+| 文件 | `JetBrainsMono-400-latin.woff2`（21,168 B）；`jetbrains-mono.css`（591 B，含内容哈希版本查询串） |
 | 体积 | woff2 合计 **21,168 字节**（含 CSS 目录合计 21,748 字节） |
 | SHA-256 基线 | 聚合 `0902c579fe6b6419140289302a7a3f8897c59bff8640dcd0e0d1320ce04bd162`（命令见上） |
 
@@ -74,7 +74,7 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | 构建方式 | **可复现脚本** `scripts/build_cjk_font_slices.py`，下载与切片分离：`--fetch <dir>` 取回并按 SHA-256 校验上游字体；切片阶段 `--weight-font 400=… --weight-font 700=…` 离线执行。切片前 CFF/OTF 源经 cu2qu（`max_err=1.0`）转 glyf/TTF（同覆盖下 woff2 对 CFF 压缩差约 35%）→ 覆盖集合按「项目字频（模板实际用字）→ hanziDB 字频前 3,000 → 其余按码点」排序 → `pyftsubset` + brotli 产出 woff2。构建期依赖 `pip install fonttools brotli`（**不写入** `requirements.txt` / `requirements.lock`） |
 | 分片策略 | 每字重 48 片：项目字频热区 300 字/片（893 字 ≈ 前 3 片）、高频区 300 字/片、其余按码点 500 字/片；`unicode-range` 由分片内容精确生成（逐片 cmap 与声明区段实测一致） |
 | 覆盖 | 每字重 **21,341 码点**：CJK 基本区 20,976 / 20,992、CJK 标点 64 / 64、全角 224 / 240、扩展 A 77（《通用规范汉字表》收录的常用部分）；缺失项均为上游字体本身无字形（U+9FF0–9FFF 等）。动态中文不再回退到系统字体 |
-| 文件 | `noto-sans-sc-{400,700}-{000..047}.woff2` 共 96 个；`notosanssc.css`（120,482 B） |
+| 文件 | `noto-sans-sc-{400,700}-{000..047}.woff2` 共 96 个；`notosanssc.css`（121,538 B，url 含内容哈希版本查询串） |
 | 体积 | 400 字重 **3,538,580 字节**、700 字重 **3,606,984 字节**；woff2 合计 **7,145,564 字节**（含 CSS 目录合计 **7,266,046 字节**） |
 | 单页载荷（实测） | 用本项目 28 个模板的 893 个不同 CJK/全角码点：400 命中 3 片 **126,772 B（0.121 MiB）**、700 命中 3 片 **128,436 B（0.122 MiB）**，合计 **255,208 B（0.243 MiB）**；旧基线为 23/101 片 ≈ 1.28 MiB/字重 |
 | SHA-256 基线 | 聚合 `9bb613b6a6aebb0e7bc04e77c040632835eec26368969c2b428331ac226b9a7f`（命令见上） |
@@ -84,8 +84,9 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | 项 | 值 |
 | --- | --- |
 | 用途 | 单一 `@import` 入口，相对路径聚合三家族 |
-| 体积 | **672 字节** |
+| 体积 | **705 字节** |
 | 引入方式 | `<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/fonts.css?v={{ web_version }}">` |
+| URL 版本化 | 全目录 CSS 的 `url()` 均带内容短哈希查询串（`?v=<sha256 前 8 位>`），由 `scripts/stamp_font_versions.py` 打标（幂等，可重跑；`--check` 只查不写）。覆盖两级：各家族 CSS 内的 woff2 分片、fonts.css 的 `@import` 目标。缓存背景：`/static/` 30 天强缓存（`max-age=2592000`），layout 的 `?v={{web_version}}` 只救 fonts.css 自身一层；不版本化时重切片后旧访客会按缓存的旧子 CSS 引用已删除的分片 → 404 回退宋体，最长 30 天自愈。`build_cjk_font_slices.py` 生成完成后会自动调用本脚本刷新整个 fonts 目录 |
 
 ## 许可文件
 
