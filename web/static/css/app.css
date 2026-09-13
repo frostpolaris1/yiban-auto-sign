@@ -2434,9 +2434,25 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   .acct-tools .acct-search { flex: 1 1 100%; }
 }
 
+/* 写操作成功后对重建行的短暂高亮：行重排后位置可能落在视口外，
+   用背景色过渡（不动画布局属性）给出「就是这一行」的就地反馈；≤300ms，
+   prefers-reduced-motion 下不播。 */
+@keyframes acct-row-flash {
+  from { background-color: var(--primary-soft); }
+  to { background-color: transparent; }
+}
+.acct-row-flash > td { animation: acct-row-flash 280ms var(--ease-out-strong); }
+
+/* 窄屏审核主任务（通过）提到行外后：主按钮与「更多操作」图标同排。 */
+.acct-row-actions--narrow { gap: 6px; }
+
+/* 批量删除后的恢复入口状态条：批量条因选择清空而隐藏，状态条落在它原位。 */
+.acct-deleted-hint { margin: 0 0 12px; align-items: center; }
+
 @media (prefers-reduced-motion: reduce) {
   #accounts-root { transition: none; }
   #accounts-root.is-swapping { opacity: 1; transform: none; }
+  .acct-row-flash > td { animation: none; }
 }
 
 /* ==========================================================================

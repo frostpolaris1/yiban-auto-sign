@@ -21,12 +21,39 @@
   function create(ctx) {
     function fail(e) { YB.toast.error((e && e.message) || "操作失败，请稍后再试"); }
     // 统一链路：置忙 → 请求 → 成功提示 + 刷新 → 复位。fallback 为空表示不弹成功提示。
-    function run(promise, fallback) {
+    // suffix 追加在（后端 msg 或 fallback）之后，用于「软删除可恢复」这类固定补充说明。
+    // after 在刷新完成后执行（ctx.refresh 需返回 Promise），用于对新生行的就地反馈。
+    function run(promise, fallback, after, suffix) {
       ctx.busy(true);
       return promise.then(function (data) {
-        if (fallback) YB.toast.success((data && data.msg) || fallback);
-        ctx.refresh();
+        if (fallback || suffix) {
+          YB.toast.success(((data && data.msg) || fallback || "操作成功") + (suffix || ""));
+        }
+        var ref = ctx.refresh();
+        if (after) return Promise.resolve(ref).then(function () { after(data); });
       }).catch(fail).then(function () { ctx.busy(false); });
+    }
+
+    // 列表刷新会整表重建：按行上的 data-acct-idx 找回新行，做一次短暂高亮。
+    function flashRow(index) {
+      if (index == null) return;
+      var tr = document.querySelector('[data-acct-idx="' + index + '"]');
+      if (!tr) return;
+      tr.classList.add("acct-row-flash");
+      setTimeout(function () { tr.classList.remove("acct-row-flash"); }, 320);
+    }
+
+    // 就地乐观标记「待签中」：改状态列图标/文案，等随后刷新用后端真实状态覆盖。
+    function markSigning(index) {
+      if (index == null) return;
+      var tr = document.querySelector('[data-acct-idx="' + index + '"]');
+      var box = tr && tr.querySelector(".acct-state");
+      if (!box) return;
+      box.className = "acct-state acct-state--muted";
+      var use = box.querySelector("use");
+      if (use) use.setAttribute("href", "#i-clock");
+      box.title = "待签中";
+      box.setAttribute("aria-label", "待签中");
     }
 
     function review(a, action) {
@@ -67,7 +94,8 @@
         confirmText: "删除", danger: true
       }).then(function (ok) {
         if (!ok) return;
-        run(YB.api("DELETE", "/api/accounts/" + a.index, { phone: a.phone }), "已删除账号");
+        run(YB.api("DELETE", "/api/accounts/" + a.index, { phone: a.phone }), "已删除账号", null,
+          " · 可在『待删除账号』恢复（7 天内）");
       });
     }
 
@@ -86,7 +114,9 @@
     }
 
     function move(a, dir) {
-      run(YB.api("POST", "/api/accounts/" + a.index + "/move", { dir: dir, phone: a.phone }), null);
+      // 行重排后位置可能落在视口外：成功提示 + 新行短暂高亮，避免用户重复点击
+      run(YB.api("POST", "/api/accounts/" + a.index + "/move", { dir: dir, phone: a.phone }),
+        dir === -1 ? "已上移" : "已下移", function () { flashRow(a.index); });
     }
 
     function signin(a) {
@@ -98,6 +128,9 @@
         return YB.api("POST", "/api/signin", { phone: full });
       }).then(function (data) {
         YB.toast.success((data && data.msg) || "已触发手动签到");
+        // 先就地显示「待签中」，随后重拉真实状态，不等 10s 轮询
+        markSigning(a.index);
+        setTimeout(function () { ctx.refresh(); }, 1000);
       }).catch(fail).then(function () { ctx.busy(false); });
     }
 
@@ -152,10 +185,14 @@
 
     function submit(path, body) {
       ctx.busy(true);
+      var isDelete = !!(body && body.action === "delete");
       YB.api("POST", path, body).then(function (data) {
-        YB.toast.success((data && data.msg) || "操作成功");
+        YB.toast.success(((data && data.msg) || "操作成功")
+          + (isDelete ? " · 可在『待删除账号』恢复（7 天内）" : ""));
         ctx.onBatchSuccess();
         ctx.refresh();
+        // 批量删除后就地给出恢复入口，避免入口只存在于另一个标签页
+        if (isDelete && ctx.onBatchDelete) ctx.onBatchDelete();
       }).catch(function (e) {
         // 409 = 列表在快照后漂移，后端文案已提示刷新
         fail(e);

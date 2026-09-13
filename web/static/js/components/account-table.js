@@ -85,35 +85,41 @@
   }
 
   // 菜单项描述：动作分发仍走同一套 handlers（YB.accountOps），宽窄两版不各写一份 handler。
-  function menuSpec(group, account, handlers) {
+  // omit 用于窄屏把主任务（通过）提到行外后，从菜单里去掉重复项。
+  function menuSpec(group, account, handlers, omit) {
+    var items;
     if (group === "pending") {
-      return [
+      items = [
         { label: "通过", icon: "check", run: function () { handlers.approve(account); } },
         { label: "驳回", icon: "x", run: function () { handlers.reject(account); } },
         { label: "编辑", icon: "pencil", run: function () { handlers.edit(account); } },
         { label: "删除", icon: "trash", danger: true, run: function () { handlers.remove(account); } }
       ];
-    }
-    if (group === "deleted") {
-      return [
+    } else if (group === "deleted") {
+      items = [
         { label: "恢复", icon: "rotate-ccw", run: function () { handlers.restore(account); } },
         { label: "彻底删除", icon: "trash", danger: true, run: function () { handlers.purge(account); } }
       ];
+    } else {
+      items = [
+        { label: "上移", icon: "arrow-up", run: function () { handlers.move(account, -1); } },
+        { label: "下移", icon: "arrow-down", run: function () { handlers.move(account, 1); } },
+        { label: "手动签到", icon: "play", run: function () { handlers.signin(account); } },
+        { label: "编辑", icon: "pencil", run: function () { handlers.edit(account); } },
+        { label: "删除", icon: "trash", danger: true, run: function () { handlers.remove(account); } }
+      ];
     }
-    return [
-      { label: "上移", icon: "arrow-up", run: function () { handlers.move(account, -1); } },
-      { label: "下移", icon: "arrow-down", run: function () { handlers.move(account, 1); } },
-      { label: "手动签到", icon: "play", run: function () { handlers.signin(account); } },
-      { label: "编辑", icon: "pencil", run: function () { handlers.edit(account); } },
-      { label: "删除", icon: "trash", danger: true, run: function () { handlers.remove(account); } }
-    ];
+    if (omit && omit.length) {
+      items = items.filter(function (it) { return omit.indexOf(it.label) === -1; });
+    }
+    return items;
   }
 
   // 行菜单的浮动态（portal 到 body + fixed 定位 + 视口钳制 + 还原）由共享组件
   // YB.rowMenu 提供；本模块只把「动作清单」交给它，宽窄两版共用同一份 handlers。
-  function dropdownCell(group, account, handlers) {
+  function dropdownCell(group, account, handlers, omit) {
     return YB.rowMenu.cell({
-      items: menuSpec(group, account, handlers),
+      items: menuSpec(group, account, handlers, omit),
       cellClass: "acct-cell-actions",
       wrapClass: "dd-wrap acct-row-menu",
       label: "更多操作"
@@ -121,7 +127,18 @@
   }
 
   function actionsCell(group, account, handlers) {
-    if (isNarrow()) return dropdownCell(group, account, handlers);
+    if (isNarrow()) {
+      // 窄屏审核主任务（通过）提到行外可见，气味与点击成本都不再依赖「更多操作」；
+      // 其余动作仍收进菜单。YB.rowMenu.cell 返回 <td>，取其首子节点（.dd-wrap）复用到行内。
+      if (group === "pending") {
+        var box = YB.el("div", { class: "acct-row-actions acct-row-actions--narrow" });
+        box.appendChild(btn("通过", "btn btn--primary btn--sm", function () { handlers.approve(account); }));
+        var menuTd = dropdownCell(group, account, handlers, ["通过"]);
+        box.appendChild(menuTd.firstChild);
+        return td([box], "acct-cell-actions");
+      }
+      return dropdownCell(group, account, handlers);
+    }
     var box = YB.el("div", { class: "acct-row-actions" });
     if (group === "pending") {
       box.appendChild(btn("通过", "btn btn--primary btn--sm", function () { handlers.approve(account); }));
@@ -187,6 +204,8 @@
     var group = opts.group;
     var handlers = opts.handlers;
     var tr = YB.el("tr");
+    // 供写操作成功后就地反馈（高亮/待签中）按索引找回重建后的行；index 非敏感
+    if (a.index != null) tr.setAttribute("data-acct-idx", String(a.index));
     tr.appendChild(checkCell(opts.selected, a, function (on) { opts.onToggle(a, on); }));
     if (group === "pending") {
       tr.appendChild(td([badge(a.status)], "acct-cell-audit"));

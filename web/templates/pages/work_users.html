@@ -14,10 +14,15 @@
 
 {% block title %}用户管理 · 易班自动签到{% endblock %}
 
-{% macro empty(id, msg) %}
+{% macro empty(id, msg, action_label, action_tab) %}
 <p id="{{ id }}" class="empty" hidden>
   <span class="empty__icon">{{ icon('users') }}</span>
   <span class="empty__msg">{{ msg }}</span>
+  {% if action_label %}
+  <span class="empty__action">
+    <button type="button" class="btn btn--ghost btn--sm" data-empty-tab="{{ action_tab }}">{{ action_label }}</button>
+  </span>
+  {% endif %}
 </p>
 {% endmacro %}
 
@@ -111,7 +116,7 @@
               <tbody id="usr-pending-tbody"></tbody>
             </table>
           </div>
-          {{ empty('usr-pending-empty', '暂无待处理用户') }}
+          {{ empty('usr-pending-empty', '暂无待处理用户', '查看正式用户', 'normal') }}
         </div>
       </div>
     </section>
@@ -141,7 +146,7 @@
               <tbody id="usr-normal-tbody"></tbody>
             </table>
           </div>
-          {{ empty('usr-normal-empty', '暂无正式用户') }}
+          {{ empty('usr-normal-empty', '暂无正式用户', '查看空用户', 'vacant') }}
         </div>
       </div>
     </section>
@@ -170,7 +175,7 @@
               <tbody id="usr-vacant-tbody"></tbody>
             </table>
           </div>
-          {{ empty('usr-vacant-empty', '暂无空用户') }}
+          {{ empty('usr-vacant-empty', '暂无空用户', '查看正式用户', 'normal') }}
         </div>
       </div>
     </section>
@@ -201,7 +206,7 @@
               <tbody id="usr-deleted-tbody"></tbody>
             </table>
           </div>
-          {{ empty('usr-deleted-empty', '暂无已注销用户') }}
+          {{ empty('usr-deleted-empty', '暂无已注销用户', '返回正式用户', 'normal') }}
         </div>
       </div>
     </section>

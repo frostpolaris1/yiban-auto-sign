@@ -137,6 +137,9 @@
       if (!empty) return;
       var msg = empty.querySelector(".empty__msg");
       if (msg) msg.textContent = "加载失败";
+      // 失败态不是「真的空」，不给下一步入口（避免把加载失败当完成态）
+      var action = empty.querySelector(".empty__action");
+      if (action) action.hidden = true;
       empty.hidden = false;
     });
   }
@@ -293,6 +296,9 @@
   function renderGroup(group, list, withBuiltin) {
     var refs = GROUPS[group];
     var tbody = $(refs.tbody);
+    // 组内表格独立滚动：整表重建前存 scrollTop、渲染后还原（同 /accounts）
+    var scroller = tbody.closest(".table-scroll");
+    var scrollTop = scroller ? scroller.scrollTop : 0;
     clear(tbody);
     var kw = state.search[group] || "";
     var filtered = list.filter(function (u) { return match(u, kw); });
@@ -305,7 +311,11 @@
     var empty = $(refs.empty);
     var msg = empty.querySelector(".empty__msg");
     if (msg) msg.textContent = shown ? "" : (list.length ? "无匹配结果" : refs.emptyText);
+    // 空态「下一步」只在真的空（而非检索无匹配）时给出
+    var action = empty.querySelector(".empty__action");
+    if (action) action.hidden = list.length > 0;
     empty.hidden = shown > 0;
+    if (scroller) scroller.scrollTop = scrollTop;
     setText(refs.count, countLabel(total, shown, kw));
     syncSelectAll(group, filtered);
     updateBatch(group);
@@ -323,6 +333,8 @@
       if (!hasDeleted && wasActive && YB.switchTab) YB.switchTab("pending");
     }
     var tbody = $("usr-deleted-tbody");
+    var scroller = tbody.closest(".table-scroll");
+    var scrollTop = scroller ? scroller.scrollTop : 0;
     clear(tbody);
     state.deleted.forEach(function (u) { tbody.appendChild(deletedRow(u)); });
     setText("usr-deleted-count", hasDeleted ? "（" + state.deleted.length + " 人）" : "");
@@ -330,6 +342,9 @@
     empty.hidden = hasDeleted;
     var msg = empty.querySelector(".empty__msg");
     if (msg) msg.textContent = hasDeleted ? "" : "暂无已注销用户";
+    var action = empty.querySelector(".empty__action");
+    if (action) action.hidden = hasDeleted;
+    if (scroller) scroller.scrollTop = scrollTop;
     // 非主管理员不提供批量清除入口（后端仍会二次校验，UI 只是不给出不可能成功的动作）
     var purgeBtn = document.querySelector('[data-usr-batch="deleted:purge"]');
     if (purgeBtn) purgeBtn.hidden = !state.isMaster;
@@ -345,6 +360,14 @@
     renderGroup("normal", listOf("normal"), true);
     renderGroup("vacant", listOf("vacant"), false);
     renderDeleted();
+  }
+
+  // 只重渲染当前组（检索用）：不触碰其它标签页的 DOM（保滚动位置与焦点）；
+  // 数据刷新/写操作后仍走 renderAll。
+  function renderOne(group) {
+    YB.rowMenu.closeAll();
+    if (group === "deleted") { renderDeleted(); return; }
+    renderGroup(group, listOf(group), group === "normal");
   }
 
   function updateBatch(group) {
@@ -391,7 +414,7 @@
         if (!input) return;
         input.addEventListener("input", debounce(function () {
           state.search[pair[1]] = input.value.trim();
-          renderAll();
+          renderOne(pair[1]);
         }, 150));
       });
   }
@@ -421,6 +444,9 @@
       }
       var clr = t.closest("[data-usr-batch-clear]");
       if (clr) { state.sel[clr.getAttribute("data-usr-batch-clear")] = {}; renderAll(); return; }
+      // 空态「下一步」：同页标签切换（不新增页面跳转）
+      var emptyBtn = t.closest("[data-empty-tab]");
+      if (emptyBtn) { YB.switchTab(emptyBtn.getAttribute("data-empty-tab")); return; }
       if (t.closest("[data-usr-retry]")) startLoad();
     });
   }
