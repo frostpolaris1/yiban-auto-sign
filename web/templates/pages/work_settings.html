@@ -21,9 +21,9 @@
    只提交自己改得动的字段）；通知通道与容量配额**可见但控件禁用**（面板顶部 .alert.info
    说明原因）；系统开关整 tab 隐藏。禁用不是安全边界，后端仍 403 兜底。
 
-   模板素材复用：.tabs / .card / .card-head / .card-title-wrap / .card-title /
-   .form-grid(.span-2) / .field(.field-label/.field-help) / .input / .textarea /
-   .input-group(.addon) / .btn-group / .switch / .data-table(.table-scroll) /
+   模板素材复用：.tabs / .panel-head(.panel-head-row/.panel-title，全站统一卡头，
+   不画分隔线) / .form-grid(.span-2) / .field(.field-label/.field-help) / .input /
+   .textarea / .input-group(.addon) / .btn-group / .switch / .data-table(.table-scroll) /
    .alert / .badge / .form-actions / .spinner。仅保留确无模板对应的项目类：
    .set-tip/.set-ok/.set-bad 就地状态文字、.set-row* 开关行、.set-danger* 危险区语义、
    自研选择控件（.select-field / .range-field，见 app.css 第 30 节）。
@@ -94,14 +94,14 @@
   <!-- 1. 签到调度：排序/分布/掐头去尾/间隔/窗口 + 周六·周日·自选（同一张卡） -->
   <div class="tab-panel is-active" role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
     <section class="card" id="set-schedule">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">自动签到</span>
-          <h2 class="card-title">签到调度</h2>
-        </div>
-        <div class="set-head-actions">
-          {% call info('调度说明', 'set-pop-schedule') %}<b>排序与分布：</b>「顺序」按列表先到先签，「随机」每天重排；分布决定时间点怎么铺开，「顺序 × 均匀」会集中在窗口前段，要铺满窗口选「随机 × 均匀」或正态。<b>掐头去尾：</b>裁掉窗口首尾各 n 分钟，避开边界超时；前后独立、0.5 分钟粒度。<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动均生效，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但占用更多窗口时间。<b>生效时机：</b>保存后下次自动签到时生效。{% endcall %}
-          {{ dirty_badge('ss-dirty') }}
+      {# 卡头统一 .panel-head：原 eyebrow「自动签到」与标题同义，删 #}
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">签到调度</h2>
+          <div class="set-head-actions">
+            {% call info('调度说明', 'set-pop-schedule') %}<b>排序与分布：</b>「顺序」按列表先到先签，「随机」每天重排；分布决定时间点怎么铺开，「顺序 × 均匀」会集中在窗口前段，要铺满窗口选「随机 × 均匀」或正态。<b>掐头去尾：</b>裁掉窗口首尾各 n 分钟，避开边界超时；前后独立、0.5 分钟粒度。<b>账号间隔：</b>相邻两次签到请求的最小间隔（秒），自动与手动均生效，0=关闭；调大可降低同一 IP 连续登录被风控的概率，但占用更多窗口时间。<b>生效时机：</b>保存后下次自动签到时生效。{% endcall %}
+            {{ dirty_badge('ss-dirty') }}
+          </div>
         </div>
       </div>
       <p class="alert info" id="ss-perm" hidden>
@@ -217,12 +217,12 @@
   <!-- 2. 全局公告：任意管理员 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-announcement" aria-labelledby="set-tab-announcement" data-tab-id="announcement">
     <section class="card" id="set-announcement-card">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">全站</span>
-          <h2 class="card-title">全局公告</h2>
+      {# 原 eyebrow「全站」与标题「全局公告」同义，删 #}
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">全局公告</h2>
+          <div class="set-head-actions">{{ dirty_badge('set-ann-dirty') }}</div>
         </div>
-        <div class="set-head-actions">{{ dirty_badge('set-ann-dirty') }}</div>
       </div>
       <div class="field">
         <label class="field-label" for="set-announcement">公告文字</label>
@@ -247,14 +247,15 @@
         <span class="body">仅主管理员可配置消息推送与邮件通道，受限控件已禁用；如需调整请联系主管理员。</span>
       </p>
       <section class="card">
-        <div class="card-head">
-          <div class="card-title-wrap">
-            <span class="eyebrow">告警送达</span>
-            <h2 class="card-title">消息推送</h2>
-          </div>
-          <div class="set-head-actions">
-            {% call info('通知通道说明', 'set-pop-notify') %}<b>密钥：</b>加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。<b>频控：</b>同类告警在冷却时间内只推一条。<b>额度：</b>按「非紧急 / 紧急」两本账各自计数。<b>权限：</b>仅主管理员可修改。<b>确认：</b>关闭通道、更换/清空密钥、调整额度节流均需当前管理员密码。{% endcall %}
-            {{ dirty_badge('sn-dirty') }}
+        {# 原 eyebrow「告警送达」：分组语境由所在 tab「通知通道」承担、告警语义已在
+           「仅推送重要告警」开关与字段文案里，删（下卡同理） #}
+        <div class="panel-head">
+          <div class="panel-head-row">
+            <h2 class="panel-title">消息推送</h2>
+            <div class="set-head-actions">
+              {% call info('通知通道说明', 'set-pop-notify') %}<b>密钥：</b>加密存储、不回显；Server酱 SendKey 以 SCT 开头，自定义地址须 HTTPS 且非内网。<b>频控：</b>同类告警在冷却时间内只推一条。<b>额度：</b>按「非紧急 / 紧急」两本账各自计数。<b>权限：</b>仅主管理员可修改。<b>确认：</b>关闭通道、更换/清空密钥、调整额度节流均需当前管理员密码。{% endcall %}
+              {{ dirty_badge('sn-dirty') }}
+            </div>
           </div>
         </div>
         <div class="form-grid">
@@ -317,12 +318,11 @@
       </section>
 
       <section class="card">
-        <div class="card-head">
-          <div class="card-title-wrap">
-            <span class="eyebrow">告警送达</span>
-            <h2 class="card-title">邮件通知</h2>
+        <div class="panel-head">
+          <div class="panel-head-row">
+            <h2 class="panel-title">邮件通知</h2>
+            <div class="set-head-actions">{{ dirty_badge('sm-dirty') }}</div>
           </div>
-          <div class="set-head-actions">{{ dirty_badge('sm-dirty') }}</div>
         </div>
         <div class="set-row">
           <div class="set-row-text">
@@ -381,12 +381,12 @@
   <!-- 4. 容量配额：只保留上限编辑，仅主管理员 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-quota" aria-labelledby="set-tab-quota" data-tab-id="quota">
     <section class="card" id="set-quota">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">名额</span>
-          <h2 class="card-title">容量配额</h2>
+      {# 原 eyebrow「名额」与标题「容量配额」同义，删 #}
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">容量配额</h2>
+          <div class="set-head-actions">{{ dirty_badge('set-cap-dirty') }}</div>
         </div>
-        <div class="set-head-actions">{{ dirty_badge('set-cap-dirty') }}</div>
       </div>
       <p class="alert info" id="set-cap-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
@@ -420,12 +420,12 @@
   <!-- 5. 健康与探针：任意管理员 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-health" aria-labelledby="set-tab-health" data-tab-id="health">
     <section class="card" id="set-health">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">自检</span>
-          <h2 class="card-title">健康与探针</h2>
+      {# 原 eyebrow「自检」与标题「健康与探针」同义，删 #}
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">健康与探针</h2>
+          <div class="set-head-actions">{{ dirty_badge('sh-dirty') }}</div>
         </div>
-        <div class="set-head-actions">{{ dirty_badge('sh-dirty') }}</div>
       </div>
       <div class="set-row">
         <div class="set-row-text">
@@ -476,10 +476,10 @@
   <!-- 6. 系统开关：动作型（非表单值），危险语义，仅主管理员整 tab 可见 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-switches" aria-labelledby="set-tab-switches" data-tab-id="switches">
     <section class="card set-danger" id="set-switches">
-      <div class="card-head">
-        <div class="card-title-wrap">
-          <span class="eyebrow">危险</span>
-          <h2 class="card-title">系统开关</h2>
+      {# 原 eyebrow「危险」删：危险语义由 .set-danger 红标题与 danger 按钮承担 #}
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">系统开关</h2>
         </div>
       </div>
       <p class="set-danger-note">暂停签到：所有账号停止自动签到（从下次开始），手动签到不受影响。
