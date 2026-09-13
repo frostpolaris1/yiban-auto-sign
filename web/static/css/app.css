@@ -2283,6 +2283,17 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-month { transition: opacity 120ms var(--ease-out-strong); }
 .sc-month.is-swapping { opacity: 0; transition-timing-function: var(--ease-in-strong); }
 
+/* 换月方向（P58）：往后一月 → 旧格向左退、新格自右进入；往前一月相反。
+   方向由 JS 按「本次月份 − 上次已渲染月份」的符号加 is-shift-next/-prev；
+   进入起点用 is-shifting-in（transition:none）落位，摘类后由基态过渡淡入。
+   只动 transform/opacity，位移 6px（大面积元素 ≤6px）。 */
+.sc-grid.is-shift-next.is-swapping { transform: translateX(-6px); }
+.sc-grid.is-shift-prev.is-swapping { transform: translateX(6px); }
+.sc-grid.is-shifting-in { opacity: 0; transition: none; }
+.sc-grid.is-shift-next.is-shifting-in { transform: translateX(6px); }
+.sc-grid.is-shift-prev.is-shifting-in { transform: translateX(-6px); }
+.sc-month.is-shifting-in { opacity: 0; transition: none; }
+
 /* 日志面板：慢请求的内容替换做一次淡入 + 3px 上浮 */
 .sc-log.is-fresh > * { animation: sc-in 160ms var(--ease-out-strong) both; }
 /* 取数期间不替换内容，只降透明表示"正在取"（避免内容先消失再出现的跳变） */
@@ -2334,6 +2345,17 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   .kpi-card:hover { transform: none; }
   .sc-grid.is-swapping { opacity: 1; transform: none; }
   .sc-month.is-swapping { opacity: 1; }
+  /* 换月方向类：JS 在 reduce 下不会加，这里兜底清零（用同/更高优先级选择器压过基态），
+     保证媒体查询在动画中途被切换时也不留下位移 */
+  .sc-grid.is-swapping,
+  .sc-grid.is-shift-next,
+  .sc-grid.is-shift-prev,
+  .sc-grid.is-shifting-in,
+  .sc-grid.is-shift-next.is-swapping,
+  .sc-grid.is-shift-prev.is-swapping,
+  .sc-grid.is-shift-next.is-shifting-in,
+  .sc-grid.is-shift-prev.is-shifting-in,
+  .sc-month.is-shifting-in { opacity: 1; transform: none; transition: none; }
   .sc-log.is-fresh > * { animation: none; }
   .collapse-body { transition: none; }
   /* 收起后延迟 220ms 隐藏的 visibility 过渡也要关掉，否则 reduced-motion 下仍有延迟 */
@@ -2856,6 +2878,16 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+/* 写操作后的列表刷新：慢请求整体淡出 → 换内容 → 淡入，与 /accounts（24 节）同口径。
+   is-swapping 是退出方向 → ease-in-strong；基类 ease-out-strong 留给移除类后的进入。
+   仅动 opacity/transform；触发与时长见 work_users.js 的 YB.swapOut / YB.SWAP_MS。 */
+#users-root { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
+#users-root.is-swapping { opacity: 0; transform: translateY(3px); transition-timing-function: var(--ease-in-strong); }
+@media (prefers-reduced-motion: reduce) {
+  #users-root { transition: none; }
+  #users-root.is-swapping { opacity: 1; transform: none; }
 }
 
 /* 窄屏补充信息（计数 / 时间）：宽屏由独立列承载，行内小字隐藏；
@@ -3548,6 +3580,7 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   font-weight: 600;
   color: var(--t-base);
   font-variant-numeric: tabular-nums;
+  transition: opacity 120ms var(--ease-out-strong);
 }
 .date-nav { width: 28px; height: 28px; }
 .date-nav svg { width: 15px; height: 15px; }
@@ -3563,7 +3596,19 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 2px;
+  transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong);
 }
+/* 切月方向（P58）：与 .sc-* 同口径（只动 transform/opacity，退出 ease-in-strong、
+   进入 ease-out-strong，各 160ms）。dir 由 JS 按箭头方向加 is-shift-next/-prev；
+   进入起点用 is-shifting-in（transition:none）落位，摘类后由基态过渡淡入。
+   位移 8px：弹层是 <300px 的小元素，方向感需要比大面积网格(6px)略强。 */
+.date-grid.is-swapping, .date-month.is-swapping { opacity: 0; transition-timing-function: var(--ease-in-strong); }
+.date-grid.is-shift-next.is-swapping { transform: translateX(-8px); }
+.date-grid.is-shift-prev.is-swapping { transform: translateX(8px); }
+.date-grid.is-shifting-in { opacity: 0; transition: none; }
+.date-grid.is-shift-next.is-shifting-in { transform: translateX(8px); }
+.date-grid.is-shift-prev.is-shifting-in { transform: translateX(-8px); }
+.date-month.is-shifting-in { opacity: 0; transition: none; }
 .date-blank { height: 32px; }
 .date-day {
   height: 32px;
@@ -3597,6 +3642,19 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 }
 @media (prefers-reduced-motion: reduce) {
   .date-pop { animation: none; }
+  /* 切月方向：JS 在 reduce 下不加类，这里兜底清零，并关掉新建的过渡 */
+  .date-grid,
+  .date-month { transition: none; }
+  .date-grid.is-swapping,
+  .date-grid.is-shifting-in,
+  .date-grid.is-shift-next,
+  .date-grid.is-shift-prev,
+  .date-grid.is-shift-next.is-swapping,
+  .date-grid.is-shift-prev.is-swapping,
+  .date-grid.is-shift-next.is-shifting-in,
+  .date-grid.is-shift-prev.is-shifting-in,
+  .date-month.is-swapping,
+  .date-month.is-shifting-in { opacity: 1; transform: none; transition: none; }
 }
 
 /* ==========================================================================
