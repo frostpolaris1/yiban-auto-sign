@@ -29,10 +29,12 @@
     user_cancelled: "muted", pending: "muted"
   };
 
+  // 状态徽标用全站达标的 .badge--* 档位（vendor .badge.success 等不达 AA）；
+  // 档位与 my-accounts.js 的先例对齐：已拒绝/待删除走 bad，待审核走 warn。
   function badge(status) {
-    if (status === "pending") return YB.el("span", { class: "badge warning", text: "待审核" });
-    if (status === "rejected") return YB.el("span", { class: "badge danger", text: "已拒绝" });
-    return YB.el("span", { class: "badge success", text: "正常" });
+    if (status === "pending") return YB.el("span", { class: "badge badge--warn", text: "待审核" });
+    if (status === "rejected") return YB.el("span", { class: "badge badge--bad", text: "已拒绝" });
+    return YB.el("span", { class: "badge badge--ok", text: "正常" });
   }
 
   function td(children, cls) {
@@ -191,7 +193,7 @@
   function nameCell(account, withDeletedBadge) {
     var main = YB.el("div", { class: "acct-name-main" });
     main.appendChild(document.createTextNode(String(account.display_name || "")));
-    if (withDeletedBadge) main.appendChild(YB.el("span", { class: "badge danger", text: "待删除" }));
+    if (withDeletedBadge) main.appendChild(YB.el("span", { class: "badge badge--bad", text: "待删除" }));
     var cell = td([main], "acct-cell-name");
     if (!YB.prefs || YB.prefs.ownerEmailVisible()) {
       cell.appendChild(YB.el("span", { class: "acct-owner-inline", text: ownerMailText(account) }));
