@@ -89,6 +89,49 @@
   var ROWS = 6;                 // 固定 6 行（42 格）：任意月份等高，换月不跳
   var CELLS = ROWS * 7;
   var ANIM_MIN_MS = 80;         // 短于此值的请求不播进入动画（加载越短越不该动）
+  var SWAP_MS = YB.SWAP_MS || 160;   // 与 core.js 的 swapOut 同口径（退出窗口）
+  // 用户偏好减少动效：完全不播（不加任何过渡类，而不是把时长归零）
+  function reduceMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  function clearShift(node) {
+    if (!node) return;
+    node.classList.remove("is-swapping", "is-shifting-in", "is-shift-next", "is-shift-prev");
+  }
+
+  // 换月方向动效（P58）：旧格保持到数据到达后，再做一次有方向的「退出 → 换内容 → 进入」。
+  // dir>0 往后一月（新内容自右侧进入、旧内容向左退），dir<0 反之。只动 transform/opacity：
+  // 退出 ease-in-strong、进入 ease-out-strong（基类承担），各 SWAP_MS。位移由 CSS 按方向给出。
+  // 点击反馈本身需要动，故不按请求快慢跳过；reduced-motion 下直接落内容。
+  function shiftMonth(grid, label, dir, apply) {
+    if (!dir || reduceMotion()) { clearShift(grid); clearShift(label); apply(); return; }
+    var seq = (grid.__scShiftSeq || 0) + 1;
+    grid.__scShiftSeq = seq;
+    clearShift(grid); clearShift(label);
+    grid.classList.add(dir > 0 ? "is-shift-next" : "is-shift-prev");
+    grid.classList.add("is-swapping");
+    if (label) label.classList.add("is-swapping");
+    var done = false;
+    function onEnd(e) { if (e.target === grid) enter(); }
+    function enter() {
+      if (done) return;
+      done = true;
+      grid.removeEventListener("transitionend", onEnd);
+      if (grid.__scShiftSeq !== seq) return;     // 已被下一次切换取代
+      apply();                                   // 换内容（此刻 opacity 仍为 0）
+      grid.classList.remove("is-swapping");
+      if (label) label.classList.remove("is-swapping");
+      grid.classList.add("is-shifting-in");      // 进入起点：偏移到「来向」一侧（无过渡落位）
+      if (label) label.classList.add("is-shifting-in");
+      void grid.offsetWidth;                     // 提交起点，使摘类时产生进入过渡
+      requestAnimationFrame(function () {
+        grid.classList.remove("is-shifting-in", "is-shift-next", "is-shift-prev");
+        if (label) label.classList.remove("is-shifting-in");
+      });
+    }
+    grid.addEventListener("transitionend", onEnd);
+    setTimeout(enter, SWAP_MS);
+  }
 
   // 建壳（只建一次）：工具栏与星期表头不随月份重绘，之后只更新标题与网格内容
   function shell(mount) {
@@ -194,11 +237,25 @@
           }
         }
       };
-      if (slow) YB.swapOut([grid, label], apply);
-      else apply();
+      // 方向 = 本次月份 相对 上一次已渲染月份 的差（+1 往后、-1 往前、0 未换月）。
+      // 月份状态在数据落地后才写回，故连续快点两次也按同一方向累计。
+      var prevView = mount.getAttribute("data-sc-view");
+      var dir = 0;
+      if (prevView) {
+        var p = prevView.split("-");
+        dir = Math.sign((year * 12 + month) - (Number(p[0]) * 12 + Number(p[1])));
+      }
+      var commit = function () { mount.setAttribute("data-sc-view", year + "-" + pad(month)); };
+      if (dir) {
+        shiftMonth(grid, label, dir, function () { apply(); commit(); });
+      } else {
+        clearShift(grid); clearShift(label);
+        if (slow) YB.swapOut([grid, label], function () { apply(); commit(); });
+        else { apply(); commit(); }
+      }
     }).catch(function () {
-      grid.classList.remove("is-swapping");
-      if (label) label.classList.remove("is-swapping");
+      clearShift(grid);
+      clearShift(label);
       grid.innerHTML = '<p class="sc-error">日历加载失败，请稍后重试</p>';
       grid.removeAttribute("aria-busy");
     });

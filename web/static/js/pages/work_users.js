@@ -16,6 +16,7 @@
   var YB = window.YB;
   if (!YB) return;
   var $ = YB.$;
+  var ANIM_MIN_MS = 80;    // 短于此值的刷新不播淡出淡入
 
   var state = {
     users: [], deleted: [], builtin: "admin",
@@ -111,10 +112,15 @@
       });
     });
   }
-  function reload() {
+  function reload(animate) {
+    var t0 = performance.now();
     return Promise.all([fetchUsers(), fetchDeleted()]).then(function () {
       pruneSelection();
-      renderAll();
+      // 写操作后的慢刷新：整体淡出 → 换内容 → 淡入，时长/双曲线口径同 /accounts。
+      // 快请求不播（<80ms 只会闪一下）。首屏与重试走 startLoad()，不传 animate。
+      var slow = animate && (performance.now() - t0 > ANIM_MIN_MS);
+      if (slow) YB.swapOut($("users-root"), renderAll);
+      else renderAll();
     });
   }
 
@@ -387,7 +393,7 @@
   /* ---------------- 写操作（委托 user-ops） ---------------- */
   var ops = YB.userOps.create({
     busy: function () { /* 本页无轮询与并发重建，忙碌态不改变视图 */ },
-    refresh: function () { return reload(); },
+    refresh: function () { return reload(true); },
     resolve: function (uid) { return state.byUid[uid]; }
   });
 

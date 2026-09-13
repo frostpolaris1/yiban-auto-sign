@@ -72,9 +72,12 @@
     trigger.setAttribute("aria-labelledby", label.id);
   }
 
+  // 当前展示的月份：优先取 data-view（setView 写的 `YYYY-MM`，**两段**——曾误按三段判断，
+  // 于是判据永不成立、每次都回落到输入框的值，导致点上下月箭头画面不变，只有动画在跑）。
+  // 兼容三段写法（`Y-M-D`）以便历史值不炸；都拿不到才回落到输入值/今天。
   function viewOf(root) {
     var v = (root.getAttribute("data-view") || "").split("-");
-    if (v.length === 3) return { y: +v[0], m: +v[1] };
+    if (v.length >= 2 && v[0] && v[1]) return { y: +v[0], m: +v[1] };
     var dt = parse(inputOf(root) && inputOf(root).value) || new Date();
     return { y: dt.getFullYear(), m: dt.getMonth() + 1 };
   }
@@ -141,6 +144,7 @@
     var pop = popOf(root), trigger = triggerOf(root);
     if (!pop || pop.hidden) return;
     pop.hidden = true;
+    resetShift(root);                       // 收起时清掉可能停在半途的切月过渡类
     root.classList.remove("is-open");
     if (trigger) {
       trigger.setAttribute("aria-expanded", "false");
@@ -163,11 +167,61 @@
     pop.style.left = Math.round(want - fb.left) + "px";
   }
 
+  // ---- 切月方向动效（P58）----
+  // 与 calendar.js / core.js 同口径：只动 transform/opacity，退出 ease-in-strong、进入
+  // ease-out-strong，各 SWAP_MS。reduced-motion 下不加任何类（不是把时长归零）。
+  function reduceMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  function resetShift(root) {
+    var pop = popOf(root);
+    if (!pop) return;
+    [].slice.call(pop.querySelectorAll(".date-grid, .date-month")).forEach(function (n) {
+      n.classList.remove("is-swapping", "is-shifting-in", "is-shift-next", "is-shift-prev");
+    });
+  }
+  // 指针点箭头切月：做一次有方向的进出（dir>0 往后一月 → 新内容自右进入）。
+  // 键盘切月（PageUp/PageDown、方向键跨月）走 renderPop 直换——键盘可长按重复，
+  // 按动效规范对键盘触发的高频切换不播动效（见 renderPop 调用点）。
+  function shiftPop(root, dir) {
+    var pop = popOf(root);
+    var grid = pop && pop.querySelector(".date-grid");
+    var label = pop && pop.querySelector(".date-month");
+    if (!grid || reduceMotion()) { renderPop(root); return; }
+    var seq = (grid.__dfShiftSeq || 0) + 1;
+    grid.__dfShiftSeq = seq;
+    resetShift(root);
+    grid.classList.add(dir > 0 ? "is-shift-next" : "is-shift-prev");
+    grid.classList.add("is-swapping");
+    if (label) label.classList.add("is-swapping");
+    var done = false;
+    function onEnd(e) { if (e.target === grid) enter(); }
+    function enter() {
+      if (done) return;
+      done = true;
+      grid.removeEventListener("transitionend", onEnd);
+      if (grid.__dfShiftSeq !== seq) return;     // 已被下一次切换取代
+      renderPop(root);                           // 换内容（此刻 opacity 仍为 0）
+      grid.classList.remove("is-swapping");
+      if (label) label.classList.remove("is-swapping");
+      grid.classList.add("is-shifting-in");      // 进入起点：偏移到「来向」一侧（无过渡落位）
+      if (label) label.classList.add("is-shifting-in");
+      void grid.offsetWidth;                     // 提交起点，使摘类时产生进入过渡
+      requestAnimationFrame(function () {
+        grid.classList.remove("is-shifting-in", "is-shift-next", "is-shift-prev");
+        if (label) label.classList.remove("is-shifting-in");
+      });
+    }
+    grid.addEventListener("transitionend", onEnd);
+    setTimeout(enter, YB.SWAP_MS || 160);
+  }
+
   function open(root) {
     var pop = popOf(root), trigger = triggerOf(root);
     if (!pop || !trigger || trigger.disabled) return;
     roots().forEach(function (r) { if (r !== root) close(r, false); });
     setView(root, viewOf(root).y, viewOf(root).m);
+    resetShift(root);
     renderPop(root);
     pop.hidden = false;
     root.classList.add("is-open");
@@ -212,7 +266,12 @@
       var day = t.closest(".date-day");
       if (day) { commit(root, day.getAttribute("data-date")); return; }
       var nav = t.closest("[data-date-nav]");
-      if (nav) { setView(root, viewOf(root).y, viewOf(root).m + Number(nav.getAttribute("data-date-nav"))); renderPop(root); return; }
+      if (nav) {
+        var dir = Number(nav.getAttribute("data-date-nav"));
+        setView(root, viewOf(root).y, viewOf(root).m + dir);
+        shiftPop(root, dir);
+        return;
+      }
       if (t.closest("[data-date-today]")) { commit(root, todayStr()); }
     });
     pop.addEventListener("keydown", function (e) {
