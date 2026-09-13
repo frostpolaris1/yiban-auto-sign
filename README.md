@@ -40,7 +40,7 @@
 - [注意事项](#注意事项)
 - [测试范围与适配说明](#测试范围与适配说明)
 - [License](#license)
-- [致谢](#致谢)
+- [开源致谢 / Acknowledgements](#开源致谢--acknowledgements)
 - [相关开源项目推荐](#相关开源项目推荐)
 - [AI 生成说明](#ai-生成说明)
 
@@ -509,7 +509,7 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 - 子路径首页请**带尾斜杠访问**（`.../demo/`）；不带尾斜杠的裸路径按 404 处理（避免误伤根路径部署）。
 - 若挂载前缀本身包含 `/api`、`/static` 或页面名等会与应用路由撞车的段（极少见），自动识别可能切错，请在 `.env` 显式设置 `YIBAN_BASE_PATH=/你的/前缀` 兜底。
 - 静态资源由应用自带 `/static` 提供（已含 30 天缓存 + `?v=` 版本号），**无需**为子路径单独配置静态代理；追求性能可另配边缘直发（见 `web/deploy/nginx.conf.example`）。
-- 代码位置：前缀自适应中间件 `BasePathMiddleware`（`web/app.py` 搜类名）；前端 `BASE` 变量（三模板 `<head>`）。
+- 代码位置：前缀自适应中间件 `BasePathMiddleware`（`web/app.py` 搜类名）；前端 `BASE` 变量（三个外壳模板 `layout_admin.html` / `layout_user.html` / `layout_auth.html` 的 `<head>`，经 `partials/theme_boot.html` 注入）。
 
 </details>
 
@@ -528,8 +528,8 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 - **想换内联 SVG**：改模板中回退占位 `<svg>` 的内容即可
 
 代码位置：
-- 管理端（管理员页面）：`web/templates/index.html` 品牌区（侧边栏顶部，搜 `brand-fallback`）
-- 用户端：`web/templates/user.html` 顶栏（搜 `user-brand-fallback`）
+- 管理端（管理员页面）：`web/templates/partials/sidebar.html` 品牌区（`brand-fallback`，缺失时 `onerror` 切占位方块）
+- 用户端：`web/templates/partials/sidebar_user.html` 品牌区（同上，两处结构同构）
 
 > 请确保你放入的图标有使用权（仓库不附带任何品牌图标资源）。
 
@@ -1270,15 +1270,47 @@ python -m pytest tests/test_smoke.py -v
 ---
 
 
-## 致谢
+## 开源致谢 / Acknowledgements
 
+本项目的签到引擎与网页管理后台建立在一批优秀开源组件之上。以下按「名称 / 用途 / 许可证」列出实际使用的第三方组件；完整版权声明与许可文本见各组件官方仓库 LICENSE，前端资源的来源、版本与哈希另见 [`web/static/vendor/MANIFEST.md`](web/static/vendor/MANIFEST.md)。
 
-本项目参考了以下开源项目与资料：
+### 网页前端（自托管于 `web/static/vendor/`，不引用任何外网 CDN）
+
+| 组件 | 用途 | 许可证 |
+|------|------|--------|
+| [Adminator](https://github.com/puikinsh/Adminator-admin-dashboard) 4.3.0 | 全站设计系统：设计令牌（含暗色）、外壳布局、组件样式 | MIT |
+| [Chart.js](https://www.npmjs.com/package/chart.js) 4.5.1 | 数据总览页折线 / 柱状 / 环形图表（按需注册的裁剪构建） | MIT |
+| [Lucide](https://github.com/lucide-icons/lucide) 1.45.0 | 全站线性图标（70 个 symbol 子集；部分图标源自 Feather） | ISC（Feather 部分 MIT） |
+| [Inter](https://github.com/rsms/inter) / [Noto Sans SC](https://fonts.google.com/noto/specimen/Noto+Sans+SC) / [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | 自托管界面字体：拉丁 / 中文 / 等宽 | SIL OFL-1.1 |
+| md-render.js | 更新日志的迷你 Markdown 渲染（本项目自研、零依赖，非第三方组件） | 随本项目 AGPL-3.0 |
+
+### 后端与运行依赖（Python）
+
+| 组件 | 用途 | 许可证 |
+|------|------|--------|
+| [Flask](https://flask.palletsprojects.com/) / [Werkzeug](https://werkzeug.palletsprojects.com/) / [Jinja2](https://jinja.palletsprojects.com/) / [click](https://click.palletsprojects.com/) / [itsdangerous](https://itsdangerous.palletsprojects.com/) / [MarkupSafe](https://markupsafe.palletsprojects.com/) / [blinker](https://github.com/pallets-eco/blinker) | Web 框架及其生态（路由 / WSGI / 模板 / CLI / 会话签名 / 转义） | BSD-3-Clause（blinker 为 MIT） |
+| [gunicorn](https://gunicorn.org/) | 生产常驻 WSGI 服务 | MIT |
+| [requests](https://requests.readthedocs.io/) | HTTP 客户端 | Apache-2.0 |
+| [urllib3](https://urllib3.readthedocs.io/) / [charset-normalizer](https://github.com/Ousret/charset_normalizer) | HTTP 底层与字符集探测 | MIT |
+| [certifi](https://github.com/certifi/python-certifi) | CA 根证书包 | MPL-2.0 |
+| [idna](https://github.com/kjd/idna) | 国际化域名编码 | BSD-3-Clause |
+| [PySocks](https://github.com/Anorov/PySocks) | SOCKS 代理（可选，`YIBAN_PROXY`） | BSD |
+| [pycryptodome](https://www.pycryptodome.org/) | AES-GCM 账号凭据加密 | Public Domain + BSD-2-Clause |
+| [colorama](https://github.com/tartley/colorama) | Windows 终端颜色（传递依赖） | BSD-3-Clause |
+
+> 精确锁定版本见 [`requirements.lock`](requirements.lock)。
+
+### 衍生来源
+
+本项目直接参考 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）实现：
+默认登录流程的真实 App 请求特征、多边形内随机定位点算法（缩放质心 + 射线法验证）、
+nightAttendance 签到流程。本项目按 AGPL-3.0 发布并保留上游版权与许可声明（另见 [License](#license) 下的「第三方组件声明与衍生来源」）。
+
+### 参考项目与资料
 
 - [AEtherside/skland-daily-attendance](https://github.com/AEtherside/skland-daily-attendance) - GitHub Actions 工作流结构与 keepalive 方案
 - Auto-Test - 易班登录流程（OAuth + RSA + ydclearance，已弃用并被本项目新登录特征取代）
 - [liskin/gh-workflow-keepalive](https://github.com/liskin/gh-workflow-keepalive) - 定时工作流自动续期（避免 60 天无活动被禁用）
-- [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）- 默认登录流程的真实 App 请求特征来源、多边形内随机定位点算法（缩放质心、射线法验证）、nightAttendance 签到流程
 
 特别感谢 [Lumjiel](https://github.com/Lumjiel) 对本项目的指导。
 
