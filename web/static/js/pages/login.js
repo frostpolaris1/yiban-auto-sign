@@ -154,7 +154,7 @@
         return;
       }
       if (data && data.ok) {
-        location.href = YB.BASE + (data.role === "admin" ? "/data/dashboard" : "/user/account");
+        location.href = YB.BASE + (data.role === "admin" ? "/data/dashboard" : "/user/calendar");
         return;
       }
       showError(errorBox, (data && data.error) || "登录失败，请重试");
@@ -173,7 +173,7 @@
       password: $("password").value
     }).then(function (data) {
       if (data && data.ok) {
-        location.href = YB.BASE + (data.role === "admin" ? "/data/dashboard" : "/user/account");
+        location.href = YB.BASE + (data.role === "admin" ? "/data/dashboard" : "/user/calendar");
         return;
       }
       showError(errorBox, (data && data.error) || "恢复失败，请稍后再试");
@@ -218,7 +218,7 @@
         return YB.api("POST", "/api/login", { username: email, password: password })
           .then(function (login) {
             if (login && login.ok) {
-              location.href = YB.BASE + "/user/account";
+              location.href = YB.BASE + "/user/calendar";   // 注册即登录成功：同样落在日历页
               return;
             }
             showError(errorBox, "注册成功，但自动登录失败，请手动登录");
