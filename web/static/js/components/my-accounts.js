@@ -108,11 +108,19 @@
       if (rb) rb.hidden = true;
     }
 
+    // 快请求不播动画的阈值（ms）：与 work_accounts / 日历同一口径——加载越短越不该动，
+    // 否则只是闪一下。慢请求走 YB.swapOut 淡出→换内容→淡入（时长见 YB.SWAP_MS）。
+    var ANIM_MIN_MS = 80;
+
     function loadAccounts() {
+      var t0 = performance.now();
       return YB.api("GET", "/api/my-accounts").then(function (data) {
         accounts = (data && data.accounts) || [];
         clearLoadFailure();
-        renderList();
+        // 整段重渲染（首载/保存后 reload/重试）原是硬切：慢请求时经 swapOut 过渡，
+        // 淡出期间不清内容（高度不塌）；快请求直接渲染、无过渡。
+        if (performance.now() - t0 > ANIM_MIN_MS) YB.swapOut(listEl, renderList);
+        else renderList();
       }).catch(function (e) {
         YB.toast.error(e.message);
         showLoadFailure();
