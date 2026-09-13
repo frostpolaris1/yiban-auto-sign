@@ -93,7 +93,7 @@
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
       if (opts.role && me.role !== opts.role) {
-        location.href = opts.denyRedirect || (YB.BASE + "/");
+        location.href = opts.denyRedirect || (YB.BASE + "/data/dashboard");
         return;
       }
       var isMaster = !!me.is_builtin_admin;

@@ -269,7 +269,7 @@
     if (saveBtn) saveBtn.addEventListener("click", function () { save(); });
     var resetBtn = $("ss-reset");
     if (resetBtn) resetBtn.addEventListener("click", reset);
-    // 兜底守卫：关闭标签页/刷新。站内跳转由页面脚本的确认弹窗接管（见 pages/settings.js），
+    // 兜底守卫：关闭标签页/刷新。站内跳转由页面脚本的确认弹窗接管（见 pages/work_settings.js），
     // 用户确认离开后由 markLeaving() 放行，避免二次拦截。
     window.addEventListener("beforeunload", function (e) {
       if (!dirty || leaving) return;

@@ -228,24 +228,6 @@
   }
 
   /* ---------------- 事件绑定 ---------------- */
-  // 组名与折叠体 id 一一对应（pending-body / active-body / deleted-body）
-  function groupOfBody(bodyId) { return String(bodyId || "").replace(/-body$/, ""); }
-
-  // 统一的展开/收起路径：点击箭头与「搜索非空自动展开」共用，避免复制两份逻辑。
-  // 收起时清空该组选择，防止隐藏的选中项在重新展开后“复活”；
-  // 展开不改选择，由调用方决定是否重渲染。
-  function setGroupOpen(group, open) {
-    var btn = document.querySelector('.acct-collapse[aria-controls="' + group + '-body"]');
-    var body = document.getElementById(group + "-body");
-    if (!btn || !body) return;
-    btn.setAttribute("aria-expanded", String(open));
-    body.classList.toggle("is-open", open);
-    if (!open) {
-      state.sel[group] = {};
-      renderAll();
-    }
-  }
-
   function bindSearch() {
     [["pending-search", "pendingSearch", "pending"],
      ["active-search", "activeSearch", "active"],
@@ -255,8 +237,6 @@
         if (!input) return;
         input.addEventListener("input", debounce(function () {
           state[pair[1]] = input.value.trim();
-          // 搜索非空时自动展开该组（清空输入不自动收起）
-          if (state[pair[1]]) setGroupOpen(pair[2], true);
           renderAll();
         }, 150));
       });
@@ -304,47 +284,6 @@
     });
   }
 
-  function bindCollapse() {
-    // 三组通用折叠：button.acct-collapse[aria-expanded] + 由 aria-controls 指定的 .collapse-body
-    //（高度动画由 CSS 的 grid-template-rows 承担）。按钮在模板中、不随表格重渲染，绑定一次即可。
-    Array.prototype.forEach.call(document.querySelectorAll(".acct-collapse"), function (btn) {
-      var group = groupOfBody(btn.getAttribute("aria-controls"));
-      btn.addEventListener("click", function () {
-        setGroupOpen(group, btn.getAttribute("aria-expanded") !== "true");
-      });
-    });
-  }
-
-  /* ---------------- 容量 ---------------- */
-  function capacityText(cur, max, breakdown) {
-    var used = String(cur);
-    if (!(Number(max) > 0)) return used + " / 不限";
-    var parts = [];
-    if (breakdown) {
-      parts.push("正常 " + (breakdown.normal || 0));
-      parts.push("用户暂停 " + (breakdown.user_paused || 0));
-      parts.push("账密暂停 " + (breakdown.cred_paused || 0));
-    }
-    return used + " / " + max + (parts.length ? "（" + parts.join(" · ") + "）" : "");
-  }
-
-  function loadCapacity() {
-    YB.api("GET", "/api/settings").then(function (d) {
-      var c = (d && d.capacity) || {};
-      setVal("capacity-accounts", capacityText(c.accounts, c.accounts_max, c.accounts_breakdown));
-      setVal("capacity-users", capacityText(c.users, c.users_max, null));
-      var e = (d && d.capacity_estimate) || {};
-      setVal("capacity-estimate",
-        "容量 " + (e.accounts_cap != null ? e.accounts_cap : "—") +
-        " · 当前 " + (e.current_accounts != null ? e.current_accounts : "—") +
-        " · 潜在 " + (e.potential_load != null ? e.potential_load : "—"));
-    }).catch(function () {
-      setVal("capacity-accounts", "加载失败");
-      setVal("capacity-users", "加载失败");
-      setVal("capacity-estimate", "加载失败");
-    });
-  }
-
   /* ---------------- 轮询 ---------------- */
   // 仅页面可见时刷新；有模态打开或写操作在途时跳过，避免打断用户操作与并发覆盖。
   function pollTick() {
@@ -362,12 +301,10 @@
     bindBatch();
     bindAdd();
     bindSelectAll();
-    bindCollapse();
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
       load();
-      loadCapacity();
-      setInterval(pollTick, 10000);
+        setInterval(pollTick, 10000);
       document.addEventListener("visibilitychange", function () { pollTick(); });
       // 行操作在 ≤900 为图标下拉、宽屏为并列按钮：跨断点需要重建行 DOM。
       if (window.matchMedia) {

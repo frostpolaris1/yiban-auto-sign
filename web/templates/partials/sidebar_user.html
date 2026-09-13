@@ -19,7 +19,7 @@
     <div class="nav-label">我的</div>
     {% set items = [
       ('user-calendar', '/user/calendar', 'calendar', '签到日历'),
-      ('user-accounts', '/user',          'user',     '账号与设置'),
+      ('user-account',  '/user/account',  'user',     '账号与设置'),
     ] %}
     {% for key, href, ico, text in items %}
     {# ≤1100px 侧栏收成 72px 图标栏时文字会被隐藏，靠 title 保留可读名称 #}
@@ -36,8 +36,8 @@
     <div class="sidebar-clock">
       {{ icon('clock') }}<span data-clock-text>--:--:--</span>
     </div>
+    {# 与管理端 sidebar.html 一致：不放头像，底部只留「名字 / 角色」两行 #}
     <div class="workspace">
-      <div class="workspace-avatar" data-account-avatar>—</div>
       <div class="workspace-text">
         <div class="workspace-name" data-account-email title="">—</div>
         <div class="workspace-role">普通用户</div>

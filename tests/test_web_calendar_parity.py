@@ -3,7 +3,7 @@
 
 ## 历史（为什么这条守卫存在）
 
-签到日历原本有两份几乎独立的实现：管理端在 `pages/mine.js` 里，用户端在
+签到日历原本有两份几乎独立的实现：管理端在 `pages/my_account.js` 里，用户端在
 `web/templates/user.html` 的内联脚本里。两份各自维护，长期漂移 —— V3-4 实测到的差异包括：
 
     · 日期格：user 端**没有**「休」角标、aria-label 只报「今天/已签到」，
@@ -18,7 +18,7 @@
 
 日历整体外提为 `web/static/js/calendar.js`：**全站唯一实现**，用户端「签到日历」页
 （`pages/user_calendar.html` + `pages/user_calendar.js`）与管理端「我的账号」
-（`pages/mine.html` 内联模式 + `components/my-accounts.js`）都调它。
+（`pages/my_account.html` 内联模式 + `components/my-accounts.js`）都调它。
 本测试钉住"只能有一份"：
 
 1. `web/static/js/` 下**恰好一个**文件定义 `function dayCell(`，且必须是 calendar.js；
@@ -45,10 +45,10 @@ TEMPLATES_DIR = os.path.join(BASE, "web", "templates")
 CALENDAR_JS = os.path.join(JS_DIR, "calendar.js")
 USER_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_calendar.html")
 USER_CAL_JS = os.path.join(JS_DIR, "pages", "user_calendar.js")
-USER_ACCOUNTS_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_accounts.html")
+USER_ACCOUNTS_PAGE = os.path.join(TEMPLATES_DIR, "pages", "user_account.html")
 # 管理端对应页（与用户端同源：正文来自共享 partial，行为来自共享组件）
-MINE_PAGE = os.path.join(TEMPLATES_DIR, "pages", "mine.html")
-MINE_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "mine_calendar.html")
+MINE_PAGE = os.path.join(TEMPLATES_DIR, "pages", "my_account.html")
+MINE_CAL_PAGE = os.path.join(TEMPLATES_DIR, "pages", "my_calendar.html")
 # 两端「我的账号」共用的正文 partial：日历不得出现在这里
 ACCOUNTS_BODY_PARTIAL = os.path.join(TEMPLATES_DIR, "partials", "page_my_accounts.html")
 # 两端日历页共用的视图组件：调用共享渲染接口的唯一载体
@@ -133,12 +133,12 @@ class CalendarSingleSourceTest(unittest.TestCase):
     def test_calendar_pages_load_the_shared_module(self):
         """两端日历页都必须引入共享日历，并由共享视图组件调用渲染接口。
 
-        2026-09-12：管理端新增 /mine/calendar，与 /user/calendar 共用
+        2026-09-12：管理端新增管理员日历页（现为 /my/calendar），与 /user/calendar 共用
         partials/page_sign_calendar.html + components/sign-calendar-view.js；
         classic script 共享全局作用域，calendar.js 必须排在视图组件之前。
         """
         for page, script in ((USER_CAL_PAGE, "pages/user_calendar.js"),
-                             (MINE_CAL_PAGE, "pages/mine_calendar.js")):
+                             (MINE_CAL_PAGE, "pages/my_calendar.js")):
             name = os.path.basename(page)
             html = _read(page)
             self.assertIn("/static/js/calendar.js", html, f"{name} 未引入共享 calendar.js")
@@ -167,9 +167,9 @@ class CalendarSingleSourceTest(unittest.TestCase):
                 )
 
     def test_admin_mine_page_links_to_the_admin_calendar(self):
-        """管理端账号页的日历链接必须指向 /mine/calendar（而不是用户端路由）。"""
-        js = _read(os.path.join(JS_DIR, "pages", "mine.js"))
-        self.assertIn("/mine/calendar", js, "pages/mine.js 的日历链接未指向 /mine/calendar")
+        """管理端账号页的日历链接必须指向 /my/calendar（而不是用户端路由）。"""
+        js = _read(os.path.join(JS_DIR, "pages", "my_account.js"))
+        self.assertIn("/my/calendar", js, "pages/my_account.js 的日历链接未指向 /my/calendar")
 
     def test_shared_implementation_keeps_the_a11y_and_state_contract(self):
         """共享实现必须保留星期表头、月份读屏名、「休」角标、失败提示与状态类名。"""

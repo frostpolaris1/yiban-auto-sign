@@ -12,8 +12,8 @@
   function init() {
     YB.myAccountsPage.mount({
       role: "admin",
-      calendarHref: YB.BASE + "/mine/calendar",
-      denyRedirect: YB.BASE + "/user",   // 普通用户回用户端
+      calendarHref: YB.BASE + "/my/calendar",
+      denyRedirect: YB.BASE + "/user/account",   // 普通用户回用户端
       showState: true                    // 卡内补今日状态（今日已完成 / 前方排队 N 人）
     });
   }

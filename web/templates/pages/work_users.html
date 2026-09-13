@@ -1,0 +1,217 @@
+{# 用户管理（管理端 /work/users）。
+   四组各自成标签页：待处理 / 正式 / 空用户 / 已注销；数据客户端拉取：
+     GET /api/users          → 注册用户（完整邮箱/角色/注册时间/账号数/待处理数）+ 主管理员显示名
+     GET /api/users/deleted  → 已注销用户（冷却剩余天数/状态）
+   写操作（角色变更 / 重置密码 / 清空账号 / 删除用户 / 立即清除 / 批量）全部委托
+   components/user-ops.js，本模板只放挂载点。
+
+   安全：/api/users 返回完整邮箱，但页面只在 JS 内存态按内部 uid 持有；本页渲染一律走
+   YB.maskEmail()，完整邮箱不进入任何 DOM 文本或属性。
+   标签切换由 core.js 的 [data-tab-group] 承担；组内保留 .collapse-body/.collapse-inner
+   这层包裹 —— 它们是宽表格防横向溢出的守卫（minmax(0,1fr) + min-width:0）。 #}
+{% extends "layout_admin.html" %}
+{% from "macros/ui.html" import icon with context %}
+
+{% block title %}用户管理 · 易班自动签到{% endblock %}
+
+{% macro empty(id, msg) %}
+<p id="{{ id }}" class="empty" hidden>
+  <span class="empty__icon">{{ icon('users') }}</span>
+  <span class="empty__msg">{{ msg }}</span>
+</p>
+{% endmacro %}
+
+{% macro group_head(title, search_id, search_label, sub, with_search) %}
+<div class="panel-head usr-group-head">
+  <div class="panel-head-row">
+    <h2 class="panel-title">{{ title }}</h2>
+    {% if with_search %}
+    <label class="usr-search">
+      <span class="sr-only">{{ search_label }}</span>
+      <input type="search" class="input" id="{{ search_id }}" placeholder="搜索邮箱" autocomplete="off">
+    </label>
+    {% endif %}
+  </div>
+  <p class="panel-sub">{{ sub }}</p>
+</div>
+{% endmacro %}
+
+{% macro batch_bar(group, purge_master) %}
+<div class="usr-batch" id="usr-batch-{{ group }}" role="status" aria-live="polite" hidden>
+  <span class="usr-batch-count">已选 <strong id="usr-batch-count-{{ group }}">0</strong> 个</span>
+  <div class="usr-batch-actions">
+    {% if purge_master %}
+    <button type="button" class="btn btn--ghost btn--sm btn--danger-ghost" data-usr-batch="{{ group }}:purge">彻底清除</button>
+    {% else %}
+    <button type="button" class="btn btn--primary btn--sm" data-usr-batch="{{ group }}:reset_password">重置密码</button>
+    <button type="button" class="btn btn--ghost btn--sm btn--danger-ghost" data-usr-batch="{{ group }}:delete">删除</button>
+    {% endif %}
+    <button type="button" class="btn btn--ghost btn--sm" data-usr-batch-clear="{{ group }}">取消选择</button>
+  </div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">用户管理</h1>
+  <p class="page-sub">管理注册用户与管理员权限；密码仅可重置，不可查看。</p>
+</div>
+
+{# 页面级状态条：加载中 / 加载失败（含重试）。接口失败时四张表可能全空，没有这条会被
+   误读成「没有用户」；成功即由 JS 隐藏。 #}
+<p class="alert info usr-status" id="usr-status" role="status" hidden>
+  <span class="ico">{{ icon('clock') }}</span>
+  <span class="body" id="usr-status-text">正在加载用户列表…</span>
+  <button type="button" class="btn btn--ghost btn--sm" data-usr-retry hidden>重试</button>
+</p>
+
+<div id="users-root">
+<div data-tab-group>
+  <div class="tabs-scroll">
+    <div class="tabs" role="tablist" aria-label="用户管理分区">
+      {# 计数放在标签上：切标签前就能看到各组的量 #}
+      <a class="tab is-active" role="tab" id="usr-tab-pending" aria-selected="true"
+         aria-controls="usr-panel-pending" href="#" data-tab-target="pending">
+        待处理用户 <span class="usr-count" id="usr-pending-count"></span></a>
+      <a class="tab" role="tab" id="usr-tab-normal" aria-selected="false"
+         aria-controls="usr-panel-normal" href="#" data-tab-target="normal">
+        正式用户 <span class="usr-count" id="usr-normal-count"></span></a>
+      <a class="tab" role="tab" id="usr-tab-vacant" aria-selected="false"
+         aria-controls="usr-panel-vacant" href="#" data-tab-target="vacant">
+        空用户 <span class="usr-count" id="usr-vacant-count"></span></a>
+      {# 已注销：无数据时整组隐藏（含本标签），由 work_users.js 同步 hidden #}
+      <a class="tab" role="tab" id="usr-tab-deleted" aria-selected="false" hidden
+         aria-controls="usr-panel-deleted" href="#" data-tab-target="deleted">
+        已注销用户 <span class="usr-count" id="usr-deleted-count"></span></a>
+    </div>
+  </div>
+
+  <!-- 待处理用户：待审核 + 已拒绝（与账号页「待处理账号」同口径） -->
+  <div class="tab-panel is-active" role="tabpanel" id="usr-panel-pending"
+       aria-labelledby="usr-tab-pending" data-tab-id="pending">
+    <section class="card">
+      {{ group_head('待处理用户', 'usr-pending-search', '搜索待处理用户',
+                    '以下用户名下有待审核或已拒绝的易班账号（与「账号管理 → 待处理账号」同口径）。',
+                    true) }}
+      <div id="usr-pending-body" class="collapse-body is-open">
+        <div class="collapse-inner">
+          {{ batch_bar('pending', false) }}
+          <div class="table-scroll">
+            <table class="data-table usr-table" aria-label="待处理用户">
+              <thead>
+                <tr>
+                  <th scope="col" class="usr-cell-check"><input type="checkbox" id="usr-select-all-pending" aria-label="全选待处理用户"></th>
+                  <th scope="col" class="usr-cell-mail">邮箱</th>
+                  <th scope="col" class="usr-cell-role">角色</th>
+                  <th scope="col" class="usr-cell-count usr-col-md">待处理数</th>
+                  <th scope="col" class="usr-cell-time usr-col-md">注册时间</th>
+                  <th scope="col" class="usr-cell-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="usr-pending-tbody"></tbody>
+            </table>
+          </div>
+          {{ empty('usr-pending-empty', '暂无待处理用户') }}
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 正式用户：有生效账号且无待审核；首行固定为内置主管理员 -->
+  <div class="tab-panel" role="tabpanel" id="usr-panel-normal"
+       aria-labelledby="usr-tab-normal" data-tab-id="normal">
+    <section class="card">
+      {{ group_head('正式用户', 'usr-normal-search', '搜索正式用户',
+                    '已提交账号且无待审核的用户；首行内置主管理员不可修改。', true) }}
+      <div id="usr-normal-body" class="collapse-body is-open">
+        <div class="collapse-inner">
+          {{ batch_bar('normal', false) }}
+          <div class="table-scroll">
+            <table class="data-table usr-table" aria-label="正式用户">
+              <thead>
+                <tr>
+                  <th scope="col" class="usr-cell-check"><input type="checkbox" id="usr-select-all-normal" aria-label="全选正式用户"></th>
+                  <th scope="col" class="usr-cell-mail">邮箱</th>
+                  <th scope="col" class="usr-cell-role">角色</th>
+                  <th scope="col" class="usr-cell-count usr-col-md">账号数</th>
+                  <th scope="col" class="usr-cell-time usr-col-md">注册时间</th>
+                  <th scope="col" class="usr-cell-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="usr-normal-tbody"></tbody>
+            </table>
+          </div>
+          {{ empty('usr-normal-empty', '暂无正式用户') }}
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 空用户：已注册未提交任何账号 -->
+  <div class="tab-panel" role="tabpanel" id="usr-panel-vacant"
+       aria-labelledby="usr-tab-vacant" data-tab-id="vacant">
+    <section class="card">
+      {{ group_head('空用户', 'usr-vacant-search', '搜索空用户',
+                    '已注册但未提交任何账号。', true) }}
+      <div id="usr-vacant-body" class="collapse-body is-open">
+        <div class="collapse-inner">
+          {{ batch_bar('vacant', false) }}
+          <div class="table-scroll">
+            <table class="data-table usr-table" aria-label="空用户">
+              <thead>
+                <tr>
+                  <th scope="col" class="usr-cell-check"><input type="checkbox" id="usr-select-all-vacant" aria-label="全选空用户"></th>
+                  <th scope="col" class="usr-cell-mail">邮箱</th>
+                  <th scope="col" class="usr-cell-role">角色</th>
+                  <th scope="col" class="usr-cell-time usr-col-md">注册时间</th>
+                  <th scope="col" class="usr-cell-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="usr-vacant-tbody"></tbody>
+            </table>
+          </div>
+          {{ empty('usr-vacant-empty', '暂无空用户') }}
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 已注销用户：无数据时整组隐藏；仅主管理员可立即清除 -->
+  <div class="tab-panel" role="tabpanel" id="usr-panel-deleted"
+       aria-labelledby="usr-tab-deleted" data-tab-id="deleted">
+    <section class="card" id="usr-deleted-card" hidden>
+      {{ group_head('已注销用户', null, null,
+                    '用户自助注销后进入 7 天冷却期，期内可由主管理员立即清除；到期由系统自动物理清除。',
+                    false) }}
+      <div id="usr-deleted-body" class="collapse-body is-open">
+        <div class="collapse-inner">
+          {{ batch_bar('deleted', true) }}
+          <div class="table-scroll">
+            <table class="data-table usr-table" aria-label="已注销用户">
+              <thead>
+                <tr>
+                  <th scope="col" class="usr-cell-check"><input type="checkbox" id="usr-select-all-deleted" aria-label="全选已注销用户"></th>
+                  <th scope="col" class="usr-cell-mail">邮箱</th>
+                  <th scope="col" class="usr-cell-time usr-col-md">注销时间</th>
+                  <th scope="col" class="usr-cell-remain usr-col-md">剩余时间</th>
+                  <th scope="col" class="usr-cell-status">状态</th>
+                  <th scope="col" class="usr-cell-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="usr-deleted-tbody"></tbody>
+            </table>
+          </div>
+          {{ empty('usr-deleted-empty', '暂无已注销用户') }}
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ request.script_root }}/static/js/components/row-menu.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/components/user-ops.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/work_users.js?v={{ web_version }}"></script>
+{% endblock %}

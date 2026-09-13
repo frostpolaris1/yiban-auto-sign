@@ -115,14 +115,14 @@ class TemplateInlineContextTest(unittest.TestCase):
     def setUpClass(cls):
         cls.index = frontend_source("index.html")
         cls.login = frontend_source("login.html")
-        cls.user_accounts = frontend_source(os.path.join("pages", "user_accounts.html"))
+        cls.user_accounts = frontend_source(os.path.join("pages", "user_account.html"))
         cls.user_calendar = frontend_source(os.path.join("pages", "user_calendar.html"))
 
     def test_base_uses_tojson_in_all_templates(self):
         for name, tpl in (
             ("index", self.index),
             ("login", self.login),
-            ("pages/user_accounts", self.user_accounts),
+            ("pages/user_account", self.user_accounts),
             ("pages/user_calendar", self.user_calendar),
         ):
             self.assertIn("const BASE = {{ request.script_root | tojson }};", tpl,
@@ -140,12 +140,17 @@ class TemplateInlineContextTest(unittest.TestCase):
         # 正确形态：data-* 属性（普通 HTML 转义即安全）+ 事件委托读 dataset，属性值不进
         # JS 解析器。旧载体（index.html 的用户 tab 内联切片）已随前端的用户管理页重写退役，
         # 判据意图不变、换锚到当前真实产物：管理端账号页与用户管理页。
-        accounts_tpl = _read("web", "templates", "pages", "accounts.html")
-        accounts_js = _read("web", "static", "js", "pages", "accounts.js")
-        users_tpl = _read("web", "templates", "pages", "users.html")
-        users_js = _read("web", "static", "js", "pages", "users.js")
-        # 模板侧：动作以 data-* 承载（非内联 onclick 拼接）
-        self.assertIn('data-batch="pending:approve"', accounts_tpl)
+        accounts_tpl = _read("web", "templates", "pages", "work_accounts.html")
+        accounts_js = _read("web", "static", "js", "pages", "work_accounts.js")
+        users_tpl = _read("web", "templates", "pages", "work_users.html")
+        users_js = _read("web", "static", "js", "pages", "work_users.js")
+        # 模板侧：动作以 data-* 承载（非内联 onclick 拼接）。
+        # 账号页把批量动作收进了 batch_bar 宏（三组共用一处定义），故锚点从渲染后的字面量
+        # `data-batch="pending:approve"` 换成"宏里的属性形态 + 三组确实都调用了该宏"——
+        # 判据意图不变（动作经 data-* 传递、值不进 JS 解析器），覆盖面反而更全。
+        self.assertIn('data-batch="{{ group }}:{{ key }}"', accounts_tpl)
+        for group in ("pending", "active", "deleted"):
+            self.assertIn(f"batch_bar('{group}'", accounts_tpl)
         self.assertIn("data-add-account", accounts_tpl)
         self.assertIn('data-usr-batch="{{ group }}:', users_tpl)
         self.assertIn("data-usr-batch-clear", users_tpl)
@@ -162,7 +167,7 @@ class TemplateInlineContextTest(unittest.TestCase):
         禁止 on(click|change|input|submit|error)=，判据不依赖具体动作名。
         """
         pattern = r"on(click|change|input|submit|error)\s*="
-        for name in (os.path.join("pages", "users.html"), os.path.join("pages", "accounts.html")):
+        for name in (os.path.join("pages", "work_users.html"), os.path.join("pages", "work_accounts.html")):
             src = _read("web", "templates", name)
             self.assertNotRegex(
                 src, pattern,

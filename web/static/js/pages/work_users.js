@@ -313,15 +313,23 @@
 
   function renderDeleted() {
     var card = $("usr-deleted-card");
-    card.hidden = state.deleted.length === 0;
+    var hasDeleted = state.deleted.length > 0;
+    card.hidden = !hasDeleted;
+    // 标签与卡同步显隐：整组无数据时连标签一起收掉（否则点进去是一片空）
+    var tabBtn = $("usr-tab-deleted");
+    if (tabBtn) {
+      var wasActive = !tabBtn.hidden && tabBtn.classList.contains("is-active");
+      tabBtn.hidden = !hasDeleted;
+      if (!hasDeleted && wasActive && YB.switchTab) YB.switchTab("pending");
+    }
     var tbody = $("usr-deleted-tbody");
     clear(tbody);
     state.deleted.forEach(function (u) { tbody.appendChild(deletedRow(u)); });
-    setText("usr-deleted-count", state.deleted.length ? "（" + state.deleted.length + " 人）" : "");
+    setText("usr-deleted-count", hasDeleted ? "（" + state.deleted.length + " 人）" : "");
     var empty = $("usr-deleted-empty");
-    empty.hidden = state.deleted.length > 0;
+    empty.hidden = hasDeleted;
     var msg = empty.querySelector(".empty__msg");
-    if (msg) msg.textContent = state.deleted.length ? "" : "暂无已注销用户";
+    if (msg) msg.textContent = hasDeleted ? "" : "暂无已注销用户";
     // 非主管理员不提供批量清除入口（后端仍会二次校验，UI 只是不给出不可能成功的动作）
     var purgeBtn = document.querySelector('[data-usr-batch="deleted:purge"]');
     if (purgeBtn) purgeBtn.hidden = !state.isMaster;
@@ -376,27 +384,6 @@
   }
 
   /* ---------------- 事件绑定 ---------------- */
-  function groupOfBody(id) { return String(id || "").replace(/^usr-/, "").replace(/-body$/, ""); }
-
-  // 统一展开/收起路径：点箭头与「搜索非空自动展开」共用；收起时清空该组选择。
-  function setGroupOpen(group, open) {
-    var btn = document.querySelector('.usr-collapse[aria-controls="usr-' + group + '-body"]');
-    var body = document.getElementById("usr-" + group + "-body");
-    if (!btn || !body) return;
-    btn.setAttribute("aria-expanded", String(open));
-    body.classList.toggle("is-open", open);
-    if (!open) { state.sel[group] = {}; renderAll(); }
-  }
-
-  function bindCollapse() {
-    [].forEach.call(document.querySelectorAll(".usr-collapse"), function (btn) {
-      btn.addEventListener("click", function () {
-        setGroupOpen(groupOfBody(btn.getAttribute("aria-controls")),
-          btn.getAttribute("aria-expanded") !== "true");
-      });
-    });
-  }
-
   function bindSearch() {
     [["usr-pending-search", "pending"], ["usr-normal-search", "normal"], ["usr-vacant-search", "vacant"]]
       .forEach(function (pair) {
@@ -404,8 +391,6 @@
         if (!input) return;
         input.addEventListener("input", debounce(function () {
           state.search[pair[1]] = input.value.trim();
-          // 搜索非空时自动展开该组（清空输入不自动收起）
-          if (state.search[pair[1]]) setGroupOpen(pair[1], true);
           renderAll();
         }, 150));
       });
@@ -443,7 +428,6 @@
   /* ---------------- 启动 ---------------- */
   function init() {
     bindSearch();
-    bindCollapse();
     bindBatch();
     bindSelectAll();
     YB.identity().then(function (me) {

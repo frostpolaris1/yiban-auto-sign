@@ -13,7 +13,7 @@
     YB.myAccountsPage.mount({
       role: "user",
       calendarHref: YB.BASE + "/user/calendar",
-      denyRedirect: YB.BASE + "/"        // 管理员回后台
+      denyRedirect: YB.BASE + "/data/dashboard"        // 管理员回后台
     });
   }
 

@@ -6,7 +6,7 @@
      GET /api/settings               → 账号/用户容量与拆解、全局/注册暂停
      GET /api/admin/sign-events      → daily_stats/events（趋势、分布、日历、成功率）
      GET /api/time-prefs/stats       → 自选时间片人数
-     GET /api/accounts + /api/users  → 待处理事项
+     GET /api/accounts               → 待处理账号（待审核 + 已拒绝）
      GET /api/clock /api/announcement、POST /api/ping → 系统状态
    每个请求独立 try/catch：单个接口失败只降级对应卡片（骨架 → 错误说明），不整页报错。
 
@@ -75,7 +75,7 @@
     }) }}
     {{ kpi({
       'color': 'danger', 'icon_color': 'danger', 'icon': 'triangle-alert',
-      'label': '待处理事项', 'pill_id': '', 'pill_class': '',
+      'label': '待处理账号', 'pill_id': '', 'pill_class': '',
       'value_id': 'kpi-pending-value', 'sub_id': 'kpi-pending-sub',
     }) }}
   </section>
@@ -187,11 +187,37 @@
         </div>
       </div>
     </section>
+
+    <!-- 账号与用户容量：原在账号管理页（那里只作展示），并入总览后管理端只此一处；
+         名额上限的修改仍在「系统设置 → 容量配额」。 -->
+    <section class="col-12 card">
+      <div class="card-head">
+        <div class="card-title-wrap">
+          <span class="eyebrow">容量</span>
+          <h2 class="card-title">账号与用户容量</h2>
+        </div>
+      </div>
+      <p class="panel-sub">名额用量与三分类拆解（仅展示，不参与配额判定）。</p>
+      <div class="dash-health" id="capacity-rows">
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('list') }}<span>账号容量</span></div>
+          <div class="dash-health-value" id="capacity-accounts"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
+        </div>
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('user') }}<span>用户容量</span></div>
+          <div class="dash-health-value" id="capacity-users"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
+        </div>
+        <div class="dash-health-row">
+          <div class="dash-health-label">{{ icon('chart-bar') }}<span>容量估算</span></div>
+          <div class="dash-health-value" id="capacity-estimate"><span class="skeleton skeleton--text dash-skel" aria-hidden="true"></span></div>
+        </div>
+      </div>
+    </section>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ request.script_root }}/static/vendor/chartjs/chart.min.js?v={{ web_version }}"></script>
-<script src="{{ request.script_root }}/static/js/pages/dashboard.js?v={{ web_version }}"></script>
+<script src="{{ request.script_root }}/static/js/pages/data_dashboard.js?v={{ web_version }}"></script>
 {% endblock %}

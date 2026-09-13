@@ -12,7 +12,7 @@ UTC+8 下本地 2026-09-11 00:00 == UTC 2026-09-10 16:00，切片得 "2026-09-10
 
 ## 本文件怎么测
 
-把 `web/static/js/pages/logs.js` 里的 `isValidDate` 源码抽出来，交给 node 执行；
+把 `web/static/js/pages/data_logs.js` 里的 `isValidDate` 源码抽出来，交给 node 执行；
 每次**运行时**改 `process.env.TZ` 后再调用（Node 会即时生效，Windows 上亦可，
 已验证 `Etc/GMT-8` → 偏移 -480、`Etc/GMT+5` → +300）。
 断言合法日期在任意时区都返回 true、非法日期返回 false、且结果与时区无关。
@@ -29,7 +29,7 @@ import subprocess
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOGS_JS = os.path.join(BASE, "web", "static", "js", "pages", "logs.js")
+LOGS_JS = os.path.join(BASE, "web", "static", "js", "pages", "data_logs.js")
 NODE = shutil.which("node")
 
 # TZ 名 → 期望的 getTimezoneOffset()（分钟；东八区为 -480，西五区为 +300）

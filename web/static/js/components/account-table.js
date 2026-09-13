@@ -2,7 +2,7 @@
    挂载到 window.YB.accountTable；classic script。
 
    本模块只负责「把一条账号数据变成 <tr>」，所有网络动作与组级状态由
-   pages/accounts.js 通过 handlers 回调注入，便于三组复用同一套行结构。
+   pages/work_accounts.js 通过 handlers 回调注入，便于三组复用同一套行结构。
    手机号一律使用列表接口下发的脱敏值（138****8000），完整号只在编辑/手动签到
    时由页面按需取详情接口，绝不进入本模块。 */
 (function () {

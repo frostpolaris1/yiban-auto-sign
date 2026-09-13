@@ -1,7 +1,7 @@
 /* 账号新增/编辑弹窗（用户端与管理端共用的唯一实现）。
    挂载到 window.YB.accountForm；classic script，仅向 YB 命名空间暴露 open()。
 
-   调用方（pages/user_accounts.js、pages/accounts.js）只提供差异选项：
+   调用方（pages/user_account.js、pages/work_accounts.js）只提供差异选项：
      variant          "user" | "admin"（决定字段文案与默认标题）
      account          列表项（admin 列表的 phone 已脱敏，编辑时值即脱敏号）
      index            编辑下标；null=新增

@@ -17,6 +17,9 @@
      由 tests/test_web_font_closure.py 静态守卫（含"Adminator 全部通用族选择器都已被收口"对账）。 */
   --font-sans: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
   --font-mono: "JetBrains Mono", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", ui-monospace, "SFMono-Regular", monospace;
+  /* 表格滚动上限：管理端各页的数据表统一取此值，避免长列表把「表格框架」拉到数千像素
+     （实测 /users 待处理组 77 行 = 4254px）。表头 position:sticky 在滚动容器内吸顶。 */
+  --table-max-h: 560px;
 }
 body,
 button,
@@ -77,12 +80,6 @@ textarea {
   border-radius: 8px;
 }
 
-/* 工作区头像承载 1–2 个字符的首字母，保证可读 */
-.workspace-avatar {
-  text-transform: uppercase;
-  letter-spacing: 0;
-  line-height: 1;
-}
 /* ==========================================================================
    3. 页脚兼容类（footer.html 用 .footer-*，Adminator 定义的是 .d-footer-meta）
    ========================================================================== */
@@ -656,7 +653,7 @@ textarea {
 }
 
 /* ==========================================================================
-   16. 数据总览页（pages/dashboard.html + pages/dashboard.js）
+   16. 数据总览页（pages/data_dashboard.html + pages/data_dashboard.js）
    仅补充 Adminator 未定义、本页专用的容器与状态；颜色一律取主题 token。
    ========================================================================== */
 /* [hidden] 优先于组件自身的 display（本页多处用隐藏切换加载/空态/图表） */
@@ -825,15 +822,9 @@ textarea {
   .dash-page .mini-cal-day {
     font-size: 11px;
   }
-  .dash-health-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-  }
-  .dash-health-value {
-    justify-content: flex-start;
-    text-align: left;
-  }
+  /* 窄屏**不**把 .dash-health-row 改成竖排：一行一行的"小标题 + 值/胶囊"本身就是
+     本卡的紧凑形态，竖排会让每行从 43px 涨到 69px（实测 390px 下 4 行多花 100px）。
+     宽度不够时由 .dash-health-value 的 flex-wrap 自行换行（长文案如公告只影响自己那行）。 */
 }
 
 /* ==========================================================================
@@ -1486,7 +1477,7 @@ body,
 .auth-mobile-brand { margin-right: auto; }
 
 /* ==========================================================================
-   19. 用户端页面（layout_user.html 外壳 + pages/user_accounts|user_calendar）
+   19. 用户端页面（layout_user.html 外壳 + pages/user_account|user_calendar）
    --------------------------------------------------------------------------
    用户页复用 Adminator 的 .shell 网格（248px 侧栏 + 1fr 主列），与登录页的营销外壳
    .auth-shell 职责不同（后者只在 login.html 使用）。本节定义：
@@ -1592,6 +1583,33 @@ html[data-theme="dark"] {
 .panel-sub:empty { display: none; }
 .panel-stack > :last-child { margin-top: auto; }
 
+/* 变体：右侧控件与**「标题 + 说明」整块**垂直居中。
+   默认版式里控件只与标题行居中（说明另起一整行），因此读起来控件偏上约半个说明行高 ——
+   在"标题 + 一行说明 + 右侧开关/按钮"的卡（/mine 与 /user 的共用正文）上按用户实拍改为
+   两列行布局：左列装标题+说明（保留 4px 组内间距），右列装控件。
+   ⚠ 组头（/accounts、/users、/logs 的 .panel-head-row）**不用**本类：那里行内是搜索框等
+   工具、且折叠箭头按行定位，改成两列会让箭头与标题错行。 */
+.panel-head--center {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+.panel-head--center > .panel-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.panel-head--center > :last-child { flex-shrink: 0; }
+/* 窄屏：文字块占满整行，控件落到下一行右对齐（控件与整块文字仍各自完整） */
+@media (max-width: 560px) {
+  .panel-head--center { flex-wrap: wrap; }
+  .panel-head--center > .panel-head-text { flex: 1 1 100%; }
+  .panel-head--center > :last-child { margin-left: auto; }
+}
+
 /* ---- 19.3 12 列网格（Adminator 只有 .col-6/.col-12） ---- */
 .user-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 24px; }
 .user-grid > * { min-width: 0; }
@@ -1663,8 +1681,11 @@ html[data-theme="dark"] {
 
 /* ---- 19.4 侧边栏可读性修正 ---- */
 .nav-label { color: var(--t-muted); }     /* Adminator 用 --t-light：浅色侧栏上 2.56:1 */
-/* 导航分组（数据 / 工作台 / 我的）：组与组之间留白，组内由 .nav-section 的 gap 收紧 */
+/* 导航分组（数据 / 工作台 / 我的）：组与组之间留白，组内由 .nav-section 的 gap 收紧。
+   首组与品牌之间也要一段独立留白：只写 `.nav-section + .nav-section` 时，首组的「数据」
+   标签紧贴品牌块，视觉上偏上（用户实拍指出「与上方标题垂直间距较小」）。 */
 .nav-section + .nav-section { margin-top: 18px; }
+.d-sidebar .brand + .nav-section { margin-top: 22px; }
 .brand-tag { color: var(--t-muted); }
 .workspace-role { color: var(--t-muted); }
 
@@ -2213,7 +2234,7 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .page-head--split > .btn { flex-shrink: 0; }
 
 /* 组头折叠：宽屏箭头绝对定位在组头行右上角，故行内留出右侧空间、避免与搜索框重叠。 */
-body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
+body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 .acct-group-head .panel-head-row { position: relative; padding-right: 44px; }
 /* 折叠箭头绝对定位在行右上角。**必须用 top:0;bottom:0;margin:auto 0 竖直居中**，不能只写
    top:0：36px 的按钮在只有标题（23.3px 行盒）的行里会从顶端向下溢出，实测中心比标题低
@@ -2224,28 +2245,30 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 /* KPI 4 张：Adminator 原生 4 列、≤1200 两列；仅本页在 ≤720 覆盖为两列
    （原生 ≤720 落 1 列，会把 4 张卡摊成 4 屏高）。作用域限定 accounts，不影响 dashboard。 */
 @media (max-width: 720px) {
-  body[data-page="accounts"] .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* 窄屏：文字块独占一行，主操作按钮落到第二行右对齐（保持"右上角主操作"的语义，
-     不做整行 —— 整行会与下方 KPI 争夺视觉重心）。 */
-  .page-head--split .page-head-text { flex: 1 1 100%; }
-  .page-head--split > .btn { margin-left: auto; }
+  body[data-page="work-accounts"] .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 窄屏：主操作**不换行**，与主标题同处第一行（文字块收缩、副标题自行折行）。
+     曾写成 flex:1 1 100% 让按钮独占第二行，实拍 390px 下按钮 top 比标题低 72px、
+     页头高度 56→111px；与「右上角主操作」的语义和宽屏版式都不一致。
+     文字块必须 min-width:0，否则标题的 min-content 会把按钮顶出去。 */
+  .page-head--split .page-head-text { flex: 1 1 auto; min-width: 0; }
+  .page-head--split > .btn { flex: 0 0 auto; }
   /* 窄屏组头显式 grid 放置：第 2 行（工具行）不再被 44px 死区占用、可用满整行；
      箭头与标题同处第 1 行并由 align-items:center 居中。必须显式指定 grid-column/row，
      靠自动放置会把绝对定位改回静态后的箭头挤到第 3 行。宽屏 (>720) 仍走上面的绝对定位。 */
-  body[data-page="accounts"] .acct-group-head .panel-head-row {
+  body[data-page="work-accounts"] .acct-group-head .panel-head-row {
     display: grid;
     grid-template-columns: 1fr auto;
     align-items: center;
     row-gap: 10px;
     padding-right: 0;
   }
-  body[data-page="accounts"] .acct-group-head .panel-title { grid-column: 1; grid-row: 1; }
-  body[data-page="accounts"] .acct-group-head .acct-collapse {
+  body[data-page="work-accounts"] .acct-group-head .panel-title { grid-column: 1; grid-row: 1; }
+  body[data-page="work-accounts"] .acct-group-head .acct-collapse {
     position: static;
     grid-column: 2;
     grid-row: 1;
   }
-  body[data-page="accounts"] .acct-group-head .acct-tools {
+  body[data-page="work-accounts"] .acct-group-head .acct-tools {
     grid-column: 1 / -1;
     grid-row: 2;
     width: 100%;
@@ -2295,7 +2318,7 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 .acct-state--muted { color: var(--t-muted); }
 
 /* 表格：表头吸顶、操作列吸右；行分隔线由 .data-table tbody td 承担（白名单第 1 类） */
-#accounts-root .table-scroll { max-height: 560px; }
+#accounts-root .table-scroll { max-height: var(--table-max-h); }
 .acct-table thead th {
   position: sticky;
   top: 0;
@@ -2405,7 +2428,7 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 @media (max-width: 720px) {
   /* 竖屏：标题与工具行分两行，工具行（已 width:100%）落到第二行。
      只在本页放开换行——桌面端「标题左、控件右同行」是既定规范，不可全局 wrap。 */
-  body[data-page="accounts"] .panel-head-row { flex-wrap: wrap; }
+  body[data-page="work-accounts"] .panel-head-row { flex-wrap: wrap; }
   .acct-search .input { min-width: 0; width: 100%; }
   .acct-tools { width: 100%; }
   .acct-tools .acct-search { flex: 1 1 100%; }
@@ -2419,23 +2442,16 @@ body[data-page="accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
 /* ==========================================================================
    25. 签到日志页（管理端 /logs）
    --------------------------------------------------------------------------
-   日志主卡（检索/显示全部/导出/按日期查看/自动刷新）+ 探针记录 + 签到事件两张可折叠卡。
+   三块内容各自成标签页（日志 / 探针记录 / 签到事件）：探针与事件的长列表在卡内滚动，
+   不再把整页拉长。手动签到已移出本页（与账号管理的单账号/批量手动签到重复）。
    分隔线遵守 23 节白名单：卡头用 .panel-head 两段式（标题行 + 整宽说明，不画线），
    只有事件时间线的重复行（.ev-row）保留行分隔线。
    事件徽标复用全站的 `.badge` + `.badge--ok/bad/warn/info/muted` 色调档位（定义见 19.6），
    不再自建一套徽标类；那五档「彩色文字 + 软底」已纳入 test_web_text_contrast.py 实测 AA。
    ========================================================================== */
 
-/* ---- 页头主操作：账号下拉 + 立即签到 ---- */
-.log-signin { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
-.log-signin__select { width: auto; min-width: 180px; max-width: 260px; height: 34px; padding: 4px 10px; font-size: 12.5px; }
-/* .btn 自然高度 39.5px（padding 11 + border 1 + 13px 行盒），与同排 34px 下拉参差；
-   min-height 只设下限、压不低自然高度，故同时把纵向 padding 归零，落到 34px 与
-   .log-tools / .log-datebar 的控件同高。 */
-.log-signin .btn { min-height: 34px; padding-top: 0; padding-bottom: 0; }
-
-/* ---- 日志卡头：标题 + 文件名；右侧工具行 ---- */
-body[data-page="logs"] .panel-title { min-width: 0; }
+/* ---- 日志卡头：标题 + 文件名；右侧工具行（检索 / 显示全部 / 导出 / 行数） ---- */
+body[data-page="data-logs"] .panel-title { min-width: 0; }
 .log-file { font-family: var(--font-mono); font-size: 12px; font-weight: 400; color: var(--t-muted); }
 .log-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
 .log-search { display: block; }
@@ -2443,20 +2459,39 @@ body[data-page="logs"] .panel-title { min-width: 0; }
 .log-search .input::placeholder { color: var(--t-muted); }
 /* 同排控件统一 34px：桌面 .btn--sm 约 31.2px，与 34px 搜索框并排会参差 */
 .log-tools .btn { min-height: 34px; }
+/* 行数信息降为工具行内的次要文本（原为独占一行的 .panel-sub，把工具行与日期行隔开） */
+.log-info { font-size: 12.5px; color: var(--t-muted); font-variant-numeric: tabular-nums; }
 
-/* ---- 日期行 ---- */
-.log-datebar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+/* ---- 日期行：左「选日期 + 查看 + 回到今天」一组，右自动刷新开关 ---- */
+.log-datebar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; margin-bottom: 0; }
+.log-datebar__group { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
 .log-datebar__label { font-size: 12.5px; color: var(--t-sub); }
+/* 原生 date input 只在脚本未加载时可见（.date-field.is-enhanced 会隐藏它），
+   增强后同排的是 .date-trigger —— 两者取同一尺寸，避免增强前后控件高度漂移 */
 .log-datebar__date { width: auto; min-width: 150px; height: 34px; padding: 4px 10px; font-size: 12.5px; }
+.log-datebar .date-trigger {
+  width: auto;
+  min-width: 150px;
+  min-height: 34px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+.log-datebar .date-caret svg { width: 15px; height: 15px; }
 .log-datebar .btn { min-height: 34px; }
-.log-date-tip { flex: 1 1 160px; min-width: 0; font-size: 12.5px; color: var(--t-sub); }
+/* 历史日期提示独占一行：与开关同排时，折行的长文案会把开关挤到视觉"悬空"处 */
+.log-date-tip { margin: 8px 0 0; font-size: 12.5px; color: var(--t-sub); }
+.log-date-tip:empty { display: none; }
 .log-auto { margin-left: auto; }
 .log-auto__text { font-size: 12.5px; color: var(--t-sub); }
 
 /* ---- 日志正文：固定高 + 等宽 + 内滚动（页面永不因日志而横向滚动） ---- */
+/* 高度取 auto + 上下限：只有几行日志时不再撑出 620px 的空灰块（用户实拍指出），
+   行数多时用满可视区、由内部滚动承担（页面本身不滚）。 */
 .log-box {
-  height: clamp(280px, 52vh, 620px);
-  margin: 0;
+  height: auto;
+  min-height: 220px;
+  max-height: clamp(300px, calc(100dvh - 420px), 900px);
+  margin: 16px 0 0;
   padding: 12px 14px;
   border: 1px solid var(--border-soft);
   border-radius: 10px;
@@ -2470,15 +2505,15 @@ body[data-page="logs"] .panel-title { min-width: 0; }
   overflow: auto;
   overscroll-behavior: contain;
 }
+.log-main-card #log-empty { margin-top: 16px; }
 
-/* ---- 折叠卡（探针 / 签到事件）：宽屏箭头绝对定位在右上角 ---- */
-.log-fold > .panel-head { margin-bottom: 0; }   /* 间距由 .collapse-body.is-open 的动画 margin-top 承担 */
-.log-fold .panel-head-row { position: relative; padding-right: 44px; }
-.log-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
-/* 同 .acct-collapse：绝对定位的 36px 按钮必须上下都锚定再 auto 居中，
-   折页卡头行只有标题（23.3px 行盒），只写 top:0 会让箭头低 6.4px。 */
-.log-collapse { position: absolute; top: 0; bottom: 0; margin: auto 0; right: 0; }
-.log-collapse .collapse-arrow svg { width: 18px; height: 18px; }
+/* ---- 探针 / 签到事件：列表在卡内滚动（不再用折叠卡） ---- */
+.log-count { font-size: 11.5px; font-weight: 600; color: var(--t-muted); font-variant-numeric: tabular-nums; }
+.ev-scroll {
+  max-height: clamp(320px, calc(100dvh - 380px), 900px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 
 /* ---- 事件时间线：重复行分隔线（白名单第 1 类） ---- */
 .ev-list { list-style: none; margin: 0; padding: 0; }
@@ -2491,23 +2526,16 @@ body[data-page="logs"] .panel-title { min-width: 0; }
 .ev-row .badge { margin-left: 0; }
 
 @media (max-width: 720px) {
-  /* 页头主操作换行到第二行右对齐（保持"右上角主操作"语义） */
-  .log-signin { margin-left: auto; }
   /* 卡头工具行独占第二行、搜索框用满整行 */
-  body[data-page="logs"] .log-main-card .panel-head-row { flex-wrap: wrap; }
+  body[data-page="data-logs"] .log-main-card .panel-head-row { flex-wrap: wrap; }
   .log-tools { width: 100%; }
   .log-search { flex: 1 1 100%; }
   .log-search .input { width: 100%; min-width: 0; }
-  /* 折叠箭头与标题同处第 1 行：显式 grid 放置（必须用 grid-column/row，靠自动放置会把
-     静态化的箭头挤到下一行）；宽屏 (>720) 仍走上面的绝对定位。 */
-  body[data-page="logs"] .log-fold .panel-head-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    padding-right: 0;
-  }
-  body[data-page="logs"] .log-fold .panel-title { grid-column: 1; grid-row: 1; }
-  body[data-page="logs"] .log-fold .log-collapse { position: static; grid-column: 2; grid-row: 1; }
+  /* 窄屏/矮视口：正文与列表改按视口百分比封顶。
+     桌面用的 `calc(100dvh - 420px)` 在短视口下会撞到 clamp 的下限（300/320px），
+     而 390 高的横屏里这个下限本身就可能超过可视区 → 内滚失效、被迫整页滚动。 */
+  .log-box { max-height: 58dvh; }
+  .ev-scroll { max-height: 58dvh; }
 }
 
 /* ==========================================================================
@@ -2524,7 +2552,7 @@ body[data-page="logs"] .panel-title { min-width: 0; }
    已纳入 test_web_text_contrast.py 的 CONTRAST_PAIRS 实测 AA，改色值会直接报红。
    ========================================================================== */
 
-body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 .collapse-body.is-open 的动画 margin-top */
+body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 .collapse-body.is-open 的动画 margin-top */
 /* 页面级加载/失败状态条：复用 Adminator .alert 骨架，失败时 JS 切 .info→.danger。
    align-items:center 让正文与重试按钮垂直居中（.alert 默认 start）。 */
 .usr-status { margin: 0 0 16px; align-items: center; }
@@ -2560,8 +2588,10 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 .usr-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* 表格：表头吸顶、操作列吸右；行分隔线由 .data-table tbody td 承担。
-   本页**不设 max-height**：四组各自滚动会叠出 4 条滚动条、页面级滚动几乎失效；
-   改为交给页面滚动 + 表头 position:sticky 吸顶（accounts 页单表仍保留 max-height）。 */
+   四组各自给滚动上限（与 /accounts 同值 var(--table-max-h)）：无上限时 77 行的待处理组
+   就把整页拉到 7604px（「表格框架变长」），页面级滚动几乎用不上；有上限后每组自滚、
+   表头在组内吸顶，整页高度收敛到 3 屏内。 */
+body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 .usr-table thead th {
   position: sticky;
   top: 0;
@@ -2636,16 +2666,16 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 @media (max-width: 720px) {
   /* 窄屏组头显式 grid 放置：标题与箭头同处第 1 行居中，搜索框独占第 2 行用满整行。
      折叠按钮必须是 .panel-head-row 的直接子元素，grid-column/row 才命得中。 */
-  body[data-page="users"] .usr-group-head .panel-head-row {
+  body[data-page="work-users"] .usr-group-head .panel-head-row {
     display: grid;
     grid-template-columns: 1fr auto;
     align-items: center;
     row-gap: 10px;
     padding-right: 0;
   }
-  body[data-page="users"] .usr-group-head .panel-title { grid-column: 1; grid-row: 1; }
-  body[data-page="users"] .usr-group-head .usr-collapse { position: static; grid-column: 2; grid-row: 1; }
-  body[data-page="users"] .usr-group-head .usr-search { grid-column: 1 / -1; grid-row: 2; }
+  body[data-page="work-users"] .usr-group-head .panel-title { grid-column: 1; grid-row: 1; }
+  body[data-page="work-users"] .usr-group-head .usr-collapse { position: static; grid-column: 2; grid-row: 1; }
+  body[data-page="work-users"] .usr-group-head .usr-search { grid-column: 1 / -1; grid-row: 2; }
   .usr-search .input { width: 100%; min-width: 0; }
 }
 
@@ -2742,7 +2772,15 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   justify-content: space-between;
   gap: 16px;
 }
-.set-row + .set-row { margin-top: 16px; }
+/* 同一卡内多组「说明 + 控件」行：行与行之间画一条线分节。
+   一张卡里堆着多组多行说明文字时，只靠 16px 留白读不出分组边界（用户实拍反馈
+   「多行式文本文案缺乏必要的分隔或间隔，难以看出功能分组」）。线与颜色走白名单
+   （重复行分隔，1px solid --border-soft）。 */
+.set-row + .set-row {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
 /* 一个 tab 里并排/堆叠多张卡（通知通道 = 推送卡 + 邮件卡）：卡间留白由容器承担 */
 .set-cards { display: flex; flex-direction: column; gap: 20px; }
 /* 长卡的保存行吸底：字段多时保存按钮在卡底，改完要滑到底才够得着（教程 #16「目标要近」）。
@@ -3085,11 +3123,12 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
 
 /* ---- 30.1 下拉选择 ---- */
 .select-field { position: relative; }
-/* 三个触发器（下拉 / 数值 / 时间）共用同一份控件外观：它们在同一张卡里并排出现，
+/* 四个触发器（下拉 / 数值 / 时间 / 日期）共用同一份控件外观：它们会在同一张卡里并排出现，
    各写一套必然漂移（高度、边框、焦点环、禁用态）。差异只在内部排布，见各分节。 */
 .select-trigger,
 .range-trigger,
-.time-trigger {
+.time-trigger,
+.date-trigger {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3107,20 +3146,22 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   cursor: pointer;
   transition: border-color 180ms, box-shadow 180ms, background-color 180ms;
 }
-.select-trigger:hover, .range-trigger:hover, .time-trigger:hover { border-color: var(--t-light); }
+.select-trigger:hover, .range-trigger:hover, .time-trigger:hover, .date-trigger:hover { border-color: var(--t-light); }
 .select-trigger:focus-visible,
 .range-trigger:focus-visible,
-.time-trigger:focus-visible {
+.time-trigger:focus-visible,
+.date-trigger:focus-visible {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-soft);
   outline: 0;
 }
-.select-trigger:disabled, .range-trigger:disabled, .time-trigger:disabled {
+.select-trigger:disabled, .range-trigger:disabled, .time-trigger:disabled, .date-trigger:disabled {
   background: var(--bg-muted);
   color: var(--t-light);
   cursor: not-allowed;
 }
-.select-trigger-text {
+.select-trigger-text,
+.date-trigger-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3234,3 +3275,121 @@ body[data-page="users"] .usr-group-head { margin-bottom: 0; }   /* 间距交给 
   .select-menu { animation: none; }
   .select-caret { transition: none; }
 }
+
+/* ---- 30.4 日期字段（触发器 + 月历弹层，取代原生 input[type=date] 的 UA 面板） ----
+   原生控件只在脚本未加载时可见（root 上没有 is-enhanced 就不隐藏），因此这里不写
+   "默认隐藏"：隐藏规则挂在 .date-field.is-enhanced 上，由 mount() 打标记。 */
+.date-field { position: relative; }
+.date-field.is-enhanced > input[type="date"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.date-field.is-empty .date-trigger-text { color: var(--t-muted); }
+.date-caret {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--t-muted);
+}
+.date-caret svg { width: 14px; height: 14px; }
+.date-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  width: 272px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg-card);
+  box-shadow: 0 12px 28px -10px rgba(0, 0, 0, .28);
+  animation: select-menu-in 140ms var(--ease-out-strong) both;
+}
+.date-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.date-month {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-base);
+  font-variant-numeric: tabular-nums;
+}
+.date-nav { width: 28px; height: 28px; }
+.date-nav svg { width: 15px; height: 15px; }
+.date-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  margin-bottom: 2px;
+  color: var(--t-muted);
+  font-size: 11px;
+  text-align: center;
+}
+.date-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+.date-blank { height: 32px; }
+.date-day {
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--t-base);
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 140ms, color 140ms;
+}
+.date-day:hover { background: var(--bg-hover); }
+.date-day:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
+/* 今天：inset 描边（不占布局、不与选中态争夺底色） */
+.date-day.is-today { box-shadow: inset 0 0 0 1px var(--primary); }
+.date-day.is-sel {
+  background: var(--primary);
+  color: var(--t-inverse);
+  font-weight: 600;
+}
+.date-day.is-sel:hover { background: var(--primary-dark); }
+.date-pop-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+@media (prefers-reduced-motion: reduce) {
+  .date-pop { animation: none; }
+}
+
+/* ==========================================================================
+   31. 标签页式列表页（账号管理 / 用户管理 / 签到日志）
+   --------------------------------------------------------------------------
+   三页把原来的「多组纵向堆叠」改成标签页：一次只显示一组，长表格在卡内滚动。
+   表格上限不再写死 560px，而是按可视区推导（--table-max-h 的唯一声明在 :root）——
+   「表格撑满屏幕、靠表内滚动预览，而不是把整页拉长」。
+   ≤720 不锁定：抽屉布局下可视高度随地址栏伸缩，写死高度会露出半行。
+   ========================================================================== */
+@media (min-width: 721px) {
+  body[data-page="work-accounts"],
+  body[data-page="work-users"] {
+    --table-max-h: clamp(320px, calc(100dvh - 360px), 1200px);
+  }
+}
+/* 标签面板内的块间距：面板取代了原来的 .grid（gap 20），需自带节奏 */
+.tab-panel > .kpi-grid { margin-bottom: 16px; }
+.tab-panel > .card + .card,
+.tab-panel > .card + .alert,
+.tab-panel > .alert + .card { margin-top: 16px; }
+/* 面板内的组头不再承担折叠间距（折叠改由标签页承担），下边距归零交给 .collapse-body */
+body[data-page="work-users"] .tab-panel .usr-group-head { margin-bottom: 0; }

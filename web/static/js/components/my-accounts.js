@@ -12,7 +12,7 @@
                     管理端 /mine 需要该信息（旧页在卡片内联展示），用户端不显示。
      onChanged      任一写操作成功后回调（可空）
 
-   接口契约（/api/my-accounts + 账号表单）与 pages/user_accounts.js 原实现逐字等价。
+   接口契约（/api/my-accounts + 账号表单）与 pages/user_account.js 原实现逐字等价。
    手机号沿用列表下发值（后端按登录身份作用域下发），动态文本一律 textContent / YB.el。 */
 (function () {
   "use strict";

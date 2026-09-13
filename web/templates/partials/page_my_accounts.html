@@ -30,15 +30,15 @@
 
   <!-- 我的账号 -->
   <section class="card col-12">
-    <div class="panel-head">
-      <div class="panel-head-row">
+    <div class="panel-head panel-head--center">
+      <div class="panel-head-text">
         <h2 class="panel-title">我的账号</h2>
-        {# 无有效账号时显示；全部被删除时也显示（软删除不死路），由页面脚本控制显隐 #}
-        <button id="open-account-btn" type="button" class="btn btn--primary" hidden>
-          {{ icon('plus') }}提交我的易班账号
-        </button>
+        <p class="panel-sub">审核通过后自动签到。</p>
       </div>
-      <p class="panel-sub">审核通过后自动签到。</p>
+      {# 无有效账号时显示；全部被删除时也显示（软删除不死路），由页面脚本控制显隐 #}
+      <button id="open-account-btn" type="button" class="btn btn--primary" hidden>
+        {{ icon('plus') }}提交我的易班账号
+      </button>
     </div>
     {# 签到状态图例/状态行在「签到日历」页：本页只管账号本身 #}
     <p id="accounts-empty" class="empty" hidden>
@@ -50,16 +50,16 @@
 
   <!-- 自选签到时间（5 分钟粒度；未开启时可展开预配置但不生效） -->
   <section id="time-pref-card" class="card col-12" hidden>
-    <div class="panel-head">
-      <div class="panel-head-row">
+    <div class="panel-head panel-head--center">
+      <div class="panel-head-text">
         <h2 class="panel-title">签到时间</h2>
-        <button id="pref-collapse-btn" type="button" class="btn btn--ghost btn--sm"
-                aria-expanded="false" aria-controls="pref-body">
-          <span id="pref-collapse-label">展开配置</span>
-          <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
-        </button>
+        <p class="panel-sub">窗口 <span class="mono" id="pref-window"></span> · 选择 5 分钟时段（今日已开始则次日生效）</p>
       </div>
-      <p class="panel-sub">窗口 <span class="mono" id="pref-window"></span> · 选择 5 分钟时段（今日已开始则次日生效）</p>
+      <button id="pref-collapse-btn" type="button" class="btn btn--ghost btn--sm"
+              aria-expanded="false" aria-controls="pref-body">
+        <span id="pref-collapse-label">展开配置</span>
+        <span class="collapse-arrow">{{ icon('chevron-down') }}</span>
+      </button>
     </div>
     <div id="pref-body" class="collapse-body">
       <div class="collapse-inner">
@@ -79,30 +79,30 @@
 
   <!-- 邮件提醒 -->
   <section class="card col-6 panel-stack">
-    <div class="panel-head">
-      <div class="panel-head-row">
+    <div class="panel-head panel-head--center">
+      <div class="panel-head-text">
         <h2 class="panel-title">邮件提醒</h2>
-        <label class="switch" title="接收签到失败与告警邮件">
-          <input id="mail-notify-switch" type="checkbox">
-          <span class="track" aria-hidden="true"></span>
-          <span class="sr-only">接收签到失败与告警邮件</span>
-        </label>
+        <p class="panel-sub">签到失败时向注册邮箱发送提醒（成功不打扰）</p>
       </div>
-      <p class="panel-sub">签到失败时向注册邮箱发送提醒（成功不打扰）</p>
+      <label class="switch" title="接收签到失败与告警邮件">
+        <input id="mail-notify-switch" type="checkbox">
+        <span class="track" aria-hidden="true"></span>
+        <span class="sr-only">接收签到失败与告警邮件</span>
+      </label>
     </div>
     <p id="mail-notify-tip" class="panel-sub" aria-live="polite"></p>
   </section>
 
   <!-- 修改密码（入口在卡片，表单在弹窗里完成；共享 YB.changePassword 唯一实现） -->
   <section class="card col-6 panel-stack">
-    <div class="panel-head">
-      <div class="panel-head-row">
+    <div class="panel-head panel-head--center">
+      <div class="panel-head-text">
         <h2 class="panel-title">修改密码</h2>
-        <button type="button" id="password-modal-btn" class="btn btn--ghost btn--sm">
-          {{ icon('key') }}修改密码
-        </button>
+        <p class="panel-sub">改后下次登录使用新密码，当前会话随即失效</p>
       </div>
-      <p class="panel-sub">改后下次登录使用新密码，当前会话随即失效</p>
+      <button type="button" id="password-modal-btn" class="btn btn--ghost btn--sm">
+        {{ icon('key') }}修改密码
+      </button>
     </div>
   </section>
 
@@ -133,14 +133,14 @@
   {% if show_delete %}
   <!-- 注销账号（危险区独占一行、置底；仅普通用户有自助注销入口） -->
   <section class="card col-12 user-danger">
-    <div class="panel-head">
-      <div class="panel-head-row">
+    <div class="panel-head panel-head--center">
+      <div class="panel-head-text">
         <h2 class="panel-title">注销账号</h2>
-        <button type="button" class="btn btn--ghost btn--danger-ghost" data-delete-account>
-          {{ icon('trash') }}注销账号
-        </button>
+        <p class="panel-sub">账号与自选时间一并删除，7 天内可撤销</p>
       </div>
-      <p class="panel-sub">账号与自选时间一并删除，7 天内可撤销</p>
+      <button type="button" class="btn btn--ghost btn--danger-ghost" data-delete-account>
+        {{ icon('trash') }}注销账号
+      </button>
     </div>
   </section>
   {% endif %}
