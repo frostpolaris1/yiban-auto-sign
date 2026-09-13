@@ -121,7 +121,7 @@
           <span class="field-label" id="ss-dist-label">分布方式</span>
           {{ select_field('ss-dist', 'uniform',
              [('uniform', '均匀分布'), ('normal', '正态分布（钟形拟人）')], 'ss-dist-label') }}
-          <p class="field-help">「顺序 × 均匀」集中在窗口前段；其余铺满窗口。</p>
+          <p class="field-help">「顺序 × 均匀」集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态。</p>
         </div>
         {# 掐头/去尾：页面只显示数值，点击在弹窗里用数字框或滑杆调整（见 range-field.js） #}
         <div class="field">
@@ -209,6 +209,7 @@
 
       {# 保存行吸底：调度卡字段多，保存按钮在卡底时改完要滑到底才够得着（教程 #16「目标要近」）。
          「恢复默认调度」是维护动作，退到同一行的右下角，不再单独占一张卡。 #}
+      <p class="field-help">改动需点「保存调度设置」后生效。</p>
       <div class="form-actions is-sticky">
         <button type="button" class="btn btn--primary btn--sm" id="ss-save" hidden>保存调度设置</button>
         <span class="spacer"></span>
@@ -234,6 +235,7 @@
         <p class="field-help">显示在所有页面顶部（含登录页）；限 200 字、禁止换行；留空保存 = 清除公告。</p>
       </div>
       <p class="set-tip" id="set-ann-tip" role="status"></p>
+      <p class="field-help">改动需点「保存公告」后生效。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" hidden>保存公告</button>
         <span class="spacer"></span>
@@ -314,6 +316,7 @@
         </details>
         <p class="field-help" id="sn-status"></p>
         <p class="set-tip" id="sn-tip" role="status"></p>
+        <p class="field-help">改动需点「保存推送配置」后生效。</p>
         <div class="form-actions">
           <button type="button" class="btn btn--primary btn--sm" id="sn-save" hidden>保存推送配置</button>
           <button type="button" class="btn btn--ghost btn--sm" id="sn-test">发送测试消息</button>
@@ -372,6 +375,7 @@
           </table>
         </div>
         <p class="set-tip" id="sm-tip" role="status"></p>
+        <p class="field-help">改动需点「保存邮件配置」后生效。</p>
         <div class="form-actions">
           <button type="button" class="btn btn--primary btn--sm" id="sm-save" hidden>保存邮件配置</button>
           <span class="spacer"></span>
@@ -414,6 +418,7 @@
         </div>
       </div>
       <p class="set-tip" id="set-cap-tip" role="status"></p>
+      <p class="field-help">改动需点「保存容量上限」后生效。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="set-cap-save" hidden>保存容量上限</button>
       </div>
@@ -456,7 +461,7 @@
         <div class="field">
           <span class="field-label" id="sh-probe-time-label">触发时间（最早时刻）</span>
           <div class="time-field" data-time-field="sh-probe-time" data-title="触发时间"
-               data-hint="到达设定时间将在最近的调度周期执行，每天最多一次。"
+               data-hint="到达设定时间将在最近的调度周期执行（约 10 分钟内），每天最多一次。"
                aria-labelledby="sh-probe-time-label">
             <input type="hidden" id="sh-probe-time" value="20:00">
           </div>
@@ -466,10 +471,11 @@
           {{ select_field('sh-probe-interval', '1',
              [('1', '每天'), ('2', '每 2 天'), ('3', '每 3 天'), ('7', '每 7 天'),
               ('once', '下次计划时间单次执行（执行后自动关闭）')], 'sh-probe-interval-label') }}
-          <p class="field-help">设定时间到达后将在最近的调度周期执行，每天最多一次。</p>
+          <p class="field-help">设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。</p>
         </div>
       </div>
       <p class="set-tip" id="sh-tip" role="status"></p>
+      <p class="field-help">改动需点「保存探针设置」后生效。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="sh-save" hidden>保存探针设置</button>
       </div>
