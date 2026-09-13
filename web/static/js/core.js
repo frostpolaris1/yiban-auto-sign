@@ -434,6 +434,7 @@
   function openPwModal(desc, cb, mode, onCancel) {
     var isConfirm = mode === "confirm";
     var submitted = false;
+    var pending = false; // thenable 回调在途标记：期间忽略再次提交
     var inputId = "pm-pw-" + (++uidSeq);
     var input = el("input", {
       id: inputId, class: "input", type: "password",
@@ -453,6 +454,11 @@
       input.focus();
       return false; // 返回 false 阻止 openModal 关闭
     }
+    function setFootBusy(busy) {
+      var foot = pwHandle.panel.querySelector(".modal-foot");
+      if (!foot) return;
+      [].forEach.call(foot.querySelectorAll(".btn"), function (b) { b.disabled = !!busy; });
+    }
     function submit() {
       var pw = input.value;
       if (!pw) return reject("请输入密码");
@@ -460,6 +466,26 @@
       // 避免"前端放行、提交后才 400"；confirm 模式只验非空。
       if (!isConfirm && !passwordPolicyOk(pw)) return reject("密码" + PW_POLICY_HINT);
       var fn = cb;
+      if (fn) {
+        var result = fn(pw);
+        if (result && typeof result.then === "function") {
+          // 回调返回 Promise：弹窗保持打开直至请求落定——拒绝时经 reject() 把
+          // 错误显示在弹窗内（口令框保留原值，可直接改口令重试），期间禁用
+          // 底部按钮防重复提交；未返回 Promise 的既有回调维持原行为（先关再回调）
+          if (pending) return false;
+          pending = true;
+          setFootBusy(true);
+          result.then(function () {
+            submitted = true;
+            closeModal(pwHandle);
+          }, function (e) {
+            pending = false;
+            setFootBusy(false);
+            reject((e && e.message) || "操作失败，请稍后重试");
+          });
+          return false;
+        }
+      }
       submitted = true;
       closeModal(pwHandle); // 先关本层再回调：回调常紧接着叠开第二个模态
       if (fn) fn(pw);
