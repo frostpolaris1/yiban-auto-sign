@@ -81,8 +81,8 @@ def frontend_source(*parts):
         seen.add(path)
         src = _read(path)
         chunks.append(src)
-        # A2 起三模板 `{% extends "base.html" %}`：共享骨架在父模板里，必须一并纳入，
-        # 否则 head_boot / tailwind_config 等 partial 的契约会落空。
+        # 递归 extends/include：共享骨架与片段里的契约必须一并纳入，
+        # 否则页脚/宏等 partial 的断言会落空。（旧栈 base.html 已随 P4 退役。）
         for m in _EXTENDS_RE.finditer(src):
             walk(os.path.join(TEMPLATES_DIR, m.group(1).replace("/", os.sep)))
         for m in _INCLUDE_RE.finditer(src):

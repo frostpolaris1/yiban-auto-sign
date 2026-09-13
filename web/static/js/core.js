@@ -3,7 +3,7 @@
 // classic script（非 module）：依赖 partials/theme_boot.html 先行定义的全局 BASE。
 (function () {
   "use strict";
-  if (window.YB && window.YB.__ready) return; // base.html 与页面可能各引一次
+  if (window.YB && window.YB.__ready) return; // 外壳与页面可能各引一次
 
   var APP_BASE = (typeof BASE === "string") ? BASE : "";
 
@@ -17,6 +17,18 @@
     });
   }
   function svgUse(name) { return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+  // SVG 命名空间下的图标元素构造：<svg>/<use> 必须以 createElementNS 创建，否则浏览器
+  // 视为未知 HTML 元素、图标不渲染；页面脚本据此以 DOM 方式挂图标，替代 innerHTML 常量串。
+  function iconEl(name, cls) {
+    var NS = "http://www.w3.org/2000/svg";
+    var s = document.createElementNS(NS, "svg");
+    s.setAttribute("aria-hidden", "true");
+    if (cls) s.setAttribute("class", cls);
+    var u = document.createElementNS(NS, "use");
+    u.setAttribute("href", "#i-" + name);
+    s.appendChild(u);
+    return s;
+  }
   // 手机号展示层脱敏（幂等）：已含 * 原样返回；长度 >=7 保留前 3 后 4。
   // 各页面统一走本助手，避免脱敏口径在页面脚本里各写一份。
   function maskPhone(p) {
@@ -434,8 +446,8 @@
   }
 
   /* ---------- 密码模态（重置密码 / 高危操作二次确认共用） ---------- */
-  // 动态构建在 openModal 之上：新 MPA 外壳 layout_admin.html 不再 include
-  // partials/modals/password.html，沿用旧 DOM id（modal-password）会在真实页面 ReferenceError。
+  // 动态构建在 openModal 之上：P4 起旧栈 modal partial 已退役，新 MPA 外壳不再 include
+  // partials/modals/*，故模态一律在运行时构造（沿用旧 DOM id 会 ReferenceError）。
   // set 模式走完整口令策略（长度 + 类别）；confirm 模式只验非空，当前口令由后端最终核对。
   // 动态文案（邮箱等）只经 el 的 text 选项写入 textContent，无 innerHTML 注入面。
   function openPasswordModal(desc, cb, onCancel) { return openPwModal(desc, cb, "set", onCancel); }
@@ -513,11 +525,6 @@
       ]
     });
     return pwHandle;
-  }
-  // 兼容退役 index.html 的 partials/modals/password.html 内联 onclick；新 MPA 页面不 include 该片段。
-  function closePasswordModal() {
-    var legacy = $("modal-password");
-    if (legacy) closeModal(legacy);
   }
 
   /* ---------- 主题 ---------- */
@@ -1006,8 +1013,8 @@
     passwordPolicyOkAdmin: passwordPolicyOkAdmin,
     openPasswordModal: openPasswordModal,
     openConfirmPasswordModal: openConfirmPasswordModal,
-    closePasswordModal: closePasswordModal,
     openPwModal: openPwModal,
+    iconEl: iconEl,
     toggleTheme: toggleTheme,
     applyTheme: applyTheme,
     currentTheme: currentTheme,
@@ -1049,7 +1056,7 @@
   window.closeModal = closeModal;
   window.confirmDialog = confirmDialog;
   window.promptDialog = promptDialog;
-  // 口令策略 / 密码模态的裸全局出口：classic 页面脚本（pages/*.js、shared-ui.js）按此名直呼
+  // 口令策略 / 密码模态的裸全局出口：classic 页面脚本（pages/*.js）按此名直呼
   window.PW_CLASS_PATTERNS = PW_CLASS_PATTERNS;
   window.PW_MIN_LEN = PW_MIN_LEN;
   window.PW_MIN_CLASSES = PW_MIN_CLASSES;
@@ -1062,7 +1069,6 @@
   window.passwordPolicyOkAdmin = passwordPolicyOkAdmin;
   window.openPasswordModal = openPasswordModal;
   window.openConfirmPasswordModal = openConfirmPasswordModal;
-  window.closePasswordModal = closePasswordModal;
   window.openPwModal = openPwModal;
   window.toggleTheme = toggleTheme;
   window.toggleSidebar = toggleDrawer;
