@@ -833,6 +833,36 @@ textarea {
   padding-top: 12px;
   border-top: 1px solid var(--border-soft);
 }
+/* 切月过渡（与日历页 .sc-grid 的 shiftMonth 同口径）：退出 ease-in-strong /
+   进入 ease-out-strong，各 160ms，只动 transform/opacity、位移 6px。
+   方向由 JS 按箭头方向加 is-shift-next/-prev；进入起点用 is-shifting-in
+   （transition:none）落位，摘类后由基态过渡淡入。reduce 与键盘触发由 JS 直接落内容。 */
+.dash-page .mini-cal-grid { transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong); }
+.dash-page .mini-cal-grid.is-swapping { opacity: 0; transition-timing-function: var(--ease-in-strong); }
+.dash-page .mini-cal-grid.is-shift-next.is-swapping { transform: translateX(-6px); }
+.dash-page .mini-cal-grid.is-shift-prev.is-swapping { transform: translateX(6px); }
+.dash-page .mini-cal-grid.is-shifting-in { opacity: 0; transition: none; }
+.dash-page .mini-cal-grid.is-shift-next.is-shifting-in { transform: translateX(6px); }
+.dash-page .mini-cal-grid.is-shift-prev.is-shifting-in { transform: translateX(-6px); }
+/* 月份标签同步淡出淡入（不做方向位移：小文本位移反而晃眼） */
+.dash-page #cal-label { transition: opacity 120ms var(--ease-out-strong); }
+.dash-page #cal-label.is-swapping { opacity: 0; transition-timing-function: var(--ease-in-strong); }
+.dash-page #cal-label.is-shifting-in { opacity: 0; transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  /* JS 在 reduce 下不加这些类，这里兜底清零 —— 动画中途切换媒体查询也不留位移 */
+  .dash-page .mini-cal-grid,
+  .dash-page .mini-cal-grid.is-swapping,
+  .dash-page .mini-cal-grid.is-shift-next,
+  .dash-page .mini-cal-grid.is-shift-prev,
+  .dash-page .mini-cal-grid.is-shifting-in,
+  .dash-page .mini-cal-grid.is-shift-next.is-swapping,
+  .dash-page .mini-cal-grid.is-shift-prev.is-swapping,
+  .dash-page .mini-cal-grid.is-shift-next.is-shifting-in,
+  .dash-page .mini-cal-grid.is-shift-prev.is-shifting-in,
+  .dash-page #cal-label,
+  .dash-page #cal-label.is-swapping,
+  .dash-page #cal-label.is-shifting-in { opacity: 1; transform: none; transition: none; }
+}
 /* 图例（色标）已上移到卡头：占标题行下方一整行、在超宽屏贴右缘，把卡头右侧空白用起来。
    面板头是 flex column，故 align-self 沿交叉轴（横向）右对齐；窄屏改回左对齐并允许换行，
    不挤压标题与月份切换（两者仍独占上一行）。 */

@@ -455,11 +455,47 @@
     for (i = 0; i < trail; i++) grid.appendChild(el("div", { class: "mini-cal-day is-other", "aria-hidden": "true" }));
     txt($("cal-label"), y + " 年 " + (mo + 1) + " 月");
   }
-  function shiftMonth(delta) {
+  // 切月过渡（P? 与日历页 calendar.js 的 shiftMonth 同口径）：
+  // 方向位移 + 淡入淡出，退出 ease-in-strong / 进入 ease-out-strong，各 160ms，
+  // 只动 transform/opacity；进入起点用 is-shifting-in 无过渡落位。
+  // reduced-motion 不播；键盘触发（click detail===0，Enter/Space）也直接落内容 ——
+  // 与 .tab-panel[data-tab-instant] 的「键盘高频操作不播动效」同一策略。
+  var CAL_SWAP_MS = (YB.SWAP_MS || 160);
+  var calShiftSeq = 0;
+  function reduceMotion() { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
+  function clearCalShift(node) { if (node) node.classList.remove("is-swapping", "is-shifting-in", "is-shift-next", "is-shift-prev"); }
+  function shiftMonth(delta, instant) {
     var base = state.calMonth ? new Date(state.calMonth + "-01T00:00:00") : monthStart(serverDate());
     base.setMonth(base.getMonth() + delta);
     state.calMonth = fmtMonth(base);
-    renderCalendar();
+    var grid = $("mini-cal"), label = $("cal-label");
+    if (!delta || instant || reduceMotion() || !grid) { clearCalShift(grid); clearCalShift(label); renderCalendar(); return; }
+    var seq = ++calShiftSeq;
+    clearCalShift(grid); clearCalShift(label);
+    grid.classList.add(delta > 0 ? "is-shift-next" : "is-shift-prev");
+    grid.classList.add("is-swapping");
+    if (label) label.classList.add("is-swapping");
+    var done = false;
+    function onEnd(e) { if (e.target === grid) enter(); }
+    function enter() {
+      if (done) return;
+      done = true;
+      grid.removeEventListener("transitionend", onEnd);
+      if (seq !== calShiftSeq) return;             // 已被下一次切换取代
+      renderCalendar();                            // 换内容（此刻 opacity 仍为 0）
+      grid.classList.remove("is-swapping");
+      if (label) label.classList.remove("is-swapping");
+      grid.classList.add("is-shifting-in");        // 进入起点：偏移到「来向」一侧（无过渡落位）
+      if (label) label.classList.add("is-shifting-in");
+      void grid.offsetWidth;                       // 提交起点，使摘类时产生进入过渡
+      requestAnimationFrame(function () {
+        if (seq !== calShiftSeq) return;
+        grid.classList.remove("is-shifting-in", "is-shift-next", "is-shift-prev");
+        if (label) label.classList.remove("is-shifting-in");
+      });
+    }
+    grid.addEventListener("transitionend", onEnd);
+    setTimeout(enter, CAL_SWAP_MS);
   }
 
   /* ---------------- 自选时间片 ---------------- */
@@ -627,8 +663,8 @@
     CAL_NOTE0 = noteNode ? noteNode.textContent : "";
     renderCalendar();
     var prev = $("cal-prev"), next = $("cal-next"), ping = $("ping-btn"), retry = $("dash-retry-btn");
-    if (prev) prev.addEventListener("click", function () { shiftMonth(-1); });
-    if (next) next.addEventListener("click", function () { shiftMonth(1); });
+    if (prev) prev.addEventListener("click", function (e) { shiftMonth(-1, e.detail === 0); });
+    if (next) next.addEventListener("click", function (e) { shiftMonth(1, e.detail === 0); });
     if (ping) ping.addEventListener("click", doPing);
     if (retry) retry.addEventListener("click", retryAll);
     loadAll();
