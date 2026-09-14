@@ -24,6 +24,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -182,6 +183,71 @@ class CapacityBreakdownTest(_Base):
             self.assertEqual(cap["accounts_max"], 2)
         finally:
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
+
+    def test_settings_stats_from_raw_snapshot_no_decrypt(self):
+        """2026-09-14 性能回归：设置页统计改用不解密读取并去重。
+
+        钉死两点：
+        (a) 判定路径不触达解密读 load_accounts（打桩为抛错，命中即 500）；
+        (b) accounts 原始读 / users 读各恰一次（去重），且三分类、owners、
+            潜在负载、活跃计数都能用不解密原始行独立复算，口径不变。
+        """
+        self._add("13900000011")                         # 正常
+        self._add("13900000012", paused=True)            # 用户自暂停
+        self._add("13900000013")                         # 账密故障暂停
+        self._add("13900000014", owner="u1@test.local")  # 有主 + 账密故障暂停
+        self._write_cred_state(["13900000013", "13900000014"])
+        self.db.create_user(email="u1@test.local", password_hash="x")
+        self.db.create_user(email="u2@test.local", password_hash="x")  # 空用户 → 潜在负载
+
+        app = self.webapp.create_app()
+        c = app.test_client()
+        r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+        with mock.patch.object(
+            self.db, "load_accounts",
+            side_effect=AssertionError("设置页不应触发解密读"),
+        ) as m_dec, mock.patch.object(
+            self.db, "load_accounts_raw", wraps=self.db.load_accounts_raw
+        ) as m_raw, mock.patch.object(
+            self.db, "load_users", wraps=self.db.load_users
+        ) as m_users:
+            rs = c.get("/api/settings")
+        self.assertEqual(rs.status_code, 200, rs.get_data(as_text=True))
+        m_dec.assert_not_called()
+        self.assertEqual(m_raw.call_count, 1, "账号原始读须去重为单次")
+        self.assertEqual(m_users.call_count, 1, "用户读取须去重为单次")
+
+        data = rs.get_json()
+        cap, bd = data["capacity"], data["capacity"]["accounts_breakdown"]
+        live = [a for a in self.db.load_accounts_raw() if not a["deleted"]]
+        cred = self.webapp._cred_paused_phones()
+        exp_user = sum(1 for a in live if a.get("user_paused"))
+        exp_cred = sum(
+            1 for a in live
+            if not a.get("user_paused") and str(a.get("phone", "")) in cred
+        )
+        self.assertEqual(
+            bd,
+            {"normal": len(live) - exp_user - exp_cred,
+             "user_paused": exp_user, "cred_paused": exp_cred},
+            "三分类口径：自暂停优先于账密故障",
+        )
+        self.assertEqual(cap["accounts"], len(live))
+        self.assertEqual(sum(bd.values()), cap["accounts"], "三桶求和 = 账号总数")
+        owners = {a.get("owner") for a in live if a.get("owner")}
+        self.assertEqual(
+            data["capacity_estimate"]["potential_load"],
+            sum(1 for u in self.db.load_users() if u["email"] not in owners),
+        )
+        # 计数/配额入口同样不得解密
+        with mock.patch.object(
+            self.db, "load_accounts",
+            side_effect=AssertionError("计数不应触发解密读"),
+        ):
+            self.assertEqual(self.webapp._active_account_count(), len(live))
+            self.assertFalse(self.webapp._accounts_at_capacity(0))
 
 
 if __name__ == "__main__":
