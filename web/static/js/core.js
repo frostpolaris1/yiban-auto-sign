@@ -618,12 +618,44 @@
     if (!items.length) return;
     items[((index % items.length) + items.length) % items.length].focus();
   }
+  // 顶栏下拉的视口钳制。vendor 在 ≤720 把 .dd-menu 定成 width:calc(100vw - 16px) 且 right:-8px,
+  // 面板右缘锚在**触发器右缘**；通知铃铛不是顶栏最后一个元素，锚点离视口右缘还有一段距离，
+  // 面板就从左侧越界（实测 390 下 left=-50、320 下 left=-64）。纯 CSS 改不了：面板宽度由
+  // 锚点右缘反推，锚点位置随顶栏排布（铃铛/主题/头像）变化，`max-width` 也管不到左溢出。
+  // 故与自研日期弹层同一套思路——按「目标视口位置 − 锚点」一次算准，只保留 left 一种锚定：
+  //   候选左缘 = 锚点右缘 − 面板宽，再夹进 [PAD, vw − PAD − 面板宽]。
+  var DD_PAD = 8;
+  function clampDropdown(wrap) {
+    var menu = wrap.querySelector(".dd-menu");
+    if (!menu) return;
+    // 行内操作下拉由 YB.rowMenu 用 fixed 自己钳制（portal 到 body），不在此处理
+    if (wrap.classList.contains("acct-row-menu") || wrap.classList.contains("usr-row-menu")) return;
+    menu.style.left = "";
+    menu.style.right = "";
+    var vw = document.documentElement.clientWidth || window.innerWidth || 0;
+    // 闭态带 scale(0.98)，矩形会缩水，量 offsetWidth（不受 transform 影响）
+    var w = menu.offsetWidth;
+    if (!w || !vw) return;
+    // 内联已清空，此处的 computed right 即 CSS 的锚定偏移（桌面 0 / 移动 -8px），
+    // 用它还原「菜单右缘」的锚点意图（right:-8 → 右缘 = 锚点右缘 + 8）
+    var rightOff = parseFloat(window.getComputedStyle(menu).right);
+    if (!isFinite(rightOff)) rightOff = 0;
+    var wrapRect = wrap.getBoundingClientRect();
+    var anchorRight = wrapRect.right - rightOff;
+    var left = Math.min(Math.max(anchorRight - w, DD_PAD), Math.max(DD_PAD, vw - DD_PAD - w));
+    menu.style.left = Math.round(left - wrapRect.left) + "px";
+    menu.style.right = "auto";
+  }
+  function clampOpenDropdowns() {
+    forEach(document.querySelectorAll(".dd-wrap.is-open"), clampDropdown);
+  }
   function toggleDropdown(trigger) {
     var wrap = trigger && trigger.closest ? trigger.closest(".dd-wrap") : null;
     if (!wrap) return;
     var willOpen = !wrap.classList.contains("is-open");
     closeDropdowns(wrap);
     wrap.classList.toggle("is-open", willOpen);
+    if (willOpen) clampDropdown(wrap);
   }
 
   /* ---------- 导航分组（桌面手风琴 + 721–1100px rail 浮层定位） ---------- */
@@ -995,7 +1027,7 @@
       else if (e.key === "End") { e.preventDefault(); focusItem(items, items.length - 1); }
     });
 
-    window.addEventListener("resize", function () { relayoutRail(); if (window.innerWidth > 720) toggleDrawer(false); });
+    window.addEventListener("resize", function () { relayoutRail(); clampOpenDropdowns(); if (window.innerWidth > 720) toggleDrawer(false); });
     window.addEventListener("scroll", relayoutRail, true);
   }
 
