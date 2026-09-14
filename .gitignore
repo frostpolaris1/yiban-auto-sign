@@ -102,6 +102,8 @@ build/
 # 品牌图标（版权来源不明，不入开源仓库；本地/服务器自行放入即可生效，见 README「自定义 Web 图标」）
 web/static/vendor/logo.png
 web/static/vendor/favicon.png
+# 页脚备案图标（备案号对应官方图标，部署者自放；缺失时页脚 onerror 隐藏，不入库）
+web/static/vendor/gongan-beian.png
 
 # 运营者本地完整版合规文档（不入库，仅自己的服务器用；仓库内相应文件为只含注释的空模板）
 deploy-local/

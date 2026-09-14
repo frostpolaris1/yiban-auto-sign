@@ -3026,6 +3026,21 @@ def create_app(host=None):
         resp.headers["Cache-Control"] = "public, max-age=3600"
         return resp
 
+    @app.route("/gongan-beian.png")
+    def gongan_beian_png():
+        """页脚备案图标：服务部署者自放的 static/vendor/gongan-beian.png（不入库）。
+
+        与 favicon 同机制——重写后模板引用带挂载前缀，请求进入应用而非域名层静态
+        目录，必须自带路由；未放置时 404，页脚 <img> 的 onerror 会隐藏裂图但保留
+        尺寸（防空行）。短缓存便于部署者换图后及时生效。
+        """
+        icon_path = os.path.join(app.static_folder, "vendor", "gongan-beian.png")
+        if not os.path.isfile(icon_path):
+            abort(404)
+        resp = send_file(icon_path, mimetype="image/png", conditional=True)
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+        return resp
+
     @app.route("/")
     def root_page():
         """根路径：按登录态**一步**转到对应首页。

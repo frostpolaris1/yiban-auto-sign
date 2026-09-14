@@ -9,7 +9,9 @@
     {% endif %}
     {% if police_info %}
     <a id="footer-police" href="{{ police_link }}" target="_blank" rel="noopener">
-      <img src="{{ request.script_root }}/gongan-beian.png" alt="" width="12" height="13">{{ police_info }}
+      {# onerror 只隐藏裂图、不隐藏元素：width/height 占位仍在，未放图时行高不跳变 #}
+      <img src="{{ request.script_root }}/gongan-beian.png" alt="" width="12" height="13"
+           onerror="this.onerror=null;this.style.visibility='hidden'">{{ police_info }}
     </a>
     {% endif %}
     {% if not icp_info and not police_info %}
