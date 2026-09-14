@@ -141,8 +141,24 @@
     }
     return { method: (method || "GET").toUpperCase(), path: path, body: body };
   }
+  /* 并发 GET 去重：同一时刻多个调用方请求同一 URL 时只发一次网络请求，共享同一 Promise。
+     仅合并「尚未返回」的请求，一旦落地即从表中移除——不引入任何响应缓存，后续刷新或写操作
+     后的重新拉取仍拿到最新数据，新鲜度语义不变；POST/PUT/DELETE/PATCH 一律不走此路径。
+     动机：外壳 core.js 的导航徽标/时钟/公告与页面脚本会在首屏同时拉 /api/accounts、
+     /api/users、/api/clock、/api/announcement，此前每次加载都重复请求一遍（单 worker 生产
+     环境下白占线程与带宽）。 */
+  var inflightGets = {};
   function api(method, path, body) {
-    return perform(normalizeRequest(method, path, body), false);
+    var req = normalizeRequest(method, path, body);
+    if (req.method !== "GET") return perform(req, false);
+    var key = req.path + "\u0000" + (req.body == null ? "" : String(req.body))
+      + "\u0000" + JSON.stringify(req.headers || {});
+    if (inflightGets[key]) return inflightGets[key];
+    var pending = perform(req, false);
+    inflightGets[key] = pending;
+    var clear = function () { if (inflightGets[key] === pending) delete inflightGets[key]; };
+    pending.then(clear, clear);
+    return pending;
   }
 
   /* ---------- Toast ---------- */
