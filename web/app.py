@@ -1408,6 +1408,18 @@ def load_accounts():
         return db.load_accounts()
 
 
+def load_accounts_raw():
+    """全部账号原始行（不解密 password/phone_code），供仅需明文列的统计/归类路径。
+
+    只 SELECT + 组行，无 AES-GCM 解密、无明文自愈回写：计数、取 owner 集合、
+    容量三分类等只用得到 phone（本就是明文列，兼作 AAD）/status/user_paused/
+    deleted/owner，调用方拿不到也无需明文凭据。
+    _file_lock 与 load_accounts 同锁：同连接上未提交事务的部分结果不可见。
+    """
+    with _file_lock:
+        return db.load_accounts_raw()
+
+
 def load_users():
     """全部用户（SQLite）。"""
     with _file_lock:
@@ -2350,8 +2362,10 @@ def _active_account_count():
 
     「账号容量」约束易班请求负载 = 实际参与签到的活跃凭据数，裸账号同样发起
     签到请求，与注册用户持有的账号同权计入；显示/配额/预估三处同一源。
+    2026-09-14 性能：只用 deleted 明文列，改走 load_accounts_raw 免解密
+    （原 load_accounts 对每行做 AES-GCM 解密并长持 _conn_lock，并发下串行化）。
     """
-    return sum(1 for a in load_accounts() if not a["deleted"])
+    return sum(1 for a in load_accounts_raw() if not a["deleted"])
 
 
 def _capacity_estimate(gap=0):
@@ -7049,8 +7063,16 @@ def create_app(host=None):
         # 容量口径（2026-09-08 修订，与配额检查同源 _active_account_count）：
         #   用户 = 全部未删除注册用户（含尚未添加账号的空用户，仅注册名额口径）
         #   账号 = 全部非删除活跃账号（含 admin 直属裸账号——同样参与签到占负载）
-        _cap_users = len(db.load_users())
-        _cur_accounts = _active_account_count()
+        # 2026-09-14 性能：单请求只读一次 users / 一次 accounts（raw，不解密）。
+        # 原先 load_accounts() 同请求 3 次、db.load_users() 2 次，每次 AES-GCM 解密
+        # 且长持 _conn_lock，2 核机上把 /api/settings 串行化到 ~13.5 rps。此处三处
+        # 用途（计数/三分类/owners 集合）都只用明文列，共享同一快照还消除并发下
+        # _cur_accounts 与三分类求和不一致的可能。
+        _users = db.load_users()
+        _accts_raw = load_accounts_raw()
+        _cap_users = len(_users)
+        # 与 _active_account_count() 同口径（全部非删除账号），只是复用同一快照
+        _cur_accounts = sum(1 for a in _accts_raw if not a["deleted"])
         # 账号容量拆解（2026-09-10 需求3，**纯展示**）：名额制下"停签/故障账号占满名额、
         # 新账号被拒但实际负载不高"是管理者的真实困惑，故在设置页展示三分类计数。
         # 口径与配额判定**完全解耦**：判定仍只看"非删除账号总数"（_active_account_count），
@@ -7059,7 +7081,7 @@ def create_app(host=None):
         # （同一账号两者都命中时归"用户自暂停"——那是用户主动行为，先说清楚"是他自己要停的"）。
         _cred_paused = _cred_paused_phones()
         _bd_normal = _bd_user_paused = _bd_cred_paused = 0
-        for _a in load_accounts():
+        for _a in _accts_raw:
             if _a.get("deleted"):
                 continue
             if _a.get("user_paused"):
@@ -7069,8 +7091,8 @@ def create_app(host=None):
             else:
                 _bd_normal += 1
         # 潜在负载：已注册未提交人数（注册用户中尚无任何非删除账号者）
-        _owners = {a.get("owner") for a in load_accounts() if not a["deleted"] and a.get("owner")}
-        _potential = sum(1 for u in db.load_users() if u["email"] not in _owners)
+        _owners = {a.get("owner") for a in _accts_raw if not a["deleted"] and a.get("owner")}
+        _potential = sum(1 for u in _users if u["email"] not in _owners)
         # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
         _est_start = load_env_int(ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
         _est_gap = load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", DEFAULT_ACCOUNT_GAP_MAX)
