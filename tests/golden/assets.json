@@ -1,6 +1,6 @@
 {
   "index": [
-    "link rel=icon href=/favicon.png",
+    "link rel=icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
@@ -10,7 +10,7 @@
     "script src=/static/js/pages/data_dashboard.js?v=*"
   ],
   "login": [
-    "link rel=icon href=/favicon.png",
+    "link rel=icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
@@ -19,7 +19,7 @@
     "script src=/static/js/pages/login.js?v=*"
   ],
   "user": [
-    "link rel=icon href=/favicon.png",
+    "link rel=icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
@@ -35,7 +35,7 @@
     "script src=/static/js/pages/user_account.js?v=*"
   ],
   "user_calendar": [
-    "link rel=icon href=/favicon.png",
+    "link rel=icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
