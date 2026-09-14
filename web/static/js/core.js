@@ -946,6 +946,7 @@
   onReady(function () {
     initGlobalHandlers();
     initTabRoving();
+    initNavProgress();
     var themeBtn = $("themeToggle");
     if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
     updateThemeIcons();
@@ -984,6 +985,92 @@
     primary.addEventListener("transitionend", onEnd);
     els.forEach(function (n) { n.classList.add("is-swapping"); });
     setTimeout(finish, SWAP_MS);
+  }
+
+  /* ---------- 顶部导航进度条（MPA 页面切换） ----------
+     多页应用没有前端路由，点内部链接即整页跳转；浏览器自身不提供任何"正在导航"
+     反馈，弱网下会出现"点了一下没反应 → 突然白屏换页"的跳变感（用户实拍）。
+     本模块在捕获阶段监听合格的同源导航点击，立即显示细进度条并缓慢推进；
+     新页面 core.js 载入时读 sessionStorage 里的起点时间，接续补到 100% 再淡出。
+     不合格的链接一律放行：修饰键（新标签/下载）、target!=_self、download、
+     外链、仅 hash 同页、文件类扩展名、显式 data-no-nav-progress。
+     reduced-motion 直接不显示（不做任何位移动画）。
+     明确不做「预取」：页面响应是 Cache-Control: no-store（见 app.py _NO_STORE_PAGES），
+     <link rel=prefetch> 拉到的整页无法在导航时复用，只会在单 worker 上白跑一遍
+     渲染；各页共享的 JS/CSS 本身已带版本号缓存。 */
+  var NAV_PROGRESS_KEY = "yiban-nav-progress-at";
+  var navBar = null, navTimer = null, navValue = 0;
+  var NAV_FILE_RE = /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|log|csv|xlsx?|docx?|pptx?|mp4|mp3|txt|json)$/i;
+  function isNavLink(a) {
+    if (!a || !a.getAttribute) return false;
+    if (a.hasAttribute("download") || a.hasAttribute("data-no-nav-progress")) return false;
+    var target = String(a.getAttribute("target") || "").toLowerCase();
+    if (target && target !== "_self") return false;
+    var href = a.getAttribute("href");
+    if (!href || href.charAt(0) === "#") return false;
+    if (/^(mailto|tel|javascript):/i.test(href)) return false;
+    var u;
+    try { u = new URL(a.href, location.href); } catch (e) { return false; }
+    if (u.origin !== location.origin) return false;                       // 外链
+    if (u.pathname === location.pathname && u.search === location.search) return false;  // 同页（含仅 hash）
+    if (NAV_FILE_RE.test(u.pathname)) return false;                       // 下载类资源
+    return true;
+  }
+  function navBarCreate() {
+    if (navBar && document.body && document.body.contains(navBar)) return navBar;
+    navBar = el("div", { class: "nav-progress", "aria-hidden": "true" });
+    navBar.appendChild(el("div", { class: "nav-progress__fill" }));
+    (document.body || document.documentElement).appendChild(navBar);
+    return navBar;
+  }
+  function navSetWidth(pct) { if (navBar) navBar.firstChild.style.width = pct + "%"; }
+  function startNavProgress() {
+    if (reducedMotion()) return;
+    navBarCreate();
+    navBar.classList.remove("is-done");
+    navBar.firstChild.style.opacity = "1";
+    navValue = 8;
+    navSetWidth(navValue);
+    try { sessionStorage.setItem(NAV_PROGRESS_KEY, String(Date.now())); } catch (e) {}
+    clearInterval(navTimer);
+    // 越接近 90% 推进越慢：避免还没到达新页就先满格（满格后长时间不动反而"卡住"）
+    navTimer = setInterval(function () {
+      navValue += Math.max(0.4, (90 - navValue) * 0.08);
+      if (navValue >= 90) { navValue = 90; clearInterval(navTimer); }
+      navSetWidth(navValue);
+    }, 120);
+  }
+  function finishNavProgress() {
+    if (!navBar || reducedMotion()) return;
+    clearInterval(navTimer);
+    navSetWidth(100);
+    navBar.classList.add("is-done");
+    var node = navBar;
+    setTimeout(function () {
+      if (node.parentNode) node.parentNode.removeChild(node);
+      if (navBar === node) { navBar = null; navValue = 0; }
+    }, 240);
+  }
+  function initNavProgress() {
+    // 新页载入接续：上一页点过导航（15s 内）则从 85% 补到 100% 并淡出，收尾"已到达"
+    var startedAt = 0;
+    try {
+      startedAt = parseInt(sessionStorage.getItem(NAV_PROGRESS_KEY) || "0", 10) || 0;
+      sessionStorage.removeItem(NAV_PROGRESS_KEY);
+    } catch (e) {}
+    if (!reducedMotion() && startedAt && Date.now() - startedAt < 15000) {
+      navBarCreate();
+      navValue = 85;
+      navSetWidth(85);
+      requestAnimationFrame(function () { requestAnimationFrame(finishNavProgress); });
+    }
+    document.addEventListener("click", function (e) {
+      if (e.defaultPrevented || e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      var t = e.target;
+      var a = (t && t.closest) ? t.closest("a[href]") : null;
+      if (isNavLink(a)) startNavProgress();
+    }, true);
   }
 
   /* ---------- 浏览器级显示偏好（localStorage） ----------
