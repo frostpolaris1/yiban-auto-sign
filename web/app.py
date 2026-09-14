@@ -45,6 +45,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     session,
     url_for,
 )
@@ -3010,6 +3011,20 @@ def create_app(host=None):
             endpoint="moved_" + _old.strip("/").replace("/", "_"),
             view_func=_moved_page_view(_target),
         )
+
+    @app.route("/favicon.png")
+    def favicon_png():
+        """站标：优先服务部署者自放的 static/vendor/favicon.png（不入库，与 logo.png 同机制）。
+
+        重写后模板引用带挂载前缀，请求进入应用而非域名层静态目录，须自带路由；
+        未放置时 404（浏览器退回默认图标）。短缓存便于部署者换图后及时生效。
+        """
+        icon_path = os.path.join(app.static_folder, "vendor", "favicon.png")
+        if not os.path.isfile(icon_path):
+            abort(404)
+        resp = send_file(icon_path, mimetype="image/png", conditional=True)
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+        return resp
 
     @app.route("/")
     def root_page():
