@@ -742,10 +742,13 @@ textarea {
 .dash-page .chart-canvas-wrap {
   position: relative;
 }
-/* 固定高度修饰类：总览两图卡（分布/时段）共用的 280px 画布高度，
-   替代手写内联 style="height: 280px"（动态高度仍由 chart_card 宏参数下发） */
+/* 固定高度修饰类：总览两图卡（分布/时段）共用 280px、趋势卡 300px 画布高度。
+   实际高度取 §35 的密度令牌（大视口自动放大），不再手写内联 px。 */
 .dash-page .chart-canvas-wrap--h280 {
-  height: 280px;
+  height: var(--density-chart-h-sm, 280px);
+}
+.dash-page .chart-canvas-wrap--h300 {
+  height: var(--density-chart-h, 300px);
 }
 .dash-page .dash-chart-overlay {
   position: absolute;
@@ -770,10 +773,10 @@ textarea {
   overflow-x: auto;
 }
 .dash-page .dash-cal-scroll .mini-cal-grid {
-  /* 流体宽度 + 420px 上限：热力图卡现在是半宽（col-6），固定宽会在窄一档的
-     断点下比卡片还宽、把 .dash-cal-scroll 顶出横向滚动。 */
+  /* 流体宽度 + 上限：热力图卡是半宽（col-6），固定宽会在窄一档的断点下比卡片还宽、
+     把 .dash-cal-scroll 顶出横向滚动。上限取 §35 密度令牌，宽视口下格子随之增大。 */
   width: 100%;
-  max-width: 420px;
+  max-width: var(--density-cal-w, 420px);
   min-width: 280px;
   gap: var(--mini-cal-gap);
 }
@@ -4091,4 +4094,56 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .to-top { transition: none; transform: none; }
+}
+
+/* ==========================================================================
+   35. 大视口信息密度（真机分辨率 × 系统缩放）
+   --------------------------------------------------------------------------
+   用户反馈：主流高清屏/超宽屏下面板大片空白 —— 内容区无宽度约束、卡片随视口
+   拉伸，而卡内元素（热力图格、图表高、KPI 数值）尺寸固定。本条不引入 max-width
+   留白，而是按 CSS 视口宽度（= 真机分辨率 ÷ 系统缩放）分级放大元素：
+     1440x900 @100% -> 1440（基线，不改）
+     1920x1080@125% -> 1536
+     2560x1440@100% -> 2560
+     3840x2160@130% -> 2954
+   取值集中在 :root 的 --fs-* / --density-* 令牌，组件只消费令牌、不散落硬编码。
+   ≤720 不参与：移动端沿用 Adminator 的窄屏档，避免放大后挤压。
+   ========================================================================== */
+:root {
+  --fs-base: 14px;                 /* 正文基准字号（body 继承链） */
+  --fs-table: 13px;                /* .data-table 正文 */
+  --fs-log: 12px;                  /* .log-box 等宽正文 */
+  --density-cal-w: clamp(420px, 30vw, 760px);  /* 热力图整块宽度上限（格边随之增大） */
+  --density-chart-h: 300px;        /* 趋势图画布高 */
+  --density-chart-h-sm: 280px;     /* 分布/时段图画布高 */
+  --density-kpi-value: 44px;       /* KPI 数值字号 */
+  --density-card-pad: 22px;        /* 卡片内距（仅桌面档消费） */
+}
+/* 桌面档（≥721）才消费密度令牌：窄屏保持 Adminator 的 18px 卡内距等原档位 */
+@media (min-width: 721px) {
+  body { font-size: var(--fs-base); }
+  .card { padding: var(--density-card-pad); }
+  .data-table tbody td { font-size: var(--fs-table); }
+  .log-box { font-size: var(--fs-log); }
+}
+.kpi-value { font-size: var(--density-kpi-value); }
+@media (min-width: 1600px) {
+  :root {
+    --fs-base: 14.5px; --fs-table: 13.5px; --fs-log: 12.5px;
+    --density-chart-h: 340px; --density-chart-h-sm: 320px;
+    --density-kpi-value: 48px; --density-card-pad: 24px;
+  }
+}
+@media (min-width: 2100px) {
+  :root {
+    --fs-base: 15px; --fs-table: 14px; --fs-log: 13px;
+    --density-chart-h: 400px; --density-chart-h-sm: 360px;
+    --density-kpi-value: 54px; --density-card-pad: 26px;
+  }
+}
+@media (min-width: 2700px) {
+  :root {
+    --density-chart-h: 440px; --density-chart-h-sm: 400px;
+    --density-kpi-value: 58px; --density-card-pad: 28px;
+  }
 }

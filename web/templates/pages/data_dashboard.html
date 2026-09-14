@@ -50,7 +50,9 @@
       <span class="card-action" id="{{ id }}-coverage"></span>
     </div>
   </div>
-  <div class="chart-canvas-wrap" style="height: {{ height }}px;">
+  {# 高度走类名而不是内联 style：大视口的信息密度档位由 app.css §35 的令牌统一放大，
+     内联 px 会盖掉媒体查询。--h{{ height }} 与宏参数一一对应。 #}
+  <div class="chart-canvas-wrap chart-canvas-wrap--h{{ height }}">
     <canvas id="chart-{{ id }}" role="img" aria-label="{{ title }}"></canvas>
     <div class="dash-chart-overlay" data-overlay="{{ id }}">
       <span class="spinner" aria-hidden="true"></span>
