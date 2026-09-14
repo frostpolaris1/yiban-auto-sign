@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""loadtest 工具链轻量冒烟测试（秒级，不进常规重负载）。
+
+覆盖：
+  * mock_yiban 全部接口形状 + 失败注入 + JSONL 落盘 + 配置热读；
+  * scale_driver 的纯解析/统计函数（模拟 N=2 的 mock 日志，验证周期与并发解析）；
+  * concurrency_probe 的切片/锁错误/饱和点判定纯函数；
+  * mock_env 的 hosts 标记块读写与 --dry-run 幂等；
+  * 五个脚本的 --help 可执行性。
+
+端到端（真实 signin 进程 + TLS + /etc/hosts）需要 root/测试机，默认跳过：
+设置 ``YIBAN_LOADTEST_E2E=1`` 且提供 ``YIBAN_LOADTEST_*`` 路径后才会执行。
+"""
+
+from __future__ import annotations
+
+import http.client
+import importlib
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+import pytest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+_LOADTEST = os.path.join(_ROOT, "scripts", "loadtest")
+if _LOADTEST and os.path.dirname(_LOADTEST) not in sys.path:
+    sys.path.insert(0, os.path.dirname(_LOADTEST))
+
+mock_yiban = importlib.import_module("loadtest.mock_yiban")
+mock_env = importlib.import_module("loadtest.mock_env")
+scale_driver = importlib.import_module("loadtest.scale_driver")
+concurrency_probe = importlib.import_module("loadtest.concurrency_probe")
+
+
+# ---------------------------------------------------------------------------
+# 工具：进程内起 mock（明文 HTTP，端口 0）
+# ---------------------------------------------------------------------------
+class MockServer:
+    def __init__(self, tmp_path, **cfg):
+        state = mock_yiban.MockState(log_path=str(tmp_path / "mock.jsonl"))
+        config = mock_yiban.MockConfig(**cfg)
+        servers, state, config = mock_yiban.create_servers(
+            host="127.0.0.1", port=0, cert=None, key=None,
+            state=state, config=config, enable_ipv6=False,
+        )
+        self.server = servers[0]
+        self.port = self.server.server_address[1]
+        self.state = state
+        self.config = config
+        self.log_path = str(tmp_path / "mock.jsonl")
+        self._t = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._t.start()
+
+    def request(self, method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        loc = resp.getheader("Location")
+        status = resp.status
+        conn.close()
+        return status, data, loc
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture()
+def mock(tmp_path):
+    srv = MockServer(tmp_path)
+    yield srv
+    srv.close()
+
+
+# ---------------------------------------------------------------------------
+# mock_yiban
+# ---------------------------------------------------------------------------
+def test_mock_all_endpoint_shapes(mock):
+    """登录链 4 步 + 签到 2 步 + 探针/运维入口的形状都必须与 signin 调用一致。"""
+    st, body, _ = mock.request("GET", "/__health")
+    assert st == 200 and json.loads(body)["ok"] is True
+
+    st, body, _ = mock.request("GET", "/code/html")
+    html = body.decode("utf-8")
+    assert st == 200
+    assert 'id="key"' in html and "BEGIN PUBLIC KEY" in html
+    assert "var page_use = 'mockpageuse12345'" in html
+
+    st, body, _ = mock.request("POST", "/code/usersure", body="oauth_uname=1")
+    assert st == 200 and json.loads(body)["code"] == "s200"
+
+    st, body, loc = mock.request("GET", "/iframe/index?act=iapp7463")
+    assert st == 302 and "verify_request=" in (loc or "")
+    assert loc.startswith("https://api.uyiban.com/base/c/auth/yiban")
+
+    st, body, _ = mock.request("GET", "/base/c/auth/yiban?verifyRequest=x&CSRF=y")
+    assert st == 200 and json.loads(body)["code"] == 0
+
+    st, body, _ = mock.request("GET", "/nightAttendance/student/index/signPosition?CSRF=y")
+    data = json.loads(body)
+    assert st == 200 and data["code"] == 0
+    assert data["data"]["Position"][0]["Name"] == "MockTask"
+    assert data["data"]["Range"]["StartTime"] < data["data"]["Range"]["EndTime"]
+
+    st, body, _ = mock.request("POST", "/nightAttendance/student/index/signIn?CSRF=y", body="x=1")
+    assert st == 200 and json.loads(body)["code"] == 0
+
+
+def test_mock_unknown_path_404(mock):
+    st, _body, _ = mock.request("GET", "/nope")
+    assert st == 404
+
+
+def test_mock_failure_injection(tmp_path):
+    """失败注入点 signIn 与 login 各验证一次（signin 会据此走失败分支）。"""
+    srv = MockServer(tmp_path, fail_rate=1.0, fail_stage="login")
+    try:
+        st, body, _ = srv.request("POST", "/code/usersure", body="x=1")
+        assert json.loads(body)["code"] != "s200"
+    finally:
+        srv.close()
+
+    srv2 = MockServer(tmp_path, fail_rate=1.0, fail_stage="signIn")
+    try:
+        st, body, _ = srv2.request("POST", "/nightAttendance/student/index/signIn", body="x=1")
+        assert st == 200 and json.loads(body)["code"] == 1
+    finally:
+        srv2.close()
+
+
+def test_mock_config_hot_read(tmp_path):
+    """配置文件热读：运行中把 fail_rate 打开即生效，无需重启。"""
+    cfg_path = tmp_path / "mock_config.json"
+    cfg_path.write_text(json.dumps({"delay_ms": 0, "fail_rate": 0.0, "fail_stage": "login"}),
+                        encoding="utf-8")
+    srv = MockServer(tmp_path, config_path=str(cfg_path))
+    try:
+        _st, body, _ = srv.request("POST", "/code/usersure", body="x=1")
+        assert json.loads(body)["code"] == "s200"
+        cfg_path.write_text(json.dumps({"fail_rate": 1.0, "fail_stage": "login"}), encoding="utf-8")
+        _st, body, _ = srv.request("POST", "/code/usersure", body="x=1")
+        assert json.loads(body)["code"] == "e001"
+    finally:
+        srv.close()
+
+
+def test_mock_jsonl_logging(mock):
+    """逐请求 JSONL 必须含毫秒时间戳/耗时/结果/并发字段。"""
+    mock.request("GET", "/code/html")
+    # mock 在响应 flush 后才写日志，轮询等待落盘（最多 2s）
+    deadline = time.monotonic() + 2.0
+    while not os.path.exists(mock.log_path) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    with open(mock.log_path, encoding="utf-8") as f:
+        rows = [json.loads(x) for x in f if x.strip()]
+    assert rows, "应至少落一条 JSONL"
+    r = next(x for x in rows if x["path"] == "/code/html")
+    assert r["host"] == "127.0.0.1"
+    assert isinstance(r["epoch_ms"], int) and r["epoch_ms"] > 0
+    assert "dur_ms" in r and r["outcome"] == "ok"
+    assert r["inflight"] >= 1
+
+
+def test_mock_default_binds_loopback_only():
+    """默认参数必须是回环地址，避免误暴露到公网。"""
+    # 直接检查 main 的默认值（不实际启动 443）
+    src = open(os.path.join(_LOADTEST, "mock_yiban.py"), encoding="utf-8").read()
+    assert 'default="127.0.0.1"' in src
+    assert 'default="::1"' in src
+    assert 'default="0.0.0.0"' not in src
+
+
+# ---------------------------------------------------------------------------
+# scale_driver
+# ---------------------------------------------------------------------------
+def test_driver_percentile_and_stats():
+    vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert scale_driver.percentile(vals, 0.5) == 3.0
+    s = scale_driver.stats(vals)
+    assert s["n"] == 5 and s["min"] == 1.0 and s["max"] == 5.0
+    assert scale_driver.percentile([], 0.5) is None
+
+
+def test_driver_parse_jsonl_cycles_n2(tmp_path):
+    """模拟 N=2：两条 /code/html 起点 → 1 个周期；并解析请求耗时与最大并发。"""
+    log = tmp_path / "mock.jsonl"
+    rows = [
+        # 账号 1：6 次请求，起点 t=0ms
+        {"epoch_ms": 1000, "path": "/code/html", "method": "GET", "dur_ms": 300, "inflight": 1},
+        {"epoch_ms": 1100, "path": "/code/usersure", "method": "POST", "dur_ms": 300, "inflight": 1},
+        {"epoch_ms": 1200, "path": "/iframe/index", "method": "GET", "dur_ms": 300, "inflight": 1},
+        {"epoch_ms": 1300, "path": "/base/c/auth/yiban", "method": "GET", "dur_ms": 300, "inflight": 1},
+        {"epoch_ms": 1400, "path": "/nightAttendance/student/index/signPosition", "method": "GET", "dur_ms": 300, "inflight": 1},
+        {"epoch_ms": 1500, "path": "/nightAttendance/student/index/signIn", "method": "POST", "dur_ms": 300, "inflight": 1},
+        # 账号 2：起点 t=10875ms（周期 ≈ 9.875s）
+        {"epoch_ms": 11875, "path": "/code/html", "method": "GET", "dur_ms": 300, "inflight": 1},
+        {"epoch_ms": 11900, "path": "/code/usersure", "method": "POST", "dur_ms": 300, "inflight": 2},
+    ]
+    with open(log, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    cycles, t_list, max_infl, ge2, n_rec, off = scale_driver.parse_jsonl_cycles(str(log))
+    assert cycles == [10.875]
+    assert t_list and abs(t_list[0] - 1.8) < 1e-6
+    assert max_infl == 2 and ge2 == 1 and n_rec == 8
+    assert off > 0
+
+
+def test_driver_env_and_csv(tmp_path):
+    envp = tmp_path / ".env"
+    envp.write_text('YIBAN_DB_FILE="/tmp/x.db"\n# c\nYIBAN_GAP=10\n', encoding="utf-8")
+    env = scale_driver.load_env_file(str(envp))
+    assert env["YIBAN_DB_FILE"] == "/tmp/x.db" and env["YIBAN_GAP"] == "10"
+    csv_path = tmp_path / "results.csv"
+    row = {k: "" for k in scale_driver.CSV_FIELDS}
+    row.update({"label": "smoke", "config": "net300", "N": 2})
+    scale_driver.write_csv(str(csv_path), row)
+    scale_driver.write_csv(str(csv_path), row)  # 去重：仍只有 1 行数据
+    lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    assert lines[1].startswith("smoke,net300,2,")
+
+
+def test_driver_compute_window():
+    from datetime import datetime
+    start, end, eff = scale_driver.compute_window(datetime(2026, 9, 14, 6, 0, 0), 420)
+    assert eff == 420 and start < end
+
+
+# ---------------------------------------------------------------------------
+# concurrency_probe
+# ---------------------------------------------------------------------------
+def test_probe_partition_slices_disjoint():
+    phones = [f"13{i:09d}" for i in range(20)]
+    slices = concurrency_probe.partition_slices(phones, k=4, per_proc=5)
+    assert len(slices) == 4
+    flat = [p for s in slices for p in s]
+    assert len(flat) == len(set(flat)) == 20  # 互不重叠
+    assert all(len(s) == 5 for s in slices)
+    # 账号不足时提前截断
+    assert len(concurrency_probe.partition_slices(phones, k=8, per_proc=5)) == 4
+
+
+def test_probe_scan_lock_errors():
+    text = "WARN 保存会话缓存失败（不影响签到）: database is locked\nall good\n"
+    n, hits = concurrency_probe.scan_lock_errors(text)
+    assert n >= 2 and "database is locked" in hits
+
+
+def test_probe_classify_bottlenecks():
+    rows = [
+        {"K": 1, "machine_cpu_pct": 10, "engine_cpu_onecore_pct": 5,
+         "min_available_mb": 900, "lock_errors": 0, "db_write_p95_ms": 1, "oom_killed": False},
+        {"K": 2, "machine_cpu_pct": 95, "engine_cpu_onecore_pct": 60,
+         "min_available_mb": 800, "lock_errors": 0, "db_write_p95_ms": 2, "oom_killed": False},
+        {"K": 4, "machine_cpu_pct": 99, "engine_cpu_onecore_pct": 120,
+         "min_available_mb": 100, "lock_errors": 1, "db_write_p95_ms": 600, "oom_killed": False},
+    ]
+    v = concurrency_probe.classify_bottlenecks(rows, 1700, 150)
+    assert v["cpu_sat_k"] == 2
+    assert v["mem_sat_k"] == 4
+    assert v["db_sat_k"] == 4
+    assert v["first_bottleneck"] == (2, "CPU")
+
+
+# ---------------------------------------------------------------------------
+# mock_env
+# ---------------------------------------------------------------------------
+def test_mock_env_hosts_block_idempotent(tmp_path):
+    hosts = tmp_path / "hosts"
+    hosts.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+    backup = str(tmp_path / "hosts.orig")
+    domains = ["oauth.yiban.cn", "f.yiban.cn"]
+    changed = mock_env.apply_hosts(str(hosts), domains, backup)
+    assert changed
+    text1 = hosts.read_text(encoding="utf-8")
+    assert mock_env.HOSTS_BEGIN in text1 and "127.0.0.1 oauth.yiban.cn" in text1
+    assert "::1 f.yiban.cn" in text1
+    # 幂等：第二次不改动
+    assert mock_env.apply_hosts(str(hosts), domains, backup) is False
+    assert hosts.read_text(encoding="utf-8") == text1
+    # 还原：标记块删除、原有内容保留，再还原也无变化
+    assert mock_env.restore_hosts(str(hosts), backup) is True
+    assert mock_env.HOSTS_BEGIN not in hosts.read_text(encoding="utf-8")
+    assert "127.0.0.1 localhost" in hosts.read_text(encoding="utf-8")
+    assert mock_env.restore_hosts(str(hosts), backup) is False
+
+
+def test_mock_env_dry_run_ok(tmp_path):
+    """--dry-run 不触碰系统，退出码 0（Windows 也可跑）。"""
+    hosts = tmp_path / "hosts"
+    hosts.write_text("", encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, os.path.join(_LOADTEST, "mock_env.py"),
+         "--dry-run", "--no-iptables", "--hosts-file", str(hosts),
+         "--base-dir", str(tmp_path / "base")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "[dry-run]" in r.stdout or "证书" in r.stdout
+
+
+def test_mock_env_selfcheck_without_setup(tmp_path):
+    """未做 hosts 改写时自检必须判失败（防止"假通过"）。"""
+    hosts = tmp_path / "hosts"
+    hosts.write_text("", encoding="utf-8")
+    ok, _rows = mock_env.selfcheck(["example.invalid"], str(hosts), ipv6=False)
+    assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# --help 冒烟（所有脚本可被解释器加载）
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("name", ["mock_yiban", "mock_env", "seed_accounts",
+                                  "scale_driver", "concurrency_probe"])
+def test_scripts_help(name):
+    r = subprocess.run([sys.executable, os.path.join(_LOADTEST, f"{name}.py"), "--help"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert "usage:" in r.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# 可选端到端（仅测试机/root，默认跳过）
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(os.environ.get("YIBAN_LOADTEST_E2E") != "1",
+                    reason="端到端需测试机 root + hosts/TLS，设置 YIBAN_LOADTEST_E2E=1 开启")
+def test_scale_driver_e2e_optional(tmp_path):
+    repo = os.environ["YIBAN_LOADTEST_REPO"]
+    env = os.environ["YIBAN_LOADTEST_ENV"]
+    db = os.environ["YIBAN_LOADTEST_DB"]
+    ca = os.environ["YIBAN_LOADTEST_CA"]
+    mock_log = os.environ["YIBAN_LOADTEST_MOCK_LOG"]
+    r = subprocess.run(
+        [sys.executable, os.path.join(_LOADTEST, "scale_driver.py"),
+         "--repo", repo, "--env", env, "--db", db, "--n", "2", "--label", "e2e",
+         "--window-sec", "20", "--ca", ca, "--mock-log", mock_log,
+         "--outdir", str(tmp_path)],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = json.loads((tmp_path / "run-e2e-n2.json").read_text(encoding="utf-8"))
+    # 严格串行的直接证据：单进程运行期间 mock 侧观测到的最大并发为 1
+    assert out["max_inflight_in_run"] == 1
