@@ -200,14 +200,17 @@ class CapacitySettingsTest(_Base):
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
             )
-        c, h = self._master()
-        data = c.get("/api/settings", headers=h).get_json()
+        # 清掉可能被其他用例写进进程环境的 avg（本用例断言发行缺省档）
+        with mock.patch.dict(os.environ):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            c, h = self._master()
+            data = c.get("/api/settings", headers=h).get_json()
         est = data["capacity_estimate"]
         for k in ("accounts_cap", "current_accounts", "potential_load"):
             self.assertIn(k, est)
         # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX=10，掐头去尾缺省前后各 60s
-        # → 有效窗口 4800-120=4680：(4680-8)/18+1 = 260
-        self.assertEqual(est["accounts_cap"], 260)
+        # → 有效窗口 4800-120=4680；avg 缺省 3：(4680-3)//13+1 = 360
+        self.assertEqual(est["accounts_cap"], 360)
         self.assertEqual(est["current_accounts"], 0)
         self.assertEqual(est["potential_load"], len(self.db.load_users()))
 
@@ -268,14 +271,17 @@ class CapacitySettingsTest(_Base):
 
 
 class CapacityFormulaTest(_Base):
-    """_capacity_estimate 公式（2026-09-08 单档：有效窗口扣除掐头去尾，仅间隔参与）。"""
+    """_capacity_estimate 公式（有效窗口扣除掐头去尾，avg 与 gap 共同决定容量）。
+
+    avg 经 YIBAN_AVG_ATTEMPT_SEC 固定为 8s，与缺省档解耦（缺省档的断言在
+    CapacitySettingsTest 里按发行缺省值另行核对）。
+    """
 
     def test_formula_single_tier(self):
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
              mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-             mock.patch.object(self.webapp.signin, "_schedule_config",
-                               return_value={"avg_attempt_sec": 8}):
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             # 4800s 窗口、无间隔：(4800-8)/8+1 = 600（单档返回单值 int）
             self.assertEqual(self.webapp._capacity_estimate(0), 600)
             # gap=10：(4800-8)/18+1 = 267
@@ -287,8 +293,7 @@ class CapacityFormulaTest(_Base):
         # 掐头去尾计入有效窗口：前后各裁 60s → 有效 4680s，容量较 4800s 变小
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-             mock.patch.object(self.webapp.signin, "_schedule_config",
-                               return_value={"avg_attempt_sec": 8}):
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             with mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)):
                 full = self.webapp._capacity_estimate(10)
             with mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
@@ -302,9 +307,20 @@ class CapacityFormulaTest(_Base):
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
              mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-             mock.patch.object(self.webapp.signin, "_schedule_config",
-                               return_value={"avg_attempt_sec": 8}):
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             self.assertEqual(self.webapp._capacity_estimate(0), 0)
+
+    def test_engine_and_web_share_one_formula(self):
+        """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""
+        import signin  # noqa: PLC0415
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
+            for gap in (0, 10, 60):
+                self.assertEqual(
+                    self.webapp._capacity_estimate(gap),
+                    signin.capacity_accounts(4680, gap),
+                )
 
 
 if __name__ == "__main__":

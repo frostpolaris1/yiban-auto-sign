@@ -22,6 +22,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -285,6 +286,39 @@ class PotentialLoadTest(_Base):
         cap = data["capacity"]
         self.assertEqual(cap["users"], len(self.db.load_users()))
         self.assertEqual(cap["accounts"], 2)
+
+
+class CapacityAccountsUnitTest(unittest.TestCase):
+    """signin.capacity_accounts：容量口径唯一源的边界（引擎预检与 web 预估共用）。"""
+
+    def _fn(self):
+        import signin
+        return signin.capacity_accounts
+
+    def test_window_smaller_than_one_account(self):
+        cap = self._fn()
+        self.assertEqual(cap(2, 10, avg=3), 0)   # 窗口 2s 容不下单账号 3s
+        self.assertEqual(cap(3, 10, avg=3), 1)   # 恰好一个（slack=0 → 1 个）
+
+    def test_gap_zero_means_pure_serial(self):
+        cap = self._fn()
+        # (4800-3)/3+1 = 1600：无间隔时限只由单账号耗时决定
+        self.assertEqual(cap(4800, 0, avg=3), 1600)
+
+    def test_gap_dominates_and_is_additive(self):
+        cap = self._fn()
+        # 实测口径：单账号周期 = avg + gap（gap 是「上一次完成 → 下一次开始」的下限）
+        self.assertEqual(cap(4800, 10, avg=3), (4800 - 3) // 13 + 1)
+        self.assertEqual(cap(4800, 10, avg=8), (4800 - 8) // 18 + 1)
+        self.assertGreater(cap(4800, 10, avg=3), cap(4800, 10, avg=8))
+
+    def test_default_avg_comes_from_env(self):
+        cap = self._fn()
+        with mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "9"}):
+            self.assertEqual(cap(4800, 10), (4800 - 9) // 19 + 1)
+        # 非法值回退发行缺省档（3s），不抛异常
+        with mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "abc"}):
+            self.assertEqual(cap(4800, 10), (4800 - 3) // 13 + 1)
 
 
 if __name__ == "__main__":

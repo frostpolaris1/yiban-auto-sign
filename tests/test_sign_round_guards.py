@@ -23,10 +23,6 @@ from unittest import mock
 import signin
 
 
-def _today():
-    return datetime.now().strftime("%Y-%m-%d")
-
-
 class _FakeDT(datetime):
     """signin.datetime 替身：now() 返回固定时刻。"""
 
@@ -42,10 +38,26 @@ class _FakeDT(datetime):
 # 补签轮定向重跑
 # ---------------------------------------------------------------------------
 class SecondRunFilterTest(unittest.TestCase):
-    """补签轮（YIBAN_SECOND_RUN=1）只重跑未了结账号；全部了结时静默结束。"""
+    """补签轮（YIBAN_SECOND_RUN=1）只重跑未了结账号；全部了结时静默结束。
+
+    本组用例钉的是补签过滤逻辑，不是周末门。signin.main() 会先过周日/周六门
+    （signin.py:3374/3380，周末且开关默认关闭即 exit 2），把"今天周几"这个外部
+    输入留成真实值，会让整组用例在周日/周六运行时必然变红。因此在测试内把
+    signin 读到的时刻固定为一个工作日（周二），状态文件名同用该固定日期，
+    使用例与运行当天的星期彻底解耦。
+    """
+
+    # 固定执行时刻：2026-09-08 为周二，避开周六/周日门；与 state 文件名共用
+    _FAKE_DATE = "2026-09-08"
+    _FAKE_DT = (2026, 9, 8, 7, 12)
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-second-run-")
+        fixed = type("_FixedDT", (_FakeDT,),
+                     {"_date": self._FAKE_DT[:3], "_hm": self._FAKE_DT[3:]})
+        p = mock.patch.object(signin, "datetime", fixed)
+        p.start()
+        self.addCleanup(p.stop)
         self._old_env = {
             k: os.environ.get(k) for k in (
                 "YIBAN_SECOND_RUN", "YIBAN_ACCOUNTS_JSON", "YIBAN_DB_FILE",
@@ -68,7 +80,7 @@ class SecondRunFilterTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write_state(self, statuses):
-        path = os.path.join(self.tmp, f"sign-state-{_today()}.json")
+        path = os.path.join(self.tmp, f"sign-state-{self._FAKE_DATE}.json")
         with io.open(path, "w", encoding="utf-8") as f:
             json.dump(
                 {p: {"status": s, "message": "", "time": "07:00:00", "task": "default"}

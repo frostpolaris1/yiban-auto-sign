@@ -1,0 +1,27 @@
+{# 错误页（404 / 500）。复用认证页外壳：错误发生时没有可靠的导航数据，
+   匿名与登录态用同一套外壳，靠服务端下发的「返回入口」区分去向。
+   只做展示与出口，不引入任何额外请求。 #}
+{% extends "layout_auth.html" %}
+
+{% block title %}{{ err_code }} {{ err_title }} · 易班自动签到{% endblock %}
+
+{% block content %}
+<div class="err-page" role="alert">
+  <div class="err-code" aria-hidden="true">{{ err_code }}</div>
+  <h1 class="err-title">{{ err_title }}</h1>
+  <p class="err-desc">{{ err_message }}</p>
+  <div class="err-actions">
+    <a class="btn btn--primary" href="{{ home_url }}">{{ home_label }}</a>
+    <button type="button" class="btn btn--ghost" id="err-back" hidden>返回上一页</button>
+  </div>
+</div>
+<script>
+  // 「返回上一页」只在确有历史记录时出现：直接打开链接时它什么也做不了，显形反而误点
+  (function () {
+    var btn = document.getElementById("err-back");
+    if (!btn || window.history.length <= 1) return;
+    btn.hidden = false;
+    btn.addEventListener("click", function () { window.history.back(); });
+  })();
+</script>
+{% endblock %}

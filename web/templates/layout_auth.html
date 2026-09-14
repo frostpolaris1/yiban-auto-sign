@@ -11,6 +11,8 @@
 <html lang="zh-CN">
 <head>
 <link rel="icon" type="image/png" href="{{ request.script_root }}/favicon.png?v={{ web_version }}">
+{# iOS 主屏图标复用同一张方图（不声明 sizes，由浏览器缩放；建议部署者用 180×180） #}
+<link rel="apple-touch-icon" href="{{ request.script_root }}/favicon.png?v={{ web_version }}">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}易班自动签到{% endblock %}</title>

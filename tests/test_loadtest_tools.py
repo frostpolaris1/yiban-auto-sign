@@ -152,16 +152,35 @@ def test_mock_config_hot_read(tmp_path):
         srv.close()
 
 
+def _read_jsonl_rows(path):
+    """读 JSONL，跳过正在写入的半行（并行满载时会被读到）。"""
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
 def test_mock_jsonl_logging(mock):
     """逐请求 JSONL 必须含毫秒时间戳/耗时/结果/并发字段。"""
     mock.request("GET", "/code/html")
-    # mock 在响应 flush 后才写日志，轮询等待落盘（最多 2s）
-    deadline = time.monotonic() + 2.0
-    while not os.path.exists(mock.log_path) and time.monotonic() < deadline:
+    # 服务端在响应 flush 之后才由请求线程落盘：客户端返回不代表行已写入。
+    # 只等"文件存在"会在满载时读到空/半行文件（xdist -n 8 下必现间歇失败），
+    # 因此轮询到目标行真正出现为止（最多 5s）。
+    deadline = time.monotonic() + 5.0
+    rows = []
+    while time.monotonic() < deadline:
+        if os.path.exists(mock.log_path):
+            rows = _read_jsonl_rows(mock.log_path)
+            if any(x.get("path") == "/code/html" for x in rows):
+                break
         time.sleep(0.02)
-    with open(mock.log_path, encoding="utf-8") as f:
-        rows = [json.loads(x) for x in f if x.strip()]
-    assert rows, "应至少落一条 JSONL"
+    assert any(x.get("path") == "/code/html" for x in rows), "应至少落一条 /code/html 的 JSONL"
     r = next(x for x in rows if x["path"] == "/code/html")
     assert r["host"] == "127.0.0.1"
     assert isinstance(r["epoch_ms"], int) and r["epoch_ms"] > 0

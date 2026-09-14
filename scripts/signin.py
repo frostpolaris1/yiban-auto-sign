@@ -396,7 +396,11 @@ _DEFAULT_MU_MAX_PCT = 60
 _DEFAULT_SIGMA_MIN_PCT = 15     # 正态分散程度范围（有效窗口宽度 %）
 _DEFAULT_SIGMA_MAX_PCT = 25
 _DEFAULT_MIN_EXEC_GAP = 5       # 请求最小间隔下限（秒，压缩模式防请求过密；F1 接线于 run_queue_retry）
-_DEFAULT_AVG_ATTEMPT_SEC = 8    # 容量预检：单次执行平均耗时估算
+# 容量预检与容量预估共用的单账号耗时估算（秒）。缺省按压测实测定档：
+# 单账号（登录链 + 签到链共 6 次请求）实测 0.08s（零延迟）、1.87s（拟真 300ms）、
+# 3.1s（含尾延迟）。旧缺省 8s 无实测依据，把可容纳账号数低估约 2.6 倍，
+# 并使保存门误拒 261~360 个账号的站点；真实网络更慢时由 YIBAN_AVG_ATTEMPT_SEC 覆盖。
+_DEFAULT_AVG_ATTEMPT_SEC = 3
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
@@ -439,6 +443,32 @@ def _env_int(name, default, lo=None, hi=None):
         logger.warning("配置 %s=%s 超出范围 [%s, %s]，回退默认 %s", name, v, lo, hi, default)
         return default
     return v
+
+
+def avg_attempt_sec():
+    """单账号签到耗时估算（秒）：YIBAN_AVG_ATTEMPT_SEC 显式配置优先，缺省 3s。"""
+    return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300)
+
+
+def capacity_accounts(window_sec, gap=0, avg=None):
+    """有效窗口内可容纳的账号数（容量口径唯一源：引擎预检与 web 容量预估共用）。
+
+    模型：首个账号立刻占用 avg 秒，此后每个账号按「上一次完成 + 间隔下限」推进，
+    相邻账号墙钟间隔 = avg + gap（实测印证：gap=10、t=1.87s → 单账号周期 11.875s）。
+    故 容量 = floor((窗口 − avg) ÷ (avg + gap)) + 1；窗口容不下单账号耗时为 0。
+
+    window_sec：有效窗口秒数（已扣掐头去尾）
+    gap：账号间隔下限秒（YIBAN_ACCOUNT_GAP_MAX）
+    avg：单账号耗时秒；缺省取 avg_attempt_sec()
+    """
+    if avg is None:
+        avg = avg_attempt_sec()
+    avg = max(1, int(avg))
+    gap = max(0, int(gap or 0))
+    slack = int(window_sec) - avg
+    if slack < 0:
+        return 0
+    return slack // (avg + gap) + 1
 
 
 def _schedule_config():
@@ -508,7 +538,7 @@ def _schedule_config():
         "sigma_min_pct": sigma_lo,
         "sigma_max_pct": sigma_hi,
         "min_exec_gap": _env_int("YIBAN_MIN_EXEC_GAP", _DEFAULT_MIN_EXEC_GAP, 1, 60),
-        "avg_attempt_sec": _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300),
+        "avg_attempt_sec": avg_attempt_sec(),
         "retry_min_interval": _env_int("YIBAN_RETRY_MIN_INTERVAL", _DEFAULT_RETRY_MIN_INTERVAL, 1, 600),
         "exec_gap_min": _env_int("YIBAN_EXEC_GAP_MIN", _DEFAULT_EXEC_GAP_MIN, 0, 300),
         "allow_time_pref": _env_int("YIBAN_ALLOW_TIME_PREF", _DEFAULT_ALLOW_TIME_PREF, 0, 1),
@@ -3415,7 +3445,7 @@ def main():
     # 自动错峰（仅自动签到；--only 手动签到立即执行，不走计划）
     schedule = {} if args.only else build_schedule(accounts)
     if schedule:
-        # 容量预检（调度 v2 第三层）：n × 平均耗时 > 有效窗口秒数 → 告警不静默
+        # 容量预检（调度 v2 第三层）：可容纳账号数 < 待签到账号数 → 告警不静默
         # 用户自暂停账号不参与调度，也不计入容量
         _cfg = _schedule_config()
         _span_min = (
@@ -3424,24 +3454,30 @@ def main():
             - (_cfg["edge_front_sec"] + _cfg["edge_back_sec"]) / 60.0
         )
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
-        if active_n * _cfg["avg_attempt_sec"] > _span_min * 60:
+        # 与 web 容量预估同一函数：账号间隔是「上一次完成 → 下一次开始」的下限，
+        # 故单账号周期 = avg + gap（旧实现只算 n × avg，与预估口径相差 ~2.3 倍）
+        _cap = capacity_accounts(_span_min * 60, gap_max, _cfg["avg_attempt_sec"])
+        if active_n > _cap:
             logger.warning(
-                "容量预检: %d 个账号 × 平均 %ds > 有效窗口 %d 秒，部分账号可能无法在窗口内完成",
-                active_n, _cfg["avg_attempt_sec"], _span_min * 60,
+                "容量预检: %d 个账号 > 有效窗口 %d 秒可容纳的 %d 个"
+                "（单账号 %.0fs + 账号间隔 %ds），部分账号可能无法在窗口内完成",
+                active_n, int(_span_min * 60), _cap, _cfg["avg_attempt_sec"], gap_max,
             )
             # 超载提醒（对抗性审查补）：通知管理员，避免"超限只在日志里"无人知情。
             # A 线合并：并入任务结束汇总邮件；webhook 仍即时推送。
             _collect_admin_mail(
                 "易班签到容量超载",
-                f"当前 {active_n} 个账号 × 平均 {_cfg['avg_attempt_sec']}s "
-                f"> 有效窗口 {_span_min * 60}s，部分账号可能无法在窗口内完成签到。\n"
-                f"建议：增加窗口时长或减少账号数量（.env 调整）。",
+                f"当前 {active_n} 个账号，有效窗口 {int(_span_min * 60)}s 仅可容纳 {_cap} 个"
+                f"（单账号 {_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s），"
+                "部分账号可能无法在窗口内完成签到。\n"
+                f"建议：增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）。",
             )
             send_notification(
                 "易班签到容量超载",
-                f"当前 {active_n} 个账号 × 平均 {_cfg['avg_attempt_sec']}s "
-                f"> 有效窗口 {_span_min * 60}s，部分账号可能无法在窗口内完成签到。\n"
-                f"建议：增加窗口时长或减少账号数量（.env 调整）。",
+                f"当前 {active_n} 个账号，有效窗口 {int(_span_min * 60)}s 仅可容纳 {_cap} 个"
+                f"（单账号 {_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s），"
+                "部分账号可能无法在窗口内完成签到。\n"
+                f"建议：增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）。",
                 notify_url,
             )
         # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
