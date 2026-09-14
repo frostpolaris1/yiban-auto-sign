@@ -527,6 +527,8 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 - **其他部署者**：自行准备一个同名图标文件放入该位置即可；不放则显示占位符，不影响任何功能
 - **想换内联 SVG**：改模板中回退占位 `<svg>` 的内容即可
 
+**浏览器标签页图标（favicon）**：把 `favicon.png` 放入同一目录（`web/static/vendor/favicon.png`）即可生效，机制与品牌图相同——文件存在即服务，不存在时浏览器使用默认图标（已入库文件不受影响）。建议使用 32×32 左右的小尺寸 PNG；页面以约 1 小时的短缓存引用它，换图后无需改代码。
+
 代码位置：
 - 管理端（管理员页面）：`web/templates/partials/sidebar.html` 品牌区（`brand-fallback`，缺失时 `onerror` 切占位方块）
 - 用户端：`web/templates/partials/sidebar_user.html` 品牌区（同上，两处结构同构）
