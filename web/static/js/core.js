@@ -1031,10 +1031,34 @@
     window.addEventListener("scroll", relayoutRail, true);
   }
 
+  /* ---------- 回到顶部（共享） ----------
+     2026-09-14 用户裁决取消三个列表页的表格内滚上限后，长列表改为整页滚动，需要一步回顶。
+     按钮固定在右下、滚动超过阈值才出现；只动 opacity/transform（无布局动画），
+     reduced-motion 去位移、点击直接回顶（不做平滑滚动）。键盘可达（原生 button + aria-label）。 */
+  var TO_TOP_AT = 400;
+  function initBackToTop() {
+    if ($("to-top")) return;
+    var btn = el("button", { type: "button", id: "to-top", class: "to-top", "aria-label": "回到顶部", title: "回到顶部" });
+    btn.appendChild(el("span", { class: "to-top__icon", "aria-hidden": "true", html: svgUse("arrow-up") }));
+    (document.body || document.documentElement).appendChild(btn);
+    function sync() {
+      var y = window.pageYOffset || document.documentElement.scrollTop || 0;
+      btn.classList.toggle("is-show", y > TO_TOP_AT);
+    }
+    btn.addEventListener("click", function () {
+      if (reducedMotion()) window.scrollTo(0, 0);
+      else window.scrollTo({ top: 0, behavior: "smooth" });
+      btn.blur();   // 回顶后按钮隐去，焦点归还文档主体，避免焦点停在不可见节点
+    });
+    window.addEventListener("scroll", sync, { passive: true });
+    sync();
+  }
+
   onReady(function () {
     initGlobalHandlers();
     initTabRoving();
     initNavProgress();
+    initBackToTop();
     var themeBtn = $("themeToggle");
     if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
     updateThemeIcons();
