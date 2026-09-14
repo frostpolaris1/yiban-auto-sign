@@ -86,16 +86,18 @@
   }
 
   function smtpRow(entry, index) {
-    var tr = YB.el("tr");
-    var tdHost = YB.el("td");
+    var tr = YB.el("tr", { class: "sm-row" });
+    // data-label：≤720 该行纵向堆叠（表头隐藏），标签由 ::before 从属性取，
+    // 保证堆叠后每个字段仍有可见名称（仅靠 aria-label 对读屏以外不可见）。
+    var tdHost = YB.el("td", { "data-label": "服务器 host" });
     tdHost.appendChild(cellInput("host", "text", "smtp.example.com", "SMTP " + (index + 1) + " 服务器 host", entry.host || ""));
-    var tdPort = YB.el("td", { class: "num" });
+    var tdPort = YB.el("td", { class: "num", "data-label": "端口" });
     tdPort.appendChild(cellInput("port", "number", "465", "SMTP " + (index + 1) + " 端口", entry.port || 465));
-    var tdUser = YB.el("td");
+    var tdUser = YB.el("td", { "data-label": "发件账号" });
     tdUser.appendChild(maskedCellInput("user", "text", entry.user || "留空沿用", "SMTP " + (index + 1) + " 发件账号"));
-    var tdPass = YB.el("td");
+    var tdPass = YB.el("td", { "data-label": "授权码" });
     tdPass.appendChild(maskedCellInput("pass", "password", entry.has_pass ? "已配置，留空沿用" : "未配置", "SMTP " + (index + 1) + " 授权码"));
-    var tdOps = YB.el("td");
+    var tdOps = YB.el("td", { class: "sm-ops" });
     var del = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm btn--danger-ghost", text: "删除" });
     del.setAttribute("aria-label", "删除 SMTP " + (index + 1));
     del.addEventListener("click", function () {
