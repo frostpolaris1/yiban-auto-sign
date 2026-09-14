@@ -39,11 +39,15 @@ textarea {
 /* ==========================================================================
    2. 侧边栏扩展（服务于 partials/sidebar.html）
    ========================================================================== */
-/* 品牌图缺失时的占位字符：嵌在 .brand-logo（32×32，grid 居中）内，
-   尺寸对齐其 svg 规则（18×18）。inline style 控制初显，故此处不写 display。 */
+/* 品牌区：部署者放入真实图片时，图片本身即品牌标（原项目做法）——容器（vendor 32×32
+   蓝底方块）的底色与光晕全部让位，由图片占满；蓝底方块只作为未放图时的回退占位，
+   由 .brand-fallback 承担。inline style 控制回退初显，故此处不写 display。 */
 .brand-logo .brand-fallback {
-  width: 18px;
-  height: 18px;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  background: var(--primary-solid);
+  box-shadow: 0 4px 10px -2px color-mix(in oklab, var(--primary) 40%, transparent);
   place-items: center;
   font-size: 14px;
   font-weight: 700;
@@ -3855,5 +3859,7 @@ html[data-theme="dark"] {
 ::selection { background: var(--primary-solid); }          /* 选区是白字压主色 */
 .check input:checked + .box { background: var(--primary-solid); border-color: var(--primary-solid); }          /* 白色对勾图形 */
 .switch input:checked + .track { background: var(--primary-solid); border-color: var(--primary-solid); }       /* 白色滑块图形 */
-.brand-logo { background: var(--primary-solid); }          /* 白色品牌图形（logotype 豁免，随实心面统一取深蓝） */
+/* 品牌区图片态：容器透明、无光晕，图片占满并随容器圆角裁切（图标直接替换蓝底框） */
+.brand-logo { background: transparent; box-shadow: none; overflow: hidden; }
+.brand-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .badge.solid { background: var(--primary-solid); }         /* 当前未使用（vendor 遗留），防回潮 */
