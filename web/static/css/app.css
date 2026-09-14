@@ -2259,8 +2259,8 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 
 /* 日志面板：常驻 + 宽屏 sticky（顶栏 60px + 24 gap），空态占位保证日志区始终可见 */
 /* 与日历卡等高：不加 sticky/align-self（那会按内容高度收缩，横屏下两卡不齐） */
-.sc-log-card { display: flex; flex-direction: column; }
-.sc-log { flex: 1; min-height: 240px; display: flex; flex-direction: column; }
+.sc-log-card { display: flex; flex-direction: column; min-width: 0; }
+.sc-log { flex: 1; min-height: 240px; display: flex; flex-direction: column; min-width: 0; overflow: clip; }
 .sc-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-muted); }
 /* 空态图标是装饰（aria-hidden），不承载信息，故可用 --t-light */
 .sc-empty-icon { display: inline-flex; color: var(--t-light); }
@@ -2270,7 +2270,19 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
    日志正文是普通 flex 子项，仍从顶部开始。 */
 .sc-log > .sc-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 30ch; margin: auto; text-align: center; }
 
-.sc-log-text { margin-top: 2px; }
+/* 日志正文的换行/钳制：.sc-log 是 flex 列、.sc-log-text 是 <pre>，flex 子项默认 min-width:auto
+   会把长坐标/URL 的 min-content 撑成整行，越过卡片右边界并让整页横向滚动（实测裸 .sc-log-text
+   下 box 内容宽 1033px vs 卡内 506px、document.scrollWidth 1912 vs 视口 1440）。
+   显式 min-width:0 + overflow-wrap:anywhere 让长串必断行；容器 .sc-log 再加 overflow:clip 兜底，
+   内层标记（如 .log-view 被替换/漏挂）变化也不会越出卡片。 */
+.sc-log-text {
+  margin-top: 2px;
+  min-width: 0;
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 720px) {
   .sc-grid { --sc-row: 44px; --sc-gap: 2px; }
   .sc-nav-btn { width: 40px; height: 40px; }
