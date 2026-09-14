@@ -17,6 +17,17 @@
 #   （此时只能靠 .env 的 YIBAN_BASE_PATH 显式指定前缀，见 README「部署形态」章节）。
 # 静态资源由应用自带 /static 提供（30 天缓存 + ?v= 版本号），子路径形态也无需单独配静态。
 
+# 文本资产压缩（2026-09-14 性能审计补）。应用自身不做 gzip，前端样式/脚本均为文本，
+# 未压缩时单页首访要传 ~470KB；开启后实测 ~122KB（约 -74%）。woff2 已压缩，不列入。
+# 形态 B（子路径部署到主站 nginx）时，本段需加到【主站自己的 http/server 块】里。
+gzip on;
+gzip_vary on;
+gzip_proxied any;
+gzip_comp_level 6;
+gzip_min_length 1024;
+gzip_types text/plain text/css text/xml application/json application/javascript
+           application/xml image/svg+xml;
+
 # 边缘限速——应用内限速仅覆盖登录/注册等端点，慢速泛洪
 # 可占满 gunicorn 单 worker 8 线程池；管理后台正常使用远低于此阈值
 limit_req_zone $binary_remote_addr zone=yiban_perip:10m rate=20r/s;
