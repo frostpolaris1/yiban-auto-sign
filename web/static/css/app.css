@@ -806,6 +806,9 @@ textarea {
   max-width: var(--density-cal-w, 420px);
   min-width: 280px;
   gap: var(--mini-cal-gap);
+  /* 宽视口下整块未占满卡片时左右均分余量：避免空白全堆在卡片右侧。
+     窄屏 width:100%（或 min-width 撑出横向滚动）时 auto 边距解析为 0，无副作用。 */
+  margin-inline: auto;
 }
 /* 日期格：加圆角 + 间隙后，相邻同色格不再连成一片（"边缘不清晰"的来源）。
    状态底色改用日历页的 --cal-*-bg/fg；今天照 .sc-cell--today 用 inset 描边（不占布局），
