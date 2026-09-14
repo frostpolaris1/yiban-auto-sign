@@ -3254,8 +3254,11 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 .input-group .input { flex: 1 1 auto; width: auto; min-width: 0; }
 .input-group .addon:last-child { border-right: 0; border-left: 1px solid var(--border); }
 
-/* ---- 27.5 SMTP 行内编辑（模板 .data-table）+ 数值列对齐 ---- */
-#sm-smtps .input { min-width: 110px; }
+/* ---- 27.5 SMTP 行内编辑（模板 .data-table）+ 数值列对齐 ----
+   输入列不再写死 min-width：旧值 110px 配上 table-layout:fixed，比端口(108px)/授权码列还宽，
+   会把输入顶出所在列、挤压相邻列并裁掉末列按钮（真机实测 host 被裁成 smtp.qq.con）。
+   改让输入填满所在列；列宽与窄屏堆叠见下方「SMTP 表」块。 */
+#sm-smtps .input { min-width: 0; }
 /* 数值右对齐 + 等宽：条目间可比、可扫读（教程 #15「数字对齐」）。端口列同时含表头。 */
 #sm-smtps .num,
 #sm-smtps .num .input { text-align: right; }
@@ -3375,14 +3378,48 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 .set-row { align-items: flex-start; }
 .set-row .switch { margin-top: 1px; }          /* 与标签行光学居中 */
 #sm-smtps .sm-empty-row td { border-bottom: 0; }
-/* SMTP 表：固定列宽 + 左缘与字段对齐（表头不再缩进 14px） */
+/* SMTP 表：固定列宽 + 左缘与字段对齐（表头不再缩进 14px）。
+   列宽：host 30% / 端口 88px / 发件账号 24% / 授权码 auto（余量）/ 操作 76px。
+   操作列必须 ≥76px：旧 60px 减去单元格左右内距只剩 32px，放不下「删除」按钮 → 被裁。
+   输入 min-width:0 + width:100%（见 27.5），任何列宽下都不会把输入顶出单元格。 */
 #sm-smtps { table-layout: fixed; }
-#sm-smtps th:nth-child(1) { width: 36%; }
-#sm-smtps th:nth-child(2) { width: 108px; }
-#sm-smtps th:nth-child(3) { width: 26%; }
-#sm-smtps th:nth-child(5) { width: 60px; }
+#sm-smtps th:nth-child(1) { width: 30%; }
+#sm-smtps th:nth-child(2) { width: 88px; }
+#sm-smtps th:nth-child(3) { width: 24%; }
+#sm-smtps th:nth-child(5) { width: 76px; }
+#sm-smtps th:last-child, #sm-smtps td:last-child { white-space: nowrap; }
+#sm-smtps td:last-child { padding-left: 0; }
 #sm-smtps thead th:first-child, #sm-smtps tbody td:first-child { padding-left: 0; }
 #sm-smtps thead th { padding-top: 0; }
+
+/* ≤720：该表纵向堆叠（每字段独立一行），表头隐藏、字段名由 td[data-label] 的 ::before 提供；
+   操作按钮整行右对齐。宽屏四列布局的输入不再溢出/截断，窄屏则不再挤压成截断文本。 */
+@media (max-width: 720px) {
+  #sm-smtps { table-layout: auto; display: block; }
+  #sm-smtps thead { display: none; }
+  #sm-smtps tbody, #sm-smtps tr, #sm-smtps td { display: block; width: auto; }
+  /* 行分隔线从 td 移到整条记录上（td 变块级后逐格画线会碎成多条） */
+  #sm-smtps tr.sm-row {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  #sm-smtps td { padding: 0; border-bottom: 0; white-space: normal; }
+  #sm-smtps td + td { margin-top: 10px; }
+  #sm-smtps td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--t-muted);
+  }
+  #sm-smtps .input { min-width: 0; width: 100%; }
+  /* 堆叠后端口不再是表格列，右对齐失去"按位比较"的意义，回到左对齐（含 ::before 标签） */
+  #sm-smtps .num,
+  #sm-smtps .num .input { text-align: left; }
+  #sm-smtps td.sm-ops { display: flex; justify-content: flex-end; margin-top: 12px; }
+  #sm-smtps .sm-empty-row td { padding: 12px 0; }
+}
 
 
 /* ---- 30.3 时间字段（触发器 + 弹窗内的滚动轮） ----
