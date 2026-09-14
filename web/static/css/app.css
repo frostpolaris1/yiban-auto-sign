@@ -3468,7 +3468,10 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
    ========================================================================== */
 .kpi-value sup { font-size: 16px; font-weight: 500; vertical-align: baseline; line-height: 1; color: var(--t-muted); }
 .kpi-compare { border-top-style: solid; }
-.kpi-value--empty { font-size: 20px; font-weight: 600; color: var(--t-muted); letter-spacing: 0; }
+/* 空态数值（如「今日无签到结果」的 —）：不复用 44px 粗体（会把「—」渲染成一条长横杠），
+   降为 20px 常规灰字。用两段类名提高权重：大视口密度令牌那批规则在本文件后面，
+   同为单类选择器时会按源码顺序盖掉这里的 font-size（实测空态破功成 44px 长横杠）。 */
+.kpi-value.kpi-value--empty { font-size: 20px; font-weight: 600; color: var(--t-muted); letter-spacing: 0; }
 /* 回退模板的单行头部（pill 文案缩短后不再换行）；但标题仍可能被窄卡挤掉，
    故把模板的 nowrap+ellipsis 改成允许折行 —— 宁可两行，也不要把标题吃掉。 */
 .kpi-label { white-space: normal; overflow: visible; text-overflow: clip; }

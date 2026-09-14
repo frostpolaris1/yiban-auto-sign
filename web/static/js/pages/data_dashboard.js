@@ -333,9 +333,13 @@
     // 签到事件失败时本卡保持 failNote 错误行：设置先到会触发这里的重算，
     // 不能让「今日暂无签到结果」把「签到事件加载失败」盖掉（失败 ≠ 没有结果）。
     if (state.signFailed) return;
+    // 设置（loadHealth）与签到事件（loadSign）是两个并发请求，先到的那次也会调本函数。
+    // 签到数据未回来前不写值：否则先按空数据写一个「—」空态，真实数值随后到达时若绕过
+    // setValue，空态类会留在节点上，数字被染成 --t-muted 灰字（实测可复现的
+    // 「成功率数字有时是灰的」）。空态只在数据已到、今日确实无记录时出现。
+    if (!state.signLoaded) return;
     var today = todayStr(), m = state.dailyMap[today], ry = rateOf(state.dailyMap[yesterdayStr()]);
     var rt = rateOf(m), v = $("kpi-rate-value"), sub = $("kpi-rate-sub");
-    clear(v);
     if (rt == null) {
       setEmptyValue(v, "—");
       v.title = "";
@@ -343,8 +347,8 @@
       setPill($("kpi-rate-pill"), "", "");
       return;
     }
-    v.appendChild(document.createTextNode(rt.toFixed(1)));
-    v.appendChild(el("sup", { text: "%" }));
+    // 真实数值统一走 setValue：它负责撤掉空态类（手写 clear + appendChild 会漏掉这一步）
+    setValue(v, rt.toFixed(1), "%");
     // 口径说明放 tooltip：写进副文案会把卡片挤成多行；「较昨日」已由右上角药丸表达，
     // 副文案只保留结果构成，避免同一信息在卡内出现两次。
     v.title = "成功率 = 成功 ÷（成功 + 失败），跳过不计入";
