@@ -7358,24 +7358,26 @@ def create_app(host=None):
         # load_env_int（==1 视为暂停），与读写两侧口径对齐。
         _cur_gp = 1 if load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0) == 1 else 0
         _cur_rp = 1 if load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else 0
-        if (global_pause is not None and global_pause != _cur_gp) or \
-                (registration_pause is not None and registration_pause != _cur_rp):
-            # 只比对不计数：不写与登录共用的 _login_fails（P18 教训——持 Cookie 者
-            # 可借共享计数反复试错把管理员锁出登录），失败仅审计留痕；成功同样
-            # 不动计数（清计数只属于真实登录/既有二次鉴权路径）。
-            if not _verify_session_password(str(data.get("confirm_password", ""))):
-                db.audit(
-                    session.get("username") or "?",
-                    "settings_switch_pw_fail",
-                    "settings",
-                    "系统开关口令复核未通过（全局暂停=%s 注册暂停=%s）" % (
-                        "未携带" if global_pause is None else
-                        ("无变更" if global_pause == _cur_gp else "尝试变更"),
-                        "未携带" if registration_pause is None else
-                        ("无变更" if registration_pause == _cur_rp else "尝试变更"),
-                    ),
-                )
-                return jsonify({"error": "口令校验未通过，设置未生效"}), 403
+        _switch_changed = (
+            (global_pause is not None and global_pause != _cur_gp)
+            or (registration_pause is not None and registration_pause != _cur_rp)
+        )
+        # 只比对不计数：不写与登录共用的 _login_fails（P18 教训——持 Cookie 者
+        # 可借共享计数反复试错把管理员锁出登录），失败仅审计留痕；成功同样
+        # 不动计数（清计数只属于真实登录/既有二次鉴权路径）。
+        if _switch_changed and not _verify_session_password(str(data.get("confirm_password", ""))):
+            db.audit(
+                session.get("username") or "?",
+                "settings_switch_pw_fail",
+                "settings",
+                "系统开关口令复核未通过（全局暂停=%s 注册暂停=%s）" % (
+                    "未携带" if global_pause is None else
+                    ("无变更" if global_pause == _cur_gp else "尝试变更"),
+                    "未携带" if registration_pause is None else
+                    ("无变更" if registration_pause == _cur_rp else "尝试变更"),
+                ),
+            )
+            return jsonify({"error": "口令校验未通过，设置未生效"}), 403
         # ---- 注册账号验证 + 探针模式（任意管理员可改；v0.23.x）----
         account_verify = None
         if "account_verify" in data:
