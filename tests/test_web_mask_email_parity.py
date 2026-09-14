@@ -84,6 +84,7 @@ def _extract_python_function(src, name):
     return namespace[name]
 
 
+@unittest.skipUnless(NODE, "node 不可用：跳过前后端邮箱脱敏口径对拍")
 class MaskEmailParityTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
