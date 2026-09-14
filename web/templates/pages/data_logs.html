@@ -8,7 +8,10 @@
    信息架构：三块内容各自成标签页（日志 / 探针记录 / 签到事件），一次只渲染一屏，
    长列表在卡内滚动而不是把整页拉长。手动签到已移除 —— 它的能力与「账号管理」的
    单账号/批量手动签到重复，留一处即可（页头因此也不再有主操作按钮）。
-   卡头统一 .panel-head 两段式（标题行 + 整宽说明，不画分隔线）。 #}
+
+   三块统一形态：同一套卡（.log-card）+ 两段式卡头（标题行 + 工具行 / 整宽说明）
+   + 同一套结构化列表（.ev-head 列头 + .ev-list 行）+ 同一套空态（.empty + 一键
+   「查看最近有数据日期」出口）。列宽由 CSS 固定，时间/账号/状态成列对齐。 #}
 {% extends "layout_admin.html" %}
 {% from "macros/ui.html" import icon with context %}
 
@@ -42,7 +45,7 @@
        把工具行与日期行硬生生隔开，573px 下同卡出现 5 段各占一行。 -->
   <div class="tab-panel is-active" role="tabpanel" id="log-panel-main"
        aria-labelledby="log-tab-main" data-tab-id="main">
-    <section class="card log-main-card">
+    <section class="card log-card log-main-card">
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">签到日志 <span class="log-file" id="log-file">sign-YYYY-MM-DD.log</span></h2>
@@ -56,6 +59,7 @@
             <span class="log-info" id="log-info" role="status">正在加载日志…</span>
           </div>
         </div>
+        <p class="panel-sub">按天记录签到与补签流程的完整文本；缺省显示最近有日志的一天，可检索、显示全部或导出。</p>
       </div>
 
       {# 日期行：左侧「选日期 + 查看 + 回到今天」一组，右侧自动刷新开关。
@@ -86,6 +90,7 @@
       <p class="empty" id="log-empty" hidden>
         <span class="empty__icon">{{ icon('list') }}</span>
         <span class="empty__msg">暂无签到日志，等待定时任务执行…</span>
+        <button type="button" class="btn btn--ghost btn--sm" id="log-recent-btn" hidden></button>
         {# 加载失败的可读错误态里给出重试出口（成功渲染/空列表态保持隐藏） #}
         <button type="button" class="btn btn--ghost btn--sm" id="log-retry-btn" hidden>重试</button>
       </p>
@@ -95,18 +100,29 @@
   <!-- 探针记录：健康检查对易班接口的探测结果 -->
   <div class="tab-panel" role="tabpanel" id="log-panel-probe"
        aria-labelledby="log-tab-probe" data-tab-id="probe">
-    <section class="card log-fold">
+    <section class="card log-card">
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">探针记录</h2>
+          <div class="log-tools">
+            <span class="log-info" id="probe-info" role="status">共 0 条</span>
+            <button type="button" class="btn btn--ghost btn--sm" id="probe-refresh-btn">刷新</button>
+          </div>
         </div>
         <p class="panel-sub">健康检查对易班接口的探测结果（非 failed 一律记为正常，原始状态码见行尾 title）。</p>
       </div>
       <div class="ev-scroll" role="region" aria-label="探针记录列表" tabindex="0">
+        <div class="ev-head" aria-hidden="true">
+          <span class="ev-time">时间</span>
+          <span class="ev-phone">账号</span>
+          <span class="ev-badge">状态</span>
+          <span class="ev-msg">说明</span>
+        </div>
         <ul class="ev-list" id="probe-list"></ul>
         <p class="empty" id="probe-empty" hidden>
           <span class="empty__icon">{{ icon('activity') }}</span>
           <span class="empty__msg">当日无探针记录</span>
+          <button type="button" class="btn btn--ghost btn--sm" id="probe-recent-btn" hidden></button>
         </p>
       </div>
     </section>
@@ -115,18 +131,29 @@
   <!-- 签到事件：当日时间线（含重试与跳过迁移、尝试次数） -->
   <div class="tab-panel" role="tabpanel" id="log-panel-signev"
        aria-labelledby="log-tab-signev" data-tab-id="signev">
-    <section class="card log-fold">
+    <section class="card log-card">
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">签到事件</h2>
+          <div class="log-tools">
+            <span class="log-info" id="signev-info" role="status">共 0 条</span>
+            <button type="button" class="btn btn--ghost btn--sm" id="signev-refresh-btn">刷新</button>
+          </div>
         </div>
         <p class="panel-sub">当日签到事件时间线（含重试与跳过迁移，尝试次数）。</p>
       </div>
       <div class="ev-scroll" role="region" aria-label="签到事件列表" tabindex="0">
+        <div class="ev-head" aria-hidden="true">
+          <span class="ev-time">时间</span>
+          <span class="ev-phone">账号</span>
+          <span class="ev-badge">状态</span>
+          <span class="ev-msg">说明</span>
+        </div>
         <ul class="ev-list" id="signev-list"></ul>
         <p class="empty" id="signev-empty" hidden>
           <span class="empty__icon">{{ icon('activity') }}</span>
           <span class="empty__msg">当日无签到事件</span>
+          <button type="button" class="btn btn--ghost btn--sm" id="signev-recent-btn" hidden></button>
         </p>
       </div>
     </section>

@@ -2777,30 +2777,51 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 }
 .log-main-card #log-empty { margin-top: 16px; }
 
-/* ---- 探针 / 签到事件：列表在卡内滚动（不再用折叠卡） ---- */
+/* ---- 探针 / 签到事件：同一套卡 + 同一套结构化列表（列宽固定成列对齐） ---- */
+/* 三块卡共用 .log-card：两段式卡头（标题行 + 工具行 / 整宽说明）与统一空态。
+   列表列宽固定，使时间/账号/状态在行间与列头（.ev-head）严格对齐；
+   字号/行高取与 .log-box 相同的 12px / 1.6，两块列表与日志正文排版节奏一致。 */
 .log-count { font-size: 11.5px; font-weight: 600; color: var(--t-muted); font-variant-numeric: tabular-nums; }
 .ev-scroll {
   max-height: clamp(320px, calc(100dvh - 380px), 900px);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+/* 列头：与 .ev-row 同列宽；窄屏行会折行、列对齐失去意义，故 720px 以下隐藏 */
+.ev-head {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 0 0 6px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--t-muted);
+}
+.ev-head .ev-badge { flex: 0 0 66px; }
 
 /* ---- 事件时间线：重复行分隔线（白名单第 1 类） ---- */
-.ev-list { list-style: none; margin: 0; padding: 0; }
+.ev-list { list-style: none; margin: 0; padding: 0; font-size: 12px; line-height: 1.6; }
 .ev-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
 .ev-row:last-child { border-bottom: 0; }
-.ev-time { font-family: var(--font-mono); font-size: 12px; color: var(--t-muted); white-space: nowrap; }
-.ev-phone { font-family: var(--font-mono); font-size: 12px; color: var(--t-base); white-space: nowrap; }
-.ev-msg { flex: 1 1 200px; min-width: 0; font-size: 12.5px; color: var(--t-sub); overflow-wrap: anywhere; }
+.ev-time { flex: 0 0 62px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; color: var(--t-muted); white-space: nowrap; }
+.ev-phone { flex: 0 0 96px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; color: var(--t-base); white-space: nowrap; }
+.ev-badge { flex: 0 0 66px; }
+.ev-msg { flex: 1 1 200px; min-width: 0; font-size: 12px; line-height: 1.6; color: var(--t-sub); overflow-wrap: anywhere; }
 /* 行内间距由 .ev-row 的 flex gap 提供，抵消 vendor `.badge{margin-left:6px}` */
 .ev-row .badge { margin-left: 0; }
+/* 列表空态：与 .log-box 的空态同一节奏（列表容器内上下留白一致） */
+.ev-scroll .empty { margin: 16px 0 0; }
 
 @media (max-width: 720px) {
-  /* 卡头工具行独占第二行、搜索框用满整行 */
-  body[data-page="data-logs"] .log-main-card .panel-head-row { flex-wrap: wrap; }
+  /* 卡头工具行独占第二行、搜索框用满整行（三块卡同一规则） */
+  body[data-page="data-logs"] .log-card .panel-head-row { flex-wrap: wrap; }
   .log-tools { width: 100%; }
   .log-search { flex: 1 1 100%; }
   .log-search .input { width: 100%; min-width: 0; }
+  /* 窄屏事件行会折行，固定列宽与列头失去对齐意义 → 还原自适应并隐藏列头 */
+  .ev-head { display: none; }
+  .ev-time, .ev-phone, .ev-badge { flex: 0 0 auto; }
   /* 窄屏/矮视口：正文与列表改按视口百分比封顶。
      桌面用的 `calc(100dvh - 420px)` 在短视口下会撞到 clamp 的下限（300/320px），
      而 390 高的横屏里这个下限本身就可能超过可视区 → 内滚失效、被迫整页滚动。 */

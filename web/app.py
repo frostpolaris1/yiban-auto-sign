@@ -6915,6 +6915,24 @@ def create_app(host=None):
         except Exception as e:
             logger.warning("sign_events 查询失败（不影响日志页）: %s", e)
             sign_events = []
+        # 空态一键跳转的「最近有数据日期」：仅在该标签当前无数据时才查库，
+        # 避免每次 10s 轮询都多做两次聚合查询。检索态（q 非空）不给出口——
+        # 「无匹配」是检索结果，不是日期没数据。
+        recent_log_date = ""
+        recent_probe_date = ""
+        recent_sign_date = ""
+        if not logs and not q:
+            candidate = _most_recent_log_date()
+            if candidate and candidate != date:
+                recent_log_date = candidate
+        if not probe_events:
+            candidate = db.sign_events_recent_date("probe")
+            if candidate and candidate != date:
+                recent_probe_date = candidate
+        if not sign_events:
+            candidate = db.sign_events_recent_date("sign")
+            if candidate and candidate != date:
+                recent_sign_date = candidate
         # 响应层脱敏：日志行内 [手机号] 不落完整号（前端 maskPhone 幂等兼容）。
         # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
         # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
@@ -6932,6 +6950,10 @@ def create_app(host=None):
                 "is_today": date == datetime.now().strftime("%Y-%m-%d"),
                 "probe_events": probe_events,
                 "sign_events": sign_events,
+                # 三块各自的「最近有数据日期」（空态一键跳转用；当前日期即最近时为空串）
+                "recent_log_date": recent_log_date,
+                "recent_probe_date": recent_probe_date,
+                "recent_sign_date": recent_sign_date,
             }
         )
 

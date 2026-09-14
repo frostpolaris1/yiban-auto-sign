@@ -3230,6 +3230,31 @@ def sign_events_on(date_str, limit=100):
         return []
 
 
+def sign_events_recent_date(stage, max_days=30):
+    """最近有指定 stage 事件的日期（YYYY-MM-DD，窗口内无则空串）。
+
+    供日志页空态给出「查看最近有数据日期」的一键入口：某标签当前日期无事件时，
+    用本函数找到该标签最近有事件的日期（stage=probe/sign 分别对应探针/签到事件）。
+    查询失败返回空串，不影响调用方。
+    """
+    stage = "probe" if stage == "probe" else "sign"
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=max_days)).strftime(
+                "%Y-%m-%d 00:00:00"
+            )
+            row = conn.execute(
+                "SELECT MAX(ts) AS m FROM sign_events WHERE stage=? AND ts >= ?",
+                (stage, cutoff),
+            ).fetchone()
+            if row and row["m"]:
+                return str(row["m"])[:10]
+    except Exception as e:
+        logger.warning("sign_events_recent_date 失败: %s", e)
+    return ""
+
+
 def sign_event_peak(days=7, bucket_minutes=5):
     """按时间桶统计签到事件数（第一版：近似并发/请求量）。"""
     try:
