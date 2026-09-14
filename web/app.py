@@ -217,9 +217,12 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} - 易班自动签到</title>
+<!-- 站标与主外壳同源：独立页（/terms /privacy）从新标签打开，此前无 icon 而不显示标签页图标 -->
+<link rel="icon" type="image/png" href="{base_path}/favicon.png">
+<link rel="apple-touch-icon" href="{base_path}/favicon.png">
+<title>{title} · 易班自动签到</title>
 <meta name="description" content="{desc_attr}">
-<meta property="og:title" content="{title} - 易班自动签到">
+<meta property="og:title" content="{title} · 易班自动签到">
 <meta property="og:description" content="{desc_attr}">
 <style>
   /* 协议/隐私文档页（Tailwind 默认配色；卡片容器与圆角为结构优化，随图标/圆角体系保留） */
@@ -2369,25 +2372,18 @@ def _active_account_count():
 
 
 def _capacity_estimate(gap=0):
-    """按当前签到窗口与账号间隔设置预估可容纳账号数（2026-09-08 单档口径）。
+    """按当前签到窗口与账号间隔设置预估可容纳账号数。
 
-    公式：账号容量 = (有效窗口 − avg) ÷ (avg + gap) + 1（取整）
+    公式与引擎容量预检共用 signin.capacity_accounts（同一函数，避免同概念两套阈值）：
     有效窗口 = _sign_window() 原始窗口 − edge_config()[0] − edge_config()[1]
     （掐头去尾裁掉的秒数不参与签到，不占容量；秒，下限 0）。
-    avg 复用 signin._schedule_config 的 avg_attempt_sec（默认 8s，容错取 8）。
+    avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省为按压实测定档的 3s）。
     返回单值 int；有效窗口不足单账号耗时时容量为 0。
     """
-    try:
-        avg = int(signin._schedule_config().get("avg_attempt_sec") or 8)
-    except Exception:
-        avg = 8
     sw = _sign_window()
     raw_sec = max(0, (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])) * 60
     window_sec = max(0, raw_sec - edge_config()[0] - edge_config()[1])
-    slack = window_sec - avg
-    if slack < 0:
-        return 0
-    return int(slack / (avg + gap)) + 1
+    return signin.capacity_accounts(window_sec, gap)
 
 
 def _accounts_at_capacity(extra_accounts=0):
@@ -2562,7 +2558,7 @@ class BasePathMiddleware:
     # 而 404（图标、旧路径重定向均属此类）——test_subpath_deploy 的 url_map 元测试兜底。
     _ROOT_MARKERS = (
         "/login", "/user", "/terms", "/privacy",
-        "/favicon.png", "/gongan-beian.png",
+        "/favicon.png", "/gongan-beian.png", "/robots.txt",
         # 改版前的旧路径（历史书签兼容，302 到 /组/页面）
         "/logs", "/accounts", "/users", "/settings", "/mine", "/mine/calendar",
     )
@@ -3079,6 +3075,83 @@ def create_app(host=None):
         resp = send_file(icon_path, mimetype="image/png", conditional=True)
         resp.headers["Cache-Control"] = "public, max-age=3600"
         return resp
+
+    @app.route("/robots.txt")
+    def robots_txt():
+        """爬虫协议：只放行登录页与静态资源，登录后的私有页（/api、/data、/work、/my、
+        /user 及各旧路径）一律禁止抓取。
+
+        路径带挂载前缀（子路径部署下 robots.txt 与页面同前缀），否则爬虫会去抓
+        前缀之外的地址而拿到 404，反而把私有页当"可抓"。
+        """
+        root = (request.script_root or "").rstrip("/")
+        lines = [
+            "User-agent: *",
+            f"Allow: {root}/login",
+            f"Allow: {root}/static/",
+            "Disallow: /",
+        ]
+        resp = app.response_class("\n".join(lines) + "\n", mimetype="text/plain")
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+        return resp
+
+    # ---- 错误页（404/500）----
+    # 静态资源与 API 的 404 不渲染 HTML 页面：前者只需空响应（浏览器/爬虫不当页面看），
+    # 后者按 JSON 契约返回，避免前端 fetch 拿到 HTML 再 res.json() 报解析错。
+    _404_OPAQUE_EXT = (
+        ".png", ".ico", ".svg", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+        ".css", ".js", ".mjs", ".map", ".woff", ".woff2", ".ttf", ".otf",
+        ".txt", ".xml", ".json", ".webmanifest",
+    )
+
+    def _home_endpoint_for(role):
+        """按当前角色给出「返回首页」端点名与按钮文案：未登录 → 登录页。"""
+        if role == "admin":
+            return "dashboard_page", "返回总览"
+        if role == "user":
+            return "user_calendar_page", "返回签到日历"
+        return "login_page", "去登录"
+
+    def _render_error_page(code, title, message):
+        role = _current_role()
+        endpoint, label = _home_endpoint_for(role)
+        return (
+            render_template(
+                "error.html",
+                web_version=WEB_VERSION,
+                app_version=APP_VERSION,
+                icp_info=icp_info(),
+                police_info=police_info(),
+                police_link=police_link(),
+                site_description=site_description(),
+                err_code=code,
+                err_title=title,
+                err_message=message,
+                home_url=url_for(endpoint),
+                home_label=label,
+                logged_in=role is not None,
+            ),
+            code,
+        )
+
+    @app.errorhandler(404)
+    def _handle_404(e):
+        path = request.path
+        if path.startswith((request.script_root or "") + "/api/"):
+            return jsonify({"error": "接口不存在"}), 404
+        if path.lower().endswith(_404_OPAQUE_EXT):
+            return app.response_class("", status=404, mimetype="text/plain")
+        return _render_error_page(
+            404, "页面不存在", "你访问的地址不存在或已被移动，请检查链接是否输入正确。"
+        )
+
+    @app.errorhandler(500)
+    def _handle_500(e):
+        if request.path.startswith((request.script_root or "") + "/api/"):
+            return jsonify({"error": "服务器内部错误，请稍后重试"}), 500
+        return _render_error_page(
+            500, "服务器内部错误", "请求处理失败，请稍后重试；若持续出现，请联系管理员。"
+        )
 
     @app.route("/")
     def root_page():

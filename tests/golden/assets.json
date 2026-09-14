@@ -1,6 +1,7 @@
 {
   "index": [
     "link rel=icon href=/favicon.png?v=*",
+    "link rel=apple-touch-icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
@@ -13,6 +14,7 @@
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
+    "link rel=apple-touch-icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
@@ -24,6 +26,7 @@
   ],
   "user": [
     "link rel=icon href=/favicon.png?v=*",
+    "link rel=apple-touch-icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
@@ -42,6 +45,7 @@
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
+    "link rel=apple-touch-icon href=/favicon.png?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
     "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
