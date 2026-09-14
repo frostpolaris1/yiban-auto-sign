@@ -92,6 +92,24 @@ textarea {
   border-radius: 8px;
 }
 
+/* 抽屉态（≤720）：导航区可滚动、底部动作区常驻抽屉内可见。
+   vendor 已把 .d-sidebar 设为 overflow-y:auto 的 100vh 滚动容器，但 .sidebar-footer 的
+   margin-top:auto 在内容溢出时不产生自由空间，退出登录被推到视口外（实测 320×568：
+   sidebar scrollHeight 680 vs clientHeight 568，退出按钮 top=628 > 568）。
+   处置：footer 吸底（sticky bottom:0），母容器下内距改由 footer 自己承担，吸底时贴到
+   视口底、不留缝；背景取侧栏底色，遮住从下方滚过的导航项。 */
+@media (max-width: 720px) {
+  .d-sidebar { padding-bottom: 0; }
+  .d-sidebar .sidebar-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin-top: auto;
+    padding-bottom: 18px;
+    background: var(--bg-sidebar);
+  }
+}
+
 /* ==========================================================================
    3. 页脚兼容类（footer.html 用 .footer-*，Adminator 定义的是 .d-footer-meta）
    ========================================================================== */
