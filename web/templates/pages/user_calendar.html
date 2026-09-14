@@ -9,7 +9,7 @@
 {% block content %}{{ body('签到日历', '按日查看每个账号的签到结果，点击日期查看当天记录。') }}{% endblock %}
 
 {% block scripts %}
-<script src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
-<script src="{{ request.script_root }}/static/js/components/sign-calendar-view.js?v={{ web_version }}"></script>
-<script src="{{ request.script_root }}/static/js/pages/user_calendar.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/sign-calendar-view.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/pages/user_calendar.js?v={{ web_version }}"></script>
 {% endblock %}

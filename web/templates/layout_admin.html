@@ -55,8 +55,11 @@
     setTimeout(function () { clearInterval(t2); done(); }, 5000);   // 兜底：异常时不常驻
   })();
 </script>
-<script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
-<script src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
+{# 外部脚本一律 defer：按文档顺序在解析完成后执行，不阻塞 HTML 解析。
+   内联引导脚本（上方 boot-loader）只轮询 window.YB，不依赖同步加载的全局。
+   defer 保序 ⇒ md-render → core → 页面/组件 的执行序不变，core.js 仍在页面脚本之前。 #}
+<script defer src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

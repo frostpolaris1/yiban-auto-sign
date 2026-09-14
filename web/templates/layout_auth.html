@@ -110,8 +110,9 @@
     setTimeout(function () { clearInterval(t2); done(); }, 5000);   // 兜底：异常时不常驻
   })();
 </script>
-<script src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
-<script src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
+{# 外部脚本一律 defer：按文档顺序在解析完成后执行，不阻塞 HTML 解析。 #}
+<script defer src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
