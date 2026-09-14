@@ -2543,7 +2543,15 @@ def _report_env_key_collisions(env_path):
 class BasePathMiddleware:
     # 应用的扁平路由标记（新增顶层页面 / 接口前缀需同步追加）。
     # _ROOT_PREFIXES 按"路径段前缀"比对，覆盖 `/组/页面` 两级路由（data/work/my 为分组）。
-    _ROOT_MARKERS = ("/login", "/user", "/terms", "/privacy")
+    # _ROOT_MARKERS 是**根级端点**的完整路径：探测据此判断"这段之后已是应用自身路由"。
+    # 新增任何根级路由（不带分组前缀）都必须登记，否则子路径部署下会被当成挂载前缀的一部分
+    # 而 404（图标、旧路径重定向均属此类）——test_subpath_deploy 的 url_map 元测试兜底。
+    _ROOT_MARKERS = (
+        "/login", "/user", "/terms", "/privacy",
+        "/favicon.png", "/gongan-beian.png",
+        # 改版前的旧路径（历史书签兼容，302 到 /组/页面）
+        "/logs", "/accounts", "/users", "/settings", "/mine", "/mine/calendar",
+    )
     _ROOT_PREFIXES = ("/api/", "/static/", "/data/", "/work/", "/my/", "/user/")
 
     def __init__(self, wsgi_app, base_path=None):
