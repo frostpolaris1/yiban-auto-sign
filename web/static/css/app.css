@@ -17,9 +17,10 @@
      由 tests/test_web_font_closure.py 静态守卫（含"Adminator 全部通用族选择器都已被收口"对账）。 */
   --font-sans: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
   --font-mono: "JetBrains Mono", "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", ui-monospace, "SFMono-Regular", monospace;
-  /* 表格滚动上限：管理端各页的数据表统一取此值，避免长列表把「表格框架」拉到数千像素
-     （实测 /users 待处理组 77 行 = 4254px）。表头 position:sticky 在滚动容器内吸顶。 */
-  --table-max-h: 560px;
+  /* 表格内滚上限已按用户 2026-09-14 裁决**取消**：三个列表页（/work/accounts、/work/users、
+     /data/logs）的表格随内容自然增高、由整页滚动承担，不再用 max-height 把表压成内滚区。
+     补偿交互是共享的「回到顶部」按钮（core.js initBackToTop + .to-top）。原变量
+     --table-max-h 及其 ≤720/≥721 两档覆盖一并删除，避免留下"唯一来源"的误导注释。 */
 }
 body,
 button,
@@ -2567,8 +2568,9 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-state--warn { color: var(--state-warn-fg); }
 .acct-state--muted { color: var(--t-muted); }
 
-/* 表格：表头吸顶、操作列吸右；行分隔线由 .data-table tbody td 承担（白名单第 1 类） */
-#accounts-root .table-scroll { max-height: var(--table-max-h); }
+/* 表格：表头吸顶、操作列吸右；行分隔线由 .data-table tbody td 承担（白名单第 1 类）。
+   表格不再限高内滚（2026-09-14 用户裁决）：随内容自然增高、整页滚动；表头 sticky 失去
+   内滚容器后不再吸顶（页面滚动时随行离开），这是取消内滚的既定代价。 */
 .acct-table thead th {
   position: sticky;
   top: 0;
@@ -2610,6 +2612,13 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-row-menu { display: inline-block; }
 .acct-row-menu .btn--icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
 .acct-row-menu .dd-menu { min-width: 168px; width: auto; right: 0; }
+/* 收纳态不参与布局：.dd-menu 是 absolute，但 visibility:hidden 的元素高度仍会记入
+   .table-scroll 的 scrollHeight —— 取消表格内滚上限后，末行菜单会在表格底部造出一段
+   可滚动的幽灵空白（实测 /work/users 末行菜单 125px，且 .table-scroll 的 overflow-x:auto
+   已把 overflow-y 变成 auto，于是真能滚）。打开时 YB.rowMenu 会把菜单 portal 到 body 并挂
+   .acct-menu--floating，选择器不再命中、display 恢复默认，展开与定位不受影响。 */
+.acct-row-menu > .dd-menu:not(.acct-menu--floating),
+.usr-row-menu > .dd-menu:not(.acct-menu--floating) { display: none; }
 /* 浮动态：菜单打开时被 portal 到 document.body（脱离 .dd-wrap 与所有裁剪祖先：
    .table-scroll 的 overflow-x:auto 会让 overflow-y 也变 auto、.collapse-inner 是 overflow:clip，
    且祖先的 transform 会污染 fixed 包含块——故挂到无 transform 的 body 上），用 fixed 定位。
@@ -2754,13 +2763,14 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 .log-auto { margin-left: auto; }
 .log-auto__text { font-size: 12.5px; color: var(--t-sub); }
 
-/* ---- 日志正文：固定高 + 等宽 + 内滚动（页面永不因日志而横向滚动） ---- */
-/* 高度取 auto + 上下限：只有几行日志时不再撑出 620px 的空灰块（用户实拍指出），
-   行数多时用满可视区、由内部滚动承担（页面本身不滚）。 */
+/* ---- 日志正文：等宽 + 自动换行（2026-09-14 起取消限高内滚，随内容自然增高） ---- */
+/* 用户 2026-09-14 裁决：三页表格取消内滚、整页滚动。日志正文同口径：
+   不再给 max-height（原 clamp(300px, 100dvh-420px, 900px)），行数多时正文撑高、由页面滚动；
+   行数少时仍保留 min-height，避免空态位置跳动。横向换行保障见 .log-view（white-space:
+   pre-wrap + overflow-wrap:anywhere，长 URL/坐标必断行）。 */
 .log-box {
   height: auto;
   min-height: 220px;
-  max-height: clamp(300px, calc(100dvh - 420px), 900px);
   margin: 16px 0 0;
   padding: 12px 14px;
   border: 1px solid var(--border-soft);
@@ -2772,8 +2782,6 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  overflow: auto;
-  overscroll-behavior: contain;
 }
 .log-main-card #log-empty { margin-top: 16px; }
 
@@ -2782,9 +2790,8 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
    列表列宽固定，使时间/账号/状态在行间与列头（.ev-head）严格对齐；
    字号/行高取与 .log-box 相同的 12px / 1.6，两块列表与日志正文排版节奏一致。 */
 .log-count { font-size: 11.5px; font-weight: 600; color: var(--t-muted); font-variant-numeric: tabular-nums; }
+/* 探针 / 签到事件列表：同口径取消限高内滚，随内容自然增高（列宽仍固定成列对齐） */
 .ev-scroll {
-  max-height: clamp(320px, calc(100dvh - 380px), 900px);
-  overflow-y: auto;
   overscroll-behavior: contain;
 }
 /* 列头：与 .ev-row 同列宽；窄屏行会折行、列对齐失去意义，故 720px 以下隐藏 */
@@ -2822,11 +2829,8 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
   /* 窄屏事件行会折行，固定列宽与列头失去对齐意义 → 还原自适应并隐藏列头 */
   .ev-head { display: none; }
   .ev-time, .ev-phone, .ev-badge { flex: 0 0 auto; }
-  /* 窄屏/矮视口：正文与列表改按视口百分比封顶。
-     桌面用的 `calc(100dvh - 420px)` 在短视口下会撞到 clamp 的下限（300/320px），
-     而 390 高的横屏里这个下限本身就可能超过可视区 → 内滚失效、被迫整页滚动。 */
-  .log-box { max-height: 58dvh; }
-  .ev-scroll { max-height: 58dvh; }
+  /* 正文与列表不再限高（2026-09-14 取消内滚），窄屏同样随内容增高、整页滚动；
+     底部/右下由共享「回到顶部」按钮补偿定位。 */
 }
 
 /* ==========================================================================
@@ -2879,10 +2883,8 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 .usr-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* 表格：表头吸顶、操作列吸右；行分隔线由 .data-table tbody td 承担。
-   四组各自给滚动上限（与 /accounts 同值 var(--table-max-h)）：无上限时 77 行的待处理组
-   就把整页拉到 7604px（「表格框架变长」），页面级滚动几乎用不上；有上限后每组自滚、
-   表头在组内吸顶，整页高度收敛到 3 屏内。 */
-body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
+   不再按组给滚动上限（2026-09-14 用户裁决取消内滚）：77 行的待处理组随内容增高、
+   由整页滚动承担；长列表靠共享「回到顶部」按钮回收定位。 */
 .usr-table thead th {
   position: sticky;
   top: 0;
@@ -3792,18 +3794,12 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
 /* ==========================================================================
    31. 标签页式列表页（账号管理 / 用户管理 / 签到日志）
    --------------------------------------------------------------------------
-   三页把原来的「多组纵向堆叠」改成标签页：一次只显示一组，长表格在卡内滚动。
-   表格上限不再写死 560px，而是按可视区推导（--table-max-h 的唯一声明在 :root）——
-   「表格撑满屏幕、靠表内滚动预览，而不是把整页拉长」。
-   ≤720 维持 :root 的 --table-max-h:560px 内滚（下面的覆盖仅 ≥721 生效）：
-   内滚保持页高稳定、便于在表格中定位后再切换页面；390 档实测锁 560、表内可滚。
+   三页把原来的「多组纵向堆叠」改成标签页：一次只显示一组。
+   2026-09-14 用户裁决反转「表内滚动」设计：表格取消 max-height 上限、随内容自然增高，
+   由整页滚动承担（底部不再留大片空白、行多时也不在卡内滚）。原按视口推导的
+   --table-max-h（:root 560px + 账号/用户页 ≥721 覆盖 clamp(...)）已整体删除；
+   长列表的「回顶多一步」由共享「回到顶部」按钮补偿。签到日志页的 .log-box 同口径处理。
    ========================================================================== */
-@media (min-width: 721px) {
-  body[data-page="work-accounts"],
-  body[data-page="work-users"] {
-    --table-max-h: clamp(320px, calc(100dvh - 360px), 1200px);
-  }
-}
 /* 标签面板内的块间距：面板取代了原来的 .grid（gap 20），需自带节奏 */
 .tab-panel > .kpi-grid { margin-bottom: 16px; }
 .tab-panel > .card + .card,
@@ -3908,3 +3904,52 @@ html[data-theme="dark"] {
 .brand-logo { background: transparent; box-shadow: none; overflow: hidden; }
 .brand-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .badge.solid { background: var(--primary-solid); }         /* 当前未使用（vendor 遗留），防回潮 */
+
+/* ==========================================================================
+   34. 回到顶部（共享：三个列表页取消内滚后的回顶入口）
+   --------------------------------------------------------------------------
+   2026-09-14 用户裁决：/work/accounts、/work/users、/data/logs 的表格不再限高内滚、
+   随内容自然增高（整页滚动）；长列表「定位后要回顶多一步」由本按钮补偿。
+   只出现在滚动超过 400px 之后；只动 opacity/transform（不做布局属性动画），
+   reduced-motion 下去位移，且 JS 侧改为直接回顶（不播平滑滚动）。
+   z-index 900：高于导航进度条(90)、低于模态遮罩(1000)——弹窗打开时被遮罩覆盖，
+   不会浮在弹窗之上；与右下角 Toast(1200) 不重叠由下面的 :has 规则保证。
+   ========================================================================== */
+.to-top {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--t-base);
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 160ms var(--ease-out-strong), transform 160ms var(--ease-out-strong), visibility 160ms;
+}
+.to-top.is-show {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+}
+.to-top:hover { background: var(--bg-hover); }
+.to-top:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.to-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; }
+/* Toast 堆叠也在右下（bottom:16）；按钮出现时把 Toast 整体抬到按钮上方，避免互相覆盖 */
+body:has(.to-top.is-show) .toast-host { bottom: 76px; }
+@media (max-width: 720px) {
+  .to-top { right: 14px; bottom: 14px; width: 40px; height: 40px; }
+  body:has(.to-top.is-show) .toast-host { bottom: 66px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .to-top { transition: none; transform: none; }
+}
