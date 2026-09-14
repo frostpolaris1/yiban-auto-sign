@@ -66,11 +66,32 @@ class SubpathDeployTest(unittest.TestCase):
         self.assertEqual(det("/tools/yiban-auto-sign/demo/"), P)          # 子路径首页带尾斜杠
         self.assertEqual(det("/tools/yiban-auto-sign/demo/api/login"), P)  # 登录 API 不可切错
         self.assertEqual(det("/tools/yiban-auto-sign/demo/user"), P)
+        self.assertEqual(det("/tools/yiban-auto-sign/demo/favicon.png"), P)      # 站标
+        self.assertEqual(det("/tools/yiban-auto-sign/demo/gongan-beian.png"), P)  # 备案图标
+        self.assertEqual(det("/tools/yiban-auto-sign/demo/logs"), P)             # 旧路径书签
+        self.assertEqual(det("/tools/yiban-auto-sign/demo/mine/calendar"), P)
         self.assertEqual(det("/login"), "")                               # 根路径
         self.assertEqual(det("/api/me"), "")
         self.assertEqual(det("/static/x.js"), "")
         self.assertEqual(det("/"), "")
         self.assertEqual(det("/foo"), "")                                 # 根路径 404 不误伤
+
+    def test_every_root_route_is_reachable_under_subpath(self):
+        """根级路由（含图标与旧路径重定向）在子路径部署下都必须被前缀探测识别。
+
+        从 app.url_map 自动推导：新增根级路由却忘了登记 _ROOT_MARKERS 时立即报红——
+        否则线上表现为「根路径可用、生产子路径 404」（本用例即由此缺陷补入）。
+        """
+        det = self.webapp.BasePathMiddleware._detect_prefix
+        checked = 0
+        for rule in self.app.url_map.iter_rules():
+            if rule.arguments:
+                continue  # 含变量的路由（/static/<path:filename> 等）由前缀清单覆盖
+            path = str(rule.rule)
+            with self.subTest(rule=path):
+                self.assertEqual(det(P + path), P)
+            checked += 1
+        self.assertGreaterEqual(checked, 10, "根级路由数量异常，元测试可能失效")
 
     def test_script_name_passthrough(self):
         captured = {}
