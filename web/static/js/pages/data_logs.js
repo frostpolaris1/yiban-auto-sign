@@ -46,6 +46,33 @@
     var dt = new Date(y, m - 1, d);
     return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
   }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
+  // 空态「查看最近有数据日期（X）」的一键出口：目标日期写入 viewDate；若目标就是今天，
+  // 清空 viewDate 走默认（今天）视图，避免被当成「历史日期」而关掉自动刷新。
+  function goToDate(date) {
+    if (!isValidDate(date)) return;
+    state.viewDate = (date === todayStr()) ? "" : date;
+    writeUrlDate(state.viewDate);
+    if (YB.dateField) YB.dateField.set("log-date", state.viewDate);
+    else { var d = $("log-date"); if (d) d.value = state.viewDate; }
+    resetSnap(); loadLogs();
+  }
+  function setRecentBtn(id, date) {
+    var b = $(id);
+    if (!b) return;
+    if (date && isValidDate(date)) {
+      b.setAttribute("data-date", date);
+      b.textContent = "查看最近有数据日期（" + date + "）";
+      b.hidden = false;
+    } else {
+      b.removeAttribute("data-date");
+      b.hidden = true;
+    }
+  }
   function readUrlDate() {
     var v = "";
     try { v = new URLSearchParams(location.search).get("date") || ""; } catch (e) { v = ""; }
@@ -72,10 +99,13 @@
     li.appendChild(YB.el("span", { class: "ev-phone", text: YB.maskPhone(ev.phone || "") }));
     var mapped = map[ev.status] || map.__default;
     var label = mapped ? mapped[0] : (ev.status || "未知");
-    li.appendChild(YB.el("span", {
+    // 徽标外包一层定宽 .ev-badge：状态列与列头/他行严格对齐（msg 列起点一致）
+    var badgeCell = YB.el("span", { class: "ev-badge" });
+    badgeCell.appendChild(YB.el("span", {
       class: "badge badge--" + (mapped ? mapped[1] : "muted"),
       text: label, title: ev.status || ""
     }));
+    li.appendChild(badgeCell);
     var msg = String(ev.message || "");
     if (isSign && Number(ev.attempt) > 1) {
       msg = msg ? msg + "（第 " + ev.attempt + " 次）" : "（第 " + ev.attempt + " 次）";
@@ -84,13 +114,14 @@
     return li;
   }
 
-  function renderEvents(listId, emptyId, countId, events, map, isSign) {
-    var list = $(listId), empty = $(emptyId), count = $(countId);
+  function renderEvents(listId, emptyId, countId, infoId, events, map, isSign) {
+    var list = $(listId), empty = $(emptyId), count = $(countId), info = $(infoId);
     if (!list) return;
     clear(list);
     var arr = events || [];
     arr.forEach(function (ev) { list.appendChild(evRow(ev, map, isSign)); });
     if (count) count.textContent = String(arr.length);
+    if (info) info.textContent = "共 " + arr.length + " 条";
     if (empty) empty.hidden = arr.length > 0;
   }
 
@@ -126,7 +157,8 @@
       // 快照含日志正文 + 探针 + 事件 + 行数信息 + 文件名/日期/历史标记：
       // 缺任何一项都会让"不同日期内容相同"时跳过重渲染，日期提示与文件名停在旧值。
       var snap = [rendered, JSON.stringify(probe), JSON.stringify(signev),
-        info, data.log_file || "", data.date || "", hist ? "1" : "0"].join("\u0001");
+        info, data.log_file || "", data.date || "", hist ? "1" : "0",
+        data.recent_log_date || "", data.recent_probe_date || "", data.recent_sign_date || ""].join("\u0001");
       if (snap === state.snap) return;
       state.snap = snap;
 
@@ -154,8 +186,12 @@
           : (state.viewDate ? "（" + state.viewDate + " 无签到日志）" : "（暂无签到日志，等待定时任务执行…）"));
       }
       state.firstLoad = false;
-      renderEvents("probe-list", "probe-empty", "probe-count", probe, PROBE_MAP, false);
-      renderEvents("signev-list", "signev-empty", "signev-count", signev, SIGN_MAP, true);
+      // 空态一键出口：后端已按各来源算出「最近有数据日期」，当前日期即最近时后端返回空串
+      setRecentBtn("log-recent-btn", state.search ? "" : data.recent_log_date);
+      setRecentBtn("probe-recent-btn", data.recent_probe_date);
+      setRecentBtn("signev-recent-btn", data.recent_sign_date);
+      renderEvents("probe-list", "probe-empty", "probe-count", "probe-info", probe, PROBE_MAP, false);
+      renderEvents("signev-list", "signev-empty", "signev-count", "signev-info", signev, SIGN_MAP, true);
     }).catch(function (e) {
       var msg = (e && e.message) || "日志加载失败，请稍后重试";
       if (silent) return;
@@ -261,6 +297,16 @@
     on("log-retry-btn", "click", function () {
       resetSnap(); loadLogs();
     });
+    // 三块统一的「最近有数据日期」一键跳转出口（目标日期在渲染时写入 data-date）
+    ["log-recent-btn", "probe-recent-btn", "signev-recent-btn"].forEach(function (id) {
+      on(id, "click", function () {
+        var d = this.getAttribute("data-date");
+        if (d) goToDate(d);
+      });
+    });
+    // 探针/签到事件工具行的刷新按钮（与日志正文共用同一次 /api/logs 拉取）
+    on("probe-refresh-btn", "click", function () { resetSnap(); loadLogs(); });
+    on("signev-refresh-btn", "click", function () { resetSnap(); loadLogs(); });
     on("log-auto-refresh", "change", function () {
       state.autoRefresh = $("log-auto-refresh").checked;
       try { localStorage.setItem(AUTO_KEY, state.autoRefresh ? "1" : "0"); } catch (e) { /* 隐私模式忽略 */ }
