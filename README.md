@@ -529,8 +529,6 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 
 **浏览器标签页图标（favicon）**：把 `favicon.png` 放入同一目录（`web/static/vendor/favicon.png`）即可生效，机制与品牌图相同——文件存在即服务，不存在时浏览器使用默认图标（已入库文件不受影响）。建议使用 32×32 左右的小尺寸 PNG；页面以约 1 小时的短缓存引用它，换图后无需改代码。
 
-**页脚备案图标（gongan-beian.png）**：若配置了公安备案号（`.env` 的 `YIBAN_POLICE_INFO`），页脚会在备案号前显示官方备案图标。把备案图标放入同一目录（`web/static/vendor/gongan-beian.png`，约 12×13 或同比例即可）即生效；**未放置时 `/gongan-beian.png` 返回 404，页脚的 `onerror` 会隐藏裂图但保留图标占位尺寸，备案号文字照常显示**，不影响任何功能。
-
 代码位置：
 - 管理端（管理员页面）：`web/templates/partials/sidebar.html` 品牌区（`brand-fallback`，缺失时 `onerror` 切占位方块）
 - 用户端：`web/templates/partials/sidebar_user.html` 品牌区（同上，两处结构同构）
