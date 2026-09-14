@@ -739,11 +739,11 @@ def main(argv=None):
     print("  woff2 %d 个，合计 %d 字节；CSS %d 字节" % (
         len(woff2_files), total_bytes, os.path.getsize(css_path)))
 
-    # 生成后立刻给 url() 打内容哈希版本（幂等）：分片/子 CSS 内容一变 URL 即变。
-    # 强缓存下的失效路径靠它 + fonts.css 的 @import 版本化共同打断——重切片后
-    # 旧访客不再引用已删除的旧分片（详见 scripts/stamp_font_versions.py 头注释）。
-    # fonts 根目录存在 fonts.css 时连 @import 层一起刷新（本脚本的常规落点），
-    # 否则只打产出目录自身（独立 staging 场景）。
+    # 生成后立刻给 url() 打内容哈希版本（幂等）：分片内容一变 URL 即变。
+    # 强缓存下的失效路径靠它 + 三个外壳给子 CSS 的 ?v={{web_version}} 共同打断——
+    # 重切片后旧访客不再引用已删除的旧分片（详见 scripts/stamp_font_versions.py 头注释）。
+    # fonts 根目录存在 fonts.css（现为纯注释说明/scope 哨兵）时对整个 fonts 目录打标
+    # （本脚本的常规落点），否则只打产出目录自身（独立 staging 场景）。
     import stamp_font_versions
     fonts_root = os.path.dirname(os.path.abspath(args.outdir))
     scope = fonts_root if os.path.isfile(os.path.join(fonts_root, "fonts.css")) else args.outdir

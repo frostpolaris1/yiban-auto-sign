@@ -16,8 +16,11 @@
 <title>{% block title %}易班自动签到{% endblock %}</title>
 {% block head_meta %}{% endblock %}
 {% include "partials/theme_boot.html" %}
-{# 自托管字体与设计系统，全部本地加载，不引用外网 CDN #}
-<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/fonts.css?v={{ web_version }}">
+{# 自托管字体与设计系统，全部本地加载，不引用外网 CDN。
+   三个字体子 css 直接并行 <link>（不再经 fonts.css @import 串行瀑布）。 #}
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/inter/inter.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/notosanssc/notosanssc.css?v={{ web_version }}">
 <link rel="stylesheet" href="{{ request.script_root }}/static/vendor/adminator/adminator.css?v={{ web_version }}">
 <link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
