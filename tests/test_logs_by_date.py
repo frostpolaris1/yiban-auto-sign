@@ -168,7 +168,7 @@ class LogsByDateTest(unittest.TestCase):
         data = c.get("/api/logs").get_json()
         self.assertEqual(data["date"], today)
         self.assertEqual(data["log_file"], f"sign-{today}.log")
-        self.assertEqual(len(data["logs"]), 1)
+        self.assertEqual(len(data["logs"]), 1, data["logs"])
         self.assertIn("✅ 签到成功", data["logs"][0])
         # 0.19.6 起 /api/logs 不再返回 states（账号图标事实源为 /api/accounts），
         # 防止日志符号污染前端状态映射
