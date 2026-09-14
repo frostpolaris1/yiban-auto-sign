@@ -896,19 +896,13 @@ textarea {
   .dash-page #cal-label.is-swapping,
   .dash-page #cal-label.is-shifting-in { opacity: 1; transform: none; transition: none; }
 }
-/* 图例（色标）已上移到卡头：占标题行下方一整行、在超宽屏贴右缘，把卡头右侧空白用起来。
-   面板头是 flex column，故 align-self 沿交叉轴（横向）右对齐；窄屏改回左对齐并允许换行，
-   不挤压标题与月份切换（两者仍独占上一行）。 */
-.dash-page .panel-head > .dash-cal-legend {
-  align-self: flex-end;
-  margin-top: 2px;
-}
-@media (max-width: 560px) {
-  .dash-page .panel-head > .dash-cal-legend { align-self: flex-start; }
-}
+/* 图例（色标）在热力图正下方居中：紧贴数据、与卡头的月份切换器分离（此前贴卡头右缘，
+   两者挨得太近，视觉重点被按钮抢走）。窄屏允许换行，居中不变。 */
 .dash-page .dash-cal-legend {
   display: flex;
   align-items: center;
+  justify-content: center;
+  margin-top: 10px;
   gap: 14px;
   flex-wrap: wrap;
   color: var(--t-muted);
@@ -934,14 +928,10 @@ textarea {
   background: var(--cal-bad-bg);
   border-color: var(--cal-bad-fg);
 }
-/* 图例色标与热力图格同义（§2 反转后）：未来=空白、仅跳过/无记录=灰底 */
+/* 图例色标与热力图格同义（§2 反转后）：仅跳过/无记录=灰底；未来是空白格，图例不再列出 */
 .dash-page .dash-cal-key i.is-none {
   background: var(--bg-muted);
   border-color: var(--border);
-}
-.dash-page .dash-cal-key i.is-future {
-  background: transparent;
-  border-color: var(--border-soft);
 }
 .dash-page .dash-cal-note {
   color: var(--t-light);
