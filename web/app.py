@@ -457,6 +457,13 @@ _IP_STORE_MAX_AGE = 3600
 # API 请求限速（防脚本轰炸）：每 IP 窗口内最多 RATE_MAX 次 /api/* 请求
 RATE_WINDOW = 10  # 窗口（秒）
 RATE_MAX = 60  # 窗口内最大 API 请求数（正常用户远低于此）
+# 已登录会话的 GET 放宽阈值（用户实拍快速切页 429）：新前端每个页面首屏 5–9 个
+# /api/*（外壳 me/clock/announcement/nav badges + 页面数据），快速切 7 页/10s 最坏
+# ≈63 次就撞严格阈值。外壳数据客户端缓存后实测降到 ≤15 次/10s，故取 240 = 严格阈
+# 值的 4 倍，覆盖未缓存最坏 3.8 倍余量；仍远低于脚本化滥用可接受上限（24 req/s）。
+# 仅放宽「已登录 + GET」：写路径（POST/PUT/DELETE）与匿名请求维持 RATE_MAX，脚本
+# 轰炸主防线不变。
+RATE_MAX_AUTH_GET = 240
 # 注册限速（防邮箱批量注册）：每 IP 窗口内最多 REGISTER_MAX 次成功注册
 REGISTER_WINDOW = 600  # 窗口（秒）= 10 分钟
 REGISTER_MAX = 5  # 窗口内最大成功注册数
@@ -2785,6 +2792,8 @@ def create_app(host=None):
     _login_fails = {}
     # 全局限速记录 {ip: [count, window_start]}
     _rate_limits = {}
+    # 已登录 GET 的独立计数桶（与严格桶分开，互不挤占；见 rate_limit 说明）
+    _rate_limits_get = {}
     # 注册限速记录 {ip: [count, window_start]}
     _register_limits = {}
     # 登录频率限制 {ip: [count, window_start]}：比全局限速更严，防换用户名密码喷洒
@@ -2811,6 +2820,16 @@ def create_app(host=None):
             return
         ip = _client_ip()
         now = time.time()
+        # 分级：已登录 GET 走放宽的独立桶（页面首屏并发 + 快速切页），写路径与匿名
+        # 请求走严格桶（脚本轰炸主防线）。两桶独立计数，正常浏览不会互相挤占。
+        relaxed = request.method == "GET" and _current_role() is not None
+        if relaxed:
+            with _rate_lock:
+                _ip_store_trim(_rate_limits_get, _IP_STORE_MAX_AGE)
+            cnt, _start, _allowed = _bump_window_count(_rate_limits_get, ip, now, RATE_WINDOW)
+            if cnt > RATE_MAX_AUTH_GET:
+                return jsonify({"error": "请求过于频繁，请稍后再试"}), 429
+            return
         with _rate_lock:
             _ip_store_trim(_rate_limits, _IP_STORE_MAX_AGE)
         cnt, _start, _allowed = _bump_window_count(_rate_limits, ip, now, RATE_WINDOW)

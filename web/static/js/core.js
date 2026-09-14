@@ -114,7 +114,10 @@
     return fetch(url(req.path), { method: req.method, headers: headers, body: body, credentials: "same-origin" })
       .then(function (resp) {
         return resp.text().then(function (txt) { return handleResponse(resp, txt, req, retried); });
-      }, function (err) { throw networkError(err); });
+      }, function (err) { throw networkError(err); })
+      // 写请求成功返回后整体失效外壳缓存（保守实现：写后重取，绝不把旧壳数据粘住；
+      // 退出/登录这类会话边界本身也是写请求，缓存随之清空，不会串会话）。
+      .then(function (data) { if (write) cacheClearAll(); return data; });
   }
   function handleResponse(resp, txt, req, retried) {
     var data = null;
@@ -159,6 +162,49 @@
     var clear = function () { if (inflightGets[key] === pending) delete inflightGets[key]; };
     pending.then(clear, clear);
     return pending;
+  }
+
+  /* ---------- 外壳数据客户端缓存（sessionStorage） ----------
+     动机（用户要求「一次性加载完然后读缓存，需要实时加载的页面再按时刷新」）：
+     MPA 每个页面加载都重跑外壳初始化（/api/me、/api/announcement、导航徽标、时钟），
+     快速切页时同一份外壳数据被反复拉取——既是单 worker 上的无谓请求，也是触发全局限速
+     429 的主因。apiCached 按 key 缓存成功结果（带写入时间戳 + TTL），命中则不产生网络请求；
+     任何写请求成功返回后整体失效（见 perform 的 cacheClearAll），会话边界（登录/退出）
+     因此天然清理，不会串会话。失败/空结果不写缓存，避免把错误态粘住。
+     sessionStorage 按标签页隔离，键前缀统一便于整体清理与排查。 */
+  var CACHE_PREFIX = "yiban-cache:";
+  function cacheGet(key) {
+    try {
+      var raw = sessionStorage.getItem(CACHE_PREFIX + key);
+      if (!raw) return null;
+      var rec = JSON.parse(raw);
+      if (!rec || typeof rec.t !== "number" || typeof rec.ttl !== "number") return null;
+      if (Date.now() - rec.t > rec.ttl) { sessionStorage.removeItem(CACHE_PREFIX + key); return null; }
+      return rec.v;
+    } catch (e) { return null; }
+  }
+  function cacheSet(key, ttlMs, value) {
+    try {
+      sessionStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ t: Date.now(), ttl: ttlMs, v: value }));
+    } catch (e) { /* 隐私模式/配额满：静默降级为不缓存 */ }
+  }
+  function cacheClearAll() {
+    try {
+      var keys = [];
+      for (var i = 0; i < sessionStorage.length; i++) {
+        var k = sessionStorage.key(i);
+        if (k && k.indexOf(CACHE_PREFIX) === 0) keys.push(k);
+      }
+      forEach(keys, function (k) { sessionStorage.removeItem(k); });
+    } catch (e) {}
+  }
+  function apiCached(key, ttlMs, fn) {
+    var hit = cacheGet(key);
+    if (hit !== null) return Promise.resolve(hit);
+    return Promise.resolve().then(fn).then(function (v) {
+      if (v !== undefined && v !== null) cacheSet(key, ttlMs, v);
+      return v;
+    });
   }
 
   /* ---------- Toast ---------- */
@@ -704,7 +750,9 @@
     return m.role === "admin" ? "管理员" : m.role === "user" ? "普通用户" : (m.role || "");
   }
   function hydrateIdentity() {
-    return api("GET", "/api/me").then(function (data) {
+    // 外壳身份走 30s 会话缓存：切页不再重复拉 /api/me（CSRF token 随会话稳定，
+    // 缓存内一并带回；写请求成功会清缓存，角色变更最多滞后 30s）。
+    return apiCached("me", 30000, function () { return api("GET", "/api/me"); }).then(function (data) {
       me = data;
       if (data && data.csrf_token) csrfToken = data.csrf_token;
       var name = data.username || data.email || "";
@@ -748,8 +796,13 @@
   function clockInfo() {
     return { now: clockString(), server_ts: Math.floor(serverNow().getTime() / 1000), tz_offset_min: clock.tz, sign_status: clock.status, color: clock.color };
   }
-  function calibrateClock() {
-    return api("GET", "/api/clock").then(function (data) {
+  // 时钟：外壳每次加载校准一次即可（offset 不随时间衰减），用 10s 短 TTL 缓存——
+  // 快速切页（<10s）不再每页都拉 /api/clock；页面停留期间由 30s 定时器 force 拉取
+  // 刷新 sign_status/颜色。需要更实时状态的页面语义不受影响（各自定时刷新）。
+  function calibrateClock(opts) {
+    var force = !!(opts && opts.force);
+    var doFetch = function () { return api("GET", "/api/clock"); };
+    return (force ? doFetch() : apiCached("clock", 10000, doFetch)).then(function (data) {
       if (!data) return null;
       var ts = Number(data.server_ts);
       if (isFinite(ts)) clock.offset = ts - Math.floor(Date.now() / 1000);
@@ -771,7 +824,9 @@
   }
   function loadNavBadges(identity) {
     if (!identity || identity.role !== "admin") return;
-    api("GET", "/api/accounts").then(function (data) {
+    // 导航徽标是外壳级低频数据：60s 缓存，切页不再重复拉 /api/accounts、/api/users
+    // （审核/删除等写操作成功会整体清缓存，徽标随之即时重取）。
+    apiCached("nav-accounts", 60000, function () { return api("GET", "/api/accounts"); }).then(function (data) {
       var list = (data && data.accounts) || [];
       // 徽标口径与账号管理页「待处理账号」组一致：待审核 + 已拒绝。
       // 只数 pending 会让徽标数小于页面里的待处理条数，同一条目两处不一致。
@@ -779,7 +834,7 @@
         return a && !a.deleted && (a.status === "pending" || a.status === "rejected");
       }).length);
     }).catch(function () {});
-    api("GET", "/api/users").then(function (data) {
+    apiCached("nav-users", 60000, function () { return api("GET", "/api/users"); }).then(function (data) {
       var list = (data && data.users) || [];
       // 待处理用户 = 名下有「待审核或已拒绝」账号的用户数。
       // review_count 已是 pending+rejected 的超集，再叠加 pending_count 会重复计数。
@@ -810,7 +865,8 @@
       if (btn.getAttribute("data-notif-always") === "1") btn.hidden = false;
       return btn;
     }
-    api("GET", "/api/announcement").then(function (data) {
+    // 公告是公开只读、低频变更：60s 缓存，切页不重复拉取
+    apiCached("announcement", 60000, function () { return api("GET", "/api/announcement"); }).then(function (data) {
       var text = String((data && data.text) || "").trim();
       var btn = $("announcementBtn");
       if (btn && text && !btn.closest(".dd-wrap")) {
@@ -959,7 +1015,8 @@
     calibrateClock();
     renderClock();
     setInterval(renderClock, 1000);
-    setInterval(calibrateClock, 60000);
+    // 30s 强制刷新一次校准（force 绕过 10s 缓存，拿到最新 sign_status/颜色）
+    setInterval(function () { calibrateClock({ force: true }); }, 30000);
   });
 
   /* ---------- 慢请求的「整体淡出 → 换内容 → 淡入」 ----------
@@ -1093,6 +1150,7 @@
     BASE: APP_BASE,
     url: url,
     api: api,
+    apiCached: apiCached,
     toast: toast,
     el: el,
     $: $,
