@@ -3165,6 +3165,30 @@ body[data-page="work-users"] .table-scroll { max-height: var(--table-max-h); }
   .boot-fill { animation: none; width: 100%; opacity: .55; }
 }
 
+/* ---- 27.2b 顶部导航进度条（MPA 页面切换专用） ----
+   多页应用（MPA）点内部链接会整页跳转，浏览器不提供导航中反馈；本条约 3px 细条
+   在点击时立即出现并缓慢推进，新页 DOMContentLoaded 后补到 100% 再淡出，给出
+   "正在切换 / 已到达"的连续感。z-index 90：高于 boot-loader(70)、低于模态(1000)，
+   不遮挡弹窗。reduced-motion 下由 JS 直接不显示（无位移动画）。 */
+.nav-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 90;
+  pointer-events: none;
+  background: transparent;
+}
+.nav-progress__fill {
+  width: 0;
+  height: 100%;
+  background: var(--primary);
+  box-shadow: 0 0 6px var(--primary);
+  transition: width 200ms var(--ease-out-strong), opacity 200ms linear;
+}
+.nav-progress.is-done .nav-progress__fill { opacity: 0; }
+
 /* ---- 27.3 就地状态文字与软警示 ---- */
 .set-tip { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
 .set-tip:empty { display: none; }
