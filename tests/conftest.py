@@ -67,6 +67,28 @@ def _close_root_file_handlers_after_each():
     _close_root_file_handlers()
 
 
+@pytest.fixture(autouse=True, scope="class")
+def _restore_environ_around_class():
+    """类级 os.environ 快照：setUpClass 的改动在 tearDownClass 之后整体还原。
+
+    大量测试类在 setUpClass 里把 YIBAN_STATE_DIR / YIBAN_ENV_FILE / YIBAN_DB_FILE
+    等指向各自的临时目录，tearDownClass 只 rmtree、不还原环境变量（个别类干脆 pop
+    conftest 设的会话默认值）。这些键被带进后续用例后指向已删目录，会让无关断言
+    以间歇形式失败——实测串行组合
+    tests/test_mail_admin_to_edit_0909.py + test_scheduler_gate 的锚点默认路径断言
+    必挂；xdist `-n 8` 下同一 worker 跨文件执行时表现为随机 1~2 项失败
+    （已复现并修复：test_scheduler_gate 锚点默认路径、test_web_auth_security 的
+    purge 线程门）。
+
+    在类边界统一快照/还原，既保留 setUpClass 为类内用例准备的隔离环境，
+    又不把该环境泄漏给其它文件；单个文件里忘还原的类也一并被兜住。
+    """
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """进程收尾兜底：即便个别测试异常中断，也释放全部文件句柄。"""
     _close_root_file_handlers()

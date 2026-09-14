@@ -986,7 +986,7 @@ textarea {
   margin: 12px 0 0;
   font-size: 12.5px;
 }
-.dash-page .dash-cap-links .linklike { font-weight: 600; }
+.dash-page .dash-cap-links .linklike { font-weight: 700; }   /* 中文文案：600 无字面（实渲 700） */
 
 /* 系统状态/容量列表（共享类：dashboard 系统状态卡与账号页容量卡复用同一套行式） */
 .dash-health {
@@ -1072,7 +1072,9 @@ textarea {
   letter-spacing: 0;   /* 中文方块字不套拉丁负字距（原 -0.022em 会让标题发挤） */
   color: var(--t-base);
 }
-.page-sub { margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: var(--t-sub); }
+/* 页说明与卡说明同档（12.5）：两者都是"标题下方的次要说明"，原 13 / 12.5 只差 0.5px
+   （比值 1.04，读者分不出），统一到 12.5 收掉一个伪层级。 */
+.page-sub { margin: 8px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
 
 /* 页脚两栏：备案信息靠左、版本与开源入口靠右（Adminator 的 .d-footer 已是 space-between） */
 .footer-legal { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
@@ -1299,7 +1301,8 @@ body {
 .auth-agree { display: flex; align-items: flex-start; gap: 8px; }
 .auth-agree .check { padding-top: 1px; }
 .auth-agree-text { font-size: 11.5px; color: var(--t-muted); line-height: 1.6; }
-.auth-agree-text button { color: var(--primary); font-weight: 600; font-size: inherit; }
+/* 《用户协议》按钮是全角标点的中文串，600 无字面（实渲 700），写 700 */
+.auth-agree-text button { color: var(--primary); font-weight: 700; font-size: inherit; }
 .auth-agree-text button:hover { text-decoration: underline; }
 
 /* 左栏功能清单 */
@@ -1308,7 +1311,7 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  font-size: 13.5px;
+  font-size: 13px;
   color: rgba(255, 255, 255, 0.88);
   line-height: 1.5;
 }
@@ -1359,7 +1362,7 @@ body {
   margin-top: 6px;
   font-size: 11.5px;
 }
-.auth-links a { color: var(--primary); font-weight: 600; }
+.auth-links a { color: var(--primary); font-weight: 700; }   /* 中文链接：600 无字面（实渲 700） */
 .auth-links .sep { color: var(--t-light); }
 
 /* 提交中/暂停态：Adminator 的 .btn 未定义 :disabled，需显式收口，
@@ -1380,7 +1383,11 @@ body {
 /* 文档正文排印：core.js 的更新日志模态与登录页的协议/隐私模态共用。
    服务端 _render_md 只产出 h1~h4 / p / ul / ol / li / blockquote / hr / code / strong / a。
    Adminator 的 reset 把 ul/ol 的 list-style 清成 none，此处按语义恢复符号。 */
-.md-body { font-size: 13px; line-height: 1.75; color: var(--t-muted); }
+/* 长文行宽：协议/隐私/更新日志模态是 .pm-panel--lg（760px），正文内容宽 718px，
+   13px 中文实测约 49.7 字/行，超出 25–45 字的舒适区（读长句易跳行）。
+   限到 580px（实测 ≈40 字/行）并居中，两端留白由模态内距承担。用 px 不用 ch：
+   ch 基于 "0" 的宽度，中文字宽与之无关，会随字体回退漂移。 */
+.md-body { font-size: 13px; line-height: 1.75; color: var(--t-muted); max-width: 580px; margin-inline: auto; }
 /* 文档正文的首个 H1 与模态标题重复（更新日志、用户协议、隐私政策都是同一段文案），
    隐藏它以免读者看到两遍同一句话。 */
 .pm-panel .md-body > h1:first-child { display: none; }
@@ -1416,9 +1423,11 @@ body {
   padding: 1px 5px;
   border-radius: 4px;
 }
-.md-body a { color: var(--primary); font-weight: 600; }
+/* 文档正文里的强调用 700：自托管 Noto Sans SC 只有 400/700 两档，600 对中文实渲 700，
+   写 700 才是字面存在的档位（写 600 只是让浏览器去模拟、且注释层面误导）。 */
+.md-body a { color: var(--primary); font-weight: 700; }
 .md-body a:hover { text-decoration: underline; }
-.md-body strong { color: var(--t-base); font-weight: 600; }
+.md-body strong { color: var(--t-base); font-weight: 700; }
 
 /* ==========================================================================
    18. 认证页视觉打磨（覆盖第 17 节初版）
@@ -1599,19 +1608,26 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
 .auth-form .field { gap: 6px; }
 .auth-form .field-help,
 .auth-form .field-error { font-size: 12px; line-height: 1.5; }
+/* vendor 的 .field-label 是 600：中文没有该字面（实渲 700），显式写 700 才与实渲一致；
+   本项目字段标签全是中文，字体栈里也取不到 600，故全局归到 700。 */
+.field-label { font-weight: 700; }
 .auth-submit { margin-top: 6px; }
+
+/* 登录页近邻字号收敛：vendor 的 .sub(13.5) 与表单主字号(13) 比值 1.038，读者分不出，
+   统一到 13，去掉一个伪层级（同一页的 12.5 也一并归到 12，见 .auth-switch-hint）。 */
+.auth-card .sub { font-size: 13px; }
 
 .auth-switch-hint {
   margin: 14px 0 0;
   text-align: center;
-  font-size: 12.5px;
+  font-size: 12px;   /* 原 12.5，与 .field-label/.field-help 的 12 同档（比值 1.04 不可辨） */
   line-height: 1.5;
   color: var(--t-muted);
 }
 .auth-switch-hint button {
   padding: 0 2px;
   font: inherit;
-  font-weight: 600;
+  font-weight: 700;   /* 中文只有 400/700 两档，600 实渲 700，直接写 700 */
   color: var(--primary);
   background: none;
   border: 0;
@@ -1855,6 +1871,9 @@ html[data-theme="dark"] {
   letter-spacing: 0;   /* 中文标题不继承拉丁负字距（Adminator 原为 -0.012em） */
   color: var(--t-base);
 }
+/* 卡头标题只有一个层级：vendor 的 .card-title 原为 16px，与 .panel-title 15px 只差 1px
+   （比值 1.067，读者分不出却并存两套卡头口径）。统一到 15px，与 .modal-title 同档。 */
+.card-title { font-size: 15px; letter-spacing: 0; }
 /* 注意：<p> 的 UA 默认外边距是 1em（11.5px），会破坏面板/表单节奏，故一律显式归零 */
 .panel-sub { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
 .panel-stack { display: flex; flex-direction: column; }
@@ -2852,8 +2871,10 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 .log-search .input::placeholder { color: var(--t-muted); }
 /* 同排控件统一 34px：桌面 .btn--sm 约 31.2px，与 34px 搜索框并排会参差 */
 .log-tools .btn { min-height: 34px; }
-/* 行数信息降为工具行内的次要文本（原为独占一行的 .panel-sub，把工具行与日期行隔开） */
-.log-info { font-size: 12.5px; color: var(--t-muted); font-variant-numeric: tabular-nums; }
+/* 行数信息降为工具行内的次要文本（原为独占一行的 .panel-sub，把工具行与日期行隔开）。
+   字号归到日志卡次要文本统一档 12：原 12.5 与 .log-file(12)/.log-count(11.5) 三个近邻
+   值（比值 ≤1.09）并存，同一卡头里看不出差别，统一到 12。 */
+.log-info { font-size: 12px; color: var(--t-muted); font-variant-numeric: tabular-nums; }
 
 /* ---- 日期行：左「选日期 + 查看 + 回到今天」一组，右自动刷新开关 ---- */
 .log-datebar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; margin-bottom: 0; }
@@ -2903,7 +2924,9 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 /* 三块卡共用 .log-card：两段式卡头（标题行 + 工具行 / 整宽说明）与统一空态。
    列表列宽固定，使时间/账号/状态在行间与列头（.ev-head）严格对齐；
    字号/行高取与 .log-box 相同的 12px / 1.6，两块列表与日志正文排版节奏一致。 */
-.log-count { font-size: 11.5px; font-weight: 600; color: var(--t-muted); font-variant-numeric: tabular-nums; }
+/* 计数徽标（探针/签到事件 tab）归到日志卡次要文本同一档 12（原 11.5，
+   与 .log-file/.log-info 只差 0.5px、同处卡头，读者分不出）。数字用 600（Inter 有此档）。 */
+.log-count { font-size: 12px; font-weight: 600; color: var(--t-muted); font-variant-numeric: tabular-nums; }
 /* 探针 / 签到事件列表：同口径取消限高内滚，随内容自然增高（列宽仍固定成列对齐） */
 .ev-scroll {
   overscroll-behavior: contain;
@@ -4157,9 +4180,14 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   .log-box { font-size: var(--fs-log); }
 }
 .kpi-value { font-size: var(--density-kpi-value); }
+/* 热力图整块宽度在宽视口继续吃掉横向余量：它是方形格（7 列 × 6 行），
+   卡宽固定时格子越大→整块越填满卡片，但整块高也随之增长，故按档给一个"填到
+   卡内容宽再留一条边距"的上限（宽度因子 <1 保证 max-width 恒小于 col-6 卡内容宽，
+   永不需要横向滚动）。实测卡内容宽 1920→744 / 2560→1060 / 2953→1253。 */
 @media (min-width: 1600px) {
   :root {
     --fs-base: 14.5px; --fs-table: 13.5px; --fs-log: 12.5px;
+    --density-cal-w: clamp(420px, 34vw, 700px);
     --density-chart-h: 340px; --density-chart-h-sm: 320px;
     --density-kpi-value: 48px; --density-card-pad: 24px;
   }
@@ -4167,13 +4195,50 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 @media (min-width: 2100px) {
   :root {
     --fs-base: 15px; --fs-table: 14px; --fs-log: 13px;
+    --density-cal-w: clamp(420px, 38vw, 960px);
     --density-chart-h: 400px; --density-chart-h-sm: 360px;
     --density-kpi-value: 54px; --density-card-pad: 26px;
   }
 }
 @media (min-width: 2700px) {
   :root {
+    --density-cal-w: clamp(420px, 39vw, 1120px);
     --density-chart-h: 440px; --density-chart-h-sm: 400px;
     --density-kpi-value: 58px; --density-card-pad: 28px;
   }
 }
+
+/* ==========================================================================
+   36. 错误页（404 / 500，复用认证页外壳）
+   --------------------------------------------------------------------------
+   状态码是本页的主信息：用 .err-code 大字做视觉锚点（与 KPI 数值同族的
+   等宽数字栈，tabular 对齐），标题与说明按正文层级顺排，出口按钮排在最后。
+   两处按钮等宽等高（min-width 88px），回到上一页为次操作走 ghost。
+   ========================================================================== */
+.err-page { text-align: center; }
+.err-code {
+  font-family: var(--font-mono);
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--primary);
+}
+.err-title { font-size: 19px; font-weight: 700; letter-spacing: 0; margin: 10px 0 0; }
+.err-desc {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--t-muted);
+  margin: 8px auto 0;
+  max-width: 40ch;              /* 中文舒适行宽：约 40 字/行 */
+  text-wrap: pretty;
+}
+.err-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+.err-actions .btn { min-width: 88px; justify-content: center; }

@@ -614,12 +614,17 @@ def main():
     # 停服探活：不停服轮换 = 签到/探针用旧钥写新密文 → 混合密钥态
     supported, hits = _yiban_processes_running()
     if supported and hits:
-        print("错误：检测到可能仍在运行的 yiban 相关进程，拒绝轮换（防止混合密钥状态）：")
+        if not args.force:
+            print("错误：检测到可能仍在运行的 yiban 相关进程，拒绝轮换（防止混合密钥状态）：")
+            for pid, cmd in hits[:10]:
+                print(f"  pid={pid}  {cmd}")
+            print("请先停服：docker compose stop yiban（Docker）/ systemctl stop yiban-web（裸机），"
+                  "或确认均为无关进程后用 --force 强制执行。")
+            sys.exit(2)
+        # --force 是这条提示给出的出口：命中也放行，但把命中明细打全（事后可追溯）
+        print("警告：--force 已跳过停服探活，检测到的进程如下（确认它们不会写入账号密文）：")
         for pid, cmd in hits[:10]:
             print(f"  pid={pid}  {cmd}")
-        print("请先停服：docker compose stop yiban（Docker）/ systemctl stop yiban-web（裸机），"
-              "或确认均为无关进程后用 --force 强制执行。")
-        sys.exit(2)
     if not supported and not args.force:
         print("警告：当前平台无法探活 yiban 进程，请自行确认已停服"
               "（docker compose stop yiban / systemctl stop yiban-web）后再继续；"

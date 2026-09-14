@@ -115,9 +115,9 @@
              aria-label="我已阅读并同意《用户协议》与《隐私政策》">
       <span class="box"></span>
     </label>
-    <span class="auth-agree-text">我已阅读并同意
-      <button type="button" data-doc="agreement">《用户协议》</button> 与
-      <button type="button" data-doc="privacy">《隐私政策》</button></span>
+    {# 书名号与汉字之间不留空格：模板换行会被折叠成一个半角空格，在《》两侧造成肉眼
+       可见的空隙（也与 aria-label 的无空格口径不一致），故把三个节点写成同一行。 #}
+    <span class="auth-agree-text">我已阅读并同意<button type="button" data-doc="agreement">《用户协议》</button>与<button type="button" data-doc="privacy">《隐私政策》</button></span>
   </div>
   <div id="reg-error-box" class="alert danger" role="alert" tabindex="-1" hidden>
     <span class="ico">{{ icon('circle-alert') }}</span>
