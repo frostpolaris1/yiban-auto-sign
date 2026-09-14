@@ -162,6 +162,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ request.script_root }}/static/js/components/date-field.js?v={{ web_version }}"></script>
-<script src="{{ request.script_root }}/static/js/pages/data_logs.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/date-field.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/pages/data_logs.js?v={{ web_version }}"></script>
 {% endblock %}
