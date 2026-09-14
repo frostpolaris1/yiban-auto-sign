@@ -82,7 +82,8 @@ def stamp_fonts_dir(root, check=False):
     for css_path in css_files:
         base = os.path.dirname(css_path)
 
-        def _font_url(m):
+        def _font_url(m, base=base):
+            # base 以默认参数绑定：回调经 re.sub 触发，显式绑定后不再依赖循环变量的闭合时机
             quote, url = m.group(1), m.group(2)
             if not _is_local_relative(url):
                 return m.group(0)

@@ -114,7 +114,7 @@ class MaskEmailParityTest(unittest.TestCase):
         front = self._run_js(inputs)
         back = [self.py_fn(s) for s in inputs]
         problems = []
-        for (label, value), f, b in zip(CASES, front, back):
+        for (label, value), f, b in zip(CASES, front, back, strict=True):
             if f != b:
                 problems.append(
                     "  %s（输入 %r）：前端 %r != 后端 %r" % (label, value, f, b)
@@ -129,7 +129,7 @@ class MaskEmailParityTest(unittest.TestCase):
         """两端对已脱敏值必须原样返回（幂等），否则会二次吞字符。"""
         masked = [self.py_fn(value) for _label, value in CASES]
         front = self._run_js(masked)
-        for value, f in zip(masked, front):
+        for value, f in zip(masked, front, strict=True):
             self.assertEqual(f, value, "前端 maskEmail 对已脱敏值 %r 不幂等（返回 %r）" % (value, f))
             self.assertEqual(self.py_fn(value), value, "后端 _mask_email 对 %r 不幂等" % value)
 

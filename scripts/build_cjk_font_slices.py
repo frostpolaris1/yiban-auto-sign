@@ -93,9 +93,9 @@ import tempfile
 import urllib.request
 
 try:
+    from fontTools import subset
     from fontTools.ttLib import TTFont, newTable
     from fontTools.varLib import instancer
-    from fontTools import subset
 except ImportError:  # pragma: no cover
     sys.exit("缺少构建依赖：pip install fonttools brotli")
 
@@ -148,7 +148,7 @@ def _download(urls, timeout=120):
                 data = resp.read()
             print("  已下载 %s（%d 字节）" % (url, len(data)))
             return data
-        except Exception as exc:  # noqa: BLE001 - 逐个回退，最后统一报错
+        except Exception as exc:
             last = exc
             print("  下载失败 %s：%s" % (url, exc))
     raise SystemExit("错误：上游 URL 均不可达（最后错误：%s）" % last)
@@ -190,7 +190,7 @@ def fetch_upstream(dest_dir):
     print("  %s SHA-256 校验通过（%d 字节）" % (UPSTREAM_VFS_NAME, len(vfs)))
 
     data = vfs.decode("utf-8")
-    for weight, (name, sha, size) in sorted(UPSTREAM_WEIGHT_FILES.items()):
+    for _weight, (name, sha, size) in sorted(UPSTREAM_WEIGHT_FILES.items()):
         m = re.search(r'"%s"\s*:\s*"([A-Za-z0-9+/=]+)"' % re.escape(name), data)
         if not m:
             sys.exit("错误：%s 内未找到 %s" % (UPSTREAM_VFS_NAME, name))
@@ -547,7 +547,7 @@ def subset_to_woff2(src_path, codepoints, out_path):
     opts = subset.Options()
     opts.flavor = "woff2"
     opts.layout_features = []
-    opts.drop_tables = list(opts.drop_tables) + ["vhea", "vmtx", "VORG", "VVAR"]
+    opts.drop_tables = [*opts.drop_tables, "vhea", "vmtx", "VORG", "VVAR"]
     opts.recalc_bounds = False
     font = subset.load_font(src_path, opts)
     try:

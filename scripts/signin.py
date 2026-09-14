@@ -1996,10 +1996,9 @@ def _flush_mail_on_sigterm(signum, frame):
     （含部分成功的汇总）一并消失。信号处理器在退出前冲刷一次；汇总为空时
     不产生任何发送（不重复告警），正常收尾路径已清空收集器。
     """
-    try:
+    # 冲刷失败不改变退出码：SIGTERM 路径的首要契约是尽快退出
+    with contextlib.suppress(Exception):
         _flush_admin_mail_summary(phase="签到超时终止")
-    except Exception:
-        pass
     sys.exit(128 + int(signum or 15))
 
 
