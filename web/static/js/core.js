@@ -807,12 +807,28 @@
     return mePending;
   }
   /* ---------- 服务器时钟 ---------- */
-  var clock = { offset: 0, tz: 0, status: "", color: "" };
+  var clock = { offset: 0, tz: 0, status: "", color: "", ready: false };
+  // 浏览器相对 UTC 的分钟偏移（东八区 = +480）。
+  function browserTzMin() { return -new Date().getTimezoneOffset(); }
+  // 服务器墙上时钟：由本地 getter（getFullYear/getMonth/getDate/getHours…）读出的值必须
+  // 等于服务器当地时间。Date.now() 是 UTC 时刻，加 offset 得到服务器真实时刻；再叠加
+  // 「服务器时区 − 浏览器时区」才能让本地 getter 落在服务器墙上时间上。
+  // 旧实现只加服务器时区：UTC+8 浏览器会再叠一次 +8h，16:00 后 getDate() 直接跳到次日，
+  // 造成数据总览「今日」KPI 与热力图取不到当天键（2026-09-14 修复）。
+  // 未校准前退回浏览器本地时钟，避免把未加时区的 UTC 当成服务器墙上时间。
   function serverNow() {
-    var epoch = Math.floor(Date.now() / 1000) + clock.offset + clock.tz * 60;
+    if (!clock.ready) return new Date();
+    var epoch = Math.floor(Date.now() / 1000) + clock.offset + (clock.tz - browserTzMin()) * 60;
     return new Date(epoch * 1000);
   }
-  function clockString() { return serverNow().toISOString().slice(0, 19).replace("T", " "); }
+  function two(n) { return (n < 10 ? "0" : "") + n; }
+  // 必须用本地 getter 重建：serverNow() 的本地字段即服务器墙上时间；若再走 toISOString
+  //（UTC 表示）会把服务器时区重复扣一次。格式与旧实现同为 "YYYY-MM-DD HH:MM:SS"。
+  function clockString() {
+    var d = serverNow();
+    return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) + " " +
+      two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
+  }
   function renderClock() {
     var s = clockString();
     setText("[data-clock-text]", s);
@@ -826,7 +842,8 @@
     });
   }
   function clockInfo() {
-    return { now: clockString(), server_ts: Math.floor(serverNow().getTime() / 1000), tz_offset_min: clock.tz, sign_status: clock.status, color: clock.color };
+    // server_ts 用真实服务器 epoch（Date.now()+offset），不是上面那个已按墙上时间平移过的时刻
+    return { now: clockString(), server_ts: Math.floor(Date.now() / 1000) + clock.offset, tz_offset_min: clock.tz, sign_status: clock.status, color: clock.color };
   }
   // 时钟：外壳每次加载校准一次即可（offset 不随时间衰减），用 10s 短 TTL 缓存——
   // 快速切页（<10s）不再每页都拉 /api/clock；页面停留期间由 30s 定时器 force 拉取
@@ -841,6 +858,7 @@
       clock.tz = Number(data.tz_offset_min) || 0;
       clock.status = data.sign_status || "";
       clock.color = /^#[0-9a-f]{6}$/i.test(String(data.color || "")) ? data.color : "";
+      clock.ready = true;   // 校准完成：serverNow() 起按服务器墙上时间解释本地字段
       renderClock(); reflectSignStatus();
       try { document.dispatchEvent(new CustomEvent("yiban:clock", { detail: clockInfo() })); } catch (e) {}
       return data;
