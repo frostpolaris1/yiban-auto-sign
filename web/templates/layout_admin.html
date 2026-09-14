@@ -13,9 +13,15 @@
 <title>{% block title %}易班自动签到{% endblock %}</title>
 {% block head_meta %}{% endblock %}
 {% include "partials/theme_boot.html" %}
-{# 自托管字体（Inter 拉丁 + Noto Sans SC 中文 + JetBrains Mono 等宽）与设计系统。
-   均本地加载，不引用任何外网 CDN。 #}
-<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/fonts.css?v={{ web_version }}">
+{# 自托管字体（Inter 拉丁 + Noto Sans SC 中文 + JetBrains Mono 等宽），全部本地加载，不引用外网 CDN。
+   三个子 css 直接并行 <link>：浏览器解析 <head> 时同时发起，避免旧写法
+   fonts.css → @import 子 css 的串行瀑布（每层多 1 个 RTT）。
+   子 css 以 ?v={{web_version}} 版本化（进程启动时间戳，每次发版 URL 变化）；
+   其内部的 woff2 分片由 scripts/stamp_font_versions.py 打内容哈希，两级共同保证
+   重切片后旧缓存不会引用已删除分片（详见该脚本头注释）。 #}
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/inter/inter.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v={{ web_version }}">
+<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/notosanssc/notosanssc.css?v={{ web_version }}">
 <link rel="stylesheet" href="{{ request.script_root }}/static/vendor/adminator/adminator.css?v={{ web_version }}">
 <link rel="stylesheet" href="{{ request.script_root }}/static/css/app.css?v={{ web_version }}">
 {% block head_styles %}{% endblock %}
