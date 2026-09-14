@@ -79,14 +79,15 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | 单页载荷（实测） | 用本项目 28 个模板的 893 个不同 CJK/全角码点：400 命中 3 片 **126,772 B（0.121 MiB）**、700 命中 3 片 **128,436 B（0.122 MiB）**，合计 **255,208 B（0.243 MiB）**；旧基线为 23/101 片 ≈ 1.28 MiB/字重 |
 | SHA-256 基线 | 聚合 `9bb613b6a6aebb0e7bc04e77c040632835eec26368969c2b428331ac226b9a7f`（命令见上） |
 
-## fonts.css 聚合入口
+## 字体引入与版本化（2026-09-14 起：三个外壳直接并行 `<link>`）
 
 | 项 | 值 |
 | --- | --- |
-| 用途 | 单一 `@import` 入口，相对路径聚合三家族 |
-| 体积 | **705 字节** |
-| 引入方式 | `<link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/fonts.css?v={{ web_version }}">` |
-| URL 版本化 | 全目录 CSS 的 `url()` 均带内容短哈希查询串（`?v=<sha256 前 8 位>`），由 `scripts/stamp_font_versions.py` 打标（幂等，可重跑；`--check` 只查不写）。覆盖两级：各家族 CSS 内的 woff2 分片、fonts.css 的 `@import` 目标。缓存背景：`/static/` 30 天强缓存（`max-age=2592000`），layout 的 `?v={{web_version}}` 只救 fonts.css 自身一层；不版本化时重切片后旧访客会按缓存的旧子 CSS 引用已删除的分片 → 404 回退宋体，最长 30 天自愈。`build_cjk_font_slices.py` 生成完成后会自动调用本脚本刷新整个 fonts 目录 |
+| 引入方式 | 三个外壳（`layout_admin/user/auth`）直接并行引入三个子 CSS，不再经 `fonts.css` 的 `@import`（@import 必须等聚合文件下载并解析后才发起子请求，多 1–2 个 RTT）：<br>`<link rel="stylesheet" href="…/static/vendor/fonts/inter/inter.css?v={{ web_version }}">`<br>`<link rel="stylesheet" href="…/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v={{ web_version }}">`<br>`<link rel="stylesheet" href="…/static/vendor/fonts/notosanssc/notosanssc.css?v={{ web_version }}">` |
+| `fonts.css` 现状 | 保留为**纯注释说明文件**（不再被任何模板引用），兼作 `scripts/build_cjk_font_slices.py` 的 scope 哨兵（存在即对整个 fonts 目录打标）。 |
+| URL 版本化（子 CSS） | 外壳以 `?v={{ web_version }}`（进程启动时间戳）版本化三个子 CSS —— 每次发版 URL 变化，子 CSS 自身总是新鲜。 |
+| URL 版本化（分片） | 各家族子 CSS 内的 woff2 `url()` 均带**内容短哈希**查询串（`?v=<sha256 前 8 位>`），由 `scripts/stamp_font_versions.py` 打标（幂等，可重跑；`--check` 只查不写）。内容不变 URL 不变（30 天强缓存继续生效），内容/文件名一变 URL 即变。 |
+| 缓存背景 / 为何不能退化 | `/static/` 为 30 天强缓存（`max-age=2592000`）。两级版本化共同打断失效链条：子 CSS URL 随发版变化 → 拿到新子 CSS → 其中分片 URL 因内容哈希变化也是新的。**不版本化时**重切片后旧访客会按缓存的旧子 CSS 引用已删除的分片 → 404 回退宋体，最长 30 天自愈。`build_cjk_font_slices.py` 生成完成后会自动调用 stamp 脚本刷新整个 fonts 目录。 |
 
 ## 许可文件
 

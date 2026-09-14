@@ -1,30 +1,33 @@
 # -*- coding: utf-8 -*-
-"""给 self-hosted 字体 CSS 的 url() 追加内容哈希查询串（幂等，可重跑）。
+"""给 self-hosted 字体 CSS 里引用的 woff2 分片追加内容哈希查询串（幂等，可重跑）。
 
 ## 解决什么问题
 
 `web/app.py` 对 `/static/` 下发 `Cache-Control: public, max-age=2592000`（30 天强
-缓存，强缓存期内浏览器不发请求，ETag 无从生效）。字体 CSS 的引用链是：
+缓存，强缓存期内浏览器不发请求，ETag 无从生效）。字体引用链现为：
 
-    fonts.css?v={{ web_version }}   ← layout 模板下发，web_version 为进程启动时间戳，
-                                      每次发版 URL 变化，fonts.css 自身总是新鲜的
-      └─ @import url('inter/inter.css') 等   ← 无版本号！
-           └─ url('xxx.woff2')               ← 无版本号！
+    三个外壳直接 <link>
+      fonts/inter/inter.css?v={{ web_version }}            ← 进程启动时间戳，每次发版变化
+      fonts/jetbrains-mono/jetbrains-mono.css?v=…           ← 同上
+      fonts/notosanssc/notosanssc.css?v=…                   ← 同上
+        └─ url('xxx.woff2')                                 ← 固定 URL（本脚本负责打标）
 
-三个 layout 的 `?v=` 只救了 fonts.css 一层：@import 的子 CSS 与分片 woff2 以
-**固定 URL** 被 30 天强缓存。`build_cjk_font_slices.py` 重切片后分片文件集合/内容
-变化，旧访客（浏览器里缓存着旧子 CSS）按旧 unicode-range 请求已被删除的旧分片
-→ 404 → 中文回退宋体，最长 30 天（子 CSS 缓存过期）自愈。
+外壳的 `?v={{ web_version }}` 让三个子 CSS 每次发版都是新鲜 URL；但子 CSS 内部的
+woff2 分片仍以**固定 URL** 被 30 天强缓存。`build_cjk_font_slices.py` 重切片后分片
+文件集合/内容变化，旧访客（浏览器里缓存着旧子 CSS）按旧 unicode-range 请求已被
+删除的旧分片 → 404 → 中文回退宋体，最长 30 天（子 CSS 缓存过期）自愈。
 
 ## 修法（本脚本）
 
-两级都打内容短哈希（sha256 前 8 位）：
+对**分片层**：每个 `url('…/*.woff2')` 追加 `?v=<woff2 内容哈希>` —— 分片内容不变时
+URL 不变，30 天缓存继续生效；内容/文件名一变 URL 即变，永不 404。
 
-  · 分片层：每个 `url('…/*.woff2')` 追加 `?v=<woff2 内容哈希>` —— 分片内容不变时
-    URL 不变，30 天缓存继续生效；内容/文件名一变 URL 即变，永不 404。
-  · @import 层：`@import url('…/*.css')` 追加 `?v=<目标 CSS 内容哈希>` —— 子 CSS
-    引用的分片哈希一变，子 CSS 文本即变，@import URL 随之变，旧访客立刻拿到新清单，
-    "引用已删除分片"的链条被打断。
+配合外壳给子 CSS 的 `?v={{ web_version }}`（每次发版变化）共同打断失效链条：
+子 CSS URL 变 → 拿到新子 CSS → 其中分片 URL 因内容哈希变化也是新的。
+
+> 历史：以前 `fonts/fonts.css` 是 @import 聚合入口，@import 层也需版本化；改为三个
+> 外壳直接并行 <link> 后该层不复存在（省 1–2 个 RTT），故本脚本不再处理 @import。
+> `fonts/fonts.css` 现为纯注释说明文件，仅作本目录说明与 build 脚本的 scope 哨兵。
 
 幂等性：处理前先剥掉 url 中已有的 `?v=…` 再重新计算哈希 —— 分片内容未变时二次
 运行零 diff（哈希对文件内容收敛，与历史查询串无关）。`--check` 模式不写盘，
@@ -48,8 +51,6 @@ HASH_LEN = 8
 
 # url('path') / url("path") —— 本仓字体 CSS 均为单引号，双引号一并兼容
 _URL_RE = re.compile(r"url\(\s*(['\"])([^'\")]+)\1\s*\)")
-# @import url('path.css')（不含 media query 形态，本仓未用）
-_IMPORT_RE = re.compile(r"(@import\s+url\(\s*(['\"])([^'\")]+)\2\s*\))")
 
 
 def _short_hash(path):
@@ -69,11 +70,7 @@ def _strip_version(url):
 
 
 def stamp_fonts_dir(root, check=False):
-    """对 root 下所有 CSS 打标。返回 {文件相对路径: 是否(将)更新}。
-
-    两遍处理：先打分片层（woff2），再打 @import 层——后者必须基于打标后的
-    子 CSS 内容计算哈希，子 CSS 一变 @import URL 即变。
-    """
+    """对 root 下所有 CSS 里引用的 woff2 分片打内容哈希。返回 {文件相对路径: 是否(将)更新}。"""
     css_files = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
@@ -82,7 +79,6 @@ def stamp_fonts_dir(root, check=False):
                 css_files.append(os.path.join(dirpath, name))
     results = {}
 
-    # 第一遍：woff2 分片层
     for css_path in css_files:
         base = os.path.dirname(css_path)
 
@@ -99,38 +95,12 @@ def stamp_fonts_dir(root, check=False):
 
         text = open(css_path, encoding="utf-8").read()
         new_text = _URL_RE.sub(_font_url, text)
-        results[os.path.relpath(css_path, root)] = new_text != text
-        if not check and new_text != text:
-            with open(css_path, "w", encoding="utf-8", newline="") as fh:
-                fh.write(new_text)
-        elif not check:
-            pass  # 未变化，不重写（保 mtime）
-
-    # 第二遍：@import 层（读取的是第一遍写盘后的子 CSS 内容）
-    for css_path in css_files:
-        base = os.path.dirname(css_path)
-
-        def _import_url(m):
-            whole, quote, url = m.group(1), m.group(2), m.group(3)
-            if not _is_local_relative(url):
-                return whole
-            target = os.path.normpath(os.path.join(base, _strip_version(url)))
-            if not os.path.isfile(target):
-                return whole
-            # 目标 CSS 以"剥查询串后的文本"参与哈希：其自身查询串是派生信息，
-            # 不参与（否则重跑时文本可能因历史残留而不收敛）
-            target_text = open(target, encoding="utf-8").read()
-            digest = hashlib.sha256(target_text.encode("utf-8")).hexdigest()[:HASH_LEN]
-            stamped = "%s?v=%s" % (_strip_version(url), digest)
-            return "@import url(%s%s%s)" % (quote, stamped, quote)
-
-        text = open(css_path, encoding="utf-8").read()
-        new_text = _IMPORT_RE.sub(_import_url, text)
         rel = os.path.relpath(css_path, root)
-        results[rel] = results.get(rel, False) or (new_text != text)
+        results[rel] = new_text != text
         if not check and new_text != text:
             with open(css_path, "w", encoding="utf-8", newline="") as fh:
                 fh.write(new_text)
+        # 未变化不重写（保 mtime）
     return results
 
 

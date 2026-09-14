@@ -1,7 +1,9 @@
 {
   "index": [
     "link rel=icon href=/favicon.png?v=*",
-    "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "script src=/static/vendor/md-render.js?v=*",
@@ -11,7 +13,9 @@
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
-    "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "script src=/static/vendor/md-render.js?v=*",
@@ -20,7 +24,9 @@
   ],
   "user": [
     "link rel=icon href=/favicon.png?v=*",
-    "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "script src=/static/vendor/md-render.js?v=*",
@@ -36,7 +42,9 @@
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
-    "link rel=stylesheet href=/static/vendor/fonts/fonts.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/inter/inter.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v=*",
+    "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "script src=/static/vendor/md-render.js?v=*",

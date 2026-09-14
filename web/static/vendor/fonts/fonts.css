@@ -1,13 +1,25 @@
-/* Self-hosted webfont aggregator.
+/* Self-hosted webfont 说明文件（不再是聚合入口）。
  *
- * 相对路径引用，无任何外网 CDN。三个家族均为 SIL OFL-1.1（见 OFL.txt）。
+ * 历史：本文件曾用 @import 串行引入三个子 css；@import 必须等本文件下载并解析后
+ * 才开始请求子 css，比直接 <link> 多 1–2 个 RTT（每层各一次往返）。
+ * 现改为三个外壳直接并行 <link>：
+ *
+ *   <link rel="stylesheet" href="/static/vendor/fonts/inter/inter.css?v={{web_version}}">
+ *   <link rel="stylesheet" href="/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v={{web_version}}">
+ *   <link rel="stylesheet" href="/static/vendor/fonts/notosanssc/notosanssc.css?v={{web_version}}">
+ *
+ * 版本化（防止重切片后旧缓存 404，勿退化）：
+ *   · 子 css 由外壳以 ?v={{web_version}}（进程启动时间戳）版本化，每次发版 URL 变化；
+ *   · 子 css 内的 woff2 分片由 scripts/stamp_font_versions.py 打内容短哈希 ?v=<sha256 前 8 位>，
+ *     内容不变则 URL 不变（30 天强缓存继续生效），内容/文件名一变 URL 即变。
+ *   两级共同保证：重切片后旧访客不会按缓存的旧子 css 引用已删除的旧分片。
+ *
+ * 三个家族均为 SIL OFL-1.1（见 OFL.txt）：
  *   inter/          Inter 400/500/600/700，latin + latin-ext
  *   jetbrains-mono/ JetBrains Mono 400，latin（等宽数值：手机号 / 日志 / ID）
  *   notosanssc/     Noto Sans SC 400/700，unicode-range 分片（动态中文内容）
- *
- * 引入方式：<link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
  * 各分片 unicode-range 保留，浏览器按页面实际码点按需加载。
+ *
+ * 本文件保留为目录说明与 scripts/build_cjk_font_slices.py 的 scope 哨兵（存在即对整个
+ * fonts 目录打标），不再被任何模板引用。
  */
-@import url('inter/inter.css?v=63bc3b91');
-@import url('jetbrains-mono/jetbrains-mono.css?v=b0e65736');
-@import url('notosanssc/notosanssc.css?v=fc8181d5');
