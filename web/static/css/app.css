@@ -3442,11 +3442,32 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
-/* 弹窗内的滚轮组：一组「时:分」一行，区间形态两行 */
+/* 弹窗内的滚轮组：一组「时:分」一行，区间形态两行。
+   --wheel-w 控制滚轮列宽上限（矮视口下并排时收窄），行高固定 44px 由 JS 的 ITEM_H 对齐，
+   不随视口改（改行高会让滚动定位与选中项错位）。 */
+.time-modal { --wheel-w: 116px; }
 .time-groups { display: flex; flex-direction: column; gap: 16px; }
 .time-group { display: flex; flex-direction: column; gap: 6px; }
 .time-group-label { font-size: 12px; font-weight: 600; color: var(--t-sub); }
 .time-modal .field-error { margin: 12px 0 0; font-size: 12.5px; }
+
+/* 矮视口（含手机横屏 / 小笔电）：起止两组并排而非纵向堆叠。
+   纵向堆叠在 844×390 下高 330px，超过弹窗正文可视高（228px），第二组滚轮被弹窗下缘裁掉；
+   并排后仅需一组的高度（~156px），两组完整可见、操作行常驻 footer。 */
+@media (max-height: 560px) and (min-width: 560px) {
+  .time-modal { --wheel-w: 104px; }
+  .time-modal .time-groups {
+    flex-direction: row;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 24px;
+  }
+  /* 并排后 .wheel-field/.wheel 的 flex-basis:0 会塌成 22px（列向时宽度靠 stretch 撑开，
+     行向没有可 stretch 的尺寸）。故在这一档改为内容宽度 + 明确列宽。 */
+  .time-modal .time-groups .time-group,
+  .time-modal .time-groups .wheel-field { flex: 0 0 auto; }
+  .time-modal .time-groups .wheel { flex: 0 0 auto; width: var(--wheel-w); }
+}
 
 /* ---- 滑块刻度（常用值）：滑块下方一排可点的刻度，既当量程尺又当快捷选择 ----
    0–5 分钟、0.5 步进是均匀刻度，故用等分 flex 排布（不是近似位置）。 */
@@ -3489,7 +3510,7 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
   position: relative;
   flex: 1 1 0;
   min-width: 0;
-  max-width: 116px;
+  max-width: var(--wheel-w, 116px);
   height: 132px;
   overflow-y: auto;
   scroll-snap-type: y mandatory;
