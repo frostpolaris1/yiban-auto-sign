@@ -60,6 +60,12 @@ class LogsByDateTest(unittest.TestCase):
         sys.modules["webapp"] = cls.webapp
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
+        # 口令明文→哈希的启动迁移在此显式做掉：留在首个 create_app() 里做的话，那条
+        # WARNING 会写进「当时的当天日志文件」——若正好是某个用例先写好文件再建 app，
+        # 该用例就会多出一行（本文件 test_api_logs_default_is_today 断言行数，随
+        # pytest-randomly 的执行顺序偶发失败，CI 上已复现）。setUp 每个用例都会清掉
+        # 当天日志文件，故这里产生的告警行不会污染任何用例。
+        cls.webapp.migrate_admin_password_to_hash(cls.env_file)
 
     @classmethod
     def tearDownClass(cls):

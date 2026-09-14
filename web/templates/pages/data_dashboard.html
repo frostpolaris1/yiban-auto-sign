@@ -155,18 +155,16 @@
             <button type="button" class="btn btn--ghost btn--sm" id="cal-next" aria-label="下一月">{{ icon('chevron-right') }}</button>
           </div>
         </div>
-        {# 图例上移（用户反馈）：超宽屏下卡片底部落在视口外，底部色标看不到。
-           放进卡头作为标题行的下一行、右对齐（面板头是 flex column，align-self 生效）；
-           ≤560px 左对齐换行，不挤压标题与月份切换。 #}
-        <div class="dash-cal-legend" id="cal-legend">
-          <span class="dash-cal-key"><i class="is-ok"></i>全部成功</span>
-          <span class="dash-cal-key"><i class="is-fail"></i>有失败</span>
-          <span class="dash-cal-key"><i class="is-none"></i>仅跳过或无记录</span>
-          <span class="dash-cal-key"><i class="is-future"></i>未来</span>
-        </div>
       </div>
       <div class="dash-cal-scroll">
         <div class="mini-cal-grid" id="mini-cal" role="grid" aria-label="签到结果日历"></div>
+      </div>
+      {# 图例置热力图正下方居中（2026-09-14 用户裁决）：此前贴卡头右侧，与月份切换按钮
+         挨得太近、抢视觉重点。只列三种真实可辨的格面——「未来」是空白格，不另标注。 #}
+      <div class="dash-cal-legend" id="cal-legend">
+        <span class="dash-cal-key"><i class="is-ok"></i>全部成功</span>
+        <span class="dash-cal-key"><i class="is-fail"></i>有失败</span>
+        <span class="dash-cal-key"><i class="is-none"></i>仅跳过或无记录</span>
       </div>
       <div class="dash-cal-foot">
         <span class="dash-cal-note" id="cal-note">真实数据（不含探针），覆盖近 30 天</span>
