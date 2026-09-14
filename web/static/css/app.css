@@ -56,6 +56,20 @@ textarea {
   color: #fff;
 }
 
+/* 品牌区版式（2026-09-14 用户裁决）：主标题原 15.5px 与正文 14px 几乎同级、
+   观感"还不如正文"，副标题 11px、图标 32px 也偏小。整体上调，并保持
+   .brand（flex align-items:center）里「40px 方块 + 两行文字块」的垂直配对。
+   主标题 19px / 正文 14px = 1.36，明显大于正文；副标题 12px 居中分层。
+   图标栏（721–1100 收成 72px）也放得下：40px 方块 + .brand 左右内距各 10px = 60 < 72。 */
+.d-sidebar .brand-name { font-size: 19px; line-height: 1.2; }
+.d-sidebar .brand-tag { font-size: 12px; line-height: 1.3; }
+/* flex-shrink:0：721–1100 收成 72px 图标栏时 .brand 内容盒仅 32px，
+   默认可收缩会把 40px 方块压成 31×40（高度仍 40）→ 非方形。
+   40 + 图标栏左右内距 10×2 + .brand 内距 10×2 = 60 < 72，不裁切。 */
+.d-sidebar .brand-logo { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; }
+.d-sidebar .brand-logo svg { width: 22px; height: 22px; }
+.d-sidebar .brand-logo .brand-fallback { border-radius: 10px; font-size: 17px; }
+
 /* 服务器时钟：图标 + 等宽时间，弱化配色，用于判断签到窗口 */
 .sidebar-clock {
   display: flex;
@@ -3979,7 +3993,7 @@ body[data-page="work-users"] .tab-panel .usr-group-head { margin-bottom: 0; }
        基线），徽标盒中心比名称墨迹中心**低** 2.34px（.acct-name-main 的
        「待删除」徽标 = P16 图三）；
    例外：.sidebar-clock 的文字走等宽栈（JetBrains Mono strut 更高），实测墨迹
-   本就与图标盒对齐（−0.09px）；.brand-logo 是 32px 品牌方块与两行文字块的
+   本就与图标盒对齐（−0.09px）；.brand-logo 是 40px 品牌方块与两行文字块的
    块级配对，不属行内图标。
    处置 = 两条共享规则（不改配色 / 不改间距节奏 / 不改 DOM 结构）：
      A. 行内图标/色块统一光学上移 0.5px（translate 不参与布局，行高与盒尺寸
