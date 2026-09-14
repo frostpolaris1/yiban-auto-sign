@@ -312,7 +312,7 @@ class CapacityFormulaTest(_Base):
 
     def test_engine_and_web_share_one_formula(self):
         """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""
-        import signin  # noqa: PLC0415
+        import signin
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
              mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
