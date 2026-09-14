@@ -758,7 +758,7 @@ textarea {
   background: var(--bg-card);
 }
 
-/* 签到热力图：窄屏可横向滚动，图例与说明置底。
+/* 签到热力图：窄屏可横向滚动，图例上移到卡头（见下 .dash-cal-legend）、口径说明置底。
    整块限宽 420px ≈ 7×56px + 6×4px，让日期格回到日历页的 ~56px 档位；
    不限宽时 1fr 会把格子拉到 ~130px，vendor 的 aspect-ratio:1 再把整块撑到 ~780px 高。
    gap 抽成 --mini-cal-gap，且变量声明在低特异度选择器上——否则窄屏覆盖（同属性、
@@ -796,13 +796,23 @@ textarea {
   background: var(--cal-bad-bg);
   color: var(--cal-bad-fg);
 }
+/* 状态语义（2026-09-14 用户裁决，与旧版相反）：
+     未来   = 纯空白（无底色）—— 代表那天服务还没运行到，不产生任何状态；
+     仅跳过/无记录 = 灰底 —— 有状态显示，说明服务正常运行。
+   底色只表达"服务是否已覆盖到这天"，与「今天」的 inset 描边互不冲突。 */
+.dash-page .mini-cal-day.is-future {
+  background: transparent;
+}
+.dash-page .mini-cal-day.is-none {
+  background: var(--bg-muted);
+}
 .dash-page .mini-cal-day.is-today {
   box-shadow: inset 0 0 0 2px var(--primary);
 }
 .dash-page .mini-cal-day.is-today.is-ok { background: var(--cal-ok-bg); color: var(--cal-ok-fg); }
 .dash-page .mini-cal-day.is-today.is-fail { background: var(--cal-bad-bg); color: var(--cal-bad-fg); }
-.dash-page .mini-cal-day.is-today.is-none { background: transparent; color: var(--t-light); }
-.dash-page .mini-cal-day.is-today.is-future { background: var(--bg-muted); color: var(--t-light); }
+.dash-page .mini-cal-day.is-today.is-none { background: var(--bg-muted); color: var(--t-base); }
+.dash-page .mini-cal-day.is-today.is-future { background: transparent; color: var(--t-light); }
 /* 右下角圆点与日历页 .sc-dot（5px / 距右下各 5px）统一；原 6px / 8px 在缩小后的格上偏大 */
 .dash-page .mini-cal-day.is-ok::after,
 .dash-page .mini-cal-day.is-fail::after {
@@ -861,12 +871,13 @@ textarea {
   background: var(--cal-bad-bg);
   border-color: var(--cal-bad-fg);
 }
+/* 图例色标与热力图格同义（§2 反转后）：未来=空白、仅跳过/无记录=灰底 */
 .dash-page .dash-cal-key i.is-none {
-  background: transparent;
+  background: var(--bg-muted);
   border-color: var(--border);
 }
 .dash-page .dash-cal-key i.is-future {
-  background: var(--bg-muted);
+  background: transparent;
   border-color: var(--border-soft);
 }
 .dash-page .dash-cal-note {
