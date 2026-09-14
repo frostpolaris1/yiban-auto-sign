@@ -113,11 +113,24 @@ textarea {
 /* ==========================================================================
    3. 页脚兼容类（footer.html 用 .footer-*，Adminator 定义的是 .d-footer-meta）
    ========================================================================== */
+/* 备案号此前是 12px + 主色 + 600（.d-footer 字号 12 与 vendor `.d-footer a` 的
+   primary/600 叠加），比版本号（10.5px 等宽、400）更抢眼，与「版本号同级甚至更低」
+   的诉求相反。这里把备案栏收敛到与 .footer-meta 同一等宽栈/字号/字距，颜色取
+   --t-sub（页脚底 6.9:1，达 AA），字重回落 400 —— 版本号仍是主色，层级更高。 */
 .d-footer .footer-legal {
   display: flex;
   align-items: center;
   gap: 14px;
   min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  color: var(--t-sub);
+}
+.d-footer .footer-legal a {
+  color: var(--t-sub);
+  font-weight: 400;
 }
 .d-footer .footer-legal img {
   display: inline-block;
