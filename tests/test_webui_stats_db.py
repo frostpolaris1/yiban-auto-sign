@@ -19,6 +19,16 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_KEY = "a" * 64
 
 
+def _recent(days=0, hours=0, minutes=0):
+    """距今给定偏移的 ts 字面量。
+
+    查询函数（sign_events_by_phone / page_visit_* / server_metric_*）按 days 窗口
+    裁剪，写死日期会在窗口滑过该日期后假红。
+    """
+    delta = datetime.timedelta(days=days, hours=hours, minutes=minutes)
+    return (datetime.datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
+
+
 class WebuiStatsDbTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -101,8 +111,8 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM page_visits").fetchone()[0], 2)
 
     def test_sign_events_by_phone(self):
-        db.add_sign_event("2026-08-16 06:30:00", "13800138000", "success")
-        db.add_sign_event("2026-08-16 06:31:00", "13900139000", "failed")
+        db.add_sign_event(_recent(hours=2), "13800138000", "success")
+        db.add_sign_event(_recent(hours=1), "13900139000", "failed")
         rows = db.sign_events_by_phone("13800138000", days=30)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["phone"], "13800138000")
@@ -133,25 +143,25 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(len(summary), 2)
 
     def test_page_visit_hourly(self):
-        db.add_page_visit("2026-08-16 08:00:00", "user", "/")
-        db.add_page_visit("2026-08-16 09:00:00", "admin", "/login")
+        db.add_page_visit(_recent(hours=2), "user", "/")
+        db.add_page_visit(_recent(hours=1), "admin", "/login")
         hourly = db.page_visit_hourly(days=30)
         self.assertTrue(hourly)
         self.assertIn("hour", hourly[0])
         self.assertIn("pv", hourly[0])
 
     def test_page_visit_top_paths(self):
-        db.add_page_visit("2026-08-16 08:00:00", "user", "/")
-        db.add_page_visit("2026-08-16 08:01:00", "user", "/")
-        db.add_page_visit("2026-08-16 08:02:00", "admin", "/login")
+        db.add_page_visit(_recent(hours=3), "user", "/")
+        db.add_page_visit(_recent(hours=2), "user", "/")
+        db.add_page_visit(_recent(hours=1), "admin", "/login")
         top = db.page_visit_top_paths(days=30, limit=10)
         self.assertEqual(top[0]["path"], "/")
         self.assertEqual(top[0]["cnt"], 2)
 
     def test_page_visit_active_users(self):
-        db.add_page_visit("2026-08-16 08:00:00", "user", "/", user_id=1)
-        db.add_page_visit("2026-08-16 08:01:00", "user", "/", user_id=2)
-        db.add_page_visit("2026-08-16 08:02:00", "anonymous", "/", user_id=None)
+        db.add_page_visit(_recent(hours=3), "user", "/", user_id=1)
+        db.add_page_visit(_recent(hours=2), "user", "/", user_id=2)
+        db.add_page_visit(_recent(hours=1), "anonymous", "/", user_id=None)
         active = db.page_visit_active_users(days=30)
         self.assertEqual(active, 2)
 
