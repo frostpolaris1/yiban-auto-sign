@@ -25,14 +25,24 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-from yiban import clock
+# 包导入引导：本文件在仓库里是 `docker/scheduler.py`、在镜像里被复制为
+# `scripts/container_scheduler.py`——两处都比仓库根低一层，但**同目录的兄弟模块**
+# （signin/child_env/env_io）只在 scripts/ 一侧，而 `yiban/` 只在仓库根。故三个路径
+# 都补上，两种位置都能直接跑（2026-09-15 容器冒烟实测：漏引导会让 sched 进程
+# ModuleNotFoundError → supervisord 反复重启 → FATAL）。过渡机制，随 M1③ 清 sys.path 注入移除。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-# .env 解析与子进程环境构造与 run.sh / web 共用口径（提为共享模块）
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# .env 解析与子进程环境构建与 run.sh / web 共用口径（共享模块）；
 # signin：补签轮判定与未了结状态码的单一事实源（宿主 run.sh 的进程内补签轮
 # 复用同一套函数，两侧不再各写一份判定）。
-import signin
-from child_env import build_child_env
+import signin  # noqa: E402
+from child_env import build_child_env  # noqa: E402
+
+from yiban import clock  # noqa: E402
 
 STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
