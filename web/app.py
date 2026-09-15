@@ -62,6 +62,7 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
         sys.path.insert(0, _p)
 
 from yiban import clock  # noqa: E402  （须在引导之后导入）
+from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
@@ -338,24 +339,12 @@ SIGN_END = (7, 50)
 
 
 def _sign_window():
-    """签到窗口（调度 v2：支持 .env 覆盖 YIBAN_SIGN_START/END，非法回退默认）。"""
-    start = SIGN_START
-    end = SIGN_END
-    env = read_env(ENV_FILE)
-    for key in ("YIBAN_SIGN_START", "YIBAN_SIGN_END"):
-        raw = env.get(key, "").strip()
-        try:
-            h, m = raw.split(":")
-            parsed = (int(h), int(m))
-            if 0 <= parsed[0] <= 23 and 0 <= parsed[1] <= 59:
-                if key.endswith("START"):
-                    start = parsed
-                else:
-                    end = parsed
-        except (ValueError, AttributeError):
-            pass
-    if start >= end:
-        start, end = SIGN_START, SIGN_END
+    """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认）。
+
+    解析委托 `yiban.window.parse_window`——与引擎（signin）同一份口径，
+    避免"网页显示 07:50、引擎按别的值判定"这类同概念两套实现。
+    """
+    start, end, _invalid = yb_window.parse_window(read_env(ENV_FILE))
     return start, end
 
 # 登录时延拉平占位哈希：用户名/账号不存在时也执行一次等价 scrypt 比对，
@@ -947,29 +936,8 @@ def site_image():
 # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）
 # 存在时映射为 front=back=旧值，保证升级前配置行为不变。范围 0~300 秒。
 def edge_config():
-    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数。"""
-    env = read_env(ENV_FILE)
-    old = env.get("YIBAN_WINDOW_EDGE_SEC", "")
-    def _get(key):
-        try:
-            v = int(env.get(key, "").strip())
-        except (TypeError, ValueError):
-            return None
-        return v if 0 <= v <= 300 else None
-    front = _get("YIBAN_WINDOW_EDGE_FRONT_SEC")
-    back = _get("YIBAN_WINDOW_EDGE_BACK_SEC")
-    if front is None or back is None:
-        try:
-            legacy = int(old) if old.strip() else None
-        except ValueError:
-            legacy = None
-        if legacy is not None and not (0 <= legacy <= 300):
-            legacy = None
-        if front is None:
-            front = legacy if legacy is not None else 60
-        if back is None:
-            back = legacy if legacy is not None else 60
-    return front, back
+    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.window.parse_edges）。"""
+    return yb_window.parse_edges(read_env(ENV_FILE))
 
 
 def edge_front_sec():
@@ -2457,18 +2425,22 @@ def _active_account_count():
 
 
 def _capacity_estimate(gap=0):
-    """按当前签到窗口与账号间隔设置预估可容纳账号数。
+    """按当前签到窗口与账号间隔设置预估可容纳账号数（**配置属性**口径）。
 
-    公式与引擎容量预检共用 signin.capacity_accounts（同一函数，避免同概念两套阈值）：
-    有效窗口 = _sign_window() 原始窗口 − edge_config()[0] − edge_config()[1]
-    （掐头去尾裁掉的秒数不参与签到，不占容量；秒，下限 0）。
-    avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省为按压实测定档的 3s）。
-    返回单值 int；有效窗口不足单账号耗时时容量为 0。
+    公式与引擎共用 `signin.capacity_accounts`，有效窗口取
+    `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
+    出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
+
+    **刻意用完整有效窗口、不扣已流逝时间**：本函数服务设置页展示与**保存闸门**
+    （"按新设置预估容量 < 当前账号数则拒绝保存"），问的是"这套配置能容纳几个"。
+    若按时段扣减，管理员在窗口末尾将永远无法保存设置。引擎侧预检问的是"今天还能
+    签几个"，那里才用 `remaining_sec()`（SCH-4）。
     """
-    sw = _sign_window()
-    raw_sec = max(0, (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])) * 60
-    window_sec = max(0, raw_sec - edge_config()[0] - edge_config()[1])
-    return signin.capacity_accounts(window_sec, gap)
+    win = yb_window.bounds({
+        "sign_start": _sign_window()[0], "sign_end": _sign_window()[1],
+        "edge_front_sec": edge_config()[0], "edge_back_sec": edge_config()[1],
+    })
+    return signin.capacity_accounts(win.full_sec(), gap)
 
 
 def _accounts_at_capacity(extra_accounts=0):

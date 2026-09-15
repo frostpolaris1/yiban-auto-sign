@@ -983,16 +983,28 @@ python scripts/signin.py
 ### 项目架构
 
 ```
-web/app.py  Flask 管理后台（账号管理/审核/用户管理/日历/手动签到）
+web/             Flask 管理后台（账号管理/审核/用户管理/日历/手动签到）
    │
    ├── scripts/db.py            SQLite 数据层（账号/用户/审计日志）
    ├── scripts/account_crypto.py AES-GCM 加密（密码/设备识别码）
-   └── scripts/signin.py        签到引擎
-            │
-            ├── OAuth 登录（RSA 加密）→ 获取签到任务 → 多边形随机定位 → 提交
-            ├── 触发方式：服务器 cron（run.sh）/ GitHub Actions
-            └── 通知：Server酱 / Bark / 企业微信 webhook
+   ├── scripts/signin.py        签到引擎 + CLI 入口
+   │        │
+   │        ├── OAuth 登录（RSA 加密）→ 获取签到任务 → 多边形随机定位 → 提交
+   │        ├── 触发方式：服务器 cron（run.sh）/ 容器调度器 / GitHub Actions
+   │        └── 通知：Server酱 / Bark / 企业微信 webhook
+   └── yiban/                   共享包（web 与签到引擎共用）
+            ├── clock.py         业务时间唯一入口（北京时间）
+            ├── window.py        签到窗口唯一事实源（排计划/判关闭/算容量同源）
+            ├── status.py        签到状态词汇表
+            ├── masking.py       脱敏（手机号/日志文本/URL）
+            ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
+            ├── attempt/jobs.py  在线校验异步任务（排队/看门狗/收口）
+            └── store/           表级数据访问（按表逐步从 scripts/db.py 迁出）
 ```
+
+> 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。
+> 单文件规模目标 600 行，现存少数大文件（`web/app.py`、`scripts/db.py`、`scripts/signin.py`）
+> 在按里程碑拆分中，超出目标者须在 `tests/test_module_size_gate.py` 写明工程理由。
 
 ### 签到流程
 
@@ -1079,7 +1091,8 @@ workflow-keepalive:
 
 **根因（2026-08-08 排查确认）**：旧登录流程沿用开源项目 Auto-Test 的请求特征（伪造 iPhone UA + `X-Requested-With: com.yiban.app` + 可预测 CSRF + 非 App 参数组合），被易班风控识别为**非官方客户端**，对登录接口统一返回 `e003 账号或密码错误` 伪装拒绝。它与 IP、账号、密码、设备信息均无关——实测：手机流量 IP + 新账号同样 e003，而同一网络下手机 App 正常。
 
-**修复方式**：登录改为 fyiban 同款流程（UA=`Yiban` + `AppVersion: 5.1.2` + SecureRandom 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回（如 GitHub Actions 等特殊场景）。
+**修复方式**：登录改为 fyiban 同款流程（UA=`Yiban` + `AppVersion` + SecureRandom 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回（如 GitHub Actions 等特殊场景）。
+> 注：当时 `AppVersion` 取上游同值 `5.1.2`，现值见 `scripts/signin.py` 的 `YIBAN_APP_VERSION`（已随易班客户端版本上浮）。另：usersure 省略 `Origin`/`Referer` 是本项目**实测结论**（上游 Kotlin 实现在该请求上仍带 `Origin`），不属上游特征。
 
 **排查顺序（老版本或自定义改回旧流程时参考）**：
 
@@ -1263,6 +1276,8 @@ python -m pytest tests/test_smoke.py -v
 
 > 披露：OneFeiFan/FYIBAN 在其 README 中声明参考了 [Qs315490/fyiban](https://github.com/Qs315490/fyiban)（无许可证，上游 Sricor/yiban 已删库）。本项目未直接使用上述无许可证项目的代码，直接参考对象为 FYIBAN（AGPL-3.0），并按 AGPL-3.0 条款发布。
 
+**改了什么（AGPL-3.0 §5(a) 要求的修改声明）**：复用部分已由 Kotlin 重写为 Python 并做了如下修改——定位采样由正态分布改为密码学安全随机的均匀分布并加质心抖动兜底，射线法补零除保护，登录侧新增会话缓存探活、URL 白名单、风控页面识别与日志脱敏；**其余部分（调度错峰、重试预算与失败分级、账密熔断、通知告警、账号与数据库、Web 管理后台）为本项目原创**，上游无对应实现。逐项对照见[开源致谢](#开源致谢--acknowledgements)的「衍生来源」小节。
+
 </details>
 
 ### 特别免责声明
@@ -1304,11 +1319,28 @@ python -m pytest tests/test_smoke.py -v
 
 > 精确锁定版本见 [`requirements.lock`](requirements.lock)。
 
-### 衍生来源
+### 衍生来源（2026-09-15 逐项核对）
 
-本项目直接参考 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN)（AGPL-3.0）实现：
-默认登录流程的真实 App 请求特征、多边形内随机定位点算法（缩放质心 + 射线法验证）、
-nightAttendance 签到流程。本项目按 AGPL-3.0 发布并保留上游版权与许可声明（另见 [License](#license) 下的「第三方组件声明与衍生来源」）。
+上游 [OneFeiFan/FYIBAN](https://github.com/OneFeiFan/FYIBAN) 是一个 **Kotlin/Android 库**（AGPL-3.0，约 670 行，作者 OneFeiFan）。本项目**没有复制其代码**（语言不同），而是按其算法与协议在 Python 中重写易班客户端。逐项对照如下（"改写"= 本地已按自己的实现重做）：
+
+| 能力 | 上游实现 | 本项目 | 判定 |
+|------|---------|--------|------|
+| App 请求指纹（UA `Yiban` / AppVersion / Origin） | `Core/SchoolBased.kt` | `scripts/signin.py` | 源自上游（版本值已更新） |
+| CSRF 随机令牌 | `Core/SchoolBased.kt` | `scripts/signin.py` | 源自上游（改为每次实例重生成） |
+| 校本化 OAuth 五步登录（`oauth.yiban.cn/code/html` → `code/usersure` → iframe → `verify_request` → `base/c/auth/yiban`）与全部请求常量 | `Core/SchoolBasedAuth.kt` | `scripts/signin.py` | 源自上游，本地改写（新增会话缓存分支、URL 白名单、风控识别、脱敏） |
+| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `scripts/signin.py` | 源自上游（补长度守卫） |
+| 登录成功判据 `code == "s200"` | `Core/SchoolBasedAuth.kt` | `scripts/signin.py` | 源自上游 |
+| `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `scripts/signin.py` | 源自上游，本地改写（多任务遍历、Range 缺失、状态机化） |
+| 缩放质心 + 射线法定位点算法 | `tool/Point.kt` | `scripts/signin.py` | 源自上游，本地改写（见下） |
+| **定位采样分布** | Box-Muller 正态分布（可能取到范围外的点） | 密码学安全随机的**均匀分布** + 质心抖动兜底 | 本地改写 |
+| **调度与错峰**（时间窗分块、锚点/σ、重试落点） | 无 | `scripts/signin.py` | 本地原创 |
+| **重试预算与失败分级、账密熔断、健康探针** | 无（上游仅 HTTP 层 `retryOnConnectionFailure`） | `scripts/signin.py` | 本地原创 |
+| **通知告警**（webhook / 管理员汇总邮件 / 用户失败提醒） | 无 | `scripts/signin.py`、`scripts/notify.py`、`scripts/mailer.py` | 本地原创 |
+| **账号存储、会话缓存、审计、Web 管理后台** | 无（示例里凭据硬编码，单账号） | `scripts/db.py`、`web/`、`yiban/` | 本地原创 |
+
+上游仓库内没有任何调度、通知、Web 或数据库代码（可自行核对：其全库无 Python 文件，且除 `retryOnConnectionFailure` 外无定时/重试实现）。
+
+**许可与署名**：上游与本项目同为 **AGPL-3.0**（同一版本），本项目按 §5(a) 保留许可声明并在本节声明修改内容、按 §5(c) 以 AGPL-3.0 授权下游。上游未在文件头或 LICENSE 中填写具体版权行，故署名只能标注项目名与作者身份（OneFeiFan）；若上游后续补充版权声明，本项目亦应同步补入。
 
 ### 参考项目与资料
 

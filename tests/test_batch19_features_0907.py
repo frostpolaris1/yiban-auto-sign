@@ -302,13 +302,24 @@ class CapacityFormulaTest(_Base):
             self.assertEqual(trimmed, (4680 - 8) // 18 + 1)
             self.assertLess(trimmed, full)
 
-    def test_window_too_small_returns_zero(self):
-        # 有效窗口不足单账号耗时（slack<0）→ 容量 0
+    def test_degenerate_window_falls_back_like_engine(self):
+        # 2026-09-15（D-3/SCH-3）：退化窗口（起止同点/裁剪吃空）时，网页与引擎
+        # 一致地回退默认窗口（06:30~07:50、默认裁剪各 60s），故容量**不是** 0。
+        # 原实现网页内联算"原始窗口 − 裁剪"、引擎按回退窗口排计划 → 出现
+        # "引擎有完整计划、网页容量显示 0"的自相矛盾。
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
              mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), 0)
+            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+
+    def test_trimmed_empty_window_matches_engine_plan(self):
+        """裁剪吃空 → 回退窗口；网页容量与引擎计划同源（SCH-3 主场景）。"""
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((7, 0), (7, 1))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(300, 300)), \
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
+            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_engine_and_web_share_one_formula(self):
         """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""
