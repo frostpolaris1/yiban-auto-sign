@@ -137,7 +137,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_production_like_db()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 13)
+        self.assertEqual(version, db._MIGRATIONS[-1][0])
         users_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         self.assertIn("deleted", users_cols)
         self.assertIn("deleted_at", users_cols)
@@ -156,7 +156,7 @@ class DbMigrationTest(unittest.TestCase):
     def test_new_db_gets_latest_version(self):
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 13)
+        self.assertEqual(version, db._MIGRATIONS[-1][0])
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -164,7 +164,7 @@ class DbMigrationTest(unittest.TestCase):
         self._create_old_accounts_table()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 13)
+        self.assertEqual(version, db._MIGRATIONS[-1][0])
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         self.assertIn("user_paused", cols)
 
@@ -180,7 +180,7 @@ class DbMigrationTest(unittest.TestCase):
             db._conn = None
         conn2 = db.init_db(self.db_file)
         version = conn2.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 13)
+        self.assertEqual(version, db._MIGRATIONS[-1][0])
 
     def test_v12_repairs_missing_app_meta(self):
         """v12：修复历史部署缺 app_meta 表（2026-08-29 线上问题）。
@@ -198,7 +198,7 @@ class DbMigrationTest(unittest.TestCase):
             db._conn = None
         conn = db.init_db(self.db_file)
         self.assertEqual(
-            conn.execute("PRAGMA user_version").fetchone()[0], 13,
+            conn.execute("PRAGMA user_version").fetchone()[0], db._MIGRATIONS[-1][0],
             "缺 app_meta 的旧库重启后应经 v12 补建并升到最新版本",
         )
         row = conn.execute(
@@ -236,7 +236,8 @@ class DbMigrationTest(unittest.TestCase):
             db._conn = None
 
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                         db._MIGRATIONS[-1][0])
         decls = {r["name"]: r["type"] for r in conn.execute("PRAGMA table_info(legacy_bad)")}
         self.assertEqual(decls.get("flag"), "INTEGER", "畸形声明应恢复为纯类型")
         # 数据与索引保留
@@ -265,7 +266,8 @@ class DbMigrationTest(unittest.TestCase):
                 db._conn.close()
             db._conn = None
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                         db._MIGRATIONS[-1][0])
         after = conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
         ).fetchone()[0]
