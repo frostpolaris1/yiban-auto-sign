@@ -210,8 +210,8 @@ logger = logging.getLogger("yiban")
 
 # 易班 App 版本特征：两处请求头（KILLYIBAN_HEADERS / usersure 提交）必须同值，
 # 不一致可能触发服务端一致性校验；旧流程 iOS UA 尾段同步引用。
-# 2026-08-22 由 5.1.2 升至应用商店真实最新版 5.2.2（下次升版只改这一行）
-YIBAN_APP_VERSION = "5.2.2"
+# 2026-09-15 由 5.2.2 升至 5.2.3（依据：易班官方 5.2.3 安装包的清单版本号实测）
+YIBAN_APP_VERSION = "5.2.3"
 
 # 易班 iOS 客户端 UA（与 Auto-Test 保持一致）
 HEADERS = {
