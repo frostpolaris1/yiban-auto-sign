@@ -48,7 +48,7 @@ class EnvLockTest(unittest.TestCase):
     def test_open_failure_logs_warning_and_degrades_to_inprocess_lock(self):
         """os.open 失败（目录不可写等）：warning 留痕，仍返回进程内锁，业务不阻断。"""
         with mock.patch.object(env_lock.os, "open", side_effect=OSError(13, "Permission denied")), \
-                self.assertLogs("yiban.env_lock", level="WARNING") as logs, \
+                self.assertLogs("yiban.locks", level="WARNING") as logs, \
                 env_lock.env_write_lock(self.env_file):
             pass  # 能进入临界区 = 降级为进程内锁后仍可用
         self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
@@ -56,7 +56,7 @@ class EnvLockTest(unittest.TestCase):
     def test_no_lock_module_logs_warning_and_degrades(self):
         """fcntl 与 msvcrt 均不可用：warning 留痕，退化为进程内锁。"""
         with mock.patch.dict(sys.modules, {"fcntl": None, "msvcrt": None}), \
-                self.assertLogs("yiban.env_lock", level="WARNING") as logs, \
+                self.assertLogs("yiban.locks", level="WARNING") as logs, \
                 env_lock.env_write_lock(self.env_file):
             pass
         self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
@@ -72,7 +72,7 @@ class EnvLockTest(unittest.TestCase):
         fake.locking = _boom
         # fcntl 置 None 强制走 msvcrt 分支，POSIX/Windows 行为一致
         with mock.patch.dict(sys.modules, {"fcntl": None, "msvcrt": fake}), \
-                self.assertLogs("yiban.env_lock", level="WARNING") as logs, \
+                self.assertLogs("yiban.locks", level="WARNING") as logs, \
                 env_lock.env_write_lock(self.env_file):
             pass
         self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)

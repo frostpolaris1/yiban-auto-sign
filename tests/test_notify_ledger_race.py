@@ -33,6 +33,7 @@ import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+import locks  # noqa: E402
 import notify  # noqa: E402
 
 KEY = "f" * 64
@@ -227,8 +228,8 @@ def test_multi_thread_consume_no_lost_update(tmp_path, monkeypatch):
         "每次消费后磁盘 count 必须与内存 count 一致（无丢失更新）"
 
 
-@pytest.mark.skipif(notify.fcntl is None,
-                    reason="Windows 无 fcntl，文件锁退化为进程内，无法验证文件锁串行化")
+@pytest.mark.skipif(locks.lock_kind() is None,
+                    reason="本平台无跨进程文件锁（fcntl/msvcrt 均不可用），无法验证文件锁串行化")
 def test_no_process_lock_concurrent_not_overspent(tmp_path, monkeypatch):
     """剥离进程内锁（模拟不共享锁的 web/signin 两进程）+ 文件锁生效时：
     读-改-写仍在单次文件锁临界区内串行化，不超发、无丢失更新。"""

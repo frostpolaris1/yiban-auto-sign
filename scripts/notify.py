@@ -47,14 +47,10 @@ import logging
 import os
 import threading
 import time
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import contextmanager, suppress
 from urllib.parse import urlparse
 
-try:
-    import fcntl
-except ImportError:  # Windows 无 fcntl，跨进程锁退化为进程内
-    fcntl = None
-
+import locks
 import requests
 
 try:
@@ -171,25 +167,17 @@ def _throttle_path():
 
 @contextmanager
 def _state_file_lock(filename):
-    """状态文件锁：POSIX 用 fcntl.flock 跨进程互斥；Windows 退化为无操作。
+    """状态文件锁：经 `locks.file_lock` 统一（POSIX flock / Windows msvcrt）。
 
-    锁文件单独使用 ``<path>.lock``（与 signin._state_file_lock 同款约定），
-    不与状态文件本身的读写句柄混用。账本与节流共用此锁机制，各自独立文件。
+    此前 Windows 上退化为 no-op 且无告警，账本与节流的跨进程互斥失效（额度可被
+    多进程超发）。锁由统一原语自行拼 ``<path>.lock``，不与状态文件本身的读写句柄混用。
     """
-    if fcntl is None:
-        with nullcontext():
-            yield
-        return
-    lock_path = os.path.join(_state_dir(), filename + ".lock")
+    lock_path = os.path.join(_state_dir(), filename)
     lock_dir = os.path.dirname(lock_path) or "."
     with suppress(OSError):
         os.makedirs(lock_dir, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as lock_f:
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+    with locks.file_lock(lock_path):
+        yield
 
 
 @contextmanager
