@@ -839,8 +839,30 @@ def _apply_global_device_info(accounts):
     return accounts
 
 
+def _dedupe_by_phone(accounts):
+    """同一手机号重复出现时只保留第一条并告警（返回新列表）。
+
+    调度、重试预算、汇总与状态文件全以手机号为键：重复项会让同一账号被完整登录
+    两次，且两次尝试共享同一份重试计数（预算错乱）。库内模式由 accounts.phone 的
+    唯一索引天然兜底，但 JSON / 环境变量配置模式此前没有任何校验。
+    """
+    seen, kept, dup = set(), [], []
+    for acc in accounts:
+        if acc.phone in seen:
+            dup.append(acc.phone)
+            continue
+        seen.add(acc.phone)
+        kept.append(acc)
+    if dup:
+        logger.warning(
+            "账号配置存在重复手机号 %d 个（已按首次出现去重）：%s",
+            len(dup), ", ".join(_mask_phone(p) for p in dup),
+        )
+    return kept
+
+
 def load_accounts():
-    """按优先级加载账号配置：文件 > JSON 环境变量 > 旧格式环境变量。"""
+    """按优先级加载账号配置：文件 > JSON 环境变量 > 旧格式环境变量（按手机号去重）。"""
     for loader in (
         _load_accounts_from_file,
         _load_accounts_from_json_env,
@@ -848,7 +870,7 @@ def load_accounts():
     ):
         accounts = loader()
         if accounts:
-            return _apply_global_device_info(accounts)
+            return _dedupe_by_phone(_apply_global_device_info(accounts))
     return []
 
 
@@ -1940,11 +1962,15 @@ def _user_fail_mail_state_path(today_str):
     return os.path.join(state_dir, f"mail-user-fail-{today_str}.json")
 
 
-def _user_fail_mail_allow_and_record(phone, today_str):
-    """检查该账号今日失败提醒额度：允许则占位并返回 True，超额返回 False。
+def _user_fail_mail_reserve(phone, today_str):
+    """预占该账号今日失败提醒额度：允许则占位并返回 True，超额返回 False。
 
-    读-改-写整体持 M12 文件锁；跨进程（签到主进程 / 手动 --only / 探针）一致。
+    读-改-写整体持状态文件锁；跨进程（签到主进程 / 手动 --only / 探针）一致。
     文件按天命名自然轮转，无需清理历史。
+
+    **调用约定**：占位后若邮件实际未发出（未启用 / SMTP 失败），必须调
+    `_user_fail_mail_release` 归还，否则一次 SMTP 抖动就会吞掉该账号当天
+    唯一的提醒机会（本函数旧实现正是如此，与 docstring 承诺相反）。
     """
     cap = USER_FAIL_MAIL_DAILY_CAP
     if cap <= 0:
@@ -1980,6 +2006,36 @@ def _user_fail_mail_allow_and_record(phone, today_str):
         return True
 
 
+def _user_fail_mail_release(phone, today_str):
+    """归还一个失败提醒额度（邮件未真正发出时调用）；下限 0，失败仅告警。
+
+    状态目录不可写时与 reserve 同口径静默放行（限频设施故障不得放大成业务故障）。
+    """
+    path = _user_fail_mail_state_path(today_str)
+    try:
+        with _state_file_lock(path):
+            if not os.path.exists(path):
+                return
+            try:
+                with open(path, encoding="utf-8-sig") as f:
+                    data = json.load(f)
+            except (OSError, ValueError, TypeError):
+                return
+            if not isinstance(data, dict) or phone not in data:
+                return
+            try:
+                used = int(data.get(phone, 0))
+            except (TypeError, ValueError):
+                return
+            data[phone] = max(0, used - 1)
+            tmp = path + ".tmp" + str(os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+    except OSError as e:
+        logger.warning("归还失败提醒额度失败（不影响签到）: %s", e)
+
+
 def send_user_fail_mail(owner, phone, message, scenario="signin"):
     """B 线：向账号归属用户发送失败类提醒邮件。
 
@@ -2007,7 +2063,8 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
         return
     if str(user.get("mail_notify", 1)).strip().lower() not in ("1", "true", "on", "yes"):
         return
-    if not _user_fail_mail_allow_and_record(phone, clock.now().strftime("%Y-%m-%d")):
+    _today = clock.now().strftime("%Y-%m-%d")
+    if not _user_fail_mail_reserve(phone, _today):
         logger.info(
             "账号 %s 今日失败提醒已达上限（%d 封），跳过发送",
             _mask_phone(phone), USER_FAIL_MAIL_DAILY_CAP,
@@ -2029,7 +2086,14 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
             f"连续失败会被系统自动暂停；如账号正常，请登录网站检查或联系管理员。\n"
             f"（可在「我的账号」页面关闭本邮件提醒）"
         )
-    mailer.send_user(owner, subject, body)
+    if not mailer.send_user(owner, subject, body):
+        # 未真正发出（邮件未启用 / 无收件人 / SMTP 全部失败）：归还额度，让当天
+        # 还有机会重试——额度语义是"每天最多成功提醒 N 次"
+        _user_fail_mail_release(phone, _today)
+        logger.info(
+            "账号 %s 的失败提醒未发出（邮件未启用或发送失败），已归还今日额度",
+            _mask_phone(phone),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2798,6 +2862,12 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 if gap > 0:
                     logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {min_gap}s）")
                     time.sleep(gap)
+            # 睡眠/间隔对齐之后**再判一次**窗口：等待期间可能已越过 eff_hi，此时
+            # 仍发起请求就落到窗口外（学校侧会拒），且会挤占后面的账号
+            if wait > 0 and _window_closed(sch_cfg, clock.now()):
+                logger.info(f"[{phone}] ⛔ 等待期间已越过签到时段，跳过执行")
+                _mark_window_skip([acc] + [r[2] for r in pending])
+                break
             attempts[phone] += 1
             logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
             t0 = time.monotonic()  # 单次尝试耗时起点（P6：慢响应可判）

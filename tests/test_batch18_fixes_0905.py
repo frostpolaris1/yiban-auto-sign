@@ -316,8 +316,15 @@ class Batch18FixesTest(unittest.TestCase):
         t = self._login(c, "u1@test.local", USER_PASS)
         mine = c.get("/api/my-accounts").get_json()["accounts"]
         self.assertEqual(mine[0]["status"], "active", "前置：审核通过为 active")
+        # 编辑表单会带上"打开表单那一刻"的快照（乐观锁 + 防错位比对基准）——
+        # 改绑本来就要求带快照：否则服务端无法区分"改绑"与"列表漂移"，
+        # 只能按 fail-safe 拒绝（见 test_rebind_without_snapshot_is_rejected）
+        import json as _json
+        snapshot = _json.dumps({"phone": PHONE, "name": mine[0].get("name", "")},
+                               ensure_ascii=False)
         r = c.put(f"/api/my-accounts/{mine[0]['index']}",
-                  json={"name": "n", "phone": REBIND_PHONE, "password": ""},
+                  json={"name": "n", "phone": REBIND_PHONE, "password": "",
+                        "_snapshot": snapshot},
                   headers={"X-CSRF-Token": t})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["msg"], "已重新提交，等待管理员审核")
@@ -326,6 +333,22 @@ class Batch18FixesTest(unittest.TestCase):
         self.assertEqual(acc["status"], "pending", "改绑后必须回待审核")
         detail = self._last_audit_detail("my_account_update")
         self.assertIn("改绑回审", detail or "")
+
+    def test_rebind_without_snapshot_is_rejected(self):
+        """不带快照的改绑请求按 fail-safe 拒绝（409），防"列表漂移静默改到他人行"。
+
+        代价：直连 API 的调用方改绑必须带 `_snapshot`（前端表单本来就会带）。
+        """
+        self._make_formal_user("u3@test.local", PHONE)
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "u3@test.local", USER_PASS)
+        mine = c.get("/api/my-accounts").get_json()["accounts"]
+        r = c.put(f"/api/my-accounts/{mine[0]['index']}",
+                  json={"name": "n", "phone": REBIND_PHONE, "password": ""},
+                  headers={"X-CSRF-Token": t})
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        acc = next(a for a in db.load_accounts() if a["owner"] == "u3@test.local")
+        self.assertEqual(acc["phone"], PHONE, "被拒后手机号不得变化")
 
     def test_user_password_only_edit_keeps_active(self):
         """仅改密码（phone 不变）：状态保持 active，返回"已保存"。"""

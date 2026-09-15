@@ -5945,10 +5945,24 @@ def create_app(host=None):
                 return jsonify({"error": "账号不存在"}), 404
             real_idx = indices[idx]
             old = accounts[real_idx]
+            data = _json_body()
+            # 防错位（与 /api/accounts/* 同口径）：本人视图的 idx 在渲染后可能因
+            # 管理员删除/清除而漂移，不校验会静默改到本人另一行。
+            # 比对基准优先取编辑表单的乐观锁快照 phone——本端点允许"填写完整新号码"
+            # 改绑（改绑后回待审核），直接拿 data["phone"] 比会把这条合法路径 409 掉。
+            _snap = data.get("_snapshot")
+            if isinstance(_snap, str):
+                try:
+                    _snap = json.loads(_snap)
+                except json.JSONDecodeError:
+                    _snap = None
+            guard_src = ({"phone": _snap["phone"]}
+                         if isinstance(_snap, dict) and _snap.get("phone") else data)
+            if _stale_idx_guard(old, guard_src):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             # 软删除账号禁止编辑（防编辑流程绕过软删除；恢复由管理员操作）
             if old.get("deleted"):
                 return jsonify({"error": "账号已删除，请先恢复"}), 400
-            data = _json_body()
             err, clean = validate_account(data, require_password=False)
             if err:
                 return jsonify({"error": err}), 400
@@ -6017,6 +6031,10 @@ def create_app(host=None):
             removed = accounts[indices[idx]]
             if removed.get("deleted"):
                 return jsonify({"error": "该账号已在待删除状态，可在本页撤销恢复"}), 400
+            # 防错位（同 /api/accounts/*）：删除是不可逆前置动作，视图漂移时宁可让
+            # 用户刷新，也不能删到本人另一行
+            if _stale_idx_guard(removed, _json_body()):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             db.set_account_deleted(
                 removed["id"],
                 1,
@@ -6106,6 +6124,9 @@ def create_app(host=None):
             if acc.get("deleted"):
                 return jsonify({"error": "账号已删除，请先恢复"}), 400
             data = _json_body()
+            # 防错位（同 /api/accounts/*）：视图漂移时不得改到本人另一行
+            if _stale_idx_guard(acc, data):
+                return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             paused = 1 if str(data.get("paused", "")).strip().lower() in ("1", "true", "on", "yes") else 0
             # 2026-08-15 用户确认：管理员不能暂停自己账号（owner=admin 为系统/管理员账号；
             # 暂停是普通用户管理自己账号的能力，管理端界面本无此入口，防 /user 页绕过）。
