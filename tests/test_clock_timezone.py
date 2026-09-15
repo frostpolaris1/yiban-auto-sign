@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""统一业务时钟（`yiban/clock.py`）与 SCH-1 的回归防线。
+"""统一业务时钟（`yiban/clock.py`）与"窗口判定只认业务钟"的回归防线。
 
-**缺陷（docs/refactor/52 §2.2 SCH-1）**：窗口/日期口径定义在北京时间上，而判定
+**缺陷**：窗口/日期口径定义在北京时间上，而判定
 取的是**宿主本地时间**——部署在 UTC 主机（GitHub Actions runner、海外 VPS）时，
 北京时间 06:40 在宿主看来是前一日 22:40，窗口闸门直接判"时段已结束"，
 **当天全部账号零请求**；按日状态文件与签到事件还会落到错的日期上。
@@ -56,7 +56,7 @@ class ClockTest(unittest.TestCase):
 
 
 class WindowDecisionUsesBeijingClockTest(unittest.TestCase):
-    """窗口判定必须只认业务钟（SCH-1 的核心回归）。"""
+    """窗口判定必须只认业务钟（核心回归）。"""
 
     PHONE = "13800138000"
 
@@ -83,7 +83,7 @@ class WindowDecisionUsesBeijingClockTest(unittest.TestCase):
     def test_window_decision_follows_beijing_clock(self):
         """北京 06:40（窗口内）+ 宿主墙钟 22:40（窗口外）→ 必须发起签到。
 
-        判定若取宿主钟（旧实现），会判"时段已结束"而整轮零请求——这就是 SCH-1。
+        判定若取宿主钟（旧实现），会判"时段已结束"而整轮零请求——这正是本用例要防的。
         """
         beijing_0640 = clock.now().replace(hour=6, minute=40, second=0, microsecond=0)
         attempt = self._run_with_clocks(beijing_0640)
