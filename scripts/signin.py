@@ -35,7 +35,7 @@ import signal
 import sys
 import time
 from base64 import b64decode, b64encode
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -44,6 +44,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import account_crypto
 import db  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
 import env_lock  # 探针 once 模式自动关闭 .env（跨进程写锁）
+import locks  # 跨进程文件锁统一原语（状态文件 / 日志 handler）
 import mailer  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
 import notify  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import requests
@@ -69,45 +70,29 @@ except ImportError:
 class _FlockFileHandler(logging.FileHandler):
     """带文件锁的日志处理器：防止多进程并发写入同一日志文件时行交错。
 
-    Windows 无 fcntl 时退化为普通 FileHandler（仅限本地开发）。
+    锁经 `locks.file_lock` 统一（POSIX flock / Windows msvcrt）——原先 Windows 直接
+    退化为无锁且无任何提示。
     """
 
     def emit(self, record):
         try:
-            if fcntl is not None and self.stream:
-                fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX)
-            super().emit(record)
+            with locks.file_lock(self.baseFilename):
+                super().emit(record)
         except Exception:
             self.handleError(record)
-        finally:
-            # 确保任何路径都释放锁（防 emit 异常后同进程死锁）
-            if fcntl is not None and self.stream:
-                try:
-                    self.stream.flush()
-                    fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
-                except Exception:
-                    pass
 
 
 @contextmanager
 def _state_file_lock(path):
-    """状态文件读改写锁：POSIX 用 fcntl.flock，Windows 无 fcntl 时退化为无操作。
+    """状态文件读改写锁：经 `locks.file_lock` 统一（POSIX flock / Windows msvcrt）。
 
-    锁文件单独使用 ``<path>.lock``，不要与日志 handler 的 flock 混用。
+    锁文件由 locks 自行拼 `<path>.lock`，不要与日志 handler 的锁混用同一把。
+    此前 Windows 上直接退化为 no-op 且**无任何告警**，5 处调用点的读-改-写因此
+    失去原子性（可丢 cred-state 熔断暂停、丢按日状态）；现由统一原语保证，
+    真无法加锁时也会告警留痕。
     """
-    if fcntl is None:
-        with nullcontext():
-            yield
-        return
-    lock_path = path + ".lock"
-    lock_dir = os.path.dirname(lock_path) or "."
-    os.makedirs(lock_dir, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as lock_f:
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+    with locks.file_lock(path):
+        yield
 
 
 # 进程级签到单实例锁：全量模式等待其他进程退出的上限（秒）。
