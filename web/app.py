@@ -271,6 +271,8 @@ import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖�
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
+from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
+
 # 默认路径（与 run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
 # 按日状态文件目录（signin.py 写入 sign-daily-YYYY-MM-DD.json，网页日历读取）
@@ -582,31 +584,24 @@ SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 _s
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
 
-# 签到状态码（signin.py 写 sign-state 文件，为状态显示的事实源）与图标/文案映射
-STATUS_SUCCESS = "success"
-STATUS_ALREADY = "already"
-STATUS_NO_TASK = "no_task"
-STATUS_FAILED = "failed"
-STATUS_RETRYING = "retrying"
-STATUS_SKIPPED_WINDOW = "skipped_window"
-STATUS_SKIPPED_NORANGE = "skipped_norange"
-STATUS_PAUSED = "paused"  # 账密异常暂停（signin 熔断器）
-STATUS_USER_CANCELLED = "user_cancelled"  # 用户自暂停签到（调度 v2）
-STATUS_PENDING = "pending"  # 待签（未执行/无记录）；账号审核态已改名为 ACCOUNT_STATUS_PENDING（2026-08-16），命名空间已分离
+# 签到状态码与图标/文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
+# 历史上本文件另定义了一份同名常量与 STATUS_ICON/STATUS_TEXT，与 signin 侧各自漂移
+# （实测本侧缺 no_position/global_paused、signin 侧缺 pending）。收口后状态码只有一处
+# 定义；两张映射的差异是**有意的**（不同消费方），合并需前后端协同，见 yiban/status.py。
+STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
+STATUS_ALREADY = yiban_status.STATUS_ALREADY
+STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
+STATUS_FAILED = yiban_status.STATUS_FAILED
+STATUS_RETRYING = yiban_status.STATUS_RETRYING
+STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
+STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
+STATUS_PAUSED = yiban_status.STATUS_PAUSED
+STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
+STATUS_PENDING = yiban_status.STATUS_PENDING
 
 # 状态图标（全站统一口径；经 /api/my-accounts 的 state_icon 下发，前端按码渲染）
-STATUS_ICON = {
-    STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
-    STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
-    STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
-    STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️", STATUS_PENDING: "⏳",
-}
-STATUS_TEXT = {
-    STATUS_SUCCESS: "签到成功", STATUS_ALREADY: "已签到", STATUS_NO_TASK: "无需签到",
-    STATUS_FAILED: "签到失败", STATUS_RETRYING: "重试中",
-    STATUS_SKIPPED_WINDOW: "时段外", STATUS_SKIPPED_NORANGE: "窗口缺失",
-    STATUS_PAUSED: "暂停", STATUS_USER_CANCELLED: "已取消", STATUS_PENDING: "待签",
-}
+STATUS_ICON = yiban_status.ICON
+STATUS_TEXT = yiban_status.TEXT
 
 
 def _cred_paused_phones():
