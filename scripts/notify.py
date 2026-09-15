@@ -358,29 +358,6 @@ def _merge_ledger_into_disk(disk, ledger_id, led):
     }
 
 
-def _sync_ledger_to_disk(ledger_id):
-    """把某本账内存态**合并**写回磁盘（调用方已持有账本 lock；内部拿文件锁）。
-
-    合并式：读盘上现存数据 → 仅更新本账本；pending/notified/warned 用"或"语义
-    （本进程为 True 时写 True，为 False 时不覆盖盘上已有的 True）——防止本进程
-    内存态陈旧时整块覆盖，把另一进程已写下的"已交付告知/已记警告"标记回退掉
-    （告知邮件重复或漏发的根因）。count/date 是数值与日期，直接覆盖即可。
-    """
-    led = _LEDGERS[ledger_id]
-    with _ledger_file_lock():
-        disk = _load_ledger_file()
-        _ensure_ledger_structure(disk)
-        cur = disk.get(ledger_id, {})
-        disk[ledger_id] = {
-            "date": led["state"]["date"],
-            "count": int(led["state"]["count"]),
-            "pending": bool(led["notice"]["pending"]) or bool(cur.get("pending", False)),
-            "notified": bool(led["notice"]["notified"]) or bool(cur.get("notified", False)),
-            "warned": bool(led["notice"]["warned"]) or bool(cur.get("warned", False)),
-        }
-        _save_ledger_file(disk)
-
-
 def _with_ledger_locked(ledger_id, fn):
     """在**单次文件锁临界区**内完成「读盘 → 跨日对齐 → fn(led, disk) → 合并写回」。
 
@@ -469,8 +446,9 @@ def _host_of(url):
 def is_safe_url(url):
     """自定义通知地址 SSRF 白名单：https + 非回环/内网/链路本地/未指定。
 
-    与 web/app.py _is_safe_notify_url、signin.py send_notification 同口径，
-    防 http 明文外泄与 SSRF 跳板。域名目标放行（DNS rebinding 由超时兜底）。
+    is_safe_url 是本口径的**唯一**实现：自定义通知地址走 SSRF 白名单（https + 非回环/
+    内网/链路本地/未指定），防 http 明文外泄与 SSRF 跳板。域名目标放行（DNS rebinding
+    由超时兜底）。
     """
     try:
         o = urlparse(url)

@@ -366,9 +366,9 @@ def _constant_time_dummy(password):
 # 覆盖设置（客户端伪造的 XFF 会被丢弃），故此处读取的 XFF 即真实客户端 IP。
 TRUSTED_PROXIES = ("127.0.0.1", "::1")
 
-# 启动断言：TRUSTED_PROXIES 必须仅为回环地址，防止配置被改为非回环地址导致 XFF 伪造绕过速率限制
-assert all(p in ("127.0.0.1", "::1", "localhost") for p in TRUSTED_PROXIES), \
-    f"TRUSTED_PROXIES 必须仅为回环地址，当前值: {TRUSTED_PROXIES}"
+# 仅回环地址：客户端伪造的 XFF 会被丢弃，故此处读取的 XFF 即真实客户端 IP。
+# 若改为非回环地址，XFF 可被伪造绕过速率限制——**不要**引入配置项放开这里。
+TRUSTED_PROXIES = ("127.0.0.1", "::1")
 
 
 def _stale_idx_guard(acc, data):
@@ -517,13 +517,9 @@ ADMIN_DELETE_MAX = 5
 # 2026-08-28 审查 C-1：原实现硬编码 7，与 db.SOFT_DELETE_RETENTION_DAYS（账号保留期
 # 唯一事实源）及 db.purge_deleted_users 默认值形成三份互不相干的"7"——运维按注释去调
 # SOFT_DELETE_RETENTION_DAYS 时，账号会被提前物理清除而恢复宽限期仍按 7 天，用户点
-# 恢复会看到"成功"实际账号已消失（静默数据丢失）。现统一取同一常量，并加启动自检
-# 防再次漂移（对齐 TRUSTED_PROXIES 的 assert 惯例）。
+# 恢复会看到"成功"实际账号已消失（静默数据丢失）。现统一取同一常量（**唯一事实源**，
+# 不要再写字面量），使两处口径无法各自漂移。
 DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
-assert DELETE_GRACE_DAYS == db.SOFT_DELETE_RETENTION_DAYS, (
-    f"DELETE_GRACE_DAYS 必须与 db.SOFT_DELETE_RETENTION_DAYS 同源: "
-    f"{DELETE_GRACE_DAYS} != {db.SOFT_DELETE_RETENTION_DAYS}"
-)
 
 # 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底；2026-08-31 口径修订）：
 # 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
