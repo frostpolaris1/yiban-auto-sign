@@ -179,6 +179,48 @@ class ProbeSigninTest(unittest.TestCase):
         va.assert_not_called()
         wsp.assert_not_called()
 
+    # ---- _env_update_probe：once 自动关闭写 .env ----
+    def test_env_update_probe_writes_disable_and_creates_tmp_0600(self):
+        """写 YIBAN_PROBE_ENABLE=0 且临时文件**创建即 0600**。
+
+        事后 chmod 不够：写完到 os.replace 之间（及崩溃残留时）整个 .env 对同机
+        其他用户可读，而默认 umask 未必是 077（交互 shell 手工跑 --probe 即可能命中）。
+        """
+        env_path = os.path.join(self._state_dir, "probe-once.env")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + "a" * 64 + "\nYIBAN_PROBE_ENABLE=1\n")
+        os.environ["YIBAN_ENV_FILE"] = env_path
+
+        real_open = os.open
+        modes = []
+
+        def _spy(path, flags, mode=0o777):
+            modes.append(mode)
+            return real_open(path, flags, mode)
+
+        with mock.patch.object(self.s.os, "open", side_effect=_spy):
+            self.s._env_update_probe(auto_disable=True)
+
+        self.assertIn(0o600, modes, "临时文件必须创建即 0600，不能靠事后 chmod")
+        with open(env_path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("YIBAN_PROBE_ENABLE=0", text)
+        self.assertNotIn("YIBAN_PROBE_ENABLE=1", text, "旧键应被折叠为单条")
+        self.assertIn("YIBAN_ACCOUNTS_KEY=", text, "其余键不得丢失")
+        if os.name == "posix":
+            import stat as _stat
+            self.assertEqual(_stat.S_IMODE(os.stat(env_path).st_mode), 0o600)
+
+    def test_env_update_probe_noop_when_not_auto_disable(self):
+        """非 once 模式不得改动 .env。"""
+        env_path = os.path.join(self._state_dir, "probe-keep.env")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("YIBAN_PROBE_ENABLE=1\n")
+        os.environ["YIBAN_ENV_FILE"] = env_path
+        self.s._env_update_probe(auto_disable=False)
+        with open(env_path, encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "YIBAN_PROBE_ENABLE=1")
+
 
 class WebVerifyTest(unittest.TestCase):
     """web 层：注册账号验证开关与验证函数（mock signin.verify_account）。"""
