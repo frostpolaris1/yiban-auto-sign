@@ -504,6 +504,17 @@ VERIFY_FAIL_COOLDOWN_MSG = (
 VERIFY_CONCURRENCY_MAX = 2
 VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
 
+# 异步校验任务（A4 第二段）
+VERIFY_JOB_OUTBOUND_TIMEOUT = 30  # 外呼预算（秒），超出按 rejected 收口（技术原因）
+VERIFY_JOB_GATE_WAIT = 300        # 后台任务等待全局席位的最长秒数
+# 待办（pending + running）任务上限：每个任务占一个后台线程，且外呼席位只有
+# VERIFY_CONCURRENCY_MAX 个——不设上界时并发提交会堆出大量等席位的线程。
+# 这是 503「校验繁忙」在异步模式下的**可达来源**（席位满由后台排队消化，
+# 不拒绝用户；待办队列满才拒绝）。
+VERIFY_JOBS_MAX_PENDING = 32
+# 任务终态（查询/取消端点判定用）
+VERIFY_JOB_TERMINAL = ("done", "rejected", "cancelled")
+
 # 注销账号冷却（防批量注销，user_delete_requests 表计数，v5）：
 # 每用户 60 秒内最多 1 次、每 IP 60 秒内最多 DELETE_MAX_REQUESTS_PER_IP 次；
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
@@ -1719,6 +1730,101 @@ def run_verify_with_gate(clean, username, limits):
         _verify_sem.release()
 
 
+def _reject_account(phone, reason):
+    """把校验未通过的账号置为 rejected（D-2：账号**留在库中**并承载技术原因）。"""
+    try:
+        accounts = load_accounts()
+        idx = find_account_index(accounts, phone)
+        if idx is None:
+            return
+        db.update_account_status(accounts[idx]["id"], ACCOUNT_STATUS_REJECTED,
+                                 reason or "在线校验未通过")
+    except Exception as e:
+        logger.error("置账号为 rejected 失败（%s）: %s", _mask_phone(phone), e)
+
+
+def _run_verify_job(job_id, clean, username, fails, limits):
+    """后台执行一条在线校验任务（A4 异步化）。
+
+    在独立线程里跑，因此**可以等待全局席位**——请求线程不能等，那正是要消除的
+    线程占用；后台任务排队是可接受的（前端只看到"校验中"）。
+
+    收口路径共三条，都经 CAS 落终态，互不覆盖：
+    ① 正常完成 → done / rejected（并置账号为 rejected）
+    ② 等待席位超时 → rejected
+    ③ 看门狗到点（`VERIFY_JOB_OUTBOUND_TIMEOUT`）→ rejected；
+       worker 之后回来时 CAS 已失配，不会把终态改写掉。
+    """
+    if not db.claim_verify_job(job_id):
+        return  # 已被取消（或已被别的线程接走）
+
+    expired = threading.Event()
+
+    def _on_timeout():
+        expired.set()
+        if db.finish_verify_job(job_id, error="外呼超时：校验未在预算内完成"):
+            _reject_account(clean["phone"], "外呼超时：校验未在预算内完成")
+
+    watchdog = threading.Timer(VERIFY_JOB_OUTBOUND_TIMEOUT, _on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        if not _verify_sem.acquire(timeout=VERIFY_JOB_GATE_WAIT):
+            if db.finish_verify_job(job_id, error="校验繁忙：等待全局校验席位超时"):
+                _reject_account(clean["phone"], "校验繁忙：等待全局校验席位超时")
+            return
+        try:
+            if expired.is_set():
+                return  # 看门狗已收口，省掉一次无谓外呼
+            verify_err = _verify_account_clean(clean)
+        finally:
+            _verify_sem.release()
+    finally:
+        watchdog.cancel()
+
+    if expired.is_set():
+        return
+    if verify_err:
+        fail_kind = _record_verify_failure(fails, clean["phone"], verify_err, time.time())
+        db.audit(username or "?", "account_verify_job_fail", _mask_phone(clean["phone"]),
+                 f"异步校验未通过（{fail_kind}）")
+        if db.finish_verify_job(job_id, error=verify_err):
+            _reject_account(clean["phone"], verify_err)
+    else:
+        db.finish_verify_job(job_id)
+
+
+def _start_verify_job(clean, username, account_id, fails, limits):
+    """建任务 + 起后台线程，返回 (job_id, created_at)。
+
+    待办队列满时抛 VerifyGateBusy（复用同一文案），调用方翻成 503。
+    """
+    if db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING:
+        raise VerifyGateBusy()
+    job_id, created_at = db.create_verify_job(account_id, clean["phone"], username or "")
+    t = threading.Thread(
+        target=_run_verify_job,
+        args=(job_id, clean, username, fails, limits),
+        name=f"verify-job-{job_id}",
+        daemon=True,
+    )
+    t.start()
+    return job_id, created_at
+
+
+def verify_async_enabled():
+    """异步校验开关：默认开（`YIBAN_ACCOUNT_VERIFY` 开启时）；可用
+    `YIBAN_VERIFY_ASYNC=0` 退回同步带闸路径（运维急停：异步路径异常时不必回滚版本）。
+
+    与 `YIBAN_ACCOUNT_VERIFY` 同口径读 `.env`（`os.environ` 优先，便于临时覆盖）——
+    只读 os.environ 会让"只配 .env"的常规部署用不上这个开关。
+    """
+    raw = os.environ.get("YIBAN_VERIFY_ASYNC")
+    if raw is None:
+        raw = read_env(ENV_FILE).get("YIBAN_VERIFY_ASYNC", "")
+    return str(raw).strip().lower() not in ("0", "false", "off", "no")
+
+
 # ---------------------------------------------------------------------------
 # 管理员认证
 # ---------------------------------------------------------------------------
@@ -2918,7 +3024,9 @@ def create_app(host=None):
         if role == "admin":
             return
         # 普通用户：只能操作自己的账号（/api/my-*）、读取时钟、查询身份与登出
-        if request.path.startswith("/api/my-") or request.path in (
+        if request.path.startswith("/api/my-") or request.path.startswith(
+            "/api/verify-jobs"
+        ) or request.path in (
             "/api/clock",
             "/api/me",
             "/api/logout",
@@ -4649,25 +4757,35 @@ def create_app(host=None):
                     return jsonify({"error": dom_err}), 400
         # R1：添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
         # 验证尝试受每用户配额限制（P1-2），认证失败另有按手机号冷却（与用户提交路径同口径）
+        verify_async_job = False
         if _account_verify_enabled():
             if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
                 return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
-            try:
-                verify_err = run_verify_with_gate(
-                    clean, str(session.get("username", "")), _verify_limits)
-            except VerifyGateBusy:
-                return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-            except VerifyQuotaExceeded:
-                return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-            if verify_err:
-                fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
-                db.audit(
-                    session.get("username") or "?",
-                    "account_add_verify_fail",
-                    _mask_phone(clean["phone"]),
-                    f"验证未通过（{fail_kind}）",
-                )
-                return jsonify({"error": verify_err}), 400
+            _vuser = str(session.get("username", ""))
+            if verify_async_enabled():
+                # 异步（A4 第二段）：请求线程只**先扣配额**，外呼交给后台任务。
+                # 待办队列满 → 503（此时账号尚未落库，拒绝无副作用）。
+                if db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING:
+                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                if not _verify_attempt_allowed(_verify_limits, _vuser):
+                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
+                verify_async_job = True
+            else:
+                try:
+                    verify_err = run_verify_with_gate(clean, _vuser, _verify_limits)
+                except VerifyGateBusy:
+                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                except VerifyQuotaExceeded:
+                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
+                if verify_err:
+                    fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
+                    db.audit(
+                        session.get("username") or "?",
+                        "account_add_verify_fail",
+                        _mask_phone(clean["phone"]),
+                        f"验证未通过（{fail_kind}）",
+                    )
+                    return jsonify({"error": verify_err}), 400
         email = str(data.get("email", "")).strip().lower()
         initial_hash = None  # 锁外预计算（scrypt ~100ms 不阻塞其他请求）
         if email:
@@ -4736,7 +4854,7 @@ def create_app(host=None):
                 clean["owner"] = "admin"
                 clean["status"] = ACCOUNT_STATUS_ACTIVE
             try:
-                db.add_account(clean)
+                new_id = db.add_account(clean)
             except db.DuplicatePhoneError:
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
             except db.DuplicateOwnerError:
@@ -4756,13 +4874,26 @@ def create_app(host=None):
             _mask_email(clean["owner"]),
             clean["status"],
         )
-        return jsonify(
-            {
-                "ok": True,
-                "msg": "已添加，等待审核通过后参与签到",
-                "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
-            }
-        )
+        resp = {
+            "ok": True,
+            "msg": "已添加，等待审核通过后参与签到",
+            "accounts": [mask_account(a, i) for i, a in enumerate(accounts)],
+        }
+        if verify_async_job:
+            # 账号已落库，随后由后台任务校验；响应**增补** job_id/status（不改既有字段）
+            try:
+                job_id, _ = _start_verify_job(
+                    clean, str(session.get("username", "")), new_id,
+                    _verify_fails, _verify_limits,
+                )
+                resp["job_id"] = job_id
+                resp["status"] = "verifying"
+            except VerifyGateBusy:
+                # 待办队列在扣配额与建任务之间被占满（竞态兜底）：账号已入库，
+                # 不因此让请求失败——置为 rejected 并说明原因，由用户重试。
+                logger.warning("校验任务队列已满，账号 %s 未建校验任务",
+                               _mask_phone(clean["phone"]))
+        return jsonify(resp)
 
     @app.route("/api/accounts/<int:idx>", methods=["PUT"])
     def api_account_update(idx):
@@ -5704,26 +5835,36 @@ def create_app(host=None):
         # 放锁外：verify 为网络操作，不阻塞其他请求；验证尝试受每用户配额限制（P1-2），
         # 认证失败另有按手机号的冷却（2026-09-04 生产复盘：密码错误反复重交会把
         # 易班账号打锁定，冷却同时给用户明确提示）
+        verify_async_job = False
         if _account_verify_enabled():
             if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
                 return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
-            try:
-                verify_err = run_verify_with_gate(clean, email_pre, _verify_limits)
-            except VerifyGateBusy:
-                return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
-            except VerifyQuotaExceeded:
-                return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-            if verify_err:
-                fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
-                # 验证失败同样留痕审计（2026-09-04 生产复盘）：否则无法还原
-                # 「某账号被反复试错锁定」事件的提交者与次数；detail 只记类别不记原始消息
-                db.audit(
-                    email_pre,
-                    "my_account_add_verify_fail",
-                    _mask_phone(clean["phone"]),
-                    f"验证未通过（{fail_kind}）",
-                )
-                return jsonify({"error": verify_err}), 400
+            if verify_async_enabled():
+                # 异步（A4 第二段）：请求线程只**先扣配额**，外呼交给后台任务。
+                # 待办队列满 → 503（账号尚未落库，拒绝无副作用）。
+                if db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING:
+                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                if not _verify_attempt_allowed(_verify_limits, email_pre):
+                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
+                verify_async_job = True
+            else:
+                try:
+                    verify_err = run_verify_with_gate(clean, email_pre, _verify_limits)
+                except VerifyGateBusy:
+                    return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+                except VerifyQuotaExceeded:
+                    return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
+                if verify_err:
+                    fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
+                    # 验证失败同样留痕审计（2026-09-04 生产复盘）：否则无法还原
+                    # 「某账号被反复试错锁定」事件的提交者与次数；detail 只记类别不记原始消息
+                    db.audit(
+                        email_pre,
+                        "my_account_add_verify_fail",
+                        _mask_phone(clean["phone"]),
+                        f"验证未通过（{fail_kind}）",
+                    )
+                    return jsonify({"error": verify_err}), 400
         with _file_lock:
             accounts = load_accounts()
             # 容量兜底：账号配额（2026-09-08 口径：活跃账号数含裸账号；用户提交同样受限，对抗性审查补）；
@@ -5749,7 +5890,7 @@ def create_app(host=None):
             clean["owner"] = session.get("username", "").lower()
             clean["status"] = ACCOUNT_STATUS_PENDING if _current_role() != "admin" else ACCOUNT_STATUS_ACTIVE
             try:
-                db.add_account(clean)
+                new_id = db.add_account(clean)
             except sqlite3.IntegrityError:
                 return jsonify({"error": f"手机号 {clean['phone']} 已被使用"}), 400  # 并发提交兜底
             db.audit(
@@ -5772,7 +5913,61 @@ def create_app(host=None):
                 )
             except Exception as e:
                 logger.warning("新申请待审核通知发送失败（不影响提交结果）: %s", e)
-            return jsonify({"ok": True, "msg": "已提交，等待管理员审核后参与签到"})
+            resp = {"ok": True, "msg": "已提交，等待管理员审核后参与签到"}
+            if verify_async_job:
+                # 账号已落库，随后由后台任务校验；响应**增补** job_id/status（不改既有字段）
+                try:
+                    job_id, _ = _start_verify_job(
+                        clean, clean["owner"], new_id, _verify_fails, _verify_limits)
+                    resp["job_id"] = job_id
+                    resp["status"] = "verifying"
+                except VerifyGateBusy:
+                    logger.warning("校验任务队列已满，账号 %s 未建校验任务",
+                                   _mask_phone(clean["phone"]))
+            return jsonify(resp)
+
+    # ---- 在线校验异步任务（A4）：查询与取消 ----
+    def _verify_job_visible(job, username, role):
+        """归属校验：任务仅本人或管理员可读/可操作。"""
+        if role == "admin":
+            return True
+        return str(job.get("owner_email") or "").strip().lower() == str(username or "").strip().lower()
+
+    def _job_payload(job):
+        return {
+            "job_id": job["id"],
+            "status": job["status"],
+            "error": job.get("error") or "",
+            "phone": _mask_phone(job.get("phone", "")),
+            "created_at": job.get("created_at"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+        }
+
+    @app.route("/api/verify-jobs/<int:job_id>")
+    def api_verify_job_get(job_id):
+        """查询校验任务状态与结果（仅本人或管理员）。"""
+        job = db.get_verify_job(job_id)
+        if not job:
+            return jsonify({"error": "任务不存在"}), 404
+        if not _verify_job_visible(job, session.get("username"), _current_role()):
+            return jsonify({"error": "无权限"}), 403
+        return jsonify({"ok": True, "job": _job_payload(job)})
+
+    @app.route("/api/verify-jobs/<int:job_id>", methods=["DELETE"])
+    def api_verify_job_cancel(job_id):
+        """取消校验任务（仅 pending 可取消；仅本人或管理员）。"""
+        job = db.get_verify_job(job_id)
+        if not job:
+            return jsonify({"error": "任务不存在"}), 404
+        if not _verify_job_visible(job, session.get("username"), _current_role()):
+            return jsonify({"error": "无权限"}), 403
+        if job["status"] in VERIFY_JOB_TERMINAL:
+            return jsonify({"error": "任务已结束，无法取消"}), 409
+        if not db.cancel_verify_job(job_id):
+            # 与查询之间被后台线程抢走（进入 running）→ 同样视为已无法取消
+            return jsonify({"error": "任务已开始执行，无法取消"}), 409
+        return jsonify({"ok": True, "job": _job_payload(db.get_verify_job(job_id))})
 
     @app.route("/api/my-calendar")
     def api_my_calendar():

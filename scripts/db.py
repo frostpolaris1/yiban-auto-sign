@@ -267,7 +267,8 @@ def _create_tables(conn):
 # 冻结的 migrate_v6 仍对它们调用 _ensure_column / _ensure_index，全新库的执行序
 # 是 migrate_v4 建表 → migrate_v6 补列 → migrate_v14 删表。迁移只增不改。
 _ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
-                   "sign_events", "page_visits", "server_metrics", "session_cache"}
+                   "sign_events", "page_visits", "server_metrics", "session_cache",
+                   "verify_jobs"}
 
 
 def _table_columns(conn, table):
@@ -972,6 +973,35 @@ def migrate_v14(conn):
     conn.commit()
 
 
+def migrate_v15(conn):
+    """v15：在线校验异步任务表（A4 异步化）。可选迁移，失败只告警不阻断启动。
+
+    独立小表，**不污染 accounts.status 枚举**：任务态（排队/在跑/完成/被拒）与
+    账号审核态（pending/active/rejected）是两件事，前者可短期清理，后者是业务状态。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS verify_jobs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "account_id INTEGER, "
+        "phone TEXT NOT NULL, "
+        "owner_email TEXT NOT NULL DEFAULT '', "
+        "status TEXT NOT NULL DEFAULT 'pending', "
+        "error TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL, "
+        "started_at TEXT, "
+        "finished_at TEXT"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_owner_created "
+        "ON verify_jobs(owner_email, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_status ON verify_jobs(status)"
+    )
+    conn.commit()
+
+
 def set_user_sid(email, sid):
     """写入用户当前有效会话标识；email 须为活跃用户。"""
     conn = get_conn()
@@ -999,6 +1029,7 @@ _MIGRATIONS = [
     (12, "v12_app_meta_repair", migrate_v12, True),
     (13, "v13_fix_malformed_column_decls", migrate_v13, True),
     (14, "v14_drop_legacy_stats", migrate_v14, False),
+    (15, "v15_verify_jobs", migrate_v15, False),
 ]
 
 
@@ -3245,6 +3276,115 @@ def sign_events_recent_date(stage, max_days=30):
     return ""
 
 
+# ---------------------------------------------------------------------------
+# 在线校验异步任务（A4 异步化，v15）
+# ---------------------------------------------------------------------------
+VERIFY_JOB_RETENTION_DAYS = 7  # 保留期（与账号软删同档）
+
+VERIFY_JOB_PENDING = "pending"
+VERIFY_JOB_RUNNING = "running"
+VERIFY_JOB_DONE = "done"
+VERIFY_JOB_REJECTED = "rejected"
+# 取消是终态，但不在需求给的 pending|running|done|rejected 四态里——取消既不是
+# "完成"也不是"校验未通过"，用一个独立值表达，避免把用户的主动撤销记成拒绝。
+VERIFY_JOB_CANCELLED = "cancelled"
+
+
+def _now_ts():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def create_verify_job(account_id, phone, owner_email):
+    """创建一条在线校验任务，返回 (job_id, created_at)。"""
+    conn = get_conn()
+    ts = _now_ts()
+    with _conn_lock:
+        cur = conn.execute(
+            "INSERT INTO verify_jobs (account_id, phone, owner_email, status, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (account_id, phone, owner_email, VERIFY_JOB_PENDING, ts),
+        )
+        conn.commit()
+        return cur.lastrowid, ts
+
+
+def get_verify_job(job_id):
+    """单条任务（dict）或 None。"""
+    with _conn_lock:
+        row = get_conn().execute(
+            "SELECT * FROM verify_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def claim_verify_job(job_id):
+    """pending → running（CAS）。返回是否抢到——抢不到说明已被取消或已在跑。"""
+    conn = get_conn()
+    with _conn_lock:
+        cur = conn.execute(
+            "UPDATE verify_jobs SET status=?, started_at=? WHERE id=? AND status=?",
+            (VERIFY_JOB_RUNNING, _now_ts(), job_id, VERIFY_JOB_PENDING),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def finish_verify_job(job_id, error=""):
+    """把 running 任务落终态（error 非空 → rejected，否则 done）。
+
+    CAS 在 running 上：任务若已被取消或被超时看门狗收口，这里自然 0 行命中，
+    不会把终态改写掉。返回是否写入。
+    """
+    conn = get_conn()
+    status = VERIFY_JOB_REJECTED if error else VERIFY_JOB_DONE
+    with _conn_lock:
+        cur = conn.execute(
+            "UPDATE verify_jobs SET status=?, error=?, finished_at=? "
+            "WHERE id=? AND status=?",
+            (status, error or "", _now_ts(), job_id, VERIFY_JOB_RUNNING),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def cancel_verify_job(job_id):
+    """取消任务（仅 pending 可取消）。返回是否成功。"""
+    conn = get_conn()
+    with _conn_lock:
+        cur = conn.execute(
+            "UPDATE verify_jobs SET status=?, finished_at=? WHERE id=? AND status=?",
+            (VERIFY_JOB_CANCELLED, _now_ts(), job_id, VERIFY_JOB_PENDING),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def count_active_verify_jobs():
+    """未落终态的任务数（pending + running）。"""
+    with _conn_lock:
+        row = get_conn().execute(
+            "SELECT COUNT(*) AS n FROM verify_jobs WHERE status IN (?,?)",
+            (VERIFY_JOB_PENDING, VERIFY_JOB_RUNNING),
+        ).fetchone()
+    return row["n"] if row else 0
+
+
+def purge_verify_jobs(days=VERIFY_JOB_RETENTION_DAYS):
+    """清理保留期外的校验任务；失败仅告警，返回删除行数。"""
+    try:
+        conn = get_conn()
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with _conn_lock:
+            cur = conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (cutoff,))
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("清理 verify_jobs 失败: %s", e)
+        return 0
+
+
 def _event_cleanup(conn):
     """清理可视化表超期数据；失败仅告警。
 
@@ -3263,6 +3403,10 @@ def _event_cleanup(conn):
             "%Y-%m-%d %H:%M:%S"
         )
         conn.execute("DELETE FROM sign_events WHERE ts < ?", (sign_cutoff,))
+        job_cutoff = (now - datetime.timedelta(days=VERIFY_JOB_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (job_cutoff,))
         conn.commit()
     except Exception as e:
         with contextlib.suppress(Exception):
