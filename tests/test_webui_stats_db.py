@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
-"""WebUI 统计/监控 DB 补齐（v6）测试。
+"""签到事件表（sign_events）补齐（v6）测试。
 
 覆盖：
-- v6 迁移：新列/索引；
+- v6 迁移：sign_events 新列/索引；
 - 写入函数新字段；
 - 批量写入；
-- 新增查询函数。
+- 按手机号 / 按时间窗查询。
+
+原文件同时测过 page_visits / server_metrics 与 sign_event_peak /
+sign_event_summary_today，这几项生产侧零引用，已由 v14 迁移删除（见 db.migrate_v14），
+对应用例随之移除。
 """
 import contextlib
 import datetime
@@ -22,8 +26,8 @@ TEST_KEY = "a" * 64
 def _recent(days=0, hours=0, minutes=0):
     """距今给定偏移的 ts 字面量。
 
-    查询函数（sign_events_by_phone / page_visit_* / server_metric_*）按 days 窗口
-    裁剪，写死日期会在窗口滑过该日期后假红。
+    查询函数（sign_events_by_phone / sign_events_since）按 days 窗口裁剪，写死日期
+    会在窗口滑过该日期后假红。
     """
     delta = datetime.timedelta(days=days, hours=hours, minutes=minutes)
     return (datetime.datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
@@ -67,15 +71,13 @@ class WebuiStatsDbTest(unittest.TestCase):
 
     def test_migration_v6_schema(self):
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                         db._MIGRATIONS[-1][0])
         sign_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sign_events)").fetchall()}
         self.assertIn("account_id", sign_cols)
         self.assertIn("dur_sec", sign_cols)
         self.assertIn("finished_at", sign_cols)
-        page_cols = {r["name"] for r in conn.execute("PRAGMA table_info(page_visits)").fetchall()}
-        self.assertIn("user_id", page_cols)
-        for index in ("idx_sign_events_phone_ts", "idx_sign_events_account_ts",
-                      "idx_page_visits_path_ts", "idx_page_visits_role_ts"):
+        for index in ("idx_sign_events_phone_ts", "idx_sign_events_account_ts"):
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='index' AND name=?", (index,)
             ).fetchone()
@@ -90,25 +92,14 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(row["dur_sec"], 1.5)
         self.assertEqual(row["finished_at"], "2026-08-16 06:30:02")
 
-    def test_add_page_visit_with_user_id(self):
-        db.add_page_visit("2026-08-16 08:00:00", "user", "/", user_id=42)
-        conn = db.get_conn()
-        row = conn.execute("SELECT * FROM page_visits").fetchone()
-        self.assertEqual(row["user_id"], 42)
-
     def test_batch_write_functions(self):
         db.add_sign_events_batch([
             {"ts": "2026-08-16 06:30:00", "phone": "13800138000", "status": "success",
              "account_id": 1, "dur_sec": 1.0, "finished_at": "2026-08-16 06:30:01"},
             {"ts": "2026-08-16 06:31:00", "phone": "13900139000", "status": "failed"},
         ])
-        db.add_page_visits_batch([
-            {"ts": "2026-08-16 08:00:00", "role": "user", "path": "/", "user_id": 1},
-            {"ts": "2026-08-16 08:01:00", "role": "admin", "path": "/login", "user_id": 2},
-        ])
         conn = db.get_conn()
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0], 2)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM page_visits").fetchone()[0], 2)
 
     def test_sign_events_by_phone(self):
         db.add_sign_event(_recent(hours=2), "13800138000", "success")
@@ -123,54 +114,6 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         rows2 = db.sign_events_since("2026-08-16 06:30:01", limit=10)
         self.assertEqual(len(rows2), 0)
-
-    def test_sign_event_peak(self):
-        # 用"昨天"时间，确保落在 days=7 窗口内（避免写死日期随时间过期）
-        base = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-        db.add_sign_event(base, "13800138000", "success")
-        db.add_sign_event(base, "13900139000", "failed")
-        peak = db.sign_event_peak(days=7, bucket_minutes=5)
-        self.assertTrue(peak)
-        self.assertIn("bucket", peak[0])
-        self.assertIn("cnt", peak[0])
-
-    def test_sign_event_summary_today(self):
-        db.add_sign_event(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                          "13800138000", "success")
-        db.add_sign_event(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                          "13900139000", "failed")
-        summary = db.sign_event_summary_today()
-        self.assertEqual(len(summary), 2)
-
-    def test_page_visit_hourly(self):
-        db.add_page_visit(_recent(hours=2), "user", "/")
-        db.add_page_visit(_recent(hours=1), "admin", "/login")
-        hourly = db.page_visit_hourly(days=30)
-        self.assertTrue(hourly)
-        self.assertIn("hour", hourly[0])
-        self.assertIn("pv", hourly[0])
-
-    def test_page_visit_top_paths(self):
-        db.add_page_visit(_recent(hours=3), "user", "/")
-        db.add_page_visit(_recent(hours=2), "user", "/")
-        db.add_page_visit(_recent(hours=1), "admin", "/login")
-        top = db.page_visit_top_paths(days=30, limit=10)
-        self.assertEqual(top[0]["path"], "/")
-        self.assertEqual(top[0]["cnt"], 2)
-
-    def test_page_visit_active_users(self):
-        db.add_page_visit(_recent(hours=3), "user", "/", user_id=1)
-        db.add_page_visit(_recent(hours=2), "user", "/", user_id=2)
-        db.add_page_visit(_recent(hours=1), "anonymous", "/", user_id=None)
-        active = db.page_visit_active_users(days=30)
-        self.assertEqual(active, 2)
-
-    def test_server_metric_latest(self):
-        db.add_server_metric("2026-08-16 08:00:00", cpu=1.0)
-        db.add_server_metric("2026-08-16 08:01:00", cpu=2.0)
-        latest = db.server_metric_latest(limit=1)
-        self.assertEqual(len(latest), 1)
-        self.assertEqual(latest[0]["cpu"], 2.0)
 
 
 if __name__ == "__main__":

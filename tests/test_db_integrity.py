@@ -7,8 +7,7 @@
 - S5：可选迁移失败/延后时 continue 执行后续迁移，不提升 user_version，重试后到 7；
 - H1：restore_user 按用户行 deleted_at 关联恢复账号；
 - M4：_audit_cleanup 不再重建哈希链，verify 首行以自身 prev_hash 为锚；
-- M5：time_pref_stats 排除已删账号，_purge_expired_deleted 连带删除 time_prefs；
-- M23：page_visit_active_users 仅统计登录用户（user_id 非空），匿名 ip_hash 不计入。
+- M5：time_pref_stats 排除已删账号，_purge_expired_deleted 连带删除 time_prefs。
 """
 import contextlib
 import datetime
@@ -195,7 +194,8 @@ class DbFixes021Test(unittest.TestCase):
 
         conn = db.init_db(self.db_file, env_file=self.env_file)
         self.assertEqual(
-            conn.execute("PRAGMA user_version").fetchone()[0], 13, "下次启动应重试到最新版本"
+            conn.execute("PRAGMA user_version").fetchone()[0], db._MIGRATIONS[-1][0],
+            "下次启动应重试到最新版本"
         )
 
     # ---- S5 复审：可选迁移失败必须回滚部分写入 ----
@@ -323,16 +323,3 @@ class DbFixes021Test(unittest.TestCase):
         db._purge_expired_deleted(db.get_conn())
 
         self.assertIsNone(db.get_time_pref("13800000031"), "过期账号清除时 time_prefs 应连带删除")
-
-    # ---- M23：活跃用户数仅统计登录用户 ----
-    def test_page_visit_active_users_counts_only_logged_in_users(self):
-        db.init_db(self.db_file, env_file=self.env_file)
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        db.add_page_visit(now, "admin", "/", ip_hash="a", user_id=1)
-        db.add_page_visit(now, "admin", "/", ip_hash="a", user_id=None)
-        db.add_page_visit(now, "admin", "/", ip_hash="b", user_id=1)
-        db.add_page_visit(now, "admin", "/", ip_hash="b", user_id=None)
-        db.add_page_visit(now, "admin", "/", ip_hash="c", user_id=None)
-
-        # 匿名访问（user_id 为空）只留 ip_hash，不应计入活跃登录用户
-        self.assertEqual(db.page_visit_active_users(days=30), 1)

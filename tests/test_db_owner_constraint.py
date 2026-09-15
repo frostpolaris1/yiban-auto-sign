@@ -110,7 +110,7 @@ class DbOwnerConstraintTest(unittest.TestCase):
         self._reset_conn()
         conn = db.init_db(self.db_file)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 13)
+        self.assertEqual(version, db._MIGRATIONS[-1][0])
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_accounts_owner_live'"
         ).fetchone()
@@ -169,9 +169,10 @@ class DbOwnerConstraintTest(unittest.TestCase):
         conn.commit()
         self._reset_conn()
 
-        # 第二次启动：无重复，自动建索引，版本升到 2
+        # 第二次启动：无重复，自动建索引，版本升到最新
         conn = db.init_db(self.db_file)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                         db._MIGRATIONS[-1][0])
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_accounts_owner_live'"
         ).fetchone()

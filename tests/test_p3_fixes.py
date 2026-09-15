@@ -152,13 +152,17 @@ class DbExecutescriptAtomicityP3Test(unittest.TestCase):
                          "可选迁移失败置 blocked：本轮不提升 user_version")
 
     def test_fresh_db_creates_all_schema(self):
-        """转换后的逐条 DDL 语义不变：新库仍建出全部基线 + 迁移表。"""
+        """转换后的逐条 DDL 语义不变：新库仍建出全部基线 + 迁移表。
+
+        page_visits / server_metrics 不在此列：它们由 migrate_v14 删除
+        （v4 建 → v6 补列 → v14 删），并已由 test_visual_tables.py 断言其不存在。
+        """
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
         names = {r["name"] for r in db.get_conn().execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         for t in ("accounts", "users", "audit_logs", "time_prefs",
-                  "user_delete_requests", "sign_events", "page_visits",
-                  "server_metrics", "session_cache", "app_meta"):
+                  "user_delete_requests", "sign_events",
+                  "session_cache", "app_meta"):
             self.assertIn(t, names, f"缺表 {t}——逐条 DDL 转换丢失了建表语句")
 
     def test_db_source_has_no_executescript_call(self):

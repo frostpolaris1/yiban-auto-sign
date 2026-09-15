@@ -7,7 +7,7 @@
 
 说明：
 - 仅用于本地测试，不部署。
-- 会生成 users / accounts / audit_logs / time_prefs / sign_events / page_visits / server_metrics。
+- 会生成 users / accounts / audit_logs / time_prefs / sign_events。
 - 使用固定随机种子，结果可复现。
 """
 import argparse
@@ -69,7 +69,7 @@ def main():
 
     # 清空旧 demo 数据（只清 demo 相关表，避免误伤真实库）
     print(f"将清空目标数据库: {args.db}")
-    for table in ("server_metrics", "page_visits", "sign_events", "time_prefs",
+    for table in ("sign_events", "time_prefs",
                   "audit_logs", "accounts", "users"):
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
@@ -167,45 +167,11 @@ def main():
                 1,
             )
 
-    print("生成页面访问事件 ...")
-    roles = ["admin", "user", "anonymous"]
-    paths = ["/", "/login", "/user", "/api/accounts", "/api/settings"]
-    for _ in range(users * 10):
-        db.add_page_visit(
-            _ts(days_ago=random.randint(0, args.days), hour=random.randint(0, 23),
-                minute=random.randint(0, 59)),
-            random.choice(roles),
-            random.choice(paths),
-            db.hash_ip(f"10.0.{random.randrange(256)}.{random.randrange(256)}"),
-            "DemoUA",
-            random.randint(0, 5000),
-        )
-
-    print("生成服务器性能采样 ...")
-    for hour in range(24 * 7):
-        ts = (datetime.datetime.now() - datetime.timedelta(hours=hour)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        db.add_server_metric(
-            ts,
-            cpu=random.uniform(0, 80),
-            mem_pct=random.uniform(20, 90),
-            disk_pct=random.uniform(30, 80),
-            net_in=random.uniform(0, 5000),
-            net_out=random.uniform(0, 5000),
-            load1=random.uniform(0, 4),
-            load5=random.uniform(0, 4),
-            load15=random.uniform(0, 4),
-            proc_count=random.randint(50, 300),
-        )
-
     counts = {
         "users": conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
         "accounts": conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0],
         "audit_logs": conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0],
         "sign_events": conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0],
-        "page_visits": conn.execute("SELECT COUNT(*) FROM page_visits").fetchone()[0],
-        "server_metrics": conn.execute("SELECT COUNT(*) FROM server_metrics").fetchone()[0],
     }
     print("demo 数据生成完成：")
     for k, v in counts.items():
