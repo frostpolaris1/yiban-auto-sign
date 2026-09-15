@@ -188,7 +188,8 @@ class CapacityBreakdownTest(_Base):
         """2026-09-14 性能回归：设置页统计改用不解密读取并去重。
 
         钉死两点：
-        (a) 判定路径不触达解密读 load_accounts（打桩为抛错，命中即 500）；
+        (a) 判定路径不触达解密（打桩为抛错，命中即 500）；A2 后 web 侧的解密入口是
+            `db.decrypt_account_rows`，原始读入口是 `db.accounts_snapshot`；
         (b) accounts 原始读 / users 读各恰一次（去重），且三分类、owners、
             潜在负载、活跃计数都能用不解密原始行独立复算，口径不变。
         """
@@ -206,10 +207,10 @@ class CapacityBreakdownTest(_Base):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
         with mock.patch.object(
-            self.db, "load_accounts",
-            side_effect=AssertionError("设置页不应触发解密读"),
+            self.db, "decrypt_account_rows",
+            side_effect=AssertionError("设置页不应触发解密"),
         ) as m_dec, mock.patch.object(
-            self.db, "load_accounts_raw", wraps=self.db.load_accounts_raw
+            self.db, "accounts_snapshot", wraps=self.db.accounts_snapshot
         ) as m_raw, mock.patch.object(
             self.db, "load_users", wraps=self.db.load_users
         ) as m_users:
@@ -243,8 +244,8 @@ class CapacityBreakdownTest(_Base):
         )
         # 计数/配额入口同样不得解密
         with mock.patch.object(
-            self.db, "load_accounts",
-            side_effect=AssertionError("计数不应触发解密读"),
+            self.db, "decrypt_account_rows",
+            side_effect=AssertionError("计数不应触发解密"),
         ):
             self.assertEqual(self.webapp._active_account_count(), len(live))
             self.assertFalse(self.webapp._accounts_at_capacity(0))

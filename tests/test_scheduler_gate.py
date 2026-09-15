@@ -458,8 +458,13 @@ class RekeyToolB12Test(unittest.TestCase):
         env["YIBAN_ENV_FILE"] = self.env_file
         env["YIBAN_ACCOUNTS_KEY"] = self._current_key()
         env["YIBAN_AUDIT_KEY"] = AUDIT_KEY
+        # 带 --force：本组测的是轮换机制本身，不是停服探活。Linux 下 rekey 会扫
+        # /proc/*/cmdline，而 pytest -n 8 并行时其他用例正在跑的 run.sh → signin.py
+        # 子进程会命中 _PROCESS_HINTS → 守卫拒绝退出 2 → 本用例假红（跨用例干扰，
+        # 与轮换逻辑无关）。探活行为由本文件 :538 的 _yiban_processes_running 用例覆盖。
         return subprocess.run(
-            [sys.executable, os.path.join(BASE, "scripts", "rekey_accounts.py"), *cli],
+            [sys.executable, os.path.join(BASE, "scripts", "rekey_accounts.py"),
+             *cli, "--force"],
             capture_output=True, text=True, env=env, cwd=BASE, timeout=120,
             input="n\n",
         )

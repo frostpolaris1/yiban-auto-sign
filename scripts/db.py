@@ -1232,62 +1232,88 @@ def _rename_backup(path, reencrypt=False, key=None):
 # ---------------------------------------------------------------------------
 # accounts CRUD（单行操作，事务内）
 # ---------------------------------------------------------------------------
-def _row_to_account(row, conn=None):
+def _mask_phone_display(phone):
+    """展示用打码（仅用于日志文案，与 web 层同口径）。"""
+    return phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
+
+
+def _decrypt_row(row):
+    """纯 CPU：把一行原始行转成账号 dict，并摘出需要明文自愈的字段。
+
+    **不访问数据库、不加锁**。调用方负责在 `_conn_lock` **之外**调用它（A2：逐行
+    AES-GCM 解密曾全程持该锁，而 web 侧有数十个调用点，导致全站 DB 访问被串行化），
+    再把摘出的 pending 交给 `_apply_plaintext_heal` 在锁内落库。
+
+    返回 `(account_dict, pending)`；pending 元素为
+    `(字段名, 行 id, 明文原值, 手机号, 打码手机号)`。
+    """
     a = dict(row)
     a["deleted"] = bool(a["deleted"])
     a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
+    pending = []
     # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
     for k in ("password", "phone_code"):
         v = a.get(k)
-        if v:
+        if not v:
+            continue
+        try:
+            obj = json.loads(v)
+        except (TypeError, ValueError):
+            obj = None
+        if isinstance(obj, dict) and "ct" in obj:
+            if not account_crypto.has_key(_env_file):
+                raise RuntimeError(
+                    "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
+                )
+            key = account_crypto.load_key(_env_file)
             try:
-                obj = json.loads(v)
-            except (TypeError, ValueError):
-                obj = None
-            if isinstance(obj, dict) and "ct" in obj:
-                if not account_crypto.has_key(_env_file):
-                    raise RuntimeError(
-                        "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
-                    )
-                key = account_crypto.load_key(_env_file)
-                try:
-                    a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
-                except ValueError as e:
-                    # 统一收口：解密失败（密钥不匹配/密文损坏）→ RuntimeError，
-                    # 与密钥缺失分支一致，由 web 层统一 JSON 错误处理（对抗性审查 L1）
-                    raise RuntimeError(str(e)) from e
-            else:
-                # 明文驻留检测（2026-08-27 审查缺口 1）：非密文值照常使用（不阻断业务），
-                # 但必须告警 + 持锁幂等加密回写——堵住"明文已进库"无人察觉；
-                # 对照 session_cache 对旧明文行抛错清除（M14），accounts 此前无对应策略。
-                phone = str(a.get("phone", ""))
-                phone_masked = phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
-                a[k] = v
-                if conn is not None:
-                    enc = _encrypt_field(v, a.get("phone", ""))
-                    # CAS 回写——并发进程可能刚改掉该行（如 update_account
-                    # 改密），无条件按 id 覆盖会把旧明文重新加密写回，静默回滚他人修改。
-                    # 以"仍处于本进程读到的明文原值"为条件，0 行命中即放弃并告警。
-                    cur = conn.execute(
-                        f"UPDATE accounts SET {k}=? WHERE id=? AND {k}=?",
-                        (enc, a["id"], v),
-                    )
-                    if cur.rowcount == 0:
-                        logger.warning(
-                            "账号 %s 的 %s 已被并发修改，跳过明文自愈回写",
-                            phone_masked, k,
-                        )
-                        continue
-                    logger.warning(
-                        "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
-                        phone_masked, k,
-                    )
-                else:
-                    logger.warning(
-                        "账号 %s 的 %s 为明文存储；本次读取未持连接上下文，未回写，"
-                        "将在下次带连接的读取时自动加密（现有调用方均传连接，此为防御分支）",
-                        phone_masked, k,
-                    )
+                a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
+            except ValueError as e:
+                # 统一收口：解密失败（密钥不匹配/密文损坏）→ RuntimeError，
+                # 与密钥缺失分支一致，由 web 层统一 JSON 错误处理（对抗性审查 L1）
+                raise RuntimeError(str(e)) from e
+        else:
+            # 明文驻留检测（2026-08-27 审查缺口 1）：非密文值照常使用（不阻断业务），
+            # 但必须告警 + 幂等加密回写——堵住"明文已进库"无人察觉；
+            # 对照 session_cache 对旧明文行抛错清除（M14），accounts 此前无对应策略。
+            phone = str(a.get("phone", ""))
+            pending.append((k, a["id"], v, phone, _mask_phone_display(phone)))
+            a[k] = v
+    return a, pending
+
+
+def _apply_plaintext_heal(conn, pending):
+    """锁内：对明文驻留字段做 CAS 加密回写（幂等；并发修改时跳过并告警）。"""
+    for k, account_id, plain, phone, masked in pending:
+        enc = _encrypt_field(plain, phone)
+        # CAS 回写——并发进程可能刚改掉该行（如 update_account 改密），无条件按 id
+        # 覆盖会把旧明文重新加密写回，静默回滚他人修改。以"仍处于本进程读到的明文
+        # 原值"为条件，0 行命中即放弃并告警。
+        cur = conn.execute(
+            f"UPDATE accounts SET {k}=? WHERE id=? AND {k}=?",
+            (enc, account_id, plain),
+        )
+        if cur.rowcount == 0:
+            logger.warning("账号 %s 的 %s 已被并发修改，跳过明文自愈回写", masked, k)
+            continue
+        logger.warning(
+            "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
+            masked, k,
+        )
+
+
+def _row_to_account(row, conn=None):
+    """单行转换（更新路径用）：conn 非空时顺带做明文自愈回写。"""
+    a, pending = _decrypt_row(row)
+    if conn is not None:
+        _apply_plaintext_heal(conn, pending)
+        return a
+    for k, _account_id, _plain, _phone, masked in pending:
+        logger.warning(
+            "账号 %s 的 %s 为明文存储；本次读取未持连接上下文，未回写，"
+            "将在下次带连接的读取时自动加密（现有调用方均传连接，此为防御分支）",
+            masked, k,
+        )
     return a
 
 
@@ -1547,42 +1573,90 @@ def purge_expired_deleted_accounts():
         _purge_expired_deleted(conn)
 
 
+def accounts_snapshot():
+    """账号原始行快照（**不解密**）。持 `_conn_lock` 取到即释放。
+
+    与 `decrypt_account_rows` 配对使用，让调用方能把 CPU 密集的解密放到锁外：
+    调用方只需在自己那一层护住"取快照"这一步（web 层是 `_file_lock`）。
+    """
+    with _conn_lock:
+        conn = get_conn()
+        return [
+            {**dict(r), "deleted": bool(r["deleted"])}
+            for r in conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
+        ]
+
+
+def load_accounts_raw():
+    """账号原始行（password/phone_code 保持密文 JSON 串，不解密）。
+
+    供 db_export 等导出场景使用：避免生成明文凭据文件。
+    （超期软删行清理已移出读路径，见 load_accounts 注释。）
+    """
+    return accounts_snapshot()
+
+
+def decrypt_account_rows(rows):
+    """把 `accounts_snapshot()` 的结果解密为账号列表。
+
+    解密全程在**锁外**（纯 CPU，不碰连接）；仅当发现明文驻留行时才另取一次
+    短 `_conn_lock` 做 CAS 自愈回写。
+    """
+    accts = []
+    pending = []
+    try:
+        for r in rows:
+            a, p = _decrypt_row(r)
+            accts.append(a)
+            pending.extend(p)
+    except Exception:
+        # 解密中途抛错（如某行密文损坏）：本函数此刻尚未写库，但并发的写操作可能在
+        # 本进程共享连接上留下未提交的隐式事务；不回滚会让后续所有
+        # `BEGIN IMMEDIATE` 写路径报 "cannot start a transaction within a
+        # transaction"，夜间事件落库等连锁失效。先回滚清场再原样抛出（2026-08-27）。
+        with _conn_lock, contextlib.suppress(Exception):
+            get_conn().rollback()
+        raise
+    if pending:
+        with _conn_lock:
+            conn = get_conn()
+            _apply_plaintext_heal(conn, pending)
+            conn.commit()
+    return accts
+
+
+def read_accounts(snapshot):
+    """取快照 → 锁外解密，并在 AAD 失配时重取一次快照重试。
+
+    `snapshot` 是零参可调用对象，返回 `accounts_snapshot()` 的结果（调用方负责它自己
+    那一层的锁语义：db 层传 `accounts_snapshot` 自身，web 层在 `_file_lock` 内取）。
+
+    **为什么要重试**：解密移出 `_conn_lock` 后，读到的快照可能已被并发写改过——
+    改绑手机号会同时换掉 AAD，于是快照里的密文按新手机号（或反之）解不开，抛
+    RuntimeError。这类失败重取一次快照即可消除；重试后仍失败即视为真实损坏
+    （密文损坏/密钥不匹配），原样抛出，不掩盖问题。
+    """
+    for attempt in (0, 1):
+        try:
+            return decrypt_account_rows(snapshot())
+        except RuntimeError:
+            if attempt:
+                raise
+
+
 def load_accounts():
     """全部账号（按 sort_order 升序），已解密。
+
+    A2（2026-09-15）：「取快照」持 `_conn_lock`，**逐行 AES-GCM 解密在锁外**——
+    此前解密全程持锁，而全项目有数十个调用点，使全站 DB 访问被串行化（实测
+    /api/accounts 恒定 28 rps 而 CPU 仅 0.66 核 → 锁瓶颈而非 CPU 瓶颈）。明文自愈
+    回写另取一次短锁（CAS 条件更新，与并发写安全）。
 
     注意：不再在读路径顺带清除超期软删除行（2026-08-20 对抗性审查 P1 修复）——
     读中途物理删行会使 idx 寻址的 mutation 错位命中其他账号；清理改由
     purge_expired_deleted_accounts() 在启动/每日线程/signin 启动时显式执行。
     """
-    with _conn_lock:
-        conn = get_conn()
-        rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-        try:
-            accts = [_row_to_account(r, conn) for r in rows]
-        except Exception:
-            # 自愈/解密中途抛错（如某行密文损坏）时，前面已执行的成功自愈/解密
-            # 会在共享连接上留下未提交的隐式事务；不回滚会让后续所有
-            # `BEGIN IMMEDIATE` 写路径报 "cannot start a transaction within a
-            # transaction"，夜间事件落库等连锁失效。先回滚清场再原样抛出（2026-08-27）。
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-        # 明文自愈回写持久化（2026-08-27 审查缺口 1）：UPDATE 不改变行数/顺序，
-        # 不会引发 idx 寻址漂移；未 commit 会在连接关闭时回滚导致自愈失效
-        conn.commit()
-        return accts
-
-
-def load_accounts_raw():
-    """全部账号原始行（password/phone_code 保持密文 JSON 串，不解密）。
-
-    供 db_export 等导出场景使用：避免生成明文凭据文件。
-    （超期软删行清理已移出读路径，见 load_accounts 注释。）
-    """
-    with _conn_lock:
-        conn = get_conn()
-        rows = conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-        return [{**dict(r), "deleted": bool(r["deleted"])} for r in rows]
+    return read_accounts(accounts_snapshot)
 
 
 def _next_sort_order(conn):

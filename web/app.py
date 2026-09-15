@@ -1400,11 +1400,16 @@ _announcement_cache = [None]  # [公告文本]
 def load_accounts():
     """全部账号（SQLite，password/phone_code 已解密为明文，按 sort_order 升序）。
 
-    _file_lock：与写操作同锁，避免读到同一连接上未提交事务的部分结果
-    （批量操作进行中，并发读可能看到半成品状态；RLock 可重入，写操作内调用无死锁）。
+    `_file_lock` 只护住「取快照」这一步：解密是 CPU 密集且不碰连接，放到锁外——
+    否则 8 个 web 线程的账号读写仍会被解密串行化（A2，2026-09-15）。
+    `_file_lock` 与写操作同锁，避免读到同一连接上未提交事务的部分结果
+    （RLock 可重入，写操作内调用无死锁）。
     """
-    with _file_lock:
-        return db.load_accounts()
+    def _snap():
+        with _file_lock:
+            return db.accounts_snapshot()
+
+    return db.read_accounts(_snap)
 
 
 def load_accounts_raw():
@@ -1416,7 +1421,7 @@ def load_accounts_raw():
     _file_lock 与 load_accounts 同锁：同连接上未提交事务的部分结果不可见。
     """
     with _file_lock:
-        return db.load_accounts_raw()
+        return db.accounts_snapshot()
 
 
 def load_users():
