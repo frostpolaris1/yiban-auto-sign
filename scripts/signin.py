@@ -58,7 +58,7 @@ from Crypto.Cipher import PKCS1_v1_5  # noqa: E402
 from Crypto.PublicKey import RSA  # noqa: E402
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar  # noqa: E402
 
-from yiban import clock  # noqa: E402  （须在引导之后导入）
+from yiban import clock, window  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
 from yiban.logging_ext import FlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
@@ -460,9 +460,9 @@ def _schedule_config():
             dist = "normal" if mode == "normal" else "uniform"
     elif dist not in ("uniform", "normal"):
         dist = "uniform"
-    start = _parse_hhmm(os.environ.get("YIBAN_SIGN_START", ""), _DEFAULT_SIGN_START)
-    end = _parse_hhmm(os.environ.get("YIBAN_SIGN_END", ""), _DEFAULT_SIGN_END)
-    if start >= end:
+    # 窗口与前后裁剪的解析委托 yiban.window（排计划/判关闭/算容量同源）；告警仍在此处发
+    start, end, _win_invalid = window.parse_window(os.environ)
+    if _win_invalid:
         global _invalid_window_notified
         if not _invalid_window_notified:
             _invalid_window_notified = True
@@ -487,23 +487,15 @@ def _schedule_config():
     if sigma_lo >= sigma_hi:
         logger.warning("σ 范围 %s~%s 非法，回退默认 15~25", sigma_lo, sigma_hi)
         sigma_lo, sigma_hi = _DEFAULT_SIGMA_MIN_PCT, _DEFAULT_SIGMA_MAX_PCT
-    old_edge = _env_int("YIBAN_WINDOW_EDGE_SEC", None, 0, 600)
+    # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度；UI 按 0.5 分钟步进）：
+    # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC
+    # 存在时映射为前后对称（保证旧配置行为不变）——解析在 yiban.window.parse_edges。
+    edge_front, edge_back = window.parse_edges(os.environ)
     return {
         "order": order,
         "dist": dist,
-        # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度；UI 按 0.5 分钟步进）：
-        # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC
-        # 存在时（升级前部署）映射为前后对称，保证旧配置行为不变。
-        "edge_front_sec": _env_int(
-            "YIBAN_WINDOW_EDGE_FRONT_SEC",
-            old_edge if old_edge is not None else _DEFAULT_EDGE_SEC,
-            0, 300,
-        ),
-        "edge_back_sec": _env_int(
-            "YIBAN_WINDOW_EDGE_BACK_SEC",
-            old_edge if old_edge is not None else _DEFAULT_EDGE_SEC,
-            0, 300,
-        ),
+        "edge_front_sec": edge_front,
+        "edge_back_sec": edge_back,
         "block_cap": _env_int("YIBAN_BLOCK_CAP", _DEFAULT_BLOCK_CAP, 1, 200),
         "mu_min_pct": mu_lo,
         "mu_max_pct": mu_hi,
@@ -1734,6 +1726,24 @@ def _is_second_run():
     return os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()
 
 
+def _sign_state_path():
+    """当日 sign-state 状态文件路径（状态目录缺失/不可写由调用方处理）。"""
+    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    return os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
+
+
+def _daily_statuses():
+    """当日按日状态文件的 {phone: status}；缺失/损坏返回 {}（调用方按"无记录"处理）。"""
+    try:
+        with open(_sign_state_path(), encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {p: (v.get("status") if isinstance(v, dict) else "") for p, v in data.items()}
+
+
 def _second_run_drop_done(accounts):
     """补签轮定向重跑：剔除当日已了结（success/already）的账号。
 
@@ -1742,18 +1752,15 @@ def _second_run_drop_done(accounts):
     再次完整登录（风控暴露）。文件缺失/损坏时按「无记录」处理返回全量
     （宁可多跑，不可漏签）。
     """
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
-    path = os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, ValueError, TypeError):
+    recorded = _daily_statuses()
+    if not recorded:
         return accounts
-    if not isinstance(data, dict) or not data:
-        return accounts
+    # 已了结 = success/already/**no_task**（按 main 自身的"已执行"口径：no_task 指
+    # "今天没任务"，同样无需重跑）。原实现漏了 no_task，补签轮会对这些账号再走一遍
+    # 完整登录——多一轮全站真实登录，且与 UNDONE_STATUSES 口径矛盾（SCH-7）。
     done = {
-        p for p, v in data.items()
-        if isinstance(v, dict) and v.get("status") in (STATUS_SUCCESS, STATUS_ALREADY)
+        p for p, st in recorded.items()
+        if st in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
     }
     if not done:
         return accounts
@@ -2124,7 +2131,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
-    path = os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
+    path = _sign_state_path()
     try:
         os.makedirs(state_dir, exist_ok=True)
         # M12：读-改-写整体持有状态文件锁，避免并发覆盖丢失条目
@@ -2357,13 +2364,10 @@ def _schedule_blocks(cfg):
     eff_lo/eff_hi：有效窗口分钟边界（相对当天 0:00），由前后裁剪分别决定。
     有效窗口为空（前裁+后裁 >= 窗口宽度）时回退默认窗口，保证调用方永不拿到空块列表。
     """
-    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
-    end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
-    front = cfg["edge_front_sec"] / 60.0
-    back = cfg["edge_back_sec"] / 60.0
-    eff_lo = start_min + front
-    eff_hi = end_min - back
-    if eff_hi <= eff_lo:
+    win = window.bounds(cfg)
+    start_min, end_min = win.start_min, win.end_min
+    eff_lo, eff_hi = win.lo_min, win.hi_min
+    if win.fell_back:
         logger.warning(
             "有效签到窗口为空（窗口 %s~%s、前裁 %ss 后裁 %ss），回退默认窗口 06:30~07:50",
             cfg["sign_start"], cfg["sign_end"], cfg["edge_front_sec"], cfg["edge_back_sec"],
@@ -2388,11 +2392,6 @@ def _schedule_blocks(cfg):
                     "（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
                 ),
             )
-        start_min = _DEFAULT_SIGN_START[0] * 60 + _DEFAULT_SIGN_START[1]
-        end_min = _DEFAULT_SIGN_END[0] * 60 + _DEFAULT_SIGN_END[1]
-        front = back = _DEFAULT_EDGE_SEC / 60.0
-        eff_lo = start_min + front
-        eff_hi = end_min - back
     blocks = []
     b = start_min
     while b < end_min:
@@ -2625,14 +2624,13 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
 
 
 def _window_closed(sch_cfg, now_dt):
-    """签到窗口是否已关闭：统一按 eff_hi = sign_end - edge_back 判定（P5，2026-08-27）。
+    """签到窗口是否已关闭（口径唯一源：yiban.window，与 _schedule_blocks 的 horizon 同源）。
 
-    与计划 horizon（_schedule_blocks 的 eff_hi）一致：首 pass 与重试同口径，
-    消除原"首 pass 裸 sign_end / 重试 end-edge_back"两处不一致。
+    此前本函数只按 sign_end - edge_back 算，而 _schedule_blocks 在"有效窗口被裁剪
+    吃空"时会回退到默认窗口——于是出现"有 80 分钟的完整计划、却整轮判时段已结束、
+    零请求"（SCH-3）。现两处都走 window.bounds（含同一套回退）。
     """
-    now_sec = now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second
-    end_sec = sch_cfg["sign_end"][0] * 3600 + sch_cfg["sign_end"][1] * 60
-    return now_sec > end_sec - sch_cfg["edge_back_sec"]
+    return window.bounds(sch_cfg).is_closed(now_dt)
 
 
 def _next_retry_at(now_dt, sch_cfg, rng=None):
@@ -2721,6 +2719,23 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         except Exception:
             pass
 
+    def _mark_window_skip(rest_accs):
+        """窗口关闭收尾：只把**当日尚无记录**的账号标记为窗口外跳过。
+
+        不覆盖已有记录：本轮（或上一轮补签）已经得出的 failed / no_position 等真实
+        原因必须保留——原实现无条件改写，会把"重试没赶上窗口"记成"窗口外"，
+        日历上丢掉失败原因，`has_real_failure` 也一起变 False（失败告警被吞掉）。
+        补签轮起跑时窗口已关闭同理：整轮零请求却不该改写首轮结论（SCH-2）。
+        """
+        recorded = _daily_statuses()
+        for _ra in rest_accs:
+            _p = _ra.phone
+            if _p in results or _p in recorded:
+                continue
+            results[_p] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
+            _write_sign_state(_p, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+            _emit_event(_p, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+
     # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐
     sch_cfg = _schedule_config() if schedule else None
     last_done = None  # 上次尝试结束时刻（monotonic），启动对齐用
@@ -2753,15 +2768,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             now_dt = clock.now()
             # 截止保护（P5，统一 eff_hi 口径）：窗口关闭 → 剩余账号全部跳过
             if _window_closed(sch_cfg, now_dt):
-                results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
-                _write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
-                _emit_event(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
                 logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
-                for _rest in pending:
-                    _rp = _rest[2].phone
-                    results[_rp] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
-                    _write_sign_state(_rp, STATUS_SKIPPED_WINDOW, "签到时段已结束")
-                    _emit_event(_rp, STATUS_SKIPPED_WINDOW, "签到时段已结束")
+                _mark_window_skip([acc] + [r[2] for r in pending])
                 break
             # 先判后睡：将跳过的账号（用户自取消/熔断暂停）不睡到时段槽位——
             # 死号排在后段时，此前会先睡满槽位间隔才发现可跳过，把活号挤出窗口
@@ -3394,33 +3402,50 @@ def main():
         # 容量预检（调度 v2 第三层）：可容纳账号数 < 待签到账号数 → 告警不静默
         # 用户自暂停账号不参与调度，也不计入容量
         _cfg = _schedule_config()
-        _span_min = (
-            (_cfg["sign_end"][0] * 60 + _cfg["sign_end"][1])
-            - (_cfg["sign_start"][0] * 60 + _cfg["sign_start"][1])
-            - (_cfg["edge_front_sec"] + _cfg["edge_back_sec"]) / 60.0
-        )
+        _win = window.bounds(_cfg)
+        # 预检按**剩余**有效窗口算（SCH-4）：本进程此刻才起跑，已流逝的窗口签不了。
+        # 原实现用完整窗口算，迟启动时按满容量放行且不告警，超出的账号只能落
+        # skipped_window——管理员看不到任何提示。
+        _rest_sec = _win.remaining_sec(clock.now())
+        _win_end = window.to_dt(
+            clock.now().replace(hour=0, minute=0, second=0, microsecond=0),
+            _win.hi_min,
+        ).strftime("%H:%M")
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
         # 与 web 容量预估同一函数：账号间隔是「上一次完成 → 下一次开始」的下限，
         # 故单账号周期 = avg + gap（旧实现只算 n × avg，与预估口径相差 ~2.3 倍）
-        _cap = capacity_accounts(_span_min * 60, gap_max, _cfg["avg_attempt_sec"])
-        if active_n > _cap:
+        _cap = capacity_accounts(max(0.0, _rest_sec), gap_max, _cfg["avg_attempt_sec"])
+        if _rest_sec <= 0:
             logger.warning(
-                "容量预检: %d 个账号 > 有效窗口 %d 秒可容纳的 %d 个"
-                "（单账号 %.0fs + 账号间隔 %ds），部分账号可能无法在窗口内完成",
-                active_n, int(_span_min * 60), _cap, _cfg["avg_attempt_sec"], gap_max,
+                "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
+                _win_end,
+            )
+            _collect_admin_mail(
+                "易班签到容量超载",
+                f"本次签到进程起跑时已过有效签到窗口（窗口至 {_win_end}），"
+                f"{active_n} 个账号本轮不会执行。如非预期，请检查触发时刻（cron / 容器调度）"
+                "与签到窗口设置（YIBAN_SIGN_START / YIBAN_SIGN_END）。",
+            )
+        elif active_n > _cap:
+            logger.warning(
+                "容量预检: %d 个账号 > 剩余有效窗口 %d 秒可容纳的 %d 个"
+                "（单账号 %.0fs + 账号间隔 %ds，窗口至 %s），部分账号可能无法在窗口内完成",
+                active_n, int(_rest_sec), _cap, _cfg["avg_attempt_sec"], gap_max, _win_end,
             )
             # 超载提醒（对抗性审查补）：通知管理员，避免"超限只在日志里"无人知情。
             # A 线合并：并入任务结束汇总邮件；webhook 仍即时推送。
             _collect_admin_mail(
                 "易班签到容量超载",
-                f"当前 {active_n} 个账号，有效窗口 {int(_span_min * 60)}s 仅可容纳 {_cap} 个"
+                f"当前 {active_n} 个账号，剩余有效窗口 {int(_rest_sec)}s（至 {_win_end}）"
+                f"仅可容纳 {_cap} 个"
                 f"（单账号 {_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s），"
                 "部分账号可能无法在窗口内完成签到。\n"
                 f"建议：增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）。",
             )
             send_notification(
                 "易班签到容量超载",
-                f"当前 {active_n} 个账号，有效窗口 {int(_span_min * 60)}s 仅可容纳 {_cap} 个"
+                f"当前 {active_n} 个账号，剩余有效窗口 {int(_rest_sec)}s（至 {_win_end}）"
+                f"仅可容纳 {_cap} 个"
                 f"（单账号 {_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s），"
                 "部分账号可能无法在窗口内完成签到。\n"
                 f"建议：增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）。",
