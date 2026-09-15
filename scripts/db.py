@@ -39,7 +39,12 @@ if _REPO_ROOT not in sys.path:
 
 # 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
 # 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
+from yiban import clock  # noqa: E402
+from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
+
+account_is_signable = _accounts.is_signable
+purge_orphan_session_cache = _accounts.purge_orphan_session_cache
 
 VERIFY_JOB_RETENTION_DAYS = _verify_jobs.VERIFY_JOB_RETENTION_DAYS
 VERIFY_JOB_PENDING = _verify_jobs.VERIFY_JOB_PENDING
@@ -1295,7 +1300,7 @@ def _rename_backup(path, reencrypt=False, key=None):
     """
     if not os.path.exists(path):
         return
-    bak = f"{path}.bak-{datetime.datetime.now().strftime('%Y%m%d')}"
+    bak = f"{path}.bak-{clock.now().strftime('%Y%m%d')}"
     if os.path.exists(bak):
         seq = 1
         while os.path.exists(f"{bak}-{seq}"):
@@ -1482,7 +1487,7 @@ def _record_clock_guard_alert(note):
                     _CLOCK_GUARD_ALERT_KEY,
                     json.dumps(
                         {
-                            "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "note": note,
                         },
                         ensure_ascii=False,
@@ -1579,7 +1584,7 @@ def _clock_jump_guard(conn, key):
     每次调用都会把当前时间 upsert 进 app_meta（ok 路径）——该 INSERT 同时充当
     库级写锁（WAL 下 INSERT 即持 RESERVED 锁），调用方无需另开 BEGIN IMMEDIATE。
     """
-    now = datetime.datetime.now()
+    now = clock.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
     row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
     if row is None:
@@ -1625,12 +1630,12 @@ def _purge_expired_deleted(conn):
         # 旧版本/手工写入的 deleted=1 且 deleted_at='' 行不参与保留期
         # 判定（条件含 deleted_at != ''），成为不死僵尸——统一补记当前时间，
         # 宽限期自此起算，下一保留期后正常清除
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = clock.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
             "UPDATE accounts SET deleted_at=? WHERE deleted=1 AND deleted_at=''",
             (now_str,),
         )
-        cutoff = (datetime.datetime.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (clock.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
         # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发 DELETE
         # 事务，只提交守卫的时钟参照一行（每天 1~2 次调用，开销可忽略）
         probe = conn.execute(
@@ -2326,7 +2331,7 @@ def soft_delete_user_with_accounts(email):
             rows = conn.execute(
                 "SELECT phone FROM accounts WHERE owner=? AND deleted=0", (email,)
             ).fetchall()
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now = clock.now().strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
                 "UPDATE accounts SET deleted=1, deleted_at=? WHERE owner=? AND deleted=0",
                 (now, email),
@@ -2420,7 +2425,7 @@ def purge_deleted_users(days=None):
             if not ok:
                 logger.error("%s", note)
                 return
-            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
             # M4a：先清这些已注销用户的冷却计数（明文邮箱随用户行一并释放，
@@ -2505,7 +2510,7 @@ def purge_old_delete_requests(days=30):
             if not ok:
                 logger.error("%s", note)
                 return
-            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
             conn.execute(
@@ -2539,6 +2544,16 @@ def run_daily_cleanup():
         conn = get_conn()
         _audit_cleanup(conn)
         _event_cleanup(conn)
+        try:
+            orphans = purge_orphan_session_cache(conn)
+            conn.commit()
+            if orphans:
+                # 孤儿行意味着"账号已不存在但凭据缓存还在"：留痕（不含手机号明文）
+                logger.warning("已清除 %d 条孤儿会话缓存（账号行已不存在）", orphans)
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            logger.warning("清除孤儿会话缓存失败（不影响其他清理）: %s", e)
     purge_expired_deleted_accounts()
     purge_deleted_users()
     purge_old_delete_requests()
@@ -2555,7 +2570,7 @@ def record_user_delete_request(username, ip_hash="", kind="delete"):
                 (
                     username or "",
                     ip_hash or "",
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                     kind if kind in ("delete", "restore") else "delete",
                 ),
             )
@@ -2704,7 +2719,7 @@ def audit(username, action, target="", detail=""):
     """
     global _AUDIT_FAIL_COUNT
     conn = None
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = detail[:200]
     last_err = None
     for attempt in range(_AUDIT_RETRIES):
@@ -2888,7 +2903,7 @@ def record_audit_anchor(path=None):
             return None
         min_id, max_id = int(row["min_id"]), int(row["max_id"])
         head = audit_head_hash()
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"{ts} {min_id} {max_id} {head}"
         d = os.path.dirname(path)
         if d:
@@ -3123,7 +3138,7 @@ def _audit_cleanup(conn):
             with contextlib.suppress(Exception):
                 conn.rollback()
             return
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (clock.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
         conn.commit()
     except Exception as e:
@@ -3196,7 +3211,7 @@ def sign_event_stats(days=30, stage=None):
     try:
         with _conn_lock:
             conn = get_conn()
-            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
             sql = (
@@ -3220,7 +3235,7 @@ def sign_events_by_phone(phone, days=30):
     try:
         with _conn_lock:
             conn = get_conn()
-            cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
             rows = conn.execute(
@@ -3317,7 +3332,7 @@ def sign_events_recent_date(stage, max_days=30):
     try:
         with _conn_lock:
             conn = get_conn()
-            cutoff = (datetime.datetime.now() - datetime.timedelta(days=max_days)).strftime(
+            cutoff = (clock.now() - datetime.timedelta(days=max_days)).strftime(
                 "%Y-%m-%d 00:00:00"
             )
             row = conn.execute(
@@ -3366,7 +3381,7 @@ def _event_cleanup(conn):
             with contextlib.suppress(Exception):
                 conn.rollback()
             return
-        now = datetime.datetime.now()
+        now = clock.now()
         sign_cutoff = (now - datetime.timedelta(days=SIGN_EVENTS_RETENTION_DAYS)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -3523,22 +3538,14 @@ SESSION_CACHE_TTL_HOURS_MAX = 72.0
 # （会话缓存本就是可再生优化数据，此失效路径可接受）。
 SESSION_CACHE_HKDF_INFO = b"yiban-session-cache-v1"
 
-# 业务日界固定按东八区算，不用宿主本地时区：宿主为 UTC（Docker 镜像默认）时，
-# "本地自然日"要到北京时间 08:00 才切日，前一晚写入的隔夜缓存恰好还在同一个
-# UTC 日内，跨日判据形同虚设。
-SESSION_CACHE_BIZ_UTC_OFFSET_HOURS = 8
-_SESSION_CACHE_BIZ_TZ = datetime.timezone(
-    datetime.timedelta(hours=SESSION_CACHE_BIZ_UTC_OFFSET_HOURS)
-)
-
-
 def _session_cache_now():
     """会话缓存统一时钟（东八区裸时间，与库内 %Y-%m-%d %H:%M:%S 串同制）。
 
     写入与过期判定必须用同一个钟：宿主为 UTC 时若写入取北京时间、判定取本地时间，
-    updated_at 会凭空"领先"8 小时，TTL 判据永远不会命中。
+    updated_at 会凭空"领先"8 小时，TTL 判据永远不会命中。东八区口径统一由
+    `yiban.clock` 提供（本处原为独立实现的固定 +8 时区，已收口到唯一时钟）。
     """
-    return datetime.datetime.now(_SESSION_CACHE_BIZ_TZ).replace(tzinfo=None)
+    return clock.now()
 
 
 def _session_cache_key():

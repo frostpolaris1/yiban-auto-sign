@@ -14,6 +14,8 @@
 import datetime
 import logging
 
+from yiban import clock
+
 logger = logging.getLogger("yiban.store.verify_jobs")
 
 VERIFY_JOB_RETENTION_DAYS = 7  # 保留期（与账号软删同档）
@@ -37,11 +39,6 @@ VERIFY_JOB_STALE_SECONDS = 900
 VERIFY_JOB_STALE_MSG = "校验任务超时未收口（进程重启或执行线程异常终止）"
 
 
-def _now_ts():
-    """与 db.py 全库统一的时间戳格式（字符串比较等价时间序）。"""
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
 def create(account_id, phone, owner_email, prev_status=VERIFY_JOB_PENDING):
     """创建一条任务，返回 (job_id, created_at)。
 
@@ -51,7 +48,7 @@ def create(account_id, phone, owner_email, prev_status=VERIFY_JOB_PENDING):
     """
     import db
     conn = db.get_conn()
-    ts = _now_ts()
+    ts = clock.ts()
     with db._conn_lock:
         cur = conn.execute(
             "INSERT INTO verify_jobs (account_id, phone, owner_email, status, prev_status, "
@@ -80,7 +77,7 @@ def claim(job_id):
     with db._conn_lock:
         cur = conn.execute(
             "UPDATE verify_jobs SET status=?, started_at=? WHERE id=? AND status=?",
-            (VERIFY_JOB_RUNNING, _now_ts(), job_id, VERIFY_JOB_PENDING),
+            (VERIFY_JOB_RUNNING, clock.ts(), job_id, VERIFY_JOB_PENDING),
         )
         conn.commit()
         return cur.rowcount == 1
@@ -99,7 +96,7 @@ def finish(job_id, error=""):
         cur = conn.execute(
             "UPDATE verify_jobs SET status=?, error=?, finished_at=? "
             "WHERE id=? AND status=?",
-            (status, error or "", _now_ts(), job_id, VERIFY_JOB_RUNNING),
+            (status, error or "", clock.ts(), job_id, VERIFY_JOB_RUNNING),
         )
         conn.commit()
         return cur.rowcount == 1
@@ -112,7 +109,7 @@ def cancel(job_id):
     with db._conn_lock:
         cur = conn.execute(
             "UPDATE verify_jobs SET status=?, finished_at=? WHERE id=? AND status=?",
-            (VERIFY_JOB_CANCELLED, _now_ts(), job_id, VERIFY_JOB_PENDING),
+            (VERIFY_JOB_CANCELLED, clock.ts(), job_id, VERIFY_JOB_PENDING),
         )
         conn.commit()
         return cur.rowcount == 1
@@ -172,7 +169,7 @@ def reclaim_stale(stale_seconds=VERIFY_JOB_STALE_SECONDS, reject_status="",
             conn.execute(
                 "UPDATE verify_jobs SET status=?, error=?, finished_at=? "
                 "WHERE status IN (?,?) AND COALESCE(started_at, created_at) < ?",
-                (VERIFY_JOB_REJECTED, VERIFY_JOB_STALE_MSG, _now_ts(),
+                (VERIFY_JOB_REJECTED, VERIFY_JOB_STALE_MSG, clock.ts(),
                  *ACTIVE_STATUSES, cutoff),
             )
             if reject_status:

@@ -4,7 +4,7 @@
 覆盖：
 - P1-2 批量/单条重置密码二次鉴权：普通管理员无 confirm_password 被门禁拦；
   带正确 confirm_password 成功；普通用户自改密码（/api/me/password）不受门禁影响；
-- P2-1 _DailyFlockFileHandler：跨天滚动 + 目录故障（_open 抛 OSError）不传播到
+- P2-1 DailyFlockFileHandler：跨天滚动 + 目录故障（_open 抛 OSError）不传播到
   调用方；下一条日志仍可重试；create_app 挂载构造失败降级不崩启动；
 - P2-7 ensure_secret_key：空 .env（无有效键）视为新部署写暂停键；有有效键不写；
 - 版本号同步：APP_VERSION 与 web/__init__.py 的 __version__ 一致且等于当前版本
@@ -196,7 +196,7 @@ class Batch16FixesTest(unittest.TestCase):
     # ---- P2-1 日志 handler 异常不传播 ----
     def _mk_handler(self):
         os.makedirs(self.log_dir, exist_ok=True)
-        return self.webapp._DailyFlockFileHandler(self.log_dir)
+        return self.webapp.DailyFlockFileHandler(self.log_dir)
 
     def test_emit_rollover_oserror_not_propagated(self):
         """跨天滚动时 _open 抛 OSError → emit 不向调用方抛异常。"""
@@ -228,12 +228,12 @@ class Batch16FixesTest(unittest.TestCase):
         h.close()
 
     def test_create_app_degrades_on_handler_construct_failure(self):
-        """_DailyFlockFileHandler 构造失败 → create_app 仅告警不崩启动。"""
+        """DailyFlockFileHandler 构造失败 → create_app 仅告警不崩启动。"""
         root = logging.getLogger()
         # 清掉 root 上残留的 flock 文件 handler（模块导入时 signin 会挂基类
-        # _FlockFileHandler，既有 create_app 可能挂 _DailyFlockFileHandler 子类）
+        # _FlockFileHandler，既有 create_app 可能挂 DailyFlockFileHandler 子类）
         for _h in list(root.handlers):
-            if type(_h).__name__ in ("_FlockFileHandler", "_DailyFlockFileHandler"):
+            if type(_h).__name__ in ("FlockFileHandler", "DailyFlockFileHandler"):
                 root.removeHandler(_h)
                 with contextlib.suppress(Exception):
                     _h.close()
@@ -241,11 +241,11 @@ class Batch16FixesTest(unittest.TestCase):
         # 用"构造即抛 OSError 的真实子类"替换模块类名：既让 create_app 的
         # isinstance 判定保持合法（mock 的 MagicMock 不是类型会崩），又能触发
         # 构造降级路径
-        class _ExplodingDailyFh(self.webapp._DailyFlockFileHandler):
+        class _ExplodingDailyFh(self.webapp.DailyFlockFileHandler):
             def __init__(self, log_dir):
                 raise OSError("no such dir")
 
-        with mock.patch.object(self.webapp, "_DailyFlockFileHandler",
+        with mock.patch.object(self.webapp, "DailyFlockFileHandler",
                                _ExplodingDailyFh), \
              mock.patch.object(self.webapp.logger, "warning") as mw:
             app = self.webapp.create_app()  # 不应抛异常

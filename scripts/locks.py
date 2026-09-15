@@ -7,7 +7,7 @@
 |------|-------|---------|
 | `env_lock._acquire_file_lock` | `fcntl.flock` | `msvcrt.locking`（唯一有真锁的） |
 | `signin._state_file_lock` | `fcntl.flock` | **no-op 且无告警** → 5 处状态文件读-改-写失去原子性 |
-| `signin._FlockFileHandler` | `fcntl.flock` | no-op（日志行交错，观感问题） |
+| `yiban.logging_ext.FlockFileHandler` | `fcntl.flock` | no-op（日志行交错，观感问题） |
 | `notify._state_file_lock` | `fcntl.flock` | **no-op 且无告警** → 账本/节流跨进程互斥失效 |
 
 统一到本模块；底层实现交给 `portalocker`（BSD-3-Clause，零强制依赖，纯 Python）。
