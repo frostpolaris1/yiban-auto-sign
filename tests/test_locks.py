@@ -62,6 +62,61 @@ class LockPrimitiveTest(unittest.TestCase):
             pass
 
     @unittest.skipUnless(os.name == "posix", "跨进程 flock 断言仅 POSIX 可用")
+    def test_waits_for_holder_instead_of_degrading_immediately(self):
+        """**引入 portalocker 的核心理由**：抢不到锁要重试等待，不是立刻降级为进程内锁。
+
+        自写版一次失败就降级（Windows 上 `msvcrt.LK_LOCK` 约 10 秒放弃），多执行体
+        竞争下跨进程互斥会静默失效；portalocker 的 Lock 带重试循环，等到超时才报错。
+        """
+        import multiprocessing as mp
+        import time
+
+        ctx = mp.get_context("fork")
+        holding, release = ctx.Event(), ctx.Event()
+
+        def _holder():
+            with locks.file_lock(self.target):
+                holding.set()
+                release.wait(10)
+
+        proc = ctx.Process(target=_holder)
+        proc.start()
+        try:
+            self.assertTrue(holding.wait(5), "持有者未就绪")
+            t0 = time.monotonic()
+            # 持有者 0.6s 后释放：给 5s 超时的调用应当**等到**它释放并成功拿到
+            def _release_later():
+                time.sleep(0.6)
+                release.set()
+
+            import threading
+            threading.Thread(target=_release_later, daemon=True).start()
+            with locks.file_lock(self.target, timeout=5.0):
+                waited = time.monotonic() - t0
+            self.assertGreaterEqual(waited, 0.4,
+                                    "应等待持有者释放（而不是立刻降级/返回）")
+        finally:
+            release.set()
+            proc.join(5)
+            if proc.is_alive():
+                proc.terminate()
+
+    def test_wrapper_passes_a_retry_timeout(self):
+        """守护配置：包装层必须把**正数**重试时长交给 portalocker。
+
+        若有人把它改回"零超时/不重试"，上面那条等待断言在快机器上可能侥幸通过，
+        这条会在配置层面直接拦下。
+        """
+        with mock.patch.object(locks.portalocker, "Lock",
+                              wraps=locks.portalocker.Lock) as spy, \
+                locks.file_lock(self.target):
+            pass
+        spy.assert_called_once()
+        self.assertGreater(spy.call_args.kwargs.get("timeout", 0), 0,
+                           "必须传入正数 timeout 以启用重试")
+        self.assertGreater(spy.call_args.kwargs.get("check_interval", 0), 0)
+
+    @unittest.skipUnless(os.name == "posix", "跨进程 flock 断言仅 POSIX 可用")
     def test_cross_process_exclusion_posix(self):
         import multiprocessing as mp
         import time
