@@ -212,6 +212,58 @@ class DbMigrationTest(unittest.TestCase):
             conn.execute("SELECT value FROM app_meta WHERE key='k'").fetchone()[0], "v"
         )
 
+    def test_v13_upgrades_to_verify_jobs_schema(self):
+        """生产口径升级路径：v13 库（无 verify_jobs）→ 最新，且任务表带 prev_status。
+
+        生产机在 2026-09-15 仍是 user_version=13，下一次部署要走 v14/v15/v16 三步。
+        v15 建表、v16 补 `prev_status` 列，两步都是可选迁移——若 v15 被延后而
+        v16 先跑，v16 也必须能自给自足地建出正确结构（两条都幂等，顺序无关）。
+        """
+        conn = db.init_db(self.db_file)
+        conn.execute("DROP TABLE IF EXISTS verify_jobs")
+        conn.execute("PRAGMA user_version = 13")
+        conn.commit()
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        conn = db.init_db(self.db_file)
+        self.assertEqual(
+            conn.execute("PRAGMA user_version").fetchone()[0], db._MIGRATIONS[-1][0],
+            "v13 库重启后应升到最新版本",
+        )
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(verify_jobs)").fetchall()}
+        self.assertIn("prev_status", cols, "v16 必须补上 prev_status 列")
+        self.assertIn("account_id", cols, "v15 的表结构必须完整")
+        # 迁移后该表的读写在(新)结构上可用
+        db.create_verify_job(1, "13800138000", "u@test.local", prev_status="active")
+        job = db.get_verify_job(1)
+        self.assertEqual(job["prev_status"], "active")
+
+    def test_v15_deferred_then_v16_builds_table(self):
+        """v15 延后、v16 先跑的乱序路径：v16 自带建表语句，结构同样正确。"""
+        old = db._MIGRATIONS
+        # 只保留到 v14（v15 被拿掉 = 可选迁移延后），先建一个"没有 verify_jobs"的库
+        db._MIGRATIONS = [m for m in old if m[0] <= 14]
+        try:
+            conn = db.init_db(self.db_file)
+            self.assertNotIn(
+                "verify_jobs",
+                {r["name"] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")},
+            )
+            if db._conn is not None:
+                with contextlib.suppress(Exception):
+                    db._conn.close()
+                db._conn = None
+            # 恢复 v15/v16：v15 建表（IF NOT EXISTS）+ v16 补列
+            db._MIGRATIONS = old
+            conn = db.init_db(self.db_file)
+        finally:
+            db._MIGRATIONS = old
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(verify_jobs)").fetchall()}
+        self.assertIn("prev_status", cols)
+
     def test_v13_fixes_malformed_column_declarations(self):
         """v13：修复 `col col TYPE` 畸形声明（2026-09-09 生产巡检发现）。
 

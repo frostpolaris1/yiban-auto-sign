@@ -52,14 +52,17 @@ from flask import (
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from yiban.attempt import jobs as verify_jobs
+
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层 + 子进程环境构造
-_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+for _p in (_SCRIPTS_DIR, _REPO_ROOT):  # 仓库根在前面的包引导之后仍需可导入 yiban/*
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # 合规文档（隐私政策 / 用户协议）渲染：从仓库根目录的 .md 文件读取并转为 HTML，
 # 供注册页弹窗与 /privacy、/terms 独立页共用，避免多份副本漂移。
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DOC_FILES = {"USER_AGREEMENT.md", "PRIVACY_POLICY.md"}
 
 
@@ -506,16 +509,15 @@ VERIFY_FAIL_COOLDOWN_MSG = (
 VERIFY_CONCURRENCY_MAX = 2
 VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
 
-# 异步校验任务（A4 第二段）
-VERIFY_JOB_OUTBOUND_TIMEOUT = 30  # 外呼预算（秒），超出按 rejected 收口（技术原因）
-VERIFY_JOB_GATE_WAIT = 300        # 后台任务等待全局席位的最长秒数
-# 待办（pending + running）任务上限：每个任务占一个后台线程，且外呼席位只有
+# 异步校验任务（A4 第二段）：实现已收进 yiban/attempt/jobs.py（调度核心行为），
+# 这里保留路由与测试按原口径引用的两个常量，其余在模块内自用。
+# 待办（pending + running）上限说明：每个任务占一个后台线程，而外呼席位只有
 # VERIFY_CONCURRENCY_MAX 个——不设上界时并发提交会堆出大量等席位的线程。
 # 这是 503「校验繁忙」在异步模式下的**可达来源**（席位满由后台排队消化，
 # 不拒绝用户；待办队列满才拒绝）。
-VERIFY_JOBS_MAX_PENDING = 32
+VERIFY_JOBS_MAX_PENDING = verify_jobs.MAX_PENDING
 # 任务终态（查询/取消端点判定用）
-VERIFY_JOB_TERMINAL = ("done", "rejected", "cancelled")
+VERIFY_JOB_TERMINAL = verify_jobs.TERMINAL_STATUSES
 
 # 注销账号冷却（防批量注销，user_delete_requests 表计数，v5）：
 # 每用户 60 秒内最多 1 次、每 IP 60 秒内最多 DELETE_MAX_REQUESTS_PER_IP 次；
@@ -1725,86 +1727,72 @@ def run_verify_with_gate(clean, username, limits):
         _verify_sem.release()
 
 
-def _reject_account(phone, reason):
-    """把校验未通过的账号置为 rejected（D-2：账号**留在库中**并承载技术原因）。"""
+def _reject_account(phone, reason, account_id, expect_status):
+    """把校验未通过的账号置为 rejected（D-2：账号**留在库中**并承载技术原因）。
+
+    `expect_status` 是任务建立时账号的状态（verify_jobs.prev_status）。**只有账号
+    仍处于该状态时才写**——异步校验在后台跑，期间管理员可能已点"审核通过"
+    （pending → active），无条件写回会把管理员的决定静默回滚。人类决定优先。
+
+    缺少任务上下文时**不写**：无从判断账号是否已被人工改动，宁可不改也不能覆盖
+    人工决定（账号状态由管理员在审核列表里可见并处理）。
+    """
+    if account_id is None or not expect_status:
+        logger.error("缺少任务上下文（account_id=%r / prev_status=%r），不改账号状态: %s",
+                     account_id, expect_status, _mask_phone(phone))
+        return
     try:
-        accounts = load_accounts()
-        idx = find_account_index(accounts, phone)
-        if idx is None:
-            return
-        db.update_account_status(accounts[idx]["id"], ACCOUNT_STATUS_REJECTED,
-                                 reason or "在线校验未通过")
+        wrote = db.update_account_status_if(
+            account_id, ACCOUNT_STATUS_REJECTED, expect_status,
+            reason or "在线校验未通过",
+        )
+        if not wrote:
+            logger.info(
+                "账号 %s 状态已人工变更（非 %s），异步校验结果不覆盖人工决定",
+                _mask_phone(phone), expect_status,
+            )
     except Exception as e:
         logger.error("置账号为 rejected 失败（%s）: %s", _mask_phone(phone), e)
 
 
-def _run_verify_job(job_id, clean, username, fails, limits):
-    """后台执行一条在线校验任务（A4 异步化）。
+def _reclaim_stale_verify_jobs():
+    """收口超龄校验任务（启动期与取消端点调用；入队路径见 _verify_queue_full）。
 
-    在独立线程里跑，因此**可以等待全局席位**——请求线程不能等，那正是要消除的
-    线程占用；后台任务排队是可接受的（前端只看到"校验中"）。
-
-    收口路径共三条，都经 CAS 落终态，互不覆盖：
-    ① 正常完成 → done / rejected（并置账号为 rejected）
-    ② 等待席位超时 → rejected
-    ③ 看门狗到点（`VERIFY_JOB_OUTBOUND_TIMEOUT`）→ rejected；
-       worker 之后回来时 CAS 已失配，不会把终态改写掉。
+    进程在任务执行期间消失（重启/重部署/OOM）会让任务永久停在 running：既不去
+    终态、又不可取消，还一直占用待办名额，累计到上限后所有新增账号的在线校验
+    永久 503。收口与账号侧的 CAS 拒绝在同一事务内完成（见 store 的 reclaim_stale）。
+    返回收口条数。
     """
-    if not db.claim_verify_job(job_id):
-        return  # 已被取消（或已被别的线程接走）
+    rows = db.reclaim_stale_verify_jobs(reject_status=ACCOUNT_STATUS_REJECTED)
+    if rows:
+        logger.warning("已收口 %d 条超龄校验任务（进程重启或线程异常终止）", len(rows))
+    return len(rows)
 
-    expired = threading.Event()
 
-    def _on_timeout():
-        expired.set()
-        if db.finish_verify_job(job_id, error="外呼超时：校验未在预算内完成"):
-            _reject_account(clean["phone"], "外呼超时：校验未在预算内完成")
+def _verify_queue_full():
+    """待办队列是否已满（判定前先收口超龄任务，否则卡死的任务会永久占满名额）。"""
+    _reclaim_stale_verify_jobs()
+    return db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING
 
-    watchdog = threading.Timer(VERIFY_JOB_OUTBOUND_TIMEOUT, _on_timeout)
-    watchdog.daemon = True
-    watchdog.start()
-    try:
-        if not _verify_sem.acquire(timeout=VERIFY_JOB_GATE_WAIT):
-            if db.finish_verify_job(job_id, error="校验繁忙：等待全局校验席位超时"):
-                _reject_account(clean["phone"], "校验繁忙：等待全局校验席位超时")
-            return
-        try:
-            if expired.is_set():
-                return  # 看门狗已收口，省掉一次无谓外呼
-            verify_err = _verify_account_clean(clean)
-        finally:
-            _verify_sem.release()
-    finally:
-        watchdog.cancel()
 
-    if expired.is_set():
-        return
-    if verify_err:
-        fail_kind = _record_verify_failure(fails, clean["phone"], verify_err, time.time())
-        db.audit(username or "?", "account_verify_job_fail", _mask_phone(clean["phone"]),
-                 f"异步校验未通过（{fail_kind}）")
-        if db.finish_verify_job(job_id, error=verify_err):
-            _reject_account(clean["phone"], verify_err)
-    else:
-        db.finish_verify_job(job_id)
+# 校验任务实现收在 yiban/attempt/jobs.py（调度核心行为）；这里注入宿主侧依赖，
+# 用 lambda 延迟解析，故测试替换下面这些实现后仍然生效。
+verify_jobs.configure(
+    seat=_verify_sem,
+    verify_one=lambda clean: _verify_account_clean(clean),
+    record_failure=lambda st, ph, err, now: _record_verify_failure(st, ph, err, now),
+    mask_phone=lambda phone: _mask_phone(phone),
+    reject_account=lambda phone, reason, aid, expect: _reject_account(phone, reason, aid, expect),
+    queue_full=_verify_queue_full,
+)
 
 
 def _start_verify_job(clean, username, account_id, fails, limits):
-    """建任务 + 起后台线程，返回 (job_id, created_at)。
-
-    待办队列满时抛 VerifyGateBusy（复用同一文案），调用方翻成 503。
-    """
-    if db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING:
+    """建任务并起后台线程；待办队列满时抛 VerifyGateBusy（调用方翻成 503）。"""
+    started = verify_jobs.start(clean, username, account_id, fails, limits)
+    if started is None:
         raise VerifyGateBusy()
-    job_id, created_at = db.create_verify_job(account_id, clean["phone"], username or "")
-    t = threading.Thread(
-        target=_run_verify_job,
-        args=(job_id, clean, username, fails, limits),
-        name=f"verify-job-{job_id}",
-        daemon=True,
-    )
-    t.start()
-    return job_id, created_at
+    return started
 
 
 def verify_async_enabled():
@@ -1812,7 +1800,9 @@ def verify_async_enabled():
     `YIBAN_VERIFY_ASYNC=0` 退回同步带闸路径（运维急停：异步路径异常时不必回滚版本）。
 
     与 `YIBAN_ACCOUNT_VERIFY` 同口径读 `.env`（`os.environ` 优先，便于临时覆盖）——
-    只读 os.environ 会让"只配 .env"的常规部署用不上这个开关。
+    只读 os.environ 会让"只配 .env"的常规部署用不上这个开关。留在这里而不下沉到
+    yiban/attempt（那里读的是 db.ENV_FILE）：本函数须用**本进程的** ENV_FILE，
+    它可被 --env-file 改写。
     """
     raw = os.environ.get("YIBAN_VERIFY_ASYNC")
     if raw is None:
@@ -2877,6 +2867,10 @@ def create_app(host=None):
     # SQLite 数据层初始化：首次启动自动迁移 accounts.json/users.json → yiban.db（幂等，
     # JSON 改名 .bak 保留逃生门）；多 worker 各自调用幂等（模块级连接缓存）
     db.init_db(DB_FILE, migrate_from=ACCOUNTS_FILE, env_file=ENV_FILE)
+    # 启动期收口超龄校验任务：上一次进程若在任务执行中消失（重启/重部署/OOM），
+    # 任务会永久停在 running 并占用待办名额（累计到上限后在线校验永久 503、
+    # 不自愈）。收口本身失败只告警，不阻断启动。
+    _reclaim_stale_verify_jobs()
     app = Flask(__name__)
     # Lucide 图标精灵图：启动时一次性读入并注册为 Jinja 全局 `lucide_sprite`，
     # 模板经 macros/ui.html 的 sprite() 宏原样输出（每次渲染零文件 I/O，见 ui.html 顶部说明）。
@@ -4760,7 +4754,7 @@ def create_app(host=None):
             if verify_async_enabled():
                 # 异步（A4 第二段）：请求线程只**先扣配额**，外呼交给后台任务。
                 # 待办队列满 → 503（此时账号尚未落库，拒绝无副作用）。
-                if db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING:
+                if _verify_queue_full():
                     return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
                 if not _verify_attempt_allowed(_verify_limits, _vuser):
                     return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
@@ -5837,7 +5831,7 @@ def create_app(host=None):
             if verify_async_enabled():
                 # 异步（A4 第二段）：请求线程只**先扣配额**，外呼交给后台任务。
                 # 待办队列满 → 503（账号尚未落库，拒绝无副作用）。
-                if db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING:
+                if _verify_queue_full():
                     return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
                 if not _verify_attempt_allowed(_verify_limits, email_pre):
                     return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
@@ -5951,7 +5945,12 @@ def create_app(host=None):
 
     @app.route("/api/verify-jobs/<int:job_id>", methods=["DELETE"])
     def api_verify_job_cancel(job_id):
-        """取消校验任务（仅 pending 可取消；仅本人或管理员）。"""
+        """取消校验任务（仅 pending 可取消；仅本人或管理员）。
+
+        先收口超龄任务：卡在 running 的任务若因进程重启而无人在跑，会因
+        "只允许取消 pending" 而永远无法撤销，这里先把它判定为终态。
+        """
+        _reclaim_stale_verify_jobs()
         job = db.get_verify_job(job_id)
         if not job:
             return jsonify({"error": "任务不存在"}), 404
