@@ -35,9 +35,12 @@ WORKDIR /app
 COPY requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
 
-# 应用源码（web 管理端 + 签到脚本 + 合规文档）
+# 应用源码（web 管理端 + 签到脚本 + 共享包 + 合规文档）
+# `yiban/` 是共享包（yiban/status.py 起被 signin/web 导入），漏拷会让容器在
+# import 阶段直接崩——tests/test_docker_image_contents.py 自动比对防复发。
 COPY web/ ./web/
 COPY scripts/ ./scripts/
+COPY yiban/ ./yiban/
 COPY ./*.md ./
 
 # 容器内进程管理 / 调度 / 入口
