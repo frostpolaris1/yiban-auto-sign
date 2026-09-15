@@ -334,8 +334,13 @@ class UserFailMailDailyCapTest(unittest.TestCase):
     def test_same_phone_second_mail_suppressed(self):
         self._seed_user()
         sent = []
-        with mock.patch.object(sys.modules["mailer"], "send_user",
-                               side_effect=lambda to, s, t: sent.append(to)):
+        # 额度语义 = "每天最多**成功**提醒 N 次"：桩函数须返回 True 表示发送成功，
+        # 否则（返回 None）会被判定为未发出而归还额度（见 D-6 SCH-8 修复）
+        def _ok(to, s_, t):
+            sent.append(to)
+            return True
+
+        with mock.patch.object(sys.modules["mailer"], "send_user", side_effect=_ok):
             signin.send_user_fail_mail("owner@test.local", "13800138001", "失败A")
             signin.send_user_fail_mail("owner@test.local", "13800138001", "失败B（手动重跑）")
         self.assertEqual(len(sent), 1, "同账号当日第二封应被每日限频抑制")
@@ -343,8 +348,11 @@ class UserFailMailDailyCapTest(unittest.TestCase):
     def test_different_phone_not_affected_and_zero_means_unlimited(self):
         self._seed_user()
         sent = []
-        with mock.patch.object(sys.modules["mailer"], "send_user",
-                               side_effect=lambda to, s, t: sent.append(to)):
+        def _ok(to, s_, t):
+            sent.append(to)
+            return True
+
+        with mock.patch.object(sys.modules["mailer"], "send_user", side_effect=_ok):
             signin.send_user_fail_mail("owner@test.local", "13800138001", "a")
             signin.send_user_fail_mail("owner@test.local", "13900139002", "b")
             self.assertEqual(len(sent), 2, "不同账号互不挤占额度")
