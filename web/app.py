@@ -496,6 +496,14 @@ VERIFY_FAIL_COOLDOWN_MSG = (
     "连续密码错误会导致易班账号被锁定，如密码有误请先在易班 APP 重置。"
 )
 
+# 外呼校验的**全局**并发上限（A4，2026-09-15）：上面两条配额都是「按会话用户」与
+# 「按手机号」，覆盖不到"多个账号同时校验"这个维度。实测 8 个并发校验即占满
+# gunicorn 的 8 个线程 → 整站约 15 秒完全无响应（/api/clock 探针在饱和期无响应）。
+# 这里限制同时在跑的外呼条数，**超出立即失败而非排队**——排队会把线程继续钉住，
+# 正是要避免的情形。
+VERIFY_CONCURRENCY_MAX = 2
+VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
+
 # 注销账号冷却（防批量注销，user_delete_requests 表计数，v5）：
 # 每用户 60 秒内最多 1 次、每 IP 60 秒内最多 DELETE_MAX_REQUESTS_PER_IP 次；
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
@@ -1675,6 +1683,40 @@ def _verify_account_clean(clean):
     if not ok_v:
         return f"账号验证未通过：{str(msg_v).replace(chr(10), ' ').replace(chr(13), ' ')}"
     return None
+
+
+# A4 全局并发闸：进程内信号量（web 固定 -w 1，进程内即全局）。
+_verify_sem = threading.BoundedSemaphore(VERIFY_CONCURRENCY_MAX)
+
+
+class VerifyGateBusy(Exception):
+    """外呼校验的全局并发席位已满（**未消耗**每用户配额）。"""
+
+
+class VerifyQuotaExceeded(Exception):
+    """该会话用户的验证尝试配额用尽。"""
+
+
+def run_verify_with_gate(clean, username, limits):
+    """执行一次外呼校验（A4：全局并发闸包裹）。
+
+    `limits` 是 create_app 内的每用户配额表（进程内字典，非模块级，故显式传入）。
+
+    顺序刻意如此：**先抢全局席位、再扣用户配额**——抢不到席位时立即抛
+    VerifyGateBusy 且不消耗配额，否则我们自己的饱和会变成对用户的惩罚。
+    席位在 `finally` 中释放，含配额拒绝与校验异常两条路径。
+
+    返回 verify_err（None 表示验证通过）；并发满/配额尽时抛上述异常，
+    由调用方翻译成 503 / 429。
+    """
+    if not _verify_sem.acquire(blocking=False):
+        raise VerifyGateBusy()
+    try:
+        if not _verify_attempt_allowed(limits, username):
+            raise VerifyQuotaExceeded()
+        return _verify_account_clean(clean)
+    finally:
+        _verify_sem.release()
 
 
 # ---------------------------------------------------------------------------
@@ -4610,10 +4652,13 @@ def create_app(host=None):
         if _account_verify_enabled():
             if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
                 return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
-            if not _verify_attempt_allowed(
-                    _verify_limits, str(session.get("username", ""))):
+            try:
+                verify_err = run_verify_with_gate(
+                    clean, str(session.get("username", "")), _verify_limits)
+            except VerifyGateBusy:
+                return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+            except VerifyQuotaExceeded:
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-            verify_err = _verify_account_clean(clean)
             if verify_err:
                 fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
                 db.audit(
@@ -5662,9 +5707,12 @@ def create_app(host=None):
         if _account_verify_enabled():
             if _verify_fail_cooldown_remaining(_verify_fails, clean["phone"], time.time()) > 0:
                 return jsonify({"error": VERIFY_FAIL_COOLDOWN_MSG}), 429
-            if not _verify_attempt_allowed(_verify_limits, email_pre):
+            try:
+                verify_err = run_verify_with_gate(clean, email_pre, _verify_limits)
+            except VerifyGateBusy:
+                return jsonify({"error": VERIFY_BUSY_MSG}), 503, {"Retry-After": "2"}
+            except VerifyQuotaExceeded:
                 return jsonify({"error": "账号验证尝试过于频繁，请稍后再试"}), 429
-            verify_err = _verify_account_clean(clean)
             if verify_err:
                 fail_kind = _record_verify_failure(_verify_fails, clean["phone"], verify_err, time.time())
                 # 验证失败同样留痕审计（2026-09-04 生产复盘）：否则无法还原
