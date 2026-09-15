@@ -14,7 +14,8 @@
 
 修复后的契约（本文件逐一断言）：
 1. 读盘 → 判定/修改 → 原子写回在**同一次文件锁持有**内完成（磁盘是唯一事实源）；
-2. `_sync_ledger_to_disk` 合并式写回，不覆盖盘上已交付标记；
+2. 已交付标记（notified/warned）不得回退，另一本账不得被抹除——由"读-改-写同处一次
+   文件锁临界区"结构保证，而非旧实现的"或"式合并兜底；
 3. `_load_ledger_file` 损坏文件归档留证 + warning，不再静默满额；
 4. 多线程并发（保留进程内锁）同进程语义不破坏，磁盘与内存计数始终一致；
 5. Linux/CI 上剥离进程内锁时，文件锁临界区仍能串行化读-改-写、不超发。
@@ -118,33 +119,34 @@ def test_refund_across_day_is_voided(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 单元：合并式写回，不覆盖盘上已交付标记
+# 不变量：已交付标记不得回退（现由"单次锁临界区"结构保证，非"或"式合并）
 # ---------------------------------------------------------------------------
 
-def test_sync_ledger_to_disk_preserves_disk_notified_true(tmp_path, monkeypatch):
-    """`_sync_ledger_to_disk` 合并式写回：本进程内存 notified=False（陈旧）不得覆盖
-    盘上另一进程已写下的 notified=True（否则已交付的耗尽告知会回退成待取，重复发信）。"""
+def test_live_path_preserves_disk_notified_true(tmp_path, monkeypatch):
+    """已交付的耗尽告知标记（notified=True）经活路径写盘后不得回退成 False。
+
+    旧实现靠 `_sync_ledger_to_disk` 的"或"式合并兜底——因为它在临界区**外**写盘，
+    内存值可能陈旧。现在读-改-写在同一次文件锁内完成，锁内读到的盘值即最新值，
+    因此不再需要"或"语义；本用例改为在活路径（`_consume_daily_budget`）上直接断言
+    该不变量，覆盖不因实现换形而丢失。
+    """
     monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "5")
     today = notify._daily_today()
-    # 构造盘上状态：另一进程已把"耗尽告知"交付（notified=True）并落盘
     _write_disk(tmp_path, {
         "general": {"date": today, "count": 3, "pending": False,
                     "notified": True, "warned": True},
         "urgent": {"date": today, "count": 0, "pending": False,
                    "notified": False, "warned": False},
     })
-    # 本进程内存态陈旧：还没对齐到盘上最新值
-    notify._general_daily["state"].update({"date": today, "count": 3})
-    notify._general_daily["notice"].update({"pending": False, "notified": False, "warned": True})
-    notify._sync_ledger_to_disk("general")
+    assert notify._consume_daily_budget("general").allowed is True
     disk = _read_disk(tmp_path)
-    assert disk["general"]["notified"] is True, "合并式写回不得把盘上已交付标记回退成 False"
-    assert disk["general"]["pending"] is False
-    assert disk["general"]["count"] == 3
+    assert disk["general"]["notified"] is True, "已交付告知标记不得被回退"
+    assert disk["general"]["warned"] is True
+    assert disk["general"]["count"] == 4, "占用应落盘"
 
 
-def test_sync_ledger_to_disk_preserves_other_ledger(tmp_path, monkeypatch):
-    """合并式写回只动本账本：盘上另一本账（urgent）的数据不得被整块覆盖抹掉。"""
+def test_live_path_does_not_touch_other_ledger(tmp_path, monkeypatch):
+    """只动本账本：盘上另一本账（urgent）的数据不得被整块覆盖抹掉。"""
     monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "5")
     today = notify._daily_today()
     _write_disk(tmp_path, {
@@ -153,9 +155,7 @@ def test_sync_ledger_to_disk_preserves_other_ledger(tmp_path, monkeypatch):
         "urgent": {"date": today, "count": 2, "pending": True,
                    "notified": False, "warned": True},   # 另一本账有真实待取告知
     })
-    notify._general_daily["state"].update({"date": today, "count": 1})
-    notify._general_daily["notice"].update({"pending": False, "notified": False, "warned": False})
-    notify._sync_ledger_to_disk("general")
+    assert notify._consume_daily_budget("general").allowed is True
     disk = _read_disk(tmp_path)
     assert disk["urgent"] == {"date": today, "count": 2, "pending": True,
                               "notified": False, "warned": True}, "不得抹掉另一本账数据"

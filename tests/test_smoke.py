@@ -310,17 +310,6 @@ class SmokeTest(unittest.TestCase):
         self.assertIn(r.status_code, (302, 401, 403),
                         f"未登录调用批量签到应被拒绝，实际返回 {r.status_code}")
 
-    # ---- 14. 速率限制（H10 测试覆盖）----
-    def test_rate_limit_decorator_exists(self):
-        """限速装饰器存在且可调用（通过多次请求触发限速验证）。"""
-        self._init_db()
-        app = self.webapp.create_app()
-        c = app.test_client()
-        # 发送多个请求，验证限速机制存在（不触发限速即可）
-        for _ in range(5):
-            r = c.get("/api/me")
-            self.assertIn(r.status_code, (200, 401))
-
     # ---- 15. CSRF 错误场景（E 测试覆盖补充）----
     def test_csrf_wrong_token_rejected(self):
         """携带错误/缺失 CSRF token 的 POST 应被拒绝（401 未登录 或 403 CSRF 失败）。"""

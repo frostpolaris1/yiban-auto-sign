@@ -4,7 +4,7 @@
 覆盖：
 - 自动签到：YIBAN_GLOBAL_PAUSE=1 时 main() 退出码 2（SKIPPED 语义）
 - 手动签到：--only 不受暂停影响（放行，不走到 exit(2)）
-- 状态常量：STATUS_GLOBAL_PAUSED 定义于 STATUS_SYMBOL 之前（防 NameError）
+- 状态常量：STATUS_GLOBAL_PAUSED 的取值与符号映射。
 """
 import json
 import os
@@ -71,8 +71,8 @@ class TestGlobalPause(unittest.TestCase):
         # 未暂停拦截 → 不会 exit 2；继续执行（--only 手动放行，进入实际签到）
         self.assertNotEqual(code, 2)
 
-    def test_constant_defined_before_symbol(self):
-        """STATUS_GLOBAL_PAUSED 必须定义于 STATUS_SYMBOL 之前（防 NameError）。"""
+    def test_status_constant_and_symbol_mapping(self):
+        """全局暂停的状态码取值与符号映射（前端按符号渲染，改动需同步前端映射）。"""
         self.assertEqual(signin.STATUS_GLOBAL_PAUSED, "global_paused")
         self.assertIn(signin.STATUS_GLOBAL_PAUSED, signin.STATUS_SYMBOL)
         self.assertEqual(signin.STATUS_SYMBOL[signin.STATUS_GLOBAL_PAUSED], "⏸")
