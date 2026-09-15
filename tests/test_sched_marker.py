@@ -156,7 +156,7 @@ class SecondRunEnvTest(unittest.TestCase):
         }
         with mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
              mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
-             mock.patch.object(signin, "datetime", _EarlyDT):
+             mock.patch.object(signin.clock, "now", _EarlyDT.now):
             is_second = signin._is_second_run()
             alerted = signin._maybe_alert_zero_success(
                 accounts, results, 1, is_second_run=is_second

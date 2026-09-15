@@ -39,7 +39,7 @@ def _today():
 
 
 class _FakeDT(datetime):
-    """datetime 替身：now() 返回固定时刻。"""
+    """时钟替身：now() 返回固定时刻（被 patch 到 `scheduler.clock.now`）。"""
 
     _date = (2026, 9, 6)
     _hm = (7, 12)
@@ -149,7 +149,7 @@ class ChildTimeoutBoundTest(unittest.TestCase):
         env = {"YIBAN_SIGN_END": "07:50"}
         for hm in ((6, 31), (7, 0), (7, 10), (7, 40), (7, 49), (8, 0)):
             fake = type(f"_DT{hm[0]}{hm[1]}", (_FakeDT,), {"_hm": hm})
-            with mock.patch.object(sched, "datetime", fake):
+            with mock.patch.object(sched.clock, "now", fake.now):
                 timeout = sched._child_timeout(env)
             now = datetime.now().replace(year=2026, month=9, day=6,
                                          hour=hm[0], minute=hm[1], second=0)
@@ -164,7 +164,7 @@ class ChildTimeoutBoundTest(unittest.TestCase):
         """窗口已关闭的晚到触发：下限 600s，此时子进程即刻全员窗口外跳过退出。"""
         sched = _load_sched("_u")
         fake = type("_DTLate", (_FakeDT,), {"_hm": (9, 0)})
-        with mock.patch.object(sched, "datetime", fake):
+        with mock.patch.object(sched.clock, "now", fake.now):
             self.assertEqual(sched._child_timeout({"YIBAN_SIGN_END": "07:50"}), 600)
 
 

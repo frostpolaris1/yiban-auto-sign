@@ -29,7 +29,7 @@ if "YIBAN_LOG_FILE" not in os.environ:
 
 
 def _close_root_file_handlers():
-    """关闭并移除 root logger 上全部文件 handler（_DailyFlockFileHandler /
+    """关闭并移除 root logger 上全部文件 handler（DailyFlockFileHandler /
     普通 FileHandler 均为 logging.FileHandler 子类）。
 
     create_app 会给 root logger 挂按天文件 handler，测试后不关闭会在 Windows 上
@@ -59,7 +59,7 @@ def _close_root_file_handlers_after_each():
     历史版本还需处理 signin 导入期游离打开的日志文件句柄（P3-13 后装配延迟到
     main()，导入零副作用，此问题已消失）。测试后清理：移除本轮 create_app 挂到
     root 的 handler。清理不破坏 test_registration_pause.py 的断言：其断言的是
-    create_app 之后 root 存在 _DailyFlockFileHandler，setup 清理后再 create_app
+    create_app 之后 root 存在 DailyFlockFileHandler，setup 清理后再 create_app
     会由幂等逻辑重新挂载。
     """
     _close_root_file_handlers()

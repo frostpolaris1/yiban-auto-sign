@@ -107,7 +107,7 @@ class BreakerTest(unittest.TestCase):
             return (True, "签到成功", False, signin.STATUS_SUCCESS)
 
         argv = ["signin.py"] + (["--only", "13800138000"] if only else [])
-        with mock.patch.object(signin, "datetime", FakeDT), \
+        with mock.patch.object(signin.clock, "now", FakeDT.now), \
              mock.patch.object(signin.YibanClient, "login_killyiban", fake_login), \
              mock.patch.object(signin.YibanClient, "signin", fake_signin), \
              mock.patch.object(signin.time, "sleep"), \
@@ -148,7 +148,7 @@ class BreakerTest(unittest.TestCase):
         cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
                                  "paused_since": self.D3, "probe_date": "2026-08-26"}}
         acc = signin.Account(phone="13800138000", password="p")
-        with mock.patch.object(signin, "datetime", FakeDT), \
+        with mock.patch.object(signin.clock, "now", FakeDT.now), \
              mock.patch.object(signin, "attempt_signin", return_value=attempt_result), \
              mock.patch.object(signin, "_write_sign_state"), \
              mock.patch.object(signin.time, "sleep"):
