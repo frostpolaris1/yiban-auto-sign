@@ -275,3 +275,22 @@ class WindowRecheckAfterSleepTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ConfigSummaryMaskingTest(unittest.TestCase):
+    """cli --check-config 摘要不得打印完整手机号（会落在 CI 日志/会话/运维群里）。"""
+
+    def test_summary_masks_phone(self):
+        import io as _io
+        from contextlib import redirect_stdout
+        accs = [signin.Account(phone="13800138000", password="p",
+                               phone_model="Vivo-XXXX", phone_code="code"),
+                signin.Account(phone="13900139001", password="p")]
+        buf = _io.StringIO()
+        with redirect_stdout(buf):
+            signin.print_config_summary(accs)
+        out = buf.getvalue()
+        self.assertNotIn("13800138000", out, "完整手机号不得出现在摘要里")
+        self.assertNotIn("13900139001", out)
+        self.assertIn("138****8000", out, "脱敏形态仍应可区分账号")
+        self.assertNotIn("code", out.replace("识别码已配置", ""), "识别码不得打印")

@@ -883,15 +883,19 @@ def parse_env_int(name, default):
 
 
 def print_config_summary(accounts):
-    """打印账号配置摘要（密码脱敏），不发任何网络请求。"""
+    """打印账号配置摘要（手机号与密码脱敏），不发任何网络请求。
+
+    手机号必须打码：本摘要会落在 CI 日志、终端记录与他人可读的会话里（运维常贴到
+    群里排查），完整号码属个人信息。脱敏后仍可区分账号（138****8000）。设备识别码
+    只报"已配置"、不打印任何前缀（防摘要泄露设备指纹），型号按原值展示便于排查。
+    """
     print("==== 账号配置检查 ====")
     for i, acc in enumerate(accounts, 1):
         if acc.has_device_info:
-            # 只显示是否已配置（不打印识别码任何前缀，防摘要泄露设备指纹）
             device = f"设备: {acc.phone_model} / 识别码已配置"
         else:
             device = "设备: 未配置（如学校开启设备绑定，签到将失败）"
-        print(f"  {i}. {acc.phone} | 密码: {'*' * 8} | {device}")
+        print(f"  {i}. {_mask_phone(acc.phone)} | 密码: {'*' * 8} | {device}")
     print(f"共 {len(accounts)} 个账号，配置检查通过。")
 
 
