@@ -31,3 +31,8 @@ idna>=3.15
 # werkzeug dev server 禁止公网直连）
 #   gunicorn>=23.0.0   CVE-2024-6827（HTTP request smuggling，22.0 及以前受影响）
 gunicorn>=23.0.0
+# 跨进程文件锁（BSD-3-Clause，零强制依赖，纯 Python）。选它而非自写：自写版抢锁
+# 失败即降级为进程内锁——Windows 上 msvcrt.LK_LOCK 约 10 秒放弃，多执行体竞争下
+# 跨进程互斥会静默失效；本库带 timeout/check_interval 重试循环，并提供共享锁与
+# 完备异常分类。改锁语义前先读 scripts/locks.py 的模块说明。
+portalocker>=4.3.2

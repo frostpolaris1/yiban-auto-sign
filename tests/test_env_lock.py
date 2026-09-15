@@ -6,9 +6,7 @@
 - account_crypto._write_key_to_env_file 已存在密钥时不得覆盖（写前重读 + 锁内整体保护）
 """
 import os
-import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
@@ -16,6 +14,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import account_crypto  # noqa: E402
 import env_lock  # noqa: E402
+import locks  # noqa: E402
 
 
 def _posix_lock_worker(env_file, ready, go, attempting, entered, release):
@@ -46,38 +45,57 @@ class EnvLockTest(unittest.TestCase):
     # ---- 文件锁降级路径必须告警留痕（降级 = 跨进程互斥失效，静默降级会丢并发写入）----
 
     def test_open_failure_logs_warning_and_degrades_to_inprocess_lock(self):
-        """os.open 失败（目录不可写等）：warning 留痕，仍返回进程内锁，业务不阻断。"""
+        """锁文件打不开（目录不可写等）：warning 留痕，仍返回进程内锁，业务不阻断。"""
         with mock.patch.object(env_lock.os, "open", side_effect=OSError(13, "Permission denied")), \
                 self.assertLogs("yiban.locks", level="WARNING") as logs, \
                 env_lock.env_write_lock(self.env_file):
             pass  # 能进入临界区 = 降级为进程内锁后仍可用
         self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
 
-    def test_no_lock_module_logs_warning_and_degrades(self):
-        """fcntl 与 msvcrt 均不可用：warning 留痕，退化为进程内锁。"""
-        with mock.patch.dict(sys.modules, {"fcntl": None, "msvcrt": None}), \
+    def test_lock_failure_logs_warning_and_degrades(self):
+        """加锁本身失败（抢锁超时/平台无锁后端/文件系统不支持）：必须告警留痕。
+
+        注入点在 portalocker 边界：底层平台分发已交给该库，**在导入时就确定了平台
+        后端**，所以再 patch `fcntl`/`msvcrt` 已打不到它（旧版那两条用例正是因此失效）。
+        要钉的契约没变——**任何加锁失败都要告警并降级，绝不静默**。
+        """
+        import portalocker
+
+        with mock.patch.object(
+                locks.portalocker.Lock, "acquire",
+                side_effect=portalocker.exceptions.LockException(
+                    portalocker.exceptions.LockException.LOCK_FAILED, "抢锁超时")), \
                 self.assertLogs("yiban.locks", level="WARNING") as logs, \
                 env_lock.env_write_lock(self.env_file):
-            pass
+            pass  # 降级为进程内锁后临界区仍可用（业务不阻断）
         self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
 
-    def test_lock_syscall_failure_logs_warning_and_degrades(self):
-        """加锁系统调用失败（msvcrt.locking OSError）：warning 留痕，退化为进程内锁。"""
-        fake = types.ModuleType("msvcrt")
-        fake.LK_LOCK = 1
+    def test_lock_failure_still_excludes_within_process(self):
+        """降级后**进程内**互斥仍然生效（同线程重入不阻塞、跨线程会互斥）。"""
+        import threading
 
-        def _boom(fd, mode, nbytes):
-            raise OSError(36, "Resource temporarily unavailable")
+        import portalocker
 
-        fake.locking = _boom
-        # fcntl 置 None 强制走 msvcrt 分支，POSIX/Windows 行为一致
-        with mock.patch.dict(sys.modules, {"fcntl": None, "msvcrt": fake}), \
-                self.assertLogs("yiban.locks", level="WARNING") as logs, \
+        entered = threading.Event()
+
+        def _other_thread():
+            with locks.file_lock(self.env_file):
+                entered.set()
+
+        with mock.patch.object(
+                locks.portalocker.Lock, "acquire",
+                side_effect=portalocker.exceptions.LockException(
+                    portalocker.exceptions.LockException.LOCK_FAILED, "抢锁超时")), \
+                self.assertLogs("yiban.locks", level="WARNING"), \
                 env_lock.env_write_lock(self.env_file):
-            pass
-        self.assertTrue(any("退化为进程内锁" in m for m in logs.output), logs.output)
+            t = threading.Thread(target=_other_thread, daemon=True)
+            t.start()
+            self.assertFalse(entered.wait(0.2),
+                             "另一线程不得在持锁期间进入（进程内 RLock 生效）")
+        t.join(timeout=5)
+        self.assertTrue(entered.is_set(), "释放后另一线程应能进入")
 
-    @unittest.skipUnless(os.name == "posix", "跨进程 fcntl.flock 仅 POSIX 可用；Windows 退化为进程内锁")
+    @unittest.skipUnless(os.name == "posix", "跨进程 flock 仅 POSIX 可用；Windows 退化为进程内锁")
     def test_env_write_lock_cross_process_posix(self):
         """POSIX 跨进程互斥：父进程持锁时子进程不得进入，父进程释放后子进程进入。"""
         import multiprocessing as mp
