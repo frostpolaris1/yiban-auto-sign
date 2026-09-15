@@ -105,7 +105,7 @@ class A2DecryptOutOfLockTest(unittest.TestCase):
                     for a in accts:
                         if not a.get("phone"):
                             errors.append(AssertionError("返回了半成品行（phone 为空）"))
-                except Exception as e:  # noqa: BLE001 — 线程内异常需收集后统一断言
+                except Exception as e:
                     errors.append(e)
 
         threads = [threading.Thread(target=_reader) for _ in range(4)]
@@ -139,9 +139,8 @@ class A2DecryptOutOfLockTest(unittest.TestCase):
     def test_read_accounts_raises_after_retry_fails(self):
         with mock.patch.object(
             db, "decrypt_account_rows", side_effect=RuntimeError("密文真实损坏")
-        ):
-            with self.assertRaises(RuntimeError):
-                db.read_accounts(db.accounts_snapshot)
+        ), self.assertRaises(RuntimeError):
+            db.read_accounts(db.accounts_snapshot)
 
     # ---- 4. 快照（不解密）与解密读口径一致 ----
     def test_snapshot_and_load_accounts_agree_on_order_and_identity(self):

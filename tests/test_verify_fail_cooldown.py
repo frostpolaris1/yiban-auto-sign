@@ -343,6 +343,129 @@ class AdminAddVerifyAuditTest(_WebAppBase):
         self.assertEqual(rows[0]["detail"], "验证未通过（认证失败）")
 
 
+class VerifyConcurrencyGateTest(_WebAppBase):
+    """A4：外呼校验的**全局**并发闸（2026-09-15）。
+
+    上面两条配额分别是「按会话用户」（VERIFY_MAX）与「按手机号」（失败冷却），都覆盖
+    不到"多个账号同时校验"这一维度。实测 8 个并发校验即占满 gunicorn 的 8 个线程 →
+    整站约 15 秒完全无响应（/api/clock 探针在饱和期无响应）。
+    """
+
+    NET_FAIL = "账号验证异常：HTTPSConnectionPool 读超时"  # 网络类失败：不计冷却
+
+    def _saturate(self):
+        """占满全部席位，返回已占数量（调用方负责用 _release 归还）。"""
+        n = 0
+        while self.webapp._verify_sem.acquire(blocking=False):
+            n += 1
+        return n
+
+    def _release(self, n):
+        for _ in range(n):
+            self.webapp._verify_sem.release()
+
+    def test_busy_returns_503_without_consuming_quota(self):
+        """席位满 → 503 + 明确文案 + Retry-After，且**不扣**用户配额。"""
+        token = self._login(EMAIL, USER_PASS)
+        held = self._saturate()
+        try:
+            self.assertGreater(held, 0)
+            r = self._submit(PHONE1, token)
+            self.assertEqual(r.status_code, 503, r.get_data(as_text=True))
+            self.assertEqual(r.get_json()["error"], self.webapp.VERIFY_BUSY_MSG)
+            self.assertEqual(r.headers.get("Retry-After"), "2")
+        finally:
+            self._release(held)
+        # 席位恢复后同一用户应能正常走到验证环节 —— 证明上面的 503 没扣配额
+        with mock.patch.object(self.webapp.signin, "verify_account",
+                               return_value=(True, "ok")):
+            r2 = self._submit(PHONE2, token)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+
+    def test_concurrent_outbound_never_exceeds_max(self):
+        """并发驱动闸门时，同时在跑的外呼条数不得超过 VERIFY_CONCURRENCY_MAX。
+
+        直接驱动 `run_verify_with_gate`（闸门本体）：HTTP 层要多套会话并发，
+        而 `users.sid` 是**每用户一份**的会话标识——同一用户并发登录会互相吊销
+        会话（"新登录踢旧会话"是既定语义），会把断言搅进与闸门无关的噪声里。
+        HTTP 层的 503 / 配额 / 异常三条路径由本类的其余用例覆盖。
+        """
+        import threading as _threading
+        import time as _time
+
+        cur = {"n": 0, "max": 0}
+        lock = _threading.Lock()
+        n_workers = 6
+        gate = _threading.Barrier(n_workers)
+        results = []
+        limits = {}  # 每用户配额表：本用例不触发配额
+
+        def _fake(_clean):
+            with lock:
+                cur["n"] += 1
+                cur["max"] = max(cur["max"], cur["n"])
+            _time.sleep(0.2)
+            with lock:
+                cur["n"] -= 1
+            return self.NET_FAIL
+
+        def _worker():
+            gate.wait(timeout=20)
+            try:
+                self.webapp.run_verify_with_gate({"phone": PHONE1}, EMAIL, limits)
+                results.append("done")
+            except self.webapp.VerifyGateBusy:
+                results.append("busy")
+            except Exception as e:  # 意外异常收集后统一断言
+                results.append(f"err:{type(e).__name__}")
+
+        with mock.patch.object(self.webapp, "_verify_account_clean", side_effect=_fake):
+            ts = [_threading.Thread(target=_worker) for _ in range(n_workers)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join(timeout=30)
+
+        self.assertEqual(len(results), n_workers, f"应有 {n_workers} 个结果，实际 {results}")
+        self.assertLessEqual(
+            cur["max"], self.webapp.VERIFY_CONCURRENCY_MAX,
+            f"同时外呼数不得超过 {self.webapp.VERIFY_CONCURRENCY_MAX}",
+        )
+        self.assertIn("busy", results, "席位满时应立即失败（VerifyGateBusy）而非排队")
+        self.assertNotIn("err:RuntimeError", results)
+        # 席位必须全部归还：再串行跑一轮应全部成功
+        with mock.patch.object(self.webapp, "_verify_account_clean", return_value=None):
+            for _ in range(self.webapp.VERIFY_CONCURRENCY_MAX):
+                self.webapp.run_verify_with_gate({"phone": PHONE1}, EMAIL, limits)
+
+    def test_semaphore_not_leaked_when_quota_exceeded(self):
+        """配额拒绝路径不得漏掉席位。"""
+        token = self._login(EMAIL, USER_PASS)
+        with mock.patch.object(self.webapp.signin, "verify_account",
+                               return_value=(False, self.NET_FAIL)):
+            for i in range(self.webapp.VERIFY_MAX):
+                self.assertEqual(self._submit(f"1380000020{i}", token).status_code, 400)
+            r = self._submit("13800000209", token)
+        self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
+        held = self._saturate()
+        self.assertEqual(held, self.webapp.VERIFY_CONCURRENCY_MAX,
+                         "拒绝路径泄漏了席位")
+        self._release(held)
+
+    def test_semaphore_not_leaked_when_verify_raises(self):
+        """校验异常路径不得漏掉席位。"""
+        token = self._login(EMAIL, USER_PASS)
+        with mock.patch.object(self.webapp.signin, "verify_account",
+                               side_effect=RuntimeError("boom")):
+            r = self._submit(PHONE1, token)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertIn("账号验证异常", r.get_json()["error"])
+        held = self._saturate()
+        self.assertEqual(held, self.webapp.VERIFY_CONCURRENCY_MAX,
+                         "异常路径泄漏了席位")
+        self._release(held)
+
+
 class VerifyCooldownHelpersTest(unittest.TestCase):
     """冷却 helper 纯单元：窗口/冷却边界与合成时间。"""
 
