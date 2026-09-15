@@ -160,7 +160,7 @@ class ZeroSuccessAlertTest(unittest.TestCase):
             "13800000001": (True, "签到成功", False, "success"),
             "13800000002": (False, "签到时段已结束", True, "skipped_window"),
         }
-        with mock.patch.object(signin, "datetime", _EarlyDT):
+        with mock.patch.object(signin.clock, "now", _EarlyDT.now):
             self.assertFalse(signin._maybe_alert_zero_success(
                 accounts, results, ok_n=1, is_second_run=False))
         self.assertFalse(signin._mail_summary)

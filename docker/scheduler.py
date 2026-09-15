@@ -25,6 +25,8 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+from yiban import clock
+
 # .env 解析与子进程环境构造与 run.sh / web 共用口径（提为共享模块）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # signin：补签轮判定与未了结状态码的单一事实源（宿主 run.sh 的进程内补签轮
@@ -93,7 +95,7 @@ def _slot_marker(kind):
     追加一轮必然 skipped_window 的全站负载并覆盖当日已 success 的状态。
     落盘标记使「同一时段二次触发不重跑」跨重启成立；标记不可写时退化为
     既有闩锁语义。按日命名，跨日自动失效。"""
-    return os.path.join(STATEDIR, f"sched-slot-{kind}-{datetime.now():%Y-%m-%d}.json")
+    return os.path.join(STATEDIR, f"sched-slot-{kind}-{clock.now():%Y-%m-%d}.json")
 
 
 def _slot_done(kind):
@@ -109,14 +111,14 @@ def _mark_slot(kind):
     try:
         os.makedirs(STATEDIR, exist_ok=True)
         with open(_slot_marker(kind), "w", encoding="utf-8") as fh:
-            json.dump({"triggered_at": datetime.now().strftime("%H:%M:%S")}, fh)
+            json.dump({"triggered_at": clock.now().strftime("%H:%M:%S")}, fh)
     except OSError:
         pass
 
 
 def _cleanup_logs():
     """删除 365 天前的按天日志（sign-YYYY-MM-DD.log），对齐 scripts/yiban-cleanup.sh。"""
-    cutoff = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    cutoff = (clock.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     if not os.path.isdir(LOGDIR):
         return
     for name in os.listdir(LOGDIR):
@@ -161,10 +163,10 @@ def _child_timeout(env):
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
         end_hhmm = "07:50"
     try:
-        end_dt = datetime.strptime(f"{datetime.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")
+        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")
     except ValueError:
-        end_dt = datetime.strptime(f"{datetime.now():%Y-%m-%d} 07:50", "%Y-%m-%d %H:%M")
-    return max(600, int((end_dt - datetime.now()).total_seconds()) + 300)
+        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} 07:50", "%Y-%m-%d %H:%M")
+    return max(600, int((end_dt - clock.now()).total_seconds()) + 300)
 
 
 def _run_signin_child(extra=None, env=None):
@@ -205,7 +207,7 @@ def main_loop(sleep_seconds=1):
     last_probe_try = None    # datetime | None：上次尝试探针的时刻（周期尝试）
     last_clean = None
     while True:
-        now = datetime.now()
+        now = clock.now()
         today = now.date()
         hm = (now.hour, now.minute)
         # 每次触发前重新解析 .env（2026-08-28 审查 F2）：

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""暂停注册（v0.26.3）+ web 日志落盘（_DailyFlockFileHandler）测试。
+"""暂停注册（v0.26.3）+ web 日志落盘（DailyFlockFileHandler）测试。
 
 覆盖：
 - 注册开关：未配置=允许；YIBAN_REGISTRATION_PAUSE=1 → /api/register 403；
@@ -8,7 +8,7 @@
   普通管理员 403（与 global_pause 同权限口径）；
 - 公开端点：/api/registration_paused 仅暴露布尔；
 - ensure_secret_key：全新部署（.env 不存在）默认写入暂停键；既有部署不写；
-- 日志落盘：create_app 后 root 挂 _DailyFlockFileHandler 且写入 sign-*.log。
+- 日志落盘：create_app 后 root 挂 DailyFlockFileHandler 且写入 sign-*.log。
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
@@ -230,14 +230,14 @@ class RegistrationPauseWebTest(unittest.TestCase):
 
     # ---- 日志落盘（v0.26.3 缺口修复）----
     def test_root_logger_writes_daily_file(self):
-        """create_app 后 root logger 挂 _DailyFlockFileHandler 且 INFO 落入 sign-*.log。"""
+        """create_app 后 root logger 挂 DailyFlockFileHandler 且 INFO 落入 sign-*.log。"""
         import logging
         from datetime import datetime
         c = self.webapp.create_app().test_client()
         c.get("/api/registration_paused")  # 触发一条请求级日志路径
         root = logging.getLogger()
         fh = [h for h in root.handlers
-              if type(h).__name__ == "_DailyFlockFileHandler"]
+              if type(h).__name__ == "DailyFlockFileHandler"]
         self.assertTrue(fh, "create_app 应为 root 挂载按天文件 handler")
         # root 保持 WARNING（防 requests/urllib3/werkzeug 等第三方 INFO
         # 全量落盘且无轮转上限），仅自有组件单独放开 INFO

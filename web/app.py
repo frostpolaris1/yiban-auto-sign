@@ -52,14 +52,19 @@ from flask import (
 from markupsafe import Markup
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from yiban.attempt import jobs as verify_jobs
-
 # 共享模块（web/ 与 scripts/ 同级）：加密模块 + SQLite 数据访问层 + 子进程环境构造
+# **必须排在下面的 yiban.* 导入之前**：yiban 包在仓库根（scripts/ 下的 locks 等又被它
+# 依赖），两者都要先入 sys.path 才能导入。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
-for _p in (_SCRIPTS_DIR, _REPO_ROOT):  # 仓库根在前面的包引导之后仍需可导入 yiban/*
+for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from yiban import clock  # noqa: E402  （须在引导之后导入）
+from yiban.attempt import jobs as verify_jobs  # noqa: E402
+from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
+from yiban.masking import mask_phone as _mask_phone  # noqa: E402
 
 # 合规文档（隐私政策 / 用户协议）渲染：从仓库根目录的 .md 文件读取并转为 HTML，
 # 供注册页弹窗与 /privacy、/terms 独立页共用，避免多份副本漂移。
@@ -438,7 +443,7 @@ def _delete_grace_remaining(deleted_at):
             d = datetime.fromisoformat(str(deleted_at))
         except (ValueError, TypeError):
             return 0
-    remain = (d + timedelta(days=DELETE_GRACE_DAYS)) - datetime.now()
+    remain = (d + timedelta(days=DELETE_GRACE_DAYS)) - clock.now()
     return remain.total_seconds() if remain.total_seconds() > 0 else 0
 
 # 随机延迟默认上限（与 signin.py 一致）
@@ -683,7 +688,7 @@ def load_sign_state(date_str=None):
     覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
     两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
     """
-    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    date_str = date_str or clock.now().strftime("%Y-%m-%d")
     path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
     try:
         # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
@@ -709,51 +714,6 @@ def load_sign_state(date_str=None):
     }
 
 logger = logging.getLogger("web")
-
-
-class _DailyFlockFileHandler(signin._FlockFileHandler):
-    """按天滚动 + 跨进程互斥的 web 日志 handler（v0.26.3）。
-
-    背景：gunicorn 走 create_app() 不执行 main()，此前 root logger 无任何文件
-    handler——INFO 级日志被 Python logging 的 lastResort（仅放行 WARNING+）
-    直接丢弃，WARNING+ 只进 stderr（journald），后台「日志」页与 sign-*.log
-    均不可见。现与 signin 子进程同口径写入按天文件 sign-YYYY-MM-DD.log：
-    - 继承 signin 的 flock 版 FileHandler：与 cron 子进程（run.sh / run_probe.sh
-      /探针）并发写同一文件时行不交错（Windows 无 fcntl 自动退化，同 signin）；
-    - emit 时按当前日期切换目标文件（常驻进程跨天自动滚动，与 signin「按天分
-      文件」口径一致）；rollover 后先重开文件再交父类 emit，保证 flock 覆盖
-      本次写入（否则首条日志逃过跨进程互斥）。
-    """
-
-    def __init__(self, log_dir):
-        self._log_dir = log_dir
-        self._day = datetime.now().strftime("%Y-%m-%d")
-        super().__init__(
-            os.path.join(log_dir, f"sign-{self._day}.log"), encoding="utf-8"
-        )
-
-    def emit(self, record):
-        # 滚动分支（close/baseFilename 更新/_open）整体 try 兜底——
-        # 跨天滚动 + 日志目录故障（如目录被删）时，FileNotFoundError 不得传播到
-        # 业务请求线程引发 500；失败仅 handleError（降级不阻断业务），且 _day/
-        # stream 状态保证下一条日志仍会重试 _open（stream 置 None → 重新打开）。
-        try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            if today != self._day:
-                self._day = today
-                self.close()  # 关闭旧日期文件句柄
-                # 换目标文件：FileHandler 在 stream 为 None 时按 baseFilename 惰性重开
-                self.baseFilename = os.path.abspath(
-                    os.path.join(self._log_dir, f"sign-{today}.log")
-                )
-                self.stream = None
-            if self.stream is None:
-                # 先打开再交给父类 emit：父类的 flock 依赖已打开的 stream
-                self._open()
-        except Exception:
-            self.handleError(record)
-            return
-        super().emit(record)
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +782,7 @@ def log_path_for(date_str=None):
     2026-08-16 日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
     run.sh / signin.py / 手动签到子进程均写入当天文件（保留 LOG_FILE 配置的目录）。
     """
-    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    date_str = date_str or clock.now().strftime("%Y-%m-%d")
     return os.path.join(os.path.dirname(LOG_FILE), f"sign-{date_str}.log")
 
 
@@ -861,7 +821,7 @@ def _today_has_logs():
     回到今天显示昨天）。按天文件体积有限，整读开销可忽略；判定口径与
     _log_lines_for 一致（logger=yiban 且非 DEBUG）。
     """
-    return bool(_log_lines_for(datetime.now().strftime("%Y-%m-%d")))
+    return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d")))
 
 
 def _most_recent_log_date(max_days=30):
@@ -869,7 +829,7 @@ def _most_recent_log_date(max_days=30):
 
     每次先检查今天（开销小，今天有新日志立即生效）；无日志时用历史缓存（每天只扫一次）。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = clock.now().strftime("%Y-%m-%d")
     # 今天有日志 → 直接返回今天（并更新缓存）
     if _today_has_logs():
         _most_recent_log_cache["history_date"] = today
@@ -879,7 +839,7 @@ def _most_recent_log_date(max_days=30):
         _most_recent_log_cache["checked_day"] = today
         _most_recent_log_cache["history_date"] = None
         for i in range(1, max_days + 1):
-            d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            d = (clock.now() - timedelta(days=i)).strftime("%Y-%m-%d")
             # 整读判定（与 _today_has_logs 同口径）：尾部被其他 logger 刷屏时
             # 同样会漏判，统一用 _log_lines_for 保证正确性（按天文件体积有限）
             if _log_lines_for(d):
@@ -1391,7 +1351,7 @@ def _log_manual_sign_exit(phone_label, returncode):
         return
     try:
         with open(log_path_for(), "a", encoding="utf-8") as fh:
-            fh.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] "
+            fh.write(f"[{clock.now():%Y-%m-%d %H:%M:%S}] "
                      f"[{phone_label}] ⚠️ 手动签到未完成: {reason}\n")
     except OSError:
         logger.warning("手动签到退出码留痕失败: %s (returncode=%s)", phone_label, returncode)
@@ -1444,14 +1404,6 @@ def load_users():
     """全部用户（SQLite）。"""
     with _file_lock:
         return db.load_users()
-
-
-def _mask_phone(p):
-    """日志/列表脱敏：11 位手机号 → 138****8000；已脱敏（含 *）或非 11 位原样返回（幂等）。"""
-    p = str(p)
-    if "*" in p:
-        return p
-    return p[:3] + "****" + p[7:] if len(p) == 11 else p
 
 
 def _mask_log_phones(line):
@@ -1775,8 +1727,7 @@ def _verify_queue_full():
     return db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING
 
 
-# 校验任务实现收在 yiban/attempt/jobs.py（调度核心行为）；这里注入宿主侧依赖，
-# 用 lambda 延迟解析，故测试替换下面这些实现后仍然生效。
+# 校验任务实现收在 yiban/attempt/jobs.py；注入宿主侧依赖（lambda 延迟解析，故测试可替换）。
 verify_jobs.configure(
     seat=_verify_sem,
     verify_one=lambda clean: _verify_account_clean(clean),
@@ -1875,7 +1826,7 @@ def verify_admin(username, password):
                 "主管理员凭据歧义告警",
                 f".env 中 YIBAN_ADMIN_PASSWORD_HASH 未确认为恰好一行"
                 f"（统计得 {dup} 行，0 = 读取失败），主管理员登录已被拒绝。\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 "该状态要么是配置错误，要么是配置注入提权：\n"
                 "请立即核对 .env 内容与文件属主，只保留唯一一行，并排查近期登录与改密记录。",
                 urgent=True,
@@ -1916,7 +1867,7 @@ def sign_status(now=None):
     返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
     文案不含 emoji（UI 图标统一走前端 SVG 图标系统）。
     """
-    now = now or datetime.now()
+    now = now or clock.now()
     if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
         # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
         return "今日无需打卡（周日）", "#a1a1aa"
@@ -2049,7 +2000,7 @@ def _exhaustion_notice_mail(kinds):
         f"当日后续同类告警不再推手机，请改查管理员告警邮件（邮件通道不受影响）。\n"
         f"如需调整请在 .env 修改 YIBAN_NOTIFY_DAILY_MAX / YIBAN_NOTIFY_URGENT_DAILY_MAX"
         f"（0=不限），或关闭「仅推送重要告警」。\n"
-        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     logger.warning("手机推送%s，已补发告知邮件", "、".join(parts))
     recipients = _alert_mail_recipients()
@@ -2428,7 +2379,7 @@ def _send_channel_health_report(force=False):
     仍会写入标记——人工补发同样算当日那一封。
     发信抛异常时异常原样上抛（调用方记日志），且**不落**去重标记：当日稍后仍可重试。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = clock.now().strftime("%Y-%m-%d")
     if not force and _health_report_sent_today(today):
         logger.info("告警通道健康日报今日已播报（标记 %s），本次跳过", _HEALTH_REPORT_META_KEY)
         return False
@@ -2463,7 +2414,7 @@ def _send_channel_health_report(force=False):
     body = (
         "告警通道每日健康报告（两条通道状态、今日额度与审计链锚点）：\n"
         + "\n".join(lines)
-        + f"\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        + f"\n时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     # 降级口径：健康日不占紧急额度——例行日报若每天都吃掉一格紧急预算，反而会把真正
     # 的紧急告警挤出预算（那正是本次修复要治的"该响的不响"）。判据是两条出口是否都活着
@@ -2484,7 +2435,7 @@ def _send_channel_health_report(force=False):
     # 只是失败那一次不占名额：当日稍后（进程重启后的下一轮、或人工 force 补发）还能重试。
     # 不为此另起第三套状态存储——仍用同一个 app_meta 键，只是写入时机后移。
     db.set_meta(_HEALTH_REPORT_META_KEY, json.dumps(
-        {"date": today, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        {"date": today, "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
          "degraded": degraded, "channels": len(lines),
          "summary": facts}, ensure_ascii=False))
     return True
@@ -2622,7 +2573,7 @@ def _notify_capacity_once(kind, limit, label):
 # + 密钥轮换强制参数生效 + 总览成功率数字着色与空态字号修复（v0.4.1）
 APP_VERSION = "0.4.1"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
-WEB_VERSION = datetime.now().strftime("%Y%m%d%H%M%S")
+WEB_VERSION = clock.now().strftime("%Y%m%d%H%M%S")
 
 
 def _is_loopback_host(host):
@@ -2664,7 +2615,7 @@ def _report_env_key_collisions(env_path):
         "成因: 值内藏行分隔符（U+2028 等，任何一次读-改-写都会实体化成新配置行）"
         "或同名键多行（含带空格 `KEY = v` 写法），解析器按后写覆盖先写取值，"
         "生效值不可信。\n"
-        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         "请备份后手工编辑 .env，把列出的每个键清理为唯一一行；本检测不会自动改写文件。",
         urgent=True,
     )
@@ -2822,7 +2773,7 @@ def create_app(host=None):
     _root_logger = logging.getLogger()
     _existing_fh = [
         _h for _h in _root_logger.handlers
-        if isinstance(_h, _DailyFlockFileHandler)
+        if isinstance(_h, DailyFlockFileHandler)
     ]
     if _existing_fh and _existing_fh[0]._log_dir != _log_dir:
         _root_logger.removeHandler(_existing_fh[0])
@@ -2831,7 +2782,7 @@ def create_app(host=None):
         _existing_fh = []
     if not _existing_fh:
         try:
-            _daily_fh = _DailyFlockFileHandler(_log_dir)
+            _daily_fh = DailyFlockFileHandler(_log_dir)
         except OSError:
             # 日志目录不可写时构造失败不得阻断 web 启动——仅告警降级
             # （与上文注释"降级路径"口径一致：emit 失败不阻断业务，这里连挂载都失败）
@@ -3641,7 +3592,7 @@ def create_app(host=None):
                 f"IP {_nl_safe(ip)} 连续 {fails} 次登录失败"
                 f"（尝试用户名: {_nl_safe(username)}）\n"
                 f"该 IP 本窗口内尝试过 {distinct_users} 个不同用户名\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"如非本人操作，请检查是否有人尝试暴力破解",
                 urgent=distinct_users >= LOGIN_SPRAY_USERS,
                 # 独立账本 YIBAN_LOGINFAIL_DAILY_MAX（默认 3，0=不限）——
@@ -3738,7 +3689,7 @@ def create_app(host=None):
                     email,
                     generate_password_hash(password, method=SCRYPT_METHOD),
                     role="user",
-                    created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    created_at=clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                     pw_version=1,  # 密码版本：改密时递增，旧会话随之失效
                 )
             except sqlite3.IntegrityError:
@@ -3833,7 +3784,7 @@ def create_app(host=None):
                     "改密失败告警",
                     f"IP {_nl_safe(ip)} 连续 {nfails} 次修改密码失败"
                     f"（用户名: {_nl_safe(username)}）\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"如非本人操作，请检查是否有人尝试暴力破解",
                 )
             return jsonify({"error": "当前密码不正确"}), 400
@@ -3872,7 +3823,7 @@ def create_app(host=None):
             send_notification(
                 "账号安全事件告警",
                 f"内置主管理员（{_mask_email(username) if username else 'builtin-admin'}）"
-                f"密码已通过自助改密修改，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}。\n"
+                f"密码已通过自助改密修改，时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}。\n"
                 "如非本人操作，请立即按 README「主管理员权限追回」流程处理"
                 "（SSH 重写 YIBAN_ADMIN_PASSWORD + PW_VERSION 递增）。",
                 urgent=True,
@@ -3907,13 +3858,13 @@ def create_app(host=None):
                     username,
                     "【易班签到】您的账号密码已被修改",
                     "您的账号密码刚刚通过自助改密被修改。\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     "如非本人操作，请立即联系管理员重置密码并检查账号安全。",
                 )
                 send_notification(
                     "账号安全事件告警",
                     f"用户 {_mask_email(username)} 自助修改密码，"
-                    f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 )
                 logger.info("用户 %s 已修改自己的密码", _mask_email(username))
                 return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
@@ -3947,7 +3898,7 @@ def create_app(host=None):
         now = time.time()
         # 防批量冷却：计数基于 user_delete_requests 表（kind=delete，v7 分流：
         # 恢复记录不占注销冷却，允许"恢复后立即再注销"）
-        since_ts = (datetime.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
+        since_ts = (clock.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         if (
@@ -3990,7 +3941,7 @@ def create_app(host=None):
                     "注销密码失败告警",
                     f"IP {_nl_safe(ip)} 连续 {nfails} 次注销密码验证失败"
                     f"（用户名: {_nl_safe(username)}）\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"如非本人操作，请检查是否有人尝试注销该账号",
                 )
             return jsonify({"error": "当前密码不正确"}), 400
@@ -4043,7 +3994,7 @@ def create_app(host=None):
             return jsonify({"error": "邮箱和密码为必填项"}), 400
         # 防批量冷却（与注销同一张计数表，但按 kind 分流——v7 修复：
         # 注销动作自身的记录不再阻断 60s 内的恢复请求，"注销后立即反悔"路径畅通）
-        since_ts = (datetime.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
+        since_ts = (clock.now() - timedelta(seconds=DELETE_COOLDOWN_SEC)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         if (
@@ -4109,7 +4060,7 @@ def create_app(host=None):
                     "恢复密码失败告警",
                     f"IP {_nl_safe(ip)} 连续 {nfails} 次恢复密码验证失败"
                     f"（邮箱: {_nl_safe(email)}）\n"
-                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"如非本人操作，请检查是否有人尝试冒充恢复已注销账号",
                 )
             # 统一文案（2026-08-17 安全审查）：不区分"账号不存在/已过期"与"密码错误"，
@@ -4231,7 +4182,7 @@ def create_app(host=None):
                 email,
                 "【易班签到】签到失败邮件通知已被关闭",
                 "您的签到失败邮件通知已被关闭（本人操作确认）。\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 "如非本人操作，请立即联系管理员（账号可能已被他人控制）。",
             )
         return jsonify({"ok": True, "mail_notify": enabled})
@@ -4427,7 +4378,7 @@ def create_app(host=None):
                 "邮件配置变更告警",
                 f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
                 f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
                 force=True,
             )
@@ -4437,7 +4388,7 @@ def create_app(host=None):
                 "邮件 SMTP 配置变更告警",
                 f"邮件 SMTP 配置已变更: 发信 SMTP 条目 {len(smtps_list)} 条，"
                 f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
                 force=True,
             )
@@ -4451,7 +4402,7 @@ def create_app(host=None):
                     "邮件告警收件人变更告警",
                     f"告警收件人已变更: 新收件人 {shown}，"
                     f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                    f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                     urgent=True,
                     force=True,
                 )
@@ -4463,7 +4414,7 @@ def create_app(host=None):
                         "邮件告警收件人变更告警",
                         f"你已不再是本系统的告警邮件收件人。\n"
                         f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                        f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                         f"如非本人操作，请立即检查管理后台。",
                         to=",".join(stale),
                     )
@@ -4612,7 +4563,7 @@ def create_app(host=None):
             "消息推送配置变更告警",
             f"消息推送配置已变更: {_notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric)}，"
             f"操作者 {_nl_safe(session.get('username', '?'))}，"
-            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
             urgent=True,
             force=True,
         )
@@ -4830,7 +4781,7 @@ def create_app(host=None):
                     try:
                         created = db.create_user(
                             email, initial_hash, "user",
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
+                            clock.now().strftime("%Y-%m-%d %H:%M:%S"), 1,
                         )
                     except sqlite3.IntegrityError:
                         return jsonify({"error": "该邮箱已注册"}), 400  # 并发注册兜底
@@ -5109,7 +5060,7 @@ def create_app(host=None):
                 elif action == "delete" and not acc.get("deleted"):
                     # 软删除：进入待删除列表（保留期内可恢复），与单个删除一致
                     ops.append(
-                        ("set_deleted", acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                        ("set_deleted", acc["id"], 1, clock.now().strftime("%Y-%m-%d %H:%M:%S"))
                     )
                     soft_delete_targets.append(_mask_phone(str(acc.get("phone", ""))))
                 batch_targets.append(acc.get("phone", ""))
@@ -5124,7 +5075,7 @@ def create_app(host=None):
                             f"批量彻底删除账号 ×{len(purge_targets)}: "
                             f"{', '.join(purge_targets[:20])}，"
                             f"操作者 {session.get('username', '?')}，时间 "
-                            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                            f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                             urgent=True,
                         )
                 except db.DuplicateOwnerError:
@@ -5156,7 +5107,7 @@ def create_app(host=None):
                             "您提交的易班账号未通过管理员审核。\n"
                             f"理由: {reason}\n"
                             "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
-                            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
                         ),
                     )
             db.audit(
@@ -5181,7 +5132,7 @@ def create_app(host=None):
                     f"批量删除账号（软删）×{len(soft_delete_targets)}: "
                     f"{', '.join(soft_delete_targets[:20])}，"
                     f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}，"
                     f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
                     urgent=True,
                 )
@@ -5223,7 +5174,7 @@ def create_app(host=None):
             if _stale_idx_guard(acc, _json_body()):
                 return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             db.set_account_deleted(
-                acc["id"], 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                acc["id"], 1, clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 deleted_by="admin",
             )
             db.audit(
@@ -5238,7 +5189,7 @@ def create_app(host=None):
                 "高危管理操作告警",
                 f"删除账号（软删）: {_mask_phone(str(acc.get('phone', '')))}，"
                 f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}，"
+                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}，"
                 f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
                 urgent=True,
             )
@@ -5328,7 +5279,7 @@ def create_app(host=None):
                 "高危管理操作告警",
                 f"彻底删除账号: {_mask_phone(str(acc.get('phone', '')))}，"
                 f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
             )
             accounts = load_accounts()
@@ -5402,7 +5353,7 @@ def create_app(host=None):
                             + (reason if reason else "管理员未填写，可联系管理员了解详情")
                             + "\n"
                             "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
-                            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
                         ),
                     )
                 logger.info(
@@ -5510,7 +5461,7 @@ def create_app(host=None):
             if st_status not in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK):
                 running += 1
         # 今日前缀：账号卡片「最近签到记录」只显示今天的日志（日志文件跨多天时避免混入历史）
-        today_prefix = f"[{datetime.now().strftime('%Y-%m-%d')} "
+        today_prefix = f"[{clock.now().strftime('%Y-%m-%d')} "
         result = []
         for i, real_idx in enumerate(indices):
             acc = accounts[real_idx]
@@ -5714,7 +5665,7 @@ def create_app(host=None):
             # 时长可配（YIBAN_TIME_PREF_COOLDOWN_SEC 基础值，默认 30；0=关闭）
             base_cd = load_env_int(ENV_FILE, "YIBAN_TIME_PREF_COOLDOWN_SEC", TIME_PREF_COOLDOWN_SEC)
             if base_cd > 0:
-                now_ts = datetime.now()
+                now_ts = clock.now()
                 since = (now_ts - timedelta(seconds=TIME_PREF_COOLDOWN_WINDOW)
                          ).strftime("%Y-%m-%d %H:%M:%S")
                 count = db.time_pref_set_count_since(phone, since)
@@ -5747,13 +5698,13 @@ def create_app(host=None):
             full_notice = "，该时段已选满，将就近安排到附近时段" if (cap > 0 and count >= cap) else ""
             # updated_at 带微秒（M2 对抗性审查）：同秒保存的"先到先得"可区分先后，
             # 不再退化为按 phone 顺序的不可预期平局（字典序定宽，旧秒级数据兼容为更早）
-            db.set_time_pref(phone, slot, datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
+            db.set_time_pref(phone, slot, clock.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
             db.audit(session.get("username", "?"), "time_pref_set", db.hash_phone(phone), _slot_to_label(slot))
             # 生效分界（2026-08-15 用户反馈：卡点缓冲）：
             # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
             # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
             # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
-            now = datetime.now()
+            now = clock.now()
             boundary = None
             try:
                 snap_path = os.path.join(STATE_DIR, f"sched-snapshot-{now.strftime('%Y-%m-%d')}.json")
@@ -5898,7 +5849,7 @@ def create_app(host=None):
                     "新账号申请待审核",
                     f"用户 {_nl_safe(str(clean['owner']))} 提交易班账号 "
                     f"{_mask_phone(clean['phone'])}，请在管理台「待审核」列表中处理。"
-                    f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 )
             except Exception as e:
                 logger.warning("新申请待审核通知发送失败（不影响提交结果）: %s", e)
@@ -6112,7 +6063,7 @@ def create_app(host=None):
             db.set_account_deleted(
                 removed["id"],
                 1,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 deleted_by=(session.get("username", "") or "").strip().lower(),
             )
             db.audit(
@@ -6132,7 +6083,7 @@ def create_app(host=None):
                 "【易班签到】您的易班账号已删除（7 天内可撤销）",
                 f"您的易班账号（{_mask_phone(removed.get('phone', ''))}）已被删除，"
                 "进入 7 天宽限期。\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 "宽限期内可在「我的账号」页自行撤销恢复；如非本人操作，"
                 "请立即联系管理员。",
             )
@@ -6213,7 +6164,7 @@ def create_app(host=None):
                 if base_cd > 0:
                     # 弹性冷却：60s 窗口内前 PAUSE_COOLDOWN_FREE 次完全自由，
                     # 超出后冷却 = 基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX。
-                    now_ts = datetime.now()
+                    now_ts = clock.now()
                     since = (now_ts - timedelta(seconds=PAUSE_COOLDOWN_WINDOW)
                              ).strftime("%Y-%m-%d %H:%M:%S")
                     pause_count = db.pause_count_since(
@@ -6349,7 +6300,7 @@ def create_app(host=None):
                 "高危操作二次鉴权失败告警",
                 f"IP {_nl_safe(ip)} 对「{action_label}」连续 {nfails} 次口令验证失败"
                 f"（会话用户: {_nl_safe(username)}）\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 "如非本人操作，可能是账号或会话被他人使用，请立即检查。",
                 urgent=True,
             )
@@ -6543,7 +6494,7 @@ def create_app(host=None):
                 f"物理清除已注销用户 ×{len(purged)}: "
                 f"{', '.join(_mask_email(e) for e in purged[:20])}，"
                 f"操作者 {session.get('username', '?')}，时间 "
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
             )
         return jsonify({
@@ -6669,7 +6620,7 @@ def create_app(host=None):
                         f"批量删除用户 ×{done}: "
                         f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
                         f"操作者 {session.get('username', '?')}，时间 "
-                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         urgent=True,
                     )
                 # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）
@@ -6683,7 +6634,7 @@ def create_app(host=None):
                         f"批量重置密码 ×{done}: "
                         f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
                         f"操作者 {session.get('username', '?')}，时间 "
-                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         urgent=True,
                     )
             db.audit(
@@ -6775,7 +6726,7 @@ def create_app(host=None):
             send_notification(
                 "权限变更告警",
                 f"用户 {_mask_email(email)} 角色 → {new_role}，"
-                f"操作者 {username}，时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"操作者 {username}，时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
             )
             # 成功 msg 出站即脱敏（与日志/告警口径一致），完整邮箱不回显
@@ -6834,7 +6785,7 @@ def create_app(host=None):
                 "密码重置告警",
                 f"用户 {_mask_email(email)} 的密码已被管理员重置，"
                 f"操作者 {session.get('username', '?')}，"
-                f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 urgent=True,
             )
             return jsonify({"ok": True, "msg": f"{_mask_email(email)} 密码已重置"})
@@ -6899,7 +6850,7 @@ def create_app(host=None):
                     "高危管理操作告警",
                     f"完全删除用户 {_mask_email(email)} 及其全部易班账号，"
                     f"操作者 {session.get('username', '?')}，时间 "
-                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                     urgent=True,
                 )
                 return jsonify({"ok": True, "msg": f"{_mask_email(email)} 已完全删除"})
@@ -7304,7 +7255,7 @@ def create_app(host=None):
                 "q": q,
                 "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
                 "date": date,
-                "is_today": date == datetime.now().strftime("%Y-%m-%d"),
+                "is_today": date == clock.now().strftime("%Y-%m-%d"),
                 "probe_events": probe_events,
                 "sign_events": sign_events,
                 # 三块各自的「最近有数据日期」（空态一键跳转用；当前日期即最近时为空串）
@@ -7354,7 +7305,7 @@ def create_app(host=None):
         if phone:
             events = [_mask(ev) for ev in db.sign_events_by_phone(phone, days=days)][:limit]
         else:
-            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            cutoff = (clock.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
             events = [_mask(ev) for ev in db.sign_events_since(cutoff, limit=limit)]
         if stage:
             # 事件流本身不带 stage 过滤（sign_events_since 无该参数），故在此收口；
@@ -7827,7 +7778,7 @@ def create_app(host=None):
             f"全局公告已{'更新' if text else '清空'}，"
             f"操作者 {session.get('username', '?')}，"
             f"内容: {text[:80] or '（空）'}，"
-            f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
         )
         return jsonify({"ok": True, "msg": "公告已更新" if text else "公告已清除"})
 
@@ -7842,13 +7793,13 @@ def create_app(host=None):
     def api_clock():
         text, color = sign_status()
         try:
-            tz_offset_min = int(datetime.now().astimezone().utcoffset().total_seconds() // 60)
+            tz_offset_min = int(clock.now().astimezone().utcoffset().total_seconds() // 60)
         except Exception:
             tz_offset_min = 0
         return jsonify(
             {
                 "ok": True,
-                "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "now": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "server_ts": int(time.time()),  # 服务器 epoch 秒，供前端平滑走秒与校准
                 "tz_offset_min": tz_offset_min,  # 服务器本地时区相对 UTC 的分钟偏移
                 "sign_status": text,
@@ -7978,7 +7929,7 @@ def main():
     DB_FILE = args.db
     STATE_DIR = STATE_DIR_DEFAULT
 
-    # 日志 handler 统一由 create_app 配置（_DailyFlockFileHandler → 按天文件）；
+    # 日志 handler 统一由 create_app 配置（DailyFlockFileHandler → 按天文件）；
     # 此处不再 basicConfig(stderr)——双重 handler 会把每条日志写两遍。
     # 原实现先 create_app 一次、查完管理员配置后再 create_app
     # 一次——第二次调用重复执行口令迁移 / init_db / 日志 handler 幂等装配等全部

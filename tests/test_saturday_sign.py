@@ -68,7 +68,7 @@ def _run_main(now_dt, const_override=None, argv=None):
         sys.argv = ["signin.py"] + (argv or [])
         _FakeDT._now = now_dt
         patchers = [
-            mock.patch.object(signin, "datetime", _FakeDT),
+            mock.patch.object(signin.clock, "now", _FakeDT.now),
             mock.patch.object(signin, "load_accounts",
                               return_value=[mock.Mock(phone="13800000000", user_paused=False)]),
             mock.patch.object(signin, "run_queue_retry",

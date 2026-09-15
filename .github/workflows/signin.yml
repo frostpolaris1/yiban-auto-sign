@@ -75,6 +75,9 @@ jobs:
 
       - name: Run sign-in script
         env:
+          # runner 是 UTC 主机：程序内已统一按北京时间判定窗口与日期（yiban/clock.py），
+          # 这里再显式注入 TZ 作双保险，顺带让日志与依赖工具链的本地时间同口径。
+          TZ: Asia/Shanghai
           YIBAN_ACCOUNTS: ${{ secrets.YIBAN_ACCOUNTS }}
           YIBAN_PHONE: ${{ secrets.YIBAN_PHONE }}
           YIBAN_PASSWORD: ${{ secrets.YIBAN_PASSWORD }}

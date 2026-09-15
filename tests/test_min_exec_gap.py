@@ -39,7 +39,7 @@ class MinExecGapTest(unittest.TestCase):
         accs = [signin.Account(phone=p, password="p") for p in schedule]
         sleeps = []
         try:
-            with mock.patch.object(signin, "datetime", FakeNow), \
+            with mock.patch.object(signin.clock, "now", FakeNow.now), \
                  mock.patch.object(signin, "attempt_signin",
                                    return_value=(True, "ok", False, signin.STATUS_SUCCESS)) as attempt, \
                  mock.patch.object(signin, "_write_sign_state"), \

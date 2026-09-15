@@ -55,7 +55,7 @@ class SecondRunFilterTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="yiban-second-run-")
         fixed = type("_FixedDT", (_FakeDT,),
                      {"_date": self._FAKE_DT[:3], "_hm": self._FAKE_DT[3:]})
-        p = mock.patch.object(signin, "datetime", fixed)
+        p = mock.patch.object(signin.clock, "now", fixed.now)
         p.start()
         self.addCleanup(p.stop)
         self._old_env = {
@@ -193,7 +193,7 @@ class ProbeGateTest(unittest.TestCase):
         """周六签到关闭 + 周六：探针同样跳过（与真实签到同一组门）。"""
         os.environ.pop("YIBAN_GLOBAL_PAUSE", None)
         fake = type("_SatDT", (_FakeDT,), {"_date": (2026, 9, 5), "_hm": (10, 0)})
-        with mock.patch.object(signin, "datetime", fake), \
+        with mock.patch.object(signin.clock, "now", fake.now), \
              mock.patch.object(signin, "SATURDAY_SIGN", False), \
              mock.patch.object(signin, "SUNDAY_SIGN", False):
             code, m_probe = self._run_probe_main()
@@ -356,7 +356,7 @@ class LateFirstRunAlertTest(unittest.TestCase):
 
     def _alert(self, hm):
         fake = type("_DT", (_FakeDT,), {"_hm": hm})
-        with mock.patch.object(signin, "datetime", fake):
+        with mock.patch.object(signin.clock, "now", fake.now):
             return signin._maybe_alert_zero_success(
                 self.accounts, self.results, ok_n=1, is_second_run=False)
 

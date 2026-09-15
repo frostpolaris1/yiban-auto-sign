@@ -38,11 +38,10 @@ from base64 import b64decode, b64encode
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit
 
-# 包导入引导：`yiban/` 在仓库根，而直接运行本脚本时 sys.path[0] 是 scripts/。
-# 这是**过渡机制**——M3 起本脚本转为兼容壳、由 CLI 入口（`python -m yiban.cli`）调用，
-# 届时本引导随"清 sys.path 注入"一并移除。
+# 包导入引导：`yiban/` 在仓库根，而直接运行本脚本时 sys.path[0] 是 scripts/。这是
+# **过渡机制**——M3 起转为兼容壳（`python -m yiban.cli`），届时随"清 sys.path 注入"移除。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -59,7 +58,12 @@ from Crypto.Cipher import PKCS1_v1_5  # noqa: E402
 from Crypto.PublicKey import RSA  # noqa: E402
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar  # noqa: E402
 
-from yiban import status as yiban_status  # noqa: E402  （须在引导之后导入）
+from yiban import clock  # noqa: E402  （须在引导之后导入）
+from yiban import status as yiban_status  # noqa: E402
+from yiban.logging_ext import FlockFileHandler  # noqa: E402
+from yiban.masking import mask_phone as _mask_phone  # noqa: E402
+from yiban.masking import sanitize_text as _sanitize_text  # noqa: E402
+from yiban.masking import sanitize_url as _sanitize_url  # noqa: E402
 
 # 密码学安全随机数生成器（用于定位生成等安全敏感场景）
 _secure_random = secrets.SystemRandom()
@@ -74,21 +78,6 @@ try:
     import fcntl  # Unix/Linux 文件锁；Windows 不支持
 except ImportError:
     fcntl = None
-
-
-class _FlockFileHandler(logging.FileHandler):
-    """带文件锁的日志处理器：防止多进程并发写入同一日志文件时行交错。
-
-    锁经 `locks.file_lock` 统一（POSIX flock / Windows msvcrt）——原先 Windows 直接
-    退化为无锁且无任何提示。
-    """
-
-    def emit(self, record):
-        try:
-            with locks.file_lock(self.baseFilename):
-                super().emit(record)
-        except Exception:
-            self.handleError(record)
 
 
 @contextmanager
@@ -171,7 +160,7 @@ def _acquire_run_lock(only_mode):
 
 # 按天日志文件路径（与 web/app.py log_path_for 一致）
 def _signin_log_path():
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = clock.now().strftime("%Y-%m-%d")
     log_file = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
     return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
 
@@ -181,7 +170,7 @@ def _make_log_handler():
     path = _signin_log_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        return _FlockFileHandler(path, encoding="utf-8")
+        return FlockFileHandler(path, encoding="utf-8")
     except OSError:
         # 目录不可写/不存在：降级到 stderr（保持原始行为，签到不因日志中断）
         return logging.StreamHandler()
@@ -189,7 +178,7 @@ def _make_log_handler():
 
 # CLI 日志装配幂等标记。原实现把 handler 装配放在模块导入期
 # （logging.basicConfig(handlers=[_handler])）——web/app.py 导入 signin 时即向 root
-# 挂 _FlockFileHandler，create_app 随后再挂 _DailyFlockFileHandler（其去重守卫只认
+# 挂 FlockFileHandler，create_app 随后再挂 DailyFlockFileHandler（其去重守卫只认
 # 自身类），root 上出现两个指向同一日志目录的 FileHandler，每条日志写两遍。
 _cli_logging_ready = False
 
@@ -269,6 +258,8 @@ class Account:
     name: str = ""  # 自定义名称（未填写时显示为"账号N"）
     user_paused: bool = False  # 用户自暂停签到（调度 v2；db.load_accounts 透传）
     owner: str = ""  # 账号归属用户邮箱（B 线：签到失败时向 owner 发提醒邮件；JSON/legacy 来源为空）
+    # 库内账号行 id（db 来源才有，JSON/环境变量来源为 0）：运行期复核账号是否仍有效用
+    account_id: int = 0
 
     @property
     def has_device_info(self):
@@ -707,65 +698,6 @@ def clear_session_cache_quiet(phone):
         logger.debug(f"[{phone}] 清除会话缓存失败: {_sanitize_text(e)}")
 
 
-def _sanitize_text(text):
-    """服务端可控内容进入错误消息/日志/通知前转义换行与回车，防止日志与通知注入。"""
-    s = str(text).replace("\r", "\\r").replace("\n", "\\n")
-    # 脱敏：异常消息可能含 Account dataclass repr（含明文密码/令牌）
-    # 整体替换 Account(...) 对象（正则处理引号转义边界），并兜底替换 password/phone_code 字段
-    s = re.sub(r"Account\([^)]*\)", "Account(***)", s)
-    s = re.sub(r"password\s*=\s*['\"][^'\"]*['\"]", "password='***'", s)
-    s = re.sub(r"phone_code\s*=\s*['\"][^'\"]*['\"]", "phone_code='***'", s)
-    # dict/repr 形态兜底（C-SIGN-03）：'phone_code': 'xxx' / "password": "xxx"——
-    # kwarg 形态正则覆盖不到 dict repr（如 vars()/json.dumps 调试输出进异常链）
-    s = re.sub(r"(['\"])password\1\s*:\s*['\"][^'\"]*['\"]", r"\1password\1: '***'", s)
-    s = re.sub(r"(['\"])phone_code\1\s*:\s*['\"][^'\"]*['\"]", r"\1phone_code\1: '***'", s)
-    return s
-
-
-def _mask_phone(phone):
-    """通知/对外输出脱敏：11 位手机号 → 138****8000（本地 sign.log 保留完整号供排查；
-    对外 webhook 与 web 展示层不落完整号——规范审查 D2）。"""
-    p = str(phone)
-    return p[:3] + "****" + p[7:] if len(p) == 11 else p
-
-
-# URL query 敏感参数名片段（子串、不区分大小写匹配）：OAuth code/token、CSRF/session
-# 标识、签名票据类——最终 URL 进诊断日志前值统一打码（C-SIGN-01）
-_URL_SENSITIVE_KEY_PARTS = (
-    "code", "token", "csrf", "session", "ticket", "sign",
-    "auth", "key", "secret", "passwd", "password", "verify",
-)
-
-
-def _sanitize_url(url):
-    """URL 入日志前对 query 敏感参数脱敏（C-SIGN-01）。
-
-    诊断日志需要的是 scheme/host/path 与"带了哪些参数"，不是参数值：可能携带
-    凭据的（OAuth code、CSRF、session 标识等）一律替换为 ***；≥24 位连续
-    URL-safe 字符的高熵值无论参数名一律打码，兜底未知令牌参数名（阈值取 24：
-    真实 code/token 通常远长于此，避免误伤 client_id 这类恰好 16 位的公开标识）。
-    解析失败返回占位符，绝不抛异常影响主流程。
-    """
-    raw = str(url)
-    try:
-        parts = urlsplit(raw)
-        pairs = parse_qsl(parts.query, keep_blank_values=True)
-    except ValueError:
-        return "<url 解析失败已省略>"
-    if not pairs:
-        return raw
-
-    def _masked(key, value):
-        k = key.lower()
-        if any(part in k for part in _URL_SENSITIVE_KEY_PARTS):
-            return f"{key}=***"
-        if len(value) >= 24 and re.fullmatch(r"[A-Za-z0-9_\-]+", value):
-            return f"{key}=***"
-        return f"{key}={value}"
-
-    return urlunsplit(parts._replace(query="&".join(_masked(k, v) for k, v in pairs)))
-
-
 # ---------------------------------------------------------------------------
 # 账号配置加载
 # ---------------------------------------------------------------------------
@@ -821,6 +753,8 @@ def _parse_account_dict(data):
         user_paused=str(data.get("user_paused", False)).strip().lower() in ("1", "true", "on", "yes"),
         # 归属用户邮箱（B 线用户失败提醒用；JSON/legacy 环境变量来源无此字段）
         owner=str(data.get("owner") or "").strip(),
+        # 库内账号行 id（运行期复核账号是否仍有效用；JSON/legacy 来源无此字段 → 0）
+        account_id=int(data.get("id") or 0),
     )
 
 
@@ -1386,6 +1320,11 @@ class YibanClient:
         """完整登录成功后保存 cookie jar + csrf（密文落库）；失败仅告警不影响签到。"""
         if not db.is_initialized():
             return
+        if not account_still_signable(self.account):
+            # 账号在登录过程中被删除/停用：不落库。session_cache 的清理全按现存账号行
+            # 的 phone 驱动，为已消失的账号写入会留下**永久孤儿**凭据缓存（DAT-1）。
+            logger.debug(f"[{self.account.phone}] 账号已删除/停用，不保存会话缓存")
+            return
         cookies = dict_from_cookiejar(self.session.cookies)
         if not cookies:
             return  # 空会话无复用价值，不落库
@@ -1779,7 +1718,7 @@ def _sched_marker_exists():
     与容器 scheduler.py 的 _full_run_done_today() 语义一致（同一事实源）。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
-    path = os.path.join(state_dir, f"sched-run-{datetime.now().strftime('%Y-%m-%d')}.json")
+    path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
     return os.path.exists(path)
 
 
@@ -1804,7 +1743,7 @@ def _second_run_drop_done(accounts):
     （宁可多跑，不可漏签）。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
-    path = os.path.join(state_dir, f"sign-state-{datetime.now().strftime('%Y-%m-%d')}.json")
+    path = os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -1872,14 +1811,14 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
         # 例外：当前时刻已越过补签触发点（06:31 关机、07:10 才被补跑起的场景），
         # 本轮虽挂首签身份（当日 run 触发标记此刻才首次创建）却是当天最后一轮，
         # 不再有第三次触发兜底 → 仍告警，防真异常无声。
-        _now = datetime.now()
+        _now = clock.now()
         if (_now.hour, _now.minute) < _LAST_RETRY_HM:
             return False
     title = "当日签到异常告警" if ok_n == 0 else "签到窗口异常告警"
     if ok_n == 0:
         body = (
             f"本次全量签到 0 个账号成功，{len(window_skips)} 个账号因窗口外/Range 缺失被跳过。\n"
-            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"
             "（容器部署另需确认 YIBAN_RUN_TIMEOUT_SEC 未过早截断子进程）。"
         )
@@ -1887,7 +1826,7 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
         body = (
             f"本次签到 {ok_n} 个账号成功，但仍有 {len(window_skips)} 个账号因窗口外/Range "
             "缺失未了结（补签轮后仍未签到）。\n"
-            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配。"
         )
     _collect_admin_mail(title, body)
@@ -2061,7 +2000,7 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
         return
     if str(user.get("mail_notify", 1)).strip().lower() not in ("1", "true", "on", "yes"):
         return
-    if not _user_fail_mail_allow_and_record(phone, datetime.now().strftime("%Y-%m-%d")):
+    if not _user_fail_mail_allow_and_record(phone, clock.now().strftime("%Y-%m-%d")):
         logger.info(
             "账号 %s 今日失败提醒已达上限（%d 封），跳过发送",
             _mask_phone(phone), USER_FAIL_MAIL_DAILY_CAP,
@@ -2096,6 +2035,9 @@ def verify_account(account):
     返回 (ok, message)：ok=False 表示存在无法自愈的问题；message 已脱敏。
     """
     phone = account.phone
+    if not account_still_signable(account):
+        # 探针同样会完整登录（与签到同一风控暴露面）：账号已被删除/停用则不发起
+        return False, "账号已被删除或停用"
     try:
         client = YibanClient(account)
         try:
@@ -2113,6 +2055,22 @@ def verify_account(account):
         return False, safe_err
 
 
+def account_still_signable(account):
+    """运行期复核：账号是否仍可签到（见 `db.account_is_signable`）。
+
+    启动快照要跑完整轮（最长 80 分钟），期间账号可能被删除/停用。查询异常按
+    "仍有效"处理——不因一次库抖动跳过全部账号；JSON/环境变量账号模式
+    （account_id=0）恒为 True。
+    """
+    if not getattr(account, "account_id", 0):
+        return True
+    try:
+        return db.account_is_signable(account.account_id)
+    except Exception as e:
+        logger.debug(f"[{account.phone}] 账号有效性复核失败（按有效处理）: {_sanitize_text(e)}")
+        return True
+
+
 def attempt_signin(account):
     """单次签到尝试（登录 + 签到），不重试。
 
@@ -2126,6 +2084,11 @@ def attempt_signin(account):
     （通知统一由 run_queue_retry 最终放弃时发送），已删除。
     """
     phone = account.phone
+    if not account_still_signable(account):
+        # 运行期复核（DAT-1）：账号在本轮执行期间被删除/停用 → 不发起任何请求。
+        # 原实现只在启动时筛一次，被删账号仍会被完整登录并签退，还会把会话缓存
+        # 写回一个已不存在的账号（孤儿行，见 db.account_is_signable 的说明）。
+        return False, "账号已被删除或停用", True, STATUS_USER_CANCELLED
     try:
         client = YibanClient(account)
         try:
@@ -2161,7 +2124,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
-    path = os.path.join(state_dir, f"sign-state-{datetime.now().strftime('%Y-%m-%d')}.json")
+    path = os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
     try:
         os.makedirs(state_dir, exist_ok=True)
         # M12：读-改-写整体持有状态文件锁，避免并发覆盖丢失条目
@@ -2177,7 +2140,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
             if not isinstance(data, dict):
                 logger.warning("状态文件 %s 非 dict，按空数据重建", path)
                 data = {}
-            now = datetime.now()
+            now = clock.now()
             # 计划时间是当日事实：后续写入（执行结果/重试）未显式传 scheduled 时保留既有值
             if not scheduled and isinstance(data.get(phone), dict):
                 scheduled = data[phone].get("scheduled")
@@ -2216,12 +2179,12 @@ def _write_sched_done(counts=None):
     - 补签：标记不存在，或存在未了结账号（failed/retrying/pending）→ 执行。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
-    path = os.path.join(state_dir, f"sched-run-{datetime.now().strftime('%Y-%m-%d')}.json")
+    path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
     try:
         os.makedirs(state_dir, exist_ok=True)
         payload = {
             "completed": True,
-            "finished_at": datetime.now().strftime("%H:%M:%S"),
+            "finished_at": clock.now().strftime("%H:%M:%S"),
         }
         if isinstance(counts, dict):
             payload.update(counts)
@@ -2263,7 +2226,7 @@ def _state_dir():
 def full_run_done_today(state_dir=None, day=None):
     """当日全量签到是否已收尾（sched-run-<date>.json 的 completed 标记）。"""
     d = state_dir or _state_dir()
-    today = day or datetime.now().strftime("%Y-%m-%d")
+    today = day or clock.now().strftime("%Y-%m-%d")
     try:
         # utf-8-sig：容错 Windows 手工/工具写入的 BOM（与 _load_cred_state 同口径）
         with open(os.path.join(d, f"sched-run-{today}.json"), encoding="utf-8-sig") as f:
@@ -2276,7 +2239,7 @@ def full_run_done_today(state_dir=None, day=None):
 def has_undone_accounts_today(state_dir=None, day=None):
     """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。"""
     d = state_dir or _state_dir()
-    today = day or datetime.now().strftime("%Y-%m-%d")
+    today = day or clock.now().strftime("%Y-%m-%d")
     try:
         with open(os.path.join(d, f"sign-state-{today}.json"), encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -2502,7 +2465,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
 
     参数（None → 读环境变量，见 _schedule_config）：
     order: "sequence"|"random"；dist: "uniform"|"normal"
-    now: 注入当天日期（默认 datetime.now()）；rng: 注入随机源（测试固定 seed）
+    now: 注入当天日期（默认 clock.now()）；rng: 注入随机源（测试固定 seed）
     prefs: 自选 {phone: {"slot_min": int, "updated_at": str}}；None → 总开关开时读 db
     返回 {phone: datetime}。
     """
@@ -2514,7 +2477,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
     if dist not in ("uniform", "normal"):
         dist = "uniform"
     rng = rng or random.Random()
-    now = now or datetime.now()
+    now = now or clock.now()
 
     # 用户自暂停账号不参与调度（零占位；执行侧 run_queue_retry 也会跳过）
     accounts = [a for a in accounts if not getattr(a, "user_paused", False)]
@@ -2744,7 +2707,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if event_sink is None:
             return
         try:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
             event_sink({
                 "ts": ts,
                 "phone": phone,
@@ -2778,7 +2741,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             heapq.heappush(pending, (_at, _seq, _acc))
             _seq += 1
 
-        _now0 = datetime.now()
+        _now0 = clock.now()
         for _acc in accounts:
             _t = schedule.get(_acc.phone)
             _push(_acc, _t if _t and _t > _now0 else _now0)
@@ -2786,8 +2749,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             _at_dt, _seq_no, acc = heapq.heappop(pending)
             phone = acc.phone
             # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
-            today = datetime.now().strftime("%Y-%m-%d")
-            now_dt = datetime.now()
+            today = clock.now().strftime("%Y-%m-%d")
+            now_dt = clock.now()
             # 截止保护（P5，统一 eff_hi 口径）：窗口关闭 → 剩余账号全部跳过
             if _window_closed(sch_cfg, now_dt):
                 results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
@@ -2897,7 +2860,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 send_user_fail_mail(acc.owner, phone, message)
                 continue
             # 重试落点（P1/P2/P3/P7）：窗口内重新采样，非阻塞重插；窗口不足 → 放弃（P5）
-            nxt = _next_retry_at(datetime.now(), sch_cfg)
+            nxt = _next_retry_at(clock.now(), sch_cfg)
             if nxt is None:
                 results[phone] = (False, message, False, status)
                 logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
@@ -2918,7 +2881,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         acc = queue.pop(0)
         phone = acc.phone
         # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = clock.now().strftime("%Y-%m-%d")
         is_first = first_round
         first_round = False
         # 先判后睡：将跳过的账号（用户自取消/熔断暂停）不占账号间隔——
@@ -3081,7 +3044,7 @@ def _update_probe_state_run(today_str):
 
 def _health_probe_due(now=None):
     """是否应在本次入口执行健康探针：开启 + 已达触发时间 + 满足频率（once=下一次单次）。"""
-    now = now or datetime.now()
+    now = now or clock.now()
     if not PROBE_ENABLE:
         return False
     try:
@@ -3176,13 +3139,13 @@ def run_probe(accounts):
         return
     # last_run 占位前置——探测开始前先记账，双探针/调度重启并发时
     # 只放行一个（原实现探测结束后才写，两个探针都能通过 _health_probe_due 判定）
-    _update_probe_state_run(datetime.now().strftime("%Y-%m-%d"))
+    _update_probe_state_run(clock.now().strftime("%Y-%m-%d"))
     logger.info(f"==== 探针模式：对 {len(accounts)} 个账号进行健康检查 ====")
     # 探针确认健康 → 清除熔断暂停（原实现探针与熔断互不相通，
     # 误冻账号即使每晚探针证明凭据可用也要熬到 7 天后半开试探）
     cred_state = _load_cred_state()
     fuse_cleared = False
-    now = datetime.now()
+    now = clock.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
     hard_fail = []  # [(Account, message)]
     healthy_n = 0
@@ -3330,7 +3293,7 @@ def main():
         # 周末签到关闭期间照跑会把暂停语义打穿。门在探针分支内部判定——
         # 不上移全局门，保住「探针先于零账号守卫」的既有语义与 --check-config 路径。
         _paused = str(os.environ.get("YIBAN_GLOBAL_PAUSE", "")).strip().lower() in ("1", "true", "on", "yes")
-        _weekday = datetime.now().weekday()
+        _weekday = clock.now().weekday()
         if _paused or (_weekday == 6 and not SUNDAY_SIGN) or (_weekday == 5 and not SATURDAY_SIGN):
             logger.info("==== 签到已暂停/周末签到关闭，本轮探针跳过（避免暂停期完整登录） ====")
             sys.exit(0)
@@ -3384,13 +3347,13 @@ def main():
 
     # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
     # 手动签到（--only）不受限——用户主动触发应当放行
-    if not args.only and datetime.now().weekday() == 6 and not SUNDAY_SIGN:
+    if not args.only and clock.now().weekday() == 6 and not SUNDAY_SIGN:
         logger.info("==== 周日签到未开启（系统设置中开启后周日也会尝试签到），跳过执行 ====")
         sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
 
     # 周六签到开关：默认开启（周六照常签到）；管理员关闭后周六跳过。
     # 手动签到（--only）不受限——用户主动触发应当放行（与周日开关语义一致）。
-    if not args.only and datetime.now().weekday() == 5 and not SATURDAY_SIGN:
+    if not args.only and clock.now().weekday() == 5 and not SATURDAY_SIGN:
         logger.info("==== 周六签到已关闭（系统设置中开启后周六也会尝试签到），跳过执行 ====")
         sys.exit(2)  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
 
@@ -3424,7 +3387,7 @@ def main():
 
     logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
     # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）
-    attempt_date = datetime.now().strftime("%Y-%m-%d")
+    attempt_date = clock.now().strftime("%Y-%m-%d")
     # 自动错峰（仅自动签到；--only 手动签到立即执行，不走计划）
     schedule = {} if args.only else build_schedule(accounts)
     if schedule:
@@ -3481,7 +3444,7 @@ def main():
             _snap_path = os.path.join(_snap_dir, f"sched-snapshot-{attempt_date}.json")
             _snap_tmp = _snap_path + ".tmp" + str(os.getpid())
             with open(_snap_tmp, "w", encoding="utf-8") as _f:
-                json.dump({"snapshot_at": datetime.now().strftime("%H:%M:%S")}, _f)
+                json.dump({"snapshot_at": clock.now().strftime("%H:%M:%S")}, _f)
             os.replace(_snap_tmp, _snap_path)
         except OSError:
             pass  # 标记不可写时 web 端回退旧分界，不影响签到
@@ -3502,7 +3465,7 @@ def main():
     # 其他失败→不动），未处理账号保持原状。全量模式语义不变（本轮本就基于存量计算）。
     if args.only:
         merged = _load_cred_state()
-        _merge_today = datetime.now().strftime("%Y-%m-%d")
+        _merge_today = clock.now().strftime("%Y-%m-%d")
         for _acc in accounts:
             _res = results.get(_acc.phone)
             if _res is None:
@@ -3588,7 +3551,7 @@ def main():
     try:
         os.makedirs(state_dir, exist_ok=True)
         # M14：汇总文件以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
-        daily_path = os.path.join(state_dir, f"sign-daily-{datetime.now().strftime('%Y-%m-%d')}.json")
+        daily_path = os.path.join(state_dir, f"sign-daily-{clock.now().strftime('%Y-%m-%d')}.json")
         with _state_file_lock(daily_path):
             daily = {}
             if os.path.exists(daily_path):

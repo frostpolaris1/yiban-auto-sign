@@ -48,7 +48,7 @@ class RetryRescheduleTest(unittest.TestCase):
             "13800138000": _dt(2026, 8, 27, 6, 40),   # 过点（A，首次失败）
             "13800138001": _dt(2026, 8, 27, 7, 0, 0),  # 到点（B，成功）
         }
-        with mock.patch.object(signin, "datetime", FakeNow), \
+        with mock.patch.object(signin.clock, "now", FakeNow.now), \
              mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
              mock.patch.object(signin, "_write_sign_state"), \
              mock.patch.object(signin, "_update_cred_state"), \
@@ -97,7 +97,7 @@ class RetryRescheduleTest(unittest.TestCase):
                 NOW = _dt(2026, 8, 27, 7, 49, 50)  # 距 eff_hi=07:50 不足 60s
 
             sched = {"13800138000": _dt(2026, 8, 27, 7, 49, 0)}
-            with mock.patch.object(signin, "datetime", LateNow), \
+            with mock.patch.object(signin.clock, "now", LateNow.now), \
                  mock.patch.object(signin, "attempt_signin",
                                    return_value=(False, "网络超时", False, signin.STATUS_FAILED)) as attempt, \
                  mock.patch.object(signin, "classify_failure", return_value=2), \
@@ -116,7 +116,7 @@ class RetryRescheduleTest(unittest.TestCase):
             return (False, reason, False, signin.STATUS_FAILED)
 
         logmock = mock.Mock()
-        with mock.patch.object(signin, "datetime", FakeNow), \
+        with mock.patch.object(signin.clock, "now", FakeNow.now), \
              mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
              mock.patch.object(signin, "_write_sign_state") as ws, \
              mock.patch.object(signin, "_update_cred_state"), \

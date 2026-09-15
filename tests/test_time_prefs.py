@@ -396,21 +396,21 @@ class TimePrefsTest(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
         h = self._csrf(token)
-        with mock.patch.object(self.webapp, "datetime", FakeDT):
+        with mock.patch.object(self.webapp.clock, "now", FakeDT.now):
             r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("今日生效", r.get_json()["msg"])
         # 场景 2：标记存在（snapshot_at=06:00:00，cron 已快照）→ 改选在快照后 → 明日生效
         with open(snap, "w", encoding="utf-8") as f:
             json.dump({"snapshot_at": "06:00:00"}, f)
-        with mock.patch.object(self.webapp, "datetime", FakeDT):
+        with mock.patch.object(self.webapp.clock, "now", FakeDT.now):
             r2 = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertIn("明日生效", r2.get_json()["msg"])
         # 场景 3：标记时间在未来（时钟偏移/写坏，H1 对抗性审查）→ 视为无效回退兜底（06:31）
         with open(snap, "w", encoding="utf-8") as f:
             json.dump({"snapshot_at": "07:00:00"}, f)
-        with mock.patch.object(self.webapp, "datetime", FakeDT):
+        with mock.patch.object(self.webapp.clock, "now", FakeDT.now):
             r3 = c.put("/api/my-time-pref", json={"slot_min": 10}, headers=h)
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         self.assertIn("今日生效", r3.get_json()["msg"])  # 回退兜底 06:31 → now(06:30) 之前
@@ -759,7 +759,7 @@ class TimePrefsTest(unittest.TestCase):
                 return _dt(2026, 8, 15, 8, 30, 0)
 
         sched = {"13800138001": _dt(2026, 8, 15, 6, 40)}
-        with mock.patch.object(signin, "datetime", FakeNow), \
+        with mock.patch.object(signin.clock, "now", FakeNow.now), \
              mock.patch.object(signin, "attempt_signin") as attempt, \
              mock.patch.object(signin, "_write_sign_state") as w, \
              mock.patch.object(signin, "_update_cred_state"):
