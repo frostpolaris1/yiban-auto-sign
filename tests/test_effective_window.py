@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""有效窗口单一口径（SCH-2 / SCH-3 / SCH-4）。
+"""有效窗口单一口径（排计划 / 判关闭 / 算容量同源）。
 
 **缺陷**：窗口被算了四遍且各不相同——排计划（`_schedule_blocks`，含"裁剪吃空则回退
 默认窗口"）、判关闭（`_window_closed`，只看 sign_end−edge_back）、引擎容量预检
 （内联算一遍，无回退也不扣流逝时间）、网页预估（自己读 env 再算一遍）。于是：
 
-- **SCH-3**：裁剪吃空时计划按回退窗口排（有 80 分钟计划），判定却按原始配置算
+- 裁剪吃空时计划按回退窗口排（有 80 分钟计划），判定却按原始配置算
   → 有完整计划却整轮判"时段已结束"、零请求；容量还显示 0；
-- **SCH-4**：预检按完整窗口算，迟启动时按满容量放行且不告警，超出的账号落
+- 预检按完整窗口算，迟启动时按满容量放行且不告警，超出的账号落
   skipped_window；
-- **SCH-2**：补签轮起跑时窗口已关闭 → 整轮零请求，却把首轮已记录的
+- 补签轮起跑时窗口已关闭 → 整轮零请求，却把首轮已记录的
   failed/no_position 无条件改写成 skipped_window（真实原因与失败告警一起丢掉）。
 
 **修法**：`yiban/window.py` 为唯一事实源，引擎与网页共用。
@@ -67,7 +67,7 @@ class WindowSourceTest(unittest.TestCase):
         self.assertEqual((cfg["edge_front_sec"], cfg["edge_back_sec"]), (120, 120))
 
     def test_sch3_trimmed_empty_window_falls_back_for_both_plan_and_gate(self):
-        """SCH-3：裁剪吃空时，排计划与判关闭必须都按回退窗口（默认 06:30~07:50）。"""
+        """裁剪吃空时，排计划与判关闭必须都按回退窗口（默认 06:30~07:50）。"""
         cfg = _cfg(YIBAN_SIGN_START="07:00", YIBAN_SIGN_END="07:01",
                    YIBAN_WINDOW_EDGE_FRONT_SEC="300", YIBAN_WINDOW_EDGE_BACK_SEC="300")
         win = window.bounds(cfg)
@@ -84,14 +84,14 @@ class WindowSourceTest(unittest.TestCase):
         self.assertTrue(signin._window_closed(cfg, _dt.datetime(2026, 9, 15, 9, 0)))
 
     def test_capacity_nonzero_train_on_trimmed_empty_window(self):
-        """SCH-3 后半：配置异常时容量不再显示 0（回退窗口仍有 80 分钟）。"""
+        """配置异常时容量不再显示 0（回退窗口仍有 80 分钟）。"""
         cfg = _cfg(YIBAN_SIGN_START="07:00", YIBAN_SIGN_END="07:01",
                    YIBAN_WINDOW_EDGE_FRONT_SEC="300", YIBAN_WINDOW_EDGE_BACK_SEC="300")
         win = window.bounds(cfg)
         self.assertGreater(signin.capacity_accounts(win.full_sec(), 10, 3), 0)
 
     def test_sch4_remaining_sec_deducts_elapsed(self):
-        """SCH-4：剩余窗口 = 有效窗口结束 − 当前时刻（引擎预检口径）。"""
+        """剩余窗口 = 有效窗口结束 − 当前时刻（引擎预检口径）。"""
         cfg = _cfg(YIBAN_SIGN_START="06:30", YIBAN_SIGN_END="07:50",
                    YIBAN_WINDOW_EDGE_FRONT_SEC="60", YIBAN_WINDOW_EDGE_BACK_SEC="60")
         win = window.bounds(cfg)
@@ -113,7 +113,7 @@ class WindowSourceTest(unittest.TestCase):
 
 
 class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
-    """SCH-2：窗口关闭时的收尾不得覆盖已有当日记录。"""
+    """窗口关闭时的收尾不得覆盖已有当日记录。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-win-")
@@ -166,7 +166,7 @@ class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
     # 都查），故上面两条覆盖了该规则的两种来源。
 
 class SecondRunDropDoneTest(unittest.TestCase):
-    """SCH-7（顺手修）：补签轮剔除已完成账号时，no_task 也算"已了结"。"""
+    """补签轮剔除已完成账号时，no_task 也算"已了结"。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-win2-")

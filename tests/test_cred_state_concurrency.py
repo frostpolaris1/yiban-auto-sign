@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""账密熔断状态文件的读-改-写原子性（D-4：SCH-6 / DAT-2）。
+"""账密熔断状态文件的读-改-写原子性（并发写覆盖与丢失）。
 
 **缺陷**：三个写入方（签到全量轮、签到 `--only` 轮、Web 端改密/编辑后清除熔断）都做
 "读 → 改 → 写"，但只有**写动作**内部持锁，读改写整体不原子：
 
 - 签到进程从启动起持有一份内存快照，收尾整体覆盖 → 运行期间 Web 端刚清掉的暂停被写回，
-  该账号继续用错密码登录（加重风控）（SCH-6）；
+  该账号继续用错密码登录（加重风控）；
 - Web 端 `clear_fuse_pause` 自己读整个文件、删一条、再整体写回，**完全不持锁** →
-  按自己的读取结果重写会抹掉签到进程并发写入的其他账号记录（DAT-2）。
+  按自己的读取结果重写会抹掉签到进程并发写入的其他账号记录。
 
 **修法**：`yiban/cred_state.py` 为唯一读写入口——整段读-改-写同锁，且保存按手机号
 **增量合并**（调用方只声明"改了哪些账号"，其余账号以磁盘最新值为准）。
@@ -71,7 +71,7 @@ class IncrementalMergeTest(_Base):
         self.assertEqual(disk[P2]["fail_days"], 2)
 
     def test_stale_snapshot_cannot_resurrect_pause(self):
-        """SCH-6 主场景：Web 端清掉暂停后，签到收尾的旧快照不得把它写回来。"""
+        """主场景：Web 端清掉暂停后，签到收尾的旧快照不得把它写回来。"""
         self._write({P1: {"fail_days": 3, "paused_since": "2026-09-01"}})
         stale_snapshot = {P1: {"fail_days": 3, "paused_since": "2026-09-01"}}  # 启动时读到的
         cred_state.clear(P1)  # 用户改密 → Web 端清除
@@ -92,7 +92,7 @@ class IncrementalMergeTest(_Base):
 
 
 class WebConcurrentEditTest(_Base):
-    """Web 侧：清除熔断不得抹掉并发写入的其他账号记录（DAT-2）。"""
+    """Web 侧：清除熔断不得抹掉并发写入的其他账号记录。"""
 
     def _clear_via_web(self, phone):
         import importlib.util
@@ -105,7 +105,7 @@ class WebConcurrentEditTest(_Base):
         mod.clear_fuse_pause(phone)
 
     def test_web_clear_blocks_on_same_lock_as_signin(self):
-        """Web 的清除与签到的保存共用同一把锁 → 两者不可能交错（DAT-2 的根治）。
+        """Web 的清除与签到的保存共用同一把锁 → 两者不可能交错（根治手段）。
 
         验证方式：先在主线程持有该文件锁（等价于"签到进程正在保存"），再从另一线程
         调 Web 的清除——它必须**等锁**而不是直接读改写；释放后清除完成，

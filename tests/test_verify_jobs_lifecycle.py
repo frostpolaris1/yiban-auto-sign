@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """校验任务的生命周期防线（v16）。
 
-对应三条缺陷的回归测试（docs/refactor/52 §2.1，均为 A4 异步化引入）：
+对应三条缺陷的回归测试（均为在线校验异步化引入）：
 - **超龄收口**：进程在任务执行期间消失（重启/重部署/OOM）后任务永久停在
   running——既不去终态、又不可取消，还一直占待办名额，累计到上限后所有新增
   账号的在线校验永久 503 且不自愈。启动期与每次入队前都要收口。
@@ -171,7 +171,7 @@ class _LifecycleBase(unittest.TestCase):
 
 
 class StaleJobReclaimTest(_LifecycleBase):
-    """SDL-1：超龄 pending/running 必须被收口，否则功能永久不可用。"""
+    """超龄 pending/running 必须被收口，否则功能永久不可用。"""
 
     verify_on = False
 
@@ -224,7 +224,7 @@ class StaleJobReclaimTest(_LifecycleBase):
 
 
 class QueueRecoveryTest(_LifecycleBase):
-    """SDL-1 的致命后果：卡死任务占满名额后，新提交必须能自愈。"""
+    """致命后果：卡死任务占满名额后，新提交必须能自愈。"""
 
     def _submit(self, token, phone=PHONE):
         return self.c.post("/api/my-accounts", json={
@@ -267,7 +267,7 @@ class QueueRecoveryTest(_LifecycleBase):
 
 
 class AdminDecisionWinsTest(_LifecycleBase):
-    """SDL-2：迟到的异步结果不得覆盖人工决定。"""
+    """迟到的异步结果不得覆盖人工决定。"""
 
     verify_on = False
 
@@ -331,7 +331,7 @@ class AdminDecisionWinsTest(_LifecycleBase):
 
 
 class CascadeCleanupTest(_LifecycleBase):
-    """SDL-3：账号物理删除的每条路径都要连带清除 verify_jobs。"""
+    """账号物理删除的每条路径都要连带清除 verify_jobs。"""
 
     verify_on = False
 
