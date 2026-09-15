@@ -2316,6 +2316,21 @@ class LoginTrailB14Test(_B14AlertGateBase):
         ok, broken, _first = db.verify_audit_chain()
         self.assertTrue(ok, f"登出留痕须进链，broken={broken}")
 
+    def test_logout_sid_rotation_failure_is_logged_not_swallowed(self):
+        """sid 轮换失败必须留痕（ERROR），且登出仍返回 200。
+
+        原先用 `contextlib.suppress(Exception)` 静默吞掉——失败后果正是"被盗 cookie
+        在登出后仍有效"这一服务端吊销机制失效，而调用方从响应的 {"ok": true} 看不出来。
+        """
+        email, pw = self._user(email="logout-fail@test.local")
+        c = self._client()
+        token = self._login(c, email, pw)
+        with mock.patch.object(db, "set_user_sid", side_effect=RuntimeError("db down")), \
+                self.assertLogs("web", level="ERROR") as cm:
+            r = c.post("/api/logout", json={}, headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, "留痕不得改变对外语义")
+        self.assertTrue(any("sid" in m for m in cm.output), cm.output)
+
     def test_logout_of_builtin_admin_writes_logout_ok(self):
         """内置管理员（无 sid）同样要留登出痕迹，detail 记 builtin 以便与注册用户分账。"""
         c = self._client()

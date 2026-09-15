@@ -12,8 +12,15 @@ _ENV_WARNINGS=""
 if [ -r /opt/yiban-auto-sign/.env ]; then
     while IFS='=' read -r key value || [ -n "$key$value" ]; do
         value=${value%$'\r'}
+        # BOM 剥离：Windows 记事本保存的 .env 首行键名会带 BOM 前缀，被键名校验拒掉，
+        # 导致与 run.sh（已剥离）对同一文件读出不同配置
+        key="${key#$'\xEF\xBB\xBF'}"
+        # key/value 首尾空白去除（与 run.sh 的 strip 及 env_io.parse_env_file 同口径；
+        # 原先只剥 key，`KEY = v` / 值带尾随空格时两侧漂移）
         key="${key#"${key%%[![:space:]]*}"}"
         key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
         [ -z "$key" ] && continue
         case "$key" in \#*) continue ;; esac
         if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then

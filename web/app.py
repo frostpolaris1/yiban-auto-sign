@@ -3627,10 +3627,15 @@ def create_app(host=None):
             session.get("auth_source") == "user"
             and session.get("username")
         ):
-            with contextlib.suppress(Exception):
+            try:
                 db.set_user_sid(
                     session["username"].strip().lower(), secrets.token_hex(16)
                 )
+            except Exception as e:
+                # 不得静默吞掉：本条失败意味着"被盗 cookie 在登出后仍有效"这一
+                # 服务端吊销机制未生效，而对外仍返回 {"ok": true}。与 db.audit
+                # 写失败同口径留痕（调用方无法区分，只能靠日志）。
+                logger.error("登出轮换 sid 失败（旧会话可能仍有效）: %s", e)
         session.clear()
         return jsonify({"ok": True})
 
