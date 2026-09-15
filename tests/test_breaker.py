@@ -197,8 +197,11 @@ class BreakerTest(unittest.TestCase):
                        json={"name": "A", "phone": "13800138000", "password": "newpass1234"},
                        headers={"X-CSRF-Token": "t"})
         self.assertEqual(r.status_code, 200, r.get_json())
-        with open(state_path, encoding="utf-8") as f:
-            cs = json.load(f)
+        # 唯一入口的统一语义：清空后文件被删除（"无暂停 = 文件不存在"）
+        cs = {}
+        if os.path.exists(state_path):
+            with open(state_path, encoding="utf-8") as f:
+                cs = json.load(f)
         self.assertNotIn("13800138000", cs, "编辑账号（改密码）应清除暂停记录")
 
     # ---- 4. BOM 容错：带 BOM 的状态文件应正常读取 ----

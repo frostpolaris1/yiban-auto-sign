@@ -61,7 +61,7 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from yiban import clock  # noqa: E402  （须在引导之后导入）
+from yiban import clock, cred_state  # noqa: E402  （须在引导之后导入）
 from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
@@ -610,13 +610,8 @@ def _cred_paused_phones():
     （展示层显示 0，判定逻辑不受影响——本函数只服务显示，绝不参与配额判定）。
     utf-8-sig 容错 Windows 手工编辑留下的 BOM（与 signin._load_cred_state 同口径）。
     """
-    path = os.path.join(STATE_DIR, "cred-state.json")
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return set()
-    if not isinstance(data, dict):
+    data = cred_state.read()
+    if not data:
         return set()
     return {
         str(phone)
@@ -628,34 +623,17 @@ def _cred_paused_phones():
 def clear_fuse_pause(phone):
     """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
 
-    2026-08-15 命名审查：原名 clear_cred_state 误导（"cred"易被理解为清除凭据/密钥，
-    实际只删 cred-state.json 里的熔断暂停条目）；现名体现真实行为。
+    经 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）。原实现自己读整个
+    文件、删一条、再整体写回且**完全不持锁**：与签到进程收尾保存并发时，按自己的
+    读取结果重写会抹掉对方写入的其他账号记录（DAT-2）。文件不存在时无需清除，
+    静默返回——用户每次编辑账号都会走到这里，按 I/O 失败告警会刷屏。
     """
-    path = os.path.join(STATE_DIR, "cred-state.json")
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        # 文件不存在 = 从未有账号触发过账密熔断（signin._save_cred_state 维持
-        # 「无暂停 = 文件不存在」语义），无可清除，静默返回——不能按 I/O 失败
-        # 告警：用户每次编辑账号都会走到这里，误报会刷屏（2026-09-04 生产复盘）
-        return
-    except (OSError, ValueError) as e:
+        cred_state.clear(phone)
+    except Exception as e:
         # 留痕（2026-08-27 审查）：裸吞会让"改密后仍暂停"无从排查
-        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]", _mask_phone(phone), e)
-        return
-    if not isinstance(data, dict) or phone not in data:
-        return
-    try:
-        del data[phone]
-        # 唯一临时名：防与 signin 收尾 _save_cred_state 跨进程并发碰撞（对抗性审查 F5）
-        tmp = f"{path}.tmp{secrets.token_hex(4)}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError as e:
-        # 留痕（2026-08-27 审查）：裸吞会让"改密后仍暂停"无从排查
-        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]", _mask_phone(phone), e)
+        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]",
+                       _mask_phone(phone), e)
 
 
 def clear_fuse_on_cred_change(old_phone, old_password, clean):
@@ -2543,7 +2521,9 @@ def _notify_capacity_once(kind, limit, label):
 # 加载错误态与重试/系统开关口令真校验）；历史版本号已压缩重编号（0.1.0–0.3.4）
 # 2026-09-14 运营面收口（错误页/爬虫协议/站标族）+ 容量口径统一（容量与保存门同源）
 # + 密钥轮换强制参数生效 + 总览成功率数字着色与空态字号修复（v0.4.1）
-APP_VERSION = "0.4.1"
+# 2026-09-15 后端修复批次（v0.4.2）：时区口径（UTC 主机不再整日漏签）+ 运行期账号复核
+# + 在线校验三缺陷 + 窗口单一口径与容量预检 + 熔断状态读改写原子化 + 镜像补拷共享包
+APP_VERSION = "0.4.2"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = clock.now().strftime("%Y%m%d%H%M%S")
 

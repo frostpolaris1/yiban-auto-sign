@@ -137,21 +137,25 @@ class ClearFusePauseTest(unittest.TestCase):
             self.webapp.clear_fuse_pause(PHONE1)
 
     def test_corrupt_json_still_warns(self):
-        # 真实 I/O/数据错误保留 WARNING 留痕（2026-08-27 审查背景仍成立）
+        # 真实 I/O/数据错误保留 WARNING 留痕（2026-08-27 审查背景仍成立）。
+        # 留痕方为唯一入口 yiban.cred_state（web 侧不再自己读写该文件）。
         with open(self._cred_path(), "w", encoding="utf-8") as f:
             f.write("{not-json")
-        with self.assertLogs("web", "WARNING") as cm:
+        with self.assertLogs("yiban.cred_state", "WARNING") as cm:
             self.webapp.clear_fuse_pause(PHONE1)
-        self.assertIn("清除账密熔断暂停状态失败", cm.output[0])
+        self.assertIn("账密状态文件损坏", cm.output[0])
 
     def test_write_failure_still_warns(self):
+        # 保留另一条记录：清空到"无记录"时走的是删文件（不是写盘），
+        # 必须让本次清除真正落到写盘路径上才能验证"写失败留痕"。
         with open(self._cred_path(), "w", encoding="utf-8") as f:
-            json.dump({PHONE1: {"fail_days": 3}}, f)
+            json.dump({PHONE1: {"fail_days": 3},
+                       PHONE2: {"fail_days": 1, "paused_since": "2026-09-01"}}, f)
         with mock.patch.object(self.webapp.os, "replace",
                                side_effect=OSError("disk full")), \
-             self.assertLogs("web", "WARNING") as cm:
+             self.assertLogs("yiban.cred_state", "WARNING") as cm:
             self.webapp.clear_fuse_pause(PHONE1)
-        self.assertIn("清除账密熔断暂停状态失败", cm.output[0])
+        self.assertIn("写入账密状态文件失败", cm.output[0])
 
 
 class _WebAppBase(unittest.TestCase):

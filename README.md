@@ -292,6 +292,13 @@ docker compose logs -f yiban
 
 浏览器打开 `https://你的域名或IP`（自签证书首访需点「继续访问」信任），用 `data/.env` 里的管理员账号登录，在后台添加易班账号即可。
 
+> **国内主机构建镜像**：容器内直连 `pypi.org` 通常不可达，构建会在安装依赖时以
+> `No matching distribution found` 失败。此时指定国内索引即可（仅构建期生效，不写入镜像配置）：
+> ```bash
+> docker compose build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+> ```
+> 或 `docker build --build-arg PIP_INDEX_URL=... -f docker/Dockerfile .`。
+
 > **生产 HTTPS 建议**：用受信证书替换 `certs/fullchain.pem` 与 `certs/key.pem`，然后 `docker compose restart yiban-nginx`。申请免费证书可参考 `web/deploy/nginx.conf.example` 的提示（acme.sh / Let's Encrypt）。
 
 ### 3. 日常运维

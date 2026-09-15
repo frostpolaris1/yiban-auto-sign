@@ -58,7 +58,7 @@ from Crypto.Cipher import PKCS1_v1_5  # noqa: E402
 from Crypto.PublicKey import RSA  # noqa: E402
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar  # noqa: E402
 
-from yiban import clock, window  # noqa: E402
+from yiban import clock, cred_state, window  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
 from yiban.logging_ext import FlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
@@ -2276,36 +2276,31 @@ def _cred_state_path():
 
 
 def _load_cred_state():
-    """读账密状态文件：{phone: {fail_days, last_fail, paused_since, probe_date}}。"""
-    try:
-        # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
-        with open(_cred_state_path(), encoding="utf-8-sig") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    """读账密状态文件（唯一入口见 yiban/cred_state.py）。"""
+    return cred_state.read()
 
 
-def _save_cred_state(data):
-    """原子写账密状态文件；无任何暂停记录时删除文件（保持"无暂停 = 文件不存在"语义）。
+def _save_cred_state(data, touched=None):
+    """保存账密状态。
 
-    2026-08-16 修复：原实现无条件写 `{}`，与设计语义不符（TODO P5b）；目录不可写时丢弃，不影响签到执行。
+    `touched` 给出本次实际处理的手机号集合时**按账号增量合并**（磁盘最新值为准，
+    其余账号不受影响）；为 None 时整体覆盖（保留给测试/极端场景）。
+
+    增量合并是必需的：全量轮从启动起就持有内存快照，若收尾整体覆盖，运行期间
+    Web 端刚清除的暂停会被重新写回——该账号继续用错密码登录、加重风控（SCH-6）。
     """
-    path = _cred_state_path()
     try:
-        # M12：删除/写入账密状态也持有状态文件锁，防止与 _write_sign_state 等并发写串扰
-        with _state_file_lock(path):
-            if not data:
-                if os.path.exists(path):
-                    os.remove(path)
-                return
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = f"{path}.tmp{os.getpid()}"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp, path)
-    except (OSError, ValueError, TypeError, AttributeError) as e:
-        logger.debug("写入账密状态失败（%s）: %s", path, _sanitize_text(e))
+        if touched is None:
+            def _replace(d):  # 整体覆盖（兼容入口：仅测试与极端场景使用）
+                d.clear()
+                d.update(data)
+                return True
+
+            cred_state.update(_replace)
+        else:
+            cred_state.merge(touched, data)
+    except Exception as e:  # 锁/磁盘异常都只告警：状态文件不得影响签到主流程
+        logger.debug("写入账密状态失败（%s）: %s", _cred_state_path(), _sanitize_text(e))
 
 
 def _is_credential_failure(message):
@@ -3190,7 +3185,7 @@ def run_probe(accounts):
     # 预警（复用 A/B 线邮件机制；用户邮件按「健康探测」措辞，避免误报为当日签到失败）
     if fuse_cleared:
         with contextlib.suppress(Exception):
-            _save_cred_state(cred_state)
+            _save_cred_state(cred_state, touched={a.phone for a in accounts})
     for acc, message in hard_fail:
         _collect_admin_mail(
             "健康探测预警",
@@ -3489,6 +3484,7 @@ def main():
     # 处理账号的熔断增量合并回存量状态（成功→清除该账号记录；凭据失败→按日累计；
     # 其他失败→不动），未处理账号保持原状。全量模式语义不变（本轮本就基于存量计算）。
     if args.only:
+        # 增量合并（唯一入口内的读-改-写持锁）：只覆盖本次处理账号的熔断增量
         merged = _load_cred_state()
         _merge_today = clock.now().strftime("%Y-%m-%d")
         for _acc in accounts:
@@ -3511,9 +3507,10 @@ def main():
                     datetime.strptime(_merge_today, "%Y-%m-%d")
                     + timedelta(days=PROBE_INTERVAL_DAYS)
                 ).strftime("%Y-%m-%d")
-        _save_cred_state(merged)
+        _save_cred_state(merged, touched={a.phone for a in accounts})
     else:
-        _save_cred_state(cred_state)
+        # 全量轮：按账号增量合并（内存快照不能整体覆盖磁盘——见 _save_cred_state 文档）
+        _save_cred_state(cred_state, touched={a.phone for a in accounts})
 
     # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
     # 口径：成功=success/already；跳过=no_task+skipped（无需签到与时段外同列）；

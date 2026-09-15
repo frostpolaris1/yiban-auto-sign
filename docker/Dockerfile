@@ -32,9 +32,12 @@ WORKDIR /app
 
 # 依赖（flask/gunicorn/requests/pycryptodome 等）
 # 镜像安装改用精确锁定的 requirements.lock——CI pip-audit 审计的
-# 就是它，浮动下限会让镜像依赖偏离审计结论且构建不可复现
+# 就是它，浮动下限会让镜像依赖偏离审计结论且构建不可复现。
+# 国内主机直连 pypi.org 常不可达（构建会以 "No matching distribution" 失败），
+# 故支持构建期指定索引：docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple ...
+ARG PIP_INDEX_URL
 COPY requirements.lock ./
-RUN pip install --no-cache-dir -r requirements.lock
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r requirements.lock
 
 # 应用源码（web 管理端 + 签到脚本 + 共享包 + 合规文档）
 # `yiban/` 是共享包（yiban/status.py 起被 signin/web 导入），漏拷会让容器在
