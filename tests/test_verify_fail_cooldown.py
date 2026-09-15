@@ -160,6 +160,11 @@ class _WebAppBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="yiban-verify-cool-web-")
+        # 本文件断言的是**同步**外呼契约（提交即返回 400/429）。A4 异步化后，
+        # `YIBAN_ACCOUNT_VERIFY=1` 时默认走异步（提交即 200，结果由后台任务落库），
+        # 故这里显式退回同步带闸路径——它仍是受支持的运维路径（`YIBAN_VERIFY_ASYNC=0`），
+        # 异步契约由 tests/test_a4_verify_jobs.py 覆盖。
+        os.environ["YIBAN_VERIFY_ASYNC"] = "0"
         cls.env_file = os.path.join(cls.tmp, ".env")
         with open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(
@@ -193,7 +198,8 @@ class _WebAppBase(unittest.TestCase):
             db._conn = None
         shutil.rmtree(cls.tmp, ignore_errors=True)
         for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_FILE",
-                  "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE"):
+                  "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE",
+                  "YIBAN_VERIFY_ASYNC"):
             os.environ.pop(k, None)
 
     def setUp(self):
