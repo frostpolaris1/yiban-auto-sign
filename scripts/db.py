@@ -20,6 +20,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 
@@ -29,6 +30,34 @@ import env_io
 import env_lock
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
+
+# 包导入引导：`yiban/` 在仓库根，而本模块可能以 `scripts/` 为 sys.path[0] 被直接运行。
+# 与 signin.py 同款引导，随"清 sys.path 注入"（包结构收口）一并移除。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
+# 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
+from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
+
+VERIFY_JOB_RETENTION_DAYS = _verify_jobs.VERIFY_JOB_RETENTION_DAYS
+VERIFY_JOB_PENDING = _verify_jobs.VERIFY_JOB_PENDING
+VERIFY_JOB_RUNNING = _verify_jobs.VERIFY_JOB_RUNNING
+VERIFY_JOB_DONE = _verify_jobs.VERIFY_JOB_DONE
+VERIFY_JOB_REJECTED = _verify_jobs.VERIFY_JOB_REJECTED
+VERIFY_JOB_CANCELLED = _verify_jobs.VERIFY_JOB_CANCELLED
+VERIFY_JOB_STALE_SECONDS = _verify_jobs.VERIFY_JOB_STALE_SECONDS
+VERIFY_JOB_STALE_MSG = _verify_jobs.VERIFY_JOB_STALE_MSG
+
+create_verify_job = _verify_jobs.create
+get_verify_job = _verify_jobs.get
+claim_verify_job = _verify_jobs.claim
+finish_verify_job = _verify_jobs.finish
+cancel_verify_job = _verify_jobs.cancel
+count_active_verify_jobs = _verify_jobs.count_active
+reclaim_stale_verify_jobs = _verify_jobs.reclaim_stale
+purge_verify_jobs = _verify_jobs.purge
 
 logger = logging.getLogger("yiban.db")
 
@@ -1002,6 +1031,52 @@ def migrate_v15(conn):
     conn.commit()
 
 
+def _create_verify_jobs_table(conn):
+    """建 verify_jobs（含 prev_status）——v15 之后新增列的迁移复用点。
+
+    v15 的 DDL 已冻结不再改动（已发布迁移不可变），故此处重述一遍：
+    带上 prev_status 的建表语句是幂等的，v16 在"v15 尚未落地"的库上
+    也能自给自足地建出正确结构。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS verify_jobs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "account_id INTEGER, "
+        "phone TEXT NOT NULL, "
+        "owner_email TEXT NOT NULL DEFAULT '', "
+        "status TEXT NOT NULL DEFAULT 'pending', "
+        "prev_status TEXT NOT NULL DEFAULT 'pending', "
+        "error TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL, "
+        "started_at TEXT, "
+        "finished_at TEXT"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_owner_created "
+        "ON verify_jobs(owner_email, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_status ON verify_jobs(status)"
+    )
+
+
+def migrate_v16(conn):
+    """v16：verify_jobs 记录任务建立时的账号状态（可选迁移，失败只告警不阻断）。
+
+    用途：异步校验结果**不得覆盖人工决定**。校验任务建库时账号是 pending
+    （用户提交）或 active（管理员的裸账号），任务失败只允许在账号仍处于
+    建库时那个状态时置 rejected——否则管理员在任务执行期间点了"审核通过"，
+    迟到的校验结果会把管理员的决定静默回滚。
+
+    旧行 prev_status 取默认 'pending'：存量未结任务罕见，且默认值只会让
+    "账号已是 active 时不覆盖"，与人工决定优先的方向一致。
+    """
+    _create_verify_jobs_table(conn)
+    _ensure_column(conn, "verify_jobs", "prev_status", "TEXT NOT NULL DEFAULT 'pending'")
+    conn.commit()
+
+
 def set_user_sid(email, sid):
     """写入用户当前有效会话标识；email 须为活跃用户。"""
     conn = get_conn()
@@ -1030,6 +1105,7 @@ _MIGRATIONS = [
     (13, "v13_fix_malformed_column_decls", migrate_v13, True),
     (14, "v14_drop_legacy_stats", migrate_v14, False),
     (15, "v15_verify_jobs", migrate_v15, False),
+    (16, "v16_verify_job_prev_status", migrate_v16, False),
 ]
 
 
@@ -1581,9 +1657,7 @@ def _purge_expired_deleted(conn):
             "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
             (cutoff,),
         )
-        _delete_time_prefs_by_phones(conn, phones)
-        _clear_session_cache_by_phones(conn, phones)
-        _delete_sign_events_by_phones(conn, phones)  # M2：物理清除时事件连带清理
+        _cascade_phone_owned(conn, phones)
         conn.commit()
     except Exception as e:
         with contextlib.suppress(Exception):
@@ -1855,9 +1929,7 @@ def purge_account(account_id):
         row = conn.execute("SELECT phone FROM accounts WHERE id=?", (account_id,)).fetchone()
         conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
         if row is not None:
-            _delete_time_prefs_by_phones(conn, [row["phone"]])  # 连带清理自选（调度 v2）
-            _clear_session_cache_by_phones(conn, [row["phone"]])  # 连带清理会话缓存
-            _delete_sign_events_by_phones(conn, [row["phone"]])  # 连带清理事件（M2）
+            _cascade_phone_owned(conn, [row["phone"]])  # 连带清理自选/会话/事件/校验任务
 
 
 def update_account_status(account_id, status, reject_reason=None):
@@ -1911,11 +1983,7 @@ def delete_accounts_by_owner(owner):
         rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (owner,)).fetchall()
         cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
         phones = [r["phone"] for r in rows]
-        _delete_time_prefs_by_phones(conn, phones)  # 连带清理自选（调度 v2）
-        # 2026-08-28 审查 M1 补：原先漏清理会话缓存，已删账号的加密 cookie/csrf
-        # 会以 phone 为主键永久驻留（密钥仍在 .env，等同凭据残留）
-        _clear_session_cache_by_phones(conn, phones)
-        _delete_sign_events_by_phones(conn, phones)  # M2：明文事件连带清理
+        _cascade_phone_owned(conn, phones)  # 自选/会话/事件/校验任务连带清理
         return cur.rowcount
 
 
@@ -1958,9 +2026,8 @@ def delete_user_with_accounts(email, allow_last_admin=False):
             _assert_not_last_admin(conn, email, allow_last_admin)
             rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (email,)).fetchall()
             cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-            _delete_time_prefs_by_phones(conn, [r["phone"] for r in rows])  # 连带清理自选（H2 对抗性审查补）
-            _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 连带清理会话缓存
-            _delete_sign_events_by_phones(conn, [r["phone"] for r in rows])  # M2
+            phones = [r["phone"] for r in rows]
+            _cascade_phone_owned(conn, phones)
             conn.execute("DELETE FROM users WHERE email=?", (email,))
             _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
             conn.commit()
@@ -2013,9 +2080,7 @@ def replace_accounts(accounts):
         # 对齐 purge_account/delete_accounts_by_owner 等 7 条物理删除路径的
         # 三连带清理（M2 覆盖清单外的第 8 条路径）。
         removed = [r["phone"] for r in old if r["phone"] not in keep]
-        _delete_time_prefs_by_phones(conn, removed)
-        _clear_session_cache_by_phones(conn, removed)
-        _delete_sign_events_by_phones(conn, removed)
+        _cascade_phone_owned(conn, removed)
         for i, a in enumerate(accounts):
             try:
                 conn.execute(
@@ -2079,11 +2144,7 @@ def batch_account_ops(ops):
                     ).fetchone()
                     conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
                     if row is not None:
-                        _delete_time_prefs_by_phones(conn, [row["phone"]])
-                        # 2026-08-28 审查 M1 补：批量彻底删除是 Web 唯一入口，
-                        # 原先漏清理会话缓存（凭据残留，详见 delete_accounts_by_owner）
-                        _clear_session_cache_by_phones(conn, [row["phone"]])
-                        _delete_sign_events_by_phones(conn, [row["phone"]])  # M2
+                        _cascade_phone_owned(conn, [row["phone"]])
                 else:
                     raise ValueError(f"未知批量账号操作: {kind}")
             conn.commit()
@@ -2413,9 +2474,7 @@ def purge_deleted_users_hard(emails):
                     ).fetchall()
                 ]
                 conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
-                _delete_time_prefs_by_phones(conn, phones)
-                _clear_session_cache_by_phones(conn, phones)  # 连带清理会话缓存
-                _delete_sign_events_by_phones(conn, phones)  # M2：事件连带清理
+                _cascade_phone_owned(conn, phones)
                 # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
                 # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
                 cur = conn.execute(
@@ -2593,11 +2652,7 @@ def batch_user_ops(ops):
                     ).fetchall()
                     conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
                     phones = [r["phone"] for r in rows]
-                    _delete_time_prefs_by_phones(conn, phones)
-                    # 2026-08-28 审查 M1 补：与 delete_user_with_accounts 对齐，
-                    # 批量路径同样漏了会话缓存清理（凭据残留）
-                    _clear_session_cache_by_phones(conn, phones)
-                    _delete_sign_events_by_phones(conn, phones)  # M2
+                    _cascade_phone_owned(conn, phones)
                     conn.execute("DELETE FROM users WHERE email=?", (email,))
                     _delete_user_delete_requests(conn, email)  # M4
                 else:
@@ -3276,113 +3331,26 @@ def sign_events_recent_date(stage, max_days=30):
     return ""
 
 
-# ---------------------------------------------------------------------------
-# 在线校验异步任务（A4 异步化，v15）
-# ---------------------------------------------------------------------------
-VERIFY_JOB_RETENTION_DAYS = 7  # 保留期（与账号软删同档）
+def update_account_status_if(account_id, new_status, expect_status, reject_reason=None):
+    """CAS 更新账号状态：仅当当前状态仍是 expect_status 时才写。返回是否写入。
 
-VERIFY_JOB_PENDING = "pending"
-VERIFY_JOB_RUNNING = "running"
-VERIFY_JOB_DONE = "done"
-VERIFY_JOB_REJECTED = "rejected"
-# 取消是终态，但不在需求给的 pending|running|done|rejected 四态里——取消既不是
-# "完成"也不是"校验未通过"，用一个独立值表达，避免把用户的主动撤销记成拒绝。
-VERIFY_JOB_CANCELLED = "cancelled"
-
-
-def _now_ts():
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def create_verify_job(account_id, phone, owner_email):
-    """创建一条在线校验任务，返回 (job_id, created_at)。"""
-    conn = get_conn()
-    ts = _now_ts()
-    with _conn_lock:
-        cur = conn.execute(
-            "INSERT INTO verify_jobs (account_id, phone, owner_email, status, created_at) "
-            "VALUES (?,?,?,?,?)",
-            (account_id, phone, owner_email, VERIFY_JOB_PENDING, ts),
-        )
-        conn.commit()
-        return cur.lastrowid, ts
-
-
-def get_verify_job(job_id):
-    """单条任务（dict）或 None。"""
-    with _conn_lock:
-        row = get_conn().execute(
-            "SELECT * FROM verify_jobs WHERE id=?", (job_id,)
-        ).fetchone()
-    return dict(row) if row else None
-
-
-def claim_verify_job(job_id):
-    """pending → running（CAS）。返回是否抢到——抢不到说明已被取消或已在跑。"""
-    conn = get_conn()
-    with _conn_lock:
-        cur = conn.execute(
-            "UPDATE verify_jobs SET status=?, started_at=? WHERE id=? AND status=?",
-            (VERIFY_JOB_RUNNING, _now_ts(), job_id, VERIFY_JOB_PENDING),
-        )
-        conn.commit()
-        return cur.rowcount == 1
-
-
-def finish_verify_job(job_id, error=""):
-    """把 running 任务落终态（error 非空 → rejected，否则 done）。
-
-    CAS 在 running 上：任务若已被取消或被超时看门狗收口，这里自然 0 行命中，
-    不会把终态改写掉。返回是否写入。
+    人类决定优先：管理员在异步校验执行期间审批（pending → active）后，迟到的
+    校验结果不得把管理员的决定静默回滚；反向（管理员已拒绝）同样不覆盖，
+    以保留管理员写的理由。按 id 定位（accounts.phone 全局唯一，但 id 不受改绑影响）。
     """
     conn = get_conn()
-    status = VERIFY_JOB_REJECTED if error else VERIFY_JOB_DONE
-    with _conn_lock:
-        cur = conn.execute(
-            "UPDATE verify_jobs SET status=?, error=?, finished_at=? "
-            "WHERE id=? AND status=?",
-            (status, error or "", _now_ts(), job_id, VERIFY_JOB_RUNNING),
-        )
-        conn.commit()
+    with _conn_lock, conn:
+        if reject_reason is None:
+            cur = conn.execute(
+                "UPDATE accounts SET status=? WHERE id=? AND status=?",
+                (new_status, account_id, expect_status),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE accounts SET status=?, reject_reason=? WHERE id=? AND status=?",
+                (new_status, reject_reason, account_id, expect_status),
+            )
         return cur.rowcount == 1
-
-
-def cancel_verify_job(job_id):
-    """取消任务（仅 pending 可取消）。返回是否成功。"""
-    conn = get_conn()
-    with _conn_lock:
-        cur = conn.execute(
-            "UPDATE verify_jobs SET status=?, finished_at=? WHERE id=? AND status=?",
-            (VERIFY_JOB_CANCELLED, _now_ts(), job_id, VERIFY_JOB_PENDING),
-        )
-        conn.commit()
-        return cur.rowcount == 1
-
-
-def count_active_verify_jobs():
-    """未落终态的任务数（pending + running）。"""
-    with _conn_lock:
-        row = get_conn().execute(
-            "SELECT COUNT(*) AS n FROM verify_jobs WHERE status IN (?,?)",
-            (VERIFY_JOB_PENDING, VERIFY_JOB_RUNNING),
-        ).fetchone()
-    return row["n"] if row else 0
-
-
-def purge_verify_jobs(days=VERIFY_JOB_RETENTION_DAYS):
-    """清理保留期外的校验任务；失败仅告警，返回删除行数。"""
-    try:
-        conn = get_conn()
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        with _conn_lock:
-            cur = conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (cutoff,))
-            conn.commit()
-            return cur.rowcount
-    except Exception as e:
-        logger.warning("清理 verify_jobs 失败: %s", e)
-        return 0
 
 
 def _event_cleanup(conn):
@@ -3481,36 +3449,40 @@ def time_pref_stats():
         return []
 
 
-def _delete_time_prefs_by_phones(conn, phones):
-    """按手机号批量删除自选（账号删除/清空时连带，须在调用方事务内）。"""
+def _cascade_phone_owned(conn, phones):
+    """账号物理删除时按手机号连带清理全部以 phone 为键的业务数据（须在调用方事务内）。
+
+    单点收口：此前是 time_prefs / session_cache / sign_events 三处手写散点，
+    每新增一张 phone 键表就要在全部删除路径上人肉补一遍——漏项是必然的
+    （verify_jobs 就是这样漏掉的：删号后其明文手机号与错误文本驻留至保留期满，
+    account_id 还悬空）。现在所有删除路径只调本函数，schema 里凡以 phone 为键
+    的表都必须在这里列出；`tests/test_verify_jobs_lifecycle.py` 有枚举测试兜底，
+    漏加会直接红。
+
+    注意：不能用 clear_session_cache()（其自带 BEGIN IMMEDIATE 事务，嵌套会撞
+    "within a transaction"），故在调用方事务内直接 DELETE。
+    软删除路径不调用（宽限期内恢复后事件历史仍需保留）。
+    """
     if not phones:
         return
-    conn.executemany("DELETE FROM time_prefs WHERE phone=?", [(p,) for p in phones])
+    rows = [(p,) for p in phones]
+    conn.executemany("DELETE FROM time_prefs WHERE phone=?", rows)
+    conn.executemany("DELETE FROM session_cache WHERE phone=?", rows)
+    conn.executemany("DELETE FROM sign_events WHERE phone=?", rows)
+    conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
 
 
 def _clear_session_cache_by_phones(conn, phones):
-    """按手机号批量清除会话缓存（账号删除/改绑时连带，须在调用方事务内）。
+    """按手机号批量清除会话缓存（**部分清理**路径专用，须在调用方事务内）。
 
-    2026-08-27 审查残留：删除/改绑路径此前不清 session_cache，旧手机号的加密
-    cookie/csrf 行以手机号为主键永久驻留。与 _delete_time_prefs_by_phones 同款连带。
-    注意：不能用 clear_session_cache()（其自带 BEGIN IMMEDIATE 事务，嵌套会撞
-    "within a transaction"），故在调用方事务内直接 DELETE。
+    与 `_cascade_phone_owned` 的区别是刻意的：改绑手机号（旧号的 cookie/csrf
+    主键与 AAD 均按旧号，不复用）与用户注销（账号软删但不立即物理清除，
+    time_prefs 保留至物理清除、sign_events 保留供恢复后查看历史）这两条路径
+    只停用凭据缓存，不动其余历史数据。新的"账号物理删除"路径请用前者。
     """
     if not phones:
         return
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
-
-
-def _delete_sign_events_by_phones(conn, phones):
-    """按手机号批量清除签到事件（账号物理删除时连带，须在调用方事务内）。
-
-    2026-08-28 审查 M2：sign_events 明文落 phone 且删号不清理——已删账号的
-    明文手机号会驻留至 180 天保留期满。与 time_prefs/session_cache 同款连带
-    （软删除不调用：宽限期内恢复后事件历史仍需保留）。
-    """
-    if not phones:
-        return
-    conn.executemany("DELETE FROM sign_events WHERE phone=?", [(p,) for p in phones])
 
 
 def _delete_user_delete_requests(conn, email):

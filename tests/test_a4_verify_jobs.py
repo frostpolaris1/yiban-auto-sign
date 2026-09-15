@@ -301,8 +301,8 @@ class VerifyJobsSchemaTest(_A4Base):
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(verify_jobs)")}
         self.assertEqual(
             cols,
-            {"id", "account_id", "phone", "owner_email", "status", "error",
-             "created_at", "started_at", "finished_at"},
+            {"id", "account_id", "phone", "owner_email", "status", "prev_status",
+             "error", "created_at", "started_at", "finished_at"},
         )
 
 
