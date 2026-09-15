@@ -14,7 +14,7 @@
 与「日志页」的展示层——这是既有口径，移动实现不改行为。
 
 ⚠ `mask_email` 仍留在 `web/app.py`：它与 signin 侧的邮箱脱敏公式不同，合并会改变
-用户可见输出（docs/refactor/52 的 D-8），须与前端一起改，不在此处顺手统一。
+用户可见输出，须与前端展示口径一起改，不在此处顺手统一。
 """
 import re
 from urllib.parse import parse_qsl, urlsplit, urlunsplit

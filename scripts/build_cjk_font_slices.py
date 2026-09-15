@@ -22,7 +22,7 @@ npm `noto-sans-sc@37.0.0`（14 个版本、2019–2024 持续发布，看似更�
 标点 32 / 64、全角 149 / 240、扩展 A 27），采用即覆盖降级，故不采用。
 其它实测候选（`@betteroffice/fonts-cjk@0.1.0` 仅含 Regular 且为 0.1.0 双版本同日出包、
 `@electron-fonts/noto-sans-sc@1.2.0` 为 electron 注入用途且仅 2 个版本）均不更成熟，
-详见 `docs/refactor/16-font-source-mature.md`。
+来源与覆盖率口径见仓库内的字体说明文档。
 
 本脚本改用 **npm 上的完整 Noto Sans SC 静态字体**（OFL-1.1）：
 `md2note-fonts@1.0.0` 的 `vfs_fonts.js` 内嵌 `NotoSansSC-Regular.otf`（400）与

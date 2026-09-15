@@ -1314,7 +1314,7 @@ class YibanClient:
             return
         if not account_still_signable(self.account):
             # 账号在登录过程中被删除/停用：不落库。session_cache 的清理全按现存账号行
-            # 的 phone 驱动，为已消失的账号写入会留下**永久孤儿**凭据缓存（DAT-1）。
+            # 的 phone 驱动，为已消失的账号写入会留下**永久孤儿**凭据缓存。
             logger.debug(f"[{self.account.phone}] 账号已删除/停用，不保存会话缓存")
             return
         cookies = dict_from_cookiejar(self.session.cookies)
@@ -1757,7 +1757,7 @@ def _second_run_drop_done(accounts):
         return accounts
     # 已了结 = success/already/**no_task**（按 main 自身的"已执行"口径：no_task 指
     # "今天没任务"，同样无需重跑）。原实现漏了 no_task，补签轮会对这些账号再走一遍
-    # 完整登录——多一轮全站真实登录，且与 UNDONE_STATUSES 口径矛盾（SCH-7）。
+    # 完整登录——多一轮全站真实登录，且与 UNDONE_STATUSES 口径矛盾。
     done = {
         p for p, st in recorded.items()
         if st in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
@@ -2092,7 +2092,7 @@ def attempt_signin(account):
     """
     phone = account.phone
     if not account_still_signable(account):
-        # 运行期复核（DAT-1）：账号在本轮执行期间被删除/停用 → 不发起任何请求。
+        # 运行期复核：账号在本轮执行期间被删除/停用 → 不发起任何请求。
         # 原实现只在启动时筛一次，被删账号仍会被完整登录并签退，还会把会话缓存
         # 写回一个已不存在的账号（孤儿行，见 db.account_is_signable 的说明）。
         return False, "账号已被删除或停用", True, STATUS_USER_CANCELLED
@@ -2287,7 +2287,7 @@ def _save_cred_state(data, touched=None):
     其余账号不受影响）；为 None 时整体覆盖（保留给测试/极端场景）。
 
     增量合并是必需的：全量轮从启动起就持有内存快照，若收尾整体覆盖，运行期间
-    Web 端刚清除的暂停会被重新写回——该账号继续用错密码登录、加重风控（SCH-6）。
+    Web 端刚清除的暂停会被重新写回——该账号继续用错密码登录、加重风控。
     """
     try:
         if touched is None:
@@ -2623,7 +2623,7 @@ def _window_closed(sch_cfg, now_dt):
 
     此前本函数只按 sign_end - edge_back 算，而 _schedule_blocks 在"有效窗口被裁剪
     吃空"时会回退到默认窗口——于是出现"有 80 分钟的完整计划、却整轮判时段已结束、
-    零请求"（SCH-3）。现两处都走 window.bounds（含同一套回退）。
+    零请求"。现两处都走 window.bounds（含同一套回退）。
     """
     return window.bounds(sch_cfg).is_closed(now_dt)
 
@@ -2720,7 +2720,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         不覆盖已有记录：本轮（或上一轮补签）已经得出的 failed / no_position 等真实
         原因必须保留——原实现无条件改写，会把"重试没赶上窗口"记成"窗口外"，
         日历上丢掉失败原因，`has_real_failure` 也一起变 False（失败告警被吞掉）。
-        补签轮起跑时窗口已关闭同理：整轮零请求却不该改写首轮结论（SCH-2）。
+        补签轮起跑时窗口已关闭同理：整轮零请求却不该改写首轮结论。
         """
         recorded = _daily_statuses()
         for _ra in rest_accs:
@@ -3398,7 +3398,7 @@ def main():
         # 用户自暂停账号不参与调度，也不计入容量
         _cfg = _schedule_config()
         _win = window.bounds(_cfg)
-        # 预检按**剩余**有效窗口算（SCH-4）：本进程此刻才起跑，已流逝的窗口签不了。
+        # 预检按**剩余**有效窗口算：本进程此刻才起跑，已流逝的窗口签不了。
         # 原实现用完整窗口算，迟启动时按满容量放行且不告警，超出的账号只能落
         # skipped_window——管理员看不到任何提示。
         _rest_sec = _win.remaining_sec(clock.now())

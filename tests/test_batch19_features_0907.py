@@ -303,7 +303,7 @@ class CapacityFormulaTest(_Base):
             self.assertLess(trimmed, full)
 
     def test_degenerate_window_falls_back_like_engine(self):
-        # 2026-09-15（D-3/SCH-3）：退化窗口（起止同点/裁剪吃空）时，网页与引擎
+        # 退化窗口（起止同点/裁剪吃空）时，网页与引擎
         # 一致地回退默认窗口（06:30~07:50、默认裁剪各 60s），故容量**不是** 0。
         # 原实现网页内联算"原始窗口 − 裁剪"、引擎按回退窗口排计划 → 出现
         # "引擎有完整计划、网页容量显示 0"的自相矛盾。
@@ -314,7 +314,7 @@ class CapacityFormulaTest(_Base):
             self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_trimmed_empty_window_matches_engine_plan(self):
-        """裁剪吃空 → 回退窗口；网页容量与引擎计划同源（SCH-3 主场景）。"""
+        """裁剪吃空 → 回退窗口；网页容量与引擎计划同源。"""
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((7, 0), (7, 1))), \
              mock.patch.object(self.webapp, "edge_config", return_value=(300, 300)), \

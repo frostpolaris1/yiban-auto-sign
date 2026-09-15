@@ -625,7 +625,7 @@ def clear_fuse_pause(phone):
 
     经 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）。原实现自己读整个
     文件、删一条、再整体写回且**完全不持锁**：与签到进程收尾保存并发时，按自己的
-    读取结果重写会抹掉对方写入的其他账号记录（DAT-2）。文件不存在时无需清除，
+    读取结果重写会抹掉对方写入的其他账号记录。文件不存在时无需清除，
     静默返回——用户每次编辑账号都会走到这里，按 I/O 失败告警会刷屏。
     """
     try:
@@ -1693,8 +1693,13 @@ def _start_verify_job(clean, username, account_id, fails, limits):
 
 
 def verify_async_enabled():
-    """异步校验开关：默认开（`YIBAN_ACCOUNT_VERIFY` 开启时）；可用
-    `YIBAN_VERIFY_ASYNC=0` 退回同步带闸路径（运维急停：异步路径异常时不必回滚版本）。
+    """在线校验异步开关：**默认关**，显式置 `YIBAN_VERIFY_ASYNC=1` 才启用。
+
+    异步路径把外呼交给后台任务、请求线程不再被占用（长任务不拖垮整站），
+    但**结果需要前端轮询 `/api/verify-jobs/<id>` 才能展示**——当前前端尚未实现该轮询，
+    故默认走同步带闸路径：用户提交账号时当场得到校验结论（与界面现状一致）。
+    前端就绪后把默认值改为开即可（两侧契约已在 `yiban/attempt/jobs.py` 与
+    `/api/verify-jobs` 端点就位，测试也按显式开关覆盖了两条路径）。
 
     与 `YIBAN_ACCOUNT_VERIFY` 同口径读 `.env`（`os.environ` 优先，便于临时覆盖）——
     只读 os.environ 会让"只配 .env"的常规部署用不上这个开关。留在这里而不下沉到
@@ -1704,7 +1709,7 @@ def verify_async_enabled():
     raw = os.environ.get("YIBAN_VERIFY_ASYNC")
     if raw is None:
         raw = read_env(ENV_FILE).get("YIBAN_VERIFY_ASYNC", "")
-    return str(raw).strip().lower() not in ("0", "false", "off", "no")
+    return str(raw).strip().lower() in ("1", "true", "on", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -2412,7 +2417,7 @@ def _capacity_estimate(gap=0):
     **刻意用完整有效窗口、不扣已流逝时间**：本函数服务设置页展示与**保存闸门**
     （"按新设置预估容量 < 当前账号数则拒绝保存"），问的是"这套配置能容纳几个"。
     若按时段扣减，管理员在窗口末尾将永远无法保存设置。引擎侧预检问的是"今天还能
-    签几个"，那里才用 `remaining_sec()`（SCH-4）。
+    签几个"，那里才用 `remaining_sec()`。
     """
     win = yb_window.bounds({
         "sign_start": _sign_window()[0], "sign_end": _sign_window()[1],
