@@ -40,17 +40,26 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+# 包导入引导：`yiban/` 在仓库根，而直接运行本脚本时 sys.path[0] 是 scripts/。
+# 这是**过渡机制**——M3 起本脚本转为兼容壳、由 CLI 入口（`python -m yiban.cli`）调用，
+# 届时本引导随"清 sys.path 注入"一并移除。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 # 共享模块（同目录）：加密（与 web 共用密钥与密文格式）与 SQLite 数据访问层
-import account_crypto
-import db  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
-import env_lock  # 探针 once 模式自动关闭 .env（跨进程写锁）
-import locks  # 跨进程文件锁统一原语（状态文件 / 日志 handler）
-import mailer  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
-import notify  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
-import requests
-from Crypto.Cipher import PKCS1_v1_5
-from Crypto.PublicKey import RSA
-from requests.utils import cookiejar_from_dict, dict_from_cookiejar
+import account_crypto  # noqa: E402
+import db  # noqa: E402  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
+import env_lock  # noqa: E402  # 探针 once 模式自动关闭 .env（跨进程写锁）
+import locks  # noqa: E402  # 跨进程文件锁统一原语（状态文件 / 日志 handler）
+import mailer  # noqa: E402  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
+import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
+import requests  # noqa: E402
+from Crypto.Cipher import PKCS1_v1_5  # noqa: E402
+from Crypto.PublicKey import RSA  # noqa: E402
+from requests.utils import cookiejar_from_dict, dict_from_cookiejar  # noqa: E402
+
+from yiban import status as yiban_status  # noqa: E402  （须在引导之后导入）
 
 # 密码学安全随机数生成器（用于定位生成等安全敏感场景）
 _secure_random = secrets.SystemRandom()
@@ -316,37 +325,24 @@ PROBE_HARD_FAIL_RE = re.compile(
     r"|WAF|风控|拦截"
 )
 
-# 签到状态码（写 sign-state 状态文件，web 状态显示的事实源）与日志符号
-STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
-STATUS_ALREADY = "already"               # 今日已签到（重复执行时服务器告知）
-STATUS_NO_TASK = "no_task"               # 今日无需签到（服务器确认今日无任务）
-STATUS_FAILED = "failed"                 # 最终失败（重试耗尽）
-STATUS_RETRYING = "retrying"             # 重试中
-STATUS_SKIPPED_WINDOW = "skipped_window"  # 未在签到时段（窗口外）
-STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空）
-# 易班侧无签到点位（2026-09-01 独立状态）：登录成功、signPosition 返回 code=0 但
-# Position 为空（任务未配置/当日任务已关闭）。此前并入 STATUS_FAILED——与凭据/网络
-# 真失败混淆：触发"签到失败"告警轰炸、把补签闸门判为未了结白跑一轮全量。
-# 独立状态后：展示可区分、不按失败告警、不触发补签重跑（重试拿不到就是拿不到）。
-STATUS_NO_POSITION = "no_position"
-STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
-STATUS_USER_CANCELLED = "user_cancelled"  # 用户自取消（用户暂停自己的签到任务）
-STATUS_PENDING = "pending"               # 待签（未执行/无记录）
-# 全局暂停（管理员 Web UI 一键暂停：整站停止自动签到）。
-# 注意：本进程不产此状态——暂停时 main() exit(2)，由 run.sh 依据 YIBAN_GLOBAL_PAUSE=1
-# 在「日状态文件」写入 GLOBAL_PAUSED（区别于普通 SKIPPED，供运维/监控区分）；
-# 此处保留常量与符号，供显示层消费日状态时映射。
-STATUS_GLOBAL_PAUSED = "global_paused"
+# 签到状态码与日志/日历符号：**定义在 yiban.status（唯一事实源）**，此处为别名。
+# 历史上 web/app.py 另定义了一份同名常量与映射表，两份会各自漂移（实测 web 侧缺
+# no_position/global_paused、signin 侧缺 pending）；收口后状态码只有一处定义。
+STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
+STATUS_ALREADY = yiban_status.STATUS_ALREADY
+STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
+STATUS_FAILED = yiban_status.STATUS_FAILED
+STATUS_RETRYING = yiban_status.STATUS_RETRYING
+STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
+STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
+STATUS_NO_POSITION = yiban_status.STATUS_NO_POSITION
+STATUS_PAUSED = yiban_status.STATUS_PAUSED
+STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
+STATUS_PENDING = yiban_status.STATUS_PENDING
+STATUS_GLOBAL_PAUSED = yiban_status.STATUS_GLOBAL_PAUSED
 
-# 状态码 → 日志/日历符号（与 web 显示层一致）
-STATUS_SYMBOL = {
-    STATUS_SUCCESS: "✅", STATUS_ALREADY: "✅", STATUS_NO_TASK: "➖",
-    STATUS_FAILED: "❌", STATUS_RETRYING: "🔄",
-    STATUS_SKIPPED_WINDOW: "⛔", STATUS_SKIPPED_NORANGE: "⛔",
-    STATUS_NO_POSITION: "🚫",
-    STATUS_PAUSED: "⏸️", STATUS_USER_CANCELLED: "⏹️",
-    STATUS_GLOBAL_PAUSED: "⏸",
-}
+# 状态码 → 日志/日历符号（同一对象，非副本）
+STATUS_SYMBOL = yiban_status.SYMBOL
 
 # 凭据类失败关键词（熔断器计数用）：账号密码问题——连续失败达到阈值后暂停签到。
 # 注意：不含 WAF/风控关键词（那是环境问题不是凭据问题，不计入）。
@@ -2251,12 +2247,9 @@ def _write_sched_done(counts=None):
 #     崩溃或压根没跑起来 → 必须补跑；
 #   - 存在未了结账号 = 状态文件里任一账号落 UNDONE_STATUSES。
 # 无状态文件/文件损坏一律按"未了结"处理（宁多跑一轮，不漏签）。
-UNDONE_STATUSES = frozenset((
-    # 与本文件的状态常量一致（写成字面量是为了让 run.sh 侧只依赖本模块，不依赖枚举导入）
-    "failed", "retrying", "pending",
-    "skipped_window", "skipped_norange",
-    "no_position",
-))
+# 「未了结」状态集合：定义在 yiban.status（唯一事实源），此处为同一对象的别名
+# （docker/scheduler.py 亦别名引用它；测试断言三者同一身份）。
+UNDONE_STATUSES = yiban_status.UNDONE_STATUSES
 
 # `--second-run-check` 的退出码契约（run.sh 据此分支，勿随意改动）
 SECOND_RUN_CHECK_NEED = 10   # 需要补跑第二轮
