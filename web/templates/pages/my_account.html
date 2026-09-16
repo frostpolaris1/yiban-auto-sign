@@ -13,8 +13,8 @@
 {% block title %}我的账号 · 易班自动签到{% endblock %}
 
 {% block content %}
-{# page_sub 留空：同上，卡片标题即覆盖面，页头不再复述 #}
-{{ body('我的账号', '',
+{# 副标题描述本页覆盖面（账号 / 自选时间 / 登录凭据），不复述下方卡片名逐个列举 #}
+{{ body('我的账号', '管理本人的易班账号、自选签到时间与登录凭据。',
         request.script_root + '/my/calendar', false, true) }}
 {% endblock %}
 
