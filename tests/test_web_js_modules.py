@@ -327,6 +327,30 @@ class JsAssemblyGuardTest(unittest.TestCase):
                 + "\n确需下载文件（blob）时，请在本测试的 _BARE_FETCH_ALLOW 里显式登记并说明原因"
             )
 
+    def test_loading_states_always_have_an_end(self):
+        """加载态必须有终止保证：请求带超时信号、导航进度条带兜底收尾。
+
+        背景（用户实拍：总览页有概率"一直加载、一直不完成"，不可稳定复现）：
+        ① fetch 默认没有超时，网络静默掉线或服务端线程占满时 Promise 永久挂起 →
+          骨架/遮罩/在途按钮永远不会结束；② 顶部导航进度条由新页面的 core.js 收尾，
+          那次点击若没真正导航（被页面逻辑拦下或浏览器取消）就停在 90%。
+        两处都必须存在上界，否则同样的卡死会静默回归（浏览器侧无法在单测里复现）。
+        """
+        core = _read(os.path.join(JS_DIR, "core.js"))
+        self.assertIn("AbortController", core, "YB.api 的 fetch 必须挂可中止的超时信号")
+        self.assertRegex(
+            core, r"setTimeout\s*\(\s*function\s*\(\s*\)\s*\{\s*ctl\.abort\(\)",
+            "超时到点必须 abort 本次请求（否则请求无上界）",
+        )
+        self.assertRegex(
+            core, r"navGuardTimer\s*=\s*setTimeout",
+            "导航进度条必须有兜底计时器（否则点击未导航时停在 90% 不消失）",
+        )
+        self.assertRegex(
+            core, r'addEventListener\("pagehide",\s*finishNavProgress\)',
+            "真实导航发生时须取消兜底（由新页面负责收尾）",
+        )
+
     def test_settings_mail_never_backfills_masked_values(self):
         """SMTP 行内编辑不得把脱敏值写进输入框 —— 打码值只允许作 placeholder。
 
