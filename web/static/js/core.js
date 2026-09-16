@@ -85,6 +85,15 @@
     var e = new Error("网络连接失败，请检查网络后重试");
     e.network = true; e.isNetwork = true; e.cause = cause; return e;
   }
+  function timeoutError() {
+    var e = new Error("请求超时，请检查网络后重试");
+    e.network = true; e.isNetwork = true; e.timeout = true; return e;
+  }
+  // 请求超时上限：fetch 默认**没有超时**，网络静默掉线（手机切换网络、NAT 静默丢弃）或
+  // 服务端线程占满时，Promise 会一直挂着 —— 页面上的骨架/加载条/在途禁用按钮就永不结束
+  // （用户反馈"总览页有概率一直加载、一直不完成"，即此形态）。给每个请求挂 AbortSignal，
+  // 超时按网络错误处理：既有失败态与「重试」入口随即接管，不再出现"永远转圈"。
+  var API_TIMEOUT_MS = 20000;
   function genericMessage(status) {
     return status === 413 ? "请求内容过大，已拒绝"
       : status === 400 ? "请求参数有误"
@@ -111,13 +120,24 @@
     var write = req.method === "POST" || req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH";
     if (write && csrfToken) headers["X-CSRF-Token"] = csrfToken;
     if (req.headers) forEach(Object.keys(req.headers), function (k) { headers[k] = req.headers[k]; });
-    return fetch(url(req.path), { method: req.method, headers: headers, body: body, credentials: "same-origin" })
+    // 超时兜底：只会 abort 本次请求，失败按网络错误抛出（见 timeoutError）。
+    // 写请求不加自动重试——重试语义仍由 handleResponse 的 401/403 分支独占。
+    var timer = null, ctl = (typeof AbortController === "function") ? new AbortController() : null;
+    var opts = { method: req.method, headers: headers, body: body, credentials: "same-origin" };
+    if (ctl) opts.signal = ctl.signal;
+    if (ctl) timer = setTimeout(function () { ctl.abort(); }, API_TIMEOUT_MS);
+    var done = function () { if (timer) { clearTimeout(timer); timer = null; } };
+    return fetch(url(req.path), opts)
       .then(function (resp) {
         return resp.text().then(function (txt) { return handleResponse(resp, txt, req, retried); });
-      }, function (err) { throw networkError(err); })
+      }, function (err) {
+        // 超时中止与网络故障分开报文案：前者提示"超时"（同一动作值得重试），
+        // 后者才是断网（检查网络）。两者都带 network 语义，页面失败态与重试入口一致。
+        throw (err && err.name === "AbortError") ? timeoutError() : networkError(err);
+      })
       // 写请求成功返回后整体失效外壳缓存（保守实现：写后重取，绝不把旧壳数据粘住；
       // 退出/登录这类会话边界本身也是写请求，缓存随之清空，不会串会话）。
-      .then(function (data) { if (write) cacheClearAll(); return data; });
+      .then(function (data) { if (write) cacheClearAll(); done(); return data; }, function (err) { done(); throw err; });
   }
   function handleResponse(resp, txt, req, retried) {
     var data = null;
@@ -1130,7 +1150,11 @@
      <link rel=prefetch> 拉到的整页无法在导航时复用，只会在单 worker 上白跑一遍
      渲染；各页共享的 JS/CSS 本身已带版本号缓存。 */
   var NAV_PROGRESS_KEY = "yiban-nav-progress-at";
-  var navBar = null, navTimer = null, navValue = 0;
+  var navBar = null, navTimer = null, navValue = 0, navGuardTimer = null;
+  // 兜底收尾：进度条靠**新页面**的 core.js 补到 100%，若那次点击最终没发生导航
+  // （被页面自身逻辑拦下、或浏览器取消了导航），条会永远停在 90%。
+  // 兜底计时器保证任何情况下都会自行收尾，不留下"一直在加载"的假象。
+  var NAV_GUARD_MS = 8000;
   var NAV_FILE_RE = /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|log|csv|xlsx?|docx?|pptx?|mp4|mp3|txt|json)$/i;
   function isNavLink(a) {
     if (!a || !a.getAttribute) return false;
@@ -1170,8 +1194,14 @@
       if (navValue >= 90) { navValue = 90; clearInterval(navTimer); }
       navSetWidth(navValue);
     }, 120);
+    // 兜底：到点仍未发生导航（本页还在）就自行收尾
+    clearTimeout(navGuardTimer);
+    navGuardTimer = setTimeout(function () {
+      if (document.visibilityState !== "hidden") finishNavProgress();
+    }, NAV_GUARD_MS);
   }
   function finishNavProgress() {
+    clearTimeout(navGuardTimer);
     if (!navBar || reducedMotion()) return;
     clearInterval(navTimer);
     navSetWidth(100);
@@ -1202,6 +1232,10 @@
       var a = (t && t.closest) ? t.closest("a[href]") : null;
       if (isNavLink(a)) startNavProgress();
     }, true);
+    // 真正发生导航时（新文档即将接管）取消兜底：条的去向由新页面负责，不再自行收尾；
+    // 从往返缓存恢复时（back/forward）把可能残留的条清掉，避免"回来还挂着"。
+    window.addEventListener("pagehide", finishNavProgress);
+    window.addEventListener("pageshow", function (e) { if (e.persisted) finishNavProgress(); });
   }
 
   /* ---------- 浏览器级显示偏好（localStorage） ----------
