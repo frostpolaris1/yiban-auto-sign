@@ -57,6 +57,9 @@ from requests.utils import cookiejar_from_dict, dict_from_cookiejar  # noqa: E40
 
 from yiban import clock, cred_state, window  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
+from yiban.fyiban import algo as fyiban_algo  # noqa: E402
+from yiban.fyiban import headers as fyiban_headers  # noqa: E402
+from yiban.fyiban import waf as fyiban_waf  # noqa: E402
 from yiban.infra import (  # noqa: E402
     account_crypto,
     env_lock,  # 探针 once 模式自动关闭 .env（跨进程写锁）
@@ -210,33 +213,12 @@ def _setup_cli_logging():
 logger = logging.getLogger("yiban")
 
 
-# 易班 App 版本特征：两处请求头（KILLYIBAN_HEADERS / usersure 提交）必须同值，
-# 不一致可能触发服务端一致性校验；旧流程 iOS UA 尾段同步引用。
-# 2026-09-15 由 5.2.2 升至 5.2.3（依据：易班官方 5.2.3 安装包的清单版本号实测）
-YIBAN_APP_VERSION = "5.2.3"
-
-# 易班 iOS 客户端 UA（与 Auto-Test 保持一致）
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/4.0 "
-    "Chrome/104.0.5112.97 Mobile Safari/537.36 yiban_iOS/" + YIBAN_APP_VERSION,
-    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    "X-Requested-With": "com.yiban.app",
-    "Origin": "https://app.uyiban.com",
-    "Referer": "https://app.uyiban.com/",
-    "Connection": "close",
-}
-
-# KillYiBan 同款请求头（默认登录方式；与同作者的 FYIBAN 同源，KillYiBan 脱胎于 FYIBAN）
-# 注意：usersure 提交时会被显式覆盖为不带 Origin/Referer（见 login_killyiban 第 3 步，
-# 实测带 Origin → e001 无效应用端编号），其余请求用此头
-KILLYIBAN_HEADERS = {
-    "User-Agent": "Yiban",
-    "AppVersion": YIBAN_APP_VERSION,
-    "Origin": "https://c.uyiban.com",
-    "Referer": "https://c.uyiban.com/",
-    "Connection": "close",
-}
+# 易班 App 请求头与版本特征：**衍生自上游 FYIBAN**，已迁到第三方隔离层
+# （yiban/fyiban/headers.py，来源与差异见 yiban/fyiban/PROVENANCE.md）。
+# 本模块继续以同名引用，调用方无需改动。
+YIBAN_APP_VERSION = fyiban_headers.YIBAN_APP_VERSION
+HEADERS = fyiban_headers.HEADERS
+KILLYIBAN_HEADERS = fyiban_headers.KILLYIBAN_HEADERS
 
 
 # ---------------------------------------------------------------------------
@@ -519,54 +501,10 @@ WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
 # ---------------------------------------------------------------------------
 # 定位生成：多边形内随机点
 # ---------------------------------------------------------------------------
-def point_in_polygon(x, y, polygon):
-    """射线法判断点是否在多边形内。"""
-    n = len(polygon)
-    inside = False
-    j = n - 1
-    for i in range(n):
-        xi, yi = polygon[i]
-        xj, yj = polygon[j]
-        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi):
-            inside = not inside
-        j = i
-    return inside
-
-
-def generate_position_in_polygon(polygon_points):
-    """在多边形内生成随机点（缩放质心算法）。"""
-    if not polygon_points:
-        return None
-
-    min_lng = min(p[0] for p in polygon_points)
-    max_lng = max(p[0] for p in polygon_points)
-    min_lat = min(p[1] for p in polygon_points)
-    max_lat = max(p[1] for p in polygon_points)
-
-    center_lng = sum(p[0] for p in polygon_points) / len(polygon_points)
-    center_lat = sum(p[1] for p in polygon_points) / len(polygon_points)
-
-    scaled_points = [
-        ((p[0] - center_lng) * 0.7 + center_lng, (p[1] - center_lat) * 0.7 + center_lat)
-        for p in polygon_points
-    ]
-
-    for _ in range(5000):
-        lng = center_lng + (max_lng - min_lng) * 0.2 * (_secure_random.random() - 0.5)
-        lat = center_lat + (max_lat - min_lat) * 0.2 * (_secure_random.random() - 0.5)
-        if point_in_polygon(lng, lat, scaled_points) and point_in_polygon(lng, lat, polygon_points):
-            return (lng, lat)
-
-    # 兜底：质心 + 小范围随机抖动。避免多账号/多次触发共用同一质心坐标
-    # （固定坐标聚集会成为风控行为指纹），同时保持仍在签到范围内。
-    jitter = min(max_lng - min_lng, max_lat - min_lat) * 0.01  # 范围边长的 1%，约几十米量级
-    jitter = max(jitter, 1e-6)  # 极小多边形时防止抖动归零
-    for _ in range(50):
-        fallback = (center_lng + _secure_random.uniform(-jitter, jitter),
-                    center_lat + _secure_random.uniform(-jitter, jitter))
-        if point_in_polygon(fallback[0], fallback[1], polygon_points):
-            return fallback
-    return (center_lng, center_lat)
+# 算法**衍生自上游 FYIBAN**（缩放质心 + 射线法），已迁到第三方隔离层；
+# 采样分布与兜底策略的本地差异见 yiban/fyiban/PROVENANCE.md。
+point_in_polygon = fyiban_algo.point_in_polygon
+generate_position_in_polygon = fyiban_algo.generate_position_in_polygon
 
 
 # ---------------------------------------------------------------------------
@@ -1374,99 +1312,12 @@ class YibanClient:
         return "window.onload=setTimeout" in resp.text and 'eval("qo=eval;qo(po);")' in resp.text
 
     def _solve_ydclearance(self, text):
-        """纯 Python 解析易盾 WAF（https_ydclearance）挑战，不执行任何远程 JS。
+        """纯 Python 解析易盾 WAF 挑战（实现与来源见 yiban/fyiban/waf.py）。
 
-        挑战模板固定（易盾 WAF v1，f.yiban.cn 与 kuaidaili/89ip 同款）：
-        `oo` 十六进制字节数组 + 三步固定变换（取反+旋转-常量、逆向差分、
-        加常量+旋转），最后跳过 `qo % K` 的下标、逐字节异或挑战参数拼出
-        `po` 字符串（含 cookie 赋值与跳转路径）。各步数值常量随挑战变化，
-        用正则从 JS 中提取后在 Python 中复刻运算；任何一步提取失败都抛
-        明确错误，绝不 eval 远程代码。
+        白名单是**本项目的安全策略**，以参数注入解析器——第三方层不内联安全校验。
         """
-        fn_m = re.compile(r"(function ([a-z]{2,})\(.+) ?</script>").findall(text)
-        if not fn_m:
-            raise RuntimeError("ydclearance 挑战解析失败: 未找到挑战函数")
-        js_code = fn_m[0][0]
-        if 'eval("qo=eval;qo(po);")' not in js_code:
-            raise RuntimeError("ydclearance 挑战解析失败: 模板特征缺失（eval qo/po 未找到）")
+        return fyiban_waf.solve_ydclearance(text, allow_url=_is_fyiban_url)
 
-        # 挑战参数：window.onload=setTimeout("<fn>(<arg>)", 200)
-        arg_m = re.compile(r'window\.onload=setTimeout\("' + fn_m[0][1] + r"\(([0-9]+).+").findall(
-            text
-        )
-        if not arg_m:
-            raise RuntimeError("ydclearance 挑战解析失败: 未找到挑战参数")
-        arg = int(arg_m[0])
-
-        # oo 字节数组
-        arr_m = re.compile(r"oo = (\[[0-9a-fA-Fx,\s]+?\])").findall(js_code)
-        if not arr_m:
-            raise RuntimeError("ydclearance 挑战解析失败: 未找到 oo 数组")
-        oo = [int(x, 16) for x in re.findall(r"0x([0-9a-fA-F]+)", arr_m[0])]
-        if len(oo) < 4:
-            raise RuntimeError("ydclearance 挑战解析失败: oo 数组过短")
-
-        # 变换 A（尾部到头部）：取反 → 旋转 → 减常量
-        ta = re.search(
-            r'"qo=(\d+); do\{oo\[qo\]=\(-oo\[qo\]\)&0xff;(.+?)\} while\(--qo>=2\);',
-            js_code,
-        )
-        if not ta:
-            raise RuntimeError("ydclearance 挑战解析失败: 变换 A 未找到")
-        n_a = int(ta.group(1))
-        ta_num = re.search(r">>(\d+)", ta.group(2))
-        ta_shift_l = re.search(r"<<(\d+)", ta.group(2))
-        ta_sub = re.search(r"-(\d+)\)&0xff", ta.group(2))
-        if not (ta_num and ta_shift_l and ta_sub):
-            raise RuntimeError("ydclearance 挑战解析失败: 变换 A 常量未找到")
-        for i in range(n_a, 1, -1):
-            oo[i] = (-oo[i]) & 0xFF
-            oo[i] = (
-                ((oo[i] >> int(ta_num.group(1))) | ((oo[i] << int(ta_shift_l.group(1))) & 0xFF))
-                - int(ta_sub.group(1))
-            ) & 0xFF
-
-        # 变换 B（尾部到头部）：逆向差分
-        tb = re.search(r"qo = (\d+); do \{ oo\[qo\] = \(oo\[qo\] - oo\[qo - 1\]\)", js_code)
-        if not tb:
-            raise RuntimeError("ydclearance 挑战解析失败: 变换 B 未找到")
-        for i in range(int(tb.group(1)), 2, -1):
-            oo[i] = (oo[i] - oo[i - 1]) & 0xFF
-
-        # 变换 C（头部到尾部）：加常量 → 旋转
-        tc = re.search(r"if \(qo > (\d+)\) break; oo\[qo\] = (.+?); qo\+\+", js_code)
-        if not tc:
-            raise RuntimeError("ydclearance 挑战解析失败: 变换 C 未找到")
-        tc_num = re.search(r"\+ (\d+)\) & 0xff\) \+ (\d+)\) & 0xff\) << (\d+)", tc.group(2))
-        tc_shift_r = re.search(r">> (\d+)\)", tc.group(2))
-        if not (tc_num and tc_shift_r):
-            raise RuntimeError("ydclearance 挑战解析失败: 变换 C 常量未找到")
-        n_c = int(tc.group(1))
-        tc_add1, tc_add2, tc_shift_l = (int(x) for x in tc_num.groups())
-        for i in range(1, n_c + 1):
-            v = (oo[i] + tc_add1) & 0xFF
-            v = (v + tc_add2) & 0xFF
-            oo[i] = ((v << tc_shift_l) & 0xFF) | (v >> int(tc_shift_r.group(1)))
-
-        # 拼 po：跳过 qo % K 的下标，逐字节异或挑战参数
-        tk = re.search(r"if \(qo % (\d+)\) po \+= String\.fromCharCode\(oo\[qo\] \^ [A-Za-z_]+\)", js_code)
-        if not tk:
-            raise RuntimeError("ydclearance 挑战解析失败: po 拼接逻辑未找到")
-        k = int(tk.group(1))
-        po = "".join(chr(oo[i] ^ arg) for i in range(1, n_c + 1) if i % k)
-
-        cookie_m = re.compile(r"https?_ydclearance=([0-9a-zA-Z-_]+);?").findall(po)
-        path_m = re.compile(r'window\.document\.location="(.+)"').findall(po)
-        if not cookie_m or not path_m:
-            raise RuntimeError("ydclearance 挑战解析失败: 解码结果中未提取到 cookie/跳转路径")
-        target = path_m[0]
-        if target.startswith("/"):
-            target = "https://f.yiban.cn" + target
-        if not _is_fyiban_url(target):
-            raise RuntimeError("ydclearance 跳转目标不在白名单")
-        return cookie_m[0], target
-
-    # ---- 签到 -------------------------------------------------------------
     def signin(self):
         """执行签到，返回 (success: bool, message: str, skip: bool, status: str)。
 
