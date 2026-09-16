@@ -13,6 +13,22 @@ logger = logging.getLogger("yiban.store.accounts")
 ACCOUNT_AUDIT_INACTIVE = ("pending", "rejected")
 
 
+def signs_in(row):
+    """该账号行是否会发起易班签到请求（**容量/配额口径的唯一判据**）。
+
+    审核态未通过（pending/rejected）的行永不签到——引擎加载（signin
+    `_load_accounts_from_file`）与运行期复核（`is_signable`）用的是同一条条件。
+    把它们计入容量会让"永不签到的存量"长期占满名额：新账号在提交时被
+    「账号数量已达上限」误拒，而设置页/总览还会把它们显示成"正常"。
+
+    行 dict 可能来自 `load_accounts_raw`（无 status 的旧档等于已通过审核）。
+
+    user_paused（用户自暂停）**仍计入**：那是用户主动且一键可恢复的状态，
+    账号仍在名册里；设置页三分类已把它单独列出。
+    """
+    return not row.get("deleted") and row.get("status") not in ACCOUNT_AUDIT_INACTIVE
+
+
 def is_signable(account_id):
     """该账号当前是否仍可签到（行存在、未软删、审核态仍生效）。
 
@@ -31,9 +47,9 @@ def is_signable(account_id):
         row = db.get_conn().execute(
             "SELECT deleted, status FROM accounts WHERE id=?", (account_id,)
         ).fetchone()
-    if row is None or row["deleted"]:
+    if row is None:
         return False
-    return row["status"] not in ACCOUNT_AUDIT_INACTIVE
+    return signs_in(dict(row))
 
 
 def purge_orphan_session_cache(conn):

@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""按天状态文件清理入口（宿主 cron 调用；策略见 `yiban/state_gc.py`）。
+
+宿主 `scripts/yiban-cleanup.sh` 只是本脚本的薄包装：策略与实现在 Python 侧唯一
+（原先规则写在 bash 里，容器侧另写一份，新增一类按日文件没有机制提醒补规则）。
+
+目录解析与 run.sh 同口径（顺序也一致）：
+    YIBAN_STATE_DIR → 默认 /var/log/yiban；日志目录 = dirname(YIBAN_LOG_FILE) → 默认 state_dir
+（旧脚本用 `YIBAN_DATA_DIR`，那个键全项目只此一处使用：改为同一套键后，把
+YIBAN_STATE_DIR 指到别处的部署也能被正确清理——此前会去清默认目录。）
+
+退出码：0 = 正常（无过期文件也是 0）；1 = 保留期配置非法或目录不可用（响亮失败，
+不静默退化——静默退化会让磁盘慢慢涨满而没人发现）。
+清理结果追加到 `<state_dir>/cleanup.log`（运维按它判断清理是否在跑）。
+"""
+import datetime
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from yiban import state_gc  # noqa: E402
+
+
+def state_dir_from_env(env=None):
+    env = os.environ if env is None else env
+    return env.get("YIBAN_STATE_DIR", "").strip() or "/var/log/yiban"
+
+
+def log_dir_from_env(state_dir, env=None):
+    env = os.environ if env is None else env
+    log_file = env.get("YIBAN_LOG_FILE", "").strip()
+    if not log_file:
+        return state_dir
+    # 不取绝对路径：run.sh 用的是 `dirname "$LOG_FILE"`（相对值即相对当前目录），
+    # 这里保持同一语义，避免"配置相同、清理目录不同"
+    return os.path.dirname(log_file) or state_dir
+
+
+def _append_log(log_path, message):
+    """追加一行清理日志（0600：与状态目录其它文件同权限）。"""
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+    except OSError:
+        pass
+
+
+def main(argv=None):
+    os.umask(0o077)
+    state_dir = state_dir_from_env()
+    log_dir = log_dir_from_env(state_dir)
+    log_path = os.path.join(state_dir, "cleanup.log")
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not os.path.isdir(state_dir):
+        _append_log(log_path, f"[{stamp}] 状态目录不存在，跳过: {state_dir}")
+        print(f"状态目录不存在，跳过: {state_dir}", file=sys.stderr)
+        return 1
+    try:
+        hold = state_gc.retention_days("log")
+        snap = state_gc.retention_days("snapshot")
+        removed, detail = state_gc.sweep(state_dir, log_dir)
+    except ValueError as e:
+        # 与旧脚本"无法计算保留截止日期，跳过"同向：响亮失败，不静默不清理
+        _append_log(log_path, f"[{stamp}] 保留期配置非法，跳过清理: {e}")
+        print(f"保留期配置非法，跳过清理: {e}", file=sys.stderr)
+        return 1
+    if state_gc.sweep_empty_cred_state(state_dir):
+        removed += 1
+        detail.append("cred-state.json（空内容）")
+    if removed > 0:
+        cutoff = (datetime.date.today() - datetime.timedelta(days=hold)).strftime("%Y-%m-%d")
+        _append_log(
+            log_path,
+            f"[{stamp}] 已清理 {removed} 个过期文件"
+            f"（日志/状态保留 {hold} 天，快照保留 {snap} 天，截止 {cutoff}）: "
+            + "、".join(detail[:20])
+            + ("…" if len(detail) > 20 else ""),
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -127,7 +127,12 @@ fi
 # 判定口径收敛在 signin.need_second_run()（容器同样复用它），不在此处重复实现。
 # 注意：07:12 的 cron 保留不动，作为「06:31 进程被宿主杀死」的兜底；它拿到锁时会因
 # YIBAN_SECOND_RUN=1 而不再评估第三轮，并在收尾写 SECOND_DONE_MARKER。
+# 缺省值必须与 yiban/window.DEFAULT_RETRY_HM 一致（signin 的告警抑制按该值判断
+# "是否还有下一轮兜底"；tests/test_retry_slot_time.py 会比对两处字面量）。
 SECOND_HHMM="${YIBAN_SECOND_RUN_TIME:-07:12}"
+# 导出给子进程：signin 从环境读同一键（见 yiban.window.retry_hm），
+# 使"改了补签时刻"在所有取用点同时生效
+export YIBAN_SECOND_RUN_TIME="$SECOND_HHMM"
 # 逃生开关：显式置 0 可关闭进程内补签轮（仅调试/特殊运维场景用）
 SECOND_ROUND_ENABLED="${YIBAN_HOST_SECOND_ROUND:-1}"
 
