@@ -20,6 +20,7 @@ import shutil
 import tempfile
 import unittest
 import unittest.mock as mock
+from typing import ClassVar
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -87,25 +88,50 @@ class SlotMarkerAtomicWriteTest(unittest.TestCase):
 
 
 class SigninWritesAreAtomicTest(unittest.TestCase):
-    """signin 侧的状态文件写入同口径（本项目防止该类回归的既有约定）。"""
+    """signin 侧的状态文件写入同口径（本项目防止该类回归的既有约定）。
+
+    引擎按"执行一轮"的边界切分后，这些写入各自落在实现模块里：按日状态与全量收尾标记
+    在 `yiban/engine/state_io.py`，探针状态在 `probe.py`，用户失败邮件额度账本在
+    `alerts.py`，兼容壳 `scripts/signin.py` 只剩转发。故断言直接读实现模块，并额外锁住
+    "实现只有一份"——壳里再出现同名定义就是两份实现，改一份另一份照旧跑。
+    """
+
+    #: 状态文件写入函数 → 实现所在文件（相对仓库根）
+    WRITERS: ClassVar[dict] = {
+        "_write_sign_state": "yiban/engine/state_io.py",
+        "_write_sched_done": "yiban/engine/state_io.py",
+        "_write_probe_state": "yiban/engine/probe.py",
+        "_user_fail_mail_reserve": "yiban/engine/alerts.py",
+    }
+
+    def _read(self, rel):
+        with open(os.path.join(BASE, *rel.split("/")), encoding="utf-8") as f:
+            return f.read()
 
     def test_signin_state_writers_use_replace(self):
-        with open(os.path.join(BASE, "scripts", "signin.py"), encoding="utf-8") as f:
-            src = f.read()
-        # 直接落盘的四处：按日状态 / 全量收尾标记 / 探针状态 / 用户失败邮件额度账本
-        for func in ("_write_sign_state", "_write_sched_done", "_write_probe_state",
-                     "_user_fail_mail_reserve"):
+        for func, rel in self.WRITERS.items():
             with self.subTest(func=func):
+                src = self._read(rel)
                 body = src.split(f"def {func}(")[-1][:2500] if f"def {func}(" in src else ""
-                self.assertTrue(body, f"{func} 不存在（断言会恒真，需同步改名）")
+                self.assertTrue(body, f"{func} 不在 {rel}（断言会恒真，需同步改名）")
                 self.assertIn("os.replace", body, f"{func} 未用临时名原子替换")
+
+    def test_writers_have_single_implementation(self):
+        """同上四处不得在兼容壳里留下第二份定义。"""
+        shell = self._read("scripts/signin.py")
+        for func in self.WRITERS:
+            with self.subTest(func=func):
+                self.assertNotIn(
+                    f"def {func}(", shell,
+                    f"scripts/signin.py 又出现了一份 {func}（应为转发到 yiban/engine/）",
+                )
 
     def test_cred_state_write_is_delegated(self):
         """熔断状态文件的原子写归 `yiban/cred_state.py`（唯一读写入库）；
-        signin 不得自己再写一份（原子性与并发由 tests/test_cred_state_concurrency.py 钉住）。"""
-        with open(os.path.join(BASE, "scripts", "signin.py"), encoding="utf-8") as f:
-            src = f.read()
-        body = src.split("def _save_cred_state(")[-1][:1200]
+        引擎不得自己再写一份（原子性与并发由 tests/test_cred_state_concurrency.py 钉住）。"""
+        src = self._read("yiban/engine/state_io.py")
+        # 只取本函数体（到下一个顶层 def 为止）——按字符数截取会把相邻函数一起断言
+        body = src.split("def _save_cred_state(", 1)[1].split("\ndef ", 1)[0]
         self.assertIn("cred_state.update(", body)
         self.assertIn("cred_state.merge(", body)
         self.assertNotIn("open(", body)

@@ -28,6 +28,10 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 邮件组件的打桩目标：引擎直连 `yiban.mail`（`scripts/mailer.py` 只是兼容壳，且未必被
+# 本进程导入），故打桩打在 `signin.mailer` 上——与套件其余调用点同口径；
+# 旧写法 `sys.modules["mailer"]` 依赖那份壳恰好在 sys.modules 里，已弃用。
+
 TEST_KEY = "c" * 64
 ADMIN_USER = "root@test.local"
 ADMIN_PASS = "TestPass1234!"
@@ -340,7 +344,7 @@ class UserFailMailDailyCapTest(unittest.TestCase):
             sent.append(to)
             return True
 
-        with mock.patch.object(sys.modules["mailer"], "send_user", side_effect=_ok):
+        with mock.patch.object(signin.mailer, "send_user", side_effect=_ok):
             signin.send_user_fail_mail("owner@test.local", "13800138001", "失败A")
             signin.send_user_fail_mail("owner@test.local", "13800138001", "失败B（手动重跑）")
         self.assertEqual(len(sent), 1, "同账号当日第二封应被每日限频抑制")
@@ -352,7 +356,7 @@ class UserFailMailDailyCapTest(unittest.TestCase):
             sent.append(to)
             return True
 
-        with mock.patch.object(sys.modules["mailer"], "send_user", side_effect=_ok):
+        with mock.patch.object(signin.mailer, "send_user", side_effect=_ok):
             signin.send_user_fail_mail("owner@test.local", "13800138001", "a")
             signin.send_user_fail_mail("owner@test.local", "13900139002", "b")
             self.assertEqual(len(sent), 2, "不同账号互不挤占额度")
@@ -384,7 +388,7 @@ class MailSummaryTruncationTest(unittest.TestCase):
         signin.MAIL_SUMMARY_MAX_ENTRIES = 3
         for i in range(5):
             signin._collect_admin_mail("易班签到失败", f"条目{i}")
-        with mock.patch.object(sys.modules["mailer"], "send_admin_alert",
+        with mock.patch.object(signin.mailer, "send_admin_alert",
                                return_value=True,
                                side_effect=lambda s, t, to=None: self.sent.append(t)), \
              mock.patch.object(sys.modules["db"], "admin_mail_recipients",
@@ -447,7 +451,7 @@ class ProbeWordingTest(unittest.TestCase):
         signin._mail_summary.clear()
 
     def test_flush_phase_label(self):
-        with mock.patch.object(sys.modules["mailer"], "send_admin_alert",
+        with mock.patch.object(signin.mailer, "send_admin_alert",
                                return_value=True,
                                side_effect=lambda s, t, to=None: self.sent.append(t)), \
              mock.patch.object(sys.modules["db"], "admin_mail_recipients",
