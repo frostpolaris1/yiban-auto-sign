@@ -99,9 +99,10 @@ from _frontend_src import frontend_source
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
-import notify  # noqa: E402
 
+from yiban import notify  # noqa: E402  # 推送组件实现包（旧壳已删除）
 from yiban.infra import account_crypto  # noqa: E402
+from yiban.notify import ledger as notify_ledger  # noqa: E402  # 账本内部态走子模块
 
 OLD_KEY = "a" * 64
 NEW_KEY = "b" * 64
@@ -743,13 +744,13 @@ class RekeyMailSmtpsTest(_B14Fixture):
                          "--new-key", NEW_KEY, "--force", *extra], cwd=self.work)
 
     def _smtp_list_in_fresh_process(self):
-        """另起进程跑 mailer.smtp_list()——排除进程内缓存，按部署口径验证 .env 可用。"""
+        """另起进程跑 yiban.mail.smtp_list()——排除进程内缓存，按部署口径验证 .env 可用。"""
         env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
         env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONPATH"] = os.path.join(BASE, "scripts")
+        env["PYTHONPATH"] = BASE
         r = subprocess.run(
             [sys.executable, "-c",
-             "import json, mailer; print(json.dumps(mailer.smtp_list(), ensure_ascii=False))"],
+             "import json; from yiban import mail as mailer; print(json.dumps(mailer.smtp_list(), ensure_ascii=False))"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             cwd=self.work, env=env, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -973,9 +974,9 @@ class _B14AlertGateBase(unittest.TestCase):
         _write_env(self.env_file, list(self.env_seed))
         for k in [k for k in os.environ if k.startswith("YIBAN_NOTIFY_")]:
             os.environ.pop(k, None)
-        n = self.webapp.notify
-        n._throttle_ts.clear()
-        for led in n._LEDGERS.values():
+        # 内部态复位打在账本实现模块上（包只转发公共面）
+        notify_ledger._throttle_ts.clear()
+        for led in notify_ledger._LEDGERS.values():
             led["state"].update({"date": "", "count": 0})
             led["notice"].update({"pending": False, "notified": False, "warned": False})
         self.webapp._mail_alert_ts.clear()
@@ -1761,7 +1762,7 @@ class BothChannelsDeadCombinationVariantB14Test(_B14AlertGateBase):
                                           "YIBAN_MAIL_PASS": "smtp-auth-code-fake"}), \
              mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
              mock.patch.object(self.webapp.mailer, "send_admin_alert") as mail, \
-             mock.patch.object(self.webapp.notify.requests, "post") as post:
+             mock.patch.object(self.webapp.notify.transport.requests, "post") as post:
             self.assertTrue(self.webapp._send_channel_health_report())
             status = self.webapp._alert_channel_status()
         self.assertEqual(status["mail_recipients"], 0, "前置：这封日报确实无人可收")

@@ -48,8 +48,18 @@ OVERSIZED = {
     )),
     # scripts/signin.py 已按"执行一轮"的边界切分为 yiban/engine/*（最大 round.py 507 行），
     # 旧路径只剩兼容壳（约 130 行），故不再登记。
-    # scripts/notify.py 已按计划拆为 yiban/notify/{config,ledger,transport}（每个 ≤600 行），
-    # 旧路径只剩兼容壳，故不再登记。脚本侧仍保留的两项超大登记见下。
+    # yiban/cli.py：命令行统一入口（argparse 装配 + 七个子命令实现 + 单行 JSON 字段契约）。
+    # 整块服务于同一件事——命令行面与它的退出码契约。拆开只增加跨文件对偶：新增子命令
+    # 必须同时改"解析器"与"handler"，两个文件互为唯一调用方，没有独立变更轴（门禁判据②③）。
+    # 当前 700 余行，其中约 45 行是给 agent 看的字段契约表。下一步：若超过 900 行，按
+    # 「透传 sign/probe」与「只读运维子命令（config/capacity/state/db/version）」一分为二。
+    "yiban/cli.py": (None, (
+        "命令行统一入口：argparse 装配 + 七个子命令实现 + 单行 JSON 字段契约。整块服务于"
+        "同一件事——命令行面与其退出码（每加一个子命令都要同时改解析与分发，拆成两个"
+        "文件只增加跨文件对偶，没有独立变更轴）。当前 700 余行（含约 45 行字段契约表与"
+        "逐条硬约定说明）；若增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
+        "（config/capacity/state/db/version）」切成两个模块。"
+    )),
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),
     "scripts/rekey_accounts.py": (800, "运维工具：密钥轮换脚本，与本项目运行时解耦"),

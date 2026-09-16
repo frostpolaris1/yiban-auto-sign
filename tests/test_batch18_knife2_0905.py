@@ -32,6 +32,12 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：本类打的是**发送层**内部名
+# （`_send_serverchan` 在 transport 里被 send 调用，打在包上拦不住），故 `notify`
+# 绑 transport；账本内部态走 ledger 子模块。
+from yiban.notify import ledger as notify_ledger  # noqa: E402
+from yiban.notify import transport as notify  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
 SCT_KEY = "SCT406257TESTTESTTESTTEST"
@@ -499,12 +505,7 @@ class Batch18Knife2SummaryMailTest(unittest.TestCase):
 
 
 class Batch18Knife2NotifyLedgerTest(unittest.TestCase):
-    """scripts/notify.py 侧 M8：login_fail 独立账本。"""
-
-    @classmethod
-    def setUpClass(cls):
-        global notify
-        import notify
+    """yiban/notify 侧 M8：login_fail 独立账本。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-knife2-notify-")
@@ -518,8 +519,8 @@ class Batch18Knife2NotifyLedgerTest(unittest.TestCase):
         for k in ("YIBAN_LOGINFAIL_DAILY_MAX", "YIBAN_NOTIFY_DAILY_MAX",
                   "YIBAN_NOTIFY_URGENT_DAILY_MAX"):
             os.environ.pop(k, None)
-        notify._throttle_ts.clear()
-        notify._skip_logged.clear()
+        notify_ledger._throttle_ts.clear()
+        notify_ledger._skip_logged.clear()
         self._reset_ledgers()
 
     def tearDown(self):
@@ -529,13 +530,13 @@ class Batch18Knife2NotifyLedgerTest(unittest.TestCase):
                   "YIBAN_NOTIFY_URGENT_DAILY_MAX"):
             os.environ.pop(k, None)
         self._reset_ledgers()
-        notify._throttle_ts.clear()
-        notify._skip_logged.clear()
+        notify_ledger._throttle_ts.clear()
+        notify_ledger._skip_logged.clear()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _reset_ledgers(self):
-        for led in (notify._general_daily, notify._urgent_daily,
-                    notify._loginfail_daily):
+        for led in (notify_ledger._general_daily, notify_ledger._urgent_daily,
+                    notify_ledger._loginfail_daily):
             led["state"].update({"date": "", "count": 0})
             led["notice"].update({"pending": False, "notified": False, "warned": False})
         # 磁盘是唯一事实源（_with_ledger_locked 每次读盘合并）：只重置内存不删盘，
@@ -600,7 +601,7 @@ class Batch18Knife2NotifyLedgerTest(unittest.TestCase):
         self.assertTrue(os.path.exists(self._ledger_file()))
         disk = self._read_disk()
         self.assertEqual(disk["login_fail"]["count"], 1)
-        self.assertEqual(disk["login_fail"]["date"], notify._daily_today())
+        self.assertEqual(disk["login_fail"]["date"], notify_ledger._daily_today())
         # 既有两本账不受影响
         self.assertIn("general", disk)
         self.assertIn("urgent", disk)

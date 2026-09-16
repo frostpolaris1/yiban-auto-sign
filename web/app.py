@@ -273,11 +273,13 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 </html>"""
 import child_env  # noqa: E402
 import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
-import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
-import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
+# 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
+# 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
 from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
+from yiban import mail as mailer  # noqa: E402
+from yiban import notify  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402  # 易班端点唯一出处（web 不写字面量）
 from yiban.infra import (  # noqa: E402
@@ -285,6 +287,7 @@ from yiban.infra import (  # noqa: E402
     env_io,
     env_lock,
 )
+from yiban.mail import config as mail_config  # noqa: E402  # 邮箱配置层：打码等内部名走子模块
 from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
 
 # 默认路径（与 run.sh 保持一致，可用参数覆盖）
@@ -1909,7 +1912,7 @@ def send_notification(title, content, urgent=False, force=False, ledger=None):
     - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
       （按个人开关过滤）+ 所有开启接收的管理员用户邮箱；主管理员关闭
       YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。邮件不受 urgent 影响，始终发送。
-    - Webhook：scripts/notify.py 组件（Server酱/自定义 URL，加密配置 +
+    - Webhook：`yiban/notify` 组件（Server酱/自定义 URL，加密配置 +
       同类型节流 + 每日预算 + 响应检查，兼容旧明文 YIBAN_NOTIFY_URL）。未配置则静默跳过。
       urgent=True 标记重要告警：设置页开启「仅推送重要告警」后，仅 urgent 通知会推手机，
       其余（用户日常改密/签到结果类等）仅走邮件，把推送额度留给真正威胁系统/账号安全的事件。
@@ -1924,7 +1927,7 @@ def send_notification(title, content, urgent=False, force=False, ledger=None):
     """
     recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
-    # SMTP 额度）；webhook 由 notify.py 独立节流。force=True 时绕过（必须送达场景）
+    # SMTP 额度）；webhook 由 yiban.notify 独立节流。force=True 时绕过（必须送达场景）
     if recipients and (force or _mail_alert_due(title)):
         mailer.send_admin_alert(title, content, to=",".join(recipients))
     elif recipients:
@@ -4199,10 +4202,10 @@ def create_app(host=None):
 
         smtps：SMTP 发信条目列表（mailer.smtp_list 解密结果；pass 绝不回显，
         仅以 has_pass 标记该条是否已有授权码；user 同顶层字段口径
-        经 mailer._mask_addr 打码——发件账号也属敏感地址，编辑时留空即沿用）。
+        经 mail_config._mask_addr 打码——发件账号也属敏感地址，编辑时留空即沿用）。
         条目级 admin_to 已摘除（2026-09-08）：发送路径只读顶层旧键 ADMIN_TO，
         条目携带的收件人从不生效，历史死字段不再序列化/落盘。顶层 admin_to
-        是活字段（A 线告警收件算法的唯一来源，见 mailer._admin_tos），保留
+        是活字段（A 线告警收件算法的唯一来源，见 mail_config.admin_recipients），保留
         序列化与状态行展示——管理员必须始终可见告警发往何处。
         """
         cfg = mailer.get_config()
@@ -4219,7 +4222,7 @@ def create_app(host=None):
                 {
                     "host": str(e.get("host", "")),
                     "port": e.get("port", 465),
-                    "user": mailer._mask_addr(e.get("user")),
+                    "user": mail_config._mask_addr(e.get("user")),
                     "has_pass": bool(e.get("pass")),
                 }
                 for e in mailer.smtp_list()
@@ -4402,7 +4405,7 @@ def create_app(host=None):
             if new_addrs != set(old_admin_to):
                 # 变更后的收件人：走正常通道（落盘后 _alert_mail_recipients 已含新值）。
                 # 正文写新值但打码——告警正文不得回显完整邮箱（与 GET 同口径）。
-                shown = mailer._mask_addr(admin_to_val) if admin_to_val else "（已清空）"
+                shown = mail_config._mask_addr(admin_to_val) if admin_to_val else "（已清空）"
                 send_notification(
                     "邮件告警收件人变更告警",
                     f"告警收件人已变更: 新收件人 {shown}，"
@@ -4431,7 +4434,7 @@ def create_app(host=None):
             detail["smtps_count"] = len(smtps_list)
         if admin_to_val is not None:
             # 审计记打码值：留痕要能回答"收件人被谁改到哪个域名"，但不落完整地址
-            detail["admin_to"] = mailer._mask_addr(admin_to_val)
+            detail["admin_to"] = mail_config._mask_addr(admin_to_val)
         resp = {"ok": True}
         resp.update(detail)
         db.audit(
