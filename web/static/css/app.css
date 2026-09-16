@@ -2750,7 +2750,11 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-cell-check { width: 40px; }
 .acct-check { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; }
 .acct-cell-state { width: 44px; }
-.acct-cell-idx { width: 44px; color: var(--t-muted); text-align: right; font-variant-numeric: tabular-nums; }
+/* 数值列同样左对齐（用户 2026-09-16 定：全站表格统一左对齐）。
+   此前这里是 text-align:right：表头因 Adminator 的 .data-table thead th（0,1,2）
+   权重更高而始终左对齐，列上的声明只作用于数据格 → 同一列表头在左、数值在右，
+   视觉上像"这两列飘到右边那列去了"。保留等宽 + tabular-nums（数位仍然对齐）。 */
+.acct-cell-idx { width: 44px; color: var(--t-muted); font-variant-numeric: tabular-nums; }
 .acct-cell-name { font-weight: 600; color: var(--t-base); white-space: nowrap; min-width: 150px; }
 .acct-cell-phone { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; min-width: 190px; }
 .acct-cell-owner,
@@ -3074,7 +3078,7 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
   min-width: 190px;
 }
 .usr-cell-role { white-space: nowrap; }
-.usr-cell-count { width: 96px; color: var(--t-muted); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+.usr-cell-count { width: 96px; color: var(--t-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .usr-cell-time,
 .usr-cell-remain { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
 .usr-cell-time { min-width: 150px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -3430,12 +3434,13 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
    会把输入顶出所在列、挤压相邻列并裁掉末列按钮（真机实测 host 被裁成 smtp.qq.con）。
    改让输入填满所在列；列宽与窄屏堆叠见下方「SMTP 表」块。 */
 #sm-smtps .input { min-width: 0; }
-/* 数值右对齐 + 等宽：条目间可比、可扫读（教程 #15「数字对齐」）。端口列同时含表头。 */
+/* 数值列左对齐 + 等宽（用户 2026-09-16 定：全站表格统一左对齐，含表头）。
+   保留等宽与 tabular-nums：数位仍逐行对齐，只是左缘与表头对齐。 */
 #sm-smtps .num,
-#sm-smtps .num .input { text-align: right; }
+#sm-smtps .num .input { text-align: left; }
 #sm-smtps .num .input { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-/* 数值型输入统一等宽；**左对齐**（不是右对齐）—— 单值字段左对齐后与上方标签左缘同列，
-   扫读有共同锚点；右对齐只在同列多值需要按位比较时成立（那是表格的 .num 列，见上一条）。 */
+/* 数值型输入统一等宽左对齐：单值字段左对齐后与上方标签左缘同列，扫读有共同锚点
+   （表格数值列同样如此，见上一条）。 */
 .field .input[type="number"] {
   text-align: left;
   font-family: var(--font-mono);
@@ -3588,9 +3593,6 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
     color: var(--t-muted);
   }
   #sm-smtps .input { min-width: 0; width: 100%; }
-  /* 堆叠后端口不再是表格列，右对齐失去"按位比较"的意义，回到左对齐（含 ::before 标签） */
-  #sm-smtps .num,
-  #sm-smtps .num .input { text-align: left; }
   #sm-smtps td.sm-ops { display: flex; justify-content: flex-end; margin-top: 12px; }
   #sm-smtps .sm-empty-row td { padding: 12px 0; }
 }
