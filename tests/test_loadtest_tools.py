@@ -295,15 +295,18 @@ def test_probe_classify_bottlenecks():
 # ---------------------------------------------------------------------------
 # capacity_probe
 # ---------------------------------------------------------------------------
-def test_capacity_executor_capacity_uses_measured_cycle():
-    """单执行体容量 = 窗口 ÷ **实测周期**；周期已含间隔对齐，不得再加一次。
+def test_capacity_measured_cycle_adds_back_first_account_gap():
+    """周期还原：压测的"平均墙钟"少了"第一个账号不等待间隔"的那部分（gap / n）。
 
-    实测教训（2026-09-16 测试机）：生产间隔档实测周期 10.321s，若再 +10s 间隔
-    会把容量从 453 低估到 230（近一半），并得出"需要 33 个执行体"的错误结论。
+    实测教训（2026-09-16 测试机）：生产间隔档 gap=10 / 每进程 6 个账号，
+    平均墙钟 10.321s；补回 10/6 得周期 11.99s，与 2026-09-14 独立实测的
+    11.88s 吻合（不补则会高估容量约 16%）。
     """
-    assert capacity_probe.executor_capacity(4680, 10.321) == 453
+    assert round(capacity_probe.measured_cycle(10.321, 10, 6), 2) == 11.99
+    assert capacity_probe.measured_cycle(1.954, 0, 8) == 1.954   # 无间隔档原样
+    assert capacity_probe.measured_cycle(1.954, 10, 0) == 1.954  # 缺 per_proc 时不猜
+    assert capacity_probe.executor_capacity(4680, 11.99) == 390
     assert capacity_probe.executor_capacity(4680, 8.0) == 585
-    assert capacity_probe.executor_capacity(4680, 2.0) == 2340
     # 退化输入不得抛异常（除零/负数）
     assert capacity_probe.executor_capacity(4680, 0) == 0
     assert capacity_probe.executor_capacity(0, 8.0) == 0
@@ -357,6 +360,7 @@ def test_capacity_verdict_is_feasible_only_when_machine_holds():
         {"K": 4, "per_acct_wall_s": 13.0, "degradation_x": 1.63, "machine_cpu_pct": 80},
     ]
     v = capacity_probe.build_verdict(rows, users=5000, window_sec=4680, gap=10)
+    # rows 里没有 per_proc → 不做"补回首账号间隔"的还原，周期取实测墙钟 8.0s
     assert v["ok"] and v["single_executor_capacity"] == 585
     assert v["recommended_per_executor"] == 390
     assert v["executors_needed"] == 13
