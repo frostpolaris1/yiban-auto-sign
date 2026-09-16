@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+"""版本号单一来源 + 轮次横幅带版本号（发布门槛的自证前提）。
+
+**为什么需要这组用例**：`main` 的门槛要求"同一提交在生产机上完成 ≥3 个有效轮次"
+（PROMPT.md §6.10 / docs/dev/release-gate.md）。生产日志不自带版本号，所以台账
+靠"引擎在轮次开始时打印的版本号"与提交对齐。这要求两件事同时成立：
+
+1. 版本号只有**一个**定义处（`yiban/__init__.py`），web 侧与引擎都引用它；
+   一旦分叉，"日志里写的版本"就不再等于"代码的版本"，台账失效且无人察觉；
+2. 引擎**确实**把版本打进轮次横幅与汇总行（不能只写在文档里）。
+
+全程静态检查（读源码文本），不联网、不起进程。
+用法（项目根目录）：
+    python -m pytest tests/test_release_version_source.py -v
+"""
+import os
+import re
+import unittest
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 版本字面量**允许**出现的位置（其余运行时目录出现即视为第二来源）
+ALLOWED_LITERAL_FILES = {
+    "yiban/__init__.py",   # 唯一来源
+    "CHANGELOG.md",        # 人读的变更记录
+}
+SCAN_DIRS = ["scripts", "web", "yiban", "docker"]
+
+
+def _read(rel):
+    with open(os.path.join(BASE, rel), encoding="utf-8") as f:
+        return f.read()
+
+
+class SingleVersionSourceTest(unittest.TestCase):
+    def test_version_defined_once(self):
+        from yiban import __version__ as v
+        self.assertTrue(re.fullmatch(r"\d+\.\d+\.\d+", v), f"版本号格式异常: {v!r}")
+        literal = f'"{v}"'
+        offenders = []
+        for d in SCAN_DIRS:
+            root = os.path.join(BASE, d)
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [x for x in dirnames if x != "__pycache__"]
+                for name in filenames:
+                    if not name.endswith(".py"):
+                        continue
+                    full = os.path.join(dirpath, name)
+                    rel = os.path.relpath(full, BASE).replace(os.sep, "/")
+                    if rel in ALLOWED_LITERAL_FILES:
+                        continue
+                    if literal in _read(rel):
+                        offenders.append(rel)
+        self.assertEqual(
+            offenders, [],
+            f"版本字面量 {literal} 出现在多个文件：{offenders}；"
+            "版本只能定义在 yiban/__init__.py，其它处请引用 __version__",
+        )
+
+    def test_web_side_references_instead_of_redefining(self):
+        import web as web_pkg
+        from yiban import __version__ as v
+        self.assertEqual(web_pkg.__version__, v)
+        src = _read("web/__init__.py")
+        self.assertIn("from yiban import __version__", src)
+
+    def test_changelog_top_entry_matches(self):
+        from yiban import __version__ as v
+        head = "\n".join(_read("CHANGELOG.md").splitlines()[:8])
+        self.assertIn(f"v{v}", head, "CHANGELOG 顶部条目与本项目版本号不一致")
+
+
+class EngineLogsReleaseVersionTest(unittest.TestCase):
+    """引擎轮次横幅/汇总行必须带版本号——台账的唯一对齐依据。"""
+
+    def setUp(self):
+        self.src = _read("scripts/signin.py")
+
+    def test_round_banner_carries_version(self):
+        m = re.search(r"开始执行签到（v\{RELEASE_VERSION\}）", self.src)
+        self.assertIsNotNone(
+            m, "轮次横幅缺少版本号：发布门槛无法把生产轮次与提交对齐"
+        )
+
+    def test_summary_line_carries_version(self):
+        self.assertIn("签到汇总（v{RELEASE_VERSION}）", self.src)
+
+    def test_release_version_is_our_version_not_yiban_app_version(self):
+        """横幅里用的必须是**本项目**版本（勿与易班 App 版本 YIBAN_APP_VERSION 混同）。"""
+        self.assertRegex(
+            self.src, r"__version__ as RELEASE_VERSION",
+            "引擎没有以 RELEASE_VERSION 名义引用本项目版本",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
