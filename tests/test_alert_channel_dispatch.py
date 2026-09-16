@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import account_crypto
+from yiban.infra import account_crypto
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

@@ -19,7 +19,7 @@ if [ -r "$ENV_PATH" ]; then
         # 兼容 CRLF 编辑产生的行尾 CR
         value=${value%$'\r'}
         # 兼容 UTF-8 BOM 开头的 .env（Windows 记事本保存常见）：否则首行键名带 BOM
-        # 前缀被键名校验拒掉，宿主 cron 与 web 侧（utf-8-sig，见 scripts/env_io.py）
+        # 前缀被键名校验拒掉，宿主 cron 与 web 侧（utf-8-sig，见 yiban/infra/env_io.py）
         # 对同一文件读出不同配置（2026-09-08）
         key="${key#$'\xEF\xBB\xBF'}"
         # key/value 首尾空白去除（与 env_io.parse_env_file 的两侧 strip 同口径；

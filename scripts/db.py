@@ -24,22 +24,23 @@ import sys
 import threading
 import time
 
-# 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
-import account_crypto
-import env_io
-import env_lock
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
 
 # 包导入引导：`yiban/` 在仓库根，而本模块可能以 `scripts/` 为 sys.path[0] 被直接运行。
 # 与 signin.py 同款引导，随"清 sys.path 注入"（包结构收口）一并移除。
+# **必须先于任何 yiban 导入**（含下面的 infra 导入，以及函数内的延迟导入）——
+# 原先 infra 导入在引导之前时，`python3 scripts/list_duplicate_owners.py` 这类
+# 只 import db 的小 CLI 会 ModuleNotFoundError。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+# 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
 # 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
 # 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
 from yiban import clock  # noqa: E402
+from yiban.infra import account_crypto, env_io, env_lock  # noqa: E402
 from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 

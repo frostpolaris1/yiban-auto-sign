@@ -12,14 +12,16 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import account_crypto  # noqa: E402
-import env_lock  # noqa: E402
-import locks  # noqa: E402
+from yiban.infra import (  # noqa: E402
+    account_crypto,
+    env_lock,
+    locks,
+)
 
 
 def _posix_lock_worker(env_file, ready, go, attempting, entered, release):
     """POSIX 跨进程互斥测试子进程：等待 go 后尝试获取 env_write_lock。"""
-    import env_lock
+    from yiban.infra import env_lock
 
     ready.set()
     if not go.wait(5):

@@ -18,9 +18,12 @@ import secrets
 import threading
 from contextlib import suppress
 
-import env_io  # 同目录共享模块：.env 解析单一实现
-import env_lock
 from Crypto.Cipher import AES
+
+from yiban.infra import (
+    env_io,  # 同目录共享模块：.env 解析单一实现
+    env_lock,
+)
 
 logger = logging.getLogger("yiban-crypto")
 

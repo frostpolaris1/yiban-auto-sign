@@ -62,7 +62,7 @@ def update(mutate):
 
     所有写入方都必须走这里（见模块文档）。返回 mutate 的返回值。
     """
-    import locks
+    from yiban.infra import locks
     p = path()
     with locks.file_lock(p):
         data = read()

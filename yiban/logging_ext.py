@@ -17,7 +17,7 @@ signin / web 启动时都已把 `scripts/` 放进 sys.path。
 import logging
 import os
 
-import locks
+from yiban.infra import locks
 
 from . import clock
 

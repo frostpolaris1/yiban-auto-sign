@@ -13,11 +13,18 @@ import logging
 import os
 import smtplib
 import ssl
+import sys
 from email.header import Header
 from email.mime.text import MIMEText
 
-import account_crypto  # 同目录裸模块：SMTPS_ENC 密文加解密（AES-GCM，同 webhook 密钥口径）
-import env_io  # 同目录共享模块：.env 解析单一实现
+# 引导：以「文件路径」方式运行时 sys.path[0] 是 scripts/，仓库根不在其中——共享代码在
+# yiban/ 下，故入口先补仓库根（与 scripts/signin.py 同口径；包化完成后统一收口）。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from yiban.infra import (
+    account_crypto,  # SMTPS_ENC 密文加解密（AES-GCM，与 webhook 密钥同口径）
+    env_io,  # .env 解析单一实现
+)
 
 logger = logging.getLogger("mailer")
 

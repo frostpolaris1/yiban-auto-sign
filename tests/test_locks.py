@@ -19,10 +19,13 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-import env_lock  # noqa: E402
-import locks  # noqa: E402
 import notify  # noqa: E402
 import signin  # noqa: E402
+
+from yiban.infra import (  # noqa: E402
+    env_lock,
+    locks,
+)
 
 
 class LockPrimitiveTest(unittest.TestCase):

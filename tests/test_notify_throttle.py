@@ -34,8 +34,9 @@ import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import account_crypto  # noqa: E402
 import notify  # noqa: E402
+
+from yiban.infra import account_crypto  # noqa: E402
 
 KEY = "f" * 64
 SCT_KEY = "SCT406257TESTTESTTESTTESTTEST"

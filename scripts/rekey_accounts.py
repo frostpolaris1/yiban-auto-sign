@@ -77,10 +77,14 @@ import secrets
 import sqlite3
 import sys
 
+# 引导：以文件路径运行时 sys.path[0] 是 scripts/，仓库根不在其中——
+# 共享代码在 yiban/ 下，须补仓库根（scripts/ 仍留：db/signin 等兄弟模块尚未迁移）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import account_crypto
 import db
+
+from yiban.infra import account_crypto
 
 logger = logging.getLogger("yiban.rekey")
 
@@ -405,7 +409,7 @@ def update_env_key(env_path, new_key, extra=None):
     extra 的值必须是**调用方在锁内读到的现值算出来的**；若需要在写盘前读 .env，
     请改用 rotate_and_write_env。
     """
-    import env_lock
+    from yiban.infra import env_lock
 
     with env_lock.env_write_lock(env_path):
         _write_env_key(env_path, new_key, extra)
@@ -514,7 +518,7 @@ def rotate_and_write_env(env_path, new_key, old_key, skip_notify=False, skip_mai
     是文档允许的用法，不停服时设置页可能随时重写这些密文；
     锁外快照 + 锁内写入 = 把用户期间的修改覆盖回旧值。
     """
-    import env_lock
+    from yiban.infra import env_lock
 
     with env_lock.env_write_lock(env_path):
         notify_state, notify_raw = rotate_notify_secret(

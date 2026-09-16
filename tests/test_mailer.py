@@ -10,8 +10,9 @@ import os
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import account_crypto  # noqa: E402
 import mailer  # noqa: E402
+
+from yiban.infra import account_crypto  # noqa: E402
 
 _KEY = "a" * 64
 

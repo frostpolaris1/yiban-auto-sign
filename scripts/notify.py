@@ -45,19 +45,19 @@ import ipaddress
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager, suppress
 from urllib.parse import urlparse
 
-import locks
 import requests
 
-try:
-    from . import account_crypto, env_io
-except ImportError:  # 非包上下文（scripts/ 直接 import）
-    import account_crypto
-    import env_io
+# 引导：以「文件路径」方式运行时 sys.path[0] 是 scripts/，仓库根不在其中——共享代码在
+# yiban/ 下，故入口先补仓库根（与 scripts/signin.py 同口径；包化完成后统一收口）。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from yiban.infra import account_crypto, env_io, locks
 
 logger = logging.getLogger("notify")
 

@@ -33,8 +33,9 @@ import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import locks  # noqa: E402
 import notify  # noqa: E402
+
+from yiban.infra import locks  # noqa: E402
 
 KEY = "f" * 64
 
