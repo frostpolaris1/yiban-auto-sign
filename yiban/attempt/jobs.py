@@ -105,7 +105,7 @@ def run(job_id, clean, username, account_id, prev_status, fails, limits):
     if expired.is_set():
         return
     if verify_err:
-        import db
+        from yiban.store import db
         fail_kind = _hooks["record_failure"](fails, clean["phone"], verify_err, time.time())
         db.audit(username or "?", "account_verify_job_fail", mask(clean["phone"]),
                  f"异步校验未通过（{fail_kind}）")

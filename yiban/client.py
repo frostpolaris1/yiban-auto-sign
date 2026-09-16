@@ -53,7 +53,7 @@ class _SessionCache:
         任何缓存读失败都按未命中处理，绝不阻断正常登录。会话是否仍有效由
         `login_killyiban` 第 1 步的 OAuth 探针判定。
         """
-        import db
+        from yiban.store import db
         client = self._client
         if not db.is_initialized():
             return None
@@ -76,7 +76,7 @@ class _SessionCache:
 
     def save(self, session, csrf):
         """完整登录成功后保存 cookie jar + csrf（密文落库）；失败仅告警不影响签到。"""
-        import db
+        from yiban.store import db
         client = self._client
         if not db.is_initialized():
             return
@@ -96,7 +96,7 @@ class _SessionCache:
 
     def clear(self):
         """清除本账号会话缓存（探针判死 / 风控类失败联动清除）。"""
-        import db
+        from yiban.store import db
         client = self._client
         if not db.is_initialized():
             return
