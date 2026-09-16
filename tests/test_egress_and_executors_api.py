@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""出口分配（`yiban/egress.py`）与执行体只读接口（`GET /api/executors`）的断言。
+"""出口分配（`yiban/egress.py`）与执行体接口（`/api/scheduler/executors`）的断言。
 
 多执行体上线后，部署者要能给**每个执行体（含兜底常驻执行体）**单独配出口，
 也可以留空走本机出口。这里钉住三件事：
@@ -145,20 +145,22 @@ class _WebBase(unittest.TestCase):
                 os.remove(path)
 
     def _login(self):
+        """登录并带回 CSRF 令牌（写接口必须带 `X-CSRF-Token`，与既有测试同做法）。"""
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        c.csrf = c.get("/api/me").get_json()["csrf_token"]
         return c
 
 
 class ExecutorsEndpointTest(_WebBase):
     def test_requires_master_admin(self):
         c = self.webapp.create_app().test_client()
-        self.assertEqual(c.get("/api/executors").status_code, 401)
+        self.assertEqual(c.get("/api/scheduler/executors").status_code, 401)
 
     def test_returns_assignments_and_masks_credentials(self):
         c = self._login()
-        r = c.get("/api/executors")
+        r = c.get("/api/scheduler/executors")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         body = r.get_json()
         self.assertEqual(body["workers"]["configured"], 3)
@@ -174,7 +176,7 @@ class ExecutorsEndpointTest(_WebBase):
 
     def test_recommendation_comes_from_measured_value_only(self):
         c = self._login()
-        body = c.get("/api/executors").get_json()
+        body = c.get("/api/scheduler/executors").get_json()
         self.assertEqual(body["measured"]["per_executor_capacity"], 354)
         rec = body["recommendation"]
         self.assertEqual(rec["per_executor_accounts"], 236)   # 354 × 2/3
@@ -195,9 +197,74 @@ class ExecutorsEndpointTest(_WebBase):
         with open(self.env_file, "w", encoding="utf-8") as f:
             f.write("\n".join(ln for ln in original.splitlines()
                               if not ln.startswith("YIBAN_CAPACITY_MEASURED")) + "\n")
-        body = self._login().get("/api/executors").get_json()
+        body = self._login().get("/api/scheduler/executors").get_json()
         self.assertIsNone(body["measured"])
         self.assertIsNone(body["recommendation"])
+
+
+class ExecutorsSaveEndpointTest(_WebBase):
+    """写路径：只写 .env、非法值不落盘、审计不含凭据。"""
+
+    def _read_env(self):
+        return dict(ln.split("=", 1) for ln in
+                    open(self.env_file, encoding="utf-8").read().splitlines()
+                    if "=" in ln and not ln.startswith("#"))
+
+    def test_put_requires_master_admin(self):
+        c = self.webapp.create_app().test_client()
+        r = c.put("/api/scheduler/executors", json={"workers": 2},
+                  headers={"X-CSRF-Token": "x"})
+        self.assertIn(r.status_code, (401, 403))
+
+    def test_put_writes_workers_and_proxies(self):
+        c = self._login()
+        r = c.put("/api/scheduler/executors", headers={"X-CSRF-Token": c.csrf}, json={
+            "workers": 5,
+            "proxy_list": "http://p1:1,http://p2:2",
+            "proxy_fallback": "http://fb:8080",
+            "capacity_measured": 400,
+        })
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = self._read_env()
+        self.assertEqual(env["YIBAN_WORKERS"], "5")
+        self.assertEqual(env["YIBAN_PROXY_LIST"], "http://p1:1,http://p2:2")
+        self.assertEqual(env["YIBAN_PROXY_FALLBACK"], "http://fb:8080")
+        self.assertEqual(env["YIBAN_CAPACITY_MEASURED"], "400")
+        # 读回是描述串（有凭据也只回 host）
+        body = c.get("/api/scheduler/executors").get_json()
+        self.assertEqual([a["egress"] for a in body["workers"]["assignments"]][:2],
+                         ["http://p1:1", "http://p2:2"])
+
+    def test_put_rejects_bad_values_without_touching_env(self):
+        c = self._login()
+        before = self._read_env()
+        for payload in ({"workers": 0}, {"workers": 999}, {"workers": "many"},
+                        {"proxy_list": "not a url"}, {"proxy_list": "http://a:1" + chr(10) + "YIBAN_X=1"},
+                        {"capacity_measured": -5}):
+            with self.subTest(payload=payload):
+                r = c.put("/api/scheduler/executors", json=payload,
+                          headers={"X-CSRF-Token": c.csrf})
+                self.assertEqual(r.status_code, 400, payload)
+        self.assertEqual(self._read_env(), before, "校验失败不得落盘")
+
+    def test_put_empty_clears_measured(self):
+        c = self._login()
+        c.put("/api/scheduler/executors", headers={"X-CSRF-Token": c.csrf},
+              json={"capacity_measured": 0})
+        self.assertEqual(self._read_env().get("YIBAN_CAPACITY_MEASURED", ""), "")
+        self.assertIsNone(c.get("/api/scheduler/executors").get_json()["measured"])
+
+    def test_audit_records_keys_not_credentials(self):
+        """审计链不得出现代理凭据（只记键名）。"""
+        c = self._login()
+        from unittest import mock as _mock
+        with _mock.patch.object(self.webapp.db, "audit", return_value=True) as m:
+            c.put("/api/scheduler/executors", headers={"X-CSRF-Token": c.csrf},
+                  json={"proxy_list": f"{SECRET_PROXY},,http://c:3"})
+        detail = " ".join(str(a) for a in m.call_args[0])
+        for secret in ("svcuser", "svcp", SECRET_PROXY):
+            self.assertNotIn(secret, detail)
+        self.assertIn("YIBAN_PROXY_LIST", detail)
 
 
 if __name__ == "__main__":

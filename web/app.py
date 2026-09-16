@@ -927,6 +927,25 @@ def edge_front_sec():
     return edge_config()[0]
 
 
+def _is_http_proxy_url(value):
+    """代理地址格式校验：`http(s)://[user:pass@]host[:port]`（宽松但明确）。
+
+    只做形状校验（scheme + 主机非空、无空白/换行）；**不解析、不连接**——
+    代理是否可用由签到进程在使用时报错，网页侧只拦"明显填错"（例如把备注写进去）。
+    """
+    if not value:
+        return True                       # 空串=直连，合法
+    if re.search(r"\s", value):
+        return False
+    parts = re.match(r"^https?://([^/]*?)(/.*)?$", value)
+    if not parts:
+        return False
+    host_part = parts.group(1)
+    if "@" in host_part:                  # 去掉可能的 userinfo
+        host_part = host_part.rsplit("@", 1)[1]
+    return bool(host_part)
+
+
 def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
     write_env_key(env_path, key, str(value) if value > 0 else "")
@@ -7752,7 +7771,7 @@ def create_app(host=None):
                 _changelog_cache[0] = "暂无更新日志"
         return jsonify({"ok": True, "text": _changelog_cache[0]})
 
-    @app.route("/api/executors", methods=["GET"])
+    @app.route("/api/scheduler/executors", methods=["GET"])
     def api_executors():
         """执行体与出口（多执行体形态的只读视图；**仅主管理员**可见）。
 
@@ -7828,6 +7847,56 @@ def create_app(host=None):
                 "note": "实测容量 × 2/3 的建议值；这是建议，不是程序上限",
             }
         return jsonify(payload)
+
+    @app.route("/api/scheduler/executors", methods=["PUT"])
+    def api_scheduler_executors_save():
+        """改执行体数量与出口配置（D-17：由主管理员手动调整；可部分提交）。
+
+        **只写 `.env`，不重启也不拉起进程**——下一轮定时任务/容器重启后生效
+        （与既有设置项同一语义，页面上要如实说明）。非法值一律 400 且不落盘。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
+        data = _json_body()
+        updates = {}
+        if "workers" in data:
+            try:
+                workers = int(data["workers"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "执行体数量必须是整数"}), 400
+            if not (1 <= workers <= 64):
+                return jsonify({"error": "执行体数量应为 1~64"}), 400
+            updates["YIBAN_WORKERS"] = str(workers)
+        for field, env_key in (("proxy_list", yb_egress.ENV_WORKER_LIST),
+                               ("proxy_fallback", yb_egress.ENV_FALLBACK)):
+            if field not in data:
+                continue
+            raw = str(data[field] or "").strip()
+            if env_io.has_line_break(raw):
+                return jsonify({"error": "代理配置不能包含换行"}), 400
+            items = yb_egress.parse_list(raw) if field == "proxy_list" else [raw]
+            for item in items:
+                if item and not _is_http_proxy_url(item):
+                    return jsonify({"error": f"代理地址格式不正确: {item[:40]}"}), 400
+            updates[env_key] = raw
+        if "capacity_measured" in data:
+            try:
+                cap = int(data["capacity_measured"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "实测容量必须是整数"}), 400
+            if not (0 <= cap <= 100000):
+                return jsonify({"error": "实测容量应为 0~100000（0 表示清除）"}), 400
+            updates["YIBAN_CAPACITY_MEASURED"] = str(cap) if cap else ""
+        if not updates:
+            return jsonify({"error": "没有可更新的字段"}), 400
+        try:
+            write_env_batch(ENV_FILE, updates)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        # 审计只记键名：代理串可能带凭据，不得进审计链
+        db.audit("admin", "settings", "executors", ",".join(sorted(updates))[:200])
+        return jsonify({"ok": True, "applied": sorted(updates),
+                        "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
     @app.route("/api/announcement", methods=["GET"])
     def api_announcement():
