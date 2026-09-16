@@ -32,6 +32,8 @@ import random
 import re
 import secrets
 import signal
+import socket
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -121,9 +123,13 @@ def _acquire_run_lock(only_mode):
     不可写时返回 None（不互斥、不阻断，与 _state_file_lock 降级策略一致）。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    # 多执行体形态下每个子进程用**各自的**锁文件（YIBAN_RUN_LOCK_NAME），全局锁由
+    # 拉起它们的监督进程持有：这样既保住"散落的另一轮全量不得与本轮并发"的原有保护，
+    # 又不让子进程之间互相阻塞。
+    lock_name = os.environ.get("YIBAN_RUN_LOCK_NAME", "").strip() or "signin-run.lock"
     try:
         os.makedirs(state_dir, exist_ok=True)
-        fh = open(os.path.join(state_dir, "signin-run.lock"), "a+", encoding="utf-8")
+        fh = open(os.path.join(state_dir, lock_name), "a+", encoding="utf-8")
     except OSError:
         return None
     if fcntl is None:
@@ -2529,6 +2535,78 @@ def _apply_only_filter(accounts, only_arg):
     return filtered, missing
 
 
+def _worker_proxy(index, total):
+    """第 index 个执行体的出口代理（未配置则返回空串=用 YIBAN_PROXY 或不走代理）。
+
+    `YIBAN_PROXY_LIST`（逗号/空白分隔）里按序取；不足时**循环取用**（3 个出口
+    × 5 个执行体 → 出口 1,2,3,1,2）。这样部署者能按自己的出口数量摊开请求，
+    风控面与带宽面都比"所有执行体共用一个 IP"低——**这是可选能力，默认不配置**
+    （默认与既有单出口行为逐字一致）。
+    """
+    raw = os.environ.get("YIBAN_PROXY_LIST", "").replace(",", " ").split()
+    if not raw:
+        return ""
+    return raw[index % len(raw)]
+
+
+def run_worker_supervisor(n, argv):
+    """拉起 n 个执行体子进程并汇总退出码（`--workers N`）。
+
+    - **全局锁由本进程持有**：散落的另一轮全量（cron 与手动）仍会被挡住；
+    - 子进程各持自己的锁文件 + 各自的执行体身份（领取池据此分工）；
+    - 每个子进程可配一个独立出口代理（`YIBAN_PROXY_LIST`，见 `_worker_proxy`）；
+    - 退出码汇总取"最严重"的一个：真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
+      调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致。
+    """
+    # 全局锁：本进程持有直到子进程全部结束（句柄必须保活，不能只用一次就丢）
+    _global_lock = _acquire_run_lock(False)
+    # 先在本进程把库初始化/迁移做完并校验账号配置：否则 N 个子进程会在同一秒
+    # 抢着 init_db（实测 `PRAGMA journal_mode=WAL` 会报 "database is locked"），
+    # 而且配置错误的报错会变成 N 份、互相淹没。
+    try:
+        accounts = load_accounts()
+    except RuntimeError as e:
+        logger.error(f"配置加载失败: {e}")
+        return 1
+    if not accounts:
+        logger.error("未配置任何账号，不拉起执行体")
+        return 1
+    logger.info("多执行体：共 %d 个账号待签，拉起 %d 个执行体", len(accounts), n)
+    children = []
+    for i in range(n):
+        env = os.environ.copy()
+        env["YIBAN_EXECUTOR_ID"] = f"{socket.gethostname()}:workers:{os.getpid()}:w{i}"
+        env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{i}"
+        proxy = _worker_proxy(i, n)
+        if proxy:
+            env["YIBAN_PROXY"] = proxy
+        # 复刻本轮其余参数（去掉 --workers，避免递归拉起）
+        child_argv = [a for a in argv if a != "--workers" and a != str(n)]
+        cmd = [sys.executable, os.path.abspath(__file__), *child_argv]
+        logger.info(
+            "执行体 %d/%d 启动（出口: %s）", i + 1, n,
+            _notify_url_desc(proxy) if proxy else "默认（YIBAN_PROXY / 直连）",
+        )
+        children.append(subprocess.Popen(cmd, env=env))
+        # 错开启动：既避开"同一秒争库"，也让首轮请求不要在同一瞬间齐发（风控面）
+        if i + 1 < n:
+            time.sleep(0.5)
+
+    codes = []
+    for i, child in enumerate(children):
+        rc = child.wait()
+        codes.append(rc)
+        logger.info("执行体 %d/%d 结束，退出码 %s", i + 1, n, rc)
+
+    if any(c == 1 for c in codes):
+        return 1
+    if any(c == 3 for c in codes):
+        return 3
+    if any(c == 2 for c in codes):
+        return 2
+    return 0
+
+
 def main():
     """主函数：加载账号配置并执行签到。
 
@@ -2565,7 +2643,20 @@ def main():
             f"退出码 {SECOND_RUN_CHECK_NEED}（需要补跑），否则 0。不读账号、不联网。"
         ),
     )
+    parser.add_argument(
+        "--workers", type=int, default=1, metavar="N",
+        help=(
+            "多执行体：拉起 N 个并行执行体共同完成本轮（默认 1 = 单执行体，行为不变）。"
+            "分工靠数据库里的领取池（动态领取 + 账号级租约），账号不会被两个执行体同时签；"
+            "每个执行体可用 YIBAN_PROXY_LIST 配一个独立出口代理"
+        ),
+    )
     args = parser.parse_args()
+
+    # 多执行体：本进程只做监督（持全局锁 + 汇总退出码），活儿由子进程干。
+    # 放在补签轮判定之前不必要——补签轮判定只读文件，先走它更快。
+    if args.workers and args.workers > 1:
+        sys.exit(run_worker_supervisor(args.workers, sys.argv[1:]))
 
     # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
     # 宿主 run.sh 在首轮结束仍持锁时调用本开关，据退出码决定是否补跑第二轮
