@@ -52,6 +52,26 @@ def is_signable(account_id):
     return signs_in(dict(row))
 
 
+def account_still_signable(account):
+    """运行期复核：账号**对象**当前是否仍可签到（见 `is_signable`）。
+
+    签到进程按启动快照跑完整轮，期间 web 端可能删除或停用账号。查询异常按
+    "仍有效"处理——不因一次库抖动跳过全部账号；JSON/环境变量账号模式
+    （account_id=0）恒为 True。
+    """
+    account_id = getattr(account, "account_id", 0)
+    if not account_id:
+        return True
+    try:
+        import db
+        return db.account_is_signable(account_id)
+    except Exception as e:
+        from yiban import masking
+        logger.debug(f"[{getattr(account, 'phone', '')}] 账号有效性复核失败（按有效处理）: "
+                     f"{masking.sanitize_text(e)}")
+        return True
+
+
 def purge_orphan_session_cache(conn):
     """清除"账号行已不存在"的会话缓存（孤儿行；须在调用方事务内）。
 

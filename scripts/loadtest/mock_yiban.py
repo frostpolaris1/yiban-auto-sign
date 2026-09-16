@@ -5,11 +5,17 @@
 覆盖 ``scripts/signin.py`` 默认登录流程（login_killyiban）与签到流程实际调用的
 全部接口形状：
 
-  登录链（4 步）
+  登录链（默认 KillYiBan 流程，4 步）
     GET  /code/html                                   -> 200 登录页（input#key + var page_use）
     POST /code/usersure                               -> JSON {"code": "s200"}
     GET  /iframe/index                                -> 302 Location 带 verify_request
-    GET  /base/c/auth/yiban                           -> JSON {"code": 0}
+    GET  /base/c/auth/yiban                           -> JSON {"code": 0}（带 verifyRequest）
+  登录链（旧 iOS 流程，YIBAN_LEGACY_LOGIN=1 时启用，多一步跳转）
+    GET  /base/c/auth/yiban（不带 verifyRequest）      -> JSON data.Data = OAuth 入口 URL
+    POST /code/usersure（scope=1,2,3,4,）             -> JSON {"reUrl": ...}（旧流程的成功标志）
+    GET  /iapp7463                                    -> 302 到 iframe/index
+    GET  /iframe/index                                -> 302 Location 带 verify_request
+    GET  /base/c/auth/yiban（带 verifyRequest）        -> JSON {"code": 0}
   签到（2 步）
     GET  /nightAttendance/student/index/signPosition  -> JSON 点位 + 时间窗口
     POST /nightAttendance/student/index/signIn        -> JSON {"code": 0, "data": {...}}
@@ -329,8 +335,19 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                         "?verify_request=mockvreq123&CSRF=mockcsrf"
                     )
                 elif p == "/base/c/auth/yiban":
-                    # 登录链第 4 步：完成认证
-                    self._send_json({"code": 0, "data": {}, "msg": ""})
+                    # 带 verifyRequest = 完成认证（两条流程的最后一步）；
+                    # 不带 = 旧 iOS 流程的第 1 步：取 OAuth 入口 URL（客户端据此再请求）
+                    if "verifyRequest" in self.path:
+                        self._send_json({"code": 0, "data": {}, "msg": ""})
+                    else:
+                        self._send_json({"code": 0, "data": {
+                            "Data": "https://oauth.yiban.cn/code/html"
+                                    "?client_id=95626fa3080300ea"
+                                    "&redirect_uri=https://f.yiban.cn/iapp7463"}})
+                elif p == "/iapp7463":
+                    # 旧 iOS 流程第 4 步的落地页：再跳一次，令牌在下一跳的 Location 里
+                    self._send_redirect(
+                        "https://c.uyiban.com/iframe/index?act=iapp7463")
                 elif p == "/nightAttendance/student/index/signPosition":
                     injected = self._should_fail(cfg, "signPosition")
                     if injected:
@@ -351,19 +368,23 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                 p = self._path()
                 host = self._host()
                 injected = False
-                # 读干请求体（保持 keep-alive 连接帧完整）
+                # 读请求体（保持 keep-alive 连接帧完整；usersure 还要按体区分两条流程）
+                body = b""
                 try:
                     n = int(self.headers.get("Content-Length", 0) or 0)
                     if n:
-                        self.rfile.read(n)
+                        body = self.rfile.read(n)
                 except (ValueError, OSError):
                     pass
 
                 if p == "/code/usersure":
-                    # 登录链第 2 步：成功标志 code == "s200"（KillYiBan 流程）
+                    # 登录链第 2 步：成功标志默认是 code == "s200"（KillYiBan 流程）；
+                    # 旧 iOS 流程（scope 为 "1,2,3,4,"）的成功标志是响应里的 reUrl
                     injected = self._should_fail(cfg, "login")
                     if injected:
                         self._send_json({"code": "e001", "msgCN": "mock injected login failure"})
+                    elif b"scope=1%2C2%2C3%2C4%2C" in body:
+                        self._send_json({"reUrl": "https://f.yiban.cn/iapp7463"})
                     else:
                         self._send_json({"code": "s200", "msgCN": ""})
                 elif p == "/nightAttendance/student/index/signIn":

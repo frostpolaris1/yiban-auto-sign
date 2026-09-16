@@ -34,11 +34,9 @@ import secrets
 import signal
 import sys
 import time
-from base64 import b64decode, b64encode
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from urllib.parse import urlencode, urlsplit
 
 # 包导入引导：`yiban/` 在仓库根，而直接运行本脚本时 sys.path[0] 是 scripts/。这是
 # **过渡机制**——M3 起转为兼容壳（`python -m yiban.cli`），届时随"清 sys.path 注入"移除。
@@ -50,16 +48,17 @@ if _REPO_ROOT not in sys.path:
 import db  # noqa: E402  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
 import mailer  # noqa: E402  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
-import requests  # noqa: E402
-from Crypto.Cipher import PKCS1_v1_5  # noqa: E402
-from Crypto.PublicKey import RSA  # noqa: E402
-from requests.utils import cookiejar_from_dict, dict_from_cookiejar  # noqa: E402
 
-from yiban import clock, cred_state, window  # noqa: E402
+from yiban import client as yiban_client  # noqa: E402  # 客户端外观 YibanClient
+from yiban import (  # noqa: E402
+    clock,
+    cred_state,
+    security,  # 白名单 / WAF 判定口径（唯一实现）
+    window,
+)
 from yiban import status as yiban_status  # noqa: E402
 from yiban.fyiban import algo as fyiban_algo  # noqa: E402
 from yiban.fyiban import headers as fyiban_headers  # noqa: E402
-from yiban.fyiban import waf as fyiban_waf  # noqa: E402
 from yiban.infra import (  # noqa: E402
     account_crypto,
     env_lock,  # 探针 once 模式自动关闭 .env（跨进程写锁）
@@ -69,6 +68,7 @@ from yiban.logging_ext import FlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.masking import sanitize_text as _sanitize_text  # noqa: E402
 from yiban.masking import sanitize_url as _sanitize_url  # noqa: E402
+from yiban.store import accounts as accounts_store  # noqa: E402  # 账号运行期复核
 
 # 密码学安全随机数生成器（用于定位生成等安全敏感场景）
 _secure_random = secrets.SystemRandom()
@@ -494,39 +494,19 @@ def _schedule_config():
         "sign_end": end,
     }
 
-# WAF 风控关键词（用于判断是否被拦截）
-WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
+# WAF 判定口径的唯一实现在 `yiban/security.py`（含"只在短响应里检测"的边界理由
+# 与 Unicode 转义解码），此处只做同名转发——调用方与既有测试继续用 signin 的名字。
+WAF_KEYWORDS = security.WAF_KEYWORDS
+is_waf_blocked = security.is_waf_blocked
 
 
 # ---------------------------------------------------------------------------
 # 定位生成：多边形内随机点
 # ---------------------------------------------------------------------------
-# 算法**衍生自上游 FYIBAN**（缩放质心 + 射线法），已迁到第三方隔离层；
-# 采样分布与兜底策略的本地差异见 yiban/fyiban/PROVENANCE.md。
+# 算法**衍生自上游 FYIBAN**（缩放质心 + 射线法），实现在第三方隔离层
+# `yiban/fyiban/algo.py`；采样分布与兜底策略的本地差异见同目录 PROVENANCE.md。
 point_in_polygon = fyiban_algo.point_in_polygon
 generate_position_in_polygon = fyiban_algo.generate_position_in_polygon
-
-
-# ---------------------------------------------------------------------------
-# 工具函数
-# ---------------------------------------------------------------------------
-def is_waf_blocked(response_text):
-    """判断响应是否为 WAF 风控拦截。
-
-     WAF 拦截页通常很短（< 2000 字符），而正常页面（如 OAuth 授权页、
-     服务协议等）内容较长且可能包含"风控""拦截"等正常法律文本。
-     因此仅在响应内容较短时才检测 WAF 关键词，避免误报。
-
-     注意：易班 WAF 返回 JSON 格式时，中文会被 Unicode 转义
-    （如 \\u98ce\\u9669 = "风险"），需先解码再匹配关键词。
-    """
-    if len(response_text) > 2000:
-        return False
-    # 解码 \uXXXX 形式的 Unicode 转义序列后一并检测
-    decoded = re.compile(r"\\u([0-9a-fA-F]{4})").sub(
-        lambda m: chr(int(m.group(1), 16)), response_text
-    )
-    return any(keyword in response_text or keyword in decoded for keyword in WAF_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -842,689 +822,25 @@ def print_config_summary(accounts):
 # ---------------------------------------------------------------------------
 # 易班登录
 # ---------------------------------------------------------------------------
-def _is_yiban_trusted_url(url):
-    """宽松白名单（纵深防御）：仅放行 yiban.cn / uyiban.com 体系的 https 链接。
-
-    login() 旧流程跟随服务端可控的跳转 URL（OAuth Data/reUrl/Location）——
-    这些 URL 来自易班服务端自身，信任链成立，但与同文件 ydclearance 分支的
-    严格白名单口径不一致；此校验兜底防服务端被劫持时把登录态导流到任意域。
-    """
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    host = parts.hostname or ""
-    return (
-        parts.scheme == "https"
-        and (host == "yiban.cn" or host.endswith(".yiban.cn")
-             or host == "uyiban.com" or host.endswith(".uyiban.com"))
-        and parts.username is None
-    )
+# 白名单口径的唯一实现在 `yiban/security.py`（宽松 = 登录链路跟随的跳转；
+# 严格 = 挑战页吐出的跳转目标）；此处只做同名转发。
+_is_yiban_trusted_url = security.is_yiban_trusted_url
+_is_fyiban_url = security.is_fyiban_url
 
 
-def _is_fyiban_url(url):
-    """严格校验易班跳转 URL：https + 主机精确为 f.yiban.cn + 不允许 userinfo。
-
-    使用 urlsplit 避免 `https://f.yiban.cn.evil.com` 或
-    `https://f.yiban.cn@evil.com` 这类前缀/userinfo 绕过。
-    """
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    return (
-        parts.scheme == "https"
-        and parts.hostname == "f.yiban.cn"
-        and parts.username is None
-    )
-
-
-class YibanClient:
-    """易班客户端：封装登录与签到流程。"""
-
-    def __init__(self, account):
-        self.account = account
-        # C-SIGN-04：密码缓冲用可变 bytearray 持有（str 不可原位清零），
-        # 单次签到尝试结束由 _wipe_credentials 原位清零（attempt_signin finally）
-        self.password = bytearray(account.password.encode("UTF-8"))
-        # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，与同作者 FYIBAN 同源，实测绕过 e003）；
-        # 旧流程（Auto-Test 继承的 iOS 伪造 UA）仅在 YIBAN_LEGACY_LOGIN=1 时启用（GitHub Actions 等场景备选）
-        self.use_killyiban = os.environ.get("YIBAN_LEGACY_LOGIN", "") != "1"
-        if self.use_killyiban:
-            self.csrf = secrets.token_hex(16)  # SecureRandom 真随机
-            logger.debug(
-                f"[{account.phone}] 登录方式: 标准 App 特征（UA=Yiban/AppVersion={YIBAN_APP_VERSION}/SecureRandom CSRF）"
-            )
-        else:
-            self.csrf = secrets.token_hex(16)  # 使用安全随机数替代可预测的时间戳 md5
-            logger.debug(f"[{account.phone}] 登录方式: 旧流程（iOS 伪造 UA，YIBAN_LEGACY_LOGIN=1）")
-        self.session = requests.Session()
-        self.session.headers = dict(KILLYIBAN_HEADERS if self.use_killyiban else HEADERS)
-        # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截
-        proxy = os.environ.get("YIBAN_PROXY", "").strip()
-        if proxy:
-            self.session.proxies = {"http": proxy, "https": proxy}
-            # 日志只记录 scheme://host:port，绝不落 userinfo（账号密码）明文
-            proxy_parsed = urlsplit(proxy)
-            if proxy_parsed.hostname:
-                proxy_desc = f"{proxy_parsed.scheme}://{proxy_parsed.hostname}"
-                if proxy_parsed.port:
-                    proxy_desc += f":{proxy_parsed.port}"
-            else:
-                proxy_desc = "<无法解析>"
-            logger.debug(f"[{account.phone}] 已启用代理: {proxy_desc}")
-        else:
-            logger.debug(
-                f"[{account.phone}] 未配置代理，如遇 WAF 拦截可配置 YIBAN_PROXY"
-            )
-        # 设备信息：部分学校开启了"设备绑定"，签到时需校验设备型号和唯一识别码
-        self.phone_model = account.phone_model
-        self.phone_code = account.phone_code
-        self.logged_in = False
-
-    def _rsa_encrypt(self, cipher):
-        """RSA-1024 + PKCS1_v1_5 加密密码，超长时给出明确报错（而非底层 ValueError 裸抛）。"""
-        if len(self.password) > 117:
-            raise ValueError(
-                "密码过长: RSA-1024 公钥单次最多加密 117 字节（约 39 个中文字符），"
-                "当前密码无法加密提交，请缩短密码或联系管理员处理"
-            )
-        # bytes(...) 产生一个短暂不可变副本（pycryptodome 接口要求），交由 GC 回收；
-        # 可清零的 bytearray 本体在尝试结束后由 _wipe_credentials 原位覆写
-        return b64encode(cipher.encrypt(bytes(self.password)))
-
-    def _wipe_credentials(self):
-        """凭据内存尽力清零（C-SIGN-04）：单次签到尝试结束（成败均然）由 attempt_signin 调用。
-
-        - password 缓冲（bytearray）原位覆写 \\x00——唯一能保证失效的副本；
-        - 解除 account/phone_model/phone_code 引用，缩短凭据可回收窗口。
-        CPython 局限：不可变对象（str/bytes）无法原位清零，RSA 加密瞬态副本与
-        Account.password 本体只能等 GC；core dump / swap 场景仍可能残留。彻底
-        消除需全链路换可清零凭据容器（侵入 web/db 存储层，标注为已知限制）。
-        """
-        pwd = getattr(self, "password", None)
-        if isinstance(pwd, bytearray):
-            pwd[:] = b"\x00" * len(pwd)
-        self.password = None
-        self.phone_model = None
-        self.phone_code = None
-        self.account = None
-
-    def login(self):
-        """登录易班，成功返回 True，失败抛出异常。"""
-        self.session.cookies = cookiejar_from_dict({"csrf_token": self.csrf})
-        self.session.headers.update(
-            Referer="https://c.uyiban.com/",
-            Origin="https://c.uyiban.com",
-        )
-
-        # 1. 获取跳转 URL
-        resp = self.session.get(
-            "https://api.uyiban.com/base/c/auth/yiban",
-            params={"CSRF": self.csrf},
-            allow_redirects=False,
-            timeout=15,
-        )
-        if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
-        data = resp.json()
-        if data.get("code") != 0:
-            raise RuntimeError(f"获取登录入口失败: {_sanitize_text(data.get('msg'))}")
-
-        # 2. 跳转到 OAuth 页面，解析 RSA 公钥与 page_use
-        # 跳转目标过宽松白名单（纵深防御，与 ydclearance 分支口径一致）
-        _oauth_url = data["data"]["Data"]
-        if not _is_yiban_trusted_url(_oauth_url):
-            raise RuntimeError(f"登录入口 URL 不在白名单: {_notify_url_desc(str(_oauth_url))}")
-        resp = self.session.get(_oauth_url, allow_redirects=True, timeout=15)
-
-        # 检查是否被 WAF 拦截
-        if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
-
-        page_use_match = re.compile(r"page_use ?= ?[\'|\"]([a-zA-Z0-9-_]+)[\'|\"]").findall(
-            resp.text
-        )
-        key_match = re.compile(r'id="key"\s+value="([^"]+)"').findall(resp.text)
-        if not page_use_match or not key_match:
-            # 只落响应摘要（前 300 字符），避免整页 HTML/敏感内容进日志；
-            # _sanitize_text 同时处理 \r（防日志伪造）并脱敏 Account repr；
-            # 最终 URL 的 query 可能带 OAuth code/CSRF，经 _sanitize_url 打码（C-SIGN-01）
-            body_preview = _sanitize_text(resp.text[:300].replace("\n", "\\n"))
-            logger.error(f"[{self.account.phone}] OAuth 页解析失败诊断:")
-            logger.error(f"  最终 URL: {_sanitize_url(resp.url)}")
-            logger.error(f"  状态码: {resp.status_code}")
-            logger.error(f"  响应长度: {len(resp.text)}")
-            logger.error(f"  响应前300字符: {body_preview}")
-            logger.error(f"  page_use 命中: {len(page_use_match)}, key 命中: {len(key_match)}")
-            if is_waf_blocked(resp.text):
-                logger.error("  检测到 WAF 风控拦截特征，通常是 GitHub Actions 海外 IP 被易班风控")
-            logger.error(
-                "  若响应为 WAF 挑战页/拦截页，通常是 GitHub Actions 海外 IP 被易班风控，"
-                "请配置 YIBAN_PROXY 代理后重试。"
-            )
-            raise RuntimeError("登录页面解析失败（page_use / RSA key 未找到），详见上方诊断日志")
-
-        cipher = PKCS1_v1_5.new(RSA.importKey(key_match[0]))
-        self.session.headers.update(
-            Referer=resp.url,
-            Origin="https://oauth.yiban.cn",
-        )
-
-        # 3. 提交账号密码
-        resp = self.session.post(
-            "https://oauth.yiban.cn/code/usersure",
-            params={"ajax_sign": page_use_match[0]},
-            data=urlencode(
-                {
-                    "oauth_uname": self.account.phone,
-                    "oauth_upwd": self._rsa_encrypt(cipher),
-                    "client_id": "95626fa3080300ea",
-                    "redirect_uri": "https://f.yiban.cn/iapp7463",
-                    "state": "",
-                    "scope": "1,2,3,4,",
-                    "display": "html",
-                }
-            ),
-            allow_redirects=False,
-            timeout=15,
-        )
-        # 先检测 WAF 拦截再做 JSON 解析（拦截页是 HTML，直接 json() 会抛解析异常）
-        if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
-        result = resp.json()
-
-        if "reUrl" not in result:
-            # 同上：_sanitize_text 处理 \r 与 Account repr 脱敏
-            body_preview = _sanitize_text(resp.text[:300].replace("\n", "\\n"))
-            logger.error(f"[{self.account.phone}] usersure 响应无 reUrl 字段，诊断:")
-            logger.error(f"  状态码: {resp.status_code}")
-            logger.error(f"  响应前300字符: {body_preview}")
-            raise RuntimeError(f"登录响应异常（无 reUrl）: {_sanitize_text(result)}")
-        if "error" in result.get("reUrl", ""):
-            raise RuntimeError(f"登录失败（账号或密码错误）: {self.account.phone}")
-
-        # 4. 跳转回 f.yiban.cn，可能遇到 ydclearance 反爬
-        self.session.headers.update(Referer="https://oauth.yiban.cn")
-        if not _is_yiban_trusted_url(str(result.get("reUrl", ""))):
-            raise RuntimeError("登录 reUrl 不在白名单")
-        resp = self.session.get(result["reUrl"], allow_redirects=False, timeout=15)
-
-        if self._is_ydclearance_challenge(resp):
-            # 纯 Python 解析挑战（不执行任何远程 JS），得出 cookie 与跳转路径
-            clearance = self._solve_ydclearance(resp.text)
-            cookies = dict_from_cookiejar(self.session.cookies)
-            cookies["https_ydclearance"] = clearance[0]
-            self.session.cookies = cookiejar_from_dict(cookies)
-            self.session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
-            target = clearance[1]
-            if not _is_fyiban_url(target):
-                raise RuntimeError("ydclearance 跳转目标不在白名单")
-            resp = self.session.get(target, allow_redirects=False, timeout=15)
-            self.session.headers.update(Referer=resp.url)
-        else:
-            self.session.headers.update(Referer=resp.url, Origin="https://f.yiban.cn")
-
-        # 5. 获取 verify_request
-        location = resp.headers.get("Location", "")
-        if not location:
-            raise RuntimeError(
-                f"获取 verify_request 失败: 上一步响应缺少 Location 头"
-                f"（状态码 {resp.status_code}，响应长度 {len(resp.text)}）"
-            )
-        if not _is_yiban_trusted_url(location):
-            raise RuntimeError("verify_request 跳转不在白名单")
-        resp = self.session.get(location, allow_redirects=False, timeout=15)
-        verify_match = re.compile(r"verify_request=([^&]+)&?").findall(
-            resp.headers.get("Location", "")
-        )
-        if not verify_match:
-            raise RuntimeError(
-                f"获取 verify_request 失败: 重定向响应缺少 verify_request 参数"
-                f"（状态码 {resp.status_code}，响应长度 {len(resp.text)}）"
-            )
-        verify_code = verify_match[0]
-
-        # 6. 完成登录
-        self.session.headers.update(
-            Referer="https://c.uyiban.com/",
-            Origin="https://c.uyiban.com",
-        )
-        resp = self.session.get(
-            "https://api.uyiban.com/base/c/auth/yiban",
-            params={"verifyRequest": verify_code, "CSRF": self.csrf},
-            cookies={},
-            allow_redirects=False,
-            timeout=15,
-        )
-        if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
-        data = resp.json()
-        if data.get("code") != 0:
-            raise RuntimeError(f"最终认证失败: {_sanitize_text(data.get('msg'))}")
-
-        cookies = dict_from_cookiejar(self.session.cookies)
-        if "csrf_token" not in cookies:
-            raise RuntimeError("登录失败：未获取到 csrf_token")
-
-        self.logged_in = True
-        logger.info(f"[{self.account.phone}] 登录成功")
-
-    # ---- KillYiBan 同款登录（默认登录方式，e003 修复）----
-    def login_killyiban(self):
-        """完全复刻反编译 KillYiBan (p101w2/b.java) 的登录流程。
-
-        差异点（vs 原 login）：
-        - 入口直接打 oauth.yiban.cn/code/html（不先打 api.uyiban.com）
-        - usersure 请求不带 Referer/Origin（原 App 传空 headers）
-        - scope 传空、display 传 "authorize"（原 App 实值）
-        - 成功标志判断 code == "s200"（原 App 判断方式）
-        - CSRF 为 SecureRandom 真随机
-        - 页面解析用 jsoup 等价正则（key 去掉 BEGIN/END 后按 X509 解码）
-        """
-        phone = self.account.phone
-        # 0. 会话缓存：命中则还原 cookies + csrf，复用第 1 步 OAuth 探针判活——
-        #    302 到 iapp7463 = 会话仍有效（免登录）；200 登录页 = 失效，清缓存走完整流程
-        restored = self._restore_session_cache()
-        if not restored:
-            # 设置 csrf_token cookie（服务器用其校验 CSRF 参数，缺失会报 CSRF invalid）
-            self.session.cookies = cookiejar_from_dict({"csrf_token": self.csrf})
-        # session 头已是 KILLYIBAN_HEADERS，此处无需再改
-
-        # 1. 打开 OAuth 登录页（client_id/redirect_uri 参数，无 CSRF）
-        #    注意：不跟随重定向，直接取登录页 HTML（diag 实测 allow_redirects=False 返回 200 登录页）
-        resp = self.session.get(
-            "https://oauth.yiban.cn/code/html",
-            params={"client_id": "95626fa3080300ea", "redirect_uri": "https://f.yiban.cn/iapp7463"},
-            allow_redirects=False,
-            timeout=15,
-        )
-        # 若直接返回 iapp7463 说明已登录（正常流程是停留在登录页）
-        if "iapp7463" in (resp.headers.get("Location", "")):
-            if restored:
-                logger.info(f"[{phone}] 登录: 会话缓存命中，免登录复用")
-            else:
-                logger.info(f"[{phone}] 登录: 已登录状态（无需提交）")
-            self.logged_in = True
-            return
-        if restored:
-            # 缓存会话已被服务端判失效（探针返回登录页）：清缓存并还原干净初始会话
-            self._clear_session_cache()
-            self.session.cookies = cookiejar_from_dict({"csrf_token": self.csrf})
-
-        # 2. 解析 RSA 公钥与 page_use（jsoup input#key 等价正则）
-        key_match = re.compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"').findall(resp.text)
-        page_use_match = re.compile(r"var page_use = '([^']+)'").findall(resp.text)
-        if not key_match or not page_use_match:
-            logger.error(
-                f"[{phone}] 登录 OAuth 页解析失败（key={len(key_match)}, page_use={len(page_use_match)}）"
-            )
-            raise RuntimeError("登录: OAuth 页解析失败")
-        # key 去掉 PEM 头尾后按 X509 解码
-        key_b64 = re.compile(r"\s+").sub(
-            "",
-            key_match[0]
-            .replace("-----BEGIN PUBLIC KEY-----", "")
-            .replace("-----END PUBLIC KEY-----", ""),
-        )
-        cipher = PKCS1_v1_5.new(RSA.import_key(b64decode(key_b64)))
-
-        # 3. 提交账号密码（实测：usersure 必须不带 Origin/Referer 才返回 s200；
-        #    带 Origin → e001"无效的应用端编号"；scope 空 + display=authorize 与 App 一致）
-        resp = self.session.post(
-            "https://oauth.yiban.cn/code/usersure",
-            params={"ajax_sign": page_use_match[0]},
-            headers={
-                "User-Agent": "Yiban",
-                "AppVersion": YIBAN_APP_VERSION,
-                "Origin": None,
-                "Referer": None,
-                "X-Requested-With": None,
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-            data=urlencode(
-                {
-                    "oauth_uname": phone,
-                    "oauth_upwd": self._rsa_encrypt(cipher),
-                    "client_id": "95626fa3080300ea",
-                    "redirect_uri": "https://f.yiban.cn/iapp7463",
-                    "state": "",
-                    "scope": "",
-                    "display": "authorize",
-                }
-            ),
-            allow_redirects=False,
-            timeout=15,
-        )
-        # 先检测 WAF 拦截再做 JSON 解析（拦截页是 HTML，直接 json() 会抛解析异常）
-        if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
-        result = resp.json()
-        # App 用 code == "s200" 判断成功
-        if result.get("code") != "s200":
-            raise RuntimeError(f"登录失败: {_sanitize_text(result.get('msgCN', result))}")
-
-        # 4. 打开 iframe/index 获取 Location → verify_request（默认三个头）
-        resp = self.session.get(
-            "https://f.yiban.cn/iframe/index",
-            params={"act": "iapp7463"},
-            allow_redirects=False,
-            timeout=15,
-        )
-        location = resp.headers.get("Location", "")
-        # 宽容正则（与旧流程一致）——原 `(.*?)&` 要求令牌后必跟 &，
-        # 服务端把 verify_request 放 query 末位即全站性登录失败
-        verify_match = re.compile(r"verify_request=([^&]+)&?").findall(location)
-        if not verify_match:
-            # Location 的 query 中含 verify_request 令牌，错误消息只留 host/path
-            loc_desc = ""
-            try:
-                parts = urlsplit(location)
-                if parts.scheme:
-                    loc_desc = f"{parts.scheme}://{parts.netloc}{parts.path}"
-                else:
-                    loc_desc = parts.path
-            except ValueError:
-                loc_desc = "<无法解析>"
-            raise RuntimeError(f"无法提取 verify_request（Location={loc_desc}）")
-
-        # 5. 完成认证（默认三个头 + 跟随重定向，最终返回 JSON）
-        resp = self.session.get(
-            "https://api.uyiban.com/base/c/auth/yiban",
-            params={"verifyRequest": verify_match[0], "CSRF": self.csrf},
-            allow_redirects=True,
-            timeout=15,
-        )
-        if is_waf_blocked(resp.text):
-            raise RuntimeError("请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试")
-        data = resp.json()
-        if data.get("code") != 0:
-            raise RuntimeError(f"最终认证失败: {_sanitize_text(data.get('msg'))}")
-        self.logged_in = True
-        logger.info(f"[{phone}] 登录成功")
-        # 完整登录成功：保存会话缓存供下次免登录复用（失败仅告警，不影响签到）
-        self._save_session_cache()
-
-    # ---- 会话 Cookie 缓存（SQLite 表版，db.session_cache，2026-08-22）----
-    # 我们的登录是 OAuth 会话 Cookie 流程（非 access_token）：login_killyiban 五步
-    # 完成后认证态落在 session.cookies + self.csrf 上。缓存序列化 cookie jar + csrf，
-    # 下次签到先探针判活复用会话——减少登录频率 = 降低风控触发面（调研吸收项，
-    # docs/research-lumjiel-core-sign-20260822.md §七）。仅 db 已初始化（数据库账号
-    # 模式）时启用；CI 环境变量账号模式不建缓存。
-    def _restore_session_cache(self):
-        """登录前查会话缓存：命中还原 cookies + csrf 并返回 True（会话是否仍有效
-        由 login_killyiban 第 1 步 OAuth 探针判定）。任何缓存读失败都按未命中
-        处理，绝不阻断正常登录。"""
-        if not db.is_initialized():
-            return False
-        try:
-            cached = db.get_session_cache(self.account.phone)
-        except Exception as e:
-            logger.debug(f"[{self.account.phone}] 读取会话缓存失败（按未命中处理）: {_sanitize_text(e)}")
-            return False
-        if not cached:
-            return False
-        try:
-            cookies = json.loads(cached["cookies"])
-        except (TypeError, ValueError):
-            logger.warning(f"[{self.account.phone}] 会话缓存 cookies 非合法 JSON，已清除")
-            self._clear_session_cache()
-            return False
-        self.session.cookies = cookiejar_from_dict(cookies)
-        self.csrf = cached["csrf"]
-        return True
-
-    def _save_session_cache(self):
-        """完整登录成功后保存 cookie jar + csrf（密文落库）；失败仅告警不影响签到。"""
-        if not db.is_initialized():
-            return
-        if not account_still_signable(self.account):
-            # 账号在登录过程中被删除/停用：不落库。session_cache 的清理全按现存账号行
-            # 的 phone 驱动，为已消失的账号写入会留下**永久孤儿**凭据缓存。
-            logger.debug(f"[{self.account.phone}] 账号已删除/停用，不保存会话缓存")
-            return
-        cookies = dict_from_cookiejar(self.session.cookies)
-        if not cookies:
-            return  # 空会话无复用价值，不落库
-        try:
-            db.set_session_cache(self.account.phone, json.dumps(cookies), self.csrf)
-        except Exception as e:
-            logger.warning(f"[{self.account.phone}] 保存会话缓存失败（不影响签到）: {_sanitize_text(e)}")
-
-    def _clear_session_cache(self):
-        """清除本账号会话缓存（探针判死 / 风控类失败联动清除）。"""
-        if not db.is_initialized():
-            return
-        try:
-            db.clear_session_cache(self.account.phone)
-        except Exception as e:
-            logger.debug(f"[{self.account.phone}] 清除会话缓存失败: {_sanitize_text(e)}")
-
-    def _is_ydclearance_challenge(self, resp):
-        """判断响应是否触发 ydclearance 反爬挑战。
-
-        特征判定（不依赖响应长度）：
-        - Set-Cookie 已下发 https_ydclearance（说明已过挑战）；
-        - 或响应包含挑战 JS 特征（window.onload=setTimeout + eval("qo=eval;qo(po);")）。
-        """
-        if "https_ydclearance" in resp.headers.get("Set-Cookie", ""):
-            return True
-        return "window.onload=setTimeout" in resp.text and 'eval("qo=eval;qo(po);")' in resp.text
-
-    def _solve_ydclearance(self, text):
-        """纯 Python 解析易盾 WAF 挑战（实现与来源见 yiban/fyiban/waf.py）。
-
-        白名单是**本项目的安全策略**，以参数注入解析器——第三方层不内联安全校验。
-        """
-        return fyiban_waf.solve_ydclearance(text, allow_url=_is_fyiban_url)
-
-    def signin(self):
-        """执行签到，返回 (success: bool, message: str, skip: bool, status: str)。
-
-        skip=True 表示当前不在签到时间窗口内，不需要重试。
-        """
-        if not self.logged_in:
-            # 与 attempt_signin 保持一致：按配置选择登录流程（防止直接调 signin() 时走错）
-            if self.use_killyiban:
-                self.login_killyiban()
-            else:
-                self.login()
-
-        # 1. 获取签到位置范围
-        if not self.use_killyiban:
-            self.session.headers.update(
-                Origin="https://app.uyiban.com", Referer="https://app.uyiban.com/"
-            )
-        resp = self.session.get(
-            "https://api.uyiban.com/nightAttendance/student/index/signPosition",
-            params={"CSRF": self.csrf},
-            allow_redirects=False,
-            timeout=15,
-        )
-        if is_waf_blocked(resp.text):
-            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False, STATUS_FAILED
-        data = resp.json()
-        if data.get("code") != 0:
-            return False, f"获取签到任务失败: {_sanitize_text(data.get('msg'))}", False, STATUS_FAILED
-
-        data_obj = data["data"]
-        msg = data_obj.get("Msg", "")
-        if "已签到" in msg:
-            return True, "今日已签到（无需重复签到）", False, STATUS_ALREADY
-        if "今日无需签到" in msg:
-            return True, "今日无需签到（非签到日）", False, STATUS_NO_TASK
-
-        position_list = data_obj.get("Position", [])
-        if not position_list:
-            # 2026-08-31 公测：登录成功、signPosition 返回 code=0 但 Position 为空。
-            # 此前只报笼统一句"未找到签到位置数据"，Msg 原文被吞，管理员无从判断
-            # 是"任务未配置点位"还是"当日任务已关闭"。落一条带 Msg 的日志供取证。
-            # 2026-09-01：状态独立为 STATUS_NO_POSITION——非账号/凭据问题，不按失败
-            # 告警、不触发补签重跑（NO_POSITION_MAX_ATTEMPTS=1，见 _retry_budget）。
-            logger.warning(
-                f"[{self.account.phone}] signPosition 无可用点位: "
-                f"Msg={_sanitize_text(msg)!r} Range={'有' if data_obj.get('Range') else '无'}"
-            )
-            return (
-                False,
-                "未找到签到位置数据（易班未返回该账号的签到点位，非账号密码问题）",
-                False,
-                STATUS_NO_POSITION,
-            )
-        # 多任务 shuffle 改造（2026-08-29）后首个点位不再特殊：
-        # 点位统一由下方遍历全部任务处理，此处不再取 position_list[0]。
-        range_obj = data_obj.get("Range", {})
-
-        # 2. 校验签到时间
-        now_ts = int(datetime.now().timestamp())
-        start_ts = int(range_obj.get("StartTime", 0))
-        end_ts = int(range_obj.get("EndTime", 0))
-        if not start_ts or not end_ts:
-            # 签到时间窗口缺失（Range 为空），视为 skip，不直接提交
-            return False, "签到时间窗口缺失（无 Range），已跳过", True, STATUS_SKIPPED_NORANGE
-        if not (start_ts <= now_ts <= end_ts):
-            # 不在签到时间窗口内，标记为 skip（不需要重试）
-            return (
-                False,
-                f"未在签到时间内（{datetime.fromtimestamp(start_ts)} ~ {datetime.fromtimestamp(end_ts)}）",
-                True,
-                STATUS_SKIPPED_WINDOW,
-            )
-
-        # 3. 解析多边形点（逐点容错：单个坏点跳过，不拖垮整个签到）
-        # 修复了「只签 position_list[0]」导致的漏签，改为遍历全部任务。
-        # 2026-08-29 用户裁决：多任务通常为「同一打卡的多个点位，任取其一即可」——
-        # 先随机打乱任务顺序（避免固定只签第一个点位，贴近学生真实行为、降低固定
-        # 点位指纹），然后任一任务成功即停（下方 break），不再重复提交。
-        random.shuffle(position_list)
-        results_tasks = []  # [(task_name, ok, err_msg)]
-        for position in position_list:
-            task_name = str(position.get("Name", "") or f"任务{len(results_tasks) + 1}")
-            points_raw = position.get("Points", [])
-            polygon = []
-            for p in points_raw:
-                try:
-                    parts = str(p).split(",")
-                    if len(parts) >= 2:
-                        polygon.append((float(parts[0]), float(parts[1])))
-                except (TypeError, ValueError):
-                    continue
-
-            if not polygon:
-                results_tasks.append((task_name, False, "签到范围点解析失败"))
-                continue
-
-            # 4. 在多边形内生成随机点
-            lng, lat = generate_position_in_polygon(polygon)
-            logger.info(
-                f"[{self.account.phone}] 生成定位: ({lng},{lat}) 地址: {_sanitize_text(position.get('Address', ''))}"
-            )
-
-            # 5. 构建签到数据并提交
-            sign_info = {
-                "Reason": "",
-                "AttachmentFileName": "",
-                "LngLat": f"{lng},{lat}",
-                "Address": position.get("Address", ""),
-            }
-            if not self.phone_model or not self.phone_code:
-                logger.warning(
-                    f"[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），"
-                    "如学校开启了设备绑定，签到将失败"
-                )
-            resp = self.session.post(
-                "https://api.uyiban.com/nightAttendance/student/index/signIn",
-                params={"CSRF": self.csrf},
-                data={
-                    "Code": self.phone_code,
-                    "PhoneModel": self.phone_model,
-                    "SignInfo": json.dumps(sign_info, ensure_ascii=False),
-                    # KillYiBan 用 MINI_VERSION="1"，原脚本用 "1.0"
-                    "OutState": "1" if self.use_killyiban else "1.0",
-                },
-                allow_redirects=False,
-                timeout=15,
-            )
-            if is_waf_blocked(resp.text):
-                return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试", False, STATUS_FAILED
-            result = resp.json()
-            if result.get("code") == 0 and result.get("data"):
-                results_tasks.append((task_name, True, ""))
-                # 2026-08-29 用户裁决：多任务「随机选点、任一成功即停」——命中任一
-                # 任务即视为当日已签，停止提交后续任务（省请求、降风控）
-                logger.info(
-                    f"[{self.account.phone}] 签到成功，剩余 "
-                    f"{len(position_list) - len(results_tasks)} 个任务不再重复提交"
-                )
-                break
-            else:
-                err_msg = _sanitize_text(result.get("msg", "未知错误"))
-                if "授权设备" in err_msg:
-                    err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
-                results_tasks.append((task_name, False, f"签到失败: {err_msg}"))
-
-        # 6. 汇总各任务结果（2026-08-29 语义：多任务「随机选点、任一成功即停」——
-        # 命中任一任务即视为当日已签；仅全部失败才判失败，保持重试兜底）
-        ok_tasks = [t for t in results_tasks if t[1]]
-        fail_tasks = [t for t in results_tasks if not t[1]]
-        if ok_tasks:
-            if fail_tasks:
-                # 前面任务失败、后续任务命中（随机序）——留痕失败原因，仍判成功
-                detail = "; ".join(f"{n}: {m}" for n, _ok, m in fail_tasks[:3])
-                logger.warning(
-                    f"[{self.account.phone}] 已成功签到（前面 {len(fail_tasks)} 个任务失败后命中）: {detail}"
-                )
-                return True, f"签到成功（{len(fail_tasks)} 个任务失败后命中）", False, STATUS_SUCCESS
-            return True, "签到成功", False, STATUS_SUCCESS
-        parts = "; ".join(f"{n}: {m}" for n, _ok, m in fail_tasks[:3])
-        return False, f"{len(fail_tasks)} 个任务均失败: {parts}", False, STATUS_FAILED
-
-    def verify(self):
-        """只读健康检查（登录后）：拉取签到位置，**不提交签到**。
-
-        用于注册时预处理验证与探针模式。返回 (ok, message)：
-        - ok=True：账号可正常签到（能登录且能拉到任务，含校本化授权正常）
-        - ok=False：存在无法自愈的问题（登录失败/校本化失效/图形验证/WAF 等，
-          message 已脱敏，供用户可见提示或探针预警）
-        """
-        if not self.logged_in:
-            if self.use_killyiban:
-                self.login_killyiban()
-            else:
-                self.login()
-        if not self.use_killyiban:
-            self.session.headers.update(
-                Origin="https://app.uyiban.com", Referer="https://app.uyiban.com/"
-            )
-        resp = self.session.get(
-            "https://api.uyiban.com/nightAttendance/student/index/signPosition",
-            params={"CSRF": self.csrf},
-            allow_redirects=False,
-            timeout=15,
-        )
-        if is_waf_blocked(resp.text):
-            return False, "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
-        data = resp.json()
-        if data.get("code") != 0:
-            return False, f"获取签到任务失败: {_sanitize_text(data.get('msg'))}"
-        return True, "账号健康，可正常签到"
+# 客户端外观（凭据托管 / 会话缓存 / 代理 / 设备绑定）在 `yiban/client.py`，
+# 协议步骤在 `yiban/fyiban/protocol.py`，安全策略在 `yiban/security.py`。
+# 此处转发**同一个类对象**（不是第二份实现）：既有调用点与
+# `patch.object(signin.YibanClient, ...)` 的测试行为不变。
+YibanClient = yiban_client.YibanClient
 
 
 # ---------------------------------------------------------------------------
 # 消息通知
 # ---------------------------------------------------------------------------
-def _notify_url_desc(url):
-    """通知日志只记录 scheme://host[:port]，避免把 query/token/userinfo 带进日志。"""
-    try:
-        parts = urlsplit(url)
-        if parts.hostname:
-            desc = f"{parts.scheme}://{parts.hostname}"
-            if parts.port:
-                desc += f":{parts.port}"
-            return desc
-    except ValueError:
-        pass
-    return "<无法解析>"
+# URL 描述（只留 scheme://host[:port]）的唯一实现在 `yiban/security.py`；
+# 此处只做同名转发，通知侧 yiban/notify/config.py 也转发同一实现。
+_notify_url_desc = security.url_desc
 
 
 def send_notification(title, content, url=None, urgent=False, force=False):
@@ -1983,20 +1299,10 @@ def verify_account(account):
         return False, safe_err
 
 
-def account_still_signable(account):
-    """运行期复核：账号是否仍可签到（见 `db.account_is_signable`）。
-
-    启动快照要跑完整轮（最长 80 分钟），期间账号可能被删除/停用。查询异常按
-    "仍有效"处理——不因一次库抖动跳过全部账号；JSON/环境变量账号模式
-    （account_id=0）恒为 True。
-    """
-    if not getattr(account, "account_id", 0):
-        return True
-    try:
-        return db.account_is_signable(account.account_id)
-    except Exception as e:
-        logger.debug(f"[{account.phone}] 账号有效性复核失败（按有效处理）: {_sanitize_text(e)}")
-        return True
+# 运行期账号复核（"启动快照跑完整轮期间账号可能被删/停用"）的实现在
+# `yiban/store/accounts.py::account_still_signable`——会话缓存的写入闸门
+# （`yiban.client`）与本文件必须用**同一份**判据，各写一份会分叉。
+account_still_signable = accounts_store.account_still_signable
 
 
 def attempt_signin(account):
