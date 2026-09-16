@@ -277,6 +277,7 @@ import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖�
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
+from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402  # 易班端点唯一出处（web 不写字面量）
 from yiban.infra import (  # noqa: E402
@@ -7750,6 +7751,80 @@ def create_app(host=None):
             except OSError:
                 _changelog_cache[0] = "暂无更新日志"
         return jsonify({"ok": True, "text": _changelog_cache[0]})
+
+    @app.route("/api/executors", methods=["GET"])
+    def api_executors():
+        """执行体与出口（多执行体形态的只读视图；**仅主管理员**可见）。
+
+        前端要做"执行体配置"页时读这个接口即可，不必知道 .env 键名。字段说明：
+
+        - `workers.configured`：当前配置的并行执行体数（`YIBAN_WORKERS`，0/未设=1）
+        - `workers.assignments[]`：每个执行体的出口描述（**已脱敏**，见下）
+        - `fallback`：兜底常驻执行体的出口与扫描间隔
+        - `measured` / `recommendation`：容量建议（只有部署者实测过才有值，
+          **建议值不是上限**；没实测就是 null，不编数字）
+
+        脱敏：代理串可能带 `user:pass@`，一律只回 `scheme://host[:port]`；
+        接口本身也只回描述串，不回原始凭据。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可查看执行体配置"}), 403
+        env = read_env(ENV_FILE)
+        # 与 signin 侧同一口径（yiban/egress.py）：这里只做展示，不重复实现分配规则
+        configured = load_env_int(ENV_FILE, "YIBAN_WORKERS", 1)
+        configured = max(1, configured)
+        # 注意传 env：出口分配的唯一口径在 yiban/egress.py，且**读的是 .env 那份配置**
+        # （不传就会去读进程环境变量，网页里配好的出口会显示成"直连"）
+        assignments = [
+            {"index": i, "egress": desc}
+            for i, _proxy, desc in yb_egress.assignments(configured, env=env)
+        ]
+        fallback_proxy = yb_egress.resolve(yb_egress.ROLE_FALLBACK, env=env)
+        # 窗口：用现成的 `_sign_window()`（与引擎同一份解析）+ window.bounds 的有效秒数
+        _start, _end = _sign_window()
+        bounds = yb_window.bounds({
+            "sign_start": _start, "sign_end": _end,
+            "edge_front_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_FRONT_SEC", 0),
+            "edge_back_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_BACK_SEC", 0),
+        })
+        measured = load_env_int(ENV_FILE, "YIBAN_CAPACITY_MEASURED", 0)
+        cur_accounts = _capacity_account_count()
+        payload = {
+            "ok": True,
+            "workers": {
+                "configured": configured,
+                "assignments": assignments,
+                "env_keys": {
+                    "list": yb_egress.ENV_WORKER_LIST,
+                    "single": yb_egress.ENV_SINGLE,
+                },
+            },
+            "fallback": {
+                "egress": yb_egress.describe(fallback_proxy),
+                "interval_sec": load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60),
+                "env_key": yb_egress.ENV_FALLBACK,
+            },
+            "window": {
+                "effective_sec": bounds.full_sec() if bounds else None,
+                "start": f"{int(bounds.lo_min) // 60:02d}:{int(bounds.lo_min) % 60:02d}"
+                         if bounds else None,
+                "end": f"{int(bounds.hi_min) // 60:02d}:{int(bounds.hi_min) % 60:02d}"
+                       if bounds else None,
+            },
+            "measured": ({"per_executor_capacity": measured,
+                          "source": "capacity_probe（部署者实测录入）",
+                          "env_key": "YIBAN_CAPACITY_MEASURED"} if measured else None),
+            "recommendation": None,
+            "current_accounts": cur_accounts,
+        }
+        if measured:
+            per_exec = max(1, int(measured * 2 / 3))
+            payload["recommendation"] = {
+                "per_executor_accounts": per_exec,
+                "executors_needed": -(-cur_accounts // per_exec),
+                "note": "实测容量 × 2/3 的建议值；这是建议，不是程序上限",
+            }
+        return jsonify(payload)
 
     @app.route("/api/announcement", methods=["GET"])
     def api_announcement():

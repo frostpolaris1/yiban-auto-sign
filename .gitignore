@@ -81,7 +81,11 @@ PROXY_DEPLOY_GUIDE.md
 ADVERSARIAL_REVIEW_20260820.md
 hardening/
 # docs 目录一律不跟踪（内部运维/设计/调研文档仅本地留存，2026-08-22 起整体移出版本控制）
-docs/
+# 注意用的是 `docs/*` 而不是 `docs/`：目录整体被排除时，任何负向规则都**无法**再放行其中
+# 的文件（git 的"父目录已排除则子文件不可重新包含"）。下一行的负向规则依赖这一点。
+docs/*
+# 例外：开发文档（模块地图 / API 契约）可入库，内容已脱敏
+!docs/dev/
 .superpowers/
 
 # ZCode 工具目录
@@ -134,6 +138,11 @@ web/static/vendor/fonts/fangyuan/
 # 本地工具配置目录（DSH 路由套件 / 模型 preset，非项目产物，2026-08-16 补忽略）
 dsh-routing-suite/
 v4-flash-godmode-opencode-go/
+
+# 开发文档（模块地图 / API 契约）例外放行：docs/ 整体仍本地留存，只用**负向规则**
+# 单独放行 docs/dev/（内容已脱敏：不含真实域名/IP/邮箱/手机号/密钥、备案信息、测试机信息）
+!docs/dev/
+!docs/dev/**
 
 # 设计/调研文稿与 AI 记忆文件：一律本地留存，不入版本控制
 # （docs/ 已有同类规则，此处显式覆盖根目录记忆锚点与后续可能新增的文稿目录）
