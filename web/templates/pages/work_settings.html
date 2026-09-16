@@ -62,7 +62,8 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">系统设置</h1>
-  {# 页头不再罗列分区名：同屏页签（调度/公告/通知/容量/探针/执行体/开关）已表达，说明不增量 #}
+  {# 副标题说清"这页是干什么的"，不罗列分区名（同屏页签已表达各分区） #}
+  <p class="page-sub">系统级配置与开关；各分区独立保存。</p>
 </div>
 
 {# 页面级状态条：GET /api/settings 加载中 / 失败（含重试）。.alert 的 grid 第 3 列承载重试按钮 #}
