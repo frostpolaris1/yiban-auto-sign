@@ -9,8 +9,8 @@
 - **B 线（用户本人）**：`send_user_fail_mail` 逐条即时，受按天额度（默认每账号 1 封，
   签到/手动/探针三个入口统一计算）与用户开关约束，**发送成功才消耗额度**，未发出即归还。
 
-`mailer` / `notify` 直连实现（`from yiban import mail as mailer`）——`scripts/mailer.py`
-与 `scripts/notify.py` 已是兼容壳。发送失败一律只留痕，绝不抛出，也不影响退出码。
+`mailer` / `notify` 是本包内的实现（`from yiban import mail as mailer`、`from yiban import notify`），
+发送失败一律只留痕，绝不抛出，也不影响退出码。
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
 """
@@ -39,7 +39,7 @@ STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 # 消息通知
 # ---------------------------------------------------------------------------
 def send_notification(title, content, url=None, urgent=False, force=False):
-    """通过 Webhook 推送组件发送通知（Server酱/自定义 URL，见 scripts/notify.py）。
+    """通过 Webhook 推送组件发送通知（Server酱/自定义 URL，见 `yiban/notify`）。
 
     2026-08-29 组件化：Server酱适配（title+desp）、同类型告警节流、服务端响应
     检查（配额/限频可见）、自定义 URL SSRF 白名单；兼容旧明文 YIBAN_NOTIFY_URL

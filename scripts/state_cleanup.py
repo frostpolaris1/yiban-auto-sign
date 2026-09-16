@@ -25,20 +25,12 @@ if _REPO_ROOT not in sys.path:
 
 from yiban import state_gc  # noqa: E402
 
-
-def state_dir_from_env(env=None):
-    env = os.environ if env is None else env
-    return env.get("YIBAN_STATE_DIR", "").strip() or "/var/log/yiban"
-
-
-def log_dir_from_env(state_dir, env=None):
-    env = os.environ if env is None else env
-    log_file = env.get("YIBAN_LOG_FILE", "").strip()
-    if not log_file:
-        return state_dir
-    # 不取绝对路径：run.sh 用的是 `dirname "$LOG_FILE"`（相对值即相对当前目录），
-    # 这里保持同一语义，避免"配置相同、清理目录不同"
-    return os.path.dirname(log_file) or state_dir
+# 目录解析与 run.sh 同口径（顺序也一致）：YIBAN_STATE_DIR → 默认 /var/log/yiban；
+# 日志目录 = dirname(YIBAN_LOG_FILE) → 默认 state_dir。实现在 `yiban/state_gc.py`
+# ——CLI（`python -m yiban.cli state`）与本脚本共用同一份，免得出现"配置一样、
+# 清理目录不同"；这里保留同名绑定，既有调用方（测试）无需改动。
+state_dir_from_env = state_gc.state_dir_from_env
+log_dir_from_env = state_gc.log_dir_from_env
 
 
 def _append_log(log_path, message):

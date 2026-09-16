@@ -19,6 +19,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from yiban import notify  # 推送组件实现包（旧 scripts/notify.py 壳已删除）
 from yiban.infra import account_crypto
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,8 +57,6 @@ class NotifyIsConfiguredTest(unittest.TestCase):
         os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
         for k in NOTIFY_ENV_KEYS:
             os.environ.pop(k, None)
-        global notify
-        import notify
 
     @classmethod
     def tearDownClass(cls):

@@ -30,9 +30,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-import mailer
-
 from yiban.infra import account_crypto, env_io
+
+# 直连实现包（旧的 scripts/mailer.py 兼容壳已删除）：条目/通道状态在 config 子模块，
+# 发送与发送侧一次性旗标在 transport 子模块——打桩/复位必须落在真正持有它的模块上。
+from yiban.mail import config as mailer
+from yiban.mail import transport as mailer_transport
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -339,7 +342,7 @@ class MailFailoverTest(_Base):
 
         with mock.patch("smtplib.SMTP_SSL", side_effect=factory):
             # send_user → _send：第 1 条 SMTPException → 第 2 条成功
-            self.assertTrue(mailer.send_user("to@x.com", "subject", "body"))
+            self.assertTrue(mailer_transport.send_user("to@x.com", "subject", "body"))
         self.assertEqual(constructed, ["down", "ok"], "应按顺序尝试两条 SMTP 条目")
 
     def test_failover_logs_both_attempts_and_no_credentials(self):
@@ -370,7 +373,7 @@ class MailFailoverTest(_Base):
 
         with mock.patch("smtplib.SMTP_SSL", side_effect=factory) as m, \
              self.assertLogs("mailer", level="WARNING") as logs:
-            self.assertTrue(mailer.send_user("to@x.com", "subject", "body"))
+            self.assertTrue(mailer_transport.send_user("to@x.com", "subject", "body"))
         self.assertEqual(m.call_count, 2, "两次尝试（首条失败 + 次条成功）")
         joined = "\n".join(logs.output)
         self.assertIn("1/2", joined, "失败日志应含条目序号")
@@ -388,7 +391,7 @@ class MailFailoverTest(_Base):
 
         with mock.patch("smtplib.SMTP_SSL", Boom), \
              self.assertLogs("mailer", level="WARNING"):
-            self.assertFalse(mailer.send_user("to@x.com", "subject", "body"))
+            self.assertFalse(mailer_transport.send_user("to@x.com", "subject", "body"))
 
     def test_invalid_entry_port_falls_back_and_warns_once(self):
         """条目 port 非法：发送回退 465 并只记一次告警（第二次发送不再告警）。"""
@@ -399,7 +402,7 @@ class MailFailoverTest(_Base):
             json.dumps(smtps, ensure_ascii=False), account_crypto.load_key(self.env_file))
         self._reset_env_file(f"YIBAN_MAIL_SMTPS_ENC={json.dumps(enc, ensure_ascii=False)}\n")
         os.environ["YIBAN_MAIL_ENABLE"] = "1"
-        mailer._entry_port_warned = False  # 模块级一次性旗，测试间复位
+        mailer_transport._entry_port_warned = False  # 模块级一次性旗，测试间复位
 
         class FakeOK:
             def __init__(self, *a, **k):
@@ -419,12 +422,12 @@ class MailFailoverTest(_Base):
 
         with mock.patch("smtplib.SMTP_SSL", side_effect=FakeOK) as m, \
              self.assertLogs("mailer", level="WARNING") as logs:
-            self.assertTrue(mailer.send_user("to@x.com", "subject", "body"))
+            self.assertTrue(mailer_transport.send_user("to@x.com", "subject", "body"))
         self.assertEqual(m.call_args[0][1], 465, "非法端口应回退 465 发送")
         self.assertIn("不是合法端口", "\n".join(logs.output), "应记端口告警")
         with mock.patch("smtplib.SMTP_SSL", side_effect=FakeOK), \
              self.assertNoLogs("mailer", level="WARNING"):
-            self.assertTrue(mailer.send_user("to@x.com", "subject", "body"))
+            self.assertTrue(mailer_transport.send_user("to@x.com", "subject", "body"))
 
 
 class MailChannelStateReportTest(_Base):

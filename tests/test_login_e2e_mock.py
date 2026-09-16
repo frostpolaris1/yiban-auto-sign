@@ -83,9 +83,24 @@ class _FakeYiban:
         self.server.server_close()
 
     def requests(self):
-        """逐请求记录（按发生顺序），来自假服务端的 JSONL。"""
+        """逐请求记录（按发生顺序），来自假服务端的 JSONL。
+
+        ⚠ 容错：读的是**另一个线程**正在追加的文件（服务端每写一条就 close），
+        并发下可能读到只写了一半的末行 → `json.loads` 抛 JSONDecodeError。
+        故只把**无法解析的末行**当作"尚未写完"跳过；中间出现坏行仍按错误抛出，
+        免得真把"日志写坏了"当成正常。
+        """
+        rows = []
         with open(self.log_path, encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
+            lines = [ln for ln in f if ln.strip()]
+        for i, line in enumerate(lines):
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                if i == len(lines) - 1:
+                    break  # 末行未写完（并发追加）
+                raise
+        return rows
 
     def wait_paths(self, count, timeout=3.0):
         """等落盘记录达到 `count` 条后返回路径序列。

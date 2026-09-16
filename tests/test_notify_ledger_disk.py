@@ -29,7 +29,8 @@ class NotifyLedgerDiskTest(unittest.TestCase):
     """P2-3：额度磁盘账本（单进程内验证文件语义）。"""
 
     def setUp(self):
-        import notify
+        # 内部账本名走子模块（旧的 scripts/notify.py 兼容壳已删除）
+        from yiban.notify import ledger as notify
         self.notify = notify
         self.tmp = tempfile.mkdtemp(prefix="yiban-ledger-")
         self.env_file = os.path.join(self.tmp, "nope.env")
@@ -106,11 +107,12 @@ class NotifyLedgerDiskTest(unittest.TestCase):
             t = self.notify._consume_daily_budget("general")
             self.assertTrue(t.allowed, f"A 第 {i+1} 条应允许")
             sent_a.append(t)
-        # 实例 B（进程 2）：重新加载模块
+        # 实例 B（进程 2）：把实现包从 sys.modules 里整体摘掉再导入，等价于
+        # "新进程从零起"（内存账本为空，只能从磁盘恢复已占用计数）
         for k in list(sys.modules):
-            if k.startswith("notify"):
+            if k.startswith("yiban.notify"):
                 del sys.modules[k]
-        import notify as notify_b
+        from yiban.notify import ledger as notify_b
         os.environ["YIBAN_STATE_DIR"] = self.tmp
         os.environ["YIBAN_ENV_FILE"] = self.env_file
         os.environ["YIBAN_ACCOUNTS_KEY"] = KEY

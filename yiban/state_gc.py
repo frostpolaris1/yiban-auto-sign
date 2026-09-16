@@ -98,22 +98,43 @@ def _cutoff(days, now=None):
     return (base - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
 
 
-def sweep(state_dir, log_dir=None, env=None, now=None):
-    """清理过期按日文件与孤儿临时文件；→ (删除数, 明细列表)。
+def state_dir_from_env(env=None):
+    """状态目录：`YIBAN_STATE_DIR` → 默认 `/var/log/yiban`（与 run.sh 同口径）。
 
-    `log_dir` 默认为 state_dir（宿主形态两者同目录；容器形态分别是 /data/logs
-    与 /data/state）。日志类文件只在 log_dir 里找，其余在 state_dir 里找。
-
-    明细行形如 `sign-state-2025-01-02.json（过期）`，供调用方写清理日志/测试断言。
-    目录不存在、单个文件删不掉（并发占用）都不算错误：跳过并继续。
+    放在本模块是为了"清理目录与写目录同源"：宿主清理脚本、容器调度与 CLI
+    （`python -m yiban.cli state`）都调这里，避免又出现一份各自的默认值。
     """
     env = os.environ if env is None else env
-    log_dir = log_dir or state_dir
-    cutoffs = {
+    return env.get("YIBAN_STATE_DIR", "").strip() or "/var/log/yiban"
+
+
+def log_dir_from_env(state_dir, env=None):
+    """日志目录：`dirname(YIBAN_LOG_FILE)` → 回退 state_dir。
+
+    不取绝对路径：run.sh 用的是 `dirname "$LOG_FILE"`（相对值即相对当前目录），
+    这里保持同一语义，避免"配置相同、清理目录不同"。
+    """
+    env = os.environ if env is None else env
+    log_file = env.get("YIBAN_LOG_FILE", "").strip()
+    if not log_file:
+        return state_dir
+    return os.path.dirname(log_file) or state_dir
+
+
+def _cutoffs(env, now):
+    """两档保留期 → 截止日期（非法配置由 retention_days 抛 ValueError，调用方响亮失败）。"""
+    return {
         "log": _cutoff(retention_days("log", env), now),
         "snapshot": _cutoff(retention_days("snapshot", env), now),
     }
-    removed, detail = 0, []
+
+
+def _iter_expired(state_dir, log_dir, cutoffs, now=None):
+    """产出 (路径, 明细行)：过期按日文件（按 ARTIFACTS 顺序、目录项名排序）与孤儿临时文件。
+
+    `sweep`（真删）与 `plan`（只看不动手）共用本迭代器——判定口径只有这一处，
+    不会出现"报告要删 A、实际删了 B"。
+    """
     for art in ARTIFACTS:
         target_dir = log_dir if art.where == "log" else state_dir
         if not os.path.isdir(target_dir):
@@ -125,20 +146,11 @@ def sweep(state_dir, log_dir=None, env=None, now=None):
             path = os.path.join(target_dir, name)
             try:
                 if os.path.isfile(path):
-                    os.remove(path)
-                    removed += 1
-                    detail.append(f"{name}（{art.bucket} 过期）")
+                    yield path, f"{name}（{art.bucket} 过期）"
             except OSError:
                 continue
-    removed += _sweep_orphan_tmp(state_dir, detail, now)
-    return removed, detail
-
-
-def _sweep_orphan_tmp(state_dir, detail, now=None):
-    """删除写盘中断留下的 `<name>.tmp<pid>`（按 mtime 判，超过 1 天必为孤儿）。"""
     if not os.path.isdir(state_dir):
-        return 0
-    removed = 0
+        return
     threshold = ((now or datetime.datetime.now()) - datetime.timedelta(
         seconds=_TMP_MAX_AGE_SEC)).timestamp()
     for name in sorted(os.listdir(state_dir)):
@@ -147,12 +159,62 @@ def _sweep_orphan_tmp(state_dir, detail, now=None):
         path = os.path.join(state_dir, name)
         try:
             if os.path.isfile(path) and os.path.getmtime(path) < threshold:
-                os.remove(path)
-                removed += 1
-                detail.append(f"{name}（中断的半成品）")
+                yield path, f"{name}（中断的半成品）"
         except OSError:
             continue
-    return removed
+
+
+def sweep(state_dir, log_dir=None, env=None, now=None):
+    """清理过期按日文件与孤儿临时文件；→ (删除数, 明细列表)。
+
+    `log_dir` 默认为 state_dir（宿主形态两者同目录；容器形态分别是 /data/logs
+    与 /data/state）。日志类文件只在 log_dir 里找，其余在 state_dir 里找。
+
+    明细行形如 `sign-state-2025-01-02.json（过期）`，供调用方写清理日志/测试断言。
+    目录不存在、单个文件删不掉（并发占用）都不算错误：跳过并继续。
+    """
+    env = os.environ if env is None else env
+    log_dir = log_dir or state_dir
+    removed, detail = 0, []
+    for path, label in _iter_expired(state_dir, log_dir, _cutoffs(env, now), now):
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        removed += 1
+        detail.append(label)
+    return removed, detail
+
+
+def plan(state_dir, log_dir=None, env=None, now=None):
+    """列出**将要**清理的条目但不动手；→ (条数, 明细列表)（CLI 的 dry-run 用）。
+
+    明细行与 `sweep` 的逐字一致（同一套匹配与保留期判定），调用方可以先把结果
+    报给人看、再由 `sweep` 执行同一批；不会出现"报告一套、执行另一套"。
+    """
+    env = os.environ if env is None else env
+    log_dir = log_dir or state_dir
+    detail = [label for _path, label in _iter_expired(state_dir, log_dir, _cutoffs(env, now), now)]
+    if empty_cred_state_path(state_dir) is not None:
+        detail.append("cred-state.json（空内容）")
+    return len(detail), detail
+
+
+def empty_cred_state_path(state_dir):
+    """→ 内容为空（`{}` 或零字节）的 `cred-state.json` 路径；无需清理时返回 None。
+
+    判定与删除分开，是为了让"只看不动手"的调用方（`plan` / CLI 的 dry-run）
+    能报出同一条目，又不必先删再恢复。
+    """
+    path = os.path.join(state_dir, "cred-state.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = re.sub(r"\s", "", f.read())
+    except OSError:
+        return None
+    if content and content != "{}":
+        return None
+    return path
 
 
 def sweep_empty_cred_state(state_dir):
@@ -162,13 +224,8 @@ def sweep_empty_cred_state(state_dir):
     这里是兜底：手工/旧版本留下的空文件会让"无暂停"与"文件缺失"两种语义并存，
     排查时容易误判。有暂停记录则保留。返回是否删除。
     """
-    path = os.path.join(state_dir, "cred-state.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            content = re.sub(r"\s", "", f.read())
-    except OSError:
-        return False
-    if content and content != "{}":
+    path = empty_cred_state_path(state_dir)
+    if path is None:
         return False
     try:
         os.remove(path)

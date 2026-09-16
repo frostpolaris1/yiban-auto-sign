@@ -77,5 +77,75 @@ class InfraLayerTest(unittest.TestCase):
                     )
 
 
+#: 推送/邮件两个组件的裸名壳（曾让 `import notify` / `import mailer` 继续可用）
+REMOVED_SHELLS = ("scripts/notify.py", "scripts/mailer.py")
+
+#: 裸名导入：`import notify` / `from mailer import x` / `import mailer as m` 都算
+BARE_NOTIFY_MAILER_RE = re.compile(
+    r"(?m)^\s*(?:import|from)\s+(?:notify|mailer)(?:\s|\.|,|$)")
+
+#: 运行时目录（测试代码不在此列：测试里出现裸名会直接 ImportError，无需文本守卫）
+RUNTIME_DIRS = ("web", "yiban", "scripts", "docker")
+
+
+class LegacyShellRemovalTest(unittest.TestCase):
+    """收口守卫：两个兼容壳必须消失，且运行时模块不得再裸名导入它们。
+
+    壳删除后 `import notify` 会直接 ModuleNotFoundError，故**保留壳**没有意义；
+    真正要防的是"有人图省事又加回一份壳"或"新代码写成裸名导入"——那两件事都会
+    让"两份实现/路径依赖 scripts/"的老问题回来（`yiban/` 里出现裸名还会让包
+    在缺 scripts/ 的部署形态下当场炸）。调用方一律 `from yiban import notify` /
+    `from yiban import mail as mailer`；下划线名走子模块。
+    """
+
+    def _iter_runtime_py(self):
+        for root in RUNTIME_DIRS:
+            base = os.path.join(BASE, root)
+            for dirpath, dirnames, filenames in os.walk(base):
+                dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+                for name in sorted(filenames):
+                    if name.endswith(".py"):
+                        yield os.path.join(dirpath, name)
+
+    def test_shells_are_gone(self):
+        for rel in REMOVED_SHELLS:
+            with self.subTest(path=rel):
+                self.assertFalse(
+                    os.path.exists(os.path.join(BASE, rel)),
+                    f"{rel} 还在：旧导入路径会继续被使用，收口未完成",
+                )
+
+    def test_no_bare_notify_mailer_imports_in_runtime_dirs(self):
+        bad = []
+        for path in self._iter_runtime_py():
+            with io.open(path, encoding="utf-8") as f:
+                src = f.read()
+            for m in BARE_NOTIFY_MAILER_RE.finditer(src):
+                bad.append(f"{os.path.relpath(path, BASE).replace(os.sep, '/')}: "
+                           f"{m.group(0).strip()}")
+        self.assertEqual(
+            bad, [],
+            "运行时模块不得裸名导入 notify/mailer（应为 `from yiban import notify` / "
+            "`from yiban import mail as mailer`）：" + "; ".join(bad),
+        )
+
+    def test_packages_expose_the_public_surface(self):
+        """壳曾转发的**公共名**必须能从包直接拿到（下划线名走子模块）。"""
+        import importlib
+
+        notify_pkg = importlib.import_module("yiban.notify")
+        mail_pkg = importlib.import_module("yiban.mail")
+        for name in ("send", "send_test", "get_config", "get_secret", "is_configured",
+                     "is_safe_url", "budget_exhausted_today", "pop_exhaustion_notice",
+                     "BudgetTicket", "logger"):
+            with self.subTest(pkg="yiban.notify", name=name):
+                self.assertTrue(hasattr(notify_pkg, name), f"yiban.notify 缺公共名 {name}")
+        for name in ("send_admin_alert", "send_user", "get_config", "is_enabled",
+                     "smtp_list", "smtp_channel_state", "admin_recipients",
+                     "admin_notify_enabled", "logger"):
+            with self.subTest(pkg="yiban.mail", name=name):
+                self.assertTrue(hasattr(mail_pkg, name), f"yiban.mail 缺公共名 {name}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

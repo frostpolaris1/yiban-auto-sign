@@ -127,12 +127,12 @@ class MailAlertThrottleTest(_B13WebBase):
         mails = []
         hooks = []
         # 邮件节流不应作用于 webhook：此处关闭 webhook 节流（YIBAN_NOTIFY_COOLDOWN=0）
-        # 隔离验证；webhook 组件（notify.py）自身节流测试见 test_notify_webhook.py
+        # 隔离验证；webhook 组件（yiban/notify）自身节流测试见 test_notify_webhook.py
         with open(self.env_file, "a", encoding="utf-8") as f:
             f.write("YIBAN_NOTIFY_COOLDOWN=0\n")
         with mock.patch.object(self.webapp.mailer, "send_admin_alert",
                                side_effect=lambda t, c, to=None: mails.append((t, c))), \
-             mock.patch.object(self.webapp.notify, "_send_custom",
+             mock.patch.object(self.webapp.notify.transport, "_send_custom",
                                side_effect=lambda url, t, c: hooks.append(url)):
             os.environ["YIBAN_NOTIFY_URL"] = "https://example.com/hook"
             try:
@@ -288,10 +288,10 @@ class NotifyConfigApiTest(_B13WebBase):
         for k in list(os.environ):
             if k.startswith("YIBAN_NOTIFY_"):
                 os.environ.pop(k, None)
-        self.webapp.notify._throttle_ts.clear()
+        self.webapp.notify.ledger._throttle_ts.clear()
         # 每日额度已拆成非紧急 / 紧急两本账，复位时两本都要清
-        self.webapp.notify._general_daily["state"].update({"date": "", "count": 0})
-        self.webapp.notify._urgent_daily["state"].update({"date": "", "count": 0})
+        self.webapp.notify.ledger._general_daily["state"].update({"date": "", "count": 0})
+        self.webapp.notify.ledger._urgent_daily["state"].update({"date": "", "count": 0})
 
     def test_get_config_default_off(self):
         c = self.webapp.create_app().test_client()

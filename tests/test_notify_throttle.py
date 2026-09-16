@@ -34,9 +34,11 @@ import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import notify  # noqa: E402
-
+# 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块。
+from yiban import notify  # noqa: E402
 from yiban.infra import account_crypto  # noqa: E402
+from yiban.notify import ledger as notify_ledger  # noqa: E402
+from yiban.notify import transport as notify_transport  # noqa: E402
 
 KEY = "f" * 64
 SCT_KEY = "SCT406257TESTTESTTESTTESTTEST"
@@ -52,12 +54,12 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", KEY)
     monkeypatch.setenv("YIBAN_ENV_FILE", str(tmp_path / "no-such.env"))
-    notify._throttle_ts.clear()
-    notify._general_daily["state"].update({"date": "", "count": 0})
-    notify._urgent_daily["state"].update({"date": "", "count": 0})
-    for ledger in (notify._general_daily, notify._urgent_daily):
+    notify_ledger._throttle_ts.clear()
+    notify_ledger._general_daily["state"].update({"date": "", "count": 0})
+    notify_ledger._urgent_daily["state"].update({"date": "", "count": 0})
+    for ledger in (notify_ledger._general_daily, notify_ledger._urgent_daily):
         ledger["notice"].update({"pending": False, "notified": False, "warned": False})
-    notify._skip_logged.clear()
+    notify_ledger._skip_logged.clear()
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_"):
             monkeypatch.delenv(k)
@@ -83,11 +85,11 @@ def _freeze_time(monkeypatch, clock):
     不去动全局 time 模块（那是全进程共享对象），仅替换 notify 模块级
     `time` 名字，同文件其它用例与 pytest 自身计时不受影响。
     """
-    real = notify.time
+    real = notify_transport.time
     fake = types.ModuleType("fake_time")
     fake.time = lambda: clock[0]
     fake.strftime = real.strftime
-    monkeypatch.setattr(notify, "time", fake)
+    monkeypatch.setattr(notify_transport, "time", fake)
 
 
 def _enc(secret):
@@ -102,7 +104,7 @@ def _enc(secret):
 def test_due_persists_to_disk(tmp_path, monkeypatch):
     """放行时写盘：磁盘节流表存在且记录本次时间戳。"""
     _set_cooldown(monkeypatch, 3600)
-    assert notify._throttle_due("磁盘标题") is True
+    assert notify_transport._throttle_due("磁盘标题") is True
     disk = _read_disk(tmp_path)
     assert list(disk.keys()) == ["磁盘标题"]
     assert isinstance(disk["磁盘标题"], float)
@@ -111,9 +113,9 @@ def test_due_persists_to_disk(tmp_path, monkeypatch):
 def test_cross_process_reload_sees_disk(tmp_path, monkeypatch):
     """模拟另一进程（清空内存节流态）：窗口内同标题仍被磁盘判定拦下。"""
     _set_cooldown(monkeypatch, 3600)
-    assert notify._throttle_due("跨进程标题") is True
-    notify._throttle_ts.clear()  # 新进程不共享内存
-    assert notify._throttle_due("跨进程标题") is False, \
+    assert notify_transport._throttle_due("跨进程标题") is True
+    notify_ledger._throttle_ts.clear()  # 新进程不共享内存
+    assert notify_transport._throttle_due("跨进程标题") is False, \
         "磁盘节流表必须兜住另一进程/进程重启后的同类告警"
 
 
@@ -122,28 +124,28 @@ def test_window_expiry_allows_again(tmp_path, monkeypatch):
     clock = [1000000.0]
     _freeze_time(monkeypatch, clock)
     _set_cooldown(monkeypatch, 60)
-    assert notify._throttle_due("过期标题") is True
-    assert notify._throttle_due("过期标题") is False  # 窗口内
+    assert notify_transport._throttle_due("过期标题") is True
+    assert notify_transport._throttle_due("过期标题") is False  # 窗口内
     clock[0] += 61
-    assert notify._throttle_due("过期标题") is True   # 窗口外重新放行
+    assert notify_transport._throttle_due("过期标题") is True   # 窗口外重新放行
     assert _read_disk(tmp_path)["过期标题"] == clock[0], "放行须刷新磁盘时间戳"
 
 
 def test_distinct_titles_independent(tmp_path, monkeypatch):
     """不同标题互不干扰：各自独立计窗。"""
     _set_cooldown(monkeypatch, 3600)
-    assert notify._throttle_due("标题A") is True
-    assert notify._throttle_due("标题A") is False
-    assert notify._throttle_due("标题B") is True
-    assert notify._throttle_due("标题B") is False
+    assert notify_transport._throttle_due("标题A") is True
+    assert notify_transport._throttle_due("标题A") is False
+    assert notify_transport._throttle_due("标题B") is True
+    assert notify_transport._throttle_due("标题B") is False
     assert sorted(_read_disk(tmp_path).keys()) == ["标题A", "标题B"]
 
 
 def test_cooldown_zero_disabled_and_no_disk(tmp_path, monkeypatch):
     """cooldown=0 关闭节流：每次都放行，且不产生磁盘文件。"""
     _set_cooldown(monkeypatch, 0)
-    assert notify._throttle_due("不限标题") is True
-    assert notify._throttle_due("不限标题") is True
+    assert notify_transport._throttle_due("不限标题") is True
+    assert notify_transport._throttle_due("不限标题") is True
     assert not os.path.exists(_throttle_file(tmp_path)), "关闭节流不应碰磁盘"
 
 
@@ -152,9 +154,9 @@ def test_prune_removes_stale_entries(tmp_path, monkeypatch):
     clock = [1000000.0]
     _freeze_time(monkeypatch, clock)
     _set_cooldown(monkeypatch, 60)
-    assert notify._throttle_due("旧标题") is True
+    assert notify_transport._throttle_due("旧标题") is True
     clock[0] += 61
-    assert notify._throttle_due("新标题") is True
+    assert notify_transport._throttle_due("新标题") is True
     disk = _read_disk(tmp_path)
     assert "旧标题" not in disk, "过窗口的条目应在下次写盘时被清理"
     assert list(disk.keys()) == ["新标题"]
@@ -167,7 +169,7 @@ def test_corrupt_file_archived_warned_and_restarts(tmp_path, monkeypatch, caplog
     with open(path, "w", encoding="utf-8") as f:
         f.write("{broken-json")
     with caplog.at_level(logging.WARNING, logger="notify"):
-        assert notify._throttle_due("损坏标题") is True
+        assert notify_transport._throttle_due("损坏标题") is True
     assert "损坏" in caplog.text, "损坏必须记 warning，不得静默重置"
     corrupts = [n for n in os.listdir(str(tmp_path))
                 if n.startswith("notify-throttle.json.corrupt-")]
@@ -195,7 +197,7 @@ def test_concurrent_same_title_only_one_passes(tmp_path, monkeypatch):
 
     def _worker():
         barrier.wait()
-        ok = notify._throttle_due("并发标题")
+        ok = notify_transport._throttle_due("并发标题")
         with guard:
             results.append(ok)
 
@@ -224,12 +226,12 @@ def test_send_throttle_works_across_process(tmp_path, monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("集成标题", "第一次") is True
     assert notify.send("集成标题", "第二次") is False  # 窗口内节流
     assert len(calls) == 1
     # 模拟另一进程重启：内存节流态清零（新进程）——磁盘判定仍兜住
-    notify._throttle_ts.clear()
+    notify_ledger._throttle_ts.clear()
     assert notify.send("集成标题", "第三次") is False, "跨进程不得双发"
     assert len(calls) == 1
     # force 绕过节流与预算（测试推送语义不变）
@@ -248,7 +250,7 @@ def test_send_throttle_zero_still_allows_each(tmp_path, monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("不节流标题", "1") is True
     assert notify.send("不节流标题", "2") is True
     assert len(calls) == 2
