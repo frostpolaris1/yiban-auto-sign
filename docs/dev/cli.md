@@ -6,22 +6,27 @@
 > 分工（2026-09-16 用户裁决）：**CLI 面向 agent，README 面向人类**。
 > 本文是 agent 侧的契约；人类教程在仓库根 `README.md`。
 
-## 1. 现状与目标（**M3 待做**，当前是过渡态）
+## 1. 形态（**M3 已实施**）
 
-当前 CLI 是"一个主脚本 + 多个运维脚本"，参数风格不统一（有的接受 `--flag`，有的只认环境变量），
-也没有机器可读输出。目标形态：
+统一入口已落地，七个子命令与 `--json` 全部可用：
 
 ```
-python3 -m yiban.cli <子命令> [选项]      # 统一入口（M3）
-  sign      一轮签到（可 --workers N / --only 手机号 / --fallback 常驻）
+python3 -m yiban.cli <子命令> [选项]
+  sign      一轮签到（可 --workers N / --only 手机号 / --fallback / --second-run-check）
   probe     只读健康检查
   config    配置检查（脱敏打印，不联网）
-  capacity  容量基准（本机实测 → 建议执行体数）
-  state     状态文件清理
-  db        数据库维护（备份/完整性检查/迁移状态）
+  capacity  容量基准与建议（默认只读建议；--measure 转发基准工具，需 root 隔离测试机）
+  state     状态文件清理（默认 dry-run，--yes 才动手）
+  db        数据库维护（--status / --integrity / --backup [路径]）
+  version   版本与库版本
 ```
 
-`scripts/*.py` 届时变兼容壳（转发并透传退出码），旧调用方式继续可用。
+`scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是**兼容壳**：旧调用方式
+（`run.sh`、cron、容器调度器、本文档 §4 的写法）继续可用并与新入口同退出码。
+`scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连 `yiban.notify` / `yiban.mail`。
+
+模块落位：引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
+state_io / accounts / workers / config_check / cli_support），SQLite 层在 `yiban/store/db.py`。
 
 ## 2. 硬性约定（实施与评审都按这几条）
 
@@ -50,18 +55,37 @@ python3 -m yiban.cli <子命令> [选项]      # 统一入口（M3）
 
 `--workers N` 的汇总码取"最严重者"：`1 > 3 > 2 > 0`。
 
-## 4. 现有命令速查（当前已可用）
+## 4. 命令速查
+
+新入口（推荐给脚本/agent；`--json` 时 stdout 是**单行** JSON 对象）：
 
 ```bash
-python3 scripts/signin.py --check-config      # 配置检查（脱敏、不联网），退出码 0/1
+python3 -m yiban.cli version --json
+python3 -m yiban.cli config --json            # 脱敏配置检查（不联网）
+python3 -m yiban.cli db --status --json       # user_version / 表 / 账号数
+python3 -m yiban.cli state                    # 默认 dry-run，只报告
+python3 -m yiban.cli state --yes              # 真删（保留期见 .env）
+python3 -m yiban.cli capacity --json          # 读实测值给建议
+python3 -m yiban.cli capacity --measure --repo <repo> --users 5000   # 转发基准工具（需 root）
+python3 -m yiban.cli sign --workers 4
+python3 -m yiban.cli sign --fallback
+python3 -m yiban.cli sign --second-run-check  # 退出码 10 = 需要补跑
+```
+
+等价的旧写法（兼容壳，退出码一致；`run.sh` / cron / 容器调度器用的就是这些）：
+
+```bash
+python3 scripts/signin.py --check-config      # = config
 python3 scripts/signin.py --only <手机号>     # 只签指定账号（可逗号分隔）
-python3 scripts/signin.py --probe             # 只读健康检查（受探针开关/频率约束）
-python3 scripts/signin.py --second-run-check  # 补签轮判定，退出码 10/0，只读本地状态
+python3 scripts/signin.py --probe             # = probe
 python3 scripts/signin.py --workers 4         # 多执行体并行一轮（父进程监督）
 python3 scripts/signin.py --fallback          # 兜底常驻：窗口内反复接手未了结账号
-python3 scripts/state_cleanup.py              # 状态文件清理（保留期见 .env；无参数）
+python3 scripts/state_cleanup.py              # = state --yes（宿主 cron 用，无参数）
 bash run.sh                                   # 宿主入口：读 .env（含 YIBAN_WORKERS）后执行一轮
 ```
+
+> `capacity --measure` 转发的是 `scripts/loadtest/capacity_probe.py`（自建假易班、零真实外联、
+> 跑完自动还原），**只在隔离测试机上跑**；与 `--json` 互斥（转发工具的 stdout 自成一路）。
 
 ## 5. 相关文档
 
