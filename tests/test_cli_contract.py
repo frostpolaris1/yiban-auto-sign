@@ -8,6 +8,8 @@
 口径（为什么全部起子进程）：退出码、stdout/stderr 分流、stdin 行为都是**进程级契约**，
 在测试进程里调 `main()` 会把它们（尤其 stdin 与 stdout 编码）测成另一回事。每个用例
 都用临时 STATE/LOG/DB/ENV——绝不碰本机真实 `.env` 与状态目录。
+**唯一例外**：`capacity --measure` 的转发用例不起真进程（转发目标是真的容量基准工具，
+在 Linux 上会真做完整基准），改用打桩 `subprocess.run`，理由见该用例 docstring。
 """
 import json
 import os
@@ -218,15 +220,24 @@ class CliContractTest(unittest.TestCase):
     def test_capacity_measure_forwards_extra_args(self):
         """`--measure` 之后的多余参数属于工具自己的开关，不是 CLI 的用法错误。
 
-        工具在非隔离测试机上会自己拒绝运行（退出码由它决定并原样透传），故这里只钉
-        "转发确实发生了、参数没被 CLI 拦下"，不钉它的退出码。
+        ⚠ 本用例**不起真进程**（与文件头"全部起子进程"的口径为例外，理由充分）：
+        转发目标是真的容量基准工具，在 Linux 上它会真做完整基准（分钟级），
+        那就是"单元测试里跑压测"。这里只验证**转发本身**——argv 拼对了、
+        参数没被 CLI 拦下——用打桩 `subprocess.run` 即可。
         """
-        probe = os.path.join(BASE, "scripts", "loadtest", "capacity_probe.py")
-        if not os.path.exists(probe):
+        import unittest.mock as mock
+
+        import yiban.cli as cli
+        if not os.path.isfile(cli.CAPACITY_PROBE):
             self.skipTest("容量基准工具不在仓库里")
-        r = _run(["capacity", "--measure", "--repo", "."], self.env)
-        self.assertIn("转发容量基准工具", r.stderr)
-        self.assertNotIn("无法识别的参数", r.stderr)
+        with mock.patch.object(cli.subprocess, "run") as m_run:
+            m_run.return_value = mock.Mock(returncode=0)
+            rc = cli.main(["capacity", "--measure", "--repo", "."])
+        self.assertEqual(rc, 0, "转发未发生（退出码不是子进程的）")
+        cmd = m_run.call_args.args[0]
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertEqual(cmd[1], cli.CAPACITY_PROBE)
+        self.assertEqual(cmd[2:], ["--repo", "."], "工具自己的开关必须原样透传")
 
     # ---- ⑦ 不读 stdin：stdin 关掉/空管道都能跑完 ----
 
