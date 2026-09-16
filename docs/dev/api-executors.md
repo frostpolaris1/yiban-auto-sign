@@ -1,4 +1,4 @@
-# API 契约：执行体与出口（`/api/executors`）
+# API 契约：执行体与出口（`/api/scheduler/executors`）
 
 给前端做「执行体配置」页用。**后端已就绪，页面未实现**——本文档是唯一契约来源，
 字段与语义变了要同步改这里（并与 `tests/test_egress_and_executors_api.py` 的断言对齐）。
@@ -10,7 +10,7 @@
   代理地址里可能带 `user:pass@`，任何页面都**不得**期望看到完整串；写接口接受完整串，
   读接口只回描述。示例：写入 `http://svc:secret@proxy.example:8080` → 读回 `http://proxy.example:8080`。
 
-## `GET /api/executors`
+## `GET /api/scheduler/executors`
 
 ```json
 {
@@ -65,20 +65,24 @@
 **文案要求**：展示 `recommendation` 时必须带上"建议"字样（直接引用 `note` 即可），
 不得让管理员理解成"超过就会出错"——不同部署者的机器与出口带宽差异很大，这个数字只作提醒。
 
-## 写路径：`POST /api/settings`
+## `PUT /api/scheduler/executors`
 
-新字段（与既有设置同接口、同字段级权限；**仅主管理员**可写）：
+改执行体数量与出口（**仅主管理员**；字段可部分提交，未提交的字段保持原值）：
 
 | 字段 | 类型 | 校验 | 落库键 |
 |------|------|------|--------|
-| `proxy_list` | string | 逗号分隔；每段为空或 `http(s)://host[:port]` | `YIBAN_PROXY_LIST` |
-| `proxy_fallback` | string | 同上（单段） | `YIBAN_PROXY_FALLBACK` |
 | `workers` | int | 1~64 | `YIBAN_WORKERS` |
-| `capacity_measured` | int | 0~100000；0 表示清除 | `YIBAN_CAPACITY_MEASURED` |
+| `proxy_list` | string | 逗号分隔；每段为空或 `http(s)://[user:pass@]host[:port]` | `YIBAN_PROXY_LIST` |
+| `proxy_fallback` | string | 同上（单段，可空） | `YIBAN_PROXY_FALLBACK` |
+| `capacity_measured` | int | 0~100000；`0` 表示清除实测值 | `YIBAN_CAPACITY_MEASURED` |
 
-返回与错误：成功 `{"ok": true}`；校验失败 `400` + `{"error": "..."}`；
-权限不足 `403`。**写完整代理串**（含凭据）由前端输入、后端落 `.env`；
-读回一律是描述串（见上文脱敏）。
+响应：成功 `{"ok": true, "applied": ["..."], "note": "已写入配置；下一轮定时任务或容器重启后生效"}`；
+校验失败 `400` + `{"error": "..."}`；权限不足 `403`。
+
+**两条必须转达给用户的语义**：
+1. **保存不会立即生效**（下一轮定时任务 / 容器重启后生效）——页面上要写明，不要让人以为点完就在跑；
+2. **写完整代理串**（含凭据）由前端输入、后端落 `.env`；读回一律是描述串（见上文脱敏），
+   所以"原样回显"是不可能的，编辑框应留空并提示"留空=不修改/直连"。
 
 ## 尚未提供（前端仍缺的后端能力，按需再排）
 
