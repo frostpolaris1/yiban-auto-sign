@@ -9,13 +9,22 @@
 2. **不泄漏凭据**：代理串可能带 `user:pass@`，日志与接口只允许出现
    `scheme://host[:port]`（`describe()`）；接口另外只许主管理员访问；
 3. **建议值不编数字**：没实测就没有建议（`recommended` 为 null），实测了才按
-   实测 × 2/3 给建议，且文案说明"是建议不是上限"。
+   实测 × 2/3 给建议，且文案说明"是建议不是上限"；
+4. **执行体身份可判定且不回原串**：身份串的构造与解析同源（`worker_owner` /
+   `fallback_owner` / `single_owner` / `parse_owner` / `role_label`），接口只回角色与
+   1-based 槽位号——身份串含主机名，属部署信息，任何响应里都不许出现原串
+   （本文件的脱敏断言反查它）。名字**跨重启稳定**（不含进程号/启动时刻），
+   解析同时认得**旧格式**（库里有 14 天保留期的存量记录）；
+5. **单段出口写接口**（`PUT …/executors/workers/<index>` 与 `…/executors/fallback`）：
+   只替换目标段、其余段**逐字保留**（前端整条回写会把别人段的凭据清成空，这是本接口
+   存在的理由），读接口只回描述串（不含 userinfo）。
 """
 import contextlib
 import importlib.util
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import unittest
@@ -23,7 +32,10 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import egress  # noqa: E402
+from yiban import (  # noqa: E402
+    clock,
+    egress,
+)
 
 ADMIN_PASS = "TestPass1234!"
 
@@ -100,6 +112,108 @@ class EgressRulesTest(unittest.TestCase):
         self.assertNotIn("svcp", json.dumps([d for _i, _p, d in got]))
 
 
+class OwnerIdentityTest(unittest.TestCase):
+    """执行体身份串：**写入与解析必须同源**（各写一份字符串迟早漂移）。
+
+    身份串写进 `sign_claims.owner`，是"这个执行体算什么类型"的唯一事实来源。
+    三种形态：并行执行体（可解析出序号）、兜底常驻、单执行体；历史遗留串判不出
+    角色，**照实回 `unknown`** 而不是猜——老数据里兜底与单执行体同前缀，本就无法追溯。
+    """
+
+    def test_worker_owner_round_trip(self):
+        owner = egress.worker_owner(3, "myhost")
+        self.assertEqual(owner, "worker-3@myhost")
+        parsed = egress.parse_owner(owner)
+        self.assertEqual((parsed["role"], parsed["index"]), (egress.ROLE_WORKER, 3))
+        self.assertEqual(parsed["label"], "并行执行体 #4")
+
+    def test_stable_names_round_trip(self):
+        """三种角色的**稳定槽位名**都要解析得回来（写入与解析同源）。"""
+        cases = ((egress.worker_owner(2, "myhost"), egress.ROLE_WORKER, 2),
+                 (egress.fallback_owner("myhost"), egress.ROLE_FALLBACK, None),
+                 (egress.single_owner("myhost"), egress.ROLE_SINGLE, None))
+        for owner, role, index in cases:
+            with self.subTest(owner=owner):
+                parsed = egress.parse_owner(owner)
+                self.assertEqual((parsed["role"], parsed["index"]), (role, index))
+
+    def test_owner_name_is_stable_and_host_scoped(self):
+        """名字**跨重启稳定**（同参两次相等：不含进程号/启动时刻），且**跨主机唯一**。
+
+        稳定性是本次改动的目的（前端把执行体当界面对象、重启后立即认领自己的在飞账号）；
+        跨主机唯一是它的安全代价（同名 = 两台机器互相认领 → 同时登录同一账号）。
+        """
+        self.assertEqual(egress.worker_owner(3, "h1"), egress.worker_owner(3, "h1"))
+        self.assertNotEqual(egress.worker_owner(3, "h1"), egress.worker_owner(3, "h2"))
+        self.assertNotEqual(egress.worker_owner(2, "h1"), egress.worker_owner(3, "h1"))
+        for fn in (egress.fallback_owner, egress.single_owner):
+            with self.subTest(fn=fn.__name__):
+                self.assertEqual(fn("h1"), fn("h1"))
+                self.assertNotEqual(fn("h1"), fn("h2"))
+        self.assertNotEqual(egress.fallback_owner("h1"), egress.single_owner("h1"))
+
+    def test_owner_defaults_to_this_host(self):
+        """省略主机名时取本机名（拉起执行体的一方无需自己拼串），且名字里**没有进程号**。"""
+        host = socket.gethostname()
+        self.assertEqual(egress.worker_owner(0), f"worker-0@{host}")
+        self.assertEqual(egress.fallback_owner(), f"fallback@{host}")
+        self.assertEqual(egress.single_owner(), f"single@{host}")
+        for owner in (egress.worker_owner(0), egress.fallback_owner(), egress.single_owner()):
+            self.assertNotIn(str(os.getpid()), owner, "稳定槽位名不得含进程号")
+
+    def test_worker_index_parse_failure_is_not_fatal(self):
+        """序号解析不出来（历史串/被改写）→ `index=None`，角色仍是 worker。"""
+        for owner in ("host:workers:1:wx", "host:workers:1:7", "host:workers:1"):
+            with self.subTest(owner=owner):
+                parsed = egress.parse_owner(owner)
+                self.assertEqual(parsed["role"], egress.ROLE_WORKER)
+                self.assertIsNone(parsed["index"])
+                self.assertEqual(parsed["label"], "并行执行体")
+        # 稳定槽位名同理：`worker-@h` / `worker-xx@h` 判得出角色、判不出序号
+        for owner in ("worker-@h", "worker-xx@h"):
+            with self.subTest(owner=owner):
+                parsed = egress.parse_owner(owner)
+                self.assertEqual((parsed["role"], parsed["index"]),
+                                 (egress.ROLE_WORKER, None))
+
+    def test_legacy_owner_formats_still_parse(self):
+        """**旧格式必须继续认得**：库里还有 14 天保留期的存量记录，写入格式改了不等于
+        读不懂老数据（`:workers:` 中缀、`fallback-`/`exec-` 前缀）。"""
+        cases = (("hostA:workers:4242:w3", egress.ROLE_WORKER, 3),
+                 ("fallback-hostA:4242:090000", egress.ROLE_FALLBACK, None),
+                 ("exec-hostA:4242:090001", egress.ROLE_SINGLE, None))
+        for owner, role, index in cases:
+            with self.subTest(owner=owner):
+                parsed = egress.parse_owner(owner)
+                self.assertEqual((parsed["role"], parsed["index"]), (role, index))
+        # 新格式与旧格式的判定**不互相干扰**：含 `:workers:` 的串仍走旧分支（不会被
+        # 稳定名分支截胡），稳定名也不会被旧前缀规则误判
+        self.assertEqual(egress.parse_owner("worker-3@myhost")["index"], 3)
+        self.assertEqual(egress.parse_owner("fallback@myhost")["role"],
+                         egress.ROLE_FALLBACK)
+
+    def test_fallback_and_single_prefixes(self):
+        fb = egress.parse_owner(egress.IDENT_FALLBACK_PREFIX + "h:1:090000")
+        self.assertEqual((fb["role"], fb["index"], fb["label"]),
+                         (egress.ROLE_FALLBACK, None, "兜底常驻执行体"))
+        sg = egress.parse_owner(egress.IDENT_SINGLE_PREFIX + "h:1:090000")
+        self.assertEqual((sg["role"], sg["index"], sg["label"]),
+                         (egress.ROLE_SINGLE, None, "单执行体"))
+
+    def test_unknown_for_legacy_and_empty(self):
+        """历史遗留串（`{主机}:{进程}:{时刻}`，无前缀）判不出角色——照实回 unknown。"""
+        for owner in ("", "   ", None, "hostA:100:090000", "随便写的串"):
+            with self.subTest(owner=owner):
+                parsed = egress.parse_owner(owner)
+                self.assertEqual(parsed["role"], egress.ROLE_UNKNOWN)
+                self.assertIsNone(parsed["index"])
+                self.assertIn("未标注", parsed["label"])
+
+    def test_role_label_fallbacks(self):
+        self.assertEqual(egress.role_label(egress.ROLE_WORKER), "并行执行体")
+        self.assertEqual(egress.role_label("别的角色"), "未标注（旧数据）")
+
+
 class _WebBase(unittest.TestCase):
     """临时库/环境 + 主管理员登录（与既有 web 测试同一套骨架）。"""
 
@@ -174,6 +288,15 @@ class ExecutorsEndpointTest(_WebBase):
         # 环境键名一并给出：前端不必硬编码字符串
         self.assertEqual(body["workers"]["env_keys"]["list"], egress.ENV_WORKER_LIST)
 
+    def test_assignments_carry_role_and_label(self):
+        """每个并行执行体都带角色与中文标签：前端不必自己拼文案。"""
+        body = self._login().get("/api/scheduler/executors").get_json()
+        got = body["workers"]["assignments"]
+        self.assertEqual([a["role"] for a in got], [egress.ROLE_WORKER] * 3)
+        self.assertEqual([a["label"] for a in got],
+                         ["并行执行体 #1", "并行执行体 #2", "并行执行体 #3"])
+        self.assertEqual([a["index"] for a in got], [0, 1, 2])
+
     def test_recommendation_comes_from_measured_value_only(self):
         c = self._login()
         body = c.get("/api/scheduler/executors").get_json()
@@ -200,6 +323,159 @@ class ExecutorsEndpointTest(_WebBase):
         body = self._login().get("/api/scheduler/executors").get_json()
         self.assertIsNone(body["measured"])
         self.assertIsNone(body["recommendation"])
+
+
+class FallbackStatusTest(_WebBase):
+    """兜底常驻执行体的开关四态：`enabled`（.env 声明的开关）× `alive`（心跳）。
+
+    为什么要后端算好 status：**声明开关**（网页写 .env）与**真在跑**（心跳新鲜度）
+    是两件事，"开了却没跑起来"要靠宿主 cron，"没开却在跑"是人工起的进程——两者
+    的运维动作完全不同，不能糊成一个布尔让前端猜。
+    """
+
+    def _set_enabled(self, value):
+        """改写共享 `.env` 的开关行（`value=None` = 删掉该键）。"""
+        with open(self.env_file, encoding="utf-8") as f:
+            lines = [ln for ln in f.read().splitlines()
+                     if not ln.startswith("YIBAN_FALLBACK_ENABLE")]
+        if value is not None:
+            lines.append(f"YIBAN_FALLBACK_ENABLE={value}")
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def _set_alive(self, alive):
+        """造/删兜底心跳文件（与 `state_io._write_fallback_alive` 同格式）。"""
+        path = os.path.join(self.tmp, "fallback-alive.json")
+        if not alive:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"at": clock.now().strftime("%Y-%m-%d %H:%M:%S"), "pid": 1}, f)
+
+    def _fallback(self):
+        return self._login().get("/api/scheduler/executors").get_json()["fallback"]
+
+    def test_status_four_states(self):
+        cases = (
+            (None, False, False, "off"),
+            ("0", False, False, "off"),
+            ("1", True, True, "running"),
+            ("1", False, True, "declared_not_running"),
+            ("0", True, False, "running_not_declared"),
+        )
+        for raw, alive, enabled, status in cases:
+            with self.subTest(YIBAN_FALLBACK_ENABLE=raw, alive=alive):
+                self._set_enabled(raw)
+                self._set_alive(alive)
+                fb = self._fallback()
+                self.assertEqual(fb["enabled"], enabled)
+                self.assertEqual(fb["alive"], alive)
+                self.assertEqual(fb["status"], status)
+
+    def test_fallback_carries_role_label_and_key_name(self):
+        self._set_enabled(None)
+        self._set_alive(False)
+        fb = self._fallback()
+        self.assertEqual(fb["role"], egress.ROLE_FALLBACK)
+        self.assertEqual(fb["label"], "兜底常驻执行体")
+        self.assertEqual(fb["env_key_enable"], "YIBAN_FALLBACK_ENABLE")
+        self.assertIsInstance(fb["in_window"], bool)
+        # 窗口外 alive=false 属正常：前端要据此只对窗口内报警，故 in_window 必须回
+        self.assertIn("in_window", fb)
+
+    def test_truthy_env_value_reads_as_enabled(self):
+        """`.env` 里手写 `true`/`on` 也算开（与 run.sh 的真值字面量同一套）。"""
+        for value in ("true", "TRUE", "on", "yes"):
+            with self.subTest(value=value):
+                self._set_enabled(value)
+                self._set_alive(False)
+                fb = self._fallback()
+                self.assertTrue(fb["enabled"])
+                self.assertEqual(fb["status"], "declared_not_running")
+
+
+#: 极具辨识度的主机名与进程号：脱敏断言据此反查"响应里有没有身份原串"。
+#: 并行执行体用**当前的稳定槽位名**（不含进程号——进程号只出现在旧格式那两条里）
+SECRET_HOST = "host-secret-9z8y"
+OWNER_WORKER = egress.worker_owner(0, SECRET_HOST)
+OWNER_FALLBACK = egress.IDENT_FALLBACK_PREFIX + f"{SECRET_HOST}:4243:090000"
+OWNER_SINGLE = egress.IDENT_SINGLE_PREFIX + f"{SECRET_HOST}:4244:090001"
+OWNER_LEGACY = f"{SECRET_HOST}:4245:090002"
+
+
+class ActivityEndpointTest(_WebBase):
+    """`activity`：当日"谁做了多少"，**已脱敏**（用槽位号替代 owner 原串）。
+
+    身份串含主机名（旧格式还含进程号），对攻击者就是资产清单；但"第 1 个并行执行体
+    做了 10 个"这类信息前端确实需要——槽位号正好给出同样的信息量而不泄漏部署细节。
+    """
+
+    def _seed(self):
+        """造三类身份 + 一条历史遗留串的领取记录。"""
+        from yiban.store import db as store_db
+        day = clock.today()
+        store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
+                         cleanup=False)
+        rows = (
+            ("13900000001", OWNER_WORKER, "done"),
+            ("13900000002", OWNER_WORKER, "done"),
+            ("13900000003", OWNER_WORKER, "failed"),
+            ("13900000004", OWNER_FALLBACK, "claimed"),
+            ("13900000005", OWNER_SINGLE, "done"),
+            ("13900000006", OWNER_LEGACY, "done"),
+        )
+        for phone, owner, state in rows:
+            self.assertTrue(store_db.claim_sign_account(phone, day, owner), phone)
+            if state == "done":
+                store_db.claim_settle(phone, day, owner, store_db.CLAIM_STATE_DONE, "ok")
+            elif state == "failed":
+                store_db.claim_give_up(phone, day, owner, "重试耗尽")
+        return day
+
+    def test_activity_groups_and_masks_owner(self):
+        day = self._seed()
+        body = self._login().get("/api/scheduler/executors").get_json()
+        act = body["activity"]
+        self.assertEqual(act["day"], day)
+        self.assertIsInstance(act["in_window"], bool)
+        by_slot = {e["slot"]: e for e in act["by_executor"]}
+        self.assertEqual(sorted(by_slot), list(range(1, len(by_slot) + 1)),
+                         "槽位必须是 1-based 连续编号")
+        roles = {e["role"] for e in act["by_executor"]}
+        self.assertEqual(roles, {egress.ROLE_WORKER, egress.ROLE_FALLBACK,
+                                 egress.ROLE_SINGLE, egress.ROLE_UNKNOWN})
+        worker = next(e for e in act["by_executor"] if e["role"] == egress.ROLE_WORKER)
+        self.assertEqual((worker["index"], worker["label"]), (0, "并行执行体 #1"))
+        self.assertEqual((worker["done"], worker["failed"], worker["claimed"],
+                          worker["total"]), (2, 1, 0, 3))
+        unknown = next(e for e in act["by_executor"]
+                       if e["role"] == egress.ROLE_UNKNOWN)
+        self.assertEqual(unknown["label"], "未标注（旧数据）")
+        self.assertEqual(act["totals"],
+                         {"claimed": 1, "failed": 1, "done": 4, "total": 6})
+
+    def test_activity_never_returns_raw_owner(self):
+        """**脱敏硬要求**：响应 JSON 里反查不到任何身份原串（含主机名与进程号）。
+
+        进程号只出现在旧格式的存量身份里（稳定槽位名不含进程号），故只对旧格式那三条
+        的进程号做反查；主机名对四种身份都要反查。
+        """
+        self._seed()
+        body = self._login().get("/api/scheduler/executors").get_json()
+        raw = json.dumps(body, ensure_ascii=False)
+        for owner in (OWNER_WORKER, OWNER_FALLBACK, OWNER_SINGLE, OWNER_LEGACY):
+            self.assertNotIn(owner, raw, "接口不得回显执行体身份原串")
+        self.assertNotIn(SECRET_HOST, raw, "主机名属部署信息，不得进响应")
+        for pid in ("4243", "4244", "4245"):
+            self.assertNotIn(pid, raw, "进程号属部署信息，不得进响应")
+
+    def test_empty_database_is_not_an_error(self):
+        """新部署没有库很正常：`activity` 回空结构，接口照常 200。"""
+        body = self._login().get("/api/scheduler/executors").get_json()
+        self.assertEqual(body["activity"]["by_executor"], [])
+        self.assertEqual(body["activity"]["totals"],
+                         {"claimed": 0, "failed": 0, "done": 0, "total": 0})
 
 
 class ExecutorsSaveEndpointTest(_WebBase):
@@ -254,6 +530,35 @@ class ExecutorsSaveEndpointTest(_WebBase):
         self.assertEqual(self._read_env().get("YIBAN_CAPACITY_MEASURED", ""), "")
         self.assertIsNone(c.get("/api/scheduler/executors").get_json()["measured"])
 
+    def test_put_fallback_enable_accepts_literals(self):
+        """开关只接受 0/1/true/false，落盘统一归一成 0/1（.env 里只有一种写法）。"""
+        c = self._login()
+        for payload, expect in (({"fallback_enable": 1}, "1"),
+                                ({"fallback_enable": "true"}, "1"),
+                                ({"fallback_enable": True}, "1"),
+                                ({"fallback_enable": 0}, "0"),
+                                ({"fallback_enable": "FALSE"}, "0"),
+                                ({"fallback_enable": False}, "0")):
+            with self.subTest(payload=payload):
+                r = c.put("/api/scheduler/executors", json=payload,
+                          headers={"X-CSRF-Token": c.csrf})
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                self.assertEqual(self._read_env()["YIBAN_FALLBACK_ENABLE"], expect)
+        # 读回与开关一致（enabled/status 由后端算好）
+        body = c.get("/api/scheduler/executors").get_json()
+        self.assertFalse(body["fallback"]["enabled"])
+        self.assertEqual(body["fallback"]["status"], "off")
+
+    def test_put_rejects_bad_fallback_enable_without_touching_env(self):
+        c = self._login()
+        before = self._read_env()
+        for value in ("on", "yes", "也许", "1" + chr(10) + "YIBAN_X=1", "", 2):
+            with self.subTest(value=value):
+                r = c.put("/api/scheduler/executors", json={"fallback_enable": value},
+                          headers={"X-CSRF-Token": c.csrf})
+                self.assertEqual(r.status_code, 400, value)
+        self.assertEqual(self._read_env(), before, "校验失败不得落盘")
+
     def test_audit_records_keys_not_credentials(self):
         """审计链不得出现代理凭据（只记键名）。"""
         c = self._login()
@@ -265,6 +570,255 @@ class ExecutorsSaveEndpointTest(_WebBase):
         for secret in ("svcuser", "svcp", SECRET_PROXY):
             self.assertNotIn(secret, detail)
         self.assertIn("YIBAN_PROXY_LIST", detail)
+
+
+class ReplaceSlotTest(unittest.TestCase):
+    """`egress.replace_slot`：**只换目标段、其余段逐字保留**（纯函数，不依赖 web/DB）。
+
+    排在整条写入之外的第二个写面的地基：段位必须与 `parse_list` 同号（否则"改第 2 个
+    执行体的出口"会改到别人头上），其余段必须逐字写回（否则一次改动会把别人段的写法
+    与"空位=直连"的刻意留白一起抹掉）。
+    """
+
+    def test_replaces_only_target_and_keeps_the_rest_verbatim(self):
+        raw = "http://u1:p1@a:1,http://u2:p2@b:2,http://u3:p3@c:3"
+        out = egress.replace_slot(raw, 1, "http://new:9")
+        self.assertEqual(out, "http://u1:p1@a:1,http://new:9,http://u3:p3@c:3")
+        self.assertEqual(out.split(",")[0], raw.split(",")[0], "第 1 段必须逐字未变")
+        self.assertEqual(out.split(",")[2], raw.split(",")[2], "第 3 段必须逐字未变")
+
+    def test_slot_numbering_matches_parse_list(self):
+        """段号口径与 `parse_list` 一致（含空位），否则会改到别人段上。"""
+        raw = "http://a:1,,http://c:3"
+        self.assertEqual(egress.parse_list(raw)[1], egress.DIRECT)
+        self.assertEqual(egress.replace_slot(raw, 1, "http://b:2"),
+                         "http://a:1,http://b:2,http://c:3")
+        # 末尾逗号也是"多一个空段"（parse_list 的字面语义），补位时同样按逗号连接
+        self.assertEqual(len(egress.parse_list("http://a:1,")), 2)
+        self.assertEqual(egress.replace_slot("http://a:1,", 1, "http://b:2"),
+                         "http://a:1,http://b:2")
+
+    def test_pads_missing_segments(self):
+        """段数不足时用空段补齐到 index（中间段为空 = 该执行体直连）。"""
+        self.assertEqual(egress.replace_slot("http://a:1", 2, "http://c:3"),
+                         "http://a:1,,http://c:3")
+        self.assertEqual(egress.replace_slot("", 0, "http://a:1"), "http://a:1")
+        self.assertEqual(egress.replace_slot(None, 1, "http://b:2"), ",http://b:2")
+        # 补齐出来的空段在解析口径下确实是"直连"
+        self.assertEqual(egress.parse_list(egress.replace_slot("http://a:1", 2, "x:1"))[1],
+                         egress.DIRECT)
+
+    def test_untouched_input_round_trips(self):
+        """不替换任何段（写回同样的值）必须**逐字回到原串**——其余段一字不差。"""
+        for raw in ("http://a:1,http://b:2", "http://a:1,,http://c:3", "http://only:1",
+                    "http://u:p@a:1, http://b:2"):
+            with self.subTest(raw=raw):
+                fields = raw.split(",")
+                index = len(fields) - 1
+                self.assertEqual(egress.replace_slot(raw, index, fields[index]), raw)
+
+
+class SlotEgressEndpointTest(_WebBase):
+    """单段出口写接口：`PUT …/executors/workers/<index>` 与 `PUT …/executors/fallback`。
+
+    这两个接口存在的理由是**防数据破坏**：整条写入收的是整条逗号列表、读接口只回脱敏
+    描述串（不含 userinfo），前端拿读回的值整条回写就会把别人段的代理凭据清成空、静默
+    退回直连。故本类最要紧的断言是"**只改目标段，其余段逐字未变**"。
+    """
+
+    def _read_env(self):
+        with open(self.env_file, encoding="utf-8") as f:
+            return dict(ln.split("=", 1) for ln in f.read().splitlines()
+                        if "=" in ln and not ln.startswith("#"))
+
+    def _setup_env(self, proxy_list=None, workers="3", fallback=None):
+        """把共享 `.env` 重写成本次用例要的出口形态（`None` = 不写该键）。
+
+        本类每个用例都自带前置配置：共享 `.env` 会被前面的用例改写，不这样写就会
+        出现"单跑绿、全量红"。
+        """
+        lines = ["YIBAN_ACCOUNTS_KEY=" + "a" * 64,
+                 "YIBAN_ADMIN_USER=admin@test.local",
+                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}"]
+        if proxy_list is not None:
+            lines.append(f"{egress.ENV_WORKER_LIST}={proxy_list}")
+        if fallback is not None:
+            lines.append(f"{egress.ENV_FALLBACK}={fallback}")
+        if workers is not None:
+            lines.append(f"YIBAN_WORKERS={workers}")
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def _put(self, c, path, payload):
+        return c.put(path, json=payload, headers={"X-CSRF-Token": c.csrf})
+
+    def test_worker_slot_changes_only_target_segment(self):
+        """**验收项**：改第 2 段后，第 1、3 段逐字未变；读接口只回描述串（不含 userinfo）。"""
+        self._setup_env(proxy_list="http://u1:p1@a.example:1,http://u2:p2@b.example:2,"
+                                   "http://u3:p3@c.example:3", workers="3")
+        c = self._login()
+        r = self._put(c, "/api/scheduler/executors/workers/1",
+                      {"egress": "http://newuser:newpw@d.example:4"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["index"], 1)
+        self.assertEqual(body["egress"], "http://d.example:4", "响应只回描述串")
+        for secret in ("newuser", "newpw"):
+            self.assertNotIn(secret, json.dumps(body))
+        # 落盘：只有第 2 段变了，其余两段**逐字**保留（连 userinfo 都没动）
+        self.assertEqual(
+            self._read_env()[egress.ENV_WORKER_LIST],
+            "http://u1:p1@a.example:1,http://newuser:newpw@d.example:4,"
+            "http://u3:p3@c.example:3")
+        # 读接口：三段都是描述串，任何凭据都不出现
+        got = c.get("/api/scheduler/executors").get_json()
+        self.assertEqual([a["egress"] for a in got["workers"]["assignments"]],
+                         ["http://a.example:1", "http://d.example:4", "http://c.example:3"])
+        raw = json.dumps(got, ensure_ascii=False)
+        for secret in ("u1:p1", "u2:p2", "u3:p3", "newuser", "newpw"):
+            self.assertNotIn(secret, raw, "读接口不得回显任何段的凭据")
+
+    def test_worker_slot_pads_missing_segments(self):
+        """列表只有 1 段、改 index 2 → 第 2 段是新值、第 0 段原样、中间为空段。"""
+        self._setup_env(proxy_list="http://only.example:1", workers="3")
+        c = self._login()
+        r = self._put(c, "/api/scheduler/executors/workers/2",
+                      {"egress": "http://late.example:2"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["egress"], "http://late.example:2")
+        stored = self._read_env()[egress.ENV_WORKER_LIST]
+        self.assertEqual(stored, "http://only.example:1,,http://late.example:2")
+        self.assertEqual(egress.parse_list(stored)[1], egress.DIRECT, "中间补齐段=直连")
+
+    def test_empty_or_null_means_direct(self):
+        """`""` / `null` = 该槽位直连（清空是显式动作，不是"没提交"）。"""
+        self._setup_env(proxy_list="http://u1:p1@a.example:1,http://b.example:2,"
+                                   "http://c.example:3", workers="3",
+                        fallback="http://fb.example:9")
+        c = self._login()
+        for payload in ({"egress": ""}, {"egress": None}):
+            with self.subTest(payload=payload):
+                self._setup_env(proxy_list="http://u1:p1@a.example:1,http://b.example:2,"
+                                           "http://c.example:3", workers="3")
+                r = self._put(c, "/api/scheduler/executors/workers/1", payload)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                self.assertEqual(r.get_json()["egress"], "直连（本机出口）")
+                self.assertEqual(self._read_env()[egress.ENV_WORKER_LIST],
+                                 "http://u1:p1@a.example:1,,http://c.example:3",
+                                 "只清目标段，别的段一字不动")
+        # 兜底段清空 = 删掉该键（既有的"未单独配置就退回 YIBAN_PROXY"语义不变）
+        self._setup_env(proxy_list="http://a.example:1", fallback="http://fb.example:9")
+        r = self._put(c, "/api/scheduler/executors/fallback", {"egress": None})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json(), {"ok": True, "index": "fallback",
+                                        "egress": "直连（本机出口）"})
+        self.assertEqual(self._read_env().get(egress.ENV_FALLBACK, ""), "")
+        self.assertEqual(c.get("/api/scheduler/executors").get_json()["fallback"]["egress"],
+                         "直连（本机出口）")
+
+    def test_fallback_slot_replaces_only_that_key(self):
+        """改兜底段不得连带重写并行执行体的出口表（反之亦然）。"""
+        self._setup_env(proxy_list="http://u1:p1@a.example:1,http://b.example:2",
+                        workers="2")
+        c = self._login()
+        r = self._put(c, "/api/scheduler/executors/fallback",
+                      {"egress": "http://fbuser:fbpw@fb.example:8080"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json(),
+                         {"ok": True, "index": "fallback", "egress": "http://fb.example:8080"})
+        env = self._read_env()
+        self.assertEqual(env[egress.ENV_FALLBACK],
+                         "http://fbuser:fbpw@fb.example:8080")
+        self.assertEqual(env[egress.ENV_WORKER_LIST], "http://u1:p1@a.example:1,http://b.example:2",
+                         "兜底写接口不得动并行执行体的表")
+
+    def test_missing_egress_key_is_400_without_touching_env(self):
+        """缺 `egress` 键 → 400（不给"什么都不改"的歧义），且不落盘。"""
+        self._setup_env(proxy_list="http://a.example:1", fallback="http://fb.example:9")
+        c = self._login()
+        before = self._read_env()[egress.ENV_WORKER_LIST]
+        for path in ("/api/scheduler/executors/workers/0",
+                     "/api/scheduler/executors/fallback"):
+            with self.subTest(path=path):
+                r = self._put(c, path, {})
+                self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+                self.assertIn("egress", r.get_json()["error"])
+        self.assertEqual(self._read_env()[egress.ENV_WORKER_LIST], before,
+                         "校验失败不得落盘（比整份 .env 只看出口键：启动期口令迁移"
+                         "会合法地改写 .env 的别处）")
+
+    def test_rejects_line_break_injection_and_bad_url(self):
+        """换行注入与新段的形状校验一律 400，且不落盘（其余段不得被写坏）。"""
+        self._setup_env(proxy_list="http://a.example:1,http://b.example:2", workers="2")
+        c = self._login()
+        before = self._read_env()[egress.ENV_WORKER_LIST]
+        bad = ("http://x:1" + chr(10) + "YIBAN_PROXY=", "http://x:1" + chr(13),
+               "not a url", "http://user:pa ss@h:1")
+        for value in bad:
+            with self.subTest(value=value):
+                r = self._put(c, "/api/scheduler/executors/workers/0", {"egress": value})
+                self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(self._read_env()[egress.ENV_WORKER_LIST], before,
+                         "校验失败不得落盘")
+
+    def test_index_out_of_range_is_400(self):
+        """`index` 必须 `< 当前执行体数` 且 `<= 63`，否则 400 并说明该槽位未被使用。"""
+        self._setup_env(proxy_list="http://a.example:1,http://b.example:2", workers="2")
+        c = self._login()
+        for index in (2, 3, 63):
+            with self.subTest(index=index):
+                r = self._put(c, f"/api/scheduler/executors/workers/{index}",
+                              {"egress": "http://x:1"})
+                self.assertEqual(r.status_code, 400)
+                self.assertIn("未被使用", r.get_json()["error"])
+        # 下标上限 63（`YIBAN_WORKERS` 最大 64）：就算执行体数写满也不收 64
+        self._setup_env(proxy_list="http://a.example:1", workers="64")
+        r = self._put(c, "/api/scheduler/executors/workers/64", {"egress": "http://x:1"})
+        self.assertEqual(r.status_code, 400)
+        # 合法槽位在同一份配置下必须能写（反证 400 不是"一律拒绝"）
+        self.assertEqual(self._put(c, "/api/scheduler/executors/workers/63",
+                                   {"egress": "http://x:1"}).status_code, 200)
+
+    def test_requires_master_admin(self):
+        """未登录 401/403；**普通管理员（注册用户）403**；且不落盘。"""
+        self._setup_env(proxy_list="http://a.example:1", fallback="http://fb.example:9")
+        anon = self.webapp.create_app().test_client()
+        for path in ("/api/scheduler/executors/workers/0",
+                     "/api/scheduler/executors/fallback"):
+            with self.subTest(path=path, who="anon"):
+                r = anon.put(path, json={"egress": "http://x:1"},
+                             headers={"X-CSRF-Token": "x"})
+                self.assertIn(r.status_code, (401, 403))
+        from yiban.store import db as store_db
+        store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
+        store_db.create_user("admin2@test.local",
+                             self.webapp.generate_password_hash("UserPass1234!"),
+                             role="admin")
+        c = self.webapp.create_app().test_client()
+        self.assertEqual(c.post("/api/login", json={
+            "username": "admin2@test.local", "password": "UserPass1234!"}).status_code, 200)
+        csrf = c.get("/api/me").get_json()["csrf_token"]
+        before = self._read_env()
+        for path in ("/api/scheduler/executors/workers/0",
+                     "/api/scheduler/executors/fallback"):
+            with self.subTest(path=path, who="non-master-admin"):
+                r = c.put(path, json={"egress": "http://x:1"},
+                          headers={"X-CSRF-Token": csrf})
+                self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertEqual(self._read_env(), before, "无权限不得落盘")
+
+    def test_audit_records_slot_name_not_credentials(self):
+        """审计只记**槽位名**（如 `YIBAN_PROXY_LIST[1]`），绝不记代理凭据。"""
+        self._setup_env(proxy_list="http://a.example:1,http://b.example:2", workers="2")
+        c = self._login()
+        from unittest import mock as _mock
+        with _mock.patch.object(self.webapp.db, "audit", return_value=True) as m:
+            self.assertEqual(self._put(c, "/api/scheduler/executors/workers/1",
+                                       {"egress": SECRET_PROXY}).status_code, 200)
+        detail = " ".join(str(a) for a in m.call_args[0])
+        for secret in ("svcuser", "svcp", SECRET_PROXY):
+            self.assertNotIn(secret, detail)
+        self.assertIn(f"{egress.ENV_WORKER_LIST}[1]", detail)
 
 
 if __name__ == "__main__":

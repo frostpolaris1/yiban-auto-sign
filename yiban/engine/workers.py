@@ -13,7 +13,6 @@
 """
 import logging
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -73,7 +72,11 @@ def run_worker_supervisor(n, argv):
     children = []
     for i in range(n):
         env = os.environ.copy()
-        env["YIBAN_EXECUTOR_ID"] = f"{socket.gethostname()}:workers:{os.getpid()}:w{i}"
+        # 身份串的唯一构造处在 egress（写入与解析同一份口径）：稳定槽位名
+        # `worker-{i}@{主机名}`——跨重启不变，故重启后立刻认领自己上一轮的在飞账号；
+        # 代价是同一槽位名不得两台机器同时跑（跨主机靠 @主机名 区分，同机由本进程
+        # 持有的全局锁 signin-run.lock 挡住，故那把锁不能去掉）。
+        env["YIBAN_EXECUTOR_ID"] = egress.worker_owner(i)
         env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{i}"
         proxy = egress.resolve(egress.ROLE_WORKER, i)
         if proxy:
@@ -125,6 +128,10 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     """
     interval = interval or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
     os.environ.setdefault("YIBAN_RUN_LOCK_NAME", FALLBACK_LOCK_NAME)
+    # 身份串：兜底常驻与单执行体/并行执行体各用**稳定的槽位名**（`fallback@{主机名}`），
+    # 跨重启不变 ⇒ 重启后立刻接手自己上一轮的在飞账号；代价是同一槽位名不得两台机器
+    # 同时跑（跨主机靠 @主机名 区分，同机由下面那把 `signin-run.lock.fallback` 挡住）。
+    os.environ.setdefault("YIBAN_EXECUTOR_ID", egress.fallback_owner())
     proxy = egress.resolve(egress.ROLE_FALLBACK)
     logger.info("兜底执行体启动（出口: %s，扫描间隔 %ss）", egress.describe(proxy), interval)
     if proxy:

@@ -15,7 +15,7 @@ import random
 import time
 from datetime import datetime, timedelta
 
-from yiban import clock, notify
+from yiban import clock, egress, notify
 from yiban import status as yiban_status
 from yiban.engine import alerts, state_io
 from yiban.engine import attempts as attempts_mod
@@ -132,8 +132,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     first_round = True
 
     # ---- 领取池（多执行体协调；单执行体形态下永远领得到，行为与旧版一致）----
+    # 单执行体形态的身份是稳定槽位名 `single@{主机名}`：跨重启不变，故重启后立刻认领
+    # 自己上一轮的在飞账号；代价是同一槽位名不得两台机器同时跑（跨主机靠 @主机名 区分，
+    # 同机靠运行锁挡住——单执行体形态由调用方持锁，见 yiban/engine/cli_support.py）。
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
-                   or db.claim_new_owner("exec-"))
+                   or egress.single_owner())
     claimed_day = {}   # 本进程领到的账号 → 业务日（跨午夜时逐账号不同）
 
     def _claim(phone, day):

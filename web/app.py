@@ -355,6 +355,61 @@ def _sign_window():
     start, end, _invalid = yb_window.parse_window(read_env(ENV_FILE))
     return start, end
 
+
+#: 开关类 .env 值的真值字面量（与 run.sh 的 `_is_truthy` 同一套写法）
+_TRUTHY_LITERALS = ("1", "true", "on", "yes")
+
+
+def _env_flag(value):
+    """把 `.env` 里的开关值解析成布尔（认 1/true/on/yes，大小写不敏感）。
+
+    只认这四个真值字面量，其余（`0`/`false`/空/未设/写错的词）一律按**关**处理：
+    兜底常驻是要占一份出口与一个常驻进程的动作，"开"必须是明确表达的意图。
+    """
+    return str(value if value is not None else "").strip().lower() in _TRUTHY_LITERALS
+
+
+def _in_sign_window(bounds, now=None):
+    """当前是否落在**有效**签到窗口内（已扣掐头去尾）。
+
+    判定用引擎同一份 `yiban.window.bounds` 给出的边界，这里只把"现在"换算成
+    当天分钟数再比区间，不另写一套窗口逻辑。窗口外 `fallback.alive=false` 属正常
+    （兜底进程本就只在窗口内运行），前端应据此只在窗口内报警。
+    """
+    now = now or clock.now()
+    now_min = now.hour * 60 + now.minute + now.second / 60.0
+    return bounds.lo_min <= now_min <= bounds.hi_min
+
+
+def _executor_activity(day):
+    """当日领取池归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
+
+    为什么必须脱敏：`owner` 形如 `{主机名}:{进程号}:w{序号}`，是部署信息（主机名与
+    进程号对攻击者是资产清单）。故**绝不回原串**——用 1-based 槽位号替代它，前端
+    拿到的信息量不变（"第 1 个并行执行体做了 10 个"），也看得懂。
+    角色解析的唯一口径在 `yiban.egress.parse_owner`；`unknown` 照实回（历史数据里
+    兜底与单执行体同前缀，本来就无法追溯，不假装能还原）。
+
+    库不存在/未初始化（新部署很正常）→ `([], 全 0)`，与 `claims.stats` 同口径不抛。
+    """
+    by_executor = []
+    totals = {"claimed": 0, "failed": 0, "done": 0, "total": 0}
+    for slot, row in enumerate(db.claim_activity(day), start=1):
+        parsed = yb_egress.parse_owner(row.get("owner"))
+        by_executor.append({
+            "slot": slot,
+            "role": parsed["role"],
+            "index": parsed["index"],
+            "label": parsed["label"],
+            "claimed": int(row.get("claimed", 0)),
+            "failed": int(row.get("failed", 0)),
+            "done": int(row.get("done", 0)),
+            "total": int(row.get("total", 0)),
+        })
+        for key in totals:
+            totals[key] += int(row.get(key, 0))
+    return by_executor, totals
+
 # 登录时延拉平占位哈希：用户名/账号不存在时也执行一次等价 scrypt 比对，
 # 消除「响应耗时差异」造成的用户枚举时序侧信道（占位哈希无需真实有效，比对恒为 False）。
 _dummy_pw_hash = None
@@ -931,6 +986,11 @@ def edge_front_sec():
     return edge_config()[0]
 
 
+#: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 允许 1~64 → 下标 0~63）；
+#: 单槽位出口写接口按"下标 + 当前执行体数"两重判定拒绝未被使用的槽位。
+EXECUTOR_INDEX_MAX = 63
+
+
 def _is_http_proxy_url(value):
     """代理地址格式校验：`http(s)://[user:pass@]host[:port]`（宽松但明确）。
 
@@ -948,6 +1008,35 @@ def _is_http_proxy_url(value):
     if "@" in host_part:                  # 去掉可能的 userinfo
         host_part = host_part.rsplit("@", 1)[1]
     return bool(host_part)
+
+
+def _save_slot_egress(env_path, key, index, value):
+    """读-改-写 `.env` 里**一段**出口（`index=None` = 该键只有一段，兜底）。
+
+    读与写在**同一把** `.env` 写锁内完成（复用整条写入用的 `_env_write_lock` 与
+    `write_env_batch`，不另造一套）：否则并发保存时"读到的旧串"会把别人刚写的段盖掉。
+    其余段**逐字保留**（切分与合并见 `yiban.egress.replace_slot`）——本接口只改一段，
+    不重新校验也不规范化别人的段，免得把"这一段直连"的刻意空位改写成别的意思。
+
+    校验复用整条写入的同一个 `_is_http_proxy_url`（不写第二套形状校验）。
+    返回 `(错误信息, 状态码)`；成功为 `(None, None)`。
+    """
+    if env_io.has_line_break(value):
+        return "代理配置不能包含换行", 400
+    if not _is_http_proxy_url(value):
+        return f"代理地址格式不正确: {value[:40]}", 400
+    with _env_write_lock(env_path):
+        raw = read_env(env_path).get(key, "")
+        updated = value if index is None else yb_egress.replace_slot(raw, index, value)
+        # 写盘前对整串再查一次换行：新段已校验，但其余段是既有配置，本接口逐字保留它们，
+        # 只校验新段拦不住历史载荷被"保"进来（write_env_batch 内还有一道硬校验兜底）
+        if env_io.has_line_break(updated):
+            return "现有代理配置含换行符，请先手工清理该键", 400
+        try:
+            write_env_batch(env_path, {key: updated})
+        except ValueError as e:
+            return str(e), 400
+    return None, None
 
 
 def write_env_int(env_path, key, value):
@@ -7783,13 +7872,19 @@ def create_app(host=None):
         前端要做"执行体配置"页时读这个接口即可，不必知道 .env 键名。字段说明：
 
         - `workers.configured`：当前配置的并行执行体数（`YIBAN_WORKERS`，0/未设=1）
-        - `workers.assignments[]`：每个执行体的出口描述（**已脱敏**，见下）
-        - `fallback`：兜底常驻执行体的出口与扫描间隔
+        - `workers.assignments[]`：每个执行体的出口描述 + 角色标签（**已脱敏**，见下）
+        - `fallback`：兜底常驻执行体的出口、扫描间隔、角色标签，以及
+          `enabled`（.env 里声明的开关）/ `alive`（心跳判定是否真在跑）/
+          `status`（四态：off / running / declared_not_running / running_not_declared）/
+          `in_window`（当前是否在有效签到窗口内；窗口外 alive=false 属正常）
+        - `activity`：当日**按执行体归属**的计数（谁做了多少），**已脱敏**
         - `measured` / `recommendation`：容量建议（只有部署者实测过才有值，
           **建议值不是上限**；没实测就是 null，不编数字）
 
-        脱敏：代理串可能带 `user:pass@`，一律只回 `scheme://host[:port]`；
-        接口本身也只回描述串，不回原始凭据。
+        脱敏：① 代理串可能带 `user:pass@`，一律只回 `scheme://host[:port]`；
+        ② 执行体身份（`sign_claims.owner`）含主机名与进程号，**一律不回原串**——
+        `activity.by_executor[].slot` 用 1-based 槽位序号替代它，角色来自
+        `yiban.egress.parse_owner`（判不出即 `unknown`，照实回不猜）。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可查看执行体配置"}), 403
@@ -7800,7 +7895,9 @@ def create_app(host=None):
         # 注意传 env：出口分配的唯一口径在 yiban/egress.py，且**读的是 .env 那份配置**
         # （不传就会去读进程环境变量，网页里配好的出口会显示成"直连"）
         assignments = [
-            {"index": i, "egress": desc}
+            {"index": i, "egress": desc,
+             "role": yb_egress.ROLE_WORKER,
+             "label": yb_egress.role_label(yb_egress.ROLE_WORKER, i)}
             for i, _proxy, desc in yb_egress.assignments(configured, env=env)
         ]
         fallback_proxy = yb_egress.resolve(yb_egress.ROLE_FALLBACK, env=env)
@@ -7813,6 +7910,19 @@ def create_app(host=None):
         })
         measured = load_env_int(ENV_FILE, "YIBAN_CAPACITY_MEASURED", 0)
         cur_accounts = _capacity_account_count()
+        fallback_interval = load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60)
+        # 是否在跑：按心跳新鲜度判定（进程被强杀时心跳会过期，故不能只看文件在不在）
+        fallback_alive = signin.fallback_alive(fallback_interval)[0]
+        # 声明的开关（.env 里网页写入的键）与"实际在跑"分开回，让前端能分辨
+        # "声明了没跑起来"（要查 cron）与"没声明却在跑"（人工起的进程）
+        fallback_enabled = _env_flag(env.get("YIBAN_FALLBACK_ENABLE"))
+        in_window = _in_sign_window(bounds)
+        if fallback_enabled:
+            fallback_status = "running" if fallback_alive else "declared_not_running"
+        else:
+            fallback_status = "running_not_declared" if fallback_alive else "off"
+        day = clock.today()
+        by_executor, activity_totals = _executor_activity(day)
         payload = {
             "ok": True,
             "workers": {
@@ -7825,11 +7935,18 @@ def create_app(host=None):
             },
             "fallback": {
                 "egress": yb_egress.describe(fallback_proxy),
-                "interval_sec": load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60),
+                "interval_sec": fallback_interval,
                 "env_key": yb_egress.ENV_FALLBACK,
-                # 是否在跑：按心跳新鲜度判定（进程被强杀时心跳会过期，故不能只看文件在不在）
-                "alive": signin.fallback_alive(
-                    load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60))[0],
+                "role": yb_egress.ROLE_FALLBACK,
+                "label": yb_egress.role_label(yb_egress.ROLE_FALLBACK),
+                "alive": fallback_alive,
+                # 声明开关（读 .env）与四态 status 的键名一并给出，前端不必硬编码
+                "enabled": fallback_enabled,
+                "env_key_enable": "YIBAN_FALLBACK_ENABLE",
+                "status": fallback_status,
+                # 窗口外 alive=false 属正常：前端只该对 in_window=true 的
+                # declared_not_running 报警，否则每天非签到时段都在误报
+                "in_window": in_window,
             },
             "window": {
                 "effective_sec": bounds.full_sec() if bounds else None,
@@ -7837,6 +7954,12 @@ def create_app(host=None):
                          if bounds else None,
                 "end": f"{int(bounds.hi_min) // 60:02d}:{int(bounds.hi_min) % 60:02d}"
                        if bounds else None,
+            },
+            "activity": {
+                "day": day,
+                "in_window": in_window,
+                "by_executor": by_executor,
+                "totals": activity_totals,
             },
             "measured": ({"per_executor_capacity": measured,
                           "source": "capacity_probe（部署者实测录入）",
@@ -7859,6 +7982,10 @@ def create_app(host=None):
 
         **只写 `.env`，不重启也不拉起进程**——下一轮定时任务/容器重启后生效
         （与既有设置项同一语义，页面上要如实说明）。非法值一律 400 且不落盘。
+
+        `fallback_enable` 只落盘这个开关；**还必须在宿主加一条 cron** 才会真正有进程
+        被拉起来（模板见 `scripts/yiban-fallback.sh` 头注释）。故页面上不能写成
+        "打开即在跑"——接口回的 `fallback.status` 才是"实际在不在跑"的判据。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
@@ -7892,6 +8019,13 @@ def create_app(host=None):
             if not (0 <= cap <= 100000):
                 return jsonify({"error": "实测容量应为 0~100000（0 表示清除）"}), 400
             updates["YIBAN_CAPACITY_MEASURED"] = str(cap) if cap else ""
+        if "fallback_enable" in data:
+            # 白名单式解析：只接受 0/1/true/false（大小写不敏感，JSON 布尔与字符串
+            # 都认）——这同时就是"拒绝换行"的校验，写不进去任何拼出来的行
+            raw_flag = str(data["fallback_enable"]).strip().lower()
+            if raw_flag not in ("0", "1", "true", "false"):
+                return jsonify({"error": "兜底开关只接受 0/1/true/false"}), 400
+            updates["YIBAN_FALLBACK_ENABLE"] = "1" if raw_flag in ("1", "true") else "0"
         if not updates:
             return jsonify({"error": "没有可更新的字段"}), 400
         try:
@@ -7902,6 +8036,79 @@ def create_app(host=None):
         db.audit("admin", "settings", "executors", ",".join(sorted(updates))[:200])
         return jsonify({"ok": True, "applied": sorted(updates),
                         "note": "已写入配置；下一轮定时任务或容器重启后生效"})
+
+    def _reply_slot_egress(env_key, index):
+        """单段出口写接口的公共实现（两个路由只差"哪一段"）。
+
+        `index=None` 表示该键只有一段（兜底）；否则是 `YIBAN_PROXY_LIST` 里的第 index 段。
+        请求体契约见两个路由的 docstring。**审计只落槽位名**（如 `YIBAN_PROXY_LIST[2]`），
+        代理串可能带凭据，绝不进审计链。
+        """
+        data = _json_body()
+        if "egress" not in data:
+            # 缺键不给"什么都不改"的歧义：清空必须显式写 null 或空串
+            return jsonify({"error": "缺少 egress 字段（该槽位要直连请显式传 null 或空串）"}), 400
+        submitted = "" if data["egress"] is None else str(data["egress"])
+        # 换行检查在 strip **之前**做：先 strip 会把尾随换行静默吃掉，于是"提交了什么"
+        # 与"落盘了什么"不一致（本接口对换行零容忍，含尾随的那个）；空格仍照旧 strip
+        if env_io.has_line_break(submitted):
+            return jsonify({"error": "代理配置不能包含换行"}), 400
+        value = submitted.strip()
+        err, code = _save_slot_egress(ENV_FILE, env_key, index, value)
+        if err:
+            return jsonify({"error": err}), code
+        db.audit("admin", "settings", "executors",
+                 env_key if index is None else f"{env_key}[{index}]")
+        # 回"该槽位此刻生效的描述串"：与 GET 的 assignments[i].egress 同走
+        # yiban.egress.resolve，故 PUT 之后 GET 读到的与这里回的**是同一个值**
+        role = yb_egress.ROLE_FALLBACK if index is None else yb_egress.ROLE_WORKER
+        desc = yb_egress.describe(
+            yb_egress.resolve(role, index or 0, env=read_env(ENV_FILE)))
+        return jsonify({"ok": True,
+                        "index": index if index is not None else "fallback",
+                        "egress": desc})
+
+    @app.route("/api/scheduler/executors/workers/<int:index>", methods=["PUT"])
+    def api_scheduler_executor_worker_egress(index):
+        """**只替换第 index 个并行执行体的出口段**（仅主管理员；CSRF 由 before_request 统一校验）。
+
+        存在的理由：整条写入（`PUT /api/scheduler/executors` 的 `proxy_list`）收的是
+        **整条**逗号列表，而读接口只回脱敏描述串（不含 userinfo）——前端拿读回的值整条
+        回写，就会把别人段的代理凭据清成空、静默退回直连。本接口按序号只改一段，
+        其余段**逐字保留**（不重新校验、不规范化、不排序），从接口形状上消灭这次数据破坏。
+
+        请求体：`{"egress": "<代理串>"}` = 设置该段；`{"egress": null}` 或 `{"egress": ""}`
+        = 该槽位直连；**缺 `egress` 键 → 400**（不给"什么都不改"的歧义）。
+        槽位校验：`0 <= index <= 63` 且 `< 当前执行体数 YIBAN_WORKERS`，否则 400 并提示
+        该槽位未被使用。列表段数不足时用空段补齐到 index。
+
+        响应：`{"ok": true, "index": <int>, "egress": "<脱敏描述串>"}`（不含 userinfo）。
+        **只写 `.env`，不重启也不拉起进程**——下一轮定时任务或重启执行体后生效。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
+        configured = max(1, load_env_int(ENV_FILE, "YIBAN_WORKERS", 1))
+        if not (0 <= index <= EXECUTOR_INDEX_MAX) or index >= configured:
+            return jsonify({"error": f"槽位 {index} 未被使用（当前执行体数 {configured}）"}), 400
+        return _reply_slot_egress(yb_egress.ENV_WORKER_LIST, index)
+
+    @app.route("/api/scheduler/executors/fallback", methods=["PUT"])
+    def api_scheduler_executor_fallback_egress():
+        """**只替换兜底常驻执行体的那一段出口**（仅主管理员；CSRF 由 before_request 统一校验）。
+
+        与 `PUT /api/scheduler/executors/workers/<index>` 同一契约、同一实现：只改
+        `YIBAN_PROXY_FALLBACK` 这一段，其余键逐字不动，也就不会把并行执行体的出口表
+        连带重写（同理，那条整条写入会把兜底段清空）。
+
+        请求体：`{"egress": "<代理串>"}` = 设置；`{"egress": null}` 或 `{"egress": ""}`
+        = 清掉该键，即"未单独配置兜底出口"——`resolve` 的既有语义是退回 `YIBAN_PROXY`，
+        两者都没配就是直连（本接口不改这条语义，故响应回的是**该槽位此刻生效**的描述串）。
+        **缺 `egress` 键 → 400**。响应：`{"ok": true, "index": "fallback", "egress": "…"}`。
+        **只写 `.env`，不重启也不拉起进程**——下一轮定时任务或重启兜底执行体后生效。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
+        return _reply_slot_egress(yb_egress.ENV_FALLBACK, None)
 
     @app.route("/api/announcement", methods=["GET"])
     def api_announcement():

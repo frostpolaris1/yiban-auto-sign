@@ -253,6 +253,44 @@ def stats(day):
                 "total": 0}
 
 
+def activity(day):
+    """当日**按执行体归属**的分组计数（前端"谁做了多少"的数据来源）。
+
+    与 `stats(day)` 的区别只在分组维度：`stats` 回答"了结了多少"，本函数回答
+    "这些活分别是谁做的"。故它只做 `GROUP BY owner, state` 的计数，**不解析角色、
+    不脱敏**——角色口径与脱敏是展示层的事（Web 层用 `yiban.egress.parse_owner`
+    把 owner 折成角色与槽位序号，绝不把 owner 原串回给前端）。本模块因此不依赖
+    `yiban.egress`，数据层保持对展示口径无感。
+
+    返回 `[{"owner":…, "claimed":n, "failed":n, "done":n, "total":n}, …]`
+    （按 owner 升序，顺序稳定；空库/库未初始化 → `[]`，与 `stats` 同口径不抛）。
+    """
+    from yiban.store import db
+    out = {}
+    try:
+        with db._conn_lock:
+            rows = db.get_conn().execute(
+                "SELECT owner, state, COUNT(*) AS n FROM sign_claims "
+                "WHERE day=? GROUP BY owner, state ORDER BY owner",
+                (day,),
+            ).fetchall()
+    except Exception as e:
+        logger.debug("读取执行体归属计数失败（按空处理）: %s", e)
+        return []
+    for r in rows:
+        row = out.setdefault(
+            r["owner"], {STATE_CLAIMED: 0, STATE_DONE: 0, STATE_FAILED: 0})
+        # 未知状态照实加到它自己的键上（不丢数），总量仍等于当日全部记录数
+        row[r["state"]] = row.get(r["state"], 0) + r["n"]
+    result = []
+    for owner, counts in out.items():
+        item = {"owner": owner}
+        item.update(counts)
+        item["total"] = sum(counts.values())
+        result.append(item)
+    return result
+
+
 def purge(days=RETENTION_DAYS):
     """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。"""
     from yiban.store import db
