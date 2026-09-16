@@ -25,13 +25,15 @@
   if (!YB) return;
 
   var ctx = { isMaster: false };
-  var snap = { workers: 1, capacity: 0 };
+  var snap = { workers: 1 };
+  // 容量配额口径（来自 /api/settings，由页面在装配时喂进来）：账号上限 与 单执行体容量
+  var quota = { maxAccounts: null, perExec: null };
   var lastData = null;          // 最近一次接口响应（行内详情弹窗按需读取，不重复请求）
   var dirty = false;
   var busy = false;
 
   // 可编辑控件（权限禁用与脏判定共用一份清单，避免两处漂移）
-  var FIELDS = ["set-exec-workers", "set-exec-list", "set-exec-fb-proxy", "set-exec-cap"];
+  var FIELDS = ["set-exec-workers", "set-exec-list", "set-exec-fb-proxy"];
 
   function $(id) { return document.getElementById(id); }
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
@@ -85,8 +87,8 @@
   function paintWorkers(data) {
     var w = (data && data.workers) || {};
     var keys = w.env_keys || {};
-    var rec = (data && data.recommendation) || null;
-    var perExec = rec ? count(rec.per_executor_accounts) : null;
+    // 每个执行体的建议负载 ＝ 单执行体容量（与容量配额页同一口径，见 paintAdvice）
+    var perExec = (quota.perExec == null ? null : count(quota.perExec));
     setText("set-exec-configured", "当前配置 " + count(w.configured || 1) + " 个并行执行体。");
     // 「列表未配 → 退回单执行体出口」的口径在 yiban/egress.py，键名由接口给出
     var hint = keys.list ? "对应配置项：" + keys.list
@@ -110,6 +112,7 @@
         tbody.appendChild(YB.el("tr", {}, [
           // 标识与配置下标一致（后端按 YIBAN_PROXY_LIST 下标分配出口）
           YB.el("td", { class: "mono", text: "worker-" + idx }),
+          YB.el("td", { text: "并行" }),
           // 接口已脱敏（去 userinfo），逐字照显，前端不再二次加工描述串
           YB.el("td", { text: a.egress || "直连（本机出口）" }),
           // 「说明」列逐行自报语义（执行体＝建议账号数、兜底＝扫描间隔），
@@ -127,6 +130,7 @@
         YB.el("span", { class: "badge dot " + (fb.alive === true ? "badge--ok" : "badge--bad"),
                         text: fb.alive === true ? "在跑" : "已停" })
       ]),
+      YB.el("td", { text: "兜底" }),
       YB.el("td", { text: fb.egress || "直连（本机出口）" }),
       YB.el("td", { class: "set-exec-col-md", text: "扫描间隔 " + count(fb.interval_sec) + " 秒" }),
       YB.el("td", {}, [detailBtn("兜底执行体", null)])
@@ -209,46 +213,45 @@
     setText("set-exec-key-fb", fb.env_key ? "对应配置项：" + fb.env_key : "");
   }
 
-  function paintCapacity(data) {
-    var measured = data && data.measured;
-    var rec = data && data.recommendation;
-    var cap = measured ? count(measured.per_executor_capacity) : 0;
-    snap.capacity = cap;
-    if ($("set-exec-cap")) $("set-exec-cap").value = String(cap);
-    setText("set-exec-key-cap", measured && measured.env_key
-      ? "对应配置项：" + measured.env_key : "");
-    setText("set-exec-measured", measured
-      ? "已实测：单执行体容量 " + cap + " 个"
-        + (measured.source ? "（" + measured.source + "）" : "") + "。"
-      : "未实测：部署者尚未录入实测容量，因此不给出建议值（也不按现有账号数反算）。");
-
+  // 建议区（只读）：口径与「容量配额」分区**同源** —— 账号容量上限 ÷ 单执行体容量，向上取整。
+  // 两个输入值都来自 /api/settings：quota.maxAccounts = capacity.accounts_max、
+  // quota.perExec = capacity_estimate.accounts_cap（单执行体容量，已扣掐头去尾）。
+  // 临时口径说明：按用户 2026-09-16 的定稿，这个建议值**应当由后端按同一公式算好下发**
+  // （见 docs/refactor/73 §6）；在接口就绪前，这里用页面已有的两个数就地换算，只为让两个页面
+  // 的数字当场对得上，不引入第二套算法（分子分母都来自后端）。
+  function paintAdvice(data) {
     var win = (data && data.window) || {};
-    setText("set-exec-window", win.start && win.end
-      ? "有效签到窗口：" + win.start + " ~ " + win.end + "（已扣掐头去尾，共 "
-        + (win.effective_sec == null ? "—" : count(win.effective_sec)) + " 秒，容量换算的分母）。"
-      : "");
+    var maxA = quota.maxAccounts, perExec = quota.perExec;
+    setText("set-exec-quota", maxA == null ? ""
+      : (maxA > 0 ? "账号容量上限：" + count(maxA) + " 个（系统设置 → 容量配额）"
+                  : "账号容量上限为 0（不限），无法据此给出建议。"));
+    setText("set-exec-window", perExec == null ? ""
+      : "单执行体容量：" + count(perExec) + " 个（按有效签到窗口 "
+        + (win.start && win.end ? win.start + " ~ " + win.end : "—")
+        + " 与账号间隔估算，与容量配额页同一口径）。");
     setText("set-exec-accounts", "当前计入容量的账号数：" + count(data && data.current_accounts) + " 个");
 
-    // 建议区：只有接口给出 recommendation 才出现；note 原文照显（不另写口径）
-    if (rec) {
-      setText("set-exec-advice-nums", "建议：每执行体 " + count(rec.per_executor_accounts)
-        + " 个账号；按当前账号数建议 " + count(rec.executors_needed) + " 个执行体。");
-      setText("set-exec-advice-note", rec.note || "");
+    if (maxA > 0 && perExec > 0) {
+      var need = Math.ceil(count(maxA) / count(perExec));
+      setText("set-exec-advice-nums",
+        "建议执行体数：" + need + " 个（= 账号容量上限 ÷ 单执行体容量，向上取整）。");
       setHidden($("set-exec-advice-nums"), false);
-      setHidden($("set-exec-advice-note"), !rec.note);
     } else {
       setText("set-exec-advice-nums", "");
-      setText("set-exec-advice-note", "");
       setHidden($("set-exec-advice-nums"), true);
-      setHidden($("set-exec-advice-note"), true);
     }
+    // 建议不是上限：这句必须在场（契约要求，防止管理员读成"超过就出错"）
+    var canAdvise = maxA > 0 && perExec > 0;
+    setText("set-exec-advice-note", canAdvise
+      ? "建议值按容量配额换算，只是提醒、不是程序上限；实际承载还受出口带宽与网络影响。"
+      : "");
+    setHidden($("set-exec-advice-note"), !canAdvise);
   }
 
   /* ---------------- 脏状态与提交 ---------------- */
   // 有改动 = 任一数值字段偏离快照，或任一出口输入框非空（出口读不回原值，非空即视为要写）
   function changed() {
     return num("set-exec-workers", snap.workers) !== snap.workers
-      || num("set-exec-cap", snap.capacity) !== snap.capacity
       || !!text("set-exec-list") || !!text("set-exec-fb-proxy");
   }
   function syncDirty() {
@@ -260,8 +263,6 @@
     var body = {};
     var w = num("set-exec-workers", snap.workers);
     if (w !== snap.workers) body.workers = w;
-    var cap = num("set-exec-cap", snap.capacity);
-    if (cap !== snap.capacity) body.capacity_measured = cap;
     var list = text("set-exec-list");
     if (list) body.proxy_list = list;
     var fb = text("set-exec-fb-proxy");
@@ -278,7 +279,6 @@
   function refreshAfterSave(body) {
     return YB.api("GET", "/api/scheduler/executors").then(apply, function () {
       if (body.workers != null) snap.workers = body.workers;
-      if (body.capacity_measured != null) snap.capacity = body.capacity_measured;
       clearProxyInputs();
       clearDirty();
       applyPerm();
@@ -357,7 +357,7 @@
     clearProxyInputs();
     paintWorkers(data);
     paintFallback(data);
-    paintCapacity(data);
+    paintAdvice(data);
     clearDirty();
     setTip("", false);
     applyPerm();
@@ -389,10 +389,20 @@
     applyPerm();
   }
 
+  // 容量配额数据（/api/settings）：页面装配时喂进来，供建议区换算（见 paintAdvice 的临时口径说明）
+  function applySettings(data) {
+    var cap = (data && data.capacity) || {};
+    var est = (data && data.capacity_estimate) || {};
+    quota.maxAccounts = cap.accounts_max == null ? null : count(cap.accounts_max);
+    quota.perExec = est.accounts_cap == null ? null : count(est.accounts_cap);
+    if (lastData) paintAdvice(lastData);   // 若执行体数据已到，重算建议区
+  }
+
   YB.settingsExecutors = {
     mount: mount,
     load: load,
     apply: apply,
+    applySettings: applySettings,
     save: save,
     isDirty: function () { return dirty; }
   };

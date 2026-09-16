@@ -498,7 +498,7 @@
         <div class="panel-head-row">
           <h2 class="panel-title">执行体总设置</h2>
           <div class="set-head-actions">
-            {% call info('执行体说明', 'set-pop-executors') %}<b>执行体：</b>一轮签到并行拉起的进程数（对应 --workers N），每个执行体可走独立出口。<b>出口：</b>按列表顺序逐个分配，不足时循环取用、空位 = 直连；接口只回脱敏描述，不回账号密码。<b>兜底：</b>常驻进程负责窗口内补签，是否在跑按心跳新鲜度判定（进程被强杀也能识别）。<b>容量：</b>实测值与建议值只是提醒，不是程序上限，不同机器的出口带宽差异很大。<b>生效：</b>保存只写配置，下一轮定时任务或容器重启后生效。<b>权限：</b>仅主管理员可查看与修改。{% endcall %}
+            {% call info('执行体说明', 'set-pop-executors') %}<b>执行体：</b>一轮签到并行拉起的进程数（对应 --workers N），每个执行体可走独立出口。<b>出口：</b>按列表顺序逐个分配，不足时循环取用、空位 = 直连；接口只回脱敏描述，不回账号密码。<b>兜底：</b>常驻进程负责窗口内补签，是否在跑按心跳新鲜度判定（进程被强杀也能识别）。<b>容量：</b>建议执行体数＝账号容量上限 ÷ 单执行体容量（与「容量配额」分区同一口径，向上取整），只是提醒不是程序上限；单执行体容量按签到窗口与账号间隔估算，可用实测单账号耗时校准。<b>生效：</b>保存只写配置，下一轮定时任务或容器重启后生效。<b>权限：</b>仅主管理员可查看与修改。{% endcall %}
             {{ dirty_badge('set-exec-dirty') }}
           </div>
         </div>
@@ -517,19 +517,12 @@
           </div>
           <p class="field-help">每轮签到并行拉起的进程数（1~64，对应 --workers N）；未配置时为 1。</p>
         </div>
-        <div class="field field--narrow">
-          <label class="field-label" for="set-exec-cap">实测容量（单执行体）</label>
-          <div class="input-group">
-            <input class="input" id="set-exec-cap" type="number" min="0" max="100000" step="1" placeholder="0">
-            <span class="addon">个</span>
-          </div>
-          <p class="field-help">部署者实测的「单个执行体一轮能签多少账号」，建议值由它换算；<b>0 = 清除实测值</b>，清除后不再给出建议。<span id="set-exec-key-cap"></span></p>
-        </div>
       </div>
 
-      {# 建议区（只读）：只有实测过才出现；未实测写「未实测」并隐藏建议，不按现有账号数反算 #}
+      {# 建议区（只读）：口径与「容量配额」分区同源 —— 账号容量上限 ÷ 单执行体容量，向上取整；
+         不再单独展示"实测容量"（用户 2026-09-16：实测说明进介绍文案，或另给测试入口）。 #}
       <div id="set-exec-advice">
-        <p class="field-help" id="set-exec-measured"></p>
+        <p class="field-help" id="set-exec-quota"></p>
         <p class="field-help" id="set-exec-window"></p>
         <p class="field-help" id="set-exec-accounts"></p>
         <p class="field-help" id="set-exec-advice-nums" hidden></p>
@@ -588,6 +581,7 @@
           <thead>
             <tr>
               <th scope="col">执行体</th>
+              <th scope="col">类型</th>
               <th scope="col">出口</th>
               <th scope="col" class="set-exec-col-md">说明</th>
               <th scope="col">操作</th>
