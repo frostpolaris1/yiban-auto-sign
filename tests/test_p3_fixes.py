@@ -3,7 +3,8 @@
 
 覆盖三个 P3 级小修（均为纯本地，无网络请求）：
 
-- P3-1 scripts/db.py：`conn.executescript()` 会在执行脚本前**隐式 COMMIT**，
+- P3-1 yiban/store/db.py（原 scripts/db.py）：`conn.executescript()` 会在执行脚本前
+  **隐式 COMMIT**，
   把 `_run_migrations` 为每个迁移开启的 `BEGIN IMMEDIATE` 提前提交——迁移中途
   失败时，同事务先前的 DDL 已落盘无法回滚，迁移原子性被击穿。修复：改为逐条
   `conn.execute`（_create_tables / migrate_v4 / migrate_v5 / migrate_v8 /
@@ -166,11 +167,11 @@ class DbExecutescriptAtomicityP3Test(unittest.TestCase):
             self.assertIn(t, names, f"缺表 {t}——逐条 DDL 转换丢失了建表语句")
 
     def test_db_source_has_no_executescript_call(self):
-        """源码级回归绊线：db.py 不得再出现 executescript 调用。"""
-        with open(os.path.join(BASE, "scripts", "db.py"), encoding="utf-8") as f:
+        """源码级回归绊线：db 实现不得再出现 executescript 调用。"""
+        with open(os.path.join(BASE, "yiban", "store", "db.py"), encoding="utf-8") as f:
             src = f.read()
         self.assertNotIn(".executescript(", src,
-                         "db.py 重新引入了 executescript（隐式 COMMIT 隐患）")
+                         "db 重新引入了 executescript（隐式 COMMIT 隐患）")
 
 
 def _close_db():

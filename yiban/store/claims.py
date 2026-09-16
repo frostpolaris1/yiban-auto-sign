@@ -24,7 +24,7 @@
    （按"没人在抢"处理）而不是让签到停摆——单执行体形态下这个表可有可无，
    多执行体形态下它必须可用（届时由启动期自检拦住）。
 
-连接与进程内锁取自 `scripts/db.py`；db.py 把本模块公开名全部再导出。
+连接与进程内锁取自同包的 `yiban.store.db`；它把本模块公开名全部再导出。
 """
 import datetime
 import logging
@@ -87,7 +87,7 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     实现是**单条 upsert**：并发下 SQLite 串行化写者，后到者的 WHERE 会看到
     先到者已提交的行，故"只可能有一个赢家"，不需要额外的锁表。
     """
-    import db
+    from yiban.store import db
     ts = _now_str(now)
     expired_before = _utc_offset_str(lease_sec)
     # 冲突分支的两种情形分开写清楚：
@@ -132,7 +132,7 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
 
 def touch(phone, day, owner, lease_sec=LEASE_SECONDS, now=None):
     """续租（只续自己的）。返回是否续上（被接管/已了结时为 False）。"""
-    import db
+    from yiban.store import db
     ts = _now_str(now)
     try:
         conn = db.get_conn()
@@ -154,7 +154,7 @@ def settle(phone, day, owner, state=STATE_DONE, result=""):
 
     `result` 只存**摘要**（截断），且调用方须先脱敏——本表可能被运维查询导出。
     """
-    import db
+    from yiban.store import db
     if state not in SETTLED_STATES:
         raise ValueError(f"非法终态: {state!r}")
     try:
@@ -181,7 +181,7 @@ def give_up(phone, day, owner, result=""):
 
     返回是否写成功（被接管时为 False）。
     """
-    import db
+    from yiban.store import db
     try:
         conn = db.get_conn()
         expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
@@ -200,7 +200,7 @@ def give_up(phone, day, owner, result=""):
 
 def states_for_day(day):
     """当日已建记录的 `phone -> state` 映射（未建的账号不在映射里 = 未领取）。"""
-    import db
+    from yiban.store import db
     try:
         with db._conn_lock:
             rows = db.get_conn().execute(
@@ -214,7 +214,7 @@ def states_for_day(day):
 
 def in_flight_phones(day, lease_sec=LEASE_SECONDS):
     """当日仍在飞（`claimed` 且租约未过期）的账号——诊断"谁卡住了"用。"""
-    import db
+    from yiban.store import db
     expired_before = _utc_offset_str(lease_sec)
     try:
         with db._conn_lock:
@@ -233,7 +233,7 @@ def in_flight_phones(day, lease_sec=LEASE_SECONDS):
 
 def stats(day):
     """当日各状态计数——供设置页/CLI 展示"了结进度"。"""
-    import db
+    from yiban.store import db
     try:
         with db._conn_lock:
             rows = db.get_conn().execute(
@@ -255,7 +255,7 @@ def stats(day):
 
 def purge(days=RETENTION_DAYS):
     """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。"""
-    import db
+    from yiban.store import db
     cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         conn = db.get_conn()

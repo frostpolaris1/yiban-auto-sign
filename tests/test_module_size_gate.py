@@ -40,11 +40,11 @@ OVERSIZED = {
         "读改写序列、按会话的限速表），先拆会把共享状态改成跨模块注入，收益低于风险；"
         "M5 已有既定拆法（蓝图 + 服务层），届时按依赖自然切分。"
     )),
-    "scripts/db.py": (None, (
-        "SQLite 数据访问层（连接/迁移/各表 CRUD/清理）。M4 计划拆为 store/*。"
-        "已按表迁出 verify_jobs 与 accounts（见 yiban/store/）；剩余部分继续按表迁，"
-        "不一次性重构的原因：迁移需与冻结的历史迁移函数共存（迁移不可变），"
-        "批量搬动会同时动 schema 与读写路径，风险高。"
+    "yiban/store/db.py": (None, (
+        "SQLite 数据访问层（连接/迁移/各表 CRUD/清理）。已按 M4 计划从 scripts/db.py "
+        "移入 store（旧路径只剩兼容壳）；verify_jobs 与 accounts 已按表迁出"
+        "（见 yiban/store/），剩余部分继续按表迁，不一次性重构的原因：迁移需与冻结的"
+        "历史迁移函数共存（迁移不可变），批量搬动会同时动 schema 与读写路径，风险高。"
     )),
     "scripts/signin.py": (None, (
         "签到引擎 + CLI 入口（协议层取自 FYIBAN，调度为原创）。协议步骤、客户端外观与"

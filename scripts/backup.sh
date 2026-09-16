@@ -61,7 +61,7 @@ DATA_FILES=(.env)
 DB_FILE="${DB_FILE:-yiban.db}"
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
-# 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、scripts/db.py、
+# 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、yiban/store/db.py、
 #     .env.example），原 SIGN_STATE_DIR 与其脱钩——自定义状态目录时
 #     sign-daily/sign-state/cred-state 静默不入备份包（影响"当天是否已签"的
 #     判定恢复）。现以 YIBAN_STATE_DIR 优先，SIGN_STATE_DIR 仅作旧部署回退。

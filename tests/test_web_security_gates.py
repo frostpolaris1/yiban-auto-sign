@@ -278,7 +278,7 @@ class Batch16FixesTest(unittest.TestCase):
 
     # ---- 版本号 ----
     def test_version_synced(self):
-        """版本号只有一个来源：`yiban/__init__.py`；web 侧两处都引用它，不得各写一份字面量。
+        """版本号只有一个来源：`yiban/__init__.py`；web 侧引用它，不得各写一份字面量。
 
         发布门槛要用"引擎轮次横幅里的版本号"把生产跑过的轮次与提交对齐
         （见 docs/dev/release-gate.md），版本一旦分叉，台账就不再可信。
@@ -286,8 +286,6 @@ class Batch16FixesTest(unittest.TestCase):
         from yiban import __version__ as engine_version
         self.assertEqual(engine_version, "0.4.4")
         self.assertEqual(self.webapp.APP_VERSION, engine_version)
-        import web as web_pkg
-        self.assertEqual(web_pkg.__version__, engine_version)
         # web 侧两个文件都不得再出现版本字面量（否则就是第二个来源）
         for rel in ("web/__init__.py", "web/app.py"):
             with open(os.path.join(BASE, rel), encoding="utf-8") as f:

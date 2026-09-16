@@ -7,8 +7,8 @@
 **状态推进全部走 CAS**：任务状态由内存里的线程推进，进程随时可能消失，
 所有 UPDATE 都带期望状态条件，迟到者写不进去也就覆盖不了别人的终态。
 
-连接与进程内锁取自 `scripts/db.py`（当前唯一的连接持有者）——延迟到函数内
-`import db`，避免 db.py 在文件末尾导入本模块时形成导入环。db.py 把本模块的
+连接与进程内锁取自同包的 `yiban.store.db`（当前唯一的连接持有者）——延迟到函数内
+导入，避免它在文件末尾导入本模块时形成导入环。`yiban.store.db` 把本模块的
 公开名全部再导出，故历史调用方（`db.create_verify_job` 等）无需改动。
 """
 import datetime
@@ -46,7 +46,7 @@ def create(account_id, phone, owner_email, prev_status=VERIFY_JOB_PENDING):
     （见 db.update_account_status_if）：管理员在任务执行期间审批后，迟到的
     校验结果不得覆盖人工决定。
     """
-    import db
+    from yiban.store import db
     conn = db.get_conn()
     ts = clock.ts()
     with db._conn_lock:
@@ -62,7 +62,7 @@ def create(account_id, phone, owner_email, prev_status=VERIFY_JOB_PENDING):
 
 def get(job_id):
     """单条任务（dict）或 None。"""
-    import db
+    from yiban.store import db
     with db._conn_lock:
         row = db.get_conn().execute(
             "SELECT * FROM verify_jobs WHERE id=?", (job_id,)
@@ -72,7 +72,7 @@ def get(job_id):
 
 def claim(job_id):
     """pending → running（CAS）。返回是否抢到——抢不到说明已被取消或已在跑。"""
-    import db
+    from yiban.store import db
     conn = db.get_conn()
     with db._conn_lock:
         cur = conn.execute(
@@ -89,7 +89,7 @@ def finish(job_id, error=""):
     CAS 在 running 上：任务若已被取消或被超时看门狗收口，这里自然 0 行命中，
     不会把终态改写掉。返回是否写入。
     """
-    import db
+    from yiban.store import db
     conn = db.get_conn()
     status = VERIFY_JOB_REJECTED if error else VERIFY_JOB_DONE
     with db._conn_lock:
@@ -104,7 +104,7 @@ def finish(job_id, error=""):
 
 def cancel(job_id):
     """取消任务（仅 pending 可取消）。返回是否成功。"""
-    import db
+    from yiban.store import db
     conn = db.get_conn()
     with db._conn_lock:
         cur = conn.execute(
@@ -117,7 +117,7 @@ def cancel(job_id):
 
 def count_active():
     """未落终态的任务数（pending + running）。"""
-    import db
+    from yiban.store import db
     with db._conn_lock:
         row = db.get_conn().execute(
             "SELECT COUNT(*) AS n FROM verify_jobs WHERE status IN (?,?)",
@@ -146,7 +146,7 @@ def reclaim_stale(stale_seconds=VERIFY_JOB_STALE_SECONDS, reject_status="",
     仍是建任务时那个状态）——分两步做会在中间被人工审批插入，正是要防的事。
     返回 [{"id","account_id","phone","prev_status"}]。
     """
-    import db
+    from yiban.store import db
     try:
         conn = db.get_conn()
         cutoff = (datetime.datetime.now()
@@ -192,7 +192,7 @@ def reclaim_stale(stale_seconds=VERIFY_JOB_STALE_SECONDS, reject_status="",
 
 def purge(days=VERIFY_JOB_RETENTION_DAYS):
     """清理保留期外的任务；失败仅告警，返回删除行数。"""
-    import db
+    from yiban.store import db
     try:
         conn = db.get_conn()
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(

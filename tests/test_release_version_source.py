@@ -57,12 +57,14 @@ class SingleVersionSourceTest(unittest.TestCase):
             "版本只能定义在 yiban/__init__.py，其它处请引用 __version__",
         )
 
-    def test_web_side_references_instead_of_redefining(self):
-        import web as web_pkg
-        from yiban import __version__ as v
-        self.assertEqual(web_pkg.__version__, v)
-        src = _read("web/__init__.py")
-        self.assertIn("from yiban import __version__", src)
+    def test_web_side_takes_version_from_the_package(self):
+        """网页侧从 yiban 取版本，不自己定义（`web/__init__.py` 是纯包说明）。
+
+        运行时取值的一致性由 `test_web_security_gates::test_version_synced` 断言
+        （那里用的是隔离加载的 app 模块）；本文件只做静态检查，避免在导入期碰 .env。
+        """
+        self.assertIn("from yiban import __version__ as APP_VERSION", _read("web/app.py"))
+        self.assertNotIn("__version__ =", _read("web/__init__.py"))
 
     def test_changelog_top_entry_matches(self):
         from yiban import __version__ as v

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """数据层：accounts 表的运行期有效性判定与相关清理。
 
-连接与进程内锁取自 `scripts/db.py`（当前唯一的连接持有者）——延迟到函数内
-`import db`，避免与 db.py 形成导入环；db.py 把公开名再导出，调用方无需改动。
+连接与进程内锁取自同包的 `yiban.store.db`（当前唯一的连接持有者）——延迟到函数内
+导入，避免与它形成导入环；`yiban.store.db` 把公开名再导出，调用方无需改动。
 """
 import logging
 
@@ -40,7 +40,7 @@ def is_signable(account_id):
     account_id 为 0/None（JSON / 环境变量账号模式：库内没有对应行）时返回 True——
     那些模式本来就不存在"库内账号行过期"的问题。
     """
-    import db
+    from yiban.store import db
     if not account_id:
         return True
     with db._conn_lock:
@@ -63,7 +63,7 @@ def account_still_signable(account):
     if not account_id:
         return True
     try:
-        import db
+        from yiban.store import db
         return db.account_is_signable(account_id)
     except Exception as e:
         from yiban import masking
