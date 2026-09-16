@@ -39,7 +39,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import env_io  # pythonpath 已含 scripts/（pyproject.toml）
+from yiban.infra import env_io  # pythonpath 已含 scripts/（pyproject.toml）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

@@ -30,9 +30,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-import account_crypto
-import env_io
 import mailer
+
+from yiban.infra import account_crypto, env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

@@ -42,8 +42,9 @@ class SmokeTest(unittest.TestCase):
         # web/app.py 模块级函数可独立调用
         import importlib.util
 
-        import account_crypto
         import db
+
+        from yiban.infra import account_crypto
         spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
@@ -254,7 +255,7 @@ class SmokeTest(unittest.TestCase):
     def test_decrypt_failure_wrapped_runtime_error(self):
         """密文损坏（tag 校验失败）→ load_accounts 抛 RuntimeError（统一 JSON 收口），非 ValueError 透传。"""
         self._init_db()
-        import account_crypto
+        from yiban.infra import account_crypto
 
         key = account_crypto.load_key(self.env_file)
         good = account_crypto.encrypt_password("secret", key, "13800138000")
@@ -273,7 +274,7 @@ class SmokeTest(unittest.TestCase):
         """多线程首启 load_key：只生成一份密钥并共享（_KEY_LOCK 双检）。"""
         import threading
 
-        import account_crypto
+        from yiban.infra import account_crypto
 
         old_cache = account_crypto._KEY_CACHE
         old_env = os.environ.pop("YIBAN_ACCOUNTS_KEY", None)

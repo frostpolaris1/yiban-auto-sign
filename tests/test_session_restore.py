@@ -397,8 +397,9 @@ class Batch11RekeyToolTest(_Batch11WebBase):
 
     def test_rekey_roundtrip(self):
         self._seed_encrypted_account("13900000001", "plain-pw-1")
-        import account_crypto
         import rekey_accounts
+
+        from yiban.infra import account_crypto
         ok, note = rekey_accounts.rekey(self.db_file, bytes.fromhex(TEST_KEY), bytes.fromhex(NEW_KEY))
         self.assertTrue(ok, note)
         conn = sqlite3_connect(self.db_file)

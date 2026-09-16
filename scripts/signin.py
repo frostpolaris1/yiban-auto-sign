@@ -47,10 +47,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # 共享模块（同目录）：加密（与 web 共用密钥与密文格式）与 SQLite 数据访问层
-import account_crypto  # noqa: E402
 import db  # noqa: E402  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
-import env_lock  # noqa: E402  # 探针 once 模式自动关闭 .env（跨进程写锁）
-import locks  # noqa: E402  # 跨进程文件锁统一原语（状态文件 / 日志 handler）
 import mailer  # noqa: E402  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import requests  # noqa: E402
@@ -60,6 +57,11 @@ from requests.utils import cookiejar_from_dict, dict_from_cookiejar  # noqa: E40
 
 from yiban import clock, cred_state, window  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402
+from yiban.infra import (  # noqa: E402
+    account_crypto,
+    env_lock,  # 探针 once 模式自动关闭 .env（跨进程写锁）
+    locks,  # 跨进程文件锁统一原语（状态文件 / 日志 handler）
+)
 from yiban.logging_ext import FlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.masking import sanitize_text as _sanitize_text  # noqa: E402
