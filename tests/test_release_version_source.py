@@ -76,7 +76,9 @@ class EngineLogsReleaseVersionTest(unittest.TestCase):
     """引擎轮次横幅/汇总行必须带版本号——台账的唯一对齐依据。"""
 
     def setUp(self):
-        self.src = _read("scripts/signin.py")
+        # 轮次横幅与汇总行随"执行一轮"的入口一起迁进了引擎（`yiban/engine/runner.py`），
+        # 兼容壳 `scripts/signin.py` 只剩转发：两处一起读，迁移前后都成立。
+        self.src = _read("yiban/engine/runner.py") + _read("scripts/signin.py")
 
     def test_round_banner_carries_version(self):
         m = re.search(r"开始执行签到（v\{RELEASE_VERSION\}）", self.src)
