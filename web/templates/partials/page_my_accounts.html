@@ -17,7 +17,8 @@
 
 <div class="page-head">
   <h1 class="page-title">{{ page_title }}</h1>
-  <p class="page-sub">{{ page_sub }}</p>
+  {# page_sub 传空则不渲染整行：页头只补看不见的信息，不逐条复述下方卡片名 #}
+  {% if page_sub %}<p class="page-sub">{{ page_sub }}</p>{% endif %}
 </div>
 
 {# 调度模式提示条：登录后由 /api/me 填充（签到方式 / 窗口 / 是否可自选），失败不阻塞页面 #}
@@ -120,7 +121,7 @@
     <div class="set-row">
       <div class="set-row-text">
         <span class="set-row-label">竖屏显示归属邮箱</span>
-        <p class="set-help">窄屏账号表在名称下方补一行归属邮箱（后端已脱敏），便于竖屏管理；关闭后宽屏归属列不受影响。</p>
+        <p class="set-help">窄屏在名称下补一行归属邮箱（已脱敏）；宽屏归属列不受影响。</p>
       </div>
       <label class="switch" title="竖屏显示归属邮箱">
         <input id="owner-email-switch" type="checkbox">

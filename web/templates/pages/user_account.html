@@ -9,7 +9,8 @@
 {% block title %}账号与设置 · 易班自动签到{% endblock %}
 
 {% block content %}
-{{ body('账号与设置', '管理你的易班账号、自选签到时间与登录凭据。',
+{# page_sub 留空：下方各卡（我的账号/签到时间/邮件提醒/修改密码/注销账号）已表达页面覆盖面 #}
+{{ body('账号与设置', '',
         request.script_root + '/user/calendar', true, false) }}
 {% endblock %}
 
