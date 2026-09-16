@@ -588,6 +588,35 @@ textarea {
   outline: none;
 }
 
+/* 移动端点按反馈：UA 的点击高亮（-webkit-tap-highlight-color）会在任何可点元素上
+   盖一层半透明矩形，颜色与形状由浏览器决定、无法用设计令牌统一（实测 app.css 与
+   Adminator 均未声明该属性 → UA 默认值生效，表现为「点任意按钮都冒出一个半透明蓝框」）。
+   全站关闭它，改为自绘按下态：只动 transform（不参与布局、不触发重排），
+   与 .sc-cell/.slot/.switch 既有的 scale(0.96) 同一口径；纯文本链接触感更合适的是
+   轻微变淡，故链接类走 opacity。reduced-motion 下统一去位移（见同节末尾）。 */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+:where(
+  .btn,
+  .nav-link,
+  .icon-btn,
+  .tab,
+  .dd-menu-item,
+  .slot,
+  .pager__btn,
+  .accordion-trigger,
+  .hamburger,
+  .info-tip,
+  a.kpi-card,
+  .pm-panel .pm-panel-close
+):active {
+  transform: scale(0.96);
+}
+:where(.linklike, .d-footer a, .auth-links a, .md-body a, .nav-submenu a):active {
+  opacity: 0.72;
+}
+
 /* ==========================================================================
    12. 空状态
    ========================================================================== */
@@ -2498,6 +2527,21 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
   .sc-cell:active,
   .slot:active:not(:disabled),
   .switch:active .track { transform: none; }
+  /* 点按反馈在 reduced-motion 下去位移（保留链接类的变淡，它不是位移动画） */
+  :where(
+    .btn,
+    .nav-link,
+    .icon-btn,
+    .tab,
+    .dd-menu-item,
+    .slot,
+    .pager__btn,
+    .accordion-trigger,
+    .hamburger,
+    .info-tip,
+    a.kpi-card,
+    .pm-panel .pm-panel-close
+  ):active { transform: none; }
   /* 滑块位移由 Adminator 的 .track::after 承担，不在 .track 上，需单独关掉 */
   .switch .track::after { transition: none; }
   /* vendor 的 .kpi-card:hover 有 -2px 上浮位移，同样在 reduced-motion 下移除 */
