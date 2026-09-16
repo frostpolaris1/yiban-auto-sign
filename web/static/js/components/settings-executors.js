@@ -84,7 +84,7 @@
     var w = (data && data.workers) || {};
     var keys = w.env_keys || {};
     setText("set-exec-configured",
-      "当前配置：" + count(w.configured || 1) + " 个并行执行体（未配置时为 1）。");
+      "当前配置：" + count(w.configured || 1) + " 个并行执行体。");
     // 「列表未配 → 退回单执行体出口」的口径在 yiban/egress.py，键名由接口给出
     var hint = keys.list ? "对应配置项：" + keys.list
       + (keys.single ? "；未配置时退回 " + keys.single : "") : "";

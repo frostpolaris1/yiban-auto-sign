@@ -88,8 +88,8 @@
   /* ---------------- 日志渲染 ---------------- */
   function infoText(data) {
     if (state.search) return data.returned + " 行匹配 / 共 " + data.total_lines + " 行";
-    if (data.truncated) return "已截断：显示前 " + data.returned + " / 共 " + data.total_lines + " 行（导出可取完整文件）";
-    if (data.total_lines > 80) return "共 " + data.total_lines + " 行（默认显示最后 80 行，可显示全部或导出）";
+    if (data.truncated) return "已截断：显示前 " + data.returned + " / 共 " + data.total_lines + " 行";
+    // 只报总数：截断口径已由上一行覆盖，「显示全部 / 导出」按钮就在同一行，无需再用文字解释
     return "共 " + data.total_lines + " 行";
   }
 

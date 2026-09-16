@@ -62,7 +62,7 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">系统设置</h1>
-  <p class="page-sub">签到调度、公告、通知通道、容量配额、健康检查、执行体与系统开关。</p>
+  {# 页头不再罗列分区名：同屏页签（调度/公告/通知/容量/探针/执行体/开关）已表达，说明不增量 #}
 </div>
 
 {# 页面级状态条：GET /api/settings 加载中 / 失败（含重试）。.alert 的 grid 第 3 列承载重试按钮 #}
@@ -176,7 +176,8 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">周六签到</span>
-          <p class="set-help">开启后周六也签到（默认关闭）。</p>
+          {# 只说默认值（开关当前态已可见，不需再解释开关做什么） #}
+          <p class="set-help">默认关闭。</p>
         </div>
         <label class="switch" title="周六签到">
           <input id="ss-sat" type="checkbox">
@@ -187,7 +188,7 @@
       <div class="set-row">
         <div class="set-row-text">
           <span class="set-row-label">周日签到</span>
-          <p class="set-help">开启后周日也签到（默认关闭）。</p>
+          <p class="set-help">默认关闭。</p>
         </div>
         <label class="switch" title="周日签到">
           <input id="ss-sun" type="checkbox">
@@ -251,7 +252,7 @@
     <div id="set-notify" class="set-cards">
       <p class="alert info" id="sn-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <span class="body">仅主管理员可配置消息推送与邮件通道，受限控件已禁用；如需调整请联系主管理员。</span>
+        <span class="body">仅主管理员可配置消息推送与邮件通道，受限控件已禁用；需调整请联系主管理员。</span>
       </p>
       <section class="card">
         {# 原 eyebrow「告警送达」：分组语境由所在 tab「通知通道」承担、告警语义已在
@@ -349,7 +350,7 @@
             <input class="input" id="sm-to" type="text" maxlength="320" autocomplete="off" placeholder="admin@example.com">
             <span class="addon">邮箱</span>
           </div>
-          <p class="field-help">告警邮件的送达地址；多个用英文逗号分隔。留空 = 不改动，清空走下方「清空收件人」。</p>
+          <p class="field-help">多个用英文逗号分隔；留空 = 不改动，清空走下方「清空收件人」。</p>
         </div>
 
         {# 状态行描述的是「发件 SMTP 是否配置」，放在 SMTP 表上方才读得通 #}
@@ -399,7 +400,7 @@
       </div>
       <p class="alert info" id="set-cap-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <span class="body">仅主管理员可修改容量上限，控件已禁用；如需调整请联系主管理员。</span>
+        <span class="body">仅主管理员可修改容量上限，控件已禁用；需调整请联系主管理员。</span>
       </p>
       <div class="form-grid">
         <div class="field field--narrow">
@@ -501,7 +502,7 @@
       </div>
       <p class="alert info" id="set-exec-perm" hidden>
         <span class="ico">{{ icon('info') }}</span>
-        <span class="body">仅主管理员可查看与修改执行体配置，控件已禁用；如需调整请联系主管理员。</span>
+        <span class="body">仅主管理员可查看与修改执行体配置，控件已禁用；需调整请联系主管理员。</span>
       </p>
 
       {# 块一：并行执行体数量与出口列表（可编辑）+ 各执行体当前出口（只读，接口已脱敏） #}
@@ -523,7 +524,7 @@
             <input class="input" id="set-exec-list" type="text" autocomplete="off" spellcheck="false"
                    placeholder="http://proxy1.example:8080,http://proxy2.example:3128">
           </div>
-          <p class="field-help">英文逗号分隔，按顺序逐个分配给执行体；不足时循环取用，空位 = 该执行体直连，每段可为空。读接口只回脱敏后的出口描述（不含账号密码），故本框不回显原值、留空 = 不修改。<span id="set-exec-key-list"></span></p>
+          <p class="field-help">英文逗号分隔，按序分配给执行体；不足时循环取用，空位 = 该执行体直连，每段可为空。读接口只回脱敏描述（不含账号密码），本框不回显原值、留空 = 不修改。<span id="set-exec-key-list"></span></p>
         </div>
       </div>
       <p class="field-help" id="set-exec-configured"></p>
@@ -590,7 +591,7 @@
       </div>
 
       <p class="set-tip" id="set-exec-tip" role="status"></p>
-      <p class="field-help">改动需点「保存执行体配置」后生效；<b>保存只写入配置、不会重启执行体</b>，下一轮定时任务或容器重启后才生效。</p>
+      <p class="field-help">改动需点「保存执行体配置」；保存只写配置、不重启执行体，下一轮定时任务或容器重启后生效。</p>
       {# 操作行不吸底：本卡的编辑点都在操作行上方一到两屏内，且清空入口是低频动作 ——
          常驻的吸底条会在窄屏上盖住「兜底未在运行」这类警示文字（卡不长，吸底收益低于代价）。 #}
       <div class="form-actions">

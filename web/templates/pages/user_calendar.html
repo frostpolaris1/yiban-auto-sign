@@ -6,7 +6,8 @@
 
 {% block title %}签到日历 · 易班自动签到{% endblock %}
 
-{% block content %}{{ body('签到日历', '按日查看每个账号的签到结果，点击日期查看当天记录。') }}{% endblock %}
+{% block content %}{# 「点击日期查看记录」已由右侧日志面板的引导空态承担，页头不重复 #}
+{{ body('签到日历', '按日查看每个账号的签到结果。') }}{% endblock %}
 
 {% block scripts %}
 <script defer src="{{ request.script_root }}/static/js/calendar.js?v={{ web_version }}"></script>
