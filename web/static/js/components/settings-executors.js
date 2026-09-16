@@ -26,6 +26,7 @@
 
   var ctx = { isMaster: false };
   var snap = { workers: 1, capacity: 0 };
+  var lastData = null;          // 最近一次接口响应（行内详情弹窗按需读取，不重复请求）
   var dirty = false;
   var busy = false;
 
@@ -79,12 +80,14 @@
   }
 
   /* ---------------- 只读视图 ---------------- */
-  // 出口描述、键名、运行状态一律取自接口；本函数只做排版与文案。
+  // 一览表：一行一个执行体（含兜底），出口只读展示 + 建议账号数 + 行内「详情」。
+  // 出口描述/键名/运行状态一律取自接口，本函数只做排版与文案。
   function paintWorkers(data) {
     var w = (data && data.workers) || {};
     var keys = w.env_keys || {};
-    setText("set-exec-configured",
-      "当前配置：" + count(w.configured || 1) + " 个并行执行体。");
+    var rec = (data && data.recommendation) || null;
+    var perExec = rec ? count(rec.per_executor_accounts) : null;
+    setText("set-exec-configured", "当前配置 " + count(w.configured || 1) + " 个并行执行体。");
     // 「列表未配 → 退回单执行体出口」的口径在 yiban/egress.py，键名由接口给出
     var hint = keys.list ? "对应配置项：" + keys.list
       + (keys.single ? "；未配置时退回 " + keys.single : "") : "";
@@ -97,16 +100,96 @@
     if (!rows.length) {
       tbody.appendChild(YB.el("tr", {}, [
         YB.el("td", { text: "—" }),
-        YB.el("td", { text: "暂无执行体分配" })
+        YB.el("td", { text: "暂无执行体分配" }),
+        YB.el("td", { text: "—" }),
+        YB.el("td", { class: "set-exec-col-md" })
       ]));
-      return;
+    } else {
+      rows.forEach(function (a) {
+        var idx = count(a.index);
+        tbody.appendChild(YB.el("tr", {}, [
+          // 标识与配置下标一致（后端按 YIBAN_PROXY_LIST 下标分配出口）
+          YB.el("td", { class: "mono", text: "worker-" + idx }),
+          // 接口已脱敏（去 userinfo），逐字照显，前端不再二次加工描述串
+          YB.el("td", { text: a.egress || "直连（本机出口）" }),
+          // 「说明」列逐行自报语义（执行体＝建议账号数、兜底＝扫描间隔），
+          // 避免同一列两种含义而列名只写了其中一种
+          YB.el("td", { class: "set-exec-col-md", text: perExec == null ? "—" : "建议 " + perExec + " 个账号" }),
+          YB.el("td", {}, [detailBtn("worker-" + idx, idx)])
+        ]));
+      });
     }
-    rows.forEach(function (a) {
-      tbody.appendChild(YB.el("tr", {}, [
-        YB.el("td", { class: "num", text: String(count(a.index)) }),
-        // 接口已脱敏（去 userinfo），逐字照显，前端不再二次加工描述串
-        YB.el("td", { text: a.egress || "直连（本机出口）" })
+    // 兜底执行体也是表里的一行：存活状态只有它可判（按心跳新鲜度），并行执行体的存活未暴露
+    var fb = (data && data.fallback) || {};
+    tbody.appendChild(YB.el("tr", {}, [
+      YB.el("td", {}, [
+        YB.el("span", { text: "兜底执行体 " }),
+        YB.el("span", { class: "badge dot " + (fb.alive === true ? "badge--ok" : "badge--bad"),
+                        text: fb.alive === true ? "在跑" : "已停" })
+      ]),
+      YB.el("td", { text: fb.egress || "直连（本机出口）" }),
+      YB.el("td", { class: "set-exec-col-md", text: "扫描间隔 " + count(fb.interval_sec) + " 秒" }),
+      YB.el("td", {}, [detailBtn("兜底执行体", null)])
+    ]));
+  }
+
+  function detailBtn(label, idx) {
+    var btn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "详情" });
+    btn.setAttribute("aria-label", label + " 详情");
+    btn.addEventListener("click", function () { openDetail(idx); });
+    return btn;
+  }
+
+  // 行内详情弹窗：复用站点既有弹窗外壳与只读字段排版（与账号/用户编辑弹窗同形）。
+  // 只展示当前接口能给的：出口（已脱敏）、建议账号数 / 兜底扫描间隔与存活、对应配置项。
+  // **出口就地编辑暂缓**：按序号写单个出口需要后端支持（见 docs/refactor/71 §3.5），
+  // 未就绪前这里不放可编辑控件——避免"填了写不进去"或误清其它执行体的凭据。
+  function openDetail(idx) {
+    if (!lastData) { setTip("数据尚未加载完成", true); return; }
+    var w = lastData.workers || {}, fb = lastData.fallback || {};
+    var rec = lastData.recommendation || null;
+    var isFb = idx == null;
+    var rows, egressLabel;
+    if (isFb) {
+      egressLabel = "兜底出口（已脱敏）";
+      rows = [
+        ["运行状态", fb.alive === true ? "在跑" : "已停（窗口内不会自动补签）"],
+        ["扫描间隔", count(fb.interval_sec) + " 秒"],
+        ["对应配置项", fb.env_key || "—"]
+      ];
+    } else {
+      egressLabel = "出口（已脱敏）";
+      rows = [
+        ["建议账号数", rec ? count(rec.per_executor_accounts) + " 个（实测容量 × 2/3，是建议不是上限）" : "未实测"],
+        ["对应配置项", (w.env_keys && w.env_keys.list) || "—"]
+      ];
+    }
+    var a = isFb ? {} : ((w.assignments || []).filter(function (x) {
+      return count(x.index) === idx;
+    })[0] || {});
+    // form-grid 是两列：字段成对排；说明句放在网格之外，才能整行铺满（否则落进右格，
+    // 看起来像挂在"对应配置项"旁边）
+    var wrap = YB.el("div");
+    var grid = YB.el("div", { class: "form-grid" });
+    grid.appendChild(YB.el("div", { class: "field" }, [
+      YB.el("span", { class: "field-label", text: egressLabel }),
+      YB.el("p", { class: "field-help", text: (isFb ? fb.egress : a.egress) || "直连（本机出口）" })
+    ]));
+    rows.forEach(function (pair) {
+      grid.appendChild(YB.el("div", { class: "field" }, [
+        YB.el("span", { class: "field-label", text: pair[0] }),
+        YB.el("p", { class: "field-help", text: pair[1] })
       ]));
+    });
+    wrap.appendChild(grid);
+    wrap.appendChild(YB.el("p", {
+      class: "field-help",
+      text: "单个执行体的出口编辑需要后端支持按序号写入，接口就绪后开放。"
+    }));
+    YB.openModal({
+      title: isFb ? "兜底执行体" : "worker-" + idx,
+      body: wrap,
+      actions: [{ label: "关闭", variant: "primary", onClick: function () { return true; } }]
     });
   }
 
@@ -118,14 +201,12 @@
       badge.textContent = alive ? "在跑" : "已停";
       badge.className = "badge dot " + (alive ? "badge--ok" : "badge--bad");
     }
+    // 一览表里兜底那行已给出出口与扫描间隔，此处只补一句状态说明（避免同一信息两处重复）
     setText("set-exec-fb-text", alive
       ? "兜底执行体正在运行，窗口内的漏签会由它补签。"
       : "兜底执行体当前未在运行。");
     setHidden($("set-exec-fb-warn"), alive);
-    // 键名提示挂在可编辑的出口框旁（与块一同一处位置），只读信息行不再重复
     setText("set-exec-key-fb", fb.env_key ? "对应配置项：" + fb.env_key : "");
-    setText("set-exec-fb-info", "当前出口：" + (fb.egress || "直连（本机出口）")
-      + "；扫描间隔：" + count(fb.interval_sec) + " 秒。");
   }
 
   function paintCapacity(data) {
@@ -269,6 +350,7 @@
   }
 
   function apply(data) {
+    lastData = data || null;
     var w = (data && data.workers) || {};
     snap.workers = count(w.configured || 1);
     if ($("set-exec-workers")) $("set-exec-workers").value = String(snap.workers);
