@@ -987,20 +987,14 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
     计入未了结使补签得以重跑；宿主 run.sh 退出码语义同样保证补签
     不被「部分成功」吞掉。
 
-    告警时机（避免首签误报噪音）：
-      - 零成功（ok_n==0）且存在窗口外跳过：任何轮次都告警（原语义，
-        全员窗口外 = 当天可能无签，必须当天知情）；
-      - 部分成功 + 窗口外跳过：仅补签轮告警（is_second_run=True）——
-        首签有 skipped 属正常（07:10 会重跑），补签轮仍有 skipped 说明
-        当天已无下一触发点（宿主 cron 只有 06:31/07:10 两轮），需当天知情。
+    告警时机（避免误报噪音）：
+      - 零成功（ok_n==0）且存在窗口外跳过：任何轮次都告警（全员窗口外 =
+        当天可能无签，必须当天知情）；
+      - 部分成功 + 窗口外跳过：只有在"**窗口已关**或**后面不会再有人跑**"时才告警。
+        前面还会重试（补签轮未到 / 兜底执行体在跑）时不打扰管理员。
 
-    is_second_run 判定：调用方（main()）传入
-    `os.environ.get("YIBAN_SECOND_RUN") == "1" or _sched_marker_exists()`——
-    环境变量优先（run.sh 补签轮 / 容器调度器 SECOND 时段注入，首签轮不设），
-    sched-run 标记兜底。二者均缺省时（本函数被单独调用，is_second_run=None）
-    回退到 _sched_marker_exists()。环境变量之所以优先：首签子进程被宿主 timeout
-    击杀（exit 124）时收尾未执行、sched-run 标记不写，07:10 补签轮仅靠标记
-    会误判为首签轮 → 部分成功+窗口外零告警（B12-2 分支复发）。
+    `is_second_run` 参数保留给调用方表达"本轮是不是补签轮"，但抑制判据**不再依赖它**
+    （多执行体下轮次身份不再可靠，见下）；它仅用于告警文案/日志语境。
 
     返回是否产生了告警（测试用）。
     """
@@ -1015,14 +1009,19 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
         return False
     if is_second_run is None:
         is_second_run = _sched_marker_exists()
-    if ok_n > 0 and not is_second_run:
-        # 首签轮部分成功 + 部分窗口外：补签轮会重跑，不打扰。
-        # 例外：当前时刻已越过补签触发点（06:31 关机、补签点之后才被拉起起的场景），
-        # 本轮虽挂首签身份（当日 run 触发标记此刻才首次创建）却是当天最后一轮，
-        # 不再有第三次触发兜底 → 仍告警，防真异常无声。
-        _now = clock.now()
-        if (_now.hour, _now.minute) < window.retry_hm():
-            return False
+    # 抑制的判据从"猜这是第几轮"改成**两个事实**（`63` §2 的口径）：
+    #   ① 窗口还开着——账号理论上还签得上；
+    #   ② 后面还有没有人接着跑——补签轮还没到（时刻事实），或者兜底执行体在跑（心跳事实）。
+    # 两个都成立才抑制：这时打扰管理员没有意义（马上会重试）。
+    # 之所以不再只看 is_second_run：多执行体形态下"轮次身份"不再可靠——
+    # 兜底执行体会一直重试到窗口关闭，此时即便挂着补签轮身份也没必要告警；
+    # 反之（没兜底、补签轮也过了）必须告警，因为当天不会再有触发了。
+    _now = clock.now()
+    _alive, _ = fallback_alive()
+    _later_round = (_now.hour, _now.minute) < window.retry_hm() or _alive
+    _window_open = not _window_closed(_schedule_config(), _now)
+    if ok_n > 0 and _later_round and _window_open:
+        return False
     title = "当日签到异常告警" if ok_n == 0 else "签到窗口异常告警"
     if ok_n == 0:
         body = (
@@ -1477,6 +1476,10 @@ UNDONE_STATUSES = yiban_status.UNDONE_STATUSES
 #: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
 FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 
+#: 兜底执行体的心跳文件（刷新时间戳；退出时删除）。用途：让"还有没有下一轮兜底"
+#: 变成可查的**事实**，而不是靠猜时刻——告警抑制与网页展示都用它。
+FALLBACK_ALIVE_FILE = "fallback-alive.json"
+
 #: 领取池的"当日了结"口径（与 `_second_run_drop_done` 的剔除集合一致）：
 #: 这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）都仍开放，
 #: 由补签轮或兜底执行体接手。
@@ -1505,9 +1508,22 @@ def full_run_done_today(state_dir=None, day=None):
 
 
 def has_undone_accounts_today(state_dir=None, day=None):
-    """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。"""
-    d = state_dir or _state_dir()
+    """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。
+
+    **多执行体形态优先看领取池**：那里是账号级了结的事实源（`done`=当日了结，
+    `claimed`/`failed`=未了结），而状态文件只能说"这个账号最后写成什么状态"。
+    当池里当日有记录时以池为准；没有记录（无库/池未启用/当日还没人领过）再回退到
+    状态文件——两条口径都可用时，池更准。
+    """
     today = day or clock.now().strftime("%Y-%m-%d")
+    try:
+        if db.is_initialized():
+            stats = db.claim_stats(today)
+            if stats.get("total"):
+                return stats.get("open", 0) > 0
+    except Exception as e:      # 池不可用 → 回退状态文件（不影响签到主流程）
+        logger.debug("读取领取池失败（回退状态文件口径）: %s", e)
+    d = state_dir or _state_dir()
     try:
         with open(os.path.join(d, f"sign-state-{today}.json"), encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -1877,6 +1893,48 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             t = lo + dur * (j + 0.5) / m + rng.uniform(0, min(0.8, dur / m / 2))
             schedule[p] = _minute_to_dt(base, min(t, hi - 0.001))
     return schedule
+
+
+def _fallback_alive_path():
+    return os.path.join(_state_dir(), FALLBACK_ALIVE_FILE)
+
+
+def _write_fallback_alive(at=None):
+    """刷新兜底执行体心跳（每轮扫描写一次）。失败静默——心跳不该影响签到。"""
+    path = _fallback_alive_path()
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = f"{path}.tmp{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"at": (at or clock.now()).strftime("%Y-%m-%d %H:%M:%S"),
+                       "pid": os.getpid()}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _clear_fallback_alive():
+    with contextlib.suppress(OSError):
+        os.remove(_fallback_alive_path())
+
+
+def fallback_alive(interval_sec=None, now=None):
+    """兜底执行体是否在跑（按心跳新鲜度判定：超过 2 个扫描间隔即视为已停）。
+
+    返回 `(alive: bool, age_sec: float | None)`。判定用**文件里的时间戳**而非文件是否存在：
+    进程被 kill -9 时不会执行清理，只靠"文件还在"会永远报"在跑"。
+    """
+    path = _fallback_alive_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            at = json.load(f).get("at", "")
+        stamp = datetime.strptime(at, "%Y-%m-%d %H:%M:%S")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False, None
+    now = now or clock.now()
+    age = (now - stamp).total_seconds()
+    limit = 2 * (interval_sec or _env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600))
+    return age <= limit, age
 
 
 def _window_closed(sch_cfg, now_dt):
@@ -2656,10 +2714,12 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             logger.info("兜底执行体：签到时段已结束，退出")
             break
 
+        _write_fallback_alive(now)
         try:
             accounts = load_accounts()
         except RuntimeError as e:
             logger.error("兜底执行体：配置加载失败: %s", e)
+            _clear_fallback_alive()
             return 1
         if not accounts:
             logger.info("兜底执行体：当前没有账号，%ss 后再看", interval)
@@ -2687,6 +2747,8 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         else:
             # 有活干就连续扫（不睡满间隔），直到没活为止——窗口是有限的
             time.sleep(min(interval, 5))
+    _clear_fallback_alive()
+    logger.info("兜底执行体已退出（心跳已清除）")
     return last_code
 
 
@@ -2723,7 +2785,8 @@ def main():
         "--second-run-check", action="store_true",
         help=(
             "补签轮判定（供宿主 run.sh 调用）：当日全量未收尾或存在未了结账号时"
-            f"退出码 {SECOND_RUN_CHECK_NEED}（需要补跑），否则 0。不读账号、不联网。"
+            f"退出码 {SECOND_RUN_CHECK_NEED}（需要补跑），否则 0。"
+            "只读本地状态（领取池/状态文件），不加载账号、不发起任何网络请求。"
         ),
     )
     parser.add_argument(

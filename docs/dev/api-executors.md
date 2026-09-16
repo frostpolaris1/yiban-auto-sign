@@ -27,7 +27,8 @@
   "fallback": {
     "egress": "直连（本机出口）",
     "interval_sec": 60,
-    "env_key": "YIBAN_PROXY_FALLBACK"
+    "env_key": "YIBAN_PROXY_FALLBACK",
+    "alive": false
   },
   "window": {
     "effective_sec": 4680,
@@ -55,6 +56,7 @@
 | `workers.env_keys` | object | 键名由后端给出，前端**不要硬编码字符串** |
 | `fallback.egress` | string | 兜底常驻执行体的出口描述 |
 | `fallback.interval_sec` | int | 兜底执行体的扫描间隔（秒） |
+| `fallback.alive` | bool | 兜底执行体**当前是否在跑**（按心跳新鲜度：超过 2 个扫描间隔即判"已停"，进程被强杀也能识别） |
 | `window.*` | object | 有效窗口（已扣掐头去尾）：`effective_sec` 就是容量换算用的分母 |
 | `measured` | object \| **null** | 部署者实测值。**为 null 时页面必须显示"未实测"并隐藏建议**，不得编造数字 |
 | `recommendation` | object \| **null** | `per_executor_accounts = 实测 × 2/3`（向下取整，至少 1）；`executors_needed = ⌈current_accounts / per_executor_accounts⌉` |
