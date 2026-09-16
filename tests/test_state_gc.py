@@ -271,6 +271,15 @@ class CleanupEntryPointsTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_cli_missing_state_dir_is_loud_and_creates_nothing(self):
+        """目录不存在 → 响亮失败（cron 会报给运维），但**不得**顺手把目录造出来。"""
+        missing = os.path.join(tempfile.mkdtemp(prefix="yiban-gc-miss-"), "state")
+        with mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": missing, "YIBAN_LOG_FILE": ""}), \
+             mock.patch.object(sys, "stderr", io.StringIO()) as err:
+            self.assertEqual(state_cleanup.main([]), 1)
+        self.assertIn("状态目录不存在", err.getvalue())
+        self.assertFalse(os.path.exists(missing), "清理脚本不该创建状态目录")
+
     def test_cli_fails_loudly_on_bad_retention(self):
         tmp = tempfile.mkdtemp(prefix="yiban-gc-cli-bad-")
         try:

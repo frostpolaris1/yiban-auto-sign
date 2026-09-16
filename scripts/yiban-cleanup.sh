@@ -23,6 +23,9 @@ if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
 elif command -v python3 >/dev/null 2>&1; then
     PY=python3
+elif [ -x /usr/bin/python3 ]; then
+    # cron 的 PATH 可能极简（/usr/bin:/bin），command -v 也未命中时兜底绝对路径
+    PY=/usr/bin/python3
 else
     echo "找不到 python3，无法执行清理（策略实现在 yiban/state_gc.py）" >&2
     exit 1

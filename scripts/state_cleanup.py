@@ -59,7 +59,9 @@ def main(argv=None):
     log_path = os.path.join(state_dir, "cleanup.log")
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not os.path.isdir(state_dir):
-        _append_log(log_path, f"[{stamp}] 状态目录不存在，跳过: {state_dir}")
+        # 状态目录由 run.sh 首次签到时 mkdir -p 建立；此刻仍不存在，要么部署还没跑过
+        # 签到，要么 YIBAN_STATE_DIR 配错了。两种都值得让 cron 报出来——**不在这里
+        # 造目录**（清理脚本不该创建状态目录，且日志也没地方落）。
         print(f"状态目录不存在，跳过: {state_dir}", file=sys.stderr)
         return 1
     try:
