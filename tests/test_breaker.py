@@ -119,6 +119,9 @@ class BreakerTest(unittest.TestCase):
 
     def setUp(self):
         self._calls = []
+        # 领取池由 conftest 的自动夹具统一清空（本类多条用例固定在同一天、同一账号
+        # 上跑队列，池子会记住"当日已了结"而让后续用例领不到账号）。
+        # ⚠ 注意：本类只能有一个 setUp——重复定义会静默覆盖，我在此踩过一次。
 
     def test_paused_account_zero_requests(self):
         cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,

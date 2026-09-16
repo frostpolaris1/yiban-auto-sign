@@ -67,6 +67,47 @@ def _close_root_file_handlers_after_each():
     _close_root_file_handlers()
 
 
+def _clear_sign_claim_pool():
+    """清空**当前生效连接**上的签到领取池（多执行体协调表）；异常一律不影响用例。
+
+    为什么用"当前连接"而不是"环境变量指向的库"：连接是模块级单例，而多数测试类
+    直接复用上一个类留下的连接（自己不设 `YIBAN_DB_FILE`）——引擎在新用例里用的
+    就是这个连接，池子里的行就是它挡住的。清一个已属于旧类的临时库无害。
+    （连接为空时**不**在此处开库：否则会顺手创建默认库，把后续类的库选择带偏。）
+    """
+    try:
+        import db
+        conn = db._conn
+        if conn is None:
+            return
+        with db._conn_lock:
+            conn.execute("DELETE FROM sign_claims")
+            conn.commit()
+    except Exception:  # 库/表不存在 → 该用例与领取池无关
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_sign_claim_pool():
+    """每个用例前清空签到领取池（`sign_claims`，多执行体协调表）。
+
+    为什么需要：领取池的语义是"**一个账号一个业务日只被一个执行体做一次**"
+    （成功/已签到/今日无任务记 `done`，其余落 `failed` 并放开租约可被接手）。
+    而单元测试普遍在**同一个库、同一天、同一个手机号**上反复调用
+    `run_queue_retry` 来验证不同分支——不清池的话，第二条用例的账号会直接
+    "已被领取"而根本不发起尝试，断言会以"没发请求/没写状态"的形式失败，
+    看起来像实现坏了，其实是池子记住了上一轮。
+
+    这也正是生产语义：同一账号同一天的重复自动执行本就该被拒（防重复登录），
+    只有补签轮（接手 `failed`）与手动指定账号（`reclaim=True`）才继续做。
+
+    清理放在**用例之后**：不少测试类在 setUp 里才把 `YIBAN_DB_FILE` 指向临时库
+    （夹具先跑就看不到那个库），而用例结束时环境与连接都还是该类的，判定最准。
+    """
+    yield
+    _clear_sign_claim_pool()
+
+
 @pytest.fixture(autouse=True, scope="class")
 def _restore_environ_around_class():
     """类级 os.environ 快照：setUpClass 的改动在 tearDownClass 之后整体还原。

@@ -44,10 +44,17 @@ LEASE_SECONDS = 900
 #: 保留期（天）：只用于运维追溯与"昨日的了结情况"，展示口径不读它。
 RETENTION_DAYS = 14
 
+#: 在飞：已被某执行体领取、尚未收尾。
 STATE_CLAIMED = "claimed"
+#: **当日了结**：无需再签（成功/已签到/今日无任务/无点位）。
 STATE_DONE = "done"
+#: 尝试过但**未了结**（重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
+#: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
 STATE_FAILED = "failed"
-SETTLED_STATES = (STATE_DONE, STATE_FAILED)
+#: 终态集合（只有 done 是真终态；failed 是"可再领"）
+SETTLED_STATES = (STATE_DONE,)
+#: 参与"未了结账号"统计的状态（与 done 互斥）
+OPEN_STATES = (STATE_CLAIMED, STATE_FAILED)
 
 
 def _integrity_errors():
@@ -84,8 +91,9 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     ts = _now_str(now)
     expired_before = _utc_offset_str(lease_sec)
     # 冲突分支的两种情形分开写清楚：
-    #  ① 行已了结（done/failed）：**无人持有**，故租约条件不适用——只由 allow_settled 决定；
-    #  ② 行在飞（claimed）：自己的可重入；他人的须租约已过期（<=：租约 0 秒即"立刻可接管"）。
+    #  ① 已了结（done）：**无人持有**，故租约条件不适用——只由 allow_settled 决定；
+    #  ② 未了结（claimed 在飞 / failed 弃过）：自己的可重入；他人的须租约已过期
+    #     （<=：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期，见 give_up）。
     sql = (
         "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
         "state, result, attempts) VALUES (?, ?, ?, ?, ?, ?, '', 0) "
@@ -93,8 +101,8 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
         "owner=excluded.owner, claimed_at=excluded.claimed_at, "
         "heartbeat_at=excluded.heartbeat_at, state=excluded.state, "
         "attempts=sign_claims.attempts + 1 "
-        "WHERE (sign_claims.state != ? AND ?)"
-        "   OR (sign_claims.state = ? "
+        "WHERE (sign_claims.state = ? AND ?)"
+        "   OR (sign_claims.state IN (?, ?) "
         "       AND (sign_claims.owner = excluded.owner "
         "            OR sign_claims.heartbeat_at <= ?))"
     )
@@ -103,8 +111,8 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
         with db._conn_lock:
             cur = conn.execute(
                 sql, (phone, day, owner, ts, ts, STATE_CLAIMED,
-                      STATE_CLAIMED, 1 if allow_settled else 0,
-                      STATE_CLAIMED, expired_before),
+                      STATE_DONE, 1 if allow_settled else 0,
+                      STATE_CLAIMED, STATE_FAILED, expired_before),
             )
             conn.commit()
             return cur.rowcount == 1
@@ -164,6 +172,32 @@ def settle(phone, day, owner, state=STATE_DONE, result=""):
         return False
 
 
+def give_up(phone, day, owner, result=""):
+    """本次执行放弃该账号，但**当日仍未了结**：置 `failed` 并**立刻放开租约**。
+
+    为什么必须放开：补签轮（窗口内第二轮）与兜底执行体的存在意义就是接手失败账号。
+    若把租约留满 900s，07:10 弃权的账号在 07:12 的补签轮里仍"被持有"→ 补签轮领不到、
+    当日再也签不上。放开后任何执行体/任何一轮都能立刻接手。
+
+    返回是否写成功（被接管时为 False）。
+    """
+    import db
+    try:
+        conn = db.get_conn()
+        expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
+        with db._conn_lock:
+            cur = conn.execute(
+                "UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
+                "WHERE phone=? AND day=? AND owner=?",
+                (STATE_FAILED, (result or "")[:200], expired, phone, day, owner),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+    except Exception as e:
+        logger.warning("放弃签到记录失败（不影响签到结果）: %s", e)
+        return False
+
+
 def states_for_day(day):
     """当日已建记录的 `phone -> state` 映射（未建的账号不在映射里 = 未领取）。"""
     import db
@@ -209,12 +243,14 @@ def stats(day):
         out = {STATE_CLAIMED: 0, STATE_DONE: 0, STATE_FAILED: 0}
         for r in rows:
             out[r["state"]] = r["n"]
-        out["settled"] = out[STATE_DONE] + out[STATE_FAILED]
-        out["total"] = out[STATE_CLAIMED] + out["settled"]
+        out["settled"] = out[STATE_DONE]
+        out["open"] = out[STATE_CLAIMED] + out[STATE_FAILED]
+        out["total"] = out["settled"] + out["open"]
         return out
     except Exception as e:
         logger.debug("读取签到进度失败（按空处理）: %s", e)
-        return {"claimed": 0, "done": 0, "failed": 0, "settled": 0, "total": 0}
+        return {"claimed": 0, "done": 0, "failed": 0, "settled": 0, "open": 0,
+                "total": 0}
 
 
 def purge(days=RETENTION_DAYS):
