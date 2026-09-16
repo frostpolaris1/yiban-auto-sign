@@ -55,6 +55,7 @@ from yiban import client as yiban_client  # noqa: E402  # 客户端外观 YibanC
 from yiban import (  # noqa: E402
     clock,
     cred_state,
+    egress,  # 出口（代理）分配：每个执行体可独立配置
     security,  # 白名单 / WAF 判定口径（唯一实现）
     window,
 )
@@ -1473,6 +1474,9 @@ def _write_sched_done(counts=None):
 # （docker/scheduler.py 亦别名引用它；测试断言三者同一身份）。
 UNDONE_STATUSES = yiban_status.UNDONE_STATUSES
 
+#: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
+FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
+
 #: 领取池的"当日了结"口径（与 `_second_run_drop_done` 的剔除集合一致）：
 #: 这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）都仍开放，
 #: 由补签轮或兜底执行体接手。
@@ -2562,20 +2566,6 @@ def _apply_only_filter(accounts, only_arg):
     return filtered, missing
 
 
-def _worker_proxy(index, total):
-    """第 index 个执行体的出口代理（未配置则返回空串=用 YIBAN_PROXY 或不走代理）。
-
-    `YIBAN_PROXY_LIST`（逗号/空白分隔）里按序取；不足时**循环取用**（3 个出口
-    × 5 个执行体 → 出口 1,2,3,1,2）。这样部署者能按自己的出口数量摊开请求，
-    风控面与带宽面都比"所有执行体共用一个 IP"低——**这是可选能力，默认不配置**
-    （默认与既有单出口行为逐字一致）。
-    """
-    raw = os.environ.get("YIBAN_PROXY_LIST", "").replace(",", " ").split()
-    if not raw:
-        return ""
-    return raw[index % len(raw)]
-
-
 def run_worker_supervisor(n, argv):
     """拉起 n 个执行体子进程并汇总退出码（`--workers N`）。
 
@@ -2604,16 +2594,13 @@ def run_worker_supervisor(n, argv):
         env = os.environ.copy()
         env["YIBAN_EXECUTOR_ID"] = f"{socket.gethostname()}:workers:{os.getpid()}:w{i}"
         env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{i}"
-        proxy = _worker_proxy(i, n)
+        proxy = egress.resolve(egress.ROLE_WORKER, i)
         if proxy:
             env["YIBAN_PROXY"] = proxy
         # 复刻本轮其余参数（去掉 --workers，避免递归拉起）
         child_argv = [a for a in argv if a != "--workers" and a != str(n)]
         cmd = [sys.executable, os.path.abspath(__file__), *child_argv]
-        logger.info(
-            "执行体 %d/%d 启动（出口: %s）", i + 1, n,
-            _notify_url_desc(proxy) if proxy else "默认（YIBAN_PROXY / 直连）",
-        )
+        logger.info("执行体 %d/%d 启动（出口: %s）", i + 1, n, egress.describe(proxy))
         children.append(subprocess.Popen(cmd, env=env))
         # 错开启动：既避开"同一秒争库"，也让首轮请求不要在同一瞬间齐发（风控面）
         if i + 1 < n:
@@ -2632,6 +2619,75 @@ def run_worker_supervisor(n, argv):
     if any(c == 2 for c in codes):
         return 2
     return 0
+
+
+def run_fallback_worker(argv_rest, interval=None, deadline=None):
+    """兜底常驻执行体：窗口内反复扫"还没了结"的账号并接手，窗口关闭即退出。
+
+    为什么需要它（`63` §2 用户反问"等某个 worker 做完才能开始？"→ 不要等）：
+    学校晚放号、窗口内新审核通过的账号、被慢账号拖住的、失败待重试的——都能被
+    **随手接手**，而不是等下一轮定时任务。
+
+    做法刻意简单可靠：每一轮重新加载账号并调用同一条执行路径（`run_queue_retry`，
+    schedule 为空=立即执行）。**分工由领取池承担**：已了结的账号领不到、别的执行体
+    正在做的领不到，所以"全量账号列表"作为输入也不会重复签——不需要在这里再写一套筛选。
+
+    自己持一个独立锁文件（`YIBAN_RUN_LOCK_NAME`），因此与定时全量、手动签到、
+    其他执行体都能并存（互斥交给领取池）。
+
+    退出：窗口关闭 / 到达 `deadline` / 账号列表为空且已过窗口。返回退出码语义与
+    单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
+    """
+    interval = interval or _env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
+    os.environ.setdefault("YIBAN_RUN_LOCK_NAME", FALLBACK_LOCK_NAME)
+    proxy = egress.resolve(egress.ROLE_FALLBACK)
+    logger.info("兜底执行体启动（出口: %s，扫描间隔 %ss）", egress.describe(proxy), interval)
+    if proxy:
+        os.environ["YIBAN_PROXY"] = proxy
+
+    sch_cfg = _schedule_config()
+    last_code = 0
+    while True:
+        now = clock.now()
+        if deadline is not None and now >= deadline:
+            logger.info("兜底执行体：到达截止时刻，退出")
+            break
+        if _window_closed(sch_cfg, now):
+            logger.info("兜底执行体：签到时段已结束，退出")
+            break
+
+        try:
+            accounts = load_accounts()
+        except RuntimeError as e:
+            logger.error("兜底执行体：配置加载失败: %s", e)
+            return 1
+        if not accounts:
+            logger.info("兜底执行体：当前没有账号，%ss 后再看", interval)
+            time.sleep(interval)
+            continue
+
+        delegated = set()
+        results = run_queue_retry(accounts, os.environ.get("YIBAN_NOTIFY_URL", ""), 0,
+                                  _env_int("YIBAN_ACCOUNT_GAP_MAX", 10, 0, 3600),
+                                  schedule=None, cred_state=_load_cred_state(),
+                                  delegated=delegated)
+        settled = 0
+        for acc in accounts:
+            if acc.phone in delegated:
+                settled += 1
+        own = len(results)
+        # 本轮自己没活干（全部已被别人接手/已了结）→ 睡一会儿再看
+        logger.info("兜底执行体：本轮处理 %d 个账号（%d 个已由他人负责），%ss 后再扫",
+                    own, settled, interval)
+        for _ok, _msg, skip, status in results.values():
+            if status in (STATUS_FAILED,) and not skip:
+                last_code = 1
+        if own == 0:
+            time.sleep(interval)
+        else:
+            # 有活干就连续扫（不睡满间隔），直到没活为止——窗口是有限的
+            time.sleep(min(interval, 5))
+    return last_code
 
 
 def main():
@@ -2678,7 +2734,19 @@ def main():
             "每个执行体可用 YIBAN_PROXY_LIST 配一个独立出口代理"
         ),
     )
+    parser.add_argument(
+        "--fallback", action="store_true",
+        help=(
+            "兜底常驻模式：在签到时段内反复扫描'尚未了结'的账号并随手接手（晚放号、"
+            "窗口内新审核通过的账号、慢账号、待重试账号），时段结束自动退出。"
+            "自己持独立锁、可用 YIBAN_PROXY_FALLBACK 配独立出口，与定时全量并存"
+        ),
+    )
     args = parser.parse_args()
+
+    # 兜底常驻执行体：先于其他分支（它自带循环与退出条件）
+    if args.fallback:
+        sys.exit(run_fallback_worker(sys.argv[1:]))
 
     # 多执行体：本进程只做监督（持全局锁 + 汇总退出码），活儿由子进程干。
     # 放在补签轮判定之前不必要——补签轮判定只读文件，先走它更快。
