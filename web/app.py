@@ -61,6 +61,7 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
 from yiban import clock, cred_state  # noqa: E402  （须在引导之后导入）
 from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
@@ -2574,7 +2575,8 @@ def _notify_capacity_once(kind, limit, label):
 # 2026-09-16 结构与通知拆分（v0.4.4）：登录/签到协议层独立（yiban/fyiban/protocol.py，
 # 安全校验以策略注入）+ 客户端外观（yiban/client.py）+ 安全策略层（yiban/security.py）
 # + 通知与邮件拆为 yiban/notify 与 yiban/mail
-APP_VERSION = "0.4.4"
+# 版本号：由 yiban/__init__.py 的 __version__ 唯一提供（上文已导入为 APP_VERSION）。
+# 改版本时的连带项：根目录 CHANGELOG.md + web/__init__.py（转出）+ 版本门禁用例。
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = clock.now().strftime("%Y%m%d%H%M%S")
 
