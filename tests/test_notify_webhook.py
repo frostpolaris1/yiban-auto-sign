@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""scripts/notify.py Webhook 推送组件单元测试（2026-08-29）。
+"""`yiban/notify` Webhook 推送组件单元测试（2026-08-29）。
 
 覆盖：
 - 配置读取：未配置禁用 / 兼容旧明文 YIBAN_NOTIFY_URL / 加密密文解密回读 /
@@ -16,7 +16,7 @@
   （跨日凭证作废、发送途中改上限不多退不漏退、虚警撤回）、pop_exhaustion_notice
   返回哪些账本耗尽且每本账每日各一次、get_config 一轮只解析一次 .env
 - 虚警判定与告知撤回合并在同一把账本锁内（并发下真实 pending
-  不会被陈旧撤回抹掉）；耗尽告知标记与额度计数同属一本账（notify._*_daily["notice"]）
+  不会被陈旧撤回抹掉）；耗尽告知标记与额度计数同属一本账（notify_ledger._*_daily["notice"]）
 - get_secret 必须按 YIBAN_ENV_FILE 解析路径取钥，不在 cwd 生成游离密钥
 全程 mock requests，不发起真实网络请求。
 用法（项目根目录）：
@@ -32,9 +32,13 @@ import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import notify  # noqa: E402
-
+# 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：公共面走包，内部名走子模块——
+# 打桩必须打在**真正持有并调用该名字**的模块上，否则会静默失效。
+from yiban import notify  # noqa: E402
 from yiban.infra import account_crypto  # noqa: E402
+from yiban.notify import config as notify_config  # noqa: E402
+from yiban.notify import ledger as notify_ledger  # noqa: E402
+from yiban.notify import transport as notify_transport  # noqa: E402
 
 KEY = "f" * 64
 SCT_KEY = "SCT406257TESTTESTTESTTESTTEST"
@@ -46,7 +50,7 @@ def _reset_notices():
     pending/notified/warned 从全局 notify._exhaustion 挪进了
     各本账自己的 notice 子字典（与 count 同一把账本锁），复位口径随之逐本清。
     """
-    for ledger in (notify._general_daily, notify._urgent_daily):
+    for ledger in (notify_ledger._general_daily, notify_ledger._urgent_daily):
         ledger["notice"].update({"pending": False, "notified": False, "warned": False})
 
 
@@ -64,12 +68,12 @@ def _clear(monkeypatch):
     # 指向不存在的 .env，避免 notify 回退读取项目根 .env（含真实 Server酱 配置）
     monkeypatch.setenv("YIBAN_ENV_FILE",
                        os.path.join(tempfile.gettempdir(), "yiban-notify-no-such.env"))
-    notify._throttle_ts.clear()
+    notify_ledger._throttle_ts.clear()
     # 重置进程内状态：两本账、耗尽告知标记、跳过日志去重表
-    notify._general_daily["state"].update({"date": "", "count": 0})
-    notify._urgent_daily["state"].update({"date": "", "count": 0})
+    notify_ledger._general_daily["state"].update({"date": "", "count": 0})
+    notify_ledger._urgent_daily["state"].update({"date": "", "count": 0})
     _reset_notices()
-    notify._skip_logged.clear()
+    notify_ledger._skip_logged.clear()
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_"):
             monkeypatch.delenv(k)
@@ -81,7 +85,7 @@ def _freeze_day(monkeypatch, day):
     不去动 stdlib time.strftime——那是全进程共享对象，patch 它会影响其它模块甚至
     其它线程的用例，跨日语义只要 _daily_today 稳定返回目标日期即可。
     """
-    monkeypatch.setattr(notify, "_daily_today", lambda: day[0])
+    monkeypatch.setattr(notify_ledger, "_daily_today", lambda: day[0])
     return day
 
 
@@ -116,7 +120,7 @@ def _ok_post(monkeypatch, calls):
         calls.append(kw["data"]["title"])
         return _Resp(0)
 
-    monkeypatch.setattr(notify.requests, "post", _post)
+    monkeypatch.setattr(notify_transport.requests, "post", _post)
 
 
 def _rejected_post(monkeypatch, calls):
@@ -125,7 +129,7 @@ def _rejected_post(monkeypatch, calls):
         calls.append(kw["data"]["title"])
         return _Resp(429)
 
-    monkeypatch.setattr(notify.requests, "post", _post)
+    monkeypatch.setattr(notify_transport.requests, "post", _post)
 
 
 def _info_lines(caplog, needle):
@@ -193,7 +197,7 @@ def test_serverchan_success_format(monkeypatch):
         calls["data"] = kw.get("data")
         return FakeResp()
 
-    monkeypatch.setattr(notify.requests, "post", _post)
+    monkeypatch.setattr(notify_transport.requests, "post", _post)
     assert notify.send("签到失败", "账号: 138****0001") is True
     assert calls["url"] == f"https://sctapi.ftqq.com/{SCT_KEY}.send"
     assert calls["data"]["title"] == "签到失败"
@@ -212,7 +216,7 @@ def test_serverchan_title_truncated_and_flattened(monkeypatch):
         data.update(kw.get("data"))
         return FakeResp()
 
-    monkeypatch.setattr(notify.requests, "post", _post)
+    monkeypatch.setattr(notify_transport.requests, "post", _post)
     notify.send("很长的标题" * 20 + "\n换行", "内容")
     assert "\n" not in data["title"]
     assert len(data["title"]) <= 32
@@ -225,7 +229,7 @@ def test_serverchan_nonzero_code_fails_and_masks_key(monkeypatch, caplog):
         def json(self):
             return {"code": 429, "message": "超过今日免费额度"}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: FakeResp())
     with caplog.at_level(logging.WARNING, logger="notify"):
         assert notify.send("告警", "内容") is False
     assert "429" in caplog.text
@@ -234,7 +238,7 @@ def test_serverchan_nonzero_code_fails_and_masks_key(monkeypatch, caplog):
 
 def test_serverchan_raise_fails_silently(monkeypatch, caplog):
     _configure_serverchan(monkeypatch)
-    monkeypatch.setattr(notify.requests, "post", mock.Mock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(notify_transport.requests, "post", mock.Mock(side_effect=RuntimeError("boom")))
     with caplog.at_level(logging.WARNING, logger="notify"):
         assert notify.send("告警", "内容") is False
     assert SCT_KEY not in caplog.text
@@ -257,7 +261,7 @@ def test_custom_sends_json_and_masks_host(monkeypatch, caplog):
         calls["json"] = kw.get("json")
         return FakeResp()
 
-    monkeypatch.setattr(notify.requests, "post", _post)
+    monkeypatch.setattr(notify_transport.requests, "post", _post)
     with caplog.at_level(logging.WARNING, logger="notify"):
         assert notify.send("告警", "内容") is False
     assert calls["url"] == "https://user:pass@example.com:8443/hook?token=1"
@@ -296,7 +300,7 @@ def test_throttle_same_title_skipped_force_bypasses(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("同标题", "1") is True
     assert notify.send("同标题", "2") is False  # 窗口内同标题被节流
     assert notify.send("同标题", "3", force=True) is True  # force 绕过
@@ -311,7 +315,7 @@ def test_throttle_zero_disables(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("同标题", "1") is True
     assert notify.send("同标题", "2") is True
     assert len(calls) == 2
@@ -327,7 +331,7 @@ def test_legacy_url_uses_custom_channel(monkeypatch):
     class FakeResp:
         status_code = 200
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(k.get("json")) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(k.get("json")) or FakeResp())
     assert notify.send("告警", "内容") is True
     assert calls == [{"title": "告警", "content": "内容"}]
 
@@ -343,7 +347,7 @@ def test_urgent_only_skips_non_urgent(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("用户日常改密", "内容") is False          # 非紧急跳过
     assert notify.send("用户日常改密", "内容", urgent=False) is False
     assert notify.send("高危操作告警", "内容", urgent=True) is True  # 紧急放行
@@ -358,7 +362,7 @@ def test_urgent_only_off_pushes_all(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("用户日常改密", "内容") is True   # 未开启时不区分紧急
     assert notify.send("用户日常改密", "内容", urgent=True) is True
     assert len(calls) == 2
@@ -373,7 +377,7 @@ def test_urgent_only_force_bypasses(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("测试", "内容", force=True) is True  # 测试推送不受紧急过滤
     assert len(calls) == 1
 
@@ -389,7 +393,7 @@ def test_daily_budget_stops_after_limit(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     for i in range(3):
         assert notify.send(f"告警{i}", "内容") is True
     assert notify.send("告警3", "内容") is False  # 预算耗尽
@@ -406,7 +410,7 @@ def test_daily_budget_force_bypasses(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     assert notify.send("告警1", "内容") is True
     assert notify.send("告警2", "内容") is False
     assert notify.send("测试", "内容", force=True) is True  # force 绕过预算
@@ -422,7 +426,7 @@ def test_daily_budget_zero_unlimited(monkeypatch):
         def json(self):
             return {"code": 0}
 
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
     for i in range(7):
         assert notify.send(f"告警{i}", "内容") is True
     assert len(calls) == 7
@@ -442,14 +446,14 @@ def test_get_config_parses_env_file_once(monkeypatch):
     """修复轮⑤：一轮 get_config 只解析一次 .env（原先每个键各自读一遍全文件 + 一遍解析）。"""
     _configure_serverchan(monkeypatch)
     _set(monkeypatch, DAILY_MAX="4", URGENT_DAILY_MAX="2", COOLDOWN="15")
-    real = notify._read_env_file
+    real = notify_config._read_env_file
     reads = []
 
     def _counting():
         reads.append(1)
         return real()
 
-    monkeypatch.setattr(notify, "_read_env_file", _counting)
+    monkeypatch.setattr(notify_config, "_read_env_file", _counting)
     cfg = notify.get_config()
     assert (cfg["daily_max"], cfg["urgent_daily_max"], cfg["cooldown"]) == (4, 2, 15)
     assert len(reads) == 1, f".env 被重复解析了 {len(reads)} 次"
@@ -554,7 +558,7 @@ def test_send_exception_refunds_urgent_budget(monkeypatch):
     calls = []
     _ok_post(monkeypatch, calls)
     assert notify.send("普通1", "内容") is True                  # 非紧急账占满
-    monkeypatch.setattr(notify.requests, "post", mock.Mock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(notify_transport.requests, "post", mock.Mock(side_effect=RuntimeError("boom")))
     assert notify.send("紧急1", "内容", urgent=True) is False
     assert notify.get_config()["urgent_daily_remaining"] == 1
     assert notify.get_config()["daily_remaining"] == 0           # 不得误退非紧急账
@@ -575,7 +579,7 @@ def test_non_json_response_refunds_budget(monkeypatch):
             raise ValueError("Expecting value")
 
     calls = []
-    monkeypatch.setattr(notify.requests,
+    monkeypatch.setattr(notify_transport.requests,
                         "post",
                         lambda *a, **k: calls.append(k["data"]["title"]) or _BrokenResp())
     assert notify.send("告警", "内容") is False
@@ -589,7 +593,7 @@ def test_unknown_type_refunds_budget(monkeypatch):
     _configure_serverchan(monkeypatch, cooldown=0)
     _set(monkeypatch, DAILY_MAX="1", TYPE="telegram")
     calls = []
-    monkeypatch.setattr(notify.requests, "post", lambda *a, **k: calls.append(1) or _Resp(0))
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or _Resp(0))
     assert notify.send("告警", "内容") is False
     assert calls == [], "未知类型不该有外发"
     assert notify.get_config()["daily_remaining"] == 1
@@ -602,7 +606,7 @@ def test_unsafe_url_rejection_refunds_budget(monkeypatch):
     _set(monkeypatch, TYPE="custom", DAILY_MAX="2",
          SECRET_ENC=_enc("http://example.com/hook"))
     calls = []
-    monkeypatch.setattr(notify.requests, "post",
+    monkeypatch.setattr(notify_transport.requests, "post",
                         lambda *a, **k: calls.append(1) or _Resp(0, 200))
     assert notify.send("告警", "内容") is False
     assert calls == []
@@ -618,14 +622,14 @@ def test_refund_across_day_does_not_charge_next_day(monkeypatch):
     _configure_serverchan(monkeypatch, cooldown=0)
     _set(monkeypatch, DAILY_MAX="2")
     day = _freeze_day(monkeypatch, ["2026-08-29"])
-    stale = notify._consume_daily_budget("general")             # 昨天的占用，请求还没回来
+    stale = notify_ledger._consume_daily_budget("general")             # 昨天的占用，请求还没回来
     assert stale.allowed and stale.ledger == "general" and stale.day == "2026-08-29"
     day[0] = "2026-08-30"                                       # 跨日：次日账本归零重来
     calls = []
     _ok_post(monkeypatch, calls)
     assert notify.send("次日1", "内容") is True                   # 今天已实打实发出 1 条
     assert notify.get_config()["daily_remaining"] == 1
-    notify._refund_daily_budget(stale)                          # 昨天的失败此刻才退还
+    notify_ledger._refund_daily_budget(stale)                          # 昨天的失败此刻才退还
     assert notify.get_config()["daily_remaining"] == 1, "跨日退还不得扣到次日账上"
     assert notify.send("次日2", "内容") is True                   # 次日仍是完整的 2 条额度
     assert notify.send("次日3", "内容") is False
@@ -636,12 +640,12 @@ def test_refund_kept_when_limit_switched_to_unlimited(monkeypatch):
     """修复轮③ 反向：占用时有限额、退还时管理员已改成不限额，旧凭证仍要照退（不得漏退）。"""
     _configure_serverchan(monkeypatch, cooldown=0)
     _set(monkeypatch, DAILY_MAX="2")
-    ticket = notify._consume_daily_budget("general")
-    assert ticket.ledger == "general" and ticket.day == notify._daily_today()
-    assert notify._general_daily["state"]["count"] == 1
+    ticket = notify_ledger._consume_daily_budget("general")
+    assert ticket.ledger == "general" and ticket.day == notify_ledger._daily_today()
+    assert notify_ledger._general_daily["state"]["count"] == 1
     monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "0")            # 发送途中改成不限
-    notify._refund_daily_budget(ticket)
-    assert notify._general_daily["state"]["count"] == 0, \
+    notify_ledger._refund_daily_budget(ticket)
+    assert notify_ledger._general_daily["state"]["count"] == 0, \
         "退还只认凭证：不限额是「现在」的状态，不能据此认定当初没占"
 
 
@@ -649,12 +653,12 @@ def test_refund_ticket_is_one_shot(monkeypatch):
     """凭证一次性：同一笔占用退两次只退一次，否则等于白送一条额度。"""
     _configure_serverchan(monkeypatch, cooldown=0)
     _set(monkeypatch, DAILY_MAX="2")
-    ticket = notify._consume_daily_budget("general")                 # 占 1 条
-    assert notify._consume_daily_budget("general").allowed is True   # 占满 2/2
-    assert notify._general_daily["state"]["count"] == 2
-    notify._refund_daily_budget(ticket)
-    notify._refund_daily_budget(ticket)                              # 第二次须被忽略
-    assert notify._general_daily["state"]["count"] == 1
+    ticket = notify_ledger._consume_daily_budget("general")                 # 占 1 条
+    assert notify_ledger._consume_daily_budget("general").allowed is True   # 占满 2/2
+    assert notify_ledger._general_daily["state"]["count"] == 2
+    notify_ledger._refund_daily_budget(ticket)
+    notify_ledger._refund_daily_budget(ticket)                              # 第二次须被忽略
+    assert notify_ledger._general_daily["state"]["count"] == 1
 
 
 def test_no_phantom_refund_when_limit_raised_mid_send(monkeypatch):
@@ -665,9 +669,9 @@ def test_no_phantom_refund_when_limit_raised_mid_send(monkeypatch):
     _ok_post(monkeypatch, calls)
     assert notify.send("普通1", "内容") is True                  # 唯一的额度用掉
     monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "0")            # 管理员中途放开
-    monkeypatch.setattr(notify.requests, "post", mock.Mock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(notify_transport.requests, "post", mock.Mock(side_effect=RuntimeError("boom")))
     assert notify.send("普通2", "内容") is False                 # 不限额：本次没占额度
-    assert notify._general_daily["state"]["count"] == 1, "没占额度就不该退，退了就是幻影退还"
+    assert notify_ledger._general_daily["state"]["count"] == 1, "没占额度就不该退，退了就是幻影退还"
     monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "1")            # 再改回来
     assert notify.get_config()["daily_remaining"] == 0, "幻影退还等于白送一条额度"
 
@@ -711,26 +715,26 @@ def test_refund_does_not_clobber_concurrent_exhaustion_notice(monkeypatch):
     """
     _configure_serverchan(monkeypatch, cooldown=0)
     _set(monkeypatch, DAILY_MAX="2")
-    mine = notify._consume_daily_budget("general")                 # 甲：占 1 条
-    rival = notify._consume_daily_budget("general")                # 乙：占满 2/2
+    mine = notify_ledger._consume_daily_budget("general")                 # 甲：占 1 条
+    rival = notify_ledger._consume_daily_budget("general")                # 乙：占满 2/2
     assert mine.allowed and rival.allowed
     assert notify.budget_exhausted_today(False) is True
-    assert notify._general_daily["notice"]["pending"] is True      # 告知还没被取走
+    assert notify_ledger._general_daily["notice"]["pending"] is True      # 告知还没被取走
 
     def _other_thread():
         """竞争线程：把甲刚退出来的那条重新占掉 → 账本再次真实打满并挂标记。"""
-        filled = notify._consume_daily_budget("general")
+        filled = notify_ledger._consume_daily_budget("general")
         assert filled.allowed is True, "前置条件失败：此刻账上应还剩一条可占"
-        assert notify._general_daily["state"]["count"] == 2
+        assert notify_ledger._general_daily["state"]["count"] == 2
 
-    real_lock = notify._general_daily["lock"]
-    notify._general_daily["lock"] = _InterferingLock(_other_thread)
+    real_lock = notify_ledger._general_daily["lock"]
+    notify_ledger._general_daily["lock"] = _InterferingLock(_other_thread)
     try:
-        notify._refund_daily_budget(mine)                          # 甲的失败退还在此发生
+        notify_ledger._refund_daily_budget(mine)                          # 甲的失败退还在此发生
     finally:
-        notify._general_daily["lock"] = real_lock
+        notify_ledger._general_daily["lock"] = real_lock
 
-    assert notify._general_daily["state"]["count"] == 2, "竞争线程占的那条不该被甲退掉"
+    assert notify_ledger._general_daily["state"]["count"] == 2, "竞争线程占的那条不该被甲退掉"
     assert notify.budget_exhausted_today(False) is True            # 账本确实仍打满
     assert notify.pop_exhaustion_notice() == ["general"], \
         "真实耗尽的告知被一次陈旧的虚警撤回抹掉了（判定与撤回没在同一把锁内完成）"
@@ -747,7 +751,7 @@ def test_force_send_does_not_consume_or_refund(monkeypatch):
     assert notify.send("测试2", "内容", force=True, urgent=True) is False
     assert notify.get_config()["daily_remaining"] == 2
     assert notify.get_config()["urgent_daily_remaining"] == 3
-    assert notify._general_daily["state"]["count"] == 0
+    assert notify_ledger._general_daily["state"]["count"] == 0
 
 
 # ---- 首次耗尽一次性告知 ----
@@ -830,12 +834,12 @@ def test_skip_reason_logs_deduped_per_window(monkeypatch, caplog):
         for i in range(3):
             assert notify.send(f"用户改密{i}", "内容") is False
         assert _info_lines(caplog, "URGENT_ONLY") == 1            # 只记一行原因
-        notify._skip_logged.clear()
+        notify_ledger._skip_logged.clear()
         assert notify.send("高危操作", "内容", urgent=True) is True
         assert notify.send("高危操作", "内容", urgent=True) is False
         assert _info_lines(caplog, "节流") == 1
         assert notify.get_config()["urgent_daily_remaining"] == 2  # 节流不扣额度
-        notify._skip_logged.clear()
+        notify_ledger._skip_logged.clear()
         monkeypatch.delenv("YIBAN_NOTIFY_URGENT_ONLY")
         assert notify.send("普通1", "内容") is True
         assert notify.send("普通2", "内容") is False
@@ -855,10 +859,10 @@ def test_cooldown_explicit_zero_from_env_file_disables_throttle(monkeypatch, tmp
         "YIBAN_NOTIFY_SECRET_ENC={enc}\nYIBAN_NOTIFY_COOLDOWN=0\nYIBAN_NOTIFY_DAILY_MAX=0\n".format(
             k=key, enc=_enc_with(key, SCT_KEY)),
         encoding="utf-8")
-    notify._throttle_ts.clear()
-    notify._skip_logged.clear()
-    notify._general_daily["state"].update({"date": "", "count": 0})
-    notify._urgent_daily["state"].update({"date": "", "count": 0})
+    notify_ledger._throttle_ts.clear()
+    notify_ledger._skip_logged.clear()
+    notify_ledger._general_daily["state"].update({"date": "", "count": 0})
+    notify_ledger._urgent_daily["state"].update({"date": "", "count": 0})
     _reset_notices()
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_") or k == "YIBAN_ACCOUNTS_KEY":
@@ -907,7 +911,7 @@ def test_get_secret_swallows_key_file_read_error(monkeypatch, caplog):
     _clear(monkeypatch)
     _set(monkeypatch, TYPE="serverchan", DAILY_MAX="3", SECRET_ENC=_enc(SCT_KEY))
     post = mock.Mock(return_value=_Resp(0))
-    monkeypatch.setattr(notify.requests, "post", post)
+    monkeypatch.setattr(notify_transport.requests, "post", post)
     monkeypatch.setattr(account_crypto, "load_key", mock.Mock(side_effect=OSError("EACCES")))
     with caplog.at_level(logging.WARNING, logger="notify"):
         assert notify.get_secret() == ""

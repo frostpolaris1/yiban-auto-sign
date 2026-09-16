@@ -89,10 +89,10 @@ python -m pytest tests/test_smoke.py -v
 | `test_probe.py` | 探针模式 + 注册时账号验证 |
 | `test_env_fail_loud.py` | .env 解析快速失败（防静默重建密钥） |
 
-### 消息推送与告警（scripts/notify.py、mailer）
+### 消息推送与告警（yiban/notify、yiban/mail）
 | 文件 | 说明 |
 |---|---|
-| `test_notify_webhook.py` | notify Webhook 推送组件单元测试 |
+| `test_notify_webhook.py` | yiban/notify Webhook 推送组件单元测试 |
 | `test_notify_ledger_disk.py` | 每日预算磁盘持久化（跨进程共享额度） |
 | `test_notify_ledger_race.py` | 账本单次文件锁临界区（RMW 竞态修复） |
 | `test_notify_throttle.py` | 同类型告警节流跨进程化 |

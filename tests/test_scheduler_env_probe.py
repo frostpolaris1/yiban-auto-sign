@@ -28,9 +28,8 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 邮件组件的打桩目标：引擎直连 `yiban.mail`（`scripts/mailer.py` 只是兼容壳，且未必被
-# 本进程导入），故打桩打在 `signin.mailer` 上——与套件其余调用点同口径；
-# 旧写法 `sys.modules["mailer"]` 依赖那份壳恰好在 sys.modules 里，已弃用。
+# 邮件组件的打桩目标：引擎直连 `yiban.mail`（旧的 scripts/mailer.py 兼容壳已删除），
+# 故打桩打在 `signin.mailer`（即实现包）上——与套件其余调用点同口径。
 
 TEST_KEY = "c" * 64
 ADMIN_USER = "root@test.local"
@@ -528,7 +527,7 @@ class MailerPortFallbackTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         global mailer_mod
-        import mailer as mailer_mod
+        from yiban.mail import config as mailer_mod  # 配置层：get_config/smtp_list
         # 2026-09-01 修复：_get 在环境变量为空时回退读 .env 文件——本机工作区
         # 若有 .env 含 YIBAN_MAIL_SMTP_PORT，`_cfg_with_port("")` 清掉环境变量后
         # 仍取到文件值 → port_fallback 断言失败（CI 无 .env 反而通过）。隔离到

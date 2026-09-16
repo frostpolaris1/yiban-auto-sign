@@ -19,13 +19,13 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-import notify  # noqa: E402
 import signin  # noqa: E402
 
 from yiban.infra import (  # noqa: E402
     env_lock,
     locks,
 )
+from yiban.notify import ledger as notify  # noqa: E402  # 账本实现（旧壳已删除）
 
 
 class LockPrimitiveTest(unittest.TestCase):
