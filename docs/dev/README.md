@@ -31,7 +31,11 @@ yiban/                        签到引擎与共享基础（可被 web / scripts
 │   ├── waf.py                易盾 WAF 挑战纯 Python 解析 + 挑战特征识别
 │   └── protocol.py           端点/参数/页面正则/握手顺序（平台事实，无安全判断）
 ├── infra/                    叶子工具：locks / env_io / env_lock / account_crypto
-├── store/                    数据层：accounts / verify_jobs / claims（按表分文件）
+├── cli.py                    统一命令行入口（七个子命令；见 docs/dev/cli.md）
+├── engine/                   签到引擎（按“执行一轮”切分）：runner / round / schedule
+│                             / attempts / probe / alerts / state_io / accounts
+│                             / workers / config_check / cli_support
+├── store/                    数据层：db（连接/迁移）+ accounts / verify_jobs / claims
 ├── notify/                   通知推送：config / ledger（额度与节流账本）/ transport
 └── mail/                     邮件：config / transport
 
@@ -42,8 +46,8 @@ web/                          管理端（Flask 工厂 + 路由 + 模板 + 静�
 └── deploy/                   systemd / nginx / logrotate 部署模板
 
 scripts/                      运维 CLI（含过渡期的兼容壳）
-├── signin.py                 签到引擎 CLI（协议/客户端/策略已抽到 yiban/）
-├── db.py                     连接 + 迁移（表级实现已迁到 yiban/store/）
+├── signin.py                 兼容壳 → yiban.engine.runner（旧命令行与退出码不变）
+├── db.py                     兼容壳 → yiban.store.db（旧 `import db` 仍可用）
 ├── state_cleanup.py          状态文件清理 CLI
 └── loadtest/                 压测与容量基准（仅限隔离测试机，零真实外联）
     ├── mock_yiban.py         假易班（真 TLS，覆盖两条登录流程 + 签到）
@@ -58,7 +62,7 @@ docker/                       容器：Dockerfile / entrypoint / supervisord / s
 ## 依赖方向（单向，有守卫测试钉住）
 
 ```
-web / scripts / docker  →  yiban.*  →  infra, fyiban, store（store 延迟 import scripts/db）
+web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得裸名导入 scripts/ 模块）
 ```
 
 - `yiban/infra/` 与 `yiban/fyiban/` **不得导入业务模块**（`tests/test_infra_layer.py`、
@@ -72,8 +76,8 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（store 延迟 i
 | 能力 | 状态 |
 |------|------|
 | 领取池与账号级租约（一个账号一天只被一个执行体做） | 已实现（表 `sign_claims`，v17） |
-| 并行执行体 | 已实现：`signin.py --workers N`（父进程监督 + 子进程领活） |
-| 兜底常驻执行体 | 已实现：`signin.py --fallback`（窗口内反复扫"未了结"账号，时段结束退出） |
+| 并行执行体 | 已实现：`signin sign --workers N`（父进程监督 + 子进程领活） |
+| 兜底常驻执行体 | 已实现：`signin sign --fallback`（窗口内反复扫"未了结"账号，时段结束退出） |
 | 每个执行体独立出口 | 已实现：`yiban/egress.py` + 下列环境变量（留空=直连） |
 | 前端页面（执行体与出口配置） | **未实现**（接口已就绪，见 `api-executors.md`） |
 

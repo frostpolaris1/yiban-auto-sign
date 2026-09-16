@@ -757,7 +757,7 @@ on:
 | `YIBAN_TRACK_SALT` | 访问统计 IP 加盐哈希盐（**首次埋点自动生成**写入 `.env`，一般无需手动配置） | 自动 |
 | `YIBAN_BASE_PATH` | Web 挂载前缀（如 `/tools/yiban-auto-sign/demo`），仅在自动识别切错时手动兜底，一般无需配置（见「部署形态」章节） | 可选 |
 
-> 调度 v2 其余内部参数（正态 μ/σ 范围、重试最小间隔、容量预检耗时等）见代码 `scripts/signin.py` 的 `_schedule_config()`，网页「系统设置」不展示的项一般无需调整。
+> 调度 v2 其余内部参数（正态 μ/σ 范围、重试最小间隔、容量预检耗时等）见代码 `yiban/engine/schedule.py` 的 `_schedule_config()`，网页「系统设置」不展示的项一般无需调整。
 
 ### 账号间隔（防风控）与容量预估
 
@@ -1095,13 +1095,14 @@ python scripts/signin.py
 ```
 web/             Flask 管理后台（账号管理/审核/用户管理/日历/手动签到）
    │
-   ├── scripts/db.py            SQLite 连接与迁移（表级实现已迁到 yiban/store/）
-   ├── scripts/signin.py        签到引擎 + CLI 入口
+   ├── scripts/db.py            兼容壳 → yiban/store/db.py（SQLite 连接与迁移）
+   ├── scripts/signin.py        兼容壳 → yiban/engine/（签到引擎）
    │        │
    │        ├── OAuth 登录（RSA 加密）→ 获取签到任务 → 多边形随机定位 → 提交
    │        ├── 触发方式：服务器 cron（run.sh）/ 容器调度器 / GitHub Actions
    │        └── 通知：Server酱 / Bark / 企业微信 webhook
    └── yiban/                   共享包（web 与签到引擎共用）
+            ├── cli.py           统一命令行入口（`python -m yiban.cli <子命令>`）
             ├── clock.py         业务时间唯一入口（北京时间）
             ├── window.py        签到窗口唯一事实源（排计划/判关闭/算容量同源）
             ├── status.py        签到状态词汇表
@@ -1113,15 +1114,21 @@ web/             Flask 管理后台（账号管理/审核/用户管理/日历/�
             ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
             ├── fyiban/          ★ 第三方隔离层（易班协议与定位算法，来源见其 PROVENANCE.md）
             ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密
-            ├── store/           表级数据访问（含签到分工记录表 claims）
+            ├── engine/          签到引擎（按"执行一轮"切分）：
+            │                     runner 入口与编排 / round 队列重试 / schedule 排期与容量
+            │                     / attempts 单账号尝试 / probe 探针 / alerts 告警与邮件
+            │                     / state_io 状态文件 / accounts 账号装载 / workers 多执行体
+            ├── store/           表级数据访问（含 db.py 连接与迁移、签到分工记录表 claims）
             ├── notify/          通知推送（配置 / 额度账本 / 发送）
             ├── mail/            告警邮件（配置 / 发送）
             └── attempt/jobs.py  在线校验异步任务（排队/看门狗/收口）
 ```
 
 > 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。
-> 单文件规模目标 600 行，现存少数大文件（`web/app.py`、`scripts/db.py`、`scripts/signin.py`）
+> 单文件规模目标 600 行，现存少数大文件（`web/app.py`、`yiban/cli.py`）
 > 在按里程碑拆分中，超出目标者须在 `tests/test_module_size_gate.py` 写明工程理由。
+> 命令行有两条等价通道：人类按本文的命令（`bash run.sh`、`python3 scripts/signin.py ...`）照旧可用；
+> 面向脚本/agent 的统一入口与机器可读输出见 `docs/dev/cli.md`。
 
 ### 签到流程
 
@@ -1209,7 +1216,7 @@ workflow-keepalive:
 **根因（2026-08-08 排查确认）**：旧登录流程沿用开源项目 Auto-Test 的请求特征（伪造 iPhone UA + `X-Requested-With: com.yiban.app` + 可预测 CSRF + 非 App 参数组合），被易班风控识别为**非官方客户端**，对登录接口统一返回 `e003 账号或密码错误` 伪装拒绝。它与 IP、账号、密码、设备信息均无关——实测：手机流量 IP + 新账号同样 e003，而同一网络下手机 App 正常。
 
 **修复方式**：登录改为 fyiban 同款流程（UA=`Yiban` + `AppVersion` + SecureRandom 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回（如 GitHub Actions 等特殊场景）。
-> 注：当时 `AppVersion` 取上游同值 `5.1.2`，现值见 `scripts/signin.py` 的 `YIBAN_APP_VERSION`（已随易班客户端版本上浮）。另：usersure 省略 `Origin`/`Referer` 是本项目**实测结论**（上游 Kotlin 实现在该请求上仍带 `Origin`），不属上游特征。
+> 注：当时 `AppVersion` 取上游同值 `5.1.2`，现值见 `yiban/fyiban/headers.py` 的 `YIBAN_APP_VERSION`（已随易班客户端版本上浮）。另：usersure 省略 `Origin`/`Referer` 是本项目**实测结论**（上游 Kotlin 实现在该请求上仍带 `Origin`），不属上游特征。
 
 **排查顺序（老版本或自定义改回旧流程时参考）**：
 
@@ -1442,17 +1449,17 @@ python -m pytest tests/test_smoke.py -v
 
 | 能力 | 上游实现 | 本项目 | 判定 |
 |------|---------|--------|------|
-| App 请求指纹（UA `Yiban` / AppVersion / Origin） | `Core/SchoolBased.kt` | `scripts/signin.py` | 源自上游（版本值已更新） |
-| CSRF 随机令牌 | `Core/SchoolBased.kt` | `scripts/signin.py` | 源自上游（改为每次实例重生成） |
-| 校本化 OAuth 五步登录（`oauth.yiban.cn/code/html` → `code/usersure` → iframe → `verify_request` → `base/c/auth/yiban`）与全部请求常量 | `Core/SchoolBasedAuth.kt` | `scripts/signin.py` | 源自上游，本地改写（新增会话缓存分支、URL 白名单、风控识别、脱敏） |
-| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `scripts/signin.py` | 源自上游（补长度守卫） |
-| 登录成功判据 `code == "s200"` | `Core/SchoolBasedAuth.kt` | `scripts/signin.py` | 源自上游 |
-| `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `scripts/signin.py` | 源自上游，本地改写（多任务遍历、Range 缺失、状态机化） |
-| 缩放质心 + 射线法定位点算法 | `tool/Point.kt` | `scripts/signin.py` | 源自上游，本地改写（见下） |
+| App 请求指纹（UA `Yiban` / AppVersion / Origin） | `Core/SchoolBased.kt` | `yiban/fyiban/headers.py` | 源自上游（版本值已更新） |
+| CSRF 随机令牌 | `Core/SchoolBased.kt` | `yiban/fyiban/protocol.py` | 源自上游（改为每次实例重生成） |
+| 校本化 OAuth 五步登录（`oauth.yiban.cn/code/html` → `code/usersure` → iframe → `verify_request` → `base/c/auth/yiban`）与全部请求常量 | `Core/SchoolBasedAuth.kt` | `yiban/fyiban/protocol.py` + `yiban/client.py` | 源自上游，本地改写（新增会话缓存分支、URL 白名单、风控识别、脱敏） |
+| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `yiban/fyiban/protocol.py` | 源自上游（补长度守卫） |
+| 登录成功判据 `code == "s200"` | `Core/SchoolBasedAuth.kt` | `yiban/fyiban/protocol.py` | 源自上游 |
+| `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `yiban/fyiban/protocol.py` | 源自上游，本地改写（多任务遍历、Range 缺失、状态机化） |
+| 缩放质心 + 射线法定位点算法 | `tool/Point.kt` | `yiban/fyiban/algo.py` | 源自上游，本地改写（见下） |
 | **定位采样分布** | Box-Muller 正态分布（可能取到范围外的点） | 密码学安全随机的**均匀分布** + 质心抖动兜底 | 本地改写 |
-| **调度与错峰**（时间窗分块、锚点/σ、重试落点） | 无 | `scripts/signin.py` | 本地原创 |
-| **重试预算与失败分级、账密熔断、健康探针** | 无（上游仅 HTTP 层 `retryOnConnectionFailure`） | `scripts/signin.py` | 本地原创 |
-| **通知告警**（webhook / 管理员汇总邮件 / 用户失败提醒） | 无 | `scripts/signin.py`、`scripts/notify.py`、`scripts/mailer.py` | 本地原创 |
+| **调度与错峰**（时间窗分块、锚点/σ、重试落点） | 无 | `yiban/engine/schedule.py` + `yiban/engine/round.py` | 本地原创 |
+| **重试预算与失败分级、账密熔断、健康探针** | 无（上游仅 HTTP 层 `retryOnConnectionFailure`） | `yiban/engine/attempts.py` + `yiban/engine/probe.py` | 本地原创 |
+| **通知告警**（webhook / 管理员汇总邮件 / 用户失败提醒） | 无 | `yiban/notify/`、`yiban/mail/`、`yiban/engine/alerts.py` | 本地原创 |
 | **账号存储、会话缓存、审计、Web 管理后台** | 无（示例里凭据硬编码，单账号） | `scripts/db.py`、`web/`、`yiban/` | 本地原创 |
 
 上游仓库内没有任何调度、通知、Web 或数据库代码（可自行核对：其全库无 Python 文件，且除 `retryOnConnectionFailure` 外无定时/重试实现）。
