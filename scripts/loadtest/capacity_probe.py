@@ -354,6 +354,10 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="只打印将要执行的步骤")
     ap.add_argument("--reuse-results", action="store_true",
                     help="不测量，只按已落盘的 concurrency-*.json 重新出结论（改换算口径时用）")
+    ap.add_argument("--k-list", default="",
+                    help="覆盖档位内置的 K 阶梯（逗号分隔；用于把已测范围加大）")
+    ap.add_argument("--per-proc", type=int, default=0,
+                    help="覆盖每进程账号数（默认用档位内置值）")
     args = ap.parse_args(argv)
 
     repo = os.path.abspath(args.repo)
@@ -364,6 +368,14 @@ def main(argv=None):
     for p in profiles:
         if p not in PROFILES:
             raise SystemExit(f"错误：未知档位 {p}（可选：{', '.join(PROFILES)}）")
+    # 覆盖项：用于"需求超出已测范围"时把 K 阶梯加大（结论必须来自实测范围）
+    override_k = [int(x) for x in args.k_list.split(",") if x.strip()]
+    if override_k:
+        for p in profiles:
+            PROFILES[p]["k_list"] = override_k
+    if args.per_proc:
+        for p in profiles:
+            PROFILES[p]["per_proc"] = args.per_proc
 
     if args.dry_run:
         print("档位：")
