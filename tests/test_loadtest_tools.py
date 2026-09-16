@@ -295,13 +295,18 @@ def test_probe_classify_bottlenecks():
 # ---------------------------------------------------------------------------
 # capacity_probe
 # ---------------------------------------------------------------------------
-def test_capacity_executor_capacity_counts_gap():
-    """单执行体容量 = 窗口 ÷ (单账号耗时 + 间隔)：间隔是刻意的风控节奏，必须计入。"""
-    assert capacity_probe.executor_capacity(4680, 8.0, 10) == 260
-    assert capacity_probe.executor_capacity(4680, 8.0, 0) == 585
+def test_capacity_executor_capacity_uses_measured_cycle():
+    """单执行体容量 = 窗口 ÷ **实测周期**；周期已含间隔对齐，不得再加一次。
+
+    实测教训（2026-09-16 测试机）：生产间隔档实测周期 10.321s，若再 +10s 间隔
+    会把容量从 453 低估到 230（近一半），并得出"需要 33 个执行体"的错误结论。
+    """
+    assert capacity_probe.executor_capacity(4680, 10.321) == 453
+    assert capacity_probe.executor_capacity(4680, 8.0) == 585
+    assert capacity_probe.executor_capacity(4680, 2.0) == 2340
     # 退化输入不得抛异常（除零/负数）
-    assert capacity_probe.executor_capacity(4680, 0, 0) == 0
-    assert capacity_probe.executor_capacity(0, 8.0, 10) == 0
+    assert capacity_probe.executor_capacity(4680, 0) == 0
+    assert capacity_probe.executor_capacity(0, 8.0) == 0
 
 
 def test_capacity_recommend_applies_two_thirds():
@@ -311,6 +316,18 @@ def test_capacity_recommend_applies_two_thirds():
     assert capacity_probe.recommend_per_executor(1) == 1     # 不为 0
     assert capacity_probe.executors_needed(5000, 246) == 21
     assert capacity_probe.executors_needed(5000, 0) is None
+
+
+def test_capacity_not_saturated_is_a_lower_bound_not_a_ceiling():
+    """「未触及饱和」是**下界**：需求超出已测范围时不得据此断言"机器不够"。"""
+    rows = [{"K": 1, "per_acct_wall_s": 10.3, "degradation_x": 1.0, "machine_cpu_pct": 25},
+            {"K": 4, "per_acct_wall_s": 10.4, "degradation_x": 1.01, "machine_cpu_pct": 60}]
+    v = capacity_probe.build_verdict(rows, users=5000, window_sec=4680, gap=10)
+    assert v["hardware_ceiling_k"] == 4
+    assert v["hardware_ceiling_why"] == capacity_probe.NOT_SATURATED
+    assert v["verdict_code"] == "needs_wider_ladder"
+    text = capacity_probe.format_verdict(v, "production", rows)
+    assert "不能据此说机器不够" in text and "K≤4" in text
 
 
 def test_capacity_hardware_ceiling_stops_before_degradation():
@@ -340,17 +357,17 @@ def test_capacity_verdict_is_feasible_only_when_machine_holds():
         {"K": 4, "per_acct_wall_s": 13.0, "degradation_x": 1.63, "machine_cpu_pct": 80},
     ]
     v = capacity_probe.build_verdict(rows, users=5000, window_sec=4680, gap=10)
-    assert v["ok"] and v["single_executor_capacity"] == 260
-    assert v["recommended_per_executor"] == 173
-    assert v["executors_needed"] == 29
+    assert v["ok"] and v["single_executor_capacity"] == 585
+    assert v["recommended_per_executor"] == 390
+    assert v["executors_needed"] == 13
     assert v["hardware_ceiling_k"] == 2          # K=4 劣化 1.63× > 1.5×
     assert v["feasible_on_this_machine"] is False
     text = capacity_probe.format_verdict(v, "production", rows)
-    assert "不够" in text and "29" in text and "2 个执行体" in text
+    assert "不够" in text and "13 个执行体" in text and "2（单账号耗时劣化" in text
 
     # 小规模则可行：同一台机器带 300 个账号
     v2 = capacity_probe.build_verdict(rows, users=300, window_sec=4680, gap=10)
-    assert v2["executors_needed"] == 2 and v2["feasible_on_this_machine"] is True
+    assert v2["executors_needed"] == 1 and v2["feasible_on_this_machine"] is True
     assert "本机够用" in capacity_probe.format_verdict(v2, "production", rows)
 
 
