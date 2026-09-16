@@ -1,7 +1,8 @@
 /* 系统设置页（管理端 /settings）行为编排。
 
    依赖 core.js 与 components/{select-field,range-field,time-field,settings-schedule,
-   settings-health,settings-notify,settings-mail,settings-quota,settings-switches}.js。
+   settings-health,settings-notify,settings-mail,settings-quota,settings-executors,
+   settings-switches}.js。
 
    职责：身份判定（is_builtin_admin）→ 分区（模板 .tabs，切换由 core.js 承担）与
    ?tab= 深链（core.js 共享助手 tabDeepLink/selectTab，写 URL 时机由本页脏守卫控制）→
@@ -14,7 +15,7 @@
    字段级权限（逐字段复刻后端内联判定；UI 禁用不是安全边界，高危请求仍带 confirm_password）：
      · 任意管理员：周六/周日、account_verify / probe_*、公告
      · 仅主管理员：调度（排序/分布/掐头去尾/间隔/窗口/自选）、容量上限、通知通道、
-       系统开关（整 tab 隐藏）
+       执行体与出口、系统开关（后两者整 tab 隐藏）
    安全：全页零 innerHTML；不打印后端 e.data；写请求走 YB.api（自带 CSRF）。 */
 (function () {
   "use strict";
@@ -126,6 +127,7 @@
       { name: "消息推送", get: function () { return YB.settingsNotify; } },
       { name: "邮件通知", get: function () { return YB.settingsMail; } },
       { name: "容量配额", get: function () { return YB.settingsQuota; } },
+      { name: "执行体", get: function () { return YB.settingsExecutors; } },
       { name: "健康与探针", get: function () { return YB.settingsHealth; } }
     ];
   }
@@ -141,6 +143,7 @@
     announcement: ["全局公告"],
     notify: ["消息推送", "邮件通知"],
     quota: ["容量配额"],
+    executors: ["执行体"],
     health: ["健康与探针"]
   };
   // 脏徽标只在各自卡内 → 切到别的分区就看不见。按 dirtyStores() 汇总到分区标签的脏点上。
@@ -157,7 +160,8 @@
   // 各组件在标脏/清脏时切换卡内徽标的 hidden；监听它即可在一次改动后同步标签脏点
   function observeDirtyBadges() {
     if (!window.MutationObserver) return;
-    var badgeIds = ["ss-dirty", "set-ann-dirty", "sn-dirty", "sm-dirty", "set-cap-dirty", "sh-dirty"];
+    var badgeIds = ["ss-dirty", "set-ann-dirty", "sn-dirty", "sm-dirty", "set-cap-dirty",
+                    "set-exec-dirty", "sh-dirty"];
     var obs = new MutationObserver(refreshTabDirty);
     badgeIds.forEach(function (id) {
       var badge = $(id);
@@ -208,7 +212,8 @@
       YB.api("GET", "/api/settings").then(function (data) { applySettings(data); }),
       loadAnnouncement(),
       state.isMaster ? YB.settingsNotify.load() : Promise.resolve(),
-      state.isMaster ? YB.settingsMail.load() : Promise.resolve()
+      state.isMaster ? YB.settingsMail.load() : Promise.resolve(),
+      state.isMaster ? YB.settingsExecutors.load() : Promise.resolve()
     ]).catch(function () {}).then(function () { refreshTabDirty(); });
   }
 
@@ -286,13 +291,14 @@
     });
   }
 
-  // 首屏与页面级重试共用：核心设置 + 两张主管理员专属卡。非主管理员不拉通知/邮件
-  // （整 tab 已禁用，拉回来只会渲染出"看起来可编辑"的行；后端 GET 也会返回脱敏数据）。
+  // 首屏与页面级重试共用：核心设置 + 两张主管理员专属卡 + 执行体分区。非主管理员不拉
+  // 通知/邮件/执行体（整 tab 已隐藏，拉回来只会渲染出"看起来可编辑"的行；后端 GET 也会 403）。
   function startLoad() {
     return loadAll().then(function () {
       if (!state.isMaster) return;
       YB.settingsNotify.load();
       YB.settingsMail.load();
+      YB.settingsExecutors.load();
     });
   }
 
@@ -309,11 +315,14 @@
     YB.identity().then(function (me) {
       if (!me) { location.href = YB.BASE + "/login"; return; }
       state.isMaster = !!me.is_builtin_admin;
-      // 系统开关整 tab 仅主管理员可见（权限判定在后端，隐藏只是界面口径）
-      var tab = $("set-tab-switches");
-      if (tab) tab.hidden = !state.isMaster;
-      var panel = document.querySelector('[data-tab-group] .tab-panel[data-tab-id="switches"]');
-      if (panel) panel.hidden = !state.isMaster;
+      // 系统开关、执行体两个整 tab 仅主管理员可见（权限判定在后端，隐藏只是界面口径）：
+      // 非主管理员连请求都不发（见 startLoad），后端 403 仍是兜底。
+      [["set-tab-switches", "switches"], ["set-tab-executors", "executors"]].forEach(function (pair) {
+        var tab = $(pair[0]);
+        if (tab) tab.hidden = !state.isMaster;
+        var panel = document.querySelector('[data-tab-group] .tab-panel[data-tab-id="' + pair[1] + '"]');
+        if (panel) panel.hidden = !state.isMaster;
+      });
 
       // 自研控件必须先建出可见体：各组件随后要按权限禁用它们（隐藏 input 上置 disabled 不可见）
       if (YB.selectField) YB.selectField.mount();
@@ -327,6 +336,7 @@
       YB.settingsNotify.mount({ isMaster: state.isMaster });
       YB.settingsMail.mount({ isMaster: state.isMaster });
       YB.settingsQuota.mount({ isMaster: state.isMaster, onSaved: refreshAfterQuotaSave });
+      YB.settingsExecutors.mount({ isMaster: state.isMaster });
       YB.settingsSwitches.mount({ isMaster: state.isMaster });
       bindAnnouncement();
       initTabs();

@@ -60,6 +60,7 @@ REQUIRED_MODULES = (
     "components/settings-notify.js",
     "components/settings-mail.js",
     "components/settings-quota.js",
+    "components/settings-executors.js",
     "components/settings-switches.js",
     "pages/work_accounts.js",
     "pages/user_account.js",
