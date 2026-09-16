@@ -8,6 +8,21 @@
 import re
 
 
+def looks_like_challenge(text, set_cookie=""):
+    """判断响应是否触发 ydclearance 反爬挑战（**衍生自上游 FYIBAN**）。
+
+    特征判定（不依赖响应长度）：
+    - Set-Cookie 已下发 https_ydclearance（说明已过挑战）；
+    - 或响应包含挑战 JS 特征（window.onload=setTimeout + eval("qo=eval;qo(po);")）。
+
+    "是不是挑战页"是平台特征识别，属本层；"这个挑战能不能信"（跳转白名单）才是
+    本项目策略，仍由 `solve_ydclearance(..., allow_url=...)` 注入。
+    """
+    if "https_ydclearance" in (set_cookie or ""):
+        return True
+    return "window.onload=setTimeout" in text and 'eval("qo=eval;qo(po);")' in text
+
+
 def solve_ydclearance(text, allow_url):
     """纯 Python 解析易盾 WAF（https_ydclearance）挑战：**衍生自上游 FYIBAN 同款流程**，
     不执行任何远程 JS（来源与差异见同目录 `PROVENANCE.md`）。

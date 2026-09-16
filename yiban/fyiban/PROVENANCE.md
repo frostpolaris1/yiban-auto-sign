@@ -21,6 +21,9 @@
 | `headers.py::KILLYIBAN_HEADERS`（Origin/User-Agent/AppVersion 三项） | `Core/SchoolBased.kt::headers()`（第 31–36 行） | **特征取自上游**；`AppVersion` 已随易班官方客户端升到 5.2.3（上游为 5.1.2，按安装包清单实测更新）。 |
 | `headers.py::HEADERS`（iOS UA 全文） | 上游无此 UA | 本地补充：旧版 iOS 登录流程使用的客户端指纹（`YibanClient` 的 `use_killyiban=False` 分支）。 |
 | `waf.py::solve_ydclearance` | `Core/BaseReq.kt`（cookie 注入与跳转跟随，第 20–60 行区段） | **任务相同**（处理易盾 `https_ydclearance` 挑战、取回 cookie 与跳转目标）。**差异**：上游交给 OkHttp/CookieJar 与 JS 运行时；本实现是**不执行远程代码**的纯 Python 确定性解析（正则提取常量 + 复刻三步变换）。 |
+| `waf.py::looks_like_challenge` | 同上（上游按响应特征判断是否进挑战分支） | **特征一致**（`Set-Cookie` 含 `https_ydclearance`，或页面含 `window.onload=setTimeout` + `eval("qo=eval;qo(po);")`）。"是不是挑战页"属平台识别留本层；"这个跳转能不能信"仍靠注入的白名单。 |
+| `protocol.py` 全部端点/参数/正则 | `Core/*Req.kt`、`Core/SchoolBased.kt`、登录流程（KillYiBan `p101w2/b.java`） | **平台事实**：端点与客户端标识、OAuth 五步（旧流程）/四步（KillYiBan）顺序、页面正则、`scope`/`display` 取值、成功标志（`code == "s200"`）、`OutState` 取值（`1` vs `1.0`）。均为复刻，非本项目发明。 |
+| `protocol.py::encrypt_password` | 同上（RSA-1024 + PKCS1_v1_5 + base64 提交密码） | **编码方式一致**。**差异（有意）**：提交前加"密码超过 117 字节"的显式报错——上游让 pycryptodome 的底层异常直接冒出，用户看不懂也改不了。 |
 
 **不在本层的第三方内容**：上游的 Android UI、Gradle/Kotlin 构建、持久化 Cookie 实现、
 网络重试机制均未使用（本项目的对应实现为原创：`yiban/attempt`、`yiban/schedule`、
@@ -30,8 +33,16 @@
 
 1. **URL 白名单**：`waf.solve_ydclearance(text, allow_url=...)` 的 `allow_url` 由调用方注入
    （生产为 `yiban.security` 的 f.yiban.cn 白名单），第三方层不内联安全校验。
-2. **脱敏与日志**：本层不打日志、不带账号标识；日志口径由调用方决定。
-3. **许可**：AGPL-3.0 全文随代码分发（`LICENSE`），并在仓库根 `README.md` 的致谢与
+   `protocol.py` 的登录握手同理：每一步的跳转都要过 `policy.require_trusted` /
+   `policy.require_fyiban`，WAF 拦截判定走 `policy.require_not_blocked`
+   （`tests/test_fyiban_isolation.py::ProtocolLayerTest` 钉住"协议层不得自算裁决"）。
+2. **脱敏与日志**：本层不打账号标识、不做脱敏——错误消息里的 URL/文本一律经
+   `policy.sanitize` / `policy.describe_location`；本层只保留进程内的步骤日志
+   （`logger.info("登录成功")` 之类，日志口径由调用方配置）。
+3. **会话缓存**：协议层只通过注入的 `session_store`（`restore`/`save`/`clear`）使用它，
+   不 import `yiban.store`、不读 `db`——会话缓存是本市集的手段（少登录=少风控暴露面），
+   不是上游概念。
+4. **许可**：AGPL-3.0 全文随代码分发（`LICENSE`），并在仓库根 `README.md` 的致谢与
    《用户协议》中向使用者说明"核心算法来自上游、本项目为衍生的完整源码提供者"
    （AGPL §5 修改声明与 §13 源码提供义务）。
 
@@ -39,6 +50,8 @@
 
 改本层文件时：
 - **同步更新本文件**的对照表（新增/删除/差异）；
-- 若上游算法被替换或升级，先改 `algo.py`/`headers.py`/`waf.py` 并让
-  `tests/test_fyiban_isolation.py` 的行为断言先红后绿——该文件钉住了当前采样分布、
-  版本号一致性与挑战解析的可接受/拒绝边界。
+- 若上游算法被替换或升级，先改 `algo.py`/`headers.py`/`waf.py`/`protocol.py` 并让
+  `tests/test_fyiban_isolation.py`（隔离边界）与 `tests/test_login_protocol_shape.py`
+  （登录五步的请求形状、WAF 分支、白名单拒绝边界）先红后绿；
+- 登录路径是**钱路**：改动后除全量测试外，还要用 `scripts/loadtest/mock_yiban.py`
+  做一次端到端假服务端演练。
