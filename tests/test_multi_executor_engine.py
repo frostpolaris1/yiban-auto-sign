@@ -14,6 +14,7 @@
 """
 import contextlib
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -250,6 +251,72 @@ class PlanMustNotClobberResultTest(_Base):
         entry = self._read()
         self.assertEqual(entry["status"], signin.STATUS_PENDING)
         self.assertEqual(entry["scheduled"], "06:42:00")
+
+
+class WorkerRelaunchCommandTest(_Base):
+    """多执行体拉起的子进程入口必须是 `python -m yiban.cli sign`。
+
+    实现迁进 `yiban/engine/workers.py` 后，旧写法 `[sys.executable, os.path.abspath(__file__), ...]`
+    会把"包内模块"当脚本跑（模块体只有定义，跑完就退）——多执行体必然坏掉，而且是
+    静默的（子进程退出码 0）。同时 `--workers` 与其数值必须继续从子命令行走剔掉，
+    否则子进程会再次进入监督分支、递归拉起。
+    """
+
+    def _run_supervisor(self, n, argv):
+        """跑监督进程（不改真进程）：返回 (退出码, 每个子进程记录的 cmd/env/cwd)。"""
+        spawned = []
+
+        class _FakeProc:
+            def __init__(self, cmd, env=None, cwd=None):
+                spawned.append({"cmd": list(cmd), "env": dict(env or {}), "cwd": cwd})
+
+            def wait(self):
+                return 0
+
+        with mock.patch.object(signin, "load_accounts",
+                               return_value=[self._acc(PHONE_OK)]), \
+                mock.patch.object(signin.subprocess, "Popen", _FakeProc), \
+                mock.patch.object(signin.time, "sleep"):
+            rc = signin.run_worker_supervisor(n, argv)
+        return rc, spawned
+
+    def test_child_entry_is_module_cli_not_file_path(self):
+        rc, spawned = self._run_supervisor(2, ["--workers", "2", "--only", PHONE_OK])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(spawned), 2, "应拉起 n 个子进程")
+        for i, rec in enumerate(spawned):
+            with self.subTest(child=i):
+                self.assertNotIn("scripts/signin.py", " ".join(rec["cmd"]))
+                self.assertNotIn(os.path.abspath(signin.__file__), rec["cmd"],
+                                 "不得再按 __file__ 路径拉起子进程")
+                self.assertEqual(rec["cmd"][1:4], ["-m", "yiban.cli", "sign"],
+                                 "子进程入口应为模块方式执行同一个 CLI")
+                self.assertEqual(rec["cwd"], BASE, "cwd 必须是仓库根（python -m 需要）")
+                self.assertIn(BASE, rec["env"]["PYTHONPATH"].split(os.pathsep),
+                              "PYTHONPATH 必须含仓库根")
+
+    def test_child_argv_drops_workers_flag_and_its_value(self):
+        """`--workers 2` 与其数值都不得下传（否则子进程递归拉起执行体）。"""
+        rc, spawned = self._run_supervisor(2, ["--workers", "2", "--only", PHONE_OK])
+        self.assertEqual(rc, 0)
+        for rec in spawned:
+            tail = rec["cmd"][4:]   # [python, -m, yiban.cli, sign, *child_argv]
+            self.assertNotIn("--workers", tail)
+            self.assertEqual(tail, ["--only", PHONE_OK])
+
+    def test_source_no_longer_spawns_by_file_path(self):
+        """源级断言：拉起子进程的命令行不得再用 `__file__` 作入口。
+
+        只看 `cmd = [...]` 那一行：`__file__` 在本模块里另有正当用途（上溯仓库根），
+        故不能对整个文件做"不得出现 __file__"的粗断言。
+        """
+        with open(os.path.join(BASE, "yiban", "engine", "workers.py"), encoding="utf-8") as f:
+            src = f.read()
+        m = re.search(r"(?m)^\s*cmd = .*$", src)
+        self.assertIsNotNone(m, "workers.py 里应有子进程命令行构造")
+        self.assertNotIn("__file__", m.group(0), "不得再按 __file__ 路径拉起子进程")
+        self.assertIn('"-m", "yiban.cli"', m.group(0))
+        self.assertIn('a != "--workers"', src, "命令行仍须剔除 --workers")
 
 
 if __name__ == "__main__":

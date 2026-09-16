@@ -46,13 +46,8 @@ OVERSIZED = {
         "（见 yiban/store/），剩余部分继续按表迁，不一次性重构的原因：迁移需与冻结的"
         "历史迁移函数共存（迁移不可变），批量搬动会同时动 schema 与读写路径，风险高。"
     )),
-    "scripts/signin.py": (None, (
-        "签到引擎 + CLI 入口（协议层取自 FYIBAN，调度为原创）。协议步骤、客户端外观与"
-        "安全策略已迁出（yiban/fyiban/protocol.py、yiban/client.py、yiban/security.py），"
-        "本文件剩下的是调度/重试/告警/状态文件这些互相共享大量运行时状态的部分"
-        "（attempts/results/cred_state/schedule），先抽一部分会把它们变成跨模块参数传递；"
-        "M3 会连同 CLI 收口一起按'执行一轮'的边界切分。"
-    )),
+    # scripts/signin.py 已按"执行一轮"的边界切分为 yiban/engine/*（最大 round.py 507 行），
+    # 旧路径只剩兼容壳（约 130 行），故不再登记。
     # scripts/notify.py 已按计划拆为 yiban/notify/{config,ledger,transport}（每个 ≤600 行），
     # 旧路径只剩兼容壳，故不再登记。脚本侧仍保留的两项超大登记见下。
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
