@@ -7803,6 +7803,9 @@ def create_app(host=None):
                 "egress": yb_egress.describe(fallback_proxy),
                 "interval_sec": load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60),
                 "env_key": yb_egress.ENV_FALLBACK,
+                # 是否在跑：按心跳新鲜度判定（进程被强杀时心跳会过期，故不能只看文件在不在）
+                "alive": signin.fallback_alive(
+                    load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60))[0],
             },
             "window": {
                 "effective_sec": bounds.full_sec() if bounds else None,
