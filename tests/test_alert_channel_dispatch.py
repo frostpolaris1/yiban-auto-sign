@@ -140,9 +140,21 @@ class SigninAlertGateTest(unittest.TestCase):
                 self.assertEqual(len(signin._mail_summary), 1, "汇总邮件收集不受推送门控影响")
 
     def test_no_dead_notify_url_gate_remains_in_source(self):
-        """源级断言：四处即时告警门不得再挂在 YIBAN_NOTIFY_URL 死键上。"""
+        """源级断言：即时告警门不得再挂在 YIBAN_NOTIFY_URL 死键上。
+
+        门随执行码迁进了引擎（`yiban/engine/round.py` 的放弃分支、`alerts.py` 的耗时
+        告警），兼容壳 `scripts/signin.py` 只剩转发——因此扫整个引擎目录加壳，
+        而不是只看旧入口文件。
+        """
+        src = ""
+        engine_dir = os.path.join(BASE, "yiban", "engine")
+        for name in sorted(os.listdir(engine_dir)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(engine_dir, name), encoding="utf-8") as f:
+                src += f.read()
         with open(os.path.join(BASE, "scripts", "signin.py"), encoding="utf-8") as f:
-            src = f.read()
+            src += f.read()
         self.assertNotIn("if notify_url:", src,
                          "生产无 YIBAN_NOTIFY_URL，该门 = 告警永久哑火")
         self.assertIn("notify.is_configured()", src)
