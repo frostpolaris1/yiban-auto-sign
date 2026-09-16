@@ -35,3 +35,11 @@ KILLYIBAN_HEADERS = {
     "Referer": "https://c.uyiban.com/",
     "Connection": "close",
 }
+
+# 签到接口（nightAttendance）的目标站点特征：旧流程走 App 域。
+# 登录链把 Origin/Referer 改成了 OAuth/回调域，签到时必须**改回来**，
+# 故单独成一份常量而不是复用上面的整份头。
+APP_SIGN_HEADERS = {
+    "Origin": "https://app.uyiban.com",
+    "Referer": "https://app.uyiban.com/",
+}

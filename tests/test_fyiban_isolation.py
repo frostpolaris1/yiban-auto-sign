@@ -22,6 +22,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import signin  # noqa: E402
 
+from yiban import security as fyiban_security  # noqa: E402
 from yiban.fyiban import algo as fyiban_algo  # noqa: E402
 from yiban.fyiban import headers as fyiban_headers  # noqa: E402
 from yiban.fyiban import waf as fyiban_waf  # noqa: E402
@@ -160,21 +161,104 @@ class IsolationStructureTest(unittest.TestCase):
         self.assertIn("onefeifan/fyiban", prov)
         self.assertIn("AGPL-3.0", prov)
         self.assertRegex(prov, r"\bd854182\b", "需记录核对的上游提交号")
-        # 逐块对照表至少要覆盖三个实现文件
-        for f in ("algo.py", "headers.py", "waf.py"):
+        # 逐块对照表至少要覆盖四个实现文件
+        for f in ("algo.py", "headers.py", "waf.py", "protocol.py"):
             with self.subTest(file=f):
                 self.assertIn(f, prov)
 
     def test_layer_does_not_import_business_modules(self):
         bad = []
-        for name in ("algo.py", "headers.py", "waf.py", "__init__.py"):
+        for name in ("algo.py", "headers.py", "waf.py", "protocol.py", "__init__.py"):
             src = self._fyiban_src(name)
             for m in re.finditer(r"(?m)^\s*(?:import|from)\s+([\w.]+)", src):
                 dotted = m.group(1)
                 if dotted.split(".")[0] in ("db", "signin", "notify", "mailer", "web") or \
-                        dotted.startswith(("yiban.store", "yiban.security", "yiban.client")):
+                        dotted.startswith(("yiban.store", "yiban.security", "yiban.client",
+                                           "yiban.masking", "yiban.clock")):
                     bad.append(f"{name} → {dotted}")
         self.assertEqual(bad, [], "第三方层不得依赖业务层/安全层（策略靠注入）：" + "; ".join(bad))
+
+
+class ProtocolLayerTest(unittest.TestCase):
+    """协议层（`protocol.py`）的边界：端点只在隔离层，安全策略只在注入点。"""
+
+    def _src(self, *parts):
+        with io.open(os.path.join(BASE, *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def test_endpoints_defined_only_in_isolation_layer(self):
+        """端点与客户端标识只能定义在协议层：signin / web 里再出现一份就是第二份实现。"""
+        patterns = (
+            r'"https://oauth\.yiban\.cn/code/usersure"',
+            r'"https://oauth\.yiban\.cn/code/html"',
+            r'"https://api\.uyiban\.com/base/c/auth/yiban"',
+            r'"https://f\.yiban\.cn/iframe/index"',
+            r'"https://api\.uyiban\.com/nightAttendance/student/index/signPosition"',
+            r'"https://api\.uyiban\.com/nightAttendance/student/index/signIn"',
+            r'"95626fa3080300ea"',
+        )
+        owners = [("scripts", "signin.py"), ("web", "app.py"),
+                  ("yiban", "client.py"), ("yiban", "security.py")]
+        for owner in owners:
+            src = self._src(*owner)
+            for pattern in patterns:
+                with self.subTest(owner="/".join(owner), pattern=pattern):
+                    self.assertIsNone(
+                        re.search(pattern, src),
+                        f"{'/'.join(owner)} 里出现了易班端点字面量（应引用 protocol 常量）")
+
+        protocol_src = self._src("yiban", "fyiban", "protocol.py")
+        self.assertRegex(protocol_src, r'(?m)^OAUTH_CLIENT_ID = "95626fa3080300ea"')
+        self.assertRegex(protocol_src, r'(?m)^OAUTH_USERSURE_URL = "https://oauth\.yiban\.cn/code/usersure"')
+
+    def test_security_policy_is_injected_not_inlined(self):
+        """协议层不得自带 WAF 关键词或**域名判定**（那些属 yiban/security.py，须注入）。
+
+        端点常量本身当然含 `yiban.cn`（那是平台事实），所以判据不是"出现域名"，
+        而是"**算出裁决**"：不得有白名单函数、不得做主机后缀比对、不得内联拦截词。
+        """
+        src = self._src("yiban", "fyiban", "protocol.py")
+        for forbidden in ("WAF_KEYWORDS", "风险访问", "访问服务禁用",
+                          "def is_fyiban_url", "def is_yiban_trusted_url",
+                          "urlsplit", "endswith(", "hostname =="):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, src,
+                                 "协议层出现了安全判定（应由 policy 注入）")
+        # 注入契约在位：白名单与 WAF 判定都经 policy 调用
+        self.assertRegex(src, r"policy\.require_trusted\(")
+        self.assertRegex(src, r"policy\.require_fyiban\(")
+        self.assertRegex(src, r"policy\.require_not_blocked\(")
+        self.assertRegex(src, r"policy\.is_blocked\(")
+        self.assertRegex(src, r"allow_url=policy\.allow_fyiban_url")
+
+    def test_protocol_layer_has_no_own_session_persistence(self):
+        """会话缓存只能经 session_store 注入：协议层不得自己碰库或状态文件。"""
+        src = self._src("yiban", "fyiban", "protocol.py")
+        for forbidden in ("is_initialized", "get_session_cache", "YIBAN_STATE_DIR", "sqlite3"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, src)
+
+    def test_signin_forwards_the_same_objects(self):
+        """signin 只是转发（**同一对象**）：类、白名单、WAF 判定、账号复核都不是第二份。"""
+        import signin
+
+        from yiban import client as yiban_client
+        from yiban.store import accounts
+
+        self.assertIs(signin.YibanClient, yiban_client.YibanClient)
+        self.assertIs(signin.is_waf_blocked, fyiban_security.is_waf_blocked)
+        self.assertIs(signin._is_fyiban_url, fyiban_security.is_fyiban_url)
+        self.assertIs(signin._is_yiban_trusted_url, fyiban_security.is_yiban_trusted_url)
+        self.assertIs(signin.WAF_KEYWORDS, fyiban_security.WAF_KEYWORDS)
+        self.assertIs(signin.account_still_signable, accounts.account_still_signable)
+
+    def test_client_does_not_reimplement_protocol_steps(self):
+        """客户端外观层只管组装：请求构造不得再回到 client.py 里手写。"""
+        src = self._src("yiban", "client.py")
+        for forbidden in ('"https://', "PKCS1_v1_5", "urlencode("):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, src,
+                                 "客户端外观层出现了协议细节（应走 yiban.fyiban.protocol）")
 
 
 if __name__ == "__main__":

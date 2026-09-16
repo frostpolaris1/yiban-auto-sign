@@ -72,20 +72,12 @@ def _mask_secret(secret):
 def _host_of(url):
     """脱敏 URL 描述：仅 scheme://host[:port]，不含 userinfo/路径/查询（token 不外泄）。
 
-    与 signin._notify_url_desc 同口径，供日志使用。
+    口径的唯一实现在 `yiban.security.url_desc`，此处只是转发——通知日志与登录诊断
+    对"URL 怎么落日志"必须一致，各写一份迟早分叉。
     """
-    from urllib.parse import urlsplit
+    from yiban.security import url_desc
 
-    try:
-        parts = urlsplit(url)
-        if parts.hostname:
-            desc = f"{parts.scheme}://{parts.hostname}"
-            if parts.port:
-                desc += f":{parts.port}"
-            return desc
-    except ValueError:
-        pass
-    return "<无法解析>"
+    return url_desc(url)
 
 
 def is_safe_url(url):

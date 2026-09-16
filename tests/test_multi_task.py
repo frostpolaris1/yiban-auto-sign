@@ -5,6 +5,10 @@
 - 任务列表先随机打乱（不固定签第一个点位，贴近学生真实行为）；
 - 任一任务成功即停止，不再重复提交后续任务；
 - 前面的任务失败会继续尝试下一个（随机序）；全部失败才判失败。
+
+**打桩目标说明**：定位生成与签到的调用点在 `yiban/client.py`（客户端外观层），
+故 `generate_position_in_polygon` 必须打在 `yiban.client` 上——`signin` 里那份是
+**同一对象的转发**，打在它上面不会影响客户端内部的调用（静默失效，断言照样过）。
 """
 import datetime as _dt
 import os
@@ -14,6 +18,8 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import signin  # noqa: E402
+
+from yiban import client as yiban_client  # noqa: E402  # 打桩目标：调用点在客户端外观层
 
 
 def _sign_position_data():
@@ -74,10 +80,11 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
     def test_first_success_stops_after_one_submit(self):
         """随机序下首个尝试即成功 → 只提交 1 次，返回成功。"""
         client, session = _make_client([_signin_result(True)])
-        with mock.patch.object(signin, "generate_position_in_polygon",
-                               return_value=(118.0, 31.0)), \
+        with mock.patch.object(yiban_client, "generate_position_in_polygon",
+                               return_value=(118.0, 31.0)) as geo, \
              mock.patch.object(signin.random, "shuffle", side_effect=lambda lst: None):
             ok, msg, _skip, _status = client.signin()
+        geo.assert_called()
         self.assertTrue(ok)
         self.assertIn("签到成功", msg)
         self.assertEqual(session.post.call_count, 1, "首个成功即停，不应提交第二个任务")
@@ -85,10 +92,11 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
     def test_second_hits_after_first_fail(self):
         """随机序下首个失败、次个成功 → 提交 2 次后成功（失败不阻断尝试）。"""
         client, session = _make_client([_signin_result(False), _signin_result(True)])
-        with mock.patch.object(signin, "generate_position_in_polygon",
-                               return_value=(118.0, 31.0)), \
+        with mock.patch.object(yiban_client, "generate_position_in_polygon",
+                               return_value=(118.0, 31.0)) as geo, \
              mock.patch.object(signin.random, "shuffle", side_effect=lambda lst: None):
             ok, msg, _skip, _status = client.signin()
+        geo.assert_called()
         self.assertTrue(ok)
         self.assertIn("签到成功", msg)
         self.assertIn("失败后命中", msg)
@@ -97,10 +105,11 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
     def test_all_fail_returns_failure(self):
         """全部任务失败 → 判失败并列出原因。"""
         client, session = _make_client([_signin_result(False), _signin_result(False)])
-        with mock.patch.object(signin, "generate_position_in_polygon",
-                               return_value=(118.0, 31.0)), \
+        with mock.patch.object(yiban_client, "generate_position_in_polygon",
+                               return_value=(118.0, 31.0)) as geo, \
              mock.patch.object(signin.random, "shuffle", side_effect=lambda lst: None):
             ok, msg, _skip, status = client.signin()
+        geo.assert_called()
         self.assertFalse(ok)
         self.assertEqual(status, signin.STATUS_FAILED)
         self.assertIn("均失败", msg)
@@ -115,10 +124,11 @@ class MultiTaskAnySuccessTest(unittest.TestCase):
             captured["lst"] = list(lst)
             lst[:] = list(reversed(lst))  # 打乱（反转），验证 shuffle 确实被调用
 
-        with mock.patch.object(signin, "generate_position_in_polygon",
-                               return_value=(118.0, 31.0)), \
+        with mock.patch.object(yiban_client, "generate_position_in_polygon",
+                               return_value=(118.0, 31.0)) as geo, \
              mock.patch.object(signin.random, "shuffle", side_effect=fake_shuffle):
             ok, _, _, _ = client.signin()
+        geo.assert_called()
         self.assertTrue(ok)
         names = [p.get("Name") for p in captured["lst"]]
         self.assertEqual(names, ["任务A", "任务B"], "shuffle 必须收到全部任务")

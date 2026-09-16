@@ -278,6 +278,7 @@ import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
+from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402  # 易班端点唯一出处（web 不写字面量）
 from yiban.infra import (  # noqa: E402
     account_crypto,  # 敏感配置加密（AES-GCM，ACCOUNTS_KEY）
     env_io,
@@ -1843,7 +1844,7 @@ def check_connectivity():
     """连通性检测：不登录，仅检查易班 API 可达性。返回 (ok, detail)。"""
     try:
         resp = requests.get(
-            "https://api.uyiban.com/base/c/auth/yiban",
+            API_AUTH_URL,
             timeout=6,
             headers={
                 "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
@@ -2550,7 +2551,10 @@ def _notify_capacity_once(kind, limit, label):
 # + 容器时段标记原子化 + 告警末轮时刻与补签时刻对齐
 # 2026-09-15 后端修复批次（v0.4.2）：时区口径（UTC 主机不再整日漏签）+ 运行期账号复核
 # + 在线校验三缺陷 + 窗口单一口径与容量预检 + 熔断状态读改写原子化 + 镜像补拷共享包
-APP_VERSION = "0.4.3"
+# 2026-09-16 结构与通知拆分（v0.4.4）：登录/签到协议层独立（yiban/fyiban/protocol.py，
+# 安全校验以策略注入）+ 客户端外观（yiban/client.py）+ 安全策略层（yiban/security.py）
+# + 通知与邮件拆为 yiban/notify 与 yiban/mail
+APP_VERSION = "0.4.4"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = clock.now().strftime("%Y%m%d%H%M%S")
 
