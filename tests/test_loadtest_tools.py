@@ -6,6 +6,7 @@
   * mock_yiban 全部接口形状 + 失败注入 + JSONL 落盘 + 配置热读；
   * scale_driver 的纯解析/统计函数（模拟 N=2 的 mock 日志，验证周期与并发解析）；
   * concurrency_probe 的切片/锁错误/饱和点判定纯函数；
+  * capacity_probe 的容量换算与建议值（实测 × 2/3、执行体数、硬件上限）纯函数；
   * mock_env 的 hosts 标记块读写与 --dry-run 幂等；
   * 五个脚本的 --help 可执行性。
 
@@ -36,6 +37,7 @@ mock_yiban = importlib.import_module("loadtest.mock_yiban")
 mock_env = importlib.import_module("loadtest.mock_env")
 scale_driver = importlib.import_module("loadtest.scale_driver")
 concurrency_probe = importlib.import_module("loadtest.concurrency_probe")
+capacity_probe = importlib.import_module("loadtest.capacity_probe")
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +290,78 @@ def test_probe_classify_bottlenecks():
     assert v["mem_sat_k"] == 4
     assert v["db_sat_k"] == 4
     assert v["first_bottleneck"] == (2, "CPU")
+
+
+# ---------------------------------------------------------------------------
+# capacity_probe
+# ---------------------------------------------------------------------------
+def test_capacity_executor_capacity_counts_gap():
+    """单执行体容量 = 窗口 ÷ (单账号耗时 + 间隔)：间隔是刻意的风控节奏，必须计入。"""
+    assert capacity_probe.executor_capacity(4680, 8.0, 10) == 260
+    assert capacity_probe.executor_capacity(4680, 8.0, 0) == 585
+    # 退化输入不得抛异常（除零/负数）
+    assert capacity_probe.executor_capacity(4680, 0, 0) == 0
+    assert capacity_probe.executor_capacity(0, 8.0, 10) == 0
+
+
+def test_capacity_recommend_applies_two_thirds():
+    """用户裁决口径：建议每执行体账号数 = 实测 × 2/3（向下取整，至少 1）。"""
+    assert capacity_probe.recommend_per_executor(300) == 200
+    assert capacity_probe.recommend_per_executor(369) == 246
+    assert capacity_probe.recommend_per_executor(1) == 1     # 不为 0
+    assert capacity_probe.executors_needed(5000, 246) == 21
+    assert capacity_probe.executors_needed(5000, 0) is None
+
+
+def test_capacity_hardware_ceiling_stops_before_degradation():
+    """硬件上限取「首个劣化>1.5× 或资源饱和」档**之前**的档。"""
+    rows = [
+        {"K": 1, "per_acct_wall_s": 2.0, "degradation_x": 1.0, "machine_cpu_pct": 20},
+        {"K": 2, "per_acct_wall_s": 2.4, "degradation_x": 1.2, "machine_cpu_pct": 40},
+        {"K": 4, "per_acct_wall_s": 4.4, "degradation_x": 2.2, "machine_cpu_pct": 60},
+    ]
+    k, why = capacity_probe.hardware_ceiling(rows)
+    assert k == 2 and "劣化" in why
+    # 资源饱和同样终止升档（锁错误也算）
+    rows2 = [{"K": 1, "per_acct_wall_s": 2.0, "degradation_x": 1.0, "machine_cpu_pct": 95}]
+    assert capacity_probe.hardware_ceiling(rows2)[0] is None
+    # 全程无饱和时给出最后测到的档，并诚实说明
+    rows3 = [{"K": 1, "per_acct_wall_s": 2.0, "degradation_x": 1.0, "machine_cpu_pct": 10},
+             {"K": 2, "per_acct_wall_s": 2.1, "degradation_x": 1.05, "machine_cpu_pct": 30}]
+    assert capacity_probe.hardware_ceiling(rows3) == (2, "未触及饱和")
+
+
+def test_capacity_verdict_is_feasible_only_when_machine_holds():
+    """结论必须做「需要几个执行体 ≤ 本机实测能跑几个」的对照，不够就明说不够。"""
+    rows = [
+        {"K": 1, "per_acct_wall_s": 8.0, "degradation_x": 1.0, "machine_cpu_pct": 25,
+         "throughput_acct_per_h": 400},
+        {"K": 2, "per_acct_wall_s": 8.3, "degradation_x": 1.04, "machine_cpu_pct": 45},
+        {"K": 4, "per_acct_wall_s": 13.0, "degradation_x": 1.63, "machine_cpu_pct": 80},
+    ]
+    v = capacity_probe.build_verdict(rows, users=5000, window_sec=4680, gap=10)
+    assert v["ok"] and v["single_executor_capacity"] == 260
+    assert v["recommended_per_executor"] == 173
+    assert v["executors_needed"] == 29
+    assert v["hardware_ceiling_k"] == 2          # K=4 劣化 1.63× > 1.5×
+    assert v["feasible_on_this_machine"] is False
+    text = capacity_probe.format_verdict(v, "production", rows)
+    assert "不够" in text and "29" in text and "2 个执行体" in text
+
+    # 小规模则可行：同一台机器带 300 个账号
+    v2 = capacity_probe.build_verdict(rows, users=300, window_sec=4680, gap=10)
+    assert v2["executors_needed"] == 2 and v2["feasible_on_this_machine"] is True
+    assert "本机够用" in capacity_probe.format_verdict(v2, "production", rows)
+
+
+def test_capacity_profiles_are_consistent():
+    """档位定义自检：K 阶梯递增、每进程账号数>0、间隔与延迟非负。"""
+    assert capacity_probe.PROFILES, "档位表不能为空"
+    for name, cfg in capacity_probe.PROFILES.items():
+        assert cfg["k_list"] == sorted(cfg["k_list"]), name
+        assert all(k >= 1 for k in cfg["k_list"]), name
+        assert cfg["per_proc"] > 0, name
+        assert cfg["gap"] >= 0 and cfg["delay_ms"] >= 0, name
 
 
 # ---------------------------------------------------------------------------
