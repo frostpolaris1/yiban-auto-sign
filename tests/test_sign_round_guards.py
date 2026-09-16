@@ -355,8 +355,10 @@ class LateFirstRunAlertTest(unittest.TestCase):
         }
 
     def _alert(self, hm):
+        """注入固定时刻跑判定；补签时刻显式钉住 07:10（不随缺省值漂移）。"""
         fake = type("_DT", (_FakeDT,), {"_hm": hm})
-        with mock.patch.object(signin.clock, "now", fake.now):
+        with mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN_TIME": "07:10"}), \
+             mock.patch.object(signin.clock, "now", fake.now):
             return signin._maybe_alert_zero_success(
                 self.accounts, self.results, ok_n=1, is_second_run=False)
 

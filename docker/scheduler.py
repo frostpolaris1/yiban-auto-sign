@@ -5,7 +5,8 @@
   首签；标记缺失或存在 failed/retrying/pending 未了结账号才跑补签——
   旧「任一账号 success 即跳过」会误吞全站首签与失败账号的兜底）
 - 探针：每 10 分钟尝试一次入口（signin.py --probe 内部自判触发时间/频率/当日防重）
-- 每日 03:00 清理 /data/logs 下 365 天前的按天日志
+- 每日 03:00 清理 /data/logs 与 /data/state 下过期的按天日志/状态文件
+  （策略唯一在 yiban/state_gc.py，与宿主 cron 共用一张表）
 
 数据/配置路径由 compose 注入的 YIBAN_* 环境变量决定；同时把 YIBAN_ENV_FILE
 指向的 .env（Web 设置页写入）解析后注入子进程环境——否则 Web 后台改的
@@ -23,7 +24,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # 包导入引导：本文件在仓库里是 `docker/scheduler.py`、在镜像里被复制为
 # `scripts/container_scheduler.py`——两处都比仓库根低一层，但**同目录的兄弟模块**
@@ -42,7 +43,7 @@ for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
 import signin  # noqa: E402
 from child_env import build_child_env  # noqa: E402
 
-from yiban import clock  # noqa: E402
+from yiban import clock, state_gc  # noqa: E402
 
 STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
@@ -118,25 +119,42 @@ def _slot_done(kind):
 
 
 def _mark_slot(kind):
+    """落盘「该时段已 spawn 过子进程」标记（tmp + os.replace 原子写）。
+
+    原实现直接 `open(path, "w")`：容器在写入中途被杀会留下半截 JSON，
+    `_slot_done` 的 json.load 恒失败 → 判定为「本时段没跑过」，
+    hm >= FIRST/SECOND 的无上界判定于是再触发一轮全站登录（幂等但多一轮真实请求，
+    且覆盖当日已 success 的状态文件）。与 signin.py 的状态文件写入同口径。
+    """
+    path = _slot_marker(kind)
+    tmp = f"{path}.tmp{os.getpid()}"
     try:
         os.makedirs(STATEDIR, exist_ok=True)
-        with open(_slot_marker(kind), "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"triggered_at": clock.now().strftime("%H:%M:%S")}, fh)
+        os.replace(tmp, path)
     except OSError:
-        pass
+        # 写失败与读失败同向（退化为既有闩锁语义：读不到即允许触发），
+        # 仅清掉自己的半成品，不告警
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
 
 
-def _cleanup_logs():
-    """删除 365 天前的按天日志（sign-YYYY-MM-DD.log），对齐 scripts/yiban-cleanup.sh。"""
-    cutoff = (clock.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-    if not os.path.isdir(LOGDIR):
-        return
-    for name in os.listdir(LOGDIR):
-        if name.startswith("sign-") and name.endswith(".log"):
-            key = name[len("sign-"):-len(".log")]
-            if key < cutoff:
-                with contextlib.suppress(OSError):
-                    os.remove(os.path.join(LOGDIR, name))
+def _cleanup_state():
+    """按天状态文件的过期清理（策略唯一在 `yiban/state_gc.py`，与宿主 cron 同一份）。
+
+    原实现只清按天日志（`sign-*.log`）而不管状态目录：容器形态下
+    `/data/state` 里的 `sched-run-*` / `sched-slot-*` / `sign-daily-*` /
+    `mail-user-fail-*` 从不清理，条目随天数线性膨胀。宿主侧同一批文件过去也漏清，
+    两侧现在共用一张表；保留期取同一组环境变量（默认日志/状态 365 天、快照 7 天）。
+    清理失败仅记日志：它是后台维护动作，不该影响调度循环。
+    """
+    try:
+        removed, _detail = state_gc.sweep(STATEDIR, LOGDIR)
+        if removed:
+            print(f"[scheduler] 已清理 {removed} 个过期状态/日志文件", flush=True)
+    except (OSError, ValueError) as e:
+        print(f"[scheduler] 状态清理失败（不影响调度）: {e}", flush=True)
 
 
 # 首签 / 补签 时间点（分钟级），用「已进入该分钟且当天未执行过」的闩锁语义，
@@ -189,6 +207,13 @@ def _run_signin_child(extra=None, env=None):
     汇总在进程死亡前发出（原 subprocess.run 超时直接 SIGKILL，整轮汇总丢失）。
     """
     env = env if env is not None else build_child_env(ENV_FILE)
+    # 覆盖注入「当天最后一轮」时刻 = 本进程实际用的补签触发点（SECOND）。
+    # 容器形态的补签由本进程按 SECOND 触发，不读 YIBAN_SECOND_RUN_TIME；而
+    # signin 的告警抑制要靠该键判断"是否还有下一轮兜底"。不注入时 signin 会按
+    # 宿主默认值（07:12）判，与容器的 07:10 错位 → 07:10~07:12 之间的真异常
+    # 被当成"还有兜底"而静默漏报。故无条件以实际值覆盖（与 _child_timeout 的
+    # ".env 优先"口径不同：这里注入的是本进程的事实，不是可配置项）。
+    env["YIBAN_SECOND_RUN_TIME"] = f"{SECOND[0]:02d}:{SECOND[1]:02d}"
     timeout = _child_timeout(env)
     cmd = ["python3", "scripts/signin.py"] + (extra or [])
     proc = subprocess.Popen(cmd, cwd="/app", env=env)
@@ -259,7 +284,7 @@ def main_loop(sleep_seconds=1):
             if str(env.get("YIBAN_PROBE_ENABLE", "0")).strip().lower() in ("1", "true", "on", "yes"):
                 _run_signin_child(extra=["--probe"], env=env)
         if now.hour >= 3 and last_clean != today:
-            _cleanup_logs()
+            _cleanup_state()
             last_clean = today
         time.sleep(sleep_seconds)
 

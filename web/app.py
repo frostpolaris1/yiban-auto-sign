@@ -2396,15 +2396,27 @@ def _send_channel_health_report(force=False):
 _capacity_alerts = {"users": False, "accounts": False}
 
 
-def _active_account_count():
-    """活跃账号数（2026-09-08 占用口径）：全部非删除账号，含 owner='admin' 裸账号。
+def _capacity_account_count():
+    """计入账号容量的账号数（= 会发起易班请求的账号，含 owner='admin' 裸账号）。
 
-    「账号容量」约束易班请求负载 = 实际参与签到的活跃凭据数，裸账号同样发起
-    签到请求，与注册用户持有的账号同权计入；显示/配额/预估三处同一源。
-    2026-09-14 性能：只用 deleted 明文列，改走 load_accounts_raw 免解密
-    （原 load_accounts 对每行做 AES-GCM 解密并长持 _conn_lock，并发下串行化）。
+    口径（判据唯一来源 `yiban.store.accounts.signs_in`）：**非删除且审核态已通过**。
+    审核态未通过（pending/rejected）的行永不签到（引擎加载与运行期复核都按同一条件
+    过滤），把它们计入会让"永不签到的存量"长期占满名额——新账号在提交时被
+    「账号数量已达上限」误拒，而总览三分类还把这类行显示成"正常"。
+    user_paused 仍计入（用户主动暂停、一键可恢复；三分类已单独列出）。
+    显示/配额/预估三处同一源；2026-09-14 性能：只用明文列，走 load_accounts_raw
+    免解密（原 load_accounts 对每行做 AES-GCM 解密并长持 _conn_lock）。
     """
-    return sum(1 for a in load_accounts_raw() if not a["deleted"])
+    return sum(1 for a in load_accounts_raw() if db.account_signs_in(a))
+
+
+def _capacity_audit_count():
+    """未通过审核而不占容量的账号数（仅展示：总览/设置页的容量说明）。
+
+    与 `_capacity_account_count` 互斥互补：两者之和 = 全部非删除账号。
+    """
+    return sum(1 for a in load_accounts_raw()
+               if not a["deleted"] and not db.account_signs_in(a))
 
 
 def _capacity_estimate(gap=0):
@@ -2427,14 +2439,19 @@ def _capacity_estimate(gap=0):
 
 
 def _accounts_at_capacity(extra_accounts=0):
-    """账号配额判定（2026-09-08 口径）：占用 = 活跃账号数 + 本次将新增账号数，
+    """账号配额判定：占用 = **会签到的账号数** + 本次将新增账号数，
     > 上限则 True（0 = 不限）。调小上限不删除存量账号，只限制新增。
-    extra_accounts：本次提交将新增的非删除账号数（每次添加恰为 1 个）。
+
+    口径见 `_capacity_account_count`：未通过审核（pending/rejected）的行不计入
+    ——它们永不发起易班请求，计入会把名额被"永不签到的存量"占满，新账号被误拒。
+    审核通过是"让这一行开始产生负载"的动作，故 `api_account_review` 的 approve
+    分支同样过这道门（否则名额只在提交时把关、审批时无门可越界）。
+    extra_accounts：本次提交将新增（或转为参与签到）的账号数，添加/通过恰为 1 个。
     """
     max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
     if max_accounts <= 0:
         return False
-    return _active_account_count() + extra_accounts > max_accounts
+    return _capacity_account_count() + extra_accounts > max_accounts
 
 
 def _users_at_capacity():
@@ -2526,9 +2543,12 @@ def _notify_capacity_once(kind, limit, label):
 # 加载错误态与重试/系统开关口令真校验）；历史版本号已压缩重编号（0.1.0–0.3.4）
 # 2026-09-14 运营面收口（错误页/爬虫协议/站标族）+ 容量口径统一（容量与保存门同源）
 # + 密钥轮换强制参数生效 + 总览成功率数字着色与空态字号修复（v0.4.1）
+# 2026-09-16 容量口径与数据恢复修正（v0.4.3）：未通过审核不占账号容量 + 审核通过过闸门
+# + 注销恢复带回账号（时间戳错位）+ 按日状态文件清理收口（宿主/容器同一套规则）
+# + 容器时段标记原子化 + 告警末轮时刻与补签时刻对齐
 # 2026-09-15 后端修复批次（v0.4.2）：时区口径（UTC 主机不再整日漏签）+ 运行期账号复核
 # + 在线校验三缺陷 + 窗口单一口径与容量预检 + 熔断状态读改写原子化 + 镜像补拷共享包
-APP_VERSION = "0.4.2"
+APP_VERSION = "0.4.3"
 # 页面失效版本：每次启动变化，供前端"版本失效自动刷新"兜底（防止缓存旧页面）
 WEB_VERSION = clock.now().strftime("%Y%m%d%H%M%S")
 
@@ -5267,6 +5287,13 @@ def create_app(host=None):
                 # 软删除账号不可被审核通过（deleted 账号不参与审核流转）
                 if acc.get("deleted") or acc.get("status") not in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
                     return jsonify({"error": "该账号无需审核"}), 400
+                # 容量闸门：通过审核 = 让这一行开始产生签到负载。未通过审核的行不计入
+                # 账号容量（见 _capacity_account_count），故此处是本口径下唯一的把关点——
+                # 不放这道门就等于"提交时受限、审批时任意越界"，容量上限失去意义。
+                if _accounts_at_capacity(1):
+                    return jsonify({
+                        "error": "账号数量已达上限，无法通过审核。请清理不用的账号或提高账号容量上限后重试"
+                    }), 403
                 db.update_account_status(acc["id"], ACCOUNT_STATUS_ACTIVE, reject_reason="")
                 db.audit(
                     session.get("username") or "?",
@@ -7307,31 +7334,34 @@ def create_app(host=None):
         env = read_env(ENV_FILE)
         mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
         sw = _sign_window()
-        # 容量口径（2026-09-08 修订，与配额检查同源 _active_account_count）：
+        # 容量口径（与配额检查同源 `_capacity_account_count`）：
         #   用户 = 全部未删除注册用户（含尚未添加账号的空用户，仅注册名额口径）
-        #   账号 = 全部非删除活跃账号（含 admin 直属裸账号——同样参与签到占负载）
+        #   账号 = **会发起易班请求的账号**（非删除且审核态已通过，含 admin 直属裸账号）
         # 2026-09-14 性能：单请求只读一次 users / 一次 accounts（raw，不解密）。
         # 原先 load_accounts() 同请求 3 次、db.load_users() 2 次，每次 AES-GCM 解密
-        # 且长持 _conn_lock，2 核机上把 /api/settings 串行化到 ~13.5 rps。此处三处
-        # 用途（计数/三分类/owners 集合）都只用明文列，共享同一快照还消除并发下
-        # _cur_accounts 与三分类求和不一致的可能。
+        # 且长持 _conn_lock，2 核机上把 /api/settings 串行化到 ~13.5 rps。此处四处
+        # 用途（计数/三分类/未通过审核数/owners 集合）都只用明文列，共享同一快照还
+        # 消除并发下 _cur_accounts 与三分类求和不一致的可能。
         _users = db.load_users()
         _accts_raw = load_accounts_raw()
         _cap_users = len(_users)
-        # 与 _active_account_count() 同口径（全部非删除账号），只是复用同一快照
-        _cur_accounts = sum(1 for a in _accts_raw if not a["deleted"])
+        # 与 _capacity_account_count() 同口径，只是复用同一快照
+        _cur_accounts = sum(1 for a in _accts_raw if db.account_signs_in(a))
         # 账号容量拆解（2026-09-10 需求3，**纯展示**）：名额制下"停签/故障账号占满名额、
-        # 新账号被拒但实际负载不高"是管理者的真实困惑，故在设置页展示三分类计数。
-        # 口径与配额判定**完全解耦**：判定仍只看"非删除账号总数"（_active_account_count），
-        # 本处只做展示拆分，不参与任何 reject/accept 决策。
-        # 三桶互斥且求和 = _cur_accounts，优先级：用户自暂停 > 账密故障暂停 > 正常
-        # （同一账号两者都命中时归"用户自暂停"——那是用户主动行为，先说清楚"是他自己要停的"）。
+        # 新账号被拒但实际负载不高"是管理者的真实困惑，故展示分类计数。
+        # 三桶互斥且求和 = _cur_accounts（= 计容量的账号数），优先级：
+        # 用户自暂停 > 账密故障暂停 > 正常（同一账号两者都命中时归"用户自暂停"——
+        # 那是用户主动行为，先说清楚"是他自己要停的"）。
+        # 未通过审核的行**不属于任何一桶**（它们不计容量，见 accounts_audit），
+        # 归进"正常"会让管理者以为名额被有效账号占满。
         _cred_paused = _cred_paused_phones()
-        _bd_normal = _bd_user_paused = _bd_cred_paused = 0
+        _bd_normal = _bd_user_paused = _bd_cred_paused = _bd_audit = 0
         for _a in _accts_raw:
             if _a.get("deleted"):
                 continue
-            if _a.get("user_paused"):
+            if not db.account_signs_in(_a):
+                _bd_audit += 1
+            elif _a.get("user_paused"):
                 _bd_user_paused += 1
             elif str(_a.get("phone", "")) in _cred_paused:
                 _bd_cred_paused += 1
@@ -7371,19 +7401,23 @@ def create_app(host=None):
                 "edge_back_sec": edge_config()[1],
                 "allow_time_pref": load_env_int(ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
                 "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
-                # 容量状态：注册用户/活跃账号 当前使用量 vs 上限（管理员知情）
+                # 容量状态：注册用户/计容量账号 当前使用量 vs 上限（管理员知情）
                 "capacity": {
                     "users": _cap_users,
                     "users_max": load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS),
                     "accounts": _cur_accounts,
                     "accounts_max": load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS),
-                    # 账号容量拆解（2026-09-10 需求3，仅展示）：三桶互斥、求和 = accounts。
-                    # 定义见 api_settings 顶部注释；配额判定不看这里。
+                    # 账号容量拆解（仅展示）：三桶互斥、求和 = accounts。
+                    # 定义见 api_settings 顶部注释；配额判定与 accounts 同源。
                     "accounts_breakdown": {
                         "normal": _bd_normal,
                         "user_paused": _bd_user_paused,
                         "cred_paused": _bd_cred_paused,
                     },
+                    # 未通过审核、**不占容量**的账号数（与 accounts 互斥互补：
+                    # accounts + accounts_audit = 全部非删除账号）。前端据此解释
+                    # "账号管理里有很多行、容量却只算 N 个"。
+                    "accounts_audit": _bd_audit,
                 },
                 # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
                 "sunday_sign": load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
@@ -7444,7 +7478,7 @@ def create_app(host=None):
             # 注册用户多但活跃账号少不构成负载；存量站点瞬间显示超限仅警示，
             # 仅此处保存延迟时保留既有硬门
             est_accounts = _capacity_estimate(gap)
-            cur_accounts = _active_account_count()
+            cur_accounts = _capacity_account_count()
             if cur_accounts > est_accounts:
                 return jsonify({
                     "error": f"按新设置预估账号容量仅 {est_accounts} 个，当前活跃账号 {cur_accounts} 个，"
