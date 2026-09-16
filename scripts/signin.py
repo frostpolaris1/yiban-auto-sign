@@ -1448,6 +1448,11 @@ def _write_sched_done(counts=None):
 # （docker/scheduler.py 亦别名引用它；测试断言三者同一身份）。
 UNDONE_STATUSES = yiban_status.UNDONE_STATUSES
 
+#: 领取池的"当日了结"口径（与 `_second_run_drop_done` 的剔除集合一致）：
+#: 这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）都仍开放，
+#: 由补签轮或兜底执行体接手。
+_CLAIM_DONE_STATUSES = (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
+
 # `--second-run-check` 的退出码契约（run.sh 据此分支，勿随意改动）
 SECOND_RUN_CHECK_NEED = 10   # 需要补跑第二轮
 SECOND_RUN_CHECK_SKIP = 0    # 无需补跑
@@ -1875,7 +1880,7 @@ def _next_retry_at(now_dt, sch_cfg, rng=None):
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
-                    event_sink=None):
+                    event_sink=None, reclaim=False):
     """轮询队列 + 分散重试执行全部账号签到。
 
     流程（schedule 为空=手动签到）：按签到模式（列表顺序 / 列表随机）
@@ -1897,6 +1902,16 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     传入 dict 行（sign_events 表字段）。None 时不收集（行为与旧版一致）；
     回调异常一律吞掉，事件留痕绝不影响签到主流程。
 
+    reclaim（多执行体）：True 时允许重新领取"当日已了结"的账号——只有**手动指定账号**
+    才这么传（用户主动点的签到应当照做）。补签轮与兜底 worker 不传：它们接手的是
+    "未了结"账号，已了结的账号再登录一次纯属多余的风控暴露。
+
+    **多执行体分工（动态领取 + 账号级租约，见 yiban/store/claims.py）**：每次尝试前
+    领取该账号当日的领取记录，领不到即"别的执行体正在做它"→ 本进程不碰（不写状态、
+    不重试、不告警）；本轮结束后统一收尾：已了结（成功/已签到/今日无任务）落 `done`，
+    其余落 `failed` 并**放开租约**（补签轮/兜底执行体可立刻接手）。执行体进程崩溃时
+    领取记录停在 `claimed`，租约到期后由其他执行体接管——不需要人工介入。
+
     返回结果字典 {手机号: (success, message, skip, status)}。
     """
     schedule = schedule or {}
@@ -1917,6 +1932,50 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     attempts = {acc.phone: 0 for acc in accounts}
     results = {}
     first_round = True
+
+    # ---- 领取池（多执行体协调；单执行体形态下永远领得到，行为与旧版一致）----
+    executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
+                   or db.claim_new_owner("exec-"))
+    claimed_day = {}   # 本进程领到的账号 → 业务日（跨午夜时逐账号不同）
+
+    def _claim(phone, day):
+        """领取该账号当日的工作权；领不到返回 False（别人在做）。
+
+        **库未初始化时直接放行且不碰库**：领取池只是"多执行体协调"的手段，
+        而"不碰库"是有意的——否则纯状态文件部署（无 DB）会被这次调用顺手创建
+        一个默认库，纯属副作用。
+        """
+        if not db.is_initialized():
+            return True
+        try:
+            got = db.claim_sign_account(phone, day, executor_id, allow_settled=reclaim)
+        except Exception as e:
+            # 协调层故障不得让签到停摆（单执行体形态这个池可有可无）
+            logger.debug(f"[{phone}] 领取失败（按可执行处理）: {e}")
+            got = True
+        if got:
+            claimed_day[phone] = day
+        return got
+
+    def _settle_claims(res):
+        """本轮结束后统一收尾本轮领到的账号（只认本轮领过的，避免误写他人在飞的记录）。
+
+        了结口径与展示口径刻意一致：`success/already/no_task` 记为 `done`（当日无需再签），
+        其余记为 `failed` 但**未了结**——补签轮与兜底执行体正是为接手它们而存在。
+        """
+        if not claimed_day:
+            return   # 本轮没领过任何账号（库未初始化 / 全被他人领取）
+        for ph, (_ok, _msg, _skip, st) in res.items():
+            day = claimed_day.get(ph)
+            if not day:
+                continue
+            try:
+                if st in _CLAIM_DONE_STATUSES:
+                    db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st))
+                else:
+                    db.claim_give_up(ph, day, executor_id, str(st))
+            except Exception as e:
+                logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
 
     def _emit_event(phone, status, message, dur=None, attempt_no=None):
         """签到事件留痕（v6 的 sign_events 表此前主流程零写入）。
@@ -2031,6 +2090,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 logger.info(f"[{phone}] ⛔ 等待期间已越过签到时段，跳过执行")
                 _mark_window_skip([acc] + [r[2] for r in pending])
                 break
+            # 领取（放在"要发请求"的最后一步之前：睡到计划时刻的过程中不占租约）
+            if not _claim(phone, today):
+                logger.debug(f"[{phone}] 已被其他执行体领取，本进程跳过")
+                continue
             attempts[phone] += 1
             logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
             t0 = time.monotonic()  # 单次尝试耗时起点（P6：慢响应可判）
@@ -2111,6 +2174,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
             _push(acc, nxt)
             logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次，{nxt.strftime('%H:%M:%S')} 再试）: {_sanitize_text(message)}")
+        _settle_claims(results)
         return results
 
     while queue:
@@ -2144,6 +2208,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {gap_max}s）")
                 time.sleep(gap)
 
+        # 领取（与铺点路径同口径；手动指定账号时 reclaim=True，可重签当日已了结的账号）
+        if not _claim(phone, today):
+            logger.debug(f"[{phone}] 已被其他执行体领取，本进程跳过")
+            continue
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
@@ -2233,6 +2301,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         queue.append(acc)
         logger.warning(f"[{phone}] ⏳ 待重试（已 {attempts[phone]} 次，上限 {max_attempts} 次）: {_sanitize_text(message)}")
 
+    _settle_claims(results)
     return results
 
 
@@ -2710,6 +2779,8 @@ def main():
     results = run_queue_retry(
         accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
         event_sink=event_rows.append,
+        # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
+        reclaim=bool(args.only),
     )
     # 2026-08-20 对抗性审查修复（P1）：--only 此前无条件以本次（仅含目标账号的）状态
     # 整体覆盖保存——空 dict 时直接删除状态文件，其他账号的 fail_days/paused_since

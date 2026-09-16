@@ -132,10 +132,36 @@ class ClaimSemanticsTest(_Base):
         with self.assertRaises(ValueError):
             db.claim_settle(PHONE, DAY, OWNER_A, "半途而废")
 
+    def test_give_up_releases_lease_immediately(self):
+        """弃权（failed）必须**立刻**放开租约：否则补签轮领不到、当日彻底签不上。"""
+        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_A))
+        self.assertTrue(db.claim_give_up(PHONE, DAY, OWNER_A, "重试耗尽"))
+        self.assertEqual(db.claim_states_for_day(DAY)[PHONE], db.CLAIM_STATE_FAILED)
+        # 不等 900s，别的执行体立刻可接手
+        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B),
+                        "failed 行应立刻可被其他执行体接手")
+
+    def test_give_up_is_owner_scoped(self):
+        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self.assertFalse(db.claim_give_up(PHONE, DAY, OWNER_B, "冒充"))
+        self.assertTrue(db.claim_give_up(PHONE, DAY, OWNER_A, "放弃"))
+
+    def test_done_is_the_only_real_settlement(self):
+        """done = 当日了结（需显式 allow_settled 才能再领）；failed = 未了结（可再领）。"""
+        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        db.claim_give_up(PHONE, DAY, OWNER_A, "失败")
+        self.assertEqual(db.claim_stats(DAY)["open"], 1, "failed 属于未了结")
+        self.assertEqual(db.claim_stats(DAY)["settled"], 0)
+        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B))   # 未了结可直接领
+        db.claim_settle(PHONE, DAY, OWNER_B, db.CLAIM_STATE_DONE, "ok")
+        stats = db.claim_stats(DAY)
+        self.assertEqual((stats["settled"], stats["open"]), (1, 0))
+        self.assertFalse(db.claim_sign_account(PHONE, DAY, OWNER_A), "已了结需显式重开")
+
     def test_result_is_truncated(self):
         """结果只存摘要：本表可能被运维导出，无界文本会把它撑成第二个日志表。"""
         db.claim_sign_account(PHONE, DAY, OWNER_A)
-        db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_FAILED, "x" * 500)
+        db.claim_give_up(PHONE, DAY, OWNER_A, "x" * 500)
         row = db.get_conn().execute(
             "SELECT result FROM sign_claims WHERE phone=? AND day=?", (PHONE, DAY)).fetchone()
         self.assertEqual(len(row["result"]), 200)
@@ -218,7 +244,8 @@ class SingleStatementClaimTest(_Base):
         self.assertFalse(got)
         # 已了结行 + 未开 allow_settled：条件表达式里必须带上这两个开关
         sql = next(c[0] for c in fake.calls if c[0] != "COMMIT")
-        self.assertIn("state != ?", sql)
+        self.assertIn("state = ? AND ?", sql)          # done 行只由 allow_settled 决定
+        self.assertIn("state IN (?, ?)", sql)          # claimed/failed 走租约判据
         self.assertIn("heartbeat_at <= ?", sql)
 
     def test_settle_and_touch_are_owner_scoped_single_statements(self):
