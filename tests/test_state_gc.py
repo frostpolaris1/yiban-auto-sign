@@ -166,6 +166,8 @@ ALLOWED_NON_STATE = {
     "mock-pass-": "loadtest 假账号口令字面量（不是文件名）",
     "pass-": "generate_demo_data 的演示口令字面量",
     "run-": "loadtest 的输出 JSON（outdir）",
+    "cap-": "容量基准的每档标签（用于 concurrency-<label> 输出名，不是文件）",
+    "probe-": "容量基准每档的探针日志（outdir，由测量者自行管理）",
     "scratch-": "loadtest 的临时 SQLite 文件（outdir）",
     "signin-": "loadtest 的每轮日志文件（logdir）",
     "verify-job-": "校验任务的线程名（不是文件）",

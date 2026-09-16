@@ -3555,9 +3555,9 @@ def _cascade_phone_owned(conn, phones):
     单点收口：此前是 time_prefs / session_cache / sign_events 三处手写散点，
     每新增一张 phone 键表就要在全部删除路径上人肉补一遍——漏项是必然的
     （verify_jobs 就是这样漏掉的：删号后其明文手机号与错误文本驻留至保留期满，
-    account_id 还悬空）。现在所有删除路径只调本函数，schema 里凡以 phone 为键
-    的表都必须在这里列出；`tests/test_verify_jobs_lifecycle.py` 有枚举测试兜底，
-    漏加会直接红。
+    account_id 还悬空；sign_claims 上线时同样被这条枚举测试当场拦下）。现在所有
+    删除路径只调本函数，schema 里凡以 phone 为键的表都必须在这里列出；
+    `tests/test_verify_jobs_lifecycle.py` 有枚举测试兜底，漏加会直接红。
 
     注意：不能用 clear_session_cache()（其自带 BEGIN IMMEDIATE 事务，嵌套会撞
     "within a transaction"），故在调用方事务内直接 DELETE。
@@ -3570,6 +3570,7 @@ def _cascade_phone_owned(conn, phones):
     conn.executemany("DELETE FROM session_cache WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_events WHERE phone=?", rows)
     conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
+    conn.executemany("DELETE FROM sign_claims WHERE phone=?", rows)
 
 
 def _clear_session_cache_by_phones(conn, phones):
