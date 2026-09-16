@@ -32,6 +32,7 @@
 - [Docker 部署教程（可选）](#docker-部署教程可选)
 - [网页管理系统](#网页管理系统)
 - [GitHub Actions 使用教程（备选）](#github-actions-使用教程备选)
+- [多执行体并行签到（可选，5000+ 账号才需要）](#多执行体并行签到可选5000-账号才需要)
 - [配置说明](#配置说明)
 - [数据存储与备份](#数据存储与备份)
 - [本地调试](#本地调试)
@@ -240,6 +241,9 @@ cat /var/log/yiban/sign-2026-08-15.log
 
 # 清理过期数据（按天日志/状态文件默认保留 365 天、调度快照 7 天；可配 cron 每天执行）
 scripts/yiban-cleanup.sh
+# 同上；底层命令等价于脚本所做的事（保留期用环境变量配：
+# YIBAN_RETENTION_DAYS 默认 365 天、YIBAN_SNAPSHOT_RETENTION_DAYS 默认 7 天）
+python3 scripts/state_cleanup.py
 
 # 手动触发签到
 bash /opt/yiban-auto-sign/run.sh
@@ -250,8 +254,10 @@ systemctl status cron
 # 查看 crontab 配置
 crontab -l
 
-# 更新代码后重新部署
-scp scripts/signin.py root@服务器IP:/opt/yiban-auto-sign/scripts/
+# 更新代码后重新部署（**整仓更新**：代码已拆到 yiban/ 多个模块，单文件覆盖会漏文件）
+cd /opt/yiban-auto-sign
+git pull --ff-only          # 首次用 git clone 部署才有 .git；压缩包部署请重新上传覆盖
+sudo systemctl restart yiban-web.service   # 只改了 .env 时也必须重启（配置在启动时读取）
 ```
 
 </details>
@@ -715,6 +721,10 @@ on:
 
 ### 环境变量一览
 
+> 与多执行体相关的键（`YIBAN_WORKERS` / `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK` /
+> `YIBAN_FALLBACK_INTERVAL` / `YIBAN_CAPACITY_MEASURED`）见「多执行体并行签到」章节与
+> 「代理配置（可选）」章节；单执行体部署**不需要**配置它们。
+
 账号数据存于 **SQLite 数据库（`yiban.db`）**，由网页管理后台写入（AES-GCM 加密存储）。`YIBAN_ACCOUNTS_JSON`、`YIBAN_ACCOUNTS`、`YIBAN_PHONE`+`YIBAN_PASSWORD` 为旧格式 / CI 场景的向后兼容加载方式。
 
 | 变量名 | 说明 | 必填 |
@@ -853,13 +863,21 @@ https://api.day.app/YOUR_KEY/易班签到通知
 
 ### 代理配置（可选）
 
-| 代理类型 | 格式 | 说明 |
-|---------|------|------|
-| HTTP 代理 | `http://host:port` | 可选 |
-| 带认证的 HTTP | `http://user:pass@host:port` | 可选 |
-| SOCKS5 代理 | `socks5://host:port` | 可选 |
+| 变量名 | 作用 | 示例 |
+|--------|------|------|
+| `YIBAN_PROXY` | 单执行体（默认形态）走这个出口 | `http://user:pass@host:port` |
+| `YIBAN_PROXY_LIST` | **并行执行体各用一个**（见「多执行体并行签到」章节），逗号分隔 | `http://a:1,http://b:2,,http://d:4` |
+| `YIBAN_PROXY_FALLBACK` | 兜底常驻执行体专用出口（不填则用 `YIBAN_PROXY`） | `http://fb:8080` |
 
-> 💡 仅在网络出口被风控时按需配置；使用代理访问服务请遵守相关法律法规与平台条款。
+支持 `http://`、`https://`；带认证写成 `http://user:pass@host:port`。
+
+**留空就是走本机出口**（直连）：`YIBAN_PROXY_LIST` 里**空位表示"这个执行体直连"**，
+不足的部分循环取用（3 个出口 + 5 个执行体 → 第 4、5 个执行体复用第 1、2 个出口）。
+
+⚠️ 三点提醒：
+1. 代理地址里的账号密码**不会**回显到网页或日志（只显示 `http://主机:端口`）；
+2. 网页里改出口配置后**下一轮定时任务/容器重启才生效**；
+3. 仅在网络出口被风控或需要分散请求来源时按需配置；使用代理请遵守相关法律法规与平台条款。
 
 ### 设备绑定（可选）
 
@@ -903,6 +921,85 @@ https://api.day.app/YOUR_KEY/易班签到通知
 
 ---
 
+
+## 多执行体并行签到（可选，5000+ 账号才需要）
+
+<details>
+<summary>🚀 什么时候需要、怎么开、怎么配出口</summary>
+
+**先说结论**：几十到几百个账号**不需要**这一节——单执行体（默认）就够了。
+按实测，一台 2 核 2G 的机器跑单执行体，80 分钟窗口能签完约 400 个账号；
+账号上千以后，串行队列会在窗口内排不完，这时才需要"多个执行体并行"。
+
+### 它是怎么分工的（一句话版）
+
+启动 N 个执行体，它们**不预先分名单**，而是抢着从同一个"待办池"里领账号：
+谁空了谁领下一个；某个执行体中途挂了，它手上那个账号的"租约"到期后会被别人接手。
+所以**同一个账号永远只会被一个执行体登录**（这是设计的第一红线：重复登录会触发易班风控）。
+
+### 怎么开
+
+```bash
+# 在 .env 或系统设置里配置执行体数量（默认 1）
+YIBAN_WORKERS=4
+```
+
+执行体由同一条命令拉起，**不需要改 cron**：
+
+```bash
+# cron 里仍然是 run.sh（它会读 YIBAN_WORKERS 决定拉起几个执行体）
+bash /opt/yiban-auto-sign/run.sh
+
+# 也可以手动拉起一轮试跑（会打印每个执行体的出口与结果）
+python3 scripts/signin.py --workers 4
+```
+
+**兜底常驻执行体**（推荐与多执行体一起开）：它不是一次性跑完就退出，而是在签到时段内
+**反复扫描"还没签完"的账号**并随手接手——学校晚放号、窗口内刚通过审核的账号、被慢账号
+拖住的、失败待重试的，都不用等下一轮定时任务。
+
+```bash
+# 作为常驻服务运行（示例：systemd 或 supervisor 拉起；它会在窗口结束后自行退出）
+python3 scripts/signin.py --fallback
+```
+
+### 出口（代理）怎么分
+
+每个执行体可以有**自己的出口**，也可以留空走本机出口（配置方法见「代理配置（可选）」章节）。
+典型填法：有 3 个代理出口、要开 4 个执行体 →
+
+```bash
+YIBAN_WORKERS=4
+YIBAN_PROXY_LIST=http://a:1,http://b:2,http://c:3      # 第 4 个执行体复用第 1 个出口
+YIBAN_PROXY_FALLBACK=http://fb:8080                    # 兜底执行体单独一个出口
+```
+
+> 提醒：**出口数量与单日规模由你自己判断**。程序不做"每小时最多多少次"这类硬限制——
+> 因为不同部署者的机器与出口差异很大（家庭宽带、云服务器、多出口代理），写死阈值必然误伤。
+> 你可以在网页「设置」页看到**基于实测的建议值**（每执行体建议带多少账号），它只是建议。
+
+### 怎么看它跑得怎么样
+
+- **日志**：每轮结束会打印一行汇总，例如
+  `签到汇总：✅ 10 成功，❌ 0 失败，⇄ 30 由其他执行体负责`（"⇄"=由别的执行体领走了，不是失败）；
+- **网页**：`GET /api/scheduler/executors` 返回每个执行体的出口、兜底是否在跑、
+  实测容量建议值；接口文档见仓库内 `docs/dev/api-executors.md`；
+- **进度**：签到分工记录表（`sign_claims`）里一行就是一个账号当天的"了结"情况。
+
+### 想先量一量这台机器能带多少账号？
+
+测试机上跑一条命令即可（会自建假易班、不连真实易班，跑完自动还原）：
+
+```bash
+sudo python3 scripts/loadtest/capacity_probe.py --repo /opt/yiban-auto-sign --users 5000
+```
+
+它会打印「单账号实测耗时 / 单执行体容量 / 建议每执行体账号数（实测 × 2/3）/ 需要几个执行体」，
+并给出把实测值填回设置页的命令。**换机器、换网络都要重新量**——这是建议值，不是上限。
+
+</details>
+
+---
 
 ## 数据存储与备份
 
@@ -998,8 +1095,7 @@ python scripts/signin.py
 ```
 web/             Flask 管理后台（账号管理/审核/用户管理/日历/手动签到）
    │
-   ├── scripts/db.py            SQLite 数据层（账号/用户/审计日志）
-   ├── scripts/account_crypto.py AES-GCM 加密（密码/设备识别码）
+   ├── scripts/db.py            SQLite 连接与迁移（表级实现已迁到 yiban/store/）
    ├── scripts/signin.py        签到引擎 + CLI 入口
    │        │
    │        ├── OAuth 登录（RSA 加密）→ 获取签到任务 → 多边形随机定位 → 提交
@@ -1010,9 +1106,17 @@ web/             Flask 管理后台（账号管理/审核/用户管理/日历/�
             ├── window.py        签到窗口唯一事实源（排计划/判关闭/算容量同源）
             ├── status.py        签到状态词汇表
             ├── masking.py       脱敏（手机号/日志文本/URL）
+            ├── security.py      风控拦截判定 + 跳转白名单（注入协议层）
+            ├── egress.py        出口（代理）分配：单执行体/并行执行体/兜底执行体
+            ├── client.py        易班客户端外观（凭据/会话缓存/代理/设备绑定）
+            ├── state_gc.py      按日状态文件的保留期策略与清理
             ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
-            ├── attempt/jobs.py  在线校验异步任务（排队/看门狗/收口）
-            └── store/           表级数据访问（按表逐步从 scripts/db.py 迁出）
+            ├── fyiban/          ★ 第三方隔离层（易班协议与定位算法，来源见其 PROVENANCE.md）
+            ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密
+            ├── store/           表级数据访问（含签到分工记录表 claims）
+            ├── notify/          通知推送（配置 / 额度账本 / 发送）
+            ├── mail/            告警邮件（配置 / 发送）
+            └── attempt/jobs.py  在线校验异步任务（排队/看门狗/收口）
 ```
 
 > 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。

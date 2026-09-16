@@ -196,7 +196,22 @@ _run_signin_round() {
         fi
     fi
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] 签到超时: ${run_timeout}s（窗口至 $end_hhmm）" >> "$LOG_FILE"
-    timeout "$run_timeout" "$PY" scripts/signin.py >> "$LOG_FILE" 2>&1
+    # 多执行体（可选）：YIBAN_WORKERS>1 时由 signin 的监督模式拉起 N 个并行执行体，
+    # 分工靠数据库里的领取池（账号不会被两个执行体同时登录）。默认 1 = 现状不变。
+    # 非法值只告警并回退 1：绝不能因为一个配置笔误让当天不签到。
+    workers_args=()
+    workers_raw="${YIBAN_WORKERS:-1}"
+    if [ -n "$workers_raw" ] && [ "$workers_raw" != "1" ]; then
+        if [[ "$workers_raw" =~ ^[0-9]+$ ]] && [ "$workers_raw" -ge 2 ] && [ "$workers_raw" -le 64 ]; then
+            workers_args=(--workers "$workers_raw")
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 警告: YIBAN_WORKERS=$workers_raw 非法（须为 2~64 的整数），按单执行体执行" >> "$LOG_FILE"
+        fi
+    fi
+    if [ ${#workers_args[@]} -gt 0 ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 多执行体: ${workers_raw} 个并行执行体" >> "$LOG_FILE"
+    fi
+    timeout "$run_timeout" "$PY" scripts/signin.py ${workers_args[@]+"${workers_args[@]}"} >> "$LOG_FILE" 2>&1
     return $?
 }
 
