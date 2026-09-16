@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""批次20 需求3 回归：设置页「账号容量」拆解（纯显示层，2026-09-10）。
+"""批次20 需求3 回归：设置页「账号容量」拆解（2026-09-10）。
 
-背景：容量是「注册/持有名额制」（用户 500 / 账号 200），账号容量按**全部非删除账号**
-统计，含用户自暂停与账密故障暂停（熔断/半开试探中）的账号 —— 会出现"停签/故障账号
-占满名额、新账号被拒但实际负载并不高"。用户已拍板：**不改配额判定逻辑，只改显示**。
+背景：容量按**会发起易班请求的账号**统计（非删除且审核态已通过），含用户自暂停与
+账密故障暂停（熔断/半开试探中）的账号 —— 会出现"停签/故障账号占满名额、新账号被拒
+但实际负载并不高"。用户已拍板：**不改配额判定逻辑，只改显示**（指暂停类账号：
+它们仍占名额，只把它们分类展示出来）。未通过审核（pending/rejected）的行不属"暂停类"
+——它们永不签到，2026-09-15 起不计容量（见 `yiban.store.accounts.signs_in`）。
 
 本文件锁住四条：
 1. `/api/settings` 的 `capacity.accounts_breakdown` 三桶互斥且求和 = `capacity.accounts`；
 2. 软删账号不计入任何桶；
 3. cred-state.json 缺失/损坏时接口仍 200 且 cred_paused=0（不得 500）；
-4. **配额判定行为不变**：`_accounts_at_capacity` 仍按"全部非删除账号"计（含暂停账号），
-   显示层拆分不影响它。
+4. **配额判定与 accounts 同源**：`_accounts_at_capacity` 看的账号数与 `capacity.accounts`
+   一致（含暂停账号），显示层拆分不影响它。
 
 用法（项目根目录）：
     py -m pytest tests/test_capacity_breakdown_0910.py -q
@@ -236,7 +238,7 @@ class CapacityBreakdownTest(_Base):
             "三分类口径：自暂停优先于账密故障",
         )
         self.assertEqual(cap["accounts"], len(live))
-        self.assertEqual(sum(bd.values()), cap["accounts"], "三桶求和 = 账号总数")
+        self.assertEqual(sum(bd.values()), cap["accounts"], "三桶求和 = 计容量的账号数")
         owners = {a.get("owner") for a in live if a.get("owner")}
         self.assertEqual(
             data["capacity_estimate"]["potential_load"],
@@ -247,7 +249,7 @@ class CapacityBreakdownTest(_Base):
             self.db, "decrypt_account_rows",
             side_effect=AssertionError("计数不应触发解密"),
         ):
-            self.assertEqual(self.webapp._active_account_count(), len(live))
+            self.assertEqual(self.webapp._capacity_account_count(), len(live))
             self.assertFalse(self.webapp._accounts_at_capacity(0))
 
 

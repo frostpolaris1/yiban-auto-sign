@@ -203,16 +203,20 @@
     });
   }
   /* ---------------- 容量卡（原在账号管理页，并入总览后管理端只此一处） ---------------- */
-  function capacityText(cur, max, breakdown) {
-    var used = String(cur);
-    if (!(Number(max) > 0)) return used + " / 不限";
+  // 账号口径：`cur` = 会签到的账号数（未通过审核的行不计容量）；
+  // `audit` = 未通过审核的行数，用分号单独成段，不混进"正常/暂停"括号里
+  // （那三桶求和 = cur，混进去会让读者以为它们也占容量）。
+  function capacityText(cur, max, breakdown, audit) {
     var parts = [];
     if (breakdown) {
       parts.push("正常 " + (breakdown.normal || 0));
       parts.push("用户暂停 " + (breakdown.user_paused || 0));
       parts.push("账密暂停 " + (breakdown.cred_paused || 0));
     }
-    return used + " / " + max + (parts.length ? "（" + parts.join(" · ") + "）" : "");
+    var out = String(cur) + (Number(max) > 0 ? " / " + max : " / 不限");
+    if (parts.length) out += "（" + parts.join(" · ") + "）";
+    if (Number(audit) > 0) out += "；未通过审核 " + audit + " 个未计入";
+    return out;
   }
   function renderCapacityRows(d) {
     var acc = $("capacity-accounts"), usr = $("capacity-users"), est = $("capacity-estimate");
@@ -222,7 +226,7 @@
       return;
     }
     var c = d.capacity || {};
-    txt(acc, capacityText(c.accounts, c.accounts_max, c.accounts_breakdown));
+    txt(acc, capacityText(c.accounts, c.accounts_max, c.accounts_breakdown, c.accounts_audit));
     txt(usr, capacityText(c.users, c.users_max, null));
     var e = d.capacity_estimate || {};
     txt(est, "容量 " + (e.accounts_cap != null ? e.accounts_cap : "—") +
@@ -240,9 +244,13 @@
     }
     var acc = Number(cap.accounts) || 0, amax = Number(cap.accounts_max) || 0;
     var bd = cap.accounts_breakdown || {};
+    var audit = Number(cap.accounts_audit) || 0;
     setValue(av, num(acc), amax > 0 ? "/" + num(amax) : null);
-    // 「（均不含已删除）」括号注删出副文案（行数对齐），口径挪进 title 提示
-    setSub(as, "正常 " + num(bd.normal) + " · 用户暂停 " + num(bd.user_paused) + " · 账密故障 " + num(bd.cred_paused), "均不含已删除账号");
+    // 副文案只放三分类（求和 = 容量数），口径注进 title：
+    // 未通过审核的账号不占容量（有才提，避免常驻噪音）
+    var note = "均不含已删除账号";
+    if (audit > 0) note += "；另有 " + num(audit) + " 个未通过审核的账号未计入容量";
+    setSub(as, "正常 " + num(bd.normal) + " · 用户暂停 " + num(bd.user_paused) + " · 账密暂停 " + num(bd.cred_paused), note);
     setPill($("kpi-accounts-pill"), amax > 0 ? pctOf(acc, amax) + "%" : "未设上限", pctOf(acc, amax) >= 90 ? "down" : "info");
 
     var users = Number(cap.users) || 0, umax = Number(cap.users_max) || 0;

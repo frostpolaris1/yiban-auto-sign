@@ -1798,9 +1798,9 @@ def _second_run_drop_done(accounts):
     return kept
 
 
-# 当天最后一轮触发点（宿主 run.sh 补签 cron 与容器 scheduler.SECOND 同为 07:10）。
-# 逾此时刻的「疑似首签轮」不再有下一次触发兜底，告警抑制语义失效。
-_LAST_RETRY_HM = (7, 10)
+# 当天最后一轮触发点（= 补签轮时刻）：唯一事实源在 yiban.window.retry_hm()
+# （宿主 run.sh 补签 cron 用同一键配置；容器形态由 scheduler 把它的实际触发点
+# 注入子进程环境）。**不在此处缓存常量**——见 retry_hm 的 docstring。
 
 
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
@@ -1840,12 +1840,12 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
     if is_second_run is None:
         is_second_run = _sched_marker_exists()
     if ok_n > 0 and not is_second_run:
-        # 首签轮部分成功 + 部分窗口外：07:10 补签会重跑，不打扰。
-        # 例外：当前时刻已越过补签触发点（06:31 关机、07:10 才被补跑起的场景），
+        # 首签轮部分成功 + 部分窗口外：补签轮会重跑，不打扰。
+        # 例外：当前时刻已越过补签触发点（06:31 关机、补签点之后才被拉起起的场景），
         # 本轮虽挂首签身份（当日 run 触发标记此刻才首次创建）却是当天最后一轮，
         # 不再有第三次触发兜底 → 仍告警，防真异常无声。
         _now = clock.now()
-        if (_now.hour, _now.minute) < _LAST_RETRY_HM:
+        if (_now.hour, _now.minute) < window.retry_hm():
             return False
     title = "当日签到异常告警" if ok_n == 0 else "签到窗口异常告警"
     if ok_n == 0:

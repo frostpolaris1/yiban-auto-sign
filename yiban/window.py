@@ -20,12 +20,19 @@
   若扣掉流逝时间，管理员在窗口末尾将永远无法保存设置（保存闸门会误拒）。
 """
 import datetime
+import os
 
 DEFAULT_START = (6, 30)
 DEFAULT_END = (7, 50)
 DEFAULT_EDGE_SEC = 60
 EDGE_MIN_SEC = 0
 EDGE_MAX_SEC = 300
+# 补签轮（当天最后一轮）触发点，默认 07:12 —— **必须在进程内补签轮的等待目标
+# 之前**：signin 的告警抑制要靠它判断"是否还有下一轮兜底"（见 retry_hm）。
+# 宿主 run.sh 读同一个键（`SECOND_HHMM="${YIBAN_SECOND_RUN_TIME:-07:12}"`），
+# 容器的触发点在 docker/scheduler.py 的 SECOND（它把真实值注入子进程环境，
+# 宿主/容器两形态的告警阈值都取实际部署值）。
+DEFAULT_RETRY_HM = (7, 12)
 
 
 def parse_hhmm(value, default):
@@ -70,6 +77,19 @@ def parse_edges(env):
     if back is None:
         back = legacy if legacy is not None else DEFAULT_EDGE_SEC
     return front, back
+
+
+def retry_hm(env=None):
+    """补签轮（当天最后一轮）触发点 (h, m)：取 `YIBAN_SECOND_RUN_TIME`，非法回默认。
+
+    **调用方按需取当前值，不要在导入期缓存**：宿主 run.sh 补签 cron 的时刻由
+    同一键配置，管理员改了键而进程内常量不跟着变，会让告警抑制按错的时刻判断
+    "是否还有下一轮兜底"——阈值早于真实末轮 → 提前告警（噪音）；晚于真实末轮
+    → 真异常当天不再有任何提示（静默漏报，危害更大）。
+    """
+    if env is None:
+        env = os.environ
+    return parse_hhmm(env.get("YIBAN_SECOND_RUN_TIME", ""), DEFAULT_RETRY_HM)
 
 
 def bounds(cfg, invalid=False):

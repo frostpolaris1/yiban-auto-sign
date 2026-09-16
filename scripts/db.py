@@ -44,6 +44,7 @@ from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
 account_is_signable = _accounts.is_signable
+account_signs_in = _accounts.signs_in
 purge_orphan_session_cache = _accounts.purge_orphan_session_cache
 
 VERIFY_JOB_RETENTION_DAYS = _verify_jobs.VERIFY_JOB_RETENTION_DAYS
@@ -72,6 +73,17 @@ DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
 # 此前 web(app.py DELETED_RETENTION_DAYS) 与 db 各持一份同名不同单位常量，易改一处漏一处
 SOFT_DELETE_RETENTION_DAYS = 7
 SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
+
+# 账号物理清除的豁免条件：owner 已注销**且仍在反悔窗口内**时不清。
+# 用户此前自删的账号时刻早于注销事件，按各自 deleted_at 独立到期会先于用户行被删，
+# 而用户在窗口内恢复回来却没有账号（见 restore_user 的单行恢复说明）。
+# 用同一个 cutoff 比较用户行自身的时间戳（而不是只看 deleted=1）：豁免随用户宽限期
+# 自然失效——即使某个部署路径只清了账号没清用户（cron-only 的 signin 只调
+# purge_expired_deleted_accounts），也不会留下无界驻留的账号；SQL 里它排在账号自己的
+# `deleted_at <= ?` 之后，故调用参数必须传两次 cutoff。
+PURGE_SKIP_CANCELLED_OWNER = (
+    " AND owner NOT IN (SELECT email FROM users WHERE deleted=1 AND deleted_at > ?)"
+)
 
 
 def _normalize_limit(limit, default):
@@ -1639,8 +1651,9 @@ def _purge_expired_deleted(conn):
         # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发 DELETE
         # 事务，只提交守卫的时钟参照一行（每天 1~2 次调用，开销可忽略）
         probe = conn.execute(
-            "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ? LIMIT 1",
-            (cutoff,),
+            "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
+            + PURGE_SKIP_CANCELLED_OWNER + " LIMIT 1",
+            (cutoff, cutoff),
         ).fetchone()
         if not probe:
             conn.commit()
@@ -1654,13 +1667,15 @@ def _purge_expired_deleted(conn):
         phones = [
             r["phone"]
             for r in conn.execute(
-                "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
-                (cutoff,),
+                "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
+                + PURGE_SKIP_CANCELLED_OWNER,
+                (cutoff, cutoff),
             ).fetchall()
         ]
         conn.execute(
-            "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
-            (cutoff,),
+            "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
+            + PURGE_SKIP_CANCELLED_OWNER,
+            (cutoff, cutoff),
         )
         _cascade_phone_owned(conn, phones)
         conn.commit()
@@ -2305,6 +2320,12 @@ def soft_delete_user_with_accounts(email):
     （本条为批次5 C-2"恢复不还自选=存储优化"裁决的**有意修正**：可逆操作应完整可逆，
     且 prefs 行极小，优化收益可忽略。）
 
+    **保留期口径**：注销只给"注销当时仍生效"的账号打时刻，用户此前自删的账号保留各自
+    更早的时刻（那正是"注销当时哪一行在生效"的唯一线索，不能覆盖）。由
+    `_purge_expired_deleted` 的"owner 已注销则不清除"豁免保证它们活到用户的反悔窗口
+    结束（此前的实现会按各自更早的时刻先被物理清除，用户恢复回来却没有账号）。
+    管理员删除的行（deleted_by='admin'）不在用户的反悔范围内。
+
     返回是否找到并注销了有效用户。
     """
     conn = get_conn()
@@ -2388,13 +2409,28 @@ def restore_user(email):
                 "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
                 (deleted["id"],),
             )
-            # 只恢复同一注销事件的账号（deleted_at 与用户行一致），
-            # 避免把用户注销后单独软删的其他账号也一起恢复造成 owner 冲突。
-            conn.execute(
-                "UPDATE accounts SET deleted=0, deleted_at='', deleted_by='' "
-                "WHERE owner=? AND deleted=1 AND deleted_at=?",
+            # 只恢复"注销当时仍生效"的那一行账号（每人限 1 个账号，故至多一行）：
+            # - 它是**注销时刻最新的软删行**（注销把当时生效的行打成 now，此前自删的行
+            #   时刻更早；用户先恢复过某个更早的账号时，那一行同样成了注销时刻的最新行）
+            #   → ORDER BY deleted_at DESC, id DESC LIMIT 1 等价于"哪一行在注销时生效"；
+            # - 必须**单行**更新：多行一起置 deleted=0 会当场撞 idx_accounts_owner_live
+            #   唯一索引（同一 owner 只能有一个未删除账号）→ 500。此前自删的其余账号
+            #   保持软删，用户在「我的账号」页可逐个撤销（那时有明确的名额提示）；
+            # - `<=` 而非等值：兼容旧版本写下的时间戳错位存量行（无需数据迁移），
+            #   "先自删唯一账号再注销"正是这种形态——等值匹配会让用户恢复后一个账号都没有；
+            # - 排除 deleted_by='admin'（管理员清退不属于用户的反悔范围）与
+            #   deleted_at=''（v10 前的僵尸行，无法判定归属，由清理补记时间后自然到期）。
+            row = conn.execute(
+                "SELECT id FROM accounts WHERE owner=? AND deleted=1 AND deleted_by != 'admin' "
+                "AND deleted_at != '' AND deleted_at <= ? "
+                "ORDER BY deleted_at DESC, id DESC LIMIT 1",
                 (email, deleted["deleted_at"]),
-            )
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "UPDATE accounts SET deleted=0, deleted_at='', deleted_by='' WHERE id=?",
+                    (row["id"],),
+                )
             conn.commit()
             return True
         except Exception:
