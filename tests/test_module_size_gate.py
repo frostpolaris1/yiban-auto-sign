@@ -52,11 +52,8 @@ OVERSIZED = {
         "大量运行时状态（attempts/results/cred_state/schedule），先抽一部分会把它们变成"
         "跨模块参数传递；M3 会连同 CLI 收口一起按'执行一轮'的边界切分。"
     )),
-    "scripts/notify.py": (None, (
-        "通知聚合（webhook + 邮件 + 节流 + 台账）。M1④ 计划拆为 yiban/notify/*："
-        "台账读写、通道、节流是三条独立变更轴，属'该拆'；排在引擎拆分之后做，"
-        "避免与 signin 的调用点改动叠加冲突。"
-    )),
+    # scripts/notify.py 已按计划拆为 yiban/notify/{config,ledger,transport}（每个 ≤600 行），
+    # 旧路径只剩兼容壳，故不再登记。脚本侧仍保留的两项超大登记见下。
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),
     "scripts/rekey_accounts.py": (800, "运维工具：密钥轮换脚本，与本项目运行时解耦"),
