@@ -46,8 +46,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# 共享模块（同目录）：加密（与 web 共用密钥与密文格式）与 SQLite 数据访问层
-import db  # noqa: E402  # 2026-08-16 审查轮：原 _load_accounts_from_file/build_schedule 函数内 import 上移（无循环依赖）
+# 共享模块：加密（与 web 共用密钥与密文格式）与 SQLite 数据访问层（实现已入包
+# yiban/store/db.py；`scripts/db.py` 只剩兼容壳，此处直连实现）
 import mailer  # noqa: E402  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 
@@ -75,6 +75,7 @@ from yiban.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.masking import sanitize_text as _sanitize_text  # noqa: E402
 from yiban.masking import sanitize_url as _sanitize_url  # noqa: E402
 from yiban.store import accounts as accounts_store  # noqa: E402  # 账号运行期复核
+from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
 
 # 密码学安全随机数生成器（用于定位生成等安全敏感场景）
 _secure_random = secrets.SystemRandom()

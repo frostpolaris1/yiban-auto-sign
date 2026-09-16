@@ -272,7 +272,6 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 </body>
 </html>"""
 import child_env  # noqa: E402
-import db  # noqa: E402
 import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
@@ -286,6 +285,7 @@ from yiban.infra import (  # noqa: E402
     env_io,
     env_lock,
 )
+from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
 
 # 默认路径（与 run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")
@@ -2287,7 +2287,7 @@ def _channel_health_facts(status, exhausted=()):
     事实直接丢在取证之外。这里**无条件**把两侧各写一段，健康的那一侧也记——
     事后要能回答"坏的是哪一路、另一路当时是不是好的"。
     刻意用短串而不是整句人话：db.audit 会把 detail 截到 200 字符
-    （scripts/db.py:2429），拼完整句子在最坏情况下会把后半句（推送侧）截没，
+    （见 yiban/store/db.py 的 audit），拼完整句子在最坏情况下会把后半句（推送侧）截没，
     等于重犯同一个错。
     """
     if status["mail_error"]:
