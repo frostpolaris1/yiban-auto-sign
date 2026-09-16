@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 import db  # noqa: E402
 import signin  # noqa: E402
 
+from yiban import clock  # noqa: E402
+
 #: 固定业务时间（周三 06:40，落在默认签到窗口内）：窗口判定与"当日"都因此确定，
 #: 也让领取池的 day 键稳定（否则跨午夜跑测会落到两天上）
 FIXED_NOW = datetime(2026, 9, 16, 6, 40)
@@ -201,6 +203,53 @@ class NoDatabaseNoSideEffectTest(_Base):
                                              signin.STATUS_SUCCESS))
         self.assertEqual(calls, [PHONE_OK], "无库时照常签到（领取池可有可无）")
         self.assertFalse(db.is_initialized(), "不得因为没有领取池就顺手开一个库")
+
+
+class PlanMustNotClobberResultTest(_Base):
+    """多执行体下每个执行体启动都会写一遍全量计划——计划态不得覆盖已有结果。
+
+    实测缺陷（4 执行体 × 40 账号，真实 TLS）：晚启动的执行体把先启动者已写好的
+    success 抹回 pending（40 条里被抹 2 条），日历显示"待签"、补签闸门把已签账号
+    当未了结再跑一遍。修法：`pending` 是预测，已产出的状态是事实，事实优先。
+    """
+
+    def _state_path(self):
+        return os.path.join(os.environ["YIBAN_STATE_DIR"],
+                            f"sign-state-{clock.today()}.json")
+
+    def _write(self, status, message="", **kw):
+        with mock.patch.object(signin.clock, "now", datetime.now):
+            signin._write_sign_state(PHONE_OK, status, message, **kw)
+
+    def _read(self):
+        import json
+        with open(self._state_path(), encoding="utf-8") as f:
+            return json.load(f)[PHONE_OK]
+
+    def test_plan_does_not_overwrite_result(self):
+        self._write(signin.STATUS_SUCCESS, "签到成功")
+        self._write(signin.STATUS_PENDING, "计划 06:40", scheduled="06:40:00")
+        entry = self._read()
+        self.assertEqual(entry["status"], signin.STATUS_SUCCESS, "结果不得被计划态抹掉")
+        self.assertEqual(entry["scheduled"], "06:40:00", "计划时间仍应补进去")
+        self.assertEqual(entry["message"], "签到成功")
+
+    def test_result_still_overwrites_result(self):
+        """事实之间照旧后写覆盖：失败重试后要能反映最新一次结论。"""
+        self._write(signin.STATUS_FAILED, "网络超时")
+        self._write(signin.STATUS_SUCCESS, "签到成功")
+        self.assertEqual(self._read()["status"], signin.STATUS_SUCCESS)
+        self._write(signin.STATUS_PENDING, "计划 06:41")
+        self._write(signin.STATUS_FAILED, "再次失败")
+        self.assertEqual(self._read()["status"], signin.STATUS_FAILED)
+
+    def test_plan_still_writes_when_no_result_yet(self):
+        with contextlib.suppress(OSError):
+            os.remove(self._state_path())   # 干净起点：当日尚无任何记录
+        self._write(signin.STATUS_PENDING, "计划 06:42", scheduled="06:42:00")
+        entry = self._read()
+        self.assertEqual(entry["status"], signin.STATUS_PENDING)
+        self.assertEqual(entry["scheduled"], "06:42:00")
 
 
 if __name__ == "__main__":

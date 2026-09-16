@@ -1382,8 +1382,27 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
                 data = {}
             now = clock.now()
             # 计划时间是当日事实：后续写入（执行结果/重试）未显式传 scheduled 时保留既有值
-            if not scheduled and isinstance(data.get(phone), dict):
-                scheduled = data[phone].get("scheduled")
+            existing = data.get(phone)
+            if not scheduled and isinstance(existing, dict):
+                scheduled = existing.get("scheduled")
+            # **计划态不覆盖已有结果**：`pending` 是"打算什么时候签"的预测，success/failed
+            # 等是"已经发生"的事实——事实优先。单执行体形态下计划写在前、结果写在后，看不出
+            # 差别；多执行体下每个执行体启动都会写一遍全量计划，晚启动者的计划会把先启动者
+            # 已写完的结果抹回 pending（实测：4 执行体 40 账号，2 个账号被抹成 pending），
+            # 既让日历显示"待签"，又让补签闸门把已签账号当未了结重跑一遍。
+            if (
+                status == STATUS_PENDING
+                and isinstance(existing, dict)
+                and str(existing.get("status", "")).strip() not in ("", STATUS_PENDING)
+            ):
+                if scheduled:
+                    existing["scheduled"] = scheduled
+                data[phone] = existing
+                tmp = f"{path}.tmp{os.getpid()}"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                os.replace(tmp, path)
+                return
             entry = {
                 "status": status,
                 "message": message,
