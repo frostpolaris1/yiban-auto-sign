@@ -1886,7 +1886,7 @@ def _next_retry_at(now_dt, sch_cfg, rng=None):
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
-                    event_sink=None, reclaim=False):
+                    event_sink=None, reclaim=False, delegated=None):
     """轮询队列 + 分散重试执行全部账号签到。
 
     流程（schedule 为空=手动签到）：按签到模式（列表顺序 / 列表随机）
@@ -1917,6 +1917,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     不重试、不告警）；本轮结束后统一收尾：已了结（成功/已签到/今日无任务）落 `done`，
     其余落 `failed` 并**放开租约**（补签轮/兜底执行体可立刻接手）。执行体进程崩溃时
     领取记录停在 `claimed`，租约到期后由其他执行体接管——不需要人工介入。
+
+    `delegated`（可选出参）：把"不在本执行体范围内"的账号（领不到的那些）收集到
+    这个 set 里。汇总与退出码必须据此把它们从"失败"里摘出去——否则每个执行体都会把
+    别人的活报成自己的失败（实测：4 个执行体各带 10 个账号，却各报 28-30 个失败）。
 
     返回结果字典 {手机号: (success, message, skip, status)}。
     """
@@ -2099,6 +2103,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             # 领取（放在"要发请求"的最后一步之前：睡到计划时刻的过程中不占租约）
             if not _claim(phone, today):
                 logger.debug(f"[{phone}] 已被其他执行体领取，本进程跳过")
+                if delegated is not None:
+                    delegated.add(phone)
                 continue
             attempts[phone] += 1
             logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
@@ -2217,6 +2223,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         # 领取（与铺点路径同口径；手动指定账号时 reclaim=True，可重签当日已了结的账号）
         if not _claim(phone, today):
             logger.debug(f"[{phone}] 已被其他执行体领取，本进程跳过")
+            if delegated is not None:
+                delegated.add(phone)
             continue
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
@@ -2867,9 +2875,10 @@ def main():
     # 签到事件收集器——run_queue_retry 每次尝试/迁移经 sink 上报，
     # 任务结束后单事务批量落库（见 results 赋值后的 add_sign_events_batch）。
     event_rows = []
+    delegated = set()   # 不在本执行体范围内的账号（多执行体分工，见 run_queue_retry 说明）
     results = run_queue_retry(
         accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
-        event_sink=event_rows.append,
+        event_sink=event_rows.append, delegated=delegated,
         # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
         reclaim=bool(args.only),
     )
@@ -2922,8 +2931,13 @@ def main():
     # 退出码判成 0，run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底
     # （容器侧已修此洞，宿主侧是本轮补齐）。
     has_window_skip = False
-    ok_n = fail_n = skip_n = no_pos_n = 0
+    ok_n = fail_n = skip_n = no_pos_n = other_n = 0
     for acc in accounts:
+        if acc.phone in delegated:
+            # 由其他执行体负责：既不算成功也不算失败。若把它当失败，多执行体形态下
+            # 每个执行体都会把别人的活报成自己的失败（退出码与告警都会失真）。
+            other_n += 1
+            continue
         _s, _m, _sk, status = results.get(acc.phone, (False, "未执行", False, STATUS_PENDING))
         if status in (STATUS_SUCCESS, STATUS_ALREADY):
             ok_n += 1
@@ -2944,6 +2958,8 @@ def main():
         summary += f"，➖ {skip_n} 跳过"
     if no_pos_n:
         summary += f"，🚫 {no_pos_n} 无点位"
+    if other_n:
+        summary += f"，⇄ {other_n} 由其他执行体负责"
     logger.info(f"==== 签到汇总：{summary} ====")
 
     # 窗口外未了结专项告警。
