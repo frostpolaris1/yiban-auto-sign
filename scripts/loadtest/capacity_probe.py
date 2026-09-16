@@ -83,13 +83,17 @@ def log(msg):
 # ---------------------------------------------------------------------------
 # 纯函数（换算与判定口径，全部有单测；不依赖任何测量设备）
 # ---------------------------------------------------------------------------
-def executor_capacity(window_sec, per_acct_wall_s, gap):
-    """**单执行体**在一个窗口内能跑完的账号数。
+def executor_capacity(window_sec, cycle_sec):
+    """**单执行体**在一个窗口内能跑完的账号数 = 窗口 ÷ 单账号周期。
 
-    一个周期 = 单账号实测耗时 + 账号间隔（间隔是刻意的风控节奏，不计入"浪费"）。
-    实测耗时含进程启动摊销、TLS 握手与全部请求，故这里不做任何理论修正。
+    ⚠ **周期直接取压测给出的单账号墙钟，不要再额外加一次间隔**：账号间隔是
+    "相邻账号请求的最小间隔"（下限语义，见 `test_manual_queue_honors_account_gap_floor`），
+    间隔大于单账号耗时时，队列会等满到间隔——故实测墙钟**已经含了它**。
+    再加一次会把容量低估近一半（实测：生产间隔档 10.321s 的周期被算成 20.321s）。
+
+    周期含进程启动摊销、TLS 握手与全部请求，故不做任何理论修正。
     """
-    cycle = float(per_acct_wall_s or 0) + float(gap or 0)
+    cycle = float(cycle_sec or 0)
     if cycle <= 0:
         return 0
     return int(float(window_sec) // cycle)
@@ -107,11 +111,16 @@ def executors_needed(users, per_executor):
     return math.ceil(users / float(per_executor))
 
 
+#: "未触及饱和"的标记：此时可用的 K 只是**已测范围的下界**，不是上限
+NOT_SATURATED = "未触及饱和"
+
+
 def hardware_ceiling(rows, degrade_limit=1.5):
     """本机实测能**同时**跑几个执行体：首个「单账号耗时劣化超过 limit 或资源饱和」档之前。
 
     返回 `(K, 原因)`——`K` 为可用的最大档位，`原因` 说明为何在该档之外不可用；
-    全程没有劣化/饱和时返回最后一个测到的档位与 `"未触及饱和"`。
+    全程没有劣化/饱和时返回最后一个测到的档位与 `NOT_SATURATED`（**这是下界**：
+    意思是"至少这么多还能跑"，不能读成"最多只能这么多"，否则会得出错的"机器不够"）。
     """
     safe_k, reason = None, "未测量"
     for r in sorted(rows, key=lambda x: x["K"]):
@@ -123,7 +132,7 @@ def hardware_ceiling(rows, degrade_limit=1.5):
                 else "资源/锁饱和"
             return (safe_k, reason)
         safe_k = r["K"]
-    return (safe_k, "未触及饱和")
+    return (safe_k, NOT_SATURATED)
 
 
 def build_verdict(rows, *, users, window_sec, gap, ratio=DEFAULT_RATIO):
@@ -131,25 +140,38 @@ def build_verdict(rows, *, users, window_sec, gap, ratio=DEFAULT_RATIO):
     if not rows:
         return {"ok": False, "why": "没有测量结果"}
     base = next((r for r in rows if r["K"] == 1), rows[0])
-    per_acct = float(base.get("per_acct_wall_s") or 0)
-    capacity = executor_capacity(window_sec, per_acct, gap)
+    cycle = float(base.get("per_acct_wall_s") or 0)
+    capacity = executor_capacity(window_sec, cycle)
     per_exec = recommend_per_executor(capacity, ratio)
     need = executors_needed(users, per_exec)
     ceiling_k, ceiling_why = hardware_ceiling(rows)
-    feasible = ceiling_k is not None and need is not None and need <= ceiling_k
+    measured_upto = max(r["K"] for r in rows)
+    if ceiling_k is None:
+        verdict_code = "insufficient"          # 连最低档都饱和
+    elif need is None:
+        verdict_code = "unknown"
+    elif need <= ceiling_k:
+        verdict_code = "ok"
+    elif ceiling_why == NOT_SATURATED:
+        verdict_code = "needs_wider_ladder"    # 需求超过已测范围，无实测依据下结论
+    else:
+        verdict_code = "insufficient"
     return {
+        "verdict_code": verdict_code,
+        "measured_upto_k": measured_upto,
         "ok": True,
         "users": users,
         "window_sec": window_sec,
         "gap": gap,
         "ratio": round(ratio, 4),
-        "per_acct_wall_s": round(per_acct, 3),
+        "cycle_s": round(cycle, 3),
+        "cycle_includes_gap_s": gap,
         "single_executor_capacity": capacity,
         "recommended_per_executor": per_exec,
         "executors_needed": need,
         "hardware_ceiling_k": ceiling_k,
         "hardware_ceiling_why": ceiling_why,
-        "feasible_on_this_machine": feasible,
+        "feasible_on_this_machine": verdict_code == "ok",
         "throughput_acct_per_h": base.get("throughput_acct_per_h"),
         "first_bottleneck": (base.get("first_bottleneck") or None),
     }
@@ -159,19 +181,27 @@ def format_verdict(v, profile, rows):
     """把结论排成人类可读的几行（给部署者看）。"""
     if not v.get("ok"):
         return f"[{profile}] 无法给出建议：{v.get('why')}"
+    ceiling = ("至少 %s（%s）" % (v["hardware_ceiling_k"], v["hardware_ceiling_why"])
+               if v.get("hardware_ceiling_why") == NOT_SATURATED
+               else "%s（%s）" % (v["hardware_ceiling_k"], v["hardware_ceiling_why"]))
     lines = [
         "",
         f"=== [{profile}] 结论（全部为实测值，非估算）===",
-        f"  单账号实测耗时：{v['per_acct_wall_s']}s（账号间隔 {v['gap']}s）",
+        f"  单账号周期（实测，含间隔对齐）：{v['cycle_s']}s"
+        f"（本档账号间隔 {v['cycle_includes_gap_s']}s）",
         f"  单执行体容量：{v['single_executor_capacity']} 账号 / {v['window_sec']}s 窗口",
         f"  建议每执行体带：{v['recommended_per_executor']} 账号"
         f"（= 实测容量 × {v['ratio']:.2f}，留余量）",
         f"  {v['users']} 个账号需要：{v['executors_needed']} 个执行体",
-        f"  本机实测可同时跑：{v['hardware_ceiling_k']} 个执行体"
-        f"（上限原因：{v['hardware_ceiling_why']}）",
+        f"  本机实测可同时跑：{ceiling} 个执行体",
     ]
-    if v["feasible_on_this_machine"]:
+    if v.get("verdict_code") == "ok":
         lines.append("  → 本机够用；但**建议值只是提醒**，实际上线后仍要看失败率与单账号耗时漂移。")
+    elif v.get("verdict_code") == "needs_wider_ladder":
+        lines.append(
+            f"  → ⚠ 需求（{v['executors_needed']} 个）超过已测范围（K≤{v['measured_upto_k']}，"
+            "且未见饱和）：**不能据此说机器不够**。要下结论请把 K 阶梯加大重测。"
+        )
     else:
         lines.append(
             "  → ⚠ 按 2/3 余量口径，本机在执行体数上不够：要么接受更长窗口/更高失败率，"
@@ -306,6 +336,8 @@ def main(argv=None):
     ap.add_argument("--timeout-per-k", type=float, default=600.0,
                     help="单档阶梯的整段超时（秒）")
     ap.add_argument("--dry-run", action="store_true", help="只打印将要执行的步骤")
+    ap.add_argument("--reuse-results", action="store_true",
+                    help="不测量，只按已落盘的 concurrency-*.json 重新出结论（改换算口径时用）")
     args = ap.parse_args(argv)
 
     repo = os.path.abspath(args.repo)
@@ -344,14 +376,24 @@ def main(argv=None):
             prepare_env(base, repo)
             env_ready = True
 
-        max_accounts = max(max(PROFILES[p]["k_list"]) * PROFILES[p]["per_proc"]
-                           for p in profiles)
-        # 造号只做一次：各档共用同一批账号（口径一致，便于横向比较）
-        seed(base, db_path, env_path, max_accounts, PROFILES[profiles[0]]["gap"], repo)
+        if not (args.reuse_results and args.skip_env):
+            max_accounts = max(max(PROFILES[p]["k_list"]) * PROFILES[p]["per_proc"]
+                               for p in profiles)
+            # 造号只做一次：各档共用同一批账号（口径一致，便于横向比较）
+            seed(base, db_path, env_path, max_accounts, PROFILES[profiles[0]]["gap"], repo)
 
         for p in profiles:
             cfg = PROFILES[p]
             label = f"cap-{p}"
+            if args.reuse_results:
+                v = build_verdict(read_probe_result(outdir, label).get("rows") or [],
+                                  users=args.users, window_sec=args.window_sec,
+                                  gap=cfg["gap"], ratio=args.ratio)
+                v["profile"] = p
+                v["profile_delay_ms"] = cfg["delay_ms"]
+                verdicts[p] = v
+                print(format_verdict(v, p, read_probe_result(outdir, label).get("rows") or []))
+                continue
             if os.path.exists(ready_path):
                 os.remove(ready_path)
             mock = start_mock(base, repo, cfg["delay_ms"], mock_log, ready_path, pubkey_path)

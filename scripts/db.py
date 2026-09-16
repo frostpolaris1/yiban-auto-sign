@@ -42,6 +42,7 @@ if _REPO_ROOT not in sys.path:
 from yiban import clock  # noqa: E402
 from yiban.infra import account_crypto, env_io, env_lock  # noqa: E402
 from yiban.store import accounts as _accounts  # noqa: E402
+from yiban.store import claims as _claims  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
 account_is_signable = _accounts.is_signable
@@ -65,6 +66,22 @@ cancel_verify_job = _verify_jobs.cancel
 count_active_verify_jobs = _verify_jobs.count_active
 reclaim_stale_verify_jobs = _verify_jobs.reclaim_stale
 purge_verify_jobs = _verify_jobs.purge
+
+# 签到领取池（v17，多执行体协调）
+CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS
+CLAIM_RETENTION_DAYS = _claims.RETENTION_DAYS
+CLAIM_STATE_CLAIMED = _claims.STATE_CLAIMED
+CLAIM_STATE_DONE = _claims.STATE_DONE
+CLAIM_STATE_FAILED = _claims.STATE_FAILED
+CLAIM_SETTLED_STATES = _claims.SETTLED_STATES
+claim_new_owner = _claims.new_owner
+claim_sign_account = _claims.try_claim
+claim_touch = _claims.touch
+claim_settle = _claims.settle
+claim_states_for_day = _claims.states_for_day
+claim_in_flight = _claims.in_flight_phones
+claim_stats = _claims.stats
+purge_sign_claims = _claims.purge
 
 logger = logging.getLogger("yiban.db")
 
@@ -1104,6 +1121,35 @@ def set_user_sid(email, sid):
         )
 
 
+def migrate_v17(conn):
+    """v17：签到领取池 `sign_claims`（多执行体协调）。可选迁移，失败只告警不阻断启动。
+
+    为什么独立成表：多执行体的分工靠"原子领取 + 租约"而不是静态分片——静态分片下
+    最慢的那一份决定全天成败。领取记录同时承担"当日是否了结"的判据（state）。
+
+    `UNIQUE(phone, day)` 是**并发正确性的基础**：一个账号一天只可能有一行，
+    领取走 upsert，故不存在两个执行体同时"新插入"同一个账号的窗口。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sign_claims ("
+        "phone TEXT NOT NULL, "
+        "day TEXT NOT NULL, "
+        "owner TEXT NOT NULL, "
+        "claimed_at TEXT NOT NULL, "
+        "heartbeat_at TEXT NOT NULL, "
+        "state TEXT NOT NULL DEFAULT 'claimed', "
+        "result TEXT NOT NULL DEFAULT '', "
+        "attempts INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (phone, day)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sign_claims_day_state "
+        "ON sign_claims(day, state)"
+    )
+    conn.commit()
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -1124,6 +1170,7 @@ _MIGRATIONS = [
     (14, "v14_drop_legacy_stats", migrate_v14, False),
     (15, "v15_verify_jobs", migrate_v15, False),
     (16, "v16_verify_job_prev_status", migrate_v16, False),
+    (17, "v17_sign_claims", migrate_v17, False),
 ]
 
 
@@ -2564,7 +2611,7 @@ def purge_old_delete_requests(days=30):
 def run_daily_cleanup():
     """每日定期清理的集中入口（2026-08-28 审查 M6）。
 
-    审计/事件旧数据 + 过期软删账号 + 过期注销用户 + 注销请求记录的清理，
+    审计/事件旧数据 + 过期软删账号 + 过期注销用户 + 注销请求记录 + 签到领取记录的清理，
     原先挂在 init_db(cleanup=True) 上——而 signin 子进程每天要跑 2~3 次
     （Docker 调度器首签/补签/探针，宿主 cron 同理），每次都执行一轮
     全表 DELETE + 多个 purge，与 web 的 8 个线程抢库级写锁，是审计写入
@@ -2594,6 +2641,7 @@ def run_daily_cleanup():
     purge_expired_deleted_accounts()
     purge_deleted_users()
     purge_old_delete_requests()
+    purge_sign_claims()
 
 
 def record_user_delete_request(username, ip_hash="", kind="delete"):
