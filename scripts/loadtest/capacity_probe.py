@@ -83,15 +83,30 @@ def log(msg):
 # ---------------------------------------------------------------------------
 # 纯函数（换算与判定口径，全部有单测；不依赖任何测量设备）
 # ---------------------------------------------------------------------------
+def measured_cycle(per_acct_wall_s, gap, per_proc):
+    """把压测给出的"单账号平均墙钟"还原成**周期**（含间隔对齐）。
+
+    压测口径是 `墙钟 ÷ 进程内账号数`，而**每个进程的第一个账号不等待间隔**
+    （前面没有账号），故平均墙钟比真实周期少 `gap / n`：
+
+        周期 = 平均墙钟 + gap / n
+
+    实测对照（生产间隔档 gap=10、每进程 6 个账号）：平均墙钟 10.321s → 周期
+    11.99s，与 2026-09-14 独立实测的 11.88s（拟真 300ms + gap 10）吻合；
+    若不补这一项，容量会被高估 `(t+gap)/(t+gap-gap/n)` ≈ 16%。
+
+    gap=0 的档（纯机器能力）不含此项。
+    """
+    per_acct = float(per_acct_wall_s or 0)
+    if not gap or not per_proc:
+        return per_acct
+    return per_acct + float(gap) / float(per_proc)
+
+
 def executor_capacity(window_sec, cycle_sec):
     """**单执行体**在一个窗口内能跑完的账号数 = 窗口 ÷ 单账号周期。
 
-    ⚠ **周期直接取压测给出的单账号墙钟，不要再额外加一次间隔**：账号间隔是
-    "相邻账号请求的最小间隔"（下限语义，见 `test_manual_queue_honors_account_gap_floor`），
-    间隔大于单账号耗时时，队列会等满到间隔——故实测墙钟**已经含了它**。
-    再加一次会把容量低估近一半（实测：生产间隔档 10.321s 的周期被算成 20.321s）。
-
-    周期含进程启动摊销、TLS 握手与全部请求，故不做任何理论修正。
+    周期由 `measured_cycle` 从压测结果还原（已含间隔对齐），此处不再做任何修正。
     """
     cycle = float(cycle_sec or 0)
     if cycle <= 0:
@@ -140,7 +155,8 @@ def build_verdict(rows, *, users, window_sec, gap, ratio=DEFAULT_RATIO):
     if not rows:
         return {"ok": False, "why": "没有测量结果"}
     base = next((r for r in rows if r["K"] == 1), rows[0])
-    cycle = float(base.get("per_acct_wall_s") or 0)
+    cycle = measured_cycle(base.get("per_acct_wall_s"),
+                           gap, base.get("per_proc"))
     capacity = executor_capacity(window_sec, cycle)
     per_exec = recommend_per_executor(capacity, ratio)
     need = executors_needed(users, per_exec)
