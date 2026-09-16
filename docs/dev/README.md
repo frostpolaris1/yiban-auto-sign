@@ -49,6 +49,7 @@ scripts/                      运维 CLI（含过渡期的兼容壳）
 ├── signin.py                 兼容壳 → yiban.engine.runner（旧命令行与退出码不变）
 ├── db.py                     兼容壳 → yiban.store.db（旧 `import db` 仍可用）
 ├── state_cleanup.py          状态文件清理 CLI
+├── yiban-fallback.sh         兜底常驻执行体的 cron 薄包装（读 .env 判开关，关则静默退出）
 └── loadtest/                 压测与容量基准（仅限隔离测试机，零真实外联）
     ├── mock_yiban.py         假易班（真 TLS，覆盖两条登录流程 + 签到）
     ├── mock_env.py           自签证书 + hosts 回环 + 出站兜底（一键搭建/还原）
@@ -90,6 +91,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | `YIBAN_PROXY_FALLBACK` | 兜底常驻执行体的出口（未设则用 `YIBAN_PROXY`） | `http://fb:8080` |
 | `YIBAN_WORKERS` | 并行执行体数（未设=1） | `4` |
 | `YIBAN_FALLBACK_INTERVAL` | 兜底执行体扫描间隔秒（默认 60） | `60` |
+| `YIBAN_FALLBACK_ENABLE` | 兜底常驻执行体开关（1/true/on/yes=开；未设=关）。**还要在宿主加一条 cron** 才会真有进程（模板见 `scripts/yiban-fallback.sh` 头注释） | `1` |
 | `YIBAN_CAPACITY_MEASURED` | 部署者实测的**单执行体容量**（账号/窗口），用于给出建议值 | `354` |
 
 规则细节（按序取用、不足循环、空位语义）与脱敏口径见 `yiban/egress.py` 的模块文档；

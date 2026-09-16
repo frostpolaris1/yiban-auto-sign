@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import db  # noqa: E402
 
+from yiban import egress  # noqa: E402  # 身份串口径的唯一来源（activity 的消费侧）
+
 TEST_KEY = "a" * 64
 DAY = "2026-09-16"
 PHONE = "13800138000"
@@ -200,6 +202,69 @@ class ClaimSemanticsTest(_Base):
         self.assertFalse(db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_DONE))
         self.assertEqual(db.claim_states_for_day(DAY), {})
         self.assertEqual(db.claim_stats(DAY)["total"], 0)
+
+
+class ActivityTest(_Base):
+    """`activity(day)`：当日**按执行体归属**的分组计数（前端"谁做了多少"）。
+
+    它与 `stats(day)` 只差分组维度，故两条纪律与 `stats` 完全一致：
+    ① 只做计数，**不解析角色、不脱敏**（那是展示层的事，store 不依赖 egress）；
+    ② 库未落地/读失败一律按空处理，**不抛**——新部署没有库很正常。
+    """
+
+    def test_groups_by_owner_and_state(self):
+        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_DONE, "ok")
+        db.claim_sign_account(PHONE_B, DAY, OWNER_A)
+        db.claim_give_up(PHONE_B, DAY, OWNER_A, "失败")
+        db.claim_sign_account("13800138002", DAY, OWNER_B)
+        rows = {r["owner"]: r for r in db.claim_activity(DAY)}
+        self.assertEqual(set(rows), {OWNER_A, OWNER_B})
+        self.assertEqual((rows[OWNER_A]["done"], rows[OWNER_A]["failed"],
+                          rows[OWNER_A]["claimed"], rows[OWNER_A]["total"]),
+                         (1, 1, 0, 2))
+        self.assertEqual((rows[OWNER_B]["done"], rows[OWNER_B]["claimed"],
+                          rows[OWNER_B]["total"]), (0, 1, 1))
+
+    def test_only_counts_the_requested_day(self):
+        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        db.claim_sign_account(PHONE_B, "2000-01-01", OWNER_B)
+        rows = db.claim_activity(DAY)
+        self.assertEqual([r["owner"] for r in rows], [OWNER_A])
+
+    def test_empty_day_returns_empty_list(self):
+        self.assertEqual(db.claim_activity(DAY), [])
+
+    def test_missing_table_does_not_raise(self):
+        """表未落地（迁移被延后）时按空处理——与 `stats` 同口径，绝不抛。"""
+        db.get_conn().execute("DROP TABLE sign_claims")
+        db.get_conn().commit()
+        self.assertEqual(db.claim_activity(DAY), [])
+
+    def test_order_is_stable(self):
+        """顺序稳定（按 owner 升序）：前端用它编 1-based 槽位号，抖动会让编号乱跳。"""
+        for phone, owner in ((PHONE_B, OWNER_B), (PHONE, OWNER_A)):
+            db.claim_sign_account(phone, DAY, owner)
+        self.assertEqual([r["owner"] for r in db.claim_activity(DAY)],
+                         sorted([OWNER_A, OWNER_B]))
+
+    def test_new_owner_and_parse_owner_are_inverse(self):
+        """写入点（`new_owner`）与解析点（`egress.parse_owner`）必须互为逆运算。"""
+        for prefix, role in ((egress.IDENT_SINGLE_PREFIX, egress.ROLE_SINGLE),
+                             (egress.IDENT_FALLBACK_PREFIX, egress.ROLE_FALLBACK),
+                             ("", egress.ROLE_UNKNOWN)):
+            with self.subTest(prefix=prefix):
+                parsed = egress.parse_owner(db.claim_new_owner(prefix))
+                self.assertEqual(parsed["role"], role)
+                self.assertIsNone(parsed["index"])
+        # 执行体身份的**现行**写入点是 egress 的稳定槽位名（见 yiban/egress.py）；
+        # `new_owner` 只为历史调用方保留，两者都要能解析回来
+        parsed = egress.parse_owner(egress.worker_owner(2, "host"))
+        self.assertEqual((parsed["role"], parsed["index"]), (egress.ROLE_WORKER, 2))
+        for owner, role in ((egress.fallback_owner("host"), egress.ROLE_FALLBACK),
+                            (egress.single_owner("host"), egress.ROLE_SINGLE)):
+            with self.subTest(owner=owner):
+                self.assertEqual(egress.parse_owner(owner)["role"], role)
 
 
 class SingleStatementClaimTest(_Base):
