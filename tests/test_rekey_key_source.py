@@ -98,9 +98,10 @@ from _frontend_src import frontend_source
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import account_crypto  # noqa: E402
 import db  # noqa: E402
 import notify  # noqa: E402
+
+from yiban.infra import account_crypto  # noqa: E402
 
 OLD_KEY = "a" * 64
 NEW_KEY = "b" * 64
@@ -584,8 +585,9 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         迁移的必须是改写后的值；若读发生在锁外（修复前的 main 流程），
         落盘的就是改写前的陈旧值。
         """
-        import env_lock
         import rekey_accounts
+
+        from yiban.infra import env_lock
 
         secret_v1 = _notify_enc(OLD_KEY)
         secret_v2 = json.dumps(account_crypto.encrypt_text(

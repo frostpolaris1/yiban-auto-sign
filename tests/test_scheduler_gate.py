@@ -39,10 +39,11 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import account_crypto  # noqa: E402
 import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
 import signin  # noqa: E402
+
+from yiban.infra import account_crypto  # noqa: E402
 
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64

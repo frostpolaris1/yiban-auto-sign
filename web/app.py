@@ -270,17 +270,19 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 {police_block}
 </body>
 </html>"""
-import account_crypto  # noqa: E402  # 敏感配置加密（AES-GCM，ACCOUNTS_KEY）
 import child_env  # noqa: E402
 import db  # noqa: E402
 import email_policy  # noqa: E402  邮箱域名黑白名单审查：注册写入前拦截占位/一次性域名
-import env_io  # noqa: E402  .env 解析单一实现（web/read_env 与 scripts 各模块共用）
-import env_lock  # noqa: E402
 import mailer  # noqa: E402  # A 线：管理员告警邮件（SMTP，零依赖；不配置则不启用）
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
 
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
+from yiban.infra import (  # noqa: E402
+    account_crypto,  # 敏感配置加密（AES-GCM，ACCOUNTS_KEY）
+    env_io,
+    env_lock,
+)
 
 # 默认路径（与 run.sh 保持一致，可用参数覆盖）
 ACCOUNTS_DEFAULT = os.environ.get("YIBAN_ACCOUNTS_FILE", "accounts.json")

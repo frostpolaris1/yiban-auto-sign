@@ -11,7 +11,7 @@
 """
 import os
 
-from locks import file_lock
+from yiban.infra.locks import file_lock
 
 
 def env_write_lock(env_path):

@@ -288,7 +288,7 @@ if [ -f "${KEY_FILE}" ]; then
     fi
 else
     # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（账号密码 AES-GCM 数据加密密钥，
-    # 见 scripts/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
+    # 见 yiban/infra/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
     if [ -f "${APP_DIR}/.env" ]; then
         grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/secret-key.env" \
             && log "密钥来源：${APP_DIR}/.env 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \

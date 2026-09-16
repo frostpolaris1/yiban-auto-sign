@@ -113,7 +113,7 @@ class WebConcurrentEditTest(_Base):
         """
         import threading
 
-        import locks
+        from yiban.infra import locks
         self._write({P1: {"fail_days": 3, "paused_since": "2026-09-01"}})
         done = threading.Event()
 
@@ -148,7 +148,7 @@ class LockIsUsedTest(_Base):
     """整段读-改-写必须在同一把跨进程锁内完成。"""
 
     def test_update_holds_file_lock(self):
-        import locks
+        from yiban.infra import locks
         self._write({P1: {"fail_days": 1}})
         seen = []
         real_lock = locks.file_lock
@@ -163,7 +163,7 @@ class LockIsUsedTest(_Base):
         self.assertIn("cred-state.json", seen, "读-改-写须经统一文件锁原语")
 
     def test_signin_save_path_also_locks(self):
-        import locks
+        from yiban.infra import locks
         seen = []
         real_lock = locks.file_lock
 
