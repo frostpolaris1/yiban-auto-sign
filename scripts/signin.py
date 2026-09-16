@@ -51,6 +51,9 @@ import db  # noqa: E402  # 2026-08-16 审查轮：原 _load_accounts_from_file/b
 import mailer  # noqa: E402  # A 线：管理员告警邮件 / B 线：用户签到失败邮件（SMTP，零依赖；不配置则不启用）
 import notify  # noqa: E402  # Webhook 推送组件（Server酱/自定义 URL，加密配置+节流+响应检查）
 
+from yiban import (  # noqa: E402  # 本项目版本（勿与易班 App 版本 YIBAN_APP_VERSION 混同）
+    __version__ as RELEASE_VERSION,
+)
 from yiban import client as yiban_client  # noqa: E402  # 客户端外观 YibanClient
 from yiban import (  # noqa: E402
     clock,
@@ -2939,7 +2942,11 @@ def main():
         # 调用方可据此向用户如实提示（退出码语义见文件头/退出码表）
         sys.exit(3)
 
-    logger.info(f"==== 开始执行签到，共 {len(accounts)} 个账号，队列重试模式 ====")
+    # 版本号写进轮次横幅：发布门槛靠它把"生产跑过的轮次"与提交对齐
+    # （docs/dev/release-gate.md §4），生产日志本身不带版本信息。
+    logger.info(
+        f"==== 开始执行签到（v{RELEASE_VERSION}），共 {len(accounts)} 个账号，队列重试模式 ===="
+    )
     # 状态文件以"尝试开始时刻"的日期命名（防跨午夜执行写错当天）
     attempt_date = clock.now().strftime("%Y-%m-%d")
     # 自动错峰（仅自动签到；--only 手动签到立即执行，不走计划）
@@ -3110,7 +3117,7 @@ def main():
         summary += f"，🚫 {no_pos_n} 无点位"
     if other_n:
         summary += f"，⇄ {other_n} 由其他执行体负责"
-    logger.info(f"==== 签到汇总：{summary} ====")
+    logger.info(f"==== 签到汇总（v{RELEASE_VERSION}）：{summary} ====")
 
     # 窗口外未了结专项告警。
     # is_second_run：run.sh 补签轮（07:10）导出的 YIBAN_SECOND_RUN=1 优先
