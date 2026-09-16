@@ -83,6 +83,35 @@ class DeployEntryImportTest(unittest.TestCase):
                 problems.append(f"{d}/{name}")
         self.assertEqual(problems, [], f"以下脚本导入 yiban 却没有包导入引导：{problems}")
 
+    def test_bootstrap_precedes_yiban_import(self):
+        """引导必须**先于**任何 yiban 导入——反过来写会在"直接跑脚本"时崩。
+
+        2026-09-16 实测踩到：`db.py` 的 infra 导入被放到引导之前，于是只
+        `import db` 的小 CLI（`python3 scripts/list_duplicate_owners.py`）报
+        ModuleNotFoundError: No module named 'yiban'——而文件里"有引导"，上面那条
+        存在性断言看不出来。这里按**出现位置**判定，把顺序钉死。
+        """
+        import re
+        roots = ["scripts", "docker", "web", "yiban", "tests"]
+        boot = re.compile(r"(?m)^\s*(?:_REPO_ROOT\s*=|sys\.path\.insert)")
+        imp = re.compile(r"(?m)^\s*(?:from|import)\s+yiban\b")
+        bad = []
+        for d in roots:
+            for dirpath, dirs, files in os.walk(os.path.join(BASE, d)):
+                dirs[:] = [x for x in dirs if x != "__pycache__"]
+                for name in sorted(files):
+                    if not name.endswith(".py"):
+                        continue
+                    path = os.path.join(dirpath, name)
+                    with open(path, encoding="utf-8") as f:
+                        text = f.read()
+                    m_boot, m_imp = boot.search(text), imp.search(text)
+                    if m_boot and m_imp and m_imp.start() < m_boot.start():
+                        rel = os.path.relpath(path, BASE).replace("\\", "/")
+                        line = text[:m_imp.start()].count("\n") + 1
+                        bad.append(f"{rel}:{line}")
+        self.assertEqual(bad, [], f"以下文件先导入 yiban、后补引导（直接运行会 ImportError）：{bad}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
