@@ -1240,6 +1240,27 @@ def _mutate_executor_rows(mutator, env_path=ENV_FILE):
     return result
 
 
+def _next_executor_slot(rows):
+    """追加行的槽位号：清单最大 + 1，且**跳过保留期内真用过的号**（下标只增不复用）。
+
+    为什么需要这一步：纯函数 `next_slot` 只能给"清单最大值 + 1"，删掉当前最大行之后它会
+    把刚空出来的号再发一次，而那个号在领取池（`sign_claims.owner`）里已经有历史——重建的
+    执行体会被显示成前任的归属。故这里再按**领取历史**抬一次下限（保留期 14 天，与展示
+    口径同窗口）。历史里出现过的号一律不复用，跨主机也一样（同一个库＝同一个部署）。
+
+    库不可用/未初始化时退回"只按清单最大值 + 1"：编号可能重复，但**追加本身绝不能失败**。
+    """
+    floor = 0
+    try:
+        for owner in db.claim_owners_since():
+            parsed = yb_egress.parse_owner(owner)
+            if parsed["role"] == yb_egress.ROLE_WORKER and isinstance(parsed["index"], int):
+                floor = max(floor, parsed["index"] + 1)
+    except Exception as e:   # 库抖动不影响追加（与领取池的降级纪律一致）
+        logging.getLogger("yiban").debug("读取执行体历史失败（追加槽位退回清单口径）: %s", e)
+    return max(yb_egress.next_slot(rows), floor)
+
+
 def _save_row_egress(env_path, slot, value):
     """清单模式下只改该行的出口：**其余行逐字保留**，写回清单键（同一把写锁/同一写入函数）。
 
@@ -8455,8 +8476,8 @@ def create_app(host=None):
             return jsonify({"error": err}), 400
 
         def _apply(rows):
-            slot = yb_egress.next_slot(rows)
-            return yb_egress.add_row(rows, rtype, value), slot
+            slot = _next_executor_slot(rows)
+            return yb_egress.add_row(rows, rtype, value, min_slot=slot), slot
 
         try:
             slot = _mutate_executor_rows(_apply)
