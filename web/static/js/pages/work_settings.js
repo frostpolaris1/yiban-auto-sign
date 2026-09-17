@@ -273,10 +273,14 @@
   /* ---------------- 装配与加载 ---------------- */
   function applySettings(data) {
     state.capacityEst = data.capacity_estimate || null;
+    state.capacity = data.capacity || null;
     YB.settingsSchedule.apply(data);
     YB.settingsHealth.apply(data);
     YB.settingsQuota.apply(data);
     YB.settingsSwitches.apply(data);
+    // 执行体分区的规模 KPI 要用「容量配额 · 用户容量上限」（另一份数据源）：
+    // 上限改了（保存容量上限后重拉设置也走这里）一并重画，避免同页两处数字打架。
+    if (YB.settingsExecutors && YB.settingsExecutors.refreshKpis) YB.settingsExecutors.refreshKpis();
   }
 
   // 核心设置加载：加载中显状态条，失败显「设置加载失败」+ 重试；成功隐藏状态条。
@@ -304,11 +308,14 @@
   }
 
   // 保存容量上限后只刷新设置（容量配额 + 调度警示），不重放两张通知卡以免抹掉未保存编辑。
+  // 容量上限还是执行体分区那张「平均每执行体分到的人数」的分子，故一并重画该卡。
   function refreshAfterQuotaSave() {
     return YB.api("GET", "/api/settings").then(function (data) {
       state.capacityEst = data.capacity_estimate || null;
+      state.capacity = data.capacity || null;
       YB.settingsQuota.apply(data);
       YB.settingsSchedule.refreshWarn();
+      if (YB.settingsExecutors && YB.settingsExecutors.refreshKpis) YB.settingsExecutors.refreshKpis();
     }).catch(function () {});
   }
 
@@ -337,7 +344,14 @@
       YB.settingsNotify.mount({ isMaster: state.isMaster });
       YB.settingsMail.mount({ isMaster: state.isMaster });
       YB.settingsQuota.mount({ isMaster: state.isMaster, onSaved: refreshAfterQuotaSave });
-      YB.settingsExecutors.mount({ isMaster: state.isMaster });
+      // 执行体分区：容量上限由页面注入（规模 KPI 的分子）；同一份响应里的容量建议
+      // （measured / recommendation / window / current_accounts）转交「容量配额」分区的建议卡——
+      // 一份数据一次请求，两个分区各取所需（用户 2026-09-17：这两件事共用同一份数据）。
+      YB.settingsExecutors.mount({
+        isMaster: state.isMaster,
+        capacity: function () { return state.capacity; },
+        onData: function (data) { YB.settingsQuota.applyExecutors(data); }
+      });
       YB.settingsSwitches.mount({ isMaster: state.isMaster });
       bindAnnouncement();
       initTabs();
