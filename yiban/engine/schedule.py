@@ -232,6 +232,56 @@ def _window_closed(sch_cfg, now_dt):
     return window.bounds(sch_cfg).is_closed(now_dt)
 
 
+def _window_open(sch_cfg, now_dt):
+    """签到窗口是否已开始（同源同上）。"还没开"与"已经关"是两种情形，调用方要分开处理。"""
+    return window.bounds(sch_cfg).is_open(now_dt)
+
+
+def _window_opens_in(sch_cfg, now_dt):
+    """距窗口开始还有多少秒（已开始为 <= 0）。"""
+    return window.bounds(sch_cfg).opens_in_sec(now_dt)
+
+
+#: 开关类环境变量的真值字面量（与 `run.sh` 的 `_is_truthy`、web 写入侧同一套写法）
+_TRUTHY_LITERALS = ("1", "true", "on", "yes")
+
+
+def _env_flag(name, env=None):
+    """开关类环境变量真值（1/true/on/yes，大小写不敏感）；未设/其它值一律为假。"""
+    src = os.environ if env is None else env
+    return str(src.get(name, "")).strip().lower() in _TRUTHY_LITERALS
+
+
+#: `day_off()` 的返回原因（空串表示照常签到）
+DAY_OFF_SUNDAY = "sunday"
+DAY_OFF_SATURDAY = "saturday"
+DAY_OFF_PAUSED = "paused"
+
+
+def day_off(now=None, sat=None, sun=None, env=None):
+    """今天这一刻是否**有意不签到** → 原因串；空串=照常。
+
+    周末门与一键暂停门的**唯一实现**（顺序与历史行为一致：周日 → 周六 → 暂停）。
+    为什么必须唯一：这三道门原先只写在 `runner.main` 里，而 `--fallback` 在它们之前
+    就 `return` 了（见 `runner.main` 的分支顺序），于是**兜底常驻把门全部绕过**——
+    管理员在网页关掉周末签到、或点了一键暂停，兜底照样把账号签掉（2026-09-17 实测）。
+
+    `sat`/`sun` 可显式传入（定时轮传导入期快照常量，便于既有测试注入）；不给则读环境。
+    """
+    if sat is None:
+        sat = _env_flag("YIBAN_SATURDAY_SIGN", env)
+    if sun is None:
+        sun = _env_flag("YIBAN_SUNDAY_SIGN", env)
+    weekday = (now or clock.now()).weekday()
+    if weekday == 6 and not sun:
+        return DAY_OFF_SUNDAY
+    if weekday == 5 and not sat:
+        return DAY_OFF_SATURDAY
+    if _env_flag("YIBAN_GLOBAL_PAUSE", env):
+        return DAY_OFF_PAUSED
+    return ""
+
+
 def _nearest_available(bi, filled, blocks, cap):
     """双向就近找未满块（自选溢出顺延用；同距离优先更早的块）。无可用返回 None。"""
     n = len(blocks)

@@ -92,7 +92,7 @@
 | `fallback.enabled` | bool | `.env` 里**声明的**开关（`YIBAN_FALLBACK_ENABLE`，认 1/true/on/yes；未设=关）。"声明"与"在跑"是两件事，见 `status` |
 | `fallback.env_key_enable` | string | 开关的键名（同 `env_keys` 的用意：前端不硬编码） |
 | `fallback.status` | string | 后端算好的四态，见下表。**页面直接用它，不要自己用 enabled×alive 拼** |
-| `fallback.in_window` | bool | 当前是否落在**有效**签到窗口内（已扣掐头去尾） |
+| `fallback.in_window` | bool | 当前是否落在**本应运行**的时段内 ＝ 有效窗口内（已扣掐头去尾）**且** 今天没被门挡下（周末签到未开 / 一键暂停）。见下方「`in_window` 的两段口径」 |
 | `window.*` | object | 有效窗口（已扣掐头去尾）：`effective_sec` 就是容量换算用的分母 |
 | `activity.day` | string | 统计的业务日（北京时间） |
 | `activity.in_window` | bool | 与 `fallback.in_window` 同值（放在这里便于前端一次取用） |
@@ -108,8 +108,23 @@
 |-----------|---------|----------|--------------------|
 | 0 | 0 | `off` | 没开兜底。**正常态**，不必提示（除非用户以为开了） |
 | 1 | 1 | `running` | 开关开了、进程也真在跑。正常 |
-| 1 | 0 | `declared_not_running` | **开了却没跑起来**：宿主那条 cron 多半漏加了（或刚改完还没到触发点）。仅当 `in_window=true` 时才值得报警——窗口外它本来就该退出 |
+| 1 | 0 | `declared_not_running` | **开了却没跑起来**：宿主那条 cron 多半漏加了（或刚改完还没到触发点）。仅当 `in_window=true` 时才值得报警——`in_window=false` 时它本来就该退出 |
 | 0 | 1 | `running_not_declared` | 没开开关却有进程在跑：多半是人工 `--fallback` 起的。提示"这条不是由配置拉起的"即可，不是故障 |
+
+### `in_window` 的两段口径（2026-09-17 定，前端**不需要**改判断）
+
+`in_window` 从"落在有效窗口内"改成了"**本应运行**的时段内"，即在钟点口径上**再加一层
+今天是否被挡下的判断**（周末签到未开 / 管理员一键暂停）。改动原因：兜底常驻现在会在这两
+种日子直接退出（此前它会绕过这两道门照签，属缺陷），只按钟点算，页面会在每个周六周日、
+以及每次一键暂停期间报"兜底开了却没跑起来"。
+
+因此前端规矩不变：**只对 `in_window=true` 的 `declared_not_running` 报警**。
+`in_window=false` 有两种情形（窗口外 / 今天被挡下），都不该报警——页面若要区分，看
+`fallback.status` 即可，不必再要新字段。
+
+> 另一个 **`in_window` 用法不同**的地方：`POST /api/scheduler/executors/measure` 的
+> 409 拦截用的是**纯钟点口径**（"窗口内不做实测，避免与签到抢资源"）。所以周末在窗口
+> 钟点内仍可能被 409 拒——这是刻意的：那道闸门只关心"会不会和本轮签到撞上"。
 
 **报警纪律**：窗口外 `alive=false` 是**预期行为**（兜底进程只在窗口内运行），
 页面只对 `in_window=true` 的 `declared_not_running` 报警，否则每天非签到时段都在误报。
