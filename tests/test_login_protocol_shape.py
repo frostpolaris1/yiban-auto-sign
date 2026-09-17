@@ -368,11 +368,57 @@ class KillyibanLoginShapeTest(unittest.TestCase):
                 mock.patch.object(signin.db, "get_session_cache",
                                   return_value={"cookies": "{}", "csrf": "stale"}), \
                 mock.patch.object(signin.db, "clear_session_cache") as cleared, \
-\
                 mock.patch.object(signin.db, "set_session_cache"):
             _run(rec, client.login_killyiban)
         cleared.assert_called_once_with("13800138000")
         self.assertEqual(rec.path(1), "/code/usersure", "缓存失效后必须重新提交登录")
+
+    def test_logged_in_marker_requires_fyiban_host_and_path(self):
+        """M7：302 落在非 f.yiban.cn 的 /iapp7463 不得判"已登录"。
+
+        原判定是子串 `in`：`https://evil.example/iapp7463`、
+        `https://f.yiban.cn.evil.com/x?iapp7463` 都会命中——在未认证会话上置
+        `logged_in=True`，把"登录失败"退化成一个通用失败（可诊断信号丢失）。
+        收严后只认 host == f.yiban.cn 且 path == /iapp7463（query 允许，
+        见 test_session_cache_hit_skips_usersure 的 `?x=1`）。
+        """
+        client, rec = _killyiban_client(
+            [_resp(text=_KILLYIBAN_PAGE % _pubkey_pem(), status=302,
+                   headers={"Location": "https://evil.example/iapp7463"}),
+             _resp({"code": "s200", "msgCN": ""}),
+             _resp(text="", status=302,
+                   headers={"Location": "https://api.uyiban.com/base/c/auth/yiban"
+                                       "?verify_request=VTOK&CSRF=x"}),
+             _resp({"code": 0, "msg": ""}),
+             ])
+        with mock.patch.object(signin.db, "is_initialized", return_value=True), \
+                mock.patch.object(signin.db, "get_session_cache",
+                                  return_value={"cookies": "{}", "csrf": "stale"}), \
+                mock.patch.object(signin.db, "clear_session_cache"), \
+                mock.patch.object(signin.db, "set_session_cache"):
+            _run(rec, client.login_killyiban)
+        self.assertEqual(rec.path(1), "/code/usersure",
+                         "非易班主机的 /iapp7463 不得被当成已登录")
+
+    def test_logged_in_marker_rejects_subdomain_spoof(self):
+        """子域伪装 f.yiban.cn.evil.com 带 query 里的 iapp7463 不得命中。"""
+        client, rec = _killyiban_client(
+            [_resp(text=_KILLYIBAN_PAGE % _pubkey_pem(), status=302,
+                   headers={"Location": "https://f.yiban.cn.evil.com/x?iapp7463"}),
+             _resp({"code": "s200", "msgCN": ""}),
+             _resp(text="", status=302,
+                   headers={"Location": "https://api.uyiban.com/base/c/auth/yiban"
+                                       "?verify_request=VTOK&CSRF=x"}),
+             _resp({"code": 0, "msg": ""}),
+             ])
+        with mock.patch.object(signin.db, "is_initialized", return_value=True), \
+                mock.patch.object(signin.db, "get_session_cache",
+                                  return_value={"cookies": "{}", "csrf": "stale"}), \
+                mock.patch.object(signin.db, "clear_session_cache"), \
+                mock.patch.object(signin.db, "set_session_cache"):
+            _run(rec, client.login_killyiban)
+        self.assertEqual(rec.path(1), "/code/usersure",
+                         "子域伪装不得被当成已登录")
 
 
 # ---------------------------------------------------------------------------
