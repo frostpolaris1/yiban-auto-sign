@@ -310,9 +310,10 @@ def fallback_row(rows):
 def next_slot(rows):
     """追加新行要用的槽位号 = 现有最大 + 1（空清单 = 0）。**只增不复用**：删行不重排。
 
-    注意口径的边界：规则就是"最大值 + 1"，故删掉**当前最大**那一行之后，下一次追加
-    会拿到刚空出来的号（删中间行则不会）。要用停用来占住槽位，就把类型改成
-    `disabled` 而不是删除。
+    纯函数只能算到"最大值 + 1"：删掉**当前最大**那一行之后，下一次追加会拿到刚空出来的号。
+    要让"用过的号删掉也不再复用"成立，必须看**领取历史**（谁真的拿这个号跑过）——那是
+    数据层的事，故由追加接口算出下限、经 `add_row(..., min_slot=…)` 传进来。
+    只想占住槽位、不删行的话，把类型改成 `disabled` 即可。
     """
     return max((r["slot"] for r in rows), default=-1) + 1
 
@@ -418,12 +419,17 @@ def manifest_state(env):
     return legacy_rows(env), any(k in env for k in LEGACY_KEYS)
 
 
-def add_row(rows, rtype, proxy):
-    """追加一行：`slot = 现有最大 + 1`。非法类型/兜底重复/槽位已满抛 ValueError。"""
+def add_row(rows, rtype, proxy, min_slot=None):
+    """追加一行：`slot = max(现有最大 + 1, min_slot)`。
+
+    `min_slot` 是**槽位下限**，供调用方把"领取历史里用过的号"并进来（数据层算，见
+    `next_slot` 的说明）：删掉当前最大行后，本次追加就用它跳过那个已用过的号。
+    非法类型 / 兜底重复 / 槽位超上限抛 ValueError。
+    """
     _validate_type(rtype)
     if _fallback_taken(rows, None, rtype):
         raise ValueError("兜底执行体最多只能有一行")
-    slot = next_slot(rows)
+    slot = max(next_slot(rows), int(min_slot or 0))
     if slot > SLOT_MAX:
         raise ValueError(f"槽位已达上限 {SLOT_MAX}，无法再追加执行体")
     return _sorted_rows([*rows, {"slot": slot, "type": rtype, "proxy": _clean_proxy(proxy)}])

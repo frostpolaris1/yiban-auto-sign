@@ -34,7 +34,7 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import egress  # noqa: E402
+from yiban import clock, egress  # noqa: E402
 
 logging.getLogger("yiban").addHandler(logging.NullHandler())
 
@@ -401,6 +401,91 @@ class MigrationWritebackTest(_WebBase):
         self.assertEqual([(a["index"], a["egress"]) for a in body["workers"]["assignments"]],
                          [(0, "http://manifest:1")])
         self.assertEqual(body["fallback"]["egress"], "http://mfb:2")
+
+
+class SlotNeverReusedAfterDeleteTest(_WebBase):
+    """删掉**当前最大**那一行之后，那个号若**真被用过**（领取历史里有）就不得再发出去。
+
+    为什么单靠 `next_slot`（最大值 + 1）不够：删掉最大行后它会立刻把刚空出来的号再发一次，
+    而那个号在 `sign_claims.owner` 里已有历史——新建的执行体会在页面上显示成前任的归属
+    （账号列表的"上次实领"按槽位解析身份串）。故追加接口再按领取历史抬一次下限。
+    """
+
+    def _env_with_two_rows(self):
+        self._write_env(
+            f"{egress.ENV_MANIFEST}=" + _manifest(
+                {"slot": 0, "type": "worker", "proxy": "http://w0:1"},
+                {"slot": 1, "type": "worker", "proxy": "http://w1:1"}))
+
+    def _claim_history(self, slot):
+        """造一条领取历史（业务日=今天，落在保留期内），身份串用真实格式。"""
+        import db
+        conn = db.get_conn()
+        with db._conn_lock:
+            conn.execute(
+                "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
+                "state, result, attempts) VALUES (?, ?, ?, ?, ?, 'done', '', 0)",
+                ("13800138000", clock.today(), egress.worker_owner(slot, "testhost"),
+                 clock.ts(), clock.ts()))
+            conn.commit()
+
+    def _post(self, c, payload):
+        return c.post("/api/scheduler/executors/rows", json=payload,
+                      headers={"X-CSRF-Token": c.csrf})
+
+    def _delete(self, c, slot):
+        return c.delete(f"/api/scheduler/executors/rows/{slot}",
+                        headers={"X-CSRF-Token": c.csrf})
+
+    def test_deleted_slot_with_history_is_not_handed_out_again(self):
+        self._env_with_two_rows()
+        c = self._login()
+        self._claim_history(1)          # 1 号槽位真跑过
+        self.assertEqual(self._delete(c, 1).status_code, 200)
+        got = self._post(c, {"proxy": "http://new:1"}).get_json()
+        self.assertGreater(got["slot"], 1,
+                           "1 号在领取历史里出现过，不得再发给新行（会被显示成前任的归属）")
+
+    def test_deleted_slot_without_history_may_be_reused(self):
+        """反向控制：从没用过的号照旧复用（不白白烧号）——这是**刻意**的行为。"""
+        self._env_with_two_rows()
+        c = self._login()
+        self.assertEqual(self._delete(c, 1).status_code, 200)
+        got = self._post(c, {"proxy": "http://new:1"}).get_json()
+        self.assertEqual(got["slot"], 1)
+
+
+class OwnersSinceTest(_WebBase):
+    """`claims.owners_since`：保留期内的身份串（去重、升序），保留期外的不算。"""
+
+    def _insert(self, phone, day, owner):
+        import db
+        conn = db.get_conn()
+        with db._conn_lock:
+            conn.execute(
+                "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
+                "state, result, attempts) VALUES (?, ?, ?, ?, ?, 'done', '', 0)",
+                (phone, day, owner, clock.ts(), clock.ts()))
+            conn.commit()
+
+    def test_reads_distinct_owners_in_window(self):
+        import db
+        today = clock.today()
+        for phone, owner in (("13800138000", "worker-0@h"),
+                            ("13800138001", "worker-0@h"),
+                            ("13800138002", "fallback@h")):
+            self._insert(phone, today, owner)
+        self.assertEqual(db.claim_owners_since(), ["fallback@h", "worker-0@h"])
+
+    def test_rows_outside_retention_are_ignored(self):
+        import datetime as _dt
+
+        import db
+        old_day = (clock.now()
+                   - _dt.timedelta(days=db.CLAIM_RETENTION_DAYS + 1)).strftime("%Y-%m-%d")
+        self._insert("13800138000", old_day, "worker-7@h")
+        self.assertEqual(db.claim_owners_since(), [],
+                         "保留期外的记录不参与槽位下限（展示口径同样读不到它）")
 
 
 class RowsCrudTest(_WebBase):
