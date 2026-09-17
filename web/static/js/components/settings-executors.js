@@ -2,30 +2,39 @@
 
    挂载到 window.YB.settingsExecutors；classic script。
 
-   数据源与同页其它分区**不同**：本分区只读写 `/api/scheduler/executors`（含按序号写单段与实测端点，
-   仅主管理员），不来自 /api/settings（建议值一律用后端算好的 recommendation，前端不换算）。
-   非主管理员：整 tab 隐藏（页面编排负责），控件仍按权限禁用 + aria-describedby 就地说明；
-   禁用不是安全边界，后端 403 兜底。
+   **数据模型＝清单**（后端 `docs/refactor/86` 交接稿）：一行一个执行体，有稳定槽位号（只增不复用）、
+   类型（worker / fallback / disabled）与自己的出口。故页面上**没有"数量"输入**——行数＝清单长度，
+   增行用「添加执行体」、删行在行内弹窗里。渲染一律按接口的 `executors[]`（`slot` 升序），
+   **不假设槽位号连续**（删行后新建的行会跳过领取历史里用过的号）。
+
+   写操作全部走**行接口**（立即写入 `.env`，没有"整页保存"这一步）：
+     POST   /api/scheduler/executors/rows             追加一行
+     PUT    /api/scheduler/executors/rows/{slot}      改一行的类型 / 出口（只动这一行）
+     DELETE /api/scheduler/executors/rows/{slot}      删一行
+   旧三键（YIBAN_WORKERS / YIBAN_PROXY_LIST / YIBAN_PROXY_FALLBACK）后端已一次性迁移进清单，
+   页面**不再写它们**（写了会和清单打架）。兜底的「开关」（YIBAN_FALLBACK_ENABLE）与
+   「兜底那一行」是两件事，开关仍走 `PUT /api/scheduler/executors`。
+
+   非主管理员：整 tab 隐藏（页面编排负责），控件按权限禁用 + 就地说明；**禁用不是安全边界**，
+   后端对每个端点独立判主管理员（403），写接口另需 CSRF。
 
    字段与语义**全部以后端下发的为准**（docs/dev/api-executors.md，字段名已冻结）：
-   role / label / state / status / activity / last_seen_at 一律直接用，前端不拼、不猜、不自己算口径。
+   type / label / state / status / activity / egress 一律直接用，前端不拼、不猜、不自己算口径；
+   `disabled` 与 `fallback` 行的 `state` 是 `null`，照实渲染（分类只看 `type`）。
 
    敏感信息（出口串可能含 user:pass@）：读接口只回**描述串**（scheme://host[:port]），
-   故编辑框一律留空并提示「留空 = 不修改」，保存成功后关闭弹窗并重新 GET（读回的是脱敏串，
+   故编辑框一律留空并提示「留空 = 不修改」，写成功后重新 GET 再渲染（读回的是脱敏串，
    不能拿提交值渲染）；完整串既不入 DOM 文本与属性，也不进 title、data-* 或控制台。
-   改单个执行体的出口一律走**按序号写单段**（`PUT …/workers/{index}` / `PUT …/fallback`）——
-   整条回写会把别人的代理凭据清成空（静默退回直连）。
+   行内写入**绝不影响其他行**（后端按段写、其余行逐字保留）——见 78 号验收②。
 
-   对外面：mount(options) / load() / apply(data) / save() → Promise<boolean> / isDirty()。 */
+   对外面：mount(options) / load() / apply(data) / save() / isDirty()。 */
 (function () {
   "use strict";
   var YB = window.YB;
   if (!YB) return;
 
   var ctx = { isMaster: false };
-  var snap = { workers: 1 };
   var lastData = null;          // 最近一次执行体接口响应（弹窗与实测换算按需读取，不重复请求）
-  var dirty = false;
   var busy = false;
 
   function $(id) { return document.getElementById(id); }
@@ -37,44 +46,28 @@
   // 错误文案直接显示：后端已在源头抹掉 userinfo（yiban/masking.mask_url_userinfo，见 81/82 号
   // 文档），保证 400 的 error 不含凭据——前端不再自己脱敏，避免两处口径分叉。
   function setTip(text, bad) { YB.setTip("set-exec-tip", text, bad); }
-  function num(id, fallback) {
-    var n = parseInt(($(id) || {}).value, 10);
-    return isNaN(n) ? fallback : n;
-  }
   function count(v) { return Number(v) || 0; }
   function attr(v) { return v == null ? "" : String(v); }
-
-  function markDirty() {
-    if (dirty) return;
-    dirty = true;
-    setHidden($("set-exec-save"), false);
-    setHidden($("set-exec-dirty"), false);
-  }
-  function clearDirty() {
-    dirty = false;
-    setHidden($("set-exec-save"), true);
-    setHidden($("set-exec-dirty"), true);
+  function workers() {
+    return executors().filter(function (r) { return attr(r.type) === "worker"; }).length;
   }
 
-  // 权限：禁用控件时把原因 #set-exec-perm 与控件做程序化关联（读屏可及）。
   function applyPerm() {
     var disabled = !ctx.isMaster;
-    var input = $("set-exec-workers");
-    if (input) {
-      input.disabled = !!disabled;
-      if (disabled) input.setAttribute("aria-describedby", "set-exec-perm");
-      else input.removeAttribute("aria-describedby");
-    }
-    ["set-exec-advice-open", "set-exec-measure", "set-exec-save"].forEach(function (id) {
+    ["set-exec-row-add", "set-exec-advice-open"].forEach(function (id) {
       var b = $(id);
       if (b) b.disabled = !!disabled;
     });
-    setHidden($("set-exec-save"), disabled || !dirty);
-    setHidden($("set-exec-dirty"), disabled || !dirty);
     setHidden($("set-exec-perm"), !disabled);
   }
 
-  /* ---------------- 一览表（只读渲染，字段全部照接口） ---------------- */
+  /* ---------------- 文案映射（键都来自后端字段，前端只做中文） ---------------- */
+  var TYPE_TEXT = { worker: "并行", fallback: "兜底", disabled: "停用" };
+  var TYPE_OPTIONS = [
+    { v: "worker", t: "并行执行体（拉起并参与分配）" },
+    { v: "fallback", t: "兜底常驻执行体（窗口内补签，最多一行）" },
+    { v: "disabled", t: "停用（保留出口与槽位，不拉起、不计入建议值）" }
+  ];
   var STATE_TEXT = {
     running: "正在跑本轮",
     finished: "本轮已跑完",
@@ -99,8 +92,8 @@
     declared_not_running: "badge--bad",
     running_not_declared: "badge--info"
   };
-  // 报警纪律（后端要求）：declared_not_running 只有落在**有效窗口内**才算异常——窗口外兜底
-  // 进程本就退出（alive=false 是预期行为），沿用告警色等于每天非签到时段都在误报。
+  // 报警纪律（后端要求）：declared_not_running 只有落在**本应运行时段内**才算异常——窗口外
+  // 兜底进程本就退出（alive=false 是预期行为），沿用告警色等于每天非签到时段都在误报。
   function fbAbnormal(fb) {
     return fb.status === "running_not_declared"
       || (fb.status === "declared_not_running" && fb.in_window === true);
@@ -126,43 +119,76 @@
   }
   function todayText(a) {
     if (a) {
-      return "成功 " + count(a.done) + " · 失败 " + count(a.failed)
+      return "当日 成功 " + count(a.done) + " · 失败 " + count(a.failed)
         + (count(a.claimed) ? " · 进行中 " + count(a.claimed) : "");
     }
-    return activities().length ? "—" : "今日尚未运行";
+    return activities().length ? "当日 —" : "今日尚未运行";
+  }
+  function executors() { return (lastData && lastData.executors) || []; }
+  // 配置项键名由接口给（workers.env_keys.manifest），槽位下标是后端审计与 .env 里的写法
+  function manifestKey(slot) {
+    var keys = (lastData && lastData.workers && lastData.workers.env_keys) || {};
+    return attr(keys.manifest || "") + "[" + count(slot) + "]";
   }
 
-  function paintWorkers(data) {
-    var w = (data && data.workers) || {};
-    var keys = w.env_keys || {};
-    setText("set-exec-configured", "当前配置 " + count(w.configured || 1) + " 个并行执行体。");
-    setText("set-exec-key-list", keys.list ? "对应配置项：" + keys.list : "");
+  /* ---------------- 清单：摘要 + 一览表 ---------------- */
+  function rowsSummary() {
+    var rows = executors();
+    var n = { worker: 0, fallback: 0, disabled: 0 };
+    rows.forEach(function (r) { n[attr(r.type)] = (n[attr(r.type)] || 0) + 1; });
+    var parts = ["并行 " + n.worker, "兜底 " + n.fallback];
+    if (n.disabled) parts.push("停用 " + n.disabled);
+    return "当前清单 " + rows.length + " 行：" + parts.join(" · ");
+  }
 
+  // 状态与当日合并成一列（用户 2026-09-17：两者是同一件事的两面，各占一列只是白占宽度）
+  function stateCell(row) {
+    var type = attr(row.type);
+    var cell = YB.el("td", { class: "set-exec-state" });
+    if (type === "disabled") {
+      cell.appendChild(YB.el("span", { class: "set-exec-off", text: "停用中（不拉起、不计入建议值）" }));
+      return cell;
+    }
+    if (type === "fallback") {
+      var fb = (lastData && lastData.fallback) || {};
+      cell.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
+      cell.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("fallback", null)) }));
+      return cell;
+    }
+    cell.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
+    cell.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("worker", count(row.slot))) }));
+    return cell;
+  }
+
+  function rowBtn(row) {
+    var label = attr(row.label) || "执行体";
+    var btn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "设置" });
+    btn.setAttribute("aria-label", label + " 设置（槽位 " + count(row.slot) + "）");
+    btn.addEventListener("click", function () { openRow(row); });
+    return btn;
+  }
+
+  function paintRows() {
+    setText("set-exec-rows-summary", rowsSummary());
     var tbody = $("set-exec-assign");
     if (!tbody) return;
     tbody.textContent = "";                       // 清空容器（不用 innerHTML）
-    var rows = (w.assignments || []);
-    rows.forEach(function (a) {
-      var idx = count(a.index);
-      tbody.appendChild(YB.el("tr", {}, [
-        YB.el("td", { class: "mono", text: attr(a.label) || "并行执行体 #" + (idx + 1) }),
-        YB.el("td", { text: "并行" }),
-        YB.el("td", { text: a.egress || "直连（本机出口）" }),
-        YB.el("td", {}, [badge(STATE_TEXT[a.state] || "—", STATE_CLASS[a.state])]),
-        YB.el("td", { class: "set-exec-col-md", text: todayText(activityFor("worker", idx)) }),
-        YB.el("td", {}, [rowBtn(attr(a.label) || "并行执行体 #" + (idx + 1), "worker", idx)])
+    var rows = executors().slice().sort(function (a, b) { return count(a.slot) - count(b.slot); });
+    rows.forEach(function (r) {
+      var type = attr(r.type);
+      tbody.appendChild(YB.el("tr", { class: type === "disabled" ? "set-exec-row-off" : "" }, [
+        YB.el("td", {}, [
+          YB.el("span", { class: "mono", text: attr(r.label) || TYPE_TEXT[type] || "—" }),
+          // 停用行的标签口径就是「已停用」（后端冻结、不含槽位），多个停用行只靠标签区分不了，
+          // 故这里补一个槽位号——槽位是后端给的稳定身份，不是我拼的文案。
+          type === "disabled" ? YB.el("span", { class: "set-exec-slot", text: "（槽位 " + count(r.slot) + "）" }) : null
+        ]),
+        YB.el("td", { text: TYPE_TEXT[type] || "—" }),
+        YB.el("td", { text: r.egress || "直连（本机出口）" }),
+        stateCell(r),
+        YB.el("td", {}, [rowBtn(r)])
       ]));
     });
-    // 兜底执行体：出口与开关都能改；状态用后端算好的 status（enabled × alive 由后端合成）
-    var fb = (data && data.fallback) || {};
-    tbody.appendChild(YB.el("tr", {}, [
-      YB.el("td", { class: "mono", text: attr(fb.label) || "兜底常驻执行体" }),
-      YB.el("td", { text: "兜底" }),
-      YB.el("td", { text: fb.egress || "直连（本机出口）" }),
-      YB.el("td", {}, [badge(FB_TEXT[fb.status] || "—", fbClass(fb))]),
-      YB.el("td", { class: "set-exec-col-md", text: todayText(activityFor("fallback", null)) }),
-      YB.el("td", {}, [rowBtn(attr(fb.label) || "兜底常驻执行体", "fallback", null)])
-    ]));
     // 库里的旧记录（role=unknown）：照实列出来，不猜它属于谁（后端要求：不要在前端归类）
     activities().forEach(function (a) {
       if (attr(a.role) !== "unknown") return;
@@ -170,8 +196,9 @@
         YB.el("td", { text: attr(a.label) || "未标注（旧数据）" }),
         YB.el("td", { text: "—" }),
         YB.el("td", { text: "—" }),
-        YB.el("td", { text: "—" }),
-        YB.el("td", { class: "set-exec-col-md", text: todayText(a) }),
+        YB.el("td", { class: "set-exec-state" }, [
+          YB.el("span", { class: "set-exec-daily", text: todayText(a) })
+        ]),
         YB.el("td", {})
       ]));
     });
@@ -179,19 +206,11 @@
       tbody.appendChild(YB.el("tr", {}, [
         YB.el("td", { text: "—" }),
         YB.el("td", { text: "—" }),
-        YB.el("td", { text: "暂无执行体" }),
-        YB.el("td", { text: "—" }),
-        YB.el("td", { class: "set-exec-col-md", text: "—" }),
+        YB.el("td", { text: "清单为空：点上方「添加执行体」加一行" }),
+        YB.el("td", { class: "set-exec-state" }, [YB.el("span", { class: "set-exec-daily", text: "—" })]),
         YB.el("td", {})
       ]));
     }
-  }
-
-  function rowBtn(label, role, index) {
-    var btn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "设置" });
-    btn.setAttribute("aria-label", label + " 设置");
-    btn.addEventListener("click", function () { openSettings(role, index); });
-    return btn;
   }
 
   function paintFallback(data) {
@@ -201,24 +220,269 @@
       badgeEl.textContent = FB_TEXT[fb.status] || "—";
       badgeEl.className = "badge dot " + fbClass(fb);
     }
-    // 卡头只报异常态：off/running 是正常态（表格里已有一份，不再重复），窗口外的
-    // declared_not_running 也是预期行为（见 fbAbnormal 的口径）
-    var abnormal = fbAbnormal(fb);
     // 卡头只留短标签；"多半漏加了 cron"那类处置说明交给下面那条**窗口内才出现**的告警
     // （#set-exec-fb-warn），避免同一件事在卡头与告警里各说一遍（提醒不占页面）。
     setText("set-exec-fb-text", fb.status === "declared_not_running"
       ? "已声明开启但没有进程在跑。"
       : (fb.status === "running_not_declared" ? "有进程在跑，但不是由配置拉起的。" : ""));
-    setHidden($("set-exec-fb-state"), !abnormal);
-    // 报警纪律（后端要求）：只有"开了却没跑起来"**且落在有效窗口内**才报警，窗口外是预期行为
+    setHidden($("set-exec-fb-state"), !fbAbnormal(fb));
+    // 报警纪律（后端要求）：只有"开了却没跑起来"**且落在本应运行时段内**才报警
     var alarm = fb.status === "declared_not_running" && fb.in_window === true;
     var warn = $("set-exec-fb-warn");
     if (warn) {
       warn.textContent = alarm
-        ? "兜底执行体声明已开启但当前没有在跑（且正在签到窗口内）：窗口内的漏签不会被补，请检查宿主 cron 是否以 --fallback 拉起。"
+        ? "兜底执行体声明已开启但当前没有在跑（且正在签到时段内）：窗口内的漏签不会被补，"
+          + "请检查宿主 cron（或容器调度器）是否以 --fallback 拉起。"
         : "";
       warn.hidden = !alarm;
     }
+  }
+
+  /* ---------------- 写入：行增删 / 改类型 / 改出口（都立即落盘） ---------------- */
+  function note(d) { return attr(d && d.note) || "已写入配置"; }
+  function failTip(e, what) { setTip((e && e.message) || (what + "失败，请稍后重试"), true); }
+
+  function withBusy(fn) {
+    if (busy) return Promise.resolve(false);
+    busy = true;
+    return Promise.resolve().then(fn).then(function (ok) {
+      busy = false; applyPerm(); return ok;
+    }, function () {
+      busy = false; applyPerm(); return false;
+    });
+  }
+
+  function addRow() {
+    if (!ctx.isMaster) return;
+    withBusy(function () {
+      setTip("添加中…", false);
+      return YB.api("POST", "/api/scheduler/executors/rows", { type: "worker" }).then(function (d) {
+        return load().then(function () {
+          setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
+            + "。想给它单独出口，点那一行的「设置」。", false);
+          return true;
+        });
+      }, function (e) { failTip(e, "添加"); });
+    });
+  }
+
+  function putRow(slot, payload, okText) {
+    return withBusy(function () {
+      setTip("提交中…", false);
+      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload).then(function (d) {
+        return load().then(function () {
+          setTip(okText + "：" + note(d), false);
+          return true;
+        });
+      }, function (e) { failTip(e, "保存"); });
+    });
+  }
+
+  function deleteRow(row, handle) {
+    var slot = count(row.slot);
+    var label = attr(row.label) || ("槽位 " + slot);
+    YB.confirmDialog({
+      title: "删除这一行？",
+      body: label + "（槽位 " + slot + "）会从清单里移除，它当前的出口配置一并删除。"
+        + "只是暂时不用的话建议改成「停用」——停用保留出口与槽位号，删除不保留。",
+      confirmText: "删除",
+      danger: true
+    }).then(function (ok) {
+      if (!ok) return;
+      if (handle && handle.close) handle.close();
+      withBusy(function () {
+        setTip("删除中…", false);
+        return YB.api("DELETE", "/api/scheduler/executors/rows/" + slot).then(function (d) {
+          return load().then(function () {
+            setTip("已删除 " + label + "：" + note(d), false);
+            return true;
+          });
+        }, function (e) { failTip(e, "删除"); });
+      });
+    });
+  }
+
+  /* ---------------- 行内弹窗：类型 + 出口（低频与破坏性动作降到正文里） ---------------- */
+  // 类型用自研选择控件（原生 select 的弹出层不可控，项目约定全部自研，见 shared-frontend-components）
+  function typeField(current) {
+    var root = YB.el("div", { class: "select-field", "data-select-field": "set-exec-row-type" });
+    root.appendChild(YB.el("input", { type: "hidden", id: "set-exec-row-type", value: attr(current) }));
+    var menu = YB.el("div", { class: "select-menu", role: "listbox", hidden: true });
+    TYPE_OPTIONS.forEach(function (o) {
+      menu.appendChild(YB.el("button", {
+        type: "button", class: "select-option", role: "option", "data-v": o.v, text: o.t
+      }));
+    });
+    root.appendChild(menu);
+    return YB.el("div", { class: "field" }, [
+      YB.el("span", { class: "field-label" }, [
+        YB.el("span", { text: "类型" }),
+        infoTip("类型与出口的改法", ROW_HELP)
+      ]),
+      root
+    ]);
+  }
+
+  // 弹窗内的 info 浮层：与模板的 {% call info(label, id) %} 同构（.info-tip + .info-pop，
+  // hover/focus 双触发，CSS 里 pointer-events:none）。`up` = 向上展开——弹窗面板是
+  // overflow:hidden，靠近底部的浮层向下开会被裁掉（实测）。
+  var popUid = 0;
+  function infoTip(label, text, up) {
+    popUid += 1;
+    var popId = "set-exec-pop-" + popUid;
+    var btn = YB.el("button", { type: "button", class: "info-tip" });
+    btn.setAttribute("aria-label", label);
+    btn.setAttribute("aria-describedby", popId);
+    btn.appendChild(YB.iconEl("info"));
+    btn.appendChild(YB.el("span", {
+      class: "info-pop" + (up ? " info-pop--up" : ""), id: popId, role: "tooltip", text: text
+    }));
+    return btn;
+  }
+
+  // 文本级动作（与「保存」分属不同视觉层级）；extraClass 给破坏性动作上危险色
+  var ROW_HELP = "类型：并行＝会拉起并计入建议值；兜底＝窗口内补签，最多一行、不计入；"
+    + "停用＝保留出口与槽位、不拉起、不计入（想留位置请用停用而不是删除）。"
+    + "出口：读接口只回脱敏描述串（不含账号密码），本框不回显原值，留空＝不修改；"
+    + "改成直连请用下面的「清除出口」。写入只动这一行，其余行（含停用行的出口）逐字保留；"
+    + "改动即时写入配置，下一轮定时任务或重启执行体/容器后生效。"
+    + "「删除这一行」会连同它的出口配置一起移除且不保留槽位号。";
+
+  function linkBtn(text, onClick, extraClass) {
+    var b = YB.el("button", { type: "button", class: "linklike " + (extraClass || ""), text: text });
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function openRow(row) {
+    if (!lastData) { setTip("数据尚未加载完成", true); return null; }
+    var slot = count(row.slot);
+    var type = attr(row.type);
+    var isFb = type === "fallback";
+    var fb = (lastData.fallback) || {};
+    var acts = activityFor(isFb ? "fallback" : "worker", isFb ? null : slot);
+
+    var wrap = YB.el("div");
+    wrap.appendChild(typeField(type));
+
+    // 「当前出口」与「对应配置项」合并成一行（用户 2026-09-17：这两条本来在说同一件事）
+    wrap.appendChild(YB.el("div", { class: "field" }, [
+      YB.el("span", { class: "field-label", text: "当前出口（已脱敏）" }),
+      YB.el("p", { class: "field-help", text: (row.egress || "直连（本机出口）") + "｜配置项 " + manifestKey(slot) })
+    ]));
+
+    var inputId = "set-exec-modal-egress";
+    wrap.appendChild(YB.el("div", { class: "field" }, [
+      YB.el("label", { class: "field-label", for: inputId, text: "设置出口（留空 = 不修改）" }),
+      YB.el("div", { class: "input-group" }, [
+        YB.el("input", {
+          class: "input", id: inputId, type: "text", autocomplete: "off", spellcheck: "false",
+          placeholder: "http://user:pass@host:port"
+        })
+      ])
+    ]));
+
+    var swInput = null;
+    if (isFb) {
+      // 开关与模板里的同类控件同构：label 内补 sr-only 文本给读屏，语义说明用
+      // aria-describedby 程序化关联（与 #set-exec-perm 的做法一致）
+      swInput = YB.el("input", { type: "checkbox" });
+      if (fb.enabled === true) swInput.checked = true;
+      var swHelpId = "set-exec-modal-fb-help";
+      swInput.setAttribute("aria-describedby", swHelpId);
+      wrap.appendChild(YB.el("div", { class: "field" }, [
+        YB.el("label", { class: "switch", title: "开启兜底执行体" }, [
+          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
+          YB.el("span", { class: "sr-only", text: "开启兜底执行体" })
+        ]),
+        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起兜底进程（只写声明开关；还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
+      ]));
+    }
+    if (type !== "disabled") {
+      wrap.appendChild(YB.el("p", { class: "set-summary", text: isFb
+        ? "存活：" + (FB_TEXT[fb.status] || "—") + (fb.in_window ? "（当前在本应运行时段内）" : "（当前不在本应运行时段内）")
+          + "　" + todayText(acts)
+        : "存活：" + (STATE_TEXT[row.state] || "—") + (row.last_seen_at ? "；最近活跃 " + attr(row.last_seen_at) : "")
+          + "　" + todayText(acts) }));
+    }
+
+    var tip = YB.el("p", { class: "set-tip", text: "" });
+
+    // 低频且破坏性的动作降级到正文里（用户 2026-09-17：「清除出口」与「保存」不是一个视觉层级）
+    wrap.appendChild(YB.el("p", { class: "set-exec-subactions" }, [
+      linkBtn("清除出口（改为直连）", function () {
+        YB.confirmDialog({
+          title: "清除这一行的出口？",
+          body: "该行会改成直连（本机出口），原出口配置从配置项里删掉，不可撤销。",
+          confirmText: "清除",
+          danger: true
+        }).then(function (ok) {
+          if (!ok) return;
+          if (handle && handle.close) handle.close();
+          putRow(slot, { proxy: "" }, "已清除出口");
+        });
+      }),
+      YB.el("span", { class: "set-exec-subactions__sep", text: "·" }),
+      linkBtn("删除这一行", function () { deleteRow(row, handle); }, "set-exec-danger")
+    ]));
+    wrap.appendChild(tip);
+
+    function switchArg() {
+      if (!isFb || !swInput) return null;
+      return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
+    }
+
+    function save() {
+      if (busy) return false;
+      var newType = YB.selectField ? attr(YB.selectField.read("set-exec-row-type")) : type;
+      var egress = (($(inputId) || {}).value || "").trim();
+      var enableArg = switchArg();
+      var changedType = !!newType && newType !== type;
+      if (!changedType && !egress && enableArg == null) {
+        tip.textContent = "没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。";
+        tip.className = "set-tip set-bad";
+        return false;
+      }
+      busy = true;
+      tip.textContent = "提交中…";
+      tip.className = "set-tip";
+      var steps = [];
+      if (changedType || egress) {
+        var payload = {};
+        if (changedType) payload.type = newType;
+        if (egress) payload.proxy = egress;      // 留空＝不改出口（契约里空串＝直连，故绝不发空串）
+        steps.push(YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload));
+      }
+      if (enableArg != null) {
+        steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg }));
+      }
+      return Promise.all(steps).then(function (res) {
+        return load().then(function () {
+          if (handle && handle.close) handle.close();
+          setTip(note(res && res[0]), false);
+          return true;
+        });
+      }, function (e) {
+        busy = false;
+        tip.textContent = (e && e.message) || "保存失败，请稍后重试";
+        tip.className = "set-tip set-bad";
+        return false;
+      }).then(function (ok) {
+        busy = false; applyPerm(); return ok;
+      });
+    }
+
+    var handle = YB.openModal({
+      title: attr(row.label) || "执行体",
+      subtitle: "槽位 " + slot,
+      body: wrap,
+      actions: [
+        { label: "取消", variant: "ghost" },
+        { label: "保存", variant: "primary", close: false, onClick: function () { return save(); } }
+      ]
+    });
+    if (YB.selectField) YB.selectField.mount();      // 弹窗内的自研选择控件此刻才进 DOM
+    return handle;
   }
 
   /* ---------------- 建议：页面一行摘要 + 弹窗明细 ---------------- */
@@ -231,10 +495,10 @@
     var win = (data && data.window) || {};
     var rec = (data && data.recommendation) || null;
     var measured = (data && data.measured) || null;
-    if (!measured) return "未实测：点右侧「查看与实测」做一次实测，或由部署者录入实测容量，才会给出建议执行体数。";
-    // 尾巴上的「建议值，非程序上限」是**口径**（数字能填到 64，量与它无关）——复审判定
+    if (!measured) return "未实测：点「查看与实测」做一次实测，或由部署者录入实测容量，才会给出建议执行体数。";
+    // 尾巴上的「建议值，非程序上限」是**口径**（清单能加到 63 行，量与它无关）——复审判定
     // 「×2/3、只是建议不是上限」若只活在弹窗黄条里就收得过深，故在摘要行留这 8 字。
-    return "建议执行体数：" + (rec ? count(rec.executors_needed) + " 个" : "—")
+    return "建议并行执行体数：" + (rec ? count(rec.executors_needed) + " 个" : "—")
       + "（每个约 " + (rec ? count(rec.per_executor_accounts) : "—") + " 个账号，含慢账号余量）"
       + " · 实测容量 " + count(measured.per_executor_capacity) + " 个"
       + " · 计入容量 " + count(data && data.current_accounts) + " 个账号"
@@ -252,7 +516,8 @@
       ? "实测容量：" + count(measured.per_executor_capacity) + " 个（" + attr(measured.source) + "）"
       : "未实测：部署者尚未录入实测容量，因此不给出建议值（也不按现有账号数反算）。");
     setText("set-exec-accounts", "当前计入容量的账号数：" + count(data && data.current_accounts)
-      + " 个；有效签到窗口 " + (win.start && win.end ? win.start + " ~ " + win.end : "—") + "。");
+      + " 个；有效签到窗口 " + (win.start && win.end ? win.start + " ~ " + win.end : "—")
+      + "；建议值只数清单里的「并行」行（现在 " + workers() + " 行）。");
     if (rec) {
       setText("set-exec-advice-nums", "建议执行体数：" + count(rec.executors_needed)
         + " 个（每个执行体约 " + count(rec.per_executor_accounts) + " 个账号，含慢账号余量）。");
@@ -269,9 +534,9 @@
 
   /* ---------------- 「容量实测与建议」弹窗（低频操作 + 口径提醒的归属处） ---------------- */
   // 后端要求两条风险必须写进页面（77/73 号）：默认拿列表第一个可签账号；只覆盖窗口外最小链路。
-  // 它们与实测按钮放在同一个弹窗里——在“要动手的那一刻”给出，比常驻在页面上更省空间也更贴题。
+  // 它们与实测按钮放在同一个弹窗里——在"要动手的那一刻"给出，比常驻在页面上更省空间也更贴题。
   var MEASURE_INTRO = "点「测试」会用一个真实账号走一次只读链路（登录 + 拉任务，不提交签到）"
-    + "测出耗时，并按它把建议数量填进数量框（只填、不保存）。";
+    + "测出耗时，并据此给出建议执行体数（只提示，不改清单）。";
   var MEASURE_RISK = "说明：默认取账号列表里第一个可签账号 —— 通常是某位真实用户的账号，"
     + "且顺序稳定、每次都是同一个；它只覆盖窗口外的最小链路（登录 + 拉任务，5 次请求），"
     + "比真实签到（含定位与提交，6 次请求）偏乐观。正式定档请以测试机基准为准，两种数字不要混用；"
@@ -284,17 +549,19 @@
     wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-accounts" }));
     wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-advice-nums" }));
     wrap.appendChild(YB.el("p", { class: "set-warn", id: "set-exec-advice-note", hidden: true }));
-    // 顺序＝说明 → 动作 → 结果 → 风险（复审：按钮不该压在说明之前）
-    wrap.appendChild(YB.el("p", { class: "field-help", text: MEASURE_INTRO }));
+    // 说明与风险都在按钮旁的 ⓘ 里（用户 2026-09-17：弹窗内文案也靠 info 折叠）；
+    // 浮层向上展开——按钮在弹窗靠底部，向下开会被 .pm-panel 的 overflow:hidden 裁掉。
     var mBtn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", id: "set-exec-measure", text: "测试" });
     mBtn.disabled = !ctx.isMaster;                  // 禁用不是安全边界，后端 403 兜底
     mBtn.addEventListener("click", measure);
-    wrap.appendChild(YB.el("p", {}, [mBtn]));
+    wrap.appendChild(YB.el("p", { class: "set-exec-actions" }, [
+      mBtn,
+      infoTip("实测说明与风险", MEASURE_INTRO + " " + MEASURE_RISK, true)
+    ]));
     wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-measure-result", role: "status" }));
-    wrap.appendChild(YB.el("p", { class: "field-help", text: MEASURE_RISK }));
     var handle = YB.openModal({
       title: "容量实测与建议",
-      subtitle: "实测只填数量、不保存",
+      subtitle: "实测只给建议，不改清单",
       body: wrap,
       actions: [{ label: "关闭", variant: "ghost" }]
     });
@@ -302,147 +569,8 @@
     return handle;
   }
 
-  /* ---------------- 行内「设置」弹窗：按序号改单个执行体的出口 ---------------- */
-  // 出口编辑走**按序号写单段**（留空 = 不修改；「清除出口」= 该执行体直连/删键）。
-  function openSettings(role, index) {
-    if (!lastData) { setTip("数据尚未加载完成", true); return; }
-    var isFb = role === "fallback";
-    var w = lastData.workers || {}, fb = lastData.fallback || {};
-    var row = isFb ? fb : ((w.assignments || []).filter(function (x) {
-      return count(x.index) === index;
-    })[0] || {});
-    var acts = activityFor(role, isFb ? null : index);
-    var wrap = YB.el("div");
-    var grid = YB.el("div", { class: "form-grid" });
-    grid.appendChild(YB.el("div", { class: "field" }, [
-      YB.el("span", { class: "field-label", text: "当前出口（已脱敏）" }),
-      YB.el("p", { class: "field-help", text: row.egress || "直连（本机出口）" })
-    ]));
-    grid.appendChild(YB.el("div", { class: "field" }, [
-      YB.el("span", { class: "field-label", text: "状态" }),
-      YB.el("p", { class: "field-help", text: isFb
-        ? (FB_TEXT[fb.status] || "—") + (fb.in_window ? "（当前在签到窗口内）" : "（当前不在签到窗口内）")
-        : (STATE_TEXT[row.state] || "—") + (row.last_seen_at ? "；最近活跃 " + row.last_seen_at : "") })
-    ]));
-    grid.appendChild(YB.el("div", { class: "field" }, [
-      YB.el("span", { class: "field-label", text: "当日" }),
-      YB.el("p", { class: "field-help", text: todayText(acts) })
-    ]));
-    grid.appendChild(YB.el("div", { class: "field" }, [
-      YB.el("span", { class: "field-label", text: "对应配置项" }),
-      YB.el("p", { class: "field-help", text: attr(isFb ? fb.env_key : (w.env_keys && w.env_keys.list)) || "—" })
-    ]));
-    wrap.appendChild(grid);
-
-    var inputId = "set-exec-modal-egress";
-    wrap.appendChild(YB.el("div", { class: "form-grid" }, [
-      YB.el("div", { class: "field" }, [
-        YB.el("label", { class: "field-label", for: inputId, text: "设置出口（留空 = 不修改）" }),
-        YB.el("div", { class: "input-group" }, [
-          YB.el("input", {
-            class: "input", id: inputId, type: "text", autocomplete: "off", spellcheck: "false",
-            placeholder: "http://user:pass@host:port"
-          })
-        ]),
-        YB.el("p", { class: "field-help", text: isFb
-          ? "兜底执行体专用出口，单段可空；「清除出口」= 不再单独配（退回单执行体出口）。"
-          : "只改这一个执行体，其它段逐字保留；读接口只回脱敏串，故本框不回显原值。" })
-      ])
-    ]));
-
-    var swInput = null;
-    if (isFb) {
-      // 开关与模板里的同类控件同构：label 内补 sr-only 文本给读屏，语义说明用
-      // aria-describedby 程序化关联（与 #set-exec-perm 的做法一致）
-      swInput = YB.el("input", { type: "checkbox" });
-      if (fb.enabled === true) swInput.checked = true;
-      var swHelpId = "set-exec-modal-fb-help";
-      swInput.setAttribute("aria-describedby", swHelpId);
-      wrap.appendChild(YB.el("div", { class: "field" }, [
-        YB.el("label", { class: "switch", title: "开启兜底执行体" }, [
-          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
-          YB.el("span", { class: "sr-only", text: "开启兜底执行体" })
-        ]),
-        YB.el("p", { class: "field-help", id: swHelpId, text: "开启兜底执行体（只写声明开关；还需宿主 cron 以 --fallback 拉起进程才会真在跑）。" })
-      ]));
-    }
-    // 开关这一改动是"整条端点"的 fallback_enable，与出口（单段写）分属两个请求；
-    // 未改动时返回 null（不提交该字段）。
-    function switchArg() {
-      if (!isFb || !swInput) return null;
-      return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
-    }
-    var tip = YB.el("p", { class: "set-tip", text: "" });
-    wrap.appendChild(tip);
-
-    var handle = YB.openModal({
-      title: attr(row.label) || (isFb ? "兜底常驻执行体" : "并行执行体 #" + (index + 1)),
-      subtitle: isFb ? "类型：兜底" : "类型：并行",
-      body: wrap,
-      actions: [
-        { label: "清除出口", variant: "ghost", close: false, onClick: function () {
-          // 空串 = 该段直连（契约："" 与 null 同义）；提交后仍走"重新 GET 再渲染"
-          return submit(handle, tip, "", switchArg());
-        } },
-        { label: "保存", variant: "primary", close: false, onClick: function () {
-          var v = (($(inputId) || {}).value || "").trim();
-          var enableArg = switchArg();
-          if (!v && enableArg == null) {
-            tip.textContent = "留空 = 不修改；要改成直连请点「清除出口」。";
-            tip.className = "set-tip set-bad";
-            return false;
-          }
-          return submit(handle, tip, v || null, enableArg);
-        } }
-      ]
-    });
-    return handle;
-  }
-
-  // 提交：单段写（egress="" 表示清除/直连）+ 可选的兜底开关（整条端点的 fallback_enable）。
-  // 成功后重新 GET 再渲染（契约要求），并关闭弹窗、清空输入框（完整串不驻留）。
-  function submit(handle, tip, egress, enableArg) {
-    if (busy) return false;
-    var title = attr(handle && handle.titleEl && handle.titleEl.textContent);
-    var isFb = /兜底/.test(title);
-    var m = /#(\d+)/.exec(title);
-    var index = m ? String(parseInt(m[1], 10) - 1) : null;
-    if (!isFb && index == null) {
-      tip.textContent = "无法定位该执行体，请刷新后重试。";
-      tip.className = "set-tip set-bad";
-      return false;
-    }
-    busy = true;
-    tip.textContent = "提交中…";
-    tip.className = "set-tip";
-    var steps = [];
-    if (egress != null) {
-      var path = isFb ? "/api/scheduler/executors/fallback" : "/api/scheduler/executors/workers/" + index;
-      steps.push(YB.api("PUT", path, { egress: egress }));
-    }
-    if (enableArg != null) {
-      steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg }));
-    }
-    return Promise.all(steps).then(function () {
-      return load().then(function () {
-        if (handle && handle.close) handle.close();
-        setTip("已保存；下一轮定时任务或重启执行体/容器后生效。", false);
-        return true;
-      });
-    }, function (e) {
-      tip.textContent = (e && e.message) || "保存失败，请稍后重试";
-      tip.className = "set-tip set-bad";
-      return false;
-    }).then(function (ok) {
-      busy = false;
-      applyPerm();
-      return ok;
-    });
-  }
-
   /* ---------------- 实测（POST /measure） ---------------- */
-  // 后端会真的访问易班一次（只读链路）。按用户要求：把建议数量填进数量框，**只填不保存**。
-  // 结果行的三态样式：中性（说明/进行中）/ 失败上色 / 成功；失败走 .set-bad，与普通说明区分
+  // 后端会真的访问易班一次（只读链路）。结果行的三态样式：中性（说明/进行中）/ 失败上色 / 成功。
   function measureOut(text, bad) {
     var out = $("set-exec-measure-result");
     if (!out) return;
@@ -472,16 +600,12 @@
       measureOut("实测 " + (sec == null ? "—" : sec.toFixed(2) + " 秒")
         + "（样本 " + attr(d && d.sample) + "）；单执行体容量约 " + cap
         + " 个、建议每执行体 " + perExec + " 个账号。"
-        + (need == null ? "" : "按当前 " + cur + " 个账号换算：建议数量 " + need
-          + "，已填入页面上的「并行执行体数量」框（未保存，关掉本窗口后点「保存执行体配置」）。"), false);
+        + (need == null ? "" : "按当前 " + cur + " 个账号换算：建议 " + need
+          + " 行「并行」（清单现在 " + workers() + " 行，未自动改动——增减行请用「添加执行体」与行内「设置」）。"), false);
       // 后端把"只覆盖窗口外最小链路、偏乐观"写进了 note（78/79 号回执确认不加 scope 字段）。
       // 同一句话已经以静态文案写在按钮下方（MEASURE_RISK），故这里不再重复显示，
       // 只把后端原文挂到结果行的 title 上备查（便于对照后端口径变更）。
       if (out && d && d.note) out.title = attr(d.note);
-      if (need != null && $("set-exec-workers")) {
-        $("set-exec-workers").value = String(Math.min(64, Math.max(1, need)));
-        markDirty();
-      }
     }, function (e) {
       var cool = cooldownText(e);
       measureOut(((e && e.message) || "实测失败，请稍后重试") + (cool ? "（" + cool + "）" : ""), true);
@@ -491,45 +615,11 @@
     });
   }
 
-  /* ---------------- 脏状态与保存（总设置只提交数量） ---------------- */
-  function changed() { return num("set-exec-workers", snap.workers) !== snap.workers; }
-  function syncDirty() { if (changed()) markDirty(); else clearDirty(); }
-
-  function save() {
-    if (busy || !ctx.isMaster) return Promise.resolve(false);
-    if (!changed()) {
-      clearDirty();
-      setTip("没有需要保存的改动", false);
-      return Promise.resolve(true);
-    }
-    busy = true;
-    setTip("保存中…", false);
-    return YB.api("PUT", "/api/scheduler/executors", { workers: num("set-exec-workers", snap.workers) })
-      .then(function (d) {
-        // 提交后重新 GET 再渲染（契约要求），再回显 note
-        return load().then(function () {
-          setTip((d && d.note) || "已保存", false);
-          return true;
-        });
-      }, function (e) {
-        setTip((e && e.message) || "保存失败，请稍后重试", true);
-        return false;
-      }).then(function (ok) {
-        busy = false;
-        applyPerm();
-        return ok;
-      });
-  }
-
   function apply(data) {
     lastData = data || null;
-    var w = (data && data.workers) || {};
-    snap.workers = count(w.configured || 1);
-    if ($("set-exec-workers")) $("set-exec-workers").value = String(snap.workers);
-    paintWorkers(data);
+    paintRows();
     paintFallback(data);
     paintAdvice(data);
-    clearDirty();
     setTip("", false);
     applyPerm();
   }
@@ -547,16 +637,10 @@
 
   function mount(options) {
     ctx = { isMaster: !!(options && options.isMaster) };
-    var btn = $("set-exec-save");
-    if (btn) btn.addEventListener("click", function () { save(); });
+    var addBtn = $("set-exec-row-add");
+    if (addBtn) addBtn.addEventListener("click", addRow);
     var aBtn = $("set-exec-advice-open");
     if (aBtn) aBtn.addEventListener("click", openAdvice);
-    // 实测按钮现在活在弹窗里，绑定发生在 openAdvice() 构建弹窗时（不在这里）
-    var input = $("set-exec-workers");
-    if (input) {
-      input.addEventListener("input", syncDirty);
-      input.addEventListener("change", syncDirty);
-    }
     applyPerm();
   }
 
@@ -564,7 +648,9 @@
     mount: mount,
     load: load,
     apply: apply,
-    save: save,
-    isDirty: function () { return dirty; }
+    // 清单模型下每个写操作**立即落盘**，没有"待保存的整页改动"——保留下面两个方法只为满足
+    // 页面统一的「未保存改动守卫」接口（见 pages/work_settings.js 的 stores()）。
+    save: function () { return Promise.resolve(true); },
+    isDirty: function () { return false; }
   };
 })();
