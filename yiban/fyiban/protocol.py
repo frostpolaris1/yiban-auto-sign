@@ -50,8 +50,8 @@ LEGACY_KEY_RE = re.compile(r'id="key"\s+value="([^"]+)"')
 # KillYiBan（jsoup 等价）的页面正则
 KILLYIBAN_KEY_RE = re.compile(r'<input[^>]*id="key"[^>]*value="([^"]+)"')
 KILLYIBAN_PAGE_USE_RE = re.compile(r"var page_use = '([^']+)'")
-# verify_request 取值：宽容正则——原 `(.*?)&` 要求令牌后必跟 `&`，
-# 服务端把 verify_request 放 query 末位即全站性登录失败
+# verify_request 取值：必须宽容——令牌可能位于 query 末位，若正则要求其后必跟 `&`
+# 就会取不到，导致全站性登录失败
 VERIFY_REQUEST_RE = re.compile(r"verify_request=([^&]+)&?")
 # KillYiBan 判断"已登录"的方式：OAuth 探针 302 落到 redirect_uri
 LOGGED_IN_MARKER = "iapp7463"
@@ -368,8 +368,8 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
         )
         raise RuntimeError("登录: OAuth 页解析失败")
 
-    # 3. 提交账号密码（实测：usersure 必须不带 Origin/Referer 才返回 s200；
-    #    带 Origin → e001"无效的应用端编号"；scope 空 + display=authorize 与 App 一致）
+    # 3. 提交账号密码。usersure 必须不带 Origin/Referer 才返回 s200（带 Origin 会得
+    #    e001"无效的应用端编号"）；scope 空 + display=authorize 与 App 一致
     resp = session.post(
         OAUTH_USERSURE_URL,
         params={"ajax_sign": page_use},
