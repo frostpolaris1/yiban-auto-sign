@@ -65,7 +65,7 @@
       if (disabled) input.setAttribute("aria-describedby", "set-exec-perm");
       else input.removeAttribute("aria-describedby");
     }
-    ["set-exec-measure", "set-exec-save"].forEach(function (id) {
+    ["set-exec-advice-open", "set-exec-measure", "set-exec-save"].forEach(function (id) {
       var b = $(id);
       if (b) b.disabled = !!disabled;
     });
@@ -204,9 +204,11 @@
     // 卡头只报异常态：off/running 是正常态（表格里已有一份，不再重复），窗口外的
     // declared_not_running 也是预期行为（见 fbAbnormal 的口径）
     var abnormal = fbAbnormal(fb);
+    // 卡头只留短标签；"多半漏加了 cron"那类处置说明交给下面那条**窗口内才出现**的告警
+    // （#set-exec-fb-warn），避免同一件事在卡头与告警里各说一遍（提醒不占页面）。
     setText("set-exec-fb-text", fb.status === "declared_not_running"
-      ? "已声明开启但没有进程在跑：宿主那条 cron 多半漏加了。"
-      : (fb.status === "running_not_declared" ? "有进程在跑但不是由配置拉起的。" : ""));
+      ? "已声明开启但没有进程在跑。"
+      : (fb.status === "running_not_declared" ? "有进程在跑，但不是由配置拉起的。" : ""));
     setHidden($("set-exec-fb-state"), !abnormal);
     // 报警纪律（后端要求）：只有"开了却没跑起来"**且落在有效窗口内**才报警，窗口外是预期行为
     var alarm = fb.status === "declared_not_running" && fb.in_window === true;
@@ -219,12 +221,33 @@
     }
   }
 
-  // 建议区：口径＝实测容量 × 2/3（后端算好）；没有实测就写「未实测」并隐藏建议。
+  /* ---------------- 建议：页面一行摘要 + 弹窗明细 ---------------- */
+  // 口径＝实测容量 × 2/3（后端算好）；没有实测就写「未实测」并隐藏建议。
   // 与「容量配额」的估算**不是同一口径**（那边是"一轮装不装得下"），故写明，不假装相等。
+  // 页面只留一行摘要；明细、实测入口与两条风险说明都在「容量实测与建议」弹窗里
+  // （用户 2026-09-17：低频功能与提醒收进弹窗，节约页面空间）——弹窗元素沿用同一批 id，
+  // 所以下面这些 setText 会同时刷页面摘要与（打开着的）弹窗明细。
+  function adviceSummary(data) {
+    var win = (data && data.window) || {};
+    var rec = (data && data.recommendation) || null;
+    var measured = (data && data.measured) || null;
+    if (!measured) return "未实测：点右侧「查看与实测」做一次实测，或由部署者录入实测容量，才会给出建议执行体数。";
+    // 尾巴上的「建议值，非程序上限」是**口径**（数字能填到 64，量与它无关）——复审判定
+    // 「×2/3、只是建议不是上限」若只活在弹窗黄条里就收得过深，故在摘要行留这 8 字。
+    return "建议执行体数：" + (rec ? count(rec.executors_needed) + " 个" : "—")
+      + "（每个约 " + (rec ? count(rec.per_executor_accounts) : "—") + " 个账号，含慢账号余量）"
+      + " · 实测容量 " + count(measured.per_executor_capacity) + " 个"
+      + " · 计入容量 " + count(data && data.current_accounts) + " 个账号"
+      + (win.start && win.end ? " · 窗口 " + win.start + " ~ " + win.end : "")
+      + "（建议值，非程序上限）";
+  }
+
   function paintAdvice(data) {
     var win = (data && data.window) || {};
     var rec = (data && data.recommendation) || null;
     var measured = (data && data.measured) || null;
+    setText("set-exec-advice-line", adviceSummary(data));
+    // 以下四个 id 只存在于弹窗里：弹窗没开时 setText/setHidden 静默跳过（打开时 openAdvice 会再刷一遍）
     setText("set-exec-window", measured
       ? "实测容量：" + count(measured.per_executor_capacity) + " 个（" + attr(measured.source) + "）"
       : "未实测：部署者尚未录入实测容量，因此不给出建议值（也不按现有账号数反算）。");
@@ -242,6 +265,41 @@
       setHidden($("set-exec-advice-nums"), true);
       setHidden($("set-exec-advice-note"), true);
     }
+  }
+
+  /* ---------------- 「容量实测与建议」弹窗（低频操作 + 口径提醒的归属处） ---------------- */
+  // 后端要求两条风险必须写进页面（77/73 号）：默认拿列表第一个可签账号；只覆盖窗口外最小链路。
+  // 它们与实测按钮放在同一个弹窗里——在“要动手的那一刻”给出，比常驻在页面上更省空间也更贴题。
+  var MEASURE_INTRO = "点「测试」会用一个真实账号走一次只读链路（登录 + 拉任务，不提交签到）"
+    + "测出耗时，并按它把建议数量填进数量框（只填、不保存）。";
+  var MEASURE_RISK = "说明：默认取账号列表里第一个可签账号 —— 通常是某位真实用户的账号，"
+    + "且顺序稳定、每次都是同一个；它只覆盖窗口外的最小链路（登录 + 拉任务，5 次请求），"
+    + "比真实签到（含定位与提交，6 次请求）偏乐观。正式定档请以测试机基准为准，两种数字不要混用；"
+    + "窗口内点不了（后端返回 409），且两次实测之间有冷却时间。";
+
+  function openAdvice() {
+    if (!lastData) { setTip("数据尚未加载完成", true); return null; }
+    var wrap = YB.el("div");
+    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-window" }));
+    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-accounts" }));
+    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-advice-nums" }));
+    wrap.appendChild(YB.el("p", { class: "set-warn", id: "set-exec-advice-note", hidden: true }));
+    // 顺序＝说明 → 动作 → 结果 → 风险（复审：按钮不该压在说明之前）
+    wrap.appendChild(YB.el("p", { class: "field-help", text: MEASURE_INTRO }));
+    var mBtn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", id: "set-exec-measure", text: "测试" });
+    mBtn.disabled = !ctx.isMaster;                  // 禁用不是安全边界，后端 403 兜底
+    mBtn.addEventListener("click", measure);
+    wrap.appendChild(YB.el("p", {}, [mBtn]));
+    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-measure-result", role: "status" }));
+    wrap.appendChild(YB.el("p", { class: "field-help", text: MEASURE_RISK }));
+    var handle = YB.openModal({
+      title: "容量实测与建议",
+      subtitle: "实测只填数量、不保存",
+      body: wrap,
+      actions: [{ label: "关闭", variant: "ghost" }]
+    });
+    paintAdvice(lastData);                          // 打开时把明细填上（元素此刻才存在）
+    return handle;
   }
 
   /* ---------------- 行内「设置」弹窗：按序号改单个执行体的出口 ---------------- */
@@ -384,34 +442,49 @@
 
   /* ---------------- 实测（POST /measure） ---------------- */
   // 后端会真的访问易班一次（只读链路）。按用户要求：把建议数量填进数量框，**只填不保存**。
+  // 结果行的三态样式：中性（说明/进行中）/ 失败上色 / 成功；失败走 .set-bad，与普通说明区分
+  function measureOut(text, bad) {
+    var out = $("set-exec-measure-result");
+    if (!out) return;
+    out.textContent = text;
+    out.className = bad ? "field-help set-bad" : "field-help";
+  }
+  // 429 的 body 带 next_allowed_in（秒）：把"还要等多久"翻成人话，别只说"冷却中"
+  function cooldownText(e) {
+    var sec = e && e.data && Number(e.data.next_allowed_in);
+    if (!sec || sec <= 0) return "";
+    var min = Math.ceil(sec / 60);
+    return "约 " + (min > 1 ? min + " 分钟" : Math.max(1, Math.round(sec)) + " 秒") + "后可再测";
+  }
   function measure() {
     if (busy || !ctx.isMaster) return;
     var btn = $("set-exec-measure");
     var out = $("set-exec-measure-result");
     busy = true;
     if (btn) btn.disabled = true;
-    if (out) out.textContent = "实测中…（会用一个真实账号登录一次易班，只读、不签到）";
+    measureOut("实测中…（会用一个真实账号登录一次易班，只读、不签到）", false);
     YB.api("POST", "/api/scheduler/executors/measure", {}).then(function (d) {
       var sec = d && d.seconds != null ? Number(d.seconds) : null;
       var cap = count(d && d.per_executor_capacity);
       var perExec = count(d && d.recommended_per_executor);
       var cur = count(lastData && lastData.current_accounts);
       var need = (perExec > 0 && cur > 0) ? Math.ceil(cur / perExec) : null;
-      if (out) {
-        out.textContent = "实测 " + (sec == null ? "—" : sec.toFixed(2) + " 秒")
-          + "（样本 " + attr(d && d.sample) + "）；单执行体容量约 " + cap
-          + " 个、建议每执行体 " + perExec + " 个账号。"
-          + (need == null ? "" : "按当前 " + cur + " 个账号换算：建议数量 " + need + "，已填入左侧数字框（未保存）。");
-      }
+      measureOut("实测 " + (sec == null ? "—" : sec.toFixed(2) + " 秒")
+        + "（样本 " + attr(d && d.sample) + "）；单执行体容量约 " + cap
+        + " 个、建议每执行体 " + perExec + " 个账号。"
+        + (need == null ? "" : "按当前 " + cur + " 个账号换算：建议数量 " + need
+          + "，已填入页面上的「并行执行体数量」框（未保存，关掉本窗口后点「保存执行体配置」）。"), false);
       // 后端把"只覆盖窗口外最小链路、偏乐观"写进了 note（78/79 号回执确认不加 scope 字段）。
-      // 页面已在按钮旁常驻同义的风险说明，故这里不再重复显示，只把它挂到结果行的 title 上备查。
+      // 同一句话已经以静态文案写在按钮下方（MEASURE_RISK），故这里不再重复显示，
+      // 只把后端原文挂到结果行的 title 上备查（便于对照后端口径变更）。
       if (out && d && d.note) out.title = attr(d.note);
       if (need != null && $("set-exec-workers")) {
         $("set-exec-workers").value = String(Math.min(64, Math.max(1, need)));
         markDirty();
       }
     }, function (e) {
-      if (out) out.textContent = (e && e.message) || "实测失败，请稍后重试";
+      var cool = cooldownText(e);
+      measureOut(((e && e.message) || "实测失败，请稍后重试") + (cool ? "（" + cool + "）" : ""), true);
     }).then(function () {
       busy = false;
       if (btn) btn.disabled = !ctx.isMaster;
@@ -476,8 +549,9 @@
     ctx = { isMaster: !!(options && options.isMaster) };
     var btn = $("set-exec-save");
     if (btn) btn.addEventListener("click", function () { save(); });
-    var mBtn = $("set-exec-measure");
-    if (mBtn) mBtn.addEventListener("click", measure);
+    var aBtn = $("set-exec-advice-open");
+    if (aBtn) aBtn.addEventListener("click", openAdvice);
+    // 实测按钮现在活在弹窗里，绑定发生在 openAdvice() 构建弹窗时（不在这里）
     var input = $("set-exec-workers");
     if (input) {
       input.addEventListener("input", syncDirty);
