@@ -401,14 +401,19 @@
     </div>
   </div>
 
-  <!-- 4. 容量配额：只保留上限编辑，仅主管理员 -->
+  <!-- 4. 容量配额：上限编辑（仅主管理员可改，其余管理员可见但控件禁用）＋ 容量建议与耗时实测 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-quota" aria-labelledby="set-tab-quota" data-tab-id="quota">
     <section class="card" id="set-quota">
       {# 原 eyebrow「名额」与标题「容量配额」同义，删 #}
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">容量配额</h2>
-          <div class="set-head-actions">{{ dirty_badge('set-cap-dirty') }}</div>
+          <div class="set-head-actions">
+            {# 三处容量口径的差别（本页名额 / 总览的服务能力 / 下面那张卡的建议人数）必须说清，
+               否则三个数字看起来在互相打架——原文常驻页面占一行，收进 ⓘ #}
+            {% call info('容量上限口径', 'set-pop-cap-scope') %}<b>本页上限管"名额"：</b>能存多少用户与账号（0 = 不限），调小只挡新增、不删存量。<b>「数据总览」的容量估算</b>按有效窗口与账号间隔算"一轮装不装得下"（服务能力），<b>下一张卡的"建议"</b>另含慢账号余量（实测容量 × 2/3）。三者口径不同，<b>数值不必相等</b>，不要拿一个去校准另一个。{% endcall %}
+            {{ dirty_badge('set-cap-dirty') }}
+          </div>
         </div>
       </div>
       <p class="alert info" id="set-cap-perm" hidden>
@@ -433,15 +438,35 @@
           <p class="field-help">管账号存量（含主管理员直属裸账号）；0 = 不限。调小只限制新增，不删存量账号。</p>
         </div>
       </div>
-      {# 两个页面的容量口径不同，各自写明（后端 2026-09-17 要求）：本页＝"一轮装不装得下"；
-         「执行体」分区的建议人数另含慢账号余量（实测 × 2/3），故两页数字不必相等 #}
-      <p class="field-help">本页上限管"名额"；「数据总览」的容量估算按有效窗口与账号间隔算"一轮装不装得下"，
-        「执行体」分区的建议人数另含慢账号余量，两者口径不同、数值不必相等。</p>
       <p class="set-tip" id="set-cap-tip" role="status"></p>
       <p class="field-help">改动需点「保存容量上限」后生效。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="set-cap-save" hidden>保存容量上限</button>
       </div>
+    </section>
+
+    {# 容量建议与耗时实测：与「容量配额」共用同一份容量数据（计入容量的账号数、有效窗口），
+       故从「执行体」分区挪来同屏（用户 2026-09-17：同类功能合并），并**直接放页面上**、
+       不再收进弹窗。数字全部来自 GET /api/scheduler/executors（measured / recommendation 由
+       后端算好，前端不换算）；没有实测值就显示「未实测」且不给建议（契约要求，不得编造）。
+       非主管理员：本卡整块隐藏——那个接口对他们 403，显示空卡比不显示更糟。 #}
+    <section class="card" id="set-cap-advice" hidden>
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">容量建议与耗时实测</h2>
+          <div class="set-head-actions">
+            {# ⓘ 必须排在按钮**右侧**（行尾）：浮层固定右对齐触发器向左展开，触发器偏左时浮层左缘会跑出视口
+               （实测 360 下 ⓘ 在按钮左侧时浮层 left −46.7px，每行开头两三个字被裁） #}
+            <button type="button" class="btn btn--ghost btn--sm" id="set-cap-measure">测试单账号耗时</button>
+            {% call info('实测说明与建议口径', 'set-pop-cap-advice') %}<b>建议怎么来的：</b>每个执行体的建议账号数＝实测容量 × 2/3（含慢账号余量），建议并行执行体数＝⌈计入容量的账号数 ÷ 每个执行体的建议账号数⌉，只数清单里的「并行」行；<b>是建议不是程序上限</b>（执行体清单最多 64 行，与它无关），也不自动改配置——要改上限请用上方的容量配额，要改执行体请到「执行体」分区。<b>测试做什么：</b>用一个<b>真实账号</b>（默认取账号列表里第一个可签账号，且顺序稳定、每次都是同一个）走一次只读链路（登录 + 拉任务，<b>不提交签到</b>）测出单账号耗时并据此换算容量。它只覆盖窗口外的"登录 + 拉任务"（5 次请求），比真实签到（含定位与提交，6 次请求）偏乐观，别和测试机基准的数混用；结果<b>不会自动保存</b>，正式定档要由部署者按测试机基准录入实测容量。<b>限制：</b>仅主管理员可用（不改配置，故与手动签到同档、不收管理员口令，但要按一次确认）；两次实测之间有冷却（默认 10 分钟），冷却期内按钮灰掉并显示剩余时间；落在有效签到窗口内不做（避免抢占本轮资源）。{% endcall %}
+          </div>
+        </div>
+      </div>
+      {# 建议只有一行摘要：数字来自接口的 recommendation / measured / current_accounts（前端不换算） #}
+      <p class="set-summary" id="set-cap-advice-line">尚未读取执行体数据</p>
+      {# 后端口径提醒（recommendation.note）与实测结果行：没有就整行不显示 #}
+      <p class="set-warn" id="set-cap-advice-note" hidden></p>
+      <p class="set-tip" id="set-cap-measure-result" role="status"></p>
     </section>
   </div>
 
@@ -502,43 +527,39 @@
     </section>
   </div>
 
-  <!-- 6. 执行体与出口：并行执行体数量/出口 + 兜底执行体 + 容量建议，仅主管理员整 tab 可见。
+  <!-- 6. 执行体与出口：规模 KPI + 执行体清单（含故障转移与停用行），仅主管理员整 tab 可见。
        数据源与同页其它分区不同：本分区读 GET/PUT /api/scheduler/executors（不来自 /api/settings），
        故由 components/settings-executors.js 自带 load()。出口只以脱敏描述串返回（去 userinfo），
        编辑框一律留空并提示「留空 = 不修改」；配置项键名由接口下发，模板与脚本都不写死键名串。 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-executors" aria-labelledby="set-tab-executors" data-tab-id="executors">
-    {# 清单规模 KPI **放在页面上、不在卡里**（用户 2026-09-17）：数字全部来自接口
-       （executors[] 与 workers.configured），前端只做计数、不拼口径。
-       实测与建议移到「执行体一览」卡头右上角，建议明细与实测入口都在弹窗里，页面保持干净。 #}
-    <section class="kpi-grid" id="set-exec-kpis" aria-label="执行体清单规模">
+    {# 规模 KPI **放在页面上、不在卡里**（用户 2026-09-17）：数字全部来自接口
+       （executors[] / workers.configured / 容量配额的用户上限），前端只做计数与一次除法。
+       后两张卡的口径（分子分母各取自哪里）写在下面卡头的 ⓘ 里，不占页面。
+       —— KPI 卡是 overflow:hidden，ⓘ 浮层放卡内会被裁掉，故不放卡里。 #}
+    <section class="kpi-grid" id="set-exec-kpis" aria-label="执行体与容量规模">
       {{ exec_kpi('清单行数', 'set-exec-kpi-rows', 'list', 'primary') }}
       {{ exec_kpi('并行执行体', 'set-exec-kpi-worker', 'server', 'primary') }}
-      {{ exec_kpi('兜底 / 故障转移', 'set-exec-kpi-fallback', 'heart-pulse', 'purple') }}
-      {{ exec_kpi('停用', 'set-exec-kpi-disabled', 'circle-slash', 'muted') }}
+      {{ exec_kpi('平均每执行体分到的人数', 'set-exec-kpi-perexec', 'users', 'purple') }}
+      {{ exec_kpi('设定的容量总人数', 'set-exec-kpi-capacity', 'gauge', 'muted') }}
     </section>
 
-    {# 执行体一览＝清单本身：一行一个执行体（含兜底与停用行）；改类型/出口在行内「设置」弹窗里。
+    {# 执行体一览＝清单本身：一行一个执行体（含故障转移与停用行）；改名称/出口在行内「设置」弹窗里。
        状态用后端算好的四态（只有 worker 行有），当日计数用 activity.by_executor（数组为空＝今日尚未运行）。
-       口径（脱敏纪律 / 四态含义 / 停用与槽位 / 兜底"声明≠在跑"）收进卡头 info 浮层，不占页面。 #}
+       口径（脱敏纪律 / 四态含义 / 停用与槽位 / 故障转移"声明≠在跑"）收进卡头 info 浮层，不占页面。 #}
     <section class="card" id="set-executors-list">
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">执行体一览</h2>
           <div class="set-head-actions">
-            {% call info('执行体说明', 'set-pop-executors') %}<b>清单：</b>一行＝一个执行体，各有类型与出口；行数＝执行体个数（只有「并行」行会被拉起，容量建议也只数它们），上限 64 行（槽位 0~63）；增行用表底的「添加执行体」，改名称/出口点行内「设置」。<b>顺序：</b>兜底/故障转移行固定置顶，其余按槽位号升序。<b>类型：</b>并行 / 兜底·故障转移（窗口内补签，最多一行、不计入建议值、不可改类型、不可删除）/ 停用（保留出口与槽位，不拉起、不计入建议值）。<b>槽位号：</b>只增不复用——删行后新建的行会跳过领取历史里用过的号，故号可能不连续；想留位置请改成「停用」而不是删除。<b>出口：</b>只显示去处、不含账号密码（读接口只回 scheme://host[:port]），行内「设置」里改，留空 = 不修改。<b>停用 / 删除：</b>在「操作」列的「更多」里，且<b>要输一次当前管理员密码</b>才生效。<b>状态：</b>并行行四态由后端按心跳与领取记录判定，<b>只有"可能被中断"（有开始、无收尾）需要处理</b>；兜底行状态在卡头单独报；停用行不报存活。<b>当日：</b>今日领取/完成/失败数，显示「当日 —」＝今日尚未运行。<b>容量：</b>建议值＝实测容量 × 2/3（含慢账号余量），只数「并行」行，与「容量配额」的"一轮装不装得下"不是同一口径——见右上角「实测与建议」。<b>写入：</b>改动<b>即时写入配置</b>（本分区没有整页"保存"），下一轮定时任务或重启执行体/容器后生效。<b>旧数据：</b>归属判不出来的历史行照实列在表尾，不做猜测归类。{% endcall %}
-            <button type="button" class="btn btn--ghost btn--sm" id="set-exec-advice-open">实测与建议</button>
+            {% call info('执行体一览与规模卡口径', 'set-pop-executors') %}<b>规模卡：</b>「平均每执行体分到的人数」＝「容量配额 · 用户容量上限」÷ 并行执行体行数（向上取整，按名额填满估算，与实际账号数无关）；上限为 0（不限）时不给平均值。<b>清单：</b>一行＝一个执行体，上限 64 行（槽位 0~63）；增行用表底的「添加执行体」，改名称/出口点行内「设置」。故障转移行（后端定的显示名）固定置顶、不可改类型与删除，其余按槽位升序；槽位号只增不复用（删行后新建的行会跳过用过的号，想留位置请改成「停用」）。<b>出口：</b>只显示去处、不含账号密码（读接口只回 scheme://host[:port]），行内「设置」里改，留空 = 不修改；改直连用「清除出口」。<b>状态 · 当日：</b>并行行的四态由后端按心跳与领取记录判定，<b>只有「可能被中断」（有开始、无收尾）需要处理</b>；故障转移行状态在卡头单独报；停用行不报存活。当日＝今日该执行体的领取、完成与失败数，「—」＝今日尚未运行。<b>停用 / 删除：</b>在「操作」列的「更多」里，且<b>要输一次当前管理员密码</b>才生效。<b>写入：</b>改动<b>即时写入配置</b>（本分区没有整页"保存"），下一轮定时任务或重启执行体/容器后生效；归属判不出来的历史行照实列在表尾，不做猜测归类。{% endcall %}
           </div>
         </div>
-        {# 兜底异常只在卡头报一行短标签，处置说明交给下面那条窗口内的告警（避免同一件事说两遍） #}
+        {# 故障转移异常只在卡头报一行短标签，处置说明交给下面那条窗口内的告警（避免同一件事说两遍） #}
         <p class="panel-sub" id="set-exec-fb-state" role="status">
           <span class="badge badge--muted" id="set-exec-fb-badge">读取中</span>
           <span id="set-exec-fb-text"></span>
         </p>
       </div>
-      <p class="alert info" id="set-exec-perm" hidden>
-        <span class="ico">{{ icon('info') }}</span>
-        <span class="body">仅主管理员可查看与修改执行体配置，控件已禁用；需调整请联系主管理员。</span>
-      </p>
       {# 操作反馈做成横幅（用户 2026-09-17）：增删改类型/出口的结果与"下一轮生效"写在这里，
          不再是一行小字；成功后由组件写入，任何一次新操作都会覆盖它。 #}
       <p class="alert" id="set-exec-banner" role="status" aria-live="polite" hidden>
@@ -551,8 +572,9 @@
             <tr>
               <th scope="col">执行体</th>
               <th scope="col">类型</th>
-              {# 状态（含当日计数）单独一栏，按用户要求放在「出口」左侧 #}
-              <th scope="col">状态 · 当日</th>
+              {# 状态与当日各占一栏（用户 2026-09-17：合成一栏两串字挤在同格，读起来分不清哪串是状态） #}
+              <th scope="col">状态</th>
+              <th scope="col">当日</th>
               <th scope="col">出口</th>
               <th scope="col">操作</th>
             </tr>

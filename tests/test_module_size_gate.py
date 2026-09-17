@@ -60,14 +60,14 @@ OVERSIZED = {
         "逐条硬约定说明）；若增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
         "（config/capacity/state/db/version）」切成两个模块。"
     )),
-    "web/static/js/components/settings-executors.js": (900, (
-        "执行体分区组件（清单表 + 行内设置弹窗 + 容量实测与建议弹窗 + 写明细口径的注释）。"
-        "四块服务于同一个屏与**同一份接口响应**：lastData 被清单渲染、行弹窗、实测弹窗三处读，"
+    "web/static/js/components/settings-executors.js": (700, (
+        "执行体分区组件（规模 KPI + 清单表 + 行内设置弹窗 + 写明细口径的注释）。"
+        "三块服务于同一个屏与**同一份接口响应**：lastData 被 KPI、清单渲染、行弹窗三处读，"
         "banner/focusAfterPaint/rowName 等助手三处共用——拆开等于把这份共享状态改成跨模块协议"
         "（门禁判据②），而任何接口字段变动仍要同时改多处（判据③不成立）。"
-        "下一步（若超过 900 行）：把「容量实测与建议」弹窗整块抽成 "
-        "components/settings-executor-measure.js——它只依赖 lastData 与 banner 两样，"
-        "是块内唯一有独立变更轴的部分（实测端点的请求/响应与清单行接口互不影响）。"
+        "2026-09-17 已按上一版登记的下一步抽出「容量实测与建议」（搬去 settings-quota.js，"
+        "现在只剩 680 行）；若再超过 700 行，下一个可切的是行内设置弹窗（openRow 及其助手），"
+        "它只依赖 lastData、banner 与 putRow 三样。"
     )),
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),

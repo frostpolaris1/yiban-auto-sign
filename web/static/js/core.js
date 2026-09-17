@@ -570,31 +570,34 @@
       // set 模式按完整策略校验，与后端 _password_policy_error 同口径，
       // 避免"前端放行、提交后才 400"；confirm 模式只验非空。
       if (!isConfirm && !passwordPolicyOk(pw)) return reject("密码" + PW_POLICY_HINT);
+      if (pending || submitted) return false;    // 在途或已提交：忽略重复提交（挡在调用回调之前）
       var fn = cb;
-      if (fn) {
-        var result = fn(pw);
-        if (result && typeof result.then === "function") {
-          // 回调返回 Promise：弹窗保持打开直至请求落定——拒绝时经 reject() 把
-          // 错误显示在弹窗内（口令框保留原值，可直接改口令重试），期间禁用
-          // 底部按钮防重复提交；未返回 Promise 的既有回调维持原行为（先关再回调）
-          if (pending) return false;
-          pending = true;
-          setFootBusy(true);
-          result.then(function () {
-            submitted = true;
-            closeModal(pwHandle);
-          }, function (e) {
-            pending = false;
-            setFootBusy(false);
-            reject((e && e.message) || "操作失败，请稍后重试");
-          });
-          return false;
-        }
+      // 回调**只调一次**：它的返回值决定后续走哪条路。
+      // （2026-09-17 Playwright 实测修掉的老缺陷：为判断"回不返回 Promise"，这里曾先调一次探测、
+      //  再在下方为非 Promise 回调调第二次 —— 那些回调会真的执行两遍：两次写请求（含两次审计）、
+      //  实测端点则变成两次真实联网，前端限速形同不存在。）
+      // `submitted || pending` 那道护栏还必须留在调用**之前**：非 Promise 回调返回后该次提交虽然
+      // 立刻关上弹窗，但面板要等 200ms 才从 DOM 摘掉，真实鼠标双击的第二下仍能命中「确认操作」，
+      // 于是同一份口令会再发一次请求（实测复现）。
+      var result = fn ? fn(pw) : undefined;
+      if (result && typeof result.then === "function") {
+        // 回调返回 Promise：弹窗保持打开直至请求落定——拒绝时经 reject() 把错误显示在弹窗内
+        // （口令框保留原值，可直接改口令重试），期间禁用底部按钮防重复提交
+        pending = true;
+        setFootBusy(true);
+        result.then(function () {
+          submitted = true;
+          closeModal(pwHandle);
+        }, function (e) {
+          pending = false;
+          setFootBusy(false);
+          reject((e && e.message) || "操作失败，请稍后重试");
+        });
+        return false;
       }
       submitted = true;
-      closeModal(pwHandle); // 先关本层再回调：回调常紧接着叠开第二个模态
-      if (fn) fn(pw);
-      return false; // 已手动关闭
+      closeModal(pwHandle); // 收尾：本层关掉，调用方若紧接着叠开第二个模态，栈序仍是新层在上
+      return false;         // 已手动关闭
     }
     var pwHandle = openModal({
       title: isConfirm ? "安全确认" : "重置密码",
