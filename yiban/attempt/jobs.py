@@ -89,7 +89,14 @@ def run(job_id, clean, username, account_id, prev_status, fails, limits):
     watchdog.daemon = True
     watchdog.start()
     try:
-        if not _hooks["seat"].acquire(timeout=GATE_WAIT):
+        # 席位句柄**在这一行取一次**，acquire/release 必须是同一个对象：宿主的
+        # `seat` 是 BoundedSemaphore（超发会直接 `ValueError: Semaphore released too
+        # many times`），而读两次 `_hooks["seat"]` 就等于假设"取席位与还席位之间注册
+        # 不会被换掉"——全量测试里这条假设真的会破（上一个测试文件留下的校验线程还在
+        # 飞，下一个文件调用 configure 重新注册了自己的信号量，旧线程的 release 就打到
+        # 别人的信号量上）。取一次句柄后，释放永远回到它当初拿的那个对象。
+        seat = _hooks["seat"]
+        if not seat.acquire(timeout=GATE_WAIT):
             if store.finish(job_id, error="校验繁忙：等待全局校验席位超时"):
                 _reject("校验繁忙：等待全局校验席位超时")
             return
@@ -98,7 +105,7 @@ def run(job_id, clean, username, account_id, prev_status, fails, limits):
                 return  # 看门狗已收口，省掉一次无谓外呼
             verify_err = _hooks["verify_one"](clean)
         finally:
-            _hooks["seat"].release()
+            seat.release()
     finally:
         watchdog.cancel()
 
