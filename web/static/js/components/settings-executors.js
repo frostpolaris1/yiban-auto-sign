@@ -63,26 +63,28 @@
   }
   function count(v) { return Number(v) || 0; }
   function attr(v) { return v == null ? "" : String(v); }
-  function workers() {
-    return executors().filter(function (r) { return attr(r.type) === "worker"; }).length;
-  }
 
+  // 本分区=整 tab 仅主管理员可见（页面编排负责隐藏 tab 与面板），故页面上没有"控件已禁用"的说明条；
+  // 禁用仍逐控件设一遍：隐藏是界面口径，禁用是纵深（真正的边界在后端 403）。
   function applyPerm() {
-    var disabled = !ctx.isMaster;
-    ["set-exec-row-add", "set-exec-advice-open"].forEach(function (id) {
-      var b = $(id);
-      if (b) b.disabled = !!disabled;
-    });
-    setHidden($("set-exec-perm"), !disabled);
+    var b = $("set-exec-row-add");
+    if (b) b.disabled = !ctx.isMaster;
   }
 
   /* ---------------- 文案映射（键都来自后端字段，前端只做中文） ---------------- */
-  var TYPE_TEXT = { worker: "并行", fallback: "兜底 / 故障转移", disabled: "停用" };
+  // 兜底那一行的显示名由后端定（`yiban/egress.py::role_label`，2026-09-17 起是「故障转移」，
+  // 同时作用于 executors[] 的 label、fallback.label 与账号页「上次实领」的角色列）。
+  // 故**不再自己拼「兜底 / 故障转移」这种双写**——类型列用同一个词，行名一律用接口给的 label/name。
+  // `type` 的取值仍是 fallback（契约未动），这里只映射中文。
+  var TYPE_TEXT = { worker: "并行", fallback: "故障转移", disabled: "停用" };
   var STATE_TEXT = {
     running: "正在跑本轮",
     finished: "本轮已跑完",
     idle: "今天还没跑",
-    stale: "可能被中断（无收尾记录）"
+    // 徽标只写短名：完整口径（"有开始、无收尾记录"）写在卡头 ⓘ 里。
+    // 早先是「可能被中断（无收尾记录）」，实测 158×21.4，把状态列固有宽撑到 186px——
+    // 叠加"状态/当日"拆列后整表固有宽 937px > 1024 档的卡片内容宽 842px，操作列被推出可视区。
+    stale: "可能被中断"
   };
   // 状态胶囊配色（用户 2026-09-17）：正在跑=绿、本轮已跑完=**蓝**、今天还没跑=灰、可能被中断=红；
   // 停用行在状态栏给**灰底胶囊**（原来只有一行灰字）。
@@ -93,7 +95,7 @@
     stale: "badge--bad"
   };
   var FB_TEXT = {
-    off: "未开启兜底",
+    off: "未开启故障转移",
     running: "正在运行",
     declared_not_running: "已开启但没跑起来",
     running_not_declared: "有进程在跑（非配置拉起）"
@@ -105,7 +107,7 @@
     running_not_declared: "badge--info"
   };
   // 报警纪律（后端要求）：declared_not_running 只有落在**本应运行时段内**才算异常——窗口外
-  // 兜底进程本就退出（alive=false 是预期行为），沿用告警色等于每天非签到时段都在误报。
+  // 故障转移进程本就退出（alive=false 是预期行为），沿用告警色等于每天非签到时段都在误报。
   function fbAbnormal(fb) {
     return fb.status === "running_not_declared"
       || (fb.status === "declared_not_running" && fb.in_window === true);
@@ -129,16 +131,14 @@
     }
     return null;
   }
-  function todayText(a) {
-    if (a) {
-      return "当日 成功 " + count(a.done) + " · 失败 " + count(a.failed)
-        + (count(a.claimed) ? " · 进行中 " + count(a.claimed) : "");
-    }
-    return activities().length ? "当日 —" : "今日尚未运行";
+  // 当日计数正文（该列标题已是「当日」，正文不再重复"当日"二字）
+  function dailyText(a) {
+    return "成功 " + count(a.done) + " · 失败 " + count(a.failed)
+      + (count(a.claimed) ? " · 进行中 " + count(a.claimed) : "");
   }
   function executors() { return (lastData && lastData.executors) || []; }
   // 行名：**用户自定义名优先**（后端 name 字段），否则用后端给的标签（label 口径仍以后端为准）。
-  // 兜底/故障转移行按用户要求名称固定，不接受自定义名。
+  // 故障转移行的名称由后端定、固定，不接受自定义名（用户 2026-09-17）。
   function rowName(row) {
     if (attr(row.type) !== "fallback" && attr(row.name)) return attr(row.name);
     return attr(row.label) || TYPE_TEXT[attr(row.type)] || "执行体";
@@ -155,51 +155,66 @@
     return attr(keys.manifest || "") + "[" + count(slot) + "]";
   }
 
-  /* ---------------- 清单：摘要 + 一览表 ---------------- */
-  // 清单规模 KPI（用户 2026-09-17：这类"当前清单 N 行：并行 x…"做成 KPI 卡片）。
-  // 数字全部有后端数据支撑、前端只做计数：「并行」直接取 workers.configured（后端自己的口径：
-  // 只数 worker 行），「兜底」「停用」按 executors[] 的 type 计数，总数＝清单长度。
-  function kpiSet(id, val) {
+  /* ---------------- 清单：规模 KPI + 一览表 ---------------- */
+  // 规模 KPI（用户 2026-09-17）：前两张来自接口的清单本身；后两张是**容量配额**的换算——
+  // 用户上限 ÷ 并行行数（向上取整）与上限本身，口径写在卡头 ⓘ 里，卡里不放说明文字。
+  // 分母只数「并行」行（故障转移与停用不参与拉起，后端 workers.configured 也是这个口径）。
+  // 上限 0（不限）显示「不限」；容量数据没取到显示「—」——都不编造数字。
+  function kpiSet(id, val, sup, emptyText) {
     var el = $(id);
     if (!el) return;
-    if (val == null) { el.textContent = "—"; el.classList.add("kpi-value--empty"); }
-    else { el.textContent = String(val); el.classList.remove("kpi-value--empty"); }
+    el.textContent = "";                                // 清空容器（不用 innerHTML）
+    if (val == null) {
+      el.textContent = emptyText || "—";
+      el.classList.add("kpi-value--empty");
+      return;
+    }
+    el.classList.remove("kpi-value--empty");
+    el.appendChild(document.createTextNode(String(val)));
+    if (sup) el.appendChild(YB.el("sup", { text: sup }));
+  }
+  // 容量上限由页面注入（同一页两处数据源：本分区 /api/scheduler/executors、上限 /api/settings）。
+  // 返回 null = 还没取到（与 0 = 不限 区分开，"不限"不能当成"未知"显示）。
+  function usersMax() {
+    var c = typeof ctx.capacity === "function" ? ctx.capacity() : null;
+    if (!c) return null;
+    return count(c.users_max);
   }
   function paintKpis() {
-    var rows = executors();
     var loaded = !!lastData;
     var w = count(lastData && lastData.workers && lastData.workers.configured);
-    var fbn = 0, off = 0;
-    rows.forEach(function (r) {
-      if (attr(r.type) === "fallback") fbn += 1;
-      else if (attr(r.type) === "disabled") off += 1;
-    });
-    kpiSet("set-exec-kpi-rows", loaded ? rows.length : null);
+    var umax = usersMax();
+    var per = (umax != null && umax > 0 && w > 0) ? Math.ceil(umax / w) : null;
+    kpiSet("set-exec-kpi-rows", loaded ? executors().length : null);
     kpiSet("set-exec-kpi-worker", loaded ? w : null);
-    kpiSet("set-exec-kpi-fallback", loaded ? fbn : null);
-    kpiSet("set-exec-kpi-disabled", loaded ? off : null);
+    kpiSet("set-exec-kpi-perexec", loaded ? per : null, "人");
+    kpiSet("set-exec-kpi-capacity", loaded ? umax : null, "人", umax === 0 ? "不限" : "—");
   }
 
-  // 状态与当日合并成一列（用户 2026-09-17：两者是同一件事的两面，各占一列只是白占宽度）
-  // 徽标 + 当日计数：外层 td、内层 span 承载 flex —— td 直接做 flex 容器会失去
+  // 状态与当日各占一栏（用户 2026-09-17：合在一格里两串字挤在一起，分不清哪串是状态）。
+  // 徽标那层用 **inline-flex 且挂在内层 span 上**：td 直接做 flex 容器会失去
   // vertical-align:middle，内容相对同排其它列偏上（复核实测 −6.9px）
   function stateCell(row) {
     var type = attr(row.type);
     var inner = YB.el("span", { class: "set-exec-state" });
     if (type === "disabled") {
+      // 停用行不报存活（后端不判它），只说明"不拉起"
       inner.appendChild(badge("停用", "badge--muted"));
-      inner.appendChild(YB.el("span", { class: "set-exec-off", text: "不拉起、不计入建议值" }));
-      return YB.el("td", {}, [inner]);
-    }
-    if (type === "fallback") {
+      inner.appendChild(YB.el("span", { class: "set-exec-off", text: "不拉起" }));
+    } else if (type === "fallback") {
       var fb = (lastData && lastData.fallback) || {};
       inner.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
-      inner.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("fallback", null)) }));
-      return YB.el("td", {}, [inner]);
+    } else {
+      inner.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
     }
-    inner.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
-    inner.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("worker", count(row.slot))) }));
     return YB.el("td", {}, [inner]);
+  }
+  // 当日计数：按 role+index 命中该执行体；命中不到即"今日尚未运行"（后端约定的信号，显示 —）
+  function dailyCell(row) {
+    var type = attr(row.type);
+    var a = type === "disabled" ? null
+      : activityFor(type === "fallback" ? "fallback" : "worker", type === "fallback" ? null : count(row.slot));
+    return YB.el("td", { class: "set-exec-daily", text: a ? dailyText(a) : "—" });
   }
 
   // 行内「更多」：停用/启用 与 删除 从行弹窗搬到这里（用户 2026-09-17：设置里不再改状态/删行，
@@ -209,14 +224,14 @@
   }
   function rowMenuWrap(row) {
     var type = attr(row.type);
-    if (type === "fallback") return null;        // 兜底行：类型固定、不可删除，只留「设置」
+    if (type === "fallback") return null;        // 故障转移行：类型固定、不可删除，只留「设置」
     var name = rowName(row);
     var items = [{
       label: type === "disabled" ? "启用（改回并行）" : "停用（保留出口与槽位）",
       icon: type === "disabled" ? "play" : "circle-slash",
       run: function () { changeType(row, type === "disabled" ? "worker" : "disabled"); }
     }, {
-      label: "删除这一行", icon: "trash-2", danger: true,
+      label: "删除这一行", icon: "trash", danger: true,
       run: function () { removeRow(row); }
     }];
     var cell = YB.rowMenu.cell({ items: items, label: name + " 更多操作" });
@@ -289,12 +304,12 @@
     try { el.focus(); } catch (e) { /* 忽略 */ }
   }
 
-  // 兜底开关/进程还在、但清单里已经没有兜底行时点一句，免得"兜底 0 行"与卡头"正在运行"同屏无解释
+  // 故障转移开关/进程还在、但清单里已经没有那一行时点一句，免得"0 行"与卡头"正在运行"同屏无解释
   function fallbackRowMissing() {
     var fb = (lastData && lastData.fallback) || {};
     if (fb.status === "off") return "";
     var has = executors().some(function (r) { return attr(r.type) === "fallback"; });
-    return has ? "" : "（清单里已没有兜底行）";
+    return has ? "" : "（清单里已没有故障转移行）";
   }
 
   function rowBtn(row) {
@@ -310,7 +325,7 @@
     var tbody = $("set-exec-assign");
     if (!tbody) return;
     tbody.textContent = "";                       // 清空容器（不用 innerHTML）
-    // 顺序：兜底/故障转移行**固定置顶**（用户 2026-09-17），其余按槽位号升序
+    // 顺序：故障转移行**固定置顶**（用户 2026-09-17），其余按槽位号升序
     var rows = executors().slice().sort(function (a, b) {
       var af = attr(a.type) === "fallback" ? 0 : 1, bf = attr(b.type) === "fallback" ? 0 : 1;
       return af !== bf ? af - bf : count(a.slot) - count(b.slot);
@@ -332,8 +347,10 @@
         ]),
         YB.el("td", { text: TYPE_TEXT[type] || "—" }),
         stateCell(r),
+        dailyCell(r),
         YB.el("td", { text: r.egress || "直连（本机出口）" }),
-        YB.el("td", { class: "set-exec-ops" }, ops)
+        // flex 挂内层 span（td 做 flex 容器会失去 vertical-align:middle，≤900 换行档下按钮上浮 4.7px）
+        YB.el("td", {}, [YB.el("span", { class: "set-exec-ops" }, ops)])
       ]));
     });
     // 库里的旧记录（role=unknown）：照实列出来，不猜它属于谁（后端要求：不要在前端归类）
@@ -342,21 +359,19 @@
       tbody.appendChild(YB.el("tr", {}, [
         YB.el("td", { text: attr(a.label) || "未标注（旧数据）" }),
         YB.el("td", { text: "—" }),
-        YB.el("td", {}, [YB.el("span", { class: "set-exec-state" }, [
-          YB.el("span", { class: "set-exec-daily", text: todayText(a) })
-        ])]),
+        YB.el("td", { text: "—" }),
+        YB.el("td", { class: "set-exec-daily", text: dailyText(a) }),
         YB.el("td", { text: "—" }),
         YB.el("td", {})
       ]));
     });
     if (!rows.length && !activities().length) {
       tbody.appendChild(YB.el("tr", {}, [
+        YB.el("td", { text: "清单为空：点表底的「添加执行体」加一行" }),
         YB.el("td", { text: "—" }),
         YB.el("td", { text: "—" }),
-        YB.el("td", {}, [YB.el("span", { class: "set-exec-state" }, [
-          YB.el("span", { class: "set-exec-daily", text: "—" })
-        ])]),
-        YB.el("td", { text: "清单为空：点表格下方「添加执行体」加一行" }),
+        YB.el("td", { text: "—" }),
+        YB.el("td", { text: "—" }),
         YB.el("td", {})
       ]));
     }
@@ -381,7 +396,7 @@
     var warn = $("set-exec-fb-warn");
     if (warn) {
       warn.textContent = alarm
-        ? "兜底执行体声明已开启但当前没有在跑（且正在签到时段内）：窗口内的漏签不会被补，"
+        ? "故障转移行声明已开启但当前没有在跑（且正在签到时段内）：窗口内的漏签不会被补，"
           + "请检查宿主 cron（或容器调度器）是否以 --fallback 拉起。"
         : "";
       warn.hidden = !alarm;
@@ -413,19 +428,25 @@
     });
   }
 
+  // 追加行：后端自 2026-09-17 起对 `POST …/rows` **一律要求** confirm_password（追加一定改配置），
+  // 故先收口令再提交；口令不对时错误留在口令框里、可改口令重试（回调返回 Promise 走那条路径）。
   function addRow() {
     if (!ctx.isMaster || busy) return;          // busy 是防重入的唯一判据，入口再挡一道
-    withBusy(function () {
-      banner("添加中…", "info");
-      return YB.api("POST", "/api/scheduler/executors/rows", { type: "worker" }).then(function (d) {
-        return load().then(function () {
-          setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
-            + "。想给它单独出口，点那一行的「设置」。", false);
-          focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
-          return true;
+    askPassword("添加一行执行体（并行、默认直连）？追加行会改动执行体清单，请输入当前管理员密码确认。",
+      function (pw) {
+        return withBusy(function () {
+          banner("添加中…", "info");
+          return YB.api("POST", "/api/scheduler/executors/rows",
+            { type: "worker", confirm_password: pw }).then(function (d) {
+            return load().then(function () {
+              setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
+                + "。想给它单独出口，点那一行的「设置」。", false);
+              focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
+              return true;
+            });
+          }, function (e) { failTip(e, "添加"); });
         });
-      }, function (e) { failTip(e, "添加"); });
-    });
+      });
   }
 
   function putRow(slot, payload, okText) {
@@ -459,9 +480,9 @@
   }
 
   // 文本级动作（与「保存」分属不同视觉层级）；extraClass 给破坏性动作上危险色
-  var ROW_HELP = "名称：只影响本页显示（留空＝用默认名）；兜底/故障转移行的名称固定。"
-    + "类型：并行＝会拉起并计入建议值；兜底/故障转移＝窗口内补签，最多一行、不计入，且固定置顶；"
-    + "停用＝保留出口与槽位、不拉起、不计入。改状态与删除在表格「操作」列的更多菜单里，且要输一次管理员密码。"
+  var ROW_HELP = "名称：只影响本页显示（留空＝用默认名）；故障转移行的名称固定。"
+    + "类型：并行＝会被拉起；故障转移＝窗口内补签，最多一行、固定置顶；"
+    + "停用＝保留出口与槽位、不拉起。改类型与删除在表格「操作」列的更多菜单里，且要输一次管理员密码。"
     + "出口：读接口只回脱敏描述串（不含账号密码），本框不回显原值，留空＝不修改；"
     + "改成直连请用下面的「清除出口」。写入只动这一行，其余行（含停用行的出口）逐字保留；"
     + "改动即时写入配置，下一轮定时任务或重启执行体/容器后生效。";
@@ -478,32 +499,35 @@
     var type = attr(row.type);
     var isFb = type === "fallback";
     var fb = (lastData.fallback) || {};
-    var acts = activityFor(isFb ? "fallback" : "worker", isFb ? null : slot);
 
     // .set-exec-form：给弹窗内相邻字段之间补垂直间距（见 app.css；.field 自身没有外边距）
     var wrap = YB.el("div", { class: "set-exec-form" });
-    // 名称：仅当接口下发了 name 字段（= 后端已支持逐行改名）时才出现，避免做出一个点了会 400 的输入框。
-    // 兜底行名称固定（用户 2026-09-17），不给改名。
+    // 名称：后端 2026-09-17 起每行都下发 name（未设 = null），故能力探测恒真——保留探测只是为了
+    // 字段将来消失时不会做出"点了会 400"的输入框。`label` 是后端口径、`name` 是用户输入，
+    // 只拿 name 回填输入框（placeholder 用 label 提示默认名）。故障转移行的名称由后端定，不给改名。
     var nameId = "set-exec-modal-name";
     if (!isFb && Object.prototype.hasOwnProperty.call(row, "name")) {
       wrap.appendChild(YB.el("div", { class: "field" }, [
         YB.el("label", { class: "field-label", for: nameId, text: "名称（留空 = 用默认名）" }),
         YB.el("div", { class: "input-group" }, [
           YB.el("input", {
-            class: "input", id: nameId, type: "text", autocomplete: "off", maxlength: "24",
+            // maxlength 与后端上限一致（32）；换行在单行 input 里本来就打不进来，
+            // 粘贴带换行会被浏览器剥掉——故不另加前端校验，直接以后端 400 文案兜底。
+            class: "input", id: nameId, type: "text", autocomplete: "off", maxlength: "32",
             placeholder: attr(row.label) || "并行执行体 #" + (slot + 1), value: attr(row.name)
           })
         ]),
-        YB.el("p", { class: "field-help", text: "只影响本页显示；改状态与删除在表格「操作」列的更多菜单里。" })
+        YB.el("p", { class: "field-help", text: "只影响本页显示（最长 32 个字符）。" })
       ]));
     }
-    // 类型：只读展示（用户 2026-09-17：设置里不再改类型，停用/启用移到操作列）
+    // 类型：只读展示（用户 2026-09-17：设置里不再改类型，停用/启用移到操作列）；
+    // 改法（怎么改类型、怎么删行）在旁边的 ⓘ 里，不在页面上重复一遍。
     wrap.appendChild(YB.el("div", { class: "field" }, [
       YB.el("span", { class: "field-label" }, [
         YB.el("span", { text: "类型" }),
         infoTip("类型与出口的改法", ROW_HELP)
       ]),
-      YB.el("p", { class: "set-summary", text: TYPE_TEXT[type] + (isFb ? "（固定：置顶、不可改类型、不可删除）" : "（改状态请用「操作」列的更多菜单）") })
+      YB.el("p", { class: "set-summary", text: TYPE_TEXT[type] + (isFb ? "（固定：置顶、不可改类型、不可删除）" : "") })
     ]));
 
     // 「当前出口」与「对应配置项」合并成一行（用户 2026-09-17：这两条本来在说同一件事）
@@ -526,48 +550,37 @@
     var swInput = null;
     if (isFb) {
       // 开关与模板里的同类控件同构：label 内补 sr-only 文本给读屏，语义说明用
-      // aria-describedby 程序化关联（与 #set-exec-perm 的做法一致）
+      // aria-describedby 程序化关联（与设置页其它分区同一做法）
       swInput = YB.el("input", { type: "checkbox" });
       if (fb.enabled === true) swInput.checked = true;
       var swHelpId = "set-exec-modal-fb-help";
       swInput.setAttribute("aria-describedby", swHelpId);
       wrap.appendChild(YB.el("div", { class: "field" }, [
-        YB.el("label", { class: "switch", title: "开启兜底执行体" }, [
+        YB.el("label", { class: "switch", title: "开启故障转移" }, [
           swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
-          YB.el("span", { class: "sr-only", text: "开启兜底执行体" })
+          YB.el("span", { class: "sr-only", text: "开启故障转移" })
         ]),
-        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起兜底进程（只写声明开关；还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
+        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起故障转移进程（窗口内补签；只写声明开关，还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
       ]));
     }
+    // 存活：只报表格那两列看不到的事实——最近活跃时刻、故障转移是否在当前应运行时段内。
+    // （状态与当日已在表格里各占一栏，此处不重复。）
     if (type !== "disabled") {
       wrap.appendChild(YB.el("p", { class: "set-summary", text: isFb
         ? "存活：" + (FB_TEXT[fb.status] || "—") + (fb.in_window ? "（当前在本应运行时段内）" : "（当前不在本应运行时段内）")
-          + "　" + todayText(acts)
-        : "存活：" + (STATE_TEXT[row.state] || "—") + (row.last_seen_at ? "；最近活跃 " + attr(row.last_seen_at) : "")
-          + "　" + todayText(acts) }));
+        : "存活：" + (STATE_TEXT[row.state] || "—") + (row.last_seen_at ? "；最近活跃 " + attr(row.last_seen_at) : "") }));
     }
 
     // 低频且破坏性的动作降级到正文里（用户 2026-09-17：「清除出口」与「保存」不是一个视觉层级）
     wrap.appendChild(YB.el("p", { class: "set-exec-subactions" }, [
       linkBtn("清除出口（改为直连）", function () {
-        YB.confirmDialog({
-          title: "清除这一行的出口？",
-          body: "该行会改成直连（本机出口），原出口配置从配置项里删掉，不可撤销。",
-          confirmText: "清除",
-          danger: true
-        }).then(function (ok) {
-          if (!ok) return;
-          if (handle && handle.close) handle.close();
-          focusAfterPaint = { slot: slot };
-          putRow(slot, { proxy: "" }, "已清除出口");
-        });
-      }),
-      YB.el("span", { class: "set-exec-subactions__sep", text: "·" }),
-      linkBtn("查看这一行的状态与当日", function () {
-        var acts = activityFor(isFb ? "fallback" : "worker", isFb ? null : slot);
-        banner(rowTitle(row) + "：" + (isFb ? (FB_TEXT[fb.status] || "—") : (STATE_TEXT[row.state] || "—"))
-          + "　" + todayText(acts), "info");
         if (handle && handle.close) handle.close();
+        focusAfterPaint = { slot: slot };
+        // 清除出口 = 改 proxy，后端要口令（改直连也是改配置）；确认与警告并进口令文案，不叠两层弹窗
+        askPassword("清除 " + rowTitle(row) + " 的出口（改为直连）？原出口配置会从配置项里删掉，"
+          + "不可撤销。请输入当前管理员密码确认。", function (pw) {
+          return putRow(slot, { proxy: "", confirm_password: pw }, "已清除出口");
+        });
       })
     ]));
     function switchArg() {
@@ -575,8 +588,9 @@
       return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
     }
 
-    // 保存改走「口令确认 → 提交」：用户 2026-09-17 要求改动需输主管理员密码
-    // （后端落地 confirm_password 校验后即为真门，见 docs/refactor/88）。
+    // 保存：后端 2026-09-17 落地了口令门——**改出口或开关要口令，只改名不要**
+    // （`PUT …/rows` 在 type/proxy 真的会变时才判，`PUT …/executors` 同理）。
+    // 口令不对时后端回 403「口令校验未通过，设置未生效」，由口令框就地显示、可重试。
     function save() {
       if (busy) return false;
       var egress = (($(inputId) || {}).value || "").trim();
@@ -590,24 +604,39 @@
         banner("没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。", "info");
         return false;
       }
+      // 只有真的动出口/开关才要口令；改自定义名不动行为，按后端口径不打这道门
+      var needsPw = !!payload.proxy || enableArg != null;
       if (handle && handle.close) handle.close();
       focusAfterPaint = { slot: slot };
-      askPassword("修改 " + rowTitle(row) + " 的配置？请输入当前管理员密码确认。", function (pw) {
-        var body = { confirm_password: pw };
-        Object.keys(payload).forEach(function (k) { body[k] = payload[k]; });
-        var steps = [YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body)];
-        if (enableArg != null) {
-          steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg, confirm_password: pw }));
-        }
+      if (!needsPw) { submit(null); return true; }
+      askPassword("修改 " + rowTitle(row) + " 的出口配置？请输入当前管理员密码确认。", function (pw) { submit(pw); });
+      return true;
+    }
+    // pw = null：只改名，不带 confirm_password
+    function submit(pw) {
+      if (busy) return false;
+      var egress = (($(inputId) || {}).value || "").trim();
+      var nameEl = $(nameId);
+      var newName = nameEl ? nameEl.value.trim() : null;
+      var enableArg = switchArg();
+      var body = {};
+      if (pw != null) body.confirm_password = pw;
+      if (egress) body.proxy = egress;
+      if (nameEl && newName !== attr(row.name)) body.name = newName;
+      var steps = [YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body)];
+      if (enableArg != null) {
+        steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg, confirm_password: pw }));
+      }
+      return withBusy(function () {
+        banner("提交中…", "info");
         return Promise.all(steps).then(function (res) {
           return load().then(function () {
             banner("已保存 " + rowTitle(row) + "：" + note(res && res[0]), "success");
             if (focusAfterPaint) restoreFocus();
             return true;
           });
-        });
+        }, function (e) { failTip(e, "保存"); });
       });
-      return true;
     }
 
     var handle = YB.openModal({
@@ -622,146 +651,22 @@
     return handle;
   }
 
-  /* ---------------- 建议：页面一行摘要 + 弹窗明细 ---------------- */
-  // 口径＝实测容量 × 2/3（后端算好）；没有实测就写「未实测」并隐藏建议。
-  // 与「容量配额」的估算**不是同一口径**（那边是"一轮装不装得下"），故写明，不假装相等。
-  // 页面只留一行摘要；明细、实测入口与两条风险说明都在「容量实测与建议」弹窗里
-  // （用户 2026-09-17：低频功能与提醒收进弹窗，节约页面空间）——弹窗元素沿用同一批 id，
-  // 所以下面这些 setText 会同时刷页面摘要与（打开着的）弹窗明细。
-  function adviceSummary(data) {
-    var win = (data && data.window) || {};
-    var rec = (data && data.recommendation) || null;
-    var measured = (data && data.measured) || null;
-    if (!measured) return "未实测：点「查看与实测」做一次实测，或由部署者录入实测容量，才会给出建议执行体数。";
-    // 尾巴上的「建议值，非程序上限」是**口径**（清单能加到 63 行，量与它无关）——复审判定
-    // 「×2/3、只是建议不是上限」若只活在弹窗黄条里就收得过深，故在摘要行留这 8 字。
-    return "建议并行执行体数：" + (rec ? count(rec.executors_needed) + " 个" : "—")
-      + "（每个约 " + (rec ? count(rec.per_executor_accounts) : "—") + " 个账号，含慢账号余量）"
-      + " · 实测容量 " + count(measured.per_executor_capacity) + " 个"
-      + " · 计入容量 " + count(data && data.current_accounts) + " 个账号"
-      + (win.start && win.end ? " · 窗口 " + win.start + " ~ " + win.end : "")
-      + "（建议值，非程序上限）";
-  }
-
-  function paintAdvice(data) {
-    var win = (data && data.window) || {};
-    var rec = (data && data.recommendation) || null;
-    var measured = (data && data.measured) || null;
-    setText("set-exec-advice-line", adviceSummary(data));
-    // 以下四个 id 只存在于弹窗里：弹窗没开时 setText/setHidden 静默跳过（打开时 openAdvice 会再刷一遍）
-    setText("set-exec-window", measured
-      ? "实测容量：" + count(measured.per_executor_capacity) + " 个（" + attr(measured.source) + "）"
-      : "未实测：部署者尚未录入实测容量，因此不给出建议值（也不按现有账号数反算）。");
-    setText("set-exec-accounts", "当前计入容量的账号数：" + count(data && data.current_accounts)
-      + " 个；有效签到窗口 " + (win.start && win.end ? win.start + " ~ " + win.end : "—")
-      + "；建议值只数清单里的「并行」行（现在 " + workers() + " 行）。");
-    if (rec) {
-      setText("set-exec-advice-nums", "建议执行体数：" + count(rec.executors_needed)
-        + " 个（每个执行体约 " + count(rec.per_executor_accounts) + " 个账号，含慢账号余量）。");
-      setText("set-exec-advice-note", attr(rec.note));
-      setHidden($("set-exec-advice-nums"), false);
-      setHidden($("set-exec-advice-note"), !rec.note);
-    } else {
-      setText("set-exec-advice-nums", "");
-      setText("set-exec-advice-note", "");
-      setHidden($("set-exec-advice-nums"), true);
-      setHidden($("set-exec-advice-note"), true);
-    }
-  }
-
-  /* ---------------- 「容量实测与建议」弹窗（低频操作 + 口径提醒的归属处） ---------------- */
-  // 后端要求两条风险必须写进页面（77/73 号）：默认拿列表第一个可签账号；只覆盖窗口外最小链路。
-  // 它们与实测按钮放在同一个弹窗里——在"要动手的那一刻"给出，比常驻在页面上更省空间也更贴题。
-  var MEASURE_INTRO = "点「测试」会用一个真实账号走一次只读链路（登录 + 拉任务，不提交签到）"
-    + "测出耗时，并据此给出建议执行体数（只提示，不改清单）。";
-  var MEASURE_RISK = "说明：默认取账号列表里第一个可签账号 —— 通常是某位真实用户的账号，"
-    + "且顺序稳定、每次都是同一个；它只覆盖窗口外的最小链路（登录 + 拉任务，5 次请求），"
-    + "比真实签到（含定位与提交，6 次请求）偏乐观。正式定档请以测试机基准为准，两种数字不要混用；"
-    + "窗口内点不了（后端返回 409），且两次实测之间有冷却时间。";
-
-  function openAdvice() {
-    if (!lastData) { setTip("数据尚未加载完成", true); return null; }
-    var wrap = YB.el("div");
-    // 原来在页面上的一行建议摘要（用户 2026-09-17：加到「查看与实测」弹窗里）
-    wrap.appendChild(YB.el("p", { class: "set-summary", id: "set-exec-advice-line" }));
-    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-window" }));
-    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-accounts" }));
-    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-advice-nums" }));
-    wrap.appendChild(YB.el("p", { class: "set-warn", id: "set-exec-advice-note", hidden: true }));
-    // 说明与风险都在按钮旁的 ⓘ 里（用户 2026-09-17：弹窗内文案也靠 info 折叠）；
-    // 浮层向上展开——按钮在弹窗靠底部，向下开会被 .pm-panel 的 overflow:hidden 裁掉。
-    var mBtn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", id: "set-exec-measure", text: "测试" });
-    mBtn.disabled = !ctx.isMaster;                  // 禁用不是安全边界，后端 403 兜底
-    mBtn.addEventListener("click", measure);
-    wrap.appendChild(YB.el("p", { class: "set-exec-actions" }, [
-      mBtn,
-      infoTip("实测说明与风险", MEASURE_INTRO + " " + MEASURE_RISK, true)
-    ]));
-    wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-measure-result", role: "status" }));
-    var handle = YB.openModal({
-      title: "容量实测与建议",
-      subtitle: "实测只给建议，不改清单",
-      body: wrap,
-      actions: [{ label: "关闭", variant: "ghost" }]
-    });
-    paintAdvice(lastData);                          // 打开时把明细填上（元素此刻才存在）
-    return handle;
-  }
-
-  /* ---------------- 实测（POST /measure） ---------------- */
-  // 后端会真的访问易班一次（只读链路）。结果行的三态样式：中性（说明/进行中）/ 失败上色 / 成功。
-  function measureOut(text, bad) {
-    var out = $("set-exec-measure-result");
-    if (!out) return;
-    out.textContent = text;
-    out.className = bad ? "field-help set-bad" : "field-help";
-  }
-  // 429 的 body 带 next_allowed_in（秒）：把"还要等多久"翻成人话，别只说"冷却中"
-  function cooldownText(e) {
-    var sec = e && e.data && Number(e.data.next_allowed_in);
-    if (!sec || sec <= 0) return "";
-    var min = Math.ceil(sec / 60);
-    return "约 " + (min > 1 ? min + " 分钟" : Math.max(1, Math.round(sec)) + " 秒") + "后可再测";
-  }
-  function measure() {
-    if (busy || !ctx.isMaster) return;
-    var btn = $("set-exec-measure");
-    var out = $("set-exec-measure-result");
-    busy = true;
-    if (btn) btn.disabled = true;
-    measureOut("实测中…（会用一个真实账号登录一次易班，只读、不签到）", false);
-    YB.api("POST", "/api/scheduler/executors/measure", {}).then(function (d) {
-      var sec = d && d.seconds != null ? Number(d.seconds) : null;
-      var cap = count(d && d.per_executor_capacity);
-      var perExec = count(d && d.recommended_per_executor);
-      var cur = count(lastData && lastData.current_accounts);
-      var need = (perExec > 0 && cur > 0) ? Math.ceil(cur / perExec) : null;
-      measureOut("实测 " + (sec == null ? "—" : sec.toFixed(2) + " 秒")
-        + "（样本 " + attr(d && d.sample) + "）；单执行体容量约 " + cap
-        + " 个、建议每执行体 " + perExec + " 个账号。"
-        + (need == null ? "" : "按当前 " + cur + " 个账号换算：建议 " + need
-          + " 行「并行」（清单现在 " + workers() + " 行，未自动改动——增减行请用「添加执行体」与行内「设置」）。"), false);
-      // 后端把"只覆盖窗口外最小链路、偏乐观"写进了 note（78/79 号回执确认不加 scope 字段）。
-      // 同一句话已经以静态文案写在按钮下方（MEASURE_RISK），故这里不再重复显示，
-      // 只把后端原文挂到结果行的 title 上备查（便于对照后端口径变更）。
-      if (out && d && d.note) out.title = attr(d.note);
-    }, function (e) {
-      var cool = cooldownText(e);
-      measureOut(((e && e.message) || "实测失败，请稍后重试") + (cool ? "（" + cool + "）" : ""), true);
-    }).then(function () {
-      busy = false;
-      if (btn) btn.disabled = !ctx.isMaster;
-    });
-  }
+  /* ---------------- 容量建议与耗时实测：已移到「容量配额」分区（2026-09-17） ----------------
+     这两件事与容量配额共用同一份容量数据（计入容量的账号数、有效窗口），用户要求同类功能
+     同屏，故连代码一起搬到 components/settings-quota.js（applyExecutors/measure），
+     本分区只把接口响应通过 onData 交给它。实测那两个风险（默认拿列表第一个账号、只覆盖
+     窗口外最小链路偏乐观）改挂在容量配额页那张卡的 ⓘ 里。 */
 
   function apply(data) {
     lastData = data || null;
     paintKpis();
     paintRows();
     paintFallback(data);
-    paintAdvice(data);
     setTip("", false);
     applyPerm();
+    // 同一次响应里还有容量建议（measured / recommendation / window / current_accounts），
+    // 归「容量配额」分区的卡片渲染——一份数据一次请求，两个分区各取所需。
+    if (typeof ctx.onData === "function") ctx.onData(data);
   }
 
   function load() {
@@ -775,12 +680,19 @@
     });
   }
 
+  // options: { isMaster, capacity: () => ({users_max}), onData: (payload) => void }
+  //   capacity：规模 KPI 要「用户容量上限」，它来自 /api/settings（页面持有）——用回调取值，
+  //             避免本组件再请求一次；上限改了由页面调 refreshKpis() 重画。
+  //   onData  ：把同一份响应交给「容量配额」分区的卡片（容量建议与实测）。
   function mount(options) {
-    ctx = { isMaster: !!(options && options.isMaster) };
+    options = options || {};
+    ctx = {
+      isMaster: !!options.isMaster,
+      capacity: typeof options.capacity === "function" ? options.capacity : null,
+      onData: typeof options.onData === "function" ? options.onData : null
+    };
     var addBtn = $("set-exec-row-add");
     if (addBtn) addBtn.addEventListener("click", addRow);
-    var aBtn = $("set-exec-advice-open");
-    if (aBtn) aBtn.addEventListener("click", openAdvice);
     applyPerm();
   }
 
@@ -788,6 +700,7 @@
     mount: mount,
     load: load,
     apply: apply,
+    refreshKpis: paintKpis,
     // 清单模型下每个写操作**立即落盘**，没有"待保存的整页改动"——保留下面两个方法只为满足
     // 页面统一的「未保存改动守卫」接口（见 pages/work_settings.js 的 stores()）。
     save: function () { return Promise.resolve(true); },

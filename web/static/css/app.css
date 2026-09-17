@@ -2853,6 +2853,20 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   .acct-menu--floating,
   .acct-menu--floating.is-shown { transition: none; }
 }
+/* 浮动态下的菜单项：`.acct-row-menu .dd-menu-item` / `.usr-row-menu .dd-menu-item` 都是**后代选择器**，
+   菜单 portal 到 body 后就不再命中（实测：菜单宽 168px、菜单项却只有内容宽 128px —— hover 底色与
+   点击区都短一截，`text-align:left` 也一起失效）。故按浮动态类补齐。
+   行高按项目自己的下拉基准收紧（自研 `.select-option`：内距 8px + 行盒 18.75px = 34.8px）——
+   Adminator 的 10px 内距叠上本站 13px 字与 1.55 行高会得到 40.1px 一行，
+   同一页里两种下拉的行高不一致（用户 2026-09-17 指出的「垂直间距」）。 */
+.acct-menu--floating .dd-menu-item {
+  width: 100%;
+  text-align: left;
+  padding: 8px 14px;
+  line-height: 1.45;
+}
+/* 危险项前的分隔线：行高收紧后，原来的 6px 外边距会让两段之间空出一条比行距更宽的空当 */
+.acct-menu--floating .dd-divider { margin: 4px 0; }
 .acct-row-menu .dd-menu-item {
   width: 100%;
   border: 0;
@@ -3278,6 +3292,10 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    （实测：1440 行弹窗的浮层 420px 只露 100px）。弹窗内的触发器都在面板左半边，
    故弹窗内改为左对齐、只向右展开。 */
 .pm-panel .info-pop { right: auto; left: 0; }
+/* 浮层只向**左**展开（right:0 对齐触发器右缘）是刻意的：这个浮层常驻 DOM（靠 hover/focus 显隐，
+   不是 display:none），若改成居中/向右展开，隐藏态的那些浮层会把文档的横向可滚动区撑宽
+   （实测 360 下多出 116px 的整页横滑）。所以触发器离视口右缘太远时（卡头里 ⓘ 排在按钮左侧就会），
+   正确做法是**排布上把它放到行的最右**，而不是改这里的定位。 */
 /* hover 触发只在精确指针设备启用：触屏点按会产生"假 hover"并可能让浮层粘滞 */
 @media (hover: hover) and (pointer: fine) {
   .info-tip:hover .info-pop {
@@ -4360,19 +4378,44 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 /* ==========================================================================
    37. 执行体清单（设置页「执行体」分区，2026-09-17 换清单模型）
    --------------------------------------------------------------------------
-   页面结构：行数条（摘要 + 两个同级按钮）＋ 一行建议摘要 ＋ 清单表（5 列，状态与当日已合并）。
+   页面结构：规模 KPI（4 张，标签 + 数字，不含说明文字）＋ 清单表（6 列：
+   执行体 / 类型 / 状态 / 当日 / 出口 / 操作）＋ 表底居中的「添加执行体」。
+   容量建议与耗时实测已移到「容量配额」分区（同族功能同屏）。
    ========================================================================== */
-/* 状态与当日合并一列：徽标 + 当日计数同一行，列窄时自动折到下一行。
+/* 状态列：徽标（或"不拉起"说明）单占一行；内容折行时左对齐。
    注意用 **inline-flex 且挂在内层 span 上**：td 若是 flex 容器会失去 vertical-align:middle，
    内容相对同排其它列偏上（实测 −6.9px）。 */
 .set-exec-state { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
-.set-exec-daily, .set-exec-off, .set-exec-slot { font-size: 12px; color: var(--t-muted); }
+/* 表头与「账号管理」「用户管理」两张表同口径（.acct-table/.usr-table thead th）：
+   Adminator 的 .data-table thead th 用 --t-light（白底 2.56:1），11px 中文在那个对比度下发虚；
+   另两张表都用 --t-muted（4.76:1）且吸顶。 */
+#set-exec-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  color: var(--t-muted);
+}
+/* 当日列的小字计数（成功/失败/进行中）与停用行的说明文字。
+   ⚠ 必须写成 `#set-exec-table td.set-exec-daily`：裸 `.set-exec-daily`（0,1,0）会被
+   `.data-table tbody td`（0,1,2）盖掉，实测桌面档读到的是 13px/--t-base，小字层级不成立。 */
+.set-exec-off, .set-exec-slot { font-size: 12px; color: var(--t-muted); }
+#set-exec-table td.set-exec-daily { font-size: 12px; color: var(--t-muted); }
 .set-exec-slot { margin-left: 6px; }
 /* 停用行整行降级（出口仍在，但不是活配置） */
 #set-exec-table tr.set-exec-row-off td { color: var(--t-muted); }
-/* 操作列：设置 + 更多（⋯）；两枚同高、不折行 */
-.set-exec-ops { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* 操作列：设置 + 更多（⋯）。flex 挂在**内层 span** 上——td 若是 flex 容器会失去
+   vertical-align:middle，≤900 换行档下两枚按钮整体上浮 4.7px（实测，与 .set-exec-state 同一坑）。
+   同格两枚控件同高：⋯ 是 30×30 的图标钮、「设置」是 .btn--sm 的自然高（31.8，≤720 时 34），
+   故把两枚都钉到同一高度；≤720 抬到 34 保住触控目标。 */
+.set-exec-ops { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .set-exec-ops .dd-wrap { display: inline-flex; }
+#set-exec-table .set-exec-ops .btn { height: 32px; min-height: 0; }
+#set-exec-table .set-exec-ops .btn--icon { width: 32px; padding: 0; }
+@media (max-width: 720px) {
+  #set-exec-table .set-exec-ops .btn { height: 34px; }
+  #set-exec-table .set-exec-ops .btn--icon { width: 34px; }
+}
 /* 添加执行体：表格底部单开一行、只在中间放一个按钮（用户 2026-09-17） */
 .set-exec-addrow { display: flex; justify-content: center; margin: 14px 0 0; }
 /* 行内弹窗的字段组间距：`.field` 之间只有 .form-grid 才给间距（18/22），裸相邻会挤在一起
@@ -4381,23 +4424,25 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .set-exec-form > .field + .set-summary,
 .set-exec-form > .set-summary + .field { margin-top: 12px; }
 .set-exec-form > .set-exec-subactions { margin-top: 16px; }
-/* 行内弹窗的次级动作（清除出口 / 删除这一行）：文本级，不与「保存」同视觉层级 */
-/* 弹窗里的动作行（测试 + 它的 ⓘ）：同高、居中对齐 */
-.set-exec-actions { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
 /* 字段标签旁的 ⓘ（弹窗内折叠口径用）：与文字同一行、不撑高标签 */
 .field-label .info-tip { margin-left: 6px; vertical-align: -3px; }
+/* 行内弹窗的次级动作（只剩「清除出口」）：文本级，不与「保存」同视觉层级 */
 .set-exec-subactions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
-.set-exec-subactions__sep { color: var(--t-light); }
 .set-exec-danger { color: var(--state-bad-fg); }
 
-@media (max-width: 900px) {
-  /* 窄屏允许换行：本表「执行体」「状态·当日」都是"标识 + 徽标 + 计数"，出口列是描述性文本，
-     都不属于"不可断行的标识"（邮箱/手机号那种才需要 nowrap），换行比横向滚动更好读 */
+/* ≤1350 允许换行：本表「执行体」列是"标识 +（停用行的）槽位"、状态列是徽标、当日列是计数、
+   出口列是描述性文本，都不属于"不可断行的标识"（邮箱/手机号那种才需要 nowrap）。
+   断点取 1350 而不是 900：各列 nowrap 时整表固有宽 ≈937px，1024–1350 这段卡片内容宽只有
+   842–1008px，操作列会被推出可视区（实测 1024 下只露 15.8px／14%），而渐隐提示只在 ≤720 生效
+   ——换行比"看不见的横滑"更好读。 */
+@media (max-width: 1350px) {
   #set-exec-table th,
   #set-exec-table td { white-space: normal; }
-  /* 但整表要有一个下限宽度：容器比它更窄时（实测 360 视口下卡内容宽仅 290px），
-     浏览器会把各列压到内容宽以下，出现"一个字一行"——执行体列被压成 44px、
-     单行高 146px，状态徽标变成长条。给下限后列宽回到内容宽、行高回到 59px，
-     多出来的宽度交给 .table-scroll 横向滚动（账号页/用户页在 360 下也是这么滚的）。 */
+}
+/* ≤720 再给整表一个下限宽度：容器比它更窄时（实测 360 视口下卡内容宽仅 290px），
+   浏览器会把各列压到内容宽以下，出现"一个字一行"——执行体列被压成 44px、
+   单行高 146px，状态徽标变成长条。给下限后列宽回到内容宽、行高回到 59px，
+   多出来的宽度交给 .table-scroll 横向滚动（账号页/用户页在 360 下也是这么滚的）。 */
+@media (max-width: 720px) {
   #set-exec-table { min-width: 700px; }
 }
