@@ -36,8 +36,21 @@
        "role": "worker", "label": "并行执行体 #3",
        "state": "idle", "last_seen_at": null}
     ],
-    "env_keys": {"list": "YIBAN_PROXY_LIST", "single": "YIBAN_PROXY"}
+    "env_keys": {"list": "YIBAN_PROXY_LIST", "single": "YIBAN_PROXY",
+                 "manifest": "YIBAN_EXECUTORS"}
   },
+  "executors": [
+    {"slot": 0, "type": "worker", "egress": "http://proxy1.example:8080",
+     "label": "并行执行体 #1", "state": "finished", "last_seen_at": "2026-09-16 06:42:11"},
+    {"slot": 1, "type": "worker", "egress": "直连（本机出口）",
+     "label": "并行执行体 #2", "state": "idle", "last_seen_at": null},
+    {"slot": 2, "type": "worker", "egress": "http://proxy3.example:3128",
+     "label": "并行执行体 #3", "state": "idle", "last_seen_at": null},
+    {"slot": 3, "type": "fallback", "egress": "直连（本机出口）",
+     "label": "兜底常驻执行体", "state": null, "last_seen_at": null},
+    {"slot": 4, "type": "disabled", "egress": "http://proxy5.example:3129",
+     "label": "已停用", "state": null, "last_seen_at": null}
+  ],
   "fallback": {
     "egress": "直连（本机出口）",
     "interval_sec": 60,
@@ -80,11 +93,12 @@
 
 | 字段 | 类型 | 语义与页面用法 |
 |------|------|----------------|
-| `workers.configured` | int ≥ 1 | 当前配置的并行执行体数（对应 `--workers N` 的 N；未配置=1） |
-| `workers.assignments[]` | list | 逐个执行体的出口描述 + `role`/`label`，`index` 与 `YIBAN_PROXY_LIST` 的下标一致；**空位显示为「直连（本机出口）」** |
+| `workers.configured` | int ≥ 1 | 当前配置的并行执行体数：**清单里 `type=worker` 的行数**（`disabled`/`fallback` 不计）；清单缺失时回退旧口径（`YIBAN_WORKERS`，未配置=1） |
+| `workers.assignments[]` | list | 逐个执行体的出口描述 + `role`/`label`，`index` 是**清单槽位号**（清单缺失时即 `YIBAN_PROXY_LIST` 的下标）；**空位/空串显示为「直连（本机出口）」**。只列 `worker` 行——停用行只在 `executors[]` 里看得到 |
 | `workers.assignments[].state` | string | 该执行体的存活四态，见下表。**页面直接用，不要自己拿文件/时间去拼** |
 | `workers.assignments[].last_seen_at` | string \| **null** | 最后一次见到它活着的时刻（`YYYY-MM-DD HH:MM:SS`）；本业务日无记录时为 `null`。**不含 pid/主机名** |
-| `workers.env_keys` | object | 键名由后端给出，前端**不要硬编码字符串** |
+| `workers.env_keys` | object | 键名由后端给出，前端**不要硬编码字符串**。`manifest` = 执行体清单键名（`YIBAN_EXECUTORS`） |
+| `executors[]` | list | **执行体清单逐行**（`YIBAN_EXECUTORS` 的界面形态）：`{slot, type, egress, label[, state, last_seen_at]}`。见下节 |
 | `fallback.egress` | string | 兜底常驻执行体的出口描述 |
 | `fallback.interval_sec` | int | 兜底执行体的扫描间隔（秒） |
 | `fallback.role` / `label` | string | 固定 `fallback` / 「兜底常驻执行体」 |
@@ -92,7 +106,7 @@
 | `fallback.enabled` | bool | `.env` 里**声明的**开关（`YIBAN_FALLBACK_ENABLE`，认 1/true/on/yes；未设=关）。"声明"与"在跑"是两件事，见 `status` |
 | `fallback.env_key_enable` | string | 开关的键名（同 `env_keys` 的用意：前端不硬编码） |
 | `fallback.status` | string | 后端算好的四态，见下表。**页面直接用它，不要自己用 enabled×alive 拼** |
-| `fallback.in_window` | bool | 当前是否落在**有效**签到窗口内（已扣掐头去尾） |
+| `fallback.in_window` | bool | 当前是否落在**本应运行**的时段内 ＝ 有效窗口内（已扣掐头去尾）**且** 今天没被门挡下（周末签到未开 / 一键暂停）。见下方「`in_window` 的两段口径」 |
 | `window.*` | object | 有效窗口（已扣掐头去尾）：`effective_sec` 就是容量换算用的分母 |
 | `activity.day` | string | 统计的业务日（北京时间） |
 | `activity.in_window` | bool | 与 `fallback.in_window` 同值（放在这里便于前端一次取用） |
@@ -102,29 +116,144 @@
 | `recommendation` | object \| **null** | `per_executor_accounts = 实测 × 2/3`（向下取整，至少 1）；`executors_needed = ⌈current_accounts / per_executor_accounts⌉` |
 | `current_accounts` | int | 当前会计入容量的账号数（与设置页容量口径一致） |
 
+### `executors[]`：执行体清单（2026-09-17 新增）
+
+清单是**单键 JSON 数组** `YIBAN_EXECUTORS`，每个执行体一行：
+
+```json
+[{"slot": 0, "type": "worker", "proxy": "http://u:p@h:1"},
+ {"slot": 1, "type": "disabled", "proxy": ""},
+ {"slot": 2, "type": "fallback", "proxy": "http://fb:8080"}]
+```
+
+| 概念 | 口径（页面按这个理解） |
+|------|------------------------|
+| `slot` | **稳定槽位号**（0~63）。**只增不复用**：新增行 = 当前最大 + 1；删中间行不重排其余槽位。删掉**当前最大**那一行后，若该号在**领取历史**（保留期内）里出现过，下一次追加会**跳过去**——否则重建的执行体会被显示成前任的归属；从没用过的号照旧复用。想长期占住位置就把行改成 `disabled` **而不是删除** |
+| `type` | `worker`（并行执行体，可有 N 行）/ `fallback`（兜底，**最多 1 行**）/ `disabled`（停用） |
+| `proxy` | 该行自己的出口；空串 = 直连。**写接口收完整串，读接口只回描述串**（脱敏硬要求不变） |
+| 停用语义 | **保留出口**、不参与分配、不拉起、不计入建议值；接口回 `disabled`、**不报存活**；仍占 `slot`（不被复用）。重新启用（改回 `worker`）后出口照旧 |
+| 建议值分母 | `workers.configured` 只数 `worker` 行（`disabled` 与 `fallback` 都不计） |
+| 旧键 | 一个版本周期内保留：清单缺失时按旧三键读取（`resolve` 回退口径逐字不变）；**清单与旧键并存时以清单为准** |
+
+`executors[]` 每行字段：
+
+| 字段 | 类型 | 语义 |
+|------|------|------|
+| `slot` | int | 槽位号（同时就是并行执行体的下标，与 `workers.assignments[].index`、`activity.by_executor[].index` 同号） |
+| `type` | string | `worker` / `fallback` / `disabled` |
+| `egress` | string | 描述串（不含 userinfo） |
+| `label` | string | 中文标签：`并行执行体 #N` / `兜底常驻执行体` / `已停用` |
+| `state` | string \| null | **只有 `worker` 行有值**：该行的存活四态（口径同 `workers.assignments[].state`）；`fallback` 与 `disabled` 行**为 `null`** |
+| `last_seen_at` | string \| null | 同上：只有 `worker` 行有值，`fallback` / `disabled` 行为 `null` |
+
+**`fallback` 行与 `disabled` 行的 `state` / `last_seen_at` 是 `null`（字段照给、值为空）**：
+兜底的存活在 `fallback.*` 里（心跳文件与判据不同，套 worker 四态会永远显示 `idle`），
+停用行按要求不报存活。页面据此区分"停用"（`type == "disabled"`）。
+
+**迁移**：首次读到 `.env` 里存在旧三键、而清单键缺失时，后端按旧口径（顺序、空位=直连、
+兜底位置、worker 数量）**一次性生成清单并写回**，旧三键**不删**。所以页面第一次打开时
+`executors[]` 的行数会比"配置的并行执行体数 + 1（兜底）"——这是迁移的正常结果。
+
 ### `fallback.status` 四态（页面按它决定提示文案）
 
 | `enabled` | `alive` | `status` | 含义与页面该做什么 |
 |-----------|---------|----------|--------------------|
 | 0 | 0 | `off` | 没开兜底。**正常态**，不必提示（除非用户以为开了） |
 | 1 | 1 | `running` | 开关开了、进程也真在跑。正常 |
-| 1 | 0 | `declared_not_running` | **开了却没跑起来**：宿主那条 cron 多半漏加了（或刚改完还没到触发点）。仅当 `in_window=true` 时才值得报警——窗口外它本来就该退出 |
+| 1 | 0 | `declared_not_running` | **开了却没跑起来**：宿主形态多半是那条 cron 漏加了（或刚改完还没到触发点）；容器形态由调度器在窗口内自动拉起，拉起失败会在 sched 日志里留痕。仅当 `in_window=true` 时才值得报警——`in_window=false` 时它本来就该退出 |
 | 0 | 1 | `running_not_declared` | 没开开关却有进程在跑：多半是人工 `--fallback` 起的。提示"这条不是由配置拉起的"即可，不是故障 |
+
+### `in_window` 的两段口径（2026-09-17 定，前端**不需要**改判断）
+
+`in_window` 从"落在有效窗口内"改成了"**本应运行**的时段内"，即在钟点口径上**再加一层
+今天是否被挡下的判断**（周末签到未开 / 管理员一键暂停）。改动原因：兜底常驻现在会在这两
+种日子直接退出（此前它会绕过这两道门照签，属缺陷），只按钟点算，页面会在每个周六周日、
+以及每次一键暂停期间报"兜底开了却没跑起来"。
+
+因此前端规矩不变：**只对 `in_window=true` 的 `declared_not_running` 报警**。
+`in_window=false` 有两种情形（窗口外 / 今天被挡下），都不该报警——页面若要区分，看
+`fallback.status` 即可，不必再要新字段。
+
+> 另一个 **`in_window` 用法不同**的地方：`POST /api/scheduler/executors/measure` 的
+> 409 拦截用的是**纯钟点口径**（"窗口内不做实测，避免与签到抢资源"）。所以周末在窗口
+> 钟点内仍可能被 409 拒——这是刻意的：那道闸门只关心"会不会和本轮签到撞上"。
 
 **报警纪律**：窗口外 `alive=false` 是**预期行为**（兜底进程只在窗口内运行），
 页面只对 `in_window=true` 的 `declared_not_running` 报警，否则每天非签到时段都在误报。
+
+**宿主形态与容器形态同契约**：两者的拉起方式不同（宿主是 `scripts/yiban-fallback.sh`
+的 cron 条目；容器是 `docker/scheduler.py` 在窗口内自动拉起、窗口结束由进程自行退出），
+但都用同一个开关 `YIBAN_FALLBACK_ENABLE`、同一份心跳文件与同一套存活判据，故
+`fallback.*`（含 `status` / `alive` / `in_window`）在两种形态下语义相同、字段相同。
 
 ### `activity` 的角色与"未标注"
 
 `role` 取值 `worker` / `fallback` / `single` / `unknown`（口径唯一在 `yiban/egress.py`）：
 
-- `worker` 带 `index`（0-based，与 `YIBAN_PROXY_LIST` 下标一致）与 `label`「并行执行体 #N」；
+- `worker` 带 `index`（0-based，清单槽位号；清单缺失时与 `YIBAN_PROXY_LIST` 下标一致）与 `label`「并行执行体 #N」；
 - **`unknown` 是存量数据的事实，不是错误**：2026-09-16 之前兜底执行体与单执行体同用
   `exec-` 前缀且带进程号，库里区分不出来。这批老记录照实回 `unknown` +「未标注（旧数据）」，
   **不要**在前端猜测归类。
 
 **文案要求**：展示 `recommendation` 时必须带上"建议"字样（直接引用 `note` 即可），
 不得让管理员理解成"超过就会出错"——不同部署者的机器与出口带宽差异很大，这个数字只作提醒。
+
+## 行接口：`/api/scheduler/executors/rows…`（2026-09-17 新增）
+
+**仅主管理员**；CSRF 与同族端点一致（全局 `before_request` 校验）。三个接口都只动清单键：
+**只写 `.env`，不重启也不拉起进程**——下一轮定时任务或容器重启后生效。
+审计只落 `YIBAN_EXECUTORS[<slot>]`（**绝不记凭据**）；响应只回描述串。
+
+### `POST /api/scheduler/executors/rows` —— 追加一行
+
+| body | 含义 |
+|------|------|
+| `type` | 可选，`worker`（默认）/ `fallback` / `disabled` |
+| `proxy` | 可选，完整代理串；省略 / `null` / 空串 = 直连 |
+
+槽位 = **现有最大 + 1**，并**跳过保留期内真用过的号**（上限 63，满了 `400`）。
+`fallback` 最多 1 行，已有则 `400`。
+
+> 为什么要跳过"用过的号"：删掉当前最大那一行后，纯按"最大值 + 1"会把刚空出来的号再发一次，
+> 而那个号在领取池（`sign_claims.owner`）里已有历史，新执行体会被显示成前任的归属。
+> 领取历史读不到（库未初始化/抖动）时退回"最大值 + 1"，**追加本身永不因此失败**。
+
+成功 `200`：`{"ok": true, "slot": <int>, "type": "...", "egress": "<描述串>", "note": "..."}`。
+
+### `PUT /api/scheduler/executors/rows/<slot>` —— 改一行
+
+| body | 含义 |
+|------|------|
+| `type` | 可选；**缺席 = 不改类型**。改成 `disabled` 即"停用" |
+| `proxy` | 可选；**缺席 = 不改出口**，`null` / 空串 = 直连 |
+
+`type` 与 `proxy` 都不给 → `400`（不给"什么都不改"的歧义）；槽位不在清单里 → `400`；
+改成 `fallback` 时若已有别的兜底行 → `400`。**其余行逐字保留**（与单段出口写接口同一纪律）。
+
+成功 `200`：`{"ok": true, "slot": <int>, "type": "...", "egress": "<描述串>", "note": "..."}`。
+
+### `DELETE /api/scheduler/executors/rows/<slot>` —— 删一行
+
+删行**不重排**其余槽位（删中间行后新建的行拿 `现有最大 + 1`；删掉当前最大那行后，
+若该号在领取历史里出现过，新建的行会跳过它——见上面 POST 的说明）；槽位不存在 → `400`。
+"以后可能还要用"请改成 `disabled`（保留出口、占住槽位），不要删。
+
+成功 `200`：`{"ok": true, "slot": <int>, "type": "<被删行的类型>", "deleted": true, "note": "..."}`。
+
+### 与旧写接口的关系（迁移期）
+
+清单存在时，**旧写接口也会维护清单**（否则旧键写完被"以清单为准"的读接口盖过，
+表现为"保存点了没生效"），页面可以放心继续调旧接口：
+
+| 旧接口 | 清单存在时的行为 |
+|--------|------------------|
+| `PUT /api/scheduler/executors`（整条 `workers` / `proxy_list` / `proxy_fallback`） | 按旧口径同步清单：**保留已存在的 worker 槽位**（顺序吃新出口），执行体数变多用"最大槽位 + 1"追加、变少删除多余的 worker 行；兜底行更新出口；`disabled` 行不动 |
+| `PUT …/executors/workers/<index>` | 只改清单里该槽位那一行的出口（槽位不在清单里 → `400`） |
+| `PUT …/executors/fallback` | 改清单里兜底行的出口；清单里没有兜底行则**追加一行** |
+
+**注意**：旧整条写入只能表达"数量 + 连续出口表"，故它会**按槽位升序重新对应**执行体，
+并删除多出来的 worker 行——**停用行不会被它改动**，但槽位布局以它的口径重排。
+要精细控制槽位/停用，请用上面的行接口。
 
 ## `PUT /api/scheduler/executors`
 
@@ -145,8 +274,9 @@
 1. **保存不会立即生效**（下一轮定时任务 / 容器重启后生效）——页面上要写明，不要让人以为点完就在跑；
 2. **写完整代理串**（含凭据）由前端输入、后端落 `.env`；读回一律是描述串（见上文脱敏），
    所以"原样回显"是不可能的，编辑框应留空并提示"留空=不修改/直连"；
-3. **`fallback_enable=1` 只落一个开关**，还必须在宿主加一条 cron 才会真有进程被拉起来
-   （模板见 `scripts/yiban-fallback.sh` 头注释）。故**不能**把开关状态显示成"正在运行"——
+3. **`fallback_enable=1` 只落一个开关**，进程由部署形态各自拉起：宿主形态要在宿主机加
+   一条 cron（模板见 `scripts/yiban-fallback.sh` 头注释），容器形态由容器调度器在**签到
+   窗口内**自动拉起（窗口结束由进程自行退出）。故**不能**把开关状态显示成"正在运行"——
    以 `GET` 回来的 `fallback.status` 为准。
 
 ## `PUT /api/scheduler/executors/workers/<index>` 与 `PUT /api/scheduler/executors/fallback`
@@ -290,9 +420,9 @@
 
 | 需求 | 现状 |
 |------|------|
-| 触发一轮并行签到（按钮） | 未提供。当前由宿主 cron / 容器调度器拉起；若要做"立即执行"，应新增一个受主管理员保护、带防抖与并发闸的端点 |
+| 触发一轮并行签到（按钮） | **不提供该端点**（用户 2026-09-17 裁决：与账号列表的多选批量手动签到重复，需求撤回）。需要立刻补签时用账号列表的**多选批量手动签到**（`POST /api/signin/batch`）；定时轮仍由宿主 cron / 容器调度器拉起 |
 | 修改后自动重启执行体 | 未提供。改配置后由下一次定时/容器重启生效（与既有设置项一致的语义） |
 | 逐账号的执行体分工明细 | **部分已定**：账号列表已加"**上一个业务日**是谁签的"一列（`GET /api/accounts` 的 `last_executor`）；"把账号转移到指定执行体"用户裁决**暂缓**。全量分工明细仍不提供（避免接口变成"整表导出"） |
 | 每个并行执行体的在线状态 | 已提供：`workers.assignments[].state` 四态（`running`/`finished`/`idle`/`stale`），判定在后端 |
 | 现场实测单账号耗时（按钮） | 已提供：`POST /api/scheduler/executors/measure`，仅主管理员 + 全局冷却 + 窗口内拒绝；**它真的会用真实账号访问易班一次** |
-| 容器形态下起兜底常驻执行体 | 未做。本批只覆盖**宿主** cron（`scripts/yiban-fallback.sh`）；容器调度器未改动，容器里怎么起兜底留作独立事项 |
+| 容器形态下起兜底常驻执行体 | 已提供：`docker/scheduler.py` 每 60 秒检查一次，开关开着且**在有效签到窗口内、今天没被周末门/暂停门挡下**时拉起 `sign --fallback`；窗口结束由进程自行退出。与宿主形态同一个开关、同一把独立锁（`signin-run.lock.fallback`）、同一份心跳，故 `fallback.*` 在容器下语义不变 |

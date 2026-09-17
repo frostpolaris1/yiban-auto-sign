@@ -371,5 +371,75 @@ class LateFirstRunAlertTest(unittest.TestCase):
         self.assertFalse(self._alert((6, 50)))
 
 
+# ---------------------------------------------------------------------------
+# 窗口外起跑的全量轮：跳过 ≠ 失败
+# ---------------------------------------------------------------------------
+class WindowClosedRoundTest(unittest.TestCase):
+    """窗口外起跑的全量轮：被跳过的账号必须真的进 `results`，不能算成"失败"。
+
+    **实测缺陷**（2026-09-17 在测试机上复现，base 提交 c696aaf 同样如此）：排计划阶段
+    会给每个账号写 `pending`（"计划 HH:MM"）到当日状态文件，而 `_mark_window_skip` 把
+    "状态文件里有记录"一律当作"已有结论"跳过——于是窗口外起跑时**一个账号都进不了
+    `results`**，汇总按"未执行"把它们算成失败（❌ N 失败 / 退出码 1 / 发失败邮件），
+    真相却是一个请求都没发；`run.sh` 也因此写不出 SKIPPED，补签链跟着断掉。
+    """
+
+    PHONE = "13800000009"
+
+    class _WindowClosedDT(_FakeDT):
+        """固定为 2026-09-17 08:30（周四）：配合"早已结束"的窗口，任何时刻跑都成立。"""
+
+        _date = (2026, 9, 17)
+        _hm = (8, 30)
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-window-skip-")
+        p = mock.patch.object(signin.clock, "now", self._WindowClosedDT.now)
+        p.start()
+        self.addCleanup(p.stop)
+        self._old_env = {
+            k: os.environ.get(k) for k in (
+                "YIBAN_STATE_DIR", "YIBAN_LOG_FILE", "YIBAN_DB_FILE",
+                "YIBAN_SIGN_START", "YIBAN_SIGN_END")
+        }
+        os.environ.update({
+            "YIBAN_STATE_DIR": self.tmp,
+            "YIBAN_LOG_FILE": os.path.join(self.tmp, "sign.log"),
+            "YIBAN_DB_FILE": os.path.join(self.tmp, "yiban.db"),
+            # 窗口 00:10~00:20：配合上面的固定时刻，永远落在窗口外
+            "YIBAN_SIGN_START": "00:10",
+            "YIBAN_SIGN_END": "00:20",
+        })
+
+    def tearDown(self):
+        for k, v in self._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, recorded=None):
+        """跑一轮；时间表非空 ⇒ 走"计划"分支（与真实全量轮同一条路径）。"""
+        if recorded:
+            signin._write_sign_state(self.PHONE, recorded, "测试留痕")
+        acc = SimpleNamespace(phone=self.PHONE, user_paused=False)
+        return signin.run_queue_retry(
+            [acc], "", 0, 0,
+            schedule={self.PHONE: datetime(2026, 9, 17, 0, 11)}, cred_state={})
+
+    def test_pending_account_is_marked_window_skip(self):
+        res = self._run(recorded=signin.STATUS_PENDING)
+        got = res.get(self.PHONE)
+        self.assertIsNotNone(got, "排计划留下的 pending 不该让这个账号漏掉窗口外标记")
+        self.assertEqual(got[3], signin.STATUS_SKIPPED_WINDOW)
+        self.assertTrue(got[2], "窗口外跳过必须 skip=True（退出码 2，而不是算失败）")
+
+    def test_real_conclusion_is_not_overwritten(self):
+        """已有真实结论（failed）的账号仍不得被改写成"窗口外"。"""
+        res = self._run(recorded=signin.STATUS_FAILED)
+        self.assertNotIn(self.PHONE, res, "真实失败原因不该被窗口外覆盖")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
