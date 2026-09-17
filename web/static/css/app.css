@@ -2915,8 +2915,14 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
    值（比值 ≤1.09）并存，同一卡头里看不出差别，统一到 12。 */
 .log-info { font-size: 12px; color: var(--t-muted); font-variant-numeric: tabular-nums; }
 
-/* ---- 日期行：左「选日期 + 查看 + 回到今天」一组，右自动刷新开关 ---- */
-.log-datebar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; margin-bottom: 0; }
+/* ---- 日期行：左「选日期 + 查看 + 回到今天」一组，右自动刷新开关 ----
+   两端对齐用 space-between，而不是给开关 margin-left:auto：
+   日期行会折行（窄屏、出现「回到今天」、用户放大字体三种情形都会），
+   折行后若靠 auto 外边距定位，开关会被推到卡片右缘、与上一行完全断开，
+   读起来像一个悬空的孤立控件（真机 360×792@DPR4 实拍）。
+   space-between 折行后该行只剩一个子项，按规则落在行首，与「按日期查看」共用左基线；
+   未折行时两种写法几何完全一致（默认态 460~2953、含「回到今天」态 536~768 实测逐像素相同）。 */
+.log-datebar { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 10px 12px; margin-bottom: 0; }
 .log-datebar__group { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
 .log-datebar__label { font-size: 12.5px; color: var(--t-sub); }
 /* 原生 date input 只在脚本未加载时可见（.date-field.is-enhanced 会隐藏它），
@@ -2934,7 +2940,6 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 /* 历史日期提示独占一行：与开关同排时，折行的长文案会把开关挤到视觉"悬空"处 */
 .log-date-tip { margin: 8px 0 0; font-size: 12.5px; color: var(--t-sub); }
 .log-date-tip:empty { display: none; }
-.log-auto { margin-left: auto; }
 .log-auto__text { font-size: 12.5px; color: var(--t-sub); }
 
 /* ---- 日志正文：等宽 + 自动换行（2026-09-14 起取消限高内滚，随内容自然增高） ---- */
