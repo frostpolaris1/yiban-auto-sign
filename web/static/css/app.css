@@ -4364,6 +4364,13 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .set-exec-slot { margin-left: 6px; }
 /* 停用行整行降级（出口仍在，但不是活配置） */
 #set-exec-table tr.set-exec-row-off td { color: var(--t-muted); }
+/* 操作列：设置 + 更多（⋯）；两枚同高、不折行 */
+.set-exec-ops { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.set-exec-ops .dd-wrap { display: inline-flex; }
+/* 添加执行体：表格底部单开一行、只在中间放一个按钮（用户 2026-09-17） */
+.set-exec-addrow { display: flex; justify-content: center; margin: 14px 0 0; }
+/* 清单规模 KPI 与下方按钮行之间收一点间距（.tab-panel > .kpi-grid 已给 16px） */
+#set-exec-kpis { margin-bottom: 12px; }
 /* 行内弹窗的次级动作（清除出口 / 删除这一行）：文本级，不与「保存」同视觉层级 */
 /* 弹窗里的动作行（测试 + 它的 ⓘ）：同高、居中对齐 */
 .set-exec-actions { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }

@@ -37,6 +37,18 @@
 
 {# 信息浮层：hover + focus 双触发（键盘可达），文案为短标签 + <b> 分点。
    pop_id 唯一：aria-describedby 指向浮层本体，读屏聚焦按钮时可读出说明（不靠 hover）。 #}
+{% macro exec_kpi(label, value_id, icon_name, tone) %}
+<article class="kpi-card c-{{ tone }}">
+  <div class="kpi-top">
+    <div class="kpi-identity">
+      <div class="kpi-icon {{ tone }}">{{ icon(icon_name) }}</div>
+      <div class="kpi-label">{{ label }}</div>
+    </div>
+  </div>
+  <div class="kpi-value" id="{{ value_id }}"><span class="skeleton skeleton--title dash-skel" aria-hidden="true"></span></div>
+</article>
+{% endmacro %}
+
 {% macro info(label, pop_id) %}
 <button type="button" class="info-tip" aria-label="{{ label }}" aria-describedby="{{ pop_id }}">
   {{ icon('info') }}
@@ -513,20 +525,21 @@
         <span class="body">仅主管理员可查看与修改执行体配置，控件已禁用；需调整请联系主管理员。</span>
       </p>
 
-      {# 清单行数取代了原来的「数量」输入框：数字来自接口的 executors[]，前端不自己数口径 #}
-      <div class="set-exec-bar">
-        <p class="set-summary" id="set-exec-rows-summary"></p>
-        <div class="set-exec-bar__actions">
-          <button type="button" class="btn btn--ghost btn--sm" id="set-exec-advice-open">查看与实测</button>
-          <button type="button" class="btn btn--ghost btn--sm" id="set-exec-row-add">添加执行体</button>
-        </div>
+      {# 清单规模 KPI：数字全部来自接口（executors[] 与 workers.configured），前端只做计数、不拼口径；
+         建议值与实测明细按用户 2026-09-17 的要求**只留在「查看与实测」弹窗里**，不占页面。 #}
+      <div class="kpi-grid" id="set-exec-kpis">
+        {{ exec_kpi('清单行数', 'set-exec-kpi-rows', 'list', 'primary') }}
+        {{ exec_kpi('并行执行体', 'set-exec-kpi-worker', 'server', 'primary') }}
+        {{ exec_kpi('兜底 / 故障转移', 'set-exec-kpi-fallback', 'heart-pulse', 'purple') }}
+        {{ exec_kpi('停用', 'set-exec-kpi-disabled', 'circle-slash', 'muted') }}
       </div>
 
-      {# 建议只留一行摘要：数字来自接口的 recommendation（前端不换算）；明细在弹窗。
-         用 .set-summary 而不是 .field-help —— 这是决策要看的数据，不是说明文字。 #}
-      <p class="set-summary" id="set-exec-advice-line"></p>
-
-      <p class="set-tip" id="set-exec-tip" role="status"></p>
+      <div class="set-exec-bar">
+        <span class="spacer"></span>
+        <div class="set-exec-bar__actions">
+          <button type="button" class="btn btn--ghost btn--sm" id="set-exec-advice-open">查看与实测</button>
+        </div>
+      </div>
     </section>
 
     {# 执行体一览＝清单本身：一行一个执行体（含兜底与停用行）；改类型/出口在行内「设置」弹窗里。
@@ -537,7 +550,7 @@
         <div class="panel-head-row">
           <h2 class="panel-title">执行体一览</h2>
           <div class="set-head-actions">
-            {% call info('执行体一览说明', 'set-pop-exec-list') %}<b>出口：</b>只显示去处、不含账号密码（读接口只回 scheme://host[:port]）；行内「设置」可改类型与出口，留空 = 不修改出口。<b>状态：</b>并行行的四态由后端按心跳与领取记录判定，<b>只有"可能被中断"（有开始、无收尾）需要处理</b>，其余三态是正常运行形态；兜底行的状态在卡头单独报；停用行不报存活。<b>当日：</b>今日该执行体领取、完成与失败数；显示「当日 —」＝今日尚未运行。<b>旧数据：</b>归属判不出来的历史行照实列在表尾（「未标注（旧数据）」），不做猜测归类。{% endcall %}
+            {% call info('执行体一览说明', 'set-pop-exec-list') %}<b>顺序：</b>兜底/故障转移行固定置顶，其余按槽位号升序。<b>出口：</b>只显示去处、不含账号密码（读接口只回 scheme://host[:port]）；行内「设置」改名称与出口，留空 = 不修改出口。<b>停用 / 删除：</b>移到「操作」列的「更多」里，且<b>要输一次当前管理员密码</b>才生效（停用保留出口与槽位号，删除不保留）。<b>状态：</b>并行行的四态由后端按心跳与领取记录判定，<b>只有"可能被中断"（有开始、无收尾）需要处理</b>，其余三态是正常运行形态；兜底行的状态在卡头单独报；停用行不报存活。<b>当日：</b>今日该执行体领取、完成与失败数；显示「当日 —」＝今日尚未运行。<b>旧数据：</b>归属判不出来的历史行照实列在表尾（「未标注（旧数据）」），不做猜测归类。{% endcall %}
           </div>
         </div>
         {# 兜底异常只在卡头报一行短标签，处置说明交给下面那条窗口内的告警（避免同一件事说两遍） #}
@@ -546,20 +559,30 @@
           <span id="set-exec-fb-text"></span>
         </p>
       </div>
+      {# 操作反馈做成横幅（用户 2026-09-17）：增删改类型/出口的结果与"下一轮生效"写在这里，
+         不再是一行小字；成功后由组件写入，任何一次新操作都会覆盖它。 #}
+      <p class="alert" id="set-exec-banner" role="status" aria-live="polite" hidden>
+        <span class="ico" id="set-exec-banner-ico"></span>
+        <span class="body" id="set-exec-banner-body"></span>
+      </p>
       <div class="table-scroll">
         <table class="data-table" id="set-exec-table">
           <thead>
             <tr>
               <th scope="col">执行体</th>
               <th scope="col">类型</th>
-              <th scope="col">出口</th>
-              {# 状态与当日合并一列（用户 2026-09-17：两者是同一件事的两面） #}
+              {# 状态（含当日计数）单独一栏，按用户要求放在「出口」左侧 #}
               <th scope="col">状态 · 当日</th>
+              <th scope="col">出口</th>
               <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody id="set-exec-assign"></tbody>
         </table>
+      </div>
+      {# 添加执行体：表格底部单开一行、只在中间放一个按钮（用户 2026-09-17） #}
+      <div class="set-exec-addrow">
+        <button type="button" class="btn btn--ghost btn--sm" id="set-exec-row-add">添加执行体</button>
       </div>
       <p class="set-warn" id="set-exec-fb-warn" hidden></p>
     </section>
@@ -605,6 +628,7 @@
 <script defer src="{{ request.script_root }}/static/js/components/settings-mail.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-quota.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-switches.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/row-menu.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-executors.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/pages/work_settings.js?v={{ web_version }}"></script>
 {% endblock %}
