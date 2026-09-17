@@ -75,6 +75,9 @@ class RequestPolicy(Protocol):
     def is_logged_in_redirect(self, location):
         """302 Location 是否指向"已登录"标识页（仅 host+path，允许 query）。"""
 
+    def require_redir_chain_trusted(self, resp, site):
+        """跟随重定向后，校验最终 URL 与每一跳 history 都在白名单内。"""
+
     def require_not_blocked(self, resp):
         """被风控拦截即抛 RuntimeError。"""
 
@@ -233,6 +236,9 @@ def login_legacy(session, *, phone, password, csrf, policy):
     policy.require_trusted(oauth_url, "login_entry")
     resp = session.get(oauth_url, allow_redirects=True, timeout=REQUEST_TIMEOUT)
     policy.require_not_blocked(resp)
+    # 跟随重定向可能把白名单内主机 302 到白名单外（RSA 公钥取自落点 HTML）——
+    # 首跳白名单只校验入口，落点与中间每一跳都要再验一次（M8）。
+    policy.require_redir_chain_trusted(resp, "login_entry")
 
     page_use, key = parse_login_page(resp.text, flow="legacy")
     if page_use is None:

@@ -551,6 +551,33 @@ class UrlWhitelistBoundaryTest(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertFalse(signin._is_fyiban_url(url))
 
+    def test_redir_chain_requires_every_hop_trusted(self):
+        """M8：跟随重定向后每一跳（含落点）都必须在白名单内。"""
+        from yiban.security import ProtocolPolicy
+        policy = ProtocolPolicy()
+
+        def _resp(url, history=()):
+            r = requests.Response()
+            r.url = url
+            r.history = list(history)
+            return r
+
+        # 白名单内单跳：放行
+        ok = _resp("https://oauth.yiban.cn/code/html")
+        policy.require_redir_chain_trusted(ok, "login_entry")
+
+        # 中间某一跳到白名单外：拒绝
+        chain = _resp("https://oauth.yiban.cn/code/html",
+                      history=[_resp("https://evil.example.com/steal")])
+        with self.assertRaisesRegex(RuntimeError, "登录入口 URL 不在白名单"):
+            policy.require_redir_chain_trusted(chain, "login_entry")
+
+        # 落点本身在白名单外：拒绝
+        landing = _resp("https://evil.example.com/steal",
+                        history=[_resp("https://oauth.yiban.cn/code/html")])
+        with self.assertRaisesRegex(RuntimeError, "登录入口 URL 不在白名单"):
+            policy.require_redir_chain_trusted(landing, "login_entry")
+
     def test_waf_detection_is_length_bounded_and_decodes_escapes(self):
         """长页面（正常协议文本）不算拦截；Unicode 转义的风控文案要能识别。"""
         long_text = "风险访问" + "正文" * 2000
