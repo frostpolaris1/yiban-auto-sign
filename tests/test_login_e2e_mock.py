@@ -93,12 +93,11 @@ class _FakeYiban:
         决定往真站转发；拿到的不是假服务端就报错，并给出可操作处置（退出加速器/系统代理后重跑）。
         """
         import requests as _rq
-        # 判据一：本进程不得有生效的系统/环境代理（有代理就会按 Host 把回环请求转去真站）
-        proxies = _rq.utils.getproxies()
-        if proxies:
-            self._fail_intercepted(f"检测到系统/环境代理生效: {proxies}")
-            return
-        # 判据二：带原始 Host 探一次假服务端的运维入口（与真实请求同一条路径）
+        # 判据只有一条：带**原始 Host** 探假服务端的运维入口（与真实请求同一条路径）。
+        # 不查 `getproxies()` 是因为**本机常开着系统代理**，而 `_client()` 已把会话设为
+        # `trust_env=False`（会话不看代理），此时系统代理并不影响本用例；
+        # 真正要防的是**透明拦截**（加速器/TUN 按 Host 转发），那只能靠这一探发现。
+
         try:
             r = _rq.get(f"http://127.0.0.1:{self.port}/__health",
                         headers={"Host": "oauth.yiban.cn"}, timeout=3)
