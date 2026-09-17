@@ -25,6 +25,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -381,6 +382,36 @@ def _in_sign_window(bounds, now=None):
     return bounds.lo_min <= now_min <= bounds.hi_min
 
 
+def _executors_window():
+    """执行体接口口径的**有效签到窗口**（`window.effective_sec` 即容量换算的分母）。
+
+    `edge_*` 未配置按 0 计（与 GET 的原实现逐字一致，故显示值零变化）；容量估算与
+    "窗口内不做实测"的拦截都用它，保证页面上显示的窗口与这两个判断同源。
+    """
+    start, end = _sign_window()
+    return yb_window.bounds({
+        "sign_start": start, "sign_end": end,
+        "edge_front_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_FRONT_SEC", 0),
+        "edge_back_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_BACK_SEC", 0),
+    })
+
+
+def _last_executors(day):
+    """某个业务日每个账号的归属执行体（**已脱敏**）：`{phone: {role, index, label}}`。
+
+    账号列表要显示"上一个业务日是谁签的"：一次取回当日全部 `phone -> owner`（见
+    `store.claims.owners_for_day`，**不逐账号查**），再把 owner 折成角色与槽位。
+    身份串含主机名，属部署信息，故**只回角色/序号/label**，绝不回 owner 原串。
+    库不存在/未初始化 → `{}`（新部署很正常），调用方据此回 `null` 而不是报错。
+    """
+    out = {}
+    for phone, owner in db.claim_owners_for_day(day).items():
+        parsed = yb_egress.parse_owner(owner)
+        out[phone] = {"role": parsed["role"], "index": parsed["index"],
+                      "label": parsed["label"]}
+    return out
+
+
 def _executor_activity(day):
     """当日领取池归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
 
@@ -409,6 +440,76 @@ def _executor_activity(day):
         for key in totals:
             totals[key] += int(row.get(key, 0))
     return by_executor, totals
+
+
+# ---------------------------------------------------------------------------
+# 现场实测单账号耗时（仅主管理员；**会真实访问易班一次**）
+# ---------------------------------------------------------------------------
+#: 两次实测之间的全局冷却（秒）；可被 `.env` 的 YIBAN_MEASURE_COOLDOWN 覆盖。
+MEASURE_COOLDOWN_SEC = 600
+#: 实测冷却状态文件（单条记录，固定名，故不随时间增长）。落状态目录而非进程内存：
+#: web 重启后冷却仍有效。
+MEASURE_STATE_FILE = "capacity-measure.json"
+
+
+def _measure_state_path():
+    """实测冷却状态文件的路径。"""
+    return os.path.join(STATE_DIR, MEASURE_STATE_FILE)
+
+
+def _read_measure_state(path):
+    """读实测状态（缺失/损坏 → `{}`：按"从未实测"处理，不阻断）。"""
+    try:
+        # utf-8-sig：容错 Windows 记事本/工具写入的 BOM（与其余状态文件同口径）
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_measure_state(path, payload):
+    """原子写实测状态（创建即 0600）。失败只告警——状态文件不该阻断实测本身。"""
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        _atomic_write(path, json.dumps(payload, ensure_ascii=False), chmod_priv=True)
+    except OSError:
+        logger.warning("实测状态文件不可写（本次实测结果仍会返回，但冷却可能不生效）")
+
+
+def _measure_cooldown_remaining(state, cooldown_sec, now=None):
+    """距下次可实测的剩余**整秒**（0 = 现在可以实测）。`state` 是已解析的状态文件。
+
+    判据只认状态文件里的时刻，**不按会话/IP**：冷却必须是全局的，否则多管理员叠加
+    点击就绕开了限频（每次点击都会真实登录一个账号）。时刻读不出（旧文件/损坏）
+    按"可以实测"处理——限频是为了省请求，不该因为文件坏了就让功能永久不可用。
+    """
+    if cooldown_sec <= 0:
+        return 0
+    try:
+        at = datetime.strptime(str(state.get("at") or ""), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return 0
+    remaining = cooldown_sec - ((now or clock.now()) - at).total_seconds()
+    return math.ceil(remaining) if remaining > 0 else 0
+
+
+def _pick_measure_account(accounts, phone=None):
+    """挑一个可实测的账号：**不删、审核通过、未被用户暂停**（与容量口径同源）。
+
+    实测会真实登录易班，故不允许拿已删/未过审/用户自暂停的账号去跑——它们按设计
+    不该产生任何易班请求。`phone` 非空时只在该号码上找，找不到返回 None。
+    """
+    wanted = str(phone or "").strip()
+    for acc in accounts:
+        if not db.account_signs_in(acc) or acc.get("user_paused"):
+            continue
+        if wanted and acc.get("phone") != wanted:
+            continue
+        return acc
+    return None
+
+
 
 # 登录时延拉平占位哈希：用户名/账号不存在时也执行一次等价 scrypt 比对，
 # 消除「响应耗时差异」造成的用户枚举时序侧信道（占位哈希无需真实有效，比对恒为 False）。
@@ -1686,20 +1787,29 @@ def _account_verify_enabled():
     return env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes")
 
 
+def _as_signin_account(fields):
+    """账号字段 dict → `signin.Account`（只读探针 `verify_account` 收的是账号对象）。
+
+    `id` 是库内账号行 id，会一路带到运行期复核（`account_still_signable`）：库里来的
+    行必须带上，否则探针会跳过"账号已被删除/停用"的复核。注册时的待入库账号没有 id，
+    取 0（该复核对无 id 的账号恒按有效处理）。
+    """
+    return signin.Account(
+        phone=fields.get("phone", ""),
+        password=fields.get("password", ""),
+        phone_model=fields.get("phone_model", ""),
+        phone_code=fields.get("phone_code", ""),
+        account_id=int(fields.get("id") or 0),
+    )
+
+
 def _verify_account_clean(clean):
     """对清洗后的账号字段做只读验证（复用 signin.verify_account：登录+拉任务，不提交签到）。
 
     返回错误信息 or None（验证通过）。message 来自 signin（已脱敏），此处再转义换行防注入。
     """
     try:
-        ok_v, msg_v = signin.verify_account(
-            signin.Account(
-                phone=clean["phone"],
-                password=clean.get("password", ""),
-                phone_model=clean.get("phone_model", ""),
-                phone_code=clean.get("phone_code", ""),
-            )
-        )
+        ok_v, msg_v = signin.verify_account(_as_signin_account(clean))
     except Exception as e:
         return f"账号验证异常：{str(e).replace(chr(10), ' ').replace(chr(13), ' ')}"
     if not ok_v:
@@ -4706,6 +4816,11 @@ def create_app(host=None):
                 }
         # 调度 v2：自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
         prefs = {p: v["slot_min"] for p, v in db.get_time_prefs().items()}
+        # "上一个业务日是谁签的"：口径是**昨天**那个业务日，不是"最近一次"也不是当日。
+        # **一次取全**（几百行账号不能逐账号查），角色解析与脱敏都在 _last_executors 里；
+        # 库不存在/未初始化 → {}，于是每行 last_executor 为 null（新部署很正常）。
+        prev_day = (clock.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        last_exec = _last_executors(prev_day)
         sw = _sign_window()
         _span_min = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
 
@@ -4726,6 +4841,9 @@ def create_app(host=None):
                         **mask_account(a, i),
                         "time_pref": _slot_to_label(prefs.get(a["phone"])),
                         "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
+                        # 无记录必须是 null（前端靠它显示"—"，空对象/空串会让前端
+                        # 误以为"有归属但字段缺失"）
+                        "last_executor": last_exec.get(a["phone"]),
                     }
                     for i, a in enumerate(accounts)
                 ],
@@ -7900,14 +8018,13 @@ def create_app(host=None):
              "label": yb_egress.role_label(yb_egress.ROLE_WORKER, i)}
             for i, _proxy, desc in yb_egress.assignments(configured, env=env)
         ]
+        # 每个并行执行体的存活四态：后端算好，前端不必自己拼（也不用知道心跳周期）。
+        # `last_seen_at` 是最后一次见到它活着的时间串；**不含 pid/主机名**。
+        for item in assignments:
+            item["state"], item["last_seen_at"] = signin.worker_presence(item["index"])
         fallback_proxy = yb_egress.resolve(yb_egress.ROLE_FALLBACK, env=env)
-        # 窗口：用现成的 `_sign_window()`（与引擎同一份解析）+ window.bounds 的有效秒数
-        _start, _end = _sign_window()
-        bounds = yb_window.bounds({
-            "sign_start": _start, "sign_end": _end,
-            "edge_front_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_FRONT_SEC", 0),
-            "edge_back_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_BACK_SEC", 0),
-        })
+        # 窗口：`_executors_window()`（与引擎同一份解析：_sign_window + window.bounds）
+        bounds = _executors_window()
         measured = load_env_int(ENV_FILE, "YIBAN_CAPACITY_MEASURED", 0)
         cur_accounts = _capacity_account_count()
         fallback_interval = load_env_int(ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60)
@@ -8109,6 +8226,86 @@ def create_app(host=None):
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
         return _reply_slot_egress(yb_egress.ENV_FALLBACK, None)
+
+    @app.route("/api/scheduler/executors/measure", methods=["POST"])
+    def api_scheduler_executors_measure():
+        """现场实测单账号耗时（**仅主管理员**；CSRF 由 before_request 统一校验）。
+
+        **它会用真实账号访问易班一次**：等价于登录 + 拉取签到任务（只读路径，复用探针
+        的 `verify_account`），**不提交签到**——不写当日签到状态、不动领取池、不写
+        签到态事件。页面文案必须如实这么写。三重约束一个都不能省：
+
+        1. **全局冷却**（`YIBAN_MEASURE_COOLDOWN`，默认 600s，落单条状态文件、跨进程
+           有效）：冷却未到 → 429 + 剩余秒数。不按会话/IP 计——多管理员叠加点击就绕开了；
+        2. **签到窗口内拒绝**（409）：避免抢当前轮次的资源与风控面；
+        3. **脱敏**：响应与审计只出现打码手机号，绝不记完整号；实测结果**不落 `.env`**
+           （不自动保存），前端只拿数字填输入框，用户确认后再提交。
+
+        请求体：`{}` = 自动挑一个可签账号（不删、审核通过、未被用户暂停）；
+        `{"phone": "<手机号>"}` = 指定账号（不可用/不存在 → 404）。
+        响应结构与错误码见 `docs/dev/api-executors.md`。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可做耗时实测"}), 403
+        bounds = _executors_window()
+        if _in_sign_window(bounds):
+            return jsonify({"error": "签到窗口内不做实测（避免抢占本轮资源）"}), 409
+        data = _json_body()
+        acc = _pick_measure_account(load_accounts(), data.get("phone"))
+        if acc is None:
+            return jsonify({"error": "没有可用于实测的账号（不存在、未过审、已删除或已被暂停）"}), 404
+
+        sample = _mask_phone(acc.get("phone", ""))
+        cooldown_sec = load_env_int(ENV_FILE, "YIBAN_MEASURE_COOLDOWN", MEASURE_COOLDOWN_SEC)
+        state_path = _measure_state_path()
+        # 冷却**先占位再联网**：连点/多管理员同时点也只有一次真实登录（占位在锁内
+        # 判定并写入，跨进程串行）。代价是登录失败也消耗一次冷却——但这正是想要的：
+        # 真实登录已经发生过，风控暴露已经产生。
+        with signin._state_file_lock(state_path):
+            remaining = _measure_cooldown_remaining(_read_measure_state(state_path),
+                                                    cooldown_sec)
+            if remaining > 0:
+                return jsonify({"error": "实测冷却中", "next_allowed_in": remaining}), 429
+            started_at = clock.now()
+            _write_measure_state(state_path, {
+                "at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "seconds": None, "sample": sample,
+            })
+
+        started = time.monotonic()
+        ok, message = signin.verify_account(_as_signin_account(acc))
+        seconds = time.monotonic() - started
+        with signin._state_file_lock(state_path):
+            _write_measure_state(state_path, {
+                "at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "seconds": round(seconds, 2), "sample": sample,
+            })
+        if not ok:
+            # 已脱敏（verify_account 的 message 过 sanitize_text）；换行折平防日志/页面注入
+            reason = str(message).replace(chr(10), " ").replace(chr(13), " ")
+            return jsonify({"error": f"实测失败：{reason}"}), 502
+
+        # 容量**复用既有口径**：有效窗口用 _executors_window（= 页面显示的 window.effective_sec
+        # 的那一份），单账号周期用实测秒数，间隔用 YIBAN_ACCOUNT_GAP_MAX。
+        per_exec = signin.capacity_accounts(
+            bounds.full_sec(),
+            load_env_int(ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", DEFAULT_ACCOUNT_GAP_MAX),
+            avg=seconds)
+        # 建议值保留 ×2/3 余量：实测值是这台机器这一刻的成绩，留余量才对得上
+        # "换机器/换网络都要重新量"的现实。
+        recommended = max(1, int(per_exec * 2 / 3))
+        db.audit("admin", "executors_measure", sample,
+                 f"实测单账号耗时 {seconds:.2f}s（单执行体容量 {per_exec}）")
+        return jsonify({
+            "ok": True,
+            "seconds": round(seconds, 2),
+            "sample": sample,
+            "per_executor_capacity": per_exec,
+            "recommended_per_executor": recommended,
+            "cooldown_sec": cooldown_sec,
+            "next_allowed_in": 0,
+            "note": "实测单账号耗时 × 有效窗口的容量估算；建议值含余量（×2/3）",
+        })
 
     @app.route("/api/announcement", methods=["GET"])
     def api_announcement():
