@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timedelta
 
 from yiban import __version__ as RELEASE_VERSION
-from yiban import clock, window
+from yiban import clock, egress, window
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 
@@ -139,8 +139,17 @@ def main(argv=None):
 
     # 多执行体：本进程只做监督（持全局锁 + 汇总退出码），活儿由子进程干。
     # 放在补签轮判定之前不必要——补签轮判定只读文件，先走它更快。
-    if args.workers and args.workers > 1:
-        return workers.run_worker_supervisor(args.workers, argv)
+    # 拉起列表：优先执行体清单（`YIBAN_EXECUTORS` 里 type=worker 的行，**停用行不拉起**、
+    # 删中间行不影响其余槽位）；清单缺失/非法 → 旧口径 `--workers N`（行为逐字不变）。
+    # 清单里只有 1 个并行执行体时仍走进程内的单执行体路径（`single` 角色、出口读
+    # `YIBAN_PROXY`）——与迁移前的 `YIBAN_WORKERS=1` 完全一致。
+    slots = egress.launch_slots()
+    if slots is None:
+        # 清单缺失/非法 → 旧口径 `--workers N`（槽位就是 0..N-1，行为逐字不变）
+        if args.workers and args.workers > 1:
+            return workers.run_worker_supervisor(args.workers, argv)
+    elif len(slots) > 1:
+        return workers.run_worker_supervisor(len(slots), argv, slots=slots)
 
     # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
     # 宿主 run.sh 在首轮结束仍持锁时调用本开关，据退出码决定是否补跑第二轮

@@ -84,6 +84,7 @@ claim_in_flight = _claims.in_flight_phones
 claim_stats = _claims.stats
 claim_activity = _claims.activity
 claim_owners_for_day = _claims.owners_for_day
+claim_owners_since = _claims.owners_since
 purge_sign_claims = _claims.purge
 
 logger = logging.getLogger("yiban.db")
