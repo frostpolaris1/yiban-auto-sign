@@ -155,10 +155,16 @@ def main(argv=None):
     # 删中间行不影响其余槽位）；清单缺失/非法 → 旧口径 `--workers N`（行为逐字不变）。
     # 清单里只有 1 个并行执行体时仍走进程内的单执行体路径（`single` 角色、出口读
     # `YIBAN_PROXY`）——与迁移前的 `YIBAN_WORKERS=1` 完全一致。
-    slots = egress.launch_slots()
+    #
+    # **子进程不得再当监督进程**（2026-09-17 对抗性审查 H1）：清单是从**环境变量**读的，
+    # 监督进程拉起的子进程会原样继承它，于是"父按清单拉 N 个 → 子也按清单拉 N 个"会递归
+    # 成进程树；argv 侧去 `--workers` 的老办法挡不住（清单路径根本不经 argv）。
+    # 子进程身份由监督进程注入 `YIBAN_EXECUTOR_ID`（`worker-{i}@{主机名}`），据此短路。
+    _already_child = bool(os.environ.get("YIBAN_EXECUTOR_ID", "").strip())
+    slots = None if _already_child else egress.launch_slots()
     if slots is None:
         # 清单缺失/非法 → 旧口径 `--workers N`（槽位就是 0..N-1，行为逐字不变）
-        if args.workers and args.workers > 1:
+        if not _already_child and args.workers and args.workers > 1:
             return workers.run_worker_supervisor(args.workers, argv)
     elif len(slots) > 1:
         return workers.run_worker_supervisor(len(slots), argv, slots=slots)

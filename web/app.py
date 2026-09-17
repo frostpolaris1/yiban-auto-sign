@@ -3287,8 +3287,14 @@ def create_app(host=None):
         app.config["SESSION_COOKIE_PATH"] = "/" + _base_path_env.strip("/") + "/"
     # HTTPS 反代自动升级 Secure——请求经 https（X-Forwarded-Proto）
     # 到达而 Secure 未显式开启时，粘性开启会话 Cookie 的 Secure 标志（首次 https
-    # 请求即生效，无需重启）；显式配置 YIBAN_COOKIE_SECURE=0 的部署保持原行为。
-    _secure_auto_upgrade = {"done": not cookie_secure}  # 显式关闭时不自动升级
+    # 请求即生效，无需重启）；**显式**配置 YIBAN_COOKIE_SECURE=0 的部署保持原行为。
+    #
+    # 2026-09-17 对抗性审查 M4：这里原先写的是 `{"done": not cookie_secure}`，于是
+    # 默认（未配置）部署的 `done` 反而是 True → 整个自动升级分支**永不执行**，
+    # HTTPS 反代下 Cookie 一直不带 Secure。根因是把"未配置"与"显式关"混成了一个
+    # False——两者必须分开判：只有**键在且非空**（显式配置，含显式 0）才不自动升级。
+    _cookie_secure_explicit = bool(str(cookie_secure_raw or "").strip())
+    _secure_auto_upgrade = {"done": cookie_secure or _cookie_secure_explicit}
 
     @app.before_request
     def _auto_secure_on_https():
