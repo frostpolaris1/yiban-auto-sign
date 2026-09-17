@@ -203,6 +203,7 @@ class ManifestModelTest(unittest.TestCase):
         disabled = egress.update_row(rows, 1, rtype=egress.TYPE_DISABLED)
         # 出口仍保留（重新启用后出口还在）
         self.assertEqual(egress.row_by_slot(disabled, 1)["proxy"], "http://w1:2")
+        self.assertEqual(egress.executor_label(egress.TYPE_DISABLED, 1), "已停用")
         self.assertEqual(egress.launch_slots(
             {egress.ENV_MANIFEST: egress.dump_manifest(disabled)}), [0],
             "停用行不参与分配、不拉起")
@@ -354,11 +355,12 @@ class MigrationWritebackTest(_WebBase):
         self.assertEqual(got[0]["egress"], "http://proxy1.example:8080")
         self.assertEqual(got[0]["label"], "并行执行体 #1")
         self.assertEqual(got[3]["label"], "兜底常驻执行体")
-        # worker 行带存活四态；fallback 行的存活在 fallback.* 里（不带 state）
+        # worker 行带存活四态；fallback 行的存活在 fallback.* 里（字段在、值为 null）
         for e in got[:3]:
-            self.assertIn("state", e)
+            self.assertIn(e["state"], ("running", "finished", "idle", "stale"))
             self.assertIn("last_seen_at", e)
-        self.assertNotIn("state", got[3])
+        self.assertIsNone(got[3]["state"])
+        self.assertIsNone(got[3]["last_seen_at"])
         self.assertEqual(body["workers"]["env_keys"]["manifest"], egress.ENV_MANIFEST)
 
     def test_second_get_does_not_rewrite_manifest(self):
@@ -445,9 +447,9 @@ class RowsCrudTest(_WebBase):
         disabled = next(e for e in body["executors"] if e["slot"] == 1)
         self.assertEqual(disabled["type"], "disabled")
         self.assertEqual(disabled["egress"], "http://w1:1", "停用保留出口")
-        self.assertNotIn("state", disabled)
-        self.assertNotIn("last_seen_at", disabled)
-        self.assertIn("已停用", disabled["label"])
+        self.assertEqual(disabled["label"], "已停用")
+        self.assertIsNone(disabled["state"], "停用行不报存活（字段照给、值为 null）")
+        self.assertIsNone(disabled["last_seen_at"])
         # 拉起源（清单）里该行确实不在 worker 列表里
         rows = egress.parse_manifest(self._read_env()[egress.ENV_MANIFEST])
         self.assertEqual([x["slot"] for x in egress.worker_rows(rows)], [0])
