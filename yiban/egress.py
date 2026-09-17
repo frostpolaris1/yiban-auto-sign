@@ -6,9 +6,9 @@
 
 | 角色 | 取值来源 | 说明 |
 |------|----------|------|
-| `single` | `YIBAN_PROXY` | 单执行体，未设=直连 |
-| `worker` | `YIBAN_PROXY_LIST[i]` | 第 i 个并行执行体；表里写**空元素**即该执行体直连 |
-| `fallback` | `YIBAN_PROXY_FALLBACK`，未设退回 `YIBAN_PROXY` | 兜底常驻执行体；未设=直连 |
+| `single` | `YIBAN_PROXY` | 单执行体，未设=直连（不在清单模型里，始终读这个键） |
+| `worker` | 清单里该**槽位**那一行；无清单时 `YIBAN_PROXY_LIST[i]` | 第 i 个并行执行体；旧表里写**空元素**即该执行体直连 |
+| `fallback` | 清单里的兜底行；无清单时 `YIBAN_PROXY_FALLBACK`，未设退回 `YIBAN_PROXY` | 兜底常驻执行体；未设=直连 |
 
 分配规则（**可复现、可解释**）：执行体数超过表长时**循环取用**（第 4 个执行体用
 第 1 个出口）；表里留空位表示"这个执行体直连"；三种角色都允许为空（= 本机出口）。
@@ -35,7 +35,22 @@
 
 `parse_owner` **同时认识新旧两种格式**：旧格式（含 `:workers:` / `fallback-` /
 `exec-`）在库里还有 14 天保留期的存量记录，必须照旧判得出来。
+
+**执行体清单（`YIBAN_EXECUTORS`）**：本模块同时是清单模型（槽位/类型/每行出口）的
+唯一口径。旧口径是"一个数量（`YIBAN_WORKERS`）+ 一整条逗号列表（`YIBAN_PROXY_LIST`）
++ 单独兜底出口（`YIBAN_PROXY_FALLBACK`）"，表达不了"停用某一行""删中间行不重排"，
+故改用**单键 JSON 数组**一行一个执行体：
+
+- `worker`：并行执行体（可有 N 行，占"建议值分母"）；
+- `fallback`：兜底常驻执行体（最多 1 行）；
+- `disabled`：停用行（**保留出口**、不参与分配、不拉起、不计入建议值，但仍占槽位）。
+
+槽位号 **只增不复用**（追加 = 当前最大 + 1；删行不重排；最大 63）。旧三键保留一个
+版本周期：清单缺失时回退读旧键（`legacy_rows` 与旧 `resolve`/`assignments` 逐字等价），
+首次读到旧键且清单键缺失时由调用方一次性迁移写回（`manifest_state` 给出 `needs_write`；
+写 .env 复用既有唯一口径，不在本模块里另造一套写盘）。
 """
+import json
 import os
 import socket
 
@@ -47,6 +62,25 @@ DIRECT = ""
 ENV_SINGLE = "YIBAN_PROXY"
 ENV_WORKER_LIST = "YIBAN_PROXY_LIST"
 ENV_FALLBACK = "YIBAN_PROXY_FALLBACK"
+
+#: 执行体清单键名：**单键 JSON 数组**，每项 `{"slot": 0, "type": "worker", "proxy": "..."}`
+#: （`proxy` 空串=直连）。取代旧三键；旧键保留一个版本周期以便回退读取。
+ENV_MANIFEST = "YIBAN_EXECUTORS"
+#: 旧口径的并行执行体数量键（迁移来源之一，也是"清单缺失时"的回退读取口径）
+ENV_WORKER_COUNT = "YIBAN_WORKERS"
+#: 旧三键全量：任一存在且清单缺失 ⇒ 需要一次性迁移写回
+LEGACY_KEYS = (ENV_WORKER_COUNT, ENV_WORKER_LIST, ENV_FALLBACK)
+
+#: 执行体行的类型
+TYPE_WORKER = "worker"
+TYPE_FALLBACK = "fallback"
+TYPE_DISABLED = "disabled"
+TYPES = (TYPE_WORKER, TYPE_FALLBACK, TYPE_DISABLED)
+
+#: 槽位下标上限：`YIBAN_WORKERS` 旧口径允许 1~64 → 下标 0~63。
+SLOT_MAX = 63
+#: 旧口径执行体数的上限（与 SLOT_MAX 对应）
+WORKER_COUNT_MAX = SLOT_MAX + 1
 
 ROLE_SINGLE = "single"
 ROLE_WORKER = "worker"
@@ -160,9 +194,29 @@ def replace_slot(raw, index, value):
 def resolve(role, index=0, env=None):
     """按角色取出口；未配置返回 `DIRECT`（空串=走本机出口）。
 
-    `index` 只在 `role=worker` 时有意义；表为空（或键未设）时直连。
+    `index` 只在 `role=worker` 时有意义（**清单模式下就是槽位号**）。取值顺序：
+
+    1. **清单优先**：`YIBAN_EXECUTORS` 可解析时，`worker` 取该槽位那一行的出口
+       （`disabled` 行也算"这个槽位有自己的出口"——停用只表示不参与分配，出口仍保留）；
+       `fallback` 取清单里的兜底行；
+    2. **回退旧口径**：清单缺失/非法、或该槽位不在清单里（含单执行体形态）→ 沿用旧三键
+       （`YIBAN_PROXY_LIST` 下标取值、空位=直连、未配列表退回 `YIBAN_PROXY`）——
+       升级期的行为逐字不变。
+
+    单执行体（`single`）不在清单模型里，始终读 `YIBAN_PROXY`。
     """
     env = os.environ if env is None else env
+    rows = parse_manifest((env or {}).get(ENV_MANIFEST))
+    if rows is not None:
+        if role == ROLE_WORKER:
+            row = row_by_slot(rows, index)
+            if row is not None and row["type"] in (TYPE_WORKER, TYPE_DISABLED):
+                return row["proxy"]
+        elif role == ROLE_FALLBACK:
+            row = fallback_row(rows)
+            if row is not None:
+                return row["proxy"]
+    # 旧口径（清单缺失/非法/槽位不在清单里）
     if role == ROLE_WORKER:
         raw = env.get(ENV_WORKER_LIST, "")
         if not (raw or "").strip():
@@ -198,7 +252,283 @@ def assignments(count, env=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# 执行体清单：解析 / 序列化 / 迁移 / 行操作（纯函数，不碰文件与网络）
+# ---------------------------------------------------------------------------
+def parse_manifest(raw):
+    """解析 `YIBAN_EXECUTORS` → 行列表（按 slot 升序）；**缺失或非法返回 None**。
+
+    返回 None 让调用方回退读旧三键。**键在但 JSON 坏时也回 None，但调用方不得据此
+    覆盖写回**：坏掉的清单多半能手工修，静默按旧键重建会把停用行与槽位结构一起抹掉
+    （是否写回由 `manifest_state` 的 `needs_write` 决定，不是这里）。
+    单项非法（缺 slot / 类型不认识 / 槽位超范围）只跳过该项，其余行照旧；同 slot
+    重复时后写者胜（与 .env 解析"后写覆盖先写"同口径）。
+    """
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    by_slot = {}
+    for item in data:
+        row = _normalize_row(item)
+        if row is not None:
+            by_slot[row["slot"]] = row
+    return _sorted_rows(by_slot.values())
+
+
+def dump_manifest(rows):
+    """行列表 → 单键 JSON 串（**紧凑、无换行**；只落 slot/type/proxy 三个字段）。
+
+    紧凑写法是有意的：这个值要整条写进 `.env` 的一行，宿主 `run.sh` 逐行解析并
+    `export`；不引入空格与换行最不容易在别处被 strip 或折行。紧凑 JSON 不含任何
+    被 `str.splitlines()` 认作行边界的字符，故可直接过 `has_line_break` 校验。
+    """
+    payload = [{"slot": int(r["slot"]), "type": r["type"],
+                "proxy": str(r.get("proxy") or "")} for r in _sorted_rows(rows)]
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def row_by_slot(rows, slot):
+    """按槽位取行；不存在返回 None。"""
+    return next((r for r in rows if r["slot"] == slot), None)
+
+
+def worker_rows(rows):
+    """**拉起列表**：清单里 `type=worker` 的行（按 slot 升序）。停用与兜底都不在内。"""
+    return [r for r in _sorted_rows(rows) if r["type"] == TYPE_WORKER]
+
+
+def fallback_row(rows):
+    """兜底行（`type=fallback`）；清单里没有则 None。"""
+    return next((r for r in _sorted_rows(rows) if r["type"] == TYPE_FALLBACK), None)
+
+
+def next_slot(rows):
+    """追加新行要用的槽位号 = 现有最大 + 1（空清单 = 0）。**只增不复用**：删行不重排。
+
+    注意口径的边界：规则就是"最大值 + 1"，故删掉**当前最大**那一行之后，下一次追加
+    会拿到刚空出来的号（删中间行则不会）。要用停用来占住槽位，就把类型改成
+    `disabled` 而不是删除。
+    """
+    return max((r["slot"] for r in rows), default=-1) + 1
+
+
+def launch_rows(env=None):
+    """清单的拉起列表：`type=worker` 的行；**清单缺失/非法返回 None**（调用方回退旧口径）。
+
+    `env` 省略时读进程环境变量（与 `resolve` 同口径：拉起执行体的进程读的是环境变量，
+    网页侧则显式传 `.env` 那份配置）。
+    """
+    env = os.environ if env is None else env
+    rows = parse_manifest(env.get(ENV_MANIFEST))
+    return None if rows is None else worker_rows(rows)
+
+
+def launch_slots(env=None):
+    """拉起列表的槽位号列表（语义同 `launch_rows`；None = 清单不可用，回退旧口径）。"""
+    rows = launch_rows(env)
+    return None if rows is None else [r["slot"] for r in rows]
+
+
+def executor_label(rtype, slot=None):
+    """清单行的中文标签（前端直接显示，不必自己拼文案）。"""
+    if rtype == TYPE_WORKER:
+        return role_label(ROLE_WORKER, slot)
+    if rtype == TYPE_FALLBACK:
+        return role_label(ROLE_FALLBACK)
+    if rtype == TYPE_DISABLED:
+        base = role_label(ROLE_WORKER, slot) if isinstance(slot, int) else "并行执行体"
+        return f"已停用（{base}）"
+    return role_label(ROLE_UNKNOWN)
+
+
+def legacy_worker_count(env):
+    """旧 `YIBAN_WORKERS` 的执行体数：未设/非整数=1，按旧口径钳在 1~64。"""
+    try:
+        n = int(str((env or {}).get(ENV_WORKER_COUNT, "")).strip())
+    except (TypeError, ValueError):
+        return 1
+    return min(WORKER_COUNT_MAX, max(1, n))
+
+
+def legacy_worker_proxies(env):
+    """旧口径下各并行执行体（下标 0..n-1）的出口——与 `resolve(ROLE_WORKER, i)` 同源。
+
+    列表键存在且非空白时按逗号取段、不足**循环取用**、空位=直连；列表键缺失/全空白时
+    退回 `YIBAN_PROXY`（"只配了单出口的老配置"继续可用）。
+    """
+    env = env or {}
+    n = legacy_worker_count(env)
+    raw = env.get(ENV_WORKER_LIST, "")
+    if (raw or "").strip():
+        items = parse_list(raw)
+        return [items[i % len(items)].strip() for i in range(n)]
+    return [(env.get(ENV_SINGLE, "") or "").strip()] * n
+
+
+def legacy_fallback_proxy(env):
+    """旧口径下兜底执行体的出口：`YIBAN_PROXY_FALLBACK`，未设退回 `YIBAN_PROXY`。"""
+    env = env or {}
+    fb = (env.get(ENV_FALLBACK, "") or "").strip()
+    return fb if fb else (env.get(ENV_SINGLE, "") or "").strip()
+
+
+def legacy_rows(env):
+    """旧三键 → 清单行（迁移口径）：worker 行占 0..n-1，兜底行紧随其后。
+
+    **与旧 `resolve`/`assignments` 逐字等价**：worker 行的出口就是旧口径逐个算出的串
+    （含"空位=直连""列表不足循环取用""未配列表退回 `YIBAN_PROXY`"），兜底行的出口就是
+    `resolve(ROLE_FALLBACK)` 的值。n=64 占满 0..63 时**不产出兜底行**（旧配置里兜底
+    本就不占槽位，此时 `fallback.*` 继续按旧键口径解析，行为不变）。
+    """
+    proxies = legacy_worker_proxies(env)
+    rows = [{"slot": i, "type": TYPE_WORKER, "proxy": p} for i, p in enumerate(proxies)]
+    if len(rows) <= SLOT_MAX:
+        rows.append({"slot": len(rows), "type": TYPE_FALLBACK,
+                     "proxy": legacy_fallback_proxy(env)})
+    return rows
+
+
+def manifest_state(env):
+    """读清单：返回 `(rows, needs_write)`。
+
+    | 情形 | rows | needs_write |
+    |------|------|-------------|
+    | 清单可解析（含空数组） | 清单 | False |
+    | 清单键在但 JSON 非法 | 旧三键口径 | **False**（不覆盖写回，留给人工修） |
+    | 清单缺失/空白且旧三键任一存在 | 旧三键迁移结果 | **True**（调用方写回） |
+    | 清单缺失且无任何旧键 | 默认行（1 并行 + 1 兜底，均直连） | False（新部署不长出配置键） |
+
+    写回只由调用方做，且必须复用既有的 .env 唯一写入口径（读-改-写在同一把锁内）。
+    """
+    env = env or {}
+    raw = env.get(ENV_MANIFEST, "")
+    rows = parse_manifest(raw)
+    if rows is not None:
+        return rows, False
+    if str(raw or "").strip():
+        return legacy_rows(env), False
+    return legacy_rows(env), any(k in env for k in LEGACY_KEYS)
+
+
+def add_row(rows, rtype, proxy):
+    """追加一行：`slot = 现有最大 + 1`。非法类型/兜底重复/槽位已满抛 ValueError。"""
+    _validate_type(rtype)
+    if _fallback_taken(rows, None, rtype):
+        raise ValueError("兜底执行体最多只能有一行")
+    slot = next_slot(rows)
+    if slot > SLOT_MAX:
+        raise ValueError(f"槽位已达上限 {SLOT_MAX}，无法再追加执行体")
+    return _sorted_rows([*rows, {"slot": slot, "type": rtype, "proxy": _clean_proxy(proxy)}])
+
+
+def update_row(rows, slot, rtype=None, proxy=None):
+    """改一行（`None` = 不改该字段）；槽位不存在抛 ValueError，其余行逐字保留。
+
+    改类型时同样受"兜底最多 1 行"约束；改 `disabled` 只改类型，**出口原样保留**。
+    """
+    row = row_by_slot(rows, slot)
+    if row is None:
+        raise ValueError(f"槽位 {slot} 不在执行体清单里")
+    new_type = row["type"] if rtype is None else rtype
+    _validate_type(new_type)
+    if _fallback_taken(rows, slot, new_type):
+        raise ValueError("兜底执行体最多只能有一行")
+    updated = {"slot": slot, "type": new_type,
+               "proxy": row["proxy"] if proxy is None else _clean_proxy(proxy)}
+    return _sorted_rows([updated if r["slot"] == slot else r for r in rows])
+
+
+def delete_row(rows, slot):
+    """删一行（**不重排**其余槽位）；槽位不存在抛 ValueError。"""
+    if row_by_slot(rows, slot) is None:
+        raise ValueError(f"槽位 {slot} 不在执行体清单里")
+    return [r for r in rows if r["slot"] != slot]
+
+
+def apply_legacy_config(rows, env):
+    """把旧三键口径应用到现有清单（旧"整条写入"接口用；清单存在时维护它，别让旧键写入变成空写）。
+
+    - **保留已存在的 worker 槽位**（按 slot 升序与新的执行体下标一一对应），槽位不重排；
+    - 执行体数变少 → 多出来的 worker 行删除；变多 → 用**当前最大槽位 + 1** 追加
+      （只增不复用，且不会占用本次操作里刚删掉的行号）；
+    - 兜底行按旧键更新出口；清单里没有兜底行则在尾部追加一行；
+    - `disabled` 行原样保留（旧键表达不了它们，但没有理由因为一次旧接口写入就丢掉）。
+    槽位已满（>63）抛 ValueError。
+    """
+    env = env or {}
+    proxies = legacy_worker_proxies(env)
+    ordered = _sorted_rows(rows)
+    worker_slots = [r["slot"] for r in ordered if r["type"] == TYPE_WORKER]
+    # 前 len(worker_slots) 个执行体沿用已存在的槽位（顺序即槽位升序），槽位不重排
+    # zip 的短侧即"能对应上的执行体数"，故显式 strict=False（多出来的走末尾追加）
+    kept = {slot: proxy for slot, proxy in zip(worker_slots, proxies, strict=False)}
+    out = []
+    for r in ordered:
+        if r["type"] == TYPE_WORKER:
+            if r["slot"] in kept:
+                out.append({"slot": r["slot"], "type": TYPE_WORKER,
+                            "proxy": kept[r["slot"]]})
+            continue                       # 多余的 worker 行：本次写入要求减少执行体数
+        out.append(dict(r))
+    # 新增的 worker 行用"本次操作前的最大槽位 + 1"起步：只增不复用，也不会占用刚删掉的号
+    cursor = max([r["slot"] for r in ordered], default=-1) + 1
+    for proxy in proxies[len(worker_slots):]:
+        if cursor > SLOT_MAX:
+            raise ValueError(f"槽位已达上限 {SLOT_MAX}，无法增加并行执行体")
+        out.append({"slot": cursor, "type": TYPE_WORKER, "proxy": proxy})
+        cursor += 1
+    # 兜底行：更新出口；清单里没有兜底行则追加一行（旧口径总要能表达兜底出口）
+    fallback_proxy = legacy_fallback_proxy(env)
+    if any(r["type"] == TYPE_FALLBACK for r in out):
+        for r in out:
+            if r["type"] == TYPE_FALLBACK:
+                r["proxy"] = fallback_proxy
+    elif cursor <= SLOT_MAX:
+        out.append({"slot": cursor, "type": TYPE_FALLBACK, "proxy": fallback_proxy})
+    return _sorted_rows(out)
+
+
 # ---- 内部实现 ----
+def _sorted_rows(rows):
+    """按槽位升序（清单的输出顺序**只有这一种**，前端与写回都据此稳定）。"""
+    return sorted(rows, key=lambda r: int(r["slot"]))
+
+
+def _normalize_row(item):
+    """单项校验/归一：非法返回 None（调用方跳过）。布尔是 int 的子类，须显式排除。"""
+    if not isinstance(item, dict):
+        return None
+    slot = item.get("slot")
+    if isinstance(slot, bool) or not isinstance(slot, int) or not (0 <= slot <= SLOT_MAX):
+        return None
+    rtype = item.get("type")
+    if rtype not in TYPES:
+        return None
+    return {"slot": slot, "type": rtype, "proxy": _clean_proxy(item.get("proxy"))}
+
+
+def _clean_proxy(proxy):
+    """出口串归一：None/缺省=直连（空串），两侧空白去掉（与 `parse_list` 的取值口径一致）。"""
+    return "" if proxy is None else str(proxy).strip()
+
+
+def _validate_type(rtype):
+    if rtype not in TYPES:
+        raise ValueError("执行体类型只能是 worker / fallback / disabled")
+
+
+def _fallback_taken(rows, slot, rtype):
+    """把 `slot` 行设为 `rtype` 后是否与别的兜底行冲突（兜底最多 1 行）。"""
+    if rtype != TYPE_FALLBACK:
+        return False
+    return any(r["type"] == TYPE_FALLBACK and r["slot"] != slot for r in rows)
+
+
 def _owner_host(hostname=None):
     """槽位名里的主机后缀：省略时取本机名（`socket.gethostname()`）。"""
     return socket.gethostname() if hostname is None else hostname
