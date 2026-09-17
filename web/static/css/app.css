@@ -4362,11 +4362,6 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
    --------------------------------------------------------------------------
    页面结构：行数条（摘要 + 两个同级按钮）＋ 一行建议摘要 ＋ 清单表（5 列，状态与当日已合并）。
    ========================================================================== */
-/* 行数条：左边是清单摘要（数据），右边两个按钮同属 .btn--sm（同高）。
-   「数量」输入框在清单模型下已取消——行数由清单长度决定，故这里没有输入控件要对齐。 */
-.set-exec-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 6px; }
-.set-exec-bar .set-summary { margin: 0; }
-.set-exec-bar__actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 /* 状态与当日合并一列：徽标 + 当日计数同一行，列窄时自动折到下一行。
    注意用 **inline-flex 且挂在内层 span 上**：td 若是 flex 容器会失去 vertical-align:middle，
    内容相对同排其它列偏上（实测 −6.9px）。 */
@@ -4380,8 +4375,12 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .set-exec-ops .dd-wrap { display: inline-flex; }
 /* 添加执行体：表格底部单开一行、只在中间放一个按钮（用户 2026-09-17） */
 .set-exec-addrow { display: flex; justify-content: center; margin: 14px 0 0; }
-/* 清单规模 KPI 与下方按钮行之间收一点间距（.tab-panel > .kpi-grid 已给 16px） */
-#set-exec-kpis { margin-bottom: 12px; }
+/* 行内弹窗的字段组间距：`.field` 之间只有 .form-grid 才给间距（18/22），裸相邻会挤在一起
+   （用户 2026-09-17 实拍：标签与上一段的值贴死）。这里按弹窗节奏给 14px。 */
+.set-exec-form > .field + .field { margin-top: 14px; }
+.set-exec-form > .field + .set-summary,
+.set-exec-form > .set-summary + .field { margin-top: 12px; }
+.set-exec-form > .set-exec-subactions { margin-top: 16px; }
 /* 行内弹窗的次级动作（清除出口 / 删除这一行）：文本级，不与「保存」同视觉层级 */
 /* 弹窗里的动作行（测试 + 它的 ⓘ）：同高、居中对齐 */
 .set-exec-actions { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
