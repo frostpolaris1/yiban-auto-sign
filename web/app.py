@@ -1483,6 +1483,39 @@ def migrate_admin_password_to_hash(env_path):
         )
 
 
+#: `os.replace` 的瞬态失败重试预算（Windows 专有失败模式，见 `_replace_with_retry`）
+_REPLACE_RETRY_ATTEMPTS = 6
+_REPLACE_RETRY_BASE_SEC = 0.05
+
+
+def _replace_with_retry(tmp, path):
+    """`os.replace` + 瞬态失败重试；最终失败时**清掉临时文件**再原样抛出。
+
+    为什么要重试：Windows 上"目标文件正被别的句柄打开"时替换会被拒（`WinError 5`
+    拒绝访问 → Python 抛 `PermissionError`），而 `.env` 是**高频读取**的文件——同一
+    进程其他线程的 `read_env`、引擎子进程、预览工具都可能正打开着它。2026-09-17 实测
+    复现：一边持续读 `.env`、一边连续原子写，400 次写入**全部** WinError 5 失败（同期
+    读 3.7 万次），表现为设置页/执行体页偶发 500。Windows 的 `open()` 不带
+    `FILE_SHARE_DELETE`，读句柄会让替换失败；Linux 的 `rename` 不受读者影响，故生产
+    形态（Linux）不涉及，但本机开发与 Windows 本机部署会踩到。
+
+    失败时**必须删掉临时文件**：它是一份完整的 `.env` 副本（含密钥、口令哈希），
+    留在磁盘上既是不该有的凭据副本，也会越攒越多（实测残留 256 个）。
+    """
+    delay = _REPLACE_RETRY_BASE_SEC
+    for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt >= _REPLACE_RETRY_ATTEMPTS:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
 def _atomic_write(path, content, chmod_priv=False):
     """原子写文件：先写临时文件再替换，避免半写状态（cron 并发读取安全）。
 
@@ -1492,6 +1525,8 @@ def _atomic_write(path, content, chmod_priv=False):
     account_crypto._write_key_to_env_file 口径一致）——open("w") 在默认 umask 下
     0644，写完到 replace 之间（及进程崩溃残留时）文件对同机其他用户可读；
     收尾的 os.chmod 保留（对既有 0644 旧文件幂等收紧，无害）。
+
+    替换这一步走 `_replace_with_retry`（Windows 上并发读者会让 `os.replace` 瞬态失败）。
     """
     tmp = f"{path}.tmp{secrets.token_hex(4)}"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1499,7 +1534,7 @@ def _atomic_write(path, content, chmod_priv=False):
         f.write(content)
         f.flush()
         os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
-    os.replace(tmp, path)
+    _replace_with_retry(tmp, path)
     if chmod_priv:
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
