@@ -2127,6 +2127,12 @@ html[data-theme="dark"] {
   --badge-info-fg: #7DD3FC;  --badge-info-bg: #0D2232;
   --badge-muted-fg: #94A3B8; --badge-muted-bg: #1A2237;
 }
+/* 字号下限：Adminator 的 .badge 是 10.5px、.nav-badge 是 9px（拉丁小字设计）。
+   中文方块字在这两档下笔画发糊，且都低于项目自定的 11px 下限 —— 统一提到 11px
+   （等比影响全站 164 个徽标 + 12 个导航计数，已按 4 档视口复核不溢出、不增行高）。 */
+.badge { font-size: 11px; letter-spacing: 0; }
+.nav-badge { font-size: 11px; letter-spacing: 0; }
+
 .badge--ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
 .badge--bad { background: var(--badge-bad-bg); color: var(--badge-bad-fg); }
 .badge--warn { background: var(--badge-warn-bg); color: var(--badge-warn-fg); }
@@ -3302,6 +3308,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 @media (max-width: 560px) {
   .set-row { flex-wrap: wrap; }
   .set-row .set-help, .set-row .set-row-text { flex: 1 1 100%; }
+/* 文字块是 <label for=开关 id>（整行可点：982px 的间距不再需要走过去点） */
+.set-row-text { display: block; cursor: pointer; }
   .set-row .switch, .set-row > .set-row-ctl { margin-left: auto; }
 }
 .set-row + .set-row {
@@ -4319,6 +4327,9 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
    两处按钮等宽等高（min-width 88px），回到上一页为次操作走 ghost。
    ========================================================================== */
 .err-page { text-align: center; }
+/* 管理端外壳里的错误卡（登录态访问 404/500）：居中改为卡内居中，上下留白由卡片内距给 */
+.err-card { padding: 32px 22px 36px; }
+.err-card .err-page { max-width: 560px; margin: 0 auto; }
 .err-code {
   font-family: var(--font-mono);
   font-size: 44px;
