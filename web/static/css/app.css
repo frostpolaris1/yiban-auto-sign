@@ -4300,4 +4300,9 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
      "不可断行的标识"（邮箱/手机号那种才需要 nowrap），换行比横向滚动更好读 */
   #set-exec-table th,
   #set-exec-table td { white-space: normal; }
+  /* 但整表要有一个下限宽度：容器比它更窄时（实测 360 视口下卡内容宽仅 290px），
+     浏览器会把各列压到内容宽以下，出现"一个字一行"——执行体列被压成 44px、
+     单行高 146px，状态徽标变成长条。给下限后列宽回到内容宽、行高回到 59px，
+     多出来的宽度交给 .table-scroll 横向滚动（账号页/用户页在 360 下也是这么滚的）。 */
+  #set-exec-table { min-width: 640px; }
 }
