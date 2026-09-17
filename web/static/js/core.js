@@ -734,6 +734,12 @@
       if (on && opts.instant) p.setAttribute("data-tab-instant", "");
       else p.removeAttribute("data-tab-instant");
     });
+    // 活动标签滚进视口：窄屏 tab 条会横向溢出，深链（?tab=switches）或程序化激活时
+    // 活动 tab 可能整个在视口外（实测 scrollLeft=0、tab 在 x=493~573、可视到 344）。
+    var activeTab = group.querySelector(".tab.is-active");
+    if (activeTab && activeTab.scrollIntoView) {
+      try { activeTab.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) { /* 老浏览器忽略 */ }
+    }
     if (!opts.skipUrl && (opts.syncUrl || !group.hasAttribute("data-tab-url-own"))) tabSyncUrl(target);
   }
   function cssEscape(s) { return String(s).replace(/["\\]/g, "\\$&"); }

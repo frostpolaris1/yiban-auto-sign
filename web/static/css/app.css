@@ -1146,8 +1146,12 @@ html {
 .eyebrow,
 .nav-label,
 .brand-tag,
-.mini-cal-wd {
+.mini-cal-wd,
+/* 表头同样是"小标签"：Adminator 按拉丁小型大写设计（10px + .14em 字距），
+   中文在该尺寸与字距下笔画发糊（实测 10px/1.4px 字距，账号页与用户页共 11 处）。 */
+.data-table thead th {
   font-size: 11px;
+  letter-spacing: 0;
 }
 
 /* 中文断行：line-break:strict 让「、。，）」等标点按 clreq 避头尾，不落行首；
@@ -1163,8 +1167,13 @@ html {
 }
 .kpi-label,
 .panel-sub,
-.field-help {
+.field-help,
+.dash-health-value {
   text-wrap: pretty;
+}
+/* 表单说明的单行长度上限：项目自己声明「680px 是表单可读刻度」（见 27 节注释），
+   但裸 .field-help 曾排到 1082px 宽（实测 76 字/行，容量配额那条）。 */
+.field-help { max-width: 680px; }
 }
 /* 小字说明行高：原继承 vendor 的 1.45（11.5px → 16.7px），中文小字偏挤；
    与正文同口径抬到 1.6，让两行以上的说明读起来有节奏。 */
@@ -1890,13 +1899,15 @@ html[data-theme="dark"] {
   margin: 0;
   font-family: var(--font-sans);
   font-weight: 700;
-  font-size: 15px;
+  /* 15px 与正文 13px 只差 1.154，且自托管字体只注册了 400/700（字重已无第三档可用），
+     故走尺寸差：15 → 16（比值 1.231）。.card-title 同步到 16，维持"卡头只有一个层级"。 */
+  font-size: 16px;
   letter-spacing: 0;   /* 中文标题不继承拉丁负字距（Adminator 原为 -0.012em） */
   color: var(--t-base);
 }
 /* 卡头标题只有一个层级：vendor 的 .card-title 原为 16px，与 .panel-title 15px 只差 1px
    （比值 1.067，读者分不出却并存两套卡头口径）。统一到 15px，与 .modal-title 同档。 */
-.card-title { font-size: 15px; letter-spacing: 0; }
+.card-title { font-size: 16px; letter-spacing: 0; }
 /* 注意：<p> 的 UA 默认外边距是 1em（11.5px），会破坏面板/表单节奏，故一律显式归零 */
 .panel-sub { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--t-muted); }
 .panel-stack { display: flex; flex-direction: column; }
@@ -2465,6 +2476,16 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-cell.is-selected { box-shadow: 0 0 0 3px var(--primary-ring); }
 .sc-cell--today.is-selected { box-shadow: inset 0 0 0 2px var(--primary), 0 0 0 3px var(--primary-ring); }
 /* hover 只在真有指针的设备生效，避免触屏点按出现"假 hover" */
+/* 触屏命中区：登录页的「创建账号」「关闭公告」「显示密码」实测 52×18 / 22×22 / 30×30，
+   低于 44px 触屏最小值。只在粗指针设备放大内距，桌面观感不变。 */
+@media (hover: none) {
+  .auth-links a,
+  .auth-agree-label,
+  .announce-close,
+  .input-affix .affix-btn { min-height: 44px; }
+  .auth-links a { display: inline-flex; align-items: center; }
+}
+
 @media (hover: hover) and (pointer: fine) {
   .sc-cell:hover { border-color: var(--primary); }
 }
@@ -2657,12 +2678,10 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 
 /* 组头折叠：宽屏箭头绝对定位在组头行右上角，故行内留出右侧空间、避免与搜索框重叠。 */
 body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; }
-.acct-group-head .panel-head-row { position: relative; padding-right: 44px; }
+.acct-group-head .panel-head-row { position: relative; }   /* 原 padding-right:44px 是给已删除的折叠箭头留的 */
 /* 折叠箭头绝对定位在行右上角。**必须用 top:0;bottom:0;margin:auto 0 竖直居中**，不能只写
    top:0：36px 的按钮在只有标题（23.3px 行盒）的行里会从顶端向下溢出，实测中心比标题低
    6.4px（只有标题的行）；账号页组头因含 34px 搜索框才凑巧只差 1px。 */
-.acct-collapse { position: absolute; top: 0; bottom: 0; margin: auto 0; right: 0; }
-.acct-collapse .collapse-arrow svg { width: 18px; height: 18px; }
 
 /* KPI 4 张：Adminator 原生 4 列、≤1200 两列；仅本页在 ≤720 覆盖为两列
    （原生 ≤720 落 1 列，会把 4 张卡摊成 4 屏高）。作用域限定 accounts，不影响 dashboard。 */
@@ -2706,6 +2725,9 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
    才抬到 34），与 34px 的搜索框并排会差 2.8px，肉眼可见参差。 */
 .acct-search .input {
   height: 34px;
+  /* 必须再写 min-height：section 29 的 .input{min-height:40px}（0,1,0）会压过本条的 height
+     （同为 0,1,0 但它在后面），实测同一行里搜索框 40px、按钮 34px 参差。 */
+  min-height: 34px;
   min-width: 200px;
   padding: 4px 10px;
   font-size: 12.5px;
@@ -2910,7 +2932,7 @@ body[data-page="data-logs"] .panel-title { min-width: 0; }
 .log-file { font-family: var(--font-mono); font-size: 12px; font-weight: 400; color: var(--t-muted); }
 .log-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
 .log-search { display: block; }
-.log-search .input { height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
+.log-search .input { height: 34px; min-height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
 .log-search .input::placeholder { color: var(--t-muted); }
 /* 同排控件统一 34px：桌面 .btn--sm 约 31.2px，与 34px 搜索框并排会参差 */
 .log-tools .btn { min-height: 34px; }
@@ -3036,19 +3058,19 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 /* 页面级加载/失败状态条：复用 Adminator .alert 骨架，失败时 JS 切 .info→.danger。
    align-items:center 让正文与重试按钮垂直居中（.alert 默认 start）。 */
 .usr-status { margin: 0 0 16px; align-items: center; }
-.usr-group-head .panel-head-row { position: relative; padding-right: 44px; }
+.usr-group-head .panel-head-row { position: relative; }   /* 同上：折叠箭头已移除 */
 /* 折叠箭头绝对定位在组头行右上角。必须上下双锚定再 auto 居中：36px 的按钮在只有标题
    （23.3px 行盒）的行里只写 top:0 会向下溢出，实测中心比标题低 6.4px。 */
-.usr-collapse { position: absolute; top: 0; bottom: 0; margin: auto 0; right: 0; }
-.usr-collapse .collapse-arrow svg { width: 18px; height: 18px; }
 
 .usr-count { font-size: 12.5px; font-weight: 600; color: var(--t-muted); }
 .usr-search { display: block; }
 /* 同排控件并非同高：搜索框 34px、折叠按钮 .icon-btn 36px（vendor 原生）、批量条
    .btn--sm 31.2px（min-height 只在 ≤720 才抬到 34）。三者靠 .panel-head-row / 
    .usr-batch-actions 的 align-items:center 居中，不为凑同高去覆写全站的 .icon-btn。 */
-.usr-search .input { height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
+.usr-search .input { height: 34px; min-height: 34px; min-width: 200px; padding: 4px 10px; font-size: 12.5px; }
 .usr-search .input::placeholder { color: var(--t-muted); }
+/* 与搜索框同排的按钮同高（账号页 .acct-tools .btn 已是 34） */
+body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 
 /* 批量条：选中 >0 才显示；inset 底色表达「作用于以上选中项」，不画分隔线。
    文字用 --t-sub（--t-muted on --bg-muted 仅 4.34:1，不达 AA）。 */
@@ -3276,6 +3298,12 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
    一张卡里堆着多组多行说明文字时，只靠 16px 留白读不出分组边界（用户实拍反馈
    「多行式文本文案缺乏必要的分隔或间隔，难以看出功能分组」）。线与颜色走白名单
    （重复行分隔，1px solid --border-soft）。 */
+/* 窄屏开关行：文字与开关横排时说明列只剩 240px（实测 13 字/行）→ 文字用满整宽、开关另起一行 */
+@media (max-width: 560px) {
+  .set-row { flex-wrap: wrap; }
+  .set-row .set-help, .set-row .set-row-text { flex: 1 1 100%; }
+  .set-row .switch, .set-row > .set-row-ctl { margin-left: auto; }
+}
 .set-row + .set-row {
   margin-top: 16px;
   padding-top: 16px;
@@ -3430,6 +3458,12 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 .set-head-actions { display: inline-flex; align-items: center; gap: 10px; }
 /* tab 条在窄屏横滑：外层滚动容器，避免整页横向滚动 */
 .tabs-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* 窄屏宽表：与 tab 条同款右缘渐隐，提示"还能往右滑"（本文件 .tabs-scroll 的注释同源） */
+@media (max-width: 720px) {
+  .table-scroll { mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+  .table-scroll::-webkit-scrollbar { height: 4px; }
+  .table-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+}
 .tabs-scroll::-webkit-scrollbar { height: 4px; }
 .tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 .tabs-scroll .tabs { margin-bottom: 18px; }
@@ -3534,7 +3568,13 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 /* 空态数值（如「今日无签到结果」的 —）：不复用 44px 粗体（会把「—」渲染成一条长横杠），
    降为 20px 常规灰字。用两段类名提高权重：大视口密度令牌那批规则在本文件后面，
    同为单类选择器时会按源码顺序盖掉这里的 font-size（实测空态破功成 44px 长横杠）。 */
-.kpi-value.kpi-value--empty { font-size: 20px; font-weight: 600; color: var(--t-muted); letter-spacing: 0; }
+/* 空值还要占住与数值同高的盒子：否则同排 KPI 卡的空值光学中心偏低（实测 Δ12px）。 */
+.kpi-value.kpi-value--empty {
+  min-height: var(--density-kpi-value);
+  display: inline-flex;
+  align-items: center;
+  font-size: 20px; font-weight: 600; color: var(--t-muted); letter-spacing: 0;
+}
 /* 回退模板的单行头部（pill 文案缩短后不再换行）；但标题仍可能被窄卡挤掉，
    故把模板的 nowrap+ellipsis 改成允许折行 —— 宁可两行，也不要把标题吃掉。 */
 .kpi-label { white-space: normal; overflow: visible; text-overflow: clip; }
