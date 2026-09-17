@@ -98,7 +98,7 @@
   </div>
 
   <!-- 1. 签到调度：排序/分布/掐头去尾/间隔/窗口 + 周六·周日·自选（同一张卡） -->
-  <div class="tab-panel is-active" role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
+  <div class="tab-panel is-active" data-tab-instant role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
     <section class="card" id="set-schedule">
       {# 卡头统一 .panel-head：原 eyebrow「自动签到」与标题同义，删 #}
       <div class="panel-head">
@@ -572,6 +572,10 @@
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">系统开关</h2>
+          <div class="set-head-actions">
+            {# 危险说明整段（113 字）收进 ⓘ：实测 1440 占卡高 22%、360 占 35%（审查 P2） #}
+            {% call info('暂停签到的后果', 'set-pop-switches') %}暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，不影响已有账号签到；两者都要点「保存系统开关」才生效。{% endcall %}
+          </div>
         </div>
       </div>
       <p class="set-danger-note">暂停签到：所有账号停止自动签到（从下次开始），手动签到不受影响。
