@@ -151,11 +151,16 @@ def parse_owner(owner):
 
 
 def role_label(role, index=None):
-    """角色的中文标签（前端直接显示，不必自己拼文案）。"""
+    """角色的中文标签（前端直接显示，不必自己拼文案）。
+
+    `fallback` 的标签是「故障转移」——**唯一一处**，故执行体清单行标签与账号页
+    「上次实领」的角色列同时生效（用户 2026-09-17 定：前端不再自己覆盖显示，
+    免得两页各有一份口径）。行的自定义名见 `name` 字段（设了就优先显示它）。
+    """
     if role == ROLE_WORKER:
         return f"并行执行体 #{index + 1}" if isinstance(index, int) else "并行执行体"
     if role == ROLE_FALLBACK:
-        return "兜底常驻执行体"
+        return "故障转移"
     if role == ROLE_SINGLE:
         return "单执行体"
     return "未标注（旧数据）"
@@ -281,14 +286,24 @@ def parse_manifest(raw):
 
 
 def dump_manifest(rows):
-    """行列表 → 单键 JSON 串（**紧凑、无换行**；只落 slot/type/proxy 三个字段）。
+    """行列表 → 单键 JSON 串（**紧凑、无换行**；只落 slot/type/proxy[/name] 四个字段）。
 
     紧凑写法是有意的：这个值要整条写进 `.env` 的一行，宿主 `run.sh` 逐行解析并
     `export`；不引入空格与换行最不容易在别处被 strip 或折行。紧凑 JSON 不含任何
     被 `str.splitlines()` 认作行边界的字符，故可直接过 `has_line_break` 校验。
+
+    `name`（行的自定义名）**只在非空时落键**：旧清单与迁移产物里没有它，落键与否
+    都不影响解析；这样"迁移后的清单"与历史形态逐字一致，不会因为加了这个字段就让
+    既有对比测试全部改断言。
     """
-    payload = [{"slot": int(r["slot"]), "type": r["type"],
-                "proxy": str(r.get("proxy") or "")} for r in _sorted_rows(rows)]
+    payload = []
+    for r in _sorted_rows(rows):
+        item = {"slot": int(r["slot"]), "type": r["type"],
+                "proxy": str(r.get("proxy") or "")}
+        name = clean_name(r.get("name"))
+        if name:
+            item["name"] = name
+        payload.append(item)
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -419,11 +434,12 @@ def manifest_state(env):
     return legacy_rows(env), any(k in env for k in LEGACY_KEYS)
 
 
-def add_row(rows, rtype, proxy, min_slot=None):
+def add_row(rows, rtype, proxy, min_slot=None, name=""):
     """追加一行：`slot = max(现有最大 + 1, min_slot)`。
 
     `min_slot` 是**槽位下限**，供调用方把"领取历史里用过的号"并进来（数据层算，见
     `next_slot` 的说明）：删掉当前最大行后，本次追加就用它跳过那个已用过的号。
+    `name` 是行的自定义名（空 = 用后端标签，不落 `name` 键）。
     非法类型 / 兜底重复 / 槽位超上限抛 ValueError。
     """
     _validate_type(rtype)
@@ -432,13 +448,18 @@ def add_row(rows, rtype, proxy, min_slot=None):
     slot = max(next_slot(rows), int(min_slot or 0))
     if slot > SLOT_MAX:
         raise ValueError(f"槽位已达上限 {SLOT_MAX}，无法再追加执行体")
-    return _sorted_rows([*rows, {"slot": slot, "type": rtype, "proxy": _clean_proxy(proxy)}])
+    row = {"slot": slot, "type": rtype, "proxy": _clean_proxy(proxy)}
+    clean = clean_name(name)
+    if clean:
+        row["name"] = clean
+    return _sorted_rows([*rows, row])
 
 
-def update_row(rows, slot, rtype=None, proxy=None):
+def update_row(rows, slot, rtype=None, proxy=None, name=None):
     """改一行（`None` = 不改该字段）；槽位不存在抛 ValueError，其余行逐字保留。
 
     改类型时同样受"兜底最多 1 行"约束；改 `disabled` 只改类型，**出口原样保留**。
+    `name`：`None` = 不改，空串 = 清掉自定义名（回到后端标签）。
     """
     row = row_by_slot(rows, slot)
     if row is None:
@@ -449,6 +470,9 @@ def update_row(rows, slot, rtype=None, proxy=None):
         raise ValueError("兜底执行体最多只能有一行")
     updated = {"slot": slot, "type": new_type,
                "proxy": row["proxy"] if proxy is None else _clean_proxy(proxy)}
+    new_name = clean_name(row.get("name")) if name is None else clean_name(name)
+    if new_name:
+        updated["name"] = new_name
     return _sorted_rows([updated if r["slot"] == slot else r for r in rows])
 
 
@@ -509,7 +533,11 @@ def _sorted_rows(rows):
 
 
 def _normalize_row(item):
-    """单项校验/归一：非法返回 None（调用方跳过）。布尔是 int 的子类，须显式排除。"""
+    """单项校验/归一：非法返回 None（调用方跳过）。布尔是 int 的子类，须显式排除。
+
+    `name`（行的自定义名）缺省/空/非法一律**不落键**——等价于"没设名，用后端标签"。
+    解析侧刻意宽容（截断超长、剥控制字符），因为手写的清单不该因为一个名字丢整行。
+    """
     if not isinstance(item, dict):
         return None
     slot = item.get("slot")
@@ -518,7 +546,29 @@ def _normalize_row(item):
     rtype = item.get("type")
     if rtype not in TYPES:
         return None
-    return {"slot": slot, "type": rtype, "proxy": _clean_proxy(item.get("proxy"))}
+    row = {"slot": slot, "type": rtype, "proxy": _clean_proxy(item.get("proxy"))}
+    name = clean_name(item.get("name"))
+    if name:
+        row["name"] = name
+    return row
+
+
+#: 行自定义名的长度上限（字符数）。给前端输入的硬边界：超长直接 400，不静默截断。
+NAME_MAX_LEN = 32
+
+
+def clean_name(raw):
+    """行自定义名的**解析侧**归一：None/非字符串/空 → `""`；去两侧空白、剥掉控制字符、
+    按 `NAME_MAX_LEN` 截断。
+
+    为什么宽容：这个名字要与 `slot`/`type`/`proxy` 一起挤在 `.env` 的一行里，手写或
+    旧版本留下的值不该让**整行**被判非法丢掉（丢行 = 少一个执行体）。
+    写入侧的严格校验在 Web 层（`_validated_name`）：那里给用户 400，比静默截断好。
+    """
+    if not isinstance(raw, str):
+        return ""
+    # 控制字符（含各类行分隔符）会让这个值在 .env 里换行或被 splitlines 切开，直接剥掉
+    return "".join(ch for ch in raw.strip() if ch.isprintable())[:NAME_MAX_LEN]
 
 
 def _clean_proxy(proxy):

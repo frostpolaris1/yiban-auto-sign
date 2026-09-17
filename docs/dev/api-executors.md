@@ -47,7 +47,7 @@
     {"slot": 2, "type": "worker", "egress": "http://proxy3.example:3128",
      "label": "并行执行体 #3", "state": "idle", "last_seen_at": null},
     {"slot": 3, "type": "fallback", "egress": "直连（本机出口）",
-     "label": "兜底常驻执行体", "state": null, "last_seen_at": null},
+     "label": "故障转移", "name": null, "state": null, "last_seen_at": null},
     {"slot": 4, "type": "disabled", "egress": "http://proxy5.example:3129",
      "label": "已停用", "state": null, "last_seen_at": null}
   ],
@@ -56,7 +56,7 @@
     "interval_sec": 60,
     "env_key": "YIBAN_PROXY_FALLBACK",
     "role": "fallback",
-    "label": "兜底常驻执行体",
+    "label": "故障转移",
     "alive": false,
     "enabled": false,
     "env_key_enable": "YIBAN_FALLBACK_ENABLE",
@@ -101,7 +101,7 @@
 | `executors[]` | list | **执行体清单逐行**（`YIBAN_EXECUTORS` 的界面形态）：`{slot, type, egress, label[, state, last_seen_at]}`。见下节 |
 | `fallback.egress` | string | 兜底常驻执行体的出口描述 |
 | `fallback.interval_sec` | int | 兜底执行体的扫描间隔（秒） |
-| `fallback.role` / `label` | string | 固定 `fallback` / 「兜底常驻执行体」 |
+| `fallback.role` / `label` | string | 固定 `fallback` / 「**故障转移**」（2026-09-17 定：与 `executors[]` 里兜底行的标签、账号页「上次实领」的角色列**同一处实现**，改一处三处同时变） |
 | `fallback.alive` | bool | 兜底执行体**当前是否在跑**（按心跳新鲜度：超过 2 个扫描间隔即判"已停"，进程被强杀也能识别） |
 | `fallback.enabled` | bool | `.env` 里**声明的**开关（`YIBAN_FALLBACK_ENABLE`，认 1/true/on/yes；未设=关）。"声明"与"在跑"是两件事，见 `status` |
 | `fallback.env_key_enable` | string | 开关的键名（同 `env_keys` 的用意：前端不硬编码） |
@@ -121,7 +121,7 @@
 清单是**单键 JSON 数组** `YIBAN_EXECUTORS`，每个执行体一行：
 
 ```json
-[{"slot": 0, "type": "worker", "proxy": "http://u:p@h:1"},
+[{"slot": 0, "type": "worker", "proxy": "http://u:p@h:1", "name": "机房A"},
  {"slot": 1, "type": "disabled", "proxy": ""},
  {"slot": 2, "type": "fallback", "proxy": "http://fb:8080"}]
 ```
@@ -133,6 +133,7 @@
 | `proxy` | 该行自己的出口；空串 = 直连。**写接口收完整串，读接口只回描述串**（脱敏硬要求不变） |
 | 停用语义 | **保留出口**、不参与分配、不拉起、不计入建议值；接口回 `disabled`、**不报存活**；仍占 `slot`（不被复用）。重新启用（改回 `worker`）后出口照旧 |
 | 建议值分母 | `workers.configured` 只数 `worker` 行（`disabled` 与 `fallback` 都不计） |
+| `name` | 行的自定义名（**可选**）：设了就优先显示它，没设显示 `label`。空串 = 清除。**改它不触发口令门**（只改名不改行为） |
 | 旧键 | 一个版本周期内保留：清单缺失时按旧三键读取（`resolve` 回退口径逐字不变）；**清单与旧键并存时以清单为准** |
 
 `executors[]` 每行字段：
@@ -142,9 +143,10 @@
 | `slot` | int | 槽位号（同时就是并行执行体的下标，与 `workers.assignments[].index`、`activity.by_executor[].index` 同号） |
 | `type` | string | `worker` / `fallback` / `disabled` |
 | `egress` | string | 描述串（不含 userinfo） |
-| `label` | string | 中文标签：`并行执行体 #N` / `兜底常驻执行体` / `已停用` |
+| `label` | string | **后端口径**的中文标签：`并行执行体 #N` / `故障转移` / `已停用`。行的自定义名在 `name` 里，两者刻意分开 |
 | `state` | string \| null | **只有 `worker` 行有值**：该行的存活四态（口径同 `workers.assignments[].state`）；`fallback` 与 `disabled` 行**为 `null`** |
 | `last_seen_at` | string \| null | 同上：只有 `worker` 行有值，`fallback` / `disabled` 行为 `null` |
+| `name` | string \| null | **行的自定义名**（用户起的，2026-09-17 新增）。未设 = **`null`**（页面显示 `label`）；最长 32 字符、不许含换行。写接口收 `name`，空串/null = 清掉 |
 
 **`fallback` 行与 `disabled` 行的 `state` / `last_seen_at` 是 `null`（字段照给、值为空）**：
 兜底的存活在 `fallback.*` 里（心跳文件与判据不同，套 worker 四态会永远显示 `idle`），
@@ -202,7 +204,14 @@
 
 **仅主管理员**；CSRF 与同族端点一致（全局 `before_request` 校验）。三个接口都只动清单键：
 **只写 `.env`，不重启也不拉起进程**——下一轮定时任务或容器重启后生效。
-审计只落 `YIBAN_EXECUTORS[<slot>]`（**绝不记凭据**）；响应只回描述串。
+审计只落 `YIBAN_EXECUTORS[<slot>]`（**绝不记凭据、也不记自定义名**）；响应只回描述串。
+
+**口令门（2026-09-17 加）**：三个写接口都要求 `confirm_password`（**追加与删行一律要求**，
+改行只在 `type`/`proxy` 真的会变时要求）；缺/错 → **`403` `{"error": "口令校验未通过，设置未生效"}`**，
+此时**配置与清单都不动**，并写一条 `executors_pw_fail` 审计（只落动作与槽位）。
+与 `POST /api/settings` 的系统开关**同一实现、同一文案**：只比对不计数（不写与登录共用的
+失败计数——持 Cookie 者不得借门禁把管理员锁出登录）。原因：持被窃的主管理员会话此前
+可以无口令改出口/增删执行体/关兜底，而这类配置错了会**静默漏签**，比"站内暂停"更难发现。
 
 ### `POST /api/scheduler/executors/rows` —— 追加一行
 
@@ -210,6 +219,8 @@
 |------|------|
 | `type` | 可选，`worker`（默认）/ `fallback` / `disabled` |
 | `proxy` | 可选，完整代理串；省略 / `null` / 空串 = 直连 |
+| `name` | 可选，行自定义名；省略 / `null` / 空串 = 不设名（页面显示 `label`） |
+| `confirm_password` | **必填**（追加一定会改配置）：当前管理员口令；缺/错 → `403` |
 
 槽位 = **现有最大 + 1**，并**跳过保留期内真用过的号**（上限 63，满了 `400`）。
 `fallback` 最多 1 行，已有则 `400`。
@@ -226,14 +237,17 @@
 |------|------|
 | `type` | 可选；**缺席 = 不改类型**。改成 `disabled` 即"停用" |
 | `proxy` | 可选；**缺席 = 不改出口**，`null` / 空串 = 直连 |
+| `name` | 可选；**缺席 = 不改名**，空串 = 清掉自定义名 |
+| `confirm_password` | **`type` 或 `proxy` 真的会变时必填**（只改名或提交同值不要求） |
 
-`type` 与 `proxy` 都不给 → `400`（不给"什么都不改"的歧义）；槽位不在清单里 → `400`；
+`type` / `proxy` / `name` 都不给 → `400`（不给"什么都不改"的歧义）；槽位不在清单里 → `400`；
 改成 `fallback` 时若已有别的兜底行 → `400`。**其余行逐字保留**（与单段出口写接口同一纪律）。
 
 成功 `200`：`{"ok": true, "slot": <int>, "type": "...", "egress": "<描述串>", "note": "..."}`。
 
 ### `DELETE /api/scheduler/executors/rows/<slot>` —— 删一行
 
+`confirm_password` **必填**（删行一定会改配置）。body 里带 `{"confirm_password": "..."}`。
 删行**不重排**其余槽位（删中间行后新建的行拿 `现有最大 + 1`；删掉当前最大那行后，
 若该号在领取历史里出现过，新建的行会跳过它——见上面 POST 的说明）；槽位不存在 → `400`。
 "以后可能还要用"请改成 `disabled`（保留出口、占住槽位），不要删。
@@ -256,6 +270,11 @@
 要精细控制槽位/停用，请用上面的行接口。
 
 ## `PUT /api/scheduler/executors`
+
+**口令门**：请求里带来的键**逐个与 `.env` 现值比对**，只要有**任何一个键的值真的会变**
+（含 `workers` / `proxy_list` / `proxy_fallback` / `fallback_enable` / `capacity_measured`
+以及顺带维护的清单键），就要求 `confirm_password`；提交与现值完全相同（或只带没变的键）
+→ 不要求。缺/错 → `403`「口令校验未通过，设置未生效」且不落盘 + `executors_pw_fail` 审计。
 
 改执行体数量与出口（**仅主管理员**；字段可部分提交，未提交的字段保持原值）：
 
@@ -280,6 +299,9 @@
    以 `GET` 回来的 `fallback.status` 为准。
 
 ## `PUT /api/scheduler/executors/workers/<index>` 与 `PUT /api/scheduler/executors/fallback`
+
+**口令门**：提交的 `egress` 与**该槽位此刻生效的值**相同 → 不要求；不同 → 要求
+`confirm_password`（缺/错 `403`，不落盘 + 审计）。
 
 **按序号只改一段出口**（仅主管理员）。存在的理由：上面那个整条 `proxy_list` 写入要求前端
 提交**完整串**，而读接口只回**描述串**——前端拼不出别人的段，整条回写就会**把别人的代理凭据
@@ -340,6 +362,10 @@
 信息，任何情况下都不进响应。列表接口的手机号本就打码，与该字段无关。
 
 ## `POST /api/scheduler/executors/measure`
+
+**口令门：不需要**（2026-09-17 定）。它**不改配置**，只是"真访问易班一次并占全局冷却"——
+与手动签到（`POST /api/signin`，同样会真实登录）同一口径：都只判主管理员 + 各自的防抖。
+若页面认为实测也该算高危，请提出来改（后端改一行，前端加一个口令框）。
 
 现场实测单账号耗时（**仅主管理员**，其他身份 `403`；CSRF 由全局 `before_request` 校验）。
 
