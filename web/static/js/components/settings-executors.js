@@ -34,15 +34,9 @@
     var n = $(id);
     if (n) n.textContent = text == null ? "" : String(text);
   }
-  // 任何要落进 DOM 的**错误文案**先过这里：后端校验失败时会回显提交值的前 40 字符
-  // （如「代理地址格式不正确: …」），而出口串可能带 user:pass@ —— 抹掉 userinfo 段，
-  // 凭据不进 DOM 文本（成功路径读回的本就是脱敏描述串，无需处理）。
-  function scrub(text) {
-    return String(text == null ? "" : text)
-      .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)([^/@\s]*)@/gi, "$1***@")
-      .replace(/(^|[\s(（:：])([^\s/@]+)(?::[^\s/@]*)?@/g, "$1***@");
-  }
-  function setTip(text, bad) { YB.setTip("set-exec-tip", scrub(text), bad); }
+  // 错误文案直接显示：后端已在源头抹掉 userinfo（yiban/masking.mask_url_userinfo，见 81/82 号
+  // 文档），保证 400 的 error 不含凭据——前端不再自己脱敏，避免两处口径分叉。
+  function setTip(text, bad) { YB.setTip("set-exec-tip", text, bad); }
   function num(id, fallback) {
     var n = parseInt(($(id) || {}).value, 10);
     return isNaN(n) ? fallback : n;
@@ -378,7 +372,7 @@
         return true;
       });
     }, function (e) {
-      tip.textContent = scrub((e && e.message) || "保存失败，请稍后重试");
+      tip.textContent = (e && e.message) || "保存失败，请稍后重试";
       tip.className = "set-tip set-bad";
       return false;
     }).then(function (ok) {
@@ -417,7 +411,7 @@
         markDirty();
       }
     }, function (e) {
-      if (out) out.textContent = scrub((e && e.message) || "实测失败，请稍后重试");
+      if (out) out.textContent = (e && e.message) || "实测失败，请稍后重试";
     }).then(function () {
       busy = false;
       if (btn) btn.disabled = !ctx.isMaster;
