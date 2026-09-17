@@ -12,6 +12,8 @@ import time
 
 import requests
 
+from yiban.security import url_desc
+
 from . import config
 from . import ledger as ledger_mod
 
@@ -26,19 +28,13 @@ MAX_TITLE_CHARS = 32
 SKIP_LOG_WINDOW = 60
 
 
-# ---------------------------------------------------------------------------
-# 节流与发送
-# ---------------------------------------------------------------------------
-
 def _throttle_due(title):
     """同类型告警节流：窗口内已发过返回 False（本次跳过）。0 = 关闭。
 
-    节流状态持久化到磁盘（$YIBAN_STATE_DIR/notify-throttle.json，
-    文件锁互斥），web（常驻）与 signin（cron 新进程）共享同一节流窗口——
-    不再各持一份进程内节流表、各放行一条。内存 `_throttle_ts` 保留作快速路径：
-    本进程刚放行过的标题直接跳过（省磁盘 IO）；磁盘是唯一事实源，另一进程
-    放行过的窗口内标题在内存未命中后由磁盘判定兜住。Windows 无 fcntl 退化为
-    进程内节流（与账本同款取舍，开发机单进程可接受）。
+    磁盘表（$YIBAN_STATE_DIR/notify-throttle.json，文件锁互斥）是权威：web（常驻）与
+    signin（cron 新进程）共享同一窗口，不再各持一份进程内节流表、各放行一条。
+    内存 `_throttle_ts` 只作快速路径（本进程刚放行过的标题不读磁盘直接跳过），
+    磁盘在内存未命中后兜住另一进程放行过的标题。
     """
     cooldown = config._env_int("COOLDOWN", config.DEFAULT_COOLDOWN)
     if cooldown <= 0:
@@ -115,12 +111,12 @@ def _send_custom(url, title, content):
         )
     except Exception as e:
         # 组件绝不抛异常；只记类型名与脱敏 host（异常文本可能含 URL/token）
-        logger.warning("通知推送失败（%s）: %s", type(e).__name__, config._host_of(url))
+        logger.warning("通知推送失败（%s）: %s", type(e).__name__, url_desc(url))
         return False
     if r.status_code < 400:
         logger.info("消息推送已发送（custom）: %s", title)
         return True
-    logger.warning("通知推送失败（状态码 %s）: %s", r.status_code, config._host_of(url))
+    logger.warning("通知推送失败（状态码 %s）: %s", r.status_code, url_desc(url))
     return False
 
 
@@ -135,15 +131,14 @@ def send(title, content, force=False, urgent=False, ledger=None):
     - 额度走紧急账（YIBAN_NOTIFY_URGENT_DAILY_MAX），与非紧急账互不挤占；
     - 只有真正发送成功才扣额度，失败（含 HTTP 异常、服务端非零 code、白名单拒发）凭
       占用时拿到的退还凭证退回。
-    ledger：None = 现行行为（按 urgent 归入 general/urgent 两本账）；
-    具名账本（如 "login_fail"）→ 独立日额度（login_fail 用 YIBAN_LOGINFAIL_DAILY_MAX，
-    默认 3，0=不限），与 general/urgent 互不挤占。节流与「仅重要告警」开关仍按
-    全局口径执行，不受 ledger 影响。
+    ledger：None = 按 urgent 归入 general/urgent 两本账；具名账本（如 "login_fail"）→
+    独立日额度（用 YIBAN_LOGINFAIL_DAILY_MAX，默认 3，0=不限），与 general/urgent 互不
+    挤占。节流与「仅重要告警」开关仍按全局口径执行，不受 ledger 影响。
     """
-    # 同一逻辑段内复用一份 .env 快照：TYPE / SECRET_ENC / URGENT_ONLY 三个键共用，
-    # 避免对同一文件重复解析。注意这不是"整次 send 只解析一次"——节流窗口
-    # （_throttle_due）与额度上限（_consume_daily_budget / _daily_limit）仍各自按需解析，
-    # 它们要读的是发送当刻的最新配置，把快照传下去反而会读到陈旧上限。
+    # 同一逻辑段内复用一份 .env 快照：TYPE / SECRET_ENC / URGENT_ONLY 三个键共用。
+    # 这不是"整次 send 只解析一次"——节流窗口（_throttle_due）与额度上限
+    # （_consume_daily_budget / _daily_limit）仍各自按需解析，它们要读发送当刻的最新
+    # 配置，把快照传下去反而会读到陈旧上限。
     envs = config._read_env_file()
     ntype = config._env_str("TYPE", envs).strip().lower()
     secret = config.get_secret(envs)
@@ -171,7 +166,7 @@ def send(title, content, force=False, urgent=False, ledger=None):
         sent = _send_serverchan(secret, title, content)
     elif ntype == "custom":
         if not config.is_safe_url(secret):
-            logger.warning("自定义通知地址未通过白名单校验，已拒发: host=%s", config._host_of(secret))
+            logger.warning("自定义通知地址未通过白名单校验，已拒发: host=%s", url_desc(secret))
             sent = False
         else:
             sent = _send_custom(secret, title, content)

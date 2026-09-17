@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Webhook 推送的配置层：env 读取（含密钥密文解密）、脱敏展示与 URL 安全判定。
+"""Webhook 推送的配置层：读 `.env` / 环境变量、解出密钥、判定通道是否可用。
 
-只做"读配置 + 判定通道是否可用"，不碰账本与发送；唯一例外是 `get_config` 需要
-账本余额（每日剩余条数），故在函数内延迟导入 `ledger`——否则会形成
-config → ledger → config 的模块级导入环（ledger 需要本层的 `_env_int` 等）。
+只做"读配置 + 判定通道可用性"，不发送也不记账。唯一例外是 `get_config` 要展示每日
+剩余额度，故在函数内延迟导入 `ledger`——否则 config ↔ ledger 会形成模块级导入环
+（ledger 反向依赖本层的 `_env_int` / `_env_str`）。
 """
 import ipaddress
 import json
@@ -22,8 +22,8 @@ DEFAULT_COOLDOWN = 60
 DEFAULT_DAILY_MAX = 5
 # 紧急告警另开一本独立额度，保证噪声烧完非紧急额度后仍有手机通道
 DEFAULT_URGENT_DAILY_MAX = 3
-# 登录失败告警独立账本的日额度默认值；键名无 NOTIFY_ 前缀（独立
-# 命名），读取口径（环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
+# 登录失败告警独立账本的日额度默认值；该键无 NOTIFY_ 前缀（独立命名），但读取口径
+# （环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
 DEFAULT_LOGINFAIL_DAILY_MAX = 3
 LOGINFAIL_DAILY_MAX_KEY = "YIBAN_LOGINFAIL_DAILY_MAX"
 
@@ -41,9 +41,9 @@ def _read_env_file():
 def _env_str(key, envs=None):
     """环境变量优先，回退 .env（与 web/signin 惯例一致）。
 
-    envs：调用方本轮已解析好的 .env 快照（_read_env_file() 的返回值）。不传则本函数
-    自己读文件——一次调用读一遍全文件，get_config 里 6 个键就是 6 次磁盘 + 6 次解析，
-    故允许把同一轮的解析结果传进来复用。
+    envs：调用方本轮已解析好的 .env 快照（`_read_env_file()` 的返回值）。不传则本函数
+    自己读文件——一次调用读一遍全文件，故一次取多个键的路径（如 get_config）会把同一
+    轮快照传进来复用。
     """
     value = os.environ.get(_PREFIX + key, "").strip()
     if value:
@@ -54,6 +54,7 @@ def _env_str(key, envs=None):
 
 
 def _env_int(key, default, envs=None):
+    """读整数键：非法值回退 default，负值钳到 0（额度类键不接受负上限）。"""
     try:
         return max(0, int(_env_str(key, envs)))
     except (TypeError, ValueError):
@@ -69,23 +70,15 @@ def _mask_secret(secret):
     return secret[:3] + "*" * max(4, len(secret) - 3)
 
 
-def _host_of(url):
-    """脱敏 URL 描述：仅 scheme://host[:port]，不含 userinfo/路径/查询（token 不外泄）。
-
-    口径的唯一实现在 `yiban.security.url_desc`，此处只是转发——通知日志与登录诊断
-    对"URL 怎么落日志"必须一致，各写一份迟早分叉。
-    """
-    from yiban.security import url_desc
-
-    return url_desc(url)
-
+# ---------------------------------------------------------------------------
+# 通道配置与可用性
+# ---------------------------------------------------------------------------
 
 def is_safe_url(url):
-    """自定义通知地址 SSRF 白名单：https + 非回环/内网/链路本地/未指定。
+    """自定义通知地址的 SSRF 白名单：https + 非回环/内网/链路本地/未指定。
 
-    is_safe_url 是本口径的**唯一**实现：自定义通知地址走 SSRF 白名单（https + 非回环/
-    内网/链路本地/未指定），防 http 明文外泄与 SSRF 跳板。域名目标放行（DNS rebinding
-    由超时兜底）。
+    防 http 明文外泄与拿推送地址当 SSRF 跳板。域名目标放行（DNS rebinding 由发送
+    超时兜底）。本函数是该口径的唯一实现，web 设置页与发送层共用。
     """
     try:
         o = urlparse(url)
@@ -103,10 +96,6 @@ def is_safe_url(url):
     return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
 
 
-# ---------------------------------------------------------------------------
-# 配置读取（加密存储）
-# ---------------------------------------------------------------------------
-
 def get_secret(envs=None):
     """返回当前加密配置解出的明文密钥（serverchan=SendKey；custom=URL）。
 
@@ -122,10 +111,10 @@ def get_secret(envs=None):
         logger.warning("YIBAN_NOTIFY_SECRET_ENC 解析失败，消息推送不可用")
         return ""
     try:
-        # 必须显式传路径。load_key() 不带参数会回落到 cwd/.env，而本模块
-        # 的密文是按 YIBAN_ENV_FILE 读的——容器里 cwd=/app、真实配置在 /data/.env，
-        # 于是"cwd 下没有 .env"→ 就地生成一把游离新密钥并写盘（P2-5 同源），
-        # 结果是用错钥解密 → 推送通道静默死亡，还额外在镜像工作目录留下密钥文件。
+        # 必须显式传路径：load_key() 不带参数会回落到 cwd/.env，而本模块的密文是按
+        # YIBAN_ENV_FILE 读的。容器里 cwd=/app、真实配置在 /data/.env，不带路径会
+        # "就地生成一把游离新密钥并写盘"，再用它解本模块读到的密文 → 通道静默死亡，
+        # 还额外在镜像工作目录留下密钥文件。
         return account_crypto.decrypt_text(entry, account_crypto.load_key(_env_path()))
     except (ValueError, OSError) as e:
         # OSError：密钥文件存在但读不到（权限/占用），按"解不出"处理而非炸主流程
@@ -134,20 +123,19 @@ def get_secret(envs=None):
 
 
 def get_config():
-    """配置概览（脱敏），供设置页/日志展示。"""
+    """配置概览（脱敏），供设置页 / 日志展示。"""
     # 每日上限与余额的口径在 ledger 层（要读账本锁与磁盘账本）；此处函数内导入
     # 以免 config → ledger → config 的模块级循环。
     from . import ledger
 
-    # 本轮所有键共用一份 .env 解析结果：下面 6 个字段各读一遍文件是 6 次磁盘 + 6 次
-    # 全文件解析，设置页轮询时这笔开销并不便宜
+    # 本轮所有键共用一份 .env 解析结果：逐个键各读一遍全文件，在设置页轮询时并不便宜
     envs = _read_env_file()
     ntype = _env_str("TYPE", envs).strip().lower()
     secret = get_secret(envs)
     if not ntype and secret:
         ntype = "custom"  # 兼容旧明文 YIBAN_NOTIFY_URL
     enabled = bool(ntype and secret)
-    # 上限各解析一次，紧接着复用给 daily_max / daily_remaining（原两者各自再读一遍文件）
+    # 上限各解析一次，紧接着复用给 daily_max / daily_remaining（否则两者各自再读一遍文件）
     general_max = ledger._daily_limit("general", envs)
     urgent_max = ledger._daily_limit("urgent", envs)
     return {
@@ -158,8 +146,8 @@ def get_config():
         "configured": bool(ntype or secret),
         "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN, envs),
         "urgent_only": bool(_env_int("URGENT_ONLY", 0, envs)),
-        # daily_* 两字段语义收窄为「非紧急账」（字段名不变，前端与既有
-        # 调用方无需改），紧急账并列暴露为 urgent_daily_*
+        # daily_* 两字段语义是「非紧急账」（字段名不变，前端与既有调用方无需改），
+        # 紧急账并列暴露为 urgent_daily_*
         "daily_max": general_max,
         "daily_remaining": ledger._daily_remaining("general", general_max),
         "urgent_daily_max": urgent_max,
@@ -170,9 +158,8 @@ def get_config():
 def is_configured():
     """推送通道是否已配置可用：类型已设（或回退旧明文 URL）且密钥可解出。
 
-    与 send() 自身的未配置短路同一口径——未配置时 send 必然返回 False，
-    先判定可省一次发送尝试。供调用方在发送前判断「推送出口是否存在」
-    （如 signin 的即时告警门控、汇总告警收件人为空时的推送兜底）。
+    与 send() 自身的未配置短路同一口径——未配置时 send 必然返回 False，先判定可省一次
+    发送尝试；调用方据此在发送前判断「推送出口是否存在」。
     """
     envs = _read_env_file()
     secret = get_secret(envs)
