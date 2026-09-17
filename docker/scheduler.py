@@ -187,7 +187,7 @@ def _child_timeout(env):
         except (TypeError, ValueError):
             pass
     end_hhmm = str(env.get("YIBAN_SIGN_END", "07:50")).strip()
-    # 格式校验与 run.sh / signin.py _parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
+    # 格式校验与 run.sh / yiban.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
         end_hhmm = "07:50"
     try:

@@ -33,7 +33,7 @@ DEFAULT_RETRY_HM = (7, 12)
 
 
 def parse_hhmm(value, default):
-    """解析 HH:MM → (h, m)；非法返回 default（与 signin._parse_hhmm 同口径）。"""
+    """解析 HH:MM → (h, m)；非法返回 default（唯一实现：容器调度器与 run.sh 都按此口径校验）。"""
     try:
         h, m = str(value).strip().split(":")
         h, m = int(h), int(m)
