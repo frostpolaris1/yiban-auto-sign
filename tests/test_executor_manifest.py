@@ -372,6 +372,22 @@ class MigrationWritebackTest(_WebBase):
         self.assertEqual(self._read_env()[egress.ENV_MANIFEST], first,
                          "迁移只发生一次；清单在场后读接口不再改写它")
 
+    def test_all_rows_disabled_falls_back_to_single_executor_shape(self):
+        """清单里一个 worker 行都没有（全停用/删除）→ 回退单执行体形态，出口读 YIBAN_PROXY。
+
+        `workers.configured` 按契约仍 ≥1；停用行的出口不参与分配，故显示的出口必须是
+        **实际运行**的单执行体用的 `YIBAN_PROXY`，不是某行停用行留下的出口。
+        """
+        rows = [{"slot": 0, "type": "disabled", "proxy": "http://disabled:1"},
+                {"slot": 1, "type": "fallback", "proxy": "http://fb:2"}]
+        self._write_env("YIBAN_PROXY=http://solo:9",
+                        f"{egress.ENV_MANIFEST}={_manifest(*rows)}")
+        body = self._get(self._login())
+        self.assertEqual(body["workers"]["configured"], 1)
+        self.assertEqual([(a["index"], a["egress"]) for a in body["workers"]["assignments"]],
+                         [(0, "http://solo:9")])
+        self.assertEqual([e["type"] for e in body["executors"]], ["disabled", "fallback"])
+
     def test_manifest_wins_over_stale_legacy_keys(self):
         """清单与旧键并存 → **以清单为准**（旧键只作回退读取）。"""
         rows = [{"slot": 0, "type": "worker", "proxy": "http://manifest:1"},
