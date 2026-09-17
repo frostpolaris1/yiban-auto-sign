@@ -4,8 +4,11 @@
 
 两者都是"进程编排"而非签到逻辑本身——真正的活儿都交回 `round.run_queue_retry`，
 它们只负责：谁持哪把锁（监督进程持全局锁、子进程各持自己的锁文件）、谁用哪个出口
-代理（`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`）、每个并行执行体的**心跳**
-（开始/存活期/收尾，写在 `state_io`，供接口判存活四态）、退出码怎么汇总（取最严重者）。
+代理（执行体清单 `YIBAN_EXECUTORS` 每行一个出口；清单缺失时回退旧三键
+`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`，见 `egress.resolve`）、每个并行执行体的
+**心跳**（开始/存活期/收尾，按**槽位号**写在 `state_io`，供接口判存活四态）、
+退出码怎么汇总（取最严重者）。清单里的拉起列表由 `runner` 取 `egress.launch_slots`
+后按槽位传进来，故**停用行不会被拉起**。
 
 **子进程入口是 `python -m yiban.cli sign`**：本模块是包内模块，不再能按文件路径直接
 执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
@@ -54,15 +57,21 @@ _REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 _WAIT_POLL_SEC = 1.0
 
 
-def run_worker_supervisor(n, argv):
+def run_worker_supervisor(n, argv, slots=None):
     """拉起 n 个执行体子进程并汇总退出码（`--workers N`）。
 
     - **全局锁由本进程持有**：散落的另一轮全量（cron 与手动）仍会被挡住；
     - 子进程各持自己的锁文件 + 各自的执行体身份（领取池据此分工）；
-    - 每个子进程可配一个独立出口代理（`YIBAN_PROXY_LIST`，见 `egress.resolve`）；
+    - 每个子进程可配一个独立出口代理（`egress.resolve`）；
+    - `slots` = **执行体清单给出的槽位号**（拉起列表，`egress.launch_slots`）。省略时
+      用旧口径的 `0..n-1`（行为逐字不变）。传了槽位时子进程的身份/锁/心跳都按
+      **槽位号**算，故清单里**停用/删除的行不会被拉起**，且删中间行不影响其余槽位；
     - 退出码汇总取"最严重"的一个：真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
       调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致。
     """
+    slot_list = list(range(n)) if slots is None else list(slots)
+    argv_workers = n          # 命令行 `--workers N` 里的 N（去参数时按它匹配，语义与旧版一致）
+    n = len(slot_list)
     # 全局锁：本进程持有直到子进程全部结束（句柄必须保活，不能只用一次就丢）
     _global_lock = cli_support._acquire_run_lock(False)
     # 先在本进程把库初始化/迁移做完并校验账号配置：否则 N 个子进程会在同一秒
@@ -76,38 +85,40 @@ def run_worker_supervisor(n, argv):
     if not loaded_accounts:
         logger.error("未配置任何账号，不拉起执行体")
         return 1
-    logger.info("多执行体：共 %d 个账号待签，拉起 %d 个执行体", len(loaded_accounts), n)
+    logger.info("多执行体：共 %d 个账号待签，拉起 %d 个执行体（槽位 %s）",
+                len(loaded_accounts), n, slot_list)
     children = []
-    for i in range(n):
+    for i, slot in enumerate(slot_list):
         env = os.environ.copy()
         # 身份串的唯一构造处在 egress（写入与解析同一份口径）：稳定槽位名
-        # `worker-{i}@{主机名}`——跨重启不变，故重启后立刻认领自己上一轮的在飞账号；
+        # `worker-{槽位}@{主机名}`——跨重启不变，故重启后立刻认领自己上一轮的在飞账号；
         # 代价是同一槽位名不得两台机器同时跑（跨主机靠 @主机名 区分，同机由本进程
         # 持有的全局锁 signin-run.lock 挡住，故那把锁不能去掉）。
-        env["YIBAN_EXECUTOR_ID"] = egress.worker_owner(i)
-        env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{i}"
-        proxy = egress.resolve(egress.ROLE_WORKER, i)
+        env["YIBAN_EXECUTOR_ID"] = egress.worker_owner(slot)
+        env["YIBAN_RUN_LOCK_NAME"] = f"signin-run.lock.w{slot}"
+        proxy = egress.resolve(egress.ROLE_WORKER, slot)
         if proxy:
             env["YIBAN_PROXY"] = proxy
         # 复刻本轮其余参数（去掉 --workers，避免递归拉起）
-        child_argv = [a for a in argv if a != "--workers" and a != str(n)]
+        child_argv = [a for a in argv if a != "--workers" and a != str(argv_workers)]
         # 子进程入口：模块方式执行同一个 CLI（cwd=仓库根 + PYTHONPATH 含仓库根，
         # `python -m` 才能找到 yiban 包）。子进程收到的命令行参数与旧版逐字相同。
         cmd = [sys.executable, "-m", "yiban.cli", "sign", *child_argv]
-        logger.info("执行体 %d/%d 启动（出口: %s）", i + 1, n, egress.describe(proxy))
+        logger.info("执行体 %d/%d 启动（槽位 %d，出口: %s）",
+                    i + 1, n, slot, egress.describe(proxy))
         children.append(subprocess.Popen(
             cmd, env=_child_env_with_repo_root(env), cwd=_REPO_DIR,
         ))
         # 开始心跳：本槽位"本轮已启动"的事实。放在 Popen 之后，故页面上"在跑"的
         # 槽位必然真有子进程（不是拿"文件在不在"猜）。
-        state_io.mark_worker_started(i)
+        state_io.mark_worker_started(slot)
         # 错开启动：既避开"同一秒争库"，也让首轮请求不要在同一瞬间齐发（风控面）
         if i + 1 < n:
             time.sleep(0.5)
 
-    codes = _await_workers(children)
+    codes = _await_workers(children, slot_list)
     for i, rc in enumerate(codes):
-        logger.info("执行体 %d/%d 结束，退出码 %s", i + 1, n, rc)
+        logger.info("执行体 %d/%d（槽位 %d）结束，退出码 %s", i + 1, n, slot_list[i], rc)
 
     if any(c == 1 for c in codes):
         return 1
@@ -226,8 +237,11 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     return last_code
 
 
-def _await_workers(children):
+def _await_workers(children, slots=None):
     """等全部子进程结束，期间按心跳周期刷新各槽位心跳；返回按槽位排列的退出码。
+
+    `slots` = 各子进程对应的**槽位号**（省略 = 旧口径的 `0..len-1`）：心跳文件按槽位
+    命名，清单模式下槽位号可以不连续（删中间行不重排），故不能拿"第几个子进程"当槽位。
 
     为什么不再逐个 `child.wait()`：心跳要覆盖**进程存活期间**（一轮可能十几分钟），
     只在开始/结束两个时刻写盘会让长轮次过了 2 × 周期就被判成"过期未收尾"、页面把
@@ -238,6 +252,7 @@ def _await_workers(children):
     `timeout` 的 SIGTERM/SIGKILL）时留"有开始、无收尾"，心跳过期后由接口判成
     `stale`——那正是需要用户注意的那种异常。
     """
+    slots = list(range(len(children))) if slots is None else list(slots)
     codes = [None] * len(children)
     alive = set(range(len(children)))
     last_beat = {i: time.monotonic() for i in alive}
@@ -247,13 +262,13 @@ def _await_workers(children):
             rc = children[i].poll()
             if rc is None:
                 if time.monotonic() - last_beat[i] >= state_io.WORKER_HEARTBEAT_SEC:
-                    state_io.mark_worker_beat(i)
+                    state_io.mark_worker_beat(slots[i])
                     last_beat[i] = time.monotonic()
                 continue
             alive.discard(i)
             codes[i] = rc
             if rc >= 0:
-                state_io.mark_worker_finished(i, rc)
+                state_io.mark_worker_finished(slots[i], rc)
     return codes
 
 
