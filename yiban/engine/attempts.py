@@ -21,6 +21,7 @@ from yiban import security
 from yiban import status as yiban_status
 from yiban.fyiban import algo as fyiban_algo
 from yiban.fyiban import headers as fyiban_headers
+from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.masking import sanitize_url as _sanitize_url
 from yiban.store import accounts as accounts_store
@@ -205,8 +206,8 @@ def attempt_signin(account):
     except Exception as e:
         # exc_info=False 是有意的：堆栈可能包含含敏感数据的源码上下文，异常消息经
         # _sanitize_text 脱敏后已足够定位。requests 异常消息内嵌完整请求 URL
-        # （含 CSRF 令牌）与代理 userinfo，故先过 _sanitize_url 打码再落日志。
-        safe_err = _sanitize_text(_sanitize_url(str(e)))
+        # （含 CSRF 令牌），故依次过 _sanitize_url（query）与 _mask_url_userinfo（userinfo）再落日志。
+        safe_err = _sanitize_text(_mask_url_userinfo(_sanitize_url(str(e))))
         logger.error(f"[{phone}] ❌ 尝试失败: {safe_err}", exc_info=False)
         return False, safe_err, False, STATUS_FAILED
 

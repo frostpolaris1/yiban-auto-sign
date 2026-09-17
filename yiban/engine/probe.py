@@ -24,6 +24,7 @@ from yiban import clock
 from yiban.engine import alerts, cli_support, state_io
 from yiban.infra import env_lock
 from yiban.masking import mask_phone as _mask_phone
+from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.masking import sanitize_url as _sanitize_url
 from yiban.store import accounts as accounts_store
@@ -76,8 +77,8 @@ def verify_account(account):
         finally:
             client._wipe_credentials()
     except Exception as e:
-        # 同 attempt_signin——异常消息统一过 _sanitize_url 打码
-        safe_err = _sanitize_text(_sanitize_url(str(e)))
+        # 同 attempt_signin——异常消息统一过 _sanitize_url + _mask_url_userinfo 打码
+        safe_err = _sanitize_text(_mask_url_userinfo(_sanitize_url(str(e))))
         logger.warning(f"[{phone}] 健康检查失败: {safe_err}", exc_info=False)
         return False, safe_err
 

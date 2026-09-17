@@ -68,6 +68,7 @@ from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
+from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402  # noqa: E402
 
 # 合规文档（隐私政策 / 用户协议）渲染：从仓库根目录的 .md 文件读取并转为 HTML，
 # 供注册页弹窗与 /privacy、/terms 独立页共用，避免多份副本漂移。
@@ -1131,7 +1132,9 @@ def _save_slot_egress(env_path, key, index, value):
     if env_io.has_line_break(value):
         return "代理配置不能包含换行", 400
     if not _is_http_proxy_url(value):
-        return f"代理地址格式不正确: {value[:40]}", 400
+        # 回显能让用户看出是哪一段写错了，但出口串按契约允许带 `user:pass@`：
+        # 必须抹掉 userinfo 再回显（错误文案会进响应、DOM 与日志）。
+        return f"代理地址格式不正确: {_mask_url_userinfo(value)[:40]}", 400
     with _env_write_lock(env_path):
         raw = read_env(env_path).get(key, "")
         updated = value if index is None else yb_egress.replace_slot(raw, index, value)
@@ -8132,7 +8135,7 @@ def create_app(host=None):
             items = yb_egress.parse_list(raw) if field == "proxy_list" else [raw]
             for item in items:
                 if item and not _is_http_proxy_url(item):
-                    return jsonify({"error": f"代理地址格式不正确: {item[:40]}"}), 400
+                    return jsonify({"error": f"代理地址格式不正确: {_mask_url_userinfo(item)[:40]}"}), 400
             updates[env_key] = raw
         if "capacity_measured" in data:
             try:
