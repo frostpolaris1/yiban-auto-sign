@@ -81,3 +81,23 @@ def sanitize_url(url):
         return f"{key}={value}"
 
     return urlunsplit(parts._replace(query="&".join(_masked(k, v) for k, v in pairs)))
+
+#: URL 里的 userinfo（`scheme://user:pass@host`）——代理串按契约允许带凭据，
+#: 而 `sanitize_url` 只管 query 参数，**不碰 userinfo**，故单独一个口径。
+_URL_USERINFO_RE = re.compile(r"(?<=://)[^/?#\s]*@")
+
+
+def mask_url_userinfo(text):
+    """把 URL 里的 `user:pass@` 抹成 `***@`，其余原样——供两处共用：
+
+    1. **必须回显用户输入的场合**（如"代理地址格式不正确: <你填的值>"）：回显能帮用户
+       定位问题，但凭据绝不能进错误文案 / DOM / 日志；
+    2. **异常消息落日志**（requests 的异常文本会内嵌完整 URL，含代理 userinfo）。
+
+    无 userinfo 时原样返回；无 scheme 的裸写法（`user:pass@host:port`）也一并抹掉。
+    """
+    raw = str(text)
+    out = _URL_USERINFO_RE.sub("***@", raw)
+    if "://" not in out:
+        out = re.sub(r"^[^@\s/]*@", "***@", out)
+    return out

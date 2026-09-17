@@ -1193,3 +1193,39 @@ class MeasureEndpointTest(_WebBase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class EgressErrorMustNotLeakCredentialsTest(_WebBase):
+    """校验失败时的 `error` 文案不得回显代理凭据（前端复审 2026-09-17 提出的真实泄漏）。
+
+    出口串按契约**允许带 `user:pass@`**，而错误文案会进 HTTP 响应、浏览器 DOM 与日志——
+    所以回显前必须抹掉 userinfo。两条路径（整条写 / 按序号单段写）都要守住。
+    """
+
+    LEAKY = "http://leakuser:leakpass@" + chr(104) + "ost with space:8080"
+
+    def _assert_no_credentials(self, text):
+        self.assertNotIn("leakpass", text, "错误文案里出现了代理口令")
+        self.assertNotIn("leakuser", text, "错误文案里出现了代理用户名")
+        self.assertIn("***@", text, "应当用 ***@ 替代 userinfo，而不是整段消失")
+
+    def test_whole_list_write_error_is_masked(self):
+        c = self._login()
+        r = c.put("/api/scheduler/executors", json={"proxy_list": self.LEAKY},
+                  headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r.status_code, 400)
+        self._assert_no_credentials(r.get_data(as_text=True))
+
+    def test_single_slot_write_error_is_masked(self):
+        c = self._login()
+        r = c.put("/api/scheduler/executors/workers/1", json={"egress": self.LEAKY},
+                  headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r.status_code, 400)
+        self._assert_no_credentials(r.get_data(as_text=True))
+
+    def test_fallback_slot_write_error_is_masked(self):
+        c = self._login()
+        r = c.put("/api/scheduler/executors/fallback", json={"egress": self.LEAKY},
+                  headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r.status_code, 400)
+        self._assert_no_credentials(r.get_data(as_text=True))
