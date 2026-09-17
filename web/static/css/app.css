@@ -3210,6 +3210,11 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
   top: calc(100% + 6px);
   right: 0;
   z-index: 30;
+  /* 只读浮层（role=tooltip，内部无控件）：不吃指针事件，否则它压住的下方控件
+     —— 例如下面那张卡卡头的另一个 ⓘ —— 会被静默吞掉点击（实测：点第二个 ⓘ 无反应、
+     焦点不动、浮层不切换）。pointer-events:none 后点按穿透到目标控件；
+     浮层本身靠触发器的 :focus/:hover 维持，不需要自身可点。 */
+  pointer-events: none;
   width: max-content;
   max-width: min(72vw, 420px);
   padding: 8px 10px;
@@ -3373,6 +3378,9 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 .nav-progress.is-done .nav-progress__fill { opacity: 0; }
 
 /* ---- 27.3 就地状态文字与软警示 ---- */
+/* 卡内"结论/数据"行：与 .field-help（11.5px、--t-muted）分层——这一行是决策要看的数据，
+   不是说明文字；同色同号会让读者分不出"当前建议是什么"与"这段话在解释什么"（复审实测）。 */
+.set-summary { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--t-sub); }
 .set-tip { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--t-sub); }
 .set-tip:empty { display: none; }
 .set-warn {
