@@ -5,6 +5,9 @@
   首签；标记缺失或存在 failed/retrying/pending 未了结账号才跑补签——
   旧「任一账号 success 即跳过」会误吞全站首签与失败账号的兜底）
 - 探针：每 10 分钟尝试一次入口（signin.py --probe 内部自判触发时间/频率/当日防重）
+- 兜底常驻执行体：每 60 秒检查一次，**开关开着 + 在有效签到窗口内 + 今天没被周末门/
+  一键暂停挡下**时拉起 `sign --fallback`，窗口结束由进程自己退出（判据全部复用引擎
+  实现，见 `_fallback_should_run`；与宿主 cron 的 `scripts/yiban-fallback.sh` 同语义）
 - 每日 03:00 清理 /data/logs 与 /data/state 下过期的按天日志/状态文件
   （策略唯一在 yiban/state_gc.py，与宿主 cron 共用一张表）
 
@@ -41,9 +44,10 @@ for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
 # signin：补签轮判定与未了结状态码的单一事实源（宿主 run.sh 的进程内补签轮
 # 复用同一套函数，两侧不再各写一份判定）。
 import signin  # noqa: E402
-from child_env import build_child_env  # noqa: E402
+from child_env import build_child_env, parse_env_file  # noqa: E402
 
-from yiban import clock, state_gc  # noqa: E402
+from yiban import clock, state_gc, window  # noqa: E402
+from yiban.engine import schedule, workers  # noqa: E402
 
 STATEDIR = os.environ.get("YIBAN_STATE_DIR", "/data/state")
 LOGDIR = os.path.dirname(os.environ.get("YIBAN_LOG_FILE", "/data/logs/sign.log"))
@@ -167,6 +171,11 @@ def _cleanup_state():
 FIRST, SECOND = (6, 31), (7, 10)
 PROBE_TRY_SECONDS = 600
 
+# 兜底常驻执行体的检查周期（秒）：窗口开始时最多晚这么久拉起，窗口结束后最多晚
+# 这么久停止尝试（进程本身按引擎自己的判定退出，见 _tick_fallback）。取 60 与
+# 兜底引擎的扫描间隔（YIBAN_FALLBACK_INTERVAL 默认 60）同一量级。
+FALLBACK_TRY_SECONDS = 60
+
 
 def _child_timeout(env):
     """子进程超时：默认按签到窗口动态计算，与宿主 run.sh 同口径。
@@ -229,6 +238,93 @@ def _run_signin_child(extra=None, env=None):
         print(f"[scheduler] 签到子进程超时（>{timeout}s）被终止，已留痕继续调度", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# 兜底常驻执行体（容器形态）：随签到窗口起停
+# ---------------------------------------------------------------------------
+# 开关 `YIBAN_FALLBACK_ENABLE` 与宿主**同一个键、同一套真值字面量**（网页设置页写入
+# `.env`）；拉起时机、周末门/暂停门、窗口两段判定**全部复用引擎既有实现**，容器侧
+# 不另写一套（判据见 _fallback_should_run）。拉起的就是宿主那条入口
+# `sign --fallback`，故独立锁 `signin-run.lock.fallback` 与宿主形状完全一致。
+#
+#: 容器内托管的兜底常驻子进程（None = 当前没有）。模块级单例：调度进程只有一个，
+#: 用它保证"窗口内重复检查不会叠进程"（句柄非空即视为已有）。
+_fallback_proc = None
+
+
+def _fallback_gate_env():
+    """兜底开关/门/窗口的判据环境——**只读 `.env`**。
+
+    开关与签到窗口由网页写进 `.env`（`YIBAN_FALLBACK_ENABLE` / `YIBAN_SIGN_START`
+    等），而 compose 注入的是路径类变量。两者都从 `.env` 取，才不会出现"页面显示
+    关闭、调度器按进程环境里的另一个值起进程"；宿主 `scripts/yiban-fallback.sh`
+    同样以 `.env` 为开关事实源。
+    """
+    return parse_env_file(ENV_FILE)
+
+
+def _fallback_should_run(env, now=None):
+    """此刻是否该让兜底常驻在跑 → bool（容器形态的拉起判据，四道关全复用既有实现）。
+
+    - **开关**：`YIBAN_FALLBACK_ENABLE`，真值字面量走 `schedule._env_flag`（与
+      run.sh / 宿主兜底脚本同一套 1/true/on/yes）；未开 → 不起（静默，不刷日志）。
+    - **周末门 / 一键暂停门**：`schedule.day_off(now, env=env)` 非空 → 不起
+      （与定时轮、兜底引擎同一实现，改一处两边同时变）。
+    - **窗口两段判定**：`window.from_env(env)` 的 `is_open` 且未 `is_closed` →
+      **只在有效签到窗口内**拉起。窗口还没开不提前拉起（容器调度器是常驻进程，
+      不必像宿主 cron 那样提前挂上等待）；窗口已关不重复拉起，已起的进程由引擎
+      自己退出。
+    """
+    if not schedule._env_flag("YIBAN_FALLBACK_ENABLE", env):
+        return False
+    now = now or clock.now()
+    if schedule.day_off(now, env=env):
+        return False
+    bounds = window.from_env(env)
+    return bounds.is_open(now) and not bounds.is_closed(now)
+
+
+def _start_fallback_child():
+    """拉起兜底常驻子进程：与宿主**同一入口**（`sign --fallback`）、同一把独立锁。
+
+    入口唯一在 `yiban.engine.workers.run_fallback_worker`（它把锁名落成
+    `signin-run.lock.fallback`，与宿主 cron 完全一致，故容器内的兜底不占用也不影响
+    宿主/定时轮的那把全局锁）。这里显式把锁名写进子进程环境，使"独立锁"成为容器
+    路径的显式契约，而不依赖别人的默认值。
+
+    输出走子进程自己的按天日志 handler（`/data/logs/sign-<业务日>.log`，与签到同源），
+    不额外重定向——异常栈留在 sched 日志里便于排查。
+    """
+    env = build_child_env(ENV_FILE)
+    env.setdefault("YIBAN_RUN_LOCK_NAME", workers.FALLBACK_LOCK_NAME)
+    return subprocess.Popen(
+        ["python3", "scripts/signin.py", "--fallback"], cwd="/app", env=env
+    )
+
+
+def _tick_fallback(now=None, env=None):
+    """周期检查：该有兜底进程就拉起一个，已自行退出就回收（**同时最多一个**）。
+
+    返回 True = 本次检查新拉起了一个进程（供日志与测试断言）。窗口内重复检查不会
+    叠进程：句柄非空且仍在跑即视为已有。窗口结束/门命中/引擎异常后子进程**自行
+    退出**，下一次检查回收句柄，并只在"当前仍该跑"时才重新拉起——容器侧不做强杀
+    （引擎每一轮都会重判门与窗口，这正是它自己退出的原因）。
+    """
+    global _fallback_proc
+    if _fallback_proc is not None and _fallback_proc.poll() is not None:
+        _fallback_proc = None
+    if _fallback_proc is not None:
+        return False
+    if not _fallback_should_run(_fallback_gate_env() if env is None else env, now):
+        return False
+    try:
+        _fallback_proc = _start_fallback_child()
+    except OSError as e:
+        print(f"[scheduler] 拉起兜底常驻执行体失败: {e}", flush=True)
+        return False
+    print("[scheduler] 已在签到窗口内拉起兜底常驻执行体（窗口结束自行退出）", flush=True)
+    return True
+
+
 def main_loop(sleep_seconds=1):
     """调度主循环。闩锁按 (任务, 当日) 记账，并落盘到 sched-slot 标记——
     进程重启后当日已触发过的时段不再二次触发（闩锁内存态重启即丢），
@@ -240,6 +336,7 @@ def main_loop(sleep_seconds=1):
     done_sign_first = None   # date | None
     done_sign_second = None
     last_probe_try = None    # datetime | None：上次尝试探针的时刻（周期尝试）
+    last_fallback_try = None  # datetime | None：上次检查兜底常驻的时刻（周期检查）
     last_clean = None
     while True:
         now = clock.now()
@@ -283,6 +380,13 @@ def main_loop(sleep_seconds=1):
             env = build_child_env(ENV_FILE)
             if str(env.get("YIBAN_PROBE_ENABLE", "0")).strip().lower() in ("1", "true", "on", "yes"):
                 _run_signin_child(extra=["--probe"], env=env)
+        if (last_fallback_try is None
+                or (now - last_fallback_try).total_seconds() >= FALLBACK_TRY_SECONDS):
+            # 兜底常驻：窗口内拉起、窗口结束由进程自行退出。判据只看 `.env`
+            # （网页写入的开关与窗口设置），不构造完整子进程环境——未开时不产生
+            # 任何副作用（不 spawn、不打日志）。
+            last_fallback_try = now
+            _tick_fallback(now)
         if now.hour >= 3 and last_clean != today:
             _cleanup_state()
             last_clean = today
