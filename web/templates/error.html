@@ -1,11 +1,13 @@
-{# 错误页（404 / 500）。复用认证页外壳：错误发生时没有可靠的导航数据，
-   匿名与登录态用同一套外壳，靠服务端下发的「返回入口」区分去向。
+{# 错误页（404 / 500）。外壳按登录态选（用户 2026-09-17）：
+   **登录态的访问者用管理端外壳**——否则点到过期链接会丢掉侧栏与导航，只剩两个按钮，
+   对管理端来说像"被踢出应用"；匿名访问者仍用认证外壳（错误页没有可靠的导航数据可给）。
+   外壳名由服务端下发（_render_error_page）；渲染管理端外壳若抛错，服务端会退回认证外壳。
    只做展示与出口，不引入任何额外请求。 #}
-{% extends "layout_auth.html" %}
+{% extends layout_name | default("layout_auth.html") %}
 
 {% block title %}{{ err_code }} {{ err_title }} · 易班自动签到{% endblock %}
 
-{% block content %}
+{% macro err_body() %}
 <div class="err-page" role="alert">
   <div class="err-code" aria-hidden="true">{{ err_code }}</div>
   <h1 class="err-title">{{ err_title }}</h1>
@@ -15,6 +17,15 @@
     <button type="button" class="btn btn--ghost" id="err-back" hidden>返回上一页</button>
   </div>
 </div>
+{% endmacro %}
+
+{% block content %}
+{% if use_admin_shell %}
+{# 管理端外壳：错误内容放进内容列的一张卡里（不再整屏居中），侧栏与面包屑都还在 #}
+<section class="card err-card">{{ err_body() }}</section>
+{% else %}
+{{ err_body() }}
+{% endif %}
 <script>
   // 「返回上一页」只在确有历史记录时出现：直接打开链接时它什么也做不了，显形反而误点
   (function () {

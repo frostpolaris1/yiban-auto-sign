@@ -187,11 +187,11 @@
       <p class="set-warn" id="ss-edge-warn" hidden></p>
 
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="ss-sat">
           <span class="set-row-label">周六签到</span>
           {# 只说默认值（开关当前态已可见，不需再解释开关做什么） #}
           <p class="set-help">默认关闭。</p>
-        </div>
+        </label>
         <label class="switch" title="周六签到">
           <input id="ss-sat" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -199,10 +199,10 @@
         </label>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="ss-sun">
           <span class="set-row-label">周日签到</span>
           <p class="set-help">默认关闭。</p>
-        </div>
+        </label>
         <label class="switch" title="周日签到">
           <input id="ss-sun" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -210,10 +210,10 @@
         </label>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="ss-time-pref">
           <span class="set-row-label">允许用户自选签到时间</span>
           <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。仅主管理员可改。</p>
-        </div>
+        </label>
         <label class="switch" title="允许用户自选签到时间">
           <input id="ss-time-pref" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -294,10 +294,10 @@
           </div>
         </div>
         <div class="set-row">
-          <div class="set-row-text">
+          <label class="set-row-text" for="sn-urgent">
             <span class="set-row-label">仅推送重要告警</span>
             <p class="set-help">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度。</p>
-          </div>
+          </label>
           <label class="switch" title="仅推送重要告警">
             <input id="sn-urgent" type="checkbox">
             <span class="track" aria-hidden="true"></span>
@@ -347,10 +347,10 @@
           </div>
         </div>
         <div class="set-row">
-          <div class="set-row-text">
+          <label class="set-row-text" for="sm-global">
             <span class="set-row-label">全局邮件通知</span>
             <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码。</p>
-          </div>
+          </label>
           <label class="switch" title="全局邮件通知">
             <input id="sm-global" type="checkbox">
             <span class="track" aria-hidden="true"></span>
@@ -456,10 +456,10 @@
         </div>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="sh-verify">
           <span class="set-row-label">注册时验证账号</span>
           <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。任意管理员可改。</p>
-        </div>
+        </label>
         <label class="switch" title="注册时验证账号">
           <input id="sh-verify" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -467,10 +467,10 @@
         </label>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="sh-probe-enable">
           <span class="set-row-label">开启探针模式</span>
           <p class="set-help">非签到时段对全部账号做健康检查（仅登录，不实际签到），异常账号提前预警。</p>
-        </div>
+        </label>
         <label class="switch" title="探针模式">
           <input id="sh-probe-enable" type="checkbox">
           <span class="track" aria-hidden="true"></span>

@@ -3580,24 +3580,40 @@ def create_app(host=None):
         return "login_page", "去登录"
 
     def _render_error_page(code, title, message):
+        """错误页：匿名用认证外壳，**登录态用管理端外壳**（保留侧栏与导航）。
+
+        用户 2026-09-17：登录态管理员点到过期链接时不该"丢侧栏"，错误页恰恰最需要导航。
+        管理端外壳要读更多上下文（导航/公告等），**错误路径本身可能是坏的**，故渲染失败
+        （任何异常）一律退回认证外壳，绝不让 404/500 再抛一次。
+        """
         role = _current_role()
         endpoint, label = _home_endpoint_for(role)
+        base = dict(
+            web_version=WEB_VERSION,
+            app_version=APP_VERSION,
+            icp_info=icp_info(),
+            police_info=police_info(),
+            police_link=police_link(),
+            site_description=site_description(),
+            err_code=code,
+            err_title=title,
+            err_message=message,
+            home_url=url_for(endpoint),
+            home_label=label,
+            logged_in=role is not None,
+        )
+        if role is not None:
+            try:
+                return (
+                    render_template("error.html", layout_name="layout_admin.html",
+                                    use_admin_shell=True, **base),
+                    code,
+                )
+            except Exception as e:      # 兜底就是"什么错都退回安全外壳"，见 docstring
+                logger.warning("错误页渲染管理端外壳失败，退回认证外壳: %s", e)
         return (
-            render_template(
-                "error.html",
-                web_version=WEB_VERSION,
-                app_version=APP_VERSION,
-                icp_info=icp_info(),
-                police_info=police_info(),
-                police_link=police_link(),
-                site_description=site_description(),
-                err_code=code,
-                err_title=title,
-                err_message=message,
-                home_url=url_for(endpoint),
-                home_label=label,
-                logged_in=role is not None,
-            ),
+            render_template("error.html", layout_name="layout_auth.html",
+                            use_admin_shell=False, **base),
             code,
         )
 
