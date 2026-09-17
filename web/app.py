@@ -8300,9 +8300,10 @@ def create_app(host=None):
         **只写 `.env`，不重启也不拉起进程**——下一轮定时任务/容器重启后生效
         （与既有设置项同一语义，页面上要如实说明）。非法值一律 400 且不落盘。
 
-        `fallback_enable` 只落盘这个开关；**还必须在宿主加一条 cron** 才会真正有进程
-        被拉起来（模板见 `scripts/yiban-fallback.sh` 头注释）。故页面上不能写成
-        "打开即在跑"——接口回的 `fallback.status` 才是"实际在不在跑"的判据。
+        `fallback_enable` 只落盘这个开关；进程由部署形态各自拉起——宿主形态还要加一条
+        cron（模板见 `scripts/yiban-fallback.sh` 头注释），容器形态由容器调度器在签到
+        窗口内自动拉起。故页面上不能写成"打开即在跑"——接口回的 `fallback.status`
+        才是"实际在不在跑"的判据。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改执行体设置"}), 403

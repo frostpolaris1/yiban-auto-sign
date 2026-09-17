@@ -217,6 +217,49 @@ class YieldToFullRoundTest(_FallbackHarness):
         self.assertEqual(beats, [])
 
 
+class FallbackOwnLockTest(unittest.TestCase):
+    """兜底的**独立锁真的被取**（2026-09-17 复核 D 时发现它是"只设了锁名、从没取过"）。
+
+    此前 `runner.main` 的兜底分支在其他分支之前直接 return，`run_fallback_worker` 又只
+    `setdefault` 了锁名——于是同一台机器上起第二个兜底不会被挡住（重复登录虽由领取池兜住，
+    但会白烧一轮登录）。现在锁由兜底分支**非阻塞**取：撞上已在跑的就退出 3，不排队。
+    """
+
+    def test_second_fallback_exits_3_before_signing(self):
+        if cli_support.fcntl is None:
+            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上取不到锁）")
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-lock-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        started = []
+        with mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": tmp}, clear=False), \
+                mock.patch.object(workers, "run_fallback_worker",
+                                  lambda argv: (started.append(argv), 0)[1]):
+            held = cli_support._acquire_run_lock(True, name=workers.FALLBACK_LOCK_NAME)
+            try:
+                rc = runner.main(["--fallback"])
+            finally:
+                held.close()
+            self.assertEqual(rc, 3, "已有兜底在跑时应以 3 退出（队列忙语义）")
+            self.assertEqual(started, [], "撞锁时不得进入扫描循环")
+            # 释放后同一进程能重新拿到（锁没被自己粘住）
+            self.assertEqual(runner.main(["--fallback"]), 0)
+            self.assertEqual(len(started), 1, "锁释放后应能正常跑起来")
+
+    def test_lock_name_is_the_fallback_one(self):
+        """取的是**兜底自己的**锁名，不是全局锁——否则会挡住定时轮。"""
+        tmp = tempfile.mkdtemp(prefix="yiban-fallback-lock-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": tmp}, clear=False), \
+                mock.patch.object(workers, "run_fallback_worker", lambda argv: 0):
+            os.environ.pop("YIBAN_RUN_LOCK_NAME", None)
+            runner.main(["--fallback"])
+            # 断言必须在 patch 内：patch.dict 退出时会把这次新增的键还原掉
+            self.assertEqual(os.environ.get("YIBAN_RUN_LOCK_NAME"),
+                             workers.FALLBACK_LOCK_NAME)
+        self.assertNotEqual(workers.FALLBACK_LOCK_NAME, cli_support.GLOBAL_RUN_LOCK_NAME,
+                            "兜底的锁名必须与全局轮次锁不同名")
+
+
 class RunLockProbeTest(unittest.TestCase):
     """`cli_support._run_lock_held`：全局锁探测（让位判据的事实源）。"""
 

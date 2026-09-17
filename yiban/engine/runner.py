@@ -135,6 +135,17 @@ def main(argv=None):
 
     # 兜底常驻执行体：先于其他分支（它自带循环与退出条件）
     if args.fallback:
+        # 独立锁 `signin-run.lock.fallback`：**真的取**。此前只设了锁名、从没取过，
+        # 于是"自己持独立锁"只是注释里的一句话——同一台机器上起第二个兜底不会被挡住
+        # （重复登录虽由领取池兜住，但会白烧一轮登录，且"窗口结束自行退出"的判断也会
+        # 被第二个进程重复执行）。取锁用**非阻塞**口径：已有兜底在跑就退出 3
+        # （与手动签到撞锁同一语义），不排队；句柄在本进程存活期间必须保活。
+        os.environ.setdefault("YIBAN_RUN_LOCK_NAME", workers.FALLBACK_LOCK_NAME)
+        try:
+            _fallback_lock_fh = cli_support._acquire_run_lock(True)  # noqa: F841（保活用）
+        except cli_support._RunLockHeld:
+            logger.warning("已有兜底常驻执行体在运行，本次不重复拉起（防同账号并发登录）")
+            return 3
         return workers.run_fallback_worker(argv)
 
     # 多执行体：本进程只做监督（持全局锁 + 汇总退出码），活儿由子进程干。
