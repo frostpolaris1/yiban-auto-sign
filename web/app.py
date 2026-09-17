@@ -8179,9 +8179,10 @@ def create_app(host=None):
                 for r in active
             ]
         else:
-            # 清单里没有并行执行体行（全被停用/删除）→ 回退旧口径的单执行体形态
-            # （configured 按契约仍 ≥1；出口走 resolve，列表为空时退回 YIBAN_PROXY）
-            fallback_single = yb_egress.resolve(yb_egress.ROLE_WORKER, 0, env=env)
+            # 清单里没有并行执行体行（全被停用/删除）→ 回退旧口径的单执行体形态：
+            # configured 按契约仍 ≥1，出口走 `single` 角色（= `YIBAN_PROXY`）——
+            # 这正是这种情况下**实际运行**的单执行体用的出口（停用行的出口不参与分配）
+            fallback_single = yb_egress.resolve(yb_egress.ROLE_SINGLE, 0, env=env)
             assignments = [{"index": 0, "egress": yb_egress.describe(fallback_single),
                             "role": yb_egress.ROLE_WORKER,
                             "label": yb_egress.role_label(yb_egress.ROLE_WORKER, 0)}]
