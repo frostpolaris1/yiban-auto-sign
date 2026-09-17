@@ -267,10 +267,16 @@ class WorkerRelaunchCommandTest(_Base):
         spawned = []
 
         class _FakeProc:
+            """替身只实现监督进程真正会调用的接口：`poll()` 立刻返回退出码。
+
+            监督进程用轮询而不是 `wait()`（存活期间要按周期刷心跳），故这里给
+            `poll()`；返回 0 = 子进程已正常退出。
+            """
+
             def __init__(self, cmd, env=None, cwd=None):
                 spawned.append({"cmd": list(cmd), "env": dict(env or {}), "cwd": cwd})
 
-            def wait(self):
+            def poll(self):
                 return 0
 
         with mock.patch.object(signin, "load_accounts",
