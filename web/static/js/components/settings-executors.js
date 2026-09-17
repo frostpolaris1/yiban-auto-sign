@@ -43,9 +43,24 @@
     var n = $(id);
     if (n) n.textContent = text == null ? "" : String(text);
   }
+  // 操作反馈走横幅（用户 2026-09-17：「已删除 并行执行体 #8：已写入配置…」做成横幅形态）。
   // 错误文案直接显示：后端已在源头抹掉 userinfo（yiban/masking.mask_url_userinfo，见 81/82 号
   // 文档），保证 400 的 error 不含凭据——前端不再自己脱敏，避免两处口径分叉。
-  function setTip(text, bad) { YB.setTip("set-exec-tip", text, bad); }
+  var BANNER_ICON = { success: "circle-check", danger: "circle-x", info: "info" };
+  function setTip(text, bad) { banner(text, bad ? "danger" : "success"); }
+  function banner(text, kind) {
+    var box = $("set-exec-banner");
+    if (!box) return;
+    var ico = $("set-exec-banner-ico");
+    var body = $("set-exec-banner-body");
+    if (ico) {
+      ico.textContent = "";
+      ico.appendChild(YB.iconEl(BANNER_ICON[kind] || "info"));
+    }
+    if (body) body.textContent = text == null ? "" : String(text);
+    box.className = "alert " + (kind || "info");
+    box.hidden = !text;
+  }
   function count(v) { return Number(v) || 0; }
   function attr(v) { return v == null ? "" : String(v); }
   function workers() {
@@ -62,21 +77,18 @@
   }
 
   /* ---------------- 文案映射（键都来自后端字段，前端只做中文） ---------------- */
-  var TYPE_TEXT = { worker: "并行", fallback: "兜底", disabled: "停用" };
-  var TYPE_OPTIONS = [
-    { v: "worker", t: "并行执行体（拉起并参与分配）" },
-    { v: "fallback", t: "兜底常驻执行体（窗口内补签，最多一行）" },
-    { v: "disabled", t: "停用（保留出口与槽位，不拉起、不计入建议值）" }
-  ];
+  var TYPE_TEXT = { worker: "并行", fallback: "兜底 / 故障转移", disabled: "停用" };
   var STATE_TEXT = {
     running: "正在跑本轮",
     finished: "本轮已跑完",
     idle: "今天还没跑",
     stale: "可能被中断（无收尾记录）"
   };
+  // 状态胶囊配色（用户 2026-09-17）：正在跑=绿、本轮已跑完=**蓝**、今天还没跑=灰、可能被中断=红；
+  // 停用行在状态栏给**灰底胶囊**（原来只有一行灰字）。
   var STATE_CLASS = {
     running: "badge--ok",
-    finished: "badge--muted",
+    finished: "badge--info",
     idle: "badge--muted",
     stale: "badge--bad"
   };
@@ -125,6 +137,18 @@
     return activities().length ? "当日 —" : "今日尚未运行";
   }
   function executors() { return (lastData && lastData.executors) || []; }
+  // 行名：**用户自定义名优先**（后端 name 字段），否则用后端给的标签（label 口径仍以后端为准）。
+  // 兜底/故障转移行按用户要求名称固定，不接受自定义名。
+  function rowName(row) {
+    if (attr(row.type) !== "fallback" && attr(row.name)) return attr(row.name);
+    return attr(row.label) || TYPE_TEXT[attr(row.type)] || "执行体";
+  }
+  // 消息里的标识：停用行的后端标签就是「已停用」（不含槽位），直接拿它拼句子会得到
+  // "已启用 已停用"这种自相矛盾的文案，故停用行补槽位号（与表格里那格一致）。
+  function rowTitle(row) {
+    if (attr(row.type) === "disabled") return "执行体（槽位 " + count(row.slot) + "）";
+    return rowName(row);
+  }
   // 配置项键名由接口给（workers.env_keys.manifest），槽位下标是后端审计与 .env 里的写法
   function manifestKey(slot) {
     var keys = (lastData && lastData.workers && lastData.workers.env_keys) || {};
@@ -132,13 +156,28 @@
   }
 
   /* ---------------- 清单：摘要 + 一览表 ---------------- */
-  function rowsSummary() {
+  // 清单规模 KPI（用户 2026-09-17：这类"当前清单 N 行：并行 x…"做成 KPI 卡片）。
+  // 数字全部有后端数据支撑、前端只做计数：「并行」直接取 workers.configured（后端自己的口径：
+  // 只数 worker 行），「兜底」「停用」按 executors[] 的 type 计数，总数＝清单长度。
+  function kpiSet(id, val) {
+    var el = $(id);
+    if (!el) return;
+    if (val == null) { el.textContent = "—"; el.classList.add("kpi-value--empty"); }
+    else { el.textContent = String(val); el.classList.remove("kpi-value--empty"); }
+  }
+  function paintKpis() {
     var rows = executors();
-    var n = { worker: 0, fallback: 0, disabled: 0 };
-    rows.forEach(function (r) { n[attr(r.type)] = (n[attr(r.type)] || 0) + 1; });
-    var parts = ["并行 " + n.worker, "兜底 " + n.fallback];
-    if (n.disabled) parts.push("停用 " + n.disabled);
-    return "当前清单 " + rows.length + " 行：" + parts.join(" · ");
+    var loaded = !!lastData;
+    var w = count(lastData && lastData.workers && lastData.workers.configured);
+    var fbn = 0, off = 0;
+    rows.forEach(function (r) {
+      if (attr(r.type) === "fallback") fbn += 1;
+      else if (attr(r.type) === "disabled") off += 1;
+    });
+    kpiSet("set-exec-kpi-rows", loaded ? rows.length : null);
+    kpiSet("set-exec-kpi-worker", loaded ? w : null);
+    kpiSet("set-exec-kpi-fallback", loaded ? fbn : null);
+    kpiSet("set-exec-kpi-disabled", loaded ? off : null);
   }
 
   // 状态与当日合并成一列（用户 2026-09-17：两者是同一件事的两面，各占一列只是白占宽度）
@@ -148,7 +187,8 @@
     var type = attr(row.type);
     var inner = YB.el("span", { class: "set-exec-state" });
     if (type === "disabled") {
-      inner.appendChild(YB.el("span", { class: "set-exec-off", text: "停用中（不拉起、不计入建议值）" }));
+      inner.appendChild(badge("停用", "badge--muted"));
+      inner.appendChild(YB.el("span", { class: "set-exec-off", text: "不拉起、不计入建议值" }));
       return YB.el("td", {}, [inner]);
     }
     if (type === "fallback") {
@@ -162,6 +202,61 @@
     return YB.el("td", {}, [inner]);
   }
 
+  // 行内「更多」：停用/启用 与 删除 从行弹窗搬到这里（用户 2026-09-17：设置里不再改状态/删行，
+  // 放表格操作列作为按钮，且要输主管理员密码）。复用 YB.rowMenu（portal 浮层 + 窄屏收纳）。
+  function askPassword(text, run) {
+    YB.openConfirmPasswordModal(text, run);      // 口令错误/后端 403 会在该弹窗内显示，可重试
+  }
+  function rowMenuWrap(row) {
+    var type = attr(row.type);
+    if (type === "fallback") return null;        // 兜底行：类型固定、不可删除，只留「设置」
+    var name = rowName(row);
+    var items = [{
+      label: type === "disabled" ? "启用（改回并行）" : "停用（保留出口与槽位）",
+      icon: type === "disabled" ? "play" : "circle-slash",
+      run: function () { changeType(row, type === "disabled" ? "worker" : "disabled"); }
+    }, {
+      label: "删除这一行", icon: "trash-2", danger: true,
+      run: function () { removeRow(row); }
+    }];
+    var cell = YB.rowMenu.cell({ items: items, label: name + " 更多操作" });
+    return cell.firstElementChild;               // 取 .dd-wrap（触发器 + 菜单）放进自己的操作格
+  }
+
+  // 改状态（停用/启用）：要口令；成功/失败都走横幅
+  function changeType(row, nextType) {
+    var slot = count(row.slot);
+    var name = rowTitle(row);
+    var word = nextType === "disabled" ? "停用" : "启用";
+    askPassword(word + " " + name + "？请输入当前管理员密码确认。", function (pw) {
+      focusAfterPaint = { slot: slot };
+      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot,
+        { type: nextType, confirm_password: pw }).then(function (d) {
+        return load().then(function () {
+          banner("已" + word + " " + name + "：" + note(d), "success");
+          return true;
+        });
+      });
+    });
+  }
+
+  // 删行：要口令（确认与警告合并在口令弹窗的文案里，不叠两层弹窗）
+  function removeRow(row) {
+    var slot = count(row.slot);
+    var name = rowTitle(row);
+    askPassword("删除 " + name + "（槽位 " + slot + "）？它的出口配置会一并删除、槽位号不保留；"
+      + "只是暂时不用请改用「停用」。请输入当前管理员密码确认。", function (pw) {
+      focusAfterPaint = { slot: slot };
+      return YB.api("DELETE", "/api/scheduler/executors/rows/" + slot,
+        { confirm_password: pw }).then(function (d) {
+        return load().then(function () {
+          banner("已删除 " + name + "：" + note(d), "success");
+          return true;
+        });
+      });
+    });
+  }
+
   // 焦点归还：保存/删除后列表整表重建，刚被 openModal 归还焦点的那颗「设置」按钮被销毁，
   // 焦点会掉到 body（复核实测）。重建后按槽位找回同一行；行已删或槽位对不上则落到「添加执行体」。
   var focusAfterPaint = null;
@@ -169,7 +264,7 @@
     var want = focusAfterPaint;
     focusAfterPaint = null;
     if (!want) return;
-    var el = document.querySelector('#set-exec-assign tr[data-slot="' + want.slot + '"] button:last-of-type')
+    var el = document.querySelector('#set-exec-assign tr[data-slot="' + want.slot + '"] .set-exec-open')
       || $("set-exec-row-add");
     if (!el || el.disabled || !el.focus) return;
     var host = $("modal-host");
@@ -204,34 +299,41 @@
 
   function rowBtn(row) {
     var label = attr(row.label) || "执行体";
-    var btn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "设置" });
-    btn.setAttribute("aria-label", label + " 设置（槽位 " + count(row.slot) + "）");
+    var btn = YB.el("button", { type: "button", class: "btn btn--ghost btn--sm set-exec-open", text: "设置" });
+    btn.setAttribute("aria-label", rowName(row) + " 设置（槽位 " + count(row.slot) + "）");
     btn.addEventListener("click", function () { openRow(row); });
     return btn;
   }
 
   function paintRows() {
-    setText("set-exec-rows-summary", rowsSummary());
+    paintKpis();
     var tbody = $("set-exec-assign");
     if (!tbody) return;
     tbody.textContent = "";                       // 清空容器（不用 innerHTML）
-    var rows = executors().slice().sort(function (a, b) { return count(a.slot) - count(b.slot); });
+    // 顺序：兜底/故障转移行**固定置顶**（用户 2026-09-17），其余按槽位号升序
+    var rows = executors().slice().sort(function (a, b) {
+      var af = attr(a.type) === "fallback" ? 0 : 1, bf = attr(b.type) === "fallback" ? 0 : 1;
+      return af !== bf ? af - bf : count(a.slot) - count(b.slot);
+    });
     rows.forEach(function (r) {
       var type = attr(r.type);
+      var ops = [rowBtn(r)];
+      var more = rowMenuWrap(r);
+      if (more) ops.push(more);
       tbody.appendChild(YB.el("tr", {
         class: type === "disabled" ? "set-exec-row-off" : "",
         dataset: { slot: String(count(r.slot)) }
       }, [
         YB.el("td", {}, [
-          YB.el("span", { class: "mono", text: attr(r.label) || TYPE_TEXT[type] || "—" }),
+          YB.el("span", { class: "mono", text: rowName(r) }),
           // 停用行的标签口径就是「已停用」（后端冻结、不含槽位），多个停用行只靠标签区分不了，
           // 故这里补一个槽位号——槽位是后端给的稳定身份，不是我拼的文案。
           type === "disabled" ? YB.el("span", { class: "set-exec-slot", text: "（槽位 " + count(r.slot) + "）" }) : null
         ]),
         YB.el("td", { text: TYPE_TEXT[type] || "—" }),
-        YB.el("td", { text: r.egress || "直连（本机出口）" }),
         stateCell(r),
-        YB.el("td", {}, [rowBtn(r)])
+        YB.el("td", { text: r.egress || "直连（本机出口）" }),
+        YB.el("td", { class: "set-exec-ops" }, ops)
       ]));
     });
     // 库里的旧记录（role=unknown）：照实列出来，不猜它属于谁（后端要求：不要在前端归类）
@@ -240,10 +342,10 @@
       tbody.appendChild(YB.el("tr", {}, [
         YB.el("td", { text: attr(a.label) || "未标注（旧数据）" }),
         YB.el("td", { text: "—" }),
-        YB.el("td", { text: "—" }),
         YB.el("td", {}, [YB.el("span", { class: "set-exec-state" }, [
           YB.el("span", { class: "set-exec-daily", text: todayText(a) })
         ])]),
+        YB.el("td", { text: "—" }),
         YB.el("td", {})
       ]));
     });
@@ -251,10 +353,10 @@
       tbody.appendChild(YB.el("tr", {}, [
         YB.el("td", { text: "—" }),
         YB.el("td", { text: "—" }),
-        YB.el("td", { text: "清单为空：点上方「添加执行体」加一行" }),
         YB.el("td", {}, [YB.el("span", { class: "set-exec-state" }, [
           YB.el("span", { class: "set-exec-daily", text: "—" })
         ])]),
+        YB.el("td", { text: "清单为空：点表格下方「添加执行体」加一行" }),
         YB.el("td", {})
       ]));
     }
@@ -314,7 +416,7 @@
   function addRow() {
     if (!ctx.isMaster || busy) return;          // busy 是防重入的唯一判据，入口再挡一道
     withBusy(function () {
-      setTip("添加中…", false);
+      banner("添加中…", "info");
       return YB.api("POST", "/api/scheduler/executors/rows", { type: "worker" }).then(function (d) {
         return load().then(function () {
           setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
@@ -328,7 +430,7 @@
 
   function putRow(slot, payload, okText) {
     return withBusy(function () {
-      setTip("提交中…", false);
+      banner("提交中…", "info");
       return YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload).then(function (d) {
         return load().then(function () {
           setTip(okText + "：" + note(d), false);
@@ -338,52 +440,7 @@
     });
   }
 
-  function deleteRow(row, handle) {
-    var slot = count(row.slot);
-    var label = attr(row.label) || ("槽位 " + slot);
-    YB.confirmDialog({
-      title: "删除这一行？",
-      body: label + "（槽位 " + slot + "）会从清单里移除，它当前的出口配置一并删除。"
-        + "只是暂时不用的话建议改成「停用」——停用保留出口与槽位号，删除不保留。",
-      confirmText: "删除",
-      danger: true
-    }).then(function (ok) {
-      if (!ok) return;
-      if (handle && handle.close) handle.close();
-      focusAfterPaint = { slot: slot };        // 行已删 → restoreFocus 兜底落到「添加执行体」
-      withBusy(function () {
-        setTip("删除中…", false);
-        return YB.api("DELETE", "/api/scheduler/executors/rows/" + slot).then(function (d) {
-          return load().then(function () {
-            setTip("已删除 " + label + "：" + note(d), false);
-            return true;
-          });
-        }, function (e) { failTip(e, "删除"); });
-      });
-    });
-  }
-
   /* ---------------- 行内弹窗：类型 + 出口（低频与破坏性动作降到正文里） ---------------- */
-  // 类型用自研选择控件（原生 select 的弹出层不可控，项目约定全部自研，见 shared-frontend-components）
-  function typeField(current) {
-    var root = YB.el("div", { class: "select-field", "data-select-field": "set-exec-row-type" });
-    root.appendChild(YB.el("input", { type: "hidden", id: "set-exec-row-type", value: attr(current) }));
-    var menu = YB.el("div", { class: "select-menu", role: "listbox", hidden: true });
-    TYPE_OPTIONS.forEach(function (o) {
-      menu.appendChild(YB.el("button", {
-        type: "button", class: "select-option", role: "option", "data-v": o.v, text: o.t
-      }));
-    });
-    root.appendChild(menu);
-    return YB.el("div", { class: "field" }, [
-      YB.el("span", { class: "field-label" }, [
-        YB.el("span", { text: "类型" }),
-        infoTip("类型与出口的改法", ROW_HELP)
-      ]),
-      root
-    ]);
-  }
-
   // 弹窗内的 info 浮层：与模板的 {% call info(label, id) %} 同构（.info-tip + .info-pop，
   // hover/focus 双触发，CSS 里 pointer-events:none）。`up` = 向上展开——弹窗面板是
   // overflow:hidden，靠近底部的浮层向下开会被裁掉（实测）。
@@ -402,12 +459,12 @@
   }
 
   // 文本级动作（与「保存」分属不同视觉层级）；extraClass 给破坏性动作上危险色
-  var ROW_HELP = "类型：并行＝会拉起并计入建议值；兜底＝窗口内补签，最多一行、不计入；"
-    + "停用＝保留出口与槽位、不拉起、不计入（想留位置请用停用而不是删除）。"
+  var ROW_HELP = "名称：只影响本页显示（留空＝用默认名）；兜底/故障转移行的名称固定。"
+    + "类型：并行＝会拉起并计入建议值；兜底/故障转移＝窗口内补签，最多一行、不计入，且固定置顶；"
+    + "停用＝保留出口与槽位、不拉起、不计入。改状态与删除在表格「操作」列的更多菜单里，且要输一次管理员密码。"
     + "出口：读接口只回脱敏描述串（不含账号密码），本框不回显原值，留空＝不修改；"
     + "改成直连请用下面的「清除出口」。写入只动这一行，其余行（含停用行的出口）逐字保留；"
-    + "改动即时写入配置，下一轮定时任务或重启执行体/容器后生效。"
-    + "「删除这一行」会连同它的出口配置一起移除且不保留槽位号。";
+    + "改动即时写入配置，下一轮定时任务或重启执行体/容器后生效。";
 
   function linkBtn(text, onClick, extraClass) {
     var b = YB.el("button", { type: "button", class: "linklike " + (extraClass || ""), text: text });
@@ -424,7 +481,29 @@
     var acts = activityFor(isFb ? "fallback" : "worker", isFb ? null : slot);
 
     var wrap = YB.el("div");
-    wrap.appendChild(typeField(type));
+    // 名称：仅当接口下发了 name 字段（= 后端已支持逐行改名）时才出现，避免做出一个点了会 400 的输入框。
+    // 兜底行名称固定（用户 2026-09-17），不给改名。
+    var nameId = "set-exec-modal-name";
+    if (!isFb && Object.prototype.hasOwnProperty.call(row, "name")) {
+      wrap.appendChild(YB.el("div", { class: "field" }, [
+        YB.el("label", { class: "field-label", for: nameId, text: "名称（留空 = 用默认名）" }),
+        YB.el("div", { class: "input-group" }, [
+          YB.el("input", {
+            class: "input", id: nameId, type: "text", autocomplete: "off", maxlength: "24",
+            placeholder: attr(row.label) || "并行执行体 #" + (slot + 1), value: attr(row.name)
+          })
+        ]),
+        YB.el("p", { class: "field-help", text: "只影响本页显示；改状态与删除在表格「操作」列的更多菜单里。" })
+      ]));
+    }
+    // 类型：只读展示（用户 2026-09-17：设置里不再改类型，停用/启用移到操作列）
+    wrap.appendChild(YB.el("div", { class: "field" }, [
+      YB.el("span", { class: "field-label" }, [
+        YB.el("span", { text: "类型" }),
+        infoTip("类型与出口的改法", ROW_HELP)
+      ]),
+      YB.el("p", { class: "set-summary", text: TYPE_TEXT[type] + (isFb ? "（固定：置顶、不可改类型、不可删除）" : "（改状态请用「操作」列的更多菜单）") })
+    ]));
 
     // 「当前出口」与「对应配置项」合并成一行（用户 2026-09-17：这两条本来在说同一件事）
     wrap.appendChild(YB.el("div", { class: "field" }, [
@@ -467,8 +546,6 @@
           + "　" + todayText(acts) }));
     }
 
-    var tip = YB.el("p", { class: "set-tip", text: "" });
-
     // 低频且破坏性的动作降级到正文里（用户 2026-09-17：「清除出口」与「保存」不是一个视觉层级）
     wrap.appendChild(YB.el("p", { class: "set-exec-subactions" }, [
       linkBtn("清除出口（改为直连）", function () {
@@ -485,57 +562,51 @@
         });
       }),
       YB.el("span", { class: "set-exec-subactions__sep", text: "·" }),
-      linkBtn("删除这一行", function () { deleteRow(row, handle); }, "set-exec-danger")
+      linkBtn("查看这一行的状态与当日", function () {
+        var acts = activityFor(isFb ? "fallback" : "worker", isFb ? null : slot);
+        banner(rowTitle(row) + "：" + (isFb ? (FB_TEXT[fb.status] || "—") : (STATE_TEXT[row.state] || "—"))
+          + "　" + todayText(acts), "info");
+        if (handle && handle.close) handle.close();
+      })
     ]));
-    wrap.appendChild(tip);
-
     function switchArg() {
       if (!isFb || !swInput) return null;
       return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
     }
 
+    // 保存改走「口令确认 → 提交」：用户 2026-09-17 要求改动需输主管理员密码
+    // （后端落地 confirm_password 校验后即为真门，见 docs/refactor/88）。
     function save() {
       if (busy) return false;
-      var newType = YB.selectField ? attr(YB.selectField.read("set-exec-row-type")) : type;
       var egress = (($(inputId) || {}).value || "").trim();
+      var nameEl = $(nameId);
+      var newName = nameEl ? nameEl.value.trim() : null;
       var enableArg = switchArg();
-      var changedType = !!newType && newType !== type;
-      if (!changedType && !egress && enableArg == null) {
-        tip.textContent = "没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。";
-        tip.className = "set-tip set-bad";
+      var payload = {};
+      if (egress) payload.proxy = egress;        // 留空＝不改出口（契约里空串＝直连，故绝不发空串）
+      if (nameEl && newName !== attr(row.name)) payload.name = newName;
+      if (!Object.keys(payload).length && enableArg == null) {
+        banner("没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。", "info");
         return false;
       }
-      busy = true;
-      tip.textContent = "提交中…";
-      tip.className = "set-tip";
-      var steps = [];
-      if (changedType || egress) {
-        var payload = {};
-        if (changedType) payload.type = newType;
-        if (egress) payload.proxy = egress;      // 留空＝不改出口（契约里空串＝直连，故绝不发空串）
-        steps.push(YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload));
-      }
-      if (enableArg != null) {
-        steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg }));
-      }
-      focusAfterPaint = { slot: slot };        // 重建后把焦点还给同一行的「设置」
-      return Promise.all(steps).then(function (res) {
-        return load().then(function () {
-          if (handle && handle.close) handle.close();
-          setTip(note(res && res[0]), false);
-          return true;
+      if (handle && handle.close) handle.close();
+      focusAfterPaint = { slot: slot };
+      askPassword("修改 " + rowTitle(row) + " 的配置？请输入当前管理员密码确认。", function (pw) {
+        var body = { confirm_password: pw };
+        Object.keys(payload).forEach(function (k) { body[k] = payload[k]; });
+        var steps = [YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body)];
+        if (enableArg != null) {
+          steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg, confirm_password: pw }));
+        }
+        return Promise.all(steps).then(function (res) {
+          return load().then(function () {
+            banner("已保存 " + rowTitle(row) + "：" + note(res && res[0]), "success");
+            if (focusAfterPaint) restoreFocus();
+            return true;
+          });
         });
-      }, function (e) {
-        focusAfterPaint = null;                // 失败时弹窗还开着，不动焦点
-        busy = false;
-        tip.textContent = (e && e.message) || "保存失败，请稍后重试";
-        tip.className = "set-tip set-bad";
-        return false;
-      }).then(function (ok) {
-        busy = false; applyPerm();
-        if (focusAfterPaint) restoreFocus();     // save 走自己的链条（不是 withBusy），这里也要归还
-        return ok;
       });
+      return true;
     }
 
     var handle = YB.openModal({
@@ -547,7 +618,6 @@
         { label: "保存", variant: "primary", close: false, onClick: function () { return save(); } }
       ]
     });
-    if (YB.selectField) YB.selectField.mount();      // 弹窗内的自研选择控件此刻才进 DOM
     return handle;
   }
 
@@ -611,6 +681,8 @@
   function openAdvice() {
     if (!lastData) { setTip("数据尚未加载完成", true); return null; }
     var wrap = YB.el("div");
+    // 原来在页面上的一行建议摘要（用户 2026-09-17：加到「查看与实测」弹窗里）
+    wrap.appendChild(YB.el("p", { class: "set-summary", id: "set-exec-advice-line" }));
     wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-window" }));
     wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-accounts" }));
     wrap.appendChild(YB.el("p", { class: "field-help", id: "set-exec-advice-nums" }));
@@ -683,6 +755,7 @@
 
   function apply(data) {
     lastData = data || null;
+    paintKpis();
     paintRows();
     paintFallback(data);
     paintAdvice(data);
