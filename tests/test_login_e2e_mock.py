@@ -77,6 +77,46 @@ class _FakeYiban:
         self.port = self.server.server_address[1]
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self._thread.start()
+        self._assert_loopback_is_not_intercepted()
+
+    def _assert_loopback_is_not_intercepted(self):
+        """响亮失败守卫：确认发往本机回环的请求**真的**落在本用例的假服务端上。
+
+        为什么必须有：适配器把 URL 改写成 `http://127.0.0.1:<port>` 但**保留原始 Host 头**
+        （假服务端按 Host 统计）。于是任何本机"加速器 / 透明代理 / TUN 模式"都可能按 Host
+        把请求转发到**真实易班**——请求量、账号锁定、风控都会真实发生，而用例只是"失败"，
+        看不出它其实打过真站。实测踩到一次：Steam++ 加速器监听 443 时，
+        响应头带 `Server: WAF` 与 `.yiban.cn` 的真站 cookie，假服务端一条记录都没收到。
+
+        判据：带**原始 Host 头**（`oauth.yiban.cn`）去探假服务端自己的运维入口 `/__health` ——
+        这与真实请求走的是**同一条路径**（适配器改写 URL 但保留 Host），拦截层正是按 Host
+        决定往真站转发；拿到的不是假服务端就报错，并给出可操作处置（退出加速器/系统代理后重跑）。
+        """
+        import requests as _rq
+        # 判据一：本进程不得有生效的系统/环境代理（有代理就会按 Host 把回环请求转去真站）
+        proxies = _rq.utils.getproxies()
+        if proxies:
+            self._fail_intercepted(f"检测到系统/环境代理生效: {proxies}")
+            return
+        # 判据二：带原始 Host 探一次假服务端的运维入口（与真实请求同一条路径）
+        try:
+            r = _rq.get(f"http://127.0.0.1:{self.port}/__health",
+                        headers={"Host": "oauth.yiban.cn"}, timeout=3)
+        except Exception as e:
+            self._fail_intercepted(f"直连回环失败: {type(e).__name__}: {e}")
+            return
+        server = r.headers.get("Server", "")
+        if "yiban-mock" not in server.lower():
+            self._fail_intercepted(
+                f"回环响应不是假服务端（Server={server!r}，body 前 60 字={r.text[:60]!r}）")
+
+    @staticmethod
+    def _fail_intercepted(detail):
+        raise AssertionError(
+            "本机回环流量被拦截，假服务端收不到请求——本用例需要真实回环才能保证"
+            "「绝不连接真实易班」。请退出加速器/系统代理/TUN 模式后重跑。\n"
+            f"细节: {detail}"
+        )
 
     def close(self):
         self.server.shutdown()
@@ -100,7 +140,8 @@ class _FakeYiban:
                 if i == len(lines) - 1:
                     break  # 末行未写完（并发追加）
                 raise
-        return rows
+        # 运维入口（存活自检 / 统计）不算业务请求：本类 setUp 的"回环被拦截"守卫会探 /__health
+        return [r for r in rows if r.get("path") not in ("/__health", "/__stats")]
 
     def wait_paths(self, count, timeout=3.0):
         """等落盘记录达到 `count` 条后返回路径序列。
@@ -149,6 +190,12 @@ class _E2EBase(unittest.TestCase):
             with mock.patch.object(signin.db, "is_initialized", return_value=False):
                 client = signin.YibanClient(acc)
         client.session.mount("https://", _LocalMockAdapter(f"http://127.0.0.1:{self.mock.port}"))
+        # **必须关掉系统/环境代理**：本用例要求完全离线，而 requests 默认 `trust_env=True`
+        # 会读系统代理设置（Windows 注册表 / 环境变量）。实测踩到一次：本机开着 Clash 类代理
+        # （127.0.0.1:7897）时，回环请求被代理按 **Host 头**（`oauth.yiban.cn`）转发到真实易班
+        # ——假服务端一条记录都收不到，而用例只是报"登录失败"，看不出真站已被访问过。
+        client.session.trust_env = False
+        client.session.proxies = {}
         return client
 
 
