@@ -38,6 +38,7 @@ _DEFAULT_SLOW_SIGN_SEC = 30
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
+STATUS_PENDING = yiban_status.STATUS_PENDING
 STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
@@ -204,17 +205,22 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             pass
 
     def _mark_window_skip(rest_accs):
-        """窗口关闭收尾：只把**当日尚无记录**的账号标记为窗口外跳过。
+        """窗口关闭收尾：只把**当日尚无结论**的账号标记为窗口外跳过。
 
-        不覆盖已有记录：本轮（或上一轮补签）已经得出的 failed / no_position 等真实
+        不覆盖已有结论：本轮（或上一轮补签）已经得出的 failed / no_position 等真实
         原因必须保留——原实现无条件改写，会把"重试没赶上窗口"记成"窗口外"，
         日历上丢掉失败原因，`has_real_failure` 也一起变 False（失败告警被吞掉）。
         补签轮起跑时窗口已关闭同理：整轮零请求却不该改写首轮结论。
+
+        **`pending` 不是结论**：排计划阶段给每个账号都写了"计划 HH:MM"（同一份状态
+        文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
+        ——汇总把它们算成失败（❌ N 失败、退出码 1、发失败邮件），而真相是"一个请求都
+        没发"（2026-09-17 测试机实测复现；该行在 `pending` 判定加入前对 base 提交同样）。
         """
         recorded = state_io._daily_statuses()
         for _ra in rest_accs:
             _p = _ra.phone
-            if _p in results or _p in recorded:
+            if _p in results or recorded.get(_p, "") not in ("", STATUS_PENDING):
                 continue
             results[_p] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
             state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW, "签到时段已结束")
