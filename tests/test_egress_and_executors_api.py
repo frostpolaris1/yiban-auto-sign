@@ -401,6 +401,33 @@ class FallbackStatusTest(_WebBase):
         # 窗口外 alive=false 属正常：前端要据此只对窗口内报警，故 in_window 必须回
         self.assertIn("in_window", fb)
 
+    def test_in_window_also_covers_the_day_gate(self):
+        """`in_window` = 有效窗口内 **且** 今天没被周末门/暂停门挡下（2026-09-17 口径）。
+
+        为什么必须含门：兜底常驻在"周末签到关闭 / 一键暂停"时会直接退出，那两天的
+        钟点却落在窗口内——只按钟点算，页面会在每个周末、每次暂停期间误报"开了却没
+        跑起来"。前端规矩不变（只对 in_window=true 的 declared_not_running 报警）。
+        """
+        wed = datetime(2026, 9, 2, 6, 35, 0)    # 周三 06:35（窗口内）
+        sat = datetime(2026, 9, 5, 6, 35, 0)    # 周六 06:35（同样在窗口钟点内）
+        self._set_enabled("1")
+        self._set_alive(False)
+        with mock.patch.dict(os.environ,
+                             {"YIBAN_SATURDAY_SIGN": "0", "YIBAN_GLOBAL_PAUSE": "0"},
+                             clear=False):
+            with mock.patch.object(clock, "now", lambda: wed):
+                self.assertTrue(self._fallback()["in_window"], "工作日在窗口内应为 True")
+            with mock.patch.object(clock, "now", lambda: sat):
+                self.assertFalse(self._fallback()["in_window"],
+                                 "周六未开签到：钟点在窗口内，但今天本不该有兜底在跑")
+            with mock.patch.object(
+                    clock, "now", lambda: datetime(2026, 9, 2, 8, 30, 0)):
+                self.assertFalse(self._fallback()["in_window"], "窗口外照样是 False")
+            with mock.patch.dict(os.environ, {"YIBAN_GLOBAL_PAUSE": "1"}), \
+                    mock.patch.object(clock, "now", lambda: wed):
+                self.assertFalse(self._fallback()["in_window"], "一键暂停期间为 False")
+
+
     def test_truthy_env_value_reads_as_enabled(self):
         """`.env` 里手写 `true`/`on` 也算开（与 run.sh 的真值字面量同一套）。"""
         for value in ("true", "TRUE", "on", "yes"):
