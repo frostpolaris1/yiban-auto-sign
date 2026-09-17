@@ -142,6 +142,18 @@ class Window:
         """有效窗口是否已关闭（排计划与判关闭同源的关键）。"""
         return _minute_of_day(now_dt) > self.hi_min
 
+    def is_open(self, now_dt):
+        """有效窗口是否**已经开始**（与 `is_closed` 配对成三段：未开 / 进行中 / 已关）。
+
+        为什么必须与 `is_closed` 分开：只判"关没关"含不住"还没开"——提前拉起的常驻
+        执行体（见 `run_fallback_worker`）会把窗口外当窗口内照发请求。
+        """
+        return _minute_of_day(now_dt) >= self.lo_min
+
+    def opens_in_sec(self, now_dt):
+        """距窗口开始还有多少秒（已开始则为 0 或负；调用方自行 `max(0, …)` 收敛）。"""
+        return (self.lo_min - _minute_of_day(now_dt)) * 60.0
+
 
 def from_env(env):
     """从环境/`.env` 映射直接构造 `Window`（Web 侧与独立工具用）。"""

@@ -29,6 +29,17 @@ logger = logging.getLogger("yiban")
 #: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
 FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 
+#: 给全量轮让位时的轮询间隔（秒）：只是一次 flock 探测，比常规扫描密，全量轮一结束就接手
+_YIELD_POLL_SEC = 30
+
+#: 三道门（周日/周六未开、一键暂停）的日志措辞——门本身在 `schedule.day_off`（唯一实现），
+#: 这里只给兜底自己的说法（定时轮的措辞在 `runner._GATE_SKIP_MESSAGES`）。
+_GATE_REASON_TEXT = {
+    schedule.DAY_OFF_SUNDAY: "周日签到未开启（系统设置里可开启）",
+    schedule.DAY_OFF_SATURDAY: "周六签到已关闭（系统设置里可开启）",
+    schedule.DAY_OFF_PAUSED: "管理员已一键暂停签到",
+}
+
 # 状态码别名（与 yiban.status 同一对象）
 STATUS_FAILED = yiban_status.STATUS_FAILED
 
@@ -120,8 +131,15 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     自己持一个独立锁文件（`YIBAN_RUN_LOCK_NAME`），因此与定时全量、手动签到、
     其他执行体都能并存（互斥交给领取池）。
 
-    退出：窗口关闭 / 到达 `deadline` / 账号列表为空且已过窗口。返回退出码语义与
-    单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
+    **运行前会先过四道关**（每轮重判，不是启动时判一次）：周末签到未开、一键暂停
+    （都由 `schedule.day_off` 判定，与定时轮同源）→ 直接退出；签到时段**尚未开始**
+     → 等到开始再扫（提前拉起是 cron 模板的常态，窗口外发请求等于白登陆一次）；
+     **全量轮正在跑**（全局锁被持有）→ 让位，等它结束再扫。故它的运行区间严格落在
+    "配置的有效窗口内、今天该签、且没有全量轮在跑"——它是**捡漏**的那个，不与
+    定时轮/多执行体抢活。
+
+    退出：窗口关闭 / 三道门命中 / 到达 `deadline` / 账号列表为空且已过窗口。
+    返回退出码语义与单执行体一致（0 全成功、1 有真失败、2 存在窗口外未了结）。
     """
     interval = interval or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
     os.environ.setdefault("YIBAN_RUN_LOCK_NAME", FALLBACK_LOCK_NAME)
@@ -141,9 +159,34 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         if deadline is not None and now >= deadline:
             logger.info("兜底执行体：到达截止时刻，退出")
             break
+        # 周末门 / 一键暂停门：走**与定时轮同一实现**（schedule.day_off）。
+        # 这两道门原先只写在 runner.main 里，而本进程在它之前就 return（见分支顺序），
+        # 于是管理员关掉周末签到或点了一键暂停，兜底照签（2026-09-17 实测）。
+        # 每轮重判（不是启动时判一次）⇒ 窗口中途改设置也能在下一次扫描生效。
+        gate = schedule.day_off(now)
+        if gate:
+            logger.info("兜底执行体：%s，退出（本日不签到）", _GATE_REASON_TEXT[gate])
+            break
         if schedule._window_closed(sch_cfg, now):
             logger.info("兜底执行体：签到时段已结束，退出")
             break
+        if not schedule._window_open(sch_cfg, now):
+            # 提前拉起（cron 模板 06:05、窗口 06:30）时**必须等**，不能照走：
+            # 窗口外每次尝试都是一次真实登录（易班侧照实计数），而且可能把账号签在
+            # 管理员配置的窗口之外——`run_queue_retry` 的手动链路本身不判本项目的窗口。
+            opens_in = int(schedule._window_opens_in(sch_cfg, now))
+            wait = min(interval, max(1, opens_in))
+            logger.info("兜底执行体：签到时段尚未开始（%d 秒后开始），%d 秒后再看", opens_in, wait)
+            time.sleep(wait)
+            continue
+        if cli_support._run_lock_held():
+            # **给全量轮让位**：全量轮/多执行体在跑时不抢账号——否则兜底会按列表顺序
+            # 一路签下去，把全量轮的错峰计划与多执行体的分工一起冲掉（它抢的是"还没被
+            # 领走的"，而全量轮只在每个账号的计划时刻才领取）。
+            # 让位期间的轮询比常规扫描密：全量轮一结束就接手，而这次探测只是一次 flock。
+            logger.info("兜底执行体：全量轮正在运行，让位（%d 秒后再看）", _YIELD_POLL_SEC)
+            time.sleep(_YIELD_POLL_SEC)
+            continue
 
         state_io._write_fallback_alive(now)
         try:
