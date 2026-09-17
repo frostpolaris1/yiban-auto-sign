@@ -198,18 +198,28 @@ def give_up(phone, day, owner, result=""):
         return False
 
 
-def states_for_day(day):
-    """当日已建记录的 `phone -> state` 映射（未建的账号不在映射里 = 未领取）。"""
+def _day_column(day, column):
+    """按业务日取 `(phone, column)` 全量行；库不可用时返回 None（调用方折成空）。
+
+    `column` **只接受本模块的字面量**（"state"/"owner"），不来自外部输入——
+    它是拼进 SQL 的，这是本函数不对外暴露的原因。
+    按 `day` 过滤走主键前缀 `(phone, day)`/`(day, state)`，一次取全不分页。
+    """
     from yiban.store import db
     try:
         with db._conn_lock:
-            rows = db.get_conn().execute(
-                "SELECT phone, state FROM sign_claims WHERE day=?", (day,)
+            return db.get_conn().execute(
+                f"SELECT phone, {column} FROM sign_claims WHERE day=?", (day,)
             ).fetchall()
-        return {r["phone"]: r["state"] for r in rows}
     except Exception as e:
-        logger.debug("读取当日领取状态失败（按空处理）: %s", e)
-        return {}
+        logger.debug("读取当日签到记录失败（按空处理）: %s", e)
+        return None
+
+
+def states_for_day(day):
+    """当日已建记录的 `phone -> state` 映射（未建的账号不在映射里 = 未领取）。"""
+    rows = _day_column(day, "state")
+    return {} if rows is None else {r["phone"]: r["state"] for r in rows}
 
 
 def in_flight_phones(day, lease_sec=LEASE_SECONDS):
@@ -289,6 +299,20 @@ def activity(day):
         item["total"] = sum(counts.values())
         result.append(item)
     return result
+
+
+def owners_for_day(day):
+    """某个业务日 `phone -> owner` 映射，供账号列表批量标注归属。
+
+    **必须一次取全**：账号列表可能有几百行，逐账号查会让一次列表请求变成几百次查询。
+    调用方在内存里按手机号匹配即可。
+
+    与 `activity` 同一纪律：**只回 owner 原串、不解析角色、不脱敏**——角色口径与
+    脱敏是展示层的事（Web 层用 `yiban.egress.parse_owner` 折成角色与槽位，绝不把
+    owner 原串回给前端）。库未初始化/表未落地 → `{}`，与 `stats` 同口径不抛。
+    """
+    rows = _day_column(day, "owner")
+    return {} if rows is None else {r["phone"]: r["owner"] for r in rows}
 
 
 def purge(days=RETENTION_DAYS):

@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""状态文件读写与判定：按日状态、全量收尾标记、账密熔断状态、兜底执行体心跳。
+"""状态文件读写与判定：按日状态、全量收尾标记、账密熔断状态、执行体心跳。
+
+两类执行体心跳都在这里：兜底常驻的执行体心跳（写侧 `_write_fallback_alive`、读侧
+`fallback_alive`）与并行执行体心跳（写侧 `mark_worker_*`、读侧四态判定的
+`worker_presence`）。
 
 这些文件是**跨进程事实源**：网页日历读按日状态，容器调度器与宿主 `run.sh` 读全量
-收尾标记与"未了结账号"，告警读兜底心跳与 sched-run 标记。因此三条纪律不能破：
+收尾标记与"未了结账号"，告警读兜底心跳与 sched-run 标记，执行体接口读并行心跳。
+因此三条纪律不能破：
 
 1. **原子写**（tmp + `os.replace`）——半截 JSON 会被下游误读成"没跑过"；
 2. **带锁读改写**（`cli_support._state_file_lock`）——签到主进程、手动 `--only`、
@@ -41,6 +46,25 @@ STATUS_PENDING = yiban_status.STATUS_PENDING
 #: 兜底执行体的心跳文件（刷新时间戳；退出时删除）。用途：让"还有没有下一轮兜底"
 #: 变成可查的**事实**，而不是靠猜时刻——告警抑制与网页展示都用它。
 FALLBACK_ALIVE_FILE = "fallback-alive.json"
+
+# 并行执行体心跳（写侧：监督进程；读侧：`worker_presence`）。
+# 语义前提：并行执行体是**一轮就退出的短命进程**，不是常驻服务——"没在跑"在多数时间
+# 是正常的（定时任务还没到 / 本轮已完成），故判定回四态而不是 alive 布尔，只有
+# "有开始、无收尾且心跳过期"才判成异常，详见 `worker_presence`。
+# 心跳文件用**固定名、每轮覆盖**（不按日命名）：文件数 = 执行体数，不随时间增长，
+# 因此不需要清理策略。
+#: 心跳文件名前缀：`worker-alive-<槽位序号>.json`。
+WORKER_ALIVE_FILE_PREFIX = "worker-alive-"
+#: 心跳周期（秒）。写侧按它节流刷新心跳，读侧按 2 × 它判"新鲜"。
+WORKER_HEARTBEAT_SEC = 30
+#: 四态取值（接口原样回给前端）。
+WORKER_STATE_RUNNING = "running"
+WORKER_STATE_FINISHED = "finished"
+WORKER_STATE_IDLE = "idle"
+WORKER_STATE_STALE = "stale"
+
+#: 状态文件里的时间串格式（与全库统一口径一致）。
+_TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _sched_marker_exists():
@@ -336,7 +360,7 @@ def _write_fallback_alive(at=None):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = f"{path}.tmp{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"at": (at or clock.now()).strftime("%Y-%m-%d %H:%M:%S"),
+            json.dump({"at": (at or clock.now()).strftime(_TS_FMT),
                        "pid": os.getpid()}, f)
         os.replace(tmp, path)
     except OSError:
@@ -358,10 +382,136 @@ def fallback_alive(interval_sec=None, now=None):
     try:
         with open(path, encoding="utf-8") as f:
             at = json.load(f).get("at", "")
-        stamp = datetime.strptime(at, "%Y-%m-%d %H:%M:%S")
+        stamp = datetime.strptime(at, _TS_FMT)
     except (OSError, ValueError, TypeError, AttributeError):
         return False, None
     now = now or clock.now()
     age = (now - stamp).total_seconds()
     limit = 2 * (interval_sec or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600))
     return age <= limit, age
+
+
+# ---------------------------------------------------------------------------
+# 并行执行体心跳：写侧（监督进程调用）与读侧（执行体接口调用）
+# ---------------------------------------------------------------------------
+def worker_alive_path(index):
+    """并行执行体心跳文件路径（`<状态目录>/worker-alive-<槽位序号>.json`）。"""
+    return os.path.join(_state_dir(), f"{WORKER_ALIVE_FILE_PREFIX}{int(index)}.json")
+
+
+def mark_worker_started(index, now=None):
+    """记录"该槽位本轮已启动"（覆盖写，旧记录连同收尾标记一起被替换）。
+
+    由监督进程在拉起子进程时调用——子进程是短命进程，且写心跳需要槽位序号，
+    而序号只有监督进程有。失败只留 debug 痕迹：心跳不该影响签到主流程。
+    """
+    at = now or clock.now()
+    path = worker_alive_path(index)
+    try:
+        with cli_support._state_file_lock(path):
+            _write_private_json(path, _alive_record(index, at))
+    except OSError as e:
+        logger.debug("写入执行体心跳失败（不影响签到）: %s", _sanitize_text(e))
+
+
+def mark_worker_beat(index, now=None):
+    """刷新该槽位心跳的 `ts`（保留 `started_at`）——存活期间的周期写盘。"""
+    at = now or clock.now()
+    path = worker_alive_path(index)
+    try:
+        with cli_support._state_file_lock(path):
+            data = _read_worker_alive(index) or _alive_record(index, at)
+            data["ts"] = at.strftime(_TS_FMT)
+            _write_private_json(path, data)
+    except OSError as e:
+        logger.debug("刷新执行体心跳失败（不影响签到）: %s", _sanitize_text(e))
+
+
+def mark_worker_finished(index, exit_code=None, now=None):
+    """记录"该槽位本轮已正常退出"：在同一文件上补收尾标记（`ended_at`）。
+
+    被信号杀掉（退出码为负）时调用方**不调本函数**：留"有开始、无收尾"，心跳过期后
+    由 `worker_presence` 判成 `stale`——那正是"疑似被强杀/超时杀掉"需要用户注意的状态。
+    """
+    at = now or clock.now()
+    path = worker_alive_path(index)
+    try:
+        with cli_support._state_file_lock(path):
+            data = _read_worker_alive(index) or _alive_record(index, at)
+            data["ended_at"] = at.strftime(_TS_FMT)
+            data["ts"] = at.strftime(_TS_FMT)
+            if exit_code is not None:
+                data["exit_code"] = int(exit_code)
+            _write_private_json(path, data)
+    except OSError as e:
+        logger.debug("写入执行体收尾标记失败（不影响签到）: %s", _sanitize_text(e))
+
+
+def worker_presence(index, now=None):
+    """该并行执行体槽位此刻的存活四态 → `(state, last_seen_at)`。
+
+    | state | 判据 | 页面该做什么 |
+    |-------|------|--------------|
+    | `running` | 有心跳且新鲜（`now - ts <= 2 × WORKER_HEARTBEAT_SEC`） | 在线（正在跑本轮） |
+    | `finished` | 有本轮收尾标记（`ended_at`，正常退出） | 已跑完（灰） |
+    | `idle` | 本业务日无该槽位记录（今天还没跑） | 未运行（灰） |
+    | `stale` | 有开始记录、无收尾，且心跳已过期 | **异常**（可能被强杀/超时杀掉） |
+
+    `last_seen_at` 是"最后一次见到它活着"的时间串（收尾态给 `ended_at`；无记录给
+    None）。**为什么不回 alive 布尔**：短命进程"没在跑"多数时候是正常的，只有
+    `stale` 才需要用户注意；把四态判定放在后端一处，前端不必自己拼（也不用知道
+    心跳周期这种部署细节）。本函数只回与身份串无关的槽位事实，不含 pid/主机名。
+    """
+    now = now or clock.now()
+    data = _read_worker_alive(index)
+    # 无记录，或记录属于**别的业务日**（昨天的"已跑完"不等于今天已跑）→ 今天还没跑
+    if not data or str(data.get("day") or "") != now.strftime("%Y-%m-%d"):
+        return WORKER_STATE_IDLE, None
+    if data.get("ended_at"):
+        stamp = _parse_stamp(data.get("ended_at"))
+        return WORKER_STATE_FINISHED, stamp.strftime(_TS_FMT) if stamp else None
+    seen = _parse_stamp(data.get("ts") or data.get("started_at"))
+    if seen is None:
+        # 有记录却读不出时间：新鲜度无从判定。宁可提示"异常"也不静默当在线
+        # （页面把 stale 提示成"可能被杀"，比漏报一个卡住的槽位安全）。
+        return WORKER_STATE_STALE, None
+    last_seen = seen.strftime(_TS_FMT)
+    if (now - seen).total_seconds() <= 2 * WORKER_HEARTBEAT_SEC:
+        return WORKER_STATE_RUNNING, last_seen
+    return WORKER_STATE_STALE, last_seen
+
+
+def _read_worker_alive(index):
+    """读该槽位的心跳（缺失/损坏/非 dict → `{}`，与其余状态文件同口径不抛）。"""
+    try:
+        # utf-8-sig 容错 Windows 记事本/工具写入的 BOM（与 cred_state 同口径）
+        with open(worker_alive_path(index), encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_private_json(path, payload):
+    """原子写 JSON、**创建即 0600**：心跳含本机部署节律，不该对同机其他用户可读。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _alive_record(index, at):
+    """心跳记录的公共字段（开始与收尾写同一组，收尾只多 `ended_at`）。"""
+    stamp = at.strftime(_TS_FMT)
+    return {"day": at.strftime("%Y-%m-%d"), "role": "worker", "index": int(index),
+            "started_at": stamp, "ts": stamp}
+
+
+def _parse_stamp(value):
+    """状态文件里的时间串 → datetime；读不出返回 None。"""
+    try:
+        return datetime.strptime(str(value or ""), _TS_FMT)
+    except (TypeError, ValueError):
+        return None
