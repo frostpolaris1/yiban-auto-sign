@@ -17,7 +17,16 @@
    解析同时认得**旧格式**（库里有 14 天保留期的存量记录）；
 5. **单段出口写接口**（`PUT …/executors/workers/<index>` 与 `…/executors/fallback`）：
    只替换目标段、其余段**逐字保留**（前端整条回写会把别人段的凭据清成空，这是本接口
-   存在的理由），读接口只回描述串（不含 userinfo）。
+   存在的理由），读接口只回描述串（不含 userinfo）；
+6. **每个并行执行体的存活四态**（`workers.assignments[].state`）：`running` / `finished`
+   / `idle` / `stale`，由后端按心跳文件算好。四态而非 alive 布尔，是因为执行体是
+   **一轮就退出的短命进程**——"没在跑"多数时候正常，只有"有开始、无收尾且心跳过期"
+   才值得报警；
+7. **账号列表的 `last_executor`**：口径是**上一个业务日**是谁签的（不是当日、也不是
+   最近一次），无记录为 `null`，且只回角色/槽位/标签（身份原串含主机名）；
+8. **限频实测端点**（`POST …/executors/measure`）：仅主管理员、全局冷却（429 + 剩余
+   秒数）、窗口内拒绝（409）；它**真的会用真实账号访问易班一次**（只读路径，不写
+   签到状态、不动领取池），故这里的 `verify_account` 一律打桩，绝不联网。
 """
 import contextlib
 import importlib.util
@@ -28,6 +37,8 @@ import socket
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
@@ -258,6 +269,12 @@ class _WebBase(unittest.TestCase):
             if os.path.exists(path):
                 os.remove(path)
 
+    def _read_env(self):
+        """共享 `.env` 解析成 dict（各用例契约断言共用）。"""
+        with open(self.env_file, encoding="utf-8") as f:
+            return dict(ln.split("=", 1) for ln in f.read().splitlines()
+                        if "=" in ln and not ln.startswith("#"))
+
     def _login(self):
         """登录并带回 CSRF 令牌（写接口必须带 `X-CSRF-Token`，与既有测试同做法）。"""
         c = self.webapp.create_app().test_client()
@@ -481,11 +498,6 @@ class ActivityEndpointTest(_WebBase):
 class ExecutorsSaveEndpointTest(_WebBase):
     """写路径：只写 .env、非法值不落盘、审计不含凭据。"""
 
-    def _read_env(self):
-        return dict(ln.split("=", 1) for ln in
-                    open(self.env_file, encoding="utf-8").read().splitlines()
-                    if "=" in ln and not ln.startswith("#"))
-
     def test_put_requires_master_admin(self):
         c = self.webapp.create_app().test_client()
         r = c.put("/api/scheduler/executors", json={"workers": 2},
@@ -625,11 +637,6 @@ class SlotEgressEndpointTest(_WebBase):
     描述串（不含 userinfo），前端拿读回的值整条回写就会把别人段的代理凭据清成空、静默
     退回直连。故本类最要紧的断言是"**只改目标段，其余段逐字未变**"。
     """
-
-    def _read_env(self):
-        with open(self.env_file, encoding="utf-8") as f:
-            return dict(ln.split("=", 1) for ln in f.read().splitlines()
-                        if "=" in ln and not ln.startswith("#"))
 
     def _setup_env(self, proxy_list=None, workers="3", fallback=None):
         """把共享 `.env` 重写成本次用例要的出口形态（`None` = 不写该键）。
@@ -819,6 +826,369 @@ class SlotEgressEndpointTest(_WebBase):
         for secret in ("svcuser", "svcp", SECRET_PROXY):
             self.assertNotIn(secret, detail)
         self.assertIn(f"{egress.ENV_WORKER_LIST}[1]", detail)
+
+
+class WorkerPresenceTest(_WebBase):
+    """存活四态：`running` / `finished` / `idle` / `stale`（心跳文件 → 接口字段）。
+
+    判据的分界是"心跳周期"：新鲜（`<= 2 ×` 周期）算在跑，过期且没收尾算异常。
+    测试直接写心跳文件（`mark_worker_*` 是写侧真实现），不真起执行体。
+    """
+
+    HEARTBEAT_SEC = 30  # 与 state_io.WORKER_HEARTBEAT_SEC 同值：这里钉的是判据口径
+    FIXED_NOW = datetime(2026, 9, 16, 6, 40, 0)
+
+    def setUp(self):
+        super().setUp()
+        self._clear_heartbeats()
+
+    def _clear_heartbeats(self):
+        prefix = self.webapp.signin.WORKER_ALIVE_FILE_PREFIX
+        for name in os.listdir(self.tmp):
+            if name.startswith(prefix):
+                os.remove(os.path.join(self.tmp, name))
+
+    def _presence(self, index, now=None):
+        return self.webapp.signin.worker_presence(index, now or self.FIXED_NOW)
+
+    def test_four_states(self):
+        s = self.webapp.signin
+        now = self.FIXED_NOW
+        # idle：本业务日无记录（今天还没跑）
+        self.assertEqual(self._presence(0), ("idle", None))
+        # running：心跳新鲜
+        s.mark_worker_started(1, now=now - timedelta(seconds=5))
+        self.assertEqual(self._presence(1), ("running", "2026-09-16 06:39:55"))
+        # finished：有收尾标记（正常退出），last_seen 取收尾时刻
+        s.mark_worker_started(2, now=now - timedelta(minutes=20))
+        s.mark_worker_finished(2, exit_code=0, now=now - timedelta(minutes=18))
+        self.assertEqual(self._presence(2), ("finished", "2026-09-16 06:22:00"))
+        # stale：有开始、无收尾，心跳已过期——这才是需要用户注意的（疑似被强杀）
+        s.mark_worker_started(3, now=now - timedelta(seconds=2 * self.HEARTBEAT_SEC + 1))
+        self.assertEqual(self._presence(3), ("stale", "2026-09-16 06:38:59"))
+        # 边界：刚好 2 × 周期仍算新鲜（判据是 `<=`，与兜底心跳同口径）
+        s.mark_worker_started(4, now=now - timedelta(seconds=2 * self.HEARTBEAT_SEC))
+        self.assertEqual(self._presence(4)[0], "running")
+
+    def test_beat_refreshes_ts_but_keeps_started_at(self):
+        s = self.webapp.signin
+        now = self.FIXED_NOW
+        s.mark_worker_started(0, now=now - timedelta(minutes=10))
+        self.assertEqual(self._presence(0)[0], "stale", "十分钟前的心跳已过期")
+        s.mark_worker_beat(0, now=now - timedelta(seconds=3))
+        self.assertEqual(self._presence(0), ("running", "2026-09-16 06:39:57"))
+        with open(os.path.join(self.tmp, "worker-alive-0.json"), encoding="utf-8") as f:
+            raw = json.load(f)
+        # 起始时刻是事实，不能被心跳刷新改写（否则"本轮从何时开始"就查不到了）
+        self.assertEqual(raw["started_at"], "2026-09-16 06:30:00")
+        self.assertEqual(raw["day"], "2026-09-16")
+        self.assertEqual(raw["index"], 0)
+
+    def test_other_day_is_idle_and_unparsable_ts_is_stale(self):
+        s = self.webapp.signin
+        now = self.FIXED_NOW
+        # 昨天"已跑完"不等于今天已跑（否则每天早上页面都显示"已跑完"）
+        s.mark_worker_finished(0, exit_code=0, now=now - timedelta(days=1))
+        self.assertEqual(self._presence(0), ("idle", None))
+        # 有记录却读不出时间：宁可提示异常，也不静默当成在线
+        with open(os.path.join(self.tmp, "worker-alive-1.json"), "w", encoding="utf-8") as f:
+            json.dump({"day": "2026-09-16", "started_at": "坏值", "ts": ""}, f)
+        self.assertEqual(self._presence(1), ("stale", None))
+
+    def test_assignments_carry_state_and_last_seen_without_pid_or_host(self):
+        now = clock.now().replace(microsecond=0)
+        self.webapp.signin.mark_worker_started(1, now=now)
+        body = self._login().get("/api/scheduler/executors").get_json()
+        got = {a["index"]: a for a in body["workers"]["assignments"]}
+        self.assertEqual(got[1]["state"], "running")
+        self.assertEqual(got[1]["last_seen_at"], now.strftime("%Y-%m-%d %H:%M:%S"))
+        self.assertEqual(got[0]["state"], "idle")
+        self.assertIsNone(got[0]["last_seen_at"], "无记录时时间串必须是 null")
+        for key in ("pid", "host", "hostname"):
+            self.assertNotIn(key, got[1], "存活字段不得携带 pid/主机名")
+        self.assertNotIn(socket.gethostname(), json.dumps(body, ensure_ascii=False),
+                         "主机名属部署信息")
+
+
+class AccountsLastExecutorTest(_WebBase):
+    """/api/accounts 的 `last_executor`：**上一个业务日**是谁签的。
+
+    口径由用户定：显示"昨天是谁签的"（不是当日、也不是最近一次），无记录必须是
+    `null`（前端靠它显示"—"）；身份串含主机名，故只回角色/槽位/标签。
+    """
+
+    PHONES = ("13900000011", "13900000012", "13900000013", "13900000014")
+
+    def _seed_accounts(self, phones):
+        from yiban.store import db as store_db
+        store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
+        for phone in phones:
+            store_db.add_account({
+                "name": "N", "phone": phone, "password": "pw", "phone_model": "",
+                "phone_code": "", "owner": "admin", "status": "active", "reject_reason": "",
+            })
+
+    def _prev_day(self):
+        return (clock.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def _last_executor_of(self):
+        """`/{脱敏手机号: last_executor}`——列表行里的手机号是打过码的。"""
+        body = self._login().get("/api/accounts").get_json()
+        return {a["phone"]: a["last_executor"] for a in body["accounts"]}
+
+    def test_previous_day_owner_and_role_resolution(self):
+        from yiban.store import db as store_db
+        self._seed_accounts(self.PHONES)
+        prev, today = self._prev_day(), clock.today()
+        # 昨天：1 号由并行执行体 #1 签、2 号由兜底签
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], prev, OWNER_WORKER))
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[1], prev, OWNER_FALLBACK))
+        # 今天：3 号已有归属——口径是"昨天"，故它仍必须是 null
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[2], today, OWNER_WORKER))
+        got = self._last_executor_of()
+        m = self.webapp._mask_phone
+        self.assertEqual(got[m(self.PHONES[0])],
+                         {"role": egress.ROLE_WORKER, "index": 0,
+                          "label": "并行执行体 #1"})
+        self.assertEqual(got[m(self.PHONES[1])],
+                         {"role": egress.ROLE_FALLBACK, "index": None,
+                          "label": "兜底常驻执行体"})
+        self.assertIsNone(got[m(self.PHONES[2])], "口径是上一个业务日，不是当日/最近一次")
+        self.assertIsNone(got[m(self.PHONES[3])], "无记录必须是 null，前端据此显示 —")
+
+    def test_no_record_and_unavailable_db_are_not_errors(self):
+        from yiban.store import db as store_db
+        self._seed_accounts(self.PHONES[:1])
+        self.assertIsNone(self._last_executor_of()[self.webapp._mask_phone(self.PHONES[0])])
+        # 库不存在/未初始化：一次取全的查询必须按空表返回，而不是抛（新部署很正常）
+        with mock.patch.object(store_db, "get_conn", side_effect=RuntimeError("库不可用")):
+            self.assertEqual(store_db.claim_owners_for_day("2026-09-16"), {})
+
+    def test_response_carries_no_owner_raw_string_nor_full_phone(self):
+        from yiban.store import db as store_db
+        phone = self.PHONES[0]
+        self._seed_accounts((phone,))
+        self.assertTrue(store_db.claim_sign_account(phone, self._prev_day(), OWNER_WORKER))
+        raw = json.dumps(self._login().get("/api/accounts").get_json(), ensure_ascii=False)
+        self.assertNotIn(OWNER_WORKER, raw, "不得回显执行体身份原串")
+        self.assertNotIn(SECRET_HOST, raw, "主机名属部署信息")
+        self.assertNotIn(phone, raw, "列表不回完整手机号")
+
+
+class MeasureCooldownUnitTest(_WebBase):
+    """冷却剩余秒数的纯函数口径（不联网、不起应用）。"""
+
+    def test_remaining_rounds_up_and_expires(self):
+        f = self.webapp._measure_cooldown_remaining
+        now = datetime(2026, 9, 16, 6, 40, 0)
+        self.assertEqual(f({"at": "2026-09-16 06:30:00"}, 600, now=now), 0,
+                         "已过冷却期 → 0（可实测）")
+        self.assertEqual(f({"at": "2026-09-16 06:39:59"}, 600, now=now), 599)
+        self.assertEqual(f({"at": "2026-09-16 06:40:00"}, 600, now=now), 600,
+                         "刚实测过 → 整整一个冷却周期")
+        self.assertEqual(f({"at": "2026-09-16 06:39:59"}, 600,
+                           now=now + timedelta(milliseconds=500)), 599,
+                         "剩余的小数部分向上取整（不能提前解锁）")
+
+    def test_disabled_and_broken_state_mean_no_cooldown(self):
+        f = self.webapp._measure_cooldown_remaining
+        now = datetime(2026, 9, 16, 6, 40, 0)
+        self.assertEqual(f({"at": "2026-09-16 06:39:59"}, 0, now=now), 0,
+                         "冷却配成 0 = 关闭限频")
+        for broken in ({}, {"at": ""}, {"at": "昨天"}, {"at": None}):
+            with self.subTest(state=broken):
+                self.assertEqual(f(broken, 600, now=now), 0,
+                                 "时刻读不出 → 按可实测处理（不因坏文件永久禁用）")
+
+
+class MeasureEndpointTest(_WebBase):
+    """`POST /api/scheduler/executors/measure`：**会用真实账号访问易班一次**。
+
+    三条硬约束：仅主管理员（否则 403）、全局冷却（429 + 剩余秒数）、窗口内拒绝（409）。
+    这里 `verify_account` 一律打桩（绝不真联网），并断言它**没有**碰签到状态与领取池。
+    """
+
+    PHONE = "13800000021"
+    FULL_COOLDOWN = 600        # 默认冷却秒数（YIBAN_MEASURE_COOLDOWN 未配置）
+    DOC_GAP = 10               # YIBAN_ACCOUNT_GAP_MAX 默认值（容量公式的间隔项）
+
+    def setUp(self):
+        super().setUp()
+        self.measure_file = os.path.join(self.tmp, self.webapp.MEASURE_STATE_FILE)
+        if os.path.exists(self.measure_file):
+            os.remove(self.measure_file)
+
+    def _seed_accounts(self, rows):
+        """rows = [(phone, status, user_paused)]"""
+        from yiban.store import db as store_db
+        store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
+        for phone, status, paused in rows:
+            store_db.add_account({
+                "name": "N", "phone": phone, "password": "pw", "phone_model": "",
+                "phone_code": "", "owner": "admin", "status": status, "reject_reason": "",
+            })
+            if paused:
+                acc = next(a for a in store_db.load_accounts_raw() if a["phone"] == phone)
+                store_db.set_user_paused(acc["id"], 1)
+
+    def _post(self, client, payload=None, csrf=None):
+        return client.post("/api/scheduler/executors/measure", json=payload or {},
+                           headers={"X-CSRF-Token": csrf if csrf is not None else "x"})
+
+    @contextlib.contextmanager
+    def _no_network_no_sign_writes(self, verify_result=(True, "ok"), seconds=1.83):
+        """打桩联网 + 记录所有"会给签到状态/领取池留痕"的函数，返回 (verify 替身, 记录器)。"""
+        writers = ("claim_sign_account", "claim_settle", "claim_give_up", "claim_touch",
+                   "add_sign_event", "add_sign_events_batch")
+        spies = {}
+        ticks = iter([1000.0, 1000.0 + seconds])
+        with contextlib.ExitStack() as stack:
+            verify = stack.enter_context(mock.patch.object(
+                self.webapp.signin, "verify_account", return_value=verify_result))
+            audit = stack.enter_context(mock.patch.object(self.webapp.db, "audit"))
+            stack.enter_context(mock.patch.object(
+                self.webapp.time, "monotonic",
+                side_effect=lambda: next(ticks, 1000.0 + seconds)))
+            for name in writers:
+                spies[name] = stack.enter_context(mock.patch.object(self.webapp.db, name))
+            spies["_write_sign_state"] = stack.enter_context(
+                mock.patch.object(self.webapp.signin, "_write_sign_state"))
+            yield verify, audit, spies
+
+    def _assert_no_sign_writes(self, spies):
+        called = sorted(n for n, m in spies.items() if m.called)
+        self.assertEqual(called, [], "实测只走只读路径，不得写签到状态/领取池")
+
+    def test_requires_master_admin(self):
+        self._seed_accounts([(self.PHONE, "active", False)])
+        anon = self.webapp.create_app().test_client()
+        self.assertIn(self._post(anon).status_code, (401, 403))
+        # 普通管理员（注册用户）也不许：它真的会用一个真实账号去登录一次
+        from yiban.store import db as store_db
+        store_db.create_user("admin2@test.local",
+                             self.webapp.generate_password_hash("UserPass1234!"),
+                             role="admin")
+        c = self.webapp.create_app().test_client()
+        self.assertEqual(c.post("/api/login", json={
+            "username": "admin2@test.local", "password": "UserPass1234!"}).status_code, 200)
+        csrf = c.get("/api/me").get_json()["csrf_token"]
+        with mock.patch.object(self.webapp.signin, "verify_account") as verify:
+            r = self._post(c, csrf=csrf)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        verify.assert_not_called()
+
+    def test_window_inside_is_409_and_costs_no_cooldown(self):
+        self._seed_accounts([(self.PHONE, "active", False)])
+        c = self._login()
+        with mock.patch.object(self.webapp, "_in_sign_window", return_value=True), \
+                self._no_network_no_sign_writes() as (verify, _audit, spies):
+            r = self._post(c, csrf=c.csrf)
+            self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+            self.assertIn("窗口内", r.get_json()["error"])
+            verify.assert_not_called()
+            self._assert_no_sign_writes(spies)
+        self.assertFalse(os.path.exists(self.measure_file),
+                         "窗口内被拒不得消耗冷却（否则窗口一结束还要再等一次冷却）")
+
+    def test_cooldown_second_call_is_429_with_remaining(self):
+        self._seed_accounts([(self.PHONE, "active", False)])
+        c = self._login()
+        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+                self._no_network_no_sign_writes() as (verify, _audit, spies):
+            self.assertEqual(self._post(c, csrf=c.csrf).status_code, 200)
+            r2 = self._post(c, csrf=c.csrf)
+            self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
+            body = r2.get_json()
+            self.assertEqual(body["error"], "实测冷却中")
+            self.assertLessEqual(body["next_allowed_in"], self.FULL_COOLDOWN)
+            self.assertGreater(body["next_allowed_in"], 0, "必须给出还要等几秒")
+            self.assertEqual(verify.call_count, 1, "冷却期内不得再真登录一次")
+            self._assert_no_sign_writes(spies)
+
+    def test_ok_path_structure_masking_and_margined_recommendation(self):
+        self._seed_accounts([(self.PHONE, "active", False)])
+        c = self._login()
+        env_before = self._read_env()
+        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+                self._no_network_no_sign_writes() as (verify, audit, spies):
+            r = self._post(c, csrf=c.csrf, payload={"phone": self.PHONE})
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            body = r.get_json()
+            self._assert_no_sign_writes(spies)
+
+        masked = self.webapp._mask_phone(self.PHONE)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["seconds"], 1.83)
+        self.assertEqual(body["sample"], masked)
+        self.assertEqual(body["cooldown_sec"], self.FULL_COOLDOWN)
+        self.assertEqual(body["next_allowed_in"], 0, "本次已实测，不必再等")
+        # 容量 = 文档公式（有效窗口 ÷ 单账号周期），不复用别的口径；
+        # 建议值含余量：int(容量 × 2/3) 且严格小于容量
+        win_sec = self.webapp._executors_window().full_sec()
+        expected = (win_sec - 1) // (1 + self.DOC_GAP) + 1
+        self.assertEqual(body["per_executor_capacity"], expected)
+        self.assertEqual(body["recommended_per_executor"], int(expected * 2 / 3))
+        self.assertLess(body["recommended_per_executor"], body["per_executor_capacity"])
+        self.assertIn("建议", body["note"])
+        self.assertIn("余量", body["note"])
+        raw = json.dumps(body, ensure_ascii=False)
+        self.assertNotIn(self.PHONE, raw, "响应只回打码号码")
+        self.assertNotIn(SECRET_HOST, raw)
+
+        # 拿去做实测的账号对象必须带库内 id（运行期复核"账号还在不在"要用它）
+        account = verify.call_args[0][0]
+        self.assertEqual(account.phone, self.PHONE)
+        self.assertGreater(account.account_id, 0)
+
+        # 审计只记打码号码与耗时
+        detail = " ".join(str(a) for a in audit.call_args[0])
+        self.assertIn(masked, detail)
+        self.assertNotIn(self.PHONE, detail)
+        self.assertIn("executors_measure", detail)
+
+        # 冷却状态落盘（跨进程有效），且实测结果**不自动写回 .env**
+        with open(self.measure_file, encoding="utf-8") as f:
+            state = json.load(f)
+        self.assertEqual(state["seconds"], 1.83)
+        self.assertEqual(state["sample"], masked)
+        self.assertEqual(self._read_env(), env_before,
+                         "实测结果不自动落 .env（前端只拿数字填输入框，用户确认后再提交）")
+
+    def test_unusable_or_unknown_account_is_404(self):
+        self._seed_accounts([(self.PHONE, "active", False),
+                             ("13800000022", "pending", False),
+                             ("13800000023", "active", True)])
+        c = self._login()
+        for phone in ("13900000099",           # 库里没有
+                      "13800000022",           # 未过审（按设计不产生任何易班请求）
+                      "13800000023"):          # 用户自暂停
+            with self.subTest(phone=phone), \
+                    mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+                    self._no_network_no_sign_writes() as (verify, _audit, spies):
+                r = self._post(c, csrf=c.csrf, payload={"phone": phone})
+                self.assertEqual(r.status_code, 404, r.get_data(as_text=True))
+                verify.assert_not_called()
+                self._assert_no_sign_writes(spies)
+        self.assertFalse(os.path.exists(self.measure_file), "没实测就不该占冷却")
+
+    def test_failure_path_is_reported_without_inventing_numbers(self):
+        """登录/拉任务失败 → 502 且回脱敏原因；此时冷却**已消耗**（真实登录已发生）。"""
+        self._seed_accounts([(self.PHONE, "active", False)])
+        c = self._login()
+        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+                self._no_network_no_sign_writes(
+                    verify_result=(False, "登录失败（账号或密码错误）" + chr(10) + "第二行")
+                ) as (verify, _audit, spies):
+            r = self._post(c, csrf=c.csrf)
+            self.assertEqual(r.status_code, 502, r.get_data(as_text=True))
+            self.assertIn("实测失败", r.get_json()["error"])
+            self.assertNotIn(chr(10), r.get_json()["error"], "换行要折平（防注入）")
+            verify.assert_called_once()
+            self._assert_no_sign_writes(spies)
+        self.assertTrue(os.path.exists(self.measure_file), "真实登录已发生，冷却必须生效")
+        with open(self.measure_file, encoding="utf-8") as f:
+            state = json.load(f)
+        self.assertEqual(state["sample"], self.webapp._mask_phone(self.PHONE))
 
 
 if __name__ == "__main__":

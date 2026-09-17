@@ -41,14 +41,11 @@ STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 def send_notification(title, content, url=None, urgent=False, force=False):
     """通过 Webhook 推送组件发送通知（Server酱/自定义 URL，见 `yiban/notify`）。
 
-    2026-08-29 组件化：Server酱适配（title+desp）、同类型告警节流、服务端响应
-    检查（配额/限频可见）、自定义 URL SSRF 白名单；兼容旧明文 YIBAN_NOTIFY_URL
-    （notify.get_secret 回退，url 参数与组件配置等价，由组件统一处理）。
-    透传 urgent/force 到 notify.send——汇总邮件发送失败降级
-    webhook 时以 urgent=True + force=True 调用（绕过节流与当日额度，保证兜底必达）；
-    默认 False，既有调用方行为不变。
-    说明：签到脚本给管理员的**邮件**不在此处发送（避免逐条轰炸），而是由
-    各触发点 _collect_admin_mail 收集、任务结束 _flush_admin_mail_summary 汇总。
+    透传 urgent/force 到 notify.send：汇总邮件发送失败降级 webhook 时以
+    urgent=True + force=True 调用（绕过节流与当日额度，保证兜底必达）；默认 False。
+    `url` 保留旧调用签名，推送组件自行从配置/环境变量解析地址。
+    说明：签到脚本给管理员的**邮件**不在此处发送（避免逐条轰炸），而是由各触发点
+    _collect_admin_mail 收集、任务结束 _flush_admin_mail_summary 汇总。
     """
     try:
         notify.send(title, content, urgent=urgent, force=force)
@@ -57,12 +54,12 @@ def send_notification(title, content, url=None, urgent=False, force=False):
         logger.warning("通知推送组件调用失败: %s", type(e).__name__)
 
 
-# A 线合并版收集器：签到脚本运行期把"发给管理员"的邮件先收集，任务结束统一汇总
-# 发送（避免多账号失败时逐封轰炸）。B 线用户邮件不在此收集，保持逐条即时。
+# A 线：运行期把"发给管理员"的邮件先收集，任务结束统一汇总发送
+# （避免多账号失败时逐封轰炸）。B 线用户邮件不在此收集，保持逐条即时。
 _mail_summary = []  # list[(subject, text)]
 
-# 汇总邮件条数/体积封顶（2026-08-27 审查修复 P2-2）：巨量账号全失败场景下
-# 不封顶会生成超大 MIME 被 SMTP 拒收，整封告警丢失。截断部分指引看后台日志。
+# 汇总邮件条数/体积封顶：巨量账号全失败时不封顶会生成超大 MIME 被 SMTP 拒收，
+# 整封告警丢失。截断部分指引看后台日志。
 MAIL_SUMMARY_MAX_ENTRIES = 200
 MAIL_SUMMARY_MAX_CHARS = 200_000
 
@@ -73,9 +70,9 @@ def _collect_admin_mail(subject, text):
 
 
 def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
-    """P6 耗时告警：单次尝试超阈值 → warning 日志 + 管理员汇总邮件 + 即时通知。
+    """单次尝试耗时超阈值 → warning 日志 + 管理员汇总邮件 + 即时通知。
 
-    堆队列与旧队列两个分支共用（2026-08-27 冗余合并），统一口径防漂移。
+    堆队列与手动队列两个分支共用，统一口径防漂移。
     """
     logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
     _collect_admin_mail(
@@ -88,10 +85,6 @@ def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
             f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
             notify_url,
         )
-
-# 当天最后一轮触发点（= 补签轮时刻）：唯一事实源在 yiban.window.retry_hm()
-# （宿主 run.sh 补签 cron 用同一键配置；容器形态由 scheduler 把它的实际触发点
-# 注入子进程环境）。**不在此处缓存常量**——见 retry_hm 的 docstring。
 
 
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
@@ -124,13 +117,13 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
         return False
     if is_second_run is None:
         is_second_run = state_io._sched_marker_exists()
-    # 抑制的判据从"猜这是第几轮"改成**两个事实**（`63` §2 的口径）：
+    # 抑制的判据不是"猜这是第几轮"，而是两个事实：
     #   ① 窗口还开着——账号理论上还签得上；
-    #   ② 后面还有没有人接着跑——补签轮还没到（时刻事实），或者兜底执行体在跑（心跳事实）。
+    #   ② 后面还有没有人接着跑——补签轮还没到（时刻事实），或兜底执行体在跑（心跳事实）。
     # 两个都成立才抑制：这时打扰管理员没有意义（马上会重试）。
-    # 之所以不再只看 is_second_run：多执行体形态下"轮次身份"不再可靠——
-    # 兜底执行体会一直重试到窗口关闭，此时即便挂着补签轮身份也没必要告警；
-    # 反之（没兜底、补签轮也过了）必须告警，因为当天不会再有触发了。
+    # 之所以不看 is_second_run：多执行体形态下"轮次身份"不再可靠——兜底执行体会一直
+    # 重试到窗口关闭，此时即便挂着补签轮身份也没必要告警；反之（没兜底、补签轮也过了）
+    # 必须告警，因为当天不会再有触发了。
     _now = clock.now()
     _alive, _ = state_io.fallback_alive()
     _later_round = (_now.hour, _now.minute) < window.retry_hm() or _alive
@@ -167,8 +160,7 @@ def _flush_admin_mail_summary(phase=None):
     发送后清空收集器。
 
     phase：任务阶段标签。定时签到缺省 None → 沿用「签到任务」文案；
-    探针调用传「健康探测」，避免复用造成「并无当日签到却报签到结束」的误导
-    （2026-08-27 审查 P3 修复）。
+    探针调用传「健康探测」，避免复用造成「并无当日签到却报签到结束」的误导。
     """
     if not _mail_summary:
         return
@@ -211,13 +203,11 @@ def _flush_admin_mail_summary(phase=None):
             # mailer 自身承诺内部静默，此处兜底防调用链变化引入的异常外泄
             logger.warning("签到汇总邮件发送异常（%s），降级走 webhook", type(e).__name__)
         if not sent:
-            # 邮件通道不可用（未配置/发送失败/异常）→ webhook 兜底
-            # （urgent=True + force=True 绕过节流与当日额度）。零成功/窗口外类告警
-            # （_maybe_alert_zero_success 等经 _collect_admin_mail 汇总至此）自此
-            # 双通道：不再单点依赖 SMTP 可用性。
+            # 邮件通道不可用（未配置/发送失败/异常）→ webhook 兜底（urgent+force
+            # 绕过节流与当日额度），不再单点依赖 SMTP 可用性。
             send_notification("易班签到汇总", body, urgent=True, force=True)
     else:
-        # 收件人集为空原实现静默跳过——告警"看起来发了"实则全灭，且无从排障。
+        # 收件人集为空时不能静默跳过（告警"看起来发了"实则全灭，且无从排障）：
         # 显式 warning 留痕；推送通道已配置时把同一份汇总整卷改推（urgent+force
         # 绕过节流与当日额度），使"零成功 + 无收件人"的一轮仍可观测；推送也未
         # 配置时无事可做，仅留痕供日志页/状态页排查。
@@ -244,9 +234,10 @@ def _flush_mail_on_sigterm(signum, frame):
         _flush_admin_mail_summary(phase="签到超时终止")
     sys.exit(128 + int(signum or 15))
 
-# B 线用户失败提醒每日限频（2026-08-27 审查修复 P2-1）：README/更新日志承诺
-# 「每天每个账号最多 1 封」，原实现仅靠单次运行终态路径隐式保证——手动 --only
-# 签到与探针进程可在同日追加发送。现以按天状态文件显式去重（0 或负数 = 不限）。
+
+# B 线用户失败提醒每日限频：承诺是「每天每个账号最多 1 封」，只靠单次运行终态路径
+# 隐式保证不够——手动 --only 签到与探针进程可在同日追加发送，故用按天状态文件显式
+# 去重（0 或负数 = 不限）。
 USER_FAIL_MAIL_DAILY_CAP = config_check.parse_env_int("YIBAN_MAIL_USER_FAIL_DAILY_CAP", 1)
 
 
@@ -263,7 +254,7 @@ def _user_fail_mail_reserve(phone, today_str):
 
     **调用约定**：占位后若邮件实际未发出（未启用 / SMTP 失败），必须调
     `_user_fail_mail_release` 归还，否则一次 SMTP 抖动就会吞掉该账号当天
-    唯一的提醒机会（本函数旧实现正是如此，与 docstring 承诺相反）。
+    唯一的提醒机会。
     """
     cap = USER_FAIL_MAIL_DAILY_CAP
     if cap <= 0:
@@ -334,7 +325,7 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
 
     scenario="signin"（默认）：签到最终失败提醒（原行为，主题/正文不变）；
     scenario="probe"：健康探测发现账号异常——探测并无「当日签到」语义，
-    沿用签到措辞会误导用户（2026-08-27 审查 P3）。
+    沿用签到措辞会误导用户。
 
     仅当用户存在且开启 mail_notify（默认开）时发送；每账号每日上限
     USER_FAIL_MAIL_DAILY_CAP 封（默认 1，定时/手动/探针三个入口统一计算；
@@ -347,9 +338,9 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
     try:
         user = db.find_user(owner)
     except Exception as e:
-        # 留痕（2026-08-27 审查）：库瞬时故障时失败提醒被当"查无此人"静默跳过，
-        # 恰是用户最需要触达的时刻；区别于用户不存在（find_user 正常返回 None，
-        # 不走此分支）。打码手机号定位账号，不打印原始邮箱。
+        # 库瞬时故障时不能当"查无此人"静默跳过——那恰是用户最需要触达的时刻
+        # （区别于用户不存在：find_user 正常返回 None，不走此分支）。
+        # 打码手机号定位账号，不打印原始邮箱。
         logger.warning("查询账号 %s 的归属用户失败，本次失败提醒未发送: %s", _mask_phone(phone), e)
         user = None
     if not user:

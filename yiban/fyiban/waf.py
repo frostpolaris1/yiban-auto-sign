@@ -9,7 +9,7 @@ import re
 
 
 def looks_like_challenge(text, set_cookie=""):
-    """判断响应是否触发 ydclearance 反爬挑战（**衍生自上游 FYIBAN**）。
+    """判断响应是否触发 ydclearance 反爬挑战。
 
     特征判定（不依赖响应长度）：
     - Set-Cookie 已下发 https_ydclearance（说明已过挑战）；
@@ -24,14 +24,13 @@ def looks_like_challenge(text, set_cookie=""):
 
 
 def solve_ydclearance(text, allow_url):
-    """纯 Python 解析易盾 WAF（https_ydclearance）挑战：**衍生自上游 FYIBAN 同款流程**，
-    不执行任何远程 JS（来源与差异见同目录 `PROVENANCE.md`）。
+    """纯 Python 解析易盾 WAF（https_ydclearance）挑战；不执行任何远程 JS。
 
-    挑战模板固定（易盾 WAF v1，f.yiban.cn 与 kuaidaili/89ip 同款）：
+    升级/替换依据见同目录 `PROVENANCE.md`。挑战模板固定（易盾 WAF v1）：
     `oo` 十六进制字节数组 + 三步固定变换（取反+旋转-常量、逆向差分、加常量+旋转），
-    最后跳过 `qo % K` 的下标、逐字节异或挑战参数拼出 `po` 字符串（含 cookie 赋值与跳转路径）。
-    各步数值常量随挑战变化，用正则从 JS 中提取后在 Python 中复刻运算；任何一步提取失败都抛
-    明确错误，绝不 eval 远程代码。
+    最后跳过 `qo % K` 的下标、逐字节异或挑战参数拼出 `po` 字符串（含 cookie 赋值与跳转
+    路径）。各步数值常量随挑战变化，用正则从 JS 中提取后在 Python 中复刻运算；任何一步
+    提取失败都抛明确错误，绝不 eval 远程代码。
 
     `allow_url` 是本项目注入的**安全策略**（跳转目标白名单）：第三方层不内联安全校验，
     调用方传什么口径就按什么口径判（生产传 `yiban.security` 的 f.yiban.cn 白名单）。
@@ -119,5 +118,3 @@ def solve_ydclearance(text, allow_url):
     if not allow_url(target):
         raise RuntimeError("ydclearance 跳转目标不在白名单")
     return cookie_m[0], target
-
-# ---- 签到 -------------------------------------------------------------

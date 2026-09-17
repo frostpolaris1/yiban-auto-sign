@@ -4,7 +4,8 @@
 
 两者都是"进程编排"而非签到逻辑本身——真正的活儿都交回 `round.run_queue_retry`，
 它们只负责：谁持哪把锁（监督进程持全局锁、子进程各持自己的锁文件）、谁用哪个出口
-代理（`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`）、退出码怎么汇总（取最严重者）。
+代理（`YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`）、每个并行执行体的**心跳**
+（开始/存活期/收尾，写在 `state_io`，供接口判存活四态）、退出码怎么汇总（取最严重者）。
 
 **子进程入口是 `python -m yiban.cli sign`**：本模块是包内模块，不再能按文件路径直接
 执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
@@ -36,14 +37,10 @@ STATUS_FAILED = yiban_status.STATUS_FAILED
 #: PYTHONPATH——`python -m yiban.cli` 要求仓库根在导入路径上。
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def _child_env_with_repo_root(env):
-    """在子进程环境里确保仓库根在 `PYTHONPATH` 上（已含则不重复追加）。"""
-    paths = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
-    if _REPO_DIR not in paths:
-        paths.insert(0, _REPO_DIR)
-    env["PYTHONPATH"] = os.pathsep.join(paths)
-    return env
+#: 等待子进程退出的轮询粒度（秒）。取 1s：子进程一退出就补收尾标记（页面立刻从
+#: "在线"变"已跑完"），又不至于把监督进程变成忙等。心跳的刷新节流由
+#: `state_io.WORKER_HEARTBEAT_SEC` 决定，与这个粒度无关。
+_WAIT_POLL_SEC = 1.0
 
 
 def run_worker_supervisor(n, argv):
@@ -51,7 +48,7 @@ def run_worker_supervisor(n, argv):
 
     - **全局锁由本进程持有**：散落的另一轮全量（cron 与手动）仍会被挡住；
     - 子进程各持自己的锁文件 + 各自的执行体身份（领取池据此分工）；
-    - 每个子进程可配一个独立出口代理（`YIBAN_PROXY_LIST`，见 `_worker_proxy`）；
+    - 每个子进程可配一个独立出口代理（`YIBAN_PROXY_LIST`，见 `egress.resolve`）；
     - 退出码汇总取"最严重"的一个：真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
       调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致。
     """
@@ -90,14 +87,15 @@ def run_worker_supervisor(n, argv):
         children.append(subprocess.Popen(
             cmd, env=_child_env_with_repo_root(env), cwd=_REPO_DIR,
         ))
+        # 开始心跳：本槽位"本轮已启动"的事实。放在 Popen 之后，故页面上"在跑"的
+        # 槽位必然真有子进程（不是拿"文件在不在"猜）。
+        state_io.mark_worker_started(i)
         # 错开启动：既避开"同一秒争库"，也让首轮请求不要在同一瞬间齐发（风控面）
         if i + 1 < n:
             time.sleep(0.5)
 
-    codes = []
-    for i, child in enumerate(children):
-        rc = child.wait()
-        codes.append(rc)
+    codes = _await_workers(children)
+    for i, rc in enumerate(codes):
         logger.info("执行体 %d/%d 结束，退出码 %s", i + 1, n, rc)
 
     if any(c == 1 for c in codes):
@@ -112,9 +110,8 @@ def run_worker_supervisor(n, argv):
 def run_fallback_worker(argv_rest, interval=None, deadline=None):
     """兜底常驻执行体：窗口内反复扫"还没了结"的账号并接手，窗口关闭即退出。
 
-    为什么需要它（`63` §2 用户反问"等某个 worker 做完才能开始？"→ 不要等）：
-    学校晚放号、窗口内新审核通过的账号、被慢账号拖住的、失败待重试的——都能被
-    **随手接手**，而不是等下一轮定时任务。
+    为什么需要它：学校晚放号、窗口内新审核通过的账号、被慢账号拖住的、失败待重试的
+    ——都能被**随手接手**，而不是等下一轮定时任务。
 
     做法刻意简单可靠：每一轮重新加载账号并调用同一条执行路径（`run_queue_retry`，
     schedule 为空=立即执行）。**分工由领取池承担**：已了结的账号领不到、别的执行体
@@ -184,3 +181,43 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     state_io._clear_fallback_alive()
     logger.info("兜底执行体已退出（心跳已清除）")
     return last_code
+
+
+def _await_workers(children):
+    """等全部子进程结束，期间按心跳周期刷新各槽位心跳；返回按槽位排列的退出码。
+
+    为什么不再逐个 `child.wait()`：心跳要覆盖**进程存活期间**（一轮可能十几分钟），
+    只在开始/结束两个时刻写盘会让长轮次过了 2 × 周期就被判成"过期未收尾"、页面把
+    正常在跑的轮次报成异常。轮询 `poll()` 在子进程退出的下一秒就能补收尾标记；
+    退出码语义与逐个 wait **完全一致**（仍是每个子进程的真实返回码，按槽位排列）。
+
+    收尾标记只在**正常退出**（返回码 >= 0）时写：被信号杀掉（返回码为负，如宿主
+    `timeout` 的 SIGTERM/SIGKILL）时留"有开始、无收尾"，心跳过期后由接口判成
+    `stale`——那正是需要用户注意的那种异常。
+    """
+    codes = [None] * len(children)
+    alive = set(range(len(children)))
+    last_beat = {i: time.monotonic() for i in alive}
+    while alive:
+        time.sleep(_WAIT_POLL_SEC)
+        for i in sorted(alive):
+            rc = children[i].poll()
+            if rc is None:
+                if time.monotonic() - last_beat[i] >= state_io.WORKER_HEARTBEAT_SEC:
+                    state_io.mark_worker_beat(i)
+                    last_beat[i] = time.monotonic()
+                continue
+            alive.discard(i)
+            codes[i] = rc
+            if rc >= 0:
+                state_io.mark_worker_finished(i, rc)
+    return codes
+
+
+def _child_env_with_repo_root(env):
+    """在子进程环境里确保仓库根在 `PYTHONPATH` 上（已含则不重复追加）。"""
+    paths = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+    if _REPO_DIR not in paths:
+        paths.insert(0, _REPO_DIR)
+    env["PYTHONPATH"] = os.pathsep.join(paths)
+    return env
