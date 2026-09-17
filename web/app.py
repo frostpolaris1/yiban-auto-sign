@@ -449,13 +449,15 @@ def _executor_row_payload(row):
     """执行体清单的一行 → 接口项（`GET …/executors` 的 `executors[]`），**已脱敏**。
 
     `egress` 只回 `egress.describe()` 的描述串（代理可能带 `user:pass@`，绝不回原串）。
-    存活：**只有 `worker` 行**带 `state`/`last_seen_at`（四态口径在 `signin.worker_presence`）；
+    存活：**只有 `worker` 行**有值（四态口径在 `signin.worker_presence`）；
     `fallback` 行的存活归 `fallback.*`（心跳文件与判据不同，套 worker 四态会永远 idle），
-    `disabled` 行按要求不报存活——两者都不出现这两个键。
+    `disabled` 行按要求不报存活——两者都回 **`state: null` / `last_seen_at: null`**
+    （字段照给、值为 null，口径已冻结给前端，与 `last_executor` 的 null 用法一致）。
     """
     item = {"slot": row["slot"], "type": row["type"],
             "egress": yb_egress.describe(row["proxy"]),
-            "label": yb_egress.executor_label(row["type"], row["slot"])}
+            "label": yb_egress.executor_label(row["type"], row["slot"]),
+            "state": None, "last_seen_at": None}
     if row["type"] == yb_egress.TYPE_WORKER:
         item["state"], item["last_seen_at"] = signin.worker_presence(row["slot"])
     return item
@@ -8140,11 +8142,11 @@ def create_app(host=None):
           `status`（四态：off / running / declared_not_running / running_not_declared）/
           `in_window`（当前是否在有效签到窗口内；窗口外 alive=false 属正常）
         - `activity`：当日**按执行体归属**的计数（谁做了多少），**已脱敏**
-        - `executors[]`：**执行体清单**逐行（`{slot, type, egress, label[, state, last_seen_at]}`）。
+        - `executors[]`：**执行体清单**逐行（`{slot, type, egress, label, state, last_seen_at}`）。
           `type` 取 `worker` / `fallback` / `disabled`；`disabled` 行**保留出口、
-          不参与分配、不拉起、不计入建议值**，故它**不带** `state`/`last_seen_at`
-          （不报存活）；`fallback` 行的存活在 `fallback.*` 里（心跳口径不同），
-          也不带这两个字段。只有 `worker` 行带存活四态。
+          不参与分配、不拉起、不计入建议值**，故它**不报存活**（`state`/`last_seen_at`
+          为 `null`，不是缺字段）；`fallback` 行的存活在 `fallback.*` 里（心跳口径不同），
+          这两个字段同样为 `null`。只有 `worker` 行带存活四态。
         - `measured` / `recommendation`：容量建议（只有部署者实测过才有值，
           **建议值不是上限**；没实测就是 null，不编数字）
 
