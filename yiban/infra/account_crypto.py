@@ -46,9 +46,17 @@ def load_key(env_file=None):
     两者都不存在时生成随机 32 字节密钥并持久化到 .env（0600）后返回；
     同一进程内缓存复用（避免每次读写 .env）。
     读-生成-写-缓存全程持 _KEY_LOCK：多线程首启只生成一份密钥。
+
+    **来源守卫（M3）**：自动建钥只允许在"密钥来源确定"时发生——调用方显式传了
+    `env_file`、或设了 `YIBAN_ENV_FILE`、或当前目录已有 `.env`。三者都没有而该
+    路径又要**写**密文时，就地生成会在错误目录落一份游离 `.env` 与新密钥
+    （与 `db._assert_key_source_certain` 同源缺陷；db 依赖本模块不能反向 import，
+    故此处按同口径就地复刻）。只读解密路径（`has_key` 先判）不受影响。
     """
     global _KEY_CACHE
-    env_file = env_file or DEFAULT_ENV_FILE
+    explicit = env_file is not None
+    env_file = env_file or (os.environ.get("YIBAN_ENV_FILE") or "").strip() \
+        or DEFAULT_ENV_FILE
     env_key = os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip()
     if env_key:
         _KEY_CACHE = _decode_key(env_key)
@@ -58,6 +66,7 @@ def load_key(env_file=None):
     with _KEY_LOCK:
         if _KEY_CACHE is not None:  # 双检：等锁期间他线程已生成
             return _KEY_CACHE
+        _assert_source_certain(env_file, explicit)
         file_key = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
         if file_key:
             _KEY_CACHE = _decode_key(file_key)
@@ -65,6 +74,23 @@ def load_key(env_file=None):
         logger.info("未找到 YIBAN_ACCOUNTS_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
         _KEY_CACHE = _write_key_to_env_file(env_file, secrets.token_bytes(32))
         return _KEY_CACHE
+
+
+def _assert_source_certain(env_file, explicit):
+    """自动建钥前确认密钥来源确定：显式 env_file / YIBAN_ENV_FILE / cwd 已有 .env。
+
+    `explicit`：调用方显式传了 env_file；`env_file != DEFAULT_ENV_FILE` 说明路径
+    来自 YIBAN_ENV_FILE 解析（也算确定来源）。与 `db._resolve_key_env_file` 的
+    口径一致（explicit 优先于 cwd 兜底）；目录存在性交给写路径报错，这里只拦
+    "来源不确定却要建新钥"这一条。
+    """
+    if explicit or env_file != DEFAULT_ENV_FILE:
+        return
+    if os.path.exists(DEFAULT_ENV_FILE):
+        return
+    raise ValueError(
+        "账号密钥来源不确定，拒绝生成新密钥；请用 YIBAN_ENV_FILE 或显式 env_file 指定"
+    )
 
 
 def has_key(env_file=None):
