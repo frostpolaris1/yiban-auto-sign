@@ -275,8 +275,6 @@
     YB.settingsSchedule.apply(data);
     YB.settingsHealth.apply(data);
     YB.settingsQuota.apply(data);
-    // 执行体分区的"建议执行体数"要跟容量配额同源（账号上限 ÷ 单执行体容量），故把同一份设置喂给它
-    if (YB.settingsExecutors && YB.settingsExecutors.applySettings) YB.settingsExecutors.applySettings(data);
     YB.settingsSwitches.apply(data);
   }
 

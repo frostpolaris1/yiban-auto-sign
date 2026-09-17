@@ -421,6 +421,10 @@
           <p class="field-help">管账号存量（含主管理员直属裸账号）；0 = 不限。调小只限制新增，不删存量账号。</p>
         </div>
       </div>
+      {# 两个页面的容量口径不同，各自写明（后端 2026-09-17 要求）：本页＝"一轮装不装得下"；
+         「执行体」分区的建议人数另含慢账号余量（实测 × 2/3），故两页数字不必相等 #}
+      <p class="field-help">本页上限管"名额"；「数据总览」的容量估算按有效窗口与账号间隔算"一轮装不装得下"，
+        「执行体」分区的建议人数另含慢账号余量，两者口径不同、数值不必相等。</p>
       <p class="set-tip" id="set-cap-tip" role="status"></p>
       <p class="field-help">改动需点「保存容量上限」后生效。</p>
       <div class="form-actions">
@@ -491,14 +495,14 @@
        故由 components/settings-executors.js 自带 load()。出口只以脱敏描述串返回（去 userinfo），
        编辑框一律留空并提示「留空 = 不修改」；配置项键名由接口下发，模板与脚本都不写死键名串。 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-executors" aria-labelledby="set-tab-executors" data-tab-id="executors">
-    {# 执行体总设置：只放「数量」与「建议」（出口的逐执行体就地编辑暂缓，故整条出口列表留在本卡，
-       不丢功能；一览表里逐个执行体的出口只读展示）。 #}
+    {# 执行体总设置：只放「数量」「建议」与实测入口；**出口按执行体逐个配**（见一览表行内「设置」），
+       故本卡不再有整条出口列表与独立兜底出口栏。 #}
     <section class="card" id="set-executors">
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">执行体总设置</h2>
           <div class="set-head-actions">
-            {% call info('执行体说明', 'set-pop-executors') %}<b>执行体：</b>一轮签到并行拉起的进程数（对应 --workers N），每个执行体可走独立出口。<b>出口：</b>按列表顺序逐个分配，不足时循环取用、空位 = 直连；接口只回脱敏描述，不回账号密码。<b>兜底：</b>常驻进程负责窗口内补签，是否在跑按心跳新鲜度判定（进程被强杀也能识别）。<b>容量：</b>建议执行体数＝账号容量上限 ÷ 单执行体容量（与「容量配额」分区同一口径，向上取整），只是提醒不是程序上限；单执行体容量按签到窗口与账号间隔估算，可用实测单账号耗时校准。<b>生效：</b>保存只写配置，下一轮定时任务或容器重启后生效。<b>权限：</b>仅主管理员可查看与修改。{% endcall %}
+            {% call info('执行体说明', 'set-pop-executors') %}<b>执行体：</b>一轮签到并行拉起的进程数（对应 --workers N），每个执行体可走独立出口（在下方一览表里逐个设置）。<b>兜底：</b>常驻进程负责窗口内补签，是否在跑按心跳新鲜度判定；开关只是声明，还需宿主 cron 拉起进程，所以"开了"不等于"在跑"。<b>容量：</b>建议值＝实测容量 × 2/3（含慢账号余量），与「容量配额」的"一轮装不装得下"不是同一口径，两者不必相等；没有实测值就不给建议。<b>生效：</b>保存只写配置，下一轮定时任务或重启执行体/容器后生效，正在跑的这一轮不受影响。<b>权限：</b>仅主管理员可查看与修改。{% endcall %}
             {{ dirty_badge('set-exec-dirty') }}
           </div>
         </div>
@@ -517,63 +521,43 @@
           </div>
           <p class="field-help">每轮签到并行拉起的进程数（1~64，对应 --workers N）；未配置时为 1。</p>
         </div>
+        <div class="field field--narrow">
+          <span class="field-label">单账号耗时实测</span>
+          <p><button type="button" class="btn btn--ghost btn--sm" id="set-exec-measure">测试</button></p>
+          <p class="field-help" id="set-exec-measure-result">点「测试」会用<b>一个真实账号</b>走一次只读链路（登录 + 拉任务，不提交签到）测出耗时，并按它把建议数量填进左侧数字框。</p>
+        </div>
       </div>
+      {# 实测端点的两条风险必须写在页面上（后端要求）：默认拿列表第一个可签账号；只覆盖窗口外最小链路 #}
+      <p class="field-help">说明：默认取账号列表里第一个可签账号——通常是<b>某位真实用户</b>的账号，且顺序稳定、每次都是同一个；它只覆盖窗口外的<b>最小链路</b>（登录 + 拉任务，5 次请求），比真实签到（含定位与提交，6 次请求）<b>偏乐观</b>。正式定档请以测试机基准为准，两种数字不要混用。</p>
 
-      {# 建议区（只读）：口径与「容量配额」分区同源 —— 账号容量上限 ÷ 单执行体容量，向上取整；
-         不再单独展示"实测容量"（用户 2026-09-16：实测说明进介绍文案，或另给测试入口）。 #}
+      {# 建议区（只读）：口径＝实测容量 × 2/3（后端算）；没有实测就写「未实测」并隐藏建议 #}
       <div id="set-exec-advice">
-        <p class="field-help" id="set-exec-quota"></p>
         <p class="field-help" id="set-exec-window"></p>
         <p class="field-help" id="set-exec-accounts"></p>
         <p class="field-help" id="set-exec-advice-nums" hidden></p>
         <p class="set-warn" id="set-exec-advice-note" hidden></p>
       </div>
 
-      <div class="data-toolbar">
-        <div class="data-toolbar-left"><span class="field-label">出口列表（整条编辑）</span></div>
-      </div>
-      <div class="form-grid">
-        <div class="field">
-          <label class="field-label" for="set-exec-list">出口列表（留空 = 不修改）</label>
-          <div class="input-group">
-            <input class="input" id="set-exec-list" type="text" autocomplete="off" spellcheck="false"
-                   placeholder="http://proxy1.example:8080,http://proxy2.example:3128">
-          </div>
-          <p class="field-help">英文逗号分隔，按序逐个分配给执行体；不足时循环取用，空位 = 该执行体直连，每段可为空。读接口只回脱敏描述（不含账号密码），本框不回显原值、留空 = 不修改。<span id="set-exec-key-list"></span></p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="set-exec-fb-proxy">兜底出口（单段，留空 = 不修改）</label>
-          <div class="input-group">
-            <input class="input" id="set-exec-fb-proxy" type="text" autocomplete="off" spellcheck="false"
-                   placeholder="http://proxy.example:3128">
-          </div>
-          <p class="field-help">兜底常驻执行体专用出口，单段、可空；未配置时退回单执行体出口。<span id="set-exec-key-fb"></span></p>
-        </div>
-      </div>
-
       <p class="set-tip" id="set-exec-tip" role="status"></p>
-      <p class="field-help">改动需点「保存执行体配置」；保存只写配置、不重启执行体，下一轮定时任务或容器重启后生效。</p>
+      <p class="field-help">改动需点「保存执行体配置」；保存只写配置、不重启执行体，下一轮定时任务或重启执行体/容器后生效，正在跑的这一轮不受影响。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="set-exec-save" hidden>保存执行体配置</button>
-        <span class="spacer"></span>
-        <button type="button" class="btn btn--ghost btn--sm" id="set-exec-clear">清空出口配置</button>
       </div>
     </section>
 
-    {# 执行体一览：一行一个执行体（含兜底），出口只读展示；行内「详情」开弹窗看该执行体的数据。
-       行内编辑（按序号改单个出口）需要后端支持按序号写入，暂缓 —— 故按钮叫「详情」不叫「设置」。 #}
+    {# 执行体一览：一行一个执行体（含兜底）；出口在行内「设置」里改（按序号写单段，不动别人）。
+       状态用后端算好的四态，当日计数用 activity.by_executor（数组为空＝今日尚未运行）。 #}
     <section class="card" id="set-executors-list">
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">执行体一览</h2>
         </div>
-        {# 状态点走既有 .badge.dot（不新增 CSS），文字与颜色双通道 #}
         <p class="panel-sub" id="set-exec-fb-state" role="status">
           <span class="badge badge--muted" id="set-exec-fb-badge">读取中</span>
           <span id="set-exec-fb-text"></span>
         </p>
-        {# 脱敏口径只说一次（放卡头），不塞进列名 —— 长表头会把窄屏表格挤成横向滚动 #}
-        <p class="panel-sub">每个执行体的出口按配置顺序分配，此处只显示去处、不含账号密码。</p>
+        {# 脱敏与状态口径只说一次（放卡头），不塞进列名 —— 长表头会把窄屏表格挤成横向滚动 #}
+        <p class="panel-sub">出口只显示去处、不含账号密码；状态与当日计数由后端按心跳与领取记录判定。</p>
       </div>
       <p class="field-help" id="set-exec-configured"></p>
       <div class="table-scroll">
@@ -583,14 +567,15 @@
               <th scope="col">执行体</th>
               <th scope="col">类型</th>
               <th scope="col">出口</th>
-              <th scope="col" class="set-exec-col-md">说明</th>
+              <th scope="col">状态</th>
+              <th scope="col" class="set-exec-col-md">当日</th>
               <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody id="set-exec-assign"></tbody>
         </table>
       </div>
-      <p class="set-warn" id="set-exec-fb-warn" hidden>兜底执行体未在运行：窗口内不会自动补签，请确认容器 / 宿主调度是否以 --fallback 拉起兜底执行体。</p>
+      <p class="set-warn" id="set-exec-fb-warn" hidden></p>
     </section>
   </div>
 
