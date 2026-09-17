@@ -413,18 +413,22 @@
     if (b) b.disabled = !!on || !ctx.isMaster;
   }
 
+  // 失败时**不吞错误、也不还焦点**：本分区三个写动作都从口令框发起，回调返回的 Promise 一旦
+  // resolve，口令框就当作成功而关闭——后端 403「口令校验未通过，设置未生效」必须 reject 出去，
+  // 才会留在框里让操作者改口令重试；焦点同理该留在框内，不能被 restoreFocus 抢走。
   function withBusy(fn) {
     if (busy) return Promise.resolve(false);
     busy = true;
     setBusy(true);
+    function cleanup() { busy = false; applyPerm(); setBusy(false); }
     return Promise.resolve().then(fn).then(function (ok) {
-      busy = false; applyPerm(); setBusy(false);
+      cleanup();
       if (focusAfterPaint) restoreFocus();       // 必须在 busy 复位后：禁用按钮 focus() 无效
       return ok;
-    }, function () {
-      busy = false; applyPerm(); setBusy(false);
-      if (focusAfterPaint) restoreFocus();
-      return false;
+    }, function (e) {
+      cleanup();
+      focusAfterPaint = null;
+      throw e;
     });
   }
 
@@ -444,7 +448,7 @@
               focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
               return true;
             });
-          }, function (e) { failTip(e, "添加"); });
+          }, function (e) { failTip(e, "添加"); throw e; });   // 抛出：错误留在口令框里
         });
       });
   }
@@ -457,7 +461,7 @@
           setTip(okText + "：" + note(d), false);
           return true;
         });
-      }, function (e) { failTip(e, "保存"); });
+      }, function (e) { failTip(e, "保存"); throw e; });       // 抛出：错误留在口令框里
     });
   }
 
@@ -593,39 +597,39 @@
     // 口令不对时后端回 403「口令校验未通过，设置未生效」，由口令框就地显示、可重试。
     function save() {
       if (busy) return false;
-      var egress = (($(inputId) || {}).value || "").trim();
+      var egress = (($(inputId) || {}).value || "").trim();   // 留空＝不改出口（空串语义是"直连"，故不发）
       var nameEl = $(nameId);
       var newName = nameEl ? nameEl.value.trim() : null;
-      var enableArg = switchArg();
-      var payload = {};
-      if (egress) payload.proxy = egress;        // 留空＝不改出口（契约里空串＝直连，故绝不发空串）
-      if (nameEl && newName !== attr(row.name)) payload.name = newName;
-      if (!Object.keys(payload).length && enableArg == null) {
+      var nameArg = (nameEl && newName !== attr(row.name)) ? newName : null;   // null = 没改名
+      var enableArg = switchArg();                                            // null = 开关没动
+      if (!egress && nameArg == null && enableArg == null) {
         banner("没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。", "info");
         return false;
       }
-      // 只有真的动出口/开关才要口令；改自定义名不动行为，按后端口径不打这道门
-      var needsPw = !!payload.proxy || enableArg != null;
+      // 只有真的动出口/开关才要口令；改自定义名不动行为，按后端口径不打这道门。
+      // 取值必须**在这里取完**再关弹窗：关掉后输入框被摘出 DOM，submit() 再按 id 取就是 null
+      // （实测踩过：错口令那次请求只带了 confirm_password，后端回 400「没有可更新的字段」）。
+      var args = { proxy: egress, name: nameArg, enable: enableArg };
+      var needsPw = !!egress || enableArg != null;
       if (handle && handle.close) handle.close();
       focusAfterPaint = { slot: slot };
-      if (!needsPw) { submit(null); return true; }
-      askPassword("修改 " + rowTitle(row) + " 的出口配置？请输入当前管理员密码确认。", function (pw) { submit(pw); });
+      if (!needsPw) { submit(null, args); return true; }
+      // 回调**必须 return 这个 Promise**：口令框据此保持打开，把后端 403 文案显示在框内，
+      // 并允许改口令重试（不 return 就是"非 Promise 回调"，框会立刻关掉、错误只剩横幅）。
+      askPassword("修改 " + rowTitle(row) + " 的出口配置？请输入当前管理员密码确认。",
+        function (pw) { return submit(pw, args); });
       return true;
     }
-    // pw = null：只改名，不带 confirm_password
-    function submit(pw) {
+    // pw = null：只改名，不带 confirm_password；args 来自关弹窗前取好的值
+    function submit(pw, args) {
       if (busy) return false;
-      var egress = (($(inputId) || {}).value || "").trim();
-      var nameEl = $(nameId);
-      var newName = nameEl ? nameEl.value.trim() : null;
-      var enableArg = switchArg();
       var body = {};
       if (pw != null) body.confirm_password = pw;
-      if (egress) body.proxy = egress;
-      if (nameEl && newName !== attr(row.name)) body.name = newName;
+      if (args.proxy) body.proxy = args.proxy;
+      if (args.name != null) body.name = args.name;
       var steps = [YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body)];
-      if (enableArg != null) {
-        steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg, confirm_password: pw }));
+      if (args.enable != null) {
+        steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: args.enable, confirm_password: pw }));
       }
       return withBusy(function () {
         banner("提交中…", "info");
@@ -635,7 +639,7 @@
             if (focusAfterPaint) restoreFocus();
             return true;
           });
-        }, function (e) { failTip(e, "保存"); });
+        }, function (e) { failTip(e, "保存"); throw e; });     // 抛出：错误留在口令框里
       });
     }
 

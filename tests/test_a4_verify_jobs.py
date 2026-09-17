@@ -257,6 +257,43 @@ class VerifyAsyncSubmitTest(_A4Base):
         self.assertEqual(self._jobs(), [], "同步路径不得建任务")
 
 
+class SeatHandleCapturedTest(unittest.TestCase):
+    """席位句柄要**取一次**：acquire 与 release 必须落在同一个信号量对象上。
+
+    2026-09-17 全量 `-n 8` 抓到过一次 `ValueError: Semaphore released too many times`
+    （`yiban/attempt/jobs.py` 的 `release()`，宿主是 `BoundedSemaphore(2)`，超发直接抛）。
+    真实形态：上一个测试文件留下的校验线程还在飞时，下一个测试文件加载了自己的
+    web/app.py 实例并 `configure(seat=…)` 重新注册——旧线程若在释放时**再读一次**
+    `_hooks["seat"]`，就会释放到一个它从没 acquire 过的信号量上。
+
+    本用例不靠线程时序复现，而是把"校验途中注册被换掉"这件事**直接做出来**：
+    `verify_one` 里换注册，然后断言"取到的那个还回去了、别人的没被动过"。
+    """
+
+    def test_release_targets_the_acquired_semaphore(self):
+        import threading
+        from types import SimpleNamespace
+
+        from yiban.attempt import jobs
+
+        seat_a = threading.BoundedSemaphore(2)   # 线程当初取到的
+        seat_b = threading.BoundedSemaphore(2)   # 校验途中被换上的（别人的）
+        hooks = {
+            "seat": seat_a,
+            # 校验进行中换注册（真实形态里是"另一个 webapp 实例注册了自己的信号量"）
+            "verify_one": lambda clean: (jobs.configure(seat=seat_b), None)[1],
+            "record_failure": lambda *a: "fail-kind",
+            "mask_phone": lambda phone: phone,
+            "reject_account": lambda *a: None,
+        }
+        fake_store = SimpleNamespace(claim=lambda jid: True, finish=lambda *a, **k: True)
+        with mock.patch.object(jobs, "_hooks", hooks), \
+                mock.patch.object(jobs, "store", fake_store):
+            jobs.run(1, {"phone": PHONE}, EMAIL, 0, "pending", {}, {})
+        self.assertEqual(seat_a._value, 2, "取到的席位必须还回它自己")
+        self.assertEqual(seat_b._value, 2, "别人的信号量不得被释放（超发会直接抛）")
+
+
 class VerifyJobRetentionTest(_A4Base):
     """保留期 7 天，挂入每日清理。"""
 

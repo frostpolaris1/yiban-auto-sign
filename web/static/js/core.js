@@ -148,7 +148,13 @@
     }
     if (resp.status === 401 && !retried) return refreshThenRetry(req);
     if (resp.status === 403 && !retried && /校验失败|CSRF|令牌/.test(String(data.error || ""))) {
-      return refreshThenRetry(req).catch(function () { throw httpError(403, "请刷新页面后重试"); });
+      // 刷新身份 → 重试一次。**只有"刷新身份"这一步失败**才回落到通用文案：
+      // 重试请求自身被拒时必须原样上抛，否则后端真正的 403 文案会被吞掉
+      // （实测：口令门那条「口令校验未通过，设置未生效」被换成了"请刷新页面后重试"，
+      //  操作者看不出是口令错了；同一条路也吞 409/403 这类业务文案）。
+      csrfToken = "";
+      return fetchMe().catch(function () { throw httpError(403, "请刷新页面后重试"); })
+        .then(function () { return perform(req, true); });
     }
     if (!resp.ok || data.ok === false) throw httpError(resp.status, data.error, data);
     return data;

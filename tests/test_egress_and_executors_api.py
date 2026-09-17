@@ -206,7 +206,7 @@ class OwnerIdentityTest(unittest.TestCase):
     def test_fallback_and_single_prefixes(self):
         fb = egress.parse_owner(egress.IDENT_FALLBACK_PREFIX + "h:1:090000")
         self.assertEqual((fb["role"], fb["index"], fb["label"]),
-                         (egress.ROLE_FALLBACK, None, "兜底常驻执行体"))
+                         (egress.ROLE_FALLBACK, None, "故障转移"))
         sg = egress.parse_owner(egress.IDENT_SINGLE_PREFIX + "h:1:090000")
         self.assertEqual((sg["role"], sg["index"], sg["label"]),
                          (egress.ROLE_SINGLE, None, "单执行体"))
@@ -395,7 +395,7 @@ class FallbackStatusTest(_WebBase):
         self._set_alive(False)
         fb = self._fallback()
         self.assertEqual(fb["role"], egress.ROLE_FALLBACK)
-        self.assertEqual(fb["label"], "兜底常驻执行体")
+        self.assertEqual(fb["label"], "故障转移")
         self.assertEqual(fb["env_key_enable"], "YIBAN_FALLBACK_ENABLE")
         self.assertIsInstance(fb["in_window"], bool)
         # 窗口外 alive=false 属正常：前端要据此只对窗口内报警，故 in_window 必须回
@@ -527,7 +527,7 @@ class ExecutorsSaveEndpointTest(_WebBase):
 
     def test_put_requires_master_admin(self):
         c = self.webapp.create_app().test_client()
-        r = c.put("/api/scheduler/executors", json={"workers": 2},
+        r = c.put("/api/scheduler/executors", json={"workers": 2, "confirm_password": ADMIN_PASS},
                   headers={"X-CSRF-Token": "x"})
         self.assertIn(r.status_code, (401, 403))
 
@@ -538,6 +538,7 @@ class ExecutorsSaveEndpointTest(_WebBase):
             "proxy_list": "http://p1:1,http://p2:2",
             "proxy_fallback": "http://fb:8080",
             "capacity_measured": 400,
+            "confirm_password": ADMIN_PASS,
         })
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self._read_env()
@@ -557,7 +558,8 @@ class ExecutorsSaveEndpointTest(_WebBase):
                         {"proxy_list": "not a url"}, {"proxy_list": "http://a:1" + chr(10) + "YIBAN_X=1"},
                         {"capacity_measured": -5}):
             with self.subTest(payload=payload):
-                r = c.put("/api/scheduler/executors", json=payload,
+                r = c.put("/api/scheduler/executors",
+                          json={**payload, "confirm_password": ADMIN_PASS},
                           headers={"X-CSRF-Token": c.csrf})
                 self.assertEqual(r.status_code, 400, payload)
         self.assertEqual(self._read_env(), before, "校验失败不得落盘")
@@ -565,7 +567,7 @@ class ExecutorsSaveEndpointTest(_WebBase):
     def test_put_empty_clears_measured(self):
         c = self._login()
         c.put("/api/scheduler/executors", headers={"X-CSRF-Token": c.csrf},
-              json={"capacity_measured": 0})
+              json={"capacity_measured": 0, "confirm_password": ADMIN_PASS})
         self.assertEqual(self._read_env().get("YIBAN_CAPACITY_MEASURED", ""), "")
         self.assertIsNone(c.get("/api/scheduler/executors").get_json()["measured"])
 
@@ -579,7 +581,8 @@ class ExecutorsSaveEndpointTest(_WebBase):
                                 ({"fallback_enable": "FALSE"}, "0"),
                                 ({"fallback_enable": False}, "0")):
             with self.subTest(payload=payload):
-                r = c.put("/api/scheduler/executors", json=payload,
+                r = c.put("/api/scheduler/executors",
+                          json={**payload, "confirm_password": ADMIN_PASS},
                           headers={"X-CSRF-Token": c.csrf})
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
                 self.assertEqual(self._read_env()["YIBAN_FALLBACK_ENABLE"], expect)
@@ -593,7 +596,8 @@ class ExecutorsSaveEndpointTest(_WebBase):
         before = self._read_env()
         for value in ("on", "yes", "也许", "1" + chr(10) + "YIBAN_X=1", "", 2):
             with self.subTest(value=value):
-                r = c.put("/api/scheduler/executors", json={"fallback_enable": value},
+                r = c.put("/api/scheduler/executors",
+                          json={"fallback_enable": value, "confirm_password": ADMIN_PASS},
                           headers={"X-CSRF-Token": c.csrf})
                 self.assertEqual(r.status_code, 400, value)
         self.assertEqual(self._read_env(), before, "校验失败不得落盘")
@@ -604,7 +608,8 @@ class ExecutorsSaveEndpointTest(_WebBase):
         from unittest import mock as _mock
         with _mock.patch.object(self.webapp.db, "audit", return_value=True) as m:
             c.put("/api/scheduler/executors", headers={"X-CSRF-Token": c.csrf},
-                  json={"proxy_list": f"{SECRET_PROXY},,http://c:3"})
+                  json={"proxy_list": f"{SECRET_PROXY},,http://c:3",
+                        "confirm_password": ADMIN_PASS})
         detail = " ".join(str(a) for a in m.call_args[0])
         for secret in ("svcuser", "svcp", SECRET_PROXY):
             self.assertNotIn(secret, detail)
@@ -682,9 +687,21 @@ class SlotEgressEndpointTest(_WebBase):
             lines.append(f"YIBAN_WORKERS={workers}")
         with open(self.env_file, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+        # 重写 .env 会把启动时生成的 `YIBAN_ADMIN_PASSWORD_HASH` 一并抹掉，而
+        # `verify_admin` 对"只有明文、没有哈希"是 **fail-closed 拒绝**（M1 口径），
+        # 于是写接口的口令门会一律 403。这里补跑一次与启动同源的迁移（明文→哈希），
+        # 让夹具回到真实部署的样子——不是为了让测试变绿而放宽断言。
+        self.webapp.migrate_admin_password_to_hash(self.env_file)
 
-    def _put(self, c, path, payload):
-        return c.put(path, json=payload, headers={"X-CSRF-Token": c.csrf})
+    def _put(self, c, path, payload, password=ADMIN_PASS):
+        """写接口请求：默认带上 `confirm_password`（2026-09-17 起写操作要口令门）。
+
+        `password=None` 用于**专门测那道门**的用例（不带口令 → 期望 403）。
+        """
+        body = dict(payload)
+        if password is not None:
+            body.setdefault("confirm_password", password)
+        return c.put(path, json=body, headers={"X-CSRF-Token": c.csrf})
 
     def test_worker_slot_changes_only_target_segment(self):
         """**验收项**：改第 2 段后，第 1、3 段逐字未变；读接口只回描述串（不含 userinfo）。"""
@@ -979,7 +996,7 @@ class AccountsLastExecutorTest(_WebBase):
                           "label": "并行执行体 #1"})
         self.assertEqual(got[m(self.PHONES[1])],
                          {"role": egress.ROLE_FALLBACK, "index": None,
-                          "label": "兜底常驻执行体"})
+                          "label": "故障转移"})
         self.assertIsNone(got[m(self.PHONES[2])], "口径是上一个业务日，不是当日/最近一次")
         self.assertIsNone(got[m(self.PHONES[3])], "无记录必须是 null，前端据此显示 —")
 
@@ -1238,21 +1255,24 @@ class EgressErrorMustNotLeakCredentialsTest(_WebBase):
 
     def test_whole_list_write_error_is_masked(self):
         c = self._login()
-        r = c.put("/api/scheduler/executors", json={"proxy_list": self.LEAKY},
+        r = c.put("/api/scheduler/executors",
+                  json={"proxy_list": self.LEAKY, "confirm_password": ADMIN_PASS},
                   headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 400)
         self._assert_no_credentials(r.get_data(as_text=True))
 
     def test_single_slot_write_error_is_masked(self):
         c = self._login()
-        r = c.put("/api/scheduler/executors/workers/1", json={"egress": self.LEAKY},
+        r = c.put("/api/scheduler/executors/workers/1",
+                  json={"egress": self.LEAKY, "confirm_password": ADMIN_PASS},
                   headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 400)
         self._assert_no_credentials(r.get_data(as_text=True))
 
     def test_fallback_slot_write_error_is_masked(self):
         c = self._login()
-        r = c.put("/api/scheduler/executors/fallback", json={"egress": self.LEAKY},
+        r = c.put("/api/scheduler/executors/fallback",
+                  json={"egress": self.LEAKY, "confirm_password": ADMIN_PASS},
                   headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 400)
         self._assert_no_credentials(r.get_data(as_text=True))

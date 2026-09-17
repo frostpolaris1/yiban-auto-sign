@@ -457,6 +457,10 @@ def _executor_row_payload(row):
     item = {"slot": row["slot"], "type": row["type"],
             "egress": yb_egress.describe(row["proxy"]),
             "label": yb_egress.executor_label(row["type"], row["slot"]),
+            # 行的自定义名：没设就是 **null**（前端据此显示后端给的 `label`，或藏起输入框）。
+            # 刻意**不**把 name 折进 label：label 是后端口径（角色中文名），name 是用户输入，
+            # 两者混在一起后"清空名字"就再也分不出来了。
+            "name": row.get("name") or None,
             "state": None, "last_seen_at": None}
     if row["type"] == yb_egress.TYPE_WORKER:
         item["state"], item["last_seen_at"] = signin.worker_presence(row["slot"])
@@ -1307,6 +1311,22 @@ def _validated_proxy_value(raw):
     return value, None
 
 
+def _validated_name(raw):
+    """行自定义名的校验 + 归一：返回 `(值, 错误信息)`；空/None = 清除自定义名。
+
+    这条值要跟着 `slot/type/proxy` 一起挤进 `.env` 的**同一行**，故换行必须在 strip
+    之前拦住（与出口串同一纪律）；超长**明确拒绝**而不是静默截断（截断会让"我明明
+    起了这个名字"变成查不出来的困惑）。解析侧另走 `egress.clean_name`（宽容，见其说明）。
+    """
+    submitted = "" if raw is None else str(raw)
+    if env_io.has_line_break(submitted):
+        return None, "名称不能包含换行"
+    value = "".join(ch for ch in submitted.strip() if ch.isprintable()).strip()
+    if len(value) > yb_egress.NAME_MAX_LEN:
+        return None, f"名称最长 {yb_egress.NAME_MAX_LEN} 个字符"
+    return value, None
+
+
 def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
     write_env_key(env_path, key, str(value) if value > 0 else "")
@@ -1483,6 +1503,39 @@ def migrate_admin_password_to_hash(env_path):
         )
 
 
+#: `os.replace` 的瞬态失败重试预算（Windows 专有失败模式，见 `_replace_with_retry`）
+_REPLACE_RETRY_ATTEMPTS = 6
+_REPLACE_RETRY_BASE_SEC = 0.05
+
+
+def _replace_with_retry(tmp, path):
+    """`os.replace` + 瞬态失败重试；最终失败时**清掉临时文件**再原样抛出。
+
+    为什么要重试：Windows 上"目标文件正被别的句柄打开"时替换会被拒（`WinError 5`
+    拒绝访问 → Python 抛 `PermissionError`），而 `.env` 是**高频读取**的文件——同一
+    进程其他线程的 `read_env`、引擎子进程、预览工具都可能正打开着它。2026-09-17 实测
+    复现：一边持续读 `.env`、一边连续原子写，400 次写入**全部** WinError 5 失败（同期
+    读 3.7 万次），表现为设置页/执行体页偶发 500。Windows 的 `open()` 不带
+    `FILE_SHARE_DELETE`，读句柄会让替换失败；Linux 的 `rename` 不受读者影响，故生产
+    形态（Linux）不涉及，但本机开发与 Windows 本机部署会踩到。
+
+    失败时**必须删掉临时文件**：它是一份完整的 `.env` 副本（含密钥、口令哈希），
+    留在磁盘上既是不该有的凭据副本，也会越攒越多（实测残留 256 个）。
+    """
+    delay = _REPLACE_RETRY_BASE_SEC
+    for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt >= _REPLACE_RETRY_ATTEMPTS:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
 def _atomic_write(path, content, chmod_priv=False):
     """原子写文件：先写临时文件再替换，避免半写状态（cron 并发读取安全）。
 
@@ -1492,6 +1545,8 @@ def _atomic_write(path, content, chmod_priv=False):
     account_crypto._write_key_to_env_file 口径一致）——open("w") 在默认 umask 下
     0644，写完到 replace 之间（及进程崩溃残留时）文件对同机其他用户可读；
     收尾的 os.chmod 保留（对既有 0644 旧文件幂等收紧，无害）。
+
+    替换这一步走 `_replace_with_retry`（Windows 上并发读者会让 `os.replace` 瞬态失败）。
     """
     tmp = f"{path}.tmp{secrets.token_hex(4)}"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1499,7 +1554,7 @@ def _atomic_write(path, content, chmod_priv=False):
         f.write(content)
         f.flush()
         os.fsync(f.fileno())  # 落盘再替换：极端掉电场景不丢数据
-    os.replace(tmp, path)
+    _replace_with_retry(tmp, path)
     if chmod_priv:
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
@@ -6694,6 +6749,29 @@ def create_app(host=None):
         u = db.find_user(username.strip().lower())
         return bool(u) and check_password_hash(u.get("password_hash", ""), password)
 
+    def _executor_write_guard(data, action, changed):
+        """执行体写操作的口令复核（返回 None = 通过，否则是 `(响应, 状态码)`）。
+
+        与 `POST /api/settings` 的系统开关**逐字同构**（前端 88 号提示词要求别另立一套）：
+
+        - **只在"真的会改配置"时要求**（`changed=False` = 请求值与现值一致 → 不要求）：
+          日常无变更的保存不该多一道口令；
+        - **只比对不计数**（`_verify_session_password`）：P18 教训——持 Cookie 者若能写
+          与登录共用的失败计数，就能反手把管理员锁出登录，等于把风控变成攻击面；
+        - 失败 **403** + 审计留痕，文案沿用系统开关那条（前端直接显示，不自己拼）；
+        - **审计只落动作与槽位**：绝不记口令，也不记代理串（可能带凭据）与自定义名
+          （用户输入，可能整串是敏感内容）。
+
+        为什么执行体写操作要这道门：持被窃的主管理员会话（Cookie + CSRF）此前可以直接
+        改出口、增删执行体、关掉兜底——而这恰恰是最容易造成**静默漏签**的一类配置。
+        """
+        if not changed:
+            return None
+        if _verify_session_password(str(data.get("confirm_password", ""))):
+            return None
+        db.audit(session.get("username") or "?", "executors_pw_fail", "executors", action)
+        return jsonify({"error": "口令校验未通过，设置未生效"}), 403
+
     def _reconfirm_admin_password(password, action_label):
         """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
 
@@ -8377,6 +8455,15 @@ def create_app(host=None):
                     env_after.update(updates)
                     updates[yb_egress.ENV_MANIFEST] = yb_egress.dump_manifest(
                         yb_egress.apply_legacy_config(current_rows, env_after))
+                # 口令门：**逐键比对"这次真会写下去的值"与文件里的现值**——值没变（或该键
+                # 未携带）就不要求口令，日常保存零影响。比对放在写锁内、用同一份 current_env，
+                # 免得"比的时候是一版、写的时候又一版"。失败时不写盘、提前返回（with 会释放锁）。
+                changed_keys = sorted(k for k, v in updates.items()
+                                      if str(current_env.get(k, "")) != str(v))
+                denied = _executor_write_guard(
+                    data, "整条保存:" + ",".join(changed_keys)[:160], bool(changed_keys))
+                if denied:
+                    return denied
                 write_env_batch(ENV_FILE, updates)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -8405,15 +8492,28 @@ def create_app(host=None):
             return jsonify({"error": err}), 400
         rows = yb_egress.parse_manifest(read_env(ENV_FILE).get(yb_egress.ENV_MANIFEST))
         if rows is not None:
-            err, code = (_save_fallback_egress(ENV_FILE, value) if index is None
-                         else _save_row_egress(ENV_FILE, index, value))
+            # "值真的变了"才要口令（与其他执行体写端点同一口径）：清单模式下比该行的现值，
+            # 没有那一行（如兜底行尚未建立）也算要改。
+            cur_row = (yb_egress.fallback_row(rows) if index is None
+                       else yb_egress.row_by_slot(rows, index))
+            cur_value = "" if cur_row is None else str(cur_row.get("proxy") or "")
             audit_detail = (f"{yb_egress.ENV_MANIFEST}[fallback]" if index is None
                             else f"{yb_egress.ENV_MANIFEST}[{index}]")
+        else:
+            env_now = read_env(ENV_FILE)
+            role_now = yb_egress.ROLE_FALLBACK if index is None else yb_egress.ROLE_WORKER
+            cur_value = str(yb_egress.resolve(role_now, index or 0, env=env_now) or "")
+            audit_detail = env_key if index is None else f"{env_key}[{index}]"
+        denied = _executor_write_guard(data, f"{audit_detail} 改出口", value != cur_value)
+        if denied:
+            return denied
+        if rows is not None:
+            err, code = (_save_fallback_egress(ENV_FILE, value) if index is None
+                         else _save_row_egress(ENV_FILE, index, value))
             # 清单模式下该行的出口**就是刚提交的值**（不经过旧键），故不能拿 resolve 读
             desc = yb_egress.describe(value)
         else:
             err, code = _save_slot_egress(ENV_FILE, env_key, index, value)
-            audit_detail = env_key if index is None else f"{env_key}[{index}]"
             # 回"该槽位此刻生效的描述串"：与 GET 的 assignments[i].egress 同走
             # yiban.egress.resolve，故 PUT 之后 GET 读到的与这里回的**是同一个值**
             role = yb_egress.ROLE_FALLBACK if index is None else yb_egress.ROLE_WORKER
@@ -8478,11 +8578,17 @@ def create_app(host=None):
     def api_scheduler_executor_row_add():
         """**追加一行执行体**（仅主管理员；CSRF 由 before_request 统一校验）。
 
-        槽位号 = **现有最大 + 1**（只增不复用：删中间行不重排；上限 63，满了 400）。
-        请求体：`{"type": "worker"|"fallback"|"disabled", "proxy": "<代理串>"}`，两个字段
-        都可省（`type` 默认 `worker`；`proxy` 省/`null`/空串 = 直连）。`fallback` 最多 1 行，
-        已有则 400。响应：`{"ok": true, "slot": <int>, "type": ..., "egress": "<脱敏描述串>"}`。
-        与同族端点同规矩：**只写 `.env`，不重启也不拉起进程**；审计只落槽位名、不记凭据。
+        槽位号 = **清单现有最大 + 1**，并**跳过保留期内真用过的号**（下标只增不复用：
+        删中间行不重排；删掉当前最大行后，那个号若在领取历史里出现过就不会被再发一次。
+        上限 63，满了 400）。
+        请求体：`{"type": "worker"|"fallback"|"disabled", "proxy": "<代理串>",
+        "name": "<自定义名>"}`，字段都可省（`type` 默认 `worker`；`proxy` 省/`null`/空串 =
+        直连；`name` 省/`null`/空串 = 不设名，页面显示后端标签）。`fallback` 最多 1 行，
+        已有则 400。响应：`{"ok": true, "slot": <int>, "type": ..., "egress": "<脱敏描述串>",
+        "name": <自定义名或 null>}`。
+        **追加一定会改配置，故必须带 `confirm_password`**（与系统开关同一条门：只比对
+        不计数、失败 403 + 审计）；同规矩：**只写 `.env`，不重启也不拉起进程**；
+        审计只落槽位名，不记凭据、不记自定义名。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
@@ -8491,10 +8597,16 @@ def create_app(host=None):
         value, err = _validated_proxy_value(data.get("proxy"))
         if err:
             return jsonify({"error": err}), 400
+        name, err = _validated_name(data.get("name"))
+        if err:
+            return jsonify({"error": err}), 400
+        denied = _executor_write_guard(data, "追加执行体行", True)
+        if denied:
+            return denied
 
         def _apply(rows):
             slot = _next_executor_slot(rows)
-            return yb_egress.add_row(rows, rtype, value, min_slot=slot), slot
+            return yb_egress.add_row(rows, rtype, value, min_slot=slot, name=name), slot
 
         try:
             slot = _mutate_executor_rows(_apply)
@@ -8503,32 +8615,51 @@ def create_app(host=None):
         db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": rtype,
                         "egress": yb_egress.describe(value),
+                        "name": name or None,
                         "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
     @app.route("/api/scheduler/executors/rows/<int:slot>", methods=["PUT"])
     def api_scheduler_executor_row_update(slot):
         """**改一行的类型/出口**（仅主管理员；CSRF 由 before_request 统一校验）。
 
-        请求体：`{"type"?, "proxy"?}`——`type` 缺席=不改类型；`proxy` 缺席=不改出口，
-        `null`/空串=直连。两个键都不给 → 400（不给"什么都不改"的歧义）。改成 `disabled`
-        即"停用"：**出口保留**、不参与分配、不拉起、不计入建议值，且仍占槽位（不被复用）。
-        槽位不存在 → 400。**其余行逐字保留**（与单段出口写接口同一纪律：只动目标行）。
-        响应：`{"ok": true, "slot": <int>, "type": ..., "egress": "<脱敏描述串>"}`。
+        请求体：`{"type"?, "proxy"?, "name"?}`——字段缺席=不改；`proxy` 空串/null=直连；
+        `name` 空串/null=清掉自定义名（回到后端标签）。三个键都不给 → 400（不给"什么都不改"
+        的歧义）。改成 `disabled` 即"停用"：**出口保留**、不参与分配、不拉起、不计入建议值，
+        且仍占槽位（不被复用）。槽位不存在 → 400。**其余行逐字保留**（与单段出口写接口同一
+        纪律：只动目标行）。
+        **口令门**：`type` 或 `proxy` **真的会变**时才要求 `confirm_password`（只改名或提交
+        同值不要求——改名不改行为，日常保存不该多一道口令）；失败 403 + 审计，配置不动。
+        响应：`{"ok": true, "slot": <int>, "type": ..., "egress": "<脱敏描述串>",
+        "name": <自定义名或 null>}`。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
         data = _json_body()
-        if "type" not in data and "proxy" not in data:
-            return jsonify({"error": "没有可更新的字段（type / proxy 至少给一个）"}), 400
+        if "type" not in data and "proxy" not in data and "name" not in data:
+            return jsonify({"error": "没有可更新的字段（type / proxy / name 至少给一个）"}), 400
         rtype = str(data["type"] or "").strip() if "type" in data else None
         value = None
         if "proxy" in data:
             value, err = _validated_proxy_value(data["proxy"])
             if err:
                 return jsonify({"error": err}), 400
+        name = None
+        if "name" in data:
+            name, err = _validated_name(data["name"])
+            if err:
+                return jsonify({"error": err}), 400
+        # 现值（用于"真的会变吗"的判断）：读一次清单，找不到该行由写路径给 400。
+        _cur = yb_egress.row_by_slot(_executor_rows(), slot)
+        _changed = _cur is None or (
+            (rtype is not None and rtype != _cur["type"])
+            or (value is not None and value != str(_cur.get("proxy") or ""))
+        )
+        denied = _executor_write_guard(data, f"{yb_egress.ENV_MANIFEST}[{slot}] 改行", _changed)
+        if denied:
+            return denied
 
         def _apply(rows):
-            new_rows = yb_egress.update_row(rows, slot, rtype=rtype, proxy=value)
+            new_rows = yb_egress.update_row(rows, slot, rtype=rtype, proxy=value, name=name)
             return new_rows, yb_egress.row_by_slot(new_rows, slot)
 
         try:
@@ -8538,18 +8669,26 @@ def create_app(host=None):
         db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": row["type"],
                         "egress": yb_egress.describe(row["proxy"]),
+                        "name": row.get("name") or None,
                         "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
     @app.route("/api/scheduler/executors/rows/<int:slot>", methods=["DELETE"])
     def api_scheduler_executor_row_delete(slot):
         """**删一行执行体**（仅主管理员；CSRF 由 before_request 统一校验）。
 
-        删行**不重排**其余槽位（删中间行后新建的行拿到 `现有最大 + 1`）。要"留个位置
-        以后可能还要用"就改成 `disabled` 而不是删除。槽位不存在 → 400。
+        删行**不重排**其余槽位（删中间行后新建的行拿到 `现有最大 + 1`，并跳过保留期内
+        用过的号——见上面 POST 的说明）。要"留个位置以后可能还要用"就改成 `disabled`
+        而不是删除。槽位不存在 → 400。
+        **删行一定会改配置，故必须带 `confirm_password`**（与其他执行体写端点同一道门：
+        只比对不计数、失败 403 + 审计，且此时行不会被删）。
         响应：`{"ok": true, "slot": <int>, "type": "<被删行的类型>", "deleted": true}`。
         """
         if not _is_builtin_admin_session():
             return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
+        data = _json_body()
+        denied = _executor_write_guard(data, f"{yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
+        if denied:
+            return denied
 
         def _apply(rows):
             row = yb_egress.row_by_slot(rows, slot)

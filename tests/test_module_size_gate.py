@@ -48,6 +48,15 @@ OVERSIZED = {
     )),
     # scripts/signin.py 已按"执行一轮"的边界切分为 yiban/engine/*（最大 round.py 507 行），
     # 旧路径只剩兼容壳（约 130 行），故不再登记。
+    "yiban/egress.py": (None, (
+        "出口分配 + 执行体清单模型（2026-09-17 加入 `YIBAN_EXECUTORS` 后 618 行）。"
+        "两半**互相咬合**：清单的兜底/回退读取要用 `resolve`（清单优先、旧三键回退），"
+        "而 `resolve` 又要读清单——按「拆开」办就得让两个模块来回传「当前清单」，"
+        "通信成本高于收益（门禁判据②）。已定好的拆法：把清单模型（parse/dump/行增删改/"
+        "迁移/name）整体搬到新模块 `yiban/executors.py`，`resolve` 侧用局部导入绕开循环"
+        "（与 `engine/schedule.py` 里 `alerts` 的局部导入同法）；**清单模型下次变更时一起做**，"
+        "不为了十几行做一次纯搬家（搬动会同时动 web/runner/测试几十处调用点）。"
+    )),
     # yiban/cli.py：命令行统一入口（argparse 装配 + 七个子命令实现 + 单行 JSON 字段契约）。
     # 整块服务于同一件事——命令行面与它的退出码契约。拆开只增加跨文件对偶：新增子命令
     # 必须同时改"解析器"与"handler"，两个文件互为唯一调用方，没有独立变更轴（门禁判据②③）。
@@ -60,14 +69,16 @@ OVERSIZED = {
         "逐条硬约定说明）；若增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
         "（config/capacity/state/db/version）」切成两个模块。"
     )),
-    "web/static/js/components/settings-executors.js": (700, (
-        "执行体分区组件（规模 KPI + 清单表 + 行内设置弹窗 + 写明细口径的注释）。"
+    "web/static/js/components/settings-executors.js": (780, (
+        "执行体分区组件（规模 KPI + 清单表 + 行内设置弹窗 + 每个写操作的口令门 + 写明细口径的注释）。"
         "三块服务于同一个屏与**同一份接口响应**：lastData 被 KPI、清单渲染、行弹窗三处读，"
-        "banner/focusAfterPaint/rowName 等助手三处共用——拆开等于把这份共享状态改成跨模块协议"
+        "banner/focusAfterPaint/rowName/putRow 等助手三处共用——拆开等于把这份共享状态改成跨模块协议"
         "（门禁判据②），而任何接口字段变动仍要同时改多处（判据③不成立）。"
-        "2026-09-17 已按上一版登记的下一步抽出「容量实测与建议」（搬去 settings-quota.js，"
-        "现在只剩 680 行）；若再超过 700 行，下一个可切的是行内设置弹窗（openRow 及其助手），"
-        "它只依赖 lastData、banner 与 putRow 三样。"
+        "2026-09-17 已按上一版登记的下一步抽出「容量实测与建议」（搬去 settings-quota.js）；"
+        "随后按后端交付（docs/refactor/90）给三种写操作（追加行/删行/改行）补了口令门，"
+        "并加了「只改名不打门」的分支，涨到 706 行 → 上限由 700 提到 780。"
+        "再涨就先切行内设置弹窗：openRow 及其独有助手（infoTip/linkBtn/ROW_HELP），"
+        "届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
     )),
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),
