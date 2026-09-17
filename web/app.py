@@ -283,6 +283,7 @@ from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配�
 from yiban import mail as mailer  # noqa: E402
 from yiban import notify  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
+from yiban.engine import schedule as yb_schedule  # noqa: E402  # 周末门/暂停门：唯一实现
 from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402  # 易班端点唯一出处（web 不写字面量）
 from yiban.infra import (  # noqa: E402
     account_crypto,  # 敏感配置加密（AES-GCM，ACCOUNTS_KEY）
@@ -372,15 +373,41 @@ def _env_flag(value):
 
 
 def _in_sign_window(bounds, now=None):
-    """当前是否落在**有效**签到窗口内（已扣掐头去尾）。
+    """当前是否落在**有效**签到窗口内（已扣掐头去尾）——纯钟点口径。
 
     判定用引擎同一份 `yiban.window.bounds` 给出的边界，这里只把"现在"换算成
-    当天分钟数再比区间，不另写一套窗口逻辑。窗口外 `fallback.alive=false` 属正常
-    （兜底进程本就只在窗口内运行），前端应据此只在窗口内报警。
+    当天分钟数再比区间，不另写一套窗口逻辑。**"窗口内不做实测"的 409 拦截用它**
+    （只关心"会不会跟签到抢资源"）；执行体接口的 `in_window` 用下面的
+    `_in_run_period`（还含周末门/暂停门，见其文档）。
     """
     now = now or clock.now()
     now_min = now.hour * 60 + now.minute + now.second / 60.0
     return bounds.lo_min <= now_min <= bounds.hi_min
+
+
+def _in_run_period(bounds, now=None):
+    """当前是否落在**本应运行**的时段内＝有效窗口内 且 今天没被门挡下。
+
+    执行体接口的 `in_window` 用这个（用户 2026-09-17 定：改 `in_window` 的含义，
+    不新增字段）。为什么必须含门：兜底常驻在"周末签到关闭 / 一键暂停"时会直接退出，
+    而这两天的钟点明明落在窗口内——只按钟点算，页面会在每个周末与每次暂停期间报
+    "兜底开了却没跑起来"。含门后前端不需要改判断：`in_window=false` 就是"现在本不该
+    有兜底在跑"的完整答案。
+    """
+    now = now or clock.now()
+    return _in_sign_window(bounds, now) and not _day_off_reason(now)
+
+
+def _day_off_reason(now=None):
+    """今天此刻是否被周末门/一键暂停挡下 → 原因串；空串=照常（与引擎同一实现）。
+
+    组合口径只有一处（`yiban.engine.schedule.day_off`）：页面提示与引擎实际行为
+    必须看同一个判据，否则又会出现"页面说会跑、进程其实不跑"。
+    """
+    try:
+        return yb_schedule.day_off(now)
+    except Exception:   # 配置读不到时按"照常"处理：宁可多显示一次窗口内，也别谎报跳过
+        return ""
 
 
 def _executors_window():
@@ -8042,7 +8069,9 @@ def create_app(host=None):
         # 声明的开关（.env 里网页写入的键）与"实际在跑"分开回，让前端能分辨
         # "声明了没跑起来"（要查 cron）与"没声明却在跑"（人工起的进程）
         fallback_enabled = _env_flag(env.get("YIBAN_FALLBACK_ENABLE"))
-        in_window = _in_sign_window(bounds)
+        # `in_window` 用"本应运行时段"口径（窗口内 且 今天没被周末门/暂停门挡下）：
+        # 兜底在这两种日子会直接退出，只按钟点算会让页面每逢周末/暂停就误报"开了没跑起来"
+        in_window = _in_run_period(bounds)
         if fallback_enabled:
             fallback_status = "running" if fallback_alive else "declared_not_running"
         else:
