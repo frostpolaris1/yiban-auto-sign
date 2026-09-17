@@ -34,7 +34,15 @@
     var n = $(id);
     if (n) n.textContent = text == null ? "" : String(text);
   }
-  function setTip(text, bad) { YB.setTip("set-exec-tip", text, bad); }
+  // 任何要落进 DOM 的**错误文案**先过这里：后端校验失败时会回显提交值的前 40 字符
+  // （如「代理地址格式不正确: …」），而出口串可能带 user:pass@ —— 抹掉 userinfo 段，
+  // 凭据不进 DOM 文本（成功路径读回的本就是脱敏描述串，无需处理）。
+  function scrub(text) {
+    return String(text == null ? "" : text)
+      .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)([^/@\s]*)@/gi, "$1***@")
+      .replace(/(^|[\s(（:：])([^\s/@]+)(?::[^\s/@]*)?@/g, "$1***@");
+  }
+  function setTip(text, bad) { YB.setTip("set-exec-tip", scrub(text), bad); }
   function num(id, fallback) {
     var n = parseInt(($(id) || {}).value, 10);
     return isNaN(n) ? fallback : n;
@@ -97,6 +105,16 @@
     declared_not_running: "badge--bad",
     running_not_declared: "badge--info"
   };
+  // 报警纪律（后端要求）：declared_not_running 只有落在**有效窗口内**才算异常——窗口外兜底
+  // 进程本就退出（alive=false 是预期行为），沿用告警色等于每天非签到时段都在误报。
+  function fbAbnormal(fb) {
+    return fb.status === "running_not_declared"
+      || (fb.status === "declared_not_running" && fb.in_window === true);
+  }
+  function fbClass(fb) {
+    if (fb.status === "declared_not_running" && fb.in_window !== true) return "badge--muted";
+    return FB_CLASS[fb.status] || "badge--muted";
+  }
   function badge(text, cls) {
     return YB.el("span", { class: "badge dot " + (cls || "badge--muted"), text: text });
   }
@@ -147,7 +165,7 @@
       YB.el("td", { class: "mono", text: attr(fb.label) || "兜底常驻执行体" }),
       YB.el("td", { text: "兜底" }),
       YB.el("td", { text: fb.egress || "直连（本机出口）" }),
-      YB.el("td", {}, [badge(FB_TEXT[fb.status] || "—", FB_CLASS[fb.status])]),
+      YB.el("td", {}, [badge(FB_TEXT[fb.status] || "—", fbClass(fb))]),
       YB.el("td", { class: "set-exec-col-md", text: todayText(activityFor("fallback", null)) }),
       YB.el("td", {}, [rowBtn(attr(fb.label) || "兜底常驻执行体", "fallback", null)])
     ]));
@@ -187,10 +205,11 @@
     var badgeEl = $("set-exec-fb-badge");
     if (badgeEl) {
       badgeEl.textContent = FB_TEXT[fb.status] || "—";
-      badgeEl.className = "badge dot " + (FB_CLASS[fb.status] || "badge--muted");
+      badgeEl.className = "badge dot " + fbClass(fb);
     }
-    // 卡头只报异常态：off/running 是正常态，表格里已有一份，不再重复一遍
-    var abnormal = fb.status === "declared_not_running" || fb.status === "running_not_declared";
+    // 卡头只报异常态：off/running 是正常态（表格里已有一份，不再重复），窗口外的
+    // declared_not_running 也是预期行为（见 fbAbnormal 的口径）
+    var abnormal = fbAbnormal(fb);
     setText("set-exec-fb-text", fb.status === "declared_not_running"
       ? "已声明开启但没有进程在跑：宿主那条 cron 多半漏加了。"
       : (fb.status === "running_not_declared" ? "有进程在跑但不是由配置拉起的。" : ""));
@@ -281,14 +300,25 @@
 
     var swInput = null;
     if (isFb) {
+      // 开关与模板里的同类控件同构：label 内补 sr-only 文本给读屏，语义说明用
+      // aria-describedby 程序化关联（与 #set-exec-perm 的做法一致）
       swInput = YB.el("input", { type: "checkbox" });
       if (fb.enabled === true) swInput.checked = true;
+      var swHelpId = "set-exec-modal-fb-help";
+      swInput.setAttribute("aria-describedby", swHelpId);
       wrap.appendChild(YB.el("div", { class: "field" }, [
-        YB.el("label", { class: "switch" }, [
-          swInput, YB.el("span", { class: "track", "aria-hidden": "true" })
+        YB.el("label", { class: "switch", title: "开启兜底执行体" }, [
+          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
+          YB.el("span", { class: "sr-only", text: "开启兜底执行体" })
         ]),
-        YB.el("p", { class: "field-help", text: "开启兜底执行体（只写声明开关；还需宿主 cron 以 --fallback 拉起进程才会真在跑）。" })
+        YB.el("p", { class: "field-help", id: swHelpId, text: "开启兜底执行体（只写声明开关；还需宿主 cron 以 --fallback 拉起进程才会真在跑）。" })
       ]));
+    }
+    // 开关这一改动是"整条端点"的 fallback_enable，与出口（单段写）分属两个请求；
+    // 未改动时返回 null（不提交该字段）。
+    function switchArg() {
+      if (!isFb || !swInput) return null;
+      return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
     }
     var tip = YB.el("p", { class: "set-tip", text: "" });
     wrap.appendChild(tip);
@@ -299,18 +329,18 @@
       body: wrap,
       actions: [
         { label: "清除出口", variant: "ghost", close: false, onClick: function () {
-          return submit(handle, tip, null, null);
+          // 空串 = 该段直连（契约："" 与 null 同义）；提交后仍走"重新 GET 再渲染"
+          return submit(handle, tip, "", switchArg());
         } },
         { label: "保存", variant: "primary", close: false, onClick: function () {
           var v = (($(inputId) || {}).value || "").trim();
-          var enableArg = null;
-          if (isFb && swInput && swInput.checked !== (fb.enabled === true)) enableArg = swInput.checked ? 1 : 0;
+          var enableArg = switchArg();
           if (!v && enableArg == null) {
             tip.textContent = "留空 = 不修改；要改成直连请点「清除出口」。";
             tip.className = "set-tip set-bad";
             return false;
           }
-          return submit(handle, tip, v, enableArg);
+          return submit(handle, tip, v || null, enableArg);
         } }
       ]
     });
@@ -348,7 +378,7 @@
         return true;
       });
     }, function (e) {
-      tip.textContent = (e && e.message) || "保存失败，请稍后重试";
+      tip.textContent = scrub((e && e.message) || "保存失败，请稍后重试");
       tip.className = "set-tip set-bad";
       return false;
     }).then(function (ok) {
@@ -387,7 +417,7 @@
         markDirty();
       }
     }, function (e) {
-      if (out) out.textContent = (e && e.message) || "实测失败，请稍后重试";
+      if (out) out.textContent = scrub((e && e.message) || "实测失败，请稍后重试");
     }).then(function () {
       busy = false;
       if (btn) btn.disabled = !ctx.isMaster;
