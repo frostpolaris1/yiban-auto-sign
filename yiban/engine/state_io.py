@@ -224,10 +224,12 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, path)
+            return True
     except (OSError, ValueError, TypeError, AttributeError) as e:
         # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）；
         # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值，C-SIGN-02）
         logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(e))
+        return False
 
 # ---------------------------------------------------------------------------
 # 全量收尾标记（调度器首签/补签闸门的事实源）
