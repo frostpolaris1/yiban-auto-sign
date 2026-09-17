@@ -47,9 +47,9 @@
     {"slot": 2, "type": "worker", "egress": "http://proxy3.example:3128",
      "label": "并行执行体 #3", "state": "idle", "last_seen_at": null},
     {"slot": 3, "type": "fallback", "egress": "直连（本机出口）",
-     "label": "兜底常驻执行体"},
+     "label": "兜底常驻执行体", "state": null, "last_seen_at": null},
     {"slot": 4, "type": "disabled", "egress": "http://proxy5.example:3129",
-     "label": "已停用（并行执行体 #5）"}
+     "label": "已停用", "state": null, "last_seen_at": null}
   ],
   "fallback": {
     "egress": "直连（本机出口）",
@@ -142,11 +142,11 @@
 | `slot` | int | 槽位号（同时就是并行执行体的下标，与 `workers.assignments[].index`、`activity.by_executor[].index` 同号） |
 | `type` | string | `worker` / `fallback` / `disabled` |
 | `egress` | string | 描述串（不含 userinfo） |
-| `label` | string | 中文标签：`并行执行体 #N` / `兜底常驻执行体` / `已停用（并行执行体 #N）` |
-| `state` | string | **仅 `worker` 行有**：该行的存活四态（口径同 `workers.assignments[].state`） |
-| `last_seen_at` | string \| null | **仅 `worker` 行有**；无记录为 `null` |
+| `label` | string | 中文标签：`并行执行体 #N` / `兜底常驻执行体` / `已停用` |
+| `state` | string \| null | **只有 `worker` 行有值**：该行的存活四态（口径同 `workers.assignments[].state`）；`fallback` 与 `disabled` 行**为 `null`** |
+| `last_seen_at` | string \| null | 同上：只有 `worker` 行有值，`fallback` / `disabled` 行为 `null` |
 
-**`fallback` 行与 `disabled` 行都不回 `state` / `last_seen_at`**（不是回 null，是**这两个键不出现**）：
+**`fallback` 行与 `disabled` 行的 `state` / `last_seen_at` 是 `null`（字段照给、值为空）**：
 兜底的存活在 `fallback.*` 里（心跳文件与判据不同，套 worker 四态会永远显示 `idle`），
 停用行按要求不报存活。页面据此区分"停用"（`type == "disabled"`）。
 

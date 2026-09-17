@@ -335,14 +335,17 @@ def launch_slots(env=None):
 
 
 def executor_label(rtype, slot=None):
-    """清单行的中文标签（前端直接显示，不必自己拼文案）。"""
+    """清单行的中文标签（前端直接显示，不必自己拼文案）。
+
+    `disabled` 的标签就是「已停用」——标签口径已冻结给前端（见接口契约），
+    槽位号在 `slot` 字段里，故不再拼进标签。
+    """
     if rtype == TYPE_WORKER:
         return role_label(ROLE_WORKER, slot)
     if rtype == TYPE_FALLBACK:
         return role_label(ROLE_FALLBACK)
     if rtype == TYPE_DISABLED:
-        base = role_label(ROLE_WORKER, slot) if isinstance(slot, int) else "并行执行体"
-        return f"已停用（{base}）"
+        return "已停用"
     return role_label(ROLE_UNKNOWN)
 
 
