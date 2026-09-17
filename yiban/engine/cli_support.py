@@ -17,16 +17,22 @@ from yiban import clock
 from yiban.infra import locks
 from yiban.logging_ext import FlockFileHandler
 
-# ---------------------------------------------------------------------------
-# 日志配置
-# ---------------------------------------------------------------------------
-# 支持通过环境变量调整日志级别：DEBUG / INFO / WARNING / ERROR
-LOG_LEVEL = os.environ.get("YIBAN_LOG_LEVEL", "INFO").upper()
+logger = logging.getLogger("yiban")
 
 try:
     import fcntl  # Unix/Linux 文件锁；Windows 不支持
 except ImportError:
     fcntl = None
+
+# 日志级别可用 YIBAN_LOG_LEVEL 调整：DEBUG / INFO / WARNING / ERROR
+LOG_LEVEL = os.environ.get("YIBAN_LOG_LEVEL", "INFO").upper()
+
+# 进程级签到单实例锁：全量模式等待其他进程退出的上限（秒）。
+# 手动 --only 通常几十秒结束；cron 全量队列被手动阻塞时最多等这么久。
+_RUN_LOCK_WAIT_DEFAULT = 600
+
+# CLI 日志装配幂等标记（见 _setup_cli_logging）
+_cli_logging_ready = False
 
 
 @contextmanager
@@ -34,17 +40,11 @@ def _state_file_lock(path):
     """状态文件读改写锁：经 `locks.file_lock` 统一（POSIX flock / Windows msvcrt）。
 
     锁文件由 locks 自行拼 `<path>.lock`，不要与日志 handler 的锁混用同一把。
-    此前 Windows 上直接退化为 no-op 且**无任何告警**，5 处调用点的读-改-写因此
-    失去原子性（可丢 cred-state 熔断暂停、丢按日状态）；现由统一原语保证，
-    真无法加锁时也会告警留痕。
+    必须走这层统一原语：平台不支持文件锁时它会告警留痕，而各调用点的读-改-写
+    （熔断暂停、按日状态、失败提醒额度）不加锁就会静默丢更新。
     """
     with locks.file_lock(path):
         yield
-
-
-# 进程级签到单实例锁：全量模式等待其他进程退出的上限（秒）。
-# 手动 --only 通常几十秒结束；cron 全量队列被手动阻塞时最多等这么久。
-_RUN_LOCK_WAIT_DEFAULT = 600
 
 
 class _RunLockHeld(Exception):
@@ -54,9 +54,9 @@ class _RunLockHeld(Exception):
 def _acquire_run_lock(only_mode):
     """进程级签到单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。
 
-    对抗性审查（2026-08-20）P2：web 端防抖/terminate 只覆盖 web 自己 spawn 的
-    子进程，cron 全量队列与手动 --only 之间无任何互斥——同账号可被两个进程
-    并发登录易班（重复打卡/会话异常/风控画像）。锁文件 <STATE_DIR>/signin-run.lock：
+    web 端的防抖/terminate 只覆盖 web 自己 spawn 的子进程，与 cron 全量队列之间没有
+    任何互斥——同账号被两个进程并发登录易班会导致重复打卡/会话异常/风控画像。
+    锁文件 <STATE_DIR>/signin-run.lock：
     - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），超时告警后
       无锁继续——漏签一整天的代价高于极小概率的重叠；
     - --only 模式：立即尝试一次，被持有则抛 _RunLockHeld（调用方退出并留痕，
@@ -75,9 +75,8 @@ def _acquire_run_lock(only_mode):
     except OSError:
         return None
     if fcntl is None:
-        # 2026-08-28 审查 F5：Windows 无 fcntl 时锁退化为无互斥，且此前无任何
-        # 提示——管理员在 Windows 上跑多进程（如 cron + 手动）时会静默出现
-        # 同账号并发签到的可能（重复打卡/风控）。明确告警一次（每进程一次）。
+        # 无 fcntl 时锁退化为无互斥：管理员在 Windows 上跑多进程（cron + 手动）会
+        # 静默出现同账号并发签到的可能（重复打卡/风控），必须明确告警一次
         logger.warning(
             "当前平台无 fcntl（Windows），签到单实例锁未生效："
             "cron 全量队列与手动 --only 并发时可能对同一账号重复签到，"
@@ -129,19 +128,15 @@ def _make_log_handler():
         return logging.StreamHandler()
 
 
-# CLI 日志装配幂等标记。原实现把 handler 装配放在模块导入期
-# （logging.basicConfig(handlers=[_handler])）——web/app.py 导入 signin 时即向 root
-# 挂 FlockFileHandler，create_app 随后再挂 DailyFlockFileHandler（其去重守卫只认
-# 自身类），root 上出现两个指向同一日志目录的 FileHandler，每条日志写两遍。
-_cli_logging_ready = False
-
-
+# CLI 日志装配幂等标记（见 _setup_cli_logging）：装配必须**延迟到入口**，不能留在
+# 模块导入期——否则 web/app.py 导入 signin 时就向 root 挂 FlockFileHandler，
+# create_app 随后再挂 DailyFlockFileHandler（其去重守卫只认自身类），root 上出现
+# 两个指向同一日志目录的 FileHandler，每条日志写两遍。
 def _setup_cli_logging():
     """CLI 入口日志装配：把按天文件 handler 挂到 root logger。
 
-    装配从模块导入期延迟到 main() 入口（--check-config / --probe / --only 均经
-    main()，覆盖全部 CLI 路径）。模块导入自此零副作用：web 进程 import signin 不再向 root
-    挂 handler，双写症状（每条日志落盘两遍）消除；幂等保护重复调用不重复挂载。
+    在 main() 入口调用（--check-config / --probe / --only 均经 main()，覆盖全部
+    CLI 路径），故模块导入零副作用；幂等保护重复调用不重复挂载。
     """
     global _cli_logging_ready
     if _cli_logging_ready:
@@ -156,6 +151,3 @@ def _setup_cli_logging():
         level=getattr(logging, LOG_LEVEL, logging.INFO),
         handlers=[handler],
     )
-
-
-logger = logging.getLogger("yiban")
