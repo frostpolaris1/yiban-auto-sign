@@ -480,7 +480,8 @@
     var fb = (lastData.fallback) || {};
     var acts = activityFor(isFb ? "fallback" : "worker", isFb ? null : slot);
 
-    var wrap = YB.el("div");
+    // .set-exec-form：给弹窗内相邻字段之间补垂直间距（见 app.css；.field 自身没有外边距）
+    var wrap = YB.el("div", { class: "set-exec-form" });
     // 名称：仅当接口下发了 name 字段（= 后端已支持逐行改名）时才出现，避免做出一个点了会 400 的输入框。
     // 兜底行名称固定（用户 2026-09-17），不给改名。
     var nameId = "set-exec-modal-name";
