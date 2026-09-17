@@ -3240,6 +3240,9 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
   transform: none;
   transition-timing-function: var(--ease-out-strong);
 }
+/* 向上展开的变体：弹窗内底部没有空间时用（.pm-panel 是 overflow:hidden，向下开会**被裁掉**）。 */
+.info-pop--up { top: auto; bottom: calc(100% + 6px); transform: translateY(2px); }
+.info-pop--up.info-pop { right: 0; }
 /* hover 触发只在精确指针设备启用：触屏点按会产生"假 hover"并可能让浮层粘滞 */
 @media (hover: hover) and (pointer: fine) {
   .info-tip:hover .info-pop {
@@ -4297,20 +4300,38 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .err-actions .btn { min-width: 88px; justify-content: center; }
 
 /* ==========================================================================
-   37. 执行体一览表（设置页「执行体」分区）
+   37. 执行体清单（设置页「执行体」分区，2026-09-17 换清单模型）
    --------------------------------------------------------------------------
-   窄屏隐藏「当日」列（与账号/用户表 usr-col-md / acct-col-md 同一约定）：
-   该列是"今天谁做了多少"的细节，留着会把表格挤成横向滚动条。
+   页面结构：行数条（摘要 + 两个同级按钮）＋ 一行建议摘要 ＋ 清单表（5 列，状态与当日已合并）。
    ========================================================================== */
+/* 行数条：左边是清单摘要（数据），右边两个按钮同属 .btn--sm（同高）。
+   「数量」输入框在清单模型下已取消——行数由清单长度决定，故这里没有输入控件要对齐。 */
+.set-exec-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 6px; }
+.set-exec-bar .set-summary { margin: 0; }
+.set-exec-bar__actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+/* 状态与当日合并一列：徽标 + 当日计数同一行，列窄时自动折到下一行 */
+.set-exec-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.set-exec-daily, .set-exec-off, .set-exec-slot { font-size: 12px; color: var(--t-muted); }
+.set-exec-slot { margin-left: 6px; }
+/* 停用行整行降级（出口仍在，但不是活配置） */
+#set-exec-table tr.set-exec-row-off td { color: var(--t-muted); }
+/* 行内弹窗的次级动作（清除出口 / 删除这一行）：文本级，不与「保存」同视觉层级 */
+/* 弹窗里的动作行（测试 + 它的 ⓘ）：同高、居中对齐 */
+.set-exec-actions { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
+/* 字段标签旁的 ⓘ（弹窗内折叠口径用）：与文字同一行、不撑高标签 */
+.field-label .info-tip { margin-left: 6px; vertical-align: -3px; }
+.set-exec-subactions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
+.set-exec-subactions__sep { color: var(--t-light); }
+.set-exec-danger { color: var(--state-bad-fg); }
+
 @media (max-width: 900px) {
-  .set-exec-col-md { display: none; }
-  /* 窄屏允许换行：本表「执行体」列是"标识 + 状态徽标"、出口列是描述性文本，都不属于
-     "不可断行的标识"（邮箱/手机号那种才需要 nowrap），换行比横向滚动更好读 */
+  /* 窄屏允许换行：本表「执行体」「状态·当日」都是"标识 + 徽标 + 计数"，出口列是描述性文本，
+     都不属于"不可断行的标识"（邮箱/手机号那种才需要 nowrap），换行比横向滚动更好读 */
   #set-exec-table th,
   #set-exec-table td { white-space: normal; }
   /* 但整表要有一个下限宽度：容器比它更窄时（实测 360 视口下卡内容宽仅 290px），
      浏览器会把各列压到内容宽以下，出现"一个字一行"——执行体列被压成 44px、
      单行高 146px，状态徽标变成长条。给下限后列宽回到内容宽、行高回到 59px，
      多出来的宽度交给 .table-scroll 横向滚动（账号页/用户页在 360 下也是这么滚的）。 */
-  #set-exec-table { min-width: 640px; }
+  #set-exec-table { min-width: 620px; }
 }
