@@ -315,6 +315,29 @@ def owners_for_day(day):
     return {} if rows is None else {r["phone"]: r["owner"] for r in rows}
 
 
+def owners_since(days=RETENTION_DAYS):
+    """保留期内出现过的执行体身份串（去重，升序）——供"槽位号只增不复用"用。
+
+    用途：删除清单里**当前最大**那一行之后，纯函数只能给出"最大值 + 1"（它会拿到刚空出
+    的号）；追加接口据此再跳过"保留期内真用过的号"，这样"下标只增不复用"在删除后也成立。
+    只回答"出现过哪些身份串"，**不解析角色**（解析是展示层的事，见 `activity`）。
+
+    库不可用时返回 `[]`（调用方退回"只按清单最大值 +1"，不影响追加本身）。
+    """
+    from yiban.store import db
+    cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        with db._conn_lock:
+            rows = db.get_conn().execute(
+                "SELECT DISTINCT owner FROM sign_claims WHERE day >= ? ORDER BY owner",
+                (cutoff,),
+            ).fetchall()
+        return [r["owner"] for r in rows if r["owner"]]
+    except Exception as e:
+        logger.debug("读取执行体历史身份失败（按空处理）: %s", e)
+        return []
+
+
 def purge(days=RETENTION_DAYS):
     """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。"""
     from yiban.store import db
