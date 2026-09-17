@@ -1,12 +1,13 @@
 name: CI
 
 # PR 门禁：独立于 .github/workflows/signin.yml（后者是定时签到服务自动化）
-# 触发：向 server-web / main 提 PR，或向这两个分支 push
+# 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push
+# （分支模型见 PROMPT.md §6.11：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
 on:
   pull_request:
-    branches: [server-web, main]
+    branches: [develop, server-web, main]
   push:
-    branches: [server-web, main]
+    branches: [develop, server-web, main, 'feature/**']
 
 # 最小权限：仅读取代码与 PR 元数据
 permissions:

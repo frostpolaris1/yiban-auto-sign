@@ -1,10 +1,10 @@
 name: Mirror to Gitee
 
 # 单向镜像：GitHub(origin) -> Gitee，避免双远程手动同步分歧
-# 触发：向 main / server-web push，或手动 workflow_dispatch
+# 触发：向 main / develop / server-web push，或手动 workflow_dispatch
 on:
   push:
-    branches: [main, server-web]
+    branches: [main, develop, server-web]
   workflow_dispatch:
 
 permissions:
