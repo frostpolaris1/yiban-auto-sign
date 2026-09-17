@@ -194,6 +194,90 @@ class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
     # 本轮内"重试没赶上窗口"与本轮前的记录共用同一道守卫（`results` 与当日文件
     # 都查），故上面两条覆盖了该规则的两种来源。
 
+
+class ManualChainWindowGuardTest(unittest.TestCase):
+    """M11 残留：手动链路（schedule 为空）逐账号窗口钳制。
+
+    兜底常驻（workers）与补签轮走 `run_queue_retry` 的手动分支（schedule 为空）。
+    它们只在**每轮扫描前**判过窗口，一轮扫描内部不再按账号判——一轮在 07:49 起跑、
+    末尾几个账号要在 07:50 之后才发请求时，仍会发起真实登录。修复后：手动分支
+    每次"准备发请求"前判窗口，已关则剩余账号全部落 `skipped_window` 并停手。
+    `--only` 手动签到**有意不受限**（用户主动触发应放行），由 `window_guard`
+    开关区分（兜底/补签传 True，--only 不传）。
+    """
+
+    PHONE_IN = "13800000001"
+    PHONE_OUT = "13800000002"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-manual-win-")
+        self.env = dict(os.environ)
+        os.environ["YIBAN_STATE_DIR"] = self.tmp
+        os.environ["YIBAN_SIGN_START"] = "06:30"
+        os.environ["YIBAN_SIGN_END"] = "07:50"
+        os.environ.pop("YIBAN_SECOND_RUN", None)
+        os.environ.pop("YIBAN_GLOBAL_PAUSE", None)
+        self.state_path = os.path.join(
+            self.tmp, f"sign-state-{signin.clock.now().strftime('%Y-%m-%d')}.json")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.env)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _accs(self):
+        return [signin.Account(phone=self.PHONE_IN, password="p"),
+                signin.Account(phone=self.PHONE_OUT, password="p")]
+
+    def test_manual_chain_stops_at_window_close(self):
+        """窗口在轮内关闭：第二个账号零请求、落 skipped_window。"""
+        state = {"t": _dt.datetime(2026, 9, 17, 7, 0)}  # 窗口内
+        calls = []
+
+        def _now():
+            return state["t"]
+
+        def _attempt(acc):
+            calls.append(acc.phone)
+            state["t"] = _dt.datetime(2026, 9, 17, 7, 55)  # 首个账号执行后窗口关闭
+            return (True, "ok", False, "success")
+
+        with mock.patch.object(signin.clock, "now", _now), \
+                mock.patch.object(signin, "attempt_signin", side_effect=_attempt), \
+                mock.patch.object(signin, "_update_cred_state"), \
+                mock.patch.object(signin.time, "sleep"):
+            results = signin.run_queue_retry(self._accs(), "", 0, 0, schedule=None,
+                                             window_guard=True)
+        self.assertEqual(calls, [self.PHONE_IN],
+                         "窗口关闭后不得再对剩余账号发起真实登录")
+        with open(self.state_path, encoding="utf-8") as f:
+            st = json.load(f)[self.PHONE_OUT]["status"]
+        self.assertEqual(st, signin.STATUS_SKIPPED_WINDOW,
+                         "窗口已关的剩余账号应落 skipped_window")
+        self.assertEqual(results[self.PHONE_OUT][3], signin.STATUS_SKIPPED_WINDOW)
+
+    def test_only_mode_ignores_window_guard(self):
+        """--only（window_guard=False）：窗口外仍执行（用户主动触发放行）。"""
+        calls = []
+
+        def _now():
+            return _dt.datetime(2026, 9, 17, 7, 55)  # 全程窗口外
+
+        def _attempt(acc):
+            calls.append(acc.phone)
+            return (True, "ok", False, "success")
+
+        with mock.patch.object(signin.clock, "now", _now), \
+                mock.patch.object(signin, "attempt_signin", side_effect=_attempt), \
+                mock.patch.object(signin, "_update_cred_state"), \
+                mock.patch.object(signin.time, "sleep"):
+            results = signin.run_queue_retry(self._accs(), "", 0, 0, schedule=None,
+                                             window_guard=False)
+        self.assertEqual(calls, [self.PHONE_IN, self.PHONE_OUT],
+                         "--only 手动签到不受窗口限制，两个账号都应执行")
+        self.assertEqual(results[self.PHONE_OUT][3], "success",
+                         "不受限路径执行成功，不得被标成 skipped_window")
+
 class SecondRunDropDoneTest(unittest.TestCase):
     """补签轮剔除已完成账号时，no_task 也算"已了结"。"""
 
