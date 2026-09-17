@@ -36,8 +36,21 @@
        "role": "worker", "label": "并行执行体 #3",
        "state": "idle", "last_seen_at": null}
     ],
-    "env_keys": {"list": "YIBAN_PROXY_LIST", "single": "YIBAN_PROXY"}
+    "env_keys": {"list": "YIBAN_PROXY_LIST", "single": "YIBAN_PROXY",
+                 "manifest": "YIBAN_EXECUTORS"}
   },
+  "executors": [
+    {"slot": 0, "type": "worker", "egress": "http://proxy1.example:8080",
+     "label": "并行执行体 #1", "state": "finished", "last_seen_at": "2026-09-16 06:42:11"},
+    {"slot": 1, "type": "worker", "egress": "直连（本机出口）",
+     "label": "并行执行体 #2", "state": "idle", "last_seen_at": null},
+    {"slot": 2, "type": "worker", "egress": "http://proxy3.example:3128",
+     "label": "并行执行体 #3", "state": "idle", "last_seen_at": null},
+    {"slot": 3, "type": "fallback", "egress": "直连（本机出口）",
+     "label": "兜底常驻执行体"},
+    {"slot": 4, "type": "disabled", "egress": "http://proxy5.example:3129",
+     "label": "已停用（并行执行体 #5）"}
+  ],
   "fallback": {
     "egress": "直连（本机出口）",
     "interval_sec": 60,
@@ -80,11 +93,12 @@
 
 | 字段 | 类型 | 语义与页面用法 |
 |------|------|----------------|
-| `workers.configured` | int ≥ 1 | 当前配置的并行执行体数（对应 `--workers N` 的 N；未配置=1） |
-| `workers.assignments[]` | list | 逐个执行体的出口描述 + `role`/`label`，`index` 与 `YIBAN_PROXY_LIST` 的下标一致；**空位显示为「直连（本机出口）」** |
+| `workers.configured` | int ≥ 1 | 当前配置的并行执行体数：**清单里 `type=worker` 的行数**（`disabled`/`fallback` 不计）；清单缺失时回退旧口径（`YIBAN_WORKERS`，未配置=1） |
+| `workers.assignments[]` | list | 逐个执行体的出口描述 + `role`/`label`，`index` 是**清单槽位号**（清单缺失时即 `YIBAN_PROXY_LIST` 的下标）；**空位/空串显示为「直连（本机出口）」**。只列 `worker` 行——停用行只在 `executors[]` 里看得到 |
 | `workers.assignments[].state` | string | 该执行体的存活四态，见下表。**页面直接用，不要自己拿文件/时间去拼** |
 | `workers.assignments[].last_seen_at` | string \| **null** | 最后一次见到它活着的时刻（`YYYY-MM-DD HH:MM:SS`）；本业务日无记录时为 `null`。**不含 pid/主机名** |
-| `workers.env_keys` | object | 键名由后端给出，前端**不要硬编码字符串** |
+| `workers.env_keys` | object | 键名由后端给出，前端**不要硬编码字符串**。`manifest` = 执行体清单键名（`YIBAN_EXECUTORS`） |
+| `executors[]` | list | **执行体清单逐行**（`YIBAN_EXECUTORS` 的界面形态）：`{slot, type, egress, label[, state, last_seen_at]}`。见下节 |
 | `fallback.egress` | string | 兜底常驻执行体的出口描述 |
 | `fallback.interval_sec` | int | 兜底执行体的扫描间隔（秒） |
 | `fallback.role` / `label` | string | 固定 `fallback` / 「兜底常驻执行体」 |
@@ -101,6 +115,44 @@
 | `measured` | object \| **null** | 部署者实测值。**为 null 时页面必须显示"未实测"并隐藏建议**，不得编造数字 |
 | `recommendation` | object \| **null** | `per_executor_accounts = 实测 × 2/3`（向下取整，至少 1）；`executors_needed = ⌈current_accounts / per_executor_accounts⌉` |
 | `current_accounts` | int | 当前会计入容量的账号数（与设置页容量口径一致） |
+
+### `executors[]`：执行体清单（2026-09-17 新增）
+
+清单是**单键 JSON 数组** `YIBAN_EXECUTORS`，每个执行体一行：
+
+```json
+[{"slot": 0, "type": "worker", "proxy": "http://u:p@h:1"},
+ {"slot": 1, "type": "disabled", "proxy": ""},
+ {"slot": 2, "type": "fallback", "proxy": "http://fb:8080"}]
+```
+
+| 概念 | 口径（页面按这个理解） |
+|------|------------------------|
+| `slot` | **稳定槽位号**（0~63）。**只增不复用**：新增行 = 当前最大 + 1；删中间行不重排其余槽位；删掉最大那一行后下一次追加会复用该号（规则就是"最大值 + 1"）。要用停用来"占住位置"，把行改成 `disabled` **而不是删除** |
+| `type` | `worker`（并行执行体，可有 N 行）/ `fallback`（兜底，**最多 1 行**）/ `disabled`（停用） |
+| `proxy` | 该行自己的出口；空串 = 直连。**写接口收完整串，读接口只回描述串**（脱敏硬要求不变） |
+| 停用语义 | **保留出口**、不参与分配、不拉起、不计入建议值；接口回 `disabled`、**不报存活**；仍占 `slot`（不被复用）。重新启用（改回 `worker`）后出口照旧 |
+| 建议值分母 | `workers.configured` 只数 `worker` 行（`disabled` 与 `fallback` 都不计） |
+| 旧键 | 一个版本周期内保留：清单缺失时按旧三键读取（`resolve` 回退口径逐字不变）；**清单与旧键并存时以清单为准** |
+
+`executors[]` 每行字段：
+
+| 字段 | 类型 | 语义 |
+|------|------|------|
+| `slot` | int | 槽位号（同时就是并行执行体的下标，与 `workers.assignments[].index`、`activity.by_executor[].index` 同号） |
+| `type` | string | `worker` / `fallback` / `disabled` |
+| `egress` | string | 描述串（不含 userinfo） |
+| `label` | string | 中文标签：`并行执行体 #N` / `兜底常驻执行体` / `已停用（并行执行体 #N）` |
+| `state` | string | **仅 `worker` 行有**：该行的存活四态（口径同 `workers.assignments[].state`） |
+| `last_seen_at` | string \| null | **仅 `worker` 行有**；无记录为 `null` |
+
+**`fallback` 行与 `disabled` 行都不回 `state` / `last_seen_at`**（不是回 null，是**这两个键不出现**）：
+兜底的存活在 `fallback.*` 里（心跳文件与判据不同，套 worker 四态会永远显示 `idle`），
+停用行按要求不报存活。页面据此区分"停用"（`type == "disabled"`）。
+
+**迁移**：首次读到 `.env` 里存在旧三键、而清单键缺失时，后端按旧口径（顺序、空位=直连、
+兜底位置、worker 数量）**一次性生成清单并写回**，旧三键**不删**。所以页面第一次打开时
+`executors[]` 的行数会比"配置的并行执行体数 + 1（兜底）"——这是迁移的正常结果。
 
 ### `fallback.status` 四态（页面按它决定提示文案）
 
@@ -133,13 +185,64 @@
 
 `role` 取值 `worker` / `fallback` / `single` / `unknown`（口径唯一在 `yiban/egress.py`）：
 
-- `worker` 带 `index`（0-based，与 `YIBAN_PROXY_LIST` 下标一致）与 `label`「并行执行体 #N」；
+- `worker` 带 `index`（0-based，清单槽位号；清单缺失时与 `YIBAN_PROXY_LIST` 下标一致）与 `label`「并行执行体 #N」；
 - **`unknown` 是存量数据的事实，不是错误**：2026-09-16 之前兜底执行体与单执行体同用
   `exec-` 前缀且带进程号，库里区分不出来。这批老记录照实回 `unknown` +「未标注（旧数据）」，
   **不要**在前端猜测归类。
 
 **文案要求**：展示 `recommendation` 时必须带上"建议"字样（直接引用 `note` 即可），
 不得让管理员理解成"超过就会出错"——不同部署者的机器与出口带宽差异很大，这个数字只作提醒。
+
+## 行接口：`/api/scheduler/executors/rows…`（2026-09-17 新增）
+
+**仅主管理员**；CSRF 与同族端点一致（全局 `before_request` 校验）。三个接口都只动清单键：
+**只写 `.env`，不重启也不拉起进程**——下一轮定时任务或容器重启后生效。
+审计只落 `YIBAN_EXECUTORS[<slot>]`（**绝不记凭据**）；响应只回描述串。
+
+### `POST /api/scheduler/executors/rows` —— 追加一行
+
+| body | 含义 |
+|------|------|
+| `type` | 可选，`worker`（默认）/ `fallback` / `disabled` |
+| `proxy` | 可选，完整代理串；省略 / `null` / 空串 = 直连 |
+
+槽位 = **现有最大 + 1**（上限 63，满了 `400`）。`fallback` 最多 1 行，已有则 `400`。
+
+成功 `200`：`{"ok": true, "slot": <int>, "type": "...", "egress": "<描述串>", "note": "..."}`。
+
+### `PUT /api/scheduler/executors/rows/<slot>` —— 改一行
+
+| body | 含义 |
+|------|------|
+| `type` | 可选；**缺席 = 不改类型**。改成 `disabled` 即"停用" |
+| `proxy` | 可选；**缺席 = 不改出口**，`null` / 空串 = 直连 |
+
+`type` 与 `proxy` 都不给 → `400`（不给"什么都不改"的歧义）；槽位不在清单里 → `400`；
+改成 `fallback` 时若已有别的兜底行 → `400`。**其余行逐字保留**（与单段出口写接口同一纪律）。
+
+成功 `200`：`{"ok": true, "slot": <int>, "type": "...", "egress": "<描述串>", "note": "..."}`。
+
+### `DELETE /api/scheduler/executors/rows/<slot>` —— 删一行
+
+删行**不重排**其余槽位（删中间行后新建的行拿 `现有最大 + 1`）；槽位不存在 → `400`。
+"以后可能还要用"请改成 `disabled`（保留出口、占住槽位），不要删。
+
+成功 `200`：`{"ok": true, "slot": <int>, "type": "<被删行的类型>", "deleted": true, "note": "..."}`。
+
+### 与旧写接口的关系（迁移期）
+
+清单存在时，**旧写接口也会维护清单**（否则旧键写完被"以清单为准"的读接口盖过，
+表现为"保存点了没生效"），页面可以放心继续调旧接口：
+
+| 旧接口 | 清单存在时的行为 |
+|--------|------------------|
+| `PUT /api/scheduler/executors`（整条 `workers` / `proxy_list` / `proxy_fallback`） | 按旧口径同步清单：**保留已存在的 worker 槽位**（顺序吃新出口），执行体数变多用"最大槽位 + 1"追加、变少删除多余的 worker 行；兜底行更新出口；`disabled` 行不动 |
+| `PUT …/executors/workers/<index>` | 只改清单里该槽位那一行的出口（槽位不在清单里 → `400`） |
+| `PUT …/executors/fallback` | 改清单里兜底行的出口；清单里没有兜底行则**追加一行** |
+
+**注意**：旧整条写入只能表达"数量 + 连续出口表"，故它会**按槽位升序重新对应**执行体，
+并删除多出来的 worker 行——**停用行不会被它改动**，但槽位布局以它的口径重排。
+要精细控制槽位/停用，请用上面的行接口。
 
 ## `PUT /api/scheduler/executors`
 
