@@ -79,6 +79,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | 领取池与账号级租约（一个账号一天只被一个执行体做） | 已实现（表 `sign_claims`，v17） |
 | 并行执行体 | 已实现：`signin sign --workers N`（父进程监督 + 子进程领活） |
 | 兜底常驻执行体 | 已实现：`signin sign --fallback`（窗口内反复扫"未了结"账号，时段结束退出） |
+| 容器形态的兜底常驻 | 已实现：容器调度器在**有效签到窗口内**按开关自动拉起、窗口结束由进程自行退出（与宿主同一个 `YIBAN_FALLBACK_ENABLE`、同一把独立锁、同一份心跳） |
 | 每个执行体独立出口 | 已实现：`yiban/egress.py` + 下列环境变量（留空=直连） |
 | 每个执行体的存活四态（`running`/`finished`/`idle`/`stale`） | 已实现：并行执行体写固定名心跳文件，接口按心跳新鲜度判定（详见 `api-executors.md`） |
 | 账号列表的"上一个业务日是谁签的" | 已实现：`GET /api/accounts` 的 `last_executor` |
@@ -105,7 +106,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | `YIBAN_PROXY_FALLBACK` | 兜底常驻执行体的出口（未设则用 `YIBAN_PROXY`） | `http://fb:8080` |
 | `YIBAN_WORKERS` | 并行执行体数（未设=1） | `4` |
 | `YIBAN_FALLBACK_INTERVAL` | 兜底执行体扫描间隔秒（默认 60） | `60` |
-| `YIBAN_FALLBACK_ENABLE` | 兜底常驻执行体开关（1/true/on/yes=开；未设=关）。**还要在宿主加一条 cron** 才会真有进程（模板见 `scripts/yiban-fallback.sh` 头注释） | `1` |
+| `YIBAN_FALLBACK_ENABLE` | 兜底常驻执行体开关（1/true/on/yes=开；未设=关）。进程由部署形态各自拉起：宿主形态要加一条 cron（模板见 `scripts/yiban-fallback.sh` 头注释），容器形态由容器调度器在窗口内自动拉起 | `1` |
 | `YIBAN_CAPACITY_MEASURED` | 部署者实测的**单执行体容量**（账号/窗口），用于给出建议值 | `354` |
 | `YIBAN_MEASURE_COOLDOWN` | 现场实测端点的**全局冷却秒数**（默认 600，`0`=关闭限频） | `600` |
 

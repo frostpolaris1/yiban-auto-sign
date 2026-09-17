@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timedelta
 
 from yiban import __version__ as RELEASE_VERSION
-from yiban import clock, window
+from yiban import clock, egress, window
 from yiban import status as yiban_status
 from yiban.engine import accounts as accounts_mod
 
@@ -63,6 +63,17 @@ STATUS_SYMBOL = yiban_status.SYMBOL
 # `--second-run-check` 的退出码契约（run.sh 据此分支，勿随意改动）
 SECOND_RUN_CHECK_NEED = 10   # 需要补跑第二轮
 SECOND_RUN_CHECK_SKIP = 0    # 无需补跑
+
+# 三道门（周日未开 / 周六未开 / 一键暂停）跳过时的日志文案：**逐字保留历史措辞**
+# （运维与既有测试按它判断"这一轮为什么没跑"），因此仍写在本模块而不是门函数里。
+_GATE_SKIP_MESSAGES = {
+    schedule_mod.DAY_OFF_SUNDAY:
+        "==== 周日签到未开启（系统设置中开启后周日也会尝试签到），跳过执行 ====",
+    schedule_mod.DAY_OFF_SATURDAY:
+        "==== 周六签到已关闭（系统设置中开启后周六也会尝试签到），跳过执行 ====",
+    schedule_mod.DAY_OFF_PAUSED:
+        "==== 签到已暂停（管理员通过 Web UI 一键暂停），跳过执行 ====",
+}
 
 
 def main(argv=None):
@@ -124,12 +135,32 @@ def main(argv=None):
 
     # 兜底常驻执行体：先于其他分支（它自带循环与退出条件）
     if args.fallback:
+        # 独立锁 `signin-run.lock.fallback`：**真的取**。此前只设了锁名、从没取过，
+        # 于是"自己持独立锁"只是注释里的一句话——同一台机器上起第二个兜底不会被挡住
+        # （重复登录虽由领取池兜住，但会白烧一轮登录，且"窗口结束自行退出"的判断也会
+        # 被第二个进程重复执行）。取锁用**非阻塞**口径：已有兜底在跑就退出 3
+        # （与手动签到撞锁同一语义），不排队；句柄在本进程存活期间必须保活。
+        os.environ.setdefault("YIBAN_RUN_LOCK_NAME", workers.FALLBACK_LOCK_NAME)
+        try:
+            _fallback_lock_fh = cli_support._acquire_run_lock(True)  # noqa: F841（保活用）
+        except cli_support._RunLockHeld:
+            logger.warning("已有兜底常驻执行体在运行，本次不重复拉起（防同账号并发登录）")
+            return 3
         return workers.run_fallback_worker(argv)
 
     # 多执行体：本进程只做监督（持全局锁 + 汇总退出码），活儿由子进程干。
     # 放在补签轮判定之前不必要——补签轮判定只读文件，先走它更快。
-    if args.workers and args.workers > 1:
-        return workers.run_worker_supervisor(args.workers, argv)
+    # 拉起列表：优先执行体清单（`YIBAN_EXECUTORS` 里 type=worker 的行，**停用行不拉起**、
+    # 删中间行不影响其余槽位）；清单缺失/非法 → 旧口径 `--workers N`（行为逐字不变）。
+    # 清单里只有 1 个并行执行体时仍走进程内的单执行体路径（`single` 角色、出口读
+    # `YIBAN_PROXY`）——与迁移前的 `YIBAN_WORKERS=1` 完全一致。
+    slots = egress.launch_slots()
+    if slots is None:
+        # 清单缺失/非法 → 旧口径 `--workers N`（槽位就是 0..N-1，行为逐字不变）
+        if args.workers and args.workers > 1:
+            return workers.run_worker_supervisor(args.workers, argv)
+    elif len(slots) > 1:
+        return workers.run_worker_supervisor(len(slots), argv, slots=slots)
 
     # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
     # 宿主 run.sh 在首轮结束仍持锁时调用本开关，据退出码决定是否补跑第二轮
@@ -160,9 +191,7 @@ def main(argv=None):
         # 探针对全部账号做完整登录（等同一次真实签到，风控敏感）：一键暂停 /
         # 周末签到关闭期间照跑会把暂停语义打穿。门在探针分支内部判定——
         # 不上移全局门，保住「探针先于零账号守卫」的既有语义与 --check-config 路径。
-        _paused = str(os.environ.get("YIBAN_GLOBAL_PAUSE", "")).strip().lower() in ("1", "true", "on", "yes")
-        _weekday = clock.now().weekday()
-        if _paused or (_weekday == 6 and not SUNDAY_SIGN) or (_weekday == 5 and not SATURDAY_SIGN):
+        if schedule_mod.day_off(clock.now(), sat=SATURDAY_SIGN, sun=SUNDAY_SIGN):
             logger.info("==== 签到已暂停/周末签到关闭，本轮探针跳过（避免暂停期完整登录） ====")
             return 0
         # 探针与真实签到必须互斥，否则探针会与手动签到并发登录同一账号
@@ -213,23 +242,16 @@ def main(argv=None):
     gap_max = config_check.parse_env_int("YIBAN_ACCOUNT_GAP_MAX", 10)
 
     # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
-    # 手动签到（--only）不受限——用户主动触发应当放行
-    if not args.only and clock.now().weekday() == 6 and not SUNDAY_SIGN:
-        logger.info("==== 周日签到未开启（系统设置中开启后周日也会尝试签到），跳过执行 ====")
-        return 2  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
-
-    # 周六签到开关：关闭时周六跳过（与周日同一开关语义）。
-    # 手动签到（--only）不受限——用户主动触发应当放行（与周日开关语义一致）。
-    if not args.only and clock.now().weekday() == 5 and not SATURDAY_SIGN:
-        logger.info("==== 周六签到已关闭（系统设置中开启后周六也会尝试签到），跳过执行 ====")
-        return 2  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
-
-    # 全局暂停（管理员 Web UI 一键暂停）：下一轮生效，当前进程照常跑完。
-    # 手动签到（--only）不受限——用户主动触发应当放行（与周日开关语义一致）。
-    # YIBAN_GLOBAL_PAUSE 由 .env 写入，run.sh 加载后经环境变量传入。
-    if not args.only and str(os.environ.get("YIBAN_GLOBAL_PAUSE", "")).strip().lower() in ("1", "true", "on", "yes"):
-        logger.info("==== 签到已暂停（管理员通过 Web UI 一键暂停），跳过执行 ====")
-        return 2  # SKIPPED 语义：run.sh 写 SKIPPED 状态，恢复后次日正常执行
+    # 周六同语义；一键暂停（管理员 Web UI）同理。
+    # 三道门**共用 `schedule.day_off`（唯一实现）**：门只写在本函数里会被
+    # `--fallback` 的分支顺序绕过（兜底在它之前 return，2026-09-17 实测），故
+    # 兜底常驻（`workers.run_fallback_worker`）也走同一个函数。
+    # 手动签到（--only）不受限——用户主动触发应当放行。
+    if not args.only:
+        _gate = schedule_mod.day_off(clock.now(), sat=SATURDAY_SIGN, sun=SUNDAY_SIGN)
+        if _gate:
+            logger.info(_GATE_SKIP_MESSAGES[_gate])
+            return 2  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
 
     # 补签轮定向重跑：存在未了结账号时补签闸门整站重跑，会把当日已 success 的
     # 账号再次完整登录（风控暴露）。现剔除已了结账号（success/already），
