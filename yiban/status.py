@@ -1,19 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """签到状态码词汇表 —— **唯一事实源**。
 
-此前 `scripts/signin.py` 与 `web/app.py` 各定义了一份状态码常量与映射表，
-两份会各自漂移（实测：web 的图标/文案表缺 `no_position` 与 `global_paused`，
-signin 的符号表缺 `pending`）。本模块收口为一份：状态码只在此定义，两侧改为别名引用。
+状态码只在此定义，`scripts/signin.py`、`web/app.py`、`docker/scheduler.py` 一律
+别名引用同一对象；各写一份必然漂移（曾出现 web 的图标表缺 `no_position`、signin
+的符号表缺 `pending`）。
 
-**映射表刻意保留两张，不合并**——它们服务不同消费方，且当前确有差异：
+**映射表刻意保留两张，不合并**——它们服务不同消费方，当前确有差异：
 
 | 表 | 消费方 | 现状 |
 |----|--------|------|
 | `SYMBOL` | `signin` 写日状态文件 → 日历渲染 | 含 `no_position`(🚫) / `global_paused`(⏸)，无 `pending` |
 | `ICON` / `TEXT` | `/api/my-accounts` 的 `state_icon` / 文案 → 前端按码渲染 | 含 `pending`(⏳)，无 `no_position` / `global_paused` |
 
-合并会**改变前端可见表现**（某状态的图标/文案会变），属需要前后端协同的改动，
-不宜在重构中顺手做——已登记在待办（B-T9 前端打磨）里，届时一并收敛。
+合并会**改变前端可见表现**，属需要前后端协同的改动，不宜顺手做。
 """
 # ---- 状态码 ----
 STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
@@ -23,10 +22,10 @@ STATUS_FAILED = "failed"                 # 最终失败（重试耗尽）
 STATUS_RETRYING = "retrying"             # 重试中
 STATUS_SKIPPED_WINDOW = "skipped_window"  # 未在签到时段（窗口外）
 STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空）
-# 易班侧无签到点位（2026-09-01 独立状态）：登录成功、signPosition 返回 code=0 但
-# Position 为空（任务未配置/当日任务已关闭）。此前并入 STATUS_FAILED——与凭据/网络
-# 真失败混淆：触发"签到失败"告警轰炸、把补签闸门判为未了结白跑一轮全量。
-# 独立状态后：展示可区分、不按失败告警、不触发补签重跑（重试拿不到就是拿不到）。
+# 易班侧无签到点位：登录成功、signPosition 返回 code=0 但 Position 为空
+# （任务未配置/当日任务已关闭）。必须与 STATUS_FAILED 区分——否则会触发
+# "签到失败"告警轰炸、并把补签闸门判为未了结而白跑一轮全量；独立状态后
+# 展示可区分、不按失败告警、不触发补签重跑（重试拿不到就是拿不到）。
 STATUS_NO_POSITION = "no_position"
 STATUS_PAUSED = "paused"                # 账密异常暂停（连续凭据失败，熔断器）
 STATUS_USER_CANCELLED = "user_cancelled"  # 用户自取消（用户暂停自己的签到任务）

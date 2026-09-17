@@ -7,8 +7,8 @@
 连带丢掉这些保护。因此本模块提供策略**实现**，由 `yiban.client` 组装后注入协议层
 （契约见 `yiban/fyiban/protocol.py` 的 `RequestPolicy`）。
 
-三个判定的口径（双向钉在 `tests/test_login_protocol_shape.py` 与
-`tests/test_fyiban_isolation.py`）：
+三个判定的口径（由 `tests/test_login_protocol_shape.py` 与
+`tests/test_fyiban_isolation.py` 钉住）：
 
 - `is_yiban_trusted_url` —— **宽松**白名单：登录链路要跟随服务端下发的跳转，
   只放行 `yiban.cn` / `uyiban.com` 体系的 https 链接，防服务端被劫持时把登录态导流；
@@ -31,16 +31,24 @@ WAF_KEYWORDS = ["风险访问", "风控", "访问服务禁用", "WAF", "拦截"]
 # 被风控拦截时的统一对外文案（多处使用，文案变更必须同一处改）
 WAF_BLOCKED_MESSAGE = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
 
+# 白名单失败文案按"协议步骤"定位：说清是哪一步的 URL 不合格，管理员才能判断是
+# 服务端被劫持、还是我们的解析出了偏差。
+_WHITELIST_MESSAGES = {
+    "login_entry": "登录入口 URL 不在白名单",
+    "login_reurl": "登录 reUrl 不在白名单",
+    "verify_request": "verify_request 跳转不在白名单",
+    "ydclearance": "ydclearance 跳转目标不在白名单",
+}
+
 
 def is_waf_blocked(response_text):
     """判断响应是否为 WAF 风控拦截。
 
-     WAF 拦截页通常很短（< 2000 字符），而正常页面（如 OAuth 授权页、
-     服务协议等）内容较长且可能包含"风控""拦截"等正常法律文本。
-     因此仅在响应内容较短时才检测 WAF 关键词，避免误报。
+    WAF 拦截页通常很短（< 2000 字符），而正常页面（OAuth 授权页、服务协议等）
+    内容较长且可能包含"风控""拦截"等正常法律文本，故仅在响应较短时才检测关键词。
 
-     注意：易班 WAF 返回 JSON 格式时，中文会被 Unicode 转义
-    （如 \\u98ce\\u9669 = "风险"），需先解码再匹配关键词。
+    易班 WAF 返回 JSON 时中文会被 Unicode 转义（如 \\u98ce\\u9669 = "风险"），
+    需先解码再匹配。
     """
     if len(response_text) > 2000:
         return False
@@ -106,7 +114,7 @@ def location_desc(location):
     """302 Location 进错误消息前的脱敏描述：只留 scheme://host[:port]/path。
 
     query 里可能带 verify_request 令牌，userinfo 更是直接的凭据，两者都不能进日志
-    （原实现保留 `netloc`，会把 `https://user:pass@host/` 的凭据一起写出去）。
+    ——所以**不能**保留 `netloc`（那会把 `https://user:pass@host/` 的凭据一起写出去）。
     """
     try:
         parts = urlsplit(location or "")
@@ -119,16 +127,6 @@ def location_desc(location):
     if parts.port:
         desc += f":{parts.port}"
     return desc + parts.path
-
-
-# 白名单失败文案按"协议步骤"定位：说清是哪一步的 URL 不合格，管理员才能判断是
-# 服务端被劫持、还是我们的解析出了偏差。
-_WHITELIST_MESSAGES = {
-    "login_entry": "登录入口 URL 不在白名单",
-    "login_reurl": "登录 reUrl 不在白名单",
-    "verify_request": "verify_request 跳转不在白名单",
-    "ydclearance": "ydclearance 跳转目标不在白名单",
-}
 
 
 class ProtocolPolicy:
