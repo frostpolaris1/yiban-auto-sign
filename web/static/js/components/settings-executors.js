@@ -142,22 +142,64 @@
   }
 
   // 状态与当日合并成一列（用户 2026-09-17：两者是同一件事的两面，各占一列只是白占宽度）
+  // 徽标 + 当日计数：外层 td、内层 span 承载 flex —— td 直接做 flex 容器会失去
+  // vertical-align:middle，内容相对同排其它列偏上（复核实测 −6.9px）
   function stateCell(row) {
     var type = attr(row.type);
-    var cell = YB.el("td", { class: "set-exec-state" });
+    var inner = YB.el("span", { class: "set-exec-state" });
     if (type === "disabled") {
-      cell.appendChild(YB.el("span", { class: "set-exec-off", text: "停用中（不拉起、不计入建议值）" }));
-      return cell;
+      inner.appendChild(YB.el("span", { class: "set-exec-off", text: "停用中（不拉起、不计入建议值）" }));
+      return YB.el("td", {}, [inner]);
     }
     if (type === "fallback") {
       var fb = (lastData && lastData.fallback) || {};
-      cell.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
-      cell.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("fallback", null)) }));
-      return cell;
+      inner.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
+      inner.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("fallback", null)) }));
+      return YB.el("td", {}, [inner]);
     }
-    cell.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
-    cell.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("worker", count(row.slot))) }));
-    return cell;
+    inner.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
+    inner.appendChild(YB.el("span", { class: "set-exec-daily", text: todayText(activityFor("worker", count(row.slot))) }));
+    return YB.el("td", {}, [inner]);
+  }
+
+  // 焦点归还：保存/删除后列表整表重建，刚被 openModal 归还焦点的那颗「设置」按钮被销毁，
+  // 焦点会掉到 body（复核实测）。重建后按槽位找回同一行；行已删或槽位对不上则落到「添加执行体」。
+  var focusAfterPaint = null;
+  function restoreFocus() {
+    var want = focusAfterPaint;
+    focusAfterPaint = null;
+    if (!want) return;
+    var el = document.querySelector('#set-exec-assign tr[data-slot="' + want.slot + '"] button:last-of-type')
+      || $("set-exec-row-add");
+    if (!el || el.disabled || !el.focus) return;
+    var host = $("modal-host");
+    // 弹窗还没真正移除时不能立刻聚焦：面板是 200ms 后从 DOM 摘掉的，摘掉那一刻浏览器会把
+    // 焦点踢回 body（刚聚焦的目标也就白聚）。等 backdrop 真没了再聚焦——用 MutationObserver
+    // 观察宿主，不猜动画时长（reduce 下是 0ms，同样成立）。
+    if (host && host.querySelector(".pm-backdrop")) {
+      var done = false;
+      var obs = new MutationObserver(function () {
+        if (!host.querySelector(".pm-backdrop")) go();
+      });
+      var go = function () {
+        if (done) return;
+        done = true;
+        try { obs.disconnect(); } catch (e) { /* 忽略 */ }
+        try { el.focus(); } catch (e) { /* 忽略 */ }
+      };
+      obs.observe(host, { childList: true, subtree: true });
+      setTimeout(go, 800);                        // 兜底：观察器没触发也必须还焦点
+      return;
+    }
+    try { el.focus(); } catch (e) { /* 忽略 */ }
+  }
+
+  // 兜底开关/进程还在、但清单里已经没有兜底行时点一句，免得"兜底 0 行"与卡头"正在运行"同屏无解释
+  function fallbackRowMissing() {
+    var fb = (lastData && lastData.fallback) || {};
+    if (fb.status === "off") return "";
+    var has = executors().some(function (r) { return attr(r.type) === "fallback"; });
+    return has ? "" : "（清单里已没有兜底行）";
   }
 
   function rowBtn(row) {
@@ -176,7 +218,10 @@
     var rows = executors().slice().sort(function (a, b) { return count(a.slot) - count(b.slot); });
     rows.forEach(function (r) {
       var type = attr(r.type);
-      tbody.appendChild(YB.el("tr", { class: type === "disabled" ? "set-exec-row-off" : "" }, [
+      tbody.appendChild(YB.el("tr", {
+        class: type === "disabled" ? "set-exec-row-off" : "",
+        dataset: { slot: String(count(r.slot)) }
+      }, [
         YB.el("td", {}, [
           YB.el("span", { class: "mono", text: attr(r.label) || TYPE_TEXT[type] || "—" }),
           // 停用行的标签口径就是「已停用」（后端冻结、不含槽位），多个停用行只靠标签区分不了，
@@ -196,9 +241,9 @@
         YB.el("td", { text: attr(a.label) || "未标注（旧数据）" }),
         YB.el("td", { text: "—" }),
         YB.el("td", { text: "—" }),
-        YB.el("td", { class: "set-exec-state" }, [
+        YB.el("td", {}, [YB.el("span", { class: "set-exec-state" }, [
           YB.el("span", { class: "set-exec-daily", text: todayText(a) })
-        ]),
+        ])]),
         YB.el("td", {})
       ]));
     });
@@ -207,7 +252,9 @@
         YB.el("td", { text: "—" }),
         YB.el("td", { text: "—" }),
         YB.el("td", { text: "清单为空：点上方「添加执行体」加一行" }),
-        YB.el("td", { class: "set-exec-state" }, [YB.el("span", { class: "set-exec-daily", text: "—" })]),
+        YB.el("td", {}, [YB.el("span", { class: "set-exec-state" }, [
+          YB.el("span", { class: "set-exec-daily", text: "—" })
+        ])]),
         YB.el("td", {})
       ]));
     }
@@ -222,9 +269,10 @@
     }
     // 卡头只留短标签；"多半漏加了 cron"那类处置说明交给下面那条**窗口内才出现**的告警
     // （#set-exec-fb-warn），避免同一件事在卡头与告警里各说一遍（提醒不占页面）。
-    setText("set-exec-fb-text", fb.status === "declared_not_running"
+    setText("set-exec-fb-text", (fb.status === "declared_not_running"
       ? "已声明开启但没有进程在跑。"
-      : (fb.status === "running_not_declared" ? "有进程在跑，但不是由配置拉起的。" : ""));
+      : (fb.status === "running_not_declared" ? "有进程在跑，但不是由配置拉起的。" : ""))
+      + fallbackRowMissing());
     setHidden($("set-exec-fb-state"), !fbAbnormal(fb));
     // 报警纪律（后端要求）：只有"开了却没跑起来"**且落在本应运行时段内**才报警
     var alarm = fb.status === "declared_not_running" && fb.in_window === true;
@@ -242,24 +290,36 @@
   function note(d) { return attr(d && d.note) || "已写入配置"; }
   function failTip(e, what) { setTip((e && e.message) || (what + "失败，请稍后重试"), true); }
 
+  // 在途终态：按钮跟着 busy 灰掉，"点了没反应"变成"按钮灰着"
+  function setBusy(on) {
+    var b = $("set-exec-row-add");
+    if (b) b.disabled = !!on || !ctx.isMaster;
+  }
+
   function withBusy(fn) {
     if (busy) return Promise.resolve(false);
     busy = true;
+    setBusy(true);
     return Promise.resolve().then(fn).then(function (ok) {
-      busy = false; applyPerm(); return ok;
+      busy = false; applyPerm(); setBusy(false);
+      if (focusAfterPaint) restoreFocus();       // 必须在 busy 复位后：禁用按钮 focus() 无效
+      return ok;
     }, function () {
-      busy = false; applyPerm(); return false;
+      busy = false; applyPerm(); setBusy(false);
+      if (focusAfterPaint) restoreFocus();
+      return false;
     });
   }
 
   function addRow() {
-    if (!ctx.isMaster) return;
+    if (!ctx.isMaster || busy) return;          // busy 是防重入的唯一判据，入口再挡一道
     withBusy(function () {
       setTip("添加中…", false);
       return YB.api("POST", "/api/scheduler/executors/rows", { type: "worker" }).then(function (d) {
         return load().then(function () {
           setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
             + "。想给它单独出口，点那一行的「设置」。", false);
+          focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
           return true;
         });
       }, function (e) { failTip(e, "添加"); });
@@ -290,6 +350,7 @@
     }).then(function (ok) {
       if (!ok) return;
       if (handle && handle.close) handle.close();
+      focusAfterPaint = { slot: slot };        // 行已删 → restoreFocus 兜底落到「添加执行体」
       withBusy(function () {
         setTip("删除中…", false);
         return YB.api("DELETE", "/api/scheduler/executors/rows/" + slot).then(function (d) {
@@ -368,7 +429,7 @@
     // 「当前出口」与「对应配置项」合并成一行（用户 2026-09-17：这两条本来在说同一件事）
     wrap.appendChild(YB.el("div", { class: "field" }, [
       YB.el("span", { class: "field-label", text: "当前出口（已脱敏）" }),
-      YB.el("p", { class: "field-help", text: (row.egress || "直连（本机出口）") + "｜配置项 " + manifestKey(slot) })
+      YB.el("p", { class: "set-summary", text: (row.egress || "直连（本机出口）") + "｜配置项 " + manifestKey(slot) })
     ]));
 
     var inputId = "set-exec-modal-egress";
@@ -419,6 +480,7 @@
         }).then(function (ok) {
           if (!ok) return;
           if (handle && handle.close) handle.close();
+          focusAfterPaint = { slot: slot };
           putRow(slot, { proxy: "" }, "已清除出口");
         });
       }),
@@ -456,6 +518,7 @@
       if (enableArg != null) {
         steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: enableArg }));
       }
+      focusAfterPaint = { slot: slot };        // 重建后把焦点还给同一行的「设置」
       return Promise.all(steps).then(function (res) {
         return load().then(function () {
           if (handle && handle.close) handle.close();
@@ -463,12 +526,15 @@
           return true;
         });
       }, function (e) {
+        focusAfterPaint = null;                // 失败时弹窗还开着，不动焦点
         busy = false;
         tip.textContent = (e && e.message) || "保存失败，请稍后重试";
         tip.className = "set-tip set-bad";
         return false;
       }).then(function (ok) {
-        busy = false; applyPerm(); return ok;
+        busy = false; applyPerm();
+        if (focusAfterPaint) restoreFocus();     // save 走自己的链条（不是 withBusy），这里也要归还
+        return ok;
       });
     }
 

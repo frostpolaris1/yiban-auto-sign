@@ -160,8 +160,9 @@
   // 各组件在标脏/清脏时切换卡内徽标的 hidden；监听它即可在一次改动后同步标签脏点
   function observeDirtyBadges() {
     if (!window.MutationObserver) return;
+    // 执行体分区已改清单式（写操作即时落盘），没有卡内脏徽标，故不在此列
     var badgeIds = ["ss-dirty", "set-ann-dirty", "sn-dirty", "sm-dirty", "set-cap-dirty",
-                    "set-exec-dirty", "sh-dirty"];
+                    "sh-dirty"];
     var obs = new MutationObserver(refreshTabDirty);
     badgeIds.forEach(function (id) {
       var badge = $(id);

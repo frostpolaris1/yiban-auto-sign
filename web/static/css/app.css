@@ -911,6 +911,10 @@ html {
 .dash-page #cal-label.is-swapping { opacity: 0; transition-timing-function: var(--ease-in-strong); }
 .dash-page #cal-label.is-shifting-in { opacity: 0; transition: none; }
 @media (prefers-reduced-motion: reduce) {
+  /* 弹窗打开态的选择器（`.pm-backdrop.is-open .pm-panel`，特异性 0,3,0）会压过上面那条
+     裸 `.pm-panel { transition: none }`（0,1,0），导致 reduce 下弹窗仍播 200ms 动画。
+     这里用同等特异性兜底清零（复审实测：进/退两向都在动）。 */
+  .pm-backdrop.is-open .pm-panel { transition: none; }
   /* JS 在 reduce 下不加这些类，这里兜底清零 —— 动画中途切换媒体查询也不留位移 */
   .dash-page .mini-cal-grid,
   .dash-page .mini-cal-grid.is-swapping,
@@ -3242,7 +3246,10 @@ body[data-page="work-users"] .usr-group-head { margin-bottom: 0; }   /* 间距�
 }
 /* 向上展开的变体：弹窗内底部没有空间时用（.pm-panel 是 overflow:hidden，向下开会**被裁掉**）。 */
 .info-pop--up { top: auto; bottom: calc(100% + 6px); transform: translateY(2px); }
-.info-pop--up.info-pop { right: 0; }
+/* 弹窗内的浮层：`.pm-panel` 是 `overflow:hidden`，浮层按 right:0 向**左**展开会被横向裁掉
+   （实测：1440 行弹窗的浮层 420px 只露 100px）。弹窗内的触发器都在面板左半边，
+   故弹窗内改为左对齐、只向右展开。 */
+.pm-panel .info-pop { right: auto; left: 0; }
 /* hover 触发只在精确指针设备启用：触屏点按会产生"假 hover"并可能让浮层粘滞 */
 @media (hover: hover) and (pointer: fine) {
   .info-tip:hover .info-pop {
@@ -4309,8 +4316,10 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .set-exec-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 6px; }
 .set-exec-bar .set-summary { margin: 0; }
 .set-exec-bar__actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-/* 状态与当日合并一列：徽标 + 当日计数同一行，列窄时自动折到下一行 */
-.set-exec-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+/* 状态与当日合并一列：徽标 + 当日计数同一行，列窄时自动折到下一行。
+   注意用 **inline-flex 且挂在内层 span 上**：td 若是 flex 容器会失去 vertical-align:middle，
+   内容相对同排其它列偏上（实测 −6.9px）。 */
+.set-exec-state { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .set-exec-daily, .set-exec-off, .set-exec-slot { font-size: 12px; color: var(--t-muted); }
 .set-exec-slot { margin-left: 6px; }
 /* 停用行整行降级（出口仍在，但不是活配置） */
@@ -4333,5 +4342,5 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
      浏览器会把各列压到内容宽以下，出现"一个字一行"——执行体列被压成 44px、
      单行高 146px，状态徽标变成长条。给下限后列宽回到内容宽、行高回到 59px，
      多出来的宽度交给 .table-scroll 横向滚动（账号页/用户页在 360 下也是这么滚的）。 */
-  #set-exec-table { min-width: 620px; }
+  #set-exec-table { min-width: 700px; }
 }
