@@ -216,14 +216,22 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
         ——汇总把它们算成失败（❌ N 失败、退出码 1、发失败邮件），而真相是"一个请求都
         没发"（2026-09-17 测试机实测复现；该行在 `pending` 判定加入前对 base 提交同样）。
+
+        **快照只用于预筛，落盘再 CAS 一次**：`_daily_statuses()` 是无锁快照，从快照
+        判"无记录"到写入之间，另一执行体可能刚把真实结论落盘——写走
+        `only_if_absent`（锁内再判），CAS 被拒的账号不写、不改 results、不发事件。
         """
         recorded = state_io._daily_statuses()
         for _ra in rest_accs:
             _p = _ra.phone
             if _p in results or recorded.get(_p, "") not in ("", STATUS_PENDING):
                 continue
+            if not state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW,
+                                              "签到时段已结束", only_if_absent=True):
+                # 锁内发现当日已有结论（他执行体刚写入）：不覆盖，保持真实失败可见
+                logger.info(f"[{_p}] ⛔ 签到时段已结束，但当日已有结论，跳过写入")
+                continue
             results[_p] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
-            state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW, "签到时段已结束")
             _emit_event(_p, STATUS_SKIPPED_WINDOW, "签到时段已结束")
 
     # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐

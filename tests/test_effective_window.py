@@ -162,6 +162,35 @@ class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
             st = json.load(f)[PHONE]["status"]
         self.assertEqual(st, signin.STATUS_SKIPPED_WINDOW)
 
+    def test_closed_window_cas_does_not_clobber_concurrent_failure(self):
+        """M9：快照读"无记录"后另一执行体刚写入 failed——落盘前必须 CAS 拦下。
+
+        时序：本进程 `_mark_window_skip` 顶部读到空快照（此时还没人写）→ 进入
+        写分支前另一执行体已把真实失败落盘 → 本进程再写会把 failed 覆盖成
+        skipped_window、`has_real_failure` 变 False（失败告警被吞）。修复后
+        写入走"仅当当日无结论"的锁内再判，不得覆盖。
+        """
+        # 模拟"另一执行体已写入 failed"：真实文件里已有 failed
+        self._write_state({PHONE: {"status": signin.STATUS_FAILED, "message": "网络超时"}})
+        after = signin.clock.now().replace(hour=8, minute=5, second=0, microsecond=0)
+        accs = [signin.Account(phone=PHONE, password="p")]
+        # _daily_statuses 打桩返回空：模拟 _mark_window_skip 顶部快照"读到无记录"
+        # （快照时刻早于另一执行体的写入）——真实文件仍在锁内被读到 failed
+        with mock.patch.object(signin.clock, "now", return_value=after), \
+                mock.patch.object(signin, "attempt_signin"), \
+                mock.patch.object(signin, "_update_cred_state"), \
+                mock.patch.object(signin.time, "sleep"), \
+                mock.patch.object(signin.state_io, "_daily_statuses", return_value={}):
+            results = signin.run_queue_retry(accs, "", 0, 0,
+                                             schedule={PHONE: after})
+        with open(self.state_path, encoding="utf-8") as f:
+            st = json.load(f)[PHONE]["status"]
+        self.assertEqual(st, signin.STATUS_FAILED, "锁内 CAS 必须拦下覆盖")
+        # 本进程不得把该账号记成"窗口外跳过"——失败保持可见（has_real_failure 不被吞）
+        self.assertNotEqual(results.get(PHONE, (0, 0, 0, ""))[3],
+                            signin.STATUS_SKIPPED_WINDOW,
+                            "CAS 被拒后不得再标记为本轮的 skipped_window")
+
     # 本轮内"重试没赶上窗口"与本轮前的记录共用同一道守卫（`results` 与当日文件
     # 都查），故上面两条覆盖了该规则的两种来源。
 
