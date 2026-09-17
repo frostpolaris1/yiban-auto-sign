@@ -379,6 +379,9 @@
           + " 个、建议每执行体 " + perExec + " 个账号。"
           + (need == null ? "" : "按当前 " + cur + " 个账号换算：建议数量 " + need + "，已填入左侧数字框（未保存）。");
       }
+      // 后端把"只覆盖窗口外最小链路、偏乐观"写进了 note（78/79 号回执确认不加 scope 字段）。
+      // 页面已在按钮旁常驻同义的风险说明，故这里不再重复显示，只把它挂到结果行的 title 上备查。
+      if (out && d && d.note) out.title = attr(d.note);
       if (need != null && $("set-exec-workers")) {
         $("set-exec-workers").value = String(Math.min(64, Math.max(1, need)));
         markDirty();
