@@ -6,9 +6,9 @@
 自选时间片优先、正态钟形锚点、σ 自适应封顶、超容量压缩模式。窗口（起止 + 掐头去尾 +
 是否已关闭）的唯一口径在 `yiban.window`，本模块只做调用与告警，不另存一份判断。
 
-**告警去重**：窗口配置非法 / 有效窗口被裁剪吃空各只并入当日汇总邮件一次（`_invalid_
-window_notified`、`_edge_empty_window_notified`）——这两个函数每天被多账号多轮调用，
-不去重会把同一配置错误刷成几十条。
+**告警去重**：窗口配置非法 / 有效窗口被裁剪吃空各只并入当日汇总邮件一次（
+`_invalid_window_notified`、`_edge_empty_window_notified`）——这两个函数每天被多账号
+多轮调用，不去重会把同一配置错误刷成几十条。
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
 """
@@ -24,48 +24,32 @@ from yiban.store import db
 logger = logging.getLogger("yiban")
 
 # ---------------------------------------------------------------------------
-# 调度 v2（S1 demo）：统一填充框架配置
-# 设计文档：docs/design/plan-scheduler-v2.md（2×2 组合 + 安全底座）
+# 调度 v2 配置默认值（设计文档：docs/design/plan-scheduler-v2.md）
 # ---------------------------------------------------------------------------
 _DEFAULT_SIGN_START = (6, 30)
 _DEFAULT_SIGN_END = (7, 50)
-_DEFAULT_EDGE_SEC = 60          # 首尾缓冲：有效窗口 [SIGN_START+60s, SIGN_END-60s]
 _DEFAULT_BLOCK_CAP = 15         # 块容量（每块最多人数，满则向后顺延）
 _DEFAULT_MU_MIN_PCT = 40        # 正态高峰中心范围（有效窗口相对位置 %）
 _DEFAULT_MU_MAX_PCT = 60
 _DEFAULT_SIGMA_MIN_PCT = 15     # 正态分散程度范围（有效窗口宽度 %）
 _DEFAULT_SIGMA_MAX_PCT = 25
-_DEFAULT_MIN_EXEC_GAP = 5       # 请求最小间隔下限（秒，压缩模式防请求过密；F1 接线于 run_queue_retry）
+_DEFAULT_MIN_EXEC_GAP = 5       # 请求最小间隔下限（秒，压缩模式防请求过密，接线于 run_queue_retry）
 # 容量预检与容量预估共用的单账号耗时估算（秒）。缺省按压测实测定档：
 # 单账号（登录链 + 签到链共 6 次请求）实测 0.08s（零延迟）、1.87s（拟真 300ms）、
-# 3.1s（含尾延迟）。旧缺省 8s 无实测依据，把可容纳账号数低估约 2.6 倍，
-# 并使保存门误拒 261~360 个账号的站点；真实网络更慢时由 YIBAN_AVG_ATTEMPT_SEC 覆盖。
+# 3.1s（含尾延迟）。取 8s 会把可容纳账号数低估约 2.6 倍，并使保存门误拒 261~360 个
+# 账号的站点；真实网络更慢时由 YIBAN_AVG_ATTEMPT_SEC 覆盖。
 _DEFAULT_AVG_ATTEMPT_SEC = 3
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
 
-# 签到窗口配置异常的一次性告警标记（2026-08-28 审查 F3）：
-# _schedule_config 每次调度都会调用，非法窗口回退默认窗口的告警只收集一次，
-# 避免同一个配置错误在每日汇总邮件里重复出现 N 次
+# 签到窗口配置非法的一次性告警标记：_schedule_config 每次调度都会调用，
+# 非法窗口回退默认窗口的告警只收集一次，避免同一配置错误在汇总邮件里重复出现
 _invalid_window_notified = False
 
-# 有效签到窗口为空的一次性告警标记：
-# _schedule_blocks 每次调度都会调用（多账号/多轮），前后裁剪吃满窗口回退默认
-# 窗口的邮件告警同样只收集一次（镜像上方 F3 去重模式），防汇总邮件刷屏
+# 有效签到窗口为空的一次性告警标记：_schedule_blocks 每次调度都会调用（多账号/多轮），
+# 前后裁剪吃满窗口而回退默认窗口的告警同样只收集一次（模式同 _invalid_window_notified）
 _edge_empty_window_notified = False
-
-
-def _parse_hhmm(value, default):
-    """解析 HH:MM → (h, m)；非法返回 default。"""
-    try:
-        h, m = value.strip().split(":")
-        h, m = int(h), int(m)
-        if not (0 <= h <= 23 and 0 <= m <= 59):
-            return default
-        return (h, m)
-    except (ValueError, AttributeError):
-        return default
 
 
 def _env_int(name, default, lo=None, hi=None):
@@ -143,9 +127,8 @@ def _schedule_config():
                 "实际签到时间将与配置不符！请修改 YIBAN_SIGN_START / YIBAN_SIGN_END"
             )
             logger.error("%s", _msg)
-            # 2026-08-28 审查 F3：原实现只写 WARNING 日志，管理员在 Web 界面看到的
-            # 窗口设置"看起来生效"、实际签到时刻完全不同且无人知情。现并入当日
-            # 汇总邮件（A 线），确保配置错误可被管理员发现。
+            # 只写日志不够：管理员在 Web 界面看到的窗口设置"看起来生效"、实际签到
+            # 时刻完全不同且无人知情。故并入当日汇总邮件（A 线）。
             alerts._collect_admin_mail("签到窗口配置异常", _msg)
         start, end = _DEFAULT_SIGN_START, _DEFAULT_SIGN_END
     mu_lo = _env_int("YIBAN_SCHEDULE_MU_MIN_PCT", _DEFAULT_MU_MIN_PCT, 0, 100)
@@ -158,7 +141,7 @@ def _schedule_config():
     if sigma_lo >= sigma_hi:
         logger.warning("σ 范围 %s~%s 非法，回退默认 15~25", sigma_lo, sigma_hi)
         sigma_lo, sigma_hi = _DEFAULT_SIGMA_MIN_PCT, _DEFAULT_SIGMA_MAX_PCT
-    # 掐头去尾（0.22.0 起前后独立，秒级，0.5 分钟=30s 粒度；UI 按 0.5 分钟步进）：
+    # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度；UI 按 0.5 分钟步进）：
     # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC
     # 存在时映射为前后对称（保证旧配置行为不变）——解析在 yiban.window.parse_edges。
     edge_front, edge_back = window.parse_edges(os.environ)
@@ -211,10 +194,8 @@ def _schedule_blocks(cfg):
             "有效签到窗口为空（窗口 %s~%s、前裁 %ss 后裁 %ss），回退默认窗口 06:30~07:50",
             cfg["sign_start"], cfg["sign_end"], cfg["edge_front_sec"], cfg["edge_back_sec"],
         )
-        # 镜像 _schedule_config 的 F3 模式（一次性去重）——原实现
-        # 只写 WARNING 日志，管理员在 Web 界面看到的裁剪设置"看起来生效"、实际
-        # 签到时刻完全不同且无人知情。现并入当日汇总邮件（A 线）一次，确保
-        # 前后裁剪配置错误可被管理员发现；去重防多账号/多轮调用刷屏。
+        # 同 _schedule_config：窗口/裁剪配置错误会让"Web 界面看到的设置"与实际签到
+        # 时刻不符而无人知情，故并入当日汇总邮件（A 线）一次——多账号/多轮调用只发一次
         global _edge_empty_window_notified
         if not _edge_empty_window_notified:
             _edge_empty_window_notified = True
@@ -242,9 +223,13 @@ def _schedule_blocks(cfg):
     return blocks, eff_lo, eff_hi
 
 
-def _minute_to_dt(base_date, minute):
-    """当天分钟数 → datetime（base_date 提供日期）。"""
-    return base_date + timedelta(minutes=minute)
+def _window_closed(sch_cfg, now_dt):
+    """签到窗口是否已关闭（与 _schedule_blocks 同源：都走 window.bounds，含同一套回退）。
+
+    若这里只按 sign_end - edge_back 算，而 _schedule_blocks 在"有效窗口被裁剪吃空"时
+    回退到默认窗口，就会出现"有完整计划、却整轮判时段已结束、零请求"。
+    """
+    return window.bounds(sch_cfg).is_closed(now_dt)
 
 
 def _nearest_available(bi, filled, blocks, cap):
@@ -289,14 +274,14 @@ def _slot_to_bi(cfg):
 
 
 def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=None):
-    """调度 v2（S1 demo）：统一填充框架。
+    """调度 v2：统一填充框架。
 
     排序维度 × 分布维度（2×2）：
     - 顺序×均匀：线性填块（第 i 账号 → 第 i/K 块，先到先签）
     - 随机×均匀：打乱后循环填块（每块人数均衡、铺满窗口）
     - 顺序×正态：z_i 锚点（hash(phone)）稳定作息 + 钟形
     - 随机×正态：每天重抽分位（重排 + 钟形，防风控最强）
-    自选优先（S2）：prefs 传入 {phone: {slot_min, updated_at}} 时，自选账号固定所选片
+    自选优先：prefs 传入 {phone: {slot_min, updated_at}} 时，自选账号固定所选片
     （片内等分），片满先到先得（updated_at 早者留），溢出双向就近顺延；未选走四组合。
     安全底座：首尾缓冲有效窗口、块容量顺延、块内等分 + 抖动、
     σ_eff 封顶、反射兜底、n≤小人数免分块、超容量压缩模式。
@@ -340,7 +325,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             n, cap, k, (span * 60) / n,
         )
 
-    # 自选优先占块（S2）：先到先得 + 溢出双向就近顺延
+    # 自选优先占块：先到先得 + 溢出双向就近顺延
     chosen = {}  # phone -> bi
     if prefs is None:
         prefs = {}
@@ -350,7 +335,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             except Exception as e:
                 logger.warning("读取自选时间失败（忽略，走自动分配）: %s", e)
     if prefs:
-        # 对抗性审查补：只保留当前账号集合内的 pref（换号/删号后的孤儿不占容量）
+        # 只保留当前账号集合内的 pref（换号/删号后的孤儿不占容量）
         valid_phones = {a.phone for a in accounts}
         slot_to_bi = _slot_to_bi(cfg)
         by_slot = {}
@@ -361,13 +346,11 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
                 slot = int(p.get("slot_min", -1))
             except (TypeError, ValueError):
                 continue
-            # 2026-08-28 审查 F4：原校验 `0 <= slot < span`（span = 有效窗口宽度），
-            # 而 _slot_to_bi 的键范围是完整窗口——窗口长度非 5 分钟整数倍时
-            # （如 06:30~07:52），末尾片在 Web 端可点选、此处却被判"落窗外"
-            # 而静默回退自动分配。改以 _slot_to_bi 的成员性为准（与 Web 端
-            # _pref_slots 同一套可用性判定）。
+            # 可用性以 _slot_to_bi 的成员性为准（与 Web 端 _pref_slots 同一套判定）：
+            # 校验 `0 <= slot < span`（span=有效窗口宽度）会误杀末尾片——_slot_to_bi
+            # 的键范围是完整窗口，窗口长度非 5 分钟整数倍时（如 06:30~07:52），
+            # 末尾片在 Web 端可点选、却在这里被判"落窗外"而静默回退自动分配。
             if slot not in slot_to_bi:  # 片无效/落窗外 → 回退自动分配
-                # 留痕——退化窗口下自选片被丢弃此前完全静默
                 logger.warning(f"[{phone}] 自选时间片 {slot} 不在今日可选范围，回退自动分配")
                 continue
             by_slot.setdefault(slot, []).append((str(p.get("updated_at", "")), phone))
@@ -411,8 +394,7 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
             zmap = {acc.phone: zs[i] for i, acc in enumerate(ordered)}
         else:
             zmap = {acc.phone: _anchor_z(acc.phone) for acc in ordered}
-        # μ/σ 每天采样一次、全体共享（对抗性审查 2026-08-15：原实现在循环内每账号
-        # 重采样，偏离设计"高峰中心每日一次全体共享"，导致分布趋平/作息漂移放大）
+        # μ/σ 每天采样一次、全体共享：在循环内每账号重采样会导致分布趋平、作息漂移放大
         mu = eff_lo + span * rng.uniform(cfg["mu_min_pct"], cfg["mu_max_pct"]) / 100.0
         sigma = _sigma_eff(
             span * rng.uniform(cfg["sigma_min_pct"], cfg["sigma_max_pct"]) / 100.0,
@@ -458,17 +440,5 @@ def build_schedule(accounts, order=None, dist=None, now=None, rng=None, prefs=No
         dur = hi - lo
         for j, p in enumerate(phones):
             t = lo + dur * (j + 0.5) / m + rng.uniform(0, min(0.8, dur / m / 2))
-            schedule[p] = _minute_to_dt(base, min(t, hi - 0.001))
+            schedule[p] = base + timedelta(minutes=min(t, hi - 0.001))
     return schedule
-
-# ---------------------------------------------------------------------------
-# 签到窗口是否已关闭（口径唯一源：yiban.window，与 _schedule_blocks 的 horizon 同源）
-# ---------------------------------------------------------------------------
-def _window_closed(sch_cfg, now_dt):
-    """签到窗口是否已关闭（口径唯一源：yiban.window，与 _schedule_blocks 的 horizon 同源）。
-
-    此前本函数只按 sign_end - edge_back 算，而 _schedule_blocks 在"有效窗口被裁剪
-    吃空"时会回退到默认窗口——于是出现"有 80 分钟的完整计划、却整轮判时段已结束、
-    零请求"。现两处都走 window.bounds（含同一套回退）。
-    """
-    return window.bounds(sch_cfg).is_closed(now_dt)

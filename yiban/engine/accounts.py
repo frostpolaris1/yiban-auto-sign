@@ -7,7 +7,7 @@
 审核态过滤（pending/rejected/deleted 不参与签到）、重复手机号去重（同一账号被完整
 登录两次会让重试预算错乱）。
 
-跨模块调用纪律见包说明：跨模块一律走模块属性访问（如 `config_check.config_check._key_env_file()`）。
+跨模块调用纪律见包说明：跨模块一律走模块属性访问（如 `config_check._key_env_file()`）。
 """
 import json
 import logging
@@ -35,9 +35,9 @@ class Account:
     """
 
     phone: str
-    # C-SIGN-04 已知局限：str 不可变无法原位清零，且重试队列需跨尝试复用，
-    # 密码 str 本体只能随 accounts 列表生命周期存活（客户端侧可变副本见
-    # YibanClient._wipe_credentials 的清零与局限说明）
+    # str 不可变，无法原位清零；且重试队列要跨尝试复用，密码 str 本体只能随
+    # accounts 列表生命周期存活（客户端侧可变副本的清零与局限见
+    # YibanClient._wipe_credentials）
     password: str
     phone_model: str = ""  # 设备型号（学校开启"设备绑定"时必填）
     phone_code: str = ""  # 设备唯一识别码（学校开启"设备绑定"时必填）
@@ -51,16 +51,16 @@ class Account:
     def has_device_info(self):
         return bool(self.phone_model and self.phone_code)
 
+
 # ---------------------------------------------------------------------------
 # 账号配置加载
 # ---------------------------------------------------------------------------
 def _parse_account_dict(data):
     """将账号 JSON 对象解析为 Account，校验必填字段。
 
-    password/phone_code 支持 AES-GCM 密文对象（web 存储层加密落盘，
-    0.17+ 数据在 yiban.db（SQLite），accounts.json 仅存于迁移前——解密依赖
-    同一密钥：环境变量 YIBAN_ACCOUNTS_KEY → .env 同键（YIBAN_ENV_FILE 可指定
-    路径）；密钥缺失/解密失败抛明确错误，绝不静默使用错误数据）。
+    password/phone_code 支持 AES-GCM 密文对象（web 存储层加密落盘）：解密依赖
+    同一密钥——环境变量 YIBAN_ACCOUNTS_KEY → .env 同键（YIBAN_ENV_FILE 可指定
+    路径）；密钥缺失/解密失败抛明确错误，绝不静默使用错误数据。
     """
     phone = str(data.get("phone") or data.get("account") or "").strip()
     password = data.get("password") or data.get("pwd") or ""
@@ -102,18 +102,18 @@ def _parse_account_dict(data):
 
 
 def _load_accounts_from_file():
-    """从数据库加载（yiban.db，SQLite；web 后台写入，单行事务防并发覆盖）。
+    """从数据库文件（yiban.db，SQLite）加载；web 后台写入，单行事务防并发覆盖。
 
     db 层返回已解密明文；此处只做审核状态过滤。
     """
     db.init_db(env_file=config_check._key_env_file(), cleanup=False)
     all_accounts = db.load_accounts()
-    # 跳过待审核账号（status=pending：网页端普通用户提交、管理员尚未审核通过）、
-    # 被拒绝账号（status=rejected：管理员审核不通过，不得签到）与待删除账号
+    # 跳过待审核（status=pending：网页端普通用户提交、管理员尚未审核通过）、
+    # 被拒绝（status=rejected：管理员审核不通过，不得签到）与待删除账号
     # （deleted：网页端软删除，保留期内可恢复，不参与签到）。
-    # 注意：此处 "pending"/"rejected" 是账号审核态（web 侧 ACCOUNT_STATUS_*），
-    # 与下方 STATUS_PENDING 等签到状态码是两套语义，勿混用（2026-08-16 审查轮注明）。
-    # 旧数据可能没有 status 字段（等于通过审核），必须放行。
+    # 注意 "pending"/"rejected" 是账号审核态（web 侧 ACCOUNT_STATUS_*），与签到状态码
+    # STATUS_PENDING 等是两套语义，勿混用。旧数据可能没有 status 字段（等于通过审核），
+    # 必须放行。
     active_raw = [
         item
         for item in all_accounts
@@ -145,9 +145,9 @@ def _load_accounts_from_json_env():
 def _load_accounts_from_legacy_env():
     """旧格式兼容：YIBAN_ACCOUNTS（phone:password#...）与 YIBAN_PHONE/YIBAN_PASSWORD。
 
-    2026-08-27 审查缺口 3：此路径仍接受明文凭据环境变量——进库前会加密，但明文源
-    留在 .env 与进程环境（/proc/<pid>/environ 同 uid 可读）。保留兼容，但加载即告警，
-    提示改用 Web 管理台 / YIBAN_ACCOUNTS_JSON；告警内容不含任何凭据明文。
+    此路径接受的是**明文**凭据环境变量：进库前会加密，但明文源仍留在 .env 与进程
+    环境里（/proc/<pid>/environ 同 uid 可读）。保留兼容，但加载即告警，提示改用
+    Web 管理台或 YIBAN_ACCOUNTS_JSON；告警内容不含任何凭据明文。
     """
     accounts = []
     accounts_str = os.environ.get("YIBAN_ACCOUNTS", "")
@@ -161,8 +161,8 @@ def _load_accounts_from_legacy_env():
         if not item:
             continue
         if ":" not in item:
-            # 清洗后落日志：防畸形片段换行/回车注入（日志审查 P7）；片段缺 ":" 时
-            # 常见是裸手机号（漏输密码），纯数字片段按 11 位号脱敏后落盘
+            # 清洗后落日志，防畸形片段换行/回车注入。片段缺 ":" 时常见是裸手机号
+            # （漏输密码），纯数字片段按手机号脱敏后落盘。
             logger.error(
                 f"账号配置格式错误（应为 phone:password）: "
                 f"{_sanitize_text(_mask_phone(item) if item.isdigit() else item)}")

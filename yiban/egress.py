@@ -6,16 +6,12 @@
 
 | 角色 | 取值来源 | 说明 |
 |------|----------|------|
-| `single` | `YIBAN_PROXY` | 单执行体（现状形态），未设=直连 |
+| `single` | `YIBAN_PROXY` | 单执行体，未设=直连 |
 | `worker` | `YIBAN_PROXY_LIST[i]` | 第 i 个并行执行体；表里写**空元素**即该执行体直连 |
 | `fallback` | `YIBAN_PROXY_FALLBACK`，未设退回 `YIBAN_PROXY` | 兜底常驻执行体；未设=直连 |
 
-分配规则（**可复现、可解释**，部署者按自己的出口数量决定怎么填）：
-
-- `YIBAN_PROXY_LIST="http://a:1,http://b:2,http://c:3"` → 执行体 0/1/2 各用一个；
-  执行体数超过表长时**循环取用**（第 4 个执行体用第 1 个出口）；
-- 表里留空位表示"这个执行体直连"：`"http://a:1,,http://c:3"` → 执行体 1 直连；
-- 三种角色都**允许为空**（= 本机出口），空与非空可以是任意混合。
+分配规则（**可复现、可解释**）：执行体数超过表长时**循环取用**（第 4 个执行体用
+第 1 个出口）；表里留空位表示"这个执行体直连"；三种角色都允许为空（= 本机出口）。
 
 **脱敏**：代理串可能带 userinfo（`http://user:pass@host:port`），任何进入日志、
 接口返回值的地方都必须经 `describe()`——它只回 `scheme://host[:port]`。
@@ -23,23 +19,22 @@
 本模块同时是**执行体身份串的唯一口径**：身份串（写进 `sign_claims.owner`）的构造与
 解析都在这里，避免"写入一处、解析另一处"各写一份字符串而漂移。当前身份串形如
 `worker-3@{主机名}` / `fallback@{主机名}` / `single@{主机名}`——**跨重启稳定**
-（不含进程号与启动时刻），前端据此把"执行体"当成跨重启不变的界面对象。
-身份串含主机名，属部署信息——**任何接口/日志都不得回原串**，只回角色与槽位序号
-（`role_label`）。
+（不含进程号与启动时刻），前端据此把"执行体"当成跨重启不变的界面对象。身份串含
+主机名，属部署信息——**任何接口/日志都不得回原串**，只回角色与槽位序号（`role_label`）。
 
 **槽位名为什么必须稳定、以及它的安全边界**（改这里之前先读完这两条）：
 
-1. **想要的行为**：名字不再随进程号/启动时刻变化 ⇒ 同一槽位重启后**立刻**认领自己
-   上一轮的在飞账号（`try_claim` 对"同一个 owner"是可重入的），不用干等 900s 租约
-   过期。别的执行体（包括崩溃后换了进程的那个）owner 不同名，该等租约还得等。
-2. **代价**：**同一个槽位名不得有两台机器同时跑**。同名进程会互相认领对方的在飞账号，
-   那就是"两个进程同时登录同一账号"——本设计的第一红线。`@{主机名}` 后缀保证跨主机
-   不同名；**同一台机器上的同名进程并存由既有锁挡住**（并行执行体持全局锁
-   `signin-run.lock`、兜底持 `signin-run.lock.fallback`，见 `yiban/engine/workers.py`）。
-   故**不要**去掉这两个锁，也**不要**把 `@{主机名}` 后缀去掉。
+1. **想要的行为**：名字不随进程号/启动时刻变化 ⇒ 同一槽位重启后**立刻**认领自己
+   上一轮的在飞账号（`try_claim` 对"同一个 owner"可重入），不用干等 900s 租约过期。
+   别的执行体（包括崩溃后换了进程的那个）owner 不同名，该等租约还得等。
+2. **代价**：**同一个槽位名不得有两台机器同时跑**。同名进程会互相认领对方的在飞
+   账号，那就是"两个进程同时登录同一账号"——本设计的第一红线。`@{主机名}` 后缀
+   保证跨主机不同名；**同一台机器上的同名进程并存由既有锁挡住**（并行执行体持
+   全局锁 `signin-run.lock`、兜底持 `signin-run.lock.fallback`，见
+   `yiban/engine/workers.py`）。故**不要**去掉这两个锁，也**不要**去掉 `@{主机名}` 后缀。
 
-`parse_owner` **同时认识新旧两种格式**：旧格式（含 `:workers:` / `fallback-` / `exec-`）
-在库里还有 14 天保留期的存量记录，必须照旧判得出来。
+`parse_owner` **同时认识新旧两种格式**：旧格式（含 `:workers:` / `fallback-` /
+`exec-`）在库里还有 14 天保留期的存量记录，必须照旧判得出来。
 """
 import os
 import socket
@@ -59,13 +54,10 @@ ROLE_FALLBACK = "fallback"
 #: 角色判不出来时的取值（历史遗留串、空串）。照实回，不猜。
 ROLE_UNKNOWN = "unknown"
 
-#: 并行执行体身份的中缀（**旧格式**）：`{主机名}:workers:{进程号}:w{序号}`。
-#: 新格式已改为稳定槽位名（见 `worker_owner`），本常量只为解析存量记录而留。
+#: **旧格式**身份串的识别片段（只用于解析库里的存量记录，新写入不再产出）：
+#: `{主机名}:workers:{进程号}:w{序号}` 的中缀、`fallback-` 前缀、`exec-` 前缀。
 IDENT_WORKER_INFIX = ":workers:"
-#: 兜底常驻执行体的身份前缀（**旧格式**）。**与单执行体区分开**正是本前缀存在的理由——
-#: 此前兜底沿用 `exec-`，库里分不出"兜底"与"单执行体"。
 IDENT_FALLBACK_PREFIX = "fallback-"
-#: 单执行体身份前缀（**旧格式**）：`exec-{主机名}:{进程号}:{启动时刻}`。
 IDENT_SINGLE_PREFIX = "exec-"
 
 #: 稳定槽位名里主机后缀的分隔符：`worker-3@host`。**不得去掉**（跨主机唯一性靠它）。
@@ -75,84 +67,40 @@ OWNER_WORKER_PREFIX = "worker-"
 OWNER_FALLBACK_NAME = "fallback"
 OWNER_SINGLE_NAME = "single"
 
-
-def _owner_host(hostname=None):
-    """槽位名里的主机后缀：省略时取本机名（`socket.gethostname()`）。"""
-    return socket.gethostname() if hostname is None else hostname
+#: `YIBAN_PROXY_LIST` 的段分隔符：**只有逗号**（与 `parse_list` 的切分口径逐字一致——
+#: 空白不切段，只在取值时被 strip）。写回时按同一字符连接，故未改动的段逐字不变。
+SLOT_SEP = ","
 
 
 def worker_owner(index, hostname=None):
     """并行执行体身份（**唯一构造处**）：`worker-{序号}@{主机名}`。
 
     名字**跨重启稳定**（同一台机器上同一槽位永远同名），故重启后立即认领自己上一轮
-    的在飞账号，不必等租约过期——这是想要的：进程重启是常态，不该因此换一张脸。
-    **代价与红线**（与模块 docstring 的两条安全说明同一件事，此处再钉一遍）：
-    名字稳定 ⇒ 同一槽位名**不得有两台机器同时跑**（同名会互相认领在飞账号 →
-    两个进程同时登录同一账号）。`@主机名` 后缀保证跨主机不同名，同机同名并存由既有的
-    全局锁 `signin-run.lock`（兜底为 `signin-run.lock.fallback`）挡住——
-    **不要去掉锁，也不要把后缀去掉**。
-
-    `hostname` 省略时取本机名（`socket.gethostname()`）；显式传入只为测试与
-    "父进程代子进程构造"。
+    的在飞账号，不必等租约过期。**代价与红线见模块 docstring**：名字稳定 ⇒ 同一
+    槽位名不得有两台机器同时跑。`hostname` 省略时取本机名（`socket.gethostname()`）；
+    显式传入只为测试与"父进程代子进程构造"。
     """
     return f"{OWNER_WORKER_PREFIX}{index}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
 def fallback_owner(hostname=None):
-    """兜底常驻执行体身份：`fallback@{主机名}`。
-
-    与并行执行体同名纪律：**跨重启稳定**（同槽位重启后立即接手自己上一轮的在飞账号），
-    代价是同一槽位名不得两台机器同时跑（跨主机靠 `@主机名` 区分，同机靠
-    `signin-run.lock.fallback` 挡住）。详见 `worker_owner` 与模块 docstring。
-    """
+    """兜底常驻执行体身份：`fallback@{主机名}`（同 `worker_owner` 的稳定名字纪律）。"""
     return f"{OWNER_FALLBACK_NAME}{OWNER_HOST_SEP}{_owner_host(hostname)}"
 
 
 def single_owner(hostname=None):
-    """单执行体身份：`single@{主机名}`。
-
-    与 `worker_owner` / `fallback_owner` 同一套稳定名字纪律（跨重启不变；同槽位名不得
-    两台机器同时跑，跨主机靠 `@主机名` 区分）。详见 `worker_owner`。
-    """
+    """单执行体身份：`single@{主机名}`（同 `worker_owner` 的稳定名字纪律）。"""
     return f"{OWNER_SINGLE_NAME}{OWNER_HOST_SEP}{_owner_host(hostname)}"
-
-
-def _parse_stable_owner(text):
-    """解析新的稳定槽位名；不是该格式返回 None（交给旧格式分支）。"""
-    name, sep, host = text.rpartition(OWNER_HOST_SEP)
-    if not (sep and name and host):
-        return None                     # 没有 @ / @ 前后为空 → 不是稳定名
-    if name.startswith(OWNER_WORKER_PREFIX) or name == OWNER_WORKER_PREFIX.rstrip("-"):
-        digits = name[len(OWNER_WORKER_PREFIX):]
-        index = int(digits) if digits.isdigit() else None
-        return {"role": ROLE_WORKER, "index": index, "label": role_label(ROLE_WORKER, index)}
-    if name == OWNER_FALLBACK_NAME:
-        return {"role": ROLE_FALLBACK, "index": None, "label": role_label(ROLE_FALLBACK)}
-    if name == OWNER_SINGLE_NAME:
-        return {"role": ROLE_SINGLE, "index": None, "label": role_label(ROLE_SINGLE)}
-    return None
-
-
-def _worker_index(owner):
-    """从**旧格式**并行执行体身份里取序号；取不到（历史串/被改写）返回 None。"""
-    tail = owner.rsplit(":", 1)[-1]
-    if not tail.startswith("w"):
-        return None
-    digits = tail[1:]
-    return int(digits) if digits.isdigit() else None
 
 
 def parse_owner(owner):
     """把身份串解析成 `{"role", "index", "label"}`（判不出即 `unknown`）。
 
-    **新旧两种格式都认**（旧记录仍在库里、保留期 14 天，不能因为改了写入格式就读不懂）：
-
-    - 新（稳定槽位名，`worker_owner` / `fallback_owner` / `single_owner` 产出）：
-      `worker-3@host` → worker + index 3；`fallback@host` → fallback；`single@host` → single；
-    - 旧（`:workers:` / `fallback-` / `exec-`）：含 `:workers:` 且尾部 `w{i}` → worker +
-      index；`fallback-` 开头 → fallback；`exec-` 开头 → single；
-    - 其余（空串、历史遗留的无前缀串）→ `unknown`，**照实回而不猜**——老数据里兜底与
-      单执行体同前缀，本来就无法追溯。
+    新旧两种格式都认（旧记录仍在库里，保留期 14 天，不能因为改了写入格式就读不懂）：
+    新格式见 `worker_owner` / `fallback_owner` / `single_owner`；旧格式含
+    `:workers:`（尾部 `w{i}` 为序号）/ `fallback-` / `exec-`；其余（空串、历史遗留的
+    无前缀串）→ `unknown`，**照实回而不猜**——老数据里兜底与单执行体同前缀，
+    本来就无法追溯。
     """
     text = (owner or "").strip()
     stable = _parse_stable_owner(text)
@@ -189,11 +137,6 @@ def parse_list(raw):
     if raw is None:
         return []
     return [item.strip() for item in raw.replace(",", "\n").split("\n")]
-
-
-#: 原始串里的段分隔符：**只有逗号**（与 `parse_list` 的切分口径逐字一致——空白不切段，
-#: 只在取值时被 strip）。写回时按同一字符连接，故未改动的段与分隔符逐字不变。
-SLOT_SEP = ","
 
 
 def replace_slot(raw, index, value):
@@ -253,3 +196,34 @@ def assignments(count, env=None):
         proxy = resolve(ROLE_WORKER, i, env)
         out.append((i, proxy, describe(proxy)))
     return out
+
+
+# ---- 内部实现 ----
+def _owner_host(hostname=None):
+    """槽位名里的主机后缀：省略时取本机名（`socket.gethostname()`）。"""
+    return socket.gethostname() if hostname is None else hostname
+
+
+def _parse_stable_owner(text):
+    """解析新的稳定槽位名；不是该格式返回 None（交给旧格式分支）。"""
+    name, sep, host = text.rpartition(OWNER_HOST_SEP)
+    if not (sep and name and host):
+        return None                     # 没有 @ / @ 前后为空 → 不是稳定名
+    if name.startswith(OWNER_WORKER_PREFIX) or name == OWNER_WORKER_PREFIX.rstrip("-"):
+        digits = name[len(OWNER_WORKER_PREFIX):]
+        index = int(digits) if digits.isdigit() else None
+        return {"role": ROLE_WORKER, "index": index, "label": role_label(ROLE_WORKER, index)}
+    if name == OWNER_FALLBACK_NAME:
+        return {"role": ROLE_FALLBACK, "index": None, "label": role_label(ROLE_FALLBACK)}
+    if name == OWNER_SINGLE_NAME:
+        return {"role": ROLE_SINGLE, "index": None, "label": role_label(ROLE_SINGLE)}
+    return None
+
+
+def _worker_index(owner):
+    """从**旧格式**并行执行体身份里取序号；取不到（历史串/被改写）返回 None。"""
+    tail = owner.rsplit(":", 1)[-1]
+    if not tail.startswith("w"):
+        return None
+    digits = tail[1:]
+    return int(digits) if digits.isdigit() else None

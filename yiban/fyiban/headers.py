@@ -9,8 +9,8 @@ UA 全文与本项目的默认登录方式（KILLYIBAN）为本地补充。
 （服务端一致性校验），改一处必须改另一处（`tests/test_fyiban_isolation.py` 钉住）。
 """
 # 易班 App 版本特征：两处请求头（KILLYIBAN_HEADERS / usersure 提交）必须同值，
-# 不一致可能触发服务端一致性校验；旧流程 iOS UA 尾段同步引用。
-# 2026-09-15 由 5.2.2 升至 5.2.3（依据：易班官方 5.2.3 安装包的清单版本号实测）
+# 不一致会触发服务端一致性校验；旧流程 iOS UA 尾段同步引用。取值须与易班官方
+# 安装包的清单版本号一致（tests/test_fyiban_isolation.py 钉住）。
 YIBAN_APP_VERSION = "5.2.3"
 
 # 易班 iOS 客户端 UA（与 Auto-Test 保持一致）

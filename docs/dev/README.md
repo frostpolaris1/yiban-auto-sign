@@ -80,7 +80,21 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | 并行执行体 | 已实现：`signin sign --workers N`（父进程监督 + 子进程领活） |
 | 兜底常驻执行体 | 已实现：`signin sign --fallback`（窗口内反复扫"未了结"账号，时段结束退出） |
 | 每个执行体独立出口 | 已实现：`yiban/egress.py` + 下列环境变量（留空=直连） |
+| 每个执行体的存活四态（`running`/`finished`/`idle`/`stale`） | 已实现：并行执行体写固定名心跳文件，接口按心跳新鲜度判定（详见 `api-executors.md`） |
+| 账号列表的"上一个业务日是谁签的" | 已实现：`GET /api/accounts` 的 `last_executor` |
+| 现场实测单账号耗时 | 已实现：`POST /api/scheduler/executors/measure`（仅主管理员 + 全局冷却 + 窗口内拒绝；**会真实访问易班一次**） |
 | 前端页面（执行体与出口配置） | **未实现**（接口已就绪，见 `api-executors.md`） |
+
+### 运行期状态文件（固定名，条数不随时间增长）
+
+| 文件（在 `YIBAN_STATE_DIR`） | 写入方 | 读方 |
+|------------------------------|--------|------|
+| `worker-alive-<槽位序号>.json` | 并行执行体监督进程（开始 / 存活期刷新 / 正常退出各写一次，创建即 0600） | `GET /api/scheduler/executors` 的存活四态 |
+| `capacity-measure.json` | `POST /api/scheduler/executors/measure`（冷却占位 + 实测结果） | 同端点（跨进程限频） |
+| `fallback-alive.json` | 兜底常驻执行体（每轮扫描刷新，退出时删除） | 告警抑制与 `fallback.alive` |
+
+按日生成的文件（`sign-state-*` / `sched-run-*` / …）的保留期由 `yiban/state_gc.py` 统一管理；
+上面这些**不是按日文件**，不参与清理（固定名 + 覆盖写，故无需清理策略）。
 
 ### 出口配置（部署者视角）
 
@@ -93,6 +107,7 @@ web / scripts / docker  →  yiban.*  →  infra, fyiban, store（`yiban` 不得
 | `YIBAN_FALLBACK_INTERVAL` | 兜底执行体扫描间隔秒（默认 60） | `60` |
 | `YIBAN_FALLBACK_ENABLE` | 兜底常驻执行体开关（1/true/on/yes=开；未设=关）。**还要在宿主加一条 cron** 才会真有进程（模板见 `scripts/yiban-fallback.sh` 头注释） | `1` |
 | `YIBAN_CAPACITY_MEASURED` | 部署者实测的**单执行体容量**（账号/窗口），用于给出建议值 | `354` |
+| `YIBAN_MEASURE_COOLDOWN` | 现场实测端点的**全局冷却秒数**（默认 600，`0`=关闭限频） | `600` |
 
 规则细节（按序取用、不足循环、空位语义）与脱敏口径见 `yiban/egress.py` 的模块文档；
 容量基准由 `scripts/loadtest/capacity_probe.py` 实测得到，**建议值 = 实测 × 2/3，只是建议**。

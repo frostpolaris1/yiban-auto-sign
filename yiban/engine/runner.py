@@ -38,20 +38,17 @@ logger = logging.getLogger("yiban")
 # 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
 # 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入
 SUNDAY_SIGN = os.environ.get("YIBAN_SUNDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
-# 周六签到开关：2026-09-07（v0.29.0）起默认关闭，与周日同语义——
-# 缺省/空/非法一律视为关闭，仅显式 1/true/on/yes 开启（此前缺省=1 的 fail-open
-# 解析随默认反转一并废止，_parse_saturday_sign 已删）。需要在周六签到的部署
-# 在网页「系统设置 → 周末签到」开启，或 .env 显式写 YIBAN_SATURDAY_SIGN=1。
+# 周六签到开关：默认同样关闭，与周日同语义——缺省/空/非法一律视为关闭，
+# 仅显式 1/true/on/yes 开启（缺省即开启的 fail-open 解析已废止）。
+# 需要在周六签到的部署要在网页「系统设置 → 周末签到」开启，或 .env 写 YIBAN_SATURDAY_SIGN=1。
 SATURDAY_SIGN = os.environ.get("YIBAN_SATURDAY_SIGN", "").strip().lower() in ("1", "true", "on", "yes")
 
-# 签到状态码与日志/日历符号：**定义在 yiban.status（唯一事实源）**，此处为别名。
-# 历史上 web/app.py 另定义了一份同名常量与映射表，两份会各自漂移（实测 web 侧缺
-# no_position/global_paused、signin 侧缺 pending）；收口后状态码只有一处定义。
+# 签到状态码与日志/日历符号：**定义在 yiban.status（唯一事实源）**，此处为别名
+# （此前 web/app.py 另有一份同名常量，两份会各自漂移，收口后只有一处定义）。
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
 STATUS_FAILED = yiban_status.STATUS_FAILED
-STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 STATUS_NO_POSITION = yiban_status.STATUS_NO_POSITION
@@ -75,19 +72,18 @@ def main(argv=None):
     - 数据库 yiban.db（SQLite，web 后台写入）与 YIBAN_ACCOUNTS_JSON
     - 旧格式 YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（向后兼容）
     - 队列重试：失败账号分散重试——开启签到调度时重新安排到窗口内合适时间，否则放回队尾（分级上限）
-    - 随机延迟：YIBAN_START_DELAY_MAX（启动）/ YIBAN_ACCOUNT_GAP_MAX（账号间隔）
+    - 账号间隔：YIBAN_ACCOUNT_GAP_MAX（启动延迟 YIBAN_START_DELAY_MAX 已废弃，仅为兼容旧签名保留）
     - --only 指定手机号（逗号分隔），仅供手动签到单个账号
     - --check-config 仅检查配置，不发任何网络请求
 
     argv 为命令行参数（不含程序名）：默认取 `sys.argv[1:]`，与旧签名 `main()` 等价。
     """
     argv = list(sys.argv[1:] if argv is None else argv)
-    # 进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）
-    # 创建即 0600。宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器
-    # scheduler 与无宿主脚本的裸调路径（Windows 无实际效果，忽略）。
+    # 进程 umask 077——状态/凭据/邮件配额文件（含完整手机号键）创建即 0600。
+    # 宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器 scheduler 与无宿主脚本的
+    # 裸调路径（Windows 无实际效果）。
     os.umask(0o077)
-    # 日志装配从模块导入期延迟到 CLI 入口（幂等；覆盖
-    # --check-config / --probe / --only 全部路径），模块导入零副作用。
+    # 日志装配延迟到 CLI 入口（幂等；覆盖 --check-config / --probe / --only 全部路径）
     cli_support._setup_cli_logging()
     parser = argparse.ArgumentParser(description="易班自动签到")
     parser.add_argument(
@@ -158,9 +154,8 @@ def main(argv=None):
         logger.error(f"配置加载失败: {e}")
         return 1
 
-    # 探针模式必须先于「零账号守卫」处理（2026-08-27 审查修复）：空账号部署
-    # 误开探针时此前会夜夜走「未配置任何账号」ERROR 分支且 once 永不关闭；
-    # 探针语义下零账号=无事可做，静默成功退出。
+    # 探针模式必须先于「零账号守卫」处理：空账号部署误开探针时，走「未配置任何账号」
+    # 的 ERROR 分支会夜夜报错；探针语义下零账号=无事可做，静默成功退出。
     if args.probe:
         # 探针对全部账号做完整登录（等同一次真实签到，风控敏感）：一键暂停 /
         # 周末签到关闭期间照跑会把暂停语义打穿。门在探针分支内部判定——
@@ -170,8 +165,7 @@ def main(argv=None):
         if _paused or (_weekday == 6 and not SUNDAY_SIGN) or (_weekday == 5 and not SATURDAY_SIGN):
             logger.info("==== 签到已暂停/周末签到关闭，本轮探针跳过（避免暂停期完整登录） ====")
             return 0
-        # 探针会对全部账号做完整登录，必须与真实签到互斥——
-        # 原实现绕过运行锁，23:55 探针与手动签到并发时同一账号被两进程并发登录。
+        # 探针与真实签到必须互斥，否则探针会与手动签到并发登录同一账号
         try:
             _probe_lock_fh = cli_support._acquire_run_lock(only_mode=True)
         except cli_support._RunLockHeld:
@@ -181,8 +175,8 @@ def main(argv=None):
             probe.run_probe(accounts)
         return 0
 
-    # 超期软删账号物理清理（2026-08-20 随读路径清理外移而显式化）：cron/Actions
-    # 部署可能没有常驻 web 进程，每日签到进程是清理的唯一时机，失败不阻断签到
+    # 超期软删账号物理清理：cron/Actions 部署可能没有常驻 web 进程，
+    # 每日签到进程是清理的唯一时机；失败不阻断签到
     try:
         db.purge_expired_deleted_accounts()
     except Exception as e:
@@ -211,8 +205,8 @@ def main(argv=None):
         config_check.print_config_summary(accounts)
         return 0
 
-    # 启动延迟已废弃（v0.29.0）：仅保持旧签名兼容，值不再使用（read 后仅透传给
-    # run_queue_retry 的兼容参数位）；账号间隔 gap_max 仍生效
+    # 启动延迟已废弃：仅为兼容旧调用签名而读取，值不再使用（run_queue_retry 里同样
+    # 只占参数位）；账号间隔 gap_max 仍生效
     start_delay_max = config_check.parse_env_int("YIBAN_START_DELAY_MAX", 0)
     # 缺省 10 与 web 设置页「默认开启 10 秒」口径一致（web 端 DEFAULT_ACCOUNT_GAP_MAX）：
     # 纯 signin 部署（.env 未配置该键）升级后自动获得 10s 账号间隔
@@ -224,7 +218,7 @@ def main(argv=None):
         logger.info("==== 周日签到未开启（系统设置中开启后周日也会尝试签到），跳过执行 ====")
         return 2  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
 
-    # 周六签到开关：默认开启（周六照常签到）；管理员关闭后周六跳过。
+    # 周六签到开关：关闭时周六跳过（与周日同一开关语义）。
     # 手动签到（--only）不受限——用户主动触发应当放行（与周日开关语义一致）。
     if not args.only and clock.now().weekday() == 5 and not SATURDAY_SIGN:
         logger.info("==== 周六签到已关闭（系统设置中开启后周六也会尝试签到），跳过执行 ====")
@@ -247,14 +241,14 @@ def main(argv=None):
             logger.info("==== 补签轮：当日账号均已了结，无需重跑 ====")
             return 0
 
-    # 进程级单实例锁（2026-08-20 对抗性审查 P2）：防 cron 全量队列与手动 --only
-    # 并发签到同一账号。--only 被持有 → 留痕退出；全量被持有 → 等待至多
-    # YIBAN_RUN_LOCK_WAIT 秒后继续（不因手动签到阻塞而漏签一整天）。
+    # 进程级单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。
+    # --only 被持有 → 留痕退出；全量被持有 → 等待至多 YIBAN_RUN_LOCK_WAIT 秒后继续
+    # （不因手动签到阻塞而漏签一整天）。
     try:
         _run_lock_fh = cli_support._acquire_run_lock(bool(args.only))
     except cli_support._RunLockHeld:
         logger.warning("已有签到进程在运行，本次手动签到跳过（防同账号并发，稍后可重试）")
-        # 原 exit 0 让 web 把"静默跳过"当成功展示；3 = 队列忙，
+        # 不能返回 0：web 会把"静默跳过"当成功展示。3 = 队列忙，
         # 调用方可据此向用户如实提示（退出码语义见文件头/退出码表）
         return 3
 
@@ -273,7 +267,7 @@ def main(argv=None):
         _cfg = schedule_mod._schedule_config()
         _win = window.bounds(_cfg)
         # 预检按**剩余**有效窗口算：本进程此刻才起跑，已流逝的窗口签不了。
-        # 原实现用完整窗口算，迟启动时按满容量放行且不告警，超出的账号只能落
+        # 按完整窗口算会在迟启动时按满容量放行且不告警，超出的账号只能落
         # skipped_window——管理员看不到任何提示。
         _rest_sec = _win.remaining_sec(clock.now())
         _win_end = window.to_dt(
@@ -282,7 +276,7 @@ def main(argv=None):
         ).strftime("%H:%M")
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
         # 与 web 容量预估同一函数：账号间隔是「上一次完成 → 下一次开始」的下限，
-        # 故单账号周期 = avg + gap（旧实现只算 n × avg，与预估口径相差 ~2.3 倍）
+        # 故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约 2.3 倍）
         _cap = schedule_mod.capacity_accounts(max(0.0, _rest_sec), gap_max, _cfg["avg_attempt_sec"])
         if _rest_sec <= 0:
             logger.warning(
@@ -301,8 +295,8 @@ def main(argv=None):
                 "（单账号 %.0fs + 账号间隔 %ds，窗口至 %s），部分账号可能无法在窗口内完成",
                 active_n, int(_rest_sec), _cap, _cfg["avg_attempt_sec"], gap_max, _win_end,
             )
-            # 超载提醒（对抗性审查补）：通知管理员，避免"超限只在日志里"无人知情。
-            # A 线合并：并入任务结束汇总邮件；webhook 仍即时推送。
+            # 超载必须通知管理员，不能只留在日志里。
+            # A 线：并入任务结束汇总邮件；webhook 仍即时推送。
             alerts._collect_admin_mail(
                 "易班签到容量超载",
                 f"当前 {active_n} 个账号，剩余有效窗口 {int(_rest_sec)}s（至 {_win_end}）"
@@ -329,9 +323,9 @@ def main(argv=None):
                     f"计划 {t.strftime('%H:%M')}", scheduled=t.strftime("%H:%M:%S"),
                 )
         accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
-        # 调度快照标记（2026-08-15 用户反馈：卡点缓冲）：web 端保存自选时以此时刻为
-        # "今日/明日生效"分界——改选在快照后必为明日生效，提示与实际 100% 一致
-        # （原固定"窗口起点+1 分钟"与 cron 实际读取时刻有几秒偏差窗口）
+        # 调度快照标记：web 端保存自选时间片时以此时刻为"今日/明日生效"分界——
+        # 快照后改选必为明日生效，提示与实际一致（固定"窗口起点+1 分钟"会与
+        # cron 实际读取时刻有几秒偏差窗口）
         try:
             _snap_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
             os.makedirs(_snap_dir, exist_ok=True)
@@ -355,11 +349,11 @@ def main(argv=None):
         # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
         reclaim=bool(args.only),
     )
-    # 2026-08-20 对抗性审查修复（P1）：--only 此前无条件以本次（仅含目标账号的）状态
-    # 整体覆盖保存——空 dict 时直接删除状态文件，其他账号的 fail_days/paused_since
-    # 全部丢失，账密熔断保护被任意一次手动签到全局重置。现改为：--only 只把本次
-    # 处理账号的熔断增量合并回存量状态（成功→清除该账号记录；凭据失败→按日累计；
-    # 其他失败→不动），未处理账号保持原状。全量模式语义不变（本轮本就基于存量计算）。
+    # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
+    # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。
+    # 不能用本次（仅含目标账号的）状态整体覆盖保存：空 dict 时会直接删除状态文件，
+    # 其他账号的 fail_days/paused_since 全部丢失，账密熔断被任意一次手动签到全局重置。
+    # 全量模式语义不变（本轮本就基于存量计算）。
     if args.only:
         # 增量合并（唯一入口内的读-改-写持锁）：只覆盖本次处理账号的熔断增量
         merged = state_io._load_cred_state()
@@ -371,9 +365,9 @@ def main(argv=None):
             _ok, _msg, _skip, _status = _res
             _was_paused = bool(merged.get(_acc.phone, {}).get("paused_since"))
             attempts._update_cred_state(merged, _acc.phone, _ok, _msg, _merge_today)
-            # 2026-08-21 对抗性审查补充：手动试探已暂停账号且凭据仍失败时，
-            # 顺延下次试探日（对齐全量模式语义）——否则存量过期 probe_date 会让
-            # 下一轮全量签到立即再试探，失去半开试探的间隔保护
+            # 手动试探了已暂停账号且凭据仍失败时，顺延下次试探日（对齐全量模式语义）：
+            # 否则存量过期的 probe_date 会让下一轮全量签到立即再试探，
+            # 失去半开试探的间隔保护
             if (
                 not _ok
                 and _was_paused
@@ -391,18 +385,17 @@ def main(argv=None):
 
     # 汇总（合并为一行统计；逐账号结果已在执行中输出，不再逐行重复）
     # 口径：成功=success/already；跳过=no_task+skipped（无需签到与时段外同列）；
-    # 已执行=已了结（success/already/no_task），窗口外等跳过不算（7:10 还会再跑）。
-    # 2026-09-01：no_position（易班侧无点位）归入跳过计数但单独展示——非账号失败，
-    # 不参与 has_real_failure；但归入"未了结"（与容器调度器 _UNDONE_STATUSES 同语义），
-    # 宿主 exit 2 / 容器 07:10 补签轮均会重跑一次——学校延迟放位时仍有兜底
+    # 已执行=已了结（success/already/no_task），窗口外等跳过不算（补签轮还会再跑）。
+    # no_position（易班侧无点位）归入跳过计数但单独展示——非账号失败，不参与
+    # has_real_failure；但归入"未了结"（与容器调度器 _UNDONE_STATUSES 同语义），
+    # 宿主 exit 2 / 容器补签轮均会重跑一次——学校延迟放位时仍有兜底
     # （无点位账号 1 次即止、幂等无害）。
     has_real_failure = False
     has_executed = False
     # 窗口外/缺失（skipped_window/skipped_norange）属"未了结"——
     # 与容器调度器 _UNDONE_STATUSES（docker/scheduler.py）同一语义。宿主 run.sh 的
-    # 07:10 补签闸门只认状态文件 SUCCESS 文本：若本轮有成功就把 skipped 账号的
-    # 退出码判成 0，run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底
-    # （容器侧已修此洞，宿主侧是本轮补齐）。
+    # 补签闸门只认状态文件 SUCCESS 文本：若本轮有成功就把 skipped 账号的退出码判成 0，
+    # run.sh 写 SUCCESS → 补签被吞，被跳过的账号当天失去兜底。
     has_window_skip = False
     ok_n = fail_n = skip_n = no_pos_n = other_n = 0
     for acc in accounts:
@@ -436,18 +429,15 @@ def main(argv=None):
     logger.info(f"==== 签到汇总（v{RELEASE_VERSION}）：{summary} ====")
 
     # 窗口外未了结专项告警。
-    # is_second_run：run.sh 补签轮（07:10）导出的 YIBAN_SECOND_RUN=1 优先
-    # （首签子进程被 timeout 击杀、exit 124 未写 sched-run 标记时，
-    # 标记兜底失效，必须靠 run.sh 的补签轮环境变量识别）；容器调度器 SECOND
-    # 时段同样注入该变量；sched-run 标记作为兜底（手动/其他启动路径）。
+    # is_second_run：run.sh 补签轮导出的 YIBAN_SECOND_RUN=1 优先（首签子进程被 timeout
+    # 击杀、未写 sched-run 标记时标记兜底失效，必须靠该环境变量识别）；容器调度器
+    # 补签时段同样注入它；sched-run 标记作为兜底（手动/其他启动路径）。
     alerts._maybe_alert_zero_success(
         accounts, results, ok_n, is_second_run=state_io._is_second_run()
     )
 
-    # 签到事件落库——v6 建了 sign_events 表但签到主流程零写入
-    # （仅探针 stage=probe 有写入），统计/时间线读取函数零调用方，基础设施空转。
-    # 现每次尝试与状态迁移落一行（stage=sign），批量单事务写入；失败仅告警
-    # （add_sign_events_batch 内部捕获），不影响签到退出码。
+    # 签到事件落库：每次尝试与状态迁移落一行（stage="sign"，探针沿用 stage="probe"），
+    # 批量单事务写入；失败仅告警（add_sign_events_batch 内部捕获），不影响退出码。
     if event_rows:
         db.add_sign_events_batch(event_rows)
 
@@ -456,7 +446,7 @@ def main(argv=None):
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
     try:
         os.makedirs(state_dir, exist_ok=True)
-        # M14：汇总文件以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
+        # 以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
         daily_path = os.path.join(state_dir, f"sign-daily-{clock.now().strftime('%Y-%m-%d')}.json")
         with cli_support._state_file_lock(daily_path):
             daily = {}
@@ -475,7 +465,7 @@ def main(argv=None):
                 if status in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK,
                               STATUS_FAILED, STATUS_NO_POSITION):
                     daily[acc.phone] = STATUS_SYMBOL[status]
-            # M15：tmp + os.replace 原子写，避免半截文件
+            # tmp + os.replace 原子写，避免半截文件
             daily_tmp = daily_path + ".tmp" + str(os.getpid())
             with open(daily_tmp, "w", encoding="utf-8") as f:
                 json.dump(daily, f, ensure_ascii=False)
@@ -483,7 +473,7 @@ def main(argv=None):
     except (OSError, ValueError, TypeError) as e:
         logger.warning("写入按日状态文件失败: %s", e)
 
-    # A 线合并：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
+    # A 线：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。
     alerts._flush_admin_mail_summary()
 
@@ -495,9 +485,9 @@ def main(argv=None):
     # 退出码（run.sh 依据退出码写状态文件）：
     # 0 - 全部成功（有实际签到执行；含"已签到""无需签到"，且无窗口外未了结账号）
     # 1 - 有真正的失败（登录失败、签到失败等）
-    # 2 - 全部 skip 或存在窗口外未了结账号（无实际执行，或首签窗口外账号需 07:10 补签
-    #     重跑；此时 run.sh 写 SKIPPED 而非 SUCCESS，补签 cron 才会继续尝试）
-    #     由 run.sh 写 SKIPPED 而非 SUCCESS，避免备份等下游任务被吞
+    # 2 - 全部 skip 或存在窗口外未了结账号（无实际执行，或窗口外账号需补签重跑）
+    #     此时必须让 run.sh 写 SKIPPED 而非 SUCCESS，补签 cron 才会继续尝试，
+    #     且避免备份等下游任务被吞
     if has_real_failure:
         return 1
     if not has_executed or has_window_skip:

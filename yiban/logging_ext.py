@@ -4,15 +4,11 @@
 签到进程与 web 进程写同一批 `sign-YYYY-MM-DD.log`（web 的「日志」页与运维排查
 都读它），必须：
 
-- **跨进程互斥**：并发写入时行不交错 —— 经 `locks.file_lock`（POSIX flock /
-  Windows msvcrt）统一加锁，真无法加锁时由 locks 告警留痕（原先 Windows 上
-  直接退化为无锁且无提示）；
+- **跨进程互斥**：并发写入时行不交错——经 `yiban/infra/locks.py` 统一加锁，真无法
+  加锁时由 locks 告警留痕；
 - **按天滚动**：常驻的 web 进程跨天自动换文件，与签到子进程"按天分文件"同口径。
 
 日期口径取 `yiban.clock`（北京时间），与签到事件/状态文件一致。
-
-`locks` 目前仍在 `scripts/`（M1② 的 `yiban/infra/` 会收走）；导入本模块的
-signin / web 启动时都已把 `scripts/` 放进 sys.path。
 """
 import logging
 import os
@@ -36,10 +32,8 @@ class FlockFileHandler(logging.FileHandler):
 class DailyFlockFileHandler(FlockFileHandler):
     """按天滚动 + 跨进程互斥的 web 日志 handler。
 
-    背景：gunicorn 走 create_app() 不执行 main()，此前 root logger 无任何文件
-    handler —— INFO 级日志被 logging 的 lastResort（仅放行 WARNING+）丢弃，
-    WARNING+ 只进 stderr（journald），后台「日志」页与 sign-*.log 均不可见。
-    与签到子进程同口径写入按天文件：
+    常驻的 web 进程（gunicorn 走 create_app()、不执行 main()）必须与签到子进程写
+    同一批按天文件：
 
     - 继承 flock 版 FileHandler：与 cron 子进程并发写同一文件时行不交错；
     - emit 时按当前日期切换目标文件（常驻进程跨天自动滚动），rollover 后先重开
