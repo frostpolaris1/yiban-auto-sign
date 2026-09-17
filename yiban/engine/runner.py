@@ -142,7 +142,8 @@ def main(argv=None):
         # （与手动签到撞锁同一语义），不排队；句柄在本进程存活期间必须保活。
         os.environ.setdefault("YIBAN_RUN_LOCK_NAME", workers.FALLBACK_LOCK_NAME)
         try:
-            _fallback_lock_fh = cli_support._acquire_run_lock(True)  # noqa: F841（保活用）
+            # 句柄必须保活到进程结束（flock 随句柄释放），故赋值给局部变量而不是丢弃
+            _fallback_lock_fh = cli_support._acquire_run_lock(True)
         except cli_support._RunLockHeld:
             logger.warning("已有兜底常驻执行体在运行，本次不重复拉起（防同账号并发登录）")
             return 3

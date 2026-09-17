@@ -354,7 +354,7 @@ class MigrationWritebackTest(_WebBase):
                          [(0, "worker"), (1, "worker"), (2, "worker"), (3, "fallback")])
         self.assertEqual(got[0]["egress"], "http://proxy1.example:8080")
         self.assertEqual(got[0]["label"], "并行执行体 #1")
-        self.assertEqual(got[3]["label"], "兜底常驻执行体")
+        self.assertEqual(got[3]["label"], "故障转移")
         # worker 行带存活四态；fallback 行的存活在 fallback.* 里（字段在、值为 null）
         for e in got[:3]:
             self.assertIn(e["state"], ("running", "finished", "idle", "stale"))
@@ -429,12 +429,16 @@ class SlotNeverReusedAfterDeleteTest(_WebBase):
                  clock.ts(), clock.ts()))
             conn.commit()
 
-    def _post(self, c, payload):
-        return c.post("/api/scheduler/executors/rows", json=payload,
+    def _post(self, c, payload, password=ADMIN_PASS):
+        body = dict(payload)
+        if password is not None:
+            body.setdefault("confirm_password", password)
+        return c.post("/api/scheduler/executors/rows", json=body,
                       headers={"X-CSRF-Token": c.csrf})
 
-    def _delete(self, c, slot):
-        return c.delete(f"/api/scheduler/executors/rows/{slot}",
+    def _delete(self, c, slot, password=ADMIN_PASS):
+        body = {} if password is None else {"confirm_password": password}
+        return c.delete(f"/api/scheduler/executors/rows/{slot}", json=body,
                         headers={"X-CSRF-Token": c.csrf})
 
     def test_deleted_slot_with_history_is_not_handed_out_again(self):
@@ -496,16 +500,24 @@ class RowsCrudTest(_WebBase):
                         "YIBAN_PROXY_LIST=http://only:1",
                         f"{egress.ENV_MANIFEST}={_manifest({'slot': 0, 'type': 'worker', 'proxy': 'http://w0:1'})}")
 
-    def _post(self, c, payload):
-        return c.post("/api/scheduler/executors/rows", json=payload,
+    def _post(self, c, payload, password=ADMIN_PASS):
+        """追加行：默认带 `confirm_password`（2026-09-17 起写操作要口令门）。"""
+        body = dict(payload)
+        if password is not None:
+            body.setdefault("confirm_password", password)
+        return c.post("/api/scheduler/executors/rows", json=body,
                       headers={"X-CSRF-Token": c.csrf})
 
-    def _put(self, c, slot, payload):
-        return c.put(f"/api/scheduler/executors/rows/{slot}", json=payload,
+    def _put(self, c, slot, payload, password=ADMIN_PASS):
+        body = dict(payload)
+        if password is not None:
+            body.setdefault("confirm_password", password)
+        return c.put(f"/api/scheduler/executors/rows/{slot}", json=body,
                      headers={"X-CSRF-Token": c.csrf})
 
-    def _delete(self, c, slot):
-        return c.delete(f"/api/scheduler/executors/rows/{slot}",
+    def _delete(self, c, slot, password=ADMIN_PASS):
+        body = {} if password is None else {"confirm_password": password}
+        return c.delete(f"/api/scheduler/executors/rows/{slot}", json=body,
                         headers={"X-CSRF-Token": c.csrf})
 
     def test_append_uses_max_plus_one_and_survives_middle_delete(self):
@@ -590,7 +602,8 @@ class RowIsolationTest(_WebBase):
         self._write_env(f"{egress.ENV_MANIFEST}={_manifest(*rows)}")
         c = self._login()
         r = c.put("/api/scheduler/executors/rows/3",
-                  json={"proxy": "http://u4:p4@d.example:4"},
+                  json={"proxy": "http://u4:p4@d.example:4",
+                        "confirm_password": ADMIN_PASS},
                   headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["egress"], "http://d.example:4")
@@ -611,14 +624,16 @@ class RowIsolationTest(_WebBase):
                         f"{egress.ENV_MANIFEST}={_manifest(*rows)}")
         c = self._login()
         r = c.put("/api/scheduler/executors/workers/0",
-                  json={"egress": "http://u:p@new.example:2"},
+                  json={"egress": "http://u:p@new.example:2",
+                        "confirm_password": ADMIN_PASS},
                   headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["egress"], "http://new.example:2")
         self.assertEqual(self._get(c)["workers"]["assignments"][0]["egress"],
                          "http://new.example:2")
         r = c.put("/api/scheduler/executors/fallback",
-                  json={"egress": ""}, headers={"X-CSRF-Token": c.csrf})
+                  json={"egress": "", "confirm_password": ADMIN_PASS},
+                  headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._get(c)["fallback"]["egress"], "直连（本机出口）")
         stored = egress.parse_manifest(self._read_env()[egress.ENV_MANIFEST])
@@ -635,6 +650,7 @@ class RowIsolationTest(_WebBase):
             "workers": 3,
             "proxy_list": "http://p1:1,http://p2:2,http://p3:3",
             "proxy_fallback": "http://fb:9",
+            "confirm_password": ADMIN_PASS,
         })
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self._read_env()
