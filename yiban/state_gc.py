@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """按天状态文件的清理策略：**唯一事实源**（宿主 cron 与容器调度共用）。
 
-状态目录里的"按日文件"由多处写入（signin 的签到状态/全量收尾标记/邮件额度账本、
-容器调度的时段闩锁标记、调度快照、按天签到日志）。它们只在**当天**有意义（少数要供
-日历回看），如果不清理就是无界增长：目录条目随天数线性膨胀，web 日历按前缀
-`os.scandir` 整目录扫描（`sign-daily-*` 回退读取）也会随之变慢。
-
-此前清理规则只写在一个 bash 脚本里、且只覆盖 3 个模式，容器侧只清日志目录——
-新增一类按日文件时没有任何机制提醒补规则。本模块把"哪些文件按日生成、各保留多久"
-收成一张表，两处调用点（`scripts/state_gc.py` 的 CLI、`docker/scheduler.py`）共用；
-`tests/test_state_gc.py` 有一道元测试：代码里出现的每个按日状态文件名，都必须在本表里。
+状态目录里的"按日文件"由多处写入（签到状态、全量收尾标记、邮件额度账本、容器调度
+的时段闩锁标记、调度快照、按天签到日志）。它们只在**当天**有意义（少数要供日历回看），
+不清理就是无界增长：条目随天数线性膨胀，web 日历按前缀 `os.scandir` 整目录扫描
+（`sign-daily-*` 回退读取）也会随之变慢。本模块把"哪些文件按日生成、各保留多久"收成
+一张表，两处调用点（`scripts/state_cleanup.py` 的 CLI、`docker/scheduler.py`）共用；
+新增按日文件时**必须**在 `ARTIFACTS` 登记，否则它永远不被清理——`tests/test_state_gc.py`
+有一道元测试双向核对代码里出现的按日前缀与本表。
 
 保留期分两档（键与部署文档同口径，可用环境变量覆盖）：
 - `YIBAN_RETENTION_DAYS`（默认 365）：日志与"历史可回看"的状态文件；
@@ -93,11 +91,6 @@ def match(name):
     return None, None
 
 
-def _cutoff(days, now=None):
-    base = (now or datetime.datetime.now()).date()
-    return (base - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
-
-
 def state_dir_from_env(env=None):
     """状态目录：`YIBAN_STATE_DIR` → 默认 `/var/log/yiban`（与 run.sh 同口径）。
 
@@ -119,49 +112,6 @@ def log_dir_from_env(state_dir, env=None):
     if not log_file:
         return state_dir
     return os.path.dirname(log_file) or state_dir
-
-
-def _cutoffs(env, now):
-    """两档保留期 → 截止日期（非法配置由 retention_days 抛 ValueError，调用方响亮失败）。"""
-    return {
-        "log": _cutoff(retention_days("log", env), now),
-        "snapshot": _cutoff(retention_days("snapshot", env), now),
-    }
-
-
-def _iter_expired(state_dir, log_dir, cutoffs, now=None):
-    """产出 (路径, 明细行)：过期按日文件（按 ARTIFACTS 顺序、目录项名排序）与孤儿临时文件。
-
-    `sweep`（真删）与 `plan`（只看不动手）共用本迭代器——判定口径只有这一处，
-    不会出现"报告要删 A、实际删了 B"。
-    """
-    for art in ARTIFACTS:
-        target_dir = log_dir if art.where == "log" else state_dir
-        if not os.path.isdir(target_dir):
-            continue
-        for name in sorted(os.listdir(target_dir)):
-            got, date = match(name)
-            if got is not art or date >= cutoffs[art.bucket]:
-                continue
-            path = os.path.join(target_dir, name)
-            try:
-                if os.path.isfile(path):
-                    yield path, f"{name}（{art.bucket} 过期）"
-            except OSError:
-                continue
-    if not os.path.isdir(state_dir):
-        return
-    threshold = ((now or datetime.datetime.now()) - datetime.timedelta(
-        seconds=_TMP_MAX_AGE_SEC)).timestamp()
-    for name in sorted(os.listdir(state_dir)):
-        if _TMP_MARK not in name:
-            continue
-        path = os.path.join(state_dir, name)
-        try:
-            if os.path.isfile(path) and os.path.getmtime(path) < threshold:
-                yield path, f"{name}（中断的半成品）"
-        except OSError:
-            continue
 
 
 def sweep(state_dir, log_dir=None, env=None, now=None):
@@ -232,3 +182,52 @@ def sweep_empty_cred_state(state_dir):
         return True
     except OSError:
         return False
+
+
+# ---- 内部实现 ----
+def _cutoff(days, now=None):
+    base = (now or datetime.datetime.now()).date()
+    return (base - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _cutoffs(env, now):
+    """两档保留期 → 截止日期（非法配置由 retention_days 抛 ValueError，调用方响亮失败）。"""
+    return {
+        "log": _cutoff(retention_days("log", env), now),
+        "snapshot": _cutoff(retention_days("snapshot", env), now),
+    }
+
+
+def _iter_expired(state_dir, log_dir, cutoffs, now=None):
+    """产出 (路径, 明细行)：过期按日文件（按 ARTIFACTS 顺序、目录项名排序）与孤儿临时文件。
+
+    `sweep`（真删）与 `plan`（只看不动手）共用本迭代器——判定口径只有这一处，
+    不会出现"报告要删 A、实际删了 B"。
+    """
+    for art in ARTIFACTS:
+        target_dir = log_dir if art.where == "log" else state_dir
+        if not os.path.isdir(target_dir):
+            continue
+        for name in sorted(os.listdir(target_dir)):
+            got, date = match(name)
+            if got is not art or date >= cutoffs[art.bucket]:
+                continue
+            path = os.path.join(target_dir, name)
+            try:
+                if os.path.isfile(path):
+                    yield path, f"{name}（{art.bucket} 过期）"
+            except OSError:
+                continue
+    if not os.path.isdir(state_dir):
+        return
+    threshold = ((now or datetime.datetime.now()) - datetime.timedelta(
+        seconds=_TMP_MAX_AGE_SEC)).timestamp()
+    for name in sorted(os.listdir(state_dir)):
+        if _TMP_MARK not in name:
+            continue
+        path = os.path.join(state_dir, name)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < threshold:
+                yield path, f"{name}（中断的半成品）"
+        except OSError:
+            continue

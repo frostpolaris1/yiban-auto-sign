@@ -8,7 +8,7 @@
 |--------|------|
 | WAF 判定 / URL 白名单 / 脱敏诊断 | `yiban/security.py`（以 `ProtocolPolicy` 注入协议层） |
 | 会话缓存（少登录 = 少风控暴露面） | 本模块 `_SessionCache`（协议层只通过 restore/save/clear 使用） |
-| 凭据内存清零（C-SIGN-04） | `YibanClient._wipe_credentials`（由 `attempt_signin` 的 finally 调用） |
+| 凭据内存清零 | `YibanClient._wipe_credentials`（由 `attempt_signin` 的 finally 调用） |
 | 三态判定 / 窗口校验 / 多任务容错 | `YibanClient.signin` |
 
 `scripts/signin.py` 以 `YibanClient` 之名转发本类（**同一对象**，不是第二份实现），
@@ -117,11 +117,11 @@ class YibanClient:
 
     def __init__(self, account):
         self.account = account
-        # C-SIGN-04：密码缓冲用可变 bytearray 持有（str 不可原位清零），
-        # 单次签到尝试结束由 _wipe_credentials 原位清零（attempt_signin finally）
+        # 密码缓冲用可变 bytearray 持有（str 不可原位清零），单次签到尝试结束由
+        # _wipe_credentials 原位清零（attempt_signin 的 finally）
         self.password = bytearray(account.password.encode("UTF-8"))
-        # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，与同作者 FYIBAN 同源，实测绕过 e003）；
-        # 旧流程（Auto-Test 继承的 iOS 伪造 UA）仅在 YIBAN_LEGACY_LOGIN=1 时启用（GitHub Actions 等场景备选）
+        # 登录方式：默认 KillYiBan 同款流程（真实 App 特征，与同作者 FYIBAN 同源，
+        # 实测可绕过 e003）；旧流程（iOS 伪造 UA）仅在 YIBAN_LEGACY_LOGIN=1 时启用
         self.use_killyiban = os.environ.get("YIBAN_LEGACY_LOGIN", "") != "1"
         if self.use_killyiban:
             self.csrf = secrets.token_hex(16)  # SecureRandom 真随机
@@ -160,13 +160,13 @@ class YibanClient:
         return store
 
     def _wipe_credentials(self):
-        """凭据内存尽力清零（C-SIGN-04）：单次签到尝试结束（成败均然）由 attempt_signin 调用。
+        """凭据内存尽力清零：单次签到尝试结束（成败均然）由 attempt_signin 调用。
 
         - password 缓冲（bytearray）原位覆写 \\x00——唯一能保证失效的副本；
         - 解除 account/phone_model/phone_code 引用，缩短凭据可回收窗口。
         CPython 局限：不可变对象（str/bytes）无法原位清零，RSA 加密瞬态副本与
         Account.password 本体只能等 GC；core dump / swap 场景仍可能残留。彻底
-        消除需全链路换可清零凭据容器（侵入 web/db 存储层，标注为已知限制）。
+        消除需全链路换可清零凭据容器（侵入 web/db 存储层，属已知限制）。
         """
         pwd = getattr(self, "password", None)
         if isinstance(pwd, bytearray):
@@ -255,11 +255,10 @@ class YibanClient:
 
         position_list = data_obj.get("Position", [])
         if not position_list:
-            # 2026-08-31 公测：登录成功、signPosition 返回 code=0 但 Position 为空。
-            # 此前只报笼统一句"未找到签到位置数据"，Msg 原文被吞，管理员无从判断
-            # 是"任务未配置点位"还是"当日任务已关闭"。落一条带 Msg 的日志供取证。
-            # 2026-09-01：状态独立为 STATUS_NO_POSITION——非账号/凭据问题，不按失败
-            # 告警、不触发补签重跑（NO_POSITION_MAX_ATTEMPTS=1，见 _retry_budget）。
+            # 登录成功、signPosition 返回 code=0 但 Position 为空：必须把 Msg 原文落日志，
+            # 管理员才能判断是"任务未配置点位"还是"当日任务已关闭"。状态独立为
+            # STATUS_NO_POSITION——非账号/凭据问题，不按失败告警、不触发补签重跑
+            # （重试预算对 NO_POSITION 只给 1 次，见 engine 的 _retry_budget）。
             logger.warning(
                 f"[{self.account.phone}] signPosition 无可用点位: "
                 f"Msg={masking.sanitize_text(msg)!r} Range={'有' if data_obj.get('Range') else '无'}"
@@ -270,8 +269,6 @@ class YibanClient:
                 False,
                 yiban_status.STATUS_NO_POSITION,
             )
-        # 多任务 shuffle 改造（2026-08-29）后首个点位不再特殊：
-        # 点位统一由下方遍历全部任务处理，此处不再取 position_list[0]。
         range_obj = data_obj.get("Range", {})
 
         # 2. 校验签到时间
@@ -296,11 +293,9 @@ class YibanClient:
                 yiban_status.STATUS_SKIPPED_WINDOW,
             )
 
-        # 3. 解析多边形点（逐点容错：单个坏点跳过，不拖垮整个签到）
-        # 修复了「只签 position_list[0]」导致的漏签，改为遍历全部任务。
-        # 2026-08-29 用户裁决：多任务通常为「同一打卡的多个点位，任取其一即可」——
-        # 先随机打乱任务顺序（避免固定只签第一个点位，贴近学生真实行为、降低固定
-        # 点位指纹），然后任一任务成功即停（下方 break），不再重复提交。
+        # 3. 解析多边形点（逐点容错：单个坏点跳过，不拖垮整个签到）。
+        # 多任务通常是「同一打卡的多个点位，任取其一即可」：先随机打乱任务顺序
+        # （避免固定只签第一个点位形成行为指纹），然后任一任务成功即停（下方 break）。
         random.shuffle(position_list)
         results_tasks = []  # [(task_name, ok, err_msg)]
         for position in position_list:
@@ -332,7 +327,7 @@ class YibanClient:
                     f"[{self.account.phone}] 未配置设备信息（YIBAN_PHONE_MODEL/YIBAN_PHONE_CODE），"
                     "如学校开启了设备绑定，签到将失败"
                 )
-            # KillYiBan 用 MINI_VERSION="1"，原脚本用 "1.0"
+            # KillYiBan 的 MINI_VERSION 是 "1"，旧流程是 "1.0"（`out_state` 传参）
             submitted = fyiban_protocol.submit_sign_in(
                 self.session, self.csrf,
                 phone_code=self.phone_code, phone_model=self.phone_model,
@@ -345,8 +340,8 @@ class YibanClient:
             result = submitted.data
             if result.get("code") == 0 and result.get("data"):
                 results_tasks.append((task_name, True, ""))
-                # 2026-08-29 用户裁决：多任务「随机选点、任一成功即停」——命中任一
-                # 任务即视为当日已签，停止提交后续任务（省请求、降风控）
+                # 「随机选点、任一成功即停」：命中任一任务即视为当日已签，
+                # 停止提交后续任务（省请求、降风控）
                 logger.info(
                     f"[{self.account.phone}] 签到成功，剩余 "
                     f"{len(position_list) - len(results_tasks)} 个任务不再重复提交"
@@ -358,8 +353,8 @@ class YibanClient:
                     err_msg += "（请配置 YIBAN_PHONE_MODEL 和 YIBAN_PHONE_CODE 环境变量）"
                 results_tasks.append((task_name, False, f"签到失败: {err_msg}"))
 
-        # 6. 汇总各任务结果（2026-08-29 语义：多任务「随机选点、任一成功即停」——
-        # 命中任一任务即视为当日已签；仅全部失败才判失败，保持重试兜底）
+        # 6. 汇总各任务结果：命中任一任务即视为当日已签；仅全部失败才判失败
+        # （保持重试兜底）
         ok_tasks = [t for t in results_tasks if t[1]]
         fail_tasks = [t for t in results_tasks if not t[1]]
         if ok_tasks:
