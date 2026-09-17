@@ -109,9 +109,22 @@ class NotifyLedgerDiskTest(unittest.TestCase):
             sent_a.append(t)
         # 实例 B（进程 2）：把实现包从 sys.modules 里整体摘掉再导入，等价于
         # "新进程从零起"（内存账本为空，只能从磁盘恢复已占用计数）
-        for k in list(sys.modules):
-            if k.startswith("yiban.notify"):
+        #
+        # ⚠ 必须还原：摘掉再导入会让本进程里"先前导入方持有的旧模块对象"与
+        # "函数内重新解析到的新对象"同时存在（两份账本实例）。不还原就会污染
+        # 同进程后续用例——表现为 `test_notify_webhook.py` 的跨日退还用例在全量
+        # 运行下稳定失败（`daily_remaining` 读到陈旧计数，先跑本文件才复现）。
+        saved_modules = {k: v for k, v in sys.modules.items()
+                         if k.startswith("yiban.notify")}
+
+        def _restore_notify_modules():
+            for k in [k for k in sys.modules if k.startswith("yiban.notify")]:
                 del sys.modules[k]
+            sys.modules.update(saved_modules)
+
+        self.addCleanup(_restore_notify_modules)
+        for k in list(saved_modules):
+            del sys.modules[k]
         from yiban.notify import ledger as notify_b
         os.environ["YIBAN_STATE_DIR"] = self.tmp
         os.environ["YIBAN_ENV_FILE"] = self.env_file

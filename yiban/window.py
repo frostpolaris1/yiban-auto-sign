@@ -3,14 +3,13 @@
 
 窗口 = `YIBAN_SIGN_START`~`YIBAN_SIGN_END`（默认 06:30~07:50，北京时间）；
 "有效窗口" = 两端各让出 `YIBAN_WINDOW_EDGE_FRONT_SEC` / `_BACK_SEC` 秒（默认各 60，
-防掐着边界发起请求）；有效窗口被裁剪吃空（前后裁剪 >= 窗口宽度）时**回退默认窗口**
-并在 `fell_back` 上报告——这一步必须在同一个函数里做，否则会出现：
+防掐着边界发起请求）。有效窗口被裁剪吃空（前后裁剪 >= 窗口宽度）时**回退默认窗口**
+并在 `fell_back` 上报告——回退与判定必须在 `bounds` 里一起做，否则会出现：
 
-- 计划按"回退后的默认窗口"排（有 80 分钟的计划），而关闭判定按"原始配置"算
-  → 有完整计划却整轮判"时段已结束"、零请求；
-- 容量预检/网页预估用**完整**有效窗口算，不扣已流逝时间 → 迟启动时按满容量
-  放行，真实剩余只能容纳 `(eff_hi - now) / (avg + gap)` 个，超出者全部落
-  skipped_window。
+- 计划按"回退后的默认窗口"排，而关闭判定按"原始配置"算 → 有完整计划却整轮判
+  "时段已结束"、零请求；
+- 容量预检/网页预估用**完整**有效窗口算、不扣已流逝时间 → 迟启动时按满容量放行，
+  真实剩余只能容纳 `(eff_hi - now) / (avg + gap)` 个，超出者全部落 skipped_window。
 
 时间一律取 `yiban.clock`（北京时间），与窗口语义同源。
 
@@ -27,16 +26,14 @@ DEFAULT_END = (7, 50)
 DEFAULT_EDGE_SEC = 60
 EDGE_MIN_SEC = 0
 EDGE_MAX_SEC = 300
-# 补签轮（当天最后一轮）触发点，默认 07:12 —— **必须在进程内补签轮的等待目标
-# 之前**：signin 的告警抑制要靠它判断"是否还有下一轮兜底"（见 retry_hm）。
-# 宿主 run.sh 读同一个键（`SECOND_HHMM="${YIBAN_SECOND_RUN_TIME:-07:12}"`），
-# 容器的触发点在 docker/scheduler.py 的 SECOND（它把真实值注入子进程环境，
-# 宿主/容器两形态的告警阈值都取实际部署值）。
+# 补签轮（当天最后一轮）触发点，默认 07:12——**必须早于进程内补签轮的等待目标**：
+# signin 的告警抑制靠它判断"是否还有下一轮兜底"。宿主 run.sh 与
+# docker/scheduler.py 读同一个键（后者把真实值注入子进程环境）。
 DEFAULT_RETRY_HM = (7, 12)
 
 
 def parse_hhmm(value, default):
-    """解析 HH:MM → (h, m)；非法返回 default（与 signin._parse_hhmm 同口径）。"""
+    """解析 HH:MM → (h, m)；非法返回 default（唯一实现：容器调度器与 run.sh 都按此口径校验）。"""
     try:
         h, m = str(value).strip().split(":")
         h, m = int(h), int(m)
@@ -45,17 +42,6 @@ def parse_hhmm(value, default):
         return (h, m)
     except (ValueError, AttributeError):
         return default
-
-
-def _int_or_none(env, key, lo=EDGE_MIN_SEC, hi=EDGE_MAX_SEC):
-    raw = str(env.get(key, "") or "").strip()
-    if not raw:
-        return None
-    try:
-        v = int(raw)
-    except ValueError:
-        return None
-    return v if lo <= v <= hi else None
 
 
 def parse_window(env):
@@ -82,10 +68,10 @@ def parse_edges(env):
 def retry_hm(env=None):
     """补签轮（当天最后一轮）触发点 (h, m)：取 `YIBAN_SECOND_RUN_TIME`，非法回默认。
 
-    **调用方按需取当前值，不要在导入期缓存**：宿主 run.sh 补签 cron 的时刻由
-    同一键配置，管理员改了键而进程内常量不跟着变，会让告警抑制按错的时刻判断
-    "是否还有下一轮兜底"——阈值早于真实末轮 → 提前告警（噪音）；晚于真实末轮
-    → 真异常当天不再有任何提示（静默漏报，危害更大）。
+    **调用方按需取当前值，不要在导入期缓存**：宿主 run.sh 的补签 cron 时刻由同一键
+    配置，管理员改了键而进程内常量不跟着变，告警抑制就会按错的时刻判断"是否还有下
+    一轮兜底"——阈值早于真实末轮 → 提前告警（噪音）；晚于真实末轮 → 真异常当天不再
+    有任何提示（静默漏报，危害更大）。
     """
     if env is None:
         env = os.environ
@@ -165,10 +151,22 @@ def from_env(env):
                    "edge_front_sec": front, "edge_back_sec": back}, invalid=invalid)
 
 
-def _minute_of_day(dt):
-    return dt.hour * 60 + dt.minute + dt.second / 60.0
-
-
 def to_dt(base_date, minute):
     """当天分钟数 → datetime（base_date 提供日期）。"""
     return base_date + datetime.timedelta(minutes=minute)
+
+
+# ---- 内部实现 ----
+def _int_or_none(env, key, lo=EDGE_MIN_SEC, hi=EDGE_MAX_SEC):
+    raw = str(env.get(key, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        v = int(raw)
+    except ValueError:
+        return None
+    return v if lo <= v <= hi else None
+
+
+def _minute_of_day(dt):
+    return dt.hour * 60 + dt.minute + dt.second / 60.0
