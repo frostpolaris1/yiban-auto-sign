@@ -22,8 +22,9 @@
 # cron 模板（放在签到窗口**开始时**；窗口 06:30 开始则 06:05 起挂上就够）：
 #   5 6 * * * yiban /bin/bash /opt/yiban-auto-sign/scripts/yiban-fallback.sh
 # 兜底进程会一直跑到窗口关闭（引擎自己判退），故**不需要**额外的 timeout 包裹。
-# 与 run.sh 并存是安全的：它自己持独立锁文件（signin-run.lock.fallback），
-# 与定时全量/手动签到的分工交给数据库里的领取池。
+# 与 run.sh 并存是安全的：引擎侧持独立锁 `signin-run.lock.fallback`（本脚本不取锁——
+# 锁由下面那条 `--fallback` 入口自己取，撞上已在跑的兜底会以退出码 3 结束，不叠进程）；
+# 与定时全量/手动签到的账号级分工交给数据库里的领取池。
 # 部署：以 yiban 用户运行（与 run.sh 同属主，才能写签到日志与状态目录）。
 # 解释器：优先项目虚拟环境（与 run.sh 同一套解析），缺失时回退系统 python3。
 umask 077
