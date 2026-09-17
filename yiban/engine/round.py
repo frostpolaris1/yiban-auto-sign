@@ -9,6 +9,7 @@
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
 """
+import heapq
 import logging
 import os
 import random
@@ -26,18 +27,17 @@ from yiban.store import db
 
 logger = logging.getLogger("yiban")
 
-# 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）
-# 由网页系统设置页写入 .env（YIBAN_SIGN_MODE），run.sh 加载后经环境变量传入
+# 签到模式：sequence（列表顺序，默认）/ random（列表随机打散）。
+# 由网页系统设置页写入 .env（YIBAN_SIGN_MODE），run.sh 加载后经环境变量传入。
 SIGN_MODE = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
 
-# P6 耗时告警阈值（秒）：单次尝试耗时超此值 → warning + 管理员汇总邮件 + 即时通知
+# 单次尝试耗时告警阈值（秒）：超此值 → warning + 管理员汇总邮件 + 即时通知
 _DEFAULT_SLOW_SIGN_SEC = 30
 
 # 状态码别名（与 yiban.status 同一对象）
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
-STATUS_FAILED = yiban_status.STATUS_FAILED
 STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
@@ -48,19 +48,20 @@ STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 # 状态码 → 日志/日历符号（同一对象，非副本）
 STATUS_SYMBOL = yiban_status.SYMBOL
 
-#: 领取池的"当日了结"口径（与 `_second_run_drop_done` 的剔除集合一致）：
+#: 领取池的"当日了结"口径（`state_io._second_run_drop_done` 的剔除集合与 `_settle_claims`
+#: 的记 `done` 判据都用它，改一处必须同改另一处）：
 #: 这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）都仍开放，
 #: 由补签轮或兜底执行体接手。
 _CLAIM_DONE_STATUSES = (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
 
 
 def _next_retry_at(now_dt, sch_cfg, rng=None):
-    """重试落点（调度 v2，2026-08-27）：失败账号重新采样到剩余有效窗口的偏早段。
+    """重试落点：在剩余有效窗口的偏早段重新采样。
 
-    - 下界 now + retry_min_interval（防连击，保留原安全语义）
-    - 上界 eff_hi = sign_end - edge_back（统一截止口径）
-    - 剩余窗口"偏早随机"采样（前 60% 均匀）：不尾端扎堆（P2）、无固定尾序（P7）、
-      不再回队尾立即执行（P1）；窗口不足返回 None → 调用方走放弃路径（P5）。
+    - 下界 now + retry_min_interval（防连击）；
+    - 上界 eff_hi = sign_end - edge_back（统一截止口径）；
+    - 只在前 60% 的剩余窗口里均匀采样：不尾端扎堆、无固定尾序，也不回队尾立即执行；
+    - 窗口放不下下一次尝试时返回 None，由调用方走放弃路径。
     """
     rng = rng or random.Random()
     base = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -79,22 +80,23 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
     流程（schedule 为空=手动签到）：按签到模式（列表顺序 / 列表随机）
     确定执行顺序逐个尝试；失败的账号不立即重试，放入队尾等待下一轮；
-    每账号总尝试次数受 _retry_budget 分级控制（确定性认证失败 1 次不重试、
-    风控类最多 2 次，其他最多 3 次，MAX_ATTEMPTS=3 语义）；同一账号两次尝试间隔
-    不小于 RETRY_MIN_INTERVAL 秒，避免连击。相邻账号请求间隔对齐到不小于
+    每账号总尝试次数受 `attempts._retry_budget` 分级控制（确定性认证失败 1 次、
+    风控类最多 2 次，其他最多 `attempts.MAX_ATTEMPTS` 次）；同一账号两次尝试间隔
+    不小于 `attempts.RETRY_MIN_INTERVAL` 秒，避免连击。相邻账号请求间隔对齐到不小于
     gap_max（与自动调度、容量预估同一「最小间隔」语义）。
 
-    schedule 非空（自动错峰模式，调度 v2 时间驱动队列）：按 {phone: datetime} 时间点到点执行
-    （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新采样到
-    剩余有效窗口的偏早段后非阻塞重插（不再回队尾 + 阻塞等待），窗口不足时明确放弃；
-    相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护统一按 eff_hi（sign_end - edge_back）。
+    schedule 非空（自动错峰模式，时间驱动队列）：按 {phone: datetime} 时间点到点执行
+    （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新
+    采样到剩余有效窗口的偏早段后非阻塞重插（不再回队尾 + 阻塞等待），窗口不足时明确
+    放弃；相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护统一按
+    eff_hi（sign_end - edge_back）。
 
     cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
     执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
 
     event_sink（可选）：签到事件落库回调——每次尝试/状态迁移调用一次，
-    传入 dict 行（sign_events 表字段）。None 时不收集（行为与旧版一致）；
-    回调异常一律吞掉，事件留痕绝不影响签到主流程。
+    传入 dict 行（sign_events 表字段）。None 时不收集；回调异常一律吞掉，
+    事件留痕绝不影响签到主流程。
 
     reclaim（多执行体）：True 时允许重新领取"当日已了结"的账号——只有**手动指定账号**
     才这么传（用户主动点的签到应当照做）。补签轮与兜底 worker 不传：它们接手的是
@@ -108,17 +110,17 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
     `delegated`（可选出参）：把"不在本执行体范围内"的账号（领不到的那些）收集到
     这个 set 里。汇总与退出码必须据此把它们从"失败"里摘出去——否则每个执行体都会把
-    别人的活报成自己的失败（实测：4 个执行体各带 10 个账号，却各报 28-30 个失败）。
+    别人的活报成自己的失败。
 
     返回结果字典 {手机号: (success, message, skip, status)}。
     """
     schedule = schedule or {}
     cred_state = cred_state or {}
     # .env 直配超大值不得把队列睡死——与网页设置侧 3600 上限同口径
-    # （该保护原本内置于共享随机延迟 helper，间隔改为确定性对齐后收口到入参处）
+    # （该保护原先内置于共享随机延迟 helper，间隔改为确定性对齐后收口到入参处）
     gap_max = min(gap_max, 3600)
-    # 启动延迟已废弃（v0.29.0），调度 v2 时间点分布 + 掐头去尾取代；
-    # start_delay_max 参数仅为兼容旧调用签名保留（值不再使用）
+    # start_delay_max 只为兼容旧调用签名保留，值不再使用：启动延迟已由
+    # 调度 v2 的时间点分布 + 掐头去尾取代
     queue = list(accounts)
     if SIGN_MODE == "random" and not schedule:
         # 列表随机模式：每次运行打乱顺序（打破"固定顺序+固定时刻"的脚本指纹）；
@@ -179,7 +181,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
 
     def _emit_event(phone, status, message, dur=None, attempt_no=None):
-        """签到事件留痕（v6 的 sign_events 表此前主流程零写入）。
+        """签到事件留痕。
 
         每次尝试与状态迁移（含重试/跳过）落一行，stage="sign"；探针沿用既有
         stage="probe" 写入口径。异常吞掉——留痕失败不得影响签到主流程。
@@ -221,15 +223,14 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐
     sch_cfg = schedule_mod._schedule_config() if schedule else None
     last_done = None  # 上次尝试结束时刻（monotonic），启动对齐用
-    # P6 耗时告警：阈值可配（YIBAN_SLOW_SIGN_SEC），每账号每轮最多告警 1 次
+    # 耗时告警阈值可配（YIBAN_SLOW_SIGN_SEC），每账号每轮最多告警 1 次
     slow_sec = schedule_mod._env_int("YIBAN_SLOW_SIGN_SEC", _DEFAULT_SLOW_SIGN_SEC, 1, 600)
     slow_notified = set()
 
-    # ---- 调度 v2 时间驱动队列（2026-08-27 阶段 2：重试重新尊重计划，P1-P5/P7）----
-    # pending: (next_at, seq, acc) 按下次尝试时刻排序；首 attempt 落点=计划时刻（已过点立即）；
-    # 重试经 _next_retry_at 重新采样落点后非阻塞重插，不再"回队尾 + 阻塞 sleep"（P4 消除）。
+    # ---- 调度 v2 时间驱动队列：重试重新尊重计划 ----
+    # pending: (next_at, seq, acc) 按下次尝试时刻排序；首 attempt 落点=计划时刻（已过点
+    # 立即）；重试经 _next_retry_at 重新采样落点后非阻塞重插，不再"回队尾 + 阻塞 sleep"。
     if schedule:
-        import heapq
         pending = []
         _seq = 0
 
@@ -245,10 +246,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         while pending:
             _at_dt, _seq_no, acc = heapq.heappop(pending)
             phone = acc.phone
-            # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
+            # 每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
             today = clock.now().strftime("%Y-%m-%d")
             now_dt = clock.now()
-            # 截止保护（P5，统一 eff_hi 口径）：窗口关闭 → 剩余账号全部跳过
+            # 截止保护（统一 eff_hi 口径）：窗口关闭 → 剩余账号全部跳过
             if schedule_mod._window_closed(sch_cfg, now_dt):
                 logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
                 _mark_window_skip([acc] + [r[2] for r in pending])
@@ -273,8 +274,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             wait = (_at_dt - now_dt).total_seconds()
             if wait > 0:
                 time.sleep(wait)
-            # 请求最小间隔兜底（F1）：min_exec_gap 与 exec_gap_min（过点账号）取较大值；
-            # v0.29.0：账号间隔设置（gap_max）对自动调度同样生效，作为相邻请求间隔下限
+            # 请求最小间隔兜底：min_exec_gap 与 exec_gap_min（过点账号）取较大值；
+            # 账号间隔设置（gap_max）对自动调度同样生效，作为相邻请求间隔下限
             if last_done is not None:
                 min_gap = max(
                     sch_cfg["min_exec_gap"],
@@ -299,21 +300,21 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 continue
             attempts[phone] += 1
             logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
-            t0 = time.monotonic()  # 单次尝试耗时起点（P6：慢响应可判）
+            t0 = time.monotonic()  # 单次尝试耗时起点（慢响应可判）
             success, message, skip, status = attempts_mod.attempt_signin(acc)
             last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
             dur = last_done - t0
             state_io._write_sign_state(phone, status, message, dur=dur)
             _emit_event(phone, status, message, dur=dur)
-            # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知（原样）
+            # 单次尝试超阈值 → warning + 通知
             if dur > slow_sec and phone not in slow_notified:
                 slow_notified.add(phone)
                 alerts._alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
             # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
             attempts_mod._update_cred_state(cred_state, phone, success, message, today)
             # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
-            # （SKIPPED_WINDOW/NORANGE 发生在登录并拉取任务之后，凭据已被证实可用）。
-            # 2026-08-27 修复：原实现仅 success 时解冻，窗口跳过被误判为试探失败再冻 7 天。
+            # （SKIPPED_WINDOW/NORANGE 发生在登录并拉取任务之后，凭据已被证实可用——
+            # 只看 success 会把窗口跳过误判为试探失败，再冻一个试探周期）
             probe_healthy = success or (
                 skip and status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE)
             )
@@ -322,9 +323,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     cred_state.pop(phone, None)
                 logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
             elif cred.get("paused_since") and attempts_mod._probe_due(cred, today):
-                # 试探失败：仅凭据类失败才顺延试探日（网络类瞬时失败
-                # 原来也顺延 7 天，把可自愈状态放大成周级停签）；网络类失败保持
-                # probe_date 不变，次日即再试探
+                # 试探失败：仅凭据类失败顺延试探日——网络类瞬时失败可自愈，
+                # 顺延会把状态放大成周级停签，故保持 probe_date 不变、次日再试
                 if attempts_mod._is_credential_failure(message):
                     next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=attempts_mod.PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
                     cred_state[phone]["probe_date"] = next_probe
@@ -361,7 +361,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     alerts.send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
                 alerts.send_user_fail_mail(acc.owner, phone, message)
                 continue
-            # 重试落点（P1/P2/P3/P7）：窗口内重新采样，非阻塞重插；窗口不足 → 放弃（P5）
+            # 重试落点：窗口内重新采样后非阻塞重插；窗口不足 → 放弃
             nxt = _next_retry_at(clock.now(), sch_cfg)
             if nxt is None:
                 results[phone] = (False, message, False, status)
@@ -371,8 +371,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     alerts.send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
                 alerts.send_user_fail_mail(acc.owner, phone, message)
                 continue
-            # 重试入队统一兜底失败原因（用户需求）：把本次失败 message 原样补进
-            # 状态/事件/日志三处出口，原因经 _sanitize_text 防换行/回车注入（与 web 展示一致）。
+            # 重试入队统一兜底失败原因：把本次失败 message 原样补进状态/事件/日志三处
+            # 出口，原因经 _sanitize_text 防换行/回车注入（与 web 展示一致）。
             state_io._write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
             _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
             _push(acc, nxt)
@@ -383,7 +383,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     while queue:
         acc = queue.pop(0)
         phone = acc.phone
-        # M14：每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
+        # 每次尝试（含重试）重算 today，跨午夜执行不沿用启动日
         today = clock.now().strftime("%Y-%m-%d")
         is_first = first_round
         first_round = False
@@ -420,24 +420,24 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         attempts[phone] += 1
         logger.debug(f"[{phone}] 🔄 第 {attempts[phone]} 次尝试")
 
-        t0 = time.monotonic()  # 单次尝试耗时起点（P6：慢响应可判）
+        t0 = time.monotonic()  # 单次尝试耗时起点（慢响应可判）
         success, message, skip, status = attempts_mod.attempt_signin(acc)
         last_done = time.monotonic()  # 启动对齐：记录本次尝试结束时刻
         # 每次尝试结束即更新结构化状态文件（失败回队时显示 🔄 重试中；附耗时 dur）
         dur = last_done - t0
         state_io._write_sign_state(phone, status, message, dur=dur)
         _emit_event(phone, status, message, dur=dur)
-        # P6 耗时告警（2026-08-16）：单次尝试超阈值 → warning + 通知。
-        # 节流：每账号每轮最多 1 次（重试连击不刷屏；最终失败另有失败通知，
-        # 此处主要覆盖"慢但成功"的接口劣化预警）。通知失败不影响签到（内部已捕获）。
+        # 单次尝试超阈值 → warning + 通知。节流：每账号每轮最多 1 次（重试连击不刷屏；
+        # 最终失败另有失败通知，此处主要覆盖"慢但成功"的接口劣化预警）；
+        # 通知失败不影响签到（内部已捕获）。
         if dur > slow_sec and phone not in slow_notified:
             slow_notified.add(phone)
             alerts._alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
         attempts_mod._update_cred_state(cred_state, phone, success, message, today)
         # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
-        # （SKIPPED_WINDOW/NORANGE 发生在登录并拉取任务之后，凭据已被证实可用）。
-        # 2026-08-27 修复：原实现仅 success 时解冻，窗口跳过被误判为试探失败再冻 7 天。
+        # （SKIPPED_WINDOW/NORANGE 发生在登录并拉取任务之后，凭据已被证实可用——
+        # 只看 success 会把窗口跳过误判为试探失败，再冻一个试探周期）
         probe_healthy = success or (
             skip and status in (STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE)
         )
@@ -446,7 +446,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 cred_state.pop(phone, None)
             logger.info(f"[{phone}] ✅ 半开试探确认账密可用，解除暂停")
         elif cred.get("paused_since") and attempts_mod._probe_due(cred, today):
-            # 试探失败：仅凭据类失败才顺延试探日（理由同上）
+            # 试探失败：仅凭据类失败才顺延试探日（理由同 schedule 分支）
             if attempts_mod._is_credential_failure(message):
                 next_probe = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=attempts_mod.PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
                 cred_state[phone]["probe_date"] = next_probe
@@ -493,10 +493,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             alerts.send_user_fail_mail(acc.owner, phone, message)
             continue
 
-        # 放回队尾：单次 sleep 保证总间隔 ≥ retry_min_interval，
-        # 随机部分只用于打散，不允许把最小间隔缩水
-        # 重试入队统一兜底失败原因（用户需求）：把本次失败 message 原样补进
-        # 状态/事件/日志三处出口，原因经 _sanitize_text 防换行/回车注入（与 web 展示一致）。
+        # 放回队尾前的等待：单次 sleep 保证总间隔 ≥ retry_min_interval，
+        # 随机部分只用于打散，不允许把最小间隔缩水。
+        # 重试入队统一兜底失败原因：把本次失败 message 原样补进状态/事件/日志三处出口，
+        # 原因经 _sanitize_text 防换行/回车注入（与 web 展示一致）。
         state_io._write_sign_state(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
         _emit_event(phone, STATUS_RETRYING, f"待重试（已 {attempts[phone]} 次）: {_sanitize_text(message)}")
         retry_min_interval = attempts_mod.RETRY_MIN_INTERVAL
