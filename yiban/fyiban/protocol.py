@@ -72,6 +72,9 @@ class RequestPolicy(Protocol):
     def is_blocked(self, resp):
         """该响应是否被 WAF 风控拦截（返回布尔，不抛错）。"""
 
+    def is_logged_in_redirect(self, location):
+        """302 Location 是否指向"已登录"标识页（仅 host+path，允许 query）。"""
+
     def require_not_blocked(self, resp):
         """被风控拦截即抛 RuntimeError。"""
 
@@ -345,8 +348,10 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
         allow_redirects=False,
         timeout=REQUEST_TIMEOUT,
     )
-    # 若直接返回 redirect_uri 说明服务端已是登录态（正常流程是停留在登录页）
-    if LOGGED_IN_MARKER in (resp.headers.get("Location", "")):
+    # 若直接返回 redirect_uri 说明服务端已是登录态（正常流程是停留在登录页）。
+    # 判定经 policy 注入（本层不做域名比对）：只认 f.yiban.cn/iapp7463（允许 query），
+    # 恶意 host / 子域伪装的 Location 一律不当"已登录"（M7）。
+    if policy.is_logged_in_redirect(resp.headers.get("Location", "")):
         if restored:
             logger.info(f"[{phone}] 登录: 会话缓存命中，免登录复用")
         else:
