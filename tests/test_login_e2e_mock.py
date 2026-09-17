@@ -48,11 +48,18 @@ class _LocalMockAdapter(requests.adapters.BaseAdapter):
         self._inner = requests.adapters.HTTPAdapter()
 
     def send(self, request, **kwargs):
+        logical_url = request.url  # 逻辑 URL（https://<host>/…，连接层改写前）
         parts = urlsplit(request.url)
         path = parts.path + (f"?{parts.query}" if parts.query else "")
         request.headers["Host"] = parts.netloc
         request.url = self._base + path
-        return self._inner.send(request, **kwargs)
+        resp = self._inner.send(request, **kwargs)
+        # 改写只发生在连接层：响应 URL 必须保持逻辑形态，否则协议层基于
+        # resp.url/history 的白名单判定（M8 逐跳校验）会把回环地址误判为
+        # "跳转 URL 不在白名单"。history 里的每一跳也走本 send（重定向时
+        # requests 会用 Location 重新构造逻辑 request），url 同样被还原。
+        resp.url = logical_url
+        return resp
 
     def close(self):
         self._inner.close()
