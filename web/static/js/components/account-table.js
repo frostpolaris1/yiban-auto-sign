@@ -178,6 +178,27 @@
     return account.owner_display || (account.owner === "admin" ? "管理员" : (account.owner || "—"));
   }
 
+  // 「上次实领」= 上一个业务日实际领取该账号的执行体。取值只有一个来源：列表接口的
+  // last_executor（{role, index, label}）——前端不解析身份串、不按 role 自行归类
+  // （unknown 是存量数据的事实，后端照实回 label）。
+  // null = 上一个业务日没有该账号的记录（含新账号、库未初始化）→ 显示「—」，不当成 unknown。
+  function lastExecText(account) {
+    var ex = account && account.last_executor;
+    if (!ex) return "—";
+    var label = String(ex.label || "");
+    if (label) return label;
+    // 契约保证 label 字段存在，此处仅兜底字段缺失：unknown 照实说「旧数据」，其余不猜。
+    return ex.role === "unknown" ? "未标注（旧数据）" : "—";
+  }
+
+  // 三组共用同一格：列位置固定在「手机号」之后、「归属」之前（两个「归属」会打架，故列名不同）。
+  // 断点档位与模板表头 th 上的类名必须一致（改档位要同时改模板的 th）。
+  // 取 xl 档（≤1280 隐藏）：三张表在 ≤1280 已占满可用宽度（实测 1280 下正常账号表本就有
+  // 101px 内滚），本列宽约 100~132px，放宽一档会在 1101~1280 造出新的表内横向滚动。
+  function lastExecCell(account) {
+    return td([lastExecText(account)], "acct-cell-lastexec acct-col-lg");
+  }
+
   // 归属邮箱：列表态 a.owner 已由后端 _mask_email 脱敏为 use***@example.com，直接展示即可，
   // 不在前端还原/请求完整邮箱。非邮箱归属（admin/无）回落 ownerText。
   // 取值只在此一处，日后设置页加「是否显示归属邮箱」开关时只改这里或包一层布尔判断。
@@ -213,11 +234,13 @@
       tr.appendChild(td([badge(a.status)], "acct-cell-audit"));
       tr.appendChild(nameCell(a, false));
       tr.appendChild(td([String(a.phone || "")], "acct-cell-phone"));
+      tr.appendChild(lastExecCell(a));
       tr.appendChild(td([ownerText(a)], "acct-cell-owner acct-col-md"));
       tr.appendChild(actionsCell(group, a, handlers));
     } else if (group === "deleted") {
       tr.appendChild(nameCell(a, true));
       tr.appendChild(td([String(a.phone || "")], "acct-cell-phone"));
+      tr.appendChild(lastExecCell(a));
       tr.appendChild(td([ownerText(a)], "acct-cell-owner acct-col-md"));
       tr.appendChild(td([String(a.deleted_at || "").replace("T", " ").slice(0, 16)], "acct-cell-time"));
       tr.appendChild(actionsCell(group, a, handlers));
@@ -226,6 +249,7 @@
       tr.appendChild(td([String((a.index != null ? a.index : 0) + 1)], "acct-cell-idx"));
       tr.appendChild(nameCell(a, false));
       tr.appendChild(td([String(a.phone || "")], "acct-cell-phone"));
+      tr.appendChild(lastExecCell(a));
       tr.appendChild(td([a.phone_model || "—"], "acct-cell-model acct-col-lg"));
       tr.appendChild(td([prefText(a)], "acct-cell-pref acct-col-xl"));
       tr.appendChild(td([ownerText(a)], "acct-cell-owner acct-col-md"));

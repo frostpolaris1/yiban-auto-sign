@@ -2760,7 +2760,8 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-cell-owner,
 .acct-cell-model,
 .acct-cell-pref,
-.acct-cell-time { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+.acct-cell-time,
+.acct-cell-lastexec { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
 /* 时间列逐行数字对齐：等宽字号 + tabular-nums（不参与比较的其余文本列保持原字体） */
 .acct-cell-time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .acct-cell-owner { min-width: 150px; }
