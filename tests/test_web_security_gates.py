@@ -8,7 +8,7 @@
   调用方；下一条日志仍可重试；create_app 挂载构造失败降级不崩启动；
 - P2-7 ensure_secret_key：空 .env（无有效键）视为新部署写暂停键；有有效键不写；
 - 版本号同步：APP_VERSION 与 web/__init__.py 的 __version__ 一致且等于当前版本
-  （断言值随发版更新，当前 0.4.4）。
+  （断言值随发版更新，当前 0.4.5）。
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
@@ -284,13 +284,13 @@ class Batch16FixesTest(unittest.TestCase):
         （见 docs/dev/release-gate.md），版本一旦分叉，台账就不再可信。
         """
         from yiban import __version__ as engine_version
-        self.assertEqual(engine_version, "0.4.4")
+        self.assertEqual(engine_version, "0.4.5")
         self.assertEqual(self.webapp.APP_VERSION, engine_version)
         # web 侧两个文件都不得再出现版本字面量（否则就是第二个来源）
         for rel in ("web/__init__.py", "web/app.py"):
             with open(os.path.join(BASE, rel), encoding="utf-8") as f:
                 self.assertNotIn(
-                    '"0.4.4"', f.read(),
+                    '"0.4.5"', f.read(),
                     f"{rel} 里又写了一份版本字面量；版本只能定义在 yiban/__init__.py",
                 )
 
