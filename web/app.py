@@ -784,6 +784,30 @@ DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 DEFAULT_MAX_USERS = 500
 DEFAULT_MAX_ACCOUNTS = 200
 
+# ---- 设置项档位（`POST /api/settings` 权限判定的**唯一事实源**）----
+# 分档判据是「影响半径 × 能否造成静默漏签」，不是"看起来危不危险"：
+#   A 档（`MASTER_ONLY_KEYS`）一次改动就波及全站签到或直接拆掉安全闸门——周末开关、
+#     签到窗口与首尾裁切决定"今天到底签不签得到"，随机延迟与容量上限决定"多少账号被
+#     挤出窗口"，account_verify / probe_* 会让服务器对**全站账号**发起真实易班登录。
+#     故仅主管理员可写，且值真变化时必须当次输口令（短时豁免不适用）+ 变更告警。
+#   B 档（`GATED_KEYS`）只改排序风格与自选权，出错有 A 档参数兜底，故任意管理员可写，
+#     值真变化时过同一个口令门禁但允许豁免。
+# 唯一的例外是 `global_pause`：0→1「急停」任意管理员都能做（当次口令 + 占用高危额度 +
+# 紧急告警），1→0 恢复仍仅主管理员——把"先止损"的权力留在在场每个人手里，把"放开"的
+# 权力收在主管理员手里。
+# 新增设置键时必须改这里而不是在路由里再列一遍键名：此前 403 清单只写在 handler 内，
+# 与前端各页自己的收控件清单两处各写一遍、必然漂移（测试里的元测试负责比对这两份）。
+MASTER_ONLY_KEYS = frozenset({
+    "sign_window", "window_edge_sec", "edge_front_sec", "edge_back_sec",
+    "sunday_sign", "saturday_sign", "registration_pause",
+    "start_delay_max", "gap_max", "max_users", "max_accounts",
+    "account_verify", "probe_enable", "probe_time", "probe_interval",
+})
+GATED_KEYS = frozenset({"sign_order", "sign_dist", "sign_mode", "allow_time_pref"})
+# `global_pause` 刻意不进 `MASTER_ONLY_KEYS`：它是 A 档的唯一例外，权限按**变更方向**
+# 分流（0→1 急停人人可做、1→0 恢复仅主管理员），故单独用这个键名判方向。
+GLOBAL_PAUSE_KEY = "global_pause"
+
 # 自选时间片切换冷却（2026-08-15 用户反馈 → 弹性冷却）：
 # 60 秒窗口内前 TIME_PREF_COOLDOWN_FREE 次切换完全自由（浏览式"全点一遍再定"属正常行为）；
 # 超出后冷却递增：基础 × 2^(超限次数)，封顶 TIME_PREF_COOLDOWN_MAX（持续高频才被压制）。
@@ -1159,6 +1183,100 @@ def edge_config():
 def edge_front_sec():
     """前裁秒数（兼容旧调用的便捷入口）。"""
     return edge_config()[0]
+
+
+# A/B 档键的中文标签：变更告警正文与审计明细共用一份，避免同一件事在两处各写一套字面量
+_SETTINGS_KEY_LABELS = {
+    "sign_window": "签到窗口",
+    "window_edge_sec": "首尾裁剪",
+    "edge_front_sec": "前裁缓冲",
+    "edge_back_sec": "后裁缓冲",
+    "sunday_sign": "周日签到",
+    "saturday_sign": "周六签到",
+    "global_pause": "全局暂停签到",
+    "registration_pause": "暂停注册",
+    "start_delay_max": "启动随机延迟",
+    "gap_max": "账号间隔",
+    "max_users": "用户容量上限",
+    "max_accounts": "账号容量上限",
+    "account_verify": "注册账号验证",
+    "probe_enable": "健康探针",
+    "probe_time": "探针时刻",
+    "probe_interval": "探针频率",
+    "sign_order": "签到排序",
+    "sign_dist": "签到分布",
+    "sign_mode": "签到模式",
+    "allow_time_pref": "自选时间片",
+}
+
+# 这些键的生效值是 0/1 开关：写进审计与告警正文时翻成中文，免得运维盯着 "0"→"1" 心算
+_BOOL_SETTINGS_KEYS = frozenset({
+    "sunday_sign", "saturday_sign", "global_pause", "registration_pause",
+    "account_verify", "probe_enable", "allow_time_pref",
+})
+
+
+def _settings_label(key):
+    """设置键的中文名（未列入标签表的按键名原样回，绝不编一个名字）。"""
+    return _SETTINGS_KEY_LABELS.get(key, key)
+
+
+def _settings_value_text(key, value):
+    """设置值写进审计/告警正文时的展示形态（值本身已在现读侧归一，不含敏感串）。"""
+    if key in _BOOL_SETTINGS_KEYS:
+        return "开" if str(value) == "1" else "关"
+    return str(value)
+
+
+def _settings_effective_values(env_file):
+    """A/B 档设置项的**当前生效值**（归一为字符串），取值口径与 `GET /api/settings` 一致。
+
+    只用于"这次请求到底改没改配置"的判定：一律现读现算，绝不信请求自带的旧值——
+    否则把当前值原样抄进请求就能自称"无变更"，口令复核与变更告警双双被绕开
+    （系统开关门原本就是这个语义，这里把同一语义铺满全部 A/B 档键）。
+    """
+    env = read_env(env_file)
+    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
+    w_start, w_end, _invalid = yb_window.parse_window(env)
+    front, back = yb_window.parse_edges(env)
+
+    def _flag(key):
+        return "1" if _env_flag(env.get(key, "")) else "0"
+
+    return {
+        "start_delay_max": str(load_env_int(env_file, "YIBAN_START_DELAY_MAX", 0)),
+        "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX",
+                                    DEFAULT_ACCOUNT_GAP_MAX)),
+        "sign_window": (f"{w_start[0]:02d}:{w_start[1]:02d}"
+                        f"~{w_end[0]:02d}:{w_end[1]:02d}"),
+        # 旧键（前后对称）**一次写两侧**：现值取「前/后」组合串。只按前裁比的话，
+        # 前后不等的存量配置提交一个等于旧前裁的值会被判成"没改"，从而绕开口令复核，
+        # 而写侧其实把后裁改了。
+        "window_edge_sec": f"{front}/{back}",
+        "edge_front_sec": str(front),
+        "edge_back_sec": str(back),
+        "sunday_sign": _flag("YIBAN_SUNDAY_SIGN"),
+        "saturday_sign": _flag("YIBAN_SATURDAY_SIGN"),
+        # 两个暂停位沿用 `load_env_int(...) == 1` 的既有判据（写侧只落 "1" 或删键），
+        # 与 GET /api/settings 及系统开关门读的现值逐字一致
+        "global_pause": "1" if load_env_int(env_file, "YIBAN_GLOBAL_PAUSE", 0) == 1 else "0",
+        "registration_pause": "1" if load_env_int(env_file, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else "0",
+        "allow_time_pref": str(load_env_int(env_file, "YIBAN_ALLOW_TIME_PREF", 0)),
+        "sign_mode": mode,
+        # 排序/分布的生效值由旧模式派生（与 GET 同一式子）：只存 YIBAN_SIGN_MODE 的
+        # 存量配置，其真实排序就是派生值，拿空串比会把"没改"误判成"改了"
+        "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
+            "random" if mode == "random" else "sequence"),
+        "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
+            "normal" if mode == "normal" else "uniform"),
+        "account_verify": _flag("YIBAN_ACCOUNT_VERIFY"),
+        "probe_enable": _flag("YIBAN_PROBE_ENABLE"),
+        "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
+        "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+        "max_users": str(load_env_int(env_file, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)),
+        "max_accounts": str(load_env_int(env_file, "YIBAN_MAX_ACCOUNTS",
+                                         DEFAULT_MAX_ACCOUNTS)),
+    }
 
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 允许 1~64 → 下标 0~63）；
@@ -8154,26 +8272,20 @@ def create_app(host=None):
     @app.route("/api/settings", methods=["POST"])
     def api_settings_save():
         data = _json_body()
-        # 调度权限（2026-08-15 确认）：仅主管理员可改调度字段（排序/分布/缓冲/自选/窗口/旧版模式）；
-        # 随机延迟（start_delay_max/gap_max）同为调度核心参数——注册管理员
-        # 拉满 3600s 可把几乎全部账号挤出签到窗口（事实性停签），一并收归主管理员。
-        # 普通管理员可改周日/公告等低风险项。
-        # sign_mode 为遗留字段（已无 UI 控件），但 signin.py 在未设 sign_order 时以其为回退，
-        # 普通管理员改之可间接变更调度排序 → 同样仅主管理员可写（安全审查 2026-08）。
         is_master = _is_builtin_admin_session()
-        if not is_master and any(
-            k in data for k in ("sign_order", "sign_dist", "window_edge_sec",
-                                "edge_front_sec", "edge_back_sec",
-                                "allow_time_pref", "sign_window", "sign_mode",
-                                "global_pause", "start_delay_max", "gap_max",
-                                "registration_pause", "max_users", "max_accounts",
-                                # M12：account_verify 与 probe_* 会对**全站账号**做
-                                # 真实登录（与签到同一风控面），普通管理员改之可自设
-                                # 周期与时刻——收归主管理员（与"能造成静默漏签/风控
-                                # 暴露"的动作同一档）
-                                "account_verify", "probe_enable",
-                                "probe_time", "probe_interval")
-        ):
+        # 档位判定读单源常量（见 MASTER_ONLY_KEYS 的定义处）：只看"键是否出现"、不看值，
+        # 与普通管理员即便提交同值也无从改动这些键的既有 403 语义一致。
+        # global_pause 是唯一例外——0→1「急停」任意管理员都能做，1→0「恢复签到」仍仅
+        # 主管理员：能把全站停下去是止损，能放开来是权力。
+        gp_req = None
+        if GLOBAL_PAUSE_KEY in data:
+            gp_req = 1 if _env_flag(data.get(GLOBAL_PAUSE_KEY, "")) else 0
+        wanted_a = set()
+        if not is_master:
+            wanted_a = set(MASTER_ONLY_KEYS.intersection(data))
+            if gp_req == 0:
+                wanted_a.add(GLOBAL_PAUSE_KEY)
+        if wanted_a:
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         # 字段携带才写——原实现缺省即 0 且无条件写两个键，
         # "只改周日开关"之类的部分更新会把已配置的延迟静默清零
@@ -8187,16 +8299,10 @@ def create_app(host=None):
         # 上限 1 小时：防止误填超大值破坏签到随机延迟
         start = min(max(start, 0), 3600)
         gap = min(max(gap, 0), 3600)
-        # v0.29.0：随机延迟影响自动+手动签到节奏，修改需主管理员密码二次确认，
-        # 且新设置预估容量不足（当前活跃账号超过预估值）时拒绝保存。
+        # v0.29.0：随机延迟影响自动+手动签到节奏，且新设置预估容量不足（当前活跃账号
+        # 超过预估值）时拒绝保存。口令复核按档位收在下面的统一门禁块里（不在这里各判一次），
+        # 本段只留"就算口令对也不该落盘"的容量硬门。
         if has_start or has_gap:
-            # 纯配置项（不改权限、不可逆清除、不拆报警器）→ 允许 TTL 豁免
-            # （_reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组）
-            denied = _reconfirm_admin_password(
-                str(data.get("confirm_password", "")), "修改签到随机延迟",
-                always_required=False)
-            if denied is not None:
-                return denied
             # 2026-09-08 单门：容量口径收敛为活跃账号数（账号容量约束易班请求负载），
             # 注册用户多但活跃账号少不构成负载；存量站点瞬间显示超限仅警示，
             # 仅此处保存延迟时保留既有硬门
@@ -8272,45 +8378,14 @@ def create_app(host=None):
         saturday_sign = None
         if "saturday_sign" in data:
             saturday_sign = 1 if str(data.get("saturday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 全局暂停（一键暂停签到）：仅主管理员可写（上方 403 已拦），下一轮 cron 生效。
-        # 1=暂停（signin.py 检测后 exit(2) 跳过），0/空=正常。
-        global_pause = None
-        if "global_pause" in data:
-            global_pause = 1 if str(data.get("global_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 暂停注册（v0.26.3）：仅主管理员可写（与全局暂停同权限口径）
+        # 全局暂停（一键暂停签到）：0→1 急停任意管理员可做、1→0 恢复仅主管理员
+        # （方向判定在档位门禁块里），下一轮 cron 生效。
+        global_pause = gp_req
+        # 暂停注册（v0.26.3）：A 档，仅主管理员可写（与签到窗口同权限口径）
         registration_pause = None
         if "registration_pause" in data:
             registration_pause = 1 if str(data.get("registration_pause", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-        # 系统开关口令门禁（2026-09）：global_pause / registration_pause 是一键停摆
-        # 的系统级开关，此前前端口令框收集的 confirm_password 后端并不校验（假门），
-        # 被窃的主管理员会话可无口令直接翻转。现口径：仅当请求值与当前值**不同**时
-        # 才要求口令复核；值未变（或未携带这两个字段）不要求——其它字段的保存流程
-        # 零影响。当前值读取与 GET /api/settings（上方 403 列表同源）一致，取
-        # load_env_int（==1 视为暂停），与读写两侧口径对齐。
-        _cur_gp = 1 if load_env_int(ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0) == 1 else 0
-        _cur_rp = 1 if load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else 0
-        _switch_changed = (
-            (global_pause is not None and global_pause != _cur_gp)
-            or (registration_pause is not None and registration_pause != _cur_rp)
-        )
-        # 系统开关走统一门禁（配置类动作 → 可被"刚复核过 + 同出口 IP"的 TTL 豁免）；
-        # 值未变（或未携带这两个字段）根本不进门禁，其它字段的保存流程零影响。
-        if _switch_changed:
-            denied = _sensitive_password_gate(data, "系统开关")
-            if denied is not None:
-                db.audit(
-                    session.get("username") or "?",
-                    "settings_switch_pw_fail",
-                    "settings",
-                    "系统开关口令复核未通过（全局暂停=%s 注册暂停=%s）" % (
-                        "未携带" if global_pause is None else
-                        ("无变更" if global_pause == _cur_gp else "尝试变更"),
-                        "未携带" if registration_pause is None else
-                        ("无变更" if registration_pause == _cur_rp else "尝试变更"),
-                    ),
-                )
-                return denied
-        # ---- 注册账号验证 + 探针模式（任意管理员可改；v0.23.x）----
+        # ---- 注册账号验证 + 探针模式（A 档：仅主管理员可改；v0.23.x）----
         account_verify = None
         if "account_verify" in data:
             account_verify = 1 if str(data.get("account_verify", "")).strip().lower() in ("1", "true", "on", "yes") else 0
@@ -8356,14 +8431,84 @@ def create_app(host=None):
                 max_users_val = v
             else:
                 max_accounts_val = v
-        if max_users_val is not None or max_accounts_val is not None:
-            # 容量上限与调度参数同风险级：被窃主管理员会话可借此拆掉负载闸门，
-            # 变更同样要求口令二次确认（2026-09-08，前端确认框本就为此收集密码）；
-            # 与 start/gap 同时携带时走两次校验，密码相同无额外副作用。
-            # 与签到随机延迟同档：纯配置项，允许 TTL 豁免。
-            denied = _reconfirm_admin_password(
-                str(data.get("confirm_password", "")), "修改容量上限",
-                always_required=False)
+        # ---- 档位门禁：A/B 档的口令复核只在这一处判（档位表见 MASTER_ONLY_KEYS）----
+        # 只带其中一个边缘键时另一侧保持现值——先按写侧同一口径补齐，否则"改了前裁、
+        # 后裁跟着变"这件事在变更判定里是隐形的
+        if edge_front is not None or edge_back is not None:
+            _cur_edge = edge_config()
+            if edge_front is None:
+                edge_front = _cur_edge[0]
+            if edge_back is None:
+                edge_back = _cur_edge[1]
+        # 每个档位键 → 本次落盘后的**生效值**（None = 该键本次不写）。注意几处"删键≠0"：
+        # gap 写 0 是删键、生效值回到默认，按 0 比会把"没改"当成"改了"（反之亦然）。
+        proposed = {
+            "start_delay_max": str(start) if has_start else None,
+            "gap_max": str(gap if gap > 0 else DEFAULT_ACCOUNT_GAP_MAX) if has_gap else None,
+            "sign_window": None if win_start_str is None else f"{win_start_str}~{win_end_str}",
+            "edge_front_sec": None if edge_front is None else str(edge_front),
+            "edge_back_sec": None if edge_back is None else str(edge_back),
+            "window_edge_sec": (None if edge_front is None or edge_back is None
+                                else f"{edge_front}/{edge_back}"),
+            "allow_time_pref": None if pref is None else str(pref),
+            "sign_mode": sign_mode or None,
+            "sign_order": sign_order or None,
+            "sign_dist": sign_dist or None,
+            "sunday_sign": None if sunday_sign is None else str(sunday_sign),
+            "saturday_sign": None if saturday_sign is None else str(saturday_sign),
+            "global_pause": None if global_pause is None else str(global_pause),
+            "registration_pause": None if registration_pause is None else str(registration_pause),
+            "account_verify": None if account_verify is None else str(account_verify),
+            "probe_enable": None if probe_enable is None else str(probe_enable),
+            "probe_time": probe_time,
+            "probe_interval": probe_interval,
+            "max_users": None if max_users_val is None else str(max_users_val),
+            "max_accounts": None if max_accounts_val is None else str(max_accounts_val),
+        }
+        cur_vals = _settings_effective_values(ENV_FILE)
+        # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
+        changes = []
+        for _k in sorted(set(data).intersection(
+                MASTER_ONLY_KEYS | GATED_KEYS | {GLOBAL_PAUSE_KEY})):
+            _new, _old = proposed.get(_k), cur_vals.get(_k)
+            if _new is not None and _new != _old:
+                changes.append((_k, _old or "-", _new))
+        a_changes = [c for c in changes if c[0] in MASTER_ONLY_KEYS]
+        b_changes = [c for c in changes if c[0] in GATED_KEYS]
+        pause_change = next((c for c in changes if c[0] == GLOBAL_PAUSE_KEY), None)
+
+        def _tier_gate(action_label, always_required, attempted):
+            """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。"""
+            denied = _sensitive_password_gate(data, action_label,
+                                              always_required=always_required)
+            if denied is not None:
+                db.audit(
+                    session.get("username") or "?",
+                    "settings_switch_pw_fail",
+                    "settings",
+                    f"「{action_label}」口令复核未通过（尝试变更："
+                    + "、".join(f"{_settings_label(k)}={o}→{n}" for k, o, n in attempted)
+                    + "）",
+                )
+            return denied
+
+        if a_changes or pause_change:
+            # A 档**不吃豁免**：豁免给的是"刚复核过的同一出口不必再输一次"，而 A 档
+            # 要防的恰是持被窃会话者改一次配好手感、再连改全站停摆项。
+            _action = "、".join(
+                ([f"破坏性设置（{('、'.join(_settings_label(k) for k, _, _ in a_changes))}）"]
+                 if a_changes else [])
+                + (["系统开关"] if pause_change else []))
+            denied = _tier_gate(_action, True,
+                                (a_changes or []) + ([pause_change] if pause_change else []))
+            if denied is not None:
+                return denied
+        if pause_change and pause_change[2] == "1" and _admin_delete_limited():
+            # 急停与"删数据/拆报警器"同属一次点击即全站停摆，故共用同一套高危额度
+            # （判定即占用，必须排在口令复核之后——否则不知口令者能用错口令刷光额度）。
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        if b_changes:
+            denied = _tier_gate("调度配置", False, b_changes)
             if denied is not None:
                 return denied
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
@@ -8380,11 +8525,7 @@ def create_app(host=None):
         if sign_dist:
             updates["YIBAN_SIGN_DIST"] = sign_dist
         if edge_front is not None or edge_back is not None:
-            # 只写其中一个时保持另一个现值；写入新键并删除旧键（迁移）
-            if edge_front is None:
-                edge_front = edge_config()[0]
-            if edge_back is None:
-                edge_back = edge_config()[1]
+            # 写入新键并删除旧键（迁移）；未携带的一侧已在门禁块前按现值补齐
             updates["YIBAN_WINDOW_EDGE_FRONT_SEC"] = str(edge_front)
             updates["YIBAN_WINDOW_EDGE_BACK_SEC"] = str(edge_back)
             updates["YIBAN_WINDOW_EDGE_SEC"] = ""  # 旧键删除（前后对称语义已拆分为两键）
@@ -8434,6 +8575,10 @@ def create_app(host=None):
             f"用户={'不变' if max_users_val is None else max_users_val}"
             f"/账号={'不变' if max_accounts_val is None else max_accounts_val}"
         )
+        # 真变化键的旧→新明细（一次请求只算一份，审计与告警共用同一串）
+        changes_desc = "、".join(
+            f"{_settings_label(k)}={_settings_value_text(k, o)}→{_settings_value_text(k, n)}"
+            for k, o, n in changes) or "无实质变更"
         logger.info(
             "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 容量上限=%s",
             start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
@@ -8454,8 +8599,26 @@ def create_app(host=None):
             f"周六={saturday_display} "
             f"全局暂停={pause_display} 注册={reg_pause_display} "
             f"账号验证={'开' if account_verify else '关'} "
-            f"探针={probe_display} 容量上限={cap_limits_display}",
+            f"探针={probe_display} 容量上限={cap_limits_display} "
+            f"变更=[{changes_desc}]",
         )
+        # 变更告警：整次请求**合并成一条**（一键一封会被拿来刷告警日额度与邮箱）。
+        # A 档/急停 → urgent（进手机推送），但只有"全停急停"才 force 跳过同类节流与
+        # 推送日额度——它要立刻叫醒；其余 A 档变更沿用既有的同类节流与紧急账日额度。
+        # 纯 B 档变更非紧急。值全部来自现读+本次落盘的配置项，不含凭据，仍过一道
+        # _nl_safe 只为杜绝换行伪造告警正文。
+        if changes:
+            try:
+                send_notification(
+                    "系统设置变更告警",
+                    f"操作者: {_nl_safe((session.get('username') or '?')[:64])}\n"
+                    f"{_nl_safe(changes_desc)}\n"
+                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    urgent=bool(a_changes) or pause_change is not None,
+                    force=bool(pause_change and pause_change[2] == "1"),
+                )
+            except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
+                logger.warning("设置变更告警发送失败（不影响已保存的配置）: %s", e)
         return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
 
     # ---- 全局公告（所有页面顶部显示；GET 公开，PUT 仅管理员）----

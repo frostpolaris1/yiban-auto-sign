@@ -356,7 +356,9 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         r = c.post("/api/settings", json={"gap_max": 60, "confirm_password": ADMIN_PASS},
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=self._csrf(t))
+        # 周日开关属 A 档：主管理员也要当次口令（本例钉的是"部分更新不清零"）
+        r = c.post("/api/settings", json={"sunday_sign": 1, "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = io.open(self.env_file, encoding="utf-8").read()
         self.assertIn("YIBAN_ACCOUNT_GAP_MAX=60", env)
@@ -368,14 +370,20 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         self.assertNotIn("YIBAN_ACCOUNT_GAP_MAX=60", env)
 
     def test_delay_settings_master_only(self):
-        """A5：注册管理员改延迟/调度字段 → 403；改周日开关仍可。"""
+        """A5：注册管理员改延迟/调度字段 → 403；周末开关已上收 A 档，同样 403。"""
         c, t = self._reg_admin()
         r = c.post("/api/settings", json={"gap_max": 3600, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 403)
         r = c.post("/api/settings", json={"gap_max": 3600}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 403)
-        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=self._csrf(t))
+        r = c.post("/api/settings", json={"sunday_sign": 1, "confirm_password": USER_PASS},
+                   headers=self._csrf(t))
+        self.assertEqual(r.status_code, 403, "周日开关属破坏性设置（A 档）")
+        # 下放到 B 档的排序键仍归普通管理员管（带当次口令）
+        r = c.post("/api/settings", json={"sign_order": "random", "confirm_password": USER_PASS},
+                   headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("YIBAN_SIGN_ORDER=random", io.open(self.env_file, encoding="utf-8").read())
 
     def test_login_success_audited(self):
         """A6：登录成功写审计（action=login_ok），IP 匿名化。
