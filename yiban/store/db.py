@@ -3343,14 +3343,23 @@ def record_audit_anchor(path=None):
     try:
         with _conn_lock:
             conn = get_conn()
+            # 顺序有讲究：先读**单调计数器** purge_total，再取行快照。反过来的话，
+            # 两次读之间发生的物理删除会被算进"锚点之前"的额度，而锚点记的行数却是
+            # 删除后的——校验时"少了行却没有对应留痕"，合法的保留期清理会被判成篡改。
+            purge_total = _audit_purge_total(conn)
             row = conn.execute(
                 "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
             ).fetchone()
-            purge_total = _audit_purge_total(conn)
+            # 链头必须**按 max_id 取值**，不能另取"当前最后一行"：后者是第二次读，
+            # 并发写入落在两次读之间时，锚点行的 max_id 与 head 指向不同行，此后每次
+            # 校验都会报"链尾内容被篡改"（旧判据在 max_id 不等时会跳过比对，反而不报）。
+            anchored = (conn.execute("SELECT hash FROM audit_logs WHERE id=?",
+                                     (int(row["max_id"]),)).fetchone()
+                        if row and row["max_id"] is not None else None)
         if not row or row["max_id"] is None:
             return None
         min_id, max_id, count = int(row["min_id"]), int(row["max_id"]), int(row["n"])
-        head = audit_head_hash()
+        head = (anchored["hash"] or "") if anchored else ""
         if not head:
             logger.warning("审计链头读取失败（空值），本次不写锚点行")
             return None
@@ -3567,7 +3576,7 @@ def verify_audit_anchor(path=None):
         if anchored is not None and anchored["hash"] != anchor["head"]:
             return False, (
                 f"审计链尾行 id={anchor['max_id']} 的哈希与锚点不符（链尾内容被篡改或被"
-                f"全表重签）{_rechain_hint(events, anchor)}"
+                f"全表重签）{_rechain_hint(anchor)}"
             )
         if anchored is None:
             # 定点被留痕事件解释掉了（长期空闲后保留期清理删到了链尾）——
@@ -3712,8 +3721,15 @@ def audit_health(path=None):
       write_failures 累计的审计写入失败次数（>0 = 有操作未留痕；落库不随重启归零）
       rechain_events app_meta 里的全表重链留痕（诊断用，最新在末尾）
       empty_hash_rows 链内 hash 为空的行数（>0 = 有人清空签名等着被重签）
+      purge_total   累计**有留痕的** audit_logs 物理删除条数（保留期清理口径）
+      last_cleanup  最近一次 audit_logs 清理留痕事件（含 cutoff 与删除条数；无 → None）
       note          附加诊断文本（无异常时为空串）
       healthy       综合结论（上述全部正常）
+
+    为什么要把 purge_total / last_cleanup 放到体检结果里：本机自校验防不住**本机时钟**
+    ——守卫的参照点每次成功都会推进，容差内每天小幅拨快即可在真实时间数十天内合法清掉
+    整段保留期审计，且不触发任何告警。这两个数字的用途是**随日报出箱**：异机侧看"累计
+    删除量"与"最近 cutoff 是否持续前移"，本机看不到的异常清理在外部就能看出来。
     """
     path = path or audit_anchor_path()
     chain_ok, broken, _first = verify_audit_chain()
@@ -3742,6 +3758,13 @@ def audit_health(path=None):
             f"审计链存在 {empty_hash_rows} 条 hash 为空的记录——签名被清空后等待启动路径"
             "重签整条链（migrate_v3 即此形态），请立即核查"
         )
+    # 清理量随体检结果出箱：本机自校验防不住本机时钟（参照点每天推进、容差内的小幅
+    # 拨快即可合法清掉整段保留期审计），异机侧只能靠这两个数字判断"清理是否异常"。
+    purge_total = audit_purge_total()
+    last_cleanup = next(
+        (e for e in reversed(audit_purge_events()) if e.get("table") == "audit_logs"),
+        None,
+    )
     return {
         "chain_ok": chain_ok,
         "broken": broken,
@@ -3750,6 +3773,8 @@ def audit_health(path=None):
         "write_failures": write_failures,
         "rechain_events": rechain_events,
         "empty_hash_rows": empty_hash_rows,
+        "purge_total": purge_total,
+        "last_cleanup": last_cleanup,
         "note": "；".join(notes),
         "healthy": bool(
             chain_ok and anchor_ok and write_failures == 0

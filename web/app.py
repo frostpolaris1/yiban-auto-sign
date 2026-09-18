@@ -21,7 +21,6 @@
 import argparse
 import calendar
 import contextlib
-import hashlib
 import html
 import json
 import logging
@@ -691,6 +690,15 @@ PW_CONFIRM_COOLDOWN_DEFAULT = 300
 # 门禁拒绝文案（按状态码取）：403 是"设置未生效"（系统开关/执行体写沿用），
 # 400 是"操作已取消"（高危二次鉴权沿用）。两处历史契约都不动。
 PW_DENY_TEXT = {400: "当前密码不正确，操作已取消", 403: "口令校验未通过，设置未生效"}
+# 「没提交口令」与「口令输错」必须分开：前者是调用方还没问用户要口令（前端应弹口令框
+# 后重试），后者是用户真的输错了（应显示"不正确"）。共用一句"密码不正确"会让前端无法
+# 区分这两种处置，也让运维误以为自己的口令被改了。状态码两档与上面完全一致，
+# 只有 error 文案与 reason 不同。
+PW_MISSING_TEXT = {400: "此操作需要输入当前密码，操作已取消",
+                   403: "需要输入当前口令，设置未生效"}
+# 给前端的机器可读口径（前端不要靠比对中文文案分支）：
+# password_required → 收口令后重试；password_incorrect → 提示输错并计数。
+PW_DENY_REASON = {"missing": "password_required", "wrong": "password_incorrect"}
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
@@ -739,6 +747,19 @@ READ_AUDIT_TARGET_CAP = 8  # 单行里最多列几个脱敏目标（db.audit 的
 # 上限（daily_max / urgent_daily_max）与节流（cooldown）刻意不在此列——它们是规则
 # 配置，注册管理员看不到就无法判断"为什么没收到告警"，而余量才是拆报警器前的勘察面。
 _NOTIFY_QUOTA_HIDDEN_KEYS = ("daily_remaining", "urgent_daily_remaining")
+
+# ---- 推送/邮件配置的输入上限（写侧唯一拦点）----
+# 为什么要有上限：本项在裸机直连形态下没有 nginx 的请求体/头长度兜底，超长值会被
+# 原样加密进 .env，并在每次推送/发信时带出；条数不设限则一次请求就能把 .env 撑大。
+# 取值依据（不是拍脑袋）：Server酱 SendKey 是"定长前缀 SCT + 固定宽度主体"，
+# 实测 35 字符 → 上限取 64（约一倍余量），下限 8 只为挡明显占位串；自定义通知地址
+# 按 URL 的实际长度上限取 2048；告警收件人与 SMTP 备选条目都是"管理员级"的小列表
+# （当前部署各 1~3 条），上限取 10 足够真实使用且不会被误触。
+NOTIFY_SENDKEY_MIN_LEN = 8
+NOTIFY_SENDKEY_MAX_LEN = 64
+NOTIFY_URL_MAX_LEN = 2048
+MAIL_ADMIN_TO_MAX = 10
+MAIL_SMTPS_MAX = 10
 
 # 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
@@ -1531,7 +1552,11 @@ def write_env_batch(env_path, updates):
     """
     with _env_write_lock(env_path):
         for key, value in updates.items():
-            if _has_line_break(key) or _has_line_break(value):
+            # 键名白名单（批 3 §4.13）：任何行分隔符都过不了这个字符集，故键侧不再
+            # 单独查 _has_line_break；值仍要查——值本来就是自由文本
+            if not env_io.is_valid_env_key(key):
+                raise ValueError(f"write_env_batch 拒绝非法键名: {str(key)[:40]!r}")
+            if _has_line_break(value):
                 raise ValueError(f"write_env_batch 拒绝包含行分隔符的键值: {key}")
         lines = []
         if os.path.exists(env_path):
@@ -2453,6 +2478,26 @@ def check_admin_configured():
     )
 
 
+def _builtin_admin_loginable():
+    """内置（.env）主管理员**此刻是否真的进得来**——"至少保留 1 个管理员"的判据。
+
+    只看 `YIBAN_ADMIN_USER` 非空是不够的（原实现如此）。用户名配了而内置实际登不进
+    的三种态，`verify_admin` 都会 fail-closed 拒绝：
+      1) 哈希与明文都没有（凭据没配齐）；
+      2) 只有明文没有哈希（启动迁移写 .env 失败的降级态，明文比对已停用）；
+      3) `YIBAN_ADMIN_PASSWORD_HASH` 不是恰好一行（多行歧义，或统计读取失败计得 0）。
+    这三种态下若再把最后一个注册管理员降权/删除，Web 管理面**一个入口都不剩**
+    （内置进不来 + 注册管理员清空），而态 2 恰恰是"改过 .env 权限"后最容易出现的。
+    判据与 `verify_admin` 的三道 fail-closed 逐条对齐，一致性由用例对拍（防两侧漂移）。
+    """
+    env = read_env(ENV_FILE)
+    if not env.get("YIBAN_ADMIN_USER", "").strip():
+        return False
+    if not env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip():
+        return False
+    return _count_env_key_lines(ENV_FILE, "YIBAN_ADMIN_PASSWORD_HASH") == 1
+
+
 def verify_admin(username, password):
     """校验管理员账号（每次登录实时读 .env，修改立即生效）。
 
@@ -2587,13 +2632,61 @@ def check_connectivity():
 
 
 def _nl_safe(value):
-    """告警正文插值净化（2026-08-27 对抗性审查 P2-4）：压平 CR/LF。
+    """告警正文插值净化（2026-08-27 对抗性审查 P2-4，2026-09-18 与 .env 行模型同源）。
 
-    外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前转义换行为字面量，
-    防止请求体夹带换行在告警正文中伪造额外行。对齐 signin._sanitize_text 的
-    换行纪律；正常值不含换行，显示语义不变。
+    外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前把换行转义成字面量，
+    防止请求体夹带换行在告警正文中伪造额外行。
+
+    字符集刻意取 `_ENV_LINE_BREAK_CHARS`（= `str.splitlines()` 的全部 10 个分隔符）
+    而不是只压 `\r\n`：邮件客户端与网页日志页同样会在 `U+0085`/`U+2028` 处断行，
+    只压两个等于留 8 条"在管理员告警里伪造一行'操作者: admin'"的口子——与 .env
+    写入侧那次 CRITICAL 是同一个行模型，判据只留一份。
     """
-    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+    s = str(value).replace("\r", "\\r").replace("\n", "\\n")
+    for ch in sorted(_ENV_LINE_BREAK_CHARS - {"\r", "\n"}):
+        s = s.replace(ch, f"\\u{ord(ch):04x}")
+    return s
+
+
+def _audit_actor():
+    """审计行的 actor 唯一取法：当前会话用户名，缺省 `?`，截 64 防超长打爆索引列。
+
+    执行体那几处此前把 actor **硬编码成 `"admin"`**——审计表里出现了一句假话：
+    谁做的操作没被记下来，且与全表其他行的口径不一致（同一列两种语义，事后按
+    actor 追人时"admin"既可能是内置管理员也可能是别的账号）。
+    """
+    return (session.get("username") or "?")[:64]
+
+
+def _audit_alert_facts(health):
+    """审计链异常告警的事实清单（每日线程用，测试直接断言同一份形状）。
+
+    `诊断备注` 必须在列：`audit_health` 有两种"链自洽=是、锚点=一致，但体检仍判不健康"
+    的原因（锚点之后又跑了全表重链、有记录签名被清空等着被重签），它们只写进 `note`。
+    不带出来时管理员看到的是一条"各项都正常"的告警，第一反应是误报——正是这次要修的。
+    """
+    return [
+        ("链自洽", "是" if health["chain_ok"] else f"否（断点 {health['broken']} 处）"),
+        ("库外锚点", "一致" if health["anchor_ok"] else "不一致"),
+        ("锚点说明", _nl_safe(health["anchor_msg"]) or "（无）"),
+        ("审计写入失败次数", health["write_failures"]),
+        # 清理量出箱（异机核对用）：本机时钟被渐进拨快时，本机自校验不会报警，
+        # 但"累计删除条数"与"最近一次清理的截止点"会持续变化——日报是唯一能把它
+        # 带离本机的通道，异机侧据此判断清理是否异常。
+        ("累计留痕的审计清理条数", health.get("purge_total", 0)),
+        ("最近一次审计清理", _last_cleanup_text(health.get("last_cleanup"))),
+        ("诊断备注", _nl_safe(health["note"]) or "（无）"),
+    ]
+
+
+def _last_cleanup_text(ev):
+    """最近一次审计清理留痕的可读文本（无记录 → 「（无）」）。"""
+    if not ev:
+        return "（无）"
+    return _nl_safe(
+        f"{ev.get('ts') or '?'} 截止 {ev.get('cutoff') or '?'}，"
+        f"删除 {ev.get('deleted', 0)} 条"
+    )
 
 
 def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent"):
@@ -3612,29 +3705,44 @@ def create_app(host=None):
     _base_path_env = read_env(ENV_FILE).get("YIBAN_BASE_PATH", "").strip()
     if _base_path_env and _base_path_env != "/":
         app.config["SESSION_COOKIE_PATH"] = "/" + _base_path_env.strip("/") + "/"
-    # HTTPS 反代自动升级 Secure——请求经 https（X-Forwarded-Proto）
-    # 到达而 Secure 未显式开启时，粘性开启会话 Cookie 的 Secure 标志（首次 https
-    # 请求即生效，无需重启）；**显式**配置 YIBAN_COOKIE_SECURE=0 的部署保持原行为。
+    # HTTPS 反代自动升级 Secure——请求经 https 到达而 Secure 未显式开启时，给本次响应
+    # 的会话 Cookie 带上 Secure 标志（逐请求判定，不需要重启也不粘住进程）。
+    # **显式**配置 YIBAN_COOKIE_SECURE（含显式 0）的部署完全不参与自动判定，保持原行为。
     #
-    # 2026-09-17 对抗性审查 M4：这里原先写的是 `{"done": not cookie_secure}`，于是
-    # 默认（未配置）部署的 `done` 反而是 True → 整个自动升级分支**永不执行**，
-    # HTTPS 反代下 Cookie 一直不带 Secure。根因是把"未配置"与"显式关"混成了一个
-    # False——两者必须分开判：只有**键在且非空**（显式配置，含显式 0）才不自动升级。
+    # 两条判据都不能省：
+    # 1) 只有**键在且非空**才算"显式配置"——把"未配置"与"显式关"混成一个 False 会让
+    #    默认部署永不自动升级（HTTPS 反代下 Cookie 一直不带 Secure）；
+    # 2) 转发头只在**第一跳可信**（remote_addr 落在 TRUSTED_PROXIES）时才采信。判据与
+    #    `_client_ip` 同源：直连形态下客户端能自己发 `X-Forwarded-Proto: https`，粘性
+    #    采信会把这个进程的会话 Cookie 永久粘成 Secure，站点退回 HTTP 后浏览器不再回传
+    #    Cookie，表现为"登录不上"。
+    #
+    # 逐请求而非粘性：反代头消失（拓扑变更、代理降级为纯 HTTP）时必须能跟着回落，否则
+    # 进程会继续发已不可用的 Secure Cookie。同进程内不同请求可给出不同判定——每个响应
+    # 只按"自己这一跳"是否 https 决定，这正是要的语义。
     _cookie_secure_explicit = bool(str(cookie_secure_raw or "").strip())
-    _secure_auto_upgrade = {"done": cookie_secure or _cookie_secure_explicit}
+    _secure_auto_notice = {"logged": False}
+
+    def _forwarded_proto_is_https():
+        """`X-Forwarded-Proto` 是否声称本次请求走 https（仅可信第一跳采信）。
+
+        取首段（逗号分隔链里最靠近客户端的那一跳），与 `_client_ip` 读 XFF 的口径一致。
+        """
+        if (request.remote_addr or "") not in TRUSTED_PROXIES:
+            return False
+        raw = request.headers.get("X-Forwarded-Proto", "")
+        return bool(raw) and raw.split(",")[0].strip().lower() == "https"
 
     @app.before_request
     def _auto_secure_on_https():
-        if (
-            not _secure_auto_upgrade["done"]
-            and (
-                request.headers.get("X-Forwarded-Proto", "").strip().lower() == "https"
-                or request.is_secure
-            )
-        ):
-            app.config["SESSION_COOKIE_SECURE"] = True
-            _secure_auto_upgrade["done"] = True
-            logger.info("检测到 HTTPS 反代（X-Forwarded-Proto=https），会话 Cookie 已自动启用 Secure")
+        if _cookie_secure_explicit:
+            return
+        want = bool(request.is_secure or _forwarded_proto_is_https())
+        if app.config.get("SESSION_COOKIE_SECURE") != want:
+            app.config["SESSION_COOKIE_SECURE"] = want
+        if want and not _secure_auto_notice["logged"]:
+            _secure_auto_notice["logged"] = True
+            logger.info("检测到 HTTPS（或可信反代的转发头），会话 Cookie 自动启用 Secure")
     if host is not None and not _is_loopback_host(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
@@ -3807,10 +3915,10 @@ def create_app(host=None):
         # 的最高信号之一，此前 403 零留痕。IP 经 hash_ip 匿名化；频次天然受
         # /api/* 全局限速约束，且普通用户正常操作不会触达本分支。
         db.audit(
-            (session.get("username") or "?")[:64],
+            _audit_actor(),
             "forbidden_path",
             db.hash_ip(_client_ip()),
-            request.path[:120],
+            _nl_safe(request.path)[:120],
         )
         return jsonify({"error": "无权限"}), 403
 
@@ -3882,8 +3990,8 @@ def create_app(host=None):
                 logger.warning(
                     "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
                     db.hash_ip(_client_ip()),
-                    request.path,
-                    request.headers.get("Origin"),
+                    _nl_safe(request.path),
+                    _nl_safe(request.headers.get("Origin")),
                 )
                 return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
             return
@@ -3895,7 +4003,7 @@ def create_app(host=None):
             logger.warning(
                 "CSRF 校验失败: ip=%s path=%s token_len=%d session_token_len=%d",
                 db.hash_ip(_client_ip()),
-                request.path,
+                _nl_safe(request.path),
                 len(token),
                 len(sess_token),
             )
@@ -4564,7 +4672,7 @@ def create_app(host=None):
         # 绝不写入 sid/Cookie/CSRF 值（那些一旦进链就等于把可重放的凭据抄进日志）。
         # 顺序刻意在 session.clear() 之前：清空后就再也取不到 username 与 auth_source。
         db.audit(
-            (session.get("username") or "?")[:64], "logout_ok", db.hash_ip(_client_ip()),
+            _audit_actor(), "logout_ok", db.hash_ip(_client_ip()),
             f"登出（{session.get('auth_source') or 'builtin'}）",
         )
         # 登出轮换服务端 sid——此前仅 session.clear()，此前被窃取的
@@ -4780,7 +4888,9 @@ def create_app(host=None):
             >= 1
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
+        # 与全项目 IP 匿名口径同源（批 3 §4.7）：原先是不加盐的 sha256(ip)，IPv4 空间
+        # 可直接枚举反推，等于把这一列的匿名性单独降级成"看着像哈希"
+        ip_hash = db.hash_ip(ip)
         if (
             db.count_user_delete_requests(
                 ip_hash=ip_hash, since_ts=since_ts, kind="delete"
@@ -4878,7 +4988,9 @@ def create_app(host=None):
             >= 1
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
+        # 与全项目 IP 匿名口径同源（批 3 §4.7）：原先是不加盐的 sha256(ip)，IPv4 空间
+        # 可直接枚举反推，等于把这一列的匿名性单独降级成"看着像哈希"
+        ip_hash = db.hash_ip(ip)
         if (
             db.count_user_delete_requests(
                 ip_hash=ip_hash, since_ts=since_ts, kind="restore"
@@ -5159,6 +5271,8 @@ def create_app(host=None):
                 addrs = [a.strip() for a in raw_to.split(",") if a.strip()]
                 if not addrs:
                     return jsonify({"error": "告警收件人格式无效"}), 400
+                if len(addrs) > MAIL_ADMIN_TO_MAX:
+                    return jsonify({"error": f"告警收件人最多 {MAIL_ADMIN_TO_MAX} 个"}), 400
                 for a in addrs:
                     if not EMAIL_RE.match(a) or len(a) > 64:
                         return jsonify({"error": f"告警收件人格式无效：{a[:32]}"}), 400
@@ -5171,6 +5285,8 @@ def create_app(host=None):
             raw_list = data["smtps"]
             if not isinstance(raw_list, list):
                 return jsonify({"error": "smtps 应为列表"}), 400
+            if len(raw_list) > MAIL_SMTPS_MAX:
+                return jsonify({"error": f"SMTP 发信条目最多 {MAIL_SMTPS_MAX} 条"}), 400
             # 旧列表取自改动前的解密结果：pass 留空且该索引旧条目已有授权码 → 保留旧值
             old_entries = mailer.smtp_list()
             smtps_list = []
@@ -5183,6 +5299,13 @@ def create_app(host=None):
                 user = str(e.get("user") or "").strip()
                 if not host:
                     return jsonify({"error": f"smtps 第 {i + 1} 条 host 不能为空"}), 400
+                # 目标地址判据（写侧硬拦）：拿被窃主管理员会话改 SMTP 目标就能把发信失败
+                # 日志当成内网端口扫描器用（连接被拒/超时/无路由互不相同）。默认拒内网
+                # 与不可路由段；确需本地/内网 MTA 的部署用 YIBAN_MAIL_ALLOW_PRIVATE_HOST
+                # 显式开启——存量配置不受影响（不改 smtps 就不经过这里）。
+                _host_reason = mail_config.check_smtp_host(host)
+                if _host_reason:
+                    return jsonify({"error": f"smtps 第 {i + 1} 条：{_host_reason}"}), 400
                 # user 留空 = 沿用该索引旧条目的 user（与 pass 的按索引保留一致：
                 # GET 已打码，前端不回显完整发件账号，留空提交才不会误清空）；
                 # 无旧值可沿用时存空串（同 pass 口径）
@@ -5364,10 +5487,22 @@ def create_app(host=None):
         secret = str(data.get("secret", "")).strip()
         if ntype not in ("serverchan", "custom", ""):
             return jsonify({"error": "未知的通知类型"}), 400
-        if ntype == "serverchan" and secret and not secret.startswith("SCT"):
-            return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
-        if ntype == "custom" and secret and not notify.is_safe_url(secret):
-            return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
+        # 校验依据是**落盘后实际生效**的类型，不是请求里写了什么：`type` 置空但带密钥时，
+        # 加载侧把空类型解析成 custom（兼容旧版只配密钥的写法），于是"不带 type、只提交
+        # secret"就能绕开下面的地址白名单——空类型必须与 custom 同判。
+        effective_type = ntype or ("custom" if secret else "")
+        if effective_type == "serverchan" and secret:
+            if not secret.startswith("SCT"):
+                return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
+            # 长度上限：SendKey 是"定长前缀 SCT + 固定宽度主体"（实测 35 字符），
+            # 留一倍余量到 64；无上限时超长值会原样加密进 .env 并在每次推送时带出。
+            if not NOTIFY_SENDKEY_MIN_LEN <= len(secret) <= NOTIFY_SENDKEY_MAX_LEN:
+                return jsonify({"error": "Server酱 SendKey 长度不合法"}), 400
+        elif effective_type == "custom" and secret:
+            if len(secret) > NOTIFY_URL_MAX_LEN:
+                return jsonify({"error": f"自定义地址过长（最多 {NOTIFY_URL_MAX_LEN} 字符）"}), 400
+            if not notify.is_safe_url(secret):
+                return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
         # ---- 高危判定：会"让推送通道失效、改密钥，
         # 或调整告警送达节奏/额度"的请求都要口令 ----
         # (a) type 置空 = 关闭推送；(b) 本次落盘后不再有密钥 = 清空密钥（含"只提交
@@ -6839,9 +6974,15 @@ def create_app(host=None):
             return jsonify(resp)
 
     # ---- 在线校验异步任务（A4）：查询与取消 ----
-    def _verify_job_visible(job, username, role):
-        """归属校验：任务仅本人或管理员可读/可操作。"""
-        if role == "admin":
+    def _verify_job_visible(job, username):
+        """归属校验：任务只有**本人**读得见、取消得了；管理面仅内置主管理员放行。
+
+        原先 `role == "admin"` 一路放行＝任意注册管理员都能读/取消**别人**的校验任务，
+        而"取消"会让对方的新账号一直停在「校验中」——跨归属的可用性动作，不该是
+        "同为管理员"就能做的。今天没有任何管理面在轮询这个端点（账号页的校验状态取自
+        账号行自身，前端也未实现任务轮询），故按"权限歧义取窄侧"收成：本人 + 内置主管理员。
+        """
+        if _is_builtin_admin_session():
             return True
         return str(job.get("owner_email") or "").strip().lower() == str(username or "").strip().lower()
 
@@ -6858,17 +6999,17 @@ def create_app(host=None):
 
     @app.route("/api/verify-jobs/<int:job_id>")
     def api_verify_job_get(job_id):
-        """查询校验任务状态与结果（仅本人或管理员）。"""
+        """查询校验任务状态与结果（仅本人；内置主管理员可读）。"""
         job = db.get_verify_job(job_id)
         if not job:
             return jsonify({"error": "任务不存在"}), 404
-        if not _verify_job_visible(job, session.get("username"), _current_role()):
+        if not _verify_job_visible(job, session.get("username")):
             return jsonify({"error": "无权限"}), 403
         return jsonify({"ok": True, "job": _job_payload(job)})
 
     @app.route("/api/verify-jobs/<int:job_id>", methods=["DELETE"])
     def api_verify_job_cancel(job_id):
-        """取消校验任务（仅 pending 可取消；仅本人或管理员）。
+        """取消校验任务（仅 pending 可取消；仅本人，内置主管理员可代管）。
 
         先收口超龄任务：卡在 running 的任务若因进程重启而无人在跑，会因
         "只允许取消 pending" 而永远无法撤销，这里先把它判定为终态。
@@ -6877,7 +7018,7 @@ def create_app(host=None):
         job = db.get_verify_job(job_id)
         if not job:
             return jsonify({"error": "任务不存在"}), 404
-        if not _verify_job_visible(job, session.get("username"), _current_role()):
+        if not _verify_job_visible(job, session.get("username")):
             return jsonify({"error": "无权限"}), 403
         if job["status"] in VERIFY_JOB_TERMINAL:
             return jsonify({"error": "任务已结束，无法取消"}), 409
@@ -7320,7 +7461,8 @@ def create_app(host=None):
                     f"「{action}」口令复核连续失败 {cnt} 次，"
                     f"敏感操作暂停 {cooldown} 秒",
                 )
-        return jsonify({"error": PW_DENY_TEXT[deny_status]}), deny_status
+        return jsonify({"error": PW_DENY_TEXT[deny_status],
+                        "reason": PW_DENY_REASON["wrong"]}), deny_status
 
     def _sensitive_password_gate(data, action, *, always_required=False,
                                  deny_status=403):
@@ -7357,12 +7499,14 @@ def create_app(host=None):
             return None
         submitted = str(data.get("confirm_password", ""))
         if not submitted:
-            # 没提交口令 ≠ 猜错口令：照旧拒绝（文案与状态码不变），但**不计数、不告警、
+            # 没提交口令 ≠ 猜错口令：照旧拒绝（状态码不变），但**不计数、不告警、
             # 不进冷却**。冷却要限的是口令散列次数（实测单次 scrypt 约 157ms），而空口令
             # 在入口就被挡掉、一次散列都不做；把它计入阈值等于让攻击者用"空请求"就能把
             # 合法管理员的敏感操作预算刷光，也正是 _admin_delete_limited 修掉的那类运维 DoS
             # （前端"点了保存又取消口令框"的正常操作同样不该被罚）。
-            return jsonify({"error": PW_DENY_TEXT[deny_status]}), deny_status
+            # 文案走 PW_MISSING_TEXT：不能对用户说"密码不正确"，他根本没输。
+            return jsonify({"error": PW_MISSING_TEXT[deny_status],
+                            "reason": PW_DENY_REASON["missing"]}), deny_status
         if _verify_session_password(submitted):
             session["pw_ok_ts"] = now
             session["pw_ok_ip"] = key[0]
@@ -7684,6 +7828,9 @@ def create_app(host=None):
         with _file_lock:
             users = load_users()
             builtin = _builtin_admin_email()
+            # `builtin` 是"这一行就是内置管理员，别当普通用户批量操作"的身份比对；
+            # "还有没有兜底入口"是另一件事，必须用可登录判据（两个变量别混用一个）
+            builtin_ok = _builtin_admin_loginable()
 
             # 内存模拟用户表，保持动态管理员数量判断
             sim_users = {u["email"]: dict(u) for u in users}
@@ -7716,12 +7863,12 @@ def create_app(host=None):
                     processed.append(email)
                 elif action == "delete":
                     # 防呆：目标为管理员时校验至少保留 1 个管理员
-                    # （内置管理员存在时允许删除最后一个注册管理员，与单条路径一致）
+                    # （内置管理员**进得来**时才允许删掉最后一个注册管理员，与单条路径一致）
                     if target.get("role") == "admin":
                         admins = [u for u in sim_users.values() if u.get("role") == "admin"]
-                        if len(admins) <= 1 and not builtin:
+                        if len(admins) <= 1 and not builtin_ok:
                             continue
-                    ops.append(("delete_user_with_accounts", email, bool(builtin)))
+                    ops.append(("delete_user_with_accounts", email, builtin_ok))
                     sim_users.pop(email, None)
             done = len(ops)
             if ops:
@@ -7842,14 +7989,15 @@ def create_app(host=None):
                     return jsonify({"error": "仅正式用户可设为管理员（需有已生效账号且无待审核）"}), 400
             if new_role == "user" and target.get("role") == "admin":
                 admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users 表中的最后一个管理员
-                if len(admins) <= 1 and not _builtin_admin_email():
+                # 内置管理员也可登录时才算"还有人兜底"——只配置了用户名不算（失能态
+                # 下把最后一个注册管理员也降级，Web 面就一个入口都不剩）
+                if len(admins) <= 1 and not _builtin_admin_loginable():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             # 改走事务内复核的 set_user_role——进程内预检挡不住
             # 跨进程并发（多实例）同时把最后一个注册管理员降权
             try:
                 changed = db.set_user_role(
-                    email, new_role, allow_last_admin=bool(_builtin_admin_email())
+                    email, new_role, allow_last_admin=_builtin_admin_loginable()
                 )
             except db.LastAdminError:
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
@@ -7965,16 +8113,16 @@ def create_app(host=None):
                 return jsonify({"error": "仅主管理员可删除管理员"}), 403
             if mode == "full" and target.get("role") == "admin":
                 admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）兜底存在时可删除 users 表中的最后一个管理员
-                if len(admins) <= 1 and not _builtin_admin_email():
+                # 内置管理员可登录时才算"还有兜底入口"（判据见 _builtin_admin_loginable）
+                if len(admins) <= 1 and not _builtin_admin_loginable():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
             if mode == "full":
                 # 事务内复核最后一个注册管理员（allow 与原预检同语义：
-                # 内置管理员存在时允许删掉 users 表最后一个注册管理员）
+                # 内置管理员确实进得来时允许删掉 users 表最后一个注册管理员）
                 try:
                     db.delete_user_with_accounts(
-                        email, allow_last_admin=bool(_builtin_admin_email())
+                        email, allow_last_admin=_builtin_admin_loginable()
                     )
                 except db.LastAdminError:
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
@@ -9182,7 +9330,7 @@ def create_app(host=None):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         # 审计只记键名：代理串可能带凭据，不得进审计链
-        db.audit("admin", "settings", "executors", ",".join(sorted(updates))[:200])
+        db.audit(_audit_actor(), "settings", "executors", ",".join(sorted(updates))[:200])
         return jsonify({"ok": True, "applied": sorted(updates),
                         "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -9235,7 +9383,7 @@ def create_app(host=None):
                 yb_egress.resolve(role, index or 0, env=read_env(ENV_FILE)))
         if err:
             return jsonify({"error": err}), code
-        db.audit("admin", "settings", "executors", audit_detail)
+        db.audit(_audit_actor(), "settings", "executors", audit_detail)
         return jsonify({"ok": True,
                         "index": index if index is not None else "fallback",
                         "egress": desc})
@@ -9326,7 +9474,7 @@ def create_app(host=None):
             slot = _mutate_executor_rows(_apply)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+        db.audit(_audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": rtype,
                         "egress": yb_egress.describe(value),
                         "name": name or None,
@@ -9380,7 +9528,7 @@ def create_app(host=None):
             row = _mutate_executor_rows(_apply)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+        db.audit(_audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": row["type"],
                         "egress": yb_egress.describe(row["proxy"]),
                         "name": row.get("name") or None,
@@ -9414,7 +9562,7 @@ def create_app(host=None):
             rtype = _mutate_executor_rows(_apply)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+        db.audit(_audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": rtype, "deleted": True,
                         "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -9493,7 +9641,7 @@ def create_app(host=None):
         # 建议值保留 ×2/3 余量：实测值是这台机器这一刻的成绩，留余量才对得上
         # "换机器/换网络都要重新量"的现实。
         recommended = max(1, int(per_exec * 2 / 3))
-        db.audit("admin", "executors_measure", sample,
+        db.audit(_audit_actor(), "executors_measure", sample,
                  f"实测单账号耗时 {seconds:.2f}s（单执行体容量 {per_exec}）")
         return jsonify({
             "ok": True,
@@ -9746,13 +9894,7 @@ def create_app(host=None):
                 # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
                 _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
                 if not _health["healthy"]:
-                    _facts = [
-                        ("链自洽", "是" if _health["chain_ok"]
-                                   else f"否（断点 {_health['broken']} 处）"),
-                        ("库外锚点", "一致" if _health["anchor_ok"] else "不一致"),
-                        ("锚点说明", _health["anchor_msg"] or "（无）"),
-                        ("审计写入失败次数", _health["write_failures"]),
-                    ]
+                    _facts = _audit_alert_facts(_health)
                     # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
                     logger.error("审计链异常告警: %s",
                                  "；".join(f"{k} {v}" for k, v in _facts))

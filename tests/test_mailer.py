@@ -143,7 +143,11 @@ def test_send_failure_logs_safe(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", Boom)
     with caplog.at_level("WARNING", logger="mailer"):
         assert mailer_transport.send_admin_alert("告警", "内容", to="admin@qq.com") is False
-    assert "OSError" in caplog.text
+    # 契约变更：失败日志不再回显原始异常类型名。`OSError` / `ConnectionRefusedError` /
+    # 超时等类型名互不相同，等于把"目标端口是否开放、域名能否解析"的探测指纹写进管理员
+    # 可读日志；改记粗分类，保留"哪一类问题"的排障价值而不暴露端口状态。
+    assert "OSError" not in caplog.text
+    assert "连接失败" in caplog.text
     assert "secret" not in caplog.text, "授权码不得出现在日志"
     assert "sender@qq.com" not in caplog.text, "完整发件地址不得回显"
     assert "告警" in caplog.text

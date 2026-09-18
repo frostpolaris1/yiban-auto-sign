@@ -506,6 +506,28 @@ class RechainGuardTest(_DbFixture):
         self.assertEqual(h["rechain_events"], forged)
         self.assertIn("重链", h["note"])
 
+    def test_unhealthy_but_all_green_still_explains_itself(self):
+        """这种"各项都正常却报警"的体检结果，告警正文必须自带原因。
+
+        每日线程把 `audit_health` 摊成事实清单发管理员邮件；链自洽与库外锚点两行
+        都显示"正常"时，唯一说得出为什么报警的就是 `note`。漏掉它，管理员看到的
+        就是一条看着像误报的告警（真出问题时第一反应是忽略）。
+        """
+        self._seed(4)
+        db.record_audit_anchor()
+        db.set_meta(db._RECHAIN_EVENTS_KEY, json.dumps([{
+            "ts": "2099-01-01 00:00:00", "from_version": 2, "rows": 4,
+            "empty_hash_rows": 4, "head_before": "", "head_after": "f" * 64,
+        }]))
+        h = db.audit_health()
+        self.assertFalse(h["healthy"])
+        import web.app as webapp  # 惰性：本文件其余用例只碰 db，不加载 web
+        facts = dict(webapp._audit_alert_facts(h))
+        self.assertEqual(facts["链自洽"], "是", "夹具前提：链本身仍自洽")
+        self.assertEqual(facts["库外锚点"], "一致", "夹具前提：锚点判据仍通过")
+        self.assertIn("全表重链", facts["诊断备注"], "正文必须写明这次报警的原因")
+        self.assertEqual(len(facts["诊断备注"].splitlines()), 1, "日志行必须保持单行")
+
     def test_runtime_empty_hash_rows_are_reported(self):
         """运行期出现 hash='' 行（清空哈希等着被重签）→ 体检须给出可诊断信息。"""
         self._seed(5)
