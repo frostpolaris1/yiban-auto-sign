@@ -15,6 +15,7 @@
 """
 import contextlib
 import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -214,6 +215,221 @@ class AnchorFileIntegrityTest(_DbFixture):
         self._raw("DELETE FROM app_meta WHERE key='audit_anchor_meta'")
         ok, msg = db.verify_audit_anchor()
         self.assertTrue(ok, f"缺指纹时降级为行间链校验，不得误报：{msg}")
+
+
+class AnchorJudgmentTest(_DbFixture):
+    """锚点判定三重：定点（锚点 max_id 那一行必须在且哈希对得上）、
+    稠密（min..max 区间该有多少行）、留痕（物理删除必须逐次记账）。
+    """
+
+    def test_positive_control_suffix_delete_alone(self):
+        """缺陷表第 1 行：删链尾 10 条、之后无写入——原本就能检出，保持不回退。"""
+        self._seed(12)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id > 2")
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"], "删尾必须检出")
+        self.assertFalse(h["healthy"])
+
+    def test_suffix_delete_then_append_is_detected(self):
+        """缺陷表第 2 行：删链尾 2 条 + 之后任意 1 条新写入。
+
+        原判据只在 cur_max == 锚点 max_id 时才比链头，且只在 cur_max < 锚点 max_id
+        时报删除——删尾后只要再写一条，max_id 反而更大，整套判据完全静默。
+        """
+        self._seed(6)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id > 4")
+        db.audit("tester", "later", "t-later", "事后写入")  # id 7
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"], "删尾后追加新行不得掩盖删除（定点判据）")
+        self.assertFalse(h["healthy"])
+        self.assertIn("id=6", h["anchor_msg"])
+
+    def test_middle_tamper_positive_control(self):
+        """缺陷表第 5 行：改中间行内容——链内哈希校验本就检出，保持不回退。"""
+        self._seed(6)
+        db.record_audit_anchor()
+        self._raw("UPDATE audit_logs SET detail='篡改' WHERE id=3")
+        h = db.audit_health()
+        self.assertFalse(h["chain_ok"])
+        self.assertFalse(h["healthy"])
+
+    def test_bulk_delete_without_provenance_is_detected(self):
+        """缺陷表第 3 行：删掉 52/53 条历史（min_id 1→53），无任何清理留痕。
+
+        原实现把 min_id 增大定性为"保留期清理的正常现象，非告警"，
+        于是整段历史被抹掉也能自证清白。
+        """
+        self._seed(53)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id <= 52")
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"], "无留痕的批量删除必须检出")
+        self.assertFalse(h["healthy"])
+        self.assertIn("留痕", h["anchor_msg"])
+
+    def test_anchor_truncation_plus_day_wipe_is_detected(self):
+        """缺陷表第 4 行：删锚点文件最后一行 + 清空当日全部审计。"""
+        self._seed(3)
+        db.record_audit_anchor()
+        self._seed(3)
+        db.record_audit_anchor()
+        self._seed(2)
+        db.record_audit_anchor()  # 末行 max_id=8
+        lines = self._anchor_lines()
+        with open(self.anchor, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines[:-1]) + "\n")
+        self._raw("DELETE FROM audit_logs WHERE id > 6")  # 回到倒数第二行锚点的状态
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"], "删锚点末行+清当日审计必须检出")
+        self.assertIn("锚点文件", h["anchor_msg"])
+
+    # ---------------- 留痕：物理删除必须逐次记账 ----------------
+    def test_audit_cleanup_records_purge_event(self):
+        old_ts = "2020-01-01 00:00:00"
+        conn = db.get_conn()
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+                "VALUES (?,?,?,?,?,'','')",
+                (old_ts, "tester", "old", f"t{i}", f"d{i}"),
+            )
+            conn.commit()
+        db._rechain_audit_logs(conn)
+        self._seed(2)
+        conn = db.get_conn()
+        db._audit_cleanup(conn)
+        events = db.audit_purge_events()
+        self.assertEqual(len(events), 1, "每次物理删除都要往 app_meta 写一条留痕")
+        ev = events[0]
+        self.assertEqual(ev["table"], "audit_logs")
+        self.assertEqual(ev["deleted"], 3)
+        self.assertEqual((ev["before_min"], ev["before_max"]), (1, 5))
+        self.assertEqual((ev["after_min"], ev["after_max"]), (4, 5))
+        self.assertIn("cutoff", ev)
+        self.assertIn("ts", ev)
+        self.assertEqual(db.audit_purge_total(), 3)
+
+    def test_event_cleanup_and_user_purge_record_events(self):
+        """_event_cleanup / purge_deleted_users 的物理删除同样要留痕（运维可追）。"""
+        db.get_conn().execute(
+            "INSERT INTO sign_events (ts, phone, status, message, stage, attempt) "
+            "VALUES ('2020-01-01 00:00:00','13900000000','ok','','sign',0)"
+        )
+        db.get_conn().commit()
+        db._event_cleanup(db.get_conn())
+        kinds = {e["table"] for e in db.audit_purge_events()}
+        self.assertIn("sign_events", kinds, "sign_events 的物理删除也要留痕")
+
+        db.create_user("purge@test.local", "pw-hash", role="user")
+        self._raw(
+            "UPDATE users SET deleted=1, deleted_at='2020-01-01 00:00:00' "
+            "WHERE email='purge@test.local'"
+        )
+        db.purge_deleted_users()
+        kinds = {e["table"] for e in db.audit_purge_events()}
+        self.assertIn("users", kinds, "注销用户物理清除也要留痕")
+
+    def test_explained_prefix_cleanup_is_not_an_alarm(self):
+        """有留痕的保留期清理：min_id 跃迁与事件累计严格相等 → 只提示，不告警。"""
+        conn = db.get_conn()
+        old_ts = "2020-01-01 00:00:00"
+        for i in range(4):
+            conn.execute(
+                "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+                "VALUES (?,?,?,?,?,'','')",
+                (old_ts, "tester", "old", f"t{i}", f"d{i}"),
+            )
+            conn.commit()
+        db._rechain_audit_logs(conn)
+        self._seed(2)
+        db.record_audit_anchor()
+        db._audit_cleanup(db.get_conn())  # 删掉 4 条超期旧行，并写留痕
+        h = db.audit_health()
+        self.assertTrue(h["anchor_ok"], f"合法清理不得告警：{h['anchor_msg']}")
+        self.assertTrue(h["healthy"])
+        self.assertIn("回收", h["anchor_msg"])
+
+    def test_min_jump_larger_than_events_is_rejected(self):
+        """min_id 跃迁量必须与留痕累计**严格相等**——多出来的跃迁即非法删除。"""
+        conn = db.get_conn()
+        old_ts = "2020-01-01 00:00:00"
+        for i in range(6):
+            conn.execute(
+                "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+                "VALUES (?,?,?,?,?,'','')",
+                (old_ts, "tester", "old", f"t{i}", f"d{i}"),
+            )
+            conn.commit()
+        db._rechain_audit_logs(conn)
+        self._seed(2)
+        db.record_audit_anchor()
+        db._audit_cleanup(db.get_conn())  # 留痕：删 6 条
+        self._raw("DELETE FROM audit_logs WHERE id = 7")  # 再多删一条且无留痕
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"], "跃迁量 > 留痕累计 → 必须判非法删除")
+
+    def test_balanced_but_inconsistent_purge_record_is_rejected(self):
+        """留痕**条数**对得上、但留痕声称的"删除后 min_id"与事实不符 → 只有第三条判据能检出。
+
+        稠密性判据只做数量守恒（缺 3 条 / 声称删 3 条 → 放行）；本例数量恰好守恒，
+        而声称的 after_min=99 与当前 min_id=4 对不上——即伪造或错位的清理留痕。
+        """
+        self._seed(8)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id <= 3")  # 无留痕的真实前缀删除
+        fake = [{
+            "kind": "audit_cleanup", "table": "audit_logs", "cutoff": "2020-01-01 00:00:00",
+            "deleted": 3, "before_min": 1, "before_max": 8,
+            "after_min": 99, "after_max": 8, "ts": "2026-01-01 00:00:00", "audit_seq": 3,
+        }]
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_purge_total", "3"))
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_purge_events", json.dumps(fake)))
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"], "数量守恒但留痕内容与事实不符必须检出（第三条判据）")
+        self.assertIn("min_id", h["anchor_msg"])
+
+    def test_inflated_purge_records_rejected(self):
+        """留痕被**超额**写入（声称删 4 条、实际只少 2 条）→ 只有稠密性判据能检出。
+
+        本例刻意让另两条判据都满足：链尾行 id=6 还在且哈希对得上（定点通过）、
+        伪造事件的 after_min=3 与当前 min_id 相等（留痕判据通过）、前缀删除后首行
+        自锚所以链内哈希也自洽。超额的留痕等于攻击者预留"无痕删除额度"，必须当场判失败。
+        """
+        self._seed(6)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id <= 2")  # 实际只删 2 条
+        over = [{
+            "kind": "audit_cleanup", "table": "audit_logs", "cutoff": "2020-01-01 00:00:00",
+            "deleted": 4, "before_min": 1, "before_max": 6,
+            "after_min": 3, "after_max": 6, "ts": "2026-01-01 00:00:00", "audit_seq": 4,
+        }]
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_purge_total", "4"))
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_purge_events", json.dumps(over)))
+        h = db.audit_health()
+        self.assertTrue(h["chain_ok"], "夹具前提：链本身应仍自洽")
+        self.assertTrue(h["anchor_ok"] is False, f"超额留痕必须被稠密性判据检出：{h['anchor_msg']}")
+        self.assertIn("不符", h["anchor_msg"])
+
+    def test_v1_anchor_does_not_false_alarm_on_min_jump(self):
+        """存量 v1 锚点没有 count 字段：稠密性判据降级，但定点判据仍生效。"""
+        self._seed(5)
+        head = db.audit_head_hash()
+        with open(self.anchor, "w", encoding="utf-8") as f:
+            f.write(f"2026-08-28 18:50:00 1 5 {head}\n")
+        self._raw("DELETE FROM audit_logs WHERE id <= 2")  # 无留痕的前缀删除
+        ok, msg = db.verify_audit_anchor()
+        self.assertTrue(ok, f"v1 锚点无法承载稠密性判据，降级为不报错：{msg}")
+        # 但定点判据与格式无关：删链尾后追加照样要检出
+        self._raw("DELETE FROM audit_logs WHERE id = 5")
+        db.audit("tester", "later", "t", "d")
+        ok, _msg = db.verify_audit_anchor()
+        self.assertFalse(ok, "v1 锚点下的'删尾后追加'仍须由定点判据检出")
 
 
 if __name__ == "__main__":
