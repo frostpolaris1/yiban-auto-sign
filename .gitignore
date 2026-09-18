@@ -159,3 +159,5 @@ PROMPT_*.md
 MEMORY.md
 memory/
 HANDOFF*.md
+# 工具运行期在本仓库内创建的隔离 worktree 与任务输出目录，与项目内容无关
+.qoder/
