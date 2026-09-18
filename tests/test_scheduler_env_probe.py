@@ -477,7 +477,7 @@ class ProbeWordingTest(unittest.TestCase):
                                        "图形验证墙", scenario="probe")
         subject, text = sent[0]
         text = render_body(text)
-        self.assertEqual(subject, "易班账号健康预警")
+        self.assertEqual(subject, "【易班签到】账号健康预警")
         self.assertNotIn("今日签到失败", text)
         self.assertIn("138****0000", text)
         self.assertNotIn("13800000000", text)

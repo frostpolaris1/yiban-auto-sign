@@ -161,7 +161,8 @@ class SignUserFailMailTest(unittest.TestCase):
         to, subject, text = m.call_args[0]
         text = render_body(text)
         self.assertEqual(to, "owner@test.local")
-        self.assertEqual(subject, "易班签到失败提醒")
+        self.assertEqual(subject, "【易班签到】签到失败提醒")
+        self.assertTrue(subject.startswith("【易班签到】"), "用户邮件主题须带统一前缀")
         self.assertIn("138****0000", text)
         self.assertNotIn("13800000000", text, "邮件不得含完整手机号")
 
