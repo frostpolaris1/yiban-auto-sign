@@ -1,8 +1,9 @@
-/* 系统设置 · 执行体与出口分区（管理端 /settings 的「执行体」tab）。
+/* 系统设置 · 执行体与出口分区（管理端 /work/settings 的「执行体」tab）。
 
    挂载到 window.YB.settingsExecutors；classic script。
 
-   **数据模型＝清单**（后端 `docs/refactor/86` 交接稿）：一行一个执行体，有稳定槽位号（只增不复用）、
+   **数据模型＝清单**（后端 `docs/refactor/86` 交接稿；该目录未纳入版本控制，接口形态以
+   `docs/dev/api-executors.md` 的 `executors[]` 一节为准）：一行一个执行体，有稳定槽位号（只增不复用）、
    类型（worker / fallback / disabled）与自己的出口。故页面上**没有"数量"输入**——行数＝清单长度，
    增行用「添加执行体」、删行在行内弹窗里。渲染一律按接口的 `executors[]`（`slot` 升序），
    **不假设槽位号连续**（删行后新建的行会跳过领取历史里用过的号）。
