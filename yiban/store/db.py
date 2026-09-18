@@ -2518,14 +2518,24 @@ def purge_deleted_users(days=None):
             )
             # M4a：先清这些已注销用户的冷却计数（明文邮箱随用户行一并释放，
             # 不再驻留 user_delete_requests 至 30 天保留期满）
-            conn.execute(
+            before = _table_min_max(conn, "user_delete_requests")
+            cur = conn.execute(
                 "DELETE FROM user_delete_requests WHERE username IN ("
                 "SELECT email FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?)",
                 (cutoff,),
             )
-            conn.execute(
+            _record_purge_event(
+                conn, "user_delete_requests", "purge_deleted_users", cutoff,
+                cur.rowcount or 0, before, _table_min_max(conn, "user_delete_requests"),
+            )
+            before = _table_min_max(conn, "users")
+            cur = conn.execute(
                 "DELETE FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
                 (cutoff,),
+            )
+            _record_purge_event(
+                conn, "users", "purge_deleted_users", cutoff, cur.rowcount or 0,
+                before, _table_min_max(conn, "users"),
             )
             conn.commit()
     except Exception as e:
@@ -2980,6 +2990,9 @@ _AUDIT_PURGE_TOTAL_KEY = "audit_purge_total"
 _AUDIT_PURGE_EVENTS_KEY = "audit_purge_events"
 #: 留痕事件列表上限（app_meta 单值不宜无界增长；只保留最近 N 条足够追溯）
 _PURGE_EVENTS_KEEP = 200
+#: 全表重链留痕（migrate_v3 每次重签整条链都记一条：ts/来源版本/行数/重链前后 head）
+_RECHAIN_EVENTS_KEY = "audit_rechain_events"
+_RECHAIN_EVENTS_KEEP = 50
 #: 文件首行的"前驱哈希"哨兵。必须是非空定长串——写成空串会让行尾空格在 split()
 #: 后少一个 token，整行变得不可解析（曾导致每日误报"锚点文件被删除"）。
 _ANCHOR_GENESIS = "0" * 64
@@ -3084,6 +3097,101 @@ def _audit_purge_total(conn):
         return int(str(row["value"]).strip() or 0)
     except ValueError:
         return 0
+
+
+def _audit_purge_events(conn):
+    """物理删除留痕事件列表（app_meta JSON）。缺表/JSON 损坏 → []。"""
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (_AUDIT_PURGE_EVENTS_KEY,)
+        ).fetchone()
+    except sqlite3.Error:
+        return []
+    if row is None or not row["value"]:
+        return []
+    try:
+        val = json.loads(row["value"])
+    except ValueError:
+        return []
+    return val if isinstance(val, list) else []
+
+
+def audit_purge_total():
+    """audit_logs 累计物理删除条数（公开只读，供体检/排障；无记录 → 0）。"""
+    try:
+        return int(str(get_meta(_AUDIT_PURGE_TOTAL_KEY, "0")).strip() or 0)
+    except ValueError:
+        return 0
+
+
+def audit_purge_events():
+    """物理删除留痕事件（公开只读，最新在末尾；表缺失/损坏 → []）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            return _audit_purge_events(conn)
+    except Exception as e:
+        logger.warning("读取物理删除留痕失败: %s", e)
+        return []
+
+
+def _record_purge_event(conn, table, kind, cutoff, deleted, before, after, audit_seq=None):
+    """把一次物理删除写入 app_meta 留痕（与删除同事务，由调用方 commit）。
+
+    before/after 是删除前后的 (min_id, max_id)；表被删空时元素为 None。
+    audit_seq 仅 audit_logs 的删除使用，值为累计数**自增后**的数：判据要精确知道
+    "哪些留痕发生在某条锚点之后"，而这无法靠 ts 字符串比较得出——每日流程是"先
+    清理、后写锚点"，同一天的两条记录 ts 先后与判据要的"锚点之后"根本不对应。
+
+    写失败刻意上抛（不静默吞）：由调用方回滚，宁可本轮不删，也不留下
+    "删了却无留痕"的删除——那种删除会让稠密性判据把合法清理误判成篡改。
+    """
+    if deleted <= 0:
+        return
+    event = {
+        "kind": kind,
+        "table": table,
+        "cutoff": cutoff or "",
+        "deleted": int(deleted),
+        "before_min": before[0] if before else None,
+        "before_max": before[1] if before else None,
+        "after_min": after[0] if after else None,
+        "after_max": after[1] if after else None,
+        "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if audit_seq is not None:
+        event["audit_seq"] = int(audit_seq)
+    events = _audit_purge_events(conn)
+    events.append(event)
+    if len(events) > _PURGE_EVENTS_KEEP:
+        events = events[-_PURGE_EVENTS_KEEP:]
+    conn.execute(
+        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+        (_AUDIT_PURGE_EVENTS_KEY, json.dumps(events, ensure_ascii=False)),
+    )
+    if table == "audit_logs":
+        conn.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+            (_AUDIT_PURGE_TOTAL_KEY, str(_audit_purge_total(conn) + int(deleted))),
+        )
+
+
+def _table_min_max(conn, table):
+    """指定表的 (min_id, max_id)；空表或表不存在 → (None, None)。
+
+    table 只接受 _ALLOWED_TABLES 里的字面量——留痕是取证数据，不能成为注入面。
+    """
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"留痕不支持的表名: {table}")
+    try:
+        row = conn.execute(
+            "SELECT MIN(id) AS mn, MAX(id) AS mx FROM " + table
+        ).fetchone()
+    except sqlite3.Error:
+        return None, None
+    if row is None:
+        return None, None
+    return row["mn"], row["mx"]
 
 
 def record_audit_anchor(path=None):
@@ -3271,30 +3379,190 @@ def verify_audit_anchor(path=None):
             row = conn.execute(
                 "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
             ).fetchone()
+            anchored = conn.execute(
+                "SELECT hash FROM audit_logs WHERE id=?", (anchor["max_id"],)
+            ).fetchone()
+            appended = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE id > ?", (anchor["max_id"],)
+            ).fetchone()[0]
+            purge_total = _audit_purge_total(conn)
+            events = _audit_purge_events(conn)
         n = int(row["n"] or 0)
         cur_min = int(row["min_id"]) if row["min_id"] is not None else 0
         cur_max = int(row["max_id"]) if row["max_id"] is not None else 0
+        anchor_pt = anchor.get("purge_total")      # v1 行 → None
+        anchor_count = anchor.get("count")         # v1 行 → None
+        # 留痕累计数只增不减：倒退意味着 app_meta 的删除留痕被人清过/改过，
+        # 而这正是"批量删除后自证清白"唯一的通路，必须当场判失败。
+        if anchor_pt is not None and purge_total < anchor_pt:
+            return False, (
+                f"物理删除留痕累计数由锚点记录的 {anchor_pt} 倒退为 {purge_total}"
+                "——app_meta 删除留痕被清除或改写，删除追溯已失效，请立即核查"
+            )
+        # 锚点之后新发生的、有留痕的物理删除条数（v1 锚点无从得知基线）
+        explained = (purge_total - anchor_pt) if anchor_pt is not None else None
+
         if n == 0:
+            if explained is not None and anchor_count and explained >= anchor_count:
+                return True, (
+                    f"审计链 {anchor_count} 条已按保留期全部清理完毕"
+                    f"（有留痕，锚点以来累计删除 {explained} 条），非告警"
+                )
             return False, (
                 f"审计表为空，但锚点（{anchor['ts']}）记录曾有 {anchor['max_id']} 条"
-                "——疑似整表被清空"
+                f"——疑似整表被清空（无任何清理留痕可解释，留痕累计={explained}）"
             )
-        if cur_max < anchor["max_id"]:
+
+        # ---- 判据一：定点 ----
+        # 锚点 max_id 那一行必须还在、哈希必须还对得上。原判据是
+        # "cur_max == anchor.max_id 时才比 head"，于是"删掉链尾若干条 + 再写一条"
+        # 就足以让整套比对静默（新行 id 更大，head 比对被跳过）。
+        if anchored is None and not _purge_event_covers(events, anchor_pt, anchor["max_id"]):
+            trend = (
+                f"当前 max_id={cur_max} 小于锚点 max_id={anchor['max_id']}（条数减少，"
+                f"疑似删掉最近 {anchor['max_id'] - cur_max} 条）"
+                if cur_max < anchor["max_id"]
+                else f"当前 max_id={cur_max} 反而更大——删尾后用新写入掩盖"
+            )
             return False, (
-                f"审计记录条数减少：锚点 max_id={anchor['max_id']}，当前 max_id={cur_max}"
-                f"——疑似删除了最近 {anchor['max_id'] - cur_max} 条记录"
+                f"锚点记录的链尾行 id={anchor['max_id']} 已不存在，且无清理留痕可解释："
+                f"{trend}；锚点以来有留痕的删除累计={explained}"
             )
-        cur_head = audit_head_hash()
-        if cur_max == anchor["max_id"] and cur_head != anchor["head"]:
-            return False, "审计链头哈希与锚点不符（链尾内容被篡改）"
+        if anchored is not None and anchored["hash"] != anchor["head"]:
+            return False, (
+                f"审计链尾行 id={anchor['max_id']} 的哈希与锚点不符（链尾内容被篡改或被"
+                f"全表重签）{_rechain_hint(events, anchor)}"
+            )
+        if anchored is None:
+            # 定点被留痕事件解释掉了（长期空闲后保留期清理删到了链尾）——
+            # 这条锚点已不再描述当前链尾，后续判据照常执行
+            logger.info("锚点链尾行 id=%s 已由清理留痕解释，跳过 head 比对", anchor["max_id"])
+
+        # ---- 判据二：稠密（v1 锚点无 count，降级跳过）----
+        if anchor_count is not None:
+            era_rows = n - int(appended)          # 锚点当时那批行里现在还剩下的
+            missing = anchor_count - era_rows     # 锚点以来消失的行数
+            exp = explained if explained is not None else 0
+            if missing > exp:
+                return False, (
+                    f"审计记录条数减少且无清理留痕：锚点（{anchor['ts']}）记录 {anchor_count} 条，"
+                    f"当前该批仅剩 {era_rows} 条（此后新增 {appended} 条），"
+                    f"消失 {missing} 条而有留痕的物理删除仅 {exp} 条——"
+                    f"疑似删除了 {missing - exp} 条历史记录；min_id 由 {anchor['min_id']} "
+                    f"变为 {cur_min}，max_id 由 {anchor['max_id']} 变为 {cur_max}"
+                )
+            if missing < exp:
+                return False, (
+                    f"清理留痕与链实际状态不符：留痕声称锚点以来删除 {exp} 条，"
+                    f"实际仅消失 {missing} 条——留痕被伪造/重复写入，判为异常"
+                )
+
+        # ---- 判据三：留痕（min_id 跃迁必须有事件精确对上）----
         if cur_min > anchor["min_id"]:
+            if anchor_count is None:
+                # v1 锚点：没有 count 可核对，维持旧的"信息"定性（不因此判失败）
+                return True, (
+                    f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
+                    "（旧版锚点无 count 字段，无法核对清理留痕，非告警；"
+                    "本次已按新格式重写锚点，明日恢复完整判据）"
+                )
+            if not _purge_event_sets_min(events, anchor_pt, cur_min):
+                return False, (
+                    f"审计链 min_id 由 {anchor['min_id']} 跃迁至 {cur_min}（跃迁 "
+                    f"{cur_min - anchor['min_id']} 条），但没有任何一条清理留痕事件的"
+                    f"删除后 min_id 与之相符——前缀删除无留痕，判为非法删除"
+                )
             return True, (
                 f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
-                "（保留期清理的正常现象，非告警）"
+                "（有清理留痕，保留期清理的正常现象，非告警）"
+            )
+        if cur_min < anchor["min_id"]:
+            return False, (
+                f"审计链 min_id 由 {anchor['min_id']} 倒退至 {cur_min}——"
+                "锚点之后不可能凭空出现更早的记录，判为异常（库被替换或 id 被重写）"
             )
         return True, ""
     except Exception as e:
         return False, f"锚点校验异常: {e}"
+
+
+def _purge_events_after_anchor(events, anchor_pt):
+    """锚点之后新发生的 audit_logs 物理删除留痕（按 audit_seq 精确切分）。"""
+    out = []
+    for ev in events:
+        if ev.get("table") != "audit_logs":
+            continue
+        seq = ev.get("audit_seq")
+        if seq is None:
+            continue  # 升级前的旧清理没有序号，无法定位与锚点的先后——不参与解释
+        if anchor_pt is None or int(seq) > int(anchor_pt):
+            out.append(ev)
+    return out
+
+
+def _purge_event_covers(events, anchor_pt, row_id):
+    """是否有一条锚点之后的留痕事件恰好把 id=row_id 这条删掉了。"""
+    for ev in _purge_events_after_anchor(events, anchor_pt):
+        before_max = ev.get("before_max")
+        after_max = ev.get("after_max")
+        if before_max is None or int(row_id) > int(before_max):
+            continue
+        if after_max is None or int(row_id) > int(after_max):
+            return True
+    return False
+
+
+def _purge_event_sets_min(events, anchor_pt, cur_min):
+    """是否有一条锚点之后的留痕事件，其"删除后 min_id"恰好等于当前 min_id。"""
+    for ev in _purge_events_after_anchor(events, anchor_pt):
+        if ev.get("after_min") is None:
+            continue  # 删空后重新累积：min 由新行决定，不用于解释这次跃迁
+        if int(ev["after_min"]) == int(cur_min):
+            return True
+    return False
+
+
+def _rechain_events(conn):
+    """全表重链留痕列表（app_meta JSON）。缺表/损坏 → []。"""
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (_RECHAIN_EVENTS_KEY,)
+        ).fetchone()
+    except sqlite3.Error:
+        return []
+    if row is None or not row["value"]:
+        return []
+    try:
+        val = json.loads(row["value"])
+    except ValueError:
+        return []
+    return val if isinstance(val, list) else []
+
+
+def _rechain_hint(anchor):
+    """锚点之后若发生过全表重链，给出可诊断的留痕摘要（无则空串）。
+
+    链尾哈希与锚点不符有两个成因，处置完全不同：内容被篡改 vs 启动路径用当前密钥
+    重签了整条链（后者要求有人把 user_version 拨回 v3 之前，或换过 YIBAN_AUDIT_KEY）。
+    留痕让运维一眼看出是哪一种，而不是对着同一句"疑似篡改"猜。
+    """
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            events = _rechain_events(conn)
+    except Exception:
+        return ""
+    ts = (anchor or {}).get("ts") or ""
+    recent = [e for e in events if str(e.get("ts") or "") > ts]
+    if not recent:
+        return "；锚点之后无全表重链留痕，按内容篡改处理"
+    e = recent[-1]
+    return (
+        f"；锚点之后有 {len(recent)} 次全表重链留痕"
+        f"（最近一次 {e.get('ts')} 来源版本 v{e.get('from_version')} "
+        f"行数 {e.get('rows')} 重链后 head={str(e.get('head_after'))[:12]}…）"
+        "——若非预期的 v3 升级/密钥轮换，即视同篡改"
+    )
 
 
 def audit_health(path=None):
@@ -3413,7 +3681,17 @@ def _audit_cleanup(conn):
                 conn.rollback()
             return
         cutoff = (clock.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
+        before = _table_min_max(conn, "audit_logs")
+        cur = conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
+        deleted = cur.rowcount or 0
+        after = _table_min_max(conn, "audit_logs")
+        if deleted:
+            # 删除与留痕同事务：锚点的稠密性判据拿"有留痕的删除累计数"解释缺口，
+            # 缺了这一步，保留期清理每天都会被判成非法删除。
+            _record_purge_event(
+                conn, "audit_logs", "audit_cleanup", cutoff, deleted,
+                before, after, audit_seq=_audit_purge_total(conn) + deleted,
+            )
         conn.commit()
     except Exception as e:
         with contextlib.suppress(Exception):
@@ -3659,11 +3937,21 @@ def _event_cleanup(conn):
         sign_cutoff = (now - datetime.timedelta(days=SIGN_EVENTS_RETENTION_DAYS)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        conn.execute("DELETE FROM sign_events WHERE ts < ?", (sign_cutoff,))
+        before = _table_min_max(conn, "sign_events")
+        cur = conn.execute("DELETE FROM sign_events WHERE ts < ?", (sign_cutoff,))
+        _record_purge_event(
+            conn, "sign_events", "event_cleanup", sign_cutoff, cur.rowcount or 0,
+            before, _table_min_max(conn, "sign_events"),
+        )
         job_cutoff = (now - datetime.timedelta(days=VERIFY_JOB_RETENTION_DAYS)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (job_cutoff,))
+        before = _table_min_max(conn, "verify_jobs")
+        cur = conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (job_cutoff,))
+        _record_purge_event(
+            conn, "verify_jobs", "event_cleanup", job_cutoff, cur.rowcount or 0,
+            before, _table_min_max(conn, "verify_jobs"),
+        )
         conn.commit()
     except Exception as e:
         with contextlib.suppress(Exception):
