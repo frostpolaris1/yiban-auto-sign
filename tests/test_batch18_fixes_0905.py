@@ -376,7 +376,15 @@ class Batch18FixesTest(unittest.TestCase):
             "status": row["status"], "deleted": bool(row.get("deleted")),
         }, ensure_ascii=False)
         r = ac.put("/api/accounts/0",
-                   json={"name": "A", "phone": REBIND_PHONE, "password": "", "_snapshot": snap},
+                   json={"name": "A", "phone": REBIND_PHONE, "password": "",
+                         "_snapshot": snap},
+                   headers={"X-CSRF-Token": at})
+        self.assertIn(r.status_code, (400, 403),
+                      "改绑手机号即改写他人凭据，必须当次口令: %s" % r.get_data(as_text=True))
+        self.assertEqual(db.load_accounts()[0]["phone"], PHONE, "鉴权未通过不得改绑")
+        r = ac.put("/api/accounts/0",
+                   json={"name": "A", "phone": REBIND_PHONE, "password": "",
+                         "_snapshot": snap, "confirm_password": ADMIN_PASS},
                    headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         acc = db.load_accounts()[0]
@@ -391,8 +399,15 @@ class Batch18FixesTest(unittest.TestCase):
         db.add_account({"name": "A", "phone": PHONE, "password": "pw",
                         "status": "active", "owner": "admin"})
         ac, at = self._admin_client()
+        # 改写他人易班凭据（这里换了密码）必须当次口令——先确认没口令时不改库
+        denied = ac.put("/api/accounts/0",
+                        json={"name": "A2", "phone": PHONE, "password": "newpass123"},
+                        headers={"X-CSRF-Token": at})
+        self.assertIn(denied.status_code, (400, 403), denied.get_data(as_text=True))
+        self.assertEqual(db.load_accounts()[0]["password"], "pw", "鉴权未通过不得改写凭据")
         r = ac.put("/api/accounts/0",
-                   json={"name": "A2", "phone": PHONE, "password": "newpass123"},
+                   json={"name": "A2", "phone": PHONE, "password": "newpass123",
+                         "confirm_password": ADMIN_PASS},
                    headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         acc = db.load_accounts()[0]
