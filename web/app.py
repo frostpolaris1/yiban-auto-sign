@@ -748,6 +748,19 @@ READ_AUDIT_TARGET_CAP = 8  # 单行里最多列几个脱敏目标（db.audit 的
 # 配置，注册管理员看不到就无法判断"为什么没收到告警"，而余量才是拆报警器前的勘察面。
 _NOTIFY_QUOTA_HIDDEN_KEYS = ("daily_remaining", "urgent_daily_remaining")
 
+# ---- 推送/邮件配置的输入上限（写侧唯一拦点）----
+# 为什么要有上限：本项在裸机直连形态下没有 nginx 的请求体/头长度兜底，超长值会被
+# 原样加密进 .env，并在每次推送/发信时带出；条数不设限则一次请求就能把 .env 撑大。
+# 取值依据（不是拍脑袋）：Server酱 SendKey 是"定长前缀 SCT + 固定宽度主体"，
+# 实测 35 字符 → 上限取 64（约一倍余量），下限 8 只为挡明显占位串；自定义通知地址
+# 按 URL 的实际长度上限取 2048；告警收件人与 SMTP 备选条目都是"管理员级"的小列表
+# （当前部署各 1~3 条），上限取 10 足够真实使用且不会被误触。
+NOTIFY_SENDKEY_MIN_LEN = 8
+NOTIFY_SENDKEY_MAX_LEN = 64
+NOTIFY_URL_MAX_LEN = 2048
+MAIL_ADMIN_TO_MAX = 10
+MAIL_SMTPS_MAX = 10
+
 # 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
 VERIFY_MAX = 6  # 每用户窗口内最大验证尝试次数（正常添加流程远用不到）
@@ -2657,8 +2670,23 @@ def _audit_alert_facts(health):
         ("库外锚点", "一致" if health["anchor_ok"] else "不一致"),
         ("锚点说明", _nl_safe(health["anchor_msg"]) or "（无）"),
         ("审计写入失败次数", health["write_failures"]),
+        # 清理量出箱（异机核对用）：本机时钟被渐进拨快时，本机自校验不会报警，
+        # 但"累计删除条数"与"最近一次清理的截止点"会持续变化——日报是唯一能把它
+        # 带离本机的通道，异机侧据此判断清理是否异常。
+        ("累计留痕的审计清理条数", health.get("purge_total", 0)),
+        ("最近一次审计清理", _last_cleanup_text(health.get("last_cleanup"))),
         ("诊断备注", _nl_safe(health["note"]) or "（无）"),
     ]
+
+
+def _last_cleanup_text(ev):
+    """最近一次审计清理留痕的可读文本（无记录 → 「（无）」）。"""
+    if not ev:
+        return "（无）"
+    return _nl_safe(
+        f"{ev.get('ts') or '?'} 截止 {ev.get('cutoff') or '?'}，"
+        f"删除 {ev.get('deleted', 0)} 条"
+    )
 
 
 def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent"):
@@ -3677,29 +3705,44 @@ def create_app(host=None):
     _base_path_env = read_env(ENV_FILE).get("YIBAN_BASE_PATH", "").strip()
     if _base_path_env and _base_path_env != "/":
         app.config["SESSION_COOKIE_PATH"] = "/" + _base_path_env.strip("/") + "/"
-    # HTTPS 反代自动升级 Secure——请求经 https（X-Forwarded-Proto）
-    # 到达而 Secure 未显式开启时，粘性开启会话 Cookie 的 Secure 标志（首次 https
-    # 请求即生效，无需重启）；**显式**配置 YIBAN_COOKIE_SECURE=0 的部署保持原行为。
+    # HTTPS 反代自动升级 Secure——请求经 https 到达而 Secure 未显式开启时，给本次响应
+    # 的会话 Cookie 带上 Secure 标志（逐请求判定，不需要重启也不粘住进程）。
+    # **显式**配置 YIBAN_COOKIE_SECURE（含显式 0）的部署完全不参与自动判定，保持原行为。
     #
-    # 2026-09-17 对抗性审查 M4：这里原先写的是 `{"done": not cookie_secure}`，于是
-    # 默认（未配置）部署的 `done` 反而是 True → 整个自动升级分支**永不执行**，
-    # HTTPS 反代下 Cookie 一直不带 Secure。根因是把"未配置"与"显式关"混成了一个
-    # False——两者必须分开判：只有**键在且非空**（显式配置，含显式 0）才不自动升级。
+    # 两条判据都不能省：
+    # 1) 只有**键在且非空**才算"显式配置"——把"未配置"与"显式关"混成一个 False 会让
+    #    默认部署永不自动升级（HTTPS 反代下 Cookie 一直不带 Secure）；
+    # 2) 转发头只在**第一跳可信**（remote_addr 落在 TRUSTED_PROXIES）时才采信。判据与
+    #    `_client_ip` 同源：直连形态下客户端能自己发 `X-Forwarded-Proto: https`，粘性
+    #    采信会把这个进程的会话 Cookie 永久粘成 Secure，站点退回 HTTP 后浏览器不再回传
+    #    Cookie，表现为"登录不上"。
+    #
+    # 逐请求而非粘性：反代头消失（拓扑变更、代理降级为纯 HTTP）时必须能跟着回落，否则
+    # 进程会继续发已不可用的 Secure Cookie。同进程内不同请求可给出不同判定——每个响应
+    # 只按"自己这一跳"是否 https 决定，这正是要的语义。
     _cookie_secure_explicit = bool(str(cookie_secure_raw or "").strip())
-    _secure_auto_upgrade = {"done": cookie_secure or _cookie_secure_explicit}
+    _secure_auto_notice = {"logged": False}
+
+    def _forwarded_proto_is_https():
+        """`X-Forwarded-Proto` 是否声称本次请求走 https（仅可信第一跳采信）。
+
+        取首段（逗号分隔链里最靠近客户端的那一跳），与 `_client_ip` 读 XFF 的口径一致。
+        """
+        if (request.remote_addr or "") not in TRUSTED_PROXIES:
+            return False
+        raw = request.headers.get("X-Forwarded-Proto", "")
+        return bool(raw) and raw.split(",")[0].strip().lower() == "https"
 
     @app.before_request
     def _auto_secure_on_https():
-        if (
-            not _secure_auto_upgrade["done"]
-            and (
-                request.headers.get("X-Forwarded-Proto", "").strip().lower() == "https"
-                or request.is_secure
-            )
-        ):
-            app.config["SESSION_COOKIE_SECURE"] = True
-            _secure_auto_upgrade["done"] = True
-            logger.info("检测到 HTTPS 反代（X-Forwarded-Proto=https），会话 Cookie 已自动启用 Secure")
+        if _cookie_secure_explicit:
+            return
+        want = bool(request.is_secure or _forwarded_proto_is_https())
+        if app.config.get("SESSION_COOKIE_SECURE") != want:
+            app.config["SESSION_COOKIE_SECURE"] = want
+        if want and not _secure_auto_notice["logged"]:
+            _secure_auto_notice["logged"] = True
+            logger.info("检测到 HTTPS（或可信反代的转发头），会话 Cookie 自动启用 Secure")
     if host is not None and not _is_loopback_host(host) and not cookie_secure:
         logger.warning(
             "YIBAN_COOKIE_SECURE 未开启：当前监听地址 %s 非回环，生产环境请设置 "
@@ -5212,6 +5255,8 @@ def create_app(host=None):
                 addrs = [a.strip() for a in raw_to.split(",") if a.strip()]
                 if not addrs:
                     return jsonify({"error": "告警收件人格式无效"}), 400
+                if len(addrs) > MAIL_ADMIN_TO_MAX:
+                    return jsonify({"error": f"告警收件人最多 {MAIL_ADMIN_TO_MAX} 个"}), 400
                 for a in addrs:
                     if not EMAIL_RE.match(a) or len(a) > 64:
                         return jsonify({"error": f"告警收件人格式无效：{a[:32]}"}), 400
@@ -5224,6 +5269,8 @@ def create_app(host=None):
             raw_list = data["smtps"]
             if not isinstance(raw_list, list):
                 return jsonify({"error": "smtps 应为列表"}), 400
+            if len(raw_list) > MAIL_SMTPS_MAX:
+                return jsonify({"error": f"SMTP 发信条目最多 {MAIL_SMTPS_MAX} 条"}), 400
             # 旧列表取自改动前的解密结果：pass 留空且该索引旧条目已有授权码 → 保留旧值
             old_entries = mailer.smtp_list()
             smtps_list = []
@@ -5236,6 +5283,13 @@ def create_app(host=None):
                 user = str(e.get("user") or "").strip()
                 if not host:
                     return jsonify({"error": f"smtps 第 {i + 1} 条 host 不能为空"}), 400
+                # 目标地址判据（写侧硬拦）：拿被窃主管理员会话改 SMTP 目标就能把发信失败
+                # 日志当成内网端口扫描器用（连接被拒/超时/无路由互不相同）。默认拒内网
+                # 与不可路由段；确需本地/内网 MTA 的部署用 YIBAN_MAIL_ALLOW_PRIVATE_HOST
+                # 显式开启——存量配置不受影响（不改 smtps 就不经过这里）。
+                _host_reason = mail_config.check_smtp_host(host)
+                if _host_reason:
+                    return jsonify({"error": f"smtps 第 {i + 1} 条：{_host_reason}"}), 400
                 # user 留空 = 沿用该索引旧条目的 user（与 pass 的按索引保留一致：
                 # GET 已打码，前端不回显完整发件账号，留空提交才不会误清空）；
                 # 无旧值可沿用时存空串（同 pass 口径）
@@ -5417,10 +5471,22 @@ def create_app(host=None):
         secret = str(data.get("secret", "")).strip()
         if ntype not in ("serverchan", "custom", ""):
             return jsonify({"error": "未知的通知类型"}), 400
-        if ntype == "serverchan" and secret and not secret.startswith("SCT"):
-            return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
-        if ntype == "custom" and secret and not notify.is_safe_url(secret):
-            return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
+        # 校验依据是**落盘后实际生效**的类型，不是请求里写了什么：`type` 置空但带密钥时，
+        # 加载侧把空类型解析成 custom（兼容旧版只配密钥的写法），于是"不带 type、只提交
+        # secret"就能绕开下面的地址白名单——空类型必须与 custom 同判。
+        effective_type = ntype or ("custom" if secret else "")
+        if effective_type == "serverchan" and secret:
+            if not secret.startswith("SCT"):
+                return jsonify({"error": "Server酱 SendKey 应以 SCT 开头"}), 400
+            # 长度上限：SendKey 是"定长前缀 SCT + 固定宽度主体"（实测 35 字符），
+            # 留一倍余量到 64；无上限时超长值会原样加密进 .env 并在每次推送时带出。
+            if not NOTIFY_SENDKEY_MIN_LEN <= len(secret) <= NOTIFY_SENDKEY_MAX_LEN:
+                return jsonify({"error": "Server酱 SendKey 长度不合法"}), 400
+        elif effective_type == "custom" and secret:
+            if len(secret) > NOTIFY_URL_MAX_LEN:
+                return jsonify({"error": f"自定义地址过长（最多 {NOTIFY_URL_MAX_LEN} 字符）"}), 400
+            if not notify.is_safe_url(secret):
+                return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
         # ---- 高危判定：会"让推送通道失效、改密钥，
         # 或调整告警送达节奏/额度"的请求都要口令 ----
         # (a) type 置空 = 关闭推送；(b) 本次落盘后不再有密钥 = 清空密钥（含"只提交

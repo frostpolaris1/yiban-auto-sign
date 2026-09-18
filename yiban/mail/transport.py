@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """邮箱通知的发送层：SMTP（SSL / starttls）投递与主备条目 failover。
 
-授权码与完整发件地址不回显（只记异常类型、打码地址与条目序号）；发送异常只记日志、
+授权码与完整发件地址不回显（只记失败粗分类、打码地址与条目序号）；发送异常只记日志、
 绝不抛出。发信条目与通道状态判定住在 `config` 层，本层只做构造与投递。
 """
 import logging
@@ -19,14 +19,38 @@ logger = logging.getLogger("mailer")
 # SMTP_PORT 来源不同，分开记旗避免互相吞掉对方的告警）
 _entry_port_warned = False
 
+# SMTP 目标为内网/保留地址的发送侧一次性告警旗：进程内只记一次，不阻断发送（写侧硬拦
+# 由设置页负责，库层只提示）。
+_private_target_warned = False
+
+
+def _classify_send_error(e):
+    """SMTP 发送异常 → 失败粗分类文案（认证失败/发送被拒/连接失败/其他失败）。
+
+    失败日志只记粗分类，**不得**回显 `type(e).__name__`：`ConnectionRefusedError` /
+    `TimeoutError` / `socket.gaierror` 等原始类型名会把「目标端口是否开放、是否超时、
+    域名是否可解析」的探测指纹写进管理员可读日志——持被窃主管理员会话者据此可把 SMTP
+    目标当内网端口扫描器。粗分类保留"哪一类问题"的排障价值，又不暴露端口状态。
+    """
+    if isinstance(e, smtplib.SMTPAuthenticationError):
+        return "认证失败"
+    if isinstance(e, (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused,
+                      smtplib.SMTPDataError, smtplib.SMTPHeloError)):
+        return "发送被拒"
+    if isinstance(e, (OSError, smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
+                      smtplib.SMTPNotSupportedError)):
+        return "连接失败"
+    return "其他失败"
+
 
 def _send(subject, text, to):
     """发送一封邮件：按 smtp_list() 顺序逐条尝试（主备 failover），静默失败（记日志不抛出）。
 
     任一条发送成功即返回；单条失败（SMTP 异常/网络错误）记 warning（含条目序号与
-    host，不含凭据）后尝试下一条；条目 port 非法回退 465 并记一次性告警；全部失败
-    返回 False。
+    host，不含凭据）后尝试下一条；条目 port 非法回退 465 并记一次性告警；目标为内网/
+    保留地址时进程内只记一次告警但**不**停发；全部失败返回 False。
     """
+    global _private_target_warned
     to = str(to or "").strip()
     if not to or not config.is_enabled():
         return False
@@ -34,6 +58,16 @@ def _send(subject, text, to):
     for idx, entry in enumerate(entries):
         host = str(entry.get("host") or "").strip()
         port = entry.get("port", 465)
+        if not _private_target_warned:
+            reason = config.check_smtp_host(host)
+            if reason:
+                _private_target_warned = True
+                logger.warning(
+                    "邮件通知 SMTP 目标 %s（条目 %d/%d）属内网/保留地址：%s。"
+                    "仍会尝试发送；如需保留该目标，请在 .env 显式开启 "
+                    "YIBAN_MAIL_ALLOW_PRIVATE_HOST",
+                    host or "?", idx + 1, len(entries), reason,
+                )
         try:
             port = int(port)
         except (TypeError, ValueError):
@@ -78,11 +112,13 @@ def _send(subject, text, to):
             logger.info("邮件通知已发送: %s → %s", subject, config._mask_addr(to))
             return True
         except (OSError, smtplib.SMTPException) as e:
-            # 不回显授权码与异常详情（异常文本可能包含敏感信息），只记序号、类型与脱敏地址；
+            # 不回显授权码与异常详情（异常文本可能包含敏感信息），只记序号、脱敏地址与
+            # 失败粗分类（原始类型名会泄露端口/超时指纹，原因见 _classify_send_error）；
             # OSError 已覆盖 socket 异常（py3 中 socket.error 是其别名）
             logger.warning(
                 "邮件通知发送失败（SMTP 条目 %d/%d host=%s，%s）: %s → %s",
-                idx + 1, len(entries), host or "?", type(e).__name__, subject, config._mask_addr(to),
+                idx + 1, len(entries), host or "?", _classify_send_error(e),
+                subject, config._mask_addr(to),
             )
     return False
 

@@ -11,6 +11,10 @@
      整表清空、锚点文件自身被截断或改写；
   3. 审计写入欠账            —— 检出"业务已生效但审计没写进去"的静默丢失。
 
+输出：除三项结论外，还固定带出「累计留痕的审计清理条数」与「最近一次审计清理的
+截止点/条数」——本机时钟被渐进拨快时，本机自校验防不住（守卫参照点会跟着推进），
+异机侧只能靠这两个数字发现保留期清理被异常前移。
+
 输出：
 - 全部通过：exit 0
 - 检出异常：打印各项结论与锚点判据说明，exit 1
@@ -35,6 +39,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 
+def _same_path(a, b):
+    """两个路径是否指向同一个文件（不存在的路径按规范化字符串比）。"""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.realpath(os.path.abspath(a)) == os.path.realpath(os.path.abspath(b))
+
+
 def main():
     parser = argparse.ArgumentParser(description="校验审计哈希链 + 比对库外锚点 + 审计写入欠账")
     parser.add_argument("--db", default=None, help="yiban.db 路径（默认环境变量/相对路径）")
@@ -43,7 +55,9 @@ def main():
                              "用于摆脱对当前目录的依赖；显式指定时必须已存在）")
     parser.add_argument("--anchor", default=None,
                         help="外部锚点文件路径（默认 db.audit_anchor_path()，"
-                             "即 <YIBAN_STATE_DIR>/audit-anchor.log）")
+                             "即 <YIBAN_STATE_DIR>/audit-anchor.log；"
+                             "**校验非本部署的库时必须显式指定**——锚点与库必须同源，"
+                             "否则两套数据的差异会被误报成审计被篡改）")
     args = parser.parse_args()
     # 只读校验语义三件套——
     # 1) 库文件必须已存在：sqlite3.connect 缺库即建空库，空链 verify"通过"会对
@@ -62,7 +76,19 @@ def main():
     if not os.path.exists(db_path):
         print(f"审计校验中止：数据库文件不存在: {db_path}（拒绝新建空库误报通过）")
         sys.exit(2)
-    anchor_path = args.anchor or db.audit_anchor_path()
+    anchor_path = args.anchor
+    if anchor_path is None:
+        # 锚点文件与审计库是**一套**数据，而锚点路径来自部署的状态目录（机器级路径），
+        # 与 --db 无关。指向别的库（取证副本、备份恢复出来的库）却沿用本部署的锚点，
+        # 比出来的差异说明不了任何事，还会给出"审计记录被删除"这种**假篡改结论**。
+        # 这种情况按"无法定论"中止，并要求显式 --anchor（取证时把锚点一并拷来）。
+        deployed_db = os.environ.get("YIBAN_DB_FILE", db.DB_DEFAULT)
+        if not _same_path(db_path, deployed_db):
+            print("审计校验中止：--db 指向的不是本部署的库，无法推断它对应的锚点文件"
+                  "（锚点与库必须同源，否则会把两套数据误报成篡改）。"
+                  "对副本取证请把该库的锚点一并拷来并用 --anchor 指定")
+            sys.exit(2)
+        anchor_path = db.audit_anchor_path()
     db.init_db(db_file=db_path, cleanup=False, migrate=False, env_file=env_file)
     health = db.audit_health(path=anchor_path)
     # 链校验过程异常/密钥缺失（broken == -1）不是"检出篡改"而是"无法定论"——
@@ -78,6 +104,15 @@ def main():
     print(f"写入欠账：{health['write_failures']} 次")
     print(f"全表重链留痕：{len(health['rechain_events'])} 条；"
           f"空 hash 行：{health['empty_hash_rows']} 条")
+    # 清理量必须随取证输出带出：本机时钟被渐进拨快时本机自校验不会报警（守卫参照点
+    # 每次都推进），异机侧只能靠"累计删除条数 + 最近 cutoff"判断清理是否异常前移。
+    # 无留痕记录时也照打——运维要看得出"从哪一天起开始有"。
+    _lc = health.get("last_cleanup") or {}
+    print(f"累计留痕的审计清理条数：{health.get('purge_total', 0)} 条")
+    print("最近一次审计清理：" + (
+        f"{_lc.get('ts') or '?'} 截止 {_lc.get('cutoff') or '?'}，"
+        f"删除 {_lc.get('deleted', 0)} 条" if _lc else "（无）"
+    ))
     if health["note"]:
         print(f"附加诊断：{health['note']}")
     if health["healthy"]:
