@@ -257,22 +257,33 @@ class SaturdaySettingsWebTest(unittest.TestCase):
         self.assertEqual(data["sunday_sign"], 0)
 
     def test_saturday_toggle_saves_env(self):
-        """POST saturday_sign=0/1 → 显式写 0/1（写值口径不变，关闭也显式落盘自文档化）。"""
+        """POST saturday_sign=0/1 → 显式写 0/1（写值口径不变，关闭也显式落盘自文档化）。
+
+        A 档：真变化的那次（0→1）必须带当次口令，同值提交不进门禁。
+        """
         c, t = self._master()
         r = c.post("/api/settings", json={"saturday_sign": 0}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = io.open(self.env_file, encoding="utf-8").read()
         self.assertIn("YIBAN_SATURDAY_SIGN=0", env)
         r = c.post("/api/settings", json={"saturday_sign": 1}, headers=self._csrf(t))
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        r = c.post("/api/settings", json={"saturday_sign": 1, "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = io.open(self.env_file, encoding="utf-8").read()
         self.assertIn("YIBAN_SATURDAY_SIGN=1", env)
 
-    def test_saturday_toggle_regular_admin_ok(self):
-        """普通管理员可改周六开关（非主管理员专属，与周日同级）。"""
+    def test_saturday_toggle_regular_admin_denied(self):
+        """普通管理员改周六开关 → 403（周末开关与周日同级，均为 A 档破坏性设置）。
+
+        旧用例钉的是"周六属低风险项、任意管理员可改"——该口径已按「影响半径 ×
+        能否造成静默漏签」重排：一次点错就是周六全体漏签。
+        """
         c, t = self._reg_admin()
-        r = c.post("/api/settings", json={"saturday_sign": 0}, headers=self._csrf(t))
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        r = c.post("/api/settings", json={"saturday_sign": 0, "confirm_password": USER_PASS},
+                   headers=self._csrf(t))
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
 
     def test_saturday_partial_update_preserves_delays(self):
         """只改 saturday_sign 不得清空已配置的延迟（沿用字段携带才写语义）。"""

@@ -12,8 +12,8 @@ write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的�
 活体复现的杀链（普通管理员即可发动，无需任何主管理员凭据）：
   1) PUT /api/announcement  text = "notify" + U+2028 + "YIBAN_ADMIN_PASSWORD_HASH=<攻击者哈希>"
      （公告是自由文本，路由自己的校验同样只挡 \n / \r）
-  2) POST /api/settings     {"sunday_sign": false}   ← 任意管理员都做的日常自服务写入，
-     本次写入把潜伏行实体化到真哈希之后
+  2) POST /api/settings     {"sign_order": "sequence"}  ← 任意管理员都做的日常自服务写入
+     （同值提交不进门禁），本次写入把潜伏行实体化到真哈希之后
   3) 攻击者用自己的口令登录内置主管理员；合法主管理员 401
 
 本文件钉住的修复（三处，缺一即链未死）：
@@ -102,6 +102,9 @@ class _Base(unittest.TestCase):
             f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
             "YIBAN_ADMIN_USER=admin@test.local\n"
             f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            # 例行写入的载体：B 档键 + 提交同值 = 不进门禁、不新增物理行，
+            # 走的仍是同一条 .env 读-改-写路径
+            "YIBAN_SIGN_ORDER=sequence\n"
         )
         with io.open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(cls._pristine_env)
@@ -297,7 +300,8 @@ class EnvInjectionKillChainTest(_Base):
         self.assertEqual(_physical_lines(self.env_file), lines_before,
                          "被拒绝的请求不得改动 .env 物理行数")
         # 步骤 2：任意管理员都会做的例行自服务写入——修复前它负责"实体化"
-        r = c.post("/api/settings", json={"sunday_sign": False}, headers=h)
+        # （B 档 sign_order 提交同值：不进门禁、不新增物理行，走的仍是同一条读-改-写）
+        r = c.post("/api/settings", json={"sign_order": "sequence"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 断言一：主管理员哈希原样未动（既没被追加、也没被覆盖）
         self.assertEqual(self._master_hash_line(), master_hash,
@@ -334,7 +338,7 @@ class EnvInjectionKillChainTest(_Base):
                 self.assertEqual(self._master_hash_line(), base_hash)
                 self.assertEqual(_physical_lines(self.env_file), base_lines)
         # 拦下的所有尝试之后，再走一次例行写入也不得冒出注入行
-        r = c.post("/api/settings", json={"sunday_sign": False}, headers=h)
+        r = c.post("/api/settings", json={"sign_order": "sequence"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(_physical_lines(self.env_file), base_lines)
         self.assertEqual(self._master_hash_line(), base_hash)
@@ -349,13 +353,14 @@ class EnvInjectionKillChainTest(_Base):
         anon = self.webapp.create_app().test_client()   # 公告 GET 公开
         self.assertEqual(anon.get("/api/announcement").get_json()["text"],
                          "服务器今晚 23:00 维护")
-        r = c.post("/api/settings", json={"sunday_sign": True},
+        r = c.post("/api/settings", json={"sign_order": "random",
+                                          "confirm_password": SUB_PASS},
                    headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self.webapp.read_env(self.env_file)
-        self.assertEqual(env["YIBAN_SUNDAY_SIGN"], "1")
+        self.assertEqual(env["YIBAN_SIGN_ORDER"], "random")
         got = c.get("/api/settings", headers=h).get_json()
-        self.assertEqual(got["sunday_sign"], 1)
+        self.assertEqual(got["sign_order"], "random")
         # 清空公告（空值 = 删键）仍是常规能力
         r = c.put("/api/announcement", json={"text": ""}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
