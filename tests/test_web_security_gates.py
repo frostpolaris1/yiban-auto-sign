@@ -129,7 +129,7 @@ class Batch16FixesTest(unittest.TestCase):
                          "password": NEW_PASS},
                    headers=self._csrf(token))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("当前密码不正确", r.get_json()["error"])
+        self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(self._pw_version("user1@test.local"), 1, "密码不应被重置")
         # 旧密码仍可登录（未被动）
         c1 = self.webapp.create_app().test_client()
