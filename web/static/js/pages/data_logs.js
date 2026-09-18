@@ -1,4 +1,4 @@
-/* 签到日志页（管理端 /logs）行为。
+/* 签到日志页（管理端 /data/logs）行为。
    依赖 core.js（YB.api/el/$/toast/identity/maskPhone）与共享组件
    components/date-field.js（自研日期选择，取代原生 input[type=date] 的 UA 面板）。
 

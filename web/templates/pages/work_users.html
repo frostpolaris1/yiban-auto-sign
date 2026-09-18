@@ -93,7 +93,7 @@
   </div>
 
   <!-- 待处理用户：待审核 + 已拒绝（与账号页「待处理账号」同口径） -->
-  <div class="tab-panel is-active" role="tabpanel" id="usr-panel-pending"
+  <div class="tab-panel is-active" data-tab-instant role="tabpanel" id="usr-panel-pending"
        aria-labelledby="usr-tab-pending" data-tab-id="pending">
     <section class="card">
       {{ group_head('待处理用户', 'usr-pending-search', '搜索待处理用户',
@@ -114,7 +114,11 @@
                   <th scope="col" class="usr-cell-actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="usr-pending-tbody"></tbody>
+              <tbody id="usr-pending-tbody">
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+            </tbody>
             </table>
           </div>
           {{ empty('usr-pending-empty', '暂无待处理用户', '查看正式用户', 'normal') }}
@@ -144,7 +148,11 @@
                   <th scope="col" class="usr-cell-actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="usr-normal-tbody"></tbody>
+              <tbody id="usr-normal-tbody">
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+            </tbody>
             </table>
           </div>
           {{ empty('usr-normal-empty', '暂无正式用户', '查看空用户', 'vacant') }}
@@ -173,7 +181,11 @@
                   <th scope="col" class="usr-cell-actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="usr-vacant-tbody"></tbody>
+              <tbody id="usr-vacant-tbody">
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+            </tbody>
             </table>
           </div>
           {{ empty('usr-vacant-empty', '暂无空用户', '查看正式用户', 'normal') }}
@@ -204,7 +216,11 @@
                   <th scope="col" class="usr-cell-actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="usr-deleted-tbody"></tbody>
+              <tbody id="usr-deleted-tbody">
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+              <tr class="skel-row" aria-hidden="true"><td colspan="6"><span class="skeleton skeleton--text"></span></td></tr>
+            </tbody>
             </table>
           </div>
           {{ empty('usr-deleted-empty', '暂无已注销用户', '返回正式用户', 'normal') }}

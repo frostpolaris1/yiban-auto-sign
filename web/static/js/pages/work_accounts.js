@@ -144,9 +144,29 @@
     if (msg) {
       msg.textContent = filtered.length ? "" : (all.length ? "无匹配结果" : emptyDefault(group));
     }
-    // 空态里的「下一步」只在真的空（而非检索无匹配）时给出，避免误导
+    // 空态的出口：真·空给模板原本的「下一步」；**筛选出来的空**换成「清除筛选」
+    // （原来直接藏按钮 → 筛到 0 条时面板里没有任何可点项，见审查 P1-c）
     var action = empty.querySelector(".empty__action");
-    if (action) action.hidden = all.length > 0;
+    var actBtn = action && action.querySelector("button");
+    if (action) action.hidden = false;
+    if (actBtn) {
+      if (!actBtn.dataset.labelOrig) {
+        actBtn.dataset.labelOrig = actBtn.textContent;
+        actBtn.dataset.tabOrig = actBtn.getAttribute("data-empty-tab") || "";
+        actBtn.dataset.addOrig = actBtn.hasAttribute("data-add-account") ? "1" : "";
+      }
+      var filtering = all.length > 0;
+      actBtn.textContent = filtering ? "清除筛选" : actBtn.dataset.labelOrig;
+      if (filtering) {
+        actBtn.setAttribute("data-empty-clear", group);
+        actBtn.removeAttribute("data-empty-tab");
+        actBtn.removeAttribute("data-add-account");
+      } else {
+        actBtn.removeAttribute("data-empty-clear");
+        if (actBtn.dataset.tabOrig) actBtn.setAttribute("data-empty-tab", actBtn.dataset.tabOrig);
+        if (actBtn.dataset.addOrig) actBtn.setAttribute("data-add-account", "");
+      }
+    }
     empty.hidden = filtered.length > 0;
     if (scroller) scroller.scrollTop = scrollTop;
     var kw = state[group + "Search"];
@@ -311,6 +331,15 @@
   function bindEmptyTabs() {
     document.addEventListener("click", function (e) {
       var t = e.target;
+      var clearBtn = t && t.closest && t.closest("[data-empty-clear]");
+      if (clearBtn) {
+        var g = clearBtn.getAttribute("data-empty-clear");
+        var input = document.getElementById(g + "-search");
+        if (input) input.value = "";
+        state[g + "Search"] = "";
+        renderAll();
+        return;
+      }
       var btn = t && t.closest && t.closest("[data-empty-tab]");
       if (btn) YB.switchTab(btn.getAttribute("data-empty-tab"));
     });

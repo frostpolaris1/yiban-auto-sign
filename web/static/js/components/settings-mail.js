@@ -146,7 +146,10 @@
   function load() {
     if (!ctx.isMaster) return Promise.resolve();   // 非主管理员不拉（整卡已禁用，避免渲染出"看似可编辑"的行）
     return YB.api("GET", "/api/mail-config").then(function (data) {
-      // admin_to 是打码后的展示串：未配置时后端给 "<未配置>" 哨兵，已配置则形如 abc***@x.com。
+      // admin_to 是后端打码后的展示串：未配置时给 "<未配置>" 哨兵，单地址形如 abc***@x.com。
+      // ⚠ 别把它当"已完全脱敏"：本分支 _mask_addr 按第一个 @ 切分，逗号分隔的多地址里
+      // 第二项起会原样回显（实测 `alp******@example.test,bravo-two@example.test`）。
+      // 因此只可整串上屏展示，不得拆分、再分发或拼进其它文案/请求。
       // 故"是否已配置"只排除哨兵与空串 —— 用 clean() 会把打码真值也当成空（那是给输入框用的口径）。
       var toShown = String((data && data.admin_to) || "");
       snap = {

@@ -1,10 +1,15 @@
-/* 系统设置 · 消息推送段（管理端 /settings 的「通知通道」分区）。
+/* 系统设置 · 消息推送段（管理端 /work/settings 的「通知通道」分区）。
 
    挂载到 window.YB.settingsNotify；classic script。邮件段拆在 settings-mail.js，
    两段各占一张卡，故非主管理员的禁用由本组件对整卡统一处理。
 
-   权限：配置与测试均仅主管理员；关闭通道、更换/清空密钥、调整额度节流都需
-   confirm_password（后端 _high_risk_gate，前端先收口令再提交；UI 不是安全边界）。
+   权限（读与写不同档，别写成"GET 也会 403"）：
+     · 读 GET /api/notify-config —— 任意管理员可读通道状态与规则配置字段；额度**余量**
+       （daily_remaining / urgent_daily_remaining）仅主管理员，无权查看时后端置 null 并
+       恒定下发 quota_visible=false（本组件先看 quota_visible 再决定显示口径，不按 null 判）。
+     · 写与测试 —— 仅主管理员，且关闭通道、更换/清空密钥、调整额度节流都要
+       confirm_password（后端 _high_risk_gate：值**真的变了**才要，同值提交不要求；
+       UI 不是安全边界）。
    脱敏：密钥只读展示 secret_masked，输入框恒为空（留空=不改动），绝不回显。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存推送配置」
@@ -63,9 +68,15 @@
     } else {
       parts.push(data.configured ? "已配置但不可用（密钥缺失或解密失败，请重新填写密钥）" : "未配置");
     }
-    var g = data.daily_remaining == null ? "不限" : data.daily_remaining + " 条";
-    var u = data.urgent_daily_remaining == null ? "不限" : data.urgent_daily_remaining + " 条";
-    parts.push("今日额度：非紧急剩余 " + g + " / 紧急剩余 " + u);
+    // 额度余量按 quota_visible 分支：后端对无权查看者把 remaining 置 null，而 null 的
+    // 正常语义是"上限为 0（不限）"——两者恰好相反，只按 null 判会把"无权查看"显示成"不限"。
+    if (data.quota_visible === false) {
+      parts.push("今日额度：仅主管理员可见");
+    } else {
+      var g = data.daily_remaining == null ? "不限" : data.daily_remaining + " 条";
+      var u = data.urgent_daily_remaining == null ? "不限" : data.urgent_daily_remaining + " 条";
+      parts.push("今日额度：非紧急剩余 " + g + " / 紧急剩余 " + u);
+    }
     el.textContent = parts.join("；");
   }
 

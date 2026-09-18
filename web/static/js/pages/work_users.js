@@ -199,7 +199,9 @@
 
   // 行操作菜单：动作回调闭包持有内部 uid，菜单/触发器不携带完整邮箱。
   // 目标为注册管理员且非主管理员时，后端对 role/重置密码/清空账号/删除用户统一 403
-  // （app.py 6331-6337、6395-6396），故这些动作一律不给出。UI 隐藏不是安全边界：
+  // （`web/app.py` 三个单条端点的 `role == "admin" and not is_master` 判定，以及
+  // `/api/users/batch` 里对 reset_password/delete 的同口径软跳过；按端点名定位，不钉行号），
+  // 故这些动作一律不给出。UI 隐藏不是安全边界：
   // 请求仍带 confirm_password，后端照旧复核。
   function menuItems(u, group) {
     var uid = u.uid;
@@ -317,9 +319,27 @@
     var empty = $(refs.empty);
     var msg = empty.querySelector(".empty__msg");
     if (msg) msg.textContent = shown ? "" : (list.length ? "无匹配结果" : refs.emptyText);
-    // 空态「下一步」只在真的空（而非检索无匹配）时给出
+    // 空态的出口：真·空给模板原本的「下一步」（跨 tab 跳转）；**筛选出来的空**换成
+    // 「清除筛选」——原来这里直接把按钮藏掉，导致"筛到 0 条时整块面板一个按钮都没有"，
+    // 用户只能手动逐个删条件（审查 P1-c）。
     var action = empty.querySelector(".empty__action");
-    if (action) action.hidden = list.length > 0;
+    var actBtn = action && action.querySelector("button");
+    if (action) action.hidden = false;
+    if (actBtn) {
+      if (!actBtn.dataset.labelOrig) {
+        actBtn.dataset.labelOrig = actBtn.textContent;
+        actBtn.dataset.tabOrig = actBtn.getAttribute("data-empty-tab") || "";
+      }
+      var filtering = list.length > 0;
+      actBtn.textContent = filtering ? "清除筛选" : actBtn.dataset.labelOrig;
+      if (filtering) {
+        actBtn.setAttribute("data-empty-clear", group);
+        actBtn.removeAttribute("data-empty-tab");
+      } else {
+        actBtn.removeAttribute("data-empty-clear");
+        if (actBtn.dataset.tabOrig) actBtn.setAttribute("data-empty-tab", actBtn.dataset.tabOrig);
+      }
+    }
     empty.hidden = shown > 0;
     if (scroller) scroller.scrollTop = scrollTop;
     setText(refs.count, countLabel(total, shown, kw));
@@ -450,6 +470,15 @@
       }
       var clr = t.closest("[data-usr-batch-clear]");
       if (clr) { state.sel[clr.getAttribute("data-usr-batch-clear")] = {}; renderAll(); return; }
+      var clearBtn = t.closest("[data-empty-clear]");
+      if (clearBtn) {
+        var g = clearBtn.getAttribute("data-empty-clear");
+        var input = document.getElementById("usr-" + g + "-search");
+        if (input) input.value = "";
+        state.search[g] = "";
+        renderAll();
+        return;
+      }
       // 空态「下一步」：同页标签切换（不新增页面跳转）
       var emptyBtn = t.closest("[data-empty-tab]");
       if (emptyBtn) { YB.switchTab(emptyBtn.getAttribute("data-empty-tab")); return; }
