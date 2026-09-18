@@ -199,7 +199,9 @@
 
   // 行操作菜单：动作回调闭包持有内部 uid，菜单/触发器不携带完整邮箱。
   // 目标为注册管理员且非主管理员时，后端对 role/重置密码/清空账号/删除用户统一 403
-  // （app.py 6331-6337、6395-6396），故这些动作一律不给出。UI 隐藏不是安全边界：
+  // （`web/app.py` 三个单条端点的 `role == "admin" and not is_master` 判定，以及
+  // `/api/users/batch` 里对 reset_password/delete 的同口径软跳过；按端点名定位，不钉行号），
+  // 故这些动作一律不给出。UI 隐藏不是安全边界：
   // 请求仍带 confirm_password，后端照旧复核。
   function menuItems(u, group) {
     var uid = u.uid;

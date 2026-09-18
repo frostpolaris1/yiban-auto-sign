@@ -155,13 +155,14 @@
     var left = (coolUntil - Date.now()) / 1000;
     return left > 0 ? left : 0;
   }
-  // 建议只有一行摘要；没有实测值就明说"未实测"并指向录入方式（不是让用户点按钮硬凑数字）
+  // 建议只有一行摘要；没有实测值就明说"未实测"并指向写入处（配置文件，页面上无录入控件），
+  // 不是让用户点按钮硬凑数字
   function adviceLine(d) {
     var win = (d && d.window) || {};
     var rec = (d && d.recommendation) || null;
     var measured = (d && d.measured) || null;
     if (!measured) {
-      return "未实测：还没有录入实测容量，因此不给出建议值；可先点右上角「测试单账号耗时」粗量一次做参考。";
+      return "未实测：配置文件里还没有实测容量，因此不给出建议值；可先点右上角「测试单账号耗时」粗量一次，再由部署者写入配置文件。";
     }
     return "建议并行执行体数 " + (rec ? count(rec.executors_needed) + " 个" : "—")
       + "（每个约 " + (rec ? count(rec.per_executor_accounts) : "—") + " 个账号，含慢账号余量）"
@@ -199,7 +200,8 @@
   // 实测（POST /measure）：真的会用真实账号访问一次易班（只读、不签到）。
   // **口令门**：后端 2026-09-17 的口径是"不改配置 → 不要求 confirm_password"（与手动签到同档，
   // 只判主管理员 + 冷却），故这里**不放口令框**——前端弹一个后端不校验的口令框就是"假门"
-  // （docs/refactor/88 §2.5 与安全复审 P1 都说清过）。要改成口令门需后端加一行校验，前端再跟上。
+  // （docs/refactor/88 §2.5 与安全复审 P1 都说清过；该目录未纳入版本控制，接口契约另见
+  // docs/dev/api-executors.md 的口令门一节）。要改成口令门需后端加一行校验，前端再跟上。
   // 这里保留一道**诚实的二次确认**：一次实测会拿真实账号真登录一次，值得让操作者按一下。
   // pwOpen：确认框已在途时不再叠开第二个。
   var pwOpen = false;
