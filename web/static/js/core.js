@@ -1006,6 +1006,25 @@
       if (t.closest(".dd-menu-item")) { closeDropdowns(); return; }
       if (!t.closest(".dd-wrap")) closeDropdowns();
 
+      // 长口径说明走弹窗，不走 .info-pop 浮层：浮层靠 hover/focus 维持且 pointer-events:none
+      // （见 app.css 该处注释），实测 495 字在 390 宽下高 747px、底边超视口 344px，
+      // 超出部分既滚不到也选不中。克隆出来喂给弹窗，原节点留在页面里供下次再取。
+      var docBtn = t.closest("[data-doc]");
+      if (docBtn) {
+        e.preventDefault();
+        var docSrc = document.getElementById(docBtn.getAttribute("data-doc"));
+        if (!docSrc) return;
+        var docBody = docSrc.cloneNode(true);
+        docBody.removeAttribute("hidden");
+        docBody.classList.add("pm-doc");
+        openModal({
+          title: docBtn.getAttribute("data-doc-title") || "说明",
+          body: docBody,
+          actions: [{ label: "关闭", variant: "ghost" }]
+        });
+        return;
+      }
+
       var navToggle = t.closest("[data-nav-toggle]");
       if (navToggle) {
         e.preventDefault();

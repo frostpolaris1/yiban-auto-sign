@@ -248,29 +248,36 @@ textarea {
   stroke: currentColor;
   stroke-width: 2;
 }
+/* 语义色一律走"画在卡片上"的 token：原先直接用 --success/--warning/--info，
+   3px 边在明色对卡片只有 2.56 / 2.13 / 2.77，不达非文本部件的 3:1。
+   --state-*-fg 明暗两套都在 5:1 以上。 */
 .toast--success {
-  border-left-color: var(--success);
+  border-left-color: var(--state-ok-fg);
 }
 .toast--success .toast__icon {
-  color: var(--success);
+  color: var(--state-ok-fg);
 }
+/* core.js 产出的是 toast--error；toast--danger 同图标（circle-x）、同语义，并成一条。
+   此前只有 --danger 有规则而无人调用，--error 无规则 → 错误提示渲染成基类的灰边近黑图标。 */
+.toast--error,
 .toast--danger {
-  border-left-color: var(--danger);
+  border-left-color: var(--state-bad-fg);
 }
+.toast--error .toast__icon,
 .toast--danger .toast__icon {
-  color: var(--danger);
+  color: var(--state-bad-fg);
 }
 .toast--warning {
-  border-left-color: var(--warning);
+  border-left-color: var(--state-warn-fg);
 }
 .toast--warning .toast__icon {
-  color: var(--warning);
+  color: var(--state-warn-fg);
 }
 .toast--info {
-  border-left-color: var(--info);
+  border-left-color: var(--badge-info-fg);
 }
 .toast--info .toast__icon {
-  color: var(--info);
+  color: var(--badge-info-fg);
 }
 
 /* ==========================================================================
@@ -1894,6 +1901,11 @@ html[data-theme="dark"] {
   min-width: 0;
 }
 .panel-head-row > :last-child { flex-shrink: 0; }   /* 控件固定右侧，不被文字压缩 */
+/* 窄屏（≤480）例外：控件组不缩会把标题挤到只剩 76px，实测 5 字标题仍折 2 行。
+   整组换到标题下方，标题拿回整行宽度。 */
+@media (max-width: 480px) {
+  .panel-head-row { flex-wrap: wrap; }
+}
 .panel-head .panel-sub { margin: 0; }
 .panel-title {
   margin: 0;
@@ -3307,6 +3319,11 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 }
 .info-pop b { display: block; margin-top: 7px; font-weight: 600; color: var(--t-base); }
 .info-pop b:first-child { margin-top: 0; }
+/* 弹窗版口径说明（work_settings.html 的 doc 宏）：同样的 <b> 分节节奏，但回到正文字号、
+   行距略松；长内容由弹窗自身滚动，不再有浮层那种"超出视口就读不到"的问题。 */
+.pm-doc { color: var(--t-base); font-size: 13px; line-height: 1.75; }
+.pm-doc b { display: block; margin-top: 11px; font-weight: 600; }
+.pm-doc b:first-child { margin-top: 0; }
 
 /* ---- 27.2 「说明 + 开关」行（模板无此布局） ---- */
 /* 限宽：说明与开关是同一组，铺满整卡会让控件离说明 300px+（实测 953px 宽行下
@@ -3604,6 +3621,12 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 /* 回退模板的单行头部（pill 文案缩短后不再换行）；但标题仍可能被窄卡挤掉，
    故把模板的 nowrap+ellipsis 改成允许折行 —— 宁可两行，也不要把标题吃掉。 */
 .kpi-label { white-space: normal; overflow: visible; text-overflow: clip; }
+/* 上一条只兜住"两行"，但 1201–1439 的 4 列档实测更糟：pill（flex-shrink:0）把标签盒
+   挤到只剩 38px，5 个字的标签折成 3 行竖排。让 pill 在放不下时整颗换到下一行，
+   标签拿回整行宽度 → 1280×720 实测回到 1 行。 */
+.dash-page .kpi-top { flex-wrap: wrap; }
+.dash-page .kpi-identity { flex: 1 1 auto; min-width: 0; }
+.dash-page .kpi-pill { flex: 0 0 auto; }
 
 /* P61 说明行数统一：四张 KPI 卡的副文案由 JS 包进 .kpi-compare-text（见 data_dashboard.js
    的 setSub），收敛为单行 —— 1212 档 4 列每卡内容宽仅 ≈148px，「正常/用户暂停/账密故障」
