@@ -9,8 +9,10 @@
 - 只在"**真的会改配置**"时要求 `confirm_password`：同值提交、只改自定义名、只读不要求；
 - 校验走 `_verify_session_password`（只比对**不写**与登录共用的失败计数——P18 教训：
   持 Cookie 者若能写共享计数，就能反手把管理员锁出登录）；
-- 缺/错口令 → **403**「口令校验未通过，设置未生效」+ 审计 `executors_pw_fail`，
-  **配置与清单都不动**；审计只落动作与槽位，绝不记口令、代理串、自定义名；
+- 缺口令 → **403**「需要输入当前口令，设置未生效」+ `reason=password_required`；错口令 →
+  **403**「口令校验未通过，设置未生效」+ `reason=password_incorrect`（状态码相同、文案分开）
+  + 审计 `executors_pw_fail`，**配置与清单都不动**；审计只落动作与槽位，绝不记口令、
+  代理串、自定义名；
 - 实测端点（`…/measure`）**不要求**口令：它不改配置，与手动签到同口径。
 
 自定义名口径：随清单一起进 `.env`（`slot/type/proxy/name`）。未设 = `null`（页面显示后端
@@ -131,7 +133,8 @@ class WritePasswordGateTest(_GuardBase):
             r = c.post("/api/scheduler/executors/rows", json={"proxy": "http://n:1"},
                        headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["error"], "口令校验未通过，设置未生效")
+        self.assertEqual(r.get_json()["error"], "需要输入当前口令，设置未生效")
+        self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(self._read_env().get("YIBAN_EXECUTORS", ""), before,
                          "被拒时不得落盘")
         detail = " ".join(str(a) for a in m.call_args[0])

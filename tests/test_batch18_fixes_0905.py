@@ -188,7 +188,7 @@ class Batch18FixesTest(unittest.TestCase):
             r = ac.put("/api/notify-config", json={"cooldown": 90000},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("当前密码不正确", r.get_json()["error"])
+        self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(self.webapp.read_env(self.env_file), before, "鉴权失败必须零写入")
         sn.assert_not_called()
 
@@ -476,7 +476,7 @@ class Batch18FixesTest(unittest.TestCase):
         r = ac.post("/api/users/m3@test.local/delete",
                     json={"mode": "accounts_only"}, headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("当前密码不正确", r.get_json()["error"])
+        self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(len(db.load_accounts()), 1, "鉴权失败不得清空账号")
 
     def test_accounts_only_with_password_clears_accounts_keeps_user(self):

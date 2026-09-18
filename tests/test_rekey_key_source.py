@@ -1026,7 +1026,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
             with self.subTest(body=body):
                 r = c.put("/api/mail-config", json=body, headers=self._csrf(t))
                 self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-                self.assertIn("当前密码不正确", r.get_json()["error"])
+                self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(_read_env(self.env_file), before, "鉴权未通过不得留下任何写入")
         self.assertEqual(self.alerts, [], "被拒绝的关闭不应发出变更告警")
 
@@ -1116,7 +1116,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
             with self.subTest(body=body):
                 r = c.put("/api/notify-config", json=body, headers=self._csrf(t))
                 self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-                self.assertIn("当前密码不正确", r.get_json()["error"])
+                self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(_read_env(self.env_file), before)
 
     def test_notify_close_with_password_200_alert_urgent(self):
@@ -1150,7 +1150,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
             with self.subTest(body=body):
                 r = c.put("/api/notify-config", json=body, headers=self._csrf(t))
                 self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-                self.assertIn("当前密码不正确", r.get_json()["error"])
+                self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(_read_env(self.env_file), before, "鉴权未通过不得留下任何写入")
         # 带正确口令 → 逐项落盘
         for body in ({"cooldown": 30}, {"urgent_only": True},
@@ -1906,7 +1906,7 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         c, h = self._master()
         r = c.post("/api/accounts/batch", json={"action": "purge", "ids": [0, 1]}, headers=h)
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("当前密码不正确", r.get_json()["error"])
+        self.assertEqual(r.get_json()["reason"], "password_required")
         rows = self._rows()
         self.assertEqual(len(rows), 2, "鉴权未通过不得物理清除任何易班凭据")
         self.assertTrue(all(a.get("deleted") for a in rows))
