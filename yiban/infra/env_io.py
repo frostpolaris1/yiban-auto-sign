@@ -63,6 +63,8 @@ def env_path(default=".env"):
 # 报告、运维手工清理。这些判定放在本模块（而非 web）：读的一半本就在此，
 # 各写入方都能直接 import，无需反向依赖 web 造成循环。
 ENV_LINE_BREAK_CHARS = frozenset("\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029")
+# 配置键名字符集（is_valid_env_key 用）：大写字母开头 + 大写字母/数字/下划线
+_ENV_KEY_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def has_line_break(s):
@@ -73,6 +75,18 @@ def has_line_break(s):
     （调用方传的都是已 str() 的文本）。
     """
     return not ENV_LINE_BREAK_CHARS.isdisjoint(str(s))
+
+
+def is_valid_env_key(key):
+    """写入口的键名白名单：`^[A-Z][A-Z0-9_]*$`（本项目所有配置键都在这个形态里）。
+
+    此前 `write_env_batch` 对键名只查"会不会撑出第二行"，没查键名本身——带 `=`、`#`、
+    空白、小写或前导数字的键虽过不了行分隔符那关，却能写出**解析口径分歧**的行
+    （`parse_env_file` 按首个 `=` 切分、`key_line_pattern` 按"键名+可选空白+="折叠，
+    两边对"这是哪一条键"的理解可以不一致，后写覆盖先写就成了提权面）。
+    这条白名单顺带把行分隔符也挡死（分隔符不在字符集内）。
+    """
+    return bool(_ENV_KEY_NAME_RE.match(str(key)))
 
 
 def key_line_pattern(key):
