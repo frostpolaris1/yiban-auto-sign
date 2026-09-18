@@ -12,10 +12,15 @@ import os
 from urllib.parse import urlparse
 
 from yiban.infra import account_crypto, env_io
+from yiban.security import url_desc
 
 logger = logging.getLogger("notify")
 
 _PREFIX = "YIBAN_NOTIFY_"
+
+# 自定义地址的发送期只读复核：进程内只记一次告警。手工编辑 .env 写入的地址不再经设置页
+# 校验，加载/发送前复核一次并提示；不改发送行为，异常也绝不逃逸（见 _recheck_custom_url）。
+_unsafe_custom_warned = False
 
 
 DEFAULT_COOLDOWN = 60
@@ -155,6 +160,33 @@ def _is_ipv4_literal_like(host):
     return len(parts) <= 4 and all(_seg_ok(p) for p in parts)
 
 
+def _recheck_custom_url(secret, envs=None):
+    """启用中的自定义通知地址做一次只读安全复核，不通过只记一次 WARNING。
+
+    手工编辑 .env 写入的地址不会再经设置页校验，本函数在加载/发送前的配置读取路径补
+    一次复核：仅当类型为 custom（含未设 TYPE 时旧明文 URL 按 custom 的兼容口径）时判；
+    不通过只提示"发送仍会继续、请在设置页更正"，**不改变发送行为**。
+    复核本身绝不抛异常（它只是增益，不能拖累告警通道）。
+    """
+    global _unsafe_custom_warned
+    if _unsafe_custom_warned or not secret:
+        return
+    ntype = _env_str("TYPE", envs).strip().lower() or "custom"
+    if ntype != "custom":
+        return
+    try:
+        safe = is_safe_url(secret)
+    except Exception:
+        safe = False
+    if safe:
+        return
+    _unsafe_custom_warned = True
+    logger.warning(
+        "自定义通知地址未通过安全复核（非 HTTPS 或指向内网/保留地址），"
+        "发送仍会继续；请在设置页更正: %s", url_desc(secret),
+    )
+
+
 def get_secret(envs=None):
     """返回当前加密配置解出的明文密钥（serverchan=SendKey；custom=URL）。
 
@@ -163,7 +195,9 @@ def get_secret(envs=None):
     """
     enc = _env_str("SECRET_ENC", envs)
     if not enc:
-        return _env_str("URL", envs) or ""  # 兼容旧明文 YIBAN_NOTIFY_URL
+        url = _env_str("URL", envs) or ""  # 兼容旧明文 YIBAN_NOTIFY_URL
+        _recheck_custom_url(url, envs)
+        return url
     try:
         entry = json.loads(enc)
     except ValueError:
@@ -174,11 +208,13 @@ def get_secret(envs=None):
         # YIBAN_ENV_FILE 读的。容器里 cwd=/app、真实配置在 /data/.env，不带路径会
         # "就地生成一把游离新密钥并写盘"，再用它解本模块读到的密文 → 通道静默死亡，
         # 还额外在镜像工作目录留下密钥文件。
-        return account_crypto.decrypt_text(entry, account_crypto.load_key(_env_path()))
+        secret = account_crypto.decrypt_text(entry, account_crypto.load_key(_env_path()))
     except (ValueError, OSError) as e:
         # OSError：密钥文件存在但读不到（权限/占用），按"解不出"处理而非炸主流程
         logger.warning("消息推送密钥解密失败: %s", e)
         return ""
+    _recheck_custom_url(secret, envs)
+    return secret
 
 
 def get_config():

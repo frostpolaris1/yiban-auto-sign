@@ -2,13 +2,16 @@
 """邮箱通知的配置层：`.env` / 环境变量读取、发信条目解析、收件人算法与脱敏展示。
 
 只读配置（`YIBAN_MAIL_*`）与判定通道状态（ok/broken/off），不发送；发信在
-`transport` 层。本层不依赖包内其它子模块。
+`transport` 层。SMTP 目标地址判据（`check_smtp_host`）复用 `yiban.notify.config`
+的不可路由段判据，是该口径在邮件侧的单一实现，供 web 设置页与库层共用。
 """
+import ipaddress
 import json
 import logging
 import os
 
 from yiban.infra import account_crypto, env_io
+from yiban.notify import config as notify_config
 
 logger = logging.getLogger("mailer")
 
@@ -17,6 +20,93 @@ _PREFIX = "YIBAN_MAIL_"
 # SMTP_PORT 配置无效时的「回退 465」一次性告警：静默回退会让填错端口的用户在设置页
 # 看到 465 而误以为配置正确，排查困难。
 _port_warned = False
+
+# 允许私网/回环 SMTP 目标的显式开关。取值口径与项目其它开关一致（1/true/on/yes，
+# 大小写不敏感），未设或其它值一律为假。
+_ALLOW_PRIVATE_KEY = "YIBAN_MAIL_ALLOW_PRIVATE_HOST"
+_TRUTHY_LITERALS = ("1", "true", "on", "yes")
+
+# 可经显式开关放行的「私网/回环」段：RFC1918 三段 + 127.0.0.0/8 + IPv6 环回 ::1。
+# 其余不可路由/保留段（链路本地、CGNAT、组播、保留、未指定、site-local 等）无论如何
+# 都拒——把安全开关的放行面收窄到"确属自建内网/本机"的场景。
+_PRIVATE_TOGGLE_NETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+)
+_LOOPBACK_V6 = ipaddress.ip_address("::1")
+
+
+def _allow_private_host(env=None):
+    """`YIBAN_MAIL_ALLOW_PRIVATE_HOST` 真值判定（1/true/on/yes，大小写不敏感）。
+
+    env：测试注入用的映射；给出时只读它（不回落 .env），缺省读进程环境变量并回落
+    `.env`——口径与 `_get` 一致：web 写入 .env，cron 子进程未必带该键。
+    """
+    if env is not None:
+        return str(env.get(_ALLOW_PRIVATE_KEY, "")).strip().lower() in _TRUTHY_LITERALS
+    value = (os.environ.get(_ALLOW_PRIVATE_KEY, "").strip()
+             or _read_env_file().get(_ALLOW_PRIVATE_KEY, "").strip())
+    return value.lower() in _TRUTHY_LITERALS
+
+
+def _is_toggleable_private(ip):
+    """是否属于"可用显式开关放行"的私网/回环段（RFC1918 + 127/8 + ::1）。
+
+    `notify_config._is_nonroutable_target` 把私网/回环与链路本地、保留段一并判为不可
+    路由；邮件侧需要把前者（可开关放行）与后者（一律拒）区分开，故类别在这里单独判定，
+    不改变 notify 侧语义。
+    """
+    if ip.version == 4:
+        return any(ip in net for net in _PRIVATE_TOGGLE_NETS)
+    return ip == _LOOPBACK_V6
+
+
+def check_smtp_host(host, env=None):
+    """SMTP 目标地址判据：返回拒绝原因（中文文案）或 None（放行）。
+
+    判据三档：
+    1. 链路本地 / CGNAT / 组播 / 保留 / 未指定 / site-local 等不可路由段一律拒；
+    2. RFC1918 私网、127.0.0.0/8、::1 默认拒，`YIBAN_MAIL_ALLOW_PRIVATE_HOST` 为真时放行；
+    3. 域名与其余公网 IPv4/IPv6 放行（DNS rebinding 由发送超时兜底，不做连接期复检）。
+
+    `localhost`、非标准 IPv4 字面量（`2130706433`、`0x7f000001`、`127.1` 等）与回环同档；
+    方括号 IPv6（`[::1]`、`[::1]:465`）先去括号再解析；IPv4-mapped IPv6 按其映射的 v4 判。
+    web 设置页的写侧硬拦与库层告警共用本函数，避免两处各写一遍判据。
+    """
+    raw = str(host or "").strip()
+    if not raw:
+        return "SMTP 主机为空"
+    candidate = raw
+    if candidate.startswith("["):
+        end = candidate.find("]")
+        if end < 0:
+            return "IPv6 地址方括号不闭合"
+        candidate = candidate[1:end].strip()
+    # 尾点（FQDN 根）剥掉，否则 `127.0.0.1.` 会绕过 ip_address 解析被当成域名放行
+    candidate = candidate.rstrip(".").lower()
+    if not candidate:
+        return "SMTP 主机为空"
+    if candidate == "localhost":
+        return "目标为本机回环名，属内网地址"
+    try:
+        ip = ipaddress.ip_address(candidate)
+    except ValueError:
+        if notify_config._is_ipv4_literal_like(candidate):
+            return "目标为非标准 IPv4 字面量（疑似回环/内网写法），已拒绝"
+        return None  # 真域名放行
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        # `[::ffff:100.100.100.200]` 形态：v6 对象自身属性全 False，须按映射的 v4 判
+        ip = mapped
+    if not notify_config._is_nonroutable_target(ip):
+        return None
+    if _is_toggleable_private(ip):
+        if _allow_private_host(env):
+            return None
+        return "目标为内网/回环地址，如需保留请开启 YIBAN_MAIL_ALLOW_PRIVATE_HOST"
+    return "目标为链路本地/CGNAT/组播/保留等不可路由地址，不允许作为 SMTP 目标"
 
 
 def _read_env_file():
