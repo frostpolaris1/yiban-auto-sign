@@ -49,7 +49,7 @@ def _load_sched():
     return mod
 
 
-def _run_main(argv=None, run_queue_result=None):
+def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
     """在隔离环境下执行 signin.main()，返回退出码或捕获的 SystemExit。
 
     run_queue_result：替换 run_queue_retry 返回值（不触网）；load_accounts
@@ -102,7 +102,8 @@ def _run_main(argv=None, run_queue_result=None):
              mock.patch.object(signin, "SUNDAY_SIGN", True), \
              mock.patch.object(signin, "_acquire_run_lock", return_value=None), \
              mock.patch.object(signin, "_save_cred_state"), \
-             mock.patch.object(signin, "_flush_admin_mail_summary"), \
+             mock.patch.object(signin, "_flush_admin_mail_summary",
+                               side_effect=flush_side_effect), \
              mock.patch.object(signin, "_maybe_alert_zero_success", return_value=False):
             try:
                 signin.main()
@@ -300,6 +301,21 @@ class NoPositionMainSummaryTest(unittest.TestCase):
         with open(daily_path, encoding="utf-8") as f:
             daily = json.load(f)
         self.assertEqual(daily.get("13800000000"), "🚫")
+
+    def test_flush_mail_summary_exception_does_not_break_exit_code(self):
+        """M10：汇总邮件异常不得逃逸（退出码是 run.sh/调度器事实源）。
+
+        `_flush_admin_mail_summary` 在 `_write_sched_done` 之前调用；若异常逃逸，
+        全量运行标记不写、退出码契约被破坏。修复后异常被吞（仅 warning），
+        收尾与退出码照常。
+        """
+        with mock.patch.object(signin, "_write_sched_done") as m_done:
+            code, _ = _run_main(run_queue_result={
+                "13800000000": (False, NO_POSITION_MSG, False,
+                                signin.STATUS_NO_POSITION),
+            }, flush_side_effect=RuntimeError("boom"))
+        self.assertEqual(code, 2, "邮件异常不影响退出码（SKIPPED 语义照旧）")
+        m_done.assert_called_once()
 
 
 class NoPositionSchedulerGateTest(unittest.TestCase):
