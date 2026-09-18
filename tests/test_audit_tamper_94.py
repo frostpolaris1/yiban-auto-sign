@@ -16,6 +16,7 @@
 import contextlib
 import hashlib
 import json
+import locale
 import os
 import shutil
 import sqlite3
@@ -578,6 +579,17 @@ class WriteDebtTest(_DbFixture):
 class AuditVerifyCliTest(_DbFixture):
     """scripts/audit_verify.py 必须真的比对锚点（README 早已承诺这一点）。"""
 
+    @staticmethod
+    def _out(r):
+        """子进程输出解码。Windows 上子进程管道 stdout 用本地 ANSI 代码页（本项目
+        为 GBK），一律按 utf-8 解码会得到乱码而误判失败——仓库既有的 backup.sh /
+        scheduler 用例正因此干脆不断言中文输出。"""
+        enc = locale.getpreferredencoding(False) or "utf-8"
+        try:
+            return r.stdout.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            return r.stdout.decode("utf-8", errors="replace")
+
     def _run(self, extra=(), db_file=None):
         env = dict(os.environ)
         env["YIBAN_DB_FILE"] = db_file or self.db_file
@@ -592,7 +604,7 @@ class AuditVerifyCliTest(_DbFixture):
         self._seed(3)
         db.record_audit_anchor()
         r = self._run()
-        self.assertEqual(r.returncode, 0, r.stdout.decode("utf-8", "replace"))
+        self.assertEqual(r.returncode, 0, self._out(r))
 
     def test_cli_detects_anchor_only_tampering(self):
         """链自洽但锚点判据失败（删尾后追加）——CLI 必须照样 exit 1。"""
@@ -602,15 +614,19 @@ class AuditVerifyCliTest(_DbFixture):
         db.audit("tester", "later", "t", "d")
         self.assertTrue(db.verify_audit_chain()[0], "夹具前提：链本身仍自洽")
         r = self._run()
-        self.assertEqual(r.returncode, 1, r.stdout.decode("utf-8", "replace"))
-        self.assertIn("锚点", r.stdout.decode("utf-8", "replace"))
+        self.assertEqual(r.returncode, 1, self._out(r))
+        self.assertIn("锚点", self._out(r))
 
     def test_cli_accepts_explicit_anchor_path(self):
         self._seed(3)
         other = os.path.join(self.tmp, "custom-anchor.log")
         db.record_audit_anchor(other)
         r = self._run(["--anchor", other])
-        self.assertEqual(r.returncode, 0, r.stdout.decode("utf-8", "replace"))
+        self.assertEqual(r.returncode, 0, self._out(r))
+        self.assertIn(os.path.normpath(other), self._out(r))
+        # 默认路径此刻并不存在锚点：显式 --anchor 必须优先于默认解析
+        r2 = self._run()
+        self.assertEqual(r2.returncode, 1, self._out(r2))
 
     def test_cli_refuses_missing_db(self):
         """三条只读纪律之一：库不存在时 exit 2，绝不新建空库把"无篡改"误报成通过。"""
