@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 
@@ -430,6 +431,86 @@ class AnchorJudgmentTest(_DbFixture):
         db.audit("tester", "later", "t", "d")
         ok, _msg = db.verify_audit_anchor()
         self.assertFalse(ok, "v1 锚点下的'删尾后追加'仍须由定点判据检出")
+
+
+class RechainGuardTest(_DbFixture):
+    """migrate_v3 全表重链：只允许在真正升级那一次发生，且必须留痕。"""
+
+    def _make_v2_db(self, rows=2):
+        """造一个 user_version=2、audit_logs 尚无哈希列的旧库。"""
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            with contextlib.suppress(OSError):
+                os.remove(self.db_file + suffix)
+        conn = sqlite3.connect(self.db_file)
+        try:
+            conn.executescript(
+                "CREATE TABLE audit_logs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+                "username TEXT NOT NULL, action TEXT NOT NULL,"
+                "target TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '');"
+            )
+            for i in range(rows):
+                conn.execute(
+                    "INSERT INTO audit_logs (ts, username, action, target, detail) "
+                    "VALUES (?,?,?,?,?)",
+                    (f"2026-08-16 10:0{i}:00", "admin", "account_add", f"t{i}", f"旧数据{i}"),
+                )
+            conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_v2_upgrade_records_rechain_event(self):
+        self._make_v2_db(rows=3)
+        db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        events = db.audit_rechain_events()
+        self.assertEqual(len(events), 1, "真正从 v2 升级的重链必须留痕")
+        ev = events[0]
+        self.assertEqual(ev["from_version"], 2)
+        self.assertEqual(ev["rows"], 3)
+        self.assertEqual(ev["empty_hash_rows"], 3)
+        self.assertEqual(ev["head_before"], "", "重链前全表 hash 为空")
+        self.assertEqual(ev["head_after"], db.audit_head_hash())
+        self.assertIn("ts", ev)
+        ok, broken, _first = db.verify_audit_chain()
+        self.assertTrue(ok, f"回填后链应自洽: broken={broken}")
+
+    def test_no_rechain_event_when_nothing_to_sign(self):
+        """没有空 hash 行就不许留重链痕——否则"重链留痕"会失去指认伪造的能力。"""
+        self._seed(3)
+        self.assertEqual(db.audit_rechain_events(), [])
+        db.init_db(self.db_file, cleanup=False)  # 已迁移库重启：不应产生事件
+        self.assertEqual(db.audit_rechain_events(), [])
+
+    def test_rechain_event_after_anchor_is_unhealthy(self):
+        """锚点之后出现全表重链：合法升级必然发生在任何锚点之前。"""
+        self._seed(4)
+        db.record_audit_anchor()
+        forged = [{
+            "ts": "2099-01-01 00:00:00", "from_version": 2, "rows": 4,
+            "empty_hash_rows": 4, "head_before": "", "head_after": "f" * 64,
+        }]
+        db.set_meta(db._RECHAIN_EVENTS_KEY, json.dumps(forged))
+        h = db.audit_health()
+        self.assertTrue(h["anchor_ok"], "夹具前提：锚点判据本身应仍通过")
+        self.assertFalse(h["healthy"], "锚点之后的重链事件必须让体检判失败")
+        self.assertEqual(h["rechain_events"], forged)
+        self.assertIn("重链", h["note"])
+
+    def test_runtime_empty_hash_rows_are_reported(self):
+        """运行期出现 hash='' 行（清空哈希等着被重签）→ 体检须给出可诊断信息。"""
+        self._seed(5)
+        db.record_audit_anchor()
+        self._raw("UPDATE audit_logs SET hash='', prev_hash='' WHERE id=3")
+        h = db.audit_health()
+        self.assertFalse(h["chain_ok"], "空 hash 行必须断链")
+        self.assertFalse(h["healthy"], "空 hash 行必须参与 healthy 结论（不能只是诊断信息）")
+        self.assertEqual(h["empty_hash_rows"], 1)
+        self.assertIn("hash 为空", h["note"])
 
 
 if __name__ == "__main__":
