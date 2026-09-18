@@ -960,11 +960,13 @@ class TimePrefsTest(unittest.TestCase):
         self.assertNotIn("scrypt:fake", env, "注入的哈希值不应落盘")
         self.assertEqual(env.count("YIBAN_ADMIN_PASSWORD_HASH="), 1,
                          "注入不应产生第二个 YIBAN_ADMIN_PASSWORD_HASH 行")
-        # 单行公告正常保存
+        # 单行公告正常保存（双人发布后落在草稿键，正式键只能由发布动作写）
         r = c.put("/api/announcement", json={"text": "服务器维护中"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = open(self.env_file, encoding="utf-8").read()
-        self.assertIn("YIBAN_ANNOUNCEMENT=服务器维护中", env)
+        self.assertIn("YIBAN_ANNOUNCEMENT_DRAFT=服务器维护中", env)
+        self.assertNotIn("YIBAN_ANNOUNCEMENT=服务器维护中", env,
+                         "PUT 只写草稿：直接落正式键 = 双人发布被绕过")
 
     def test_api_settings_atomic_no_partial_write(self):
         """任一字段校验失败时全部不落盘（此前 start/gap 先写、后续字段非法时部分生效）。"""
