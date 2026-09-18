@@ -533,6 +533,23 @@
     return s.length >= PW_ADMIN_MIN_LEN && passwordClasses(s) >= PW_ADMIN_MIN_CLASSES;
   }
 
+  /* ---------- 口令门禁失败的机器可读分类 ----------
+     后端在门禁拒绝时下发 `reason`：password_required = 本次未提交口令（调用方应弹口令框
+     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试）。前端据此分支，
+     不再靠比对中文文案或状态码；旧后端未下发 reason 时回落为空串，按后端原文案显示，
+     语义与既有契约一致。 */
+  function pwGateReason(e) {
+    var r = e && e.data && e.data.reason;
+    return (r === "password_required" || r === "password_incorrect") ? r : "";
+  }
+  function pwGateMessage(e) {
+    var r = pwGateReason(e);
+    if (r === "password_required") return "此操作需要输入当前口令，请重新输入后确认。";
+    if (r === "password_incorrect") return "当前口令不正确，请重新输入。";
+    // 非口令门禁失败（冷却 429、无事可做 400、网络错误等）：原样显示后端文案
+    return (e && e.message) || "操作失败，请稍后重试";
+  }
+
   /* ---------- 密码模态（重置密码 / 高危操作二次确认共用） ---------- */
   // 动态构建在 openModal 之上：P4 起旧栈 modal partial 已退役，新 MPA 外壳不再 include
   // partials/modals/*，故模态一律在运行时构造（沿用旧 DOM id 会 ReferenceError）。
@@ -597,7 +614,9 @@
         }, function (e) {
           pending = false;
           setFootBusy(false);
-          reject((e && e.message) || "操作失败，请稍后重试");
+          // 口令门禁失败按 reason 分支：缺口令 → 提示重新输入；输错 → 明说"不正确"，
+          // 两种情况都留在框内可重试（弹窗不关闭）。
+          reject(pwGateMessage(e));
         });
         return false;
       }
@@ -942,42 +961,58 @@
     try { sessionStorage.setItem(ANNOUNCE_DISMISS_KEY, text); } catch (e) {}
     forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) { bar.hidden = true; });
   }
-  function initAnnouncement() {
-    function showBell() {
-      var btn = $("announcementBtn");
-      if (!btn) return null;
-      // data-notif-always：通知中心入口常驻（用户端下拉面板）；其余页面沿用"有公告才显示"
-      if (btn.getAttribute("data-notif-always") === "1") btn.hidden = false;
-      return btn;
-    }
-    // 公告是公开只读、低频变更：60s 缓存，切页不重复拉取
-    apiCached("announcement", 60000, function () { return api("GET", "/api/announcement"); }).then(function (data) {
-      var text = String((data && data.text) || "").trim();
-      var btn = $("announcementBtn");
-      if (btn && text && !btn.closest(".dd-wrap")) {
-        // 没有通知下拉的页面（管理端顶栏）：沿用可点开的公告弹窗
+  function showBell() {
+    var btn = $("announcementBtn");
+    if (!btn) return null;
+    // data-notif-always：通知中心入口常驻（用户端下拉面板）；其余页面沿用"有公告才显示"
+    if (btn.getAttribute("data-notif-always") === "1") btn.hidden = false;
+    return btn;
+  }
+  // 公告文本落到全部挂点（顶栏入口、通知中心分节、登录页横幅）。单独抽出来是为了让
+  // 「发布/下线」拿到响应里的 text 后能就地刷新横幅，不必再等一次 GET（且不再重复绑定监听：
+  // 用 data-announce-bound / data-announce-text 幂等绑定与取值）。
+  function applyAnnouncementText(raw) {
+    var text = String(raw == null ? "" : raw).trim();
+    var btn = $("announcementBtn");
+    if (btn && !btn.closest(".dd-wrap")) {
+      btn.setAttribute("data-announce-text", text);
+      if (text) {
         btn.hidden = false;
-        btn.addEventListener("click", function () { showAnnouncement(text); });
+        if (btn.getAttribute("data-announce-bound") !== "1") {
+          btn.setAttribute("data-announce-bound", "1");
+          btn.addEventListener("click", function () {
+            showAnnouncement(String(btn.getAttribute("data-announce-text") || ""));
+          });
+        }
+      } else {
+        btn.hidden = true;
       }
-      showBell();
-      if (!text) return;
-      var dot = document.querySelector("[data-announcement-dot]");
-      if (dot) dot.hidden = false;
-      // 所有公告文本挂点统一填充（通知中心分节、页面横幅都用 data-announcement-text）
-      forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
-      // 通知中心里的公告分节（用户端）
-      forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = false; });
-      // 页面内公告横幅（无顶栏的整页，如登录页）：文本已由上面的统一填充写入；
-      // 关闭按钮绑定 + 「本次会话已关闭」判定只对横幅做。
-      forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
-        var closeBtn = bar.querySelector("[data-announcement-dismiss]");
-        if (closeBtn) closeBtn.addEventListener("click", function () { dismissAnnouncement(text); });
-        if (!announceIsDismissed(text)) bar.hidden = false;
-      });
-    }).catch(function () {
-      // 公告接口失败也不能让通知入口消失（用户端下拉是常驻入口）
-      showBell();
+    }
+    showBell();
+    var dot = document.querySelector("[data-announcement-dot]");
+    if (dot) dot.hidden = !text;
+    forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
+    forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = !text; });
+    forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
+      var closeBtn = bar.querySelector("[data-announcement-dismiss]");
+      if (closeBtn && closeBtn.getAttribute("data-announce-bound") !== "1") {
+        closeBtn.setAttribute("data-announce-bound", "1");
+        closeBtn.addEventListener("click", function () {
+          var tn = bar.querySelector("[data-announcement-text]");
+          dismissAnnouncement(tn ? (tn.textContent || "") : "");
+        });
+      }
+      bar.hidden = !text || announceIsDismissed(text);
     });
+  }
+  function initAnnouncement() {
+    // 公告是公开只读、低频变更：60s 缓存，切页不重复拉取
+    apiCached("announcement", 60000, function () { return api("GET", "/api/announcement"); })
+      .then(function (data) { applyAnnouncementText(data && data.text); })
+      .catch(function () {
+        // 公告接口失败也不能让通知入口消失（用户端下拉是常驻入口）
+        showBell();
+      });
   }
 
   /* ---------- 全局事件委托 ---------- */
@@ -1317,6 +1352,9 @@
     openPasswordModal: openPasswordModal,
     openConfirmPasswordModal: openConfirmPasswordModal,
     openPwModal: openPwModal,
+    pwGateReason: pwGateReason,
+    pwGateMessage: pwGateMessage,
+    applyAnnouncementText: applyAnnouncementText,
     iconEl: iconEl,
     toggleTheme: toggleTheme,
     applyTheme: applyTheme,
