@@ -716,6 +716,31 @@ REGISTER_MAX = 5  # 窗口内最大成功注册数
 EXPORT_WINDOW = 60  # 窗口（秒）
 EXPORT_MAX = 6  # 窗口内最大导出次数
 
+# 账号详情读取限速：/api/accounts/<idx>/detail 的 idx 从 0 递增即可整库枚举，
+# 且它是列表接口之外唯一回传明文口令/完整手机号的面。列表侧已脱敏、编辑框每次
+# 只取一行，故取"一个会话一分钟 60 次"——等于每秒点开一次编辑框且整整一分钟
+# 不停，人类运维到不了；对照 EXPORT_WINDOW/EXPORT_MAX 同量级的"整份数据出口"口径。
+DETAIL_WINDOW = 60  # 窗口（秒）
+DETAIL_MAX = 60  # 窗口内最大详情读取次数（超限 429）
+
+# 只读面聚合审计：同一管理员对同一资源类在一个窗口内只按档位落几行，detail 带
+# 累计次数与脱敏目标摘要。逐请求一行会把审计表变成"被盗会话的免费打字机"——
+# 拒绝面已经实测过这个洞（拿 429 当产出），读取面若做成逐条就是换个口子重开。
+# 窗口取 1 小时：日志页 10s 轮询是页面心跳而非取数，短窗口会让心跳自己刷满
+# 审计表；档位（首次必落 + 10/50 两个批量档 + 此后每 200 次）保证"读一次也留痕、
+# 读五十行得见累计"，最坏情形（日志页常开一整天）约百行，远小于逐条口径。
+READ_AUDIT_WINDOW = 3600  # 聚合窗口（秒）= 1 小时
+READ_AUDIT_LADDER = (1, 10, 50)  # 窗口内累计次数落在这些档位时各写一行
+READ_AUDIT_EVERY = 200  # 越过最高档后每多少次追加一行
+READ_AUDIT_TARGET_CAP = 8  # 单行里最多列几个脱敏目标（db.audit 的 detail 本身截 200 字）
+
+# 告警额度的"勘察字段"——仅主管理员可读：普通管理员日常运维要的是"通道开没开、
+# 配没配"（enabled/type/configured/urgent_only/daily_max 保持可见），而"今天还剩
+# 几条、同类型还要等多久才推"是给"先掐额度再作案"那条链读数的：PUT 侧这几个键
+# 早就收归主管理员并要口令，读侧不设档就是档位不一致。
+_NOTIFY_QUOTA_KEYS = ("cooldown", "daily_remaining", "urgent_daily_max",
+                      "urgent_daily_remaining")
+
 # 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
 VERIFY_MAX = 6  # 每用户窗口内最大验证尝试次数（正常添加流程远用不到）
@@ -1799,6 +1824,19 @@ def _bump_window_count(store, key, now, window, limit=None):
         cnt += 1
         store[key] = (cnt, start)
         return cnt, start, True
+
+
+def _read_audit_row_due(cnt):
+    """只读面聚合审计：窗口内第 cnt 次读取是否该落一行（True=落行）。
+
+    单独成函数的理由是把"聚合而非逐条"这条判据变成可被用例直接钉住的纯逻辑：
+    首行必落（读一次也得留痕，不能等窗口关闭才 flush——进程重启或"就读这一次"
+    会让痕迹永久消失），此后只在批量档位补行。行数上界 = 档位数 + 越档后每
+    READ_AUDIT_EVERY 次一行，详情面这一路还被 DETAIL_MAX 的 429 再卡一道。
+    """
+    if cnt in READ_AUDIT_LADDER:
+        return True
+    return cnt > READ_AUDIT_LADDER[-1] and cnt % READ_AUDIT_EVERY == 0
 
 
 def _bump_login_failure(store, key, now):
@@ -3568,6 +3606,64 @@ def create_app(host=None):
     _admin_delete_limits = {}
     # 日志导出限速 {ip: (count, window_start)}
     _export_limits = {}
+    # 账号详情读取限速 {actor: (count, window_start)}（按会话而非 IP：校园网出口
+    # 高度共享，按 IP 会把两个管理员的运维互相挡死，与"新 IP 即告警"同一理由）
+    _detail_limits = {}
+    # 只读面聚合审计计数 {(actor, 资源类): (count, window_start)}
+    _read_audit_counts = {}
+    # 只读面聚合审计的目标摘要 {(actor, 资源类): [脱敏目标样本, 目标总数, window_start]}
+    _read_audit_targets = {}
+    # 只读面"超限被拒"留痕 {(actor, 资源类): (count, window_start)}：limit=1 即
+    # "每个窗口至多一行"——被拒的那一侧绝不能逐条写，否则又被当成免费打字机
+    _read_audit_denied = {}
+
+    def _read_audit_trace(action, target=""):
+        """只读面留痕：按 (actor, 资源类) 在窗口内聚合成一行，不逐请求写。
+
+        target 必须是**已脱敏**的短标识（_mask_phone/_mask_email 或"N 条"这类
+        聚合量），因为它进审计表、随日志页与备份包外流。
+
+        拒绝面（超限 429）走 _read_audit_denied 的另一条 limit=1 计数，同样
+        复用 _bump_window_count——全项目只有一份窗口计数实现。
+        """
+        actor = (session.get("username") or "?")[:64]
+        key = (actor, action)
+        now = time.time()
+        with _rate_lock:
+            _ip_store_trim(_read_audit_counts, READ_AUDIT_WINDOW + _IP_STORE_MAX_AGE)
+            _ip_store_trim(_read_audit_targets, READ_AUDIT_WINDOW + _IP_STORE_MAX_AGE)
+        cnt, start, _ = _bump_window_count(
+            _read_audit_counts, key, now, READ_AUDIT_WINDOW)
+        with _rate_lock:
+            # 摘要与计数同窗口：_bump_window_count 翻窗时给出的 start 是新窗口起点，
+            # 与存量摘要的 start 不一致即丢弃旧摘要（旧窗口的行已在首行时落库）
+            entry = _read_audit_targets.get(key)
+            if not entry or entry[2] != start:
+                entry = _read_audit_targets[key] = [[], 0, start]
+            if target and target not in entry[0]:
+                entry[1] += 1
+                if len(entry[0]) < READ_AUDIT_TARGET_CAP:
+                    entry[0].append(target)
+        if not _read_audit_row_due(cnt):
+            return
+        shown = "、".join(entry[0]) or "-"
+        if entry[1] > READ_AUDIT_TARGET_CAP:
+            shown += f" 等 {entry[1]} 个"
+        db.audit(actor, action, db.hash_ip(_client_ip()),
+                 f"窗口内累计第 {cnt} 次读取；目标 {shown}")
+
+    def _read_audit_denied_trace(action):
+        """超限被拒只留一行/窗口：既不能无痕，更不能被拿去刷表。"""
+        actor = (session.get("username") or "?")[:64]
+        key = (actor, action)
+        with _rate_lock:
+            _ip_store_trim(_read_audit_denied, READ_AUDIT_WINDOW + _IP_STORE_MAX_AGE)
+        _cnt, _start, first = _bump_window_count(
+            _read_audit_denied, key, now=time.time(), window=READ_AUDIT_WINDOW, limit=1)
+        if not first:
+            return
+        db.audit(actor, action, db.hash_ip(_client_ip()),
+                 "读取超限被拒（本窗口仅留此一行）")
 
     # _ip_store_trim（上提为模块级，见 _bump_window_count 上方）：
     # 各限速表写入路径统一调用，防公网扫描器用海量键打爆内存。
@@ -4865,6 +4961,9 @@ def create_app(host=None):
         条目携带的收件人从不生效，历史死字段不再序列化/落盘。顶层 admin_to
         是活字段（A 线告警收件算法的唯一来源，见 mail_config.admin_recipients），保留
         序列化与状态行展示——管理员必须始终可见告警发往何处。
+        与 notify-config 的字段分层刻意不对称：邮件侧没有额度可勘察——发送路径
+        不受每日条数上限与同类节流约束（额度只有推送那两本账，见 notify/ledger），
+        本接口返回的其余键全是"通道开没开、发往何处"，属普通管理员运维必读信息。
         """
         cfg = mailer.get_config()
         enabled = str(cfg.get("enable", "")).strip().lower() in ("1", "true", "on", "yes")
@@ -5110,8 +5209,19 @@ def create_app(host=None):
         响应含 cooldown / urgent_only 与两本账每日额度（分账）：
         daily_max / daily_remaining = 非紧急账，urgent_daily_max /
         urgent_daily_remaining = 紧急账；上限为 0（不限）时对应 remaining 为 null。
+
+        额度勘察字段（_NOTIFY_QUOTA_KEYS）仅主管理员会话可读，其余字段任意管理员
+        可见——普通管理员必须仍看得到"通道开没开、配没配"。刻意**置 null 而非
+        省键**：响应形态保持稳定，省键会让严格取键的调用方直接抛错。代价记在这
+        里——remaining 的 null 原意是"不限"，非主管理员看到 null 会被前端读成
+        "不限"，故前端需按身份把"今日额度"整行不渲染（见 settings-notify.js 的
+        renderStatus）。
         """
-        return jsonify(notify.get_config())
+        cfg = notify.get_config()
+        if not _is_builtin_admin_session():
+            for key in _NOTIFY_QUOTA_KEYS:
+                cfg[key] = None
+        return jsonify(cfg)
 
     @app.route("/api/notify-config", methods=["PUT"])
     def api_notify_config_save():
@@ -5327,10 +5437,28 @@ def create_app(host=None):
 
     @app.route("/api/accounts/<int:idx>/detail")
     def api_account_detail(idx):
-        """账号完整信息（仅管理员；列表接口已脱敏，编辑/签到等操作按需取完整号）。"""
+        """账号完整信息（仅管理员；列表接口已脱敏，编辑/签到等操作按需取完整号）。
+
+        这是列表之外唯一回传明文口令与完整手机号的面，且 idx 从 0 递增即可整库
+        枚举——被窃的管理员会话此前读它零成本、零痕迹，故与日志导出同口径加会话级
+        限速 + 聚合读审计（超限 429 不逐条留痕，防把审计表当打字机）。
+        """
+        with _rate_lock:
+            _ip_store_trim(_detail_limits, DETAIL_WINDOW + _IP_STORE_MAX_AGE)
+        _cnt, _start, allowed = _bump_window_count(
+            _detail_limits, (session.get("username") or "?")[:64], time.time(),
+            DETAIL_WINDOW, limit=DETAIL_MAX,
+        )
+        if not allowed:
+            # 文案不带阈值数字：这些数值对合法运维没有用处，却正好让攻击者贴着
+            # 上限排布枚举节奏（信息分层口径，与其余 429 一致）
+            _read_audit_denied_trace("account_detail_denied")
+            return jsonify({"error": "查看账号详情过于频繁，请稍后再试"}), 429
         accounts = load_accounts()
         if not 0 <= idx < len(accounts):
             return jsonify({"error": "账号不存在"}), 404
+        _read_audit_trace(
+            "account_detail_read", _mask_phone(str(accounts[idx].get("phone", ""))))
         return jsonify({"ok": True, "account": mask_account(accounts[idx], idx, masked=False)})
 
     @app.route("/api/accounts", methods=["POST"])
@@ -7288,6 +7416,7 @@ def create_app(host=None):
             }
             for u in users
         ]
+        _read_audit_trace("users_list_read", f"整表 {len(result)} 条用户")
         return jsonify(
             {
                 "ok": True,
@@ -7320,6 +7449,7 @@ def create_app(host=None):
                 }
             )
         items.sort(key=lambda x: x["deleted_at"])  # 最早到期在前（ISO 字符串字典序 = 时间序）
+        _read_audit_trace("users_deleted_read", f"整表 {len(items)} 条已注销用户")
         return jsonify({"ok": True, "items": items})
 
     @app.route("/api/users/deleted/purge", methods=["POST"])
@@ -8129,6 +8259,7 @@ def create_app(host=None):
         # 注意：不返回 states——账号表格图标的事实源是 /api/accounts（sign-state 文件），
         # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
         # 符号污染（2026-08-16 审查轮修复）。
+        _read_audit_trace("logs_read", f"{date} {total_lines} 行")
         return jsonify(
             {
                 "ok": True,
@@ -8195,6 +8326,12 @@ def create_app(host=None):
             # 事件流本身不带 stage 过滤（sign_events_since 无该参数），故在此收口；
             # 代价是过滤后条数可能少于 limit，对展示样本无影响。
             events = [ev for ev in events if ev["stage"] == stage]
+        # 单账号时间线的读取目标就是那个手机号（脱敏后进审计）；无 phone 的整表扫
+        # 只有取数量可摘要，与"谁在按天拖事件流"这一威胁问题同粒度
+        _read_audit_trace(
+            "sign_events_read",
+            signin._mask_phone(phone) if phone else f"{days} 天 {len(events)} 条事件",
+        )
         stats = db.sign_event_stats(days=days, stage=stage or None)
         return jsonify(
             {
