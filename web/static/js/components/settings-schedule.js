@@ -1,17 +1,15 @@
 /* 系统设置 · 签到调度分区（管理端 /work/settings）。
 
-   挂载到 window.YB.settingsSchedule；classic script。分区按**逐字段权限**复刻后端
-   POST /api/settings 的内联判定（`web/app.py` 的 `api_settings_save()` 主管理员键名单；
-   按函数名定位，不钉行号——钉过一次已经漂了）：
-     · 仅主管理员：sign_order / sign_dist / edge_front_sec / edge_back_sec /
-       sign_window / gap_max / allow_time_pref
-     · 任意管理员：saturday_sign / sunday_sign
-   非主管理员：主管理员专属控件全部禁用并就地说明（可见而不改）。
+   挂载到 window.YB.settingsSchedule；classic script。**本文件不抄键名档位清单**——档位由
+   后端 `web/app.py` 的 `MASTER_ONLY_KEYS`（A 档：仅主管理员 + 当次口令）/ `GATED_KEYS`
+   （B 档：任意管理员 + 口令，可短时豁免）单源决定，另有按方向分权的 `GLOBAL_PAUSE_KEY`；
+   对拍测试会读这里的字面量与那两个常量比对，所以字段名保持 `body.<键> = …` 的直写形态。
+   非主管理员：A 档控件禁用并就地说明（可见而不改），B 档可改。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存调度设置」才
-   提交；提交只发送相对服务器快照真正变化的字段，故非主管理员即便点保存也只送得出
-   周六/周日。gap_max 属容量硬门，额外走 YB.openConfirmPasswordModal 收集管理员口令。
-   脏时离开页面由 settings.js 统一守卫（保存 / 放弃 / 取消）。
+   提交；提交只发送相对服务器快照真正变化的字段，故非主管理员即便点保存也只送得出 B 档
+   字段。**有改动就一律过口令框**：A 档必须当次口令，B 档同样要口令（只是可被短时豁免），
+   多问一次不会错、少问必然 403。脏时离开页面由 settings.js 统一守卫（保存 / 放弃 / 取消）。
 
    对外面：apply(data) 回填、save() → Promise<boolean>（false = 取消或失败，页面据此
    决定不跳转）、isDirty()、markLeaving()、refreshWarn()。
@@ -244,10 +242,11 @@
       YB.toast.info("没有需要保存的改动");
       return Promise.resolve(true);
     }
-    if (!Object.prototype.hasOwnProperty.call(body, "gap_max")) return submit(body, null);
+    // A 档必须当次口令，B 档同样要口令（只是可被短时豁免）——本文件不判档，
+    // 一律先收口令再提交：多问一次不会错，少问必然 403。
     return new Promise(function (resolve) {
       YB.openConfirmPasswordModal(
-        "调整账号间隔：不合适的设置可能影响签到成功率或被容量硬门拒绝。请输入当前管理员密码确认。",
+        "调度参数改动会影响全站何时签到（窗口、掐头去尾、账号间隔等），不合适的设置可能拉低成功率或被容量硬门拒绝。请输入当前管理员密码确认。",
         function (pw) { submit(body, pw).then(resolve); },
         function () { resolve(false); });      // 取消口令 = 本次不保存
     });
