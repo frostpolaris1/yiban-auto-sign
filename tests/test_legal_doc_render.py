@@ -11,8 +11,11 @@
   本机存在时做内容断言，避免在 CI 上依赖被 gitignore 的文件。
 """
 import os
+import shutil
+import tempfile
 import threading
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -149,24 +152,29 @@ class LegalDocRenderTest(unittest.TestCase):
     def test_doc_html_cached_and_invalidated(self):
         # 0.21.2 审查修复：#6 渲染结果按 (mtime, size) 缓存；修改文件后 key 变化自动失效。
         # 仓库模板为空模板（渲染结果恒为占位），故用缓存 key 而非渲染内容判断失效。
-        target = os.path.join(BASE, "USER_AGREEMENT.md")
-        with open(target, "r", encoding="utf-8") as f:
-            orig = f.read()
-        try:
-            web._doc_cache.clear()
-            web._read_doc_html("USER_AGREEMENT.md")
-            self.assertIn("USER_AGREEMENT.md", web._doc_cache, "首次渲染应写入缓存")
-            key1 = web._doc_cache["USER_AGREEMENT.md"][0]
-            web._read_doc_html("USER_AGREEMENT.md")
-            self.assertEqual(web._doc_cache["USER_AGREEMENT.md"][0], key1, "未变更时应命中缓存")
-            with open(target, "a", encoding="utf-8") as f:
-                f.write("\n<!-- 临时增量注释 -->\n")
-            web._read_doc_html("USER_AGREEMENT.md")
-            key2 = web._doc_cache["USER_AGREEMENT.md"][0]
-            self.assertNotEqual(key1, key2, "文件变更后缓存 key 应变化并重新渲染")
-        finally:
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(orig)
+        #
+        # 靶子是临时目录里的副本，不是仓库里的 USER_AGREEMENT.md：旧写法往真文件追加
+        # 再用文本模式写回，Windows 上 LF 被转成 CRLF，跑一次测试就把工作区弄脏
+        # （文本读→文本写本身就已经改变了字节内容）。_read_doc_html 只按 _REPO_ROOT
+        # 拼路径，把它指到临时目录即可，仓库文件全程只读。
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copyfile(os.path.join(BASE, "USER_AGREEMENT.md"),
+                            os.path.join(tmp, "USER_AGREEMENT.md"))
+            target = os.path.join(tmp, "USER_AGREEMENT.md")
+            with mock.patch.object(web, "_REPO_ROOT", tmp):
+                web._doc_cache.clear()
+                web._read_doc_html("USER_AGREEMENT.md")
+                self.assertIn("USER_AGREEMENT.md", web._doc_cache, "首次渲染应写入缓存")
+                key1 = web._doc_cache["USER_AGREEMENT.md"][0]
+                web._read_doc_html("USER_AGREEMENT.md")
+                self.assertEqual(web._doc_cache["USER_AGREEMENT.md"][0], key1,
+                                 "未变更时应命中缓存")
+                with open(target, "a", encoding="utf-8") as f:
+                    f.write("\n<!-- 临时增量注释 -->\n")
+                web._read_doc_html("USER_AGREEMENT.md")
+                key2 = web._doc_cache["USER_AGREEMENT.md"][0]
+                self.assertNotEqual(key1, key2, "文件变更后缓存 key 应变化并重新渲染")
+        web._doc_cache.clear()
 
 
 if __name__ == "__main__":
