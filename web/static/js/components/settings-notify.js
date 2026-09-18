@@ -1,10 +1,14 @@
-/* 系统设置 · 消息推送段（管理端 /settings 的「通知通道」分区）。
+/* 系统设置 · 消息推送段（管理端 /work/settings 的「通知通道」分区）。
 
    挂载到 window.YB.settingsNotify；classic script。邮件段拆在 settings-mail.js，
    两段各占一张卡，故非主管理员的禁用由本组件对整卡统一处理。
 
-   权限：配置与测试均仅主管理员；关闭通道、更换/清空密钥、调整额度节流都需
-   confirm_password（后端 _high_risk_gate，前端先收口令再提交；UI 不是安全边界）。
+   权限（读与写不同档，别写成"GET 也会 403"）：
+     · 读 GET /api/notify-config —— 任意管理员可读通道状态字段；额度类字段
+       （daily_remaining / urgent_daily_max / urgent_daily_remaining / cooldown）仅主管理员。
+     · 写与测试 —— 仅主管理员，且关闭通道、更换/清空密钥、调整额度节流都要
+       confirm_password（后端 _high_risk_gate：值**真的变了**才要，同值提交不要求；
+       UI 不是安全边界）。
    脱敏：密钥只读展示 secret_masked，输入框恒为空（留空=不改动），绝不回显。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存推送配置」

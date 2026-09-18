@@ -1,7 +1,8 @@
-/* 系统设置 · 签到调度分区（管理端 /settings）。
+/* 系统设置 · 签到调度分区（管理端 /work/settings）。
 
    挂载到 window.YB.settingsSchedule；classic script。分区按**逐字段权限**复刻后端
-   POST /api/settings 的内联判定（app.py:6980-6997）：
+   POST /api/settings 的内联判定（`web/app.py` 的 `api_settings_save()` 主管理员键名单；
+   按函数名定位，不钉行号——钉过一次已经漂了）：
      · 仅主管理员：sign_order / sign_dist / edge_front_sec / edge_back_sec /
        sign_window / gap_max / allow_time_pref
      · 任意管理员：saturday_sign / sunday_sign
