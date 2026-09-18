@@ -3343,14 +3343,23 @@ def record_audit_anchor(path=None):
     try:
         with _conn_lock:
             conn = get_conn()
+            # 顺序有讲究：先读**单调计数器** purge_total，再取行快照。反过来的话，
+            # 两次读之间发生的物理删除会被算进"锚点之前"的额度，而锚点记的行数却是
+            # 删除后的——校验时"少了行却没有对应留痕"，合法的保留期清理会被判成篡改。
+            purge_total = _audit_purge_total(conn)
             row = conn.execute(
                 "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
             ).fetchone()
-            purge_total = _audit_purge_total(conn)
+            # 链头必须**按 max_id 取值**，不能另取"当前最后一行"：后者是第二次读，
+            # 并发写入落在两次读之间时，锚点行的 max_id 与 head 指向不同行，此后每次
+            # 校验都会报"链尾内容被篡改"（旧判据在 max_id 不等时会跳过比对，反而不报）。
+            anchored = (conn.execute("SELECT hash FROM audit_logs WHERE id=?",
+                                     (int(row["max_id"]),)).fetchone()
+                        if row and row["max_id"] is not None else None)
         if not row or row["max_id"] is None:
             return None
         min_id, max_id, count = int(row["min_id"]), int(row["max_id"]), int(row["n"])
-        head = audit_head_hash()
+        head = (anchored["hash"] or "") if anchored else ""
         if not head:
             logger.warning("审计链头读取失败（空值），本次不写锚点行")
             return None
@@ -3567,7 +3576,7 @@ def verify_audit_anchor(path=None):
         if anchored is not None and anchored["hash"] != anchor["head"]:
             return False, (
                 f"审计链尾行 id={anchor['max_id']} 的哈希与锚点不符（链尾内容被篡改或被"
-                f"全表重签）{_rechain_hint(events, anchor)}"
+                f"全表重签）{_rechain_hint(anchor)}"
             )
         if anchored is None:
             # 定点被留痕事件解释掉了（长期空闲后保留期清理删到了链尾）——
