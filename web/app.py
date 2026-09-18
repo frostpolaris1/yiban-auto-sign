@@ -9627,10 +9627,13 @@ def create_app(host=None):
             logger.info("公告已下线: %s", before[:50])
             send_notification(
                 "公告发布告警",
-                f"全站公告已由主管理员 {_nl_safe(who)} **下线**，"
-                f"下线前: {_nl_safe(before[:80])}，"
-                f"时间 {now_ts}\n"
-                "如非本人操作，请立即改主管理员口令并按 README「主管理员权限追回」处理。",
+                _change_mail(
+                    "全站公告已由主管理员下线。",
+                    detail=[("下线前", _nl_safe(before[:80]))],
+                    operator=_nl_safe(who),
+                    advice=["如非本人操作，请立即改主管理员口令并按"
+                            "README「主管理员权限追回」处理"],
+                ),
                 urgent=True, force=True,
             )
             return jsonify({"ok": True, "msg": "线上公告已下线", "text": ""})
