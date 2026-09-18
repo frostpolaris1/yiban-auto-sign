@@ -595,19 +595,23 @@ TRUSTED_PROXIES = ("127.0.0.1", "::1")
 TRUSTED_PROXIES = ("127.0.0.1", "::1")
 
 
-def _stale_idx_guard(acc, data):
+def _stale_idx_guard(acc, data, *, fail_closed=False):
     """防错位校验（2026-08-20 对抗性审查 P1）：mutation 按 idx 寻址时，客户端
     携带的 phone 与服务端 idx 解析结果不一致 → 账号列表在视图快照后已漂移
     （并发删除/移动等），放行会静默操作错误对象。返回 True 表示错位，调用方
-    应返回 409 引导刷新。未携带 phone 的请求（旧客户端/测试）保持兼容不校验。
+    应返回 409 引导刷新。未携带 phone 的请求（旧客户端/测试）默认保持兼容不校验。
 
     比对前双侧 _mask_phone 归一：/api/accounts 出站即脱敏（mask_account），
     浏览器回传的是 138****8000 形态；_mask_phone 幂等（含 * 原样返回），直连
     API 发全号的旧客户端/测试同样归一可比；伪造他人号码仍因不等被拦。
+
+    `fail_closed=True` 给"改写凭据"这类写路径：拿不出任何可核对的标识就等于
+    没人证明 idx 仍指向视图里那一行。放行的代价（静默改掉别人的易班凭据、还回
+    200）远大于拒绝的代价（调用方刷新一次页面），故此时按错位处理。
     """
     phone = data.get("phone") if isinstance(data, dict) else None
     if phone is None:
-        return False
+        return fail_closed
     return _mask_phone(str(phone).strip()) != _mask_phone(str(acc.get("phone", "")))
 
 
@@ -5534,14 +5538,18 @@ def create_app(host=None):
             # 比对基准优先用乐观锁快照里的 phone：编辑表单本来允许"填写完整新号码"
             # 改绑手机号（db.update_account 还专门做了重加密），那是一次变更而不是
             # 错位，直接拿 data["phone"] 比会把这条合法路径全部 409 掉。快照缺失或
-            # 不含 phone（旧客户端、直连 API）时退回与 /restore、/review 完全一致的
-            # data["phone"] 比对；未携带 phone 的请求保持既有语义不校验（不改 fail-closed）。
+            # 不含 phone 时退回与 /restore、/review 完全一致的 data["phone"] 比对。
+            # 两种标识都拿不出即 fail-closed 拒绝（旧实现是"不校验"）：本端点改的是
+            # 别人的易班凭据，放行一次错位的代价是静默改写他人账号并回 200，而拒绝的
+            # 代价只是调用方刷新一次列表。合法编辑路径不受影响——编辑表单要么带快照
+            # （前端 edit 先 GET detail 再回传 _snapshot），要么必须带完整新号，
+            # 二者皆无的请求本来就过不了 validate_account 的手机号必填。
             guard_src = (
                 {"phone": snapshot["phone"]}
                 if isinstance(snapshot, dict) and snapshot.get("phone")
                 else data
             )
-            if _stale_idx_guard(old, guard_src):
+            if _stale_idx_guard(old, guard_src, fail_closed=True):
                 return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
             err, clean = validate_account(data, require_password=False)
             if err:
@@ -5552,6 +5560,16 @@ def create_app(host=None):
                 and find_account_index(accounts, clean["phone"]) is not None
             ):
                 return jsonify({"error": f"手机号 {clean['phone']} 已存在"}), 400
+            # 改写他人易班凭据（填了新密码 / 改绑手机号）与"不可逆清除"同档：拿到被窃
+            # 管理员会话的人一次 PUT 就能把某用户的账号换成自己的凭据——此后签到在攻击
+            # 者侧完成、真用户被静默挤出，界面上看不出任何异常。只改备注/设备型号不算。
+            # 走 _high_risk_gate：先二次鉴权、通过后才占高危额度（顺序即该函数的立身之本）。
+            creds_written = bool(str(data.get("password", "")).strip()) or (
+                clean["phone"] != old.get("phone"))
+            if creds_written:
+                denied = _high_risk_gate(data, "改写他人易班凭据")
+                if denied is not None:
+                    return denied
             # 密码留空 = 保持不变（密码明文永不下发前端）
             if not clean["password"]:
                 clean["password"] = old.get("password", "")
@@ -5600,8 +5618,31 @@ def create_app(host=None):
                 session.get("username") or "?",
                 "account_update",
                 _mask_phone(clean["phone"]),
-                "编辑账号 改绑回审" if rebind else "编辑账号",
+                ("编辑账号" + (" 改绑回审" if rebind else "")
+                 + (" 改写凭据" if creds_written else "")),
             )
+            # 当事人必须知情（用户裁决：管理员改写他人易班凭据除二次鉴权外，还要绕过
+            # 其通知开关发变更信）。send_user 直收地址、不读 mail_notify——攻击者把本人
+            # 的接收开关关掉也照样收得到，与自助改密、审核拒绝同一口径。未启用邮件/无
+            # 收件人时它自己静默跳过；整段兜异常：编辑已落盘，通知失败不得把结果带崩。
+            if creds_written:
+                _owner = str(clean.get("owner") or "")
+                if _owner and _owner != "admin":
+                    try:
+                        mailer.send_user(
+                            _owner,
+                            "【易班签到】您的易班账号信息被管理员修改",
+                            "您在本站提交的易班账号 "
+                            f"{_mask_phone(clean['phone'])} 刚刚被管理员修改：\n"
+                            + ("· 重设了易班登录密码\n"
+                               if str(data.get("password", "")).strip() else "")
+                            + ("· 改绑了手机号（需管理员重新审核后才参与签到）\n" if rebind else "")
+                            + f"操作者: {_mask_email((session.get('username') or '?')[:64])}\n"
+                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            "如非您本人申请，请立即联系管理员核实。",
+                        )
+                    except Exception as e:
+                        logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
             accounts = load_accounts()
             logger.info("编辑账号 %s", _mask_phone(clean["phone"]))
             return jsonify(
@@ -6505,7 +6546,13 @@ def create_app(host=None):
             # （owner='admin'）只由账号管理页的「不填邮箱」分支创建。此前管理员提交写死
             # 'admin'，在「仅本人邮箱」口径下会让注册管理员自提交的账号立刻从个人视图消失。
             clean["owner"] = session.get("username", "").lower()
-            clean["status"] = ACCOUNT_STATUS_PENDING if _current_role() != "admin" else ACCOUNT_STATUS_ACTIVE
+            # 一律待审核（不再按角色分叉出"管理员提交即生效"）：本端点的语义是
+            # "提交一份要参与全站签动的凭据"，生效与否交给审核结论，而不是交给提交者
+            # 的角色——被窃的管理员会话就此少一条"自己交、立即跑"的免检通道。
+            # 管理员给自己邮箱代管的入口没被堵死：/api/accounts/<idx>/review 的
+            # approve 对任意 pending 行开放（不看提交者是谁），管理员自己点一次通过
+            # 即生效，并且这一步会单独留 account_review 审计（原先的隐式 ACTIVE 什么都没留）。
+            clean["status"] = ACCOUNT_STATUS_PENDING
             try:
                 new_id = db.add_account(clean)
             except sqlite3.IntegrityError:
