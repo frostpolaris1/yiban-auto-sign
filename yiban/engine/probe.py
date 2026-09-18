@@ -264,18 +264,17 @@ def run_probe(accounts):
         with contextlib.suppress(Exception):
             state_io._save_cred_state(cred_state, touched={a.phone for a in accounts})
     for acc, message in hard_fail:
-        alerts._collect_admin_mail(
-            "健康探测预警",
-            f"账号: {_mask_phone(acc.phone)}\n原因: {_sanitize_text(message)}",
-        )
+        alerts._collect_admin_mail("健康探测预警", [
+            ("账号", _mask_phone(acc.phone)),
+            ("原因", _sanitize_text(message)),
+        ])
         alerts.send_user_fail_mail(acc.owner, acc.phone, message, scenario="probe")
     if soft_fail_n and not hard_fail:
         # 无硬失败时单独提示，避免管理员把「零预警」误读为「全员可用」
-        alerts._collect_admin_mail(
-            "健康探测提示",
-            f"{soft_fail_n} 个账号在探测期间出现网络类失败"
-            f"（超时/连接异常等，通常可自愈），未计入预警。",
-        )
+        alerts._collect_admin_mail("健康探测提示", [
+            ("网络类失败", f"{soft_fail_n} 个账号"),
+            ("说明", "超时/连接异常等，通常可自愈，未计入预警"),
+        ])
     alerts._flush_admin_mail_summary(phase="健康探测")
     # once 自动关闭（last_run 已在探测开始前置记录）
     if PROBE_INTERVAL.strip().lower() == "once":

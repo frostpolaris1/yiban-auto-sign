@@ -22,6 +22,9 @@ from unittest import mock
 
 import signin
 
+# 邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
+from _mail_body import render_body
+
 
 class _FakeDT(datetime):
     """signin.datetime 替身：now() 返回固定时刻。"""
@@ -293,7 +296,7 @@ class SigtermFlushTest(unittest.TestCase):
             signin._flush_mail_on_sigterm(15, None)
         self.assertEqual(m_send.call_count, 1, "终止前必须把已收集的告警发出")
         args, kwargs = m_send.call_args
-        body = kwargs.get("body") or (args[1] if len(args) > 1 else "")
+        body = render_body(kwargs.get("body") or (args[1] if len(args) > 1 else ""))
         self.assertIn("超时", body, "汇总需标明本轮被超时终止")
         self.assertEqual(signin._mail_summary, [], "发送后清空，正常收尾不重复")
 

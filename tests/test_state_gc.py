@@ -195,6 +195,13 @@ ALLOWED_NON_STATE = {
     "scratch-": "loadtest 的临时 SQLite 文件（outdir）",
     "signin-": "loadtest 的每轮日志文件（logdir）",
     "verify-job-": "校验任务的线程名（不是文件）",
+    # 邮件排版层的 HTML 内联样式：扫描正则只看"引号 + 小写 token + '-' + 后接 {表达式}"，
+    # 而 style="border-top:1px solid {_RULE}" 正好是这个形状——CSS 属性名，不是文件名。
+    "border-": "layout.py 的 HTML 内联样式属性名（style=\"border-…: {常量}\"）",
+    "font-": "layout.py 的 HTML 内联样式属性名（style=\"font-family:{_FONT}\"）",
+    "line-": "layout.py 的 HTML 内联样式属性名（style=\"line-height:{_LEAD}\"）",
+    "vertical-": "layout.py 的 HTML 内联样式属性名（style=\"vertical-align:top;…{…}\"）",
+    "word-": "layout.py 的 HTML 内联样式属性名（style=\"word-break:break-word;…{…}\"）",
 }
 
 

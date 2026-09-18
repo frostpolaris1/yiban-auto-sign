@@ -124,7 +124,8 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         got = self._alerts()
         self.assertEqual(len(got), 1, f"仅命中阈值那一次告警：{got}")
         self.assertTrue(got[0][2], "跨账号喷洒必须升级紧急")
-        self.assertIn(f"{self.webapp.LOGIN_SPRAY_USERS} 个不同用户名", got[0][1],
+        self.assertIn("不同用户名", got[0][1])
+        self.assertIn(f"{self.webapp.LOGIN_SPRAY_USERS} 个", got[0][1],
                       "正文须交代升级依据，否则管理员无从判断是不是误报")
 
 

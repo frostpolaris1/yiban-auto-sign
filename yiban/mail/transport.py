@@ -8,9 +8,10 @@ import logging
 import smtplib
 import ssl
 from email.header import Header
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from . import config
+from . import config, layout
 
 logger = logging.getLogger("mailer")
 
@@ -47,7 +48,16 @@ def _send(subject, text, to):
         user = str(entry.get("user") or "").strip()
         password = str(entry.get("pass") or "")
 
-        msg = MIMEText(text, "plain", "utf-8")
+        plain, html_body = layout.as_body(text)
+        if html_body:
+            # multipart/alternative：parts 按"偏好递增"排（先 plain 后 html），
+            # 不支持 HTML 的客户端与终端读到的仍是排好的纯文本——排版层只是增益，
+            # 不构成新的送达依赖。
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(plain, "plain", "utf-8"))
+            msg.attach(MIMEText(html_body, "html", "utf-8"))
+        else:
+            msg = MIMEText(plain, "plain", "utf-8")
         msg["Subject"] = Header(subject, "utf-8")
         msg["From"] = user
         msg["To"] = to

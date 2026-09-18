@@ -34,6 +34,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 REG_ADMIN = "reg-admin@test.local"
@@ -112,7 +115,7 @@ class _AnnBase(unittest.TestCase):
         patcher = mock.patch.object(
             self.webapp, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
-            self.alerts.append((t, c, urgent, force)))
+            self.alerts.append((t, render_body(c), urgent, force)))
         patcher.start()
         self.addCleanup(patcher.stop)
         # .env 每一次原子落盘的全文快照（判定"发布是否一次写完"用）
@@ -403,9 +406,12 @@ class PublishEffectTest(_AnnBase):
         self._publish(m)
         body2 = [a for a in self.alerts if a[0] == "公告发布告警"][-1][1]
         self.assertIn("覆盖", body2)
-        self.assertIn("长" * 80, body2)
-        self.assertNotIn("长" * 81, body2)
-        self.assertNotIn("\n长", body2)
+        # 正文会按显示宽度主动折行并悬挂缩进，故"80 字连续出现"不再是可断言的形状；
+        # 真正要钉住的是截断口径：恰好 80 个"长"，一个字都不能多。
+        self.assertEqual(body2.replace("\n", "").replace(" ", "").count("长"), 80,
+                         "正文只截发布后前 80 字，不得外泄全文")
+        self.assertTrue(any(ln.startswith("  长") for ln in body2.splitlines()),
+                        "超宽值应悬挂缩进续行（主动断行），而不是留给客户端被动折行")
 
     def test_publish_audit_records_publisher_and_diff(self):
         m = self._master()

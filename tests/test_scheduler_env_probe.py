@@ -28,6 +28,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 # 邮件组件的打桩目标：引擎直连 `yiban.mail`（旧的 scripts/mailer.py 兼容壳已删除），
 # 故打桩打在 `signin.mailer`（即实现包）上——与套件其余调用点同口径。
 
@@ -394,7 +397,7 @@ class MailSummaryTruncationTest(unittest.TestCase):
                                return_value=["a@test.local"]):
             signin._flush_admin_mail_summary()
         self.assertEqual(len(self.sent), 1)
-        body = self.sent[0]
+        body = render_body(self.sent[0])
         self.assertIn("共 5 条异常/预警", body, "头部计数应反映收集总量")
         self.assertIn("其余 2 条已截断", body)
         self.assertNotIn("条目3\n", body.replace("条目3\"", "\""))
@@ -457,13 +460,14 @@ class ProbeWordingTest(unittest.TestCase):
                                return_value=["a@test.local"]):
             signin._collect_admin_mail("健康探测预警", "账号: 138****0001\n原因: 密码错误")
             signin._flush_admin_mail_summary(phase="健康探测")
-            self.assertTrue(self.sent[0].startswith("易班健康探测已完成"),
-                            self.sent[0][:40])
-            self.assertNotIn("签到任务已结束", self.sent[0])
+            sent0 = render_body(self.sent[0])
+            self.assertTrue(sent0.startswith("易班健康探测已完成"),
+                            sent0[:40])
+            self.assertNotIn("签到任务已结束", sent0)
             # 缺省沿用原签到文案（定时批次行为不变）
             signin._collect_admin_mail("易班签到失败", "条目")
             signin._flush_admin_mail_summary()
-            self.assertIn("易班签到任务已结束", self.sent[1])
+            self.assertIn("易班签到任务已结束", render_body(self.sent[1]))
 
     def test_probe_scenario_mail_wording(self):
         sent = []
@@ -472,6 +476,7 @@ class ProbeWordingTest(unittest.TestCase):
             signin.send_user_fail_mail("owner@test.local", "13800000000",
                                        "图形验证墙", scenario="probe")
         subject, text = sent[0]
+        text = render_body(text)
         self.assertEqual(subject, "易班账号健康预警")
         self.assertNotIn("今日签到失败", text)
         self.assertIn("138****0000", text)
