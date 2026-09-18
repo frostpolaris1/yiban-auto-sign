@@ -197,7 +197,8 @@ class BreakerTest(unittest.TestCase):
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"13800138000": {"fail_days": 3, "paused_since": self.D3}}, f)
         r = client.put("/api/accounts/0",
-                       json={"name": "A", "phone": "13800138000", "password": "newpass1234"},
+                       json={"name": "A", "phone": "13800138000", "password": "newpass1234",
+                             "confirm_password": "TestPass1234!"},
                        headers={"X-CSRF-Token": "t"})
         self.assertEqual(r.status_code, 200, r.get_json())
         # 唯一入口的统一语义：清空后文件被删除（"无暂停 = 文件不存在"）

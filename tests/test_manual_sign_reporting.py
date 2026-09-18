@@ -161,10 +161,14 @@ class FuseResetGateTest(_WebAppMixin, unittest.TestCase):
         self.assertEqual(entry.get("fail_days"), 3)
 
     def test_admin_password_change_clears_fuse_pause(self):
-        """改密码（凭据变更）：熔断条目清除，账号立即恢复签到资格。"""
+        """改密码（凭据变更）：须当次口令，通过后熔断条目清除、立即恢复签到资格。
+
+        与上一条"只改备注（password 留空）"正好成对：留空即非凭据变更，不加二次鉴权这道门。
+        """
         c, token = self._admin_client()
         r = c.put("/api/accounts/0",
-                  json={"phone": self.PHONE, "name": "x", "password": "NewPass456"},
+                  json={"phone": self.PHONE, "name": "x", "password": "NewPass456",
+                        "confirm_password": ADMIN_PASS},
                   headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertNotIn(self.PHONE, self._read_fuse_pause())
