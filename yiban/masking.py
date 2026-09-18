@@ -31,14 +31,26 @@ def sanitize_text(text):
     """服务端可控内容进入错误消息/日志/通知前转义换行与回车，防止日志与通知注入。"""
     s = str(text).replace("\r", "\\r").replace("\n", "\\n")
     # 异常消息可能含 Account dataclass repr（带明文密码/令牌）：
-    # 整体替换 Account(...) 对象（正则处理引号转义边界），并兜底替换命名字段
-    s = re.sub(r"Account\([^)]*\)", "Account(***)", s)
+    # 整体替换 Account(...) 对象（正则配对单引号串，跨过值内的 `)` 与 `(` 不截断），
+    # 并兜底替换命名字段。
+    s = re.sub(r"Account\((?:[^()']|'[^']*')*\)", "Account(***)", s)
     s = re.sub(r"password\s*=\s*['\"][^'\"]*['\"]", "password='***'", s)
     s = re.sub(r"phone_code\s*=\s*['\"][^'\"]*['\"]", "phone_code='***'", s)
     # dict/repr 形态兜底：上面的 kwarg 正则覆盖不到 'password': 'xxx' /
     # "phone_code": "xxx"（vars()/json.dumps 调试输出进异常链时会这样出现）
     s = re.sub(r"(['\"])password\1\s*:\s*['\"][^'\"]*['\"]", r"\1password\1: '***'", s)
     s = re.sub(r"(['\"])phone_code\1\s*:\s*['\"][^'\"]*['\"]", r"\1phone_code\1: '***'", s)
+    # 凭据字面量（M1）：意外落入文本的 token/cookie/session 等直接抹值。
+    # 值按"到下一个空白/逗号/分号"截取；authorization 单独一条（值是 "Bearer xxx"
+    # 含空格，通用键规则只吞掉 Bearer 会留下 token 尾巴）。
+    s = re.sub(
+        r"(?i)\b(token|cookie|csrf_token?|session|access_token|secret)\b"
+        r"\s*[:=]\s*[^\s,;]+",
+        r"\1=***",
+        s,
+    )
+    s = re.sub(r"(?i)\bauthorization\b\s*:?\s*(?:bearer\s+)?[^\s,;]+",
+               r"authorization=***", s)
     return s
 
 

@@ -79,6 +79,11 @@ def is_safe_url(url):
 
     防 http 明文外泄与拿推送地址当 SSRF 跳板。域名目标放行（DNS rebinding 由发送
     超时兜底）。本函数是该口径的唯一实现，web 设置页与发送层共用。
+
+    **白名单外写法收严（Low-1）**：`localhost.`（尾点）、纯数字/十六进制/前导零
+    IPv4 字面量（`2130706433` = 127.0.0.1）、短式回环（`127.1`）等非 `ipaddress`
+    可解析的 host 一律拒掉——否则 `https://2130706433/hook` 这类地址会直通。
+    `[::ffff:127.0.0.1]` 等 IPv6 形式已由 `ipaddress` 拦下。
     """
     try:
         o = urlparse(url)
@@ -86,14 +91,42 @@ def is_safe_url(url):
         return False
     if o.scheme != "https" or not o.hostname:
         return False
-    host = o.hostname.strip().lower()
+    host = o.hostname.strip().lower().rstrip(".")
     if host == "localhost":
         return False
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return True  # 域名：非 IP 字面量，放行
+        # 非 ipaddress 可解析的 host：若是"纯数字 IPv4 字面量"形态（十进制/0x/
+        # 前导零/短式）→ 拒掉；只有真域名（含点号且非全数字组件）放行。
+        return not _is_ipv4_literal_like(host)
     return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
+
+
+def _is_ipv4_literal_like(host):
+    """host 是否形如 IPv4 字面量（`ipaddress` 解析不了的非标准写法）。
+
+    覆盖：全数字（十进制整数，含 `2130706433`）、`0x` 十六进制（`0x7f000001`）、
+    前导零八进制（`0177.0.0.1`）、短式回环（`127.1`，点分但末段缺失）。这些都会在
+    连接时被解析为内网/回环地址。前缀/尾点优先于本判定已处理；`host` 已 rstrip(".")。
+    含字母（真域名）返回 False。
+    """
+    if not host:
+        return False
+    parts = host.split(".")
+
+    def _seg_ok(seg):
+        if not seg:
+            return False
+        if seg.isdigit():
+            return True  # 十进制（含前导零：0177 按八进制解析，仍属 IP 字面量）
+        low = seg.lower()
+        return (low.startswith("0x") and len(seg) > 2 and
+                all(c in "0123456789abcdef" for c in low[2:]))
+
+    if len(parts) == 1:
+        return _seg_ok(parts[0])
+    return len(parts) <= 4 and all(_seg_ok(p) for p in parts)
 
 
 def get_secret(envs=None):
