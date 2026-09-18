@@ -96,6 +96,9 @@ from unittest import mock
 
 from _frontend_src import frontend_source
 
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
@@ -958,7 +961,7 @@ class _B14AlertGateBase(unittest.TestCase):
                 self.webapp, "send_notification",
                 # send_notification 新增 force=（先告警后落盘），假实现同步接收
                 # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
-                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c, urgent)),
+                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, render_body(c), urgent)),
             )
             p.start()
             self.addCleanup(p.stop)
@@ -1804,7 +1807,7 @@ class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
         self.assertEqual(titles.count("手机推送额度已用尽告警"), 1,
                          f"两本账同日只补一封，实际 {titles}")
         self.assertEqual(pop.call_count, 1, "每次告警最多 pop 一次（循环 pop 会同日发两封）")
-        body = next(m[1] for m in mails if m[0] == "手机推送额度已用尽告警")
+        body = render_body(next(m[1] for m in mails if m[0] == "手机推送额度已用尽告警"))
         self.assertIn("非紧急", body)
         self.assertIn("紧急", body)
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX", body, "须给出可操作的调整指引")
@@ -1924,7 +1927,7 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         title, content, urgent = self.alerts[-1]
         self.assertEqual(title, "高危管理操作告警")
         self.assertTrue(urgent, "物理清除不可逆，必须推手机（非紧急在「仅重要告警」下不送达）")
-        self.assertIn("批量彻底删除账号 ×2", content)
+        self.assertIn("批量彻底删除账号 2 个", content)
         self.assertIn(self.webapp._mask_phone(phones[0]), content)
 
     def test_batch_purge_gate_does_not_displace_stale_phones_409(self):
@@ -2006,7 +2009,7 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         _title, content, urgent = self.alerts[-1]
         self.assertTrue(urgent, "单条物理清除同样不可逆，必须 urgent 送达")
         self.assertIn(self.webapp._mask_phone("13800138001"), content)
-        self.assertIn("操作者 admin", content)
+        self.assertIn("操作者：admin", content)
         self.assertEqual(len(self._audit_rows("account_purge")), 1, "审计留痕不得少")
 
     def test_purge_alert_title_matches_batch_so_throttle_window_is_shared(self):

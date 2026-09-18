@@ -19,6 +19,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "secret1"
@@ -236,6 +239,7 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1, "拒绝应给提交者恰好发一封邮件")
         to, subject, body = m.call_args[0]
+        body = render_body(body)
         self.assertEqual(to, "user1@test.local")
         self.assertIn("未通过审核", subject)
         self.assertIn("班级信息缺失", body)
@@ -254,6 +258,7 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1)
         _to, _subject, body = m.call_args[0]
+        body = render_body(body)
         self.assertIn("未填写", body)
 
     def test_approve_sends_no_owner_mail(self):
@@ -284,10 +289,15 @@ class ReviewFlowTest(unittest.TestCase):
                         headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 2, "批量拒绝应每户恰好一封")
-        notified = {call[0][0] for call in m.call_args_list}
-        self.assertEqual(notified, {"user1@test.local", "user2@test.local"})
-        _to, _subject, body = m.call_args[0]
-        self.assertIn("批量复核不符", body)
+        sent = {c[0][0]: render_body(c[0][2]) for c in m.call_args_list}
+        self.assertEqual(set(sent), {"user1@test.local", "user2@test.local"})
+        for addr, mine, other in (
+            ("user1@test.local", "138****8014", "139****9015"),
+            ("user2@test.local", "139****9015", "138****8014"),
+        ):
+            self.assertIn("批量复核不符", sent[addr])
+            self.assertIn(mine, sent[addr], "批量拒信也要写明被拒的是哪个账号（原先缺失）")
+            self.assertNotIn(other, sent[addr], "按户分封，不得把另一户的账号写进这封")
 
 
 if __name__ == "__main__":
