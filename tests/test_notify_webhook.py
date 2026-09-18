@@ -290,6 +290,29 @@ def test_is_safe_url():
     assert notify.is_safe_url("https://localhost/hook") is False
 
 
+def test_is_safe_url_rejects_loopback_variants():
+    """Low-1：非 IP 字面量的回环域名（纯数字/0x/前导零/短式/尾点）。
+
+    实测 `https://2130706433/hook`、`https://0x7f000001/hook`、`https://0177.0.0.1/hook`、
+    `https://127.1/hook`、`https://localhost./hook` 全部直通（原实现非 IP 域名一律
+    放行）。`[::ffff:127.0.0.1]`/`[::1]`/`169.254.169.254` 已拦住（ipaddress 可解析）。
+    改法 (a)：静态层拦 IP 字面量变体；`*.nip.io` 类域名型重绑定需连接期 DNS 复检
+    （选项 b，引入 DNS 依赖与 TOCTOU 残余，本批按工单建议不做）。
+    """
+    bad = [
+        "https://2130706433/hook",              # 十进制 IP 字面量（127.0.0.1）
+        "https://0x7f000001/hook",              # 十六进制
+        "https://0177.0.0.1/hook",              # 前导零八进制
+        "https://127.1/hook",                   # 短式回环
+        "https://localhost./hook",              # 尾点后缀
+        "https://0.0.0.0/hook",                 # 未指定
+    ]
+    for url in bad:
+        assert notify.is_safe_url(url) is False, url
+    # 合法域名不受影响
+    assert notify.is_safe_url("https://example.com/hook") is True
+
+
 # ---- 节流 ----
 
 def test_throttle_same_title_skipped_force_bypasses(monkeypatch):

@@ -67,6 +67,18 @@ WORKER_STATE_STALE = "stale"
 _TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
+def _has_conclusion(entry):
+    """该账号当日是否已有"结论"（非空且非 pending）。
+
+    `pending` 只是计划（"打算什么时候签"），success/failed 等才是事实；"空/缺失"
+    等价于无记录。`_write_sign_state` 的 only_if_absent CAS 与窗口收尾快照共用
+    这一口径。
+    """
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("status", "")).strip() not in ("", STATUS_PENDING)
+
+
 def _sched_marker_exists():
     """当日全量运行标记（sched-run-<date>.json）是否已存在。
 
@@ -139,13 +151,19 @@ def _second_run_drop_done(accounts):
     return kept
 
 
-def _write_sign_state(phone, status, message, scheduled=None, dur=None):
+def _write_sign_state(phone, status, message, scheduled=None, dur=None,
+                      only_if_absent=False):
     """写按日结构化状态文件（web 状态显示的事实源，原子替换防半截文件）。
 
     文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
     scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
     dur：单次签到尝试耗时秒数（P6，2026-08-16：慢响应可据此判断网络/接口问题）。
+    only_if_absent：仅当该账号**当日无结论**时才写入（return True），否则不覆盖
+    并返回 False。窗口关闭收尾（`_mark_window_skip`）用它做 CAS：快照判"无记录"
+    与落盘之间，另一执行体可能刚写入真实结论（failed 等）——锁内再判一次，
+    绝不让"窗口外跳过"覆盖掉真实失败（否则 `has_real_failure` 变 False、失败告警
+    被吞）。
     状态目录不可写时丢弃，不影响签到执行。
     """
     state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
@@ -170,6 +188,8 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
             existing = data.get(phone)
             if not scheduled and isinstance(existing, dict):
                 scheduled = existing.get("scheduled")
+            if only_if_absent and _has_conclusion(existing):
+                return False
             # **计划态不覆盖已有结果**：`pending` 是"打算什么时候签"的预测，success/failed
             # 等是"已经发生"的事实——事实优先。单执行体形态下计划写在前、结果写在后，看不出
             # 差别；多执行体下每个执行体启动都会写一遍全量计划，晚启动者的计划会把先启动者
@@ -187,7 +207,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False)
                 os.replace(tmp, path)
-                return
+                return True
             entry = {
                 "status": status,
                 "message": message,
@@ -204,10 +224,12 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None):
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, path)
+            return True
     except (OSError, ValueError, TypeError, AttributeError) as e:
         # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）；
         # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值，C-SIGN-02）
         logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(e))
+        return False
 
 # ---------------------------------------------------------------------------
 # 全量收尾标记（调度器首签/补签闸门的事实源）

@@ -227,6 +227,52 @@ class StaleJobReclaimTest(_LifecycleBase):
         self.assertEqual(db.reclaim_stale_verify_jobs(), [])
         self.assertEqual(self.webapp._reclaim_stale_verify_jobs(), 0)
 
+    def test_reclaim_cutoff_uses_business_clock_not_host_tz(self):
+        """H2：UTC 主机（宿主时间比北京慢 8 小时）上，超龄判定必须按业务钟。
+
+        任务按业务钟（clock.ts）写入 created_at；宿主 `datetime.now()` 晚 8 小时，
+        若用宿主时间算 cutoff，会把"已超龄"误判成"仍新鲜"——任务多滞留 8 小时。
+        """
+        acc = self._account()
+        biz_now = datetime.datetime(2026, 9, 17, 6, 0, 0)       # 北京 06:00
+        host_now = datetime.datetime(2026, 9, 16, 22, 0, 0)     # 宿主 UTC 22:00
+        created = datetime.datetime(2026, 9, 16, 23, 0, 0).strftime(
+            "%Y-%m-%d %H:%M:%S")                                 # 北京 23:00 建（已超龄 7h）
+        job_id, _ = db.create_verify_job(acc, PHONE, EMAIL, prev_status="pending")
+        conn = db.get_conn()
+        conn.execute(
+            "UPDATE verify_jobs SET created_at=?, status='running', started_at=? WHERE id=?",
+            (created, created, job_id))
+        conn.commit()
+        with mock.patch("yiban.store.verify_jobs.datetime.datetime") as dt, \
+             mock.patch("yiban.clock.now", return_value=biz_now):
+            dt.now.return_value = host_now
+            dt.timedelta = datetime.timedelta  # patch 整个类，保留真实 timedelta
+            reclaimed = db.reclaim_stale_verify_jobs()
+        self.assertEqual([r["id"] for r in reclaimed], [job_id],
+                         "UTC 主机上超龄任务也必须按业务钟收口")
+
+    def test_purge_cutoff_uses_business_clock_not_host_tz(self):
+        """H2：purge 的保留期判定同样只认业务钟。
+
+        任务建于业务 09-10 00:00、保留 7 天：按业务钟（cutoff 09-10 06:00）已过期；
+        宿主时间（cutoff 09-09 22:00）会漏删。
+        """
+        acc = self._account()
+        biz_now = datetime.datetime(2026, 9, 17, 6, 0, 0)
+        host_now = datetime.datetime(2026, 9, 16, 22, 0, 0)
+        created = datetime.datetime(2026, 9, 10, 0, 0).strftime("%Y-%m-%d %H:%M:%S")
+        job_id, _ = db.create_verify_job(acc, PHONE, EMAIL, prev_status="pending")
+        db.get_conn().execute("UPDATE verify_jobs SET created_at=? WHERE id=?",
+                              (created, job_id))
+        db.get_conn().commit()
+        with mock.patch("yiban.store.verify_jobs.datetime.datetime") as dt, \
+             mock.patch("yiban.clock.now", return_value=biz_now):
+            dt.now.return_value = host_now
+            dt.timedelta = datetime.timedelta  # patch 整个类，保留真实 timedelta
+            purged = db.purge_verify_jobs(days=7)
+        self.assertEqual(purged, 1, "UTC 主机上保留期判定同样按业务钟")
+
 
 class QueueRecoveryTest(_LifecycleBase):
     """致命后果：卡死任务占满名额后，新提交必须能自愈。"""

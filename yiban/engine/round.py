@@ -76,7 +76,7 @@ def _next_retry_at(now_dt, sch_cfg, rng=None):
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
-                    event_sink=None, reclaim=False, delegated=None):
+                    event_sink=None, reclaim=False, delegated=None, window_guard=False):
     """轮询队列 + 分散重试执行全部账号签到。
 
     流程（schedule 为空=手动签到）：按签到模式（列表顺序 / 列表随机）
@@ -216,14 +216,22 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
         ——汇总把它们算成失败（❌ N 失败、退出码 1、发失败邮件），而真相是"一个请求都
         没发"（2026-09-17 测试机实测复现；该行在 `pending` 判定加入前对 base 提交同样）。
+
+        **快照只用于预筛，落盘再 CAS 一次**：`_daily_statuses()` 是无锁快照，从快照
+        判"无记录"到写入之间，另一执行体可能刚把真实结论落盘——写走
+        `only_if_absent`（锁内再判），CAS 被拒的账号不写、不改 results、不发事件。
         """
         recorded = state_io._daily_statuses()
         for _ra in rest_accs:
             _p = _ra.phone
             if _p in results or recorded.get(_p, "") not in ("", STATUS_PENDING):
                 continue
+            if not state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW,
+                                              "签到时段已结束", only_if_absent=True):
+                # 锁内发现当日已有结论（他执行体刚写入）：不覆盖，保持真实失败可见
+                logger.info(f"[{_p}] ⛔ 签到时段已结束，但当日已有结论，跳过写入")
+                continue
             results[_p] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
-            state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW, "签到时段已结束")
             _emit_event(_p, STATUS_SKIPPED_WINDOW, "签到时段已结束")
 
     # 调度 v2 安全底座参数（schedule 模式）：本地截止保护 + 启动对齐
@@ -416,6 +424,18 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if gap > 0:
                 logger.debug(f"[{phone}] 间隔对齐: 补 {int(gap)}s（最小 {gap_max}s）")
                 time.sleep(gap)
+
+        # 手动链路的逐账号窗口钳制（M11 残留）：兜底常驻/补签轮走手动分支时
+        # 每轮扫描前已判过窗口，但一轮扫描内部（可能跨窗口末端）没有逐账号判——
+        # 07:49 起跑时末尾账号会在 07:50 之后仍发起真实登录。这里与计划分支
+        # `_window_closed` 同一位置口径（间隔对齐之后再判一次）：已关则剩余
+        # 账号全部落 skipped_window 并停手。`--only` 手动签到**有意不受限**
+        # （用户主动触发应放行），由调用方 window_guard 开关控制。
+        if window_guard and schedule_mod._window_closed(
+                schedule_mod._schedule_config(), clock.now()):
+            logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
+            _mark_window_skip([acc, *queue])
+            break
 
         # 领取（与铺点路径同口径；手动指定账号时 reclaim=True，可重签当日已了结的账号）
         if not _claim(phone, today):

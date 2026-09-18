@@ -113,6 +113,30 @@ class SweepPolicyTest(unittest.TestCase):
         self.assertFalse(os.path.exists(stale))
         self.assertTrue(os.path.exists(fresh), "刚写入的半成品必须保留（可能正在写）")
 
+    def test_retention_cutoff_uses_business_clock_not_host_tz(self):
+        """H2：UTC 主机（宿主比北京慢 8 小时）上，保留期截止日必须按业务钟。
+
+        宿主 09-16 22:00 时北京已是 09-17 06:00：文件按业务日命名，按宿主时间算
+        截止日会少算一天——把"昨天"的文件当成"今天"保留（多滞留约一天）。
+        按业务钟 cutoff=09-10（保留 7 天、删严格早于截止日）：只删 09-09；
+        按宿主钟 cutoff=09-09：09-09 当天也被保留，removed=0。
+        """
+        self._touch("sched-run-2026-09-10.json")
+        self._touch("sched-run-2026-09-09.json")
+        biz_now = datetime(2026, 9, 17, 6, 0, 0)        # 北京 09-17 06:00
+        host_now = datetime(2026, 9, 16, 22, 0, 0)      # 宿主 UTC 09-16 22:00
+        with mock.patch("yiban.state_gc.datetime.datetime") as dt, \
+             mock.patch("yiban.clock.now", return_value=biz_now):
+            dt.now.return_value = host_now
+            dt.timedelta = timedelta
+            removed, _ = state_gc.sweep(self.tmp)
+        self.assertEqual(removed, 1,
+                         "按业务钟 09-17 起算 7 天：删严格早于 09-10 的文件")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "sched-run-2026-09-09.json")),
+                         "09-09 已过期应删除")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "sched-run-2026-09-10.json")),
+                        "09-10 是截止日当天，仍在保留期内")
+
     def test_nonexistent_dir_is_not_an_error(self):
         removed, detail = state_gc.sweep(os.path.join(self.tmp, "nope"))
         self.assertEqual((removed, detail), (0, []))
