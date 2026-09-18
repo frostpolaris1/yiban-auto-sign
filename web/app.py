@@ -1455,6 +1455,59 @@ def ensure_secret_key(env_path):
         return key
 
 
+#: 内置主管理员（.env 账号）的会话凭据键名。
+ADMIN_SID_ENV_KEY = "YIBAN_ADMIN_SID"
+
+
+def _new_admin_sid():
+    """换发一个内置主管理员会话凭据（取值口径与 `users.sid` 同源：32 位 hex，
+    不可能含行分隔符，故经 `write_env_batch` 的注入校验必定安全）。"""
+    return secrets.token_hex(16)
+
+
+def _issue_admin_sid(env_path):
+    """为内置主管理员换发会话凭据并落 `.env`，返回**应当写进 session 的值**。
+
+    为什么内置主管理员需要这条凭据：它此前只有 `YIBAN_ADMIN_PW_VERSION` 一个吊销维度，
+    而版本号只在改口令时递增——于是本人**登出也踢不掉被盗的 Cookie 副本**（它只能用满
+    SESSION_ABS_DAYS 的绝对期），唯一的止损手段是改自己的口令（连带把本人也踢下线）或
+    换 `YIBAN_SECRET_KEY`（全站重登）。现在登出/改密/SSH 追回都会换发 sid，与注册用户
+    的 `users.sid` 同一条吊销面。
+
+    写失败时返回 `.env` 里的**旧值**而不是新值：本函数的返回值会被写进 session，
+    而 `_effective_role` 拿 session 里的 sid 与 `.env` 比对——若落盘失败还返回新值，
+    刚登录成功的这个会话自己就成了"sid 不匹配"，等于把管理员锁在门外（`.env` 只读
+    或权限坏掉时必然踩中）。沿用旧值则本次登录照常可用，只是这一次换发没生效，
+    与口令哈希迁移、`ensure_secret_key` 的降级策略同口径。
+    """
+    sid = _new_admin_sid()
+    try:
+        write_env_key(env_path, ADMIN_SID_ENV_KEY, sid)
+    except OSError as e:
+        logger.error(
+            "内置主管理员会话凭据落盘失败（%s 不可写？）：%s；本次登录沿用旧值，"
+            "服务端吊销面暂时缺位，请修复权限", env_path, e,
+        )
+        return read_env(env_path).get(ADMIN_SID_ENV_KEY, "").strip()
+    return sid
+
+
+def _admin_session_facts(env_path):
+    """内置主管理员的两项会话吊销凭据，返回 (口令版本, 当前 sid)。
+
+    一次 `.env` 读取取全两项：`_effective_role` 每个请求都要判一次，原实现已经为
+    `YIBAN_ADMIN_PW_VERSION` 读一遍文件，若再加一遍就是把它的热路径开销翻倍。
+    版本解析与 `load_env_int` 同语义（缺失/非法回退 1）；sid 缺失或空串返回 ""
+    （= 未签发，存量部署兼容口径见 `_effective_role`）。
+    """
+    env = read_env(env_path)
+    try:
+        version = max(0, int(env.get("YIBAN_ADMIN_PW_VERSION", "")))
+    except (TypeError, ValueError):
+        version = 1
+    return version, (env.get(ADMIN_SID_ENV_KEY) or "").strip()
+
+
 def migrate_admin_password_to_hash(env_path):
     """启动时安全迁移：检测到管理员口令以明文（YIBAN_ADMIN_PASSWORD）存储且无哈希时，
     自动生成 scrypt 哈希写入 YIBAN_ADMIN_PASSWORD_HASH 并清空明文。
@@ -1489,6 +1542,10 @@ def migrate_admin_password_to_hash(env_path):
                 return  # 明文与哈希一致（重复启动），无需任何写入
             cur_pwv = load_env_int(env_path, "YIBAN_ADMIN_PW_VERSION", 1)
             updates["YIBAN_ADMIN_PW_VERSION"] = str(cur_pwv + 1)
+            # 追回 = 假定会话已失窃：与版本号一并在这一次批量写里换发内置会话凭据
+            # （共用 write_env_batch = 单次原子写，既不多写一遍 .env，也不留下
+            # "版本已递增、sid 还是旧的"的半成品状态）
+            updates[ADMIN_SID_ENV_KEY] = _new_admin_sid()
             rotated = True
         write_env_batch(
             env_path,
@@ -4021,9 +4078,12 @@ def create_app(host=None):
             # 会话绝对过期基准（P2-5）：自此刻起最多 SESSION_ABS_TTL_SECONDS
             session["login_ts"] = int(time.time())
             # 服务端会话吊销：注册用户登录签发 sid 并落库——登出/被
-            # 重置密码/被踢时轮换，被盗 cookie 重放即失效。内置管理员走 .env 的
-            # PW_VERSION 吊销机制，无需 sid。
-            if auth_source == "user":
+            # 重置密码/被踢时轮换，被盗 cookie 重放即失效。内置主管理员没有
+            # users 行可存，它的"那一行"就是 .env：同一条吊销面落在
+            # YIBAN_ADMIN_SID 上（只在登录/登出/改密/追回时写，频率极低）。
+            if auth_source == "builtin":
+                session["sid"] = _issue_admin_sid(ENV_FILE)
+            elif auth_source == "user":
                 sid = secrets.token_hex(16)
                 session["sid"] = sid
                 db.set_user_sid(username.lower(), sid)
@@ -4189,8 +4249,17 @@ def create_app(host=None):
         )
         # 登出轮换服务端 sid——此前仅 session.clear()，此前被窃取的
         # cookie 副本在登出后重放依然有效。轮换后所有旧会话（含当前）即时失效；
-        # 内置管理员走 PW_VERSION 机制，无需轮换。
-        if (
+        # 内置主管理员同一条吊销面落在 .env 的 YIBAN_ADMIN_SID 上（原实现认为它"走
+        # PW_VERSION 即可"，但版本号只在改口令时递增——本人登出踢不掉被盗副本）。
+        if session.get("auth_source") == "builtin":
+            # 必须在 session.clear() 之前判：清空后取不到 auth_source
+            try:
+                _issue_admin_sid(ENV_FILE)
+            except Exception as e:
+                # 与注册用户分支同口径：失败意味着"被盗 cookie 在登出后仍有效"这一
+                # 服务端吊销机制未生效，而对外仍返回 {"ok": true}，只能靠日志追。
+                logger.error("登出轮换内置管理员 sid 失败（旧会话可能仍有效）: %s", e)
+        elif (
             session.get("auth_source") == "user"
             and session.get("username")
         ):
@@ -4277,6 +4346,9 @@ def create_app(host=None):
                         "YIBAN_ADMIN_PASSWORD_HASH": new_hash,
                         "YIBAN_ADMIN_PASSWORD": "",  # 清理旧明文口令，改由哈希校验
                         "YIBAN_ADMIN_PW_VERSION": str(load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1),
+                        # 会话凭据与版本号同一次原子写换发（改口令 = 假定会话已失窃；
+                        # 本会话随版本号递增一起失效，故无需回填 session）
+                        ADMIN_SID_ENV_KEY: _new_admin_sid(),
                     },
                 )
             with _rate_lock:
@@ -6973,10 +7045,18 @@ def create_app(host=None):
             username.strip().lower() == _builtin_admin_email()
             and session.get("auth_source") == "builtin"
         ):
-            # 内置管理员：必须是 builtin 登录来源且 session 版本与当前 .env 版本一致；
-            # auth_source == "user" 的同名注册用户继续按普通用户判定，不借内置邮箱提权
-            cur = load_env_int(ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)
-            return "admin" if pw_version == cur else None
+            # 内置管理员：必须是 builtin 登录来源，且 session 里的两项凭据都与当前
+            # .env 一致（口令版本 + 会话 sid）；auth_source == "user" 的同名注册用户
+            # 继续按普通用户判定，不借内置邮箱提权
+            cur, admin_sid = _admin_session_facts(ENV_FILE)
+            if pw_version != cur:
+                return None
+            # 与上面注册用户的 users.sid 逐字同口径：空 = 未签发（升级日存量会话兼容，
+            # 不强制重登），签发后不匹配即失效。这条凭据补上的是"改口令之外"的吊销面：
+            # 登出即可踢掉被盗副本，不必再靠换口令或换 YIBAN_SECRET_KEY 全站重登。
+            if admin_sid and session.get("sid") != admin_sid:
+                return None
+            return "admin"
         email = username.strip().lower()
         u = db.find_user(email)
         if u is not None:
