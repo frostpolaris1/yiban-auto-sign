@@ -79,9 +79,23 @@ DB_FILE="${DB_FILE:-yiban.db}"
 #     .env.example），原 SIGN_STATE_DIR 与其脱钩——自定义状态目录时
 #     sign-daily/sign-state/cred-state 静默不入备份包（影响"当天是否已签"的
 #     判定恢复）。现以 YIBAN_STATE_DIR 优先，SIGN_STATE_DIR 仅作旧部署回退。
+# cron / systemd 直接跑本脚本时进程环境里没有这些键（它们不读 .env），只按环境变量取会
+# 让备份**抓错目录**：自定义状态或日志目录的部署会去抓 /var/log/yiban——同一台机器上
+# 第二份部署的日志与状态就此混进别人的归档。故 .env 是第二来源，键名与 .env.example 一致。
+env_get() {  # $1=键名；进程环境优先，回退 ${APP_DIR}/.env（只认行首 键=值，跳过注释行）
+    local v
+    v="$(printenv "$1" 2>/dev/null || true)"
+    if [ -z "${v}" ] && [ -f "${APP_DIR}/.env" ]; then
+        v="$(sed -n "s/^$1=//p" "${APP_DIR}/.env" | head -1 | tr -d '\r')"
+    fi
+    printf '%s' "${v}"
+}
+YIBAN_STATE_DIR="${YIBAN_STATE_DIR:-$(env_get YIBAN_STATE_DIR)}"
+YIBAN_LOG_FILE="${YIBAN_LOG_FILE:-$(env_get YIBAN_LOG_FILE)}"
 SIGN_STATE_DIR="${YIBAN_STATE_DIR:-${SIGN_STATE_DIR:-/var/log/yiban}}"
 # 可选：按天签到日志目录（sign-YYYY-MM-DD.log；过期清理由 yiban-cleanup.sh 负责，此处仅备份现存量）
-SIGN_LOG_DIR="${SIGN_LOG_DIR:-/var/log/yiban}"
+# 跟随 YIBAN_LOG_FILE 所在目录（两者都没配，才回落到与状态目录同级的默认值）
+SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE:-${SIGN_STATE_DIR}/sign.log}")}"
 
 # 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
@@ -257,26 +271,38 @@ restore() {
     fi
     log "  - keys/ 目录是否含密钥：$(ls "${dest}/keys/" 2>/dev/null | tr '\n' ' ' || echo '无（备份时密钥缺失）')"
 
-    if [ -f "${dest}/data/${DB_FILE}" ] && command -v python3 > /dev/null 2>&1 \
-        && [ -f "${APP_DIR}/scripts/audit_verify.py" ]; then
-        log "恢复件核验：审计链 + 锚点 + 写入欠账（audit_verify.py，只读）"
-        local arc=0
-        YIBAN_STATE_DIR="${dest}/state" \
-            python3 "${APP_DIR}/scripts/audit_verify.py" \
-                --db "${dest}/data/${DB_FILE}" \
-                --env "${dest}/data/.env" \
-                --anchor "${dest}/state/audit-anchor.log" || arc=$?
-        case "$arc" in
-            0) log "恢复件核验：审计校验通过（链自洽 + 与锚点一致 + 无写入欠账）" ;;
-            1) log "错误：恢复件审计校验【检出异常】——链被改写/删除，或库与锚点不是同一批次" >&2
-               rc=1 ;;
-            *) log "错误：恢复件审计校验【无法定论】（exit $arc：缺 YIBAN_AUDIT_KEY / 包内无 .env / 校验异常）" >&2
-               log "      别按「备份完好」处理——先补齐密钥来源再重跑一次" >&2
-               rc=1 ;;
-        esac
-    else
-        log "提示：未能跑 audit_verify.py（缺 python3/包内库/${APP_DIR}/scripts/audit_verify.py）" \
-            "——请手工对恢复件跑一次，别只看 integrity_check"
+    if [ -f "${dest}/data/${DB_FILE}" ]; then
+        # 解释器优先用部署自己的 venv：系统 python3 通常没有 pycryptodome 等依赖，
+        # 用它跑会是 ImportError——而 ImportError 的退出码同样是 1，按退出码判就把
+        # "工具没跑起来"报成"审计被篡改"，恢复演练因此得出完全错误的结论。
+        local py=""
+        if [ -x "${APP_DIR}/.venv/bin/python" ]; then py="${APP_DIR}/.venv/bin/python"
+        elif command -v python3 > /dev/null 2>&1; then py="python3"; fi
+        if [ -n "${py}" ] && [ -f "${APP_DIR}/scripts/audit_verify.py" ]; then
+            log "恢复件核验：审计链 + 锚点 + 写入欠账（audit_verify.py，只读；解释器 ${py}）"
+            local out arc=0
+            out="$(YIBAN_STATE_DIR="${dest}/state" \
+                "${py}" "${APP_DIR}/scripts/audit_verify.py" \
+                    --db "${dest}/data/${DB_FILE}" \
+                    --env "${dest}/data/.env" \
+                    --anchor "${dest}/state/audit-anchor.log" 2>&1)" || arc=$?
+            printf '%s\n' "${out}"
+            # 判据取 CLI **自己的结论文本**，不看退出码：崩溃与"检出篡改"同为非 0。
+            if [ "$arc" -eq 0 ] && printf '%s' "${out}" | grep -q "校验通过"; then
+                log "恢复件核验：审计校验通过（链自洽 + 与锚点一致 + 无写入欠账）"
+            elif printf '%s' "${out}" | grep -q "审计可追溯性校验失败"; then
+                log "错误：恢复件审计校验【检出异常】——链被改写/删除，或库与锚点不是同一批次" >&2
+                rc=1
+            else
+                log "错误：恢复件审计校验【无法定论】（退出码 $arc；缺依赖/YIBAN_AUDIT_KEY/包内 .env）" >&2
+                log "      别按「备份完好」处理，也别按「被篡改」处理——补齐解释器与密钥来源后重跑" >&2
+                rc=2
+            fi
+        else
+            log "错误：包内含数据库，但找不到可用解释器（${APP_DIR}/.venv/bin/python 或 python3）或 ${APP_DIR}/scripts/audit_verify.py——恢复件未经审计核验" >&2
+            log "      别按「备份完好」处理：先手工跑一次 audit_verify.py 再决定" >&2
+            rc=2
+        fi
     fi
     log "提示：恢复演练请核对上述内容后删除临时目录；真实恢复时先停服，再把 data/ keys/ state/ 覆盖回" \
         "${APP_DIR} 与 \${YIBAN_STATE_DIR} 并 chmod 600，然后再跑一次 audit_verify.py。"
