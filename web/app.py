@@ -2612,6 +2612,22 @@ def _nl_safe(value):
     return s
 
 
+def _audit_alert_facts(health):
+    """审计链异常告警的事实清单（每日线程用，测试直接断言同一份形状）。
+
+    `诊断备注` 必须在列：`audit_health` 有两类"链自洽=是、锚点=一致，但体检仍判不健康"
+    的原因（锚点之后又跑了全表重链、有记录签名被清空等着被重签），它们只写进 `note`。
+    不带出来时管理员看到的是一条"各项都正常"的告警，第一反应是误报——正是这次要修的。
+    """
+    return [
+        ("链自洽", "是" if health["chain_ok"] else f"否（断点 {health['broken']} 处）"),
+        ("库外锚点", "一致" if health["anchor_ok"] else "不一致"),
+        ("锚点说明", _nl_safe(health["anchor_msg"]) or "（无）"),
+        ("审计写入失败次数", health["write_failures"]),
+        ("诊断备注", _nl_safe(health["note"]) or "（无）"),
+    ]
+
+
 def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent"):
     """变更/操作类告警正文的唯一形状：事件 → 明细字段 → 操作者 → 时间。
 
@@ -9749,13 +9765,7 @@ def create_app(host=None):
                 # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
                 _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
                 if not _health["healthy"]:
-                    _facts = [
-                        ("链自洽", "是" if _health["chain_ok"]
-                                   else f"否（断点 {_health['broken']} 处）"),
-                        ("库外锚点", "一致" if _health["anchor_ok"] else "不一致"),
-                        ("锚点说明", _health["anchor_msg"] or "（无）"),
-                        ("审计写入失败次数", _health["write_failures"]),
-                    ]
+                    _facts = _audit_alert_facts(_health)
                     # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
                     logger.error("审计链异常告警: %s",
                                  "；".join(f"{k} {v}" for k, v in _facts))
