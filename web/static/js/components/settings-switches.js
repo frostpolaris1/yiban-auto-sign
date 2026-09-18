@@ -1,15 +1,19 @@
-/* 系统设置 · 系统开关分区（管理端 /settings）。
+/* 系统设置 · 系统开关分区（管理端 /work/settings）。
 
-   挂载到 window.YB.settingsSwitches；classic script。整 tab 仅主管理员可见
-   （后端 POST /api/settings 的 403 列表含 global_pause / registration_pause；
-   页面 settings.js 对非主管理员隐藏 tab 按钮与面板）。
+   挂载到 window.YB.settingsSwitches；classic script。整 tab 对非主管理员隐藏由页面
+   settings.js 处理，但**那只是界面**，真正的门禁在后端。
 
-   两个开关都是危险语义：先 confirmDialog 写明影响范围，再由
-   YB.openConfirmPasswordModal 收当前管理员口令，只提交被改的那一个字段。
-   口令回调返回请求 Promise：弹窗保持打开直至后端落定——后端对开关变更做
-   真口令校验（2026-09 前 confirm_password 只收不验，形同假门），缺口令/错口令
-   返回 403 时错误显示在弹窗内，可直接改口令重试。state 仅在成功分支更新，
-   失败/取消时开关视觉状态保持原状（无需额外回滚）。 */
+   权限按**变更方向**分档（单源是 `web/app.py` 的 `MASTER_ONLY_KEYS` / `GATED_KEYS` /
+   `GLOBAL_PAUSE_KEY`，本文件不再抄第二份键名清单）：
+     · 急停（0→1）任意管理员都能做——把"先止损"的权力留在在场每个人手里；
+     · 恢复（1→0）与注册开关的两个方向都仅主管理员——把"放开"的权力收在主管理员手里。
+   所以「暂停」与「恢复」是**两颗不同权限的按钮**，不是一颗翻转钮：按当前状态只露出该露
+   的那颗，无权限时禁用并就地说明（见 #sw-perm），不能让人点了没反应。
+
+   每次动作都是：confirmDialog 写明影响范围 → YB.openConfirmPasswordModal 收当前管理员
+   口令 → 只提交被改的那一个字段。口令回调返回请求 Promise：弹窗保持打开直至后端落定，
+   缺口令/错口令的 403 显示在弹窗内可直接改重试；state 仅成功分支更新，失败/取消时
+   开关视觉状态保持原状。 */
 (function () {
   "use strict";
   var YB = window.YB;
@@ -21,14 +25,35 @@
   function $(id) { return document.getElementById(id); }
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
 
+  // 这个方向当前会话能不能做（与后端 api_settings_save 的方向判定同口径）
+  function canDo(field, next) {
+    if (field === "global_pause" && !next) return isMaster;   // 恢复签到：仅主管理员
+    if (field !== "global_pause") return isMaster;             // 注册开关两个方向：仅主管理员
+    return true;                                              // 急停签到：任意管理员
+  }
+  var WHY = "此操作仅主管理员可做";
+
   function sync() {
-    var gp = $("set-global-pause-text"), rp = $("set-reg-pause-text");
-    if (gp) gp.textContent = state.globalPause ? "恢复自动签到" : "暂停自动签到";
-    if (rp) rp.textContent = state.regPause ? "开放注册" : "暂停注册";
     var hint = $("set-pause-hint"), parts = [];
     if (state.globalPause) parts.push("签到当前处于暂停状态 — 自动签到不会执行，直至手动恢复");
     if (state.regPause) parts.push("注册当前处于暂停状态 — 新用户无法自助注册");
     if (hint) { hint.textContent = parts.join("；"); hint.hidden = parts.length === 0; }
+    // 每个开关只露出"当前状态对应的下一步动作"那颗钮：暂停中给恢复、运行中给暂停。
+    // 无权限的那颗禁用并就地说明原因，而不是留着让人点了没反应。
+    [["global_pause", "set-gp", state.globalPause], ["registration_pause", "set-rp", state.regPause]]
+      .forEach(function (row) {
+        var field = row[0], base = row[1], paused = row[2];
+        var pauseBtn = $(base + "-pause"), resumeBtn = $(base + "-resume");
+        setHidden(pauseBtn, paused);          // 已暂停时不再提供「暂停」
+        setHidden(resumeBtn, !paused);        // 运行中时不再提供「恢复」
+        [[pauseBtn, true], [resumeBtn, false]].forEach(function (pair) {
+          var b = pair[0]; if (!b) return;
+          var allowed = canDo(field, pair[1]);
+          b.disabled = !allowed;
+          if (allowed) { b.removeAttribute("title"); b.removeAttribute("aria-describedby"); }
+          else b.title = WHY;
+        });
+      });
   }
 
   function apply(data) {
@@ -41,7 +66,7 @@
   // 回调返回请求 Promise（弹窗保持打开）：403（缺口令/口令错）与其余失败的
   // 错误都显示在弹窗内供改口令重试；state 仅成功分支更新，视觉状态无需回滚。
   function pauseAction(field, next) {
-    if (!isMaster) return;
+    if (!canDo(field, next)) return;          // 方向级兜底：按钮已禁用，这里防 DOM 篡改
     var what = field === "global_pause" ? "签到" : "注册";
     var impact = field === "global_pause"
       ? (next ? "所有账号将停止自动签到：正在运行的一轮会跑完，手动签到不受影响，可随时恢复。确认继续？"
@@ -70,10 +95,13 @@
 
   function mount(options) {
     isMaster = !!(options && options.isMaster);
-    var gp = $("set-global-pause");
-    if (gp) gp.addEventListener("click", function () { pauseAction("global_pause", !state.globalPause); });
-    var rp = $("set-reg-pause");
-    if (rp) rp.addEventListener("click", function () { pauseAction("registration_pause", !state.regPause); });
+    [["set-gp-pause", "global_pause", true], ["set-gp-resume", "global_pause", false],
+     ["set-rp-pause", "registration_pause", true], ["set-rp-resume", "registration_pause", false]]
+      .forEach(function (row) {
+        var b = $(row[0]);
+        if (b) b.addEventListener("click", function () { pauseAction(row[1], row[2]); });
+      });
+    sync();
   }
 
   YB.settingsSwitches = { mount: mount, apply: apply };

@@ -620,11 +620,19 @@
         暂停注册：登录页关闭注册入口，已注册用户登录不受影响，需在「账号管理」手动添加账号。
         两项都立即生效（不属于表单值，无「保存」概念），均需二次确认 + 当前管理员密码。</p>
       <div class="set-danger-actions">
-        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-global-pause">
-          {{ icon('pause') }}<span id="set-global-pause-text">暂停自动签到</span>
+        {# 「暂停」与「恢复」是两颗不同权限的按钮（后端按变更方向分权：急停任意管理员、
+           恢复仅主管理员），不是一颗翻转钮。JS 按当前状态只露出该露的那颗、禁用无权限那颗。 #}
+        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-gp-pause">
+          {{ icon('pause') }}<span>暂停自动签到</span>
         </button>
-        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-reg-pause">
-          {{ icon('pause') }}<span id="set-reg-pause-text">暂停注册</span>
+        <button type="button" class="btn btn--ghost set-danger-btn" id="set-gp-resume" hidden>
+          {{ icon('play') }}<span>恢复自动签到</span>
+        </button>
+        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-rp-pause">
+          {{ icon('pause') }}<span>暂停注册</span>
+        </button>
+        <button type="button" class="btn btn--ghost set-danger-btn" id="set-rp-resume" hidden>
+          {{ icon('play') }}<span>开放注册</span>
         </button>
       </div>
       <p class="set-warn" id="set-pause-hint" hidden></p>
