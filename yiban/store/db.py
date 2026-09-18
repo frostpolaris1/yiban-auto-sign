@@ -2959,6 +2959,32 @@ def verify_audit_chain():
 #
 # 锚点存放在**库外**：若存进 yiban.db，有写库权限者可连同审计表一起删掉，锚点
 # 形同虚设。库外文件使"整体重写审计链"还需同步篡改该文件。
+#
+# 锚点行格式（空格分隔；时间戳本身含 1 个空格，故按 token 数区分版本，
+# 解析一律从行尾取字段）：
+#   v1（2026-08-28 起，存量生产文件）： <ts> <min_id> <max_id> <head>              = 5 token
+#   v2（当前）：                        <ts> <min_id> <max_id> <count>
+#                                        <purge_total> <head> <prev_line_hash>     = 8 token
+# v2 新增三字段的用途——
+#   count         锚定时刻链内行数 → "min..max 区间该有多少行"的稠密性判据数据源；
+#   purge_total   锚定时刻已留痕的物理删除累计条数 → 只有锚点**之后**的留痕清理
+#                 才能解释缺口，事后补写事件无法自证；
+#   prev_line_hash 前一行原文 sha256 → 锚点文件自身成链，改写任一历史行/删中间行可检出。
+# 读 v1 行时这三字段为 None（不是 0/""），依赖它们的判据自动降级，不误报。
+_ANCHOR_V1_TOKENS = 5
+_ANCHOR_V2_TOKENS = 8
+#: 库内锚点指纹：{"lines": int, "last_hash": str, "ts": str}
+_ANCHOR_META_KEY = "audit_anchor_meta"
+#: audit_logs 物理删除留痕：累计条数（int）+ 最近若干条事件（JSON 列表）
+_AUDIT_PURGE_TOTAL_KEY = "audit_purge_total"
+_AUDIT_PURGE_EVENTS_KEY = "audit_purge_events"
+#: 留痕事件列表上限（app_meta 单值不宜无界增长；只保留最近 N 条足够追溯）
+_PURGE_EVENTS_KEEP = 200
+#: 文件首行的"前驱哈希"哨兵。必须是非空定长串——写成空串会让行尾空格在 split()
+#: 后少一个 token，整行变得不可解析（曾导致每日误报"锚点文件被删除"）。
+_ANCHOR_GENESIS = "0" * 64
+
+
 def audit_anchor_path():
     """外部锚点文件路径（库外 append-only）。
 
@@ -2975,25 +3001,121 @@ def audit_anchor_path():
     return os.path.join(state_dir, "audit-anchor.log")
 
 
-def record_audit_anchor(path=None):
-    """把当前审计链的 (min_id, max_id, head_hash) 追加到外部锚点文件。
+def _anchor_line_sha(text):
+    """锚点行原文哈希（行间链用）。刻意用无密钥 sha256：锚点文件的定位是"抬高
+    伪造成本 + 留下可追改动"，不是消息认证——密钥与数据同盘时任何 MAC 都可被
+    同一权限重算，真正兜住"整体重写"的是离机副本（日报邮件 / 异机备份）。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    返回写入的锚点行；无审计记录或写入失败返回 None（不阻断调用方）。
+
+def _parse_anchor_line(ln):
+    """解析单条锚点行；不可解析返回 None。
+
+    字段一律**从行尾**取——时间戳本身含空格（"YYYY-MM-DD HH:MM:SS"），从头按下标
+    取会整体错位一格。v1 行缺失的三个字段返回 None（而非 0/""），让调用方能区分
+    "值为 0" 与"该行根本没有这个字段"，避免旧行被当成 count=0 误判。
+    """
+    parts = ln.split()
+    n = len(parts)
+    try:
+        if n == _ANCHOR_V2_TOKENS:
+            return {
+                "version": 2,
+                "ts": " ".join(parts[:-6]),
+                "min_id": int(parts[-6]),
+                "max_id": int(parts[-5]),
+                "count": int(parts[-4]),
+                "purge_total": int(parts[-3]),
+                "head": parts[-2],
+                "prev_line_hash": parts[-1],
+            }
+        if n == _ANCHOR_V1_TOKENS:
+            return {
+                "version": 1,
+                "ts": " ".join(parts[:-3]),
+                "min_id": int(parts[-3]),
+                "max_id": int(parts[-2]),
+                "head": parts[-1],
+                "count": None,
+                "purge_total": None,
+                "prev_line_hash": None,
+            }
+    except ValueError:
+        return None
+    return None
+
+
+def _read_anchor_lines(path):
+    """锚点文件的全部非空行（保持顺序）。文件不存在/不可读返回 None（区别于 []）。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        return None
+
+
+def _get_anchor_meta():
+    """读库内锚点指纹 {"lines","last_hash","ts"}；无记录/缺表/JSON 损坏 → {}。"""
+    raw = get_meta(_ANCHOR_META_KEY, "")
+    if not raw:
+        return {}
+    try:
+        val = json.loads(raw)
+    except ValueError:
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def _audit_purge_total(conn):
+    """累计"已留痕的物理删除条数"（audit_logs 口径）。缺表/缺键 → 0。
+
+    本函数刻意不抛也不吞出锁：调用方要么持有 _conn_lock 并传入共享连接，
+    要么走 get_meta（自取锁）。清理留痕的写入方见 _record_purge_event。
+    """
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_meta WHERE key=?", (_AUDIT_PURGE_TOTAL_KEY,)
+        ).fetchone()
+    except sqlite3.Error:
+        return 0
+    if row is None or row["value"] is None:
+        return 0
+    try:
+        return int(str(row["value"]).strip() or 0)
+    except ValueError:
+        return 0
+
+
+def record_audit_anchor(path=None):
+    """把当前审计链状态追加到外部锚点文件（v2 行格式见上方注释）。
+
+    返回写入的锚点行；无审计记录、链头读取失败或写入失败返回 None（不阻断调用方）。
     建议在每日清理之后调用，使锚点反映清理后的合法状态。
+
+    链头为空时**拒绝写行**而非写一条空字段：少一个 token 的行会被后续解析整体
+    错位（与 _last_audit_anchor 的"从行尾取字段"纪律冲突），宁缺毋滥。
     """
     path = path or audit_anchor_path()
     try:
         with _conn_lock:
             conn = get_conn()
             row = conn.execute(
-                "SELECT MIN(id) AS min_id, MAX(id) AS max_id FROM audit_logs"
+                "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
             ).fetchone()
+            purge_total = _audit_purge_total(conn)
         if not row or row["max_id"] is None:
             return None
-        min_id, max_id = int(row["min_id"]), int(row["max_id"])
+        min_id, max_id, count = int(row["min_id"]), int(row["max_id"]), int(row["n"])
         head = audit_head_hash()
+        if not head:
+            logger.warning("审计链头读取失败（空值），本次不写锚点行")
+            return None
         ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"{ts} {min_id} {max_id} {head}"
+        # 行间链：prev_line_hash 取**前一行原文**的哈希，旧格式（v1）行同样参与
+        # 链——否则攻击者只要删掉文件末尾的 v1 行，剩余行依然自洽，无从发现。
+        lines = _read_anchor_lines(path) or []
+        prev_line_hash = _anchor_line_sha(lines[-1]) if lines else _ANCHOR_GENESIS
+        line = f"{ts} {min_id} {max_id} {count} {purge_total} {head} {prev_line_hash}"
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
@@ -3001,53 +3123,110 @@ def record_audit_anchor(path=None):
             f.write(line + "\n")
         # 锚点落盘成功后在 app_meta 留痕——锚点文件本身可被整删
         # （删掉后校验降级为"通过"），库内元数据使其"应存在却消失"可被检出
-        try:
-            with _conn_lock:
-                conn = get_conn()
-                _begin_immediate(conn)
-                conn.execute(
-                    "INSERT OR REPLACE INTO app_meta (key, value) "
-                    "VALUES ('audit_anchor_last', ?)",
-                    (ts,),
-                )
-                conn.commit()
-        except Exception as meta_err:
-            logger.warning("锚点元数据留痕失败（不影响锚点本身）: %s", meta_err)
+        _record_anchor_trace(path, ts)
         return line
     except Exception as e:
         logger.warning("审计链锚点写入失败: %s", e)
         return None
 
 
+def _record_anchor_trace(path, ts):
+    """在 app_meta 留下锚点文件的指纹与"曾经存在"的痕迹。
+
+    两把钥匙各有分工：
+    - audit_anchor_last（仅 ts，历史兼容键）：锚点文件被**整体删除**时，
+      verify_audit_anchor 仍能判"曾写过锚点却不见了"；
+    - audit_anchor_meta（行数 + 末行哈希）：锚点文件被**截断/改写末行**时检出。
+      行间链对"删掉最后一行"无效（剩余行彼此仍自洽，没有后继行去哈希它），
+      必须有库内指纹交叉对照。行数只增不减——被截断后即使补写一行把长度凑回来，
+      本次指纹仍停留在更高的历史值上（见 _anchor_file_state）。
+    """
+    lines = _read_anchor_lines(path) or []
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            _begin_immediate(conn)
+            prev_raw = conn.execute(
+                "SELECT value FROM app_meta WHERE key=?", (_ANCHOR_META_KEY,)
+            ).fetchone()
+            recorded = 0
+            if prev_raw and prev_raw["value"]:
+                with contextlib.suppress(ValueError):
+                    recorded = int(json.loads(prev_raw["value"]).get("lines") or 0)
+            payload = json.dumps(
+                {
+                    "lines": max(recorded, len(lines)),
+                    "last_hash": _anchor_line_sha(lines[-1]) if lines else "",
+                    "ts": ts,
+                },
+                ensure_ascii=False,
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                (_ANCHOR_META_KEY, payload),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                ("audit_anchor_last", ts),
+            )
+            conn.commit()
+    except Exception as meta_err:
+        logger.warning("锚点元数据留痕失败（不影响锚点本身）: %s", meta_err)
+
+
 def _last_audit_anchor(path):
     """读取最后一条有效锚点行；无锚点或格式不符返回 None。
 
-    行格式为 `<ts> <min_id> <max_id> <head>`。注意时间戳本身含空格
-    （"2026-08-28 18:50:00"），故**从行尾**取固定字段（head / max_id / min_id），
-    不能按下标从头取——否则字段会整体错位一格。
+    行格式见 _ANCHOR_V1_TOKENS / _ANCHOR_V2_TOKENS 附近说明。字段**从行尾**取——
+    时间戳本身含空格，从头按下标取会整体错位一格。
 
-    兼容旧格式（仅 `ts head`，2026-08-21 起 web 写入）：旧行尾部只有一个
-    非数字段，int() 转换失败即跳过，不参与判定，避免升级后误报。
+    兼容三种历史形态：v2（8 token，含 count/purge_total/prev_line_hash）、
+    v1（5 token，2026-08-28 起）、更旧的 `ts head`（3 token，int() 转换失败即跳过，
+    不参与判定，避免升级后误报）。
     """
-    try:
-        with open(path, encoding="utf-8") as f:
-            lines = [ln.strip() for ln in f if ln.strip()]
-    except OSError:
+    lines = _read_anchor_lines(path)
+    if not lines:
         return None
     for ln in reversed(lines):
-        parts = ln.split()
-        if len(parts) < 4:
-            continue
-        try:
-            return {
-                "ts": " ".join(parts[:-3]),
-                "min_id": int(parts[-3]),
-                "max_id": int(parts[-2]),
-                "head": parts[-1],
-            }
-        except ValueError:
-            continue
+        parsed = _parse_anchor_line(ln)
+        if parsed is not None:
+            return parsed
     return None
+
+
+def _anchor_file_state(path):
+    """锚点文件**自身**完整性：行间链 + 库内指纹交叉校验。返回异常描述或 ''。
+
+    审计链的哈希校验只覆盖库内行；锚点文件若被截断/改写，判据会整体失效
+    （verify_audit_anchor 只读末行）。本函数把"锚点文件不可信"从静默降级
+    变成显式失败。
+    """
+    lines = _read_anchor_lines(path)
+    if lines is None:
+        return ""  # 文件缺失/不可读由 audit_anchor_last 那一支判定
+    for i, ln in enumerate(lines):
+        parsed = _parse_anchor_line(ln)
+        if parsed is None or parsed["prev_line_hash"] is None:
+            continue  # 旧格式行没有行间链字段：作为前驱参与哈希，自身不做链校验
+        expect = _anchor_line_sha(lines[i - 1]) if i > 0 else _ANCHOR_GENESIS
+        if parsed["prev_line_hash"] != expect:
+            where = _anchor_line_sha(lines[i - 1])[:12] if i > 0 else _ANCHOR_GENESIS[:12]
+            return (
+                f"锚点文件第 {i + 1} 行的行间哈希不符（期望前驱行 {where}）"
+                "——锚点历史被改写或删除过整行"
+            )
+    meta = _get_anchor_meta()
+    recorded = int(meta.get("lines") or 0) if meta else 0
+    if recorded:
+        if len(lines) < recorded:
+            return (
+                f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
+                "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）"
+            )
+        if (len(lines) == recorded and meta.get("last_hash")
+                and _anchor_line_sha(lines[-1]) != meta["last_hash"]):
+            return "锚点文件末行与库内指纹不符——末行内容被改写"
+    return ""
 
 
 def verify_audit_anchor(path=None):
@@ -3063,7 +3242,8 @@ def verify_audit_anchor(path=None):
     显式路径后会被跳过，锚点致盲问题换了个形式复发。现对显式路径同样生效
     （仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用）。
     """
-    anchor = _last_audit_anchor(path or audit_anchor_path())
+    path = path or audit_anchor_path()
+    anchor = _last_audit_anchor(path)
     if anchor is None:
         try:
             with _conn_lock:
@@ -3080,6 +3260,11 @@ def verify_audit_anchor(path=None):
         except Exception:
             pass  # app_meta 不存在（旧库/跳过迁移）→ 维持旧行为
         return True, ""
+    file_err = _anchor_file_state(path)
+    if file_err:
+        # 锚点文件自身不可信时，后面所有"拿末行与库内比对"的判据都是拿伪造值
+        # 在校验伪造值——必须先判失败。
+        return False, file_err
     try:
         with _conn_lock:
             conn = get_conn()
