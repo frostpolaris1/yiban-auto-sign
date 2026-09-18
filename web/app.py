@@ -674,8 +674,18 @@ RESTORE_FAIL_WINDOW = 600
 # 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
 LOGIN_FAIL_NOTIFY = 3
 # 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
-# 只用于告警判定，不锁管理员（P18）。
+# 只用于告警与冷却判定，不锁管理员（P18）。
 SENSITIVE_PW_FAIL_WINDOW = 900
+# 敏感口令门禁的两个默认窗口（.env 可覆盖，唯一解析处见 _sensitive_gate_params）：
+# - 豁免：本会话在 PW_CONFIRM_TTL_DEFAULT 秒内复核过口令、且出口 IP 未变 → 配置类动作
+#   免再输口令。上限 PW_CONFIRM_TTL_MAX 是硬钳——豁免窗口比会话本身还长就等于取消门禁。
+# - 冷却：独立计数达阈值后，这段时间内**一切需要复核的写操作**（含正确口令）一律拒绝。
+PW_CONFIRM_TTL_DEFAULT = 300
+PW_CONFIRM_TTL_MAX = 900
+PW_CONFIRM_COOLDOWN_DEFAULT = 300
+# 门禁拒绝文案（按状态码取）：403 是"设置未生效"（系统开关/执行体写沿用），
+# 400 是"操作已取消"（高危二次鉴权沿用）。两处历史契约都不动。
+PW_DENY_TEXT = {400: "当前密码不正确，操作已取消", 403: "口令校验未通过，设置未生效"}
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
@@ -1622,6 +1632,21 @@ def _bump_login_failure(store, key, now):
         fails += 1
         store[key] = (fails, 0, now)
         return fails
+
+
+def _sensitive_gate_params(env_path):
+    """敏感口令门禁两个旋钮的唯一解析处，返回 (豁免 TTL 秒, 冷却秒数)。
+
+    收在一处是为了"豁免窗口不可能被一个 .env 笔误放成永久"：TTL 上界硬钳
+    `PW_CONFIRM_TTL_MAX`（900 秒），配得再大也只按 900 生效；0 = 关闭豁免
+    （每次复核都要口令）。冷却同为 0 = 关闭（只留告警与独立计数），给运维
+    留一条"宁可慢也不要被门禁挡住"的降级路。`load_env_int` 已把负值夹到 0。
+    """
+    ttl = min(load_env_int(env_path, "YIBAN_PW_CONFIRM_TTL", PW_CONFIRM_TTL_DEFAULT),
+              PW_CONFIRM_TTL_MAX)
+    cooldown = load_env_int(env_path, "YIBAN_PW_CONFIRM_COOLDOWN_SEC",
+                            PW_CONFIRM_COOLDOWN_DEFAULT)
+    return ttl, cooldown
 
 
 def _verify_attempt_allowed(store, username):
@@ -3341,6 +3366,11 @@ def create_app(host=None):
     # 与 _login_fails 分开——P18 教训是"持 Cookie 者若写共享计数可把管理员锁出登录"，
     # 故高危二次鉴权/开关门/执行体门的失败只走本计数 + 首达阈值告警，绝不碰登录计数。
     _sensitive_pw_fails = {}
+    # 门禁级冷却 {(ip, 用户名): (失败次数, 解锁时刻)}：独立计数达阈值后，解锁时刻之前
+    # 一律拒绝需要复核的写操作（见 _sensitive_password_gate）。刻意与 _login_fails 的
+    # lock_until 分开两份账——冷却封的是"高危写"，登录与只读必须照常，反之亦然。
+    # 值末位统一是时间戳，故写入路径的 _ip_store_trim 能按同口径回收（防无界增长）。
+    _sensitive_pw_cooldown = {}
     # 全局限速记录 {ip: [count, window_start]}
     _rate_limits = {}
     # 已登录 GET 的独立计数桶（与严格桶分开，互不挤占；见 rate_limit 说明）
@@ -6736,9 +6766,8 @@ def create_app(host=None):
 
         口令核对语义的单一来源：内置管理员（.env）走 verify_admin（哈希优先，
         fail-closed）；注册管理员（users 表）走 password_hash 比对。
-        失败处置由调用方自行决定——_reconfirm_admin_password 在此之上叠加与
-        登录共用的 _login_fails 失败计数；系统开关门禁只比对不计数（P18 教训：
-        持 Cookie 者若能写共享计数，可反复试错把管理员锁出登录）。
+        失败处置**只有一处**——_sensitive_password_gate 在其上叠加独立计数、告警与
+        冷却；本函数自己不动任何计数表。
         """
         username = session.get("username", "")
         if _is_builtin_admin_session():
@@ -6746,92 +6775,153 @@ def create_app(host=None):
         u = db.find_user(username.strip().lower())
         return bool(u) and check_password_hash(u.get("password_hash", ""), password)
 
-    def _bump_sensitive_pw_fail(action):
-        """敏感操作口令复核失败的独立计数 + 首达阈值告警（M5）。
+    def _pw_confirm_exempt(ttl, now):
+        """本会话是否处在"刚复核过口令"的豁免窗口内（仅配置类动作可用）。
 
-        只在"复核失败"时调用：窗口内累计（键绑 (IP, 用户名)，窗口 15 分钟），
-        达到 LOGIN_FAIL_NOTIFY 次时发一次**紧急**告警（每窗口最多一次——
-        超过阈值后 count 继续涨但只在 == 阈值时触发；窗口滚动后归零重计）。
-        **不写 `_login_fails`**（P18：防持 Cookie 者把管理员锁出登录）。
+        两个条件缺一不可：
+        - TTL 内复核成功过（`ttl <= 0` 直接关闭豁免，回到"每次都要口令"）；
+        - **当前出口 IP 与授权时一致**——被窃 Cookie 换个出口就免检是不可接受的，
+          而管理员从手机热点/VPN 换个出口后重新输一次口令是可接受的摩擦。
         """
-        username = (session.get("username") or "?").strip().lower()[:64]
-        ip = _client_ip()
-        now = time.time()
-        key = (ip, username)
+        if ttl <= 0:
+            return False
+        ts = session.get("pw_ok_ts")
+        return bool(
+            isinstance(ts, (int, float))
+            and now - ts <= ttl
+            and session.get("pw_ok_ip") == _client_ip()
+        )
+
+    def _sensitive_pw_denied(key, action, deny_status, cooldown, now):
+        """门禁口令不符的处置：独立计数 → 首达阈值告警 → 达阈值起进入/续期冷却。
+
+        刻意**绝不写 `_login_fails`**（P18）：能持 Cookie 撞门禁的人若可写登录侧的共享
+        计数，就能用错口令把管理员同时锁在"登录"和"所有高危运维"之外，把风控变成攻击面。
+
+        告警按 `== LOGIN_FAIL_NOTIFY` 只发一条（同一窗口不刷屏，运维口径），但冷却按
+        `>= 阈值` **每次失败都续期**：只在"恰好等于阈值"那一次布防的话，冷却到期后的
+        第 4、5… 次失败既不再告警也不再被挡，等于把同一个洞留回原处。续期之后，
+        攻击者每 `cooldown` 秒最多只能做 `LOGIN_FAIL_NOTIFY` 次口令散列（实测单次
+        scrypt 约 157ms），而不是此前的约 6 次/秒。
+        """
         with _rate_lock:
-            _ip_store_trim(_sensitive_pw_fails, _IP_STORE_MAX_AGE)
+            _ip_store_trim(_sensitive_pw_fails,
+                           SENSITIVE_PW_FAIL_WINDOW + _IP_STORE_MAX_AGE)
         cnt, _start, _allowed = _bump_window_count(
             _sensitive_pw_fails, key, now, SENSITIVE_PW_FAIL_WINDOW)
+        if cnt >= LOGIN_FAIL_NOTIFY and cooldown > 0:
+            with _rate_lock:
+                _sensitive_pw_cooldown[key] = (cnt, now + cooldown)
         if cnt == LOGIN_FAIL_NOTIFY:
             send_notification(
-                "敏感操作口令复核失败告警",
-                f"账号 {_nl_safe(username)} 在 IP {_nl_safe(ip)} 连续 "
-                f"{cnt} 次口令复核失败（{_nl_safe(action)}）\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "高危操作二次鉴权失败告警",
+                f"IP {_nl_safe(key[0])} 对「{action}」连续 {cnt} 次口令验证失败"
+                f"（会话用户: {_nl_safe(key[1])}）\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "如非本人操作，可能是账号或会话被他人使用，请立即检查。"
+                + (f"\n敏感操作已暂停 {cooldown} 秒（登录、只读页面与普通设置不受影响）。"
+                   if cooldown > 0 else ""),
                 urgent=True,
             )
+            # 只在布防那一刻留一条审计：429 本身不逐条写，否则被盗会话又能拿
+            # "拒绝"当免费打字机刷审计表。
+            if cooldown > 0:
+                db.audit(
+                    key[1], "sensitive_pw_cooldown", db.hash_ip(key[0]),
+                    f"「{action}」口令复核连续失败 {cnt} 次，"
+                    f"敏感操作暂停 {cooldown} 秒",
+                )
+        return jsonify({"error": PW_DENY_TEXT[deny_status]}), deny_status
+
+    def _sensitive_password_gate(data, action, *, always_required=False,
+                                 deny_status=403):
+        """敏感操作口令复核的**唯一入口**。返回 None = 放行，否则是要直接 `return` 的响应。
+
+        为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）此前各写各的
+        判定，共同点是**没有冷却**——实测以主管理员会话对 `POST /api/settings` 连投错误
+        `confirm_password`，200 次只被通用 API 限速（60 次/10 秒）挡住，约 6 次/秒 ×
+        单次 scrypt 157ms 就能打满一核；比项目自己的登录口（10 次/60 秒 + 第 5 次锁
+        300 秒）快约 38 倍且**永不锁**，等于给绕过登录限速留了个算力口子。
+
+        三段判定按序：
+        1. **冷却优先于口令**：本 (出口 IP, 会话账号) 已进冷却 → 429，正确口令也不放行
+           （否则"改用对口令"就是冷却自带的绕过口子）。冷却只封这条门禁：登录、只读
+           GET、以及不需要复核的写操作一律照常。
+        2. **豁免**（仅 `always_required=False` 的配置类动作）：见 _pw_confirm_exempt。
+        3. **口令比对**：通过则把授权时刻与出口 IP 记进会话，供第 2 段用。
+
+        `always_required=True` 用于"必须当次输口令"的动作——不可逆清除、关闭/改道告警
+        通道、角色变更、重置他人口令、改主管理员口令。调用点逐个标注，见各站点注释。
+        """
+        if not session.get("auth"):
+            return jsonify({"error": "未登录"}), 401
+        ttl, cooldown = _sensitive_gate_params(ENV_FILE)
+        key = (_client_ip(), (session.get("username") or "?").strip().lower()[:64])
+        now = time.time()
+        with _rate_lock:
+            _ip_store_trim(_sensitive_pw_cooldown, cooldown + _IP_STORE_MAX_AGE)
+            until = (_sensitive_pw_cooldown.get(key) or (0, 0))[1]
+        if now < until:
+            return jsonify(
+                {"error": "口令校验失败次数过多，敏感操作已暂停，请稍后再试"}), 429
+        if not always_required and _pw_confirm_exempt(ttl, now):
+            return None
+        submitted = str(data.get("confirm_password", ""))
+        if not submitted:
+            # 没提交口令 ≠ 猜错口令：照旧拒绝（文案与状态码不变），但**不计数、不告警、
+            # 不进冷却**。冷却要限的是口令散列次数（实测单次 scrypt 约 157ms），而空口令
+            # 在入口就被挡掉、一次散列都不做；把它计入阈值等于让攻击者用"空请求"就能把
+            # 合法管理员的敏感操作预算刷光，也正是 _admin_delete_limited 修掉的那类运维 DoS
+            # （前端"点了保存又取消口令框"的正常操作同样不该被罚）。
+            return jsonify({"error": PW_DENY_TEXT[deny_status]}), deny_status
+        if _verify_session_password(submitted):
+            session["pw_ok_ts"] = now
+            session["pw_ok_ip"] = key[0]
+            return None
+        return _sensitive_pw_denied(key, action, deny_status, cooldown, now)
 
     def _executor_write_guard(data, action, changed):
         """执行体写操作的口令复核（返回 None = 通过，否则是 `(响应, 状态码)`）。
 
-        与 `POST /api/settings` 的系统开关**逐字同构**（前端 88 号提示词要求别另立一套）：
+        与 `POST /api/settings` 的系统开关**同一个门禁入口**（前端 88 号提示词要求别另立
+        一套），本函数只剩两条落点特有的判断：
 
         - **只在"真的会改配置"时要求**（`changed=False` = 请求值与现值一致 → 不要求）：
           日常无变更的保存不该多一道口令；
-        - **只比对不计数**（`_verify_session_password`）：P18 教训——持 Cookie 者若能写
-          与登录共用的失败计数，就能反手把管理员锁出登录，等于把风控变成攻击面；
-        - 失败 **403** + 审计留痕，文案沿用系统开关那条（前端直接显示，不自己拼）；
         - **审计只落动作与槽位**：绝不记口令，也不记代理串（可能带凭据）与自定义名
           （用户输入，可能整串是敏感内容）。
 
         为什么执行体写操作要这道门：持被窃的主管理员会话（Cookie + CSRF）此前可以直接
         改出口、增删执行体、关掉兜底——而这恰恰是最容易造成**静默漏签**的一类配置。
+        属"配置类"动作，故可被 TTL 豁免（刚复核过口令的同一出口不必再输一次）。
         """
         if not changed:
             return None
-        if _verify_session_password(str(data.get("confirm_password", ""))):
-            return None
-        _bump_sensitive_pw_fail(f"执行体写操作: {action}")
-        db.audit(session.get("username") or "?", "executors_pw_fail", "executors", action)
-        return jsonify({"error": "口令校验未通过，设置未生效"}), 403
+        denied = _sensitive_password_gate(data, f"执行体写操作: {action}")
+        if denied is not None:
+            db.audit(session.get("username") or "?", "executors_pw_fail", "executors",
+                     action)
+            return denied
+        return None
 
-    def _reconfirm_admin_password(password, action_label):
+    def _reconfirm_admin_password(password, action_label, always_required=True):
         """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
 
-        口令比对语义见 _verify_session_password。失败计数与登录/改密共用
-        _login_fails（达阈值锁定并告警）；成功清除失败计数。
-        返回 None 表示通过，否则返回 4xx 响应。
+        签名与返回约定保持不变（None = 通过，否则 `(响应, 状态码)` 元组），以免改动
+        20+ 调用点；实现整体交给 _sensitive_password_gate（含失败计数、告警与冷却）。
+        与原实现的两处语义差别：
+        - **不再读写 `_login_fails`**：原实现把失败记进与登录共用的桶并置 lock_until，
+          于是与管理员同出口 IP 的被窃会话可以用错口令把主管理员同时锁在"登录"和
+          "所有高危运维"之外（P18 残留，本次摘掉）；
+        - 也不再借用登录侧的锁定状态：登录侧锁着，不影响本会话用**正确口令**做运维。
+
+        `always_required` 默认 True——本函数的调用点本来就是一串"不可逆清除 / 角色变更 /
+        重置他人口令 / 关闭告警通道"，这些必须当次输口令；只有设置页里两个纯配置项
+        （签到随机延迟、容量上限）显式传 False 走豁免。
         """
-        if not session.get("auth"):
-            return jsonify({"error": "未登录"}), 401
-        username = session.get("username", "")
-        ip = _client_ip()
-        now = time.time()
-        fail_key = (ip, username.strip().lower())
-        with _rate_lock:
-            _fails, lock_until, _ = _login_fails.get(fail_key, (0, 0, 0))
-            if now < lock_until:
-                return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
-        if _verify_session_password(password):
-            with _rate_lock:
-                _login_fails.pop(fail_key, None)
-            return None
-        nfails = _bump_login_failure(_login_fails, fail_key, now)
-        if nfails >= LOGIN_MAX_FAILS:
-            with _rate_lock:
-                _login_fails[fail_key] = (0, now + LOGIN_LOCK_SECONDS, now)
-            logger.warning("二次鉴权失败次数过多，IP %s 锁定 %s 秒（%s）", db.hash_ip(ip), LOGIN_LOCK_SECONDS, action_label)
-            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
-        if nfails == LOGIN_FAIL_NOTIFY:
-            send_notification(
-                "高危操作二次鉴权失败告警",
-                f"IP {_nl_safe(ip)} 对「{action_label}」连续 {nfails} 次口令验证失败"
-                f"（会话用户: {_nl_safe(username)}）\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "如非本人操作，可能是账号或会话被他人使用，请立即检查。",
-                urgent=True,
-            )
-        return jsonify({"error": "当前密码不正确，操作已取消"}), 400
+        return _sensitive_password_gate(
+            {"confirm_password": password}, action_label,
+            always_required=always_required, deny_status=400)
 
     def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试"):
         """高危动作统一门禁：先二次鉴权，**通过之后**才占用高危限速额度。
@@ -6840,13 +6930,26 @@ def create_app(host=None):
         一个只拿到 Cookie、不知道口令的被盗会话，用错口令反复尝试就能把主管理员
         的"删除 + 告警通道变更"预算（默认 5 次 / 60 秒）全部吃掉，反过来让合法
         运维的每一次高危操作都撞 429（运维 DoS）。口令暴力的防护本就由
-        _reconfirm_admin_password 里的 _login_fails 承担（第 3 次告警、第 5 次锁定
-        15 分钟），不需要再借用高危额度；额度只该被**真实执行过**的高危动作消耗。
+        _sensitive_password_gate 里的独立计数与门禁级冷却承担（第 3 次告警并暂停
+        敏感操作），不需要再借用高危额度；额度只该被**真实执行过**的高危动作消耗。
 
         仍复用同一套计数（不新建第二套 store，评审口径），不改变"超限即 429"的语义。
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
+
+        本函数走的全部是"必须当次输口令"的动作（`always_required=True`，豁免不适用），
+        逐个落点：账号/用户的不可逆清除与删除（/api/accounts/batch 的 purge、
+        /api/accounts/<idx>/delete、/api/users/batch 的 delete、
+        /api/users/<email>/delete 的 full 与 accounts_only、
+        /api/users/deleted/purge）、关闭告警通道或改其密钥/额度（/api/mail-config 的
+        开关、/api/notify-config）、角色变更（/api/users/<email>/role）、
+        重置他人口令（/api/users/<email>/password）。
+        同为 always_required 但不占高危额度的还有 /api/mail-config 的 SMTP/收件人变更
+        （直连 _reconfirm_admin_password）。
+        可被 TTL 豁免的配置类动作只有三处：/api/settings 的系统开关、
+        /api/settings 的签到随机延迟与容量上限、/api/scheduler/executors* 的写操作。
         """
-        pw_err = _reconfirm_admin_password(str(data.get("confirm_password", "")), action_label)
+        pw_err = _reconfirm_admin_password(
+            str(data.get("confirm_password", "")), action_label, always_required=True)
         if pw_err:
             return pw_err
         if _admin_delete_limited():
@@ -8007,8 +8110,11 @@ def create_app(host=None):
         # v0.29.0：随机延迟影响自动+手动签到节奏，修改需主管理员密码二次确认，
         # 且新设置预估容量不足（当前活跃账号超过预估值）时拒绝保存。
         if has_start or has_gap:
-            # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
-            denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改签到随机延迟")
+            # 纯配置项（不改权限、不可逆清除、不拆报警器）→ 允许 TTL 豁免
+            # （_reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组）
+            denied = _reconfirm_admin_password(
+                str(data.get("confirm_password", "")), "修改签到随机延迟",
+                always_required=False)
             if denied is not None:
                 return denied
             # 2026-09-08 单门：容量口径收敛为活跃账号数（账号容量约束易班请求负载），
@@ -8107,23 +8213,23 @@ def create_app(host=None):
             (global_pause is not None and global_pause != _cur_gp)
             or (registration_pause is not None and registration_pause != _cur_rp)
         )
-        # 只比对不计数：不写与登录共用的 _login_fails（P18 教训——持 Cookie 者
-        # 可借共享计数反复试错把管理员锁出登录），失败仅审计留痕；成功同样
-        # 不动计数（清计数只属于真实登录/既有二次鉴权路径）。
-        if _switch_changed and not _verify_session_password(str(data.get("confirm_password", ""))):
-            _bump_sensitive_pw_fail("系统开关")
-            db.audit(
-                session.get("username") or "?",
-                "settings_switch_pw_fail",
-                "settings",
-                "系统开关口令复核未通过（全局暂停=%s 注册暂停=%s）" % (
-                    "未携带" if global_pause is None else
-                    ("无变更" if global_pause == _cur_gp else "尝试变更"),
-                    "未携带" if registration_pause is None else
-                    ("无变更" if registration_pause == _cur_rp else "尝试变更"),
-                ),
-            )
-            return jsonify({"error": "口令校验未通过，设置未生效"}), 403
+        # 系统开关走统一门禁（配置类动作 → 可被"刚复核过 + 同出口 IP"的 TTL 豁免）；
+        # 值未变（或未携带这两个字段）根本不进门禁，其它字段的保存流程零影响。
+        if _switch_changed:
+            denied = _sensitive_password_gate(data, "系统开关")
+            if denied is not None:
+                db.audit(
+                    session.get("username") or "?",
+                    "settings_switch_pw_fail",
+                    "settings",
+                    "系统开关口令复核未通过（全局暂停=%s 注册暂停=%s）" % (
+                        "未携带" if global_pause is None else
+                        ("无变更" if global_pause == _cur_gp else "尝试变更"),
+                        "未携带" if registration_pause is None else
+                        ("无变更" if registration_pause == _cur_rp else "尝试变更"),
+                    ),
+                )
+                return denied
         # ---- 注册账号验证 + 探针模式（任意管理员可改；v0.23.x）----
         account_verify = None
         if "account_verify" in data:
@@ -8173,8 +8279,11 @@ def create_app(host=None):
         if max_users_val is not None or max_accounts_val is not None:
             # 容量上限与调度参数同风险级：被窃主管理员会话可借此拆掉负载闸门，
             # 变更同样要求口令二次确认（2026-09-08，前端确认框本就为此收集密码）；
-            # 与 start/gap 同时携带时走两次校验，密码相同无额外副作用
-            denied = _reconfirm_admin_password(str(data.get("confirm_password", "")), "修改容量上限")
+            # 与 start/gap 同时携带时走两次校验，密码相同无额外副作用。
+            # 与签到随机延迟同档：纯配置项，允许 TTL 豁免。
+            denied = _reconfirm_admin_password(
+                str(data.get("confirm_password", "")), "修改容量上限",
+                always_required=False)
             if denied is not None:
                 return denied
         # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
