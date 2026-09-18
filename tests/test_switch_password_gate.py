@@ -23,11 +23,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
+LOGIN_FAIL_NOTIFY = 3
 
 
 class SwitchPasswordGateTest(unittest.TestCase):
@@ -195,6 +197,40 @@ class SwitchPasswordGateTest(unittest.TestCase):
         c2 = self.webapp.create_app().test_client()
         r3 = c2.post("/api/login", json={"username": "admin", "password": ADMIN_PASS})
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+
+    def test_sensitive_pw_fail_alerts_once_at_threshold(self):
+        """M5：口令复核失败走独立计数，首达阈值发一次紧急告警。
+
+        用户裁决（P18 延续）：不写 _login_fails（不锁管理员），另开独立计数 +
+        连续失败告警。连错 LOGIN_FAIL_NOTIFY 次：每次仍 403，仅第 3 次触发
+        send_notification 一次（每窗口一次），且有审计留痕。
+        """
+        c, hdr = self._login()
+        with mock.patch.object(self.webapp, "send_notification") as m:
+            for _ in range(LOGIN_FAIL_NOTIFY):
+                r = c.post("/api/settings", json={
+                    "registration_pause": 1, "confirm_password": "WrongPass999!"},
+                    headers=hdr)
+                self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertEqual(m.call_count, 1, "首达阈值只告警一次")
+        title, body, kw = m.call_args[0][0], m.call_args[0][1], m.call_args[1]
+        self.assertIn("口令复核失败", title)
+        self.assertTrue(kw.get("urgent"), "敏感操作复核失败应走紧急告警")
+        self.assertIn("系统开关", body)
+        self.assertNotIn("WrongPass999!", body, "告警不得回显口令")
+        self.assertTrue(self._audit_fail_rows(), "失败必须留审计")
+
+    def test_sensitive_pw_fail_no_repeat_alert_in_same_window(self):
+        """M5：同一窗口内超阈值后再多失败也不重复告警（避免刷屏）。"""
+        c, hdr = self._login()
+        with mock.patch.object(self.webapp, "send_notification") as m:
+            for _ in range(LOGIN_FAIL_NOTIFY + 2):
+                r = c.post("/api/settings", json={
+                    "registration_pause": 1, "confirm_password": "WrongPass999!"},
+                    headers=hdr)
+                self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertEqual(m.call_count, 1,
+                         "窗口未滚动时超阈值再多失败也只告警一次")
 
 
 if __name__ == "__main__":

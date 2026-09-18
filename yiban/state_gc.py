@@ -19,6 +19,8 @@ import datetime
 import os
 import re
 
+from yiban import clock
+
 # 保留期档位（默认值；调用方可用环境变量覆盖）
 RETENTION_DAYS = 365
 SNAPSHOT_RETENTION_DAYS = 7
@@ -186,7 +188,8 @@ def sweep_empty_cred_state(state_dir):
 
 # ---- 内部实现 ----
 def _cutoff(days, now=None):
-    base = (now or datetime.datetime.now()).date()
+    """保留期截止日（按业务钟：文件名日期都是北京时间写入的）。"""
+    base = (now or clock.now()).date()
     return (base - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
 
 
@@ -220,6 +223,8 @@ def _iter_expired(state_dir, log_dir, cutoffs, now=None):
                 continue
     if not os.path.isdir(state_dir):
         return
+    # epoch 秒与文件 mtime 比较，属"物理时刻"语义而非业务日——保留宿主时间
+    # （与 client.py 比对服务端时间戳那处同属刻意例外，见 clock 模块头注）。
     threshold = ((now or datetime.datetime.now()) - datetime.timedelta(
         seconds=_TMP_MAX_AGE_SEC)).timestamp()
     for name in sorted(os.listdir(state_dir)):

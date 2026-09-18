@@ -673,6 +673,9 @@ RESTORE_FAIL_MAX = 30
 RESTORE_FAIL_WINDOW = 600
 # 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
 LOGIN_FAIL_NOTIFY = 3
+# 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
+# 只用于告警判定，不锁管理员（P18）。
+SENSITIVE_PW_FAIL_WINDOW = 900
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
@@ -3334,6 +3337,10 @@ def create_app(host=None):
 
     # 登录失败记录 {ip: [fail_count, lock_until]}
     _login_fails = {}
+    # 敏感操作口令复核失败的**独立**计数 {fail_key: [count, window_start]}（M5）：
+    # 与 _login_fails 分开——P18 教训是"持 Cookie 者若写共享计数可把管理员锁出登录"，
+    # 故高危二次鉴权/开关门/执行体门的失败只走本计数 + 首达阈值告警，绝不碰登录计数。
+    _sensitive_pw_fails = {}
     # 全局限速记录 {ip: [count, window_start]}
     _rate_limits = {}
     # 已登录 GET 的独立计数桶（与严格桶分开，互不挤占；见 rate_limit 说明）
@@ -6739,6 +6746,31 @@ def create_app(host=None):
         u = db.find_user(username.strip().lower())
         return bool(u) and check_password_hash(u.get("password_hash", ""), password)
 
+    def _bump_sensitive_pw_fail(action):
+        """敏感操作口令复核失败的独立计数 + 首达阈值告警（M5）。
+
+        只在"复核失败"时调用：窗口内累计（键绑 (IP, 用户名)，窗口 15 分钟），
+        达到 LOGIN_FAIL_NOTIFY 次时发一次**紧急**告警（每窗口最多一次——
+        超过阈值后 count 继续涨但只在 == 阈值时触发；窗口滚动后归零重计）。
+        **不写 `_login_fails`**（P18：防持 Cookie 者把管理员锁出登录）。
+        """
+        username = (session.get("username") or "?").strip().lower()[:64]
+        ip = _client_ip()
+        now = time.time()
+        key = (ip, username)
+        with _rate_lock:
+            _ip_store_trim(_sensitive_pw_fails, _IP_STORE_MAX_AGE)
+        cnt, _start, _allowed = _bump_window_count(
+            _sensitive_pw_fails, key, now, SENSITIVE_PW_FAIL_WINDOW)
+        if cnt == LOGIN_FAIL_NOTIFY:
+            send_notification(
+                "敏感操作口令复核失败告警",
+                f"账号 {_nl_safe(username)} 在 IP {_nl_safe(ip)} 连续 "
+                f"{cnt} 次口令复核失败（{_nl_safe(action)}）\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
+            )
+
     def _executor_write_guard(data, action, changed):
         """执行体写操作的口令复核（返回 None = 通过，否则是 `(响应, 状态码)`）。
 
@@ -6759,6 +6791,7 @@ def create_app(host=None):
             return None
         if _verify_session_password(str(data.get("confirm_password", ""))):
             return None
+        _bump_sensitive_pw_fail(f"执行体写操作: {action}")
         db.audit(session.get("username") or "?", "executors_pw_fail", "executors", action)
         return jsonify({"error": "口令校验未通过，设置未生效"}), 403
 
@@ -7052,6 +7085,7 @@ def create_app(host=None):
             # 内存模拟用户表，保持动态管理员数量判断
             sim_users = {u["email"]: dict(u) for u in users}
             ops = []
+            processed = []  # 真正进了 ops 的邮箱（M6：sid 轮换只认它，不含被跳过的）
             for email in emails:
                 target = sim_users.get(email)
                 if not target or email == builtin:  # 内置管理员不可批量操作
@@ -7076,6 +7110,7 @@ def create_app(host=None):
                         )
                     )
                     sim_users[email]["pw_version"] = target.get("pw_version", 1) + 1
+                    processed.append(email)
                 elif action == "delete":
                     # 防呆：目标为管理员时校验至少保留 1 个管理员
                     # （内置管理员存在时允许删除最后一个注册管理员，与单条路径一致）
@@ -7117,28 +7152,35 @@ def create_app(host=None):
                         f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         urgent=True,
                     )
-                # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）
+                # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）。
+                # 只轮换**真正重置了密码**的账号（processed）：原实现遍历请求里的
+                # emails 原文，被跳过的管理员（内置/非主管理员动其他管理员）密码没变、
+                # sid 却被换掉 → 会话被无端登出（越权影响他人会话，M6）。
                 if action == "reset_password":
-                    for e in emails:
+                    for e in processed:
                         with contextlib.suppress(Exception):
                             db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
                     # 批量重置密码即时告警
                     send_notification(
                         "密码重置告警",
                         f"批量重置密码 ×{done}: "
-                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
+                        f"{', '.join(_mask_email(e) for e in (processed or [])[:20])}，"
                         f"操作者 {session.get('username', '?')}，时间 "
                         f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         urgent=True,
                     )
+            # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
+            # M6：重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
+            audit_detail = (f"处理 {done} 个: " + ",".join(
+                _mask_email(e) for e in (emails or [])[:20]
+            ))[:200]
+            if action == "reset_password" and done < len(emails or []):
+                audit_detail += f"；跳过 {len(emails or []) - done} 个"
             db.audit(
                 session.get("username") or "?",
                 "users_batch",
                 action,
-                # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
-                (f"处理 {done} 个: " + ",".join(
-                    _mask_email(e) for e in (emails or [])[:20]
-                ))[:200],
+                audit_detail,
             )
             logger.info("批量%s用户 %d 个", action, done)
             msg = {
@@ -7941,7 +7983,13 @@ def create_app(host=None):
                                 "edge_front_sec", "edge_back_sec",
                                 "allow_time_pref", "sign_window", "sign_mode",
                                 "global_pause", "start_delay_max", "gap_max",
-                                "registration_pause", "max_users", "max_accounts")
+                                "registration_pause", "max_users", "max_accounts",
+                                # M12：account_verify 与 probe_* 会对**全站账号**做
+                                # 真实登录（与签到同一风控面），普通管理员改之可自设
+                                # 周期与时刻——收归主管理员（与"能造成静默漏签/风控
+                                # 暴露"的动作同一档）
+                                "account_verify", "probe_enable",
+                                "probe_time", "probe_interval")
         ):
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         # 字段携带才写——原实现缺省即 0 且无条件写两个键，
@@ -8063,6 +8111,7 @@ def create_app(host=None):
         # 可借共享计数反复试错把管理员锁出登录），失败仅审计留痕；成功同样
         # 不动计数（清计数只属于真实登录/既有二次鉴权路径）。
         if _switch_changed and not _verify_session_password(str(data.get("confirm_password", ""))):
+            _bump_sensitive_pw_fail("系统开关")
             db.audit(
                 session.get("username") or "?",
                 "settings_switch_pw_fail",

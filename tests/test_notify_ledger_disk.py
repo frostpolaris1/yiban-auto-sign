@@ -90,6 +90,24 @@ class NotifyLedgerDiskTest(unittest.TestCase):
             remaining = self.notify._daily_remaining("general")
         self.assertEqual(remaining, 5, "跨日后应归零重新计数")
 
+    def test_daily_today_uses_business_clock_not_host_tz(self):
+        """Low-3：账本"今日"必须按业务钟（北京），UTC 主机上不得用宿主日期。
+
+        UTC 主机上 `time.strftime` 的本地日期比北京晚（北京时间 09-17 00:00 时
+        宿主仍是 09-16 16:00）——额度重置点错位，一个北京日历日内可动用近两份
+        额度。修复后 `_daily_today` 委托 `yiban.clock.today`：让两个来源返回
+        不同日期，断言账本落盘用的是 clock 那个。
+        """
+        os.environ["YIBAN_NOTIFY_DAILY_MAX"] = "5"
+        with mock.patch("yiban.notify.ledger.clock.today", return_value="2026-09-17"), \
+                mock.patch.object(self.notify.time, "strftime",
+                                  return_value="2026-09-16"):
+            ticket = self.notify._consume_daily_budget("general")
+            self.assertTrue(ticket.allowed)
+            disk = self._read_disk()
+        self.assertEqual(disk["general"]["date"], "2026-09-17",
+                         "账本日期必须是业务钟（北京日），不是宿主日期")
+
     def test_refund_persists_to_disk(self):
         """退还后磁盘计数回退。"""
         os.environ["YIBAN_NOTIFY_DAILY_MAX"] = "5"

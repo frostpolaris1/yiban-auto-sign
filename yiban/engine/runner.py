@@ -504,7 +504,13 @@ def main(argv=None):
 
     # A 线：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。
-    alerts._flush_admin_mail_summary()
+    # 但异常不能逃逸：退出码是 run.sh/调度器的事实源，任何一个未捕获异常都会把
+    # 收尾（sched-run 标记、退出码）打断。只记类型名不记 str(e)——异常文本
+    # 可能内嵌 URL/token（M10）。
+    try:
+        alerts._flush_admin_mail_summary()
+    except Exception as e:
+        logger.warning("签到汇总邮件收尾异常（%s），不影响退出码", type(e).__name__)
 
     # 全量运行完成标记：调度器首签/补签闸门的事实源。
     # 仅全量模式写入；--only 手动签到不写——手动成功不得压制调度器当日判定。

@@ -148,7 +148,7 @@ def reclaim_stale(stale_seconds=VERIFY_JOB_STALE_SECONDS, reject_status="",
     from yiban.store import db
     try:
         conn = db.get_conn()
-        cutoff = (datetime.datetime.now()
+        cutoff = (clock.now()
                   - datetime.timedelta(seconds=stale_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
             probe = conn.execute(
@@ -194,7 +194,7 @@ def purge(days=VERIFY_JOB_RETENTION_DAYS):
     from yiban.store import db
     try:
         conn = db.get_conn()
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+        cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         with db._conn_lock:
