@@ -217,8 +217,8 @@ class ManualChainWindowGuardTest(unittest.TestCase):
         os.environ["YIBAN_SIGN_END"] = "07:50"
         os.environ.pop("YIBAN_SECOND_RUN", None)
         os.environ.pop("YIBAN_GLOBAL_PAUSE", None)
-        self.state_path = os.path.join(
-            self.tmp, f"sign-state-{signin.clock.now().strftime('%Y-%m-%d')}.json")
+        # 与各用例 mock 的时钟日期一致（固定 2026-09-17，不随运行日漂移）
+        self.state_path = os.path.join(self.tmp, "sign-state-2026-09-17.json")
 
     def tearDown(self):
         os.environ.clear()

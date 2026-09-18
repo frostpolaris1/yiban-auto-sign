@@ -434,7 +434,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         if window_guard and schedule_mod._window_closed(
                 schedule_mod._schedule_config(), clock.now()):
             logger.info(f"[{phone}] ⛔ 签到时段已结束，跳过执行")
-            _mark_window_skip([acc] + queue)
+            _mark_window_skip([acc, *queue])
             break
 
         # 领取（与铺点路径同口径；手动指定账号时 reclaim=True，可重签当日已了结的账号）
