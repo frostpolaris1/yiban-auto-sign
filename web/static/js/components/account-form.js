@@ -271,23 +271,43 @@
     }
     if (editing && snapshot) payload._snapshot = snapshot;
 
-    busy = true;
-    if (opts.lockButton !== false) setBusy(handle, true);
-    var req = editing
-      ? YB.api("PUT", opts.endpoints.update + opts.index, payload)
-      : YB.api("POST", opts.endpoints.create, payload);
-    req.then(function (data) {
-      busy = false;
-      delete n.phone.dataset.full;   // 完整手机号不随已提交的表单节点继续驻留 DOM
-      YB.closeModal(handle);
-      if (opts.onSaved) opts.onSaved(data);
-      YB.toast.success((data && data.msg) || "已保存");
-    }).catch(function (e) {
-      busy = false;
-      if (opts.lockButton !== false) setBusy(handle, false);
-      showError(view, (e && e.message) || "保存失败，请稍后再试");
-    });
-    return false; // 由请求结果决定是否关闭，失败时保持打开
+    // 后端口令门口径（web/app.py 的 creds_written）：**非空 password** 或**改绑手机号**
+    // 才算"改写他人易班凭据"、要 confirm_password；只改名称/设备型号不多问口令。
+    // 原号取快照里的 phone（快照缺失时判不出改绑，此时只按 password 判）。
+    var origPhone = null;
+    try { origPhone = JSON.parse(snapshot).phone; } catch (e) { origPhone = null; }
+    var credsWritten = editing && (String(payload.password || "").trim() !== "" ||
+      (origPhone != null && payload.phone !== origPhone));
+
+    function send(inPwModal) {
+      busy = true;
+      if (opts.lockButton !== false) setBusy(handle, true);
+      return (editing
+        ? YB.api("PUT", opts.endpoints.update + opts.index, payload)
+        : YB.api("POST", opts.endpoints.create, payload)
+      ).then(function (data) {
+        busy = false;
+        delete n.phone.dataset.full;   // 完整手机号不随已提交的表单节点继续驻留 DOM
+        YB.closeModal(handle);
+        if (opts.onSaved) opts.onSaved(data);
+        YB.toast.success((data && data.msg) || "已保存");
+      }, function (e) {
+        busy = false;
+        if (opts.lockButton !== false) setBusy(handle, false);
+        // 从口令框发起：把错误抛回去，让它显示在框内并保留输入以便改口令重试
+        if (inPwModal) throw e;
+        showError(view, (e && e.message) || "保存失败，请稍后再试");
+      });
+    }
+
+    if (!credsWritten) { send(false); return false; }   // 由请求结果决定是否关闭，失败时保持打开
+    YB.openConfirmPasswordModal(
+      "本次修改会改写该账号的易班凭据（换了密码或改绑手机号），请输入当前管理员密码确认。",
+      function (pw) {
+        payload.confirm_password = pw;
+        return send(true);           // 返回 Promise：口令框保持打开直到请求落定
+      });
+    return false;
   }
 
   function open(opts) {
