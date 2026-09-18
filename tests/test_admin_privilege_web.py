@@ -201,6 +201,31 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         self.assertEqual(self._pw_version("admin2@test.local"), 2)
         self.assertEqual(self._pw_version("admin3@test.local"), 2)
 
+    # ---- M12：account_verify / probe_* 收归主管理员 ----
+
+    def test_regular_admin_cannot_toggle_probe_or_verify(self):
+        """注册管理员改 account_verify / probe_* → 403（会产生对外真实登录）。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin2@test.local", ADMIN_PASS)
+        for payload in ({"probe_enable": 1},
+                        {"probe_time": "06:00"},
+                        {"probe_interval": "2"},
+                        {"account_verify": 1}):
+            r = c.post("/api/settings", json={**payload, "confirm_password": ADMIN_PASS},
+                       headers=self._csrf(token))
+            self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+
+    def test_master_can_toggle_probe_and_verify(self):
+        """内置主管理员改 probe_enable → 200 且 env 落键。"""
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin", ADMIN_PASS)
+        r = c.post("/api/settings", json={"probe_enable": 1,
+                                          "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        envs = self.webapp.read_env(self.webapp.ENV_FILE)
+        self.assertEqual(envs.get("YIBAN_PROBE_ENABLE"), "1")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
