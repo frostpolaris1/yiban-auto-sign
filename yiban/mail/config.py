@@ -34,16 +34,24 @@ def _get(key):
 
 
 def _mask_addr(addr):
-    """邮箱打码（保留域名；非邮箱原样返回）。
+    """邮箱打码（保留域名；非邮箱原样返回）。**逗号列表逐项打码**。
 
     口径：用户名 >6 位保留前 3 位，否则只保留第 1 位；星号数 = max(3,
     用户名长度 - 可见位数)，3 星下限兜底（短名打码段总宽可能略宽于原用户名）。
     固定保留前 3 位会让短名几乎全暴露（ab@x.com → ab***@x.com），故短名只留 1 位。
+
+    `YIBAN_MAIL_ADMIN_TO` 的语义本就是逗号分隔多地址（`admin_recipients` 按逗号拆），
+    而"按第一个 @ 切分、其余整段当域名"会把第 2 个及之后的地址**原样**留在返回值里
+    ——收件人名单因此明文进 HTTP 响应、推送正文与审计 detail，故逐项处理。
     """
-    addr = str(addr or "").strip()
-    if "@" not in addr:
-        return addr or "<未配置>"
-    name, _, domain = addr.partition("@")
+    raw = str(addr or "").strip()
+    if not raw:
+        return "<未配置>"
+    if "," in raw:
+        return ",".join(_mask_addr(one) for one in raw.split(",") if one.strip())
+    if "@" not in raw:
+        return raw
+    name, _, domain = raw.partition("@")
     visible = name[:3] if len(name) > 6 else name[:1]
     return visible + "*" * max(3, len(name) - len(visible)) + "@" + domain
 

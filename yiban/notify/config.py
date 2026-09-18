@@ -26,6 +26,8 @@ DEFAULT_URGENT_DAILY_MAX = 3
 # （环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
 DEFAULT_LOGINFAIL_DAILY_MAX = 3
 LOGINFAIL_DAILY_MAX_KEY = "YIBAN_LOGINFAIL_DAILY_MAX"
+# CGNAT（RFC 6598）：`ipaddress.is_private` 不覆盖，而云厂商元数据服务常落在此段
+_CGNAT_V4 = ipaddress.ip_network("100.64.0.0/10")
 
 
 def _env_path():
@@ -74,8 +76,25 @@ def _mask_secret(secret):
 # 通道配置与可用性
 # ---------------------------------------------------------------------------
 
+def _is_nonroutable_target(ip):
+    """该 IP 是否属于"不得作为推送目标"的地址段（SSRF 白名单的唯一判据）。
+
+    `ipaddress.is_private` **不含** 100.64.0.0/10（RFC 6598 CGNAT）——而阿里云
+    ECS 元数据服务 `100.100.100.200` 恰在该段，只判 private/link_local 会把
+    "拿推送地址当 SSRF 跳板读实例凭据"这条路留着；组播与保留段同理。
+    """
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        # `[::ffff:100.100.100.200]` 形态：v6 对象自身属性全 False，按其映射的 v4 判
+        return _is_nonroutable_target(mapped)
+    return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+            or ip.is_multicast or ip.is_reserved
+            or getattr(ip, "is_site_local", False)
+            or (ip.version == 4 and ip in _CGNAT_V4))
+
+
 def is_safe_url(url):
-    """自定义通知地址的 SSRF 白名单：https + 非回环/内网/链路本地/未指定。
+    """自定义通知地址的 SSRF 白名单：https + 非回环/内网/链路本地/未指定/CGNAT/组播/保留。
 
     防 http 明文外泄与拿推送地址当 SSRF 跳板。域名目标放行（DNS rebinding 由发送
     超时兜底）。本函数是该口径的唯一实现，web 设置页与发送层共用。
@@ -100,7 +119,7 @@ def is_safe_url(url):
         # 非 ipaddress 可解析的 host：若是"纯数字 IPv4 字面量"形态（十进制/0x/
         # 前导零/短式）→ 拒掉；只有真域名（含点号且非全数字组件）放行。
         return not _is_ipv4_literal_like(host)
-    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
+    return not _is_nonroutable_target(ip)
 
 
 def _is_ipv4_literal_like(host):
