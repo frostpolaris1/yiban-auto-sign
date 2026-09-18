@@ -261,11 +261,15 @@ class GetShapeTest(_AnnBase):
         self._put_draft(sub, "草稿内容")
         m = self._master()
         body = m.get("/api/announcement", headers=self._hdr(m)).get_json()
-        self.assertEqual(set(body), {"ok", "text", "draft", "draft_by", "draft_at"})
+        self.assertEqual(set(body), {"ok", "text", "draft", "draft_by", "draft_at",
+                                     "published_by", "published_at"})
         self.assertEqual(body["text"], "")
         self.assertEqual(body["draft"], "草稿内容")
         self.assertEqual(body["draft_by"], REG_ADMIN)
         self.assertRegex(body["draft_at"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        # 从未发布过：两键存在但为空串（前端据此显示"线上暂无公告"而不是"未知"）
+        self.assertEqual(body["published_by"], "")
+        self.assertEqual(body["published_at"], "")
 
     def test_draft_never_leaks_into_public_text_even_when_published_is_empty(self):
         self._put_draft(self._reg_admin(), "只有草稿")
@@ -358,9 +362,14 @@ class PublishEffectTest(_AnnBase):
         self.assertEqual(self._publish(m).status_code, 200)
         self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "第二条")
         self.assertEqual(self._anon().get("/api/announcement").get_json()["text"], "第二条")
-        # 再点一次发布：草稿已被清空 → 400，正式内容保持不动
-        self.assertEqual(self._publish(m).status_code, 400)
-        self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "第二条")
+        # 发布后草稿已被清空，再点一次 = 下线（空草稿 + 线上有内容的裁决语义）。
+        # 防误按的不是报错，而是这条通道每次都要求当次口令、不吃短时豁免。
+        r_again = self._publish(m)
+        self.assertEqual(r_again.status_code, 200, r_again.get_data(as_text=True))
+        self.assertIn("下线", r_again.get_json()["msg"])
+        self.assertNotEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "第二条")
+        self.assertEqual(self._anon().get("/api/announcement").get_json()["text"], "")
+        self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT_PUBLISHED_META"), None)
 
     def test_publish_without_draft_is_400_not_silent_success(self):
         m = self._master()
@@ -409,11 +418,73 @@ class PublishEffectTest(_AnnBase):
         self.assertIn("新发布", rows[0]["detail"])
 
 
+class TakedownTest(_AnnBase):
+    """空草稿 + 线上有内容 = 下线（用户裁决：不另设 clear 端点，一收一发同档）。"""
+
+    def _published(self):
+        m = self._master()
+        self._put_draft(m, "今晚维护")
+        self.assertEqual(self._publish(m).status_code, 200)
+        return m
+
+    def test_takedown_needs_master_and_password_of_this_request(self):
+        m = self._published()
+        sub = self._reg_admin()
+        r = self._publish(sub, password=REG_PASS)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "今晚维护", "被拒不得改动线上")
+        r2 = self._publish(m, password=None)
+        self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
+        self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "今晚维护")
+
+    def test_takedown_clears_every_announcement_key_in_one_write(self):
+        m = self._published()
+        before = len(self.writes)
+        r = self._publish(m)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("下线", r.get_json()["msg"])
+        raw = self._raw_env()
+        for key in ("YIBAN_ANNOUNCEMENT=", "YIBAN_ANNOUNCEMENT_PUBLISHED_META=",
+                    "YIBAN_ANNOUNCEMENT_DRAFT="):
+            self.assertNotIn(key, raw, f"下线后 {key} 应被清掉")
+        self.assertEqual(len(self.writes), before + 1, "下线必须是一次原子落盘")
+        self.assertEqual(self._anon().get("/api/announcement").get_json()["text"], "")
+        body = m.get("/api/announcement", headers=self._hdr(m)).get_json()
+        self.assertEqual((body["published_by"], body["published_at"]), ("", ""))
+
+    def test_takedown_alert_is_urgent_forced_and_names_the_action(self):
+        m = self._published()
+        self.alerts.clear()
+        self._publish(m)
+        offline = [a for a in self.alerts if "下线" in a[1]]
+        self.assertEqual(len(offline), 1, f"应恰有一条写明下线的告警：{self.alerts}")
+        self.assertTrue(offline[0][2] and offline[0][3], "下线告警必须紧急且突破额度送达")
+        rows = self._audit("announcement_publish")
+        self.assertTrue(any("下线" in (r["detail"] or "") for r in rows),
+                        "审计要能区分这是下线而非发布")
+
+    def test_put_empty_text_no_longer_claims_the_live_one_is_gone(self):
+        m = self._published()
+        r = self._put_draft(m, "")
+        self.assertEqual(r.status_code, 200)
+        msg = r.get_json()["msg"]
+        self.assertIn("线上公告未变", msg, f"清空草稿不得被读成下线：{msg}")
+        self.assertEqual(self._env().get("YIBAN_ANNOUNCEMENT"), "今晚维护")
+
+    def test_published_meta_names_the_publisher(self):
+        m = self._published()
+        body = m.get("/api/announcement", headers=self._hdr(m)).get_json()
+        self.assertEqual(body["published_by"], "admin")
+        self.assertRegex(body["published_at"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        self.assertEqual(set(self._anon().get("/api/announcement").get_json()),
+                         {"ok", "text"}, "线上元数据不得随公开响应外泄")
+
+
 class DraftMetaHelperTest(_AnnBase):
     """元数据解析单源且 fail-safe：坏值只降级为「元数据不可用」，绝不抛。"""
 
     def test_parse_accepts_the_documented_shape(self):
-        by, at = self.webapp._parse_announcement_draft_meta(
+        by, at = self.webapp._parse_announcement_meta(
             "someone@test.local|2026-09-19 10:20:30")
         self.assertEqual((by, at), ("someone@test.local", "2026-09-19 10:20:30"))
 
@@ -424,7 +495,7 @@ class DraftMetaHelperTest(_AnnBase):
                     "a@test.local|2026-09-19T10:20:30"):
             with self.subTest(bad=bad):
                 self.assertEqual(
-                    self.webapp._parse_announcement_draft_meta(bad), ("", ""),
+                    self.webapp._parse_announcement_meta(bad), ("", ""),
                     f"非法元数据必须解析为不可用：{bad!r}")
 
 
