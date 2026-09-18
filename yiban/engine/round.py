@@ -16,7 +16,7 @@ import random
 import time
 from datetime import datetime, timedelta
 
-from yiban import clock, egress, notify
+from yiban import clock, egress
 from yiban import status as yiban_status
 from yiban.engine import alerts, state_io
 from yiban.engine import attempts as attempts_mod
@@ -370,9 +370,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                     )
                     continue
                 logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
-                alerts._collect_admin_mail("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}")
-                if notify.is_configured():
-                    alerts.send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
+                alerts.notify_admin_entry("易班签到失败", [
+                    ("账号", _mask_phone(phone)),
+                    ("原因", _sanitize_text(message)),
+                ], notify_url)
                 alerts.send_user_fail_mail(acc.owner, phone, message)
                 continue
             # 重试落点：窗口内重新采样后非阻塞重插；窗口不足 → 放弃
@@ -380,9 +381,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if nxt is None:
                 results[phone] = (False, message, False, status)
                 logger.error(f"[{phone}] ❌ 窗口剩余不足，不再重试: {message}")
-                alerts._collect_admin_mail("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}")
-                if notify.is_configured():
-                    alerts.send_notification("易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url)
+                alerts.notify_admin_entry("易班签到失败", [
+                    ("账号", _mask_phone(phone)),
+                    ("原因", _sanitize_text(message)),
+                ], notify_url)
                 alerts.send_user_fail_mail(acc.owner, phone, message)
                 continue
             # 重试入队统一兜底失败原因：把本次失败 message 原样补进状态/事件/日志三处
@@ -507,14 +509,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 continue
             logger.error(f"[{phone}] ❌ 已尝试 {attempts[phone]} 次，放弃: {message}")
             # A 线合并：失败并入任务结束汇总邮件（webhook 仍即时推送）
-            alerts._collect_admin_mail(
-                "易班签到失败",
-                f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}",
-            )
-            if notify.is_configured():
-                alerts.send_notification(
-                    "易班签到失败", f"账号: {_mask_phone(phone)}\n原因: {_sanitize_text(message)}", notify_url
-                )
+            alerts.notify_admin_entry("易班签到失败", [
+                ("账号", _mask_phone(phone)),
+                ("原因", _sanitize_text(message)),
+            ], notify_url)
             # B 线：向账号归属用户发失败提醒（未开启/未绑定用户则静默跳过）
             alerts.send_user_fail_mail(acc.owner, phone, message)
             continue

@@ -30,6 +30,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 LOGIN_FAIL_NOTIFY = 3
@@ -241,7 +244,7 @@ class SwitchPasswordGateTest(unittest.TestCase):
                     headers=hdr)
                 self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1, "首达阈值只告警一次")
-        title, body, kw = m.call_args[0][0], m.call_args[0][1], m.call_args[1]
+        title, body, kw = m.call_args[0][0], render_body(m.call_args[0][1]), m.call_args[1]
         self.assertIn("二次鉴权失败", title, "三处落点共用同一条告警标题")
         self.assertTrue(kw.get("urgent"), "敏感操作复核失败应走紧急告警")
         self.assertIn("破坏性设置", body, "A 档门禁须写明档位")
