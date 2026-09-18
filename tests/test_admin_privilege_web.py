@@ -174,6 +174,37 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         self.assertEqual(self._pw_version("admin3@test.local"), 1, "管理员目标应被跳过")
         self.assertEqual(self._pw_version("user1@test.local"), 2, "普通用户应被重置")
 
+    def test_batch_reset_only_rotates_sid_for_actually_reset(self):
+        """M6：批量重置只对**真正重置了密码**的账号轮换 sid。
+
+        原实现 sid 循环遍历请求里的 `emails` 原文——被跳过（内置管理员/非主管理员
+        动其他管理员）的目标密码没变、sid 却被换掉，会话被强制登出（越权影响他人
+        会话，DoS 味道）。修复后：普通用户 pw_version 增加**且 sid 变了**；
+        其他管理员 pw_version **未变**、sid **未变**。
+        """
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "admin2@test.local", ADMIN_PASS)
+        admin_before = db.find_user("admin3@test.local")
+        user_before = db.find_user("user1@test.local")
+        r = c.post("/api/users/batch",
+                   json={"action": "reset_password",
+                         "emails": ["admin3@test.local", "user1@test.local"],
+                         "password": NEW_PASS,
+                         "confirm_password": ADMIN_PASS},
+                   headers=self._csrf(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        admin_after = db.find_user("admin3@test.local")
+        user_after = db.find_user("user1@test.local")
+        # 普通用户：真被重置 → pw_version 增加且 sid 被轮换
+        self.assertEqual(user_after["pw_version"], user_before["pw_version"] + 1)
+        self.assertNotEqual(user_after.get("sid"), user_before.get("sid"),
+                            "被重置的普通用户应轮换 sid（吊销旧会话）")
+        # 其他管理员：被跳过 → 密码与 sid 都不该动
+        self.assertEqual(admin_after["pw_version"], admin_before["pw_version"],
+                         "被跳过的管理员密码版本不得变化")
+        self.assertEqual(admin_after.get("sid"), admin_before.get("sid"),
+                         "被跳过的管理员 sid 不得被轮换（否则会话被无端登出）")
+
     def test_batch_delete_skips_admin_for_regular_admin(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin2@test.local", ADMIN_PASS)

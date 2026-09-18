@@ -7085,6 +7085,7 @@ def create_app(host=None):
             # 内存模拟用户表，保持动态管理员数量判断
             sim_users = {u["email"]: dict(u) for u in users}
             ops = []
+            processed = []  # 真正进了 ops 的邮箱（M6：sid 轮换只认它，不含被跳过的）
             for email in emails:
                 target = sim_users.get(email)
                 if not target or email == builtin:  # 内置管理员不可批量操作
@@ -7109,6 +7110,7 @@ def create_app(host=None):
                         )
                     )
                     sim_users[email]["pw_version"] = target.get("pw_version", 1) + 1
+                    processed.append(email)
                 elif action == "delete":
                     # 防呆：目标为管理员时校验至少保留 1 个管理员
                     # （内置管理员存在时允许删除最后一个注册管理员，与单条路径一致）
@@ -7150,28 +7152,35 @@ def create_app(host=None):
                         f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         urgent=True,
                     )
-                # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）
+                # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）。
+                # 只轮换**真正重置了密码**的账号（processed）：原实现遍历请求里的
+                # emails 原文，被跳过的管理员（内置/非主管理员动其他管理员）密码没变、
+                # sid 却被换掉 → 会话被无端登出（越权影响他人会话，M6）。
                 if action == "reset_password":
-                    for e in emails:
+                    for e in processed:
                         with contextlib.suppress(Exception):
                             db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
                     # 批量重置密码即时告警
                     send_notification(
                         "密码重置告警",
                         f"批量重置密码 ×{done}: "
-                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
+                        f"{', '.join(_mask_email(e) for e in (processed or [])[:20])}，"
                         f"操作者 {session.get('username', '?')}，时间 "
                         f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         urgent=True,
                     )
+            # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
+            # M6：重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
+            audit_detail = (f"处理 {done} 个: " + ",".join(
+                _mask_email(e) for e in (emails or [])[:20]
+            ))[:200]
+            if action == "reset_password" and done < len(emails or []):
+                audit_detail += f"；跳过 {len(emails or []) - done} 个"
             db.audit(
                 session.get("username") or "?",
                 "users_batch",
                 action,
-                # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
-                (f"处理 {done} 个: " + ",".join(
-                    _mask_email(e) for e in (emails or [])[:20]
-                ))[:200],
+                audit_detail,
             )
             logger.info("批量%s用户 %d 个", action, done)
             msg = {
