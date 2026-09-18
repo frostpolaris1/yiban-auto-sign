@@ -285,5 +285,36 @@ class RowNameTest(_GuardBase):
         self.assertEqual(fb["label"], "故障转移")
 
 
+class AuditActorTest(_GuardBase):
+    """执行体写的审计 actor = 当前会话用户名（批 3 §4.6：这里曾硬编码 "admin"）。
+
+    执行体写端点只向主管理员开放，所以改前改后**放行判定**一样；问题在取证：审计表里
+    一句写死的"admin"既不是任何真实账号，也与全表其他行的口径不一致——按 actor 追人时
+    这一列直接失效。改后的口径与 `logout_ok`/`forbidden_path` 逐字同构。
+    """
+
+    def test_every_write_records_the_session_user(self):
+        import db
+        c = self._login()
+        slot = self._add(c, {"proxy": "http://203.0.113.10:8080"}).get_json()["slot"]
+        self.assertEqual(self._put_row(
+            c, slot, {"proxy": "http://203.0.113.10:8081",
+                      "confirm_password": ADMIN_PASS}).status_code, 200)
+        self.assertEqual(c.delete(
+            f"/api/scheduler/executors/rows/{slot}",
+            json={"confirm_password": ADMIN_PASS},
+            headers={"X-CSRF-Token": c.csrf}).status_code, 200)
+        # 整表写端点（另一条落点，此前同样硬编码 actor）
+        self.assertEqual(c.put("/api/scheduler/executors",
+                               json={"workers": 2, "confirm_password": ADMIN_PASS},
+                               headers={"X-CSRF-Token": c.csrf}).status_code, 200)
+        rows = db.get_conn().execute(
+            "SELECT username, detail FROM audit_logs WHERE target='executors'"
+        ).fetchall()
+        self.assertGreaterEqual(len(rows), 4, f"四条写路径都应留痕，实际 {len(rows)} 行")
+        self.assertEqual({r["username"] for r in rows}, {"admin@test.local"},
+                         "actor 必须是登录名，不是硬编码的 admin")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
