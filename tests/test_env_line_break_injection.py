@@ -220,6 +220,31 @@ class LineBreakPredicateTest(_Base):
             "写入侧用 splitlines() 拆行，校验侧漏一个字符就留一条注入链")
 
 
+class AlertBodyLineSafeTest(_Base):
+    """`_nl_safe`（告警正文净化）与 .env 写入侧共用同一个 10 字符行模型。
+
+    旧实现只压 `\\r`/`\\n`：其余 8 个分隔符在邮件客户端与日志页里照样断行，
+    等于留下"在管理员告警正文里伪造一行"的口子（与 .env 那次 CRITICAL 同源）。
+    """
+
+    def test_every_splitlines_break_is_escaped(self):
+        for ch in ALL_BREAKS:
+            with self.subTest(ch=hex(ord(ch))):
+                out = self.webapp._nl_safe(f"甲{ch}乙")
+                self.assertNotIn(ch, out, f"U+{ord(ch):04X} 未转义，仍会在正文断行")
+                self.assertEqual(len(out.splitlines()), 1, "转义后必须是单行")
+                self.assertTrue(out.startswith("甲") and out.endswith("乙"),
+                                "只转义分隔符，不得吃掉两侧内容")
+
+    def test_plain_text_untouched_and_repeat_is_stable(self):
+        """正常值零改动；二次调用不得再改（同一值可能被链路上多处净化）。"""
+        for s in ("admin@test.local", "138****8000", "签到窗口 06:30~07:50", "制表\t正常"):
+            self.assertEqual(self.webapp._nl_safe(s), s)
+        for ch in ALL_BREAKS:
+            once = self.webapp._nl_safe(f"a{ch}b")
+            self.assertEqual(self.webapp._nl_safe(once), once, "净化必须幂等")
+
+
 class WriteEnvBatchInjectionTest(_Base):
     """兜底硬校验：值/键含任意行分隔符都必须 ValueError 且零写盘。"""
 

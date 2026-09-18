@@ -2596,13 +2596,20 @@ def check_connectivity():
 
 
 def _nl_safe(value):
-    """告警正文插值净化（2026-08-27 对抗性审查 P2-4）：压平 CR/LF。
+    """告警正文插值净化（2026-08-27 对抗性审查 P2-4，2026-09-18 与 .env 行模型同源）。
 
-    外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前转义换行为字面量，
-    防止请求体夹带换行在告警正文中伪造额外行。对齐 signin._sanitize_text 的
-    换行纪律；正常值不含换行，显示语义不变。
+    外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前把换行转义成字面量，
+    防止请求体夹带换行在告警正文中伪造额外行。
+
+    字符集刻意取 `_ENV_LINE_BREAK_CHARS`（= `str.splitlines()` 的全部 10 个分隔符）
+    而不是只压 `\r\n`：邮件客户端与网页日志页同样会在 `U+0085`/`U+2028` 处断行，
+    只压两个等于留 8 条"在管理员告警里伪造一行'操作者: admin'"的口子——与 .env
+    写入侧那次 CRITICAL 是同一个行模型，判据只留一份。
     """
-    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+    s = str(value).replace("\r", "\\r").replace("\n", "\\n")
+    for ch in sorted(_ENV_LINE_BREAK_CHARS - {"\r", "\n"}):
+        s = s.replace(ch, f"\\u{ord(ch):04x}")
+    return s
 
 
 def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent"):
