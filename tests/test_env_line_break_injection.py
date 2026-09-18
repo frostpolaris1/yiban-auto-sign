@@ -278,6 +278,24 @@ class WriteEnvBatchInjectionTest(_Base):
                         self.env_file, {f"YIBAN_X{ch}Y": "1"})
                 self.assertEqual(_read(self.env_file), before)
 
+    def test_key_name_whitelist(self):
+        """键名白名单（批 3 §4.13）：只认 `^[A-Z][A-Z0-9_]*$`，其余一律拒且零写盘。
+
+        行分隔符那一关挡不住的另一半：带 `=`/`#`/空白/小写/前导数字的键写进 .env 后，
+        解析侧（按首个 `=` 切分）与折叠侧（按"键名+空白+="匹配）对"这是哪一条键"
+        的理解会分叉——后写覆盖先写，正是那条提权链的落点形态。
+        """
+        self._poisoned_env()
+        before = _read(self.env_file)
+        for bad in ("yiban_x", "YIBAN X", "YIBAN_X=1", "#YIBAN_X", "1YIBAN",
+                    "", "YIBAN-KEY", "YIBAN_Ö"):
+            with self.subTest(key=bad), self.assertRaises(ValueError):
+                self.webapp.write_env_batch(self.env_file, {bad: "1"})
+        self.assertEqual(_read(self.env_file), before, "拒绝必须零写盘")
+        # 反向：不得把规则写成只认 YIBAN_ 前缀之类的过窄判定（正常键要能存）
+        self.webapp.write_env_batch(self.env_file, {"YIBAN_OK_2": "1"})
+        self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_OK_2"], "1")
+
     def test_ordinary_values_still_write(self):
         """不得为安全把 .env 写成只能填 ASCII 单字——空格/制表/中文/URL 都要能存。"""
         self._poisoned_env()

@@ -1539,7 +1539,11 @@ def write_env_batch(env_path, updates):
     """
     with _env_write_lock(env_path):
         for key, value in updates.items():
-            if _has_line_break(key) or _has_line_break(value):
+            # 键名白名单（批 3 §4.13）：任何行分隔符都过不了这个字符集，故键侧不再
+            # 单独查 _has_line_break；值仍要查——值本来就是自由文本
+            if not env_io.is_valid_env_key(key):
+                raise ValueError(f"write_env_batch 拒绝非法键名: {str(key)[:40]!r}")
+            if _has_line_break(value):
                 raise ValueError(f"write_env_batch 拒绝包含行分隔符的键值: {key}")
         lines = []
         if os.path.exists(env_path):
