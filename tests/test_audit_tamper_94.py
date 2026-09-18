@@ -634,5 +634,78 @@ class AuditVerifyCliTest(_DbFixture):
         self.assertEqual(r.returncode, 2)
 
 
+class BackupScriptContractTest(unittest.TestCase):
+    """备份脚本的取证契约（文本级断言，与 tests/test_backup_require_encrypt.py 同口径：
+    脚本含中文输出，Windows 子进程按 GBK 解码 stdout 会误报，故不跑子进程，只做
+    源码级断言 + `bash -n` 语法核验）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(BASE, "scripts", "backup.sh"), encoding="utf-8") as f:
+            cls.src = f.read()
+        with open(os.path.join(BASE, "docker", "backup-docker.sh"), encoding="utf-8") as f:
+            cls.docker_src = f.read()
+
+    def _block(self, start_marker, end_marker):
+        return self.src[self.src.index(start_marker):self.src.index(end_marker)]
+
+    def test_cp_fallback_must_pass_integrity_check(self):
+        """(a) .backup 失败回退 cp 后必须 integrity_check，不通过就不落归档 + 非 0 退出。"""
+        block = self._block("警告：sqlite3 .backup 失败", "# 2) 密钥：优先")
+        self.assertIn("verify_db_snapshot", block, "cp 回退必须跑 integrity_check")
+        self.assertIn("rm -f \"${TMPDIR_BAK}/data/${DB_FILE}\"", block,
+                      "校验不过必须删掉坏快照（不落该归档）")
+        self.assertIn("exit 1", block, "校验不过必须以非 0 退出")
+        self.assertIn("integrity_check", self._block("verify_db_snapshot()", "if [ -f \"${APP_DIR}/${DB_FILE}\" ]"))
+
+    def test_corrupt_source_keeps_archive_but_exits_nonzero(self):
+        """.backup 成功但 integrity 不过 = 源库损坏：归档照留（最后一份素材），退出码非 0。"""
+        self.assertIn("CORRUPT_SOURCE=1", self.src)
+        tail = self.src[self.src.index("if [ \"${CORRUPT_SOURCE:-0}\" -eq 1 ]"):]
+        self.assertIn("exit 4", tail)
+
+    def test_manifest_includes_anchor_and_gate_files(self):
+        """(b) 备份清单必须含外部锚点与闸门/账本状态文件。
+
+        切片只取 state_files=( ... ) 数组本体：范围放宽到后面的日志文案就会
+        把"未发现审计锚点"那句也圈进来，从数组里删掉条目照样通过（突变验证暴露）。
+        """
+        start = self.src.index("state_files=(")
+        arr = self.src[start:self.src.index("\n    )", start)]
+        for name in ("audit-anchor.log", "sched-run-*.json", "sched-snapshot-*.json",
+                     "notify-ledger.json", "notify-throttle.json"):
+            self.assertIn('"${SIGN_STATE_DIR}"/' + name, arr,
+                          f"{name} 不在备份数组里——恢复后该类状态静默丢失")
+
+    def test_retention_covers_sha256_sidecars(self):
+        """(c) 清理 glob 必须覆盖 .sha256 侧车（否则无限堆积并泄露每日归档清单）。"""
+        self.assertIn("-name 'yiban-*.sha256'", self.src)
+
+    def test_restore_section(self):
+        """(d) --restore 必须有停服提示、删残留 -wal/-shm、恢复锚点、双验。"""
+        block = self._block('restore() {', 'if [ "${1:-}" = "--restore" ]')
+        self.assertIn("systemctl stop yiban-web", block, "缺停服提示")
+        self.assertIn("-wal", block)
+        self.assertIn("-shm", block)
+        self.assertIn("PRAGMA integrity_check", block, "恢复后必须核验完整性")
+        self.assertIn("audit_verify.py", block, "恢复后必须校验审计链与锚点")
+        self.assertIn("audit-anchor.log", block, "必须说明锚点要与库同批次落位")
+        self.assertIn("return \"$rc\"", block, "核验结论必须传出去（不得无条件报恢复成功）")
+
+    def test_cron_template_requires_encrypt_and_daily_verify(self):
+        """(e) cron 模板带 --require-encrypt，并追加每日 audit_verify 跑。"""
+        header = self.src[:self.src.index("# 依赖：")]
+        self.assertIn("yiban-backup.sh --require-encrypt", header,
+                      "cron 模板不带 --require-encrypt 时，加密失效当天会静默产出明文归档")
+        self.assertIn("audit_verify.py", header, "锚点判据不能只挂在 web 每日线程上")
+        self.assertNotIn("docs/web-console/DEPLOY-CHECKLIST.md", self.src,
+                         "引用了仓库里不存在的部署清单")
+
+    def test_docker_backup_asserts_anchor_in_archive(self):
+        self.assertIn("audit-anchor", self.docker_src)
+        self.assertIn("ANCHOR_IN_ARCHIVE", self.docker_src, "锚点入包必须是显式断言而非假设")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
