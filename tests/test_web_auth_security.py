@@ -212,7 +212,7 @@ class SecurityFixes021Test(unittest.TestCase):
             os.environ.pop("YIBAN_COOKIE_SECURE", None)
 
     def test_https_reverse_proxy_auto_upgrades_secure_when_unset(self):
-        """**未配置** `YIBAN_COOKIE_SECURE` 时，HTTPS 反代请求应自动打开 Secure（审查 M4）。
+        """**未配置** `YIBAN_COOKIE_SECURE` 时，HTTPS 反代请求应自动打开 Secure。
 
         原先写的是 `{"done": not cookie_secure}`，默认部署的 `done` 恒为 True → 自动升级
         分支**永不执行**，HTTPS 反代下 Cookie 一直不带 Secure。根因是把"未配置"与
@@ -222,9 +222,52 @@ class SecurityFixes021Test(unittest.TestCase):
         app = self.webapp.create_app()
         self.assertFalse(app.config["SESSION_COOKIE_SECURE"], "起点：未配置 = 默认关")
         c = app.test_client()
-        c.get("/api/clock", headers={"X-Forwarded-Proto": "https"})
+        # 反代形态 = 第一跳是回环（本进程只监听回环，转发头由它覆盖设置）
+        c.get("/api/clock", headers={"X-Forwarded-Proto": "https"},
+              environ_base={"REMOTE_ADDR": "127.0.0.1"})
         self.assertTrue(app.config["SESSION_COOKIE_SECURE"],
-                        "经 HTTPS 反代访问后应粘性打开 Secure")
+                        "经可信反代的 HTTPS 请求应启用 Secure")
+
+    def test_forwarded_proto_ignored_when_first_hop_untrusted(self):
+        """第一跳不可信时**不得**采信 `X-Forwarded-Proto`，且不得粘住进程。
+
+        直连形态（没有反代、或反代不在回环上）下客户端能自己发这个头。若采信，
+        本进程的会话 Cookie 会一直带 Secure，站点退回 HTTP 后浏览器不回传 Cookie，
+        表现为"登录不上"——比"少一个 Secure"更难排查。
+        """
+        self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        app = self.webapp.create_app()
+        c = app.test_client()
+        c.get("/api/clock", headers={"X-Forwarded-Proto": "https"},
+              environ_base={"REMOTE_ADDR": "203.0.113.9"})
+        self.assertFalse(app.config["SESSION_COOKIE_SECURE"],
+                         "伪造的转发头不得开启 Secure")
+
+    def test_forwarded_proto_falls_back_when_header_disappears(self):
+        """反代头消失后 Secure 必须能回落（逐请求判定，不粘住进程）。"""
+        self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        app = self.webapp.create_app()
+        c = app.test_client()
+        c.get("/api/clock", headers={"X-Forwarded-Proto": "https"},
+              environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
+        c.get("/api/clock", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertFalse(app.config["SESSION_COOKIE_SECURE"],
+                         "同进程内退回非 https 请求后不得继续发 Secure Cookie")
+
+    def test_forwarded_proto_takes_first_hop_only(self):
+        """逗号链只认最靠近客户端的那一跳（与 `_client_ip` 读 XFF 的口径一致）。"""
+        self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        app = self.webapp.create_app()
+        c = app.test_client()
+        c.get("/api/clock", headers={"X-Forwarded-Proto": "http, https"},
+              environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertFalse(app.config["SESSION_COOKIE_SECURE"],
+                         "链首是 http → 不得判成 https")
+        c.get("/api/clock", headers={"X-Forwarded-Proto": "https, http"},
+              environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertTrue(app.config["SESSION_COOKIE_SECURE"],
+                        "链首是 https → 判定为 https")
 
     def test_explicit_zero_does_not_auto_upgrade(self):
         """**显式**配 `0` = 部署者明确要求不要 Secure：HTTPS 请求也不得自动打开。"""

@@ -7,7 +7,9 @@ Cookie 的会话可无口令直接翻转 global_pause / registration_pause。
 口径（2026-09）：
 - 本门禁是统一入口 _sensitive_password_gate 的一个落点；仅当请求值与当前值**不同**时
   才要求 confirm_password，值未变（或未携带）不要求，其它字段的保存流程零影响；
-- 缺口令 / 错口令 → 403 {"error":"口令校验未通过，设置未生效"}，响应不回显口令，
+- 缺口令 → 403 {"error":"需要输入当前口令，设置未生效","reason":"password_required"}；
+  错口令 → 403 {"error":"口令校验未通过，设置未生效","reason":"password_incorrect"}。
+  两档状态码相同、文案必须分开（前端据此决定弹口令框还是提示输错），响应都不回显口令，
   并写一条 settings_switch_pw_fail 审计；
 - 错口令走**独立计数**：首达阈值告警一次，其后进入门禁级冷却（429）。仍**绝不写**与登录
   共用的 _login_fails（P18：持 Cookie 者不得借门禁把管理员锁出登录）。
@@ -118,7 +120,8 @@ class SwitchPasswordGateTest(unittest.TestCase):
         c, hdr = self._login()
         r = c.post("/api/settings", json={"registration_pause": 1}, headers=hdr)
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
-        self.assertIn("口令校验未通过", r.get_json()["error"])
+        self.assertIn("需要输入当前口令", r.get_json()["error"])
+        self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"))
         self.assertEqual(len(self._audit_fail_rows()), 1)
 
@@ -131,6 +134,8 @@ class SwitchPasswordGateTest(unittest.TestCase):
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         body = r.get_data(as_text=True)
         self.assertNotIn("WrongPass999!", body, "错误响应不得回显口令")
+        self.assertIn("口令校验未通过", r.get_json()["error"])
+        self.assertEqual(r.get_json()["reason"], "password_incorrect")
         self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"))
 
     def test_reg_change_with_correct_password_200(self):

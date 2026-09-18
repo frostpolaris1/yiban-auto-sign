@@ -13,7 +13,6 @@
     py -m pytest tests/test_user_deregistration_web.py -v
 """
 import contextlib
-import hashlib
 import importlib.util
 import json
 import os
@@ -316,7 +315,9 @@ class UserDeregistrationWebTest(unittest.TestCase):
         self.assertNotIn("60", r.get_json()["error"], "不应暴露冷却秒数")
 
     def test_cooldown_per_ip(self):
-        ip_hash = hashlib.sha256(b"127.0.0.1").hexdigest()
+        # 与处理端同源取哈希（`db.hash_ip`）：这条用例钉的是"同一 IP 的第 6 次要被拦"，
+        # 键怎么算不是它要保证的事——但两侧必须算的是同一个东西，否则限流静默失效
+        ip_hash = db.hash_ip("127.0.0.1")
         for i in range(5):
             db.record_user_delete_request(f"other{i}@test.local", ip_hash=ip_hash)
         c = self.webapp.create_app().test_client()
