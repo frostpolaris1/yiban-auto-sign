@@ -48,30 +48,90 @@
     if (box) box.hidden = true;
   }
 
-  /* ---------------- 公告（任意管理员） ---------------- */
+  /* ---------------- 公告（双人发布：任意管理员写草稿，主管理员发布/下线） ----------------
+     GET /api/announcement 对管理员返回 {text(线上), draft, draft_by, draft_at,
+     published_by, published_at}；PUT 只写草稿（线上不变）；POST /api/announcement/publish
+     仅主管理员 + 当次口令（body.confirm_password）：草稿非空 → 发布并清空草稿；
+     草稿为空且线上有内容 → 下线；两者皆空 → 400。 */
   var annBusy = false;
-  var ann = { text: "", dirty: false };
+  var ann = { draft: "", draftBy: "", draftAt: "", text: "", publishedBy: "", publishedAt: "", dirty: false };
+  function annInput() { return $("set-announcement"); }
+  function annCurrentText() {
+    var n = annInput();
+    return n ? String(n.value || "").trim() : "";
+  }
+  function annTip(text, bad) { YB.setTip("set-ann-tip", text, bad); }
+  function annMeta(by, at) {
+    var parts = [];
+    if (by) parts.push("由 " + by);
+    if (at) parts.push(at);
+    return parts.join(" · ");
+  }
   function annSetDirty(on) {
     ann.dirty = !!on;
     var btn = $("set-ann-save");
     if (btn) btn.hidden = !on;
     var badge = $("set-ann-dirty");
     if (badge) badge.hidden = !on;
+    renderAnnPublish();
   }
-  function annTip(text, bad) { YB.setTip("set-ann-tip", text, bad); }
+  function renderAnnDraftMeta() {
+    var n = $("set-ann-draft-meta");
+    if (!n) return;
+    var meta = annMeta(ann.draftBy, ann.draftAt);
+    n.textContent = ann.draft ? ("草稿" + (meta ? "：" + meta : "已保存")) : "（无草稿）";
+  }
+  function renderAnnPublished() {
+    var text = $("set-ann-published"), meta = $("set-ann-published-meta");
+    if (text) text.textContent = ann.text || "（当前没有线上公告）";
+    if (meta) meta.textContent = ann.text ? annMeta(ann.publishedBy, ann.publishedAt) : "";
+  }
+  // 发布按钮三态（按**当前草稿**判，含未保存的编辑）：非空→「发布公告」；
+  // 空且线上有内容→「下线线上公告」；两者皆空→禁用（与后端 400 同口径，前端先挡住误按）。
+  // 非主管理员：按钮保留但禁用并通过 #set-ann-perm 就地说明原因，不藏起来让人不知为何点不动。
+  function renderAnnPublish() {
+    var btn = $("set-ann-publish");
+    if (!btn) return;
+    var offline = !annCurrentText() && !!ann.text;
+    var noop = !annCurrentText() && !ann.text;
+    btn.hidden = false;                                  // 按钮常驻，权限/空态用 disabled 表达
+    btn.textContent = offline ? "下线线上公告" : "发布公告";
+    btn.disabled = !state.isMaster || noop;
+    if (!state.isMaster) {
+      btn.title = "发布/下线线上公告仅主管理员可做";
+      btn.setAttribute("aria-describedby", "set-ann-perm");
+    } else if (noop) {
+      btn.title = "草稿与线上公告都为空，没有可执行的操作";
+      btn.removeAttribute("aria-describedby");
+    } else {
+      btn.removeAttribute("title");
+      btn.removeAttribute("aria-describedby");
+    }
+    var perm = $("set-ann-perm");
+    if (perm) perm.hidden = state.isMaster;
+  }
   function loadAnnouncement() {
     return YB.api("GET", "/api/announcement").then(function (data) {
-      ann.text = (data && data.text) || "";
-      var input = $("set-announcement");
-      if (input) input.value = ann.text;
+      data = data || {};
+      ann.draft = String(data.draft || "");
+      ann.draftBy = String(data.draft_by || "");
+      ann.draftAt = String(data.draft_at || "");
+      ann.text = String(data.text || "");
+      ann.publishedBy = String(data.published_by || "");
+      ann.publishedAt = String(data.published_at || "");
+      var input = annInput();
+      if (input) input.value = ann.draft;
+      renderAnnDraftMeta();
+      renderAnnPublished();
       annSetDirty(false);
       annTip("", false);
     }).catch(function () { /* 公告读取失败不阻塞整页 */ });
   }
   // 返回 Promise<boolean>：true = 已提交（或本就无改动）；false = 失败。
+  // 只写草稿：保留后端 msg（"草稿已保存，待主管理员发布" / "草稿已清除（线上公告未变…）"）。
   function saveAnnouncement(text) {
     if (annBusy) return Promise.resolve(false);
-    if (text === ann.text) {
+    if (text === ann.draft) {
       annSetDirty(false);
       YB.toast.info("没有需要保存的改动");
       return Promise.resolve(true);
@@ -79,42 +139,88 @@
     annBusy = true;
     annTip("保存中…", false);
     return YB.api("PUT", "/api/announcement", { text: text }).then(function (data) {
-      ann.text = text;
-      annSetDirty(false);
-      annTip((data && data.msg) || (text ? "公告已更新" : "公告已清除"), false);
-      return true;
+      ann.draft = text;
+      // 重拉一次拿后端回写的草稿作者/时刻（不在前端猜作者）
+      return loadAnnouncement().then(function () {
+        annTip((data && data.msg) || (text ? "草稿已保存" : "草稿已清除"), false);
+        return true;
+      });
     }, function (e) {
       annTip((e && e.message) || "保存失败，请稍后重试", true);
       return false;
-    }).then(function (ok) { annBusy = false; return ok; });
+    }).then(function (ok) { annBusy = false; return ok; },
+            function (e) { annBusy = false; throw e; });
+  }
+  // 发布/下线：先确认影响面 → 口令框收当次口令；回调**返回请求 Promise**（既有契约），
+  // 失败会在框内显示并可改口令重试。发布作用于已保存的草稿，未保存的编辑先自动落草稿，
+  // 避免"看起来发了新内容、其实发的是旧草稿"。
+  function publishAnnouncement() {
+    if (annBusy || !state.isMaster) return;
+    if (!annCurrentText() && !ann.text) return;          // 按钮已禁用，这里防 DOM 篡改
+    var offline = !annCurrentText() && !!ann.text;
+    YB.confirmDialog({
+      title: offline ? "下线线上公告" : "发布公告",
+      body: offline
+        ? "下线后所有页面顶部（含登录页）的公告都会消失。确认继续？"
+        : "发布后公告会立即出现在所有页面顶部（含登录页）。确认继续？",
+      confirmText: offline ? "下线" : "发布",
+      danger: offline
+    }).then(function (ok) {
+      if (!ok) return;
+      YB.openConfirmPasswordModal(
+        (offline ? "下线全站公告" : "发布全站公告") + "会影响所有访问者。请输入当前管理员密码确认。",
+        function (pw) { return submitPublish(pw); });
+    });
+  }
+  function submitPublish(pw) {
+    annBusy = true;
+    annTip("发布中…", false);
+    var chain = Promise.resolve();
+    if (ann.dirty) {
+      chain = YB.api("PUT", "/api/announcement", { text: annCurrentText() }).then(function () {
+        ann.draft = annCurrentText();
+        annSetDirty(false);
+      });
+    }
+    return chain.then(function () {
+      return YB.api("POST", "/api/announcement/publish", { confirm_password: pw });
+    }).then(function (data) {
+      YB.toast.success((data && data.msg) || "已发布");
+      // 线上文本已变：先就地刷新外壳横幅（不再等一次 GET），再重拉本卡拿到发布人/时刻
+      YB.applyAnnouncementText(data && data.text);
+      return loadAnnouncement().then(function () { annTip((data && data.msg) || "已发布", false); });
+    }).then(function () { annBusy = false; },
+            // 原样上抛：口令框显示错误并保持打开供改口令重试；失败不动已保存的草稿
+            function (e) { annBusy = false; throw e; });
   }
   function bindAnnouncement() {
-    var input = $("set-announcement");
+    var input = annInput();
     if (input) {
       // 后端禁换行：前端也拦住粘贴/输入的换行（避免提交后才 400）
       input.addEventListener("input", function () {
         var v = input.value.replace(/[\r\n\u2028\u2029]+/g, " ");
         if (v !== input.value) input.value = v;
-        annSetDirty(v !== ann.text);
+        annSetDirty(v.trim() !== ann.draft);
       });
     }
     var save = $("set-ann-save");
-    if (save) save.addEventListener("click", function () {
-      saveAnnouncement((($("set-announcement") || {}).value || "").trim());
-    });
+    if (save) save.addEventListener("click", function () { saveAnnouncement(annCurrentText()); });
+    var pub = $("set-ann-publish");
+    if (pub) pub.addEventListener("click", publishAnnouncement);
     var clr = $("set-ann-clear");
     if (clr) clr.addEventListener("click", function () {
       YB.confirmDialog({
-        title: "清除公告",
-        body: "清除后所有页面顶部的公告都会消失。确定继续？",
+        title: "清除草稿",
+        body: "清除后草稿会被删除，线上公告不受影响；如需撤下线上公告请点「下线线上公告」。确定继续？",
         confirmText: "清除", danger: true
       }).then(function (ok) {
         if (!ok) return;
-        var input2 = $("set-announcement");
+        var input2 = annInput();
         if (input2) input2.value = "";
         saveAnnouncement("");
       });
     });
+    renderAnnPublish();
   }
 
   /* ---------------- 未保存改动的统一守卫 ----------------
@@ -123,7 +229,7 @@
   function stores() {
     return [
       { name: "签到调度", get: function () { return YB.settingsSchedule; } },
-      { name: "全局公告", get: function () { return { isDirty: function () { return ann.dirty; }, save: function () { return saveAnnouncement((($("set-announcement") || {}).value || "").trim()); } }; } },
+      { name: "全局公告", get: function () { return { isDirty: function () { return ann.dirty; }, save: function () { return saveAnnouncement(annCurrentText()); } }; } },
       { name: "消息推送", get: function () { return YB.settingsNotify; } },
       { name: "邮件通知", get: function () { return YB.settingsMail; } },
       { name: "容量配额", get: function () { return YB.settingsQuota; } },
@@ -160,8 +266,9 @@
   // 各组件在标脏/清脏时切换卡内徽标的 hidden；监听它即可在一次改动后同步标签脏点
   function observeDirtyBadges() {
     if (!window.MutationObserver) return;
+    // 执行体分区已改清单式（写操作即时落盘），没有卡内脏徽标，故不在此列
     var badgeIds = ["ss-dirty", "set-ann-dirty", "sn-dirty", "sm-dirty", "set-cap-dirty",
-                    "set-exec-dirty", "sh-dirty"];
+                    "sh-dirty"];
     var obs = new MutationObserver(refreshTabDirty);
     badgeIds.forEach(function (id) {
       var badge = $(id);
@@ -272,10 +379,14 @@
   /* ---------------- 装配与加载 ---------------- */
   function applySettings(data) {
     state.capacityEst = data.capacity_estimate || null;
+    state.capacity = data.capacity || null;
     YB.settingsSchedule.apply(data);
     YB.settingsHealth.apply(data);
     YB.settingsQuota.apply(data);
     YB.settingsSwitches.apply(data);
+    // 执行体分区的规模 KPI 要用「容量配额 · 用户容量上限」（另一份数据源）：
+    // 上限改了（保存容量上限后重拉设置也走这里）一并重画，避免同页两处数字打架。
+    if (YB.settingsExecutors && YB.settingsExecutors.refreshKpis) YB.settingsExecutors.refreshKpis();
   }
 
   // 核心设置加载：加载中显状态条，失败显「设置加载失败」+ 重试；成功隐藏状态条。
@@ -292,7 +403,9 @@
   }
 
   // 首屏与页面级重试共用：核心设置 + 两张主管理员专属卡 + 执行体分区。非主管理员不拉
-  // 通知/邮件/执行体（整 tab 已隐藏，拉回来只会渲染出"看起来可编辑"的行；后端 GET 也会 403）。
+  // 通知/邮件/执行体——理由是整 tab 已隐藏，拉回来只会渲染出"看起来可编辑"的行。
+  // 别把这里当成"后端会 403"：两个配置 GET 对任意管理员返回 200（通道状态字段本就有意
+  // 可读），执行体 GET 才硬拒主管理员以外。口径见 settings-notify.js 头注。
   function startLoad() {
     return loadAll().then(function () {
       if (!state.isMaster) return;
@@ -303,11 +416,14 @@
   }
 
   // 保存容量上限后只刷新设置（容量配额 + 调度警示），不重放两张通知卡以免抹掉未保存编辑。
+  // 容量上限还是执行体分区那张「平均每执行体分到的人数」的分子，故一并重画该卡。
   function refreshAfterQuotaSave() {
     return YB.api("GET", "/api/settings").then(function (data) {
       state.capacityEst = data.capacity_estimate || null;
+      state.capacity = data.capacity || null;
       YB.settingsQuota.apply(data);
       YB.settingsSchedule.refreshWarn();
+      if (YB.settingsExecutors && YB.settingsExecutors.refreshKpis) YB.settingsExecutors.refreshKpis();
     }).catch(function () {});
   }
 
@@ -336,7 +452,14 @@
       YB.settingsNotify.mount({ isMaster: state.isMaster });
       YB.settingsMail.mount({ isMaster: state.isMaster });
       YB.settingsQuota.mount({ isMaster: state.isMaster, onSaved: refreshAfterQuotaSave });
-      YB.settingsExecutors.mount({ isMaster: state.isMaster });
+      // 执行体分区：容量上限由页面注入（规模 KPI 的分子）；同一份响应里的容量建议
+      // （measured / recommendation / window / current_accounts）转交「容量配额」分区的建议卡——
+      // 一份数据一次请求，两个分区各取所需（用户 2026-09-17：这两件事共用同一份数据）。
+      YB.settingsExecutors.mount({
+        isMaster: state.isMaster,
+        capacity: function () { return state.capacity; },
+        onData: function (data) { YB.settingsQuota.applyExecutors(data); }
+      });
       YB.settingsSwitches.mount({ isMaster: state.isMaster });
       bindAnnouncement();
       initTabs();

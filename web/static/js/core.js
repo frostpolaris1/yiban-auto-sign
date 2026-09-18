@@ -148,7 +148,13 @@
     }
     if (resp.status === 401 && !retried) return refreshThenRetry(req);
     if (resp.status === 403 && !retried && /校验失败|CSRF|令牌/.test(String(data.error || ""))) {
-      return refreshThenRetry(req).catch(function () { throw httpError(403, "请刷新页面后重试"); });
+      // 刷新身份 → 重试一次。**只有"刷新身份"这一步失败**才回落到通用文案：
+      // 重试请求自身被拒时必须原样上抛，否则后端真正的 403 文案会被吞掉
+      // （实测：口令门那条「口令校验未通过，设置未生效」被换成了"请刷新页面后重试"，
+      //  操作者看不出是口令错了；同一条路也吞 409/403 这类业务文案）。
+      csrfToken = "";
+      return fetchMe().catch(function () { throw httpError(403, "请刷新页面后重试"); })
+        .then(function () { return perform(req, true); });
     }
     if (!resp.ok || data.ok === false) throw httpError(resp.status, data.error, data);
     return data;
@@ -527,6 +533,23 @@
     return s.length >= PW_ADMIN_MIN_LEN && passwordClasses(s) >= PW_ADMIN_MIN_CLASSES;
   }
 
+  /* ---------- 口令门禁失败的机器可读分类 ----------
+     后端在门禁拒绝时下发 `reason`：password_required = 本次未提交口令（调用方应弹口令框
+     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试）。前端据此分支，
+     不再靠比对中文文案或状态码；旧后端未下发 reason 时回落为空串，按后端原文案显示，
+     语义与既有契约一致。 */
+  function pwGateReason(e) {
+    var r = e && e.data && e.data.reason;
+    return (r === "password_required" || r === "password_incorrect") ? r : "";
+  }
+  function pwGateMessage(e) {
+    var r = pwGateReason(e);
+    if (r === "password_required") return "此操作需要输入当前口令，请重新输入后确认。";
+    if (r === "password_incorrect") return "当前口令不正确，请重新输入。";
+    // 非口令门禁失败（冷却 429、无事可做 400、网络错误等）：原样显示后端文案
+    return (e && e.message) || "操作失败，请稍后重试";
+  }
+
   /* ---------- 密码模态（重置密码 / 高危操作二次确认共用） ---------- */
   // 动态构建在 openModal 之上：P4 起旧栈 modal partial 已退役，新 MPA 外壳不再 include
   // partials/modals/*，故模态一律在运行时构造（沿用旧 DOM id 会 ReferenceError）。
@@ -570,31 +593,36 @@
       // set 模式按完整策略校验，与后端 _password_policy_error 同口径，
       // 避免"前端放行、提交后才 400"；confirm 模式只验非空。
       if (!isConfirm && !passwordPolicyOk(pw)) return reject("密码" + PW_POLICY_HINT);
+      if (pending || submitted) return false;    // 在途或已提交：忽略重复提交（挡在调用回调之前）
       var fn = cb;
-      if (fn) {
-        var result = fn(pw);
-        if (result && typeof result.then === "function") {
-          // 回调返回 Promise：弹窗保持打开直至请求落定——拒绝时经 reject() 把
-          // 错误显示在弹窗内（口令框保留原值，可直接改口令重试），期间禁用
-          // 底部按钮防重复提交；未返回 Promise 的既有回调维持原行为（先关再回调）
-          if (pending) return false;
-          pending = true;
-          setFootBusy(true);
-          result.then(function () {
-            submitted = true;
-            closeModal(pwHandle);
-          }, function (e) {
-            pending = false;
-            setFootBusy(false);
-            reject((e && e.message) || "操作失败，请稍后重试");
-          });
-          return false;
-        }
+      // 回调**只调一次**：它的返回值决定后续走哪条路。
+      // （2026-09-17 Playwright 实测修掉的老缺陷：为判断"回不返回 Promise"，这里曾先调一次探测、
+      //  再在下方为非 Promise 回调调第二次 —— 那些回调会真的执行两遍：两次写请求（含两次审计）、
+      //  实测端点则变成两次真实联网，前端限速形同不存在。）
+      // `submitted || pending` 那道护栏还必须留在调用**之前**：非 Promise 回调返回后该次提交虽然
+      // 立刻关上弹窗，但面板要等 200ms 才从 DOM 摘掉，真实鼠标双击的第二下仍能命中「确认操作」，
+      // 于是同一份口令会再发一次请求（实测复现）。
+      var result = fn ? fn(pw) : undefined;
+      if (result && typeof result.then === "function") {
+        // 回调返回 Promise：弹窗保持打开直至请求落定——拒绝时经 reject() 把错误显示在弹窗内
+        // （口令框保留原值，可直接改口令重试），期间禁用底部按钮防重复提交
+        pending = true;
+        setFootBusy(true);
+        result.then(function () {
+          submitted = true;
+          closeModal(pwHandle);
+        }, function (e) {
+          pending = false;
+          setFootBusy(false);
+          // 口令门禁失败按 reason 分支：缺口令 → 提示重新输入；输错 → 明说"不正确"，
+          // 两种情况都留在框内可重试（弹窗不关闭）。
+          reject(pwGateMessage(e));
+        });
+        return false;
       }
       submitted = true;
-      closeModal(pwHandle); // 先关本层再回调：回调常紧接着叠开第二个模态
-      if (fn) fn(pw);
-      return false; // 已手动关闭
+      closeModal(pwHandle); // 收尾：本层关掉，调用方若紧接着叠开第二个模态，栈序仍是新层在上
+      return false;         // 已手动关闭
     }
     var pwHandle = openModal({
       title: isConfirm ? "安全确认" : "重置密码",
@@ -734,6 +762,12 @@
       if (on && opts.instant) p.setAttribute("data-tab-instant", "");
       else p.removeAttribute("data-tab-instant");
     });
+    // 活动标签滚进视口：窄屏 tab 条会横向溢出，深链（?tab=switches）或程序化激活时
+    // 活动 tab 可能整个在视口外（实测 scrollLeft=0、tab 在 x=493~573、可视到 344）。
+    var activeTab = group.querySelector(".tab.is-active");
+    if (activeTab && activeTab.scrollIntoView) {
+      try { activeTab.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) { /* 老浏览器忽略 */ }
+    }
     if (!opts.skipUrl && (opts.syncUrl || !group.hasAttribute("data-tab-url-own"))) tabSyncUrl(target);
   }
   function cssEscape(s) { return String(s).replace(/["\\]/g, "\\$&"); }
@@ -927,42 +961,58 @@
     try { sessionStorage.setItem(ANNOUNCE_DISMISS_KEY, text); } catch (e) {}
     forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) { bar.hidden = true; });
   }
-  function initAnnouncement() {
-    function showBell() {
-      var btn = $("announcementBtn");
-      if (!btn) return null;
-      // data-notif-always：通知中心入口常驻（用户端下拉面板）；其余页面沿用"有公告才显示"
-      if (btn.getAttribute("data-notif-always") === "1") btn.hidden = false;
-      return btn;
-    }
-    // 公告是公开只读、低频变更：60s 缓存，切页不重复拉取
-    apiCached("announcement", 60000, function () { return api("GET", "/api/announcement"); }).then(function (data) {
-      var text = String((data && data.text) || "").trim();
-      var btn = $("announcementBtn");
-      if (btn && text && !btn.closest(".dd-wrap")) {
-        // 没有通知下拉的页面（管理端顶栏）：沿用可点开的公告弹窗
+  function showBell() {
+    var btn = $("announcementBtn");
+    if (!btn) return null;
+    // data-notif-always：通知中心入口常驻（用户端下拉面板）；其余页面沿用"有公告才显示"
+    if (btn.getAttribute("data-notif-always") === "1") btn.hidden = false;
+    return btn;
+  }
+  // 公告文本落到全部挂点（顶栏入口、通知中心分节、登录页横幅）。单独抽出来是为了让
+  // 「发布/下线」拿到响应里的 text 后能就地刷新横幅，不必再等一次 GET（且不再重复绑定监听：
+  // 用 data-announce-bound / data-announce-text 幂等绑定与取值）。
+  function applyAnnouncementText(raw) {
+    var text = String(raw == null ? "" : raw).trim();
+    var btn = $("announcementBtn");
+    if (btn && !btn.closest(".dd-wrap")) {
+      btn.setAttribute("data-announce-text", text);
+      if (text) {
         btn.hidden = false;
-        btn.addEventListener("click", function () { showAnnouncement(text); });
+        if (btn.getAttribute("data-announce-bound") !== "1") {
+          btn.setAttribute("data-announce-bound", "1");
+          btn.addEventListener("click", function () {
+            showAnnouncement(String(btn.getAttribute("data-announce-text") || ""));
+          });
+        }
+      } else {
+        btn.hidden = true;
       }
-      showBell();
-      if (!text) return;
-      var dot = document.querySelector("[data-announcement-dot]");
-      if (dot) dot.hidden = false;
-      // 所有公告文本挂点统一填充（通知中心分节、页面横幅都用 data-announcement-text）
-      forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
-      // 通知中心里的公告分节（用户端）
-      forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = false; });
-      // 页面内公告横幅（无顶栏的整页，如登录页）：文本已由上面的统一填充写入；
-      // 关闭按钮绑定 + 「本次会话已关闭」判定只对横幅做。
-      forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
-        var closeBtn = bar.querySelector("[data-announcement-dismiss]");
-        if (closeBtn) closeBtn.addEventListener("click", function () { dismissAnnouncement(text); });
-        if (!announceIsDismissed(text)) bar.hidden = false;
-      });
-    }).catch(function () {
-      // 公告接口失败也不能让通知入口消失（用户端下拉是常驻入口）
-      showBell();
+    }
+    showBell();
+    var dot = document.querySelector("[data-announcement-dot]");
+    if (dot) dot.hidden = !text;
+    forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
+    forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = !text; });
+    forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
+      var closeBtn = bar.querySelector("[data-announcement-dismiss]");
+      if (closeBtn && closeBtn.getAttribute("data-announce-bound") !== "1") {
+        closeBtn.setAttribute("data-announce-bound", "1");
+        closeBtn.addEventListener("click", function () {
+          var tn = bar.querySelector("[data-announcement-text]");
+          dismissAnnouncement(tn ? (tn.textContent || "") : "");
+        });
+      }
+      bar.hidden = !text || announceIsDismissed(text);
     });
+  }
+  function initAnnouncement() {
+    // 公告是公开只读、低频变更：60s 缓存，切页不重复拉取
+    apiCached("announcement", 60000, function () { return api("GET", "/api/announcement"); })
+      .then(function (data) { applyAnnouncementText(data && data.text); })
+      .catch(function () {
+        // 公告接口失败也不能让通知入口消失（用户端下拉是常驻入口）
+        showBell();
+      });
   }
 
   /* ---------- 全局事件委托 ---------- */
@@ -990,6 +1040,25 @@
       if (ddTrigger) { e.preventDefault(); toggleDropdown(ddTrigger); return; }
       if (t.closest(".dd-menu-item")) { closeDropdowns(); return; }
       if (!t.closest(".dd-wrap")) closeDropdowns();
+
+      // 长口径说明走弹窗，不走 .info-pop 浮层：浮层靠 hover/focus 维持且 pointer-events:none
+      // （见 app.css 该处注释），实测 495 字在 390 宽下高 747px、底边超视口 344px，
+      // 超出部分既滚不到也选不中。克隆出来喂给弹窗，原节点留在页面里供下次再取。
+      var docBtn = t.closest("[data-doc]");
+      if (docBtn) {
+        e.preventDefault();
+        var docSrc = document.getElementById(docBtn.getAttribute("data-doc"));
+        if (!docSrc) return;
+        var docBody = docSrc.cloneNode(true);
+        docBody.removeAttribute("hidden");
+        docBody.classList.add("pm-doc");
+        openModal({
+          title: docBtn.getAttribute("data-doc-title") || "说明",
+          body: docBody,
+          actions: [{ label: "关闭", variant: "ghost" }]
+        });
+        return;
+      }
 
       var navToggle = t.closest("[data-nav-toggle]");
       if (navToggle) {
@@ -1283,6 +1352,9 @@
     openPasswordModal: openPasswordModal,
     openConfirmPasswordModal: openConfirmPasswordModal,
     openPwModal: openPwModal,
+    pwGateReason: pwGateReason,
+    pwGateMessage: pwGateMessage,
+    applyAnnouncementText: applyAnnouncementText,
     iconEl: iconEl,
     toggleTheme: toggleTheme,
     applyTheme: applyTheme,

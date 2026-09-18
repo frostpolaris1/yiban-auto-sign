@@ -69,6 +69,17 @@ OVERSIZED = {
         "逐条硬约定说明）；若增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
         "（config/capacity/state/db/version）」切成两个模块。"
     )),
+    "web/static/js/components/settings-executors.js": (780, (
+        "执行体分区组件（规模 KPI + 清单表 + 行内设置弹窗 + 每个写操作的口令门 + 写明细口径的注释）。"
+        "三块服务于同一个屏与**同一份接口响应**：lastData 被 KPI、清单渲染、行弹窗三处读，"
+        "banner/focusAfterPaint/rowName/putRow 等助手三处共用——拆开等于把这份共享状态改成跨模块协议"
+        "（门禁判据②），而任何接口字段变动仍要同时改多处（判据③不成立）。"
+        "2026-09-17 已按上一版登记的下一步抽出「容量实测与建议」（搬去 settings-quota.js）；"
+        "随后按后端交付（docs/refactor/90）给三种写操作（追加行/删行/改行）补了口令门，"
+        "并加了「只改名不打门」的分支，涨到 706 行 → 上限由 700 提到 780。"
+        "再涨就先切行内设置弹窗：openRow 及其独有助手（infoTip/linkBtn/ROW_HELP），"
+        "届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
+    )),
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),
     "scripts/rekey_accounts.py": (800, "运维工具：密钥轮换脚本，与本项目运行时解耦"),

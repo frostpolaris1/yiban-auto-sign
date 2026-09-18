@@ -37,11 +37,32 @@
 
 {# 信息浮层：hover + focus 双触发（键盘可达），文案为短标签 + <b> 分点。
    pop_id 唯一：aria-describedby 指向浮层本体，读屏聚焦按钮时可读出说明（不靠 hover）。 #}
+{% macro exec_kpi(label, value_id, icon_name, tone) %}
+<article class="kpi-card c-{{ tone }}">
+  <div class="kpi-top">
+    <div class="kpi-identity">
+      <div class="kpi-icon {{ tone }}">{{ icon(icon_name) }}</div>
+      <div class="kpi-label">{{ label }}</div>
+    </div>
+  </div>
+  <div class="kpi-value" id="{{ value_id }}"><span class="skeleton skeleton--title dash-skel" aria-hidden="true"></span></div>
+</article>
+{% endmacro %}
+
 {% macro info(label, pop_id) %}
 <button type="button" class="info-tip" aria-label="{{ label }}" aria-describedby="{{ pop_id }}">
   {{ icon('info') }}
   <span class="info-pop" id="{{ pop_id }}" role="tooltip">{{ caller() }}</span>
 </button>
+{% endmacro %}
+
+{# 长口径说明（>200 字）改用弹窗承载，不用上面的 info：.info-pop 靠 hover/focus 维持、
+   pointer-events:none 且无 max-height，实测 495 字在 390 宽下浮层高 747px、底边超视口
+   344px，超出部分既滚不到也选不中。内容留在页面里（hidden），点击由 core.js 的
+   [data-doc] 委托克隆进弹窗。 #}
+{% macro doc(pop_id, title, btn_label) %}
+<button type="button" class="btn btn--ghost btn--sm" data-doc="{{ pop_id }}" data-doc-title="{{ title }}">{{ icon('info') }}{{ btn_label }}</button>
+<div id="{{ pop_id }}" hidden>{{ caller() }}</div>
 {% endmacro %}
 
 {# 下拉选项：静态写在模板里（Jinja 友好、无 JSON 转义），自研 listbox 接管交互。
@@ -98,7 +119,7 @@
   </div>
 
   <!-- 1. 签到调度：排序/分布/掐头去尾/间隔/窗口 + 周六·周日·自选（同一张卡） -->
-  <div class="tab-panel is-active" role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
+  <div class="tab-panel is-active" data-tab-instant role="tabpanel" id="set-panel-schedule" aria-labelledby="set-tab-schedule" data-tab-id="schedule">
     <section class="card" id="set-schedule">
       {# 卡头统一 .panel-head：原 eyebrow「自动签到」与标题同义，删 #}
       <div class="panel-head">
@@ -175,11 +196,11 @@
       <p class="set-warn" id="ss-edge-warn" hidden></p>
 
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="ss-sat">
           <span class="set-row-label">周六签到</span>
           {# 只说默认值（开关当前态已可见，不需再解释开关做什么） #}
           <p class="set-help">默认关闭。</p>
-        </div>
+        </label>
         <label class="switch" title="周六签到">
           <input id="ss-sat" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -187,10 +208,10 @@
         </label>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="ss-sun">
           <span class="set-row-label">周日签到</span>
           <p class="set-help">默认关闭。</p>
-        </div>
+        </label>
         <label class="switch" title="周日签到">
           <input id="ss-sun" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -198,10 +219,10 @@
         </label>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="ss-time-pref">
           <span class="set-row-label">允许用户自选签到时间</span>
           <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。仅主管理员可改。</p>
-        </div>
+        </label>
         <label class="switch" title="允许用户自选签到时间">
           <input id="ss-time-pref" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -232,18 +253,33 @@
           <div class="set-head-actions">{{ dirty_badge('set-ann-dirty') }}</div>
         </div>
       </div>
+      {# 权限分档：草稿任意管理员可编辑保存，发布/下线仅主管理员且需当次口令。
+         非主管理员下 work_settings.js 把 #set-ann-perm 挂到禁用按钮的 aria-describedby #}
+      <p class="alert info" id="set-ann-perm" hidden>
+        <span class="ico">{{ icon('info') }}</span>
+        <span class="body">编辑并保存草稿任意管理员均可；发布或下线线上公告仅主管理员可做（需当次口令）。</span>
+      </p>
       <div class="field">
-        <label class="field-label" for="set-announcement">公告文字</label>
+        <label class="field-label" for="set-announcement">待发布草稿（保存后不会立即对外显示）</label>
         <textarea id="set-announcement" class="textarea" rows="2" maxlength="200"
                   placeholder="例如：今晚 22:00–23:00 例行维护，签到可能延迟"></textarea>
-        <p class="field-help">显示在所有页面顶部（含登录页）；限 200 字、禁止换行；留空保存 = 清除公告。</p>
+        <p class="field-help" id="set-ann-draft-meta">（无草稿）</p>
+        <p class="field-help">显示在所有页面顶部（含登录页）；限 200 字、禁止换行。草稿需由主管理员点「发布」后才会对外生效。</p>
       </div>
       <p class="set-tip" id="set-ann-tip" role="status"></p>
-      <p class="field-help">改动需点「保存公告」后生效。</p>
+      <p class="field-help" id="set-ann-save-hint">改动需点「保存草稿」后生效；保存草稿不会改变线上公告。</p>
       <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" hidden>保存公告</button>
+        <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" hidden>保存草稿</button>
+        <button type="button" class="btn btn--ghost btn--sm" id="set-ann-clear">清除草稿</button>
         <span class="spacer"></span>
-        <button type="button" class="btn btn--ghost btn--sm" id="set-ann-clear">清除公告</button>
+        <button type="button" class="btn btn--primary btn--sm" id="set-ann-publish" hidden>发布</button>
+      </div>
+      {# 草稿态与线上态同屏可辨：管理员必须一眼看见"现在对外显示的是什么、由谁在何时发布"。
+         work_settings.js 回填 #set-ann-published / #set-ann-published-meta（不可编辑，故用文本而非输入框） #}
+      <div class="field">
+        <span class="field-label">线上公告（当前对所有访问者可见）</span>
+        <p class="set-summary" id="set-ann-published">（当前没有线上公告）</p>
+        <p class="field-help" id="set-ann-published-meta"></p>
       </div>
     </section>
   </div>
@@ -282,10 +318,10 @@
           </div>
         </div>
         <div class="set-row">
-          <div class="set-row-text">
+          <label class="set-row-text" for="sn-urgent">
             <span class="set-row-label">仅推送重要告警</span>
             <p class="set-help">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度。</p>
-          </div>
+          </label>
           <label class="switch" title="仅推送重要告警">
             <input id="sn-urgent" type="checkbox">
             <span class="track" aria-hidden="true"></span>
@@ -335,10 +371,10 @@
           </div>
         </div>
         <div class="set-row">
-          <div class="set-row-text">
+          <label class="set-row-text" for="sm-global">
             <span class="set-row-label">全局邮件通知</span>
             <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码。</p>
-          </div>
+          </label>
           <label class="switch" title="全局邮件通知">
             <input id="sm-global" type="checkbox">
             <span class="track" aria-hidden="true"></span>
@@ -389,14 +425,19 @@
     </div>
   </div>
 
-  <!-- 4. 容量配额：只保留上限编辑，仅主管理员 -->
+  <!-- 4. 容量配额：上限编辑（仅主管理员可改，其余管理员可见但控件禁用）＋ 容量建议与耗时实测 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-quota" aria-labelledby="set-tab-quota" data-tab-id="quota">
     <section class="card" id="set-quota">
       {# 原 eyebrow「名额」与标题「容量配额」同义，删 #}
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">容量配额</h2>
-          <div class="set-head-actions">{{ dirty_badge('set-cap-dirty') }}</div>
+          <div class="set-head-actions">
+            {# 三处容量口径的差别（本页名额 / 总览的服务能力 / 下面那张卡的建议人数）必须说清，
+               否则三个数字看起来在互相打架——原文常驻页面占一行，收进 ⓘ #}
+            {% call info('容量上限口径', 'set-pop-cap-scope') %}<b>本页上限管"名额"：</b>能存多少用户与账号（0 = 不限），调小只挡新增、不删存量。<b>「数据总览」的容量估算</b>按有效窗口与账号间隔算"一轮装不装得下"（服务能力），<b>下一张卡的"建议"</b>另含慢账号余量（实测容量 × 2/3）。三者口径不同，<b>数值不必相等</b>，不要拿一个去校准另一个。{% endcall %}
+            {{ dirty_badge('set-cap-dirty') }}
+          </div>
         </div>
       </div>
       <p class="alert info" id="set-cap-perm" hidden>
@@ -421,15 +462,36 @@
           <p class="field-help">管账号存量（含主管理员直属裸账号）；0 = 不限。调小只限制新增，不删存量账号。</p>
         </div>
       </div>
-      {# 两个页面的容量口径不同，各自写明（后端 2026-09-17 要求）：本页＝"一轮装不装得下"；
-         「执行体」分区的建议人数另含慢账号余量（实测 × 2/3），故两页数字不必相等 #}
-      <p class="field-help">本页上限管"名额"；「数据总览」的容量估算按有效窗口与账号间隔算"一轮装不装得下"，
-        「执行体」分区的建议人数另含慢账号余量，两者口径不同、数值不必相等。</p>
       <p class="set-tip" id="set-cap-tip" role="status"></p>
       <p class="field-help">改动需点「保存容量上限」后生效。</p>
       <div class="form-actions">
         <button type="button" class="btn btn--primary btn--sm" id="set-cap-save" hidden>保存容量上限</button>
       </div>
+    </section>
+
+    {# 容量建议与耗时实测：与「容量配额」共用同一份容量数据（计入容量的账号数、有效窗口），
+       故从「执行体」分区挪来同屏（用户 2026-09-17：同类功能合并），并**直接放页面上**、
+       不再收进弹窗。数字全部来自 GET /api/scheduler/executors（measured / recommendation 由
+       后端算好，前端不换算）；没有实测值就显示「未实测」且不给建议（契约要求，不得编造）。
+       非主管理员：本卡整块隐藏——那个接口对他们 403，显示空卡比不显示更糟。 #}
+    <section class="card" id="set-cap-advice" hidden>
+      <div class="panel-head">
+        <div class="panel-head-row">
+          <h2 class="panel-title">容量建议与耗时实测</h2>
+          <div class="set-head-actions">
+            {# 长说明走弹窗（见 doc 宏）；短说明才用 info 浮层，且浮层固定右对齐触发器向左
+               展开，触发器偏左时浮层左缘会跑出视口（实测 360 下 ⓘ 在按钮左侧时浮层
+               left −46.7px，每行开头两三个字被裁）——用 info 时仍需把 ⓘ 排在行的最右。 #}
+            <button type="button" class="btn btn--ghost btn--sm" id="set-cap-measure">测试单账号耗时</button>
+            {% call doc('set-pop-cap-advice', '实测说明与建议口径', '口径说明') %}<b>建议怎么来的：</b>每个执行体的建议账号数＝实测容量 × 2/3（含慢账号余量），建议并行执行体数＝⌈计入容量的账号数 ÷ 每个执行体的建议账号数⌉，只数清单里的「并行」行；<b>是建议不是程序上限</b>（执行体清单最多 64 行，与它无关），也不自动改配置——要改上限请用上方的容量配额，要改执行体请到「执行体」分区。<b>测试做什么：</b>用一个<b>真实账号</b>（默认取账号列表里第一个可签账号，且顺序稳定、每次都是同一个）走一次只读链路（登录 + 拉任务，<b>不提交签到</b>）测出单账号耗时并据此换算容量。它只覆盖窗口外的"登录 + 拉任务"（5 次请求），比真实签到（含定位与提交，6 次请求）偏乐观，别和测试机基准的数混用；结果<b>不会自动保存</b>，本卡只负责展示；正式定档由部署者按测试机基准写入配置文件的实测容量项（页面上没有该录入控件），写入后长期保留，直到按下一次实测的结果更新。<b>限制：</b>仅主管理员可用（不改配置，故与手动签到同档、不收管理员口令，但要按一次确认）；两次实测之间有冷却（默认 10 分钟），冷却期内按钮灰掉并显示剩余时间；落在有效签到窗口内不做（避免抢占本轮资源）。{% endcall %}
+          </div>
+        </div>
+      </div>
+      {# 建议只有一行摘要：数字来自接口的 recommendation / measured / current_accounts（前端不换算） #}
+      <p class="set-summary" id="set-cap-advice-line">尚未读取执行体数据</p>
+      {# 后端口径提醒（recommendation.note）与实测结果行：没有就整行不显示 #}
+      <p class="set-warn" id="set-cap-advice-note" hidden></p>
+      <p class="set-tip" id="set-cap-measure-result" role="status"></p>
     </section>
   </div>
 
@@ -444,10 +506,10 @@
         </div>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="sh-verify">
           <span class="set-row-label">注册时验证账号</span>
           <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。</p>
-        </div>
+        </label>
         <label class="switch" title="注册时验证账号">
           <input id="sh-verify" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -455,10 +517,10 @@
         </label>
       </div>
       <div class="set-row">
-        <div class="set-row-text">
+        <label class="set-row-text" for="sh-probe-enable">
           <span class="set-row-label">开启探针模式</span>
           <p class="set-help">非签到时段对全部账号做健康检查（仅登录，不实际签到），异常账号提前预警。</p>
-        </div>
+        </label>
         <label class="switch" title="探针模式">
           <input id="sh-probe-enable" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -493,90 +555,64 @@
     </section>
   </div>
 
-  <!-- 6. 执行体与出口：并行执行体数量/出口 + 兜底执行体 + 容量建议，仅主管理员整 tab 可见。
+  <!-- 6. 执行体与出口：规模 KPI + 执行体清单（含故障转移与停用行），仅主管理员整 tab 可见。
        数据源与同页其它分区不同：本分区读 GET/PUT /api/scheduler/executors（不来自 /api/settings），
        故由 components/settings-executors.js 自带 load()。出口只以脱敏描述串返回（去 userinfo），
        编辑框一律留空并提示「留空 = 不修改」；配置项键名由接口下发，模板与脚本都不写死键名串。 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-executors" aria-labelledby="set-tab-executors" data-tab-id="executors">
-    {# 执行体总设置：只放「数量」「建议」与实测入口；**出口按执行体逐个配**（见一览表行内「设置」），
-       故本卡不再有整条出口列表与独立兜底出口栏。 #}
-    <section class="card" id="set-executors">
-      <div class="panel-head">
-        <div class="panel-head-row">
-          <h2 class="panel-title">执行体总设置</h2>
-          <div class="set-head-actions">
-            {% call info('执行体说明', 'set-pop-executors') %}<b>执行体：</b>一轮签到并行拉起的进程数（对应 --workers N），每个执行体可走独立出口（在下方一览表里逐个设置）。<b>兜底：</b>常驻进程负责窗口内补签，是否在跑按心跳新鲜度判定；开关只是声明，还需宿主 cron 拉起进程，所以"开了"不等于"在跑"。<b>容量：</b>建议值＝实测容量 × 2/3（含慢账号余量），与「容量配额」的"一轮装不装得下"不是同一口径，两者不必相等；没有实测值就不给建议。<b>生效：</b>保存只写配置，下一轮定时任务或重启执行体/容器后生效，正在跑的这一轮不受影响。<b>权限：</b>仅主管理员可查看与修改。{% endcall %}
-            {{ dirty_badge('set-exec-dirty') }}
-          </div>
-        </div>
-      </div>
-      <p class="alert info" id="set-exec-perm" hidden>
-        <span class="ico">{{ icon('info') }}</span>
-        <span class="body">仅主管理员可查看与修改执行体配置，控件已禁用；需调整请联系主管理员。</span>
-      </p>
-
-      <div class="form-grid">
-        <div class="field field--narrow">
-          <label class="field-label" for="set-exec-workers">并行执行体数量</label>
-          <div class="input-group">
-            <input class="input" id="set-exec-workers" type="number" min="1" max="64" step="1" placeholder="1">
-            <span class="addon">个</span>
-          </div>
-          <p class="field-help">每轮签到并行拉起的进程数（1~64，对应 --workers N）；未配置时为 1。</p>
-        </div>
-        <div class="field field--narrow">
-          <span class="field-label">单账号耗时实测</span>
-          <p><button type="button" class="btn btn--ghost btn--sm" id="set-exec-measure">测试</button></p>
-          <p class="field-help" id="set-exec-measure-result">点「测试」会用<b>一个真实账号</b>走一次只读链路（登录 + 拉任务，不提交签到）测出耗时，并按它把建议数量填进左侧数字框。</p>
-        </div>
-      </div>
-      {# 实测端点的两条风险必须写在页面上（后端要求）：默认拿列表第一个可签账号；只覆盖窗口外最小链路 #}
-      <p class="field-help">说明：默认取账号列表里第一个可签账号——通常是<b>某位真实用户</b>的账号，且顺序稳定、每次都是同一个；它只覆盖窗口外的<b>最小链路</b>（登录 + 拉任务，5 次请求），比真实签到（含定位与提交，6 次请求）<b>偏乐观</b>。正式定档请以测试机基准为准，两种数字不要混用。</p>
-
-      {# 建议区（只读）：口径＝实测容量 × 2/3（后端算）；没有实测就写「未实测」并隐藏建议 #}
-      <div id="set-exec-advice">
-        <p class="field-help" id="set-exec-window"></p>
-        <p class="field-help" id="set-exec-accounts"></p>
-        <p class="field-help" id="set-exec-advice-nums" hidden></p>
-        <p class="set-warn" id="set-exec-advice-note" hidden></p>
-      </div>
-
-      <p class="set-tip" id="set-exec-tip" role="status"></p>
-      <p class="field-help">改动需点「保存执行体配置」；保存只写配置、不重启执行体，下一轮定时任务或重启执行体/容器后生效，正在跑的这一轮不受影响。</p>
-      <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="set-exec-save" hidden>保存执行体配置</button>
-      </div>
+    {# 规模 KPI **放在页面上、不在卡里**（用户 2026-09-17）：数字全部来自接口
+       （executors[] / workers.configured / 容量配额的用户上限），前端只做计数与一次除法。
+       后两张卡的口径（分子分母各取自哪里）写在下面卡头的 ⓘ 里，不占页面。
+       —— KPI 卡是 overflow:hidden，ⓘ 浮层放卡内会被裁掉，故不放卡里。 #}
+    <section class="kpi-grid" id="set-exec-kpis" aria-label="执行体与容量规模">
+      {{ exec_kpi('清单行数', 'set-exec-kpi-rows', 'list', 'primary') }}
+      {{ exec_kpi('并行执行体', 'set-exec-kpi-worker', 'server', 'primary') }}
+      {{ exec_kpi('平均每执行体分到的人数', 'set-exec-kpi-perexec', 'users', 'purple') }}
+      {{ exec_kpi('设定的容量总人数', 'set-exec-kpi-capacity', 'gauge', 'muted') }}
     </section>
 
-    {# 执行体一览：一行一个执行体（含兜底）；出口在行内「设置」里改（按序号写单段，不动别人）。
-       状态用后端算好的四态，当日计数用 activity.by_executor（数组为空＝今日尚未运行）。 #}
+    {# 执行体一览＝清单本身：一行一个执行体（含故障转移与停用行）；改名称/出口在行内「设置」弹窗里。
+       状态用后端算好的四态（只有 worker 行有），当日计数用 activity.by_executor（数组为空＝今日尚未运行）。
+       口径（脱敏纪律 / 四态含义 / 停用与槽位 / 故障转移"声明≠在跑"）收进卡头 info 浮层，不占页面。 #}
     <section class="card" id="set-executors-list">
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">执行体一览</h2>
+          <div class="set-head-actions">
+            {% call doc('set-pop-executors', '执行体一览与规模卡口径', '口径说明') %}<b>规模卡：</b>「平均每执行体分到的人数」＝「容量配额 · 用户容量上限」÷ 并行执行体行数（向上取整，按名额填满估算，与实际账号数无关）；上限为 0（不限）时不给平均值。<b>清单：</b>一行＝一个执行体，上限 64 行（槽位 0~63）；增行用表底的「添加执行体」，改名称/出口点行内「设置」。故障转移行（后端定的显示名）固定置顶、不可改类型与删除，其余按槽位升序；槽位号只增不复用（删行后新建的行会跳过用过的号，想留位置请改成「停用」）。<b>出口：</b>只显示去处、不含账号密码（读接口只回 scheme://host[:port]），行内「设置」里改，留空 = 不修改；改直连用「清除出口」。<b>状态 · 当日：</b>并行行的四态由后端按心跳与领取记录判定，<b>只有「可能被中断」（有开始、无收尾）需要处理</b>；故障转移行状态在卡头单独报；停用行不报存活。当日＝今日该执行体的领取、完成与失败数，「—」＝今日尚未运行。<b>停用 / 删除：</b>在「操作」列的「更多」里，且<b>要输一次当前管理员密码</b>才生效。<b>写入：</b>改动<b>即时写入配置</b>（本分区没有整页"保存"），下一轮定时任务或重启执行体/容器后生效；归属判不出来的历史行照实列在表尾，不做猜测归类。{% endcall %}
+          </div>
         </div>
+        {# 故障转移异常只在卡头报一行短标签，处置说明交给下面那条窗口内的告警（避免同一件事说两遍） #}
         <p class="panel-sub" id="set-exec-fb-state" role="status">
           <span class="badge badge--muted" id="set-exec-fb-badge">读取中</span>
           <span id="set-exec-fb-text"></span>
         </p>
-        {# 脱敏与状态口径只说一次（放卡头），不塞进列名 —— 长表头会把窄屏表格挤成横向滚动 #}
-        <p class="panel-sub">出口只显示去处、不含账号密码；状态与当日计数由后端按心跳与领取记录判定。</p>
       </div>
-      <p class="field-help" id="set-exec-configured"></p>
+      {# 操作反馈做成横幅（用户 2026-09-17）：增删改类型/出口的结果与"下一轮生效"写在这里，
+         不再是一行小字；成功后由组件写入，任何一次新操作都会覆盖它。 #}
+      <p class="alert" id="set-exec-banner" role="status" aria-live="polite" hidden>
+        <span class="ico" id="set-exec-banner-ico"></span>
+        <span class="body" id="set-exec-banner-body"></span>
+      </p>
       <div class="table-scroll">
         <table class="data-table" id="set-exec-table">
           <thead>
             <tr>
               <th scope="col">执行体</th>
               <th scope="col">类型</th>
-              <th scope="col">出口</th>
+              {# 状态与当日各占一栏（用户 2026-09-17：合成一栏两串字挤在同格，读起来分不清哪串是状态） #}
               <th scope="col">状态</th>
-              <th scope="col" class="set-exec-col-md">当日</th>
+              <th scope="col">当日</th>
+              <th scope="col">出口</th>
               <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody id="set-exec-assign"></tbody>
         </table>
+      </div>
+      {# 添加执行体：表格底部单开一行、只在中间放一个按钮（用户 2026-09-17） #}
+      <div class="set-exec-addrow">
+        <button type="button" class="btn btn--ghost btn--sm" id="set-exec-row-add">添加执行体</button>
       </div>
       <p class="set-warn" id="set-exec-fb-warn" hidden></p>
     </section>
@@ -589,19 +625,37 @@
       <div class="panel-head">
         <div class="panel-head-row">
           <h2 class="panel-title">系统开关</h2>
+          <div class="set-head-actions">
+            {# 危险说明整段（113 字）收进 ⓘ：实测 1440 占卡高 22%、360 占 35%（审查 P2） #}
+            {% call info('暂停签到的后果', 'set-pop-switches') %}暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，不影响已有账号签到；两者都要点「保存系统开关」才生效。{% endcall %}
+          </div>
         </div>
       </div>
       <p class="set-danger-note">暂停签到：所有账号停止自动签到（从下次开始），手动签到不受影响。
         暂停注册：登录页关闭注册入口，已注册用户登录不受影响，需在「账号管理」手动添加账号。
         两项都立即生效（不属于表单值，无「保存」概念），均需二次确认 + 当前管理员密码。</p>
       <div class="set-danger-actions">
-        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-global-pause">
-          {{ icon('pause') }}<span id="set-global-pause-text">暂停自动签到</span>
+        {# 「暂停」与「恢复」是两颗不同权限的按钮（后端按变更方向分权：急停任意管理员、
+           恢复仅主管理员），不是一颗翻转钮。JS 按当前状态只露出该露的那颗、禁用无权限那颗。 #}
+        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-gp-pause">
+          {{ icon('pause') }}<span>暂停自动签到</span>
         </button>
-        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-reg-pause">
-          {{ icon('pause') }}<span id="set-reg-pause-text">暂停注册</span>
+        <button type="button" class="btn btn--ghost set-danger-btn" id="set-gp-resume" hidden>
+          {{ icon('play') }}<span>恢复自动签到</span>
+        </button>
+        <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-rp-pause">
+          {{ icon('pause') }}<span>暂停注册</span>
+        </button>
+        <button type="button" class="btn btn--ghost set-danger-btn" id="set-rp-resume" hidden>
+          {{ icon('play') }}<span>开放注册</span>
         </button>
       </div>
+      {# 权限说明与禁用按钮同屏：内容按按钮分档——急停（暂停自动签到）任意管理员可做，
+         其余方向仅主管理员。settings-switches.js 把本节点挂到被禁按钮的 aria-describedby #}
+      <p class="alert info" id="sw-perm" hidden>
+        <span class="ico">{{ icon('info') }}</span>
+        <span class="body">「恢复自动签到」与「暂停/开放注册」仅主管理员可做；「暂停自动签到」是急停动作，任意管理员均可操作。</span>
+      </p>
       <p class="set-warn" id="set-pause-hint" hidden></p>
     </section>
   </div>
@@ -618,6 +672,7 @@
 <script defer src="{{ request.script_root }}/static/js/components/settings-mail.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-quota.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-switches.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/components/row-menu.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/components/settings-executors.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/pages/work_settings.js?v={{ web_version }}"></script>
 {% endblock %}
