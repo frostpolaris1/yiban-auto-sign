@@ -220,6 +220,31 @@ class LineBreakPredicateTest(_Base):
             "写入侧用 splitlines() 拆行，校验侧漏一个字符就留一条注入链")
 
 
+class AlertBodyLineSafeTest(_Base):
+    """`_nl_safe`（告警正文净化）与 .env 写入侧共用同一个 10 字符行模型。
+
+    旧实现只压 `\\r`/`\\n`：其余 8 个分隔符在邮件客户端与日志页里照样断行，
+    等于留下"在管理员告警正文里伪造一行"的口子（与 .env 那次 CRITICAL 同源）。
+    """
+
+    def test_every_splitlines_break_is_escaped(self):
+        for ch in ALL_BREAKS:
+            with self.subTest(ch=hex(ord(ch))):
+                out = self.webapp._nl_safe(f"甲{ch}乙")
+                self.assertNotIn(ch, out, f"U+{ord(ch):04X} 未转义，仍会在正文断行")
+                self.assertEqual(len(out.splitlines()), 1, "转义后必须是单行")
+                self.assertTrue(out.startswith("甲") and out.endswith("乙"),
+                                "只转义分隔符，不得吃掉两侧内容")
+
+    def test_plain_text_untouched_and_repeat_is_stable(self):
+        """正常值零改动；二次调用不得再改（同一值可能被链路上多处净化）。"""
+        for s in ("admin@test.local", "138****8000", "签到窗口 06:30~07:50", "制表\t正常"):
+            self.assertEqual(self.webapp._nl_safe(s), s)
+        for ch in ALL_BREAKS:
+            once = self.webapp._nl_safe(f"a{ch}b")
+            self.assertEqual(self.webapp._nl_safe(once), once, "净化必须幂等")
+
+
 class WriteEnvBatchInjectionTest(_Base):
     """兜底硬校验：值/键含任意行分隔符都必须 ValueError 且零写盘。"""
 
@@ -252,6 +277,24 @@ class WriteEnvBatchInjectionTest(_Base):
                     self.webapp.write_env_batch(
                         self.env_file, {f"YIBAN_X{ch}Y": "1"})
                 self.assertEqual(_read(self.env_file), before)
+
+    def test_key_name_whitelist(self):
+        """键名白名单（批 3 §4.13）：只认 `^[A-Z][A-Z0-9_]*$`，其余一律拒且零写盘。
+
+        行分隔符那一关挡不住的另一半：带 `=`/`#`/空白/小写/前导数字的键写进 .env 后，
+        解析侧（按首个 `=` 切分）与折叠侧（按"键名+空白+="匹配）对"这是哪一条键"
+        的理解会分叉——后写覆盖先写，正是那条提权链的落点形态。
+        """
+        self._poisoned_env()
+        before = _read(self.env_file)
+        for bad in ("yiban_x", "YIBAN X", "YIBAN_X=1", "#YIBAN_X", "1YIBAN",
+                    "", "YIBAN-KEY", "YIBAN_Ö"):
+            with self.subTest(key=bad), self.assertRaises(ValueError):
+                self.webapp.write_env_batch(self.env_file, {bad: "1"})
+        self.assertEqual(_read(self.env_file), before, "拒绝必须零写盘")
+        # 反向：不得把规则写成只认 YIBAN_ 前缀之类的过窄判定（正常键要能存）
+        self.webapp.write_env_batch(self.env_file, {"YIBAN_OK_2": "1"})
+        self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_OK_2"], "1")
 
     def test_ordinary_values_still_write(self):
         """不得为安全把 .env 写成只能填 ASCII 单字——空格/制表/中文/URL 都要能存。"""

@@ -26,6 +26,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一经 body() 渲染成文本
 from _mail_body import render_body  # noqa: E402
 
+from yiban.infra import account_crypto  # noqa: E402
+from yiban.notify import config as notify_config  # noqa: E402
+from yiban.notify import transport as notify_transport  # noqa: E402
+
 TEST_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "secret1"
@@ -161,7 +165,8 @@ class SignUserFailMailTest(unittest.TestCase):
         to, subject, text = m.call_args[0]
         text = render_body(text)
         self.assertEqual(to, "owner@test.local")
-        self.assertEqual(subject, "易班签到失败提醒")
+        self.assertEqual(subject, "【易班签到】签到失败提醒")
+        self.assertTrue(subject.startswith("【易班签到】"), "用户邮件主题须带统一前缀")
         self.assertIn("138****0000", text)
         self.assertNotIn("13800000000", text, "邮件不得含完整手机号")
 
@@ -507,6 +512,71 @@ class DbFilterMailNotifyTest(unittest.TestCase):
         db.create_user("admin1@x.com", "x", role="admin")
         result = db.admin_mail_recipients([])
         self.assertEqual(result, ["admin1@x.com"], "无 ADMIN_TO 时仍收所有开启接收的管理员")
+
+
+class NotifyCustomUrlRecheckTest(unittest.TestCase):
+    """自定义通知地址的加载期只读复核：不合格记一次 WARNING，不改通道可用性/发送行为。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-notify-recheck-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + TEST_KEY + "\n")
+        cls._old_env = {k: os.environ.get(k) for k in
+                        ("YIBAN_ENV_FILE", "YIBAN_NOTIFY_SECRET_ENC", "YIBAN_NOTIFY_TYPE",
+                         "YIBAN_NOTIFY_URL")}
+        for k in ("YIBAN_NOTIFY_SECRET_ENC", "YIBAN_NOTIFY_TYPE", "YIBAN_NOTIFY_URL"):
+            os.environ.pop(k, None)
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k, v in cls._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def setUp(self):
+        notify_config._unsafe_custom_warned = False
+
+    def _write_custom(self, url):
+        enc = account_crypto.encrypt_text(url, account_crypto.load_key(self.env_file))
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("YIBAN_ACCOUNTS_KEY=" + TEST_KEY + "\n"
+                    "YIBAN_NOTIFY_TYPE=custom\n"
+                    "YIBAN_NOTIFY_SECRET_ENC=" + json.dumps(enc, ensure_ascii=False) + "\n")
+
+    def test_unsafe_url_warns_once_and_channel_still_configured(self):
+        self._write_custom("http://127.0.0.1/hook")
+        with self.assertLogs("notify", level="WARNING") as logs:
+            secret = notify_config.get_secret()
+            notify_config.get_secret()  # 第二次不应再告警
+        self.assertEqual(secret, "http://127.0.0.1/hook", "复核不得改变解出的地址")
+        hits = [line for line in logs.output if "安全复核" in line]
+        self.assertEqual(len(hits), 1, "同一进程内只应记一条复核告警")
+        self.assertIn("设置页", hits[0], "应提示在设置页更正")
+        # 告警是 warn-only：通道仍判定为已配置，发送调用仍可执行（不抛出）
+        self.assertTrue(notify_config.is_configured(), "不合格地址不得让通道变为未配置")
+        self.assertFalse(notify_transport.send("t", "c", force=True))
+
+    def test_safe_url_no_warning(self):
+        self._write_custom("https://smtp.example.com/hook")
+        with self.assertNoLogs("notify", level="WARNING"):
+            notify_config.get_secret()
+        self.assertTrue(notify_config.is_configured())
+
+    def test_safe_then_unsafe_still_warns(self):
+        """合格地址不置旗，随后的不合格地址仍应告警（旗只被"不通过"置位）。"""
+        self._write_custom("https://smtp.example.com/hook")
+        with self.assertNoLogs("notify", level="WARNING"):
+            notify_config.get_secret()
+        self._write_custom("http://10.0.0.1/hook")
+        with self.assertLogs("notify", level="WARNING") as logs:
+            notify_config.get_secret()
+        self.assertTrue(any("安全复核" in line for line in logs.output))
 
 
 if __name__ == "__main__":

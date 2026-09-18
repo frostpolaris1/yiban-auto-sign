@@ -224,6 +224,23 @@ class TierTableMetaTest(_TierBase):
         self.assertEqual(cur["gap_max"], str(self.webapp.DEFAULT_ACCOUNT_GAP_MAX))
         self.assertEqual(cur["sign_order"], "sequence")
 
+    def test_every_effective_value_key_has_a_tier(self):
+        """反方向对拍：读侧枚举的每一个键都必须归属某一档，"没档位"= 对全体管理员开放。
+
+        档位键 ⊆ 读侧由上一条用例负责；缺的是这个反方向。新加设置项时若只补了
+        `_settings_effective_values` 而忘了补 `MASTER_ONLY_KEYS`/`GATED_KEYS`，
+        `set(data).intersection(MASTER|GATED|gp)` 会把它判成"无档位"——不要求口令、
+        不进 403 名单、不发变更告警，静默向所有管理员开放。常量定义处那句
+        "新增设置键时必须改档位表"要防的正是这件事，这里把它变成会报红的检查。
+        """
+        cur = self.webapp._settings_effective_values(self.env_file)
+        unclassified = set(cur) - (set(self.webapp.MASTER_ONLY_KEYS)
+                                   | set(self.webapp.GATED_KEYS)
+                                   | {self.webapp.GLOBAL_PAUSE_KEY})
+        self.assertEqual(unclassified, set(),
+                         f"这些设置键没有档位归属（等于任意管理员免口令可写）："
+                         f"{sorted(unclassified)}")
+
 
 class MasterOnlyTierTest(_TierBase):
     """A 档：普通管理员连口令都不给过；主管理员无口令也不给过。"""
