@@ -348,9 +348,22 @@ class EnvInjectionKillChainTest(_Base):
         c, h = self._sub_admin()
         r = c.put("/api/announcement", json={"text": "服务器今晚 23:00 维护"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        # 公告改双人发布（2026-09）后，普通管理员这一次只落草稿两键：
+        # 正式键与匿名可见文本必须原样不动（否则"草稿"就是个假名）
+        env = self.webapp.read_env(self.env_file)
+        self.assertEqual(env["YIBAN_ANNOUNCEMENT_DRAFT"], "服务器今晚 23:00 维护")
+        self.assertRegex(env["YIBAN_ANNOUNCEMENT_DRAFT_META"],
+                         rf"^{SUB_ADMIN}\|\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}$")
+        self.assertNotIn("YIBAN_ANNOUNCEMENT", env)
+        anon = self.webapp.create_app().test_client()   # 公告 GET 公开
+        self.assertEqual(anon.get("/api/announcement").get_json()["text"], "")
+        mc = self.webapp.create_app().test_client()
+        mh = self._csrf(self._login(mc, "admin@test.local", ADMIN_PASS))
+        self.assertEqual(mc.post("/api/announcement/publish",
+                                 json={"confirm_password": ADMIN_PASS},
+                                 headers=mh).status_code, 200)
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_ANNOUNCEMENT"],
                          "服务器今晚 23:00 维护")
-        anon = self.webapp.create_app().test_client()   # 公告 GET 公开
         self.assertEqual(anon.get("/api/announcement").get_json()["text"],
                          "服务器今晚 23:00 维护")
         r = c.post("/api/settings", json={"sign_order": "random",
@@ -361,10 +374,12 @@ class EnvInjectionKillChainTest(_Base):
         self.assertEqual(env["YIBAN_SIGN_ORDER"], "random")
         got = c.get("/api/settings", headers=h).get_json()
         self.assertEqual(got["sign_order"], "random")
-        # 清空公告（空值 = 删键）仍是常规能力
+        # 清空草稿（空值 = 删键）仍是常规能力；已发布的那一条不会被它牵连
         r = c.put("/api/announcement", json={"text": ""}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertNotIn("YIBAN_ANNOUNCEMENT", _read(self.env_file))
+        raw = _read(self.env_file)
+        self.assertNotIn("YIBAN_ANNOUNCEMENT_DRAFT", raw)
+        self.assertIn("YIBAN_ANNOUNCEMENT=服务器今晚 23:00 维护", raw)
 
 
 # ---------------------------------------------------------------------------
