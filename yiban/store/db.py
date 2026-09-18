@@ -2852,21 +2852,88 @@ def batch_user_ops(ops):
 # ---------------------------------------------------------------------------
 # 操作审计
 # ---------------------------------------------------------------------------
-# 审计写入失败计数（进程内累计）。审计是唯一追溯凭据，写入失败若无人察觉，
-# 就会出现"业务操作已生效、审计表里却没有这条记录"且哈希链依然自洽的静默丢失。
-# 全仓 db.audit() 调用点众多且不检查返回值，故用此计数器兜底：由每日校验
+# 审计写入失败欠账。审计是唯一追溯凭据，写入失败若无人察觉，就会出现
+# "业务操作已生效、审计表里却没有这条记录"且哈希链依然自洽的静默丢失。
+# 全仓 db.audit() 调用点众多且不检查返回值，故由此计数器兜底：由每日校验
 # （web 每日线程 / audit_verify.py）读取并告警，无需逐调用点改造。
-_AUDIT_FAIL_COUNT = 0
+#
+# 欠账必须**落库**：原实现只有进程内 int，systemctl restart 即归零——而"锁竞争
+# 导致审计写不进去"往往正是数据库已经出问题的时段，重启一次就把"有操作未留痕"
+# 这件事连同证据一起忘掉。现以 app_meta.audit_write_fail_total 为权威（单调累加），
+# 进程内只保留"落库也失败"的余额（那种时刻库本来就写不进，不能再放大故障）。
+_AUDIT_FAIL_KEY = "audit_write_fail_total"
+_AUDIT_FAIL_UNFLUSHED = 0
+_AUDIT_FAIL_UNFLUSHED_DB = None
 _AUDIT_FAIL_LOCK = threading.Lock()
 # 审计写入重试（2026-08-28 审查 B-1）：锁竞争时的短暂失败值得重试
 _AUDIT_RETRIES = 3
 _AUDIT_RETRY_BASE_DELAY = 0.2
 
 
-def audit_write_failures():
-    """返回本进程累计的审计写入失败次数（供每日校验告警；0 = 无欠账）。"""
+def _bump_audit_write_failure():
+    """欠账 +1（app_meta 单调累加）。落库失败时记在进程内余额上。"""
+    global _AUDIT_FAIL_UNFLUSHED, _AUDIT_FAIL_UNFLUSHED_DB
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            _begin_immediate(conn)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM app_meta WHERE key=?", (_AUDIT_FAIL_KEY,)
+                ).fetchone()
+                try:
+                    total = int(str(row["value"]).strip() or 0) if row and row["value"] else 0
+                except ValueError:
+                    total = 0
+                conn.execute(
+                    "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                    (_AUDIT_FAIL_KEY, str(total + 1)),
+                )
+                conn.commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                raise
+        return True
+    except Exception as e:
+        # 欠账本身就是"库写不进去"时产生的，落这条计数也可能失败——余额留在进程内，
+        # 至少本轮校验还能看见，绝不静默丢弃。
+        with _AUDIT_FAIL_LOCK:
+            _AUDIT_FAIL_UNFLUSHED += 1
+            _AUDIT_FAIL_UNFLUSHED_DB = _db_file
+        logger.error("审计写入欠账落库失败（记入进程内余额）: %s", e)
+        return False
+
+
+def _unflushed_audit_failures():
+    """进程内未落库余额；所属库已切换则视为 0（欠账是每个库各自的事实）。"""
+    if _AUDIT_FAIL_UNFLUSHED_DB is not None and _AUDIT_FAIL_UNFLUSHED_DB != _db_file:
+        return 0
+    return _AUDIT_FAIL_UNFLUSHED
+
+
+def _reset_audit_fail_memory():
+    """清空进程内余额（模拟进程重启/换库；生产路径不调用）。"""
+    global _AUDIT_FAIL_UNFLUSHED, _AUDIT_FAIL_UNFLUSHED_DB
     with _AUDIT_FAIL_LOCK:
-        return _AUDIT_FAIL_COUNT
+        _AUDIT_FAIL_UNFLUSHED = 0
+        _AUDIT_FAIL_UNFLUSHED_DB = None
+
+
+def audit_persisted_write_failures():
+    """已落库的审计写入欠账（app_meta；读不到按 0，不抛）。"""
+    try:
+        return int(str(get_meta(_AUDIT_FAIL_KEY, "0")).strip() or 0)
+    except ValueError:
+        return 0
+
+
+def audit_write_failures():
+    """累计的审计写入失败次数（供每日校验告警；0 = 无欠账）。
+
+    = 已落库的累计值 + 本轮进程内未落库的余额。重启不再归零。
+    """
+    return audit_persisted_write_failures() + _unflushed_audit_failures()
 
 
 def audit(username, action, target="", detail=""):
@@ -2881,13 +2948,12 @@ def audit(username, action, target="", detail=""):
     WARNING 并返回 None——锁等待超过 busy_timeout 时（长事务如 replace_accounts
     整表重插、夜间批量签到与 web 争锁）业务接口照常返回 200，审计表里却没有
     这条记录。因为是"没写进去"而非"写完被删"，哈希链依然自洽，verify 永远
-    验不出问题。现改为：失败重试 → 仍失败则计 ERROR + 累加失败计数（供每日
-    校验告警），并返回 bool 供关键路径在需要时显式判定。
+    验不出问题。现改为：失败重试 → 仍失败则计 ERROR + 欠账累加落 app_meta
+    （重启不归零；供每日校验告警），并返回 bool 供关键路径在需要时显式判定。
 
     返回 True 表示已落库；False 表示重试耗尽仍未写入（调用方据此决定是否
     阻断业务）。既有调用点不检查返回值也不会出错，失败会由每日校验兜住。
     """
-    global _AUDIT_FAIL_COUNT
     conn = None
     ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = detail[:200]
@@ -2935,8 +3001,7 @@ def audit(username, action, target="", detail=""):
                     _AUDIT_RETRY_BASE_DELAY * (attempt + 1), attempt + 1, _AUDIT_RETRIES, e,
                 )
                 time.sleep(_AUDIT_RETRY_BASE_DELAY * (attempt + 1))
-    with _AUDIT_FAIL_LOCK:
-        _AUDIT_FAIL_COUNT += 1
+    _bump_audit_write_failure()
     logger.error(
         "审计写入最终失败（业务操作已生效但无留痕，重试 %d 次）: %s | action=%s target=%s",
         _AUDIT_RETRIES, last_err, action, target,
