@@ -291,6 +291,7 @@ from yiban.infra import (  # noqa: E402
     env_lock,
 )
 from yiban.mail import config as mail_config  # noqa: E402  # 邮箱配置层：打码等内部名走子模块
+from yiban.mail import layout as mail_layout  # noqa: E402  # 正文排版层（三出口）
 from yiban.store import db  # noqa: E402  # SQLite 数据访问层（实现已入包，此即唯一出处）
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 旧口径 1~64 → 下标 0~63）。
@@ -2500,11 +2501,15 @@ def verify_admin(username, password):
             )
             send_notification(
                 "主管理员凭据歧义告警",
-                f".env 中 YIBAN_ADMIN_PASSWORD_HASH 未确认为恰好一行"
-                f"（统计得 {dup} 行，0 = 读取失败），主管理员登录已被拒绝。\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "该状态要么是配置错误，要么是配置注入提权：\n"
-                "请立即核对 .env 内容与文件属主，只保留唯一一行，并排查近期登录与改密记录。",
+                mail_layout.Mail(
+                    summary=".env 中 YIBAN_ADMIN_PASSWORD_HASH 未确认为恰好一行，"
+                            "主管理员登录已被拒绝。",
+                    fields=[("实测行数", f"{dup} 行（0 表示读取失败）")],
+                    notes=["该状态要么是配置错误，要么是配置注入提权。"],
+                    advice=["立即核对 .env 内容与文件属主，只保留唯一一行",
+                            "排查近期登录与改密记录"],
+                    level="urgent",
+                ),
                 urgent=True,
                 # 独立账本 login_fail：本告警可由未认证的 POST /api/login 触发，
                 # 不得挤占共享紧急额度（登录失败账本正是为高频可达的告警设立）
@@ -2591,6 +2596,38 @@ def _nl_safe(value):
     return str(value).replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent"):
+    """变更/操作类告警正文的唯一形状：事件 → 明细字段 → 操作者 → 时间。
+
+    原先 12 处各写一遍 `"…，操作者 X，时间 Y"`，冒号有无、逗号位置、时间写法
+    （`时间: X` 与 `时间 X`）全都不一致——同类告警在管理员眼里长得不一样，
+    扫不动。收成一份后只剩这一种形状；时间由排版层统一收口在末尾。
+
+    `operator` 缺省取当前会话用户；调用方已有目标用户名（如权限变更用的是局部
+    `username`）时显式传入，避免在路由里再拼一遍字段。
+    """
+    fields = list(detail or [])
+    fields.append(("操作者", _nl_safe(
+        session.get("username", "?") if operator is None else operator)))
+    return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level=level)
+
+
+def _review_reject_mail(phones, reason):
+    """审核拒绝通知的正文——单条与批量共用这一份，两路不可能再漂移。
+
+    批量分支原先自己另写了一段，且**不写被拒账号**：用户收到拒信却不知道是
+    哪一行被拒，只能挨个点开「我的账号」页看状态。
+    """
+    return mail_layout.Mail(
+        summary="您提交的易班账号未通过管理员审核。",
+        fields=[
+            ("被拒账号", "、".join(phones) if phones else "（见「我的账号」页）"),
+            ("审核理由", reason or "管理员未填写，可联系管理员了解详情"),
+        ],
+        advice=["登录后在「我的账号」页修改并重新提交，重新提交将再次进入审核"],
+    )
+
+
 def _alert_mail_recipients():
     """A 线告警邮件的收件人（唯一算法）：ADMIN_TO（受个人接收开关约束）+ 开启接收的管理员。
 
@@ -2606,6 +2643,9 @@ def _alert_mail_recipients():
 
 def send_notification(title, content, urgent=False, force=False, ledger=None):
     """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
+
+    `content` 可以是 `mail_layout.Mail`（邮件出纯文本+HTML 两版、推送取 Markdown 出口，
+    一份声明两路同源）或普通字符串（两路原样透传，与改版前逐字一致）。
 
     - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
       （按个人开关过滤）+ 所有开启接收的管理员用户邮箱；主管理员关闭
@@ -2631,7 +2671,7 @@ def send_notification(title, content, urgent=False, force=False, ledger=None):
     elif recipients:
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, content, urgent=urgent, force=force, ledger=ledger)
+    notify.send(title, mail_layout.as_text(content), urgent=urgent, force=force, ledger=ledger)
     # 手机推送额度耗尽的"补一封"——notify 侧当日首次有账本耗尽时会挂上
     # 待取走标记，pop_exhaustion_notice() 一次返回全部耗尽账本（如 ["general","urgent"]）。
     # 必须一次取完拼成一封：循环 pop 到空会让两本账同日各发一封（重复打扰）。
@@ -2671,19 +2711,20 @@ def _exhaustion_notice_mail(kinds):
         has_cap = isinstance(limit, int) and limit > 0
         tail = f"（今日上限 {limit} 条已全部用尽）" if has_cap else "（今日额度已用尽）"
         parts.append(f"{label}推送额度已用尽{tail}")
-    body = (
-        "手机消息推送" + "、".join(parts) + "。\n"
-        f"当日后续同类告警不再推手机，请改查管理员告警邮件（邮件通道不受影响）。\n"
-        f"如需调整请在 .env 修改 YIBAN_NOTIFY_DAILY_MAX / YIBAN_NOTIFY_URGENT_DAILY_MAX"
-        f"（0=不限），或关闭「仅推送重要告警」。\n"
-        f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    report = mail_layout.Mail(
+        summary="手机消息推送今日额度已用尽，当日后续同类告警不再推手机。",
+        items=parts,
+        advice=["请改查管理员告警邮件（邮件通道不受影响）",
+                "如需调整请在 .env 修改 YIBAN_NOTIFY_DAILY_MAX / "
+                "YIBAN_NOTIFY_URGENT_DAILY_MAX（0=不限），或关闭「仅推送重要告警」"],
+        level="warn",
     )
     logger.warning("手机推送%s，已补发告知邮件", "、".join(parts))
     recipients = _alert_mail_recipients()
     if not recipients:
         logger.warning("推送额度耗尽告知无法送达（邮件收件人为空），请登录后台自查推送配置")
         return
-    mailer.send_admin_alert("手机推送额度已用尽告警", body, to=",".join(recipients))
+    mailer.send_admin_alert("手机推送额度已用尽告警", report, to=",".join(recipients))
 
 
 # 两个邮件开关的中文名表（env_key → 可读名）：变更告警文案与高危动作标签共用，
@@ -2897,24 +2938,23 @@ def _channel_status_lines(status=None):
     if st["mail_error"]:
         lines.append(f"邮件通道：⚠ 状态读取失败（{st['mail_error']}）")
     elif st["mail_usable"] and st["mail_recipients"] <= 0:
-        lines.append(
-            "邮件通道：⚠ 已开启但无可送达收件人（0 人可收：主管理员个人接收已关、或未配置 "
-            "ADMIN_TO，且库里没有其他开启接收的管理员——全部告警邮件实际一封都发不出去）"
-        )
+        lines.append("邮件通道：⚠ 已开启但无可送达收件人（0 人可收）")
+        lines.append("成因：主管理员个人接收已关、或未配置 ADMIN_TO，"
+                     "且库里没有其他开启接收的管理员")
+        lines.append("影响：全部告警邮件实际一封都发不出去")
     elif st["mail_usable"]:
+        lines.append("邮件通道：已开启")
+        lines.append(f"邮件发件账号：{_nl_safe(st['mail_user'])}")
         lines.append(
-            f"邮件通道：已开启（发件 {_nl_safe(st['mail_user'])}，"
-            f"主管理员个人接收={'是' if st['mail_self_notify'] else '否（ADMIN_TO 不收）'}，"
-            f"告警收件 {_nl_safe(st['mail_admin_to'])}，今日可送达收件人 "
-            f"{st['mail_recipients']} 人）"
-        )
+            f"主管理员个人接收：{'是' if st['mail_self_notify'] else '否（ADMIN_TO 不收）'}")
+        lines.append(f"告警收件地址：{_nl_safe(st['mail_admin_to'])}")
+        lines.append(f"今日可送达收件人：{st['mail_recipients']} 人")
     elif st["mail_flag_on"]:
         # 三态 broken（开关开但发不出去）：把具体病因（未配置条目 / 条目缺账号
-        # 授权码 / 密文解不开）带到日报行，运维不必翻日志就能区分处置
-        lines.append(
-            f"邮件通道：⚠ 已开启但不可用（{st['mail_state_detail']}），"
-            "需处理：全部告警邮件实际一封都不会发出"
-        )
+        # 授权码 / 密文解不开）单独一行带到日报，运维不必翻日志就能区分处置
+        lines.append("邮件通道：⚠ 已开启但不可用")
+        lines.append(f"病因：{st['mail_state_detail']}")
+        lines.append("影响：全部告警邮件实际一封都不会发出")
     else:
         lines.append("邮件通道：⚠ 已关闭（YIBAN_MAIL_ENABLE=0，全部告警邮件不发送）")
     # ---- 手机推送通道 ----
@@ -2922,11 +2962,11 @@ def _channel_status_lines(status=None):
         lines.append(f"推送通道：⚠ 状态读取失败（{st['push_error']}）")
     else:
         if st["push_usable"]:
+            lines.append("推送通道：已开启")
+            lines.append(f"推送类型：{_nl_safe(st['push_type'])}")
+            lines.append(f"推送密钥：{_nl_safe(st['push_secret_masked'])}")
             lines.append(
-                f"推送通道：已开启（{_nl_safe(st['push_type'])}，"
-                f"密钥 {_nl_safe(st['push_secret_masked'])}，"
-                f"{'仅推送重要告警' if st['push_urgent_only'] else '全部告警均推送'}）"
-            )
+                f"推送范围：{'仅推送重要告警' if st['push_urgent_only'] else '全部告警均推送'}")
         elif st["push_configured"]:
             # 配过但当前不可用（密钥被清 / 换钥后解不开 = 已知病症）
             lines.append("推送通道：⚠ 已配置但不可用（密钥缺失或解密失败，需重新配置）")
@@ -2936,12 +2976,14 @@ def _channel_status_lines(status=None):
             # 组合变体两行都不带 ⚠ —— 日报既发不出去、又一条痕迹不落。手机推送这路
             # 不存在是真实的致盲风险（邮件一挂就零告警），必须看得见。
             lines.append("推送通道：⚠ 未配置（手机推送这路不存在，告警只剩邮件一条出口）")
-        lines.append(_daily_budget_desc(st))
+        lines.extend(_daily_budget_desc(st))
     return lines
 
 
 def _daily_budget_desc(cfg):
-    """两本推送额度账的今日剩余描述（分账后必须分开报，不能只报非紧急）。
+    """两本推送额度账的今日剩余（分账后必须分开报，不能只报非紧急）。
+
+    返回**行列表**而不是拼成一行：两本账各占一行才扫得清哪本先烧完。
 
     入参可以是 notify.get_config() 的原始输出，也可以是 _alert_channel_status() 的
     快照——后者刻意沿用同名键，展示层不再重复读一遍配置。
@@ -2952,10 +2994,10 @@ def _daily_budget_desc(cfg):
         cap = f"/{limit}" if isinstance(limit, int) and limit > 0 else ""
         return f"{label}剩余 {remaining}{cap} 条"
 
-    return "今日推送额度：" + "，".join([
-        _fmt("非紧急", cfg.get("daily_remaining"), cfg.get("daily_max")),
-        _fmt("紧急", cfg.get("urgent_daily_remaining"), cfg.get("urgent_daily_max")),
-    ])
+    return [
+        f"今日推送额度（{_fmt('非紧急', cfg.get('daily_remaining'), cfg.get('daily_max'))}）",
+        f"今日推送额度（{_fmt('紧急', cfg.get('urgent_daily_remaining'), cfg.get('urgent_daily_max'))}）",
+    ]
 
 
 # 通道健康日报"今日已播"标记（app_meta 键）。刻意落库而非进程内 dict：
@@ -3087,23 +3129,23 @@ def _send_channel_health_report(force=False):
             lines.append(f"审计链锚点：head_hash={desc}（记录数 {count}）")
     except Exception as e:
         logger.warning("读取审计链锚点失败（日报内省略该行）: %s", e)
-    body = (
-        "告警通道每日健康报告（两条通道状态、今日额度与审计链锚点）：\n"
-        + "\n".join(lines)
-        + f"\n时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
     # 降级口径：健康日不占紧急额度——例行日报若每天都吃掉一格紧急预算，反而会把真正
     # 的紧急告警挤出预算（那正是本次修复要治的"该响的不响"）。判据是两条出口是否都活着
     # （邮件可用且有收件人 + 推送可用）以及当日是否还有账本被用尽：攻击链第一步正是
     # "只关邮件"，此时日报必须还能从手机推送那条通道被听见。
     degraded = _channel_health_degraded(status, exhausted)
+    report = mail_layout.Mail(
+        summary="告警通道每日健康报告：两条通道状态、今日额度与审计链锚点。",
+        items=lines,
+        level="urgent" if degraded else "info",
+    )
     facts = _channel_health_facts(status, exhausted)
     # 痕迹落在发信**之前**：下面这句 send_notification 在两条通道全断时既送不到也没
     # 回执，先落库才谈得上"无论是否发出都留痕"。摘要（facts）与下面的 meta 共用一份，
     # 两侧事实无条件都在，不再从正文里挑 ⚠ 行拼。
     if degraded:
         _audit_channel_health_degraded(facts)
-    send_notification("告警通道健康日报", body, urgent=degraded)
+    send_notification("告警通道健康日报", report, urgent=degraded)
     # 去重标记刻意落在发信**之后**（修复轮 2 Minor）：写在之前等于"今天只要想过一遍就
     # 永久不再试"——send_notification 抛异常或 SMTP 瞬断时，当天这封日报既没出去、
     # 标记又已落库，直到次日都不会再播，一次瞬断被放大成整天静默，与"宁可多播不少播"
@@ -3221,8 +3263,12 @@ def _notify_capacity_once(kind, limit, label):
     logger.warning("%s已达上限 %d，已拒绝新注册/添加", label, limit)
     send_notification(
         f"{label}已达上限",
-        f"{label}已达上限（{limit}），新的注册/添加已被拒绝。\n"
-        f"如需扩容请在 .env 调整 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS。",
+        mail_layout.Mail(
+            summary=f"{label}已达上限，新的注册/添加已被拒绝。",
+            fields=[("当前上限", limit)],
+            advice=["如需扩容请在 .env 调整 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS"],
+            level="urgent",
+        ),
         urgent=True,
     )
 
@@ -3317,12 +3363,16 @@ def _report_env_key_collisions(env_path):
     )
     send_notification(
         ".env 配置歧义告警",
-        f"{env_path} 检测到行模型歧义配置键: {keys}\n"
-        "成因: 值内藏行分隔符（U+2028 等，任何一次读-改-写都会实体化成新配置行）"
-        "或同名键多行（含带空格 `KEY = v` 写法），解析器按后写覆盖先写取值，"
-        "生效值不可信。\n"
-        f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        "请备份后手工编辑 .env，把列出的每个键清理为唯一一行；本检测不会自动改写文件。",
+        mail_layout.Mail(
+            summary=f"{env_path} 检测到行模型歧义配置键。",
+            fields=[("受影响键", keys),
+                    ("成因", "值内藏行分隔符（U+2028 等，任何一次读-改-写都会实体化成新配置行）"
+                             "或同名键多行（含带空格 `KEY = v` 写法），"
+                             "解析器按后写覆盖先写取值，生效值不可信")],
+            advice=["备份后手工编辑 .env，把列出的每个键清理为唯一一行",
+                    "本检测不会自动改写文件"],
+            level="urgent",
+        ),
         urgent=True,
     )
 
@@ -4371,11 +4421,15 @@ def create_app(host=None):
                 distinct_users = sum(1 for (fip, _u) in _login_fails if fip == ip)
             send_notification(
                 "登录失败告警",
-                f"IP {_nl_safe(ip)} 连续 {fails} 次登录失败"
-                f"（尝试用户名: {_nl_safe(username)}）\n"
-                f"该 IP 本窗口内尝试过 {distinct_users} 个不同用户名\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"如非本人操作，请检查是否有人尝试暴力破解",
+                mail_layout.Mail(
+                    summary=f"IP {_nl_safe(ip)} 连续 {fails} 次登录失败。",
+                    fields=[
+                        ("尝试用户名", _nl_safe(username)),
+                        ("该 IP 试过的不同用户名", f"{distinct_users} 个"),
+                    ],
+                    advice=["如非本人操作，请检查是否有人尝试暴力破解"],
+                    level="urgent" if distinct_users >= LOGIN_SPRAY_USERS else "warn",
+                ),
                 urgent=distinct_users >= LOGIN_SPRAY_USERS,
                 # 独立账本 YIBAN_LOGINFAIL_DAILY_MAX（默认 3，0=不限）——
                 # 登录失败是公网最高频告警源，不再与 general/urgent 两本账互挤，
@@ -4573,10 +4627,12 @@ def create_app(host=None):
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
                     "改密失败告警",
-                    f"IP {_nl_safe(ip)} 连续 {nfails} 次修改密码失败"
-                    f"（用户名: {_nl_safe(username)}）\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试暴力破解",
+                    mail_layout.Mail(
+                        summary=f"IP {_nl_safe(ip)} 连续 {nfails} 次修改密码失败。",
+                        fields=[("用户名", _nl_safe(username))],
+                        advice=["如非本人操作，请检查是否有人尝试暴力破解"],
+                        level="warn",
+                    ),
                 )
             return jsonify({"error": "当前密码不正确"}), 400
 
@@ -4616,10 +4672,13 @@ def create_app(host=None):
             # 告警渠道存在却未接（此前漏了本分支）。对齐注册用户分支口径。
             send_notification(
                 "账号安全事件告警",
-                f"内置主管理员（{_mask_email(username) if username else 'builtin-admin'}）"
-                f"密码已通过自助改密修改，时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}。\n"
-                "如非本人操作，请立即按 README「主管理员权限追回」流程处理"
-                "（SSH 重写 YIBAN_ADMIN_PASSWORD + PW_VERSION 递增）。",
+                mail_layout.Mail(
+                    summary=f"内置主管理员（{_mask_email(username) if username else 'builtin-admin'}）"
+                            "密码已通过自助改密修改。",
+                    advice=["如非本人操作，请立即按 README「主管理员权限追回」流程处理"
+                            "（SSH 重写 YIBAN_ADMIN_PASSWORD + PW_VERSION 递增）"],
+                    level="urgent",
+                ),
                 urgent=True,
             )
             logger.info("内置管理员密码已更新")
@@ -4651,14 +4710,17 @@ def create_app(host=None):
                 mailer.send_user(
                     username,
                     "【易班签到】您的账号密码已被修改",
-                    "您的账号密码刚刚通过自助改密被修改。\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    "如非本人操作，请立即联系管理员重置密码并检查账号安全。",
+                    mail_layout.Mail(
+                        summary="您的账号密码刚刚通过自助改密被修改。",
+                        advice=["如非本人操作，请立即联系管理员重置密码并检查账号安全"],
+                        level="urgent",
+                    ),
                 )
                 send_notification(
                     "账号安全事件告警",
-                    f"用户 {_mask_email(username)} 自助修改密码，"
-                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    mail_layout.Mail(
+                        summary=f"用户 {_mask_email(username)} 自助修改密码。",
+                    ),
                 )
                 logger.info("用户 %s 已修改自己的密码", _mask_email(username))
                 return jsonify({"ok": True, "msg": "密码已更新，下次登录使用新密码"})
@@ -4733,10 +4795,12 @@ def create_app(host=None):
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
                     "注销密码失败告警",
-                    f"IP {_nl_safe(ip)} 连续 {nfails} 次注销密码验证失败"
-                    f"（用户名: {_nl_safe(username)}）\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试注销该账号",
+                    mail_layout.Mail(
+                        summary=f"IP {_nl_safe(ip)} 连续 {nfails} 次注销密码验证失败。",
+                        fields=[("用户名", _nl_safe(username))],
+                        advice=["如非本人操作，请检查是否有人尝试注销该账号"],
+                        level="warn",
+                    ),
                 )
             return jsonify({"error": "当前密码不正确"}), 400
 
@@ -4852,10 +4916,12 @@ def create_app(host=None):
             if nfails == LOGIN_FAIL_NOTIFY:
                 send_notification(
                     "恢复密码失败告警",
-                    f"IP {_nl_safe(ip)} 连续 {nfails} 次恢复密码验证失败"
-                    f"（邮箱: {_nl_safe(email)}）\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"如非本人操作，请检查是否有人尝试冒充恢复已注销账号",
+                    mail_layout.Mail(
+                        summary=f"IP {_nl_safe(ip)} 连续 {nfails} 次恢复密码验证失败。",
+                        fields=[("邮箱", _nl_safe(email))],
+                        advice=["如非本人操作，请检查是否有人尝试冒充恢复已注销账号"],
+                        level="warn",
+                    ),
                 )
             # 统一文案（2026-08-17 安全审查）：不区分"账号不存在/已过期"与"密码错误"，
             # 防无凭探测"哪些邮箱正处于注销冷却期"（注销用户警惕性低，是钓鱼高价值目标）
@@ -4975,9 +5041,12 @@ def create_app(host=None):
             mailer.send_user(
                 email,
                 "【易班签到】签到失败邮件通知已被关闭",
-                "您的签到失败邮件通知已被关闭（本人操作确认）。\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "如非本人操作，请立即联系管理员（账号可能已被他人控制）。",
+                mail_layout.Mail(
+                    summary="您的签到失败邮件通知已被关闭（本人操作确认）。",
+                    advice=["如非本人操作，请立即联系管理员（账号可能已被他人控制）"],
+                    footer="需要重新开启：登录后在「我的账号」页打开邮箱通知开关。",
+                    level="urgent",
+                ),
             )
         return jsonify({"ok": True, "mail_notify": enabled})
 
@@ -5173,9 +5242,7 @@ def create_app(host=None):
         if flags:
             send_notification(
                 "邮件配置变更告警",
-                f"邮件通知配置已变更: {_mail_flags_desc(flags)}，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                _change_mail("邮件通知配置已变更。", detail=[("变更内容", _mail_flags_desc(flags))]),
                 urgent=True,
                 force=True,
             )
@@ -5183,9 +5250,8 @@ def create_app(host=None):
             # SMTP 发信条目是告警邮件的送达路径，被人改动必须让管理员知情
             send_notification(
                 "邮件 SMTP 配置变更告警",
-                f"邮件 SMTP 配置已变更: 发信 SMTP 条目 {len(smtps_list)} 条，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                _change_mail("邮件 SMTP 配置已变更。",
+                             detail=[("发信 SMTP 条目", f"{len(smtps_list)} 条")]),
                 urgent=True,
                 force=True,
             )
@@ -5197,9 +5263,7 @@ def create_app(host=None):
                 shown = mail_config._mask_addr(admin_to_val) if admin_to_val else "（已清空）"
                 send_notification(
                     "邮件告警收件人变更告警",
-                    f"告警收件人已变更: 新收件人 {shown}，"
-                    f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    _change_mail("告警收件人已变更。", detail=[("新收件人", shown)]),
                     urgent=True,
                     force=True,
                 )
@@ -5209,10 +5273,12 @@ def create_app(host=None):
                 if stale:
                     mailer.send_admin_alert(
                         "邮件告警收件人变更告警",
-                        f"你已不再是本系统的告警邮件收件人。\n"
-                        f"操作者 {_nl_safe(session.get('username', '?'))}，"
-                        f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"如非本人操作，请立即检查管理后台。",
+                        mail_layout.Mail(
+                            summary="你已不再是本系统的告警邮件收件人。",
+                            fields=[("操作者", _nl_safe(session.get("username", "?")))],
+                            advice=["如非本人操作，请立即检查管理后台"],
+                            level="urgent",
+                        ),
                         to=",".join(stale),
                     )
         detail = {
@@ -5370,9 +5436,9 @@ def create_app(host=None):
         write_env_batch(ENV_FILE, updates)
         send_notification(
             "消息推送配置变更告警",
-            f"消息推送配置已变更: {_notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric)}，"
-            f"操作者 {_nl_safe(session.get('username', '?'))}，"
-            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            _change_mail("消息推送配置已变更。",
+                         detail=[("变更内容", _notify_change_desc(
+                             ntype, close_channel, clear_secret, swap_secret, numeric))]),
             urgent=True,
             force=True,
         )
@@ -5790,17 +5856,23 @@ def create_app(host=None):
                 _owner = str(clean.get("owner") or "")
                 if _owner and _owner != "admin":
                     try:
+                        _what = []
+                        if str(data.get("password", "")).strip():
+                            _what.append("重设了易班登录密码")
+                        if rebind:
+                            _what.append("改绑了手机号（需管理员重新审核后才参与签到）")
                         mailer.send_user(
                             _owner,
                             "【易班签到】您的易班账号信息被管理员修改",
-                            "您在本站提交的易班账号 "
-                            f"{_mask_phone(clean['phone'])} 刚刚被管理员修改：\n"
-                            + ("· 重设了易班登录密码\n"
-                               if str(data.get("password", "")).strip() else "")
-                            + ("· 改绑了手机号（需管理员重新审核后才参与签到）\n" if rebind else "")
-                            + f"操作者: {_mask_email((session.get('username') or '?')[:64])}\n"
-                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                            "如非您本人申请，请立即联系管理员核实。",
+                            mail_layout.Mail(
+                                summary=f"您在本站提交的易班账号 {_mask_phone(clean['phone'])}"
+                                        " 刚刚被管理员修改。",
+                                items=_what,
+                                fields=[("操作者", _mask_email(
+                                    str(session.get("username") or "?")[:64]))],
+                                advice=["如非您本人申请，请立即联系管理员核实"],
+                                level="urgent",
+                            ),
                         )
                     except Exception as e:
                         logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
@@ -5891,7 +5963,7 @@ def create_app(host=None):
             batch_targets = []  #：审计留目标清单（脱敏截断）
             purge_targets = []  #：高危操作（物理删除）即时告警汇总
             soft_delete_targets = []  #：软删即时告警汇总（批次20 Y1）
-            reject_notify_owners = set()  # 2026-09-06 用户裁决：批量拒绝每户一封
+            reject_notify_owners = {}  # 2026-09-06 用户裁决：批量拒绝每户一封
             # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
             live_owners = {
                 a.get("owner", "")
@@ -5911,7 +5983,9 @@ def create_app(host=None):
                     if acc.get("status") in (ACCOUNT_STATUS_PENDING, ACCOUNT_STATUS_REJECTED):
                         ops.append(("update_status", acc["id"], ACCOUNT_STATUS_REJECTED, reason))
                         if acc.get("owner"):
-                            reject_notify_owners.add(acc["owner"])
+                            reject_notify_owners.setdefault(
+                                acc["owner"], []
+                            ).append(_mask_phone(str(acc.get("phone", ""))))
                 elif action == "purge":
                     # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
                     if acc.get("deleted"):
@@ -5944,10 +6018,11 @@ def create_app(host=None):
                         # 高危操作即时告警（不等每日审计体检）
                         send_notification(
                             "高危管理操作告警",
-                            f"批量彻底删除账号 ×{len(purge_targets)}: "
-                            f"{', '.join(purge_targets[:20])}，"
-                            f"操作者 {session.get('username', '?')}，时间 "
-                            f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                            _change_mail(
+                                f"批量彻底删除账号 {len(purge_targets)} 个。",
+                                detail=[("目标", "、".join(purge_targets[:20]))],
+                                advice=["物理删除不可恢复；操作前应有当日备份"],
+                            ),
                             urgent=True,
                         )
                 except db.DuplicateOwnerError:
@@ -5971,16 +6046,11 @@ def create_app(host=None):
                 # 2026-09-06 用户裁决：批量拒绝每户一封、同样文案（批量拒绝必填理由，
                 # 无空理由分支）。刻意放在 batch_account_ops 成功之后——回滚路径已提前
                 # return，不会出现"状态没变先收拒信"。
-                for _owner in sorted(reject_notify_owners):
+                for _owner, _phones in sorted(reject_notify_owners.items()):
                     mailer.send_user(
                         _owner,
                         "【易班签到】您提交的账号未通过审核",
-                        (
-                            "您提交的易班账号未通过管理员审核。\n"
-                            f"理由: {reason}\n"
-                            "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
-                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        ),
+                        _review_reject_mail(_phones, reason),
                     )
             db.audit(
                 session.get("username") or "?",
@@ -6001,11 +6071,11 @@ def create_app(host=None):
                 # 由 webhook 保证），两头的语义都保住。
                 send_notification(
                     "高危管理操作告警",
-                    f"批量删除账号（软删）×{len(soft_delete_targets)}: "
-                    f"{', '.join(soft_delete_targets[:20])}，"
-                    f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                    f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}，"
-                    f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
+                    _change_mail(
+                        f"批量删除账号（软删）{len(soft_delete_targets)} 个。",
+                        detail=[("目标", "、".join(soft_delete_targets[:20]))],
+                        advice=[f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复"],
+                    ),
                     urgent=True,
                 )
             accounts = load_accounts()
@@ -6059,10 +6129,11 @@ def create_app(host=None):
             # 标题沿用「高危管理操作告警」以共享邮件节流窗口（见批量分支注释）。
             send_notification(
                 "高危管理操作告警",
-                f"删除账号（软删）: {_mask_phone(str(acc.get('phone', '')))}，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}，"
-                f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复",
+                _change_mail(
+                    "删除账号（软删）。",
+                    detail=[("目标", _mask_phone(str(acc.get("phone", ""))))],
+                    advice=[f"{DELETED_RETENTION_DAYS} 天内可在待删除列表恢复"],
+                ),
                 urgent=True,
             )
             accounts = load_accounts()
@@ -6149,9 +6220,11 @@ def create_app(host=None):
             # 不会被刷爆 SMTP 额度，合法运维的批量清理也只留一封，两头的语义都保住。
             send_notification(
                 "高危管理操作告警",
-                f"彻底删除账号: {_mask_phone(str(acc.get('phone', '')))}，"
-                f"操作者 {_nl_safe(session.get('username', '?'))}，时间 "
-                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                _change_mail(
+                    "彻底删除账号。",
+                    detail=[("目标", _mask_phone(str(acc.get("phone", ""))))],
+                    advice=["物理删除不可恢复"],
+                ),
                 urgent=True,
             )
             accounts = load_accounts()
@@ -6225,14 +6298,8 @@ def create_app(host=None):
                     mailer.send_user(
                         _owner,
                         "【易班签到】您提交的账号未通过审核",
-                        (
-                            f"您提交的易班账号（{_mask_phone(str(acc.get('phone', '')))}）"
-                            "未通过管理员审核。\n"
-                            "理由: "
-                            + (reason if reason else "管理员未填写，可联系管理员了解详情")
-                            + "\n"
-                            "登录后在「我的账号」页可修改并重新提交，重新提交将再次进入审核。\n"
-                            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        _review_reject_mail(
+                            [_mask_phone(str(acc.get("phone", "")))], reason
                         ),
                     )
                 logger.info(
@@ -6732,9 +6799,13 @@ def create_app(host=None):
             try:
                 send_notification(
                     "新账号申请待审核",
-                    f"用户 {_nl_safe(str(clean['owner']))} 提交易班账号 "
-                    f"{_mask_phone(clean['phone'])}，请在管理台「待审核」列表中处理。"
-                    f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    mail_layout.Mail(
+                        summary="有新提交的易班账号待审核。",
+                        fields=[("提交者", _nl_safe(str(clean["owner"]))),
+                                ("账号", _mask_phone(clean["phone"])),
+                                ("处理入口", "管理台「待审核」列表")],
+                        level="info",
+                    ),
                 )
             except Exception as e:
                 logger.warning("新申请待审核通知发送失败（不影响提交结果）: %s", e)
@@ -6984,11 +7055,12 @@ def create_app(host=None):
             mailer.send_user(
                 session.get("username", ""),
                 "【易班签到】您的易班账号已删除（7 天内可撤销）",
-                f"您的易班账号（{_mask_phone(removed.get('phone', ''))}）已被删除，"
-                "进入 7 天宽限期。\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "宽限期内可在「我的账号」页自行撤销恢复；如非本人操作，"
-                "请立即联系管理员。",
+                mail_layout.Mail(
+                    summary=f"您的易班账号（{_mask_phone(removed.get('phone', ''))}）已被删除，"
+                            f"进入 {DELETED_RETENTION_DAYS} 天宽限期。",
+                    advice=["宽限期内可在「我的账号」页自行撤销恢复",
+                            "如非本人操作，请立即联系管理员"],
+                ),
             )
             return jsonify({"ok": True, "msg": "已删除，7 天内可在本页撤销恢复，超期自动清除"})
 
@@ -7213,12 +7285,15 @@ def create_app(host=None):
         if cnt == LOGIN_FAIL_NOTIFY:
             send_notification(
                 "高危操作二次鉴权失败告警",
-                f"IP {_nl_safe(key[0])} 对「{action}」连续 {cnt} 次口令验证失败"
-                f"（会话用户: {_nl_safe(key[1])}）\n"
-                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "如非本人操作，可能是账号或会话被他人使用，请立即检查。"
-                + (f"\n敏感操作已暂停 {cooldown} 秒（登录、只读页面与普通设置不受影响）。"
-                   if cooldown > 0 else ""),
+                mail_layout.Mail(
+                    summary=f"IP {_nl_safe(key[0])} 对「{action}」连续 {cnt} 次口令验证失败。",
+                    fields=([("会话用户", _nl_safe(key[1]))]
+                            + ([("敏感操作已暂停",
+                                 f"{cooldown} 秒（登录、只读页面与普通设置不受影响）")]
+                               if cooldown > 0 else [])),
+                    advice=["如非本人操作，可能是账号或会话被他人使用，请立即检查"],
+                    level="urgent",
+                ),
                 urgent=True,
             )
             # 只在布防那一刻留一条审计：429 本身不逐条写，否则被盗会话又能拿
@@ -7529,10 +7604,11 @@ def create_app(host=None):
             # 物理清除不可逆，与批量删除用户同级即时告警
             send_notification(
                 "高危管理操作告警",
-                f"物理清除已注销用户 ×{len(purged)}: "
-                f"{', '.join(_mask_email(e) for e in purged[:20])}，"
-                f"操作者 {session.get('username', '?')}，时间 "
-                f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                _change_mail(
+                    f"物理清除已注销用户 {len(purged)} 个。",
+                    detail=[("目标", "、".join(_mask_email(e) for e in purged[:20]))],
+                    advice=["物理清除不可恢复"],
+                ),
                 urgent=True,
             )
         return jsonify({
@@ -7657,10 +7733,11 @@ def create_app(host=None):
                     # 批量物理删除用户为不可逆高危操作，即时告警
                     send_notification(
                         "高危管理操作告警",
-                        f"批量删除用户 ×{done}: "
-                        f"{', '.join(_mask_email(e) for e in (emails or [])[:20])}，"
-                        f"操作者 {session.get('username', '?')}，时间 "
-                        f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        _change_mail(
+                            f"批量删除用户 {done} 个。",
+                            detail=[("目标", "、".join(
+                                _mask_email(e) for e in (emails or [])[:20]))],
+                        ),
                         urgent=True,
                     )
                 # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）。
@@ -7674,10 +7751,11 @@ def create_app(host=None):
                     # 批量重置密码即时告警
                     send_notification(
                         "密码重置告警",
-                        f"批量重置密码 ×{done}: "
-                        f"{', '.join(_mask_email(e) for e in (processed or [])[:20])}，"
-                        f"操作者 {session.get('username', '?')}，时间 "
-                        f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        _change_mail(
+                            f"批量重置密码 {done} 个。",
+                            detail=[("目标", "、".join(
+                                _mask_email(e) for e in (processed or [])[:20]))],
+                        ),
                         urgent=True,
                     )
             # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
@@ -7772,8 +7850,12 @@ def create_app(host=None):
             # 提降权即时告警（权限面变更应可感知）
             send_notification(
                 "权限变更告警",
-                f"用户 {_mask_email(email)} 角色 → {new_role}，"
-                f"操作者 {username}，时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                _change_mail(
+                    f"用户 {_mask_email(email)} 的权限已变更。",
+                    detail=[("新角色",
+                             "管理员" if new_role == "admin" else "普通用户")],
+                    operator=username,
+                ),
                 urgent=True,
             )
             # 成功 msg 出站即脱敏（与日志/告警口径一致），完整邮箱不回显
@@ -7830,9 +7912,7 @@ def create_app(host=None):
             # 重置他人密码即时告警（被盗号会话中的静默接管信号）
             send_notification(
                 "密码重置告警",
-                f"用户 {_mask_email(email)} 的密码已被管理员重置，"
-                f"操作者 {session.get('username', '?')}，"
-                f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                _change_mail(f"用户 {_mask_email(email)} 的密码已被管理员重置。"),
                 urgent=True,
             )
             return jsonify({"ok": True, "msg": f"{_mask_email(email)} 密码已重置"})
@@ -7895,9 +7975,11 @@ def create_app(host=None):
                 # 完全删除（物理、不可逆）为高危操作，即时告警
                 send_notification(
                     "高危管理操作告警",
-                    f"完全删除用户 {_mask_email(email)} 及其全部易班账号，"
-                    f"操作者 {session.get('username', '?')}，时间 "
-                    f"{clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    _change_mail(
+                        f"完全删除用户 {_mask_email(email)}。",
+                        detail=[("连带", "其全部易班账号一并清除")],
+                        advice=["物理删除不可恢复"],
+                    ),
                     urgent=True,
                 )
                 return jsonify({"ok": True, "msg": f"{_mask_email(email)} 已完全删除"})
@@ -8828,9 +8910,17 @@ def create_app(host=None):
             try:
                 send_notification(
                     "系统设置变更告警",
-                    f"操作者: {_nl_safe((session.get('username') or '?')[:64])}\n"
-                    f"{_nl_safe(changes_desc)}\n"
-                    f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    _change_mail(
+                        "系统设置已变更。",
+                        detail=[
+                            (_settings_label(k),
+                             f"{_nl_safe(_settings_value_text(k, o))} → "
+                             f"{_nl_safe(_settings_value_text(k, n))}")
+                            for k, o, n in changes
+                        ],
+                        operator=str(session.get("username") or "?")[:64],
+                        level="urgent" if (a_changes or pause_change is not None) else "info",
+                    ),
                     urgent=bool(a_changes) or pause_change is not None,
                     force=bool(pause_change and pause_change[2] == "1"),
                 )
@@ -9486,11 +9576,12 @@ def create_app(host=None):
         # 草稿不改变对外可见内容，故沿用非紧急告警（紧急账每天只有几条，得留给真发布）
         send_notification(
             "公告变更告警",
-            f"公告草稿{'已更新' if text else '已清除'}"
-            f"{'，待主管理员发布' if text else ''}，"
-            f"操作者 {session.get('username', '?')}，"
-            f"内容: {_nl_safe(text[:80]) or '（空）'}，"
-            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            _change_mail(
+                f"公告草稿{'已更新' if text else '已清除'}"
+                + ("，待主管理员发布。" if text else "。"),
+                detail=([("公告内容", _nl_safe(text[:80]))] if text else []),
+                level="warn",
+            ),
         )
         return jsonify({"ok": True,
                         "msg": ("草稿已保存，待主管理员发布" if text else
@@ -9568,12 +9659,15 @@ def create_app(host=None):
         # 单点，这条必须送达（同类节流会吞掉第二条，运维反而看不到）
         send_notification(
             "公告发布告警",
-            f"全站公告已由主管理员 {_nl_safe(who)} {change}，"
-            f"草稿作者: {_nl_safe(author) or '（元数据不可用）'}，"
-            f"发布前: {_nl_safe(before[:80]) or '（空）'}，"
-            f"发布后: {_nl_safe(draft[:80])}，"
-            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            "如非本人操作，请立即改主管理员口令并按 README「主管理员权限追回」处理。",
+            _change_mail(
+                f"全站公告已由主管理员 {change}。",
+                detail=[("草稿作者", _nl_safe(author) or "（元数据不可用）"),
+                        ("发布前", _nl_safe(before[:80]) or "（空）"),
+                        ("发布后", _nl_safe(draft[:80]))],
+                operator=_nl_safe(who),
+                advice=["如非本人操作，请立即改主管理员口令并按"
+                        "README「主管理员权限追回」处理"],
+            ),
             urgent=True, force=True,
         )
         return jsonify({"ok": True, "msg": "公告已发布", "text": draft})
@@ -9633,15 +9727,28 @@ def create_app(host=None):
                 # 造成"每日误报锚点被删 + 真实锚点从未参与校验"的双重失效
                 _health = db.audit_health(path=os.path.join(STATE_DIR, "audit-anchor.log"))
                 if not _health["healthy"]:
-                    _alert = (
-                        "审计可追溯性校验失败："
-                        f"链自洽={_health['chain_ok']}(broken={_health['broken']}) "
-                        f"锚点={_health['anchor_ok']}（{_health['anchor_msg']}） "
-                        f"审计写入失败次数={_health['write_failures']}。"
-                        "审计记录可能被篡改/删除，或存在未留痕的管理操作，请立即核查！"
+                    _facts = [
+                        ("链自洽", "是" if _health["chain_ok"]
+                                   else f"否（断点 {_health['broken']} 处）"),
+                        ("库外锚点", "一致" if _health["anchor_ok"] else "不一致"),
+                        ("锚点说明", _health["anchor_msg"] or "（无）"),
+                        ("审计写入失败次数", _health["write_failures"]),
+                    ]
+                    # 日志保持单行可 grep；邮件/推送读下面那份结构化正文
+                    logger.error("审计链异常告警: %s",
+                                 "；".join(f"{k} {v}" for k, v in _facts))
+                    send_notification(
+                        "审计链异常告警",
+                        mail_layout.Mail(
+                            summary="审计可追溯性校验失败：审计记录可能被篡改/删除，"
+                                    "或存在未留痕的管理操作。",
+                            fields=_facts,
+                            advice=["立即核查审计链与库外锚点",
+                                    "确认之前不要依赖审计记录做处置结论"],
+                            level="urgent",
+                        ),
+                        urgent=True,
                     )
-                    logger.error("审计链异常告警: %s", _alert)
-                    send_notification("审计链异常告警", _alert, urgent=True)
                 elif _health["anchor_msg"]:
                     # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
                     logger.info("审计链提示: %s", _health["anchor_msg"])
@@ -9651,15 +9758,17 @@ def create_app(host=None):
                 # 是刻意的：冻结状态必须保持可见，防止静默腐烂）
                 _cg = db.clock_guard_alert()
                 if _cg:
-                    _cg_alert = (
-                        "时钟跳变守卫告警：系统时间异常跳变已被拦截，全部物理清理"
-                        f"处于冻结状态（告警时间 {_cg.get('ts', '?')}）。\n"
-                        f"{_cg.get('note', '')}\n"
-                        "请核实系统时间与 NTP；确认正确后运行 "
-                        "python3 scripts/clock_guard_reset.py --confirm 重置。"
+                    _cg_mail = mail_layout.Mail(
+                        summary="系统时间异常跳变已被拦截，全部物理清理处于冻结状态。",
+                        fields=[("告警时间", _cg.get("ts", "?")),
+                                ("守卫备注", _cg.get("note") or "（无）")],
+                        advice=["先核实系统时间与 NTP 同步状态",
+                                "确认时间正确后运行 "
+                                "python3 scripts/clock_guard_reset.py --confirm 重置"],
+                        level="urgent",
                     )
                     logger.error("时钟守卫告警: %s", _cg.get("note", ""))
-                    send_notification("时钟跳变守卫告警", _cg_alert, urgent=True)
+                    send_notification("时钟跳变守卫告警", _cg_mail, urgent=True)
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
                 logger.warning("审计链每日校验/锚点写入失败: %s", e)

@@ -24,6 +24,10 @@ import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "Master-Test-2026!"
 SUB_PASS = "Subadmin-Test-2026!"
@@ -95,7 +99,7 @@ class CredentialWriteGateTest(unittest.TestCase):
         self.app = self.webapp.create_app()
         self.sent = []
         self._orig_send = self.webapp.mailer.send_user
-        self.webapp.mailer.send_user = lambda to, subject, text: self.sent.append((to, subject, text))
+        self.webapp.mailer.send_user = lambda to, subject, text: self.sent.append((to, subject, render_body(text)))
 
     def tearDown(self):
         self.webapp.mailer.send_user = self._orig_send

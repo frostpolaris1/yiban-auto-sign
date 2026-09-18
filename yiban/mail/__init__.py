@@ -2,7 +2,9 @@
 """SMTP 邮箱通知模块（A 线：管理员告警邮件；B 线：用户签到结果邮件）。
 
 通过 .env / 环境变量（YIBAN_MAIL_*）配置，仅用 Python 标准库 smtplib 发送，零第三方
-依赖。分层：`config` 读配置与判定通道三态，`transport` 投递（主备 failover）。设计原则：
+依赖。分层：`config` 读配置与判定通道三态，`layout` 排版正文（一份声明出纯文本/HTML/
+推送三版，不参与判定与发送），`transport` 投递（主备 failover）。正文入参接受普通字符串
+（行为与改版前逐字一致）或 `layout.Mail`（改发 multipart/alternative）。设计原则：
 
 - 不配置 = 不启用：YIBAN_MAIL_ENABLE 未开启或配置不完整时静默跳过，不影响现有功能；
 - 静默失败：发送异常只记日志，绝不抛出（告警/通知失败不能拖累签到主流程）；
