@@ -13,6 +13,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 
+from yiban import clock
 from yiban.infra import locks
 
 from . import config
@@ -241,8 +242,14 @@ def _prune_throttle_entries(data, now, cooldown):
 # ---------------------------------------------------------------------------
 
 def _daily_today():
-    """今日日期串（本地时区，与服务器日期一致）。"""
-    return time.strftime("%Y-%m-%d")
+    """今日日期串（**业务钟**北京日，与签到/通知各处的日期口径一致）。
+
+    原实现用 `time.strftime`（宿主本地时区）：UTC 主机的本地日期比北京晚，
+    额度重置点错位——一个北京日历日内可动用接近两份额度，且与 web 通道健康
+    日报（clock.now()）口径不一致。委托 `clock.today` 后与业务钟对齐
+    （Asia/Shanghai 主机上两者恒等，行为不变）。
+    """
+    return clock.today()
 
 
 def _ledger(ledger_id):
