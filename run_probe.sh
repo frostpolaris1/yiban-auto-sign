@@ -5,11 +5,13 @@ umask 077
 #       自行判断是否到触发时间/频率（含 once 单次执行后自动关闭）。
 #       实际执行时刻由 YIBAN_PROBE_TIME 决定（每天该时刻后的第一个调度周期）；
 #       在「系统设置」修改探针时间后无需再改动 cron。
-cd /opt/yiban-auto-sign
+# 应用目录：与 run.sh 同口径，可用 YIBAN_APP_DIR 覆盖（非 /opt 部署不必再改脚本本体）
+APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
+cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 
 # 加载环境变量（安全逐行解析，仅导出 YIBAN_* 前缀键；与 run.sh 一致，绝不用 source）
 _ENV_WARNINGS=""
-if [ -r /opt/yiban-auto-sign/.env ]; then
+if [ -r "$APP_DIR/.env" ]; then
     while IFS='=' read -r key value || [ -n "$key$value" ]; do
         value=${value%$'\r'}
         # BOM 剥离：Windows 记事本保存的 .env 首行键名会带 BOM 前缀，被键名校验拒掉，
@@ -34,7 +36,7 @@ if [ -r /opt/yiban-auto-sign/.env ]; then
             continue
         fi
         export "$key=$value"
-    done < /opt/yiban-auto-sign/.env
+    done < "$APP_DIR/.env"
 fi
 
 # 状态/日志根目录
@@ -71,8 +73,8 @@ flock -n 9 || {
 }
 
 # Python 解释器：优先项目虚拟环境，缺失时回退系统 Python
-if [ -x /opt/yiban-auto-sign/.venv/bin/python3 ]; then
-    PY=/opt/yiban-auto-sign/.venv/bin/python3
+if [ -x "$APP_DIR/.venv/bin/python3" ]; then
+    PY="$APP_DIR/.venv/bin/python3"
 else
     PY=/usr/bin/python3
 fi

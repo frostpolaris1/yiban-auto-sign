@@ -78,7 +78,9 @@ sudo python3 scripts/loadtest/capacity_probe.py --repo /opt/yiban-auto-sign --us
 
 ```bash
 # 1. 环境（只需一次）
-apt update && apt install -y python3-pip
+# sqlite3 用于备份的一致性快照与完整性校验（Ubuntu 默认未装；缺它时备份会回退 cp
+# 并跳过校验，属静默降级）
+apt update && apt install -y python3-pip sqlite3
 pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 2. 拉取代码（服务器为主力签到，推荐国内网络直拉 Gitee 或上传压缩包）
@@ -88,19 +90,27 @@ cd /opt/yiban-auto-sign && pip3 install -r requirements.lock
 # 保证实际部署的依赖版本 = 安全审计覆盖的版本；requirements.txt 仅作下限声明。
 
 # 3. 配置账号：推荐用网页管理后台（见「网页管理后台」）；
-#    无头环境/CI 可用 .env 的 YIBAN_ACCOUNTS_JSON（见「配置说明」）
+#    无头环境/CI 可用 .env 的 YIBAN_ACCOUNTS_JSON（见「配置说明」）；
+#    只有 SSH、没有浏览器的部署者可以走管理端 REST 接口（登录拿 CSRF → 增删账号 →
+#    审核 → 手动签到），接口清单见「无浏览器部署（纯命令行/自动化）」
 
 # 4. 定时任务（每天 06:31 首签；同一条脚本在进程内补签，07:12 再有一条 cron 兜底）
 crontab -e   # 追加：
 # 31 6 * * * /opt/yiban-auto-sign/run.sh
 # 12 7 * * * /opt/yiban-auto-sign/run.sh
+# 无人值守/脚本化安装（crontab -e 是交互式的）：
+#   ( crontab -l 2>/dev/null; echo '31 6 * * * /opt/yiban-auto-sign/run.sh'; \
+#     echo '12 7 * * * /opt/yiban-auto-sign/run.sh' ) | crontab -
 # 补签时刻须与 .env 的 YIBAN_SECOND_RUN_TIME（默认 07:12）一致；
 # 周六/周日是否执行由网页「系统设置 → 签到调度」的「周六签到 / 周日签到」开关决定，
-# 两个默认都关（未开启时当天自动跳过）。
+# 两个默认都关（未开启时当天自动跳过），也可直接用 .env 的
+# YIBAN_SATURDAY_SIGN / YIBAN_SUNDAY_SIGN=1 打开（改完重启 web 生效）。
 
 # 5. 验证
 python3 scripts/signin.py --check-config   # 只读配置检查，不发任何请求
 bash run.sh && tail -20 /var/log/yiban/sign-$(date +%F).log
+# 上面这条日志路径是默认状态目录；若 .env 设了 YIBAN_LOG_FILE，日志在该路径所在目录，
+# 且目录由它的 dirname 决定（web、脚本、备份三处现在同源）
 ```
 
 ## 服务器部署（分步详解）
@@ -458,7 +468,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_LEGACY_LOGIN` | 设为 `1` 使用旧登录流程（伪造 iOS UA）；默认用真实 App 特征（推荐） | 可选 |
 | `YIBAN_WORKERS` / `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK` / `YIBAN_FALLBACK_ENABLE` / `YIBAN_FALLBACK_INTERVAL` / `YIBAN_CAPACITY_MEASURED` | 多执行体相关（单执行体部署**不需要**配置），见 [多执行体并行签到](#多执行体并行签到可选) 与 [代理配置](#代理配置可选) | 可选 |
 | `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD` | 内置主管理员账号（口令策略：至少 12 位且含四类字符中的至少三类） | 必填（Web） |
-| `YIBAN_ACCOUNTS_KEY` / `YIBAN_AUDIT_KEY` / `YIBAN_TRACK_SALT` | 账号密文密钥 / 审计链 HMAC 密钥 / 访问统计盐：**首次启动自动生成**并写入 `.env`，一般无需手填 | 自动 |
+| `YIBAN_ACCOUNTS_KEY` / `YIBAN_AUDIT_KEY` / `YIBAN_TRACK_SALT` | 账号密文密钥 / 审计链 HMAC 密钥 / 访问统计盐：**按需自动生成**并写入 `.env`（分别在首次加解密账号、首次写入审计行、首次记录访问时），一般无需手填。注意：刚装好还没加过账号时，`​.env` 里可能只有管理员哈希与会话密钥——别把这一刻的 `.env` 当成「密钥齐全」归档 | 自动 |
 | `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` | 状态文件目录（默认 `/var/log/yiban`）与日志路径（按天分文件） | 可选 |
 | `YIBAN_DB_FILE` / `YIBAN_ENV_FILE` | 数据库与 `.env` 路径（默认相对路径） | 可选 |
 | `YIBAN_BASE_PATH` | Web 挂载前缀，仅在自动识别切错时兜底（见 [部署形态](#部署形态)） | 可选 |
@@ -616,6 +626,19 @@ EOF
 python3 -m web
 # 生产用 systemd + gunicorn 常驻（禁止 werkzeug dev server 公网直连）：
 #   systemd 单元模板 web/deploy/yiban-web.service，nginx 示例 web/deploy/nginx.conf.example
+#
+# 装单元前先备齐模板里引用的三样东西（缺任一样 systemd 会以 "Failed at step NAMESPACE"
+# 或 EnvironmentFile 报错启动失败）：
+#   useradd -r -s /usr/sbin/nologin yiban                     # 模板的 User=yiban
+#   install -d -m 0750 -o yiban -g yiban /etc/yiban           # .env 分盘存放目录（可选）
+#   install -m 0640 -o root -g yiban .env /etc/yiban/accounts-key   # 模板的 EnvironmentFile
+# 若部署目录不是 /opt/yiban-auto-sign，必须同步改单元里的 WorkingDirectory / ExecStart /
+# ReadWritePaths（模板是写死的绝对路径）。
+#
+# 安装与开机自启（照抄即可，先按上面改好路径）：
+#   cp web/deploy/yiban-web.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now yiban-web
+#   systemctl status yiban-web        # 启动失败看 journalctl -u yiban-web -n 50
 ```
 
 浏览器访问 `https://你的域名`（经 nginx 反代）或 `http://127.0.0.1:17892`（本机调试）。**默认不监听全网卡**：确需直连局域网请显式 `python3 -m web --host 0.0.0.0`（明文 HTTP 无防护，自担风险）。
@@ -670,6 +693,32 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 
 ## 运维
 
+### 无浏览器部署（纯命令行 / 自动化）
+
+只有 SSH、没有浏览器的机器也能把管理面走完——管理端本身就是一套 JSON 接口，网页只是它的前端。**除 `GET /api/scheduler/executors` 外，下面这些接口属于内部契约**（随版本可能变），自动化脚本请锁定版本并自测。
+
+```bash
+B=http://127.0.0.1:17892 ; J=/tmp/yiban.jar
+# 登录（会话存 cookie jar）
+curl -s -c $J -X POST $B/api/login -H 'Content-Type: application/json' \
+     -d '{"username":"你的管理员账号","password":"你的口令"}'
+# 写操作要 CSRF 令牌：从 /api/me 取（必须带 -c 回写 cookie，否则令牌不在会话里）
+CSRF=$(curl -s -b $J -c $J $B/api/me | python3 -c 'import sys,json;print(json.load(sys.stdin)["csrf_token"])')
+# 加账号（管理员提交：默认待审核，审核通过才参与签到）
+curl -s -b $J -X POST $B/api/accounts -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+     -d '{"phone":"13800138000","password":"该账号的易班密码","name":"备注名"}'
+curl -s -b $J $B/api/accounts                      # 列表（手机号等已脱敏）
+curl -s -b $J -X POST $B/api/accounts/0/review -H "X-CSRF-Token: $CSRF" \
+     -H 'Content-Type: application/json' -d '{"action":"approve"}'
+# 手动签到一次（只影响该账号）
+curl -s -b $J -X POST $B/api/signin -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+     -d '{"phone":"13800138000"}'
+# 系统设置：POST /api/settings（部分更新）；公告：PUT /api/announcement 写草稿、
+# POST /api/announcement/publish（仅主管理员 + 当次口令）发布或下线
+```
+
+绝大多数设置项也可以直接改 `.env` 里的键再重启 web（键名见「配置说明」表；页面上的改动本身就写在 `.env` 里）。涉及口令复核的写操作（改他人账号凭据、执行体配置、破坏性设置等）在接口层要求 `confirm_password` 字段，纯脚本调用时一并带上即可。
+
 ### 备份与恢复
 
 `scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照 → **快照必须过 `PRAGMA integrity_check` 才算这次备份成功**（源库本身损坏时归档照留但非 0 退出；`.backup` 失败回退 `cp` 且校验不过时不落该归档——"看着有备份"比没备份更危险）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天（`.sha256` 侧车一起轮转）→ 可选异机加密副本（`REMOTE_BACKUP`）。
@@ -679,14 +728,21 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 ```bash
 # 备份（安装到 /usr/local/sbin 后用 root crontab 调用；--require-encrypt 不可省：
 # 不带时一旦加密配置失效，cron 会静默产出含全部密钥与口令哈希的明文归档）
-sudo /usr/local/sbin/yiban-backup.sh --require-encrypt
+sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh
+# 加密口令**经环境变量注入**（脚本不读任何口令文件；不给就会以"无可用加密方式"拒绝执行）
+sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh --require-encrypt
+# cron 里同样要注入（口令写进 root 的 crontab 行或单独的 0600 环境文件，别放命令历史）
 # 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）
 30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
 # 恢复演练 / 真实恢复（支持 .tar.gz / .gpg / .age）
-bash scripts/backup.sh --restore <备份包> <目标目录>
+sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
+  bash scripts/backup.sh --restore <备份包> <目标目录>
 ```
 
-> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。恢复口令存于 `/etc/yiban/backup-passphrase`（0600，仅 root 可读），**该口令文件必须另行离机保存一份**（密码管理器/离线介质），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
+> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。**备份口令只从环境变量取**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密），脚本不会去读任何口令文件——所以口令**必须另行离机保存一份**（密码管理器/离线介质），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
+>
+> ℹ️ 恢复路径的审计核验按结论分档：**通过**（退出码 0）/ **检出异常**（1，链被改写或库与锚点不同批次）/ **无法定论**（2，缺解释器、缺 `YIBAN_AUDIT_KEY` 或包内 `.env`）。给到 2 时别按"备份完好"处理，也别按"被篡改"处理——先补齐解释器与密钥来源再重跑。恢复件用的解释器优先取部署自己的 `.venv/bin/python`（系统 `python3` 往往没有 `pycryptodome` 等依赖）。
+
 
 > ⚠️ 加密密钥（`.env` 的 `YIBAN_ACCOUNTS_KEY`）与数据分开备份——密钥丢失 = 已加密账号密码不可恢复。
 >
