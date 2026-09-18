@@ -1,7 +1,8 @@
-/* 系统设置 · 容量配额分区（管理端 /settings）。
+/* 系统设置 · 容量配额分区（管理端 /work/settings）。
 
-   挂载到 window.YB.settingsQuota；classic script。仅主管理员可改
-   （后端 POST /api/settings 的 403 列表含 max_users / max_accounts）。
+   挂载到 window.YB.settingsQuota；classic script。仅主管理员可改（档位单源是后端
+   `web/app.py` 的 `MASTER_ONLY_KEYS`，本文件不再抄第二份键名清单；字段名保持
+   `body.<键> = …` 直写形态供对拍测试读取）。
    非主管理员：控件禁用 + 就地说明（可见即理解权限）。
 
    两张卡：
