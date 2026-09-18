@@ -211,6 +211,30 @@ class SecurityFixes021Test(unittest.TestCase):
         finally:
             os.environ.pop("YIBAN_COOKIE_SECURE", None)
 
+    def test_https_reverse_proxy_auto_upgrades_secure_when_unset(self):
+        """**未配置** `YIBAN_COOKIE_SECURE` 时，HTTPS 反代请求应自动打开 Secure（审查 M4）。
+
+        原先写的是 `{"done": not cookie_secure}`，默认部署的 `done` 恒为 True → 自动升级
+        分支**永不执行**，HTTPS 反代下 Cookie 一直不带 Secure。根因是把"未配置"与
+        "显式关"混成了同一个 False，两者必须分开判。
+        """
+        self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "")
+        app = self.webapp.create_app()
+        self.assertFalse(app.config["SESSION_COOKIE_SECURE"], "起点：未配置 = 默认关")
+        c = app.test_client()
+        c.get("/api/clock", headers={"X-Forwarded-Proto": "https"})
+        self.assertTrue(app.config["SESSION_COOKIE_SECURE"],
+                        "经 HTTPS 反代访问后应粘性打开 Secure")
+
+    def test_explicit_zero_does_not_auto_upgrade(self):
+        """**显式**配 `0` = 部署者明确要求不要 Secure：HTTPS 请求也不得自动打开。"""
+        self.webapp.write_env_key(self.env_file, "YIBAN_COOKIE_SECURE", "0")
+        app = self.webapp.create_app()
+        c = app.test_client()
+        c.get("/api/clock", headers={"X-Forwarded-Proto": "https"})
+        self.assertFalse(app.config["SESSION_COOKIE_SECURE"],
+                         "显式 0 的部署保持原行为（与未配置必须区分开）")
+
     # ---- I3：.env 敏感键原子写入 ----
     def test_migrate_admin_password_to_hash_clears_plain_and_sets_hash(self):
         env_file = os.path.join(self.tmp, "migrate.env")

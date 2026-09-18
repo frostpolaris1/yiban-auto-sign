@@ -493,7 +493,7 @@
       <div class="set-row">
         <label class="set-row-text" for="sh-verify">
           <span class="set-row-label">注册时验证账号</span>
-          <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。任意管理员可改。</p>
+          <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。</p>
         </label>
         <label class="switch" title="注册时验证账号">
           <input id="sh-verify" type="checkbox">
@@ -512,6 +512,9 @@
           <span class="sr-only">探针模式</span>
         </label>
       </div>
+      {# M12：探针/账号验证会对全站账号做真实登录，仅主管理员可改——权限说明与
+         控件程序化关联（settings-health.js 的 applyPerm 挂 aria-describedby） #}
+      <p class="alert info" id="sh-perm" hidden>仅主管理员可修改健康与探针设置。</p>
       <div class="form-grid">
         <div class="field">
           <span class="field-label" id="sh-probe-time-label">触发时间（最早时刻）</span>

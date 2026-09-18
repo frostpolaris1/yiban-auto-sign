@@ -155,10 +155,16 @@ def main(argv=None):
     # 删中间行不影响其余槽位）；清单缺失/非法 → 旧口径 `--workers N`（行为逐字不变）。
     # 清单里只有 1 个并行执行体时仍走进程内的单执行体路径（`single` 角色、出口读
     # `YIBAN_PROXY`）——与迁移前的 `YIBAN_WORKERS=1` 完全一致。
-    slots = egress.launch_slots()
+    #
+    # **子进程不得再当监督进程**（2026-09-17 对抗性审查 H1）：清单是从**环境变量**读的，
+    # 监督进程拉起的子进程会原样继承它，于是"父按清单拉 N 个 → 子也按清单拉 N 个"会递归
+    # 成进程树；argv 侧去 `--workers` 的老办法挡不住（清单路径根本不经 argv）。
+    # 子进程身份由监督进程注入 `YIBAN_EXECUTOR_ID`（`worker-{i}@{主机名}`），据此短路。
+    _already_child = bool(os.environ.get("YIBAN_EXECUTOR_ID", "").strip())
+    slots = None if _already_child else egress.launch_slots()
     if slots is None:
         # 清单缺失/非法 → 旧口径 `--workers N`（槽位就是 0..N-1，行为逐字不变）
-        if args.workers and args.workers > 1:
+        if not _already_child and args.workers and args.workers > 1:
             return workers.run_worker_supervisor(args.workers, argv)
     elif len(slots) > 1:
         return workers.run_worker_supervisor(len(slots), argv, slots=slots)
@@ -306,12 +312,12 @@ def main(argv=None):
                 "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
                 _win_end,
             )
-            alerts._collect_admin_mail(
-                "易班签到容量超载",
-                f"本次签到进程起跑时已过有效签到窗口（窗口至 {_win_end}），"
-                f"{active_n} 个账号本轮不会执行。如非预期，请检查触发时刻（cron / 容器调度）"
-                "与签到窗口设置（YIBAN_SIGN_START / YIBAN_SIGN_END）。",
-            )
+            alerts._collect_admin_mail("易班签到容量超载", [
+                ("状态", f"起跑时已过有效签到窗口（窗口至 {_win_end}）"),
+                ("影响", f"{active_n} 个账号本轮不会执行"),
+                ("请核查", "触发时刻（cron / 容器调度）与签到窗口设置"
+                           "（YIBAN_SIGN_START / YIBAN_SIGN_END）"),
+            ])
         elif active_n > _cap:
             logger.warning(
                 "容量预检: %d 个账号 > 剩余有效窗口 %d 秒可容纳的 %d 个"
@@ -320,23 +326,13 @@ def main(argv=None):
             )
             # 超载必须通知管理员，不能只留在日志里。
             # A 线：并入任务结束汇总邮件；webhook 仍即时推送。
-            alerts._collect_admin_mail(
-                "易班签到容量超载",
-                f"当前 {active_n} 个账号，剩余有效窗口 {int(_rest_sec)}s（至 {_win_end}）"
-                f"仅可容纳 {_cap} 个"
-                f"（单账号 {_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s），"
-                "部分账号可能无法在窗口内完成签到。\n"
-                f"建议：增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）。",
-            )
-            alerts.send_notification(
-                "易班签到容量超载",
-                f"当前 {active_n} 个账号，剩余有效窗口 {int(_rest_sec)}s（至 {_win_end}）"
-                f"仅可容纳 {_cap} 个"
-                f"（单账号 {_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s），"
-                "部分账号可能无法在窗口内完成签到。\n"
-                f"建议：增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）。",
-                notify_url,
-            )
+            # 整段文案原先在邮件与推送各写一遍同样的字面量，改一处必漏另一处，故共用一份。
+            alerts.notify_admin_entry("易班签到容量超载", [
+                ("当前账号", f"{active_n} 个"),
+                ("剩余有效窗口", f"{int(_rest_sec)}s（至 {_win_end}），仅可容纳 {_cap} 个"),
+                ("单账号耗时", f"{_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s"),
+                ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
+            ], notify_url)
         # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
         for acc in accounts:
             t = schedule.get(acc.phone)
@@ -498,7 +494,13 @@ def main(argv=None):
 
     # A 线：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。
-    alerts._flush_admin_mail_summary()
+    # 但异常不能逃逸：退出码是 run.sh/调度器的事实源，任何一个未捕获异常都会把
+    # 收尾（sched-run 标记、退出码）打断。只记类型名不记 str(e)——异常文本
+    # 可能内嵌 URL/token（M10）。
+    try:
+        alerts._flush_admin_mail_summary()
+    except Exception as e:
+        logger.warning("签到汇总邮件收尾异常（%s），不影响退出码", type(e).__name__)
 
     # 全量运行完成标记：调度器首签/补签闸门的事实源。
     # 仅全量模式写入；--only 手动签到不写——手动成功不得压制调度器当日判定。

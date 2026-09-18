@@ -1,8 +1,10 @@
 /* 系统设置 · 健康与探针分区（管理端 /settings）。
 
    挂载到 window.YB.settingsHealth；classic script。
-   任意管理员可改（后端 POST /api/settings 对 account_verify / probe_enable /
-   probe_time / probe_interval 不限主管理员），故无禁用逻辑。
+   探针/账号验证会对**全站账号**做真实登录（与签到同一风控面），M12 起仅主管理员
+   可改（后端 POST /api/settings 对 account_verify / probe_enable / probe_time /
+   probe_interval 收归主管理员，403）——前端同步禁用控件并挂权限说明
+   （#sh-perm，读屏可及），避免普通管理员点保存收到 403 文案。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存探针设置」
    才提交，只发送真正变化的字段；此前这里是"改动即保存"，与同页其它卡片不一致
@@ -21,6 +23,7 @@
   var snap = null;
   var dirty = false;
   var saving = false;
+  var ctx = { isMaster: false };
 
   function $(id) { return document.getElementById(id); }
   function setHidden(el, hidden) { if (el) el.hidden = !!hidden; }
@@ -35,6 +38,25 @@
     dirty = false;
     setHidden($("sh-save"), true);
     setHidden($("sh-dirty"), true);
+  }
+
+  // 健康/探针按权限启用/禁用：禁用时把原因 #sh-perm 与控件程序化关联（读屏可及）。
+  function applyPerm() {
+    var disabled = !ctx.isMaster;
+    ["sh-verify", "sh-probe-enable"].forEach(function (id) {
+      var n = $(id);
+      if (!n) return;
+      n.disabled = !!disabled;
+      if (disabled) n.setAttribute("aria-describedby", "sh-perm");
+      else n.removeAttribute("aria-describedby");
+    });
+    if (YB.timeField && YB.timeField.setDisabled) YB.timeField.setDisabled("sh-probe-time", disabled);
+    if (YB.selectField && YB.selectField.setDisabled) YB.selectField.setDisabled("sh-probe-interval", disabled);
+    var btn = $("sh-save");
+    if (btn) btn.disabled = !!disabled;
+    setHidden($("sh-save"), disabled || !dirty);
+    setHidden($("sh-dirty"), disabled || !dirty);
+    setHidden($("sh-perm"), !disabled);
   }
 
   function domSnapshot() {
@@ -77,7 +99,7 @@
 
   // 返回 Promise<boolean>：true = 已提交（或本就无改动）；false = 提交失败。
   function save() {
-    if (saving) return Promise.resolve(false);
+    if (saving || !ctx.isMaster) return Promise.resolve(false);
     var body = collect();
     if (!Object.keys(body).length) {
       clearDirty();
@@ -100,6 +122,7 @@
     YB.timeField.set("sh-probe-time", snap.time);
     YB.selectField.set("sh-probe-interval", snap.interval);
     clearDirty();
+    applyPerm();
     tip("", false);
   }
 
@@ -114,6 +137,8 @@
     if (interval) interval.addEventListener("change", markDirty);
     var btn = $("sh-save");
     if (btn) btn.addEventListener("click", function () { save(); });
+    ctx = { isMaster: !!(arguments[0] && arguments[0].isMaster) };
+    applyPerm();
   }
 
   YB.settingsHealth = { mount: mount, apply: apply, save: save, isDirty: function () { return dirty; } };
