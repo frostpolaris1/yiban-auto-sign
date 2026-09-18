@@ -236,6 +236,20 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.assertTrue(any(row["detail"] == "/api/logs/export" for row in rows),
                         f"普通用户越权导出应留 forbidden_path 审计: {[dict(r) for r in rows]}")
 
+    # ---- 5b. 越权路径里的换行必须被压平（%0A 能在日志/审计里伪造第二行）----
+    def test_forbidden_path_detail_stays_single_line(self):
+        c = self._user_client()
+        r = c.get("/api/logs%0Aexport-injected")
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        rows = [row for row in self._audit_rows("forbidden_path")
+                if "injected" in row["detail"]]
+        self.assertTrue(rows, f"越权尝试应留痕: {[dict(x) for x in rows]}")
+        for row in rows:
+            self.assertNotIn("\n", row["detail"], "审计 detail 里不得有真换行")
+            self.assertIn("\\n", row["detail"], "换行须转义成字面量，信息不丢")
+            self.assertEqual(len(row["detail"].splitlines()), 1,
+                             "detail 必须单行——日志页与导出都按行切")
+
     # ---- 6. 写入侧：web 告警行不得落盘裸 IP（与审计 hash_ip 同口径）----
     def test_csrf_warning_logs_hashed_ip_not_raw(self):
         c = self._admin_client()

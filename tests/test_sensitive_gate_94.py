@@ -204,6 +204,23 @@ class CooldownTest(_GateBase):
                          [403] * self.webapp.LOGIN_FAIL_NOTIFY)
         self.assertEqual(self._attempt(c, "switch", WRONG_PASS).status_code, 429)
 
+    def test_missing_and_wrong_password_have_different_copy(self):
+        """「没输口令」与「口令输错」文案必须分开（前端据此决定是弹口令框还是报错）。
+
+        状态码两档相同（沿用历史契约：配置类 403、高危类 400），只有 error 文案与
+        机器可读的 reason 不同——缺口令说"需要输入"，错口令说"不正确"。
+        """
+        c = self._login()
+        miss = self._switch_with(c, None)
+        self.assertEqual(miss.get_json()["reason"], "password_required")
+        self.assertIn("需要输入当前口令", miss.get_json()["error"])
+        self.assertNotIn("不正确", miss.get_json()["error"],
+                         "用户根本没输口令，不能说他输错了")
+        wrong = self._switch_with(c, WRONG_PASS)
+        self.assertEqual(wrong.get_json()["reason"], "password_incorrect")
+        self.assertIn("口令校验未通过", wrong.get_json()["error"])
+        self.assertEqual(miss.status_code, wrong.status_code, "两档状态码不得因此改变")
+
     def test_cooldown_rejects_correct_password_too(self):
         """②冷却期内正确口令也不放行——否则"改用对口令"就绕过了冷却。"""
         c = self._login()
@@ -407,7 +424,8 @@ class ExemptionTest(_GateBase):
                 self.assertEqual(
                     r.status_code, 400,
                     f"{path} 属必须当次复核的动作，豁免不得放行：{r.get_data(as_text=True)}")
-                self.assertIn("当前密码不正确", r.get_json()["error"])
+                # 用例本身就没带 confirm_password，故是"缺口令"档文案
+                self.assertEqual(r.get_json()["reason"], "password_required")
                 self.assertEqual(self.alerts, [], "被拒的高危动作不得发出任何变更告警")
 
     def test_self_password_change_never_uses_exemption(self):

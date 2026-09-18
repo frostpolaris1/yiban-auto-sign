@@ -9,8 +9,10 @@
 - 只在"**真的会改配置**"时要求 `confirm_password`：同值提交、只改自定义名、只读不要求；
 - 校验走 `_verify_session_password`（只比对**不写**与登录共用的失败计数——P18 教训：
   持 Cookie 者若能写共享计数，就能反手把管理员锁出登录）；
-- 缺/错口令 → **403**「口令校验未通过，设置未生效」+ 审计 `executors_pw_fail`，
-  **配置与清单都不动**；审计只落动作与槽位，绝不记口令、代理串、自定义名；
+- 缺口令 → **403**「需要输入当前口令，设置未生效」+ `reason=password_required`；错口令 →
+  **403**「口令校验未通过，设置未生效」+ `reason=password_incorrect`（状态码相同、文案分开）
+  + 审计 `executors_pw_fail`，**配置与清单都不动**；审计只落动作与槽位，绝不记口令、
+  代理串、自定义名；
 - 实测端点（`…/measure`）**不要求**口令：它不改配置，与手动签到同口径。
 
 自定义名口径：随清单一起进 `.env`（`slot/type/proxy/name`）。未设 = `null`（页面显示后端
@@ -131,7 +133,8 @@ class WritePasswordGateTest(_GuardBase):
             r = c.post("/api/scheduler/executors/rows", json={"proxy": "http://n:1"},
                        headers={"X-CSRF-Token": c.csrf})
         self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["error"], "口令校验未通过，设置未生效")
+        self.assertEqual(r.get_json()["error"], "需要输入当前口令，设置未生效")
+        self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(self._read_env().get("YIBAN_EXECUTORS", ""), before,
                          "被拒时不得落盘")
         detail = " ".join(str(a) for a in m.call_args[0])
@@ -280,6 +283,37 @@ class RowNameTest(_GuardBase):
         self.assertEqual(fb["label"], self.webapp.yb_egress.role_label(
             self.webapp.yb_egress.ROLE_FALLBACK))
         self.assertEqual(fb["label"], "故障转移")
+
+
+class AuditActorTest(_GuardBase):
+    """执行体写的审计 actor = 当前会话用户名（批 3 §4.6：这里曾硬编码 "admin"）。
+
+    执行体写端点只向主管理员开放，所以改前改后**放行判定**一样；问题在取证：审计表里
+    一句写死的"admin"既不是任何真实账号，也与全表其他行的口径不一致——按 actor 追人时
+    这一列直接失效。改后的口径与 `logout_ok`/`forbidden_path` 逐字同构。
+    """
+
+    def test_every_write_records_the_session_user(self):
+        import db
+        c = self._login()
+        slot = self._add(c, {"proxy": "http://203.0.113.10:8080"}).get_json()["slot"]
+        self.assertEqual(self._put_row(
+            c, slot, {"proxy": "http://203.0.113.10:8081",
+                      "confirm_password": ADMIN_PASS}).status_code, 200)
+        self.assertEqual(c.delete(
+            f"/api/scheduler/executors/rows/{slot}",
+            json={"confirm_password": ADMIN_PASS},
+            headers={"X-CSRF-Token": c.csrf}).status_code, 200)
+        # 整表写端点（另一条落点，此前同样硬编码 actor）
+        self.assertEqual(c.put("/api/scheduler/executors",
+                               json={"workers": 2, "confirm_password": ADMIN_PASS},
+                               headers={"X-CSRF-Token": c.csrf}).status_code, 200)
+        rows = db.get_conn().execute(
+            "SELECT username, detail FROM audit_logs WHERE target='executors'"
+        ).fetchall()
+        self.assertGreaterEqual(len(rows), 4, f"四条写路径都应留痕，实际 {len(rows)} 行")
+        self.assertEqual({r["username"] for r in rows}, {"admin@test.local"},
+                         "actor 必须是登录名，不是硬编码的 admin")
 
 
 if __name__ == "__main__":
