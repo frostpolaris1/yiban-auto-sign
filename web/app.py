@@ -7941,7 +7941,13 @@ def create_app(host=None):
                                 "edge_front_sec", "edge_back_sec",
                                 "allow_time_pref", "sign_window", "sign_mode",
                                 "global_pause", "start_delay_max", "gap_max",
-                                "registration_pause", "max_users", "max_accounts")
+                                "registration_pause", "max_users", "max_accounts",
+                                # M12：account_verify 与 probe_* 会对**全站账号**做
+                                # 真实登录（与签到同一风控面），普通管理员改之可自设
+                                # 周期与时刻——收归主管理员（与"能造成静默漏签/风控
+                                # 暴露"的动作同一档）
+                                "account_verify", "probe_enable",
+                                "probe_time", "probe_interval")
         ):
             return jsonify({"error": "仅主管理员可修改调度设置"}), 403
         # 字段携带才写——原实现缺省即 0 且无条件写两个键，

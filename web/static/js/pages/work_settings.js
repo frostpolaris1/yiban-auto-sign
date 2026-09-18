@@ -332,7 +332,7 @@
         isMaster: state.isMaster,
         capacity: function () { return state.capacityEst; }
       });
-      YB.settingsHealth.mount();
+      YB.settingsHealth.mount({ isMaster: state.isMaster });
       YB.settingsNotify.mount({ isMaster: state.isMaster });
       YB.settingsMail.mount({ isMaster: state.isMaster });
       YB.settingsQuota.mount({ isMaster: state.isMaster, onSaved: refreshAfterQuotaSave });
