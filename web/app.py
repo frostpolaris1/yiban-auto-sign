@@ -673,6 +673,9 @@ RESTORE_FAIL_MAX = 30
 RESTORE_FAIL_WINDOW = 600
 # 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
 LOGIN_FAIL_NOTIFY = 3
+# 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
+# 只用于告警判定，不锁管理员（P18）。
+SENSITIVE_PW_FAIL_WINDOW = 900
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
@@ -3334,6 +3337,10 @@ def create_app(host=None):
 
     # 登录失败记录 {ip: [fail_count, lock_until]}
     _login_fails = {}
+    # 敏感操作口令复核失败的**独立**计数 {fail_key: [count, window_start]}（M5）：
+    # 与 _login_fails 分开——P18 教训是"持 Cookie 者若写共享计数可把管理员锁出登录"，
+    # 故高危二次鉴权/开关门/执行体门的失败只走本计数 + 首达阈值告警，绝不碰登录计数。
+    _sensitive_pw_fails = {}
     # 全局限速记录 {ip: [count, window_start]}
     _rate_limits = {}
     # 已登录 GET 的独立计数桶（与严格桶分开，互不挤占；见 rate_limit 说明）
@@ -6739,6 +6746,31 @@ def create_app(host=None):
         u = db.find_user(username.strip().lower())
         return bool(u) and check_password_hash(u.get("password_hash", ""), password)
 
+    def _bump_sensitive_pw_fail(action):
+        """敏感操作口令复核失败的独立计数 + 首达阈值告警（M5）。
+
+        只在"复核失败"时调用：窗口内累计（键绑 (IP, 用户名)，窗口 15 分钟），
+        达到 LOGIN_FAIL_NOTIFY 次时发一次**紧急**告警（每窗口最多一次——
+        超过阈值后 count 继续涨但只在 == 阈值时触发；窗口滚动后归零重计）。
+        **不写 `_login_fails`**（P18：防持 Cookie 者把管理员锁出登录）。
+        """
+        username = (session.get("username") or "?").strip().lower()[:64]
+        ip = _client_ip()
+        now = time.time()
+        key = (ip, username)
+        with _rate_lock:
+            _ip_store_trim(_sensitive_pw_fails, _IP_STORE_MAX_AGE)
+        cnt, _start, _allowed = _bump_window_count(
+            _sensitive_pw_fails, key, now, SENSITIVE_PW_FAIL_WINDOW)
+        if cnt == LOGIN_FAIL_NOTIFY:
+            send_notification(
+                "敏感操作口令复核失败告警",
+                f"账号 {_nl_safe(username)} 在 IP {_nl_safe(ip)} 连续 "
+                f"{cnt} 次口令复核失败（{_nl_safe(action)}）\n"
+                f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                urgent=True,
+            )
+
     def _executor_write_guard(data, action, changed):
         """执行体写操作的口令复核（返回 None = 通过，否则是 `(响应, 状态码)`）。
 
@@ -6759,6 +6791,7 @@ def create_app(host=None):
             return None
         if _verify_session_password(str(data.get("confirm_password", ""))):
             return None
+        _bump_sensitive_pw_fail(f"执行体写操作: {action}")
         db.audit(session.get("username") or "?", "executors_pw_fail", "executors", action)
         return jsonify({"error": "口令校验未通过，设置未生效"}), 403
 
@@ -8069,6 +8102,7 @@ def create_app(host=None):
         # 可借共享计数反复试错把管理员锁出登录），失败仅审计留痕；成功同样
         # 不动计数（清计数只属于真实登录/既有二次鉴权路径）。
         if _switch_changed and not _verify_session_password(str(data.get("confirm_password", ""))):
+            _bump_sensitive_pw_fail("系统开关")
             db.audit(
                 session.get("username") or "?",
                 "settings_switch_pw_fail",

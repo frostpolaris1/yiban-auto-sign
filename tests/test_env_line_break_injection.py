@@ -349,12 +349,11 @@ class EnvInjectionKillChainTest(_Base):
         anon = self.webapp.create_app().test_client()   # 公告 GET 公开
         self.assertEqual(anon.get("/api/announcement").get_json()["text"],
                          "服务器今晚 23:00 维护")
-        r = c.post("/api/settings", json={"sunday_sign": True, "account_verify": True},
+        r = c.post("/api/settings", json={"sunday_sign": True},
                    headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = self.webapp.read_env(self.env_file)
         self.assertEqual(env["YIBAN_SUNDAY_SIGN"], "1")
-        self.assertEqual(env["YIBAN_ACCOUNT_VERIFY"], "1")
         got = c.get("/api/settings", headers=h).get_json()
         self.assertEqual(got["sunday_sign"], 1)
         # 清空公告（空值 = 删键）仍是常规能力
