@@ -178,10 +178,27 @@ class SwitchPasswordGateTest(unittest.TestCase):
         self.assertFalse(self._env_has("YIBAN_GLOBAL_PAUSE=1"))
 
     # ---- 外溢面守卫 ----
-    def test_other_fields_save_without_password(self):
-        """不带开关字段的普通保存不受门禁影响（零口令仍可保存其它字段）。"""
+    def test_gate_only_fires_on_real_changes(self):
+        """门禁只咬"真变更"：同值保存零口令，真变更才按档位要口令。
+
+        旧用例钉的是"非开关字段随便写、不要口令"——那是档位重排前的口径。现在
+        A/B 档真变更一律过门禁（A 档还不得豁免），所以这里钉三件事：值未变不进门禁
+        （整表回传/误点保存不该多一道口令）、B 档真变更无口令即拒、A 档真变更无口令即拒。
+        """
         c, hdr = self._login()
+        # B 档同值（未配过 sign_order → 生效值就是派生的 sequence）→ 不进门禁
+        r = c.post("/api/settings", json={"sign_order": "sequence"}, headers=hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        # B 档真变更且无口令 → 403，且不得落盘
+        r = c.post("/api/settings", json={"sign_order": "random"}, headers=hdr)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertFalse(self._env_has("YIBAN_SIGN_ORDER=random"))
+        # A 档真变更且无口令 → 403（周末开关已上收 A 档）
         r = c.post("/api/settings", json={"sunday_sign": 1}, headers=hdr)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertFalse(self._env_has("YIBAN_SUNDAY_SIGN=1"))
+        # A 档同值 → 仍不进门禁
+        r = c.post("/api/settings", json={"sunday_sign": 0}, headers=hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_wrong_password_does_not_touch_login_fail_counter(self):
@@ -227,7 +244,8 @@ class SwitchPasswordGateTest(unittest.TestCase):
         title, body, kw = m.call_args[0][0], m.call_args[0][1], m.call_args[1]
         self.assertIn("二次鉴权失败", title, "三处落点共用同一条告警标题")
         self.assertTrue(kw.get("urgent"), "敏感操作复核失败应走紧急告警")
-        self.assertIn("系统开关", body)
+        self.assertIn("破坏性设置", body, "A 档门禁须写明档位")
+        self.assertIn("暂停注册", body, "A 档门禁还须点出被尝试的具体键")
         self.assertNotIn("WrongPass999!", body, "告警不得回显口令")
         self.assertTrue(self._audit_fail_rows(), "失败必须留审计")
 

@@ -104,10 +104,12 @@ class _GateBase(unittest.TestCase):
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file,
                    env_file=self.env_file)
-        # 每用例回到"两开关均未配置（=开放）+ 门禁旋钮走默认值"基线
+        # 每用例回到"两开关均未配置（=开放）+ 门禁旋钮走默认值"基线；B 档三键同清——
+        # 它们是豁免用例的"真变更"载体，上一条用例留下的值会让下一条根本不进门禁
         self.webapp.write_env_batch(self.env_file, {
             "YIBAN_GLOBAL_PAUSE": "", "YIBAN_REGISTRATION_PAUSE": "",
             "YIBAN_PW_CONFIRM_TTL": "", "YIBAN_PW_CONFIRM_COOLDOWN_SEC": "",
+            "YIBAN_SIGN_ORDER": "", "YIBAN_SIGN_DIST": "", "YIBAN_SIGN_MODE": "",
         })
         self.alerts = []
         patcher = mock.patch.object(
@@ -225,7 +227,8 @@ class CooldownTest(_GateBase):
         self.assertEqual(c.get("/api/users").status_code, 200, "管理页数据不受冷却影响")
         self.assertEqual(c.get("/api/clock").status_code, 200, "公开只读接口不受冷却影响")
         # 值未变更 → 不在门禁范围内（不要求复核），冷却不该顺手把它也停了
-        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=self._hdr(c))
+        # （用 A 档的 sunday_sign 提交它的现值 0：档位高低都不该让"没改"的保存多一道口令）
+        r = c.post("/api/settings", json={"sunday_sign": 0}, headers=self._hdr(c))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         # 登录完全可用：新会话用正确口令照常登录，用错误口令仍是"口令错"而不是"锁定"
         c2 = self.webapp.create_app().test_client()
@@ -311,15 +314,19 @@ class ExemptionTest(_GateBase):
     """配置类动作的"刚复核过就免再输"豁免，及其边界（IP / TTL / always_required）。"""
 
     def test_config_gate_exempt_within_ttl(self):
-        """③先正确口令过一次，TTL 内改另一个值不必再输口令。"""
+        """③先正确口令过一次，TTL 内改另一个**可豁免档位**的值不必再输口令。"""
         c = self._login()
         self.assertEqual(self._switch_with(c, None).status_code, 403,
                          "前置：未复核过的真变更必须要口令")
         self.assertEqual(self._switch_with(c, ADMIN_PASS).status_code, 200)
-        # 换一档值（注册暂停）→ 真变更，但本会话刚复核过 → 免口令
-        r = c.post("/api/settings", json={"registration_pause": 1}, headers=self._hdr(c))
+        # B 档真变更，但本会话刚复核过 → 免口令
+        r = c.post("/api/settings", json={"sign_order": "random"}, headers=self._hdr(c))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(self._env_has("YIBAN_REGISTRATION_PAUSE=1"))
+        self.assertTrue(self._env_has("YIBAN_SIGN_ORDER=random"))
+        # 同一份豁免对 A 档不生效（A 档必须当次输口令）
+        r = c.post("/api/settings", json={"registration_pause": 1}, headers=self._hdr(c))
+        self.assertEqual(r.status_code, 403, "A 档不得被豁免放行")
+        self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"))
 
     def test_executor_gate_shares_the_exemption(self):
         """豁免跨落点生效（同一入口的同一份会话凭据）。"""
@@ -330,21 +337,25 @@ class ExemptionTest(_GateBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_exemption_not_granted_from_a_different_ip(self):
-        """出口 IP 变了必须重新输口令——被窃 Cookie 换个出口就免检是不可接受的。"""
+        """出口 IP 变了必须重新输口令——被窃 Cookie 换个出口就免检是不可接受的。
+
+        载体用 B 档 sign_order（可豁免动作）：拿 A 档键测等于在测 always_required，
+        豁免这条边界就没人管了。
+        """
         c = self._login()
         self.assertEqual(self._switch_with(c, ADMIN_PASS).status_code, 200)
         with mock.patch.object(self.webapp, "_client_ip", return_value="203.0.113.9"):
-            r = c.post("/api/settings", json={"registration_pause": 1},
+            r = c.post("/api/settings", json={"sign_order": "random"},
                        headers=self._hdr(c))
         self.assertEqual(r.status_code, 403, "跨 IP 不得沿用豁免")
-        self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"))
+        self.assertFalse(self._env_has("YIBAN_SIGN_ORDER=random"))
 
     def test_exemption_disabled_by_ttl_zero(self):
         """`YIBAN_PW_CONFIRM_TTL=0` = 关闭豁免（每次都要口令）。"""
         self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_TTL": "0"})
         c = self._login()
         self.assertEqual(self._switch_with(c, ADMIN_PASS).status_code, 200)
-        r = c.post("/api/settings", json={"registration_pause": 1}, headers=self._hdr(c))
+        r = c.post("/api/settings", json={"sign_order": "random"}, headers=self._hdr(c))
         self.assertEqual(r.status_code, 403, "TTL=0 时不得豁免")
 
     def test_exemption_expires_after_ttl(self):
@@ -353,7 +364,7 @@ class ExemptionTest(_GateBase):
         c = self._login()
         self.assertEqual(self._switch_with(c, ADMIN_PASS).status_code, 200)
         time.sleep(1.2)
-        r = c.post("/api/settings", json={"registration_pause": 1}, headers=self._hdr(c))
+        r = c.post("/api/settings", json={"sign_order": "random"}, headers=self._hdr(c))
         self.assertEqual(r.status_code, 403, "豁免到期后须重新复核")
 
     def _grant_exemption(self, c, i):
