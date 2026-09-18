@@ -219,12 +219,20 @@ def _close_db():
 
 
 def _run_cli(script, cli, cwd, extra_env=None):
-    """在指定 cwd 下运行 scripts/ 工具；子进程输出固定 UTF-8（Windows 默认 GBK 会乱码）。"""
+    """在指定 cwd 下运行 scripts/ 工具；子进程输出固定 UTF-8（Windows 默认 GBK 会乱码）。
+
+    **状态目录必须钉在临时目录里**：`YIBAN_STATE_DIR` 的默认值是机器级路径
+    （裸机 `/var/log/yiban`），而外部锚点文件与审计库是**一套**数据。不钉住时，
+    取证类工具会在临时库上比对宿主真实部署的锚点文件——宿主机跑过一次部署就报
+    "审计记录条数减少、疑似删除"，宿主机没有该文件时才"恰好通过"。这是环境依赖，
+    不是被测行为。
+    """
     env = dict(os.environ)
     for k in _CHILD_POP_KEYS:
         env.pop(k, None)
     for k in [k for k in env if k.startswith("YIBAN_NOTIFY_")]:
         env.pop(k, None)
+    env["YIBAN_STATE_DIR"] = os.path.join(cwd, "_state")
     env["PYTHONIOENCODING"] = "utf-8"
     env.update(extra_env or {})
     return subprocess.run(
