@@ -33,6 +33,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 REG_ADMIN = "reg-admin@test.local"
@@ -148,7 +151,7 @@ class _TierBase(unittest.TestCase):
         patcher = mock.patch.object(
             self.webapp, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
-            self.alerts.append((t, c, urgent, force)))
+            self.alerts.append((t, render_body(c), urgent, force)))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -383,8 +386,8 @@ class ChangeAlertTest(_TierBase):
         self.assertIn("系统设置变更", title)
         self.assertTrue(urgent, "含 A 档变更必须 urgent")
         self.assertFalse(force, "非「拆报警器 / 不可逆清除 / 全停急停」不得 force")
-        for frag in ("周日签到=关→开", "周六签到=关→开", "签到排序=sequence→random",
-                     "操作者: admin"):
+        for frag in ("周日签到：关 → 开", "周六签到：关 → 开",
+                     "签到排序：sequence → random", "操作者：admin"):
             self.assertIn(frag, body, f"告警正文缺少 {frag}")
         rows = self._audit_rows("settings_save")
         self.assertEqual(len(rows), 1, "审计仍是一行 settings_save")
@@ -405,7 +408,7 @@ class ChangeAlertTest(_TierBase):
         self.assertEqual(len(self.alerts), 1)
         _title, body, urgent, force = self.alerts[0]
         self.assertTrue(urgent and force, "全停急停要立刻叫醒：urgent + force")
-        self.assertIn("全局暂停签到=关→开", body)
+        self.assertIn("全局暂停签到：关 → 开", body)
 
     def test_noop_save_sends_no_alert(self):
         """误点保存（值一个没变）不该发出任何告警，也不该被口令挡住。"""
@@ -422,7 +425,13 @@ class ChangeAlertTest(_TierBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(len(self.alerts), 1)
         body = self.alerts[0][1]
-        self.assertEqual(len(body.splitlines()), 3, f"正文应为操作者/明细/时间三行：{body!r}")
+        lines = body.splitlines()
+        # 行数不是判据（摘要/明细/时间之间本来就有空行）；真正要钉的是"每个部分各占
+        # 一行"——值若夹带裸换行，明细行就会裂成两行。
+        self.assertEqual(sum(ln.startswith("· 探针时刻") for ln in lines), 1,
+                         f"值不得把明细项撑成多行：{body!r}")
+        self.assertEqual(sum(ln.startswith("· 操作者") for ln in lines), 1)
+        self.assertEqual(sum(ln.startswith("时间：") for ln in lines), 1)
 
 
 if __name__ == "__main__":
