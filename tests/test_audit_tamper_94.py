@@ -19,8 +19,12 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
 AUDIT_KEY = "b" * 64
@@ -511,6 +515,107 @@ class RechainGuardTest(_DbFixture):
         self.assertFalse(h["healthy"], "空 hash 行必须参与 healthy 结论（不能只是诊断信息）")
         self.assertEqual(h["empty_hash_rows"], 1)
         self.assertIn("hash 为空", h["note"])
+
+
+class WriteDebtTest(_DbFixture):
+    """审计写入欠账必须落库：进程内计数器重启即归零，等于把"有操作未留痕"忘掉。"""
+
+    def _force_one_failure(self):
+        real = db._audit_hash
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("模拟审计写入失败")
+
+        db._audit_hash = _boom
+        try:
+            self.assertFalse(db.audit("tester", "unit_test", "t", "should fail"))
+        finally:
+            db._audit_hash = real
+
+    def _simulate_process_restart(self):
+        """清掉进程内状态并重开连接——真正的重启只剩库里那份数据。"""
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        db._reset_audit_fail_memory()
+
+    def test_write_debt_is_persisted_and_monotonic(self):
+        self._force_one_failure()
+        self.assertEqual(db.audit_write_failures(), 1)
+        self.assertEqual(db.audit_persisted_write_failures(), 1, "欠账必须落 app_meta")
+        self._force_one_failure()
+        self._simulate_process_restart()
+        self.assertEqual(
+            db.audit_write_failures(), 2,
+            "重启后仍须看得见累计欠账——原实现进程内计数重启归零，未留痕的操作就此忘掉",
+        )
+        self.assertEqual(db.audit_persisted_write_failures(), 2)
+
+    def test_write_debt_makes_health_unhealthy(self):
+        self._seed(2)
+        db.record_audit_anchor()
+        self.assertTrue(db.audit_health()["healthy"])
+        self._force_one_failure()
+        h = db.audit_health()
+        self.assertEqual(h["write_failures"], 1)
+        self.assertFalse(h["healthy"], "有欠账即不健康（既有行为保持）")
+        self._simulate_process_restart()
+        self.assertFalse(db.audit_health()["healthy"], "重启后依旧不得洗白")
+
+    def test_write_debt_does_not_leak_across_databases(self):
+        """欠账是"这个库"的事实：换库必须归零，否则测试/多实例会互相污染。"""
+        self._force_one_failure()
+        self.assertEqual(db.audit_write_failures(), 1)
+        self._simulate_process_restart()
+        for suffix in ("", "-wal", "-shm"):
+            with contextlib.suppress(OSError):
+                os.remove(self.db_file + suffix)
+        db.init_db(cleanup=False)
+        self.assertEqual(db.audit_write_failures(), 0, "全新库不应继承旧库的欠账")
+
+
+class AuditVerifyCliTest(_DbFixture):
+    """scripts/audit_verify.py 必须真的比对锚点（README 早已承诺这一点）。"""
+
+    def _run(self, extra=(), db_file=None):
+        env = dict(os.environ)
+        env["YIBAN_DB_FILE"] = db_file or self.db_file
+        env["YIBAN_ENV_FILE"] = self.env_file
+        env["YIBAN_STATE_DIR"] = self.tmp
+        return subprocess.run(
+            [sys.executable, os.path.join(BASE, "scripts", "audit_verify.py"), *extra],
+            capture_output=True, env=env, cwd=BASE,
+        )
+
+    def test_cli_exit_zero_when_healthy(self):
+        self._seed(3)
+        db.record_audit_anchor()
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stdout.decode("utf-8", "replace"))
+
+    def test_cli_detects_anchor_only_tampering(self):
+        """链自洽但锚点判据失败（删尾后追加）——CLI 必须照样 exit 1。"""
+        self._seed(6)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id > 4")
+        db.audit("tester", "later", "t", "d")
+        self.assertTrue(db.verify_audit_chain()[0], "夹具前提：链本身仍自洽")
+        r = self._run()
+        self.assertEqual(r.returncode, 1, r.stdout.decode("utf-8", "replace"))
+        self.assertIn("锚点", r.stdout.decode("utf-8", "replace"))
+
+    def test_cli_accepts_explicit_anchor_path(self):
+        self._seed(3)
+        other = os.path.join(self.tmp, "custom-anchor.log")
+        db.record_audit_anchor(other)
+        r = self._run(["--anchor", other])
+        self.assertEqual(r.returncode, 0, r.stdout.decode("utf-8", "replace"))
+
+    def test_cli_refuses_missing_db(self):
+        """三条只读纪律之一：库不存在时 exit 2，绝不新建空库把"无篡改"误报成通过。"""
+        r = self._run(db_file=os.path.join(self.tmp, "nope.db"))
+        self.assertEqual(r.returncode, 2)
 
 
 if __name__ == "__main__":
