@@ -2612,10 +2612,20 @@ def _nl_safe(value):
     return s
 
 
+def _audit_actor():
+    """审计行的 actor 唯一取法：当前会话用户名，缺省 `?`，截 64 防超长打爆索引列。
+
+    执行体那几处此前把 actor **硬编码成 `"admin"`**——审计表里出现了一句假话：
+    谁做的操作没被记下来，且与全表其他行的口径不一致（同一列两种语义，事后按
+    actor 追人时"admin"既可能是内置管理员也可能是别的账号）。
+    """
+    return (session.get("username") or "?")[:64]
+
+
 def _audit_alert_facts(health):
     """审计链异常告警的事实清单（每日线程用，测试直接断言同一份形状）。
 
-    `诊断备注` 必须在列：`audit_health` 有两类"链自洽=是、锚点=一致，但体检仍判不健康"
+    `诊断备注` 必须在列：`audit_health` 有两种"链自洽=是、锚点=一致，但体检仍判不健康"
     的原因（锚点之后又跑了全表重链、有记录签名被清空等着被重签），它们只写进 `note`。
     不带出来时管理员看到的是一条"各项都正常"的告警，第一反应是误报——正是这次要修的。
     """
@@ -3839,10 +3849,10 @@ def create_app(host=None):
         # 的最高信号之一，此前 403 零留痕。IP 经 hash_ip 匿名化；频次天然受
         # /api/* 全局限速约束，且普通用户正常操作不会触达本分支。
         db.audit(
-            (session.get("username") or "?")[:64],
+            _audit_actor(),
             "forbidden_path",
             db.hash_ip(_client_ip()),
-            request.path[:120],
+            _nl_safe(request.path)[:120],
         )
         return jsonify({"error": "无权限"}), 403
 
@@ -3914,8 +3924,8 @@ def create_app(host=None):
                 logger.warning(
                     "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
                     db.hash_ip(_client_ip()),
-                    request.path,
-                    request.headers.get("Origin"),
+                    _nl_safe(request.path),
+                    _nl_safe(request.headers.get("Origin")),
                 )
                 return jsonify({"error": "请求来源异常，请刷新页面后重试"}), 403
             return
@@ -3927,7 +3937,7 @@ def create_app(host=None):
             logger.warning(
                 "CSRF 校验失败: ip=%s path=%s token_len=%d session_token_len=%d",
                 db.hash_ip(_client_ip()),
-                request.path,
+                _nl_safe(request.path),
                 len(token),
                 len(sess_token),
             )
@@ -4580,7 +4590,7 @@ def create_app(host=None):
         # 绝不写入 sid/Cookie/CSRF 值（那些一旦进链就等于把可重放的凭据抄进日志）。
         # 顺序刻意在 session.clear() 之前：清空后就再也取不到 username 与 auth_source。
         db.audit(
-            (session.get("username") or "?")[:64], "logout_ok", db.hash_ip(_client_ip()),
+            _audit_actor(), "logout_ok", db.hash_ip(_client_ip()),
             f"登出（{session.get('auth_source') or 'builtin'}）",
         )
         # 登出轮换服务端 sid——此前仅 session.clear()，此前被窃取的
@@ -9201,7 +9211,7 @@ def create_app(host=None):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         # 审计只记键名：代理串可能带凭据，不得进审计链
-        db.audit("admin", "settings", "executors", ",".join(sorted(updates))[:200])
+        db.audit(_audit_actor(), "settings", "executors", ",".join(sorted(updates))[:200])
         return jsonify({"ok": True, "applied": sorted(updates),
                         "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -9254,7 +9264,7 @@ def create_app(host=None):
                 yb_egress.resolve(role, index or 0, env=read_env(ENV_FILE)))
         if err:
             return jsonify({"error": err}), code
-        db.audit("admin", "settings", "executors", audit_detail)
+        db.audit(_audit_actor(), "settings", "executors", audit_detail)
         return jsonify({"ok": True,
                         "index": index if index is not None else "fallback",
                         "egress": desc})
@@ -9345,7 +9355,7 @@ def create_app(host=None):
             slot = _mutate_executor_rows(_apply)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+        db.audit(_audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": rtype,
                         "egress": yb_egress.describe(value),
                         "name": name or None,
@@ -9399,7 +9409,7 @@ def create_app(host=None):
             row = _mutate_executor_rows(_apply)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+        db.audit(_audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": row["type"],
                         "egress": yb_egress.describe(row["proxy"]),
                         "name": row.get("name") or None,
@@ -9433,7 +9443,7 @@ def create_app(host=None):
             rtype = _mutate_executor_rows(_apply)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        db.audit("admin", "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+        db.audit(_audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
         return jsonify({"ok": True, "slot": slot, "type": rtype, "deleted": True,
                         "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -9512,7 +9522,7 @@ def create_app(host=None):
         # 建议值保留 ×2/3 余量：实测值是这台机器这一刻的成绩，留余量才对得上
         # "换机器/换网络都要重新量"的现实。
         recommended = max(1, int(per_exec * 2 / 3))
-        db.audit("admin", "executors_measure", sample,
+        db.audit(_audit_actor(), "executors_measure", sample,
                  f"实测单账号耗时 {seconds:.2f}s（单执行体容量 {per_exec}）")
         return jsonify({
             "ok": True,
