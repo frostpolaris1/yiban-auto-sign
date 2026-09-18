@@ -734,12 +734,10 @@ READ_AUDIT_LADDER = (1, 10, 50)  # 窗口内累计次数落在这些档位时各
 READ_AUDIT_EVERY = 200  # 越过最高档后每多少次追加一行
 READ_AUDIT_TARGET_CAP = 8  # 单行里最多列几个脱敏目标（db.audit 的 detail 本身截 200 字）
 
-# 告警额度的"勘察字段"——仅主管理员可读：普通管理员日常运维要的是"通道开没开、
-# 配没配"（enabled/type/configured/urgent_only/daily_max 保持可见），而"今天还剩
-# 几条、同类型还要等多久才推"是给"先掐额度再作案"那条链读数的：PUT 侧这几个键
-# 早就收归主管理员并要口令，读侧不设档就是档位不一致。
-_NOTIFY_QUOTA_KEYS = ("cooldown", "daily_remaining", "urgent_daily_max",
-                      "urgent_daily_remaining")
+# 告警通道 GET 里仅主管理员可读的字段：两本账的**当日余量**。
+# 上限（daily_max / urgent_daily_max）与节流（cooldown）刻意不在此列——它们是规则
+# 配置，注册管理员看不到就无法判断"为什么没收到告警"，而余量才是拆报警器前的勘察面。
+_NOTIFY_QUOTA_HIDDEN_KEYS = ("daily_remaining", "urgent_daily_remaining")
 
 # 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
@@ -5210,17 +5208,18 @@ def create_app(host=None):
         daily_max / daily_remaining = 非紧急账，urgent_daily_max /
         urgent_daily_remaining = 紧急账；上限为 0（不限）时对应 remaining 为 null。
 
-        额度勘察字段（_NOTIFY_QUOTA_KEYS）仅主管理员会话可读，其余字段任意管理员
-        可见——普通管理员必须仍看得到"通道开没开、配没配"。刻意**置 null 而非
-        省键**：响应形态保持稳定，省键会让严格取键的调用方直接抛错。代价记在这
-        里——remaining 的 null 原意是"不限"，非主管理员看到 null 会被前端读成
-        "不限"，故前端需按身份把"今日额度"整行不渲染（见 settings-notify.js 的
-        renderStatus）。
+        额度**余量**（daily_remaining / urgent_daily_remaining）仅主管理员可读——它是
+        "拆报警器前还剩几条能发"的勘察面；`cooldown` 与两本账的 `*_max` 是规则配置，
+        任何管理员都必须看得见，否则他无法判断"为什么没收到告警"。
+        隐藏时对应键置 null 并**恒定**下发 `quota_visible` 布尔：remaining 的 null 原本
+        表示"不限"，只靠 null 表达"无权查看"会让前端把两者读成同一个意思。
         """
         cfg = notify.get_config()
-        if not _is_builtin_admin_session():
-            for key in _NOTIFY_QUOTA_KEYS:
+        quota_visible = _is_builtin_admin_session()
+        if not quota_visible:
+            for key in _NOTIFY_QUOTA_HIDDEN_KEYS:
                 cfg[key] = None
+        cfg["quota_visible"] = quota_visible
         return jsonify(cfg)
 
     @app.route("/api/notify-config", methods=["PUT"])
