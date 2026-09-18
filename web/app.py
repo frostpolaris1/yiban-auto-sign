@@ -21,7 +21,6 @@
 import argparse
 import calendar
 import contextlib
-import hashlib
 import html
 import json
 import logging
@@ -4806,7 +4805,9 @@ def create_app(host=None):
             >= 1
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
+        # 与全项目 IP 匿名口径同源（批 3 §4.7）：原先是不加盐的 sha256(ip)，IPv4 空间
+        # 可直接枚举反推，等于把这一列的匿名性单独降级成"看着像哈希"
+        ip_hash = db.hash_ip(ip)
         if (
             db.count_user_delete_requests(
                 ip_hash=ip_hash, since_ts=since_ts, kind="delete"
@@ -4904,7 +4905,9 @@ def create_app(host=None):
             >= 1
         ):
             return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-        ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
+        # 与全项目 IP 匿名口径同源（批 3 §4.7）：原先是不加盐的 sha256(ip)，IPv4 空间
+        # 可直接枚举反推，等于把这一列的匿名性单独降级成"看着像哈希"
+        ip_hash = db.hash_ip(ip)
         if (
             db.count_user_delete_requests(
                 ip_hash=ip_hash, since_ts=since_ts, kind="restore"
