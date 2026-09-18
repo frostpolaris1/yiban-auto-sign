@@ -6892,9 +6892,15 @@ def create_app(host=None):
             return jsonify(resp)
 
     # ---- 在线校验异步任务（A4）：查询与取消 ----
-    def _verify_job_visible(job, username, role):
-        """归属校验：任务仅本人或管理员可读/可操作。"""
-        if role == "admin":
+    def _verify_job_visible(job, username):
+        """归属校验：任务只有**本人**读得见、取消得了；管理面仅内置主管理员放行。
+
+        原先 `role == "admin"` 一路放行＝任意注册管理员都能读/取消**别人**的校验任务，
+        而"取消"会让对方的新账号一直停在「校验中」——跨归属的可用性动作，不该是
+        "同为管理员"就能做的。今天没有任何管理面在轮询这个端点（账号页的校验状态取自
+        账号行自身，前端也未实现任务轮询），故按"权限歧义取窄侧"收成：本人 + 内置主管理员。
+        """
+        if _is_builtin_admin_session():
             return True
         return str(job.get("owner_email") or "").strip().lower() == str(username or "").strip().lower()
 
@@ -6911,17 +6917,17 @@ def create_app(host=None):
 
     @app.route("/api/verify-jobs/<int:job_id>")
     def api_verify_job_get(job_id):
-        """查询校验任务状态与结果（仅本人或管理员）。"""
+        """查询校验任务状态与结果（仅本人；内置主管理员可读）。"""
         job = db.get_verify_job(job_id)
         if not job:
             return jsonify({"error": "任务不存在"}), 404
-        if not _verify_job_visible(job, session.get("username"), _current_role()):
+        if not _verify_job_visible(job, session.get("username")):
             return jsonify({"error": "无权限"}), 403
         return jsonify({"ok": True, "job": _job_payload(job)})
 
     @app.route("/api/verify-jobs/<int:job_id>", methods=["DELETE"])
     def api_verify_job_cancel(job_id):
-        """取消校验任务（仅 pending 可取消；仅本人或管理员）。
+        """取消校验任务（仅 pending 可取消；仅本人，内置主管理员可代管）。
 
         先收口超龄任务：卡在 running 的任务若因进程重启而无人在跑，会因
         "只允许取消 pending" 而永远无法撤销，这里先把它判定为终态。
@@ -6930,7 +6936,7 @@ def create_app(host=None):
         job = db.get_verify_job(job_id)
         if not job:
             return jsonify({"error": "任务不存在"}), 404
-        if not _verify_job_visible(job, session.get("username"), _current_role()):
+        if not _verify_job_visible(job, session.get("username")):
             return jsonify({"error": "无权限"}), 403
         if job["status"] in VERIFY_JOB_TERMINAL:
             return jsonify({"error": "任务已结束，无法取消"}), 409
