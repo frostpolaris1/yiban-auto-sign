@@ -2532,6 +2532,32 @@ html[data-theme="dark"] .btn--danger-ghost { color: #FCA5A5; border-color: rgba(
 .sc-log.is-loading { opacity: 0.55; }
 @keyframes sc-in { from { opacity: 0; transform: translateY(3px); } }
 
+/* ---- 状态盒入场（四页统一） ----
+   这些盒子全靠 [hidden] 切换显隐，而 [hidden]{display:none!important} 让 transition
+   根本没有可过渡的起始帧（实测 .set-tip / .set-warn / .kpi-value 的 transition-duration
+   均为 0s），状态出现是硬跳。CSS animation 在元素从 display:none 转为渲染时**会重新
+   触发**（实测：隐藏期 getAnimations() 为空，取消隐藏后立刻 running、currentTime 从 0
+   起算），所以入场用 animation；退场元素直接消失，无可过渡，保持瞬时。
+   数值被"替换"（非显隐）的场合不适用本规则，那类要走 core.js 的 YB.swapOut 协议。 */
+.dash-page #dash-status,
+.dash-page [data-overlay],
+.empty,
+.log-box,
+.set-tip:not(:empty),
+#ss-edge-warn,
+#set-exec-banner {
+  animation: sc-in 160ms var(--ease-out-strong) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-page #dash-status,
+  .dash-page [data-overlay],
+  .empty,
+  .log-box,
+  .set-tip:not(:empty),
+  #ss-edge-warn,
+  #set-exec-banner { animation: none; }
+}
+
 /* 时段按钮：按压反馈（颜色过渡沿用 19.8） */
 .slot { transition: background-color 140ms, border-color 140ms, color 140ms, transform 120ms var(--theme-ease); }
 .slot:active:not(:disabled) { transform: scale(0.96); }
