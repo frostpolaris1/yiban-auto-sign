@@ -5,11 +5,14 @@
 Cookie 的会话可无口令直接翻转 global_pause / registration_pause。
 
 口径（2026-09）：
-- 仅当请求值与当前值**不同**时才要求 confirm_password；值未变（或未携带）不要求，
-  其它字段的保存流程零影响；
-- 缺口令 / 错口令 → 403 {"error":"口令校验未通过，设置未生效"}，响应不回显口令；
-- 失败只比对不计数：不写与登录共用的 _login_fails（持 Cookie 者不得借门禁把
-  管理员锁出登录），失败写一条 settings_switch_pw_fail 审计。
+- 本门禁是统一入口 _sensitive_password_gate 的一个落点；仅当请求值与当前值**不同**时
+  才要求 confirm_password，值未变（或未携带）不要求，其它字段的保存流程零影响；
+- 缺口令 / 错口令 → 403 {"error":"口令校验未通过，设置未生效"}，响应不回显口令，
+  并写一条 settings_switch_pw_fail 审计；
+- 错口令走**独立计数**：首达阈值告警一次，其后进入门禁级冷却（429）。仍**绝不写**与登录
+  共用的 _login_fails（P18：持 Cookie 者不得借门禁把管理员锁出登录）。
+  计数/冷却/豁免的完整口径见 tests/test_sensitive_gate_94.py；本文件每例都用新登录的
+  会话（无豁免态），钉的是"单次请求要不要口令"这层语义。
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
@@ -182,24 +185,32 @@ class SwitchPasswordGateTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_wrong_password_does_not_touch_login_fail_counter(self):
-        """P18 回归守卫：门禁错口令只比对不计数——连错 6 次（>LOGIN_MAX_FAILS=5）
-        每次都是 403 而非 429，且此后正确口令登录不受影响（管理员未被锁出）。"""
+        """P18 回归守卫：门禁错口令绝不写与登录共用的 _login_fails。
+
+        新语义下第 4 次起是**门禁级冷却**（429），不再是永远 403；要钉的不变量没变——
+        被窃会话不得借门禁把管理员锁出登录：登录侧既不被锁（正确口令照登），
+        也不被误判成锁定（错口令仍是 401 而不是 429）。
+        """
         c, hdr = self._login()
+        codes = []
         for _ in range(6):
             r = c.post("/api/settings", json={
                 "registration_pause": 1, "confirm_password": "WrongPass999!"},
                 headers=hdr)
-            self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
-        r2 = c.post("/api/settings", json={
-            "registration_pause": 1, "confirm_password": ADMIN_PASS}, headers=hdr)
-        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
-        # 同会话仍有效；再开一个新客户端用正确口令登录也应成功（计数未被污染）
-        c2 = self.webapp.create_app().test_client()
-        r3 = c2.post("/api/login", json={"username": "admin", "password": ADMIN_PASS})
-        self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+            codes.append(r.status_code)
+        self.assertEqual(codes[:LOGIN_FAIL_NOTIFY], [403] * LOGIN_FAIL_NOTIFY)
+        self.assertTrue(all(x in (403, 429) for x in codes), f"实际 {codes}")
+        self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"), "被拒不得落盘")
+        # 登录侧完好无损（同一个 app：_login_fails 是 create_app 的闭包字典，
+        # 换 app 探测等于换了个内存桶，测不出门禁有没有污染登录的账）
+        c2 = c.application.test_client()
+        r = c2.post("/api/login", json={"username": "admin", "password": "WrongPass999!"})
+        self.assertEqual(r.status_code, 401, "错口令仍是口令错，不是被门禁连带锁定")
+        r = c2.post("/api/login", json={"username": "admin", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     def test_sensitive_pw_fail_alerts_once_at_threshold(self):
-        """M5：口令复核失败走独立计数，首达阈值发一次紧急告警。
+        """统一门禁：口令复核失败走独立计数，首达阈值发一次紧急告警。
 
         用户裁决（P18 延续）：不写 _login_fails（不锁管理员），另开独立计数 +
         连续失败告警。连错 LOGIN_FAIL_NOTIFY 次：每次仍 403，仅第 3 次触发
@@ -214,23 +225,28 @@ class SwitchPasswordGateTest(unittest.TestCase):
                 self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
         self.assertEqual(m.call_count, 1, "首达阈值只告警一次")
         title, body, kw = m.call_args[0][0], m.call_args[0][1], m.call_args[1]
-        self.assertIn("口令复核失败", title)
+        self.assertIn("二次鉴权失败", title, "三处落点共用同一条告警标题")
         self.assertTrue(kw.get("urgent"), "敏感操作复核失败应走紧急告警")
         self.assertIn("系统开关", body)
         self.assertNotIn("WrongPass999!", body, "告警不得回显口令")
         self.assertTrue(self._audit_fail_rows(), "失败必须留审计")
 
     def test_sensitive_pw_fail_no_repeat_alert_in_same_window(self):
-        """M5：同一窗口内超阈值后再多失败也不重复告警（避免刷屏）。"""
+        """同一窗口内超阈值后再多失败也不重复告警（避免刷屏），改为进冷却拒绝。"""
         c, hdr = self._login()
+        codes = []
         with mock.patch.object(self.webapp, "send_notification") as m:
             for _ in range(LOGIN_FAIL_NOTIFY + 2):
                 r = c.post("/api/settings", json={
                     "registration_pause": 1, "confirm_password": "WrongPass999!"},
                     headers=hdr)
-                self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+                codes.append(r.status_code)
         self.assertEqual(m.call_count, 1,
                          "窗口未滚动时超阈值再多失败也只告警一次")
+        self.assertEqual(codes[:LOGIN_FAIL_NOTIFY], [403] * LOGIN_FAIL_NOTIFY)
+        self.assertEqual(codes[LOGIN_FAIL_NOTIFY:], [429] * 2,
+                         f"超阈值后应被冷却挡住，实际 {codes}")
+        self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"))
 
 
 if __name__ == "__main__":
