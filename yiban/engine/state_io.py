@@ -32,6 +32,7 @@ from datetime import datetime
 from yiban import clock, cred_state
 from yiban import status as yiban_status
 from yiban.engine import cli_support, schedule
+from yiban.infra import env_io
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import db
 
@@ -88,7 +89,7 @@ def _sched_marker_exists():
       - 补签轮（07:10）调用时标记已存在 → 本轮是补签。
     与容器 scheduler.py 的 _full_run_done_today() 语义一致（同一事实源）。
     """
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = _state_dir()
     path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
     return os.path.exists(path)
 
@@ -107,7 +108,7 @@ def _is_second_run():
 
 def _sign_state_path():
     """当日 sign-state 状态文件路径（状态目录缺失/不可写由调用方处理）。"""
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = _state_dir()
     return os.path.join(state_dir, f"sign-state-{clock.now().strftime('%Y-%m-%d')}.json")
 
 
@@ -166,7 +167,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     被吞）。
     状态目录不可写时丢弃，不影响签到执行。
     """
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = _state_dir()
     path = _sign_state_path()
     try:
         os.makedirs(state_dir, exist_ok=True)
@@ -243,7 +244,7 @@ def _write_sched_done(counts=None):
     - 首签：标记不存在 → 执行；
     - 补签：标记不存在，或存在未了结账号（failed/retrying/pending）→ 执行。
     """
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = _state_dir()
     path = os.path.join(state_dir, f"sched-run-{clock.now().strftime('%Y-%m-%d')}.json")
     try:
         os.makedirs(state_dir, exist_ok=True)
@@ -280,7 +281,13 @@ UNDONE_STATUSES = yiban_status.UNDONE_STATUSES
 
 
 def _state_dir():
-    return os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    """按日状态目录：环境变量 → .env → 裸机默认。
+
+    口径与 web/app.py 同源（`env_io.resolve_path`）。过去只读 os.environ，于是把
+    `YIBAN_STATE_DIR` 写进 .env 的部署里，`run.sh`（自己 export）与直接调用的脚本
+    会落到**不同目录**——一边是配置目录、一边是 /var/log/yiban。
+    """
+    return env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
 
 
 def full_run_done_today(state_dir=None, day=None):
@@ -337,7 +344,7 @@ def need_second_run(state_dir=None, day=None):
 
 
 def _cred_state_path():
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = _state_dir()
     return os.path.join(state_dir, "cred-state.json")
 
 

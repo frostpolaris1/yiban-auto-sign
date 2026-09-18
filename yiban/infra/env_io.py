@@ -47,6 +47,27 @@ def env_path(default=".env"):
     return os.environ.get("YIBAN_ENV_FILE", "").strip() or default
 
 
+def resolve_path(key, default, *, env=None, env_file=None):
+    """路径类配置的唯一解析口径：**进程环境 → .env 文件 → 默认值**。
+
+    为什么必须读 .env：`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` 这类部署路径过去只在进程
+    环境里找（`os.environ.get(...)`）。而 README 与 `.env.example` 教的是把配置写进
+    `.env`——于是同一条配置里，"写进 .env"对跑 `run.sh` 的那条路有效（脚本自己 export），
+    对 **web 进程**与**直接调用的脚本**无效：它们静默回落到 `/var/log/yiban`。后果不只是
+    "配置没生效"：同一台机器上跑第二份部署时，两份会往同一个 `/var/log/yiban` 写状态文件、
+    锁与磁盘外锚点，互相污染对方的取证基线。
+
+    env / env_file 参数供测试注入；缺省读进程环境与 `env_path()`。
+    """
+    raw = (os.environ if env is None else env).get(key, "")
+    if not str(raw).strip():
+        try:
+            raw = parse_env_file(env_path() if env_file is None else env_file).get(key, "")
+        except OSError:
+            raw = ""
+    return str(raw).strip() or default
+
+
 # ---------------------------------------------------------------------------
 # .env 行模型工具：读的一半 parse_env_file 在上，写的一半在此收敛
 # ---------------------------------------------------------------------------
