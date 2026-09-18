@@ -2465,6 +2465,26 @@ def check_admin_configured():
     )
 
 
+def _builtin_admin_loginable():
+    """内置（.env）主管理员**此刻是否真的进得来**——"至少保留 1 个管理员"的判据。
+
+    只看 `YIBAN_ADMIN_USER` 非空是不够的（原实现如此）。用户名配了而内置实际登不进
+    的三种态，`verify_admin` 都会 fail-closed 拒绝：
+      1) 哈希与明文都没有（凭据没配齐）；
+      2) 只有明文没有哈希（启动迁移写 .env 失败的降级态，明文比对已停用）；
+      3) `YIBAN_ADMIN_PASSWORD_HASH` 不是恰好一行（多行歧义，或统计读取失败计得 0）。
+    这三种态下若再把最后一个注册管理员降权/删除，Web 管理面**一个入口都不剩**
+    （内置进不来 + 注册管理员清空），而态 2 恰恰是"改过 .env 权限"后最容易出现的。
+    判据与 `verify_admin` 的三道 fail-closed 逐条对齐，一致性由用例对拍（防两侧漂移）。
+    """
+    env = read_env(ENV_FILE)
+    if not env.get("YIBAN_ADMIN_USER", "").strip():
+        return False
+    if not env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip():
+        return False
+    return _count_env_key_lines(ENV_FILE, "YIBAN_ADMIN_PASSWORD_HASH") == 1
+
+
 def verify_admin(username, password):
     """校验管理员账号（每次登录实时读 .env，修改立即生效）。
 
@@ -7720,6 +7740,9 @@ def create_app(host=None):
         with _file_lock:
             users = load_users()
             builtin = _builtin_admin_email()
+            # `builtin` 是"这一行就是内置管理员，别当普通用户批量操作"的身份比对；
+            # "还有没有兜底入口"是另一件事，必须用可登录判据（两个变量别混用一个）
+            builtin_ok = _builtin_admin_loginable()
 
             # 内存模拟用户表，保持动态管理员数量判断
             sim_users = {u["email"]: dict(u) for u in users}
@@ -7752,12 +7775,12 @@ def create_app(host=None):
                     processed.append(email)
                 elif action == "delete":
                     # 防呆：目标为管理员时校验至少保留 1 个管理员
-                    # （内置管理员存在时允许删除最后一个注册管理员，与单条路径一致）
+                    # （内置管理员**进得来**时才允许删掉最后一个注册管理员，与单条路径一致）
                     if target.get("role") == "admin":
                         admins = [u for u in sim_users.values() if u.get("role") == "admin"]
-                        if len(admins) <= 1 and not builtin:
+                        if len(admins) <= 1 and not builtin_ok:
                             continue
-                    ops.append(("delete_user_with_accounts", email, bool(builtin)))
+                    ops.append(("delete_user_with_accounts", email, builtin_ok))
                     sim_users.pop(email, None)
             done = len(ops)
             if ops:
@@ -7878,14 +7901,15 @@ def create_app(host=None):
                     return jsonify({"error": "仅正式用户可设为管理员（需有已生效账号且无待审核）"}), 400
             if new_role == "user" and target.get("role") == "admin":
                 admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）也是管理员且不可被移除——存在时允许取消 users 表中的最后一个管理员
-                if len(admins) <= 1 and not _builtin_admin_email():
+                # 内置管理员也可登录时才算"还有人兜底"——只配置了用户名不算（失能态
+                # 下把最后一个注册管理员也降级，Web 面就一个入口都不剩）
+                if len(admins) <= 1 and not _builtin_admin_loginable():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             # 改走事务内复核的 set_user_role——进程内预检挡不住
             # 跨进程并发（多实例）同时把最后一个注册管理员降权
             try:
                 changed = db.set_user_role(
-                    email, new_role, allow_last_admin=bool(_builtin_admin_email())
+                    email, new_role, allow_last_admin=_builtin_admin_loginable()
                 )
             except db.LastAdminError:
                 return jsonify({"error": "至少保留 1 个管理员"}), 400
@@ -8001,16 +8025,16 @@ def create_app(host=None):
                 return jsonify({"error": "仅主管理员可删除管理员"}), 403
             if mode == "full" and target.get("role") == "admin":
                 admins = [u for u in load_users() if u.get("role") == "admin"]
-                # 内置管理员（.env）兜底存在时可删除 users 表中的最后一个管理员
-                if len(admins) <= 1 and not _builtin_admin_email():
+                # 内置管理员可登录时才算"还有兜底入口"（判据见 _builtin_admin_loginable）
+                if len(admins) <= 1 and not _builtin_admin_loginable():
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
             # 删除其提交的易班账号（full 模式用单事务组合函数，防崩溃窗口不一致）
             if mode == "full":
                 # 事务内复核最后一个注册管理员（allow 与原预检同语义：
-                # 内置管理员存在时允许删掉 users 表最后一个注册管理员）
+                # 内置管理员确实进得来时允许删掉 users 表最后一个注册管理员）
                 try:
                     db.delete_user_with_accounts(
-                        email, allow_last_admin=bool(_builtin_admin_email())
+                        email, allow_last_admin=_builtin_admin_loginable()
                     )
                 except db.LastAdminError:
                     return jsonify({"error": "至少保留 1 个管理员"}), 400
