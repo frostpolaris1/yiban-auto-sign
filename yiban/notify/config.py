@@ -99,9 +99,7 @@ def is_safe_url(url):
     except ValueError:
         # 非 ipaddress 可解析的 host：若是"纯数字 IPv4 字面量"形态（十进制/0x/
         # 前导零/短式）→ 拒掉；只有真域名（含点号且非全数字组件）放行。
-        if _is_ipv4_literal_like(host):
-            return False
-        return True
+        return not _is_ipv4_literal_like(host)
     return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
 
 
