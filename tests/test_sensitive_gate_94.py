@@ -38,6 +38,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 WRONG_PASS = "WrongPass999!"
@@ -115,7 +118,7 @@ class _GateBase(unittest.TestCase):
         patcher = mock.patch.object(
             self.webapp, "send_notification",
             side_effect=lambda t, c, urgent=False, force=False, ledger=None:
-            self.alerts.append((t, c, urgent)))
+            self.alerts.append((t, render_body(c), urgent)))
         patcher.start()
         self.addCleanup(patcher.stop)
 

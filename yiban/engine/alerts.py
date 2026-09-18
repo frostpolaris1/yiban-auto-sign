@@ -24,6 +24,7 @@ from yiban import clock, notify, window
 from yiban import mail as mailer
 from yiban import status as yiban_status
 from yiban.engine import cli_support, config_check, schedule, state_io
+from yiban.mail import layout
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import db
@@ -41,14 +42,15 @@ STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 def send_notification(title, content, url=None, urgent=False, force=False):
     """通过 Webhook 推送组件发送通知（Server酱/自定义 URL，见 `yiban/notify`）。
 
-    透传 urgent/force 到 notify.send：汇总邮件发送失败降级 webhook 时以
+    `content` 可以是 `layout.Mail`（取 Markdown 出口，短通道自带裁剪）或普通字符串
+    （原样透传）。透传 urgent/force 到 notify.send：汇总邮件发送失败降级 webhook 时以
     urgent=True + force=True 调用（绕过节流与当日额度，保证兜底必达）；默认 False。
     `url` 保留旧调用签名，推送组件自行从配置/环境变量解析地址。
     说明：签到脚本给管理员的**邮件**不在此处发送（避免逐条轰炸），而是由各触发点
     _collect_admin_mail 收集、任务结束 _flush_admin_mail_summary 汇总。
     """
     try:
-        notify.send(title, content, urgent=urgent, force=force)
+        notify.send(title, layout.as_text(content), urgent=urgent, force=force)
     except Exception as e:
         # 组件异常不得拖累签到主流程；只记类型名（异常文本可能含 URL/token）
         logger.warning("通知推送组件调用失败: %s", type(e).__name__)
@@ -65,26 +67,36 @@ MAIL_SUMMARY_MAX_CHARS = 200_000
 
 
 def _collect_admin_mail(subject, text):
-    """把一条管理员告警并入任务结束汇总（不立即发送）。"""
+    """把一条管理员告警并入任务结束汇总（不立即发送）。
+
+    `text` 可以是 `[(标签, 值)]` 字段表（汇总时一项一行）或普通字符串（作为一段说明，
+    兼容既有调用与测试）。
+    """
     _mail_summary.append((subject, text))
+
+
+def notify_admin_entry(subject, entry, notify_url=None):
+    """一条管理员告警同时走「汇总邮件」与「即时推送」，两路读同一份 `entry`。
+
+    原先各调用点要把同一条 `"账号: X\n原因: Y"` 字面量写两遍（邮件一遍、推送一遍），
+    两路必然漂移；收成一次调用后两路共用一份字段表，改文案只改一处。
+    """
+    _collect_admin_mail(subject, entry)
+    if notify.is_configured():
+        send_notification(subject, layout.Mail(fields=entry, time=""), notify_url)
 
 
 def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
     """单次尝试耗时超阈值 → warning 日志 + 管理员汇总邮件 + 即时通知。
 
-    堆队列与手动队列两个分支共用，统一口径防漂移。
+    堆队列与手动队列两个分支共用，统一口径防漂移。字段表只建一次，邮件与推送读同一份。
     """
     logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
-    _collect_admin_mail(
-        "易班签到耗时告警",
-        f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
-    )
-    if notify.is_configured():
-        send_notification(
-            "易班签到耗时告警",
-            f"账号: {_mask_phone(phone)}\n耗时: {dur:.1f}s（阈值 {slow_sec}s）\n结果: {_sanitize_text(message)}",
-            notify_url,
-        )
+    notify_admin_entry("易班签到耗时告警", [
+        ("账号", _mask_phone(phone)),
+        ("耗时", f"{dur:.1f}s（阈值 {slow_sec}s）"),
+        ("结果", _sanitize_text(message)),
+    ], notify_url)
 
 
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
@@ -132,20 +144,19 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
         return False
     title = "当日签到异常告警" if ok_n == 0 else "签到窗口异常告警"
     if ok_n == 0:
-        body = (
-            f"本次全量签到 0 个账号成功，{len(window_skips)} 个账号因窗口外/Range 缺失被跳过。\n"
-            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"
-            "（容器部署另需确认 YIBAN_RUN_TIMEOUT_SEC 未过早截断子进程）。"
-        )
+        entry = [
+            ("成功账号", "0 个"),
+            ("窗口外/Range 跳过", f"{len(window_skips)} 个"),
+            ("请核查", "YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"
+                       "（容器部署另需确认 YIBAN_RUN_TIMEOUT_SEC 未过早截断子进程）"),
+        ]
     else:
-        body = (
-            f"本次签到 {ok_n} 个账号成功，但仍有 {len(window_skips)} 个账号因窗口外/Range "
-            "缺失未了结（补签轮后仍未签到）。\n"
-            f"时间: {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            "请核查 YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配。"
-        )
-    _collect_admin_mail(title, body)
+        entry = [
+            ("成功账号", f"{ok_n} 个"),
+            ("未了结", f"{len(window_skips)} 个账号因窗口外/Range 缺失未签到（补签轮后仍未了结）"),
+            ("请核查", "YIBAN_SIGN_START / YIBAN_SIGN_END 与学校实际放号窗口是否匹配"),
+        ]
+    _collect_admin_mail(title, entry)
     return True
 
 
@@ -174,31 +185,34 @@ def _flush_admin_mail_summary(phase=None):
             groups[subject] = []
             order.append(subject)
         groups[subject].append(text)
-    if phase:
-        parts = [f"易班{phase}已完成，共 {total} 条异常/预警：\n"]
-    else:
-        parts = [f"易班签到任务已结束，共 {total} 条异常/预警：\n"]
-    for subject in order:
-        parts.append(f"【{subject}】")
-        parts.extend(groups[subject])
-        parts.append("")
+    footer = []
     if truncated > 0:
-        parts.append(
-            f"（其余 {truncated} 条已截断以免邮件过大被拒收，"
-            f"明细见管理后台「日志」页或 /var/log/yiban 按天日志）"
+        footer.append(
+            f"其余 {truncated} 条已截断以免邮件过大被拒收，"
+            "明细见管理后台「日志」页或 /var/log/yiban 按天日志"
         )
+    if phase:
+        summary = f"易班{phase}已完成，共 {total} 条异常/预警。"
+    else:
+        summary = f"易班签到任务已结束，共 {total} 条异常/预警。"
+    mail = layout.Mail(summary=summary, groups=[(s, groups[s]) for s in order],
+                       footer=footer, level="urgent")
+    body = mail.to_plain()
+    payload = mail
+    if len(body) > MAIL_SUMMARY_MAX_CHARS:
+        # 超长只可能在数百条明细时出现：那种量级下放弃 HTML、整封按纯文本截断送出，
+        # 也好过生成超大 MIME 被 SMTP 拒收而整封告警丢失。
+        body = body[:MAIL_SUMMARY_MAX_CHARS].rstrip() + "\n…（超长截断，明细见日志）"
+        payload = body
     # 收件人 = ADMIN_TO（按个人开关过滤） + 所有开启接收的管理员用户邮箱：
     # 普通管理员自动获得告警收件权；关闭 mail_notify 后从收件人剔除。
     # 内置主管理员关闭 YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。
     extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
     recipients = db.admin_mail_recipients(extra)
-    body = "\n".join(parts).rstrip()
-    if len(body) > MAIL_SUMMARY_MAX_CHARS:
-        body = body[:MAIL_SUMMARY_MAX_CHARS].rstrip() + "\n…（超长截断，明细见日志）"
     if recipients:
         sent = False
         try:
-            sent = mailer.send_admin_alert("易班签到汇总", body, to=",".join(recipients))
+            sent = mailer.send_admin_alert("易班签到汇总", payload, to=",".join(recipients))
         except Exception as e:
             # mailer 自身承诺内部静默，此处兜底防调用链变化引入的异常外泄
             logger.warning("签到汇总邮件发送异常（%s），降级走 webhook", type(e).__name__)
@@ -356,19 +370,23 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
         return
     if scenario == "probe":
         subject = "易班账号健康预警"
-        body = (
-            f"您的易班账号 {_mask_phone(phone)} 在系统例行健康检查中未能正常登录。\n"
-            f"{_sanitize_text(message)}\n\n"
-            f"这不影响已完成的签到；请尽快核对账号密码是否变更、或按提示处理验证问题，"
-            f"避免下次签到失败。\n"
-            f"（可在「我的账号」页面关闭本邮件提醒）"
+        body = layout.Mail(
+            summary=f"您的易班账号 {_mask_phone(phone)} 在系统例行健康检查中未能正常登录。",
+            fields=[("异常详情", _sanitize_text(message))],
+            advice=["请尽快核对账号密码是否变更，或按提示处理验证问题，避免下次签到失败",
+                    "本次预警不影响已完成的签到"],
+            footer="可在「我的账号」页面关闭本邮件提醒。",
+            level="warn",
         )
     else:
         subject = "易班签到失败提醒"
-        body = (
-            f"您的易班账号 {_mask_phone(phone)} 今日签到失败：\n{_sanitize_text(message)}\n\n"
-            f"连续失败会被系统自动暂停；如账号正常，请登录网站检查或联系管理员。\n"
-            f"（可在「我的账号」页面关闭本邮件提醒）"
+        body = layout.Mail(
+            summary=f"您的易班账号 {_mask_phone(phone)} 今日签到失败。",
+            fields=[("失败原因", _sanitize_text(message))],
+            advice=["连续失败会被系统自动暂停账号",
+                    "如账号本身正常，请登录网站检查或联系管理员"],
+            footer="可在「我的账号」页面关闭本邮件提醒。",
+            level="warn",
         )
     if not mailer.send_user(owner, subject, body):
         # 未真正发出（邮件未启用 / 无收件人 / SMTP 全部失败）：归还额度，让当天
