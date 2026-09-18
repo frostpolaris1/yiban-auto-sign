@@ -14,7 +14,6 @@
 """
 import unittest
 
-from yiban.engine.accounts import Account
 from yiban.masking import sanitize_text
 
 

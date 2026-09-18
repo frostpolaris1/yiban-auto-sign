@@ -314,7 +314,15 @@ SSH 失陷时攻击者可读 `.env` 中的 `YIBAN_ACCOUNTS_KEY`，离线解密�
 - 重加密事务提交**前**中断：库未变更，`.env` 旧钥仍有效，直接重跑本工具；
 - 重加密事务提交**后**、写 `.env` 前中断：库内已是新钥密文而 `.env` 仍是旧钥——新钥就在暂存文件 `<env>.rekey-staging`（0600），写回 `.env` 的 `YIBAN_ACCOUNTS_KEY` 即恢复；或重跑 `python3 scripts/rekey_accounts.py --env-only --new-key-file <暂存文件>` 补完（`--env-only` 会先用新钥抽样试解一行库内密文，密钥不对即拒绝写 `.env`）。
 
-**事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db` 校验审计链并比对 `YIBAN_STATE_DIR/audit-anchor.log` 外部锚点；批量操作审计含脱敏目标清单，登录成功留有匿名化 IP 审计（登录失败阈值/越权 403/密钥轮换/数据导出同样留痕）。
+**事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log`
+一次跑完三件校验——哈希链自洽（防改行）、库外锚点比对（防删尾/删前缀/整表清空/截断或改写锚点文件）、审计写入欠账。
+退出码 0=健康、1=检出异常、2=无法定论（缺密钥/库不存在/锚点不可读）。批量操作审计含脱敏目标清单，登录成功留有匿名化 IP
+审计（登录失败阈值/越权 403/密钥轮换/数据导出同样留痕）。
+
+> 诚实边界：以上判据都在**同一台机器**上。拿到 root 者可改 `.env` 里的审计密钥并重启服务，让链在新密钥下重签自洽——
+> 合法的重链只会发生在"任何锚点存在之前"（即升级那一次），锚点之后再出现重链就判异常。但要真正排除，靠的是
+> **离开本机的两份留痕**：每日日报邮件里的链头哈希与记录数、以及异机备份副本（`REMOTE_BACKUP`，其中已含审计锚点文件）。
+> 怀疑失陷时先取这两处比对，再决定是否按密钥泄露处理。
 
 **时钟守卫冻结恢复**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后都会触发）时，全部物理清理会被守卫冻结并邮件告警。核实系统时间已正确后运行 `python3 scripts/clock_guard_reset.py --confirm` 重置（不带 `--confirm` 仅查看状态；刻意不自动恢复——防"拨快一次、下轮洗白"）。
 
@@ -664,11 +672,16 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 
 ### 备份与恢复
 
-`scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照（WAL 安全；含 `yiban.db`、`.env`、密钥文件、按日状态文件）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天 → 可选异机加密副本（`REMOTE_BACKUP`）。
+`scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照 → **快照必须过 `PRAGMA integrity_check` 才算这次备份成功**（源库本身损坏时归档照留但非 0 退出；`.backup` 失败回退 `cp` 且校验不过时不落该归档——"看着有备份"比没备份更危险）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天（`.sha256` 侧车一起轮转）→ 可选异机加密副本（`REMOTE_BACKUP`）。
+
+包内内容除 `yiban.db`、`.env`、密钥文件外，还含**当日闸门标记与账本**（`sched-run-*`/`sched-slot-*`/`sched-snapshot-*`/`notify-ledger.json`/`notify-throttle.json`/`cred-state.json`）与**审计链外部锚点** `audit-anchor.log`：缺前者恢复当天会重签或漏签、告警日额度被重置；缺后者恢复出来的库就再也验不了"删尾/删前缀/整表清空"。`--restore` 解包后会自动跑 `integrity_check` 与 `audit_verify.py`（链 + 锚点 + 欠账）并带回结论，同时提示"先停服再覆盖"与"必须删除残留 `-wal`/`-shm`"。
 
 ```bash
-# 备份（安装到 /usr/local/sbin 后用 root crontab 调用，见脚本头部说明）
-sudo /usr/local/sbin/yiban-backup.sh
+# 备份（安装到 /usr/local/sbin 后用 root crontab 调用；--require-encrypt 不可省：
+# 不带时一旦加密配置失效，cron 会静默产出含全部密钥与口令哈希的明文归档）
+sudo /usr/local/sbin/yiban-backup.sh --require-encrypt
+# 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）
+30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
 # 恢复演练 / 真实恢复（支持 .tar.gz / .gpg / .age）
 bash scripts/backup.sh --restore <备份包> <目标目录>
 ```
@@ -682,7 +695,8 @@ bash scripts/backup.sh --restore <备份包> <目标目录>
 **取证与排障工具**：
 
 ```bash
-python3 scripts/audit_verify.py --db /opt/yiban-auto-sign/yiban.db   # 校验审计链（通过退出码 0，被篡改退出码 1）
+python3 scripts/audit_verify.py --db /opt/yiban-auto-sign/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log
+    # 链自洽 + 库外锚点比对 + 审计写入欠账三件一起跑；0=健康 1=检出删除/篡改 2=无法定论
 python3 scripts/list_duplicate_owners.py                            # 列出"同一用户多个未删除账号"（人工清理后自动恢复一人一号约束）
 python3 scripts/db_export.py --out /tmp/export                      # 导出回 JSON（降级/迁移用）
 ```

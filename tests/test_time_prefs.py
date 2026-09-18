@@ -482,6 +482,7 @@ class TimePrefsTest(unittest.TestCase):
         r = c.post("/api/settings", json={
             "sign_order": "random", "sign_dist": "normal",
             "window_edge_sec": 0, "allow_time_pref": 0,
+            "confirm_password": ADMIN_PASS,  # 含 A 档边缘键 → 必须当次口令
         }, headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = open(self.env_file, encoding="utf-8").read()
@@ -499,6 +500,7 @@ class TimePrefsTest(unittest.TestCase):
         h = self._csrf(token)
         r = c.post("/api/settings", json={
             "edge_front_sec": 30, "edge_back_sec": 300,
+            "confirm_password": ADMIN_PASS,  # A 档：主管理员亦须当次口令
         }, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = open(self.env_file, encoding="utf-8").read()
@@ -910,23 +912,37 @@ class TimePrefsTest(unittest.TestCase):
             self.assertEqual(self.webapp._users_at_capacity(), expect,
                              f"max={maxv} 时语义必须与旧判定一致")
 
-    def test_api_settings_sched_master_only(self):
-        """调度字段仅主管理员可改；普通管理员 403，其他字段仍可改。"""
+    def test_api_settings_sched_tier_split(self):
+        """档位重排后：排序/分布/模式/自选归 B 档（口令可用豁免），周末/窗口/边缘归 A 档。
+
+        旧用例钉的是"sign_order 仅主管理员 + 周日开关人人可改"，两个方向都被
+        「影响半径 × 能否造成静默漏签」的判据改判：这里同时钉住改判后的两侧。
+        """
         app = self.webapp.create_app()
-        # 普通管理员（非主）
         db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
         c = app.test_client()
         token = self._login(c, "admin2@test.local", USER_PASS)
         h = self._csrf(token)
-        r = c.post("/api/settings", json={"sign_order": "random"}, headers=h)
-        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
-        # 低风险字段（周日）仍可改
-        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=h)
+        cur = c.get("/api/settings", headers=h).get_json()["sign_order"]
+        other = "sequence" if cur == "random" else "random"
+        # B 档真变更：无口令 403、带当次口令 200（普通管理员即可）
+        self.assertEqual(c.post("/api/settings", json={"sign_order": other},
+                                headers=h).status_code, 403)
+        r = c.post("/api/settings", json={"sign_order": other, "confirm_password": USER_PASS},
+                   headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        # 主管理员可改调度
+        self.assertEqual(c.get("/api/settings", headers=h).get_json()["sign_order"], other)
+        # A 档（周日开关）：普通管理员即使带口令也 403
+        r = c.post("/api/settings", json={"sunday_sign": 1, "confirm_password": USER_PASS},
+                   headers=h)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        # 主管理员可改 A 档，但同样要当次口令
         c2 = app.test_client()
         token2 = self._login(c2, "admin", ADMIN_PASS)
-        r = c2.post("/api/settings", json={"sign_order": "random"}, headers=self._csrf(token2))
+        self.assertEqual(c2.post("/api/settings", json={"sunday_sign": 1},
+                                 headers=self._csrf(token2)).status_code, 403)
+        r = c2.post("/api/settings", json={"sunday_sign": 1, "confirm_password": ADMIN_PASS},
+                    headers=self._csrf(token2))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
     # ---- 安全审查 2026-08：sign_mode 权限 / settings 原子性 / 公告 .env 注入 ----
@@ -944,11 +960,13 @@ class TimePrefsTest(unittest.TestCase):
         self.assertNotIn("scrypt:fake", env, "注入的哈希值不应落盘")
         self.assertEqual(env.count("YIBAN_ADMIN_PASSWORD_HASH="), 1,
                          "注入不应产生第二个 YIBAN_ADMIN_PASSWORD_HASH 行")
-        # 单行公告正常保存
+        # 单行公告正常保存（双人发布后落在草稿键，正式键只能由发布动作写）
         r = c.put("/api/announcement", json={"text": "服务器维护中"}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = open(self.env_file, encoding="utf-8").read()
-        self.assertIn("YIBAN_ANNOUNCEMENT=服务器维护中", env)
+        self.assertIn("YIBAN_ANNOUNCEMENT_DRAFT=服务器维护中", env)
+        self.assertNotIn("YIBAN_ANNOUNCEMENT=服务器维护中", env,
+                         "PUT 只写草稿：直接落正式键 = 双人发布被绕过")
 
     def test_api_settings_atomic_no_partial_write(self):
         """任一字段校验失败时全部不落盘（此前 start/gap 先写、后续字段非法时部分生效）。"""
@@ -974,25 +992,31 @@ class TimePrefsTest(unittest.TestCase):
         self.assertIn("YIBAN_START_DELAY_MAX=300", env)
         self.assertIn("YIBAN_SIGN_MODE=sequence", env)
 
-    def test_api_settings_sign_mode_master_only(self):
-        """遗留 sign_mode 字段同样仅主管理员可写（防普通管理员借其改调度排序）。"""
+    def test_api_settings_sign_mode_gated(self):
+        """sign_mode 归 B 档（普通管理员带当次口令可写）；A 档仍一律 403。
+
+        旧用例钉的是"sign_mode 仅主管理员"，理由是"普通管理员可借它间接改排序"——
+        排序本身现已下放 B 档，那条理由不再成立；改判后仍要钉住的是：B 档也要当次口令，
+        而 A 档（周末/窗口/边缘）连口令带过去也不给普通管理员写。
+        """
         app = self.webapp.create_app()
         db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
         c = app.test_client()
         token = self._login(c, "admin2@test.local", USER_PASS)
         h = self._csrf(token)
-        r = c.post("/api/settings", json={"sign_mode": "random"}, headers=h)
-        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
-        # 低风险字段（周日）仍可改
-        r = c.post("/api/settings", json={"sunday_sign": 1}, headers=h)
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        # 主管理员可写 sign_mode
-        c2 = app.test_client()
-        token2 = self._login(c2, "admin", ADMIN_PASS)
-        r = c2.post("/api/settings", json={"sign_mode": "random"}, headers=self._csrf(token2))
+        cur = c.get("/api/settings", headers=h).get_json()["sign_mode"]
+        other = "sequence" if cur == "random" else "random"
+        self.assertEqual(c.post("/api/settings", json={"sign_mode": other},
+                                headers=h).status_code, 403, "B 档真变更无口令即拒")
+        r = c.post("/api/settings", json={"sign_mode": other, "confirm_password": USER_PASS},
+                   headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         env = open(self.env_file, encoding="utf-8").read()
-        self.assertIn("YIBAN_SIGN_MODE=random", env)
+        self.assertIn(f"YIBAN_SIGN_MODE={other}", env)
+        # A 档：普通管理员即使带口令也 403（周日开关）
+        r = c.post("/api/settings", json={"sunday_sign": 1, "confirm_password": USER_PASS},
+                   headers=h)
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
 
     def test_write_env_key_guards_newline(self):
         """write_env_key 兜底：含换行/回车的键或值直接抛 ValueError，不落盘。"""

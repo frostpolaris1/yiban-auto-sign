@@ -85,7 +85,11 @@ class _GuardBase(unittest.TestCase):
         with open(self.env_file, "w", encoding="utf-8") as f:
             f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                     "YIBAN_ADMIN_USER=admin@test.local\n"
-                    f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n")
+                    f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                    # 本文件钉的是"单次真变更当次就要口令"，而门禁的 TTL 豁免
+                    # （刚复核过 + 同出口 IP → 免再输）恰好放松这条；豁免本身的口径
+                    # 由 tests/test_sensitive_gate_94.py 负责，这里把它关掉。
+                    "YIBAN_PW_CONFIRM_TTL=0\n")
         # 重写 .env 会抹掉首启迁移生成的哈希，而 `verify_admin` 对"只有明文"是
         # fail-closed 拒绝 ⇒ 口令门会一律 403。补跑一次与启动同源的迁移，让夹具
         # 回到真实部署的样子（不是为了让测试变绿而放宽断言）。
