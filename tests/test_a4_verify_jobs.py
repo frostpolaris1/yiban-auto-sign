@@ -196,6 +196,31 @@ class VerifyAsyncSubmitTest(_A4Base):
                           headers={"X-CSRF-Token": t2})
         self.assertEqual(r3.status_code, 403, "非本人不得取消他人任务")
 
+    def test_registered_admin_has_no_cross_owner_access(self):
+        """"同为管理员"不等于能看/能取消别人的任务（批 3 §4.8）。
+
+        改前 `_verify_job_visible` 对 `role == "admin"` 一路放行；改后管理面只放行
+        内置主管理员。取消别人 pending 的任务，会让对方的新账号一直停在「校验中」，
+        而这条动作此前不需要任何归属关系、也不二次鉴权。
+        """
+        job_id, _ = db.create_verify_job(1, PHONE, EMAIL)   # pending：不起 worker
+        db.set_user_role(EMAIL2, "admin")
+        other = self.app.test_client()
+        t2 = self._login(EMAIL2, client=other)
+        self.assertEqual(other.get(f"/api/verify-jobs/{job_id}").status_code, 403,
+                         "普通管理员不得读他人任务")
+        self.assertEqual(other.delete(f"/api/verify-jobs/{job_id}",
+                                      headers={"X-CSRF-Token": t2}).status_code, 403,
+                         "普通管理员不得取消他人任务")
+        self.assertEqual(db.get_verify_job(job_id)["status"], "pending", "被拒不得改状态")
+        # 内置主管理员保留排障入口
+        mc = self.app.test_client()
+        mt = self._login("admin", client=mc, password=ADMIN_PASS)
+        self.assertEqual(mc.get(f"/api/verify-jobs/{job_id}").status_code, 200)
+        r = mc.delete(f"/api/verify-jobs/{job_id}", headers={"X-CSRF-Token": mt})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(db.get_verify_job(job_id)["status"], "cancelled")
+
     def test_cancel_only_pending(self):
         token = self._login()
         # pending：直接建行不起 worker，模拟排队中的任务

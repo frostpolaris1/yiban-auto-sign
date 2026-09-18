@@ -172,7 +172,7 @@ class HighRiskDeleteTest(_B13WebBase):
                    json={"action": "delete", "emails": ["u1@test.local"]},
                    headers=self._csrf(t))
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertIn("当前密码不正确", r.get_json()["error"])
+        self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertIsNotNone(db.find_user("u1@test.local"), "未通过鉴权不得删除")
 
     def test_batch_delete_wrong_password_alerts_and_blocks(self):

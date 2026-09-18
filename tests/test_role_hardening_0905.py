@@ -216,5 +216,37 @@ class RoleHardeningTest(unittest.TestCase):
         self.assertIsNone(self.webapp.reject_default_admin_password(strong), "12 位三类应允许启动")
 
 
+    # ---- 7. 「内置管理员是否还进得来」判据（批 3 §4.4）----
+    def _rewrite_env(self, body):
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(body)
+
+    def test_builtin_loginable_matches_verify_admin(self):
+        """兜底判据必须与登录判据同口径：一处说"还有人兜底"、另一处拒登录＝全员锁死。
+
+        原先"至少保留 1 个管理员"只看 `YIBAN_ADMIN_USER` 非空，而 verify_admin 对
+        下面三种态都 fail-closed 拒绝——三种态都必须在两侧同时判 False。
+        """
+        good = self.webapp.generate_password_hash(ADMIN_PASS, self.webapp.SCRYPT_METHOD)
+        head = (f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_ADMIN_USER=admin\n")
+        states = (
+            (f"{head}YIBAN_ADMIN_PASSWORD_HASH={good}\n", True, "哈希恰一行"),
+            (f"{head}YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n", False, "只剩明文（迁移失败态）"),
+            (f"{head}YIBAN_ADMIN_PASSWORD_HASH={good}\n"
+             f"YIBAN_ADMIN_PASSWORD_HASH={good}\n", False, "哈希多行歧义"),
+            (head, False, "凭据全缺"),
+        )
+        try:
+            for body, expect, name in states:
+                with self.subTest(state=name):
+                    self._rewrite_env(body)
+                    self.assertEqual(self.webapp._builtin_admin_loginable(), expect, name)
+                    self.assertEqual(
+                        self.webapp.verify_admin("admin", ADMIN_PASS), expect,
+                        f"{name}：兜底判据与 verify_admin 漂移")
+        finally:
+            self._rewrite_env(self._env_content)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

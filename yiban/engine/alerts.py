@@ -369,7 +369,8 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
         )
         return
     if scenario == "probe":
-        subject = "易班账号健康预警"
+        # 主题带【易班签到】前缀与 web 侧 6 处用户邮件同口径：邮箱里一眼可辨来源
+        subject = "【易班签到】账号健康预警"
         body = layout.Mail(
             summary=f"您的易班账号 {_mask_phone(phone)} 在系统例行健康检查中未能正常登录。",
             fields=[("异常详情", _sanitize_text(message))],
@@ -379,7 +380,7 @@ def send_user_fail_mail(owner, phone, message, scenario="signin"):
             level="warn",
         )
     else:
-        subject = "易班签到失败提醒"
+        subject = "【易班签到】签到失败提醒"
         body = layout.Mail(
             summary=f"您的易班账号 {_mask_phone(phone)} 今日签到失败。",
             fields=[("失败原因", _sanitize_text(message))],
