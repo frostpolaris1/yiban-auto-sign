@@ -246,13 +246,19 @@ class ReadAuditTest(unittest.TestCase):
         self.assertIsNotNone(master["urgent_daily_remaining"])
 
         sub = self._sub().get("/api/notify-config").get_json()
-        for key in self.webapp._NOTIFY_QUOTA_KEYS:
+        self.assertEqual(master["quota_visible"], True)
+        self.assertEqual(sub["quota_visible"], False,
+                         "余量的 null 原意是「不限」，无权查看必须靠这个标记区分")
+        for key in self.webapp._NOTIFY_QUOTA_HIDDEN_KEYS:
             self.assertIn(key, sub, "刻意置 null 而非省键：响应形态必须稳定")
             self.assertIsNone(sub[key], f"{key} 属额度勘察字段，普通管理员不该看到")
         self.assertEqual(set(sub), set(master), "两套响应的键集合必须一致")
         # 日常运维要的信息一个字都不能少
         self.assertEqual(sub["daily_max"], master["daily_max"])
         self.assertEqual(sub["urgent_only"], master["urgent_only"])
+        # 规则值（上限与节流）属"看得懂规则才能运维"，不是勘察面——两边同值
+        self.assertEqual(sub["cooldown"], master["cooldown"])
+        self.assertEqual(sub["urgent_daily_max"], master["urgent_daily_max"])
         for key in ("ok", "enabled", "type", "configured", "secret_masked"):
             self.assertIn(key, sub)
         self.assertEqual(sub["daily_max"], 9, "上限本身仍是配置读数，保持可见")
@@ -264,8 +270,8 @@ class ReadAuditTest(unittest.TestCase):
         for key in ("enabled", "admin_notify", "smtp_host", "smtp_port",
                     "user", "admin_to", "smtps"):
             self.assertIn(key, sub, "普通管理员必须看得到邮件通道开没开、配没配")
-        self.assertFalse([k for k in sub if k in self.webapp._NOTIFY_QUOTA_KEYS],
-                         "邮件侧无额度字段可收归（发送路径不受每日条数与节流约束）")
+        self.assertFalse([k for k in sub if k in self.webapp._NOTIFY_QUOTA_HIDDEN_KEYS],
+                         "邮件侧没有这两个余量键可分层（发送路径不受推送每日条数与节流约束）")
 
 
 if __name__ == "__main__":

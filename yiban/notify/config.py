@@ -64,12 +64,19 @@ def _env_int(key, default, envs=None):
 
 
 def _mask_secret(secret):
-    """密钥打码：保留前 3 位，其余星号。空返回空。"""
+    """密钥打码：前 3 位 + 后 2 位供辨认，中间**固定**星号。空返回空。
+
+    星数刻意与密钥长度无关：原实现 `"*" * (len - 3)` 把精确长度也发给前端，
+    对定长前缀的 sendkey（Server酱 `SCT` + 固定宽度）等于多泄露一个强特征。
+    短值（<12 位）不回尾段——3+2 会把六七位的密钥几乎整个露出来，辨认价值没增加、
+    泄露却实打实发生。
+    """
     if not secret:
         return ""
-    if len(secret) <= 6:
-        return secret[:2] + "**"
-    return secret[:3] + "*" * max(4, len(secret) - 3)
+    s = str(secret)
+    if len(s) < 12:
+        return s[:2] + "***"
+    return s[:3] + "***" + s[-2:]
 
 
 # ---------------------------------------------------------------------------

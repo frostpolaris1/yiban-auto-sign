@@ -88,6 +88,22 @@ class MailAddrMaskingTest(unittest.TestCase):
         self.assertEqual(mail_config._mask_addr("not-an-email"), "not-an-email")
 
 
+class NotifySecretMaskTest(unittest.TestCase):
+    def test_secret_mask_is_fixed_width_and_keeps_both_ends(self):
+        short_key = notify_config._mask_secret("SCT1234567890abcdef")
+        long_key = notify_config._mask_secret("SCT1234567890abcdefghijklmnopqrstuv")
+        self.assertEqual(short_key, "SCT***ef")
+        self.assertEqual(long_key, "SCT***uv")
+        self.assertEqual(short_key.count("*"), long_key.count("*"),
+                         "星数不得随密钥长度变化（否则等于把精确长度也发出去）")
+
+    def test_short_secret_gets_no_tail(self):
+        # 6 位值若照"前 3 + 后 2"打码会露出 5/6，打码名不副实
+        out = notify_config._mask_secret("abc123")
+        self.assertEqual(out, "ab***")
+        self.assertEqual(notify_config._mask_secret(""), "")
+
+
 class UrlPhoneTest(unittest.TestCase):
     def test_phone_in_query_masked_by_name_and_by_value(self):
         by_name = sanitize_url("https://f.yiban.cn/cb?mobile=13800008000")
