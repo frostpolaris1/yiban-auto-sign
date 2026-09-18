@@ -1996,9 +1996,39 @@ def _env_write_lock(env_path):
     with env_lock.env_write_lock(env_path):
         yield
 
-# 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告保存时同步更新
+# 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告**发布**时同步更新
 _changelog_cache = [None]  # [文本]
-_announcement_cache = [None]  # [公告文本]
+_announcement_cache = [None]  # [已发布公告文本]（草稿刻意不进缓存：它要按会话现读）
+
+# ---- 全站公告双人发布：三个 .env 键的键名单源在此 ----
+# 公告会出现在**全体学生**的页面顶横幅与登录页上，是内部人/被盗会话最好用的社工面，
+# 故拆成两半：普通管理员只能写草稿，主管理员点"发布"才落成对外可见的那一键。
+# 作者与时刻单独成键（而非塞进草稿正文），为的是发布人批准前就能看见"这是谁、
+# 什么时候写的"——审计表只能事后追，双人发布要的是事前那一眼。
+ANNOUNCEMENT_KEY = "YIBAN_ANNOUNCEMENT"
+ANNOUNCEMENT_DRAFT_KEY = "YIBAN_ANNOUNCEMENT_DRAFT"
+ANNOUNCEMENT_DRAFT_META_KEY = "YIBAN_ANNOUNCEMENT_DRAFT_META"
+ANNOUNCEMENT_DRAFT_META_SEP = "|"
+ANNOUNCEMENT_DRAFT_META_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def _parse_announcement_draft_meta(raw):
+    """解析草稿元数据 `<小写邮箱>|YYYY-MM-DD HH:MM:SS` → `(作者, 时刻)`。
+
+    任何不符都返回 `("", "")`（"元数据不可用"）而不是抛错：该键可被手工编辑，也可能是
+    半成品写入，而它只是公告 GET 的附带信息，不值当把这条**匿名也要读**的接口拖崩。
+    """
+    parts = str(raw or "").split(ANNOUNCEMENT_DRAFT_META_SEP)
+    if len(parts) != 2:
+        return "", ""
+    author, when = parts[0].strip(), parts[1].strip()
+    if not author or not when:
+        return "", ""
+    try:
+        datetime.strptime(when, ANNOUNCEMENT_DRAFT_META_FMT)
+    except ValueError:
+        return "", ""
+    return author, when
 
 
 def load_accounts():
@@ -9374,10 +9404,26 @@ def create_app(host=None):
 
     @app.route("/api/announcement", methods=["GET"])
     def api_announcement():
-        # 公告缓存：首次读取 .env，保存公告时更新（write 接口同步 _announcement_cache）
+        """公告读取：对外只给**已发布**文本；管理员会话额外看到待发布草稿三键。
+
+        公开响应的形状是契约（登录页与全站顶横幅都取它，且未登录也要能读）：
+        `{"ok": true, "text": <已发布>}` 两键一字不动。草稿刻意不进 `_announcement_cache`
+        ——它按会话现读，缓存它等于把"尚不成立的事实"广播给所有匿名请求。
+        """
+        env = None
         if _announcement_cache[0] is None:
-            _announcement_cache[0] = read_env(ENV_FILE).get("YIBAN_ANNOUNCEMENT", "").strip()
-        return jsonify({"ok": True, "text": _announcement_cache[0]})
+            env = read_env(ENV_FILE)
+            _announcement_cache[0] = env.get(ANNOUNCEMENT_KEY, "").strip()
+        body = {"ok": True, "text": _announcement_cache[0]}
+        if _current_role() == "admin":
+            if env is None:
+                env = read_env(ENV_FILE)
+            draft_by, draft_at = _parse_announcement_draft_meta(
+                env.get(ANNOUNCEMENT_DRAFT_META_KEY, ""))
+            body["draft"] = env.get(ANNOUNCEMENT_DRAFT_KEY, "").strip()
+            body["draft_by"] = draft_by
+            body["draft_at"] = draft_at
+        return jsonify(body)
 
     @app.route("/api/registration_paused")
     def api_registration_paused():
@@ -9390,6 +9436,12 @@ def create_app(host=None):
 
     @app.route("/api/announcement", methods=["PUT"])
     def api_announcement_save():
+        """任意管理员写**草稿**（双人发布的前半程，不改变任何对外可见内容）。
+
+        落点从 `YIBAN_ANNOUNCEMENT` 换成草稿两键：改前每一次 PUT 都立即对全体学生生效，
+        一个只拿到注册管理员 Cookie 的人就能把伪造通知发成官方公告。校验逐条保留
+        （200 字、行分隔符）——草稿与正式同格式单行存进 .env，注入面一分没小。
+        """
         data = _json_body()
         text = str(data.get("text", "")).strip()
         if len(text) > 200:  # 后端长度限制（与前端 maxlength=200 一致）
@@ -9397,29 +9449,96 @@ def create_app(host=None):
         if _has_line_break(text):
             # 安全审查 2026-08：公告存入 .env 单行键值，换行会注入新配置行
             # （如 YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。
-            # 前端为 textarea 但展示端换行本就折叠，直接拒绝（write_env_key 另有兜底）。
-            # 判据单源在 _has_line_break（2026-09-07）：此处原先只挡
-            # \n \r，与 write_env_batch 读写用的 splitlines() 不同集，
-            # \v \f \x1c \x1d \x1e \x85 \u2028 \u2029 会作为潜伏分隔符蒙混过关。
+            # 前端为 textarea 但展示端换行本就折叠，直接拒绝而非剥掉（write_env_batch
+            # 另有兜底）。判据单源在 _has_line_break（2026-09-07）：与 write_env_batch
+            # 读写用的 splitlines() 同字符集，故 \v \f \x1c \x1d \x1e \x85 \u2028 \u2029
+            # 一并拒——它们会作为"潜伏分隔符"被下一次读-改-写实体化成新配置行。
             return jsonify({"error": "公告内容不能包含换行或行分隔符（单行存储）"}), 400
-        write_env_key(ENV_FILE, "YIBAN_ANNOUNCEMENT", text)
-        _announcement_cache[0] = text  # 同步内存缓存
+        updates = {ANNOUNCEMENT_DRAFT_KEY: text}
+        if text:
+            author = str(session.get("username") or "?").strip().lower()[:64]
+            meta = (f"{author}{ANNOUNCEMENT_DRAFT_META_SEP}"
+                    f"{clock.now().strftime(ANNOUNCEMENT_DRAFT_META_FMT)}")
+            if _has_line_break(meta):
+                # 用户名走登录侧校验后不该带分隔符，这里是兜底：宁可拒绝保存，也不留
+                # 一条作者被截断/污染的草稿——双人发布的全部价值就在于发布人看得见作者。
+                return jsonify({"error": "草稿作者标识非法，未能保存"}), 400
+            updates[ANNOUNCEMENT_DRAFT_META_KEY] = meta
+        else:
+            updates[ANNOUNCEMENT_DRAFT_META_KEY] = ""  # 空草稿 = 两键一起删
+        # 一次批量写：正文与作者/时刻要么同时生效、要么都不生效（不存在"有草稿无作者"）
+        write_env_batch(ENV_FILE, updates)
         db.audit(
             session.get("username") or "?",
-            "announcement_save",
+            "announcement_draft_save",
             "announcement",
-            text or "（已清除）",
+            f"草稿待发布｜{_nl_safe(text[:150])}" if text else "草稿已清除",
         )
-        logger.info("公告已更新: %s", text[:50] or "（已清除）")
-        # 公告变更是普通管理员可用的对外触达渠道（社工面），变更可感知
+        logger.info("公告草稿已更新: %s", text[:50] or "（已清除）")
+        # 草稿不改变对外可见内容，故沿用非紧急告警（紧急账每天只有几条，得留给真发布）
         send_notification(
             "公告变更告警",
-            f"全局公告已{'更新' if text else '清空'}，"
+            f"公告草稿{'已更新' if text else '已清除'}"
+            f"{'，待主管理员发布' if text else ''}，"
             f"操作者 {session.get('username', '?')}，"
-            f"内容: {text[:80] or '（空）'}，"
+            f"内容: {_nl_safe(text[:80]) or '（空）'}，"
             f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}",
         )
-        return jsonify({"ok": True, "msg": "公告已更新" if text else "公告已清除"})
+        return jsonify({"ok": True,
+                        "msg": "草稿已保存，待主管理员发布" if text else "草稿已清除"})
+
+    @app.route("/api/announcement/publish", methods=["POST"])
+    def api_announcement_publish():
+        """主管理员把草稿落为对外可见的公告并清空草稿（双人发布的后半程）。
+
+        仅主管理员 + **当次口令**（`always_required=True`，短时豁免不适用）：这一键改动
+        会即时出现在全体学生的顶横幅与登录页上，是全站影响面最大的对外写操作。
+        响应：`{"ok": true, "msg": …, "text": <刚发布的文本>}`，前端可据此立刻刷新横幅。
+        """
+        if not _is_builtin_admin_session():
+            return jsonify({"error": "仅主管理员可发布公告"}), 403
+        denied = _sensitive_password_gate(_json_body(), "发布全站公告", always_required=True)
+        if denied is not None:
+            return denied
+        env = read_env(ENV_FILE)
+        draft = env.get(ANNOUNCEMENT_DRAFT_KEY, "").strip()
+        if not draft:
+            return jsonify({"error": "当前没有待发布的公告草稿"}), 400
+        if _has_line_break(draft):
+            # 解析器按行切，正常读不回带分隔符的值；会走到这里只可能是 .env 被手改成
+            # 多行。那种内容没被任何人在 UI 上看过，一律拒绝发布而非照抄进正式键。
+            return jsonify({"error": "草稿含行分隔符（.env 疑似被手工改动），未能发布"}), 400
+        before = env.get(ANNOUNCEMENT_KEY, "").strip()
+        author, _at = _parse_announcement_draft_meta(
+            env.get(ANNOUNCEMENT_DRAFT_META_KEY, ""))
+        # 单批写入 = 一次读-改-写 + 一次原子替换：不存在"正式已被清、草稿还没落"的中间态
+        write_env_batch(ENV_FILE, {
+            ANNOUNCEMENT_KEY: draft,
+            ANNOUNCEMENT_DRAFT_KEY: "",
+            ANNOUNCEMENT_DRAFT_META_KEY: "",
+        })
+        _announcement_cache[0] = draft  # 同步内存缓存（与 PUT 不同：这次真改了对外文本）
+        change = "新发布" if not before else "覆盖发布"
+        who = str(session.get("username") or "?")
+        db.audit(
+            who, "announcement_publish", "announcement",
+            f"{change}｜原: {_nl_safe(before[:60]) or '（空）'}"
+            f" → 新: {_nl_safe(draft[:60])}",
+        )
+        logger.info("公告已发布（%s）: %s", change, draft[:50])
+        # 对外可见内容变了才走紧急 + force：被盗主管理员发布伪造公告是本系统最坏的
+        # 单点，这条必须送达（同类节流会吞掉第二条，运维反而看不到）
+        send_notification(
+            "公告发布告警",
+            f"全站公告已由主管理员 {_nl_safe(who)} {change}，"
+            f"草稿作者: {_nl_safe(author) or '（元数据不可用）'}，"
+            f"发布前: {_nl_safe(before[:80]) or '（空）'}，"
+            f"发布后: {_nl_safe(draft[:80])}，"
+            f"时间 {clock.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            "如非本人操作，请立即改主管理员口令并按 README「主管理员权限追回」处理。",
+            urgent=True, force=True,
+        )
+        return jsonify({"ok": True, "msg": "公告已发布", "text": draft})
 
     # ---- 连通性检测 ----
     @app.route("/api/ping", methods=["POST"])
