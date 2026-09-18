@@ -72,6 +72,12 @@ class RequestPolicy(Protocol):
     def is_blocked(self, resp):
         """该响应是否被 WAF 风控拦截（返回布尔，不抛错）。"""
 
+    def is_logged_in_redirect(self, location):
+        """302 Location 是否指向"已登录"标识页（仅 host+path，允许 query）。"""
+
+    def require_redir_chain_trusted(self, resp, site):
+        """跟随重定向后，校验最终 URL 与每一跳 history 都在白名单内。"""
+
     def require_not_blocked(self, resp):
         """被风控拦截即抛 RuntimeError。"""
 
@@ -230,6 +236,9 @@ def login_legacy(session, *, phone, password, csrf, policy):
     policy.require_trusted(oauth_url, "login_entry")
     resp = session.get(oauth_url, allow_redirects=True, timeout=REQUEST_TIMEOUT)
     policy.require_not_blocked(resp)
+    # 跟随重定向可能把白名单内主机 302 到白名单外（RSA 公钥取自落点 HTML）——
+    # 首跳白名单只校验入口，落点与中间每一跳都要再验一次（M8）。
+    policy.require_redir_chain_trusted(resp, "login_entry")
 
     page_use, key = parse_login_page(resp.text, flow="legacy")
     if page_use is None:
@@ -345,8 +354,10 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
         allow_redirects=False,
         timeout=REQUEST_TIMEOUT,
     )
-    # 若直接返回 redirect_uri 说明服务端已是登录态（正常流程是停留在登录页）
-    if LOGGED_IN_MARKER in (resp.headers.get("Location", "")):
+    # 若直接返回 redirect_uri 说明服务端已是登录态（正常流程是停留在登录页）。
+    # 判定经 policy 注入（本层不做域名比对）：只认 f.yiban.cn/iapp7463（允许 query），
+    # 恶意 host / 子域伪装的 Location 一律不当"已登录"（M7）。
+    if policy.is_logged_in_redirect(resp.headers.get("Location", "")):
         if restored:
             logger.info(f"[{phone}] 登录: 会话缓存命中，免登录复用")
         else:

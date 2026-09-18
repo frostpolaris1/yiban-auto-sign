@@ -155,6 +155,32 @@ class ProtocolPolicy:
         if not is_fyiban_url(url):
             raise RuntimeError(_WHITELIST_MESSAGES.get(site, "跳转 URL 不在白名单"))
 
+    def is_logged_in_redirect(self, location):
+        """302 Location 是否指向"已登录"标识页（`f.yiban.cn/iapp7463`，允许 query）。
+
+        只认 host == f.yiban.cn 且 path == /iapp7463：恶意 host（evil.example/iapp7463）
+        与子域伪装（f.yiban.cn.evil.com/x?iapp7463）都不能置登录态——否则"登录失败"
+        会被误判成"已登录"短路，可诊断信号退化成通用失败。
+        """
+        try:
+            parts = urlsplit(location or "")
+        except ValueError:
+            return False
+        return parts.hostname == "f.yiban.cn" and parts.path == "/iapp7463"
+
+    def require_redir_chain_trusted(self, resp, site):
+        """跟随重定向后校验整条链都在白名单内（最终 URL + 每一跳 history）。
+
+        只校验首跳不足够：`allow_redirects=True` 时中间人可以把白名单内主机 302 到
+        白名单外，RSA 公钥取自最终落点 HTML——逐跳校验是纵深缺口（M8）。格式非法
+        的 URL 一律判不合格（不碰 history 之外的东西）。
+        """
+        hops = [getattr(r, "url", "") for r in getattr(resp, "history", []) or []]
+        hops.append(getattr(resp, "url", "") or "")
+        for u in hops:
+            if not is_yiban_trusted_url(u):
+                raise RuntimeError(_WHITELIST_MESSAGES.get(site, "跳转 URL 不在白名单"))
+
     # ---- WAF 拦截 ----
     def is_blocked(self, resp):
         """该响应是否被 WAF 风控拦截（不抛错，供需要自行降级为状态码的调用方使用）。"""

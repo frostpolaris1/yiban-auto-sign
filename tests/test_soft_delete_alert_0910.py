@@ -29,6 +29,9 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
 REG_ADMIN = "regadmin@test.local"
@@ -93,7 +96,7 @@ class _Base(unittest.TestCase):
         self._orig_send = self.webapp.send_notification
 
         def _probe(title, content, **kw):
-            self.alerts.append((title, content, kw))
+            self.alerts.append((title, render_body(content), kw))
             return True
 
         self.webapp.send_notification = _probe
@@ -163,7 +166,7 @@ class SoftDeleteAlertTest(_Base):
         hits = self._alerts_with_title()
         self.assertEqual(len(hits), 1, "批量软删应只发一条汇总告警")
         body = hits[0][1]
-        self.assertIn(f"×{len(ids)}", body)
+        self.assertIn(f"{len(ids)} 个", body)
         self.assertNotIn("13900000001", body, "汇总告警同样不能含完整号")
 
     def test_soft_delete_rate_limited(self):

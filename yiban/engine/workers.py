@@ -216,7 +216,10 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         results = round_mod.run_queue_retry(accounts, os.environ.get("YIBAN_NOTIFY_URL", ""), 0,
                                             schedule._env_int("YIBAN_ACCOUNT_GAP_MAX", 10, 0, 3600),
                                             schedule=None, cred_state=state_io._load_cred_state(),
-                                            delegated=delegated)
+                                            delegated=delegated,
+                                            # 兜底是"替全量轮捡漏"：窗口已关就该停手，
+                                            # 一轮扫描内部不再对剩余账号发起真实登录
+                                            window_guard=True)
         settled = 0
         for acc in accounts:
             if acc.phone in delegated:

@@ -96,6 +96,9 @@ from unittest import mock
 
 from _frontend_src import frontend_source
 
+# 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
+from _mail_body import render_body
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
@@ -958,7 +961,7 @@ class _B14AlertGateBase(unittest.TestCase):
                 self.webapp, "send_notification",
                 # send_notification 新增 force=（先告警后落盘），假实现同步接收
                 # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
-                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c, urgent)),
+                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, render_body(c), urgent)),
             )
             p.start()
             self.addCleanup(p.stop)
@@ -1804,7 +1807,7 @@ class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
         self.assertEqual(titles.count("手机推送额度已用尽告警"), 1,
                          f"两本账同日只补一封，实际 {titles}")
         self.assertEqual(pop.call_count, 1, "每次告警最多 pop 一次（循环 pop 会同日发两封）")
-        body = next(m[1] for m in mails if m[0] == "手机推送额度已用尽告警")
+        body = render_body(next(m[1] for m in mails if m[0] == "手机推送额度已用尽告警"))
         self.assertIn("非紧急", body)
         self.assertIn("紧急", body)
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX", body, "须给出可操作的调整指引")
@@ -1924,7 +1927,7 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         title, content, urgent = self.alerts[-1]
         self.assertEqual(title, "高危管理操作告警")
         self.assertTrue(urgent, "物理清除不可逆，必须推手机（非紧急在「仅重要告警」下不送达）")
-        self.assertIn("批量彻底删除账号 ×2", content)
+        self.assertIn("批量彻底删除账号 2 个", content)
         self.assertIn(self.webapp._mask_phone(phones[0]), content)
 
     def test_batch_purge_gate_does_not_displace_stale_phones_409(self):
@@ -2006,7 +2009,7 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         _title, content, urgent = self.alerts[-1]
         self.assertTrue(urgent, "单条物理清除同样不可逆，必须 urgent 送达")
         self.assertIn(self.webapp._mask_phone("13800138001"), content)
-        self.assertIn("操作者 admin", content)
+        self.assertIn("操作者：admin", content)
         self.assertEqual(len(self._audit_rows("account_purge")), 1, "审计留痕不得少")
 
     def test_purge_alert_title_matches_batch_so_throttle_window_is_shared(self):
@@ -2120,17 +2123,19 @@ class AccountUpdateStaleIdxB14Test(_B14AccountBase):
         self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
         self.assertEqual([a["name"] for a in self._rows()], ["A", "B"], "409 后不得有任何改写")
 
-    def test_put_without_phone_keeps_previous_behavior(self):
-        """红线：守卫只在 data 带 phone 时生效，不带 phone 的旧客户端行为不得改变。
+    def test_put_without_phone_is_fail_closed_409(self):
+        """不带任何可核对标识（无 `_snapshot` 也无 `phone`）→ 409，不得改库。
 
-        不带 phone 仍由 validate_account 报"手机号为必填项"（400）——关键是不得被
-        新守卫改判成 409（那等于把兼容路径顺手改成 fail-closed）。
+        立场翻转记录：本用例原先钉的是"守卫只在 data 带 phone 时生效，旧客户端行为不得
+        改变（400 而非 409）"。本轮把改写他人凭据这条路加了二次鉴权后，缺标识的请求一律
+        按错位拒绝。这没有破坏任何真实兼容路径——不带 phone 的请求此前也过不了
+        `validate_account`（同样被拒，只是 400"手机号为必填项"），变化的只是拒绝点从
+        字段校验提前到错位判定，没人因此从"能改"变成"不能改"。
         """
         self._add_account("13800138000", name="A")
         c, h = self._master()
         r = c.put("/api/accounts/0", json={"name": "A2"}, headers=h)
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["error"], "手机号为必填项")
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
         self.assertEqual(self._rows()[0]["name"], "A")
 
     def test_put_with_matching_phone_still_200(self):
@@ -2154,7 +2159,7 @@ class AccountUpdateStaleIdxB14Test(_B14AccountBase):
         c, h = self._master()
         r = c.put("/api/accounts/0",
                   json={"name": "A", "phone": "13900139000", "password": "",
-                        "_snapshot": snap}, headers=h)
+                        "_snapshot": snap, "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._rows()[0]["phone"], "13900139000")
 

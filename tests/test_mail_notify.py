@@ -23,6 +23,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一经 body() 渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 TEST_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "secret1"
@@ -156,6 +159,7 @@ class SignUserFailMailTest(unittest.TestCase):
             signin.send_user_fail_mail("owner@test.local", "13800000000", "boom")
         m.assert_called_once()
         to, subject, text = m.call_args[0]
+        text = render_body(text)
         self.assertEqual(to, "owner@test.local")
         self.assertEqual(subject, "易班签到失败提醒")
         self.assertIn("138****0000", text)
@@ -405,6 +409,7 @@ class SignAdminMailSummaryTest(unittest.TestCase):
             signin._flush_admin_mail_summary()
         m.assert_called_once()
         subject, text = m.call_args[0]
+        text = render_body(text)
         self.assertEqual(subject, "易班签到汇总")
         self.assertIn("共 2 条异常", text)
         self.assertIn("138****0001", text)
@@ -416,6 +421,7 @@ class SignAdminMailSummaryTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "send_admin_alert") as m:
             signin._flush_admin_mail_summary()
         _subject, text = m.call_args[0]
+        text = render_body(text)
         self.assertIn("【易班签到失败】", text)
         self.assertIn("【易班签到耗时告警】", text)
         self.assertLess(
