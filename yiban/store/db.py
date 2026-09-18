@@ -2907,7 +2907,7 @@ def _bump_audit_write_failure():
 
 def _unflushed_audit_failures():
     """进程内未落库余额；所属库已切换则视为 0（欠账是每个库各自的事实）。"""
-    if _AUDIT_FAIL_UNFLUSHED_DB is not None and _AUDIT_FAIL_UNFLUSHED_DB != _db_file:
+    if _AUDIT_FAIL_UNFLUSHED_DB is not None and _db_file != _AUDIT_FAIL_UNFLUSHED_DB:
         return 0
     return _AUDIT_FAIL_UNFLUSHED
 
