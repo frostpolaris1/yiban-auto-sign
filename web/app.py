@@ -691,6 +691,15 @@ PW_CONFIRM_COOLDOWN_DEFAULT = 300
 # 门禁拒绝文案（按状态码取）：403 是"设置未生效"（系统开关/执行体写沿用），
 # 400 是"操作已取消"（高危二次鉴权沿用）。两处历史契约都不动。
 PW_DENY_TEXT = {400: "当前密码不正确，操作已取消", 403: "口令校验未通过，设置未生效"}
+# 「没提交口令」与「口令输错」必须分开：前者是调用方还没问用户要口令（前端应弹口令框
+# 后重试），后者是用户真的输错了（应显示"不正确"）。共用一句"密码不正确"会让前端无法
+# 区分这两种处置，也让运维误以为自己的口令被改了。状态码两档与上面完全一致，
+# 只有 error 文案与 reason 不同。
+PW_MISSING_TEXT = {400: "此操作需要输入当前密码，操作已取消",
+                   403: "需要输入当前口令，设置未生效"}
+# 给前端的机器可读口径（前端不要靠比对中文文案分支）：
+# password_required → 收口令后重试；password_incorrect → 提示输错并计数。
+PW_DENY_REASON = {"missing": "password_required", "wrong": "password_incorrect"}
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
@@ -7304,7 +7313,8 @@ def create_app(host=None):
                     f"「{action}」口令复核连续失败 {cnt} 次，"
                     f"敏感操作暂停 {cooldown} 秒",
                 )
-        return jsonify({"error": PW_DENY_TEXT[deny_status]}), deny_status
+        return jsonify({"error": PW_DENY_TEXT[deny_status],
+                        "reason": PW_DENY_REASON["wrong"]}), deny_status
 
     def _sensitive_password_gate(data, action, *, always_required=False,
                                  deny_status=403):
@@ -7341,12 +7351,14 @@ def create_app(host=None):
             return None
         submitted = str(data.get("confirm_password", ""))
         if not submitted:
-            # 没提交口令 ≠ 猜错口令：照旧拒绝（文案与状态码不变），但**不计数、不告警、
+            # 没提交口令 ≠ 猜错口令：照旧拒绝（状态码不变），但**不计数、不告警、
             # 不进冷却**。冷却要限的是口令散列次数（实测单次 scrypt 约 157ms），而空口令
             # 在入口就被挡掉、一次散列都不做；把它计入阈值等于让攻击者用"空请求"就能把
             # 合法管理员的敏感操作预算刷光，也正是 _admin_delete_limited 修掉的那类运维 DoS
             # （前端"点了保存又取消口令框"的正常操作同样不该被罚）。
-            return jsonify({"error": PW_DENY_TEXT[deny_status]}), deny_status
+            # 文案走 PW_MISSING_TEXT：不能对用户说"密码不正确"，他根本没输。
+            return jsonify({"error": PW_MISSING_TEXT[deny_status],
+                            "reason": PW_DENY_REASON["missing"]}), deny_status
         if _verify_session_password(submitted):
             session["pw_ok_ts"] = now
             session["pw_ok_ip"] = key[0]
