@@ -10,6 +10,11 @@
 #        不存在则从 .env 提取 YIBAN_ACCOUNTS_KEY 单独置于 keys/（密钥与数据
 #        同包但分目录放置，恢复时可区分）
 #      - 签到状态文件（/var/log/yiban 下 sign-daily-*.json / sign-state-*.json / cred-state.json，可选）
+#      - 调度闸门与通知账本状态文件（sched-run-* / sched-slot-* / sched-snapshot-* /
+#        notify-ledger.json / notify-throttle.json）——缺了它们恢复当日会重签或
+#        漏签（"今天是否已全量跑过"的标记丢失）、邮件/推送日额度被重置
+#      - 审计链外部锚点 audit-anchor.log——缺了它恢复出来的库无法再自检
+#        "删尾 / 删前缀 / 整表清空"（锚点是审计链唯一的外部参照）
 #   2. 异机加密副本（可选）：REMOTE_BACKUP 配置后，用 age（优先）或
 #      gpg --symmetric 加密备份包，再 rsync（优先）/ scp 到远端。
 #      REMOTE_BACKUP 未配置时仅保留本地副本。
@@ -17,20 +22,29 @@
 #      密文并删除明文 tar.gz——明文落盘需显式 BACKUP_PLAINTEXT=1（大字告警）。
 #      无可用加密方式（未配置口令/公钥且无交互终端）保持明文 + 大字告警，
 #      不改变既有部署行为。--restore 对 .tar.gz / .gpg / .age 均可直接恢复。
-#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete）。
-#   5. --restore 模式：从备份包恢复到指定目录（恢复演练 / 真实恢复）。
+#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete，含 .sha256 侧车）。
+#   5. --restore 模式：从备份包恢复到指定目录（恢复演练 / 真实恢复），并在解包后
+#      跑 PRAGMA integrity_check + scripts/audit_verify.py 验证恢复件可用。
 #
 # 用法：
 #   ./backup.sh                      # 执行备份（有加密条件时本地默认密文）
+#   ./backup.sh --require-encrypt    # 本轮必须加密成功，否则不生成任何归档
 #   ./backup.sh --restore <备份包> <目标目录>   # 恢复演练/恢复（支持 .gpg/.age）
 #   REMOTE_BACKUP=user@host:/backup/yiban ./backup.sh
 #   REMOTE_BACKUP="user@host:/backup/yiban" BACKUP_GPG_PASSPHRASE=xxx ./backup.sh
 #   BACKUP_PLAINTEXT=1 ./backup.sh   # 显式关闭默认加密（明文本地归档，大字告警）
 #
-# 安装（cron 每日 02:00，见 docs/web-console/DEPLOY-CHECKLIST.md 步骤 7）：
+# 安装（cron 每日 02:00；部署清单见 README「运维 → 备份与恢复」一节）：
 #   sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh
 #   sudo crontab -e
-#   0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup.sh >> /var/log/yiban/backup.log 2>&1
+#   # 备份——务必带 --require-encrypt：不带时一旦加密配置失效，cron 会静默产出
+#   # 含全部密钥与管理员口令哈希的【明文】归档（备份目录被读 = 全库凭据泄露）。
+#   0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup.sh --require-encrypt >> /var/log/yiban/backup.log 2>&1
+#   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
+#   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
+#   30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+#   # 上一条的退出码 1 = 检出篡改/删除，2 = 无法定论（密钥缺失等）；0 才是健康。
+#   # 想让 cron 直接告警，可包一层：|| mail -s 'yiban 审计校验失败' root@localhost
 #
 # 依赖：
 #   - 本地打包：tar / find / sqlite3（系统自带）
@@ -188,19 +202,92 @@ restore() {
         exit 1
     }
     log "已从 $archive 恢复到 $dest"
+
+    # 1) 停服提示：进程还活着时覆盖数据目录 = 把主库和它自己的 WAL 写成两份不一致
+    #    状态，恢复件当场不可用（容器部署下 web/scheduler 是 supervisord 子进程，
+    #    `supervisorctl stop web scheduler` 这类服务名不存在，必须停整个容器）。
+    log "⚠ 覆盖回生产前必须先停服：systemctl stop yiban-web / docker compose stop yiban"
+    log "⚠ 未停服就替换 yiban.db 会造成主库与 -wal 不一致（丢数据或 file is not a database）"
+
+    # 2) 删残留 -wal/-shm：只替换 yiban.db 而留着上一次的 WAL，SQLite 启动时会把
+    #    旧 WAL 重放到刚恢复出来的库上——等于把"恢复"变成"回滚掉刚恢复的内容"。
+    for suffix in -wal -shm; do
+        if [ -f "${dest}/data/${DB_FILE}${suffix}" ]; then
+            rm -f "${dest}/data/${DB_FILE}${suffix}"
+            log "已删除恢复目录里的残留 ${DB_FILE}${suffix}（必须与主库同源，不得跨备份混用）"
+        fi
+    done
+
     log "恢复内容清单："
     find "$dest" -type f -exec ls -l {} \;
-    log "恢复演练核对项："
-    local n_accounts
-    n_accounts=$(sqlite3 "${dest}/data/yiban.db" "SELECT COUNT(*) FROM accounts" 2>/dev/null || echo "?")
-    log "  - yiban.db 账号数量：${n_accounts:-0}"
+    log "落位说明（生产路径按 APP_DIR / YIBAN_STATE_DIR 调整）："
+    log "  - data/${DB_FILE} → ${APP_DIR}/${DB_FILE}"
+    log "  - data/.env       → ${APP_DIR}/.env"
+    log "  - keys/           → ${KEY_FILE}（或与 .env 合并）"
+    log "  - state/          → \${YIBAN_STATE_DIR}（含 sched-run-*/sched-slot-*/sched-snapshot-*/"
+    log "                      notify-ledger.json/notify-throttle.json/cred-state.json）"
+    if [ -f "${dest}/state/audit-anchor.log" ]; then
+        log "  - state/audit-anchor.log → \${YIBAN_STATE_DIR}/audit-anchor.log"
+        log "    ↑ 必须与恢复出来的库【同批次】落位：锚点是审计链唯一的外部参照，"
+        log "      只回库不回锚点（或回错批次）会让「删尾/删前缀/整表清空」判据整体失效。"
+    else
+        log "  ⚠ 本备份包内没有 audit-anchor.log —— 恢复后审计防删除判据不可用，"
+        log "    需另从离机副本（每日日报邮件 / 异机备份）取回锚点，或重新建立基线"
+    fi
+    log "  - logs/           → \${YIBAN_LOG_FILE} 所在目录（可选，仅供回看）"
+
+    # 3) 恢复件双验：integrity_check 证明"包没坏、库能开"，audit_verify 证明
+    #    "链自洽 + 与锚点对得上 + 无写入欠账"。前者过了后者不过，通常意味着
+    #    库与锚点不是同一批次（恢复到半程）——这正是最危险的"看起来成功了"。
+    local rc=0
+    if command -v sqlite3 > /dev/null 2>&1 && [ -f "${dest}/data/${DB_FILE}" ]; then
+        local ic
+        ic=$(sqlite3 "${dest}/data/${DB_FILE}" "PRAGMA integrity_check;" 2>/dev/null) || ic="(读取失败)"
+        if [ "$ic" = "ok" ]; then
+            log "恢复件核验：integrity_check=ok"
+        else
+            log "错误：恢复件 integrity_check 未通过：${ic}" >&2
+            rc=1
+        fi
+        local n_accounts
+        n_accounts=$(sqlite3 "${dest}/data/${DB_FILE}" "SELECT COUNT(*) FROM accounts" 2>/dev/null || echo "?")
+        log "  - yiban.db 账号数量：${n_accounts:-0}"
+    else
+        log "警告：缺 sqlite3 或包内无 ${DB_FILE}，跳过 integrity_check 与账号数核对"
+    fi
     log "  - keys/ 目录是否含密钥：$(ls "${dest}/keys/" 2>/dev/null | tr '\n' ' ' || echo '无（备份时密钥缺失）')"
-    log "提示：恢复演练请核对上述内容后删除临时目录；真实恢复时将 data/ 与 keys/ 覆盖回 $APP_DIR 并 chmod 600（yiban.db 需先停止 yiban-web 服务）。"
+
+    if [ -f "${dest}/data/${DB_FILE}" ] && command -v python3 > /dev/null 2>&1 \
+        && [ -f "${APP_DIR}/scripts/audit_verify.py" ]; then
+        log "恢复件核验：审计链 + 锚点 + 写入欠账（audit_verify.py，只读）"
+        local arc=0
+        YIBAN_STATE_DIR="${dest}/state" \
+            python3 "${APP_DIR}/scripts/audit_verify.py" \
+                --db "${dest}/data/${DB_FILE}" \
+                --env "${dest}/data/.env" \
+                --anchor "${dest}/state/audit-anchor.log" || arc=$?
+        case "$arc" in
+            0) log "恢复件核验：审计校验通过（链自洽 + 与锚点一致 + 无写入欠账）" ;;
+            1) log "错误：恢复件审计校验【检出异常】——链被改写/删除，或库与锚点不是同一批次" >&2
+               rc=1 ;;
+            *) log "错误：恢复件审计校验【无法定论】（exit $arc：缺 YIBAN_AUDIT_KEY / 包内无 .env / 校验异常）" >&2
+               log "      别按「备份完好」处理——先补齐密钥来源再重跑一次" >&2
+               rc=1 ;;
+        esac
+    else
+        log "提示：未能跑 audit_verify.py（缺 python3/包内库/${APP_DIR}/scripts/audit_verify.py）" \
+            "——请手工对恢复件跑一次，别只看 integrity_check"
+    fi
+    log "提示：恢复演练请核对上述内容后删除临时目录；真实恢复时先停服，再把 data/ keys/ state/ 覆盖回" \
+        "${APP_DIR} 与 \${YIBAN_STATE_DIR} 并 chmod 600，然后再跑一次 audit_verify.py。"
+    return "$rc"
 }
 
 if [ "${1:-}" = "--restore" ]; then
+    # restore() 会带回核验结论（integrity_check / audit_verify 不通过时非 0）——
+    # 原实现无条件 exit 0，等于"恢复件是坏的"也报恢复成功。
     restore "${2:-}" "${3:-}"
-    exit 0
+    exit $?
 fi
 
 # --require-encrypt：强制本轮归档加密，加密不可用时拒绝执行（防未加密备份泄露全部凭证）
@@ -253,22 +340,71 @@ done
 
 # 1b) SQLite 数据库：sqlite3 .backup 一致性快照（WAL 模式下 cp 会漏未合并日志，
 #     .backup 由 SQLite 内部保证快照一致；--restore 时直接替换回 yiban.db 即可）
+#
+#     快照必须过 integrity_check 才算备份成功（原实现回退 cp 后【静默】归档——
+#     WAL 未合并时 cp 出来的可能是撕裂副本，"看着有备份"等于没有备份）：
+#       .backup 成功 + 校验不过 → 源库本身已损坏：保留归档（垂死的库这份往往是
+#         最后一份素材，也是取证对象），但非 0 退出 + 大字告警；
+#       cp 回退 + 校验不过 → 这是一份"看似成功的坏备份"：删掉快照、不落该归档、
+#         非 0 退出（坏副本比没有副本更危险——它会让人删掉真正的好副本）；
+#       无 sqlite3 可校验 → 保留 + 大字告警（不得静默）。
+DB_SNAPSHOT_VERIFIED=0
+verify_db_snapshot() {
+    local snap="$1" out
+    [ -f "$snap" ] || return 1
+    command -v sqlite3 > /dev/null 2>&1 || return 2
+    out=$(sqlite3 "$snap" "PRAGMA integrity_check;" 2>/dev/null) || return 1
+    [ "$out" = "ok" ] || { log "  integrity_check 输出：${out}"; return 1; }
+    return 0
+}
+
 if [ -f "${APP_DIR}/${DB_FILE}" ]; then
     if command -v sqlite3 > /dev/null 2>&1; then
         if sqlite3 "${APP_DIR}/${DB_FILE}" ".backup ${TMPDIR_BAK}/data/${DB_FILE}" 2>/dev/null; then
-            log "数据库已备份（一致性快照）：${DB_FILE}"
+            if verify_db_snapshot "${TMPDIR_BAK}/data/${DB_FILE}"; then
+                DB_SNAPSHOT_VERIFIED=1
+                log "数据库已备份（一致性快照，integrity_check=ok）：${DB_FILE}"
+            else
+                # 源库损坏：归档照留，但绝不报"备份完成"
+                log "════════════════════════════════════════════════════════════"
+                log "⚠⚠⚠ 快照 integrity_check 未通过——【源库】已损坏，非本脚本问题 ⚠⚠⚠"
+                log "⚠⚠⚠ 本轮归档保留（最后一份素材），但请立即检查/重建数据库 ⚠⚠⚠"
+                log "════════════════════════════════════════════════════════════"
+                CORRUPT_SOURCE=1
+            fi
         else
             log "警告：sqlite3 .backup 失败（${DB_FILE} 可能被占用），回退为文件复制"
             cp -p "${APP_DIR}/${DB_FILE}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
                 { log "警告：无法复制 ${DB_FILE}，已跳过"; rm -f "${TMPDIR_BAK}/data/${DB_FILE}"; }
+            if [ -f "${TMPDIR_BAK}/data/${DB_FILE}" ]; then
+                if verify_db_snapshot "${TMPDIR_BAK}/data/${DB_FILE}"; then
+                    DB_SNAPSHOT_VERIFIED=1
+                    log "cp 回退快照 integrity_check=ok（WAL 未合并，恢复前建议人工确认）"
+                else
+                    log "错误：cp 回退的快照 integrity_check 未通过——WAL 未合并的副本不可信"
+                    log "错误：不落该归档（坏副本会让人误以为有备份），本轮以非 0 退出"
+                    rm -f "${TMPDIR_BAK}/data/${DB_FILE}"
+                    exit 1
+                fi
+            fi
         fi
     else
-        log "警告：未安装 sqlite3，回退为文件复制（WAL 未合并时快照可能不完整）"
+        log "════════════════════════════════════════════════════════════"
+        log "警告：未安装 sqlite3，回退为文件复制且【无法】做 integrity_check" >&2
+        log "警告：WAL 未合并时快照可能不完整——请尽快安装 sqlite3 重新备份   " >&2
+        log "════════════════════════════════════════════════════════════" >&2
         cp -p "${APP_DIR}/${DB_FILE}" "${TMPDIR_BAK}/data/" 2>/dev/null || \
             { log "警告：无法复制 ${DB_FILE}，已跳过"; rm -f "${TMPDIR_BAK}/data/${DB_FILE}"; }
     fi
 else
     log "跳过（不存在）：${APP_DIR}/${DB_FILE}"
+fi
+# 收尾退出码判据用（set -u：必须先初始化再引用）
+CORRUPT_SOURCE="${CORRUPT_SOURCE:-0}"
+if [ -f "${TMPDIR_BAK}/data/${DB_FILE}" ]; then
+    DB_SNAPSHOT_PRESENT=1
+else
+    DB_SNAPSHOT_PRESENT=0
 fi
 
 # 2) 密钥：优先 /etc/yiban/accounts-key（systemd EnvironmentFile，应含数据加密密钥
@@ -298,16 +434,44 @@ else
     fi
 fi
 
-# 3) 签到状态文件（可选）：/var/log/yiban 根下 sign-daily/sign-state/cred-state
-#    ——glob 匹配多个状态文件模式；无匹配时 cp 会失败，静默跳过（状态可重建，非关键）
+# 3) 状态文件（可选）：/var/log/yiban 根下的当日闸门标记、通知账本与审计链锚点
+#    ——glob 匹配多个模式；无匹配时静默跳过。
+#    清单里每一类"可重建"程度不同，缺了会怎样都记在这里：
+#      sign-daily-*/sign-state-*  当天是否已签的判定（缺 → 当天可能重签）
+#      cred-state.json            熔断状态（缺 → 已熔断的账号被立即再试）
+#      sched-run-*/sched-slot-*   当日全量/分片闸门标记（缺 → 恢复当天重签或漏签）
+#      sched-snapshot-*           当日调度快照标记（缺 → 窗口判定回落）
+#      notify-ledger.json         邮件/推送当日额度账本（缺 → 日额度重置，
+#                                 当天所有告警重发一遍，反过来也能被用来刷屏）
+#      notify-throttle.json       通知节流状态（缺 → 同上，节流窗口失效）
+#      audit-anchor.log           审计链外部锚点（缺 → 恢复出来的库再也无法检出
+#                                 删尾/删前缀/整表清空：锚点是链的唯一外部参照，
+#                                 只备 yiban.db 等于把"防删除"那半边一起丢掉）
 if [ -d "${SIGN_STATE_DIR}" ]; then
     shopt -s nullglob
-    state_files=("${SIGN_STATE_DIR}"/sign-daily-*.json "${SIGN_STATE_DIR}"/sign-state-*.json "${SIGN_STATE_DIR}"/cred-state.json)
+    state_files=(
+        "${SIGN_STATE_DIR}"/sign-daily-*.json
+        "${SIGN_STATE_DIR}"/sign-state-*.json
+        "${SIGN_STATE_DIR}"/cred-state.json
+        "${SIGN_STATE_DIR}"/sched-run-*.json
+        "${SIGN_STATE_DIR}"/sched-slot-*.json
+        "${SIGN_STATE_DIR}"/sched-snapshot-*.json
+        "${SIGN_STATE_DIR}"/notify-ledger.json
+        "${SIGN_STATE_DIR}"/notify-throttle.json
+        "${SIGN_STATE_DIR}"/audit-anchor.log
+    )
     shopt -u nullglob
     if [ ${#state_files[@]} -gt 0 ]; then
         mkdir -p "${TMPDIR_BAK}/state"
         cp -p "${state_files[@]}" "${TMPDIR_BAK}/state/" 2>/dev/null \
-            && log "已备份签到状态文件（${#state_files[@]} 个：sign-daily/sign-state/cred-state）"
+            && log "已备份状态/闸门/账本/审计锚点文件（${#state_files[@]} 个）"
+        # 锚点在包内却没有库内"曾经写入"痕迹可对照时同样是盲区——这里只保证它在包里
+        if [ -f "${SIGN_STATE_DIR}/audit-anchor.log" ]; then
+            log "已包含审计链外部锚点：${SIGN_STATE_DIR}/audit-anchor.log"
+        else
+            log "提示：未发现审计锚点（${SIGN_STATE_DIR}/audit-anchor.log）——" \
+                "web 未跑过每日线程或被配到别处时属正常，恢复后审计防删除判据不可用"
+        fi
     fi
 fi
 
@@ -447,10 +611,26 @@ fi
 # ------------------------------------------------------------
 # 本地保留策略：删除超过 30 天的本地备份包
 # ------------------------------------------------------------
+# .sha256 侧车必须一起轮转：原三条 glob 只覆盖 tar.gz/.age/.gpg，侧车永久堆积——
+# 既无限增长，又把"哪天做了备份、产物叫什么名"整份泄露给任何能读备份目录的账号
+# （对攻击者这就是一张"哪天该去删哪条审计"的地图）。
 find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz' -mtime "+${RETENTION_DAYS}" -delete
 find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz.age' -mtime "+${RETENTION_DAYS}" -delete
 find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.tar.gz.gpg' -mtime "+${RETENTION_DAYS}" -delete
-log "本地清理完成（保留 ${RETENTION_DAYS} 天）"
+find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.sha256' -mtime "+${RETENTION_DAYS}" -delete
+log "本地清理完成（保留 ${RETENTION_DAYS} 天，含 .sha256 侧车）"
 
 log "=== 备份完成：${FINAL_LOCAL} ==="
 log "恢复演练：bash backup.sh --restore ${FINAL_LOCAL} /tmp/yiban-restore-test"
+
+# 退出码不得谎报"备份成功"：源库损坏 / 快照没做过 integrity 核验时，归档照留
+# （垂死的库这份往往是最后一份素材），但 cron 必须看见非 0，否则坏库会安静地
+# 把所有后续备份都变成"备份了一份损坏数据"。
+if [ "${CORRUPT_SOURCE:-0}" -eq 1 ]; then
+    echo "错误：本轮归档内的数据库快照未过 integrity_check（源库损坏），请立即处理" >&2
+    exit 4
+fi
+if [ "${DB_SNAPSHOT_PRESENT:-0}" -eq 1 ] && [ "${DB_SNAPSHOT_VERIFIED}" -ne 1 ]; then
+    echo "警告：本轮数据库快照未经 integrity_check 核验（缺 sqlite3 命令）" >&2
+    exit 5
+fi
