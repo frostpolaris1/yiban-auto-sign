@@ -595,8 +595,59 @@ def _rechain_audit_logs(conn):
     conn.commit()
 
 
+def _record_rechain_event(conn, from_version, rows, empty_hash_rows, head_before, head_after):
+    """全表重链留痕（app_meta.audit_rechain_events，最新在末尾）。
+
+    重签整条链是"改完内容 → 清空 hash → 重启走正常启动路径 → 链重新自洽"这条路
+    的唯一落点，所以每一次重链都必须记账，供 audit_health 与锚点交叉判定。写失败
+    刻意上抛：宁可让迁移失败暴露出来，也不能悄悄重写链而不留痕。
+    """
+    # app_meta 原挂在 v8（后由 v12 幂等补建），v3 阶段可能还不存在——先补建，
+    # 否则"留痕"这件事本身会把启动带崩。DDL 与 v8/v12 逐字一致。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_meta ("
+        "key   TEXT PRIMARY KEY, "
+        "value TEXT NOT NULL"
+        ")"
+    )
+    events = _rechain_events(conn)
+    events.append({
+        "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "from_version": int(from_version),
+        "rows": int(rows),
+        "empty_hash_rows": int(empty_hash_rows),
+        "head_before": head_before or "",
+        "head_after": head_after or "",
+    })
+    if len(events) > _RECHAIN_EVENTS_KEEP:
+        events = events[-_RECHAIN_EVENTS_KEEP:]
+    conn.execute(
+        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+        (_RECHAIN_EVENTS_KEY, json.dumps(events, ensure_ascii=False)),
+    )
+
+
+def audit_rechain_events():
+    """全表重链留痕（公开只读，最新在末尾；缺表/损坏 → []）。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            return _rechain_events(conn)
+    except Exception as e:
+        logger.warning("读取全表重链留痕失败: %s", e)
+        return []
+
+
 def migrate_v3(conn):
-    """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。"""
+    """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。
+
+    重链守卫：_rechain_audit_logs 用**当前密钥**重签全表，等于给"改掉内容 →
+    清空 hash → 重启（正常启动路径）→ 链重新自洽"留了一条路。迁移器只在
+    PRAGMA user_version < 3 时调用本函数，所以"低版本升级"是它唯一的合法触发
+    场景；这里显式读出 from_version 并把它连同重链前后链头一并留痕到 app_meta，
+    使 audit_health 能把"锚点之后发生的重链"指认为异常。
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
     _ensure_column(conn, "audit_logs", "prev_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "audit_logs", "hash", "TEXT NOT NULL DEFAULT ''")
     # 空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
@@ -604,7 +655,27 @@ def migrate_v3(conn):
         "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
     ).fetchone()["n"]
     if empty:
+        if version >= 3:
+            # 不该发生：>=3 的库迁移器不会再跑本迁移。真发生了说明有人绕过了
+            # 版本门控（或直接调 _rechain_audit_logs），留痕照记，由 audit_health 判失败。
+            logger.error(
+                "migrate_v3 在 user_version=%s 的库上被调用且发现 %s 条空 hash 审计行——"
+                "迁移版本门控被绕过，已记录重链留痕", version, empty
+            )
+        head_before = _chain_head(conn)
+        rows = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
         _rechain_audit_logs(conn)
+        _record_rechain_event(conn, version, rows, empty, head_before, _chain_head(conn))
+        conn.commit()
+
+
+def _chain_head(conn):
+    """当前链头哈希（空链/缺列 → 空串）。迁移内部用，不取锁（调用方已持有连接）。"""
+    try:
+        row = conn.execute("SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return ""
+    return (row["hash"] or "") if row else ""
 
 
 # ---------------------------------------------------------------------------
@@ -3571,22 +3642,73 @@ def audit_health(path=None):
     返回 dict：
       chain_ok      链内哈希自洽（False = 有记录被篡改/删除）
       broken        链内断链条数（-1 = 校验异常或密钥缺失）
-      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾）
+      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾 / 无痕删除）
       anchor_msg    锚点判定的说明或提示信息
-      write_failures 本进程累计的审计写入失败次数（>0 = 有操作未留痕）
-      healthy       综合结论（上述全部正常且无写入欠账）
+      write_failures 累计的审计写入失败次数（>0 = 有操作未留痕；落库不随重启归零）
+      rechain_events app_meta 里的全表重链留痕（诊断用，最新在末尾）
+      empty_hash_rows 链内 hash 为空的行数（>0 = 有人清空签名等着被重签）
+      note          附加诊断文本（无异常时为空串）
+      healthy       综合结论（上述全部正常）
     """
+    path = path or audit_anchor_path()
     chain_ok, broken, _first = verify_audit_chain()
     anchor_ok, anchor_msg = verify_audit_anchor(path)
     write_failures = audit_write_failures()
+    rechain_events, empty_hash_rows = _rechain_diagnostics()
+    notes = []
+    rechain_after_anchor = False
+    if rechain_events:
+        anchor = _last_audit_anchor(path)
+        anchor_ts = (anchor or {}).get("ts") or ""
+        # 合法的全表重链只会发生在"任何锚点存在之前"（升级那一次）。锚点之后
+        # 再出现重链，意味着启动路径在已锚定的链上动过手——即使链此刻自洽、
+        # head 也巧合同值，这个动作本身就是异常。
+        late = [e for e in rechain_events if anchor_ts and str(e.get("ts") or "") > anchor_ts]
+        if late:
+            rechain_after_anchor = True
+            e = late[-1]
+            notes.append(
+                f"锚点（{anchor_ts}）之后存在 {len(late)} 次全表重链留痕"
+                f"（最近 {e.get('ts')} 来源版本 v{e.get('from_version')}，"
+                f"行数 {e.get('rows')}）——非预期升级即视为链被重写"
+            )
+    if empty_hash_rows:
+        notes.append(
+            f"审计链存在 {empty_hash_rows} 条 hash 为空的记录——签名被清空后等待启动路径"
+            "重签整条链（migrate_v3 即此形态），请立即核查"
+        )
     return {
         "chain_ok": chain_ok,
         "broken": broken,
         "anchor_ok": anchor_ok,
         "anchor_msg": anchor_msg,
         "write_failures": write_failures,
-        "healthy": bool(chain_ok and anchor_ok and write_failures == 0),
+        "rechain_events": rechain_events,
+        "empty_hash_rows": empty_hash_rows,
+        "note": "；".join(notes),
+        "healthy": bool(
+            chain_ok and anchor_ok and write_failures == 0
+            and not rechain_after_anchor and not empty_hash_rows
+        ),
     }
+
+
+def _rechain_diagnostics():
+    """(全表重链留痕, 链内空 hash 行数)——体检的附加信号，读失败按无异常处理。"""
+    try:
+        with _conn_lock:
+            conn = get_conn()
+            events = _rechain_events(conn)
+            try:
+                empty = conn.execute(
+                    "SELECT COUNT(*) FROM audit_logs WHERE hash=''"
+                ).fetchone()[0]
+            except sqlite3.Error:
+                empty = 0
+        return events, int(empty or 0)
+    except Exception as e:
+        logger.warning("读取重链/空 hash 诊断信息失败: %s", e)
+        return [], 0
 
 
 def last_time_pref_set_at(phone):
