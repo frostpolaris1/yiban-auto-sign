@@ -31,7 +31,14 @@
     if (field !== "global_pause") return isMaster;             // 注册开关两个方向：仅主管理员
     return true;                                              // 急停签到：任意管理员
   }
-  var WHY = "此操作仅主管理员可做";
+  // 禁用原因**按按钮**取：急停那颗（global_pause 0→1）任意管理员可做、永不被禁，
+  // 所以走这里的只有"恢复签到"与注册开关两类，不能整区一句"仅主管理员"
+  // （那会把在场者唯一能做的止血动作一起否定）。
+  function whyFor(field) {
+    return field === "global_pause"
+      ? "恢复自动签到仅主管理员可做"
+      : "注册开关仅主管理员可做";
+  }
 
   function sync() {
     var hint = $("set-pause-hint"), parts = [];
@@ -40,6 +47,7 @@
     if (hint) { hint.textContent = parts.join("；"); hint.hidden = parts.length === 0; }
     // 每个开关只露出"当前状态对应的下一步动作"那颗钮：暂停中给恢复、运行中给暂停。
     // 无权限的那颗禁用并就地说明原因，而不是留着让人点了没反应。
+    var denied = false;
     [["global_pause", "set-gp", state.globalPause], ["registration_pause", "set-rp", state.regPause]]
       .forEach(function (row) {
         var field = row[0], base = row[1], paused = row[2];
@@ -51,9 +59,15 @@
           var allowed = canDo(field, pair[1]);
           b.disabled = !allowed;
           if (allowed) { b.removeAttribute("title"); b.removeAttribute("aria-describedby"); }
-          else b.title = WHY;
+          else {
+            b.title = whyFor(field);
+            b.setAttribute("aria-describedby", "sw-perm");   // 就地说明（#sw-perm）+ 读屏可及
+            denied = true;
+          }
         });
       });
+    // 有按钮被禁才露出权限说明；与 sh-perm / set-exec-perm 同构。
+    setHidden($("sw-perm"), !denied);
   }
 
   function apply(data) {
