@@ -150,8 +150,13 @@ class AuditTraceabilityTest(unittest.TestCase):
         self.assertFalse(ok, "清空整表必须被检出")
         self.assertIn("清空", msg)
 
-    def test_anchor_tolerates_prefix_cleanup(self):
-        """删前缀是保留期清理的合法行为：不判失败，但给出提示信息。"""
+    def test_anchor_detects_unprovenanced_prefix_deletion(self):
+        """裸 SQL 删前缀且无清理留痕 → 必须判失败。
+
+        原实现把"min_id 增大"一律定性为「保留期清理的正常现象，非告警」，于是
+        删掉整段历史（min_id 1→53）也能自证清白。现在前缀回收必须有留痕事件精确
+        对上（删除后 min_id == 当前 min_id），否则即非法删除。
+        """
         self._seed(6)
         db.record_audit_anchor()
         with db._conn_lock:
@@ -160,7 +165,26 @@ class AuditTraceabilityTest(unittest.TestCase):
             conn.execute("DELETE FROM audit_logs WHERE id <= ?", (min_id + 2,))
             conn.commit()
         ok, msg = db.verify_audit_anchor()
-        self.assertTrue(ok, "合法清理不应触发告警，否则每日校验天天误报淹没真告警")
+        self.assertFalse(ok, f"无留痕的前缀删除必须被检出：{msg}")
+        self.assertFalse(db.audit_health()["healthy"])
+
+    def test_anchor_tolerates_retention_cleanup(self):
+        """有留痕的保留期清理：min_id 回收只给提示，不告警（否则天天误报淹没真告警）。"""
+        conn = db.get_conn()
+        old_ts = "2020-01-01 00:00:00"  # 远超 180 天保留期
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
+                "VALUES (?,?,?,?,?,'','')",
+                (old_ts, "tester", "old", f"o{i}", f"d{i}"),
+            )
+            conn.commit()
+        db._rechain_audit_logs(conn)
+        self._seed(2)
+        db.record_audit_anchor()
+        db._audit_cleanup(conn)  # 走真实清理路径：删除与留痕同事务
+        ok, msg = db.verify_audit_anchor()
+        self.assertTrue(ok, f"合法清理不应触发告警：{msg}")
         self.assertIn("回收", msg)
 
     def test_anchor_detects_tail_tamper(self):

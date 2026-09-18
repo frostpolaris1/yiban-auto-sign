@@ -117,6 +117,23 @@ if ! gpg --batch --yes --decrypt --passphrase-fd 3 -o - 3<<< "$PASSPHRASE" "$OUT
     exit 1
 fi
 
+# 审计链外部锚点必须在包里（断言，不是假设）：容器默认 YIBAN_STATE_DIR=/data/state
+# 落在 DATA_DIR 内，理论上是随 data/ 整体入包的——但这一点从未被核验过。一旦有人把
+# YIBAN_STATE_DIR 指到 data/ 之外（compose 里改一行），备份包照样"自检通过"却不含
+# 锚点，而锚点是审计链唯一的外部参照：缺了它，恢复出来的库再也检不出
+# 删尾 / 删前缀 / 整表清空（这三类恰是掩盖篡改最常用的动作）。
+ANCHOR_IN_ARCHIVE="$(gpg --batch --yes --decrypt --passphrase-fd 3 -o - 3<<< "$PASSPHRASE" "$OUT" 2>/dev/null \
+    | tar -tzf - 2>/dev/null | grep -c 'audit-anchor\.log$' || true)"
+if [ "${ANCHOR_IN_ARCHIVE:-0}" -ge 1 ]; then
+    echo "锚点   : 已包含审计链外部锚点 audit-anchor.log（${ANCHOR_IN_ARCHIVE} 份）"
+else
+    echo "⚠⚠⚠ 备份包内【没有】audit-anchor.log —— 审计链外部锚点未入包 ⚠⚠⚠" >&2
+    echo "      恢复这份备份后，「删尾/删前缀/整表清空」三类判据全部失效。" >&2
+    echo "      常见成因：YIBAN_STATE_DIR 被指到 ${DATA_DIR} 之外（容器默认为 /data/state）。" >&2
+    echo "      处置：把状态目录改回 DATA_DIR 内，或另行把 <YIBAN_STATE_DIR>/audit-anchor.log" >&2
+    echo "      与备份同批次离机保存（每日日报邮件里也带一条链头锚点）。" >&2
+fi
+
 chmod 600 "$OUT"
 sha256sum "$OUT" | awk '{print $1}' > "$OUT.sha256"
 
