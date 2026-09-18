@@ -168,6 +168,27 @@ class CliContractTest(unittest.TestCase):
         self.assertTrue(os.path.exists(backup), "加 --yes 应写出副本")
         self.assertEqual(json.loads(r.stdout)["user_version"], 17)
 
+    def test_db_backup_rejects_target_equals_source(self):
+        """Low-2：`db --backup <源库>` 目标==源库必须拒绝。
+
+        原实现不设防：WAL 库"报成功但副本就是活库本身"（误导）；非 WAL 库
+        `src.backup(dst)` **无限阻塞**（运维命令挂死）。修复后按 realpath 归一
+        判定同源即报错，--yes 与 dry-run 都拦。
+        """
+        _make_db(self.root, self.env)
+        src = str(self.root / "yiban.db")
+        # 先量源库完整性基线
+        r0 = _run(["db", "--status", "--json"], self.env)
+        self.assertEqual(r0.returncode, 0)
+        # 目标==源（显式传源路径）：必须失败
+        r = _run(["db", "--backup", src, "--yes", "--json"], self.env)
+        self.assertNotEqual(r.returncode, 0, "目标==源库必须拒绝")
+        self.assertFalse(json.loads(r.stdout)["ok"])
+        self.assertIn("目标", r.stderr + r.stdout)
+        # dry-run 分支同样拦（不能只报告"计划"放行）
+        r = _run(["db", "--backup", src, "--json"], self.env)
+        self.assertNotEqual(r.returncode, 0, "dry-run 也应拦目标==源")
+
     # ---- ⑤ version 与 yiban.__version__ 同源 ----
 
     def test_version_matches_package(self):

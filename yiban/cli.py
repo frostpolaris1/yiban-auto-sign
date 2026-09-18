@@ -493,6 +493,14 @@ def _db_backup(args, db_file):
     丢，外部进程正在写也不会拷到半截（本项目是 WAL + 多进程形态，直接 copy 不安全）。
     """
     target = args.backup or (db_file + ".backup")
+    # 目标==源库必须拒绝（Low-2）：用 realpath 归一后比 inode——软链/相对路径/`..`
+    # 都逃不过。WAL 库下原实现"报成功但副本就是活库本身"（误导运维），非 WAL 库
+    # `src.backup(dst)` 直接无限阻塞（命令挂死）。放在 --yes 之前，dry-run 也拦。
+    if os.path.exists(target) and os.path.exists(db_file) and \
+            os.path.samefile(os.path.realpath(target), os.path.realpath(db_file)):
+        return _fail("db", 1, [f"备份目标与源库是同一个文件，已拒绝: {target}"], args.json,
+                     mode="backup", db_file=db_file, backup_path=target,
+                     dry_run=not args.yes)
     exists = os.path.exists(target)
     payload = {
         "command": "db",
