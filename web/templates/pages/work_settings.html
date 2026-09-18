@@ -253,18 +253,33 @@
           <div class="set-head-actions">{{ dirty_badge('set-ann-dirty') }}</div>
         </div>
       </div>
+      {# 权限分档：草稿任意管理员可编辑保存，发布/下线仅主管理员且需当次口令。
+         非主管理员下 work_settings.js 把 #set-ann-perm 挂到禁用按钮的 aria-describedby #}
+      <p class="alert info" id="set-ann-perm" hidden>
+        <span class="ico">{{ icon('info') }}</span>
+        <span class="body">编辑并保存草稿任意管理员均可；发布或下线线上公告仅主管理员可做（需当次口令）。</span>
+      </p>
       <div class="field">
-        <label class="field-label" for="set-announcement">公告文字</label>
+        <label class="field-label" for="set-announcement">待发布草稿（保存后不会立即对外显示）</label>
         <textarea id="set-announcement" class="textarea" rows="2" maxlength="200"
                   placeholder="例如：今晚 22:00–23:00 例行维护，签到可能延迟"></textarea>
-        <p class="field-help">显示在所有页面顶部（含登录页）；限 200 字、禁止换行；留空保存 = 清除公告。</p>
+        <p class="field-help" id="set-ann-draft-meta">（无草稿）</p>
+        <p class="field-help">显示在所有页面顶部（含登录页）；限 200 字、禁止换行。草稿需由主管理员点「发布」后才会对外生效。</p>
       </div>
       <p class="set-tip" id="set-ann-tip" role="status"></p>
-      <p class="field-help">改动需点「保存公告」后生效。</p>
+      <p class="field-help" id="set-ann-save-hint">改动需点「保存草稿」后生效；保存草稿不会改变线上公告。</p>
       <div class="form-actions">
-        <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" hidden>保存公告</button>
+        <button type="button" class="btn btn--primary btn--sm" id="set-ann-save" hidden>保存草稿</button>
+        <button type="button" class="btn btn--ghost btn--sm" id="set-ann-clear">清除草稿</button>
         <span class="spacer"></span>
-        <button type="button" class="btn btn--ghost btn--sm" id="set-ann-clear">清除公告</button>
+        <button type="button" class="btn btn--primary btn--sm" id="set-ann-publish" hidden>发布</button>
+      </div>
+      {# 草稿态与线上态同屏可辨：管理员必须一眼看见"现在对外显示的是什么、由谁在何时发布"。
+         work_settings.js 回填 #set-ann-published / #set-ann-published-meta（不可编辑，故用文本而非输入框） #}
+      <div class="field">
+        <span class="field-label">线上公告（当前对所有访问者可见）</span>
+        <p class="set-summary" id="set-ann-published">（当前没有线上公告）</p>
+        <p class="field-help" id="set-ann-published-meta"></p>
       </div>
     </section>
   </div>
@@ -635,6 +650,12 @@
           {{ icon('play') }}<span>开放注册</span>
         </button>
       </div>
+      {# 权限说明与禁用按钮同屏：内容按按钮分档——急停（暂停自动签到）任意管理员可做，
+         其余方向仅主管理员。settings-switches.js 把本节点挂到被禁按钮的 aria-describedby #}
+      <p class="alert info" id="sw-perm" hidden>
+        <span class="ico">{{ icon('info') }}</span>
+        <span class="body">「恢复自动签到」与「暂停/开放注册」仅主管理员可做；「暂停自动签到」是急停动作，任意管理员均可操作。</span>
+      </p>
       <p class="set-warn" id="set-pause-hint" hidden></p>
     </section>
   </div>
