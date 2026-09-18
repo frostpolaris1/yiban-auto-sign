@@ -13,7 +13,6 @@
     py -m pytest tests/test_user_deregistration_web.py -v
 """
 import contextlib
-import hashlib
 import importlib.util
 import json
 import os
