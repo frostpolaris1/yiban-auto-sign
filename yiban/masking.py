@@ -24,21 +24,46 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 _URL_SENSITIVE_KEY_PARTS = (
     "code", "token", "csrf", "session", "ticket", "sign",
     "auth", "key", "secret", "passwd", "password", "verify",
+    "phone", "mobile", "tel",
 )
+# 大陆手机号形态（11 位、1[3-9] 开头）——参数名不敏感时也按值打码：
+# 上游把手机号回显在 `u=`/`id=` 这类名字里时，24 位高熵阈值够不到 11 位。
+_PHONE_VALUE_RE = re.compile(r"^1[3-9]\d{9}$")
+
+
+# 凭据字面量的键名形态：允许 `refresh_token` / `session_id` / `id_token` /
+# `JSESSIONID` / `x-csrf` / `api_key` 这类带前后缀的复合名——`\b` 在 `_`/`-` 处
+# 不构成边界，原写法只认独立单词，实测 6 类复合名全部漏网。
+# 刻意不含裸 `key`/`sid`：否则 `monkey`/`consider` 这类无关词会被误伤。
+_CRED_KEY = r"(?:token|secret|passwd|password|pwd|cookie|session|csrf|authorization|api[-_]?key)"
+# 值按"配对的同种引号串（含反斜杠转义）或裸值"取：`[^'"]*` 会在口令内含
+# 另一种引号时截断，残留首引号之后的明文（repr 对含单引号的口令正好用双引号包裹）。
+_QUOTED_OR_BARE = r"(?:\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|[^\s,;]+)"
 
 
 def sanitize_text(text):
     """服务端可控内容进入错误消息/日志/通知前转义换行与回车，防止日志与通知注入。"""
     s = str(text).replace("\r", "\\r").replace("\n", "\\n")
     # 异常消息可能含 Account dataclass repr（带明文密码/令牌）：
-    # 整体替换 Account(...) 对象（正则处理引号转义边界），并兜底替换命名字段
-    s = re.sub(r"Account\([^)]*\)", "Account(***)", s)
-    s = re.sub(r"password\s*=\s*['\"][^'\"]*['\"]", "password='***'", s)
-    s = re.sub(r"phone_code\s*=\s*['\"][^'\"]*['\"]", "phone_code='***'", s)
-    # dict/repr 形态兜底：上面的 kwarg 正则覆盖不到 'password': 'xxx' /
-    # "phone_code": "xxx"（vars()/json.dumps 调试输出进异常链时会这样出现）
-    s = re.sub(r"(['\"])password\1\s*:\s*['\"][^'\"]*['\"]", r"\1password\1: '***'", s)
-    s = re.sub(r"(['\"])phone_code\1\s*:\s*['\"][^'\"]*['\"]", r"\1phone_code\1: '***'", s)
+    # 整体替换 Account(...) 对象（正则配对单引号串，跨过值内的 `)` 与 `(` 不截断），
+    # 并兜底替换命名字段。
+    s = re.sub(r"Account\((?:[^()']|'[^']*')*\)", "Account(***)", s)
+    # authorization 专项必须**先于**下面的通用键规则：值是 "Bearer xxx" 含空格，
+    # 通用规则的 `[^\s,;]+` 只吞得掉 "Bearer"，会把 token 留在原地。
+    s = re.sub(r"(?i)\bauthorization\b\s*:?\s*(?:bearer\s+)?[^\s,;]+",
+               r"authorization=***", s)
+    s = re.sub(rf"(?i)\b(password|phone_code)\s*[:=]\s*{_QUOTED_OR_BARE}", r"\1=***", s)
+    # dict/repr 形态（vars()/json.dumps 调试输出）：键自身带引号，故以引号为界
+    # 而不是要求 `\b`——空格与引号都是非词字符，那里不存在词边界。
+    s = re.sub(rf"(?i)(['\"](?:password|phone_code)['\"]\s*[:=]\s*){_QUOTED_OR_BARE}",
+               r"\1***", s)
+    # 凭据字面量（M1）：意外落入文本的 token/cookie/session 等直接抹值，
+    # 键名允许带前后缀（refresh_token / session_id / JSESSIONID / x-csrf / api_key）。
+    s = re.sub(
+        rf"(?i)(?<![\w-])([a-z0-9_\-]*{_CRED_KEY}[a-z0-9_\-]*)\s*[:=]\s*[^\s,;]+",
+        r"\1=***",
+        s,
+    )
     return s
 
 
@@ -78,6 +103,9 @@ def sanitize_url(url):
             return f"{key}=***"
         if len(value) >= 24 and re.fullmatch(r"[A-Za-z0-9_\-]+", value):
             return f"{key}=***"
+        if _PHONE_VALUE_RE.match(value):
+            # 按值兜底：保留 mask_phone 同口径的前 3 后 4，仍可区分是哪个号
+            return f"{key}={value[:3]}****{value[7:]}"
         return f"{key}={value}"
 
     return urlunsplit(parts._replace(query="&".join(_masked(k, v) for k, v in pairs)))

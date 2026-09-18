@@ -105,6 +105,14 @@ build/
 
 # 品牌图标（版权来源不明，不入开源仓库；本地/服务器自行放入即可生效，见 README「自定义 Web 图标」）
 web/static/vendor/logo.png
+
+# 工具产物（2026-09-17 用户要求）：编码助手/审查工具往仓库里落的技能与锁文件，
+# 与运行时、部署、文档都无关，一律不入版本控制
+# （`.agents/`、`.claude/`、`agent/` 是同一份技能在三种 IDE 布局下的副本）
+.agents/
+.claude/
+agent/
+skills-lock.json
 web/static/vendor/favicon.png
 # 页脚备案图标（备案号对应官方图标，部署者自放；缺失时页脚 onerror 隐藏，不入库）
 web/static/vendor/gongan-beian.png
@@ -151,3 +159,5 @@ PROMPT_*.md
 MEMORY.md
 memory/
 HANDOFF*.md
+# 工具运行期在本仓库内创建的隔离 worktree 与任务输出目录，与项目内容无关
+.qoder/

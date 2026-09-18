@@ -215,12 +215,15 @@ class CapacitySettingsTest(_Base):
         self.assertEqual(est["potential_load"], len(self.db.load_users()))
 
     def test_delay_requires_confirm_password(self):
+        """随机延迟属 A 档：缺口令/错口令都由设置路由统一的 403 拒绝（不落盘）。"""
         c, h = self._master()
         r = c.post("/api/settings", json={"start_delay_max": 60}, headers=h)
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 403)
         r = c.post("/api/settings", json={"start_delay_max": 60, "confirm_password": "wrong!"},
                    headers=h)
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 403)
+        self.assertNotIn("YIBAN_START_DELAY_MAX=60",
+                         io.open(self.env_file, encoding="utf-8").read())
 
     def test_delay_save_with_confirm(self):
         c, h = self._master()

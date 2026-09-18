@@ -24,6 +24,9 @@ from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 推送/邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
+from _mail_body import render_body  # noqa: E402
+
 
 class BreakerTest(unittest.TestCase):
     @classmethod
@@ -197,7 +200,8 @@ class BreakerTest(unittest.TestCase):
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"13800138000": {"fail_days": 3, "paused_since": self.D3}}, f)
         r = client.put("/api/accounts/0",
-                       json={"name": "A", "phone": "13800138000", "password": "newpass1234"},
+                       json={"name": "A", "phone": "13800138000", "password": "newpass1234",
+                             "confirm_password": "TestPass1234!"},
                        headers={"X-CSRF-Token": "t"})
         self.assertEqual(r.status_code, 200, r.get_json())
         # 唯一入口的统一语义：清空后文件被删除（"无暂停 = 文件不存在"）
@@ -248,7 +252,7 @@ class BreakerTest(unittest.TestCase):
             attempt.return_value = (True, "签到成功", False, signin.STATUS_SUCCESS)
             signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
         sn.assert_called_once()
-        title, content = sn.call_args[0][0], sn.call_args[0][1]
+        title, content = sn.call_args[0][0], render_body(sn.call_args[0][1], "markdown")
         self.assertIn("耗时", title)
         self.assertIn("31.0", content, "通知应含实际耗时")
         self.assertIn("138****8001", content, "通知应含脱敏账号")
@@ -277,7 +281,7 @@ class BreakerTest(unittest.TestCase):
         # 2 次尝试 → 慢告警 1 次 + 最终放弃失败通知 1 次（慢告警未连发）
         self.assertEqual(sn.call_count, 2, "慢告警 1 次 + 失败通知 1 次")
         self.assertEqual(sn.call_args_list[0].args[0], "易班签到耗时告警", "第一次应为耗时告警")
-        self.assertIn("31.0", sn.call_args_list[0].args[1])
+        self.assertIn("31.0", render_body(sn.call_args_list[0].args[1], "markdown"))
         self.assertEqual(sn.call_args_list[1].args[0], "易班签到失败", "第二次应为最终失败通知")
 
 
