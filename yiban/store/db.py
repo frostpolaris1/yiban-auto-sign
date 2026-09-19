@@ -15,13 +15,14 @@
   `init_db` 留在这里——它是启动序列的编排点，也须与冻结的历史迁移函数共存。
 - `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
-- `events`：sign_events 的写入/查询/统计与保留期清理。
+- `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
 - `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
 - `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
 - `session_cache`：session_cache 表族的读写、有效期判定与凭据加密。
+- `time_prefs`：time_prefs 表的读写、拥挤度统计与保存冷却查询。
 
-本模块自身仍持有：time_prefs、时钟守卫与 app_meta、追踪盐哈希等尚未按域
+本模块自身仍持有：时钟守卫与 app_meta、追踪盐哈希等尚未按域
 拆出的部分，以及跨域粘合助手（写事务入口、连带清理、清理留痕）。子模块反向经本门面按
 属性取这些名字（见各模块的 `_facade()`）；`db._audit_hash = 替身`、`db._conn = None` 一类
 打桩面由本模块的再导出与读写转发维持不变。
@@ -60,6 +61,7 @@ from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
 from yiban.store import session_cache as _session_cache  # noqa: E402
+from yiban.store import time_prefs as _time_prefs  # noqa: E402
 from yiban.store import users as _users  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
@@ -173,6 +175,8 @@ _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
 
 # 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
 # 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
+# 按表归属并入事件域的暂停冷却两名（`last_pause_at` / `pause_count_since`，查 audit_logs）
+# 走下方读写转发，不在这里再导出。
 SIGN_EVENTS_RETENTION_DAYS = _events.SIGN_EVENTS_RETENTION_DAYS
 _normalize_limit = _events._normalize_limit
 add_sign_event = _events.add_sign_event
@@ -290,6 +294,9 @@ _conn_lock = _connection._conn_lock
 #   会话缓存域全部迁出名 → session_cache：`db._session_cache_now` 被
 #   tests/test_session_cache_db.py 打桩（读写同钟），**session_cache 模块内部**的
 #   `get_session_cache` / `set_session_cache` 调用点必须看到替身；
+#   事件域按表归属并入的暂停冷却两名 → events、用户自选时间片域七名 → time_prefs：
+#   调用方只经门面属性访问，读写转发让 `db.<名字> = 替身` / `del db.<名字>` 落到真定义点
+#   （`last_time_pref_set_at` 体内按属性取的 `db.hash_phone` 仍留在门面）；
 #   快照式再导出只换掉门面那一份，内部照旧调真名——打桩静默失效。
 # 其余名字（`_conn_lock` 永不重绑、审计/迁移/事件/用户/校验任务/领取池域函数与常量）按
 # 快照式再导出即等价；会话缓存域的四个常量同样按常量再导出（无内部惰性读取之外的语义）。
@@ -333,13 +340,24 @@ _FORWARDED_STATE = {
     "get_session_cache": _session_cache,
     "set_session_cache": _session_cache,
     "clear_session_cache": _session_cache,
+    # 事件域按表归属并入的暂停冷却（查 audit_logs 表，唯一定义点在 yiban/store/events.py）
+    "last_pause_at": _events,
+    "pause_count_since": _events,
+    # 用户自选时间片域迁出名（唯一定义点在 yiban/store/time_prefs.py）
+    "last_time_pref_set_at": _time_prefs,
+    "time_pref_set_count_since": _time_prefs,
+    "get_time_prefs": _time_prefs,
+    "get_time_pref": _time_prefs,
+    "set_time_pref": _time_prefs,
+    "clear_time_pref": _time_prefs,
+    "time_pref_stats": _time_prefs,
 }
 # delattr 撤下的名字（见 _StateForwardingModule.__delattr__）：名字重新可读即移出
 _FORWARDED_STATE_HIDDEN = set()
 
 
 def __getattr__(name):
-    """PEP 562：转发名（连接三态、审计/迁移域可变状态、账号域迁出名）读取回落到定义点。"""
+    """PEP 562：转发名（连接三态、审计/迁移域可变状态、各域迁出名）读取回落到定义点。"""
     mod = _FORWARDED_STATE.get(name)
     if mod is not None:
         if name in _FORWARDED_STATE_HIDDEN:
@@ -962,147 +980,6 @@ def _table_min_max(conn, table):
     if row is None:
         return None, None
     return row["mn"], row["mx"]
-
-
-def last_time_pref_set_at(phone):
-    """指定账号最近一次自选时间片保存时间（切换冷却判定用；无记录返回 None）。
-
-    按被选账号（审计 target=hash_phone(phone)（匿名稳定键））而非操作用户计价（H3/H4 对抗性审查）：
-    - 多管理员共享 admin 账号时冷却全局生效（管理员 A 保存后 B 立即改选也被拦截）；
-    - 改手机号/删号重提交新号后，新 phone 无历史审计 → 不被旧账号冷却误伤。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            target = hash_phone(phone) if phone else phone or ""
-            row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
-                "ORDER BY id DESC LIMIT 1",
-                (target,),
-            ).fetchone()
-            return row["ts"] if row else None
-    except Exception as e:
-        raise RuntimeError(f"查询自选保存时间失败: {e}") from e
-
-
-def time_pref_set_count_since(phone, since_ts):
-    """指定账号在 since_ts 之后的保存次数（弹性冷却高频判定用；ts 定宽字符串可比较）。
-
-    审计 target=hash_phone(phone)（匿名稳定键）。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            target = hash_phone(phone) if phone else phone or ""
-            row = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
-                "AND target=? AND ts >= ?",
-                (target, since_ts),
-            ).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        raise RuntimeError(f"统计自选保存次数失败: {e}") from e
-
-
-def last_pause_at(username):
-    """指定用户最近一次暂停签到时间（暂停冷却判定用；恢复不计，按用户计价）。
-
-    审计 target 为脱敏手机号，故按 username 关联；多管理员共享账号各自独立计价
-    （暂停/恢复冷却仅防噪音，绕过危害极小，可接受）。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
-                "ORDER BY id DESC LIMIT 1",
-                (username or "",),
-            ).fetchone()
-            return row["ts"] if row else None
-    except Exception as e:
-        raise RuntimeError(f"查询暂停时间失败: {e}") from e
-
-
-def pause_count_since(username, since_ts):
-    """指定用户在 since_ts 之后的暂停次数（弹性冷却高频判定用）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
-                "AND action='my_account_pause' AND ts >= ?",
-                (username or "", since_ts),
-            ).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        raise RuntimeError(f"统计暂停次数失败: {e}") from e
-
-
-# ---------------------------------------------------------------------------
-# 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）
-# ---------------------------------------------------------------------------
-def get_time_prefs():
-    """全量自选 {phone: {"slot_min": int, "updated_at": str}}（build_schedule 每次启动读一次）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            rows = conn.execute("SELECT phone, slot_min, updated_at FROM time_prefs").fetchall()
-            return {r["phone"]: {"slot_min": r["slot_min"], "updated_at": r["updated_at"]} for r in rows}
-    except Exception as e:
-        logger.warning("读取 time_prefs 失败: %s", e)
-        return {}
-
-
-def get_time_pref(phone):
-    """单个账号自选；无则 None。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT phone, slot_min, updated_at FROM time_prefs WHERE phone=?", (phone,)
-            ).fetchone()
-            return None if row is None else {"slot_min": row["slot_min"], "updated_at": row["updated_at"]}
-    except Exception as e:
-        logger.warning("读取 time_pref %s 失败: %s", phone, e)
-        return None
-
-
-def set_time_pref(phone, slot_min, updated_at):
-    """保存/更新自选（UPSERT）。slot_min 为窗口内分钟数（06:30 → 390，5 对齐）。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute(
-            "INSERT INTO time_prefs (phone, slot_min, updated_at) VALUES (?,?,?) "
-            "ON CONFLICT(phone) DO UPDATE SET slot_min=excluded.slot_min, updated_at=excluded.updated_at",
-            (phone, slot_min, updated_at),
-        )
-
-
-def clear_time_pref(phone):
-    """清除自选（回退自动错峰）。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute("DELETE FROM time_prefs WHERE phone=?", (phone,))
-
-
-def time_pref_stats():
-    """每片已选人数（拥挤度）：[{slot_min, count}]，按 slot_min 升序。
-
-    只统计未删除账号的自选，避免已注销/已软删账号的残留 pref 虚高拥挤度。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            rows = conn.execute(
-                "SELECT t.slot_min, COUNT(*) AS count "
-                "FROM time_prefs t "
-                "JOIN accounts a ON a.phone = t.phone AND a.deleted = 0 "
-                "GROUP BY t.slot_min ORDER BY t.slot_min"
-            ).fetchall()
-            return [{"slot_min": r["slot_min"], "count": r["count"]} for r in rows]
-    except Exception as e:
-        logger.warning("time_prefs 统计失败: %s", e)
-        return []
 
 
 def _cascade_phone_owned(conn, phones):
