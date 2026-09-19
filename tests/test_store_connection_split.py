@@ -19,6 +19,7 @@
 connection 的真状态"，不是"db 有自己的 _conn 属性"。
 """
 import os
+import pytest
 import shutil
 import sys
 import tempfile
@@ -163,6 +164,59 @@ class ReExportNamesTest(_ConnStateBase):
         self.assertIsNone(shell._conn)
         shell._env_file = "via-shell.env"
         self.assertEqual(conn_mod._env_file, "via-shell.env")
+
+
+class PatchAndDeleteRoundTripTest(_ConnStateBase):
+    """外部打桩/撤销路径：`mock.patch.object` / `mock.patch("…_conn")` / `monkeypatch.delattr`。
+
+    `_conn` 等名字不在 db 的 `__dict__` 里（唯一定义点在 connection），而
+    `unittest.mock._patch.__exit__` 对"不在 `__dict__` 的名字"走 `delattr` 撤销、随后按
+    "删完名字还在不在"决定要不要 `setattr` 回原值。若模块类不实现 `__delattr__`，撤销
+    会抛 `AttributeError: _conn`（teardown error）；只实现"删得掉"还不够——必须真的删得掉
+    （`hasattr` 变假），否则原值永不被 setattr 回来、打桩静默残留成 None。
+    """
+
+    SENTINEL = object()
+
+    def test_patch_object_round_trips_real_state(self):
+        path = self._temp_db()
+        c = impl.init_db(db_file=path, cleanup=False)
+        with mock.patch.object(impl, "_conn", self.SENTINEL):
+            self.assertIs(impl._conn, self.SENTINEL, "打桩期间门面读取应看到替身")
+            self.assertIs(conn_mod.current(), self.SENTINEL)
+        self.assertIs(conn_mod.current(), c,
+                      "退出打桩必须把真连接恢复回来（丢成 None 即静默残留）")
+        self.assertIs(impl._conn, c)
+
+    def test_patch_string_target_round_trips(self):
+        path = self._temp_db()
+        c = impl.init_db(db_file=path, cleanup=False)
+        with mock.patch("yiban.store.db._conn", self.SENTINEL):
+            self.assertIs(impl._conn, self.SENTINEL)
+        self.assertIs(conn_mod.current(), c)
+        self.assertIs(impl._conn, c)
+
+    def test_monkeypatch_delattr_undo_restores(self):
+        """pytest `monkeypatch.delattr` 式撤销：delattr 得掉、undo 后真状态复原。"""
+        path = self._temp_db()
+        c = impl.init_db(db_file=path, cleanup=False)
+        mp = pytest.MonkeyPatch()
+        try:
+            mp.delattr(impl, "_conn")
+            self.assertFalse(hasattr(impl, "_conn"),
+                             "删不掉的话 undo 不会 setattr 回原值（mock 同理）")
+            with self.assertRaises(AttributeError):
+                impl._conn
+            self.assertIs(conn_mod.current(), c, "门面摘名不该动 connection 的真状态")
+        finally:
+            mp.undo()
+        self.assertIs(impl._conn, c)
+        self.assertIs(conn_mod.current(), c)
+
+    def test_delattr_of_unknown_name_still_raises(self):
+        """非连接状态名字仍走 ModuleType 语义（真缺失必须抛 AttributeError）。"""
+        with self.assertRaises(AttributeError):
+            del impl.definitely_not_a_name
 
 
 class InitDbSemanticsTest(_ConnStateBase):
