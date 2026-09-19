@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""模块化门禁：默认 600 行目标 + 超限必须写明工程理由。
+"""模块化门禁：按类型设目标行数 + 超限必须写明工程理由。
 
 `PROMPT.md` §5.2 第 4/7 条禁止"继续做超长文件"与"堆砌代码"。但**红线不是目的**：
 真正的判据是"拆了是否更好维护"。若两个功能本就相似相通，硬拆会把原本一次函数调用
@@ -7,7 +7,7 @@
 
 因此本门禁的规则是：
 
-1. 未登记的文件 ≤ `LIMIT`（600 行）；
+1. 未登记的文件 ≤ 该类型的目标上限（`LIMITS`：py 600 / js·css 800 / html·sh 400 行）；
 2. 登记（`OVERSIZED`）的文件必须给出**工程理由**：为什么它现在这么大、为什么不拆
    （或不立刻拆）、下一步怎么处理。理由写不出 20 字以上就失败——**要么拆，要么说清楚**；
 3. 登记项可以给硬上限（`limit`）也可以放弃（`None`，表示"按理由判断，允许增长"）；
@@ -22,12 +22,14 @@
 ④ 是否有第二个调用方（复用）？是→拆。
 """
 import os
+import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 目标上限（`45` §3.1）
-LIMIT = 600
+# 各类型目标上限：行数语义不同（py 源码、js/css 资源、html/sh 模板与脚本），
+# 阈值按现值分布给足余量，又不放过真正的膨胀
+LIMITS = {".py": 600, ".js": 800, ".css": 800, ".html": 400, ".sh": 400}
 # 绝对上限：与逐行较劲无关，只拦"失控式堆砌"
 HARD_CAP = 12000
 
@@ -35,21 +37,51 @@ HARD_CAP = 12000
 # 理由需包含：它是什么、为什么现在这样、下一步。
 OVERSIZED = {
     "web/app.py": (None, (
-        "Flask 工厂 + 全部路由 + 渲染辅助，M5 计划拆为 routes/services/security/render。"
+        "Flask 工厂 + 全部路由 + 渲染辅助，既定拆法是 routes/services/security/render 四层。"
         "当前未拆的工程原因：路由函数大量共享 create_app 内的闭包状态（_file_lock 保护的"
         "读改写序列、按会话的限速表），先拆会把共享状态改成跨模块注入，收益低于风险；"
-        "M5 已有既定拆法（蓝图 + 服务层），届时按依赖自然切分。"
+        "既定拆法（蓝图 + 服务层）按依赖自然切分，届时一次到位。"
     )),
     "yiban/store/db.py": (None, (
-        "SQLite 数据访问层（连接/迁移/各表 CRUD/清理）。已按 M4 计划从 scripts/db.py "
-        "移入 store（旧路径只剩兼容壳）；verify_jobs 与 accounts 已按表迁出"
-        "（见 yiban/store/），剩余部分继续按表迁，不一次性重构的原因：迁移需与冻结的"
-        "历史迁移函数共存（迁移不可变），批量搬动会同时动 schema 与读写路径，风险高。"
+        "SQLite 数据访问层的门面与尚未按域拆出的表访问。已拆出并"
+        "再导出：连接（connection）、迁移（migrations）、审计链（audit_chain）、事件（events）、"
+        "用户与注销（users）、每日清理（cleanup）。剩余部分不是'没拆'而是'还没拆'：accounts 表 "
+        "CRUD 与加解密、time_prefs、session_cache、时钟守卫与 app_meta、追踪盐哈希五个域，"
+        "外加跨域粘合（写事务入口、连带清理 _cascade_phone_owned、清理留痕 _record_purge_event/"
+        "_table_min_max/_clock_jump_guard）——粘合函数被拆出模块反向依赖（events/cleanup/users "
+        "都经门面取），拆走就得改成跨模块传递。下一步：按域继续迁出，accounts CRUD 迁入现有 "
+        "accounts.py，time_prefs / session_cache / clock+meta 各立模块；粘合函数留在门面。"
+    )),
+    "yiban/store/users.py": (800, (
+        "用户与注销域：users / user_delete_requests 两表的读写、"
+        "最后管理员守卫、软注销与反悔恢复、到期物理清除、注销请求冷却计数，行数含注释契约要求"
+        "的四问头与函数级说明（占约四分之一）。整块服务同一条状态机（软注销→宽限→恢复/物理"
+        "清除）与同一对表，拆开就得把'最后管理员守卫'与'连带清理'在模块间来回传（门禁判据①"
+        "成立、②不成立）。上限 800：超过则按「用户读写 + 角色守卫」与「注销/恢复/到期清除」"
+        "切成两个模块，守卫用局部导入共享。"
+    )),
+    "yiban/store/audit_chain.py": (None, (
+        "审计链域：HMAC 哈希链写入/校验、全表重链留痕、"
+        "库外锚点族、审计密钥来源与缓存。四块服务于同一条协议与同一份取证状态——锚点校验"
+        "要读清理留痕、体检要汇总链/锚点/留痕全部信号，拆开就得把这份状态改成跨模块传递"
+        "（门禁判据①「同一件事」成立、②不成立）。下一步：若继续膨胀需要再拆，按「密钥来源"
+        "与缓存（_audit_key 族，只依赖 connection/env_io/env_lock）」与「锚点文件（record/"
+        "verify/anchor 族）」切成两个模块；当前不拆，避免为搬家再动 db 门面与打桩面"
+        "（db._audit_hash = 替身 / db._AUDIT_KEY_CACHE = None 必须落在真定义点）。"
+    )),
+    "yiban/store/migrations.py": (None, (
+        "schema 版本迁移域：基线建表、migrate_v1..v17、"
+        "版本编排 `_run_migrations` 与迁移助手 `_table_columns`/`_ensure_column`/`_ensure_index`。"
+        "整块是**一份按版本号冻结的时间序列**——已发布的迁移函数不可再改，拆开就得把冻结的"
+        "迁移登记表与「核心/可选、失败是否阻断启动」的编排判据在模块间来回传递（门禁判据①"
+        "「同一件事」成立、②通信成本高）。下一步：版本只增不改，行数会持续增长；若超过 1000 "
+        "行，按「迁移项（v1..vN，纯 DDL/数据修复）」与「编排 + 助手」切成两个模块，迁移登记表"
+        "留在编排侧作唯一登记点。当前不拆，避免为搬家再动 db 门面与 `db._MIGRATIONS` 读写转发面。"
     )),
     # scripts/signin.py 已按"执行一轮"的边界切分为 yiban/engine/*（最大 round.py 507 行），
     # 旧路径只剩兼容壳（约 130 行），故不再登记。
     "yiban/egress.py": (None, (
-        "出口分配 + 执行体清单模型（2026-09-17 加入 `YIBAN_EXECUTORS` 后 618 行）。"
+        "出口分配 + 执行体清单模型（纳入 `YIBAN_EXECUTORS` 出口清单后规模上升）。"
         "两半**互相咬合**：清单的兜底/回退读取要用 `resolve`（清单优先、旧三键回退），"
         "而 `resolve` 又要读清单——按「拆开」办就得让两个模块来回传「当前清单」，"
         "通信成本高于收益（门禁判据②）。已定好的拆法：把清单模型（parse/dump/行增删改/"
@@ -74,11 +106,39 @@ OVERSIZED = {
         "三块服务于同一个屏与**同一份接口响应**：lastData 被 KPI、清单渲染、行弹窗三处读，"
         "banner/focusAfterPaint/rowName/putRow 等助手三处共用——拆开等于把这份共享状态改成跨模块协议"
         "（门禁判据②），而任何接口字段变动仍要同时改多处（判据③不成立）。"
-        "2026-09-17 已按上一版登记的下一步抽出「容量实测与建议」（搬去 settings-quota.js）；"
-        "随后按后端交付（docs/refactor/90）给三种写操作（追加行/删行/改行）补了口令门，"
-        "并加了「只改名不打门」的分支，涨到 706 行 → 上限由 700 提到 780。"
+        "容量实测与建议已抽到 settings-quota.js；三种写操作（追加行/删行/改行）各带口令门，"
+        "另有「只改名不打门」的分支，故上限设在 780。"
         "再涨就先切行内设置弹窗：openRow 及其独有助手（infoTip/linkBtn/ROW_HELP），"
         "届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
+    )),
+    "web/static/js/core.js": (None, (
+        "前端交互层核心（classic script，非 module）：全局 api/toast/modal/时钟/身份/导航行为，"
+        "以及各页共用的 DOM 与脱敏助手，运行期只加载一次并挂在 window.YB。规模来自**共享本身**"
+        "——所有页面模块都依赖这些全局符号，且加载顺序守卫钉住「core.js 先于组件与页面模块」，"
+        "拆成多文件就得给同一份全局词法作用域加跨脚本加载协议（判据②通信成本高），并放大"
+        "「拆文件撞名」的风险面。下一步：若继续增长，按「网络/身份」「UI 反馈」「助手函数」切分，"
+        "切分前先重钉加载顺序守卫。"
+    )),
+    "web/static/css/app.css": (None, (
+        "项目层唯一集中样式表：在 vendor 的 adminator.css 之后加载，只写设计系统没覆盖、"
+        "或需按本项目语义扩展的部分。规模来自**单一样式上下文**——颜色/阴影/圆角一律取 "
+        "Adminator 的主题 token，深浅两套主题才自动成立；字体栈是全站单一事实源，另有静态"
+        "守卫对账收口。拆文件会破坏「加载顺序在 adminator.css 之后」与 token/字体收口的唯一"
+        "来源性质（判据②）。下一步：若继续增长，把「token 与字体栈」（必须仍排最前）与"
+        "「各节组件样式」切成两个文件，并同步收口守卫的对账清单。"
+    )),
+    "web/templates/pages/work_settings.html": (None, (
+        "管理端系统设置页：全部系统级配置分区集中在一个模板里，含字段级权限矩阵（必须逐字段"
+        "复刻后端判定）与模板素材复用说明。整页共用一套 tab 契约（[data-tab-group] + "
+        "[data-tab-target] + [data-tab-id]）与一次「改动只标脏、点保存才提交」的语义，"
+        "按分区拆文件会把权限矩阵与 tab 装配复制多份，并引入跨模板包含层（判据②）。"
+        "下一步：若继续增长，把各分区移入 partials 由本页 include，tab 契约与权限说明"
+        "留在本页作唯一登记点。"
+    )),
+    "scripts/backup.sh": (800, (
+        "运维脚本：数据文件一致性快照 + 加密 + 保留策略 + --restore 恢复演练，"
+        "头部使用/安装说明与各分支的防护校验占相当篇幅；非运行时模块，给硬上限防继续"
+        "膨胀，超过上限则按「备份」与「恢复/校验」拆两个脚本。"
     )),
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),
@@ -88,10 +148,18 @@ OVERSIZED = {
 
 # 扫描范围：运行时与共享代码（不含测试、构建产物、第三方）
 SCAN_DIRS = ["scripts", "web", "docker", "yiban"]
+# 各扫描目录纳入的扩展名：py 全量递归；前端资源限 web 内的 js/css/html（vendor 由剪枝排除）
+SCAN_EXT = {
+    "scripts": (".py", ".sh"),
+    "web": (".py", ".js", ".css", ".html"),
+    "docker": (".py",),
+    "yiban": (".py",),
+}
 
 
 def _iter_scanned():
     for d in SCAN_DIRS:
+        exts = SCAN_EXT[d]
         root_dir = os.path.join(BASE, d)
         if not os.path.isdir(root_dir):
             continue
@@ -99,11 +167,12 @@ def _iter_scanned():
             dirnames[:] = [x for x in dirnames
                            if x not in ("__pycache__", "vendor", "node_modules", ".venv")]
             for name in sorted(filenames):
-                if not name.endswith(".py"):
+                ext = os.path.splitext(name)[1]
+                if ext not in exts:
                     continue
                 full = os.path.join(dirpath, name)
                 rel = os.path.relpath(full, BASE).replace(os.sep, "/")
-                yield rel, full
+                yield rel, full, LIMITS[ext]
 
 
 def _count_lines(path):
@@ -111,20 +180,52 @@ def _count_lines(path):
         return sum(1 for _ in f)
 
 
+def _size_violations(entries):
+    """未登记的超限文件清单；门禁与自检共用（entries 为 (rel, full, limit) 序列）。"""
+    out = []
+    for rel, full, limit in entries:
+        n = _count_lines(full)
+        if rel in OVERSIZED or n <= limit:
+            continue
+        out.append((rel, n, limit))
+    return out
+
+
 class ModuleSizeGateTest(unittest.TestCase):
     def test_unlisted_files_within_target(self):
-        violations = []
-        for rel, full in _iter_scanned():
-            n = _count_lines(full)
-            if rel in OVERSIZED or n <= LIMIT:
-                continue
-            violations.append(f"  {rel}: {n} 行 > {LIMIT} 行")
+        violations = [
+            f"  {rel}: {n} 行 > {limit} 行"
+            for rel, n, limit in _size_violations(_iter_scanned())
+        ]
         if violations:
             self.fail(
                 "文件超过目标规模且未登记（PROMPT.md §5.2 第 4/7 条）：\n"
                 + "\n".join(violations)
                 + "\n请二选一：按上文判据拆开，或在 OVERSIZED 里写明工程理由与下一步。"
             )
+
+    def test_gate_rejects_unregistered_oversized(self):
+        """自检：未登记的超限文件必须被拦下，已登记者放行（临时文件即用即删）。"""
+        limit = LIMITS[".js"]
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "oversized_sample.js")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("// x\n" * (limit + 1))
+            rel = "tmp/oversized_sample.js"
+            self.assertEqual(
+                len(_size_violations([(rel, path, limit)])), 1,
+                "未登记的越线文件未被门禁拦下")
+            self.assertEqual(_size_violations([(rel, path, limit * 1000)]), [])
+        # 已登记者即便越线也放行
+        core = os.path.join(BASE, "web", "static", "js", "core.js")
+        self.assertEqual(
+            _size_violations([("web/static/js/core.js", core, LIMITS[".js"])]), [])
+
+    def test_scan_covers_all_types(self):
+        """扫描面自检：各扩展名都必须扫到文件，防 SCAN_EXT 掉项后门禁静默失明。"""
+        seen = {os.path.splitext(rel)[1] for rel, _, _ in _iter_scanned()}
+        for ext in LIMITS:
+            self.assertIn(ext, seen, f"扫描面漏掉 {ext} 类型文件")
 
     def test_oversized_entries_explain_themselves(self):
         """允许增长（limit=None）的登记项必须给出实质理由——"要么拆，要么说清楚"。
@@ -140,7 +241,7 @@ class ModuleSizeGateTest(unittest.TestCase):
             self.fail("超限登记缺少工程理由：\n" + "\n".join(thin))
 
     def test_oversized_hard_limits_are_kept(self):
-        """给了硬上限的登记项（工具脚本）不得越线。"""
+        """给了硬上限的登记项不得越线。"""
         violations = []
         for rel, (limit, _) in OVERSIZED.items():
             full = os.path.join(BASE, rel)
@@ -156,7 +257,7 @@ class ModuleSizeGateTest(unittest.TestCase):
         """绝对上限：拦"失控式堆砌"，与逐行红线无关。"""
         violations = [
             f"  {rel}: {_count_lines(full)} 行 > 绝对上限 {HARD_CAP}"
-            for rel, full in _iter_scanned()
+            for rel, full, _ in _iter_scanned()
             if _count_lines(full) > HARD_CAP
         ]
         if violations:
