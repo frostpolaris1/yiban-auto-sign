@@ -95,11 +95,15 @@
     idle: "badge--muted",
     stale: "badge--bad"
   };
+  // 故障转移那行的状态一律**以配置开关为主语**报，别把"开关没开"与"没跑起来"说成一件事——
+  // 旧文案「未开启故障转移」既能读成"这个功能没启用"，也能读成"这个执行体还没启动"，第一次看到
+  // 分不清该去哪一栏找原因。故：off = 配置里没启用（开关关着）；declared_not_running = 声明启用但
+  // 当前没有进程（窗口外属正常，窗口内才算异常，见 fbAbnormal）；running_not_declared = 反过来。
   var FB_TEXT = {
-    off: "未开启故障转移",
-    running: "正在运行",
-    declared_not_running: "已开启但没跑起来",
-    running_not_declared: "有进程在跑（非配置拉起）"
+    off: "未启用",
+    running: "运行中",
+    declared_not_running: "已启用·未运行",
+    running_not_declared: "运行中·配置未启用"
   };
   var FB_CLASS = {
     off: "badge--muted",
@@ -157,10 +161,12 @@
   }
 
   /* ---------------- 清单：规模 KPI + 一览表 ---------------- */
-  // 规模 KPI（用户 2026-09-17）：前两张来自接口的清单本身；后两张是**容量配额**的换算——
-  // 用户上限 ÷ 并行行数（向上取整）与上限本身，口径写在卡头 ⓘ 里，卡里不放说明文字。
-  // 分母只数「并行」行（故障转移与停用不参与拉起，后端 workers.configured 也是这个口径）。
-  // 上限 0（不限）显示「不限」；容量数据没取到显示「—」——都不编造数字。
+  // 规模 KPI（口径 2026-09-18 用户裁决改版）：前两张来自接口的清单本身；后两张来自页面注入的
+  // 容量对象（`/api/settings` 的 capacity）——执行体分的是**账号**，故不再用用户容量上限：
+  //   «平均每执行体分到的人数» = **计入容量的账号数** ÷ **并行执行体数**（只数「并行」行：
+  //     停用与故障转移不分担账号，与后端 workers.configured 同口径），向上取整；
+  //   «设定的账号容量上限» = 容量配额里的**账号**上限（与用户上限是两回事，别混用）。
+  // 取不到/没配并行行显示「—」，上限 0（不限）显示「不限」——都不编造数字。
   function kpiSet(id, val, sup, emptyText) {
     var el = $(id);
     if (!el) return;
@@ -174,22 +180,25 @@
     el.appendChild(document.createTextNode(String(val)));
     if (sup) el.appendChild(YB.el("sup", { text: sup }));
   }
-  // 容量上限由页面注入（同一页两处数据源：本分区 /api/scheduler/executors、上限 /api/settings）。
-  // 返回 null = 还没取到（与 0 = 不限 区分开，"不限"不能当成"未知"显示）。
-  function usersMax() {
+  // 容量对象由页面注入（本分区读 /api/scheduler/executors，容量上限来自 /api/settings）。
+  // 缺键返回 null（与 0 区分开：0 是真实值——账号上限 0 = 不限，不能当成"未知"）。
+  function capacityNum(key) {
     var c = typeof ctx.capacity === "function" ? ctx.capacity() : null;
-    if (!c) return null;
-    return count(c.users_max);
+    if (!c || c[key] == null) return null;
+    return count(c[key]);
   }
   function paintKpis() {
     var loaded = !!lastData;
     var w = count(lastData && lastData.workers && lastData.workers.configured);
-    var umax = usersMax();
-    var per = (umax != null && umax > 0 && w > 0) ? Math.ceil(umax / w) : null;
+    var acc = capacityNum("accounts");        // 计入容量的账号数（后端唯一口径）
+    var amax = capacityNum("accounts_max");   // 账号容量上限（0 = 不限）
+    var per = (acc != null && w > 0) ? Math.ceil(acc / w) : null;
     kpiSet("set-exec-kpi-rows", loaded ? executors().length : null);
     kpiSet("set-exec-kpi-worker", loaded ? w : null);
     kpiSet("set-exec-kpi-perexec", loaded ? per : null, "人");
-    kpiSet("set-exec-kpi-capacity", loaded ? umax : null, "人", umax === 0 ? "不限" : "—");
+    if (!loaded) kpiSet("set-exec-kpi-capacity", null, "人", "—");
+    else if (amax === 0) kpiSet("set-exec-kpi-capacity", null, "人", "不限");
+    else kpiSet("set-exec-kpi-capacity", amax, "人");
   }
 
   // 状态与当日各占一栏（用户 2026-09-17：合在一格里两串字挤在一起，分不清哪串是状态）。
@@ -685,9 +694,10 @@
     });
   }
 
-  // options: { isMaster, capacity: () => ({users_max}), onData: (payload) => void }
-  //   capacity：规模 KPI 要「用户容量上限」，它来自 /api/settings（页面持有）——用回调取值，
-  //             避免本组件再请求一次；上限改了由页面调 refreshKpis() 重画。
+  // options: { isMaster, capacity: () => (容量对象), onData: (payload) => void }
+  //   capacity：规模 KPI 要「计入容量的账号数」与「账号容量上限」（`accounts` / `accounts_max`），
+  //             它来自 /api/settings（页面持有）——用回调取值，避免本组件再请求一次；
+  //             上限改了由页面调 refreshKpis() 重画。
   //   onData  ：把同一份响应交给「容量配额」分区的卡片（容量建议与实测）。
   function mount(options) {
     options = options || {};
