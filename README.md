@@ -960,7 +960,7 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
 ```
 
 > 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。
-> 单文件规模目标 600 行，超出目标者须在 `tests/test_module_size_gate.py` 写明工程理由。
+> 单文件规模目标按类型设阈（py 600 / js·css 800 / html·sh 400 行），超出目标者须在 `tests/test_module_size_gate.py` 写明工程理由。
 > 命令行有两条等价通道：人类按本文的命令（`bash run.sh`、`python3 scripts/signin.py ...`）照旧可用；统一入口与机器可读输出见 [`docs/dev/cli.md`](docs/dev/cli.md)。
 
 ### 签到流程
