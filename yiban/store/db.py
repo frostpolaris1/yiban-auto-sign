@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""SQLite 数据访问层（web / signin 双进程共用）的门面与尚未按域拆出的表访问。
+"""SQLite 数据访问层（web / signin 双进程共用）的门面与跨域粘合助手。
 
 - accounts/users 数据从 JSON 整文件读写迁移到 SQLite（yiban.db，WAL 模式）
   ——根治并发覆盖 / 索引漂移 / 进程外覆盖三个历史问题
@@ -10,13 +10,14 @@
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
 
-已按域拆出的模块（定义点不在本模块，这里只再导出）：
+本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
-  `init_db` 留在这里——它是启动序列的编排点，也须与冻结的历史迁移函数共存。
 - `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`，以及 JSON → SQLite
   自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
+- `verify_jobs`：在线校验任务表的创建/领取/结算/取消、超龄回收与保留期清理。
+- `claims`：签到领取池（多执行体协调）的领取/续租/结算/放弃与清理。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
 - `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
 - `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
@@ -25,9 +26,12 @@
 - `clock_meta`：时钟守卫的告警留痕与读取、app_meta 通用单键读写。
 - `tracking`：追踪盐（YIBAN_TRACK_SALT）的取用/落盘与 IP、手机号加盐哈希。
 
-本模块自身仍持有：时钟跳变守卫本体（`_clock_jump_guard`），以及跨域粘合助手（写事务入口、
-连带清理、清理留痕）。子模块反向经本门面按属性取这些名字（见各模块的 `_facade()`）；
-`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块的再导出与读写转发维持不变。
+本模块自身仍持有：启动编排 `init_db`（与冻结的历史迁移函数共存）、密钥来源解析
+`resolve_env_file` / `require_existing_env_file`、写事务入口 `_begin_immediate`、时钟跳变
+守卫本体 `_clock_jump_guard`，以及跨域粘合助手 `_record_purge_event` / `_table_min_max` /
+`_cascade_phone_owned` / `_clear_session_cache_by_phones`。子模块反向经本门面按属性取这些
+名字（见各模块的 `_facade()`）；`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块
+的再导出与读写转发维持不变。
 """
 import contextlib
 import datetime
