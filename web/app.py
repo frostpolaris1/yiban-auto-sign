@@ -891,7 +891,24 @@ SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 _s
 
 # 日志格式（与 signin.py 相同）
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
-SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] (\w+): (.*)")
+# logger 名允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：旧正则用 `(\w+)`，匹配不到
+# 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）因此整行被丢弃，日志页只剩
+# 汇总与结果——用户 2026-09-19 反馈"只显示结果的话，不如直接看签到事件"。
+SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] ([\w.]+): (.*)")
+
+
+def _log_line_visible(level, logger_name):
+    """日志页 / 导出 / 账号卡「最近记录」显示哪些行（2026-09-19 用户裁决：提高显示等级）。
+
+    - `yiban` 及其**子模块**（`yiban.*`）：全部级别。签到链路的细节都在这些 logger 下
+      （`yiban.fyiban.protocol` 的登录成功、`yiban.client` 的生成定位与签到成功、`yiban.engine.*`
+      的逐账号判定），漏掉它们页面就只剩结果；DEBUG 也是部署自己开的级别，开了就该看得到。
+    - 其它组件（werkzeug / mailer / notify 等）：仅 WARNING 以上——它们的 INFO 与签到无关
+      （请求日志、发送成功），全量入列会把日志页灌满、把故障留痕冲走。
+    """
+    if logger_name == "yiban" or logger_name.startswith("yiban."):
+        return True
+    return level in ("WARNING", "ERROR", "CRITICAL")
 
 # 签到状态码与图标/文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
 # 历史上本文件另定义了一份同名常量与 STATUS_ICON/STATUS_TEXT，与 signin 侧各自漂移
@@ -1022,12 +1039,13 @@ def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
 
 
 def parse_sign_log(path):
-    """解析签到日志：返回最近日志行列表（yiban 非 DEBUG 行）。
+    """解析签到日志：返回最近日志行列表（可见性口径见 `_log_line_visible`）。
 
     2026-08-16 审查轮：原返回值 (states, recent) 的 states（日志符号 → 图标）从未被
     正确消费——账号状态的事实源是 sign-state 文件（load_sign_state，/api/accounts），
     日志符号与前端状态码语义不符，曾被 /api/logs 透传污染前端图标/统计卡（历史遗留）。
-    现仅返回 recent 行。
+    现仅返回 recent 行；`parse_sign_log` 与 `_log_lines_for` 共用同一条可见性规则，
+    避免两处各写一遍必然漂移（2026-09-19 收口）。
     """
     recent = []
     for line in _tail_lines(path):
@@ -1035,13 +1053,7 @@ def parse_sign_log(path):
         if not m:
             continue
         _date, level, logger_name, _msg = m.groups()
-        if level == "DEBUG":
-            continue
-        if logger_name != "yiban" and level not in ("WARNING", "ERROR", "CRITICAL"):
-            # v0.26.3：签到日志（yiban）照旧全量展示；其他组件（web/notify/
-            # mailer/db）仅展示告警级输出——它们是"非签到功能留下的最终结果"
-            # （如邮件/推送发送失败），此前只进 journald 后台页看不到。
-            # INFO 级维持不展示，日志页洁净度不变。
+        if not _log_line_visible(level, logger_name):
             continue
         recent.append(line.strip())
     return recent
@@ -1067,7 +1079,7 @@ def log_path_for(date_str=None):
 
 
 def _log_lines_for(date_str):
-    """读取指定日期日志的行（行首日期过滤防跨天残留；仅 yiban 非 DEBUG 行）。
+    """读取指定日期日志的行（行首日期过滤防跨天残留；可见性口径见 `_log_line_visible`）。
 
     文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
     """
@@ -1080,10 +1092,7 @@ def _log_lines_for(date_str):
         if not m:
             continue
         _, level, logger_name, _msg = m.groups()
-        if level == "DEBUG":
-            continue
-        if logger_name != "yiban" and level not in ("WARNING", "ERROR", "CRITICAL"):
-            # v0.26.3：与 parse_sign_log 同口径——其他组件仅告警级入列
+        if not _log_line_visible(level, logger_name):
             continue
         out.append(line.strip())
     return out
