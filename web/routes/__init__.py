@@ -135,7 +135,7 @@ def read_audit_denied_trace():
 
 
 def register_all(app):
-    """装配全部路由域。顺序与原定义顺序一致；路径冲突会在启动时直接报错。"""
+    """装配全部路由域。各域注册顺序不参与路由判定（无同路径同方法重叠）。"""
     from web.routes import (
         accounts_api,
         auth,

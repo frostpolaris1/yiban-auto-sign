@@ -15,8 +15,8 @@ sid，使旧会话（含被盗副本）即时失效。
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配。登录失败表与登录/注册频率表经
 `current_app.extensions` 取用——它们原是 create_app 工厂局部可变状态，必须保"每个
-app 实例一份"（测试进程反复 create_app，进程级共享会跨实例串计数）。登录失败表与
-仍未搬走的改密/注销/恢复路由共用同一份账（安全语义依赖同一份计数）。
+app 实例一份"（测试进程反复 create_app，进程级共享会跨实例串计数）。登录失败表由
+`web.routes.login_fails()` 单点取用，认证/个人域共用同一份账（安全语义依赖同一份计数）。
 
 **通信**
 视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
