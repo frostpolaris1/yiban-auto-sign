@@ -61,6 +61,7 @@ from _frontend_src import frontend_source
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(BASE, "web", "templates")
 APP_PY = os.path.join(BASE, "web", "app.py")
+ROUTES_DIR = os.path.join(BASE, "web", "routes")
 
 # 认证页与用户端两页（本清单里的页面在共享页脚里恰好各出现一次）；
 # 管理端七页由下方 ADMIN_PAGES 覆盖 —— 两份清单页面集互斥，不是重复断言。
@@ -103,8 +104,24 @@ UNIQUE_MARKERS = {
 
 # 侧栏 items 元组：('key', '/href', 'icon', '文案')
 _NAV_ITEM_RE = re.compile(r"\(\s*'([\w-]+)'\s*,\s*'(/[^']*)'\s*,")
-# 页面路由：只取静态路径（含 <参数> 的动态路由不可能是导航目标）
-_ROUTE_RE = re.compile(r'@app\.route\(\s*["\'](/[^"\'<>]*)["\']')
+# 页面路由：只取静态路径（含 <参数> 的动态路由不可能是导航目标）。
+# 路由分域后有两种注册写法：app.py 内的 @app.route 装饰器，以及
+# web/routes/*.py 的 register(app) 里 app.add_url_rule(路径, …)。
+_ROUTE_RE = re.compile(
+    r'(?:@app\.route\(|app\.add_url_rule\()\s*["\'](/[^"\'<>]*)["\']'
+)
+
+
+def _registered_page_paths():
+    """全部注册源码里出现的静态页面路径：app.py + web/routes/*.py。"""
+    files = [APP_PY]
+    if os.path.isdir(ROUTES_DIR):
+        files += [os.path.join(ROUTES_DIR, n)
+                  for n in sorted(os.listdir(ROUTES_DIR)) if n.endswith(".py")]
+    paths = set()
+    for path in files:
+        paths |= set(_ROUTE_RE.findall(_read(path)))
+    return paths
 
 
 def _read(path):
@@ -147,7 +164,7 @@ class PageConsistencyTest(unittest.TestCase):
         sidebar = _read(os.path.join(TEMPLATES, "partials", "sidebar.html"))
         nav = _NAV_ITEM_RE.findall(sidebar)
         self.assertTrue(nav, "侧栏未解析到 nav 条目（items 列表结构变了？）")
-        registered = set(_ROUTE_RE.findall(_read(APP_PY)))
+        registered = _registered_page_paths()
         missing = [href for _key, href in nav if href not in registered]
         self.assertEqual(
             missing,
