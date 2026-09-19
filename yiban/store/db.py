@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""SQLite 数据访问层（web / signin 双进程共用）。
+"""SQLite 数据访问层（web / signin 双进程共用）的门面与尚未按域拆出的表访问。
 
 - accounts/users 数据从 JSON 整文件读写迁移到 SQLite（yiban.db，WAL 模式）
   ——根治并发覆盖 / 索引漂移 / 进程外覆盖三个历史问题
@@ -9,6 +9,20 @@
 - 自动迁移：accounts/users 表为空且对应 JSON 存在 → 导入（幂等）→ JSON 改名 .bak 保留逃生门
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
+
+已按域拆出的模块（定义点不在本模块，这里只再导出）：
+- `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
+  `init_db` 留在这里——它是启动序列的编排点，也须与冻结的历史迁移函数共存。
+- `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`。
+- `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
+- `events`：sign_events 的写入/查询/统计与保留期清理。
+- `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
+- `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
+
+本模块自身仍持有：accounts 表 CRUD 与加解密、time_prefs、session_cache、时钟守卫与
+app_meta、追踪盐哈希等尚未按域拆出的部分，以及跨域粘合助手（写事务入口、连带清理、
+清理留痕）。子模块反向经本门面按属性取这些名字（见各模块的 `_facade()`）；
+`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块的再导出与读写转发维持不变。
 """
 import contextlib
 import datetime
@@ -17,12 +31,11 @@ import hmac
 import json
 import logging
 import os
-import re
 import secrets
 import sqlite3
 import sys
 import threading
-import time
+import types
 
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
@@ -39,14 +52,22 @@ if _REPO_ROOT not in sys.path:
 # 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
 # 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
 from yiban import clock  # noqa: E402
-from yiban.infra import account_crypto, env_io, env_lock  # noqa: E402
+from yiban.infra import account_crypto, env_lock  # noqa: E402
 from yiban.store import accounts as _accounts  # noqa: E402
+from yiban.store import audit_chain as _audit_chain  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
+from yiban.store import cleanup as _cleanup  # noqa: E402
+from yiban.store import connection as _connection  # noqa: E402
+from yiban.store import events as _events  # noqa: E402
+from yiban.store import migrations as _migrations  # noqa: E402
+from yiban.store import users as _users  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
 account_is_signable = _accounts.is_signable
 account_signs_in = _accounts.signs_in
 purge_orphan_session_cache = _accounts.purge_orphan_session_cache
+# accounts.phone 唯一约束冲突的可区分异常，定义点随 accounts 表在 yiban/store/accounts.py
+DuplicatePhoneError = _accounts.DuplicatePhoneError
 
 VERIFY_JOB_RETENTION_DAYS = _verify_jobs.VERIFY_JOB_RETENTION_DAYS
 VERIFY_JOB_PENDING = _verify_jobs.VERIFY_JOB_PENDING
@@ -87,67 +108,233 @@ claim_owners_for_day = _claims.owners_for_day
 claim_owners_since = _claims.owners_since
 purge_sign_claims = _claims.purge
 
+# 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
+# `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
+# 三个**可变状态**名（`_AUDIT_KEY_CACHE` / `_AUDIT_FAIL_UNFLUSHED` / `_AUDIT_FAIL_UNFLUSHED_DB`）
+# 不走这里的快照式再导出，而走下方模块类的读写转发——否则 `db._AUDIT_KEY_CACHE = None`
+# （tests/test_rekey_key_source.py 的清缓存）只会写在一份陈旧副本上、真缓存纹丝不动。
+_parse_env_file = _audit_chain._parse_env_file
+_decode_audit_key = _audit_chain._decode_audit_key
+_resolve_key_env_file = _audit_chain._resolve_key_env_file
+_write_audit_key_to_env_file = _audit_chain._write_audit_key_to_env_file
+_assert_key_source_certain = _audit_chain._assert_key_source_certain
+_audit_key = _audit_chain._audit_key
+_audit_hash = _audit_chain._audit_hash
+_rechain_audit_logs = _audit_chain._rechain_audit_logs
+_record_rechain_event = _audit_chain._record_rechain_event
+audit_rechain_events = _audit_chain.audit_rechain_events
+
+_bump_audit_write_failure = _audit_chain._bump_audit_write_failure
+_unflushed_audit_failures = _audit_chain._unflushed_audit_failures
+_reset_audit_fail_memory = _audit_chain._reset_audit_fail_memory
+audit_persisted_write_failures = _audit_chain.audit_persisted_write_failures
+audit_write_failures = _audit_chain.audit_write_failures
+audit = _audit_chain.audit
+audit_head_hash = _audit_chain.audit_head_hash
+audit_row_count = _audit_chain.audit_row_count
+verify_audit_chain = _audit_chain.verify_audit_chain
+
+audit_anchor_path = _audit_chain.audit_anchor_path
+_anchor_line_sha = _audit_chain._anchor_line_sha
+_parse_anchor_line = _audit_chain._parse_anchor_line
+_read_anchor_lines = _audit_chain._read_anchor_lines
+_get_anchor_meta = _audit_chain._get_anchor_meta
+_audit_purge_total = _audit_chain._audit_purge_total
+_audit_purge_events = _audit_chain._audit_purge_events
+audit_purge_total = _audit_chain.audit_purge_total
+audit_purge_events = _audit_chain.audit_purge_events
+record_audit_anchor = _audit_chain.record_audit_anchor
+_record_anchor_trace = _audit_chain._record_anchor_trace
+_last_audit_anchor = _audit_chain._last_audit_anchor
+_anchor_file_state = _audit_chain._anchor_file_state
+verify_audit_anchor = _audit_chain.verify_audit_anchor
+_purge_events_after_anchor = _audit_chain._purge_events_after_anchor
+_purge_event_covers = _audit_chain._purge_event_covers
+_purge_event_sets_min = _audit_chain._purge_event_sets_min
+_rechain_events = _audit_chain._rechain_events
+_rechain_hint = _audit_chain._rechain_hint
+audit_health = _audit_chain.audit_health
+_rechain_diagnostics = _audit_chain._rechain_diagnostics
+
+_AUDIT_KEY_LOCK = _audit_chain._AUDIT_KEY_LOCK
+_AUDIT_FAIL_KEY = _audit_chain._AUDIT_FAIL_KEY
+_AUDIT_FAIL_LOCK = _audit_chain._AUDIT_FAIL_LOCK
+_AUDIT_RETRIES = _audit_chain._AUDIT_RETRIES
+_AUDIT_RETRY_BASE_DELAY = _audit_chain._AUDIT_RETRY_BASE_DELAY
+_ANCHOR_V1_TOKENS = _audit_chain._ANCHOR_V1_TOKENS
+_ANCHOR_V2_TOKENS = _audit_chain._ANCHOR_V2_TOKENS
+_ANCHOR_META_KEY = _audit_chain._ANCHOR_META_KEY
+_AUDIT_PURGE_TOTAL_KEY = _audit_chain._AUDIT_PURGE_TOTAL_KEY
+_AUDIT_PURGE_EVENTS_KEY = _audit_chain._AUDIT_PURGE_EVENTS_KEY
+_PURGE_EVENTS_KEEP = _audit_chain._PURGE_EVENTS_KEEP
+_RECHAIN_EVENTS_KEY = _audit_chain._RECHAIN_EVENTS_KEY
+_RECHAIN_EVENTS_KEEP = _audit_chain._RECHAIN_EVENTS_KEEP
+_ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
+
+# 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
+# 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
+SIGN_EVENTS_RETENTION_DAYS = _events.SIGN_EVENTS_RETENTION_DAYS
+_normalize_limit = _events._normalize_limit
+add_sign_event = _events.add_sign_event
+add_sign_events_batch = _events.add_sign_events_batch
+sign_event_stats = _events.sign_event_stats
+sign_events_by_phone = _events.sign_events_by_phone
+sign_events_since = _events.sign_events_since
+probe_events_on = _events.probe_events_on
+sign_events_on = _events.sign_events_on
+sign_events_recent_date = _events.sign_events_recent_date
+_event_cleanup = _events._event_cleanup
+
+# 用户与注销域（唯一定义点在 yiban/store/users.py）：users / user_delete_requests 表的状态机、
+# 注销与反悔、到期物理清除按原样再导出，既有 `db.load_users()` / `db.restore_user()` /
+# `db.LastAdminError` 调用面与异常捕获不变。宽限期常量同时约束用户行与账号行的清除时机。
+SOFT_DELETE_RETENTION_DAYS = _users.SOFT_DELETE_RETENTION_DAYS
+SOFT_DELETE_RETENTION_SECONDS = _users.SOFT_DELETE_RETENTION_SECONDS
+PURGE_SKIP_CANCELLED_OWNER = _users.PURGE_SKIP_CANCELLED_OWNER
+DuplicateOwnerError = _users.DuplicateOwnerError
+LastAdminError = _users.LastAdminError
+set_user_sid = _users.set_user_sid
+load_users = _users.load_users
+find_user = _users.find_user
+find_user_any = _users.find_user_any
+filter_mail_notify = _users.filter_mail_notify
+admin_mail_recipients = _users.admin_mail_recipients
+create_user = _users.create_user
+update_user = _users.update_user
+_assert_not_last_admin = _users._assert_not_last_admin
+delete_user_with_accounts = _users.delete_user_with_accounts
+set_user_role = _users.set_user_role
+soft_delete_user_with_accounts = _users.soft_delete_user_with_accounts
+restore_user = _users.restore_user
+purge_deleted_users = _users.purge_deleted_users
+purge_deleted_users_hard = _users.purge_deleted_users_hard
+purge_old_delete_requests = _users.purge_old_delete_requests
+record_user_delete_request = _users.record_user_delete_request
+count_user_delete_requests = _users.count_user_delete_requests
+is_last_registered_admin = _users.is_last_registered_admin
+batch_user_ops = _users.batch_user_ops
+_delete_user_delete_requests = _users._delete_user_delete_requests
+
+# 每日清理域（唯一定义点在 yiban/store/cleanup.py）：清理编排与审计/账号保留期清除按原样
+# 再导出，web 每日线程的 `db.run_daily_cleanup()`、signin 启动的
+# `db.purge_expired_deleted_accounts()` 与测试直接调用的 `db._audit_cleanup(...)` 调用面不变。
+run_daily_cleanup = _cleanup.run_daily_cleanup
+_audit_cleanup = _cleanup._audit_cleanup
+_purge_expired_deleted = _cleanup._purge_expired_deleted
+purge_expired_deleted_accounts = _cleanup.purge_expired_deleted_accounts
+
+# 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v17、版本编排
+# `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
+# / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
+# （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。
+MigrationDeferred = _migrations.MigrationDeferred
+_ALLOWED_TABLES = _migrations._ALLOWED_TABLES
+_table_columns = _migrations._table_columns
+_ensure_column = _migrations._ensure_column
+_ensure_index = _migrations._ensure_index
+_create_tables = _migrations._create_tables
+_chain_head = _migrations._chain_head
+_MALFORMED_COL_RE = _migrations._MALFORMED_COL_RE
+_malformed_schema_tables = _migrations._malformed_schema_tables
+_create_verify_jobs_table = _migrations._create_verify_jobs_table
+migrate_v1 = _migrations.migrate_v1
+migrate_v2 = _migrations.migrate_v2
+migrate_v3 = _migrations.migrate_v3
+migrate_v4 = _migrations.migrate_v4
+migrate_v5 = _migrations.migrate_v5
+migrate_v6 = _migrations.migrate_v6
+migrate_v7 = _migrations.migrate_v7
+migrate_v8 = _migrations.migrate_v8
+migrate_v9 = _migrations.migrate_v9
+migrate_v10 = _migrations.migrate_v10
+migrate_v11 = _migrations.migrate_v11
+migrate_v12 = _migrations.migrate_v12
+migrate_v13 = _migrations.migrate_v13
+migrate_v14 = _migrations.migrate_v14
+migrate_v15 = _migrations.migrate_v15
+migrate_v16 = _migrations.migrate_v16
+migrate_v17 = _migrations.migrate_v17
+_run_migrations = _migrations._run_migrations
+
 logger = logging.getLogger("yiban.db")
 
-DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
+DB_DEFAULT = _connection.DB_DEFAULT
 
-# 软删除保留期（2026-08-15 审查统一命名/单位）：天为唯一来源，秒数派生——
-# 此前 web(app.py DELETED_RETENTION_DAYS) 与 db 各持一份同名不同单位常量，易改一处漏一处
-SOFT_DELETE_RETENTION_DAYS = 7
-SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
+# 连接层再导出（唯一定义点在 yiban/store/connection.py）：`_conn`/`_db_file`/`_env_file`
+# 读写都**转发**——全仓 190+ 处测试收尾 `db._conn = None` 与 `db._env_file = path` 若只写
+# 一份快照就静默失效（connection 仍握真连接/旧路径）；`_conn_lock`（永不重绑）与
+# `get_conn`/`is_initialized` 直接再导出即等价：本模块内部按裸名调用，既有
+# `mock.patch.object(db, "get_conn"/"_conn_lock", …)` 打桩仍然生效。
+get_conn = _connection.get_conn
+is_initialized = _connection.is_initialized
+_conn_lock = _connection._conn_lock
 
-# 账号物理清除的豁免条件：owner 已注销**且仍在反悔窗口内**时不清。
-# 用户此前自删的账号时刻早于注销事件，按各自 deleted_at 独立到期会先于用户行被删，
-# 而用户在窗口内恢复回来却没有账号（见 restore_user 的单行恢复说明）。
-# 用同一个 cutoff 比较用户行自身的时间戳（而不是只看 deleted=1）：豁免随用户宽限期
-# 自然失效——即使某个部署路径只清了账号没清用户（cron-only 的 signin 只调
-# purge_expired_deleted_accounts），也不会留下无界驻留的账号；SQL 里它排在账号自己的
-# `deleted_at <= ?` 之后，故调用参数必须传两次 cutoff。
-PURGE_SKIP_CANCELLED_OWNER = (
-    " AND owner NOT IN (SELECT email FROM users WHERE deleted=1 AND deleted_at > ?)"
-)
-
-
-def _normalize_limit(limit, default):
-    """把 limit 钳制到 1..1000；非法值回退到默认值。"""
-    try:
-        return max(1, min(int(limit), 1000))
-    except (TypeError, ValueError):
-        return default
-
-
-class DuplicatePhoneError(Exception):
-    """手机号已存在（accounts.phone 唯一约束冲突）。"""
-
-
-class DuplicateOwnerError(Exception):
-    """该用户已有一个未删除账号（accounts.owner 部分唯一索引冲突）。"""
+# 需要**读写转发**的模块级状态：模块级赋值/删除默认直写 `__dict__`、不触发下方的魔术方法，
+# 故这些名字一律不进本模块的 `__dict__`——读取回落到唯一定义点，写入也落到那里：
+#   `_conn`/`_db_file`/`_env_file` → connection（全仓 190+ 处测试收尾 `db._conn = None`）；
+#   `_AUDIT_KEY_CACHE` 等三个审计域进程内状态 → audit_chain（test_rekey_key_source 的
+#   `db._AUDIT_KEY_CACHE = None` 必须真的清掉密钥缓存）；
+#   `_MIGRATIONS` → migrations（测试以 `db._MIGRATIONS = [...]` 缩窄/替换迁移集，
+#   `_run_migrations` 必须读到改写后的登记表）。
+# 其余名字（`_conn_lock` 永不重绑、审计/迁移域函数与常量）按快照式再导出即等价。
+_FORWARDED_STATE = {
+    "_conn": _connection,
+    "_db_file": _connection,
+    "_env_file": _connection,
+    "_AUDIT_KEY_CACHE": _audit_chain,
+    "_AUDIT_FAIL_UNFLUSHED": _audit_chain,
+    "_AUDIT_FAIL_UNFLUSHED_DB": _audit_chain,
+    "_MIGRATIONS": _migrations,
+}
+# delattr 撤下的名字（见 _StateForwardingModule.__delattr__）：名字重新可读即移出
+_FORWARDED_STATE_HIDDEN = set()
 
 
-class MigrationDeferred(Exception):
-    """迁移暂缓：本次不应用，下次启动重试（用于可选迁移遇到需人工处理的数据）。"""
+def __getattr__(name):
+    """PEP 562：转发状态（连接三态、审计域进程内状态与迁移域登记表）读取回落到各自定义点。"""
+    mod = _FORWARDED_STATE.get(name)
+    if mod is not None:
+        if name in _FORWARDED_STATE_HIDDEN:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-class LastAdminError(Exception):
-    """注销被拒绝：该用户是最后一个注册管理员（事务内复核，跨进程安全）。"""
+class _StateForwardingModule(types.ModuleType):
+    """转发状态**写入/撤销**（`db._conn = None`、`db._AUDIT_KEY_CACHE = None`、`del db._conn`）。
 
-# 模块级共享（web 通过环境变量注入路径后调用 init_db）
-_conn = None
-# RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
-# 会触发 "cannot start a transaction" / InterfaceError misuse——2026-08-15 本地并发验证暴露）
-_conn_lock = threading.RLock()
-_db_file = DB_DEFAULT
-# .env 路径（加密密钥来源）：None = 未显式指定，由 _resolve_key_env_file 按
-# YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（此时若回落值来自 cwd
-# 且文件不存在，生成新密钥会被 _assert_key_source_certain 拒绝，避免游离密钥）
-_env_file = None
+    模块级赋值/删除默认直写 `__dict__`、不触发魔术方法，故本类只影响外部写入与
+    mock/pytest 的撤销路径；本文件自身的名字绑定不受影响。
+    """
 
-# 审计 HMAC 密钥缓存与互斥（Phase 3）
-_AUDIT_KEY_CACHE = None
-_AUDIT_KEY_LOCK = threading.Lock()
+    def __setattr__(self, name, value):
+        mod = _FORWARDED_STATE.get(name)
+        if mod is not None:
+            _FORWARDED_STATE_HIDDEN.discard(name)
+            setattr(mod, name, value)
+            return
+        types.ModuleType.__setattr__(self, name, value)
 
-# 可视化表保留期（Phase 4）
-SIGN_EVENTS_RETENTION_DAYS = 180
+    def __delattr__(self, name):
+        """撤销外部赋值：把名字从门面上摘下来（读取随即回落到真状态）。
+
+        **为什么必须"摘下来"而不是去删真状态**：`mock.patch.object` /
+        `mock.patch("yiban.store.db._conn", …)` 对不在 `__dict__` 里的名字走
+        `delattr` 撤销路径，随后按"删完名字还在不在"决定要不要 `setattr` 回原值
+        （`unittest.mock._patch.__exit__`）——若删不掉（`__getattr__` 照旧转发），
+        原值永不被恢复，打桩静默残留；pytest `monkeypatch.delattr` 的 undo 同理
+        （它靠"delattr 过"来记账、undo 时 setattr 原值）。故这里只在本模块层面
+        隐藏该名字（`_FORWARDED_STATE_HIDDEN`），真状态与各定义点的内部使用
+        一概不动；紧跟其后的 `setattr` 原值会经 `__setattr__` 写回并解除隐藏。
+        """
+        if name in _FORWARDED_STATE:
+            _FORWARDED_STATE_HIDDEN.add(name)
+            return
+        types.ModuleType.__delattr__(self, name)
+
+
+sys.modules[__name__].__class__ = _StateForwardingModule
+
 
 # IP 加盐哈希（Phase 4）
 _TRACK_SALT_CACHE = None
@@ -165,53 +352,45 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
     （v3 rechain）等，使"被校验对象在校验过程中被改动"。
     """
-    global _conn, _db_file, _env_file
-    _env_file = env_file
-    _db_file = db_file or os.environ.get("YIBAN_DB_FILE", DB_DEFAULT)
-    if _conn is not None:
-        return _conn
+    # 库路径 / .env 路径**无条件刷新**（即使连接已存在——它们是"最近一次 init_db 的
+    # 来源"），经 connection 的显式 API 写入
+    _connection.set_env_file(env_file)
+    db_path = db_file or os.environ.get("YIBAN_DB_FILE", DB_DEFAULT)
+    _connection.set_db_file(db_path)
+    conn = _connection.current()
+    if conn is not None:
+        return conn
     with _conn_lock:
-        if _conn is not None:
-            return _conn
-        _conn = sqlite3.connect(_db_file, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
+        conn = _connection.current()
+        if conn is not None:
+            return conn
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        # 先登记再配置：建表/迁移函数内部会经 get_conn() 取"当前连接"，故连接必须先
+        # 入册，其后才逐条 PRAGMA/DDL
+        _connection.set_conn(conn)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
         # 5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
         # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
-        _conn.execute("PRAGMA busy_timeout=15000")
-        _conn.execute("PRAGMA foreign_keys=OFF")
-        _create_tables(_conn)
+        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute("PRAGMA foreign_keys=OFF")
+        _create_tables(conn)
         # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
         # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败继续后续迁移但不提升版本。
         try:
             if migrate:
-                _run_migrations(_conn)
+                _run_migrations(conn)
                 # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
                 if migrate_from:
-                    _maybe_migrate(_conn, migrate_from)
+                    _maybe_migrate(conn, migrate_from)
         except Exception:
             with contextlib.suppress(Exception):
-                _conn.close()
-            _conn = None
+                conn.close()
+            _connection.reset_conn()
             raise
         if cleanup:
             run_daily_cleanup()
-        return _conn
-
-
-def get_conn():
-    if _conn is None:
-        init_db()
-    return _conn
-
-
-def is_initialized():
-    """db 层是否已显式初始化（不触发隐式 init_db）。
-
-    供 signin 判断会话缓存可用性：环境变量账号模式（CI 等）未初始化 db，
-    不启用缓存——避免 get_conn 隐式 init 在工作目录创建空库。
-    """
-    return _conn is not None
+        return conn
 
 
 def resolve_env_file(cli_value=None):
@@ -246,303 +425,6 @@ def require_existing_env_file(cli_value=None):
     return path
 
 
-# ---------------------------------------------------------------------------
-# 表结构
-# ---------------------------------------------------------------------------
-def _create_tables(conn):
-    # 不用 executescript——其隐式 COMMIT 会把调用方已开启的事务
-    # （_run_migrations 的 BEGIN IMMEDIATE）提前提交，击穿迁移原子性；逐条
-    # execute 让 DDL 落在事务内，中途失败可整体回滚。
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS accounts ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "sort_order INTEGER NOT NULL, "
-        "name TEXT NOT NULL DEFAULT '', "
-        "phone TEXT NOT NULL UNIQUE, "
-        "password TEXT NOT NULL DEFAULT '', "
-        "phone_model TEXT NOT NULL DEFAULT '', "
-        "phone_code TEXT NOT NULL DEFAULT '', "
-        "owner TEXT NOT NULL DEFAULT 'admin', "
-        "status TEXT NOT NULL DEFAULT 'pending', "
-        "reject_reason TEXT NOT NULL DEFAULT '', "
-        "deleted INTEGER NOT NULL DEFAULT 0, "
-        "deleted_at TEXT NOT NULL DEFAULT '', "
-        "deleted_by TEXT NOT NULL DEFAULT '', "
-        "user_paused INTEGER NOT NULL DEFAULT 0"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_sort ON accounts(sort_order)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "email TEXT NOT NULL, "
-        "password_hash TEXT NOT NULL, "
-        "role TEXT NOT NULL DEFAULT 'user', "
-        "created_at TEXT NOT NULL DEFAULT '', "
-        "pw_version INTEGER NOT NULL DEFAULT 1, "
-        "deleted INTEGER NOT NULL DEFAULT 0, "
-        "deleted_at TEXT NOT NULL DEFAULT '', "
-        "mail_notify INTEGER NOT NULL DEFAULT 1"
-        ")"
-    )
-    # 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
-    # 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
-    # 迁移执行前崩溃（对抗审查 2026-08-16 演练发现）。
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_logs ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "ts TEXT NOT NULL, "
-        "username TEXT NOT NULL, "
-        "action TEXT NOT NULL, "
-        "target TEXT NOT NULL DEFAULT '', "
-        "detail TEXT NOT NULL DEFAULT ''"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action_target ON audit_logs(action, target, id)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS time_prefs ("
-        "phone TEXT PRIMARY KEY, "
-        "slot_min INTEGER NOT NULL, "
-        "updated_at TEXT NOT NULL"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_time_prefs_slot ON time_prefs(slot_min)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_delete_requests ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "username TEXT NOT NULL, "
-        "ip_hash TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash)")
-    conn.commit()
-
-
-# ---------------------------------------------------------------------------
-# 通用幂等迁移框架（Phase 0）
-# ---------------------------------------------------------------------------
-# 允许操作的表名白名单（防止 f-string SQL 注入）
-# page_visits / server_metrics 已由 migrate_v14 删除，条目保留是必需的：
-# 冻结的 migrate_v6 仍对它们调用 _ensure_column / _ensure_index，全新库的执行序
-# 是 migrate_v4 建表 → migrate_v6 补列 → migrate_v14 删表。迁移只增不改。
-_ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
-                   "sign_events", "page_visits", "server_metrics", "session_cache",
-                   "verify_jobs"}
-
-
-def _table_columns(conn, table):
-    """返回表的所有列名（PRAGMA table_info）。"""
-    if table not in _ALLOWED_TABLES:
-        raise ValueError(f"非法表名: {table!r}")
-    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-
-
-def _ensure_column(conn, table, column, type_decl):
-    """缺列才 ALTER TABLE ADD COLUMN（幂等）。
-
-    type_decl 是**纯类型声明**（如 "TEXT NOT NULL DEFAULT ''"），不含列名——
-    本函数自己拼 `ADD COLUMN {column} {type_decl}`。历史实现把列名一并写进了
-    type_decl，生成 `deleted_by deleted_by TEXT` 这类重复列名声明（SQLite 宽容
-    接受、亲和性碰巧不变，但 schema 可读性差、.dump 会把畸形带进新库）；
-    v13 迁移修复存量库，此处加断言防复发（见 migrate_v13）。
-    """
-    if table not in _ALLOWED_TABLES:
-        raise ValueError(f"非法表名: {table!r}")
-    # 列名白名单：仅允许字母数字下划线，防止注入
-    if not column.isidentifier() or not column.replace("_", "").isalnum():
-        raise ValueError(f"非法列名: {column!r}")
-    # 防复发：type_decl 不得以列名开头（那正是历史畸形形态）
-    if str(type_decl).split()[0].lower() == column.lower():
-        raise ValueError(
-            f"_ensure_column type_decl 不应重复列名: {column!r} / {type_decl!r}"
-        )
-    if column not in _table_columns(conn, table):
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_decl}")
-        conn.commit()
-
-
-def _ensure_index(conn, create_sql):
-    """按给定 CREATE INDEX / CREATE UNIQUE INDEX 语句幂等创建（依赖 IF NOT EXISTS）。"""
-    conn.execute(create_sql)
-    conn.commit()
-
-
-def migrate_v1(conn):
-    """v1：补齐 accounts.user_paused 列（现状基线迁移）。"""
-    _ensure_column(conn, "accounts", "user_paused", "INTEGER NOT NULL DEFAULT 0")
-
-
-def migrate_v2(conn):
-    """v2：为普通用户“每人限 1 账号”创建部分唯一索引（可选/延后）。
-
-    若存在历史重复数据，抛出 MigrationDeferred，不创建索引、不 bump 版本；
-    人工清理后下次启动自动重试。
-    """
-    rows = conn.execute(
-        "SELECT owner, COUNT(*) AS cnt FROM accounts "
-        "WHERE deleted=0 AND owner NOT IN ('', 'admin') "
-        "GROUP BY owner HAVING COUNT(*) > 1"
-    ).fetchall()
-    if rows:
-        dup = ", ".join(f"{r['owner']}({r['cnt']})" for r in rows)
-        logger.warning("检测到重复 owner，跳过唯一索引创建（需人工清理后重启重试）: %s", dup)
-        raise MigrationDeferred("存在重复 owner，唯一索引延后创建")
-    _ensure_index(
-        conn,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_live "
-        "ON accounts(owner) WHERE deleted=0 AND owner != '' AND owner != 'admin'",
-    )
-
-
-# ---------------------------------------------------------------------------
-# 审计哈希链（Phase 3）
-# ---------------------------------------------------------------------------
-def _parse_env_file(env_file):
-    """读取 .env 全部键值，返回 dict（文件缺失返回空；非法行跳过）。
-
-    严格策略：文件存在但读取失败 → 记 ERROR 并重抛（解析实现在 env_io）。
-    """
-    try:
-        return env_io.parse_env_file(env_file, strict=True)
-    except OSError as e:
-        # 文件存在但读取失败：绝不静默当作"未配置"，否则 audit key / track salt
-        # 自动生成路径会误判无密钥而重新生成，致既有审计链/追踪盐失效。
-        # 宁可启动失败也不生成替代密钥（2026-08-27 审查）。
-        logger.error("环境变量文件存在但读取失败，按错误处理而非未配置（请检查权限）: %s [%s]", env_file, e)
-        raise
-
-
-def _decode_audit_key(raw):
-    """把 hex 字符串审计密钥解码为 bytes；格式/长度非法抛 ValueError。"""
-    try:
-        key = bytes.fromhex(raw)
-    except (TypeError, ValueError) as e:
-        raise ValueError("YIBAN_AUDIT_KEY 格式非法：应为 64 位十六进制字符串") from e
-    if len(key) != 32:
-        raise ValueError("YIBAN_AUDIT_KEY 长度非法：应为 32 字节（64 位十六进制）")
-    return key
-
-
-def _resolve_key_env_file():
-    """解析密钥来源 .env 路径：_env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
-
-    原写法 `env_file = _env_file or ".env"` 把密钥来源绑在 cwd 上——
-    取证/恢复类 CLI（rekey / audit_verify / clock_guard_reset /
-    list_duplicate_owners）未传 env_file 时，在应用根之外运行会读不到旧钥，进而
-    就地生成新钥落盘，同时产出"游离在错误目录的 .env"和"用错密钥签的审计行"
-    （真实审计链随即判破，而这正是取证要用的工具）。
-
-    返回 (path, from_cwd_default)：from_cwd_default=True 表示该路径纯粹靠 cwd 默认
-    ".env" 兜底（既无 init_db(env_file=...) 也无 YIBAN_ENV_FILE）——此时文件不存在
-    意味着密钥来源不确定，调用方须拒绝生成新密钥。
-    """
-    explicit = (_env_file or "").strip()
-    if explicit:
-        return explicit, False
-    env_var = (os.environ.get("YIBAN_ENV_FILE") or "").strip()
-    if env_var:
-        return env_var, False
-    return ".env", True
-
-
-def _write_audit_key_to_env_file(env_file, key):
-    """把新生成的审计密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
-
-    读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥；锁内仍保留
-    “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
-    """
-    with env_lock.env_write_lock(env_file):
-        existing = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
-        if existing:
-            return _decode_audit_key(existing)
-        lines = []
-        if os.path.exists(env_file):
-            with open(env_file, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
-        out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
-        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
-        # 之间（及进程崩溃残留时）密钥对同机其他用户可读
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, env_file)
-        with contextlib.suppress(OSError):
-            os.chmod(env_file, 0o600)
-        return key
-
-
-def _assert_key_source_certain(what, env_file, from_cwd):
-    """密钥来源只能靠 cwd 默认 ".env" 兜底且该文件不存在时拒绝生成。
-
-    文件存在时行为完全不变（正常首启在应用根生成）；只有"来源不确定"（既无
-    显式 env_file 也无 YIBAN_ENV_FILE，且当前目录没有 .env）才抛错——宁可不写
-    也不要在错误目录留下第二个密钥源。
-    """
-    if from_cwd and not os.path.exists(env_file):
-        logger.error(
-            "%s生成中止：当前工作目录无 .env，且调用方未指定密钥来源"
-            "（既未传 init_db(env_file=…) 也未设 YIBAN_ENV_FILE）——"
-            "此时就地生成会在错误目录留下游离密钥，并使审计链/追踪哈希从此不可复现",
-            what,
-        )
-        raise ValueError(f"{what}来源不确定，拒绝生成新密钥；请用 --env 或 YIBAN_ENV_FILE 指定 .env 路径")
-
-
-def _audit_key(create=True):
-    """获取审计 HMAC 密钥：环境变量 YIBAN_AUDIT_KEY 优先，回退 .env。
-
-    .env 路径按 init_db(env_file=…) → YIBAN_ENV_FILE → 当前目录 ".env" 有序回落
-    （不再无条件依赖 cwd）。
-    create=True（默认）时缺失会生成并写入 .env；create=False 供只读校验，
-    密钥缺失返回 None，由调用方按 fail-closed 处理。生成前
-    若判定密钥来源只能靠 cwd 兜底且文件不存在，则拒绝生成并抛 ValueError。
-    """
-    global _AUDIT_KEY_CACHE
-    env_file, from_cwd = _resolve_key_env_file()
-    env_key = os.environ.get("YIBAN_AUDIT_KEY", "").strip()
-    if env_key:
-        _AUDIT_KEY_CACHE = _decode_audit_key(env_key)
-        return _AUDIT_KEY_CACHE
-    if _AUDIT_KEY_CACHE is not None:
-        return _AUDIT_KEY_CACHE
-    with _AUDIT_KEY_LOCK:
-        if _AUDIT_KEY_CACHE is not None:
-            return _AUDIT_KEY_CACHE
-        file_key = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
-        if file_key:
-            _AUDIT_KEY_CACHE = _decode_audit_key(file_key)
-            return _AUDIT_KEY_CACHE
-        if not create:
-            return None
-        _assert_key_source_certain("审计密钥", env_file, from_cwd)
-        logger.info("未找到 YIBAN_AUDIT_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
-        _AUDIT_KEY_CACHE = _write_audit_key_to_env_file(env_file, secrets.token_bytes(32))
-        return _AUDIT_KEY_CACHE
-
-
-def _audit_hash(prev_hash, ts, username, action, target, detail):
-    """计算单条审计日志的 HMAC-SHA256 哈希。"""
-    payload = json.dumps(
-        [prev_hash, ts, username, action, target, detail],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return hmac.new(_audit_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
 def _begin_immediate(conn):
     """统一的写事务入口：遗留未提交事务先安全回滚再 BEGIN。
 
@@ -557,125 +439,6 @@ def _begin_immediate(conn):
         )
         conn.rollback()
     conn.execute('BEGIN IMMEDIATE')
-
-
-def _rechain_audit_logs(conn):
-    """按 id 升序重建审计哈希链（从空 prev_hash 开始）。
-
-    改为按 id 游标分批重链——原 LIMIT 10000 一次性截断，审计量超限
-    时第 10001 行起的旧 hash 未重算且其 prev 指向的行刚被改写，链永久断裂，
-    每日告警"狼来了"掩盖真实篡改。
-    """
-    _BATCH = 10000
-    last_id = 0
-    prev = ""
-    # prev 必须接续库内首行之前的链（重链从全表语义出发时为空串）
-    first = conn.execute(
-        "SELECT prev_hash FROM audit_logs ORDER BY id LIMIT 1"
-    ).fetchone()
-    if first is not None:
-        prev = first["prev_hash"] or ""
-    while True:
-        rows = conn.execute(
-            "SELECT id, ts, username, action, target, detail FROM audit_logs "
-            "WHERE id > ? ORDER BY id LIMIT ?",
-            (last_id, _BATCH),
-        ).fetchall()
-        if not rows:
-            break
-        for r in rows:
-            h = _audit_hash(prev, r["ts"], r["username"], r["action"], r["target"], r["detail"])
-            conn.execute(
-                "UPDATE audit_logs SET prev_hash=?, hash=? WHERE id=?",
-                (prev, h, r["id"]),
-            )
-            prev = h
-            last_id = r["id"]
-        conn.commit()  # 分批落盘：超大表迁移不因单事务超长而失败
-    conn.commit()
-
-
-def _record_rechain_event(conn, from_version, rows, empty_hash_rows, head_before, head_after):
-    """全表重链留痕（app_meta.audit_rechain_events，最新在末尾）。
-
-    重签整条链是"改完内容 → 清空 hash → 重启走正常启动路径 → 链重新自洽"这条路
-    的唯一落点，所以每一次重链都必须记账，供 audit_health 与锚点交叉判定。写失败
-    刻意上抛：宁可让迁移失败暴露出来，也不能悄悄重写链而不留痕。
-    """
-    # app_meta 原挂在 v8（后由 v12 幂等补建），v3 阶段可能还不存在——先补建，
-    # 否则"留痕"这件事本身会把启动带崩。DDL 与 v8/v12 逐字一致。
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_meta ("
-        "key   TEXT PRIMARY KEY, "
-        "value TEXT NOT NULL"
-        ")"
-    )
-    events = _rechain_events(conn)
-    events.append({
-        "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "from_version": int(from_version),
-        "rows": int(rows),
-        "empty_hash_rows": int(empty_hash_rows),
-        "head_before": head_before or "",
-        "head_after": head_after or "",
-    })
-    if len(events) > _RECHAIN_EVENTS_KEEP:
-        events = events[-_RECHAIN_EVENTS_KEEP:]
-    conn.execute(
-        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-        (_RECHAIN_EVENTS_KEY, json.dumps(events, ensure_ascii=False)),
-    )
-
-
-def audit_rechain_events():
-    """全表重链留痕（公开只读，最新在末尾；缺表/损坏 → []）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            return _rechain_events(conn)
-    except Exception as e:
-        logger.warning("读取全表重链留痕失败: %s", e)
-        return []
-
-
-def migrate_v3(conn):
-    """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。
-
-    重链守卫：_rechain_audit_logs 用**当前密钥**重签全表，等于给"改掉内容 →
-    清空 hash → 重启（正常启动路径）→ 链重新自洽"留了一条路。迁移器只在
-    PRAGMA user_version < 3 时调用本函数，所以"低版本升级"是它唯一的合法触发
-    场景；这里显式读出 from_version 并把它连同重链前后链头一并留痕到 app_meta，
-    使 audit_health 能把"锚点之后发生的重链"指认为异常。
-    """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    _ensure_column(conn, "audit_logs", "prev_hash", "TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "audit_logs", "hash", "TEXT NOT NULL DEFAULT ''")
-    # 空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
-    empty = conn.execute(
-        "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
-    ).fetchone()["n"]
-    if empty:
-        if version >= 3:
-            # 不该发生：>=3 的库迁移器不会再跑本迁移。真发生了说明有人绕过了
-            # 版本门控（或直接调 _rechain_audit_logs），留痕照记，由 audit_health 判失败。
-            logger.error(
-                "migrate_v3 在 user_version=%s 的库上被调用且发现 %s 条空 hash 审计行——"
-                "迁移版本门控被绕过，已记录重链留痕", version, empty
-            )
-        head_before = _chain_head(conn)
-        rows = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        _rechain_audit_logs(conn)
-        _record_rechain_event(conn, version, rows, empty, head_before, _chain_head(conn))
-        conn.commit()
-
-
-def _chain_head(conn):
-    """当前链头哈希（空链/缺列 → 空串）。迁移内部用，不取锁（调用方已持有连接）。"""
-    try:
-        row = conn.execute("SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1").fetchone()
-    except sqlite3.Error:
-        return ""
-    return (row["hash"] or "") if row else ""
 
 
 # ---------------------------------------------------------------------------
@@ -768,545 +531,6 @@ def hash_phone(phone):
     return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
 
 
-def migrate_v4(conn):
-    """v4：创建可视化三表（可选迁移，失败只告警不阻断启动）。"""
-    # 逐条 execute 替代 executescript（隐式 COMMIT 击穿
-    # _run_migrations 的 BEGIN IMMEDIATE，失败时前半段 DDL 已提交无法回滚）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sign_events ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "ts TEXT NOT NULL, "
-        "phone TEXT NOT NULL, "
-        "status TEXT NOT NULL, "
-        "message TEXT NOT NULL DEFAULT '', "
-        "stage TEXT NOT NULL DEFAULT '', "
-        "attempt INTEGER NOT NULL DEFAULT 0, "
-        "account_id INTEGER, "
-        "dur_sec REAL, "
-        "finished_at TEXT"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_ts ON sign_events(ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_phone ON sign_events(phone)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts ON sign_events(phone, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts ON sign_events(account_id, ts)")
-
-    # page_visits / server_metrics 已废弃：由 migrate_v14 删除。本段保留是必需的
-    # （已发布迁移不可修改；migrate_v6 还依赖这两张表存在）——见 migrate_v14 说明。
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS page_visits ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "ts TEXT NOT NULL, "
-        "role TEXT NOT NULL DEFAULT '', "
-        "path TEXT NOT NULL, "
-        "ip_hash TEXT NOT NULL DEFAULT '', "
-        "ua TEXT NOT NULL DEFAULT '', "
-        "dur_ms INTEGER NOT NULL DEFAULT 0, "
-        "user_id INTEGER"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_ts ON page_visits(ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_role ON page_visits(role)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts ON page_visits(path, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts ON page_visits(role, ts)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS server_metrics ("
-        "ts TEXT NOT NULL, "
-        "cpu REAL, "
-        "mem_pct REAL, "
-        "disk_pct REAL, "
-        "net_in REAL, "
-        "net_out REAL, "
-        "load1 REAL, "
-        "load5 REAL, "
-        "load15 REAL, "
-        "proc_count INTEGER"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics(ts)")
-    conn.commit()
-
-
-def migrate_v5(conn):
-    """v5：用户注销支持——users 增加 deleted/deleted_at，邮箱唯一改为活跃唯一，新增注销请求表。"""
-    cols = _table_columns(conn, "users")
-    if "deleted" not in cols:
-        # 使用 ALTER TABLE ADD COLUMN 而非表重建，避免崩溃窗口数据丢失
-        conn.execute("ALTER TABLE users ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
-        conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
-        conn.commit()
-    # 旧库 users.email TEXT UNIQUE 会生成 sqlite_autoindex_users_N 全局唯一索引，
-    # 与“同邮箱可有一个活跃 + 多个已注销”的部分唯一索引冲突，必须先移除。
-    # SQLite 不允许直接 DROP 与 UNIQUE 列约束关联的自动索引，因此重建 users 表
-    # 去掉 email UNIQUE 约束（保留数据）；idx_users_email_live 本身保留不动。
-    old_email_indexes = []
-    for idx in conn.execute("PRAGMA index_list('users')").fetchall():
-        name = idx["name"]
-        if name == "idx_users_email_live" or not idx["unique"]:
-            continue
-        info = conn.execute(f"PRAGMA index_info('{name}')").fetchall()
-        if [r["name"] for r in info] == ["email"]:
-            old_email_indexes.append(name)
-    if old_email_indexes:
-        col_list = "id, email, password_hash, role, created_at, pw_version"
-        cols = _table_columns(conn, "users")
-        if "deleted" in cols:
-            col_list += ", deleted"
-        if "deleted_at" in cols:
-            col_list += ", deleted_at"
-        conn.execute(
-            "CREATE TABLE users_new ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "email TEXT NOT NULL, "
-            "password_hash TEXT NOT NULL, "
-            "role TEXT NOT NULL DEFAULT 'user', "
-            "created_at TEXT NOT NULL DEFAULT '', "
-            "pw_version INTEGER NOT NULL DEFAULT 1, "
-            "deleted INTEGER NOT NULL DEFAULT 0, "
-            "deleted_at TEXT NOT NULL DEFAULT ''"
-            ")"
-        )
-        conn.execute(
-            f"INSERT INTO users_new ({col_list}) SELECT {col_list} FROM users"
-        )
-        conn.execute("DROP TABLE users")
-        conn.execute("ALTER TABLE users_new RENAME TO users")
-        conn.commit()
-    _ensure_index(
-        conn,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
-        "ON users(email) WHERE deleted = 0",
-    )
-    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_delete_requests ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "username TEXT NOT NULL, "
-        "ip_hash TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash)")
-    conn.commit()
-
-
-def migrate_v6(conn):
-    """v6：WebUI 统计/监控补齐——sign_events 增加 account_id/dur_sec/finished_at，
-    page_visits 增加 user_id，并补索引。可选迁移，失败不阻断启动。"""
-    _ensure_column(conn, "sign_events", "account_id", "INTEGER")
-    _ensure_column(conn, "sign_events", "dur_sec", "REAL")
-    _ensure_column(conn, "sign_events", "finished_at", "TEXT")
-    _ensure_column(conn, "page_visits", "user_id", "INTEGER")
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts "
-        "ON sign_events(phone, ts)",
-    )
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts "
-        "ON sign_events(account_id, ts)",
-    )
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts "
-        "ON page_visits(path, ts)",
-    )
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts "
-        "ON page_visits(role, ts)",
-    )
-    try:
-        conn.execute(
-            "UPDATE sign_events SET account_id = ("
-            "SELECT id FROM accounts WHERE accounts.phone = sign_events.phone LIMIT 1"
-            ") WHERE account_id IS NULL"
-        )
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("回填 sign_events.account_id 失败: %s", e)
-
-
-def migrate_v7(conn):
-    """v7：注销请求表加 kind 列（delete=注销 / restore=恢复），修复注销记录阻断 60s 内恢复的漏洞。
-
-    2026-08-17 排查复现：注销与恢复共用计数，注销动作本身写入的记录会让
-    随后 60 秒内的恢复请求全部 429（真实用户"注销后立即反悔"路径必现）。
-    旧数据无 kind → 默认 'delete'（历史记录均为注销）。
-    """
-    _ensure_column(
-        conn, "user_delete_requests", "kind", "TEXT NOT NULL DEFAULT 'delete'"
-    )
-
-
-def migrate_v8(conn):
-    """v8：会话 Cookie 缓存表（OAuth 会话复用，降低登录频率 = 降低风控触发面）。
-
-    缓存对象为序列化 cookie jar + csrf（login_killyiban 完成后的完整认证态）；
-    cookies_ct 为 AES-GCM 密文 JSON 串（AAD=phone，复用 account_crypto），
-    库内绝不落明文 cookie。表结构见 docs/research-lumjiel-core-sign-20260822.md §七。
-    """
-    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS session_cache ("
-        "phone        TEXT PRIMARY KEY, "
-        "cookies_ct   TEXT NOT NULL, "
-        "csrf         TEXT NOT NULL, "
-        "created_at   TEXT NOT NULL, "
-        "updated_at   TEXT NOT NULL"
-        ")"
-    )
-    # 应用元数据（2026-08-28 审查 M3）：purge 时钟跳变保护的单调参照等
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_meta ("
-        "key   TEXT PRIMARY KEY, "
-        "value TEXT NOT NULL"
-        ")"
-    )
-    conn.commit()
-
-
-def migrate_v9(conn):
-    """v9：用户邮箱通知开关（users.mail_notify，默认开启接收签到结果邮件）。
-
-    1=接收（默认）；0=关闭（不接收用户签到失败邮件 B 线）。
-    管理员告警邮件（A 线）不受此开关影响。旧库补列时默认置 1。
-    """
-    _ensure_column(conn, "users", "mail_notify", "INTEGER NOT NULL DEFAULT 1")
-
-
-def migrate_v10(conn):
-    """v10：软删除操作者留痕（accounts.deleted_by）。
-
-    区分删除来源，支撑「用户自删可撤销、管理员删除仅管理员可恢复」：
-    - 用户自行删除：deleted_by = 用户邮箱（宽限期内可在用户页自行撤销）；
-    - 管理员删除：deleted_by = 'admin'；
-    - 系统连带（注销联动 soft_delete_user_with_accounts 等）：置空串。
-    旧数据/旧路径默认空串 = 用户不可自行撤销（fail-closed，防越权恢复管理员清退的账号）。
-    """
-    _ensure_column(conn, "accounts", "deleted_by", "TEXT NOT NULL DEFAULT ''")
-
-
-def migrate_v11(conn):
-    """v11：服务端会话吊销（users.sid）。
-
-    sid 为该用户当前唯一有效会话标识：登录时签发，登出/被重置密码/被踢时轮换；
-    会话内 sid 与库内不一致即视为未登录。空串=未签发（升级日存量兼容）。
-    """
-    _ensure_column(conn, "users", "sid", "TEXT NOT NULL DEFAULT ''")
-
-
-def migrate_v12(conn):
-    """v12：修复历史部署缺失的 app_meta 表（2026-08-29 线上发现）。
-
-    app_meta 建表原挂在 migrate_v8（2026-08-28 M3 时钟跳变），但 v8 早已随
-    session_cache 发布——旧部署 PRAGMA user_version 已 ≥8，迁移不会再重跑 v8，
-    导致时钟守卫/每日清理/审计锚点元数据全部因缺表报错（线上日志每 ~5 分钟刷
-    "no such table: app_meta"，并连带挤占签到日志尾部导致「回到今天」误判昨天）。
-    新增本迁移幂等补建，旧库自动补齐；新库 v8 已建则 IF NOT EXISTS 空操作。
-    教训：新表/新列必须新增迁移版本，不得修改已发布的旧迁移。
-    """
-    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_meta ("
-        "key   TEXT PRIMARY KEY, "
-        "value TEXT NOT NULL"
-        ")"
-    )
-    conn.commit()
-
-
-# 畸形列声明：`col col TYPE ...`（列名被重复写进类型声明）。
-# 形如 accounts.deleted_by 声明为 `deleted_by deleted_by TEXT NOT NULL DEFAULT ''`。
-# 成因见 _ensure_column 文档串（历史调用方把列名一并传进 type_decl）。
-_MALFORMED_COL_RE = re.compile(r"(?<=[(,])\s*([A-Za-z_][A-Za-z0-9_]*)\s+\1\b\s+")
-
-
-def _malformed_schema_tables(conn):
-    """返回声明类型重复列名的表 [(表名, 原始 DDL), ...]（跳过 sqlite_ 内部表）。"""
-    out = []
-    for row in conn.execute(
-        "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
-    ):
-        name, sql = row["name"], row["sql"]
-        if name.startswith("sqlite_"):
-            continue
-        if _MALFORMED_COL_RE.search(sql):
-            out.append((name, sql))
-    return out
-
-
-def migrate_v13(conn):
-    """v13：修复畸形列声明（`col col TYPE`），重建受影响表。
-
-    2026-09-09 生产巡检发现：`accounts.deleted_by` 的声明类型是
-    `deleted_by TEXT`，即列名被重复写进类型声明。排查确认这是 _ensure_column
-    的历史 API 误用（调用方把列名一起塞进 type_decl 参数），影响面远不止一列——
-    存量库共 11 列 / 6 表（accounts.deleted_by+user_paused、users.mail_notify+sid、
-    audit_logs.prev_hash+hash、sign_events.account_id/dur_sec/finished_at、
-    page_visits.user_id、user_delete_requests.kind）。
-
-    **影响评估（实测）**：SQLite 对类型声明取子串匹配算亲和性，`deleted_by TEXT`
-    仍含 "TEXT" → 亲和性 TEXT，与正确声明完全一致；`typeof()` 与值强制转换实测
-    逐项相同，索引/约束/审计链均不受影响。故本迁移**不是修故障，而是修 schema
-    可读性与可移植性**（.dump 会把畸形带进新库；外部工具按 table_info 生成的 DDL
-    也会继承）。
-
-    做法：按 sqlite_master 里的 DDL 去掉重复列名后重建表 + 回填数据 + 重建索引
-    （CREATE TABLE → INSERT SELECT → DROP → RENAME，同 migrate_v5 的模式）。
-    SQLite 不允许改列声明，只能重建。**幂等**：无畸形表时空操作。
-    索引 DDL 从 sqlite_master 原样取回，不硬编码（避免与建表处漂移）。
-    AUTOINCREMENT 计数由 sqlite_sequence 随表名迁移保留，实测 max(id) 不变。
-    """
-    bad = _malformed_schema_tables(conn)
-    if not bad:
-        return
-    for name, sql in bad:
-        fixed = _MALFORMED_COL_RE.sub(r" \1 ", sql)
-        # 索引 DDL 先取回：DROP TABLE 会连带删除其索引，重建表后按原样重建
-        indexes = [
-            r["sql"]
-            for r in conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
-                (name,),
-            )
-        ]
-        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({name})")]
-        tmp = f"{name}__v13"
-        conn.execute(f'DROP TABLE IF EXISTS "{tmp}"')
-        # 只替换首个表名出现处：DDL 里其余位置可能含同名子串（如索引名）
-        fixed_tmp = fixed.replace(f'TABLE "{name}"', f'TABLE "{tmp}"', 1)
-        if fixed_tmp == fixed:
-            fixed_tmp = fixed.replace(f"TABLE {name}", f"TABLE {tmp}", 1)
-        conn.execute(fixed_tmp)
-        collist = ", ".join(f'"{c}"' for c in cols)
-        conn.execute(f'INSERT INTO "{tmp}" ({collist}) SELECT {collist} FROM "{name}"')
-        conn.execute(f'DROP TABLE "{name}"')
-        conn.execute(f'ALTER TABLE "{tmp}" RENAME TO "{name}"')
-        for idx_sql in indexes:
-            conn.execute(idx_sql)
-        logger.info("schema 修复：重建表 %s（%d 列，%d 索引）", name, len(cols), len(indexes))
-    conn.commit()
-
-
-def migrate_v14(conn):
-    """v14：删除从未接线的统计表（可选迁移，失败只告警不阻断启动）。
-
-    page_visits / server_metrics 是 v4 建、v6 补列的一整套"页面访问统计 + 服务器
-    采样"能力，但生产侧**零写入方、零读取方、零 UI**：web/ 全目录无任何引用，唯一
-    写入者是 scripts/generate_demo_data.py（演示数据生成器）。保留它们只会让每次
-    启动多跑两条全表 DELETE，并让两张空表与八个空索引常驻 schema。
-
-    **只删表，不改 migrate_v4 / migrate_v6 原文**——已发布迁移不可修改（改了对
-    存量库无效，对介于 v4~v6 之间的库反而会制造"表不存在"的失败路径）。因此全新库
-    的执行序是 v4 建表 → v6 补列 → 本迁移删表，一次性的"建了又删"换取迁移历史不变；
-    _ALLOWED_TABLES 保留这两个表名也是因为冻结的 v6 仍会引用它们。
-    """
-    conn.execute("DROP TABLE IF EXISTS page_visits")
-    conn.execute("DROP TABLE IF EXISTS server_metrics")
-    conn.commit()
-
-
-def migrate_v15(conn):
-    """v15：在线校验异步任务表（A4 异步化）。可选迁移，失败只告警不阻断启动。
-
-    独立小表，**不污染 accounts.status 枚举**：任务态（排队/在跑/完成/被拒）与
-    账号审核态（pending/active/rejected）是两件事，前者可短期清理，后者是业务状态。
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS verify_jobs ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "account_id INTEGER, "
-        "phone TEXT NOT NULL, "
-        "owner_email TEXT NOT NULL DEFAULT '', "
-        "status TEXT NOT NULL DEFAULT 'pending', "
-        "error TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL, "
-        "started_at TEXT, "
-        "finished_at TEXT"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_owner_created "
-        "ON verify_jobs(owner_email, created_at)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_status ON verify_jobs(status)"
-    )
-    conn.commit()
-
-
-def _create_verify_jobs_table(conn):
-    """建 verify_jobs（含 prev_status）——v15 之后新增列的迁移复用点。
-
-    v15 的 DDL 已冻结不再改动（已发布迁移不可变），故此处重述一遍：
-    带上 prev_status 的建表语句是幂等的，v16 在"v15 尚未落地"的库上
-    也能自给自足地建出正确结构。
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS verify_jobs ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "account_id INTEGER, "
-        "phone TEXT NOT NULL, "
-        "owner_email TEXT NOT NULL DEFAULT '', "
-        "status TEXT NOT NULL DEFAULT 'pending', "
-        "prev_status TEXT NOT NULL DEFAULT 'pending', "
-        "error TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL, "
-        "started_at TEXT, "
-        "finished_at TEXT"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_owner_created "
-        "ON verify_jobs(owner_email, created_at)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_status ON verify_jobs(status)"
-    )
-
-
-def migrate_v16(conn):
-    """v16：verify_jobs 记录任务建立时的账号状态（可选迁移，失败只告警不阻断）。
-
-    用途：异步校验结果**不得覆盖人工决定**。校验任务建库时账号是 pending
-    （用户提交）或 active（管理员的裸账号），任务失败只允许在账号仍处于
-    建库时那个状态时置 rejected——否则管理员在任务执行期间点了"审核通过"，
-    迟到的校验结果会把管理员的决定静默回滚。
-
-    旧行 prev_status 取默认 'pending'：存量未结任务罕见，且默认值只会让
-    "账号已是 active 时不覆盖"，与人工决定优先的方向一致。
-    """
-    _create_verify_jobs_table(conn)
-    _ensure_column(conn, "verify_jobs", "prev_status", "TEXT NOT NULL DEFAULT 'pending'")
-    conn.commit()
-
-
-def set_user_sid(email, sid):
-    """写入用户当前有效会话标识；email 须为活跃用户。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute(
-            "UPDATE users SET sid=? WHERE email=? AND deleted=0", (sid, email)
-        )
-
-
-def migrate_v17(conn):
-    """v17：签到领取池 `sign_claims`（多执行体协调）。可选迁移，失败只告警不阻断启动。
-
-    为什么独立成表：多执行体的分工靠"原子领取 + 租约"而不是静态分片——静态分片下
-    最慢的那一份决定全天成败。领取记录同时承担"当日是否了结"的判据（state）。
-
-    `UNIQUE(phone, day)` 是**并发正确性的基础**：一个账号一天只可能有一行，
-    领取走 upsert，故不存在两个执行体同时"新插入"同一个账号的窗口。
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sign_claims ("
-        "phone TEXT NOT NULL, "
-        "day TEXT NOT NULL, "
-        "owner TEXT NOT NULL, "
-        "claimed_at TEXT NOT NULL, "
-        "heartbeat_at TEXT NOT NULL, "
-        "state TEXT NOT NULL DEFAULT 'claimed', "
-        "result TEXT NOT NULL DEFAULT '', "
-        "attempts INTEGER NOT NULL DEFAULT 0, "
-        "PRIMARY KEY (phone, day)"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sign_claims_day_state "
-        "ON sign_claims(day, state)"
-    )
-    conn.commit()
-
-
-# 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
-# - 核心迁移：现有功能依赖，失败应阻断启动。
-# - 可选迁移：未来/非关键能力，失败只告警或延后重试。
-_MIGRATIONS = [
-    (1, "v1_add_account_user_paused", migrate_v1, True),
-    (2, "v2_unique_owner_live", migrate_v2, False),
-    (3, "v3_audit_hash_chain", migrate_v3, True),
-    (4, "v4_visual_tables", migrate_v4, False),
-    (5, "v5_user_deregistration", migrate_v5, True),
-    (6, "v6_webui_stats", migrate_v6, False),
-    (7, "v7_delete_request_kind", migrate_v7, True),
-    (8, "v8_session_cache", migrate_v8, False),
-    (9, "v9_user_mail_notify", migrate_v9, True),
-    (10, "v10_account_deleted_by", migrate_v10, True),
-    (11, "v11_user_session_sid", migrate_v11, True),
-    (12, "v12_app_meta_repair", migrate_v12, True),
-    (13, "v13_fix_malformed_column_decls", migrate_v13, True),
-    (14, "v14_drop_legacy_stats", migrate_v14, False),
-    (15, "v15_verify_jobs", migrate_v15, False),
-    (16, "v16_verify_job_prev_status", migrate_v16, False),
-    (17, "v17_sign_claims", migrate_v17, False),
-]
-
-
-def _run_migrations(conn):
-    """按 PRAGMA user_version 顺序执行未应用的迁移。
-
-    核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动），包括核心迁移抛
-    MigrationDeferred；可选迁移失败/延后时先回滚该迁移的部分写入，再置 blocked
-    并 continue，后续迁移照常执行，但 blocked 期间任何迁移都不提升 user_version，
-    下次启动重试。
-    """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    blocked = False
-    for target_version, name, fn, is_core in _MIGRATIONS:
-        if version >= target_version:
-            continue
-        try:
-            # 单个迁移全程持库级写锁（2026-08-28 审查 B-4）：
-            # migrate_v5 的表重建是 CREATE → INSERT → DROP → RENAME 四条 DDL，
-            # 而 Python sqlite3 对 DDL 不开隐式事务，原实现下每条语句各自
-            # autocommit——在 DROP TABLE users 与 RENAME 之间，其他连接执行
-            # SELECT ... FROM users 会直接报 "no such table: users"。该窗口在
-            # SSD 上是微秒级，但容器首启并发 / 网络盘 / 大表时完全可命中，
-            # 且若迁移在窗口中失败，核心迁移会一并阻断进程启动。
-            # 包进 BEGIN IMMEDIATE 后整段迁移原子，中间态对外不可见。
-            _begin_immediate(conn)
-            try:
-                fn(conn)
-                if blocked:
-                    # 不提升 user_version：后续启动会重跑本迁移（实现必须幂等）。
-                    # 显式提交（原实现此处未提交，改动滞留在未决事务中，是否被
-                    # 后续某次 commit 带走取决于执行顺序——幂等迁移下显式提交可预期）
-                    conn.commit()
-                    logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
-                else:
-                    conn.execute(f"PRAGMA user_version = {target_version}")
-                    conn.commit()
-                    version = target_version
-                    logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
-            except Exception:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                raise
-        except MigrationDeferred as e:
-            if is_core:
-                logger.error("核心 schema 迁移延后: %s: %s", name, e)
-                raise
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("可选 schema 迁移延后: %s: %s", name, e)
-            blocked = True
-        except Exception as e:
-            if is_core:
-                logger.error("核心 schema 迁移失败: %s: %s", name, e)
-                raise
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("可选 schema 迁移失败: %s: %s，继续后续迁移", name, e)
-            blocked = True
-
-
 # ---------------------------------------------------------------------------
 # 自动迁移（JSON → SQLite，幂等）
 # ---------------------------------------------------------------------------
@@ -1363,7 +587,7 @@ def _maybe_migrate(conn, json_base):
             logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
         return
     imported = 0
-    key = account_crypto.load_key(_env_file) if accounts else None
+    key = account_crypto.load_key(_connection._env_file) if accounts else None
     had_plaintext = False  # 迁移源含明文字段 → .bak 逃生门需重写为加密版（2026-08-27 审查缺口 2）
     with _conn_lock, conn:
         if accounts:
@@ -1508,11 +732,11 @@ def _decrypt_row(row):
         except (TypeError, ValueError):
             obj = None
         if isinstance(obj, dict) and "ct" in obj:
-            if not account_crypto.has_key(_env_file):
+            if not account_crypto.has_key(_connection._env_file):
                 raise RuntimeError(
                     "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
                 )
-            key = account_crypto.load_key(_env_file)
+            key = account_crypto.load_key(_connection._env_file)
             try:
                 a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
             except ValueError as e:
@@ -1586,7 +810,7 @@ def _encrypt_field(value, phone):
         return ""
     if isinstance(value, dict):
         return json.dumps(value)  # 已是密文对象
-    key = account_crypto.load_key(_env_file)
+    key = account_crypto.load_key(_connection._env_file)
     return json.dumps(account_crypto.encrypt_password(str(value), key, phone))
 
 
@@ -1613,7 +837,7 @@ def _record_clock_guard_alert(note):
     写失败不影响主流程（只告警）。JSON 结构 {ts, note}。
     """
     try:
-        target_db = _db_file or os.environ.get("YIBAN_DB_FILE") or DB_DEFAULT
+        target_db = _connection._db_file or os.environ.get("YIBAN_DB_FILE") or DB_DEFAULT
         conn2 = sqlite3.connect(target_db, timeout=5)
         try:
             conn2.execute(
@@ -1744,81 +968,6 @@ def _clock_jump_guard(conn, key):
         return False, note
     conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
     return True, ""
-
-
-def _purge_expired_deleted(conn):
-    """软删除超过保留期（>= 7 天）的行物理清除（web 原 load 惰性清理语义，库内必有 deleted_at）。
-
-    deleted_at 为 %Y-%m-%d %H:%M:%S 格式（统一写入格式），字符串比较等价时间序。
-    清理失败仅告警不阻断（规范审查 D6：原静默吞错无痕迹）。
-    """
-    try:
-        # 2026-08-28 审查 M3：时钟异常跳变（拨快 >72h / 回拨 >1h）时跳过清理，
-        # 防"系统时间被拨快后刚软删 1 秒的账号被立即物理清除、反悔窗口归零"。
-        # 守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作 M5 的事务边界。
-        ok, note = _clock_jump_guard(conn, "purge_accounts_clock")
-        if not ok:
-            logger.error("%s", note)
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            return
-        # 旧版本/手工写入的 deleted=1 且 deleted_at='' 行不参与保留期
-        # 判定（条件含 deleted_at != ''），成为不死僵尸——统一补记当前时间，
-        # 宽限期自此起算，下一保留期后正常清除
-        now_str = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            "UPDATE accounts SET deleted_at=? WHERE deleted=1 AND deleted_at=''",
-            (now_str,),
-        )
-        cutoff = (clock.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
-        # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发 DELETE
-        # 事务，只提交守卫的时钟参照一行（每天 1~2 次调用，开销可忽略）
-        probe = conn.execute(
-            "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
-            + PURGE_SKIP_CANCELLED_OWNER + " LIMIT 1",
-            (cutoff, cutoff),
-        ).fetchone()
-        if not probe:
-            conn.commit()
-            return
-        # 2026-08-28 审查 M5：读 phones → DELETE → 连带清理 整段原子。
-        # 原实现 SELECT 与 DELETE 之间跨进程无互斥，期间被管理员恢复的账号
-        # （deleted=0）其行会被 WHERE deleted=1 正确保留，但 time_prefs /
-        # session_cache 会被陈旧 phones 列表连带误删——用户自选签到时段被静默
-        # 重置为自动错峰。守卫 INSERT 已持写锁，事务内重读 phones（不复用事务
-        # 前列表），读-删-清对外原子。
-        phones = [
-            r["phone"]
-            for r in conn.execute(
-                "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
-                + PURGE_SKIP_CANCELLED_OWNER,
-                (cutoff, cutoff),
-            ).fetchall()
-        ]
-        conn.execute(
-            "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
-            + PURGE_SKIP_CANCELLED_OWNER,
-            (cutoff, cutoff),
-        )
-        _cascade_phone_owned(conn, phones)
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理超期软删除账号失败: %s", e)
-
-
-def purge_expired_deleted_accounts():
-    """物理清除超过保留期的软删除账号（显式调用：init_db 启动清理 / web 每日线程 / signin 启动）。
-
-    2026-08-20 对抗性审查修复（P1）：原实现挂在 load_accounts() 读路径上，任何一次
-    列表读取都可能物理删行并使其后所有下标前移——web 层按 idx 寻址的 mutation 在
-    管理员持旧视图时会静默命中错误对象（"无人触发的索引漂移"）。移出读路径后，
-    清理只发生在显式时机，两次读取之间的列表顺序保持稳定。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        _purge_expired_deleted(conn)
 
 
 def accounts_snapshot():
@@ -2130,80 +1279,6 @@ def delete_accounts_by_owner(owner):
         return cur.rowcount
 
 
-def _assert_not_last_admin(conn, email, allow_last_admin):
-    """「最后一个注册管理员不可删除/降权」复核——必须在 BEGIN IMMEDIATE 事务内调用。
-
-    管理员侧删除/降权此前只在 web 进程内 _file_lock 下预检，
-    跨进程（web 多实例共享同一库）两名操作者可同时通过预检，把最后一个
-    注册管理员清零（未配内置管理员的部署失去全部管理入口）。已把
-    自助注销路径的复核下沉事务，本函数把管理员侧三个路径（单删/批量删/降权）
-    对齐同口径。命中即抛 LastAdminError（调用方事务回滚、web 转 400）。
-
-    allow_last_admin：内置管理员（.env）存在时允许删掉 users 表中最后一个注册
-    管理员（web 侧传 bool(_builtin_admin_email())，与原预检语义一致）。
-    """
-    row = conn.execute(
-        "SELECT role FROM users WHERE email=? AND deleted=0", (email,)
-    ).fetchone()
-    if row is not None and row["role"] == "admin" and not allow_last_admin:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
-        ).fetchone()[0]
-        if total <= 1:
-            raise LastAdminError(
-                "该用户是最后一个注册管理员，不可删除/降权（系统需保留至少一个管理入口）"
-            )
-
-
-def delete_user_with_accounts(email, allow_last_admin=False):
-    """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。
-
-    allow_last_admin=False（默认）时，事务内复核目标是否最后一个
-    注册管理员（含跨进程并发窗口），命中抛 LastAdminError 且库保持原状；
-    仅「内置管理员存在」的调用方应显式传 True。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            _assert_not_last_admin(conn, email, allow_last_admin)
-            rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (email,)).fetchall()
-            cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-            phones = [r["phone"] for r in rows]
-            _cascade_phone_owned(conn, phones)
-            conn.execute("DELETE FROM users WHERE email=?", (email,))
-            _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
-            conn.commit()
-            return cur.rowcount
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def set_user_role(email, new_role, allow_last_admin=False):
-    """单行角色变更（降权最后一个注册管理员的复核下沉事务内）。
-
-    返回受影响行数（0 = 用户不存在/已删除）；降权最后一个注册管理员且
-    allow_last_admin=False 时抛 LastAdminError（库保持原状）。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            if new_role == "user":
-                _assert_not_last_admin(conn, email, allow_last_admin)
-            cur = conn.execute(
-                "UPDATE users SET role=? WHERE email=? AND deleted=0", (new_role, email)
-            )
-            conn.commit()
-            return cur.rowcount
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
 def replace_accounts(accounts):
     """整表替换：事务内清空并重插，sort_order=列表顺序 1..N。
 
@@ -2297,980 +1372,6 @@ def batch_account_ops(ops):
             raise
 
 
-# ---------------------------------------------------------------------------
-# users CRUD
-# ---------------------------------------------------------------------------
-def load_users(include_deleted=False):
-    """全部用户（默认排除已注销/软删除用户）。"""
-    with _conn_lock:
-        conn = get_conn()
-        if include_deleted:
-            rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM users WHERE deleted=0 ORDER BY id"
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def find_user(email):
-    """查找有效（未注销）用户。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT * FROM users WHERE email=? AND deleted=0", (email,)
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def find_user_any(email):
-    """查找任意用户（含已注销），供恢复/管理排查使用。优先返回活跃用户。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT * FROM users WHERE email=? ORDER BY deleted ASC, id DESC LIMIT 1", (email,)
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def filter_mail_notify(emails):
-    """过滤出「接收邮件提醒」的邮箱列表（mail_notify=1 或非注册用户默认接收）。
-
-    供 A 线（管理员告警邮件）按收件人个人开关过滤：普通用户/管理员关闭
-    mail_notify 后，即使其邮箱位于 YIBAN_MAIL_ADMIN_TO，也不再接收告警邮件。
-    内置主管理员（.env 账号，users 表无记录）不受影响，由全局开关
-    YIBAN_MAIL_ENABLE 控制；查库异常时按「接收」处理（不误伤收件人）。
-    """
-    result = []
-    for e in emails:
-        u = None
-        try:
-            u = find_user(e)
-        except Exception:
-            u = None
-        if u is None or str(u.get("mail_notify", 1)).strip().lower() in ("1", "true", "on", "yes"):
-            result.append(e)
-    return result
-
-
-def admin_mail_recipients(extra_emails=()):
-    """A 线告警邮件的完整收件人列表（去重）。
-
-    组成 = ADMIN_TO（.env，经 filter_mail_notify 按个人开关过滤） + 所有
-    「开启接收邮件」的管理员用户邮箱（users.role=admin 且 mail_notify=1）。
-
-    这样普通管理员自动获得告警收件权，无需手动加入 YIBAN_MAIL_ADMIN_TO；
-    普通管理员关闭 mail_notify 后即从收件人剔除。内置主管理员（.env 账号，
-    不在 users 表）由 extra_emails（ADMIN_TO）覆盖。
-    """
-    recipients = set(filter_mail_notify(extra_emails))
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            rows = conn.execute(
-                "SELECT email, mail_notify FROM users WHERE role='admin' AND deleted=0"
-            ).fetchall()
-    except Exception as e:
-        rows = []
-        # 留痕（2026-08-27 审查）：否则库故障时普通管理员被无声剔出告警收件人，
-        # 事后无从回答"为何没人收到告警"（降级仍保留 .env 配置的 ADMIN_TO）
-        logger.warning("查询管理员告警收件人失败，仅保留 .env 配置的收件人: %s", e)
-    for r in rows:
-        if str(r["mail_notify"] if r["mail_notify"] is not None else 1).strip().lower() in ("1", "true", "on", "yes"):
-            recipients.add(r["email"])
-    return sorted(recipients)
-
-
-def create_user(email, password_hash, role="user", created_at="", pw_version=1):
-    conn = get_conn()
-    with _conn_lock, conn:
-        # 使用 INSERT ... ON CONFLICT DO NOTHING 并通过 rowcount 判断是否实际创建
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version, deleted, deleted_at) "
-            "VALUES (?,?,?,?,?,0,'')",
-            (email, password_hash, role, created_at, pw_version),
-        )
-        return cur.rowcount > 0
-
-
-def update_user(email, fields):
-    """更新用户字段；返回受影响行数。
-
-    2026-08-28 审查 C-M1：原实现返回 None，调用方无法区分"更新成功"与
-    "邮箱不存在/已注销"的静默 no-op——邮件通知开关等接口对内置管理员（不在
-    users 表）会谎报成功，刷新后开关弹回开启，还污染审计链。返回 rowcount
-    供调用方判 404。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        sets, vals = [], []
-        for k in ("password_hash", "role", "pw_version", "mail_notify"):
-            if k in fields:
-                sets.append(f"{k}=?")
-                vals.append(fields[k])
-        if not sets:
-            return 0
-        vals.append(email)
-        cur = conn.execute(
-            f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0", vals
-        )
-        return cur.rowcount
-
-
-# ---------------------------------------------------------------------------
-# 用户主动注销（软删除 + 宽限期，Phase 5）
-# ---------------------------------------------------------------------------
-def soft_delete_user_with_accounts(email):
-    """软注销：标记用户 deleted=1，并软删除其易班账号。
-
-    2026-08-16 安全审查（用户提出错位问题）：账号由物理删除改为软删除，
-    与管理员删除账号的 7 天保留语义对齐——宽限期内 restore_user 可完整恢复
-    （用户 + 账号）；软删账号不参与签到（signin _load_accounts_from_file 过滤 deleted）。
-
-    2026-08-28 审查 C-M3：'最后一个注册管理员不可注销'的复核从 web 进程内锁
-    下沉到本事务内——原实现 web 层用进程内 _file_lock 检查后调用本函数，其他写入方 /
-    多容器共享同一库时两名管理员可同时通过检查双双注销，系统失去全部管理
-    入口（内置管理员未配置时彻底无法进入）。现于 BEGIN IMMEDIATE 后 COUNT 复核，
-    命中即抛 LastAdminError（web 捕获转 400）。
-
-    2026-09-10（批次20 D 项）**不再物理删除 time_prefs**：原实现注销时物理删自选
-    时间片，而"账号级软删"路径（set_account_deleted）不删——两条同称"7 天内可反悔"
-    的可逆路径对自选命运的处置相反（账号级保留 / 注销丢失），用户无法预期。
-    统一为"软删阶段一律保留，仅在物理清除时连带清理"（_purge_expired_deleted 与
-    purge_deleted_users_hard 都会按 phone 清 prefs），因此不存在残留风险：
-    restore_user 后自选完整回来，与账号级恢复行为一致。
-    time_pref_stats 本就按 accounts.deleted=0 过滤，残留 pref 不会虚高拥挤度。
-    （本条为批次5 C-2"恢复不还自选=存储优化"裁决的**有意修正**：可逆操作应完整可逆，
-    且 prefs 行极小，优化收益可忽略。）
-
-    **保留期口径**：注销只给"注销当时仍生效"的账号打时刻，用户此前自删的账号保留各自
-    更早的时刻（那正是"注销当时哪一行在生效"的唯一线索，不能覆盖）。由
-    `_purge_expired_deleted` 的"owner 已注销则不清除"豁免保证它们活到用户的反悔窗口
-    结束（此前的实现会按各自更早的时刻先被物理清除，用户恢复回来却没有账号）。
-    管理员删除的行（deleted_by='admin'）不在用户的反悔范围内。
-
-    返回是否找到并注销了有效用户。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            row = conn.execute(
-                "SELECT id, role FROM users WHERE email=? AND deleted=0", (email,)
-            ).fetchone()
-            if row is None:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                return False
-            if row["role"] == "admin":
-                total = conn.execute(
-                    "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
-                ).fetchone()[0]
-                if total <= 1:
-                    with contextlib.suppress(Exception):
-                        conn.rollback()
-                    raise LastAdminError(
-                        "该用户是最后一个注册管理员，不可注销（系统需保留至少一个管理入口）"
-                    )
-            rows = conn.execute(
-                "SELECT phone FROM accounts WHERE owner=? AND deleted=0", (email,)
-            ).fetchall()
-            now = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "UPDATE accounts SET deleted=1, deleted_at=? WHERE owner=? AND deleted=0",
-                (now, email),
-            )
-            # 自选时间片刻意保留至物理清除（见 docstring）；会话缓存仍即时停用——
-            # 它是易班登录态凭据缓存，注销后保留会扩大凭据暴露面，且恢复时重新登录即可
-            _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 注销后停用会话缓存
-            conn.execute(
-                "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
-                (now, row["id"]),
-            )
-            conn.commit()
-            return True
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def restore_user(email):
-    """撤销注销：仅当没有同邮箱活跃用户时，把最近一个已注销用户及其账号恢复。
-
-    2026-08-16 安全审查：联动恢复该用户的软删易班账号（deleted=0），
-    保证反悔恢复 = 用户 + 账号完整回来（此前账号在注销时被物理删除，恢复残缺）。
-
-    2026-08-28 审查 M7：检查-写入整体纳入 BEGIN IMMEDIATE 写锁。原实现
-    `with _conn_lock, conn:` 下 SELECT 走 autocommit，检查（无活跃用户）与
-    UPDATE 之间跨进程无互斥——另一进程并发 create_user（同邮箱）可在检查
-    通过后抢注成功，本 UPDATE 撞 idx_users_email_live 唯一索引抛
-    IntegrityError，web 侧未捕获 → 500。持锁后并发注册被串行化；若仍撞约束
-    （防御纵深）由上层捕获转 409。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            active = conn.execute(
-                "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
-            ).fetchone()
-            if active is not None:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                return False
-            deleted = conn.execute(
-                "SELECT id, deleted_at FROM users WHERE email=? AND deleted=1 "
-                "ORDER BY id DESC LIMIT 1",
-                (email,),
-            ).fetchone()
-            if deleted is None:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                return False
-            conn.execute(
-                "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
-                (deleted["id"],),
-            )
-            # 只恢复"注销当时仍生效"的那一行账号（每人限 1 个账号，故至多一行）：
-            # - 它是**注销时刻最新的软删行**（注销把当时生效的行打成 now，此前自删的行
-            #   时刻更早；用户先恢复过某个更早的账号时，那一行同样成了注销时刻的最新行）
-            #   → ORDER BY deleted_at DESC, id DESC LIMIT 1 等价于"哪一行在注销时生效"；
-            # - 必须**单行**更新：多行一起置 deleted=0 会当场撞 idx_accounts_owner_live
-            #   唯一索引（同一 owner 只能有一个未删除账号）→ 500。此前自删的其余账号
-            #   保持软删，用户在「我的账号」页可逐个撤销（那时有明确的名额提示）；
-            # - `<=` 而非等值：兼容旧版本写下的时间戳错位存量行（无需数据迁移），
-            #   "先自删唯一账号再注销"正是这种形态——等值匹配会让用户恢复后一个账号都没有；
-            # - 排除 deleted_by='admin'（管理员清退不属于用户的反悔范围）与
-            #   deleted_at=''（v10 前的僵尸行，无法判定归属，由清理补记时间后自然到期）。
-            row = conn.execute(
-                "SELECT id FROM accounts WHERE owner=? AND deleted=1 AND deleted_by != 'admin' "
-                "AND deleted_at != '' AND deleted_at <= ? "
-                "ORDER BY deleted_at DESC, id DESC LIMIT 1",
-                (email, deleted["deleted_at"]),
-            ).fetchone()
-            if row is not None:
-                conn.execute(
-                    "UPDATE accounts SET deleted=0, deleted_at='', deleted_by='' WHERE id=?",
-                    (row["id"],),
-                )
-            conn.commit()
-            return True
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def purge_deleted_users(days=None):
-    """物理清除超过宽限期的已注销用户（默认取 SOFT_DELETE_RETENTION_DAYS）；失败仅告警。
-
-    2026-08-28 审查 C-1：原默认参数硬编码 `days=7`，与 SOFT_DELETE_RETENTION_DAYS
-    （账号侧保留期的唯一事实源）以及 web 侧 DELETE_GRACE_DAYS 形成三份互不相干的
-    "7"。运维按注释去调 SOFT_DELETE_RETENTION_DAYS 时，此处仍按 7 天清理，
-    而 web 的恢复宽限期又是另一份——三者的错位会造成静默数据丢失（详见
-    web/app.py DELETE_GRACE_DAYS 处的说明）。现改为取同一常量。
-
-    2026-08-16 安全审查（用户提出错位问题）：宽限期 3 天 → 7 天，
-    与账号软删除保留期（_purge_expired_deleted，7 天）对齐——第 7 天用户与
-    账号同天清除，邮箱/手机号同时释放，消除"反悔窗口内资产被抢占"风险。
-    """
-    days = SOFT_DELETE_RETENTION_DAYS if days is None else days
-    try:
-        conn = get_conn()
-        with _conn_lock, conn:
-            # M3 时钟保护：跳变时跳过，防注销宽限期被拨快吞掉
-            ok, note = _clock_jump_guard(conn, "purge_users_clock")
-            if not ok:
-                logger.error("%s", note)
-                return
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            # M4a：先清这些已注销用户的冷却计数（明文邮箱随用户行一并释放，
-            # 不再驻留 user_delete_requests 至 30 天保留期满）
-            before = _table_min_max(conn, "user_delete_requests")
-            cur = conn.execute(
-                "DELETE FROM user_delete_requests WHERE username IN ("
-                "SELECT email FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?)",
-                (cutoff,),
-            )
-            _record_purge_event(
-                conn, "user_delete_requests", "purge_deleted_users", cutoff,
-                cur.rowcount or 0, before, _table_min_max(conn, "user_delete_requests"),
-            )
-            before = _table_min_max(conn, "users")
-            cur = conn.execute(
-                "DELETE FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
-                (cutoff,),
-            )
-            _record_purge_event(
-                conn, "users", "purge_deleted_users", cutoff, cur.rowcount or 0,
-                before, _table_min_max(conn, "users"),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理已注销用户失败: %s", e)
-
-
-def purge_deleted_users_hard(emails):
-    """管理员手动物理清除指定的已注销用户（2026-08-17 需求：不等 7 天自动清除）。
-
-    安全边界：仅处理 deleted=1 的用户行——传入活跃用户邮箱时该用户被直接跳过
-    （管理员误操作/并发注册新同邮箱用户均不可能误删活跃数据）。
-    账号行只删除 deleted=1 的软删账号；活跃账号跳过，避免误删用户注销后
-    重新添加的账号。单事务连带清理：这些已删账号对应 time_prefs + 用户行。
-    返回实际清除的邮箱列表（供调用方审计与回显）。
-    """
-    if not emails:
-        return []
-    conn = get_conn()
-    purged = []
-    with _conn_lock:
-        # BEGIN IMMEDIATE 写锁内完成"读 phones → 删账号 → 连带清理"，
-        # 与 restore_user 跨进程串行化。原 deferred 快照下 phones 列表可能陈旧
-        # （M5 同族竞态：并发 restore 后升级写表现为 BUSY_SNAPSHOT 500，连带
-        # 清理列表陈旧）；持 IMMEDIATE 后写锁期间列表不可能变化。
-        _begin_immediate(conn)
-        try:
-            for email in emails:
-                row = conn.execute(
-                    "SELECT id FROM users WHERE email=? AND deleted=1", (email,)
-                ).fetchone()
-                if row is None:
-                    continue
-                phones = [
-                    r["phone"]
-                    for r in conn.execute(
-                        "SELECT phone FROM accounts WHERE owner=? AND deleted=1", (email,)
-                    ).fetchall()
-                ]
-                conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
-                _cascade_phone_owned(conn, phones)
-                # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
-                # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
-                cur = conn.execute(
-                    "DELETE FROM users WHERE id=? AND deleted=1", (row["id"],)
-                )
-                if cur.rowcount > 0:
-                    purged.append(email)
-                    _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
-            conn.commit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-    return purged
-
-
-def purge_old_delete_requests(days=30):
-    """物理清除超过保留期的注销请求记录（默认 30 天）；失败仅告警。
-
-    对抗审查 2026-08-16：user_delete_requests 只增不删会无限累积
-    （长期使用后 count 查询变慢、库体积膨胀）——启动时随 purge_deleted_users 一并清理。
-    """
-    try:
-        conn = get_conn()
-        with _conn_lock, conn:
-            # M3 时钟保护：跳变时跳过（该表是冷却计数，误删只影响限速；保守一致）
-            ok, note = _clock_jump_guard(conn, "purge_requests_clock")
-            if not ok:
-                logger.error("%s", note)
-                return
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            conn.execute(
-                "DELETE FROM user_delete_requests WHERE created_at <= ?",
-                (cutoff,),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理注销请求记录失败: %s", e)
-
-
-def run_daily_cleanup():
-    """每日定期清理的集中入口（2026-08-28 审查 M6）。
-
-    审计/事件旧数据 + 过期软删账号 + 过期注销用户 + 注销请求记录 + 签到领取记录的清理，
-    原先挂在 init_db(cleanup=True) 上——而 signin 子进程每天要跑 2~3 次
-    （Docker 调度器首签/补签/探针，宿主 cron 同理），每次都执行一轮
-    全表 DELETE + 多个 purge，与 web 的 8 个线程抢库级写锁，是审计写入
-    失败（B-1）与陈旧列表误删（M5）的主要诱因。
-    现改为：web 每日线程统一调用本函数；signin 侧 init_db(cleanup=False)
-    （其 main() 保留对超期软删账号的显式清理，覆盖无 web 的纯 cron 场景）。
-
-    _audit_cleanup/_event_cleanup 直接在本模块共享连接上
-    execute+commit——必须持 _conn_lock，否则与 8 个请求线程的 BEGIN IMMEDIATE
-    事务交叠时，清理的 DELETE 会加入他人未提交事务、commit 把半程事务提前
-    发布（撕裂事务，破坏原子性投入）。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        _audit_cleanup(conn)
-        _event_cleanup(conn)
-        try:
-            orphans = purge_orphan_session_cache(conn)
-            conn.commit()
-            if orphans:
-                # 孤儿行意味着"账号已不存在但凭据缓存还在"：留痕（不含手机号明文）
-                logger.warning("已清除 %d 条孤儿会话缓存（账号行已不存在）", orphans)
-        except Exception as e:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("清除孤儿会话缓存失败（不影响其他清理）: %s", e)
-    purge_expired_deleted_accounts()
-    purge_deleted_users()
-    purge_old_delete_requests()
-    purge_sign_claims()
-
-
-def record_user_delete_request(username, ip_hash="", kind="delete"):
-    """记录一次注销/恢复请求（供冷却/防批量使用；kind: delete=注销 / restore=恢复，v7）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            conn.execute(
-                "INSERT INTO user_delete_requests (username, ip_hash, created_at, kind) "
-                "VALUES (?,?,?,?)",
-                (
-                    username or "",
-                    ip_hash or "",
-                    clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    kind if kind in ("delete", "restore") else "delete",
-                ),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("记录注销请求失败: %s", e)
-
-
-def count_user_delete_requests(username=None, ip_hash=None, since_ts=None, kind=None):
-    """统计窗口内注销/恢复请求次数（用户或 IP 维度；kind=None 统计全部，v7）。
-
-    计数类查询 fail-closed：异常包装为 RuntimeError 由上层统一处理。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
-            params = []
-            if username:
-                sql += " AND username=?"
-                params.append(username)
-            if ip_hash:
-                sql += " AND ip_hash=?"
-                params.append(ip_hash)
-            if since_ts:
-                sql += " AND created_at >= ?"
-                params.append(since_ts)
-            if kind:
-                sql += " AND kind=?"
-                params.append(kind)
-            row = conn.execute(sql, params).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        raise RuntimeError(f"统计注销请求失败: {e}") from e
-
-
-def is_last_registered_admin(email):
-    """判断该邮箱是否是最后一个注册管理员（不含 .env 内置管理员）。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
-        ).fetchone()
-        total = row[0] if row else 0
-        target = conn.execute(
-            "SELECT id FROM users WHERE email=? AND role='admin' AND deleted=0",
-            (email,),
-        ).fetchone()
-        return target is not None and total <= 1
-
-
-def batch_user_ops(ops):
-    """在一个事务内批量执行用户操作（Phase 1：整体成功或整体回滚）。
-
-    ops 为 (op, params) 列表，op 支持：
-      ("update_user", email, fields_dict)          # role/password_hash/pw_version
-      ("update_user", email, fields_dict, allow_last_admin)  #：降权含
-                                                    # 最后管理员事务内复核的放行开关
-      ("delete_user_with_accounts", email)
-      ("delete_user_with_accounts", email, allow_last_admin)  # 同上
-    """
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            for op in ops:
-                kind = op[0]
-                if kind == "update_user":
-                    email, fields = op[1], op[2]
-                    # 角色降级经同一事务内复核（预检在 web 进程内，
-                    # 挡不住跨进程并发把最后一个注册管理员降权）
-                    if fields.get("role") == "user":
-                        _assert_not_last_admin(conn, email, op[3] if len(op) > 3 else False)
-                    sets, vals = [], []
-                    for k in ("password_hash", "role", "pw_version"):
-                        if k in fields:
-                            sets.append(f"{k}=?")
-                            vals.append(fields[k])
-                    if not sets:
-                        continue
-                    vals.append(email)
-                    conn.execute(
-                        f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0",
-                        vals,
-                    )
-                elif kind == "delete_user_with_accounts":
-                    email = op[1]
-                    # 删除管理员前事务内复核最后管理员
-                    _assert_not_last_admin(conn, email, op[2] if len(op) > 2 else False)
-                    rows = conn.execute(
-                        "SELECT phone FROM accounts WHERE owner=?", (email,)
-                    ).fetchall()
-                    conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-                    phones = [r["phone"] for r in rows]
-                    _cascade_phone_owned(conn, phones)
-                    conn.execute("DELETE FROM users WHERE email=?", (email,))
-                    _delete_user_delete_requests(conn, email)  # M4
-                else:
-                    raise ValueError(f"未知批量用户操作: {kind}")
-            conn.commit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-# ---------------------------------------------------------------------------
-# 操作审计
-# ---------------------------------------------------------------------------
-# 审计写入失败欠账。审计是唯一追溯凭据，写入失败若无人察觉，就会出现
-# "业务操作已生效、审计表里却没有这条记录"且哈希链依然自洽的静默丢失。
-# 全仓 db.audit() 调用点众多且不检查返回值，故由此计数器兜底：由每日校验
-# （web 每日线程 / audit_verify.py）读取并告警，无需逐调用点改造。
-#
-# 欠账必须**落库**：原实现只有进程内 int，systemctl restart 即归零——而"锁竞争
-# 导致审计写不进去"往往正是数据库已经出问题的时段，重启一次就把"有操作未留痕"
-# 这件事连同证据一起忘掉。现以 app_meta.audit_write_fail_total 为权威（单调累加），
-# 进程内只保留"落库也失败"的余额（那种时刻库本来就写不进，不能再放大故障）。
-_AUDIT_FAIL_KEY = "audit_write_fail_total"
-_AUDIT_FAIL_UNFLUSHED = 0
-_AUDIT_FAIL_UNFLUSHED_DB = None
-_AUDIT_FAIL_LOCK = threading.Lock()
-# 审计写入重试（2026-08-28 审查 B-1）：锁竞争时的短暂失败值得重试
-_AUDIT_RETRIES = 3
-_AUDIT_RETRY_BASE_DELAY = 0.2
-
-
-def _bump_audit_write_failure():
-    """欠账 +1（app_meta 单调累加）。落库失败时记在进程内余额上。"""
-    global _AUDIT_FAIL_UNFLUSHED, _AUDIT_FAIL_UNFLUSHED_DB
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            _begin_immediate(conn)
-            try:
-                row = conn.execute(
-                    "SELECT value FROM app_meta WHERE key=?", (_AUDIT_FAIL_KEY,)
-                ).fetchone()
-                try:
-                    total = int(str(row["value"]).strip() or 0) if row and row["value"] else 0
-                except ValueError:
-                    total = 0
-                conn.execute(
-                    "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-                    (_AUDIT_FAIL_KEY, str(total + 1)),
-                )
-                conn.commit()
-            except Exception:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                raise
-        return True
-    except Exception as e:
-        # 欠账本身就是"库写不进去"时产生的，落这条计数也可能失败——余额留在进程内，
-        # 至少本轮校验还能看见，绝不静默丢弃。
-        with _AUDIT_FAIL_LOCK:
-            _AUDIT_FAIL_UNFLUSHED += 1
-            _AUDIT_FAIL_UNFLUSHED_DB = _db_file
-        logger.error("审计写入欠账落库失败（记入进程内余额）: %s", e)
-        return False
-
-
-def _unflushed_audit_failures():
-    """进程内未落库余额；所属库已切换则视为 0（欠账是每个库各自的事实）。"""
-    if _AUDIT_FAIL_UNFLUSHED_DB is not None and _db_file != _AUDIT_FAIL_UNFLUSHED_DB:
-        return 0
-    return _AUDIT_FAIL_UNFLUSHED
-
-
-def _reset_audit_fail_memory():
-    """清空进程内余额（模拟进程重启/换库；生产路径不调用）。"""
-    global _AUDIT_FAIL_UNFLUSHED, _AUDIT_FAIL_UNFLUSHED_DB
-    with _AUDIT_FAIL_LOCK:
-        _AUDIT_FAIL_UNFLUSHED = 0
-        _AUDIT_FAIL_UNFLUSHED_DB = None
-
-
-def audit_persisted_write_failures():
-    """已落库的审计写入欠账（app_meta；读不到按 0，不抛）。"""
-    try:
-        return int(str(get_meta(_AUDIT_FAIL_KEY, "0")).strip() or 0)
-    except ValueError:
-        return 0
-
-
-def audit_write_failures():
-    """累计的审计写入失败次数（供每日校验告警；0 = 无欠账）。
-
-    = 已落库的累计值 + 本轮进程内未落库的余额。重启不再归零。
-    """
-    return audit_persisted_write_failures() + _unflushed_audit_failures()
-
-
-def audit(username, action, target="", detail=""):
-    """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
-
-    Phase 3：写入 HMAC 哈希链，prev_hash 取上一条 hash；签名保持不变。
-    2026-08-20 对抗性审查修复：prev_hash 读取纳入 BEGIN IMMEDIATE 写事务——
-    原实现"读上一条 hash"与 INSERT 之间无跨进程互斥（_conn_lock 仅进程内），
-    web 多进程并发写审计会读到同一 prev_hash 造成链分叉（verify 断链）。
-
-    2026-08-28 审查 B-1（fail-loud）：原实现 `except Exception` 后只写一条
-    WARNING 并返回 None——锁等待超过 busy_timeout 时（长事务如 replace_accounts
-    整表重插、夜间批量签到与 web 争锁）业务接口照常返回 200，审计表里却没有
-    这条记录。因为是"没写进去"而非"写完被删"，哈希链依然自洽，verify 永远
-    验不出问题。现改为：失败重试 → 仍失败则计 ERROR + 欠账累加落 app_meta
-    （重启不归零；供每日校验告警），并返回 bool 供关键路径在需要时显式判定。
-
-    返回 True 表示已落库；False 表示重试耗尽仍未写入（调用方据此决定是否
-    阻断业务）。既有调用点不检查返回值也不会出错，失败会由每日校验兜住。
-    """
-    conn = None
-    ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-    detail = detail[:200]
-    last_err = None
-    for attempt in range(_AUDIT_RETRIES):
-        try:
-            with _conn_lock:
-                conn = get_conn()
-                # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
-                # 未提交事务，先解除——否则 BEGIN IMMEDIATE 会报 "within a transaction"。
-                # 2026-08-28 审查 M8：盲提交会把"写了一半的事务"发布成持久数据。
-                # 修订：遗留锁用【回滚】解除同样有效（写锁本质由未完成
-                # 事务持有），而未知半事务按安全默认丢弃——提交可能把半程写入发布
-                # 为持久数据（如 replace_accounts 中途可见的残表）。遗留事务本身是
-                # 某条写路径未正确 commit/rollback 的 bug，应据堆栈定位修复。
-                if conn.in_transaction:
-                    logger.error(
-                        "检测到遗留未提交事务，已回滚解除写锁（未知半事务按安全默认"
-                        "丢弃）——请检查此前调用路径是否有写操作未 commit/rollback"
-                        "（in_transaction 状态残留）"
-                    )
-                    conn.rollback()
-                # IMMEDIATE：取 prev_hash 前先拿库级写锁，跨进程串行化"读尾→追加"
-                _begin_immediate(conn)
-                row = conn.execute(
-                    "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
-                ).fetchone()
-                prev_hash = row["hash"] if row else ""
-                h = _audit_hash(prev_hash, ts, username, action, target, detail)
-                conn.execute(
-                    "INSERT INTO audit_logs (ts, username, action, target, detail, prev_hash, hash) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (ts, username, action, target, detail, prev_hash, h),
-                )
-                conn.commit()
-            return True
-        except Exception as e:
-            last_err = e
-            if conn is not None:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-            if attempt < _AUDIT_RETRIES - 1:
-                logger.warning(
-                    "审计写入失败，%.1fs 后重试（第 %d/%d 次）: %s",
-                    _AUDIT_RETRY_BASE_DELAY * (attempt + 1), attempt + 1, _AUDIT_RETRIES, e,
-                )
-                time.sleep(_AUDIT_RETRY_BASE_DELAY * (attempt + 1))
-    _bump_audit_write_failure()
-    logger.error(
-        "审计写入最终失败（业务操作已生效但无留痕，重试 %d 次）: %s | action=%s target=%s",
-        _AUDIT_RETRIES, last_err, action, target,
-    )
-    return False
-
-
-def audit_head_hash():
-    """返回审计链当前头哈希（空链返回空串）；供外部锚点导出（append-only 日志）。
-
-    2026-08-21 对抗性审查补充：HMAC 链密钥与数据同盘时"整体重算"零成本，
-    把链头哈希定期追加到独立文件（web 每日线程写 STATE_DIR/audit-anchor.log），
-    使重写库内审计链还需同步篡改锚点文件，外部锚定抬高伪造成本。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            return row["hash"] if row else ""
-    except Exception as e:
-        logger.warning("读取审计链头失败: %s", e)
-        return ""
-
-
-def audit_row_count():
-    """审计链当前记录总数（只读 COUNT，供日报锚点行等链状态对照）。
-
-    刻意不吞异常：与 audit_head_hash 的"记日志返回空"不同，本函数让读取失败
-    原样上抛，由调用方（日报的 try/except 纪律）决定省略——锚点行是取证对照
-    数据，宁缺毋滥。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()
-        return row[0] if row else 0
-
-
-def verify_audit_chain():
-    """校验审计哈希链。
-
-    把当前表中 id 最小的一行视为链根：首行以自身 prev_hash 为锚校验 hash，
-    不判首行 prev 断链（清理旧行后 prev_hash 指向已删除的前序行是合法状态）。
-    从第二行开始要求 prev_hash 等于上一行 hash，且每行 hash 与内容匹配。
-
-    返回 (ok, broken_count, first_broken_id)；broken_count=-1 表示校验过程异常
-    或审计密钥缺失（fail-closed）。
-    """
-    try:
-        key = _audit_key(create=False)
-        if key is None:
-            logger.warning("审计链校验失败: 未配置 YIBAN_AUDIT_KEY")
-            return False, -1, None
-        with _conn_lock:
-            conn = get_conn()
-            rows = conn.execute(
-                "SELECT id, prev_hash, hash, ts, username, action, target, detail "
-                "FROM audit_logs ORDER BY id"
-            ).fetchall()
-            if not rows:
-                return True, 0, None
-            prev = None
-            broken = 0
-            first_broken = None
-            for r in rows:
-                # 首行锚点取自身 prev_hash；后续行要求 prev_hash 与上一行 hash 一致
-                anchor = r["prev_hash"] if prev is None else prev
-                if prev is not None and r["prev_hash"] != prev:
-                    broken += 1
-                    if first_broken is None:
-                        first_broken = r["id"]
-                expected_hash = _audit_hash(
-                    anchor, r["ts"], r["username"], r["action"], r["target"], r["detail"]
-                )
-                if r["hash"] != expected_hash:
-                    broken += 1
-                    if first_broken is None:
-                        first_broken = r["id"]
-                prev = r["hash"]
-            return broken == 0, broken, first_broken
-    except Exception as e:
-        logger.warning("审计链校验失败: %s", e)
-        return False, -1, None
-
-
-# ---------------------------------------------------------------------------
-# 审计链外部锚点（2026-08-28 审查 B-2）
-# ---------------------------------------------------------------------------
-# verify_audit_chain() 只能检出"删中间"：首行以自身 prev_hash 自锚、空表直接判
-# 通过（见其实现）。于是「删前缀 / 删尾 / 清空整表」三类篡改全部验不出来。
-#
-# 锚点记录 (min_id, max_id, head_hash) 三元组即可覆盖：
-#   - 当前 max_id < 锚点 max_id            → 尾部被删（最危险：抹掉最近的记录）
-#   - 表空但锚点 max_id > 0                → 整表被清空
-#   - max_id 相同但 head_hash 不符          → 链尾内容被篡改
-#   - 当前 min_id > 锚点 min_id            → 前缀被删（**不判失败**）
-#
-# 前缀删除刻意降级为「信息」而非「失败」：_audit_cleanup（保留 180 天）本身就是
-# 删前缀的合法路径，判失败会让每日校验天天误报，反而淹没真告警。
-#
-# 锚点存放在**库外**：若存进 yiban.db，有写库权限者可连同审计表一起删掉，锚点
-# 形同虚设。库外文件使"整体重写审计链"还需同步篡改该文件。
-#
-# 锚点行格式（空格分隔；时间戳本身含 1 个空格，故按 token 数区分版本，
-# 解析一律从行尾取字段）：
-#   v1（2026-08-28 起，存量生产文件）： <ts> <min_id> <max_id> <head>              = 5 token
-#   v2（当前）：                        <ts> <min_id> <max_id> <count>
-#                                        <purge_total> <head> <prev_line_hash>     = 8 token
-# v2 新增三字段的用途——
-#   count         锚定时刻链内行数 → "min..max 区间该有多少行"的稠密性判据数据源；
-#   purge_total   锚定时刻已留痕的物理删除累计条数 → 只有锚点**之后**的留痕清理
-#                 才能解释缺口，事后补写事件无法自证；
-#   prev_line_hash 前一行原文 sha256 → 锚点文件自身成链，改写任一历史行/删中间行可检出。
-# 读 v1 行时这三字段为 None（不是 0/""），依赖它们的判据自动降级，不误报。
-_ANCHOR_V1_TOKENS = 5
-_ANCHOR_V2_TOKENS = 8
-#: 库内锚点指纹：{"lines": int, "last_hash": str, "ts": str}
-_ANCHOR_META_KEY = "audit_anchor_meta"
-#: audit_logs 物理删除留痕：累计条数（int）+ 最近若干条事件（JSON 列表）
-_AUDIT_PURGE_TOTAL_KEY = "audit_purge_total"
-_AUDIT_PURGE_EVENTS_KEY = "audit_purge_events"
-#: 留痕事件列表上限（app_meta 单值不宜无界增长；只保留最近 N 条足够追溯）
-_PURGE_EVENTS_KEEP = 200
-#: 全表重链留痕（migrate_v3 每次重签整条链都记一条：ts/来源版本/行数/重链前后 head）
-_RECHAIN_EVENTS_KEY = "audit_rechain_events"
-_RECHAIN_EVENTS_KEEP = 50
-#: 文件首行的"前驱哈希"哨兵。必须是非空定长串——写成空串会让行尾空格在 split()
-#: 后少一个 token，整行变得不可解析（曾导致每日误报"锚点文件被删除"）。
-_ANCHOR_GENESIS = "0" * 64
-
-
-def audit_anchor_path():
-    """外部锚点文件路径（库外 append-only）。
-
-    默认与 web/app.py 的 STATE_DIR 对齐（/var/log/yiban）——
-    原默认 "."（进程 cwd）使裸机部署下 web 把锚点写到 /var/log/yiban/audit-anchor.log，
-    而 audit_health 读 <cwd>/audit-anchor.log：每日误报「锚点文件被删除」淹没真告警，
-    且删尾/清空/链尾篡改检测从未比对过真实锚点（锚点防线整体致盲）。
-    Windows 开发/测试环境保留 "."（/var/log 不可写）；显式设置 YIBAN_STATE_DIR 时
-    两边一致（Docker compose 即此形态，不受影响）。
-    """
-    state_dir = os.environ.get("YIBAN_STATE_DIR") or (
-        "." if os.name == "nt" else "/var/log/yiban"
-    )
-    return os.path.join(state_dir, "audit-anchor.log")
-
-
-def _anchor_line_sha(text):
-    """锚点行原文哈希（行间链用）。刻意用无密钥 sha256：锚点文件的定位是"抬高
-    伪造成本 + 留下可追改动"，不是消息认证——密钥与数据同盘时任何 MAC 都可被
-    同一权限重算，真正兜住"整体重写"的是离机副本（日报邮件 / 异机备份）。"""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _parse_anchor_line(ln):
-    """解析单条锚点行；不可解析返回 None。
-
-    字段一律**从行尾**取——时间戳本身含空格（"YYYY-MM-DD HH:MM:SS"），从头按下标
-    取会整体错位一格。v1 行缺失的三个字段返回 None（而非 0/""），让调用方能区分
-    "值为 0" 与"该行根本没有这个字段"，避免旧行被当成 count=0 误判。
-    """
-    parts = ln.split()
-    n = len(parts)
-    try:
-        if n == _ANCHOR_V2_TOKENS:
-            return {
-                "version": 2,
-                "ts": " ".join(parts[:-6]),
-                "min_id": int(parts[-6]),
-                "max_id": int(parts[-5]),
-                "count": int(parts[-4]),
-                "purge_total": int(parts[-3]),
-                "head": parts[-2],
-                "prev_line_hash": parts[-1],
-            }
-        if n == _ANCHOR_V1_TOKENS:
-            return {
-                "version": 1,
-                "ts": " ".join(parts[:-3]),
-                "min_id": int(parts[-3]),
-                "max_id": int(parts[-2]),
-                "head": parts[-1],
-                "count": None,
-                "purge_total": None,
-                "prev_line_hash": None,
-            }
-    except ValueError:
-        return None
-    return None
-
-
-def _read_anchor_lines(path):
-    """锚点文件的全部非空行（保持顺序）。文件不存在/不可读返回 None（区别于 []）。"""
-    try:
-        with open(path, encoding="utf-8") as f:
-            return [ln.strip() for ln in f if ln.strip()]
-    except OSError:
-        return None
-
-
-def _get_anchor_meta():
-    """读库内锚点指纹 {"lines","last_hash","ts"}；无记录/缺表/JSON 损坏 → {}。"""
-    raw = get_meta(_ANCHOR_META_KEY, "")
-    if not raw:
-        return {}
-    try:
-        val = json.loads(raw)
-    except ValueError:
-        return {}
-    return val if isinstance(val, dict) else {}
-
-
-def _audit_purge_total(conn):
-    """累计"已留痕的物理删除条数"（audit_logs 口径）。缺表/缺键 → 0。
-
-    本函数刻意不抛也不吞出锁：调用方要么持有 _conn_lock 并传入共享连接，
-    要么走 get_meta（自取锁）。清理留痕的写入方见 _record_purge_event。
-    """
-    try:
-        row = conn.execute(
-            "SELECT value FROM app_meta WHERE key=?", (_AUDIT_PURGE_TOTAL_KEY,)
-        ).fetchone()
-    except sqlite3.Error:
-        return 0
-    if row is None or row["value"] is None:
-        return 0
-    try:
-        return int(str(row["value"]).strip() or 0)
-    except ValueError:
-        return 0
-
-
-def _audit_purge_events(conn):
-    """物理删除留痕事件列表（app_meta JSON）。缺表/JSON 损坏 → []。"""
-    try:
-        row = conn.execute(
-            "SELECT value FROM app_meta WHERE key=?", (_AUDIT_PURGE_EVENTS_KEY,)
-        ).fetchone()
-    except sqlite3.Error:
-        return []
-    if row is None or not row["value"]:
-        return []
-    try:
-        val = json.loads(row["value"])
-    except ValueError:
-        return []
-    return val if isinstance(val, list) else []
-
-
-def audit_purge_total():
-    """audit_logs 累计物理删除条数（公开只读，供体检/排障；无记录 → 0）。"""
-    try:
-        return int(str(get_meta(_AUDIT_PURGE_TOTAL_KEY, "0")).strip() or 0)
-    except ValueError:
-        return 0
-
-
-def audit_purge_events():
-    """物理删除留痕事件（公开只读，最新在末尾；表缺失/损坏 → []）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            return _audit_purge_events(conn)
-    except Exception as e:
-        logger.warning("读取物理删除留痕失败: %s", e)
-        return []
-
-
 def _record_purge_event(conn, table, kind, cutoff, deleted, before, after, audit_seq=None):
     """把一次物理删除写入 app_meta 留痕（与删除同事务，由调用方 commit）。
 
@@ -3328,477 +1429,6 @@ def _table_min_max(conn, table):
     if row is None:
         return None, None
     return row["mn"], row["mx"]
-
-
-def record_audit_anchor(path=None):
-    """把当前审计链状态追加到外部锚点文件（v2 行格式见上方注释）。
-
-    返回写入的锚点行；无审计记录、链头读取失败或写入失败返回 None（不阻断调用方）。
-    建议在每日清理之后调用，使锚点反映清理后的合法状态。
-
-    链头为空时**拒绝写行**而非写一条空字段：少一个 token 的行会被后续解析整体
-    错位（与 _last_audit_anchor 的"从行尾取字段"纪律冲突），宁缺毋滥。
-    """
-    path = path or audit_anchor_path()
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            # 顺序有讲究：先读**单调计数器** purge_total，再取行快照。反过来的话，
-            # 两次读之间发生的物理删除会被算进"锚点之前"的额度，而锚点记的行数却是
-            # 删除后的——校验时"少了行却没有对应留痕"，合法的保留期清理会被判成篡改。
-            purge_total = _audit_purge_total(conn)
-            row = conn.execute(
-                "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
-            ).fetchone()
-            # 链头必须**按 max_id 取值**，不能另取"当前最后一行"：后者是第二次读，
-            # 并发写入落在两次读之间时，锚点行的 max_id 与 head 指向不同行，此后每次
-            # 校验都会报"链尾内容被篡改"（旧判据在 max_id 不等时会跳过比对，反而不报）。
-            anchored = (conn.execute("SELECT hash FROM audit_logs WHERE id=?",
-                                     (int(row["max_id"]),)).fetchone()
-                        if row and row["max_id"] is not None else None)
-        if not row or row["max_id"] is None:
-            return None
-        min_id, max_id, count = int(row["min_id"]), int(row["max_id"]), int(row["n"])
-        head = (anchored["hash"] or "") if anchored else ""
-        if not head:
-            logger.warning("审计链头读取失败（空值），本次不写锚点行")
-            return None
-        ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 行间链：prev_line_hash 取**前一行原文**的哈希，旧格式（v1）行同样参与
-        # 链——否则攻击者只要删掉文件末尾的 v1 行，剩余行依然自洽，无从发现。
-        lines = _read_anchor_lines(path) or []
-        prev_line_hash = _anchor_line_sha(lines[-1]) if lines else _ANCHOR_GENESIS
-        line = f"{ts} {min_id} {max_id} {count} {purge_total} {head} {prev_line_hash}"
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        # 锚点落盘成功后在 app_meta 留痕——锚点文件本身可被整删
-        # （删掉后校验降级为"通过"），库内元数据使其"应存在却消失"可被检出
-        _record_anchor_trace(path, ts)
-        return line
-    except Exception as e:
-        logger.warning("审计链锚点写入失败: %s", e)
-        return None
-
-
-def _record_anchor_trace(path, ts):
-    """在 app_meta 留下锚点文件的指纹与"曾经存在"的痕迹。
-
-    两把钥匙各有分工：
-    - audit_anchor_last（仅 ts，历史兼容键）：锚点文件被**整体删除**时，
-      verify_audit_anchor 仍能判"曾写过锚点却不见了"；
-    - audit_anchor_meta（行数 + 末行哈希）：锚点文件被**截断/改写末行**时检出。
-      行间链对"删掉最后一行"无效（剩余行彼此仍自洽，没有后继行去哈希它），
-      必须有库内指纹交叉对照。行数只增不减——被截断后即使补写一行把长度凑回来，
-      本次指纹仍停留在更高的历史值上（见 _anchor_file_state）。
-    """
-    lines = _read_anchor_lines(path) or []
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            _begin_immediate(conn)
-            prev_raw = conn.execute(
-                "SELECT value FROM app_meta WHERE key=?", (_ANCHOR_META_KEY,)
-            ).fetchone()
-            recorded = 0
-            if prev_raw and prev_raw["value"]:
-                with contextlib.suppress(ValueError):
-                    recorded = int(json.loads(prev_raw["value"]).get("lines") or 0)
-            payload = json.dumps(
-                {
-                    "lines": max(recorded, len(lines)),
-                    "last_hash": _anchor_line_sha(lines[-1]) if lines else "",
-                    "ts": ts,
-                },
-                ensure_ascii=False,
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-                (_ANCHOR_META_KEY, payload),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-                ("audit_anchor_last", ts),
-            )
-            conn.commit()
-    except Exception as meta_err:
-        logger.warning("锚点元数据留痕失败（不影响锚点本身）: %s", meta_err)
-
-
-def _last_audit_anchor(path):
-    """读取最后一条有效锚点行；无锚点或格式不符返回 None。
-
-    行格式见 _ANCHOR_V1_TOKENS / _ANCHOR_V2_TOKENS 附近说明。字段**从行尾**取——
-    时间戳本身含空格，从头按下标取会整体错位一格。
-
-    兼容三种历史形态：v2（8 token，含 count/purge_total/prev_line_hash）、
-    v1（5 token，2026-08-28 起）、更旧的 `ts head`（3 token，int() 转换失败即跳过，
-    不参与判定，避免升级后误报）。
-    """
-    lines = _read_anchor_lines(path)
-    if not lines:
-        return None
-    for ln in reversed(lines):
-        parsed = _parse_anchor_line(ln)
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _anchor_file_state(path):
-    """锚点文件**自身**完整性：行间链 + 库内指纹交叉校验。返回异常描述或 ''。
-
-    审计链的哈希校验只覆盖库内行；锚点文件若被截断/改写，判据会整体失效
-    （verify_audit_anchor 只读末行）。本函数把"锚点文件不可信"从静默降级
-    变成显式失败。
-    """
-    lines = _read_anchor_lines(path)
-    if lines is None:
-        return ""  # 文件缺失/不可读由 audit_anchor_last 那一支判定
-    for i, ln in enumerate(lines):
-        parsed = _parse_anchor_line(ln)
-        if parsed is None or parsed["prev_line_hash"] is None:
-            continue  # 旧格式行没有行间链字段：作为前驱参与哈希，自身不做链校验
-        expect = _anchor_line_sha(lines[i - 1]) if i > 0 else _ANCHOR_GENESIS
-        if parsed["prev_line_hash"] != expect:
-            where = _anchor_line_sha(lines[i - 1])[:12] if i > 0 else _ANCHOR_GENESIS[:12]
-            return (
-                f"锚点文件第 {i + 1} 行的行间哈希不符（期望前驱行 {where}）"
-                "——锚点历史被改写或删除过整行"
-            )
-    meta = _get_anchor_meta()
-    recorded = int(meta.get("lines") or 0) if meta else 0
-    if recorded:
-        if len(lines) < recorded:
-            return (
-                f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
-                "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）"
-            )
-        if (len(lines) == recorded and meta.get("last_hash")
-                and _anchor_line_sha(lines[-1]) != meta["last_hash"]):
-            return "锚点文件末行与库内指纹不符——末行内容被改写"
-    return ""
-
-
-def verify_audit_anchor(path=None):
-    """与库外锚点比对，检出「删尾 / 清空整表 / 篡改链尾」。
-
-    返回 (ok: bool, message: str)：
-    - ok=False → 确证异常，调用方应告警；
-    - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
-    无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
-    app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
-    不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。
-    该元数据交叉检查此前仅对默认路径生效——web 每日线程改传
-    显式路径后会被跳过，锚点致盲问题换了个形式复发。现对显式路径同样生效
-    （仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用）。
-    """
-    path = path or audit_anchor_path()
-    anchor = _last_audit_anchor(path)
-    if anchor is None:
-        try:
-            with _conn_lock:
-                conn = get_conn()
-                r = conn.execute(
-                    "SELECT value FROM app_meta WHERE key='audit_anchor_last'"
-                ).fetchone()
-            if r is not None and r["value"]:
-                return False, (
-                    f"审计锚点文件缺失或不可读，但应用元数据记录曾于 "
-                    f"{r['value']} 写入锚点——疑似锚点文件被删除，"
-                    "删尾/清空检测已失效，请立即核查"
-                )
-        except Exception:
-            pass  # app_meta 不存在（旧库/跳过迁移）→ 维持旧行为
-        return True, ""
-    file_err = _anchor_file_state(path)
-    if file_err:
-        # 锚点文件自身不可信时，后面所有"拿末行与库内比对"的判据都是拿伪造值
-        # 在校验伪造值——必须先判失败。
-        return False, file_err
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT MIN(id) AS min_id, MAX(id) AS max_id, COUNT(*) AS n FROM audit_logs"
-            ).fetchone()
-            anchored = conn.execute(
-                "SELECT hash FROM audit_logs WHERE id=?", (anchor["max_id"],)
-            ).fetchone()
-            appended = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE id > ?", (anchor["max_id"],)
-            ).fetchone()[0]
-            purge_total = _audit_purge_total(conn)
-            events = _audit_purge_events(conn)
-        n = int(row["n"] or 0)
-        cur_min = int(row["min_id"]) if row["min_id"] is not None else 0
-        cur_max = int(row["max_id"]) if row["max_id"] is not None else 0
-        anchor_pt = anchor.get("purge_total")      # v1 行 → None
-        anchor_count = anchor.get("count")         # v1 行 → None
-        # 留痕累计数只增不减：倒退意味着 app_meta 的删除留痕被人清过/改过，
-        # 而这正是"批量删除后自证清白"唯一的通路，必须当场判失败。
-        if anchor_pt is not None and purge_total < anchor_pt:
-            return False, (
-                f"物理删除留痕累计数由锚点记录的 {anchor_pt} 倒退为 {purge_total}"
-                "——app_meta 删除留痕被清除或改写，删除追溯已失效，请立即核查"
-            )
-        # 锚点之后新发生的、有留痕的物理删除条数（v1 锚点无从得知基线）
-        explained = (purge_total - anchor_pt) if anchor_pt is not None else None
-
-        if n == 0:
-            if explained is not None and anchor_count and explained >= anchor_count:
-                return True, (
-                    f"审计链 {anchor_count} 条已按保留期全部清理完毕"
-                    f"（有留痕，锚点以来累计删除 {explained} 条），非告警"
-                )
-            return False, (
-                f"审计表为空，但锚点（{anchor['ts']}）记录曾有 {anchor['max_id']} 条"
-                f"——疑似整表被清空（无任何清理留痕可解释，留痕累计={explained}）"
-            )
-
-        # ---- 判据一：定点 ----
-        # 锚点 max_id 那一行必须还在、哈希必须还对得上。原判据是
-        # "cur_max == anchor.max_id 时才比 head"，于是"删掉链尾若干条 + 再写一条"
-        # 就足以让整套比对静默（新行 id 更大，head 比对被跳过）。
-        if anchored is None and not _purge_event_covers(events, anchor_pt, anchor["max_id"]):
-            trend = (
-                f"当前 max_id={cur_max} 小于锚点 max_id={anchor['max_id']}（条数减少，"
-                f"疑似删掉最近 {anchor['max_id'] - cur_max} 条）"
-                if cur_max < anchor["max_id"]
-                else f"当前 max_id={cur_max} 反而更大——删尾后用新写入掩盖"
-            )
-            return False, (
-                f"锚点记录的链尾行 id={anchor['max_id']} 已不存在，且无清理留痕可解释："
-                f"{trend}；锚点以来有留痕的删除累计={explained}"
-            )
-        if anchored is not None and anchored["hash"] != anchor["head"]:
-            return False, (
-                f"审计链尾行 id={anchor['max_id']} 的哈希与锚点不符（链尾内容被篡改或被"
-                f"全表重签）{_rechain_hint(anchor)}"
-            )
-        if anchored is None:
-            # 定点被留痕事件解释掉了（长期空闲后保留期清理删到了链尾）——
-            # 这条锚点已不再描述当前链尾，后续判据照常执行
-            logger.info("锚点链尾行 id=%s 已由清理留痕解释，跳过 head 比对", anchor["max_id"])
-
-        # ---- 判据二：稠密（v1 锚点无 count，降级跳过）----
-        if anchor_count is not None:
-            era_rows = n - int(appended)          # 锚点当时那批行里现在还剩下的
-            missing = anchor_count - era_rows     # 锚点以来消失的行数
-            exp = explained if explained is not None else 0
-            if missing > exp:
-                return False, (
-                    f"审计记录条数减少且无清理留痕：锚点（{anchor['ts']}）记录 {anchor_count} 条，"
-                    f"当前该批仅剩 {era_rows} 条（此后新增 {appended} 条），"
-                    f"消失 {missing} 条而有留痕的物理删除仅 {exp} 条——"
-                    f"疑似删除了 {missing - exp} 条历史记录；min_id 由 {anchor['min_id']} "
-                    f"变为 {cur_min}，max_id 由 {anchor['max_id']} 变为 {cur_max}"
-                )
-            if missing < exp:
-                return False, (
-                    f"清理留痕与链实际状态不符：留痕声称锚点以来删除 {exp} 条，"
-                    f"实际仅消失 {missing} 条——留痕被伪造/重复写入，判为异常"
-                )
-
-        # ---- 判据三：留痕（min_id 跃迁必须有事件精确对上）----
-        if cur_min > anchor["min_id"]:
-            if anchor_count is None:
-                # v1 锚点：没有 count 可核对，维持旧的"信息"定性（不因此判失败）
-                return True, (
-                    f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
-                    "（旧版锚点无 count 字段，无法核对清理留痕，非告警；"
-                    "本次已按新格式重写锚点，明日恢复完整判据）"
-                )
-            if not _purge_event_sets_min(events, anchor_pt, cur_min):
-                return False, (
-                    f"审计链 min_id 由 {anchor['min_id']} 跃迁至 {cur_min}（跃迁 "
-                    f"{cur_min - anchor['min_id']} 条），但没有任何一条清理留痕事件的"
-                    f"删除后 min_id 与之相符——前缀删除无留痕，判为非法删除"
-                )
-            return True, (
-                f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
-                "（有清理留痕，保留期清理的正常现象，非告警）"
-            )
-        if cur_min < anchor["min_id"]:
-            return False, (
-                f"审计链 min_id 由 {anchor['min_id']} 倒退至 {cur_min}——"
-                "锚点之后不可能凭空出现更早的记录，判为异常（库被替换或 id 被重写）"
-            )
-        return True, ""
-    except Exception as e:
-        return False, f"锚点校验异常: {e}"
-
-
-def _purge_events_after_anchor(events, anchor_pt):
-    """锚点之后新发生的 audit_logs 物理删除留痕（按 audit_seq 精确切分）。"""
-    out = []
-    for ev in events:
-        if ev.get("table") != "audit_logs":
-            continue
-        seq = ev.get("audit_seq")
-        if seq is None:
-            continue  # 升级前的旧清理没有序号，无法定位与锚点的先后——不参与解释
-        if anchor_pt is None or int(seq) > int(anchor_pt):
-            out.append(ev)
-    return out
-
-
-def _purge_event_covers(events, anchor_pt, row_id):
-    """是否有一条锚点之后的留痕事件恰好把 id=row_id 这条删掉了。"""
-    for ev in _purge_events_after_anchor(events, anchor_pt):
-        before_max = ev.get("before_max")
-        after_max = ev.get("after_max")
-        if before_max is None or int(row_id) > int(before_max):
-            continue
-        if after_max is None or int(row_id) > int(after_max):
-            return True
-    return False
-
-
-def _purge_event_sets_min(events, anchor_pt, cur_min):
-    """是否有一条锚点之后的留痕事件，其"删除后 min_id"恰好等于当前 min_id。"""
-    for ev in _purge_events_after_anchor(events, anchor_pt):
-        if ev.get("after_min") is None:
-            continue  # 删空后重新累积：min 由新行决定，不用于解释这次跃迁
-        if int(ev["after_min"]) == int(cur_min):
-            return True
-    return False
-
-
-def _rechain_events(conn):
-    """全表重链留痕列表（app_meta JSON）。缺表/损坏 → []。"""
-    try:
-        row = conn.execute(
-            "SELECT value FROM app_meta WHERE key=?", (_RECHAIN_EVENTS_KEY,)
-        ).fetchone()
-    except sqlite3.Error:
-        return []
-    if row is None or not row["value"]:
-        return []
-    try:
-        val = json.loads(row["value"])
-    except ValueError:
-        return []
-    return val if isinstance(val, list) else []
-
-
-def _rechain_hint(anchor):
-    """锚点之后若发生过全表重链，给出可诊断的留痕摘要（无则空串）。
-
-    链尾哈希与锚点不符有两个成因，处置完全不同：内容被篡改 vs 启动路径用当前密钥
-    重签了整条链（后者要求有人把 user_version 拨回 v3 之前，或换过 YIBAN_AUDIT_KEY）。
-    留痕让运维一眼看出是哪一种，而不是对着同一句"疑似篡改"猜。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            events = _rechain_events(conn)
-    except Exception:
-        return ""
-    ts = (anchor or {}).get("ts") or ""
-    recent = [e for e in events if str(e.get("ts") or "") > ts]
-    if not recent:
-        return "；锚点之后无全表重链留痕，按内容篡改处理"
-    e = recent[-1]
-    return (
-        f"；锚点之后有 {len(recent)} 次全表重链留痕"
-        f"（最近一次 {e.get('ts')} 来源版本 v{e.get('from_version')} "
-        f"行数 {e.get('rows')} 重链后 head={str(e.get('head_after'))[:12]}…）"
-        "——若非预期的 v3 升级/密钥轮换，即视同篡改"
-    )
-
-
-def audit_health(path=None):
-    """审计可追溯性综合体检（供每日线程 / audit_verify.py 调用）。
-
-    返回 dict：
-      chain_ok      链内哈希自洽（False = 有记录被篡改/删除）
-      broken        链内断链条数（-1 = 校验异常或密钥缺失）
-      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾 / 无痕删除）
-      anchor_msg    锚点判定的说明或提示信息
-      write_failures 累计的审计写入失败次数（>0 = 有操作未留痕；落库不随重启归零）
-      rechain_events app_meta 里的全表重链留痕（诊断用，最新在末尾）
-      empty_hash_rows 链内 hash 为空的行数（>0 = 有人清空签名等着被重签）
-      purge_total   累计**有留痕的** audit_logs 物理删除条数（保留期清理口径）
-      last_cleanup  最近一次 audit_logs 清理留痕事件（含 cutoff 与删除条数；无 → None）
-      note          附加诊断文本（无异常时为空串）
-      healthy       综合结论（上述全部正常）
-
-    为什么要把 purge_total / last_cleanup 放到体检结果里：本机自校验防不住**本机时钟**
-    ——守卫的参照点每次成功都会推进，容差内每天小幅拨快即可在真实时间数十天内合法清掉
-    整段保留期审计，且不触发任何告警。这两个数字的用途是**随日报出箱**：异机侧看"累计
-    删除量"与"最近 cutoff 是否持续前移"，本机看不到的异常清理在外部就能看出来。
-    """
-    path = path or audit_anchor_path()
-    chain_ok, broken, _first = verify_audit_chain()
-    anchor_ok, anchor_msg = verify_audit_anchor(path)
-    write_failures = audit_write_failures()
-    rechain_events, empty_hash_rows = _rechain_diagnostics()
-    notes = []
-    rechain_after_anchor = False
-    if rechain_events:
-        anchor = _last_audit_anchor(path)
-        anchor_ts = (anchor or {}).get("ts") or ""
-        # 合法的全表重链只会发生在"任何锚点存在之前"（升级那一次）。锚点之后
-        # 再出现重链，意味着启动路径在已锚定的链上动过手——即使链此刻自洽、
-        # head 也巧合同值，这个动作本身就是异常。
-        late = [e for e in rechain_events if anchor_ts and str(e.get("ts") or "") > anchor_ts]
-        if late:
-            rechain_after_anchor = True
-            e = late[-1]
-            notes.append(
-                f"锚点（{anchor_ts}）之后存在 {len(late)} 次全表重链留痕"
-                f"（最近 {e.get('ts')} 来源版本 v{e.get('from_version')}，"
-                f"行数 {e.get('rows')}）——非预期升级即视为链被重写"
-            )
-    if empty_hash_rows:
-        notes.append(
-            f"审计链存在 {empty_hash_rows} 条 hash 为空的记录——签名被清空后等待启动路径"
-            "重签整条链（migrate_v3 即此形态），请立即核查"
-        )
-    # 清理量随体检结果出箱：本机自校验防不住本机时钟（参照点每天推进、容差内的小幅
-    # 拨快即可合法清掉整段保留期审计），异机侧只能靠这两个数字判断"清理是否异常"。
-    purge_total = audit_purge_total()
-    last_cleanup = next(
-        (e for e in reversed(audit_purge_events()) if e.get("table") == "audit_logs"),
-        None,
-    )
-    return {
-        "chain_ok": chain_ok,
-        "broken": broken,
-        "anchor_ok": anchor_ok,
-        "anchor_msg": anchor_msg,
-        "write_failures": write_failures,
-        "rechain_events": rechain_events,
-        "empty_hash_rows": empty_hash_rows,
-        "purge_total": purge_total,
-        "last_cleanup": last_cleanup,
-        "note": "；".join(notes),
-        "healthy": bool(
-            chain_ok and anchor_ok and write_failures == 0
-            and not rechain_after_anchor and not empty_hash_rows
-        ),
-    }
-
-
-def _rechain_diagnostics():
-    """(全表重链留痕, 链内空 hash 行数)——体检的附加信号，读失败按无异常处理。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            events = _rechain_events(conn)
-            try:
-                empty = conn.execute(
-                    "SELECT COUNT(*) FROM audit_logs WHERE hash=''"
-                ).fetchone()[0]
-            except sqlite3.Error:
-                empty = 0
-        return events, int(empty or 0)
-    except Exception as e:
-        logger.warning("读取重链/空 hash 诊断信息失败: %s", e)
-        return [], 0
 
 
 def last_time_pref_set_at(phone):
@@ -3875,241 +1505,6 @@ def pause_count_since(username, since_ts):
         raise RuntimeError(f"统计暂停次数失败: {e}") from e
 
 
-def _audit_cleanup(conn):
-    """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。
-
-    Phase 3 修订：删除旧行后不重建哈希链——剩余首行仍保留指向已删前序行的
-    prev_hash 作为锚，verify_audit_chain 以该锚校验首行 hash。
-
-    接入时钟跳变守卫——审计是篡改取证数据源，时钟被拨快（NTP 故障
-    或拿到服务器权限者掩盖痕迹）会让 cutoff 前移、审计链被一次性清空，且该清理
-    不动"最后一条"锚点，库外锚点校验不会报警。与三个短保留期 purge 同口径。
-    """
-    try:
-        ok, note = _clock_jump_guard(conn, "audit_cleanup_clock")
-        if not ok:
-            logger.error("%s", note)
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            return
-        cutoff = (clock.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
-        before = _table_min_max(conn, "audit_logs")
-        cur = conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
-        deleted = cur.rowcount or 0
-        after = _table_min_max(conn, "audit_logs")
-        if deleted:
-            # 删除与留痕同事务：锚点的稠密性判据拿"有留痕的删除累计数"解释缺口，
-            # 缺了这一步，保留期清理每天都会被判成非法删除。
-            _record_purge_event(
-                conn, "audit_logs", "audit_cleanup", cutoff, deleted,
-                before, after, audit_seq=_audit_purge_total(conn) + deleted,
-            )
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理旧审计日志失败: %s", e)
-
-
-# ---------------------------------------------------------------------------
-# 可视化表（Phase 4）
-# ---------------------------------------------------------------------------
-def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
-                   account_id=None, dur_sec=None, finished_at=None):
-    """写入签到事件；失败仅告警，不影响调用方。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            conn.execute(
-                "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
-                "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (ts, phone, status, message, stage, attempt,
-                 account_id, dur_sec, finished_at),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("写入 sign_events 失败: %s", e)
-
-
-def add_sign_events_batch(rows):
-    """批量写入签到事件（单事务）；失败仅告警，不影响调用方。
-
-    rows 为 dict 列表，支持 add_sign_event 的全部字段。
-    """
-    with _conn_lock:
-        try:
-            conn = get_conn()
-            _begin_immediate(conn)
-            for r in rows:
-                conn.execute(
-                    "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
-                    "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (
-                        r.get("ts", ""),
-                        r.get("phone", ""),
-                        r.get("status", ""),
-                        r.get("message", ""),
-                        r.get("stage", ""),
-                        r.get("attempt", 0),
-                        r.get("account_id"),
-                        r.get("dur_sec"),
-                        r.get("finished_at"),
-                    ),
-                )
-            conn.commit()
-        except Exception as e:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("批量写入 sign_events 失败: %s", e)
-
-
-def sign_event_stats(days=30, stage=None):
-    """按天统计签到事件数量/状态分布；失败返回空列表。
-
-    stage 为可选过滤开关：sign_events 同时承载真实签到（stage="sign"）与健康探针
-    （stage="probe"），不传时两者混算。需要「签到口径」的调用方必须显式传
-    stage="sign"，否则探针的成功/失败会被计入签到成功率。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            sql = (
-                "SELECT substr(ts, 1, 10) AS day, status, COUNT(*) AS cnt "
-                "FROM sign_events WHERE ts >= ?"
-            )
-            params = [cutoff]
-            if stage:
-                sql += " AND stage = ?"
-                params.append(stage)
-            sql += " GROUP BY day, status ORDER BY day"
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events 统计失败: %s", e)
-        return []
-
-
-def sign_events_by_phone(phone, days=30):
-    """单账号历史表现：按手机号返回时间线事件列表。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            rows = conn.execute(
-                "SELECT id, ts, phone, status, message, stage, attempt, "
-                "account_id, dur_sec, finished_at "
-                "FROM sign_events WHERE phone=? AND ts >= ? ORDER BY ts",
-                (phone, cutoff),
-            ).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events_by_phone 失败: %s", e)
-        return []
-
-
-def sign_events_since(since_ts, phone=None, limit=100):
-    """实时事件流：返回 since_ts 之后的事件，可选按手机号过滤。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            sql = (
-                "SELECT id, ts, phone, status, message, stage, attempt, "
-                "account_id, dur_sec, finished_at FROM sign_events WHERE ts >= ?"
-            )
-            params = [since_ts]
-            if phone:
-                sql += " AND phone=?"
-                params.append(phone)
-            sql += " ORDER BY ts LIMIT ?"
-            params.append(_normalize_limit(limit, 100))
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events_since 失败: %s", e)
-        return []
-
-
-def probe_events_on(date_str, limit=100):
-    """指定日期（YYYY-MM-DD）的健康探测事件（stage="probe"，按时间正序）。
-
-    供 Web 日志页展示探针结构化记录（v0.24.4 前 stage 仅落库无消费方）。
-    查询失败返回空列表，不影响调用方。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            start = f"{date_str} 00:00:00"
-            end = f"{date_str} 23:59:59"
-            sql = (
-                "SELECT id, ts, phone, status, message, attempt "
-                "FROM sign_events WHERE stage='probe' AND ts BETWEEN ? AND ? "
-                "ORDER BY ts LIMIT ?"
-            )
-            params = [start, end, _normalize_limit(limit, 100)]
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("probe_events_on 失败: %s", e)
-        return []
-
-
-def sign_events_on(date_str, limit=100):
-    """指定日期（YYYY-MM-DD）的签到事件（stage="sign"，按时间正序）。
-
-    sign_events 补消费端——随 /api/logs 附带当日签到事件
-    （与 probe_events_on 同口径：手机号脱敏、条数封顶由调用方处理）。
-    查询失败返回空列表，不影响调用方。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            start = f"{date_str} 00:00:00"
-            end = f"{date_str} 23:59:59"
-            sql = (
-                "SELECT id, ts, phone, status, message, attempt "
-                "FROM sign_events WHERE stage='sign' AND ts BETWEEN ? AND ? "
-                "ORDER BY ts LIMIT ?"
-            )
-            params = [start, end, _normalize_limit(limit, 100)]
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events_on 失败: %s", e)
-        return []
-
-
-def sign_events_recent_date(stage, max_days=30):
-    """最近有指定 stage 事件的日期（YYYY-MM-DD，窗口内无则空串）。
-
-    供日志页空态给出「查看最近有数据日期」的一键入口：某标签当前日期无事件时，
-    用本函数找到该标签最近有事件的日期（stage=probe/sign 分别对应探针/签到事件）。
-    查询失败返回空串，不影响调用方。
-    """
-    stage = "probe" if stage == "probe" else "sign"
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            cutoff = (clock.now() - datetime.timedelta(days=max_days)).strftime(
-                "%Y-%m-%d 00:00:00"
-            )
-            row = conn.execute(
-                "SELECT MAX(ts) AS m FROM sign_events WHERE stage=? AND ts >= ?",
-                (stage, cutoff),
-            ).fetchone()
-            if row and row["m"]:
-                return str(row["m"])[:10]
-    except Exception as e:
-        logger.warning("sign_events_recent_date 失败: %s", e)
-    return ""
-
-
 def update_account_status_if(account_id, new_status, expect_status, reject_reason=None):
     """CAS 更新账号状态：仅当当前状态仍是 expect_status 时才写。返回是否写入。
 
@@ -4130,45 +1525,6 @@ def update_account_status_if(account_id, new_status, expect_status, reject_reaso
                 (new_status, reject_reason, account_id, expect_status),
             )
         return cur.rowcount == 1
-
-
-def _event_cleanup(conn):
-    """清理可视化表超期数据；失败仅告警。
-
-    接入时钟跳变守卫（同 _audit_cleanup）——sign_events 等表是
-    取证数据源，时钟跳变不应放大清理窗口。
-    """
-    try:
-        ok, note = _clock_jump_guard(conn, "event_cleanup_clock")
-        if not ok:
-            logger.error("%s", note)
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            return
-        now = clock.now()
-        sign_cutoff = (now - datetime.timedelta(days=SIGN_EVENTS_RETENTION_DAYS)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        before = _table_min_max(conn, "sign_events")
-        cur = conn.execute("DELETE FROM sign_events WHERE ts < ?", (sign_cutoff,))
-        _record_purge_event(
-            conn, "sign_events", "event_cleanup", sign_cutoff, cur.rowcount or 0,
-            before, _table_min_max(conn, "sign_events"),
-        )
-        job_cutoff = (now - datetime.timedelta(days=VERIFY_JOB_RETENTION_DAYS)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        before = _table_min_max(conn, "verify_jobs")
-        cur = conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (job_cutoff,))
-        _record_purge_event(
-            conn, "verify_jobs", "event_cleanup", job_cutoff, cur.rowcount or 0,
-            before, _table_min_max(conn, "verify_jobs"),
-        )
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理可视化表失败: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -4275,17 +1631,6 @@ def _clear_session_cache_by_phones(conn, phones):
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
 
 
-def _delete_user_delete_requests(conn, email):
-    """连带清除某邮箱的注销/恢复冷却计数（用户被物理删除时调用）。
-
-    2026-08-28 审查 M4：user_delete_requests 只按保留期（30 天）清理，用户被
-    物理删除（注销 purge / 管理员手动清除）后其明文邮箱仍驻留最多 30 天。
-    在用户行物理删除的同一事务内连带清除，不留隐私残留。
-    """
-    if email:
-        conn.execute("DELETE FROM user_delete_requests WHERE username=?", (email,))
-
-
 # ---------------------------------------------------------------------------
 # 会话 Cookie 缓存（v8，docs/research-lumjiel-core-sign-20260822.md §七）
 # ---------------------------------------------------------------------------
@@ -4326,7 +1671,7 @@ def _session_cache_now():
 def _session_cache_key():
     """session_cache 专用加密密钥（HKDF-SHA256 派生，与账号凭据加密密钥隔离）。"""
     return HKDF(
-        account_crypto.load_key(_env_file),
+        account_crypto.load_key(_connection._env_file),
         32,
         salt=SESSION_CACHE_HKDF_INFO,
         hashmod=SHA256,

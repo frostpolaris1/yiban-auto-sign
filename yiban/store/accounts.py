@@ -14,6 +14,14 @@ logger = logging.getLogger("yiban.store.accounts")
 ACCOUNT_AUDIT_INACTIVE = ("pending", "rejected")
 
 
+class DuplicatePhoneError(Exception):
+    """手机号已存在（accounts.phone 唯一约束冲突）。
+
+    由 db 门面的 `_convert_integrity_error` 在写路径抛出，web 捕获转 400；
+    定义点随 accounts 表放在本模块，`db.DuplicatePhoneError` 是唯一可见名字。
+    """
+
+
 def signs_in(row):
     """该账号行是否会发起易班签到请求（**容量/配额口径的唯一判据**）。
 
