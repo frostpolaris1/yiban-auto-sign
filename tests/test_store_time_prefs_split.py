@@ -14,9 +14,9 @@
 2. **写转发落真定义点**：`db.set_time_pref = 替身` 必须改到 `time_prefs.set_time_pref`、
    `db.last_pause_at = 替身` 必须改到 `events.last_pause_at`——只换掉门面那一份就是
    打桩静默失效。
-3. **门面内的晚解析**：冷却查询里的 `hash_phone`（追踪盐哈希，仍留在门面）经
-   `_facade()` 按属性取——`db.hash_phone = 替身` 必须被 `last_time_pref_set_at` /
-   `time_pref_set_count_since` 看见。
+3. **门面内的晚解析**：冷却查询里的 `hash_phone`（追踪盐哈希，定义点在
+   `yiban/store/tracking.py`）经 `_facade()` 按属性取——`db.hash_phone = 替身` 必须被
+   `last_time_pref_set_at` / `time_pref_set_count_since` 看见。
 4. **delattr 隐藏名语义**：`del db.<名字>` 只把名字从门面摘下（真定义与模块内部调用不动），
    随后的 `setattr` 恢复让它重新可读——`mock.patch.object` / `monkeypatch.delattr` 的撤销
    依赖这条，删不掉的后果是原值永不恢复、打桩残留。
