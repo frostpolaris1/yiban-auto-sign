@@ -252,25 +252,27 @@ class RegistrationPauseWebTest(unittest.TestCase):
         self.assertIn("web:", content, "web logger 的 INFO 应落盘（此前被丢弃）")
 
     def test_log_page_shows_component_warnings(self):
-        """后台日志页解析：非 yiban 组件仅 WARNING+ 入列（INFO 仍不展示）。"""
+        """日志页解析口径（2026-09-19 改）：`yiban.*` 全级别入列，其它组件仅 WARNING+。"""
         parse = self.webapp.parse_sign_log
         yiban_info = "[2026-09-01 10:00:00] [INFO] yiban: 签到正常"
+        yiban_sub = "[2026-09-01 10:00:03] [INFO] yiban.client: [13800138000] 生成定位: (118.8, 31.9)"
         comp_warn = "[2026-09-01 10:00:01] [WARNING] mailer: 邮件通知发送失败（SMTPAuthenticationError）"
         comp_info = "[2026-09-01 10:00:02] [INFO] notify: 消息推送已发送（serverchan）: t"
-        comp_debug = "[2026-09-01 10:00:03] [DEBUG] yiban: 探针跳过"
+        yiban_debug = "[2026-09-01 10:00:03] [DEBUG] yiban: 探针跳过"
         tmp_log = os.path.join(self.tmp, "parse-probe.log")
         with open(tmp_log, "w", encoding="utf-8") as f:
-            f.write("\n".join([yiban_info, comp_warn, comp_info, comp_debug]) + "\n")
+            f.write("\n".join([yiban_info, comp_warn, comp_info, yiban_debug, yiban_sub]) + "\n")
         with unittest.mock.patch.object(self.webapp, "_tail_lines",
                                         return_value=[yiban_info, comp_warn,
-                                                      comp_info, comp_debug]), \
+                                                      comp_info, yiban_debug, yiban_sub]), \
              unittest.mock.patch.object(self.webapp, "log_path_for",
                                         return_value=tmp_log):
             lines = parse(tmp_log)
         self.assertIn(yiban_info, lines)
         self.assertIn(comp_warn, lines, "组件 WARNING 应展示（故障留痕）")
-        self.assertNotIn(comp_info, lines, "组件 INFO 不展示（维持日志页洁净）")
-        self.assertNotIn(comp_debug, lines)
+        self.assertNotIn(comp_info, lines, "非 yiban 组件的 INFO 仍不展示（维持日志页洁净）")
+        self.assertIn(yiban_debug, lines, "yiban 的 DEBUG 入列（部署自己开的级别）")
+        self.assertIn(yiban_sub, lines, "yiban.client 等子模块入列（细节行）")
 
 
 import unittest.mock  # noqa: E402  （置于文件尾部：仅测试方法内使用）
