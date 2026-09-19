@@ -9,6 +9,10 @@
 - 自动迁移：accounts/users 表为空且对应 JSON 存在 → 导入（幂等）→ JSON 改名 .bak 保留逃生门
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
+
+- 2026-09-19 第一刀：连接层状态与原语（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/
+  `DB_DEFAULT`/`get_conn`/`is_initialized`）移入 `yiban/store/connection.py`，本模块再导出
+  （三个状态量读写都转发，见下方）；`init_db` 与建表/迁移留在本模块（同属一条启动序列）。
 """
 import contextlib
 import datetime
@@ -23,6 +27,7 @@ import sqlite3
 import sys
 import threading
 import time
+import types
 
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import HKDF
@@ -42,6 +47,7 @@ from yiban import clock  # noqa: E402
 from yiban.infra import account_crypto, env_io, env_lock  # noqa: E402
 from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
+from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
 account_is_signable = _accounts.is_signable
@@ -89,7 +95,7 @@ purge_sign_claims = _claims.purge
 
 logger = logging.getLogger("yiban.db")
 
-DB_DEFAULT = os.environ.get("YIBAN_DB_FILE", "yiban.db")
+DB_DEFAULT = _connection.DB_DEFAULT
 
 # 软删除保留期（2026-08-15 审查统一命名/单位）：天为唯一来源，秒数派生——
 # 此前 web(app.py DELETED_RETENTION_DAYS) 与 db 各持一份同名不同单位常量，易改一处漏一处
@@ -131,16 +137,36 @@ class MigrationDeferred(Exception):
 class LastAdminError(Exception):
     """注销被拒绝：该用户是最后一个注册管理员（事务内复核，跨进程安全）。"""
 
-# 模块级共享（web 通过环境变量注入路径后调用 init_db）
-_conn = None
-# RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
-# 会触发 "cannot start a transaction" / InterfaceError misuse——2026-08-15 本地并发验证暴露）
-_conn_lock = threading.RLock()
-_db_file = DB_DEFAULT
-# .env 路径（加密密钥来源）：None = 未显式指定，由 _resolve_key_env_file 按
-# YIBAN_ENV_FILE → 当前工作目录 ".env" 回落（此时若回落值来自 cwd
-# 且文件不存在，生成新密钥会被 _assert_key_source_certain 拒绝，避免游离密钥）
-_env_file = None
+# 连接层再导出（唯一定义点在 yiban/store/connection.py）：`_conn`/`_db_file`/`_env_file`
+# 读写都**转发**——全仓 190+ 处测试收尾 `db._conn = None` 与 `db._env_file = path` 若只写
+# 一份快照就静默失效（connection 仍握真连接/旧路径）；`_conn_lock`（永不重绑）与
+# `get_conn`/`is_initialized` 直接再导出即等价：本模块内部按裸名调用，既有
+# `mock.patch.object(db, "get_conn"/"_conn_lock", …)` 与拆分前一样生效。
+get_conn = _connection.get_conn
+is_initialized = _connection.is_initialized
+_conn_lock = _connection._conn_lock
+
+_CONNECTION_STATE_NAMES = ("_conn", "_db_file", "_env_file")
+
+
+def __getattr__(name):
+    """PEP 562：连接状态（`_conn`/`_db_file`/`_env_file`）读取回落到 connection。"""
+    if name in _CONNECTION_STATE_NAMES:
+        return getattr(_connection, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+class _ConnectionStateModule(types.ModuleType):
+    """连接状态**写入**转发（`db._conn = None`）；模块内赋值直写 __dict__、不经此。"""
+
+    def __setattr__(self, name, value):
+        if name in _CONNECTION_STATE_NAMES:
+            setattr(_connection, name, value)
+            return
+        types.ModuleType.__setattr__(self, name, value)
+
+
+sys.modules[__name__].__class__ = _ConnectionStateModule
 
 # 审计 HMAC 密钥缓存与互斥（Phase 3）
 _AUDIT_KEY_CACHE = None
@@ -165,53 +191,45 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     migrate：默认 True 执行迁移；只读校验类工具应传 False——迁移会重写审计链
     （v3 rechain）等，使"被校验对象在校验过程中被改动"。
     """
-    global _conn, _db_file, _env_file
-    _env_file = env_file
-    _db_file = db_file or os.environ.get("YIBAN_DB_FILE", DB_DEFAULT)
-    if _conn is not None:
-        return _conn
+    # 库路径 / .env 路径**无条件刷新**（即使连接已存在——它们是"最近一次 init_db 的
+    # 来源"）：拆分前是 `global` 重绑定，现在是 connection 的显式 API，语义逐条等价。
+    _connection.set_env_file(env_file)
+    db_path = db_file or os.environ.get("YIBAN_DB_FILE", DB_DEFAULT)
+    _connection.set_db_file(db_path)
+    conn = _connection.current()
+    if conn is not None:
+        return conn
     with _conn_lock:
-        if _conn is not None:
-            return _conn
-        _conn = sqlite3.connect(_db_file, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
+        conn = _connection.current()
+        if conn is not None:
+            return conn
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        # 先登记再配置：建表/迁移函数内部会经 get_conn() 取"当前连接"，拆分前也是
+        # `_conn = sqlite3.connect(...)` 先行、随后逐条 PRAGMA/DDL 的同一顺序
+        _connection.set_conn(conn)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
         # 5000ms 在夜间批量签到/整表重建等长事务窗口内不够，业务写
         # 路径无重试，超限即 500——提到 15s 并保留 audit() 自身的 3 次重试
-        _conn.execute("PRAGMA busy_timeout=15000")
-        _conn.execute("PRAGMA foreign_keys=OFF")
-        _create_tables(_conn)
+        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute("PRAGMA foreign_keys=OFF")
+        _create_tables(conn)
         # 通用幂等迁移框架（Phase 0）：按 PRAGMA user_version 顺序执行；
         # 核心迁移失败会关闭连接并抛出，阻断启动；可选迁移失败继续后续迁移但不提升版本。
         try:
             if migrate:
-                _run_migrations(_conn)
+                _run_migrations(conn)
                 # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
                 if migrate_from:
-                    _maybe_migrate(_conn, migrate_from)
+                    _maybe_migrate(conn, migrate_from)
         except Exception:
             with contextlib.suppress(Exception):
-                _conn.close()
-            _conn = None
+                conn.close()
+            _connection.reset_conn()
             raise
         if cleanup:
             run_daily_cleanup()
-        return _conn
-
-
-def get_conn():
-    if _conn is None:
-        init_db()
-    return _conn
-
-
-def is_initialized():
-    """db 层是否已显式初始化（不触发隐式 init_db）。
-
-    供 signin 判断会话缓存可用性：环境变量账号模式（CI 等）未初始化 db，
-    不启用缓存——避免 get_conn 隐式 init 在工作目录创建空库。
-    """
-    return _conn is not None
+        return conn
 
 
 def resolve_env_file(cli_value=None):
@@ -433,7 +451,7 @@ def _decode_audit_key(raw):
 
 
 def _resolve_key_env_file():
-    """解析密钥来源 .env 路径：_env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
+    """解析密钥来源 .env 路径：connection._env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
 
     原写法 `env_file = _env_file or ".env"` 把密钥来源绑在 cwd 上——
     取证/恢复类 CLI（rekey / audit_verify / clock_guard_reset /
@@ -445,7 +463,7 @@ def _resolve_key_env_file():
     ".env" 兜底（既无 init_db(env_file=...) 也无 YIBAN_ENV_FILE）——此时文件不存在
     意味着密钥来源不确定，调用方须拒绝生成新密钥。
     """
-    explicit = (_env_file or "").strip()
+    explicit = (_connection._env_file or "").strip()
     if explicit:
         return explicit, False
     env_var = (os.environ.get("YIBAN_ENV_FILE") or "").strip()
@@ -1363,7 +1381,7 @@ def _maybe_migrate(conn, json_base):
             logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
         return
     imported = 0
-    key = account_crypto.load_key(_env_file) if accounts else None
+    key = account_crypto.load_key(_connection._env_file) if accounts else None
     had_plaintext = False  # 迁移源含明文字段 → .bak 逃生门需重写为加密版（2026-08-27 审查缺口 2）
     with _conn_lock, conn:
         if accounts:
@@ -1508,11 +1526,11 @@ def _decrypt_row(row):
         except (TypeError, ValueError):
             obj = None
         if isinstance(obj, dict) and "ct" in obj:
-            if not account_crypto.has_key(_env_file):
+            if not account_crypto.has_key(_connection._env_file):
                 raise RuntimeError(
                     "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
                 )
-            key = account_crypto.load_key(_env_file)
+            key = account_crypto.load_key(_connection._env_file)
             try:
                 a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
             except ValueError as e:
@@ -1586,7 +1604,7 @@ def _encrypt_field(value, phone):
         return ""
     if isinstance(value, dict):
         return json.dumps(value)  # 已是密文对象
-    key = account_crypto.load_key(_env_file)
+    key = account_crypto.load_key(_connection._env_file)
     return json.dumps(account_crypto.encrypt_password(str(value), key, phone))
 
 
@@ -1613,7 +1631,7 @@ def _record_clock_guard_alert(note):
     写失败不影响主流程（只告警）。JSON 结构 {ts, note}。
     """
     try:
-        target_db = _db_file or os.environ.get("YIBAN_DB_FILE") or DB_DEFAULT
+        target_db = _connection._db_file or os.environ.get("YIBAN_DB_FILE") or DB_DEFAULT
         conn2 = sqlite3.connect(target_db, timeout=5)
         try:
             conn2.execute(
@@ -2900,14 +2918,14 @@ def _bump_audit_write_failure():
         # 至少本轮校验还能看见，绝不静默丢弃。
         with _AUDIT_FAIL_LOCK:
             _AUDIT_FAIL_UNFLUSHED += 1
-            _AUDIT_FAIL_UNFLUSHED_DB = _db_file
+            _AUDIT_FAIL_UNFLUSHED_DB = _connection._db_file
         logger.error("审计写入欠账落库失败（记入进程内余额）: %s", e)
         return False
 
 
 def _unflushed_audit_failures():
     """进程内未落库余额；所属库已切换则视为 0（欠账是每个库各自的事实）。"""
-    if _AUDIT_FAIL_UNFLUSHED_DB is not None and _db_file != _AUDIT_FAIL_UNFLUSHED_DB:
+    if _AUDIT_FAIL_UNFLUSHED_DB is not None and _connection._db_file != _AUDIT_FAIL_UNFLUSHED_DB:
         return 0
     return _AUDIT_FAIL_UNFLUSHED
 
@@ -4326,7 +4344,7 @@ def _session_cache_now():
 def _session_cache_key():
     """session_cache 专用加密密钥（HKDF-SHA256 派生，与账号凭据加密密钥隔离）。"""
     return HKDF(
-        account_crypto.load_key(_env_file),
+        account_crypto.load_key(_connection._env_file),
         32,
         salt=SESSION_CACHE_HKDF_INFO,
         hashmod=SHA256,
