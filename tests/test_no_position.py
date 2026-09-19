@@ -74,11 +74,12 @@ def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
                   "YIBAN_SIGN_MODE", "YIBAN_PROBE_ENABLE",
                   "YIBAN_WINDOW_EDGE_FRONT_SEC", "YIBAN_WINDOW_EDGE_BACK_SEC"):
             os.environ.pop(k, None)
-        # 周日门禁解耦（与被测逻辑无关，仅为排除周日门禁对用例的日期依赖）：
-        # 周日（weekday()==6）且 YIBAN_SUNDAY_SIGN 关闭时，main() 在签到流程
-        # 开始前即 exit(2)，到达不了本组用例要断言的无点位汇总/退出码/状态文件
-        # 逻辑。显式开启周日门，使用例在任意星期几运行结果一致。
+        # 周末门禁解耦（与被测逻辑无关，仅为排除门禁对用例的日期依赖）：
+        # 周六/周日且对应开关关闭时，main() 在签到流程开始前即 exit(2)，到不了本组
+        # 用例要断言的汇总/退出码/状态文件逻辑。真正的开关补丁在下方 mock.patch.object
+        # （两个 SIGN 都是模块导入时求值的常量，这里设环境变量只对首次导入生效）。
         os.environ["YIBAN_SUNDAY_SIGN"] = "1"
+        os.environ["YIBAN_SATURDAY_SIGN"] = "1"
         # 窗口覆盖全天：避免测试运行时已过默认 07:50 截止导致 build_schedule 提前收口
         os.environ["YIBAN_SIGN_START"] = "00:00"
         os.environ["YIBAN_SIGN_END"] = "23:59"
@@ -93,13 +94,15 @@ def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
                 signin.Account(phone="13800000000", password="test-pass", name="测试")
             ]
 
-        # SUNDAY_SIGN 是 signin 模块导入时求值的常量（scripts/signin.py:308），
-        # env 只对进程内首次导入生效；全量跑测时其他用例文件可能已先把 signin
-        # 以"周日门关闭"态导入，故以模块属性补丁兜底（与 test_saturday_sign 的
-        # const_override 同法），不依赖用例文件的导入顺序。
+        # SUNDAY_SIGN / SATURDAY_SIGN 都是 signin 模块导入时求值的常量（runner.py:40/44），
+        # env 只对进程内首次导入生效；全量跑测时其他用例文件可能已先把 signin 以"周末门
+        # 关闭"态导入，故以模块属性补丁兜底（与 test_saturday_sign 的 const_override 同法），
+        # 不依赖用例文件的导入顺序。**周六门原先漏了补丁**：周六跑全量时本组 4 条必红
+        # （2026-09-19 实测，develop 上同样复现）。
         with mock.patch.object(signin, "load_accounts", side_effect=_fake_load_accounts), \
              mock.patch.object(signin, "run_queue_retry", return_value=result), \
              mock.patch.object(signin, "SUNDAY_SIGN", True), \
+             mock.patch.object(signin, "SATURDAY_SIGN", True), \
              mock.patch.object(signin, "_acquire_run_lock", return_value=None), \
              mock.patch.object(signin, "_save_cred_state"), \
              mock.patch.object(signin, "_flush_admin_mail_summary",
