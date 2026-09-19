@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """连接层地基：SQLite 连接单例、进程内互斥锁、库/密钥来源路径。
 
-本模块是下列名字的**唯一定义点**（2026-09-19 db.py 按域拆分的第一刀；此前它们与
-`init_db` 一起挤在 4400 余行的 `yiban/store/db.py` 顶部）：
+本模块是下列名字的**唯一定义点**（连接状态的真身在此；`yiban/store/db.py` 再导出这些
+名字，既有调用方与 `scripts/db.py` 兼容壳照旧用 `db.xxx`）：
 
 - `_conn`：模块级单例连接（`db.init_db` 建、调用方自行关闭后置空）
 - `_conn_lock`：进程内 RLock，所有读写串行化；定义后**永不重绑**
@@ -14,8 +14,8 @@
 **为什么 `init_db` 不在这里**：`tests/test_store_db_move.py` 钉住"真正的 `init_db` 定义
 只能在 `yiban/store/db.py`"（建连与建表/迁移同属启动序列，还要与冻结的历史迁移函数
 共存）。故本模块对外只多一组**显式读写 API**（`current`/`set_conn`/`reset_conn`/
-`set_db_file`/`set_env_file`），由 `db.init_db` 逐分支调用——拆分前后每条分支语义等价，
-包括迁移异常路径的 `reset_conn()`（对应原先的 `_conn = None`）。
+`set_db_file`/`set_env_file`），由 `db.init_db` 逐分支调用；迁移异常路径用
+`reset_conn()` 清空单例（连接由调用方关闭），与正常路径共用同一套 API。
 
 **读写纪律**：`db` 层经本模块访问这几个量（`_connection._db_file` 等）；`db._conn` /
 `db._db_file` / `db._env_file` 的读取与**写入**都由 `yiban/store/db.py` 的模块级转发落到
