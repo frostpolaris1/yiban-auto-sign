@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""SQLite 数据访问层（web / signin 双进程共用）。
+"""SQLite 数据访问层（web / signin 双进程共用）的门面与尚未按域拆出的表访问。
 
 - accounts/users 数据从 JSON 整文件读写迁移到 SQLite（yiban.db，WAL 模式）
   ——根治并发覆盖 / 索引漂移 / 进程外覆盖三个历史问题
@@ -10,15 +10,19 @@
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
 
-- 2026-09-19 第一刀：连接层状态与原语（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/
-  `DB_DEFAULT`/`get_conn`/`is_initialized`）移入 `yiban/store/connection.py`，本模块再导出
-  （三个状态量读写都转发，见下方）；`init_db` 留在本模块（启动序列的编排点）。
-- 审计链域（`audit()` 与写入欠账口径、哈希链校验、全表重链留痕、库外锚点族、审计密钥来源与
-  缓存）的定义点在 `yiban/store/audit_chain.py`，本模块再导出；审计域反向经本门面按属性取
-  连接/锁/写事务入口（`_facade()`），`db._audit_hash = 替身` 一类打桩面不变。
-- 迁移域（建表/索引定义、`migrate_v1..v17`、版本编排 `_run_migrations`、`_ALLOWED_TABLES`、
-  `MigrationDeferred`）的定义点在 `yiban/store/migrations.py`，本模块再导出；`init_db` 按裸名
-  调用建表与迁移编排，`mock.patch.object(db, "_run_migrations", …)` 打桩面不变。
+已按域拆出的模块（定义点不在本模块，这里只再导出）：
+- `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
+  `init_db` 留在这里——它是启动序列的编排点，也须与冻结的历史迁移函数共存。
+- `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`。
+- `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
+- `events`：sign_events 的写入/查询/统计与保留期清理。
+- `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
+- `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
+
+本模块自身仍持有：accounts 表 CRUD 与加解密、time_prefs、session_cache、时钟守卫与
+app_meta、追踪盐哈希等尚未按域拆出的部分，以及跨域粘合助手（写事务入口、连带清理、
+清理留痕）。子模块反向经本门面按属性取这些名字（见各模块的 `_facade()`）；
+`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块的再导出与读写转发维持不变。
 """
 import contextlib
 import datetime
@@ -52,14 +56,18 @@ from yiban.infra import account_crypto, env_lock  # noqa: E402
 from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import audit_chain as _audit_chain  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
+from yiban.store import cleanup as _cleanup  # noqa: E402
 from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
+from yiban.store import users as _users  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
 account_is_signable = _accounts.is_signable
 account_signs_in = _accounts.signs_in
 purge_orphan_session_cache = _accounts.purge_orphan_session_cache
+# accounts.phone 唯一约束冲突的可区分异常，定义点随 accounts 表在 yiban/store/accounts.py
+DuplicatePhoneError = _accounts.DuplicatePhoneError
 
 VERIFY_JOB_RETENTION_DAYS = _verify_jobs.VERIFY_JOB_RETENTION_DAYS
 VERIFY_JOB_PENDING = _verify_jobs.VERIFY_JOB_PENDING
@@ -177,6 +185,44 @@ sign_events_on = _events.sign_events_on
 sign_events_recent_date = _events.sign_events_recent_date
 _event_cleanup = _events._event_cleanup
 
+# 用户与注销域（唯一定义点在 yiban/store/users.py）：users / user_delete_requests 表的状态机、
+# 注销与反悔、到期物理清除按原样再导出，既有 `db.load_users()` / `db.restore_user()` /
+# `db.LastAdminError` 调用面与异常捕获不变。宽限期常量同时约束用户行与账号行的清除时机。
+SOFT_DELETE_RETENTION_DAYS = _users.SOFT_DELETE_RETENTION_DAYS
+SOFT_DELETE_RETENTION_SECONDS = _users.SOFT_DELETE_RETENTION_SECONDS
+PURGE_SKIP_CANCELLED_OWNER = _users.PURGE_SKIP_CANCELLED_OWNER
+DuplicateOwnerError = _users.DuplicateOwnerError
+LastAdminError = _users.LastAdminError
+set_user_sid = _users.set_user_sid
+load_users = _users.load_users
+find_user = _users.find_user
+find_user_any = _users.find_user_any
+filter_mail_notify = _users.filter_mail_notify
+admin_mail_recipients = _users.admin_mail_recipients
+create_user = _users.create_user
+update_user = _users.update_user
+_assert_not_last_admin = _users._assert_not_last_admin
+delete_user_with_accounts = _users.delete_user_with_accounts
+set_user_role = _users.set_user_role
+soft_delete_user_with_accounts = _users.soft_delete_user_with_accounts
+restore_user = _users.restore_user
+purge_deleted_users = _users.purge_deleted_users
+purge_deleted_users_hard = _users.purge_deleted_users_hard
+purge_old_delete_requests = _users.purge_old_delete_requests
+record_user_delete_request = _users.record_user_delete_request
+count_user_delete_requests = _users.count_user_delete_requests
+is_last_registered_admin = _users.is_last_registered_admin
+batch_user_ops = _users.batch_user_ops
+_delete_user_delete_requests = _users._delete_user_delete_requests
+
+# 每日清理域（唯一定义点在 yiban/store/cleanup.py）：清理编排与审计/账号保留期清除按原样
+# 再导出，web 每日线程的 `db.run_daily_cleanup()`、signin 启动的
+# `db.purge_expired_deleted_accounts()` 与测试直接调用的 `db._audit_cleanup(...)` 调用面不变。
+run_daily_cleanup = _cleanup.run_daily_cleanup
+_audit_cleanup = _cleanup._audit_cleanup
+_purge_expired_deleted = _cleanup._purge_expired_deleted
+purge_expired_deleted_accounts = _cleanup.purge_expired_deleted_accounts
+
 # 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v17、版本编排
 # `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
 # / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
@@ -213,34 +259,6 @@ _run_migrations = _migrations._run_migrations
 logger = logging.getLogger("yiban.db")
 
 DB_DEFAULT = _connection.DB_DEFAULT
-
-# 软删除保留期（2026-08-15 审查统一命名/单位）：天为唯一来源，秒数派生——
-# 此前 web(app.py DELETED_RETENTION_DAYS) 与 db 各持一份同名不同单位常量，易改一处漏一处
-SOFT_DELETE_RETENTION_DAYS = 7
-SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
-
-# 账号物理清除的豁免条件：owner 已注销**且仍在反悔窗口内**时不清。
-# 用户此前自删的账号时刻早于注销事件，按各自 deleted_at 独立到期会先于用户行被删，
-# 而用户在窗口内恢复回来却没有账号（见 restore_user 的单行恢复说明）。
-# 用同一个 cutoff 比较用户行自身的时间戳（而不是只看 deleted=1）：豁免随用户宽限期
-# 自然失效——即使某个部署路径只清了账号没清用户（cron-only 的 signin 只调
-# purge_expired_deleted_accounts），也不会留下无界驻留的账号；SQL 里它排在账号自己的
-# `deleted_at <= ?` 之后，故调用参数必须传两次 cutoff。
-PURGE_SKIP_CANCELLED_OWNER = (
-    " AND owner NOT IN (SELECT email FROM users WHERE deleted=1 AND deleted_at > ?)"
-)
-
-
-class DuplicatePhoneError(Exception):
-    """手机号已存在（accounts.phone 唯一约束冲突）。"""
-
-
-class DuplicateOwnerError(Exception):
-    """该用户已有一个未删除账号（accounts.owner 部分唯一索引冲突）。"""
-
-
-class LastAdminError(Exception):
-    """注销被拒绝：该用户是最后一个注册管理员（事务内复核，跨进程安全）。"""
 
 # 连接层再导出（唯一定义点在 yiban/store/connection.py）：`_conn`/`_db_file`/`_env_file`
 # 读写都**转发**——全仓 190+ 处测试收尾 `db._conn = None` 与 `db._env_file = path` 若只写
@@ -511,15 +529,6 @@ def hash_phone(phone):
     """
     salt = _track_salt()
     return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
-
-
-def set_user_sid(email, sid):
-    """写入用户当前有效会话标识；email 须为活跃用户。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute(
-            "UPDATE users SET sid=? WHERE email=? AND deleted=0", (sid, email)
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -961,81 +970,6 @@ def _clock_jump_guard(conn, key):
     return True, ""
 
 
-def _purge_expired_deleted(conn):
-    """软删除超过保留期（>= 7 天）的行物理清除（web 原 load 惰性清理语义，库内必有 deleted_at）。
-
-    deleted_at 为 %Y-%m-%d %H:%M:%S 格式（统一写入格式），字符串比较等价时间序。
-    清理失败仅告警不阻断（规范审查 D6：原静默吞错无痕迹）。
-    """
-    try:
-        # 2026-08-28 审查 M3：时钟异常跳变（拨快 >72h / 回拨 >1h）时跳过清理，
-        # 防"系统时间被拨快后刚软删 1 秒的账号被立即物理清除、反悔窗口归零"。
-        # 守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作 M5 的事务边界。
-        ok, note = _clock_jump_guard(conn, "purge_accounts_clock")
-        if not ok:
-            logger.error("%s", note)
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            return
-        # 旧版本/手工写入的 deleted=1 且 deleted_at='' 行不参与保留期
-        # 判定（条件含 deleted_at != ''），成为不死僵尸——统一补记当前时间，
-        # 宽限期自此起算，下一保留期后正常清除
-        now_str = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            "UPDATE accounts SET deleted_at=? WHERE deleted=1 AND deleted_at=''",
-            (now_str,),
-        )
-        cutoff = (clock.now() - datetime.timedelta(seconds=SOFT_DELETE_RETENTION_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
-        # 2026-08-16 优化（性能审查遗留）：先查有无超期行再删——无行时不发 DELETE
-        # 事务，只提交守卫的时钟参照一行（每天 1~2 次调用，开销可忽略）
-        probe = conn.execute(
-            "SELECT 1 FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
-            + PURGE_SKIP_CANCELLED_OWNER + " LIMIT 1",
-            (cutoff, cutoff),
-        ).fetchone()
-        if not probe:
-            conn.commit()
-            return
-        # 2026-08-28 审查 M5：读 phones → DELETE → 连带清理 整段原子。
-        # 原实现 SELECT 与 DELETE 之间跨进程无互斥，期间被管理员恢复的账号
-        # （deleted=0）其行会被 WHERE deleted=1 正确保留，但 time_prefs /
-        # session_cache 会被陈旧 phones 列表连带误删——用户自选签到时段被静默
-        # 重置为自动错峰。守卫 INSERT 已持写锁，事务内重读 phones（不复用事务
-        # 前列表），读-删-清对外原子。
-        phones = [
-            r["phone"]
-            for r in conn.execute(
-                "SELECT phone FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
-                + PURGE_SKIP_CANCELLED_OWNER,
-                (cutoff, cutoff),
-            ).fetchall()
-        ]
-        conn.execute(
-            "DELETE FROM accounts WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?"
-            + PURGE_SKIP_CANCELLED_OWNER,
-            (cutoff, cutoff),
-        )
-        _cascade_phone_owned(conn, phones)
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理超期软删除账号失败: %s", e)
-
-
-def purge_expired_deleted_accounts():
-    """物理清除超过保留期的软删除账号（显式调用：init_db 启动清理 / web 每日线程 / signin 启动）。
-
-    2026-08-20 对抗性审查修复（P1）：原实现挂在 load_accounts() 读路径上，任何一次
-    列表读取都可能物理删行并使其后所有下标前移——web 层按 idx 寻址的 mutation 在
-    管理员持旧视图时会静默命中错误对象（"无人触发的索引漂移"）。移出读路径后，
-    清理只发生在显式时机，两次读取之间的列表顺序保持稳定。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        _purge_expired_deleted(conn)
-
-
 def accounts_snapshot():
     """账号原始行快照（**不解密**）。持 `_conn_lock` 取到即释放。
 
@@ -1345,80 +1279,6 @@ def delete_accounts_by_owner(owner):
         return cur.rowcount
 
 
-def _assert_not_last_admin(conn, email, allow_last_admin):
-    """「最后一个注册管理员不可删除/降权」复核——必须在 BEGIN IMMEDIATE 事务内调用。
-
-    管理员侧删除/降权此前只在 web 进程内 _file_lock 下预检，
-    跨进程（web 多实例共享同一库）两名操作者可同时通过预检，把最后一个
-    注册管理员清零（未配内置管理员的部署失去全部管理入口）。已把
-    自助注销路径的复核下沉事务，本函数把管理员侧三个路径（单删/批量删/降权）
-    对齐同口径。命中即抛 LastAdminError（调用方事务回滚、web 转 400）。
-
-    allow_last_admin：内置管理员（.env）存在时允许删掉 users 表中最后一个注册
-    管理员（web 侧传 bool(_builtin_admin_email())，与原预检语义一致）。
-    """
-    row = conn.execute(
-        "SELECT role FROM users WHERE email=? AND deleted=0", (email,)
-    ).fetchone()
-    if row is not None and row["role"] == "admin" and not allow_last_admin:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
-        ).fetchone()[0]
-        if total <= 1:
-            raise LastAdminError(
-                "该用户是最后一个注册管理员，不可删除/降权（系统需保留至少一个管理入口）"
-            )
-
-
-def delete_user_with_accounts(email, allow_last_admin=False):
-    """删除用户及其全部易班账号（单事务，防崩溃窗口数据不一致）。返回删除账号行数。
-
-    allow_last_admin=False（默认）时，事务内复核目标是否最后一个
-    注册管理员（含跨进程并发窗口），命中抛 LastAdminError 且库保持原状；
-    仅「内置管理员存在」的调用方应显式传 True。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            _assert_not_last_admin(conn, email, allow_last_admin)
-            rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (email,)).fetchall()
-            cur = conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-            phones = [r["phone"] for r in rows]
-            _cascade_phone_owned(conn, phones)
-            conn.execute("DELETE FROM users WHERE email=?", (email,))
-            _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
-            conn.commit()
-            return cur.rowcount
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def set_user_role(email, new_role, allow_last_admin=False):
-    """单行角色变更（降权最后一个注册管理员的复核下沉事务内）。
-
-    返回受影响行数（0 = 用户不存在/已删除）；降权最后一个注册管理员且
-    allow_last_admin=False 时抛 LastAdminError（库保持原状）。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            if new_role == "user":
-                _assert_not_last_admin(conn, email, allow_last_admin)
-            cur = conn.execute(
-                "UPDATE users SET role=? WHERE email=? AND deleted=0", (new_role, email)
-            )
-            conn.commit()
-            return cur.rowcount
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
 def replace_accounts(accounts):
     """整表替换：事务内清空并重插，sort_order=列表顺序 1..N。
 
@@ -1505,558 +1365,6 @@ def batch_account_ops(ops):
                         _cascade_phone_owned(conn, [row["phone"]])
                 else:
                     raise ValueError(f"未知批量账号操作: {kind}")
-            conn.commit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-# ---------------------------------------------------------------------------
-# users CRUD
-# ---------------------------------------------------------------------------
-def load_users(include_deleted=False):
-    """全部用户（默认排除已注销/软删除用户）。"""
-    with _conn_lock:
-        conn = get_conn()
-        if include_deleted:
-            rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM users WHERE deleted=0 ORDER BY id"
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def find_user(email):
-    """查找有效（未注销）用户。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT * FROM users WHERE email=? AND deleted=0", (email,)
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def find_user_any(email):
-    """查找任意用户（含已注销），供恢复/管理排查使用。优先返回活跃用户。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT * FROM users WHERE email=? ORDER BY deleted ASC, id DESC LIMIT 1", (email,)
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def filter_mail_notify(emails):
-    """过滤出「接收邮件提醒」的邮箱列表（mail_notify=1 或非注册用户默认接收）。
-
-    供 A 线（管理员告警邮件）按收件人个人开关过滤：普通用户/管理员关闭
-    mail_notify 后，即使其邮箱位于 YIBAN_MAIL_ADMIN_TO，也不再接收告警邮件。
-    内置主管理员（.env 账号，users 表无记录）不受影响，由全局开关
-    YIBAN_MAIL_ENABLE 控制；查库异常时按「接收」处理（不误伤收件人）。
-    """
-    result = []
-    for e in emails:
-        u = None
-        try:
-            u = find_user(e)
-        except Exception:
-            u = None
-        if u is None or str(u.get("mail_notify", 1)).strip().lower() in ("1", "true", "on", "yes"):
-            result.append(e)
-    return result
-
-
-def admin_mail_recipients(extra_emails=()):
-    """A 线告警邮件的完整收件人列表（去重）。
-
-    组成 = ADMIN_TO（.env，经 filter_mail_notify 按个人开关过滤） + 所有
-    「开启接收邮件」的管理员用户邮箱（users.role=admin 且 mail_notify=1）。
-
-    这样普通管理员自动获得告警收件权，无需手动加入 YIBAN_MAIL_ADMIN_TO；
-    普通管理员关闭 mail_notify 后即从收件人剔除。内置主管理员（.env 账号，
-    不在 users 表）由 extra_emails（ADMIN_TO）覆盖。
-    """
-    recipients = set(filter_mail_notify(extra_emails))
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            rows = conn.execute(
-                "SELECT email, mail_notify FROM users WHERE role='admin' AND deleted=0"
-            ).fetchall()
-    except Exception as e:
-        rows = []
-        # 留痕（2026-08-27 审查）：否则库故障时普通管理员被无声剔出告警收件人，
-        # 事后无从回答"为何没人收到告警"（降级仍保留 .env 配置的 ADMIN_TO）
-        logger.warning("查询管理员告警收件人失败，仅保留 .env 配置的收件人: %s", e)
-    for r in rows:
-        if str(r["mail_notify"] if r["mail_notify"] is not None else 1).strip().lower() in ("1", "true", "on", "yes"):
-            recipients.add(r["email"])
-    return sorted(recipients)
-
-
-def create_user(email, password_hash, role="user", created_at="", pw_version=1):
-    conn = get_conn()
-    with _conn_lock, conn:
-        # 使用 INSERT ... ON CONFLICT DO NOTHING 并通过 rowcount 判断是否实际创建
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version, deleted, deleted_at) "
-            "VALUES (?,?,?,?,?,0,'')",
-            (email, password_hash, role, created_at, pw_version),
-        )
-        return cur.rowcount > 0
-
-
-def update_user(email, fields):
-    """更新用户字段；返回受影响行数。
-
-    2026-08-28 审查 C-M1：原实现返回 None，调用方无法区分"更新成功"与
-    "邮箱不存在/已注销"的静默 no-op——邮件通知开关等接口对内置管理员（不在
-    users 表）会谎报成功，刷新后开关弹回开启，还污染审计链。返回 rowcount
-    供调用方判 404。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        sets, vals = [], []
-        for k in ("password_hash", "role", "pw_version", "mail_notify"):
-            if k in fields:
-                sets.append(f"{k}=?")
-                vals.append(fields[k])
-        if not sets:
-            return 0
-        vals.append(email)
-        cur = conn.execute(
-            f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0", vals
-        )
-        return cur.rowcount
-
-
-# ---------------------------------------------------------------------------
-# 用户主动注销（软删除 + 宽限期，Phase 5）
-# ---------------------------------------------------------------------------
-def soft_delete_user_with_accounts(email):
-    """软注销：标记用户 deleted=1，并软删除其易班账号。
-
-    2026-08-16 安全审查（用户提出错位问题）：账号由物理删除改为软删除，
-    与管理员删除账号的 7 天保留语义对齐——宽限期内 restore_user 可完整恢复
-    （用户 + 账号）；软删账号不参与签到（signin _load_accounts_from_file 过滤 deleted）。
-
-    2026-08-28 审查 C-M3：'最后一个注册管理员不可注销'的复核从 web 进程内锁
-    下沉到本事务内——原实现 web 层用进程内 _file_lock 检查后调用本函数，其他写入方 /
-    多容器共享同一库时两名管理员可同时通过检查双双注销，系统失去全部管理
-    入口（内置管理员未配置时彻底无法进入）。现于 BEGIN IMMEDIATE 后 COUNT 复核，
-    命中即抛 LastAdminError（web 捕获转 400）。
-
-    2026-09-10（批次20 D 项）**不再物理删除 time_prefs**：原实现注销时物理删自选
-    时间片，而"账号级软删"路径（set_account_deleted）不删——两条同称"7 天内可反悔"
-    的可逆路径对自选命运的处置相反（账号级保留 / 注销丢失），用户无法预期。
-    统一为"软删阶段一律保留，仅在物理清除时连带清理"（_purge_expired_deleted 与
-    purge_deleted_users_hard 都会按 phone 清 prefs），因此不存在残留风险：
-    restore_user 后自选完整回来，与账号级恢复行为一致。
-    time_pref_stats 本就按 accounts.deleted=0 过滤，残留 pref 不会虚高拥挤度。
-    （本条为批次5 C-2"恢复不还自选=存储优化"裁决的**有意修正**：可逆操作应完整可逆，
-    且 prefs 行极小，优化收益可忽略。）
-
-    **保留期口径**：注销只给"注销当时仍生效"的账号打时刻，用户此前自删的账号保留各自
-    更早的时刻（那正是"注销当时哪一行在生效"的唯一线索，不能覆盖）。由
-    `_purge_expired_deleted` 的"owner 已注销则不清除"豁免保证它们活到用户的反悔窗口
-    结束（此前的实现会按各自更早的时刻先被物理清除，用户恢复回来却没有账号）。
-    管理员删除的行（deleted_by='admin'）不在用户的反悔范围内。
-
-    返回是否找到并注销了有效用户。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            row = conn.execute(
-                "SELECT id, role FROM users WHERE email=? AND deleted=0", (email,)
-            ).fetchone()
-            if row is None:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                return False
-            if row["role"] == "admin":
-                total = conn.execute(
-                    "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
-                ).fetchone()[0]
-                if total <= 1:
-                    with contextlib.suppress(Exception):
-                        conn.rollback()
-                    raise LastAdminError(
-                        "该用户是最后一个注册管理员，不可注销（系统需保留至少一个管理入口）"
-                    )
-            rows = conn.execute(
-                "SELECT phone FROM accounts WHERE owner=? AND deleted=0", (email,)
-            ).fetchall()
-            now = clock.now().strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "UPDATE accounts SET deleted=1, deleted_at=? WHERE owner=? AND deleted=0",
-                (now, email),
-            )
-            # 自选时间片刻意保留至物理清除（见 docstring）；会话缓存仍即时停用——
-            # 它是易班登录态凭据缓存，注销后保留会扩大凭据暴露面，且恢复时重新登录即可
-            _clear_session_cache_by_phones(conn, [r["phone"] for r in rows])  # 注销后停用会话缓存
-            conn.execute(
-                "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
-                (now, row["id"]),
-            )
-            conn.commit()
-            return True
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def restore_user(email):
-    """撤销注销：仅当没有同邮箱活跃用户时，把最近一个已注销用户及其账号恢复。
-
-    2026-08-16 安全审查：联动恢复该用户的软删易班账号（deleted=0），
-    保证反悔恢复 = 用户 + 账号完整回来（此前账号在注销时被物理删除，恢复残缺）。
-
-    2026-08-28 审查 M7：检查-写入整体纳入 BEGIN IMMEDIATE 写锁。原实现
-    `with _conn_lock, conn:` 下 SELECT 走 autocommit，检查（无活跃用户）与
-    UPDATE 之间跨进程无互斥——另一进程并发 create_user（同邮箱）可在检查
-    通过后抢注成功，本 UPDATE 撞 idx_users_email_live 唯一索引抛
-    IntegrityError，web 侧未捕获 → 500。持锁后并发注册被串行化；若仍撞约束
-    （防御纵深）由上层捕获转 409。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            active = conn.execute(
-                "SELECT id FROM users WHERE email=? AND deleted=0", (email,)
-            ).fetchone()
-            if active is not None:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                return False
-            deleted = conn.execute(
-                "SELECT id, deleted_at FROM users WHERE email=? AND deleted=1 "
-                "ORDER BY id DESC LIMIT 1",
-                (email,),
-            ).fetchone()
-            if deleted is None:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                return False
-            conn.execute(
-                "UPDATE users SET deleted=0, deleted_at='' WHERE id=?",
-                (deleted["id"],),
-            )
-            # 只恢复"注销当时仍生效"的那一行账号（每人限 1 个账号，故至多一行）：
-            # - 它是**注销时刻最新的软删行**（注销把当时生效的行打成 now，此前自删的行
-            #   时刻更早；用户先恢复过某个更早的账号时，那一行同样成了注销时刻的最新行）
-            #   → ORDER BY deleted_at DESC, id DESC LIMIT 1 等价于"哪一行在注销时生效"；
-            # - 必须**单行**更新：多行一起置 deleted=0 会当场撞 idx_accounts_owner_live
-            #   唯一索引（同一 owner 只能有一个未删除账号）→ 500。此前自删的其余账号
-            #   保持软删，用户在「我的账号」页可逐个撤销（那时有明确的名额提示）；
-            # - `<=` 而非等值：兼容旧版本写下的时间戳错位存量行（无需数据迁移），
-            #   "先自删唯一账号再注销"正是这种形态——等值匹配会让用户恢复后一个账号都没有；
-            # - 排除 deleted_by='admin'（管理员清退不属于用户的反悔范围）与
-            #   deleted_at=''（v10 前的僵尸行，无法判定归属，由清理补记时间后自然到期）。
-            row = conn.execute(
-                "SELECT id FROM accounts WHERE owner=? AND deleted=1 AND deleted_by != 'admin' "
-                "AND deleted_at != '' AND deleted_at <= ? "
-                "ORDER BY deleted_at DESC, id DESC LIMIT 1",
-                (email, deleted["deleted_at"]),
-            ).fetchone()
-            if row is not None:
-                conn.execute(
-                    "UPDATE accounts SET deleted=0, deleted_at='', deleted_by='' WHERE id=?",
-                    (row["id"],),
-                )
-            conn.commit()
-            return True
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def purge_deleted_users(days=None):
-    """物理清除超过宽限期的已注销用户（默认取 SOFT_DELETE_RETENTION_DAYS）；失败仅告警。
-
-    2026-08-28 审查 C-1：原默认参数硬编码 `days=7`，与 SOFT_DELETE_RETENTION_DAYS
-    （账号侧保留期的唯一事实源）以及 web 侧 DELETE_GRACE_DAYS 形成三份互不相干的
-    "7"。运维按注释去调 SOFT_DELETE_RETENTION_DAYS 时，此处仍按 7 天清理，
-    而 web 的恢复宽限期又是另一份——三者的错位会造成静默数据丢失（详见
-    web/app.py DELETE_GRACE_DAYS 处的说明）。现改为取同一常量。
-
-    2026-08-16 安全审查（用户提出错位问题）：宽限期 3 天 → 7 天，
-    与账号软删除保留期（_purge_expired_deleted，7 天）对齐——第 7 天用户与
-    账号同天清除，邮箱/手机号同时释放，消除"反悔窗口内资产被抢占"风险。
-    """
-    days = SOFT_DELETE_RETENTION_DAYS if days is None else days
-    try:
-        conn = get_conn()
-        with _conn_lock, conn:
-            # M3 时钟保护：跳变时跳过，防注销宽限期被拨快吞掉
-            ok, note = _clock_jump_guard(conn, "purge_users_clock")
-            if not ok:
-                logger.error("%s", note)
-                return
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            # M4a：先清这些已注销用户的冷却计数（明文邮箱随用户行一并释放，
-            # 不再驻留 user_delete_requests 至 30 天保留期满）
-            before = _table_min_max(conn, "user_delete_requests")
-            cur = conn.execute(
-                "DELETE FROM user_delete_requests WHERE username IN ("
-                "SELECT email FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?)",
-                (cutoff,),
-            )
-            _record_purge_event(
-                conn, "user_delete_requests", "purge_deleted_users", cutoff,
-                cur.rowcount or 0, before, _table_min_max(conn, "user_delete_requests"),
-            )
-            before = _table_min_max(conn, "users")
-            cur = conn.execute(
-                "DELETE FROM users WHERE deleted=1 AND deleted_at != '' AND deleted_at <= ?",
-                (cutoff,),
-            )
-            _record_purge_event(
-                conn, "users", "purge_deleted_users", cutoff, cur.rowcount or 0,
-                before, _table_min_max(conn, "users"),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理已注销用户失败: %s", e)
-
-
-def purge_deleted_users_hard(emails):
-    """管理员手动物理清除指定的已注销用户（2026-08-17 需求：不等 7 天自动清除）。
-
-    安全边界：仅处理 deleted=1 的用户行——传入活跃用户邮箱时该用户被直接跳过
-    （管理员误操作/并发注册新同邮箱用户均不可能误删活跃数据）。
-    账号行只删除 deleted=1 的软删账号；活跃账号跳过，避免误删用户注销后
-    重新添加的账号。单事务连带清理：这些已删账号对应 time_prefs + 用户行。
-    返回实际清除的邮箱列表（供调用方审计与回显）。
-    """
-    if not emails:
-        return []
-    conn = get_conn()
-    purged = []
-    with _conn_lock:
-        # BEGIN IMMEDIATE 写锁内完成"读 phones → 删账号 → 连带清理"，
-        # 与 restore_user 跨进程串行化。原 deferred 快照下 phones 列表可能陈旧
-        # （M5 同族竞态：并发 restore 后升级写表现为 BUSY_SNAPSHOT 500，连带
-        # 清理列表陈旧）；持 IMMEDIATE 后写锁期间列表不可能变化。
-        _begin_immediate(conn)
-        try:
-            for email in emails:
-                row = conn.execute(
-                    "SELECT id FROM users WHERE email=? AND deleted=1", (email,)
-                ).fetchone()
-                if row is None:
-                    continue
-                phones = [
-                    r["phone"]
-                    for r in conn.execute(
-                        "SELECT phone FROM accounts WHERE owner=? AND deleted=1", (email,)
-                    ).fetchall()
-                ]
-                conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
-                _cascade_phone_owned(conn, phones)
-                # 2026-08-20 对抗性审查修复：DELETE 复核 deleted=1——SELECT 与 DELETE 之间
-                # 用户可能被并发 restore（跨进程/多 worker），无条件按 id 删会物理删除刚恢复的用户
-                cur = conn.execute(
-                    "DELETE FROM users WHERE id=? AND deleted=1", (row["id"],)
-                )
-                if cur.rowcount > 0:
-                    purged.append(email)
-                    _delete_user_delete_requests(conn, email)  # M4：冷却计数连带清除
-            conn.commit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-    return purged
-
-
-def purge_old_delete_requests(days=30):
-    """物理清除超过保留期的注销请求记录（默认 30 天）；失败仅告警。
-
-    对抗审查 2026-08-16：user_delete_requests 只增不删会无限累积
-    （长期使用后 count 查询变慢、库体积膨胀）——启动时随 purge_deleted_users 一并清理。
-    """
-    try:
-        conn = get_conn()
-        with _conn_lock, conn:
-            # M3 时钟保护：跳变时跳过（该表是冷却计数，误删只影响限速；保守一致）
-            ok, note = _clock_jump_guard(conn, "purge_requests_clock")
-            if not ok:
-                logger.error("%s", note)
-                return
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            conn.execute(
-                "DELETE FROM user_delete_requests WHERE created_at <= ?",
-                (cutoff,),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理注销请求记录失败: %s", e)
-
-
-def run_daily_cleanup():
-    """每日定期清理的集中入口（2026-08-28 审查 M6）。
-
-    审计/事件旧数据 + 过期软删账号 + 过期注销用户 + 注销请求记录 + 签到领取记录的清理，
-    原先挂在 init_db(cleanup=True) 上——而 signin 子进程每天要跑 2~3 次
-    （Docker 调度器首签/补签/探针，宿主 cron 同理），每次都执行一轮
-    全表 DELETE + 多个 purge，与 web 的 8 个线程抢库级写锁，是审计写入
-    失败（B-1）与陈旧列表误删（M5）的主要诱因。
-    现改为：web 每日线程统一调用本函数；signin 侧 init_db(cleanup=False)
-    （其 main() 保留对超期软删账号的显式清理，覆盖无 web 的纯 cron 场景）。
-
-    _audit_cleanup/_event_cleanup 直接在本模块共享连接上
-    execute+commit——必须持 _conn_lock，否则与 8 个请求线程的 BEGIN IMMEDIATE
-    事务交叠时，清理的 DELETE 会加入他人未提交事务、commit 把半程事务提前
-    发布（撕裂事务，破坏原子性投入）。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        _audit_cleanup(conn)
-        _event_cleanup(conn)
-        try:
-            orphans = purge_orphan_session_cache(conn)
-            conn.commit()
-            if orphans:
-                # 孤儿行意味着"账号已不存在但凭据缓存还在"：留痕（不含手机号明文）
-                logger.warning("已清除 %d 条孤儿会话缓存（账号行已不存在）", orphans)
-        except Exception as e:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("清除孤儿会话缓存失败（不影响其他清理）: %s", e)
-    purge_expired_deleted_accounts()
-    purge_deleted_users()
-    purge_old_delete_requests()
-    purge_sign_claims()
-
-
-def record_user_delete_request(username, ip_hash="", kind="delete"):
-    """记录一次注销/恢复请求（供冷却/防批量使用；kind: delete=注销 / restore=恢复，v7）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            conn.execute(
-                "INSERT INTO user_delete_requests (username, ip_hash, created_at, kind) "
-                "VALUES (?,?,?,?)",
-                (
-                    username or "",
-                    ip_hash or "",
-                    clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    kind if kind in ("delete", "restore") else "delete",
-                ),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("记录注销请求失败: %s", e)
-
-
-def count_user_delete_requests(username=None, ip_hash=None, since_ts=None, kind=None):
-    """统计窗口内注销/恢复请求次数（用户或 IP 维度；kind=None 统计全部，v7）。
-
-    计数类查询 fail-closed：异常包装为 RuntimeError 由上层统一处理。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            sql = "SELECT COUNT(*) FROM user_delete_requests WHERE 1=1"
-            params = []
-            if username:
-                sql += " AND username=?"
-                params.append(username)
-            if ip_hash:
-                sql += " AND ip_hash=?"
-                params.append(ip_hash)
-            if since_ts:
-                sql += " AND created_at >= ?"
-                params.append(since_ts)
-            if kind:
-                sql += " AND kind=?"
-                params.append(kind)
-            row = conn.execute(sql, params).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        raise RuntimeError(f"统计注销请求失败: {e}") from e
-
-
-def is_last_registered_admin(email):
-    """判断该邮箱是否是最后一个注册管理员（不含 .env 内置管理员）。"""
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE role='admin' AND deleted=0"
-        ).fetchone()
-        total = row[0] if row else 0
-        target = conn.execute(
-            "SELECT id FROM users WHERE email=? AND role='admin' AND deleted=0",
-            (email,),
-        ).fetchone()
-        return target is not None and total <= 1
-
-
-def batch_user_ops(ops):
-    """在一个事务内批量执行用户操作（Phase 1：整体成功或整体回滚）。
-
-    ops 为 (op, params) 列表，op 支持：
-      ("update_user", email, fields_dict)          # role/password_hash/pw_version
-      ("update_user", email, fields_dict, allow_last_admin)  #：降权含
-                                                    # 最后管理员事务内复核的放行开关
-      ("delete_user_with_accounts", email)
-      ("delete_user_with_accounts", email, allow_last_admin)  # 同上
-    """
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            for op in ops:
-                kind = op[0]
-                if kind == "update_user":
-                    email, fields = op[1], op[2]
-                    # 角色降级经同一事务内复核（预检在 web 进程内，
-                    # 挡不住跨进程并发把最后一个注册管理员降权）
-                    if fields.get("role") == "user":
-                        _assert_not_last_admin(conn, email, op[3] if len(op) > 3 else False)
-                    sets, vals = [], []
-                    for k in ("password_hash", "role", "pw_version"):
-                        if k in fields:
-                            sets.append(f"{k}=?")
-                            vals.append(fields[k])
-                    if not sets:
-                        continue
-                    vals.append(email)
-                    conn.execute(
-                        f"UPDATE users SET {', '.join(sets)} WHERE email=? AND deleted=0",
-                        vals,
-                    )
-                elif kind == "delete_user_with_accounts":
-                    email = op[1]
-                    # 删除管理员前事务内复核最后管理员
-                    _assert_not_last_admin(conn, email, op[2] if len(op) > 2 else False)
-                    rows = conn.execute(
-                        "SELECT phone FROM accounts WHERE owner=?", (email,)
-                    ).fetchall()
-                    conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
-                    phones = [r["phone"] for r in rows]
-                    _cascade_phone_owned(conn, phones)
-                    conn.execute("DELETE FROM users WHERE email=?", (email,))
-                    _delete_user_delete_requests(conn, email)  # M4
-                else:
-                    raise ValueError(f"未知批量用户操作: {kind}")
             conn.commit()
         except Exception:
             with contextlib.suppress(Exception):
@@ -2197,42 +1505,6 @@ def pause_count_since(username, since_ts):
         raise RuntimeError(f"统计暂停次数失败: {e}") from e
 
 
-def _audit_cleanup(conn):
-    """清理超 180 天审计（启动时顺带，一条 DELETE）。清理失败仅告警（规范审查 D6）。
-
-    Phase 3 修订：删除旧行后不重建哈希链——剩余首行仍保留指向已删前序行的
-    prev_hash 作为锚，verify_audit_chain 以该锚校验首行 hash。
-
-    接入时钟跳变守卫——审计是篡改取证数据源，时钟被拨快（NTP 故障
-    或拿到服务器权限者掩盖痕迹）会让 cutoff 前移、审计链被一次性清空，且该清理
-    不动"最后一条"锚点，库外锚点校验不会报警。与三个短保留期 purge 同口径。
-    """
-    try:
-        ok, note = _clock_jump_guard(conn, "audit_cleanup_clock")
-        if not ok:
-            logger.error("%s", note)
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            return
-        cutoff = (clock.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
-        before = _table_min_max(conn, "audit_logs")
-        cur = conn.execute("DELETE FROM audit_logs WHERE ts < ?", (cutoff,))
-        deleted = cur.rowcount or 0
-        after = _table_min_max(conn, "audit_logs")
-        if deleted:
-            # 删除与留痕同事务：锚点的稠密性判据拿"有留痕的删除累计数"解释缺口，
-            # 缺了这一步，保留期清理每天都会被判成非法删除。
-            _record_purge_event(
-                conn, "audit_logs", "audit_cleanup", cutoff, deleted,
-                before, after, audit_seq=_audit_purge_total(conn) + deleted,
-            )
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理旧审计日志失败: %s", e)
-
-
 def update_account_status_if(account_id, new_status, expect_status, reject_reason=None):
     """CAS 更新账号状态：仅当当前状态仍是 expect_status 时才写。返回是否写入。
 
@@ -2357,17 +1629,6 @@ def _clear_session_cache_by_phones(conn, phones):
     if not phones:
         return
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
-
-
-def _delete_user_delete_requests(conn, email):
-    """连带清除某邮箱的注销/恢复冷却计数（用户被物理删除时调用）。
-
-    2026-08-28 审查 M4：user_delete_requests 只按保留期（30 天）清理，用户被
-    物理删除（注销 purge / 管理员手动清除）后其明文邮箱仍驻留最多 30 天。
-    在用户行物理删除的同一事务内连带清除，不留隐私残留。
-    """
-    if email:
-        conn.execute("DELETE FROM user_delete_requests WHERE username=?", (email,))
 
 
 # ---------------------------------------------------------------------------

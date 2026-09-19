@@ -41,10 +41,22 @@ OVERSIZED = {
         "M5 已有既定拆法（蓝图 + 服务层），届时按依赖自然切分。"
     )),
     "yiban/store/db.py": (None, (
-        "SQLite 数据访问层（连接/迁移/各表 CRUD/清理）。已按 M4 计划从 scripts/db.py "
-        "移入 store（旧路径只剩兼容壳）；verify_jobs 与 accounts 已按表迁出"
-        "（见 yiban/store/），剩余部分继续按表迁，不一次性重构的原因：迁移需与冻结的"
-        "历史迁移函数共存（迁移不可变），批量搬动会同时动 schema 与读写路径，风险高。"
+        "SQLite 数据访问层的门面与尚未按域拆出的表访问（batch-4a 后剩 1814 行）。已拆出并"
+        "再导出：连接（connection）、迁移（migrations）、审计链（audit_chain）、事件（events）、"
+        "用户与注销（users）、每日清理（cleanup）。剩余部分不是'没拆'而是'还没拆'：accounts 表 "
+        "CRUD 与加解密、time_prefs、session_cache、时钟守卫与 app_meta、追踪盐哈希五个域，"
+        "外加跨域粘合（写事务入口、连带清理 _cascade_phone_owned、清理留痕 _record_purge_event/"
+        "_table_min_max/_clock_jump_guard）——粘合函数被拆出模块反向依赖（events/cleanup/users "
+        "都经门面取），拆走就得改成跨模块传递。下一步：按域继续迁出，accounts CRUD 迁入现有 "
+        "accounts.py，time_prefs / session_cache / clock+meta 各立模块；粘合函数留在门面。"
+    )),
+    "yiban/store/users.py": (800, (
+        "用户与注销域（batch-4a 第五刀从 db.py 迁出）：users / user_delete_requests 两表的读写、"
+        "最后管理员守卫、软注销与反悔恢复、到期物理清除、注销请求冷却计数，行数含注释契约要求"
+        "的四问头与函数级说明（占约四分之一）。整块服务同一条状态机（软注销→宽限→恢复/物理"
+        "清除）与同一对表，拆开就得把'最后管理员守卫'与'连带清理'在模块间来回传（门禁判据①"
+        "成立、②不成立）。上限 800：超过则按「用户读写 + 角色守卫」与「注销/恢复/到期清除」"
+        "切成两个模块，守卫用局部导入共享。"
     )),
     "yiban/store/audit_chain.py": (None, (
         "审计链域（2026-09-19 从 db.py 第二刀迁出）：HMAC 哈希链写入/校验、全表重链留痕、"
