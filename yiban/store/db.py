@@ -51,6 +51,7 @@ from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import audit_chain as _audit_chain  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
 from yiban.store import connection as _connection  # noqa: E402
+from yiban.store import events as _events  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
 account_is_signable = _accounts.is_signable
@@ -159,6 +160,20 @@ _RECHAIN_EVENTS_KEY = _audit_chain._RECHAIN_EVENTS_KEY
 _RECHAIN_EVENTS_KEEP = _audit_chain._RECHAIN_EVENTS_KEEP
 _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
 
+# 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
+# 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
+SIGN_EVENTS_RETENTION_DAYS = _events.SIGN_EVENTS_RETENTION_DAYS
+_normalize_limit = _events._normalize_limit
+add_sign_event = _events.add_sign_event
+add_sign_events_batch = _events.add_sign_events_batch
+sign_event_stats = _events.sign_event_stats
+sign_events_by_phone = _events.sign_events_by_phone
+sign_events_since = _events.sign_events_since
+probe_events_on = _events.probe_events_on
+sign_events_on = _events.sign_events_on
+sign_events_recent_date = _events.sign_events_recent_date
+_event_cleanup = _events._event_cleanup
+
 logger = logging.getLogger("yiban.db")
 
 DB_DEFAULT = _connection.DB_DEFAULT
@@ -178,14 +193,6 @@ SOFT_DELETE_RETENTION_SECONDS = SOFT_DELETE_RETENTION_DAYS * 86400
 PURGE_SKIP_CANCELLED_OWNER = (
     " AND owner NOT IN (SELECT email FROM users WHERE deleted=1 AND deleted_at > ?)"
 )
-
-
-def _normalize_limit(limit, default):
-    """把 limit 钳制到 1..1000；非法值回退到默认值。"""
-    try:
-        return max(1, min(int(limit), 1000))
-    except (TypeError, ValueError):
-        return default
 
 
 class DuplicatePhoneError(Exception):
@@ -275,8 +282,6 @@ class _StateForwardingModule(types.ModuleType):
 
 sys.modules[__name__].__class__ = _StateForwardingModule
 
-# 可视化表保留期（Phase 4）
-SIGN_EVENTS_RETENTION_DAYS = 180
 
 # IP 加盐哈希（Phase 4）
 _TRACK_SALT_CACHE = None
@@ -2920,205 +2925,6 @@ def _audit_cleanup(conn):
         logger.warning("清理旧审计日志失败: %s", e)
 
 
-# ---------------------------------------------------------------------------
-# 可视化表（Phase 4）
-# ---------------------------------------------------------------------------
-def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
-                   account_id=None, dur_sec=None, finished_at=None):
-    """写入签到事件；失败仅告警，不影响调用方。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            conn.execute(
-                "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
-                "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (ts, phone, status, message, stage, attempt,
-                 account_id, dur_sec, finished_at),
-            )
-            conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("写入 sign_events 失败: %s", e)
-
-
-def add_sign_events_batch(rows):
-    """批量写入签到事件（单事务）；失败仅告警，不影响调用方。
-
-    rows 为 dict 列表，支持 add_sign_event 的全部字段。
-    """
-    with _conn_lock:
-        try:
-            conn = get_conn()
-            _begin_immediate(conn)
-            for r in rows:
-                conn.execute(
-                    "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
-                    "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (
-                        r.get("ts", ""),
-                        r.get("phone", ""),
-                        r.get("status", ""),
-                        r.get("message", ""),
-                        r.get("stage", ""),
-                        r.get("attempt", 0),
-                        r.get("account_id"),
-                        r.get("dur_sec"),
-                        r.get("finished_at"),
-                    ),
-                )
-            conn.commit()
-        except Exception as e:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("批量写入 sign_events 失败: %s", e)
-
-
-def sign_event_stats(days=30, stage=None):
-    """按天统计签到事件数量/状态分布；失败返回空列表。
-
-    stage 为可选过滤开关：sign_events 同时承载真实签到（stage="sign"）与健康探针
-    （stage="probe"），不传时两者混算。需要「签到口径」的调用方必须显式传
-    stage="sign"，否则探针的成功/失败会被计入签到成功率。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            sql = (
-                "SELECT substr(ts, 1, 10) AS day, status, COUNT(*) AS cnt "
-                "FROM sign_events WHERE ts >= ?"
-            )
-            params = [cutoff]
-            if stage:
-                sql += " AND stage = ?"
-                params.append(stage)
-            sql += " GROUP BY day, status ORDER BY day"
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events 统计失败: %s", e)
-        return []
-
-
-def sign_events_by_phone(phone, days=30):
-    """单账号历史表现：按手机号返回时间线事件列表。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            cutoff = (clock.now() - datetime.timedelta(days=days)).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            rows = conn.execute(
-                "SELECT id, ts, phone, status, message, stage, attempt, "
-                "account_id, dur_sec, finished_at "
-                "FROM sign_events WHERE phone=? AND ts >= ? ORDER BY ts",
-                (phone, cutoff),
-            ).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events_by_phone 失败: %s", e)
-        return []
-
-
-def sign_events_since(since_ts, phone=None, limit=100):
-    """实时事件流：返回 since_ts 之后的事件，可选按手机号过滤。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            sql = (
-                "SELECT id, ts, phone, status, message, stage, attempt, "
-                "account_id, dur_sec, finished_at FROM sign_events WHERE ts >= ?"
-            )
-            params = [since_ts]
-            if phone:
-                sql += " AND phone=?"
-                params.append(phone)
-            sql += " ORDER BY ts LIMIT ?"
-            params.append(_normalize_limit(limit, 100))
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events_since 失败: %s", e)
-        return []
-
-
-def probe_events_on(date_str, limit=100):
-    """指定日期（YYYY-MM-DD）的健康探测事件（stage="probe"，按时间正序）。
-
-    供 Web 日志页展示探针结构化记录（v0.24.4 前 stage 仅落库无消费方）。
-    查询失败返回空列表，不影响调用方。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            start = f"{date_str} 00:00:00"
-            end = f"{date_str} 23:59:59"
-            sql = (
-                "SELECT id, ts, phone, status, message, attempt "
-                "FROM sign_events WHERE stage='probe' AND ts BETWEEN ? AND ? "
-                "ORDER BY ts LIMIT ?"
-            )
-            params = [start, end, _normalize_limit(limit, 100)]
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("probe_events_on 失败: %s", e)
-        return []
-
-
-def sign_events_on(date_str, limit=100):
-    """指定日期（YYYY-MM-DD）的签到事件（stage="sign"，按时间正序）。
-
-    sign_events 补消费端——随 /api/logs 附带当日签到事件
-    （与 probe_events_on 同口径：手机号脱敏、条数封顶由调用方处理）。
-    查询失败返回空列表，不影响调用方。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            start = f"{date_str} 00:00:00"
-            end = f"{date_str} 23:59:59"
-            sql = (
-                "SELECT id, ts, phone, status, message, attempt "
-                "FROM sign_events WHERE stage='sign' AND ts BETWEEN ? AND ? "
-                "ORDER BY ts LIMIT ?"
-            )
-            params = [start, end, _normalize_limit(limit, 100)]
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
-    except Exception as e:
-        logger.warning("sign_events_on 失败: %s", e)
-        return []
-
-
-def sign_events_recent_date(stage, max_days=30):
-    """最近有指定 stage 事件的日期（YYYY-MM-DD，窗口内无则空串）。
-
-    供日志页空态给出「查看最近有数据日期」的一键入口：某标签当前日期无事件时，
-    用本函数找到该标签最近有事件的日期（stage=probe/sign 分别对应探针/签到事件）。
-    查询失败返回空串，不影响调用方。
-    """
-    stage = "probe" if stage == "probe" else "sign"
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            cutoff = (clock.now() - datetime.timedelta(days=max_days)).strftime(
-                "%Y-%m-%d 00:00:00"
-            )
-            row = conn.execute(
-                "SELECT MAX(ts) AS m FROM sign_events WHERE stage=? AND ts >= ?",
-                (stage, cutoff),
-            ).fetchone()
-            if row and row["m"]:
-                return str(row["m"])[:10]
-    except Exception as e:
-        logger.warning("sign_events_recent_date 失败: %s", e)
-    return ""
-
-
 def update_account_status_if(account_id, new_status, expect_status, reject_reason=None):
     """CAS 更新账号状态：仅当当前状态仍是 expect_status 时才写。返回是否写入。
 
@@ -3139,45 +2945,6 @@ def update_account_status_if(account_id, new_status, expect_status, reject_reaso
                 (new_status, reject_reason, account_id, expect_status),
             )
         return cur.rowcount == 1
-
-
-def _event_cleanup(conn):
-    """清理可视化表超期数据；失败仅告警。
-
-    接入时钟跳变守卫（同 _audit_cleanup）——sign_events 等表是
-    取证数据源，时钟跳变不应放大清理窗口。
-    """
-    try:
-        ok, note = _clock_jump_guard(conn, "event_cleanup_clock")
-        if not ok:
-            logger.error("%s", note)
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            return
-        now = clock.now()
-        sign_cutoff = (now - datetime.timedelta(days=SIGN_EVENTS_RETENTION_DAYS)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        before = _table_min_max(conn, "sign_events")
-        cur = conn.execute("DELETE FROM sign_events WHERE ts < ?", (sign_cutoff,))
-        _record_purge_event(
-            conn, "sign_events", "event_cleanup", sign_cutoff, cur.rowcount or 0,
-            before, _table_min_max(conn, "sign_events"),
-        )
-        job_cutoff = (now - datetime.timedelta(days=VERIFY_JOB_RETENTION_DAYS)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        before = _table_min_max(conn, "verify_jobs")
-        cur = conn.execute("DELETE FROM verify_jobs WHERE created_at < ?", (job_cutoff,))
-        _record_purge_event(
-            conn, "verify_jobs", "event_cleanup", job_cutoff, cur.rowcount or 0,
-            before, _table_min_max(conn, "verify_jobs"),
-        )
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("清理可视化表失败: %s", e)
 
 
 # ---------------------------------------------------------------------------
