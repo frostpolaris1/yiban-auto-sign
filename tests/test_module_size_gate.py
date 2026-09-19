@@ -221,6 +221,12 @@ class ModuleSizeGateTest(unittest.TestCase):
         self.assertEqual(
             _size_violations([("web/static/js/core.js", core, LIMITS[".js"])]), [])
 
+    def test_scan_covers_all_types(self):
+        """扫描面自检：各扩展名都必须扫到文件，防 SCAN_EXT 掉项后门禁静默失明。"""
+        seen = {os.path.splitext(rel)[1] for rel, _, _ in _iter_scanned()}
+        for ext in LIMITS:
+            self.assertIn(ext, seen, f"扫描面漏掉 {ext} 类型文件")
+
     def test_oversized_entries_explain_themselves(self):
         """允许增长（limit=None）的登记项必须给出实质理由——"要么拆，要么说清楚"。
 
