@@ -16,8 +16,9 @@ CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 `high_risk_gate()` / `reconfirm_admin_password()` 取回留在 web.app 里的高危门禁闭包，
 `admin_delete_limited()` 取回同族的"删除/通道变更"限速判定；
 `verify_limits()` / `verify_fails()` 是账号验证配额与冷却的唯一取用点（管理员添加与
-用户自助提交共用同一份账），`detail_limits()` 是账号详情读取限速表，
-`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕的两个入口。
+用户自助提交共用同一份账），`detail_limits()` 是账号详情读取限速表，`export_limits()`
+是日志导出限速表，`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕
+的两个入口。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
@@ -105,6 +106,14 @@ def detail_limits():
     return current_app.extensions["yiban_detail_limits"]
 
 
+def export_limits():
+    """日志导出限速表 {ip: (count, window_start)}（每 app 实例一份）。
+
+    仅日志导出域使用；取用点收在本包一处，与其余限速表同一形态。
+    """
+    return current_app.extensions["yiban_export_limits"]
+
+
 def read_audit_trace():
     """只读面聚合留痕：窗口内聚合成一行，不逐请求写（每 app 实例一份闭包）。"""
     return current_app.extensions["yiban_read_audit_trace"]
@@ -117,9 +126,11 @@ def read_audit_denied_trace():
 
 def register_all(app):
     """装配全部路由域。顺序与原定义顺序一致；路径冲突会在启动时直接报错。"""
-    from web.routes import accounts_api, auth, me, notify, pages
+    from web.routes import accounts_api, auth, data, me, my, notify, pages
     pages.register(app)
     auth.register(app)
     me.register(app)
     notify.register(app)
     accounts_api.register(app)
+    my.register(app)
+    data.register(app)
