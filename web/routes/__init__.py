@@ -41,5 +41,6 @@ def appmod():
 
 def register_all(app):
     """装配全部路由域。顺序与原定义顺序一致；路径冲突会在启动时直接报错。"""
-    from web.routes import pages
+    from web.routes import auth, pages
     pages.register(app)
+    auth.register(app)
