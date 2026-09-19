@@ -167,11 +167,17 @@ class DbExecutescriptAtomicityP3Test(unittest.TestCase):
             self.assertIn(t, names, f"缺表 {t}——逐条 DDL 转换丢失了建表语句")
 
     def test_db_source_has_no_executescript_call(self):
-        """源码级回归绊线：db 实现不得再出现 executescript 调用。"""
-        with open(os.path.join(BASE, "yiban", "store", "db.py"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertNotIn(".executescript(", src,
-                         "db 重新引入了 executescript（隐式 COMMIT 隐患）")
+        """源码级回归绊线：db 与迁移实现都不得再出现 executescript 调用。
+
+        DDL（CREATE/ALTER/DROP）随迁移域拆入 `migrations.py`，扫描面必须同时覆盖两文件
+        ——只扫 db.py 会让迁移 DDL 脱离 P3-1 的绊线保护。
+        """
+        for rel in ("yiban", "store", "db.py"), ("yiban", "store", "migrations.py"):
+            path = os.path.join(BASE, *rel)
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            self.assertNotIn(".executescript(", src,
+                             f"{'/'.join(rel)} 重新引入了 executescript（隐式 COMMIT 隐患）")
 
 
 def _close_db():
