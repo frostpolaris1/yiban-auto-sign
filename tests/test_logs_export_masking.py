@@ -164,7 +164,8 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.assertEqual(data["logs"], body.splitlines(),
                          "导出与视图必须同一过滤管线（行集合逐行一致）")
         self.assertNotIn("marker-mailer-info", body, "其他组件 INFO 行不入列（视图同口径）")
-        self.assertNotIn("marker-yiban-debug", body, "DEBUG 行不入列")
+        self.assertIn("marker-yiban-debug", body,
+                      "yiban 的 DEBUG 入列（2026-09-19 提高显示等级：部署自己开的级别要看得到）")
         self.assertIn("marker-web-warn", body, "非 yiban 组件告警级行视图本就入列——同口径")
 
     def test_view_shows_masked_only_warning(self):

@@ -3380,6 +3380,14 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 }
 /* 一个 tab 里并排/堆叠多张卡（通知通道 = 推送卡 + 邮件卡）：卡间留白由容器承担 */
 .set-cards { display: flex; flex-direction: column; gap: 20px; }
+/* 公告卡：线上公告只读块与草稿区分节（复用「卡内相邻分组画线分节」的既有约定，
+   标记与颜色同源：1px solid --border-soft）。原先它与操作按钮行贴在一起、读起来像同一块。 */
+.ann-published {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+.ann-published .field-label { display: block; margin-bottom: 6px; }
 /* 长卡的保存行吸底：字段多时保存按钮在卡底，改完要滑到底才够得着（教程 #16「目标要近」）。
    只给显式标 .is-sticky 的操作行；底衬不透明，避免字段从按钮下透出。 */
 .form-actions.is-sticky {
