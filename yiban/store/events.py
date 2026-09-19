@@ -15,7 +15,7 @@
 web 日志页与 `/api/admin/sign-events`、signin 执行体（runner 批量落库、probe 探针）
 共用的一张事件表。sign_events 同时承载真实签到（stage="sign"）与健康探针
 （stage="probe"），凡以「签到口径」消费的调用方必须显式按 stage 过滤，否则探针的
-成功/失败会被计入签到成功率。建表与索引在迁移域（`yiban/store/db.py`），本模块只读写。
+成功/失败会被计入签到成功率。建表与索引在迁移域（`yiban/store/migrations.py`），本模块只读写。
 
 **复用**
 `yiban.store.db` 把本模块的函数与常量按原样再导出，`db.add_sign_event()` /

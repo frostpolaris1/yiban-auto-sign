@@ -55,6 +55,15 @@ OVERSIZED = {
         "verify/anchor 族）」切成两个模块；当前不拆，避免为搬家再动 db 门面与打桩面"
         "（db._audit_hash = 替身 / db._AUDIT_KEY_CACHE = None 必须落在真定义点）。"
     )),
+    "yiban/store/migrations.py": (None, (
+        "schema 版本迁移域（2026-09-19 从 db.py 第四刀迁出）：基线建表、migrate_v1..v17、"
+        "版本编排 `_run_migrations` 与迁移助手 `_table_columns`/`_ensure_column`/`_ensure_index`。"
+        "整块是**一份按版本号冻结的时间序列**——已发布的迁移函数不可再改，拆开就得把冻结的"
+        "迁移登记表与「核心/可选、失败是否阻断启动」的编排判据在模块间来回传递（门禁判据①"
+        "「同一件事」成立、②通信成本高）。下一步：版本只增不改，行数会持续增长；若超过 1000 "
+        "行，按「迁移项（v1..vN，纯 DDL/数据修复）」与「编排 + 助手」切成两个模块，迁移登记表"
+        "留在编排侧作唯一登记点。当前不拆，避免为搬家再动 db 门面与 `db._MIGRATIONS` 读写转发面。"
+    )),
     # scripts/signin.py 已按"执行一轮"的边界切分为 yiban/engine/*（最大 round.py 507 行），
     # 旧路径只剩兼容壳（约 130 行），故不再登记。
     "yiban/egress.py": (None, (
