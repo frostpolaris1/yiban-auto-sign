@@ -42,10 +42,10 @@ from flask import (
     Response,
     abort,
     jsonify,
-    redirect,
+    redirect,  # noqa: F401  # 页面路由已入 web/routes/pages.py，此处仅为保持 web.app 的导入面不变
     render_template,
     request,
-    send_file,
+    send_file,  # noqa: F401  # 同上（web.app.<名字> 仍可 import，打桩面零损失）
     session,
     url_for,
 )
@@ -61,6 +61,8 @@ for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from web.routes import register_all  # noqa: E402  # 路由分域装配（各域在 web/routes/）
+from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清单（页面路径唯一登记点）
 from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
 from yiban import clock, cred_state  # noqa: E402  （须在引导之后导入）
 from yiban import window as yb_window  # noqa: E402
@@ -1688,6 +1690,79 @@ def _admin_session_facts(env_path):
     except (TypeError, ValueError):
         version = 1
     return version, (env.get(ADMIN_SID_ENV_KEY) or "").strip()
+
+
+def _builtin_admin_email():
+    """内置管理员（.env）标识（小写），用于防呆比较：不可改角色/删除。"""
+    env = read_env(ENV_FILE)
+    return env.get("YIBAN_ADMIN_USER", "").strip().lower()
+
+
+def _effective_role(username, pw_version=None):
+    """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
+    内置管理员 → admin；注册用户 → users 表的 role；查无此人 → None。
+    管理员变更角色后，已登录用户的下一次请求立即生效，无需重新登录；
+    被删除/取消权限的用户旧会话随之失效（None 视为未登录）；
+    注册用户密码被重置/修改后（pw_version 递增）旧会话随之失效；
+    内置管理员改密后（.env 版本递增）旧会话同样失效。
+    """
+    if not username:
+        return None
+    # 所有会话都必须带 auth_source；旧会话（无该字段）一律视为未登录
+    if not session.get("auth_source"):
+        return None
+    if (
+        username.strip().lower() == _builtin_admin_email()
+        and session.get("auth_source") == "builtin"
+    ):
+        # 内置管理员：必须是 builtin 登录来源，且 session 里的两项凭据都与当前
+        # .env 一致（口令版本 + 会话 sid）；auth_source == "user" 的同名注册用户
+        # 继续按普通用户判定，不借内置邮箱提权
+        cur, admin_sid = _admin_session_facts(ENV_FILE)
+        if pw_version != cur:
+            return None
+        # 与上面注册用户的 users.sid 逐字同口径：空 = 未签发（升级日存量会话兼容，
+        # 不强制重登），签发后不匹配即失效。这条凭据补上的是"改口令之外"的吊销面：
+        # 登出即可踢掉被盗副本，不必再靠换口令或换 YIBAN_SECRET_KEY 全站重登。
+        if admin_sid and session.get("sid") != admin_sid:
+            return None
+        return "admin"
+    email = username.strip().lower()
+    u = db.find_user(email)
+    if u is not None:
+        # 旧数据（无 pw_version 字段）不做会话吊销校验，兼容存量会话
+        if "pw_version" in u and pw_version != u.get("pw_version", 1):
+            return None
+        # 服务端会话吊销：users.sid 为该用户当前唯一有效会话标识，
+        # 登录时签发、登出/被重置密码/被踢时轮换——被盗 cookie 重放即失效。
+        # sid 为空串视为未签发（升级日存量会话兼容），签发后不匹配即失效。
+        sid = u.get("sid", "")
+        if sid and session.get("sid") != sid:
+            return None
+        return "admin" if u.get("role") == "admin" else "user"
+    return None
+
+
+def _current_role():
+    """当前登录会话的实时角色；未登录 → None。
+
+    会话绝对过期：滑动续期（14 天）之外另设「自登录起最多 N 天」硬上限，防止被盗
+    Cookie 永久续命。时间戳在登录/恢复时写入 session["login_ts"]；存量旧会话无该
+    字段则就地补记当下（升级日不强制全体重新登录）。超限即清空会话视为未登录。
+
+    模块级而非工厂局部：`web/routes/*` 的路由体经 `web.routes.appmod()` 取用本函数
+    （打桩面要求，见该函数的说明）。
+    """
+    if not session.get("auth"):
+        return None
+    ts = session.get("login_ts")
+    now = time.time()
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        session["login_ts"] = int(now)
+    elif now - ts > SESSION_ABS_TTL_SECONDS:
+        session.clear()
+        return None
+    return _effective_role(session.get("username"), session.get("pw_version"))
 
 
 def migrate_admin_password_to_hash(env_path):
@@ -4020,122 +4095,6 @@ def create_app(host=None):
             )
             return jsonify({"error": "请求校验失败，请刷新页面后重试"}), 403
 
-    # ---- 页面（服务端按登录态重定向，避免未登录时先渲染后台造成闪烁）----
-    # ---- 管理端多页：一页一模板，外壳（侧栏/顶栏/页脚）由 layout_admin.html 服务端渲染 ----
-    def _render_admin_page(template, nav_key, crumbs):
-        """管理端页面统一上下文：版本 / 备案 / 导航高亮 / 面包屑 / 当前身份。
-
-        身份显式下发（而非模板内读 session），便于侧栏常驻显示当前账号——
-        这是防误操作设计：登录错账号后误删数据的代价高。
-        """
-        return render_template(
-            template,
-            web_version=WEB_VERSION,
-            app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            nav_active=nav_key,
-            crumbs=crumbs,
-            current_username=session.get("username", ""),
-            current_role=_current_role() or "",
-        )
-
-    def _admin_page_redirect():
-        """管理端页面守卫：未登录 → 登录页；非管理员 → 用户页。合规时返回 None。
-
-        返回而非装饰，是因为三处守卫各自需要不同模板/导航键，装饰器会增加一层间接。
-        """
-        role = _current_role()
-        if role is None:
-            return redirect(url_for("login_page"))
-        if role != "admin":
-            return redirect(url_for("user_calendar_page"))
-        return None
-
-    # ---- 页面路径：`组/页面`（数据 / 工作台 / 我的 + 用户端）----
-    # 分组标题与首段一致，页面与第二段一致，便于按 URL 反推归属。
-    @app.route("/data/dashboard")
-    def dashboard_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/data_dashboard.html", "data-dashboard", ["数据", "数据总览"])
-
-    # 旧路径 → 新路径：书签/分享链接不失效。用 302 而非 308：本项目仍在演进，
-    # 永久重定向会被浏览器长期缓存，路径再调整时无法纠正。
-    # 值写**端点名**而不是路径字面量：redirect() 不做 SCRIPT_NAME 拼接，子路径部署
-    # （/tools/yiban-…/）下写死 "/work/accounts" 会把用户甩回域名根。
-    _MOVED_PAGES = {
-        "/logs": "logs_page",
-        "/accounts": "accounts_page",
-        "/users": "users_page",
-        "/settings": "settings_page",
-        "/mine": "my_account_page",
-        "/mine/calendar": "my_calendar_page",
-        "/user": "user_account_page",
-    }
-
-    def _moved_page_view(endpoint):
-        def view():
-            # 保留查询串：theme_boot 的版本兜底跳 `/?v=<版本>`，丢掉 ?v= 会让它反复重试
-            qs = request.query_string.decode("utf-8", "ignore")
-            return redirect(url_for(endpoint) + (("?" + qs) if qs else ""), code=302)
-        return view
-
-    for _old, _target in _MOVED_PAGES.items():
-        app.add_url_rule(
-            _old,
-            endpoint="moved_" + _old.strip("/").replace("/", "_"),
-            view_func=_moved_page_view(_target),
-        )
-
-    @app.route("/favicon.png")
-    def favicon_png():
-        """站标：优先服务部署者自放的 static/vendor/favicon.png（不入库，与 logo.png 同机制）。
-
-        重写后模板引用带挂载前缀，请求进入应用而非域名层静态目录，须自带路由；
-        未放置时 404（浏览器退回默认图标）。短缓存便于部署者换图后及时生效。
-        """
-        icon_path = os.path.join(app.static_folder, "vendor", "favicon.png")
-        if not os.path.isfile(icon_path):
-            abort(404)
-        resp = send_file(icon_path, mimetype="image/png", conditional=True)
-        resp.headers["Cache-Control"] = "public, max-age=3600"
-        return resp
-
-    @app.route("/gongan-beian.png")
-    def gongan_beian_png():
-        """页脚备案图标：服务部署者自放的 static/vendor/gongan-beian.png（不入库，未放置 404）。
-
-        模板引用带挂载前缀，须自带路由；短缓存便于换图后及时生效。
-        """
-        icon_path = os.path.join(app.static_folder, "vendor", "gongan-beian.png")
-        if not os.path.isfile(icon_path):
-            abort(404)
-        resp = send_file(icon_path, mimetype="image/png", conditional=True)
-        resp.headers["Cache-Control"] = "public, max-age=3600"
-        return resp
-
-    @app.route("/robots.txt")
-    def robots_txt():
-        """爬虫协议：只放行登录页与静态资源，登录后的私有页（/api、/data、/work、/my、
-        /user 及各旧路径）一律禁止抓取。
-
-        路径带挂载前缀（子路径部署下 robots.txt 与页面同前缀），否则爬虫会去抓
-        前缀之外的地址而拿到 404，反而把私有页当"可抓"。
-        """
-        root = (request.script_root or "").rstrip("/")
-        lines = [
-            "User-agent: *",
-            f"Allow: {root}/login",
-            f"Allow: {root}/static/",
-            "Disallow: /",
-        ]
-        resp = app.response_class("\n".join(lines) + "\n", mimetype="text/plain")
-        resp.headers["Cache-Control"] = "public, max-age=3600"
-        return resp
-
     # ---- 错误页（404/500）----
     # 静态资源与 API 的 404 不渲染 HTML 页面：前者只需空响应（浏览器/爬虫不当页面看），
     # 后者按 JSON 契约返回，避免前端 fetch 拿到 HTML 再 res.json() 报解析错。
@@ -4210,168 +4169,6 @@ def create_app(host=None):
             500, "服务器内部错误", "请求处理失败，请稍后重试；若持续出现，请联系管理员。"
         )
 
-    @app.route("/")
-    def root_page():
-        """根路径：按登录态**一步**转到对应首页。
-
-        不做成到 /data/dashboard 的盲跳：未登录时会多一跳（/ → /data/dashboard → /login），
-        而 theme_boot 的版本兜底跳的正是 `/?v=`，链越长越容易在弱网下闪现中间态。
-        """
-        role = _current_role()
-        if role is None:
-            return redirect(url_for("login_page"))
-        if role == "admin":
-            return redirect(url_for("dashboard_page"))
-        # 普通用户的首页是「签到日历」而不是「账号与设置」：进站第一眼要看到今天的签到结果，
-        # 账号本身是低频维护对象（用户 2026-09-13 指定）
-        return redirect(url_for("user_calendar_page"))
-
-    def _user_page_redirect():
-        """用户端页面守卫：未登录 → 登录页；管理员 → 管理端首页。合规时返回 None。
-
-        与管理端守卫同构：返回而非装饰，便于各页按需处理。
-        """
-        role = _current_role()
-        if role is None:
-            return redirect(url_for("login_page"))
-        if role != "user":
-            return redirect(url_for("dashboard_page"))
-        return None
-
-    def _render_user_page(template, nav_key, crumbs):
-        """用户端页面统一上下文（与管理端同构：版本 / 备案 / 导航高亮 / 面包屑）。
-
-        身份不在此下发：用户端外壳由 core.js 的 /api/me 填充账号区，
-        避免服务端再走一次会话取值（管理员页下发的理由见 _render_admin_page）。
-        """
-        return render_template(
-            template,
-            web_version=WEB_VERSION,
-            app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            nav_active=nav_key,
-            crumbs=crumbs,
-        )
-
-    @app.route("/user/account")
-    def user_account_page():
-        blocked = _user_page_redirect()
-        if blocked:
-            return blocked
-        return _render_user_page("pages/user_account.html", "user-account", ["用户中心", "账号与设置"])
-
-    @app.route("/user/calendar")
-    def user_calendar_page():
-        blocked = _user_page_redirect()
-        if blocked:
-            return blocked
-        return _render_user_page("pages/user_calendar.html", "user-calendar", ["用户中心", "签到日历"])
-
-    # 登录页循环检测 {ip: [count, first_ts]}：浏览器缓存旧 JS 时可能无限 302 循环，
-    # 同 IP 短时间频繁访问 /login 超过阈值 → 直接渲染登录页打断循环
-    _login_loop = {}
-    _LOGIN_LOOP_LIMIT = 1000  # 条目上限，防止内存无限增长
-
-    @app.route("/login")
-    def login_page():
-        if session.get("auth"):
-            ip = _client_ip()
-            now = time.time()
-            _ip_store_trim(_login_loop, 60)
-            # 条目上限防护：超出时清理最老的 20%
-            if len(_login_loop) > _LOGIN_LOOP_LIMIT:
-                sorted_ips = sorted(_login_loop, key=lambda k: _login_loop[k][1])
-                for old_ip in sorted_ips[:_LOGIN_LOOP_LIMIT // 5]:
-                    _login_loop.pop(old_ip, None)
-            cnt, first = _login_loop.get(ip, (0, now))
-            if now - first > 10:
-                cnt, first = 0, now
-            cnt += 1
-            _login_loop[ip] = (cnt, first)
-            if cnt < 4:
-                return redirect(url_for("dashboard_page") if _current_role() == "admin" else url_for("user_calendar_page"))
-            logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
-        return render_template(
-            "login.html",
-            web_version=WEB_VERSION,
-            app_version=APP_VERSION,
-            icp_info=icp_info(),
-            police_info=police_info(),
-            police_link=police_link(),
-            site_description=site_description(),
-            site_image=site_image(),
-            agreement_html=_read_doc_html("USER_AGREEMENT.md"),
-            privacy_html=_read_doc_html("PRIVACY_POLICY.md"),
-        )
-
-    @app.route("/terms")
-    def terms_page():
-        """用户协议独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("用户协议", _read_doc_html("USER_AGREEMENT.md"), icp_info(), police_info(), request.script_root, police_link())
-
-    @app.route("/privacy")
-    def privacy_page():
-        """隐私政策独立页（footer / 隐私链接可指向）。"""
-        return _doc_page("隐私政策", _read_doc_html("PRIVACY_POLICY.md"), icp_info(), police_info(), request.script_root, police_link())
-
-    # 管理端各功能页。拆页而非单页 tab：URL 可书签/可分享、刷新不丢状态，
-    # 且每页只加载自己的脚本（单页方案需一次性加载全部 5 个功能域的 JS）。
-    @app.route("/work/accounts")
-    def accounts_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/work_accounts.html", "work-accounts", ["工作台", "账号管理"])
-
-    @app.route("/data/logs")
-    def logs_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/data_logs.html", "data-logs", ["数据", "签到日志"])
-
-    @app.route("/work/users")
-    def users_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/work_users.html", "work-users", ["工作台", "用户管理"])
-
-    @app.route("/work/settings")
-    def settings_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
-
-    @app.route("/my/account")
-    def my_account_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/my_account.html", "my-account", ["我的", "我的账号"])
-
-    # 管理员本人的签到日历（与用户端 /user/calendar 同源）；个人域的一部分，
-    # 数据取本人邮箱归属账号（与 /my/account 同口径，一人一号）。
-    @app.route("/my/calendar")
-    def my_calendar_page():
-        blocked = _admin_page_redirect()
-        if blocked:
-            return blocked
-        return _render_admin_page("pages/my_calendar.html", "my-calendar", ["我的", "我的日历"])
-
-    # ---- 页面缓存策略：管理页面禁止缓存（防浏览器缓存旧版 JS 导致登录循环）----
-    # 需要禁缓存的页面路径：全部页面路由 + 旧的被重定向路径（含根路径）
-    _NO_STORE_PAGES = set(_MOVED_PAGES) | {
-        "/", "/login", "/terms", "/privacy",
-        "/data/dashboard", "/data/logs",
-        "/work/accounts", "/work/users", "/work/settings",
-        "/my/account", "/my/calendar",
-        "/user/account", "/user/calendar",
-    }
-
     @app.after_request
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
@@ -4400,7 +4197,7 @@ def create_app(host=None):
             "base-uri 'self'; form-action 'self'; object-src 'none'"
         )
         # 页面一律禁缓存（含旧的被重定向路径），防止浏览器缓存旧版 HTML/JS 造成登录循环
-        if request.path in _NO_STORE_PAGES:
+        if request.path in NO_STORE_PAGES:
             resp.headers["Cache-Control"] = "no-store"
         elif request.path.startswith("/static/") and resp.status_code < 400:
             # 静态资源长缓存 30 天（版本变化由 ?v= 兜底）；404 等错误响应不缓存（防浏览器缓存 404）
@@ -7350,11 +7147,6 @@ def create_app(host=None):
             })
 
     # ---- 用户管理（仅管理员；路径不在普通用户白名单，自动 403）----
-    def _builtin_admin_email():
-        """内置管理员（.env）标识（小写），用于防呆比较：不可改角色/删除。"""
-        env = read_env(ENV_FILE)
-        return env.get("YIBAN_ADMIN_USER", "").strip().lower()
-
     def _builtin_admin_display():
         """内置管理员显示名（保留 .env 原始大小写，仅用于界面展示）。"""
         env = read_env(ENV_FILE)
@@ -7599,69 +7391,6 @@ def create_app(host=None):
         if _admin_delete_limited():
             return jsonify({"error": limit_msg}), 429
         return None
-
-    def _effective_role(username, pw_version=None):
-        """实时角色判定（每次请求读取，不依赖登录时固化的 session）：
-        内置管理员 → admin；注册用户 → users 表的 role；查无此人 → None。
-        管理员变更角色后，已登录用户的下一次请求立即生效，无需重新登录；
-        被删除/取消权限的用户旧会话随之失效（None 视为未登录）；
-        注册用户密码被重置/修改后（pw_version 递增）旧会话随之失效；
-        内置管理员改密后（.env 版本递增）旧会话同样失效。
-        """
-        if not username:
-            return None
-        # S1/复审：所有会话都必须带 auth_source；旧会话（无该字段）一律视为未登录
-        if not session.get("auth_source"):
-            return None
-        if (
-            username.strip().lower() == _builtin_admin_email()
-            and session.get("auth_source") == "builtin"
-        ):
-            # 内置管理员：必须是 builtin 登录来源，且 session 里的两项凭据都与当前
-            # .env 一致（口令版本 + 会话 sid）；auth_source == "user" 的同名注册用户
-            # 继续按普通用户判定，不借内置邮箱提权
-            cur, admin_sid = _admin_session_facts(ENV_FILE)
-            if pw_version != cur:
-                return None
-            # 与上面注册用户的 users.sid 逐字同口径：空 = 未签发（升级日存量会话兼容，
-            # 不强制重登），签发后不匹配即失效。这条凭据补上的是"改口令之外"的吊销面：
-            # 登出即可踢掉被盗副本，不必再靠换口令或换 YIBAN_SECRET_KEY 全站重登。
-            if admin_sid and session.get("sid") != admin_sid:
-                return None
-            return "admin"
-        email = username.strip().lower()
-        u = db.find_user(email)
-        if u is not None:
-            # 旧数据（无 pw_version 字段）不做会话吊销校验，兼容存量会话
-            if "pw_version" in u and pw_version != u.get("pw_version", 1):
-                return None
-            # 服务端会话吊销：users.sid 为该用户当前唯一有效会话标识，
-            # 登录时签发、登出/被重置密码/被踢时轮换——被盗 cookie 重放即失效。
-            # sid 为空串视为未签发（升级日存量会话兼容），签发后不匹配即失效。
-            sid = u.get("sid", "")
-            if sid and session.get("sid") != sid:
-                return None
-            return "admin" if u.get("role") == "admin" else "user"
-        return None
-
-    def _current_role():
-        """当前登录会话的实时角色；未登录 → None。
-
-        会话绝对过期（2026-08-27 审查修复 P2-5）：滑动续期（14 天）之外另设
-        「自登录起最多 N 天」硬上限，防止被盗 Cookie 永久续命。时间戳在登录/
-        恢复时写入 session["login_ts"]；存量旧会话无该字段则就地补记当下
-        （升级日不强制全体重新登录）。超限即清空会话视为未登录。
-        """
-        if not session.get("auth"):
-            return None
-        ts = session.get("login_ts")
-        now = time.time()
-        if not isinstance(ts, (int, float)) or ts <= 0:
-            session["login_ts"] = int(now)
-        elif now - ts > SESSION_ABS_TTL_SECONDS:
-            session.clear()
-            return None
-        return _effective_role(session.get("username"), session.get("pw_version"))
 
     @app.route("/api/users")
     def api_users():
@@ -9970,6 +9699,9 @@ def create_app(host=None):
                 threading.Thread(
                     target=_daily_purge_loop, daemon=True, name="daily-purge"
                 ).start()
+
+    # 路由装配：页面/API 各域在 web/routes/*，此处一次接入（注册顺序与原定义顺序一致）
+    register_all(app)
 
     # 前缀自适应：把 WSGI 层包一层（app 本身仍是 Flask 对象，.run()/gunicorn 调用不受影响）。
     # 支持子路径 / 独立子域 / 根路径三种部署；详见 BasePathMiddleware 类注释。
