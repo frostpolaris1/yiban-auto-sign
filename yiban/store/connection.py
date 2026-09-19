@@ -20,7 +20,7 @@
 **读写纪律**：`db` 层经本模块访问这几个量（`_connection._db_file` 等）；`db._conn` /
 `db._db_file` / `db._env_file` 的读取与**写入**都由 `yiban/store/db.py` 的模块级转发落到
 本模块（全仓 190+ 处测试收尾 `db._conn = None` 依赖这一点，否则它们只会写在一份陈旧
-副本上、真连接关不掉——详见 db.py 里 `__getattr__` 与 `_ConnectionStateModule` 的说明）。
+副本上、真连接关不掉——详见 db.py 里 `__getattr__` 与 `_StateForwardingModule` 的说明）。
 """
 import os
 import threading
