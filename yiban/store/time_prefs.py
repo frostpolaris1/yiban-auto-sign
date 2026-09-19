@@ -28,8 +28,8 @@ time_prefs 表以 phone 为键，服务调度 v2 的「用户自选时间片」
 **通信**
 连接与进程内锁（`_conn_lock` / `get_conn`）一律经 `_facade()` 按属性取——必须按属性取而非
 模块级 from-import，`mock.patch.object(db, "get_conn"/"_conn_lock", …)` 一类打桩才会在函数
-体里生效。冷却查询用的 `hash_phone` 仍留在门面（追踪盐哈希未按域拆出），同样经 `_facade()`
-按属性取。
+体里生效。冷却查询用的 `hash_phone` 定义点在 `yiban/store/tracking.py`，同样经 `_facade()`
+按属性取，`db.hash_phone = 替身` 才能被这里的查询看见。
 """
 import logging
 
