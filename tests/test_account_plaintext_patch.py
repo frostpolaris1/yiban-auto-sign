@@ -73,7 +73,7 @@ class PlaintextPatchTest(unittest.TestCase):
         self.assertTrue(db._is_encrypted_value(raw["password"]))
         self.assertTrue(db._is_encrypted_value(raw["phone_code"]))
         # 二次读取不再告警（已自愈）
-        with self.assertNoLogs("yiban.db", level="WARNING"):
+        with self.assertNoLogs("yiban.store.accounts", level="WARNING"):
             db.load_accounts()
 
     def test_load_accounts_decrypt_error_rolls_back_dangling_txn(self):
