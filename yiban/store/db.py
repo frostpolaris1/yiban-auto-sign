@@ -147,23 +147,49 @@ is_initialized = _connection.is_initialized
 _conn_lock = _connection._conn_lock
 
 _CONNECTION_STATE_NAMES = ("_conn", "_db_file", "_env_file")
+# delattr 撤下的名字（见 _ConnectionStateModule.__delattr__）：名字重新可读即移出
+_CONNECTION_STATE_HIDDEN = set()
 
 
 def __getattr__(name):
     """PEP 562：连接状态（`_conn`/`_db_file`/`_env_file`）读取回落到 connection。"""
     if name in _CONNECTION_STATE_NAMES:
+        if name in _CONNECTION_STATE_HIDDEN:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         return getattr(_connection, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class _ConnectionStateModule(types.ModuleType):
-    """连接状态**写入**转发（`db._conn = None`）；模块内赋值直写 __dict__、不经此。"""
+    """连接状态**写入/撤销**转发（`db._conn = None`、`del db._conn`）。
+
+    模块级赋值/删除默认直写 `__dict__`、不触发魔术方法，故本类只影响外部写入与
+    mock/pytest 的撤销路径；本文件自身的名字绑定不受影响。
+    """
 
     def __setattr__(self, name, value):
         if name in _CONNECTION_STATE_NAMES:
+            _CONNECTION_STATE_HIDDEN.discard(name)
             setattr(_connection, name, value)
             return
         types.ModuleType.__setattr__(self, name, value)
+
+    def __delattr__(self, name):
+        """撤销外部赋值：把名字从门面上摘下来（读取随即回落到 connection 真状态）。
+
+        **为什么必须"摘下来"而不是去删 connection 的真状态**：`mock.patch.object` /
+        `mock.patch("yiban.store.db._conn", …)` 对不在 `__dict__` 里的名字走
+        `delattr` 撤销路径，随后按"删完名字还在不在"决定要不要 `setattr` 回原值
+        （`unittest.mock._patch.__exit__`）——若删不掉（`__getattr__` 照旧转发），
+        原值永不被恢复，打桩静默残留；pytest `monkeypatch.delattr` 的 undo 同理
+        （它靠"delattr 过"来记账、undo 时 setattr 原值）。故这里只在本模块层面
+        隐藏该名字（`_CONNECTION_STATE_HIDDEN`），真状态与 connection 的内部使用
+        一概不动；紧跟其后的 `setattr` 原值会经 `__setattr__` 写回 connection 并解除隐藏。
+        """
+        if name in _CONNECTION_STATE_NAMES:
+            _CONNECTION_STATE_HIDDEN.add(name)
+            return
+        types.ModuleType.__delattr__(self, name)
 
 
 sys.modules[__name__].__class__ = _ConnectionStateModule
