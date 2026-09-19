@@ -12,7 +12,8 @@ CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 
 **复用**
 `appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；
-`login_fails()` 是登录失败计数表的唯一取用点，认证与个人两域共用同一份账。
+`login_fails()` 是登录失败计数表的唯一取用点，认证与个人两域共用同一份账；
+`high_risk_gate()` / `reconfirm_admin_password()` 取回留在 web.app 里的高危门禁闭包。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
@@ -49,9 +50,28 @@ def login_fails():
     return current_app.extensions["yiban_login_fails"]
 
 
+def high_risk_gate():
+    """高危动作统一门禁：先二次鉴权，通过后才占用高危限速额度（每 app 实例一份闭包）。
+
+    实现留在 `web.app.create_app`（它闭包依赖工厂局部的限速计数表，做成模块级会跨
+    app 实例串额度），create_app 在建 app 时把该闭包登记进 extensions；本函数是其
+    唯一取用点，通知配置域经此调用。
+    """
+    return current_app.extensions["yiban_high_risk_gate"]
+
+
+def reconfirm_admin_password():
+    """高危二次鉴权入口（校验走门禁的独立计数，不碰登录失败表；每 app 实例一份闭包）。
+
+    与 `high_risk_gate()` 同源：门禁闭包留在 `web.app.create_app`，按 app 实例登记。
+    """
+    return current_app.extensions["yiban_reconfirm_admin_password"]
+
+
 def register_all(app):
     """装配全部路由域。顺序与原定义顺序一致；路径冲突会在启动时直接报错。"""
-    from web.routes import auth, me, pages
+    from web.routes import auth, me, notify, pages
     pages.register(app)
     auth.register(app)
     me.register(app)
+    notify.register(app)
