@@ -18,11 +18,12 @@
 - `events`：sign_events 的写入/查询/统计与保留期清理。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
 - `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
+- `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
 
-本模块自身仍持有：accounts 表 CRUD 与加解密、time_prefs、session_cache、时钟守卫与
-app_meta、追踪盐哈希等尚未按域拆出的部分，以及跨域粘合助手（写事务入口、连带清理、
-清理留痕）。子模块反向经本门面按属性取这些名字（见各模块的 `_facade()`）；
-`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块的再导出与读写转发维持不变。
+本模块自身仍持有：time_prefs、session_cache、时钟守卫与 app_meta、追踪盐哈希等尚未按域
+拆出的部分，以及跨域粘合助手（写事务入口、连带清理、清理留痕）。子模块反向经本门面按
+属性取这些名字（见各模块的 `_facade()`）；`db._audit_hash = 替身`、`db._conn = None` 一类
+打桩面由本模块的再导出与读写转发维持不变。
 """
 import contextlib
 import datetime
@@ -269,14 +270,18 @@ get_conn = _connection.get_conn
 is_initialized = _connection.is_initialized
 _conn_lock = _connection._conn_lock
 
-# 需要**读写转发**的模块级状态：模块级赋值/删除默认直写 `__dict__`、不触发下方的魔术方法，
-# 故这些名字一律不进本模块的 `__dict__`——读取回落到唯一定义点，写入也落到那里：
+# 需要**读写转发**的模块级状态与账号域迁出名：模块级赋值/删除默认直写 `__dict__`、不触发
+# 下方的魔术方法，故这些名字一律不进本模块的 `__dict__`——读取回落到唯一定义点，写入也
+# 落到那里：
 #   `_conn`/`_db_file`/`_env_file` → connection（全仓 190+ 处测试收尾 `db._conn = None`）；
 #   `_AUDIT_KEY_CACHE` 等三个审计域进程内状态 → audit_chain（test_rekey_key_source 的
 #   `db._AUDIT_KEY_CACHE = None` 必须真的清掉密钥缓存）；
 #   `_MIGRATIONS` → migrations（测试以 `db._MIGRATIONS = [...]` 缩窄/替换迁移集，
-#   `_run_migrations` 必须读到改写后的登记表）。
-# 其余名字（`_conn_lock` 永不重绑、审计/迁移域函数与常量）按快照式再导出即等价。
+#   `_run_migrations` 必须读到改写后的登记表）；
+#   账号域全部迁出名 → accounts：`db._decrypt_row` / `db.decrypt_account_rows` 被
+#   tests/test_a2_decrypt_out_of_lock.py 打桩后，**accounts 模块内部**的调用点必须看到替身；
+#   快照式再导出只换掉门面那一份，内部照旧调真名——打桩静默失效。
+# 其余名字（`_conn_lock` 永不重绑、审计/迁移/事件/用户域函数与常量）按快照式再导出即等价。
 _FORWARDED_STATE = {
     "_conn": _connection,
     "_db_file": _connection,
@@ -285,13 +290,38 @@ _FORWARDED_STATE = {
     "_AUDIT_FAIL_UNFLUSHED": _audit_chain,
     "_AUDIT_FAIL_UNFLUSHED_DB": _audit_chain,
     "_MIGRATIONS": _migrations,
+    # 账号域迁出名（唯一定义点在 yiban/store/accounts.py）
+    "_mask_phone_display": _accounts,
+    "_decrypt_row": _accounts,
+    "_apply_plaintext_heal": _accounts,
+    "_row_to_account": _accounts,
+    "_is_encrypted_value": _accounts,
+    "_encrypt_field": _accounts,
+    "accounts_snapshot": _accounts,
+    "load_accounts_raw": _accounts,
+    "decrypt_account_rows": _accounts,
+    "read_accounts": _accounts,
+    "load_accounts": _accounts,
+    "_next_sort_order": _accounts,
+    "_convert_integrity_error": _accounts,
+    "add_account": _accounts,
+    "update_account": _accounts,
+    "set_account_deleted": _accounts,
+    "purge_account": _accounts,
+    "update_account_status": _accounts,
+    "set_user_paused": _accounts,
+    "move_account": _accounts,
+    "delete_accounts_by_owner": _accounts,
+    "replace_accounts": _accounts,
+    "batch_account_ops": _accounts,
+    "update_account_status_if": _accounts,
 }
 # delattr 撤下的名字（见 _StateForwardingModule.__delattr__）：名字重新可读即移出
 _FORWARDED_STATE_HIDDEN = set()
 
 
 def __getattr__(name):
-    """PEP 562：转发状态（连接三态、审计域进程内状态与迁移域登记表）读取回落到各自定义点。"""
+    """PEP 562：转发名（连接三态、审计/迁移域可变状态、账号域迁出名）读取回落到定义点。"""
     mod = _FORWARDED_STATE.get(name)
     if mod is not None:
         if name in _FORWARDED_STATE_HIDDEN:
@@ -301,7 +331,8 @@ def __getattr__(name):
 
 
 class _StateForwardingModule(types.ModuleType):
-    """转发状态**写入/撤销**（`db._conn = None`、`db._AUDIT_KEY_CACHE = None`、`del db._conn`）。
+    """转发名**写入/撤销**（`db._conn = None`、`db._AUDIT_KEY_CACHE = None`、
+    `db.add_account = 替身`、`del db._conn`）。
 
     模块级赋值/删除默认直写 `__dict__`、不触发魔术方法，故本类只影响外部写入与
     mock/pytest 的撤销路径；本文件自身的名字绑定不受影响。
@@ -599,12 +630,12 @@ def _maybe_migrate(conn, json_base):
                 password = a.get("password", "") or ""
                 phone_code = a.get("phone_code", "") or ""
                 if key is not None:
-                    if password and not _is_encrypted_value(password):
+                    if password and not _accounts._is_encrypted_value(password):
                         had_plaintext = True
                         password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
                     elif isinstance(password, dict):
                         password = json.dumps(password)  # 已是密文对象 → 序列化入库
-                    if phone_code and not _is_encrypted_value(phone_code):
+                    if phone_code and not _accounts._is_encrypted_value(phone_code):
                         had_plaintext = True
                         phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
                     elif isinstance(phone_code, dict):
@@ -678,13 +709,13 @@ def _rename_backup(path, reencrypt=False, key=None):
                 changed = False
                 for a in data:
                     pwd = a.get("password", "") or ""
-                    if pwd and not _is_encrypted_value(pwd):
+                    if pwd and not _accounts._is_encrypted_value(pwd):
                         a["password"] = json.dumps(
                             account_crypto.encrypt_password(pwd, key, a.get("phone", ""))
                         )
                         changed = True
                     code = a.get("phone_code", "") or ""
-                    if code and not _is_encrypted_value(code):
+                    if code and not _accounts._is_encrypted_value(code):
                         a["phone_code"] = json.dumps(
                             account_crypto.encrypt_password(code, key, a.get("phone", ""))
                         )
@@ -698,120 +729,6 @@ def _rename_backup(path, reencrypt=False, key=None):
                     logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
         except (OSError, ValueError, TypeError):
             logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
-
-
-# ---------------------------------------------------------------------------
-# accounts CRUD（单行操作，事务内）
-# ---------------------------------------------------------------------------
-def _mask_phone_display(phone):
-    """展示用打码（仅用于日志文案，与 web 层同口径）。"""
-    return phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
-
-
-def _decrypt_row(row):
-    """纯 CPU：把一行原始行转成账号 dict，并摘出需要明文自愈的字段。
-
-    **不访问数据库、不加锁**。调用方负责在 `_conn_lock` **之外**调用它（A2：逐行
-    AES-GCM 解密曾全程持该锁，而 web 侧有数十个调用点，导致全站 DB 访问被串行化），
-    再把摘出的 pending 交给 `_apply_plaintext_heal` 在锁内落库。
-
-    返回 `(account_dict, pending)`；pending 元素为
-    `(字段名, 行 id, 明文原值, 手机号, 打码手机号)`。
-    """
-    a = dict(row)
-    a["deleted"] = bool(a["deleted"])
-    a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
-    pending = []
-    # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
-    for k in ("password", "phone_code"):
-        v = a.get(k)
-        if not v:
-            continue
-        try:
-            obj = json.loads(v)
-        except (TypeError, ValueError):
-            obj = None
-        if isinstance(obj, dict) and "ct" in obj:
-            if not account_crypto.has_key(_connection._env_file):
-                raise RuntimeError(
-                    "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
-                )
-            key = account_crypto.load_key(_connection._env_file)
-            try:
-                a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
-            except ValueError as e:
-                # 统一收口：解密失败（密钥不匹配/密文损坏）→ RuntimeError，
-                # 与密钥缺失分支一致，由 web 层统一 JSON 错误处理（对抗性审查 L1）
-                raise RuntimeError(str(e)) from e
-        else:
-            # 明文驻留检测（2026-08-27 审查缺口 1）：非密文值照常使用（不阻断业务），
-            # 但必须告警 + 幂等加密回写——堵住"明文已进库"无人察觉；
-            # 对照 session_cache 对旧明文行抛错清除（M14），accounts 此前无对应策略。
-            phone = str(a.get("phone", ""))
-            pending.append((k, a["id"], v, phone, _mask_phone_display(phone)))
-            a[k] = v
-    return a, pending
-
-
-def _apply_plaintext_heal(conn, pending):
-    """锁内：对明文驻留字段做 CAS 加密回写（幂等；并发修改时跳过并告警）。"""
-    for k, account_id, plain, phone, masked in pending:
-        enc = _encrypt_field(plain, phone)
-        # CAS 回写——并发进程可能刚改掉该行（如 update_account 改密），无条件按 id
-        # 覆盖会把旧明文重新加密写回，静默回滚他人修改。以"仍处于本进程读到的明文
-        # 原值"为条件，0 行命中即放弃并告警。
-        cur = conn.execute(
-            f"UPDATE accounts SET {k}=? WHERE id=? AND {k}=?",
-            (enc, account_id, plain),
-        )
-        if cur.rowcount == 0:
-            logger.warning("账号 %s 的 %s 已被并发修改，跳过明文自愈回写", masked, k)
-            continue
-        logger.warning(
-            "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
-            masked, k,
-        )
-
-
-def _row_to_account(row, conn=None):
-    """单行转换（更新路径用）：conn 非空时顺带做明文自愈回写。"""
-    a, pending = _decrypt_row(row)
-    if conn is not None:
-        _apply_plaintext_heal(conn, pending)
-        return a
-    for k, _account_id, _plain, _phone, masked in pending:
-        logger.warning(
-            "账号 %s 的 %s 为明文存储；本次读取未持连接上下文，未回写，"
-            "将在下次带连接的读取时自动加密（现有调用方均传连接，此为防御分支）",
-            masked, k,
-        )
-    return a
-
-
-def _is_encrypted_value(v):
-    """字段值是否为密文（dict 密文对象，或密文 JSON 串）——迁移/写路径判定用。"""
-    if isinstance(v, dict):
-        return account_crypto.is_encrypted(v)
-    if isinstance(v, str):
-        try:
-            obj = json.loads(v)
-        except (TypeError, ValueError):
-            return False
-        return account_crypto.is_encrypted(obj)
-    return False
-
-
-def _encrypt_field(value, phone):
-    """写库前密文化：dict 密文对象 → JSON 串；其他非空值 → AES-GCM 加密（AAD=phone）→ JSON 串；空值原样。
-
-    无密钥时 load_key 自动生成并持久化（与 web 现状一致）；密钥非法则抛错（绝不静默降级明文）。
-    """
-    if not value:
-        return ""
-    if isinstance(value, dict):
-        return json.dumps(value)  # 已是密文对象
-    key = account_crypto.load_key(_connection._env_file)
-    return json.dumps(account_crypto.encrypt_password(str(value), key, phone))
 
 
 # 时钟跳变保护参数（2026-08-28 审查 M3）：
@@ -970,408 +887,6 @@ def _clock_jump_guard(conn, key):
     return True, ""
 
 
-def accounts_snapshot():
-    """账号原始行快照（**不解密**）。持 `_conn_lock` 取到即释放。
-
-    与 `decrypt_account_rows` 配对使用，让调用方能把 CPU 密集的解密放到锁外：
-    调用方只需在自己那一层护住"取快照"这一步（web 层是 `_file_lock`）。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        return [
-            {**dict(r), "deleted": bool(r["deleted"])}
-            for r in conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-        ]
-
-
-def load_accounts_raw():
-    """账号原始行（password/phone_code 保持密文 JSON 串，不解密）。
-
-    供 db_export 等导出场景使用：避免生成明文凭据文件。
-    （超期软删行清理已移出读路径，见 load_accounts 注释。）
-    """
-    return accounts_snapshot()
-
-
-def decrypt_account_rows(rows):
-    """把 `accounts_snapshot()` 的结果解密为账号列表。
-
-    解密全程在**锁外**（纯 CPU，不碰连接）；仅当发现明文驻留行时才另取一次
-    短 `_conn_lock` 做 CAS 自愈回写。
-    """
-    accts = []
-    pending = []
-    try:
-        for r in rows:
-            a, p = _decrypt_row(r)
-            accts.append(a)
-            pending.extend(p)
-    except Exception:
-        # 解密中途抛错（如某行密文损坏）：本函数此刻尚未写库，但并发的写操作可能在
-        # 本进程共享连接上留下未提交的隐式事务；不回滚会让后续所有
-        # `BEGIN IMMEDIATE` 写路径报 "cannot start a transaction within a
-        # transaction"，夜间事件落库等连锁失效。先回滚清场再原样抛出（2026-08-27）。
-        with _conn_lock, contextlib.suppress(Exception):
-            get_conn().rollback()
-        raise
-    if pending:
-        with _conn_lock:
-            conn = get_conn()
-            _apply_plaintext_heal(conn, pending)
-            conn.commit()
-    return accts
-
-
-def read_accounts(snapshot):
-    """取快照 → 锁外解密，并在 AAD 失配时重取一次快照重试。
-
-    `snapshot` 是零参可调用对象，返回 `accounts_snapshot()` 的结果（调用方负责它自己
-    那一层的锁语义：db 层传 `accounts_snapshot` 自身，web 层在 `_file_lock` 内取）。
-
-    **为什么要重试**：解密移出 `_conn_lock` 后，读到的快照可能已被并发写改过——
-    改绑手机号会同时换掉 AAD，于是快照里的密文按新手机号（或反之）解不开，抛
-    RuntimeError。这类失败重取一次快照即可消除；重试后仍失败即视为真实损坏
-    （密文损坏/密钥不匹配），原样抛出，不掩盖问题。
-    """
-    for attempt in (0, 1):
-        try:
-            return decrypt_account_rows(snapshot())
-        except RuntimeError:
-            if attempt:
-                raise
-
-
-def load_accounts():
-    """全部账号（按 sort_order 升序），已解密。
-
-    A2（2026-09-15）：「取快照」持 `_conn_lock`，**逐行 AES-GCM 解密在锁外**——
-    此前解密全程持锁，而全项目有数十个调用点，使全站 DB 访问被串行化（实测
-    /api/accounts 恒定 28 rps 而 CPU 仅 0.66 核 → 锁瓶颈而非 CPU 瓶颈）。明文自愈
-    回写另取一次短锁（CAS 条件更新，与并发写安全）。
-
-    注意：不再在读路径顺带清除超期软删除行（2026-08-20 对抗性审查 P1 修复）——
-    读中途物理删行会使 idx 寻址的 mutation 错位命中其他账号；清理改由
-    purge_expired_deleted_accounts() 在启动/每日线程/signin 启动时显式执行。
-    """
-    return read_accounts(accounts_snapshot)
-
-
-def _next_sort_order(conn):
-    row = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM accounts").fetchone()
-    return row["n"]
-
-
-def _convert_integrity_error(e):
-    """把 sqlite3.IntegrityError 转换为可区分异常；无法识别则原样抛出。"""
-    msg = str(e)
-    if "accounts.owner" in msg:
-        raise DuplicateOwnerError("该用户已有一个未删除账号") from e
-    if "accounts.phone" in msg:
-        raise DuplicatePhoneError("手机号已存在") from e
-    raise e
-
-
-def add_account(fields):
-    """新增账号（fields 为业务层明文 dict），返回新 id。
-
-    敏感字段写库前加密（AAD=手机号）；手机号重复抛 sqlite3.IntegrityError（业务层捕获）。
-    BEGIN IMMEDIATE：跨进程（多 worker）并发时提前获取写锁，
-    保证 MAX(sort_order)+1 的读与 INSERT 原子（防并发重复排序号）。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            cur = conn.execute(
-                "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    _next_sort_order(conn),
-                    fields.get("name", ""),
-                    fields.get("phone", ""),
-                    _encrypt_field(fields.get("password"), fields.get("phone", "")),
-                    fields.get("phone_model", ""),
-                    _encrypt_field(fields.get("phone_code"), fields.get("phone", "")),
-                    fields.get("owner", "admin"),
-                    fields.get("status", "pending"),
-                    fields.get("reject_reason", ""),
-                ),
-            )
-            new_id = cur.lastrowid
-            conn.commit()
-            return new_id
-        except sqlite3.IntegrityError as e:
-            conn.rollback()
-            _convert_integrity_error(e)
-        except Exception:
-            conn.rollback()
-            raise
-
-
-def update_account(account_id, fields, expect_snapshot=None):
-    """更新单行；expect_snapshot 为乐观锁指纹 dict（name/phone/phone_model/status/deleted），不匹配返回 False。
-
-    手机号变更时自动用新手机号重加密 password/phone_code（旧密文 AAD 绑定旧手机号）；
-    改 phone 撞 UNIQUE 抛 sqlite3.IntegrityError（业务层捕获）。
-
-    2026-08-28 审查 B-5：整个读-改-写过程纳入 BEGIN IMMEDIATE 事务。
-    原实现 SELECT（读行 + 解密）与 UPDATE 之间跨进程无互斥（_conn_lock 仅进程内），
-    中间还夹着解密与重加密——两个进程或两个标签页并发编辑同一账号时，后提交者
-    静默覆盖前者（实测：A 写 name=FROM_A、B 写 name=FROM_B，双方都收到成功，
-    最终只剩 FROM_B，A 的编辑被丢弃且无任何提示）。
-    危险的是 web 用户自编辑路径不传 expect_snapshot、且总把 old["password"] 回填，
-    覆盖时可能把用户刚改的密码静默回滚。持锁后读-改-写原子，即使调用方
-    不传乐观锁指纹，并发也不会丢更新。
-    """
-    conn = get_conn()
-
-    def _body():
-        """读-改-写事务体（在 BEGIN IMMEDIATE 写锁内执行）。
-
-        拆出闭包是为了让事务边界清晰：外层统一 commit/rollback，内层只负责
-        读-改-写。IntegrityError 分支需要"回滚主更新 → 重放密文自愈 → 独立提交"，
-        故该分支自行控制事务（_convert_integrity_error 必定抛出，不会走到末尾）。
-        """
-        # 改绑手机号时体内会重新绑定 fields（补齐待重加密的敏感字段）：
-        # 不加 nonlocal 会被当作 _body 的局部变量，首次读取即 UnboundLocalError。
-        nonlocal fields
-        cur = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,))
-        row = cur.fetchone()
-        if row is None:
-            return None if expect_snapshot is not None else False
-        cur_a = _row_to_account(row, conn)  # 解密（AAD=库内当前手机号）；明文驻留自动加密回写
-        if expect_snapshot is not None:
-            snap = {
-                "name": cur_a.get("name", ""),
-                "phone": cur_a.get("phone", ""),
-                "phone_model": cur_a.get("phone_model", ""),
-                "status": cur_a.get("status", ""),
-                "deleted": bool(cur_a.get("deleted")),
-            }
-            if snap != expect_snapshot:
-                return False  # 已被他人修改（409）
-        # 手机号变更且敏感字段未随本次提供 → 用旧手机号解密的明文按新手机号重加密
-        new_phone = fields.get("phone")
-        if new_phone is not None and new_phone != cur_a.get("phone"):
-            # 改绑手机号：旧手机号的会话缓存随之失效（主键/AAD 均按旧号，不复用）
-            _clear_session_cache_by_phones(conn, [cur_a.get("phone", "")])
-            for k in ("password", "phone_code"):
-                if k not in fields:
-                    fields = dict(fields)
-                    fields[k] = cur_a.get(k, "")  # 已解密明文
-        phone_for_aad = new_phone if new_phone is not None else cur_a.get("phone", "")
-        sets = []
-        vals = []
-        for k in ("name", "phone", "phone_model", "owner", "status", "reject_reason", "deleted", "deleted_at"):
-            if k in fields:
-                sets.append(f"{k}=?")
-                vals.append(fields[k])
-        for k in ("password", "phone_code"):
-            if k in fields:
-                sets.append(f"{k}=?")
-                vals.append(_encrypt_field(fields[k], phone_for_aad))
-        if not sets:
-            return True
-        vals.append(account_id)
-        try:
-            conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
-        except sqlite3.IntegrityError as e:
-            conn.rollback()
-            # 主更新失败回滚会连带撤销 _row_to_account 的明文自愈；凭据不留明文优先，
-            # 用已解密值重放自愈并独立提交（幂等，仅原行确为明文时生效）。2026-08-27
-            for k in ("password", "phone_code"):
-                raw = row[k]
-                if raw and not _is_encrypted_value(raw) and cur_a.get(k):
-                    conn.execute(
-                        f"UPDATE accounts SET {k}=? WHERE id=?",
-                        (_encrypt_field(cur_a[k], cur_a.get("phone", "")), account_id),
-                    )
-            conn.commit()
-            _convert_integrity_error(e)
-        return True
-
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            result = _body()
-            conn.commit()
-            return result
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def set_account_deleted(account_id, deleted, deleted_at="", deleted_by=""):
-    """软删除/恢复账号；deleted_by 留痕删除来源（用户邮箱 / 'admin' / ''=系统），v10。
-
-    恢复（deleted=0）时 deleted_by 一并清空，避免残留旧来源被后续语义误读。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute(
-            "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
-            (1 if deleted else 0, deleted_at, deleted_by if deleted else "", account_id),
-        )
-
-
-def purge_account(account_id):
-    conn = get_conn()
-    with _conn_lock, conn:
-        row = conn.execute("SELECT phone FROM accounts WHERE id=?", (account_id,)).fetchone()
-        conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
-        if row is not None:
-            _cascade_phone_owned(conn, [row["phone"]])  # 连带清理自选/会话/事件/校验任务
-
-
-def update_account_status(account_id, status, reject_reason=None):
-    conn = get_conn()
-    with _conn_lock, conn:
-        if reject_reason is None:
-            conn.execute("UPDATE accounts SET status=? WHERE id=?", (status, account_id))
-        else:
-            conn.execute("UPDATE accounts SET status=?, reject_reason=? WHERE id=?", (status, reject_reason, account_id))
-
-
-def set_user_paused(account_id, paused):
-    """用户自暂停/恢复签到（user_paused 0/1）。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute("UPDATE accounts SET user_paused=? WHERE id=?", (1 if paused else 0, account_id))
-
-
-def move_account(account_id, direction):
-    """direction: -1 上移 / 1 下移。事务内与相邻账号交换 sort_order。"""
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            rows = conn.execute(
-                "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
-            ).fetchall()
-            pos = next((i for i, r in enumerate(rows) if r["id"] == account_id), None)
-            if pos is None:
-                conn.rollback()
-                return False
-            target = pos + direction
-            if target < 0 or target >= len(rows):
-                conn.rollback()
-                return False
-            a, b = rows[pos]["sort_order"], rows[target]["sort_order"]
-            conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (b, rows[pos]["id"]))
-            conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (a, rows[target]["id"]))
-            conn.commit()
-            return True
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def delete_accounts_by_owner(owner):
-    """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (owner,)).fetchall()
-        cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
-        phones = [r["phone"] for r in rows]
-        _cascade_phone_owned(conn, phones)  # 自选/会话/事件/校验任务连带清理
-        return cur.rowcount
-
-
-def replace_accounts(accounts):
-    """整表替换：事务内清空并重插，sort_order=列表顺序 1..N。
-
-    敏感字段密文化同 add_account（AAD=手机号）。
-    ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（勿与其他写入方同时编辑）。
-    不再存在的账号连带清理自选时间片（H2 对抗性审查补：防孤儿 pref 虚高拥挤度）。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        old = conn.execute("SELECT phone FROM accounts").fetchall()
-        conn.execute("DELETE FROM accounts")
-        keep = {a.get("phone", "") for a in accounts}
-        # 2026-08-28 审查 M1 补：整表替换时移除的账号原先只清 time_prefs，
-        # 漏清会话缓存（凭据残留）。保留的账号不动，避免无谓的重新登录。
-        # 同样漏清 sign_events——整表替换移除的账号，其
-        # 明文手机号（sign_events.phone 明文落库）会驻留至 180 天保留期满；
-        # 对齐 purge_account/delete_accounts_by_owner 等 7 条物理删除路径的
-        # 三连带清理（M2 覆盖清单外的第 8 条路径）。
-        removed = [r["phone"] for r in old if r["phone"] not in keep]
-        _cascade_phone_owned(conn, removed)
-        for i, a in enumerate(accounts):
-            try:
-                conn.execute(
-                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at, user_paused) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        i + 1,
-                        a.get("name", ""),
-                        a.get("phone", ""),
-                        _encrypt_field(a.get("password"), a.get("phone", "")),
-                        a.get("phone_model", ""),
-                        _encrypt_field(a.get("phone_code"), a.get("phone", "")),
-                        a.get("owner", "admin"),
-                        a.get("status", "active"),
-                        a.get("reject_reason", ""),
-                        1 if a.get("deleted") else 0,
-                        a.get("deleted_at", ""),
-                        1 if a.get("user_paused") else 0,
-                    ),
-                )
-            except sqlite3.IntegrityError as e:
-                conn.rollback()
-                _convert_integrity_error(e)
-    return len(accounts)
-
-
-def batch_account_ops(ops):
-    """在一个事务内批量执行账号操作（Phase 1：整体成功或整体回滚）。
-
-    ops 为 (op, params) 列表，op 支持：
-      ("update_status", account_id, status, reject_reason)
-      ("set_deleted", account_id, deleted, deleted_at)
-      ("purge", account_id)
-    """
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            for op in ops:
-                kind = op[0]
-                if kind == "update_status":
-                    _, account_id, status, reject_reason = op
-                    conn.execute(
-                        "UPDATE accounts SET status=?, reject_reason=? WHERE id=?",
-                        (status, reject_reason, account_id),
-                    )
-                elif kind == "set_deleted":
-                    _, account_id, deleted, deleted_at = op
-                    try:
-                        # 批量操作仅管理员可达：留痕 'admin'（v10 用户撤销仅限本人自删行）
-                        conn.execute(
-                            "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
-                            (1 if deleted else 0, deleted_at, "admin", account_id),
-                        )
-                    except sqlite3.IntegrityError as e:
-                        _convert_integrity_error(e)
-                elif kind == "purge":
-                    _, account_id = op
-                    row = conn.execute(
-                        "SELECT phone FROM accounts WHERE id=?", (account_id,)
-                    ).fetchone()
-                    conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
-                    if row is not None:
-                        _cascade_phone_owned(conn, [row["phone"]])
-                else:
-                    raise ValueError(f"未知批量账号操作: {kind}")
-            conn.commit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
 def _record_purge_event(conn, table, kind, cutoff, deleted, before, after, audit_seq=None):
     """把一次物理删除写入 app_meta 留痕（与删除同事务，由调用方 commit）。
 
@@ -1503,28 +1018,6 @@ def pause_count_since(username, since_ts):
             return row[0] if row else 0
     except Exception as e:
         raise RuntimeError(f"统计暂停次数失败: {e}") from e
-
-
-def update_account_status_if(account_id, new_status, expect_status, reject_reason=None):
-    """CAS 更新账号状态：仅当当前状态仍是 expect_status 时才写。返回是否写入。
-
-    人类决定优先：管理员在异步校验执行期间审批（pending → active）后，迟到的
-    校验结果不得把管理员的决定静默回滚；反向（管理员已拒绝）同样不覆盖，
-    以保留管理员写的理由。按 id 定位（accounts.phone 全局唯一，但 id 不受改绑影响）。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        if reject_reason is None:
-            cur = conn.execute(
-                "UPDATE accounts SET status=? WHERE id=? AND status=?",
-                (new_status, account_id, expect_status),
-            )
-        else:
-            cur = conn.execute(
-                "UPDATE accounts SET status=?, reject_reason=? WHERE id=? AND status=?",
-                (new_status, reject_reason, account_id, expect_status),
-            )
-        return cur.rowcount == 1
 
 
 # ---------------------------------------------------------------------------
