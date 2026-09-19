@@ -148,7 +148,7 @@ class DbResidueTest(unittest.TestCase):
         )
         conn.commit()
         row = conn.execute("SELECT * FROM accounts WHERE phone='13800138020'").fetchone()
-        with self.assertLogs("yiban.db", level="WARNING") as cm:
+        with self.assertLogs("yiban.store.accounts", level="WARNING") as cm:
             db._row_to_account(row)  # conn 缺省 → 不回写
         joined = "\n".join(cm.output)
         self.assertIn("明文存储", joined)

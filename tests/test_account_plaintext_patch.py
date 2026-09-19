@@ -63,7 +63,7 @@ class PlaintextPatchTest(unittest.TestCase):
             "VALUES (1, '张三', '13800138000', 'MyPass123', 'code456')"
         )
         conn.commit()
-        with self.assertLogs("yiban.db", level="WARNING") as cm:
+        with self.assertLogs("yiban.store.accounts", level="WARNING") as cm:
             accounts = db.load_accounts()
         self.assertEqual(accounts[0]["password"], "MyPass123", "明文值本次照常可用")
         self.assertEqual(accounts[0]["phone_code"], "code456")
