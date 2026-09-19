@@ -18,14 +18,16 @@
 直到某个用例断言到另一条库里的数据才以随机形式失败。故这里断言的是"读到的就是
 connection 的真状态"，不是"db 有自己的 _conn 属性"。
 """
+import contextlib
 import os
-import pytest
 import shutil
 import sys
 import tempfile
 import threading
 import unittest
 from unittest import mock
+
+import pytest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
@@ -63,10 +65,8 @@ class _ConnStateBase(unittest.TestCase):
         顺带覆盖写入转发；这正是本文件第 3 条要钉的路径）。"""
         conn = conn_mod.current()
         if conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
         impl._conn = None
 
     def _temp_db(self):
@@ -143,7 +143,7 @@ class ReExportNamesTest(_ConnStateBase):
         self.assertEqual(impl._resolve_key_env_file()[0], "/tmp/probe.env")
 
         with self.assertRaises(AttributeError):
-            impl.definitely_not_a_name           # __getattr__ 不得吞掉真缺失
+            _ = impl.definitely_not_a_name       # __getattr__ 不得吞掉真缺失
 
         c.close()
 
@@ -206,7 +206,7 @@ class PatchAndDeleteRoundTripTest(_ConnStateBase):
             self.assertFalse(hasattr(impl, "_conn"),
                              "删不掉的话 undo 不会 setattr 回原值（mock 同理）")
             with self.assertRaises(AttributeError):
-                impl._conn
+                _ = impl._conn
             self.assertIs(conn_mod.current(), c, "门面摘名不该动 connection 的真状态")
         finally:
             mp.undo()
@@ -278,9 +278,10 @@ class InitDbSemanticsTest(_ConnStateBase):
         def boom(_conn):
             raise RuntimeError("迁移失败（用例注入）")
 
-        with mock.patch.object(impl, "_run_migrations", side_effect=boom):
-            with self.assertRaises(RuntimeError):
-                impl.init_db(db_file=path, cleanup=False)
+        with mock.patch.object(
+            impl, "_run_migrations", side_effect=boom
+        ), self.assertRaises(RuntimeError):
+            impl.init_db(db_file=path, cleanup=False)
         self.assertIsNone(conn_mod.current(), "异常路径必须置空连接")
         self.assertFalse(impl.is_initialized())
 
