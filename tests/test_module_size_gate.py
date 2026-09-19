@@ -46,6 +46,15 @@ OVERSIZED = {
         "（见 yiban/store/），剩余部分继续按表迁，不一次性重构的原因：迁移需与冻结的"
         "历史迁移函数共存（迁移不可变），批量搬动会同时动 schema 与读写路径，风险高。"
     )),
+    "yiban/store/audit_chain.py": (None, (
+        "审计链域（2026-09-19 从 db.py 第二刀迁出）：HMAC 哈希链写入/校验、全表重链留痕、"
+        "库外锚点族、审计密钥来源与缓存。四块服务于同一条协议与同一份取证状态——锚点校验"
+        "要读清理留痕、体检要汇总链/锚点/留痕全部信号，拆开就得把这份状态改成跨模块传递"
+        "（门禁判据①「同一件事」成立、②不成立）。下一步：若继续膨胀需要再拆，按「密钥来源"
+        "与缓存（_audit_key 族，只依赖 connection/env_io/env_lock）」与「锚点文件（record/"
+        "verify/anchor 族）」切成两个模块；当前不拆，避免为搬家再动 db 门面与打桩面"
+        "（db._audit_hash = 替身 / db._AUDIT_KEY_CACHE = None 必须落在真定义点）。"
+    )),
     # scripts/signin.py 已按"执行一轮"的边界切分为 yiban/engine/*（最大 round.py 507 行），
     # 旧路径只剩兼容壳（约 130 行），故不再登记。
     "yiban/egress.py": (None, (
