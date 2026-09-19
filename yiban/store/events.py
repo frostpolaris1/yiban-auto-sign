@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""事件与统计域：sign_events 表的写入、查询与保留期清理。
+"""事件与统计域：sign_events 表的写入、查询与保留期清理，以及 audit_logs 上的暂停冷却查询。
 
 **功能**
 - 写入：`add_sign_event`（单条，失败仅告警）与 `add_sign_events_batch`（单事务批量，
@@ -8,6 +8,8 @@
 - 查询与统计：`sign_event_stats`（按天 × 状态聚合）、`sign_events_by_phone`（单账号
   时间线）、`sign_events_since`（实时事件流）、`probe_events_on` / `sign_events_on`
   （指定日期的探针 / 签到事件）、`sign_events_recent_date`（窗口内最近有数据的日期）；
+- 暂停冷却：`last_pause_at` / `pause_count_since` 查 audit_logs 表里
+  action='my_account_pause' 的最近时间与窗口计数；
 - 保留期：`SIGN_EVENTS_RETENTION_DAYS` 与 `_event_cleanup`（删除超期 sign_events，
   同事务连带清理超期 verify_jobs 并写留痕）。
 
@@ -17,9 +19,17 @@ web 日志页与 `/api/admin/sign-events`、signin 执行体（runner 批量落�
 （stage="probe"），凡以「签到口径」消费的调用方必须显式按 stage 过滤，否则探针的
 成功/失败会被计入签到成功率。建表与索引在迁移域（`yiban/store/migrations.py`），本模块只读写。
 
+暂停冷却查询按**表归属**（audit_logs）落在本模块，而不是随「自选时间片」域走：
+它按 username 计价（审计 target 为脱敏手机号，故按操作用户名关联；多管理员共享账号
+各自独立计价——暂停/恢复冷却仅防噪音，绕过危害极小，可接受），与 sign_events 无表级
+关系。与之对称的 time_pref 保存冷却按审计 target=hash_phone(phone) 按被选账号计价，
+落在 `yiban/store/time_prefs.py`。
+
 **复用**
-`yiban.store.db` 把本模块的函数与常量按原样再导出，`db.add_sign_event()` /
-`db.sign_event_stats()` / `db._event_cleanup(...)` 一类调用与身份断言不变。
+`yiban.store.db` 把本模块的事件函数与常量按原样再导出，`db.add_sign_event()` /
+`db.sign_event_stats()` / `db._event_cleanup(...)` 一类调用与身份断言不变；本模块并入的
+暂停冷却两名（`last_pause_at` / `pause_count_since`）在门面上走**模块级读写转发**，
+`db.last_pause_at()` 调用与 `db.<名字> = 替身` 打桩都落到这里。
 
 **通信**
 连接、进程内锁与写事务入口（`_conn_lock` / `get_conn` / `_begin_immediate`），以及留在
@@ -263,6 +273,45 @@ def sign_events_recent_date(stage, max_days=30):
     except Exception as e:
         logger.warning("sign_events_recent_date 失败: %s", e)
     return ""
+
+
+# ---------------------------------------------------------------------------
+# 暂停冷却（audit_logs 表，按表归属落在本模块）
+# ---------------------------------------------------------------------------
+def last_pause_at(username):
+    """指定用户最近一次暂停签到时间（暂停冷却判定用；恢复不计，按用户计价）。
+
+    审计 target 为脱敏手机号，故按 username 关联；多管理员共享账号各自独立计价
+    （暂停/恢复冷却仅防噪音，绕过危害极小，可接受）。
+    """
+    try:
+        db = _facade()
+        with db._conn_lock:
+            conn = db.get_conn()
+            row = conn.execute(
+                "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
+                "ORDER BY id DESC LIMIT 1",
+                (username or "",),
+            ).fetchone()
+            return row["ts"] if row else None
+    except Exception as e:
+        raise RuntimeError(f"查询暂停时间失败: {e}") from e
+
+
+def pause_count_since(username, since_ts):
+    """指定用户在 since_ts 之后的暂停次数（弹性冷却高频判定用）。"""
+    try:
+        db = _facade()
+        with db._conn_lock:
+            conn = db.get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
+                "AND action='my_account_pause' AND ts >= ?",
+                (username or "", since_ts),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        raise RuntimeError(f"统计暂停次数失败: {e}") from e
 
 
 # ---------------------------------------------------------------------------
