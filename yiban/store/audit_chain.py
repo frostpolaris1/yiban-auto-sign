@@ -1,36 +1,38 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""审计链域：HMAC 哈希链写入/校验、库外锚点、审计密钥来源与清理留痕口径。
+"""审计链域：HMAC 审计哈希链的写入/校验、库外锚点、审计密钥来源与清理留痕口径。
 
-2026-09-19 `yiban/store/db.py` 按域拆分的第二刀。本模块是下列内容的唯一定义点：
-
-- **密钥来源与缓存**：`_parse_env_file` / `_decode_audit_key` / `_resolve_key_env_file` /
+**功能**
+- 密钥来源与缓存：`_parse_env_file` / `_decode_audit_key` / `_resolve_key_env_file` /
   `_write_audit_key_to_env_file` / `_assert_key_source_certain` / `_audit_key`（含
   `_AUDIT_KEY_CACHE`、`_AUDIT_KEY_LOCK`）与签名计算 `_audit_hash`；
-- **写入链路**：`audit()`、写入失败欠账计数（`_bump_audit_write_failure` 等）与只读口径
+- 写入链路：`audit()`、写入失败欠账计数（`_bump_audit_write_failure` 等）与只读口径
   （`audit_head_hash` / `audit_row_count` / `verify_audit_chain`）；
-- **全表重链留痕**：`_rechain_audit_logs` / `_record_rechain_event` / `audit_rechain_events`；
-- **库外锚点族与最近清理口径**：`record_audit_anchor` / `verify_audit_anchor` /
-  `audit_health` / `_rechain_hint`，以及 `audit_purge_total` / `audit_purge_events`
-  （写入侧 `_record_purge_event` 仍留在 db.py，与注销/事件清理域共用）。
+- 全表重链留痕：`_rechain_audit_logs` / `_record_rechain_event` / `audit_rechain_events`；
+- 库外锚点族与最近清理口径：`record_audit_anchor` / `verify_audit_anchor` / `audit_health` /
+  `_rechain_hint` / `audit_purge_total` / `audit_purge_events`。
 
-`yiban.store.db` 把上述名字全部再导出（调用方与测试无需改动）。三个**可变状态**名字
-（`_AUDIT_KEY_CACHE` / `_AUDIT_FAIL_UNFLUSHED` / `_AUDIT_FAIL_UNFLUSHED_DB`）从 db 侧走模块类
-的读写转发——`db._AUDIT_KEY_CACHE = None`（tests/test_rekey_key_source.py 的清缓存）必须真的
-清到本模块的缓存，只做一次快照式再导出会静默失效。
+**归属**
+审计可追溯性是 web 与 signin 两个进程共用的一条链：写入方是 `db.audit()` 的全体调用点，
+读出方是 web 每日线程与 `scripts/audit_verify.py`（都经 `audit_health()` 汇总）。建表与全部
+迁移函数、写事务入口 `_begin_immediate`、留痕的**写入**侧（`_table_min_max` /
+`_record_purge_event`）、每日清理 `_audit_cleanup`，以及审计之外另有大量引用的
+`hash_ip` / `hash_phone` / `_track_salt` 都在 `yiban/store/db.py`。
 
-**连接与跨模块调用一律经 `_facade()` 按属性取**（`_conn_lock` / `get_conn` / `_begin_immediate` /
-`get_meta`，以及两处会被打桩的 `_audit_hash` / `_audit_purge_total`）。这不是绕路，而是拆分前
-语义的忠实搬运：这些名字原本与审计函数同模块，`tests/test_claims.py` 的
-`mock.patch.object(db, "get_conn"/"_conn_lock", …)`、`tests/test_audit_anchor.py` 与
-`tests/test_audit_tamper_94.py` 的 `db._audit_hash = 替身`、`tests/test_audit_anchor_field_source.py`
-的 `db._audit_purge_total = 注入`，都必须继续被函数体看见；直接调用本模块的同名函数会让这些
-打桩静默失效（测试仍"绿"，但打桩点不再是它以为的那一个）。
+**复用**
+`yiban.store.db` 把本模块的 40 个函数与 14 个常量按原样再导出，`db.audit()` /
+`db.audit_health()` / `db._audit_hash(...)` 一类调用与身份断言不变；三个进程内可变状态
+（`_AUDIT_KEY_CACHE` / `_AUDIT_FAIL_UNFLUSHED` / `_AUDIT_FAIL_UNFLUSHED_DB`）由 db 侧模块类
+读写转发——`db._AUDIT_KEY_CACHE = None`（tests/test_rekey_key_source.py 清缓存）必须真的清到
+本模块缓存，快照式再导出会静默失效。
 
-**留在这里之外的东西**（连同理由）：`init_db`/建表/全部迁移函数（含迁移对审计表的引用，
-迁移不可变）；`_begin_immediate`（全域共用的写事务入口）；`_table_min_max` /
-`_record_purge_event`（清理与注销域共用的留痕**写入**侧）；`_audit_cleanup`（每日清理域）；
-`hash_ip` / `hash_phone` / `_track_salt` / `_TRACK_SALT_*`（审计之外另有大量引用，按计划留 db.py）。
+**通信**
+连接、进程内锁、写事务入口与 `get_meta` 一律经 `_facade()` 按属性取（`_conn_lock` /
+`get_conn` / `_begin_immediate` / `get_meta`，以及 `_audit_hash` / `_audit_purge_total`）。
+必须按属性取而非模块级 from-import：`mock.patch.object(db, "get_conn"/"_conn_lock", …)`、
+`db._audit_hash = 替身`（tests/test_audit_anchor.py、tests/test_audit_tamper_94.py）与
+`db._audit_purge_total = 注入`（tests/test_audit_anchor_field_source.py）都要求打桩点落在 db
+门面上；直接调本模块同名函数会让打桩静默失效（测试仍绿，但打桩点不再是它以为的那一个）。
 """
 import contextlib
 import hashlib
@@ -49,7 +51,7 @@ from yiban.store import connection as _connection
 
 logger = logging.getLogger("yiban.store.audit_chain")
 
-# 审计 HMAC 密钥缓存与互斥（Phase 3）
+# 审计 HMAC 密钥缓存与互斥
 _AUDIT_KEY_CACHE = None
 _AUDIT_KEY_LOCK = threading.Lock()
 
@@ -65,7 +67,7 @@ def _facade():
 
 
 # ---------------------------------------------------------------------------
-# 审计哈希链（Phase 3）
+# 审计密钥来源与哈希链签名
 # ---------------------------------------------------------------------------
 def _parse_env_file(env_file):
     """读取 .env 全部键值，返回 dict（文件缺失返回空；非法行跳过）。
@@ -77,7 +79,7 @@ def _parse_env_file(env_file):
     except OSError as e:
         # 文件存在但读取失败：绝不静默当作"未配置"，否则 audit key / track salt
         # 自动生成路径会误判无密钥而重新生成，致既有审计链/追踪盐失效。
-        # 宁可启动失败也不生成替代密钥（2026-08-27 审查）。
+        # 宁可启动失败也不生成替代密钥。
         logger.error("环境变量文件存在但读取失败，按错误处理而非未配置（请检查权限）: %s [%s]", env_file, e)
         raise
 
@@ -96,7 +98,7 @@ def _decode_audit_key(raw):
 def _resolve_key_env_file():
     """解析密钥来源 .env 路径：connection._env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
 
-    原写法 `env_file = _env_file or ".env"` 把密钥来源绑在 cwd 上——
+    密钥来源不能绑在 cwd 上（不能写成 `env_file = _env_file or ".env"`）：
     取证/恢复类 CLI（rekey / audit_verify / clock_guard_reset /
     list_duplicate_owners）未传 env_file 时，在应用根之外运行会读不到旧钥，进而
     就地生成新钥落盘，同时产出"游离在错误目录的 .env"和"用错密钥签的审计行"
@@ -291,15 +293,15 @@ def audit_rechain_events():
 # 全仓 db.audit() 调用点众多且不检查返回值，故由此计数器兜底：由每日校验
 # （web 每日线程 / audit_verify.py）读取并告警，无需逐调用点改造。
 #
-# 欠账必须**落库**：原实现只有进程内 int，systemctl restart 即归零——而"锁竞争
+# 欠账必须**落库**：只留进程内 int 时 systemctl restart 即归零——而"锁竞争
 # 导致审计写不进去"往往正是数据库已经出问题的时段，重启一次就把"有操作未留痕"
-# 这件事连同证据一起忘掉。现以 app_meta.audit_write_fail_total 为权威（单调累加），
+# 这件事连同证据一起忘掉。故以 app_meta.audit_write_fail_total 为权威（单调累加），
 # 进程内只保留"落库也失败"的余额（那种时刻库本来就写不进，不能再放大故障）。
 _AUDIT_FAIL_KEY = "audit_write_fail_total"
 _AUDIT_FAIL_UNFLUSHED = 0
 _AUDIT_FAIL_UNFLUSHED_DB = None
 _AUDIT_FAIL_LOCK = threading.Lock()
-# 审计写入重试（2026-08-28 审查 B-1）：锁竞争时的短暂失败值得重试
+# 审计写入重试：库级锁竞争导致的短暂失败值得重试，重试耗尽才计入欠账
 _AUDIT_RETRIES = 3
 _AUDIT_RETRY_BASE_DELAY = 0.2
 
@@ -370,17 +372,16 @@ def audit_write_failures():
 def audit(username, action, target="", detail=""):
     """记录关键管理操作（多管理员追溯；detail 需已脱敏）。
 
-    Phase 3：写入 HMAC 哈希链，prev_hash 取上一条 hash；签名保持不变。
-    2026-08-20 对抗性审查修复：prev_hash 读取纳入 BEGIN IMMEDIATE 写事务——
-    原实现"读上一条 hash"与 INSERT 之间无跨进程互斥（_conn_lock 仅进程内），
-    web 多进程并发写审计会读到同一 prev_hash 造成链分叉（verify 断链）。
+    写入 HMAC 哈希链：prev_hash 取上一条 hash，hash 由 `_audit_hash` 对
+    [prev_hash, ts, username, action, target, detail] 计算。**prev_hash 的读取必须与
+    INSERT 同处一个 BEGIN IMMEDIATE 写事务**：_conn_lock 只管进程内，读上一条与 INSERT
+    之间若没有跨进程互斥，web 多进程并发写会读到同一 prev_hash 造成链分叉（verify 断链）。
 
-    2026-08-28 审查 B-1（fail-loud）：原实现 `except Exception` 后只写一条
-    WARNING 并返回 None——锁等待超过 busy_timeout 时（长事务如 replace_accounts
-    整表重插、夜间批量签到与 web 争锁）业务接口照常返回 200，审计表里却没有
-    这条记录。因为是"没写进去"而非"写完被删"，哈希链依然自洽，verify 永远
-    验不出问题。现改为：失败重试 → 仍失败则计 ERROR + 欠账累加落 app_meta
-    （重启不归零；供每日校验告警），并返回 bool 供关键路径在需要时显式判定。
+    失败口径（fail-loud）：失败先重试；重试耗尽仍失败则计 ERROR + 欠账落 app_meta
+    （重启不归零，供每日校验告警）并返回 False。**不允许只记 WARNING 后返回 None 而吞掉
+    失败**：锁等待超过 busy_timeout 时（长事务如 replace_accounts 整表重插、夜间批量签到
+    与 web 争锁）业务接口照常成功，审计表里却没有这条记录，且因为是"没写进去"而非"写完被
+    删"，哈希链依然自洽，verify 永远验不出问题。
 
     返回 True 表示已落库；False 表示重试耗尽仍未写入（调用方据此决定是否
     阻断业务）。既有调用点不检查返回值也不会出错，失败会由每日校验兜住。
@@ -395,11 +396,9 @@ def audit(username, action, target="", detail=""):
                 conn = _facade().get_conn()
                 # 防御：正常路径所有写操作均已提交（with conn 模式），若前序调用遗留
                 # 未提交事务，先解除——否则 BEGIN IMMEDIATE 会报 "within a transaction"。
-                # 2026-08-28 审查 M8：盲提交会把"写了一半的事务"发布成持久数据。
-                # 修订：遗留锁用【回滚】解除同样有效（写锁本质由未完成
-                # 事务持有），而未知半事务按安全默认丢弃——提交可能把半程写入发布
-                # 为持久数据（如 replace_accounts 中途可见的残表）。遗留事务本身是
-                # 某条写路径未正确 commit/rollback 的 bug，应据堆栈定位修复。
+                # 必须用【回滚】而不是提交来解除：写锁本质由未完成事务持有，回滚同样有效；
+                # 而提交会把未知的半事务发布成持久数据（如 replace_accounts 中途可见的残表）。
+                # 遗留事务本身是某条写路径未正确 commit/rollback 的 bug，应据堆栈定位修复。
                 if conn.in_transaction:
                     logger.error(
                         "检测到遗留未提交事务，已回滚解除写锁（未知半事务按安全默认"
@@ -443,7 +442,7 @@ def audit(username, action, target="", detail=""):
 def audit_head_hash():
     """返回审计链当前头哈希（空链返回空串）；供外部锚点导出（append-only 日志）。
 
-    2026-08-21 对抗性审查补充：HMAC 链密钥与数据同盘时"整体重算"零成本，
+    锚点存在的理由：HMAC 链密钥与数据同盘时"整体重算"零成本，
     把链头哈希定期追加到独立文件（web 每日线程写 STATE_DIR/audit-anchor.log），
     使重写库内审计链还需同步篡改锚点文件，外部锚定抬高伪造成本。
     """
@@ -520,7 +519,7 @@ def verify_audit_chain():
 
 
 # ---------------------------------------------------------------------------
-# 审计链外部锚点（2026-08-28 审查 B-2）
+# 审计链外部锚点
 # ---------------------------------------------------------------------------
 # verify_audit_chain() 只能检出"删中间"：首行以自身 prev_hash 自锚、空表直接判
 # 通过（见其实现）。于是「删前缀 / 删尾 / 清空整表」三类篡改全部验不出来。
@@ -539,7 +538,7 @@ def verify_audit_chain():
 #
 # 锚点行格式（空格分隔；时间戳本身含 1 个空格，故按 token 数区分版本，
 # 解析一律从行尾取字段）：
-#   v1（2026-08-28 起，存量生产文件）： <ts> <min_id> <max_id> <head>              = 5 token
+#   v1（存量生产文件）：              <ts> <min_id> <max_id> <head>              = 5 token
 #   v2（当前）：                        <ts> <min_id> <max_id> <count>
 #                                        <purge_total> <head> <prev_line_hash>     = 8 token
 # v2 新增三字段的用途——
@@ -568,8 +567,8 @@ _ANCHOR_GENESIS = "0" * 64
 def audit_anchor_path():
     """外部锚点文件路径（库外 append-only）。
 
-    默认与 web/app.py 的 STATE_DIR 对齐（/var/log/yiban）——
-    原默认 "."（进程 cwd）使裸机部署下 web 把锚点写到 /var/log/yiban/audit-anchor.log，
+    默认与 web/app.py 的 STATE_DIR 对齐（/var/log/yiban），不能用 "."（进程 cwd）：
+    否则裸机部署下 web 把锚点写到 /var/log/yiban/audit-anchor.log，
     而 audit_health 读 <cwd>/audit-anchor.log：每日误报「锚点文件被删除」淹没真告警，
     且删尾/清空/链尾篡改检测从未比对过真实锚点（锚点防线整体致盲）。
     Windows 开发/测试环境保留 "."（/var/log 不可写）；显式设置 YIBAN_STATE_DIR 时
@@ -669,9 +668,9 @@ def _audit_purge_total(conn):
 def _meta_json_list(conn, key):
     """读 app_meta 里 key 的 JSON 列表；缺表/缺键/JSON 损坏/非列表 → []。
 
-    2026-09-19 拆分顺手消除的逐字重复：`_audit_purge_events` 与 `_rechain_events`
-    原本是同一段实现换了个 key，合并后语义逐字保持（含 sqlite3.Error 兜底与
-    isinstance 列表校验，调用方各自 docstring 的承诺不变）。
+    `_audit_purge_events` 与 `_rechain_events` 是它的两个包装：读取口径只有这一处，
+    改动 sqlite3.Error 兜底或 isinstance 列表校验时，两个调用方的"损坏按空列表"承诺
+    一起变（缺一个都会让留痕判据把损坏误当"没有留痕"）。
     """
     try:
         row = conn.execute(
@@ -691,8 +690,9 @@ def _meta_json_list(conn, key):
 def _meta_int(key):
     """读 app_meta 里 key 的整数值（走 get_meta 自取锁）；缺失/损坏 → 0。
 
-    同上一处：`audit_persisted_write_failures` 与 `audit_purge_total` 的读取逐字相同，
-    只差 key，合于此（语义逐字保持）。
+    包装与直查同构：`audit_persisted_write_failures`（审计欠账）与 `audit_purge_total`
+    （清理留痕累计）共用这一处整数解析与 ValueError 兜底，改一处须两处的"读不到按 0"
+    一起改——两处都是告警判据的输入，语义漂移会让体检结果对不上。
     """
     try:
         return int(str(_facade().get_meta(key, "0")).strip() or 0)
@@ -824,8 +824,8 @@ def _last_audit_anchor(path):
     行格式见 _ANCHOR_V1_TOKENS / _ANCHOR_V2_TOKENS 附近说明。字段**从行尾**取——
     时间戳本身含空格，从头按下标取会整体错位一格。
 
-    兼容三种历史形态：v2（8 token，含 count/purge_total/prev_line_hash）、
-    v1（5 token，2026-08-28 起）、更旧的 `ts head`（3 token，int() 转换失败即跳过，
+    兼容三种形态：v2（8 token，含 count/purge_total/prev_line_hash）、
+    v1（5 token）、更旧的 `ts head`（3 token，int() 转换失败即跳过，
     不参与判定，避免升级后误报）。
     """
     lines = _read_anchor_lines(path)
@@ -882,9 +882,9 @@ def verify_audit_anchor(path=None):
     无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
     app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
     不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。
-    该元数据交叉检查此前仅对默认路径生效——web 每日线程改传
-    显式路径后会被跳过，锚点致盲问题换了个形式复发。现对显式路径同样生效
-    （仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用）。
+    这项元数据交叉检查对**显式路径同样生效**：只查默认路径时，web 每日线程改传
+    显式路径就会把它整个跳过，锚点被删仍判通过（致盲换个形式复发）。
+    仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用。
     """
     path = path or audit_anchor_path()
     anchor = _last_audit_anchor(path)
