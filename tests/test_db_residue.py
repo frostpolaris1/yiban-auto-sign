@@ -115,7 +115,8 @@ class DbResidueTest(unittest.TestCase):
         accounts_json = os.path.join(self.tmp, "accounts.json")
         with open(accounts_json, "w", encoding="utf-8") as f:
             f.write("{ this is not valid json !!!")
-        with self.assertLogs("yiban.db", level="ERROR") as cm:
+        # 自动导入的日志通道随定义点迁到 yiban.store.migrations（文案未变）
+        with self.assertLogs("yiban.store.migrations", level="ERROR") as cm:
             db.init_db(self.db_file, migrate_from=accounts_json,
                        env_file=self.env_file, cleanup=False)
         joined = "\n".join(cm.output)

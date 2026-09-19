@@ -13,7 +13,8 @@
 已按域拆出的模块（定义点不在本模块，这里只再导出）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
   `init_db` 留在这里——它是启动序列的编排点，也须与冻结的历史迁移函数共存。
-- `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`。
+- `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`，以及 JSON → SQLite
+  自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
@@ -22,23 +23,19 @@
 - `session_cache`：session_cache 表族的读写、有效期判定与凭据加密。
 - `time_prefs`：time_prefs 表的读写、拥挤度统计与保存冷却查询。
 - `clock_meta`：时钟守卫的告警留痕与读取、app_meta 通用单键读写。
+- `tracking`：追踪盐（YIBAN_TRACK_SALT）的取用/落盘与 IP、手机号加盐哈希。
 
-本模块自身仍持有：时钟跳变守卫本体（`_clock_jump_guard`）、追踪盐哈希等尚未按域
-拆出的部分，以及跨域粘合助手（写事务入口、连带清理、清理留痕）。子模块反向经本门面按
-属性取这些名字（见各模块的 `_facade()`）；`db._audit_hash = 替身`、`db._conn = None` 一类
-打桩面由本模块的再导出与读写转发维持不变。
+本模块自身仍持有：时钟跳变守卫本体（`_clock_jump_guard`），以及跨域粘合助手（写事务入口、
+连带清理、清理留痕）。子模块反向经本门面按属性取这些名字（见各模块的 `_facade()`）；
+`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块的再导出与读写转发维持不变。
 """
 import contextlib
 import datetime
-import hashlib
-import hmac
 import json
 import logging
 import os
-import secrets
 import sqlite3
 import sys
-import threading
 import types
 
 # 包导入引导：本模块已入包（`yiban.store.db`），正常导入路径下仓库根必然在 sys.path
@@ -53,7 +50,11 @@ if _REPO_ROOT not in sys.path:
 # 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
 # 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
 from yiban import clock  # noqa: E402
-from yiban.infra import account_crypto, env_lock  # noqa: E402
+
+# account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
+# `db.account_crypto` 仍被测试直接取用（test_db_residue / test_account_plaintext_patch
+# 取 load_key / encrypt_password），删除即取用面损失。
+from yiban.infra import account_crypto  # noqa: E402, F401
 from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import audit_chain as _audit_chain  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
@@ -64,6 +65,7 @@ from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
 from yiban.store import session_cache as _session_cache  # noqa: E402
 from yiban.store import time_prefs as _time_prefs  # noqa: E402
+from yiban.store import tracking as _tracking  # noqa: E402
 from yiban.store import users as _users  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
@@ -240,7 +242,9 @@ purge_expired_deleted_accounts = _cleanup.purge_expired_deleted_accounts
 # 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v17、版本编排
 # `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
 # / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
-# （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。
+# （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。JSON → SQLite 自动导入两名
+# （`_maybe_migrate` / `_rename_backup`）同样走读写转发：门面内的 `init_db` 按属性晚解析
+# 调用它们，快照式再导出会让 `db._maybe_migrate = 替身` 的打桩看不到。
 MigrationDeferred = _migrations.MigrationDeferred
 _ALLOWED_TABLES = _migrations._ALLOWED_TABLES
 _table_columns = _migrations._table_columns
@@ -298,9 +302,13 @@ _conn_lock = _connection._conn_lock
 #   `get_session_cache` / `set_session_cache` 调用点必须看到替身；
 #   事件域按表归属并入的暂停冷却两名 → events、用户自选时间片域七名 → time_prefs：
 #   调用方只经门面属性访问，读写转发让 `db.<名字> = 替身` / `del db.<名字>` 落到真定义点
-#   （`last_time_pref_set_at` 体内按属性取的 `db.hash_phone` 仍留在门面）；
+#   （`last_time_pref_set_at` 体内按属性取的 `db.hash_phone` 读到的正是 tracking 域真身）；
 #   时钟守卫告警与 app_meta 单键读写四名 → clock_meta：告警落库被留守的 `_clock_jump_guard`
-#   在本模块内按属性调用（见该函数的晚解析注释），快照式再导出会让这处内部调用看不到替身。
+#   在本模块内按属性调用（见该函数的晚解析注释），快照式再导出会让这处内部调用看不到替身；
+#   迁移域的 JSON 导入两名 → migrations：门面内 `init_db` 按属性晚解析调用 `_maybe_migrate`；
+#   追踪盐域四名与盐缓存的**可变状态** `_TRACK_SALT_CACHE` → tracking：
+#   `db._TRACK_SALT_CACHE = None`（tests/test_rekey_key_source.py 清盐缓存）必须真的清掉
+#   定义点那份缓存，且 `db.hash_phone = 替身` 要被 time_prefs 的冷却查询看见。
 #   快照式再导出只换掉门面那一份，内部照旧调真名——打桩静默失效。
 # 其余名字（`_conn_lock` 永不重绑、审计/迁移/事件/用户/校验任务/领取池域函数与常量）按
 # 快照式再导出即等价；会话缓存域的四个常量同样按常量再导出（无内部惰性读取之外的语义）。
@@ -360,6 +368,16 @@ _FORWARDED_STATE = {
     "clock_guard_alert": _clock_meta,
     "get_meta": _clock_meta,
     "set_meta": _clock_meta,
+    # JSON → SQLite 自动导入（唯一定义点在 yiban/store/migrations.py；门面内 init_db 晚解析调用）
+    "_maybe_migrate": _migrations,
+    "_rename_backup": _migrations,
+    # 追踪盐与加盐哈希域迁出名（唯一定义点在 yiban/store/tracking.py）
+    "_write_track_salt_to_env_file": _tracking,
+    "_track_salt": _tracking,
+    "hash_ip": _tracking,
+    "hash_phone": _tracking,
+    # 追踪盐的进程内缓存是可变状态：`db._TRACK_SALT_CACHE = None` 必须清到定义点那份
+    "_TRACK_SALT_CACHE": _tracking,
 }
 # delattr 撤下的名字（见 _StateForwardingModule.__delattr__）：名字重新可读即移出
 _FORWARDED_STATE_HIDDEN = set()
@@ -412,11 +430,6 @@ class _StateForwardingModule(types.ModuleType):
 sys.modules[__name__].__class__ = _StateForwardingModule
 
 
-# IP 加盐哈希（Phase 4）
-_TRACK_SALT_CACHE = None
-_TRACK_SALT_LOCK = threading.Lock()
-
-
 def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True):
     """初始化连接与表结构；可选自动迁移（migrate_from 提供 json 文件基路径，如 /path/accounts.json）。
 
@@ -457,8 +470,10 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
             if migrate:
                 _run_migrations(conn)
                 # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
+                # 定义点在 yiban/store/migrations.py：按属性取，`db._maybe_migrate = 替身`
+                # 一类打桩必须被本调用点看见（晚解析）
                 if migrate_from:
-                    _maybe_migrate(conn, migrate_from)
+                    _migrations._maybe_migrate(conn, migrate_from)
         except Exception:
             with contextlib.suppress(Exception):
                 conn.close()
@@ -515,265 +530,6 @@ def _begin_immediate(conn):
         )
         conn.rollback()
     conn.execute('BEGIN IMMEDIATE')
-
-
-# ---------------------------------------------------------------------------
-# 可视化表（Phase 4）
-# ---------------------------------------------------------------------------
-def _write_track_salt_to_env_file(env_file, salt):
-    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。
-
-    读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥；锁内仍保留
-    “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
-    """
-    with env_lock.env_write_lock(env_file):
-        existing = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
-        if existing:
-            return existing
-        lines = []
-        if os.path.exists(env_file):
-            with open(env_file, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
-        out.append(f"YIBAN_TRACK_SALT={salt}")
-        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 创建即 0600（盐泄漏 = IP/手机号哈希可离线枚举反查）
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, env_file)
-        with contextlib.suppress(OSError):
-            os.chmod(env_file, 0o600)
-        return salt
-
-
-def _track_salt():
-    """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。
-
-    .env 路径回落顺序与审计密钥一致：init_db(env_file=…) →
-    YIBAN_ENV_FILE → 当前目录 ".env"；来源只能靠 cwd 兜底且文件不存在时拒绝生成。
-    """
-    global _TRACK_SALT_CACHE
-    env_file, from_cwd = _resolve_key_env_file()
-    env_salt = os.environ.get("YIBAN_TRACK_SALT", "").strip()
-    if env_salt:
-        if len(env_salt) < 16:
-            # 弱盐告警（不拒绝——存量部署换盐会使既有哈希关联失效）；
-            # 盐被猜测即可离线反查 IP/手机号哈希
-            logger.warning("YIBAN_TRACK_SALT 长度过短（<16），易被枚举，建议更换为 32 位以上随机串")
-        _TRACK_SALT_CACHE = env_salt
-        return env_salt
-    if _TRACK_SALT_CACHE is not None:
-        return _TRACK_SALT_CACHE
-    with _TRACK_SALT_LOCK:
-        if _TRACK_SALT_CACHE is not None:
-            return _TRACK_SALT_CACHE
-        file_salt = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
-        if file_salt:
-            _TRACK_SALT_CACHE = file_salt
-            return file_salt
-        _assert_key_source_certain("追踪盐", env_file, from_cwd)
-        logger.info("未找到 YIBAN_TRACK_SALT，已生成新盐并写入 %s（chmod 600）", env_file)
-        _TRACK_SALT_CACHE = _write_track_salt_to_env_file(env_file, secrets.token_hex(32))
-        return _TRACK_SALT_CACHE
-
-
-def hash_ip(ip):
-    """对 IP 加盐哈希（YIBAN_TRACK_SALT），返回十六进制字符串。
-
-    2026-08-28 审查 M9：原实现为 `sha256(salt + ":" + ip)` 字符串拼接——
-    构造上接近 HMAC 但非标准；改用 HMAC-SHA256(salt, ip)（密钥前向填充，防
-    长度扩展类问题）。注意：盐与库同盘时（.env + yiban.db 同时被拿），IPv4
-    空间仍可离线枚举还原——本函数用于限速计数/统计，不承担凭据级保密。
-    """
-    salt = _track_salt()
-    return hmac.new(salt.encode("utf-8"), str(ip).encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def hash_phone(phone):
-    """对手机号做稳定匿名哈希（YIBAN_TRACK_SALT），返回十六进制字符串。
-
-    与审计脱敏不同：同一手机号总是得到相同哈希，可供 time_pref 冷却等
-    需要按账号关联审计记录的逻辑使用，同时不把真实手机号写入审计 target。
-
-    有意与 hash_ip 的 HMAC 口径不同：本函数的输出会作为**库内关联键**存储
-    （time_pref 冷却等），更换算法将使全部存量关联失效；等值查询用途下
-    sha256(salt:input) 无现实攻击面（长度扩展需要构造可验证的 MAC，此处
-    哈希仅用于存储比对）。评审结论：保持口径并记录理由。
-    """
-    salt = _track_salt()
-    return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# 自动迁移（JSON → SQLite，幂等）
-# ---------------------------------------------------------------------------
-def _maybe_migrate(conn, json_base):
-    """json_base 形如 /path/accounts.json（users.json 同目录推断）。
-
-    读取 accounts/users 两个 JSON 后在一个事务内导入，两个都成功后一起改名 .bak；
-    某个 JSON 读取失败/不存在时跳过该文件，不阻断另一个成功导入。
-    """
-    accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
-        os.path.dirname(json_base), "accounts.json"
-    )
-    users_json = os.path.join(os.path.dirname(accounts_json), "users.json")
-    has_db_rows = (
-        conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] > 0
-        or conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
-    )
-    if has_db_rows:
-        return  # 已迁移过
-    accounts = []
-    users = []
-    load_errors = []
-    if os.path.exists(accounts_json):
-        try:
-            with open(accounts_json, encoding="utf-8") as f:
-                accounts = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            accounts = []
-            load_errors.append(accounts_json)
-            logger.error(
-                "账号数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
-                accounts_json, type(e).__name__, e,
-            )
-        if not isinstance(accounts, list):
-            accounts = []
-    if os.path.exists(users_json):
-        try:
-            with open(users_json, encoding="utf-8") as f:
-                users = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            users = []
-            load_errors.append(users_json)
-            logger.error(
-                "用户数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
-                users_json, type(e).__name__, e,
-            )
-        if not isinstance(users, list):
-            users = []
-    if not accounts and not users:
-        if load_errors:
-            logger.error("存在无法读取的数据文件，本次未完成迁移（请勿误判为无数据）: %s",
-                         ", ".join(load_errors))
-        else:
-            logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
-        return
-    imported = 0
-    key = account_crypto.load_key(_connection._env_file) if accounts else None
-    had_plaintext = False  # 迁移源含明文字段 → .bak 逃生门需重写为加密版（2026-08-27 审查缺口 2）
-    with _conn_lock, conn:
-        if accounts:
-            # 加密字段统一为库内 JSON 串格式：
-            #   明文 str → 加密（复用 account_crypto）；
-            #   密文 dict（0.16 JSON 嵌套对象）→ json.dumps 序列化；
-            #   密文 JSON 串 → 原样。
-            for i, a in enumerate(accounts):
-                password = a.get("password", "") or ""
-                phone_code = a.get("phone_code", "") or ""
-                if key is not None:
-                    if password and not _accounts._is_encrypted_value(password):
-                        had_plaintext = True
-                        password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
-                    elif isinstance(password, dict):
-                        password = json.dumps(password)  # 已是密文对象 → 序列化入库
-                    if phone_code and not _accounts._is_encrypted_value(phone_code):
-                        had_plaintext = True
-                        phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
-                    elif isinstance(phone_code, dict):
-                        phone_code = json.dumps(phone_code)
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO accounts "
-                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        i + 1,
-                        a.get("name", ""),
-                        a.get("phone", ""),
-                        password,
-                        a.get("phone_model", ""),
-                        phone_code,
-                        a.get("owner", "admin"),
-                        a.get("status", "active"),
-                        a.get("reject_reason", ""),
-                        1 if a.get("deleted") else 0,
-                        a.get("deleted_at", ""),
-                    ),
-                )
-                imported += cur.rowcount
-        if users:
-            for u in users:
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
-                    (
-                        u.get("email", ""),
-                        u.get("password_hash", ""),
-                        u.get("role", "user"),
-                        u.get("created_at", ""),
-                        u.get("pw_version", 1),
-                    ),
-                )
-                imported += cur.rowcount
-    # 事务提交成功后统一改名，避免单个 JSON 导入失败时已把另一个改名
-    if accounts:
-        _rename_backup(accounts_json, reencrypt=had_plaintext, key=key)
-    if users:
-        _rename_backup(users_json)
-    logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
-
-
-def _rename_backup(path, reencrypt=False, key=None):
-    """JSON 迁移成功后改名保留（逃生门），避免被旧代码误写回。
-
-    2026-08-27 审查缺口 2：.bak 一律落 0600；迁移源含明文字段时（更早格式/手工构造/
-    第三方导出），重写 .bak 为加密版，杜绝明文凭据以 .bak 形态驻留磁盘。
-    同日已有同名 .bak 时追加递增序号，确保源文件总能离开原路径——此前目标已存在
-    即跳过 os.rename，会让含明文的源 JSON 以原文件名无限期驻留。
-    """
-    if not os.path.exists(path):
-        return
-    bak = f"{path}.bak-{clock.now().strftime('%Y%m%d')}"
-    if os.path.exists(bak):
-        seq = 1
-        while os.path.exists(f"{bak}-{seq}"):
-            seq += 1
-        new_bak = f"{bak}-{seq}"
-        logger.warning("迁移备份目标 %s 已存在，源文件改存为 %s", bak, new_bak)
-        bak = new_bak
-    os.rename(path, bak)
-    with contextlib.suppress(OSError):  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
-        os.chmod(bak, 0o600)
-    if reencrypt and key is not None:
-        try:
-            with open(bak, encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                changed = False
-                for a in data:
-                    pwd = a.get("password", "") or ""
-                    if pwd and not _accounts._is_encrypted_value(pwd):
-                        a["password"] = json.dumps(
-                            account_crypto.encrypt_password(pwd, key, a.get("phone", ""))
-                        )
-                        changed = True
-                    code = a.get("phone_code", "") or ""
-                    if code and not _accounts._is_encrypted_value(code):
-                        a["phone_code"] = json.dumps(
-                            account_crypto.encrypt_password(code, key, a.get("phone", ""))
-                        )
-                        changed = True
-                if changed:
-                    tmp = bak + ".tmp" + str(os.getpid())
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False)
-                    os.chmod(tmp, 0o600)
-                    os.replace(tmp, bak)
-                    logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
-        except (OSError, ValueError, TypeError):
-            logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
 
 
 # 时钟跳变保护参数（2026-08-28 审查 M3）：
