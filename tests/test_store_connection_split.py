@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """连接层拆分契约：`yiban/store/connection.py` 是连接状态与原语的唯一定义点。
 
-2026-09-19 db.py（4400+ 行）按域拆分的第一刀把 `_conn`/`_conn_lock`/`_db_file`/
-`_env_file`/`DB_DEFAULT`/`get_conn`/`is_initialized` 移入 `yiban/store/connection.py`，
-`yiban/store/db.py` 再导出。本文件钉住三件事，任何一件破了都会**静默**改变全仓行为：
+`yiban/store/db.py` 再导出这些名字供既有调用方使用；本文件钉住三件事，任何一件破了
+都会**静默**改变全仓行为：
 
 1. **同一对象**：`db._conn_lock is connection._conn_lock`（`_conn_lock` 定义后永不重绑，
    db.py 内部 73 处 `with _conn_lock` 与 19 处子模块 `with db._conn_lock` 共用同一把 RLock）。
@@ -79,7 +78,6 @@ class ConnectionIdentityTest(_ConnStateBase):
     """① 再导出的名字与 connection 是同一对象（含唯一定义点这一事实）。"""
 
     def test_lock_is_the_same_object(self):
-        self.assertIs(impl._conn_lock, conn_mod._conn_lock)
         self.assertIs(impl._conn_lock, conn_mod._conn_lock)
         # 真 RLock（可重入）——不是被替换成 nullcontext 之类的替身
         self.assertIsInstance(impl._conn_lock, type(threading.RLock()))
@@ -213,6 +211,42 @@ class PatchAndDeleteRoundTripTest(_ConnStateBase):
         self.assertIs(impl._conn, c)
         self.assertIs(conn_mod.current(), c)
 
+    def test_shell_patch_object_round_trips_real_state(self):
+        """legacy 壳路径（`import db`）：patch.object 撤销后 connection 真状态必须复原。
+
+        壳的读取回落到实现模块，故 `_patch.__exit__` 的 `delattr` 若只删壳自己的条目，
+        `hasattr` 经回落仍为真 → 跳过 setattr 恢复 → `connection._conn` 留下替身。
+        """
+        shell = _import_shell()
+        path = self._temp_db()
+        c = impl.init_db(db_file=path, cleanup=False)
+        with mock.patch.object(shell, "_conn", self.SENTINEL):
+            self.assertIs(shell._conn, self.SENTINEL, "打桩期间壳的读取应看到替身")
+            self.assertIs(conn_mod.current(), self.SENTINEL)
+        self.assertIs(conn_mod.current(), c,
+                      "壳上的 patch 退出后必须复原真连接，不能留成替身")
+        self.assertIs(shell._conn, c)
+
+    def test_shell_monkeypatch_delattr_undo_restores(self):
+        """壳上的 `monkeypatch.delattr`：删得掉（不再 AttributeError）、undo 后复原。"""
+        shell = _import_shell()
+        path = self._temp_db()
+        c = impl.init_db(db_file=path, cleanup=False)
+        mp = pytest.MonkeyPatch()
+        try:
+            mp.delattr(shell, "_conn")
+            self.assertFalse(hasattr(shell, "_conn"), "壳上的删除必须让 hasattr 变假")
+            self.assertIs(conn_mod.current(), c, "壳摘名不该动 connection 的真状态")
+        finally:
+            mp.undo()
+        self.assertIs(shell._conn, c)
+        self.assertIs(conn_mod.current(), c)
+
+    def test_shell_delattr_of_missing_name_still_raises(self):
+        shell = _import_shell()
+        with self.assertRaises(AttributeError):
+            del shell.definitely_not_a_name
+
     def test_delattr_of_unknown_name_still_raises(self):
         """非连接状态名字仍走 ModuleType 语义（真缺失必须抛 AttributeError）。"""
         with self.assertRaises(AttributeError):
@@ -220,7 +254,7 @@ class PatchAndDeleteRoundTripTest(_ConnStateBase):
 
 
 class InitDbSemanticsTest(_ConnStateBase):
-    """② `init_db` 各分支语义与拆分前等价（连接、幂等、路径刷新、异常置空）。"""
+    """② `init_db` 各分支语义（连接、幂等、路径刷新、异常置空）。"""
 
     def test_init_then_select_one(self):
         path = self._temp_db()

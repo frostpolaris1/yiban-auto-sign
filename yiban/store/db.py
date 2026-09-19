@@ -264,7 +264,7 @@ DB_DEFAULT = _connection.DB_DEFAULT
 # 读写都**转发**——全仓 190+ 处测试收尾 `db._conn = None` 与 `db._env_file = path` 若只写
 # 一份快照就静默失效（connection 仍握真连接/旧路径）；`_conn_lock`（永不重绑）与
 # `get_conn`/`is_initialized` 直接再导出即等价：本模块内部按裸名调用，既有
-# `mock.patch.object(db, "get_conn"/"_conn_lock", …)` 与拆分前一样生效。
+# `mock.patch.object(db, "get_conn"/"_conn_lock", …)` 打桩仍然生效。
 get_conn = _connection.get_conn
 is_initialized = _connection.is_initialized
 _conn_lock = _connection._conn_lock
@@ -353,7 +353,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     （v3 rechain）等，使"被校验对象在校验过程中被改动"。
     """
     # 库路径 / .env 路径**无条件刷新**（即使连接已存在——它们是"最近一次 init_db 的
-    # 来源"）：拆分前是 `global` 重绑定，现在是 connection 的显式 API，语义逐条等价。
+    # 来源"），经 connection 的显式 API 写入
     _connection.set_env_file(env_file)
     db_path = db_file or os.environ.get("YIBAN_DB_FILE", DB_DEFAULT)
     _connection.set_db_file(db_path)
@@ -365,8 +365,8 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
         if conn is not None:
             return conn
         conn = sqlite3.connect(db_path, check_same_thread=False)
-        # 先登记再配置：建表/迁移函数内部会经 get_conn() 取"当前连接"，拆分前也是
-        # `_conn = sqlite3.connect(...)` 先行、随后逐条 PRAGMA/DDL 的同一顺序
+        # 先登记再配置：建表/迁移函数内部会经 get_conn() 取"当前连接"，故连接必须先
+        # 入册，其后才逐条 PRAGMA/DDL
         _connection.set_conn(conn)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
