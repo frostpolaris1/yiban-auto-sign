@@ -37,12 +37,12 @@ HARD_CAP = 12000
 # 理由需包含：它是什么、为什么现在这样、下一步。
 OVERSIZED = {
     "web/app.py": (None, (
-        "Flask 工厂 + 全部路由 + 渲染辅助，既定拆法是 routes/services/security/render 四层。"
-        "当前未拆的工程原因：路由函数大量共享 create_app 内的闭包状态（_file_lock 保护的"
-        "读改写序列、按会话的限速表），先拆会把共享状态改成跨模块注入，收益低于风险；"
-        "既定拆法（蓝图 + 服务层）按依赖自然切分，届时一次到位。"
+        "Flask 工厂 + 跨域中间件 + 模块级辅助（路由已入 web/routes/）。当前未拆的工程原因："
+        "create_app 内仍有大量跨域闭包状态（_file_lock 保护的读改写序列、按会话的限速表、"
+        "按 app 实例登记的高危门禁闭包），先拆会把共享状态改成跨模块注入，收益低于风险；"
+        "既定拆法（services/security/render 三层）按依赖自然切分，届时一次到位。"
     )),
-    "web/routes/accounts_api.py": (None, (
+    "web/routes/accounts_api.py": (1000, (
         "账号管理域路由：十条管理员视图（列表/详情/增删改/批量/审核/排序）与 register()。"
         "规模来自注释契约（四问头 + 每处安全语义的「为什么」，约占四分之一）与真被依赖的"
         "顺序约束（二次鉴权先于占额度、审计先于外发、容量闸门、idx 错位守卫）——十条视图"
@@ -50,7 +50,7 @@ OVERSIZED = {
         "来回传（通信成本高于收益）。下一步：若超过 1000 行，按「读（列表/详情）」与"
         "「写（增删改/批量/审核/排序）」切成两个模块，共享的 idx 守卫与掩码助手留在读侧。"
     )),
-    "web/routes/my.py": (None, (
+    "web/routes/my.py": (1000, (
         "个人自助族路由：十三条普通用户视图（我的账号提交/列表/编辑/软删/撤销/自暂停、"
         "自选时间片读写与统计、在线校验任务查询/取消、我的月历/日志）＋ 七个本人视图助手"
         "（_my_account_indices_of/_my_account_view/_pref_slots 等）与 register()。规模来自"
@@ -61,7 +61,7 @@ OVERSIZED = {
         "「账号自助（my-accounts 族）」与「选片/历史（time-pref、calendar、logs、verify-jobs）」"
         "一分为二，共享的本人视图助手留在账号侧。"
     )),
-    "web/routes/settings_api.py": (None, (
+    "web/routes/settings_api.py": (1600, (
         "设置 / 执行体 / 公告域路由：十五条管理员视图（系统开关读写、执行体清单读写与单段"
         "出口改写、清单行增删改、现场实测、公告草稿/读取/双人发布、注册暂停状态、更新日志）"
         "＋ 两条落点助手（_executor_write_guard / _reply_slot_egress）与 register()。规模来自"

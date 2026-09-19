@@ -897,7 +897,7 @@ EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
 PHONE_RE = re.compile(r"^1\d{10}$")
 
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
-SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 _spawn_signin docstring
+SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 web/routes/signin_api.py 的 _spawn_signin docstring
 
 # 日志格式（与 signin.py 相同）
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
@@ -2003,7 +2003,7 @@ def _verify_attempt_allowed(store, username):
     被当作凭据试探的免费代理：在真正发起网络验证前按「会话用户名」扣减配额，
     超过 VERIFY_MAX 次 / VERIFY_WINDOW 秒即拒绝。全局 IP 限速之外的账号维度
     补充；计数语义与登录频率限制一致（先判后增）。store 由调用方传入
-    （create_app 内的 _verify_limits，随应用生命周期存在于内存）。
+    （current_app.extensions 登记，经 web.routes.verify_limits() 取用）。
     """
     # 写入前顺带 trim（键为会话用户名/邮箱，长度有界但基数无界），
     # 与其余 IP 计数表同口径防无界增长
@@ -2022,8 +2022,8 @@ def _verify_attempt_allowed(store, username):
 def _verify_fail_cooldown_remaining(store, phone, now):
     """同一手机号验证冷却剩余秒数（0 = 不在冷却中）。
 
-    store 由调用方传入（create_app 内的 _verify_fails，随应用生命周期存在于
-    内存）；gunicorn 单进程多线程，读写统一走 _rate_lock。
+    store 由调用方传入（current_app.extensions 登记，经 web.routes.verify_fails()
+    取用）；gunicorn 单进程多线程，读写统一走 _rate_lock。
     """
     with _rate_lock:
         entry = store.get(phone)
@@ -2463,7 +2463,8 @@ class VerifyQuotaExceeded(Exception):
 def run_verify_with_gate(clean, username, limits):
     """执行一次外呼校验（A4：全局并发闸包裹）。
 
-    `limits` 是 create_app 内的每用户配额表（进程内字典，非模块级，故显式传入）。
+    `limits` 是每用户配额表（current_app.extensions 登记，经 web.routes.verify_limits()
+    取用；进程内字典，故显式传入）。
 
     顺序刻意如此：**先抢全局席位、再扣用户配额**——抢不到席位时立即抛
     VerifyGateBusy 且不消耗配额，否则我们自己的饱和会变成对用户的惩罚。
@@ -4564,7 +4565,7 @@ def create_app(host=None):
                     target=_daily_purge_loop, daemon=True, name="daily-purge"
                 ).start()
 
-    # 路由装配：页面/API 各域在 web/routes/*，此处一次接入（注册顺序与原定义顺序一致）
+    # 路由装配：页面/API 各域在 web/routes/*，此处一次接入（注册顺序不参与路由判定）
     register_all(app)
 
     # 前缀自适应：把 WSGI 层包一层（app 本身仍是 Flask 对象，.run()/gunicorn 调用不受影响）。
