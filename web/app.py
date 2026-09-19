@@ -81,13 +81,46 @@ from web.routes import (  # noqa: E402
     verify_limits,  # noqa: F401
 )
 from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清单（页面路径唯一登记点）
+
+# 服务层实现（web/services/）：env 读写与执行体清单的真源。本模块只保留名字面，
+# 需要本模块模块级状态的入口（_atomic_write / write_env_batch / _env_flag / 设置缺省值 /
+# send_notification / ENV_FILE / _sign_window）在下方转发时调用时刻现取后注入——它们会被
+# 测试改写、也会随运行方式变化，服务层另持一份绑定会让打桩与 --config 静默失效。
+from web.services import env_io as _env_io_svc  # noqa: E402
+from web.services import executor_env as _executor_env  # noqa: E402
+from web.services.env_io import (  # noqa: E402
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
+    _BOOL_SETTINGS_KEYS,  # noqa: F401
+    _SETTINGS_KEY_LABELS,  # noqa: F401
+    ANNOUNCEMENT_DRAFT_META_FMT,  # noqa: F401
+    ANNOUNCEMENT_DRAFT_META_SEP,  # noqa: F401
+    _env_write_lock,  # noqa: F401
+    _is_http_proxy_url,  # noqa: F401
+    _parse_announcement_meta,  # noqa: F401
+    _settings_label,  # noqa: F401
+    _settings_value_text,  # noqa: F401
+    load_env_int,
+    read_env,
+)
+from web.services.executor_env import (  # noqa: E402
+    # 同上：本模块已无自用点，保留为 web.app.<名字> 的兼容面
+    _executor_activity,  # noqa: F401
+    _executor_row_payload,  # noqa: F401
+    _last_executors,  # noqa: F401
+    _next_executor_slot,  # noqa: F401
+    _validated_name,  # noqa: F401
+    _validated_proxy_value,  # noqa: F401
+)
+from web.services.locks import (  # noqa: E402
+    _file_lock,  # 进程内锁真源（与 m._file_lock 同一把）
+)
 from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
 from yiban import clock, cred_state  # noqa: E402  （须在引导之后导入）
 from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
-from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402  # noqa: E402
+from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402,F401  # 代理脱敏
 
 # 名字面零损失：纯再导出见上方 import；需要注入本模块模块级状态的入口
 # （_read_doc_html / _doc_page / 站点展示族）在下方转发。
@@ -123,7 +156,7 @@ from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402  # 易班端点唯�
 from yiban.infra import (  # noqa: E402
     account_crypto,  # noqa: F401  # 本模块已无自用点，保留：web.app.<名字> 仍可 import（打桩面零损失）
     env_io,
-    env_lock,
+    env_lock,  # noqa: F401  # 跨进程写锁真源（写路径已入 web/services/env_io.py），保留名字面
 )
 from yiban.mail import (  # noqa: E402
     config as mail_config,  # noqa: F401  # 无自用点，保留供 web.app.<名字> import
@@ -256,85 +289,11 @@ def _day_off_reason(now=None):
 
 
 def _executors_window():
-    """执行体接口口径的**有效签到窗口**（`window.effective_sec` 即容量换算的分母）。
+    """执行体接口口径的**有效签到窗口**（实现见 web/services/executor_env.py）。
 
-    `edge_*` 未配置按 0 计（与 GET 的原实现逐字一致，故显示值零变化）；容量估算与
-    "窗口内不做实测"的拦截都用它，保证页面上显示的窗口与这两个判断同源。
+    `.env` 路径与窗口解析器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
     """
-    start, end = _sign_window()
-    return yb_window.bounds({
-        "sign_start": start, "sign_end": end,
-        "edge_front_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_FRONT_SEC", 0),
-        "edge_back_sec": load_env_int(ENV_FILE, "YIBAN_WINDOW_EDGE_BACK_SEC", 0),
-    })
-
-
-def _last_executors(day):
-    """某个业务日每个账号的归属执行体（**已脱敏**）：`{phone: {role, index, label}}`。
-
-    账号列表要显示"上一个业务日是谁签的"：一次取回当日全部 `phone -> owner`（见
-    `store.claims.owners_for_day`，**不逐账号查**），再把 owner 折成角色与槽位。
-    身份串含主机名，属部署信息，故**只回角色/序号/label**，绝不回 owner 原串。
-    库不存在/未初始化 → `{}`（新部署很正常），调用方据此回 `null` 而不是报错。
-    """
-    out = {}
-    for phone, owner in db.claim_owners_for_day(day).items():
-        parsed = yb_egress.parse_owner(owner)
-        out[phone] = {"role": parsed["role"], "index": parsed["index"],
-                      "label": parsed["label"]}
-    return out
-
-
-def _executor_row_payload(row):
-    """执行体清单的一行 → 接口项（`GET …/executors` 的 `executors[]`），**已脱敏**。
-
-    `egress` 只回 `egress.describe()` 的描述串（代理可能带 `user:pass@`，绝不回原串）。
-    存活：**只有 `worker` 行**有值（四态口径在 `signin.worker_presence`）；
-    `fallback` 行的存活归 `fallback.*`（心跳文件与判据不同，套 worker 四态会永远 idle），
-    `disabled` 行按要求不报存活——两者都回 **`state: null` / `last_seen_at: null`**
-    （字段照给、值为 null，口径已冻结给前端，与 `last_executor` 的 null 用法一致）。
-    """
-    item = {"slot": row["slot"], "type": row["type"],
-            "egress": yb_egress.describe(row["proxy"]),
-            "label": yb_egress.executor_label(row["type"], row["slot"]),
-            # 行的自定义名：没设就是 **null**（前端据此显示后端给的 `label`，或藏起输入框）。
-            # 刻意**不**把 name 折进 label：label 是后端口径（角色中文名），name 是用户输入，
-            # 两者混在一起后"清空名字"就再也分不出来了。
-            "name": row.get("name") or None,
-            "state": None, "last_seen_at": None}
-    if row["type"] == yb_egress.TYPE_WORKER:
-        item["state"], item["last_seen_at"] = signin.worker_presence(row["slot"])
-    return item
-
-
-def _executor_activity(day):
-    """当日领取池归属（**已脱敏**）：按 owner 聚合后折成角色 + 槽位序号。
-
-    为什么必须脱敏：`owner` 形如 `{主机名}:{进程号}:w{序号}`，是部署信息（主机名与
-    进程号对攻击者是资产清单）。故**绝不回原串**——用 1-based 槽位号替代它，前端
-    拿到的信息量不变（"第 1 个并行执行体做了 10 个"），也看得懂。
-    角色解析的唯一口径在 `yiban.egress.parse_owner`；`unknown` 照实回（历史数据里
-    兜底与单执行体同前缀，本来就无法追溯，不假装能还原）。
-
-    库不存在/未初始化（新部署很正常）→ `([], 全 0)`，与 `claims.stats` 同口径不抛。
-    """
-    by_executor = []
-    totals = {"claimed": 0, "failed": 0, "done": 0, "total": 0}
-    for slot, row in enumerate(db.claim_activity(day), start=1):
-        parsed = yb_egress.parse_owner(row.get("owner"))
-        by_executor.append({
-            "slot": slot,
-            "role": parsed["role"],
-            "index": parsed["index"],
-            "label": parsed["label"],
-            "claimed": int(row.get("claimed", 0)),
-            "failed": int(row.get("failed", 0)),
-            "done": int(row.get("done", 0)),
-            "total": int(row.get("total", 0)),
-        })
-        for key in totals:
-            totals[key] += int(row.get(key, 0))
-    return by_executor, totals
+    return _executor_env._executors_window(ENV_FILE, _sign_window)
 
 
 # ---------------------------------------------------------------------------
@@ -978,22 +937,8 @@ def _most_recent_log_date(max_days=30):
 # ---------------------------------------------------------------------------
 # .env 读写
 # ---------------------------------------------------------------------------
-def read_env(env_path):
-    """读取 .env 全部键值，返回 dict（宽松：文件缺失/读失败返回空 dict）。
-
-    解析实现单一来源见 scripts/env_io.py（utf-8-sig 兼容 BOM——Windows 记事本等
-    工具保存时会带 BOM，否则首个键名会带上 \ufeff 前缀导致读不到，
-    管理员登录/改密会静默失败）。
-    """
-    return env_io.parse_env_file(env_path)
-
-
-def load_env_int(env_path, key, default):
-    """读取 .env 中的整数配置，缺失/非法回退默认值。"""
-    try:
-        return max(0, int(read_env(env_path).get(key, "")))
-    except (TypeError, ValueError):
-        return default
+# 读（read_env / load_env_int）在导入区再导出；写与设置项展示族的转发在下方
+# （它们需要注入本模块持有的 _atomic_write / write_env_batch / _env_flag / 设置缺省值）。
 
 
 # 站点展示族（备案信息 / 分享摘要配图 / 窗口裁剪）：实现见 web/render.py，本模块只转发。
@@ -1050,98 +995,16 @@ def edge_front_sec():
     return _render.edge_front_sec(read_env(ENV_FILE))
 
 
-# A/B 档键的中文标签：变更告警正文与审计明细共用一份，避免同一件事在两处各写一套字面量
-_SETTINGS_KEY_LABELS = {
-    "sign_window": "签到窗口",
-    "window_edge_sec": "首尾裁剪",
-    "edge_front_sec": "前裁缓冲",
-    "edge_back_sec": "后裁缓冲",
-    "sunday_sign": "周日签到",
-    "saturday_sign": "周六签到",
-    "global_pause": "全局暂停签到",
-    "registration_pause": "暂停注册",
-    "start_delay_max": "启动随机延迟",
-    "gap_max": "账号间隔",
-    "max_users": "用户容量上限",
-    "max_accounts": "账号容量上限",
-    "account_verify": "注册账号验证",
-    "probe_enable": "健康探针",
-    "probe_time": "探针时刻",
-    "probe_interval": "探针频率",
-    "sign_order": "签到排序",
-    "sign_dist": "签到分布",
-    "sign_mode": "签到模式",
-    "allow_time_pref": "自选时间片",
-}
-
-# 这些键的生效值是 0/1 开关：写进审计与告警正文时翻成中文，免得运维盯着 "0"→"1" 心算
-_BOOL_SETTINGS_KEYS = frozenset({
-    "sunday_sign", "saturday_sign", "global_pause", "registration_pause",
-    "account_verify", "probe_enable", "allow_time_pref",
-})
-
-
-def _settings_label(key):
-    """设置键的中文名（未列入标签表的按键名原样回，绝不编一个名字）。"""
-    return _SETTINGS_KEY_LABELS.get(key, key)
-
-
-def _settings_value_text(key, value):
-    """设置值写进审计/告警正文时的展示形态（值本身已在现读侧归一，不含敏感串）。"""
-    if key in _BOOL_SETTINGS_KEYS:
-        return "开" if str(value) == "1" else "关"
-    return str(value)
-
-
+# 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py；
+# 三个容量缺省值与开关解析器 `_env_flag` 由本模块现取注入（它们是本模块的名字，会被测试改写）。
 def _settings_effective_values(env_file):
-    """A/B 档设置项的**当前生效值**（归一为字符串），取值口径与 `GET /api/settings` 一致。
-
-    只用于"这次请求到底改没改配置"的判定：一律现读现算，绝不信请求自带的旧值——
-    否则把当前值原样抄进请求就能自称"无变更"，口令复核与变更告警双双被绕开
-    （系统开关门原本就是这个语义，这里把同一语义铺满全部 A/B 档键）。
-    """
-    env = read_env(env_file)
-    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
-    w_start, w_end, _invalid = yb_window.parse_window(env)
-    front, back = yb_window.parse_edges(env)
-
-    def _flag(key):
-        return "1" if _env_flag(env.get(key, "")) else "0"
-
-    return {
-        "start_delay_max": str(load_env_int(env_file, "YIBAN_START_DELAY_MAX", 0)),
-        "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX",
-                                    DEFAULT_ACCOUNT_GAP_MAX)),
-        "sign_window": (f"{w_start[0]:02d}:{w_start[1]:02d}"
-                        f"~{w_end[0]:02d}:{w_end[1]:02d}"),
-        # 旧键（前后对称）**一次写两侧**：现值取「前/后」组合串。只按前裁比的话，
-        # 前后不等的存量配置提交一个等于旧前裁的值会被判成"没改"，从而绕开口令复核，
-        # 而写侧其实把后裁改了。
-        "window_edge_sec": f"{front}/{back}",
-        "edge_front_sec": str(front),
-        "edge_back_sec": str(back),
-        "sunday_sign": _flag("YIBAN_SUNDAY_SIGN"),
-        "saturday_sign": _flag("YIBAN_SATURDAY_SIGN"),
-        # 两个暂停位沿用 `load_env_int(...) == 1` 的既有判据（写侧只落 "1" 或删键），
-        # 与 GET /api/settings 及系统开关门读的现值逐字一致
-        "global_pause": "1" if load_env_int(env_file, "YIBAN_GLOBAL_PAUSE", 0) == 1 else "0",
-        "registration_pause": "1" if load_env_int(env_file, "YIBAN_REGISTRATION_PAUSE", 0) == 1 else "0",
-        "allow_time_pref": str(load_env_int(env_file, "YIBAN_ALLOW_TIME_PREF", 0)),
-        "sign_mode": mode,
-        # 排序/分布的生效值由旧模式派生（与 GET 同一式子）：只存 YIBAN_SIGN_MODE 的
-        # 存量配置，其真实排序就是派生值，拿空串比会把"没改"误判成"改了"
-        "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
-            "random" if mode == "random" else "sequence"),
-        "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-            "normal" if mode == "normal" else "uniform"),
-        "account_verify": _flag("YIBAN_ACCOUNT_VERIFY"),
-        "probe_enable": _flag("YIBAN_PROBE_ENABLE"),
-        "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
-        "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
-        "max_users": str(load_env_int(env_file, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)),
-        "max_accounts": str(load_env_int(env_file, "YIBAN_MAX_ACCOUNTS",
-                                         DEFAULT_MAX_ACCOUNTS)),
-    }
+    """A/B 档设置项的当前生效值（实现见 web/services/env_io.py）。"""
+    return _env_io_svc._settings_effective_values(
+        env_file, _env_flag,
+        gap_max_default=DEFAULT_ACCOUNT_GAP_MAX,
+        max_users_default=DEFAULT_MAX_USERS,
+        max_accounts_default=DEFAULT_MAX_ACCOUNTS,
+    )
 
 
 #: 并行执行体槽位的最大下标（`YIBAN_WORKERS` 允许 1~64 → 下标 0~63）；
@@ -1149,193 +1012,47 @@ def _settings_effective_values(env_file):
 #: 常量本体在导入区（= `yiban.egress.SLOT_MAX`，清单模型的唯一口径）定义。
 
 
-def _is_http_proxy_url(value):
-    """代理地址格式校验：`http(s)://[user:pass@]host[:port]`（宽松但明确）。
-
-    只做形状校验（scheme + 主机非空、无空白/换行）；**不解析、不连接**——
-    代理是否可用由签到进程在使用时报错，网页侧只拦"明显填错"（例如把备注写进去）。
-    """
-    if not value:
-        return True                       # 空串=直连，合法
-    if re.search(r"\s", value):
-        return False
-    parts = re.match(r"^https?://([^/]*?)(/.*)?$", value)
-    if not parts:
-        return False
-    host_part = parts.group(1)
-    if "@" in host_part:                  # 去掉可能的 userinfo
-        host_part = host_part.rsplit("@", 1)[1]
-    return bool(host_part)
-
-
+# 执行体清单的写入与校验（`YIBAN_EXECUTORS`）实现见 web/services/executor_env.py。
+# 写回一律经本模块的 `write_env_batch` 现取注入：它既是"每一次 .env 落盘"的观测点
+# （测试在此打桩），也负责把落盘交给本模块的 `_atomic_write`。
 def _save_slot_egress(env_path, key, index, value):
-    """读-改-写 `.env` 里**一段**出口（`index=None` = 该键只有一段，兜底）。
-
-    读与写在**同一把** `.env` 写锁内完成（复用整条写入用的 `_env_write_lock` 与
-    `write_env_batch`，不另造一套）：否则并发保存时"读到的旧串"会把别人刚写的段盖掉。
-    其余段**逐字保留**（切分与合并见 `yiban.egress.replace_slot`）——本接口只改一段，
-    不重新校验也不规范化别人的段，免得把"这一段直连"的刻意空位改写成别的意思。
-
-    校验复用整条写入的同一个 `_is_http_proxy_url`（不写第二套形状校验）。
-    返回 `(错误信息, 状态码)`；成功为 `(None, None)`。
-    """
-    if env_io.has_line_break(value):
-        return "代理配置不能包含换行", 400
-    if not _is_http_proxy_url(value):
-        # 回显能让用户看出是哪一段写错了，但出口串按契约允许带 `user:pass@`：
-        # 必须抹掉 userinfo 再回显（错误文案会进响应、DOM 与日志）。
-        return f"代理地址格式不正确: {_mask_url_userinfo(value)[:40]}", 400
-    with _env_write_lock(env_path):
-        raw = read_env(env_path).get(key, "")
-        updated = value if index is None else yb_egress.replace_slot(raw, index, value)
-        # 写盘前对整串再查一次换行：新段已校验，但其余段是既有配置，本接口逐字保留它们，
-        # 只校验新段拦不住历史载荷被"保"进来（write_env_batch 内还有一道硬校验兜底）
-        if env_io.has_line_break(updated):
-            return "现有代理配置含换行符，请先手工清理该键", 400
-        try:
-            write_env_batch(env_path, {key: updated})
-        except ValueError as e:
-            return str(e), 400
-    return None, None
+    """读-改-写 `.env` 里一段出口（实现见 web/services/executor_env.py）。"""
+    return _executor_env._save_slot_egress(env_path, key, index, value, write_env_batch)
 
 
 def _executor_rows(env_path=ENV_FILE):
-    """读执行体清单（`YIBAN_EXECUTORS`）；清单缺失且存在旧三键时**一次性迁移写回**。
-
-    迁移不是另造一套写盘：读-判-写在同一把 `.env` 写锁内完成，写回走既有的
-    `write_env_batch`（键值校验、行折叠、原子替换都在那里）。**旧键不删**——保留
-    一个版本周期，回退读取与手工比对都还靠它们；迁移只"多写一个键"。
-    写回失败（只读挂载等）只告警并继续按内存结果服务：读一次配置不该让整个接口 500。
-    """
-    env = read_env(env_path)
-    rows, needs_write = yb_egress.manifest_state(env)
-    if not needs_write:
-        return rows
-    try:
-        with _env_write_lock(env_path):
-            rows, needs_write = yb_egress.manifest_state(read_env(env_path))
-            if needs_write:
-                write_env_batch(env_path, {
-                    yb_egress.ENV_MANIFEST: yb_egress.dump_manifest(rows)})
-                logger.info("执行体清单：已按旧三键迁移写入 %s（旧键保留）",
-                            yb_egress.ENV_MANIFEST)
-    except (OSError, ValueError) as e:
-        # 已脱敏：这里只打异常本身（不含代理串；write_env_batch 的报错只带键名）
-        logger.warning("执行体清单迁移写回失败（按内存结果继续）: %s", e)
-    return rows
+    """读执行体清单，必要时按旧三键迁移写回（实现见 web/services/executor_env.py）。"""
+    return _executor_env._executor_rows(env_path, write_env_batch)
 
 
 def _mutate_executor_rows(mutator, env_path=ENV_FILE):
-    """在 `.env` 写锁内读清单 → 应用 `mutator(rows)` → 写回清单键（读-改-写原子）。
-
-    `mutator` 返回 `(新行, 结果)`；校验失败抛 ValueError（消息可直接回前端 400）。
-    清单缺失时 `manifest_state` 先按旧三键给出行，改动后的整份清单一次写回
-    （顺带完成迁移；旧键仍保留）。只按槽位动目标行，其余行逐字保留。
-    """
-    with _env_write_lock(env_path):
-        rows, _ = yb_egress.manifest_state(read_env(env_path))
-        new_rows, result = mutator(rows)
-        write_env_batch(env_path, {
-            yb_egress.ENV_MANIFEST: yb_egress.dump_manifest(new_rows)})
-    return result
-
-
-def _next_executor_slot(rows):
-    """追加行的槽位号：清单最大 + 1，且**跳过保留期内真用过的号**（下标只增不复用）。
-
-    为什么需要这一步：纯函数 `next_slot` 只能给"清单最大值 + 1"，删掉当前最大行之后它会
-    把刚空出来的号再发一次，而那个号在领取池（`sign_claims.owner`）里已经有历史——重建的
-    执行体会被显示成前任的归属。故这里再按**领取历史**抬一次下限（保留期 14 天，与展示
-    口径同窗口）。历史里出现过的号一律不复用，跨主机也一样（同一个库＝同一个部署）。
-
-    库不可用/未初始化时退回"只按清单最大值 + 1"：编号可能重复，但**追加本身绝不能失败**。
-    """
-    floor = 0
-    try:
-        for owner in db.claim_owners_since():
-            parsed = yb_egress.parse_owner(owner)
-            if parsed["role"] == yb_egress.ROLE_WORKER and isinstance(parsed["index"], int):
-                floor = max(floor, parsed["index"] + 1)
-    except Exception as e:   # 库抖动不影响追加（与领取池的降级纪律一致）
-        logging.getLogger("yiban").debug("读取执行体历史失败（追加槽位退回清单口径）: %s", e)
-    return max(yb_egress.next_slot(rows), floor)
+    """`.env` 写锁内读清单 → 应用 mutator → 写回（实现见 web/services/executor_env.py）。"""
+    return _executor_env._mutate_executor_rows(mutator, env_path, write_env_batch)
 
 
 def _save_row_egress(env_path, slot, value):
-    """清单模式下只改该行的出口：**其余行逐字保留**，写回清单键（同一把写锁/同一写入函数）。
-
-    与 `_save_slot_egress`（旧逗号列表模式）同纪律：只动目标行，不重排、不规范化
-    别的行。槽位不在清单里 → ValueError → 400。
-    """
-    def _apply(rows):
-        return yb_egress.update_row(rows, slot, proxy=value), None
-
-    try:
-        _mutate_executor_rows(_apply, env_path)
-    except ValueError as e:
-        return str(e), 400
-    return None, None
+    """清单模式下只改该行的出口（实现见 web/services/executor_env.py）。"""
+    return _executor_env._save_row_egress(env_path, slot, value, write_env_batch)
 
 
 def _save_fallback_egress(env_path, value):
-    """清单模式下改兜底行的出口；清单里没有兜底行则**追加一行**（旧接口的写入要生效）。"""
-    def _apply(rows):
-        fb = yb_egress.fallback_row(rows)
-        if fb is None:
-            return yb_egress.add_row(rows, yb_egress.TYPE_FALLBACK, value), None
-        return yb_egress.update_row(rows, fb["slot"], proxy=value), None
-
-    try:
-        _mutate_executor_rows(_apply, env_path)
-    except ValueError as e:
-        return str(e), 400
-    return None, None
-
-
-def _validated_proxy_value(raw):
-    """行出口的校验 + 归一：返回 `(值, 错误信息)`；空/None = 直连（空串）。
-
-    换行在 strip **之前**拦（含尾随换行，与单段写接口同一纪律）；形状校验复用
-    `_is_http_proxy_url`（不写第二套）。错误回显先 `_mask_url_userinfo` 脱敏。
-    """
-    submitted = "" if raw is None else str(raw)
-    if env_io.has_line_break(submitted):
-        return None, "代理配置不能包含换行"
-    value = submitted.strip()
-    if value and not _is_http_proxy_url(value):
-        return None, f"代理地址格式不正确: {_mask_url_userinfo(value)[:40]}"
-    return value, None
-
-
-def _validated_name(raw):
-    """行自定义名的校验 + 归一：返回 `(值, 错误信息)`；空/None = 清除自定义名。
-
-    这条值要跟着 `slot/type/proxy` 一起挤进 `.env` 的**同一行**，故换行必须在 strip
-    之前拦住（与出口串同一纪律）；超长**明确拒绝**而不是静默截断（截断会让"我明明
-    起了这个名字"变成查不出来的困惑）。解析侧另走 `egress.clean_name`（宽容，见其说明）。
-    """
-    submitted = "" if raw is None else str(raw)
-    if env_io.has_line_break(submitted):
-        return None, "名称不能包含换行"
-    value = "".join(ch for ch in submitted.strip() if ch.isprintable()).strip()
-    if len(value) > yb_egress.NAME_MAX_LEN:
-        return None, f"名称最长 {yb_egress.NAME_MAX_LEN} 个字符"
-    return value, None
+    """清单模式下改兜底行的出口（实现见 web/services/executor_env.py）。"""
+    return _executor_env._save_fallback_egress(env_path, value, write_env_batch)
 
 
 def write_env_int(env_path, key, value):
-    """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
-    write_env_key(env_path, key, str(value) if value > 0 else "")
+    """把整数配置写入 .env：value<=0 删除该行，>0 写入（实现见 web/services/env_io.py）。"""
+    return _env_io_svc.write_env_int(env_path, key, value, write_env_batch)
 
 
-# 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 scripts/env_io.py
+# 行分隔符判定 / 键行折叠 / 行计数 / 歧义检测的单一实现已迁至 yiban/infra/env_io.py
 # （ENV_LINE_BREAK_CHARS / has_line_break / key_line_pattern / count_key_lines /
 # find_env_key_collisions）：读的一半（parse_env_file）本就在那里，写的一半随之
 # 落位，scripts/ 各 .env 写入方无需反向依赖 web 即可共用同一套判定。
-# 不变量（读写两侧同源）：新注入在写入口被 has_line_break 拦下；修复升级前
-# 已埋下的潜伏载荷不会被回溯改写——由 create_app 启动时的
-# _report_env_key_collisions（env_io.find_env_key_collisions）报告、运维手工清理。
-# 此处保留模块级别名：既有调用点与测试的探测口径
+# 不变量（读写两侧同源）：新注入在写入口被 has_line_break 拦下；升级前已埋下的
+# 潜伏载荷不会被回溯改写——由 create_app 启动时的
+# _report_env_key_collisions（yiban.infra.env_io.find_env_key_collisions）报告、运维手工清理。
+# 此处保留模块级别名（本模块已无自用点）：既有调用点与测试的探测口径
 # （webapp._has_line_break / webapp._ENV_LINE_BREAK_CHARS）保持不变。
 _ENV_LINE_BREAK_CHARS = env_io.ENV_LINE_BREAK_CHARS
 _has_line_break = env_io.has_line_break
@@ -1346,100 +1063,26 @@ _count_env_key_lines = env_io.count_key_lines
 def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
-    单键形态 = write_env_batch({key: value})：行分隔符注入校验、写锁、原子替换
-    均单源在 write_env_batch（防两份安全校验实现漂移）。
+    实现见 web/services/env_io.py；写回落在本模块的 `write_env_batch` 上（同一观测点）。
     """
-    write_env_batch(env_path, {key: value})
+    return _env_io_svc.write_env_key(env_path, key, value, write_env_batch)
 
 
 def write_env_batch(env_path, updates):
-    """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
-    避免多次独立写入时进程崩溃导致配置不一致。
-    updates: dict {key: value}，value 为空字符串则删除该键。
+    """批量写入多个键值（原子操作，实现见 web/services/env_io.py）。
 
-    写锁（_env_write_lock）：并发保存设置/公告时读-改-写互斥，防跨 worker 丢更新。
-    安全约束（安全审查 2026-08）：.env 为逐行键值格式，键或值含换行符会注入出
-    新的配置行（如经公告文本写入 YIBAN_ADMIN_PASSWORD_HASH 覆盖主管理员哈希提权）。
-    此处为兜底硬校验（调用方应先自行校验并返回友好错误），违规直接抛 ValueError。
-    字符集口径（2026-09-07 修订）：本函数自己用 splitlines() 读、
-    用 "\\n".join() 写，故校验必须覆盖 splitlines 认定的**全部**行分隔符
-    （见 _ENV_LINE_BREAK_CHARS）——只挡 \\n \\r 会留下"潜伏分隔符 + 后续读改写
-    实体化"这条同效路径。
+    落盘交给本模块现取的 `_atomic_write`：它是"每一次 .env 落盘"的观测点（测试在此
+    打桩快照全文），且 Windows 上的替换重试策略在那里；服务层另持绑定会让打桩静默失效。
     """
-    with _env_write_lock(env_path):
-        for key, value in updates.items():
-            # 键名白名单（批 3 §4.13）：任何行分隔符都过不了这个字符集，故键侧不再
-            # 单独查 _has_line_break；值仍要查——值本来就是自由文本
-            if not env_io.is_valid_env_key(key):
-                raise ValueError(f"write_env_batch 拒绝非法键名: {str(key)[:40]!r}")
-            if _has_line_break(value):
-                raise ValueError(f"write_env_batch 拒绝包含行分隔符的键值: {key}")
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        # 保留注释行和非更新键；过滤被更新键的旧行后追加新值
-        # （折叠用 _env_key_line_re，`KEY = v` 写法同样是该键的旧行）
-        pats = [_env_key_line_re(k) for k in updates]
-        out = [ln for ln in lines if not any(p.match(ln.strip()) for p in pats)]
-        for key, value in updates.items():
-            if value:
-                out.append(f"{key}={value}")
-        _atomic_write(env_path, "\n".join(out) + "\n", chmod_priv=True)
+    return _env_io_svc.write_env_batch(env_path, updates, _atomic_write)
 
 
 def ensure_secret_key(env_path):
-    """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。
+    """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值，实现见 web/services/env_io.py）。
 
-    .env 不可写时降级为进程内随机密钥并告警（服务可用，重启后会话失效）——
-    与 migrate_admin_password_to_hash 的降级策略一致（对抗性审查 F4）。
+    落盘同样交本模块现取的 `_atomic_write`（不可写时由服务层降级为进程内随机密钥并告警）。
     """
-    with _env_write_lock(env_path):
-        # v0.26.3：全新部署判定必须在读取前——.env 不存在 = 首次初始化，
-        # 默认写入「暂停注册」；既有部署（文件已存在，如升级安装）不写此键，
-        # 注册行为保持不变（用户裁决：默认允许，新部署才默认暂停）。
-        # touch 空 .env / 复制 .env.example 后文件存在但无任何有效键
-        # 仍视为全新部署（此前判定仅看文件存在性，会把空配置误判为既有部署
-        # 而不写暂停键，新部署默认开放注册）。
-        env = read_env(env_path)
-        new_deployment = not os.path.exists(env_path) or not env
-        key = env.get("YIBAN_SECRET_KEY", "").strip()
-        if key:
-            return key
-        key = secrets.token_hex(32)
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-                lines = f.read().splitlines()
-        # 旧键折叠与 key_line_pattern 同源：`YIBAN_SECRET_KEY = `（= 号前带空格、
-        # 值为空）此前被 startswith("YIBAN_SECRET_KEY=") 漏判，函数继续生成并追加
-        # 第二行，留下重复键影子行。走到这里 = 解析侧该键值为空，滤掉该键全部
-        # 旧行再落新行是安全的，任何写法都不会追加出重复。
-        # 这是日后把主凭据"歧义拒绝"扩大到 YIBAN_SECRET_KEY 的前提（现在不扩：
-        # scripts/ 各写入方尚未收敛到同一写入实现，此处拒绝会把写入侧缺陷
-        # 变成活体锁死）。
-        _sk_pat = _env_key_line_re("YIBAN_SECRET_KEY")
-        lines = [ln for ln in lines if not _sk_pat.match(ln.strip())]
-        lines.append(f"YIBAN_SECRET_KEY={key}")
-        if new_deployment:
-            # 常量字面量写入，无注入面；管理员完成初始配置后在设置页开启注册
-            lines.append("YIBAN_REGISTRATION_PAUSE=1")
-        try:
-            _atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
-        except OSError as e:
-            logger.warning(
-                "无法写入 %s（%s）：YIBAN_SECRET_KEY 仅本次进程生效（重启后会话将失效），"
-                "请修复目录权限或手动配置密钥",
-                env_path, e,
-            )
-            return key
-        logger.info("已自动生成 YIBAN_SECRET_KEY 并写入 %s", env_path)
-        if new_deployment:
-            logger.info(
-                "新部署默认暂停注册（YIBAN_REGISTRATION_PAUSE=1），"
-                "完成初始配置后可在设置页开启"
-            )
-        return key
+    return _env_io_svc.ensure_secret_key(env_path, _atomic_write)
 
 
 #: 内置主管理员（.env 账号）的会话凭据键名。
@@ -1707,7 +1350,9 @@ def _atomic_write(path, content, chmod_priv=False):
 # RLock：进程内"读→检查→写"操作级序列互斥（防呆判定与写入之间不被同进程请求交错；
 # 跨进程一致性由 SQLite 事务与 UNIQUE 约束保证）
 # ---------------------------------------------------------------------------
-_file_lock = threading.RLock()
+# `_file_lock` 的唯一真源在 web/services/locks.py，本模块在导入区再导出
+# （`web.app._file_lock is web.services.locks._file_lock`）：路由经 m._file_lock 取用，
+# 各模块自建一把会让"同进程内读写互斥"静默失效。
 # 限速/失败计数 dict 的进程内读改写锁（H7：单 worker + 锁内原子更新；
 # scrypt 校验不持锁，避免长时间阻塞其他请求）
 _rate_lock = threading.Lock()
@@ -1912,16 +1557,9 @@ def _log_manual_sign_exit(phone_label, returncode):
         logger.warning("手动签到退出码留痕失败: %s (returncode=%s)", phone_label, returncode)
 
 
-@contextlib.contextmanager
-def _env_write_lock(env_path):
-    """.env 写互斥：复用 scripts/env_lock.py 的共享锁。
-
-    修复（对抗性审查 2026-08-15 实证）：并发保存设置/公告时 read-modify-write
-    丢更新——gunicorn 多 worker 跨进程写 .env 需文件锁；同一把锁也供
-    密钥生成等场景使用，避免各写各的锁文件。
-    """
-    with env_lock.env_write_lock(env_path):
-        yield
+# `.env` 写互斥与公告元数据解析的实现见 web/services/env_io.py：
+# `_env_write_lock` 是纯再导出（跨进程写锁沿用 yiban.infra.env_lock 真源）；
+# `_parse_announcement_meta` 与其分隔符/时刻格式常量同在导入区再导出。
 
 # 启动缓存（与数据无关）：CHANGELOG 部署重启自然失效；公告**发布**时同步更新
 _changelog_cache = [None]  # [文本]
@@ -1938,28 +1576,8 @@ ANNOUNCEMENT_DRAFT_META_KEY = "YIBAN_ANNOUNCEMENT_DRAFT_META"
 # 线上公告的发布人/时刻：前端要同屏显示"草稿是谁写的"与"线上是谁在何时发的"，
 # 否则管理员只能看到一串文本，分不清自己看到的到底是待发布内容还是已生效内容。
 ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
-ANNOUNCEMENT_DRAFT_META_SEP = "|"
-ANNOUNCEMENT_DRAFT_META_FMT = "%Y-%m-%d %H:%M:%S"
-
-
-def _parse_announcement_meta(raw):
-    """解析公告元数据 `<小写邮箱>|YYYY-MM-DD HH:MM:SS` → `(作者, 时刻)`。
-
-    草稿与线上公告共用这一形态，故解析器只有一个。任何不符都返回 `("", "")`
-    （"元数据不可用"）而不是抛错：该键可被手工编辑，也可能是半成品写入，而它只是
-    公告 GET 的附带信息，不值当把这条**匿名也要读**的接口拖崩。
-    """
-    parts = str(raw or "").split(ANNOUNCEMENT_DRAFT_META_SEP)
-    if len(parts) != 2:
-        return "", ""
-    author, when = parts[0].strip(), parts[1].strip()
-    if not author or not when:
-        return "", ""
-    try:
-        datetime.strptime(when, ANNOUNCEMENT_DRAFT_META_FMT)
-    except ValueError:
-        return "", ""
-    return author, when
+# 元数据值的分隔符与时刻格式随解析器（_parse_announcement_meta）留在
+# web/services/env_io.py，此处以导入区再导出保持 m.ANNOUNCEMENT_DRAFT_META_SEP/_FMT 可达。
 
 
 def load_accounts():
@@ -3344,46 +2962,19 @@ def _is_loopback_host(host):
 
 
 # .env 歧义键启动检测：每进程只报一次（同 _notify_capacity_once 的节流思路）。
+# 闩留在本模块（测试按 `webapp._env_collision_reported = False` 复位它来逐例复现启动）；
+# 检测、ERROR 日志与告警正文的实现见 web/services/env_io.py，告警出口现取本模块的
+# `send_notification`（它带着既有的节流与账本语义）。
 _env_collision_reported = False
 
 
 def _report_env_key_collisions(env_path):
-    """启动时报告 .env 的行模型歧义键（潜伏行分隔符 / 影子重复行）。只检测不改写。
-
-    刻意先于 create_app 里一切 .env 写入（口令迁移 / init_db 落盐 /
-    ensure_secret_key）：这些写入的读-改-写会把潜伏载荷实体化——升级后第一次
-    重启本身就是一个实体化器，报告必须赶在它前面，运维才能据此判断是否在
-    升级前被打。不做静默自动改写：归一化会连带改动其他键的存量值；
-    清理动作 = ERROR 日志 + 一次 urgent 告警点名键与清理方法。
-    """
+    """启动时报告 .env 的行模型歧义键（实现见 web/services/env_io.py）。只检测不改写。"""
     global _env_collision_reported
     if _env_collision_reported:
         return
     _env_collision_reported = True
-    hits = env_io.find_env_key_collisions(env_path)
-    if not hits:
-        return
-    keys = ", ".join(sorted(hits))
-    logger.error(
-        "%s 检测到行模型歧义配置键（值内潜伏行分隔符或同名键多行，"
-        "解析器按后写覆盖先写取值）：%s。请备份后手工把每个键清理为唯一一行；"
-        "本次启动只检测不改写",
-        env_path, keys,
-    )
-    send_notification(
-        ".env 配置歧义告警",
-        mail_layout.Mail(
-            summary=f"{env_path} 检测到行模型歧义配置键。",
-            fields=[("受影响键", keys),
-                    ("成因", "值内藏行分隔符（U+2028 等，任何一次读-改-写都会实体化成新配置行）"
-                             "或同名键多行（含带空格 `KEY = v` 写法），"
-                             "解析器按后写覆盖先写取值，生效值不可信")],
-            advice=["备份后手工编辑 .env，把列出的每个键清理为唯一一行",
-                    "本检测不会自动改写文件"],
-            level="urgent",
-        ),
-        urgent=True,
-    )
+    return _env_io_svc._report_env_key_collisions(env_path, send_notification)
 
 
 # ---------------------------------------------------------------------------
