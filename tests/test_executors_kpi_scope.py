@@ -67,6 +67,24 @@ class KpiScopeTest(unittest.TestCase):
         self.assertIn("不是用户上限", self.tpl,
                       "必须点明与用户上限的区别（此前正是这两者被混用）")
 
+    def test_first_card_is_todays_progress(self):
+        """首卡从「清单行数」换成「今日进度」：行数在表里一眼可见，卡片该回答"今天跑得怎么样"。"""
+        self.assertIn("今日进度", self.tpl)
+        self.assertNotIn("清单行数", self.tpl)
+        body = _function_body(self.js, "paintKpis") + _function_body(self.js, "progressText")
+        self.assertIn('"set-exec-kpi-progress"', body)
+        self.assertIn("activity.totals", body, "分子必须取当日已了结数")
+        self.assertIn("current_accounts", body, "分母必须取计入容量的账号数")
+
+
+class FallbackSwitchHintTest(unittest.TestCase):
+    """「未启用」必须同时给出开关在哪——否则用户看到状态却找不到入口。"""
+
+    def test_off_state_points_to_the_row_dialog(self):
+        js = _read(JS)
+        self.assertRegex(js, r'fb\.status === "off"[\s\S]{0,200}点「设置」开启',
+                         "未启用时要在状态列指出开关位置")
+
 
 class FallbackStatusCopyTest(unittest.TestCase):
     def test_off_state_names_the_switch_not_a_process(self):
