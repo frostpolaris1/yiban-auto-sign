@@ -161,8 +161,10 @@
   }
 
   /* ---------------- 清单：规模 KPI + 一览表 ---------------- */
-  // 规模 KPI（口径 2026-09-18 用户裁决改版）：前两张来自接口的清单本身；后两张来自页面注入的
-  // 容量对象（`/api/settings` 的 capacity）——执行体分的是**账号**，故不再用用户容量上限：
+  // 规模 KPI（口径 2026-09-18 用户裁决改版，2026-09-19 首卡换值）：
+  //   «今日进度» = 今日已了结的账号数 ÷ 计入容量的账号数——首卡原先是「清单行数」，而行数在
+  //     下面的表里一眼可见，卡片位置更该回答"今天跑得怎么样"。失败数不进这张卡：每行的「当日」
+  //     列已逐执行体列了领取/完成/失败，总量再报一遍属重复；
   //   «平均每执行体分到的人数» = **计入容量的账号数** ÷ **并行执行体数**（只数「并行」行：
   //     停用与故障转移不分担账号，与后端 workers.configured 同口径），向上取整；
   //   «设定的账号容量上限» = 容量配额里的**账号**上限（与用户上限是两回事，别混用）。
@@ -187,13 +189,19 @@
     if (!c || c[key] == null) return null;
     return count(c[key]);
   }
+  // 今日进度：两个数都来自本分区的接口（activity.totals 与 current_accounts），前端只做拼接
+  function progressText() {
+    var counted = count(lastData && lastData.current_accounts);
+    var totals = (lastData && lastData.activity && lastData.activity.totals) || {};
+    return count(totals.done) + "/" + counted;
+  }
   function paintKpis() {
     var loaded = !!lastData;
     var w = count(lastData && lastData.workers && lastData.workers.configured);
     var acc = capacityNum("accounts");        // 计入容量的账号数（后端唯一口径）
     var amax = capacityNum("accounts_max");   // 账号容量上限（0 = 不限）
     var per = (acc != null && w > 0) ? Math.ceil(acc / w) : null;
-    kpiSet("set-exec-kpi-rows", loaded ? executors().length : null);
+    kpiSet("set-exec-kpi-progress", loaded ? progressText() : null);
     kpiSet("set-exec-kpi-worker", loaded ? w : null);
     kpiSet("set-exec-kpi-perexec", loaded ? per : null, "人");
     if (!loaded) kpiSet("set-exec-kpi-capacity", null, "人", "—");
@@ -214,6 +222,11 @@
     } else if (type === "fallback") {
       var fb = (lastData && lastData.fallback) || {};
       inner.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
+      if (fb.status === "off") {
+        // 徽标说「未启用」时必须指出开关在哪：它就在本行的「设置」弹窗里。
+        // 只报状态、不给入口，用户只能对着"未启用"找一圈（用户 2026-09-19 反馈）。
+        inner.appendChild(YB.el("span", { class: "set-exec-off", text: "点「设置」开启" }));
+      }
     } else {
       inner.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
     }
