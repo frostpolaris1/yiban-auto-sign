@@ -13,7 +13,11 @@ CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 **复用**
 `appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；
 `login_fails()` 是登录失败计数表的唯一取用点，认证与个人两域共用同一份账；
-`high_risk_gate()` / `reconfirm_admin_password()` 取回留在 web.app 里的高危门禁闭包。
+`high_risk_gate()` / `reconfirm_admin_password()` 取回留在 web.app 里的高危门禁闭包，
+`admin_delete_limited()` 取回同族的"删除/通道变更"限速判定；
+`verify_limits()` / `verify_fails()` 是账号验证配额与冷却的唯一取用点（管理员添加与
+用户自助提交共用同一份账），`detail_limits()` 是账号详情读取限速表，
+`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕的两个入口。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
@@ -68,10 +72,54 @@ def reconfirm_admin_password():
     return current_app.extensions["yiban_reconfirm_admin_password"]
 
 
+def admin_delete_limited():
+    """高危删除/告警通道变更的窗口限速判定：超限返回 True（每 app 实例一份闭包）。
+
+    与 `high_risk_gate()` 同源（它内部也调这一个判定）；"删数据"与"拆报警器"共用同一
+    份计数，不只是否可逆区分前台入口，故取用点收在本包一处。
+    """
+    return current_app.extensions["yiban_admin_delete_limited"]
+
+
+def verify_limits():
+    """账号验证尝试配额表 {username: (count, window_start)}（每 app 实例一份）。
+
+    管理员添加账号与用户自助提交两条路径共用同一份配额，故取用点收在本包一处。
+    """
+    return current_app.extensions["yiban_verify_limits"]
+
+
+def verify_fails():
+    """账号验证认证失败冷却表 {phone: (fails, window_start, cooldown_until)}（每 app 实例一份）。
+
+    与 `verify_limits()` 同源：两条提交路径共用同一份冷却账。
+    """
+    return current_app.extensions["yiban_verify_fails"]
+
+
+def detail_limits():
+    """账号详情读取限速表 {actor: (count, window_start)}（每 app 实例一份）。
+
+    按会话而非 IP 计数（校园网出口共享，按 IP 会把两个管理员的运维互相挡死）。
+    """
+    return current_app.extensions["yiban_detail_limits"]
+
+
+def read_audit_trace():
+    """只读面聚合留痕：窗口内聚合成一行，不逐请求写（每 app 实例一份闭包）。"""
+    return current_app.extensions["yiban_read_audit_trace"]
+
+
+def read_audit_denied_trace():
+    """只读面"超限被拒"留痕：每窗口至多一行（每 app 实例一份闭包）。"""
+    return current_app.extensions["yiban_read_audit_denied_trace"]
+
+
 def register_all(app):
     """装配全部路由域。顺序与原定义顺序一致；路径冲突会在启动时直接报错。"""
-    from web.routes import auth, me, notify, pages
+    from web.routes import accounts_api, auth, me, notify, pages
     pages.register(app)
     auth.register(app)
     me.register(app)
     notify.register(app)
+    accounts_api.register(app)
