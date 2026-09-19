@@ -119,19 +119,28 @@ class LogsByDateTest(unittest.TestCase):
             os.path.join(self.tmp, f"sign-{HIST_DATE}.log"),
         )
 
-    # ---- 2. _log_lines_for：只返回该日 yiban 非 DEBUG 行 ----
+    # ---- 2. _log_lines_for：该日 `yiban.*` 全部级别 + 其它组件仅告警级（2026-09-19 改口径）----
     def test_log_lines_for_filters(self):
+        """签到链路的子 logger 与 DEBUG 必须入列——细节行原先被正则漏掉，页面只剩结果。"""
         self._write_date_log(HIST_DATE, [
             _log_line(HIST_DATE, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
             _log_line(HIST_DATE, "INFO", "yiban", "==== 开始执行签到，共 1 个账号，队列重试模式 ===="),
-            _log_line(HIST_DATE, "DEBUG", "yiban", "[13800138001] 登录方式: KillYiBan 同款"),  # DEBUG 应滤掉
-            _log_line(HIST_DATE, "INFO", "werkzeug", '127.0.0.1 - - "GET /api/logs HTTP/1.1" 200 -'),  # 非 yiban 应滤掉
-            "无格式行（run.sh 直接 echo）",  # 不匹配正则应滤掉
+            _log_line(HIST_DATE, "INFO", "yiban.client", "[13800138001] 生成定位: (118.8, 31.9)"),
+            _log_line(HIST_DATE, "INFO", "yiban.fyiban.protocol", "[13800138001] 登录成功"),
+            _log_line(HIST_DATE, "DEBUG", "yiban", "[13800138001] 登录方式: KillYiBan 同款"),
+            _log_line(HIST_DATE, "INFO", "werkzeug", '127.0.0.1 - - "GET /api/logs HTTP/1.1" 200 -'),
+            "无格式行（run.sh 直接 echo）",
         ])
         out = self.webapp._log_lines_for(HIST_DATE)
-        self.assertEqual(len(out), 2)
-        self.assertIn("签到成功", out[0])
-        self.assertIn("开始执行签到", out[1])
+        joined = "\n".join(out)
+        self.assertIn("签到成功", joined)
+        self.assertIn("开始执行签到", joined)
+        self.assertIn("生成定位", joined, "yiban.client 的细节行必须入列（旧正则漏掉带点的 logger）")
+        self.assertIn("登录成功", joined, "yiban.fyiban.protocol 同上")
+        self.assertIn("登录方式", joined, "yiban.* 的 DEBUG 也入列（部署自己开的级别）")
+        self.assertNotIn("werkzeug", joined, "非 yiban 组件的 INFO 仍不入列")
+        self.assertNotIn("无格式行", joined)
+        self.assertEqual(len(out), 5)
 
     def test_log_lines_for_blocks_crossday_leftover(self):
         """跨天残留行（文件日期 ≠ 行首日期）不得混入。"""
@@ -148,15 +157,19 @@ class LogsByDateTest(unittest.TestCase):
 
     # ---- 3. parse_sign_log 兼容按天文件（0.19.6 起仅返回 recent 行，states 语义已移除）----
     def test_parse_sign_log_returns_recent_only(self):
+        """口径与 `_log_lines_for` 同源（2026-09-19）：`yiban.*` 全级别入列，其它组件仅告警级。"""
         today = datetime.now().strftime("%Y-%m-%d")
         self._write_date_log(today, [
             _log_line(today, "INFO", "yiban", "[13800138001] ✅ 签到成功"),
-            _log_line(today, "DEBUG", "yiban", "[13800138001] 内部细节"),  # DEBUG 应滤掉
-            _log_line(today, "INFO", "werkzeug", 'GET /api/logs'),  # 非 yiban 应滤掉
+            _log_line(today, "DEBUG", "yiban", "[13800138001] 内部细节"),
+            _log_line(today, "INFO", "yiban.client", "[13800138001] 生成定位: (118.8, 31.9)"),
+            _log_line(today, "INFO", "werkzeug", "GET /api/logs"),  # 非 yiban INFO 仍应滤掉
         ])
         recent = self.webapp.parse_sign_log(self.webapp.log_path_for())
-        self.assertEqual(len(recent), 1)
+        self.assertEqual(len(recent), 3, "yiban 家族全收；非 yiban 的 INFO 不收")
         self.assertIn("✅ 签到成功", recent[0])
+        self.assertIn("内部细节", recent[1])
+        self.assertIn("生成定位", recent[2])
 
     # ---- 4. API：/api/logs 日期参数 ----
     def _admin_client(self):
