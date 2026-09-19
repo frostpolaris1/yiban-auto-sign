@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""数据组路由：签到日志的查看/导出与签到事件的结构化查询（管理员面）。
+"""数据组路由：签到日志的查看/导出、签到事件的结构化查询与系统状态探针（管理员面）。
 
 **功能**
 `GET /api/logs` 按天签到日志（检索 q / 全量 all / 探针与签到事件摘要）；
 `GET /api/logs/export` 某日日志的脱敏导出（与展示层同一条可见性过滤管线）；
-`GET /api/admin/sign-events` 单账号时间线 / 实时事件流 / 按天统计。
+`GET /api/admin/sign-events` 单账号时间线 / 实时事件流 / 按天统计；
+`GET /api/clock` 与 `POST /api/ping` 是数据总览页「系统状态」卡的两条探针
 
 **归属**
 `web.app.create_app` 的"日志与状态"面；数据总览页（/data/dashboard）是页面路由，
@@ -237,8 +238,35 @@ def api_admin_sign_events():
     )
 
 
+def api_ping():
+    m = _appmod()
+    ok, detail = m.check_connectivity()
+    return jsonify({"ok": True, "reachable": ok, "detail": detail})
+
+
+def api_clock():
+    m = _appmod()
+    text, color = m.sign_status()
+    try:
+        tz_offset_min = int(m.clock.now().astimezone().utcoffset().total_seconds() // 60)
+    except Exception:
+        tz_offset_min = 0
+    return jsonify(
+        {
+            "ok": True,
+            "now": m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "server_ts": int(time.time()),  # 服务器 epoch 秒，供前端平滑走秒与校准
+            "tz_offset_min": tz_offset_min,  # 服务器本地时区相对 UTC 的分钟偏移
+            "sign_status": text,
+            "color": color,
+        }
+    )
+
+
 def register(app):
-    """在本域注册三条数据路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册五条数据路由；endpoint 取函数名（url_for 依赖）。"""
     app.add_url_rule("/api/logs/export", view_func=api_logs_export)
     app.add_url_rule("/api/logs", view_func=api_logs)
     app.add_url_rule("/api/admin/sign-events", view_func=api_admin_sign_events)
+    app.add_url_rule("/api/ping", view_func=api_ping, methods=["POST"])
+    app.add_url_rule("/api/clock", view_func=api_clock)
