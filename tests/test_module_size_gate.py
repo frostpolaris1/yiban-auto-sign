@@ -61,6 +61,15 @@ OVERSIZED = {
         "「账号自助（my-accounts 族）」与「选片/历史（time-pref、calendar、logs、verify-jobs）」"
         "一分为二，共享的本人视图助手留在账号侧。"
     )),
+    "web/routes/settings_api.py": (None, (
+        "设置 / 执行体 / 公告域路由：十五条管理员视图（系统开关读写、执行体清单读写与单段"
+        "出口改写、清单行增删改、现场实测、公告草稿/读取/双人发布、注册暂停状态、更新日志）"
+        "＋ 两条落点助手（_executor_write_guard / _reply_slot_egress）与 register()。规模来自"
+        "注释契约（四问头 + 每处口径与口令门次序的「为什么」，约占四分之一）与真被依赖的"
+        "顺序约束（口令复核先于占额度、执行体写回要与清单同步、公告发布必须当次口令）。"
+        "下一步：若超过 1600 行，按「系统设置 + 公告」与「执行体清单（含现场实测）」切成两个"
+        "模块——两组之间没有共享状态，口令门都经 web.routes 取回，切分不需跨模块传状态。"
+    )),
     "yiban/store/db.py": (None, (
         "SQLite 数据访问层的门面与尚未按域拆出的表访问。已拆出并"
         "再导出：连接（connection）、迁移（migrations）、审计链（audit_chain）、事件（events）、"

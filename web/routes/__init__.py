@@ -73,6 +73,16 @@ def reconfirm_admin_password():
     return current_app.extensions["yiban_reconfirm_admin_password"]
 
 
+def sensitive_password_gate():
+    """敏感操作口令复核的唯一入口（每 app 实例一份闭包）。
+
+    `POST /api/settings` 的系统开关、`/api/announcement/publish` 与执行体写操作三处
+    共用同一份失败计数与冷却，故取用点收在本包一处；实现留在 `web.app.create_app`
+    （闭包依赖工厂局部的敏感口令计数表，做成模块级会跨 app 实例串账）。
+    """
+    return current_app.extensions["yiban_sensitive_password_gate"]
+
+
 def admin_delete_limited():
     """高危删除/告警通道变更的窗口限速判定：超限返回 True（每 app 实例一份闭包）。
 
@@ -126,7 +136,18 @@ def read_audit_denied_trace():
 
 def register_all(app):
     """装配全部路由域。顺序与原定义顺序一致；路径冲突会在启动时直接报错。"""
-    from web.routes import accounts_api, auth, data, me, my, notify, pages
+    from web.routes import (
+        accounts_api,
+        auth,
+        data,
+        me,
+        my,
+        notify,
+        pages,
+        settings_api,
+        signin_api,
+        users_api,
+    )
     pages.register(app)
     auth.register(app)
     me.register(app)
@@ -134,3 +155,6 @@ def register_all(app):
     accounts_api.register(app)
     my.register(app)
     data.register(app)
+    users_api.register(app)
+    settings_api.register(app)
+    signin_api.register(app)
