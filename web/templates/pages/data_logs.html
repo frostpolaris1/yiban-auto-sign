@@ -5,7 +5,7 @@
    手机号在列表与日志层一律脱敏展示；探针/签到事件用结构化列表渲染（非 emoji 文本流），
    所有后端数据经 YB.el/textContent 写入，不用 innerHTML。
 
-   信息架构：三块内容各自成标签页（日志 / 探针记录 / 签到事件），一次只渲染一屏，
+   信息架构：三块内容各自成标签页（日志 / 签到事件 / 探针记录），一次只渲染一屏，
    长列表在卡内滚动而不是把整页拉长。手动签到已移除 —— 它的能力与「账号管理」的
    单账号/批量手动签到重复，留一处即可（页头因此也不再有主操作按钮）。
 
@@ -31,12 +31,15 @@
          计数直接放在标签上：省掉卡内一行「共 N 条」，切标签前就能看到量 #}
       <a class="tab is-active" role="tab" id="log-tab-main" aria-selected="true"
          aria-controls="log-panel-main" href="#" data-tab-target="main" tabindex="0">日志</a>
-      <a class="tab" role="tab" id="log-tab-probe" aria-selected="false"
-         aria-controls="log-panel-probe" href="#" data-tab-target="probe" tabindex="-1">
-        探针记录 <span class="log-count" id="probe-count">0</span></a>
+      {# 顺序：日志 → 签到事件 → 探针记录（用户 2026-09-19：把探针与签到事件对调——签到事件是
+         日常要看的那块，探针只在排查健康问题时才看）。面板 DOM 顺序与标签无关：靠 aria-controls
+         关联、切换按 data-tab-target，故只调标签顺序即可。 #}
       <a class="tab" role="tab" id="log-tab-signev" aria-selected="false"
          aria-controls="log-panel-signev" href="#" data-tab-target="signev" tabindex="-1">
         签到事件 <span class="log-count" id="signev-count">0</span></a>
+      <a class="tab" role="tab" id="log-tab-probe" aria-selected="false"
+         aria-controls="log-panel-probe" href="#" data-tab-target="probe" tabindex="-1">
+        探针记录 <span class="log-count" id="probe-count">0</span></a>
     </div>
   </div>
 
