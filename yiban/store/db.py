@@ -13,9 +13,9 @@
 - 2026-09-19 第一刀：连接层状态与原语（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/
   `DB_DEFAULT`/`get_conn`/`is_initialized`）移入 `yiban/store/connection.py`，本模块再导出
   （三个状态量读写都转发，见下方）；`init_db` 与建表/迁移留在本模块（同属一条启动序列）。
-- 2026-09-19 第二刀：审计链域（`audit()` 与写入欠账口径、哈希链校验、全表重链留痕、库外锚点族、
-  审计密钥来源与缓存）移入 `yiban/store/audit_chain.py`，本模块再导出；审计域反向经本门面
-  按属性取连接/锁/写事务入口（`_facade()`），`db._audit_hash = 替身` 一类打桩面与拆分前一致。
+- 审计链域（`audit()` 与写入欠账口径、哈希链校验、全表重链留痕、库外锚点族、审计密钥来源与
+  缓存）的定义点在 `yiban/store/audit_chain.py`，本模块再导出；审计域反向经本门面按属性取
+  连接/锁/写事务入口（`_facade()`），`db._audit_hash = 替身` 一类打桩面不变。
 """
 import contextlib
 import datetime
@@ -96,8 +96,8 @@ claim_owners_for_day = _claims.owners_for_day
 claim_owners_since = _claims.owners_since
 purge_sign_claims = _claims.purge
 
-# 审计链域（唯一定义点在 yiban/store/audit_chain.py，2026-09-19 第二刀）：函数与常量按原样
-# 再导出，既有 `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
+# 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
+# `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
 # 三个**可变状态**名（`_AUDIT_KEY_CACHE` / `_AUDIT_FAIL_UNFLUSHED` / `_AUDIT_FAIL_UNFLUSHED_DB`）
 # 不走这里的快照式再导出，而走下方模块类的读写转发——否则 `db._AUDIT_KEY_CACHE = None`
 # （tests/test_rekey_key_source.py 的清缓存）只会写在一份陈旧副本上、真缓存纹丝不动。
