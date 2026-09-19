@@ -70,15 +70,16 @@ OVERSIZED = {
         "下一步：若超过 1600 行，按「系统设置 + 公告」与「执行体清单（含现场实测）」切成两个"
         "模块——两组之间没有共享状态，口令门都经 web.routes 取回，切分不需跨模块传状态。"
     )),
-    "yiban/store/db.py": (None, (
-        "SQLite 数据访问层的门面与尚未按域拆出的表访问。已拆出并"
-        "再导出：连接（connection）、迁移（migrations）、审计链（audit_chain）、事件（events）、"
-        "用户与注销（users）、每日清理（cleanup）。剩余部分不是'没拆'而是'还没拆'：accounts 表 "
-        "CRUD 与加解密、time_prefs、session_cache、时钟守卫与 app_meta、追踪盐哈希五个域，"
-        "外加跨域粘合（写事务入口、连带清理 _cascade_phone_owned、清理留痕 _record_purge_event/"
-        "_table_min_max/_clock_jump_guard）——粘合函数被拆出模块反向依赖（events/cleanup/users "
-        "都经门面取），拆走就得改成跨模块传递。下一步：按域继续迁出，accounts CRUD 迁入现有 "
-        "accounts.py，time_prefs / session_cache / clock+meta 各立模块；粘合函数留在门面。"
+    "yiban/store/db.py": (800, (
+        "SQLite 数据访问层的门面：启动编排 `init_db`、密钥来源解析 `resolve_env_file` / "
+        "`require_existing_env_file`、写事务入口 `_begin_immediate`、时钟跳变守卫 "
+        "`_clock_jump_guard`，以及跨域粘合助手（清理留痕 `_record_purge_event` / "
+        "`_table_min_max`、手机号连带清理 `_cascade_phone_owned` / `_clear_session_cache_by_phones`）。"
+        "表级 CRUD 已全部按域拆入同包模块，之所以是终态：剩下的粘合函数被各域模块**经门面"
+        "反向依赖**（events/cleanup/users 等都按属性取），拆走就得把共享事务与留痕语义改成"
+        "跨模块传递（门禁判据①同一件事成立、②通信成本高）；再导出与 `_FORWARDED_STATE` 读写"
+        "转发面（57 项）本身也必须有唯一宿主，否则 `db._conn = None` 一类打桩静默失效。"
+        "下一步：粘合函数若再增，参照 web 侧服务层收口模式另立存储服务层，而不是继续往本文件堆。"
     )),
     "yiban/store/users.py": (800, (
         "用户与注销域：users / user_delete_requests 两表的读写、"
@@ -107,12 +108,14 @@ OVERSIZED = {
     )),
     "yiban/store/migrations.py": (None, (
         "schema 版本迁移域：基线建表、migrate_v1..v17、"
-        "版本编排 `_run_migrations` 与迁移助手 `_table_columns`/`_ensure_column`/`_ensure_index`。"
+        "版本编排 `_run_migrations` 与迁移助手 `_table_columns`/`_ensure_column`/`_ensure_index`，"
+        "以及 JSON → SQLite 自动导入 `_maybe_migrate`/`_rename_backup`（同属 init_db 启动序列）。"
         "整块是**一份按版本号冻结的时间序列**——已发布的迁移函数不可再改，拆开就得把冻结的"
         "迁移登记表与「核心/可选、失败是否阻断启动」的编排判据在模块间来回传递（门禁判据①"
-        "「同一件事」成立、②通信成本高）。下一步：版本只增不改，行数会持续增长；若超过 1000 "
-        "行，按「迁移项（v1..vN，纯 DDL/数据修复）」与「编排 + 助手」切成两个模块，迁移登记表"
-        "留在编排侧作唯一登记点。当前不拆，避免为搬家再动 db 门面与 `db._MIGRATIONS` 读写转发面。"
+        "「同一件事」成立、②通信成本高）。下一步：版本只增不改，行数会持续增长（现 955 行）；"
+        "若超过 1000 行，按「迁移项（v1..vN，纯 DDL/数据修复）」与「编排 + 助手」切成两个模块，"
+        "迁移登记表留在编排侧作唯一登记点。当前不拆，避免为搬家再动 db 门面与 `db._MIGRATIONS` "
+        "读写转发面。"
     )),
     # scripts/signin.py 已按"执行一轮"的边界切分为 yiban/engine/*（最大 round.py 507 行），
     # 旧路径只剩兼容壳（约 130 行），故不再登记。
