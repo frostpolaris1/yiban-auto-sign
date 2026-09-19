@@ -30,11 +30,7 @@ import time
 from flask import current_app, jsonify, session
 
 from web.routes import appmod as _appmod
-
-
-def _login_fails():
-    """登录失败计数表：与 web/app.py 中未搬走的路由共用同一份（create_app 登记在 extensions）。"""
-    return current_app.extensions["yiban_login_fails"]
+from web.routes import login_fails as _login_fails
 
 
 def _register_limits():

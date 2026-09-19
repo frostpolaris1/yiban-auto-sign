@@ -11,7 +11,8 @@
 CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 
 **复用**
-`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）。
+`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；
+`login_fails()` 是登录失败计数表的唯一取用点，认证与个人两域共用同一份账。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
@@ -39,8 +40,18 @@ def appmod():
     return mod
 
 
+def login_fails():
+    """登录失败计数表：create_app 登记在 extensions，保每 app 实例一份。
+
+    `_rate_lock` 保护的同一个 dict 同时被登录、改密、注销、恢复四条路径读写
+    （安全语义依赖同一份账），故取用点收在本包一处，各域不再各持别名。
+    """
+    return current_app.extensions["yiban_login_fails"]
+
+
 def register_all(app):
     """装配全部路由域。顺序与原定义顺序一致；路径冲突会在启动时直接报错。"""
-    from web.routes import auth, pages
+    from web.routes import auth, me, pages
     pages.register(app)
     auth.register(app)
+    me.register(app)
