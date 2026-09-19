@@ -12,10 +12,13 @@
 
 - 2026-09-19 第一刀：连接层状态与原语（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/
   `DB_DEFAULT`/`get_conn`/`is_initialized`）移入 `yiban/store/connection.py`，本模块再导出
-  （三个状态量读写都转发，见下方）；`init_db` 与建表/迁移留在本模块（同属一条启动序列）。
+  （三个状态量读写都转发，见下方）；`init_db` 留在本模块（启动序列的编排点）。
 - 审计链域（`audit()` 与写入欠账口径、哈希链校验、全表重链留痕、库外锚点族、审计密钥来源与
   缓存）的定义点在 `yiban/store/audit_chain.py`，本模块再导出；审计域反向经本门面按属性取
   连接/锁/写事务入口（`_facade()`），`db._audit_hash = 替身` 一类打桩面不变。
+- 迁移域（建表/索引定义、`migrate_v1..v17`、版本编排 `_run_migrations`、`_ALLOWED_TABLES`、
+  `MigrationDeferred`）的定义点在 `yiban/store/migrations.py`，本模块再导出；`init_db` 按裸名
+  调用建表与迁移编排，`mock.patch.object(db, "_run_migrations", …)` 打桩面不变。
 """
 import contextlib
 import datetime
@@ -24,7 +27,6 @@ import hmac
 import json
 import logging
 import os
-import re
 import secrets
 import sqlite3
 import sys
@@ -52,6 +54,7 @@ from yiban.store import audit_chain as _audit_chain  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
 from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
+from yiban.store import migrations as _migrations  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
 account_is_signable = _accounts.is_signable
@@ -174,6 +177,39 @@ sign_events_on = _events.sign_events_on
 sign_events_recent_date = _events.sign_events_recent_date
 _event_cleanup = _events._event_cleanup
 
+# 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v17、版本编排
+# `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
+# / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
+# （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。
+MigrationDeferred = _migrations.MigrationDeferred
+_ALLOWED_TABLES = _migrations._ALLOWED_TABLES
+_table_columns = _migrations._table_columns
+_ensure_column = _migrations._ensure_column
+_ensure_index = _migrations._ensure_index
+_create_tables = _migrations._create_tables
+_chain_head = _migrations._chain_head
+_MALFORMED_COL_RE = _migrations._MALFORMED_COL_RE
+_malformed_schema_tables = _migrations._malformed_schema_tables
+_create_verify_jobs_table = _migrations._create_verify_jobs_table
+migrate_v1 = _migrations.migrate_v1
+migrate_v2 = _migrations.migrate_v2
+migrate_v3 = _migrations.migrate_v3
+migrate_v4 = _migrations.migrate_v4
+migrate_v5 = _migrations.migrate_v5
+migrate_v6 = _migrations.migrate_v6
+migrate_v7 = _migrations.migrate_v7
+migrate_v8 = _migrations.migrate_v8
+migrate_v9 = _migrations.migrate_v9
+migrate_v10 = _migrations.migrate_v10
+migrate_v11 = _migrations.migrate_v11
+migrate_v12 = _migrations.migrate_v12
+migrate_v13 = _migrations.migrate_v13
+migrate_v14 = _migrations.migrate_v14
+migrate_v15 = _migrations.migrate_v15
+migrate_v16 = _migrations.migrate_v16
+migrate_v17 = _migrations.migrate_v17
+_run_migrations = _migrations._run_migrations
+
 logger = logging.getLogger("yiban.db")
 
 DB_DEFAULT = _connection.DB_DEFAULT
@@ -203,10 +239,6 @@ class DuplicateOwnerError(Exception):
     """该用户已有一个未删除账号（accounts.owner 部分唯一索引冲突）。"""
 
 
-class MigrationDeferred(Exception):
-    """迁移暂缓：本次不应用，下次启动重试（用于可选迁移遇到需人工处理的数据）。"""
-
-
 class LastAdminError(Exception):
     """注销被拒绝：该用户是最后一个注册管理员（事务内复核，跨进程安全）。"""
 
@@ -223,8 +255,10 @@ _conn_lock = _connection._conn_lock
 # 故这些名字一律不进本模块的 `__dict__`——读取回落到唯一定义点，写入也落到那里：
 #   `_conn`/`_db_file`/`_env_file` → connection（全仓 190+ 处测试收尾 `db._conn = None`）；
 #   `_AUDIT_KEY_CACHE` 等三个审计域进程内状态 → audit_chain（test_rekey_key_source 的
-#   `db._AUDIT_KEY_CACHE = None` 必须真的清掉密钥缓存）。
-# 其余名字（`_conn_lock` 永不重绑、审计域函数/常量）按快照式再导出即等价。
+#   `db._AUDIT_KEY_CACHE = None` 必须真的清掉密钥缓存）；
+#   `_MIGRATIONS` → migrations（测试以 `db._MIGRATIONS = [...]` 缩窄/替换迁移集，
+#   `_run_migrations` 必须读到改写后的登记表）。
+# 其余名字（`_conn_lock` 永不重绑、审计/迁移域函数与常量）按快照式再导出即等价。
 _FORWARDED_STATE = {
     "_conn": _connection,
     "_db_file": _connection,
@@ -232,13 +266,14 @@ _FORWARDED_STATE = {
     "_AUDIT_KEY_CACHE": _audit_chain,
     "_AUDIT_FAIL_UNFLUSHED": _audit_chain,
     "_AUDIT_FAIL_UNFLUSHED_DB": _audit_chain,
+    "_MIGRATIONS": _migrations,
 }
 # delattr 撤下的名字（见 _StateForwardingModule.__delattr__）：名字重新可读即移出
 _FORWARDED_STATE_HIDDEN = set()
 
 
 def __getattr__(name):
-    """PEP 562：转发状态（连接三态与审计域进程内状态）读取回落到各自唯一定义点。"""
+    """PEP 562：转发状态（连接三态、审计域进程内状态与迁移域登记表）读取回落到各自定义点。"""
     mod = _FORWARDED_STATE.get(name)
     if mod is not None:
         if name in _FORWARDED_STATE_HIDDEN:
@@ -372,163 +407,6 @@ def require_existing_env_file(cli_value=None):
     return path
 
 
-# ---------------------------------------------------------------------------
-# 表结构
-# ---------------------------------------------------------------------------
-def _create_tables(conn):
-    # 不用 executescript——其隐式 COMMIT 会把调用方已开启的事务
-    # （_run_migrations 的 BEGIN IMMEDIATE）提前提交，击穿迁移原子性；逐条
-    # execute 让 DDL 落在事务内，中途失败可整体回滚。
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS accounts ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "sort_order INTEGER NOT NULL, "
-        "name TEXT NOT NULL DEFAULT '', "
-        "phone TEXT NOT NULL UNIQUE, "
-        "password TEXT NOT NULL DEFAULT '', "
-        "phone_model TEXT NOT NULL DEFAULT '', "
-        "phone_code TEXT NOT NULL DEFAULT '', "
-        "owner TEXT NOT NULL DEFAULT 'admin', "
-        "status TEXT NOT NULL DEFAULT 'pending', "
-        "reject_reason TEXT NOT NULL DEFAULT '', "
-        "deleted INTEGER NOT NULL DEFAULT 0, "
-        "deleted_at TEXT NOT NULL DEFAULT '', "
-        "deleted_by TEXT NOT NULL DEFAULT '', "
-        "user_paused INTEGER NOT NULL DEFAULT 0"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_sort ON accounts(sort_order)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "email TEXT NOT NULL, "
-        "password_hash TEXT NOT NULL, "
-        "role TEXT NOT NULL DEFAULT 'user', "
-        "created_at TEXT NOT NULL DEFAULT '', "
-        "pw_version INTEGER NOT NULL DEFAULT 1, "
-        "deleted INTEGER NOT NULL DEFAULT 0, "
-        "deleted_at TEXT NOT NULL DEFAULT '', "
-        "mail_notify INTEGER NOT NULL DEFAULT 1"
-        ")"
-    )
-    # 注意：idx_users_email_live（依赖 users.deleted）由 migrate_v5 创建，
-    # 不能放在基线建表里——旧库（0.19.8，users 无 deleted 列）升级时会在
-    # 迁移执行前崩溃（对抗审查 2026-08-16 演练发现）。
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_logs ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "ts TEXT NOT NULL, "
-        "username TEXT NOT NULL, "
-        "action TEXT NOT NULL, "
-        "target TEXT NOT NULL DEFAULT '', "
-        "detail TEXT NOT NULL DEFAULT ''"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action_target ON audit_logs(action, target, id)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS time_prefs ("
-        "phone TEXT PRIMARY KEY, "
-        "slot_min INTEGER NOT NULL, "
-        "updated_at TEXT NOT NULL"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_time_prefs_slot ON time_prefs(slot_min)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_delete_requests ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "username TEXT NOT NULL, "
-        "ip_hash TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash)")
-    conn.commit()
-
-
-# ---------------------------------------------------------------------------
-# 通用幂等迁移框架（Phase 0）
-# ---------------------------------------------------------------------------
-# 允许操作的表名白名单（防止 f-string SQL 注入）
-# page_visits / server_metrics 已由 migrate_v14 删除，条目保留是必需的：
-# 冻结的 migrate_v6 仍对它们调用 _ensure_column / _ensure_index，全新库的执行序
-# 是 migrate_v4 建表 → migrate_v6 补列 → migrate_v14 删表。迁移只增不改。
-_ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
-                   "sign_events", "page_visits", "server_metrics", "session_cache",
-                   "verify_jobs"}
-
-
-def _table_columns(conn, table):
-    """返回表的所有列名（PRAGMA table_info）。"""
-    if table not in _ALLOWED_TABLES:
-        raise ValueError(f"非法表名: {table!r}")
-    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-
-
-def _ensure_column(conn, table, column, type_decl):
-    """缺列才 ALTER TABLE ADD COLUMN（幂等）。
-
-    type_decl 是**纯类型声明**（如 "TEXT NOT NULL DEFAULT ''"），不含列名——
-    本函数自己拼 `ADD COLUMN {column} {type_decl}`。历史实现把列名一并写进了
-    type_decl，生成 `deleted_by deleted_by TEXT` 这类重复列名声明（SQLite 宽容
-    接受、亲和性碰巧不变，但 schema 可读性差、.dump 会把畸形带进新库）；
-    v13 迁移修复存量库，此处加断言防复发（见 migrate_v13）。
-    """
-    if table not in _ALLOWED_TABLES:
-        raise ValueError(f"非法表名: {table!r}")
-    # 列名白名单：仅允许字母数字下划线，防止注入
-    if not column.isidentifier() or not column.replace("_", "").isalnum():
-        raise ValueError(f"非法列名: {column!r}")
-    # 防复发：type_decl 不得以列名开头（那正是历史畸形形态）
-    if str(type_decl).split()[0].lower() == column.lower():
-        raise ValueError(
-            f"_ensure_column type_decl 不应重复列名: {column!r} / {type_decl!r}"
-        )
-    if column not in _table_columns(conn, table):
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_decl}")
-        conn.commit()
-
-
-def _ensure_index(conn, create_sql):
-    """按给定 CREATE INDEX / CREATE UNIQUE INDEX 语句幂等创建（依赖 IF NOT EXISTS）。"""
-    conn.execute(create_sql)
-    conn.commit()
-
-
-def migrate_v1(conn):
-    """v1：补齐 accounts.user_paused 列（现状基线迁移）。"""
-    _ensure_column(conn, "accounts", "user_paused", "INTEGER NOT NULL DEFAULT 0")
-
-
-def migrate_v2(conn):
-    """v2：为普通用户“每人限 1 账号”创建部分唯一索引（可选/延后）。
-
-    若存在历史重复数据，抛出 MigrationDeferred，不创建索引、不 bump 版本；
-    人工清理后下次启动自动重试。
-    """
-    rows = conn.execute(
-        "SELECT owner, COUNT(*) AS cnt FROM accounts "
-        "WHERE deleted=0 AND owner NOT IN ('', 'admin') "
-        "GROUP BY owner HAVING COUNT(*) > 1"
-    ).fetchall()
-    if rows:
-        dup = ", ".join(f"{r['owner']}({r['cnt']})" for r in rows)
-        logger.warning("检测到重复 owner，跳过唯一索引创建（需人工清理后重启重试）: %s", dup)
-        raise MigrationDeferred("存在重复 owner，唯一索引延后创建")
-    _ensure_index(
-        conn,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_live "
-        "ON accounts(owner) WHERE deleted=0 AND owner != '' AND owner != 'admin'",
-    )
-
-
 def _begin_immediate(conn):
     """统一的写事务入口：遗留未提交事务先安全回滚再 BEGIN。
 
@@ -543,46 +421,6 @@ def _begin_immediate(conn):
         )
         conn.rollback()
     conn.execute('BEGIN IMMEDIATE')
-
-
-def migrate_v3(conn):
-    """v3：审计日志加 prev_hash/hash 列，并对存量数据回填哈希链。
-
-    重链守卫：_rechain_audit_logs 用**当前密钥**重签全表，等于给"改掉内容 →
-    清空 hash → 重启（正常启动路径）→ 链重新自洽"留了一条路。迁移器只在
-    PRAGMA user_version < 3 时调用本函数，所以"低版本升级"是它唯一的合法触发
-    场景；这里显式读出 from_version 并把它连同重链前后链头一并留痕到 app_meta，
-    使 audit_health 能把"锚点之后发生的重链"指认为异常。
-    """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    _ensure_column(conn, "audit_logs", "prev_hash", "TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "audit_logs", "hash", "TEXT NOT NULL DEFAULT ''")
-    # 空 hash 行计数不再 LIMIT 10000——有缺口即全量分批重链
-    empty = conn.execute(
-        "SELECT COUNT(*) AS n FROM audit_logs WHERE hash=''"
-    ).fetchone()["n"]
-    if empty:
-        if version >= 3:
-            # 不该发生：>=3 的库迁移器不会再跑本迁移。真发生了说明有人绕过了
-            # 版本门控（或直接调 _rechain_audit_logs），留痕照记，由 audit_health 判失败。
-            logger.error(
-                "migrate_v3 在 user_version=%s 的库上被调用且发现 %s 条空 hash 审计行——"
-                "迁移版本门控被绕过，已记录重链留痕", version, empty
-            )
-        head_before = _chain_head(conn)
-        rows = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        _rechain_audit_logs(conn)
-        _record_rechain_event(conn, version, rows, empty, head_before, _chain_head(conn))
-        conn.commit()
-
-
-def _chain_head(conn):
-    """当前链头哈希（空链/缺列 → 空串）。迁移内部用，不取锁（调用方已持有连接）。"""
-    try:
-        row = conn.execute("SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1").fetchone()
-    except sqlite3.Error:
-        return ""
-    return (row["hash"] or "") if row else ""
 
 
 # ---------------------------------------------------------------------------
@@ -675,425 +513,6 @@ def hash_phone(phone):
     return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
 
 
-def migrate_v4(conn):
-    """v4：创建可视化三表（可选迁移，失败只告警不阻断启动）。"""
-    # 逐条 execute 替代 executescript（隐式 COMMIT 击穿
-    # _run_migrations 的 BEGIN IMMEDIATE，失败时前半段 DDL 已提交无法回滚）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sign_events ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "ts TEXT NOT NULL, "
-        "phone TEXT NOT NULL, "
-        "status TEXT NOT NULL, "
-        "message TEXT NOT NULL DEFAULT '', "
-        "stage TEXT NOT NULL DEFAULT '', "
-        "attempt INTEGER NOT NULL DEFAULT 0, "
-        "account_id INTEGER, "
-        "dur_sec REAL, "
-        "finished_at TEXT"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_ts ON sign_events(ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_phone ON sign_events(phone)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts ON sign_events(phone, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts ON sign_events(account_id, ts)")
-
-    # page_visits / server_metrics 已废弃：由 migrate_v14 删除。本段保留是必需的
-    # （已发布迁移不可修改；migrate_v6 还依赖这两张表存在）——见 migrate_v14 说明。
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS page_visits ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "ts TEXT NOT NULL, "
-        "role TEXT NOT NULL DEFAULT '', "
-        "path TEXT NOT NULL, "
-        "ip_hash TEXT NOT NULL DEFAULT '', "
-        "ua TEXT NOT NULL DEFAULT '', "
-        "dur_ms INTEGER NOT NULL DEFAULT 0, "
-        "user_id INTEGER"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_ts ON page_visits(ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_role ON page_visits(role)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts ON page_visits(path, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts ON page_visits(role, ts)")
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS server_metrics ("
-        "ts TEXT NOT NULL, "
-        "cpu REAL, "
-        "mem_pct REAL, "
-        "disk_pct REAL, "
-        "net_in REAL, "
-        "net_out REAL, "
-        "load1 REAL, "
-        "load5 REAL, "
-        "load15 REAL, "
-        "proc_count INTEGER"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics(ts)")
-    conn.commit()
-
-
-def migrate_v5(conn):
-    """v5：用户注销支持——users 增加 deleted/deleted_at，邮箱唯一改为活跃唯一，新增注销请求表。"""
-    cols = _table_columns(conn, "users")
-    if "deleted" not in cols:
-        # 使用 ALTER TABLE ADD COLUMN 而非表重建，避免崩溃窗口数据丢失
-        conn.execute("ALTER TABLE users ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
-        conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
-        conn.commit()
-    # 旧库 users.email TEXT UNIQUE 会生成 sqlite_autoindex_users_N 全局唯一索引，
-    # 与“同邮箱可有一个活跃 + 多个已注销”的部分唯一索引冲突，必须先移除。
-    # SQLite 不允许直接 DROP 与 UNIQUE 列约束关联的自动索引，因此重建 users 表
-    # 去掉 email UNIQUE 约束（保留数据）；idx_users_email_live 本身保留不动。
-    old_email_indexes = []
-    for idx in conn.execute("PRAGMA index_list('users')").fetchall():
-        name = idx["name"]
-        if name == "idx_users_email_live" or not idx["unique"]:
-            continue
-        info = conn.execute(f"PRAGMA index_info('{name}')").fetchall()
-        if [r["name"] for r in info] == ["email"]:
-            old_email_indexes.append(name)
-    if old_email_indexes:
-        col_list = "id, email, password_hash, role, created_at, pw_version"
-        cols = _table_columns(conn, "users")
-        if "deleted" in cols:
-            col_list += ", deleted"
-        if "deleted_at" in cols:
-            col_list += ", deleted_at"
-        conn.execute(
-            "CREATE TABLE users_new ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "email TEXT NOT NULL, "
-            "password_hash TEXT NOT NULL, "
-            "role TEXT NOT NULL DEFAULT 'user', "
-            "created_at TEXT NOT NULL DEFAULT '', "
-            "pw_version INTEGER NOT NULL DEFAULT 1, "
-            "deleted INTEGER NOT NULL DEFAULT 0, "
-            "deleted_at TEXT NOT NULL DEFAULT ''"
-            ")"
-        )
-        conn.execute(
-            f"INSERT INTO users_new ({col_list}) SELECT {col_list} FROM users"
-        )
-        conn.execute("DROP TABLE users")
-        conn.execute("ALTER TABLE users_new RENAME TO users")
-        conn.commit()
-    _ensure_index(
-        conn,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_live "
-        "ON users(email) WHERE deleted = 0",
-    )
-    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_delete_requests ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "username TEXT NOT NULL, "
-        "ip_hash TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_user ON user_delete_requests(username)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_delete_requests_ip ON user_delete_requests(ip_hash)")
-    conn.commit()
-
-
-def migrate_v6(conn):
-    """v6：WebUI 统计/监控补齐——sign_events 增加 account_id/dur_sec/finished_at，
-    page_visits 增加 user_id，并补索引。可选迁移，失败不阻断启动。"""
-    _ensure_column(conn, "sign_events", "account_id", "INTEGER")
-    _ensure_column(conn, "sign_events", "dur_sec", "REAL")
-    _ensure_column(conn, "sign_events", "finished_at", "TEXT")
-    _ensure_column(conn, "page_visits", "user_id", "INTEGER")
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_sign_events_phone_ts "
-        "ON sign_events(phone, ts)",
-    )
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_sign_events_account_ts "
-        "ON sign_events(account_id, ts)",
-    )
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_page_visits_path_ts "
-        "ON page_visits(path, ts)",
-    )
-    _ensure_index(
-        conn,
-        "CREATE INDEX IF NOT EXISTS idx_page_visits_role_ts "
-        "ON page_visits(role, ts)",
-    )
-    try:
-        conn.execute(
-            "UPDATE sign_events SET account_id = ("
-            "SELECT id FROM accounts WHERE accounts.phone = sign_events.phone LIMIT 1"
-            ") WHERE account_id IS NULL"
-        )
-        conn.commit()
-    except Exception as e:
-        with contextlib.suppress(Exception):
-            conn.rollback()
-        logger.warning("回填 sign_events.account_id 失败: %s", e)
-
-
-def migrate_v7(conn):
-    """v7：注销请求表加 kind 列（delete=注销 / restore=恢复），修复注销记录阻断 60s 内恢复的漏洞。
-
-    2026-08-17 排查复现：注销与恢复共用计数，注销动作本身写入的记录会让
-    随后 60 秒内的恢复请求全部 429（真实用户"注销后立即反悔"路径必现）。
-    旧数据无 kind → 默认 'delete'（历史记录均为注销）。
-    """
-    _ensure_column(
-        conn, "user_delete_requests", "kind", "TEXT NOT NULL DEFAULT 'delete'"
-    )
-
-
-def migrate_v8(conn):
-    """v8：会话 Cookie 缓存表（OAuth 会话复用，降低登录频率 = 降低风控触发面）。
-
-    缓存对象为序列化 cookie jar + csrf（login_killyiban 完成后的完整认证态）；
-    cookies_ct 为 AES-GCM 密文 JSON 串（AAD=phone，复用 account_crypto），
-    库内绝不落明文 cookie。表结构见 docs/research-lumjiel-core-sign-20260822.md §七。
-    """
-    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS session_cache ("
-        "phone        TEXT PRIMARY KEY, "
-        "cookies_ct   TEXT NOT NULL, "
-        "csrf         TEXT NOT NULL, "
-        "created_at   TEXT NOT NULL, "
-        "updated_at   TEXT NOT NULL"
-        ")"
-    )
-    # 应用元数据（2026-08-28 审查 M3）：purge 时钟跳变保护的单调参照等
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_meta ("
-        "key   TEXT PRIMARY KEY, "
-        "value TEXT NOT NULL"
-        ")"
-    )
-    conn.commit()
-
-
-def migrate_v9(conn):
-    """v9：用户邮箱通知开关（users.mail_notify，默认开启接收签到结果邮件）。
-
-    1=接收（默认）；0=关闭（不接收用户签到失败邮件 B 线）。
-    管理员告警邮件（A 线）不受此开关影响。旧库补列时默认置 1。
-    """
-    _ensure_column(conn, "users", "mail_notify", "INTEGER NOT NULL DEFAULT 1")
-
-
-def migrate_v10(conn):
-    """v10：软删除操作者留痕（accounts.deleted_by）。
-
-    区分删除来源，支撑「用户自删可撤销、管理员删除仅管理员可恢复」：
-    - 用户自行删除：deleted_by = 用户邮箱（宽限期内可在用户页自行撤销）；
-    - 管理员删除：deleted_by = 'admin'；
-    - 系统连带（注销联动 soft_delete_user_with_accounts 等）：置空串。
-    旧数据/旧路径默认空串 = 用户不可自行撤销（fail-closed，防越权恢复管理员清退的账号）。
-    """
-    _ensure_column(conn, "accounts", "deleted_by", "TEXT NOT NULL DEFAULT ''")
-
-
-def migrate_v11(conn):
-    """v11：服务端会话吊销（users.sid）。
-
-    sid 为该用户当前唯一有效会话标识：登录时签发，登出/被重置密码/被踢时轮换；
-    会话内 sid 与库内不一致即视为未登录。空串=未签发（升级日存量兼容）。
-    """
-    _ensure_column(conn, "users", "sid", "TEXT NOT NULL DEFAULT ''")
-
-
-def migrate_v12(conn):
-    """v12：修复历史部署缺失的 app_meta 表（2026-08-29 线上发现）。
-
-    app_meta 建表原挂在 migrate_v8（2026-08-28 M3 时钟跳变），但 v8 早已随
-    session_cache 发布——旧部署 PRAGMA user_version 已 ≥8，迁移不会再重跑 v8，
-    导致时钟守卫/每日清理/审计锚点元数据全部因缺表报错（线上日志每 ~5 分钟刷
-    "no such table: app_meta"，并连带挤占签到日志尾部导致「回到今天」误判昨天）。
-    新增本迁移幂等补建，旧库自动补齐；新库 v8 已建则 IF NOT EXISTS 空操作。
-    教训：新表/新列必须新增迁移版本，不得修改已发布的旧迁移。
-    """
-    # 逐条 execute 替代 executescript（同上，保持迁移事务原子）
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_meta ("
-        "key   TEXT PRIMARY KEY, "
-        "value TEXT NOT NULL"
-        ")"
-    )
-    conn.commit()
-
-
-# 畸形列声明：`col col TYPE ...`（列名被重复写进类型声明）。
-# 形如 accounts.deleted_by 声明为 `deleted_by deleted_by TEXT NOT NULL DEFAULT ''`。
-# 成因见 _ensure_column 文档串（历史调用方把列名一并传进 type_decl）。
-_MALFORMED_COL_RE = re.compile(r"(?<=[(,])\s*([A-Za-z_][A-Za-z0-9_]*)\s+\1\b\s+")
-
-
-def _malformed_schema_tables(conn):
-    """返回声明类型重复列名的表 [(表名, 原始 DDL), ...]（跳过 sqlite_ 内部表）。"""
-    out = []
-    for row in conn.execute(
-        "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"
-    ):
-        name, sql = row["name"], row["sql"]
-        if name.startswith("sqlite_"):
-            continue
-        if _MALFORMED_COL_RE.search(sql):
-            out.append((name, sql))
-    return out
-
-
-def migrate_v13(conn):
-    """v13：修复畸形列声明（`col col TYPE`），重建受影响表。
-
-    2026-09-09 生产巡检发现：`accounts.deleted_by` 的声明类型是
-    `deleted_by TEXT`，即列名被重复写进类型声明。排查确认这是 _ensure_column
-    的历史 API 误用（调用方把列名一起塞进 type_decl 参数），影响面远不止一列——
-    存量库共 11 列 / 6 表（accounts.deleted_by+user_paused、users.mail_notify+sid、
-    audit_logs.prev_hash+hash、sign_events.account_id/dur_sec/finished_at、
-    page_visits.user_id、user_delete_requests.kind）。
-
-    **影响评估（实测）**：SQLite 对类型声明取子串匹配算亲和性，`deleted_by TEXT`
-    仍含 "TEXT" → 亲和性 TEXT，与正确声明完全一致；`typeof()` 与值强制转换实测
-    逐项相同，索引/约束/审计链均不受影响。故本迁移**不是修故障，而是修 schema
-    可读性与可移植性**（.dump 会把畸形带进新库；外部工具按 table_info 生成的 DDL
-    也会继承）。
-
-    做法：按 sqlite_master 里的 DDL 去掉重复列名后重建表 + 回填数据 + 重建索引
-    （CREATE TABLE → INSERT SELECT → DROP → RENAME，同 migrate_v5 的模式）。
-    SQLite 不允许改列声明，只能重建。**幂等**：无畸形表时空操作。
-    索引 DDL 从 sqlite_master 原样取回，不硬编码（避免与建表处漂移）。
-    AUTOINCREMENT 计数由 sqlite_sequence 随表名迁移保留，实测 max(id) 不变。
-    """
-    bad = _malformed_schema_tables(conn)
-    if not bad:
-        return
-    for name, sql in bad:
-        fixed = _MALFORMED_COL_RE.sub(r" \1 ", sql)
-        # 索引 DDL 先取回：DROP TABLE 会连带删除其索引，重建表后按原样重建
-        indexes = [
-            r["sql"]
-            for r in conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
-                (name,),
-            )
-        ]
-        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({name})")]
-        tmp = f"{name}__v13"
-        conn.execute(f'DROP TABLE IF EXISTS "{tmp}"')
-        # 只替换首个表名出现处：DDL 里其余位置可能含同名子串（如索引名）
-        fixed_tmp = fixed.replace(f'TABLE "{name}"', f'TABLE "{tmp}"', 1)
-        if fixed_tmp == fixed:
-            fixed_tmp = fixed.replace(f"TABLE {name}", f"TABLE {tmp}", 1)
-        conn.execute(fixed_tmp)
-        collist = ", ".join(f'"{c}"' for c in cols)
-        conn.execute(f'INSERT INTO "{tmp}" ({collist}) SELECT {collist} FROM "{name}"')
-        conn.execute(f'DROP TABLE "{name}"')
-        conn.execute(f'ALTER TABLE "{tmp}" RENAME TO "{name}"')
-        for idx_sql in indexes:
-            conn.execute(idx_sql)
-        logger.info("schema 修复：重建表 %s（%d 列，%d 索引）", name, len(cols), len(indexes))
-    conn.commit()
-
-
-def migrate_v14(conn):
-    """v14：删除从未接线的统计表（可选迁移，失败只告警不阻断启动）。
-
-    page_visits / server_metrics 是 v4 建、v6 补列的一整套"页面访问统计 + 服务器
-    采样"能力，但生产侧**零写入方、零读取方、零 UI**：web/ 全目录无任何引用，唯一
-    写入者是 scripts/generate_demo_data.py（演示数据生成器）。保留它们只会让每次
-    启动多跑两条全表 DELETE，并让两张空表与八个空索引常驻 schema。
-
-    **只删表，不改 migrate_v4 / migrate_v6 原文**——已发布迁移不可修改（改了对
-    存量库无效，对介于 v4~v6 之间的库反而会制造"表不存在"的失败路径）。因此全新库
-    的执行序是 v4 建表 → v6 补列 → 本迁移删表，一次性的"建了又删"换取迁移历史不变；
-    _ALLOWED_TABLES 保留这两个表名也是因为冻结的 v6 仍会引用它们。
-    """
-    conn.execute("DROP TABLE IF EXISTS page_visits")
-    conn.execute("DROP TABLE IF EXISTS server_metrics")
-    conn.commit()
-
-
-def migrate_v15(conn):
-    """v15：在线校验异步任务表（A4 异步化）。可选迁移，失败只告警不阻断启动。
-
-    独立小表，**不污染 accounts.status 枚举**：任务态（排队/在跑/完成/被拒）与
-    账号审核态（pending/active/rejected）是两件事，前者可短期清理，后者是业务状态。
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS verify_jobs ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "account_id INTEGER, "
-        "phone TEXT NOT NULL, "
-        "owner_email TEXT NOT NULL DEFAULT '', "
-        "status TEXT NOT NULL DEFAULT 'pending', "
-        "error TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL, "
-        "started_at TEXT, "
-        "finished_at TEXT"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_owner_created "
-        "ON verify_jobs(owner_email, created_at)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_status ON verify_jobs(status)"
-    )
-    conn.commit()
-
-
-def _create_verify_jobs_table(conn):
-    """建 verify_jobs（含 prev_status）——v15 之后新增列的迁移复用点。
-
-    v15 的 DDL 已冻结不再改动（已发布迁移不可变），故此处重述一遍：
-    带上 prev_status 的建表语句是幂等的，v16 在"v15 尚未落地"的库上
-    也能自给自足地建出正确结构。
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS verify_jobs ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "account_id INTEGER, "
-        "phone TEXT NOT NULL, "
-        "owner_email TEXT NOT NULL DEFAULT '', "
-        "status TEXT NOT NULL DEFAULT 'pending', "
-        "prev_status TEXT NOT NULL DEFAULT 'pending', "
-        "error TEXT NOT NULL DEFAULT '', "
-        "created_at TEXT NOT NULL, "
-        "started_at TEXT, "
-        "finished_at TEXT"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_owner_created "
-        "ON verify_jobs(owner_email, created_at)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_verify_jobs_status ON verify_jobs(status)"
-    )
-
-
-def migrate_v16(conn):
-    """v16：verify_jobs 记录任务建立时的账号状态（可选迁移，失败只告警不阻断）。
-
-    用途：异步校验结果**不得覆盖人工决定**。校验任务建库时账号是 pending
-    （用户提交）或 active（管理员的裸账号），任务失败只允许在账号仍处于
-    建库时那个状态时置 rejected——否则管理员在任务执行期间点了"审核通过"，
-    迟到的校验结果会把管理员的决定静默回滚。
-
-    旧行 prev_status 取默认 'pending'：存量未结任务罕见，且默认值只会让
-    "账号已是 active 时不覆盖"，与人工决定优先的方向一致。
-    """
-    _create_verify_jobs_table(conn)
-    _ensure_column(conn, "verify_jobs", "prev_status", "TEXT NOT NULL DEFAULT 'pending'")
-    conn.commit()
-
-
 def set_user_sid(email, sid):
     """写入用户当前有效会话标识；email 须为活跃用户。"""
     conn = get_conn()
@@ -1101,117 +520,6 @@ def set_user_sid(email, sid):
         conn.execute(
             "UPDATE users SET sid=? WHERE email=? AND deleted=0", (sid, email)
         )
-
-
-def migrate_v17(conn):
-    """v17：签到领取池 `sign_claims`（多执行体协调）。可选迁移，失败只告警不阻断启动。
-
-    为什么独立成表：多执行体的分工靠"原子领取 + 租约"而不是静态分片——静态分片下
-    最慢的那一份决定全天成败。领取记录同时承担"当日是否了结"的判据（state）。
-
-    `UNIQUE(phone, day)` 是**并发正确性的基础**：一个账号一天只可能有一行，
-    领取走 upsert，故不存在两个执行体同时"新插入"同一个账号的窗口。
-    """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sign_claims ("
-        "phone TEXT NOT NULL, "
-        "day TEXT NOT NULL, "
-        "owner TEXT NOT NULL, "
-        "claimed_at TEXT NOT NULL, "
-        "heartbeat_at TEXT NOT NULL, "
-        "state TEXT NOT NULL DEFAULT 'claimed', "
-        "result TEXT NOT NULL DEFAULT '', "
-        "attempts INTEGER NOT NULL DEFAULT 0, "
-        "PRIMARY KEY (phone, day)"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sign_claims_day_state "
-        "ON sign_claims(day, state)"
-    )
-    conn.commit()
-
-
-# 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
-# - 核心迁移：现有功能依赖，失败应阻断启动。
-# - 可选迁移：未来/非关键能力，失败只告警或延后重试。
-_MIGRATIONS = [
-    (1, "v1_add_account_user_paused", migrate_v1, True),
-    (2, "v2_unique_owner_live", migrate_v2, False),
-    (3, "v3_audit_hash_chain", migrate_v3, True),
-    (4, "v4_visual_tables", migrate_v4, False),
-    (5, "v5_user_deregistration", migrate_v5, True),
-    (6, "v6_webui_stats", migrate_v6, False),
-    (7, "v7_delete_request_kind", migrate_v7, True),
-    (8, "v8_session_cache", migrate_v8, False),
-    (9, "v9_user_mail_notify", migrate_v9, True),
-    (10, "v10_account_deleted_by", migrate_v10, True),
-    (11, "v11_user_session_sid", migrate_v11, True),
-    (12, "v12_app_meta_repair", migrate_v12, True),
-    (13, "v13_fix_malformed_column_decls", migrate_v13, True),
-    (14, "v14_drop_legacy_stats", migrate_v14, False),
-    (15, "v15_verify_jobs", migrate_v15, False),
-    (16, "v16_verify_job_prev_status", migrate_v16, False),
-    (17, "v17_sign_claims", migrate_v17, False),
-]
-
-
-def _run_migrations(conn):
-    """按 PRAGMA user_version 顺序执行未应用的迁移。
-
-    核心迁移失败会抛出异常（init_db 会关闭连接并阻断启动），包括核心迁移抛
-    MigrationDeferred；可选迁移失败/延后时先回滚该迁移的部分写入，再置 blocked
-    并 continue，后续迁移照常执行，但 blocked 期间任何迁移都不提升 user_version，
-    下次启动重试。
-    """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    blocked = False
-    for target_version, name, fn, is_core in _MIGRATIONS:
-        if version >= target_version:
-            continue
-        try:
-            # 单个迁移全程持库级写锁（2026-08-28 审查 B-4）：
-            # migrate_v5 的表重建是 CREATE → INSERT → DROP → RENAME 四条 DDL，
-            # 而 Python sqlite3 对 DDL 不开隐式事务，原实现下每条语句各自
-            # autocommit——在 DROP TABLE users 与 RENAME 之间，其他连接执行
-            # SELECT ... FROM users 会直接报 "no such table: users"。该窗口在
-            # SSD 上是微秒级，但容器首启并发 / 网络盘 / 大表时完全可命中，
-            # 且若迁移在窗口中失败，核心迁移会一并阻断进程启动。
-            # 包进 BEGIN IMMEDIATE 后整段迁移原子，中间态对外不可见。
-            _begin_immediate(conn)
-            try:
-                fn(conn)
-                if blocked:
-                    # 不提升 user_version：后续启动会重跑本迁移（实现必须幂等）。
-                    # 显式提交（原实现此处未提交，改动滞留在未决事务中，是否被
-                    # 后续某次 commit 带走取决于执行顺序——幂等迁移下显式提交可预期）
-                    conn.commit()
-                    logger.info("schema 迁移已执行（blocked，不提升版本）: %s", name)
-                else:
-                    conn.execute(f"PRAGMA user_version = {target_version}")
-                    conn.commit()
-                    version = target_version
-                    logger.info("schema 迁移完成: %s (user_version=%d)", name, target_version)
-            except Exception:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                raise
-        except MigrationDeferred as e:
-            if is_core:
-                logger.error("核心 schema 迁移延后: %s: %s", name, e)
-                raise
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("可选 schema 迁移延后: %s: %s", name, e)
-            blocked = True
-        except Exception as e:
-            if is_core:
-                logger.error("核心 schema 迁移失败: %s: %s", name, e)
-                raise
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            logger.warning("可选 schema 迁移失败: %s: %s，继续后续迁移", name, e)
-            blocked = True
 
 
 # ---------------------------------------------------------------------------
