@@ -161,3 +161,11 @@ memory/
 HANDOFF*.md
 # 工具运行期在本仓库内创建的隔离 worktree 与任务输出目录，与项目内容无关
 .qoder/
+
+# 本地 AI/技能工具产物（skills 工具生成，非项目产物，2026-09-19 补忽略）
+.agents/
+.claude/
+agent/
+skills-lock.json
+# 某工具未展开波浪号误生成的字面量 ~ 目录（内含 .cache；2026-09-19 已清理，规则防复发）
+~/
