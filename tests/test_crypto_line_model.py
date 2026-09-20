@@ -4,7 +4,8 @@
 - 折叠：`YIBAN_ACCOUNTS_KEY = `（= 前带空格、值为空）在 `env_io.parse_env_file` 口径下
   是同一条键的行，只认字面前缀 `KEY=` 折不掉它，残留影子行后生效值由行序决定；
 - 潜伏分隔符：既有行的值里藏着 U+2028 时，旧写回（splitlines 读 + "\\n".join 写）
-  会把它后面的半截拼成真配置行。该情形必须 fail-closed：拒绝写入且一个字节都不改。
+  会把它后面的半截拼成真配置行。该情形必须 fail-closed：拒绝写入且一个字节都不改 ——
+  被折叠丢弃的行也不例外（丢弃同样要先过校验，不能靠"删掉"把问题抹平）。
 """
 import os
 import shutil
@@ -60,6 +61,20 @@ class CryptoLineModelTest(unittest.TestCase):
         self.assertEqual(self._read_env(), before, "拒绝写入时不得改动 .env")
         leftovers = [p for p in os.listdir(self.tmp) if ".tmp" in p]
         self.assertEqual(leftovers, [], "拒绝写入时不得先落 tmp 文件")
+
+    def test_latent_separator_in_dropped_old_key_line_still_refuses(self):
+        """含 U+2028 的旧键行会被折叠丢弃——丢弃前同样要过校验，不得静默删掉。"""
+        self._write_env("YIBAN_ACCOUNTS_KEY=aa\u2028bb\nYIBAN_ACCOUNTS_KEY=\n")
+        before = self._read_env()
+        self.assertEqual(
+            env_io.parse_env_file(self.env_file)["YIBAN_ACCOUNTS_KEY"], "",
+            "前置条件：末行空值键让本函数走进写入分支（而非早退返回既有密钥）")
+
+        with self.assertRaises(ValueError) as ctx:
+            account_crypto._write_key_to_env_file(self.env_file, NEW_KEY)
+
+        self.assertIn("行分隔符", str(ctx.exception))
+        self.assertEqual(self._read_env(), before, "拒绝写入时不得改动 .env")
 
 
 if __name__ == "__main__":

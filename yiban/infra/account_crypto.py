@@ -31,9 +31,6 @@ logger = logging.getLogger("yiban-crypto")
 # 密文对象格式版本（AES-256-GCM，v1）
 SCHEMA_VERSION = 1
 DEFAULT_ENV_FILE = ".env"
-# 本键"这一行属于 YIBAN_ACCOUNTS_KEY"的判据，直接取自 env_io：折叠与解析必须是
-# 同一套口径（见 _write_key_to_env_file），各写一份正则迟早漂移出影子行
-_KEY_LINE_RE = env_io.key_line_pattern("YIBAN_ACCOUNTS_KEY")
 
 # 进程内密钥缓存（bytes）。环境变量优先级最高，其次 .env 文件；
 # 两者都没有时自动生成并持久化（见 load_key）。
@@ -49,6 +46,8 @@ def load_key(env_file=None):
     两者都不存在时生成随机 32 字节密钥并持久化到 .env（0600）后返回；
     同一进程内缓存复用（避免每次读写 .env）。
     读-生成-写-缓存全程持 _KEY_LOCK：多线程首启只生成一份密钥。
+    自动建钥会抛错而不落盘（调用方须按"启动失败"处理）：密钥来源不确定（M3 守卫），
+    或既有 .env 有行含潜伏行分隔符（见 _write_key_to_env_file）。
 
     **来源守卫（M3）**：自动建钥只允许在"密钥来源确定"时发生——调用方显式传了
     `env_file`、或设了 `YIBAN_ENV_FILE`、或当前目录已有 `.env`。三者都没有而该
@@ -247,6 +246,7 @@ def _write_key_to_env_file(env_file, key):
 
     读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥，避免多进程首启
     同时生成不同密钥互相覆盖；锁内仍保留"写入前重读"的既有兜底。
+    既有行含潜伏行分隔符（U+2028 等）时抛 ValueError 且磁盘上一个字节都不改。
     """
     with env_lock.env_write_lock(env_file):
         existing = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
@@ -262,21 +262,23 @@ def _write_key_to_env_file(env_file, key):
         lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         if lines and lines[-1] == "":
             lines.pop()  # 结尾换行不构成空配置行（对齐 splitlines 的行数）
-        # 旧键行折叠必须与解析口径同源（env_io.key_line_pattern）：parse_env_file 按
-        # "首个 = 切分 + 两侧 strip"认键，`YIBAN_ACCOUNTS_KEY = v` 正是同一条键的行；
-        # 只认字面前缀 KEY= 折不掉它，残留影子行后谁生效由落盘顺序决定（后写覆盖先写）。
-        out = [ln for ln in lines if not _KEY_LINE_RE.match(ln.strip())]
-        out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")
-        # fail-closed：本函数只保留别人的行、没有清理权；潜伏分隔符写回后仍是潜伏态，
-        # 迟早被某次 splitlines 读-改-写实体化成生效配置行（启动时 find_env_key_collisions
-        # 已报出这类行）。故拒写并在消息里点名待清理的行，不静默留下歧义的 .env。
-        for ln in out:
+        # 校验必须在折叠之前：被丢弃的行同样要先过这一关，否则含潜伏分隔符的旧键行会被
+        # 静默删掉（报"写入成功"，实则抹掉一行本函数根本没看懂的配置）。fail-closed 的
+        # 理由：本函数只保留别人的行、没有清理权；潜伏载荷留在文件里迟早被某次 splitlines
+        # 读-改-写实体化成生效配置行（启动时 find_env_key_collisions 已报出待清理的键）。
+        for ln in lines:
             if env_io.has_line_break(ln):
                 raise ValueError(
                     f"{env_file} 有行含潜伏行分隔符（U+2028 等），写回会把它后面的内容"
                     f"实体化成新配置行，故拒绝写入密钥；请人工清理该行后重试"
                     f"（定位线索，该行首个键名：{(ln.partition('=')[0].strip()[:40] or '?')}）"
                 )
+        # 旧键行折叠必须与解析口径同源：parse_env_file 按"首个 = 切分 + 两侧 strip"认键，
+        # `YIBAN_ACCOUNTS_KEY = v` 正是同一条键的行；只认字面前缀 KEY= 折不掉它，残留的
+        # 影子行与新行谁生效由落盘顺序决定（后写覆盖先写）。
+        key_pat = env_io.key_line_pattern("YIBAN_ACCOUNTS_KEY")
+        out = [ln for ln in lines if not key_pat.match(ln.strip())]
+        out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")  # hex 天然不含分隔符，无需再过校验
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
         # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
         # 之间（及进程崩溃残留时）密钥对同机其他用户可读，AES-GCM 防线归零
