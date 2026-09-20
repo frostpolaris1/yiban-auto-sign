@@ -93,10 +93,24 @@ class _AccountsSplitBase(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
+        # 连接层的 .env / 库路径是**模块级全局**，`init_db(env_file=…)` 无条件改写
+        # （见 yiban/store/connection.py 的 set_env_file / set_db_file）。子类
+        # （如 FacadeBehaviourTest）用 setUpClass 临时目录里的 .env 初始化，而
+        # tearDownClass 会 rmtree 掉该目录——不还原就留下悬空的全局路径，污染后续
+        # 用例（当前全绿是碰巧）。收尾手法与 test_store_connection_split 一致。
+        self._prev_env_file = impl._connection._env_file
+        self._prev_db_file = impl._connection._db_file
+        self._prev_env = os.environ.get("YIBAN_DB_FILE")
         self._reset_conn()
 
     def tearDown(self):
         self._reset_conn()
+        if self._prev_env is None:
+            os.environ.pop("YIBAN_DB_FILE", None)
+        else:
+            os.environ["YIBAN_DB_FILE"] = self._prev_env
+        impl._connection._env_file = self._prev_env_file
+        impl._connection._db_file = self._prev_db_file
 
     def _reset_conn(self):
         conn = impl._conn
