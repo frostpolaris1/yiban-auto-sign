@@ -21,7 +21,7 @@
    （读取不变）；守卫阈值 `_CLOCK_ALLOW_FWD_HOURS` / `_CLOCK_ALLOW_BACK_SECONDS` 只被
    留守的守卫本体使用，不随迁。
 
-另外钉住本任务唯一可观察的行为面变化：日志通道由 `yiban.db` 细分为
+另外钉住本次迁出唯一可观察的行为面变化：日志通道由 `yiban.db` 细分为
 `yiban.store.clock_meta`（文案未改），旧通道不再收到本域日志。
 """
 import contextlib
