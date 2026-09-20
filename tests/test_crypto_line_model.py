@@ -50,14 +50,19 @@ class CryptoLineModelTest(unittest.TestCase):
 
     def test_latent_separator_in_existing_line_refuses_write(self):
         """既有行值藏 U+2028：写回会坐实其后的半截 → 抛错且 .env 未被改写。"""
-        self._write_env("OTHER=a\u2028YIBAN_ADMIN_PASSWORD_HASH=evil\n")
+        self._write_env("OTHER=ok\nSECRET=a\u2028YIBAN_ADMIN_PASSWORD_HASH=evil\n")
         before = self._read_env()
 
         with self.assertRaises(ValueError) as ctx:
             account_crypto._write_key_to_env_file(self.env_file, NEW_KEY)
 
-        self.assertIn("行分隔符", str(ctx.exception))
-        self.assertIn("OTHER", str(ctx.exception), "消息须给出待清理行的键名线索")
+        msg = str(ctx.exception)
+        self.assertIn("行分隔符", msg)
+        # 定位线索是行号（1-based）而非行原文：行原文会带出值里的口令（实测如
+        # postgres://user:S3cretPw@…）与裸 U+2028，跟着异常消息落日志与 HTTP 500
+        self.assertIn("第 2 行", msg, "消息须给出问题行的行号线索")
+        self.assertNotIn("SECRET", msg, "消息不得回带行原文（键名也不行）")
+        self.assertNotIn("\u2028", msg, "消息里不得出现分隔符字符本身")
         self.assertEqual(self._read_env(), before, "拒绝写入时不得改动 .env")
         leftovers = [p for p in os.listdir(self.tmp) if ".tmp" in p]
         self.assertEqual(leftovers, [], "拒绝写入时不得先落 tmp 文件")
