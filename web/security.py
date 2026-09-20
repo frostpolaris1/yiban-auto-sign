@@ -87,10 +87,9 @@ ADMIN_SID_ENV_KEY = "YIBAN_ADMIN_SID"
 LOGIN_LOCK_SECONDS = 300
 
 # 可信第一跳代理（nginx 反代）：仅当请求来自这些地址时才信任转发头。
-# 生产部署：yiban-web 监听 127.0.0.1，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`
-# 覆盖设置（客户端伪造的 XFF 会被丢弃），故此处读取的 XFF 即真实客户端 IP。
-# 仅回环地址：客户端伪造的 XFF 会被丢弃。若改为非回环地址，XFF 可被伪造绕过速率
-# 限制——**不要**引入配置项放开这里。
+# 生产部署：yiban-web 只监听回环地址，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`
+# 覆盖设置，故此处读取的 XFF 即真实客户端 IP；客户端伪造的 XFF 会被丢弃。
+# 仅回环地址：若改为非回环地址，XFF 可被伪造绕过速率限制——**不要**引入配置项放开这里。
 TRUSTED_PROXIES = ("127.0.0.1", "::1")
 
 # IP 计数 dict（限速/登录失败/注册）的条目上限与最长保留：防公网扫描器多 IP 打爆内存
