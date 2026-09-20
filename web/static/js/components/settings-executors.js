@@ -227,13 +227,9 @@
       inner.appendChild(badge("停用", "badge--muted"));
       inner.appendChild(YB.el("span", { class: "set-exec-off", text: "不拉起" }));
     } else if (type === "fallback") {
+      // 状态格只报状态：开关只留弹窗一个入口，同屏两个入口会让用户以为是两个独立开关。
       var fb = (lastData && lastData.fallback) || {};
       inner.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
-      if (fb.status === "off") {
-        // 徽标说「未启用」时必须指出开关在哪：它就在本行的「设置」弹窗里。
-        // 只报状态、不给入口，用户只能对着"未启用"找一圈（用户 2026-09-19 反馈）。
-        inner.appendChild(YB.el("span", { class: "set-exec-off", text: "点「设置」开启" }));
-      }
     } else {
       inner.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
     }
@@ -485,6 +481,7 @@
       });
   }
 
+  // PUT 单行 + 成功后 `load()` 重画（清除出口等行内写操作共用这一条「提交中→落盘→刷新→横幅」链路）
   function putRow(slot, payload, okText) {
     return withBusy(function () {
       banner("提交中…", "info");
@@ -558,6 +555,22 @@
     var wrap = YB.el("div", { class: "set-exec-form" });
     var hint = singleRowHint(type);
     if (hint) wrap.appendChild(hint);
+    // 开关放首位：它是这一行的主状态控件，紧随其后的类型/出口字段才聚成一组（接近性原则）。
+    var swInput = null;
+    if (isFb) {
+      swInput = YB.el("input", { type: "checkbox" });
+      if (fb.enabled === true) swInput.checked = true;
+      var swHelpId = "set-exec-modal-fb-help";
+      swInput.setAttribute("aria-describedby", swHelpId);
+      wrap.appendChild(YB.el("div", { class: "field" }, [
+        YB.el("span", { class: "field-label", text: "故障转移开关" }),
+        YB.el("label", { class: "switch", title: "开启故障转移" }, [
+          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
+          YB.el("span", { class: "sr-only", text: "开启故障转移" })
+        ]),
+        YB.el("p", { class: "field-help", id: swHelpId, text: "只写声明开关：窗口内补签还需部署侧以 --fallback 拉起进程才会真在跑。" })
+      ]));
+    }
     // 名称：后端 2026-09-17 起每行都下发 name（未设 = null），故能力探测恒真——保留探测只是为了
     // 字段将来消失时不会做出"点了会 400"的输入框。`label` 是后端口径、`name` 是用户输入，
     // 只拿 name 回填输入框（placeholder 用 label 提示默认名）。故障转移行的名称由后端定，不给改名。
@@ -603,22 +616,6 @@
       ])
     ]));
 
-    var swInput = null;
-    if (isFb) {
-      // 开关与模板里的同类控件同构：label 内补 sr-only 文本给读屏，语义说明用
-      // aria-describedby 程序化关联（与设置页其它分区同一做法）
-      swInput = YB.el("input", { type: "checkbox" });
-      if (fb.enabled === true) swInput.checked = true;
-      var swHelpId = "set-exec-modal-fb-help";
-      swInput.setAttribute("aria-describedby", swHelpId);
-      wrap.appendChild(YB.el("div", { class: "field" }, [
-        YB.el("label", { class: "switch", title: "开启故障转移" }, [
-          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
-          YB.el("span", { class: "sr-only", text: "开启故障转移" })
-        ]),
-        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起故障转移进程（窗口内补签；只写声明开关，还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
-      ]));
-    }
     // 存活：只报表格那两列看不到的事实——最近活跃时刻、故障转移是否在当前应运行时段内。
     // （状态与当日已在表格里各占一栏，此处不重复。）
     if (type !== "disabled") {
@@ -666,9 +663,13 @@
       if (handle && handle.close) handle.close();
       focusAfterPaint = { slot: slot };
       if (!needsPw) { submit(null, args); return true; }
+      // 措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"
+      var pwAsk = egress
+        ? "修改 " + rowTitle(row) + " 的出口配置" + (enableArg != null ? "与故障转移开关" : "")
+        : (enableArg ? "开启" : "关闭") + "故障转移";
       // 回调**必须 return 这个 Promise**：口令框据此保持打开，把后端 403 文案显示在框内，
       // 并允许改口令重试（不 return 就是"非 Promise 回调"，框会立刻关掉、错误只剩横幅）。
-      askPassword("修改 " + rowTitle(row) + " 的出口配置？请输入当前管理员密码确认。",
+      askPassword(pwAsk + "？请输入当前管理员密码确认。",
         function (pw) { return submit(pw, args); });
       return true;
     }
@@ -679,7 +680,11 @@
       if (pw != null) body.confirm_password = pw;
       if (args.proxy) body.proxy = args.proxy;
       if (args.name != null) body.name = args.name;
-      var steps = [YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body)];
+      var steps = [];
+      // 行接口缺 type/proxy/name 会回 400「没有可更新的字段」；只拨开关时不能发这个空体
+      if (args.proxy || args.name != null) {
+        steps.push(YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body));
+      }
       if (args.enable != null) {
         steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: args.enable, confirm_password: pw }));
       }
