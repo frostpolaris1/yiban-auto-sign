@@ -475,7 +475,8 @@
             return load().then(function () {
               setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
                 + "。想给它单独出口，点那一行的「设置」；编号只增不复用，故障转移行也占一个编号"
-                + "（它固定置顶、行名不带数字），所以并行行跳号是正常的，不代表删过行。", false);
+                + "（它固定置顶、行名不带数字），所以并行行跳号是正常的、不影响运行"
+                + "（没删过行却看到跳号，就是它在占号）。", false);
               focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
               return true;
             });
@@ -541,8 +542,8 @@
     var ico = YB.el("span", { class: "ico" });
     ico.appendChild(YB.iconEl("info"));
     box.appendChild(ico);
-    box.appendChild(YB.el("span", { class: "body", text: "当前只有 1 个并行执行体：运行时走进程内路径，"
-      + "实际出口读全局配置「" + key + "」，不是本行这一格；本行出口要加到第二个并行执行体后才按行生效。" }));
+    box.appendChild(YB.el("span", { class: "body", text: "只有一个并行执行体时，程序在本进程内直接签到，"
+      + "出口读全局配置「" + key + "」（不是本行这一格）；加到第二个并行执行体后才按行生效。" }));
     return box;
   }
 
