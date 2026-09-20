@@ -196,6 +196,10 @@ class ProtocolPolicy:
         """对外文本脱敏（换行转义 + 抹掉可能内嵌的凭据字面量）。"""
         return masking.sanitize_text(text)
 
+    def mask_account(self, phone):
+        """账号标识（手机号）入日志与错误消息前脱敏。`mask_phone` 幂等，重复打码无副作用。"""
+        return masking.mask_phone(phone)
+
     def describe_location(self, location):
         """302 Location 的诊断描述（脱敏：去 query 与 userinfo）。"""
         return location_desc(location)
@@ -207,7 +211,7 @@ class ProtocolPolicy:
         正则命中数），而不是整页 HTML：整页既可能含账号信息又不便阅读。
         """
         text = getattr(resp, "text", "") or ""
-        logger.error(f"[{phone}] {stage}诊断:")
+        logger.error(f"[{masking.mask_phone(phone)}] {stage}诊断:")
         logger.error(f"  最终 URL: {masking.sanitize_url(getattr(resp, 'url', '') or '')}")
         logger.error(f"  状态码: {getattr(resp, 'status_code', '')}")
         logger.error(f"  响应长度: {len(text)}")
