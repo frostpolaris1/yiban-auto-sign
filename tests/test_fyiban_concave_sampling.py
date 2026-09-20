@@ -137,22 +137,43 @@ class ConcaveFenceSamplingTest(unittest.TestCase):
                 point = SAMPLE(polygon)
                 self.assertTrue(point is None or len(point) == 2)
 
-    def test_self_intersecting_polygon_never_yields_unverified_point(self):
-        """自交多边形（蝴蝶结、自交五边形）不支持：新路径要么拒绝、要么交出过裁判的点。
+    def test_simple_polygons_never_yield_outside_point(self):
+        """正向（可证）：通过自交判定的围栏，新路径返回的点必在围栏内。
 
-        自交路径的"内/外"本身没有公认定义，剖分可能拼出偏出围栏的三角形；这里钉住
-        新路径的后置条件——它返回的任何坐标都必须过 `point_in_polygon`。核不上时
-        交回旧路径（旧行为，可能出界），但绝不能由新路径直接交出可疑坐标。
+        三角形是凸集、内缩后整块仍在原三角形内，剪耳又保证三角形拼回溯围栏本身
+        （面积守恒）——所以只要"简单性"成立，取点不出界是可证的，不依赖随机抽检。
+        """
+        simple = {"L 形": L_SHAPE, "门形": GATE_SHAPE, "五角星": STAR_SHAPE,
+                  "正方形": SQUARE, "三角形": TRIANGLE}
+        for name, polygon in simple.items():
+            with self.subTest(shape=name):
+                self.assertFalse(fyiban_algo._has_self_intersection(polygon))
+                for _ in range(500):
+                    point = fyiban_algo._sample_by_triangulation(polygon)
+                    self.assertIsNotNone(point)
+                    self.assertTrue(POINT_IN(point[0], point[1], polygon),
+                                    f"{name}的新路径交出了围栏外的点")
+
+    def test_self_intersecting_polygons_never_use_the_triangulation_path(self):
+        """反向：自交多边形一律不走新路径（回退旧路径），公开入口仍不崩、形状合法。
+
+        这是上一版用例的修正——原先断言"新路径若返回点则必过裁判"，但存在反例：
+        7 顶点自交多边形能让剪耳凑出面积守恒、200 点自检也通过，随后仍偶发偏出围栏
+        （比旧路径更差）。现在建表前有确定性自交判定，这些形状都进不了新路径。
         """
         bowtie = [(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)]
         crossed = [(0.0, 1.0), (2.0, -1.0), (-2.0, 1.0), (2.0, 1.0), (-2.0, -1.0)]
-        for name, polygon in (("蝴蝶结", bowtie), ("自交五边形", crossed)):
+        sneaky = [(8.1386732749, 4.1317307596), (0.6471359865, 1.2291195505),
+                  (8.6485589709, 2.0524692762), (7.9848169430, 5.9748486442),
+                  (4.3817975369, 6.9969126913), (8.2149936844, 4.2889499737),
+                  (9.8436255936, 8.7772387584)]
+        for name, polygon in (("蝴蝶结", bowtie), ("自交五边形", crossed), ("七顶点反例", sneaky)):
             with self.subTest(shape=name):
-                for _ in range(500):
-                    point = fyiban_algo._sample_by_triangulation(polygon)
-                    if point is not None:
-                        self.assertTrue(POINT_IN(point[0], point[1], polygon),
-                                        f"{name}的新路径交出了围栏外的点")
+                self.assertTrue(fyiban_algo._has_self_intersection(polygon),
+                                f"{name}应被判为自交")
+                for _ in range(200):
+                    self.assertIsNone(fyiban_algo._sample_by_triangulation(polygon),
+                                      f"{name}不该走新路径")
                 point = SAMPLE(polygon)
                 self.assertTrue(point is None or len(point) == 2, "公开入口应返回点或 None")
 
@@ -163,8 +184,8 @@ class ConcaveFenceSamplingTest(unittest.TestCase):
 
     def test_shrink_ratio_leaves_edge_margin(self):
         """内缩比例必须严格小于 1：等于 1 就失去"不可能贴边"的边距。"""
-        self.assertGreater(fyiban_algo.TRI_SHRINK_RATIO, 0.0)
-        self.assertLess(fyiban_algo.TRI_SHRINK_RATIO, 1.0)
+        self.assertGreater(fyiban_algo._TRI_SHRINK_RATIO, 0.0)
+        self.assertLess(fyiban_algo._TRI_SHRINK_RATIO, 1.0)
 
 
 class SamplingCacheTest(unittest.TestCase):
@@ -238,14 +259,15 @@ class SamplingCacheTest(unittest.TestCase):
             "全共线": [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)],
             "蝴蝶结": [(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)],
         }
-        real = fyiban_algo._ear_clip_triangles
+        # 计建造次数而不是剪耳次数：自交多边形在自交判定就被拦下，根本走不到剪耳。
+        real = fyiban_algo._build_sampling_table
         calls = []
 
         def counting(polygon):
             calls.append(1)
             return real(polygon)
 
-        with mock.patch.object(fyiban_algo, "_ear_clip_triangles", counting):
+        with mock.patch.object(fyiban_algo, "_build_sampling_table", counting):
             for name, polygon in polygons.items():
                 with self.subTest(shape=name):
                     self.assertIsNone(fyiban_algo._sample_by_triangulation(polygon))
