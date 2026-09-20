@@ -40,8 +40,10 @@ DEFAULT_ENV_FILE = ".env"
 # 共用一个槽位就会串钥——load_key(a) 之后再 load_key(b) 既不读 b 的盘也不打缓存，
 # 直接返回 a 的钥，而同进程的 has_key(b)=True 会说反话。
 _KEY_CACHE = None
-# 来源条目上限：只留最近用到的来源。单位是来源字符串——同一个物理 .env 的不同拼写
-# （相对路径 / 绝对路径 / 带 ./ 前缀）各占一格；防 env_file 取值无界时缓存无限增长
+# 来源条目上限（2）：只在"新来源且已满"时整体腾空，再从当前来源重新积累——越限后
+# 缓存里实际只剩当前这 1 格，腾空前那些来源下次一律重新读盘解析。单位是来源字符串——
+# 同一个物理 .env 的不同拼写（相对路径 / 绝对路径 / 带 ./ 前缀）各占一格；
+# 防 env_file 取值无界时缓存无限增长
 _CACHE_MAX = 2
 # 建钥互斥：防多线程首启各自生成不同密钥互相覆盖（跨进程已由 _write_key_to_env_file
 # 的"写前重读"缓解，此处封同进程竞态）
@@ -98,7 +100,7 @@ def _cache_get(source):
 
 
 def _cache_put(source, key):
-    """把解析结果按来源落缓存，超上限先整体清空（只留最近这两格）。"""
+    """把解析结果按来源落缓存；新来源且已满时整体腾空，再从当前来源重新积累（上限 2）。"""
     global _KEY_CACHE
     if _KEY_CACHE is None:
         _KEY_CACHE = {}
@@ -292,7 +294,8 @@ def _write_key_to_env_file(env_file, key):
 
     读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥，避免多进程首启
     同时生成不同密钥互相覆盖；锁内仍保留"写入前重读"的既有兜底。
-    既有行含潜伏行分隔符（U+2028 等）时抛 ValueError 且磁盘上一个字节都不改。
+    既有行含潜伏行分隔符（U+2028 等）时抛 ValueError 且磁盘上一个字节都不改；
+    错误消息给出行号（1-based）作定位线索，不回带行原文（值里可能有口令等敏感内容）。
     """
     with env_lock.env_write_lock(env_file):
         existing = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
@@ -312,12 +315,15 @@ def _write_key_to_env_file(env_file, key):
         # 静默删掉（报"写入成功"，实则抹掉一行本函数根本没看懂的配置）。fail-closed 的
         # 理由：本函数只保留别人的行、没有清理权；潜伏载荷留在文件里迟早被某次 splitlines
         # 读-改-写实体化成生效配置行（启动时 find_env_key_collisions 已报出待清理的键）。
-        for ln in lines:
+        for ln_no, ln in enumerate(lines, start=1):
             if env_io.has_line_break(ln):
+                # 定位线索只给行号（1-based），绝不回带行原文：行原文会被测试与实测证实
+                # 带出值里的口令（如 postgres://user:S3cretPw@…）与裸 U+2028，随异常消息
+                # 落日志与 HTTP 500。<env_file 路径> + 行号已足以定位，零信息损失。
                 raise ValueError(
-                    f"{env_file} 有行含潜伏行分隔符（U+2028 等），写回会把它后面的内容"
-                    f"实体化成新配置行，故拒绝写入密钥；请人工清理该行后重试"
-                    f"（定位线索，该行首个键名：{(ln.partition('=')[0].strip()[:40] or '?')}）"
+                    f"{env_file} 第 {ln_no} 行（1-based）含潜伏行分隔符（U+2028 等），"
+                    f"写回会把它后面的内容实体化成新配置行，故拒绝写入密钥；"
+                    f"请人工清理该行后重试"
                 )
         # 旧键行折叠必须与解析口径同源：parse_env_file 按"首个 = 切分 + 两侧 strip"认键，
         # `YIBAN_ACCOUNTS_KEY = v` 正是同一条键的行；只认字面前缀 KEY= 折不掉它，残留的
