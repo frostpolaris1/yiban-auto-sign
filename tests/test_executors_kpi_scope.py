@@ -79,13 +79,28 @@ class KpiScopeTest(unittest.TestCase):
         self.assertIn("current_accounts", body, "分母必须取计入容量的账号数")
 
 
-class FallbackSwitchHintTest(unittest.TestCase):
-    """「未启用」必须同时给出开关在哪——否则用户看到状态却找不到入口。"""
+class FallbackInlineSwitchTest(unittest.TestCase):
+    """状态列要给**开关本体**，不是一句指路文案——否则用户看到状态还得找入口。
 
-    def test_off_state_points_to_the_row_dialog(self):
-        js = _read(JS)
-        self.assertRegex(js, r'fb\.status === "off"[\s\S]{0,200}点「设置」开启',
-                         "未启用时要在状态列指出开关位置")
+    断言只认控件构造与交互链路的稳定措辞（类名、字段名、门函数名），不锁整句文案。
+    """
+
+    def test_state_cell_renders_a_real_switch(self):
+        body = _function_body(_read(JS), "stateCell")
+        self.assertIn('class: "switch"', body, "故障转移行状态列必须渲染出开关本体")
+        self.assertIn('class: "track"', body, "开关要与弹窗那个同构（漏了 track 就不是同一个控件）")
+        self.assertIn('type: "checkbox"', body, "开关必须带 checkbox 输入")
+        self.assertIn("fb.enabled === true", body,
+                      "勾选状态只认配置里的 enabled（status 是运行期实况，两者会分叉）")
+
+    def test_state_cell_switch_walks_the_password_gate(self):
+        body = _function_body(_read(JS), "stateCell")
+        self.assertIn("askPassword", body, "拨动开关要走口令门")
+        self.assertIn("fallback_enable", body, "复用整条接口已有的开关字段，不新造接口字段")
+
+    def test_pointer_copy_never_comes_back(self):
+        self.assertNotIn("点「设置」开启", _read(JS),
+                         "开关已进状态列，那句指路文案不该回流")
 
 
 class FallbackStatusCopyTest(unittest.TestCase):

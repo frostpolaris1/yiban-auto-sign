@@ -229,11 +229,28 @@
     } else if (type === "fallback") {
       var fb = (lastData && lastData.fallback) || {};
       inner.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
-      if (fb.status === "off") {
-        // 徽标说「未启用」时必须指出开关在哪：它就在本行的「设置」弹窗里。
-        // 只报状态、不给入口，用户只能对着"未启用"找一圈（用户 2026-09-19 反馈）。
-        inner.appendChild(YB.el("span", { class: "set-exec-off", text: "点「设置」开启" }));
-      }
+      // 开关本体就放在状态格里（与行内弹窗那个同构）：用户看到「未启用」时手边就有入口，
+      // 不必先去猜入口藏在「设置」里。`enabled` 是配置里的声明开关，`status` 是运行期实况，
+      // 两者会分叉（有进程但配置没开），故勾选状态只认 `enabled`。
+      var fbSw = YB.el("input", { type: "checkbox" });
+      fbSw.checked = fb.enabled === true;
+      fbSw.addEventListener("change", function () {
+        var on = fbSw.checked;
+        // 先把控件拨回去：口令没过、或被取消时不该显示成已经改了（真值要等后端落盘后重画）
+        fbSw.checked = fb.enabled === true;
+        askPassword((on ? "开启" : "关闭") + "故障转移（槽位 " + count(row.slot) + "）？请输入当前管理员密码确认。",
+          function (pw) {
+            // 开关属于整条接口（`PUT /api/scheduler/executors` 的 `fallback_enable`），
+            // 行接口只认 type/proxy/name，不认这个字段
+            return putTo("/api/scheduler/executors",
+              { fallback_enable: on ? 1 : 0, confirm_password: pw },
+              on ? "已开启故障转移" : "已关闭故障转移");
+          });
+      });
+      inner.appendChild(YB.el("label", { class: "switch", title: "开启故障转移" }, [
+        fbSw, YB.el("span", { class: "track", "aria-hidden": "true" }),
+        YB.el("span", { class: "sr-only", text: "开启故障转移" })
+      ]));
     } else {
       inner.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
     }
@@ -486,9 +503,15 @@
   }
 
   function putRow(slot, payload, okText) {
+    return putTo("/api/scheduler/executors/rows/" + slot, payload, okText);
+  }
+
+  // PUT + 成功后 `load()` 重画：行内各写操作（含表格里的故障转移开关）共用同一条
+  // "提交中→落盘→刷新→横幅"链路，端点不同只差 URL。
+  function putTo(url, payload, okText) {
     return withBusy(function () {
       banner("提交中…", "info");
-      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload).then(function (d) {
+      return YB.api("PUT", url, payload).then(function (d) {
         return load().then(function () {
           setTip(okText + "：" + note(d), false);
           return true;
