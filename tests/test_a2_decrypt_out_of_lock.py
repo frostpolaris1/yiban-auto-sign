@@ -161,7 +161,7 @@ class A2DecryptOutOfLockTest(unittest.TestCase):
             "VALUES (1, '甲', '13800138099', 'PlainPW')"
         )
         conn.commit()
-        with self.assertLogs("yiban.db", level="WARNING") as cm:
+        with self.assertLogs("yiban.store.accounts", level="WARNING") as cm:
             accts = db.load_accounts()
         self.assertEqual(accts[0]["password"], "PlainPW", "明文值照常可用（不阻断业务）")
         self.assertTrue(any("已自动加密回写" in m for m in cm.output), cm.output)

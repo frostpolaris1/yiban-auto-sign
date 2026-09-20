@@ -16,8 +16,9 @@
 审计可追溯性是 web 与 signin 两个进程共用的一条链：写入方是 `db.audit()` 的全体调用点，
 读出方是 web 每日线程与 `scripts/audit_verify.py`（都经 `audit_health()` 汇总）。建表与全部
 迁移函数在 `yiban/store/migrations.py`；写事务入口 `_begin_immediate`、留痕的**写入**侧
-（`_table_min_max` / `_record_purge_event`）、每日清理 `_audit_cleanup`，以及审计之外另有大量
-引用的 `hash_ip` / `hash_phone` / `_track_salt` 都在 `yiban/store/db.py`。
+（`_table_min_max` / `_record_purge_event`）、每日清理 `_audit_cleanup` 在 `yiban/store/db.py`，
+追踪盐与加盐匿名哈希 `hash_ip` / `hash_phone` / `_track_salt` 在 `yiban/store/tracking.py`
+（与审计密钥同住一个 .env、共用本模块的路径回落链）。
 
 **复用**
 `yiban.store.db` 把本模块的 40 个函数与 14 个常量按原样再导出，`db.audit()` /

@@ -159,7 +159,7 @@ class SessionCacheDbTest(_SessionCacheFixture):
         db.set_session_cache(PHONE, '{"a":"1"}', "c")
         self._backdate_updated_at(hours=13, base_now=self.NOW)  # 落在当日 02:00，默认 TTL 6h
 
-        with self.assertLogs("yiban.db", level="INFO") as captured:
+        with self.assertLogs("yiban.store.session_cache", level="INFO") as captured:
             self.assertIsNone(self._get(), "同日内超出默认 TTL 6h 应返回 None")
         joined = "\n".join(captured.output)
         self.assertIn("同日内超出 TTL", joined, "应按同日 TTL 过期作废，而非跨业务日")
@@ -199,7 +199,7 @@ class SessionCacheDbTest(_SessionCacheFixture):
         conn.commit()
         os.environ["YIBAN_SESSION_TTL_HOURS"] = "72"
         try:
-            with self.assertLogs("yiban.db", level="INFO") as captured:
+            with self.assertLogs("yiban.store.session_cache", level="INFO") as captured:
                 self.assertIsNone(
                     self._get(), "跨业务日缓存必须作废，调大 TTL 也解锁不了"
                 )
@@ -358,7 +358,7 @@ class SessionCacheBusinessDayTest(_SessionCacheFixture):
     def test_discard_log_names_the_real_reason(self):
         """管理员要能一眼看出"为什么今早多登录了一次"，不能只看到未命中。"""
         self._write_with_updated_at(self._ts(day_offset=-1))
-        with self.assertLogs("yiban.db", level="INFO") as captured:
+        with self.assertLogs("yiban.store.session_cache", level="INFO") as captured:
             self.assertIsNone(self._get())
         joined = "\n".join(captured.output)
         self.assertIn("跨业务日", joined)

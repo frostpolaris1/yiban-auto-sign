@@ -11,30 +11,44 @@
 - 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE、核心迁移失败阻断
   启动、可选迁移失败或延后只置 blocked 且不提升版本（下次启动重试）；`_MIGRATIONS`
   是「版本号 → 名称 → 函数 → 是否核心」的登记表；
-- `MigrationDeferred`：可选迁移遇到需人工处理的数据时主动延后。
+- `MigrationDeferred`：可选迁移遇到需人工处理的数据时主动延后；
+- JSON → SQLite 自动导入 `_maybe_migrate` / `_rename_backup`：库仍为空且 JSON 存在时把
+  accounts/users 导入 SQLite（幂等），两个文件都成功后一起改名 `.bak` 保留逃生门。
 
 **归属**
 `yiban/store/db.py` 的 `init_db` 启动序列：建连后 `_create_tables` → `_run_migrations`
-（`migrate=False` 时整段跳过）。迁移历史是一份**按版本号冻结的时间序列**——已发布的迁移
-函数不可再改（改了对已升级的库无效，还会给介于两个版本之间的库制造新的失败路径），
-故整块按「同一份 schema 演进史」放在一起，不按版本段再拆。
+（`migrate=False` 时整段跳过）→ `_maybe_migrate`（仅在给了 `migrate_from` 时）。迁移历史
+是一份**按版本号冻结的时间序列**——已发布的迁移函数不可再改（改了对已升级的库无效，还会
+给介于两个版本之间的库制造新的失败路径），故整块按「同一份 schema 演进史」放在一起，
+不按版本段再拆。JSON 自动导入是这条启动序列里"把旧文件形态搬进 schema"的一步，与迁移
+共用同一个入口编排，故并入本模块。
 
 **复用**
 `yiban.store.db` 把本模块全部名字按原样再导出：既有 `db.migrate_v10(...)` /
-`db._ensure_column(...)` / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是**可变
-登记表**（测试用 `db._MIGRATIONS = [...]` 缩窄或替换迁移集），由 db 侧模块类读写转发到
-本模块——快照式再导出会让缩窄静默失效（编排仍读真表）。
+`db._ensure_column(...)` / `db._create_tables(...)` / `db._maybe_migrate(...)` 调用面不变。
+`_MIGRATIONS` 是**可变登记表**（测试用 `db._MIGRATIONS = [...]` 缩窄或替换迁移集），由 db
+侧模块类读写转发到本模块——快照式再导出会让缩窄静默失效（编排仍读真表）。
 
 **通信**
 迁移函数一律接收调用方传入的 `conn`（事务由 `_run_migrations` 经写事务入口开启），本模块
 从不自取连接。跨域调用——写事务入口 `_begin_immediate`、审计链重签 `_rechain_audit_logs`
-与重链留痕 `_record_rechain_event`——经 `_facade()` 按属性延迟取 `yiban.store.db`：函数内
-导入避免导入环，按属性取保证 `db.<名字> = 替身` 一类打桩可见。
+与重链留痕 `_record_rechain_event`、JSON 导入的进程内写锁 `_conn_lock`——经 `_facade()`
+按属性延迟取 `yiban.store.db`：函数内导入避免导入环，按属性取保证 `db.<名字> = 替身`
+一类打桩可见。库与密钥来源路径直接读连接模块（`_connection._env_file`；`db._env_file =
+path` 的写入由 db 门面转发落到那里），账号域的加密值判定按父提交同形直取
+`_accounts._is_encrypted_value`。
 """
 import contextlib
+import json
 import logging
+import os
 import re
 import sqlite3
+
+from yiban import clock
+from yiban.infra import account_crypto
+from yiban.store import accounts as _accounts
+from yiban.store import connection as _connection
 
 logger = logging.getLogger("yiban.store.migrations")
 
@@ -770,3 +784,172 @@ def _run_migrations(conn):
                 conn.rollback()
             logger.warning("可选 schema 迁移失败: %s: %s，继续后续迁移", name, e)
             blocked = True
+
+
+# ---------------------------------------------------------------------------
+# JSON → SQLite 自动导入（幂等）
+# ---------------------------------------------------------------------------
+def _maybe_migrate(conn, json_base):
+    """json_base 形如 /path/accounts.json（users.json 同目录推断）。
+
+    读取 accounts/users 两个 JSON 后在一个事务内导入，两个都成功后一起改名 .bak；
+    某个 JSON 读取失败/不存在时跳过该文件，不阻断另一个成功导入。
+    """
+    accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
+        os.path.dirname(json_base), "accounts.json"
+    )
+    users_json = os.path.join(os.path.dirname(accounts_json), "users.json")
+    has_db_rows = (
+        conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] > 0
+        or conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
+    )
+    if has_db_rows:
+        return  # 已迁移过
+    accounts = []
+    users = []
+    load_errors = []
+    if os.path.exists(accounts_json):
+        try:
+            with open(accounts_json, encoding="utf-8") as f:
+                accounts = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            accounts = []
+            load_errors.append(accounts_json)
+            logger.error(
+                "账号数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
+                accounts_json, type(e).__name__, e,
+            )
+        if not isinstance(accounts, list):
+            accounts = []
+    if os.path.exists(users_json):
+        try:
+            with open(users_json, encoding="utf-8") as f:
+                users = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            users = []
+            load_errors.append(users_json)
+            logger.error(
+                "用户数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
+                users_json, type(e).__name__, e,
+            )
+        if not isinstance(users, list):
+            users = []
+    if not accounts and not users:
+        if load_errors:
+            logger.error("存在无法读取的数据文件，本次未完成迁移（请勿误判为无数据）: %s",
+                         ", ".join(load_errors))
+        else:
+            logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
+        return
+    imported = 0
+    key = account_crypto.load_key(_connection._env_file) if accounts else None
+    had_plaintext = False  # 迁移源含明文字段 → .bak 逃生门需重写为加密版
+    with _facade()._conn_lock, conn:
+        if accounts:
+            # 加密字段统一为库内 JSON 串格式：
+            #   明文 str → 加密（复用 account_crypto）；
+            #   密文 dict（0.16 JSON 嵌套对象）→ json.dumps 序列化；
+            #   密文 JSON 串 → 原样。
+            for i, a in enumerate(accounts):
+                password = a.get("password", "") or ""
+                phone_code = a.get("phone_code", "") or ""
+                if key is not None:
+                    if password and not _accounts._is_encrypted_value(password):
+                        had_plaintext = True
+                        password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
+                    elif isinstance(password, dict):
+                        password = json.dumps(password)  # 已是密文对象 → 序列化入库
+                    if phone_code and not _accounts._is_encrypted_value(phone_code):
+                        had_plaintext = True
+                        phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
+                    elif isinstance(phone_code, dict):
+                        phone_code = json.dumps(phone_code)
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO accounts "
+                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        i + 1,
+                        a.get("name", ""),
+                        a.get("phone", ""),
+                        password,
+                        a.get("phone_model", ""),
+                        phone_code,
+                        a.get("owner", "admin"),
+                        a.get("status", "active"),
+                        a.get("reject_reason", ""),
+                        1 if a.get("deleted") else 0,
+                        a.get("deleted_at", ""),
+                    ),
+                )
+                imported += cur.rowcount
+        if users:
+            for u in users:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
+                    (
+                        u.get("email", ""),
+                        u.get("password_hash", ""),
+                        u.get("role", "user"),
+                        u.get("created_at", ""),
+                        u.get("pw_version", 1),
+                    ),
+                )
+                imported += cur.rowcount
+    # 事务提交成功后统一改名，避免单个 JSON 导入失败时已把另一个改名
+    if accounts:
+        _rename_backup(accounts_json, reencrypt=had_plaintext, key=key)
+    if users:
+        _rename_backup(users_json)
+    logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
+
+
+def _rename_backup(path, reencrypt=False, key=None):
+    """JSON 迁移成功后改名保留（逃生门），避免被旧代码误写回。
+
+    .bak 一律落 0600；迁移源含明文字段时（更早格式/手工构造/第三方导出），重写 .bak
+    为加密版，杜绝明文凭据以 .bak 形态驻留磁盘。
+    同日已有同名 .bak 时追加递增序号，确保源文件总能离开原路径——此前目标已存在
+    即跳过 os.rename，会让含明文的源 JSON 以原文件名无限期驻留。
+    """
+    if not os.path.exists(path):
+        return
+    bak = f"{path}.bak-{clock.now().strftime('%Y%m%d')}"
+    if os.path.exists(bak):
+        seq = 1
+        while os.path.exists(f"{bak}-{seq}"):
+            seq += 1
+        new_bak = f"{bak}-{seq}"
+        logger.warning("迁移备份目标 %s 已存在，源文件改存为 %s", bak, new_bak)
+        bak = new_bak
+    os.rename(path, bak)
+    with contextlib.suppress(OSError):  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
+        os.chmod(bak, 0o600)
+    if reencrypt and key is not None:
+        try:
+            with open(bak, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                changed = False
+                for a in data:
+                    pwd = a.get("password", "") or ""
+                    if pwd and not _accounts._is_encrypted_value(pwd):
+                        a["password"] = json.dumps(
+                            account_crypto.encrypt_password(pwd, key, a.get("phone", ""))
+                        )
+                        changed = True
+                    code = a.get("phone_code", "") or ""
+                    if code and not _accounts._is_encrypted_value(code):
+                        a["phone_code"] = json.dumps(
+                            account_crypto.encrypt_password(code, key, a.get("phone", ""))
+                        )
+                        changed = True
+                if changed:
+                    tmp = bak + ".tmp" + str(os.getpid())
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False)
+                    os.chmod(tmp, 0o600)
+                    os.replace(tmp, bak)
+                    logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
+        except (OSError, ValueError, TypeError):
+            logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
