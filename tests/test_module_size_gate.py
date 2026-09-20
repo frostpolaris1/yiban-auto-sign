@@ -162,18 +162,16 @@ OVERSIZED = {
         "逐条硬约定说明）；若增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
         "（config/capacity/state/db/version）」切成两个模块。"
     )),
-    "web/static/js/components/settings-executors.js": (800, (
+    "web/static/js/components/settings-executors.js": (780, (
         "执行体分区组件（规模 KPI + 清单表 + 行内设置弹窗 + 每个写操作的口令门 + 写明细口径的注释）。"
         "三块服务于同一个屏与**同一份接口响应**：lastData 被 KPI、清单渲染、行弹窗三处读，"
         "banner/focusAfterPaint/rowName/putRow 等助手三处共用——拆开等于把这份共享状态改成跨模块协议"
         "（门禁判据②），而任何接口字段变动仍要同时改多处（判据③不成立）。"
         "容量实测与建议已抽到 settings-quota.js；三种写操作（追加行/删行/改行）各带口令门，"
-        "另有「只改名不打门」的分支。上限由 780 调到 800：状态列新增故障转移开关后，"
-        "控件构造、拨动即复原、口令回调与端点归属说明各占几行，同屏又多了「表格开关与弹窗开关指向同一状态」"
-        "这一致的说明——这几十行与清单表共享 lastData/rowName/putRow，搬出去反而要给它另做一份"
-        "注入协议（判据②）。再涨就先切行内设置弹窗：openRow 及其独有助手（infoTip/linkBtn/ROW_HELP），"
-        "届时要把它依赖的 lastData/putRow/banner 三样显式注入；开关那一段留在本文件（它读的是"
-        "清单响应、画在表格里，与清单表同一变更轴）。"
+        "另有「只改名不打门」的分支，故上限设在 780（此前为状态列的行内开关临时提到 800，"
+        "该开关已按用户要求收回、只留弹窗一个入口，上限随之回到 780）。"
+        "再涨就先切行内设置弹窗：openRow 及其独有助手（infoTip/linkBtn/ROW_HELP），"
+        "届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
     )),
     "web/static/js/core.js": (None, (
         "前端交互层核心（classic script，非 module）：全局 api/toast/modal/时钟/身份/导航行为，"

@@ -10,17 +10,22 @@
    既能读成"功能没启用"，也能读成"执行体没启动"，用户第一次看到分不清去哪一栏找原因。
 3. **执行体一览的三处口径句**（见末尾 `ExecutorListWordingTest`）：故障转移行占号导致并行行
    跳号、单并行行时行内出口不生效、以及「单执行体」与账号页「上次实领」的对照。
+4. **故障转移开关只留弹窗一个入口**：状态格只报状态徽标；开关在弹窗首位、带字段标题，
+   其 payload 字面量与勾选初值分别用代码级断言钉住（注释顶替不了）；浮层行菜单的分隔线
+   不带外边距。
 
-三者都是"文案/口径"级契约，没有运行时断言可依赖，故直接读源码——与项目既有的
+四者都是"文案/口径/控件归属"级契约，没有运行时断言可依赖，故直接读源码——与项目既有的
 `test_settings_tiers_frontend_parity` 同一手法。
 """
 
 import os
+import re
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS = os.path.join(BASE, "web", "static", "js", "components", "settings-executors.js")
 TPL = os.path.join(BASE, "web", "templates", "pages", "work_settings.html")
+CSS = os.path.join(BASE, "web", "static", "css", "app.css")
 
 
 def _read(path):
@@ -79,28 +84,71 @@ class KpiScopeTest(unittest.TestCase):
         self.assertIn("current_accounts", body, "分母必须取计入容量的账号数")
 
 
-class FallbackInlineSwitchTest(unittest.TestCase):
-    """状态列要给**开关本体**，不是一句指路文案——否则用户看到状态还得找入口。
+class FallbackStateCellIsStatusOnlyTest(unittest.TestCase):
+    """故障转移行的状态格**只报状态**，开关只留弹窗一个入口。
 
-    断言只认控件构造与交互链路的稳定措辞（类名、字段名、门函数名），不锁整句文案。
+    同一状态两个开关入口属「过度」（不足与过度同样算缺陷），故状态格不再放控件；
+    断言只认控件构造的稳定措辞（类名、字段名、门函数名），不锁整句文案。
     """
 
-    def test_state_cell_renders_a_real_switch(self):
+    def test_state_cell_renders_status_badge_only(self):
         body = _function_body(_read(JS), "stateCell")
-        self.assertIn('class: "switch"', body, "故障转移行状态列必须渲染出开关本体")
-        self.assertIn('class: "track"', body, "开关要与弹窗那个同构（漏了 track 就不是同一个控件）")
-        self.assertIn('type: "checkbox"', body, "开关必须带 checkbox 输入")
-        self.assertIn("fb.enabled === true", body,
-                      "勾选状态只认配置里的 enabled（status 是运行期实况，两者会分叉）")
+        self.assertIn("FB_TEXT[fb.status]", body, "状态格仍要报故障转移状态")
+        for forbidden in ('class: "switch"', 'class: "track"', 'type: "checkbox"'):
+            self.assertNotIn(forbidden, body,
+                             "状态格不得再出现开关控件（%s）——开关只在弹窗里" % forbidden)
 
-    def test_state_cell_switch_walks_the_password_gate(self):
+    def test_state_cell_has_no_second_write_path(self):
         body = _function_body(_read(JS), "stateCell")
-        self.assertIn("askPassword", body, "拨动开关要走口令门")
-        self.assertIn("fallback_enable", body, "复用整条接口已有的开关字段，不新造接口字段")
+        self.assertNotIn("askPassword", body,
+                         "状态格不该有独立的口令门（写入口只有弹窗那一个）")
+        self.assertNotIn("fallback_enable", body,
+                         "状态格不该再打开关接口（防第二开关回流）")
 
     def test_pointer_copy_never_comes_back(self):
         self.assertNotIn("点「设置」开启", _read(JS),
-                         "开关已进状态列，那句指路文案不该回流")
+                         "状态格不放指路文案：开关就在「设置」弹窗里，用户看状态不必再被指挥")
+
+
+class FallbackSwitchPayloadTest(unittest.TestCase):
+    """弹窗开关的读写口径必须落在**可执行代码**上。
+
+    同函数里的注释也含 `fallback_enable` / `fb.enabled` 字样，只 assertIn 关键字会被注释
+    满足（评审实测：把 payload 键改坏、保留注释，旧用例仍绿）。故这里断言 payload 字面量
+    与勾选初值两行代码，注释无法满足。
+    """
+
+    def test_switch_initial_checked_reads_config_flag(self):
+        body = _function_body(_read(JS), "openRow")
+        self.assertIn("if (fb.enabled === true) swInput.checked = true", body,
+                      "勾选初值必须只认配置里的 enabled（这一行是代码，注释与复原语句都顶替不了）")
+
+    def test_submit_posts_the_fallback_payload_literal(self):
+        body = _function_body(_read(JS), "submit")
+        self.assertRegex(body, r"fallback_enable:\s*args\.enable",
+                         "提交必须带 fallback_enable 的 payload 字面量（关键字被注释满足不算）")
+        self.assertIn('"/api/scheduler/executors"', body,
+                      "开关属于整条接口，不是行接口")
+
+    def test_switch_value_is_one_or_zero(self):
+        body = _function_body(_read(JS), "switchArg")
+        self.assertIn("swInput.checked ? 1 : 0", body,
+                      "开关值由勾选态换算成 1/0，不直接送布尔")
+
+
+class RowMenuDividerSpacingTest(unittest.TestCase):
+    """浮层行菜单的危险项分隔线不带外边距。
+
+    菜单项实测高 34.8px，相邻两项文字间距 16px；这条 1px 线若带 4px 边距，线两侧就是 25px，
+    正是用户看到的「分隔线上下空隙大」。归零后 17px，与别处一致。
+    """
+
+    def test_floating_divider_has_no_margin(self):
+        css = _read(CSS)
+        m = re.search(r"\.acct-menu--floating\s+\.dd-divider\s*\{([^}]*)\}", css)
+        self.assertIsNotNone(m, "找不到浮层菜单分隔线规则（规则被删或改名都要在这里登记）")
+        self.assertRegex(m.group(1), r"margin:\s*0\s*;",
+                         "分隔线外边距必须归零，否则线两侧间距又比其它菜单项宽")
 
 
 class FallbackModalSwitchPlacementTest(unittest.TestCase):

@@ -227,30 +227,9 @@
       inner.appendChild(badge("停用", "badge--muted"));
       inner.appendChild(YB.el("span", { class: "set-exec-off", text: "不拉起" }));
     } else if (type === "fallback") {
+      // 状态格只报状态：开关只留弹窗一个入口，同屏两个入口会让用户以为是两个独立开关。
       var fb = (lastData && lastData.fallback) || {};
       inner.appendChild(badge(FB_TEXT[fb.status] || "—", fbClass(fb)));
-      // 开关本体就放在状态格里（与行内弹窗那个同构）：用户看到「未启用」时手边就有入口，
-      // 不必先去猜入口藏在「设置」里。`enabled` 是配置里的声明开关，`status` 是运行期实况，
-      // 两者会分叉（有进程但配置没开），故勾选状态只认 `enabled`。
-      var fbSw = YB.el("input", { type: "checkbox" });
-      fbSw.checked = fb.enabled === true;
-      fbSw.addEventListener("change", function () {
-        var on = fbSw.checked;
-        // 先把控件拨回去：口令没过、或被取消时不该显示成已经改了（真值要等后端落盘后重画）
-        fbSw.checked = fb.enabled === true;
-        askPassword((on ? "开启" : "关闭") + "故障转移（槽位 " + count(row.slot) + "）？请输入当前管理员密码确认。",
-          function (pw) {
-            // 开关属于整条接口（`PUT /api/scheduler/executors` 的 `fallback_enable`），
-            // 行接口只认 type/proxy/name，不认这个字段
-            return putTo("/api/scheduler/executors",
-              { fallback_enable: on ? 1 : 0, confirm_password: pw },
-              on ? "已开启故障转移" : "已关闭故障转移");
-          });
-      });
-      inner.appendChild(YB.el("label", { class: "switch", title: "开启故障转移" }, [
-        fbSw, YB.el("span", { class: "track", "aria-hidden": "true" }),
-        YB.el("span", { class: "sr-only", text: "开启故障转移" })
-      ]));
     } else {
       inner.appendChild(badge(STATE_TEXT[row.state] || "—", STATE_CLASS[row.state]));
     }
@@ -506,8 +485,7 @@
     return putTo("/api/scheduler/executors/rows/" + slot, payload, okText);
   }
 
-  // PUT + 成功后 `load()` 重画：行内各写操作（含表格里的故障转移开关）共用同一条
-  // "提交中→落盘→刷新→横幅"链路，端点不同只差 URL。
+  // PUT + 成功后 `load()` 重画：行内写操作共用同一条「提交中→落盘→刷新→横幅」链路。
   function putTo(url, payload, okText) {
     return withBusy(function () {
       banner("提交中…", "info");
@@ -581,11 +559,7 @@
     var wrap = YB.el("div", { class: "set-exec-form" });
     var hint = singleRowHint(type);
     if (hint) wrap.appendChild(hint);
-    // 故障转移开关放**第一个字段**：它是这一行的主状态控件，只有先出现，紧随其后的「类型／
-    // 当前出口／设置出口」才自然聚成一组；原先夹在「设置出口」输入框与「存活」之间、又没有
-    // 字段标题时，按接近性原则看不出它属于出口还是属于这一行（用户反馈）。
-    // 字段标题与同弹窗其它字段同构；开关与模板里的同类控件同构：label 内补 sr-only 文本给
-    // 读屏，语义说明用 aria-describedby 程序化关联（与设置页其它分区同一做法）。
+    // 开关放首位：它是这一行的主状态控件，紧随其后的类型/出口字段才聚成一组（接近性原则）。
     var swInput = null;
     if (isFb) {
       swInput = YB.el("input", { type: "checkbox" });
@@ -598,7 +572,7 @@
           swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
           YB.el("span", { class: "sr-only", text: "开启故障转移" })
         ]),
-        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起故障转移进程（窗口内补签；只写声明开关，还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
+        YB.el("p", { class: "field-help", id: swHelpId, text: "只写声明开关：窗口内补签还需宿主以 --fallback 拉起进程才会真在跑。" })
       ]));
     }
     // 名称：后端 2026-09-17 起每行都下发 name（未设 = null），故能力探测恒真——保留探测只是为了
