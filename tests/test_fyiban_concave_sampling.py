@@ -8,7 +8,9 @@
 验收口径统一用本层自己的 `point_in_polygon`，即调用方用的同一裁判；每个用例都
 拿采样点回判，不另立标准。
 """
+import math
 import unittest
+from unittest import mock
 
 from yiban.fyiban import algo as fyiban_algo
 
@@ -22,6 +24,21 @@ GATE_SHAPE = [(0.0, 0.0), (0.0, 2.0), (1.0, 2.0), (1.0, 1.0),
               (2.0, 1.0), (2.0, 2.0), (3.0, 2.0), (3.0, 0.0)]
 SQUARE = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
 TRIANGLE = [(0.0, 0.0), (2.0, 0.0), (0.0, 2.0)]
+
+
+def _star_polygon(points, outer, inner, center):
+    """外向/内向顶点交替的简单五角星（凹形，不交叉），用于覆盖更多剪耳分支。"""
+    cx, cy = center
+    ring = []
+    for k in range(points):
+        outer_angle = math.radians(90 + 360.0 * k / points)
+        inner_angle = outer_angle + math.radians(180.0 / points)
+        ring.append((cx + outer * math.cos(outer_angle), cy + outer * math.sin(outer_angle)))
+        ring.append((cx + inner * math.cos(inner_angle), cy + inner * math.sin(inner_angle)))
+    return ring
+
+
+STAR_SHAPE = _star_polygon(5, 1.5, 0.62, (1.5, 1.5))
 
 
 def _vertices_are_inside(polygon, count):
@@ -148,6 +165,101 @@ class ConcaveFenceSamplingTest(unittest.TestCase):
         """内缩比例必须严格小于 1：等于 1 就失去"不可能贴边"的边距。"""
         self.assertGreater(fyiban_algo.TRI_SHRINK_RATIO, 0.0)
         self.assertLess(fyiban_algo.TRI_SHRINK_RATIO, 1.0)
+
+
+class SamplingCacheTest(unittest.TestCase):
+    """剖分缓存：命中不再剪耳、LRU 淘汰后重建、不可用围栏记账后回退旧路径。
+
+    围栏按学校固定、同一轮多账号共用同一多边形，故剖分（连同内缩三角形与面积前缀
+    和）按顶点元组缓存；这里钉住缓存的可见行为，不碰内部数据结构。
+    """
+
+    def setUp(self):
+        # 每个用例从空缓存起，建造次数才可观测，也避免用例间互相污染。
+        fyiban_algo._TRIANGULATION_CACHE.clear()
+
+    def tearDown(self):
+        fyiban_algo._TRIANGULATION_CACHE.clear()
+
+    def test_repeated_polygon_builds_triangulation_once(self):
+        """同一多边形连续取点：剪耳只跑一次，之后都命中缓存。"""
+        real = fyiban_algo._ear_clip_triangles
+        calls = []
+
+        def counting(polygon):
+            calls.append(1)
+            return real(polygon)
+
+        with mock.patch.object(fyiban_algo, "_ear_clip_triangles", counting):
+            for _ in range(200):
+                point = SAMPLE(L_SHAPE)
+                self.assertTrue(POINT_IN(point[0], point[1], L_SHAPE))
+        self.assertEqual(len(calls), 1, "同一多边形应只剖分一次，其余应命中缓存")
+
+    def test_cached_sampling_stays_inside_for_complex_fences(self):
+        """缓存路径下 L 形、门形、五角星各 2000 点必须全部落在围栏内。"""
+        for name, polygon in (("L 形", L_SHAPE), ("门形", GATE_SHAPE), ("五角星", STAR_SHAPE)):
+            with self.subTest(shape=name):
+                inside = _vertices_are_inside(polygon, 2000)
+                self.assertEqual(inside, 2000, f"{name}有 {2000 - inside} 个采样点落在围栏外")
+
+    def test_lru_eviction_rebuilds_evicted_polygon(self):
+        """容量只有 8 条：塞入 9 个不同多边形后最早那个被淘汰，回访时重建且仍正确。"""
+        polygons = [[(float(i), 0.0), (float(i) + 3.0, 0.0), (float(i) + 3.0, 1.0),
+                     (float(i) + 1.0, 1.0), (float(i) + 1.0, 3.0), (float(i), 3.0)]
+                    for i in range(9)]
+        for polygon in polygons:
+            point = SAMPLE(polygon)
+            self.assertTrue(POINT_IN(point[0], point[1], polygon))
+        self.assertLessEqual(len(fyiban_algo._TRIANGULATION_CACHE),
+                             fyiban_algo._TRIANGULATION_CACHE_CAPACITY,
+                             "缓存条数不得超过容量上限")
+
+        first = polygons[0]  # 最早入队、此后再没被访问，应已被 LRU 淘汰
+        real = fyiban_algo._ear_clip_triangles
+        calls = []
+
+        def counting(polygon):
+            calls.append(1)
+            return real(polygon)
+
+        with mock.patch.object(fyiban_algo, "_ear_clip_triangles", counting):
+            for _ in range(100):
+                point = SAMPLE(first)
+                self.assertTrue(POINT_IN(point[0], point[1], first))
+        self.assertEqual(len(calls), 1, "被淘汰的多边形回访时应重建一次（且只一次）")
+
+    def test_unusable_polygons_are_cached_and_fall_back(self):
+        """退化/自交多边形回退旧路径：不抛异常、返回值形状不变，且只尝试建造一次。
+
+        不可用的多边形也记一份缓存（negative），否则每次取样都要重跑注定失败的剪耳。
+        """
+        polygons = {
+            "全共线": [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)],
+            "蝴蝶结": [(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)],
+        }
+        real = fyiban_algo._ear_clip_triangles
+        calls = []
+
+        def counting(polygon):
+            calls.append(1)
+            return real(polygon)
+
+        with mock.patch.object(fyiban_algo, "_ear_clip_triangles", counting):
+            for name, polygon in polygons.items():
+                with self.subTest(shape=name):
+                    self.assertIsNone(fyiban_algo._sample_by_triangulation(polygon))
+                    for _ in range(5):
+                        point = SAMPLE(polygon)
+                        self.assertTrue(point is None or len(point) == 2,
+                                        f"{name}返回值形状异常")
+        self.assertEqual(len(calls), len(polygons),
+                         "不可用的多边形应各只尝试建造一次（negative 缓存生效）")
+
+    def test_self_check_failure_disables_triangulation(self):
+        """建时自检不过 → 该围栏视为不可用，新路径不再交回任何点（交回旧路径）。"""
+        with mock.patch.object(fyiban_algo, "point_in_polygon", return_value=False):
+            self.assertIsNone(fyiban_algo._sample_by_triangulation(L_SHAPE))
 
 
 class TriangulationTest(unittest.TestCase):

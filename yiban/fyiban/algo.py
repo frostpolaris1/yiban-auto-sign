@@ -8,10 +8,14 @@
 - 剖分不成立（自交、退化）时退回"缩放质心 + 均匀分布 ±0.1 跨度"的旧路径，与上游
   的缩放质心骨架一致；抖动兜底也是本地补充，避免多账号多次签到聚在质心附近形成
   行为指纹。
+- 剖分很贵（O(n²)）而围栏按学校固定，故按顶点元组缓存剖分与面积前缀和（LRU 8 条）：
+  同一围栏重复取点直接跳过剪耳，并在建表时抽检一次保证取点不出界。
 
 随机源用 `secrets.SystemRandom()`（不可预测）：坐标是要提交给服务端的"人在现场"
 证据，不能用可预测的伪随机序列。
 """
+import bisect
+import collections
 import math
 import secrets
 
@@ -26,6 +30,20 @@ MAX_ATTEMPTS = 5000
 # 贴边的采样点容易被服务端判在围栏外；取 0.7 与旧路径的 SCALE_FACTOR 同量级，
 # 三条边各留约三成边距，同时保住三角形约一半的面积（0.7²）可用。
 TRI_SHRINK_RATIO = 0.7
+
+# 剪耳剖分很贵（O(n²)，48 顶点数百 µs、400 顶点数十 ms），而围栏按学校固定、同一轮
+# 多账号共用同一多边形——把剖分连同内缩三角形、面积前缀和缓存下来，命中就跳过剪耳，
+# 每点只剩取样本身。容量 8 条是为同进程内服务多校区留的余量，LRU 淘汰。
+_TRIANGULATION_CACHE_CAPACITY = 8
+# 建表时的自检抽样数：剖分刚建好时抽这么多点，全部落在围栏内才认可这份剖分（见
+# `_build_sampling_table`）。抽检替代旧实现的"每点复核"，语义不弱：自交/退化围栏的
+# 剖分在建表时就被否定。
+_SELF_CHECK_SAMPLES = 200
+_CACHE_MISS = object()
+# 键是顶点浮点元组，值是 (内缩三角形, 面积前缀和, 总面积)，不可用的多边形值为 None。
+# 引擎进程内取点是严格串行的，普通 dict 就够；即便被多线程并发访问，最坏也只是同一
+# 围栏被重复建造一次，不会取到别人的表（dict 的读写本身是原子操作）。
+_TRIANGULATION_CACHE = collections.OrderedDict()
 
 
 def point_in_polygon(x, y, polygon):
@@ -177,6 +195,76 @@ def _sample_in_triangle(triangle):
     return (w_a * ax + w_b * bx + w_c * cx, w_a * ay + w_b * by + w_c * cy)
 
 
+def _sample_from_table(shrunk, cumulative, total):
+    """从采样表取一个点：按面积加权选一块内缩三角形，再在三角形内均匀取点。
+
+    `bisect_left` 在前缀和里定位第一块"上界 ≥ 抽签值"的三角形，即面积加权抽签；
+    抽出的是三角形（凸集）且已向心内缩，取点必然落在该三角形内部，从而落在围栏内。
+    """
+    target = _SECURE_RANDOM.uniform(0.0, total)
+    index = bisect.bisect_left(cumulative, target)
+    if index >= len(shrunk):  # uniform 取到上界（理论上的边界情形）时归到最后一块
+        index = len(shrunk) - 1
+    return _sample_in_triangle(shrunk[index])
+
+
+def _self_check(table, polygon):
+    """建表自检：从刚建好的表里抽 `_SELF_CHECK_SAMPLES` 个点，全在围栏内才认可。
+
+    旧实现在每次取点后都用 `point_in_polygon` 核一遍，只为拦住"自交/退化围栏拼出
+    偏出围栏的三角形"这一种输入；改成建表时一次性抽检，正常围栏命中缓存后不再付
+    这份成本。抽检点出界即否定整份剖分——这类围栏本身说不清内外，宁可走旧行为。
+    """
+    shrunk, cumulative, total = table
+    for _ in range(_SELF_CHECK_SAMPLES):
+        point = _sample_from_table(shrunk, cumulative, total)
+        if not point_in_polygon(point[0], point[1], polygon):
+            return False
+    return True
+
+
+def _build_sampling_table(polygon):
+    """建造采样表并自检，得到 `_TRIANGULATION_CACHE` 的值；不可用返回 None。
+
+    流程：剪耳剖分 → 每块三角形向内心内缩 `TRI_SHRINK_RATIO` → 累出面积前缀和。
+    剖分失败、总面积为 0、或建时自检不通过都返回 None，调用方据此回退旧路径。
+    """
+    triangles = _ear_clip_triangles(polygon)
+    if not triangles:
+        return None
+    shrunk = [_shrink_triangle(triangle, TRI_SHRINK_RATIO) for triangle in triangles]
+    cumulative = []
+    total = 0.0
+    for triangle in shrunk:
+        total += _triangle_area(triangle)
+        cumulative.append(total)
+    if total <= 0:
+        return None
+    table = (shrunk, cumulative, total)
+    if not _self_check(table, polygon):
+        return None
+    return table
+
+
+def _sampling_table(polygon):
+    """取（缺则建造并缓存）多边形的采样表；该围栏不可用时返回 None。
+
+    键是顶点浮点元组：同一份围栏重复调用是同一批 float，浮点相等即命中（不引入
+    容差——形状相近但不同的围栏不该互相污染）。不可用的多边形也记一份（值为 None），
+    免得每次取样都重跑一遍注定失败的剪耳。
+    """
+    key = tuple((float(point[0]), float(point[1])) for point in polygon)
+    table = _TRIANGULATION_CACHE.get(key, _CACHE_MISS)
+    if table is not _CACHE_MISS:
+        _TRIANGULATION_CACHE.move_to_end(key)
+        return table
+    table = _build_sampling_table(polygon)
+    _TRIANGULATION_CACHE[key] = table
+    if len(_TRIANGULATION_CACHE) > _TRIANGULATION_CACHE_CAPACITY:
+        _TRIANGULATION_CACHE.popitem(last=False)
+    return table
+
+
 def _sample_by_triangulation(polygon):
     """剖分采样：按三角形面积加权挑一块，再在它内缩后的范围里均匀取点。
 
@@ -184,31 +272,14 @@ def _sample_by_triangulation(polygon):
     单块三角形是凸集，向内缩固定比例后仍整体在原三角形内，所以取点不可能出界。
     代价是内缩把每块三角形的三个角让了出去，贴着围栏外角的那一小片密度偏低——
     这正是"不可能贴边"要换的东西。
-    剖分失败、总面积为 0、或取出的点核不上围栏时返回 None（交调用方走旧路径）。
+    采样表（剖分 + 内缩 + 面积前缀和）由 `_sampling_table` 缓存，命中即跳过剪耳；
+    "取点不出界"由建表自检保证，这里不再逐点复核。表不可用（自交、退化）返回 None，
+    交调用方走旧路径。
     """
-    triangles = _ear_clip_triangles(polygon)
-    if not triangles:
+    table = _sampling_table(polygon)
+    if table is None:
         return None
-    cumulative = []
-    total = 0.0
-    for triangle in triangles:
-        total += _triangle_area(triangle)
-        cumulative.append(total)
-    if total <= 0:
-        return None
-    target = _SECURE_RANDOM.uniform(0.0, total)
-    chosen = triangles[-1]
-    for triangle, upper in zip(triangles, cumulative, strict=True):
-        if target <= upper:
-            chosen = triangle
-            break
-    point = _sample_in_triangle(_shrink_triangle(chosen, TRI_SHRINK_RATIO))
-    # 简单多边形的三角形是整个围栏的一部分，这一步必然通过，是"不可能出界"的兜底
-    # 校验；自交这类围栏本身说不清内外的输入，剖分可能拼出偏出围栏的三角形，核不
-    # 上就交回旧路径——宁可走旧行为，也不交出可疑坐标。
-    if point_in_polygon(point[0], point[1], polygon):
-        return point
-    return None
+    return _sample_from_table(*table)
 
 
 def _generate_by_scaled_centroid(polygon_points):
