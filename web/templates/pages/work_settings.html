@@ -152,7 +152,7 @@
           <span class="field-label" id="ss-dist-label">分布方式</span>
           {{ select_field('ss-dist', 'uniform',
              [('uniform', '均匀分布'), ('normal', '正态分布（钟形拟人）')], 'ss-dist-label') }}
-          <p class="field-help">「顺序 × 均匀」集中在窗口前段；要铺满窗口选「随机 × 均匀」或正态。</p>
+          <p class="field-help">「顺序 × 均匀」集中在窗口前段；铺满窗口选「随机 × 均匀」或正态。</p>
         </div>
         {# 掐头/去尾：页面只显示数值，点击在弹窗里用数字框或滑杆调整（见 range-field.js） #}
         <div class="field">
@@ -163,7 +163,7 @@
                aria-labelledby="ss-edge-front-label">
             <input type="hidden" id="ss-edge-front" value="1">
           </div>
-          <p class="field-help">裁掉窗口开头的 n 分钟以避开边界超时；0 = 不裁切。</p>
+          <p class="field-help">裁掉窗口开头 n 分钟以避开边界超时；0 = 不裁切。</p>
         </div>
         <div class="field">
           <span class="field-label" id="ss-edge-back-label">去尾</span>
@@ -183,7 +183,7 @@
                    aria-labelledby="ss-gap-label">
             <span class="addon">秒</span>
           </div>
-          <p class="field-help">自动手动均生效，0 = 关闭；修改需当前管理员密码确认。</p>
+          <p class="field-help">自动与手动均生效，0 = 关闭；修改需管理员密码。</p>
         </div>
         {# 窗口起止是同一个逻辑对：共用一个触发器与一个弹窗（弹窗里滚轮选时并校验先后） #}
         <div class="field">
@@ -228,7 +228,7 @@
       <div class="set-row">
         <label class="set-row-text" for="ss-time-pref">
           <span class="set-row-label">允许用户自选签到时间</span>
-          <p class="set-help">开启后普通用户可选 5 分钟时间片；未开启时用户可预配置但不生效。仅主管理员可改。</p>
+          <p class="set-help">用户可选 5 分钟时间片；未开启时预配置不生效。仅主管理员可改。</p>
         </label>
         <label class="switch" title="允许用户自选签到时间">
           <input id="ss-time-pref" type="checkbox">
@@ -271,7 +271,7 @@
         <textarea id="set-announcement" class="textarea" rows="2" maxlength="200"
                   placeholder="例如：今晚 22:00–23:00 例行维护，签到可能延迟"></textarea>
         <p class="field-help" id="set-ann-draft-meta">（无草稿）</p>
-        <p class="field-help">限 200 字、禁止换行；发布后显示在所有页面顶部（含登录页）。</p>
+        <p class="field-help">限 200 字、禁止换行；显示在所有页面顶部（含登录页）。</p>
       </div>
       {# 线上态只读块：与草稿区分节（卡内相邻分组画线分节的既有约定），否则按钮行紧贴它、
          两段读起来像同一块（用户 2026-09-19 实拍：排版混乱、层级看不出）。
@@ -329,7 +329,7 @@
         <div class="set-row">
           <label class="set-row-text" for="sn-urgent">
             <span class="set-row-label">仅推送重要告警</span>
-            <p class="set-help">只推安全与系统级告警；用户日常改密、签到结果类仅走邮件，不占每日推送额度。</p>
+            <p class="set-help">只推安全与系统级告警；改密与签到结果走邮件，不占推送额度。</p>
           </label>
           <label class="switch" title="仅推送重要告警">
             <input id="sn-urgent" type="checkbox">
@@ -382,7 +382,7 @@
         <div class="set-row">
           <label class="set-row-text" for="sm-global">
             <span class="set-row-label">全局邮件通知</span>
-            <p class="set-help">关闭后所有邮件都不发送（消息推送不受影响）。关闭需当前管理员密码。</p>
+            <p class="set-help">关闭后所有邮件都不发送（推送不受影响），需管理员密码。</p>
           </label>
           <label class="switch" title="全局邮件通知">
             <input id="sm-global" type="checkbox">
@@ -396,7 +396,7 @@
             <input class="input" id="sm-to" type="text" maxlength="320" autocomplete="off" placeholder="admin@example.com">
             <span class="addon">邮箱</span>
           </div>
-          <p class="field-help">多个用英文逗号分隔；留空 = 不改动，清空走下方「清空收件人」。</p>
+          <p class="field-help">英文逗号分隔；留空 = 不改动，清空走下方按钮。</p>
         </div>
 
         {# 状态行描述的是「发件 SMTP 是否配置」，放在 SMTP 表上方才读得通 #}
@@ -460,7 +460,7 @@
             <input class="input" id="set-max-users" type="number" min="0" max="100000" step="1" placeholder="0">
             <span class="addon">人</span>
           </div>
-          <p class="field-help">管归属注册名额；0 = 不限。调小只限制新增，不删存量用户。</p>
+          <p class="field-help">管归属注册名额；0 = 不限。调小只挡新增，不删存量。</p>
         </div>
         <div class="field field--narrow">
           <label class="field-label" for="set-max-accounts">账号容量上限</label>
@@ -468,7 +468,7 @@
             <input class="input" id="set-max-accounts" type="number" min="0" max="100000" step="1" placeholder="0">
             <span class="addon">个</span>
           </div>
-          <p class="field-help">管账号存量（含主管理员直属裸账号）；0 = 不限。调小只限制新增，不删存量账号。</p>
+          <p class="field-help">含主管理员直属裸账号；0 = 不限。调小只挡新增，不删存量。</p>
         </div>
       </div>
       <p class="set-tip" id="set-cap-tip" role="status"></p>
@@ -517,7 +517,7 @@
       <div class="set-row">
         <label class="set-row-text" for="sh-verify">
           <span class="set-row-label">注册时验证账号</span>
-          <p class="set-help">开启后提交账号会即时验证，无法通过将当场提示。</p>
+          <p class="set-help">开启后提交账号即时验证，不通过当场提示。</p>
         </label>
         <label class="switch" title="注册时验证账号">
           <input id="sh-verify" type="checkbox">
@@ -528,7 +528,7 @@
       <div class="set-row">
         <label class="set-row-text" for="sh-probe-enable">
           <span class="set-row-label">开启探针模式</span>
-          <p class="set-help">非签到时段对全部账号做健康检查（仅登录，不实际签到），异常账号提前预警。</p>
+          <p class="set-help">非签到时段做健康检查（仅登录、不签到），异常账号提前预警。</p>
         </label>
         <label class="switch" title="探针模式">
           <input id="sh-probe-enable" type="checkbox">
@@ -553,7 +553,7 @@
           {{ select_field('sh-probe-interval', '1',
              [('1', '每天'), ('2', '每 2 天'), ('3', '每 3 天'), ('7', '每 7 天'),
               ('once', '下次计划时间单次执行（执行后自动关闭）')], 'sh-probe-interval-label') }}
-          <p class="field-help">设定时间到达后将在最近的调度周期执行（约 10 分钟内），每天最多一次。</p>
+          <p class="field-help">到达后最近调度周期执行（约 10 分钟内），每天最多一次。</p>
         </div>
       </div>
       <p class="set-tip" id="sh-tip" role="status"></p>
