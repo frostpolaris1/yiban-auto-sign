@@ -2903,10 +2903,7 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   padding: 8px 14px;
   line-height: 1.45;
 }
-/* 危险项前的分隔线：菜单项实测高 34.8px（上下各 8px 内距 + 18.85px 行盒），相邻两项的文字
-   间距是 16px；这条 1px 线若带外边距，线两侧的文字间距就比别处宽——原 4px 边距得到
-   25px（8+4+1+4+8），正是用户看到的「分隔线上下空隙大」。归零后两侧 17px，与其它项的
-   16px 视觉一致。 */
+/* 危险项前的分隔线：线两侧间距要与其它菜单项一致，故不带外边距。 */
 .acct-menu--floating .dd-divider { margin: 0; }
 .acct-row-menu .dd-menu-item {
   width: 100%;
