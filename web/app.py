@@ -22,13 +22,13 @@ import argparse
 import calendar  # noqa: F401  # 月历路由已入 web/routes/my.py，此处仅为保持 web.app 名字面不变
 import contextlib
 import html  # noqa: F401  # 文档页转义已入 web/render.py，此处仅为保持 web.app 名字面不变
-import json
+import json  # noqa: F401  # 通道健康日报已入 web/services/channel_health.py，此处仅为保持 web.app 名字面不变
 import logging
 import os
 import re
 import secrets
 import sqlite3  # noqa: F401  # 个人/数据域路由已迁出，此处仅为保持 web.app 名字面不变
-import subprocess
+import subprocess  # noqa: F401  # 手动签到子进程族已入 web/services/manual_sign.py，保留名字面（测试打桩 webapp.subprocess.Popen）
 import sys
 import threading
 import time
@@ -127,10 +127,14 @@ from web.security import (  # noqa: E402
     _verify_fail_cooldown_remaining,  # noqa: F401
 )
 from web.services import accounts_data as _accounts_data  # noqa: E402
+from web.services import capacity as _capacity  # noqa: E402
+from web.services import channel_health as _channel_health  # noqa: E402
 from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services import executor_env as _executor_env  # noqa: E402
 from web.services import logs as _logs_svc  # noqa: E402
+from web.services import manual_sign as _manual_sign  # noqa: E402
 from web.services import measure as _measure  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
 from web.services import signstatus as _signstatus  # noqa: E402
 from web.services import verify_queue as _verify_queue  # noqa: E402
 
@@ -164,10 +168,29 @@ from web.services.accounts_data import (  # noqa: E402
     _verify_account_clean,
     find_account_index,  # noqa: F401
     load_accounts,
-    load_accounts_raw,
+    load_accounts_raw,  # noqa: F401
     load_users,  # noqa: F401
     mask_account,  # noqa: F401
     validate_account,  # noqa: F401
+)
+from web.services.capacity import (  # noqa: E402
+    # 名字面零损失：容量族常量与节流状态随族搬入 web/services/capacity.py
+    # （routes 经 m.* 取用、测试按属性读取 `_mail_alert_ts` 复位节流），此处再导出
+    DEFAULT_MAIL_ALERT_COOLDOWN,  # noqa: F401
+    _capacity_account_count,  # noqa: F401
+    _capacity_alerts,  # noqa: F401
+    _capacity_audit_count,  # noqa: F401
+    _mail_alert_lock,  # noqa: F401
+    _mail_alert_ts,  # noqa: F401
+)
+from web.services.channel_health import (  # noqa: E402
+    # 名字面零损失：通道健康族的纯逻辑与常量（routes/测试按属性读取日报标记键）
+    _HEALTH_REPORT_META_KEY,  # noqa: F401
+    _audit_channel_health_degraded,  # noqa: F401
+    _channel_health_degraded,  # noqa: F401
+    _channel_health_facts,  # noqa: F401
+    _daily_budget_desc,  # noqa: F401
+    _health_report_sent_today,  # noqa: F401
 )
 from web.services.env_io import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
@@ -211,6 +234,15 @@ from web.services.logs import (  # noqa: E402
     clear_fuse_on_cred_change,  # noqa: F401
     clear_fuse_pause,  # noqa: F401
 )
+from web.services.manual_sign import (  # noqa: E402
+    # 名字面零损失：手动签到子进程族（等待回收、队列超时缩放、退出码词表）随族搬入
+    # web/services/manual_sign.py；只有 `_log_manual_sign_exit` 需注入本模块的
+    # `log_path_for`，故在下方转发
+    _SIGNIN_EXIT_REASONS,  # noqa: F401
+    _batch_wait_timeout,  # noqa: F401
+    _manual_sign_failure_reason,  # noqa: F401
+    _wait_signin_proc,  # noqa: F401
+)
 from web.services.measure import (  # noqa: E402
     # 同上：实现见 web/services/measure.py，此处保留 web.app.<名字> 的兼容面；
     # `_measure_state_path` / `_write_measure_state` 另被本模块的转发包装注入
@@ -218,6 +250,24 @@ from web.services.measure import (  # noqa: E402
     _measure_cooldown_remaining,  # noqa: F401
     _pick_measure_account,  # noqa: F401
     _read_measure_state,  # noqa: F401
+)
+from web.services.notify_mail import (  # noqa: E402
+    # 名字面零损失：通知与告警邮件族随族搬入 web/services/notify_mail.py
+    # （`_nl_safe` / `_audit_actor` / `_audit_alert_facts` 本模块自用，其余为 m.* 兼容面）；
+    # `send_notification` 与 `_push_ever_configured` 需注入本模块的名字，故在下方转发
+    _MAIL_FLAG_NAMES,  # noqa: F401
+    _NOTIFY_LEDGER_LABELS,  # noqa: F401
+    _PUSH_CONFIG_ENV_KEYS,  # noqa: F401
+    _alert_mail_recipients,  # noqa: F401
+    _audit_actor,
+    _audit_alert_facts,
+    _change_mail,  # noqa: F401
+    _exhaustion_notice_mail,  # noqa: F401
+    _last_cleanup_text,  # noqa: F401
+    _mail_flags_desc,  # noqa: F401
+    _nl_safe,
+    _notify_change_desc,  # noqa: F401
+    _review_reject_mail,  # noqa: F401
 )
 from web.services.signstatus import (  # noqa: E402
     # 同上：实现见 web/services/signstatus.py，此处保留 web.app.<名字> 的兼容面；
@@ -244,7 +294,9 @@ from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源
 
 # cred_state 已无自用点，保留供 web.app.<名字> 取用（须在引导之后导入）
 from yiban import clock, cred_state  # noqa: E402,F401
-from yiban import window as yb_window  # noqa: E402
+
+# 容量预估已迁出（web/services/capacity.py），保留供 web.app.<名字> 取用
+from yiban import window as yb_window  # noqa: E402,F401
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
@@ -271,13 +323,16 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
                              description or site_description())
 import child_env  # noqa: E402,F401  # 签到子进程环境注入已入 web/routes/signin_api.py，保留供 web.app.<名字> 取用
 import email_policy  # noqa: E402,F401  # 域名审查实现已入 web/render.py，保留供 web.app.<名字> 取用
-import signin  # noqa: E402  # 探针/注册验证：只读健康检查（登录+拉任务，不提交签到）
+import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出，保留供 web.app.<名字> 取用
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
 # 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
 from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配：唯一口径
-from yiban import mail as mailer  # noqa: E402
-from yiban import notify  # noqa: E402
+
+# 两条通道的读配置/取走标记已随通知族迁出（web/services/notify_mail.py），
+# 保留 web.app.mailer / web.app.notify 名字面（两者都是测试的打桩点）
+from yiban import mail as mailer  # noqa: E402,F401
+from yiban import notify  # noqa: E402,F401
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 
 # 周末门/暂停门与易班端点：实现已入 web/services/signstatus.py，保留供 web.app.<名字> 取用
@@ -980,63 +1035,17 @@ def _sensitive_gate_params(env_path):
     return _security._sensitive_gate_params(env_path, load_env_int)
 
 
-def _wait_signin_proc(proc, timeout=300):
-    """等待手动签到子进程；超时则终止并回收，避免批量签到队列被卡死。
-
-    M8：原 proc.wait(timeout=300) 超时抛出 TimeoutExpired 后未回收子进程，
-    队列仍会继续触发下一个账号，造成并发签到。超时后先 terminate，再等待
-    回收；仍不退则 kill 兜底。
-    """
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-
-
-def _batch_wait_timeout(count):
-    """批量签到队列的等待超时按账号数缩放。
-
-    固定 300s 在多账号场景过紧：每号真实登录+网络余量约 2 分钟，10 号队列
-    原本会被 300s 截断误杀。公式 max(300, 120 * count + 300)——单账号 420s、
-    10 号（BATCH_OP_LIMIT 上限）1500s；300s 下限兜底空队列/边界。
-    _wait_signin_proc 的默认参数保持 300 不动，由调用方传参缩放。
-    """
-    return max(300, 120 * count + 300)
-
-
-# 手动签到子进程非 0 退出码 → 用户可见原因（与 signin.py 退出码表同口径）
-_SIGNIN_EXIT_REASONS = {
-    2: "子进程自行退出（时段外跳过/暂停/存在未了结账号），本轮未实际签到",
-    3: "签到队列忙（运行锁被其他签到进程持有），本轮未执行",
-}
-
-
-def _manual_sign_failure_reason(returncode):
-    """手动签到子进程退出码的用户可见原因；0/None 返回 None（正常）。"""
-    if not returncode:
-        return None
-    return _SIGNIN_EXIT_REASONS.get(
-        int(returncode), f"签到子进程异常退出（退出码 {returncode}）"
-    )
-
-
+# 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
+# 退出码原因 `_manual_sign_failure_reason` 与退出码表 `_SIGNIN_EXIT_REASONS`）实现见
+# web/services/manual_sign.py，此处以导入区再导出保持 m.* 可达；只有 `_log_manual_sign_exit`
+# 需要注入本模块持有的入口，故在下方转发。
 def _log_manual_sign_exit(phone_label, returncode):
-    """手动签到子进程异常退出写入签到日志——前端「结果稍后出现在日志」的
-    唯一结果通道：exit 3（队列忙）等此前被静默吞掉，用户看到已触发实际没签。"""
-    reason = _manual_sign_failure_reason(returncode)
-    if not reason:
-        return
-    try:
-        with open(log_path_for(), "a", encoding="utf-8") as fh:
-            fh.write(f"[{clock.now():%Y-%m-%d %H:%M:%S}] "
-                     f"[{phone_label}] ⚠️ 手动签到未完成: {reason}\n")
-    except OSError:
-        logger.warning("手动签到退出码留痕失败: %s (returncode=%s)", phone_label, returncode)
+    """手动签到退出码留痕（实现见 web/services/manual_sign.py）。
+
+    日志路径按调用时刻现取本模块的 `log_path_for`（它再现取 `LOG_FILE`）：测试会赋值
+    `webapp.LOG_FILE` 换日志目录，转发处不现取就会被服务层的副本绑定架空。
+    """
+    return _manual_sign._log_manual_sign_exit(phone_label, returncode, log_path_for)
 
 
 # `.env` 写互斥与公告元数据解析的实现见 web/services/env_io.py：
@@ -1184,753 +1193,141 @@ def sign_status(now=None):
     return _signstatus.sign_status(ENV_FILE, load_env_int, _sign_window, now)
 
 
-def _nl_safe(value):
-    """告警正文插值净化（2026-08-27 对抗性审查 P2-4，2026-09-18 与 .env 行模型同源）。
-
-    外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前把换行转义成字面量，
-    防止请求体夹带换行在告警正文中伪造额外行。
-
-    字符集刻意取 `_ENV_LINE_BREAK_CHARS`（= `str.splitlines()` 的全部 10 个分隔符）
-    而不是只压 `\r\n`：邮件客户端与网页日志页同样会在 `U+0085`/`U+2028` 处断行，
-    只压两个等于留 8 条"在管理员告警里伪造一行'操作者: admin'"的口子——与 .env
-    写入侧那次 CRITICAL 是同一个行模型，判据只留一份。
-    """
-    s = str(value).replace("\r", "\\r").replace("\n", "\\n")
-    for ch in sorted(_ENV_LINE_BREAK_CHARS - {"\r", "\n"}):
-        s = s.replace(ch, f"\\u{ord(ch):04x}")
-    return s
-
-
-def _audit_actor():
-    """审计行的 actor 唯一取法：当前会话用户名，缺省 `?`，截 64 防超长打爆索引列。
-
-    执行体那几处此前把 actor **硬编码成 `"admin"`**——审计表里出现了一句假话：
-    谁做的操作没被记下来，且与全表其他行的口径不一致（同一列两种语义，事后按
-    actor 追人时"admin"既可能是内置管理员也可能是别的账号）。
-    """
-    return (session.get("username") or "?")[:64]
-
-
-def _audit_alert_facts(health):
-    """审计链异常告警的事实清单（每日线程用，测试直接断言同一份形状）。
-
-    `诊断备注` 必须在列：`audit_health` 有两种"链自洽=是、锚点=一致，但体检仍判不健康"
-    的原因（锚点之后又跑了全表重链、有记录签名被清空等着被重签），它们只写进 `note`。
-    不带出来时管理员看到的是一条"各项都正常"的告警，第一反应是误报——正是这次要修的。
-    """
-    return [
-        ("链自洽", "是" if health["chain_ok"] else f"否（断点 {health['broken']} 处）"),
-        ("库外锚点", "一致" if health["anchor_ok"] else "不一致"),
-        ("锚点说明", _nl_safe(health["anchor_msg"]) or "（无）"),
-        ("审计写入失败次数", health["write_failures"]),
-        # 清理量出箱（异机核对用）：本机时钟被渐进拨快时，本机自校验不会报警，
-        # 但"累计删除条数"与"最近一次清理的截止点"会持续变化——日报是唯一能把它
-        # 带离本机的通道，异机侧据此判断清理是否异常。
-        ("累计留痕的审计清理条数", health.get("purge_total", 0)),
-        ("最近一次审计清理", _last_cleanup_text(health.get("last_cleanup"))),
-        ("诊断备注", _nl_safe(health["note"]) or "（无）"),
-    ]
-
-
-def _last_cleanup_text(ev):
-    """最近一次审计清理留痕的可读文本（无记录 → 「（无）」）。"""
-    if not ev:
-        return "（无）"
-    return _nl_safe(
-        f"{ev.get('ts') or '?'} 截止 {ev.get('cutoff') or '?'}，"
-        f"删除 {ev.get('deleted', 0)} 条"
-    )
-
-
-def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent"):
-    """变更/操作类告警正文的唯一形状：事件 → 明细字段 → 操作者 → 时间。
-
-    原先 12 处各写一遍 `"…，操作者 X，时间 Y"`，冒号有无、逗号位置、时间写法
-    （`时间: X` 与 `时间 X`）全都不一致——同类告警在管理员眼里长得不一样，
-    扫不动。收成一份后只剩这一种形状；时间由排版层统一收口在末尾。
-
-    `operator` 缺省取当前会话用户；调用方已有目标用户名（如权限变更用的是局部
-    `username`）时显式传入，避免在路由里再拼一遍字段。
-    """
-    fields = list(detail or [])
-    fields.append(("操作者", _nl_safe(
-        session.get("username", "?") if operator is None else operator)))
-    return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level=level)
-
-
-def _review_reject_mail(phones, reason):
-    """审核拒绝通知的正文——单条与批量共用这一份，两路不可能再漂移。
-
-    批量分支原先自己另写了一段，且**不写被拒账号**：用户收到拒信却不知道是
-    哪一行被拒，只能挨个点开「我的账号」页看状态。
-    """
-    return mail_layout.Mail(
-        summary="您提交的易班账号未通过管理员审核。",
-        fields=[
-            ("被拒账号", "、".join(phones) if phones else "（见「我的账号」页）"),
-            ("审核理由", reason or "管理员未填写，可联系管理员了解详情"),
-        ],
-        advice=["登录后在「我的账号」页修改并重新提交，重新提交将再次进入审核"],
-    )
-
-
-def _alert_mail_recipients():
-    """A 线告警邮件的收件人（唯一算法）：ADMIN_TO（受个人接收开关约束）+ 开启接收的管理员。
-
-    刻意只留一份实现，由 send_notification、_exhaustion_notice_mail 与
-    _alert_channel_status() 共用：通道健康判据要回答的是"这一封日报到底发不发得出去"，
-    它与 send_notification 实际取收件人的算法必须严格一致，各算一套就会分叉——
-    复评点名的组合变体（只关 admin_notify + 无其他接收管理员）正是
-    "邮件通道看着全绿、收件人却为空"，判据若另算一份就会报成"一切正常"。
-    """
-    extra = mailer.admin_recipients() if mailer.admin_notify_enabled() else []
-    return db.admin_mail_recipients(extra)
+# 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
+# `_audit_alert_facts` / `_last_cleanup_text`、变更与审核邮件 `_change_mail` /
+# `_review_reject_mail`、收件人算法 `_alert_mail_recipients`、耗尽告知
+# `_exhaustion_notice_mail`、开关与推送变更描述 `_mail_flags_desc` /
+# `_notify_change_desc` 及随族常量）实现见 web/services/notify_mail.py，此处以导入区
+# 再导出保持 m.* 可达；`send_notification` 与 `_push_ever_configured` 需要注入本模块
+# 持有的名字，故在下方转发。
 
 
 def send_notification(title, content, urgent=False, force=False, ledger=None):
-    """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
+    """发送告警通知（A 线邮件 + Webhook 双通道，实现见 web/services/notify_mail.py）。
 
-    `content` 可以是 `mail_layout.Mail`（邮件出纯文本+HTML 两版、推送取 Markdown 出口，
-    一份声明两路同源）或普通字符串（两路原样透传，与改版前逐字一致）。
-
-    - 邮件：SMTP 管理员告警（同类型节流，见 _mail_alert_due）。收件人 = ADMIN_TO
-      （按个人开关过滤）+ 所有开启接收的管理员用户邮箱；主管理员关闭
-      YIBAN_MAIL_ADMIN_NOTIFY 后不再收 ADMIN_TO 邮件。邮件不受 urgent 影响，始终发送。
-    - Webhook：`yiban/notify` 组件（Server酱/自定义 URL，加密配置 +
-      同类型节流 + 每日预算 + 响应检查，兼容旧明文 YIBAN_NOTIFY_URL）。未配置则静默跳过。
-      urgent=True 标记重要告警：设置页开启「仅推送重要告警」后，仅 urgent 通知会推手机，
-      其余（用户日常改密/签到结果类等）仅走邮件，把推送额度留给真正威胁系统/账号安全的事件。
-    - force=True：跳过两侧节流（邮件同类节流 + webhook 的
-      节流/每日额度/仅重要开关），供"先告警后落盘"的配置变更告警等**必须送达**的
-      场景使用——此刻额度/节流参数仍为旧值，告警不会被本次刚提交的新参数吞掉。
-      默认 False，向后兼容（既有调用方行为不变）。
-    - ledger：None = 现行行为（按 urgent 归入 general/urgent 两本账）；
-      "login_fail" = 登录失败告警独立账本，日额度 YIBAN_LOGINFAIL_DAILY_MAX
-      （默认 3，0=不限），与 general/urgent 互不挤占——登录失败是公网最高频的
-      告警源，独占账本后喷洒类攻击烧不光紧急账的额度。
+    同类型告警邮件节流 `_mail_alert_due` 按调用时刻现取本模块的（测试会打桩
+    `webapp._mail_alert_due`，服务层另持绑定会让这个桩静默失效）。
     """
-    recipients = _alert_mail_recipients()
-    # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
-    # SMTP 额度）；webhook 由 yiban.notify 独立节流。force=True 时绕过（必须送达场景）
-    if recipients and (force or _mail_alert_due(title)):
-        mailer.send_admin_alert(title, content, to=",".join(recipients))
-    elif recipients:
-        logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
-    # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
-    notify.send(title, mail_layout.as_text(content), urgent=urgent, force=force, ledger=ledger)
-    # 手机推送额度耗尽的"补一封"——notify 侧当日首次有账本耗尽时会挂上
-    # 待取走标记，pop_exhaustion_notice() 一次返回全部耗尽账本（如 ["general","urgent"]）。
-    # 必须一次取完拼成一封：循环 pop 到空会让两本账同日各发一封（重复打扰）。
-    # 告知只走邮件（推送额度正是刚用尽的东西），且整段兜异常——耗尽告知属附加信息，
-    # 绝不能把本次主告警带崩。
-    try:
-        exhausted = notify.pop_exhaustion_notice()
-    except Exception as e:  # 兜底：告知接线不得影响本次主告警
-        logger.warning("读取推送额度耗尽标记失败（忽略）: %s", e)
-        exhausted = None
-    if exhausted:
-        try:
-            _exhaustion_notice_mail(exhausted)
-        except Exception as e:  # 兜底：同上
-            logger.warning("推送额度耗尽告知邮件发送失败: %s", e)
+    return _notify_mail.send_notification(
+        title, content, urgent, force, ledger, mail_alert_due=_mail_alert_due)
 
 
-_NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急", "login_fail": "登录失败告警"}
-
-
-def _exhaustion_notice_mail(kinds):
-    """手机推送额度耗尽告知：一封邮件写清哪几本账耗尽、上限是多少。
-
-    kinds 为 notify.pop_exhaustion_notice() 返回的账本名列表（"general"/"urgent"），
-    每本账每日各一次，故本函数每天最多被调用两次且不会重复发同一本。
-    只走邮件通道（不经 send_notification，避免与本函数互相递归）。
-    """
-    try:
-        cfg = notify.get_config()
-    except Exception:  # 兜底：取额度概览失败时按"未知"出文，不抛
-        cfg = {}
-    max_keys = {"general": "daily_max", "urgent": "urgent_daily_max"}
-    parts = []
-    for kind in kinds:
-        label = _NOTIFY_LEDGER_LABELS.get(kind, kind)
-        limit = cfg.get(max_keys.get(kind, ""))
-        has_cap = isinstance(limit, int) and limit > 0
-        tail = f"（今日上限 {limit} 条已全部用尽）" if has_cap else "（今日额度已用尽）"
-        parts.append(f"{label}推送额度已用尽{tail}")
-    report = mail_layout.Mail(
-        summary="手机消息推送今日额度已用尽，当日后续同类告警不再推手机。",
-        items=parts,
-        advice=["请改查管理员告警邮件（邮件通道不受影响）",
-                "如需调整请在 .env 修改 YIBAN_NOTIFY_DAILY_MAX / "
-                "YIBAN_NOTIFY_URGENT_DAILY_MAX（0=不限），或关闭「仅推送重要告警」"],
-        level="warn",
-    )
-    logger.warning("手机推送%s，已补发告知邮件", "、".join(parts))
-    recipients = _alert_mail_recipients()
-    if not recipients:
-        logger.warning("推送额度耗尽告知无法送达（邮件收件人为空），请登录后台自查推送配置")
-        return
-    mailer.send_admin_alert("手机推送额度已用尽告警", report, to=",".join(recipients))
-
-
-# 两个邮件开关的中文名表（env_key → 可读名）：变更告警文案与高危动作标签共用，
-# 避免同一件事在两个地方各写一套字面量（评审 ⑤：告警标签必须按字段区分）
-_MAIL_FLAG_NAMES = {
-    "YIBAN_MAIL_ENABLE": "全局邮件通知",
-    "YIBAN_MAIL_ADMIN_NOTIFY": "主管理员个人接收",
-}
-
-
-def _mail_flags_desc(flags):
-    """邮件开关变更集（env_key → bool）→ 告警正文可读描述。
-
-    文案里带上"具体改了什么"：运营者只看一行标题无法判断是
-    全局关停下线、还是主管理员个人收件被拔线，两者的处置动作完全不同。
-    键名来自代码常量（非外部输入），无注入面。
-    """
-    return "；".join(
-        f"{_MAIL_FLAG_NAMES.get(k, k)}：{'开启' if v else '关闭'}" for k, v in flags.items()
-    )
-
-
-def _notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric):
-    """消息推送配置变更集 → 告警正文可读描述。
-
-    关闭通道与"只是换了个数"在告警里必须一眼可辨：前者是攻击者掩盖痕迹的必经动作，
-    后者是日常调参。ntype 已过白名单校验、numeric 为 int/bool，均无注入面。
-    """
-    parts = []
-    if close_channel:
-        parts.append("通道：关闭（⚠ 告警不再推手机）")
-    elif ntype:
-        parts.append(f"通道：{ntype}")
-    if swap_secret:
-        parts.append("密钥：已更换")
-    elif clear_secret and not close_channel:
-        parts.append("密钥：已清空（⚠ 通道随之失效）")
-    labels = {
-        "cooldown": "节流秒数", "urgent_only": "仅重要告警",
-        "daily_max": "非紧急每日上限", "urgent_daily_max": "紧急每日上限",
-    }
-    for key, value in numeric.items():
-        shown = ("开启" if value else "关闭") if isinstance(value, bool) else value
-        parts.append(f"{labels.get(key, key)}：{shown}")
-    return "；".join(parts) or "无实质变更"
-
-
-# 判定"推送这路是否曾配置过"的最轻事实来源：.env 里这两个键**存在且值非空**。
-# 口径（修复轮 3 裁定）：两键都不存在、或都在而值都为空 ⇒ 按"从未配置"处理，不算降级；
-# 设置页关闭通道会把两键一并删掉、手工"清空"则写成 `KEY=` 空值行，两者在配置文件里
-# 同形，一律落进"从未配置"这个合法终态。
-_PUSH_CONFIG_ENV_KEYS = ("YIBAN_NOTIFY_TYPE", "YIBAN_NOTIFY_SECRET_ENC")
+# 判定"推送这路是否曾配置过"的键表与其唯一实现见 web/services/notify_mail.py，
+# 此处以导入区再导出保持 m.* 可达。
 
 
 def _push_ever_configured(envs=None):
-    """手机推送通道在本部署历史上是否配置过（修复轮 3 的降级判据输入）。
+    """手机推送通道在本部署历史上是否配置过（实现见 web/services/notify_mail.py）。
 
-    轮 2 把"推送未配置"一并判为降级，于是**邮件单通道**这一刻意的终态配置每天落一条
-    channel_health 降级痕迹、日报每天挂 ⚠/urgent —— 天天喊降级就是告警疲劳，真出事时
-    这条痕迹反而没人看。降级只该回答"本应可用的出口现在不可用"，因此需要一个
-    "是否曾配置"的事实来源。刻意复用现成的 .env 解析结果，**不新增 app_meta 键、不新建
-    状态存储**："把推送配置拆掉"这个**动作**（设置页关闭/清钥、或直接改文件）本身已由
-    notify_config 审计行 + urgent=True 变更播报覆盖，日报无需对一个
-    已经安静消失的通道天天重复定性。
-    代价照实记下：管理员用设置页"关闭推送"后两个键行都被删除，此后日报不再因此挂
-    降级旗标——该动作发生当时那一条 notify_config 审计 + urgent 播报就是痕迹本体。
-    .env 整个读不到（文件不存在）时按"可能配过"处理：宁可多判一次降级留痕，不可静默
-    当健康——与本函数调用方对"收件人读取失败"的取向完全一致。
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`、
+    也会赋值 `ENV_FILE`），故转发必须在调用时刻现取后传入。
     """
-    if envs is None:
-        if not os.path.exists(ENV_FILE):
-            return True
-        envs = read_env(ENV_FILE)
-    return any(str(envs.get(k) or "").strip() for k in _PUSH_CONFIG_ENV_KEYS)
+    return _notify_mail._push_ever_configured(ENV_FILE, read_env, envs)
 
 
 def _alert_channel_status():
-    """两条告警通道的结构化可用性判据。
+    """两条告警通道的结构化可用性判据（实现见 web/services/channel_health.py）。
 
-    刻意把"通道到底可用不可用"从展示文案里拆出来单独算：是否降级决定日报按不按
-    urgent 发、以及要不要往审计链落痕迹，属安全判定，不能靠"正文里有没有 ⚠ 字符"
-    这种字符串嗅探——措辞改一次、或某条本该报的事实恰好不带 ⚠（旧写法里
-    「主管理员个人接收=否」与「推送通道：未配置」两行都不带），嗅探就会静默漏判。
-    本函数一次读清两侧与收件人，_channel_status_lines() 只负责把它翻译成人话，
-    判定与文案共用同一份数据，不可能再各说各话。
+    "推送是否曾配置过"的判据按调用时刻现取本模块的 `_push_ever_configured`（它再现取
+    本进程的 `ENV_FILE` 与 `read_env`），服务层另持绑定会让改写 `web.app.ENV_FILE`
+    的测试静默失效。
     """
-    status = {
-        "mail_flag_on": False,      # YIBAN_MAIL_ENABLE 开关本身
-        "mail_usable": False,       # mailer.is_enabled()：开关 + SMTP 发信条目真正可用
-        "mail_state": "",           # mailer.smtp_channel_state()：ok/broken/off 三态
-        "mail_state_detail": "",    # broken 时的具体病因（供日报点名，不必翻日志）
-        "mail_self_notify": True,   # 主管理员个人接收（YIBAN_MAIL_ADMIN_NOTIFY）
-        "mail_recipients": 0,       # 实际可送达收件人（为空 == 邮件这路等于不存在）
-        "mail_user": "",
-        "mail_admin_to": "",
-        "mail_error": "",
-        "push_usable": False,       # notify.get_config()["enabled"]：有 type 且密钥解得开
-        "push_configured": False,   # 配过（含"配过又被清钥"= 已知病症）
-        # 是否曾配置过（.env 两键存在且值非空）：区分"从未启用推送"与"配过又被拆"（修复轮 3）
-        "push_ever_configured": False,
-        "push_type": "",
-        "push_secret_masked": "",
-        "push_urgent_only": False,
-        "push_error": "",
-        # 两本推送额度账（P2-1 分账后分开展示；键名与 notify.get_config 保持一致）
-        "daily_max": None,
-        "daily_remaining": None,
-        "urgent_daily_max": None,
-        "urgent_daily_remaining": None,
-    }
-    # ---- 邮件通道（A 线：全部安全告警的最后送达路径）----
-    try:
-        mcfg = mailer.get_config()
-        status["mail_flag_on"] = str(mcfg.get("enable", "")).strip().lower() in (
-            "1", "true", "on", "yes")
-        # 可用性判据必须是 mailer.is_enabled()：除 YIBAN_MAIL_ENABLE 外还要求 SMTP
-        # 发信条目列表非空（YIBAN_MAIL_SMTPS_ENC 或旧键 USER+PASS），否则
-        # mailer._send 就静默跳过、一封都不发。只看 enable 真值会把"开了但发不出去"
-        # 误报成"一切正常"（修复轮 1 评审 ①）。
-        status["mail_usable"] = bool(mailer.is_enabled())
-        # 三态与病因同行取出（两次调用会重复解密一次）：broken 时日报按
-        # "已开启但不可用 + 具体病因"展示——密文解不开与未配置条目是两种不同处置
-        mail_state, mail_state_detail = mailer.smtp_channel_state()
-        status["mail_state"] = mail_state
-        status["mail_state_detail"] = mail_state_detail
-        status["mail_self_notify"] = bool(mcfg.get("admin_notify", True))
-        status["mail_user"] = mcfg.get("user", "") or "-"
-        status["mail_admin_to"] = mcfg.get("admin_to", "") or "-"
-    except Exception as e:  # 兜底：日报不得因单通道读取失败整体缺席
-        status["mail_error"] = type(e).__name__
-    try:
-        # 收件人与 send_notification 同一套算法（_alert_mail_recipients）：开关与凭据
-        # 都齐、但 ADMIN_TO 被个人接收开关摘掉且无其他接收管理员时，recipients 为空，
-        # 邮件这路同样一封都发不出去——修复轮 2 复评点名的组合变体。
-        status["mail_recipients"] = len(_alert_mail_recipients())
-    except Exception as e:
-        # 读不动收件人按 0 处理（宁可多判一次降级留痕，不可静默当健康）
-        status["mail_error"] = status["mail_error"] or type(e).__name__
-    # ---- 手机推送通道（B 线：Webhook / Server酱）----
-    try:
-        ncfg = notify.get_config()
-        status["push_usable"] = bool(ncfg.get("enabled"))
-        status["push_configured"] = bool(ncfg.get("configured"))
-        status["push_type"] = ncfg.get("type", "")
-        status["push_secret_masked"] = ncfg.get("secret_masked", "")
-        status["push_urgent_only"] = bool(ncfg.get("urgent_only"))
-        for key in ("daily_max", "daily_remaining",
-                    "urgent_daily_max", "urgent_daily_remaining"):
-            status[key] = ncfg.get(key)
-        # 曾配置判据与 notify 侧读的是同一份 .env（两键存在且值非空），本函数唯一的额外
-        # 开销是一次 os.path.exists；抛错时上面的 push_error 已置位 ⇒ 直接判降级。
-        status["push_ever_configured"] = _push_ever_configured()
-    except Exception as e:  # 兜底：同上
-        status["push_error"] = type(e).__name__
-    return status
+    return _channel_health._alert_channel_status(_push_ever_configured)
 
 
-def _channel_health_degraded(status, exhausted=()):
-    """本次通道状态是否算"降级"（决定日报 urgent 与要不要落审计痕迹）。
-
-    判据逐条取自结构化数据（_alert_channel_status() 的字段 + pop_exhaustion_notice()
-    返回的账本名列表），与正文里有没有 ⚠ 字符无关。
-
-    修复轮 3 口径修正：**降级只回答"本应可用的出口现在不可用"**。轮 2 把"推送从未
-    配置"也算降级，后果是邮件单通道部署（本项目真实生产在某个时点就是这样）每天落
-    一条 channel_health 降级痕迹、日报每天挂 ⚠/urgent —— 对一个刻意的终态配置天天
-    喊"降级"就是告警疲劳，正是本任务要消灭的病。"清空推送配置"这个**动作**本身已由
-    notify_config 审计行 + urgent 播报覆盖，日报无需重复定性。
-    注意：本函数只管"要不要挂旗标"，两侧事实由 _channel_health_facts() **无条件**
-    落审计与 meta（无论是否降级），"事后核查"不因此少一个字。
-
-    成立条件（任一即降级）：
-      - 看不清状态：邮件侧或推送侧读取失败——报警器本身出了毛病；
-      - 当日有推送账本额度耗尽（exhausted 非空）：这路当天等于死了；
-      - (a) 邮件侧不可用：mailer.is_enabled() 为假（YIBAN_MAIL_ENABLE 开了却没有
-        可用的 SMTP 发信条目，或整个开关被关），一封都发不出去；
-      - (b) 邮件侧可用却无任何可送达收件人（_alert_mail_recipients() 为空）——
-        "只关 admin_notify 且库里没有其他接收管理员"这个组合变体仍算降级；
-      - (c) 推送侧**曾配置过**而现在不可用：.env 里 type 或密文至少一个仍有值，却
-        已被清钥、或密文存在却解不出（push_configured 真而 push_usable 假
-        = 已知病症）。
-    「从未配置过推送」不在 (c) 内：.env 里 YIBAN_NOTIFY_TYPE 与 YIBAN_NOTIFY_SECRET_ENC
-    两键都不存在、或都在而值都为空（设置页关闭通道是删键行、手工清空是空值行，二者在
-    配置文件里同形）—— 这样的部署日报照常用于每日一封，只是不挂降级旗标。
-    """
-    if status["mail_error"] or status["push_error"]:
-        return True  # 看不清通道状态本身就是报警器出了毛病
-    if exhausted:
-        return True
-    if not status["mail_usable"] or status["mail_recipients"] <= 0:
-        return True  # (a)(b)：邮件是全部安全告警的最后送达路径，任何时候都本应可用
-    # (c)：推送这路只有在"曾经配过"的前提下缺失才算被拆；从未启用手机推送是合法终态
-    return bool(status["push_ever_configured"]) and not status["push_usable"]
+# 告警通道健康族（降级判定 `_channel_health_degraded`、状态行 `_channel_status_lines`、
+# 额度描述 `_daily_budget_desc`、日报已播标记读取 `_health_report_sent_today`、事实摘要
+# `_channel_health_facts`、降级痕迹 `_audit_channel_health_degraded` 与日报标记键
+# `_HEALTH_REPORT_META_KEY`）的纯逻辑实现见 web/services/channel_health.py，此处以导入区
+# 再导出保持 m.* 可达；需要现取本模块名字（状态生产者 / 状态行 / 告警出口）的入口在
+# 下方转发。
 
 
 def _channel_status_lines(status=None):
-    """两条告警通道的当前状态文本行（供每日健康日报使用）——纯展示层。
+    """两条告警通道的当前状态文本行（实现见 web/services/channel_health.py）。
 
-    判据一律取自 _alert_channel_status()（或调用方传入的那一份），本函数只把结构化
-    事实翻译成人话；是否降级由 _channel_health_degraded() 直接看结构化字段，不回过来
-    嗅这里有没有 ⚠。
-
-    刻意"不依赖被改配置本身"：通道被关闭时照样输出"被关"这一行，而不是跳过——
-    攻击者关掉报警器后，日报里必须仍然看得见"被关"这个事实，否则关闭动作与
-    "一切正常"在运维眼里无法区分。读取失败也出一行（并标注读取失败），保证
-    日报每次都有这条状态，不会静默缺席。
+    默认的状态生产者按调用时刻现取本模块的 `_alert_channel_status`（它再现取
+    `_push_ever_configured` 与 `.env` 状态）：服务层另持绑定会让改写 `ENV_FILE`
+    的测试静默失效。
     """
-    st = status if status is not None else _alert_channel_status()
-    lines = []
-    # ---- 邮件通道 ----
-    if st["mail_error"]:
-        lines.append(f"邮件通道：⚠ 状态读取失败（{st['mail_error']}）")
-    elif st["mail_usable"] and st["mail_recipients"] <= 0:
-        lines.append("邮件通道：⚠ 已开启但无可送达收件人（0 人可收）")
-        lines.append("成因：主管理员个人接收已关、或未配置 ADMIN_TO，"
-                     "且库里没有其他开启接收的管理员")
-        lines.append("影响：全部告警邮件实际一封都发不出去")
-    elif st["mail_usable"]:
-        lines.append("邮件通道：已开启")
-        lines.append(f"邮件发件账号：{_nl_safe(st['mail_user'])}")
-        lines.append(
-            f"主管理员个人接收：{'是' if st['mail_self_notify'] else '否（ADMIN_TO 不收）'}")
-        lines.append(f"告警收件地址：{_nl_safe(st['mail_admin_to'])}")
-        lines.append(f"今日可送达收件人：{st['mail_recipients']} 人")
-    elif st["mail_flag_on"]:
-        # 三态 broken（开关开但发不出去）：把具体病因（未配置条目 / 条目缺账号
-        # 授权码 / 密文解不开）单独一行带到日报，运维不必翻日志就能区分处置
-        lines.append("邮件通道：⚠ 已开启但不可用")
-        lines.append(f"病因：{st['mail_state_detail']}")
-        lines.append("影响：全部告警邮件实际一封都不会发出")
-    else:
-        lines.append("邮件通道：⚠ 已关闭（YIBAN_MAIL_ENABLE=0，全部告警邮件不发送）")
-    # ---- 手机推送通道 ----
-    if st["push_error"]:
-        lines.append(f"推送通道：⚠ 状态读取失败（{st['push_error']}）")
-    else:
-        if st["push_usable"]:
-            lines.append("推送通道：已开启")
-            lines.append(f"推送类型：{_nl_safe(st['push_type'])}")
-            lines.append(f"推送密钥：{_nl_safe(st['push_secret_masked'])}")
-            lines.append(
-                f"推送范围：{'仅推送重要告警' if st['push_urgent_only'] else '全部告警均推送'}")
-        elif st["push_configured"]:
-            # 配过但当前不可用（密钥被清 / 换钥后解不开 = 已知病症）
-            lines.append("推送通道：⚠ 已配置但不可用（密钥缺失或解密失败，需重新配置）")
-        else:
-            # 修复轮 2：「未配置」同样标 ⚠ 并计入降级。旧写法把它当正常文本，于是
-            # "只关 admin_notify + 关闭推送（type 置空后 configured 一并转假）" 这个
-            # 组合变体两行都不带 ⚠ —— 日报既发不出去、又一条痕迹不落。手机推送这路
-            # 不存在是真实的致盲风险（邮件一挂就零告警），必须看得见。
-            lines.append("推送通道：⚠ 未配置（手机推送这路不存在，告警只剩邮件一条出口）")
-        lines.extend(_daily_budget_desc(st))
-    return lines
-
-
-def _daily_budget_desc(cfg):
-    """两本推送额度账的今日剩余（分账后必须分开报，不能只报非紧急）。
-
-    返回**行列表**而不是拼成一行：两本账各占一行才扫得清哪本先烧完。
-
-    入参可以是 notify.get_config() 的原始输出，也可以是 _alert_channel_status() 的
-    快照——后者刻意沿用同名键，展示层不再重复读一遍配置。
-    """
-    def _fmt(label, remaining, limit):
-        if remaining is None:
-            return f"{label}不限额"
-        cap = f"/{limit}" if isinstance(limit, int) and limit > 0 else ""
-        return f"{label}剩余 {remaining}{cap} 条"
-
-    return [
-        f"今日推送额度（{_fmt('非紧急', cfg.get('daily_remaining'), cfg.get('daily_max'))}）",
-        f"今日推送额度（{_fmt('紧急', cfg.get('urgent_daily_remaining'), cfg.get('urgent_daily_max'))}）",
-    ]
-
-
-# 通道健康日报"今日已播"标记（app_meta 键）。刻意落库而非进程内 dict：
-# 每日线程在启动 60 秒后即跑第一轮，_mail_alert_ts 这类进程内状态重启即失效，
-# 频繁重启的环境会把"每日健康日报 + 每轮一封"变成"每次重启各发一封外发邮件"。
-_HEALTH_REPORT_META_KEY = "channel_health_last"
-
-
-def _health_report_sent_today(today):
-    """app_meta 里记录的最近一次日报是否就是今天（跨进程重启有效）。
-
-    读失败 / 无记录一律按"未发送"处理：宁可多播一封，也不能因为库读不动而让
-    报警器彻底沉默（漏播比重复打扰严重）。兼容两种写法：JSON 与裸日期串。
-    """
-    raw = db.get_meta(_HEALTH_REPORT_META_KEY, "")
-    if not raw:
-        return False
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return raw.strip() == today
-    return isinstance(data, dict) and data.get("date") == today
-
-
-def _channel_health_facts(status, exhausted=()):
-    """两侧通道的压缩事实摘要（审计 detail 与 app_meta 记录共用这一份）。
-
-    修复轮 2 评审：旧 detail 只拼正文里含 ⚠ 的行，两通道全断的那个变体里恰好
-    两侧都不带 ⚠（或只有一侧带），detail 就只剩半条链，"推送侧也被拆了"这个关键
-    事实直接丢在取证之外。这里**无条件**把两侧各写一段，健康的那一侧也记——
-    事后要能回答"坏的是哪一路、另一路当时是不是好的"。
-    刻意用短串而不是整句人话：db.audit 会把 detail 截到 200 字符
-    （见 yiban/store/db.py 的 audit），拼完整句子在最坏情况下会把后半句（推送侧）截没，
-    等于重犯同一个错。
-    """
-    if status["mail_error"]:
-        mail = f"读取失败({status['mail_error']})"
-    elif not status["mail_usable"]:
-        mail = "开关开但凭据缺失" if status["mail_flag_on"] else "已关闭"
-    elif status["mail_recipients"] <= 0:
-        mail = "可用但收件人为空"
-    else:
-        mail = "可用"
-    if status["push_error"]:
-        push = f"读取失败({status['push_error']})"
-    elif status["push_usable"]:
-        push = "可用"
-    elif status["push_configured"]:
-        push = "已配置但不可用"
-    else:
-        push = "未配置"
-    facts = (f"邮件通道={mail}(收件人{status['mail_recipients']},"
-             f"主管理员接收={'是' if status['mail_self_notify'] else '否'})；"
-             f"推送通道={push}")
-    if exhausted:
-        facts += "；推送额度已用尽=" + "/".join(
-            _NOTIFY_LEDGER_LABELS.get(k, k) for k in exhausted)
-    return facts
-
-
-def _audit_channel_health_degraded(facts):
-    """把"通道处于降级"这一事实落到审计链。
-
-    两条通道同时被拆时，日报本身既发不出去也没有任何别的出口；没有库内痕迹，
-    事后就无法证明"系统曾检测到通道被拆"，攻击者的拔线动作与运维正常停机在
-    取证上完全同形。审计行会进入既有 HMAC 哈希链并被库外锚点覆盖（app_meta 不在
-    链内，所以痕迹刻意写审计而不是 meta）。db.audit 自身已含重试与失败计数。
-
-    facts 必须由 _channel_health_facts()（结构化状态）产出，不得改为拼正文里含 ⚠
-    的行——那正是修复轮 2 复评点名的失准来源。
-    """
-    detail = f"degraded=1 {facts}"[:200]
-    if not db.audit("system", "channel_health", "alert_channels", detail):
-        # 审计也写不进去时只剩日志这条退路（此时大概率两通道与库都在打架）
-        logger.error("告警通道降级痕迹未能落审计链，请人工核查: %s", detail)
+    return _channel_health._channel_status_lines(_alert_channel_status, status)
 
 
 def _send_channel_health_report(force=False):
-    """告警通道健康日报（每日线程调用）。
+    """告警通道健康日报（每日线程调用，实现见 web/services/channel_health.py）。
 
-    三件事：① 固定附一行两条通道当前状态（被关闭也要看得见"被关"）；
-    ② 接线 Task 2 的 pop_exhaustion_notice()——当日有账本额度耗尽且尚未告知时，
-    在此把行补进日报。这里的 pop 必须在 send_notification 之前：pop 是取走语义，
-    先取走就不会再被本次 send_notification 内部的接线重复发一封（一次 pop 拿全列表）；
-    ③ 评审 ④（"日报本身不得依赖被改配置/进程内状态"）：
-      - 每日至多一封用 app_meta 落库去重（进程内 dict 重启即失效）；
-      - 通道降级时**先落一条审计痕迹再尝试发信**——两条通道同时被拆时这封日报
-        既发不出去也没有别的出口，没有库内痕迹就无法在事后证明"系统曾检测到
-        通道被拆"。审计行走既有 HMAC 哈希链 + 库外锚点覆盖范围（app_meta 不在链内，
-        故痕迹用 db.audit 而非只写 meta）。
-
-    降级判定（修复轮 2）：一律取自结构化状态 _alert_channel_status() + pop 出的账本
-    名列表，不看正文有没有 ⚠；痕迹摘要同样按结构化事实拼，两侧都记。
-
-    返回 True 表示本次已排出一封日报（含"发不出去但痕迹已落库"），
-    False 表示今日已播过、本次跳过。force=True 只越过"今日已播"判定，
-    仍会写入标记——人工补发同样算当日那一封。
-    发信抛异常时异常原样上抛（调用方记日志），且**不落**去重标记：当日稍后仍可重试。
+    状态生产者 / 状态行 / 告警出口三个入口都按调用时刻现取本模块的（既有测试在
+    `web.app` 上打桩 `_channel_status_lines` 做"纯文案改版"对拍，又打桩
+    `send_notification` 模拟发信失败），服务层另持绑定会让这些桩静默失效。
     """
-    today = clock.now().strftime("%Y-%m-%d")
-    if not force and _health_report_sent_today(today):
-        logger.info("告警通道健康日报今日已播报（标记 %s），本次跳过", _HEALTH_REPORT_META_KEY)
-        return False
-    status = _alert_channel_status()
-    lines = _channel_status_lines(status)
-    try:
-        exhausted = notify.pop_exhaustion_notice() or []
-    except Exception as e:  # 兜底：告知接线不得影响日报
-        logger.warning("读取推送额度耗尽标记失败（日报内省略）: %s", e)
-        exhausted = []
-    for kind in exhausted:
-        lines.append(
-            f"⚠ 手机推送{_NOTIFY_LEDGER_LABELS.get(kind, kind)}额度今日已用尽，"
-            "当日后续同类告警请查邮件（本行每日每本账各一次）"
-        )
-    # 审计链锚点随日报出箱：HMAC 链密钥、锚点文件、备份都在同一台机器上，
-    # 这封日报是唯一每天离开这台机器的链状态记录——运维拿昨日邮件对照今日库，
-    # 删链/篡改即可被发现。只读（不创建、不轮转锚点）；读取失败省略该行，
-    # 不影响日报本体的发送与降级判定。
-    try:
-        head = db.audit_head_hash()
-        count = db.audit_row_count()
-        if not head and count:
-            # 链头读取失败被 audit_head_hash 吞成空串、而记录数却非零：两侧读到的
-            # 不是同一份一致状态，锚点行宁缺毋滥
-            logger.warning("审计链头读取异常（记录数 %d 但链头为空），日报内省略锚点行", count)
-        else:
-            desc = f"{head[:12]}…" if head else "空链"
-            lines.append(f"审计链锚点：head_hash={desc}（记录数 {count}）")
-    except Exception as e:
-        logger.warning("读取审计链锚点失败（日报内省略该行）: %s", e)
-    # 降级口径：健康日不占紧急额度——例行日报若每天都吃掉一格紧急预算，反而会把真正
-    # 的紧急告警挤出预算（那正是本次修复要治的"该响的不响"）。判据是两条出口是否都活着
-    # （邮件可用且有收件人 + 推送可用）以及当日是否还有账本被用尽：攻击链第一步正是
-    # "只关邮件"，此时日报必须还能从手机推送那条通道被听见。
-    degraded = _channel_health_degraded(status, exhausted)
-    report = mail_layout.Mail(
-        summary="告警通道每日健康报告：两条通道状态、今日额度与审计链锚点。",
-        items=lines,
-        level="urgent" if degraded else "info",
-    )
-    facts = _channel_health_facts(status, exhausted)
-    # 痕迹落在发信**之前**：下面这句 send_notification 在两条通道全断时既送不到也没
-    # 回执，先落库才谈得上"无论是否发出都留痕"。摘要（facts）与下面的 meta 共用一份，
-    # 两侧事实无条件都在，不再从正文里挑 ⚠ 行拼。
-    if degraded:
-        _audit_channel_health_degraded(facts)
-    send_notification("告警通道健康日报", report, urgent=degraded)
-    # 去重标记刻意落在发信**之后**（修复轮 2 Minor）：写在之前等于"今天只要想过一遍就
-    # 永久不再试"——send_notification 抛异常或 SMTP 瞬断时，当天这封日报既没出去、
-    # 标记又已落库，直到次日都不会再播，一次瞬断被放大成整天静默，与"宁可多播不少播"
-    # 的取向相反。目标仍是"跨重启每日至多一封"（成功即落标记，重启不会各发一封），
-    # 只是失败那一次不占名额：当日稍后（进程重启后的下一轮、或人工 force 补发）还能重试。
-    # 不为此另起第三套状态存储——仍用同一个 app_meta 键，只是写入时机后移。
-    db.set_meta(_HEALTH_REPORT_META_KEY, json.dumps(
-        {"date": today, "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-         "degraded": degraded, "channels": len(lines),
-         "summary": facts}, ensure_ascii=False))
-    return True
+    return _channel_health._send_channel_health_report(
+        force, alert_channel_status=_alert_channel_status,
+        status_lines=_channel_status_lines, send_notification=send_notification)
 
 
-# 容量告警去重（进程内）：首次触顶通知一次，之后静默拒绝（防通知风暴；重启后重置）
-_capacity_alerts = {"users": False, "accounts": False}
-
-
-def _capacity_account_count():
-    """计入账号容量的账号数（= 会发起易班请求的账号，含 owner='admin' 裸账号）。
-
-    口径（判据唯一来源 `yiban.store.accounts.signs_in`）：**非删除且审核态已通过**。
-    审核态未通过（pending/rejected）的行永不签到（引擎加载与运行期复核都按同一条件
-    过滤），把它们计入会让"永不签到的存量"长期占满名额——新账号在提交时被
-    「账号数量已达上限」误拒，而总览三分类还把这类行显示成"正常"。
-    user_paused 仍计入（用户主动暂停、一键可恢复；三分类已单独列出）。
-    显示/配额/预估三处同一源；2026-09-14 性能：只用明文列，走 load_accounts_raw
-    免解密（原 load_accounts 对每行做 AES-GCM 解密并长持 _conn_lock）。
-    """
-    return sum(1 for a in load_accounts_raw() if db.account_signs_in(a))
-
-
-def _capacity_audit_count():
-    """未通过审核而不占容量的账号数（仅展示：总览/设置页的容量说明）。
-
-    与 `_capacity_account_count` 互斥互补：两者之和 = 全部非删除账号。
-    """
-    return sum(1 for a in load_accounts_raw()
-               if not a["deleted"] and not db.account_signs_in(a))
-
-
+# 容量核计与触顶告警族（账号/用户配额判定 `_capacity_account_count` /
+# `_capacity_audit_count` / `_accounts_at_capacity` / `_users_at_capacity`、容量预估
+# `_capacity_estimate`、注册暂停 `_registration_paused`、同类型告警邮件节流
+# `_mail_alert_due` 与触顶通知 `_notify_capacity_once`，含去重表 `_capacity_alerts`、
+# 节流表 `_mail_alert_ts` / `_mail_alert_lock` 与缺省窗口常量）实现见
+# web/services/capacity.py，此处以导入区再导出保持 m.* 可达；需要现取本模块名字
+# （`.env` 路径与读取器、缺省上限、窗口/裁剪口径、告警出口）的入口在下方转发。
 def _capacity_estimate(gap=0):
-    """按当前签到窗口与账号间隔设置预估可容纳账号数（**配置属性**口径）。
+    """按当前窗口与账号间隔预估可容纳账号数（实现见 web/services/capacity.py）。
 
-    公式与引擎共用 `signin.capacity_accounts`，有效窗口取
-    `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
-    出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
-
-    **刻意用完整有效窗口、不扣已流逝时间**：本函数服务设置页展示与**保存闸门**
-    （"按新设置预估容量 < 当前账号数则拒绝保存"），问的是"这套配置能容纳几个"。
-    若按时段扣减，管理员在窗口末尾将永远无法保存设置。引擎侧预检问的是"今天还能
-    签几个"，那里才用 `remaining_sec()`。
+    窗口解析器与掐头去尾口径按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`
+    与 `web.app.edge_config`），故转发必须现取后传入。
     """
-    win = yb_window.bounds({
-        "sign_start": _sign_window()[0], "sign_end": _sign_window()[1],
-        "edge_front_sec": edge_config()[0], "edge_back_sec": edge_config()[1],
-    })
-    return signin.capacity_accounts(win.full_sec(), gap)
+    return _capacity._capacity_estimate(gap, sign_window=_sign_window, edge_config=edge_config)
 
 
 def _accounts_at_capacity(extra_accounts=0):
-    """账号配额判定：占用 = **会签到的账号数** + 本次将新增账号数，
-    > 上限则 True（0 = 不限）。调小上限不删除存量账号，只限制新增。
+    """账号配额判定（实现见 web/services/capacity.py）。
 
-    口径见 `_capacity_account_count`：未通过审核（pending/rejected）的行不计入
-    ——它们永不发起易班请求，计入会把名额被"永不签到的存量"占满，新账号被误拒。
-    审核通过是"让这一行开始产生负载"的动作，故 `api_account_review` 的 approve
-    分支同样过这道门（否则名额只在提交时把关、审批时无门可越界）。
-    extra_accounts：本次提交将新增（或转为参与签到）的账号数，添加/通过恰为 1 个。
+    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
+    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
     """
-    max_accounts = load_env_int(ENV_FILE, "YIBAN_MAX_ACCOUNTS", DEFAULT_MAX_ACCOUNTS)
-    if max_accounts <= 0:
-        return False
-    return _capacity_account_count() + extra_accounts > max_accounts
+    return _capacity._accounts_at_capacity(
+        extra_accounts, env_file=ENV_FILE, load_env_int=load_env_int,
+        max_accounts_default=DEFAULT_MAX_ACCOUNTS)
 
 
 def _registration_paused():
-    """注册是否处于暂停状态。
+    """注册是否处于暂停状态（实现见 web/services/capacity.py）。
 
-    YIBAN_REGISTRATION_PAUSE=1 视为暂停；未配置/空 = 允许——既有部署升级后
-    无此键，注册行为不变（用户裁决：默认允许，新部署才默认暂停）。新部署由
-    ensure_secret_key 首次创建 .env 时写入 1，管理员完成初始配置后在设置页
-    （危险区，仅主管理员）开启。与 YIBAN_GLOBAL_PAUSE 同款读写口径。
-
-    提升为模块级：注册接口（web/routes/auth.py）与公开状态接口
-    （api_registration_paused）共用，且函数体只读 .env、无工厂状态。
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
+    `read_env`），故转发必须现取后传入。
     """
-    return load_env_int(ENV_FILE, "YIBAN_REGISTRATION_PAUSE", 0) == 1
+    return _capacity._registration_paused(ENV_FILE, load_env_int)
 
 
 def _users_at_capacity():
-    """用户配额判定（与 `_accounts_at_capacity` 同构的"超过上限才拒绝"语义，
-    2026-09 容量阈值语义统一）：再注册 1 人后全部未删除注册用户数
-    > 上限 则 True（注册每次恰好新增 1 用户；0 = 不限）。
-    users 口径 = 全部未删除注册用户（含空用户）。
+    """用户配额判定（实现见 web/services/capacity.py）。
+
+    `.env` 路径、整数读取器与缺省上限按调用时刻现取本模块的（测试会赋值 `ENV_FILE`、
+    打桩 `read_env` / `load_env_int`），故转发必须现取后传入。
     """
-    max_users = load_env_int(ENV_FILE, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)
-    if max_users <= 0:
-        return False
-    return len(db.load_users()) + 1 > max_users
-
-
-# 高危告警邮件节流（2026-08-29 被盗号滥用面加固）：同类型告警邮件在窗口内只发一封，
-# 防被盗管理员会话通过反复触发高危操作（批量删除等）耗尽 SMTP 发件额度；webhook
-# 保持实时逐条推送，不受影响。窗口可调：YIBAN_MAIL_ALERT_COOLDOWN（秒，0=关闭，默认 300）。
-DEFAULT_MAIL_ALERT_COOLDOWN = 300
-_mail_alert_ts = {}
-_mail_alert_lock = threading.Lock()
+    return _capacity._users_at_capacity(
+        env_file=ENV_FILE, load_env_int=load_env_int, max_users_default=DEFAULT_MAX_USERS)
 
 
 def _mail_alert_due(title):
-    """同类型告警邮件节流判断：窗口内已发过返回 False（本次跳过邮件，仅走 webhook）。"""
-    window = load_env_int(ENV_FILE, "YIBAN_MAIL_ALERT_COOLDOWN", DEFAULT_MAIL_ALERT_COOLDOWN)
-    if window <= 0:
-        return True  # 0 = 关闭节流
-    now = time.time()
-    with _mail_alert_lock:
-        last = _mail_alert_ts.get(title, 0.0)
-        if now - last < window:
-            return False
-        _mail_alert_ts[title] = now
-        return True
+    """同类型告警邮件节流判断（实现见 web/services/capacity.py）。
+
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会赋值 `ENV_FILE` / 打桩
+    `read_env`），故转发必须现取后传入。
+    """
+    return _capacity._mail_alert_due(title, ENV_FILE, load_env_int)
 
 
 def _notify_capacity_once(kind, limit, label):
-    """容量触顶通知（每进程每种资源只发一次）：管理员知情且不刷屏。"""
-    if _capacity_alerts.get(kind):
-        return
-    _capacity_alerts[kind] = True
-    logger.warning("%s已达上限 %d，已拒绝新注册/添加", label, limit)
-    send_notification(
-        f"{label}已达上限",
-        mail_layout.Mail(
-            summary=f"{label}已达上限，新的注册/添加已被拒绝。",
-            fields=[("当前上限", limit)],
-            advice=["如需扩容请在 .env 调整 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS"],
-            level="urgent",
-        ),
-        urgent=True,
-    )
+    """容量触顶通知（实现见 web/services/capacity.py）。
+
+    告警出口按调用时刻现取本模块的 `send_notification`（测试会打桩
+    `webapp.send_notification`），服务层另持绑定会让那些桩静默失效。
+    """
+    return _capacity._notify_capacity_once(
+        kind, limit, label, send_notification=send_notification)
 
 
 # ---------------------------------------------------------------------------
