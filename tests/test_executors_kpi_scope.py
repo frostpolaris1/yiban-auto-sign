@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""执行体分区的两处口径（用户 2026-09-18 裁决），用源级断言钉住。
+"""执行体分区的口径说明，用源级断言钉住。
 
 1. **「平均每执行体分到的人数」= 计入容量的账号数 ÷ 并行执行体数**（只数「并行」行：停用与
    故障转移不分担账号）。旧口径是「用户容量上限 ÷ 并行行数」——按名额填满估算，与实际账号数
@@ -8,8 +8,10 @@
    **账号**上限（执行体分的是账号），不是用户上限。
 2. **故障转移行的状态文案**：`off` 必须以"开关"为主语（「未启用」），旧文案「未开启故障转移」
    既能读成"功能没启用"，也能读成"执行体没启动"，用户第一次看到分不清去哪一栏找原因。
+3. **执行体一览的三处口径句**（见末尾 `ExecutorListWordingTest`）：故障转移行占号导致并行行
+   跳号、单并行行时行内出口不生效、以及「单执行体」与账号页「上次实领」的对照。
 
-两处都是"文案/口径"级契约，没有运行时断言可依赖，故直接读源码——与项目既有的
+三者都是"文案/口径"级契约，没有运行时断言可依赖，故直接读源码——与项目既有的
 `test_settings_tiers_frontend_parity` 同一手法。
 """
 
@@ -94,6 +96,35 @@ class FallbackStatusCopyTest(unittest.TestCase):
                             "旧文案把「功能没启用」与「执行体没启动」说成了一件事")
         self.assertIn('off: "未启用"', js)
         self.assertIn('declared_not_running: "已启用·未运行"', js)
+
+
+class ExecutorListWordingTest(unittest.TestCase):
+    """执行体一览新增的三处口径句（纯文案，无运行时断言可依赖，故读源码钉住）。
+
+    断言只挑**稳定的措辞锚点**（不依赖整句、不锁标点）：口径句被改写/删掉即报红，
+    避免"下次被顺手改回去也没有东西拦"。
+    """
+
+    def test_fallback_row_occupies_a_number_in_doc_and_banner(self):
+        """故障转移行占号 → 并行行跳号属正常：卡头 ⓘ 与「添加执行体」成功横幅两处都要说。"""
+        tpl = _read(TPL)
+        self.assertIn("故障转移行也占一个编号", tpl, "卡头 ⓘ 缺「占号」口径句")
+        self.assertIn("不影响运行", tpl, "跳号只解释成“正常”，不能说成“删过行”的结果")
+        self.assertIn("就是它在占号", tpl, "缺与「删过行」区分的判据")
+        # 绝对归因（"不代表删过行"）与紧邻的"槽位号只增不复用"自相矛盾，不许回流
+        self.assertNotIn("不代表删过行", tpl)
+        body = _function_body(_read(JS), "addRow")
+        self.assertIn("故障转移行也占一个编号", body, "添加成功横幅缺「占号」口径句")
+
+    def test_doc_links_single_executor_and_guards_single_row_hint(self):
+        """「单执行体」＝清单只有一行「并行」时的显示名（账号页「上次实领」），且单行有出口提示。"""
+        tpl = _read(TPL)
+        self.assertIn("「单执行体」不是清单类型", tpl, "缺「单执行体」与清单类型的对照")
+        self.assertIn("上次实领", tpl, "对照句必须点明显示在账号页哪一列")
+        hint = _function_body(_read(JS), "singleRowHint")
+        self.assertIn("只有一个并行执行体时", hint, "单行弹窗缺出口提示")
+        self.assertIn("按行生效", hint, "提示必须说明行内出口何时生效")
+        self.assertIn("env_keys", hint, "提示里的配置键名仍须取自接口下发，不硬编码")
 
 
 if __name__ == "__main__":
