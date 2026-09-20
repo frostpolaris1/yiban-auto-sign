@@ -103,6 +103,35 @@ class FallbackInlineSwitchTest(unittest.TestCase):
                          "开关已进状态列，那句指路文案不该回流")
 
 
+class FallbackModalSwitchPlacementTest(unittest.TestCase):
+    """行内弹窗里的开关要有字段标题、且是弹窗**第一个字段**。
+
+    没有标题又夹在「设置出口」与「存活」之间时，按接近性原则看不出它属于出口还是这一行；
+    排在类型/出口字段之前，它才作为这一行的主状态控件先被读到。
+    """
+
+    def _body(self):
+        return _function_body(_read(JS), "openRow")
+
+    def test_switch_field_has_a_label(self):
+        body = self._body()
+        self.assertIn('class: "field-label", text: "故障转移开关"', body,
+                      "开关要有与同弹窗其它字段同构的字段标题")
+        self.assertIn('swInput.setAttribute("aria-describedby", swHelpId)', body,
+                      "读屏关联（aria-describedby）照旧保留")
+
+    def test_switch_field_comes_before_type_and_egress_fields(self):
+        body = self._body()
+        sw_at = body.index('class: "field-label", text: "故障转移开关"')
+        for later in ('text: "名称（留空 = 用默认名）"',
+                      'text: "类型"',
+                      'text: "当前出口（已脱敏）"',
+                      'text: "设置出口（留空 = 不修改）"'):
+            self.assertIn(later, body)
+            self.assertLess(sw_at, body.index(later),
+                            "开关字段要排在「%s」之前（它是这一行的主状态控件）" % later)
+
+
 class FallbackStatusCopyTest(unittest.TestCase):
     def test_off_state_names_the_switch_not_a_process(self):
         js = _read(JS)
