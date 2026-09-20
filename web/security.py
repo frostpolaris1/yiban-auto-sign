@@ -45,19 +45,31 @@ import logging
 import os
 import re
 import secrets
+import sys
 import time
 
-from flask import request, session
-from werkzeug.security import check_password_hash, generate_password_hash
+# 包导入引导：本模块按**文件路径**被直接导入时（`web/app.py` 的别名加载、部署入口
+# 的独立探针等），`sys.path[0]` 只是该文件所在目录，仓库根与 scripts/ 都不在上面。
+# 本模块 `from yiban.*` 取共享包，又经 `web.services.accounts_data` 传递依赖 scripts/
+# 下的 `signin`（账号只读验证探针），故**两段都要**先入 sys.path——缺任一段都会在
+# 无引导环境里 ModuleNotFoundError。已存在则不重复插入。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+for _p in (_SCRIPTS_DIR, _REPO_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-from web.services.accounts_data import (
+from flask import request, session  # noqa: E402
+from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
+
+from web.services.accounts_data import (  # noqa: E402
     _PASSWORD_CLASS_PATTERNS,
     ADMIN_PASSWORD_MIN_CLASSES,
     ADMIN_PASSWORD_MIN_LEN,
 )
-from web.services.locks import _rate_lock
-from yiban.mail import layout as mail_layout
-from yiban.store import db
+from web.services.locks import _rate_lock  # noqa: E402
+from yiban.mail import layout as mail_layout  # noqa: E402
+from yiban.store import db  # noqa: E402
 
 # 与 web.app 同名的日志通道：安全域的日志落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
