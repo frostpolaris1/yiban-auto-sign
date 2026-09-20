@@ -616,6 +616,50 @@ class ExecutorsSaveEndpointTest(_WebBase):
         self.assertIn("YIBAN_PROXY_LIST", detail)
 
 
+class FallbackSwitchOnlySaveTest(_WebBase):
+    """「只拨故障转移开关」的保存链路（真实 Flask test client，不打桩）。
+
+    开关不归行接口管：`PUT …/executors/rows/<slot>` 缺 type/proxy/name 一律 400
+    （「没有可更新的字段」）。前端只拨开关时必须**只**发整条接口那一个请求——否则行接口
+    先 400、`Promise.all` 直接 reject：用户被告知失败，而 `.env` 里开关已经落盘，且重试
+    永远走同一条路。本类固定后端两侧的真实契约；前端"只拨开关时不带空请求体"由
+    `test_executors_kpi_scope.py` 的源级守卫钉住。
+    """
+
+    def test_rows_endpoint_rejects_a_body_without_type_proxy_name(self):
+        """先固定陷阱本身：缺三键的行接口请求确实是 400（前端不能带这个空请求体）。"""
+        c = self._login()
+        r = c.put("/api/scheduler/executors/rows/0",
+                  json={"confirm_password": ADMIN_PASS},
+                  headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertIn("没有可更新的字段", r.get_json()["error"])
+
+    def test_switch_only_save_persists_and_returns_200(self):
+        """只拨开关 → 整条接口 200 且 `.env` 落盘，这条路径上不应出现任何 400。"""
+        c = self._login()
+        r = c.put("/api/scheduler/executors",
+                  json={"fallback_enable": 1, "confirm_password": ADMIN_PASS},
+                  headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self._read_env()["YIBAN_FALLBACK_ENABLE"], "1")
+        self.assertTrue(c.get("/api/scheduler/executors").get_json()["fallback"]["enabled"])
+
+    def test_switch_only_save_with_wrong_password_stays_unpersisted(self):
+        """口令错 → 403 + 报口令错，`.env` 不动（不会出现"报失败但已生效"）。"""
+        c = self._login()
+        before = self._read_env()
+        cur = before.get("YIBAN_FALLBACK_ENABLE", "0")
+        want = 0 if cur == "1" else 1            # 必与现值不同，才会触发口令门
+        r = c.put("/api/scheduler/executors",
+                  json={"fallback_enable": want, "confirm_password": "DefinitelyWrong!9"},
+                  headers={"X-CSRF-Token": c.csrf})
+        self.assertEqual(r.status_code, 403, r.get_data(as_text=True))
+        self.assertIn("口令校验未通过", r.get_json()["error"])
+        self.assertEqual(self._read_env().get("YIBAN_FALLBACK_ENABLE"),
+                         before.get("YIBAN_FALLBACK_ENABLE"), "口令错不得落盘")
+
+
 class ReplaceSlotTest(unittest.TestCase):
     """`egress.replace_slot`：**只换目标段、其余段逐字保留**（纯函数，不依赖 web/DB）。
 

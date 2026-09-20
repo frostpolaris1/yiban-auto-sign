@@ -481,15 +481,11 @@
       });
   }
 
+  // PUT 单行 + 成功后 `load()` 重画（清除出口等行内写操作共用这一条「提交中→落盘→刷新→横幅」链路）
   function putRow(slot, payload, okText) {
-    return putTo("/api/scheduler/executors/rows/" + slot, payload, okText);
-  }
-
-  // PUT + 成功后 `load()` 重画：行内写操作共用同一条「提交中→落盘→刷新→横幅」链路。
-  function putTo(url, payload, okText) {
     return withBusy(function () {
       banner("提交中…", "info");
-      return YB.api("PUT", url, payload).then(function (d) {
+      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload).then(function (d) {
         return load().then(function () {
           setTip(okText + "：" + note(d), false);
           return true;
@@ -572,7 +568,7 @@
           swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
           YB.el("span", { class: "sr-only", text: "开启故障转移" })
         ]),
-        YB.el("p", { class: "field-help", id: swHelpId, text: "只写声明开关：窗口内补签还需宿主以 --fallback 拉起进程才会真在跑。" })
+        YB.el("p", { class: "field-help", id: swHelpId, text: "只写声明开关：窗口内补签还需部署侧以 --fallback 拉起进程才会真在跑。" })
       ]));
     }
     // 名称：后端 2026-09-17 起每行都下发 name（未设 = null），故能力探测恒真——保留探测只是为了
@@ -680,7 +676,11 @@
       if (pw != null) body.confirm_password = pw;
       if (args.proxy) body.proxy = args.proxy;
       if (args.name != null) body.name = args.name;
-      var steps = [YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body)];
+      var steps = [];
+      // 行接口缺 type/proxy/name 会回 400「没有可更新的字段」；只拨开关时不能发这个空体
+      if (args.proxy || args.name != null) {
+        steps.push(YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body));
+      }
       if (args.enable != null) {
         steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: args.enable, confirm_password: pw }));
       }
