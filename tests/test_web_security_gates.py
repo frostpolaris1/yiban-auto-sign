@@ -284,13 +284,13 @@ class Batch16FixesTest(unittest.TestCase):
         （见 docs/dev/release-gate.md），版本一旦分叉，台账就不再可信。
         """
         from yiban import __version__ as engine_version
-        self.assertEqual(engine_version, "0.4.5")
+        self.assertRegex(engine_version, r"^\d+\.\d+\.\d+$")
         self.assertEqual(self.webapp.APP_VERSION, engine_version)
         # web 侧两个文件都不得再出现版本字面量（否则就是第二个来源）
         for rel in ("web/__init__.py", "web/app.py"):
             with open(os.path.join(BASE, rel), encoding="utf-8") as f:
                 self.assertNotIn(
-                    '"0.4.5"', f.read(),
+                    f'"{engine_version}"', f.read(),
                     f"{rel} 里又写了一份版本字面量；版本只能定义在 yiban/__init__.py",
                 )
 
