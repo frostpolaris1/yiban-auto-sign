@@ -9,13 +9,15 @@
   的缩放质心骨架一致；抖动兜底也是本地补充，避免多账号多次签到聚在质心附近形成
   行为指纹。
 - 剖分很贵（O(n²)）而围栏按学校固定，故按顶点元组缓存剖分与面积前缀和（LRU 8 条）：
-  同一围栏重复取点直接跳过剪耳，并在建表时抽检一次保证取点不出界。
+  同一围栏重复取点直接跳过剪耳。建表前先做**确定性自交判定**（不相邻边真交叉），
+  自交多边形一律回退旧路径——随机抽检拦不住它。
 
 随机源用 `secrets.SystemRandom()`（不可预测）：坐标是要提交给服务端的"人在现场"
 证据，不能用可预测的伪随机序列。
 """
 import bisect
 import collections
+import contextlib
 import math
 import secrets
 
@@ -29,7 +31,8 @@ MAX_ATTEMPTS = 5000
 # 三角形内向内心收缩的比例。不取 1.0（顶点即围栏顶点）是因为 GPS 有几十米漂移，
 # 贴边的采样点容易被服务端判在围栏外；取 0.7 与旧路径的 SCALE_FACTOR 同量级，
 # 三条边各留约三成边距，同时保住三角形约一半的面积（0.7²）可用。
-TRI_SHRINK_RATIO = 0.7
+# 下划线私有：本层对外只保留 point_in_polygon / generate_position_in_polygon / SCALE_FACTOR。
+_TRI_SHRINK_RATIO = 0.7
 
 # 剪耳剖分很贵（O(n²)，48 顶点数百 µs、400 顶点数十 ms），而围栏按学校固定、同一轮
 # 多账号共用同一多边形——把剖分连同内缩三角形、面积前缀和缓存下来，命中就跳过剪耳，
@@ -41,8 +44,9 @@ _TRIANGULATION_CACHE_CAPACITY = 8
 _SELF_CHECK_SAMPLES = 200
 _CACHE_MISS = object()
 # 键是顶点浮点元组，值是 (内缩三角形, 面积前缀和, 总面积)，不可用的多边形值为 None。
-# 引擎进程内取点是严格串行的，普通 dict 就够；即便被多线程并发访问，最坏也只是同一
-# 围栏被重复建造一次，不会取到别人的表（dict 的读写本身是原子操作）。
+# 引擎进程内取点是严格串行的，这里不额外加锁；若被多线程并发访问，值不会串（键与值
+# 一一对应），但 get 与 move_to_end 之间的空档里该条可能被别的线程淘汰，故 move_to_end
+# 要吞 KeyError（见 `_sampling_table`）。最坏只是同一围栏被重复建造一次。
 _TRIANGULATION_CACHE = collections.OrderedDict()
 
 
@@ -97,6 +101,58 @@ def _triangle_area(triangle):
     return abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / 2.0
 
 
+def _merged_ring(polygon):
+    """规范化顶点：转成浮点并丢掉相邻重复顶点与闭合重复点。
+
+    重复点不贡献形状，却会挡住剪耳、也会让"边是否相邻"的判断失准；闭合环写法
+    （首尾写同一点）在这里被折掉，返回的可能不足 3 个顶点（调用方自行判定退化）。
+    """
+    merged = []
+    for point in polygon:
+        vertex = (float(point[0]), float(point[1]))
+        if not merged or vertex != merged[-1]:
+            merged.append(vertex)
+    if len(merged) > 1 and merged[0] == merged[-1]:
+        merged.pop()
+    return merged
+
+
+def _bbox_disjoint(a, b, c, d):
+    """线段 ab 与 cd 的包围盒是否不相交：不相交则两线段必不相交，可跳过精判。"""
+    if max(a[0], b[0]) < min(c[0], d[0]) or max(c[0], d[0]) < min(a[0], b[0]):
+        return True
+    return max(a[1], b[1]) < min(c[1], d[1]) or max(c[1], d[1]) < min(a[1], b[1])
+
+
+def _has_self_intersection(polygon):
+    """确定性简单性判定：存在一对不相邻的边真交叉即为自交（非简单多边形）。
+
+    两边同号（`_cross` 之积非负）说明另一条边的两端位于本条的同侧，不相交；只有
+    两端严格分居两侧（积为负）才算真交叉。相邻边共享顶点是合法的，跳过；端点在
+    另一条边上、共线重叠等退化情形不在此判据内，由 `_ear_clip_triangles` 的面积
+    守恒与建表自检兜底——这里只拦"剖分可能拼出偏出围栏的三角形"的主要来源。
+
+    先做包围盒预筛（不相交的边对直接跳过），实践上接近线性；最坏 O(n²)，但只在
+    建表时跑一次并随采样表缓存。
+    """
+    pts = _merged_ring(polygon)
+    n = len(pts)
+    if n < 4:  # 三角形一定简单
+        return False
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        for j in range(i + 1, n):
+            if j == i + 1 or (i == 0 and j == n - 1):
+                continue  # 相邻边共享端点，合法
+            c, d = pts[j], pts[(j + 1) % n]
+            if _bbox_disjoint(a, b, c, d):
+                continue
+            if _cross(a, b, c) * _cross(a, b, d) < 0 \
+                    and _cross(c, d, a) * _cross(c, d, b) < 0:
+                return True
+    return False
+
+
 def _ear_clip_triangles(polygon):
     """剪耳法把简单多边形剖分成三角形；剖不动（自交、退化）时返回 None。
 
@@ -107,18 +163,9 @@ def _ear_clip_triangles(polygon):
 
     凹角和共线（零面积）的候选耳直接跳过，一轮扫不出耳朵就收工，不会死循环。
     """
-    pts = [(float(p[0]), float(p[1])) for p in polygon]
-    # 丢掉相邻重复顶点，包括"首尾写同一点"的闭合环写法：重复点不贡献形状，却会
-    # 挡住剪耳，让一个本来正常的围栏被误判成退化。
-    merged = []
-    for point in pts:
-        if not merged or point != merged[-1]:
-            merged.append(point)
-    if len(merged) > 1 and merged[0] == merged[-1]:
-        merged.pop()
-    if len(merged) < 3:
+    pts = _merged_ring(polygon)
+    if len(pts) < 3:
         return None
-    pts = merged
     # 整体平移到首个顶点为原点的局部坐标：围栏坐标是经纬度（百量级的大数），
     # 而面积只有 1e-5 度² 量级，鞋带公式直接用大数相减会因抵消丢掉有效位、
     # 连绕行方向都判错。剪耳只用到顶点之差，平移不改变形状。
@@ -211,9 +258,10 @@ def _sample_from_table(shrunk, cumulative, total):
 def _self_check(table, polygon):
     """建表自检：从刚建好的表里抽 `_SELF_CHECK_SAMPLES` 个点，全在围栏内才认可。
 
-    旧实现在每次取点后都用 `point_in_polygon` 核一遍，只为拦住"自交/退化围栏拼出
-    偏出围栏的三角形"这一种输入；改成建表时一次性抽检，正常围栏命中缓存后不再付
-    这份成本。抽检点出界即否定整份剖分——这类围栏本身说不清内外，宁可走旧行为。
+    这只是第二道防线，**不是"取点必定界内"的证明**：抽检放过的剖分仍可能偶发偏出
+    围栏（随机自交多边形就出现过 200 点全过、之后仍泄漏的情形）。真正决定"走不走
+    新路径"的是 `_has_self_intersection` 的确定性判定；自检用来兜住其它异常。
+    抽检点出界即否定整份剖分，宁可走旧行为。
     """
     shrunk, cumulative, total = table
     for _ in range(_SELF_CHECK_SAMPLES):
@@ -226,13 +274,18 @@ def _self_check(table, polygon):
 def _build_sampling_table(polygon):
     """建造采样表并自检，得到 `_TRIANGULATION_CACHE` 的值；不可用返回 None。
 
-    流程：剪耳剖分 → 每块三角形向内心内缩 `TRI_SHRINK_RATIO` → 累出面积前缀和。
-    剖分失败、总面积为 0、或建时自检不通过都返回 None，调用方据此回退旧路径。
+    流程：**确定性自交判定** → 剪耳剖分 → 每块三角形向内心内缩 `_TRI_SHRINK_RATIO`
+    → 累出面积前缀和 → 建表自检。任何一步不过都返回 None，调用方据此回退旧路径。
+    自交判定必须排在剖分之前：自交多边形的"内/外"没有公认定义，剪耳却可能凑出面积
+    守恒、连 200 点自检都蒙混过关的三角形集合（评审给过 7 顶点反例），那时再采样
+    就会偶发偏出围栏——比旧路径更差。
     """
+    if _has_self_intersection(polygon):
+        return None
     triangles = _ear_clip_triangles(polygon)
     if not triangles:
         return None
-    shrunk = [_shrink_triangle(triangle, TRI_SHRINK_RATIO) for triangle in triangles]
+    shrunk = [_shrink_triangle(triangle, _TRI_SHRINK_RATIO) for triangle in triangles]
     cumulative = []
     total = 0.0
     for triangle in shrunk:
@@ -256,7 +309,9 @@ def _sampling_table(polygon):
     key = tuple((float(point[0]), float(point[1])) for point in polygon)
     table = _TRIANGULATION_CACHE.get(key, _CACHE_MISS)
     if table is not _CACHE_MISS:
-        _TRIANGULATION_CACHE.move_to_end(key)
+        # 并发下该条可能刚被别的线程淘汰；值已取到，无需重新入队，吞掉即可。
+        with contextlib.suppress(KeyError):
+            _TRIANGULATION_CACHE.move_to_end(key)
         return table
     table = _build_sampling_table(polygon)
     _TRIANGULATION_CACHE[key] = table
