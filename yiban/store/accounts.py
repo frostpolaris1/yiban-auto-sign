@@ -91,7 +91,7 @@ def is_signable(account_id):
     account_id 为 0/None（JSON / 环境变量账号模式：库内没有对应行）时返回 True——
     那些模式本来就不存在"库内账号行过期"的问题。
     """
-    from yiban.store import db
+    db = _facade()
     if not account_id:
         return True
     with db._conn_lock:
@@ -114,8 +114,7 @@ def account_still_signable(account):
     if not account_id:
         return True
     try:
-        from yiban.store import db
-        return db.account_is_signable(account_id)
+        return _facade().account_is_signable(account_id)
     except Exception as e:
         from yiban import masking
         logger.debug(f"[{getattr(account, 'phone', '')}] 账号有效性复核失败（按有效处理）: "
@@ -585,8 +584,8 @@ def replace_accounts(accounts):
         old = conn.execute("SELECT phone FROM accounts").fetchall()
         conn.execute("DELETE FROM accounts")
         keep = {a.get("phone", "") for a in accounts}
-        # 保留的账号不动，避免无谓的重新登录。
         removed = [r["phone"] for r in old if r["phone"] not in keep]
+        # 只连带清理被移除账号的关联数据；保留者整表重插时不因此重新登录。
         db._cascade_phone_owned(conn, removed)
         for i, a in enumerate(accounts):
             try:

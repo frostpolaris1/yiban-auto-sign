@@ -400,10 +400,6 @@ CLEAR_SENTINEL = "__clear__"
 # 降低误操作与滥用影响范围。三处接口共用本常量，防单处调整后其他路径遗漏。
 BATCH_OP_LIMIT = 10
 
-# 签到窗口默认值（06:30 ~ 07:50）：可被 .env 的 YIBAN_SIGN_START/END 覆盖（见 _sign_window）
-SIGN_START = (6, 30)
-SIGN_END = (7, 50)
-
 
 def _sign_window():
     """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认，实现见 web/services/signstatus.py）。
@@ -1608,7 +1604,7 @@ def create_app(host=None):
     app.config["SESSION_COOKIE_HTTPONLY"] = True  # JS 不可读 session cookie（防 XSS 窃取）
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"  # 跨站请求不携带 cookie（防 CSRF）
     # H6：Secure 标志可由 YIBAN_COOKIE_SECURE 显式开启（env 文件或环境变量，1/true/yes 开，
-    # 默认关）。默认关保持本机 HTTP 直连演示可用；生产 systemd 模板置 1（Task 7）。
+    # 默认关）。默认关保持本机 HTTP 直连演示可用；生产 systemd 模板置 1。
     cookie_secure_raw = os.environ.get("YIBAN_COOKIE_SECURE")
     if cookie_secure_raw is None:
         cookie_secure_raw = read_env(ENV_FILE).get("YIBAN_COOKIE_SECURE", "")

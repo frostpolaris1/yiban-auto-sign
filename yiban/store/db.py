@@ -50,7 +50,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
+# 原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
 # 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
 # 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
 from yiban import clock  # noqa: E402
@@ -524,7 +524,7 @@ def _begin_immediate(conn):
     """统一的写事务入口：遗留未提交事务先安全回滚再 BEGIN。
 
     原各写路径直接 BEGIN IMMEDIATE，一旦存在遗留事务（任何写路径漏 commit/rollback
-    的 bug）即抛 "within a transaction" 并连锁锁死全部写路径；audit() 的旧 M8 防御
+    的 bug）即抛 "within a transaction" 并连锁锁死全部写路径；audit() 原有的自保防御
     只覆盖自己。统一走本函数：遗留半事务按安全默认丢弃并 ERROR 留痕定位根因。
     """
     if conn.in_transaction:
@@ -536,12 +536,12 @@ def _begin_immediate(conn):
     conn.execute('BEGIN IMMEDIATE')
 
 
-# 时钟跳变保护参数（2026-08-28 审查 M3）：
+# 时钟跳变保护参数：
 # 允许的"时间前进"上限。软删保留期 7 天——系统时间被拨快 8 天，刚软删 1 秒的
 # 账号会在下次清理时被立即物理清除、7 天反悔窗口归零。取 72h：每日正常运行的
 # 服务不会超过；停机 >3 天后的首轮清理会被跳过并触发告警，需人工核实时钟后用
-# scripts/clock_guard_reset.py 显式重置（用户裁决 2026-08-29：
-# 刻意不自动恢复——自动把参照点拨到当前时间等于给"拨快一次、下轮洗白"开通道）。
+# scripts/clock_guard_reset.py 显式重置（刻意不自动恢复——自动把参照点拨到当前
+# 时间等于给"拨快一次、下轮洗白"开通道）。
 _CLOCK_ALLOW_FWD_HOURS = 72
 # 允许的"时间回拨"上限（秒）：正常 NTP 校正是秒级，回拨超过 1h 视为异常
 _CLOCK_ALLOW_BACK_SECONDS = 3600
