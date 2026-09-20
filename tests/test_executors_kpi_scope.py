@@ -188,6 +188,16 @@ class FallbackSwitchPayloadTest(unittest.TestCase):
         self.assertLess(body.index(guard), body.index('"/api/scheduler/executors/rows/"'),
                         "行接口请求必须在该判据成立时才加入 steps")
 
+    def test_password_prompt_wording_follows_the_change(self):
+        """口令框措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"。"""
+        body = _code_body(_read(JS), "save")
+        self.assertIn('(enableArg ? "开启" : "关闭")', body,
+                      "只拨开关时口令框要按方向说「开启/关闭故障转移」")
+        self.assertIn('"与故障转移开关"', body,
+                      "同时改出口与开关时要把开关一并说出来")
+        self.assertIn('askPassword(pwAsk + "？请输入当前管理员密码确认。"', body,
+                      "措辞按本次改动拼装后再接统一的确认尾句")
+
 
 class RowMenuDividerSpacingTest(unittest.TestCase):
     """浮层行菜单的危险项分隔线不带外边距。

@@ -663,9 +663,13 @@
       if (handle && handle.close) handle.close();
       focusAfterPaint = { slot: slot };
       if (!needsPw) { submit(null, args); return true; }
+      // 措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"
+      var pwAsk = egress
+        ? "修改 " + rowTitle(row) + " 的出口配置" + (enableArg != null ? "与故障转移开关" : "")
+        : (enableArg ? "开启" : "关闭") + "故障转移";
       // 回调**必须 return 这个 Promise**：口令框据此保持打开，把后端 403 文案显示在框内，
       // 并允许改口令重试（不 return 就是"非 Promise 回调"，框会立刻关掉、错误只剩横幅）。
-      askPassword("修改 " + rowTitle(row) + " 的出口配置？请输入当前管理员密码确认。",
+      askPassword(pwAsk + "？请输入当前管理员密码确认。",
         function (pw) { return submit(pw, args); });
       return true;
     }
