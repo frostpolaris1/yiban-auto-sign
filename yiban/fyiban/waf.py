@@ -111,10 +111,10 @@ def solve_ydclearance(text, allow_url):
     k = int(tk.group(1))
     if k == 0:  # JS 里 `qo % 0` 是 NaN（假值），Python 直接 ZeroDivisionError
         raise RuntimeError("ydclearance 挑战解析失败: po 过滤常量 k 为 0")
-    # 上界对应真模板 po 循环条件 `for (qo = 1; qo < oo.length - 1; qo++)`，取到下标 len(oo)-2。
-    # 真模板里 n_c = len(oo) - 3（C 段 `if (qo > n_c) break`），故 n_c+1 这个下标落在 C 变换
-    # 范围之外，存的是模板留的收尾字符（跳转路径的右引号）——停在 n_c 会静默少解一个字符。
-    po = "".join(chr(oo[i] ^ arg) for i in range(1, len(oo) - 1) if i % k)
+    po = "".join(  # 上界对应真模板 `qo < oo.length - 1`，取到下标 len(oo)-2
+        # n_c = len(oo)-3，多出的 n_c+1 格在 C 变换范围外，是模板留的收尾引号（跳转路径右引号）
+        chr(oo[i] ^ arg) for i in range(1, len(oo) - 1) if i % k
+    )
 
     cookie_m = re.compile(r"https?_ydclearance=([0-9a-zA-Z-_]+);?").findall(po)
     path_m = re.compile(r'window\.document\.location="(.+)"').findall(po)

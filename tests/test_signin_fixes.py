@@ -27,16 +27,17 @@ def _challenge_text(target_url, cookie="abc123", arg=0, k=1000, legacy_bound=Fal
 
     按真模板形状造：po 循环 `qo < oo.length - 1` 比 C 段上界多取一格，而真模板里
     n_c = len(oo) - 3，故 n_c+1 落在 C 变换范围之外——那一格直接存"收尾字符 ^ arg"
-    （收尾字符是跳转路径的右引号）。legacy_bound=True 还原改造前的假页形状（数组不设
-    最后两格、po 上界恰好等于 n_c），用作"少解收尾字符"的负对照。
+    （收尾字符是跳转路径的右引号）。两段都按 `chr(oo[i] ^ arg)` 的读法预先把 arg 异或
+    编进去（arg 需 ≤ 0xFF，否则异或的高位会在解码侧带回来）。legacy_bound=True 还原
+    改造前的假页形状（数组不设最后两格、po 上界恰好等于 n_c），用作"少解收尾字符"的负对照。
     """
     desired = f"https_ydclearance={cookie};window.document.location=\"{target_url}\""
     add1, add2, shift_l, shift_r = 1, 2, 3, 5
     head, tail = (desired, "") if legacy_bound else (desired[:-1], desired[-1])
     n_c = len(head)
+    vals = [ord(c) ^ arg for c in head]  # 先异或 arg：解码侧读法是 chr(oo[i] ^ arg)
     arr = [0] + [
-        ((((ord(c) >> shift_l) | ((ord(c) << shift_r) & 0xFF)) - add1 - add2) & 0xFF)
-        for c in head
+        ((((v >> shift_l) | ((v << shift_r) & 0xFF)) - add1 - add2) & 0xFF) for v in vals
     ]
     if not legacy_bound:
         arr += [ord(tail) ^ arg, 0]  # n_c+1 格存尾字符；len(oo)-1 格在模板里从不参与运算
@@ -123,11 +124,19 @@ class SigninFixes021Test(unittest.TestCase):
 
     # ---- T-WAF-9：po 上界与真模板 `qo < oo.length - 1` 对齐 ----
     def test_solve_ydclearance_decodes_tail_char_outside_transform_c(self):
-        """收尾字符（路径右引号）在下标 len(oo)-2，不在 C 变换范围内，必须逐字解出。"""
+        """收尾字符（路径右引号）在下标 len(oo)-2，不在 C 变换范围内，必须逐字解出。
+
+        arg 同时覆盖非 0 值：假页的 head 与 tail 两段都要按 `chr(oo[i] ^ arg)` 的
+        读法把参数异或编进去，否则只有 arg=0 才自洽。158 是公开样本里的真实量级。
+        """
         client = signin.YibanClient.__new__(signin.YibanClient)
-        cookie, target = client._solve_ydclearance(_challenge_text("https://f.yiban.cn/iapp7463"))
-        self.assertEqual(cookie, "abc123")
-        self.assertEqual(target, "https://f.yiban.cn/iapp7463")
+        for arg in (0, 7, 158):
+            with self.subTest(arg=arg):
+                cookie, target = client._solve_ydclearance(
+                    _challenge_text("https://f.yiban.cn/iapp7463", arg=arg)
+                )
+                self.assertEqual(cookie, "abc123")
+                self.assertEqual(target, "https://f.yiban.cn/iapp7463")
 
     def test_solve_ydclearance_old_fixture_shape_fails_loudly(self):
         """改造前的假页形状（po 上界恰好等于 C 段上界）在新实现下必须响亮失败，不得静默截断。"""
