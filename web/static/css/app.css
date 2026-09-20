@@ -4480,6 +4480,9 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .set-exec-form > .field + .field { margin-top: 14px; }
 .set-exec-form > .field + .set-summary,
 .set-exec-form > .set-summary + .field { margin-top: 12px; }
+/* 单并行执行体时弹窗顶部的出口提示（.set-exec-hint）：模板 .alert 只带 margin-top，
+   作为首个子节点会让下面的第一个 .field 贴死，故给下间距——纯排版，不动字段与交互。 */
+.set-exec-form > .set-exec-hint { margin: 0 0 14px; }
 .set-exec-form > .set-exec-subactions { margin-top: 16px; }
 /* 字段标签旁的 ⓘ（弹窗内折叠口径用）：与文字同一行、不撑高标签 */
 .field-label .info-tip { margin-left: 6px; vertical-align: -3px; }
