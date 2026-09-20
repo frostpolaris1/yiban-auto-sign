@@ -72,7 +72,7 @@ def _capacity_audit_count():
 def _capacity_estimate(gap=0, *, sign_window, edge_config):
     """按当前签到窗口与账号间隔设置预估可容纳账号数（**配置属性**口径）。
 
-    公式与引擎共用 `signin.capacity_accounts`，有效窗口取
+    公式与引擎共用 `yiban.engine.schedule.capacity_accounts`，有效窗口取
     `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
     出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
 
