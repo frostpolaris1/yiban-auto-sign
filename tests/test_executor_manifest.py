@@ -28,6 +28,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
@@ -40,6 +41,10 @@ logging.getLogger("yiban").addHandler(logging.NullHandler())
 
 ADMIN_PASS = "TestPass1234!"
 SECRET_PROXY = "http://svcuser:svcp@proxy1.example:8080"
+
+#: 固定业务时刻（周三 06:40）；派发路径用例把时钟钉在非周末，否则跑测当天是周六/周日
+#: 时「周末签到未开启」的提前门会先拦下（那是另一组用例的主题，不该让这组周末变红）
+WEEKDAY_06_40 = datetime(2026, 9, 2, 6, 40)
 
 
 def _manifest(*rows):
@@ -719,8 +724,10 @@ class LaunchWiringTest(unittest.TestCase):
 
     def test_runner_passes_manifest_slots_to_supervisor(self):
         from yiban.engine import runner, workers
-        env = {egress.ENV_MANIFEST: egress.dump_manifest(self.ROWS)}
+        env = {egress.ENV_MANIFEST: egress.dump_manifest(self.ROWS),
+               "YIBAN_GLOBAL_PAUSE": "0"}
         with mock.patch.dict(os.environ, env), \
+                mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
                 mock.patch.object(workers, "run_worker_supervisor",
                                   return_value=7) as m:
             rc = runner.main(["--workers", "5"])
@@ -731,7 +738,9 @@ class LaunchWiringTest(unittest.TestCase):
 
     def test_runner_falls_back_to_workers_flag_without_manifest(self):
         from yiban.engine import runner, workers
-        with mock.patch.dict(os.environ, {"YIBAN_EXECUTORS": ""}), \
+        env = {"YIBAN_EXECUTORS": "", "YIBAN_GLOBAL_PAUSE": "0"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
                 mock.patch.object(workers, "run_worker_supervisor",
                                   return_value=0) as m:
             runner.main(["--workers", "3"])
@@ -770,6 +779,101 @@ class LaunchWiringTest(unittest.TestCase):
                          "执行体身份按槽位号构造（跨重启稳定）")
         self.assertEqual([e["YIBAN_RUN_LOCK_NAME"] for e in spawned],
                          ["signin-run.lock.w0", "signin-run.lock.w3"])
+
+
+class DispatchGateTest(unittest.TestCase):
+    """派发监督进程前的两道闸：周末/暂停门与补签轮判定，都必须在 spawn 之前。
+
+    门若排在派发之后，清单形态下会先按清单拉起一批执行体子进程、再由每个子进程各自
+    撞门退出——读配置、连库、载账号都白做一遍。补签轮判定本应是"只读本地状态"，
+    被派发挡在后面就成了重活，退出码也传不回来。
+    """
+
+    ROWS = ({"slot": 0, "type": "worker", "proxy": ""},
+            {"slot": 1, "type": "worker", "proxy": ""})
+
+    #: 命中提前门的样例时刻：周日代表周末门，周三代表工作日（暂停门由开关单独注入）
+    SUNDAY_06_31 = datetime(2026, 9, 6, 6, 31)
+
+    def _manifest_env(self, **extra):
+        env = {egress.ENV_MANIFEST: egress.dump_manifest(self.ROWS),
+               "YIBAN_EXECUTOR_ID": "",
+               "YIBAN_GLOBAL_PAUSE": "0"}
+        env.update(extra)
+        return env
+
+    def test_day_off_returns_2_before_dispatch(self):
+        """周日签到未开启 + 清单 2 槽位 → 返回 2，不派发监督进程、也不加载账号。"""
+        from yiban.engine import runner, workers
+        with mock.patch.dict(os.environ, self._manifest_env()), \
+                mock.patch.object(runner.clock, "now", lambda: self.SUNDAY_06_31), \
+                mock.patch.object(runner, "SUNDAY_SIGN", False), \
+                mock.patch.object(workers, "run_worker_supervisor") as m_sup, \
+                mock.patch.object(runner.accounts_mod, "load_accounts") as m_load:
+            rc = runner.main([])
+        self.assertEqual(rc, 2, "应走 SKIPPED 语义（run.sh 据此写 SKIPPED）")
+        m_sup.assert_not_called()
+        m_load.assert_not_called()
+
+    def test_paused_returns_2_before_dispatch(self):
+        """一键暂停命中 → 同样在派发之前返回 2。"""
+        from yiban.engine import runner, workers
+        with mock.patch.dict(os.environ, self._manifest_env(YIBAN_GLOBAL_PAUSE="1")), \
+                mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
+                mock.patch.object(workers, "run_worker_supervisor") as m_sup, \
+                mock.patch.object(runner.accounts_mod, "load_accounts") as m_load:
+            rc = runner.main([])
+        self.assertEqual(rc, 2)
+        m_sup.assert_not_called()
+        m_load.assert_not_called()
+
+    def test_second_run_check_returns_10_before_dispatch(self):
+        """补签轮判定 + 清单多槽位 → 返回 10（需要补跑），不派发、不起子进程、不载账号。"""
+        from yiban.engine import runner, workers
+        with mock.patch.dict(os.environ, self._manifest_env()), \
+                mock.patch.object(runner.clock, "now", lambda: self.SUNDAY_06_31), \
+                mock.patch.object(runner.state_io, "need_second_run", return_value=True), \
+                mock.patch.object(workers, "run_worker_supervisor") as m_sup, \
+                mock.patch.object(workers.subprocess, "Popen") as m_popen, \
+                mock.patch.object(runner.accounts_mod, "load_accounts") as m_load:
+            rc = runner.main(["--second-run-check"])
+        self.assertEqual(rc, 10, "补签判定不得被监督分支劫持")
+        m_sup.assert_not_called()
+        m_popen.assert_not_called()
+        m_load.assert_not_called()
+
+    def test_manual_only_still_dispatches_on_day_off(self):
+        """`--only` 是用户主动触发（既有语义：不受周末/暂停门限制），多执行体下照旧派发。
+
+        被提前门拦下等于"用户点了手动签到却被静默跳过"——门只写在单执行体路径时
+        根本到不了这里（子进程各自按 `if not args.only` 放行），故豁免必须与之一致。
+        """
+        from yiban.engine import runner, workers
+        for label, now, extra in (("周日", self.SUNDAY_06_31, {}),
+                                  ("暂停", WEEKDAY_06_40, {"YIBAN_GLOBAL_PAUSE": "1"})):
+            with self.subTest(label=label):
+                with mock.patch.dict(os.environ, self._manifest_env(**extra)), \
+                        mock.patch.object(runner.clock, "now", lambda now=now: now), \
+                        mock.patch.object(runner, "SUNDAY_SIGN", False), \
+                        mock.patch.object(workers, "run_worker_supervisor",
+                                          return_value=7) as m_sup:
+                    rc = runner.main(["--only", "13800000000"])
+                self.assertEqual(rc, 7, "用户主动触发被门拦下 = 手动签到被静默跳过")
+                m_sup.assert_called_once()
+
+    def test_check_config_and_probe_still_dispatch_on_day_off(self):
+        """`--check-config`（部署验证，哪天都要能验）与 `--probe`（自带门、跳过语义是 0）同样不被拦。"""
+        from yiban.engine import runner, workers
+        for argv in (["--check-config"], ["--probe"]):
+            with self.subTest(argv=argv):
+                with mock.patch.dict(os.environ, self._manifest_env()), \
+                        mock.patch.object(runner.clock, "now", lambda: self.SUNDAY_06_31), \
+                        mock.patch.object(runner, "SUNDAY_SIGN", False), \
+                        mock.patch.object(workers, "run_worker_supervisor",
+                                          return_value=0) as m_sup:
+                    rc = runner.main(list(argv))
+                self.assertEqual(rc, 0)
+                m_sup.assert_called_once()
 
 
 if __name__ == "__main__":

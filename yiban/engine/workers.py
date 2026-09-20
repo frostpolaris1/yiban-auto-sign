@@ -7,8 +7,8 @@
 代理（执行体清单 `YIBAN_EXECUTORS` 每行一个出口；清单缺失时回退旧三键
 `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK`，见 `egress.resolve`）、每个并行执行体的
 **心跳**（开始/存活期/收尾，按**槽位号**写在 `state_io`，供接口判存活四态）、
-退出码怎么汇总（取最严重者）。清单里的拉起列表由 `runner` 取 `egress.launch_slots`
-后按槽位传进来，故**停用行不会被拉起**。
+退出码怎么汇总（取最严重者，但补签轮判定的「需要补跑」原样透出）。清单里的拉起列表由
+`runner` 取 `egress.launch_slots` 后按槽位传进来，故**停用行不会被拉起**。
 
 **子进程入口是 `python -m yiban.cli sign`**：本模块是包内模块，不再能按文件路径直接
 执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
@@ -56,6 +56,12 @@ _REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 #: `state_io.WORKER_HEARTBEAT_SEC` 决定，与这个粒度无关。
 _WAIT_POLL_SEC = 1.0
 
+#: 补签轮判定「需要补跑」的退出码：与 `runner.SECOND_RUN_CHECK_NEED` 是同一契约值
+#: （`docs/dev/cli.md` §3）。此处复写而非从 runner 取，是因为 runner 反向依赖本模块，
+#: 导入期取不到它；两处一致性由测试对账。子进程带它退出时监督进程必须原样透出——
+#: 归一成 0 会让宿主 run.sh 把「需要补签」读成「一切正常」，补签轮被静默吞掉。
+_SECOND_RUN_CHECK_NEED = 10
+
 
 def run_worker_supervisor(n, argv, slots=None):
     """拉起 n 个执行体子进程并汇总退出码（`--workers N`）。
@@ -66,8 +72,11 @@ def run_worker_supervisor(n, argv, slots=None):
     - `slots` = **执行体清单给出的槽位号**（拉起列表，`egress.launch_slots`）。省略时
       用旧口径的 `0..n-1`（行为逐字不变）。传了槽位时子进程的身份/锁/心跳都按
       **槽位号**算，故清单里**停用/删除的行不会被拉起**，且删中间行不影响其余槽位；
-    - 退出码汇总取"最严重"的一个：真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
-      调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致。
+    - 退出码汇总取"最严重"的一个：补签轮判定的「需要补跑」(10) 原样透出且优先于其余判定
+      （它表达调用方必须区分的语义，归一成 0 会让补签轮被静默吞掉），其后才是
+      真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
+      调用方（run.sh）据此判断本轮是否需要补签，语义与单执行体一致；容器侧不消费本
+      退出码（docker/scheduler.py 的补签闸门读状态文件判定）。
     """
     slot_list = list(range(n)) if slots is None else list(slots)
     argv_workers = n          # 命令行 `--workers N` 里的 N（去参数时按它匹配，语义与旧版一致）
@@ -120,6 +129,8 @@ def run_worker_supervisor(n, argv, slots=None):
     for i, rc in enumerate(codes):
         logger.info("执行体 %d/%d（槽位 %d）结束，退出码 %s", i + 1, n, slot_list[i], rc)
 
+    if any(c == _SECOND_RUN_CHECK_NEED for c in codes):
+        return _SECOND_RUN_CHECK_NEED
     if any(c == 1 for c in codes):
         return 1
     if any(c == 3 for c in codes):
