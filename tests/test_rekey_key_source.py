@@ -2538,16 +2538,36 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(w._PASSWORD_MIN_CLASSES, 2,
                          "判定下限仍是 2 类：不得改成 3 类，也不得要求必须含符号")
         self.assertEqual(w.PASSWORD_MIN_LEN, 10, "长度下限不变")
-        # 后端侧的四类正则与两条文案随账号数据族（含口令策略）迁入
-        # web/services/accounts_data.py：位置变了，判据（唯一定义点、不得内联）不变。
-        src = _read_text(os.path.join(BASE, "web", "services", "accounts_data.py"))
-        self.assertEqual(src.count("A-Za-z0-9"), 1,
-                         "web/services/accounts_data.py 里符号类正则只能出现在 "
-                         "_PASSWORD_CLASS_PATTERNS 一处；出现第二处即回到多份内联重复的老问题")
+        # 后端侧的四类正则与两条文案随账号数据族（含口令策略）住在
+        # web/services/accounts_data.py：判据是「符号类正则全后端只出现一次＝唯一定义点」。
+        # 覆盖**消费面**而不只定义点——两侧消费点各按来源不同：
+        #   web/security.py 的 reject_default_admin_password 与 web/app.py 的转发/再导出
+        #   都只能按名取用（导入常量），一律不得内联那份正则。
+        # 说明（评审 Minor 消解）：此前只扫定义文件，任一消费面把 `[^A-Za-z0-9]`
+        # 抄一份都会被漏掉；web/app.py 纵深同样纳入后，三处一起钉住。
+        backends = {
+            "web/services/accounts_data.py": 1,  # 唯一定义点（_PASSWORD_CLASS_PATTERNS）
+            "web/security.py": 0,                # 启动弱口令检测按名取用
+            "web/app.py": 0,                     # 只转发/再导出
+        }
+        for rel, want in backends.items():
+            src = _read_text(os.path.join(BASE, *rel.split("/")))
+            self.assertEqual(
+                src.count("A-Za-z0-9"), want,
+                f"{rel} 的符号类正则出现 {src.count('A-Za-z0-9')} 处（应为 {want}）："
+                f"全后端只允许 web/services/accounts_data.py 的 _PASSWORD_CLASS_PATTERNS "
+                f"定义一次，其余位置按名取用；内联第二份即回到多份正则各自漂移的老问题")
         fn = inspect.getsource(w._password_policy_error)
         self.assertIn("_PASSWORD_CLASS_PATTERNS", fn,
                       "_password_policy_error 必须由模块级常量派生，不得自带一份正则")
         self.assertNotIn("A-Za-z0-9", fn, "_password_policy_error 内不得内联类别正则")
+        # 启动弱口令检测的实现住在 web/security.py（web.app 上只剩转发包装），
+        # 故按真源模块的函数源码对拍：必须派生自同一常量、不得内联。
+        import web.security as security_mod
+        fn_rej = inspect.getsource(security_mod.reject_default_admin_password)
+        self.assertIn("_PASSWORD_CLASS_PATTERNS", fn_rej,
+                      "reject_default_admin_password 必须由模块级常量派生，不得自带一份正则")
+        self.assertNotIn("A-Za-z0-9", fn_rej, "启动弱口令检测内不得内联类别正则")
 
     # ---- ③ 之前端半边（元测试核心）：承载页聚合出的定义 vs 后端常量逐字同序同串 ----
     def test_templates_class_regexes_match_backend_constant(self):
@@ -2612,10 +2632,12 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
     def test_ambiguous_wording_is_gone(self):
         """①文案歧义：旧措辞在随代码发布的文本里一律不得再现（含注释，防其回流）。"""
         # 后端承载文本随账号数据族（含口令策略）迁入 web/services/accounts_data.py；
-        # web/app.py 仍保留为随代码发布的文本（转发说明也在其中），一并纳入扫描。
+        # web/app.py 仍保留为随代码发布的文本（转发说明也在其中），安全域
+        # web/security.py 承载启动弱口令检测的文案，三者一并纳入扫描。
         targets = [
             ("web/services/accounts_data.py",
              _read_text(os.path.join(BASE, "web", "services", "accounts_data.py"))),
+            ("web/security.py", _read_text(os.path.join(BASE, "web", "security.py"))),
             ("web/app.py", _read_text(os.path.join(BASE, "web", "app.py"))),
         ]
         targets += [(n, _frontend(n)) for n in PW_TEMPLATES]
