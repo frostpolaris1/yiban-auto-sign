@@ -31,6 +31,9 @@ logger = logging.getLogger("yiban-crypto")
 # 密文对象格式版本（AES-256-GCM，v1）
 SCHEMA_VERSION = 1
 DEFAULT_ENV_FILE = ".env"
+# 本键"这一行属于 YIBAN_ACCOUNTS_KEY"的判据，直接取自 env_io：折叠与解析必须是
+# 同一套口径（见 _write_key_to_env_file），各写一份正则迟早漂移出影子行
+_KEY_LINE_RE = env_io.key_line_pattern("YIBAN_ACCOUNTS_KEY")
 
 # 进程内密钥缓存（bytes）。环境变量优先级最高，其次 .env 文件；
 # 两者都没有时自动生成并持久化（见 load_key）。
@@ -249,12 +252,31 @@ def _write_key_to_env_file(env_file, key):
         existing = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
         if existing:
             return _decode_key(existing)
-        lines = []
+        raw = ""
         if os.path.exists(env_file):
             with open(env_file, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_ACCOUNTS_KEY=")]
+                raw = f.read()
+        # 行模型取窄模型（只认 \r\n / \r / \n）而非 splitlines()：值里藏的 U+2028 之类
+        # 在窄模型下仍留在本行内，下面逐行 has_line_break 才看得见——splitlines() 会先把
+        # 它当行边界吃掉。无潜伏分隔符时两者逐行等价，正常 .env 写回结果与旧实现逐字相同。
+        lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()  # 结尾换行不构成空配置行（对齐 splitlines 的行数）
+        # 旧键行折叠必须与解析口径同源（env_io.key_line_pattern）：parse_env_file 按
+        # "首个 = 切分 + 两侧 strip"认键，`YIBAN_ACCOUNTS_KEY = v` 正是同一条键的行；
+        # 只认字面前缀 KEY= 折不掉它，残留影子行后谁生效由落盘顺序决定（后写覆盖先写）。
+        out = [ln for ln in lines if not _KEY_LINE_RE.match(ln.strip())]
         out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")
+        # fail-closed：本函数只保留别人的行、没有清理权；潜伏分隔符写回后仍是潜伏态，
+        # 迟早被某次 splitlines 读-改-写实体化成生效配置行（启动时 find_env_key_collisions
+        # 已报出这类行）。故拒写并在消息里点名待清理的行，不静默留下歧义的 .env。
+        for ln in out:
+            if env_io.has_line_break(ln):
+                raise ValueError(
+                    f"{env_file} 有行含潜伏行分隔符（U+2028 等），写回会把它后面的内容"
+                    f"实体化成新配置行，故拒绝写入密钥；请人工清理该行后重试"
+                    f"（定位线索，该行首个键名：{(ln.partition('=')[0].strip()[:40] or '?')}）"
+                )
         tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
         # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
         # 之间（及进程崩溃残留时）密钥对同机其他用户可读，AES-GCM 防线归零
