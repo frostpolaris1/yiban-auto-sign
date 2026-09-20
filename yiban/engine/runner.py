@@ -6,9 +6,10 @@
 `docs/dev/cli.md` §3）：这样 `yiban/cli.py` 与 `scripts/signin.py` 兼容壳可以统一
 `sys.exit(main(argv))`，同时保留"返回码"这一可被直接断言的形式。
 
-分支顺序是有意为之，改动前先读注释：兜底常驻 → 多执行体监督 → 补签轮判定（只读本地
-状态）→ SIGTERM 兜底 → 加载账号 → 探针 → 零账号守卫 → `--only` 过滤 → `--check-config`
-→ 周末门/全局暂停 → 补签轮定向重跑 → 进程级单实例锁 → 一轮队列 → 汇总与退出码。
+分支顺序是有意为之，改动前先读注释：兜底常驻 → 补签轮判定（只读本地状态）→
+多执行体监督（派发前先过周末/暂停门）→ SIGTERM 兜底 → 加载账号 → 探针 → 零账号守卫 →
+`--only` 过滤 → `--check-config` → 周末门/全局暂停 → 补签轮定向重跑 → 进程级单实例锁 →
+一轮队列 → 汇总与退出码。
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
 """
@@ -74,6 +75,20 @@ _GATE_SKIP_MESSAGES = {
     schedule_mod.DAY_OFF_PAUSED:
         "==== 签到已暂停（管理员通过 Web UI 一键暂停），跳过执行 ====",
 }
+
+
+def _day_off_skip():
+    """周末（周六/周日未开）或一键暂停命中时打日志并返回 2（SKIPPED 语义），否则 None。
+
+    门本身只有 `schedule.day_off` 一个实现，本函数只负责把「当前时刻 + 导入期开关
+    快照」喂给它——多执行体派发前的提前拦截与单执行体路径的门必须给出**同一个判定、
+    同一句措辞**，否则两条路径对"这一轮为什么没跑"的解释会漂移。
+    """
+    gate = schedule_mod.day_off(clock.now(), sat=SATURDAY_SIGN, sun=SUNDAY_SIGN)
+    if not gate:
+        return None
+    logger.info(_GATE_SKIP_MESSAGES[gate])
+    return 2  # run.sh 据此写 SKIPPED 状态，次日正常执行
 
 
 def main(argv=None):
@@ -149,8 +164,19 @@ def main(argv=None):
             return 3
         return workers.run_fallback_worker(argv)
 
+    # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
+    # 宿主 run.sh 在首轮结束仍持锁时调用本开关，据退出码决定是否补跑第二轮
+    # （与容器 docker/scheduler.py 的 SECOND 闸门同语义，判定实现在 need_second_run）。
+    # 位置在多执行体派发之前：清单形态下监督进程会先拉起执行体（各自读配置、连库、
+    # 载账号、真实登录），只读判定被挡在后面就做成了重活，退出码也传不出来。
+    if args.second_run_check:
+        if state_io.need_second_run():
+            logger.info("补签轮判定：需要补跑（当日全量未收尾或存在未了结账号）")
+            return SECOND_RUN_CHECK_NEED
+        logger.info("补签轮判定：无需补跑（当日已收尾且无未了结账号）")
+        return SECOND_RUN_CHECK_SKIP
+
     # 多执行体：本进程只做监督（持全局锁 + 汇总退出码），活儿由子进程干。
-    # 放在补签轮判定之前不必要——补签轮判定只读文件，先走它更快。
     # 拉起列表：优先执行体清单（`YIBAN_EXECUTORS` 里 type=worker 的行，**停用行不拉起**、
     # 删中间行不影响其余槽位）；清单缺失/非法 → 旧口径 `--workers N`（行为逐字不变）。
     # 清单里只有 1 个并行执行体时仍走进程内的单执行体路径（`single` 角色、出口读
@@ -162,22 +188,25 @@ def main(argv=None):
     # 子进程身份由监督进程注入 `YIBAN_EXECUTOR_ID`（`worker-{i}@{主机名}`），据此短路。
     _already_child = bool(os.environ.get("YIBAN_EXECUTOR_ID", "").strip())
     slots = None if _already_child else egress.launch_slots()
+    # 派发监督进程的参数（None = 不派发，走下面的进程内单执行体路径）：清单缺失/非法 →
+    # 旧口径 `--workers N`（槽位就是 0..N-1）；清单在场 → 数**拉起列表**的槽位
+    # （停用/兜底行不在其中）。
     if slots is None:
-        # 清单缺失/非法 → 旧口径 `--workers N`（槽位就是 0..N-1，行为逐字不变）
-        if not _already_child and args.workers and args.workers > 1:
-            return workers.run_worker_supervisor(args.workers, argv)
-    elif len(slots) > 1:
-        return workers.run_worker_supervisor(len(slots), argv, slots=slots)
-
-    # 补签轮判定必须最先处理：只读状态文件，不加载账号、不建连接、不发请求。
-    # 宿主 run.sh 在首轮结束仍持锁时调用本开关，据退出码决定是否补跑第二轮
-    # （与容器 docker/scheduler.py 的 SECOND 闸门同语义，判定实现在 need_second_run）。
-    if args.second_run_check:
-        if state_io.need_second_run():
-            logger.info("补签轮判定：需要补跑（当日全量未收尾或存在未了结账号）")
-            return SECOND_RUN_CHECK_NEED
-        logger.info("补签轮判定：无需补跑（当日已收尾且无未了结账号）")
-        return SECOND_RUN_CHECK_SKIP
+        _dispatch = (args.workers, None) if (
+            not _already_child and args.workers and args.workers > 1) else None
+    else:
+        _dispatch = (len(slots), slots) if len(slots) > 1 else None
+    # 只有"真跑计划任务"的派发才在 spawn 之前过门：`--only` 是用户主动触发（必须放行）、
+    # `--check-config` 是部署验证（哪天都要能验）、`--probe` 自带一道门且跳过语义是
+    # `return 0` 而非 2——三者照旧派发，由子进程各自按既有语义处理，与门只写在下面时逐字一致。
+    if _dispatch is not None:
+        if not (args.only or args.check_config or args.probe):
+            # 周末/暂停门必须在 spawn 之前拦下：否则先按清单拉起一批执行体子进程，再由每个
+            # 子进程各自撞门退出（读配置、连库、载账号都白做一遍）。
+            _skip = _day_off_skip()
+            if _skip is not None:
+                return _skip
+        return workers.run_worker_supervisor(_dispatch[0], argv, slots=_dispatch[1])
 
     # 超时击杀前的告警兜底：宿主 run.sh timeout / 容器 / 手动 terminate 均以
     # SIGTERM 结束子进程；注册在探针分支之前，签到与探针子进程同享。
@@ -255,10 +284,9 @@ def main(argv=None):
     # 兜底常驻（`workers.run_fallback_worker`）也走同一个函数。
     # 手动签到（--only）不受限——用户主动触发应当放行。
     if not args.only:
-        _gate = schedule_mod.day_off(clock.now(), sat=SATURDAY_SIGN, sun=SUNDAY_SIGN)
-        if _gate:
-            logger.info(_GATE_SKIP_MESSAGES[_gate])
-            return 2  # SKIPPED 语义：run.sh 写 SKIPPED 状态，次日正常执行
+        _skip = _day_off_skip()
+        if _skip is not None:
+            return _skip
 
     # 补签轮定向重跑：存在未了结账号时补签闸门整站重跑，会把当日已 success 的
     # 账号再次完整登录（风控暴露）。现剔除已了结账号（success/already），
