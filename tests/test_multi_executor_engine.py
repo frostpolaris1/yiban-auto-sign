@@ -325,5 +325,55 @@ class WorkerRelaunchCommandTest(_Base):
         self.assertIn('a != "--workers"', src, "命令行仍须剔除 --workers")
 
 
+class SupervisorExitCodeAggregationTest(unittest.TestCase):
+    """监督进程的退出码汇总：补签轮判定的「需要补跑」(10) 必须原样透出。
+
+    被归一成 0 后，宿主 run.sh 会把"首轮有账号需要补跑"读成"一切正常"，
+    补签轮不触发、当天失败的账号不再重试。10 还要先于 1/3/2 判定——否则会被
+    2（跳过/窗口外）或 3（锁忙）掩盖成别的语义。
+    """
+
+    @staticmethod
+    def _supervise(codes):
+        """跑监督进程（不起真子进程）：替身的 `poll()` 按序返回给定退出码。"""
+        from yiban.engine import workers
+        pending = list(codes)
+
+        class _FakeProc:
+            def __init__(self, cmd, env=None, cwd=None):
+                pass
+
+            def poll(self):
+                return pending.pop(0)
+
+        acc = SimpleNamespace(phone="13800000000", user_paused=False)
+        with mock.patch.object(workers.cli_support, "_acquire_run_lock", return_value=None), \
+                mock.patch.object(workers.accounts_mod, "load_accounts", return_value=[acc]), \
+                mock.patch.object(workers.subprocess, "Popen", _FakeProc), \
+                mock.patch.object(workers.time, "sleep"), \
+                mock.patch.object(workers.state_io, "mark_worker_started", lambda *a, **k: None), \
+                mock.patch.object(workers.state_io, "mark_worker_finished", lambda *a, **k: None):
+            return workers.run_worker_supervisor(len(codes), ["--workers", str(len(codes))])
+
+    def test_second_run_code_is_passed_through(self):
+        from yiban.engine import runner, workers
+        self.assertEqual(workers._SECOND_RUN_CHECK_NEED, runner.SECOND_RUN_CHECK_NEED,
+                         "两处补签判定退出码必须同值，否则子进程的 10 会被读成别的码")
+        for codes, want in (
+            ([10, 0], 10),
+            ([0, 10], 10),
+            ([10, 2], 10),   # 不被「跳过/窗口外」掩盖
+            ([10, 3], 10),   # 不被「锁忙」掩盖
+            ([10, 1], 10),   # 也不被「真失败」掩盖（调用方需要知道要补跑）
+        ):
+            with self.subTest(codes=codes):
+                self.assertEqual(self._supervise(codes), want)
+
+    def test_existing_priority_unchanged(self):
+        for codes, want in (([1, 2], 1), ([2, 3], 3), ([2, 0], 2), ([0, 0], 0), ([0, 3], 3)):
+            with self.subTest(codes=codes):
+                self.assertEqual(self._supervise(codes), want)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

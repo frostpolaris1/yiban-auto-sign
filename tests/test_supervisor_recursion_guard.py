@@ -19,6 +19,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +33,10 @@ MANIFEST = egress.dump_manifest([
     {"slot": 1, "type": "worker", "proxy": ""},
 ])
 ACCOUNTS = '[{"phone":"13800000000","password":"x"}]'
+
+#: 固定业务时刻（周三 06:40，非周末、非暂停）：派发用例与"跑测当天是星期几"解耦，
+#: 否则周末跑测时「周末签到未开启」的提前门会先拦下，派发根本走不到
+WEEKDAY_06_40 = datetime(2026, 9, 2, 6, 40)
 
 
 class SupervisorRecursionGuardTest(unittest.TestCase):
@@ -57,7 +62,9 @@ class SupervisorRecursionGuardTest(unittest.TestCase):
 
     def test_parent_with_manifest_dispatches_supervisor(self):
         """反向控制：没有子进程身份时照旧按清单派发（别把正常路径也挡了）。"""
-        self.assertEqual(runner.main([]), 0)
+        with mock.patch.dict(os.environ, {"YIBAN_GLOBAL_PAUSE": "0"}), \
+                mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40):
+            self.assertEqual(runner.main([]), 0)
         self.assertEqual(len(self.calls), 1, "清单里有 2 个 worker 行，父进程应派发监督")
         self.assertEqual(self.calls[0][0], 2)
 
