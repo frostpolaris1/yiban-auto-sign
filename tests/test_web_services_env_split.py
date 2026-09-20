@@ -479,14 +479,17 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         self.assertIs(self.webapp._executor_env, exec_mod,
                       "别名加载的 app 副本必须复用同一个 web.services.executor_env")
         self.assertIs(self.webapp._file_lock, locks_mod._file_lock)
+        self.assertIs(self.webapp._rate_lock, locks_mod._rate_lock,
+                      "限速/失败计数表与 web.app（routes 经 m.*）必须共用同一把锁")
 
     def test_service_modules_hold_no_app_state(self):
         from web.services import env_io as env_mod
         from web.services import executor_env as exec_mod
         from web.services import locks as locks_mod
-        # locks 本来就是 _file_lock 的真源（唯一例外），其余 app 状态一概不得持有
+        # locks 本来就是进程内锁的真源（_file_lock / _rate_lock，唯一例外），
+        # 其余 app 状态一概不得持有
         for mod, exempt in ((env_mod, frozenset()), (exec_mod, frozenset()),
-                            (locks_mod, frozenset({"_file_lock"}))):
+                            (locks_mod, frozenset({"_file_lock", "_rate_lock"}))):
             for name in APP_HELD_STATE:
                 if name in exempt:
                     continue
