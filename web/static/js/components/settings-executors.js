@@ -154,6 +154,13 @@
     if (attr(row.type) === "disabled") return "执行体（槽位 " + count(row.slot) + "）";
     return rowName(row);
   }
+  // 出口的显示前缀：接口对直连行回中文「直连（本机出口）」、对代理行回**裸** scheme://host[:port]，
+  // 两行并排时口径不对仗，故代理串在渲染层补「代理 」前缀。接口字段与后端 describe() 都不同步改。
+  var EGRESS_DIRECT = "直连（本机出口）";
+  function egressText(v) {
+    var s = attr(v);
+    return (!s || s === EGRESS_DIRECT) ? EGRESS_DIRECT : "代理 " + s;
+  }
   // 配置项键名由接口给（workers.env_keys.manifest），槽位下标是后端审计与 .env 里的写法
   function manifestKey(slot) {
     var keys = (lastData && lastData.workers && lastData.workers.env_keys) || {};
@@ -371,7 +378,7 @@
         YB.el("td", { text: TYPE_TEXT[type] || "—" }),
         stateCell(r),
         dailyCell(r),
-        YB.el("td", { text: r.egress || "直连（本机出口）" }),
+        YB.el("td", { text: egressText(r.egress) }),
         // flex 挂内层 span（td 做 flex 容器会失去 vertical-align:middle，≤900 换行档下按钮上浮 4.7px）
         YB.el("td", {}, [YB.el("span", { class: "set-exec-ops" }, ops)])
       ]));
@@ -467,7 +474,8 @@
             { type: "worker", confirm_password: pw }).then(function (d) {
             return load().then(function () {
               setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
-                + "。想给它单独出口，点那一行的「设置」。", false);
+                + "。想给它单独出口，点那一行的「设置」；编号只增不复用，故障转移行也占一个编号"
+                + "（它固定置顶、行名不带数字），所以并行行跳号是正常的，不代表删过行。", false);
               focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
               return true;
             });
@@ -520,6 +528,24 @@
     return b;
   }
 
+  // 单并行行的出口提示：清单只有 1 个「并行」行时运行时走进程内路径（`single` 角色），
+  // 出口读全局配置键（`workers.env_keys.single`，即 YIBAN_PROXY），本行这一格要到出现第二个
+  // 并行行后才按行生效。不提示的话用户会以为行内出口已生效——而页面此时显示的正是行内值。
+  // 判据用后端 `workers.configured`（只数 worker 行，0 行时按契约仍为 1 = 单执行体形态），
+  // 键名同样由接口下发，本文件不写死配置键名。
+  function singleRowHint(type) {
+    if (type !== "worker") return null;
+    if (count(lastData && lastData.workers && lastData.workers.configured) > 1) return null;
+    var key = attr(((lastData && lastData.workers && lastData.workers.env_keys) || {}).single);
+    var box = YB.el("p", { class: "alert info set-exec-hint", role: "status" });
+    var ico = YB.el("span", { class: "ico" });
+    ico.appendChild(YB.iconEl("info"));
+    box.appendChild(ico);
+    box.appendChild(YB.el("span", { class: "body", text: "当前只有 1 个并行执行体：运行时走进程内路径，"
+      + "实际出口读全局配置「" + key + "」，不是本行这一格；本行出口要加到第二个并行执行体后才按行生效。" }));
+    return box;
+  }
+
   function openRow(row) {
     if (!lastData) { setTip("数据尚未加载完成", true); return null; }
     var slot = count(row.slot);
@@ -529,6 +555,8 @@
 
     // .set-exec-form：给弹窗内相邻字段之间补垂直间距（见 app.css；.field 自身没有外边距）
     var wrap = YB.el("div", { class: "set-exec-form" });
+    var hint = singleRowHint(type);
+    if (hint) wrap.appendChild(hint);
     // 名称：后端 2026-09-17 起每行都下发 name（未设 = null），故能力探测恒真——保留探测只是为了
     // 字段将来消失时不会做出"点了会 400"的输入框。`label` 是后端口径、`name` 是用户输入，
     // 只拿 name 回填输入框（placeholder 用 label 提示默认名）。故障转移行的名称由后端定，不给改名。
@@ -560,7 +588,7 @@
     // 「当前出口」与「对应配置项」合并成一行（用户 2026-09-17：这两条本来在说同一件事）
     wrap.appendChild(YB.el("div", { class: "field" }, [
       YB.el("span", { class: "field-label", text: "当前出口（已脱敏）" }),
-      YB.el("p", { class: "set-summary", text: (row.egress || "直连（本机出口）") + "｜配置项 " + manifestKey(slot) })
+      YB.el("p", { class: "set-summary", text: egressText(row.egress) + "｜配置项 " + manifestKey(slot) })
     ]));
 
     var inputId = "set-exec-modal-egress";
