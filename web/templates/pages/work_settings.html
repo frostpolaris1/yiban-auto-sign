@@ -50,10 +50,17 @@
 {% endmacro %}
 
 {% macro info(label, pop_id) %}
+{%- set body -%}{{ caller() }}{%- endset -%}
 <button type="button" class="info-tip" aria-label="{{ label }}" aria-describedby="{{ pop_id }}">
   {{ icon('info') }}
-  <span class="info-pop" id="{{ pop_id }}" role="tooltip">{{ caller() }}</span>
+  <span class="info-pop" id="{{ pop_id }}" role="tooltip">{{ body }}</span>
 </button>
+{#- 同一份文案的第二个面：窄屏就地展开（浮层在手机上会盖住被解释的字段）。
+   两处都是同一份 caller()，不会分叉；CSS 按 720px 断点二选一，读屏只遇到可见的那一个。 -#}
+<details class="set-more set-more--inline">
+  <summary>{{ label }}</summary>
+  <div class="set-more-body">{{ body }}</div>
+</details>
 {% endmacro %}
 
 {# 长口径说明（>200 字）改用弹窗承载，不用上面的 info：.info-pop 靠 hover/focus 维持、

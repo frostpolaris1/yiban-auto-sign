@@ -121,8 +121,10 @@
       return b;
     });
 
+    // 说明走弹窗副标题、不进正文：手机上软键盘把可视高度压到 ~400px 时，正文会变可滚动区，
+    // 先被裁掉的是排在最后的东西——说明排在最前时，被裁掉的正是"输入 + 滑杆"这两个主控件
+    // （实测 360×400 下滑杆只露 37%，压在底部按钮之下）。副标题常驻在头部，不会被裁。
     var body = YB.el("div", { class: "range-modal" });
-    if (cfg.hint) body.appendChild(YB.el("p", { class: "field-help", text: cfg.hint }));
     body.appendChild(row);
     body.appendChild(range);
     body.appendChild(scale);
@@ -150,10 +152,18 @@
     });
     sync();
 
+    var stopReveal = null;
     YB.openModal({
       title: "调整" + cfg.title,
+      subtitle: cfg.hint || "",
       body: body,
-      onOpen: function () { number.focus(); if (number.select) number.select(); },
+      onOpen: function () {
+        number.focus(); if (number.select) number.select();
+        // 软键盘把可视高度压到 ~400px 时，正文变可滚动区：把滑杆滚进可视，
+        // 否则它被底部按钮压住一半（实测只露 37%）。聚焦与键盘弹出是两个时刻，故订阅视口变化。
+        if (YB.keepRevealed) stopReveal = YB.keepRevealed(range);
+      },
+      onClose: function () { if (stopReveal) { stopReveal(); stopReveal = null; } },
       actions: [
         { label: "取消", variant: "ghost" },
         {

@@ -390,9 +390,12 @@ textarea {
   }
 }
 @media (max-width: 480px) {
-  /* 窄屏操作行改为纵向满宽，避免两个按钮挤在一行 */
+  /* 窄屏操作行改为纵向满宽，避免两个按钮挤在一行。
+     顺序按 DOM 序（取消在前、主操作在后 → 视觉上"取消在上、主操作在下"）：
+     原先用 column-reverse 把主操作翻到上面，与桌面版「左取消、右主操作」的方向相反，
+     也不符合拇指落点（主操作该在最下、离手最近）。 */
   .pm-panel .modal-foot {
-    flex-direction: column-reverse;
+    flex-direction: column;
   }
   .pm-panel .modal-foot .btn {
     width: 100%;
@@ -3334,6 +3337,20 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    不是 display:none），若改成居中/向右展开，隐藏态的那些浮层会把文档的横向可滚动区撑宽
    （实测 360 下多出 116px 的整页横滑）。所以触发器离视口右缘太远时（卡头里 ⓘ 排在按钮左侧就会），
    正确做法是**排布上把它放到行的最右**，而不是改这里的定位。 */
+/* 窄屏：卡头的 ⓘ 改成**就地展开**（模板宏同时渲染 ⓘ 与 .set-more--inline，按断点二选一）。
+   浮层方案在手机上盖住它要解释的字段：实测 360 下 259×345、占卡高 30%，最长的一张 700+px
+   超过整屏，读说明时正好看不见被解释的控件。就地展开把卡片撑高，永远不遮挡。
+   （曾试过"贴视口底部的浮层"，被 .tab-panel.is-active 的 animation 遗留的 identity matrix
+   做成了包含块、定位落在面板盒子上——原因见 set-panel-in 的注释；details 与包含块无关，更稳。） */
+.set-more--inline { display: none; }
+@media (max-width: 720px) {
+  .panel-head .set-head-actions { flex-wrap: wrap; }
+  .panel-head .set-head-actions .info-tip { display: none; }
+  .set-more--inline { display: block; flex: 1 1 100%; margin-top: 4px; }
+  .set-more--inline > summary { font-size: 12.5px; }
+  .set-more--inline[open] > summary { margin-bottom: 10px; }
+  .set-more--inline .set-more-body { font-size: 12.5px; line-height: 1.6; color: var(--t-sub); }
+}
 /* hover 触发只在精确指针设备启用：触屏点按会产生"假 hover"并可能让浮层粘滞 */
 @media (hover: hover) and (pointer: fine) {
   .info-tip:hover .info-pop {
@@ -3343,7 +3360,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
     transition-timing-function: var(--ease-out-strong);
   }
 }
-.info-pop b { display: block; margin-top: 7px; font-weight: 600; color: var(--t-base); }
+.info-pop b, .set-more-body b { display: block; margin-top: 7px; font-weight: 600; color: var(--t-base); }
 .info-pop b:first-child { margin-top: 0; }
 /* 弹窗版口径说明（work_settings.html 的 doc 宏）：同样的 <b> 分节节奏，但回到正文字号、
    行距略松；长内容由弹窗自身滚动，不再有浮层那种"超出视口就读不到"的问题。 */
@@ -3365,14 +3382,13 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    一张卡里堆着多组多行说明文字时，只靠 16px 留白读不出分组边界（用户实拍反馈
    「多行式文本文案缺乏必要的分隔或间隔，难以看出功能分组」）。线与颜色走白名单
    （重复行分隔，1px solid --border-soft）。 */
-/* 窄屏开关行：文字与开关横排时说明列只剩 240px（实测 13 字/行）→ 文字用满整宽、开关另起一行 */
-@media (max-width: 560px) {
-  .set-row { flex-wrap: wrap; }
-  .set-row .set-help, .set-row .set-row-text { flex: 1 1 100%; }
-/* 文字块是 <label for=开关 id>（整行可点：982px 的间距不再需要走过去点） */
+/* 文字块是 <label for=开关 id>：整行可点（982px 的间距不再需要走过去点）。
+   **开关与标签同排，窄屏也不再另起一行**：曾经在 ≤560px 让文字占满整宽、开关掉到下一行，
+   结果是每行从 43.5px 涨到 106–123px，开关与自己的标签之间隔着整段说明、看起来像两个控件
+   （用户 2026-09-20 实拍）。代价是 360 下说明列只剩约 240px（每行 13 字）——可读但更紧凑，
+   而"标签—开关"的配对感与行高更适合手机。 */
 .set-row-text { display: block; cursor: pointer; }
-  .set-row .switch, .set-row > .set-row-ctl { margin-left: auto; }
-}
+.set-row .switch, .set-row > .set-row-ctl { margin-left: auto; }
 .set-row + .set-row {
   margin-top: 16px;
   padding-top: 16px;
@@ -3595,6 +3611,11 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
    模板 .tab-panel.is-active 自带 keyframes rise-in 320ms ease + 位移 10px，且模板文件里
    `prefers-reduced-motion` 出现 0 次。分区切换属高频操作，项目规矩是 ≤160ms、进入用
    --ease-out-strong、大面位移 ≤6px；此处按属性选择器提高特异度覆盖 vendor（不用 !important）。 */
+/* ⚠ 这条动画（fill: both）会让 .tab-panel.is-active 的 computed transform 永远停在
+   identity matrix —— 而 matrix 就是 position:fixed 后代的包含块：面板内任何 fixed 元素都会被
+   按面板盒子定位（实测浮层 bottom:10px 落在 y=1052 而不是视口底部；补一句 to{transform:none}
+   也没用，Chrome 会把 none 归一成 matrix）。故**面板内不要用 fixed 定位**，
+   需要"贴视口"的浮层要么 portal 到 body（见 YB.rowMenu），要么改就地展开（见 .set-more--inline）。 */
 @keyframes set-panel-in {
   from { opacity: 0; transform: translateY(6px); }
 }
@@ -4328,8 +4349,13 @@ html[data-theme="dark"] {
 /* Toast 堆叠也在右下（bottom:16）；按钮出现时把 Toast 整体抬到按钮上方，避免互相覆盖 */
 body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 @media (max-width: 720px) {
-  .to-top { right: 14px; bottom: 14px; width: 40px; height: 40px; }
-  body:has(.to-top.is-show) .toast-host { bottom: 66px; }
+  /* 手机上内容通栏，悬浮按钮必然压在内容上：缩小并贴角，减少遮挡面积 */
+  .to-top { right: 10px; bottom: 10px; width: 36px; height: 36px; }
+  .to-top svg { width: 18px; height: 18px; }
+  body:has(.to-top.is-show) .toast-host { bottom: 58px; }
+  /* 页面末尾留出与按钮同高的安全区：滚到底时页脚/末尾控件不会被按钮压住
+     （用户 2026-09-20 实拍：页脚链接与「恢复默认调度」被压）。 */
+  .d-footer { padding-bottom: 56px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .to-top { transition: none; transform: none; }

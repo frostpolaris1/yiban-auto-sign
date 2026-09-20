@@ -578,16 +578,24 @@
     if (isFb) {
       // 开关与模板里的同类控件同构：label 内补 sr-only 文本给读屏，语义说明用
       // aria-describedby 程序化关联（与设置页其它分区同一做法）
-      swInput = YB.el("input", { type: "checkbox" });
-      if (fb.enabled === true) swInput.checked = true;
+      var swId = "set-exec-modal-fb-switch";
       var swHelpId = "set-exec-modal-fb-help";
+      swInput = YB.el("input", { type: "checkbox", id: swId });
+      if (fb.enabled === true) swInput.checked = true;
       swInput.setAttribute("aria-describedby", swHelpId);
+      // 与设置页的开关行同构（.set-row：标签 + 整行可点的说明 + 右侧开关）：
+      // 早先只给开关一个 sr-only 文本，手机上是"一个孤零零的开关压在三行说明上"（用户实拍），
+      // 看不出这个开关管什么。现在标签常显，说明在标签下方，整行可点。
       wrap.appendChild(YB.el("div", { class: "field" }, [
-        YB.el("label", { class: "switch", title: "开启故障转移" }, [
-          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
-          YB.el("span", { class: "sr-only", text: "开启故障转移" })
-        ]),
-        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起故障转移进程（窗口内补签；只写声明开关，还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
+        YB.el("div", { class: "set-row" }, [
+          YB.el("label", { class: "set-row-text", for: swId }, [
+            YB.el("span", { class: "set-row-label", text: "开启故障转移" }),
+            YB.el("p", { class: "set-help", id: swHelpId, text: "要不要拉起故障转移进程（窗口内补签；只写声明开关，还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
+          ]),
+          YB.el("label", { class: "switch" }, [
+            swInput, YB.el("span", { class: "track", "aria-hidden": "true" })
+          ])
+        ])
       ]));
     }
     // 存活：只报表格那两列看不到的事实——最近活跃时刻、故障转移是否在当前应运行时段内。

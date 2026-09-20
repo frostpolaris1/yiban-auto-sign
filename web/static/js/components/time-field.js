@@ -143,8 +143,9 @@
   /* ---------------- 弹窗 ---------------- */
   // plan: { title, hint, groups: [{label, value}], onConfirm(values) → null 关闭 / 字符串 就地报错 }
   function openDialog(plan) {
+    // 说明走副标题、不进正文：软键盘压缩可视高度时，正文里排最后的东西先被裁掉，
+    // 而"时/分转轮"才是主控件（与 range-field 同一处理）。
     var body = YB.el("div", { class: "time-modal" });
-    if (plan.hint) body.appendChild(YB.el("p", { class: "field-help", text: plan.hint }));
     var wrap = YB.el("div", { class: "time-groups" });
     var groups = plan.groups.map(function (g) {
       var box = YB.el("div", { class: "time-group" });
@@ -157,12 +158,17 @@
     body.appendChild(wrap);
     var err = YB.el("p", { class: "field-error", hidden: true });
     body.appendChild(err);
+    var stopReveal = null;
     YB.openModal({
       title: plan.title,
+      subtitle: plan.hint || "",
       body: body,
       onOpen: function () {
         plan.groups.forEach(function (g, i) { groups[i].set(g.value); });
+        // 软键盘压缩可视高度时把转轮滚进可视（与 range-field 同一处理）
+        if (YB.keepRevealed && wrap) stopReveal = YB.keepRevealed(wrap);
       },
+      onClose: function () { if (stopReveal) { stopReveal(); stopReveal = null; } },
       actions: [
         { label: "取消", variant: "ghost" },
         {

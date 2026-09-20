@@ -435,6 +435,32 @@
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
 
+  /* 让 el 完整落在可滚动祖先（弹窗正文）的可视区内：只动那个容器的 scrollTop，
+     不惊动背后页面。软键盘弹出后可视高度被压到 ~400px，排最后的控件会被底部按钮压住
+     （实测「调整去尾」的滑杆只露 37%），打开时与 resize 时各调一次即可。 */
+  function revealInContainer(el, pad) {
+    if (!el || !el.closest) return;
+    var host = el.closest(".modal-body");
+    if (!host || host.scrollHeight <= host.clientHeight + 1) return;
+    var p = pad == null ? 12 : pad;
+    var hb = host.getBoundingClientRect(), eb = el.getBoundingClientRect();
+    if (eb.bottom > hb.bottom - p) host.scrollTop += (eb.bottom - hb.bottom) + p;
+    else if (eb.top < hb.top + p) host.scrollTop -= (hb.top - eb.top) + p;
+  }
+  // 弹窗打开期间订阅视口变化（软键盘出现/收起、横竖屏）：每次把主控件重新滚进可视
+  function keepRevealed(el) {
+    var on = function () { revealInContainer(el); };
+    if (window.visualViewport && window.visualViewport.addEventListener) window.visualViewport.addEventListener("resize", on);
+    window.addEventListener("resize", on);
+    window.addEventListener("orientationchange", on);
+    setTimeout(on, 60);                       // 打开当帧：等内容落位后补一次
+    return function () {
+      if (window.visualViewport && window.visualViewport.removeEventListener) window.visualViewport.removeEventListener("resize", on);
+      window.removeEventListener("resize", on);
+      window.removeEventListener("orientationchange", on);
+    };
+  }
+
   function confirmDialog(opts) {
     opts = opts || {};
     return new Promise(function (resolve) {
@@ -1143,6 +1169,9 @@
      按钮固定在右下、滚动超过阈值才出现；只动 opacity/transform（无布局动画），
      reduced-motion 去位移、点击直接回顶（不做平滑滚动）。键盘可达（原生 button + aria-label）。 */
   var TO_TOP_AT = 400;
+// 距页面底部这么近就不显示回顶按钮（见 sync：它此刻只会压住页脚与末尾动作；
+  // 取 96 而不是更大值：短页（滚动量不足两屏）本来也不需要回顶，窗口太窄会显得按钮时有时无）
+  var TO_TOP_BOTTOM_GAP = 96;
   function initBackToTop() {
     if ($("to-top")) return;
     var btn = el("button", { type: "button", id: "to-top", class: "to-top", "aria-label": "回到顶部", title: "回到顶部" });
@@ -1150,7 +1179,13 @@
     (document.body || document.documentElement).appendChild(btn);
     function sync() {
       var y = window.pageYOffset || document.documentElement.scrollTop || 0;
-      btn.classList.toggle("is-show", y > TO_TOP_AT);
+      // 滚到页面末尾附近时隐去：末尾通常是页脚与卡片底部动作，悬浮按钮会正好压在上面
+      // （用户 2026-09-20 实拍：压住「恢复默认调度」与页脚链接，点按钮右端会误触回顶）。
+      // 想回到顶部时往上滚一点它就回来——反正"在页面最底部"本身就是最不需要回顶的时刻。
+      var doc = document.documentElement;
+      var max = Math.max(0, (doc.scrollHeight || 0) - window.innerHeight);
+      var atBottom = max > 0 && y >= max - TO_TOP_BOTTOM_GAP;
+      btn.classList.toggle("is-show", y > TO_TOP_AT && !atBottom);
     }
     btn.addEventListener("click", function () {
       if (reducedMotion()) window.scrollTo(0, 0);
@@ -1337,6 +1372,8 @@
     openModal: openModal,
     closeModal: closeModal,
     confirmDialog: confirmDialog,
+    revealInContainer: revealInContainer,
+    keepRevealed: keepRevealed,
     promptDialog: promptDialog,
     setTip: setTip,
     PW_CLASS_PATTERNS: PW_CLASS_PATTERNS,
