@@ -2903,8 +2903,8 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   padding: 8px 14px;
   line-height: 1.45;
 }
-/* 危险项前的分隔线：行高收紧后，原来的 6px 外边距会让两段之间空出一条比行距更宽的空当 */
-.acct-menu--floating .dd-divider { margin: 4px 0; }
+/* 危险项前的分隔线：线两侧间距要与其它菜单项一致，故不带外边距。 */
+.acct-menu--floating .dd-divider { margin: 0; }
 .acct-row-menu .dd-menu-item {
   width: 100%;
   border: 0;
