@@ -53,9 +53,12 @@ import time
 # 本模块 `from yiban.*` 取共享包，又经 `web.services.accounts_data` 传递依赖 scripts/
 # 下的 `signin`（账号只读验证探针），故**两段都要**先入 sys.path——缺任一段都会在
 # 无引导环境里 ModuleNotFoundError。已存在则不重复插入。
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
-for _p in (_SCRIPTS_DIR, _REPO_ROOT):
+# 引导元变量刻意不叫 `_REPO_ROOT`（先例见 web/render.py）：该名字是 web.app 注入拆分
+# 模块的文档根参数名，拆分契约判定拆分模块不得自持同名绑定（防「另存一份绑定」以更
+# 隐蔽的形态回归），本模块作为拆分模块同样不例外。
+_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_PACKAGE_ROOT, "scripts")
+for _p in (_SCRIPTS_DIR, _PACKAGE_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
