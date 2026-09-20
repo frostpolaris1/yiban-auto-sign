@@ -44,6 +44,47 @@ def _function_body(src, name):
     return src[start:end]
 
 
+def _strip_comments(src):
+    """去掉 `//` 行注释（字符串字面量里的 `//` 不动）。
+
+    断言必须落在**可执行代码**上：同形注释可以满足 assertIn（评审实测：payload 键改坏 +
+    注入一行 `// fallback_enable: args.enable`，旧用例仍绿）。
+    """
+    out = []
+    for line in src.splitlines():
+        buf = []
+        quote = None
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if quote:
+                buf.append(ch)
+                if ch == "\\" and i + 1 < len(line):
+                    buf.append(line[i + 1])
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in ('"', "'"):
+                quote = ch
+                buf.append(ch)
+                i += 1
+                continue
+            if ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
+                break
+            buf.append(ch)
+            i += 1
+        out.append("".join(buf))
+    return "\n".join(out)
+
+
+def _code_body(src, name):
+    """函数体去掉注释后的文本（断言只认代码，注释顶替不了）。"""
+    return _strip_comments(_function_body(src, name))
+
+
 class KpiScopeTest(unittest.TestCase):
     def setUp(self):
         self.js = _read(JS)
@@ -92,21 +133,21 @@ class FallbackStateCellIsStatusOnlyTest(unittest.TestCase):
     """
 
     def test_state_cell_renders_status_badge_only(self):
-        body = _function_body(_read(JS), "stateCell")
+        body = _code_body(_read(JS), "stateCell")
         self.assertIn("FB_TEXT[fb.status]", body, "状态格仍要报故障转移状态")
         for forbidden in ('class: "switch"', 'class: "track"', 'type: "checkbox"'):
             self.assertNotIn(forbidden, body,
                              "状态格不得再出现开关控件（%s）——开关只在弹窗里" % forbidden)
 
     def test_state_cell_has_no_second_write_path(self):
-        body = _function_body(_read(JS), "stateCell")
+        body = _code_body(_read(JS), "stateCell")
         self.assertNotIn("askPassword", body,
                          "状态格不该有独立的口令门（写入口只有弹窗那一个）")
         self.assertNotIn("fallback_enable", body,
                          "状态格不该再打开关接口（防第二开关回流）")
 
     def test_pointer_copy_never_comes_back(self):
-        self.assertNotIn("点「设置」开启", _read(JS),
+        self.assertNotIn("点「设置」开启", _strip_comments(_read(JS)),
                          "状态格不放指路文案：开关就在「设置」弹窗里，用户看状态不必再被指挥")
 
 
@@ -114,40 +155,52 @@ class FallbackSwitchPayloadTest(unittest.TestCase):
     """弹窗开关的读写口径必须落在**可执行代码**上。
 
     同函数里的注释也含 `fallback_enable` / `fb.enabled` 字样，只 assertIn 关键字会被注释
-    满足（评审实测：把 payload 键改坏、保留注释，旧用例仍绿）。故这里断言 payload 字面量
-    与勾选初值两行代码，注释无法满足。
+    满足（评审实测：把 payload 键改坏、保留注释，旧用例仍绿）。故这里断言先剥掉 `//` 注释
+    再匹配，注释无法顶替。
     """
 
     def test_switch_initial_checked_reads_config_flag(self):
-        body = _function_body(_read(JS), "openRow")
+        body = _code_body(_read(JS), "openRow")
         self.assertIn("if (fb.enabled === true) swInput.checked = true", body,
                       "勾选初值必须只认配置里的 enabled（这一行是代码，注释与复原语句都顶替不了）")
 
     def test_submit_posts_the_fallback_payload_literal(self):
-        body = _function_body(_read(JS), "submit")
+        body = _code_body(_read(JS), "submit")
         self.assertRegex(body, r"fallback_enable:\s*args\.enable",
                          "提交必须带 fallback_enable 的 payload 字面量（关键字被注释满足不算）")
         self.assertIn('"/api/scheduler/executors"', body,
                       "开关属于整条接口，不是行接口")
 
     def test_switch_value_is_one_or_zero(self):
-        body = _function_body(_read(JS), "switchArg")
+        body = _code_body(_read(JS), "switchArg")
         self.assertIn("swInput.checked ? 1 : 0", body,
                       "开关值由勾选态换算成 1/0，不直接送布尔")
+
+    def test_switch_only_save_skips_the_rows_endpoint(self):
+        """只拨开关时不得发空体的行接口：后端对缺 type/proxy/name 的请求回 400。
+
+        行接口请求必须包在 `if (args.proxy || args.name != null)` 里，否则只拨开关的保存会
+        先 400、Promise.all 直接 reject——用户被告知失败而配置已经落盘。断言只认代码。
+        """
+        body = _code_body(_read(JS), "submit")
+        guard = "if (args.proxy || args.name != null)"
+        self.assertIn(guard, body, "行接口请求必须先判有无 type/proxy/name 要改")
+        self.assertLess(body.index(guard), body.index('"/api/scheduler/executors/rows/"'),
+                        "行接口请求必须在该判据成立时才加入 steps")
 
 
 class RowMenuDividerSpacingTest(unittest.TestCase):
     """浮层行菜单的危险项分隔线不带外边距。
 
-    菜单项实测高 34.8px，相邻两项文字间距 16px；这条 1px 线若带 4px 边距，线两侧就是 25px，
-    正是用户看到的「分隔线上下空隙大」。归零后 17px，与别处一致。
+    线若带外边距，它两侧的文字间距就比其它菜单项宽（用户看到的「分隔线上下空隙大」）。
     """
 
     def test_floating_divider_has_no_margin(self):
         css = _read(CSS)
-        m = re.search(r"\.acct-menu--floating\s+\.dd-divider\s*\{([^}]*)\}", css)
-        self.assertIsNotNone(m, "找不到浮层菜单分隔线规则（规则被删或改名都要在这里登记）")
-        self.assertRegex(m.group(1), r"margin:\s*0\s*;",
+        rules = re.findall(r"\.acct-menu--floating\s+\.dd-divider\s*\{([^}]*)\}", css)
+        self.assertEqual(len(rules), 1,
+                         "浮层菜单分隔线应恰好一条规则（多一条会互相覆盖，正是要防的回流）")
+        self.assertRegex(rules[0], r"margin:\s*0\s*;",
                          "分隔线外边距必须归零，否则线两侧间距又比其它菜单项宽")
 
 
@@ -159,7 +212,7 @@ class FallbackModalSwitchPlacementTest(unittest.TestCase):
     """
 
     def _body(self):
-        return _function_body(_read(JS), "openRow")
+        return _code_body(_read(JS), "openRow")
 
     def test_switch_field_has_a_label(self):
         body = self._body()
