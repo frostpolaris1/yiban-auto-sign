@@ -3,8 +3,9 @@
 
 ## 为什么要对拍
 
-两端各有一份邮箱脱敏：`web/app.py` 的 `_mask_email`（出站即脱敏）与
-`web/static/js/core.js` 的 `maskEmail`（渲染层幂等脱敏）。二者是同一口径的**两份实现**，
+两端各有一份邮箱脱敏：`web/services/accounts_data.py` 的 `_mask_email`（出站即脱敏，
+经 `web.app._mask_email` 再导出）与 `web/static/js/core.js` 的 `maskEmail`（渲染层幂等
+脱敏）。二者是同一口径的**两份实现**，
 只要一边改动而另一边没跟上，就会出现「后端已脱敏、前端再脱一次」或反过来的错位，
 表现为域名被吞或完整性泄漏。静态扫描只能证明函数存在，证明不了**行为一致**。
 
@@ -26,7 +27,8 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
-APP_PY = os.path.join(BASE, "web", "app.py")
+# 后端 `_mask_email` 的唯一真源（web.app 只再导出）：源码文本从它的新家抽取。
+APP_PY = os.path.join(BASE, "web", "services", "accounts_data.py")
 NODE = shutil.which("node")
 
 # (说明, 输入) —— 两端对同一输入必须给出同一结果
