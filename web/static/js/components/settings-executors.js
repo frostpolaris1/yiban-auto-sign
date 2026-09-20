@@ -581,6 +581,26 @@
     var wrap = YB.el("div", { class: "set-exec-form" });
     var hint = singleRowHint(type);
     if (hint) wrap.appendChild(hint);
+    // 故障转移开关放**第一个字段**：它是这一行的主状态控件，只有先出现，紧随其后的「类型／
+    // 当前出口／设置出口」才自然聚成一组；原先夹在「设置出口」输入框与「存活」之间、又没有
+    // 字段标题时，按接近性原则看不出它属于出口还是属于这一行（用户反馈）。
+    // 字段标题与同弹窗其它字段同构；开关与模板里的同类控件同构：label 内补 sr-only 文本给
+    // 读屏，语义说明用 aria-describedby 程序化关联（与设置页其它分区同一做法）。
+    var swInput = null;
+    if (isFb) {
+      swInput = YB.el("input", { type: "checkbox" });
+      if (fb.enabled === true) swInput.checked = true;
+      var swHelpId = "set-exec-modal-fb-help";
+      swInput.setAttribute("aria-describedby", swHelpId);
+      wrap.appendChild(YB.el("div", { class: "field" }, [
+        YB.el("span", { class: "field-label", text: "故障转移开关" }),
+        YB.el("label", { class: "switch", title: "开启故障转移" }, [
+          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
+          YB.el("span", { class: "sr-only", text: "开启故障转移" })
+        ]),
+        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起故障转移进程（窗口内补签；只写声明开关，还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
+      ]));
+    }
     // 名称：后端 2026-09-17 起每行都下发 name（未设 = null），故能力探测恒真——保留探测只是为了
     // 字段将来消失时不会做出"点了会 400"的输入框。`label` 是后端口径、`name` 是用户输入，
     // 只拿 name 回填输入框（placeholder 用 label 提示默认名）。故障转移行的名称由后端定，不给改名。
@@ -626,22 +646,6 @@
       ])
     ]));
 
-    var swInput = null;
-    if (isFb) {
-      // 开关与模板里的同类控件同构：label 内补 sr-only 文本给读屏，语义说明用
-      // aria-describedby 程序化关联（与设置页其它分区同一做法）
-      swInput = YB.el("input", { type: "checkbox" });
-      if (fb.enabled === true) swInput.checked = true;
-      var swHelpId = "set-exec-modal-fb-help";
-      swInput.setAttribute("aria-describedby", swHelpId);
-      wrap.appendChild(YB.el("div", { class: "field" }, [
-        YB.el("label", { class: "switch", title: "开启故障转移" }, [
-          swInput, YB.el("span", { class: "track", "aria-hidden": "true" }),
-          YB.el("span", { class: "sr-only", text: "开启故障转移" })
-        ]),
-        YB.el("p", { class: "field-help", id: swHelpId, text: "要不要拉起故障转移进程（窗口内补签；只写声明开关，还需宿主 cron 或容器调度器以 --fallback 拉起进程才会真在跑）。" })
-      ]));
-    }
     // 存活：只报表格那两列看不到的事实——最近活跃时刻、故障转移是否在当前应运行时段内。
     // （状态与当日已在表格里各占一栏，此处不重复。）
     if (type !== "disabled") {
