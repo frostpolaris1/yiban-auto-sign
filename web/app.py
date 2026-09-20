@@ -24,9 +24,7 @@ import contextlib
 import html  # noqa: F401  # 文档页转义已入 web/render.py，此处仅为保持 web.app 名字面不变
 import json
 import logging
-import math
 import os
-import random
 import re
 import secrets
 import sqlite3  # noqa: F401  # 个人/数据域路由已迁出，此处仅为保持 web.app 名字面不变
@@ -34,7 +32,9 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+
+# 时间构造已随账号数据 / 日志 / 实测族迁出；测试仍以 `webapp.datetime` 替换 web 侧时钟
+from datetime import datetime, timedelta  # noqa: F401  # 名字面零损失
 
 import requests  # noqa: F401  # 连通性检测已入 web/services/signstatus.py，此处仅为保持 web.app 名字面不变
 from flask import (
@@ -86,10 +86,49 @@ from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清�
 # 需要本模块模块级状态的入口（_atomic_write / write_env_batch / _env_flag / 设置缺省值 /
 # send_notification / ENV_FILE / _sign_window）在下方转发时调用时刻现取后注入——它们会被
 # 测试改写、也会随运行方式变化，服务层另持一份绑定会让打桩与 --config 静默失效。
+from web.services import accounts_data as _accounts_data  # noqa: E402
 from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services import executor_env as _executor_env  # noqa: E402
 from web.services import logs as _logs_svc  # noqa: E402
+from web.services import measure as _measure  # noqa: E402
 from web.services import signstatus as _signstatus  # noqa: E402
+from web.services import verify_queue as _verify_queue  # noqa: E402
+
+# 名字面零损失：以下再导出的 web.app.<名字> 仍可 import（routes 经 m.* 取用、
+# 测试按属性读取或替换）。
+from web.services.accounts_data import (  # noqa: E402
+    # 账号审核态词表、手机号正则、注销宽限期与口令策略常量随账号数据族搬入
+    # web/services/accounts_data.py，此处取回保 m.* 名字面
+    _PASSWORD_CLASS_HINT,  # noqa: F401
+    _PASSWORD_CLASS_LABELS,  # noqa: F401
+    _PASSWORD_CLASS_PATTERNS,
+    _PASSWORD_MIN_CLASSES,  # noqa: F401
+    _PASSWORD_POLICY_HINT,  # noqa: F401
+    ACCOUNT_STATUS_ACTIVE,  # noqa: F401
+    ACCOUNT_STATUS_PENDING,  # noqa: F401
+    ACCOUNT_STATUS_REJECTED,  # noqa: F401
+    ADMIN_PASSWORD_MIN_CLASSES,
+    ADMIN_PASSWORD_MIN_LEN,
+    DELETE_GRACE_DAYS,  # noqa: F401
+    PASSWORD_MIN_LEN,  # noqa: F401
+    PHONE_RE,  # noqa: F401
+    _admin_password_policy_error,  # noqa: F401
+    _as_signin_account,  # noqa: F401
+    _delete_grace_remaining,  # noqa: F401
+    _duplicate_phone_error,  # noqa: F401
+    _mask_email,  # noqa: F401
+    _owner_display_of,  # noqa: F401
+    _owner_has_other_live,  # noqa: F401
+    _password_policy_error,  # noqa: F401
+    _stale_idx_guard,  # noqa: F401
+    _verify_account_clean,
+    find_account_index,  # noqa: F401
+    load_accounts,
+    load_accounts_raw,
+    load_users,  # noqa: F401
+    mask_account,  # noqa: F401
+    validate_account,  # noqa: F401
+)
 from web.services.env_io import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
     _BOOL_SETTINGS_KEYS,  # noqa: F401
@@ -114,7 +153,7 @@ from web.services.executor_env import (  # noqa: E402
     _validated_proxy_value,  # noqa: F401
 )
 from web.services.locks import (  # noqa: E402
-    _file_lock,  # 进程内锁真源（与 m._file_lock 同一把）
+    _file_lock,  # noqa: F401  # 进程内锁真源（与 m._file_lock 同一把，供路由取用）
 )
 from web.services.logs import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
@@ -129,6 +168,14 @@ from web.services.logs import (  # noqa: E402
     clear_fuse_on_cred_change,  # noqa: F401
     clear_fuse_pause,  # noqa: F401
 )
+from web.services.measure import (  # noqa: E402
+    # 同上：实现见 web/services/measure.py，此处保留 web.app.<名字> 的兼容面；
+    # `_measure_state_path` / `_write_measure_state` 另被本模块的转发包装注入
+    MEASURE_STATE_FILE,  # noqa: F401
+    _measure_cooldown_remaining,  # noqa: F401
+    _pick_measure_account,  # noqa: F401
+    _read_measure_state,  # noqa: F401
+)
 from web.services.signstatus import (  # noqa: E402
     # 同上：实现见 web/services/signstatus.py，此处保留 web.app.<名字> 的兼容面；
     # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
@@ -137,6 +184,18 @@ from web.services.signstatus import (  # noqa: E402
     _env_flag,
     _in_sign_window,
     check_connectivity,  # noqa: F401
+)
+from web.services.verify_queue import (  # noqa: E402
+    # 同上：实现见 web/services/verify_queue.py，此处保留 web.app.<名字> 的兼容面；
+    # `run_verify_with_gate` / `verify_async_enabled` / `_account_verify_enabled`
+    # 另被本模块的转发包装注入（席位、配额判定、只读验证、ENV_FILE 与 read_env）
+    VERIFY_JOBS_MAX_PENDING,  # noqa: F401
+    VerifyGateBusy,  # noqa: F401
+    VerifyQuotaExceeded,  # noqa: F401
+    _reclaim_stale_verify_jobs,
+    _reject_account,
+    _start_verify_job,  # noqa: F401
+    _verify_queue_full,
 )
 from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
 
@@ -213,32 +272,17 @@ ENV_FILE = ENV_DEFAULT
 STATE_DIR = STATE_DIR_DEFAULT
 DB_FILE = DB_DEFAULT
 
-# 普通用户账号的审核状态（2026-08-16 审查轮：原 STATUS_PENDING/ACTIVE/REJECTED 与签到状态码
-# STATUS_* 同名异义（历史遗留），改名为 ACCOUNT_STATUS_* 彻底分离命名空间）
-ACCOUNT_STATUS_PENDING = "pending"  # 待审核（不参与定时签到）
-ACCOUNT_STATUS_ACTIVE = "active"  # 已生效（参与定时签到）
-ACCOUNT_STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑重新提交）
+# 普通用户账号的审核状态（原 STATUS_PENDING/ACTIVE/REJECTED 与签到状态码 STATUS_* 同名
+# 异义（历史遗留），改名为 ACCOUNT_STATUS_* 彻底分离命名空间）实现见
+# web/services/accounts_data.py，此处以导入区再导出保持 m.ACCOUNT_STATUS_* 可达。
 
 # 软删除保留期（天）：管理员删除的账号进入待删除状态，超期自动彻底清除。
-# 唯一来源在 db.py（SOFT_DELETE_RETENTION_DAYS），此处仅引用防双源漂移（2026-08-15 审查）
+# 唯一来源在 db.py（SOFT_DELETE_RETENTION_DAYS），此处仅引用防双源漂移
 DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
-# 密码策略：至少 10 位且包含大写/小写/数字/符号中至少两类（只对新建/修改生效，存量密码不受影响）
-PASSWORD_MIN_LEN = 10
-# 口令"字符类别"单一事实源：四个类别正则按文案顺序排列，与 _PASSWORD_CLASS_LABELS
-# 同序同数。判定语义是"命中类别数 >= _PASSWORD_MIN_CLASSES 即通过"——符号算一类，不额外要求含符号。
-# 前端三个模板各内联一份同名同序的 PW_CLASS_PATTERNS（不跨文件共享脚本），由
-# tests/test_batch14_fixes_0829.py 的元测试从模板源码提取后与本元组逐字比对，任一侧漂移即红。
-_PASSWORD_CLASS_PATTERNS = (r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]")
-_PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
-# 类别下限：文案里的中文"两"须与本常量一致（元测试同时钉住数值与措辞，防只改一处）
-_PASSWORD_MIN_CLASSES = 2
-# 统一口径文案（前后端同句）：旧写法一处把下限写成易被读成"三类起"的中文比较词、另一处
-# 简写得像"数量恰好等于下限"。此后统一用"…中的至少两类"这一无歧义说法。
-# 2026-09-07 起大小写合并显示（文案精简）；判定仍按上方四类（大写/小写/数字/符号各自独立），
-# 故 _PASSWORD_CLASS_LABELS 保持四元组——管理员"至少三类"消息（L1310）必须完整列举四类。
-_PASSWORD_CLASS_HINT = "大小写字母、数字、符号中的至少两类"
-_PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
+# 密码策略（至少 10 位且包含大写/小写/数字/符号中至少两类，只对新建/修改生效）及其
+# 主管理员单独提档的两档下限实现见 web/services/accounts_data.py，此处以导入区再导出
+# 保持 m.PASSWORD_MIN_LEN / m._PASSWORD_* / m.ADMIN_PASSWORD_MIN_* 可达。
 # 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
 SCRYPT_METHOD = "scrypt:65536:8:1"
 
@@ -285,75 +329,18 @@ def _executors_window():
 # ---------------------------------------------------------------------------
 #: 两次实测之间的全局冷却（秒）；可被 `.env` 的 YIBAN_MEASURE_COOLDOWN 覆盖。
 MEASURE_COOLDOWN_SEC = 600
-#: 实测冷却状态文件（单条记录，固定名，故不随时间增长）。落状态目录而非进程内存：
-#: web 重启后冷却仍有效。
-MEASURE_STATE_FILE = "capacity-measure.json"
-
-
+# 实测状态文件的路径/读写/冷却判定与可实测账号的挑选实现见 web/services/measure.py；
+# 本模块的 `_measure_state_path` 与 `_write_measure_state` 转发时现取本模块的
+# STATE_DIR 与 _atomic_write（测试会赋值 `web.app.STATE_DIR`、在 `web.app` 上打桩
+# `_atomic_write`），其余三个名字以导入区再导出保持 m.* 可达。
 def _measure_state_path():
-    """实测冷却状态文件的路径。"""
-    return os.path.join(STATE_DIR, MEASURE_STATE_FILE)
-
-
-def _read_measure_state(path):
-    """读实测状态（缺失/损坏 → `{}`：按"从未实测"处理，不阻断）。"""
-    try:
-        # utf-8-sig：容错 Windows 记事本/工具写入的 BOM（与其余状态文件同口径）
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, ValueError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    """实测冷却状态文件路径（实现见 web/services/measure.py）。"""
+    return _measure._measure_state_path(STATE_DIR)
 
 
 def _write_measure_state(path, payload):
-    """原子写实测状态（创建即 0600）。失败只告警——状态文件不该阻断实测本身。"""
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        _atomic_write(path, json.dumps(payload, ensure_ascii=False), chmod_priv=True)
-    except OSError:
-        logger.warning("实测状态文件不可写（本次实测结果仍会返回，但冷却可能不生效）")
-
-
-def _measure_cooldown_remaining(state, cooldown_sec, now=None):
-    """距下次可实测的剩余**整秒**（0 = 现在可以实测）。`state` 是已解析的状态文件。
-
-    判据只认状态文件里的时刻，**不按会话/IP**：冷却必须是全局的，否则多管理员叠加
-    点击就绕开了限频（每次点击都会真实登录一个账号）。时刻读不出（旧文件/损坏）
-    按"可以实测"处理——限频是为了省请求，不该因为文件坏了就让功能永久不可用。
-    """
-    if cooldown_sec <= 0:
-        return 0
-    try:
-        at = datetime.strptime(str(state.get("at") or ""), "%Y-%m-%d %H:%M:%S")
-    except (TypeError, ValueError):
-        return 0
-    remaining = cooldown_sec - ((now or clock.now()) - at).total_seconds()
-    return math.ceil(remaining) if remaining > 0 else 0
-
-
-def _pick_measure_account(accounts, phone=None):
-    """挑一个可实测的账号：**不删、审核通过、未被用户暂停**（与容量口径同源）。
-
-    实测会真实登录易班，故不允许拿已删/未过审/用户自暂停的账号去跑——它们按设计
-    不该产生任何易班请求。`phone` 非空时只在该号码上找，找不到返回 None。
-
-    ⚠ **默认（不带 `phone`）取的是列表里第一个满足条件的账号**，通常是某个**真实用户**
-    的账号（很可能不是管理员自己的），而且账号列表顺序稳定 ⇒ **每次实测默认都是同一个账号**。
-    也就是说：这个功能是"拿一位用户的账号替全站做一次真实登录"，那位用户并不知情。
-    这是把风控暴露与不便转嫁给单点，所以本端点必须保持：仅主管理员、全局冷却、
-    窗口内拒绝，且页面文案要如实说明"会用一个真实账号访问易班一次"。
-    """
-    wanted = str(phone or "").strip()
-    for acc in accounts:
-        if not db.account_signs_in(acc) or acc.get("user_paused"):
-            continue
-        if wanted and acc.get("phone") != wanted:
-            continue
-        return acc
-    return None
-
-
+    """原子写实测状态（实现见 web/services/measure.py）；落盘经本模块的 `_atomic_write`。"""
+    return _measure._write_measure_state(path, payload, _atomic_write)
 
 # 登录时延拉平占位哈希：用户名/账号不存在时也执行一次等价 scrypt 比对，
 # 消除「响应耗时差异」造成的用户枚举时序侧信道（占位哈希无需真实有效，比对恒为 False）。
@@ -378,24 +365,8 @@ TRUSTED_PROXIES = ("127.0.0.1", "::1")
 TRUSTED_PROXIES = ("127.0.0.1", "::1")
 
 
-def _stale_idx_guard(acc, data, *, fail_closed=False):
-    """防错位校验（2026-08-20 对抗性审查 P1）：mutation 按 idx 寻址时，客户端
-    携带的 phone 与服务端 idx 解析结果不一致 → 账号列表在视图快照后已漂移
-    （并发删除/移动等），放行会静默操作错误对象。返回 True 表示错位，调用方
-    应返回 409 引导刷新。未携带 phone 的请求（旧客户端/测试）默认保持兼容不校验。
-
-    比对前双侧 _mask_phone 归一：/api/accounts 出站即脱敏（mask_account），
-    浏览器回传的是 138****8000 形态；_mask_phone 幂等（含 * 原样返回），直连
-    API 发全号的旧客户端/测试同样归一可比；伪造他人号码仍因不等被拦。
-
-    `fail_closed=True` 给"改写凭据"这类写路径：拿不出任何可核对的标识就等于
-    没人证明 idx 仍指向视图里那一行。放行的代价（静默改掉别人的易班凭据、还回
-    200）远大于拒绝的代价（调用方刷新一次页面），故此时按错位处理。
-    """
-    phone = data.get("phone") if isinstance(data, dict) else None
-    if phone is None:
-        return fail_closed
-    return _mask_phone(str(phone).strip()) != _mask_phone(str(acc.get("phone", "")))
+# 防错位校验（`_stale_idx_guard`）实现见 web/services/accounts_data.py，此处以导入区
+# 再导出保持 m.* 可达。
 
 
 def _json_body():
@@ -429,23 +400,8 @@ def _client_ip():
     return r
 
 
-def _delete_grace_remaining(deleted_at):
-    """注销冷却剩余秒数：deleted_at + 宽限期 − now；非冷却中（无时间/已过期/解析失败）返回 0。
-
-    登录即恢复（2026-08-16 用户裁决）与已注销用户视图共用此判定。
-    兼容两种格式：主格式 strftime("%Y-%m-%d %H:%M:%S")（新写入），存量 ISO 格式自动回退。
-    """
-    if not deleted_at:
-        return 0
-    try:
-        d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        try:
-            d = datetime.fromisoformat(str(deleted_at))
-        except (ValueError, TypeError):
-            return 0
-    remain = (d + timedelta(days=DELETE_GRACE_DAYS)) - clock.now()
-    return remain.total_seconds() if remain.total_seconds() > 0 else 0
+# 注销冷却剩余（`_delete_grace_remaining`）与注销宽限期常量（DELETE_GRACE_DAYS）见
+# web/services/accounts_data.py，此处以导入区再导出保持 m.* 可达。
 
 # 随机延迟默认上限（与 signin.py 一致）
 DEFAULT_START_DELAY_MAX = 60
@@ -573,13 +529,12 @@ VERIFY_FAIL_COOLDOWN_MSG = (
 VERIFY_CONCURRENCY_MAX = 2
 VERIFY_BUSY_MSG = "校验繁忙，请稍后重试"
 
-# 异步校验任务（A4 第二段）：实现已收进 yiban/attempt/jobs.py（调度核心行为），
-# 这里保留路由与测试按原口径引用的两个常量，其余在模块内自用。
+# 异步校验任务（A4 第二段）：实现已收进 yiban/attempt/jobs.py（调度核心行为）。
 # 待办（pending + running）上限说明：每个任务占一个后台线程，而外呼席位只有
 # VERIFY_CONCURRENCY_MAX 个——不设上界时并发提交会堆出大量等席位的线程。
 # 这是 503「校验繁忙」在异步模式下的**可达来源**（席位满由后台排队消化，
-# 不拒绝用户；待办队列满才拒绝）。
-VERIFY_JOBS_MAX_PENDING = verify_jobs.MAX_PENDING
+# 不拒绝用户；待办队列满才拒绝）。待办上限常量本体已随校验队列搬入
+# web/services/verify_queue.py，此处以导入区再导出保持 m.* 可达。
 # 任务终态（查询/取消端点判定用）
 VERIFY_JOB_TERMINAL = verify_jobs.TERMINAL_STATUSES
 
@@ -599,14 +554,10 @@ DELETE_MAX_REQUESTS_PER_IP = 5
 # .env 可调（YIBAN_ADMIN_DELETE_COOLDOWN_SEC / YIBAN_ADMIN_DELETE_MAX，0=关闭）。
 ADMIN_DELETE_COOLDOWN_SEC = 60
 ADMIN_DELETE_MAX = 5
-# 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐（7 天，安全审查 2026-08-16）；
-# 与 db.purge_deleted_users 默认一致；已注销用户视图按此计算剩余天数
-# 2026-08-28 审查 C-1：原实现硬编码 7，与 db.SOFT_DELETE_RETENTION_DAYS（账号保留期
-# 唯一事实源）及 db.purge_deleted_users 默认值形成三份互不相干的"7"——运维按注释去调
-# SOFT_DELETE_RETENTION_DAYS 时，账号会被提前物理清除而恢复宽限期仍按 7 天，用户点
-# 恢复会看到"成功"实际账号已消失（静默数据丢失）。现统一取同一常量（**唯一事实源**，
-# 不要再写字面量），使两处口径无法各自漂移。
-DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
+# 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐，与 db.purge_deleted_users
+# 默认一致；已注销用户视图按此计算剩余天数。常量本体（取 db.SOFT_DELETE_RETENTION_DAYS
+# ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
+# web/services/accounts_data.py，此处以导入区再导出保持 m.DELETE_GRACE_DAYS 可达。
 
 # 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底；2026-08-31 口径修订）：
 # 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
@@ -664,8 +615,8 @@ PAUSE_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 # 一次性域名黑名单的字面匹配；限 ASCII 后此类注册直接被格式校验拦截
 EMAIL_RE = re.compile(r"^[\w.+-]{1,32}@[\w-]+(\.[\w-]+)+$", re.ASCII)
 EMAIL_USER_MAX = 32  # 邮箱用户名部分（@ 前）最大长度
-# 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
-PHONE_RE = re.compile(r"^1\d{10}$")
+# 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）常量已随
+# 账号数据族搬入 web/services/accounts_data.py，此处以导入区再导出保持 m.PHONE_RE 可达。
 
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
 SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 web/routes/signin_api.py 的 _spawn_signin docstring
@@ -1397,359 +1348,55 @@ ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
 # web/services/env_io.py，此处以导入区再导出保持 m.ANNOUNCEMENT_DRAFT_META_SEP/_FMT 可达。
 
 
-def load_accounts():
-    """全部账号（SQLite，password/phone_code 已解密为明文，按 sort_order 升序）。
-
-    `_file_lock` 只护住「取快照」这一步：解密是 CPU 密集且不碰连接，放到锁外——
-    否则 8 个 web 线程的账号读写仍会被解密串行化（A2，2026-09-15）。
-    `_file_lock` 与写操作同锁，避免读到同一连接上未提交事务的部分结果
-    （RLock 可重入，写操作内调用无死锁）。
-    """
-    def _snap():
-        with _file_lock:
-            return db.accounts_snapshot()
-
-    return db.read_accounts(_snap)
-
-
-def load_accounts_raw():
-    """全部账号原始行（不解密 password/phone_code），供仅需明文列的统计/归类路径。
-
-    只 SELECT + 组行，无 AES-GCM 解密、无明文自愈回写：计数、取 owner 集合、
-    容量三分类等只用得到 phone（本就是明文列，兼作 AAD）/status/user_paused/
-    deleted/owner，调用方拿不到也无需明文凭据。
-    _file_lock 与 load_accounts 同锁：同连接上未提交事务的部分结果不可见。
-    """
-    with _file_lock:
-        return db.accounts_snapshot()
-
-
-def load_users():
-    """全部用户（SQLite）。"""
-    with _file_lock:
-        return db.load_users()
-
-
-def _mask_email(e):
-    """日志/列表脱敏：邮箱 → abc***@example.com（保留域名）；已脱敏或非邮箱原样返回（幂等）。"""
-    e = str(e)
-    if "*" in e:
-        return e
-    i = e.find("@")
-    if i <= 0:
-        return e
-    return e[: min(3, i)] + "***" + e[i:]
-
-
-def _password_policy_error(password):
-    """校验密码强度：至少 PASSWORD_MIN_LEN 位且命中 _PASSWORD_CLASS_PATTERNS 中
-    _PASSWORD_MIN_CLASSES 个类别（符号算一类）。返回错误信息 or None。
-
-    类别正则与文案都取自模块级常量（本函数不再内联字面量）：前端 login/user/index
-    三模板各有一份同序的 PW_CLASS_PATTERNS 与 PW_POLICY_HINT，由元测试逐字比对防漂移。
-    """
-    if len(password) < PASSWORD_MIN_LEN:
-        return f"密码{_PASSWORD_POLICY_HINT}"
-    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
-    if classes < _PASSWORD_MIN_CLASSES:
-        return f"密码需包含{_PASSWORD_CLASS_HINT}"
-    return None
-
-
-def _admin_password_policy_error(password):
-    """主管理员（内置 .env 管理员）口令策略：至少 12 位且命中至少三类。
-
-    2026-09-05 用户裁决：主管理员口令单独提档（普通用户维持原口径不变），
-    与 reject_default_admin_password 的启动 fail-closed 同一策略。
-    """
-    if len(password) < ADMIN_PASSWORD_MIN_LEN:
-        return f"至少 {ADMIN_PASSWORD_MIN_LEN} 位，且包含大写字母、小写字母、数字、符号中的至少三类"
-    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
-    if classes < ADMIN_PASSWORD_MIN_CLASSES:
-        return f"需包含{'、'.join(_PASSWORD_CLASS_LABELS)}中的至少三类"
-    return None
-
-
-def _owner_display_of(owner_email):
-    """把账号归属邮箱映射为展示名（后台归属列用）：普通用户显示邮箱前缀（@ 前）。"""
-    if owner_email in ("admin", ""):
-        return "管理员"
-    return owner_email.split("@")[0] if "@" in owner_email else owner_email
-
-
+# 账号 / 用户读取（load_accounts / load_accounts_raw / load_users）、展示序列化
+# （mask_account / _mask_email / _owner_display_of）、定位与字段校验
+# （find_account_index / _duplicate_phone_error / _owner_has_other_live / validate_account）、
+# 口令策略（_password_policy_error / _admin_password_policy_error）与只读验证
+# （_as_signin_account / _verify_account_clean）实现见 web/services/accounts_data.py；
+# 审核态词表、手机号正则、注销宽限期与口令策略常量也随该族搬入，此处一律以导入区再导出
+# 保持 m.* 可达。
 def _slot_to_label(slot_min):
-    """自选片窗口内分钟数 → "HH:MM"（调度 v2，与 signin 的 slot 口径一致：06:30 → 390）。"""
-    if slot_min is None:
-        return None
-    sw = _sign_window()
-    base = sw[0][0] * 60 + sw[0][1]
-    m = base + int(slot_min)
-    return f"{m // 60:02d}:{m % 60:02d}"
+    """自选片窗口内分钟数 → "HH:MM"（实现见 web/services/accounts_data.py）。
+
+    窗口解析器按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`）。
+    """
+    return _accounts_data._slot_to_label(slot_min, _sign_window)
 
 
 def _estimate_slot(phone):
-    """预计签到时段（调度 v2 2.1，docs/design/plan-scheduler-v2.md）：
-    顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
-    随机排序 = 每天重排，返回 None + 提示文案。
-    返回 (estimated_str|None, note_str)。
+    """预计签到时段（实现见 web/services/accounts_data.py）。
+
+    账号读入口、`.env` 路径与读取器、整数配置读取器、窗口解析器、掐头去尾口径都按调用
+    时刻现取本模块的（测试会打桩 `read_env` / `_sign_window` / `edge_config` /
+    `load_accounts`，也会赋值 `ENV_FILE`）。
     """
-    env = read_env(ENV_FILE)
-    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
-    order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
-        "random" if mode == "random" else "sequence")
-    dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-        "normal" if mode == "normal" else "uniform")
-    if order != "sequence":
-        return None, "随机模式每日重排，签到时间当天 06:31 后可见"
-    accounts = load_accounts()
-    # 与 build_schedule 一致：user_paused 账号不参与调度（零占位），预计时段按实际参与人计算
-    live = [a for a in accounts if not a.get("user_paused")]
-    idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
-    if idx is None or not live:
-        return None, ""
-    sw = _sign_window()
-    front_min, back_min = edge_config()[0] / 60.0, edge_config()[1] / 60.0
-    start_min = sw[0][0] * 60 + sw[0][1]
-    end_min = sw[1][0] * 60 + sw[1][1]
-    eff_lo = start_min + front_min
-    eff_hi = end_min - back_min
-    span = eff_hi - eff_lo
-
-    def fmt(m):
-        m = int(m)
-        return f"{m // 60:02d}:{m % 60:02d}"
-
-    if dist == "uniform":
-        # 线性填块（与 signin._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
-        # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）
-        k = load_env_int(ENV_FILE, "YIBAN_BLOCK_CAP", 15)
-        valid = []
-        b = start_min
-        while b < end_min:
-            lo = max(b, eff_lo)
-            hi = min(b + 5, eff_hi)
-            if hi > lo:
-                valid.append((lo, hi))
-            b += 5
-        if not valid:
-            return None, ""
-        bi = min(idx // k, len(valid) - 1)
-        lo, hi = valid[bi]
-        return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
-    # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
-    z = random.Random(str(phone)).gauss(0, 1)
-    center = max(eff_lo, min(eff_hi, eff_lo + span * 0.5 + span * 0.20 * z))
-    return f"约 {fmt(center)}", "（每日波动约 ±10 分钟）"
+    return _accounts_data._estimate_slot(
+        phone, load_accounts, read_env, ENV_FILE, load_env_int, _sign_window, edge_config)
 
 
-def mask_account(acc, index, masked=True):
-    """账号展示序列化（列表默认脱敏手机号/归属邮箱，网络层不泄露完整 PII）。
-
-    masked=False 时返回完整信息（仅详情接口使用，按需取完整号用于编辑/签到等操作）。
-    密码始终不下发（has_password 布尔）；设备识别码始终不下发（has_phone_code 布尔）。
-    """
-    phone = acc.get("phone", "")
-    owner = acc.get("owner", "admin")
-    return {
-        "index": index,
-        "name": acc.get("name", ""),
-        "phone": _mask_phone(phone) if masked else phone,
-        "phone_model": acc.get("phone_model", ""),
-        "has_password": bool(acc.get("password")),
-        "has_phone_code": bool(acc.get("phone_code")),
-        "display_name": acc.get("name") or f"账号{index + 1}",
-        # 普通用户体系：owner=提交者邮箱（'admin'=管理员添加），status=待审核/已生效
-        "owner": _mask_email(owner) if masked else owner,
-        "owner_display": _owner_display_of(owner),
-        "status": acc.get("status", ACCOUNT_STATUS_ACTIVE),
-        "reject_reason": acc.get("reject_reason", ""),
-        "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
-        # 软删除：管理员删除后进入待删除状态（保留期内可恢复）
-        "deleted": bool(acc.get("deleted")),
-        "deleted_at": acc.get("deleted_at", ""),
-    }
+# 账号展示序列化（mask_account）、定位与字段校验（find_account_index /
+# _duplicate_phone_error / _owner_has_other_live / validate_account）、即时验证开关
+# （_account_verify_enabled，转发见下方）与只读验证（_as_signin_account /
+# _verify_account_clean）实现见 web/services/accounts_data.py，此处以导入区再导出保持
+# m.* 可达；`_verify_account_clean` 另被本模块的转发包装与 verify_jobs 回调现取注入。
 
 
-def find_account_index(accounts, phone):
-    """按手机号查账号下标（手动签到用）。"""
-    for i, acc in enumerate(accounts):
-        if acc.get("phone") == phone:
-            return i
-    return None
-
-
-def _duplicate_phone_error(accounts, phone, email):
-    """重提手机号冲突的差异化文案（v10 用户删除软删化）。
-
-    冲突行是本人刚删除的账号（deleted_by=本人）时给撤销指引；其余统一口径，
-    不向调用方泄露该手机号的归属信息。返回 None 表示非本人待删除行冲突。
-    """
-    conflict = next((a for a in accounts if a.get("phone") == phone), None)
-    if (
-        conflict is not None
-        and conflict.get("owner") == email
-        and conflict.get("deleted")
-        and conflict.get("deleted_by", "") == email
-    ):
-        return "该手机号对应你刚删除的账号，可先撤销删除；或等 7 天自动清除后再提交"
-    return None
-
-
-def _owner_has_other_live(accounts, acc):
-    """归属用户（非 admin）名下是否已有其他未删除账号（每人限 1 个，恢复/添加时校验）。"""
-    owner = acc.get("owner", "admin")
-    if not owner or owner == "admin":
-        return False
-    return any(
-        a.get("owner") == owner and not a.get("deleted") and a is not acc for a in accounts
-    )
-
-
-def validate_account(data, require_password):
-    """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。"""
-    name = str(data.get("name", "")).strip()
-    if len(name) > 50:
-        return "名称过长（最多 50 字）", None
-    phone = str(data.get("phone", "")).strip()
-    password = str(data.get("password", "")).strip()
-    if not phone:
-        return "手机号为必填项", None
-    if not PHONE_RE.match(phone):
-        return "手机号格式不正确（应为 1 开头的 11 位数字）", None
-    if require_password and not password:
-        return "密码为必填项", None
-    phone_model = str(data.get("phone_model", "")).strip()
-    if len(phone_model) > 50:
-        return "设备型号过长（最多 50 字）", None
-    phone_code = str(data.get("phone_code", "")).strip()
-    if len(phone_code) > 128:
-        return "设备识别码过长", None
-    return None, {
-        "name": name,
-        "phone": phone,
-        "password": password,
-        "phone_model": phone_model,
-        "phone_code": phone_code,
-    }
-
-
-def _account_verify_enabled():
-    """注册/添加账号时是否做即时验证（YIBAN_ACCOUNT_VERIFY=1，任意管理员可开关）。"""
-    env = read_env(ENV_FILE)
-    return env.get("YIBAN_ACCOUNT_VERIFY", "").strip().lower() in ("1", "true", "on", "yes")
-
-
-def _as_signin_account(fields):
-    """账号字段 dict → `signin.Account`（只读探针 `verify_account` 收的是账号对象）。
-
-    `id` 是库内账号行 id，会一路带到运行期复核（`account_still_signable`）：库里来的
-    行必须带上，否则探针会跳过"账号已被删除/停用"的复核。注册时的待入库账号没有 id，
-    取 0（该复核对无 id 的账号恒按有效处理）。
-    """
-    return signin.Account(
-        phone=fields.get("phone", ""),
-        password=fields.get("password", ""),
-        phone_model=fields.get("phone_model", ""),
-        phone_code=fields.get("phone_code", ""),
-        account_id=int(fields.get("id") or 0),
-    )
-
-
-def _verify_account_clean(clean):
-    """对清洗后的账号字段做只读验证（复用 signin.verify_account：登录+拉任务，不提交签到）。
-
-    返回错误信息 or None（验证通过）。message 来自 signin（已脱敏），此处再转义换行防注入。
-    """
-    try:
-        ok_v, msg_v = signin.verify_account(_as_signin_account(clean))
-    except Exception as e:
-        return f"账号验证异常：{str(e).replace(chr(10), ' ').replace(chr(13), ' ')}"
-    if not ok_v:
-        return f"账号验证未通过：{str(msg_v).replace(chr(10), ' ').replace(chr(13), ' ')}"
-    return None
-
-
-# A4 全局并发闸：进程内信号量（web 固定 -w 1，进程内即全局）。
+# 外呼校验的闸门与异步任务族（`VerifyGateBusy` / `VerifyQuotaExceeded` /
+# `run_verify_with_gate` / `_reject_account` / `_reclaim_stale_verify_jobs` /
+# `_verify_queue_full` / `_start_verify_job` / `verify_async_enabled` /
+# `_account_verify_enabled`）实现见 web/services/verify_queue.py。
+# 两个异常类型、失败落库、超龄收口、待办上限与建任务以导入区再导出保持 m.* 可达；
+# 带闸校验与两个开关在下方转发时现取本模块的席位 / 配额判定 / 只读验证 / .env
+# 路径与读取器（它们会被测试打桩或赋值改写）。
+# A4 全局并发闸：进程内信号量（web 固定 -w 1，进程内即全局）。席位留在本模块：
+# 静/异步两条路径共用同一个（异步侧经 verify_jobs.configure 登记）。
 _verify_sem = threading.BoundedSemaphore(VERIFY_CONCURRENCY_MAX)
 
 
-class VerifyGateBusy(Exception):
-    """外呼校验的全局并发席位已满（**未消耗**每用户配额）。"""
-
-
-class VerifyQuotaExceeded(Exception):
-    """该会话用户的验证尝试配额用尽。"""
-
-
 def run_verify_with_gate(clean, username, limits):
-    """执行一次外呼校验（A4：全局并发闸包裹）。
-
-    `limits` 是每用户配额表（current_app.extensions 登记，经 web.routes.verify_limits()
-    取用；进程内字典，故显式传入）。
-
-    顺序刻意如此：**先抢全局席位、再扣用户配额**——抢不到席位时立即抛
-    VerifyGateBusy 且不消耗配额，否则我们自己的饱和会变成对用户的惩罚。
-    席位在 `finally` 中释放，含配额拒绝与校验异常两条路径。
-
-    返回 verify_err（None 表示验证通过）；并发满/配额尽时抛上述异常，
-    由调用方翻译成 503 / 429。
-    """
-    if not _verify_sem.acquire(blocking=False):
-        raise VerifyGateBusy()
-    try:
-        if not _verify_attempt_allowed(limits, username):
-            raise VerifyQuotaExceeded()
-        return _verify_account_clean(clean)
-    finally:
-        _verify_sem.release()
-
-
-def _reject_account(phone, reason, account_id, expect_status):
-    """把校验未通过的账号置为 rejected（D-2：账号**留在库中**并承载技术原因）。
-
-    `expect_status` 是任务建立时账号的状态（verify_jobs.prev_status）。**只有账号
-    仍处于该状态时才写**——异步校验在后台跑，期间管理员可能已点"审核通过"
-    （pending → active），无条件写回会把管理员的决定静默回滚。人类决定优先。
-
-    缺少任务上下文时**不写**：无从判断账号是否已被人工改动，宁可不改也不能覆盖
-    人工决定（账号状态由管理员在审核列表里可见并处理）。
-    """
-    if account_id is None or not expect_status:
-        logger.error("缺少任务上下文（account_id=%r / prev_status=%r），不改账号状态: %s",
-                     account_id, expect_status, _mask_phone(phone))
-        return
-    try:
-        wrote = db.update_account_status_if(
-            account_id, ACCOUNT_STATUS_REJECTED, expect_status,
-            reason or "在线校验未通过",
-        )
-        if not wrote:
-            logger.info(
-                "账号 %s 状态已人工变更（非 %s），异步校验结果不覆盖人工决定",
-                _mask_phone(phone), expect_status,
-            )
-    except Exception as e:
-        logger.error("置账号为 rejected 失败（%s）: %s", _mask_phone(phone), e)
-
-
-def _reclaim_stale_verify_jobs():
-    """收口超龄校验任务（启动期与取消端点调用；入队路径见 _verify_queue_full）。
-
-    进程在任务执行期间消失（重启/重部署/OOM）会让任务永久停在 running：既不去
-    终态、又不可取消，还一直占用待办名额，累计到上限后所有新增账号的在线校验
-    永久 503。收口与账号侧的 CAS 拒绝在同一事务内完成（见 store 的 reclaim_stale）。
-    返回收口条数。
-    """
-    rows = db.reclaim_stale_verify_jobs(reject_status=ACCOUNT_STATUS_REJECTED)
-    if rows:
-        logger.warning("已收口 %d 条超龄校验任务（进程重启或线程异常终止）", len(rows))
-    return len(rows)
-
-
-def _verify_queue_full():
-    """待办队列是否已满（判定前先收口超龄任务，否则卡死的任务会永久占满名额）。"""
-    _reclaim_stale_verify_jobs()
-    return db.count_active_verify_jobs() >= VERIFY_JOBS_MAX_PENDING
+    """执行一次外呼校验（实现见 web/services/verify_queue.py），注入本模块现取的席位。"""
+    return _verify_queue.run_verify_with_gate(
+        clean, username, limits, _verify_sem, _verify_attempt_allowed, _verify_account_clean)
 
 
 # 校验任务实现收在 yiban/attempt/jobs.py；注入宿主侧依赖（lambda 延迟解析，故测试可替换）。
@@ -1763,32 +1410,21 @@ verify_jobs.configure(
 )
 
 
-def _start_verify_job(clean, username, account_id, fails, limits):
-    """建任务并起后台线程；待办队列满时抛 VerifyGateBusy（调用方翻成 503）。"""
-    started = verify_jobs.start(clean, username, account_id, fails, limits)
-    if started is None:
-        raise VerifyGateBusy()
-    return started
-
-
 def verify_async_enabled():
-    """在线校验异步开关：**默认关**，显式置 `YIBAN_VERIFY_ASYNC=1` 才启用。
+    """在线校验异步开关（实现见 web/services/verify_queue.py）。
 
-    异步路径把外呼交给后台任务、请求线程不再被占用（长任务不拖垮整站），
-    但**结果需要前端轮询 `/api/verify-jobs/<id>` 才能展示**——当前前端尚未实现该轮询，
-    故默认走同步带闸路径：用户提交账号时当场得到校验结论（与界面现状一致）。
-    前端就绪后把默认值改为开即可（两侧契约已在 `yiban/attempt/jobs.py` 与
-    `/api/verify-jobs` 端点就位，测试也按显式开关覆盖了两条路径）。
-
-    与 `YIBAN_ACCOUNT_VERIFY` 同口径读 `.env`（`os.environ` 优先，便于临时覆盖）——
-    只读 os.environ 会让"只配 .env"的常规部署用不上这个开关。留在这里而不下沉到
-    yiban/attempt（那里读的是 db.ENV_FILE）：本函数须用**本进程的** ENV_FILE，
-    它可被 --env-file 改写。
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`，
+    也会赋值 `ENV_FILE`）——本函数须用**本进程的** ENV_FILE，它可被 --env-file 改写。
     """
-    raw = os.environ.get("YIBAN_VERIFY_ASYNC")
-    if raw is None:
-        raw = read_env(ENV_FILE).get("YIBAN_VERIFY_ASYNC", "")
-    return str(raw).strip().lower() in ("1", "true", "on", "yes")
+    return _verify_queue.verify_async_enabled(read_env, ENV_FILE)
+
+
+def _account_verify_enabled():
+    """注册/添加账号时是否做即时验证（实现见 web/services/verify_queue.py）。
+
+    `.env` 路径与读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。
+    """
+    return _verify_queue._account_verify_enabled(read_env, ENV_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -2847,11 +2483,10 @@ _DEFAULT_ADMIN_LITERALS = frozenset((
     "password",
     "admin",
 ))
-# 主管理员（内置 .env 管理员）口令单独提档：12 位三类（2026-09-05 用户裁决）——
-# 最高权限账号的口令强度要求高于普通用户原口径，启动 fail-closed
-# 与自助改密（_admin_password_policy_error）共用本常量
-ADMIN_PASSWORD_MIN_LEN = 12
-ADMIN_PASSWORD_MIN_CLASSES = 3
+# 主管理员（内置 .env 管理员）口令单独提档：12 位三类——最高权限账号的口令强度要求
+# 高于普通用户原口径，启动 fail-closed 与自助改密（_admin_password_policy_error）共用
+# 同一组常量；常量本体随口令策略搬入 web/services/accounts_data.py，此处以导入区再导出
+# 保持两处口径同源（不要再写字面量）。
 
 
 def reject_default_admin_password(env_path):
