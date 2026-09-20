@@ -36,7 +36,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-import requests
+import requests  # noqa: F401  # 连通性检测已入 web/services/signstatus.py，此处仅为保持 web.app 名字面不变
 from flask import (
     Flask,
     Response,  # noqa: F401  # 日志导出已入 web/routes/data.py，此处仅为保持 web.app 名字面不变
@@ -88,6 +88,8 @@ from web.routes.pages import NO_STORE_PAGES  # noqa: E402  # 页面禁缓存清�
 # 测试改写、也会随运行方式变化，服务层另持一份绑定会让打桩与 --config 静默失效。
 from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services import executor_env as _executor_env  # noqa: E402
+from web.services import logs as _logs_svc  # noqa: E402
+from web.services import signstatus as _signstatus  # noqa: E402
 from web.services.env_io import (  # noqa: E402
     # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
     _BOOL_SETTINGS_KEYS,  # noqa: F401
@@ -114,8 +116,32 @@ from web.services.executor_env import (  # noqa: E402
 from web.services.locks import (  # noqa: E402
     _file_lock,  # 进程内锁真源（与 m._file_lock 同一把）
 )
+from web.services.logs import (  # noqa: E402
+    # 名字面零损失：web.app.<名字> 仍可 import（routes 经 m.* 取用）
+    _LOG_TAIL_BYTES,  # noqa: F401
+    SIGN_LOG_RE,  # noqa: F401
+    _cred_paused_phones,  # noqa: F401
+    _is_valid_date_str,  # noqa: F401
+    _log_line_visible,  # noqa: F401
+    _mask_log_phones,  # noqa: F401
+    _most_recent_log_cache,  # noqa: F401
+    _tail_lines,
+    clear_fuse_on_cred_change,  # noqa: F401
+    clear_fuse_pause,  # noqa: F401
+)
+from web.services.signstatus import (  # noqa: E402
+    # 同上：实现见 web/services/signstatus.py，此处保留 web.app.<名字> 的兼容面；
+    # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
+    _TRUTHY_LITERALS,  # noqa: F401
+    _day_off_reason,
+    _env_flag,
+    _in_sign_window,
+    check_connectivity,  # noqa: F401
+)
 from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源：yiban/__init__.py
-from yiban import clock, cred_state  # noqa: E402  （须在引导之后导入）
+
+# cred_state 已无自用点，保留供 web.app.<名字> 取用（须在引导之后导入）
+from yiban import clock, cred_state  # noqa: E402,F401
 from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
@@ -151,8 +177,10 @@ from yiban import egress as yb_egress  # noqa: E402  # 出口（代理）分配�
 from yiban import mail as mailer  # noqa: E402
 from yiban import notify  # noqa: E402
 from yiban import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
-from yiban.engine import schedule as yb_schedule  # noqa: E402  # 周末门/暂停门：唯一实现
-from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402  # 易班端点唯一出处（web 不写字面量）
+
+# 周末门/暂停门与易班端点：实现已入 web/services/signstatus.py，保留供 web.app.<名字> 取用
+from yiban.engine import schedule as yb_schedule  # noqa: E402,F401
+from yiban.fyiban.protocol import API_AUTH_URL  # noqa: E402,F401
 from yiban.infra import (  # noqa: E402
     account_crypto,  # noqa: F401  # 本模块已无自用点，保留：web.app.<名字> 仍可 import（打桩面零损失）
     env_io,
@@ -228,64 +256,20 @@ SIGN_END = (7, 50)
 
 
 def _sign_window():
-    """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认）。
+    """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认，实现见 web/services/signstatus.py）。
 
-    解析委托 `yiban.window.parse_window`——与引擎（signin）同一份口径，
-    避免"网页显示 07:50、引擎按别的值判定"这类同概念两套实现。
+    `.env` 路径与读取器按调用时刻现取本模块的（测试与 `--config` 都改写 `ENV_FILE`）。
     """
-    start, end, _invalid = yb_window.parse_window(read_env(ENV_FILE))
-    return start, end
-
-
-#: 开关类 .env 值的真值字面量（与 run.sh 的 `_is_truthy` 同一套写法）
-_TRUTHY_LITERALS = ("1", "true", "on", "yes")
-
-
-def _env_flag(value):
-    """把 `.env` 里的开关值解析成布尔（认 1/true/on/yes，大小写不敏感）。
-
-    只认这四个真值字面量，其余（`0`/`false`/空/未设/写错的词）一律按**关**处理：
-    兜底常驻是要占一份出口与一个常驻进程的动作，"开"必须是明确表达的意图。
-    """
-    return str(value if value is not None else "").strip().lower() in _TRUTHY_LITERALS
-
-
-def _in_sign_window(bounds, now=None):
-    """当前是否落在**有效**签到窗口内（已扣掐头去尾）——纯钟点口径。
-
-    判定用引擎同一份 `yiban.window.bounds` 给出的边界，这里只把"现在"换算成
-    当天分钟数再比区间，不另写一套窗口逻辑。**"窗口内不做实测"的 409 拦截用它**
-    （只关心"会不会跟签到抢资源"）；执行体接口的 `in_window` 用下面的
-    `_in_run_period`（还含周末门/暂停门，见其文档）。
-    """
-    now = now or clock.now()
-    now_min = now.hour * 60 + now.minute + now.second / 60.0
-    return bounds.lo_min <= now_min <= bounds.hi_min
+    return _signstatus._sign_window(ENV_FILE, read_env)
 
 
 def _in_run_period(bounds, now=None):
     """当前是否落在**本应运行**的时段内＝有效窗口内 且 今天没被门挡下。
 
-    执行体接口的 `in_window` 用这个（用户 2026-09-17 定：改 `in_window` 的含义，
-    不新增字段）。为什么必须含门：兜底常驻在"周末签到关闭 / 一键暂停"时会直接退出，
-    而这两天的钟点明明落在窗口内——只按钟点算，页面会在每个周末与每次暂停期间报
-    "兜底开了却没跑起来"。含门后前端不需要改判断：`in_window=false` 就是"现在本不该
-    有兜底在跑"的完整答案。
+    门与钟点判定的口径见 web/services/signstatus.py；两个判定都按调用时刻现取本模块的
+    （`_in_sign_window` 与 `_day_off_reason` 在既有测试中被直接打桩）。
     """
-    now = now or clock.now()
-    return _in_sign_window(bounds, now) and not _day_off_reason(now)
-
-
-def _day_off_reason(now=None):
-    """今天此刻是否被周末门/一键暂停挡下 → 原因串；空串=照常（与引擎同一实现）。
-
-    组合口径只有一处（`yiban.engine.schedule.day_off`）：页面提示与引擎实际行为
-    必须看同一个判据，否则又会出现"页面说会跑、进程其实不跑"。
-    """
-    try:
-        return yb_schedule.day_off(now)
-    except Exception:   # 配置读不到时按"照常"处理：宁可多显示一次窗口内，也别谎报跳过
-        return ""
+    return _signstatus._in_run_period(bounds, _in_sign_window, _day_off_reason, now)
 
 
 def _executors_window():
@@ -686,26 +670,13 @@ PHONE_RE = re.compile(r"^1\d{10}$")
 # 手动签到防抖：同一账号两次触发的最小间隔（秒）
 SIGN_MIN_INTERVAL = 30  # 手动签到防抖窗口（秒）；注释口径见 web/routes/signin_api.py 的 _spawn_signin docstring
 
-# 日志格式（与 signin.py 相同）
+# 日志行可见性与行正则（`SIGN_LOG_RE`）的实现见 web/services/logs.py：两者在导入区
+# 再导出，`web.app.<名字>` 的取用面不变。
+# 日志格式（与 signin.py 相同）：
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
-# logger 名允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：旧正则用 `(\w+)`，匹配不到
-# 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）因此整行被丢弃，日志页只剩
-# 汇总与结果——用户 2026-09-19 反馈"只显示结果的话，不如直接看签到事件"。
-SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] ([\w.]+): (.*)")
-
-
-def _log_line_visible(level, logger_name):
-    """日志页 / 导出 / 账号卡「最近记录」显示哪些行（2026-09-19 用户裁决：提高显示等级）。
-
-    - `yiban` 及其**子模块**（`yiban.*`）：全部级别。签到链路的细节都在这些 logger 下
-      （`yiban.fyiban.protocol` 的登录成功、`yiban.client` 的生成定位与签到成功、`yiban.engine.*`
-      的逐账号判定），漏掉它们页面就只剩结果；DEBUG 也是部署自己开的级别，开了就该看得到。
-    - 其它组件（werkzeug / mailer / notify 等）：仅 WARNING 以上——它们的 INFO 与签到无关
-      （请求日志、发送成功），全量入列会把日志页灌满、把故障留痕冲走。
-    """
-    if logger_name == "yiban" or logger_name.startswith("yiban."):
-        return True
-    return level in ("WARNING", "ERROR", "CRITICAL")
+# logger 名允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：只认 `(\w+)` 的正则匹配不到
+# 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）会整行被丢弃，日志页只剩
+# 汇总与结果。
 
 # 签到状态码与图标/文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
 # 历史上本文件另定义了一份同名常量与 STATUS_ICON/STATUS_TEXT，与 signin 侧各自漂移
@@ -727,85 +698,17 @@ STATUS_ICON = yiban_status.ICON
 STATUS_TEXT = yiban_status.TEXT
 
 
-def _cred_paused_phones():
-    """处于「账密故障暂停」（熔断/半开试探中）的手机号集合，供设置页容量拆解展示。
-
-    数据源：STATE_DIR/cred-state.json（signin 维护，{phone: {fail_days, last_fail,
-    paused_since, probe_date}}）。判定口径与 signin 一致：`paused_since` 非空即暂停中。
-    **必须容错**：该文件由签到进程按"无暂停=文件不存在"语义维护，随时可能缺失、被删或
-    半写；设置页不能因为一个可选状态文件读不出来就 500，故一切异常都退化为空集合
-    （展示层显示 0，判定逻辑不受影响——本函数只服务显示，绝不参与配额判定）。
-    utf-8-sig 容错 Windows 手工编辑留下的 BOM（与 signin._load_cred_state 同口径）。
-    """
-    data = cred_state.read()
-    if not data:
-        return set()
-    return {
-        str(phone)
-        for phone, rec in data.items()
-        if isinstance(rec, dict) and str(rec.get("paused_since", "") or "").strip()
-    }
-
-
-def clear_fuse_pause(phone):
-    """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
-
-    经 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）。原实现自己读整个
-    文件、删一条、再整体写回且**完全不持锁**：与签到进程收尾保存并发时，按自己的
-    读取结果重写会抹掉对方写入的其他账号记录。文件不存在时无需清除，
-    静默返回——用户每次编辑账号都会走到这里，按 I/O 失败告警会刷屏。
-    """
-    try:
-        cred_state.clear(phone)
-    except Exception as e:
-        # 留痕（2026-08-27 审查）：裸吞会让"改密后仍暂停"无从排查
-        logger.warning("清除账密熔断暂停状态失败，该账号可能仍处暂停: %s [%s]",
-                       _mask_phone(phone), e)
-
-
-def clear_fuse_on_cred_change(old_phone, old_password, clean):
-    """仅凭据（密码/手机号）实际变更时清除熔断计数；只改备注/状态等不清。
-
-    此前任意编辑都触发 clear_fuse_pause → fail_days 清零 → 熔断永不跳闸。
-    改绑清旧号条目（账号主体已迁移），改密清当前号条目（立即恢复签到资格）。
-    """
-    if old_phone != clean["phone"]:
-        clear_fuse_pause(old_phone)
-    if clean["password"] != old_password:
-        clear_fuse_pause(clean["phone"])
+# 账号状态族（`load_sign_state` / `_cred_paused_phones` / `clear_fuse_pause` /
+# `clear_fuse_on_cred_change`）的实现见 web/services/logs.py：前三个与凭据熔断清理族在
+# 导入区再导出，`load_sign_state` 在下方转发（需注入本模块持有的 STATE_DIR）。
 
 
 def load_sign_state(date_str=None):
-    """读取按日结构化状态文件：{phone: {status, message, time, task}}。
+    """读取按日结构化状态文件（实现见 web/services/logs.py）。
 
-    缺失/损坏/目录不存在时回退读旧格式按日文件（sign-daily，符号 → 状态码）：
-    覆盖部署过渡期（sign-state 尚未生成）与历史日期查看场景。
-    两者都无 → 返回空 dict（前端回退显示待签 ⏳）。
+    状态目录按调用时刻现取本模块的 `STATE_DIR`（可被 `--config` 等参数覆盖）。
     """
-    date_str = date_str or clock.now().strftime("%Y-%m-%d")
-    path = os.path.join(STATE_DIR, f"sign-state-{date_str}.json")
-    try:
-        # utf-8-sig：兼容 Windows 记事本/手工编辑可能写入的 UTF-8 BOM（BOM 会让 json.load 抛错）
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
-        if isinstance(data, dict) and data:
-            return data
-    except (OSError, ValueError):
-        pass
-    # 回退：sign-daily（旧版符号 ✅/❌/➖）→ 状态码
-    daily_path = os.path.join(STATE_DIR, f"sign-daily-{date_str}.json")
-    try:
-        with open(daily_path, encoding="utf-8-sig") as f:
-            daily = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(daily, dict):
-        return {}
-    sym_map = {"✅": STATUS_SUCCESS, "❌": STATUS_FAILED, "➖": STATUS_NO_TASK}
-    return {
-        phone: {"status": sym_map.get(sym, STATUS_PENDING), "message": "", "task": "default"}
-        for phone, sym in daily.items()
-    }
+    return _logs_svc.load_sign_state(STATE_DIR, date_str)
 
 logger = logging.getLogger("web")
 
@@ -813,125 +716,39 @@ logger = logging.getLogger("web")
 # ---------------------------------------------------------------------------
 # 签到日志解析
 # ---------------------------------------------------------------------------
-_LOG_TAIL_BYTES = 2 * 1024 * 1024  # 日志倒读上限 2MB（约 2 万行）
-
-
-def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
-    """从文件尾部读取最多 max_bytes 的完整文本行：大日志避免整读入内存。"""
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return []
-    try:
-        with open(path, "rb") as f:
-            if size > max_bytes:
-                f.seek(size - max_bytes)
-                f.readline()  # 丢弃首个不完整行
-                raw = f.read()
-            else:
-                raw = f.read()
-    except OSError:
-        return []
-    return raw.decode("utf-8", errors="replace").splitlines()
+# 实现见 web/services/logs.py：`_LOG_TAIL_BYTES` / `_tail_lines` / `_most_recent_log_cache`
+# 与 `_is_valid_date_str` 在导入区再导出；需要本模块模块级状态的入口（日志目录 LOG_FILE、
+# 倒读实现 `_tail_lines`）在下方转发时调用时刻现取后注入——它们会被测试改写（既有测试直接
+# 赋值 `web.app.LOG_FILE`、并在 `web.app` 上打桩 `_tail_lines`），服务层另持一份绑定会让
+# 打桩静默失效。
 
 
 def parse_sign_log(path):
-    """解析签到日志：返回最近日志行列表（可见性口径见 `_log_line_visible`）。
-
-    2026-08-16 审查轮：原返回值 (states, recent) 的 states（日志符号 → 图标）从未被
-    正确消费——账号状态的事实源是 sign-state 文件（load_sign_state，/api/accounts），
-    日志符号与前端状态码语义不符，曾被 /api/logs 透传污染前端图标/统计卡（历史遗留）。
-    现仅返回 recent 行；`parse_sign_log` 与 `_log_lines_for` 共用同一条可见性规则，
-    避免两处各写一遍必然漂移（2026-09-19 收口）。
-    """
-    recent = []
-    for line in _tail_lines(path):
-        m = SIGN_LOG_RE.match(line.strip())
-        if not m:
-            continue
-        _date, level, logger_name, _msg = m.groups()
-        if not _log_line_visible(level, logger_name):
-            continue
-        recent.append(line.strip())
-    return recent
-
-
-def _is_valid_date_str(s):
-    """YYYY-MM-DD 格式且为真实日历日期（2026-13-99 这类非法值拒绝）。"""
-    try:
-        datetime.strptime(s, "%Y-%m-%d")
-        return True
-    except (TypeError, ValueError):
-        return False
+    """解析签到日志（实现见 web/services/logs.py）；倒读实现现取本模块的 `_tail_lines`。"""
+    return _logs_svc.parse_sign_log(path, _tail_lines)
 
 
 def log_path_for(date_str=None):
-    """按天日志文件路径：{LOG_FILE 目录}/sign-YYYY-MM-DD.log（date_str 缺省=今天）。
-
-    2026-08-16 日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
-    run.sh / signin.py / 手动签到子进程均写入当天文件（保留 LOG_FILE 配置的目录）。
-    """
-    date_str = date_str or clock.now().strftime("%Y-%m-%d")
-    return os.path.join(os.path.dirname(LOG_FILE), f"sign-{date_str}.log")
+    """按天日志文件路径（实现见 web/services/logs.py）；日志目录现取本模块的 `LOG_FILE`。"""
+    return _logs_svc.log_path_for(LOG_FILE, date_str)
 
 
 def _log_lines_for(date_str):
-    """读取指定日期日志的行（行首日期过滤防跨天残留；可见性口径见 `_log_line_visible`）。
+    """读取指定日期日志的行（实现见 web/services/logs.py）。
 
-    文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
+    路径与倒读实现都按调用时刻现取本模块的（`LOG_FILE` 可被测试直接赋值改写）。
     """
-    prefix = f"[{date_str} "
-    out = []
-    for line in _tail_lines(log_path_for(date_str)):
-        if not line.startswith(prefix):
-            continue
-        m = SIGN_LOG_RE.match(line.strip())
-        if not m:
-            continue
-        _, level, logger_name, _msg = m.groups()
-        if not _log_line_visible(level, logger_name):
-            continue
-        out.append(line.strip())
-    return out
-
-
-# 最近日志日期缓存 {date: "YYYY-MM-DD"}：轮询每 10s 调用，避免每次都扫描 30 天文件
-_most_recent_log_cache = {"history_date": None, "checked_day": ""}
+    return _logs_svc._log_lines_for(date_str, log_path_for, _tail_lines)
 
 
 def _today_has_logs():
-    """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。
-
-    原实现只扫文件尾部 4096 字节——一旦尾部被其他 logger（如 web 每日清理循环的
-    yiban.db 告警）刷屏会误判「今天无日志」而回退到历史日期（2026-08-29 线上复现：
-    回到今天显示昨天）。按天文件体积有限，整读开销可忽略；判定口径与
-    _log_lines_for 一致（logger=yiban 且非 DEBUG）。
-    """
-    return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d")))
+    """今天是否有 yiban 签到日志行（实现见 web/services/logs.py）；注入同上。"""
+    return _logs_svc._today_has_logs(log_path_for, _tail_lines)
 
 
 def _most_recent_log_date(max_days=30):
-    """查找最近有日志的日期（从今天往前最多 max_days 天）。返回 YYYY-MM-DD。
-
-    每次先检查今天（开销小，今天有新日志立即生效）；无日志时用历史缓存（每天只扫一次）。
-    """
-    today = clock.now().strftime("%Y-%m-%d")
-    # 今天有日志 → 直接返回今天（并更新缓存）
-    if _today_has_logs():
-        _most_recent_log_cache["history_date"] = today
-        return today
-    # 今天无日志：跨天重置缓存，重新扫描历史
-    if _most_recent_log_cache["checked_day"] != today:
-        _most_recent_log_cache["checked_day"] = today
-        _most_recent_log_cache["history_date"] = None
-        for i in range(1, max_days + 1):
-            d = (clock.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            # 整读判定（与 _today_has_logs 同口径）：尾部被其他 logger 刷屏时
-            # 同样会漏判，统一用 _log_lines_for 保证正确性（按天文件体积有限）
-            if _log_lines_for(d):
-                _most_recent_log_cache["history_date"] = d
-                break
-    return _most_recent_log_cache["history_date"] or today
+    """查找最近有日志的日期（实现见 web/services/logs.py）；注入同上。"""
+    return _logs_svc._most_recent_log_date(max_days, log_path_for, _tail_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1613,15 +1430,6 @@ def load_users():
         return db.load_users()
 
 
-def _mask_log_phones(line):
-    """日志行内全部 [11 位手机号] 脱敏（/api/logs 与 /api/my-logs 共用，防展示层漏出 PII）。
-
-    覆盖 signin.py 的行格式 `[13800138000] 结果`；其他格式（如 `账号: 138...`）
-    不进日志（通知内容不落盘），单一格式正则足够——见日志审查 P3。
-    """
-    return re.sub(r"\[(\d{11})\]", lambda m: "[" + _mask_phone(m.group(1)) + "]", line)
-
-
 def _mask_email(e):
     """日志/列表脱敏：邮箱 → abc***@example.com（保留域名）；已脱敏或非邮箱原样返回（幂等）。"""
     e = str(e)
@@ -2108,47 +1916,11 @@ def verify_admin(username, password):
 # 系统信息
 # ---------------------------------------------------------------------------
 def sign_status(now=None):
-    """基于服务器时间计算签到状态。
+    """基于服务器时间计算签到状态（实现见 web/services/signstatus.py）。
 
-    返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
-    文案不含 emoji（UI 图标统一走前端 SVG 图标系统）。
+    `.env` 路径、整数配置读取器与窗口解析器都按调用时刻现取本模块的。
     """
-    now = now or clock.now()
-    if now.weekday() == 6 and not load_env_int(ENV_FILE, "YIBAN_SUNDAY_SIGN", 0):
-        # 周日：仅当「周日签到」开启时走正常窗口逻辑，否则提示无需打卡
-        return "今日无需打卡（周日）", "#a1a1aa"
-    if now.weekday() == 5 and not load_env_int(ENV_FILE, "YIBAN_SATURDAY_SIGN", 0):
-        # 周六：2026-09-07（v0.29.0）起默认关闭；开启后走正常窗口逻辑
-        return "今日无需打卡（周六）", "#a1a1aa"
-    sw = _sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
-    start_h, start_m = sw[0]
-    end_h, end_m = sw[1]
-    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
-    if now < start:
-        return f"未到签到时间（{start_h:02d}:{start_m:02d} 开始）", "#7aa2f7"
-    if now <= end:
-        return f"签到窗口进行中（~{end_h:02d}:{end_m:02d} 结束）", "#9ece6a"
-    return "今日签到已结束", "#e0af68"
-
-
-def check_connectivity():
-    """连通性检测：不登录，仅检查易班 API 可达性。返回 (ok, detail)。"""
-    try:
-        resp = requests.get(
-            API_AUTH_URL,
-            timeout=6,
-            headers={
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-            },
-        )
-        ok = resp.status_code < 500
-        detail = f"HTTP {resp.status_code}"
-    except Exception as e:
-        ok = False
-        detail = str(e)[:60]
-    return ok, detail
+    return _signstatus.sign_status(ENV_FILE, load_env_int, _sign_window, now)
 
 
 def _nl_safe(value):
