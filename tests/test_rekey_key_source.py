@@ -2538,10 +2538,12 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(w._PASSWORD_MIN_CLASSES, 2,
                          "判定下限仍是 2 类：不得改成 3 类，也不得要求必须含符号")
         self.assertEqual(w.PASSWORD_MIN_LEN, 10, "长度下限不变")
-        src = _read_text(os.path.join(BASE, "web", "app.py"))
+        # 后端侧的四类正则与两条文案随账号数据族（含口令策略）迁入
+        # web/services/accounts_data.py：位置变了，判据（唯一定义点、不得内联）不变。
+        src = _read_text(os.path.join(BASE, "web", "services", "accounts_data.py"))
         self.assertEqual(src.count("A-Za-z0-9"), 1,
-                         "web/app.py 里符号类正则只能出现在 _PASSWORD_CLASS_PATTERNS "
-                         "一处；出现第二处即回到多份内联重复的老问题")
+                         "web/services/accounts_data.py 里符号类正则只能出现在 "
+                         "_PASSWORD_CLASS_PATTERNS 一处；出现第二处即回到多份内联重复的老问题")
         fn = inspect.getsource(w._password_policy_error)
         self.assertIn("_PASSWORD_CLASS_PATTERNS", fn,
                       "_password_policy_error 必须由模块级常量派生，不得自带一份正则")
@@ -2571,7 +2573,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(
             found, backend,
             f"{name} 的类别判定正则与后端漂移：前端 {found} != 后端 {backend}"
-            f"（后端定义见 web/app.py 的 _PASSWORD_CLASS_PATTERNS，前端定义见 "
+            f"（后端定义见 web/services/accounts_data.py 的 _PASSWORD_CLASS_PATTERNS，前端定义见 "
             f"{PW_SHARED_JS}）。两侧须同序同串")
         self.assertEqual(
             src.count("[^A-Za-z0-9]"), 1,
@@ -2608,8 +2610,14 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
                          f"{name} 的类别下限与后端 _PASSWORD_MIN_CLASSES 漂移")
 
     def test_ambiguous_wording_is_gone(self):
-        """①文案歧义：旧措辞在随代码发布的四处文本里一律不得再现（含注释，防其回流）。"""
-        targets = [("web/app.py", _read_text(os.path.join(BASE, "web", "app.py")))]
+        """①文案歧义：旧措辞在随代码发布的文本里一律不得再现（含注释，防其回流）。"""
+        # 后端承载文本随账号数据族（含口令策略）迁入 web/services/accounts_data.py；
+        # web/app.py 仍保留为随代码发布的文本（转发说明也在其中），一并纳入扫描。
+        targets = [
+            ("web/services/accounts_data.py",
+             _read_text(os.path.join(BASE, "web", "services", "accounts_data.py"))),
+            ("web/app.py", _read_text(os.path.join(BASE, "web", "app.py"))),
+        ]
         targets += [(n, _frontend(n)) for n in PW_TEMPLATES]
         for name, src in targets:
             for bad in ("两类以上", "含两类字符"):
