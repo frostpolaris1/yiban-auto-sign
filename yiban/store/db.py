@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""SQLite 数据访问层（web / signin 双进程共用）的门面与尚未按域拆出的表访问。
+"""SQLite 数据访问层（web / signin 双进程共用）的门面与跨域粘合助手。
 
 - accounts/users 数据从 JSON 整文件读写迁移到 SQLite（yiban.db，WAL 模式）
   ——根治并发覆盖 / 索引漂移 / 进程外覆盖三个历史问题
@@ -10,35 +10,37 @@
 - 操作审计：audit() 记录关键管理操作（多管理员追溯）
 - 排序：sort_order 升序为签到顺序（移动 = 事务内交换/重排）
 
-已按域拆出的模块（定义点不在本模块，这里只再导出）：
+本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
-  `init_db` 留在这里——它是启动序列的编排点，也须与冻结的历史迁移函数共存。
-- `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`。
+- `migrations`：建表/索引、`migrate_v1..v17`、版本编排 `_run_migrations`，以及 JSON → SQLite
+  自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
-- `events`：sign_events 的写入/查询/统计与保留期清理。
+- `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
+- `verify_jobs`：在线校验任务表的创建/领取/结算/取消、超龄回收与保留期清理。
+- `claims`：签到领取池（多执行体协调）的领取/续租/结算/放弃与清理。
 - `users`：users / user_delete_requests 表的状态机、注销与反悔、到期清除。
 - `cleanup`：每日清理编排（审计与账号保留期清除，并调用各域清理）。
+- `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
+- `session_cache`：session_cache 表族的读写、有效期判定与凭据加密。
+- `time_prefs`：time_prefs 表的读写、拥挤度统计与保存冷却查询。
+- `clock_meta`：时钟守卫的告警留痕与读取、app_meta 通用单键读写。
+- `tracking`：追踪盐（YIBAN_TRACK_SALT）的取用/落盘与 IP、手机号加盐哈希。
 
-本模块自身仍持有：accounts 表 CRUD 与加解密、time_prefs、session_cache、时钟守卫与
-app_meta、追踪盐哈希等尚未按域拆出的部分，以及跨域粘合助手（写事务入口、连带清理、
-清理留痕）。子模块反向经本门面按属性取这些名字（见各模块的 `_facade()`）；
-`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块的再导出与读写转发维持不变。
+本模块自身仍持有：启动编排 `init_db`（与冻结的历史迁移函数共存）、密钥来源解析
+`resolve_env_file` / `require_existing_env_file`、写事务入口 `_begin_immediate`、时钟跳变
+守卫本体 `_clock_jump_guard`，以及跨域粘合助手 `_record_purge_event` / `_table_min_max` /
+`_cascade_phone_owned` / `_clear_session_cache_by_phones`。子模块反向经本门面按属性取这些
+名字（见各模块的 `_facade()`）；`db._audit_hash = 替身`、`db._conn = None` 一类打桩面由本模块
+的再导出与读写转发维持不变。
 """
 import contextlib
 import datetime
-import hashlib
-import hmac
 import json
 import logging
 import os
-import secrets
 import sqlite3
 import sys
-import threading
 import types
-
-from Crypto.Hash import SHA256
-from Crypto.Protocol.KDF import HKDF
 
 # 包导入引导：本模块已入包（`yiban.store.db`），正常导入路径下仓库根必然在 sys.path
 # 里；这里仍补一次仓库根，作为"被以任意 sys.path 形状导入"的兜底（如容器里从
@@ -48,18 +50,26 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# 2026-08-16 审查轮：原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
+# 原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
 # 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
 # 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
 from yiban import clock  # noqa: E402
-from yiban.infra import account_crypto, env_lock  # noqa: E402
+
+# account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
+# `db.account_crypto` 仍被测试直接取用（test_db_residue / test_account_plaintext_patch
+# 取 load_key / encrypt_password），删除即取用面损失。
+from yiban.infra import account_crypto  # noqa: E402, F401
 from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import audit_chain as _audit_chain  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
 from yiban.store import cleanup as _cleanup  # noqa: E402
+from yiban.store import clock_meta as _clock_meta  # noqa: E402
 from yiban.store import connection as _connection  # noqa: E402
 from yiban.store import events as _events  # noqa: E402
 from yiban.store import migrations as _migrations  # noqa: E402
+from yiban.store import session_cache as _session_cache  # noqa: E402
+from yiban.store import time_prefs as _time_prefs  # noqa: E402
+from yiban.store import tracking as _tracking  # noqa: E402
 from yiban.store import users as _users  # noqa: E402
 from yiban.store import verify_jobs as _verify_jobs  # noqa: E402
 
@@ -173,6 +183,8 @@ _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
 
 # 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
 # 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
+# 按表归属并入事件域的暂停冷却两名（`last_pause_at` / `pause_count_since`，查 audit_logs）
+# 走下方读写转发，不在这里再导出。
 SIGN_EVENTS_RETENTION_DAYS = _events.SIGN_EVENTS_RETENTION_DAYS
 _normalize_limit = _events._normalize_limit
 add_sign_event = _events.add_sign_event
@@ -184,6 +196,14 @@ probe_events_on = _events.probe_events_on
 sign_events_on = _events.sign_events_on
 sign_events_recent_date = _events.sign_events_recent_date
 _event_cleanup = _events._event_cleanup
+
+# 会话缓存域（唯一定义点在 yiban/store/session_cache.py）：函数走下方读写转发（内部调用点
+# 会被 `db._session_cache_now` 打桩），四个常量是不可变配置、全仓无重绑与打桩，按常量
+# 再导出即等价。`db.SESSION_CACHE_TTL_HOURS_DEFAULT` 一类读取不变。
+SESSION_CACHE_TTL_HOURS_DEFAULT = _session_cache.SESSION_CACHE_TTL_HOURS_DEFAULT
+SESSION_CACHE_TTL_HOURS_MIN = _session_cache.SESSION_CACHE_TTL_HOURS_MIN
+SESSION_CACHE_TTL_HOURS_MAX = _session_cache.SESSION_CACHE_TTL_HOURS_MAX
+SESSION_CACHE_HKDF_INFO = _session_cache.SESSION_CACHE_HKDF_INFO
 
 # 用户与注销域（唯一定义点在 yiban/store/users.py）：users / user_delete_requests 表的状态机、
 # 注销与反悔、到期物理清除按原样再导出，既有 `db.load_users()` / `db.restore_user()` /
@@ -226,7 +246,9 @@ purge_expired_deleted_accounts = _cleanup.purge_expired_deleted_accounts
 # 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v17、版本编排
 # `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
 # / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
-# （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。
+# （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。JSON → SQLite 自动导入两名
+# （`_maybe_migrate` / `_rename_backup`）同样走读写转发：门面内的 `init_db` 按属性晚解析
+# 调用它们，快照式再导出会让 `db._maybe_migrate = 替身` 的打桩看不到。
 MigrationDeferred = _migrations.MigrationDeferred
 _ALLOWED_TABLES = _migrations._ALLOWED_TABLES
 _table_columns = _migrations._table_columns
@@ -269,14 +291,31 @@ get_conn = _connection.get_conn
 is_initialized = _connection.is_initialized
 _conn_lock = _connection._conn_lock
 
-# 需要**读写转发**的模块级状态：模块级赋值/删除默认直写 `__dict__`、不触发下方的魔术方法，
-# 故这些名字一律不进本模块的 `__dict__`——读取回落到唯一定义点，写入也落到那里：
+# 需要**读写转发**的模块级状态与账号域迁出名：模块级赋值/删除默认直写 `__dict__`、不触发
+# 下方的魔术方法，故这些名字一律不进本模块的 `__dict__`——读取回落到唯一定义点，写入也
+# 落到那里：
 #   `_conn`/`_db_file`/`_env_file` → connection（全仓 190+ 处测试收尾 `db._conn = None`）；
 #   `_AUDIT_KEY_CACHE` 等三个审计域进程内状态 → audit_chain（test_rekey_key_source 的
 #   `db._AUDIT_KEY_CACHE = None` 必须真的清掉密钥缓存）；
 #   `_MIGRATIONS` → migrations（测试以 `db._MIGRATIONS = [...]` 缩窄/替换迁移集，
-#   `_run_migrations` 必须读到改写后的登记表）。
-# 其余名字（`_conn_lock` 永不重绑、审计/迁移域函数与常量）按快照式再导出即等价。
+#   `_run_migrations` 必须读到改写后的登记表）；
+#   账号域全部迁出名 → accounts：`db._decrypt_row` / `db.decrypt_account_rows` 被
+#   tests/test_a2_decrypt_out_of_lock.py 打桩后，**accounts 模块内部**的调用点必须看到替身；
+#   会话缓存域全部迁出名 → session_cache：`db._session_cache_now` 被
+#   tests/test_session_cache_db.py 打桩（读写同钟），**session_cache 模块内部**的
+#   `get_session_cache` / `set_session_cache` 调用点必须看到替身；
+#   事件域按表归属并入的暂停冷却两名 → events、用户自选时间片域七名 → time_prefs：
+#   调用方只经门面属性访问，读写转发让 `db.<名字> = 替身` / `del db.<名字>` 落到真定义点
+#   （`last_time_pref_set_at` 体内按属性取的 `db.hash_phone` 读到的正是 tracking 域真身）；
+#   时钟守卫告警与 app_meta 单键读写四名 → clock_meta：告警落库被留守的 `_clock_jump_guard`
+#   在本模块内按属性调用（见该函数的晚解析注释），快照式再导出会让这处内部调用看不到替身；
+#   迁移域的 JSON 导入两名 → migrations：门面内 `init_db` 按属性晚解析调用 `_maybe_migrate`；
+#   追踪盐域四名与盐缓存的**可变状态** `_TRACK_SALT_CACHE` → tracking：
+#   `db._TRACK_SALT_CACHE = None`（tests/test_rekey_key_source.py 清盐缓存）必须真的清掉
+#   定义点那份缓存，且 `db.hash_phone = 替身` 要被 time_prefs 的冷却查询看见。
+#   快照式再导出只换掉门面那一份，内部照旧调真名——打桩静默失效。
+# 其余名字（`_conn_lock` 永不重绑、审计/迁移/事件/用户/校验任务/领取池域函数与常量）按
+# 快照式再导出即等价；会话缓存域的四个常量同样按常量再导出（无内部惰性读取之外的语义）。
 _FORWARDED_STATE = {
     "_conn": _connection,
     "_db_file": _connection,
@@ -285,13 +324,71 @@ _FORWARDED_STATE = {
     "_AUDIT_FAIL_UNFLUSHED": _audit_chain,
     "_AUDIT_FAIL_UNFLUSHED_DB": _audit_chain,
     "_MIGRATIONS": _migrations,
+    # 账号域迁出名（唯一定义点在 yiban/store/accounts.py）
+    "_mask_phone_display": _accounts,
+    "_decrypt_row": _accounts,
+    "_apply_plaintext_heal": _accounts,
+    "_row_to_account": _accounts,
+    "_is_encrypted_value": _accounts,
+    "_encrypt_field": _accounts,
+    "accounts_snapshot": _accounts,
+    "load_accounts_raw": _accounts,
+    "decrypt_account_rows": _accounts,
+    "read_accounts": _accounts,
+    "load_accounts": _accounts,
+    "_next_sort_order": _accounts,
+    "_convert_integrity_error": _accounts,
+    "add_account": _accounts,
+    "update_account": _accounts,
+    "set_account_deleted": _accounts,
+    "purge_account": _accounts,
+    "update_account_status": _accounts,
+    "set_user_paused": _accounts,
+    "move_account": _accounts,
+    "delete_accounts_by_owner": _accounts,
+    "replace_accounts": _accounts,
+    "batch_account_ops": _accounts,
+    "update_account_status_if": _accounts,
+    # 会话缓存域迁出名（唯一定义点在 yiban/store/session_cache.py）
+    "_session_cache_now": _session_cache,
+    "_session_cache_key": _session_cache,
+    "_session_cache_ttl_hours": _session_cache,
+    "get_session_cache": _session_cache,
+    "set_session_cache": _session_cache,
+    "clear_session_cache": _session_cache,
+    # 事件域按表归属并入的暂停冷却（查 audit_logs 表，唯一定义点在 yiban/store/events.py）
+    "last_pause_at": _events,
+    "pause_count_since": _events,
+    # 用户自选时间片域迁出名（唯一定义点在 yiban/store/time_prefs.py）
+    "last_time_pref_set_at": _time_prefs,
+    "time_pref_set_count_since": _time_prefs,
+    "get_time_prefs": _time_prefs,
+    "get_time_pref": _time_prefs,
+    "set_time_pref": _time_prefs,
+    "clear_time_pref": _time_prefs,
+    "time_pref_stats": _time_prefs,
+    # 时钟守卫告警与 app_meta 单键读写（唯一定义点在 yiban/store/clock_meta.py）
+    "_record_clock_guard_alert": _clock_meta,
+    "clock_guard_alert": _clock_meta,
+    "get_meta": _clock_meta,
+    "set_meta": _clock_meta,
+    # JSON → SQLite 自动导入（唯一定义点在 yiban/store/migrations.py；门面内 init_db 晚解析调用）
+    "_maybe_migrate": _migrations,
+    "_rename_backup": _migrations,
+    # 追踪盐与加盐哈希域迁出名（唯一定义点在 yiban/store/tracking.py）
+    "_write_track_salt_to_env_file": _tracking,
+    "_track_salt": _tracking,
+    "hash_ip": _tracking,
+    "hash_phone": _tracking,
+    # 追踪盐的进程内缓存是可变状态：`db._TRACK_SALT_CACHE = None` 必须清到定义点那份
+    "_TRACK_SALT_CACHE": _tracking,
 }
 # delattr 撤下的名字（见 _StateForwardingModule.__delattr__）：名字重新可读即移出
 _FORWARDED_STATE_HIDDEN = set()
 
 
 def __getattr__(name):
-    """PEP 562：转发状态（连接三态、审计域进程内状态与迁移域登记表）读取回落到各自定义点。"""
+    """PEP 562：转发名（连接三态、审计/迁移域可变状态、各域迁出名）读取回落到定义点。"""
     mod = _FORWARDED_STATE.get(name)
     if mod is not None:
         if name in _FORWARDED_STATE_HIDDEN:
@@ -301,7 +398,8 @@ def __getattr__(name):
 
 
 class _StateForwardingModule(types.ModuleType):
-    """转发状态**写入/撤销**（`db._conn = None`、`db._AUDIT_KEY_CACHE = None`、`del db._conn`）。
+    """转发名**写入/撤销**（`db._conn = None`、`db._AUDIT_KEY_CACHE = None`、
+    `db.add_account = 替身`、`del db._conn`）。
 
     模块级赋值/删除默认直写 `__dict__`、不触发魔术方法，故本类只影响外部写入与
     mock/pytest 的撤销路径；本文件自身的名字绑定不受影响。
@@ -334,11 +432,6 @@ class _StateForwardingModule(types.ModuleType):
 
 
 sys.modules[__name__].__class__ = _StateForwardingModule
-
-
-# IP 加盐哈希（Phase 4）
-_TRACK_SALT_CACHE = None
-_TRACK_SALT_LOCK = threading.Lock()
 
 
 def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrate=True):
@@ -381,8 +474,10 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
             if migrate:
                 _run_migrations(conn)
                 # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
+                # 定义点在 yiban/store/migrations.py：按属性取，`db._maybe_migrate = 替身`
+                # 一类打桩必须被本调用点看见（晚解析）
                 if migrate_from:
-                    _maybe_migrate(conn, migrate_from)
+                    _migrations._maybe_migrate(conn, migrate_from)
         except Exception:
             with contextlib.suppress(Exception):
                 conn.close()
@@ -413,7 +508,7 @@ def require_existing_env_file(cli_value=None):
     为什么必须校验：--env 一旦给出，db 层就认为"密钥来源已确定"，防游离落盘的
     _assert_key_source_certain 对它不再生效。路径打错（少写一层目录、部署迁移后
     旧路径）时，工具会在该位置新建 .env 并生成一把**新**审计密钥，把这次留痕用
-    第三把钥匙签名——真实哈希链从这条起判破，正是本任务要治的病症的新入口。
+    第三把钥匙签名——真实哈希链从这条起判破，正是这道校验要治的病症的新入口。
     未显式给出（cli_value 为空）时不校验，交由回落链判定，保持既有行为。
     """
     path = resolve_env_file(cli_value)
@@ -429,7 +524,7 @@ def _begin_immediate(conn):
     """统一的写事务入口：遗留未提交事务先安全回滚再 BEGIN。
 
     原各写路径直接 BEGIN IMMEDIATE，一旦存在遗留事务（任何写路径漏 commit/rollback
-    的 bug）即抛 "within a transaction" 并连锁锁死全部写路径；audit() 的旧 M8 防御
+    的 bug）即抛 "within a transaction" 并连锁锁死全部写路径；audit() 原有的自保防御
     只覆盖自己。统一走本函数：遗留半事务按安全默认丢弃并 ERROR 留痕定位根因。
     """
     if conn.in_transaction:
@@ -441,496 +536,18 @@ def _begin_immediate(conn):
     conn.execute('BEGIN IMMEDIATE')
 
 
-# ---------------------------------------------------------------------------
-# 可视化表（Phase 4）
-# ---------------------------------------------------------------------------
-def _write_track_salt_to_env_file(env_file, salt):
-    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。
-
-    读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥；锁内仍保留
-    “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
-    """
-    with env_lock.env_write_lock(env_file):
-        existing = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
-        if existing:
-            return existing
-        lines = []
-        if os.path.exists(env_file):
-            with open(env_file, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
-        out.append(f"YIBAN_TRACK_SALT={salt}")
-        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 创建即 0600（盐泄漏 = IP/手机号哈希可离线枚举反查）
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, env_file)
-        with contextlib.suppress(OSError):
-            os.chmod(env_file, 0o600)
-        return salt
-
-
-def _track_salt():
-    """获取 IP 加盐哈希用的盐：环境变量优先，回退 .env，缺失时生成。
-
-    .env 路径回落顺序与审计密钥一致：init_db(env_file=…) →
-    YIBAN_ENV_FILE → 当前目录 ".env"；来源只能靠 cwd 兜底且文件不存在时拒绝生成。
-    """
-    global _TRACK_SALT_CACHE
-    env_file, from_cwd = _resolve_key_env_file()
-    env_salt = os.environ.get("YIBAN_TRACK_SALT", "").strip()
-    if env_salt:
-        if len(env_salt) < 16:
-            # 弱盐告警（不拒绝——存量部署换盐会使既有哈希关联失效）；
-            # 盐被猜测即可离线反查 IP/手机号哈希
-            logger.warning("YIBAN_TRACK_SALT 长度过短（<16），易被枚举，建议更换为 32 位以上随机串")
-        _TRACK_SALT_CACHE = env_salt
-        return env_salt
-    if _TRACK_SALT_CACHE is not None:
-        return _TRACK_SALT_CACHE
-    with _TRACK_SALT_LOCK:
-        if _TRACK_SALT_CACHE is not None:
-            return _TRACK_SALT_CACHE
-        file_salt = _parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
-        if file_salt:
-            _TRACK_SALT_CACHE = file_salt
-            return file_salt
-        _assert_key_source_certain("追踪盐", env_file, from_cwd)
-        logger.info("未找到 YIBAN_TRACK_SALT，已生成新盐并写入 %s（chmod 600）", env_file)
-        _TRACK_SALT_CACHE = _write_track_salt_to_env_file(env_file, secrets.token_hex(32))
-        return _TRACK_SALT_CACHE
-
-
-def hash_ip(ip):
-    """对 IP 加盐哈希（YIBAN_TRACK_SALT），返回十六进制字符串。
-
-    2026-08-28 审查 M9：原实现为 `sha256(salt + ":" + ip)` 字符串拼接——
-    构造上接近 HMAC 但非标准；改用 HMAC-SHA256(salt, ip)（密钥前向填充，防
-    长度扩展类问题）。注意：盐与库同盘时（.env + yiban.db 同时被拿），IPv4
-    空间仍可离线枚举还原——本函数用于限速计数/统计，不承担凭据级保密。
-    """
-    salt = _track_salt()
-    return hmac.new(salt.encode("utf-8"), str(ip).encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def hash_phone(phone):
-    """对手机号做稳定匿名哈希（YIBAN_TRACK_SALT），返回十六进制字符串。
-
-    与审计脱敏不同：同一手机号总是得到相同哈希，可供 time_pref 冷却等
-    需要按账号关联审计记录的逻辑使用，同时不把真实手机号写入审计 target。
-
-    有意与 hash_ip 的 HMAC 口径不同：本函数的输出会作为**库内关联键**存储
-    （time_pref 冷却等），更换算法将使全部存量关联失效；等值查询用途下
-    sha256(salt:input) 无现实攻击面（长度扩展需要构造可验证的 MAC，此处
-    哈希仅用于存储比对）。评审结论：保持口径并记录理由。
-    """
-    salt = _track_salt()
-    return hashlib.sha256(f"{salt}:{phone}".encode("utf-8")).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# 自动迁移（JSON → SQLite，幂等）
-# ---------------------------------------------------------------------------
-def _maybe_migrate(conn, json_base):
-    """json_base 形如 /path/accounts.json（users.json 同目录推断）。
-
-    读取 accounts/users 两个 JSON 后在一个事务内导入，两个都成功后一起改名 .bak；
-    某个 JSON 读取失败/不存在时跳过该文件，不阻断另一个成功导入。
-    """
-    accounts_json = json_base if json_base.endswith("accounts.json") else os.path.join(
-        os.path.dirname(json_base), "accounts.json"
-    )
-    users_json = os.path.join(os.path.dirname(accounts_json), "users.json")
-    has_db_rows = (
-        conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] > 0
-        or conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
-    )
-    if has_db_rows:
-        return  # 已迁移过
-    accounts = []
-    users = []
-    load_errors = []
-    if os.path.exists(accounts_json):
-        try:
-            with open(accounts_json, encoding="utf-8") as f:
-                accounts = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            accounts = []
-            load_errors.append(accounts_json)
-            logger.error(
-                "账号数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
-                accounts_json, type(e).__name__, e,
-            )
-        if not isinstance(accounts, list):
-            accounts = []
-    if os.path.exists(users_json):
-        try:
-            with open(users_json, encoding="utf-8") as f:
-                users = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            users = []
-            load_errors.append(users_json)
-            logger.error(
-                "用户数据文件存在但读取/解析失败，未迁移（文件保留原样，请手工检查）: %s [%s: %s]",
-                users_json, type(e).__name__, e,
-            )
-        if not isinstance(users, list):
-            users = []
-    if not accounts and not users:
-        if load_errors:
-            logger.error("存在无法读取的数据文件，本次未完成迁移（请勿误判为无数据）: %s",
-                         ", ".join(load_errors))
-        else:
-            logger.info("SQLite 初始化完成（无 JSON 数据可迁移）")
-        return
-    imported = 0
-    key = account_crypto.load_key(_connection._env_file) if accounts else None
-    had_plaintext = False  # 迁移源含明文字段 → .bak 逃生门需重写为加密版（2026-08-27 审查缺口 2）
-    with _conn_lock, conn:
-        if accounts:
-            # 加密字段统一为库内 JSON 串格式：
-            #   明文 str → 加密（复用 account_crypto）；
-            #   密文 dict（0.16 JSON 嵌套对象）→ json.dumps 序列化；
-            #   密文 JSON 串 → 原样。
-            for i, a in enumerate(accounts):
-                password = a.get("password", "") or ""
-                phone_code = a.get("phone_code", "") or ""
-                if key is not None:
-                    if password and not _is_encrypted_value(password):
-                        had_plaintext = True
-                        password = json.dumps(account_crypto.encrypt_password(password, key, a.get("phone", "")))
-                    elif isinstance(password, dict):
-                        password = json.dumps(password)  # 已是密文对象 → 序列化入库
-                    if phone_code and not _is_encrypted_value(phone_code):
-                        had_plaintext = True
-                        phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
-                    elif isinstance(phone_code, dict):
-                        phone_code = json.dumps(phone_code)
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO accounts "
-                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        i + 1,
-                        a.get("name", ""),
-                        a.get("phone", ""),
-                        password,
-                        a.get("phone_model", ""),
-                        phone_code,
-                        a.get("owner", "admin"),
-                        a.get("status", "active"),
-                        a.get("reject_reason", ""),
-                        1 if a.get("deleted") else 0,
-                        a.get("deleted_at", ""),
-                    ),
-                )
-                imported += cur.rowcount
-        if users:
-            for u in users:
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO users (email, password_hash, role, created_at, pw_version) VALUES (?,?,?,?,?)",
-                    (
-                        u.get("email", ""),
-                        u.get("password_hash", ""),
-                        u.get("role", "user"),
-                        u.get("created_at", ""),
-                        u.get("pw_version", 1),
-                    ),
-                )
-                imported += cur.rowcount
-    # 事务提交成功后统一改名，避免单个 JSON 导入失败时已把另一个改名
-    if accounts:
-        _rename_backup(accounts_json, reencrypt=had_plaintext, key=key)
-    if users:
-        _rename_backup(users_json)
-    logger.info("SQLite 自动迁移完成：导入 %d 条记录（JSON 已改名 .bak 保留逃生门）", imported)
-
-
-def _rename_backup(path, reencrypt=False, key=None):
-    """JSON 迁移成功后改名保留（逃生门），避免被旧代码误写回。
-
-    2026-08-27 审查缺口 2：.bak 一律落 0600；迁移源含明文字段时（更早格式/手工构造/
-    第三方导出），重写 .bak 为加密版，杜绝明文凭据以 .bak 形态驻留磁盘。
-    同日已有同名 .bak 时追加递增序号，确保源文件总能离开原路径——此前目标已存在
-    即跳过 os.rename，会让含明文的源 JSON 以原文件名无限期驻留。
-    """
-    if not os.path.exists(path):
-        return
-    bak = f"{path}.bak-{clock.now().strftime('%Y%m%d')}"
-    if os.path.exists(bak):
-        seq = 1
-        while os.path.exists(f"{bak}-{seq}"):
-            seq += 1
-        new_bak = f"{bak}-{seq}"
-        logger.warning("迁移备份目标 %s 已存在，源文件改存为 %s", bak, new_bak)
-        bak = new_bak
-    os.rename(path, bak)
-    with contextlib.suppress(OSError):  # 非 POSIX 平台或权限受限：尽力而为，不阻断迁移
-        os.chmod(bak, 0o600)
-    if reencrypt and key is not None:
-        try:
-            with open(bak, encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                changed = False
-                for a in data:
-                    pwd = a.get("password", "") or ""
-                    if pwd and not _is_encrypted_value(pwd):
-                        a["password"] = json.dumps(
-                            account_crypto.encrypt_password(pwd, key, a.get("phone", ""))
-                        )
-                        changed = True
-                    code = a.get("phone_code", "") or ""
-                    if code and not _is_encrypted_value(code):
-                        a["phone_code"] = json.dumps(
-                            account_crypto.encrypt_password(code, key, a.get("phone", ""))
-                        )
-                        changed = True
-                if changed:
-                    tmp = bak + ".tmp" + str(os.getpid())
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False)
-                    os.chmod(tmp, 0o600)
-                    os.replace(tmp, bak)
-                    logger.warning("迁移 .bak 含明文字段，已重写为加密版（%s）", bak)
-        except (OSError, ValueError, TypeError):
-            logger.warning("迁移备份重写加密失败（.bak 保持原样，请手工检查权限）: %s", bak)
-
-
-# ---------------------------------------------------------------------------
-# accounts CRUD（单行操作，事务内）
-# ---------------------------------------------------------------------------
-def _mask_phone_display(phone):
-    """展示用打码（仅用于日志文案，与 web 层同口径）。"""
-    return phone[:3] + "****" + phone[7:] if len(phone) == 11 else phone
-
-
-def _decrypt_row(row):
-    """纯 CPU：把一行原始行转成账号 dict，并摘出需要明文自愈的字段。
-
-    **不访问数据库、不加锁**。调用方负责在 `_conn_lock` **之外**调用它（A2：逐行
-    AES-GCM 解密曾全程持该锁，而 web 侧有数十个调用点，导致全站 DB 访问被串行化），
-    再把摘出的 pending 交给 `_apply_plaintext_heal` 在锁内落库。
-
-    返回 `(account_dict, pending)`；pending 元素为
-    `(字段名, 行 id, 明文原值, 手机号, 打码手机号)`。
-    """
-    a = dict(row)
-    a["deleted"] = bool(a["deleted"])
-    a["user_paused"] = bool(a.get("user_paused", 0))  # 用户自暂停签到（调度 v2）
-    pending = []
-    # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
-    for k in ("password", "phone_code"):
-        v = a.get(k)
-        if not v:
-            continue
-        try:
-            obj = json.loads(v)
-        except (TypeError, ValueError):
-            obj = None
-        if isinstance(obj, dict) and "ct" in obj:
-            if not account_crypto.has_key(_connection._env_file):
-                raise RuntimeError(
-                    "账号已加密但未配置 YIBAN_ACCOUNTS_KEY（请在 .env 配置或恢复密钥备份）"
-                )
-            key = account_crypto.load_key(_connection._env_file)
-            try:
-                a[k] = account_crypto.decrypt_password(obj, key, a.get("phone", ""))
-            except ValueError as e:
-                # 统一收口：解密失败（密钥不匹配/密文损坏）→ RuntimeError，
-                # 与密钥缺失分支一致，由 web 层统一 JSON 错误处理（对抗性审查 L1）
-                raise RuntimeError(str(e)) from e
-        else:
-            # 明文驻留检测（2026-08-27 审查缺口 1）：非密文值照常使用（不阻断业务），
-            # 但必须告警 + 幂等加密回写——堵住"明文已进库"无人察觉；
-            # 对照 session_cache 对旧明文行抛错清除（M14），accounts 此前无对应策略。
-            phone = str(a.get("phone", ""))
-            pending.append((k, a["id"], v, phone, _mask_phone_display(phone)))
-            a[k] = v
-    return a, pending
-
-
-def _apply_plaintext_heal(conn, pending):
-    """锁内：对明文驻留字段做 CAS 加密回写（幂等；并发修改时跳过并告警）。"""
-    for k, account_id, plain, phone, masked in pending:
-        enc = _encrypt_field(plain, phone)
-        # CAS 回写——并发进程可能刚改掉该行（如 update_account 改密），无条件按 id
-        # 覆盖会把旧明文重新加密写回，静默回滚他人修改。以"仍处于本进程读到的明文
-        # 原值"为条件，0 行命中即放弃并告警。
-        cur = conn.execute(
-            f"UPDATE accounts SET {k}=? WHERE id=? AND {k}=?",
-            (enc, account_id, plain),
-        )
-        if cur.rowcount == 0:
-            logger.warning("账号 %s 的 %s 已被并发修改，跳过明文自愈回写", masked, k)
-            continue
-        logger.warning(
-            "账号 %s 的 %s 为明文存储（迁移残留/手工改库/第三方写入），已自动加密回写",
-            masked, k,
-        )
-
-
-def _row_to_account(row, conn=None):
-    """单行转换（更新路径用）：conn 非空时顺带做明文自愈回写。"""
-    a, pending = _decrypt_row(row)
-    if conn is not None:
-        _apply_plaintext_heal(conn, pending)
-        return a
-    for k, _account_id, _plain, _phone, masked in pending:
-        logger.warning(
-            "账号 %s 的 %s 为明文存储；本次读取未持连接上下文，未回写，"
-            "将在下次带连接的读取时自动加密（现有调用方均传连接，此为防御分支）",
-            masked, k,
-        )
-    return a
-
-
-def _is_encrypted_value(v):
-    """字段值是否为密文（dict 密文对象，或密文 JSON 串）——迁移/写路径判定用。"""
-    if isinstance(v, dict):
-        return account_crypto.is_encrypted(v)
-    if isinstance(v, str):
-        try:
-            obj = json.loads(v)
-        except (TypeError, ValueError):
-            return False
-        return account_crypto.is_encrypted(obj)
-    return False
-
-
-def _encrypt_field(value, phone):
-    """写库前密文化：dict 密文对象 → JSON 串；其他非空值 → AES-GCM 加密（AAD=phone）→ JSON 串；空值原样。
-
-    无密钥时 load_key 自动生成并持久化（与 web 现状一致）；密钥非法则抛错（绝不静默降级明文）。
-    """
-    if not value:
-        return ""
-    if isinstance(value, dict):
-        return json.dumps(value)  # 已是密文对象
-    key = account_crypto.load_key(_connection._env_file)
-    return json.dumps(account_crypto.encrypt_password(str(value), key, phone))
-
-
-# 时钟跳变保护参数（2026-08-28 审查 M3）：
+# 时钟跳变保护参数：
 # 允许的"时间前进"上限。软删保留期 7 天——系统时间被拨快 8 天，刚软删 1 秒的
 # 账号会在下次清理时被立即物理清除、7 天反悔窗口归零。取 72h：每日正常运行的
 # 服务不会超过；停机 >3 天后的首轮清理会被跳过并触发告警，需人工核实时钟后用
-# scripts/clock_guard_reset.py 显式重置（用户裁决 2026-08-29：
-# 刻意不自动恢复——自动把参照点拨到当前时间等于给"拨快一次、下轮洗白"开通道）。
+# scripts/clock_guard_reset.py 显式重置（刻意不自动恢复——自动把参照点拨到当前
+# 时间等于给"拨快一次、下轮洗白"开通道）。
 _CLOCK_ALLOW_FWD_HOURS = 72
 # 允许的"时间回拨"上限（秒）：正常 NTP 校正是秒级，回拨超过 1h 视为异常
 _CLOCK_ALLOW_BACK_SECONDS = 3600
-# 守卫失败告警在 app_meta 的留痕键（web 每日线程读取并发邮件；人工重置后清除）
-_CLOCK_GUARD_ALERT_KEY = "clock_guard_alert"
-
-
-def _record_clock_guard_alert(note):
-    """守卫拦截时把告警落到 app_meta。
-
-    原实现 ok=False 仅 logger.error：无任何告警出口，且因不更新参照点，5 处清理
-    **永久**冻结（软删数据永不物理清除、审计/事件表无限膨胀）——与注释承诺的
-    「清理推迟一天」相悖，日志无人看时静默腐烂。此处用**独立短连接**写入：
-    守卫运行在调用方事务内，随后调用方会 rollback，同连接写入会被一起回滚。
-    写失败不影响主流程（只告警）。JSON 结构 {ts, note}。
-    """
-    try:
-        target_db = _connection._db_file or os.environ.get("YIBAN_DB_FILE") or DB_DEFAULT
-        conn2 = sqlite3.connect(target_db, timeout=5)
-        try:
-            conn2.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-                (
-                    _CLOCK_GUARD_ALERT_KEY,
-                    json.dumps(
-                        {
-                            "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "note": note,
-                        },
-                        ensure_ascii=False,
-                    ),
-                ),
-            )
-            conn2.commit()
-        finally:
-            conn2.close()
-    except Exception as e:
-        logger.warning("时钟守卫告警留痕失败: %s", e)
-
-
-def clock_guard_alert():
-    """读取未清除的时钟守卫告警（供 web 每日线程/体检调用）。无告警返回 None。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            r = conn.execute(
-                "SELECT value FROM app_meta WHERE key=?", (_CLOCK_GUARD_ALERT_KEY,)
-            ).fetchone()
-        if r is None or not r["value"]:
-            return None
-        try:
-            data = json.loads(r["value"])
-            if isinstance(data, dict) and data.get("note"):
-                return data
-        except ValueError:
-            pass
-        return {"ts": "", "note": str(r["value"])}
-    except Exception as e:
-        logger.warning("读取时钟守卫告警失败: %s", e)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# app_meta 通用单键读写
-# ---------------------------------------------------------------------------
-# app_meta 此前只有内联 SQL（见 _record_clock_guard_alert / record_audit_anchor）。
-# 告警通道健康日报需要一把"当日串键"做跨进程重启的每日去重——进程内 dict（如
-# _mail_alert_ts）重启即失效，兜不住"每次重启各发一封"。故在此收口一对最小读写：
-# 不新建表、不加迁移，值统一按 TEXT 存（调用方自行放日期串或 JSON）。
-def get_meta(key, default=""):
-    """读取 app_meta 单键值（str）。键不存在 / 表缺失（旧库未跑 v12）/ 读失败 → default。
-
-    刻意不抛：本函数的调用方是"尽力而为"的元数据留痕（如日报去重），读失败时按
-    "无记录"继续即可，不能把兜底路径变成新故障点。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
-        if row is None or row["value"] is None:
-            return default
-        return str(row["value"])
-    except Exception as e:
-        logger.warning("读取 app_meta[%s] 失败（按无记录处理）: %s", key, e)
-        return default
-
-
-def set_meta(key, value):
-    """写入/更新 app_meta 单键值（INSERT OR REPLACE）。返回 True 表示已落库。
-
-    与其余写路径同口径走 _begin_immediate（WAL 下该 INSERT 即持 RESERVED 写锁）；
-    失败只告警并返回 False——元数据留痕不得放大故障，也不得留下未决事务。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            _begin_immediate(conn)
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-                    (key, str(value)),
-                )
-                conn.commit()
-            except Exception:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                raise
-        return True
-    except Exception as e:
-        logger.warning("写入 app_meta[%s] 失败: %s", key, e)
-        return False
+# 守卫失败告警的留痕键（唯一定义点在 `yiban/store/clock_meta.py`）：本模块的守卫本体经
+# 晚解析调用那里的告警落库，这里按常量再导出，`db._CLOCK_GUARD_ALERT_KEY` 读取不变。
+_CLOCK_GUARD_ALERT_KEY = _clock_meta._CLOCK_GUARD_ALERT_KEY
 
 
 def _clock_jump_guard(conn, key):
@@ -964,412 +581,12 @@ def _clock_jump_guard(conn, key):
             "scripts/clock_guard_reset.py 重置（清理将保持冻结直至重置）"
         )
         logger.error("%s", note)
-        _record_clock_guard_alert(note)
+        # 定义点在 yiban/store/clock_meta.py：按属性取，`db._record_clock_guard_alert = 替身`
+        # 一类打桩必须被本函数看见（晚解析）
+        _clock_meta._record_clock_guard_alert(note)
         return False, note
     conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
     return True, ""
-
-
-def accounts_snapshot():
-    """账号原始行快照（**不解密**）。持 `_conn_lock` 取到即释放。
-
-    与 `decrypt_account_rows` 配对使用，让调用方能把 CPU 密集的解密放到锁外：
-    调用方只需在自己那一层护住"取快照"这一步（web 层是 `_file_lock`）。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        return [
-            {**dict(r), "deleted": bool(r["deleted"])}
-            for r in conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
-        ]
-
-
-def load_accounts_raw():
-    """账号原始行（password/phone_code 保持密文 JSON 串，不解密）。
-
-    供 db_export 等导出场景使用：避免生成明文凭据文件。
-    （超期软删行清理已移出读路径，见 load_accounts 注释。）
-    """
-    return accounts_snapshot()
-
-
-def decrypt_account_rows(rows):
-    """把 `accounts_snapshot()` 的结果解密为账号列表。
-
-    解密全程在**锁外**（纯 CPU，不碰连接）；仅当发现明文驻留行时才另取一次
-    短 `_conn_lock` 做 CAS 自愈回写。
-    """
-    accts = []
-    pending = []
-    try:
-        for r in rows:
-            a, p = _decrypt_row(r)
-            accts.append(a)
-            pending.extend(p)
-    except Exception:
-        # 解密中途抛错（如某行密文损坏）：本函数此刻尚未写库，但并发的写操作可能在
-        # 本进程共享连接上留下未提交的隐式事务；不回滚会让后续所有
-        # `BEGIN IMMEDIATE` 写路径报 "cannot start a transaction within a
-        # transaction"，夜间事件落库等连锁失效。先回滚清场再原样抛出（2026-08-27）。
-        with _conn_lock, contextlib.suppress(Exception):
-            get_conn().rollback()
-        raise
-    if pending:
-        with _conn_lock:
-            conn = get_conn()
-            _apply_plaintext_heal(conn, pending)
-            conn.commit()
-    return accts
-
-
-def read_accounts(snapshot):
-    """取快照 → 锁外解密，并在 AAD 失配时重取一次快照重试。
-
-    `snapshot` 是零参可调用对象，返回 `accounts_snapshot()` 的结果（调用方负责它自己
-    那一层的锁语义：db 层传 `accounts_snapshot` 自身，web 层在 `_file_lock` 内取）。
-
-    **为什么要重试**：解密移出 `_conn_lock` 后，读到的快照可能已被并发写改过——
-    改绑手机号会同时换掉 AAD，于是快照里的密文按新手机号（或反之）解不开，抛
-    RuntimeError。这类失败重取一次快照即可消除；重试后仍失败即视为真实损坏
-    （密文损坏/密钥不匹配），原样抛出，不掩盖问题。
-    """
-    for attempt in (0, 1):
-        try:
-            return decrypt_account_rows(snapshot())
-        except RuntimeError:
-            if attempt:
-                raise
-
-
-def load_accounts():
-    """全部账号（按 sort_order 升序），已解密。
-
-    A2（2026-09-15）：「取快照」持 `_conn_lock`，**逐行 AES-GCM 解密在锁外**——
-    此前解密全程持锁，而全项目有数十个调用点，使全站 DB 访问被串行化（实测
-    /api/accounts 恒定 28 rps 而 CPU 仅 0.66 核 → 锁瓶颈而非 CPU 瓶颈）。明文自愈
-    回写另取一次短锁（CAS 条件更新，与并发写安全）。
-
-    注意：不再在读路径顺带清除超期软删除行（2026-08-20 对抗性审查 P1 修复）——
-    读中途物理删行会使 idx 寻址的 mutation 错位命中其他账号；清理改由
-    purge_expired_deleted_accounts() 在启动/每日线程/signin 启动时显式执行。
-    """
-    return read_accounts(accounts_snapshot)
-
-
-def _next_sort_order(conn):
-    row = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM accounts").fetchone()
-    return row["n"]
-
-
-def _convert_integrity_error(e):
-    """把 sqlite3.IntegrityError 转换为可区分异常；无法识别则原样抛出。"""
-    msg = str(e)
-    if "accounts.owner" in msg:
-        raise DuplicateOwnerError("该用户已有一个未删除账号") from e
-    if "accounts.phone" in msg:
-        raise DuplicatePhoneError("手机号已存在") from e
-    raise e
-
-
-def add_account(fields):
-    """新增账号（fields 为业务层明文 dict），返回新 id。
-
-    敏感字段写库前加密（AAD=手机号）；手机号重复抛 sqlite3.IntegrityError（业务层捕获）。
-    BEGIN IMMEDIATE：跨进程（多 worker）并发时提前获取写锁，
-    保证 MAX(sort_order)+1 的读与 INSERT 原子（防并发重复排序号）。
-    """
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            cur = conn.execute(
-                "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    _next_sort_order(conn),
-                    fields.get("name", ""),
-                    fields.get("phone", ""),
-                    _encrypt_field(fields.get("password"), fields.get("phone", "")),
-                    fields.get("phone_model", ""),
-                    _encrypt_field(fields.get("phone_code"), fields.get("phone", "")),
-                    fields.get("owner", "admin"),
-                    fields.get("status", "pending"),
-                    fields.get("reject_reason", ""),
-                ),
-            )
-            new_id = cur.lastrowid
-            conn.commit()
-            return new_id
-        except sqlite3.IntegrityError as e:
-            conn.rollback()
-            _convert_integrity_error(e)
-        except Exception:
-            conn.rollback()
-            raise
-
-
-def update_account(account_id, fields, expect_snapshot=None):
-    """更新单行；expect_snapshot 为乐观锁指纹 dict（name/phone/phone_model/status/deleted），不匹配返回 False。
-
-    手机号变更时自动用新手机号重加密 password/phone_code（旧密文 AAD 绑定旧手机号）；
-    改 phone 撞 UNIQUE 抛 sqlite3.IntegrityError（业务层捕获）。
-
-    2026-08-28 审查 B-5：整个读-改-写过程纳入 BEGIN IMMEDIATE 事务。
-    原实现 SELECT（读行 + 解密）与 UPDATE 之间跨进程无互斥（_conn_lock 仅进程内），
-    中间还夹着解密与重加密——两个进程或两个标签页并发编辑同一账号时，后提交者
-    静默覆盖前者（实测：A 写 name=FROM_A、B 写 name=FROM_B，双方都收到成功，
-    最终只剩 FROM_B，A 的编辑被丢弃且无任何提示）。
-    危险的是 web 用户自编辑路径不传 expect_snapshot、且总把 old["password"] 回填，
-    覆盖时可能把用户刚改的密码静默回滚。持锁后读-改-写原子，即使调用方
-    不传乐观锁指纹，并发也不会丢更新。
-    """
-    conn = get_conn()
-
-    def _body():
-        """读-改-写事务体（在 BEGIN IMMEDIATE 写锁内执行）。
-
-        拆出闭包是为了让事务边界清晰：外层统一 commit/rollback，内层只负责
-        读-改-写。IntegrityError 分支需要"回滚主更新 → 重放密文自愈 → 独立提交"，
-        故该分支自行控制事务（_convert_integrity_error 必定抛出，不会走到末尾）。
-        """
-        # 改绑手机号时体内会重新绑定 fields（补齐待重加密的敏感字段）：
-        # 不加 nonlocal 会被当作 _body 的局部变量，首次读取即 UnboundLocalError。
-        nonlocal fields
-        cur = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,))
-        row = cur.fetchone()
-        if row is None:
-            return None if expect_snapshot is not None else False
-        cur_a = _row_to_account(row, conn)  # 解密（AAD=库内当前手机号）；明文驻留自动加密回写
-        if expect_snapshot is not None:
-            snap = {
-                "name": cur_a.get("name", ""),
-                "phone": cur_a.get("phone", ""),
-                "phone_model": cur_a.get("phone_model", ""),
-                "status": cur_a.get("status", ""),
-                "deleted": bool(cur_a.get("deleted")),
-            }
-            if snap != expect_snapshot:
-                return False  # 已被他人修改（409）
-        # 手机号变更且敏感字段未随本次提供 → 用旧手机号解密的明文按新手机号重加密
-        new_phone = fields.get("phone")
-        if new_phone is not None and new_phone != cur_a.get("phone"):
-            # 改绑手机号：旧手机号的会话缓存随之失效（主键/AAD 均按旧号，不复用）
-            _clear_session_cache_by_phones(conn, [cur_a.get("phone", "")])
-            for k in ("password", "phone_code"):
-                if k not in fields:
-                    fields = dict(fields)
-                    fields[k] = cur_a.get(k, "")  # 已解密明文
-        phone_for_aad = new_phone if new_phone is not None else cur_a.get("phone", "")
-        sets = []
-        vals = []
-        for k in ("name", "phone", "phone_model", "owner", "status", "reject_reason", "deleted", "deleted_at"):
-            if k in fields:
-                sets.append(f"{k}=?")
-                vals.append(fields[k])
-        for k in ("password", "phone_code"):
-            if k in fields:
-                sets.append(f"{k}=?")
-                vals.append(_encrypt_field(fields[k], phone_for_aad))
-        if not sets:
-            return True
-        vals.append(account_id)
-        try:
-            conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
-        except sqlite3.IntegrityError as e:
-            conn.rollback()
-            # 主更新失败回滚会连带撤销 _row_to_account 的明文自愈；凭据不留明文优先，
-            # 用已解密值重放自愈并独立提交（幂等，仅原行确为明文时生效）。2026-08-27
-            for k in ("password", "phone_code"):
-                raw = row[k]
-                if raw and not _is_encrypted_value(raw) and cur_a.get(k):
-                    conn.execute(
-                        f"UPDATE accounts SET {k}=? WHERE id=?",
-                        (_encrypt_field(cur_a[k], cur_a.get("phone", "")), account_id),
-                    )
-            conn.commit()
-            _convert_integrity_error(e)
-        return True
-
-    with _conn_lock:
-        _begin_immediate(conn)
-        try:
-            result = _body()
-            conn.commit()
-            return result
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def set_account_deleted(account_id, deleted, deleted_at="", deleted_by=""):
-    """软删除/恢复账号；deleted_by 留痕删除来源（用户邮箱 / 'admin' / ''=系统），v10。
-
-    恢复（deleted=0）时 deleted_by 一并清空，避免残留旧来源被后续语义误读。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute(
-            "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
-            (1 if deleted else 0, deleted_at, deleted_by if deleted else "", account_id),
-        )
-
-
-def purge_account(account_id):
-    conn = get_conn()
-    with _conn_lock, conn:
-        row = conn.execute("SELECT phone FROM accounts WHERE id=?", (account_id,)).fetchone()
-        conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
-        if row is not None:
-            _cascade_phone_owned(conn, [row["phone"]])  # 连带清理自选/会话/事件/校验任务
-
-
-def update_account_status(account_id, status, reject_reason=None):
-    conn = get_conn()
-    with _conn_lock, conn:
-        if reject_reason is None:
-            conn.execute("UPDATE accounts SET status=? WHERE id=?", (status, account_id))
-        else:
-            conn.execute("UPDATE accounts SET status=?, reject_reason=? WHERE id=?", (status, reject_reason, account_id))
-
-
-def set_user_paused(account_id, paused):
-    """用户自暂停/恢复签到（user_paused 0/1）。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute("UPDATE accounts SET user_paused=? WHERE id=?", (1 if paused else 0, account_id))
-
-
-def move_account(account_id, direction):
-    """direction: -1 上移 / 1 下移。事务内与相邻账号交换 sort_order。"""
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            rows = conn.execute(
-                "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
-            ).fetchall()
-            pos = next((i for i, r in enumerate(rows) if r["id"] == account_id), None)
-            if pos is None:
-                conn.rollback()
-                return False
-            target = pos + direction
-            if target < 0 or target >= len(rows):
-                conn.rollback()
-                return False
-            a, b = rows[pos]["sort_order"], rows[target]["sort_order"]
-            conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (b, rows[pos]["id"]))
-            conn.execute("UPDATE accounts SET sort_order=? WHERE id=?", (a, rows[target]["id"]))
-            conn.commit()
-            return True
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
-
-
-def delete_accounts_by_owner(owner):
-    """删除某用户提交的全部易班账号（用户删除/清空账号用，事务内）。返回删除行数。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        rows = conn.execute("SELECT phone FROM accounts WHERE owner=?", (owner,)).fetchall()
-        cur = conn.execute("DELETE FROM accounts WHERE owner=?", (owner,))
-        phones = [r["phone"] for r in rows]
-        _cascade_phone_owned(conn, phones)  # 自选/会话/事件/校验任务连带清理
-        return cur.rowcount
-
-
-def replace_accounts(accounts):
-    """整表替换：事务内清空并重插，sort_order=列表顺序 1..N。
-
-    敏感字段密文化同 add_account（AAD=手机号）。
-    ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（勿与其他写入方同时编辑）。
-    不再存在的账号连带清理自选时间片（H2 对抗性审查补：防孤儿 pref 虚高拥挤度）。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        old = conn.execute("SELECT phone FROM accounts").fetchall()
-        conn.execute("DELETE FROM accounts")
-        keep = {a.get("phone", "") for a in accounts}
-        # 2026-08-28 审查 M1 补：整表替换时移除的账号原先只清 time_prefs，
-        # 漏清会话缓存（凭据残留）。保留的账号不动，避免无谓的重新登录。
-        # 同样漏清 sign_events——整表替换移除的账号，其
-        # 明文手机号（sign_events.phone 明文落库）会驻留至 180 天保留期满；
-        # 对齐 purge_account/delete_accounts_by_owner 等 7 条物理删除路径的
-        # 三连带清理（M2 覆盖清单外的第 8 条路径）。
-        removed = [r["phone"] for r in old if r["phone"] not in keep]
-        _cascade_phone_owned(conn, removed)
-        for i, a in enumerate(accounts):
-            try:
-                conn.execute(
-                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at, user_paused) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        i + 1,
-                        a.get("name", ""),
-                        a.get("phone", ""),
-                        _encrypt_field(a.get("password"), a.get("phone", "")),
-                        a.get("phone_model", ""),
-                        _encrypt_field(a.get("phone_code"), a.get("phone", "")),
-                        a.get("owner", "admin"),
-                        a.get("status", "active"),
-                        a.get("reject_reason", ""),
-                        1 if a.get("deleted") else 0,
-                        a.get("deleted_at", ""),
-                        1 if a.get("user_paused") else 0,
-                    ),
-                )
-            except sqlite3.IntegrityError as e:
-                conn.rollback()
-                _convert_integrity_error(e)
-    return len(accounts)
-
-
-def batch_account_ops(ops):
-    """在一个事务内批量执行账号操作（Phase 1：整体成功或整体回滚）。
-
-    ops 为 (op, params) 列表，op 支持：
-      ("update_status", account_id, status, reject_reason)
-      ("set_deleted", account_id, deleted, deleted_at)
-      ("purge", account_id)
-    """
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            for op in ops:
-                kind = op[0]
-                if kind == "update_status":
-                    _, account_id, status, reject_reason = op
-                    conn.execute(
-                        "UPDATE accounts SET status=?, reject_reason=? WHERE id=?",
-                        (status, reject_reason, account_id),
-                    )
-                elif kind == "set_deleted":
-                    _, account_id, deleted, deleted_at = op
-                    try:
-                        # 批量操作仅管理员可达：留痕 'admin'（v10 用户撤销仅限本人自删行）
-                        conn.execute(
-                            "UPDATE accounts SET deleted=?, deleted_at=?, deleted_by=? WHERE id=?",
-                            (1 if deleted else 0, deleted_at, "admin", account_id),
-                        )
-                    except sqlite3.IntegrityError as e:
-                        _convert_integrity_error(e)
-                elif kind == "purge":
-                    _, account_id = op
-                    row = conn.execute(
-                        "SELECT phone FROM accounts WHERE id=?", (account_id,)
-                    ).fetchone()
-                    conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
-                    if row is not None:
-                        _cascade_phone_owned(conn, [row["phone"]])
-                else:
-                    raise ValueError(f"未知批量账号操作: {kind}")
-            conn.commit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                conn.rollback()
-            raise
 
 
 def _record_purge_event(conn, table, kind, cutoff, deleted, before, after, audit_seq=None):
@@ -1431,169 +648,6 @@ def _table_min_max(conn, table):
     return row["mn"], row["mx"]
 
 
-def last_time_pref_set_at(phone):
-    """指定账号最近一次自选时间片保存时间（切换冷却判定用；无记录返回 None）。
-
-    按被选账号（审计 target=hash_phone(phone)（匿名稳定键））而非操作用户计价（H3/H4 对抗性审查）：
-    - 多管理员共享 admin 账号时冷却全局生效（管理员 A 保存后 B 立即改选也被拦截）；
-    - 改手机号/删号重提交新号后，新 phone 无历史审计 → 不被旧账号冷却误伤。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            target = hash_phone(phone) if phone else phone or ""
-            row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE action='time_pref_set' AND target=? "
-                "ORDER BY id DESC LIMIT 1",
-                (target,),
-            ).fetchone()
-            return row["ts"] if row else None
-    except Exception as e:
-        raise RuntimeError(f"查询自选保存时间失败: {e}") from e
-
-
-def time_pref_set_count_since(phone, since_ts):
-    """指定账号在 since_ts 之后的保存次数（弹性冷却高频判定用；ts 定宽字符串可比较）。
-
-    审计 target=hash_phone(phone)（匿名稳定键）。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            target = hash_phone(phone) if phone else phone or ""
-            row = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE action='time_pref_set' "
-                "AND target=? AND ts >= ?",
-                (target, since_ts),
-            ).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        raise RuntimeError(f"统计自选保存次数失败: {e}") from e
-
-
-def last_pause_at(username):
-    """指定用户最近一次暂停签到时间（暂停冷却判定用；恢复不计，按用户计价）。
-
-    审计 target 为脱敏手机号，故按 username 关联；多管理员共享账号各自独立计价
-    （暂停/恢复冷却仅防噪音，绕过危害极小，可接受）。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT ts FROM audit_logs WHERE username=? AND action='my_account_pause' "
-                "ORDER BY id DESC LIMIT 1",
-                (username or "",),
-            ).fetchone()
-            return row["ts"] if row else None
-    except Exception as e:
-        raise RuntimeError(f"查询暂停时间失败: {e}") from e
-
-
-def pause_count_since(username, since_ts):
-    """指定用户在 since_ts 之后的暂停次数（弹性冷却高频判定用）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE username=? "
-                "AND action='my_account_pause' AND ts >= ?",
-                (username or "", since_ts),
-            ).fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        raise RuntimeError(f"统计暂停次数失败: {e}") from e
-
-
-def update_account_status_if(account_id, new_status, expect_status, reject_reason=None):
-    """CAS 更新账号状态：仅当当前状态仍是 expect_status 时才写。返回是否写入。
-
-    人类决定优先：管理员在异步校验执行期间审批（pending → active）后，迟到的
-    校验结果不得把管理员的决定静默回滚；反向（管理员已拒绝）同样不覆盖，
-    以保留管理员写的理由。按 id 定位（accounts.phone 全局唯一，但 id 不受改绑影响）。
-    """
-    conn = get_conn()
-    with _conn_lock, conn:
-        if reject_reason is None:
-            cur = conn.execute(
-                "UPDATE accounts SET status=? WHERE id=? AND status=?",
-                (new_status, account_id, expect_status),
-            )
-        else:
-            cur = conn.execute(
-                "UPDATE accounts SET status=?, reject_reason=? WHERE id=? AND status=?",
-                (new_status, reject_reason, account_id, expect_status),
-            )
-        return cur.rowcount == 1
-
-
-# ---------------------------------------------------------------------------
-# 用户自选时间片（调度 v2，docs/design/plan-scheduler-v2.md 2.2）
-# ---------------------------------------------------------------------------
-def get_time_prefs():
-    """全量自选 {phone: {"slot_min": int, "updated_at": str}}（build_schedule 每次启动读一次）。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            rows = conn.execute("SELECT phone, slot_min, updated_at FROM time_prefs").fetchall()
-            return {r["phone"]: {"slot_min": r["slot_min"], "updated_at": r["updated_at"]} for r in rows}
-    except Exception as e:
-        logger.warning("读取 time_prefs 失败: %s", e)
-        return {}
-
-
-def get_time_pref(phone):
-    """单个账号自选；无则 None。"""
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT phone, slot_min, updated_at FROM time_prefs WHERE phone=?", (phone,)
-            ).fetchone()
-            return None if row is None else {"slot_min": row["slot_min"], "updated_at": row["updated_at"]}
-    except Exception as e:
-        logger.warning("读取 time_pref %s 失败: %s", phone, e)
-        return None
-
-
-def set_time_pref(phone, slot_min, updated_at):
-    """保存/更新自选（UPSERT）。slot_min 为窗口内分钟数（06:30 → 390，5 对齐）。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute(
-            "INSERT INTO time_prefs (phone, slot_min, updated_at) VALUES (?,?,?) "
-            "ON CONFLICT(phone) DO UPDATE SET slot_min=excluded.slot_min, updated_at=excluded.updated_at",
-            (phone, slot_min, updated_at),
-        )
-
-
-def clear_time_pref(phone):
-    """清除自选（回退自动错峰）。"""
-    conn = get_conn()
-    with _conn_lock, conn:
-        conn.execute("DELETE FROM time_prefs WHERE phone=?", (phone,))
-
-
-def time_pref_stats():
-    """每片已选人数（拥挤度）：[{slot_min, count}]，按 slot_min 升序。
-
-    只统计未删除账号的自选，避免已注销/已软删账号的残留 pref 虚高拥挤度。
-    """
-    try:
-        with _conn_lock:
-            conn = get_conn()
-            rows = conn.execute(
-                "SELECT t.slot_min, COUNT(*) AS count "
-                "FROM time_prefs t "
-                "JOIN accounts a ON a.phone = t.phone AND a.deleted = 0 "
-                "GROUP BY t.slot_min ORDER BY t.slot_min"
-            ).fetchall()
-            return [{"slot_min": r["slot_min"], "count": r["count"]} for r in rows]
-    except Exception as e:
-        logger.warning("time_prefs 统计失败: %s", e)
-        return []
-
-
 def _cascade_phone_owned(conn, phones):
     """账号物理删除时按手机号连带清理全部以 phone 为键的业务数据（须在调用方事务内）。
 
@@ -1629,186 +683,3 @@ def _clear_session_cache_by_phones(conn, phones):
     if not phones:
         return
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
-
-
-# ---------------------------------------------------------------------------
-# 会话 Cookie 缓存（v8，docs/research-lumjiel-core-sign-20260822.md §七）
-# ---------------------------------------------------------------------------
-# 会话有效期两道判据（2026-08-31 公测复盘后重定）：
-# ① 主判据 = 同一业务日：签到是"一天一签"的业务，缓存只在当天内复用（同日重试 /
-#    首轮到兜底补签 / 当天手动重试）。隔夜缓存收益最小、风险最大——生产当天 3 个
-#    账号正是复用了前一晚 20:35 写入、被服务端作废的会话。
-# ② 护栏 = TTL 小时数：同一天内的附加上限，默认由 12 降到 6（同日窗口最长 80 分钟，
-#    6 小时已极宽）。旧口径"调大 TTL 以支持跨天复用"已被 ① 取代：再调大也解锁不了
-#    跨天复用，只能放宽同日内的时长。
-# 服务端会话真实有效期未知，取值原则不变：宁多登一次，不可拿过期凭据撞风控。
-SESSION_CACHE_TTL_HOURS_DEFAULT = 6
-# TTL 钳制边界（M13）：上限 72h（再大会把远过期凭据反复送去撞风控/已改密账号），
-# 下限 1h（低于 1h 缓存命中形同虚设）。越界不静默接受，回默认并告警。
-SESSION_CACHE_TTL_HOURS_MIN = 1.0
-SESSION_CACHE_TTL_HOURS_MAX = 72.0
-
-# L-03 密钥分离：session_cache 加密密钥不再直接复用账号凭据主密钥，
-# 改由 YIBAN_ACCOUNTS_KEY 经 HKDF-SHA256 派生（info/salt 固定常量）。
-# 主密钥泄露面的缩小之外，更防一类跨用途事故：cookie 缓存密文与账号密码密文
-# 同钥同体系，任一用途的密文/明文对（如已知自己密码的账号）可为攻击者提供
-# 验证主密钥的样本；派生隔离后互不可推。HKDF 每次现算（约 3 次 HMAC，开销
-# 微秒级），不缓存派生结果——主密钥轮换后立即生效。
-# 派生密钥变更后旧缓存解密必然失败 → 读侧按未命中清行，用户重登即可重建
-# （会话缓存本就是可再生优化数据，此失效路径可接受）。
-SESSION_CACHE_HKDF_INFO = b"yiban-session-cache-v1"
-
-def _session_cache_now():
-    """会话缓存统一时钟（东八区裸时间，与库内 %Y-%m-%d %H:%M:%S 串同制）。
-
-    写入与过期判定必须用同一个钟：宿主为 UTC 时若写入取北京时间、判定取本地时间，
-    updated_at 会凭空"领先"8 小时，TTL 判据永远不会命中。东八区口径统一由
-    `yiban.clock` 提供（本处原为独立实现的固定 +8 时区，已收口到唯一时钟）。
-    """
-    return clock.now()
-
-
-def _session_cache_key():
-    """session_cache 专用加密密钥（HKDF-SHA256 派生，与账号凭据加密密钥隔离）。"""
-    return HKDF(
-        account_crypto.load_key(_connection._env_file),
-        32,
-        salt=SESSION_CACHE_HKDF_INFO,
-        hashmod=SHA256,
-        context=SESSION_CACHE_HKDF_INFO,
-    )
-
-
-def _session_cache_ttl_hours():
-    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 6）：缺失/非法/非正回退默认。
-
-    M13：配置越界（<1h 或 >72h）同样回退默认并告警——此前可配 8760h 之类
-    超大值，把早已失效的会话凭据跨季反复复用，等于放大风控与撞库面。
-    """
-    raw = os.environ.get("YIBAN_SESSION_TTL_HOURS", "").strip()
-    if not raw:
-        return SESSION_CACHE_TTL_HOURS_DEFAULT
-    try:
-        v = float(raw)
-    except ValueError:
-        logger.warning("配置 YIBAN_SESSION_TTL_HOURS=%r 非法，回退默认 %s 小时", raw, SESSION_CACHE_TTL_HOURS_DEFAULT)
-        return SESSION_CACHE_TTL_HOURS_DEFAULT
-    if v <= 0:
-        logger.warning("配置 YIBAN_SESSION_TTL_HOURS=%s 非正，回退默认 %s 小时", raw, SESSION_CACHE_TTL_HOURS_DEFAULT)
-        return SESSION_CACHE_TTL_HOURS_DEFAULT
-    if not (SESSION_CACHE_TTL_HOURS_MIN <= v <= SESSION_CACHE_TTL_HOURS_MAX):
-        logger.warning(
-            "配置 YIBAN_SESSION_TTL_HOURS=%s 超出钳制范围 [%s, %s]，回退默认 %s 小时",
-            raw, SESSION_CACHE_TTL_HOURS_MIN, SESSION_CACHE_TTL_HOURS_MAX,
-            SESSION_CACHE_TTL_HOURS_DEFAULT,
-        )
-        return SESSION_CACHE_TTL_HOURS_DEFAULT
-    return v
-
-
-def get_session_cache(phone):
-    """读取会话缓存：返回 {"cookies": <明文 JSON 串>, "csrf": str, 时间戳}，未命中返回 None。
-
-    超过 TTL 的行读时顺手清除（updated_at 为定宽 %Y-%m-%d %H:%M:%S，字符串比较
-    等价时间序，与库内其他 ts 比较口径一致）。缓存是可再生的优化数据，解密失败
-    （换密钥/密文损坏）按未命中处理并清行，不阻断签到重新登录。
-    M14：csrf 列同为准密文（AES-GCM 对象）。读侧遇到旧版明文行（非密文对象）
-    一律视为失效——csrf 是免登录复用的关键凭据，明文残留行不可信，整行清除重登。
-    """
-    with _conn_lock:
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT cookies_ct, csrf, created_at, updated_at FROM session_cache WHERE phone=?",
-            (phone,),
-        ).fetchone()
-        if row is None:
-            return None
-        now = _session_cache_now()
-        ttl_hours = _session_cache_ttl_hours()
-        cutoff = (now - datetime.timedelta(hours=ttl_hours)).strftime("%Y-%m-%d %H:%M:%S")
-        today = now.strftime("%Y-%m-%d")
-        # 两道判据取更严者，且跨日判定排在前面：否则"昨晚 20:35 写的缓存今早 06:31
-        # 复用"会被报成"超出 TTL"，把业务日语义问题误读成秒数配置问题。
-        if row["updated_at"][:10] != today:
-            reason = f"跨业务日（缓存日 {row['updated_at'][:10]} ≠ 今日 {today}）"
-        elif row["updated_at"] <= cutoff:
-            reason = f"同日内超出 TTL {ttl_hours} 小时"
-        else:
-            reason = None
-        if reason:
-            try:
-                _begin_immediate(conn)
-                conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
-                conn.commit()
-            except Exception:
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                logger.warning("清理过期会话缓存失败: %s", phone)
-            logger.info("会话缓存作废（%s）: %s，本次真实登录", reason, phone)
-            return None
-        try:
-            obj = json.loads(row["cookies_ct"])
-            key = _session_cache_key()  # L-03：HKDF 派生密钥，与账号凭据密钥隔离
-            cookies = account_crypto.decrypt_password(obj, key, phone)
-            # M14：csrf 解密（旧明文行在此抛错 → 整行按未命中清除）
-            csrf_obj = json.loads(row["csrf"])
-            if not account_crypto.is_encrypted(csrf_obj):
-                raise ValueError("csrf 字段不是密文对象（旧版明文行）")
-            csrf = account_crypto.decrypt_password(csrf_obj, key, phone)
-        except (ValueError, TypeError, json.JSONDecodeError) as e:
-            logger.warning("会话缓存解密失败（按未命中清除重登）: %s: %s", phone, e)
-            with contextlib.suppress(Exception):
-                conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
-                conn.commit()
-            return None
-        return {
-            "cookies": cookies,
-            "csrf": csrf,
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
-
-
-def set_session_cache(phone, cookie_json, csrf):
-    """写入/更新会话缓存（UPSERT）。cookie_json 为明文 cookie jar JSON 串，
-    落库前 AES-GCM 加密（AAD=phone，复用 account_crypto，与密码字段同体系）；
-    M14：csrf 与 cookies 同等加密保护（csrf 也是免登录复用的认证凭据，
-    明文落库使库文件泄露即可直接伪造请求）；更新时保留首次 created_at，
-    只刷新 updated_at。
-
-    BEGIN IMMEDIATE：跨进程写锁（signin 与 web 并存时串行化写路径）。
-    """
-    now = _session_cache_now().strftime("%Y-%m-%d %H:%M:%S")
-    key = _session_cache_key()  # L-03：HKDF 派生密钥，与账号凭据密钥隔离
-    cookies_ct = json.dumps(
-        account_crypto.encrypt_password(str(cookie_json), key, phone)
-    )
-    csrf_ct = json.dumps(account_crypto.encrypt_password(str(csrf), key, phone))
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            conn.execute(
-                "INSERT INTO session_cache (phone, cookies_ct, csrf, created_at, updated_at) "
-                "VALUES (?,?,?,?,?) "
-                "ON CONFLICT(phone) DO UPDATE SET cookies_ct=excluded.cookies_ct, "
-                "csrf=excluded.csrf, updated_at=excluded.updated_at",
-                (phone, cookies_ct, csrf_ct, now, now),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-
-
-def clear_session_cache(phone):
-    """清除单账号会话缓存（会话失效/风控类失败联动；行不存在时无操作）。"""
-    conn = get_conn()
-    with _conn_lock:
-        try:
-            _begin_immediate(conn)
-            conn.execute("DELETE FROM session_cache WHERE phone=?", (phone,))
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise

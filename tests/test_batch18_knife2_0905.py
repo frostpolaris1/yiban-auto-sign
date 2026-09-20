@@ -32,6 +32,9 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 安全域实现模块（口令校验的另一份绑定在其上；见 Batch18Knife2WebTest 的登录用例）
+import web.security as web_security  # noqa: E402
+
 # 直连实现包（旧的 scripts/notify.py 兼容壳已删除）：本类打的是**发送层**内部名
 # （`_send_serverchan` 在 transport 里被 send 调用，打在包上拦不住），故 `notify`
 # 绑 transport；账本内部态走 ledger 子模块。
@@ -302,8 +305,14 @@ class Batch18Knife2WebTest(unittest.TestCase):
         """验收：3 次登录失败 → notify.send 收到 ledger="login_fail"（走真实
         send_notification 验证透传链路）；urgent 仍按喷洒判据为 False。"""
         c = self.webapp.create_app().test_client()
+        # 口令校验的**两份绑定都要打**：`webapp.check_password_hash` 覆盖注册用户路径
+        # （路由经 `m.*` 取 app 侧绑定），`web_security.check_password_hash` 覆盖内置
+        # 管理员路径（`web/security.py` 的 verify_admin 用该模块自己的绑定，app 侧打桩
+        # 到不了它）。本 block 内 verify_admin 已被打成 False 短路内置路径，security 侧
+        # 这一桩是防"日后去掉 verify_admin 桩"时真实 scrypt 悄悄回流的兜底。
         with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
              mock.patch.object(self.webapp, "check_password_hash", return_value=False), \
+             mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp.notify, "send") as nsend:
             for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
@@ -323,8 +332,10 @@ class Batch18Knife2WebTest(unittest.TestCase):
         （3+2=5 次即锁定）；若未截断则第二键独立计数、第 5 次仍是 401。"""
         c = self.webapp.create_app().test_client()
         long_a, long_b = "a" * 200, "a" * 128 + "b" * 72
+        # 两份 check_password_hash 绑定同 test_m8_login_alert_routed_to_loginfail_ledger。
         with mock.patch.object(self.webapp, "verify_admin", return_value=False), \
              mock.patch.object(self.webapp, "check_password_hash", return_value=False), \
+             mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
             for _ in range(3):

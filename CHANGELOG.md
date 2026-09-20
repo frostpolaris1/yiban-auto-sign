@@ -34,7 +34,9 @@
 **变更**
 - 数据库层按职责拆分：连接、审计链、事件统计、迁移、用户、每日清理各成一处，行为、数据与配置不变，账号数据无需迁移。
 - 网页后端按功能域拆分：全部页面与接口归入独立模块，地址、权限与行为不变。
-- 日志通道名细分：上述模块的日志从统一的 `yiban.db` 改为各自的模块名（如 `yiban.store.migrations`），日志内容与格式不变；按旧通道名过滤日志的部署需要同步调整过滤条件。
+- 数据库层余下各域继续拆开：账号数据、会话缓存、时间偏好、追踪哈希、时钟元数据各成一处，数据访问门面只留启动编排、跨域粘合与转发面；读写行为、库结构与配置不变，账号数据无需迁移。
+- 网页后端余下的实现继续拆开：安全判定（内置管理员会话与口令校验、IP 计数限速）与页面渲染/站点展示各成独立模块，通知告警、容量、通道健康、日志、`.env` 读写等按域归入服务层；页面与接口地址、权限与行为不变。
+- 日志通道名细分：上述模块的日志从统一的 `yiban.db` 改为各自的模块名（本批新增 `yiban.store.session_cache`、`yiban.store.time_prefs`、`yiban.store.tracking`、`yiban.store.clock_meta`，此前已有 `yiban.store.migrations`、`yiban.store.accounts`、`yiban.store.users`、`yiban.store.audit_chain`、`yiban.store.events`、`yiban.store.cleanup`、`yiban.store.claims`、`yiban.store.verify_jobs`），日志内容与格式不变；网页后端各模块沿用原有的 `web` 通道（通道名未变）。按旧通道名过滤日志的部署需要同步调整过滤条件。
 
 ## [v0.4.4] - 2026-09-16 · 登录流程与通知模块整理
 

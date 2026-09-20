@@ -584,7 +584,7 @@ def main():
     except ValueError as e:
         # 修复轮1③：显式 --env 指向不存在的文件 → 立即退出。本工具随后会写 .env、
         # 写暂存文件、写审计链，路径打错时若继续就会在该位置凭空造出一份密钥源，
-        # 把留痕用第三把钥匙签坏（正是本任务要治的病症）。
+        # 把留痕用第三把钥匙签坏（正是这道校验要治的病症）。
         print(f"错误：{e}")
         sys.exit(2)
     env_path = key_source or account_crypto.DEFAULT_ENV_FILE
