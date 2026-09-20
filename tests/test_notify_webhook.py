@@ -783,7 +783,7 @@ def test_last_message_filling_budget_still_notifies(monkeypatch, caplog):
     """修复轮①：最后一条恰好打满、之后不再有新的 send 调用时，告知仍必须能取到。
 
     旧实现只在"下一次尝试被拒"时才补标记——当日再无新告警就等于静默，
-    而这正是本任务要治的病。
+    而这正是要治的病。
     """
     _configure_serverchan(monkeypatch, cooldown=0)
     _set(monkeypatch, DAILY_MAX="2")

@@ -10,12 +10,20 @@ supervisord 直接执行——此时 `sys.path[0]` 是 `scripts/`，而共享包
 导入失败会立刻以非零码退出，进入主循环则超时——两种情况都能区分。
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 包导入引导块的判据：真正的引导一定会在仓库根/scripts 上插 sys.path，
+# 惯用写法是先算一个根路径变量再插（`_REPO_ROOT = ...`）——两种写法都算引导；
+# 只在 docstring/注释里出现字样不算（本仓曾有过这样的模块：说明文字里有
+# `_REPO_ROOT`，代码里一行引导都没有，却通过了早期那条存在性判据）。
+BOOT = re.compile(r"(?m)^\s*(?:_REPO_ROOT\s*=|sys\.path\.insert)")
+YIBAN_IMPORT = re.compile(r"(?m)^\s*(?:from|import)\s+yiban\b")
 
 
 class DeployEntryImportTest(unittest.TestCase):
@@ -64,23 +72,25 @@ class DeployEntryImportTest(unittest.TestCase):
     def test_all_local_package_importers_are_bootstrapped(self):
         """凡导入 yiban 的运行时脚本，都必须自己保证仓库根在 sys.path 上。
 
-        结构断言（此处无可执行的行为判据：脚本一旦跑起来就是守护进程/真实签到）。
+        判据是**真实存在引导块且先于首个 yiban 导入**，不是"文本里出现过引导字样"：
+        只在 docstring/注释里提一句 `_REPO_ROOT` 不算引导（`web/render.py` 曾如此通过
+        存在性判据）。结构断言（此处无可执行的行为判据：脚本一旦跑起来就是守护进程/
+        真实签到）。
         """
-        import re
-        roots = ["scripts", "docker", "web"]
         problems = []
-        for d in roots:
+        for d in ("scripts", "docker", "web"):
             for name in sorted(os.listdir(os.path.join(BASE, d))):
                 if not name.endswith(".py"):
                     continue
                 path = os.path.join(BASE, d, name)
                 with open(path, encoding="utf-8") as f:
                     text = f.read()
-                if not re.search(r"^\s*(from yiban|import yiban)", text, re.M):
+                m_imp = YIBAN_IMPORT.search(text)
+                if not m_imp:
                     continue
-                if "_REPO_ROOT" in text or "dirname(os.path.dirname" in text:
-                    continue
-                problems.append(f"{d}/{name}")
+                m_boot = BOOT.search(text)
+                if m_boot is None or m_boot.start() > m_imp.start():
+                    problems.append(f"{d}/{name}")
         self.assertEqual(problems, [], f"以下脚本导入 yiban 却没有包导入引导：{problems}")
 
     def test_bootstrap_precedes_yiban_import(self):
@@ -91,12 +101,8 @@ class DeployEntryImportTest(unittest.TestCase):
         ModuleNotFoundError: No module named 'yiban'——而文件里"有引导"，上面那条
         存在性断言看不出来。这里按**出现位置**判定，把顺序钉死。
         """
-        import re
-        roots = ["scripts", "docker", "web", "yiban", "tests"]
-        boot = re.compile(r"(?m)^\s*(?:_REPO_ROOT\s*=|sys\.path\.insert)")
-        imp = re.compile(r"(?m)^\s*(?:from|import)\s+yiban\b")
         bad = []
-        for d in roots:
+        for d in ("scripts", "docker", "web", "yiban", "tests"):
             for dirpath, dirs, files in os.walk(os.path.join(BASE, d)):
                 dirs[:] = [x for x in dirs if x != "__pycache__"]
                 for name in sorted(files):
@@ -105,7 +111,7 @@ class DeployEntryImportTest(unittest.TestCase):
                     path = os.path.join(dirpath, name)
                     with open(path, encoding="utf-8") as f:
                         text = f.read()
-                    m_boot, m_imp = boot.search(text), imp.search(text)
+                    m_boot, m_imp = BOOT.search(text), YIBAN_IMPORT.search(text)
                     if m_boot and m_imp and m_imp.start() < m_boot.start():
                         rel = os.path.relpath(path, BASE).replace("\\", "/")
                         line = text[:m_imp.start()].count("\n") + 1

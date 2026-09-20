@@ -26,10 +26,23 @@ import html
 import logging
 import os
 import re
+import sys
 
-import email_policy
+# 包导入引导：本模块按**文件路径**被直接导入时（`web/app.py` 的别名加载、部署入口的
+# 独立探针等），`sys.path[0]` 只是该文件所在目录，仓库根与 scripts/ 都不在上面。
+# 本模块 `import email_policy`（scripts/ 下的域名审查实现）与 `from yiban import ...`
+# 取共享包，故**两段都要**先入 sys.path——缺任一段都会在无引导环境里 ModuleNotFoundError。
+# 已存在则不重复插入。本模块**刻意不叫 `_REPO_ROOT`**：该名字是 web.app 注入本模块的
+# 文档根参数名，render 拆分契约禁止本模块持有同名绑定（防「另存一份绑定」以更隐蔽的
+# 形态回归），引导元变量因此另起一名。
+_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _p in (os.path.join(_PACKAGE_ROOT, "scripts"), _PACKAGE_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-from yiban import window as yb_window
+import email_policy  # noqa: E402
+
+from yiban import window as yb_window  # noqa: E402
 
 # 与 web.app 同名的日志通道：合规文档渲染失败的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")

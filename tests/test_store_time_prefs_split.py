@@ -21,7 +21,7 @@
    随后的 `setattr` 恢复让它重新可读——`mock.patch.object` / `monkeypatch.delattr` 的撤销
    依赖这条，删不掉的后果是原值永不恢复、打桩残留。
 
-另外钉住本任务唯一可观察的行为面变化：日志通道由 `yiban.db` 细分为
+另外钉住本次迁出唯一可观察的行为面变化：日志通道由 `yiban.db` 细分为
 `yiban.store.time_prefs`（文案未改），旧通道不再收到本域日志。
 """
 import contextlib

@@ -45,7 +45,7 @@ from flask import (
     redirect,  # noqa: F401  # 页面路由已入 web/routes/pages.py，此处仅为保持 web.app 的导入面不变
     render_template,
     request,
-    send_file,  # noqa: F401  # 同上（web.app.<名字> 仍可 import，打桩面零损失）
+    send_file,  # noqa: F401  # 日志导出已入 web/routes/data.py，保留 web.app.<名字> 可 import（打桩面零损失）
     session,
     url_for,
 )
@@ -60,6 +60,12 @@ _SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
 for _p in (_SCRIPTS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+# scripts/ 下的裸模块（同属"共享模块"段）：三者本模块均无自用点，保留供 web.app.<名字>
+# 取用（routes 经 m.* 取用、测试按属性打桩）。位置随包导入引导之后、web./yiban. 之前。
+import child_env  # noqa: E402,F401  # 签到子进程环境注入已入 web/routes/signin_api.py
+import email_policy  # noqa: E402,F401  # 域名审查实现已入 web/render.py
+import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出
 
 # 渲染层实现（web/render.py）：合规文档与站点展示族的真源。本模块只转发，并在转发时
 # 注入本模块持有的模块级状态（`_REPO_ROOT` / `_doc_cache` / `ENV_FILE` / `read_env`）
@@ -207,7 +213,8 @@ from web.services.env_io import (  # noqa: E402
     read_env,
 )
 from web.services.executor_env import (  # noqa: E402
-    # 同上：本模块已无自用点，保留为 web.app.<名字> 的兼容面
+    # 名字面零损失：执行体清单及其 .env 键已入 web/services/executor_env.py，
+    # 本模块已无自用点，保留为 web.app.<名字> 的兼容面（routes 经 m.* 取用）
     _executor_activity,  # noqa: F401
     _executor_row_payload,  # noqa: F401
     _last_executors,  # noqa: F401
@@ -244,7 +251,8 @@ from web.services.manual_sign import (  # noqa: E402
     _wait_signin_proc,  # noqa: F401
 )
 from web.services.measure import (  # noqa: E402
-    # 同上：实现见 web/services/measure.py，此处保留 web.app.<名字> 的兼容面；
+    # 名字面零损失：现场实测的状态文件与冷却判定已入 web/services/measure.py，
+    # 保留 web.app.<名字> 的兼容面；
     # `_measure_state_path` / `_write_measure_state` 另被本模块的转发包装注入
     MEASURE_STATE_FILE,  # noqa: F401
     _measure_cooldown_remaining,  # noqa: F401
@@ -270,7 +278,8 @@ from web.services.notify_mail import (  # noqa: E402
     _review_reject_mail,  # noqa: F401
 )
 from web.services.signstatus import (  # noqa: E402
-    # 同上：实现见 web/services/signstatus.py，此处保留 web.app.<名字> 的兼容面；
+    # 名字面零损失：签到窗口/运行时段判定与系统信息已入 web/services/signstatus.py，
+    # 保留 web.app.<名字> 的兼容面；
     # `_day_off_reason` / `_env_flag` / `_in_sign_window` 另被本模块的转发包装注入
     _TRUTHY_LITERALS,  # noqa: F401
     _day_off_reason,
@@ -279,7 +288,8 @@ from web.services.signstatus import (  # noqa: E402
     check_connectivity,  # noqa: F401
 )
 from web.services.verify_queue import (  # noqa: E402
-    # 同上：实现见 web/services/verify_queue.py，此处保留 web.app.<名字> 的兼容面；
+    # 名字面零损失：在线校验的执行闸门、异步任务与失败落库已入
+    # web/services/verify_queue.py，保留 web.app.<名字> 的兼容面；
     # `run_verify_with_gate` / `verify_async_enabled` / `_account_verify_enabled`
     # 另被本模块的转发包装注入（席位、配额判定、只读验证、ENV_FILE 与 read_env）
     VERIFY_JOBS_MAX_PENDING,  # noqa: F401
@@ -321,9 +331,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
     """合规文档独立页（实现见 web/render.py）；摘要留空时取本模块现读的站点简介默认文案。"""
     return _render._doc_page(title, body_html, icp_text, police_text, base_path, police_link,
                              description or site_description())
-import child_env  # noqa: E402,F401  # 签到子进程环境注入已入 web/routes/signin_api.py，保留供 web.app.<名字> 取用
-import email_policy  # noqa: E402,F401  # 域名审查实现已入 web/render.py，保留供 web.app.<名字> 取用
-import signin  # noqa: E402,F401  # 探针/注册验证与容量公式已随域迁出，保留供 web.app.<名字> 取用
+
 
 # 告警两条通道的实现都在包内：A 线管理员邮件（SMTP，零依赖；不配置则不启用）
 # 与 Webhook 推送（Server酱/自定义 URL，加密配置 + 节流 + 响应检查）。
@@ -758,12 +766,18 @@ def _log_lines_for(date_str):
 
 
 def _today_has_logs():
-    """今天是否有 yiban 签到日志行（实现见 web/services/logs.py）；注入同上。"""
+    """今天是否有 yiban 签到日志行（实现见 web/services/logs.py）。
+
+    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
+    """
     return _logs_svc._today_has_logs(log_path_for, _tail_lines)
 
 
 def _most_recent_log_date(max_days=30):
-    """查找最近有日志的日期（实现见 web/services/logs.py）；注入同上。"""
+    """查找最近有日志的日期（实现见 web/services/logs.py）。
+
+    注入同 `_log_lines_for`：日志路径与倒读实现都现取本模块的 `LOG_FILE` / `_tail_lines`。
+    """
     return _logs_svc._most_recent_log_date(max_days, log_path_for, _tail_lines)
 
 

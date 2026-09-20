@@ -542,7 +542,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         """修复轮1③+⑤：显式 --env 指向不存在的文件 → 非零退出，且绝不创建该文件。
 
         打错路径时若继续执行，四条 CLI 都会把该路径当作"来源已确定"，在那里新建
-        .env + 生成新审计密钥，把这次留痕用第三把钥匙签坏（正是本任务要治的病症
+        .env + 生成新审计密钥，把这次留痕用第三把钥匙签坏（正是这道校验要治的病症
         的新入口）。未显式给 --env 时不受本用例影响（见上一条用例）。
         """
         missing = os.path.join(self.keydir, "typo-deploy.env")   # 目录存在、文件不存在
@@ -2295,7 +2295,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
             self.assertEqual(r.status_code, 401, r.get_data(as_text=True))
         self.assertEqual(self._audit_rows("login_ok"), [], "失败登录绝不产生成功留痕")
         fails = self._audit_rows("login_failed")
-        self.assertEqual(len(fails), 1, "既有阈值失败留痕（第 3 次一条）不受本任务影响")
+        self.assertEqual(len(fails), 1, "既有阈值失败留痕（第 3 次一条）不受本例改动影响")
         self._assert_triple(fails[0], email)
         self.assertNotIn(bad, self._row_text(fails[0]), "失败留痕同样不得带上尝试的口令")
 
