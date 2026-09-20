@@ -31,6 +31,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import signin  # noqa: E402
 from test_rekey_key_source import _B14AlertGateBase  # noqa: E402
 
+import web.security as web_security  # noqa: E402
+
 # 生产 2026-08-31 的原始失败消息（signin.py 拼出的完整串，非构造）
 PROD_STALE_MSG = "获取签到任务失败: 未登录或登录已经超时"
 
@@ -90,9 +92,18 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         p1 = mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None)
         p1.start()
         self.addCleanup(p1.stop)
+        # p2 覆盖**注册用户**路径（路由经 `m.check_password_hash` 取 app 侧绑定）。
         p2 = mock.patch.object(self.webapp, "check_password_hash", lambda h, p: False)
         p2.start()
         self.addCleanup(p2.stop)
+        # p3 覆盖**内置管理员**路径：`web/security.py` 的 verify_admin 用的是该模块自己
+        # 从 werkzeug 导入的 check_password_hash，app 侧绑定到不了它。只打 p2 会让上面
+        # 那句"patch 掉 scrypt"对 admin 用户静默失效（本类用例打的全是 "admin" 与不存在
+        # 的邮箱，真实 scrypt 正是从 security 侧发出）。打桩目标须落在真正决定校验的那份
+        # 绑定上，否则用例看着绿、开销照付。
+        p3 = mock.patch.object(web_security, "check_password_hash", lambda h, p: False)
+        p3.start()
+        self.addCleanup(p3.stop)
 
     def _alerts(self):
         return [a for a in self.alerts if a[0] == "登录失败告警"]
