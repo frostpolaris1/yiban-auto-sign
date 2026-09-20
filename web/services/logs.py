@@ -200,7 +200,7 @@ def _most_recent_log_date(max_days, path_for, tail_lines):
 def _mask_log_phones(line):
     """日志行内全部 [11 位手机号] 脱敏（/api/logs 与 /api/my-logs 共用，防展示层漏出 PII）。
 
-    覆盖 signin.py 的行格式 `[13800138000] 结果`；其他格式（如 `账号: 138...`）
+    覆盖 signin.py 的行格式 `[11 位手机号] 结果`；其他格式（如 `账号: 138...`）
     不进日志（通知内容不落盘），单一格式正则足够。
     """
     return re.sub(r"\[(\d{11})\]", lambda m: "[" + _mask_phone(m.group(1)) + "]", line)
