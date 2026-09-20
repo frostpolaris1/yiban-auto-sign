@@ -32,11 +32,13 @@
     if (dirty) return;
     dirty = true;
     setHidden($("sn-save"), false);
+    setHidden($("sn-save-hint"), false);   // 说明与按钮同显隐：不指向看不见的按钮
     setHidden($("sn-dirty"), false);
   }
   function clearDirty() {
     dirty = false;
     setHidden($("sn-save"), true);
+    setHidden($("sn-save-hint"), true);
     setHidden($("sn-dirty"), true);
   }
   // 权限说明追加到被禁用控件的 aria-describedby：保留控件原有说明（如 info-tip 的浮层），

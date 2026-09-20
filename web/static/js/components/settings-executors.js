@@ -23,9 +23,10 @@
    type / label / state / status / activity / egress 一律直接用，前端不拼、不猜、不自己算口径；
    `disabled` 与 `fallback` 行的 `state` 是 `null`，照实渲染（分类只看 `type`）。
 
-   敏感信息（出口串可能含 user:pass@）：读接口只回**描述串**（scheme://host[:port]），
-   故编辑框一律留空并提示「留空 = 不修改」，写成功后重新 GET 再渲染（读回的是脱敏串，
-   不能拿提交值渲染）；完整串既不入 DOM 文本与属性，也不进 title、data-* 或控制台。
+   敏感信息（出口串可能含 user:pass@）：读接口只回**描述串**（scheme://host[:port]，无 userinfo，
+   可安全上屏），故编辑框**回填当前描述串**——保持原值＝不修改（后端同值不打口令门），清空后保存＝直连
+   （proxy 空串语义）；写成功后重新 GET 再渲染。完整串既不入 DOM 文本与属性，也不进 title、
+   data-* 或控制台。
    行内写入**绝不影响其他行**（后端按段写、其余行逐字保留）——见 78 号验收②。
 
    对外面：mount(options) / load() / apply(data) / save() / isDirty()。 */
@@ -476,18 +477,6 @@
       });
   }
 
-  function putRow(slot, payload, okText) {
-    return withBusy(function () {
-      banner("提交中…", "info");
-      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload).then(function (d) {
-        return load().then(function () {
-          setTip(okText + "：" + note(d), false);
-          return true;
-        });
-      }, function (e) { failTip(e, "保存"); throw e; });       // 抛出：错误留在口令框里
-    });
-  }
-
   /* ---------------- 行内弹窗：类型 + 出口（低频与破坏性动作降到正文里） ---------------- */
   // 弹窗内的 info 浮层：与模板的 {% call info(label, id) %} 同构（.info-tip + .info-pop，
   // hover/focus 双触发，CSS 里 pointer-events:none）。`up` = 向上展开——弹窗面板是
@@ -506,19 +495,15 @@
     return btn;
   }
 
-  // 文本级动作（与「保存」分属不同视觉层级）；extraClass 给破坏性动作上危险色
+  // 出口口径（用户 2026-09-20）：编辑框**回填当前描述串**（后端 describe() 只回
+  // scheme://host[:port]，无 userinfo，可安全上屏），保持原值＝不改；清空后保存＝直连
+  // （后端 proxy 空串语义）。故不再有单独的「清除出口」动作，两件事并进一个框。
   var ROW_HELP = "名称：只影响本页显示（留空＝用默认名）；故障转移行的名称固定。"
     + "类型：并行＝会被拉起；故障转移＝窗口内补签，最多一行、固定置顶；"
     + "停用＝保留出口与槽位、不拉起。改类型与删除在表格「操作」列的更多菜单里，且要输一次管理员密码。"
-    + "出口：读接口只回脱敏描述串（不含账号密码），本框不回显原值，留空＝不修改；"
-    + "改成直连请用下面的「清除出口」。写入只动这一行，其余行（含停用行的出口）逐字保留；"
-    + "改动即时写入配置，下一轮定时任务或重启执行体/容器后生效。";
-
-  function linkBtn(text, onClick, extraClass) {
-    var b = YB.el("button", { type: "button", class: "linklike " + (extraClass || ""), text: text });
-    b.addEventListener("click", onClick);
-    return b;
-  }
+    + "出口：框内回填的是当前生效出口（已脱敏，不含账号密码），保持原值＝不修改；"
+    + "填完整代理串＝换成新出口，清空后保存＝改为直连。写入只动这一行，"
+    + "其余行（含停用行的出口）逐字保留；改动即时写入配置，下一轮定时任务或重启执行体/容器后生效。";
 
   function openRow(row) {
     if (!lastData) { setTip("数据尚未加载完成", true); return null; }
@@ -564,14 +549,18 @@
     ]));
 
     var inputId = "set-exec-modal-egress";
+    // 回填当前描述串（后端 describe() 已脱敏，无 userinfo）：保持原值＝不改，
+    // 用户在原值基础上直接编辑即可（用户 2026-09-20：留空不修改不应留在框外说明里）。
+    var curEgress = row.egress || "直连（本机出口）";
     wrap.appendChild(YB.el("div", { class: "field" }, [
-      YB.el("label", { class: "field-label", for: inputId, text: "设置出口（留空 = 不修改）" }),
+      YB.el("label", { class: "field-label", for: inputId, text: "出口" }),
       YB.el("div", { class: "input-group" }, [
         YB.el("input", {
           class: "input", id: inputId, type: "text", autocomplete: "off", spellcheck: "false",
-          placeholder: "http://user:pass@host:port"
+          placeholder: "http://user:pass@host:port", value: curEgress
         })
-      ])
+      ]),
+      YB.el("p", { class: "field-help", text: "保持原值 = 不修改；填完整代理串 = 换新出口；清空后保存 = 改为直连。" })
     ]));
 
     var swInput = null;
@@ -606,18 +595,8 @@
         : "存活：" + (STATE_TEXT[row.state] || "—") + (row.last_seen_at ? "；最近活跃 " + attr(row.last_seen_at) : "") }));
     }
 
-    // 低频且破坏性的动作降级到正文里（用户 2026-09-17：「清除出口」与「保存」不是一个视觉层级）
-    wrap.appendChild(YB.el("p", { class: "set-exec-subactions" }, [
-      linkBtn("清除出口（改为直连）", function () {
-        if (handle && handle.close) handle.close();
-        focusAfterPaint = { slot: slot };
-        // 清除出口 = 改 proxy，后端要口令（改直连也是改配置）；确认与警告并进口令文案，不叠两层弹窗
-        askPassword("清除 " + rowTitle(row) + " 的出口（改为直连）？原出口配置会从配置项里删掉，"
-          + "不可撤销。请输入当前管理员密码确认。", function (pw) {
-          return putRow(slot, { proxy: "", confirm_password: pw }, "已清除出口");
-        });
-      })
-    ]));
+    // 「清除出口」已并入上面的编辑框（用户 2026-09-20）：清空后保存即直连，
+    // 不再是单独的动作——单独按钮让"留空不修改"与"清除"两个功能拆在两处，语义打架。
     function switchArg() {
       if (!isFb || !swInput) return null;
       return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
@@ -626,22 +605,29 @@
     // 保存：后端 2026-09-17 落地了口令门——**改出口或开关要口令，只改名不要**
     // （`PUT …/rows` 在 type/proxy 真的会变时才判，`PUT …/executors` 同理）。
     // 口令不对时后端回 403「口令校验未通过，设置未生效」，由口令框就地显示、可重试。
+    // 出口比较口径（用户 2026-09-20 改版后）：框内**回填当前描述串**，与原值相同＝不改
+    // （不发 proxy，后端也就不打口令门）；清空＝直连；填新值＝换出口。两者都真的变了。
+    var DIRECT_DESC = "直连（本机出口）";   // 与后端 egress.describe 的空串口径一致
     function save() {
       if (busy) return false;
-      var egress = (($(inputId) || {}).value || "").trim();   // 留空＝不改出口（空串语义是"直连"，故不发）
+      var raw = (($(inputId) || {}).value || "").trim();
+      var wasDirect = !attr(row.egress);                    // 原值就是直连
+      var egress = raw === DIRECT_DESC && wasDirect ? ""    // 回填的原样直连描述＝没改
+        : raw;                                              // 其余：空＝清空直连，新值＝换出口
+      var egressChanged = raw !== (wasDirect ? DIRECT_DESC : attr(row.egress));
       var nameEl = $(nameId);
       var newName = nameEl ? nameEl.value.trim() : null;
       var nameArg = (nameEl && newName !== attr(row.name)) ? newName : null;   // null = 没改名
       var enableArg = switchArg();                                            // null = 开关没动
-      if (!egress && nameArg == null && enableArg == null) {
-        banner("没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。", "info");
+      if (!egressChanged && nameArg == null && enableArg == null) {
+        banner("没有需要保存的改动（保持原值 = 不修改；改成直连请清空出口后保存）。", "info");
         return false;
       }
       // 只有真的动出口/开关才要口令；改自定义名不动行为，按后端口径不打这道门。
       // 取值必须**在这里取完**再关弹窗：关掉后输入框被摘出 DOM，submit() 再按 id 取就是 null
       // （实测踩过：错口令那次请求只带了 confirm_password，后端回 400「没有可更新的字段」）。
-      var args = { proxy: egress, name: nameArg, enable: enableArg };
-      var needsPw = !!egress || enableArg != null;
+      var args = { proxy: egress, proxyChanged: egressChanged, name: nameArg, enable: enableArg };
+      var needsPw = egressChanged || enableArg != null;
       if (handle && handle.close) handle.close();
       focusAfterPaint = { slot: slot };
       if (!needsPw) { submit(null, args); return true; }
@@ -656,7 +642,7 @@
       if (busy) return false;
       var body = {};
       if (pw != null) body.confirm_password = pw;
-      if (args.proxy) body.proxy = args.proxy;
+      if (args.proxyChanged) body.proxy = args.proxy;       // 空串＝直连（清空是显式动作，后端同口径）
       if (args.name != null) body.name = args.name;
       var steps = [YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body)];
       if (args.enable != null) {

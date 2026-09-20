@@ -3726,31 +3726,40 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: 34px; }
 .set-row .switch { margin-top: 1px; }          /* 与标签行光学居中 */
 #sm-smtps .sm-empty-row td { border-bottom: 0; }
 /* SMTP 表：固定列宽 + 左缘与字段对齐（表头不再缩进 14px）。
-   列宽：host 30% / 端口 88px / 发件账号 24% / 授权码 auto（余量）/ 操作 76px。
+   列宽：# 36px / host 30% / 端口 112px / 发件账号 24% / 授权码 auto（余量）/ 操作 76px。
+   # 与端口列同刻度（用户 2026-09-20 加序号列）：序号是个位数，36px 够且不挤 host；
+   端口 88px→112px：输入的 number 步进器（spin buttons）在 88px 列里被压到 465|{ 后裁掉
+   尾位（用户实拍），112px 才装得下"数字 + 步进器"（vendor 单元格内距 12px 14px）。
    操作列必须 ≥76px：旧 60px 减去单元格左右内距只剩 32px，放不下「删除」按钮 → 被裁。
-   输入 min-width:0 + width:100%（见 27.5），任何列宽下都不会把输入顶出单元格。 */
+   输入 min-width:0 + width:100%（见 27.5），任何列宽下都不会把输入顶出单元格。
+   单元格内距 14px→10px（用户 2026-09-20：填写框之间水平间距偏大）：行内编辑的输入框
+   自带圆角与边框，列间视觉空隙 = 两侧 td 内距之和（28px），收紧到 20px 仍留呼吸感。 */
 #sm-smtps { table-layout: fixed; }
-#sm-smtps th:nth-child(1) { width: 30%; }
-#sm-smtps th:nth-child(2) { width: 88px; }
-#sm-smtps th:nth-child(3) { width: 24%; }
-#sm-smtps th:nth-child(5) { width: 76px; }
+#sm-smtps th, #sm-smtps td { padding-left: 10px; padding-right: 10px; }
+#sm-smtps th:nth-child(1) { width: 36px; padding-left: 0; }
+#sm-smtps th:nth-child(2) { width: 30%; padding-left: 0; }
+#sm-smtps th:nth-child(3) { width: 112px; }
+#sm-smtps th:nth-child(4) { width: 24%; }
+#sm-smtps th:nth-child(6) { width: 76px; }
+#sm-smtps td.sm-no { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--t-muted); }
 #sm-smtps th:last-child, #sm-smtps td:last-child { white-space: nowrap; }
-#sm-smtps td:last-child { padding-left: 0; }
-#sm-smtps thead th:first-child, #sm-smtps tbody td:first-child { padding-left: 0; }
+#sm-smtps td:last-child { padding-left: 0; padding-right: 0; }
 #sm-smtps thead th { padding-top: 0; }
 
 /* ≤720：该表纵向堆叠（每字段独立一行），表头隐藏、字段名由 td[data-label] 的 ::before 提供；
-   操作按钮整行右对齐。宽屏四列布局的输入不再溢出/截断，窄屏则不再挤压成截断文本。 */
+   操作按钮整行右对齐。序号列在堆叠后不重复显示（顺序就是行的先后，::before 无内容）。
+   宽屏列内距收紧（见上一块）同样收窄堆叠后的纵向留白（td 变块级后 padding 只剩左右）。 */
 @media (max-width: 720px) {
   #sm-smtps { table-layout: auto; display: block; }
   #sm-smtps thead { display: none; }
-  #sm-smtps tbody, #sm-smtps tr, #sm-smtps td { display: block; width: auto; }
+  #sm-smtps tbody, #sm-smtps tr, #sm-smtps td { display: block; width: auto; padding: 0; }
   /* 行分隔线从 td 移到整条记录上（td 变块级后逐格画线会碎成多条） */
   #sm-smtps tr.sm-row {
     padding: 12px 0;
     border-bottom: 1px solid var(--border-soft);
   }
-  #sm-smtps td { padding: 0; border-bottom: 0; white-space: normal; }
+  #sm-smtps td { border-bottom: 0; white-space: normal; }
+  #sm-smtps td.sm-no { display: none; }
   #sm-smtps td + td { margin-top: 10px; }
   #sm-smtps td[data-label]::before {
     content: attr(data-label);
@@ -4506,11 +4515,9 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
 .set-exec-form > .field + .field { margin-top: 14px; }
 .set-exec-form > .field + .set-summary,
 .set-exec-form > .set-summary + .field { margin-top: 12px; }
-.set-exec-form > .set-exec-subactions { margin-top: 16px; }
 /* 字段标签旁的 ⓘ（弹窗内折叠口径用）：与文字同一行、不撑高标签 */
 .field-label .info-tip { margin-left: 6px; vertical-align: -3px; }
-/* 行内弹窗的次级动作（只剩「清除出口」）：文本级，不与「保存」同视觉层级 */
-.set-exec-subactions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
+/* 「清除出口」已并入弹窗的出口编辑框（清空后保存＝直连），次级动作行随之删除 */
 .set-exec-danger { color: var(--state-bad-fg); }
 
 /* ≤1350 允许换行：本表「执行体」列是"标识 +（停用行的）槽位"、状态列是徽标、当日列是计数、

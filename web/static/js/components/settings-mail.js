@@ -36,12 +36,14 @@
     if (dirty) return;
     dirty = true;
     setHidden($("sm-save"), false);
+    setHidden($("sm-save-hint"), false);   // 说明与按钮同显隐：不指向看不见的按钮
     setHidden($("sm-dirty"), false);
   }
   function clearDirty() {
     dirty = false;
     tableDirty = false;
     setHidden($("sm-save"), true);
+    setHidden($("sm-save-hint"), true);
     setHidden($("sm-dirty"), true);
   }
   // 读取失败就地提示 + 重试（不能只置灰，用户无法区分"未配置"与"没读到"）
@@ -87,6 +89,9 @@
 
   function smtpRow(entry, index) {
     var tr = YB.el("tr", { class: "sm-row" });
+    // 序号列（用户 2026-09-20）：「按顺序主备切换」的顺序靠它读；删除后 renumber() 重排。
+    // ≤720 堆叠时不重复显示（data-label 为空则 ::before 无内容，见 CSS 口径）。
+    var tdNo = YB.el("td", { class: "num sm-no", text: String(index + 1) });
     // data-label：≤720 该行纵向堆叠（表头隐藏），标签由 ::before 从属性取，
     // 保证堆叠后每个字段仍有可见名称（仅靠 aria-label 对读屏以外不可见）。
     var tdHost = YB.el("td", { "data-label": "服务器 host" });
@@ -108,6 +113,7 @@
       markDirty();
     });
     tdOps.appendChild(del);
+    tr.appendChild(tdNo);
     tr.appendChild(tdHost);
     tr.appendChild(tdPort);
     tr.appendChild(tdUser);
@@ -129,7 +135,7 @@
 
   function emptyRow() {
     var tr = YB.el("tr", { class: "sm-empty-row" });
-    var td = YB.el("td", { colspan: "5" });
+    var td = YB.el("td", { colspan: "6" });
     td.appendChild(YB.el("p", { class: "field-help", text: "尚未配置发件 SMTP；添加后告警邮件才可送达。" }));
     tr.appendChild(td);
     return tr;
