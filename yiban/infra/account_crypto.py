@@ -3,8 +3,7 @@
 
 - 存储层加密：账号的 password/phone_code 字段为密文对象（yiban.db 的 accounts 表，
   迁移前是 accounts.json）
-- 密钥：环境变量 YIBAN_ACCOUNTS_KEY → 回退 .env 同键 → 缺失时生成并持久化（0600）；
-  进程内缓存按 env_file 分开（环境变量档现取现解码、不落缓存），换 env_file 不会串钥
+- 密钥：环境变量 YIBAN_ACCOUNTS_KEY → 回退 .env 同键 → 缺失时生成并持久化（0600）
 - AAD = 手机号（防密文跨账号互换）；解密 tag 校验失败即抛错
 
 密文对象格式（v1）：
@@ -37,12 +36,12 @@ logger = logging.getLogger("yiban-crypto")
 SCHEMA_VERSION = 1
 DEFAULT_ENV_FILE = ".env"
 
-# 进程内密钥缓存（bytes），**按来源分开存**：键是 env_file 路径（环境变量档不落缓存，
-# 见 load_key）。共用一个槽位就会串钥——load_key(a) 之后再 load_key(b) 既不读 b 的盘
-# 也不打缓存，直接返回 a 的钥，而同进程的 has_key(b)=True 会说反话。
-# 值 = dict[env_file] -> key；整体置 None 等价于清空（测试与调用方按此复位）。
+# 进程内密钥缓存：dict[env_file] -> key（bytes），**按来源分开存**。
+# 共用一个槽位就会串钥——load_key(a) 之后再 load_key(b) 既不读 b 的盘也不打缓存，
+# 直接返回 a 的钥，而同进程的 has_key(b)=True 会说反话。
 _KEY_CACHE = None
-# 来源条目上限：只留最近用到的来源，防 env_file 取值无界时缓存无限增长
+# 来源条目上限：只留最近用到的来源。单位是来源字符串——同一个物理 .env 的不同拼写
+# （相对路径 / 绝对路径 / 带 ./ 前缀）各占一格；防 env_file 取值无界时缓存无限增长
 _CACHE_MAX = 2
 # 建钥互斥：防多线程首启各自生成不同密钥互相覆盖（跨进程已由 _write_key_to_env_file
 # 的"写前重读"缓解，此处封同进程竞态）
@@ -53,8 +52,7 @@ def load_key(env_file=None):
     """获取加密密钥：环境变量 YIBAN_ACCOUNTS_KEY 优先，回退 .env 同键。
 
     两者都不存在时生成随机 32 字节密钥并持久化到 .env（0600）后返回；
-    同一 env_file 的钥在同一进程内缓存复用（避免每次读 .env），缓存按来源分开，
-    不会把 A 文件的钥给 B 文件用。
+    同一 env_file 的钥在同一进程内缓存复用（避免每次读 .env，见 _KEY_CACHE）。
     读-生成-写-缓存全程持 _KEY_LOCK：多线程首启只生成一份密钥。
     自动建钥会抛错而不落盘（调用方须按"启动失败"处理）：密钥来源不确定（M3 守卫），
     或既有 .env 有行含潜伏行分隔符（见 _write_key_to_env_file）。
@@ -175,8 +173,8 @@ def _check_key(key):
 def decrypt_password(entry, key, phone):
     """解密密文对象为明文 str。
 
-    entry 不是密文对象 / 密文被篡改 / 密钥不匹配 / AAD 手机号不匹配
-    （tag 校验失败）时抛 ValueError——绝不静默返回错误结果。
+    key 不是 32 字节 bytes / entry 不是密文对象 / 密文被篡改 / 密钥不匹配 /
+    AAD 手机号不匹配（tag 校验失败）时抛 ValueError——绝不静默返回错误结果。
     """
     _check_key(key)
     if not is_encrypted(entry):
@@ -230,8 +228,8 @@ def encrypt_text(plain, key, aad=b"yiban-notify"):
 def decrypt_text(entry, key, aad=b"yiban-notify"):
     """解密密文对象为明文 str（AAD 固定）。
 
-    entry 不是密文对象 / 密文被篡改 / 密钥不匹配（tag 校验失败）时抛
-    ValueError——绝不静默返回错误结果。
+    key 不是 32 字节 bytes / entry 不是密文对象 / 密文被篡改 / 密钥不匹配
+    （tag 校验失败）时抛 ValueError——绝不静默返回错误结果。
     """
     _check_key(key)
     if not is_encrypted(entry):
