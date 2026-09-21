@@ -284,14 +284,17 @@ def login_legacy(session, *, phone, password, csrf, policy):
     if "reUrl" not in result:
         policy.log_response_diagnostics(phone, resp, stage="usersure 响应无 reUrl 字段，", advice=False)
         raise RuntimeError(f"登录响应异常（无 reUrl）: {policy.sanitize(result)}")
-    if "error" in result.get("reUrl", ""):
+    # reUrl 可能为 null/非字符串：先归一成字符串再判错，避免 `in None` 抛 TypeError；
+    # 后续白名单校验与实际请求**同取这一个局部变量**（此前校验 str(...) 却用原值请求）
+    reurl = str(result.get("reUrl", "") or "")
+    if "error" in reurl:
         # 账号标识入消息前经 policy 脱敏（打码规则属本项目，不在本层内联）
         raise RuntimeError(f"登录失败（账号或密码错误）: {policy.mask_account(phone)}")
 
     # 4. 跳转回 f.yiban.cn，可能遇到 ydclearance 反爬
     session.headers.update(Referer="https://oauth.yiban.cn")
-    policy.require_trusted(str(result.get("reUrl", "")), "login_reurl")
-    resp = session.get(result["reUrl"], allow_redirects=False, timeout=REQUEST_TIMEOUT)
+    policy.require_trusted(reurl, "login_reurl")
+    resp = session.get(reurl, allow_redirects=False, timeout=REQUEST_TIMEOUT)
 
     if fyiban_waf.looks_like_challenge(resp.text, resp.headers.get("Set-Cookie", "")):
         # 纯 Python 解析挑战（不执行任何远程 JS），得出 cookie 与跳转路径。
