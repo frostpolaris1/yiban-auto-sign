@@ -22,7 +22,7 @@ from datetime import datetime
 from yiban import client as yiban_client
 from yiban import clock
 from yiban.engine import alerts, cli_support, state_io
-from yiban.infra import env_lock
+from yiban.infra import env_io, env_lock
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo
 from yiban.masking import sanitize_text as _sanitize_text
@@ -85,7 +85,7 @@ def verify_account(account):
 
 def _probe_state_path():
     """探针最近执行日状态文件（由探针进程独占维护，避免频繁写 .env）。"""
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
     return os.path.join(state_dir, "probe-state.json")
 
 
