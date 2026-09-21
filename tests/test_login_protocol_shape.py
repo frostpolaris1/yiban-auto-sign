@@ -252,6 +252,15 @@ class LegacyLoginShapeTest(unittest.TestCase):
             _run(rec, client.login)
         self.assertEqual(len(rec.calls), 3, "非白名单 reUrl 不得被请求")
 
+    def test_reurl_null_fails_loudly_without_type_error(self):
+        """N5/N6：reUrl 为 null 时不得 `in None` 抛裸 TypeError；白名单校验与请求同源。"""
+        resp = self._happy_responses("https://oauth.yiban.cn/code/html")
+        resp[2] = _resp({"reUrl": None})
+        client, rec = _legacy_client(resp)
+        with self.assertRaisesRegex(RuntimeError, "登录 reUrl 不在白名单"):
+            _run(rec, client.login)
+        self.assertEqual(len(rec.calls), 3, "空 reUrl 不得被请求")
+
     def test_verify_request_location_not_whitelisted_is_rejected(self):
         resp = self._happy_responses("https://oauth.yiban.cn/code/html")
         resp[3] = _resp(text="", headers={"Location": "https://evil.example.com/x"})
