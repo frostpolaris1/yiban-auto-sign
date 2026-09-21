@@ -232,8 +232,21 @@ def format_verdict(v, profile, rows):
 # ---------------------------------------------------------------------------
 # 编排（调用既有工具；每步失败都明确报错并尽量还原环境）
 # ---------------------------------------------------------------------------
+def _tail(text, limit=2000):
+    """取子进程输出的尾部若干字符（失败信息里带上，便于定位是哪一步/哪条 FAIL）。"""
+    if not text:
+        return ""
+    text = text.strip()
+    return text[-limit:]
+
+
 def _run(cmd, *, cwd=None, env=None, timeout=None, check=True, logfile=None):
-    """跑子命令并回显；`logfile` 给定时输出落盘（长任务便于事后查）。"""
+    """跑子命令并回显；`logfile` 给定时输出落盘（长任务便于事后查）。
+
+    失败（check=True 且非零退出）时把子进程输出尾部带进异常——只有"命令失败"
+    一行时，调用方只能看到笼统的退出码，定位不到是自检哪一条 FAIL（或 iptables
+    哪条规则没装上）；输出落在 logfile 时从落盘文件取尾部。
+    """
     log("$ " + " ".join(str(c) for c in cmd))
     printable = " ".join(str(c) for c in cmd)
     if logfile:
@@ -249,7 +262,16 @@ def _run(cmd, *, cwd=None, env=None, timeout=None, check=True, logfile=None):
             with contextlib.suppress(Exception):
                 fh.close()
     if check and p.returncode != 0:
-        raise RuntimeError(f"命令失败（退出码 {p.returncode}）：{printable}")
+        output = p.stdout
+        if output is None and logfile:
+            with contextlib.suppress(OSError), \
+                    open(logfile, encoding="utf-8", errors="replace") as f:
+                output = f.read()
+        msg = f"命令失败（退出码 {p.returncode}）：{printable}"
+        tail = _tail(output)
+        if tail:
+            msg += f"\n--- 子进程输出尾部 ---\n{tail}"
+        raise RuntimeError(msg)
     return p
 
 
@@ -401,8 +423,17 @@ def main(argv=None):
     verdicts = {}
     try:
         if not env_ready:
-            prepare_env(base, repo)
+            # 先置位再搭环境：mock_env 可能在自检失败前已改过 hosts/iptables，
+            # 失败路径同样要走到 finally 的还原。
             env_ready = True
+            try:
+                prepare_env(base, repo)
+            except RuntimeError as e:
+                # 环境未就绪（hosts/iptables 兜底没装好或零外联自检 FAIL）：
+                # **不跑 K 阶梯**——出站没被拦住时压测会直连真实易班。
+                # 子进程输出尾部已在异常信息里带上。
+                raise SystemExit(
+                    f"错误：压测环境未就绪，已中止（不跑 K 阶梯）：{e}") from e
 
         if not (args.reuse_results and args.skip_env):
             max_accounts = max(max(PROFILES[p]["k_list"]) * PROFILES[p]["per_proc"]
