@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""易盾 WAF（https_ydclearance）挑战解析：**衍生自 `onefeifan/fyiban`（AGPL-3.0）**。
+"""易盾 WAF（https_ydclearance）挑战解析：形状提取的四段正则沿用 `sdk250/Auto-Test`
+（该仓库无 LICENSE，默认全权保留；逐块对照见 `PROVENANCE.md`），三段字节变换是本项目
+把它 `js2py` 执行那段 JS 的结果"去 JS 化"后自行重写的纯 Python 运算。
 
-上游在 `Core/BaseReq.kt` + 登录流程里处理该挑战（跟随跳转、取回 cookie）；本实现把它
-落成纯 Python 的确定性解析（不执行远程代码）。**安全策略以 `allow_url` 注入**，见
-`PROVENANCE.md` 与包文档的两条纪律。
+上游 `onefeifan/fyiban`（AGPL-3.0）全史无 `ydclearance`、无 JS 运行时，本文件与它只有
+"任务相同"、**不构成衍生关系**。本实现不执行远程代码；**安全策略以 `allow_url` 注入**，
+见 `PROVENANCE.md` 与包文档的两条纪律。
 """
 import re
 
