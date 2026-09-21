@@ -17,6 +17,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from yiban.infra import env_io
 from yiban.store import audit_chain, tracking
@@ -123,6 +124,19 @@ class AuditKeyLineModelTest(_EnvFileBase):
         audit_chain._write_audit_key_to_env_file(self.env_file, AUDIT_KEY)
         self.assertEqual(self._physical_lines(), 2)
         self.assertEqual(env_io.parse_env_file(self.env_file)["YIBAN_OTHER"], "1")
+
+
+class WriteEnvKeysTmpCleanupTest(_EnvFileBase):
+    """写失败不得把装着新密钥/新盐的 tmp 永久留在盘上。"""
+
+    def test_failed_replace_leaves_no_tmp(self):
+        self._write("YIBAN_OTHER=1\n")
+        with mock.patch.object(env_io.os, "replace", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            env_io.write_env_keys(self.env_file, {"YIBAN_SECRET_KEY": "d" * 64})
+        self.assertEqual(self._leftover_tmp(), [], "含新钥的 tmp 不得留盘")
+        self.assertEqual(env_io.parse_env_file(self.env_file), {"YIBAN_OTHER": "1"},
+                         "写失败不得改动原文件")
 
 
 if __name__ == "__main__":
