@@ -231,3 +231,14 @@ def report_fatal_error(summary):
 def last_fatal_error():
     """最近一次 `report_fatal_error` 的摘要；无则 None。"""
     return _LAST_FATAL_ERROR
+
+
+def clear_fatal_error():
+    """清空上一轮的致命错误摘要（`runner.main` 入口调用）。
+
+    没有这一步时，同一进程内多次调用 main（测试等场景）会把**上一轮**的失败原因
+    附到本轮失败上——例如本轮是"队列忙（3）"而上轮是"未配置任何账号"，调用方
+    拿到的 error 描述的是另一回事。生产进程一轮一次，这里只为进程内复用兜底。
+    """
+    global _LAST_FATAL_ERROR
+    _LAST_FATAL_ERROR = None
