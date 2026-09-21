@@ -27,6 +27,7 @@
 `import subprocess` 取用（测试以 `webapp.subprocess.Popen` 打桩，同一模块对象）。
 """
 
+import contextlib
 import logging
 import subprocess
 
@@ -42,16 +43,22 @@ def _wait_signin_proc(proc, timeout=300):
     原 proc.wait(timeout=300) 超时抛出 TimeoutExpired 后未回收子进程，
     队列仍会继续触发下一个账号，造成并发签到。超时后先 terminate，再等待
     回收；仍不退则 kill 兜底。
+    子进程可能在 terminate/kill 之前已经退出（POSIX 上是 ProcessLookupError），
+    这不是失败——若不兜住，异常会穿出等待函数，调用方的退出码留痕随之丢失；
+    kill 之后的回收也给超时兜底（管道/句柄未释放时 wait() 会永久挂住）。
     """
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.terminate()
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=10)
 
 
 def _batch_wait_timeout(count):
