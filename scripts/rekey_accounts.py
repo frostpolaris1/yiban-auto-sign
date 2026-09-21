@@ -84,7 +84,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 
-from yiban.infra import account_crypto
+from yiban.infra import account_crypto, env_io
 
 logger = logging.getLogger("yiban.rekey")
 
@@ -377,26 +377,16 @@ def _write_env_key(env_path, new_key, extra=None):
     **调用方必须已持有 env_lock.env_write_lock(env_path)**——本函数不加锁，
     目的是让"读现值 → 算新值 → 落盘"能整体收在同一把锁里（见 rotate_and_write_env）。
     extra 值为 None/空串的项跳过不写（不删除既有键：删除语义归设置页）。
+
+    落盘复用 `env_io.write_env_keys` 的窄行模型（潜伏行分隔符守卫 + key_line_pattern
+    折叠 + 多键同一次原子替换）：本工具此前自抄一份宽行模型
+    （`splitlines()` + 字面前缀 `startswith("KEY=")` 折叠），既漏掉 U+2028 等
+    潜伏分隔符的注入校验，也折不掉 `KEY = v` 影子行。
     """
-    extra = {k: v for k, v in (extra or {}).items() if v}
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容 BOM
-            lines = f.read().splitlines()
-    changed = ["YIBAN_ACCOUNTS_KEY", *extra]
-    out = [ln for ln in lines if not ln.strip().startswith(tuple(f"{k}=" for k in changed))]
-    out.append(f"YIBAN_ACCOUNTS_KEY={new_key.hex()}")
-    for k, v in extra.items():
-        out.append(f"{k}={v}")
-    tmp = f"{env_path}.tmp{secrets.token_hex(4)}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, env_path)
-    with contextlib.suppress(OSError):
-        os.chmod(env_path, 0o600)
+    env_io.write_env_keys(env_path, {
+        "YIBAN_ACCOUNTS_KEY": new_key.hex(),
+        **{k: v for k, v in (extra or {}).items() if v},
+    })
 
 
 def update_env_key(env_path, new_key, extra=None):

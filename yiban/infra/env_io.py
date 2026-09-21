@@ -190,8 +190,8 @@ def find_env_key_collisions(env_path):
     }
 
 
-def write_env_key(env_file, key, value):
-    """把单条配置写入 .env：折叠同键旧行、保留其余行、原子替换为 0600。
+def write_env_keys(env_file, updates):
+    """把多条配置一次写入 .env：折叠同键旧行、保留其余行、原子替换为 0600。
 
     行模型取**窄行模型**（只把 \\r\\n / \\r / \\n 当行边界），不是 `str.splitlines()`：
     后者额外把 \\v \\f \\x1c \\x1d \\x1e \\x85 \\u2028 \\u2029 当边界。值里潜伏这些字符
@@ -208,6 +208,9 @@ def write_env_key(env_file, key, value):
     旧行折叠走 `key_line_pattern`，与 `parse_env_file`"首个 = 切分 + 两侧 strip"的认键
     口径同源：`KEY = v` 这类带空白的写法同样是同一条键的行，只认字面前缀 `KEY=` 折不掉它，
     残留的影子行与新行谁生效由落盘顺序决定。
+
+    多键合进**同一次原子替换**：换钥场景要把 YIBAN_ACCOUNTS_KEY 与用它重加密的通道密文
+    一起落盘，分两次写会出现"新钥已落盘、密文还是旧钥"的中间态（通道静默死亡）。
 
     调用方须自行持有 `env_lock.env_write_lock(env_file)`（跨进程 .env 写互斥）：本函数
     不做加锁，把"写前重读既有值"的判定留在调用方，避免嵌套取锁。
@@ -226,9 +229,10 @@ def write_env_key(env_file, key, value):
                 f"写回会把它后面的内容实体化成新配置行，故拒绝写入；"
                 f"请人工清理该行后重试"
             )
-    pat = key_line_pattern(key)
-    out = [ln for ln in lines if not pat.match(ln.strip())]
-    out.append(f"{key}={value}")
+    pats = [key_line_pattern(key) for key in updates]
+    out = [ln for ln in lines if not any(p.match(ln.strip()) for p in pats)]
+    for key, value in updates.items():
+        out.append(f"{key}={value}")
     tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
     # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace 之间（及进程崩溃
     # 残留 tmp 时）密钥/盐对同机其他用户可读
@@ -240,3 +244,12 @@ def write_env_key(env_file, key, value):
     os.replace(tmp, env_file)
     with contextlib.suppress(OSError):
         os.chmod(env_file, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
+
+
+def write_env_key(env_file, key, value):
+    """把单条配置写入 .env：折叠同键旧行、保留其余行、原子替换为 0600。
+
+    单键形态 = `write_env_keys(env_file, {key: value})`；行模型、注入校验与
+    折叠口径的单一说明在 `write_env_keys`，本函数不再复述。
+    """
+    write_env_keys(env_file, {key: value})
