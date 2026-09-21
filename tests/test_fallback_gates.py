@@ -118,15 +118,26 @@ class DayOffGateTest(_WeekdayGuard):
 class _FallbackHarness(_WeekdayGuard):
     """主循环测试骨架：把循环跑起来并记录"睡过几次、扫了几次、写没写心跳"。"""
 
-    def _run(self, times, env=None, accounts=None, results=None, lock_held=None):
+    def _run(self, times, env=None, accounts=None, results=None, lock_held=None,
+             mutate_cred=None):
         """跑一次兜底常驻主循环，返回 (退出码, 睡过的秒数, 心跳时刻, 扫描次数)。
 
         `lock_held`：全局锁探测的返回序列（缺省全 False = 没有全量轮在跑）。
         必须显式打桩：真探测会去读宿主 `YIBAN_STATE_DIR`，测试之间会互相串味。
+        `mutate_cred`：模拟 `run_queue_retry` 就地改熔断快照；写回调用记录在
+        `self.saves`（(data, touched) 列表）。
         """
-        sleeps, beats, scans = [], [], []
+        sleeps, beats, scans, saves = [], [], [], []
+        self.saves = saves
         held = list(lock_held) if lock_held else []
         acc = mock.Mock(phone="13800000000", user_paused=False)
+
+        def _retry(*a, **k):
+            scans.append(k.get("delegated"))
+            if mutate_cred is not None:
+                mutate_cred(k.get("cred_state"))
+            return results if results is not None else {}
+
         with mock.patch.dict(os.environ, {**BASE_ENV, **(env or {})}, clear=False), \
                 mock.patch.object(workers, "time", SimpleNamespace(sleep=sleeps.append)), \
                 mock.patch.object(workers.clock, "now", _ClockSeq(*times)), \
@@ -136,11 +147,11 @@ class _FallbackHarness(_WeekdayGuard):
                                   lambda now: beats.append(now)), \
                 mock.patch.object(workers.state_io, "_clear_fallback_alive", lambda: None), \
                 mock.patch.object(workers.state_io, "_load_cred_state", lambda: {}), \
+                mock.patch.object(workers.state_io, "_save_cred_state",
+                                  lambda data, touched=None: saves.append((data, touched))), \
                 mock.patch.object(workers.accounts_mod, "load_accounts",
                                   lambda: ([acc] if accounts is None else accounts)), \
-                mock.patch.object(workers.round_mod, "run_queue_retry",
-                                  lambda *a, **k: (scans.append(k.get("delegated")),
-                                                   results if results is not None else {})[1]):
+                mock.patch.object(workers.round_mod, "run_queue_retry", _retry):
             rc = workers.run_fallback_worker(["--fallback"])
         return rc, sleeps, beats, scans
 
@@ -187,6 +198,28 @@ class FallbackGateTest(_FallbackHarness):
     def test_window_closed_exits(self):
         rc, _, _, scans = self._run([_at(WED, (8, 30))])
         self.assertEqual(scans, [], "窗口已关仍扫描")
+        self.assertEqual(rc, 0)
+
+
+class FallbackCredStatePersistTest(_FallbackHarness):
+    """兜底轮末必须把熔断计数写回磁盘。
+
+    `_load_cred_state()` 每轮返回**新 dict**，`run_queue_retry` 就地改它；若轮末不写回，
+    "连续凭据失败达阈值 → 暂停"只在内存里成立，下一轮又从零读盘——错密码账号被无限次
+    真实登录（易班侧照实计数，加重风控），兜底这条路成了熔断的缺口。
+    """
+
+    def test_round_saves_cred_state_incrementally(self):
+        def _fail_once(cred_state):
+            cred_state["13800000000"] = {"fail_days": 3, "last_fail": "2026-09-02"}
+
+        rc, _sleeps, _beats, scans = self._run(
+            [_at(WED, (6, 35)), _at(WED, (8, 30))], mutate_cred=_fail_once)
+        self.assertEqual(len(scans), 1, "前置条件：窗口内应扫一轮")
+        self.assertEqual(len(self.saves), 1, "兜底轮末未写回熔断计数——计数永不落盘")
+        data, touched = self.saves[0]
+        self.assertEqual(touched, {"13800000000"}, "写回须按本轮账号增量合并")
+        self.assertEqual(data["13800000000"]["fail_days"], 3, "当轮累计的计数须落盘")
         self.assertEqual(rc, 0)
 
 
