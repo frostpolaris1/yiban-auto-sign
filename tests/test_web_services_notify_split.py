@@ -460,6 +460,28 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
         self.webapp._wait_signin_proc(proc)
         self.assertEqual((proc.calls, proc.terminated, proc.killed), (2, True, False))
 
+    def test_wait_signin_proc_tolerates_already_dead_child(self):
+        """子进程在 terminate/kill 前已退出：ProcessLookupError 不得穿出等待函数，
+        否则调用方的退出码留痕被跳过；kill 后回收也给超时兜底。"""
+        class DeadProc:
+            def __init__(self):
+                self.terminated, self.killed = 0, 0
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("dead", timeout)
+
+            def terminate(self):
+                self.terminated += 1
+                raise ProcessLookupError("no such process")
+
+            def kill(self):
+                self.killed += 1
+                raise ProcessLookupError("no such process")
+
+        proc = DeadProc()
+        self.webapp._wait_signin_proc(proc)      # 不得抛
+        self.assertEqual((proc.terminated, proc.killed), (1, 1))
+
     def test_channel_health_degraded_three_conditions_verbatim(self):
         base = self._status_base()
         degraded = self.webapp._channel_health_degraded
