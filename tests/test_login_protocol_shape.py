@@ -310,10 +310,11 @@ class KillyibanLoginShapeTest(unittest.TestCase):
         self.assertEqual(rec.query(2), {"act": "iapp7463"})
         self.assertIs(rec.redirects(2), False)
 
-        # 第 4 步：完成认证（跟随重定向）
+        # 第 4 步：完成认证——手动逐跳校验白名单后再跟跳，不让 requests 自动跟随
+        # （自动跟随会在校验前把域名为空的 csrf_token cookie 发往任意 302 落点）
         self.assertEqual(rec.base(3), "api.uyiban.com")
         self.assertEqual(rec.query(3), {"verifyRequest": "VTOK", "CSRF": client.csrf})
-        self.assertIs(rec.redirects(3), True)
+        self.assertIs(rec.redirects(3), False)
 
     def test_verify_request_regex_tolerates_token_at_query_end(self):
         """令牌放在 query 末位（后面没有 `&`）也必须能提取——曾因此全站登录失败。"""
@@ -326,6 +327,31 @@ class KillyibanLoginShapeTest(unittest.TestCase):
         ])
         _run(rec, client.login_killyiban)
         self.assertEqual(rec.query(3)["verifyRequest"], "TAILTOKEN")
+
+    def test_final_auth_redirect_outside_whitelist_is_rejected(self):
+        """N1：最终认证那一跳是默认流唯一会跟随的重定向——302 到白名单外必须在
+        发出请求**之前**响亮失败（会话 jar 里 csrf_token 域名为空，对任意主机都会带出）。"""
+        resp = self._happy_responses()
+        resp[3] = _resp(text="", status=302,
+                        headers={"Location": "https://evil.example.com/steal"},
+                        url="https://api.uyiban.com/base/c/auth/yiban")
+        client, rec = _killyiban_client(resp)
+        with self.assertRaisesRegex(RuntimeError, "最终认证跳转不在白名单"):
+            _run(rec, client.login_killyiban)
+        self.assertEqual(len(rec.calls), 4, "非白名单落点不得被请求")
+
+    def test_final_auth_redirect_inside_whitelist_is_followed_manually(self):
+        """白名单内 302（落点才是 JSON）：手动跟跳取回落点响应，登录照常成功。"""
+        resp = self._happy_responses()
+        resp[3] = _resp(text="", status=302,
+                        headers={"Location": "https://api.uyiban.com/base/c/auth/yiban/done"},
+                        url="https://api.uyiban.com/base/c/auth/yiban")
+        resp.insert(4, _resp({"code": 0, "msg": ""}))
+        client, rec = _killyiban_client(resp)
+        _run(rec, client.login_killyiban)
+        self.assertTrue(client.logged_in)
+        self.assertEqual(rec.path(4), "/base/c/auth/yiban/done")
+        self.assertIs(rec.redirects(4), False)
 
     def test_s200_is_the_success_marker(self):
         """成功标志是 code == "s200"（App 判定方式），其他值一律当失败并回报 msgCN。"""

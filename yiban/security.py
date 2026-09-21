@@ -37,6 +37,7 @@ _WHITELIST_MESSAGES = {
     "login_entry": "登录入口 URL 不在白名单",
     "login_reurl": "登录 reUrl 不在白名单",
     "verify_request": "verify_request 跳转不在白名单",
+    "final_auth": "最终认证跳转不在白名单",
     "ydclearance": "ydclearance 跳转目标不在白名单",
 }
 
