@@ -69,6 +69,9 @@ def run_worker_supervisor(n, argv, slots=None):
     - **全局锁由本进程持有**：散落的另一轮全量（cron 与手动）仍会被挡住；
     - 子进程各持自己的锁文件 + 各自的执行体身份（领取池据此分工）；
     - 每个子进程可配一个独立出口代理（`egress.resolve`）；
+    - 子进程的 argv 是本进程 argv 去掉 `--workers` 及其后随值（`--workers=N` 同样）后的
+      逐字复刻：多执行体的身份靠注入的 `YIBAN_EXECUTOR_ID` 表达，`--workers` 下传只会
+      让子进程再当一次监督进程；
     - `slots` = **执行体清单给出的槽位号**（拉起列表，`egress.launch_slots`）。省略时
       用旧口径的 `0..n-1`（行为逐字不变）。传了槽位时子进程的身份/锁/心跳都按
       **槽位号**算，故清单里**停用/删除的行不会被拉起**，且删中间行不影响其余槽位；
@@ -79,7 +82,6 @@ def run_worker_supervisor(n, argv, slots=None):
       退出码（docker/scheduler.py 的补签闸门读状态文件判定）。
     """
     slot_list = list(range(n)) if slots is None else list(slots)
-    argv_workers = n          # 命令行 `--workers N` 里的 N（去参数时按它匹配，语义与旧版一致）
     n = len(slot_list)
     # 全局锁：本进程持有直到子进程全部结束（句柄必须保活，不能只用一次就丢）
     _global_lock = cli_support._acquire_run_lock(False)
@@ -108,8 +110,23 @@ def run_worker_supervisor(n, argv, slots=None):
         proxy = egress.resolve(egress.ROLE_WORKER, slot)
         if proxy:
             env["YIBAN_PROXY"] = proxy
-        # 复刻本轮其余参数（去掉 --workers，避免递归拉起）
-        child_argv = [a for a in argv if a != "--workers" and a != str(argv_workers)]
+        # 复刻本轮其余参数：剔除 `--workers` **及其后随值**（按 argv 序位解析，与
+        # argparse 同语义；`--workers=N` 形态一并剔除）。不能按值匹配：清单模式下拉起
+        # 的槽位数与命令行 `--workers N` 的 N 可以不等——网页改执行体清单只写
+        # YIBAN_EXECUTORS、不回写 YIBAN_WORKERS，于是 N 留在 argv 里变成子进程的位置
+        # 参数，argparse 直接报错退出 → 每个执行体都零请求退出，全天静默不签到。
+        child_argv = []
+        _skip_next = False
+        for a in argv:
+            if _skip_next:          # 上一个是 `--workers`：本项是它的后随值，一并剔除
+                _skip_next = False
+                continue
+            if a == "--workers":
+                _skip_next = True
+                continue
+            if a.startswith("--workers="):
+                continue
+            child_argv.append(a)
         # 子进程入口：模块方式执行同一个 CLI（cwd=仓库根 + PYTHONPATH 含仓库根，
         # `python -m` 才能找到 yiban 包）。子进程收到的命令行参数与旧版逐字相同。
         cmd = [sys.executable, "-m", "yiban.cli", "sign", *child_argv]
@@ -224,13 +241,20 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
             continue
 
         delegated = set()
+        # 本轮熔断状态快照：`read()` 每轮返回新 dict，`run_queue_retry` 就地改它，
+        # 故必须持有引用以便轮末写回（不能像过去那样现取现传、写回时已无对象）。
+        cred_state = state_io._load_cred_state()
         results = round_mod.run_queue_retry(accounts, os.environ.get("YIBAN_NOTIFY_URL", ""), 0,
                                             schedule._env_int("YIBAN_ACCOUNT_GAP_MAX", 10, 0, 3600),
-                                            schedule=None, cred_state=state_io._load_cred_state(),
+                                            schedule=None, cred_state=cred_state,
                                             delegated=delegated,
                                             # 兜底是"替全量轮捡漏"：窗口已关就该停手，
                                             # 一轮扫描内部不再对剩余账号发起真实登录
                                             window_guard=True)
+        # 轮末写回熔断计数（口径与 runner 全量轮一致：按本轮账号增量合并）。不写回则
+        # "连续凭据失败达阈值 → 暂停"只在磁盘上不存在：下一轮 read() 又从零开始，
+        # 错密码账号被无限次真实登录（易班侧照实计数，加重风控）。
+        state_io._save_cred_state(cred_state, touched={a.phone for a in accounts})
         settled = 0
         for acc in accounts:
             if acc.phone in delegated:
