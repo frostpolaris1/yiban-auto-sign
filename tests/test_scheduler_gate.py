@@ -284,6 +284,28 @@ class DbLayerB12Test(unittest.TestCase):
             else:
                 os.environ["YIBAN_STATE_DIR"] = old
 
+    def test_anchor_path_honours_state_dir_from_env_file(self):
+        """YIBAN_STATE_DIR 只写进 .env（进程环境没有）时读侧同样生效。
+
+        写侧（web 的 STATE_DIR / run.sh）认 .env，读侧若只认 `os.environ` 就会落在
+        默认目录：审计锚点被写到别处而校验读默认目录，锚点防线致盲且 audit_verify
+        以退出码 1 误报链破。
+        """
+        old = os.environ.pop("YIBAN_STATE_DIR", None)
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AUDIT_KEY={AUDIT_KEY}\n"
+                    f"YIBAN_STATE_DIR={self.tmp}\n")
+        try:
+            self.assertEqual(
+                os.path.normpath(db.audit_anchor_path()),
+                os.path.normpath(os.path.join(self.tmp, "audit-anchor.log")),
+                "只写在 .env 的 YIBAN_STATE_DIR 必须被锚点路径解析看到")
+        finally:
+            if old is not None:
+                os.environ["YIBAN_STATE_DIR"] = old
+            with io.open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AUDIT_KEY={AUDIT_KEY}\n")
+
     def test_verify_anchor_meta_check_applies_to_explicit_path(self):
         """B12-4：显式路径校验同样做「锚点被删」元数据交叉检查。"""
         db.audit("tester", "login", "-", "铺底一条审计，锚点才有内容可记")

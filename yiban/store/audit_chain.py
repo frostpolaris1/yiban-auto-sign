@@ -559,12 +559,15 @@ def audit_anchor_path():
     否则裸机部署下 web 把锚点写到 /var/log/yiban/audit-anchor.log，
     而 audit_health 读 <cwd>/audit-anchor.log：每日误报「锚点文件被删除」淹没真告警，
     且删尾/清空/链尾篡改检测从未比对过真实锚点（锚点防线整体致盲）。
-    Windows 开发/测试环境保留 "."（/var/log 不可写）；显式设置 YIBAN_STATE_DIR 时
-    两边一致（Docker compose 即此形态，不受影响）。
+    Windows 开发/测试环境保留 "."（/var/log 不可写）。
+
+    YIBAN_STATE_DIR 按 `env_io.resolve_path` 解析（进程环境 → .env → 默认值），
+    与写入方（web 的 STATE_DIR、run.sh）同一口径：只写进 .env 的部署读侧同样生效。
+    此前只读 `os.environ`，写侧却认得 .env——审计锚点被写到别处而校验读默认目录，
+    锚点防线致盲且 audit_verify 以退出码 1 误报链破。
     """
-    state_dir = os.environ.get("YIBAN_STATE_DIR") or (
-        "." if os.name == "nt" else "/var/log/yiban"
-    )
+    default_dir = "." if os.name == "nt" else "/var/log/yiban"
+    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", default_dir)
     return os.path.join(state_dir, "audit-anchor.log")
 
 
