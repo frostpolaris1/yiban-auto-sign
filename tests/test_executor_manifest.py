@@ -875,6 +875,34 @@ class DispatchGateTest(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 m_sup.assert_called_once()
 
+    def test_check_config_dispatches_supervisor_without_migrate(self):
+        """F3：`--check-config` 派发监督进程时，监督进程的配置预检也不跑迁移。
+
+        监督进程会在 spawn 前先 `load_accounts()` 校验配置（否则 N 个子进程同秒抢
+        init_db、配置错误报 N 份）。若它用 migrate=True，宣称只读的校验仍会把目标库
+        改一遍——子进程各自的 migrate=False 就被父进程抢先作废了。
+        """
+        from yiban.engine import runner, workers
+        with mock.patch.dict(os.environ, self._manifest_env()), \
+                mock.patch.object(runner.clock, "now", lambda: self.SUNDAY_06_31), \
+                mock.patch.object(runner, "SUNDAY_SIGN", False), \
+                mock.patch.object(workers, "run_worker_supervisor",
+                                  return_value=0) as m_sup:
+            rc = runner.main(["--check-config"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(m_sup.call_args.kwargs.get("migrate", True),
+                         "只读校验不得让监督进程先跑迁移")
+
+        # 对照组：普通全量轮照旧在监督进程迁移（缺省 True）
+        with mock.patch.dict(os.environ, self._manifest_env()), \
+                mock.patch.object(runner.clock, "now", lambda: WEEKDAY_06_40), \
+                mock.patch.object(workers, "run_worker_supervisor",
+                                  return_value=0) as m_sup:
+            rc = runner.main([])
+        self.assertEqual(rc, 0)
+        self.assertTrue(m_sup.call_args.kwargs.get("migrate", True),
+                        "普通全量轮必须照旧迁移")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

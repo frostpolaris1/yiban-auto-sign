@@ -49,7 +49,8 @@ class SupervisorRecursionGuardTest(unittest.TestCase):
         os.environ.pop("YIBAN_EXECUTOR_ID", None)
         self.calls = []
         p = mock.patch.object(workers, "run_worker_supervisor",
-                              lambda n, argv, slots=None: (self.calls.append((n, slots)), 0)[1])
+                              lambda n, argv, slots=None, migrate=True:
+                              (self.calls.append((n, slots)), 0)[1])
         p.start()
         self.addCleanup(p.stop)
 
