@@ -20,6 +20,7 @@ import os
 import re
 
 from yiban import clock
+from yiban.infra import env_io
 
 # 保留期档位（默认值；调用方可用环境变量覆盖）
 RETENTION_DAYS = 365
@@ -94,13 +95,13 @@ def match(name):
 
 
 def state_dir_from_env(env=None):
-    """状态目录：`YIBAN_STATE_DIR` → 默认 `/var/log/yiban`（与 run.sh 同口径）。
+    """状态目录：`env_io.resolve_path` 口径（进程环境 → .env → 默认 `/var/log/yiban`）。
 
     放在本模块是为了"清理目录与写目录同源"：宿主清理脚本、容器调度与 CLI
     （`python -m yiban.cli state`）都调这里，避免又出现一份各自的默认值。
+    `env` 供测试注入映射（None = 读进程环境，与 resolve_path 同语义）。
     """
-    env = os.environ if env is None else env
-    return env.get("YIBAN_STATE_DIR", "").strip() or "/var/log/yiban"
+    return env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban", env=env)
 
 
 def log_dir_from_env(state_dir, env=None):
@@ -108,9 +109,9 @@ def log_dir_from_env(state_dir, env=None):
 
     不取绝对路径：run.sh 用的是 `dirname "$LOG_FILE"`（相对值即相对当前目录），
     这里保持同一语义，避免"配置相同、清理目录不同"。
+    `env` 供测试注入映射（None = 读进程环境，与 resolve_path 同语义）。
     """
-    env = os.environ if env is None else env
-    log_file = env.get("YIBAN_LOG_FILE", "").strip()
+    log_file = env_io.resolve_path("YIBAN_LOG_FILE", "", env=env)
     if not log_file:
         return state_dir
     return os.path.dirname(log_file) or state_dir

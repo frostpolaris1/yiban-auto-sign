@@ -24,6 +24,7 @@ from yiban import clock, notify, window
 from yiban import mail as mailer
 from yiban import status as yiban_status
 from yiban.engine import cli_support, config_check, schedule, state_io
+from yiban.infra import env_io
 from yiban.mail import layout
 from yiban.masking import mask_phone as _mask_phone
 from yiban.masking import sanitize_text as _sanitize_text
@@ -256,7 +257,7 @@ USER_FAIL_MAIL_DAILY_CAP = config_check.parse_env_int("YIBAN_MAIL_USER_FAIL_DAIL
 
 
 def _user_fail_mail_state_path(today_str):
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
     return os.path.join(state_dir, f"mail-user-fail-{today_str}.json")
 
 

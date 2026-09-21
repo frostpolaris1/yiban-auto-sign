@@ -31,6 +31,7 @@ from yiban.engine import accounts as accounts_mod
 from yiban.engine import alerts, attempts, cli_support, config_check, probe, state_io, workers
 from yiban.engine import round as round_mod
 from yiban.engine import schedule as schedule_mod
+from yiban.infra import env_io
 from yiban.masking import mask_phone as _mask_phone
 from yiban.store import db
 
@@ -374,7 +375,7 @@ def main(argv=None):
         # 快照后改选必为明日生效，提示与实际一致（固定"窗口起点+1 分钟"会与
         # cron 实际读取时刻有几秒偏差窗口）
         try:
-            _snap_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+            _snap_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
             os.makedirs(_snap_dir, exist_ok=True)
             _snap_path = os.path.join(_snap_dir, f"sched-snapshot-{attempt_date}.json")
             _snap_tmp = _snap_path + ".tmp" + str(os.getpid())
@@ -490,7 +491,7 @@ def main(argv=None):
 
     # 写按日状态文件（供网页日历组件读取；窗口外跳过不写，当天留空）
     # 符号按状态码：success/already→✅、no_task→➖、failed→❌、no_position→🚫
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
     try:
         os.makedirs(state_dir, exist_ok=True)
         # 以写盘时日期命名（跨午夜不沿用启动时的 attempt_date）
