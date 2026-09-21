@@ -104,7 +104,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import db  # noqa: E402
 
 from yiban import notify  # noqa: E402  # 推送组件实现包（旧壳已删除）
-from yiban.infra import account_crypto  # noqa: E402
+from yiban.infra import account_crypto, env_io  # noqa: E402
 from yiban.notify import ledger as notify_ledger  # noqa: E402  # 账本内部态走子模块
 
 OLD_KEY = "a" * 64
@@ -860,6 +860,36 @@ class RekeyMailSmtpsTest(_B14Fixture):
 
 class RekeyBestEffortB14Test(unittest.TestCase):
     """修复轮1①/③/④ 的边界单测（无需建库，直接打函数）。"""
+
+    def test_write_env_key_uses_shared_narrow_line_model(self):
+        """rekey 的 .env 写回与 store 三处共用窄行模型。
+
+        旧实现自抄一份宽行模型（`splitlines()` + 字面前缀折叠）：值里潜伏 U+2028
+        时读-改-写会把后半截实体化成真配置行（可注入 YIBAN_ADMIN_PASSWORD_HASH=），
+        `KEY = v` 影子行也折不掉。现改调 env_io.write_env_keys，两种病一起治。
+        """
+        import rekey_accounts
+
+        tmp = tempfile.mkdtemp(prefix="b14-rekey-narrow-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        env = os.path.join(tmp, ".env")
+
+        # 潜伏分隔符：拒绝写入、磁盘一个字节都不改、不留 tmp
+        latent = "notify\u2028YIBAN_ADMIN_PASSWORD_HASH=injected"
+        _write_env(env, ["YIBAN_OTHER=ok", f"YIBAN_ANNOUNCEMENT={latent}"])
+        before = _read_env(env)
+        with self.assertRaises(ValueError) as cm:
+            rekey_accounts._write_env_key(env, account_crypto._decode_key(NEW_KEY))
+        self.assertIn("行分隔符", str(cm.exception))
+        self.assertEqual(_read_env(env), before)
+        self.assertEqual([n for n in os.listdir(tmp) if ".tmp" in n], [])
+
+        # 带空格的影子行：同一条键只留一行
+        _write_env(env, ["YIBAN_ACCOUNTS_KEY = ", "YIBAN_OTHER=1"])
+        rekey_accounts._write_env_key(env, account_crypto._decode_key(NEW_KEY))
+        self.assertEqual(env_io.count_key_lines(env, "YIBAN_ACCOUNTS_KEY"), 1)
+        self.assertEqual(_env_value(env, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
+        self.assertEqual(_env_value(env, "YIBAN_OTHER"), "1")
 
     def test_unreadable_env_file_reports_failed_instead_of_raising(self):
         """①：.env 读失败必须转成 failed 状态，而不是抛穿 main()。
