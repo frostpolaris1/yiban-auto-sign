@@ -439,9 +439,15 @@ class WindowClosedRoundTest(unittest.TestCase):
         self.assertTrue(got[2], "窗口外跳过必须 skip=True（退出码 2，而不是算失败）")
 
     def test_real_conclusion_is_not_overwritten(self):
-        """已有真实结论（failed）的账号仍不得被改写成"窗口外"。"""
+        """已有真实结论（failed）的账号仍不得被改写成"窗口外"，且失败保持可见。"""
         res = self._run(recorded=signin.STATUS_FAILED)
-        self.assertNotIn(self.PHONE, res, "真实失败原因不该被窗口外覆盖")
+        got = res.get(self.PHONE)
+        self.assertIsNotNone(got, "已有结论的账号也必须进 results，否则汇总按未执行失败计")
+        self.assertEqual(got[3], signin.STATUS_FAILED, "真实失败原因必须透传")
+        with io.open(os.path.join(self.tmp, "sign-state-2026-09-17.json"),
+                     encoding="utf-8") as f:
+            self.assertEqual(json.load(f)[self.PHONE]["status"], signin.STATUS_FAILED,
+                             "真实失败原因不该被窗口外覆盖")
 
 
 if __name__ == "__main__":

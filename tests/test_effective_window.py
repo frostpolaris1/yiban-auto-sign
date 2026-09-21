@@ -140,9 +140,9 @@ class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
                 mock.patch.object(signin, "attempt_signin") as attempt, \
                 mock.patch.object(signin, "_update_cred_state"), \
                 mock.patch.object(signin.time, "sleep"):
-            signin.run_queue_retry(accs, "", 0, 0,
-                                  schedule={p: beijing_now for p in phones})
-        return attempt
+            results = signin.run_queue_retry(accs, "", 0, 0,
+                                             schedule={p: beijing_now for p in phones})
+        return attempt, results
 
     def test_closed_window_keeps_previous_failure_reason(self):
         """已记录 failed 的账号：窗口关闭收尾不得改写成 skipped_window。"""
@@ -161,6 +161,39 @@ class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
         with open(self.state_path, encoding="utf-8") as f:
             st = json.load(f)[PHONE]["status"]
         self.assertEqual(st, signin.STATUS_SKIPPED_WINDOW)
+
+    def test_closed_window_carries_recorded_conclusion_into_results(self):
+        """已有结论的账号必须带**真实结论**进 `results`，不能被收尾漏掉。
+
+        汇总只认 `results`：缺席的账号落到默认 `(False, "未执行", False, pending)`
+        → 计一次失败、`has_real_failure=True`、退出码 1，而本轮一个请求都没发。
+        """
+        for recorded in (signin.STATUS_SKIPPED_WINDOW, signin.STATUS_NO_POSITION,
+                         signin.STATUS_SUCCESS):
+            with self.subTest(recorded=recorded):
+                self._write_state({PHONE: {"status": recorded, "message": "首轮留痕"}})
+                after = signin.clock.now().replace(hour=8, minute=5, second=0,
+                                                   microsecond=0)
+                attempt, results = self._run([PHONE], after)
+                self.assertEqual(attempt.call_count, 0, "窗口已关不得发起真实请求")
+                self.assertEqual(results[PHONE][3], recorded,
+                                 "results 必须带真实结论，否则汇总按未执行失败计")
+                with open(self.state_path, encoding="utf-8") as f:
+                    self.assertEqual(json.load(f)[PHONE]["status"], recorded,
+                                     "已有结论不得被窗口外跳过改写")
+
+    def test_closed_window_status_less_entry_is_no_record(self):
+        """条目缺 `status` 键（无结论）→ 与 `_has_conclusion` 同口径写窗口外跳过。
+
+        快照预筛若把这种条目当"已有结论"，就会拿 "None" 去汇总分组（落失败桶）；
+        而锁内 CAS 判它"无结论"本就允许写入——两处口径必须一致。
+        """
+        self._write_state({PHONE: {"message": "半截条目"}})
+        after = signin.clock.now().replace(hour=8, minute=5, second=0, microsecond=0)
+        _attempt, results = self._run([PHONE], after)
+        self.assertEqual(results[PHONE][3], signin.STATUS_SKIPPED_WINDOW)
+        with open(self.state_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)[PHONE]["status"], signin.STATUS_SKIPPED_WINDOW)
 
     def test_closed_window_cas_does_not_clobber_concurrent_failure(self):
         """M9：快照读"无记录"后另一执行体刚写入 failed——落盘前必须 CAS 拦下。
@@ -193,6 +226,74 @@ class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
 
     # 本轮内"重试没赶上窗口"与本轮前的记录共用同一道守卫（`results` 与当日文件
     # 都查），故上面两条覆盖了该规则的两种来源。
+
+
+class WindowClosedExitCodeTest(unittest.TestCase):
+    """窗口已关的零请求收尾轮：退出码必须按账号的真实结论算，而不是按"未执行"算。
+
+    run.sh 只认退出码：2 写 SKIPPED（补签会再跑），1 不写状态文件（当天留着失败语义，
+    还伴随失败邮件）。已有结论的账号若被收尾漏出 `results`，汇总按默认 `pending`
+    计成失败 → 退出码 1——真相却是"当日已有结论、本轮无需处理"。
+    """
+
+    PHONE = "13800138000"
+    #: 固定业务时刻（2026-09-17 周四 08:05，晚于 06:30~07:50 的有效窗口 07:49）
+    AFTER = _dt.datetime(2026, 9, 17, 8, 5)
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-win-exit-")
+        self.env = dict(os.environ)
+        os.environ.update({
+            "YIBAN_STATE_DIR": self.tmp,
+            "YIBAN_LOG_FILE": os.path.join(self.tmp, "sign.log"),
+            "YIBAN_DB_FILE": os.path.join(self.tmp, "yiban.db"),
+            "YIBAN_SIGN_START": "06:30",
+            "YIBAN_SIGN_END": "07:50",
+        })
+        os.environ.pop("YIBAN_SECOND_RUN", None)
+        os.environ.pop("YIBAN_GLOBAL_PAUSE", None)
+        self.state_path = os.path.join(self.tmp, f"sign-state-{self.AFTER:%Y-%m-%d}.json")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.env)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run_main(self, recorded):
+        """预置一条当日结论后跑一轮全量（时间表非空 ⇒ 与真实全量轮同一条路径）。"""
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump({self.PHONE: {"status": recorded, "message": "首轮留痕"}}, f)
+        calls = []
+        acc = signin.Account(phone=self.PHONE, password="p")
+        with mock.patch.object(signin.clock, "now", return_value=self.AFTER), \
+                mock.patch.object(signin, "load_accounts", return_value=[acc]), \
+                mock.patch.object(signin, "build_schedule",
+                                  return_value={self.PHONE: self.AFTER}), \
+                mock.patch.object(signin, "attempt_signin",
+                                  side_effect=lambda a: calls.append(a.phone)), \
+                mock.patch.object(signin, "_acquire_run_lock", return_value=None), \
+                mock.patch.object(signin, "_save_cred_state"), \
+                mock.patch.object(signin, "_maybe_alert_zero_success", return_value=False), \
+                mock.patch.object(signin, "_flush_admin_mail_summary"), \
+                mock.patch.object(signin.time, "sleep"):
+            try:
+                signin.main([])
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, calls
+
+    def test_exit_code_follows_recorded_conclusion(self):
+        for recorded, want, why in (
+            (signin.STATUS_SKIPPED_WINDOW, 2, "窗口外跳过 → 待补签，不是失败"),
+            (signin.STATUS_NO_POSITION, 2, "无点位 → 跳过桶，补签闸门仍会重跑"),
+            (signin.STATUS_FAILED, 1, "真失败必须继续可见"),
+            (signin.STATUS_SUCCESS, 0, "当日已签到 → 无需处理，也不该报失败"),
+        ):
+            with self.subTest(recorded=recorded):
+                code, calls = self._run_main(recorded)
+                self.assertEqual(calls, [], "窗口已关：一个真实请求都不该发")
+                self.assertEqual(code, want, why)
 
 
 class ManualChainWindowGuardTest(unittest.TestCase):
