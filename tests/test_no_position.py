@@ -86,7 +86,8 @@ def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
         sys.argv = ["signin.py"] + (argv or [])
         result = run_queue_result or {}
 
-        def _fake_load_accounts():
+        def _fake_load_accounts(migrate=True):
+            # migrate 入参（F3 只读校验）与本组用例无关：普通签到路径传 True
             return [
                 signin.Account(phone=p, password="test-pass", name="测试")
                 for p in result

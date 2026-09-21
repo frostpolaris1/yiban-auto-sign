@@ -119,12 +119,14 @@ def _parse_account_dict(data):
     )
 
 
-def _load_accounts_from_file():
+def _load_accounts_from_file(migrate=True):
     """从数据库文件（yiban.db，SQLite）加载；web 后台写入，单行事务防并发覆盖。
 
     db 层返回已解密明文；此处只做审核状态过滤。
+
+    migrate=False 时**不跑 schema 迁移**（只读校验模式，见 `load_accounts`）。
     """
-    db.init_db(env_file=config_check._key_env_file(), cleanup=False)
+    db.init_db(env_file=config_check._key_env_file(), cleanup=False, migrate=migrate)
     all_accounts = db.load_accounts()
     # 跳过待审核（status=pending：网页端普通用户提交、管理员尚未审核通过）、
     # 被拒绝（status=rejected：管理员审核不通过，不得签到）与待删除账号
@@ -230,10 +232,18 @@ def _dedupe_by_phone(accounts):
     return kept
 
 
-def load_accounts():
-    """按优先级加载账号配置：文件 > JSON 环境变量 > 旧格式环境变量（按手机号去重）。"""
+def load_accounts(migrate=True):
+    """按优先级加载账号配置：文件 > JSON 环境变量 > 旧格式环境变量（按手机号去重）。
+
+    migrate：False = **只读校验模式**（`config` 子命令 / `sign --check-config`）：
+    不跑 schema 迁移。迁移会重写审计链（v3 rechain）等，使"被校验对象在校验过程
+    中被改动"——`db.init_db` 的文档自述"校验类工具应传 False"（2026-09-21 测试机
+    47 E2E：宣称只读的配置检查实际把目标库迁到 v17）。账号表由 `init_db` 的基线
+    建表保证存在（`CREATE TABLE IF NOT EXISTS`），故只读模式下取账号不依赖迁移。
+    """
     for loader in (
-        _load_accounts_from_file,
+        # 文件来源是唯一碰库的加载器：migrate 只对它有意义
+        lambda: _load_accounts_from_file(migrate=migrate),
         _load_accounts_from_json_env,
         _load_accounts_from_legacy_env,
     ):
