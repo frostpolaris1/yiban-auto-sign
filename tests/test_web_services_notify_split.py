@@ -500,6 +500,25 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
         once = self.webapp._nl_safe("a\u2028b")
         self.assertEqual(self.webapp._nl_safe(once), once, "净化必须幂等")
 
+    def test_review_reject_mail_sanitizes_fields(self):
+        """拒信正文的被拒账号与理由都要过净化：纯文本拒信不得被拆出伪造行。
+
+        理由来自管理员表单（外部输入）；此前直接塞进 `fields`，`\\n`/`U+2028`
+        都能在用户收到的纯文本邮件里伪造一行（如假造一条管理员说明）。
+        """
+        mail_obj = self.webapp._review_reject_mail(
+            ["138****8000\u2028伪造行"], "理由\n伪造第二行")
+        fields = dict(mail_obj.fields)
+        for label in ("被拒账号", "审核理由"):
+            value = fields[label]
+            for ch in ("\n", "\r", "\u2028"):
+                self.assertNotIn(ch, value, f"{label} 仍含裸分隔符: {value!r}")
+        self.assertIn("\\n", fields["审核理由"], "换行应转成字面量而非直接丢弃")
+        # 空值分支的兜底文案不受净化影响
+        empty = dict(self.webapp._review_reject_mail([], "").fields)
+        self.assertEqual(empty["被拒账号"], "（见「我的账号」页）")
+        self.assertEqual(empty["审核理由"], "管理员未填写，可联系管理员了解详情")
+
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
