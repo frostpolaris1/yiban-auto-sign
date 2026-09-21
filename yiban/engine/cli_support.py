@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager, suppress
 
 from yiban import clock
-from yiban.infra import locks
+from yiban.infra import env_io, locks
 from yiban.logging_ext import FlockFileHandler
 
 logger = logging.getLogger("yiban")
@@ -73,7 +73,7 @@ def _acquire_run_lock(only_mode, name=None):
     再退到 `GLOBAL_RUN_LOCK_NAME`。**显式传参可绕过环境变量**——探测全局锁必须显式
     传（兜底进程自己的环境变量里放的是它自己的锁名）。
     """
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
     # 多执行体形态下每个子进程用**各自的**锁文件（YIBAN_RUN_LOCK_NAME），全局锁由
     # 拉起它们的监督进程持有：这样既保住"散落的另一轮全量不得与本轮并发"的原有保护，
     # 又不让子进程之间互相阻塞。
@@ -147,7 +147,7 @@ def _run_lock_held(name=None):
 # 按天日志文件路径（与 web/app.py log_path_for 一致）
 def _signin_log_path():
     date_str = clock.now().strftime("%Y-%m-%d")
-    log_file = os.environ.get("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
+    log_file = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
     return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
 
 

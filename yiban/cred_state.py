@@ -20,6 +20,7 @@ import os
 import secrets
 
 from . import clock
+from .infra import env_io
 
 logger = logging.getLogger("yiban.cred_state")
 
@@ -28,7 +29,7 @@ TMP_SUFFIX_LEN = 4
 
 def path():
     """状态文件路径（YIBAN_STATE_DIR，与按日状态文件同目录）。"""
-    state_dir = os.environ.get("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
     return os.path.join(state_dir, "cred-state.json")
 
 
