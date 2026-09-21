@@ -13,6 +13,7 @@
 """
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import unittest
@@ -79,6 +80,26 @@ class CliContractTest(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def _user_version(self):
+        conn = sqlite3.connect(str(self.root / "yiban.db"))
+        try:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+
+    def _add_account(self):
+        """往临时库写一个 active 账号（走数据层，密码按密钥加密）。"""
+        code = ("import sys; from yiban.store import db;"
+                "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
+                "db.add_account({'name': 'A', 'phone': '13800138000', 'password': 'p1',"
+                " 'status': 'active', 'owner': 'admin'})")
+        r = subprocess.run([sys.executable, "-c", code, str(self.root / "yiban.db"),
+                            str(self.root / ".env")], cwd=BASE, env=self.env,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120)
+        if r.returncode != 0:
+            raise AssertionError(f"临时账号写入失败: {r.stdout}{r.stderr}")
 
     # ---- ① 子命令存在且 --help 可用 ----
 
@@ -282,6 +303,49 @@ class CliContractTest(unittest.TestCase):
         payload = json.loads(r.stdout.splitlines()[0])
         self.assertFalse(payload["ok"])
         self.assertTrue(any("配置加载失败" in m for m in payload["errors"]), payload)
+
+    def test_config_and_check_config_do_not_migrate_target_db(self):
+        """F3：宣称"脱敏、不联网/只读"的配置检查不得对目标库跑迁移（写库）。
+
+        2026-09-21 测试机 47 E2E：`config` 经 `load_accounts() → db.init_db(migrate=True)`
+        把目标库迁到了 v17。本用例用 user_version=13 的旧库（E2E 前 n360.db 的形态）
+        钉住"不迁移"：跑完 `config` 与 `sign --check-config`，user_version 必须原样不动。
+        对照组（直接 `init_db`，缺省 migrate=True）证明该库确实可被迁移——否则用例
+        什么也没测到。
+        """
+        _make_db(self.root, self.env)
+        self._add_account()
+        # 伪装成旧库（E2E 前的 n360.db：user_version 13）
+        conn = sqlite3.connect(str(self.root / "yiban.db"))
+        try:
+            conn.execute("PRAGMA user_version=13")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self._user_version(), 13, "前置条件：旧库")
+
+        r = _run(["config", "--json"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        payload = json.loads(r.stdout.splitlines()[0])
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload["accounts"], 1, "只读模式下账号仍应正常列出")
+        self.assertEqual(self._user_version(), 13, "config 不得对目标库跑迁移")
+
+        r = _run(["sign", "--check-config"], self.env)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertEqual(self._user_version(), 13, "sign --check-config 不得跑迁移")
+
+        # 对照组：真实路径（init_db 缺省 migrate=True）会把这个库迁到当前版本
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; from yiban.store import db;"
+             "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False)",
+             str(self.root / "yiban.db"), str(self.root / ".env")],
+            cwd=BASE, env=self.env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertEqual(self._user_version(), 17,
+                         "对照组失败：该库本可被迁移，上面的断言没测到东西")
 
     def test_capacity_measure_forwards_extra_args(self):
         """`--measure` 之后的多余参数属于工具自己的开关，不是 CLI 的用法错误。

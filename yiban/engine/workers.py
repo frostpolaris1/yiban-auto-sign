@@ -79,7 +79,7 @@ _WAIT_POLL_SEC = 1.0
 _SECOND_RUN_CHECK_NEED = 10
 
 
-def run_worker_supervisor(n, argv, slots=None):
+def run_worker_supervisor(n, argv, slots=None, migrate=True):
     """拉起 n 个执行体子进程并汇总退出码（`--workers N`）。
 
     - **全局锁由本进程持有**：散落的另一轮全量（cron 与手动）仍会被挡住；
@@ -91,6 +91,8 @@ def run_worker_supervisor(n, argv, slots=None):
     - `slots` = **执行体清单给出的槽位号**（拉起列表，`egress.launch_slots`）。省略时
       用旧口径的 `0..n-1`（行为逐字不变）。传了槽位时子进程的身份/锁/心跳都按
       **槽位号**算，故清单里**停用/删除的行不会被拉起**，且删中间行不影响其余槽位；
+    - `migrate`：False = 本轮的配置预检也不跑 schema 迁移（`--check-config` 只读校验；
+      子进程各自按同口径处理，监督进程先迁移会把"只读校验"打成写库）；
     - 退出码汇总取"最严重"的一个：补签轮判定的「需要补跑」(10) 原样透出且优先于其余判定
       （它表达调用方必须区分的语义，归一成 0 会让补签轮被静默吞掉），其后才是
       真失败(1) > 锁忙(3) > 跳过/窗口外(2) > 全成功(0)。
@@ -104,8 +106,10 @@ def run_worker_supervisor(n, argv, slots=None):
     # 先在本进程把库初始化/迁移做完并校验账号配置：否则 N 个子进程会在同一秒
     # 抢着 init_db（实测 `PRAGMA journal_mode=WAL` 会报 "database is locked"），
     # 而且配置错误的报错会变成 N 份、互相淹没。
+    # `--check-config` 只读校验不在此迁移（migrate=False）：否则宣称只读的校验
+    # 仍会把目标库改一遍（2026-09-21 测试机 47 E2E）。
     try:
-        loaded_accounts = accounts_mod.load_accounts()
+        loaded_accounts = accounts_mod.load_accounts(migrate=migrate)
     except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         logger.error(f"配置加载失败: {e}")
         cli_support.report_fatal_error(f"配置加载失败: {e}")

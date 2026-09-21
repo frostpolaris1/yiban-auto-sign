@@ -342,7 +342,7 @@ class SharedGateWiringTest(_WeekdayGuard):
                 mock.patch.object(runner, "SATURDAY_SIGN", False), \
                 mock.patch.object(runner, "SUNDAY_SIGN", False), \
                 mock.patch.object(runner.accounts_mod, "load_accounts",
-                                  lambda: [mock.Mock(phone="13800000000")]):
+                                  lambda *a, **kw: [mock.Mock(phone="13800000000")]):
             rc = runner.main([])
         self.assertEqual(rc, 2, "定时轮没把门当回事（应为 SKIPPED 语义的 2）")
         self.assertEqual(len(calls), 1, "定时轮没走共享门 `schedule.day_off`")
@@ -355,7 +355,7 @@ class SharedGateWiringTest(_WeekdayGuard):
                 mock.patch.object(runner, "SATURDAY_SIGN", False), \
                 mock.patch.object(runner, "SUNDAY_SIGN", False), \
                 mock.patch.object(runner.accounts_mod, "load_accounts",
-                                  lambda: [mock.Mock(phone="13800000000")]):
+                                  lambda *a, **kw: [mock.Mock(phone="13800000000")]):
             self.assertEqual(runner.main([]), 2)
 
 

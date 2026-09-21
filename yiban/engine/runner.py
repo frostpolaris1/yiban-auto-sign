@@ -228,7 +228,8 @@ def main(argv=None):
             _skip = _day_off_skip()
             if _skip is not None:
                 return _skip
-        return workers.run_worker_supervisor(_dispatch[0], argv, slots=_dispatch[1])
+        return workers.run_worker_supervisor(_dispatch[0], argv, slots=_dispatch[1],
+                                             migrate=not args.check_config)
 
     # 超时击杀前的告警兜底：宿主 run.sh timeout / 容器 / 手动 terminate 均以
     # SIGTERM 结束子进程；注册在探针分支之前，签到与探针子进程同享。
@@ -237,8 +238,10 @@ def main(argv=None):
     notify_url = os.environ.get("YIBAN_NOTIFY_URL", "")
 
     # 加载账号配置（文件 > JSON 环境变量 > 旧格式，详见 load_accounts）
+    # `--check-config` 是只读校验：不跑 schema 迁移（迁移会重写审计链，使"被校验
+    # 对象在校验过程中被改动"；db.init_db 文档自述校验类工具应传 False）
     try:
-        accounts = accounts_mod.load_accounts()
+        accounts = accounts_mod.load_accounts(migrate=not args.check_config)
     except (RuntimeError, ValueError) as e:
         # ValueError 来自 `_parse_account_dict` 的字段缺失（phone/password 为空）：
         # 配置错误同样要落成"配置加载失败 + 退出码 1"，不得变裸 traceback
@@ -267,11 +270,13 @@ def main(argv=None):
         return 0
 
     # 超期软删账号物理清理：cron/Actions 部署可能没有常驻 web 进程，
-    # 每日签到进程是清理的唯一时机；失败不阻断签到
-    try:
-        db.purge_expired_deleted_accounts()
-    except Exception as e:
-        logger.debug("清理超期软删除账号失败（不影响签到）: %s", e)
+    # 每日签到进程是清理的唯一时机；失败不阻断签到。
+    # `--check-config` 是只读校验：物理删行也是写库，同样跳过（与 migrate=False 同理由）。
+    if not args.check_config:
+        try:
+            db.purge_expired_deleted_accounts()
+        except Exception as e:
+            logger.debug("清理超期软删除账号失败（不影响签到）: %s", e)
 
     if not accounts:
         logger.error("未配置任何账号，请通过以下任一方式配置：")

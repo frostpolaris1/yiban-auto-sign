@@ -24,7 +24,7 @@
 |--------|--------|-------------------|--------|
 | `sign` | 一轮签到（选项原样透传给引擎） | `command` `exit_code`（非 0 时附 `error` 摘要） | 0/1/2/3/10（引擎口径） |
 | `probe` | 只读健康检查（引擎 `--probe` 语义） | `command` `exit_code`（非 0 时附 `error` 摘要） | 同上 |
-| `config` | 账号配置检查（脱敏、不联网） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
+| `config` | 账号配置检查（脱敏、不联网、只读不迁移） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
 | `capacity` | 容量建议（实测值 → 建议执行体数） | `command` `ok` `accounts` `accounts_total` `window_effective_sec` `avg_attempt_sec` `gap_sec` `capacity_per_executor` `measured_per_executor` `recommended_per_executor` `executors_needed` `paths` | 0 / 1 |
 | `state` | 状态文件清理（默认 dry-run） | `command` `ok` `dry_run` `state_dir` `log_dir` `retention_days` `candidates` `removed` `detail` | 0 正常 / 1 保留期非法或目录不可用 |
 | `db` | 数据库维护（状态/完整性/备份） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `dry_run` | 0 / 1 |
@@ -280,10 +280,15 @@ def _cmd_config(args, view):
 
     退出码 0 正常 / 1 配置错误（账号加载失败，或一个账号都没有 —— 与引擎入口的
     "零账号守卫"同一判据，免得"CLI 说没问题、签到却直接报未配置"）。
+
+    `migrate=False`：本命令宣称"脱敏、不联网/只读"，就不能经 `load_accounts() →
+    db.init_db(migrate=True)` 对目标库跑迁移（重写审计链等）——2026-09-21 测试机
+    47 E2E 实测宣称只读的 config 把库迁到了 v17。账号表由 init_db 的基线建表保证
+    存在，只读模式下取账号不依赖迁移。
     """
     paths = _paths(view)
     try:
-        accounts = accounts_mod.load_accounts()
+        accounts = accounts_mod.load_accounts(migrate=False)
     except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         return _fail("config", 1, [f"配置加载失败: {e}"], args.json,
                      accounts=0, phones_masked=[], paths=paths)
