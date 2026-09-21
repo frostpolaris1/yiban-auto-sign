@@ -205,12 +205,20 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             pass
 
     def _mark_window_skip(rest_accs):
-        """窗口关闭收尾：只把**当日尚无结论**的账号标记为窗口外跳过。
+        """窗口关闭收尾：剩余账号一律进本轮 `results`；落盘只写**当日尚无结论**的账号。
 
         不覆盖已有结论：本轮（或上一轮补签）已经得出的 failed / no_position 等真实
         原因必须保留——原实现无条件改写，会把"重试没赶上窗口"记成"窗口外"，
         日历上丢掉失败原因，`has_real_failure` 也一起变 False（失败告警被吞掉）。
         补签轮起跑时窗口已关闭同理：整轮零请求却不该改写首轮结论。
+
+        **已有结论的账号按原结论透传进 `results`**：这类账号本轮不执行（窗口已关），
+        但汇总只认 `results`，缺席即按默认 `pending` 归入"未执行"失败（❌ N 失败、
+        退出码 1、失败邮件），而真相是"该账号当日已有结论、无需本轮处理"。透传后汇总
+        按真实结论分组：success/already 计入成功；no_task / skipped_window /
+        skipped_norange / paused / user_cancelled / no_position 计入跳过；其余
+        （failed 等）仍计失败——真失败必须继续可见。状态串 strip 后比较，
+        口径与 `state_io._has_conclusion` 相同。
 
         **`pending` 不是结论**：排计划阶段给每个账号都写了"计划 HH:MM"（同一份状态
         文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
@@ -224,7 +232,11 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         recorded = state_io._daily_statuses()
         for _ra in rest_accs:
             _p = _ra.phone
-            if _p in results or recorded.get(_p, "") not in ("", STATUS_PENDING):
+            if _p in results:
+                continue
+            _rec_status = str(recorded.get(_p, "")).strip()
+            if _rec_status not in ("", STATUS_PENDING):
+                results[_p] = (False, "已有当日结论", False, _rec_status)
                 continue
             if not state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW,
                                               "签到时段已结束", only_if_absent=True):
