@@ -108,6 +108,38 @@ class CliContractTest(unittest.TestCase):
                 self.assertIsInstance(payload, dict)
                 self.assertEqual(payload["command"], cmd)
 
+    # ---- ②b 致命配置错误：stderr 一行摘要 + --json 的 error 详情（F2） ----
+
+    def test_sign_no_accounts_error_reaches_stderr_and_json(self):
+        """F2：`sign` 零账号（未配置任何账号）退出码 1 时，错误必须打到 stderr。
+
+        2026-09-21 测试机 47 无上下文 CLI E2E：该失败模式下 stdout/stderr 全空，
+        错误只进按天日志文件；`--json` 也只有 exit_code 没有详情。
+        """
+        # 人类模式：stderr 一行摘要；stdout 保持"只有结果"（空）
+        r = _run(["sign"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        self.assertEqual(r.stdout, "", "stdout 只放结果，不得混入人类可读输出")
+        self.assertIn("未配置任何账号", r.stderr, "致命错误摘要必须打到 stderr")
+
+        # --json 模式：stdout 单行 JSON 带 error 详情（不能只有光秃秃的 exit_code）
+        r = _run(["sign", "--json"], self.env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = json.loads(r.stdout.splitlines()[0])
+        self.assertEqual(payload["exit_code"], 1)
+        self.assertIn("error", payload, "--json 必须带失败详情")
+        self.assertIn("未配置任何账号", payload["error"])
+        self.assertIn("未配置任何账号", r.stderr, "--json 模式下 stderr 摘要同样应可见")
+
+    def test_sign_config_load_failure_error_reaches_stderr_and_json(self):
+        """F2 同族：配置加载失败（坏 JSON）同样是 stderr 摘要 + --json error。"""
+        env = dict(self.env, YIBAN_ACCOUNTS_JSON="{not-json")
+        r = _run(["sign", "--json"], env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        payload = json.loads(r.stdout.splitlines()[0])
+        self.assertIn("配置加载失败", payload.get("error", ""))
+        self.assertIn("配置加载失败", r.stderr)
+
     # ---- ③ state 默认 dry-run，--yes 才动手 ----
 
     def test_state_defaults_to_dry_run_and_yes_deletes(self):

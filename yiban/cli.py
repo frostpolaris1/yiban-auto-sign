@@ -22,8 +22,8 @@
 
 | 子命令 | 做什么 | `--json` 顶层字段 | 退出码 |
 |--------|--------|-------------------|--------|
-| `sign` | 一轮签到（选项原样透传给引擎） | `command` `exit_code` | 0/1/2/3/10（引擎口径） |
-| `probe` | 只读健康检查（引擎 `--probe` 语义） | `command` `exit_code` | 同上 |
+| `sign` | 一轮签到（选项原样透传给引擎） | `command` `exit_code`（非 0 时附 `error` 摘要） | 0/1/2/3/10（引擎口径） |
+| `probe` | 只读健康检查（引擎 `--probe` 语义） | `command` `exit_code`（非 0 时附 `error` 摘要） | 同上 |
 | `config` | 账号配置检查（脱敏、不联网） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
 | `capacity` | 容量建议（实测值 → 建议执行体数） | `command` `ok` `accounts` `accounts_total` `window_effective_sec` `avg_attempt_sec` `gap_sec` `capacity_per_executor` `measured_per_executor` `recommended_per_executor` `executors_needed` `paths` | 0 / 1 |
 | `state` | 状态文件清理（默认 dry-run） | `command` `ok` `dry_run` `state_dir` `log_dir` `retention_days` `candidates` `removed` `detail` | 0 正常 / 1 保留期非法或目录不可用 |
@@ -65,7 +65,7 @@ import sys
 from yiban import __version__ as RELEASE_VERSION
 from yiban import state_gc, window
 from yiban.engine import accounts as accounts_mod
-from yiban.engine import runner
+from yiban.engine import cli_support, runner
 from yiban.engine import schedule as schedule_mod
 from yiban.infra import env_io
 from yiban.masking import mask_phone
@@ -243,10 +243,19 @@ def _cmd_sign(json_mode, extra):
     也写成一行对象；人类可读日志仍由引擎写往 stderr / 日志文件。`--json` 在透传前
     已被 argparse 取走，不会漏给子进程（`--workers N` 拉起的执行体不会各打一行 JSON
     把 stdout 撑花）。
+
+    退出码非 0 时附带可选 `error` 字段（引擎致命错误的 stderr 摘要，"未配置任何账号"/
+    "配置加载失败"类）：否则调用方只拿到一个光秃秃的 exit_code，失败原因仍埋在按天
+    日志文件里（2026-09-21 测试机 47 E2E）。
     """
     code = runner.main(extra)
     if json_mode:
-        _emit_json({"command": "sign", "exit_code": code})
+        payload = {"command": "sign", "exit_code": code}
+        if code != 0:
+            error = cli_support.last_fatal_error()
+            if error:
+                payload["error"] = error
+        _emit_json(payload)
     return code
 
 
@@ -254,7 +263,12 @@ def _cmd_probe(json_mode, extra):
     """只读健康检查：转引擎的 `--probe` 语义（是否真跑由探针开关/频率/暂停门决定）。"""
     code = runner.main(["--probe", *extra])
     if json_mode:
-        _emit_json({"command": "probe", "exit_code": code})
+        payload = {"command": "probe", "exit_code": code}
+        if code != 0:
+            error = cli_support.last_fatal_error()
+            if error:
+                payload["error"] = error
+        _emit_json(payload)
     return code
 
 

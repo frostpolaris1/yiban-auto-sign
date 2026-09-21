@@ -108,9 +108,13 @@ def run_worker_supervisor(n, argv, slots=None):
         loaded_accounts = accounts_mod.load_accounts()
     except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         logger.error(f"配置加载失败: {e}")
+        cli_support.report_fatal_error(f"配置加载失败: {e}")
         return 1
     if not loaded_accounts:
         logger.error("未配置任何账号，不拉起执行体")
+        cli_support.report_fatal_error(
+            "未配置任何账号：请配置 yiban.db（网页后台添加）、YIBAN_ACCOUNTS_JSON、"
+            "YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（配置方法详见日志）")
         return 1
     logger.info("多执行体：共 %d 个账号待签，拉起 %d 个执行体（槽位 %s）",
                 len(loaded_accounts), n, slot_list)
