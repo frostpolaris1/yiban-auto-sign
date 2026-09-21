@@ -1,12 +1,28 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁。
+"""**功能**
+CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁。
 
 三件事都属"进程外壳"而非签到逻辑：谁在跑（单实例锁，防 cron 全量与手动 `--only`
 并发登录同一账号）、日志写哪儿（按天文件 handler，装配延迟到入口、导入零副作用）、
 状态文件怎么安全读改写（跨进程文件锁）。引擎其余部分与入口都依赖它们，故独立成模块。
 
-跨模块调用纪律见包说明：本模块内部用裸名，跨模块一律走模块属性访问。
+**归属**
+`yiban.engine` 的进程外壳支撑层（`runner` / `workers` / `round` / `probe` / `alerts`
+与 web 服务层都依赖它）。
+
+**复用**
+`_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
+`GLOBAL_RUN_LOCK_NAME` 与运行锁获取函数；锁原语来自 `yiban.infra.locks`。
+
+**通信**
+输入：日志级别/路径等环境配置、状态文件路径与加锁范围。
+输出：配置好的 logger/handler、被加锁的读改写上下文。
+调用谁：`yiban.infra.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
+谁调用：`runner`、`workers`、`state_io`、`probe`、`alerts` 与 web 服务层。
+前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
+页面的"正在跑/存活"判定依赖本模块的全局运行锁。
+本模块内部用裸名，跨模块一律走模块属性访问。
 """
 import logging
 import os

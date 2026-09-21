@@ -1,13 +1,32 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""一轮队列：把账号列表跑成一轮签到（含分级重试、领取池分工、窗口收尾）。
+"""**功能**
+一轮队列：把账号列表跑成一轮签到（含分级重试、领取池分工、窗口收尾）。
 
 两种形态共用同一份重试分级与领取池：调度 v2 的**时间驱动堆队列**（自动错峰，失败
 账号经 `_next_retry_at` 重新采样落点后非阻塞重插）与**手动队列**（`--only`/兜底执行体
 传入空 schedule，失败回队尾并等满最小间隔）。多执行体的分工靠 `yiban/store/claims.py`
 的账号级租约：领不到即"别人正在做它"，本进程不碰（不写状态、不重试、不告警）。
 
-跨模块调用纪律见包说明：跨模块一律走模块属性访问。
+**归属**
+`yiban.engine` 的签到执行核心；`runner`（定时全量）、`workers`（并行/兜底执行体）与
+手动 `--only` 都落到 `run_queue_retry`。
+
+**复用**
+`run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）；
+`SIGN_MODE`、`_DEFAULT_SLOW_SIGN_SEC` 供告警与容量计算对齐。
+
+**通信**
+输入：账号列表、时间表（schedule，空即手动队列）、`--only` 过滤后的子集。
+输出：按日状态（经 `state_io`）、`sign_events`、告警（`alerts`）；返回本轮统计供
+`runner` 汇总退出码。
+调用谁：`client`（单次尝试）、`attempts`、`state_io`、`alerts`、`schedule`、`db`。
+谁调用：`runner.run_once`、`workers` 的子进程。
+前端调用点：账号页与我的账号页（`web/pages/work_accounts.js`、
+`web/components/my-accounts.js`）、日历/日志（`web/static/js/calendar.js` 拉
+`/api/my-calendar`、`/api/my-logs`）与仪表盘 `/api/admin/sign-events` 读本模块写入的
+按日状态与事件——状态码或收尾口径变化会直接改变这些页面的日历着色与日志列表。
+跨模块一律走模块属性访问。
 """
 import heapq
 import logging

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""易班账号敏感字段加密（AES-GCM）：web / signin 双进程共享。
+"""**功能**
+易班账号敏感字段加密（AES-GCM）：web / signin 双进程共享。
 
 - 存储层加密：账号的 password/phone_code 字段为密文对象（yiban.db 的 accounts 表，
   迁移前是 accounts.json）
@@ -15,6 +16,24 @@ ValueError 时才知道，换钥中断、.env 与库不同步时无法在动手�
 
 ⚠️ 密钥丢失 = 已加密的账号密码不可恢复：备份数据时必须连同密钥一起备份
 （密钥与数据分开放，如 .env 与 yiban.db 分开打包）。
+
+**归属**
+`yiban.infra` 的加密基础设施（无项目内依赖），是账号密文的唯一实现；web 与 signin
+两个进程共享同一份密钥与格式。
+
+**复用**
+`encrypt_field` / `decrypt_field` 族与 `load_key` / `has_key`、`SCHEMA_VERSION` 是
+唯一来源；`.env` 读写复用同目录 `env_io`，跨进程锁复用 `env_lock`。
+
+**通信**
+输入：明文敏感字段 + 手机号（AAD）、密钥来源（环境变量或 .env 路径）。
+输出：v1 密文对象（JSON 可序列化）或解密后的明文；密钥缺失时按 0600 生成并持久化。
+调用谁：`yiban.infra.env_io`、`yiban.infra.env_lock`、`Crypto.Cipher.AES`。
+谁调用：`yiban.engine.accounts`（装载解密）、`yiban.store.db`（落库加密）、
+web 服务层（账号增改与改密）、`scripts/rekey_accounts.py`（轮换）。
+前端调用点：`/api/accounts`、`/api/my-accounts`、`/api/me/password`
+（`web/components/account-form.js`、`web/components/my-accounts.js`）提交的密码经本模块
+加密落库——格式或密钥口径变化会直接影响这些页面保存/校验账号的成功与失败。
 """
 
 import logging

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""探针与只读健康检查：非签到时段对全部账号做登录 + 拉任务（不提交签到）。
+"""**功能**
+探针与只读健康检查：非签到时段对全部账号做登录 + 拉任务（不提交签到）。
 
 用途有二：注册/改密时即时验证账号（网页侧复用 `verify_account`），以及定时健康探测
 提前发现"图形验证墙 / 校本化失效 / 密码错误"这类无法自愈的问题。探测结果落
@@ -10,7 +11,24 @@
 探测本身是**一次真实登录**（与签到同一风控暴露面），因此：一键暂停/周末关闭期间不跑、
 与签到进程互斥（入口处持运行锁）、`last_run` **先记账再探测**（双探针并发只放行一个）。
 
-跨模块调用纪律见包说明：跨模块一律走模块属性访问。
+**归属**
+`yiban.engine` 的只读健康检查层；`runner --probe` 与网页注册/改密验证都走它。
+
+**复用**
+`verify_account`（注册/改密即时验证，网页侧复用）、探针模式判定与结果落库函数；
+账号复核 `account_still_signable` 取自 `yiban.store.accounts`。
+
+**通信**
+输入：账号列表、探针配置（`YIBAN_PROBE_ENABLE` / `YIBAN_PROBE_TIME` 等，经 .env 传入）。
+输出：`sign_events`（stage=probe）、管理员汇总（并入 A 线）与用户预警；退出码口径与
+`runner` 一致。
+调用谁：`client`（真实登录）、`alerts`、`state_io`、`cli_support`、`env_lock`、`db`。
+谁调用：`runner`（`--probe`）、web 注册/改密路径（`web/services/accounts_data.py`）。
+前端调用点：注册与改密表单（`web/components/account-form.js`、
+`web/pages/my_account.js`）走 `/api/accounts`、`/api/my-accounts` 经本模块做即时验证；
+健康探测结果经 `/api/admin/sign-events` 进入仪表盘——验证口径变化会改变注册/改密的
+打回提示。
+跨模块一律走模块属性访问。
 """
 import contextlib
 import json

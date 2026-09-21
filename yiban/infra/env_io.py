@@ -1,12 +1,29 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""单一 .env 解析与单键写入实现（mailer / notify / account_crypto / db 共用）。
+"""**功能**
+单一 .env 解析与单键写入实现（mailer / notify / account_crypto / db 共用）。
 
 读的一半是 `parse_env_file`；写的一半是 `write_env_key`——读-改-写里"保留其他行、
 只替换目标键"的那套行模型（窄行、逐行行分隔符校验、键行折叠、原子 0600 替换）只有
 这一份，密钥（account_crypto）/ 审计密钥（audit_chain）/ 追踪盐（tracking）三处共用，
 避免各自再抄一份而口径漂移。
 
-各调用方的解析口径完全一致，差异仅在错误策略，由 strict 参数表达：
+解析口径：utf-8-sig 兼容 BOM（Windows 记事本等工具保存常见，否则首个键名带
+\\ufeff 前缀导致读不到）；忽略空行与 # 注释行；按首个 = 切分，键值两侧 strip；
+无 = 的行跳过。
+
+**归属**
+`yiban.infra` 的基础设施层（无项目内依赖），是全项目 `.env` 读写的**唯一实现**；
+`web/services/env_io.py` 是它在 web 侧的服务包装，不另立第二套行模型。
+
+**复用**
+`parse_env_file`、`write_env_key`、`ENV_LINE_BREAK_CHARS` 与 `resolve_path` 被引擎
+（`env_io` 调用点）、`account_crypto`、`audit_chain`、`tracking`、`state_gc`、`cred_state`
+与 web 服务层复用。
+
+**通信**
+输入：`.env` 路径、键名与值、`strict` 错误策略、解析/写入的调用方参数。
+输出：解析后的 dict 或写回后的 `.env` 文件（原子 0600 替换）。
+各调用方的解析口径完全一致，差异仅在错误策略，由 `strict` 参数表达：
 - 宽松（默认）：任何 OSError（含文件不存在）→ 返回空 dict，调用方走"未配置"分支；
 - 严格（strict=True）：文件不存在 → 空 dict；文件存在但读取失败（权限/占用等）
   → 直接抛出 OSError，由调用方记日志并失败。
@@ -14,9 +31,11 @@
 严格模式的理由（勿简化掉）：密钥/审计盐的自动生成路径若把"读失败"误判为"未配置"，
 会静默生成新钥覆盖旧钥，致存量密文与审计链永久不可解——宁可启动失败也不生成替代密钥。
 
-解析口径：utf-8-sig 兼容 BOM（Windows 记事本等工具保存常见，否则首个键名带
-\\ufeff 前缀导致读不到）；忽略空行与 # 注释行；按首个 = 切分，键值两侧 strip；
-无 = 的行跳过。
+调用谁：仅标准库（`os` / `re` / `secrets` / `contextlib`）。
+谁调用：`yiban.engine.*`、`yiban.store.*`、`yiban.infra.account_crypto`、
+`web/services/env_io.py` 与设置页写入路径。
+前端调用点：系统设置页 `/api/settings`（`web/components/settings-*.js`）的开关落盘经
+web 服务层走本模块——行模型或 `strict` 口径变化会影响设置保存与密钥/盐的生成。
 
 `child_env.parse_env_file` 不在此收敛：它有额外语义（仅接受 YIBAN_ 前缀且键名
 合法的行，供子进程环境注入，防 .env 被写入特殊键后污染子进程），保持独立实现。

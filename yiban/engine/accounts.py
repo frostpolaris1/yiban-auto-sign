@@ -1,13 +1,31 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""账号装载：数据库 / JSON 环境变量 / 旧格式环境变量三种来源，统一去重与设备回退。
+"""**功能**
+账号装载：数据库 / JSON 环境变量 / 旧格式环境变量三种来源，统一去重与设备回退。
 
 优先级（`load_accounts`）：数据库 > `YIBAN_ACCOUNTS_JSON` > 旧格式环境变量。装载是
 引擎的第一道门，因此这里同时承担三件事：密文解密（依赖 `YIBAN_ACCOUNTS_KEY`）、
 审核态过滤（pending/rejected/deleted 不参与签到）、重复手机号去重（同一账号被完整
 登录两次会让重试预算错乱）。
 
-跨模块调用纪律见包说明：跨模块一律走模块属性访问（如 `config_check._key_env_file()`）。
+**归属**
+`yiban.engine` 的账号装载层（引擎入口的第一道门）；`runner` / `probe` / 多执行体子进程
+都从这里取账号。
+
+**复用**
+`Account` 数据模型与 `load_accounts` 是唯一来源；设备回退与审核态过滤口径被
+`config_check`、web 服务层与 rekey 工具复用。
+
+**通信**
+输入：`db`（accounts 表，密文经 `account_crypto` 解密）、`YIBAN_ACCOUNTS_JSON` /
+旧格式环境变量。输出：`Account` 列表（含 owner / account_id 等运行期字段）。
+调用谁：`db`、`account_crypto`、`config_check`。
+谁调用：`runner`、`probe`、`workers` 的子进程。
+前端调用点：`/api/accounts`（`web/pages/work_accounts.js`、
+`web/components/account-ops.js`）与 `/api/my-accounts`（`web/components/my-accounts.js`）
+的增删改由本模块在下一轮装载生效——优先级/去重/审核态口径变化会改变这些页面看到的
+可签到集合。
+跨模块一律走模块属性访问（如 `config_check._key_env_file()`）。
 """
 import json
 import logging

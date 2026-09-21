@@ -58,6 +58,6 @@
 - **同步更新本文件**的对照表（新增/删除/差异）；
 - 若上游算法被替换或升级，先改 `algo.py`/`headers.py`/`waf.py`/`protocol.py` 并让
   `tests/test_fyiban_isolation.py`（隔离边界）与 `tests/test_login_protocol_shape.py`
-  （登录五步的请求形状、WAF 分支、白名单拒绝边界）先红后绿；
+  （旧流 6 次请求的形状、WAF 分支、白名单拒绝边界）先红后绿；
 - 登录路径是**钱路**：改动后除全量测试外，还要用 `scripts/loadtest/mock_yiban.py`
   做一次端到端假服务端演练。

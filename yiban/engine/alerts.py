@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""告警与邮件：管理员汇总邮件、用户失败提醒、Webhook 推送。
+"""**功能**
+告警与邮件：管理员汇总邮件、用户失败提醒、Webhook 推送。
 
 两条通道（口径不同，勿混）：
 - **A 线（管理员）**：运行期 `_collect_admin_mail` 只收集，任务收尾
@@ -12,7 +13,24 @@
 `mailer` / `notify` 是本包内的实现（`from yiban import mail as mailer`、`from yiban import notify`），
 发送失败一律只留痕，绝不抛出，也不影响退出码。
 
-跨模块调用纪律见包说明：跨模块一律走模块属性访问。
+**归属**
+`yiban.engine` 的告警通道层；被 `round`（签到成败）、`probe`（健康探测）、`runner`
+（收尾汇总）调用。
+
+**复用**
+`_collect_admin_mail` / `_flush_admin_mail_summary`（A 线汇总）、`send_user_fail_mail`
+（B 线逐条）、`send_notification` 族与额度口径被三个入口共用；`STATUS_*` 取自
+`yiban.status`。
+
+**通信**
+输入：本轮结果（状态码、账号、失败原因）、收件人/开关/额度配置（来自 .env 与 db）。
+输出：SMTP 邮件、webhook 推送与 `sign_events` 留痕；**只留痕不抛出**，不影响退出码。
+调用谁：`mail`（`mailer`）、`notify`、`db`、`state_io`、`cli_support`、`schedule`。
+谁调用：`round`、`probe`、`runner`。
+前端调用点：邮件/推送配置与"发送测试"由 `/api/mail-config`、`/api/notify-config`、
+`/api/notify-test`（`web/components/settings-health.js` 等设置页）管理——告警通道或措辞
+变化会影响用户收到的邮件/推送。
+跨模块一律走模块属性访问。
 """
 import contextlib
 import json
