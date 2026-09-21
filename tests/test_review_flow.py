@@ -147,6 +147,48 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(mine[0]["status"], "rejected")
         self.assertEqual(mine[0]["reject_reason"], "设备信息不符")
 
+    def test_reject_reason_sanitizes_all_line_separators(self):
+        """拒绝理由的全部行分隔符都要净化：只压 \\r\\n 会留下 8 个伪造行口子。
+
+        理由会落库（用户可见）、进审计详情、进 sign.log；U+2028/U+0085 等分隔符
+        在只压 \\r\\n 时能一路穿过去，在审计与日志里伪造额外一行。
+        """
+        c = self.webapp.create_app().test_client()
+        token = self._login(c, "user1@test.local", USER_PASS)
+        self._submit(c, token, "13800138012")
+        _c, data = self._admin_accounts()
+        acc = next(a for a in data["accounts"] if a["phone"] == "138****8012")
+        r = _c.post(f"/api/accounts/{acc['index']}/review",
+                    json={"action": "reject", "reason": "理由\u2028伪造行\u0085再一行"},
+                    headers=self._csrf(self._login(_c, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        _c2, data2 = self._admin_accounts()
+        acc2 = next(a for a in data2["accounts"] if a["phone"] == "138****8012")
+        for ch in ("\u2028", "\u0085", "\n", "\r"):
+            self.assertNotIn(ch, acc2["reject_reason"], "拒绝理由不得夹带裸行分隔符")
+        import sqlite3
+        conn = sqlite3.connect(self.db_file)
+        row = conn.execute(
+            "SELECT detail FROM audit_logs WHERE action='account_review' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row, "审核拒绝应留审计")
+        for ch in ("\u2028", "\u0085", "\n", "\r"):
+            self.assertNotIn(ch, row[0], "审计详情不得夹带裸行分隔符")
+        # 批量路径同一口径（此处原先完全没有净化）：落库的理由不得夹带裸分隔符
+        _c3, data3 = self._admin_accounts()
+        ids = [a["index"] for a in data3["accounts"]]
+        r = _c3.post("/api/accounts/batch",
+                     json={"action": "reject", "ids": ids, "reason": "批量\u2028伪造行"},
+                     headers=self._csrf(self._login(_c3, "admin", ADMIN_PASS)))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        _c4, data4 = self._admin_accounts()
+        self.assertTrue(data4["accounts"], "前置条件：批量拒绝后仍有账号行")
+        for a in data4["accounts"]:
+            for ch in ("\u2028", "\u0085", "\n", "\r"):
+                self.assertNotIn(ch, a.get("reject_reason") or "",
+                                 "批量拒绝理由落库不得夹带裸行分隔符")
+
     # ---- 3. 被拒用户编辑 → 重新提交（回 pending，清除理由） ----
     def test_rejected_edit_resubmits_pending(self):
         c = self.webapp.create_app().test_client()

@@ -125,12 +125,15 @@ def _review_reject_mail(phones, reason):
 
     批量分支原先自己另写了一段，且**不写被拒账号**：用户收到拒信却不知道是
     哪一行被拒，只能挨个点开「我的账号」页看状态。
+
+    被拒账号与审核理由都要过 `_nl_safe`：理由来自管理员表单（外部输入），
+    换行不转义时一封纯文本拒信可以被拆出伪造行（如假造一条签名或说明）。
     """
     return mail_layout.Mail(
         summary="您提交的易班账号未通过管理员审核。",
         fields=[
-            ("被拒账号", "、".join(phones) if phones else "（见「我的账号」页）"),
-            ("审核理由", reason or "管理员未填写，可联系管理员了解详情"),
+            ("被拒账号", _nl_safe("、".join(phones)) if phones else "（见「我的账号」页）"),
+            ("审核理由", _nl_safe(reason) if reason else "管理员未填写，可联系管理员了解详情"),
         ],
         advice=["登录后在「我的账号」页修改并重新提交，重新提交将再次进入审核"],
     )

@@ -492,7 +492,9 @@ def api_accounts_batch():
     # /api/users/deleted/purge 共用 BATCH_OP_LIMIT
     if len(ids) > m.BATCH_OP_LIMIT:
         return jsonify({"error": f"单次批量操作最多 {m.BATCH_OP_LIMIT} 个账号"}), 400
-    reason = str(data.get("reason", "")).strip()[:100]
+    # 理由清洗：与单条拒绝同一净化口径（覆盖全部分隔符——理由会落库、进审计详情、
+    # 进 sign.log，只压 \r\n 时 U+2028/U+0085 等能一路穿过去伪造行）
+    reason = m._nl_safe(str(data.get("reason", "")).strip()[:100])
     if action == "reject" and not reason:
         return jsonify({"error": "批量拒绝需要填写理由"}), 400
     if action == "purge":
@@ -854,13 +856,10 @@ def api_account_review(idx):
         if action == "reject":
             if acc.get("status") not in (m.ACCOUNT_STATUS_PENDING, m.ACCOUNT_STATUS_REJECTED):
                 return jsonify({"error": "该账号无需拒绝"}), 400
-            # 理由清洗：换行/控制字符 → 空格（防日志注入伪造日志行）
-            reason = (
-                str(data.get("reason", ""))
-                .strip()[:100]
-                .replace("\r", " ")
-                .replace("\n", " ")
-            )
+            # 理由清洗：走统一净化 `_nl_safe`（覆盖 `str.splitlines()` 的全部分隔符）。
+            # 此前只把 \r\n 压成空格，U+0085/U+2028 等其余分隔符仍能在审计详情与
+            # sign.log 里伪造一行（如假造一条"操作者"记录）。
+            reason = m._nl_safe(str(data.get("reason", "")).strip()[:100])
             m.db.update_account_status(acc["id"], m.ACCOUNT_STATUS_REJECTED, reason)
             m.db.audit(
                 session.get("username") or "?",
