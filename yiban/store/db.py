@@ -58,7 +58,10 @@ from yiban import clock  # noqa: E402
 # account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
 # `db.account_crypto` 仍被测试直接取用（test_db_residue / test_account_plaintext_patch
 # 取 load_key / encrypt_password），删除即取用面损失。
-from yiban.infra import account_crypto  # noqa: E402, F401
+from yiban.infra import (  # noqa: E402
+    account_crypto,  # noqa: F401
+    env_io,
+)
 from yiban.store import accounts as _accounts  # noqa: E402
 from yiban.store import audit_chain as _audit_chain  # noqa: E402
 from yiban.store import claims as _claims  # noqa: E402
@@ -449,7 +452,13 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
     # 库路径 / .env 路径**无条件刷新**（即使连接已存在——它们是"最近一次 init_db 的
     # 来源"），经 connection 的显式 API 写入
     _connection.set_env_file(env_file)
-    db_path = db_file or os.environ.get("YIBAN_DB_FILE", DB_DEFAULT)
+    # 库路径解析统一走 env_io.resolve_path（进程环境 → .env → 默认值），与
+    # YIBAN_STATE_DIR / YIBAN_LOG_FILE / 审计锚点等路径键同口径（E1/E7 收口）。
+    # 过去这里只认 os.environ：`YIBAN_DB_FILE` 只写进 .env 而未 export 时（agent/CI
+    # 直调 CLI 的常见形态），引擎静默回落到默认 ./yiban.db——0 账号 → "未配置任何
+    # 账号"、exit 1，而 CLI 路径显示与 `db --status` 认的却是 .env 里的库，两侧
+    # 看到的根本不是同一个库（2026-09-21 测试机 47 E2E 实测）。
+    db_path = db_file or env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)
     _connection.set_db_file(db_path)
     conn = _connection.current()
     if conn is not None:
