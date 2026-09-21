@@ -430,6 +430,70 @@ def test_mock_env_selfcheck_without_setup(tmp_path):
     assert ok is False
 
 
+def _patch_setup_peripherals(monkeypatch, tmp_path, *, egress_ok, ipt_ok):
+    """把搭建路径上的外部副作用换掉，只留"退出码是否反映实情"这一条被测行为。"""
+    monkeypatch.setattr(mock_env.sys, "platform", "linux")  # 绕过"仅 Linux"前置
+    monkeypatch.setattr(mock_env, "ensure_certs", lambda *a, **k: {})
+    monkeypatch.setattr(mock_env, "apply_hosts", lambda *a, **k: True)
+    monkeypatch.setattr(mock_env, "verify_zero_egress", lambda *a, **k: egress_ok)
+    monkeypatch.setattr(mock_env, "apply_iptables", lambda ipv6, dry_run=False: ipt_ok)
+    return ["--hosts-file", str(tmp_path / "hosts"), "--base-dir", str(tmp_path / "base")]
+
+
+def test_mock_env_selfcheck_failure_returns_nonzero(tmp_path, monkeypatch):
+    """零真实外联自检 FAIL 时 main 必须非零退出（此前返回值被丢弃 → 假"环境就绪"）。"""
+    cli = _patch_setup_peripherals(monkeypatch, tmp_path, egress_ok=False, ipt_ok=True)
+    assert mock_env.main([*cli, "--no-iptables"]) == 1
+
+
+def test_mock_env_iptables_failure_returns_nonzero(tmp_path, monkeypatch):
+    """出站兜底规则没装上也必须非零退出：缺 REJECT 时压测会直连真实易班。"""
+    cli = _patch_setup_peripherals(monkeypatch, tmp_path, egress_ok=True, ipt_ok=False)
+    assert mock_env.main(cli) == 1
+
+
+def test_mock_env_all_green_returns_zero(tmp_path, monkeypatch):
+    """自检通过且规则就位：退出码保持 0（不要把成功路径一并判失败）。"""
+    cli = _patch_setup_peripherals(monkeypatch, tmp_path, egress_ok=True, ipt_ok=True)
+    assert mock_env.main(cli) == 0
+
+
+def test_capacity_run_failure_message_includes_child_output():
+    """子进程非零退出时，失败信息要带上它的输出尾部（只报退出码无从定位）。
+
+    子进程吐出的标记由运行期拼接：它不会出现在命令行回显里，故断言只可能来自
+    真正被带出来的输出（否则"命令里恰好有这串字"会让本用例假绿）。
+    """
+    with pytest.raises(RuntimeError) as cm:
+        capacity_probe._run([sys.executable, "-c",
+                             "import sys; print('-'.join(['probe', 'needle', '42']));"
+                             " sys.exit(3)"])
+    msg = str(cm.value)
+    assert "退出码 3" in msg
+    assert "probe-needle-42" in msg
+
+
+def test_capacity_aborts_ladder_when_env_prep_fails(tmp_path, monkeypatch):
+    """mock_env 报告环境未就绪：不跑 K 阶梯、非零退出，并把子进程输出带出来。"""
+    monkeypatch.setattr(capacity_probe, "ensure_platform", lambda: None)
+    monkeypatch.setattr(capacity_probe, "restore_env", lambda *a, **k: None)
+    ran = []
+
+    def _boom(*a, **k):
+        raise RuntimeError("命令失败（退出码 1）：mock_env.py\n"
+                           "  [FAIL] oauth.yiban.cn -> 203.0.113.9")
+
+    monkeypatch.setattr(capacity_probe, "prepare_env", _boom)
+    monkeypatch.setattr(capacity_probe, "run_ladder", lambda *a, **k: ran.append(1))
+    with pytest.raises(SystemExit) as cm:
+        capacity_probe.main(["--repo", str(tmp_path), "--base-dir", str(tmp_path),
+                             "--profile", "simulated"])
+    msg = str(cm.value)
+    assert "不跑 K 阶梯" in msg
+    assert "[FAIL] oauth.yiban.cn -> 203.0.113.9" in msg, "失败信息须带上子进程输出"
+    assert ran == [], "环境未就绪时不得跑 K 阶梯"
+
+
 # ---------------------------------------------------------------------------
 # --help 冒烟（所有脚本可被解释器加载）
 # ---------------------------------------------------------------------------
