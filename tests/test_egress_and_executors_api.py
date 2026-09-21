@@ -22,8 +22,9 @@
    / `idle` / `stale`，由后端按心跳文件算好。四态而非 alive 布尔，是因为执行体是
    **一轮就退出的短命进程**——"没在跑"多数时候正常，只有"有开始、无收尾且心跳过期"
    才值得报警；
-7. **账号列表的 `last_executor`**：口径是**上一个业务日**是谁签的（不是当日、也不是
-   最近一次），无记录为 `null`，且只回角色/槽位/标签（身份原串含主机名）；
+7. **账号列表的 `last_executor`**：口径是**最近一次有记录的业务日**是谁签的（用户
+   2026-09-21 定，「上次」的字面意即最近一次；跨周末停签仍显示上一轮），
+   无记录为 `null`，且只回角色/槽位/标签（身份原串含主机名）；
 8. **限频实测端点**（`POST …/executors/measure`）：仅主管理员、全局冷却（429 + 剩余
    秒数）、窗口内拒绝（409）；它**真的会用真实账号访问易班一次**（只读路径，不写
    签到状态、不动领取池），故这里的 `verify_account` 一律打桩，绝不联网。
@@ -999,10 +1000,11 @@ class WorkerPresenceTest(_WebBase):
 
 
 class AccountsLastExecutorTest(_WebBase):
-    """/api/accounts 的 `last_executor`：**上一个业务日**是谁签的。
+    """/api/accounts 的 `last_executor`：**最近一次有记录的业务日**是谁签的。
 
-    口径由用户定：显示"昨天是谁签的"（不是当日、也不是最近一次），无记录必须是
-    `null`（前端靠它显示"—"）；身份串含主机名，故只回角色/槽位/标签。
+    口径由用户定（2026-09-21）：「上次」的字面意即最近一次——周末停签后按"昨天"取
+    会让整列空白到下一个工作日。无记录必须是 `null`（前端靠它显示"—"）；
+    身份串含主机名，故只回角色/槽位/标签。
     """
 
     PHONES = ("13900000011", "13900000012", "13900000013", "13900000014")
@@ -1024,25 +1026,38 @@ class AccountsLastExecutorTest(_WebBase):
         body = self._login().get("/api/accounts").get_json()
         return {a["phone"]: a["last_executor"] for a in body["accounts"]}
 
-    def test_previous_day_owner_and_role_resolution(self):
+    def test_latest_day_owner_and_role_resolution(self):
         from yiban.store import db as store_db
         self._seed_accounts(self.PHONES)
         prev, today = self._prev_day(), clock.today()
-        # 昨天：1 号由并行执行体 #1 签、2 号由兜底签
+        # 前天（此处借 _prev_day 模拟更早的业务日）：1 号由并行执行体 #1 签
         self.assertTrue(store_db.claim_sign_account(self.PHONES[0], prev, OWNER_WORKER))
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[1], prev, OWNER_FALLBACK))
-        # 今天：3 号已有归属——口径是"昨天"，故它仍必须是 null
+        # 今天是最近一次有记录的业务日：2 号由兜底签、3 号由并行执行体 #1 签
+        # ——口径是"最近一次"，故 2/3 号按今天的记录解析，1 号（只在更早日有记录）为 null
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[1], today, OWNER_FALLBACK))
         self.assertTrue(store_db.claim_sign_account(self.PHONES[2], today, OWNER_WORKER))
         got = self._last_executor_of()
         m = self.webapp._mask_phone
-        self.assertEqual(got[m(self.PHONES[0])],
-                         {"role": egress.ROLE_WORKER, "index": 0,
-                          "label": "并行执行体 #1"})
+        self.assertEqual(got[m(self.PHONES[0])], None,
+                         "只在更早业务日有记录的账号：最近一次（今日）没有它的记录 → null")
         self.assertEqual(got[m(self.PHONES[1])],
                          {"role": egress.ROLE_FALLBACK, "index": None,
                           "label": "故障转移"})
-        self.assertIsNone(got[m(self.PHONES[2])], "口径是上一个业务日，不是当日/最近一次")
+        self.assertEqual(got[m(self.PHONES[2])],
+                         {"role": egress.ROLE_WORKER, "index": 0,
+                          "label": "并行执行体 #1"})
         self.assertIsNone(got[m(self.PHONES[3])], "无记录必须是 null，前端据此显示 —")
+
+    def test_weekend_gap_still_shows_last_round(self):
+        """跨周末停签后仍显示上一轮：更早业务日的记录不被"昨天"口径清空。"""
+        from yiban.store import db as store_db
+        self._seed_accounts(self.PHONES[:1])
+        # 只有更早业务日有记录（模拟周六/周日无签到轮）
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], self._prev_day(), OWNER_FALLBACK))
+        got = self._last_executor_of()
+        self.assertEqual(got[self.webapp._mask_phone(self.PHONES[0])],
+                         {"role": egress.ROLE_FALLBACK, "index": None,
+                          "label": "故障转移"})
 
     def test_no_record_and_unavailable_db_are_not_errors(self):
         from yiban.store import db as store_db
@@ -1051,6 +1066,7 @@ class AccountsLastExecutorTest(_WebBase):
         # 库不存在/未初始化：一次取全的查询必须按空表返回，而不是抛（新部署很正常）
         with mock.patch.object(store_db, "get_conn", side_effect=RuntimeError("库不可用")):
             self.assertEqual(store_db.claim_owners_for_day("2026-09-16"), {})
+            self.assertIsNone(store_db.claim_latest_day())
 
     def test_response_carries_no_owner_raw_string_nor_full_phone(self):
         from yiban.store import db as store_db

@@ -34,7 +34,6 @@ import json
 import os
 import sqlite3
 import time
-from datetime import timedelta
 
 from flask import jsonify, session
 
@@ -65,11 +64,11 @@ def api_accounts():
             }
     # 自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
     prefs = {p: v["slot_min"] for p, v in m.db.get_time_prefs().items()}
-    # "上一个业务日是谁签的"：口径是**昨天**那个业务日，不是"最近一次"也不是当日。
+    # "上次实领是谁签的"：口径是**最近一次有记录的业务日**（用户 2026-09-21 定，
+    # "上次"的字面意即最近一次——周末停签后按"昨天"取会让整列空白到下一个工作日）。
     # **一次取全**（几百行账号不能逐账号查），角色解析与脱敏都在 _last_executors 里；
     # 库不存在/未初始化 → {}，于是每行 last_executor 为 null（新部署很正常）。
-    prev_day = (m.clock.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    last_exec = m._last_executors(prev_day)
+    last_exec = m._last_executors(m.db.claim_latest_day())
     sw = m._sign_window()
     _span_min = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
 

@@ -44,12 +44,15 @@ def solve_ydclearance(text, allow_url):
         raise RuntimeError("ydclearance 挑战解析失败: 模板特征缺失（eval qo/po 未找到）")
 
     # 挑战参数：window.onload=setTimeout("<fn>(<arg>)", 200)
-    arg_m = re.compile(r'window\.onload=setTimeout\("' + fn_m[0][1] + r"\(([0-9]+).+").findall(
-        text
+    arg_re = re.compile(r'window\.onload=setTimeout\("' + fn_m[0][1] + r"\(([0-9]+).+")
+    arg_m = arg_re.findall(js_code) or arg_re.findall(  # 先在 js_code 里找：setTimeout 在函数体内时就在这段
+        text  # 回退整页：setTimeout 落在函数体外（`</script>` 前）是已知的真模板形状
     )
     if not arg_m:
         raise RuntimeError("ydclearance 挑战解析失败: 未找到挑战参数")
     arg = int(arg_m[0])
+    if arg > 0x10FFFF:  # chr() 只收 Unicode 码点；越界时 chr 抛裸 OverflowError
+        raise RuntimeError("ydclearance 挑战解析失败: 挑战参数超出 Unicode 码点范围")
 
     # oo 字节数组
     arr_m = re.compile(r"oo = (\[[0-9a-fA-Fx,\s]+?\])").findall(js_code)
@@ -106,7 +109,12 @@ def solve_ydclearance(text, allow_url):
     if not tk:
         raise RuntimeError("ydclearance 挑战解析失败: po 拼接逻辑未找到")
     k = int(tk.group(1))
-    po = "".join(chr(oo[i] ^ arg) for i in range(1, n_c + 1) if i % k)
+    if k == 0:  # JS 里 `qo % 0` 是 NaN（假值），Python 直接 ZeroDivisionError
+        raise RuntimeError("ydclearance 挑战解析失败: po 过滤常量 k 为 0")
+    po = "".join(  # 上界对应真模板 `qo < oo.length - 1`，取到下标 len(oo)-2
+        # n_c = len(oo)-3，多出的 n_c+1 格在 C 变换范围外，是模板留的收尾引号（跳转路径右引号）
+        chr(oo[i] ^ arg) for i in range(1, len(oo) - 1) if i % k
+    )
 
     cookie_m = re.compile(r"https?_ydclearance=([0-9a-zA-Z-_]+);?").findall(po)
     path_m = re.compile(r'window\.document\.location="(.+)"').findall(po)

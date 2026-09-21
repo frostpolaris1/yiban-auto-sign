@@ -84,6 +84,9 @@ class RequestPolicy(Protocol):
     def sanitize(self, text):
         """对外文本脱敏。"""
 
+    def mask_account(self, phone):
+        """账号标识（手机号）入日志与错误消息前脱敏。"""
+
     def describe_location(self, location):
         """302 Location 的诊断描述（脱敏：去 query 与 userinfo）。"""
 
@@ -152,23 +155,34 @@ def parse_login_page(text, *, flow):
     两条流程的页面结构不同（旧流程用 `page_use = '…'` + `id="key" value="…"`；
     KillYiBan 用 `var page_use = '…'` + `<input … id="key" …>`），密钥的装载方式
     也不同——KillYiBan 的 key 带 PEM 头尾，需剥掉后按 X509 解码。
+
+    key 命中但损坏（base64/DER 解析失败）与"没命中"同价：一并返回 `(None, None)`，
+    由调用方已有的 `page_use is None` 分支落诊断日志——底层异常（binascii.Error
+    是 ValueError 子类）不得越过本函数的返回契约。
     """
     if flow == "killyiban":
         key_match = KILLYIBAN_KEY_RE.findall(text)
         page_use_match = KILLYIBAN_PAGE_USE_RE.findall(text)
         if not key_match or not page_use_match:
             return None, None
-        key = RSA.import_key(b64decode(
-            re.sub(r"\s+", "", key_match[0]
-                   .replace("-----BEGIN PUBLIC KEY-----", "")
-                   .replace("-----END PUBLIC KEY-----", ""))
-        ))
+        try:
+            key = RSA.import_key(b64decode(
+                re.sub(r"\s+", "", key_match[0]
+                       .replace("-----BEGIN PUBLIC KEY-----", "")
+                       .replace("-----END PUBLIC KEY-----", ""))
+            ))
+        except (ValueError, TypeError):  # 损坏 key：解码/导入抛底层异常
+            return None, None
         return page_use_match[0], key
     key_match = LEGACY_KEY_RE.findall(text)
     page_use_match = LEGACY_PAGE_USE_RE.findall(text)
     if not page_use_match or not key_match:
         return None, None
-    return page_use_match[0], RSA.importKey(key_match[0])
+    try:
+        key = RSA.importKey(key_match[0])
+    except (ValueError, TypeError):  # 损坏 key：导入抛底层异常
+        return None, None
+    return page_use_match[0], key
 
 
 def usersure_form(phone, encrypted_password, *, scope, display):
@@ -267,7 +281,8 @@ def login_legacy(session, *, phone, password, csrf, policy):
         policy.log_response_diagnostics(phone, resp, stage="usersure 响应无 reUrl 字段，", advice=False)
         raise RuntimeError(f"登录响应异常（无 reUrl）: {policy.sanitize(result)}")
     if "error" in result.get("reUrl", ""):
-        raise RuntimeError(f"登录失败（账号或密码错误）: {phone}")
+        # 账号标识入消息前经 policy 脱敏（打码规则属本项目，不在本层内联）
+        raise RuntimeError(f"登录失败（账号或密码错误）: {policy.mask_account(phone)}")
 
     # 4. 跳转回 f.yiban.cn，可能遇到 ydclearance 反爬
     session.headers.update(Referer="https://oauth.yiban.cn")
@@ -320,7 +335,7 @@ def login_legacy(session, *, phone, password, csrf, policy):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     if "csrf_token" not in dict_from_cookiejar(session.cookies):
         raise RuntimeError("登录失败：未获取到 csrf_token")
-    logger.info(f"[{phone}] 登录成功")
+    logger.info(f"[{policy.mask_account(phone)}] 登录成功")
     return LoginOutcome(csrf=csrf)
 
 
@@ -359,9 +374,9 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     # 恶意 host / 子域伪装的 Location 一律不当"已登录"（M7）。
     if policy.is_logged_in_redirect(resp.headers.get("Location", "")):
         if restored:
-            logger.info(f"[{phone}] 登录: 会话缓存命中，免登录复用")
+            logger.info(f"[{policy.mask_account(phone)}] 登录: 会话缓存命中，免登录复用")
         else:
-            logger.info(f"[{phone}] 登录: 已登录状态（无需提交）")
+            logger.info(f"[{policy.mask_account(phone)}] 登录: 已登录状态（无需提交）")
         return LoginOutcome(csrf=csrf, via_cache=restored)
     if restored:
         # 缓存会话已被服务端判失效（探针返回登录页）：清缓存并还原干净初始会话
@@ -426,7 +441,7 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
-    logger.info(f"[{phone}] 登录成功")
+    logger.info(f"[{policy.mask_account(phone)}] 登录成功")
     if session_store is not None:
         # 完整登录成功：保存会话缓存供下次免登录复用（失败仅告警，不影响签到）
         session_store.save(session, csrf)

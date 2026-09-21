@@ -178,10 +178,11 @@
     return account.owner_display || (account.owner === "admin" ? "管理员" : (account.owner || "—"));
   }
 
-  // 「上次实领」= 上一个业务日实际领取该账号的执行体。取值只有一个来源：列表接口的
+  // 「上次实领」= 最近一次有记录的业务日实际领取该账号的执行体（口径由后端定，
+  // 前端不问是哪一天）。取值只有一个来源：列表接口的
   // last_executor（{role, index, label}）——前端不解析身份串、不按 role 自行归类
   // （unknown 是存量数据的事实，后端照实回 label）。
-  // null = 上一个业务日没有该账号的记录（含新账号、库未初始化）→ 显示「—」，不当成 unknown。
+  // null = 最近一次有记录的业务日没有该账号的记录（含新账号、库未初始化）→ 显示「—」，不当成 unknown。
   function lastExecText(account) {
     var ex = account && account.last_executor;
     if (!ex) return "—";

@@ -22,16 +22,26 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import signin  # noqa: E402
 
 
-def _challenge_text(target_url, cookie="abc123"):
-    """构造可被 _solve_ydclearance 解析的本地假挑战页（不访问网络）。"""
+def _challenge_text(target_url, cookie="abc123", arg=0, k=1000, legacy_bound=False):
+    """构造可被 _solve_ydclearance 解析的本地假挑战页（不访问网络）。
+
+    按真模板形状造：po 循环 `qo < oo.length - 1` 比 C 段上界多取一格，而真模板里
+    n_c = len(oo) - 3，故 n_c+1 落在 C 变换范围之外——那一格直接存"收尾字符 ^ arg"
+    （收尾字符是跳转路径的右引号）。两段都按 `chr(oo[i] ^ arg)` 的读法预先把 arg 异或
+    编进去（arg 需 ≤ 0xFF，否则异或的高位会在解码侧带回来）。legacy_bound=True 还原
+    改造前的假页形状（数组不设最后两格、po 上界恰好等于 n_c），用作"少解收尾字符"的负对照。
+    """
     desired = f"https_ydclearance={cookie};window.document.location=\"{target_url}\""
     add1, add2, shift_l, shift_r = 1, 2, 3, 5
+    head, tail = (desired, "") if legacy_bound else (desired[:-1], desired[-1])
+    n_c = len(head)
+    vals = [ord(c) ^ arg for c in head]  # 先异或 arg：解码侧读法是 chr(oo[i] ^ arg)
     arr = [0] + [
-        ((((ord(c) >> shift_l) | ((ord(c) << shift_r) & 0xFF)) - add1 - add2) & 0xFF)
-        for c in desired
+        ((((v >> shift_l) | ((v << shift_r) & 0xFF)) - add1 - add2) & 0xFF) for v in vals
     ]
+    if not legacy_bound:
+        arr += [ord(tail) ^ arg, 0]  # n_c+1 格存尾字符；len(oo)-1 格在模板里从不参与运算
     arr_str = ",".join(hex(x) for x in arr)
-    n_c = len(desired)
     return (
         "function ab(arg) { "
         'eval("qo=eval;qo(po);"); '
@@ -41,10 +51,25 @@ def _challenge_text(target_url, cookie="abc123"):
         "qo = 1; do { oo[qo] = (oo[qo] - oo[qo - 1]) } while(--qo>=2); "
         f"if (qo > {n_c}) break; "
         "oo[qo] = ((((oo[qo] + 1) & 0xff) + 2) & 0xff) << 3) >> 5); qo++; "
-        "if (qo % 1000) po += String.fromCharCode(oo[qo] ^ arg); "
+        f"for (qo = 1; qo < oo.length - 1; qo++) "
+        f"if (qo % {k}) po += String.fromCharCode(oo[qo] ^ arg); "
         f'window.document.location="{target_url}"; }} '
-        'window.onload=setTimeout("ab(0)", 200) </script>'
+        f'window.onload=setTimeout("ab({arg})", 200) </script>'
     )
+
+
+def _challenge_text_timeout_outside_script(target_url, cookie="abc123", arg=0):
+    """真模板的另一种形状：`window.onload=setTimeout(...)` 落在 `</script>` 之后。
+
+    这样它就不在 `re` 从 `function … </script>` 截出的函数体里——挑战参数只能回退整页
+    找（`yiban/fyiban/waf.py` 的整页回退分支）。其余形状与 `_challenge_text` 逐字相同。
+    """
+    text = _challenge_text(target_url, cookie=cookie, arg=arg)
+    body, sep, tail = text.rpartition("window.onload=setTimeout")
+    assert sep and tail.endswith("</script>"), \
+        "假页形状变了：setTimeout 段不在末尾的 </script> 之前"
+    # 把 </script> 挪到函数体之后、setTimeout 之前：函数体与 setTimeout 分属两个脚本块
+    return body.rstrip() + "</script> " + sep + tail[: -len("</script>")].rstrip()
 
 
 class SigninFixes021Test(unittest.TestCase):
@@ -110,6 +135,56 @@ class SigninFixes021Test(unittest.TestCase):
         client = signin.YibanClient.__new__(signin.YibanClient)
         with self.assertRaisesRegex(RuntimeError, "ydclearance 跳转目标不在白名单"):
             client._solve_ydclearance(_challenge_text("https://f.yiban.cn@evil.com/iapp7463"))
+
+    # ---- T-WAF-9：po 上界与真模板 `qo < oo.length - 1` 对齐 ----
+    def test_solve_ydclearance_decodes_tail_char_outside_transform_c(self):
+        """收尾字符（路径右引号）在下标 len(oo)-2，不在 C 变换范围内，必须逐字解出。
+
+        arg 同时覆盖非 0 值：假页的 head 与 tail 两段都要按 `chr(oo[i] ^ arg)` 的
+        读法把参数异或编进去，否则只有 arg=0 才自洽。158 是公开样本里的真实量级。
+        """
+        client = signin.YibanClient.__new__(signin.YibanClient)
+        for arg in (0, 7, 158):
+            with self.subTest(arg=arg):
+                cookie, target = client._solve_ydclearance(
+                    _challenge_text("https://f.yiban.cn/iapp7463", arg=arg)
+                )
+                self.assertEqual(cookie, "abc123")
+                self.assertEqual(target, "https://f.yiban.cn/iapp7463")
+
+    def test_solve_ydclearance_settimeout_outside_script_tag(self):
+        """T-WAF-10：setTimeout 在 `</script>` 之后（真模板形状）时，参数须回退整页提取。
+
+        此时 setTimeout 文本不在挑战函数体内，只看函数体会漏掉 arg；回退分支必须生效，
+        且回退取到的 arg 要真正参与 po 解码（arg=158 为公开样本量级）。
+        """
+        client = signin.YibanClient.__new__(signin.YibanClient)
+        cookie, target = client._solve_ydclearance(
+            _challenge_text_timeout_outside_script("https://f.yiban.cn/iapp7463", arg=158)
+        )
+        self.assertEqual(cookie, "abc123")
+        self.assertEqual(target, "https://f.yiban.cn/iapp7463")
+
+    def test_solve_ydclearance_old_fixture_shape_fails_loudly(self):
+        """改造前的假页形状（po 上界恰好等于 C 段上界）在新实现下必须响亮失败，不得静默截断。"""
+        client = signin.YibanClient.__new__(signin.YibanClient)
+        with self.assertRaisesRegex(RuntimeError, "ydclearance 挑战解析失败"):
+            client._solve_ydclearance(
+                _challenge_text("https://f.yiban.cn/iapp7463", legacy_bound=True)
+            )
+
+    # ---- T-WAF-6：异常契约（越界输入给明确 RuntimeError，不给裸内置异常）----
+    def test_solve_ydclearance_rejects_arg_beyond_code_point_range(self):
+        client = signin.YibanClient.__new__(signin.YibanClient)
+        with self.assertRaisesRegex(RuntimeError, "ydclearance 挑战解析失败"):
+            client._solve_ydclearance(
+                _challenge_text("https://f.yiban.cn/iapp7463", arg=0x110000)
+            )
+
+    def test_solve_ydclearance_rejects_zero_k(self):
+        client = signin.YibanClient.__new__(signin.YibanClient)
+        with self.assertRaisesRegex(RuntimeError, "ydclearance 挑战解析失败"):
+            client._solve_ydclearance(_challenge_text("https://f.yiban.cn/iapp7463", k=0))
 
     def test_is_fyiban_url_helper(self):
         self.assertTrue(signin._is_fyiban_url("https://f.yiban.cn/iapp7463"))
