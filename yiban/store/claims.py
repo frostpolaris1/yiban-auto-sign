@@ -301,6 +301,23 @@ def activity(day):
     return result
 
 
+def latest_claims_day():
+    """`sign_claims` 里最近一次有记录的业务日（`MAX(day)`）；表空返回 None。
+
+    「上次实领」的口径是"最近一次"（用户 2026-09-21 定，"上次"的字面意即最近一次）：
+    周末停签后若按"昨天"取，整列会空白到下一个工作日，改按最近一次有记录的日取，
+    跨周末也能看到上一轮是谁签的。
+    """
+    from yiban.store import db
+    try:
+        with db._conn_lock:
+            row = db.get_conn().execute("SELECT MAX(day) FROM sign_claims").fetchone()
+    except Exception as e:
+        logger.debug("读取最近一次签到记录日失败（按空处理）: %s", e)
+        return None
+    return row[0] if row else None
+
+
 def owners_for_day(day):
     """某个业务日 `phone -> owner` 映射，供账号列表批量标注归属。
 

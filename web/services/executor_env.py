@@ -69,7 +69,8 @@ def _executors_window(env_file, sign_window):
 def _last_executors(day):
     """某个业务日每个账号的归属执行体（**已脱敏**）：`{phone: {role, index, label}}`。
 
-    账号列表要显示"上一个业务日是谁签的"：一次取回当日全部 `phone -> owner`（见
+    账号列表要显示"上次实领是谁签的"（day 由调用方给——口径是最近一次有记录的业务日，
+    见 `store.claims.latest_claims_day`）：一次取回当日全部 `phone -> owner`（见
     `store.claims.owners_for_day`，**不逐账号查**），再把 owner 折成角色与槽位。
     身份串含主机名，属部署信息，故**只回角色/序号/label**，绝不回 owner 原串。
     库不存在/未初始化 → `{}`（新部署很正常），调用方据此回 `null` 而不是报错。
