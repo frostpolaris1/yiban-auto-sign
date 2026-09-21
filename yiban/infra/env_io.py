@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""单一 .env 解析实现（mailer / notify / account_crypto / db 共用）。
+"""单一 .env 解析与单键写入实现（mailer / notify / account_crypto / db 共用）。
+
+读的一半是 `parse_env_file`；写的一半是 `write_env_key`——读-改-写里"保留其他行、
+只替换目标键"的那套行模型（窄行、逐行行分隔符校验、键行折叠、原子 0600 替换）只有
+这一份，密钥（account_crypto）/ 审计密钥（audit_chain）/ 追踪盐（tracking）三处共用，
+避免各自再抄一份而口径漂移。
 
 各调用方的解析口径完全一致，差异仅在错误策略，由 strict 参数表达：
 - 宽松（默认）：任何 OSError（含文件不存在）→ 返回空 dict，调用方走"未配置"分支；
@@ -16,8 +21,10 @@
 `child_env.parse_env_file` 不在此收敛：它有额外语义（仅接受 YIBAN_ 前缀且键名
 合法的行，供子进程环境注入，防 .env 被写入特殊键后污染子进程），保持独立实现。
 """
+import contextlib
 import os
 import re
+import secrets
 
 
 def parse_env_file(path, *, strict=False):
@@ -181,3 +188,55 @@ def find_env_key_collisions(env_path):
         for k in wide
         if wide[k] > 1 or wide[k] != narrow.get(k, 0)
     }
+
+
+def write_env_key(env_file, key, value):
+    """把单条配置写入 .env：折叠同键旧行、保留其余行、原子替换为 0600。
+
+    行模型取**窄行模型**（只把 \\r\\n / \\r / \\n 当行边界），不是 `str.splitlines()`：
+    后者额外把 \\v \\f \\x1c \\x1d \\x1e \\x85 \\u2028 \\u2029 当边界。值里潜伏这些字符
+    时，窄模型下它仍留在本行内，逐行 `has_line_break` 才看得见；宽模型会先把它拆成两行，
+    读-改-写于是把后半截实体化成真配置行（`parse_env_file` 按文件顺序建 dict、后写覆盖
+    先写 → 载荷生效）。无潜伏分隔符时两种模型逐行等价，正常 .env 写回结果与宽模型逐字相同。
+
+    校验先于折叠：将被折叠丢弃的旧键行同样要过 `has_line_break`——丢弃同样要先过这一关，
+    否则含载荷的旧键行会被静默删掉（报"写入成功"，实则抹掉一行本函数根本没看懂的配置）。
+    任一行含潜伏分隔符即 ValueError 且磁盘上一个字节都不改（fail-closed：本函数只保留
+    别人的行、没有清理权）。错误消息只给行号（1-based），绝不回带行原文——值里可能有口令
+    等敏感内容，会随异常消息落日志与 HTTP 500。
+
+    旧行折叠走 `key_line_pattern`，与 `parse_env_file`"首个 = 切分 + 两侧 strip"的认键
+    口径同源：`KEY = v` 这类带空白的写法同样是同一条键的行，只认字面前缀 `KEY=` 折不掉它，
+    残留的影子行与新行谁生效由落盘顺序决定。
+
+    调用方须自行持有 `env_lock.env_write_lock(env_file)`（跨进程 .env 写互斥）：本函数
+    不做加锁，把"写前重读既有值"的判定留在调用方，避免嵌套取锁。
+    """
+    raw = ""
+    if os.path.exists(env_file):
+        with open(env_file, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
+            raw = f.read()
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # 结尾换行不构成空配置行（对齐 splitlines 的行数）
+    for ln_no, ln in enumerate(lines, start=1):
+        if has_line_break(ln):
+            raise ValueError(
+                f"{env_file} 第 {ln_no} 行（1-based）含潜伏行分隔符（U+2028 等），"
+                f"写回会把它后面的内容实体化成新配置行，故拒绝写入；"
+                f"请人工清理该行后重试"
+            )
+    pat = key_line_pattern(key)
+    out = [ln for ln in lines if not pat.match(ln.strip())]
+    out.append(f"{key}={value}")
+    tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
+    # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace 之间（及进程崩溃
+    # 残留 tmp 时）密钥/盐对同机其他用户可读
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, env_file)
+    with contextlib.suppress(OSError):
+        os.chmod(env_file, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）

@@ -29,7 +29,6 @@
 from-import，`db._track_salt = 替身` 一类打桩才会在函数体里生效。跨进程 .env 写锁沿用
 真源 `yiban.infra.env_lock.env_write_lock`（与 audit_chain / account_crypto 同一把锁）。
 """
-import contextlib
 import hashlib
 import hmac
 import logging
@@ -37,7 +36,7 @@ import os
 import secrets
 import threading
 
-from yiban.infra import env_lock
+from yiban.infra import env_io, env_lock
 
 logger = logging.getLogger("yiban.store.tracking")
 
@@ -58,32 +57,20 @@ _TRACK_SALT_LOCK = threading.Lock()
 
 
 def _write_track_salt_to_env_file(env_file, salt):
-    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行，原子替换）。
+    """把新生成的 YIBAN_TRACK_SALT 写入 .env（保留其他行、原子替换、创建即 0600）。
 
     读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥；锁内仍保留
     “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
+    行模型（窄行读 + 逐行行分隔符校验 + 键行折叠 + 原子 0600 替换）下沉在
+    `env_io.write_env_key`：与账号密钥、审计密钥两处写入方共用同一份实现，
+    值里潜伏的 U+2028 之类不会被实体化成真配置行（盐泄漏 = IP/手机号哈希可离线反查）。
     """
     db = _facade()
     with env_lock.env_write_lock(env_file):
         existing = db._parse_env_file(env_file).get("YIBAN_TRACK_SALT", "").strip()
         if existing:
             return existing
-        lines = []
-        if os.path.exists(env_file):
-            with open(env_file, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_TRACK_SALT=")]
-        out.append(f"YIBAN_TRACK_SALT={salt}")
-        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 创建即 0600（盐泄漏 = IP/手机号哈希可离线枚举反查）
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, env_file)
-        with contextlib.suppress(OSError):
-            os.chmod(env_file, 0o600)
+        env_io.write_env_key(env_file, "YIBAN_TRACK_SALT", salt)
         return salt
 
 
