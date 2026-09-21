@@ -248,7 +248,7 @@ def _cmd_config(args, view):
     paths = _paths(view)
     try:
         accounts = accounts_mod.load_accounts()
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         return _fail("config", 1, [f"配置加载失败: {e}"], args.json,
                      accounts=0, phones_masked=[], paths=paths)
     if not accounts:

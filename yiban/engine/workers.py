@@ -90,7 +90,7 @@ def run_worker_supervisor(n, argv, slots=None):
     # 而且配置错误的报错会变成 N 份、互相淹没。
     try:
         loaded_accounts = accounts_mod.load_accounts()
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
         logger.error(f"配置加载失败: {e}")
         return 1
     if not loaded_accounts:
@@ -231,7 +231,7 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         state_io._write_fallback_alive(now)
         try:
             accounts = accounts_mod.load_accounts()
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
             logger.error("兜底执行体：配置加载失败: %s", e)
             state_io._clear_fallback_alive()
             return 1
