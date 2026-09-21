@@ -92,7 +92,7 @@ class BreakerTest(unittest.TestCase):
         self.assertNotIn("13800138000", cs, "网络类失败不应计数")
 
     # ---- 2. run_queue_retry / main 行为 ----
-    def _run_main(self, fixed_dt, cred_state, only=False):
+    def _run_main(self, fixed_dt, cred_state, only=False, attempt_result=None):
         class FakeDT(datetime):
             _f = fixed_dt
 
@@ -110,18 +110,27 @@ class BreakerTest(unittest.TestCase):
             return (True, "签到成功", False, signin.STATUS_SUCCESS)
 
         argv = ["signin.py"] + (["--only", "13800138000"] if only else [])
-        with mock.patch.object(signin.clock, "now", FakeDT.now), \
-             mock.patch.object(signin.YibanClient, "login_killyiban", fake_login), \
-             mock.patch.object(signin.YibanClient, "signin", fake_signin), \
-             mock.patch.object(signin.time, "sleep"), \
-             mock.patch.object(signin, "_load_cred_state", return_value=cred_state), \
-             mock.patch.object(signin, "_save_cred_state"), \
-             mock.patch.object(sys, "argv", argv), \
-             contextlib.suppress(SystemExit):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(signin.clock, "now", FakeDT.now))
+            stack.enter_context(mock.patch.object(signin.YibanClient, "login_killyiban", fake_login))
+            stack.enter_context(mock.patch.object(signin.YibanClient, "signin", fake_signin))
+            if attempt_result is not None:
+                # 直接指定 attempt_signin 的返回（credential failure 等场景）
+                self._attempt_signin = stack.enter_context(
+                    mock.patch.object(signin, "attempt_signin", return_value=attempt_result))
+            stack.enter_context(mock.patch.object(signin.time, "sleep"))
+            stack.enter_context(mock.patch.object(signin, "_load_cred_state", return_value=cred_state))
+            # 捕获收尾保存的 dict（F5 回归据此断言"计数真的落盘了"）
+            self._saved_cred_state = stack.enter_context(
+                mock.patch.object(signin, "_save_cred_state"))
+            stack.enter_context(mock.patch.object(sys, "argv", argv))
+            stack.enter_context(contextlib.suppress(SystemExit))
             signin.main()
 
     def setUp(self):
         self._calls = []
+        self._saved_cred_state = None
+        self._attempt_signin = None
         # 领取池由 conftest 的自动夹具统一清空（本类多条用例固定在同一天、同一账号
         # 上跑队列，池子会记住"当日已了结"而让后续用例领不到账号）。
         # ⚠ 注意：本类只能有一个 setUp——重复定义会静默覆盖，我在此踩过一次。
@@ -183,6 +192,55 @@ class BreakerTest(unittest.TestCase):
         self.assertIn("13800138000", cred, "凭据类失败应保持暂停")
         self.assertEqual(cred["13800138000"]["probe_date"], "2026-09-02",
                          "试探失败应顺延 7 天（8-26 + 7）")
+
+    # ---- 2b. F5 回归：全新系统熔断计数必须写回调用方持有的 dict ----
+    # 症状（2026-09-21 测试机 47 E2E）：`run_queue_retry` 里 `cred_state = cred_state
+    # or {}` 对空 dict 重新绑定新对象——全新系统（cred-state.json 不存在，
+    # `_load_cred_state()` 返回 {}）时轮内失败计数写进新 dict，runner/workers 收尾
+    # 保存的仍是自己的空 dict：熔断计数永不落盘、"连续 3 天失败暂停"永不触发，
+    # 错密码账号被每日无限次真实登录（易班侧照实计数，加重风控）。
+    def test_fresh_system_fail_count_written_back_inplace(self):
+        """单元级：调用方持有的空 dict（= 全新系统 read() 的返回值）必须就地收到
+        fail_days——runner/workers 收尾保存的正是这个 dict。"""
+        class FakeDT(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 17, 6, 40)  # 周一 D1，窗口 06:30~07:50 内
+
+        # 全新系统：状态文件不存在 → 读入口返回空 dict；调用方持有该引用
+        state_path = signin._cred_state_path()
+        if os.path.exists(state_path):
+            os.remove(state_path)
+        cred = signin._load_cred_state()
+        self.assertEqual(cred, {}, "前置条件：全新系统读到的应为空 dict")
+        acc = signin.Account(phone="13800138000", password="p")
+        with mock.patch.object(signin.clock, "now", FakeDT.now), \
+             mock.patch.object(
+                 signin, "attempt_signin",
+                 return_value=(False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED)), \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin.time, "sleep"):
+            signin.run_queue_retry([acc], None, 0, 0, cred_state=cred)
+        self.assertIn("13800138000", cred,
+                      "轮内失败计数必须写进调用方持有的 dict（收尾据此落盘）")
+        self.assertEqual(cred["13800138000"]["fail_days"], 1)
+
+    def test_full_run_fresh_system_saves_fail_count(self):
+        """runner 级：全新系统（_load_cred_state 返回 {}）跑一轮全量签到，
+        收尾 _save_cred_state 收到的 dict 必须含 fail_days（否则计数永不落盘）。"""
+        fresh = {}  # 全新系统：磁盘上没有任何熔断记录
+        self._run_main(
+            datetime(2026, 8, 17, 6, 40), fresh,
+            attempt_result=(False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
+        )
+        self.assertEqual(self._attempt_signin.call_count, 1, "账号应真实执行一次")
+        save_mock = self._saved_cred_state
+        self.assertIsNotNone(save_mock, "收尾必须调用 _save_cred_state")
+        self.assertTrue(save_mock.called, "收尾必须保存熔断状态")
+        saved = save_mock.call_args[0][0]
+        self.assertIn("13800138000", saved,
+                      "全新系统的失败计数必须随收尾落盘（否则 3 天暂停永不触发）")
+        self.assertEqual(saved["13800138000"]["fail_days"], 1)
 
     # ---- 3. web 编辑账号清除 cred-state ----
     def test_account_edit_clears_cred_state(self):

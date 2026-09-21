@@ -135,7 +135,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     返回结果字典 {手机号: (success, message, skip, status)}。
     """
     schedule = schedule or {}
-    cred_state = cred_state or {}
+    # 必须保持传入 dict 的**同一引用**（不能 `or {}` 另起新对象）：调用方
+    # （runner/workers）收尾时保存的是自己持有的那个 dict，若这里对空 dict
+    # （全新系统：状态文件不存在 → read() 返回 {}）重新绑定，轮内账密失败计数
+    # 全写进新对象，调用方保存的仍是空 dict——熔断计数永不落盘、"连续失败达
+    # 阈值暂停"（3 天）永不触发，错密码账号被每日无限次真实登录（易班侧照实
+    # 计数，加重风控）。契约见 yiban/engine/workers.py 收尾处的持有引用注释。
+    cred_state = cred_state if cred_state is not None else {}
     # .env 直配超大值不得把队列睡死——与网页设置侧 3600 上限同口径
     # （该保护原先内置于共享随机延迟 helper，间隔改为确定性对齐后收口到入参处）
     gap_max = min(gap_max, 3600)
