@@ -270,24 +270,27 @@ def ensure_secret_key(env_path, atomic_write):
         if key:
             return key
         key = secrets.token_hex(32)
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-                lines = f.read().splitlines()
-        # 旧键折叠与 key_line_pattern 同源：`YIBAN_SECRET_KEY = `（= 号前带空格、
-        # 值为空）此前被 startswith("YIBAN_SECRET_KEY=") 漏判，函数继续生成并追加
-        # 第二行，留下重复键影子行。走到这里 = 解析侧该键值为空，滤掉该键全部
-        # 旧行再落新行是安全的，任何写法都不会追加出重复。
-        # 这是日后把主凭据"歧义拒绝"扩大到 YIBAN_SECRET_KEY 的前提（现在不扩：
-        # scripts/ 各写入方尚未收敛到同一写入实现，此处拒绝会把写入侧缺陷
-        # 变成活体锁死）。
-        _sk_pat = _env_io.key_line_pattern("YIBAN_SECRET_KEY")
-        lines = [ln for ln in lines if not _sk_pat.match(ln.strip())]
-        lines.append(f"YIBAN_SECRET_KEY={key}")
-        if new_deployment:
-            # 常量字面量写入，无注入面；管理员完成初始配置后在设置页开启注册
-            lines.append("YIBAN_REGISTRATION_PAUSE=1")
         try:
+            lines = []
+            if os.path.exists(env_path):
+                # 读失败（文件存在但不可读/被占用）与 atomic_write 的 OSError 同走下面兜底：
+                # read_env 已按"读失败返回空"降级，这里若让 open 抛穿就会把启动炸掉，
+                # 违背"降级为进程内密钥、带病运行"的承诺。
+                with open(env_path, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
+                    lines = f.read().splitlines()
+            # 旧键折叠与 key_line_pattern 同源：`YIBAN_SECRET_KEY = `（= 号前带空格、
+            # 值为空）此前被 startswith("YIBAN_SECRET_KEY=") 漏判，函数继续生成并追加
+            # 第二行，留下重复键影子行。走到这里 = 解析侧该键值为空，滤掉该键全部
+            # 旧行再落新行是安全的，任何写法都不会追加出重复。
+            # 这是日后把主凭据"歧义拒绝"扩大到 YIBAN_SECRET_KEY 的前提（现在不扩：
+            # scripts/ 各写入方尚未收敛到同一写入实现，此处拒绝会把写入侧缺陷
+            # 变成活体锁死）。
+            _sk_pat = _env_io.key_line_pattern("YIBAN_SECRET_KEY")
+            lines = [ln for ln in lines if not _sk_pat.match(ln.strip())]
+            lines.append(f"YIBAN_SECRET_KEY={key}")
+            if new_deployment:
+                # 常量字面量写入，无注入面；管理员完成初始配置后在设置页开启注册
+                lines.append("YIBAN_REGISTRATION_PAUSE=1")
             atomic_write(env_path, "\n".join(lines) + "\n", chmod_priv=True)
         except OSError as e:
             logger.warning(

@@ -376,6 +376,18 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
                          "全新部署默认暂停注册")
         self.assertEqual(self.webapp.ensure_secret_key(self.env_file), key, "已有密钥不得换发")
 
+    def test_ensure_secret_key_degrades_when_env_unreadable(self):
+        """.env 存在但不可读时降级返回进程内密钥并告警，不得把启动炸掉。
+
+        用一个目录当 env 路径制造 OSError（跨平台）。修复前该 open 在 try 之外，
+        read_env 吞掉 OSError 后紧接着的 open 直接把启动打挂。"""
+        bad = os.path.join(self.tmp, "unreadable.env")
+        os.makedirs(bad, exist_ok=True)
+        with self.assertLogs("web", level="WARNING") as logs:
+            key = self.webapp.ensure_secret_key(bad)
+        self.assertEqual(len(key), 64)
+        self.assertTrue(any("YIBAN_SECRET_KEY" in ln for ln in logs.output), logs.output)
+
     def test_executor_rows_migrates_legacy_keys_once_and_keeps_them(self):
         from yiban import egress
         self._write_raw("YIBAN_WORKERS=2\n"
