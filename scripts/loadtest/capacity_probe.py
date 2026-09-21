@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""容量基准 CLI：**一条命令**测出「这台机器能带多少账号」并给出建议值（**仅限隔离测试机**）。
+"""**功能**
+容量基准 CLI：**一条命令**测出「这台机器能带多少账号」并给出建议值（**仅限隔离测试机**）。
 
 它把已有四件工具串起来跑（不重复实现任何测量逻辑）：
 
@@ -20,16 +21,17 @@
    "这台机器不够"，而不是给一个乐观数字。
 
 **建议值只是提醒**：不同部署者的机器差别很大（带宽/CPU/内存/网络延迟都不同），
-所以这个数字由**每台机器自己跑出来**，不得写进程序当固定上限（见项目记忆
-"容量/带宽只作推荐值"）。
+所以这个数字由**每台机器自己跑出来**，不得写进程序当固定上限。
 
-## 安全红线（与 loadtest 工具链一致）
+**归属**
+`scripts/loadtest/` 隔离压测工具链的**顶层入口**；`yiban/cli.py capacity` 子命令是同
+口径的命令行包装（生产侧只做建议，不做实测）。只在测试机运行。
 
-1. 绝不指向真实易班：`mock_env` 会把易班域名改写为回环并用 iptables 拒绝其余 443 出站；
-2. 只允许在隔离测试机上以 root 运行（改 `/etc/hosts`/iptables/自签证书需要 root）；
-3. 结束必须还原：脚本默认自动 `--restore`，中断（Ctrl-C）时也会尝试还原；
-   `--keep-env` 用于连续跑多档（此时由调用方最后手动 restore）。
+**复用**
+建议值换算函数与三档 `--profile` 定义被 `yiban/cli.py capacity` 复用；测量本身不
+重复实现，一律转调 `concurrency_probe` 等既有工具。
 
+**通信**
 用法：
 
     sudo python3 scripts/loadtest/capacity_probe.py --repo /opt/repo \\
@@ -39,7 +41,18 @@
     sudo python3 scripts/loadtest/capacity_probe.py --repo /opt/repo \\
         --base-dir /opt/yiban-capacity --profile simulated --skip-env
 
-退出码：0 正常；2 参数/平台/前置不满足；3 某档测量失败。
+输入：`--repo` / `--base-dir` / `--users` / `--profile` / `--skip-env` / `--keep-env`。
+输出：实测容量与三条建议值到 stdout；退出码 0 正常；2 参数/平台/前置不满足；
+3 某档测量失败。
+调用谁：`mock_env` / `seed_accounts` / `mock_yiban` / `concurrency_probe`（子进程）。
+谁调用：运维在隔离测试机手工执行。
+
+## 安全红线（与 loadtest 工具链一致）
+
+1. 绝不指向真实易班：`mock_env` 会把易班域名改写为回环并用 iptables 拒绝其余 443 出站；
+2. 只允许在隔离测试机上以 root 运行（改 `/etc/hosts`/iptables/自签证书需要 root）；
+3. 结束必须还原：脚本默认自动 `--restore`，中断（Ctrl-C）时也会尝试还原；
+   `--keep-env` 用于连续跑多档（此时由调用方最后手动 restore）。
 """
 
 from __future__ import annotations

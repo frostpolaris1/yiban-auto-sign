@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""入口与轮次编排：`main(argv=None) -> int`（装载配置 → 分支 → 一轮队列 → 汇总退出码）。
+"""**功能**
+入口与轮次编排：`main(argv=None) -> int`（装载配置 → 分支 → 一轮队列 → 汇总退出码）。
 
 **退出码由本函数返回、不再自己 `sys.exit`**（退出码语义逐字不变，见
 `docs/dev/cli.md` §3）：这样 `yiban/cli.py` 与 `scripts/signin.py` 兼容壳可以统一
@@ -11,7 +12,27 @@
 `--only` 过滤 → `--check-config` → 周末门/全局暂停 → 补签轮定向重跑 → 进程级单实例锁 →
 一轮队列 → 汇总与退出码。
 
-跨模块调用纪律见包说明：跨模块一律走模块属性访问。
+**归属**
+`yiban.engine` 的编排顶层，也是命令行签到路径的入口实现：`yiban/cli.py` 的
+`sign` / `probe` 子命令、部署面的 `scripts/signin.py` 兼容壳与 `run.sh`、容器调度器
+都落到这里。真正的签到逻辑在 `round`，进程编排在 `workers`。
+
+**复用**
+`main()` 是唯一入口；`SUNDAY_SIGN` / `SATURDAY_SIGN`、退出码常量与
+`_GATE_SKIP_MESSAGES` 供同族模块对齐口径；单实例锁与 `cli_support` 共用同一原语。
+
+**通信**
+输入：`argv`（缺省取 `sys.argv[1:]`）与环境变量/.env（配置只从环境读，命令行不接受
+敏感值）。输出：进程退出码（0/1/2/3/10 口径见 `docs/dev/cli.md` §3）与日志；`--json`
+由 `cli.py` 包裹。
+调用谁：`accounts` / `probe` / `workers` / `round` / `state_io` / `alerts` / `cli_support`
+（跨模块一律走模块属性访问）。
+谁调用：`yiban/cli.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
+`docker/scheduler.py`。
+前端调用点：手动签到 `/api/signin` 经 `web/services/manual_sign.py` 以子进程拉起
+`scripts/signin.py --only`（`web/components/account-ops.js` 触发），执行体接口
+`/api/scheduler/executors*`（`web/components/settings-executors.js`、`settings-quota.js`）
+读执行体产生的存活态——退出码语义变化会改变这些页面的成功/失败提示与执行体行。
 """
 import argparse
 import json

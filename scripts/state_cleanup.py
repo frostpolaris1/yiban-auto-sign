@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""按天状态文件清理入口（宿主 cron 调用；策略见 `yiban/state_gc.py`）。
+"""**功能**
+按天状态文件清理入口（宿主 cron 调用；策略见 `yiban/state_gc.py`）。
 
 宿主 `scripts/yiban-cleanup.sh` 只是本脚本的薄包装：策略与实现在 Python 侧唯一
 （原先规则写在 bash 里，容器侧另写一份，新增一类按日文件没有机制提醒补规则）。
@@ -8,11 +9,26 @@
 目录解析与 run.sh 同口径（顺序也一致）：
     YIBAN_STATE_DIR → 默认 /var/log/yiban；日志目录 = dirname(YIBAN_LOG_FILE) → 默认 state_dir
 （旧脚本用 `YIBAN_DATA_DIR`，那个键全项目只此一处使用：改为同一套键后，把
-YIBAN_STATE_DIR 指到别处的部署也能被正确清理——此前会去清默认目录。）
+YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认目录。）
 
-退出码：0 = 正常（无过期文件也是 0）；1 = 保留期配置非法或目录不可用（响亮失败，
-不静默退化——静默退化会让磁盘慢慢涨满而没人发现）。
-清理结果追加到 `<state_dir>/cleanup.log`（运维按它判断清理是否在跑）。
+**归属**
+部署面脚本（`scripts/`），宿主 cron / 容器调度按文件路径调用；清理策略的**唯一实现**
+在 `yiban/state_gc.py`，本脚本只做入口与退出码。
+
+**复用**
+`state_dir_from_env` / `log_dir_from_env` 是 `yiban.state_gc` 同名函数的保留绑定
+（既有调用方无需改动）；清理函数与 `ARTIFACTS` 登记表复用 `yiban.state_gc`，不另写规则。
+
+**通信**
+输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与可选 `argv`。
+输出：被清理的文件、`<state_dir>/cleanup.log` 追加行；退出码 0 = 正常（无过期文件
+也是 0），1 = 保留期配置非法或目录不可用（响亮失败，不静默退化——静默退化会让磁盘
+慢慢涨满而没人发现）。
+调用谁：`yiban.state_gc`（策略）、`yiban.clock`。
+谁调用：宿主 `scripts/yiban-cleanup.sh`（cron）、容器调度器；`yiban/cli.py state`
+子命令与之同源。
+前端调用点：无直接调用点；容器调度器的清理结果与保留期设置经 `/api/settings`
+（`web/components/settings-quota.js` 等设置页）暴露给运维。
 """
 import datetime
 import os

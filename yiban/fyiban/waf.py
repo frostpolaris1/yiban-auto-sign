@@ -1,11 +1,28 @@
 # -*- coding: utf-8 -*-
-"""易盾 WAF（https_ydclearance）挑战解析：形状提取的四段正则沿用 `sdk250/Auto-Test`
+"""**功能**
+易盾 WAF（https_ydclearance）挑战解析：形状提取的四段正则沿用 `sdk250/Auto-Test`
 （该仓库无 LICENSE，默认全权保留；逐块对照见 `PROVENANCE.md`），三段字节变换是本项目
 把它 `js2py` 执行那段 JS 的结果"去 JS 化"后自行重写的纯 Python 运算。
 
 上游 `onefeifan/fyiban`（AGPL-3.0）全史无 `ydclearance`、无 JS 运行时，本文件与它只有
-"任务相同"、**不构成衍生关系**。本实现不执行远程代码；**安全策略以 `allow_url` 注入**，
+"任务相同"、**不构成衍生关系**。
+
+**归属**
+`yiban/fyiban/` 第三方隔离层的 WAF 子模块。"是不是挑战页"属平台特征识别（本层）；
+"这个挑战能不能信"（跳转白名单）属本项目策略，以 `allow_url` 注入，
 见 `PROVENANCE.md` 与包文档的两条纪律。
+
+**复用**
+`looks_like_challenge` 与 `solve_ydclearance`（含 `allow_url` 注入点）被
+`yiban/fyiban/protocol.py` 复用。
+
+**通信**
+输入：响应文本、`Set-Cookie`、注入的 `allow_url` 白名单。输出：跳转目标 URL 或 cookie
+值；提取失败抛明确错误，**不执行任何远程 JS**。
+调用谁：仅标准库 `re`。
+谁调用：`yiban/fyiban/protocol.py`（登录握手遇挑战时）。
+前端调用点：无直接调用点；WAF 拦截最终经 `yiban/security.py` 的文案进入签到日志与
+`/api/my-logs`、`/api/admin/sign-events` 页面。
 """
 import re
 

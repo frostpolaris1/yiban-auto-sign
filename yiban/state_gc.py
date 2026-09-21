@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""按天状态文件的清理策略：**唯一事实源**（宿主 cron 与容器调度共用）。
+"""**功能**
+按天状态文件的清理策略：**唯一事实源**（宿主 cron 与容器调度共用）。
 
 状态目录里的"按日文件"由多处写入（签到状态、全量收尾标记、邮件额度账本、容器调度
 的时段闩锁标记、调度快照、按天签到日志）。它们只在**当天**有意义（少数要供日历回看），
@@ -14,6 +15,24 @@
 - `YIBAN_SNAPSHOT_RETENTION_DAYS`（默认 7）：只在近几天有意义的标记/账本。
 
 删除一律**按文件名里的日期**判定（比 mtime 精确：复制/恢复会重置 mtime）。
+
+**归属**
+`yiban` 包根的清理策略模块；`scripts/state_cleanup.py`（宿主 cron）与
+`docker/scheduler.py`（容器调度）共用同一份，CLI 子命令 `python -m yiban.cli state`
+也走它。
+
+**复用**
+`ARTIFACTS`（按日文件登记表）、`state_dir_from_env` / `log_dir_from_env`（目录解析）
+与清理函数是唯一事实源；目录解析复用 `yiban.infra.env_io.resolve_path`。
+
+**通信**
+输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与当前日期。
+输出：被删除的过期按日文件与清理结果（供调用方打印/记日志）。
+调用谁：`yiban.clock`、`yiban.infra.env_io`。
+谁调用：`scripts/state_cleanup.py`、`docker/scheduler.py`、`yiban/cli.py` 的 `state` 子命令。
+前端调用点：容器调度器的清理结果与保留期设置经 `/api/settings`
+（`web/components/settings-quota.js` 等设置页）暴露；登记表或保留期口径变化会改变运维
+在这些页面看到的清理/容量信息。
 """
 import datetime
 import os

@@ -1,10 +1,27 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""YIBAN_ACCOUNTS_KEY 轮换工具：旧钥解密 → 新钥重加密 → 校验 → 更新 .env。
+"""**功能**
+YIBAN_ACCOUNTS_KEY 轮换工具：旧钥解密 → 新钥重加密 → 校验 → 更新 .env。
 
 SSH 失陷后攻击者可能已持有旧密钥（.env 为 0600 但 root 可读）。
 运营者换钥后，若存量密文不重加密，新钥将无法解密旧数据（数据不可追回）；
 本工具在单事务内完成全量重加密并自校验，最后才更新 .env。
+
+**归属**
+运维脚本（`scripts/`），由部署者手工执行；轮换对象是 `yiban.infra.account_crypto`
+管理的账号密文与 `.env` 密钥，与 web/signin/scheduler 进程强耦合（必须停服）。
+
+**复用**
+无对外可复用函数（一次性的运维入口）；加解密与 `.env` 行模型复用
+`yiban.infra.account_crypto` / `yiban.infra.env_io` 的真源，不另写第二套。
+
+**通信**
+输入：`--generate` / `--new-key` / `--new-key-file`（新钥）、`--db` / `--env` 路径、
+`--skip-notify` / `--skip-mail` / `--force` / `--env-only`。
+输出：单事务重加密后的 accounts 表、更新后的 `.env`（原子 0600，最后写）；
+非零退出码即轮换中止（库或 `.env` 未被进一步改动）。
+调用谁：`yiban.infra.account_crypto`、`yiban.infra.env_io`、`yiban.infra.env_lock`、`db`。
+谁调用：仅运维手工执行（SSH 失陷后的密钥轮换）。
 
 用法（务必先停服——Docker 用 `docker compose stop yiban`，
 systemd 用 `systemctl stop yiban-web`；容器内 web/scheduler 是 supervisord 子进程，
@@ -22,10 +39,10 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
     可选：--skip-notify（不迁移推送密文 YIBAN_NOTIFY_SECRET_ENC）
     可选：--skip-mail（不迁移邮件 SMTP 密文 YIBAN_MAIL_SMTPS_ENC）
 
-流程（崩溃安全，.env 最后写；加固）：
-    0. 新钥生成后**立即写入 0600 暂存文件**（<env>.rekey-staging）——
-       此前 --generate 的新钥只存在于内存，第 2 步提交后、第 4 步写 .env 前
-       崩溃 = 新钥永久丢失，库内密文随之整体不可解（仅剩 ≤24h 备份可救）。
+流程（崩溃安全，.env 最后写）：
+    0. 新钥生成后**立即写入 0600 暂存文件**（<env>.rekey-staging）——只在内存里的话，
+       第 2 步提交后、第 4 步写 .env 前崩溃 = 新钥永久丢失，库内密文随之整体不可解
+       （仅剩 ≤24h 备份可救）。
     1. 全量读 accounts 表，旧钥解密全部 password/phone_code——任何一行失败
        立即中止且不写库（密钥不对就不动数据）
     2. 单事务（BEGIN IMMEDIATE，busy_timeout 15s）用新钥重加密写回全部行
@@ -52,8 +69,8 @@ web/signin/scheduler 时拒绝执行，--force 可跳过该探活（自担风险
        "需在设置页重新配置 SMTP 发信条目"；--skip-mail 可显式跳过本步。
        收尾自检对推送与邮件两条通道各报一行（未配置/已迁移/迁移失败需重配/
        已跳过）——只报其一会把"另一条通道已死"掩盖成轮换成功。
-    崩溃恢复（按中断点区分——旧文案"改回旧钥即可恢复"对第 2 步
-    之后的中断是**错误**指引，库内已是新钥密文，旧钥解不开）：
+    崩溃恢复按中断点区分（第 2 步之后库内已是新钥密文，旧钥解不开，
+    "改回旧钥即可恢复"对那种情形是错误指引）：
     - 第 2 步提交**前**中断：库未变更，.env 旧钥仍然有效，直接重跑本工具即可；
     - 第 2 步提交**后**、第 4 步前中断：库内已是新钥密文，.env 仍是旧钥——
       新钥就在暂存文件 <env>.rekey-staging（0600）里，把它写回 .env 的

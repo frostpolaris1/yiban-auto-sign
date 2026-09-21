@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""压测环境一键搭建/还原（**仅限测试机**）。
+"""**功能**
+压测环境一键搭建/还原（**仅限测试机**）。
 
 做四件事，全部幂等：
   1. 生成自签 CA 与服务器证书（SAN 覆盖所需易班域名），并导出登录页用 RSA 公钥；
@@ -9,6 +10,23 @@
   4. 自检「零真实外联」并打印结论。
 
 ``--restore`` 反向还原第 2、3 步（证书目录按约定可保留），同样幂等。
+
+**归属**
+`scripts/loadtest/` 隔离压测工具链的**环境底座**：`capacity_probe.py`、`mock_yiban.py`、
+`seed_accounts.py`、`concurrency_probe.py` 都建立在它搭好的 hosts/证书/iptables 之上。
+只在测试机运行，不进生产。
+
+**复用**
+`verify_zero_egress`（零真实外联自检）供 `capacity_probe.py` 等工具共用；域名表
+`DEFAULT_DOMAINS` 可被参数覆盖；`--restore` 与搭建对称，供工具收尾复用。
+
+**通信**
+输入：`--base-dir`、域名列表、`--dry-run` / `--restore`。
+输出：自签证书与 RSA 公钥、改写的 `/etc/hosts`（首次改写前备份为 `<base>/hosts.orig`）、
+iptables 443 兜底规则，以及自检结论到 stdout；退出码 0 正常，iptables/自检失败按非零
+退出码报错（不静默）。
+调用谁：`openssl`（证书）、系统 `iptables` 与 `/etc/hosts` 写操作（均为子进程/文件写）。
+谁调用：`scripts/loadtest/capacity_probe.py`（自动搭建与默认还原）、运维手工执行。
 
 安全约定：
   * 只应在测试机以 root 运行；脚本拒绝在非 Linux 上执行写操作（--dry-run 除外）。
