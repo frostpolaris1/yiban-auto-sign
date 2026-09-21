@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""`python -m yiban.cli <子命令> [选项]`：agent 侧统一入口（契约见 `docs/dev/cli.md`）。
+"""**功能**
+`python -m yiban.cli <子命令> [选项]`：agent 侧统一入口（契约见 `docs/dev/cli.md`）。
 
 本模块是命令行**唯一入口**，`scripts/signin.py` / `scripts/db.py` / `scripts/state_cleanup.py`
 是部署面（run.sh / cron / 容器调度器按文件路径调用）的兼容壳，二者行为同源。
@@ -31,6 +32,27 @@
 
 `capacity --measure` 与 `db --backup` 的取舍、以及"人类可读输出不进 stdout"的落地细节
 见各自函数的文档字符串。
+
+**归属**
+`yiban` 包的命令行门面；引擎逻辑在 `yiban.engine`（`runner.main`），本模块只做子命令
+分派、退出码包装与 `--json` 输出。
+
+**复用**
+`main(argv=None) -> int` 是唯一入口；`_say`、`_env_view` 与退出码常量供同族子命令共用；
+`sign` / `probe` 直接转发 `runner.main`。
+
+**通信**
+输入：`argv`（子命令 + 选项）与环境变量/.env（敏感值只从环境读）。
+输出：stdout 一行 JSON（`--json`）或 stderr 人类可读汇总；退出码见上表。
+调用谁：`yiban.engine.runner`（`sign`/`probe`）、`yiban.state_gc`（`state`）、
+`yiban.store.db`（`db`）、配置检查与容量计算（`config`/`capacity`）。
+谁调用：`scripts/signin.py` / `scripts/db.py` / `scripts/state_cleanup.py` 兼容壳、
+`run.sh`、`docker/scheduler.py`，以及 web 手动签到经 `scripts/signin.py --only`
+（`web/services/manual_sign.py`）拉起。
+前端调用点：手动签到 `/api/signin`、调度器 `/api/scheduler/executors*` 经子进程落到
+`sign`/`probe` 子命令；系统设置页 `/api/settings`（`web/components/settings-*.js`）的
+容量与执行体建议与 `capacity` 子命令同口径——子命令退出码或 `--json` 字段变化会影响
+这些页面。
 """
 import argparse
 import json

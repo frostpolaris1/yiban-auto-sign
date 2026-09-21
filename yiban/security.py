@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""安全策略层：WAF 拦截判定、URL 白名单、对外文本脱敏与失败现场诊断。
+"""**功能**
+安全策略层：WAF 拦截判定、URL 白名单、对外文本脱敏与失败现场诊断。
 
 **为什么单独一层**：`yiban/fyiban/` 承接的是上游（AGPL-3.0）的协议与算法，而
 "什么算被风控拦截""服务端下发的跳转目标能不能信""日志里哪些字段必须打码"是
@@ -16,6 +17,25 @@
   等于 `f.yiban.cn`；
 - `is_waf_blocked` —— 只在**短响应**里找拦截关键词，避免把含"风控""拦截"字样的
   正常法律文本误判成拦截页。
+
+**归属**
+`yiban` 包根的安全策略实现层，服务第三方隔离层：`yiban.client` 把本模块的函数组装成
+`RequestPolicy` 注入 `yiban/fyiban/protocol.py`，故本模块是"本项目自有安全判断"与
+"上游协议知识"的分界线。
+
+**复用**
+`is_yiban_trusted_url` / `is_fyiban_url` / `is_waf_blocked` 与
+`WAF_BLOCKED_MESSAGE`、`_WHITELIST_MESSAGES`（对外文案单一来源）；脱敏口径复用
+`yiban.masking`。
+
+**通信**
+输入：URL、响应文本/头部/状态码、待脱敏文本。输出：布尔判定或脱敏/诊断后的文本。
+调用谁：`yiban.masking`、`urlsplit`。
+谁调用：`yiban.client`（组装 `RequestPolicy` 注入协议层）、`yiban/fyiban/protocol.py`
+经注入的策略回调、以及各日志/错误消息点。
+前端调用点：无直接调用点；本模块的结果经登录/签到错误消息（最终进入签到日志与
+`/api/my-logs`、`/api/admin/sign-events` 页面）间接可见——白名单/脱敏口径变化会改变
+这些页面的错误文案与打码效果。
 """
 import logging
 import re

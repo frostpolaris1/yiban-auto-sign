@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""状态文件读写与判定：按日状态、全量收尾标记、账密熔断状态、执行体心跳。
+"""**功能**
+状态文件读写与判定：按日状态、全量收尾标记、账密熔断状态、执行体心跳。
 
 两类执行体心跳都在这里：兜底常驻的执行体心跳（写侧 `_write_fallback_alive`、读侧
 `fallback_alive`）与并行执行体心跳（写侧 `mark_worker_*`、读侧四态判定的
@@ -10,18 +11,33 @@
 收尾标记与"未了结账号"，告警读兜底心跳与 sched-run 标记，执行体接口读并行心跳。
 因此三条纪律不能破：
 
+
 1. **原子写**（tmp + `os.replace`）——半截 JSON 会被下游误读成"没跑过"；
 2. **带锁读改写**（`cli_support._state_file_lock`）——签到主进程、手动 `--only`、
    探针三个进程会同时碰这些文件；
 3. **失效方向偏安全**——文件缺失/损坏一律按"尚未了结"处理，宁可多跑一轮不漏签。
 
-状态码别名取自 `yiban.status`（唯一事实源）。
+**归属**
+`yiban.engine` 的持久化口径层（按日状态 / 全量收尾标记 / 心跳）；告警、探针、Web
+日历与容器调度器都按这些文件判"跑没跑、结没结"。
 
+**复用**
+状态码别名取自 `yiban.status`（唯一事实源）；`mark_worker_*` / `worker_presence`、
+`fallback_alive`、按日状态读写函数被 `runner` / `workers` / `probe` / `alerts` 与
+web 服务层复用。
+
+**通信**
+输入/输出：直接读写 `YIBAN_STATE_DIR` 下的 JSON 文件——页面与调度器读同一批文件，
+故格式与键名是跨进程契约。
+调用谁：`cred_state`、`cli_support._state_file_lock`、`schedule`、`db`、`env_io`。
+谁调用：`runner`、`workers`、`round`、`probe`、`alerts` 与 web 的日历/执行体接口。
 **依赖方向**：本模块只额外依赖 `schedule` 的 `_env_int`（兜底心跳的扫描间隔下限），
 而 `schedule` 不依赖本模块，故模块级导入安全；`alerts` 反向依赖本模块（告警要读
 sched-run 标记与心跳）与 `schedule`（判窗口是否还开着），那条环路由 alerts 侧断开。
-
-跨模块调用纪律见包说明：跨模块一律走模块属性访问。
+前端调用点：`/api/scheduler/executors*`（执行体存活四态）、`/api/my-calendar`、
+`/api/my-logs`、`/api/admin/sign-events`（按日状态与事件）——键名或失效方向变化会改变
+日历着色、执行体行与日志列表。
+跨模块一律走模块属性访问。
 """
 import contextlib
 import json

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""多执行体：`--workers N` 的监督进程与 `--fallback` 兜底常驻执行体。
+"""**功能**
+多执行体：`--workers N` 的监督进程与 `--fallback` 兜底常驻执行体。
 
 两者都是"进程编排"而非签到逻辑本身——真正的活儿都交回 `round.run_queue_retry`，
 它们只负责：谁持哪把锁（监督进程持全局锁、子进程各持自己的锁文件）、谁用哪个出口
@@ -13,7 +14,22 @@
 **子进程入口是 `python -m yiban.cli sign`**：本模块是包内模块，不再能按文件路径直接
 执行，故监督进程以模块方式拉起同一个 CLI（cwd 与 PYTHONPATH 都指向仓库根）。
 
-跨模块调用纪律见包说明：跨模块一律走模块属性访问。
+**归属**
+`yiban.engine` 的进程编排层；`runner` 在"多执行体监督"分支调用它。
+
+**复用**
+`run_supervisor` / `run_fallback` 是两条入口；`FALLBACK_LOCK_NAME`、`_GATE_REASON_TEXT`
+供同族模块对齐；执行体清单与槽位语义与 `egress` 同源。
+
+**通信**
+输入：执行体清单（环境变量 `YIBAN_EXECUTORS`）、槽位数与 `argv`（`--workers` 及其后随值
+不透传给子进程）。输出：子进程退出码、心跳与日志。
+调用谁：`round.run_queue_retry`（真正干活）、`state_io`（心跳）、`cli_support`、`egress`。
+谁调用：`runner` 的多执行体分支。
+前端调用点：执行体存活四态由 `/api/scheduler/executors*` 族读写
+（`web/components/settings-executors.js`、`settings-quota.js`），清单由系统设置页
+`/api/settings` 写入 .env——心跳与退出码口径变化会改变这些页面的执行体行与容量提示。
+跨模块一律走模块属性访问。
 """
 import logging
 import os

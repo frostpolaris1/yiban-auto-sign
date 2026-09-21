@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""审计可追溯性取证校验工具（Phase 3 / 锚点比对补全）。
-
-用法：
-    python3 scripts/audit_verify.py [--db 路径] [--env .env 路径] [--anchor 路径]
+"""**功能**
+审计可追溯性取证校验工具。
 
 一次跑齐三件事（与 web 每日线程调的同一个 db.audit_health()）：
   1. 链内 HMAC 哈希自洽      —— 检出改内容 / 删中间行；
@@ -11,19 +9,29 @@
      整表清空、锚点文件自身被截断或改写；
   3. 审计写入欠账            —— 检出"业务已生效但审计没写进去"的静默丢失。
 
-输出：除三项结论外，还固定带出「累计留痕的审计清理条数」与「最近一次审计清理的
-截止点/条数」——本机时钟被渐进拨快时，本机自校验防不住（守卫参照点会跟着推进），
-异机侧只能靠这两个数字发现保留期清理被异常前移。
+除三项结论外，还固定带出「累计留痕的审计清理条数」与「最近一次审计清理的截止点/
+条数」——本机时钟被渐进拨快时，本机自校验防不住（守卫参照点会跟着推进），异机侧
+只能靠这两个数字发现保留期清理被异常前移。
 
-输出：
-- 全部通过：exit 0
-- 检出异常：打印各项结论与锚点判据说明，exit 1
-- 无法定论（密钥缺失 / 校验过程异常）：exit 2
+**归属**
+取证/运维侧脚本（`scripts/`）；判据本体在 `yiban.store.audit_chain`，本脚本只做参数
+解析与取证口径落定，与 web 每日线程共用同一 `audit_health()`。
+
+**复用**
+无对外可复用函数；核心判据复用 `yiban.store.audit_chain.audit_health` /
+`audit_anchor_path`，web 与容器侧都应调那一份，不得另写第二套校验。
+
+**通信**
+用法：`python3 scripts/audit_verify.py [--db 路径] [--env .env 路径] [--anchor 路径]`
+输入：命令行 `--db` / `--env` / `--anchor`（缺省走环境变量与默认路径）。
+输出：三项结论 + 清理留痕数字到 stdout；退出码：全部通过 exit 0；检出异常 exit 1；
+无法定论（密钥缺失 / 校验过程异常）exit 2。
+调用谁：`db`（`yiban.store.db` / `audit_chain` 的兼容壳）。
+谁调用：运维手工取证（只读，无写盘）。
 
 --anchor：外部锚点文件路径。默认 db.audit_anchor_path()（YIBAN_STATE_DIR，
 裸机默认 /var/log/yiban，Windows 开发环境默认 cwd）。README 承诺"校验审计链并
-比对 audit-anchor.log 外部锚点"——本工具此前只验链不比对锚点，删尾/清空/整表
-被抹掉在这里完全静默；现不传参即按默认路径比对，传参可指向取证副本。
+比对 audit-anchor.log 外部锚点"，故不传参即按默认路径比对，传参可指向取证副本。
 
 --env：审计密钥（YIBAN_AUDIT_KEY）所在 .env 路径。不指定时取
 环境变量 YIBAN_ENV_FILE，两者都没有才回落到当前目录 .env；取证时请在任意

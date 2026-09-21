@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
-"""易班**协议步骤**：登录握手与签到两接口的请求构造与响应解析。
+"""**功能**
+易班**协议步骤**：登录握手与签到两接口的请求构造与响应解析。
 
 **衍生声明**：本文件中的端点、参数名与取值、页面正则、RSA 编码方式与握手顺序
 来自上游 `onefeifan/fyiban`（AGPL-3.0）及其同源实现 KillYiBan，逐块对照见同目录
-`PROVENANCE.md`。本层是"平台要求怎么做"的知识，**不含**本项目自有的安全判断：
+`PROVENANCE.md`。
+
+**归属**
+`yiban/fyiban/` 第三方隔离层的协议模块（"平台要求怎么做"的知识），**不含**本项目
+自有的安全判断：
 
 - URL 白名单、WAF 拦截判定、脱敏与诊断措辞一律经 `policy`（`RequestPolicy`）注入，
   由 `yiban/security.py` 实现、`yiban/client.py` 组装；
@@ -12,6 +17,16 @@
 
 第三方层因此可以独立核对、替换或升级：换平台时实现本文件的端点与形状即可，
 安全策略与会话策略不必跟着重写。
+
+**复用**
+端点/参数常量（`OAUTH_CLIENT_ID`、`API_AUTH_URL` 等）、`RequestPolicy` / `SessionStore`
+协议与登录/签到函数是隔离层的对外接口；`headers` / `waf` 两个同层子模块被本模块复用。
+
+**通信**
+输入：`requests.Session`、注入的 `policy` 与 `session_store`、账号/密码与点位参数。
+输出：签到结果与会话；每一步跳转都过 `policy.require_*` 校验，本层不自算裁决。
+调用谁：`requests`、同层 `headers` / `waf`、注入的 `policy` / `session_store`。
+谁调用：`yiban/client.py`（唯一生产调用方，负责组装 policy 与 session_store）。
 """
 import json
 import logging

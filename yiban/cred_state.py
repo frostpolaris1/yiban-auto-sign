@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""账密熔断状态文件（`cred-state.json`）：**唯一读写入口**。
+"""**功能**
+账密熔断状态文件（`cred-state.json`）：**唯一读写入口**。
 
 内容：`{phone: {fail_days, last_fail, paused_since, probe_date}}`——"连续凭据失败
 达到阈值则暂停签到"的事实源，属安全相关状态（写错了会拿错密码反复登录，加重风控）。
@@ -13,6 +14,23 @@
 **做法**：整段读-改-写放进同一把跨进程文件锁（`yiban/infra/locks.py` 的统一原语），
 并且**按手机号增量合并**而不是整表覆盖——调用方只声明"我改了哪些账号"，
 其余账号永远由磁盘上的最新值决定。
+
+**归属**
+`yiban` 包根的安全状态模块（`yiban/cred_state.py`），服务引擎与 Web 两侧：它是"账密
+连续失败即暂停"的事实源，被 `state_io` / `round` / `probe` 与 web 服务层共用。
+
+**复用**
+`path()` / `read()` / `write()` / 按手机号的增量合并接口是全项目**唯一**读写入口，
+调用方都走它；路径解析复用 `yiban.infra.env_io.resolve_path`。
+
+**通信**
+输入：本进程要改动的账号 → `{fail_days, last_fail, paused_since, probe_date}` 记录。
+输出：`cred-state.json`（`YIBAN_STATE_DIR` 下，原子写 + 跨进程锁）。
+调用谁：`clock`、`yiban.infra.env_io`、`yiban.infra.locks`。
+谁调用：`round` / `probe`（失败记账与暂停）、`state_io`、web 服务层（改密/编辑后清除熔断）。
+前端调用点：`/api/accounts`（`web/components/account-ops.js`）与 `/api/my-accounts`
+（`web/components/my-accounts.js`）、`/api/me/password`（`web/pages/my_account.js`）改密/
+编辑后经本模块清除暂停——合并/锁口径变化会让 Web 端刚解开的暂停被签到进程覆盖回来。
 """
 import json
 import logging
