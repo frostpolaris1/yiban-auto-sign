@@ -113,7 +113,12 @@ def _sign_state_path():
 
 
 def _daily_statuses():
-    """当日按日状态文件的 {phone: status}；缺失/损坏返回 {}（调用方按"无记录"处理）。"""
+    """当日按日状态文件的 {phone: status}；缺失/损坏返回 {}（调用方按"无记录"处理）。
+
+    条目缺 `status` 键按空串——与 `_has_conclusion` 同口径（"无记录"，而非"一条
+    状态为 None 的结论"）：窗口收尾拿本快照预筛、落盘再走 `_has_conclusion` 的
+    CAS，两处口径必须一致，否则预筛判"已有结论"而 CAS 判"可以写"。
+    """
     try:
         with open(_sign_state_path(), encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -121,7 +126,7 @@ def _daily_statuses():
         return {}
     if not isinstance(data, dict):
         return {}
-    return {p: (v.get("status") if isinstance(v, dict) else "") for p, v in data.items()}
+    return {p: (v.get("status", "") if isinstance(v, dict) else "") for p, v in data.items()}
 
 
 def _second_run_drop_done(accounts):

@@ -263,7 +263,12 @@ def api_settings_save():
         # 单门：容量口径收敛为活跃账号数（账号容量约束易班请求负载），
         # 注册用户多但活跃账号少不构成负载；存量站点瞬间显示超限仅警示，
         # 仅此处保存延迟时保留既有硬门
-        est_accounts = m._capacity_estimate(gap)
+        # gap 未携带（部分更新只改启动延迟）时必须按 `.env` 现值算：用请求缺省的 0
+        # 会把预估容量顶到窗口上限，硬门被"乐观上限"整个绕过。现值读法与 GET
+        # /api/settings 的 gap_max 展示同源（0 是合法间隔，即不留间隔）。
+        gate_gap = gap if has_gap else m.load_env_int(
+            m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX)
+        est_accounts = m._capacity_estimate(gate_gap)
         cur_accounts = m._capacity_account_count()
         if cur_accounts > est_accounts:
             return jsonify({

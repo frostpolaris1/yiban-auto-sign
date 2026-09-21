@@ -126,6 +126,24 @@ class SaveGateSingleTierTest(_Base):
                    json={"gap_max": 3600, "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
+    def test_partial_update_uses_current_gap_for_gate(self):
+        """只带 start_delay_max 的部分更新必须按 `.env` 里现存的账号间隔算容量。
+
+        缺省取 0 会把预估容量顶到窗口上限，容量硬门被"乐观上限"整个绕过。
+        """
+        for i in range(3):
+            self.db.add_account({"name": "N", "phone": f"1380013802{i}", "password": "pw",
+                                 "status": "active", "owner": "admin"})
+        self.webapp.write_env_key(self.env_file, "YIBAN_ACCOUNT_GAP_MAX", "3600")
+        try:
+            c, h = self._master()
+            r = c.post("/api/settings",
+                       json={"start_delay_max": 30, "confirm_password": ADMIN_PASS}, headers=h)
+            self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+            self.assertIn("活跃账号", r.get_json()["error"])
+        finally:
+            self.webapp.write_env_key(self.env_file, "YIBAN_ACCOUNT_GAP_MAX", "")
+
     def test_deleted_accounts_not_counted(self):
         # 软删除账号不占负载：3 条中 2 条 deleted → 占用 1 ≤ 2 → 放行
         for i in range(3):
