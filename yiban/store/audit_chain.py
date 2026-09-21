@@ -123,28 +123,15 @@ def _write_audit_key_to_env_file(env_file, key):
 
     读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥；锁内仍保留
     “写入前重读”的既有兜底，避免多进程首启竞态覆盖。
+    行模型（窄行读 + 逐行行分隔符校验 + 键行折叠 + 原子 0600 替换）下沉在
+    `env_io.write_env_key`：与账号密钥、追踪盐两处写入方共用同一份实现，
+    值里潜伏的 U+2028 之类不会被实体化成真配置行。
     """
     with env_lock.env_write_lock(env_file):
         existing = _parse_env_file(env_file).get("YIBAN_AUDIT_KEY", "").strip()
         if existing:
             return _decode_audit_key(existing)
-        lines = []
-        if os.path.exists(env_file):
-            with open(env_file, encoding="utf-8-sig") as f:
-                lines = f.read().splitlines()
-        out = [ln for ln in lines if not ln.strip().startswith("YIBAN_AUDIT_KEY=")]
-        out.append(f"YIBAN_AUDIT_KEY={key.hex()}")
-        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
-        # 之间（及进程崩溃残留时）密钥对同机其他用户可读
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, env_file)
-        with contextlib.suppress(OSError):
-            os.chmod(env_file, 0o600)
+        env_io.write_env_key(env_file, "YIBAN_AUDIT_KEY", key.hex())
         return key
 
 
