@@ -623,6 +623,34 @@ def verify_weight_source(weight, path, strict):
     print("警告：字重 %d 源 %s 未经上游哈希校验（--strict-source 可强制）" % (weight, name))
 
 
+#: 允许被整目录替换（`shutil.rmtree` + `os.replace`）的输出根，相对仓库根。
+#: outdir 是位置参数、随后直接 rmtree，接受任意路径意味着一次笔误
+#: （漏写一层目录、变量为空、补全选错）就是不可逆的目录删除。
+OUTDIR_WHITELIST = ("web/static",)
+
+
+def resolve_outdir(path):
+    """把 outdir 解析为绝对路径并校验落在仓库白名单内；不在则抛 ValueError。
+
+    判包含关系用 `commonpath` 而非字符串前缀——前缀会把 `web/static-evil`
+    误判为合法。白名单根自身也拒绝：`rmtree(web/static)` 不是任何一次切片该做的事。
+    """
+    root = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    target = os.path.realpath(path)
+    for rel in OUTDIR_WHITELIST:
+        allowed = os.path.join(root, *rel.split("/"))
+        try:
+            inside = os.path.commonpath([target, allowed]) == allowed
+        except ValueError:          # 不同盘符（Windows）：必然不在白名单内
+            continue
+        if inside and target != allowed:
+            return target
+    raise ValueError(
+        "输出目录不在白名单内：%s（仅允许仓库内 %s 之下的子目录）"
+        % (path, "、".join(OUTDIR_WHITELIST))
+    )
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("outdir", nargs="?", help="输出目录（整目录原子替换）")
@@ -652,6 +680,10 @@ def main(argv=None):
 
     if not args.outdir:
         ap.error("需要输出目录（--fetch 模式除外）")
+    try:
+        args.outdir = resolve_outdir(args.outdir)
+    except ValueError as e:
+        ap.error(str(e))
     weights = [int(w) for w in args.weights.split(",") if w.strip()]
     weight_sources = parse_weight_sources(args.weight_font)
     if args.font and weight_sources:

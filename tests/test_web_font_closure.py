@@ -38,6 +38,9 @@ Adminator 在 **58 个组件级选择器**里声明了自己的 `font-family`，
 
 import os
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -180,6 +183,52 @@ class FontStackClosureTest(unittest.TestCase):
                 + "\n".join(f"  {m}" for m in missing)
                 + "\n\n修法：把它们按栈尾族分别并入 app.css 第 X 节的正文栈/等宽栈清单。"
             )
+
+
+class FontSliceOutdirGuardTest(unittest.TestCase):
+    """分片脚本的 outdir 是位置参数、随后被整目录 `rmtree`：白名单外必须拒绝。
+
+    起子进程断言进程级行为（退出码 + 目标目录未被动过）。脚本导入期即依赖
+    fonttools（**构建期**依赖，不在 requirements 里），缺依赖时跳过本组。
+    """
+
+    SCRIPT = os.path.join(BASE, "scripts", "build_cjk_font_slices.py")
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        if importlib.util.find_spec("fontTools") is None:
+            raise unittest.SkipTest("fonttools 未安装（构建期依赖，本组跳过）")
+
+    def _run(self, outdir):
+        return subprocess.run(
+            [sys.executable, self.SCRIPT, outdir, "--font", "fake.ttf"],
+            capture_output=True, text=True, timeout=120, cwd=BASE)
+
+    def test_outside_repo_is_refused_and_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            keep = os.path.join(d, "keep.txt")
+            with open(keep, "w", encoding="utf-8") as f:
+                f.write("sentinel")
+            r = self._run(d)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("白名单", r.stderr)
+            self.assertTrue(os.path.isfile(keep), "被拒绝的输出目录不得被动过")
+            self.assertTrue(os.path.isdir(d), "被拒绝的输出目录不得被删")
+
+    def test_whitelist_root_and_prefix_sibling_refused(self):
+        """白名单根自身与"前缀相似"的同级目录都不算命中（后者防字符串前缀误判）。"""
+        for rel in ("web/static", "web/static-evil"):
+            with self.subTest(rel=rel):
+                r = self._run(rel)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("白名单", r.stderr)
+
+    def test_under_whitelist_passes_the_guard(self):
+        """白名单内的合法落点必须过闸（后续因假字体失败，但不再是白名单拒绝）。"""
+        r = self._run("web/static/vendor/fonts/notosanssc-guardprobe")
+        self.assertNotEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("白名单", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
