@@ -27,7 +27,7 @@
 调用谁：`round.run_queue_retry`（真正干活）、`state_io`（心跳）、`cli_support`、`egress`。
 谁调用：`runner` 的多执行体分支。
 前端调用点：执行体存活四态由 `/api/scheduler/executors*` 族读写
-（`web/components/settings-executors.js`、`settings-quota.js`），清单由系统设置页
+（`web/static/js/components/settings-executors.js`、`settings-quota.js`），清单由系统设置页
 `/api/settings` 写入 .env——心跳与退出码口径变化会改变这些页面的执行体行与容量提示。
 跨模块一律走模块属性访问。
 """

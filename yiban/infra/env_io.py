@@ -34,7 +34,7 @@
 调用谁：仅标准库（`os` / `re` / `secrets` / `contextlib`）。
 谁调用：`yiban.engine.*`、`yiban.store.*`、`yiban.infra.account_crypto`、
 `web/services/env_io.py` 与设置页写入路径。
-前端调用点：系统设置页 `/api/settings`（`web/components/settings-*.js`）的开关落盘经
+前端调用点：系统设置页 `/api/settings`（`web/static/js/components/settings-*.js`）的开关落盘经
 web 服务层走本模块——行模型或 `strict` 口径变化会影响设置保存与密钥/盐的生成。
 
 `child_env.parse_env_file` 不在此收敛：它有额外语义（仅接受 YIBAN_ 前缀且键名

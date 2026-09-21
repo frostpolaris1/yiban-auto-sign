@@ -32,7 +32,7 @@ ValueError 时才知道，换钥中断、.env 与库不同步时无法在动手�
 谁调用：`yiban.engine.accounts`（装载解密）、`yiban.store.db`（落库加密）、
 web 服务层（账号增改与改密）、`scripts/rekey_accounts.py`（轮换）。
 前端调用点：`/api/accounts`、`/api/my-accounts`、`/api/me/password`
-（`web/components/account-form.js`、`web/components/my-accounts.js`）提交的密码经本模块
+（`web/static/js/components/account-form.js`、`web/static/js/components/my-accounts.js`）提交的密码经本模块
 加密落库——格式或密钥口径变化会直接影响这些页面保存/校验账号的成功与失败。
 """
 

@@ -28,7 +28,7 @@
 调用谁：`mail`（`mailer`）、`notify`、`db`、`state_io`、`cli_support`、`schedule`。
 谁调用：`round`、`probe`、`runner`。
 前端调用点：邮件/推送配置与"发送测试"由 `/api/mail-config`、`/api/notify-config`、
-`/api/notify-test`（`web/components/settings-health.js` 等设置页）管理——告警通道或措辞
+`/api/notify-test`（`web/static/js/components/settings-notify.js` 等设置页）管理——告警通道或措辞
 变化会影响用户收到的邮件/推送。
 跨模块一律走模块属性访问。
 """

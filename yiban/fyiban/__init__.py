@@ -22,6 +22,7 @@
 输入/输出：见各子模块；本层不做 I/O 与安全裁决，一切平台交互经注入的 `requests.Session`、
 `policy` 与 `session_store`。
 谁调用：`yiban/client.py`（生产唯一入口）。
+前端调用点：无直接调用点（隔离层）。
 本层不得反向依赖 `yiban.store` / `yiban.security` / web 层。
 
 **两条纪律（改本层前先读）**：

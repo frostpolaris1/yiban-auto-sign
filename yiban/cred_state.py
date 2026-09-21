@@ -28,9 +28,9 @@
 输出：`cred-state.json`（`YIBAN_STATE_DIR` 下，原子写 + 跨进程锁）。
 调用谁：`clock`、`yiban.infra.env_io`、`yiban.infra.locks`。
 谁调用：`round` / `probe`（失败记账与暂停）、`state_io`、web 服务层（改密/编辑后清除熔断）。
-前端调用点：`/api/accounts`（`web/components/account-ops.js`）与 `/api/my-accounts`
-（`web/components/my-accounts.js`）、`/api/me/password`（`web/pages/my_account.js`）改密/
-编辑后经本模块清除暂停——合并/锁口径变化会让 Web 端刚解开的暂停被签到进程覆盖回来。
+前端调用点：`/api/accounts`（`web/static/js/components/account-ops.js`）与 `/api/my-accounts`
+（`web/static/js/components/my-accounts.js`）的账号编辑，经 `web/services/logs.py` 的
+`clear_fuse_on_cred_change` 清除暂停——合并/锁口径变化会让 Web 端刚解开的暂停被签到进程覆盖回来。
 """
 import json
 import logging

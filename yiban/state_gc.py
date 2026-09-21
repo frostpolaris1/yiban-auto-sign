@@ -31,7 +31,7 @@
 调用谁：`yiban.clock`、`yiban.infra.env_io`。
 谁调用：`scripts/state_cleanup.py`、`docker/scheduler.py`、`yiban/cli.py` 的 `state` 子命令。
 前端调用点：容器调度器的清理结果与保留期设置经 `/api/settings`
-（`web/components/settings-quota.js` 等设置页）暴露；登记表或保留期口径变化会改变运维
+（`web/static/js/components/settings-quota.js` 等设置页）暴露；登记表或保留期口径变化会改变运维
 在这些页面看到的清理/容量信息。
 """
 import datetime

@@ -172,7 +172,8 @@ main↔develop 差异面：**全仓 187 个文件、`yiban/` 下 48 个 py**。�
 ## 2026-09-21 修复批收口
 
 范围：`feature/review-fix-20260921` 行为修复 + 注释 P0 + T-ATTR-1，基线 `develop=37d7334`，
-本批 25 个 commit（`37d7334..6444f6a`，含后续注释达标批 eec405d）。逐条一行（编号 · 已修 commit）。
+本批 25 个 commit（`37d7334..6444f6a`）；注释达标批 `eec405d` 在本区间之外，见文末单独记录。
+逐条一行（编号 · 已修 commit）。
 
 - **T-CRYPTO-1 残留** · `5c202b3`：rekey 回写 `.env` 改走 `env_io` 窄行写入，堵住潜伏分隔符与影子行（account_crypto 主路径随 N-1 在 `ed51e8b` 收口，`_write_key_to_env_file` 的空格影子行折不掉问题一并消除）。
 - **T-WIN-1** · **本批未修**：`round.py::_next_retry_at` 的内联 `eff_hi` 口径与 `window.bounds()` 剪辑仍分裂，25 个 commit 无一触及该区域（全批 `git show ... -- yiban/engine/round.py | grep eff_hi` 0 命中）。本批唯一与 Windows 状态文件相关的修复是 `a8cddc5`（按日状态写入侧改 `utf-8-sig`），属 E4，与 eff_hi 窗口口径无关。

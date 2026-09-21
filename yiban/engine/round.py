@@ -22,8 +22,8 @@
 `runner` 汇总退出码。
 调用谁：`client`（单次尝试）、`attempts`、`state_io`、`alerts`、`schedule`、`db`。
 谁调用：`runner.run_once`、`workers` 的子进程。
-前端调用点：账号页与我的账号页（`web/pages/work_accounts.js`、
-`web/components/my-accounts.js`）、日历/日志（`web/static/js/calendar.js` 拉
+前端调用点：账号页与我的账号页（`web/static/js/pages/work_accounts.js`、
+`web/static/js/components/my-accounts.js`）、日历/日志（`web/static/js/calendar.js` 拉
 `/api/my-calendar`、`/api/my-logs`）与仪表盘 `/api/admin/sign-events` 读本模块写入的
 按日状态与事件——状态码或收尾口径变化会直接改变这些页面的日历着色与日志列表。
 跨模块一律走模块属性访问。
