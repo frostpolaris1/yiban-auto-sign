@@ -36,9 +36,10 @@
    `protocol.py` 的登录握手同理：每一步的跳转都要过 `policy.require_trusted` /
    `policy.require_fyiban`，WAF 拦截判定走 `policy.require_not_blocked`
    （`tests/test_fyiban_isolation.py::ProtocolLayerTest` 钉住"协议层不得自算裁决"）。
-2. **脱敏与日志**：本层不打账号标识、不做脱敏——错误消息里的 URL/文本一律经
-   `policy.sanitize` / `policy.describe_location`；本层只保留进程内的步骤日志
-   （`logger.info("登录成功")` 之类，日志口径由调用方配置）。
+2. **脱敏与日志**：本层不做脱敏、也不自带打码规则——账号标识入日志与错误消息前一律经
+   注入的 `policy.mask_account`（`logger.info(f"[{policy.mask_account(phone)}] 登录成功")`
+   之类），URL/文本一律经 `policy.sanitize` / `policy.describe_location`；`policy` 未注入时
+   即"不脱敏"，由调用方承担。
 3. **会话缓存**：协议层只通过注入的 `session_store`（`restore`/`save`/`clear`）使用它，
    不 import `yiban.store`、不读 `db`——会话缓存是本市集的手段（少登录=少风控暴露面），
    不是上游概念。
