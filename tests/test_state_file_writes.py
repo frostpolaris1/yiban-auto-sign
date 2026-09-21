@@ -27,6 +27,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import scheduler  # noqa: E402  （docker/scheduler.py）
 
 from yiban import state_gc  # noqa: E402
+from yiban.engine import state_io  # noqa: E402
 
 
 class SlotMarkerAtomicWriteTest(unittest.TestCase):
@@ -135,6 +136,37 @@ class SigninWritesAreAtomicTest(unittest.TestCase):
         self.assertIn("cred_state.update(", body)
         self.assertIn("cred_state.merge(", body)
         self.assertNotIn("open(", body)
+
+
+class SignStateBomReadTest(unittest.TestCase):
+    """按日状态文件带 BOM 时，读侧不得判"损坏"而清空整日数据。
+
+    写入方 `_write_sign_state` 的读-改-写若用 utf-8 读带 BOM 的存档，json 解析
+    必失败 → 按空数据重建 → 当日已写结论全部丢失。读侧其余入口
+    （`_daily_statuses` / sched-run）早已统一 utf-8-sig，本用例钉住写侧同口径。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-signstate-")
+        p = mock.patch.object(state_io, "_state_dir", return_value=self.tmp)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_bom_file_keeps_existing_entries(self):
+        path = os.path.join(
+            self.tmp, f"sign-state-{state_io.clock.now():%Y-%m-%d}.json")
+        # utf-8-sig 写：文件头带 BOM（Windows 记事本等工具另存的形态）
+        with open(path, "w", encoding="utf-8-sig") as f:
+            json.dump({"13800000001": {"status": "success", "message": "先写入"}}, f)
+
+        state_io._write_sign_state("13800000002", "failed", "后写入")
+
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        self.assertEqual(data["13800000001"]["status"], "success",
+                         "带 BOM 的既有条目被当损坏清空重建 = 整日数据丢失")
+        self.assertEqual(data["13800000002"]["status"], "failed")
 
 
 if __name__ == "__main__":
