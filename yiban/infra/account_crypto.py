@@ -21,7 +21,6 @@ import logging
 import os
 import secrets
 import threading
-from contextlib import suppress
 
 from Crypto.Cipher import AES
 
@@ -294,52 +293,13 @@ def _write_key_to_env_file(env_file, key):
 
     读-写-替换整体包进共享 env_lock：与 web 写 .env 互斥，避免多进程首启
     同时生成不同密钥互相覆盖；锁内仍保留"写入前重读"的既有兜底。
-    既有行含潜伏行分隔符（U+2028 等）时抛 ValueError 且磁盘上一个字节都不改；
-    错误消息给出行号（1-based）作定位线索，不回带行原文（值里可能有口令等敏感内容）。
+    行模型（窄行读 + 逐行行分隔符校验 + 键行折叠 + 原子 0600 替换）下沉在
+    `env_io.write_env_key`，与审计密钥/追踪盐两处写入方共用同一份实现；
+    既有行含潜伏行分隔符（U+2028 等）时由它抛 ValueError 且磁盘上一个字节都不改。
     """
     with env_lock.env_write_lock(env_file):
         existing = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
         if existing:
             return _decode_key(existing)
-        raw = ""
-        if os.path.exists(env_file):
-            with open(env_file, encoding="utf-8-sig") as f:  # utf-8-sig：兼容带 BOM 的 .env
-                raw = f.read()
-        # 行模型取窄模型（只认 \r\n / \r / \n）而非 splitlines()：值里藏的 U+2028 之类
-        # 在窄模型下仍留在本行内，下面逐行 has_line_break 才看得见——splitlines() 会先把
-        # 它当行边界吃掉。无潜伏分隔符时两者逐行等价，正常 .env 写回结果与旧实现逐字相同。
-        lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        if lines and lines[-1] == "":
-            lines.pop()  # 结尾换行不构成空配置行（对齐 splitlines 的行数）
-        # 校验必须在折叠之前：被丢弃的行同样要先过这一关，否则含潜伏分隔符的旧键行会被
-        # 静默删掉（报"写入成功"，实则抹掉一行本函数根本没看懂的配置）。fail-closed 的
-        # 理由：本函数只保留别人的行、没有清理权；潜伏载荷留在文件里迟早被某次 splitlines
-        # 读-改-写实体化成生效配置行（启动时 find_env_key_collisions 已报出待清理的键）。
-        for ln_no, ln in enumerate(lines, start=1):
-            if env_io.has_line_break(ln):
-                # 定位线索只给行号（1-based），绝不回带行原文：行原文会被测试与实测证实
-                # 带出值里的口令（如 postgres://user:S3cretPw@…）与裸 U+2028，随异常消息
-                # 落日志与 HTTP 500。<env_file 路径> + 行号已足以定位，零信息损失。
-                raise ValueError(
-                    f"{env_file} 第 {ln_no} 行（1-based）含潜伏行分隔符（U+2028 等），"
-                    f"写回会把它后面的内容实体化成新配置行，故拒绝写入密钥；"
-                    f"请人工清理该行后重试"
-                )
-        # 旧键行折叠必须与解析口径同源：parse_env_file 按"首个 = 切分 + 两侧 strip"认键，
-        # `YIBAN_ACCOUNTS_KEY = v` 正是同一条键的行；只认字面前缀 KEY= 折不掉它，残留的
-        # 影子行与新行谁生效由落盘顺序决定（后写覆盖先写）。
-        key_pat = env_io.key_line_pattern("YIBAN_ACCOUNTS_KEY")
-        out = [ln for ln in lines if not key_pat.match(ln.strip())]
-        out.append(f"YIBAN_ACCOUNTS_KEY={key.hex()}")  # hex 天然不含分隔符，无需再过校验
-        tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-        # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace
-        # 之间（及进程崩溃残留时）密钥对同机其他用户可读，AES-GCM 防线归零
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, env_file)
-        with suppress(OSError):
-            os.chmod(env_file, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
+        env_io.write_env_key(env_file, "YIBAN_ACCOUNTS_KEY", key.hex())
         return key
