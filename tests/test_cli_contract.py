@@ -238,6 +238,19 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertEqual(r.stdout, "")
 
+    def test_config_reports_missing_field_as_config_error_not_traceback(self):
+        """账号缺必填字段（phone/password 为空）抛的是 ValueError：
+
+        配置入口必须把它落成"配置加载失败 + 退出码 1 + 一行可解析 JSON"，
+        不得变成裸 traceback（此前只捕 RuntimeError）。"""
+        env = dict(self.env, YIBAN_ACCOUNTS_JSON='[{"phone": "13800000001"}]')
+        r = _run(["config", "--json"], env)
+        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        self.assertNotIn("Traceback", r.stderr)
+        payload = json.loads(r.stdout.splitlines()[0])
+        self.assertFalse(payload["ok"])
+        self.assertTrue(any("配置加载失败" in m for m in payload["errors"]), payload)
+
     def test_capacity_measure_forwards_extra_args(self):
         """`--measure` 之后的多余参数属于工具自己的开关，不是 CLI 的用法错误。
 
