@@ -335,6 +335,32 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         self.assertEqual(full[0], "06:30~06:35")
         self.assertEqual(shifted[0], "07:00~07:05", "窗口打桩必须换掉预计时段")
 
+    def test_estimate_slot_block_cap_zero_means_unlimited(self):
+        """`YIBAN_BLOCK_CAP=0`（不限容量，与 my.py 拥挤度同口径）时预计时段照常返回。
+
+        不能拿块容量当除数——否则用户端自选片接口对全员 500。分块线下全员落首块：
+        第 20 人（idx=19）默认块容量 15 时应落第 2 块，不限容量时必须回到第 1 块。
+        """
+        accounts = [{"phone": f"1380013{i:04d}", "status": "active", "deleted": False}
+                    for i in range(20)]
+        target = accounts[-1]["phone"]
+        self._write_raw("YIBAN_BLOCK_CAP=0\n")
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
+            got = self.webapp._estimate_slot(target)
+        self.assertEqual(got, ("06:30~06:35", "（每日固定时段，块内时刻每天略有抖动）"),
+                         "不限容量时全员落首块，且不得除零")
+        # 反证：默认块容量 15 下同一目标落第 2 块，说明上面的断言真的钉住了口径
+        self._write_raw("YIBAN_BLOCK_CAP=15\n")
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
+            capped = self.webapp._estimate_slot(target)
+        self.assertEqual(capped[0], "06:35~06:40")
+
     def test_read_env_and_env_file_stubs_reach_verify_switches(self):
         """`web.app.read_env` / `ENV_FILE` 是既有开关打桩点（test_probe 的写法）。"""
         with mock.patch.object(self.webapp, "read_env",

@@ -376,7 +376,11 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int, sign_
             b += 5
         if not valid:
             return None, ""
-        bi = min(idx // k, len(valid) - 1)
+        # k<=0（`.env` 显式写 YIBAN_BLOCK_CAP=0）= 不限容量，与 my.py 拥挤度口径
+        # （`cap > 0` 才算百分比与满员提示）一致：无块内人数上限，全员落在首块，
+        # 不能拿 k 当除数（否则用户端自选片接口整个 500）。引擎侧配置校验把 0 判非法
+        # 并回退默认块容量，故这里只是展示/估算口径，不改真实排片。
+        bi = 0 if k <= 0 else min(idx // k, len(valid) - 1)
         lo, hi = valid[bi]
         return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
     # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
