@@ -218,7 +218,9 @@ def main(argv=None):
     # 加载账号配置（文件 > JSON 环境变量 > 旧格式，详见 load_accounts）
     try:
         accounts = accounts_mod.load_accounts()
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
+        # ValueError 来自 `_parse_account_dict` 的字段缺失（phone/password 为空）：
+        # 配置错误同样要落成"配置加载失败 + 退出码 1"，不得变裸 traceback
         logger.error(f"配置加载失败: {e}")
         return 1
 
