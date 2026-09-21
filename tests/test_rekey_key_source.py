@@ -538,6 +538,40 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         # 部署 .env 里的审计密钥原样未动（没有被"就地生成第二把钥"顶替）
         self.assertEqual(_env_value(self.env_file, "YIBAN_AUDIT_KEY"), AUDIT_KEY)
 
+    def test_env_var_key_without_env_file_is_refused(self):
+        """`YIBAN_ACCOUNTS_KEY` 来自环境变量、却没有任何 --env/YIBAN_ENV_FILE 时拒绝执行。
+
+        此时 env_path 只能回落到相对路径 ".env"（cwd 下并不存在）。旧钥虽能从环境
+        变量拿到，工具不校验那份文件就会在该位置新建一份游离密钥源——库已用新钥
+        重加密，而服务仍按自己那份旧钥读取，凭据从此解不开。
+        fail-closed = 非零退出、给出去路、且什么都不落。
+        """
+        r = _run_cli("rekey_accounts.py",
+                     ["--db", self.db_file, "--new-key", NEW_KEY, "--force"],
+                     cwd=self.work, extra_env={"YIBAN_ACCOUNTS_KEY": OLD_KEY})
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("--env", out, f"错误信息须给出去路（--env/YIBAN_ENV_FILE）: {out}")
+        residues = [n for n in os.listdir(self.work) if n.startswith(".env")]
+        self.assertEqual(residues, [], f"不得在 cwd 新建游离密钥源: {residues}")
+        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), OLD_KEY)
+        ok, broken, first = self.verify_chain_with_prod_env()
+        self.assertTrue(ok, f"被拒绝的执行仍改动了链：broken={broken} first={first}")
+        self.assert_db_account_readable(OLD_KEY)
+
+    def test_env_var_key_with_env_file_still_rotates(self):
+        """环境变量与 .env 同时持有旧钥（容器部署常见）：文件校验通过，轮换照常完成。"""
+        r = _run_cli("rekey_accounts.py",
+                     ["--db", self.db_file, "--new-key", NEW_KEY, "--force"],
+                     cwd=self.work,
+                     extra_env={"YIBAN_ACCOUNTS_KEY": OLD_KEY,
+                                "YIBAN_ENV_FILE": self.env_file})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
+        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [],
+                         "密钥写进 YIBAN_ENV_FILE 指定的文件，不得另落一份")
+        self.assert_db_account_readable(NEW_KEY)
+
     def test_explicit_missing_env_is_rejected(self):
         """修复轮1③+⑤：显式 --env 指向不存在的文件 → 非零退出，且绝不创建该文件。
 

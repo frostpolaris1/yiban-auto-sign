@@ -600,11 +600,27 @@ def main():
 
     # 旧密钥：环境变量/ .env 当前值（与 load_key 同优先级，但禁止"缺失时自动生成"）
     old_raw = os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip()
+    key_from_environ = bool(old_raw)
     if not old_raw:
         old_raw = account_crypto._parse_env_file(env_path).get("YIBAN_ACCOUNTS_KEY", "").strip()
     if not old_raw:
         print("错误：未找到当前密钥（环境变量与 .env 均无 YIBAN_ACCOUNTS_KEY）")
         sys.exit(2)
+    # 旧钥来自环境变量而非文件时，env_path 还必须是一个确实存在且持有旧钥的文件：
+    # 此时它往往只是回落出的相对路径 ".env"，工具不校验就会在该位置新建一份游离
+    # 密钥源——库已用新钥重加密，而服务仍按自己那份旧钥读取，凭据从此解不开。
+    # 与 require_existing_env_file 对显式 --env 的存在性校验同向：来源不确定就拒绝执行。
+    if key_from_environ:
+        try:
+            env_file_key = account_crypto._parse_env_file(env_path).get(
+                "YIBAN_ACCOUNTS_KEY", "").strip()
+        except OSError:
+            env_file_key = ""
+        if not env_file_key:
+            print(f"错误：YIBAN_ACCOUNTS_KEY 来自环境变量，而密钥文件 {env_path} "
+                  "不存在或未持有 YIBAN_ACCOUNTS_KEY（拒绝在该位置新建 .env）；"
+                  "请用 --env 显式指定部署的 .env 路径，或设置 YIBAN_ENV_FILE 指向它")
+            sys.exit(2)
     try:
         old_key = account_crypto._decode_key(old_raw)
     except ValueError as e:
