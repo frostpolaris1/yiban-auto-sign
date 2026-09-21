@@ -209,7 +209,7 @@ def api_settings():
             },
             # 周日签到：1=开启（周日也尝试签到），0=关闭（默认）
             "sunday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SUNDAY_SIGN", 0),
-            # 周六签到：1=开启（默认，周六照常签到），0=关闭（周六暂停）
+            # 周六签到：1=开启（周六照常签到），0=关闭（默认，周六暂停）
             "saturday_sign": m.load_env_int(m.ENV_FILE, "YIBAN_SATURDAY_SIGN", 0),
             # 全局暂停（一键暂停签到）：1=暂停（下一轮 cron 跳过），0=正常
             "global_pause": m.load_env_int(m.ENV_FILE, "YIBAN_GLOBAL_PAUSE", 0),
@@ -336,7 +336,7 @@ def api_settings_save():
     sunday_sign = None
     if "sunday_sign" in data:
         sunday_sign = 1 if str(data.get("sunday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
-    # 周六签到开关（1=开启/0=关闭）：默认开启，仅请求携带时才更新，避免保存其他设置时误关
+    # 周六签到开关（1=开启/0=关闭）：仅请求携带时才更新，避免保存其他设置时误关
     saturday_sign = None
     if "saturday_sign" in data:
         saturday_sign = 1 if str(data.get("saturday_sign", "")).strip().lower() in ("1", "true", "on", "yes") else 0
