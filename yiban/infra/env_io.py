@@ -234,14 +234,21 @@ def write_env_keys(env_file, updates):
     for key, value in updates.items():
         out.append(f"{key}={value}")
     tmp = f"{env_file}.tmp{secrets.token_hex(4)}"
-    # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace 之间（及进程崩溃
-    # 残留 tmp 时）密钥/盐对同机其他用户可读
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, env_file)
+    try:
+        # 创建即 0600——open("w") 在默认 umask 下 0644，写完到 replace 之间（及进程崩溃
+        # 残留 tmp 时）密钥/盐对同机其他用户可读
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_file)
+    except OSError:
+        # 写/替换失败（磁盘满、权限、Windows 上替换目标被占用）不得把 tmp 留在盘上：
+        # 它装着本次要写入的新密钥/新盐，永久残留即凭据暴露面
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     with contextlib.suppress(OSError):
         os.chmod(env_file, 0o600)  # 仅属主可读写（Windows 无实际效果，忽略失败）
 
