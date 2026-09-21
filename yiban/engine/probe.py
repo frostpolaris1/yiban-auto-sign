@@ -24,8 +24,8 @@
 `runner` 一致。
 调用谁：`client`（真实登录）、`alerts`、`state_io`、`cli_support`、`env_lock`、`db`。
 谁调用：`runner`（`--probe`）、web 注册/改密路径（`web/services/accounts_data.py`）。
-前端调用点：注册与改密表单（`web/components/account-form.js`、
-`web/pages/my_account.js`）走 `/api/accounts`、`/api/my-accounts` 经本模块做即时验证；
+前端调用点：注册与改密表单（`web/static/js/components/account-form.js`、
+`web/static/js/pages/my_account.js`）走 `/api/accounts`、`/api/my-accounts` 经本模块做即时验证；
 健康探测结果经 `/api/admin/sign-events` 进入仪表盘——验证口径变化会改变注册/改密的
 打回提示。
 跨模块一律走模块属性访问。

@@ -30,8 +30,8 @@
 谁调用：`yiban/cli.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
 `docker/scheduler.py`。
 前端调用点：手动签到 `/api/signin` 经 `web/services/manual_sign.py` 以子进程拉起
-`scripts/signin.py --only`（`web/components/account-ops.js` 触发），执行体接口
-`/api/scheduler/executors*`（`web/components/settings-executors.js`、`settings-quota.js`）
+`scripts/signin.py --only`（`web/static/js/components/account-ops.js` 触发），执行体接口
+`/api/scheduler/executors*`（`web/static/js/components/settings-executors.js`、`settings-quota.js`）
 读执行体产生的存活态——退出码语义变化会改变这些页面的成功/失败提示与执行体行。
 """
 import argparse

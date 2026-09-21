@@ -21,8 +21,8 @@
 旧格式环境变量。输出：`Account` 列表（含 owner / account_id 等运行期字段）。
 调用谁：`db`、`account_crypto`、`config_check`。
 谁调用：`runner`、`probe`、`workers` 的子进程。
-前端调用点：`/api/accounts`（`web/pages/work_accounts.js`、
-`web/components/account-ops.js`）与 `/api/my-accounts`（`web/components/my-accounts.js`）
+前端调用点：`/api/accounts`（`web/static/js/pages/work_accounts.js`、
+`web/static/js/components/account-ops.js`）与 `/api/my-accounts`（`web/static/js/components/my-accounts.js`）
 的增删改由本模块在下一轮装载生效——优先级/去重/审核态口径变化会改变这些页面看到的
 可签到集合。
 跨模块一律走模块属性访问（如 `config_check._key_env_file()`）。
