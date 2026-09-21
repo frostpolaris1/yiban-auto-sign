@@ -196,7 +196,8 @@ def _duplicate_phone_error(accounts, phone, email):
         and conflict.get("deleted")
         and conflict.get("deleted_by", "") == email
     ):
-        return "该手机号对应你刚删除的账号，可先撤销删除；或等 7 天自动清除后再提交"
+        return (f"该手机号对应你刚删除的账号，可先撤销删除；"
+                f"或等 {DELETE_GRACE_DAYS} 天自动清除后再提交")
     return None
 
 
