@@ -18,7 +18,7 @@ import logging
 import re
 from base64 import b64decode, b64encode
 from typing import Callable, NamedTuple, Protocol
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
@@ -43,6 +43,10 @@ SIGN_IN_URL = "https://api.uyiban.com/nightAttendance/student/index/signIn"
 
 #: 单请求超时（秒）：登录链与签到链一致
 REQUEST_TIMEOUT = 15
+
+#: 最终认证手动跟跳的层数上限：正常只有一跳（落点才是 JSON），
+#: 超过即视为重定向环，响亮失败而不是无限跟下去
+MAX_FINAL_AUTH_REDIRECTS = 5
 
 # 旧流程（Auto-Test 继承）的页面正则
 LEGACY_PAGE_USE_RE = re.compile(r"page_use ?= ?['|\"]([a-zA-Z0-9-_]+)['|\"]")
@@ -430,14 +434,32 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
             f"无法提取 verify_request（Location={policy.describe_location(location)}）"
         )
 
-    # 5. 完成认证（默认三个头 + 跟随重定向，最终返回 JSON）
+    # 5. 完成认证（默认三个头，最终返回 JSON）。这一跳服务端可能 302（落点才是
+    #    JSON），而请求自带的 csrf_token cookie 域名为空——对任意主机会一并带出。
+    #    故**不**让 requests 自动跟随：自动跟随会在白名单校验之前就把令牌发往
+    #    落点（SSRF 面），改为取 Location、先过宽松白名单、再发下一跳；判据与
+    #    login_legacy 服务端下发跳转同一口径（require_trusted）。
+    url = API_AUTH_URL
     resp = session.get(
-        API_AUTH_URL,
+        url,
         params={"verifyRequest": verify_code, "CSRF": csrf},
-        allow_redirects=True,
+        allow_redirects=False,
         timeout=REQUEST_TIMEOUT,
     )
     policy.require_not_blocked(resp)
+    for _ in range(MAX_FINAL_AUTH_REDIRECTS):
+        if not resp.is_redirect:
+            break
+        location = resp.headers.get("Location", "")
+        policy.require_trusted(location, "final_auth")
+        resp = session.get(
+            urljoin(getattr(resp, "url", "") or url, location),
+            allow_redirects=False,
+            timeout=REQUEST_TIMEOUT,
+        )
+        policy.require_not_blocked(resp)
+    else:
+        raise RuntimeError("最终认证重定向层数过多，疑似重定向环")
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
