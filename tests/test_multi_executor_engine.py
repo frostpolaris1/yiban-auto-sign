@@ -262,7 +262,7 @@ class WorkerRelaunchCommandTest(_Base):
     否则子进程会再次进入监督分支、递归拉起。
     """
 
-    def _run_supervisor(self, n, argv):
+    def _run_supervisor(self, n, argv, slots=None):
         """跑监督进程（不改真进程）：返回 (退出码, 每个子进程记录的 cmd/env/cwd)。"""
         spawned = []
 
@@ -283,7 +283,7 @@ class WorkerRelaunchCommandTest(_Base):
                                return_value=[self._acc(PHONE_OK)]), \
                 mock.patch.object(signin.subprocess, "Popen", _FakeProc), \
                 mock.patch.object(signin.time, "sleep"):
-            rc = signin.run_worker_supervisor(n, argv)
+            rc = signin.run_worker_supervisor(n, argv, slots=slots)
         return rc, spawned
 
     def test_child_entry_is_module_cli_not_file_path(self):
@@ -310,6 +310,37 @@ class WorkerRelaunchCommandTest(_Base):
             self.assertNotIn("--workers", tail)
             self.assertEqual(tail, ["--only", PHONE_OK])
 
+    def test_child_argv_drops_workers_value_not_equal_to_slot_count(self):
+        """清单模式：槽位数与命令行 `--workers N` 的 N 不等时，N 也不得下传。
+
+        网页改执行体清单只写 `YIBAN_EXECUTORS`、不回写 `YIBAN_WORKERS`，于是
+        `--workers 4`（旧值）+ 3 个拉起槽位是常态。按值匹配去参数会把 "4" 留在
+        argv 里 → 子进程 argparse 收到位置参数直接报错退出（exit 2）→ 每个执行体
+        都零请求退出，整天静默不签到。故按 argv 序位剔除 `--workers` 与其后随值。
+        """
+        for flag in (["--workers", "4"], ["--workers=4"]):
+            with self.subTest(flag=flag):
+                rc, spawned = self._run_supervisor(
+                    3, [*flag, "--only", PHONE_OK], slots=[0, 1, 3])
+                self.assertEqual(rc, 0)
+                self.assertEqual(len(spawned), 3, "应按 3 个槽位拉起")
+                for rec in spawned:
+                    tail = rec["cmd"][4:]
+                    self.assertNotIn("--workers", tail)
+                    self.assertNotIn("4", tail, "命令行 N 不得下传（子进程会当位置参数）")
+                    self.assertEqual(tail, ["--only", PHONE_OK])
+
+    def test_argv_position_does_not_eat_lookalike_values(self):
+        """只吃 `--workers` 的后随值：其余参数里同名的值照旧下传。
+
+        这正是按值匹配的另一个坑——`--workers 2` 之外任何等于 "2" 的参数
+        （如某账号手机号尾部）都会被误删，子进程收到的参数就少了一个。
+        """
+        rc, spawned = self._run_supervisor(2, ["--workers", "2", "--only", "2"])
+        self.assertEqual(rc, 0)
+        for rec in spawned:
+            self.assertEqual(rec["cmd"][4:], ["--only", "2"])
+
     def test_source_no_longer_spawns_by_file_path(self):
         """源级断言：拉起子进程的命令行不得再用 `__file__` 作入口。
 
@@ -322,7 +353,7 @@ class WorkerRelaunchCommandTest(_Base):
         self.assertIsNotNone(m, "workers.py 里应有子进程命令行构造")
         self.assertNotIn("__file__", m.group(0), "不得再按 __file__ 路径拉起子进程")
         self.assertIn('"-m", "yiban.cli"', m.group(0))
-        self.assertIn('a != "--workers"', src, "命令行仍须剔除 --workers")
+        self.assertIn('a == "--workers"', src, "命令行仍须按序位剔除 --workers")
 
 
 class SupervisorExitCodeAggregationTest(unittest.TestCase):
