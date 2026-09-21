@@ -15,7 +15,10 @@
   var STATE_ICON = {
     success: "circle-check", already: "circle-check", failed: "circle-x",
     retrying: "refresh-cw", no_task: "circle-minus",
-    skipped_window: "ban", skipped_norange: "ban",
+    // 跳过两类与「重试中」同形（refresh-cw，用户 2026-09-20 方案 A）：
+    // 页面图例按状态大类写五项（clock/circle-check/circle-x/refresh-cw/circle-minus），
+    // 此前跳过用 ban，表格里出现图例没有的第四种形状——形状归一到图例口径。
+    skipped_window: "refresh-cw", skipped_norange: "refresh-cw",
     paused: "circle-pause", user_cancelled: "circle-stop", pending: "clock"
   };
   var STATE_TEXT = {
