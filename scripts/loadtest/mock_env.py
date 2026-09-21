@@ -221,17 +221,21 @@ def _ipt_has(cmd, spec):
 
 
 def apply_iptables(ipv6, dry_run=False):
-    """幂等：放行回环 443，拒绝其余 443 出站。"""
+    """幂等：放行回环 443，拒绝其余 443 出站。返回 True = 两条规则均已就位。
+
+    装不上必须让调用方看得见（返回值），不能只打一行警告就当作环境就绪——
+    出站 REJECT 缺失时压测会直连真实易班，这正是本工具要拦的事。
+    """
     cmd = _ipt_cmd(ipv6)
     accept, reject = _rule_specs(ipv6)
-    changed = False
+    ok = True
     # ACCEPT 用 -I 插到最前，保证先于任何既有 REJECT 生效
     if not _ipt_has(cmd, accept):
         rc, _ = run([cmd, "-I", "OUTPUT", "1", *accept], dry_run=dry_run)
         if rc != 0 and not dry_run:
             print(f"警告：{cmd} 添加回环放行规则失败（可能无权限）", file=sys.stderr)
+            ok = False
         else:
-            changed = True
             print(f"{cmd}: 已放行回环 443 出站")
     else:
         print(f"{cmd}: 回环放行规则已存在")
@@ -239,12 +243,12 @@ def apply_iptables(ipv6, dry_run=False):
         rc, _ = run([cmd, "-A", "OUTPUT", *reject], dry_run=dry_run)
         if rc != 0 and not dry_run:
             print(f"警告：{cmd} 添加 443 REJECT 规则失败（可能无权限）", file=sys.stderr)
+            ok = False
         else:
-            changed = True
             print(f"{cmd}: 已添加其余 443 出站 REJECT")
     else:
         print(f"{cmd}: 443 REJECT 规则已存在")
-    return changed
+    return ok
 
 
 def restore_iptables(ipv6, dry_run=False):
@@ -389,17 +393,28 @@ def main(argv=None):
     print("== 搭建压测环境 ==")
     certs = ensure_certs(args.base_dir, domains, force=args.force, dry_run=args.dry_run)
     apply_hosts(hosts_path, domains, backup_path, dry_run=args.dry_run)
+    ipt_ok = True
     if not args.no_iptables:
-        apply_iptables(False, dry_run=args.dry_run)
+        ipt_ok = apply_iptables(False, dry_run=args.dry_run)
         if not args.no_ipv6:
-            apply_iptables(True, dry_run=args.dry_run)
+            # 不用 and 短路：IPv4 失败时 IPv6 也要照装，且两侧结果都要拿到
+            ipt_ok = apply_iptables(True, dry_run=args.dry_run) and ipt_ok
 
     if not args.dry_run:
-        verify_zero_egress(domains, hosts_path, probe_ip=args.egress_probe_ip)
+        egress_ok = verify_zero_egress(domains, hosts_path, probe_ip=args.egress_probe_ip)
         print("\n提示：压测结束后务必执行 --restore 还原 hosts 与 iptables。")
+    else:
+        egress_ok = True
     print("证书路径：")
     for k, v in certs.items():
         print(f"  {k}: {v}")
+    # 自检只是打印结论会让"未通过"静默变成成功：出站兜底没装好或域名仍解析到真实
+    # 地址时，压测会直连真实易班。退出码必须反映实情，让调用方（capacity_probe）
+    # 拒绝在此环境上跑 K 阶梯。
+    if not args.dry_run and not (egress_ok and ipt_ok):
+        print("错误：零真实外联自检未通过或出站兜底规则未装好，环境不可用"
+              "（修正后请用 --check 复核）", file=sys.stderr)
+        return 1
     return 0
 
 
