@@ -243,6 +243,8 @@ def main(argv=None):
         # ValueError 来自 `_parse_account_dict` 的字段缺失（phone/password 为空）：
         # 配置错误同样要落成"配置加载失败 + 退出码 1"，不得变裸 traceback
         logger.error(f"配置加载失败: {e}")
+        # stderr 一行摘要：日志只进按天文件，agent/CI 直调 CLI 时否则输出全空
+        cli_support.report_fatal_error(f"配置加载失败: {e}")
         return 1
 
     # 探针模式必须先于「零账号守卫」处理：空账号部署误开探针时，走「未配置任何账号」
@@ -277,6 +279,10 @@ def main(argv=None):
         logger.error("  2. YIBAN_ACCOUNTS_JSON 环境变量（JSON 数组）")
         logger.error("  3. YIBAN_ACCOUNTS 环境变量（旧格式 phone:password#phone2:password2）")
         logger.error("  4. YIBAN_PHONE / YIBAN_PASSWORD 环境变量（单账号）")
+        # stderr 一行摘要（详细配置方法同上留在日志里）：退出码 1 不得伴随全空输出
+        cli_support.report_fatal_error(
+            "未配置任何账号：请配置 yiban.db（网页后台添加）、YIBAN_ACCOUNTS_JSON、"
+            "YIBAN_ACCOUNTS 或 YIBAN_PHONE/YIBAN_PASSWORD（配置方法详见日志）")
         return 1
 
     # --only 过滤：只保留指定手机号（手动签到单个账号）
@@ -285,8 +291,9 @@ def main(argv=None):
         accounts, _missing = config_check._apply_only_filter(accounts, args.only)
         if not accounts:
             # 与 _apply_only_filter 同口径脱敏（args.only 是完整裸号）
-            logger.error("--only 指定账号不在配置中: %s",
-                         ", ".join(_mask_phone(p) for p in _missing))
+            _missing_shown = ", ".join(_mask_phone(p) for p in _missing)
+            logger.error("--only 指定账号不在配置中: %s", _missing_shown)
+            cli_support.report_fatal_error(f"--only 指定账号不在配置中: {_missing_shown}")
             return 1
 
     # 仅检查配置模式：不发任何网络请求，用于部署验证

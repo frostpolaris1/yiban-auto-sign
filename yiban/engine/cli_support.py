@@ -26,6 +26,7 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁。
 """
 import logging
 import os
+import sys
 import time
 from contextlib import contextmanager, suppress
 
@@ -201,3 +202,32 @@ def _setup_cli_logging():
         level=getattr(logging, LOG_LEVEL, logging.INFO),
         handlers=[handler],
     )
+
+
+#: 最近一次致命错误摘要（进程级，单线程 CLI 使用无需加锁）：`report_fatal_error`
+#: 写入，`last_fatal_error` 读取。存在的理由：`--json` 模式下调用方只拿到退出码，
+#: 需要一个机器可读的失败原因（F2，2026-09-21 测试机 47 E2E）。
+_LAST_FATAL_ERROR = None
+
+
+def report_fatal_error(summary):
+    """致命错误（配置加载失败/未配置任何账号类）：stderr 一行摘要 + 记录给 `--json`。
+
+    为什么不能只靠 `logger.error`：CLI 日志装配只挂**按天文件** handler，stderr 上
+    什么都没有——agent/CI 直调 `python -m yiban.cli sign` 时退出码 1 而 stdout/stderr
+    全空，错误只进日志文件（2026-09-21 测试机 47 E2E 实测）。stdout 仍保持"只有结果"
+    （`docs/dev/cli.md` §2.2），摘要一律走 stderr；`--json` 的 error 字段由调用方
+    （`yiban/cli.py`）经 `last_fatal_error()` 取用。
+    """
+    global _LAST_FATAL_ERROR
+    _LAST_FATAL_ERROR = str(summary)
+    try:
+        sys.stderr.write(f"错误: {_LAST_FATAL_ERROR}\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass  # stderr 不可写（已关闭/重定向坏）不得让致命错误处理本身再炸一次
+
+
+def last_fatal_error():
+    """最近一次 `report_fatal_error` 的摘要；无则 None。"""
+    return _LAST_FATAL_ERROR
