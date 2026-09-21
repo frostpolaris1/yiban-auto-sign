@@ -181,7 +181,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
             data = {}
             if os.path.exists(path):
                 try:
-                    with open(path, encoding="utf-8") as f:
+                    with open(path, encoding="utf-8-sig") as f:  # utf-8-sig：带 BOM 的文件不得被判损坏清空
                         data = json.load(f)
                 except (OSError, ValueError, TypeError, AttributeError):
                     logger.warning("状态文件 %s 损坏，按空数据重建", path)
