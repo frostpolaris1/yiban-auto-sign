@@ -161,6 +161,30 @@ class CliContractTest(unittest.TestCase):
         self.assertIn("配置加载失败", payload.get("error", ""))
         self.assertIn("配置加载失败", r.stderr)
 
+    def test_fatal_error_not_leaked_between_in_process_runs(self):
+        """F2 附属：进程内多次调用 main 时，上一轮的致命原因不得附到本轮失败上。
+
+        真实 CLI 一轮一进程，这条兜底的是测试/进程内复用：第二轮
+        `--second-run-check` 只读判定（退出码 10，无致命错误）之后，
+        `last_fatal_error()` 必须已被入口清空。
+        """
+        import unittest.mock as mock
+
+        from yiban.engine import cli_support, runner
+        with mock.patch.object(runner.accounts_mod, "load_accounts",
+                               side_effect=RuntimeError("boom")), \
+                mock.patch.object(runner.cli_support, "_setup_cli_logging"):
+            rc = runner.main([])
+        self.assertEqual(rc, 1)
+        self.assertIn("配置加载失败", cli_support.last_fatal_error())
+
+        with mock.patch.object(runner.state_io, "need_second_run", return_value=True), \
+                mock.patch.object(runner.cli_support, "_setup_cli_logging"):
+            rc = runner.main(["--second-run-check"])
+        self.assertEqual(rc, 10)
+        self.assertIsNone(cli_support.last_fatal_error(),
+                          "上一轮的致命原因被带到了本轮（应已在 main 入口清空）")
+
     # ---- ③ state 默认 dry-run，--yes 才动手 ----
 
     def test_state_defaults_to_dry_run_and_yes_deletes(self):

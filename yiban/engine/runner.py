@@ -131,6 +131,8 @@ def main(argv=None):
     # 宿主 run.sh 已有 umask 077；本处覆盖 web 子进程、容器 scheduler 与无宿主脚本的
     # 裸调路径（Windows 无实际效果）。
     os.umask(0o077)
+    # 清空上一轮的致命错误摘要（进程内多次调用 main 时不得把上轮原因附到本轮）
+    cli_support.clear_fatal_error()
     # 日志装配延迟到 CLI 入口（幂等；覆盖 --check-config / --probe / --only 全部路径）
     cli_support._setup_cli_logging()
     parser = argparse.ArgumentParser(description="易班自动签到")
