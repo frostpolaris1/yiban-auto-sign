@@ -5,7 +5,7 @@
 （`yiban.client` / 签到引擎）只依赖本层定义的**接口**，不复制其中的算法细节。
 
 成员与来源（逐块见 `PROVENANCE.md`）：
-- `algo.py`     多边形内随机定位点（缩放质心 + 射线法）
+- `algo.py`     多边形内随机定位点（剪耳三角剖分 + 三角形内均匀采样，退化时回退缩放质心）
 - `headers.py`  易班 App 请求头与版本特征（`HEADERS` / `KILLYIBAN_HEADERS`）
 - `waf.py`      易盾 WAF（`https_ydclearance`）挑战的纯 Python 解析
 - `protocol.py` 登录握手与签到接口的端点、请求形状与响应解析
