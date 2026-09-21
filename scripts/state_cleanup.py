@@ -28,7 +28,7 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 谁调用：宿主 `scripts/yiban-cleanup.sh`（cron）、容器调度器；`yiban/cli.py state`
 子命令与之同源。
 前端调用点：无直接调用点；容器调度器的清理结果与保留期设置经 `/api/settings`
-（`web/components/settings-quota.js` 等设置页）暴露给运维。
+（`web/static/js/components/settings-quota.js` 等设置页）暴露给运维。
 """
 import datetime
 import os

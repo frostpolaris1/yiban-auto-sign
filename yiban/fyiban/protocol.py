@@ -27,6 +27,7 @@
 输出：签到结果与会话；每一步跳转都过 `policy.require_*` 校验，本层不自算裁决。
 调用谁：`requests`、同层 `headers` / `waf`、注入的 `policy` / `session_store`。
 谁调用：`yiban/client.py`（唯一生产调用方，负责组装 policy 与 session_store）。
+前端调用点：无直接调用点（隔离层）。
 """
 import json
 import logging

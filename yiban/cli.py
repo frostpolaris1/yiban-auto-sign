@@ -50,7 +50,7 @@
 `run.sh`、`docker/scheduler.py`，以及 web 手动签到经 `scripts/signin.py --only`
 （`web/services/manual_sign.py`）拉起。
 前端调用点：手动签到 `/api/signin`、调度器 `/api/scheduler/executors*` 经子进程落到
-`sign`/`probe` 子命令；系统设置页 `/api/settings`（`web/components/settings-*.js`）的
+`sign`/`probe` 子命令；系统设置页 `/api/settings`（`web/static/js/components/settings-*.js`）的
 容量与执行体建议与 `capacity` 子命令同口径——子命令退出码或 `--json` 字段变化会影响
 这些页面。
 """
