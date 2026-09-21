@@ -18,6 +18,7 @@
 connection 的真状态"，不是"db 有自己的 _conn 属性"。
 """
 import contextlib
+import io
 import os
 import shutil
 import sys
@@ -328,6 +329,65 @@ class InitDbSemanticsTest(_ConnStateBase):
         self.assertIs(impl.get_conn(), c)
         self.assertEqual(c.execute("SELECT 1").fetchone()[0], 1)
         self.assertTrue(impl.is_initialized())
+
+
+class DbPathFromEnvFileTest(_ConnStateBase):
+    """F1：`YIBAN_DB_FILE` 只写进 .env（未 export）时，库路径必须解析到 .env 指定的库。
+
+    2026-09-21 测试机 47 无上下文 CLI E2E：只写 .env 不导出环境变量时，CLI 的路径
+    显示与 `db --status` 认 .env，而 `init_db` 过去只认 `os.environ` → 静默回退默认
+    `./yiban.db`（0 账号）→ 引擎"未配置任何账号"、exit 1，错误只进日志文件。
+    修法：库路径解析统一走 `env_io.resolve_path`（进程环境 → .env → 默认值），与
+    YIBAN_STATE_DIR / YIBAN_LOG_FILE / 审计锚点同口径。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._prev_env_file_var = os.environ.get("YIBAN_ENV_FILE")
+        self.tmp = tempfile.mkdtemp(prefix="yiban-dbpath-envfile-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.db_path = os.path.join(self.tmp, "from-env-file.db")
+        self.env_file = os.path.join(self.tmp, ".env")
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_DB_FILE={self.db_path}\n")
+        # 只写 .env、不导出环境变量（E2E 复现形态）
+        os.environ["YIBAN_ENV_FILE"] = self.env_file
+        os.environ.pop("YIBAN_DB_FILE", None)
+
+    def tearDown(self):
+        if self._prev_env_file_var is None:
+            os.environ.pop("YIBAN_ENV_FILE", None)
+        else:
+            os.environ["YIBAN_ENV_FILE"] = self._prev_env_file_var
+        super().tearDown()
+
+    def test_init_db_resolves_db_file_from_env_file(self):
+        c = impl.init_db(cleanup=False)
+        self.assertEqual(conn_mod._db_file, self.db_path,
+                         "库路径应从 .env 解析（而非回退默认 ./yiban.db）")
+        self.assertTrue(os.path.isfile(self.db_path), "应在 .env 指定的路径上建库")
+        # 连接真正落在 .env 指定的库上（不是默认库）
+        rows = c.execute("PRAGMA database_list").fetchall()
+        self.assertTrue(any(os.path.realpath(r[2]) == os.path.realpath(self.db_path)
+                            for r in rows if r[2]),
+                        f"连接指向的库不是 .env 指定的库: {[r[2] for r in rows]}")
+
+    def test_engine_load_accounts_uses_env_file_db(self):
+        """引擎取账号（accounts.load_accounts）在只有 .env 配置时解析到 .env 指定的库。"""
+        from yiban.engine import accounts as engine_accounts
+
+        os.environ["YIBAN_ACCOUNTS_KEY"] = "b" * 64
+        self.addCleanup(os.environ.pop, "YIBAN_ACCOUNTS_KEY", None)
+        # 先在 .env 指定的库上建好一个账号（显式路径，模拟 web 侧写入）
+        impl.init_db(db_file=self.db_path, env_file=self.env_file, cleanup=False)
+        impl.add_account({"name": "A", "phone": "13800138000", "password": "p1",
+                          "status": "active", "owner": "admin"})
+        self._close_current()
+        # 全新进程形态：环境里没有任何 YIBAN_DB_FILE，只有 .env
+        loaded = engine_accounts.load_accounts()
+        self.assertEqual([a.phone for a in loaded], ["13800138000"],
+                         "引擎应解析到 .env 指定的库并取到账号（旧行为：0 账号）")
+        self.assertEqual(conn_mod._db_file, self.db_path)
 
 
 if __name__ == "__main__":
