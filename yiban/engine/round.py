@@ -166,24 +166,32 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
                    or egress.single_owner())
     claimed_day = {}   # 本进程领到的账号 → 业务日（跨午夜时逐账号不同）
+    # 本进程领到的账号 → 领取时拿到的 fencing token。收尾写必须带上它：重试重插会再次
+    # 领取（同一 owner 重入也自增 epoch），故这里记的是**最近一次**的 token，旧的已作废。
+    claimed_epoch = {}
 
     def _claim(phone, day):
-        """领取该账号当日的工作权；领不到返回 False（别人在做）。
+        """领取该账号当日的工作权；领不到返回 False（别人在做 / 领取池不可用）。
 
         **库未初始化时直接放行且不碰库**：领取池只是"多执行体协调"的手段，
         而"不碰库"是有意的——否则纯状态文件部署（无 DB）会被这次调用顺手创建
         一个默认库，纯属副作用。
+
+        领取池不可用时**拒跑**（与 `claims.try_claim` 的 fail-closed 同一纪律）：
+        这里答"可执行"会让两个执行体同时登录同一账号，踩上游风控红线。该账号本轮
+        空转，由补签轮 / 兜底执行体接手。
         """
         if not db.is_initialized():
             return True
         try:
-            got = db.claim_sign_account(phone, day, executor_id, allow_settled=reclaim)
+            got, epoch = db.claim_sign_account(phone, day, executor_id,
+                                               allow_settled=reclaim)
         except Exception as e:
-            # 协调层故障不得让签到停摆（单执行体形态这个池可有可无）
-            logger.debug(f"[{phone}] 领取失败（按可执行处理）: {e}")
-            got = True
+            logger.error(f"[{_mask_phone(phone)}] 领取签到账号异常（fail-closed 拒跑）: {e}")
+            got, epoch = False, 0
         if got:
             claimed_day[phone] = day
+            claimed_epoch[phone] = epoch
         return got
 
     def _settle_claims(res):
@@ -191,6 +199,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
         了结口径与展示口径刻意一致：`success/already/no_task` 记为 `done`（当日无需再签），
         其余记为 `failed` 但**未了结**——补签轮与兜底执行体正是为接手它们而存在。
+
+        收尾带上领取时的 fencing token：本轮被接管过的账号写不进去（被接管者迟到的结论
+        不得覆盖接管者的结论）。
         """
         if not claimed_day:
             return   # 本轮没领过任何账号（库未初始化 / 全被他人领取）
@@ -198,11 +209,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             day = claimed_day.get(ph)
             if not day:
                 continue
+            epoch = claimed_epoch.get(ph)
             try:
                 if st in _CLAIM_DONE_STATUSES:
-                    db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st))
+                    db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st),
+                                    epoch=epoch)
                 else:
-                    db.claim_give_up(ph, day, executor_id, str(st))
+                    db.claim_give_up(ph, day, executor_id, str(st), epoch=epoch)
             except Exception as e:
                 logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
 

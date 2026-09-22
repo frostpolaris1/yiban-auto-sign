@@ -5,7 +5,8 @@
 **功能**
 - `claim_batch`：按虚分片批量领取到期任务——单条 `UPDATE ... RETURNING`，在
   SQLite 的写者串行语义下天然原子（等价于 PG 的 `SKIP LOCKED`，本仓无需跨机形态）；
-- `settle_tasks`：一批完成的任务在单事务里收尾（owner 作用域），不逐账号 commit；
+  领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
+- `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
   "当日是否了结"、给进度展示取数。
@@ -83,12 +84,16 @@ def _lease_until(lease_sec):
 
 def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
                 lease_sec=LEASE_SECONDS):
-    """按分片（`vshard`）批量领取到期任务。返回 `[{"phone","run_at","attempts"}, ...]`。
+    """按分片（`vshard`）批量领取到期任务。返回
+    `[{"phone","run_at","attempts","epoch"}, ...]`。
 
     单事务 `UPDATE ... WHERE (phone, day) IN (SELECT ...) RETURNING`：返回的行即被本
     执行体占住的行（`state='claimed'` + 写入 owner）。`SET owner` 是必需的——`owner`
     一列同时是"计划 owner"与"当前持有者"，收尾路径按 owner 做作用域校验，
     不写它则接管/窃取换不了手。
+
+    `epoch` 是本次领取的 fencing token（**每次领取自增**，单调）：调用方收尾时必须把它
+    原样传回 `settle_tasks` / `requeue_task`。没有它，被接管者迟到的写会覆盖接管者的结论。
 
     `vshards=()` 返回 `[]`（本轮不该领活，不算故障）；表未落地/库异常返回 `[]` **并
     告警**——与"表在、但无到期行"的空返回是两件事，调用方据此决定是否退回动态领取
@@ -99,13 +104,14 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
         return []
     placeholders = ",".join("?" for _ in shards)
     sql = (
-        "UPDATE sign_tasks SET state='claimed', owner=?, lease_until=? "
+        "UPDATE sign_tasks SET state='claimed', owner=?, lease_until=?, "
+        "epoch=epoch + 1 "
         "WHERE (phone, day) IN ("
         "SELECT phone, day FROM sign_tasks "
         f"WHERE day=? AND vshard IN ({placeholders}) "
         "AND state='pending' AND run_at<=? "
         "ORDER BY priority, run_at LIMIT ?"
-        ") RETURNING phone, run_at, attempts"
+        ") RETURNING phone, run_at, attempts, epoch"
     )
     params = (owner, _lease_until(lease_sec), day, *shards, now or clock.ts(), int(limit))
     try:
@@ -116,25 +122,31 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
     except Exception as e:
         logger.warning("批量领取签到任务失败（按无可领处理）: %s", e)
         return []
-    return [{"phone": r["phone"], "run_at": r["run_at"], "attempts": r["attempts"]}
-            for r in rows]
+    return [{"phone": r["phone"], "run_at": r["run_at"], "attempts": r["attempts"],
+             "epoch": r["epoch"]} for r in rows]
 
 
-def settle_tasks(owner, day, outcomes, state=STATE_DONE):
+def settle_tasks(owner, day, outcomes, state=STATE_DONE, epochs=None):
     """批量收尾：`outcomes=[(phone, result), ...]`，返回受影响行数。
 
     `WHERE day=? AND phone=? AND owner=?` 单事务收尾：被接管（owner 已是别人）的行
     写不进去，与 `claims.settle` 的 owner 作用域同一条纪律。`result` 调用方须先脱敏，
     本层只截断（转义与否是上层口径）。逐行参数走 executemany——result 是逐账号的，
     一次调用仍只有一次 commit（不逐账号 commit）。
+
+    `epochs` 是 `{phone: 领取时拿到的 epoch}`：给了就逐行带上 `epoch=?`，owner 相同但
+    token 落后的行同样写不进去（被接管者迟到的收尾会覆盖接管者的结论）。缺省 `None`
+    表示不校验 token（迁移期调用方）。逐行的 token 用 `(? IS NULL OR epoch=?)` 表达
+    而不是拼两种 SQL——executemany 要求整批共用一条语句。
     """
     items = list(outcomes or ())
     if not items:
         return 0
+    tokens = epochs or {}
     sql = ("UPDATE sign_tasks SET state=?, result=?, lease_until='' "
-           "WHERE day=? AND phone=? AND owner=?")
-    params = [(state, (result or "")[:RESULT_MAX], day, phone, owner)
-              for phone, result in items]
+           "WHERE day=? AND phone=? AND owner=? AND (? IS NULL OR epoch=?)")
+    params = [(state, (result or "")[:RESULT_MAX], day, phone, owner,
+               tokens.get(phone), tokens.get(phone)) for phone, result in items]
     try:
         conn, lock = _queue_conn()
         with lock:
@@ -146,21 +158,27 @@ def settle_tasks(owner, day, outcomes, state=STATE_DONE):
         return 0
 
 
-def requeue_task(phone, day, run_at, priority_delta=1, result=""):
-    """重试重排：返回受影响行数（0 = 该行不存在）。
+def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
+    """重试重排：返回受影响行数（0 = 该行不存在或被 token 拒）。
 
     `priority` 递增让重试任务排在新任务之后（活号优先）；`attempts` 落库后即**跨执行体
     共享**，接手者不再从 0 起算重试预算。任务回到 `pending` 意味着上一轮的 result 不再
     代表当前状态，故用传入值覆盖（缺省清空）。
+
+    `epoch` 给了就带 `epoch=?`：只有当前持有者能把在飞任务重排回 `pending`，
+    被接管者不得把接管者的任务重新投回池子（那会让同一账号被第三个执行体再领一次）。
     """
     sql = ("UPDATE sign_tasks SET state=?, run_at=?, priority=priority+?, "
            "attempts=attempts+1, lease_until='', result=? WHERE phone=? AND day=?")
-    params = (STATE_PENDING, run_at, int(priority_delta),
-              (result or "")[:RESULT_MAX], phone, day)
+    params = [STATE_PENDING, run_at, int(priority_delta),
+              (result or "")[:RESULT_MAX], phone, day]
+    if epoch is not None:
+        sql += " AND epoch=?"
+        params.append(epoch)
     try:
         conn, lock = _queue_conn()
         with lock:
-            cur = conn.execute(sql, params)
+            cur = conn.execute(sql, tuple(params))
             conn.commit()
             return cur.rowcount
     except Exception as e:

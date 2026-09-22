@@ -115,7 +115,7 @@ class ClaimBatchTest(_Base):
         got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts())
         self.assertEqual(len(got), 32, "limit 缺省 32 = 通道数 × 预取系数")
         for r in got:
-            self.assertEqual(set(r), {"phone", "run_at", "attempts"})
+            self.assertEqual(set(r), {"phone", "run_at", "attempts", "epoch"})
             self.assertIn(self._row(r["phone"])["vshard"], MY_SHARDS)
         mine = {p for p, r in self._all().items() if r["state"] == "claimed"}
         self.assertEqual(mine, {r["phone"] for r in got}, "领到的恰好是返回的那些行")
