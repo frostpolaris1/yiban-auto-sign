@@ -11,7 +11,7 @@
 
 ## 本文件怎么测
 
-照 `tests/test_web_logs_date_validation.py` 的做法：从源码里按花括号配对抽出
+照 `tests/test_logs_by_date.py` 的做法：从源码里按花括号配对抽出
 `function maskEmail(e) { ... }` 交给 node 执行；后端侧抽出 `def _mask_email(e):` 的
 函数体后 `exec` 成可调用对象。对同一批输入逐例比对两端返回值，覆盖正常邮箱、
 已含 `*`（幂等）、无 `@`、`@` 在首位、本地部长度 1/2/3/超长等边界。
@@ -19,11 +19,20 @@
 node 不可用时跳过（本套件其余部分不引入硬性 node 依赖）。
 """
 
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
+
+from _frontend_src import frontend_source
+
+from yiban.infra import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
@@ -134,6 +143,174 @@ class MaskEmailParityTest(unittest.TestCase):
         for value, f in zip(masked, front, strict=True):
             self.assertEqual(f, value, "前端 maskEmail 对已脱敏值 %r 不幂等（返回 %r）" % (value, f))
             self.assertEqual(self.py_fn(value), value, "后端 _mask_email 对 %r 不幂等" % value)
+
+
+TEST_KEY = "a" * 64
+
+
+ADMIN_PASS = "MasterPass#2026"
+
+
+_ENV_KEYS = (
+    "YIBAN_MAIL_ENABLE", "YIBAN_MAIL_ADMIN_TO", "YIBAN_MAIL_ADMIN_NOTIFY",
+    "YIBAN_MAIL_USER", "YIBAN_MAIL_PASS", "YIBAN_MAIL_SMTPS_ENC",
+    "YIBAN_SITE_DESCRIPTION", "YIBAN_SITE_IMAGE",
+)
+
+
+def _load_webapp(tag):
+    import db as _db
+    spec = importlib.util.spec_from_file_location(f"webapp_{tag}", os.path.join(BASE, "web", "app.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[f"webapp_{tag}"] = mod
+    with contextlib.suppress(Exception):
+        spec.loader.exec_module(mod)
+    return _db, mod
+
+
+class _Base(unittest.TestCase):
+    """共享脚手架：临时 .env/DB + webapp 加载 + 主管理员登录（照抄 test_mailer.py 的 MailFailoverTest）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-admin-to-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with io.open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            )
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        cls._old_env = {k: os.environ.get(k) for k in (*_ENV_KEYS, "YIBAN_ENV_FILE")}
+        for k in _ENV_KEYS:
+            os.environ.pop(k, None)
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        cls.db, cls.webapp = _load_webapp(cls.__name__)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.db._conn is not None:
+            with contextlib.suppress(Exception):
+                cls.db._conn.close()
+            cls.db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k, v in cls._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def setUp(self):
+        if self.db._conn is not None:
+            with contextlib.suppress(Exception):
+                self.db._conn.close()
+            self.db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+
+    def _reset_env_file(self, extra=""):
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n" + extra
+            )
+
+    def _master(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = c.get("/api/me").get_json()["csrf_token"]
+        return c, {"X-CSRF-Token": t}
+
+    def _env_admin_to(self):
+        return env_io.parse_env_file(self.env_file).get("YIBAN_MAIL_ADMIN_TO")
+
+
+class SiteDescriptionTest(_Base):
+    """站点分享摘要：登录页与文档页含 description/og，可用 .env 覆盖。"""
+
+    def setUp(self):
+        # unittest 按方法名字母序执行，.env 覆盖会跨用例残留（且 site_description
+        # 每次读文件）——每个用例都从干净基线起步。
+        super().setUp()
+        self._reset_env_file()
+
+    def test_login_page_has_description_and_og(self):
+        c = self.webapp.create_app().test_client()
+        html = c.get("/login").get_data(as_text=True)
+        self.assertIn('<meta name="description"', html)
+        self.assertIn('<meta property="og:title"', html)
+        self.assertIn('<meta property="og:description"', html)
+        self.assertIn(self.webapp.SITE_DESCRIPTION_DEFAULT, html)
+
+    def test_doc_pages_have_description(self):
+        c = self.webapp.create_app().test_client()
+        for path in ("/terms", "/privacy"):
+            html = c.get(path).get_data(as_text=True)
+            self.assertIn('<meta name="description"', html, f"{path} 缺摘要")
+            self.assertIn('<meta property="og:description"', html, f"{path} 缺 og 摘要")
+
+    def test_env_overrides_description(self):
+        self._reset_env_file("YIBAN_SITE_DESCRIPTION=自定义站点简介\n")
+        c = self.webapp.create_app().test_client()
+        html = c.get("/login").get_data(as_text=True)
+        self.assertIn("自定义站点简介", html)
+        self.assertNotIn(self.webapp.SITE_DESCRIPTION_DEFAULT, html)
+
+    def test_description_is_escaped(self):
+        """摘要来自 .env，进 content 属性前必须转义（防属性注入）。"""
+        self._reset_env_file('YIBAN_SITE_DESCRIPTION=x"><script>alert(1)</script>\n')
+        c = self.webapp.create_app().test_client()
+        html = c.get("/login").get_data(as_text=True)
+        self.assertNotIn('<script>alert(1)</script>', html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_site_image_requires_https(self):
+        """og:image 仅接受 https 绝对地址，其余一律忽略。"""
+        self._reset_env_file("YIBAN_SITE_IMAGE=javascript:alert(1)\n")
+        c = self.webapp.create_app().test_client()
+        self.assertNotIn('property="og:image"', c.get("/login").get_data(as_text=True))
+        self._reset_env_file("YIBAN_SITE_IMAGE=https://cdn.example.com/a.png\n")
+        self.assertIn('content="https://cdn.example.com/a.png"',
+                      c.get("/login").get_data(as_text=True))
+
+
+class PlaceholderFontParityTest(_Base):
+    """占位文字字号：三模板不得再把 placeholder 缩到 0.92em（与输入值不一致）。"""
+
+    def _read(self, name):
+        # A1/A3 起前端被拆分（index.html 的内联 CSS 外提为 static/css/app.css、
+        # 设置区拆到 templates/tabs/settings.html）：改为聚合读取"模板 + include 片段 +
+        # 外链自研静态资源"。否则本组的 assertNotIn 会因目标文件变空而**恒真**——
+        # 占位字号缩放的防回流保护会静默失效。
+        return frontend_source(name)
+
+    def test_no_placeholder_font_shrink(self):
+        # 载体换锚：user.html 已随用户端拆页退役、index.html 已无路由渲染；
+        # 判据（有输入框的页面不得对 placeholder 缩字号）不变，改扫现役含输入框的页面。
+        pages = ("login.html", os.path.join("pages", "work_settings.html"),
+                 os.path.join("pages", "work_accounts.html"),
+                 os.path.join("pages", "user_account.html"))
+        for name in pages:
+            src = self._read(name)
+            self.assertNotIn("::placeholder { font-size", src, f"{name} 仍有 placeholder 字号缩放")
+            self.assertNotIn("::placeholder{font-size", src, f"{name} 仍有 placeholder 字号缩放")
+
+    def test_capacity_inputs_no_inline_shrink(self):
+        """容量上限输入框不得再用内联 0.92em（与同卡其它输入框不一致）。"""
+        src = self._read(os.path.join("pages", "work_settings.html"))
+        self.assertNotIn('style="font-size:0.92em"', src)
 
 
 if __name__ == "__main__":

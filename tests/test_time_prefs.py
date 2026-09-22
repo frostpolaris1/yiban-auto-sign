@@ -14,6 +14,7 @@
   accounts 返回 time_pref 字段；settings 读写新参数
 """
 import contextlib
+import datetime as _datetime_TPREF
 import importlib.util
 import json
 import os
@@ -23,6 +24,9 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta  # 弹性冷却测试构造审计时间戳/窗口用
+
+import db
+import signin
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -1029,6 +1033,223 @@ class TimePrefsTest(unittest.TestCase):
         self.webapp.write_env_key(self.env_file, "K", "ok")
         env = open(self.env_file, encoding="utf-8").read()
         self.assertIn("K=ok", env)
+
+
+def hm_EDGE(dt):
+    """datetime → 当天分钟浮点（0:00 = 0，含秒）。"""
+    return dt.hour * 60 + dt.minute + dt.second / 60.0
+
+
+def make_accounts(n):
+    return [signin.Account(phone=str(13800000000 + i), password="p") for i in range(n)]
+
+
+def pop_env(keys):
+    for k in keys:
+        os.environ.pop(k, None)
+
+
+class EdgeScheduleTest(unittest.TestCase):
+    def setUp(self):
+        keys = (
+            "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST", "YIBAN_SIGN_MODE",
+            "YIBAN_WINDOW_EDGE_SEC", "YIBAN_WINDOW_EDGE_FRONT_SEC",
+            "YIBAN_WINDOW_EDGE_BACK_SEC", "YIBAN_SIGN_START", "YIBAN_SIGN_END",
+        )
+        pop_env(keys)
+        # 用例各自再写入的键随测试结束一并清除：新键（FRONT/BACK）优先级高于
+        # 旧键 YIBAN_WINDOW_EDGE_SEC，泄漏会静默改写后续调度测试（schedule_v2
+        # 的旧键用例）的有效窗口——2026-08-22 全量跑查明的跨文件污染源
+        self.addCleanup(pop_env, keys)
+
+    def test_asymmetric_front_back(self):
+        """前 30s + 后 300s：所有计划时刻 ∈ [06:30.5, 07:45]（默认窗口 06:30~07:50）。"""
+        os.environ["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "30"
+        os.environ["YIBAN_WINDOW_EDGE_BACK_SEC"] = "300"
+        sched = signin.build_schedule(
+            make_accounts(10), order="sequence", dist="uniform", rng=random.Random(1))
+        self.assertEqual(len(sched), 10)
+        for t in sched.values():
+            m = hm_EDGE(t)
+            self.assertGreaterEqual(m, 390.5, "不得早于窗口起点+前裁 0.5 分钟")
+            self.assertLessEqual(m, 470 - 5, "不得晚于窗口终点-后裁 5 分钟")
+
+    def test_half_minute_front_edge_precision(self):
+        """0.5 分钟（30s）粒度：前裁 0.5 分钟 → 首块 lo=390.5（浮点分钟精确）。"""
+        os.environ["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "30"
+        os.environ["YIBAN_WINDOW_EDGE_BACK_SEC"] = "0"
+        cfg = signin._schedule_config()
+        blocks, eff_lo, eff_hi = signin._schedule_blocks(cfg)
+        self.assertEqual(eff_lo, 390.5)
+        self.assertEqual(eff_hi, 470.0)
+        # 首块被部分裁剪：lo=390.5，仍有 4.5 分钟可用（块存在）
+        self.assertEqual(blocks[0], (390.5, 395.0))
+
+    def test_legacy_env_symmetric_mapping(self):
+        """旧键 YIBAN_WINDOW_EDGE_SEC=120 → front=back=120（升级兼容，行为不变）。"""
+        os.environ["YIBAN_WINDOW_EDGE_SEC"] = "120"
+        cfg = signin._schedule_config()
+        self.assertEqual(cfg["edge_front_sec"], 120)
+        self.assertEqual(cfg["edge_back_sec"], 120)
+
+    def test_new_keys_override_legacy(self):
+        """新键存在时优先于旧键（前后可不同）。"""
+        os.environ["YIBAN_WINDOW_EDGE_SEC"] = "120"
+        os.environ["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "30"
+        os.environ["YIBAN_WINDOW_EDGE_BACK_SEC"] = "300"
+        cfg = signin._schedule_config()
+        self.assertEqual(cfg["edge_front_sec"], 30)
+        self.assertEqual(cfg["edge_back_sec"], 300)
+
+    def test_front_back_sum_overflows_window_fallback(self):
+        """前 5 分 + 后 5 分 超过窗口（06:30~06:40 共 10 分钟）→ 回退默认窗口，不崩溃。"""
+        os.environ["YIBAN_SIGN_START"] = "06:30"
+        os.environ["YIBAN_SIGN_END"] = "06:40"
+        os.environ["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "300"
+        os.environ["YIBAN_WINDOW_EDGE_BACK_SEC"] = "300"
+        sched = signin.build_schedule(
+            make_accounts(3), order="sequence", dist="uniform", rng=random.Random(1))
+        self.assertEqual(len(sched), 3)
+        for t in sched.values():
+            self.assertTrue(391 <= hm_EDGE(t) <= 469, t)
+
+    def test_pref_slot_partially_clipped_block_maps(self):
+        """前 2 分钟裁剪：自选 slot 0（首片）仍可映射到块（块 0 lo=392.0），不因裁剪丢块。"""
+        os.environ["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "120"
+        os.environ["YIBAN_WINDOW_EDGE_BACK_SEC"] = "0"
+        cfg = signin._schedule_config()
+        slot_to_bi = signin._slot_to_bi(cfg)
+        self.assertIn(0, slot_to_bi, "部分裁剪的首片仍应可被自选选中")
+        _blocks, eff_lo, _eff_hi = signin._schedule_blocks(cfg)
+        self.assertEqual(eff_lo, 392.0)
+
+
+USER = "pref-user@test.local"
+
+
+PHONE = "13900001234"
+
+
+class TimePrefRestoreConsistencyTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-timepref-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        # setdefault（非硬赋值）：该键由 conftest 全局管理，本类只做兜底，绝不覆盖/清除
+        os.environ.setdefault("YIBAN_DISABLE_PURGE_LOOP", "1")
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        # 只清本类自己设置的键。**绝不清 YIBAN_DISABLE_PURGE_LOOP**——它由
+        # tests/conftest.py 在进程启动时 setdefault 设成 "1"，是"全量 pytest 反复
+        # create_app 时禁止启动 daily-purge 后台线程"的全局前提；一旦在此 pop 掉，
+        # 后续任何 create_app 都会真的起线程并把 web.app._purge_loop_started 置 True，
+        # 使 test_web_auth_security 的"该开关为 1 时不应启动 daily-purge"用例失败
+        # （2026-09-10 实际踩过：全量 1 failed，该用例在单跑时却通过）。
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_FILE",
+                  "YIBAN_DB_FILE"):
+            os.environ.pop(k, None)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+
+    def _seed(self, phone=PHONE, slot=390):
+        db.create_user(USER, "hash", created_at="2026-09-10")
+        db.add_account({
+            "name": "测试账号", "phone": phone, "password": "p1",
+            "phone_model": "", "phone_code": "", "owner": USER,
+            "status": "active", "reject_reason": "",
+        })
+        db.set_time_pref(phone, slot, "2026-09-10 10:00:00")
+        row = next(a for a in db.load_accounts_raw() if a["phone"] == phone)
+        return row["id"]
+
+    def _age_deleted_at(self, days):
+        """把用户与账号的 deleted_at 回拨到保留期之外（模拟宽限期已过）。"""
+        stale = (_datetime_TPREF.datetime.now() - _datetime_TPREF.timedelta(days=days)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        conn = db.get_conn()
+        with db._conn_lock, conn:
+            conn.execute("UPDATE accounts SET deleted_at=? WHERE deleted=1", (stale,))
+            conn.execute("UPDATE users SET deleted_at=? WHERE deleted=1", (stale,))
+            conn.commit()
+
+    # ---- 1. 账号级软删 → 恢复：自选保留（既有行为，防回退） ----
+    def test_account_level_soft_delete_keeps_pref(self):
+        acc_id = self._seed()
+        db.set_account_deleted(acc_id, 1, "2026-09-10 11:00:00", deleted_by=USER)
+        db.set_account_deleted(acc_id, 0)
+        self.assertIsNotNone(
+            db.get_time_pref(PHONE), "账号级软删恢复后自选应保留"
+        )
+
+    # ---- 2. 用户级注销 → 恢复：自选保留（本次修复点，原先会丢） ----
+    def test_user_cancel_keeps_pref_across_restore(self):
+        self._seed()
+        self.assertTrue(db.soft_delete_user_with_accounts(USER))
+        self.assertIsNotNone(
+            db.get_time_pref(PHONE),
+            "注销（软删）阶段不应清除自选时间片——与账号级软删口径统一",
+        )
+        self.assertTrue(db.restore_user(USER))
+        pref = db.get_time_pref(PHONE)
+        self.assertIsNotNone(pref, "注销后恢复应带回自选时间片（可逆操作完整可逆）")
+        self.assertEqual(pref["slot_min"], 390)
+
+    # ---- 3. 过期物理清除仍连带清 prefs（不留孤儿） ----
+    def test_expired_purge_still_clears_pref(self):
+        self._seed()
+        db.soft_delete_user_with_accounts(USER)
+        self._age_deleted_at(db.SOFT_DELETE_RETENTION_DAYS + 1)
+        db._purge_expired_deleted(db.get_conn())
+        self.assertIsNone(
+            db.get_time_pref(PHONE),
+            "物理清除后必须连带清理自选，否则会留下无主 pref",
+        )
+
+    # ---- 4. 管理员硬清除已注销用户仍连带清 prefs ----
+    def test_hard_purge_still_clears_pref(self):
+        self._seed()
+        db.soft_delete_user_with_accounts(USER)
+        purged = db.purge_deleted_users_hard([USER])
+        self.assertEqual(purged, [USER])
+        self.assertIsNone(
+            db.get_time_pref(PHONE), "管理员硬清除后自选应连带清理"
+        )
+
+    # ---- 5. 拥挤度统计不计入软删账号的自选（既有语义不得回退） ----
+    def test_time_pref_stats_ignores_soft_deleted(self):
+        self._seed()
+        before = [s for s in db.time_pref_stats() if s["slot_min"] == 390]
+        self.assertEqual(before, [{"slot_min": 390, "count": 1}])
+        db.soft_delete_user_with_accounts(USER)
+        after = [s for s in db.time_pref_stats() if s["slot_min"] == 390]
+        self.assertEqual(
+            after, [],
+            "软删账号的残留 pref 不得计入拥挤度（否则占位会虚高）",
+        )
 
 
 if __name__ == "__main__":

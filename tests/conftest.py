@@ -116,7 +116,7 @@ def _restore_environ_around_class():
     等指向各自的临时目录，tearDownClass 只 rmtree、不还原环境变量（个别类干脆 pop
     conftest 设的会话默认值）。这些键被带进后续用例后指向已删目录，会让无关断言
     以间歇形式失败——实测串行组合
-    tests/test_mail_admin_to_edit_0909.py + test_scheduler_gate 的锚点默认路径断言
+    tests/test_mailer.py + test_scheduler_gate 的锚点默认路径断言
     必挂；xdist `-n 8` 下同一 worker 跨文件执行时表现为随机 1~2 项失败
     （已复现并修复：test_scheduler_gate 锚点默认路径、test_web_auth_security 的
     purge 线程门）。

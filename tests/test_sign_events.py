@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Phase 4：可视化表（sign_events）与 v14 删除遗留统计表的测试。
+# SPDX-License-Identifier: AGPL-3.0-only
+"""签到事件表 `sign_events`：写入、按天聚合与前端统计口径。
 
-覆盖：
-- 迁移到最新版本后 sign_events 与索引存在；
-- v14 已删除 page_visits / server_metrics（生产侧零引用，见 db.migrate_v14）；
-- 写入函数成功写入；
-- 表被误删时写入函数不抛异常（降级）；
-- 清理函数删除超期数据；
-- 只读聚合函数返回预期结构；
-- hash_ip 使用 YIBAN_TRACK_SALT 且结果稳定。
+`sign_events` 是 WebUI 统计与可视化表格的共同数据源；本文件并两处断言：表的写入与聚合
+口径，以及前端可视化表格取数时对同一批事件的解读（列集合与计数），避免两边各写一套。
+
+功能：`sign_events` 表与聚合统计的行为回归。
+归属：`yiban/store` 数据层 + `web/` 统计展示的交叉测试。
+复用：`BASE` / `TEST_KEY` 与临时库装配助手。
+通信：写临时 SQLite 后经聚合函数读回；由 pytest 收集 `unittest.TestCase`。
 """
 import contextlib
 import datetime
@@ -19,8 +19,13 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
 TEST_KEY = "a" * 64
+
+
 AUDIT_KEY = "b" * 64
+
+
 TRACK_SALT = "c" * 64
 
 
@@ -166,5 +171,94 @@ class VisualTablesTest(unittest.TestCase):
         self.assertEqual(len(h1), 64)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _recent(days=0, hours=0, minutes=0):
+    """距今给定偏移的 ts 字面量。
+
+    查询函数（sign_events_by_phone / sign_events_since）按 days 窗口裁剪，写死日期
+    会在窗口滑过该日期后假红。
+    """
+    delta = datetime.timedelta(days=days, hours=hours, minutes=minutes)
+    return (datetime.datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class WebuiStatsDbTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-webui-stats-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        global db
+        import db
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        os.environ.pop("YIBAN_ACCOUNTS_KEY", None)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        db.init_db(self.db_file, env_file=self.env_file)
+
+    def test_migration_v6_schema(self):
+        conn = db.init_db(self.db_file)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                         db._MIGRATIONS[-1][0])
+        sign_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sign_events)").fetchall()}
+        self.assertIn("account_id", sign_cols)
+        self.assertIn("dur_sec", sign_cols)
+        self.assertIn("finished_at", sign_cols)
+        for index in ("idx_sign_events_phone_ts", "idx_sign_events_account_ts"):
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name=?", (index,)
+            ).fetchone()
+            self.assertIsNotNone(row, f"索引 {index} 应存在")
+
+    def test_add_sign_event_with_new_fields(self):
+        db.add_sign_event("2026-08-16 06:30:00", "13800138000", "success",
+                          account_id=1, dur_sec=1.5, finished_at="2026-08-16 06:30:02")
+        conn = db.get_conn()
+        row = conn.execute("SELECT * FROM sign_events").fetchone()
+        self.assertEqual(row["account_id"], 1)
+        self.assertEqual(row["dur_sec"], 1.5)
+        self.assertEqual(row["finished_at"], "2026-08-16 06:30:02")
+
+    def test_batch_write_functions(self):
+        db.add_sign_events_batch([
+            {"ts": "2026-08-16 06:30:00", "phone": "13800138000", "status": "success",
+             "account_id": 1, "dur_sec": 1.0, "finished_at": "2026-08-16 06:30:01"},
+            {"ts": "2026-08-16 06:31:00", "phone": "13900139000", "status": "failed"},
+        ])
+        conn = db.get_conn()
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0], 2)
+
+    def test_sign_events_by_phone(self):
+        db.add_sign_event(_recent(hours=2), "13800138000", "success")
+        db.add_sign_event(_recent(hours=1), "13900139000", "failed")
+        rows = db.sign_events_by_phone("13800138000", days=30)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["phone"], "13800138000")
+
+    def test_sign_events_since(self):
+        db.add_sign_event("2026-08-16 06:30:00", "13800138000", "success")
+        rows = db.sign_events_since("2026-08-16 06:00:00", limit=10)
+        self.assertEqual(len(rows), 1)
+        rows2 = db.sign_events_since("2026-08-16 06:30:01", limit=10)
+        self.assertEqual(len(rows2), 0)

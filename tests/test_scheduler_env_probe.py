@@ -219,7 +219,7 @@ class VerifyPrescreenWebTest(unittest.TestCase):
         # 本组断言**同步**校验契约（配额节流 → 提交即 429）。A4 异步化后，
         # YIBAN_ACCOUNT_VERIFY=1 时默认走异步（提交即 200，结果由后台任务落库），
         # 故显式退回同步带闸路径（仍是受支持的运维路径 `YIBAN_VERIFY_ASYNC=0`）；
-        # 异步契约由 tests/test_a4_verify_jobs.py 覆盖。
+        # 异步契约由 tests/test_verify_jobs.py 覆盖。
         os.environ["YIBAN_VERIFY_ASYNC"] = "0"
         global db, signin
         import db
