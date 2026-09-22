@@ -7,7 +7,8 @@
   SQLite 的写者串行语义下天然原子（等价于 PG 的 `SKIP LOCKED`，本仓无需跨机形态）；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
-- `day_counts`：当日各 state 计数，供降级链与进度展示判"当日是否了结"。
+- `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
+  "当日是否了结"、给进度展示取数。
 
 **归属**
 `sign_tasks` 由 `yiban/store/migrations.py` 的 v18 迁移建立；本模块是该表在 store 层的
@@ -20,11 +21,11 @@
 
 **通信**
 数据源连接与进程内写锁暂取 `yiban.store.connection` 的单例 `get_conn()` / `_conn_lock`
-（`_queue_conn()` 是唯一取点：三库分离落地时只改这一处）。设计上的调用方是执行入口
-`yiban/engine/round.py`（领取/收尾）与展示侧 `yiban/engine/state_io.py`、
-`web/services/executor_env.py`（经路由 `web/routes/accounts_api.py` 暴露）；这几处
-**今天读写的仍是 v17 的 `sign_claims`**（经 `yiban/store/db.py` 的再导出调用
-`claims.py`），本模块尚无调用点——本任务只落访问层与迁移。
+（`_queue_conn()` 是唯一取点：将来本表迁到独立库文件、换独立连接时只改这一处）。
+设计上的调用方是执行入口 `yiban/engine/round.py`（领取/收尾）与展示侧
+`yiban/engine/state_io.py`、`web/services/executor_env.py`（经路由
+`web/routes/accounts_api.py` 暴露）；这几处**今天读写的仍是 v17 的 `sign_claims`**
+（经 `yiban/store/db.py` 的再导出调用 `claims.py`），本模块尚无调用点。
 """
 import datetime
 import logging
@@ -53,6 +54,12 @@ STATE_STOLEN = "stolen"
 STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
           STATE_STOLEN)
 
+#: 了结态（当日不必再签）。`sign_claims` 时代"今日无任务/窗口外跳过"记在 `done` 上，
+#: 故 `skipped` 与它同类——判"当日是否了结"时两者都算完。
+SETTLED_STATES = (STATE_DONE, STATE_SKIPPED)
+#: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
+OPEN_STATES = (STATE_PENDING, STATE_CLAIMED, STATE_FAILED, STATE_STOLEN)
+
 
 def _queue_conn():
     """队列库连接与写锁的**唯一取点**。
@@ -76,11 +83,11 @@ def _lease_until(lease_sec):
 
 def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
                 lease_sec=LEASE_SECONDS):
-    """按分片批量领取到期任务（A 案 §5.2）。返回 `[{"phone","run_at","attempts"}, ...]`。
+    """按分片（`vshard`）批量领取到期任务。返回 `[{"phone","run_at","attempts"}, ...]`。
 
     单事务 `UPDATE ... WHERE (phone, day) IN (SELECT ...) RETURNING`：返回的行即被本
     执行体占住的行（`state='claimed'` + 写入 owner）。`SET owner` 是必需的——`owner`
-    一列同时是"计划 owner（HRW）"与"当前持有者"，收尾路径按 owner 做作用域校验，
+    一列同时是"计划 owner"与"当前持有者"，收尾路径按 owner 做作用域校验，
     不写它则接管/窃取换不了手。
 
     `vshards=()` 返回 `[]`（本轮不该领活，不算故障）；表未落地/库异常返回 `[]` **并
@@ -114,7 +121,7 @@ def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
 
 
 def settle_tasks(owner, day, outcomes, state=STATE_DONE):
-    """批量收尾（A 案 §5.4）：`outcomes=[(phone, result), ...]`，返回受影响行数。
+    """批量收尾：`outcomes=[(phone, result), ...]`，返回受影响行数。
 
     `WHERE day=? AND phone=? AND owner=?` 单事务收尾：被接管（owner 已是别人）的行
     写不进去，与 `claims.settle` 的 owner 作用域同一条纪律。`result` 调用方须先脱敏，
@@ -140,7 +147,7 @@ def settle_tasks(owner, day, outcomes, state=STATE_DONE):
 
 
 def requeue_task(phone, day, run_at, priority_delta=1, result=""):
-    """重试重排（A 案 §5.3）：返回受影响行数（0 = 该行不存在）。
+    """重试重排：返回受影响行数（0 = 该行不存在）。
 
     `priority` 递增让重试任务排在新任务之后（活号优先）；`attempts` 落库后即**跨执行体
     共享**，接手者不再从 0 起算重试预算。任务回到 `pending` 意味着上一轮的 result 不再
@@ -162,12 +169,20 @@ def requeue_task(phone, day, run_at, priority_delta=1, result=""):
 
 
 def day_counts(day):
-    """当日各 state 计数——供降级链 / 进度展示判"当日是否了结"。
+    """当日各 state 计数与派生口径——供调用方判"当日是否了结"、给进度展示取数。
 
     与 `claims.stats` 同口径：`GROUP BY state` 计数、空 day 全 0、库不可用也不抛
-    （失败记 warning 并按全 0 返回）。返回全集是 v18 DDL 的 `state` 取值，
-    **不派生 settled/open**：`skipped` / `stolen` 在 `sign_claims` 时代没有对应状态，
-    "哪些状态算了结"由调用方按自己的口径判。
+    （记 warning 后按全 0 返回），并在状态计数之外派生三项——调用方**不需要自己求和**：
+
+    | 派生键 | 定义 |
+    |--------|------|
+    | `settled` | `done` + `skipped`（当日不必再签） |
+    | `open` | `pending` + `claimed` + `failed` + `stolen`（仍可能被重排/接手） |
+    | `total` | 当日全部行数 = `settled` + `open` |
+
+    `state` 词汇比 `sign_claims` 多两个（`skipped` 归入了结、`stolen` 归未了结），
+    派生口径按上表定；未登记的 state 照实计进自己的键（不丢数）但不进派生三项
+    ——与 `claims.stats` 对未知状态的处理同形。
     """
     out = dict.fromkeys(STATES, 0)
     try:
@@ -177,9 +192,11 @@ def day_counts(day):
                 "SELECT state, COUNT(*) AS n FROM sign_tasks WHERE day=? GROUP BY state",
                 (day,),
             ).fetchall()
+        for r in rows:
+            out[r["state"]] = r["n"]
     except Exception as e:
         logger.warning("读取当日签到任务计数失败（按全 0 处理）: %s", e)
-        return out
-    for r in rows:
-        out[r["state"]] = r["n"]   # 未知状态照实计数，不丢数
+    out["settled"] = sum(out[s] for s in SETTLED_STATES)
+    out["open"] = sum(out[s] for s in OPEN_STATES)
+    out["total"] = out["settled"] + out["open"]
     return out

@@ -138,9 +138,18 @@ class SchemaTest(_Base):
         self.assertEqual(got, SIGN_TASKS_COLUMNS)
 
     def test_synchronous_is_full_after_migration(self):
-        """claim/settle 所在表的耐久级必须是 FULL：WAL+NORMAL 会回滚终态 ⇒ 重复登录。"""
-        conn = self._init_full()
-        self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2)
+        """claim/settle 所在表的耐久级必须是 FULL：WAL+NORMAL 会回滚终态 ⇒ 重复登录。
+
+        先把连接降到 NORMAL(1) 再跑框架迁移，断言才有判别力——新连接默认本就是
+        FULL(2)，不前置的话删掉迁移里的 PRAGMA 这个用例照样绿。
+        """
+        conn = self._init_at_v17()
+        conn.execute("PRAGMA synchronous = NORMAL")
+        self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1,
+                         "前置条件：连接耐久级不是 FULL")
+        db._run_migrations(conn)          # 框架路径：v18 在 BEGIN IMMEDIATE 内执行
+        self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2,
+                         "v18 迁移后连接必须是 FULL")
 
 
 class DataShiftTest(_Base):
@@ -172,7 +181,7 @@ class DataShiftTest(_Base):
         for phone, _day, owner, claimed_at, heartbeat_at, state, result, attempts in self.ROWS:
             row = shifted[phone]
             self.assertEqual(row["day"], DAY)
-            self.assertEqual(row["vshard"], -1, "平移行不参与 HRW 分工")
+            self.assertEqual(row["vshard"], -1, "平移行不参与分片分工")
             self.assertEqual(row["owner"], owner)
             self.assertEqual(row["run_at"], claimed_at)
             self.assertEqual(row["priority"], 5)
