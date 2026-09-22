@@ -42,7 +42,7 @@ def _load_webapp(tag):
 
 
 class _Base(unittest.TestCase):
-    """临时 .env/DB + webapp 加载 + 主管理员登录（照抄 test_mail_admin_to_edit_0909）。"""
+    """临时 .env/DB + webapp 加载 + 主管理员登录（照抄 test_mailer.py 的管理员写信脚手架）。"""
 
     @classmethod
     def setUpClass(cls):

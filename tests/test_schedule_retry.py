@@ -1,29 +1,21 @@
 # -*- coding: utf-8 -*-
-"""批次20 B3 回归：宿主「进程内补签轮」判定与执行（2026-09-10）。
+# SPDX-License-Identifier: AGPL-3.0-only
+"""重试重排与补签时刻：重试落点、槽位时刻与宿主脚本契约。
 
-背景：补签原本由第二个独立 cron（07:12）承担，但 flock 由首签脚本持有至退出，
-而首签要 sleep 到最晚自选时间片（生产实测 07:25）才结束 —— 07:12 的 cron 每天撞锁
-`exit 0`，补签轮从未真正执行（生产 sign-*.log 12/12 天实证；容器形态因在同进程内
-等首轮子进程返回后再判 SECOND，反而正确）。
+调度把未了结账号按重试余量重排，并据此决定下一次外呼时刻（`retry_hm`）；容器的重试槽位
+由宿主注入。本文件并两处断言：重试重排的间隔与顺序语义，以及重试槽位/告警阈值在
+`run.sh` 与容器调度器之间的注入契约。
 
-用户裁决方案一：宿主改为与容器同语义——首轮结束后在**仍持锁的同一进程内**再判定
-一次是否需要补跑。判定口径收敛到 `signin.need_second_run()`。
-
-覆盖：
-1. `need_second_run()` 判定矩阵（含 fail-safe：无记录/损坏按"需要补跑"）；
-2. `signin.py --second-run-check` 的退出码契约（10=需要 / 0=不需要）；
-3. **真实执行 run.sh**：需要补跑 → 跑两轮且第二轮带 `YIBAN_SECOND_RUN=1`；
-   不需要 → 只跑一轮；`YIBAN_HOST_SECOND_ROUND=0` → 只跑一轮；
-   本轮本身是补签轮（`YIBAN_SECOND_RUN=1`）→ 不再评估第三轮；
-   收尾标记落地后再次调用 run.sh → 直接跳过（不再产生任何一轮）。
-
-用法（项目根目录）：
-    py -m pytest tests/test_second_run_0910.py -q
-（run.sh 集成用例需要 bash；无 bash 时自动跳过。）
+功能：重试重排与补签时刻的调度回归。
+归属：`yiban/engine/schedule.py` 与容器调度入口的交叉测试。
+复用：`FakeNow` 假时钟、`_acc()` 账号构造助手、`BASE` 常量。
+通信：以假时钟驱动调度纯函数，并读 `run.sh` / `docker/scheduler.py` 文本做契约断言；
+由 pytest 收集。
 """
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -31,13 +23,312 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from datetime import datetime as _dt
+from datetime import datetime as clock_cls
+from types import SimpleNamespace
+from unittest import mock
+
+import scheduler
+import signin
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import signin  # noqa: E402
+sys.path.insert(0, os.path.join(BASE, "scripts"))
+
+from yiban import window  # noqa: E402
+
+
+class FakeNow:
+    NOW = _dt(2026, 8, 27, 7, 0, 0)
+
+    @classmethod
+    def now(cls):
+        return cls.NOW
+
+
+def _acc(phone):
+    return signin.Account(phone=phone, password="p")
+
+
+class RetryRescheduleTest(unittest.TestCase):
+    def setUp(self):
+        for k in ("YIBAN_RETRY_MIN_INTERVAL", "YIBAN_SIGN_START", "YIBAN_SIGN_END",
+                  "YIBAN_WINDOW_EDGE_SEC", "YIBAN_MIN_EXEC_GAP", "YIBAN_EXEC_GAP_MIN"):
+            os.environ.pop(k, None)
+
+    def test_failure_does_not_block_other_accounts(self):
+        """P4：A 失败不阻塞 B——执行顺序 A→B→A(重试)；旧行为会是 A→A(重试)→B。"""
+        calls = []
+
+        def fake_attempt(acc):
+            calls.append(acc.phone)
+            if acc.phone == "13800138000" and calls.count(acc.phone) == 1:
+                return (False, "网络超时", False, signin.STATUS_FAILED)
+            return (True, "ok", False, signin.STATUS_SUCCESS)
+
+        sched = {
+            "13800138000": _dt(2026, 8, 27, 6, 40),   # 过点（A，首次失败）
+            "13800138001": _dt(2026, 8, 27, 7, 0, 0),  # 到点（B，成功）
+        }
+        with mock.patch.object(signin.clock, "now", FakeNow.now), \
+             mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
+             mock.patch.object(signin, "_write_sign_state"), \
+             mock.patch.object(signin, "_update_cred_state"), \
+             mock.patch.object(signin.time, "monotonic", return_value=100.0), \
+             mock.patch.object(signin.time, "sleep"):
+            signin.run_queue_retry(
+                [_acc("13800138000"), _acc("13800138001")],
+                "", 0, 0, schedule=sched,
+            )
+        self.assertEqual(calls, ["13800138000", "13800138001", "13800138000"],
+                         "A 失败后 B 应立即执行（重试挂起不阻塞）")
+
+    def test_retry_slot_within_window_and_min_interval(self):
+        """P1/P2：重试落点 ∈ [now+retry_min_interval, eff_hi]，且限偏早段（≤ 60% 剩余窗口）。"""
+        with mock.patch.dict(os.environ, {
+            "YIBAN_RETRY_MIN_INTERVAL": "60",
+            "YIBAN_SIGN_START": "06:30",
+            "YIBAN_SIGN_END": "07:50",
+            "YIBAN_WINDOW_EDGE_SEC": "0",
+        }, clear=False):
+            cfg = signin._schedule_config()
+            now = FakeNow.NOW  # 07:00
+            lo = now.replace(minute=1, second=0, microsecond=0)
+            eff_hi = now.replace(hour=7, minute=50, second=0, microsecond=0)
+            for seed in range(100):
+                nxt = signin._next_retry_at(now, cfg, rng=__import__("random").Random(seed))
+                self.assertIsNotNone(nxt)
+                self.assertGreaterEqual(nxt, lo, f"seed {seed}: 早于下界")
+                self.assertLessEqual(nxt, eff_hi, f"seed {seed}: 越过窗口末端")
+                # 偏早段：nxt ≤ lo + 60% 剩余窗口
+                self.assertLessEqual(
+                    nxt, lo + (eff_hi - lo) * 0.6 + __import__("datetime").timedelta(seconds=1),
+                    f"seed {seed}: 落点应偏早",
+                )
+
+    def test_retry_gives_up_when_window_insufficient(self):
+        """P5：窗口剩余不足 retry_min_interval → 不重试，直接判失败（不硬冲）。"""
+        with mock.patch.dict(os.environ, {
+            "YIBAN_RETRY_MIN_INTERVAL": "60",
+            "YIBAN_SIGN_START": "06:30",
+            "YIBAN_SIGN_END": "07:50",
+            "YIBAN_WINDOW_EDGE_SEC": "0",
+        }, clear=False):
+
+            class LateNow(FakeNow):
+                NOW = _dt(2026, 8, 27, 7, 49, 50)  # 距 eff_hi=07:50 不足 60s
+
+            sched = {"13800138000": _dt(2026, 8, 27, 7, 49, 0)}
+            with mock.patch.object(signin.clock, "now", LateNow.now), \
+                 mock.patch.object(signin, "attempt_signin",
+                                   return_value=(False, "网络超时", False, signin.STATUS_FAILED)) as attempt, \
+                 mock.patch.object(signin, "classify_failure", return_value=2), \
+                 mock.patch.object(signin, "_write_sign_state"), \
+                 mock.patch.object(signin, "_update_cred_state"), \
+                 mock.patch.object(signin, "send_notification"):
+                results = signin.run_queue_retry(
+                    [_acc("13800138000")], "", 0, 0, schedule=sched,
+                )
+            self.assertEqual(attempt.call_count, 1, "窗口不足不应重试")
+            self.assertFalse(results["13800138000"][0], "窗口不足应判失败")
+
+    def _run_status(self, reason, schedule):
+        """统一驱动：让某账号连续失败直到进入重试入队分支，返回 (_write_sign_state 调用, logger mock)。"""
+        def fake_attempt(acc):
+            return (False, reason, False, signin.STATUS_FAILED)
+
+        logmock = mock.Mock()
+        with mock.patch.object(signin.clock, "now", FakeNow.now), \
+             mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
+             mock.patch.object(signin, "_write_sign_state") as ws, \
+             mock.patch.object(signin, "_update_cred_state"), \
+             mock.patch.object(signin, "logger", logmock), \
+             mock.patch.object(signin, "send_notification"), \
+             mock.patch.object(signin, "send_user_fail_mail"), \
+             mock.patch.object(signin, "_collect_admin_mail"), \
+             mock.patch.object(signin.time, "monotonic", return_value=100.0), \
+             mock.patch.object(signin.time, "sleep"):
+            signin.run_queue_retry([_acc("13800138000")], "", 0, 0, schedule=schedule)
+        return ws, logmock
+
+    def test_schedule_retry_state_and_log_include_reason(self):
+        """需求1（调度分支）：失败账号入队重试时，状态文件与 warning 日志都补记失败原因。"""
+        reason = "获取签到任务失败: 未登录或登录已经超时"
+        sched = {"13800138000": _dt(2026, 8, 27, 6, 40)}
+        ws, logmock = self._run_status(reason, sched)
+        retry_msgs = [c.args[2] for c in ws.call_args_list
+                      if c.args[1] == signin.STATUS_RETRYING]
+        self.assertTrue(retry_msgs, "未捕获到重试入队的状态写入")
+        self.assertTrue(all(reason in m for m in retry_msgs), "状态文件未补记失败原因")
+        warn_lines = [c.args[0] for c in logmock.warning.call_args_list
+                      if str(c.args[0]).startswith("[13800138000] ⏳ 待重试")]
+        self.assertTrue(warn_lines, "未捕获到重试入队日志")
+        self.assertTrue(all(reason in w for w in warn_lines), "warning 日志未补记失败原因")
+
+    def test_queue_retry_state_and_log_include_reason(self):
+        """需求1（队列回队尾分支）：同上，覆盖无计划（手动/列表）模式。"""
+        reason = "请求被 WAF 风控拦截，请配置 YIBAN_PROXY 代理后重试"
+        ws, logmock = self._run_status(reason, None)
+        retry_msgs = [c.args[2] for c in ws.call_args_list
+                      if c.args[1] == signin.STATUS_RETRYING]
+        self.assertTrue(retry_msgs, "未捕获到重试入队的状态写入")
+        self.assertTrue(all(reason in m for m in retry_msgs), "状态文件未补记失败原因")
+        warn_lines = [c.args[0] for c in logmock.warning.call_args_list
+                      if str(c.args[0]).startswith("[13800138000] ⏳ 待重试")]
+        self.assertTrue(warn_lines, "未捕获到重试入队日志")
+        self.assertTrue(all(reason in w for w in warn_lines), "warning 日志未补记失败原因")
+
+    def test_retry_reason_sanitized_no_log_injection(self):
+        """需求1：含换行的原因经 _sanitize_text 转义，状态文件/日志不会被拆成多行。"""
+        reason = "获取签到任务失败\n未登录或登录已经超时"
+        sched = {"13800138000": _dt(2026, 8, 27, 6, 40)}
+        ws, logmock = self._run_status(reason, sched)
+        retry_msgs = [c.args[2] for c in ws.call_args_list
+                      if c.args[1] == signin.STATUS_RETRYING]
+        self.assertTrue(retry_msgs)
+        self.assertTrue(all(signin._sanitize_text(reason) in m for m in retry_msgs),
+                        "重试状态 message 应包含转义后的原因")
+        self.assertTrue(all("\n" not in m for m in retry_msgs), "原因含真实换行会污染状态文件")
+        warn_lines = [c.args[0] for c in logmock.warning.call_args_list
+                      if str(c.args[0]).startswith("[13800138000] ⏳ 待重试")]
+        self.assertTrue(all("\n" not in w for w in warn_lines),
+                        "原因换行会把日志拆成多行")
+
+
+class RetryHmAtoMidTest(unittest.TestCase):
+    """取值与容错：与窗口起止同用 parse_hhmm（接受 `7:30` 与 `07:30`）。"""
+
+    def test_default_matches_documented_retry_cron(self):
+        self.assertEqual(window.retry_hm({}), (7, 12))
+        self.assertEqual(window.retry_hm({}), window.DEFAULT_RETRY_HM)
+
+    def test_env_override(self):
+        self.assertEqual(window.retry_hm({"YIBAN_SECOND_RUN_TIME": "07:30"}), (7, 30))
+        self.assertEqual(window.retry_hm({"YIBAN_SECOND_RUN_TIME": "7:30"}), (7, 30))
+        self.assertEqual(window.retry_hm({"YIBAN_SECOND_RUN_TIME": " 06:05 "}), (6, 5))
+
+    def test_invalid_falls_back(self):
+        for raw in ("", "abc", "25:00", "07:60", "07", None, "07:12:30"):
+            with self.subTest(raw=raw):
+                self.assertEqual(window.retry_hm({"YIBAN_SECOND_RUN_TIME": raw}),
+                                 window.DEFAULT_RETRY_HM)
+
+    def test_reads_env_at_call_time(self):
+        """导入期缓存会让"管理员改了补签时刻"在长驻进程里不生效。"""
+        with mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN_TIME": "07:40"}):
+            self.assertEqual(window.retry_hm(), (7, 40))
+        os.environ.pop("YIBAN_SECOND_RUN_TIME", None)
+        self.assertEqual(window.retry_hm(), window.DEFAULT_RETRY_HM)
+
+
+class HostRunShContractTest(unittest.TestCase):
+    """宿主 run.sh 是同键的另一个取用点：缺省必须同源，且要传给子进程。"""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(BASE, "run.sh"), encoding="utf-8") as f:
+            cls.src = f.read()
+
+    def test_default_literal_matches_shared_constant(self):
+        m = re.search(r'\$\{YIBAN_SECOND_RUN_TIME:-(\d{1,2}:\d{2})\}', self.src)
+        self.assertIsNotNone(m, "run.sh 未按 SECOND_HHMM=\"${YIBAN_SECOND_RUN_TIME:-HH:MM}\" 取补签时刻")
+        hh, mm = m.group(1).split(":")
+        self.assertEqual((int(hh), int(mm)), window.DEFAULT_RETRY_HM,
+                         "run.sh 默认补签时刻与 yiban.window.DEFAULT_RETRY_HM 漂移")
+
+    def test_exports_key_to_child(self):
+        """不导出时子进程读不到 .env 之外的实际取值（signin 会退回默认）。"""
+        self.assertRegex(self.src, r'(?m)^export YIBAN_SECOND_RUN_TIME=')
+
+
+class SigninAlertThresholdTest(unittest.TestCase):
+    """告警抑制按**当前**补签时刻判断，且双向都按实际值走。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-retry-slot-")
+        p = mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": self.tmp})
+        p.start()
+        self.addCleanup(p.stop)
+        signin._mail_summary.clear()
+        self.addCleanup(signin._mail_summary.clear)
+        self.accounts = [SimpleNamespace(phone="13800000001"),
+                         SimpleNamespace(phone="13800000002")]
+        self.results = {
+            "13800000001": (True, "已签到", False, "success"),
+            "13800000002": (False, "签到时段已结束", True, "skipped_window"),
+        }
+
+    def _alert(self, hm):
+        """注入固定时刻跑一次告警判定（该路径只取 clock.now() 的时分）。"""
+        moment = clock_cls(2026, 9, 15, hm[0], hm[1])
+        with mock.patch.object(signin.clock, "now", lambda: moment):
+            return signin._maybe_alert_zero_success(
+                self.accounts, self.results, ok_n=1, is_second_run=False)
+
+    def test_late_retry_slot_suppresses(self):
+        """补签时刻被配到 07:30：07:20 的首签轮仍有下一轮兜底 → 不打扰。"""
+        with mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN_TIME": "07:30"}):
+            self.assertFalse(self._alert((7, 20)))
+
+    def test_early_retry_slot_alerts(self):
+        """补签时刻被配到 07:05：07:20 已是当天最后一轮 → 必须告警（防静默漏报）。"""
+        with mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN_TIME": "07:05"}):
+            self.assertTrue(self._alert((7, 20)))
+
+    def test_default_slot_boundary(self):
+        """缺省 07:12：正好到点即为最后一轮（06:31 关机后 07:12 才起跑的经典场景）。"""
+        os.environ.pop("YIBAN_SECOND_RUN_TIME", None)
+        self.assertFalse(self._alert((7, 11)))
+        self.assertTrue(self._alert((7, 12)))
+
+
+class ContainerInjectsRetrySlotTest(unittest.TestCase):
+    """容器把实际触发点（SECOND）注入子进程环境——容器不读 YIBAN_SECOND_RUN_TIME。"""
+
+    def test_child_env_carries_actual_slot(self):
+        captured = {}
+
+        class _Proc:
+            def wait(self, timeout=None):
+                return 0
+
+        def _fake_popen(cmd, cwd=None, env=None):
+            captured["env"] = dict(env or {})
+            return _Proc()
+
+        with mock.patch.object(scheduler.subprocess, "Popen", _fake_popen), \
+             mock.patch.object(scheduler, "build_child_env", return_value={}):
+            scheduler._run_signin_child()
+        expect = f"{scheduler.SECOND[0]:02d}:{scheduler.SECOND[1]:02d}"
+        self.assertEqual(captured["env"].get("YIBAN_SECOND_RUN_TIME"), expect)
+
+    def test_injection_wins_over_stale_env_key(self):
+        """.env 里若写了该键，容器也不据此调度 → 必须以容器实际值覆盖，
+        否则 signin 会按一个没人用的时刻判断末轮（静默漏报方向）。"""
+        captured = {}
+
+        class _Proc:
+            def wait(self, timeout=None):
+                return 0
+
+        def _fake_popen(cmd, cwd=None, env=None):
+            captured["env"] = dict(env or {})
+            return _Proc()
+
+        with mock.patch.object(scheduler.subprocess, "Popen", _fake_popen), \
+             mock.patch.object(scheduler, "build_child_env",
+                               return_value={"YIBAN_SECOND_RUN_TIME": "23:59"}):
+            scheduler._run_signin_child()
+        self.assertEqual(captured["env"]["YIBAN_SECOND_RUN_TIME"],
+                         f"{scheduler.SECOND[0]:02d}:{scheduler.SECOND[1]:02d}")
+
 
 TODAY = datetime.now().strftime("%Y-%m-%d")
+
+
 _MISSING = object()  # 哨兵：区分"不创建该文件"
+
+
 STUB_SIGNIN = '''# -*- coding: utf-8 -*-
 """测试桩：替代真实 scripts/signin.py。
 
@@ -386,7 +677,3 @@ class HostContainerAgreementTest(unittest.TestCase):
     def test_undone_status_set_is_single_source(self):
         """容器引用的未了结集合必须就是 signin 的那一份（不是复制品）。"""
         self.assertIs(self.scheduler._UNDONE_STATUSES, signin.UNDONE_STATUSES)
-
-
-if __name__ == "__main__":
-    unittest.main()

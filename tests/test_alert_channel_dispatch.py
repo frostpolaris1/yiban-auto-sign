@@ -19,6 +19,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+import signin
+from test_rekey_key_source import _B14AlertGateBase
+
+import web.security as web_security
 from yiban import notify  # 推送组件实现包（旧 scripts/notify.py 壳已删除）
 from yiban.infra import account_crypto
 
@@ -190,6 +194,136 @@ class SigninAlertGateTest(unittest.TestCase):
         m_send.assert_not_called()
         self.assertTrue(any("无可用收件人" in msg for msg in logs.output))
         self.assertEqual(signin._mail_summary, [])
+
+
+PROD_STALE_MSG = "获取签到任务失败: 未登录或登录已经超时"
+
+
+class LoginAlertUrgencyTest(_B14AlertGateBase):
+    """R2：只有喷洒特征才升级紧急。"""
+
+    def setUp(self):
+        super().setUp()
+        # 2026-09-01 性能修复：登录失败用例每次都走 scrypt 时延拉平
+        # （_constant_time_dummy / check_password_hash，安全设计约 0.6s/次），
+        # spray 用例 10 次请求 ≈ 6.6s。本类被测对象是「告警分级与喷洒识别」，
+        # 与密码校验结果无关——统一 patch 掉 scrypt 为常数开销。
+        # 注：patch 对象是 self.webapp（模块名 "webapp"，非 "web.app"）。
+        p1 = mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None)
+        p1.start()
+        self.addCleanup(p1.stop)
+        # p2 覆盖**注册用户**路径（路由经 `m.check_password_hash` 取 app 侧绑定）。
+        p2 = mock.patch.object(self.webapp, "check_password_hash", lambda h, p: False)
+        p2.start()
+        self.addCleanup(p2.stop)
+        # p3 覆盖**内置管理员**路径：`web/security.py` 的 verify_admin 用的是该模块自己
+        # 从 werkzeug 导入的 check_password_hash，app 侧绑定到不了它。只打 p2 会让上面
+        # 那句"patch 掉 scrypt"对 admin 用户静默失效（本类用例打的全是 "admin" 与不存在
+        # 的邮箱，真实 scrypt 正是从 security 侧发出）。打桩目标须落在真正决定校验的那份
+        # 绑定上，否则用例看着绿、开销照付。
+        p3 = mock.patch.object(web_security, "check_password_hash", lambda h, p: False)
+        p3.start()
+        self.addCleanup(p3.stop)
+
+    def _alerts(self):
+        return [a for a in self.alerts if a[0] == "登录失败告警"]
+
+    def test_below_threshold_sends_nothing(self):
+        c = self._client()
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
+            c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
+        self.assertEqual(self._alerts(), [])
+
+    def test_same_user_repeated_mistake_is_not_urgent(self):
+        """本人忘密码：连续 3 次输错 → 仍告警（可追溯），但走非紧急账不占手机额度。"""
+        c = self._client()
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+            c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
+        got = self._alerts()
+        self.assertEqual(len(got), 1, f"每轮应只告警一次：{got}")
+        self.assertFalse(got[0][2], "单账号反复输错不得占用紧急额度")
+
+    def test_spray_across_users_is_urgent(self):
+        """同一 IP 打多个用户名且某账号已到阈值 → 撞库特征，升级紧急。"""
+        c = self._client()
+        users = ["a1@beta.local", "a2@beta.local", "a3@beta.local"]
+        for u in users:
+            for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
+                c.post("/api/login", json={"username": u, "password": "WrongPass#111"})
+        # 第 3 个账号的第 3 次失败触发告警：此时该 IP 已试过 3 个不同用户名
+        c.post("/api/login", json={"username": users[-1], "password": "WrongPass#111"})
+        got = self._alerts()
+        self.assertEqual(len(got), 1, f"仅命中阈值那一次告警：{got}")
+        self.assertTrue(got[0][2], "跨账号喷洒必须升级紧急")
+        self.assertIn("不同用户名", got[0][1])
+        self.assertIn(f"{self.webapp.LOGIN_SPRAY_USERS} 个", got[0][1],
+                      "正文须交代升级依据，否则管理员无从判断是不是误报")
+
+
+class LoginAlertRealChannelTest(_B14AlertGateBase):
+    """不替换 send_notification：钉住"降级"改的是账本归属，不是把通知整条跳过。"""
+
+    PATCH_NOTIFY = False
+
+    def test_login_failure_still_reaches_the_notification_layer(self):
+        """降级只降"推不推手机"的账本归属，不得在应用层就把通知整条跳过。"""
+        c = self._client()
+        with mock.patch.object(self.webapp.notify, "send") as send_mock:
+            for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+                c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
+            self.assertEqual(send_mock.call_count, 1,
+                             "非紧急仍须调用 notify.send（是否推手机由通道侧决定）")
+            self.assertIs(send_mock.call_args.kwargs.get("urgent"), False,
+                          "传入的 urgent 必须与判据一致")
+
+
+class NewApplicationAlertTest(_B14AlertGateBase):
+    """R3：申请入库后管理员必须被通知到。"""
+
+    EMAIL = "beta.tester@qq.com"
+    PASSWORD = "BetaUser#2026x"
+
+    def _submit_account(self):
+        c = self._client()
+        r = c.post("/api/register",
+                   json={"email": self.EMAIL, "password": self.PASSWORD, "agree": True})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = self._login(c, self.EMAIL, self.PASSWORD)
+        return c.post(
+            "/api/my-accounts",
+            json={"name": "小李的手机", "phone": "13800001234", "password": "Yiban#pw123",
+                  "phone_model": "", "phone_code": ""},
+            headers=self._csrf(token),
+        )
+
+    def test_admin_gets_non_urgent_notice_on_new_application(self):
+        r = self._submit_account()
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        got = [a for a in self.alerts if a[0] == "新账号申请待审核"]
+        self.assertEqual(len(got), 1, f"新申请须且只须一条告警：{self.alerts}")
+        self.assertFalse(got[0][2], "新申请属日常事务，不得占用紧急额度")
+        self.assertIn("1234", got[0][1], "正文须含脱敏手机号尾号供管理员定位")
+        self.assertNotIn("13800001234", got[0][1], "告警正文不得外泄完整手机号")
+
+    def test_notice_failure_does_not_break_the_submission(self):
+        """通知通道炸掉时，已入库的申请仍须返回成功（不得退化成 500 让用户重交）。"""
+        c = self._client()
+        r = c.post("/api/register",
+                   json={"email": self.EMAIL, "password": self.PASSWORD, "agree": True})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = self._login(c, self.EMAIL, self.PASSWORD)
+        with mock.patch.object(self.webapp, "send_notification",
+                               side_effect=RuntimeError("通道炸了")):
+            r2 = c.post(
+                "/api/my-accounts",
+                json={"name": "", "phone": "13800005678", "password": "Yiban#pw123",
+                      "phone_model": "", "phone_code": ""},
+                headers=self._csrf(token),
+            )
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        accs = [a for a in self.webapp.load_accounts() if a.get("phone") == "13800005678"]
+        self.assertEqual(len(accs), 1, "申请须已入库且状态待审核")
+        self.assertEqual(accs[0].get("status"), self.webapp.ACCOUNT_STATUS_PENDING)
 
 
 if __name__ == "__main__":
