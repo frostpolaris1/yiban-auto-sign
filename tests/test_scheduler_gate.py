@@ -34,14 +34,16 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
+
+import signin
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
-import signin  # noqa: E402
 
 from yiban.infra import account_crypto  # noqa: E402
 
@@ -868,6 +870,397 @@ class WebB12Test(unittest.TestCase):
         self.c.post("/api/login", json={"username": "evu@test.local", "password": "UserPass#123"})
         resp = self.c.get("/api/admin/sign-events")
         self.assertEqual(resp.status_code, 403)
+
+
+_SCHED_PATH = os.path.join(BASE, "docker", "scheduler.py")
+
+
+def _load_sched():
+    """按文件路径加载调度器（它位于 docker/ 而非包内，与 test_container_scheduler 同法）。"""
+    spec = importlib.util.spec_from_file_location("container_scheduler", _SCHED_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Acc(SimpleNamespace):
+    pass
+
+
+def _mk_acc(phone):
+    return _Acc(phone=phone, name="t", owner="admin", user_paused=False)
+
+
+class OnlyFilterTest(unittest.TestCase):
+    """P2-6：--only 部分命中不再静默吞号。"""
+
+    def test_partial_match_logs_missing_warning(self):
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        with self.assertLogs(signin.logger, level="WARNING") as cm:
+            filtered, missing = signin._apply_only_filter(
+                accounts, "13800000001,13899999999"
+            )
+        self.assertEqual([a.phone for a in filtered], ["13800000001"])
+        self.assertEqual(missing, ["13899999999"])
+        # 未命中号码落日志即脱敏（裸号不带 [] 定界符，web 展示层脱敏正则盖不住）
+        self.assertTrue(
+            any("138****9999" in line for line in cm.output),
+            f"warning 日志应包含未命中号码的脱敏形态，实际: {cm.output}",
+        )
+        self.assertFalse(
+            any("13899999999" in line for line in cm.output),
+            f"warning 日志不得包含未命中号码完整号，实际: {cm.output}",
+        )
+
+    def test_all_missing_returns_empty(self):
+        """全不命中 → 过滤结果为空（main() 据此报错退出，既有行为保持）。"""
+        accounts = [_mk_acc("13800000001")]
+        filtered, missing = signin._apply_only_filter(accounts, "13900000000")
+        self.assertEqual(filtered, [])
+        self.assertEqual(missing, ["13900000000"])
+
+    def test_all_match_no_warning(self):
+        """全部命中 → 无 warning。"""
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        with mock.patch.object(signin.logger, "warning") as m_warn:
+            filtered, missing = signin._apply_only_filter(
+                accounts, "13800000001, 13800000002"
+            )
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(missing, [])
+        m_warn.assert_not_called()
+
+    def test_whitespace_only_ignored(self):
+        """逗号间空白/空段不产生未命中告警。"""
+        accounts = [_mk_acc("13800000001")]
+        filtered, missing = signin._apply_only_filter(accounts, "13800000001,, ")
+        self.assertEqual([a.phone for a in filtered], ["13800000001"])
+        self.assertEqual(missing, [])
+
+
+class SecondRunEnvTest(unittest.TestCase):
+    """P2-4：YIBAN_SECOND_RUN=1 优先于 sched-run 标记判定补签轮。"""
+
+    def setUp(self):
+        self._old = os.environ.get("YIBAN_SECOND_RUN")
+        os.environ.pop("YIBAN_SECOND_RUN", None)
+
+    def tearDown(self):
+        os.environ.pop("YIBAN_SECOND_RUN", None)
+        if self._old is not None:
+            os.environ["YIBAN_SECOND_RUN"] = self._old
+
+    def test_env_overrides_missing_marker(self):
+        """核心场景：标记缺失（exit 124 首签被杀）+ YIBAN_SECOND_RUN=1 → 判为补签轮。"""
+        with mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": "1"}):
+            self.assertTrue(signin._is_second_run())
+
+    def test_marker_fallback_without_env(self):
+        """无环境变量时回退 sched-run 标记（容器首签正常收尾场景）。"""
+        with mock.patch.object(signin, "_sched_marker_exists", return_value=True):
+            self.assertTrue(signin._is_second_run())
+
+    def test_first_run_when_no_signal(self):
+        """既无环境变量也无标记 → 首签轮。"""
+        with mock.patch.object(signin, "_sched_marker_exists", return_value=False):
+            self.assertFalse(signin._is_second_run())
+
+    def test_alert_on_partial_success_window_skip_second_run(self):
+        """部分成功 + 窗口外：补签轮（YIBAN_SECOND_RUN=1，标记缺失）必须告警。"""
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        results = {
+            "13800000001": (True, "签到成功", False, signin.STATUS_SUCCESS),
+            "13800000002": (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW),
+        }
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
+             mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": "1"}):
+            is_second = signin._is_second_run()
+            alerted = signin._maybe_alert_zero_success(
+                accounts, results, 1, is_second_run=is_second
+            )
+        self.assertTrue(is_second, "YIBAN_SECOND_RUN=1 时应判为补签轮")
+        self.assertTrue(alerted, "补签轮部分成功+窗口外必须告警")
+        m_mail.assert_called_once()
+
+    def test_no_alert_partial_success_first_run(self):
+        """部分成功 + 窗口外：补签触发点之前的首签轮不告警（避免误报噪音）。
+
+        抑制语义依赖「07:10 补签会重跑」：已越过补签触发点（07:10）的首签身份轮
+        是当天最后一轮（06:31 关机 07:10 起的场景），仍会告警——
+        见 test_sign_round_guards.LateFirstRunAlertTest。此处注入补签触发点
+        之前的固定时钟，用例不再随运行时刻漂移。
+        """
+        from datetime import datetime as _dt
+
+        class _EarlyDT(_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 8, 6, 50)
+
+        accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
+        results = {
+            "13800000001": (True, "签到成功", False, signin.STATUS_SUCCESS),
+            "13800000002": (False, "签到时段已结束", True, signin.STATUS_SKIPPED_WINDOW),
+        }
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
+             mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             mock.patch.object(signin.clock, "now", _EarlyDT.now):
+            is_second = signin._is_second_run()
+            alerted = signin._maybe_alert_zero_success(
+                accounts, results, 1, is_second_run=is_second
+            )
+        self.assertFalse(is_second)
+        self.assertFalse(alerted)
+        m_mail.assert_not_called()
+
+
+class ChildTimeoutPrecedenceTest(unittest.TestCase):
+    """P2-5：docker/scheduler.py `_child_timeout` 键优先级 .env 优先于进程环境。"""
+
+    def setUp(self):
+        self.sched = _load_sched()
+        self._old = os.environ.get("YIBAN_RUN_TIMEOUT_SEC")
+        os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None)
+
+    def tearDown(self):
+        os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None)
+        if self._old is not None:
+            os.environ["YIBAN_RUN_TIMEOUT_SEC"] = self._old
+
+    def test_env_file_wins_over_process_env(self):
+        """.env（env dict）900s 优先于进程环境 500s → 900。"""
+        os.environ["YIBAN_RUN_TIMEOUT_SEC"] = "500"
+        self.assertEqual(self.sched._child_timeout({"YIBAN_RUN_TIMEOUT_SEC": "900"}), 900)
+
+    def test_process_env_used_when_env_file_empty(self):
+        """.env 未设置时回退进程环境（500 低于下限 600 → 钳到 600）。"""
+        os.environ["YIBAN_RUN_TIMEOUT_SEC"] = "500"
+        self.assertEqual(self.sched._child_timeout({}), 600)
+
+    def test_process_env_value_above_floor(self):
+        """进程环境 800s 正常生效（>= 下限）。"""
+        os.environ["YIBAN_RUN_TIMEOUT_SEC"] = "800"
+        self.assertEqual(self.sched._child_timeout({}), 800)
+
+    def test_both_absent_dynamic(self):
+        """均未设置 → 按窗口动态计算（>= 下限 600）。"""
+        self.assertGreaterEqual(self.sched._child_timeout({}), 600)
+
+
+_SCHED_PATH = os.path.join(BASE, "docker", "scheduler.py")
+
+
+def _load_sched(unique_suffix=""):
+    """按文件路径加载容器调度器（docker/ 非包内），每次调用返回全新模块实例。"""
+    spec = importlib.util.spec_from_file_location(
+        f"container_scheduler_marks{unique_suffix}", _SCHED_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Stop(Exception):
+    """打断 main_loop 的无限循环。"""
+
+
+def _today():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+class _FakeDT(datetime):
+    """时钟替身：now() 返回固定时刻（被 patch 到 `scheduler.clock.now`）。"""
+
+    _date = (2026, 9, 6)
+    _hm = (7, 12)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(*cls._date, *cls._hm)
+
+
+class _FakeProc:
+    def __init__(self):
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def _stub_module(**members):
+    return type("_Stub", (), {k: staticmethod(v) for k, v in members.items()})()
+
+
+class SlotMarkerRestartTest(unittest.TestCase):
+    """hm >= FIRST/SECOND 无上界 + 闩锁仅存内存：容器重启会追加必然
+    skipped_window 的全站负载。触发点落盘后，同一时段重启不再二次触发。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-slot-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _prepare(self, sched):
+        sched.STATEDIR = self.tmp
+        sched.ENV_FILE = os.path.join(self.tmp, ".env")
+        sched.FIRST = (0, 0)
+        sched.SECOND = (0, 0)
+        sched.LOGDIR = os.path.join(self.tmp, "logs")
+        sched.build_child_env = lambda env_file=None, base=None, **kw: {}
+        sched.subprocess = _stub_module(Popen=lambda cmd, **kw: _FakeProc())
+        sched.time = _stub_module(sleep=lambda s: (_ for _ in ()).throw(_Stop()))
+
+    def _tick(self, suffix):
+        sched = _load_sched(suffix)
+        self._prepare(sched)
+        spawns = []
+        sched._run_signin_child = lambda extra=None, env=None: spawns.append(extra)
+        with self.assertRaises(_Stop):
+            sched.main_loop(sleep_seconds=1)
+        return sched, spawns
+
+    def test_restart_does_not_retrigger_same_slot(self):
+        """首轮正常跑完后容器重启（新进程、当日已触发过）：不得再追加全站轮。"""
+        _, first = self._tick("_p1")
+        self.assertEqual(len(first), 2, "首签+补签各触发一次")
+        # 模拟运行结束后的当日状态：全量标记 + 一个 failed 账号（补签闸门恒真）
+        with io.open(os.path.join(self.tmp, f"sched-run-{_today()}.json"), "w") as f:
+            json.dump({"completed": True}, f)
+        with io.open(os.path.join(self.tmp, f"sign-state-{_today()}.json"), "w") as f:
+            json.dump({"13800000000": {"status": "failed"}}, f)
+        _, second = self._tick("_p2")
+        self.assertEqual(
+            second, [],
+            "同一时段重启后不得二次触发（追加轮=必然 skipped_window 的全站负载）",
+        )
+
+    def test_unfinished_first_run_not_respawned_after_restart(self):
+        """首签子进程被杀后重启：首签槽位当日已触发不重跑；
+        未了结账号仍由 07:10 补签闸门兜底（补签槽位未触发）。"""
+        _, first = self._tick("_q1")
+        self.assertEqual(len(first), 2)
+        # 不写 sched-run 标记（模拟首签被 timeout 击杀）
+        with io.open(os.path.join(self.tmp, f"sign-state-{_today()}.json"), "w") as f:
+            json.dump({"13800000000": {"status": "failed"}}, f)
+        sched2, second = self._tick("_q2")
+        self.assertEqual(second, [], "首签槽位当日已触发过，不得重跑")
+        # 补签闸门仍可判定为需要补签（谓词本身不受影响）
+        self.assertTrue(sched2._has_undone_today())
+
+    def test_next_day_slot_marker_expires(self):
+        """标记按日命名：跨日自动失效（次日仍可正常触发）。"""
+        self._tick("_r1")
+        files = [n for n in os.listdir(self.tmp) if n.startswith("sched-slot-")]
+        self.assertEqual(len(files), 2, "首签/补签各写一个当日槽位标记")
+        for n in files:
+            self.assertIn(_today(), n, "标记须按日命名，跨日失效")
+
+
+class ChildTimeoutBoundTest(unittest.TestCase):
+    """晚到触发的重跑进程：动态超时恒大于「距窗口关闭的剩余时间」，
+    子进程总能在窗口关闭时自了结（剩余账号 skipped_window 后退出），
+    600s 下限只在窗口已关闭时生效——彼时剩余合法工作≈0，截断无害。"""
+
+    def test_timeout_always_exceeds_time_to_window_close(self):
+        sched = _load_sched("_t")
+        env = {"YIBAN_SIGN_END": "07:50"}
+        for hm in ((6, 31), (7, 0), (7, 10), (7, 40), (7, 49), (8, 0)):
+            fake = type(f"_DT{hm[0]}{hm[1]}", (_FakeDT,), {"_hm": hm})
+            with mock.patch.object(sched.clock, "now", fake.now):
+                timeout = sched._child_timeout(env)
+            now = datetime.now().replace(year=2026, month=9, day=6,
+                                         hour=hm[0], minute=hm[1], second=0)
+            end = now.replace(hour=7, minute=50)
+            remaining = max(0, (end - now).total_seconds())
+            self.assertGreater(
+                timeout, remaining,
+                f"{hm[0]:02d}:{hm[1]:02d} 触发的重跑必须能活到窗口关闭自行了结",
+            )
+
+    def test_late_trigger_floor_is_600(self):
+        """窗口已关闭的晚到触发：下限 600s，此时子进程即刻全员窗口外跳过退出。"""
+        sched = _load_sched("_u")
+        fake = type("_DTLate", (_FakeDT,), {"_hm": (9, 0)})
+        with mock.patch.object(sched.clock, "now", fake.now):
+            self.assertEqual(sched._child_timeout({"YIBAN_SIGN_END": "07:50"}), 600)
+
+
+RUN_SH = os.path.join(BASE, "run.sh")
+
+
+def _today():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+FAKE_FLOCK = "#!/usr/bin/env bash\nexit ${FAKE_FLOCK_EXIT:-0}\n"
+
+
+FAKE_TIMEOUT = r"""#!/usr/bin/env bash
+{
+  echo "SECOND_RUN=${YIBAN_SECOND_RUN-UNSET}"
+  echo "TIMEOUT_ARG=$1"
+} >> "$FAKE_TIMEOUT_LOG"
+exit ${FAKE_TIMEOUT_EXIT:-0}
+"""
+
+
+class EdgeEmptyWindowMailTest(unittest.TestCase):
+    """P3-3：有效窗口被前后裁剪吃空 → 回退默认窗口 + 一次性管理员汇总邮件。"""
+
+    def setUp(self):
+        signin._edge_empty_window_notified = False
+        signin._mail_summary.clear()
+
+    def tearDown(self):
+        signin._edge_empty_window_notified = False
+        signin._mail_summary.clear()
+
+    @staticmethod
+    def _overflow_cfg():
+        # 06:30~06:40 共 10 分钟窗口，前后各裁 5 分钟 → 有效窗口为空
+        return {
+            "sign_start": (6, 30),
+            "sign_end": (6, 40),
+            "edge_front_sec": 300,
+            "edge_back_sec": 300,
+        }
+
+    def test_empty_window_collects_admin_mail_once(self):
+        cfg = self._overflow_cfg()
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail:
+            blocks1, lo1, hi1 = signin._schedule_blocks(dict(cfg))
+            blocks2, lo2, hi2 = signin._schedule_blocks(dict(cfg))
+        m_mail.assert_called_once()  # 去重标记必须保证多轮调用只收集一次
+        title, text = m_mail.call_args[0]
+        self.assertEqual(title, "签到窗口配置异常")
+        self.assertIn("有效签到窗口为空", text)
+        self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC", text)
+        # 回退默认窗口：06:30+60s ~ 07:50-60s
+        self.assertEqual((lo1, hi1), (391.0, 469.0))
+        self.assertEqual((lo2, hi2), (391.0, 469.0))
+        self.assertTrue(blocks1, "回退后必须产出非空块列表")
+        self.assertEqual(len(blocks1), len(blocks2))
+
+    def test_normal_window_no_mail(self):
+        cfg = {
+            "sign_start": (6, 30),
+            "sign_end": (7, 50),
+            "edge_front_sec": 60,
+            "edge_back_sec": 60,
+        }
+        with mock.patch.object(signin, "_collect_admin_mail") as m_mail:
+            blocks, lo, hi = signin._schedule_blocks(cfg)
+        m_mail.assert_not_called()
+        self.assertTrue(blocks)
+        self.assertEqual((lo, hi), (391.0, 469.0))
 
 
 if __name__ == "__main__":

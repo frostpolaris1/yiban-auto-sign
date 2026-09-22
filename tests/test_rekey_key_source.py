@@ -94,6 +94,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import db
 from _frontend_src import frontend_source
 
 # 告警/邮件正文入参已放宽为 layout.Mail | str，捕获点统一渲染成文本
@@ -101,7 +102,6 @@ from _mail_body import render_body
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import db  # noqa: E402
 
 from yiban import notify  # noqa: E402  # 推送组件实现包（旧壳已删除）
 from yiban.infra import account_crypto, env_io  # noqa: E402
@@ -2865,6 +2865,117 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertEqual((db.find_user(email) or {}).get("pw_version"), 2,
                          "两类口令（纯符号+数字）仍按原语义放行并递增 pw_version")
+
+
+TEST_KEY = "b" * 64
+
+
+def _table_names(db_file):
+    conn = sqlite3.connect(db_file)
+    try:
+        return {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+
+
+def _user_version(db_file):
+    conn = sqlite3.connect(db_file)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+class _FlakyConn:
+    """对 sqlite3.Connection 实例的委托包装器：在第 N 次命中指定 DDL 时抛错。
+
+    不能用 mock.patch 直接打补丁：`sqlite3.Connection` 是 C 扩展类型，其
+    `execute` 属性不可 setattr（TypeError: immutable type）。
+    委托方式保留 execute/commit/rollback/in_transaction/row_factory 等全部
+    接口，仅拦截"CREATE ... <fail_on>"语句制造迁移中途失败。
+    """
+
+    def __init__(self, conn, fail_on, fail_once=True):
+        self._conn = conn
+        self._fail_on = fail_on
+        self._fail_once = fail_once
+        self._fail_armed = True
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def execute(self, sql, params=()):
+        if (self._fail_armed and "CREATE" in str(sql).upper()
+                and self._fail_on in str(sql)):
+            if self._fail_once:
+                self._fail_armed = False
+            raise sqlite3.OperationalError(f"injected failure: {self._fail_on}")
+        return self._conn.execute(sql, params)
+
+
+def _close_db():
+    if db._conn is not None:
+        with contextlib.suppress(Exception):
+            db._conn.close()
+        db._conn = None
+
+
+class RekeyArgvLeakP3Test(unittest.TestCase):
+    """P3-2：--new-key argv 泄露的告警与尽力擦除。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="p3-rekey-")
+        cls.key_file = os.path.join(cls.tmp, "newkey.txt")
+        with open(cls.key_file, "w", encoding="utf-8") as f:
+            f.write(TEST_KEY + "\n")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _args(self, **kw):
+        import argparse
+        defaults = {"new_key": "", "new_key_file": "", "generate": False}
+        defaults.update(kw)
+        return argparse.Namespace(**defaults)
+
+    def _read_with_stderr(self, args):
+        import rekey_accounts
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            key = rekey_accounts._read_new_key(args)
+        return key, stderr.getvalue()
+
+    def test_new_key_argv_emits_warning(self):
+        """--new-key 读钥必须向 stderr 告警并推荐 --new-key-file。"""
+        key, msg = self._read_with_stderr(self._args(new_key=TEST_KEY))
+        self.assertEqual(key.hex(), TEST_KEY)
+        self.assertIn("警告", msg)
+        self.assertIn("--new-key-file", msg)
+        self.assertTrue(
+            any(w in msg for w in ("进程列表", "/proc", "ps ", "shell 历史")),
+            f"告警未提及 argv 暴露途径: {msg!r}")
+
+    def test_new_key_file_no_argv_warning(self):
+        """--new-key-file 读钥不应出现 argv 暴露告警。"""
+        key, msg = self._read_with_stderr(
+            self._args(new_key_file=self.key_file))
+        self.assertEqual(key.hex(), TEST_KEY)
+        self.assertNotIn("警告", msg, f"--new-key-file 不应有 argv 暴露告警: {msg!r}")
+
+    def test_generate_no_argv_warning(self):
+        """--generate 读钥同样不应出现 argv 暴露告警。"""
+        key, msg = self._read_with_stderr(self._args(generate=True))
+        self.assertEqual(len(key), 32)
+        self.assertNotIn("警告", msg)
+
+    def test_wipe_argv_never_raises(self):
+        """_wipe_argv 尽力而为：任何平台都不抛异常，返回 bool。"""
+        import rekey_accounts
+        result = rekey_accounts._wipe_argv()
+        self.assertIsInstance(result, bool)
 
 
 if __name__ == "__main__":

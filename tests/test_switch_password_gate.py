@@ -13,7 +13,7 @@ Cookie 的会话可无口令直接翻转 global_pause / registration_pause。
   并写一条 settings_switch_pw_fail 审计；
 - 错口令走**独立计数**：首达阈值告警一次，其后进入门禁级冷却（429）。仍**绝不写**与登录
   共用的 _login_fails（P18：持 Cookie 者不得借门禁把管理员锁出登录）。
-  计数/冷却/豁免的完整口径见 tests/test_sensitive_gate_94.py；本文件每例都用新登录的
+  计数/冷却/豁免的完整口径见 tests/test_web_auth_security.py；本文件每例都用新登录的
   会话（无豁免态），钉的是"单次请求要不要口令"这层语义。
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
