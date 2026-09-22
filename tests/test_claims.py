@@ -81,6 +81,10 @@ class _Base(unittest.TestCase):
                 db._conn.close()
             db._conn = None
 
+    def _claim(self, phone, day, owner, **kw):
+        """领取并只取"领到了吗"——epoch 是 `test_claims_fencing.py` 的断言对象。"""
+        return db.claim_sign_account(phone, day, owner, **kw)[0]
+
 
 class SchemaTest(_Base):
     def test_v17_creates_claim_table_with_unique_key(self):
@@ -88,7 +92,8 @@ class SchemaTest(_Base):
         cols = {r["name"]: r["pk"] for r in db.get_conn().execute(
             "PRAGMA table_info(sign_claims)").fetchall()}
         self.assertEqual(set(cols), {"phone", "day", "owner", "claimed_at",
-                                     "heartbeat_at", "state", "result", "attempts"})
+                                     "heartbeat_at", "state", "result", "attempts",
+                                     "epoch"})
         self.assertEqual(cols["phone"], 1)
         self.assertEqual(cols["day"], 2)
         self.assertGreaterEqual(
@@ -100,34 +105,34 @@ class SchemaTest(_Base):
 
 class ClaimSemanticsTest(_Base):
     def test_claim_then_second_owner_is_refused_while_lease_live(self):
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_A))
-        self.assertFalse(db.claim_sign_account(PHONE, DAY, OWNER_B),
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
+        self.assertFalse(self._claim(PHONE, DAY, OWNER_B),
                          "租约有效期内其他执行体不得领到同一账号")
 
     def test_same_owner_may_reclaim(self):
         """自己重入是允许的：同一执行体内重试、进程重启后接管自己的记录。"""
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_A))
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_A))
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
 
     def test_expired_lease_can_be_taken_over(self):
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_A))
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
         # lease_sec=0 表示"立刻可接管"（等价于心跳已过期）
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B, lease_sec=0),
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_B, lease_sec=0),
                         "租约过期后任何执行体都应能接管（崩溃自愈的前提）")
 
     def test_settle_is_owner_scoped(self):
         """收尾必须带 owner 条件：被接管的旧执行体不能把结果写进去。"""
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
         self.assertFalse(db.claim_settle(PHONE, DAY, OWNER_B, db.CLAIM_STATE_DONE, "冒充"))
         self.assertTrue(db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_DONE, "签到成功"))
         self.assertEqual(db.claim_states_for_day(DAY)[PHONE], db.CLAIM_STATE_DONE)
 
     def test_settled_row_needs_explicit_reopen(self):
         """已了结的账号默认不能再领；手动指定账号/补签重跑须显式 allow_settled。"""
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
         db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_DONE, "ok")
-        self.assertFalse(db.claim_sign_account(PHONE, DAY, OWNER_B))
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B, allow_settled=True))
+        self.assertFalse(self._claim(PHONE, DAY, OWNER_B))
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_B, allow_settled=True))
         self.assertEqual(db.claim_states_for_day(DAY)[PHONE], db.CLAIM_STATE_CLAIMED)
 
     def test_settle_rejects_unknown_state(self):
@@ -136,41 +141,41 @@ class ClaimSemanticsTest(_Base):
 
     def test_give_up_releases_lease_immediately(self):
         """弃权（failed）必须**立刻**放开租约：否则补签轮领不到、当日彻底签不上。"""
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_A))
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_A))
         self.assertTrue(db.claim_give_up(PHONE, DAY, OWNER_A, "重试耗尽"))
         self.assertEqual(db.claim_states_for_day(DAY)[PHONE], db.CLAIM_STATE_FAILED)
         # 不等 900s，别的执行体立刻可接手
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B),
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_B),
                         "failed 行应立刻可被其他执行体接手")
 
     def test_give_up_is_owner_scoped(self):
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
         self.assertFalse(db.claim_give_up(PHONE, DAY, OWNER_B, "冒充"))
         self.assertTrue(db.claim_give_up(PHONE, DAY, OWNER_A, "放弃"))
 
     def test_done_is_the_only_real_settlement(self):
         """done = 当日了结（需显式 allow_settled 才能再领）；failed = 未了结（可再领）。"""
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
         db.claim_give_up(PHONE, DAY, OWNER_A, "失败")
         self.assertEqual(db.claim_stats(DAY)["open"], 1, "failed 属于未了结")
         self.assertEqual(db.claim_stats(DAY)["settled"], 0)
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_B))   # 未了结可直接领
+        self.assertTrue(self._claim(PHONE, DAY, OWNER_B))   # 未了结可直接领
         db.claim_settle(PHONE, DAY, OWNER_B, db.CLAIM_STATE_DONE, "ok")
         stats = db.claim_stats(DAY)
         self.assertEqual((stats["settled"], stats["open"]), (1, 0))
-        self.assertFalse(db.claim_sign_account(PHONE, DAY, OWNER_A), "已了结需显式重开")
+        self.assertFalse(self._claim(PHONE, DAY, OWNER_A), "已了结需显式重开")
 
     def test_result_is_truncated(self):
         """结果只存摘要：本表可能被运维导出，无界文本会把它撑成第二个日志表。"""
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
         db.claim_give_up(PHONE, DAY, OWNER_A, "x" * 500)
         row = db.get_conn().execute(
             "SELECT result FROM sign_claims WHERE phone=? AND day=?", (PHONE, DAY)).fetchone()
         self.assertEqual(len(row["result"]), 200)
 
     def test_status_helpers(self):
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
-        db.claim_sign_account(PHONE_B, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
+        self._claim(PHONE_B, DAY, OWNER_A)
         db.claim_settle(PHONE_B, DAY, OWNER_A, db.CLAIM_STATE_DONE, "ok")
         states = db.claim_states_for_day(DAY)
         self.assertEqual(states, {PHONE: db.CLAIM_STATE_CLAIMED, PHONE_B: db.CLAIM_STATE_DONE})
@@ -182,23 +187,28 @@ class ClaimSemanticsTest(_Base):
         self.assertEqual({r["phone"] for r in db.claim_in_flight(DAY, lease_sec=0)}, set())
 
     def test_touch_requires_ownership(self):
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
         self.assertTrue(db.claim_touch(PHONE, DAY, OWNER_A))
         self.assertFalse(db.claim_touch(PHONE, DAY, OWNER_B))
 
     def test_purge_keeps_recent_days(self):
-        db.claim_sign_account(PHONE, "2000-01-01", OWNER_A)
-        db.claim_sign_account(PHONE_B, DAY, OWNER_A)
+        self._claim(PHONE, "2000-01-01", OWNER_A)
+        self._claim(PHONE_B, DAY, OWNER_A)
         removed = db.purge_sign_claims(14)
         self.assertEqual(removed, 1)
         self.assertNotIn("2000-01-01", {r["day"] for r in db.get_conn().execute(
             "SELECT day FROM sign_claims").fetchall()})
 
-    def test_degrades_gracefully_without_table(self):
-        """表未落地（迁移被延后）时领取按"没人在抢"处理——单执行体形态不能因此停摆。"""
+    def test_refuses_when_table_missing(self):
+        """表未落地（迁移被延后）时**拒跑**，绝不答"可执行"。
+
+        答"可执行"在多执行体下等于两个执行体同时放行同一账号 ⇒ 两次真实登录，
+        那是本项目的第一红线；单执行体形态由调用方按"本轮空转"处理。
+        （告警与去重口径见 `tests/test_claims_fencing.py` 的 FailClosedTest。）
+        """
         db.get_conn().execute("DROP TABLE sign_claims")
         db.get_conn().commit()
-        self.assertTrue(db.claim_sign_account(PHONE, DAY, OWNER_A))
+        self.assertEqual(db.claim_sign_account(PHONE, DAY, OWNER_A), (False, 0))
         self.assertFalse(db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_DONE))
         self.assertEqual(db.claim_states_for_day(DAY), {})
         self.assertEqual(db.claim_stats(DAY)["total"], 0)
@@ -213,11 +223,11 @@ class ActivityTest(_Base):
     """
 
     def test_groups_by_owner_and_state(self):
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
+        self._claim(PHONE, DAY, OWNER_A)
         db.claim_settle(PHONE, DAY, OWNER_A, db.CLAIM_STATE_DONE, "ok")
-        db.claim_sign_account(PHONE_B, DAY, OWNER_A)
+        self._claim(PHONE_B, DAY, OWNER_A)
         db.claim_give_up(PHONE_B, DAY, OWNER_A, "失败")
-        db.claim_sign_account("13800138002", DAY, OWNER_B)
+        self._claim("13800138002", DAY, OWNER_B)
         rows = {r["owner"]: r for r in db.claim_activity(DAY)}
         self.assertEqual(set(rows), {OWNER_A, OWNER_B})
         self.assertEqual((rows[OWNER_A]["done"], rows[OWNER_A]["failed"],
@@ -227,8 +237,8 @@ class ActivityTest(_Base):
                           rows[OWNER_B]["total"]), (0, 1, 1))
 
     def test_only_counts_the_requested_day(self):
-        db.claim_sign_account(PHONE, DAY, OWNER_A)
-        db.claim_sign_account(PHONE_B, "2000-01-01", OWNER_B)
+        self._claim(PHONE, DAY, OWNER_A)
+        self._claim(PHONE_B, "2000-01-01", OWNER_B)
         rows = db.claim_activity(DAY)
         self.assertEqual([r["owner"] for r in rows], [OWNER_A])
 
@@ -244,7 +254,7 @@ class ActivityTest(_Base):
     def test_order_is_stable(self):
         """顺序稳定（按 owner 升序）：前端用它编 1-based 槽位号，抖动会让编号乱跳。"""
         for phone, owner in ((PHONE_B, OWNER_B), (PHONE, OWNER_A)):
-            db.claim_sign_account(phone, DAY, owner)
+            self._claim(phone, DAY, owner)
         self.assertEqual([r["owner"] for r in db.claim_activity(DAY)],
                          sorted([OWNER_A, OWNER_B]))
 
@@ -272,23 +282,28 @@ class SingleStatementClaimTest(_Base):
 
     时序型用例撞不上那个窗口（见 CrossProcessClaimTest 的说明），所以这条用**调用形状**
     钉住：一次 `try_claim` 只能发一条 SQL，且必须是带 `ON CONFLICT ... DO UPDATE`
-    的 upsert（冲突行不满足条件时 rowcount=0，正好就是"没领到"）。
+    的 upsert（冲突行不满足条件时 `RETURNING` 零行，正好就是"没领到"）。
     """
 
     class _FakeConn:
-        def __init__(self, rowcount=1):
+        """替身连接：`returned=None` 模拟"条件不满足"（零行 ⇒ rowcount=0）。"""
+
+        def __init__(self, returned=1):
             self.calls = []
-            self._rowcount = rowcount
+            self._returned = returned
 
         def execute(self, sql, params=()):
             self.calls.append((" ".join(sql.split()), params))
-            return type("Cur", (), {"rowcount": self._rowcount})()
+            cur = type("Cur", (), {})()
+            cur.fetchone = lambda: None if self._returned is None else (self._returned,)
+            cur.rowcount = 0 if self._returned is None else 1
+            return cur
 
         def commit(self):
             self.calls.append(("COMMIT", ()))
 
-    def _run_claim(self, rowcount=1, **kw):
-        fake = self._FakeConn(rowcount)
+    def _run_claim(self, returned=1, **kw):
+        fake = self._FakeConn(returned)
         with mock.patch.object(db, "get_conn", return_value=fake),                 mock.patch.object(db, "_conn_lock", contextlib.nullcontext()):
             got = db.claim_sign_account(PHONE, DAY, OWNER_A, **kw)
         return got, fake
@@ -301,12 +316,13 @@ class SingleStatementClaimTest(_Base):
         sql = statements[0][0]
         self.assertIn("INSERT INTO sign_claims", sql)
         self.assertIn("ON CONFLICT(phone, day) DO UPDATE", sql)
-        self.assertTrue(got)
+        self.assertTrue(got[0])
+        self.assertEqual(got[1], 1, "插入分支的 fencing token 取 1")
 
-    def test_rowcount_zero_means_lost_race(self):
-        """upsert 的条件不满足时 rowcount=0，必须如实答"没领到"。"""
-        got, fake = self._run_claim(rowcount=0)
-        self.assertFalse(got)
+    def test_no_returned_row_means_lost_race(self):
+        """upsert 的条件不满足时 `RETURNING` 零行，必须如实答"没领到"。"""
+        got, fake = self._run_claim(returned=None)
+        self.assertEqual(got, (False, 0))
         # 已了结行 + 未开 allow_settled：条件表达式里必须带上这两个开关
         sql = next(c[0] for c in fake.calls if c[0] != "COMMIT")
         self.assertIn("state = ? AND ?", sql)          # done 行只由 allow_settled 决定
@@ -317,7 +333,7 @@ class SingleStatementClaimTest(_Base):
         for fn, args in ((db.claim_settle, (PHONE, DAY, OWNER_A)),
                          (db.claim_touch, (PHONE, DAY, OWNER_A))):
             with self.subTest(fn=fn.__name__):
-                fake = self._FakeConn(0)
+                fake = self._FakeConn(None)
                 with mock.patch.object(db, "get_conn", return_value=fake),                         mock.patch.object(db, "_conn_lock", contextlib.nullcontext()):
                     self.assertFalse(fn(*args))
                 sql = next(c[0] for c in fake.calls if c[0] != "COMMIT")
@@ -341,7 +357,7 @@ while time.time() < start_at:
     time.sleep(0.001)
 for ph in phones:
     for _ in range(3):          # 抢不到就重试（模拟真实执行体的重试节奏）
-        if db.claim_sign_account(ph, os.environ["CLAIMS_DAY"], owner):
+        if db.claim_sign_account(ph, os.environ["CLAIMS_DAY"], owner)[0]:
             won[ph] = owner
             break
         time.sleep(0.005)

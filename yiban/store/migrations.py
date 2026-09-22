@@ -5,7 +5,7 @@
 **功能**
 - 基线建表 `_create_tables`：accounts / users / audit_logs / time_prefs /
   user_delete_requests 五张表与其索引（幂等 IF NOT EXISTS）；
-- 迁移项 `migrate_v1..v18`：每项对应一个已发布、且**不可再修改**的 schema 版本；
+- 迁移项 `migrate_v1..v19`：每项对应一个已发布、且**不可再修改**的 schema 版本；
 - 迁移助手 `_table_columns` / `_ensure_column` / `_ensure_index` 与表名白名单
   `_ALLOWED_TABLES`（助手对白名单外的表名直接拒绝，防拼接 SQL 的注入面）；
 - 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE、核心迁移失败阻断
@@ -156,7 +156,7 @@ def _create_tables(conn):
 # 是 migrate_v4 建表 → migrate_v6 补列 → migrate_v14 删表。迁移只增不改。
 _ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
                    "sign_events", "page_visits", "server_metrics", "session_cache",
-                   "verify_jobs"}
+                   "verify_jobs", "sign_claims", "sign_tasks"}
 
 
 def _table_columns(conn, table):
@@ -787,6 +787,25 @@ def migrate_v18(conn):
     conn.execute("PRAGMA synchronous = FULL")
 
 
+def migrate_v19(conn):
+    """v19：`sign_claims` 补 fencing token 列 `epoch`（可选迁移，失败只告警不阻断）。
+
+    为什么需要：账号级租约 900s 的判据是"心跳时间串"，而执行体会被 STW 停顿/容器
+    挂起卡住数分钟——它醒来后仍以为自己持有该账号，会把迟到的结论写进去，覆盖接管者
+    的结论。故每次领取自增一个单调序号（fencing token），收尾写的 WHERE 带上它，
+    存储端主动拒绝"token 后退的写"（Kleppmann：只给领取侧发号而不校验等于没做）。
+
+    存量行取默认 0（= 从未被领取过），**NOT NULL 是必需的**：领取路径要拿它做
+    `epoch = epoch + 1`，NULL 会让算术静默变 NULL、守卫全失效。
+
+    `sign_tasks.epoch` 由 v18 建齐；此处一并 `_ensure_column` 兜底——v18 若被回退，
+    本迁移仍能把队列侧的护栏补上。两条 ALTER 都幂等，可选迁移失败后下次启动整段重跑。
+    """
+    _ensure_column(conn, "sign_claims", "epoch", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "sign_tasks", "epoch", "INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -809,6 +828,7 @@ _MIGRATIONS = [
     (16, "v16_verify_job_prev_status", migrate_v16, False),
     (17, "v17_sign_claims", migrate_v17, False),
     (18, "v18_sign_tasks", migrate_v18, False),
+    (19, "v19_fencing_epoch", migrate_v19, False),
 ]
 
 

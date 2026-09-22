@@ -98,7 +98,7 @@ class _Base(unittest.TestCase):
         self._close_conn()
 
     def _init_full(self):
-        """跑到当前最新版本（含 v18）。"""
+        """跑到当前最新版本（含 v18；v19 及以后的迁移在本类的断言之外）。"""
         return db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
 
     def _init_at_v17(self):
@@ -120,8 +120,8 @@ class _Base(unittest.TestCase):
 class SchemaTest(_Base):
     def test_v18_bumps_version_and_creates_tables_and_indexes(self):
         conn = self._init_full()
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 18)
-        self.assertEqual(db._MIGRATIONS[-1][0], 18, "v18 应是迁移顶")
+        self.assertGreaterEqual(conn.execute("PRAGMA user_version").fetchone()[0], 18)
+        self.assertIn(18, [m[0] for m in db._MIGRATIONS], "v18 必须登记在迁移表里")
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         for t in ("sign_tasks", "executor_heartbeats", "egress_state"):
@@ -174,7 +174,7 @@ class DataShiftTest(_Base):
 
     def test_rows_shift_field_by_field(self):
         conn, _ = self._migrate_with_seed()
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 18)
+        self.assertGreaterEqual(conn.execute("PRAGMA user_version").fetchone()[0], 18)
         shifted = {r["phone"]: dict(r) for r in conn.execute(
             "SELECT * FROM sign_tasks").fetchall()}
         self.assertEqual(set(shifted), {r[0] for r in self.ROWS})
@@ -207,7 +207,10 @@ class DataShiftTest(_Base):
         ).fetchone(), "sign_claims 只读过渡期内不得 DROP")
         after = [dict(r) for r in conn.execute(
             "SELECT * FROM sign_claims ORDER BY phone").fetchall()]
-        self.assertEqual(after, before)
+        # 后续迁移可能给本表补列（如 fencing 的 epoch，存量行取默认值），
+        # 故只比对平移那一刻已有的列：数据平移不得改动旧表的行。
+        keys = set(before[0])
+        self.assertEqual([{k: r[k] for k in keys} for r in after], before)
 
 
 class SynchronousAppliedByMigrationTest(_Base):
