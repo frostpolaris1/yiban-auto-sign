@@ -25,7 +25,7 @@
   // 用户端文案沿用已确认版本；管理端沿用旧弹窗（P4 已随旧栈退役）的既有口径。
   var TEXTS = {
     user: {
-      nameLabel: "名称 / 备注（可选）", namePlaceholder: "如：我的易班账号",
+      nameLabel: "名称 / 备注（可选）", namePlaceholder: "如：电力123庄方宜",
       nameHelp: "会显示给管理员，便于审核。",
       phoneLabel: "易班手机号", phonePlaceholder: "登录易班的手机号",
       passwordLabel: "易班密码", passwordNewPlaceholder: "用于自动登录签到",
