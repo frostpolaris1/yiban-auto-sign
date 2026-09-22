@@ -145,10 +145,9 @@ class NotifyLedgerDiskTest(unittest.TestCase):
         # 实例 B（进程 2）：把实现包从 sys.modules 里整体摘掉再导入，等价于
         # "新进程从零起"（内存账本为空，只能从磁盘恢复已占用计数）
         #
-        # ⚠ 必须还原：摘掉再导入会让本进程里"先前导入方持有的旧模块对象"与
-        # "函数内重新解析到的新对象"同时存在（两份账本实例）。不还原就会污染
-        # 同进程后续用例——表现为 `test_notify_webhook.py` 的跨日退还用例在全量
-        # 运行下稳定失败（`daily_remaining` 读到陈旧计数，先跑本文件才复现）。
+        # ⚠ 必须完整还原（sys.modules + 父包属性）：摘掉再导入会让本进程里"先前
+        # 导入方持有的旧模块对象"与"函数内重新解析到的新对象"同时存在，形成两份
+        # 账本实例，后续用例的计数与打桩都会落在错的那一份上。
         saved_modules = {k: v for k, v in sys.modules.items()
                          if k.startswith("yiban.notify")}
 
@@ -156,6 +155,18 @@ class NotifyLedgerDiskTest(unittest.TestCase):
             for k in [k for k in sys.modules if k.startswith("yiban.notify")]:
                 del sys.modules[k]
             sys.modules.update(saved_modules)
+            # 只还原 sys.modules 不够：`from yiban import notify` 取的是**父包上的属性**，
+            # 子模块重新导入时该属性已被换成新对象。属性不一起还原，进程里就留下两份
+            # `yiban.notify`——先导入的模块（如 web/services/notify_mail）握着旧对象，
+            # 后导入的（测试里 importlib 重载的 webapp）握着新对象，于是
+            # `mock.patch.object(webapp.notify, "send")` 打不到真正被调用的那一份，
+            # 告警用例表现为"0 次调用"（本文件先跑才复现）。
+            pkg = sys.modules.get("yiban")
+            if pkg is not None and "yiban.notify" in saved_modules:
+                pkg.notify = saved_modules["yiban.notify"]
+                for k, v in saved_modules.items():
+                    if k.startswith("yiban.notify."):
+                        setattr(saved_modules["yiban.notify"], k.rsplit(".", 1)[1], v)
 
         self.addCleanup(_restore_notify_modules)
         for k in list(saved_modules):
