@@ -1,20 +1,22 @@
 # -*- coding: utf-8 -*-
 """`yiban.engine.hrw` 的契约用例：纯函数 HRW 分工（虚分片 + argmax 归属）。
 
-覆盖十条：确定性、跨进程一致（钉死"禁用内置 `hash()`"）、跨天重排、`v_for` 阈值、
-分布无空洞、增删执行体只迁移约 1/K、均衡度落在理论抖动包络内、
+覆盖十一条：确定性、跨进程一致（钉死"禁用内置 `hash()`"）、vshard 与 owner 两层都吃
+`day`、`v_for` 阈值、分布无空洞、增删执行体只迁移约 1/K、均衡度落在理论抖动包络内、
 `shards_of` 与 `owner_of`/`assignment` 三方一致、平局按字典序、空执行体不抛。
 
 **两处容差比设计文档宽，依据是实测**（HRW 的归属是"每片独立均匀选主"，分片数与每片
 人数都服从多项分布）：
 - 256 片 / K=8 时执行体分片数的理论标准差 `√(V·(1/K)·(1−1/K)) ≈ 5.3` 片（32 片的
   ≈16.5%），故"各执行体 32±5%"（±1.6 片）不是这套算法能有的精度：实测 365 天里没有
-  一天满足，最好的一天跨度也有 5 片；
+  一天满足，最好的一天跨度也有 3 片；
 - 10000 人落 256 片时每片理论标准差 `√(n·p·(1−p)) ≈ 6.2` 人，而"±40%"（±2.5σ）在
   256 个格子同时受检下等于要求最大偏差 ≤2.5σ（最大偏差期望已 ≈3.3σ）：实测 365 天
   只有 10 天满足。
-两处都改判 `mean ± 4σ` 包络：既能拦住哈希坏掉（分片塌缩、执行体吃独食、内置 hash
-每进程随机化），又不会换一天/换一台机器就翻红。
+两处都改判 `mean ± 4.5σ` 包络（σ 各按自己的多项分布算）：4σ 时人数包络全年有 13/365
+天不满足（日期一换就误报），4.5σ 降到 1/365；分片数包络 4σ 起就是 0/365。选定日
+2026-09-22 实测最差偏差：人数 19.9 / 上限 28.1、分片数 6 / 上限 23.8。包络仍能拦住
+哈希坏掉（分片塌缩、执行体吃独食、内置 hash 每进程随机化）。
 """
 import json
 import os
@@ -90,6 +92,22 @@ class HrwIdentityTest(unittest.TestCase):
         self.assertEqual(a["owner"], b["owner"], "归属跨进程不一致")
         self.assertEqual(a["owner"], hrw.owner_of(7, ["w0", "w1", "w2"], DAY))
 
+    def test_vshard_depends_on_day(self):
+        """vshard 层同样必须吃 `day`：换天后同一批账号的分片号整体重排，且编码被钉住。
+
+        vshard 是要落库的（`sign_tasks.vshard`）——day 只在 owner 层生效不够：那等于每天
+        把同一批账号压回同一个执行体，虚分片削峰在跨天维度上失效。owner 层的跨天重排
+        （`test_day_change_reshuffles_owners`）判别不了这里，所以本层单独验。
+        末尾两个定值钉的是**编码本身**（`\\x1f` 连接 + blake2b 前 8 字节 + 大端）：当天
+        已落的计划与库里的 vshard 都按它算，改编码等于作废当天全站计划。
+        """
+        phones = [_phone(i) for i in range(512)]
+        moved = sum(1 for p in phones if hrw.vshard_of(p, DAY) != hrw.vshard_of(p, NEXT_DAY))
+        self.assertGreaterEqual(moved, len(phones) * 0.3,
+                                f"换天后只有 {moved}/{len(phones)} 个账号换片，vshard 没吃 day")
+        self.assertEqual(hrw.vshard_of(_phone(0), DAY), 203)
+        self.assertEqual(hrw.vshard_of(_phone(0), NEXT_DAY), 218)
+
     def test_v_for_thresholds(self):
         """分片数按规模选：n<500→64、n<3000→128、否则 256。"""
         self.assertEqual(hrw.v_for(499), 64)
@@ -100,7 +118,7 @@ class HrwIdentityTest(unittest.TestCase):
         self.assertEqual(hrw.v_for(30000), 256)
 
     def test_shard_population_has_no_holes_and_stays_in_envelope(self):
-        """10000 个不同账号同一天落 256 片：无空洞（每片必有账号）、每片人数在 ±4σ 内。"""
+        """10000 个不同账号同一天落 256 片：无空洞（每片必有账号）、每片人数在 ±4.5σ 内。"""
         n = 10000
         counts = [0] * V
         for i in range(n):
@@ -111,8 +129,8 @@ class HrwIdentityTest(unittest.TestCase):
         sigma = (n * (1 / V) * (1 - 1 / V)) ** 0.5
         worst = max(abs(c - mean) for c in counts)
         self.assertLessEqual(
-            worst, 4 * sigma,
-            f"分片人数偏差 {worst:.1f} 超出 4σ（mean={mean:.1f}, sigma={sigma:.2f}）")
+            worst, 4.5 * sigma,
+            f"分片人数偏差 {worst:.1f} 超出 4.5σ（mean={mean:.1f}, sigma={sigma:.2f}）")
 
 
 class HrwAssignmentTest(unittest.TestCase):
@@ -140,7 +158,7 @@ class HrwAssignmentTest(unittest.TestCase):
                          f"迁移目标不是新执行体（HRW 不该在旧执行体之间搬）: {owners}")
 
     def test_balance_within_envelope(self):
-        """均衡度：K=8、256 片时各执行体的分片数落在 HRW 理论抖动的 4σ 包络内。"""
+        """均衡度：K=8、256 片时各执行体的分片数落在 HRW 理论抖动的 4.5σ 包络内。"""
         executors = [f"w{i}" for i in range(8)]
         board = hrw.assignment(executors, DAY)
         counts = [sum(1 for v in range(V) if board[v] == e) for e in executors]
@@ -148,8 +166,8 @@ class HrwAssignmentTest(unittest.TestCase):
         sigma = (V * (1 / 8) * (1 - 1 / 8)) ** 0.5
         worst = max(abs(c - mean) for c in counts)
         self.assertLessEqual(
-            worst, 4 * sigma,
-            f"分片数偏差 {worst:.1f} 超出 4σ（mean={mean}, sigma={sigma:.2f}）: {counts}")
+            worst, 4.5 * sigma,
+            f"分片数偏差 {worst:.1f} 超出 4.5σ（mean={mean}, sigma={sigma:.2f}）: {counts}")
 
     def test_shards_of_matches_owner_and_partitions_space(self):
         """`shards_of` 与 `owner_of`/`assignment` 一致，且各执行体的分片集互斥且覆盖 0..V-1。"""
