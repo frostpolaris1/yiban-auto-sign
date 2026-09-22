@@ -221,14 +221,14 @@ class CliContractTest(unittest.TestCase):
         r = _run(["db", "--status", "--json"], self.env)
         self.assertEqual(r.returncode, 0, r.stderr[-400:])
         payload = json.loads(r.stdout)
-        self.assertEqual(payload["user_version"], 17, "临时库与生产同 schema")
+        self.assertEqual(payload["user_version"], 18, "临时库与生产同 schema")
         self.assertIn("accounts", payload["tables"])
         self.assertGreater(payload["size_bytes"], 0)
         # 非 --json 时 stdout 必须干净（人话走 stderr）
         r = _run(["db", "--status"], self.env)
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout, "", "人类可读输出不得进 stdout")
-        self.assertIn("user_version=17", r.stderr)
+        self.assertIn("user_version=18", r.stderr)
 
     def test_db_integrity_and_backup_need_yes(self):
         _make_db(self.root, self.env)
@@ -243,7 +243,7 @@ class CliContractTest(unittest.TestCase):
         r = _run(["db", "--backup", backup, "--yes", "--json"], self.env)
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertTrue(os.path.exists(backup), "加 --yes 应写出副本")
-        self.assertEqual(json.loads(r.stdout)["user_version"], 17)
+        self.assertEqual(json.loads(r.stdout)["user_version"], 18)
 
     def test_db_backup_rejects_target_equals_source(self):
         """Low-2：`db --backup <源库>` 目标==源库必须拒绝。
@@ -281,7 +281,7 @@ class CliContractTest(unittest.TestCase):
         self.assertIsNone(payload["user_version"])
         _make_db(self.root, self.env)
         self.assertEqual(json.loads(_run(["version", "--json"], self.env).stdout)["user_version"],
-                         17)
+                         18)
 
     # ---- capacity：建议值口径与网页 /api/scheduler/executors 同源 ----
 
@@ -332,7 +332,7 @@ class CliContractTest(unittest.TestCase):
         """F3：宣称"脱敏、不联网/只读"的配置检查不得对目标库跑迁移（写库）。
 
         2026-09-21 测试机 47 E2E：`config` 经 `load_accounts() → db.init_db(migrate=True)`
-        把目标库迁到了 v17。本用例用 user_version=13 的旧库（E2E 前 n360.db 的形态）
+        把目标库迁到了当时的 schema 顶（v17，现为 v18）。本用例用 user_version=13 的旧库（E2E 前 n360.db 的形态）
         钉住"不迁移"：跑完 `config` 与 `sign --check-config`，user_version 必须原样不动。
         对照组（直接 `init_db`，缺省 migrate=True）证明该库确实可被迁移——否则用例
         什么也没测到。
@@ -368,7 +368,7 @@ class CliContractTest(unittest.TestCase):
             cwd=BASE, env=self.env, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
-        self.assertEqual(self._user_version(), 17,
+        self.assertEqual(self._user_version(), 18,
                          "对照组失败：该库本可被迁移，上面的断言没测到东西")
 
     def test_capacity_measure_forwards_extra_args(self):
