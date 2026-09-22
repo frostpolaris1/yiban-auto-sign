@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -166,6 +167,22 @@ class ClaimBatchTest(_Base):
         self._add_task(_phone(1))
         self.assertEqual(queue_store.claim_batch(OWNER, DAY, (), now=_ts()), [])
 
+    def test_missing_table_returns_empty_with_warning(self):
+        """表未落地 = 队列能力不可用：空返回**并告警**，调用方据此退回动态领取路径。"""
+        conn = db.get_conn()
+        conn.execute("DROP TABLE sign_tasks")
+        conn.commit()
+        with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
+            self.assertEqual(queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts()), [])
+        self.assertIn("批量领取签到任务失败", "\n".join(cm.output))
+
+    def test_no_due_rows_is_silent(self):
+        """表在、只是没有到期行 ⇒ 空返回但**不告警**：与"库坏了"必须是两件事。"""
+        self._add_task(_phone(1), run_at=_ts(minutes=+30))
+        with mock.patch.object(queue_store.logger, "warning") as warn:
+            self.assertEqual(queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts()), [])
+        warn.assert_not_called()
+
 
 class SettleTasksTest(_Base):
     def test_batch_settle_is_owner_scoped_and_truncates_result(self):
@@ -219,15 +236,30 @@ class DayCountsTest(_Base):
                                    "failed", "skipped", "stolen")):
             self._add_task(_phone(i), state=state)
         got = queue_store.day_counts(DAY)
-        for state, n in got.items():
+        for state in queue_store.STATES:
             sql_n = db.get_conn().execute(
                 "SELECT COUNT(*) FROM sign_tasks WHERE day=? AND state=?",
                 (DAY, state)).fetchone()[0]
-            self.assertEqual(n, sql_n, state)
+            self.assertEqual(got[state], sql_n, state)
 
-    def test_empty_day_returns_zeros_without_raising(self):
+    def test_derived_settled_open_total(self):
+        """派生口径：done+skipped 算完、其余算未完；调用方不必自己求和。"""
+        for i, state in enumerate(("pending", "pending", "claimed", "done",
+                                   "failed", "skipped", "stolen")):
+            self._add_task(_phone(i), state=state)
+        got = queue_store.day_counts(DAY)
+        self.assertEqual(got["settled"], 2, "done + skipped")
+        self.assertEqual(got["open"], 5, "pending + claimed + failed + stolen")
+        self.assertEqual(got["total"], 7)
+
+    def test_stats_style_keys_present_when_day_is_empty(self):
+        """空 day（含库不可用路径）也要给出 claims.stats 口径的键，调用方不得 KeyError。"""
         got = queue_store.day_counts("2026-01-01")
-        self.assertTrue(got)
+        for key in ("claimed", "done", "failed", "settled", "open", "total"):
+            self.assertIn(key, got)
+        self.assertEqual(got["settled"], 0)
+        self.assertEqual(got["open"], 0)
+        self.assertEqual(got["total"], 0)
         self.assertTrue(all(n == 0 for n in got.values()), got)
 
 

@@ -10,6 +10,7 @@
 `time_prefs` 管自选时间片表的读写、拥挤度统计与保存冷却查询，
 `clock_meta` 管时钟守卫告警的留痕与读取、app_meta 通用单键读写，
 `tracking` 管追踪盐（YIBAN_TRACK_SALT）的取用/落盘与 IP、手机号加盐哈希，
-`verify_jobs` 管在线校验任务表的状态机，`users` 管用户表
+`verify_jobs` 管在线校验任务表的状态机，`queue_store` 管持久化任务队列
+（`sign_tasks`）的批量领取/收尾/重排与当日计数，`users` 管用户表
 与注销生命周期，`cleanup` 管每日清理编排。
 """
