@@ -5,7 +5,7 @@
 **功能**
 - 基线建表 `_create_tables`：accounts / users / audit_logs / time_prefs /
   user_delete_requests 五张表与其索引（幂等 IF NOT EXISTS）；
-- 迁移项 `migrate_v1..v17`：每项对应一个已发布、且**不可再修改**的 schema 版本；
+- 迁移项 `migrate_v1..v18`：每项对应一个已发布、且**不可再修改**的 schema 版本；
 - 迁移助手 `_table_columns` / `_ensure_column` / `_ensure_index` 与表名白名单
   `_ALLOWED_TABLES`（助手对白名单外的表名直接拒绝，防拼接 SQL 的注入面）；
 - 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE、核心迁移失败阻断
@@ -704,6 +704,87 @@ def migrate_v17(conn):
     conn.commit()
 
 
+def migrate_v18(conn):
+    """v18：持久化任务队列（sign_tasks）+ 执行体心跳（executor_heartbeats）
+    + 出口令牌桶状态（egress_state）；sign_claims 数据平移进 sign_tasks。
+
+    可选迁移（is_core=False，同 v17 口径）：失败只告警不阻断启动，下次启动整段重跑，
+    故必须幂等（CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE）。
+
+    `sign_tasks` 一行 = 一个账号在一个业务日的计划、当前状态与**跨执行体共享**的
+    尝试数（v17 `sign_claims` 的语义整体并入）。`state` 取值：
+
+    | state | 含义 |
+    |-------|------|
+    | `pending` | 待领取（`run_at` 到点后被批量领取） |
+    | `claimed` | 已被某执行体领取、任务级租约未过期 |
+    | `done` / `skipped` | 已完成（成功/已签到/今日无任务/窗口外跳过） |
+    | `failed` / `stolen` | 未了结：可重排（`run_at` 后退）或按分片接管 |
+
+    `vshard` 是 HRW 分工的虚分片（0..255）；`sign_claims` 平移行落 **-1**，表示
+    "不参与 HRW 分工的历史行"（其 `run_at` 取 `claimed_at`，且 state 非 pending
+    时不会命中批领，故历史行不会被重新领取）。`owner` 一列同时承担"计划 owner
+    （HRW）"与"当前持有者"，`epoch` 是 fencing token——列在 v18 一次建齐
+    （schema 变更此刻最便宜），其自增与终态写的 WHERE 守卫由领取/收尾路径实现。
+
+    **耐久性**：本表回答"当日是否已登录"，终态被回滚等于对同一账号再登录一次
+    （上游风控红线），故连接必须是 FULL——WAL+NORMAL 会丢最近提交。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sign_tasks ("
+        "phone TEXT NOT NULL, "
+        "day TEXT NOT NULL, "
+        "vshard INTEGER NOT NULL, "
+        "owner TEXT NOT NULL DEFAULT '', "
+        "run_at TEXT NOT NULL, "
+        "priority INTEGER NOT NULL DEFAULT 5, "
+        "state TEXT NOT NULL DEFAULT 'pending', "
+        "attempts INTEGER NOT NULL DEFAULT 0, "
+        "lease_until TEXT NOT NULL DEFAULT '', "
+        "epoch INTEGER NOT NULL DEFAULT 0, "
+        "result TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL, "
+        "PRIMARY KEY (phone, day)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_pickup "
+        "ON sign_tasks(day, vshard, state, run_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_lease ON sign_tasks(state, lease_until)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS executor_heartbeats ("
+        "executor TEXT PRIMARY KEY, "
+        "vshards TEXT NOT NULL DEFAULT '', "
+        "heartbeat_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS egress_state ("
+        "egress TEXT PRIMARY KEY, "
+        "rate REAL NOT NULL, "
+        "burst REAL NOT NULL DEFAULT 0, "
+        "tat REAL NOT NULL DEFAULT 0, "
+        "updated_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
+        "priority, state, attempts, lease_until, result, created_at) "
+        "SELECT phone, day, -1, owner, claimed_at, 5, state, attempts, heartbeat_at, "
+        "result, claimed_at FROM sign_claims"
+    )
+    # 提交建表与平移（与 v17 同形：迁移不做事务管理，框架已持 BEGIN IMMEDIATE）。
+    conn.commit()
+    # 耐久级必须在**事务外**改：SQLite 对事务内的 PRAGMA synchronous 直接报
+    # "Safety level may not be changed inside a transaction"。放在末尾提交之后
+    # 既绕开该限制，又保住建表与平移在前一个事务里原子生效；PRAGMA 若仍失败，
+    # blocked 路径下次启动整段重跑（幂等）收敛。
+    conn.execute("PRAGMA synchronous = FULL")
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -725,6 +806,7 @@ _MIGRATIONS = [
     (15, "v15_verify_jobs", migrate_v15, False),
     (16, "v16_verify_job_prev_status", migrate_v16, False),
     (17, "v17_sign_claims", migrate_v17, False),
+    (18, "v18_sign_tasks", migrate_v18, False),
 ]
 
 

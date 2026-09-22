@@ -34,7 +34,7 @@ PHONE2 = "13800000002"
 # 以 phone 为键的业务表（accounts 自身除外）。**新增此类表必须同时加进
 # _cascade_phone_owned**——下面的枚举测试会失败提醒，这是刻意的。
 PHONE_KEYED_TABLES = {"time_prefs", "session_cache", "sign_events", "verify_jobs",
-                     "sign_claims"}
+                     "sign_claims", "sign_tasks"}
 
 
 def _ago(seconds):
@@ -172,6 +172,10 @@ class _LifecycleBase(unittest.TestCase):
                      "(phone, day, owner, claimed_at, heartbeat_at, state) "
                      "VALUES (?,?,?,?,?,?)",
                      (phone, _ago(0)[:10], "seed-proc", _ago(0), _ago(0), "claimed"))
+        conn.execute("INSERT OR REPLACE INTO sign_tasks "
+                     "(phone, day, vshard, owner, run_at, state, created_at) "
+                     "VALUES (?,?,?,?,?,?,?)",
+                     (phone, _ago(0)[:10], 0, "seed-proc", _ago(0), "claimed", _ago(0)))
         conn.commit()
 
 

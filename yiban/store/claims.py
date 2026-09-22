@@ -25,6 +25,12 @@
    多执行体形态下它必须可用（届时由启动期自检拦住）。
 
 连接与进程内锁取自同包的 `yiban.store.db`；它把本模块公开名全部再导出。
+
+**过渡说明（v18 起）**：v18 新增的 `sign_tasks`（访问层 `yiban/store/queue_store.py`）
+把本表的 state / result / attempts 语义整体并入，并把本表存量行一次性平移进新表
+（`vshard=-1`、`run_at=claimed_at`，历史行不会被新队列重复领取）。旧表**不删**：
+14 天过渡期内本模块行为不变（仍读写本表），新队列只读写 `sign_tasks`，两表暂不对写；
+双写对齐到一定版本后再由后续迁移冻结旧表。故展示与了结判据此刻仍以本表为准。
 """
 import datetime
 import logging
