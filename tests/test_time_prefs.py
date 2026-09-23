@@ -456,10 +456,10 @@ class TimePrefsTest(unittest.TestCase):
                 f.write(original)
 
     def test_api_me_sign_window_uses_effective_window(self):
-        """`/api/me` 的 `sign_window` 取**有效**窗口端点，与同页自选片卡片同一份几何。
+        """`/api/me` 的 `sign_window` 取**生效**窗口端点，与同页自选片卡片同一份几何。
 
-        非回退（生产默认 06:30~07:50）逐值等价；裁剪吃空回退默认窗口时，页面不再显示
-        原始配置的 07:00~07:10（否则同一页面出现片卡"06:30~07:50"与"07:00~07:10"两个钟点）。
+        非退化（生产默认 06:30~07:50）逐值等价；缓冲过大时窗口被保留（只收缩缓冲），
+        页面显示的仍是管理员设的 07:00~07:10，与片卡同一份几何（片号基点就是它）。
         """
         base = (f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_ADMIN_USER=admin\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\nYIBAN_ALLOW_TIME_PREF=1\n"
@@ -477,8 +477,8 @@ class TimePrefsTest(unittest.TestCase):
             self.assertEqual(c.get("/api/me").get_json()["sign_window"], "06:30 ~ 07:50")
             _write("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
                    "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
-            self.assertEqual(c.get("/api/me").get_json()["sign_window"], "06:30 ~ 07:50",
-                             "回退配置下应与片卡同一窗口，而非原始 07:00 ~ 07:10")
+            self.assertEqual(c.get("/api/me").get_json()["sign_window"], "07:00 ~ 07:10",
+                             "窗口被保留，展示应与片卡同一窗口（而非默认 06:30 ~ 07:50）")
         finally:
             with open(self.env_file, "w", encoding="utf-8") as f:
                 f.write(original)
@@ -589,6 +589,110 @@ class TimePrefsTest(unittest.TestCase):
         env = open(self.env_file, encoding="utf-8").read()
         self.assertNotIn("YIBAN_WINDOW_EDGE_FRONT_SEC=15", env)
 
+    # ---- 缓冲预防：保存时按窗口宽度夹取（夹取而非拒绝）----
+    # 逐用例整文件快照/还原：本类共用一份 .env，而 pytest 按方法名字母序执行，
+    # 就地追加的窗口/缓冲键会漏给后面的用例（既有用例同样是这个口径）。
+    @contextlib.contextmanager
+    def _env_guard(self):
+        original = open(self.env_file, encoding="utf-8").read()
+        try:
+            yield
+        finally:
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original)
+
+    def _with_window(self, start, end):
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write(f"YIBAN_SIGN_START={start}\nYIBAN_SIGN_END={end}\n")
+
+    def test_api_settings_clamps_edge_to_window_share(self):
+        """10 分钟窗口 + 各 300s：保存被夹到单边 120s（窗口的 20%）并写明原因。"""
+        with self._env_guard():
+            self._with_window("06:30", "06:40")
+            c = self.webapp.create_app().test_client()
+            h = self._csrf(self._login(c, "admin", ADMIN_PASS))
+            r = c.post("/api/settings", json={
+                "edge_front_sec": 300, "edge_back_sec": 300,
+                "confirm_password": ADMIN_PASS,
+            }, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            body = r.get_json()
+            self.assertIn("120", body["msg"], "响应必须说明被夹到多少")
+            self.assertIn("20%", body["msg"], "响应必须说明为什么")
+            env = open(self.env_file, encoding="utf-8").read()
+            self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC=120", env)
+            self.assertIn("YIBAN_WINDOW_EDGE_BACK_SEC=120", env)
+            data = c.get("/api/settings").get_json()
+            self.assertEqual((data["edge_front_sec"], data["edge_back_sec"]), (120, 120))
+
+    def test_api_settings_window_change_uses_new_window_cap(self):
+        """同一次请求里改窗口：上限按**新**窗口算（10 分钟 → 单边 120s）。"""
+        with self._env_guard():
+            c = self.webapp.create_app().test_client()
+            h = self._csrf(self._login(c, "admin", ADMIN_PASS))
+            r = c.post("/api/settings", json={
+                "sign_window": "06:30 ~ 06:40",
+                "edge_front_sec": 300, "edge_back_sec": 300,
+                "confirm_password": ADMIN_PASS,
+            }, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            env = open(self.env_file, encoding="utf-8").read()
+            self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC=120", env)
+            self.assertIn("YIBAN_WINDOW_EDGE_BACK_SEC=120", env)
+
+    def test_api_settings_legacy_edge_key_clamped_symmetrically(self):
+        """旧键 `window_edge_sec` 的对称映射保留，且同样被夹（两边都到 120s）。"""
+        with self._env_guard():
+            self._with_window("06:30", "06:40")
+            c = self.webapp.create_app().test_client()
+            h = self._csrf(self._login(c, "admin", ADMIN_PASS))
+            r = c.post("/api/settings", json={
+                "window_edge_sec": 300, "confirm_password": ADMIN_PASS,
+            }, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            env = open(self.env_file, encoding="utf-8").read()
+            self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC=120", env)
+            self.assertIn("YIBAN_WINDOW_EDGE_BACK_SEC=120", env)
+
+    def test_api_settings_edge_untouched_when_within_cap(self):
+        """默认 80 分钟窗口：单边 20% = 960s > 既有量程，故逐值不变且响应无夹取说明。"""
+        with self._env_guard():
+            c = self.webapp.create_app().test_client()
+            h = self._csrf(self._login(c, "admin", ADMIN_PASS))
+            r = c.post("/api/settings", json={
+                "edge_front_sec": 30, "edge_back_sec": 300,
+                "confirm_password": ADMIN_PASS,
+            }, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertEqual(r.get_json()["msg"], "设置已保存（cron 下次触发自动生效）")
+            env = open(self.env_file, encoding="utf-8").read()
+            self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC=30", env)
+            self.assertIn("YIBAN_WINDOW_EDGE_BACK_SEC=300", env)
+
+    def test_api_settings_window_fallback_flag_default_off(self):
+        """窗口可用（常态）：`window_fallback` 为假、提示为空串（响应逐字不变）。"""
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        data = c.get("/api/settings").get_json()
+        self.assertFalse(data["window_fallback"])
+        self.assertEqual(data["window_fallback_text"], "")
+
+    def test_api_settings_window_fallback_flag_visible(self):
+        """窗口不可用（已回退默认）：设置页拿到可见提示（"已按 X~Y 运行"）。"""
+        from unittest import mock
+
+        from yiban import window as yb_window
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
+                                 "edge_front_sec": 60, "edge_back_sec": 60})
+        self.assertTrue(dead.fell_back)
+        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
+            data = c.get("/api/settings").get_json()
+        self.assertTrue(data["window_fallback"])
+        self.assertIn("配置异常", data["window_fallback_text"])
+        self.assertIn("06:31~07:49", data["window_fallback_text"])
+
     def test_api_pref_slots_disabled_partial(self):
         """0.22.0：前 2 分钟 + 后 5 分钟 → 首片 partial（可点+提示）、末片 disabled（灰）。"""
         with open(self.env_file, "a", encoding="utf-8") as f:
@@ -631,13 +735,13 @@ class TimePrefsTest(unittest.TestCase):
                 s.replace("YIBAN_WINDOW_EDGE_FRONT_SEC=120\n", "")
                  .replace("YIBAN_WINDOW_EDGE_BACK_SEC=300\n", ""))
 
-    def test_api_pref_save_ok_on_cropped_window_fallback(self):
-        """裁剪吃空回退：可用性判定与展示同准绳，回退窗口下所选片仍可保存。
+    def test_api_pref_save_ok_when_edges_clamped(self):
+        """缓冲过大被收缩：可用性判定与展示同准绳，收缩窗口下的可选片仍可保存。
 
-        窗口 06:30~06:40 前后各裁 300s ⇒ `window.bounds` 判回退到默认 06:30~07:50。
-        展示侧 `_pref_slots` 按回退窗口给出 16 片且不全为灰；保存闸门若仍按原始窗口与
-        裁剪判定（span=10、前后各 5 分钟），每一片都会被判"不在可选范围内"——用户点得到、
-        存不下。
+        窗口 06:30~06:40 前后各 300s（合计 >= 窗口宽度）⇒ `window.bounds` 保留窗口、
+        把缓冲等比收缩为各 60s（有效窗口 06:31~06:39）。展示侧 `_pref_slots` 按该窗口
+        给出 2 片且不全为灰；保存闸门若仍按原始裁剪判定（前后各 5 分钟），每一片都会被
+        判"不在可选范围内"——用户点得到、存不下。
         """
         added = ("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=06:40\n"
                  "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
@@ -648,21 +752,20 @@ class TimePrefsTest(unittest.TestCase):
             token = self._login(c, "user1@test.local", USER_PASS)
             h = self._csrf(token)
             slots = c.get("/api/my-time-pref").get_json()["slots"]
-            self.assertFalse(all(s["disabled"] for s in slots), "回退窗口下不应全部置灰")
-            for slot in (0, 75):
+            self.assertFalse(all(s["disabled"] for s in slots), "收缩窗口下不应全部置灰")
+            for slot in (0, 5):
                 r = c.put("/api/my-time-pref", json={"slot_min": slot}, headers=h)
                 self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         finally:
             s = open(self.env_file, encoding="utf-8").read()
             open(self.env_file, "w", encoding="utf-8").write(s.replace(added, ""))
 
-    def test_fallback_window_clock_labels_agree_across_the_page(self):
-        """裁剪吃空回退：选片卡 / 已存偏好 / 保存提示 / 管理员列表四处钟点必须一致。
+    def test_clamped_window_clock_labels_agree_across_the_page(self):
+        """缓冲过大被收缩：选片卡 / 已存偏好 / 保存提示 / 管理员列表四处钟点必须一致。
 
-        回退配置原始窗口 07:00~07:10 + 前后各裁 300s ⇒ `window.bounds` 回退默认
-        06:30~07:50（前后各 60s）。展示侧若仍按**原始**窗口起点（07:00）折算，片卡显示
-        06:30 而保存提示说 07:00——同一页面出现两个钟点；管理员列表的首尾标记若按原始
-        窗口宽度（10 分钟）判，中段任意片都会被误标成 `last`。
+        配置原始窗口 07:00~07:10 + 前后各 300s ⇒ `window.bounds` 保留窗口、缓冲收缩为
+        各 60s。展示侧若仍按原始裁剪折算，片卡会把两片全置灰；管理员列表的首尾标记若按
+        有效窗口宽度（8 分钟）判，也会与片号基准分叉。四处都必须以**窗口起止**为基准。
         """
         added = ("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
                  "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
@@ -673,25 +776,24 @@ class TimePrefsTest(unittest.TestCase):
             token = self._login(c, "user1@test.local", USER_PASS)
             h = self._csrf(token)
             data = c.get("/api/my-time-pref").get_json()
-            # 有效窗口 = 回退后的默认窗口：窗口串与片卡标签都以它为基准
-            self.assertEqual(data["window"], "06:30 ~ 07:50")
-            self.assertEqual(data["slots"][0]["label"], "06:30")
-            self.assertEqual(data["slots"][-1]["label"], "07:45")
+            # 窗口被保留：窗口串与片卡标签都以它为基准
+            self.assertEqual(data["window"], "07:00 ~ 07:10")
+            self.assertEqual(data["slots"][0]["label"], "07:00")
+            self.assertEqual(data["slots"][-1]["label"], "07:05")
             # 保存提示与已存偏好标签同基准
-            r = c.put("/api/my-time-pref", json={"slot_min": 30}, headers=h)
+            r = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-            self.assertIn("已保存自选 07:00", r.get_json()["msg"])
+            self.assertIn("已保存自选 07:05", r.get_json()["msg"])
             data2 = c.get("/api/my-time-pref").get_json()
-            self.assertEqual(data2["pref"], "07:00")
-            self.assertEqual(data2["pref_slot"], 30)
-            # 管理员列表：片标签同基准，首尾标记按有效窗口宽度（span=80）判
+            self.assertEqual(data2["pref"], "07:05")
+            self.assertEqual(data2["pref_slot"], 5)
+            # 管理员列表：片标签同基准，首尾标记按窗口宽度（span=10）判
             adm = self.webapp.create_app().test_client()
             self._login(adm, "admin", ADMIN_PASS)
             acc = next(a for a in adm.get("/api/accounts").get_json()["accounts"]
                        if a["phone"] == "138****8001")
-            self.assertEqual(acc["time_pref"], "07:00")
-            self.assertIsNone(acc["time_pref_edge"],
-                              "span 按原始窗口(10)算会把片 30 误标 last")
+            self.assertEqual(acc["time_pref"], "07:05")
+            self.assertEqual(acc["time_pref_edge"], "last")
         finally:
             s = open(self.env_file, encoding="utf-8").read()
             open(self.env_file, "w", encoding="utf-8").write(s.replace(added, ""))
