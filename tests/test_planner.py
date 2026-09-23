@@ -30,9 +30,10 @@ WINDOW_ENV = {
     "YIBAN_WINDOW_EDGE_FRONT_SEC": "300",
     "YIBAN_WINDOW_EDGE_BACK_SEC": "300",
 }
-#: 裁剪吃空：窗口仅 10 分钟、前后各裁 300s ⇒ 有效窗口宽度为 0，`window.bounds` 回退默认窗口
-#: （06:30~07:50）。此时"窗口起点 + 片偏移"必须以**回退后**的 390 分（06:30）为基点。
-EMPTY_WINDOW_ENV = {
+#: 缓冲过大：窗口仅 10 分钟、前后各 300s ⇒ `window.bounds` **保留窗口**、把缓冲等比
+#: 收缩为各 60s（有效窗口 07:01~07:09）。此时"窗口起点 + 片偏移"必须以窗口起点 420 分
+#: （07:00）为基点，且只有偏移 0 与 5 两个片可用。
+CLAMPED_WINDOW_ENV = {
     "YIBAN_SIGN_START": "07:00",
     "YIBAN_SIGN_END": "07:10",
     "YIBAN_WINDOW_EDGE_FRONT_SEC": "300",
@@ -371,15 +372,15 @@ class PrefOverflowTest(_Base):
 
 
 class PrefBasePointTest(_Base):
-    """片号基点唯一：候选分片与溢出半径都以**有效窗口起点**为基点。
+    """片号基点唯一：候选分片与溢出半径都以**窗口起点**为基点。
 
     片号（`slot_min`）是相对窗口起点的 5 分钟格（与 web `_pref_slots` /
-    `schedule._slot_to_bi` 同号），故"基点"必须与它们同源；否则窗口被裁剪吃空而
-    `window.bounds` 回退默认窗口时，展示按回退窗口、计划按原始配置，落点整体错位。
+    `schedule._slot_to_bi` 同号），故"基点"必须与它们同源；否则缓冲过大而缓冲被收缩时，
+    展示按窗口起点、计划按收缩后的有效窗口起点，落点整体错位。
     """
 
     def test_pref_slices_normal_window_pinned(self):
-        """正常窗口（无回退）：基点即原始窗口起点，候选分片逐值不变（显式期望）。"""
+        """正常窗口（无退化）：基点即窗口起点，候选分片逐值不变（显式期望）。"""
         cfg = self.cfg()
         win = self.bounds()
         self.assertFalse(win.fell_back)
@@ -389,33 +390,37 @@ class PrefBasePointTest(_Base):
         # 片 35 → 06:00 + 35 分钟 = 06:35；有效窗口 06:05~07:15 → 分片 30~34
         self.assertEqual(cands, [30, 31, 32, 33, 34])
 
-    def test_pref_slices_use_fallback_window_start(self):
-        """裁剪吃空回退：基点取回退窗口起点（06:30），而非原始配置的 07:00。"""
-        os.environ.update(EMPTY_WINDOW_ENV)
+    def test_pref_slices_use_clamped_window_start(self):
+        """缓冲过大：基点仍取窗口起点（07:00），收缩的只是缓冲（有效窗口 07:01~07:09）。"""
+        os.environ.update(CLAMPED_WINDOW_ENV)
         cfg = self.cfg()
         win = self.bounds()
-        self.assertTrue(win.fell_back)
-        self.assertEqual((win.start_min, win.end_min), (390, 470))
-        cands = planner._pref_slices(30, cfg, win.lo_min, win.hi_min,
+        self.assertTrue(win.edges_clamped)
+        self.assertFalse(win.fell_back)
+        self.assertEqual((win.start_min, win.end_min), (420, 430))
+        self.assertEqual((win.lo_min, win.hi_min), (421.0, 429.0))
+        # 片 0 与片 5 覆盖收缩后的有效窗口（偏移 0 = 07:00~07:05，偏移 5 = 07:05~07:10）
+        cands = planner._pref_slices(5, cfg, win.lo_min, win.hi_min,
                                      planner._slice_count(cfg), schedule._slot_to_bi(cfg))
-        self.assertEqual(cands, [29, 30, 31, 32, 33])
-        # 片 30 → 06:30 + 30 分钟 = 07:00 起；绝对分钟 = 有效窗口起点 + 分片号
-        self.assertEqual(win.lo_min + cands[0], 420.0)
+        self.assertEqual(cands, [4, 5, 6, 7])
+        # 片 5 → 07:00 + 5 分钟 = 07:05 起；绝对分钟 = 有效窗口起点 + 分片号
+        self.assertEqual(win.lo_min + cands[0], 425.0)
 
-    def test_spill_block_reaches_the_fallback_window_start(self):
-        """溢出搜索半径同样按有效窗口算：够得到回退窗口起点处仅存的空片。"""
-        os.environ.update(EMPTY_WINDOW_ENV)
+    def test_spill_block_reaches_the_window_start_slice(self):
+        """溢出搜索半径同样按窗口起止算：够得到窗口起点片里仅存的空分片。"""
+        os.environ.update(CLAMPED_WINDOW_ENV)
         cfg = self.cfg()
         win = self.bounds()
         n_slices = planner._slice_count(cfg)
+        self.assertEqual(n_slices, 8)
         filled = [1] * n_slices
-        for k in (0, 1, 2, 3):  # 窗口起点片（偏移 0 = 06:30~06:35）是唯一空片
+        for k in (0, 1, 2, 3):  # 窗口起点片（偏移 0 = 07:00~07:05）是唯一有空位的片
             filled[k] = 0
-        got = planner._spill_block(75, cfg, win.lo_min, win.hi_min, n_slices,
-                                   schedule._slot_to_bi(cfg), filled, 1, 0)
-        self.assertIsNotNone(got, "搜索半径按原始窗口算 → 够不到回退窗口起点的空片")
-        # 逐值钉住：距 75 片最近的空片就是回退窗口起点片（偏移 0），就近取 k0=0
-        self.assertEqual(got, 0)
+        got = planner._spill_block(5, cfg, win.lo_min, win.hi_min, n_slices,
+                                   schedule._slot_to_bi(cfg), filled, 1, 4)
+        self.assertIsNotNone(got, "搜索半径按原始窗口算 → 够不到窗口起点片的空分片")
+        # 逐值钉住：距片 5 最近的空分片落在窗口起点片，且只到该片的最后一个分片（3）
+        self.assertEqual(got, 3)
 
 
 class ModeTest(_Base):
@@ -529,27 +534,27 @@ class PlanStatsTest(_Base):
         # 有效窗口起点 06:05 → 键 5；07:14:59 距 06:00 共 74 分 59 秒 → 键 70（末格）
         self.assertEqual(planner.plan_stats(rows, cfg, DAY)["hist"], {5: 1, 70: 1})
 
-    def test_histogram_base_follows_fallback_window_start(self):
-        """裁剪吃空回退：桶键基点取回退窗口起点（06:30 ⇒ 键 0），与自选片号同号。
+    def test_histogram_base_follows_clamped_window_start(self):
+        """缓冲过大：桶键基点取窗口起点（07:00 ⇒ 键 0），与自选片号同号。
 
-        基点若仍按原始配置的 07:00 算，06:30 的落点会得到负键（-30），与 web 侧
-        "片号相对回退后窗口起点"的片号错格，影子期（dry_run）落点对比随之整体偏移。
+        基点若按收缩后的有效窗口起点（07:01）算，07:00 的落点会得到负键，与 web 侧
+        "片号相对窗口起点"的片号错格，影子期（dry_run）落点对比随之整体偏移。
         """
-        os.environ.update(EMPTY_WINDOW_ENV)
+        os.environ.update(CLAMPED_WINDOW_ENV)
         cfg = self.cfg()
         win = window.bounds(cfg)
-        self.assertTrue(win.fell_back)
-        self.assertEqual((win.start_min, win.end_min), (390, 470))
-        rows = [_row(_phone(0), f"{DAY} 06:30:01.000"),
-                _row(_phone(1), f"{DAY} 06:35:00.000"),
-                _row(_phone(2), f"{DAY} 07:49:59.000")]
-        self.assertEqual(sorted(planner.plan_stats(rows, cfg, DAY)["hist"]), [0, 5, 75])
+        self.assertTrue(win.edges_clamped)
+        self.assertEqual((win.start_min, win.end_min), (420, 430))
+        rows = [_row(_phone(0), f"{DAY} 07:00:01.000"),
+                _row(_phone(1), f"{DAY} 07:05:00.000"),
+                _row(_phone(2), f"{DAY} 07:09:59.000")]
+        self.assertEqual(planner.plan_stats(rows, cfg, DAY)["hist"], {0: 1, 5: 2})
 
     def test_geometry_derived_from_a_single_window_view(self):
         """分片数/槽宽都由同一份有效窗口视图派生：逐值钉住，且 `bounds` 只读一次。
 
         约简前经 `_span`、`window.bounds(cfg).start_min`、`_slice_count`（两次）共读 4 次
-        有效窗口；约简为取一次 `win` 再派生，逐值必须不变（正常与回退两种窗口都钉）。
+        有效窗口；约简为取一次 `win` 再派生，逐值必须不变（正常与缓冲收缩两种窗口都钉）。
         """
         cfg = self.cfg()                       # 有效窗口 06:05~07:15 → 70 分钟分片
         win = window.bounds(cfg)
@@ -562,16 +567,16 @@ class PlanStatsTest(_Base):
         self.assertEqual(st["slot_width_ms"], 1000)
         self.assertEqual(st["n_slices"], int((win.hi_min - win.lo_min) * 60 // 60))
         self.assertEqual(st["hist"], {})
-        # 裁剪吃空回退：同一份视图给回退窗口（06:31~07:49 → 78 分片），仍只读一次
-        os.environ.update(EMPTY_WINDOW_ENV)
+        # 缓冲收缩：同一份视图给有效窗口 07:01~07:09（8 分片），仍只读一次
+        os.environ.update(CLAMPED_WINDOW_ENV)
         cfg2 = self.cfg()
         win2 = window.bounds(cfg2)
-        self.assertTrue(win2.fell_back)
+        self.assertTrue(win2.edges_clamped)
         with mock.patch.object(planner.window, "bounds",
                                wraps=planner.window.bounds) as spy2:
             st2 = planner.plan_stats([], cfg2, DAY)
-        self.assertEqual(spy2.call_count, 1, "回退下同样只读一次有效窗口")
-        self.assertEqual(st2["n_slices"], 78)
+        self.assertEqual(spy2.call_count, 1, "收缩下同样只读一次有效窗口")
+        self.assertEqual(st2["n_slices"], 8)
         self.assertEqual(st2["n_slices"], int((win2.hi_min - win2.lo_min) * 60 // 60))
 
     def test_peak_per_sec_counts_landings_in_the_same_second(self):

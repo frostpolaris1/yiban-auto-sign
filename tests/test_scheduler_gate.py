@@ -1212,20 +1212,22 @@ exit ${FAKE_TIMEOUT_EXIT:-0}
 """
 
 
-class EdgeEmptyWindowMailTest(unittest.TestCase):
-    """P3-3：有效窗口被前后裁剪吃空 → 回退默认窗口 + 一次性管理员汇总邮件。"""
+class WindowDegradeMailTest(unittest.TestCase):
+    """缓冲过大（前后裁剪合计 >= 窗口宽度）→ 收缩缓冲 + 一次性管理员汇总邮件。"""
 
     def setUp(self):
-        signin._edge_empty_window_notified = False
+        signin._window_clamped_notified = False
+        signin._window_fallback_notified = False
         signin._mail_summary.clear()
 
     def tearDown(self):
-        signin._edge_empty_window_notified = False
+        signin._window_clamped_notified = False
+        signin._window_fallback_notified = False
         signin._mail_summary.clear()
 
     @staticmethod
     def _overflow_cfg():
-        # 06:30~06:40 共 10 分钟窗口，前后各裁 5 分钟 → 有效窗口为空
+        # 06:30~06:40 共 10 分钟窗口，前后各裁 5 分钟 → 缓冲合计吃满窗口
         return {
             "sign_start": (6, 30),
             "sign_end": (6, 40),
@@ -1233,20 +1235,21 @@ class EdgeEmptyWindowMailTest(unittest.TestCase):
             "edge_back_sec": 300,
         }
 
-    def test_empty_window_collects_admin_mail_once(self):
+    def test_overflow_edges_collects_admin_mail_once(self):
         cfg = self._overflow_cfg()
         with mock.patch.object(signin, "_collect_admin_mail") as m_mail:
             blocks1, lo1, hi1 = signin._schedule_blocks(dict(cfg))
             blocks2, lo2, hi2 = signin._schedule_blocks(dict(cfg))
         m_mail.assert_called_once()  # 去重标记必须保证多轮调用只收集一次
         title, text = m_mail.call_args[0]
-        self.assertEqual(title, "签到窗口配置异常")
-        self.assertIn("有效签到窗口为空", text)
-        self.assertIn("YIBAN_WINDOW_EDGE_FRONT_SEC", text)
-        # 回退默认窗口：06:30+60s ~ 07:50-60s
-        self.assertEqual((lo1, hi1), (391.0, 469.0))
-        self.assertEqual((lo2, hi2), (391.0, 469.0))
-        self.assertTrue(blocks1, "回退后必须产出非空块列表")
+        self.assertEqual(title, "签到窗口缓冲已收缩")
+        self.assertIn("06:30~06:40", text)
+        self.assertIn("300", text)
+        self.assertIn("60", text)
+        # 窗口保留、缓冲收缩为各 60s：06:30+60s ~ 06:40-60s
+        self.assertEqual((lo1, hi1), (391.0, 399.0))
+        self.assertEqual((lo2, hi2), (391.0, 399.0))
+        self.assertTrue(blocks1, "收缩后必须产出非空块列表")
         self.assertEqual(len(blocks1), len(blocks2))
 
     def test_normal_window_no_mail(self):
