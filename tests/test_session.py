@@ -179,6 +179,20 @@ class SessionCacheDbTest(_SessionCacheFixture):
             "过期行应在读取时被顺手清除",
         )
 
+    # ---- 作废日志不得印裸号：输出面兜底之外，调用点本身也须先脱敏 ----
+    def test_void_log_masks_phone_at_call_site(self):
+        db.init_db(self.db_file, env_file=self.env_file)
+        db.set_session_cache(PHONE, '{"a":"1"}', "c")
+        self._backdate_updated_at(hours=13, base_now=self.NOW)
+        # assertLogs 用默认 formatter（只取 message），故此处断言的是调用点自身
+        # 传入的文本，而非输出面 formatter 的兜底效果。
+        with self.assertLogs("yiban.store.session_cache", level="INFO") as captured:
+            self.assertIsNone(self._get())
+        joined = "\n".join(captured.output)
+        self.assertIn("会话缓存作废", joined, "作废路径应留痕")
+        self.assertNotIn(PHONE, joined, "调用点日志不得含裸号")
+        self.assertIn("138****1234", joined)
+
     # ---- TTL：YIBAN_SESSION_TTL_HOURS 环境变量覆盖（同日内放宽时长）----
     def test_ttl_env_override_extends_validity(self):
         db.init_db(self.db_file, env_file=self.env_file)

@@ -1629,12 +1629,15 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             os.remove(name)
         self.assertEqual(self.webapp.load_sign_state(date), {})
 
-    def test_mask_log_phones_only_masks_bracketed_11_digits(self):
+    def test_mask_log_phones_masks_all_bare_11_digits(self):
         mask = self.webapp._mask_log_phones
         self.assertEqual(mask("[13800138000] ✅ 签到成功"), "[138****8000] ✅ 签到成功")
         self.assertEqual(mask("[13800138000][13900139000] 两个"), "[138****8000][139****9000] 两个")
         self.assertEqual(mask("[1380013800] 少一位"), "[1380013800] 少一位")
-        self.assertEqual(mask("账号: 13800138000"), "账号: 13800138000")
+        # 中文逗号分隔的裸号此前漏过（展示层只认方括号形态），必须一并遮住
+        self.assertEqual(mask("账号: 13800138000"), "账号: 138****8000")
+        # 坐标/普通数字不得误伤
+        self.assertEqual(mask("定位 118.88459277562808"), "定位 118.88459277562808")
         self.assertEqual(mask("无号码"), "无号码")
 
     def test_cred_paused_phones_and_clear_fuse_pause(self):

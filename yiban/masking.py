@@ -8,10 +8,12 @@
   抹掉可能内嵌的凭据字面量——防日志注入与凭据泄露；
 - `sanitize_url`：URL 入日志前对 query 里的凭据类参数打码（OAuth code / CSRF /
   session 标识 / 未知高熵令牌）；
-- `mask_phone`：11 位手机号 → `138****8000`。
+- `mask_phone`：11 位手机号 → `138****8000`；
+- `mask_phones_in_text`：自由文本里**所有** 11 位手机号 → `138****8000`，供日志输出面
+  与展示/导出层共用（同一口径，不另起第二套）。
 
-**本地日志文件仍保留完整号**（排查需要），脱敏只用在对外通道（webhook、页面展示）
-与「日志页」的展示层。
+**日志落盘面也脱敏**：日志文件会被转发、导出、截图，故输出面的 formatter 对最终
+消息统一兜底脱敏（`yiban.logging_ext.MaskingFormatter`），不依赖各调用点自觉。
 
 ⚠ `mask_email` 不在这里：它与 signin 侧的邮箱脱敏公式不同，合并会改变用户可见输出，
 须与前端展示口径一起改。
@@ -29,6 +31,11 @@ _URL_SENSITIVE_KEY_PARTS = (
 # 大陆手机号形态（11 位、1[3-9] 开头）——参数名不敏感时也按值打码：
 # 上游把手机号回显在 `u=`/`id=` 这类名字里时，24 位高熵阈值够不到 11 位。
 _PHONE_VALUE_RE = re.compile(r"^1[3-9]\d{9}$")
+
+# 自由文本里的手机号：与 `_PHONE_VALUE_RE` 同字符口径（直接复用其 pattern，不另写
+# 一套号码规则），只把首尾锚点换成"两侧不能是数字"——否则会把 12 位订单号之类
+# 前 11 位截出来误伤；同时避免把坐标/时间戳里的数字段当号码。
+_PHONE_IN_TEXT_RE = re.compile(r"(?<!\d)" + _PHONE_VALUE_RE.pattern.strip("^$") + r"(?!\d)")
 
 
 # 凭据字面量的键名形态：允许 `refresh_token` / `session_id` / `id_token` /
@@ -77,6 +84,17 @@ def mask_phone(phone):
     if "*" in p:
         return p
     return p[:3] + "****" + p[7:] if len(p) == 11 else p
+
+
+def mask_phones_in_text(text):
+    """把自由文本里**全部** 11 位手机号替换为 `138****8000`，其余原样（**幂等**）。
+
+    日志输出面（`yiban.logging_ext.MaskingFormatter`）与展示/导出层（`_mask_log_phones`）
+    共用本函数：脱敏必须只有一个号码口径，否则两套必然分叉（历史缺陷正是展示层只认
+    `[11 位]` 方括号形态、中文逗号分隔的裸号漏过）。已遮形态（含 `*`）不匹配 11 位
+    连续数字，故重复调用不再变形。
+    """
+    return _PHONE_IN_TEXT_RE.sub(lambda m: mask_phone(m.group(0)), str(text))
 
 
 def sanitize_url(url):
