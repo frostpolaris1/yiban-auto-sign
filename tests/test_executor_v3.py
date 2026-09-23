@@ -949,10 +949,14 @@ class GiveUpNotifyTest(_Base):
 # 顶层兜底：未预期异常不外逃
 # ---------------------------------------------------------------------------
 class UnexpectedErrorTest(_Base):
-    """lane/refiller 抛出的未预期异常必须被顶层兜住：记 error 并返回空结果。
+    """顶层兜底的两档边界：**丢结果**与**只丢收尾**。
 
-    逃逸成 traceback 会让退出码落到契约（0/1/2/3/10）之外；处置与"计划不可用"
-    同一口径——本轮一个请求都不发，返回空结果，由 runner 汇总出契约内退出码。
+    - 拿结果那一段（ctx 构建 → 预扫 → 装桶 → `asyncio.run`）失败：本轮一个请求都
+      没走完，只能记 error 并返回空结果——逃逸成 traceback 会让退出码落到契约
+      （0/1/2/3/10）之外，处置与"计划不可用"同一口径；
+    - 窗口收尾（`_mark_window_skips`）失败：结果集已经成型，**必须原样返回**，
+      只把这一段记 error——把已完成的成功/失败改成"无结果"会让 runner 把一轮基本
+      成功的活汇总成"全部未执行"（退出码 1 + 失败邮件），与事实相反。
     """
 
     def test_refiller_exception_is_contained(self):
@@ -966,6 +970,23 @@ class UnexpectedErrorTest(_Base):
         self.assertEqual(results, {}, "未预期异常按无结果收尾")
         joined = "\n".join(cm.output)
         self.assertIn("未预期异常", joined)
+        self.assertNotIn("13800000001", joined, "异常文本落日志前必须脱敏手机号")
+
+    def test_window_skip_failure_keeps_completed_results(self):
+        """窗口收尾失败只丢收尾：已完成账号的结果照常返回，不得变成空结果。"""
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "签到成功", False, "success")), \
+             mock.patch.object(executor_v3, "_mark_window_skips",
+                               side_effect=RuntimeError("收尾炸了 13800000001")), \
+             self.assertLogs("yiban", level="ERROR") as cm:
+            results = self._run_v3(self._accounts(phone), [_item(phone)])
+        self.assertEqual(results.get(phone), (True, "签到成功", False, "success"),
+                         "窗口收尾失败不得丢掉已完成的账号结果")
+        joined = "\n".join(cm.output)
+        self.assertIn("v3 窗口收尾失败", joined, "收尾异常必须留下 ERROR 日志")
         self.assertNotIn("13800000001", joined, "异常文本落日志前必须脱敏手机号")
 
     def test_unexpected_error_does_not_swallow_contract_signals(self):
@@ -1324,11 +1345,22 @@ class RunnerSplitTest(unittest.TestCase):
                 self.assertEqual(len(retry_calls), 1)
 
     def test_empty_results_from_executor_yield_contract_exit_code(self):
-        """执行体返回空结果（顶层兜底的输出）时，runner 仍给出契约内退出码。"""
+        """执行体返回空结果（**丢结果**那一档兜底的输出）时，runner 仍给出契约内退出码。"""
         os.environ["YIBAN_SCHEDULER_V3"] = "1"
         code, *_ = self._run(outcome={})
         self.assertIn(code, (0, 1, 2, 3, 10))
         self.assertEqual(code, 1, "无结果按失败汇总，不得落到契约之外")
+
+    def test_retained_results_from_executor_yield_contract_exit_code(self):
+        """执行体保留已完成结果（**只丢收尾**那一档的输出）时，退出码同样在契约内。
+
+        窗口收尾失败返回的是"已完成账号的结果集"，不是空结果——runner 按它汇总出
+        成功（0），而不是把一轮基本成功的活报成"全部未执行"（1 + 失败邮件）。
+        """
+        os.environ["YIBAN_SCHEDULER_V3"] = "1"
+        code, *_ = self._run(outcome={_phone(0): (True, "签到成功", False, "success")})
+        self.assertIn(code, (0, 1, 2, 3, 10))
+        self.assertEqual(code, 0, "保留的结果集按真实结论汇总，不得落到契约之外")
 
 
 if __name__ == "__main__":

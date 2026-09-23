@@ -586,11 +586,20 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     计划不可用时返回空结果并留 error：v3 的队列就是 `sign_tasks`，没有可用的库就没有
     队列，本轮一个请求都不发。
 
-    **未预期异常一律不外逃**：本函数是 `runner` 退出码汇总的前置调用，任何从通道/补货/
-    收尾冒出的异常若逃成 traceback，退出码就会落到契约（0/1/2/3/10）之外，`run.sh` 的
-    补签闸门与状态写入随之失真。故除"计划不可用"外再兜一层 `except Exception`：记 error
-    后返回空结果，与"计划不可用"同一处置——由 runner 把"无结果"汇总成契约内退出码。
-    只兜 `Exception`，`KeyboardInterrupt` / `SystemExit`（超时击杀、显式退出）必须照常外逃。
+    **未预期异常一律不外逃**，但按"结果是否已成型"分两档处置：本函数是 `runner` 退出码
+    汇总的前置调用，任何冒出的异常若逃成 traceback，退出码就会落到契约（0/1/2/3/10）
+    之外，`run.sh` 的补签闸门与状态写入随之失真。
+
+    - **丢结果**：ctx 构建 → 预扫 → 装桶 → `asyncio.run(_run_async)` 这一段失败时，
+      本轮没有可信的账号结论，记 error 后返回空结果（与"计划不可用"同一处置，由
+      runner 汇总成契约内的"未执行"）；
+    - **只丢收尾**：`_mark_window_skips` 失败时结果集已经成型，**照常返回 `ctx.results`**，
+      只把这一段记 error 并继续——若并进"丢结果"那一档，一轮基本成功的活会被汇总成
+      "全部未执行"（退出码 1 + 失败邮件），与事实相反；没被收尾的账号由 runner 按
+      "未执行"计入失败，可见性不受损。
+
+    两档都只兜 `Exception`，`KeyboardInterrupt` / `SystemExit`（超时击杀、显式退出）
+    必须照常外逃。
     """
     cfg = cfg or schedule.planner_config()
     day = day or _now().strftime("%Y-%m-%d")
@@ -620,10 +629,14 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         logger.info("v3 执行体：%d 条通道 / %d 个分片 / 出口 %s",
                     ctx.m, len(ctx.shards), ctx.egress)
         asyncio.run(_run_async(ctx))
-        _mark_window_skips(ctx, accounts)
     except Exception as e:
         # 异常文本经 _sanitize_text 防注入、_mask_phones_in_text 抹手机号后再落日志
         logger.error("v3 执行体未预期异常，本轮按无结果收尾（不外逃）: %s",
                      _mask_phones_in_text(_sanitize_text(str(e))))
         return {}
+    try:
+        _mark_window_skips(ctx, accounts)
+    except Exception as e:
+        logger.error("v3 窗口收尾失败，已完成的账号结果照常返回: %s",
+                     _mask_phones_in_text(_sanitize_text(str(e))))
     return ctx.results
