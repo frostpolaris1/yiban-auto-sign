@@ -77,8 +77,10 @@ class _Base(unittest.TestCase):
 class SchemaTest(_Base):
     def test_v19_bumps_version_and_adds_epoch_column(self):
         conn = self._init_full()
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 19)
-        self.assertEqual(db._MIGRATIONS[-1][0], 19, "v19 应是迁移顶")
+        # 断言对齐迁移登记表的顶，而不是写死 19——本文件不必随新迁移再改
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                         db._MIGRATIONS[-1][0])
+        self.assertIn(19, [m[0] for m in db._MIGRATIONS], "v19 应在迁移登记表中")
         col = {r["name"]: r for r in conn.execute(
             "PRAGMA table_info(sign_claims)").fetchall()}["epoch"]
         self.assertEqual(col["type"], "INTEGER")
@@ -99,7 +101,8 @@ class SchemaTest(_Base):
              "2026-09-22 07:00:11", "claimed", "", 0))
         conn.commit()
         db._run_migrations(conn)          # 框架路径：v18 + v19 在 BEGIN IMMEDIATE 内执行
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 19)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                         db._MIGRATIONS[-1][0], "迁移链应跑到登记表的顶")
         row = conn.execute(
             "SELECT epoch FROM sign_claims WHERE phone=?", ("13800138000",)).fetchone()
         self.assertEqual(row["epoch"], 0)
