@@ -84,6 +84,11 @@ def _next_retry_at(now_dt, sch_cfg, rng=None):
     上界必须与排计划/判关闭同源：裁剪把窗口吃空时 `window.bounds` 回退默认窗口，而
     "sign_end - edge_back" 仍按原始配置算，上界会落到有效窗口起点之前——窗口明明还开着，
     重试却判"放不下"而放弃，白丢一次机会。
+
+    **入参契约**：`sch_cfg` 必须是 `schedule._schedule_config()` 的返回形态，即含
+    `sign_start` / `sign_end` / `edge_front_sec` / `edge_back_sec` 四键（`window.bounds`
+    按这四键折有效窗口）外加 `retry_min_interval`。只给起止两键的旧形态会让 `bounds`
+    取不到裁剪键而抛 KeyError。
     """
     rng = rng or random.Random()
     base = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
