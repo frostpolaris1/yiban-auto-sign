@@ -8,6 +8,8 @@
 ——对账结论不依赖 backfill 行为，两个被测面互不牵连。
 """
 import contextlib
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from yiban import clock
 from yiban.masking import mask_phone
@@ -33,6 +36,14 @@ def _run(args, env):
     return subprocess.run([sys.executable, SCRIPT, *args], cwd=BASE, env=env,
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=120)
+
+
+def _load_script():
+    """把脚本按模块载入——异常路径无法从 CLI 触发，只能对同一 `main()` 注入故障。"""
+    spec = importlib.util.spec_from_file_location("_ledger_check_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class LedgerCheckTest(unittest.TestCase):
@@ -80,12 +91,12 @@ class LedgerCheckTest(unittest.TestCase):
                   encoding="utf-8") as f:
             json.dump(entries, f, ensure_ascii=False)
 
-    def _insert_task(self, phone, day, state, owner="backfill"):
+    def _insert_task(self, phone, day, state, owner="backfill", vshard=-1):
         self.conn.execute(
             "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
             "state, attempts, lease_until, result, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (phone, day, -1, owner, f"{day} 07:00:00", 5, state, 0, "", "",
+            (phone, day, vshard, owner, f"{day} 07:00:00", 5, state, 0, "", "",
              f"{day} 07:00:00"),
         )
         self.conn.commit()
@@ -144,7 +155,55 @@ class LedgerCheckTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("halfway", r.stdout)
 
-    # ---- 12. 白名单补项 ----
+    # ---- 12. 计数自洽的两个分支 ----
+    def test_translated_row_counts_toward_reconciliation(self):
+        """平移行是 `vshard=-1` 且 `owner` 为领取池原值（v18 平移保留 owner）；
+        `owner='backfill'` 的是补账行——两者在计数检查里分列两项，不能混作一格。"""
+        self._write_state(DAY, {PHONE_OK: {"status": "success"}})
+        self._insert_task(PHONE_OK, DAY, "done", owner="worker-0@host")
+        r = _run(["--day", DAY], self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("对账平", r.stdout)
+
+    def test_third_writer_breaks_count_reconciliation(self):
+        """行数 ≠ 平移 + 补账 ⇒ exit 1 并打印该差异（真实分片行既非平移也非补账）。"""
+        self._write_state(DAY, {
+            PHONE_OK: {"status": "success"},
+            PHONE_MISSING: {"status": "paused"},
+        })
+        self._insert_task(PHONE_OK, DAY, "done", owner="worker-0@host")
+        self._insert_task(PHONE_MISSING, DAY, "skipped", owner="worker-1@host", vshard=0)
+        r = _run(["--day", DAY], self.env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("计数不自洽", r.stdout)
+        self.assertIn("无来源 1 行", r.stdout)
+
+    # ---- 13. 零覆盖与未预期异常都归"无法定论" ----
+    def test_zero_coverage_exits_two(self):
+        """状态目录在、但一天的处理文件都没有 ⇒ 无法定论，不是平账。
+
+        三项检查在空输入上空转全部"通过"，那盏绿灯说明不了台账对不对。
+        """
+        r = _run(["--day", DAY], self.env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("零覆盖", r.stdout)
+
+    def test_unexpected_exception_exits_two(self):
+        """非 sqlite 异常也归"无法定论"——`1` 只留给明确探测到的差异。
+
+        故障注入点只能从进程内给（CLI 不暴露），故直接断言 `main()` 的返回值：它就是
+        `sys.exit(main())` 交给进程的退出码。
+        """
+        module = _load_script()
+        with mock.patch.object(module.db, "init_db",
+                               side_effect=RuntimeError("注入的连接层故障")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = module.main(["--day", DAY])
+        self.assertEqual(rc, 2, buf.getvalue())
+        self.assertIn("无法定论", buf.getvalue())
+
+    # ---- 14. 白名单补项 ----
     def test_allowed_tables_covers_egress_state_and_app_meta(self):
         self.assertIn("egress_state", migrations._ALLOWED_TABLES)
         self.assertIn("app_meta", migrations._ALLOWED_TABLES)
