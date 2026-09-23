@@ -117,12 +117,34 @@ def capacity_accounts(window_sec, gap=0, avg=None):
     return slack // (avg + gap) + 1
 
 
+def channel_count(bucket_rate, avg=None):
+    """每执行体的并发通道数 `M = min(_DEFAULT_CHANNELS_MAX, ceil(bucket_rate × avg × 2))`。
+
+    通道能力 `M/avg` 只需略高于出口令牌桶上限（系数 2 是余量），瓶颈因此始终是两者中
+    的较小者。**M 的唯一口径**：容量公式、令牌桶的突发额度与执行体的通道数/线程池上限
+    都调本函数——三处各写一份式子，改一处必漏另两处。
+
+    `bucket_rate` 非正 → 回退 `_DEFAULT_BUCKET_RATE` 并告警（与 `capacity_accounts_v3`
+    同口径）：非法配置不能让通道数恒为 0，否则容量预估恒 0、执行体一条通道都不起。
+    """
+    if avg is None:
+        avg = avg_attempt_sec()
+    avg = max(1, int(avg))
+    bucket_rate = float(bucket_rate)
+    if bucket_rate <= 0:
+        # 非法配置不能让容量恒 0：web 保存闸门会因此误拒一切设置
+        logger.warning("出口桶速率 %s 非法，回退默认 %s", bucket_rate, _DEFAULT_BUCKET_RATE)
+        bucket_rate = _DEFAULT_BUCKET_RATE
+    return min(_DEFAULT_CHANNELS_MAX, math.ceil(bucket_rate * avg * 2))
+
+
 def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
     """V3 全局容量：`容量 = K × min(M/avg, bucket_rate) × W × util`。
 
-    `M = min(16, ceil(bucket_rate × avg × 2))` 是每执行体的并发通道数：通道能力
-    `M/avg` 只需略高于出口令牌桶上限，**瓶颈是两者中的较小者**。只按通道吞吐算容量、
-    忽略桶封顶，会把容量高估 2.3 倍（桶 1/s、avg 3s 时 2.67 次/s 并非有效速率）。
+    `M = min(16, ceil(bucket_rate × avg × 2))` 是每执行体的并发通道数（唯一口径见
+    `channel_count`）：通道能力 `M/avg` 只需略高于出口令牌桶上限，**瓶颈是两者中的
+    较小者**。只按通道吞吐算容量、忽略桶封顶，会把容量高估 2.3 倍（桶 1/s、avg 3s 时
+    2.67 次/s 并非有效速率）。
 
     `util` 缺省 0.8（重试与尾延迟降额）；`k` 是执行体数（默认 1 = 单执行体零额外配置）。
     单位是**账号尝试数**（单账号 ≈6 次 HTTP 请求），不是请求数。
@@ -131,13 +153,11 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
         avg = avg_attempt_sec()
     avg = max(1, int(avg))
     k = max(1, int(k))
+    util = min(max(float(util), 0.0), 1.0)
+    channels = channel_count(bucket_rate, avg)
     bucket_rate = float(bucket_rate)
     if bucket_rate <= 0:
-        # 非法配置不能让容量恒 0：web 保存闸门会因此误拒一切设置
-        logger.warning("出口桶速率 %s 非法，回退默认 %s", bucket_rate, _DEFAULT_BUCKET_RATE)
         bucket_rate = _DEFAULT_BUCKET_RATE
-    util = min(max(float(util), 0.0), 1.0)
-    channels = min(_DEFAULT_CHANNELS_MAX, math.ceil(bucket_rate * avg * 2))
     rate_eff = min(channels / avg, bucket_rate)
     return math.floor(k * rate_eff * max(0, int(window_sec)) * util + 1e-9)
 
