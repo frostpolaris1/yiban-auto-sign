@@ -188,6 +188,40 @@ class LedgerCheckTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("零覆盖", r.stdout)
 
+    def test_empty_state_files_exit_two(self):
+        """状态文件在、但没有一条终态记录 ⇒ 仍是零覆盖，不可读成平账。
+
+        空 dict、或条目里没有可对账的 `status`，都让三项检查在空输入上空转全绿。
+        故"有覆盖"按**有终态记录**算，而不是"文件读出来是 dict"。
+        """
+        self._write_state(DAY, {})
+        r = _run(["--day", DAY], self.env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("零覆盖", r.stdout)
+
+        self._write_state(DAY, {PHONE_OK: {}, PHONE_MISSING: {"status": ""}})
+        r = _run(["--day", DAY], self.env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("零覆盖", r.stdout)
+
+    def test_unexpected_exception_message_is_sanitized(self):
+        """兜底打印的异常消息含凭据形态时必须脱敏（与迁移侧同一口径）。
+
+        异常文本多来自连接层/`.env` 解析，可能带出配置值；原样打印等于把它写进
+        运维终端与日志。判定与实现共用 `yiban.masking.sanitize_text`。
+        """
+        module = _load_script()
+        with mock.patch.object(
+                module.db, "init_db",
+                side_effect=RuntimeError("连接失败 token=SECRET123")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = module.main(["--day", DAY])
+        out = buf.getvalue()
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("SECRET123", out, "兜底输出不得回显异常原文")
+        self.assertIn("token=***", out)
+
     def test_unexpected_exception_exits_two(self):
         """非 sqlite 异常也归"无法定论"——`1` 只留给明确探测到的差异。
 
