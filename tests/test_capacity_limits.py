@@ -537,12 +537,17 @@ class CapacityFormulaTest(_Base_B19):
             self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_trimmed_empty_window_matches_engine_plan(self):
-        """裁剪吃空 → 回退窗口；网页容量与引擎计划同源。"""
+        """缓冲过大 → 只收缩缓冲（窗口 1 分钟保留）；网页容量与引擎计划同源。
+
+        窗口 07:00~07:01 前后各 300s（合计 >= 窗口宽度）⇒ 缓冲等比收缩为各 6s，
+        有效窗口 ≈48s；容量 = (47 - 8) / 8 + 1 = 5（**不是** 0，也不是回退默认窗口；
+        47 是 `capacity_accounts` 对窗口秒数取整的结果）。
+        """
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((7, 0), (7, 1))), \
              mock.patch.object(self.webapp, "edge_config", return_value=(300, 300)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+            self.assertEqual(self.webapp._capacity_estimate(0), 5)
 
     def test_engine_and_web_share_one_formula(self):
         """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""

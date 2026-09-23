@@ -71,25 +71,30 @@ class WindowSourceTest(unittest.TestCase):
                    YIBAN_WINDOW_EDGE_BACK_SEC=None)
         self.assertEqual((cfg["edge_front_sec"], cfg["edge_back_sec"]), (120, 120))
 
-    def test_sch3_trimmed_empty_window_falls_back_for_both_plan_and_gate(self):
-        """裁剪吃空时，排计划与判关闭必须都按回退窗口（默认 06:30~07:50）。"""
+    def test_sch3_trimmed_empty_window_clamps_edges_for_both_plan_and_gate(self):
+        """缓冲过大时只收缩缓冲（窗口保留），排计划与判关闭必须都按收缩后的有效窗口。"""
         cfg = _cfg(YIBAN_SIGN_START="07:00", YIBAN_SIGN_END="07:01",
                    YIBAN_WINDOW_EDGE_FRONT_SEC="300", YIBAN_WINDOW_EDGE_BACK_SEC="300")
         win = window.bounds(cfg)
-        self.assertTrue(win.fell_back, "前裁+后裁吃满窗口应回退默认窗口")
-        self.assertEqual((win.lo_min, win.hi_min), (391.0, 469.0))
-        # 计划（_schedule_blocks）与判定（_window_closed）同源：07:00 开启
+        self.assertTrue(win.edges_clamped, "缓冲合计 >= 窗口宽度应收缩缓冲")
+        self.assertFalse(win.fell_back, "窗口可用时不得回退默认窗口")
+        # 窗口 1 分钟保留；缓冲等比收缩到合计 12s（各 6s）→ 有效窗口 48s
+        self.assertEqual((win.start_min, win.end_min), (420, 421))
+        self.assertEqual((win.front_sec, win.back_sec), (6, 6))
+        self.assertEqual((win.lo_min, win.hi_min), (420.1, 420.9))
+        # 计划（_schedule_blocks）与判定（_window_closed）同源
         blocks, eff_lo, eff_hi = signin._schedule_blocks(cfg)
-        self.assertGreater(len(blocks), 0, "回退窗口下应有完整计划")
+        self.assertGreater(len(blocks), 0, "收缩后窗口下应有完整计划")
         self.assertEqual((eff_lo, eff_hi), (win.lo_min, win.hi_min))
         self.assertFalse(
             signin._window_closed(cfg, _dt.datetime(2026, 9, 15, 7, 0)),
-            "07:00 在回退窗口内，不得判『时段已结束』（原实现按原始配置算 → 全员零请求）",
+            "07:00 在有效窗口起点之前，不得判『时段已结束』（按原始配置算 → 全员零请求）",
         )
+        self.assertFalse(signin._window_closed(cfg, _dt.datetime(2026, 9, 15, 7, 0, 20)))
         self.assertTrue(signin._window_closed(cfg, _dt.datetime(2026, 9, 15, 9, 0)))
 
     def test_capacity_nonzero_train_on_trimmed_empty_window(self):
-        """配置异常时容量不再显示 0（回退窗口仍有 80 分钟）。"""
+        """缓冲过大时容量不再显示 0（收缩后仍有 48 秒有效窗口）。"""
         cfg = _cfg(YIBAN_SIGN_START="07:00", YIBAN_SIGN_END="07:01",
                    YIBAN_WINDOW_EDGE_FRONT_SEC="300", YIBAN_WINDOW_EDGE_BACK_SEC="300")
         win = window.bounds(cfg)
