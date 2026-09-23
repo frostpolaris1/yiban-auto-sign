@@ -308,7 +308,7 @@ from yiban import clock, cred_state  # noqa: E402,F401
 # 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
 from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
-from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
+from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402,F401  # 代理脱敏
 
@@ -1575,7 +1575,7 @@ def create_app(host=None):
                 "仅输出到 stderr/标准日志通道", _log_dir)
             _daily_fh = None
         if _daily_fh is not None:
-            _daily_fh.setFormatter(logging.Formatter(
+            _daily_fh.setFormatter(MaskingFormatter(
                 "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             ))

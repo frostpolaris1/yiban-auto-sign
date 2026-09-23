@@ -41,6 +41,7 @@ from Crypto.Protocol.KDF import HKDF
 
 from yiban import clock
 from yiban.infra import account_crypto
+from yiban.masking import mask_phone as _mask_phone
 from yiban.store import connection as _connection
 
 logger = logging.getLogger("yiban.store.session_cache")
@@ -170,8 +171,8 @@ def get_session_cache(phone):
             except Exception:
                 with contextlib.suppress(Exception):
                     conn.rollback()
-                logger.warning("清理过期会话缓存失败: %s", phone)
-            logger.info("会话缓存作废（%s）: %s，本次真实登录", reason, phone)
+                logger.warning("清理过期会话缓存失败: %s", _mask_phone(phone))
+            logger.info("会话缓存作废（%s）: %s，本次真实登录", reason, _mask_phone(phone))
             return None
         try:
             obj = json.loads(row["cookies_ct"])
