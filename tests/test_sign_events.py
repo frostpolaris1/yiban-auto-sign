@@ -262,3 +262,41 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         rows2 = db.sign_events_since("2026-08-16 06:30:01", limit=10)
         self.assertEqual(len(rows2), 0)
+
+    # ---- 聚合口径：按账号去重，同时保留原始行数 ----
+    def _stat_for(self, status):
+        """取今日该状态的那条聚合行（找不到返回 None）。"""
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        for row in db.sign_event_stats(days=30):
+            if row["day"] == today and row["status"] == status:
+                return row
+        return None
+
+    def test_stats_count_distinct_phone_not_rows(self):
+        # 跳过发生在领取之前：两个执行体各走一遍跳过路径、各写一行 ⇒ 同一账号两行。
+        # cnt 必须按账号计一次，否则报表虚增；row_cnt 保留真实行数（尝试次数）。
+        db.add_sign_event(_recent(minutes=2), "13800138000", "user_cancelled")
+        db.add_sign_event(_recent(minutes=1), "13800138000", "user_cancelled")
+        row = self._stat_for("user_cancelled")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["cnt"], 1, "同一账号同一状态当日只计一次")
+        self.assertEqual(row["row_cnt"], 2, "原始行数（尝试次数）不得丢失")
+
+    def test_stats_count_distinct_across_phones(self):
+        db.add_sign_event(_recent(minutes=2), "13800138000", "failed")
+        db.add_sign_event(_recent(minutes=1), "13900139000", "failed")
+        row = self._stat_for("failed")
+        self.assertEqual(row["cnt"], 2)
+        self.assertEqual(row["row_cnt"], 2)
+
+    def test_stats_same_phone_in_both_status_buckets(self):
+        # 语义边界：各状态桶分别去重 ⇒ 先失败后成功的账号同时出现在两个桶，
+        # 各桶相加当"账号总数"仍会偏大（最终状态口径不在本聚合范围内）。
+        db.add_sign_event(_recent(minutes=3), "13800138000", "failed")
+        db.add_sign_event(_recent(minutes=2), "13800138000", "success")
+        failed = self._stat_for("failed")
+        success = self._stat_for("success")
+        self.assertEqual(failed["cnt"], 1)
+        self.assertEqual(success["cnt"], 1)
+        self.assertEqual(failed["cnt"] + success["cnt"], 2,
+                         "同一账号在两个桶各计一次（分桶去重的必然结果）")
