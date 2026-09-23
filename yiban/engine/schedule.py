@@ -42,6 +42,11 @@ _DEFAULT_AVG_ATTEMPT_SEC = 3
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
+# V3 全局容量口径（A 案 §6.1 修正版）：出口令牌桶速率（次尝试/s）、通道数上限、
+# 重试与尾延迟降额系数。桶速率键与 web 侧容量预估（T7）同源。
+_DEFAULT_BUCKET_RATE = 1.0
+_DEFAULT_CHANNELS_MAX = 16
+_DEFAULT_UTIL = 0.8
 
 # 签到窗口配置非法的一次性告警标记：_schedule_config 每次调度都会调用，
 # 非法窗口回退默认窗口的告警只收集一次，避免同一配置错误在汇总邮件里重复出现
@@ -73,6 +78,22 @@ def avg_attempt_sec():
     return _env_int("YIBAN_AVG_ATTEMPT_SEC", _DEFAULT_AVG_ATTEMPT_SEC, 1, 300)
 
 
+def _env_float(name, default, lo=None, hi=None):
+    """读浮点环境变量；缺失/非法回退默认（与 `_env_int` 同一套回退 + 告警口径）。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        logger.warning("配置 %s=%r 非法，回退默认 %s", name, raw, default)
+        return default
+    if (lo is not None and v < lo) or (hi is not None and v > hi):
+        logger.warning("配置 %s=%s 超出范围 [%s, %s]，回退默认 %s", name, v, lo, hi, default)
+        return default
+    return v
+
+
 def capacity_accounts(window_sec, gap=0, avg=None):
     """有效窗口内可容纳的账号数（容量口径唯一源：引擎预检与 web 容量预估共用）。
 
@@ -92,6 +113,31 @@ def capacity_accounts(window_sec, gap=0, avg=None):
     if slack < 0:
         return 0
     return slack // (avg + gap) + 1
+
+
+def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
+    """V3 全局容量（A 案 §6.1 修正版）：`容量 = K × min(M/avg, bucket_rate) × W × util`。
+
+    `M = min(16, ceil(bucket_rate × avg × 2))` 是每执行体的并发通道数：通道能力
+    `M/avg` 只需略高于出口令牌桶上限，**瓶颈是两者中的较小者**。原稿直接拿通道
+    吞吐（2.3 次/s）算容量、忽略桶封顶，把容量高估 2.3 倍（A 案 §11.2 第 1 条）。
+
+    `util` 缺省 0.8（重试与尾延迟降额）；`k` 是执行体数（默认 1 = 单执行体零额外配置）。
+    单位是**账号尝试数**（单账号 ≈6 次 HTTP 请求），不是请求数。
+    """
+    if avg is None:
+        avg = avg_attempt_sec()
+    avg = max(1, int(avg))
+    k = max(1, int(k))
+    bucket_rate = float(bucket_rate)
+    if bucket_rate <= 0:
+        # 非法配置不能让容量恒 0：web 保存闸门会因此误拒一切设置
+        logger.warning("出口桶速率 %s 非法，回退默认 %s", bucket_rate, _DEFAULT_BUCKET_RATE)
+        bucket_rate = _DEFAULT_BUCKET_RATE
+    util = min(max(float(util), 0.0), 1.0)
+    channels = min(_DEFAULT_CHANNELS_MAX, math.ceil(bucket_rate * avg * 2))
+    rate_eff = min(channels / avg, bucket_rate)
+    return math.floor(k * rate_eff * max(0, int(window_sec)) * util + 1e-9)
 
 
 def _schedule_config():
@@ -163,6 +209,35 @@ def _schedule_config():
         "sign_start": start,
         "sign_end": end,
     }
+
+
+def _executor_ids(env=None):
+    """执行体身份串列表（HRW 分工的候选集）：清单里的并行执行体行；无清单 → 单执行体。
+
+    身份串的唯一构造处是 `yiban.egress`（跨重启稳定、含主机名），这里只按清单行取
+    ——计划里的 `owner` 必须与执行体自己算出的名字逐字一致，否则分片归属会对不上。
+    """
+    from yiban import egress
+    src = os.environ if env is None else env
+    rows = egress.parse_manifest(src.get(egress.ENV_MANIFEST))
+    if rows:
+        workers = egress.worker_rows(rows)
+        if workers:
+            return [egress.worker_owner(r["slot"]) for r in workers]
+    return [egress.single_owner()]
+
+
+def planner_config():
+    """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 三模式 + μσ + 桶速率 + 执行体。
+
+    读法与 `_schedule_config` **同源**（直接复用它的结果），只补两项 Planner 独有的：
+    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省 1.0，与 web 容量预估同键）与 `executors`
+    （HRW 候选集）。不另存一份窗口/模式口径——两份口径迟早会分叉。
+    """
+    cfg = _schedule_config()
+    cfg["bucket_rate"] = _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
+    cfg["executors"] = _executor_ids()
+    return cfg
 
 
 def _anchor_z(phone):
