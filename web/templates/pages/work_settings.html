@@ -152,21 +152,21 @@
           <span class="field-label" id="ss-edge-front-label">掐头</span>
           <div class="range-field" data-range-field="ss-edge-front" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="掐头"
-               data-hint="裁掉签到窗口开头段，避开整点边界超时；0 = 不裁切。"
+               data-hint="裁掉签到窗口开头段，避开整点边界超时；0 = 不裁切。上限随窗口收窄，不超过窗口的 20%。"
                aria-labelledby="ss-edge-front-label">
             <input type="hidden" id="ss-edge-front" value="1">
           </div>
-          <p class="field-help">裁掉窗口开头的 n 分钟以避开边界超时；0 = 不裁切。</p>
+          <p class="field-help">裁掉窗口开头的 n 分钟以避开边界超时；0 = 不裁切；上限随窗口收窄。</p>
         </div>
         <div class="field">
           <span class="field-label" id="ss-edge-back-label">去尾</span>
           <div class="range-field" data-range-field="ss-edge-back" data-min="0" data-max="5"
                data-step="0.5" data-unit="分钟" data-title="去尾"
-               data-hint="裁掉签到窗口末尾段；不影响「掐头」。"
+               data-hint="裁掉签到窗口末尾段；不影响「掐头」。上限随窗口收窄，不超过窗口的 20%。"
                aria-labelledby="ss-edge-back-label">
             <input type="hidden" id="ss-edge-back" value="1">
           </div>
-          <p class="field-help">裁掉窗口末尾的 n 分钟，前后独立设置。</p>
+          <p class="field-help">裁掉窗口末尾的 n 分钟，前后独立设置；上限随窗口收窄。</p>
         </div>
         {# 短标量字段收窄（原与整列同宽，一个 1~4 位数字占 550px） #}
         <div class="field field--narrow">

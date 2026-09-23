@@ -27,6 +27,7 @@
   var dirty = false;
   var saving = false;
   var leaving = false;      // 页面已就"离开"征得用户同意（由 markLeaving() 置位）
+  var fallbackText = "";    // 窗口不可用（已回退默认）时服务端给的可见提示，正常为空串
 
   function $(id) { return document.getElementById(id); }
   function num(el, fallback) {
@@ -50,6 +51,14 @@
     var s = parseInt(a[0], 10) * 3600 + parseInt(a[1], 10) * 60;
     var e = parseInt(b[0], 10) * 3600 + parseInt(b[1], 10) * 60;
     return e > s ? e - s : 0;
+  }
+  // 缓冲单边上限（分钟）：窗口宽度的 20%，且不超过既有量程 5 分钟；按 30s 粒度向下取整。
+  // 与服务端 `yiban.window.edge_cap_sec` 同一条式子（粒度也必须一致，否则前端允许的值
+  // 服务端会夹小、用户看到"保存后数字变了"）。
+  function edgeMaxMin(winSec) {
+    if (!(winSec > 0)) return 5;
+    var cap = Math.floor(winSec * 0.2 / 30) * 30 / 60;
+    return Math.max(0, Math.min(5, cap));
   }
   function capacityCount() {
     var cap = ctx && ctx.capacity ? ctx.capacity() : null;
@@ -129,17 +138,33 @@
     setHidden($("ss-dirty"), true);
   }
 
-  // 窗口容量警示：掐头去尾为 0 时边缘账号可能超时；窗口扣除掐头去尾与
-  // 间隔×账号数后不足时，提示可能签不上。纯展示，不阻断保存。
+  // 滑块可用上限随当前窗口动态收窄：窗口变小后旧值可能超出上限，保存会被服务端夹小，
+  // 故先把量程改小（弹窗里的数字框/滑杆随即只能选到上限），再由 updateEdgeWarn 说明。
+  function updateEdgeLimits() {
+    var maxMin = edgeMaxMin(windowSec());
+    ["ss-edge-front", "ss-edge-back"].forEach(function (id) {
+      var root = document.querySelector('[data-range-field="' + id + '"]');
+      if (root) root.setAttribute("data-max", String(maxMin));
+    });
+    return maxMin;
+  }
+
+  // 窗口容量警示：掐头去尾超过窗口的 20%（单边上限随窗口动态收窄，与服务端夹取同一
+  // 规则）时提示会被自动收缩；窗口扣除掐头去尾与间隔×账号数后不足时，提示可能签不上。
+  // 纯展示，不阻断保存。
   function updateEdgeWarn() {
     var warn = $("ss-edge-warn");
     if (!warn) return;
+    var maxMin = updateEdgeLimits();
     var f = edgeVal("ss-edge-front"), b = edgeVal("ss-edge-back");
     var gap = clampGap(num($("ss-gap"), snap ? snap.gap : 0));
     var win = windowSec();
     var n = capacityCount();
     var msgs = [];
-    if (f === 0 || b === 0) msgs.push("掐头或去尾为 0：对应边缘时段的账号可能超时");
+    if (fallbackText) msgs.push(fallbackText);
+    if (win > 0 && (f > maxMin * 60 + 1e-9 || b > maxMin * 60 + 1e-9)) {
+      msgs.push("缓冲超过窗口的 20%（单边上限 " + maxMin + " 分钟），保存时会被自动收缩");
+    }
     if (win > 0) {
       var need = f + b + Math.max(gap, 0) * Math.max(n, 1);
       if (need > win) {
@@ -314,6 +339,8 @@
 
   // 用服务器数据回填（首次加载与保存后重拉共用）。
   function apply(data) {
+    fallbackText = data && data.window_fallback_text
+      ? String(data.window_fallback_text) : "";
     snap = {
       order: data.sign_order || DEFAULTS.order,
       dist: data.sign_dist || DEFAULTS.dist,
