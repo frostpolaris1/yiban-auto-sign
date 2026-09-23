@@ -172,20 +172,21 @@ def _my_phone():
     return None
 
 
-def _pref_slots(sw):
+def _pref_slots(win):
     """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
 
+    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.app.sign_window_bounds` 现取
+    后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
+    会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口排期，网页却把片全置灰）。
     掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
     disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
     标记 edge_note 提示且仍可点选（调度在可用部分内安排）。返回全部片（含 disabled），
     前端据此渲染，保证"满 5 分钟才完全灰掉、不足时提示"的需求语义。
     """
-    m = _appmod()
-    start_min = sw[0][0] * 60 + sw[0][1]
-    end_min = sw[1][0] * 60 + sw[1][1]
+    start_min, end_min = win.start_min, win.end_min
     span = end_min - start_min
-    front_min = m.edge_config()[0] / 60.0
-    back_min = m.edge_config()[1] / 60.0
+    front_min = win.front_sec / 60.0
+    back_min = win.back_sec / 60.0
     slots = []
     for b in range(start_min, end_min, 5):
         off = b - start_min  # 片起点相对窗口起点的分钟偏移
@@ -251,12 +252,13 @@ def api_my_time_pref():
     """
     m = _appmod()
     sw = m._sign_window()
+    win = m.sign_window_bounds()
     phone = _my_phone()
     pref = m.db.get_time_pref(phone) if phone else None
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
     cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
     slots = []
-    for s in _pref_slots(sw):
+    for s in _pref_slots(win):
         count = stats.get(s["slot_min"], 0)
         # 粗粒度 10% 档：精确百分比 + 已知默认 K 可反推人数；
         # 未满封顶 90、满员恰好 100——前端 pct>=100 判满精确（19/20=95% 不会再被
@@ -408,13 +410,12 @@ def api_my_time_pref_save():
 def api_time_prefs_stats():
     """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
     m = _appmod()
-    sw = m._sign_window()
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
     cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
     return jsonify({
         "ok": True,
         "slots": [{**s, "count": stats.get(s["slot_min"], 0), "cap": cap}
-                  for s in _pref_slots(sw)],
+                  for s in _pref_slots(m.sign_window_bounds())],
     })
 
 
