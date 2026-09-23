@@ -92,10 +92,25 @@ def _span(cfg):
     return win.lo_min, win.hi_min
 
 
+def _slice_count_of(win):
+    """有效窗口视图 → 1 分钟分片数（向下取整，至少 1 片）。
+
+    与 `_slice_count(cfg)` 分开只为"一份视图派生多个量"的调用方：几何量各自再调一次
+    `window.bounds` 只是重复解析同一份配置，取值不会因此不同。
+    """
+    return max(1, int((win.hi_min - win.lo_min) * 60 // SLICE_SEC))
+
+
 def _slice_count(cfg):
     """有效窗口内的 1 分钟分片数（向下取整，至少 1 片）。"""
-    lo, hi = _span(cfg)
-    return max(1, int((hi - lo) * 60 // SLICE_SEC))
+    return _slice_count_of(window.bounds(cfg))
+
+
+def _slot_width_ms(n, n_slices):
+    """`slot_width_ms` 的纯计算部分：按已算好的分片数判压缩（避免重复解析配置）。"""
+    if n > n_slices * SLOTS_PER_SLICE:
+        return int(SLOT_SEC_COMPRESSED * 1000)
+    return int(SLOT_SEC * 1000)
 
 
 def slot_width_ms(n, cfg=None):
@@ -105,9 +120,7 @@ def slot_width_ms(n, cfg=None):
     "压缩告警"了事；实际槽宽由 `write_plan` 写进 `app_meta`，执行体读它即可。
     """
     cfg = cfg or schedule.planner_config()
-    if n > _slice_count(cfg) * SLOTS_PER_SLICE:
-        return int(SLOT_SEC_COMPRESSED * 1000)
-    return int(SLOT_SEC * 1000)
+    return _slot_width_ms(n, _slice_count(cfg))
 
 
 def _pref_slices(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi):
@@ -438,12 +451,16 @@ def plan_stats(rows, cfg=None, day=None):
     items = list(rows or ())
     cfg = cfg or schedule.planner_config()
     day = _day_str(day or (items[0]["day"] if items else clock.today()))
-    eff_lo, eff_hi = _span(cfg)
+    # 几何量全部由同一份有效窗口视图派生（分片数、槽宽、直方图基点）：各自再调一次
+    # `window.bounds` 只是重复解析同一份配置，逐值不会有差别。
+    win = window.bounds(cfg)
+    eff_lo, eff_hi = win.lo_min, win.hi_min
     span_sec = (eff_hi - eff_lo) * 60.0
+    n_slices = _slice_count_of(win)
     # 基点必须与 web 片号同源（都取有效窗口起点）：裁剪把窗口吃空时 `window.bounds`
     # 回退默认窗口，若这里仍按原始 `sign_start` 算，回退窗口起点的落点会落进负键，
     # 影子期落点对比与 web 片号整体错格。
-    start_min = window.bounds(cfg).start_min
+    start_min = win.start_min
     owners, shards, hist, per_sec = {}, {}, {}, {}
     for r in items:
         owners[r["owner"]] = owners.get(r["owner"], 0) + 1
@@ -465,8 +482,8 @@ def plan_stats(rows, cfg=None, day=None):
         "hist": hist,
         "peak_per_sec": max(per_sec.values(), default=0),
         "dist": dist,
-        "slot_width_ms": slot_width_ms(len(items), cfg),
-        "n_slices": _slice_count(cfg),
+        "slot_width_ms": _slot_width_ms(len(items), n_slices),
+        "n_slices": n_slices,
         "mu_min": mu_min,
         "sigma_min": sigma_min,
         "flatten_alpha": alpha,

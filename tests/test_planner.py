@@ -414,7 +414,8 @@ class PrefBasePointTest(_Base):
         got = planner._spill_block(75, cfg, win.lo_min, win.hi_min, n_slices,
                                    schedule._slot_to_bi(cfg), filled, 1, 0)
         self.assertIsNotNone(got, "搜索半径按原始窗口算 → 够不到回退窗口起点的空片")
-        self.assertIn(got, (0, 1, 2, 3))
+        # 逐值钉住：距 75 片最近的空片就是回退窗口起点片（偏移 0），就近取 k0=0
+        self.assertEqual(got, 0)
 
 
 class ModeTest(_Base):
@@ -543,6 +544,35 @@ class PlanStatsTest(_Base):
                 _row(_phone(1), f"{DAY} 06:35:00.000"),
                 _row(_phone(2), f"{DAY} 07:49:59.000")]
         self.assertEqual(sorted(planner.plan_stats(rows, cfg, DAY)["hist"]), [0, 5, 75])
+
+    def test_geometry_derived_from_a_single_window_view(self):
+        """分片数/槽宽都由同一份有效窗口视图派生：逐值钉住，且 `bounds` 只读一次。
+
+        约简前经 `_span`、`window.bounds(cfg).start_min`、`_slice_count`（两次）共读 4 次
+        有效窗口；约简为取一次 `win` 再派生，逐值必须不变（正常与回退两种窗口都钉）。
+        """
+        cfg = self.cfg()                       # 有效窗口 06:05~07:15 → 70 分钟分片
+        win = window.bounds(cfg)
+        self.assertFalse(win.fell_back)
+        with mock.patch.object(planner.window, "bounds",
+                               wraps=planner.window.bounds) as spy:
+            st = planner.plan_stats([], cfg, DAY)
+        self.assertEqual(spy.call_count, 1, "几何应只读一次有效窗口")
+        self.assertEqual(st["n_slices"], 70)
+        self.assertEqual(st["slot_width_ms"], 1000)
+        self.assertEqual(st["n_slices"], int((win.hi_min - win.lo_min) * 60 // 60))
+        self.assertEqual(st["hist"], {})
+        # 裁剪吃空回退：同一份视图给回退窗口（06:31~07:49 → 78 分片），仍只读一次
+        os.environ.update(EMPTY_WINDOW_ENV)
+        cfg2 = self.cfg()
+        win2 = window.bounds(cfg2)
+        self.assertTrue(win2.fell_back)
+        with mock.patch.object(planner.window, "bounds",
+                               wraps=planner.window.bounds) as spy2:
+            st2 = planner.plan_stats([], cfg2, DAY)
+        self.assertEqual(spy2.call_count, 1, "回退下同样只读一次有效窗口")
+        self.assertEqual(st2["n_slices"], 78)
+        self.assertEqual(st2["n_slices"], int((win2.hi_min - win2.lo_min) * 60 // 60))
 
     def test_peak_per_sec_counts_landings_in_the_same_second(self):
         """`peak_per_sec` 是同一秒内的落点数（聚合口径，与计划形状无关）。"""
