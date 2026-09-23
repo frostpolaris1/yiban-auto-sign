@@ -12,8 +12,8 @@
 
 **归属**
 运维/取证侧脚本（`scripts/`）。台账口径的落地在别处，本脚本只核对不再造第二份判据：
-终态映射取 `yiban.store.migrations.migrate_v20` 的常量表，池状态词表取
-`yiban.store.queue_store.STATES`。
+终态判定取 `yiban.store.migrations.terminal_task_state`（与 v20 补账同一份逻辑），
+池状态词表取 `yiban.store.queue_store.STATES`。
 
 **复用**
 无对外可复用函数。
@@ -25,7 +25,9 @@
 输出：逐日结论与差异行到 stdout 并逐个打一遍结论，差异行的手机号经
 `yiban.masking.mask_phone` 脱敏（对外输出不得含完整号码）。
 退出码：`0`=对账平；`1`=有差异（已逐行打印）；`2`=无法定论（状态目录缺失 /
-库文件缺失 / 库不可用，含库尚未升到 `sign_tasks` 存在的那一版）。
+库文件缺失 / 库不可用（含库尚未升到 `sign_tasks` 存在的那一版）/ 任何未预期异常 /
+零覆盖——一天的处理文件都没有）。`1` 只留给**明确探测到的差异**，其余一律 `2`：
+把一次崩溃或空覆盖读成"对账不平/对账平"都会误导运维。
 调用谁：`yiban.store.db`（`init_db(migrate=False, cleanup=False)` 的只读口径）、
 `yiban.store.migrations`、`yiban.store.queue_store`、`yiban.infra.env_io`、
 `yiban.clock`。
@@ -35,7 +37,6 @@ import argparse
 import json
 import os
 import re
-import sqlite3
 import sys
 from datetime import timedelta
 
@@ -87,8 +88,9 @@ def _target_days(args):
 def _read_terminals(state_dir, day):
     """该日的终态账号 → JSON 状态；文件缺失/损坏/非 dict → None（该日无输入）。
 
-    终态判定与 `migrate_v20` 共用同一张常量表：各写一份必然漂移，对账会据此报出
-    并不存在的差异（或漏报真差异）。
+    终态判定复用 `migrations.terminal_task_state`（v20 补账用的同一份逻辑）：只共用
+    常量表而各写一遍规范化，仍会在细节上漂移，对账据此报出并不存在的差异（或漏报
+    真差异）。JSON 状态串原样带出，供差异行打印。
     """
     path = os.path.join(state_dir, f"sign-state-{day}.json")
     try:
@@ -100,16 +102,14 @@ def _read_terminals(state_dir, day):
         return None
     out = {}
     for phone, entry in data.items():
-        if not isinstance(entry, dict):
+        if migrations.terminal_task_state(entry) is None:
             continue
-        st = str(entry.get("status") or "").strip()
-        if st in migrations._JSON_TERMINAL_TO_TASK_STATE:
-            out[phone] = st
+        out[phone] = str(entry.get("status") or "").strip()
     return out
 
 
 def _check_day(conn, state_dir, day, report):
-    """核对单日，把结论行追加进 `report`，返回差异处数。"""
+    """核对单日，把结论行追加进 `report`，返回 `(差异处数, 该日是否有可用输入)`。"""
     problems = 0
 
     # 1) 终态覆盖：JSON 里有终态、台账里没有该账号 → 对账不平
@@ -145,7 +145,7 @@ def _check_day(conn, state_dir, day, report):
         problems += 1
         report.append(f"[{day}] 计数不自洽: 总数 {total} ≠ 平移 {translated} + "
                       f"补账 {backfilled}（无来源 {other} 行）")
-    return problems
+    return problems, terminals is not None
 
 
 def main(argv=None):
@@ -157,7 +157,18 @@ def main(argv=None):
     group.add_argument("--all-days", type=_positive_int, default=None,
                        help="核对最近 N 天（含今天）")
     args = parser.parse_args(argv)
+    try:
+        return _reconcile(args)
+    except Exception as e:
+        # 兜底必须是"任何异常"：只捕 sqlite3.Error 时，.env 解析 / 时钟 / 连接层的异常
+        # 会让解释器以 exit 1 退出，与"探测到差异"同码——运维会把一次崩溃误读成
+        # "对账不平"。exit 1 只留给明确探测到的差异。
+        print(f"对账无法定论：未预期异常 {type(e).__name__}: {e}")
+        return 2
 
+
+def _reconcile(args):
+    """执行对账并返回退出码：`0`=平 / `1`=有差异 / `2`=无法定论。"""
     state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
     if not os.path.isdir(state_dir):
         print(f"对账无法定论：状态目录不存在 {state_dir}")
@@ -172,16 +183,14 @@ def main(argv=None):
     days = _target_days(args)
     report = []
     problems = 0
-    try:
-        # 只读口径：不迁移（迁移会写库，且 v20 会顺手补行，使被核对对象在校验过程中
-        # 被改动）、不做启动清理。
-        conn = db.init_db(db_file=db_path, cleanup=False, migrate=False)
-        for day in days:
-            problems += _check_day(conn, state_dir, day, report)
-    except sqlite3.Error as e:
-        # 表缺失（库还没升到 v18）与库损坏都归"无法定论"，不用 exit 1 冒充一次对账
-        print(f"对账无法定论：库不可用 {e}")
-        return 2
+    covered = 0
+    # 只读口径：不迁移（迁移会写库，且 v20 会顺手补行，使被核对对象在校验过程中
+    # 被改动）、不做启动清理。
+    conn = db.init_db(db_file=db_path, cleanup=False, migrate=False)
+    for day in days:
+        day_problems, has_input = _check_day(conn, state_dir, day, report)
+        problems += day_problems
+        covered += 1 if has_input else 0
 
     print(f"库：{db_path}")
     print(f"状态目录：{state_dir}")
@@ -190,6 +199,10 @@ def main(argv=None):
     if problems:
         print(f"对账不平：{len(days)} 天里 {problems} 处差异")
         return 1
+    if not covered:
+        # 一天的处理文件都没有 ⇒ 三项检查全在空集上"通过"，这盏绿灯说明不了台账对不对
+        print(f"对账无法定论：{len(days)} 天里没有一天存在按日状态文件（零覆盖）")
+        return 2
     print(f"对账平：{len(days)} 天，终态覆盖 / 状态词表 / 计数三项均无差异")
     return 0
 
