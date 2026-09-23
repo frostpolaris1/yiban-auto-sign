@@ -308,24 +308,37 @@
       throw err;   // 重抛给页级状态条计数
     });
   }
+  // 两类聚合分开累加，绝不混进同一个 total：
+  //   accounts —— 按 phone 去重后的**账号数**（后端 cnt）。同一账号被多个执行体各写一行
+  //     只算一次，适合「涉及多少账号」的分布/日历；
+  //   events   —— 原始**事件行数**（后端 row_cnt）。重试与多执行体各写一行都是事实，
+  //     适合「发生多少次」的趋势/成功率。
+  // 混用会让数字与单位对不上（分布写「账号」却按行计数 = 同一账号被算多次）。
   function normalizeDaily(rows) {
     var map = {}, byStatus = {};
     rows.forEach(function (r) {
       var day = String((r && r.day) || "");
       if (!day) return;
-      var cnt = Number(r.cnt) || 0, st = String(r.status || "");
-      var m = map[day] || (map[day] = { success: 0, fail: 0, skip: 0, total: 0 });
-      m.total += cnt; m[statusKind(st)] += cnt;
-      byStatus[st] = (byStatus[st] || 0) + cnt;
+      var acct = Number(r.cnt) || 0, ev = Number(r.row_cnt) || 0, st = String(r.status || "");
+      var m = map[day] || (map[day] = {
+        accounts: { success: 0, fail: 0, skip: 0, total: 0 },
+        events: { success: 0, fail: 0, skip: 0, total: 0 }
+      });
+      var kind = statusKind(st);
+      m.accounts[kind] += acct; m.accounts.total += acct;
+      m.events[kind] += ev; m.events.total += ev;
+      byStatus[st] = (byStatus[st] || 0) + acct;   // 分布图按账号口径
     });
     state.dailyMap = map;
     state.dailyDays = Object.keys(map).sort();
     state.byStatus = byStatus;
   }
-  function rateOf(m) {
-    if (!m) return null;
-    var att = m.success + m.fail;
-    return att > 0 ? Math.round(m.success / att * 1000) / 10 : null;
+  // 成功率只看「已了结的尝试」：成功 ÷（成功 + 失败），跳过不计入。
+  // 入参是单一口径的桶（accounts 或 events），由调用方决定用哪一列。
+  function rateOf(bucket) {
+    if (!bucket) return null;
+    var att = bucket.success + bucket.fail;
+    return att > 0 ? Math.round(bucket.success / att * 1000) / 10 : null;
   }
   // 无结果文案要区分「当天本来就不签到」与「还没产生结果」：
   // 周六/周日签到可在系统设置中关闭，此时显示「暂无结果」会误导管理员以为调度异常。
@@ -346,8 +359,11 @@
     // setValue，空态类会留在节点上，数字被染成 --t-muted 灰字（实测可复现的
     // 「成功率数字有时是灰的」）。空态只在数据已到、今日确实无记录时出现。
     if (!state.signLoaded) return;
-    var today = todayStr(), m = state.dailyMap[today], ry = rateOf(state.dailyMap[yesterdayStr()]);
-    var rt = rateOf(m), v = $("kpi-rate-value"), sub = $("kpi-rate-sub");
+    var today = todayStr(), m = state.dailyMap[today], y = state.dailyMap[yesterdayStr()];
+    // 口径取事件（尝试）列：成功率的分子/分母天然是尝试次数，重试本就各算一次；
+    // 账号口径下「同日先失败后成功」会把同一次最终成功与一次失败并进同一账号而失真。
+    var rt = rateOf(m && m.events), ry = rateOf(y && y.events);
+    var v = $("kpi-rate-value"), sub = $("kpi-rate-sub");
     if (rt == null) {
       setEmptyValue(v, "—");
       v.title = "";
@@ -359,8 +375,9 @@
     setValue(v, rt.toFixed(1), "%");
     // 口径说明放 tooltip：写进副文案会把卡片挤成多行；「较昨日」已由右上角药丸表达，
     // 副文案只保留结果构成，避免同一信息在卡内出现两次。
-    v.title = "成功率 = 成功 ÷（成功 + 失败），跳过不计入";
-    setSub(sub, "成功 " + num(m.success) + " · 失败 " + num(m.fail) + (m.skip > 0 ? " · 跳过 " + num(m.skip) : ""));
+    v.title = "成功率 = 成功 ÷（成功 + 失败），跳过不计入；按事件（尝试）计，重试各算一次";
+    var ev = m.events;
+    setSub(sub, "成功 " + num(ev.success) + " · 失败 " + num(ev.fail) + (ev.skip > 0 ? " · 跳过 " + num(ev.skip) : ""));
     if (ry != null) {
       var diff = Math.round((rt - ry) * 10) / 10;
       var cls = diff > 0 ? "up" : diff < 0 ? "down" : "flat";
@@ -374,12 +391,13 @@
   function renderTrend() {
     var days = state.dailyDays;
     if (!days.length) { overlay("trend", "empty", "最近 30 天无真实签到记录"); txt($("trend-coverage"), "无数据"); return; }
+    // 趋势回答「发生多少次」：堆叠与汇总必须同取事件（行数）列，不得与账号列混用。
     var labels = [], ok = [], fail = [], skip = [], sum = { ok: 0, fail: 0, skip: 0 };
     days.forEach(function (day) {
-      var m = state.dailyMap[day];
+      var ev = state.dailyMap[day].events;
       labels.push(day.slice(5));
-      ok.push(m.success); fail.push(m.fail); skip.push(m.skip);
-      sum.ok += m.success; sum.fail += m.fail; sum.skip += m.skip;
+      ok.push(ev.success); fail.push(ev.fail); skip.push(ev.skip);
+      sum.ok += ev.success; sum.fail += ev.fail; sum.skip += ev.skip;
     });
     var t = palette(), opt = baseOpts(t);
     opt.interaction = { mode: "index", intersect: false };
@@ -408,10 +426,11 @@
       ["近 30 天成功", num(sum.ok)],
       ["近 30 天失败", num(sum.fail)],
       ["近 30 天跳过", num(sum.skip)],
-      ["日均签到事件", num(days.length ? Math.round(total / days.length * 10) / 10 : 0)]
+      ["日均签到事件（次）", num(days.length ? Math.round(total / days.length * 10) / 10 : 0)]
     ]);
   }
   function renderDist() {
+    // 分布回答「涉及多少账号」：按 phone 去重后的账号数，同账号多行只算一次。
     var by = state.byStatus, keys = Object.keys(by).filter(function (k) { return by[k] > 0; });
     keys.sort(function (a, b) { return by[b] - by[a]; });
     if (!keys.length) { overlay("dist", "empty", "暂无签到结果数据"); return; }
@@ -421,7 +440,7 @@
     opt.plugins.tooltip.callbacks = {
       label: function (c) {
         var v = Number(c.parsed) || 0;
-        return c.label + "：" + num(v) + " 次（" + (total > 0 ? Math.round(v / total * 1000) / 10 : 0) + "%）";
+        return c.label + "：" + num(v) + " 账号（" + (total > 0 ? Math.round(v / total * 1000) / 10 : 0) + "%）";
       }
     };
     var drawn = draw("dist", "chart-dist", {
@@ -433,7 +452,7 @@
       options: opt
     });
     overlay("dist", drawn ? "none" : "error", "图表渲染失败");
-    renderMeta("dist", [["签到事件总数", num(total)], ["结果类型", num(keys.length)]]);
+    renderMeta("dist", [["签到账号总数", num(total)], ["结果类型", num(keys.length)]]);
   }
   function renderCalendar() {
     var grid = $("mini-cal");
@@ -453,15 +472,21 @@
     for (i = 1; i <= daysIn; i++) {
       var ds = fmtDate(new Date(y, mo, i));
       var m = state.dailyMap[ds];
+      // 展示桶与分布同口径（账号数）；存在性以事件行数为兜底——去重只会减少账号数，
+      // 不会凭空增行，两个判据取或可保证换口径不会把「有记录」的日期误判成空。
+      var acct = m && m.accounts, ev = m && m.events;
+      var hasData = !!(acct && ev && (acct.total > 0 || ev.total > 0));
       var cls = "mini-cal-day";
       if (ds > today) cls += " is-future";
-      else if (m && m.total > 0) cls += m.fail > 0 ? " is-fail" : (m.success > 0 ? " is-ok" : " is-none");
+      else if (hasData) cls += acct.fail > 0 ? " is-fail" : (acct.success > 0 ? " is-ok" : " is-none");
       else cls += " is-none";
       if (ds === today) cls += " is-today";
       var cell = el("div", { class: cls, text: String(i), role: "gridcell" });
-      cell.title = (m && m.total > 0)
-        ? "成功 " + m.success + " · 失败 " + m.fail + " · 跳过 " + m.skip
-        : (ds > today ? "未来日期（尚未签到）" : "当日无真实签到记录");
+      cell.title = !hasData
+        ? (ds > today ? "未来日期（尚未签到）" : "当日无真实签到记录")
+        : (acct.total > 0
+          ? "成功 " + acct.success + " · 失败 " + acct.fail + " · 跳过 " + acct.skip + "（账号数）"
+          : "有签到记录（账号未识别）");
       grid.appendChild(cell);
     }
     for (i = 0; i < trail; i++) grid.appendChild(el("div", { class: "mini-cal-day is-other", "aria-hidden": "true" }));
