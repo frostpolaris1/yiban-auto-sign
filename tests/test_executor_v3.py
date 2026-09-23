@@ -301,7 +301,7 @@ class _Base(unittest.TestCase):
 
     def _run_v3(self, accounts, items=None, *, cfg=None, rng=None, limiter=None,
                 gate=None, delegated=None, cred_state=None, event_sink=None,
-                dry_run=False):
+                dry_run=False, notify_url=""):
         """跑一轮 v3。
 
         `items` 给了就用"一次性投递 + 哨兵"的假补货（时序完全可控，行需已领取）；
@@ -326,7 +326,7 @@ class _Base(unittest.TestCase):
             return executor_v3.run_executor_v3(
                 accounts, day=DAY, cfg=cfg, rng=rng or random.Random(7),
                 delegated=delegated, cred_state=cred_state, event_sink=event_sink,
-                dry_run=dry_run)
+                dry_run=dry_run, notify_url=notify_url)
         finally:
             for p in reversed(patches):
                 p.stop()
@@ -880,6 +880,107 @@ def _remaining(cfg, now_dt):
 
 
 # ---------------------------------------------------------------------------
+# 最终放弃时的通知：与 v2 的放弃路径同一函数、同一触发条件
+# ---------------------------------------------------------------------------
+class GiveUpNotifyTest(_Base):
+    """v2 在"重试耗尽 / 窗口放不下重试"时通知管理员与用户各一次；v3 必须对齐。
+
+    触发条件只有**最终放弃**：重试中的失败不通知（否则每次尝试都发一封）。
+    `no_position` 是唯一例外——易班侧没有点位非账号/凭据问题，v2 刻意不告警
+    （管理员无从修复，重试也拿不到）。
+    """
+
+    def _spy_run(self, status, *, message, attempts, skip=False, success=False,
+                 notify_url="https://hook.example/x"):
+        phone = _phone(1)
+        self._clear_tasks()
+        self._add_claimed(phone, attempts=attempts, epoch=1)
+        self._seed_v(8)
+        with mock.patch.object(executor_v3.alerts, "notify_admin_entry") as m_admin, \
+             mock.patch.object(executor_v3.alerts, "send_user_fail_mail") as m_user, \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (success, message, skip, status)):
+            results = self._run_v3(self._accounts(phone),
+                                   [_item(phone, attempts=attempts)],
+                                   notify_url=notify_url)
+        return phone, results, m_admin, m_user
+
+    def test_final_give_up_notifies_admin_and_user_like_v2(self):
+        phone, results, m_admin, m_user = self._spy_run(
+            "failed", message="网络抖动", attempts=2)
+        self.assertIn(phone, results, "预算用尽即终态")
+        m_admin.assert_called_once_with("易班签到失败", [
+            ("账号", "138****0001"),
+            ("原因", "网络抖动"),
+        ], "https://hook.example/x")
+        m_user.assert_called_once_with("u@" + phone, phone, "网络抖动")
+
+    def test_retry_only_notifies_nothing(self):
+        phone, results, m_admin, m_user = self._spy_run(
+            "failed", message="e003 风险访问", attempts=0)
+        self.assertNotIn(phone, results, "重试中的账号不是终态")
+        self.assertEqual(self._row(phone)["state"], "pending")
+        m_admin.assert_not_called()
+        m_user.assert_not_called()
+
+    def test_no_room_left_notifies_like_v2(self):
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=0, epoch=1)
+        self._seed_v(8)
+        cfg = _cfg(sign_end=(6, 40), edge_back_sec=0)
+        with mock.patch.object(executor_v3.alerts, "notify_admin_entry") as m_admin, \
+             mock.patch.object(executor_v3.alerts, "send_user_fail_mail") as m_user, \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "网络抖动", False, "failed")):
+            results = self._run_v3(self._accounts(phone), [_item(phone)], cfg=cfg)
+        self.assertIn(phone, results)
+        m_admin.assert_called_once()
+        m_user.assert_called_once()
+
+    def test_no_position_does_not_notify(self):
+        phone, results, m_admin, m_user = self._spy_run(
+            "no_position", message="未找到签到位置数据", attempts=0)
+        self.assertIn(phone, results)
+        m_admin.assert_not_called()
+        m_user.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 顶层兜底：未预期异常不外逃
+# ---------------------------------------------------------------------------
+class UnexpectedErrorTest(_Base):
+    """lane/refiller 抛出的未预期异常必须被顶层兜住：记 error 并返回空结果。
+
+    逃逸成 traceback 会让退出码落到契约（0/1/2/3/10）之外；处置与"计划不可用"
+    同一口径——本轮一个请求都不发，返回空结果，由 runner 汇总出契约内退出码。
+    """
+
+    def test_refiller_exception_is_contained(self):
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        with mock.patch.object(queue_store, "claim_batch",
+                               side_effect=RuntimeError("claim 失败 13800000001")), \
+             self.assertLogs("yiban", level="ERROR") as cm:
+            results = self._run_v3(self._accounts(phone))
+        self.assertEqual(results, {}, "未预期异常按无结果收尾")
+        joined = "\n".join(cm.output)
+        self.assertIn("未预期异常", joined)
+        self.assertNotIn("13800000001", joined, "异常文本落日志前必须脱敏手机号")
+
+    def test_unexpected_error_does_not_swallow_contract_signals(self):
+        """`except Exception` 不得吞掉 KeyboardInterrupt/SystemExit（非 Exception 子类）。"""
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        with mock.patch.object(queue_store, "claim_batch",
+                               side_effect=KeyboardInterrupt), \
+             self.assertRaises(KeyboardInterrupt):
+            executor_v3.run_executor_v3(self._accounts(phone), day=DAY, cfg=_cfg())
+
+
+
+# ---------------------------------------------------------------------------
 # dry_run 影子模式：零落库 / 零领取 / 零请求
 # ---------------------------------------------------------------------------
 class DryRunTest(_Base):
@@ -1147,12 +1248,13 @@ class RunnerSplitTest(unittest.TestCase):
                 os.environ[k] = v
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _run(self, argv=None):
+    def _run(self, argv=None, outcome=None):
         accounts = [SimpleNamespace(phone=_phone(0), user_paused=False, owner="u@1")]
         sched = {_phone(0): START}
         cred = {"seed": 1}
         # 两个执行体替身返回**同形**的结果：退出码由 runner 的汇总算出，与谁执行无关
-        outcome = {_phone(0): (True, "签到成功", False, "success")}
+        outcome = dict(outcome) if outcome is not None else {
+            _phone(0): (True, "签到成功", False, "success")}
         retry_calls = []
         v3_calls = []
         with mock.patch.object(runner_mod.accounts_mod, "load_accounts",
@@ -1220,6 +1322,13 @@ class RunnerSplitTest(unittest.TestCase):
                 _, _, _, _, retry_calls, v3_calls = self._run()
                 self.assertEqual(v3_calls, [])
                 self.assertEqual(len(retry_calls), 1)
+
+    def test_empty_results_from_executor_yield_contract_exit_code(self):
+        """执行体返回空结果（顶层兜底的输出）时，runner 仍给出契约内退出码。"""
+        os.environ["YIBAN_SCHEDULER_V3"] = "1"
+        code, *_ = self._run(outcome={})
+        self.assertIn(code, (0, 1, 2, 3, 10))
+        self.assertEqual(code, 1, "无结果按失败汇总，不得落到契约之外")
 
 
 if __name__ == "__main__":

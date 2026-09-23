@@ -21,8 +21,9 @@
 退出码汇总零改动；另有 `sign-state-<day>.json`（每次尝试与重试入队即写，网页日历的事实源）。
 调用谁：`queue_store`（批量领取 / 收尾 / 重排 / 待办计数 / 桶状态落库）、`token_bucket`
 （出口桶 + 全局上界 + gap 门）、`planner`（计划生成与落库、`has_plan`）、`hrw`（分片集）、
-`state_io`（按日状态）、`attempts`（单次尝试与失败分级）、`clock_meta`（当日虚分片数落库）、
-`schedule`（配置、窗口关闭判定、通道数）——均在 `yiban.engine` / `yiban.store` 下。
+`state_io`（按日状态）、`attempts`（单次尝试与失败分级）、`alerts`（最终放弃时的管理员
+告警与用户失败邮件）、`clock_meta`（当日虚分片数落库）、`schedule`（配置、窗口关闭判定、
+通道数）——均在 `yiban.engine` / `yiban.store` 下。
 谁调用：`runner.main` 的分流点——`YIBAN_SCHEDULER_V3` 为真且非 `--only` 时替换
 `round.run_queue_retry` 那一行调用。
 """
@@ -37,8 +38,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from yiban import clock, egress, window
 from yiban import status as yiban_status
-from yiban.engine import attempts, hrw, planner, schedule, state_io, token_bucket
+from yiban.engine import alerts, attempts, hrw, planner, schedule, state_io, token_bucket
 from yiban.masking import mask_phone as _mask_phone
+from yiban.masking import mask_phones_in_text as _mask_phones_in_text
 from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import clock_meta, queue_store
 
@@ -69,6 +71,7 @@ STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_PAUSED = yiban_status.STATUS_PAUSED
 STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
+STATUS_NO_POSITION = yiban_status.STATUS_NO_POSITION
 
 #: `run_at` 的两种精度：计划与重排都写毫秒精度，v17 平移的存量行只有秒精度
 _RUN_AT_FORMATS = ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
@@ -328,6 +331,23 @@ def _is_risk_signal(message):
         kw in message for kw in attempts.RISK_FAIL_KEYWORDS)
 
 
+def _alert_give_up(ctx, acc, phone, status, message):
+    """最终放弃时的通知：管理员入口 + 账号归属用户的失败提醒。
+
+    与 v2 的放弃路径同一函数、同一触发条件——**只在最终放弃时通知一次**：逐次失败不
+    通知（否则每次尝试都发一封，且 `attempts.attempt_signin` 亦承诺逐次失败不通知）。
+    `no_position` 是唯一例外：易班侧没有点位不是账号/凭据问题，管理员无从修复，v2 对
+    它刻意不告警，重试也拿不到。通知内部自捕获异常，不得影响签到主流程。
+    """
+    if status == STATUS_NO_POSITION:
+        return
+    alerts.notify_admin_entry("易班签到失败", [
+        ("账号", _mask_phone(phone)),
+        ("原因", _sanitize_text(message)),
+    ], ctx.notify_url)
+    alerts.send_user_fail_mail(acc.owner, phone, message)
+
+
 # ---------------------------------------------------------------------------
 # 通道、补货、桶状态落库
 # ---------------------------------------------------------------------------
@@ -416,6 +436,7 @@ async def _attempt(ctx, item):
         logger.error("[%s] ❌ 窗口剩余不足，不再重试: %s",
                      _mask_phone(phone), _sanitize_text(message))
     ctx.results[phone] = (False, message, False, status)
+    _alert_give_up(ctx, acc, phone, status, message)
     _settle(ctx, phone, epoch, queue_store.STATE_FAILED, message)
 
 
@@ -564,6 +585,12 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     汇总邮件与告警入口的职责，v2 亦只在最终放弃时通知一次）。
     计划不可用时返回空结果并留 error：v3 的队列就是 `sign_tasks`，没有可用的库就没有
     队列，本轮一个请求都不发。
+
+    **未预期异常一律不外逃**：本函数是 `runner` 退出码汇总的前置调用，任何从通道/补货/
+    收尾冒出的异常若逃成 traceback，退出码就会落到契约（0/1/2/3/10）之外，`run.sh` 的
+    补签闸门与状态写入随之失真。故除"计划不可用"外再兜一层 `except Exception`：记 error
+    后返回空结果，与"计划不可用"同一处置——由 runner 把"无结果"汇总成契约内退出码。
+    只兜 `Exception`，`KeyboardInterrupt` / `SystemExit`（超时击杀、显式退出）必须照常外逃。
     """
     cfg = cfg or schedule.planner_config()
     day = day or _now().strftime("%Y-%m-%d")
@@ -578,19 +605,25 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         return {}
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
                    or egress.single_owner())
-    ctx = _Ctx(
-        accounts={a.phone: a for a in accounts},
-        day=day, cfg=cfg, v=v,
-        shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
-        executor_id=executor_id, results={}, cred_state=cred_state,
-        delegated=delegated, notify_url=notify_url, event_sink=event_sink,
-        rng=rng or random.Random())
-    _prescan(ctx, accounts)
-    ctx.limiter.restore_from_store(ctx.egress, now=_mono())
-    if ctx.global_limiter.invalid:
-        logger.warning("%s 非法，全局速率上界按不限处理（不阻断签到）", ENV_GLOBAL_RATE)
-    logger.info("v3 执行体：%d 条通道 / %d 个分片 / 出口 %s",
-                ctx.m, len(ctx.shards), ctx.egress)
-    asyncio.run(_run_async(ctx))
-    _mark_window_skips(ctx, accounts)
+    try:
+        ctx = _Ctx(
+            accounts={a.phone: a for a in accounts},
+            day=day, cfg=cfg, v=v,
+            shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
+            executor_id=executor_id, results={}, cred_state=cred_state,
+            delegated=delegated, notify_url=notify_url, event_sink=event_sink,
+            rng=rng or random.Random())
+        _prescan(ctx, accounts)
+        ctx.limiter.restore_from_store(ctx.egress, now=_mono())
+        if ctx.global_limiter.invalid:
+            logger.warning("%s 非法，全局速率上界按不限处理（不阻断签到）", ENV_GLOBAL_RATE)
+        logger.info("v3 执行体：%d 条通道 / %d 个分片 / 出口 %s",
+                    ctx.m, len(ctx.shards), ctx.egress)
+        asyncio.run(_run_async(ctx))
+        _mark_window_skips(ctx, accounts)
+    except Exception as e:
+        # 异常文本经 _sanitize_text 防注入、_mask_phones_in_text 抹手机号后再落日志
+        logger.error("v3 执行体未预期异常，本轮按无结果收尾（不外逃）: %s",
+                     _mask_phones_in_text(_sanitize_text(str(e))))
+        return {}
     return ctx.results
