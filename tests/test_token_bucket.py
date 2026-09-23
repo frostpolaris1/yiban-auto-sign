@@ -236,6 +236,14 @@ class GlobalTest(unittest.TestCase):
                 self.assertFalse(token_bucket.GlobalLimiter(lam).invalid,
                                  "未配/显式不限/正常数值都不算「非法」")
 
+    def test_10d_blank_lam_is_unset_not_invalid(self):
+        """`.env` 里空值 = 未配置：空串按不限处理，既不告警也不标非法。"""
+        for lam in (None, "", "   ", 0.0, -1.0, "2.0"):
+            with self.subTest(lam=lam), \
+                    self.assertNoLogs("yiban.engine.token_bucket", level="WARNING"):
+                g = token_bucket.GlobalLimiter(lam)
+                self.assertFalse(g.invalid, f"Λ={lam!r} 不是「非法」")
+
 
 class ConfigTest(unittest.TestCase):
     """配置面收口：`YIBAN_MIN_EXEC_GAP` → 突发额度；速率与突发一次读全。"""
@@ -282,27 +290,41 @@ class ConfigTest(unittest.TestCase):
             self.assertAlmostEqual(token_bucket.limiter_from_env(channels=8).burst, 3.0,
                                    places=9, msg="1 + 1s × 2.0 attempt/s")
 
-    def test_16_manual_rate_stops_aimd_but_keeps_safety(self):
-        """`.env` 显式配速率 = 人工接管：AIMD 不再改写速率，安全反应照做。
+    def test_16_manual_rate_caps_growth_but_risk_fallback_still_applies(self):
+        """`.env` 显式配速率 = **上限**，不是"关掉自适应"：上探不生效，风控回退照做。
 
-        取舍：管理员手写的速率就该按它跑（否则"我配的值第二天自己变了"无从解释）；
-        但半开、站点级降档这类**安全**反应不随之停——停掉会让一次手写错值变成
-        无保护的全速放行。
+        取舍：管理员手写的值是"不许跑得比它快"；但风控回退是**安全反应**而非自适应，
+        停掉它等于让站点贴着风控墙跑。半开与告警同样照旧。
         """
         lim = token_bucket.EgressLimiter(rate=1.0, burst=6, manual=True)
         for _ in range(token_bucket.SUCCESS_STREAK * 3):
             lim.on_success("e0")
         self.assertAlmostEqual(lim.snapshot()["e0"]["rate"], 1.0, places=9,
-                               msg="人工接管：上探不改写速率")
+                               msg="人工接管：上探不改写速率（不得超过管理员设定值）")
         with self.assertLogs("yiban.engine.token_bucket", level="WARNING"):
             got = lim.on_risk_signal("e0", 0.0)
-        self.assertAlmostEqual(got, 1.0, places=9, msg="人工接管：风控不改写速率")
+        self.assertAlmostEqual(got, 0.5, places=9, msg="人工接管：风控回退仍减半")
+        self.assertAlmostEqual(lim.snapshot()["e0"]["rate"], 0.5, places=9)
+        self.assertLessEqual(lim.snapshot()["e0"]["rate"], 1.0, "回退只降不升，不越过上限")
         self.assertTrue(lim.is_half_open("e0", 1.0), "安全反应不停：风控仍触发半开")
         self.assertTrue(lim.acquire("e0", 1.0))
         self.assertFalse(lim.acquire("e0", 1.0), "半开期仍只放单通道探测")
         lim.downgrade_all(5.0)
         self.assertAlmostEqual(lim.snapshot()["e0"]["rate"], token_bucket.RATE_MIN, places=9,
                                msg="站点级降档是安全反应，人工接管不阻止它")
+
+    def test_16c_manual_risk_fallback_is_monotone_and_floor_bounded(self):
+        """manual + 连续风控：速率单调不增、不低于 `RATE_MIN`、也不越过设定上限。"""
+        lim = token_bucket.EgressLimiter(rate=2.0, burst=6, manual=True)
+        prev = lim.bucket("e0").rate
+        for t in range(12):
+            with self.assertLogs("yiban.engine.token_bucket", level="WARNING"):
+                got = lim.on_risk_signal("e0", float(t))
+            self.assertLessEqual(got, prev, "风控回退只降不升")
+            self.assertGreaterEqual(got, token_bucket.RATE_MIN)
+            self.assertLessEqual(got, 2.0, "不得回涨超过管理员设定值")
+            prev = got
+        self.assertAlmostEqual(prev, token_bucket.RATE_MIN, places=9, msg="连击触底")
 
     def test_16b_limiter_from_env_marks_manual_only_when_rate_configured(self):
         with self._env("YIBAN_EGRESS_RATE", None):
