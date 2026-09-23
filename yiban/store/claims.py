@@ -43,6 +43,7 @@ import os
 import socket
 
 from yiban import clock, masking
+from yiban import status as yiban_status
 
 logger = logging.getLogger("yiban.store.claims")
 
@@ -62,8 +63,12 @@ STATE_DONE = "done"
 #: 尝试过但**未了结**（重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
 STATE_FAILED = "failed"
-#: 终态集合（只有 done 是真终态；failed 是"可再领"）
-SETTLED_STATES = (STATE_DONE,)
+#: 终态集合（只有 done 是真终态；failed 是"可再领"）。
+#: 值为本表词表与 `yiban.status.TASKS_SETTLED_STATES` 的交集——「了结」的词义定义在
+#: `yiban.status`（同一件事在 `sign_claims` / `sign_tasks` / 状态文件里各有一套 state
+#: 名），此处只做本表词表下的投影，不再自写一份"哪些算完"。
+SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
+                  & yiban_status.TASKS_SETTLED_STATES)
 #: 参与"未了结账号"统计的状态（与 done 互斥）
 OPEN_STATES = (STATE_CLAIMED, STATE_FAILED)
 

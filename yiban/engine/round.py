@@ -68,11 +68,10 @@ STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 # 状态码 → 日志/日历符号（同一对象，非副本）
 STATUS_SYMBOL = yiban_status.SYMBOL
 
-#: 领取池的"当日了结"口径（`state_io._second_run_drop_done` 的剔除集合与 `_settle_claims`
-#: 的记 `done` 判据都用它，改一处必须同改另一处）：
-#: 这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）都仍开放，
-#: 由补签轮或兜底执行体接手。
-_CLAIM_DONE_STATUSES = (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
+#: 领取池的"当日了结"口径：`yiban.status.CLAIM_DONE_STATUSES` 的别名（**同一对象**，
+#: 非副本）。这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）
+#: 都仍开放，由补签轮或兜底执行体接手。补签轮定向剔除（`state_io`）判的是同一件事。
+_CLAIM_DONE_STATUSES = yiban_status.CLAIM_DONE_STATUSES
 
 
 def _next_retry_at(now_dt, sch_cfg, rng=None):
@@ -255,8 +254,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         退出码 1、失败邮件），而真相是"该账号当日已有结论、无需本轮处理"。透传后汇总
         按真实结论分组：success/already 计入成功；no_task / skipped_window /
         skipped_norange / paused / user_cancelled / no_position 计入跳过；其余
-        （failed 等）仍计失败——真失败必须继续可见。状态串 strip 后比较，
-        口径与 `state_io._has_conclusion` 相同。
+        （failed 等）仍计失败——真失败必须继续可见。状态串 strip 后比较，口径与
+        `state_io._has_conclusion` 相同（同一谓词 `yiban.status.is_concluded_status`）。
 
         **`pending` 不是结论**：排计划阶段给每个账号都写了"计划 HH:MM"（同一份状态
         文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
@@ -273,7 +272,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if _p in results:
                 continue
             _rec_status = str(recorded.get(_p, "")).strip()
-            if _rec_status not in ("", STATUS_PENDING):
+            if yiban_status.is_concluded_status(_rec_status):
                 results[_p] = (False, "已有当日结论", False, _rec_status)
                 continue
             if not state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW,
