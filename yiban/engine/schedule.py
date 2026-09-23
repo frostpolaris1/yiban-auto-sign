@@ -6,9 +6,10 @@
 自选时间片优先、正态钟形锚点、σ 自适应封顶、超容量压缩模式。窗口（起止 + 掐头去尾 +
 是否已关闭）的唯一口径在 `yiban.window`，本模块只做调用与告警，不另存一份判断。
 
-**告警去重**：窗口配置非法 / 有效窗口被裁剪吃空各只并入当日汇总邮件一次（
-`_invalid_window_notified`、`_edge_empty_window_notified`）——这两个函数每天被多账号
-多轮调用，不去重会把同一配置错误刷成几十条。
+**告警去重**：窗口配置非法 / 缓冲过大被收缩 / 窗口不可用被回退各只并入当日汇总邮件
+一次（`_invalid_window_notified`、`_window_clamped_notified`、
+`_window_fallback_notified`）——这些函数每天被多账号多轮调用，不去重会把同一配置错误
+刷成几十条。
 
 跨模块调用纪律见包说明：跨模块一律走模块属性访问。
 """
@@ -52,9 +53,10 @@ _DEFAULT_UTIL = 0.8
 # 非法窗口回退默认窗口的告警只收集一次，避免同一配置错误在汇总邮件里重复出现
 _invalid_window_notified = False
 
-# 有效签到窗口为空的一次性告警标记：_schedule_blocks 每次调度都会调用（多账号/多轮），
-# 前后裁剪吃满窗口而回退默认窗口的告警同样只收集一次（模式同 _invalid_window_notified）
-_edge_empty_window_notified = False
+# 窗口退化的一次性告警标记（缓冲过大被收缩 / 窗口不可用被回退）：_schedule_blocks
+# 每次调度都会调用（多账号/多轮），同一配置错误的告警只收集一次
+_window_clamped_notified = False
+_window_fallback_notified = False
 
 
 def _env_int(name, default, lo=None, hi=None):
@@ -266,34 +268,49 @@ def _schedule_blocks(cfg):
 
     blocks: [(lo_min, hi_min), ...]（浮点分钟，支持 0.5 分钟=30s 的裁剪粒度）；
     eff_lo/eff_hi：有效窗口分钟边界（相对当天 0:00），由前后裁剪分别决定。
-    有效窗口为空（前裁+后裁 >= 窗口宽度）时回退默认窗口，保证调用方永不拿到空块列表。
+    缓冲过大时 `window.bounds` 只收缩缓冲、保留窗口（`edges_clamped`）；窗口本身不可用
+    （宽度 <= 0）才回退默认窗口（`fell_back`）——两种退化各告警一次，块列表永不空。
     """
     from yiban.engine import alerts  # 局部导入的理由同 _schedule_config
 
     win = window.bounds(cfg)
     start_min, end_min = win.start_min, win.end_min
     eff_lo, eff_hi = win.lo_min, win.hi_min
-    if win.fell_back:
+    _win_txt = (f"{cfg['sign_start'][0]:02d}:{cfg['sign_start'][1]:02d}"
+                f"~{cfg['sign_end'][0]:02d}:{cfg['sign_end'][1]:02d}")
+    if win.edges_clamped:
         logger.warning(
-            "有效签到窗口为空（窗口 %s~%s、前裁 %ss 后裁 %ss），回退默认窗口 06:30~07:50",
-            cfg["sign_start"], cfg["sign_end"], cfg["edge_front_sec"], cfg["edge_back_sec"],
+            "签到窗口 %s 的缓冲过大（前 %ss 后 %ss，合计已达窗口宽度），"
+            "已收缩为 前 %ss 后 %ss，窗口本身未改动",
+            _win_txt, cfg["edge_front_sec"], cfg["edge_back_sec"],
+            win.front_sec, win.back_sec,
         )
-        # 同 _schedule_config：窗口/裁剪配置错误会让"Web 界面看到的设置"与实际签到
-        # 时刻不符而无人知情，故并入当日汇总邮件（A 线）一次——多账号/多轮调用只发一次
-        global _edge_empty_window_notified
-        if not _edge_empty_window_notified:
-            _edge_empty_window_notified = True
+        # 窗口没变、只是精修被牺牲，管理员仍需知道"保存的值与实际生效的值不同"
+        global _window_clamped_notified
+        if not _window_clamped_notified:
+            _window_clamped_notified = True
+            alerts._collect_admin_mail(
+                "签到窗口缓冲已收缩",
+                (
+                    f"签到窗口 {_win_txt} 的缓冲过大（前 {cfg['edge_front_sec']}s / 后 "
+                    f"{cfg['edge_back_sec']}s，合计已达窗口宽度），已等比收缩为 前 "
+                    f"{win.front_sec}s / 后 {win.back_sec}s，窗口本身未改动（有效窗口 = "
+                    "窗口宽度的 80%）。请调小 YIBAN_WINDOW_EDGE_FRONT_SEC / "
+                    "YIBAN_WINDOW_EDGE_BACK_SEC（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
+                ),
+            )
+    if win.fell_back:
+        logger.warning("签到窗口 %s 不可用（宽度 <= 0），回退默认窗口 06:30~07:50", _win_txt)
+        # 同 _schedule_config：窗口不可用会让"界面看到的设置"与实际签到时刻不符
+        global _window_fallback_notified
+        if not _window_fallback_notified:
+            _window_fallback_notified = True
             alerts._collect_admin_mail(
                 "签到窗口配置异常",
                 (
-                    f"有效签到窗口为空：窗口 "
-                    f"{cfg['sign_start'][0]:02d}:{cfg['sign_start'][1]:02d}"
-                    f"~{cfg['sign_end'][0]:02d}:{cfg['sign_end'][1]:02d}"
-                    f" 被前后裁剪吃满（前 {cfg['edge_front_sec']}s / 后 "
-                    f"{cfg['edge_back_sec']}s），已回退默认窗口 06:30~07:50，"
-                    "实际签到时间将与配置不符！请调小 "
-                    "YIBAN_WINDOW_EDGE_FRONT_SEC / YIBAN_WINDOW_EDGE_BACK_SEC"
-                    "（或放宽 YIBAN_SIGN_START / YIBAN_SIGN_END）"
+                    f"签到窗口 {_win_txt} 不可用（宽度 <= 0），已回退默认窗口 "
+                    "06:30~07:50，实际签到时间将与配置不符！请检查 "
+                    "YIBAN_SIGN_START / YIBAN_SIGN_END"
                 ),
             )
     blocks = []

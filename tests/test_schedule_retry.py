@@ -159,12 +159,12 @@ class RetryRescheduleTest(unittest.TestCase):
             nxt = signin._next_retry_at(_dt(2026, 8, 27, 7, 0, 0), cfg, rng=_MaxRng())
             self.assertEqual(nxt, _dt(2026, 8, 27, 7, 29, 48))
 
-    def test_retry_upper_bound_follows_fallback_window(self):
-        """裁剪吃空回退：上界取有效窗口结束（07:49），窗口还开着就不得放弃重试。
+    def test_retry_upper_bound_follows_clamped_window(self):
+        """缓冲过大被收缩：上界取收缩后的有效窗口结束（07:09），窗口还开着就不得放弃重试。
 
-        原始配置 07:00~07:10 各裁 300s ⇒ 有效窗口回退默认 06:30~07:50；此刻（07:06）
-        已越过"原始配置的上界"07:05，但有效窗口仍开着——按原始配置算会把重试判成
-        "放不下"而直接放弃，窗口内的重试机会白白丢掉。
+        配置 07:00~07:10 各 300s（合计 >= 窗口宽度）⇒ 缓冲收缩为各 60s、窗口保留；
+        此刻（07:06）已越过"原始配置的上界"07:05，但有效窗口仍开着——按原始配置算会把
+        重试判成"放不下"而直接放弃，窗口内的重试机会白白丢掉。
         """
         class _MaxRng:
             def uniform(self, lo, hi):
@@ -179,15 +179,16 @@ class RetryRescheduleTest(unittest.TestCase):
         }, clear=False):
             cfg = signin._schedule_config()
             win = window.bounds(cfg)
-            self.assertTrue(win.fell_back)
-            self.assertEqual(win.hi_min, 7 * 60 + 49)
+            self.assertTrue(win.edges_clamped)
+            self.assertFalse(win.fell_back)
+            self.assertEqual(win.hi_min, 7 * 60 + 9)
             now = _dt(2026, 8, 27, 7, 6, 0)
             self.assertFalse(win.is_closed(now), "前提：有效窗口仍开着")
             nxt = signin._next_retry_at(now, cfg, rng=_MaxRng())
             self.assertIsNotNone(nxt, "窗口还开着，重试不得判放不下")
-            self.assertEqual(nxt, _dt(2026, 8, 27, 7, 32, 12))
-            # 放弃语义保留，但改按有效窗口判定：下界越过 07:49 才放弃
-            self.assertIsNone(signin._next_retry_at(_dt(2026, 8, 27, 7, 49, 0), cfg))
+            self.assertEqual(nxt, _dt(2026, 8, 27, 7, 8, 12))
+            # 放弃语义保留，但改按有效窗口判定：下界越过 07:09 才放弃
+            self.assertIsNone(signin._next_retry_at(_dt(2026, 8, 27, 7, 9, 0), cfg))
 
     def _run_status(self, reason, schedule):
         """统一驱动：让某账号连续失败直到进入重试入队分支，返回 (_write_sign_state 调用, logger mock)。"""
