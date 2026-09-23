@@ -35,7 +35,7 @@ import random
 import time
 from datetime import datetime, timedelta
 
-from yiban import clock, egress
+from yiban import clock, egress, window
 from yiban import status as yiban_status
 from yiban.engine import alerts, state_io
 from yiban.engine import attempts as attempts_mod
@@ -77,19 +77,22 @@ def _next_retry_at(now_dt, sch_cfg, rng=None):
     """重试落点：在剩余有效窗口的偏早段重新采样。
 
     - 下界 now + retry_min_interval（防连击）；
-    - 上界 eff_hi = sign_end - edge_back（统一截止口径）；
+    - 上界 = 有效窗口结束（`window.bounds`，与排计划/判关闭同一口径）；
     - 只在前 60% 的剩余窗口里均匀采样：不尾端扎堆、无固定尾序，也不回队尾立即执行；
     - 窗口放不下下一次尝试时返回 None，由调用方走放弃路径。
+
+    上界必须与排计划/判关闭同源：裁剪把窗口吃空时 `window.bounds` 回退默认窗口，而
+    "sign_end - edge_back" 仍按原始配置算，上界会落到有效窗口起点之前——窗口明明还开着，
+    重试却判"放不下"而放弃，白丢一次机会。
     """
     rng = rng or random.Random()
     base = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_min = sch_cfg["sign_end"][0] * 60 + sch_cfg["sign_end"][1]
-    eff_hi = base + timedelta(minutes=end_min - sch_cfg["edge_back_sec"] / 60.0)
+    eff_hi = base + timedelta(minutes=window.bounds(sch_cfg).hi_min)
     lo = now_dt + timedelta(seconds=sch_cfg["retry_min_interval"])
     if lo >= eff_hi:
         return None
-    window = (eff_hi - lo).total_seconds()
-    return lo + timedelta(seconds=rng.uniform(0, window * 0.6))
+    span = (eff_hi - lo).total_seconds()
+    return lo + timedelta(seconds=rng.uniform(0, span * 0.6))
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
@@ -106,8 +109,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     schedule 非空（自动错峰模式，时间驱动队列）：按 {phone: datetime} 时间点到点执行
     （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新
     采样到剩余有效窗口的偏早段后非阻塞重插（不再回队尾 + 阻塞等待），窗口不足时明确
-    放弃；相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护统一按
-    eff_hi（sign_end - edge_back）。
+    放弃；相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护与重试上界统一按
+    有效窗口结束（`window.bounds`，含裁剪吃空时回退的默认窗口）。
 
     cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
     执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
