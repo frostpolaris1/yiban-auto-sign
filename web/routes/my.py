@@ -249,9 +249,11 @@ def api_my_time_pref():
 
     拥挤度防调研：普通用户端只下发「已选百分比」（整数，四舍五入），
     不下发真实人数/块容量——不知道 K 无法反推人数；管理端 stats 接口保留精确计数。
+
+    `window` 回的是**有效窗口**（起止已按裁剪收敛、吃空时回退默认窗口）：片卡标签、
+    偏好标签与保存提示都以它为基准，直读原始配置会在回退时让同一页面出现两个钟点。
     """
     m = _appmod()
-    sw = m._sign_window()
     win = m.sign_window_bounds()
     phone = _my_phone()
     pref = m.db.get_time_pref(phone) if phone else None
@@ -282,7 +284,8 @@ def api_my_time_pref():
         "pref_slot": pref["slot_min"] if pref else None,
         "slots": slots,
         "allowed": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
-        "window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
+        "window": (f"{win.start_min // 60:02d}:{win.start_min % 60:02d} ~ "
+                   f"{win.end_min // 60:02d}:{win.end_min % 60:02d}"),
         "edge_sec": front_sec,                    # 兼容旧前端（=前裁）
         "edge_front_sec": front_sec,              # 前后独立
         "edge_back_sec": back_sec,

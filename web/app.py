@@ -1109,20 +1109,21 @@ ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
 def _slot_to_label(slot_min):
     """自选片窗口内分钟数 → "HH:MM"（实现见 web/services/accounts_data.py）。
 
-    窗口解析器按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`）。
+    有效窗口视图按调用时刻现取本模块的（测试会打桩 `web.app._sign_window` /
+    `web.app.edge_config`，`sign_window_bounds` 现取后穿透到服务层）。
     """
-    return _accounts_data._slot_to_label(slot_min, _sign_window)
+    return _accounts_data._slot_to_label(slot_min, sign_window_bounds)
 
 
 def _estimate_slot(phone):
     """预计签到时段（实现见 web/services/accounts_data.py）。
 
-    账号读入口、`.env` 路径与读取器、整数配置读取器、窗口解析器、掐头去尾口径都按调用
+    账号读入口、`.env` 路径与读取器、整数配置读取器、有效窗口视图都按调用
     时刻现取本模块的（测试会打桩 `read_env` / `_sign_window` / `edge_config` /
     `load_accounts`，也会赋值 `ENV_FILE`）。
     """
     return _accounts_data._estimate_slot(
-        phone, load_accounts, read_env, ENV_FILE, load_env_int, _sign_window, edge_config)
+        phone, load_accounts, read_env, ENV_FILE, load_env_int, sign_window_bounds)
 
 
 # 账号展示序列化（mask_account）、定位与字段校验（find_account_index /

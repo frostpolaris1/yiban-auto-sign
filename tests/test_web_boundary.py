@@ -376,6 +376,31 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
             capped = self.webapp._estimate_slot(target)
         self.assertEqual(capped[0], "06:35~06:40")
 
+    def test_estimate_slot_nonempty_on_fallback_window(self):
+        """裁剪吃空回退：预计签到时段按有效窗口算，不得静默变空。
+
+        原实现自拼 `eff_lo/eff_hi`（原始窗口 + 原始裁剪）：原始 07:00~07:10 各裁 300s
+        时 span=0、无有效块 ⇒ 返回 (None, "")，用户端"预计签到时段"整块空白。改消费
+        有效窗口（回退默认 06:30~07:50、前后各 60s）后首块 06:31~06:35，与引擎同源。
+        """
+        self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
+                        "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
+        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
+        with mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
+            got = self.webapp._estimate_slot(PHONE)
+        self.assertEqual(got, ("06:31~06:35", "（每日固定时段，块内时刻每天略有抖动）"),
+                         "回退窗口下不得返回空（原实现 span=0 → (None, \"\")）")
+
+    def test_estimate_slot_still_fails_closed_when_no_usable_block(self):
+        """fail-closed 语义保留：确实没有可用片时仍返回 (None, "")，不回退成默认片。"""
+        import yiban.window as yb_window
+        degenerate = yb_window.Window(390, 470, 400.0, 400.0, 60, 60)
+        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
+        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=degenerate), \
+                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
+            got = self.webapp._estimate_slot(PHONE)
+        self.assertEqual(got, (None, ""))
+
     def test_read_env_and_env_file_stubs_reach_verify_switches(self):
         """`web.app.read_env` / `ENV_FILE` 是既有开关打桩点（test_probe 的写法）。"""
         with mock.patch.object(self.webapp, "read_env",
@@ -997,6 +1022,22 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
                 mock.patch.object(self.webapp, "_sign_window", return_value=((8, 0), (9, 0))):
             win = self.webapp._executors_window()
         self.assertEqual((win.start_min, win.end_min), (480, 540))
+
+    def test_executors_window_defaults_match_engine_window(self):
+        """`.env` 未写裁剪键时执行体页与引擎同窗：缺省 60s（原实现缺省 0 → 宽 1 分钟）。
+
+        示例 `.env` 把两个裁剪键注释掉，故这条缺省路径就是生产默认形态：缺省 0 会让
+        页面上显示的窗口、容量换算的分母与"窗口内不做实测"的拦截都比引擎宽 1 分钟。
+        """
+        import yiban.window as yb_window
+        self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
+        with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
+            win = self.webapp._executors_window()
+        engine = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
+                                   "edge_front_sec": 60, "edge_back_sec": 60})
+        self.assertEqual((win.front_sec, win.back_sec), (60, 60))
+        self.assertEqual((win.lo_min, win.hi_min), (engine.lo_min, engine.hi_min))
+        self.assertEqual(win.full_sec(), 78 * 60)
 
     def test_settings_effective_values_uses_app_side_flag_and_defaults(self):
         """`_env_flag` 与三个容量缺省值都在调用时刻从 web.app 现取。"""

@@ -157,16 +157,44 @@ class PrefSliceEndToEndTest(unittest.TestCase):
 
 class SlotOffsetSemanticsTest(unittest.TestCase):
     def test_offset_zero_is_window_start(self):
-        """`slot_min` 是相对窗口起点的分钟偏移：偏移 0 → 窗口起点，不是绝对分钟。"""
-        self.assertEqual(accounts_data._slot_to_label(0, lambda: ((6, 30), (7, 50))),
-                         "06:30")
-        self.assertEqual(accounts_data._slot_to_label(30, lambda: ((7, 0), (8, 0))),
-                         "07:30", "偏移应加在窗口起点上，而非按当天 0:00 计")
+        """`slot_min` 是相对**有效**窗口起点的分钟偏移：偏移 0 → 窗口起点，不是绝对分钟。"""
+        self.assertEqual(
+            accounts_data._slot_to_label(0, lambda: window.from_env(
+                {"YIBAN_SIGN_START": "06:30", "YIBAN_SIGN_END": "07:50"})), "06:30")
+        self.assertEqual(
+            accounts_data._slot_to_label(30, lambda: window.from_env(
+                {"YIBAN_SIGN_START": "07:00", "YIBAN_SIGN_END": "08:00"})),
+            "07:30", "偏移应加在窗口起点上，而非按当天 0:00 计")
+
+    def test_non_fallback_label_uses_original_window_start(self):
+        """非回退：有效窗口起点与原始窗口起点逐值相等 ⇒ 标签逐值不变（生产显示不变）。"""
+        win = window.bounds({"sign_start": (7, 0), "sign_end": (8, 0),
+                             "edge_front_sec": 60, "edge_back_sec": 60})
+        self.assertFalse(win.fell_back)
+        self.assertEqual(accounts_data._slot_to_label(0, lambda: win), "07:00")
+        self.assertEqual(accounts_data._slot_to_label(30, lambda: win), "07:30")
+
+    def test_fallback_label_uses_effective_window_start(self):
+        """裁剪吃空回退：基点取回退窗口起点（06:30），而非原始配置的 07:00。
+
+        原实现直读 `_sign_window` 的原始起点，回退时片卡（按有效窗口）显示 06:30，
+        已存偏好与保存提示（按原始窗口）却说 07:00——同一页面出现两个钟点。
+        """
+        win = window.bounds({"sign_start": (7, 0), "sign_end": (7, 10),
+                             "edge_front_sec": 300, "edge_back_sec": 300})
+        self.assertTrue(win.fell_back)
+        self.assertEqual((win.start_min, win.end_min), (390, 470))
+        self.assertEqual(accounts_data._slot_to_label(0, lambda: win), "06:30")
+        self.assertEqual(accounts_data._slot_to_label(30, lambda: win), "07:00")
 
 
 class WebPrefSlotsYardstickTest(unittest.TestCase):
     def test_pref_slots_not_all_disabled_when_window_cropped(self):
-        """web 同准绳：裁剪吃空后自选片不全为灰，且片号/结构集合与正常窗口同构。"""
+        """web 同准绳：裁剪吃空后自选片不全为灰，且片号/结构集合与正常窗口同构。
+
+        回退窗口 = 默认 06:30~07:50、前后各裁 60s，故逐片钉住具体 label/disabled：
+        首末片各被裁 1 分钟（部分保留、可点选并给提示），中段无提示，**没有任何片被置灰**。
+        """
         with _cfg_env(**CROPPED) as cropped_cfg:
             cropped = window.bounds(cropped_cfg)
         with _cfg_env(**NORMAL) as normal_cfg:
@@ -178,6 +206,31 @@ class WebPrefSlotsYardstickTest(unittest.TestCase):
         self.assertEqual({s["slot_min"] for s in slots},
                          {s["slot_min"] for s in base})
         self.assertEqual([sorted(s) for s in slots], [sorted(s) for s in base])
+        self.assertEqual(
+            slots[0], {"slot_min": 0, "label": "06:30",
+                       "disabled": False, "edge_note": "开头 1 分钟保留"})
+        self.assertEqual(
+            slots[1], {"slot_min": 5, "label": "06:35", "disabled": False, "edge_note": ""})
+        self.assertEqual(
+            slots[-1], {"slot_min": 75, "label": "07:45",
+                        "disabled": False, "edge_note": "结尾 1 分钟保留"})
+
+    def test_pref_slots_pin_enabled_and_disabled_under_crop(self):
+        """有效窗口被前裁吃满 5 分钟（未吃空）：首片整片在裁剪区内 → 置灰，次片可选。
+
+        与上一例互补：回退窗口的前后裁固定 60s（< 5 分钟）故永远置灰不了任何片，
+        这里用"仍有效但被裁剪"的窗口钉住置灰与可选两种取值，避免"不全灰"这种
+        弱断言在置灰逻辑整体失效时仍然通过。
+        """
+        win = window.bounds({"sign_start": (6, 30), "sign_end": (7, 0),
+                             "edge_front_sec": 300, "edge_back_sec": 0})
+        self.assertFalse(win.fell_back)
+        slots = my._pref_slots(win)
+        self.assertEqual(
+            slots[0], {"slot_min": 0, "label": "06:30",
+                       "disabled": True, "edge_note": ""})
+        self.assertEqual(
+            slots[1], {"slot_min": 5, "label": "06:35", "disabled": False, "edge_note": ""})
 
     def test_app_forward_hands_window_over_to_bounds(self):
         """`web.app.sign_window_bounds` 只转发：起止与前后裁剪交给 `yiban.window.bounds`。"""

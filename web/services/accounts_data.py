@@ -13,8 +13,8 @@
 
 **归属**
 原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的模块级名字——签到窗口 `_sign_window`、`.env` 路径与
-读取器、整数配置读取器、掐头去尾口径 `edge_config`、账号读入口 `load_accounts`——在调用
+转发，把它自己持有、而本模块需要的模块级名字——有效窗口视图 `sign_window_bounds`、
+`.env` 路径与读取器、整数配置读取器、账号读入口 `load_accounts`——在调用
 时刻现取后注入。账号审核态词表、口令策略常量、手机号正则与注销宽限期随本族搬入本模块，
 `web/app.py` 再导出以免 `m.*` 名字面损失。
 
@@ -26,11 +26,12 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。签到窗口、`.env` 路径与读取器、掐头去尾口径、账号读入口都作为显式参数接收：
-它们在 `web.app` 上是会被测试打桩或赋值改写的模块级名字（既有测试在 `web.app` 上打桩
-`_sign_window` / `edge_config` / `read_env` / `load_accounts`，又直接赋值 `ENV_FILE`），
-本模块另持一份绑定会让这些改写静默失效。只读验证复用 `scripts/signin.py` 的
-`signin.verify_account` 真源（登录 + 拉任务，不提交签到），不自建第二套探针。
+模块）。有效窗口视图、`.env` 路径与读取器、账号读入口都作为显式参数接收：它们在
+`web.app` 上是会被测试打桩或赋值改写的模块级名字（`_sign_window` / `edge_config` /
+`read_env` / `load_accounts` 在既有测试里被打桩，`ENV_FILE` 被直接赋值；窗口打桩经
+`sign_window_bounds` 现取后穿透到本模块），本模块另持一份绑定会让这些改写静默失效。
+只读验证复用 `scripts/signin.py` 的 `signin.verify_account` 真源（登录 + 拉任务，
+不提交签到），不自建第二套探针。
 """
 
 import random
@@ -313,29 +314,37 @@ def _admin_password_policy_error(password):
 # ---------------------------------------------------------------------------
 # 自选时间片展示与预计时段
 # ---------------------------------------------------------------------------
-def _slot_to_label(slot_min, sign_window):
-    """自选片相对窗口起点的分钟偏移 → "HH:MM"（偏移 0 = 窗口起点，与调度侧同号）。
+def _slot_to_label(slot_min, sign_window_bounds):
+    """自选片相对**有效窗口起点**的分钟偏移 → "HH:MM"（偏移 0 = 窗口起点，与调度侧同号）。
 
-    窗口解析器由调用方传入（`web.app` 的 `_sign_window`）：它是会被测试打桩的模块级名字。
+    基准必须是有效窗口起点：片号是相对窗口起点的偏移，而裁剪把有效窗口吃空时
+    `window.bounds` 回退默认窗口——直读原始窗口起点会让片卡（按有效窗口）显示 06:30、
+    而偏好标签与保存提示（按原始窗口）说 07:00，同一页面出现两个钟点。
+
+    窗口视图由调用方传入（`web.app` 的 `sign_window_bounds`）：它是会被测试打桩的
+    模块级名字。
     """
     if slot_min is None:
         return None
-    sw = sign_window()
-    base = sw[0][0] * 60 + sw[0][1]
-    m = base + int(slot_min)
+    win = sign_window_bounds()
+    m = win.start_min + int(slot_min)
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int, sign_window,
-                   edge_config):
+def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
+                   sign_window_bounds):
     """预计签到时段（调度 v2）：
     顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
     随机排序 = 每天重排，返回 None + 提示文案。
     返回 (estimated_str|None, note_str)。
 
-    账号读入口、`.env` 路径与读取器、整数配置读取器、窗口解析器、掐头去尾口径都由
-    调用方传入（`web.app` 的同名模块级名字）：它们会被测试打桩或赋值改写，
-    本模块另持绑定会让这些改写静默失效。
+    几何一律取自**有效窗口视图**（`window.bounds`，含裁剪吃空时的回退）：自己按原始
+    窗口与原始裁剪拼 `eff_lo/eff_hi` 会在回退时得到空区间（span=0），预计时段静默变空。
+    找不到可用片时仍返回 `(None, "")`（fail-closed，不回退成某个默认片）。
+
+    账号读入口、`.env` 路径与读取器、整数配置读取器、窗口视图都由调用方传入
+    （`web.app` 的同名模块级名字）：它们会被测试打桩或赋值改写，本模块另持绑定会让
+    这些改写静默失效。
     """
     env = read_env(env_file)
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
@@ -351,12 +360,9 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int, sign_
     idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
     if idx is None or not live:
         return None, ""
-    sw = sign_window()
-    front_min, back_min = edge_config()[0] / 60.0, edge_config()[1] / 60.0
-    start_min = sw[0][0] * 60 + sw[0][1]
-    end_min = sw[1][0] * 60 + sw[1][1]
-    eff_lo = start_min + front_min
-    eff_hi = end_min - back_min
+    win = sign_window_bounds()
+    start_min, end_min = win.start_min, win.end_min
+    eff_lo, eff_hi = win.lo_min, win.hi_min
     span = eff_hi - eff_lo
 
     def fmt(m):
