@@ -419,6 +419,70 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
         self.assertIn("今日生效", r3.get_json()["msg"])  # 回退兜底 06:31 → now(06:30) 之前
 
+    def test_api_pref_boundary_fallback_uses_effective_start(self):
+        """快照标记缺失时的兜底分界取**有效**窗口起点（已扣前裁），不是原始起点+1 分钟。
+
+        原始窗口 07:00~08:00、前裁 300s ⇒ 有效起点 07:05。07:03 改选仍早于该起点，
+        引擎此刻尚未读自选表 ⇒ 应提示"今日生效"；旧实现按原始起点+1 分钟算成 07:01，
+        会把同一时刻误报成"明日生效"（用户以为今天不生效，实际今天会生效）。
+        """
+        import unittest.mock as mock
+        from datetime import datetime as _dt
+
+        class FakeDT:  # 固定业务钟在 07:03（有效起点 07:05 之前）
+            @staticmethod
+            def now():
+                return _dt(2026, 8, 15, 7, 3, 0)
+
+            strptime = staticmethod(_dt.strptime)
+
+        original = open(self.env_file, encoding="utf-8").read()
+        snap = os.path.join(self.tmp, "sched-snapshot-2026-08-15.json")
+        if os.path.exists(snap):
+            os.remove(snap)
+        try:
+            with open(self.env_file, "a", encoding="utf-8") as f:
+                f.write("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=08:00\n"
+                        "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=0\n")
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, "user1@test.local", USER_PASS)
+            h = self._csrf(token)
+            with mock.patch.object(self.webapp.clock, "now", FakeDT.now):
+                r = c.put("/api/my-time-pref", json={"slot_min": 5}, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertIn("今日生效", r.get_json()["msg"])
+        finally:
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original)
+
+    def test_api_me_sign_window_uses_effective_window(self):
+        """`/api/me` 的 `sign_window` 取**有效**窗口端点，与同页自选片卡片同一份几何。
+
+        非回退（生产默认 06:30~07:50）逐值等价；裁剪吃空回退默认窗口时，页面不再显示
+        原始配置的 07:00~07:10（否则同一页面出现片卡"06:30~07:50"与"07:00~07:10"两个钟点）。
+        """
+        base = (f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_ADMIN_USER=admin\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\nYIBAN_ALLOW_TIME_PREF=1\n"
+                "YIBAN_TIME_PREF_COOLDOWN_SEC=0\nYIBAN_PAUSE_COOLDOWN_SEC=0\n")
+        original = open(self.env_file, encoding="utf-8").read()
+
+        def _write(extra):
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(base + extra)
+
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        try:
+            _write("")
+            self.assertEqual(c.get("/api/me").get_json()["sign_window"], "06:30 ~ 07:50")
+            _write("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
+                   "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
+            self.assertEqual(c.get("/api/me").get_json()["sign_window"], "06:30 ~ 07:50",
+                             "回退配置下应与片卡同一窗口，而非原始 07:00 ~ 07:10")
+        finally:
+            with open(self.env_file, "w", encoding="utf-8") as f:
+                f.write(original)
+
     def test_api_pref_slot_type_strict(self):
         """对抗（M1）：bool（False→0）与小数（5.9→5）截断不得误入合法槽位。"""
         c = self.webapp.create_app().test_client()

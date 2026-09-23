@@ -329,7 +329,6 @@ def api_my_time_pref_save():
             slot = int(slot)
         except (TypeError, ValueError):
             return jsonify({"error": "时间片取值无效"}), 400
-        sw = m._sign_window()
         # 可用性按 `window.bounds` 的有效窗口算（与 `_pref_slots` 展示同准绳）：有效窗口被
         # 前后裁剪吃空时 bounds 回退默认窗口，展示侧按回退窗口给出可点选的片——此处若直读
         # 原始窗口与裁剪，会把每一片都判成"不在可选范围"，形成"点得到、存不下"。
@@ -388,7 +387,7 @@ def api_my_time_pref_save():
         # 生效分界（卡点缓冲）：
         # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
         # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
-        # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
+        # 标记不存在（当日 cron 未运行/自选未激活）回退"有效窗口起点"兜底
         now = m.clock.now()
         boundary = None
         try:
@@ -405,11 +404,11 @@ def api_my_time_pref_save():
         except (OSError, ValueError, KeyError, TypeError):
             boundary = None
         if boundary is None:
-            try:
-                boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
-            except ValueError:
-                boundary = now
-            boundary += timedelta(minutes=1)
+            # 兜底取**有效**窗口起点（已扣前裁）：它就是引擎/cron 读取自选表的近似时刻，
+            # 与快照标记同一准绳。按原始窗口起点 + 1 分钟折算在前裁非默认值时会偏
+            # （前裁 300s 时偏 4 分钟）→ 改选提示的"今日/明日生效"与实际分叉。
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            boundary = midnight + timedelta(seconds=win.lo_min * 60)
         when = "今日生效" if now < boundary else "明日生效"
         return jsonify({"ok": True, "msg": f"已保存自选 {m._slot_to_label(slot)}，{when}{full_notice}"})
 
