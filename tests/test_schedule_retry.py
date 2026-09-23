@@ -132,6 +132,63 @@ class RetryRescheduleTest(unittest.TestCase):
             self.assertEqual(attempt.call_count, 1, "窗口不足不应重试")
             self.assertFalse(results["13800138000"][0], "窗口不足应判失败")
 
+    def test_retry_upper_bound_pinned_to_sign_end_minus_edge(self):
+        """正常窗口（无回退）：上界逐值等于 `sign_end - edge_back`（07:50 - 60s = 07:49）。
+
+        采样上限用"uniform 恒回上界"的替身 rng 钉死，故断言的是精确时刻而非区间：
+        07:01 + 60% × (07:49 - 07:01) = 07:29:48。
+        """
+        class _MaxRng:
+            def uniform(self, lo, hi):
+                return hi
+
+        with mock.patch.dict(os.environ, {
+            "YIBAN_RETRY_MIN_INTERVAL": "60",
+            "YIBAN_SIGN_START": "06:30",
+            "YIBAN_SIGN_END": "07:50",
+            "YIBAN_WINDOW_EDGE_FRONT_SEC": "60",
+            "YIBAN_WINDOW_EDGE_BACK_SEC": "60",
+        }, clear=False):
+            cfg = signin._schedule_config()
+            win = window.bounds(cfg)
+            self.assertFalse(win.fell_back)
+            self.assertEqual(win.hi_min, 7 * 60 + 49)
+            self.assertEqual(win.hi_min,
+                             cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
+                             - cfg["edge_back_sec"] / 60.0)
+            nxt = signin._next_retry_at(_dt(2026, 8, 27, 7, 0, 0), cfg, rng=_MaxRng())
+            self.assertEqual(nxt, _dt(2026, 8, 27, 7, 29, 48))
+
+    def test_retry_upper_bound_follows_fallback_window(self):
+        """裁剪吃空回退：上界取有效窗口结束（07:49），窗口还开着就不得放弃重试。
+
+        原始配置 07:00~07:10 各裁 300s ⇒ 有效窗口回退默认 06:30~07:50；此刻（07:06）
+        已越过"原始配置的上界"07:05，但有效窗口仍开着——按原始配置算会把重试判成
+        "放不下"而直接放弃，窗口内的重试机会白白丢掉。
+        """
+        class _MaxRng:
+            def uniform(self, lo, hi):
+                return hi
+
+        with mock.patch.dict(os.environ, {
+            "YIBAN_RETRY_MIN_INTERVAL": "60",
+            "YIBAN_SIGN_START": "07:00",
+            "YIBAN_SIGN_END": "07:10",
+            "YIBAN_WINDOW_EDGE_FRONT_SEC": "300",
+            "YIBAN_WINDOW_EDGE_BACK_SEC": "300",
+        }, clear=False):
+            cfg = signin._schedule_config()
+            win = window.bounds(cfg)
+            self.assertTrue(win.fell_back)
+            self.assertEqual(win.hi_min, 7 * 60 + 49)
+            now = _dt(2026, 8, 27, 7, 6, 0)
+            self.assertFalse(win.is_closed(now), "前提：有效窗口仍开着")
+            nxt = signin._next_retry_at(now, cfg, rng=_MaxRng())
+            self.assertIsNotNone(nxt, "窗口还开着，重试不得判放不下")
+            self.assertEqual(nxt, _dt(2026, 8, 27, 7, 32, 12))
+            # 放弃语义保留，但改按有效窗口判定：下界越过 07:49 才放弃
+            self.assertIsNone(signin._next_retry_at(_dt(2026, 8, 27, 7, 49, 0), cfg))
+
     def _run_status(self, reason, schedule):
         """统一驱动：让某账号连续失败直到进入重试入队分支，返回 (_write_sign_state 调用, logger mock)。"""
         def fake_attempt(acc):
