@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""v18 迁移：持久化任务队列 `sign_tasks` + 执行体心跳 `executor_heartbeats`
-+ 出口令牌桶状态 `egress_state`。
+"""v18 迁移：持久化任务队列 `sign_tasks` + 出口令牌桶状态 `egress_state`。
 
 覆盖四件事：
-- schema 落地：三张表、两个领取/回收索引、`sign_tasks` 逐列（名/类型/NOT NULL/主键）匹配；
+- schema 落地：两张表、两个领取/回收索引、`sign_tasks` 逐列（名/类型/NOT NULL/主键）匹配；
+  并守住执行体存活**不走表**——它由文件心跳 `yiban.engine.state_io.worker_presence`
+  承担（四态，`/api/scheduler/executors` 与页面消费），建表会让判据多出一份；
 - `sign_claims` 存量数据平移进 `sign_tasks`（vshard 落 -1、run_at 取 claimed_at），
   且幂等（连跑两次不重复插入）、旧表不删且原行原样保留；
 - 耐久性：迁移后连接的 `PRAGMA synchronous` 为 FULL（2）——签到的"是否已登录"判据
@@ -127,8 +128,10 @@ class SchemaTest(_Base):
         self.assertIn(18, [m[0] for m in db._MIGRATIONS], "v18 必须登记在迁移表里")
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        for t in ("sign_tasks", "executor_heartbeats", "egress_state"):
+        for t in ("sign_tasks", "egress_state"):
             self.assertIn(t, tables, f"缺表 {t}")
+        self.assertNotIn("executor_heartbeats", tables,
+                         "执行体存活以文件心跳为准，本表不得再建回 schema")
         indexes = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index'")}
         for i in ("idx_tasks_pickup", "idx_tasks_lease"):

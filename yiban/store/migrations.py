@@ -714,8 +714,8 @@ def migrate_v17(conn):
 
 
 def migrate_v18(conn):
-    """v18：持久化任务队列（sign_tasks）+ 执行体心跳（executor_heartbeats）
-    + 出口令牌桶状态（egress_state）；sign_claims 数据平移进 sign_tasks。
+    """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）；
+    sign_claims 数据平移进 sign_tasks。
 
     可选迁移（is_core=False，同 v17 口径）：失败只告警不阻断启动，下次启动整段重跑，
     故必须幂等（CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE）。
@@ -764,13 +764,6 @@ def migrate_v18(conn):
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_lease ON sign_tasks(state, lease_until)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS executor_heartbeats ("
-        "executor TEXT PRIMARY KEY, "
-        "vshards TEXT NOT NULL DEFAULT '', "
-        "heartbeat_at TEXT NOT NULL"
-        ")"
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS egress_state ("
