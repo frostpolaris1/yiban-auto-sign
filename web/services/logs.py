@@ -38,6 +38,7 @@ from datetime import datetime, timedelta
 from yiban import clock, cred_state
 from yiban import status as yiban_status
 from yiban.masking import mask_phone as _mask_phone
+from yiban.masking import mask_phones_in_text as _mask_phones_in_text
 
 # 与 web.app 同名的日志通道：熔断清理失败的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
@@ -198,12 +199,12 @@ def _most_recent_log_date(max_days, path_for, tail_lines):
 # 出站脱敏
 # ---------------------------------------------------------------------------
 def _mask_log_phones(line):
-    """日志行内全部 [11 位手机号] 脱敏（/api/logs 与 /api/my-logs 共用，防展示层漏出 PII）。
+    """日志行内全部 11 位手机号脱敏（/api/logs 与 /api/my-logs 共用，防展示层漏出 PII）。
 
-    覆盖 signin.py 的行格式 `[11 位手机号] 结果`；其他格式（如 `账号: 138...`）
-    不进日志（通知内容不落盘），单一格式正则足够。
+    直接复用输出面兜底同一实现 `mask_phones_in_text`：只认 `[11 位]` 方括号形态会漏过
+    中文逗号分隔等其它位置的裸号，展示/导出层与落盘面必须是同一个号码口径。
     """
-    return re.sub(r"\[(\d{11})\]", lambda m: "[" + _mask_phone(m.group(1)) + "]", line)
+    return _mask_phones_in_text(line)
 
 
 # ---------------------------------------------------------------------------
