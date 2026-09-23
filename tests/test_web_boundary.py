@@ -1504,7 +1504,11 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                          "转发必须现取 STATE_DIR，而不是服务层自持的绑定")
 
     def test_sign_window_stub_reaches_status_executors_and_capacity(self):
-        """`web.app._sign_window` 的既有打桩点对三处消费方都生效。"""
+        """`web.app._sign_window` 的既有打桩点对三处消费方都生效。
+
+        `sign_status` 现经 `sign_window_bounds` 现取窗口（有效端点 = 打桩窗口 ± 默认
+        60s 裁剪），故文案为"~08:59 结束"而非打桩端点 09:00——这正是与引擎同源的结果。
+        """
         with mock.patch.object(self.webapp, "_sign_window",
                                return_value=((8, 0), (9, 0))):
             win = self.webapp._executors_window()
@@ -1512,7 +1516,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             self.assertEqual(self.webapp._slot_to_label(0), "08:00")
             now = datetime(2026, 9, 16, 8, 30)
             self.assertEqual(self.webapp.sign_status(now),
-                             ("签到窗口进行中（~09:00 结束）", "#9ece6a"))
+                             ("签到窗口进行中（~08:59 结束）", "#9ece6a"))
         self.assertIsInstance(self.webapp._capacity_estimate(10), int)
 
     def test_in_sign_window_stub_reaches_in_run_period(self):
@@ -1701,12 +1705,18 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                          "窗口外一律不算本应运行")
 
     def test_sign_status_texts_and_weekend_short_circuit(self):
+        """三段文案与配色（含周末短路）按**有效**窗口端点出字。
+
+        默认窗口 06:30~07:50、前后各裁 60s ⇒ 有效端点 06:31 / 07:49；文案里的钟点
+        必须与引擎实际开关点同源（旧实现按原始配置说"06:30 开始 / ~07:50 结束"，
+        与引擎 06:31 开、07:49 停手分叉 1 分钟）。
+        """
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         status = self.webapp.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 0)),
-                         ("未到签到时间（06:30 开始）", "#7aa2f7"))
+                         ("未到签到时间（06:31 开始）", "#7aa2f7"))
         self.assertEqual(status(datetime(2026, 9, 16, 7, 0)),
-                         ("签到窗口进行中（~07:50 结束）", "#9ece6a"))
+                         ("签到窗口进行中（~07:49 结束）", "#9ece6a"))
         self.assertEqual(status(datetime(2026, 9, 16, 8, 0)),
                          ("今日签到已结束", "#e0af68"))
         self.assertEqual(status(datetime(2026, 9, 19, 7, 0)),
@@ -1715,7 +1725,35 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                          ("今日无需打卡（周日）", "#a1a1aa"))
         self._write_raw("YIBAN_SATURDAY_SIGN=1\nYIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         self.assertEqual(status(datetime(2026, 9, 19, 7, 0)),
-                         ("签到窗口进行中（~07:50 结束）", "#9ece6a"))
+                         ("签到窗口进行中（~07:49 结束）", "#9ece6a"))
+
+    def test_sign_status_switches_exactly_at_effective_endpoints(self):
+        """三段切换点逐分钟钉住：06:30 未到、06:31 进行中、07:49 进行中、07:50 已结束。
+
+        边界值显式回归：判定与文案同取有效端点，任一漂回原始窗口（06:30 / 07:50）即红。
+        """
+        self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
+                        "YIBAN_WINDOW_EDGE_FRONT_SEC=60\nYIBAN_WINDOW_EDGE_BACK_SEC=60\n")
+        status = self.webapp.sign_status
+        self.assertEqual(status(datetime(2026, 9, 16, 6, 30))[0], "未到签到时间（06:31 开始）")
+        self.assertEqual(status(datetime(2026, 9, 16, 6, 31))[0], "签到窗口进行中（~07:49 结束）")
+        self.assertEqual(status(datetime(2026, 9, 16, 7, 49))[0], "签到窗口进行中（~07:49 结束）")
+        self.assertEqual(status(datetime(2026, 9, 16, 7, 50))[0], "今日签到已结束")
+
+    def test_sign_status_cropped_empty_window_uses_fallback_endpoints(self):
+        """裁剪吃空回退默认窗口：文案取回退后的有效端点（06:31 / 07:49），非原始配置端点。
+
+        原始 07:00~07:10、前后各裁 300s ⇒ 有效宽度为 0 ⇒ `window.bounds` 回退默认窗口；
+        旧实现直读原始窗口，会在回退下把文案写成"~07:10 结束"，与引擎回退后的实际
+        关闭点差 30 分钟。
+        """
+        self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
+                        "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
+        status = self.webapp.sign_status
+        self.assertEqual(status(datetime(2026, 9, 16, 6, 30)),
+                         ("未到签到时间（06:31 开始）", "#7aa2f7"))
+        self.assertEqual(status(datetime(2026, 9, 16, 7, 0)),
+                         ("签到窗口进行中（~07:49 结束）", "#9ece6a"))
 
     def test_check_connectivity_ok_and_error_detail(self):
         from web.services import signstatus as ss_mod
