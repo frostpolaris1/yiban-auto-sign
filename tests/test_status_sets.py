@@ -66,24 +66,26 @@ class StatusSetsTest(unittest.TestCase):
                          {yiban_status.STATUS_PENDING})
 
     def test_concluded_excludes_only_pending(self):
-        """「有结论」= 12 个状态码里除 `pending` 外的全部（差集定义，不手抄枚举）。
+        """「只有 `pending` 不算结论」的可观察后果，按消费方的判据断言。
 
-        `pending` 只是计划（"打算什么时候签"），不是事实；其余 11 个都已留下事实。
-        故本集合与 `UNDONE_STATUSES` **刻意重叠**：failed / retrying / skipped_window
-        等既有结论、又要补签——「还要不要再签」与「有没有留下事实」是两个问题，
-        把它们合成一个集合会让窗口收尾覆盖掉真实失败，或让补签轮漏掉失败账号。
+        1. 窗口收尾的 CAS 判据 `_has_conclusion` 对 `pending` 为假、对其余 11 个状态码
+           为真——若把 `pending`（排计划写下的"打算什么时候签"）当成记录，窗口外起跑的
+           整轮零请求账号会一个都进不了 `results`，汇总把它们算成失败并退出码 1；
+        2. `pending` 不在「已了结」三态里 ⇒ 该账号仍会被补签轮纳入。
+
+        「还要不要再签」与「有没有留下事实」是两个问题，故两处判定刻意不同向。
         """
-        self.assertEqual(yiban_status.CONCLUDED_JSON_STATUSES,
-                         set(yiban_status.ALL_STATUSES) - {yiban_status.STATUS_PENDING})
-        self.assertEqual(yiban_status.CONCLUDED_JSON_STATUSES & yiban_status.UNDONE_STATUSES,
-                         {yiban_status.STATUS_FAILED, yiban_status.STATUS_RETRYING,
-                          yiban_status.STATUS_SKIPPED_WINDOW,
-                          yiban_status.STATUS_SKIPPED_NORANGE,
-                          yiban_status.STATUS_NO_POSITION})
-        self.assertEqual(yiban_status.UNDONE_STATUSES - yiban_status.CONCLUDED_JSON_STATUSES,
-                         {yiban_status.STATUS_PENDING})
-        self.assertEqual(yiban_status.UNDONE_STATUSES | yiban_status.CONCLUDED_JSON_STATUSES,
-                         set(yiban_status.ALL_STATUSES))
+        self.assertFalse(state_io._has_conclusion({"status": yiban_status.STATUS_PENDING}))
+        self.assertFalse(yiban_status.is_concluded_status(yiban_status.STATUS_PENDING))
+        for st in yiban_status.ALL_STATUSES:
+            if st == yiban_status.STATUS_PENDING:
+                continue
+            with self.subTest(status=st):
+                self.assertTrue(state_io._has_conclusion({"status": st}),
+                                "除 pending 外的状态码都留下了事实，窗口外跳过不得覆盖")
+        self.assertNotIn(yiban_status.STATUS_PENDING, yiban_status.CLAIM_DONE_STATUSES,
+                         "pending 不是「已了结」⇒ 补签轮仍要纳入它")
+        self.assertIn(yiban_status.STATUS_PENDING, yiban_status.UNDONE_STATUSES)
 
     def test_pending_is_undone_but_not_concluded(self):
         """`pending` 只是计划（"打算什么时候签"），不是事实。"""
@@ -217,6 +219,11 @@ class SecondRunDropDoneTest(unittest.TestCase):
             with self.subTest(status=st):
                 self._write_state({PHONE: {"status": st}})
                 self.assertEqual(self._kept(), [PHONE])
+
+    def test_pending_is_kept_for_second_run(self):
+        """`pending` 只是排计划写下的"打算什么时候签"，不算已了结 ⇒ 补签轮仍纳入它。"""
+        self._write_state({PHONE: {"status": yiban_status.STATUS_PENDING}})
+        self.assertEqual(self._kept(), [PHONE])
 
     def test_missing_state_file_keeps_everything(self):
         """状态文件缺失/损坏按「无记录」处理：宁可多跑一轮，不可漏签。"""
