@@ -592,6 +592,61 @@ class TimePrefsTest(unittest.TestCase):
             s = open(self.env_file, encoding="utf-8").read()
             open(self.env_file, "w", encoding="utf-8").write(s.replace(added, ""))
 
+    def test_fallback_window_clock_labels_agree_across_the_page(self):
+        """裁剪吃空回退：选片卡 / 已存偏好 / 保存提示 / 管理员列表四处钟点必须一致。
+
+        回退配置原始窗口 07:00~07:10 + 前后各裁 300s ⇒ `window.bounds` 回退默认
+        06:30~07:50（前后各 60s）。展示侧若仍按**原始**窗口起点（07:00）折算，片卡显示
+        06:30 而保存提示说 07:00——同一页面出现两个钟点；管理员列表的首尾标记若按原始
+        窗口宽度（10 分钟）判，中段任意片都会被误标成 `last`。
+        """
+        added = ("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
+                 "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write(added)
+        try:
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, "user1@test.local", USER_PASS)
+            h = self._csrf(token)
+            data = c.get("/api/my-time-pref").get_json()
+            # 有效窗口 = 回退后的默认窗口：窗口串与片卡标签都以它为基准
+            self.assertEqual(data["window"], "06:30 ~ 07:50")
+            self.assertEqual(data["slots"][0]["label"], "06:30")
+            self.assertEqual(data["slots"][-1]["label"], "07:45")
+            # 保存提示与已存偏好标签同基准
+            r = c.put("/api/my-time-pref", json={"slot_min": 30}, headers=h)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+            self.assertIn("已保存自选 07:00", r.get_json()["msg"])
+            data2 = c.get("/api/my-time-pref").get_json()
+            self.assertEqual(data2["pref"], "07:00")
+            self.assertEqual(data2["pref_slot"], 30)
+            # 管理员列表：片标签同基准，首尾标记按有效窗口宽度（span=80）判
+            adm = self.webapp.create_app().test_client()
+            self._login(adm, "admin", ADMIN_PASS)
+            acc = next(a for a in adm.get("/api/accounts").get_json()["accounts"]
+                       if a["phone"] == "138****8001")
+            self.assertEqual(acc["time_pref"], "07:00")
+            self.assertIsNone(acc["time_pref_edge"],
+                              "span 按原始窗口(10)算会把片 30 误标 last")
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(s.replace(added, ""))
+
+    def test_api_accounts_time_pref_edge_marks_without_fallback(self):
+        """非回退（生产默认窗口 06:30~07:50）：片标签与首尾标记逐值不变。"""
+        c = self.webapp.create_app().test_client()
+        self._login(c, "admin", ADMIN_PASS)
+        db.set_time_pref("13800138001", 75, "2026-08-15 10:00:00")
+        acc = next(a for a in c.get("/api/accounts").get_json()["accounts"]
+                   if a["phone"] == "138****8001")
+        self.assertEqual(acc["time_pref"], "07:45")
+        self.assertEqual(acc["time_pref_edge"], "last")
+        db.set_time_pref("13800138001", 30, "2026-08-15 10:00:00")
+        acc = next(a for a in c.get("/api/accounts").get_json()["accounts"]
+                   if a["phone"] == "138****8001")
+        self.assertEqual(acc["time_pref"], "07:00")
+        self.assertIsNone(acc["time_pref_edge"], "中段片不得带首尾标记")
+
     def test_api_settings_window_validation(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)
