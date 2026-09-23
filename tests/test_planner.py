@@ -513,6 +513,37 @@ class PlanStatsTest(_Base):
         self.assertEqual(sorted(st["hist"]), list(range(5, 75, 5)))
         self.assertEqual(set(st["hist"].values()), {50})
 
+    def test_histogram_base_pinned_to_config_start_without_fallback(self):
+        """正常窗口（无回退）：桶键基点逐值等于 `sign_start`（06:00），首格键为 5。
+
+        显式期望值钉住"无回退时基点与原始配置同值"，故落点分桶与既有分布逐格一致。
+        """
+        cfg = self.cfg()
+        win = window.bounds(cfg)
+        self.assertFalse(win.fell_back)
+        self.assertEqual(win.start_min, cfg["sign_start"][0] * 60 + cfg["sign_start"][1])
+        self.assertEqual(win.start_min, 6 * 60)
+        rows = [_row(_phone(0), f"{DAY} 06:05:00.000"),
+                _row(_phone(1), f"{DAY} 07:14:59.000")]
+        # 有效窗口起点 06:05 → 键 5；07:14:59 距 06:00 共 74 分 59 秒 → 键 70（末格）
+        self.assertEqual(planner.plan_stats(rows, cfg, DAY)["hist"], {5: 1, 70: 1})
+
+    def test_histogram_base_follows_fallback_window_start(self):
+        """裁剪吃空回退：桶键基点取回退窗口起点（06:30 ⇒ 键 0），与自选片号同号。
+
+        基点若仍按原始配置的 07:00 算，06:30 的落点会得到负键（-30），与 web 侧
+        "片号相对回退后窗口起点"的片号错格，影子期（dry_run）落点对比随之整体偏移。
+        """
+        os.environ.update(EMPTY_WINDOW_ENV)
+        cfg = self.cfg()
+        win = window.bounds(cfg)
+        self.assertTrue(win.fell_back)
+        self.assertEqual((win.start_min, win.end_min), (390, 470))
+        rows = [_row(_phone(0), f"{DAY} 06:30:01.000"),
+                _row(_phone(1), f"{DAY} 06:35:00.000"),
+                _row(_phone(2), f"{DAY} 07:49:59.000")]
+        self.assertEqual(sorted(planner.plan_stats(rows, cfg, DAY)["hist"]), [0, 5, 75])
+
     def test_peak_per_sec_counts_landings_in_the_same_second(self):
         """`peak_per_sec` 是同一秒内的落点数（聚合口径，与计划形状无关）。"""
         rows = [

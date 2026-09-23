@@ -429,7 +429,7 @@ def _minute_of_day(stamp):
 def plan_stats(rows, cfg=None, day=None):
     """计划摘要：总行数、按 vshard 的 owner 分布、落点直方图（按 5 分钟片分桶）。
 
-    直方图桶键 = 自选片号（相对窗口起点的 5 分钟格，与 `time_prefs.slot_min` 同号），
+    直方图桶键 = 自选片号（相对**有效窗口起点**的 5 分钟格，与 `time_prefs.slot_min` 同号），
     故影子期（dry_run）能把"计划分布"与现网实际落点逐格对比；`peak_per_sec` 是同一
     秒内的实际落点数（"任意 1 秒内实际请求数不超过计划密度"这条不变量的观测量）。
     `cfg` 缺省取当前配置，`dist=normal` 时另附密度整形结果（φ_max / 压平系数 α /
@@ -440,7 +440,10 @@ def plan_stats(rows, cfg=None, day=None):
     day = _day_str(day or (items[0]["day"] if items else clock.today()))
     eff_lo, eff_hi = _span(cfg)
     span_sec = (eff_hi - eff_lo) * 60.0
-    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
+    # 基点必须与 web 片号同源（都取有效窗口起点）：裁剪把窗口吃空时 `window.bounds`
+    # 回退默认窗口，若这里仍按原始 `sign_start` 算，回退窗口起点的落点会落进负键，
+    # 影子期落点对比与 web 片号整体错格。
+    start_min = window.bounds(cfg).start_min
     owners, shards, hist, per_sec = {}, {}, {}, {}
     for r in items:
         owners[r["owner"]] = owners.get(r["owner"], 0) + 1
