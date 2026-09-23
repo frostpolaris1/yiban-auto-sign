@@ -8,6 +8,8 @@
   领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
+- `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
+  闸门，见该函数说明）；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
   "当日是否了结"、给进度展示取数；
 - `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
@@ -26,10 +28,13 @@
 **通信**
 数据源连接与进程内写锁暂取 `yiban.store.connection` 的单例 `get_conn()` / `_conn_lock`
 （`_queue_conn()` 是唯一取点：将来本表迁到独立库文件、换独立连接时只改这一处）。
-设计上的调用方是执行入口 `yiban/engine/round.py`（领取/收尾）与展示侧
+设计上的调用方是执行入口 `yiban/engine/round.py`（领取/收尾）与调度 v3 的执行体
+`yiban/engine/executor_v3.py`（批量领取/收尾/重排/待办计数/桶状态落库），展示侧是
 `yiban/engine/state_io.py`、`web/services/executor_env.py`（经路由
-`web/routes/accounts_api.py` 暴露）；这几处**今天读写的仍是 v17 的 `sign_claims`**
-（经 `yiban/store/db.py` 的再导出调用 `claims.py`），本模块尚无调用点。
+`web/routes/accounts_api.py` 暴露）。**注意这两条路径读写的不是同一张表**：`round.py`
+与展示侧读写的仍是 v17 的 `sign_claims`（经 `yiban/store/db.py` 的再导出调用
+`claims.py`），只有 `executor_v3.py` 消费本模块的 `sign_tasks`——过渡期两个写者按
+"当日单一写者"的运维规则互斥。
 `egress_state` 的调用方是 `yiban/engine/token_bucket.py`（`EgressLimiter.persist` /
 `restore_from_store`）。
 """
@@ -238,6 +243,34 @@ def save_egress_state(egress, rate, burst, tat, now=None):
     except Exception as e:
         logger.warning("写入出口令牌桶状态失败（不影响签到）: %s", e)
         return False
+
+
+def pending_count(day, vshards):
+    """当日「我的分片集」内仍待办（`state='pending'`）的行数——**当日是否了结的闸门**。
+
+    为什么必须带 `vshard` 过滤，而不能用 `day_counts(day)["open"]`：v18 的 `sign_claims`
+    平移行与 v20 的补账行都写 `vshard=-1`，其中 `state='failed'` 属 `OPEN_STATES`，可它们
+    永不被 `claim_batch` 领取、也没有 owner/epoch 可供 `requeue`。把它们算作"未了结"，
+    该日就**永远不了结**（补签轮反复空跑）。分片集恒是 `0..V-1` 的子集，故历史行天然
+    不在其中；SQL 里再显式写一遍 `vshard >= 0` 是双保险（防调用方传入非法分片集）。
+
+    `vshards=()` → 0（本轮不该领活，不算故障，与 `claim_batch` 同口径）；库异常 → 0 +
+    warning（调用方据此走"没有待办"的收干分支，而不是抛出去打断签到）。
+    """
+    shards = tuple(vshards or ())
+    if not shards:
+        return 0
+    placeholders = ",".join("?" for _ in shards)
+    sql = ("SELECT COUNT(*) FROM sign_tasks WHERE day=? AND state=? "
+           f"AND vshard >= 0 AND vshard IN ({placeholders})")
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            row = conn.execute(sql, (day, STATE_PENDING, *shards)).fetchone()
+    except Exception as e:
+        logger.warning("读取当日待办任务计数失败（按无待办处理）: %s", e)
+        return 0
+    return int(row[0]) if row else 0
 
 
 def day_counts(day):
