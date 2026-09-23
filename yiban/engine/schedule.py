@@ -389,13 +389,16 @@ def _next_available(bi, filled, blocks, cap):
 def _slot_to_bi(cfg):
     """自选片分钟偏移（相对窗口起点）→ 块索引。
 
-    口径与 web/app.py `_pref_slots` 完全一致：块起点 = 窗口起点 + 5k 对齐，
-    key = 块起点 - 窗口起点（窗口起点非 5 分钟倍数时同样成立）。
+    窗口起止与前后裁剪一律取 `window.bounds(cfg)`，与 `_schedule_blocks` 同准绳：有效
+    窗口被裁剪吃空时两者都按回退后的默认窗口算——各自直读 `cfg` 的话，块照常在回退窗口
+    里切，自选片却因 `hi <= lo` 恒不成立而整片落空，用户所选片被静默放弃。
+    key = 块起点 - 窗口起点（窗口起点非 5 分钟倍数时同样成立），与
+    `web.routes.my._pref_slots` 的 `slot_min` 同号。
     """
-    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
-    end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
-    front = cfg["edge_front_sec"] / 60.0
-    back = cfg["edge_back_sec"] / 60.0
+    win = window.bounds(cfg)
+    start_min, end_min = win.start_min, win.end_min
+    front = win.front_sec / 60.0
+    back = win.back_sec / 60.0
     m = {}
     bi = 0
     for b in range(start_min, end_min, 5):

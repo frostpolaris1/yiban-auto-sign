@@ -2802,10 +2802,10 @@ class WebSecuritySplitContractTest(unittest.TestCase):
 M_ATTR_RE = re.compile(r"\bm\.([A-Za-z_]\w*)")
 
 
-M_ROUTE_NAMES_TOTAL = 198
+M_ROUTE_NAMES_TOTAL = 199
 
 
-M_ROUTE_COMPAT_NAMES = 197
+M_ROUTE_COMPAT_NAMES = 198
 
 
 M_ROUTE_NAME_EXCLUDED = frozenset({"__file__"})
