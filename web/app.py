@@ -305,8 +305,8 @@ from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源
 # cred_state 已无自用点，保留供 web.app.<名字> 取用（须在引导之后导入）
 from yiban import clock, cred_state  # noqa: E402,F401
 
-# 容量预估已迁出（web/services/capacity.py），保留供 web.app.<名字> 取用
-from yiban import window as yb_window  # noqa: E402,F401
+# 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
+from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
 from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
@@ -836,6 +836,24 @@ def edge_config():
 def edge_front_sec():
     """前裁秒数（兼容旧调用的便捷入口，实现见 web/render.py）。"""
     return _render.edge_front_sec(read_env(ENV_FILE))
+
+
+def sign_window_bounds():
+    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.window.Window`。
+
+    唯一口径在 `yiban.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
+    几何会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口切块，网页却按原始
+    配置把片全置灰），用户所选片随之被静默放弃。窗口起止与前后裁剪两个取值点按调用
+    时刻现取本模块的（测试会打桩 `web.app._sign_window` / `web.app.edge_config`）。
+    """
+    start, end = _sign_window()
+    front_sec, back_sec = edge_config()
+    return yb_window.bounds({
+        "sign_start": start,
+        "sign_end": end,
+        "edge_front_sec": front_sec,
+        "edge_back_sec": back_sec,
+    })
 
 
 # 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py；
