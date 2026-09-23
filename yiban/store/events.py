@@ -133,6 +133,20 @@ def add_sign_events_batch(rows):
 def sign_event_stats(days=30, stage=None):
     """按天统计签到事件数量/状态分布；失败返回空列表。
 
+    两个计数口径并存：
+    - `cnt`：该日该状态的**账号数**（`COUNT(DISTINCT phone)`）。同一账号当日可被多个
+      执行体各留一行（跳过发生在领取之前，不产生 claim、不占租约，故每个 worker 都会
+      各走一遍并各写一行），按行计数会把同一账号算多次、令报表虚增；
+    - `row_cnt`：该日该状态的**原始行数**（`COUNT(*)`），保留"尝试次数"信息（重试本来
+      就会多行，那是真事实）。
+
+    两条语义边界（消费方须自行处理）：
+    1. 各状态桶**分别**去重 ⇒ 同一天"先失败后成功"的账号会**同时出现在两个桶**，把各桶
+       `cnt` 相加当"账号总数"仍会偏大；若要"最终状态"口径，需按账号取当日最后一条事件
+       （不在本聚合范围内）。
+    2. 事件**列表**仍会显示多行——那是各执行体各自的事实；写入侧去重（同一
+       `(phone, day, status, stage)` 只写一次）不在本聚合范围内。
+
     stage 为可选过滤开关：sign_events 同时承载真实签到（stage="sign"）与健康探针
     （stage="probe"），不传时两者混算。需要「签到口径」的调用方必须显式传
     stage="sign"，否则探针的成功/失败会被计入签到成功率。
@@ -144,7 +158,8 @@ def sign_event_stats(days=30, stage=None):
                 "%Y-%m-%d %H:%M:%S"
             )
             sql = (
-                "SELECT substr(ts, 1, 10) AS day, status, COUNT(*) AS cnt "
+                "SELECT substr(ts, 1, 10) AS day, status, "
+                "COUNT(DISTINCT phone) AS cnt, COUNT(*) AS row_cnt "
                 "FROM sign_events WHERE ts >= ?"
             )
             params = [cutoff]
