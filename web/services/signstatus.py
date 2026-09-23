@@ -120,6 +120,19 @@ def _hm(minute_of_day):
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
+def window_fallback_text(bounds):
+    """窗口不可用（`bounds` 已回退默认窗口）时的可见提示；正常窗口返回空串。
+
+    唯一文案源：`sign_status` 的展示与设置页的提示必须逐字一致——同一异常在两处
+    说成两句话，管理员会以为是两件事。回退是唯一"管理员设的窗口没被采用"的情形
+    （缓冲过大只是收缩缓冲、窗口不动，见 `yiban.window` 的退化处置），故只有它
+    需要"配置异常、已按 X~Y 运行"这句话。
+    """
+    if not getattr(bounds, "fell_back", False):
+        return ""
+    return (f"配置异常：签到窗口不可用，已按 {_hm(bounds.lo_min)}~{_hm(bounds.hi_min)} 运行")
+
+
 def sign_status(env_file, load_env_int, sign_window_bounds, now=None):
     """基于服务器时间计算签到状态。
 
@@ -127,8 +140,10 @@ def sign_status(env_file, load_env_int, sign_window_bounds, now=None):
     文案不含 emoji（UI 图标统一走前端 SVG 图标系统）。
 
     三段判定与文案里的钟点都取**有效**窗口端点（`window.bounds`，已扣前后裁剪、
-    裁剪吃空时回退默认窗口）：本函数只服务展示，但展示的正是引擎实际开关点——按原始
+    缓冲过大时缓冲被收缩）：本函数只服务展示，但展示的正是引擎实际开关点——按原始
     配置出字会在日常配置下就与引擎分叉 1 分钟（页面说"~07:50 结束"，引擎 07:49 已停手）。
+    窗口本身不可用时（`fell_back`，防御分支）改出"配置异常、已按 X~Y 运行"整句：
+    此时管理员设的窗口根本没被采用，继续报三段状态等于谎报。
 
     `.env` 路径、整数配置读取器与有效窗口视图由调用方传入（`web.app` 的
     `ENV_FILE` / `load_env_int` / `sign_window_bounds`）：三者都会被测试改写或在调用点打桩。
@@ -141,6 +156,9 @@ def sign_status(env_file, load_env_int, sign_window_bounds, now=None):
         # 周六：默认关闭；开启后走正常窗口逻辑
         return "今日无需打卡（周六）", "#a1a1aa"
     win = sign_window_bounds()  # 单次读取（每次调用都会重读 .env，避免重复解析）
+    fallback = window_fallback_text(win)
+    if fallback:
+        return fallback, "#e0af68"
     lo_min, hi_min = win.lo_min, win.hi_min
     now_min = now.hour * 60 + now.minute + now.second / 60.0
     if now_min < lo_min:
