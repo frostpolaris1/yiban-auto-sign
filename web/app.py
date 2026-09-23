@@ -1217,9 +1217,11 @@ def verify_admin(username, password):
 def sign_status(now=None):
     """基于服务器时间计算签到状态（实现见 web/services/signstatus.py）。
 
-    `.env` 路径、整数配置读取器与窗口解析器都按调用时刻现取本模块的。
+    `.env` 路径、整数配置读取器与有效窗口视图都按调用时刻现取本模块的
+    （测试会打桩 `web.app._sign_window` / `web.app.edge_config`，窗口打桩经
+    `sign_window_bounds` 现取后穿透）。
     """
-    return _signstatus.sign_status(ENV_FILE, load_env_int, _sign_window, now)
+    return _signstatus.sign_status(ENV_FILE, load_env_int, sign_window_bounds, now)
 
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
