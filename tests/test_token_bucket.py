@@ -5,6 +5,7 @@
 速率单位一律是**账号尝试/s**（attempt/s）——`rate=1` 的 T 是 1.0s，不是 1/6。
 """
 import contextlib
+import math
 import os
 import random
 import shutil
@@ -107,6 +108,20 @@ class AimdTest(unittest.TestCase):
         self.assertTrue(lane1)
         self.assertFalse(lane2, "半开期同一出口只允许 1 条并发探测")
 
+    def test_06b_half_open_is_time_bounded(self):
+        """探测成功**不**结束半开：冷却窗按时间走表，否则一次侥幸就换回 6 条并发。"""
+        lim = token_bucket.EgressLimiter(rate=1.0, burst=6)
+        lim.on_risk_signal("e0", 0.0)              # rate → 0.5（T=2s），半开 [0, 300)
+        self.assertTrue(lim.acquire("e0", 1.0))
+        lim.on_success("e0")                       # 探测成功
+        self.assertTrue(lim.is_half_open("e0", 2.0), "成功不该提前结束半开")
+        self.assertFalse(lim.acquire("e0", 2.0), "半开未结束 ⇒ 仍只放单通道")
+        self.assertTrue(lim.acquire("e0", 3.0), "等满一个 T 后允许下一次探测")
+        self.assertTrue(lim.is_half_open("e0", token_bucket.HALF_OPEN_SEC - 1.0))
+        admitted = sum(1 for _ in range(20)
+                       if lim.acquire("e0", float(token_bucket.HALF_OPEN_SEC)))
+        self.assertEqual(admitted, 6, "冷却走完后突发额度回到 burst=6")
+
     def test_07_risk_signal_resets_success_streak(self):
         """风控信号清零 streak：其后的 199 次成功**不**算作上一轮的续集。"""
         lim = token_bucket.EgressLimiter(rate=1.0, burst=6)
@@ -179,6 +194,59 @@ class GlobalTest(unittest.TestCase):
             shared = token_bucket.GlobalLimiter(2.0)
             self.assertEqual(sum(1 for _ in range(k) if shared.acquire(0.0)), 1,
                              "总量由 Λ 决定，与出口数 K 无关")
+
+    def test_10b_non_integer_lam_rounds_up_within_a_second(self):
+        """任意 1s 内的放行数是 ⌈Λ⌉（GCRA 的边界取整），不是 Λ 本身。"""
+        for lam in (0.4, 1.0, 1.5, 2.0, 3.5):
+            g = token_bucket.GlobalLimiter(lam)
+            admitted = sum(1 for i in range(1000) if g.acquire(i * 0.001))
+            self.assertEqual(admitted, math.ceil(lam), f"Λ={lam} 时首秒放行数")
+
+
+class ConfigTest(unittest.TestCase):
+    """配置面收口：`YIBAN_MIN_EXEC_GAP` → 突发额度；速率与突发一次读全。"""
+
+    @contextlib.contextmanager
+    def _env(self, key, raw):
+        """临时把 `key` 设为 `raw`（None = 不设该键），退出时还原。"""
+        saved = os.environ.get(key)
+        try:
+            if raw is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = raw
+            yield
+        finally:
+            if saved is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = saved
+
+    def test_14_min_exec_gap_maps_into_burst(self):
+        cap = token_bucket.burst_cap
+        self.assertEqual(cap(rate=1.0, gap_sec=5, channels=6), 6.0,
+                         "缺省 gap=5s、rate=1 ⇒ 恰好等于通道数 M")
+        self.assertEqual(cap(rate=1.0, gap_sec=1, channels=6), 2.0,
+                         "收紧 gap ⇒ 突发收紧（1 + 1×1）")
+        self.assertEqual(cap(rate=4.0, gap_sec=5, channels=16), 16.0,
+                         "gap 宽时由通道数封顶")
+        self.assertEqual(cap(rate=0.2, gap_sec=5, channels=2), 2.0)
+        self.assertEqual(cap(rate=1.0, gap_sec=5, channels=0), 1.0, "通道数为 0 仍有 1 条")
+
+        for raw, want in ((None, 6.0), ("1", 2.0), ("60", 6.0)):
+            with self.subTest(gap=raw), self._env(token_bucket.ENV_MIN_EXEC_GAP, raw):
+                self.assertEqual(token_bucket.burst_from_env(6, 1.0), want)
+
+    def test_15_limiter_from_env_reads_rate_and_burst(self):
+        with (self._env("YIBAN_EGRESS_RATE", "2.0"),
+              self._env(token_bucket.ENV_MIN_EXEC_GAP, None)):
+            lim = token_bucket.limiter_from_env(channels=8)
+            self.assertAlmostEqual(lim.rate, 2.0, places=9, msg="rate = YIBAN_EGRESS_RATE")
+            self.assertAlmostEqual(lim.burst, 8.0, places=9, msg="gap=5s 宽 ⇒ 通道数封顶")
+        with (self._env("YIBAN_EGRESS_RATE", "2.0"),
+              self._env(token_bucket.ENV_MIN_EXEC_GAP, "1")):
+            self.assertAlmostEqual(token_bucket.limiter_from_env(channels=8).burst, 3.0,
+                                   places=9, msg="1 + 1s × 2.0 attempt/s")
 
 
 class GapGateTest(unittest.TestCase):
@@ -298,6 +366,12 @@ class PersistTest(unittest.TestCase):
         saved = queue_store.load_egress_state("e0")
         self.assertAlmostEqual(saved["rate"], 1.0, places=9)
         self.assertAlmostEqual(saved["tat"], 6.0, places=9)
+
+        self.assertTrue(lim.persist("e0", stamp="2026-09-23 07:00:00"))
+        row = db.get_conn().execute(
+            "SELECT updated_at FROM egress_state WHERE egress='e0'").fetchone()
+        self.assertEqual(row["updated_at"], "2026-09-23 07:00:00",
+                         "persist 的 stamp 是墙钟写入时刻，不是桶的浮点时钟")
 
         fresh = token_bucket.EgressLimiter()
         self.assertTrue(fresh.restore_from_store("e0", now=6.0),
