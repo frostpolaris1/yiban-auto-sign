@@ -240,6 +240,15 @@ def planner_config():
     return cfg
 
 
+def egress_rate_explicit():
+    """`YIBAN_EGRESS_RATE` 是否被显式写入（供限速器判「人工接管」）。
+
+    值本身仍由 `planner_config` 读（本键的唯一取值点），这里只回答"有没有配"：
+    配了就不再让 AIMD 改写速率——管理员手写的值不该自己漂移。
+    """
+    return bool(os.environ.get("YIBAN_EGRESS_RATE", "").strip())
+
+
 def _anchor_z(phone):
     """账号锚点分位（顺序×正态）：hash(phone) 派生标准正态值，零持久化、每天稳定。"""
     return random.Random(str(phone)).gauss(0, 1)

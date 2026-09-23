@@ -54,7 +54,9 @@ class BucketTest(unittest.TestCase):
             self.assertTrue(b.try_acquire(0.0), f"第 {i + 1} 次突发应放行")
         self.assertFalse(b.try_acquire(0.0), "第 7 次超出突发额度")
         self.assertAlmostEqual(b.retry_after(0.0), 1.0, places=9)
-        self.assertAlmostEqual(b.wait_sec(0.0), b.retry_after(0.0), places=9)
+        # 剩余等待随 now 递减：tat=6、τ=5 ⇒ admit_at=1，now=0.5 时还差 0.5s，过了就不再等
+        self.assertAlmostEqual(b.wait_sec(0.5), 0.5, places=9)
+        self.assertAlmostEqual(b.wait_sec(2.0), 0.0, places=9)
         self.assertTrue(b.try_acquire(1.0), "等满 retry_after 后必放行")
 
     def test_03_tat_not_accumulating(self):
@@ -146,8 +148,22 @@ class AimdTest(unittest.TestCase):
         self.assertTrue(lim.is_half_open("e0", 11.0))
         self.assertTrue(lim.is_half_open("e1", 11.0))
 
+    def test_08c_downgrade_sticks_for_new_egress(self):
+        """站点级降档是粘住的：降档后**新出现**的出口也按降档值起算。
+
+        只降已建桶的出口会让站点级熔断对新出口静默失效——降档期间冒出来的出口仍按
+        出厂速率放行，等于漏掉一类出口。
+        """
+        lim = token_bucket.EgressLimiter(rate=4.0, burst=6)
+        lim.acquire("e0", 0.0)
+        lim.downgrade_all(10.0)
+        self.assertAlmostEqual(lim.snapshot()["e0"]["rate"], token_bucket.RATE_MIN, places=9)
+        self.assertAlmostEqual(lim.bucket("e_new").rate, token_bucket.RATE_MIN, places=9,
+                               msg="降档后新建的出口从降档值起算，不是出厂速率 4.0")
+
     def test_08b_rate_stays_within_bounds(self):
-        rng = random.Random(20260923)
+        # 固定常数种子：序列可复现，换种子会走到另一条回退/上探路径
+        rng = random.Random(12345)
         lim = token_bucket.EgressLimiter(rate=1.0, burst=6)
         for i in range(500):
             # 30% 风控信号（事件式回退）、其余无风控（事件式上探）
@@ -169,6 +185,11 @@ class EwmaTest(unittest.TestCase):
         self.assertAlmostEqual(token_bucket.apply_ewma(0.2, 0.0, 0.2), 0.2, places=9)
         self.assertAlmostEqual(token_bucket.apply_ewma(1.0, 1.0, 0.0), 1.0, places=9,
                                msg="R_target 非法时不调整（不做除零）")
+
+    def test_09b_apply_ewma_takes_no_alpha_parameter(self):
+        """平滑系数在调用侧使用，函数本身只吃（prev, r̂, R_target）——不留口径占位形参。"""
+        with self.assertRaises(TypeError):
+            token_bucket.apply_ewma(1.0, 0.4, 0.2, alpha=0.2)
 
 
 class GlobalTest(unittest.TestCase):
@@ -201,6 +222,19 @@ class GlobalTest(unittest.TestCase):
             g = token_bucket.GlobalLimiter(lam)
             admitted = sum(1 for i in range(1000) if g.acquire(i * 0.001))
             self.assertEqual(admitted, math.ceil(lam), f"Λ={lam} 时首秒放行数")
+
+    def test_10c_non_numeric_lam_warns_and_marks_invalid(self):
+        """非数值 Λ 不得静默吞成「不限」：告警 + `invalid` 标记（供接线侧决定是否拒启）。"""
+        with self.assertLogs("yiban.engine.token_bucket", level="WARNING") as cm:
+            g = token_bucket.GlobalLimiter("abc")
+        self.assertTrue(g.invalid, "「取值非法、已按不限处理」这一事实必须可读")
+        self.assertIsNone(g.lam)
+        self.assertTrue(all(g.acquire(0.0) for _ in range(10)))
+        self.assertTrue(any("不限" in m for m in cm.output), cm.output)
+        for lam in (None, 0.0, -1.0, "2.0"):
+            with self.subTest(lam=lam):
+                self.assertFalse(token_bucket.GlobalLimiter(lam).invalid,
+                                 "未配/显式不限/正常数值都不算「非法」")
 
 
 class ConfigTest(unittest.TestCase):
@@ -248,6 +282,37 @@ class ConfigTest(unittest.TestCase):
             self.assertAlmostEqual(token_bucket.limiter_from_env(channels=8).burst, 3.0,
                                    places=9, msg="1 + 1s × 2.0 attempt/s")
 
+    def test_16_manual_rate_stops_aimd_but_keeps_safety(self):
+        """`.env` 显式配速率 = 人工接管：AIMD 不再改写速率，安全反应照做。
+
+        取舍：管理员手写的速率就该按它跑（否则"我配的值第二天自己变了"无从解释）；
+        但半开、站点级降档这类**安全**反应不随之停——停掉会让一次手写错值变成
+        无保护的全速放行。
+        """
+        lim = token_bucket.EgressLimiter(rate=1.0, burst=6, manual=True)
+        for _ in range(token_bucket.SUCCESS_STREAK * 3):
+            lim.on_success("e0")
+        self.assertAlmostEqual(lim.snapshot()["e0"]["rate"], 1.0, places=9,
+                               msg="人工接管：上探不改写速率")
+        with self.assertLogs("yiban.engine.token_bucket", level="WARNING"):
+            got = lim.on_risk_signal("e0", 0.0)
+        self.assertAlmostEqual(got, 1.0, places=9, msg="人工接管：风控不改写速率")
+        self.assertTrue(lim.is_half_open("e0", 1.0), "安全反应不停：风控仍触发半开")
+        self.assertTrue(lim.acquire("e0", 1.0))
+        self.assertFalse(lim.acquire("e0", 1.0), "半开期仍只放单通道探测")
+        lim.downgrade_all(5.0)
+        self.assertAlmostEqual(lim.snapshot()["e0"]["rate"], token_bucket.RATE_MIN, places=9,
+                               msg="站点级降档是安全反应，人工接管不阻止它")
+
+    def test_16b_limiter_from_env_marks_manual_only_when_rate_configured(self):
+        with self._env("YIBAN_EGRESS_RATE", None):
+            self.assertFalse(token_bucket.limiter_from_env(channels=6).manual,
+                             "未配速率 ⇒ 自适应照常")
+        with self._env("YIBAN_EGRESS_RATE", "2.0"):
+            lim = token_bucket.limiter_from_env(channels=6)
+            self.assertTrue(lim.manual, "显式配了速率 ⇒ 人工接管")
+            self.assertAlmostEqual(lim.rate, 2.0, places=9)
+
 
 class GapGateTest(unittest.TestCase):
     """每账号 gap 安全件（与出口桶并存，不替代）。"""
@@ -285,6 +350,20 @@ class GapGateTest(unittest.TestCase):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+    def test_11c_gap_enforce_invalid_value_falls_back_to_on(self):
+        """安全件的非法值回退到**开**：`abc` 不是「关闭」的同义词。
+
+        该键语义是"缺省开"，手写错值只能读成"没表达清楚"，不能读成"关掉安全件"。
+        """
+        for raw in ("abc", "maybe"):
+            with self.subTest(raw=raw), \
+                    mock.patch.dict(os.environ, {token_bucket.ENV_GAP_ENFORCE: raw}), \
+                    self.assertLogs("yiban.engine.token_bucket", level="WARNING") as cm:
+                gate = token_bucket.gap_gate_from_env()
+                self.assertTrue(gate.enabled, "安全件不得因手写错值而消失")
+                self.assertTrue(any(token_bucket.ENV_GAP_ENFORCE in m for m in cm.output),
+                                cm.output)
 
 
 class UnitTest(unittest.TestCase):
