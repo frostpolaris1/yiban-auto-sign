@@ -49,13 +49,16 @@ class _Base(unittest.TestCase):
             "YIBAN_ACCOUNTS_KEY": TEST_KEY,
             "YIBAN_ENV_FILE": cls.env_file,
             "YIBAN_DB_FILE": cls.db_file,
+            # 状态目录同样要隔离：迁移会读它补账，未隔离时读到的是本机真实部署的状态文件
+            "YIBAN_STATE_DIR": cls.tmp,
         })
 
     @classmethod
     def tearDownClass(cls):
         cls._close_conn()
         shutil.rmtree(cls.tmp, ignore_errors=True)
-        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE"):
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
+                  "YIBAN_STATE_DIR"):
             os.environ.pop(k, None)
 
     @staticmethod
