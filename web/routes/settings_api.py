@@ -33,6 +33,8 @@ from flask import jsonify, session
 
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
+from web.services import signstatus as _signstatus
+from yiban import window as yb_window
 
 
 def _executor_write_guard(data, action, changed):
@@ -122,6 +124,10 @@ def api_settings():
     env = m.read_env(m.ENV_FILE)
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
     sw = m._sign_window()
+    # 窗口不可用（已回退默认）时把"配置异常、已按 X~Y 运行"暴露给设置页：那才是管理员
+    # 会去修的地方，只写日志+邮件等于让他继续按错的窗口签到。文案与 /api/clock 同源
+    # （`signstatus.window_fallback_text`），正常窗口为空串（响应逐字不变）。
+    _fallback_text = _signstatus.window_fallback_text(m.sign_window_bounds())
     # 容量口径（与配额检查同源 `_capacity_account_count`）：
     #   用户 = 全部未删除注册用户（含尚未添加账号的空用户，仅注册名额口径）
     #   账号 = **会发起易班请求的账号**（非删除且审核态已通过，含 admin 直属裸账号）
@@ -189,6 +195,9 @@ def api_settings():
             "edge_back_sec": m.edge_config()[1],
             "allow_time_pref": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
             "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
+            # 窗口不可用（已回退默认）的可见提示；正常窗口时 false + 空串
+            "window_fallback": bool(_fallback_text),
+            "window_fallback_text": _fallback_text,
             # 容量状态：注册用户/计容量账号 当前使用量 vs 上限（管理员知情）
             "capacity": {
                 "users": _cap_users,
@@ -396,12 +405,28 @@ def api_settings_save():
     # ---- 档位门禁：A/B 档的口令复核只在这一处判（档位表见 MASTER_ONLY_KEYS）----
     # 只带其中一个边缘键时另一侧保持现值——先按写侧同一口径补齐，否则"改了前裁、
     # 后裁跟着变"这件事在变更判定里是隐形的
+    edge_note = ""
     if edge_front is not None or edge_back is not None:
         _cur_edge = m.edge_config()
         if edge_front is None:
             edge_front = _cur_edge[0]
         if edge_back is None:
             edge_back = _cur_edge[1]
+        # 预防性夹取（夹取而非拒绝）：单边不超过窗口宽度的 20%。拒绝会让"已有超限配置
+        # 的站点连别的字段都存不了"；夹到 20%（合计 40%）远小于运行时收缩阈值，
+        # 故保存过的配置不会再让有效窗口被缓冲吃空。窗口以本次提交为准（改窗口时
+        # 按新窗口算上限），未提交则按现值。
+        if win_start_str is not None:
+            _win_lo, _win_hi = (sh, sm), (eh, em)
+        else:
+            _win_lo, _win_hi = m._sign_window()
+        _win_sec = ((_win_hi[0] * 60 + _win_hi[1]) - (_win_lo[0] * 60 + _win_lo[1])) * 60
+        _cap = yb_window.edge_cap_sec(_win_sec)
+        _edge_before = (edge_front, edge_back)
+        edge_front, edge_back = min(edge_front, _cap), min(edge_back, _cap)
+        if (edge_front, edge_back) != _edge_before:
+            edge_note = (f"缓冲已按窗口宽度上限收缩为 前 {edge_front}s / 后 {edge_back}s"
+                         f"（单边不超过窗口的 20%，避免有效窗口被裁剪吃空）")
     # 每个档位键 → 本次落盘后的**生效值**（None = 该键本次不写）。注意几处"删键≠0"：
     # gap 写 0 是删键、生效值回到默认，按 0 比会把"没改"当成"改了"（反之亦然）。
     proposed = {
@@ -589,7 +614,12 @@ def api_settings_save():
             )
         except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
             m.logger.warning("设置变更告警发送失败（不影响已保存的配置）: %s", e)
-    return jsonify({"ok": True, "msg": "设置已保存（cron 下次触发自动生效）"})
+    _saved_msg = "设置已保存（cron 下次触发自动生效）"
+    if edge_note:
+        # 被夹过就必须说清"夹到多少、为什么"：否则管理员看到滑块/输入框里的值
+        # 与自己提交的不同，只会以为保存坏了
+        _saved_msg = f"{_saved_msg}；{edge_note}"
+    return jsonify({"ok": True, "msg": _saved_msg})
 
 
 def api_changelog():
