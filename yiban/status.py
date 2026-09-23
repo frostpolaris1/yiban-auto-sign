@@ -13,6 +13,10 @@
 | `ICON` / `TEXT` | `/api/my-accounts` 的 `state_icon` / 文案 → 前端按码渲染 | 含 `pending`(⏳)，无 `no_position` / `global_paused` |
 
 合并会**改变前端可见表现**，属需要前后端协同的改动，不宜顺手做。
+
+「今日是否了结」的划分同样收在本模块（`UNDONE_STATUSES` / `CLAIM_DONE_STATUSES` /
+`CONCLUDED_JSON_STATUSES`，以及领取池侧的 `TASKS_*`）：补签闸门、补签轮剔除与领取池
+收尾都引用同一批对象，判定口径只有一处可改。
 """
 # ---- 状态码 ----
 STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）
@@ -69,3 +73,43 @@ UNDONE_STATUSES = frozenset((
     STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
     STATUS_NO_POSITION,
 ))
+
+#: 全部 JSON 状态码（两张映射表的键并集即此；新增状态码时必须同步本元组）。
+#: 它是「有结论 / 未了结」这类划分的**分母**——用差集表达，就不必手写枚举，
+#: 手写的枚举会在新增状态码时静默漏掉一格。
+ALL_STATUSES = (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK, STATUS_FAILED,
+                STATUS_RETRYING, STATUS_SKIPPED_WINDOW, STATUS_SKIPPED_NORANGE,
+                STATUS_NO_POSITION, STATUS_PAUSED, STATUS_USER_CANCELLED,
+                STATUS_PENDING, STATUS_GLOBAL_PAUSED)
+
+#: 「已了结、今日不必再签」的 JSON 状态集：补签轮定向剔除与领取池记 `done` 共用
+#: 同一对象（各写一份会漂移成漏签或重复登录，而重复登录踩上游风控红线）。
+CLAIM_DONE_STATUSES = frozenset((STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK))
+
+#: 「已有结论」的 JSON 状态集：非空且非 pending（`state_io._has_conclusion` 的口径）。
+#: 注意两点：
+#: - 本集合**不含**空串/缺 status 键——那两种是「无记录」，既非结论也非未了结；
+#: - 它**不是** `UNDONE_STATUSES` 的补集：failed / retrying / skipped_window /
+#:   skipped_norange / no_position 既「未了结」又「已有结论」。「还要不要再签」与
+#:   「有没有留下事实」是两个问题，故两个集合刻意重叠，勿合并成一个。
+CONCLUDED_JSON_STATUSES = frozenset(ALL_STATUSES) - {STATUS_PENDING}
+
+
+def is_concluded_status(value):
+    """该状态串是否代表「已有结论」（非空且非 `pending`）；未知串按有结论处理。
+
+    判据用**排除法**而不是集合成员：状态文件是跨进程事实源，其 `status` 可能是本进程
+    不认识的串（新增状态码而读侧未同步、外部工具手写）。消费方是「仅当当日无结论才写」
+    的 CAS 与窗口收尾预筛，失效方向必须偏「不覆盖已有结果」——把一个看不懂的结果判成
+    「无记录」，窗口外跳过就会把它覆盖掉，真实失败随之从告警里消失。
+    故 `CONCLUDED_JSON_STATUSES`（只枚举已知常量）供展示/枚举类消费者使用，**不是**本
+    谓词的定义域，两者不等价。
+    """
+    return str(value).strip() not in ("", STATUS_PENDING)
+
+
+#: 领取池（sign_tasks）侧的两个集合，state 词表见 yiban/store/queue_store.py。
+#: 与 JSON 状态码是两套词：池里的 `done` 同时涵盖 success/already/no_task/no_position/
+#: skipped_window 多种结论，故判「当日是否了结」只能按池自己的词表来。
+TASKS_OPEN_STATES = frozenset(("pending", "claimed", "failed", "stolen"))
+TASKS_SETTLED_STATES = frozenset(("done", "skipped"))

@@ -37,6 +37,7 @@ import datetime
 import logging
 
 from yiban import clock
+from yiban import status as yiban_status
 
 logger = logging.getLogger("yiban.store.queue_store")
 
@@ -62,9 +63,12 @@ STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
 
 #: 了结态（当日不必再签）。`sign_claims` 时代"今日无任务/窗口外跳过"记在 `done` 上，
 #: 故 `skipped` 与它同类——判"当日是否了结"时两者都算完。
-SETTLED_STATES = (STATE_DONE, STATE_SKIPPED)
+#: 成员取自 `yiban.status.TASKS_SETTLED_STATES`（「了结」词义的唯一定义处）。
+SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
-OPEN_STATES = (STATE_PENDING, STATE_CLAIMED, STATE_FAILED, STATE_STOLEN)
+#: 成员取自 `yiban.status.TASKS_OPEN_STATES`（「未了结」词义的唯一定义处），顺序沿用本表
+#: 自己的 `STATES`（成员无先后语义，但顺序稳定便于比对与调试）。
+OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)
 
 
 def _queue_conn():
@@ -244,7 +248,7 @@ def day_counts(day):
 
     | 派生键 | 定义 |
     |--------|------|
-    | `settled` | `done` + `skipped`（当日不必再签） |
+    | `settled` | `done` + `skipped`（当日不必再签；「了结」的词义见 `yiban.status.TASKS_SETTLED_STATES`） |
     | `open` | `pending` + `claimed` + `failed` + `stolen`（仍可能被重排/接手） |
     | `total` | 当日全部行数 = `settled` + `open` |
 

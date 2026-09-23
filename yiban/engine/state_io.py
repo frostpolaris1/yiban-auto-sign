@@ -85,15 +85,15 @@ _TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _has_conclusion(entry):
-    """该账号当日是否已有"结论"（非空且非 pending）。
+    """该账号当日是否已有"结论"：`status` 非空且非 `pending`（未知状态串也算有结论）。
 
     `pending` 只是计划（"打算什么时候签"），success/failed 等才是事实；"空/缺失"
-    等价于无记录。`_write_sign_state` 的 only_if_absent CAS 与窗口收尾快照共用
-    这一口径。
+    等价于无记录。判据取自 `yiban.status.is_concluded_status`（唯一定义处）：
+    `_write_sign_state` 的 only_if_absent CAS 与窗口收尾预筛共用这一口径。
     """
     if not isinstance(entry, dict):
         return False
-    return str(entry.get("status", "")).strip() not in ("", STATUS_PENDING)
+    return yiban_status.is_concluded_status(entry.get("status", ""))
 
 
 def _sched_marker_exists():
@@ -156,12 +156,12 @@ def _second_run_drop_done(accounts):
     recorded = _daily_statuses()
     if not recorded:
         return accounts
-    # 已了结 = success/already/**no_task**（按 main 自身的"已执行"口径：no_task 指
-    # "今天没任务"，同样无需重跑）。原实现漏了 no_task，补签轮会对这些账号再走一遍
-    # 完整登录——多一轮全站真实登录，且与 UNDONE_STATUSES 口径矛盾。
+    # 已了结 = `yiban.status.CLAIM_DONE_STATUSES`（success/already/**no_task**：no_task
+    # 指"今天没任务"，同样无需重跑）。与领取池记 `done` 的判据是**同一对象**——两处
+    # 各写一份会漂移，让补签轮对这些账号再走一遍完整登录。
     done = {
         p for p, st in recorded.items()
-        if st in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
+        if st in yiban_status.CLAIM_DONE_STATUSES
     }
     if not done:
         return accounts
