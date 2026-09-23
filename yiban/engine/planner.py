@@ -115,10 +115,13 @@ def _pref_slices(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi):
 
     可用性判定走 `schedule._slot_to_bi`（与 web `_pref_slots` 同一口径），本函数只把
     "片"切成 1 分钟分片。两处若各写一份判定，末尾片会出现"网页可点选、计划侧静默丢弃"。
+    基点一律取 `window.bounds` 的窗口起点：片号是**相对窗口起点**的偏移，而有效窗口被
+    前后裁剪吃空时 `bounds` 回退默认窗口——直读 `cfg` 的起止会把片号按原始窗口加一遍，
+    候选非空却整体错位（展示按回退窗口、落点按原始配置）。
     """
     if slot_min not in slot_to_bi:
         return []
-    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
+    start_min = window.bounds(cfg).start_min
     b = start_min + slot_min
     k_lo = math.floor(b - eff_lo)
     k_hi = math.ceil(b + 5 - eff_lo)
@@ -139,9 +142,13 @@ def _spill_block(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi, filled, ca
     """外层溢出：向邻近 5 分钟片整体顺延（±5min → ±10min → …），同距离优先更早的片。
 
     只有自选片内 5 个 1 分钟分片全满才会走到这里，故跨片距离与 v2 完全一致。
+
+    搜索半径按 `window.bounds` 的窗口起止算（与片号基点、`_pref_slices` 同源）：半径直读
+    `cfg` 的话，有效窗口被裁剪吃空而回退默认窗口时够不到回退窗口里的空片，"全部片满"会被
+    误判成无处顺延而丢号。
     """
-    start_min = cfg["sign_start"][0] * 60 + cfg["sign_start"][1]
-    end_min = cfg["sign_end"][0] * 60 + cfg["sign_end"][1]
+    win = window.bounds(cfg)
+    start_min, end_min = win.start_min, win.end_min
     blocks = int((end_min - start_min) // 5) + 1
     for d in range(1, blocks + 1):
         for s2 in (slot_min - 5 * d, slot_min + 5 * d):

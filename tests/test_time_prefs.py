@@ -567,6 +567,31 @@ class TimePrefsTest(unittest.TestCase):
                 s.replace("YIBAN_WINDOW_EDGE_FRONT_SEC=120\n", "")
                  .replace("YIBAN_WINDOW_EDGE_BACK_SEC=300\n", ""))
 
+    def test_api_pref_save_ok_on_cropped_window_fallback(self):
+        """裁剪吃空回退：可用性判定与展示同准绳，回退窗口下所选片仍可保存。
+
+        窗口 06:30~06:40 前后各裁 300s ⇒ `window.bounds` 判回退到默认 06:30~07:50。
+        展示侧 `_pref_slots` 按回退窗口给出 16 片且不全为灰；保存闸门若仍按原始窗口与
+        裁剪判定（span=10、前后各 5 分钟），每一片都会被判"不在可选范围内"——用户点得到、
+        存不下。
+        """
+        added = ("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=06:40\n"
+                 "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
+        with open(self.env_file, "a", encoding="utf-8") as f:
+            f.write(added)
+        try:
+            c = self.webapp.create_app().test_client()
+            token = self._login(c, "user1@test.local", USER_PASS)
+            h = self._csrf(token)
+            slots = c.get("/api/my-time-pref").get_json()["slots"]
+            self.assertFalse(all(s["disabled"] for s in slots), "回退窗口下不应全部置灰")
+            for slot in (0, 75):
+                r = c.put("/api/my-time-pref", json={"slot_min": slot}, headers=h)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        finally:
+            s = open(self.env_file, encoding="utf-8").read()
+            open(self.env_file, "w", encoding="utf-8").write(s.replace(added, ""))
+
     def test_api_settings_window_validation(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "admin", ADMIN_PASS)
