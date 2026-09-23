@@ -412,8 +412,8 @@ def main(argv=None):
                 )
         accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
         # 调度快照标记：web 端保存自选时间片时以此时刻为"今日/明日生效"分界——
-        # 快照后改选必为明日生效，提示与实际一致（固定"窗口起点+1 分钟"会与
-        # cron 实际读取时刻有几秒偏差窗口）
+        # 快照后改选必为明日生效，提示与实际一致（web 侧兜底按"有效窗口起点"折算，
+        # 与 cron 实际读取时刻仍有偏差窗口）
         try:
             _snap_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
             os.makedirs(_snap_dir, exist_ok=True)
