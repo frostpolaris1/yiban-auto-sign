@@ -120,7 +120,7 @@ def get_time_pref(phone):
 
 
 def set_time_pref(phone, slot_min, updated_at):
-    """保存/更新自选（UPSERT）。slot_min 为窗口内分钟数（06:30 → 390，5 对齐）。"""
+    """保存/更新自选（UPSERT）。slot_min 是**相对窗口起点**的分钟偏移（5 对齐）。"""
     db = _facade()
     conn = db.get_conn()
     with db._conn_lock, conn:
