@@ -73,6 +73,15 @@ class _Base(unittest.TestCase):
         finally:
             db._MIGRATIONS = old
 
+    @staticmethod
+    def _registry_up_to(top):
+        """登记表里 ≤ top 的那些项——断言"某一版的登记口径"时不跟着表尾跑。
+
+        表尾会被后续迁移继续追加，取 `_MIGRATIONS[-1]` 等于改测那一项：把本版改成核心
+        迁移，断言照样绿。
+        """
+        return [m for m in db._MIGRATIONS if m[0] <= top]
+
 
 class SchemaTest(_Base):
     def test_v19_bumps_version_and_adds_epoch_column(self):
@@ -89,7 +98,15 @@ class SchemaTest(_Base):
 
     def test_v19_is_optional(self):
         """可选迁移：失败只告警不阻断启动（epoch 属护栏，不是启动必需能力）。"""
-        self.assertIs(db._MIGRATIONS[-1][3], False)
+        narrow = self._registry_up_to(19)
+        self.assertEqual(narrow[-1][0], 19, "≤19 的登记尾项应是 v19")
+        self.assertIs(narrow[-1][3], False)
+
+    def test_v20_is_registered_as_optional(self):
+        """v20 同为可选迁移（补账失败只告警，下次启动整段重跑收敛）。"""
+        narrow = self._registry_up_to(20)
+        self.assertEqual(narrow[-1][0], 20, "≤20 的登记尾项应是 v20")
+        self.assertIs(narrow[-1][3], False)
 
     def test_existing_rows_default_to_zero(self):
         """存量行（v17 时代建的）取默认 0——迁移不得要求重写业务行。"""
