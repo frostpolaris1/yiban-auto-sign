@@ -376,20 +376,21 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
             capped = self.webapp._estimate_slot(target)
         self.assertEqual(capped[0], "06:35~06:40")
 
-    def test_estimate_slot_nonempty_on_fallback_window(self):
-        """裁剪吃空回退：预计签到时段按有效窗口算，不得静默变空。
+    def test_estimate_slot_nonempty_on_clamped_window(self):
+        """缓冲过大被收缩：预计签到时段按收缩后的有效窗口算，不得静默变空。
 
-        原实现自拼 `eff_lo/eff_hi`（原始窗口 + 原始裁剪）：原始 07:00~07:10 各裁 300s
-        时 span=0、无有效块 ⇒ 返回 (None, "")，用户端"预计签到时段"整块空白。改消费
-        有效窗口（回退默认 06:30~07:50、前后各 60s）后首块 06:31~06:35，与引擎同源。
+        自拼 `eff_lo/eff_hi`（原始窗口 + 原始裁剪）时：原始 07:00~07:10 各 300s
+        会让 span=0、无有效块 ⇒ 返回 (None, "")，用户端"预计签到时段"整块空白。消费
+        有效窗口（窗口保留、缓冲收缩为各 60s ⇒ 有效窗口 07:01~07:09）后首块 07:01~07:05，
+        与引擎同源。
         """
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
         accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
         with mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
             got = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(got, ("06:31~06:35", "（每日固定时段，块内时刻每天略有抖动）"),
-                         "回退窗口下不得返回空（原实现 span=0 → (None, \"\")）")
+        self.assertEqual(got, ("07:01~07:05", "（每日固定时段，块内时刻每天略有抖动）"),
+                         "收缩后的有效窗口下不得返回空（span=0 → (None, \"\")）")
 
     def test_estimate_slot_still_fails_closed_when_no_usable_block(self):
         """fail-closed 语义保留：确实没有可用片时仍返回 (None, "")，不回退成默认片。"""
@@ -1740,20 +1741,34 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         self.assertEqual(status(datetime(2026, 9, 16, 7, 49))[0], "签到窗口进行中（~07:49 结束）")
         self.assertEqual(status(datetime(2026, 9, 16, 7, 50))[0], "今日签到已结束")
 
-    def test_sign_status_cropped_empty_window_uses_fallback_endpoints(self):
-        """裁剪吃空回退默认窗口：文案取回退后的有效端点（06:31 / 07:49），非原始配置端点。
+    def test_sign_status_clamped_window_uses_window_endpoints(self):
+        """缓冲过大被收缩：文案取收缩后的有效端点（07:01 / 07:09），窗口本身仍是 07:00~07:10。
 
-        原始 07:00~07:10、前后各裁 300s ⇒ 有效宽度为 0 ⇒ `window.bounds` 回退默认窗口；
-        旧实现直读原始窗口，会在回退下把文案写成"~07:10 结束"，与引擎回退后的实际
-        关闭点差 30 分钟。
+        配置 07:00~07:10、前后各 300s ⇒ 缓冲收缩为各 60s。按原始裁剪直算会得到空
+        区间；文案必须取实际生效的开关点。
         """
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
         status = self.webapp.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 30)),
-                         ("未到签到时间（06:31 开始）", "#7aa2f7"))
-        self.assertEqual(status(datetime(2026, 9, 16, 7, 0)),
-                         ("签到窗口进行中（~07:49 结束）", "#9ece6a"))
+                         ("未到签到时间（07:01 开始）", "#7aa2f7"))
+        self.assertEqual(status(datetime(2026, 9, 16, 7, 5)),
+                         ("签到窗口进行中（~07:09 结束）", "#9ece6a"))
+
+    def test_sign_status_reports_window_unavailable(self):
+        """窗口本身不可用（已回退默认）：状态文案整句改为"配置异常、已按 X~Y 运行"。
+
+        此时管理员设的窗口根本没被采用，继续报三段状态等于谎报；这句话也是页面上唯一
+        能看见该异常的出口（只写日志+邮件不够）。
+        """
+        import yiban.window as yb_window
+        dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
+                                 "edge_front_sec": 60, "edge_back_sec": 60})
+        self.assertTrue(dead.fell_back)
+        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
+            text, color = self.webapp.sign_status(datetime(2026, 9, 16, 7, 0))
+        self.assertEqual(text, "配置异常：签到窗口不可用，已按 06:31~07:49 运行")
+        self.assertEqual(color, "#e0af68")
 
     def test_check_connectivity_ok_and_error_detail(self):
         from web.services import signstatus as ss_mod
