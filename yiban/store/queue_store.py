@@ -9,12 +9,15 @@
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
-  "当日是否了结"、给进度展示取数。
+  "当日是否了结"、给进度展示取数；
+- `load_egress_state` / `save_egress_state`：出口令牌桶状态（`egress_state`，v18 建表）
+  的读写薄封装，供 `yiban/engine/token_bucket.py` 落库与崩溃重启恢复。
 
 **归属**
-`sign_tasks` 由 `yiban/store/migrations.py` 的 v18 迁移建立；本模块是该表在 store 层的
-**唯一访问点**——表结构、SQL 与降级口径都收在这里，调用方不自己拼 SQL。v17 的
-`sign_claims` 平移进本表后进入只读过渡期，其访问点仍是 `yiban/store/claims.py`。
+`sign_tasks` 由 `yiban/store/migrations.py` 的 v18 迁移建立；本模块是该表与
+`egress_state` 在 store 层的**唯一访问点**——表结构、SQL 与降级口径都收在这里，
+调用方不自己拼 SQL。v17 的 `sign_claims` 平移进本表后进入只读过渡期，其访问点仍是
+`yiban/store/claims.py`。
 
 **复用**
 调用方按模块属性取（`from yiban.store import queue_store` 后 `queue_store.claim_batch(...)`），
@@ -27,6 +30,8 @@
 `yiban/engine/state_io.py`、`web/services/executor_env.py`（经路由
 `web/routes/accounts_api.py` 暴露）；这几处**今天读写的仍是 v17 的 `sign_claims`**
 （经 `yiban/store/db.py` 的再导出调用 `claims.py`），本模块尚无调用点。
+`egress_state` 的调用方是 `yiban/engine/token_bucket.py`（`EgressLimiter.persist` /
+`restore_from_store`）。
 """
 import datetime
 import logging
@@ -184,6 +189,51 @@ def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
     except Exception as e:
         logger.warning("重排签到任务失败: %s", e)
         return 0
+
+
+def load_egress_state(egress):
+    """读某出口的令牌桶状态：`{"rate","burst","tat"}`；无记录/库异常 → `None`。
+
+    `rate` 单位是**账号尝试/s**（attempt/s，见 `yiban/engine/token_bucket.py` 模块头）。
+    读失败**不抛**：调用方（执行体）按"没有记忆"回退出厂速率——重启后拿不到速率也不该
+    卡住签到，出厂速率本就比自适应上限保守。
+    """
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            row = conn.execute(
+                "SELECT rate, burst, tat FROM egress_state WHERE egress=?", (egress,)
+            ).fetchone()
+    except Exception as e:
+        logger.warning("读取出口令牌桶状态失败（按无记录处理）: %s", e)
+        return None
+    if row is None:
+        return None
+    return {"rate": row["rate"], "burst": row["burst"], "tat": row["tat"]}
+
+
+def save_egress_state(egress, rate, burst, tat, now=None):
+    """UPSERT 某出口的令牌桶状态，返回是否写入成功。
+
+    `rate` 单位 = 账号尝试/s（attempt/s）；`burst` 是突发额度（尝试数）；`tat` 是 GCRA 的
+    理论到达时刻（浮点秒，与调用方注入的时钟**同域**）。`now` 是写入时刻（墙钟字符串，
+    缺省 `clock.ts()`）——它与 `tat` 不同域，只作"上次落库时刻"给运维看，**不可**拿来与
+    `tat` 直接比较。写失败只告警不抛：桶状态是记忆不是业务事实，写不进去不该阻断签到。
+    """
+    sql = ("INSERT INTO egress_state (egress, rate, burst, tat, updated_at) "
+           "VALUES (?,?,?,?,?) ON CONFLICT(egress) DO UPDATE SET "
+           "rate=excluded.rate, burst=excluded.burst, tat=excluded.tat, "
+           "updated_at=excluded.updated_at")
+    params = (egress, float(rate), float(burst), float(tat), now or clock.ts())
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            conn.execute(sql, params)
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.warning("写入出口令牌桶状态失败（不影响签到）: %s", e)
+        return False
 
 
 def day_counts(day):
