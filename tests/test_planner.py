@@ -30,6 +30,14 @@ WINDOW_ENV = {
     "YIBAN_WINDOW_EDGE_FRONT_SEC": "300",
     "YIBAN_WINDOW_EDGE_BACK_SEC": "300",
 }
+#: 裁剪吃空：窗口仅 10 分钟、前后各裁 300s ⇒ 有效窗口宽度为 0，`window.bounds` 回退默认窗口
+#: （06:30~07:50）。此时"窗口起点 + 片偏移"必须以**回退后**的 390 分（06:30）为基点。
+EMPTY_WINDOW_ENV = {
+    "YIBAN_SIGN_START": "07:00",
+    "YIBAN_SIGN_END": "07:10",
+    "YIBAN_WINDOW_EDGE_FRONT_SEC": "300",
+    "YIBAN_WINDOW_EDGE_BACK_SEC": "300",
+}
 #: 会被用例改动、必须逐个还原的环境键（含旧 YIBAN_SIGN_MODE 与出口桶速率键）
 _TOUCHED = (
     "YIBAN_SIGN_START", "YIBAN_SIGN_END", "YIBAN_WINDOW_EDGE_FRONT_SEC",
@@ -360,6 +368,53 @@ class PrefOverflowTest(_Base):
         in_block = {p for p, r in rows.items() if _slice_of(r["run_at"], eff_lo) in range(30, 35)}
         self.assertEqual(in_block, set(phones[:300]), "最早的 300 个留在自选片内")
         self.assertEqual({p for p in phones if p not in in_block}, set(phones[300:]))
+
+
+class PrefBasePointTest(_Base):
+    """片号基点唯一：候选分片与溢出半径都以**有效窗口起点**为基点。
+
+    片号（`slot_min`）是相对窗口起点的 5 分钟格（与 web `_pref_slots` /
+    `schedule._slot_to_bi` 同号），故"基点"必须与它们同源；否则窗口被裁剪吃空而
+    `window.bounds` 回退默认窗口时，展示按回退窗口、计划按原始配置，落点整体错位。
+    """
+
+    def test_pref_slices_normal_window_pinned(self):
+        """正常窗口（无回退）：基点即原始窗口起点，候选分片逐值不变（显式期望）。"""
+        cfg = self.cfg()
+        win = self.bounds()
+        self.assertFalse(win.fell_back)
+        self.assertEqual(win.start_min, 360)
+        cands = planner._pref_slices(35, cfg, win.lo_min, win.hi_min,
+                                     planner._slice_count(cfg), schedule._slot_to_bi(cfg))
+        # 片 35 → 06:00 + 35 分钟 = 06:35；有效窗口 06:05~07:15 → 分片 30~34
+        self.assertEqual(cands, [30, 31, 32, 33, 34])
+
+    def test_pref_slices_use_fallback_window_start(self):
+        """裁剪吃空回退：基点取回退窗口起点（06:30），而非原始配置的 07:00。"""
+        os.environ.update(EMPTY_WINDOW_ENV)
+        cfg = self.cfg()
+        win = self.bounds()
+        self.assertTrue(win.fell_back)
+        self.assertEqual((win.start_min, win.end_min), (390, 470))
+        cands = planner._pref_slices(30, cfg, win.lo_min, win.hi_min,
+                                     planner._slice_count(cfg), schedule._slot_to_bi(cfg))
+        self.assertEqual(cands, [29, 30, 31, 32, 33])
+        # 片 30 → 06:30 + 30 分钟 = 07:00 起；绝对分钟 = 有效窗口起点 + 分片号
+        self.assertEqual(win.lo_min + cands[0], 420.0)
+
+    def test_spill_block_reaches_the_fallback_window_start(self):
+        """溢出搜索半径同样按有效窗口算：够得到回退窗口起点处仅存的空片。"""
+        os.environ.update(EMPTY_WINDOW_ENV)
+        cfg = self.cfg()
+        win = self.bounds()
+        n_slices = planner._slice_count(cfg)
+        filled = [1] * n_slices
+        for k in (0, 1, 2, 3):  # 窗口起点片（偏移 0 = 06:30~06:35）是唯一空片
+            filled[k] = 0
+        got = planner._spill_block(75, cfg, win.lo_min, win.hi_min, n_slices,
+                                   schedule._slot_to_bi(cfg), filled, 1, 0)
+        self.assertIsNotNone(got, "搜索半径按原始窗口算 → 够不到回退窗口起点的空片")
+        self.assertIn(got, (0, 1, 2, 3))
 
 
 class ModeTest(_Base):
