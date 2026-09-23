@@ -19,9 +19,10 @@
 - `EgressLimiter`：`{egress: EgressBucket}` + AIMD/半开 + `snapshot` / `persist` /
   `restore_from_store`（落库往返与崩溃重启恢复）+ `downgrade_all`（全体降档入口）；
 - `GlobalLimiter`：Λ 上界；`AccountGapGate`：每账号 gap 安全件；
-- `apply_ewma`：外环一步速率更新；
-- 配置面收口：`limiter_from_env`（速率 + 突发额度一次读全）、`burst_from_env` /
-  `burst_cap`（`YIBAN_MIN_EXEC_GAP` → 突发额度）、`gap_gate_from_env`（gap 门）。
+- `apply_ewma`：外环一步速率更新（平滑系数归调用侧）；
+- 配置面收口：`limiter_from_env`（速率 + 突发额度一次读全，并在显式配速率时标记
+  人工接管）、`burst_from_env` / `burst_cap`（`YIBAN_MIN_EXEC_GAP` → 突发额度）、
+  `gap_gate_from_env`（gap 门）。
 
 **通信**
 输入：`now`（浮点秒，**必须由调用方注入**，测试不依赖真实时钟）、出口标识、风控信号；
@@ -29,9 +30,11 @@
 落库：`egress_state(egress, rate, burst, tat, updated_at)`，经 `queue_store.
 load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路径，10s 粒度由
 调用方循环，写失败只告警不阻断签到。配置面只有三个旋钮：每出口目标速率
-`YIBAN_EGRESS_RATE`（attempt/s，缺省 1.0，**唯一读取点是 `schedule.planner_config`**，
-本模块经 `limiter_from_env` 取用而不另立字面量）、`YIBAN_MIN_EXEC_GAP`（突发额度收口，
-见 `burst_from_env`）、`YIBAN_ACCOUNT_GAP_MAX` / `YIBAN_ACCOUNT_GAP_ENFORCE`（gap 门）。
+`YIBAN_EGRESS_RATE`（attempt/s，缺省 1.0，**值只由 `schedule.planner_config` 读**，
+本模块经 `limiter_from_env` 取用而不另立字面量；该键**是否被显式写入**由
+`schedule.egress_rate_explicit` 回答，用来判人工接管）、`YIBAN_MIN_EXEC_GAP`
+（突发额度收口，见 `burst_from_env`）、`YIBAN_ACCOUNT_GAP_MAX` /
+`YIBAN_ACCOUNT_GAP_ENFORCE`（gap 门）。
 调用谁：`yiban.store.queue_store`。谁调用：执行体（通道循环取额度、回报 `on_success` /
 `on_risk_signal`、10s 循环 `persist`；站点级熔断用 `downgrade_all`）。
 """
@@ -52,7 +55,7 @@ RATE_DEFAULT = 1.0
 SUCCESS_STREAK = 200
 #: 风控命中后该出口的半开时长（秒）
 HALF_OPEN_SEC = 300
-#: 风控信号率 EWMA 的平滑系数（半衰期 ≈ 3 次采样）；口径归调用侧，见 `apply_ewma`
+#: 风控信号率 EWMA 的平滑系数（半衰期 ≈ 3 次采样）；由调用侧使用，见 `apply_ewma`
 EWMA_ALPHA = 0.2
 #: 外环目标跟踪的增益
 EWMA_BETA = 0.5
@@ -77,6 +80,9 @@ ENV_MIN_EXEC_GAP = "YIBAN_MIN_EXEC_GAP"
 #: `YIBAN_MIN_EXEC_GAP` 缺省值（秒）：`RATE_MIN = 0.2` 正是它的倒数——最慢时一条尝试
 #: 占满一个最小间隔，同一个物理量的两种写法。
 DEFAULT_MIN_EXEC_GAP_SEC = 5
+#: 开关类环境变量的假值字面量（与 `schedule._env_flag` 的真值表互补）：写这些值才是
+#: "显式关闭"；既非真值也非假值的手写错值另有归属，见 `gap_gate_from_env`。
+_FALSY_LITERALS = ("0", "false", "off", "no")
 
 
 def _clamp(rate):
@@ -150,21 +156,30 @@ class EgressLimiter:
     半开（`is_half_open`）是**按时间**结束的冷却窗口，不是"探测一次成功就放行"：窗口内
     该出口突发额度恒为 1（只放行单通道探测），探测成功只算一次无风控（进 streak），
     要等 `HALF_OPEN_SEC` 走完才恢复突发额度与多通道。一次侥幸不该立刻换回 6 条并发。
+
+    `manual`（人工接管）：`.env` 里显式写了速率就不该再被 AIMD 改写——否则管理员配的
+    值会自己漂移，而"我配的值为什么变了"无从解释。故上探与回退都不改速率；但**安全
+    反应不随之停**：风控信号仍置半开（降并发探测）并告警，`downgrade_all` 仍降档。
+    停掉安全件会让一次手写错值变成无保护的全速放行，代价远高于"速率不自动调优"。
     """
 
-    def __init__(self, rate=RATE_DEFAULT, burst=DEFAULT_BURST, on_change=None):
+    def __init__(self, rate=RATE_DEFAULT, burst=DEFAULT_BURST, on_change=None, manual=False):
         self.rate = _clamp(rate)
         self.burst = float(burst)
+        self.manual = bool(manual)
         self._on_change = on_change
+        # 新建桶的起算速率：站点级降档把它粘到降档值（见 downgrade_all），此后冒出来的
+        # 出口不再按出厂速率放行——只降已建桶会让熔断对新出口静默失效。
+        self._baseline_rate = self.rate
         self._buckets = {}
         self._streak = {}
         self._half_open_until = {}
 
     def bucket(self, egress):
-        """取该出口的桶；首次访问按本限速器的出厂速率建桶（`rate` 参数）。"""
+        """取该出口的桶；首次访问按本限速器的**起算速率**建桶（降档后即降档值）。"""
         b = self._buckets.get(egress)
         if b is None:
-            b = EgressBucket(egress, rate=self.rate, burst=self.burst)
+            b = EgressBucket(egress, rate=self._baseline_rate, burst=self.burst)
             self._buckets[egress] = b
         self._streak.setdefault(egress, 0)
         return b
@@ -183,7 +198,8 @@ class EgressLimiter:
         """连续 `SUCCESS_STREAK` 次无风控 → `rate ×= 1.2`（封顶），返回生效后的 rate。
 
         半开期内成功只算"这一次没被拦"（进 streak、可触发上探），**不结束半开**：冷却窗按
-        `HALF_OPEN_SEC` 走表，期间该出口始终只放单通道（见 `acquire`）。
+        `HALF_OPEN_SEC` 走表，期间该出口始终只放单通道（见 `acquire`）。人工接管时上探
+        不改速率（streak 仍按轮清零，口径不变）。
         """
         b = self.bucket(egress)
         n = self._streak.get(egress, 0) + 1
@@ -191,13 +207,24 @@ class EgressLimiter:
             self._streak[egress] = n
             return b.rate
         self._streak[egress] = 0
+        if self.manual:
+            return b.rate
         return self._set_rate(egress, b.rate * GROWTH_FACTOR, "连续无风控上探")
 
     def on_risk_signal(self, egress, now):
-        """风控信号 → `rate ÷= 2`（下限 `RATE_MIN`）+ 半开 `HALF_OPEN_SEC`，返回新 rate。"""
+        """风控信号 → `rate ÷= 2`（下限 `RATE_MIN`）+ 半开 `HALF_OPEN_SEC`，返回新 rate。
+
+        人工接管时速率保持（不自动回退），但半开与告警照做——安全反应是底线，不随
+        "速率交给管理员"一起交出。
+        """
         self.bucket(egress)
         self._streak[egress] = 0
         self._half_open_until[egress] = now + HALF_OPEN_SEC
+        if self.manual:
+            logger.warning("出口 %s 风控信号，但速率由 .env 人工接管，保持 %.3f attempt/s"
+                           "（仍进入 %ds 半开单通道探测）",
+                           egress, self._buckets[egress].rate, HALF_OPEN_SEC)
+            return self._buckets[egress].rate
         return self._set_rate(egress, self._buckets[egress].rate * SHRINK_FACTOR,
                               "风控信号回退")
 
@@ -205,9 +232,11 @@ class EgressLimiter:
         """全体出口降档到 `RATE_MIN` 并进入半开，返回 `{egress: rate}`。
 
         站点级熔断（风控信号率超阈）的**降档入口**：阈值判定与告警归调用方，本方法只做
-        降档本身——已建桶的出口逐一下调，未建桶的出口以本限速器的出厂速率起算（尚未
-        放行过，谈不上降档）。
+        降档本身。降档是**粘住的**：已建桶的出口逐一下调，同时把新建桶的起算速率也降到
+        `RATE_MIN`——降档期间新冒出来的出口同样按降档值放行，否则站点级熔断对新出口
+        静默失效。人工接管不阻止降档（安全反应优先于"速率由管理员定"）。
         """
+        self._baseline_rate = RATE_MIN
         for egress in list(self._buckets):
             self._half_open_until[egress] = now + HALF_OPEN_SEC
             self._streak[egress] = 0
@@ -275,13 +304,21 @@ class GlobalLimiter:
     （0s 与 0.67s 各一条），此后按 1.5 条/s 摊销，不会持续超发。`lam` 单位 = 账号尝试/s；
     None/≤0 = 不限（小站不强迫配置）。本层不带突发额度：全局多放一条就多一份并发冲击，
     突发额度属于每出口桶。
+
+    取值非法（非数值串等）时按"不限"处理——全局上界缺失不该让整个签到起不来，但这个
+    事实**不静默**：`logger.warning` 明示，且 `invalid` 属性置真，供接线侧据此决定是否
+    拒绝启动（把 Λ 写错成 `abc` 的部署等于没有全局上界，值得让人看见）。
     """
 
     def __init__(self, lam):
+        self.invalid = False
         try:
-            self.lam = float(lam) if lam is not None and float(lam) > 0 else None
+            v = float(lam) if lam is not None else 0.0
         except (TypeError, ValueError):
-            self.lam = None
+            self.invalid = True
+            logger.warning("全局速率上界 Λ=%r 非法（非数值），已按不限处理", lam)
+            v = 0.0
+        self.lam = v if v > 0 else None
         self._tat = 0.0
 
     def acquire(self, now):
@@ -320,17 +357,18 @@ class AccountGapGate:
         self._tat[phone] = max(now, self._tat.get(phone, 0.0)) + self.gap_sec
 
 
-def apply_ewma(prev_rate, risk_ratio_hat, r_target, alpha=EWMA_ALPHA, beta=EWMA_BETA):
+def apply_ewma(prev_rate, risk_ratio_hat, r_target, beta=EWMA_BETA):
     """外环一步速率更新（目标跟踪的连续微调），返回新 rate。
 
     `bucket_rate = clamp(prev × (1 + β·(r̂ − R_target)/R_target), RATE_MIN, RATE_MAX)`，
     单次调整幅度再夹到 ±`MAX_STEP`——一次抖动不该把速率打到下限，宁可慢调。
-    `risk_ratio_hat` 是风控信号率的 EWMA，平滑（`r̂_t = α·r_t + (1−α)·r̂_{t−1}`）在调用侧
-    做，`alpha` 因此只作口径占位：外环与调用侧取同一套 α/β 才可比。
+    `risk_ratio_hat` 是风控信号率的 EWMA，**平滑在调用侧做**（`r̂_t = α·r_t +
+    (1−α)·r̂_{t−1}`，α 见 `EWMA_ALPHA`）：本函数只吃平滑后的 r̂，故不收 α——外环与
+    调用侧用同一套 α/β 才可比，而 α 的作用点在采样，不在这一步更新。
 
     与 AIMD 的分工：AIMD 是信号驱动的事件式回退/上探，本函数是事件之间的微调；调用方须
     先跑 AIMD 事件、再跑本函数，且**只在两次尝试之间**调整（不在单次尝试中途变速率，
-    否则半程限速会让状态不一致）。
+    否则半程限速会让状态不一致）。人工接管的出口不再调用本函数。
     """
     prev = _clamp(prev_rate)
     if not r_target or float(r_target) <= 0:
@@ -369,29 +407,42 @@ def limiter_from_env(channels=DEFAULT_BURST, on_change=None):
       取，本模块不另立键名字面量；
     - `burst` = `burst_from_env(channels, rate)`（`YIBAN_MIN_EXEC_GAP` 收口）；
     - `channels` 缺省按出厂速率下的通道数（`DEFAULT_BURST`）；执行体按
-      `M = min(16, ceil(rate × avg × 2))` 算好自己的通道数传入。
+      `M = min(16, ceil(rate × avg × 2))` 算好自己的通道数传入；
+    - `manual` = 该键**是否被显式写入**（`schedule.egress_rate_explicit`）：写了即
+      人工接管，AIMD 不再改写速率（安全反应照做，见 `EgressLimiter`）。
     """
     from yiban.engine import schedule
     cfg = schedule.planner_config()
     rate = cfg["bucket_rate"]
     return EgressLimiter(rate=rate, burst=burst_from_env(channels, rate),
-                         on_change=on_change)
+                         on_change=on_change, manual=schedule.egress_rate_explicit())
 
 
 def gap_gate_from_env():
     """按环境配置造每账号 gap 门。
 
     gap = `YIBAN_ACCOUNT_GAP_MAX`（缺省 10s，与 `capacity_accounts` 的 gap 入参、执行体
-    读的是同一个键）；enabled = `YIBAN_ACCOUNT_GAP_ENFORCE` 真值（**缺省 1=开**）——上游
-    是否按账号维度看间隔尚未实测裁决，故留开关。gap 本身不可移除（账号间隔、幂等、到期
-    兜底是两种形态下的共同底限）。
+    读的是同一个键）；enabled = `YIBAN_ACCOUNT_GAP_ENFORCE`（**缺省 1=开**）——上游是否
+    按账号维度看间隔尚未实测裁决，故留开关。gap 本身不可移除（账号间隔、幂等、到期兜底
+    是两种形态下的共同底限）。
+
+    该键语义是"缺省开"，故真值判据三分：未设/空白 → 开；显式假值字面量 → 关；显式真值
+    字面量 → 开；**其余手写错值（如 `abc`）→ 开 + 告警**。错值不等于"关闭"：把安全件
+    因一次笔误静默摘掉是 fail-open 方向，宁可多一层间隔并让人看见告警。
     """
     # 局部导入：配置解析口径复用 schedule（避免第二套环境解析），且 schedule 反向引用
     # 本模块的可能性随执行体接线增大，模块级互引会成环。
     from yiban.engine import schedule
     gap = schedule._env_int(ENV_ACCOUNT_GAP_MAX, DEFAULT_ACCOUNT_GAP_SEC, 0, 3600)
     raw = str(os.environ.get(ENV_GAP_ENFORCE, "")).strip()
-    # 这是"默认开"的键：未设/空 ⇒ 开，显式写入才按真值字面量判——与 `_env_flag`
-    # 的"缺省即假"语义相反，故不能直接用它的缺省分支。
-    enabled = schedule._env_flag(ENV_GAP_ENFORCE) if raw else True
+    if not raw:
+        enabled = True
+    elif raw.lower() in _FALSY_LITERALS:
+        enabled = False
+    elif schedule._env_flag(ENV_GAP_ENFORCE):
+        enabled = True
+    else:
+        logger.warning("配置 %s=%r 非法（既非真值也非假值），安全件按缺省开处理",
+                       ENV_GAP_ENFORCE, raw)
+        enabled = True
     return AccountGapGate(gap_sec=gap, enabled=enabled)
