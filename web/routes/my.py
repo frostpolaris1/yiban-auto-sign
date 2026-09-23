@@ -327,9 +327,13 @@ def api_my_time_pref_save():
         except (TypeError, ValueError):
             return jsonify({"error": "时间片取值无效"}), 400
         sw = m._sign_window()
-        span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
-        front_min = m.edge_config()[0] / 60.0
-        back_min = m.edge_config()[1] / 60.0
+        # 可用性按 `window.bounds` 的有效窗口算（与 `_pref_slots` 展示同准绳）：有效窗口被
+        # 前后裁剪吃空时 bounds 回退默认窗口，展示侧按回退窗口给出可点选的片——此处若直读
+        # 原始窗口与裁剪，会把每一片都判成"不在可选范围"，形成"点得到、存不下"。
+        win = m.sign_window_bounds()
+        span = win.end_min - win.start_min
+        front_min = win.front_sec / 60.0
+        back_min = win.back_sec / 60.0
         # 前后独立裁剪：部分落入裁剪区的片（如首片剩 3 分钟）允许保存，
         # 调度会在可用部分内安排；完全落入裁剪区（前端已置灰）拒绝。
         if slot % 5 != 0 or not (0 <= slot < span) or not (
