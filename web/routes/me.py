@@ -454,7 +454,10 @@ def api_me():
     sign_dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
         "normal" if mode == "normal" else "uniform"
     )
-    sw = m._sign_window()
+    # 窗口展示取**有效**窗口端点（`window.bounds`，含裁剪吃空时的回退）：与同页自选片
+    # 卡片同一份几何——直读原始配置会在回退时让两处显示两个钟点（片卡 06:30~07:50、
+    # 这里 07:00~07:10）。
+    win = m.sign_window_bounds()
     return jsonify(
         {
             "ok": True,
@@ -470,7 +473,8 @@ def api_me():
             "sign_order": sign_order,
             "sign_dist": sign_dist,
             "time_pref_allowed": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
-            "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
+            "sign_window": (f"{win.start_min // 60:02d}:{win.start_min % 60:02d}"
+                            f" ~ {win.end_min // 60:02d}:{win.end_min % 60:02d}"),
         }
     )
 
