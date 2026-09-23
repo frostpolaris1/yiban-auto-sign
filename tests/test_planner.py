@@ -2,9 +2,9 @@
 """`yiban/engine/planner.py`（双粒度分片 Planner）与 `schedule.capacity_accounts_v3` 的契约用例。
 
 窗口取 06:00~07:20、前后各裁 300s ⇒ 有效窗口 70 分钟 = 4200s = 70 个 1 分钟分片
-（每片 60 个 1 秒微槽）——与设计文档 §3.1/§11.1 的核算口径同数。自选片 `slot_min`
-仍是"相对窗口起点"的 5 分钟格（与 web `_pref_slots`、`schedule._slot_to_bi` 同源），
-故 `slot_min=35` 对应 06:35~06:40。
+（每片 60 个 1 秒微槽），与容量核算口径同数。自选片 `slot_min` 仍是"相对窗口起点"的
+5 分钟格（与 web `_pref_slots`、`schedule._slot_to_bi` 同源），故 `slot_min=35` 对应
+06:35~06:40。
 
 覆盖：确定性/可重放、与执行体数 K 无关、落点有界、分层零方差、微槽与相位范围、
 跨天重排、小 N 前载、自选硬约束与双层溢出、先到先得、三模式保留、压缩模式与元数据、
@@ -30,7 +30,7 @@ WINDOW_ENV = {
     "YIBAN_WINDOW_EDGE_FRONT_SEC": "300",
     "YIBAN_WINDOW_EDGE_BACK_SEC": "300",
 }
-#: 会被用例改动、必须逐个还原的环境键（含旧 YIBAN_SIGN_MODE 与 T7 的桶速率键）
+#: 会被用例改动、必须逐个还原的环境键（含旧 YIBAN_SIGN_MODE 与出口桶速率键）
 _TOUCHED = (
     "YIBAN_SIGN_START", "YIBAN_SIGN_END", "YIBAN_WINDOW_EDGE_FRONT_SEC",
     "YIBAN_WINDOW_EDGE_BACK_SEC", "YIBAN_WINDOW_EDGE_SEC", "YIBAN_SIGN_MODE",
@@ -77,6 +77,12 @@ def _h(*parts):
     """与 `hrw` 同一口径的 blake2b（用例自算，用于核对"按 H(phone‖day) 选片"这条契约）。"""
     raw = "\x1f".join(str(p) for p in parts).encode("utf-8")
     return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big")
+
+
+def _row(phone, run_at, owner="worker-0@hostA", vshard=0):
+    """手造计划行（只喂 `plan_stats` 这类只读摘要的用例）。"""
+    return {"phone": phone, "day": DAY, "vshard": vshard, "owner": owner,
+            "run_at": run_at, "priority": 5, "state": "pending", "epoch": 0}
 
 
 def _dt(run_at):
@@ -392,7 +398,7 @@ class ModeTest(_Base):
                            sum(1 for x in offs if x < 0.2 or x >= 0.8))
 
     def test_normal_peak_rate_is_capped_by_bucket(self):
-        """φ_max × N ≤ Λ（A 案 §6.1 修正版口径：密度峰值速率受出口令牌桶封顶）。"""
+        """φ_max × N ≤ Λ（密度峰值速率受出口令牌桶封顶）。"""
         os.environ["YIBAN_SIGN_DIST"] = "normal"
         rows = self.plan(_accounts(400))
         st = planner.plan_stats(rows, self.cfg(), DAY)
@@ -452,15 +458,22 @@ class PlanStatsTest(_Base):
         self.assertEqual(sorted(st["hist"]), list(range(5, 75, 5)))
         self.assertEqual(set(st["hist"].values()), {50})
 
-    def test_peak_per_sec_counts_real_landings(self):
-        rows = self.plan(_accounts(30))
+    def test_peak_per_sec_counts_landings_in_the_same_second(self):
+        """`peak_per_sec` 是同一秒内的落点数（聚合口径，与计划形状无关）。"""
+        rows = [
+            _row(_phone(0), f"{DAY} 06:30:01.000"),
+            _row(_phone(1), f"{DAY} 06:30:01.400"),
+            _row(_phone(2), f"{DAY} 06:30:01.999"),
+            _row(_phone(3), f"{DAY} 06:30:02.000"),
+        ]
         st = planner.plan_stats(rows)
-        self.assertGreaterEqual(st["peak_per_sec"], 1)
-        self.assertLessEqual(st["peak_per_sec"], 30)
+        self.assertEqual(st["peak_per_sec"], 3)
+        self.assertEqual(st["n"], 4)
+        self.assertEqual(sum(st["hist"].values()), 4)
 
 
 class CapacityV3Test(unittest.TestCase):
-    """`schedule.capacity_accounts_v3`：逐位钉死 A 案 §6.1 修正版取值。"""
+    """`schedule.capacity_accounts_v3`：逐位钉死修正版容量公式的取值。"""
 
     def test_reference_values(self):
         self.assertEqual(
@@ -488,7 +501,7 @@ class CapacityV3Test(unittest.TestCase):
             schedule.capacity_accounts_v3(4200, k=1, avg=3, bucket_rate=1.0, util=1.0), 4200)
 
     def test_legacy_capacity_function_is_unchanged(self):
-        """旧串行公式（web 闸门仍在用，T7 才切换）一字未改：4200s / avg 3 / gap 10 → 323。"""
+        """旧串行公式（web 保存闸门仍按它取数）一字未改：4200s / avg 3 / gap 10 → 323。"""
         self.assertEqual(schedule.capacity_accounts(4200, gap=10, avg=3), 323)
 
 

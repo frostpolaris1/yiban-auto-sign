@@ -46,7 +46,7 @@ SLOT_SEC_COMPRESSED = 0.5
 SLOTS_PER_SLICE = 60
 #: 计划元数据键：槽宽（毫秒）。执行体不必感知压缩，读它即可
 SLOT_WIDTH_META_KEY = "scheduler_v3_slot_width_ms"
-#: 计划行的 priority 缺省值（重试 +1 / 手动 0 由运行期改，A 案 §5.1）
+#: 计划行的 priority 缺省值（重试 +1 / 手动 0 由运行期改）
 PRIORITY_DEFAULT = 5
 STATE_PENDING = queue_store.STATE_PENDING
 
@@ -99,7 +99,7 @@ def _slice_count(cfg):
 
 
 def slot_width_ms(n, cfg=None):
-    """计划的槽宽（毫秒）：N 超过槽位总容量时 1s → 0.5s（A 案 §3.4）。
+    """计划的槽宽（毫秒）：N 超过槽位总容量（分片数 × 每片槽数）时 1s → 0.5s。
 
     容量 = 分片数 × 每片槽数（1s 时 60）。超过就把槽宽减半、槽数翻倍，而不是落一条
     "压缩告警"了事；实际槽宽由 `write_plan` 写进 `app_meta`，执行体读它即可。
@@ -155,9 +155,9 @@ def _density(n, cfg, day, span_sec):
     """正态模式的密度整形 → `(mu_min, sigma_min, alpha, phi_max)`。
 
     φ 是**归一化**密度（∫φ = 1），峰值到达速率 = `N × φ_max`，受出口令牌桶 Λ 封顶：
-    原设计只封 σ 不封峰值速率，中段会形成相对突发（A 案 §6.1 修正）。违反约束时把
-    正态与均匀按 α 混合**压平峰值**，μ/σ 一律不动——改 σ 会把"作息形状"一起改掉。
-    连均匀密度都超过 Λ 时 α 取 1（能做的只有压到最平），余下的缺口属于出口令牌桶。
+    只封 σ 不封峰值速率时，中段会形成相对突发。违反约束时把正态与均匀按 α 混合
+    **压平峰值**，μ/σ 一律不动——改 σ 会把"作息形状"一起改掉。连均匀密度都超过 Λ 时
+    α 取 1（能做的只有压到最平），余下的缺口属于出口令牌桶。
     """
     span_min = span_sec / 60.0
     mu_pct = cfg["mu_min_pct"] + _u(day, "mu") * (cfg["mu_max_pct"] - cfg["mu_min_pct"])
@@ -399,7 +399,7 @@ def write_plan(rows, day=None):
 
 
 def has_plan(day):
-    """当日是否已有计划行——执行体启动时的降级判定（A 案 §11.2 第 3 条）。
+    """当日是否已有计划行——执行体启动时的降级判定。
 
     库不可用 / 表未落地一律回 `False`：调用方据此退回 v17 的动态领取路径，而不是空转。
     """
@@ -424,8 +424,9 @@ def plan_stats(rows, cfg=None, day=None):
 
     直方图桶键 = 自选片号（相对窗口起点的 5 分钟格，与 `time_prefs.slot_min` 同号），
     故影子期（dry_run）能把"计划分布"与现网实际落点逐格对比；`peak_per_sec` 是同一
-    秒内的实际落点数（A 案 §7 不变量 1 的观测量）。`cfg` 缺省取当前配置，`dist=normal`
-    时另附密度整形结果（φ_max / 压平系数 α / 峰值速率），供容量与分布一起核对。
+    秒内的实际落点数（"任意 1 秒内实际请求数不超过计划密度"这条不变量的观测量）。
+    `cfg` 缺省取当前配置，`dist=normal` 时另附密度整形结果（φ_max / 压平系数 α /
+    峰值速率），供容量与分布一起核对。
     """
     items = list(rows or ())
     cfg = cfg or schedule.planner_config()

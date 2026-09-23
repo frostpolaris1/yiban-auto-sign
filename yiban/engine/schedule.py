@@ -42,8 +42,8 @@ _DEFAULT_AVG_ATTEMPT_SEC = 3
 _DEFAULT_RETRY_MIN_INTERVAL = 60
 _DEFAULT_EXEC_GAP_MIN = 10      # 启动对齐：已过点账号相邻最小间隔（秒）
 _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认，管理员开启后生效）
-# V3 全局容量口径（A 案 §6.1 修正版）：出口令牌桶速率（次尝试/s）、通道数上限、
-# 重试与尾延迟降额系数。桶速率键与 web 侧容量预估（T7）同源。
+# V3 全局容量口径：出口令牌桶速率（次尝试/s）、通道数上限、重试与尾延迟降额系数。
+# 桶速率键供引擎与 web 侧容量预估共用（web 侧尚未接入）。
 _DEFAULT_BUCKET_RATE = 1.0
 _DEFAULT_CHANNELS_MAX = 16
 _DEFAULT_UTIL = 0.8
@@ -116,11 +116,11 @@ def capacity_accounts(window_sec, gap=0, avg=None):
 
 
 def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
-    """V3 全局容量（A 案 §6.1 修正版）：`容量 = K × min(M/avg, bucket_rate) × W × util`。
+    """V3 全局容量：`容量 = K × min(M/avg, bucket_rate) × W × util`。
 
     `M = min(16, ceil(bucket_rate × avg × 2))` 是每执行体的并发通道数：通道能力
-    `M/avg` 只需略高于出口令牌桶上限，**瓶颈是两者中的较小者**。原稿直接拿通道
-    吞吐（2.3 次/s）算容量、忽略桶封顶，把容量高估 2.3 倍（A 案 §11.2 第 1 条）。
+    `M/avg` 只需略高于出口令牌桶上限，**瓶颈是两者中的较小者**。只按通道吞吐算容量、
+    忽略桶封顶，会把容量高估 2.3 倍（桶 1/s、avg 3s 时 2.67 次/s 并非有效速率）。
 
     `util` 缺省 0.8（重试与尾延迟降额）；`k` 是执行体数（默认 1 = 单执行体零额外配置）。
     单位是**账号尝试数**（单账号 ≈6 次 HTTP 请求），不是请求数。
@@ -231,8 +231,8 @@ def planner_config():
     """Planner 用的配置快照（调度 v3）：窗口/裁剪 + 三模式 + μσ + 桶速率 + 执行体。
 
     读法与 `_schedule_config` **同源**（直接复用它的结果），只补两项 Planner 独有的：
-    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省 1.0，与 web 容量预估同键）与 `executors`
-    （HRW 候选集）。不另存一份窗口/模式口径——两份口径迟早会分叉。
+    `bucket_rate`（`YIBAN_EGRESS_RATE`，缺省 1.0）与 `executors`（HRW 候选集）。
+    不另存一份窗口/模式口径——两份口径迟早会分叉。
     """
     cfg = _schedule_config()
     cfg["bucket_rate"] = _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
