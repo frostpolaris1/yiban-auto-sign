@@ -766,7 +766,8 @@ def migrate_v18(conn):
     conn.execute(
         "CREATE TABLE IF NOT EXISTS egress_state ("
         "egress TEXT PRIMARY KEY, "
-        "rate REAL NOT NULL, "
+        "rate REAL NOT NULL /* 单位 = 账号尝试/s（attempt/s）：1 = 单出口每秒 1 次账号尝试"
+        "（单账号 = 6 次 HTTP 请求） */, "
         "burst REAL NOT NULL DEFAULT 0, "
         "tat REAL NOT NULL DEFAULT 0, "
         "updated_at TEXT NOT NULL"
