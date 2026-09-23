@@ -5,7 +5,7 @@
 **功能**
 - 基线建表 `_create_tables`：accounts / users / audit_logs / time_prefs /
   user_delete_requests 五张表与其索引（幂等 IF NOT EXISTS）；
-- 迁移项 `migrate_v1..v19`：每项对应一个已发布、且**不可再修改**的 schema 版本；
+- 迁移项 `migrate_v1..v20`：每项对应一个已发布、且**不可再修改**的 schema 版本；
 - 迁移助手 `_table_columns` / `_ensure_column` / `_ensure_index` 与表名白名单
   `_ALLOWED_TABLES`（助手对白名单外的表名直接拒绝，防拼接 SQL 的注入面）；
 - 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE、核心迁移失败阻断
@@ -28,6 +28,8 @@
 `db._ensure_column(...)` / `db._create_tables(...)` / `db._maybe_migrate(...)` 调用面不变。
 `_MIGRATIONS` 是**可变登记表**（测试用 `db._MIGRATIONS = [...]` 缩窄或替换迁移集），由 db
 侧模块类读写转发到本模块——快照式再导出会让缩窄静默失效（编排仍读真表）。
+`terminal_task_state` 与 `_JSON_TERMINAL_TO_TASK_STATE` 是「JSON 状态 → 池状态」判定的
+唯一定义处，`scripts/ledger_check.py` 的对账判定引用它。
 
 **通信**
 迁移函数一律接收调用方传入的 `conn`（事务由 `_run_migrations` 经写事务入口开启），本模块
@@ -48,6 +50,7 @@ from datetime import timedelta
 
 from yiban import clock
 from yiban.infra import account_crypto, env_io
+from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import accounts as _accounts
 from yiban.store import connection as _connection
 
@@ -838,6 +841,9 @@ _BACKFILL_COMMIT_ROWS = 50
 #: - `paused`/`user_cancelled`/`global_paused` 是管理侧决策（熔断/用户自停/全站
 #:   暂停），今天不会再试 → `skipped`。
 #: 在途状态（`retrying`/`pending`）**不补**：那不是终态，补进台账会凭空多出待办。
+#: **新增状态码必须同步本表**：本表被 v20 补账与 `scripts/ledger_check.py` 的对账判定
+#: 共用，少一格时两头同时失效——该补的行不进台账，而用同一张表做的对账还报"对账平"，
+#: 全程无信号。绑定由 tests/test_migrations_v20.py 的键集守卫钉住。
 # 一致性由 tests/test_migrations_v20.py 与未来 ledger_states 的等价断言共同保证
 # ——将来若把这份映射搬到 `ledger_states.from_status_json`，必须与本表逐格一致。
 _JSON_TERMINAL_TO_TASK_STATE = {
@@ -868,7 +874,7 @@ def _read_sign_state(state_dir, day):
         return None
     except (OSError, ValueError, TypeError) as e:
         logger.warning("v20 backfill：状态文件不可读，跳过该日 %s [%s: %s]",
-                       path, type(e).__name__, e)
+                       path, type(e).__name__, _sanitize_text(e))
         return None
     if not isinstance(data, dict) or not data:
         logger.warning("v20 backfill：状态文件非 dict 或为空，跳过该日 %s", path)
@@ -876,11 +882,15 @@ def _read_sign_state(state_dir, day):
     return data
 
 
-def _terminal_task_state(entry):
+def terminal_task_state(entry):
     """该条目对应的池状态；非终态与「无记录」→ None。
 
     空串与缺 `status` 键都是「无记录」（与 `status.is_concluded_status` 同口径，
     即 `""` 不算一条"状态为空的结论"），不是 `pending`。
+
+    公开名字是**有意的**：`scripts/ledger_check.py` 的对账判定必须与本处同一份逻辑，
+    各写一份（哪怕共用同一张常量表）也会在规范化细节上漂移，对账据此报出并不存在的
+    差异或漏报真差异。
     """
     if not isinstance(entry, dict):
         return None
@@ -928,7 +938,7 @@ def migrate_v20(conn):
             continue
         scanned_days += 1
         for phone, entry in entries.items():
-            state = _terminal_task_state(entry)
+            state = terminal_task_state(entry)
             if state is None:
                 continue
             stamp = f"{day} {_entry_time(entry)}"

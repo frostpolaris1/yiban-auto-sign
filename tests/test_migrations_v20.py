@@ -9,6 +9,8 @@
 5. 容错（某日损坏 / 目录缺失 → 跳过，不抛）；
 6. `run_at` 时间回退与批量提交不丢行。
 
+另有一条守卫：冻结映射表与 `yiban.status.ALL_STATUSES` 的键绑定（少一格即两头静默失效）。
+
 库是**手工搭到 v19** 的（v17 建 `sign_claims`、v18 建 `sign_tasks`）——不借 `db` 的
 全局连接，免得多用例共享单例连接互相干扰。
 """
@@ -20,11 +22,14 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import timedelta
+from unittest import mock
 
-from yiban import clock
-from yiban.store import migrations
+from yiban import clock, status
+from yiban.engine import hrw
+from yiban.store import connection, migrations, queue_store
 
 PHONE_A = "13800000001"
+PHONE_B = "13800000002"
 
 
 def _day(offset=0):
@@ -75,12 +80,12 @@ class MigrateV20Test(unittest.TestCase):
     def _count(self):
         return self.conn.execute("SELECT COUNT(*) FROM sign_tasks").fetchone()[0]
 
-    def _insert_task(self, phone, day, owner, state="done"):
+    def _insert_task(self, phone, day, owner, state="done", vshard=-1):
         self.conn.execute(
             "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
             "state, attempts, lease_until, result, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (phone, day, -1, owner, f"{day} 06:31:00", 5, state, 1, "", "ok",
+            (phone, day, vshard, owner, f"{day} 06:31:00", 5, state, 1, "", "ok",
              f"{day} 06:31:00"),
         )
         self.conn.commit()
@@ -147,6 +152,33 @@ class MigrateV20Test(unittest.TestCase):
         self.assertEqual(row["result"], "")
         self.assertEqual(row["priority"], 5)
 
+        # 惰性直证：-1 落在任何执行体的分片集之外，不靠"两个集合不相交"的组合推理。
+        v = hrw.V_DEFAULT
+        executors = ("worker-0@host", "worker-1@host", "worker-2@host")
+        self.assertNotIn(-1, hrw.assignment(executors, day, v),
+                         "assignment 的键恰为 0..v-1，不含 -1")
+        for executor in executors:
+            with self.subTest(executor=executor):
+                self.assertNotIn(-1, hrw.shards_of(executor, executors, day, v))
+        self.assertGreaterEqual(hrw.vshard_of(PHONE_A, day, v), 0, "vshard_of 只产 0..v-1")
+
+        # 反证：先把该行改成"待领取"以隔离出 vshard 这一个变量（否则"领不到"可能只是
+        # state 不是 pending 的结果），再传入全部真实分片——批领仍领不到它。同批领到
+        # vshard=0 的对照行，说明"领不到"不是批领整体失效。
+        self.conn.execute("UPDATE sign_tasks SET state='pending' WHERE phone=?", (PHONE_A,))
+        self._insert_task(PHONE_B, day, "", state="pending", vshard=0)
+        prev_conn = connection._conn
+        connection.set_conn(self.conn)
+        try:
+            claimed = queue_store.claim_batch(
+                "worker-0@host", day, tuple(range(v)), now=f"{day} 23:59:59")
+        finally:
+            if prev_conn is None:
+                connection.reset_conn()
+            else:
+                connection.set_conn(prev_conn)
+        self.assertEqual([c["phone"] for c in claimed], [PHONE_B])
+
     # ---- 3. 不读 sign-daily，且不越出回看窗口 ----
     def test_sign_daily_symbol_table_is_not_an_input(self):
         day = _day()
@@ -186,6 +218,23 @@ class MigrateV20Test(unittest.TestCase):
         self.assertEqual(migrations.migrate_v20(self.conn), 0)
         self.assertEqual(self._count(), 0)
 
+    def test_unreadable_state_file_logs_a_sanitized_exception(self):
+        """异常文本入日志前走 `sanitize_text`（与 `state_io` 同口径）。
+
+        sqlite/json 的异常消息可能回显库内值（cookie/csrf/凭据），直接落日志等于把
+        脱敏口径开个后门。
+        """
+        day = _day()
+        self._write_state(day, {PHONE_A: {"status": "success"}})
+        with mock.patch.object(migrations.json, "load",
+                               side_effect=ValueError("第一行\npassword=hunter2")), \
+                self.assertLogs("yiban.store.migrations", level="WARNING") as logs:
+            self.assertIsNone(migrations._read_sign_state(self.state_dir, day))
+        logged = "\n".join(logs.output)
+        self.assertIn("password=***", logged)
+        self.assertNotIn("hunter2", logged)
+        self.assertIn(r"\n", logged, "换行应被转义（防日志注入），不是原样落盘")
+
     # ---- 6. run_at 回退与批量提交 ----
     def test_run_at_falls_back_to_midnight_when_time_is_unusable(self):
         day = _day()
@@ -210,6 +259,21 @@ class MigrateV20Test(unittest.TestCase):
         })
         self.assertEqual(migrations.migrate_v20(self.conn), 120)
         self.assertEqual(self._count(), 120)
+
+
+class TerminalMapGuardTest(unittest.TestCase):
+    """冻结映射表与状态词表的绑定守卫。"""
+
+    def test_map_keys_are_all_statuses_minus_in_flight(self):
+        """表键 == `ALL_STATUSES` − {`retrying`, `pending`}。
+
+        这张表被 v20 补账与 `scripts/ledger_check.py` 的对账判定**共用**，故它少一格时
+        两头同时失效：该补的行不会进台账，而用同一张表做的对账还报"平"——没有任何信号。
+        用差集表达而不是手写枚举：手写枚举会在新增状态码时静默漏掉一格。
+        """
+        expected = set(status.ALL_STATUSES) - {status.STATUS_RETRYING,
+                                               status.STATUS_PENDING}
+        self.assertEqual(set(migrations._JSON_TERMINAL_TO_TASK_STATE), expected)
 
 
 if __name__ == "__main__":
