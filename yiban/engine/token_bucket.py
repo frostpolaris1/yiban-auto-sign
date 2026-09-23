@@ -157,16 +157,19 @@ class EgressLimiter:
     该出口突发额度恒为 1（只放行单通道探测），探测成功只算一次无风控（进 streak），
     要等 `HALF_OPEN_SEC` 走完才恢复突发额度与多通道。一次侥幸不该立刻换回 6 条并发。
 
-    `manual`（人工接管）：`.env` 里显式写了速率就不该再被 AIMD 改写——否则管理员配的
-    值会自己漂移，而"我配的值为什么变了"无从解释。故上探与回退都不改速率；但**安全
-    反应不随之停**：风控信号仍置半开（降并发探测）并告警，`downgrade_all` 仍降档。
-    停掉安全件会让一次手写错值变成无保护的全速放行，代价远高于"速率不自动调优"。
+    `manual`（人工接管）：`.env` 里显式写了速率，它就是这个出口的**上限**——管理员写的
+    值不该被自适应越过（否则"我配的值为什么变快了"无从解释）。故上探在 manual 下
+    no-op。但**安全反应不随之停**：风控信号的乘性回退是安全反应而非自适应，照做且只
+    夹在"不超过上限"之下——把回退也停掉等于让站点贴着风控墙跑；半开与告警同样照旧。
+    一句话：manual 的语义是"不许跑得比管理员设的快"，不是"风控来了也不减速"。
     """
 
     def __init__(self, rate=RATE_DEFAULT, burst=DEFAULT_BURST, on_change=None, manual=False):
         self.rate = _clamp(rate)
         self.burst = float(burst)
         self.manual = bool(manual)
+        # 速率上限：manual 时是管理员设定值（上探不得越过），否则是模块上限。
+        self._ceiling = self.rate if self.manual else RATE_MAX
         self._on_change = on_change
         # 新建桶的起算速率：站点级降档把它粘到降档值（见 downgrade_all），此后冒出来的
         # 出口不再按出厂速率放行——只降已建桶会让熔断对新出口静默失效。
@@ -199,32 +202,31 @@ class EgressLimiter:
 
         半开期内成功只算"这一次没被拦"（进 streak、可触发上探），**不结束半开**：冷却窗按
         `HALF_OPEN_SEC` 走表，期间该出口始终只放单通道（见 `acquire`）。人工接管时上探
-        不改速率（streak 仍按轮清零，口径不变）。
+        no-op（速率不得越过管理员设定值），streak 也不再累计。
         """
         b = self.bucket(egress)
+        if self.manual:
+            return b.rate
         n = self._streak.get(egress, 0) + 1
         if n < SUCCESS_STREAK:
             self._streak[egress] = n
             return b.rate
         self._streak[egress] = 0
-        if self.manual:
-            return b.rate
         return self._set_rate(egress, b.rate * GROWTH_FACTOR, "连续无风控上探")
 
     def on_risk_signal(self, egress, now):
         """风控信号 → `rate ÷= 2`（下限 `RATE_MIN`）+ 半开 `HALF_OPEN_SEC`，返回新 rate。
 
-        人工接管时速率保持（不自动回退），但半开与告警照做——安全反应是底线，不随
-        "速率交给管理员"一起交出。
+        回退是**安全反应**：人工接管下照做（只夹在不超过上限，见 `_set_rate`），半开与
+        告警照旧——人工接管禁的是上探，不是减速。
         """
         self.bucket(egress)
         self._streak[egress] = 0
         self._half_open_until[egress] = now + HALF_OPEN_SEC
         if self.manual:
-            logger.warning("出口 %s 风控信号，但速率由 .env 人工接管，保持 %.3f attempt/s"
-                           "（仍进入 %ds 半开单通道探测）",
-                           egress, self._buckets[egress].rate, HALF_OPEN_SEC)
-            return self._buckets[egress].rate
+            logger.warning("出口 %s 风控信号，速率按安全回退下调（.env 人工接管的上限 "
+                           "%.3f attempt/s，%ds 半开单通道探测）",
+                           egress, self._ceiling, HALF_OPEN_SEC)
         return self._set_rate(egress, self._buckets[egress].rate * SHRINK_FACTOR,
                               "风控信号回退")
 
@@ -281,13 +283,16 @@ class EgressLimiter:
         return True
 
     def _set_rate(self, egress, rate, reason):
-        """改速率（夹到上下限）+ 审计日志/变更回调，返回生效后的 rate。
+        """改速率（夹到上下限与速率上限）+ 审计日志/变更回调，返回生效后的 rate。
+
+        上限即 `_ceiling`：非人工接管时是模块上限，人工接管时是管理员设定值——安全回退
+        可以往下走，但任何路径都不许把速率抬过它。
 
         自适应决策本身是持久状态：调用方（执行体的 10s 落库循环）负责把它写进
         `egress_state`，本方法只发变更事件——持久化不该发生在每次调整里（写库会拖慢放行）。
         """
         b = self.bucket(egress)
-        old, new = b.rate, _clamp(rate)
+        old, new = b.rate, min(max(_clamp(rate), RATE_MIN), self._ceiling)
         b.rate = new
         if new != old:
             logger.info("出口 %s 速率 %.3f → %.3f attempt/s（%s）", egress, old, new, reason)
@@ -307,17 +312,22 @@ class GlobalLimiter:
 
     取值非法（非数值串等）时按"不限"处理——全局上界缺失不该让整个签到起不来，但这个
     事实**不静默**：`logger.warning` 明示，且 `invalid` 属性置真，供接线侧据此决定是否
-    拒绝启动（把 Λ 写错成 `abc` 的部署等于没有全局上界，值得让人看见）。
+    拒绝启动（把 Λ 写错成 `abc` 的部署等于没有全局上界，值得让人看见）。空值（`None`
+    或空串/纯空白）是 `.env` 的既有约定"未配置/关闭"，按不限处理且**不告警、不标非法**。
     """
 
     def __init__(self, lam):
         self.invalid = False
-        try:
-            v = float(lam) if lam is not None else 0.0
-        except (TypeError, ValueError):
-            self.invalid = True
-            logger.warning("全局速率上界 Λ=%r 非法（非数值），已按不限处理", lam)
+        text = lam.strip() if isinstance(lam, str) else lam
+        if text is None or text == "":
             v = 0.0
+        else:
+            try:
+                v = float(text)
+            except (TypeError, ValueError):
+                self.invalid = True
+                logger.warning("全局速率上界 Λ=%r 非法（非数值），已按不限处理", lam)
+                v = 0.0
         self.lam = v if v > 0 else None
         self._tat = 0.0
 
@@ -409,7 +419,8 @@ def limiter_from_env(channels=DEFAULT_BURST, on_change=None):
     - `channels` 缺省按出厂速率下的通道数（`DEFAULT_BURST`）；执行体按
       `M = min(16, ceil(rate × avg × 2))` 算好自己的通道数传入；
     - `manual` = 该键**是否被显式写入**（`schedule.egress_rate_explicit`）：写了即
-      人工接管，AIMD 不再改写速率（安全反应照做，见 `EgressLimiter`）。
+      人工接管，该值成为速率**上限**（上探不生效），风控回退等安全反应照做
+      （见 `EgressLimiter`）。
     """
     from yiban.engine import schedule
     cfg = schedule.planner_config()
