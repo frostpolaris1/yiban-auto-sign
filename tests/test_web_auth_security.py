@@ -925,8 +925,7 @@ class RoleHardeningTest(unittest.TestCase):
                         headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(db.find_user("u4@test.local").get("role"), "admin")
-        subjects = [call.args[0] for call in notify.call_args_list]
-        self.assertIn("权限变更告警", subjects, "提权仍须即时告警")
+        notify.assert_not_called()  # 权限变更告警已下线：留痕由审计行承担
         rows = db.audit_rows(50) if hasattr(db, "audit_rows") else []
         if rows:  # 审计留痕（允许无此辅助函数的环境跳过细查）
             self.assertTrue(any(x.get("action") == "user_role" for x in rows))

@@ -20,7 +20,8 @@ CSRF、同源校验、安全响应头）与共享安全门实现仍留在 `web/a
 视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
 `mock.patch.object(web.app, …)` 打桩（ENV_FILE / mailer / notify / mail_config /
 account_crypto / write_env_batch / send_notification / db / _json_body 等）必须继续生效。
-配置落盘走 `write_env_batch` 一次原子写；变更告警经 `send_notification` 发出。
+配置落盘走 `write_env_batch` 一次原子写；通道变更只留审计行（不外发告警——见视图内注释），
+`POST /api/notify-test` 的测试消息经 `send_notification` 发出。
 """
 import json
 
@@ -213,63 +214,16 @@ def api_mail_config_save():
     # 密文与开关合成**一次** write_env_batch 落盘：拆成两次独立写，中间崩溃会
     # 留下"密文新/开关旧"的中间态（write_env_key 单键形态是本函数的一半，
     # 此处不再经由它）。
-    # 改收件人前先记下旧地址：落盘后 _alert_mail_recipients() 读到的已是新值，
-    # 若不额外通知旧地址，被盗会话只要一次 PUT 就能把告警悄悄改投他人信箱，
-    # 而真正的管理员收不到任何"收件人被改了"的提示（与"关开关"同族的拔线动作）。
-    old_admin_to = m.mailer.admin_recipients()
     updates = {k: ("1" if v else "0") for k, v in flags.items()}
     if smtps_enc is not None:
         updates["YIBAN_MAIL_SMTPS_ENC"] = smtps_enc
     if admin_to_val is not None:
         updates["YIBAN_MAIL_ADMIN_TO"] = admin_to_val
     m.write_env_batch(m.ENV_FILE, updates)
-    # 变更告警在写入**成功之后**发出：先发会让加密/写盘失败（500）时运营者已收到
-    # 一条描述从未生效变更的通知；force=True 本就绕过两侧节流，故不必担心刚写入的
-    # 参数把这条告警吞掉（它正是"通道被人动了"的信号）。
-    # urgent=True——设置页开着「仅推送重要告警」时非紧急通知不推手机。
-    if flags:
-        m.send_notification(
-            "邮件配置变更告警",
-            m._change_mail("邮件通知配置已变更。",
-                           detail=[("变更内容", m._mail_flags_desc(flags))]),
-            urgent=True,
-            force=True,
-        )
-    if smtps_list is not None:
-        # SMTP 发信条目是告警邮件的送达路径，被人改动必须让管理员知情
-        m.send_notification(
-            "邮件 SMTP 配置变更告警",
-            m._change_mail("邮件 SMTP 配置已变更。",
-                           detail=[("发信 SMTP 条目", f"{len(smtps_list)} 条")]),
-            urgent=True,
-            force=True,
-        )
-    if admin_to_val is not None:
-        new_addrs = {a.strip() for a in admin_to_val.split(",") if a.strip()}
-        if new_addrs != set(old_admin_to):
-            # 变更后的收件人：走正常通道（落盘后 _alert_mail_recipients 已含新值）。
-            # 正文写新值但打码——告警正文不得回显完整邮箱（与 GET 同口径）。
-            shown = m.mail_config._mask_addr(admin_to_val) if admin_to_val else "（已清空）"
-            m.send_notification(
-                "邮件告警收件人变更告警",
-                m._change_mail("告警收件人已变更。", detail=[("新收件人", shown)]),
-                urgent=True,
-                force=True,
-            )
-            # 被摘掉的旧地址：绕过 send_notification 的收件人合成（此刻已解析
-            # 不到旧值），直接发给改动前的收件人。这是防"改收件人即致盲"的关键一封。
-            stale = [a for a in old_admin_to if a not in new_addrs]
-            if stale:
-                m.mailer.send_admin_alert(
-                    "邮件告警收件人变更告警",
-                    m.mail_layout.Mail(
-                        summary="你已不再是本系统的告警邮件收件人。",
-                        fields=[("操作者", m._nl_safe(session.get("username", "?")))],
-                        advice=["如非本人操作，请立即检查管理后台"],
-                        level="urgent",
-                    ),
-                    to=",".join(stale),
-                )
+    # 通道变更不再外发告警（开关 / SMTP 条目 / 收件人三处都是）：改告警通道本身就
+    # 是"把报警器拆掉"的动作，用它自己那条通道去通报"通道被改了"只在通道还活着时
+    # 成立；留痕统一交给下面的审计行（含收件人的打码值与各开关的新值），运维按
+    # 审计页即可回答"谁在什么时候动了哪一路"。
     detail = {
         "enabled" if k == "YIBAN_MAIL_ENABLE" else "admin_notify": v
         for k, v in flags.items()
@@ -388,8 +342,10 @@ def api_notify_config_save():
         updates["YIBAN_NOTIFY_COOLDOWN"] = str(cd)
         numeric["cooldown"] = cd
     if "urgent_only" in data:
-        # 仅重要告警：true → 非紧急通知不推手机（邮件不受影响）；false → 全部推送
-        updates["YIBAN_NOTIFY_URGENT_ONLY"] = "1" if data["urgent_only"] else ""
+        # 仅重要告警：true → 非紧急通知不推手机（邮件不受影响）；false → 全部推送。
+        # 两个状态都显式落盘（1 / 0）：该键的默认值是"开"，写空值等于删键、随即回落
+        # 默认——设置页的"关闭"就成了"打开的"，与开关本身的意思相反。
+        updates["YIBAN_NOTIFY_URGENT_ONLY"] = "1" if data["urgent_only"] else "0"
         numeric["urgent_only"] = bool(data["urgent_only"])
     if "daily_max" in data:
         try:
@@ -428,19 +384,10 @@ def api_notify_config_save():
             updates["YIBAN_NOTIFY_SECRET_ENC"] = json.dumps(enc, ensure_ascii=False)
         except ValueError as e:
             return jsonify({"error": f"加密失败：{e}"}), 500
-    # 变更告警在写入**成功之后**发出（与 mail-config 同口径）：先发会让落盘失败
-    # （500）时运营者已收到一条描述从未生效变更的通知；daily_max/urgent_daily_max/
-    # cooldown/urgent_only 即按新值生效也不影响本条——force=True 本就绕过两侧节流
-    # 与额度。urgent=True——本告警正是"通道被人拆了"的信号。
     m.write_env_batch(m.ENV_FILE, updates)
-    m.send_notification(
-        "消息推送配置变更告警",
-        m._change_mail("消息推送配置已变更。",
-                       detail=[("变更内容", m._notify_change_desc(
-                           ntype, close_channel, clear_secret, swap_secret, numeric))]),
-        urgent=True,
-        force=True,
-    )
+    # 通道变更不再外发告警：改告警通道就是"把报警器拆掉"的动作，用它自己那条通道
+    # 通报"通道被改了"只在通道还活着时成立；留痕统一交给下面的审计行（类型/密钥
+    # 去向/各限额的新值逐键落盘），运维按审计页即可还原完整动作。
     # 审计只记实际落盘的键：未提交 type 不得按 off 记录（把"没动通道"伪造成
     # "关过通道"）；密文真的写入时补记去向，事后才能还原完整动作。
     detail = dict(numeric)

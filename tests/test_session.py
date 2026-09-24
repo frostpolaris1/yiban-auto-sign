@@ -589,7 +589,8 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
         self.assertEqual(r.status_code, 403, "N3 修复：普通管理员不可物理清除注销用户")
         self.assertIsNotNone(self._user_row("victim@test.local"), "行未被清除")
 
-    def test_master_can_purge_with_alert(self):
+    def test_master_can_purge_without_admin_alert(self):
+        """主管理员物理清除：功能生效、留审计，但不再外发即时告警。"""
         self._make_victim("victim2@test.local")
         ac, at = self._admin_client()
         r = ac.post("/api/users/deleted/purge",
@@ -597,8 +598,11 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNone(self._user_row("victim2@test.local"), "主管理员清除生效")
-        self.assertTrue(any(t == "高危管理操作告警" for t, _ in self.alerts),
-                        f"purge 应即时告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "高危管理操作告警" for t, _ in self.alerts),
+                         f"管理操作逐条发信已下线，实际 {self.alerts}")
+        rows = [dict(x) for x in db.get_conn().execute(
+            "SELECT action FROM audit_logs WHERE action='user_deleted_purge'").fetchall()]
+        self.assertTrue(rows, "清除动作必须留在审计链上（告警下线后这是唯一痕迹）")
 
 
 class Batch11NotifyCoverageTest(_Batch11WebBase):
@@ -652,17 +656,23 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertTrue(any(to == EMAIL for to, _ in self.user_mails),
                         "删号必须给本人发留痕邮件")
 
-    def test_single_reset_password_alerts(self):
+    def test_single_reset_password_no_admin_alert(self):
+        """重置他人口令：动作生效、目标旧会话被吊销，但不再外发管理员告警。"""
         self._user_with_account(EMAIL, "13800138004")
         ac, at = self._admin_client()
         r = ac.post(f"/api/users/{EMAIL}/password",
                     json={"password": "Reset#12345", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
-                        f"重置密码应有告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "密码重置告警" for t, _ in self.alerts),
+                         f"重置密码的管理员告警已下线，实际 {self.alerts}")
+        self.assertTrue(
+            [dict(x) for x in db.get_conn().execute(
+                "SELECT action FROM audit_logs WHERE action='user_password_reset'").fetchall()],
+            "重置动作必须留在审计链上",
+        )
 
-    def test_batch_reset_alerts_and_batch_role_removed(self):
+    def test_batch_reset_no_alert_and_batch_role_removed(self):
         self._user_with_account(EMAIL, "13800138005")
         ac, at = self._admin_client()
         r = ac.post("/api/users/batch", json={
@@ -670,8 +680,8 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
             "confirm_password": ADMIN_PASS,
         }, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
-                        f"批量重置应有告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "密码重置告警" for t, _ in self.alerts),
+                         f"批量重置的管理员告警已下线，实际 {self.alerts}")
         self.alerts.clear()
         # 2026-09-05 用户裁决：批量角色变更入口移除（提权/降权仅保留单个路径 + 二次鉴权）
         r = ac.post("/api/users/batch", json={
@@ -681,7 +691,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertFalse(any(t == "权限变更告警" for t, _ in self.alerts),
                          "批量提权入口已移除，不应有告警")
 
-    def test_role_change_alerts(self):
+    def test_role_change_no_alert(self):
         self._user_with_account(EMAIL, "13800138006")
         ac, at = self._admin_client()
         # 2026-09-05：角色变更接入高危门禁，须携带当前管理员密码二次鉴权
@@ -689,8 +699,14 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
                     json={"role": "admin", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "权限变更告警" for t, _ in self.alerts),
-                        f"角色变更应有告警，实际 {self.alerts}")
+        self.assertEqual(db.find_user(EMAIL).get("role"), "admin", "角色变更应生效")
+        self.assertFalse(any(t == "权限变更告警" for t, _ in self.alerts),
+                         f"权限变更告警已下线，实际 {self.alerts}")
+        self.assertTrue(
+            [dict(x) for x in db.get_conn().execute(
+                "SELECT action FROM audit_logs WHERE action='user_role'").fetchall()],
+            "角色变更必须留在审计链上",
+        )
 
     def test_role_change_without_reconfirm_rejected(self):
         self._user_with_account(EMAIL, "13800138007")
@@ -709,12 +725,17 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertTrue(any(t == "公告变更告警" for t, _ in self.alerts),
                         f"公告变更应有告警，实际 {self.alerts}")
 
-    def test_mail_config_change_alerts(self):
+    def test_mail_config_change_no_alert(self):
         ac, at = self._admin_client()
         r = ac.put("/api/mail-config", json={"enabled": True}, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "邮件配置变更告警" for t, _ in self.alerts),
-                        f"邮件配置变更应有告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "邮件配置变更告警" for t, _ in self.alerts),
+                         f"通道变更告警已下线，实际 {self.alerts}")
+        self.assertTrue(
+            [dict(x) for x in db.get_conn().execute(
+                "SELECT action FROM audit_logs WHERE action='mail_config'").fetchall()],
+            "通道变更必须留在审计链上",
+        )
 
 
 class Batch11CleanupClockGuardTest(_Batch11WebBase):
