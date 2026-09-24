@@ -25,9 +25,8 @@ logger = logging.getLogger("notify")
 
 # 节流状态的进程内快速路径：本进程刚放行过的标题在窗口内直接跳过，省一次磁盘 IO；
 # 跨进程一致性由磁盘表 + 文件锁保证（见 _throttle_path / transport._throttle_due）。
-# 磁盘表的键就是告警标题原文：标题里带了什么（账号标识等），磁盘上就存什么，不清理。
 # 测试按这两个名字复位内存态（`_throttle_ts.clear()`），不要改名。
-_throttle_ts = {}
+_throttle_ts = {}  # 键=告警标题原文：标题里带了什么（账号标识等）就原样落盘，本层不脱敏
 _throttle_lock = threading.Lock()
 
 # 跳过原因日志去重表：{原因: 上次记录时间}（仅防日志刷屏，跨进程不共享）
@@ -211,7 +210,7 @@ def _load_throttle_file():
             raise ValueError("节流表顶层不是 JSON 对象")
         return data
     except FileNotFoundError:
-        return {}
+        return {}  # 缺文件 = 没有历史放行记录，与下面的"损坏"区别对待
     except (OSError, ValueError, TypeError) as e:
         _archive_corrupt_state_file(path)
         logger.warning("推送节流状态损坏或不可读，已归档并按空表处理: %s", e)
@@ -237,7 +236,7 @@ def _prune_throttle_entries(data, now, cooldown):
     （窗口内必为 ``now - ts < cooldown``）。仅删过期条目，仍生效窗口不受影响。
     """
     expire_before = now - cooldown
-    for title in [t for t, ts in data.items() if ts < expire_before]:
+    for title in [t for t, ts in data.items() if ts < expire_before]:  # 先物化键列表，迭代中 del 会报错
         del data[title]
 
 
@@ -278,7 +277,7 @@ def _loginfail_daily_limit(envs=None):
             envs = config._read_env_file()
         value = envs.get(config.LOGINFAIL_DAILY_MAX_KEY, "").strip()
     try:
-        return max(0, int(value))
+        return max(0, int(value))  # 负值收敛成 0，而 0 的含义是"不限额"：填 -1 = 放开上限
     except (TypeError, ValueError):
         return config.DEFAULT_LOGINFAIL_DAILY_MAX
 
@@ -293,7 +292,7 @@ def _daily_limit(ledger_id, envs=None):
         return config._env_int("URGENT_DAILY_MAX", config.DEFAULT_URGENT_DAILY_MAX, envs)
     if ledger_id == "login_fail":
         return _loginfail_daily_limit(envs)
-    return config._env_int("DAILY_MAX", config.DEFAULT_DAILY_MAX, envs)
+    return config._env_int("DAILY_MAX", config.DEFAULT_DAILY_MAX, envs)  # 兜底：未知 id 也算 general 账
 
 
 def _daily_remaining(ledger_id, limit=None):
@@ -304,7 +303,7 @@ def _daily_remaining(ledger_id, limit=None):
     if limit is None:
         limit = _daily_limit(ledger_id)
     if limit <= 0:
-        return None
+        return None  # None=不设上限，调用方不得当成"剩 0 条"（0 与 None 语义相反）
     led = _ledger(ledger_id)
     with led["lock"]:
         # 单次文件锁临界区：读盘 → 跨日对齐 → 读剩余，纯读不写盘

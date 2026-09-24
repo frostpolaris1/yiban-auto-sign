@@ -32,7 +32,7 @@ ValueError 时才知道，换钥中断、.env 与库不同步时无法在动手�
 输入：明文敏感字段 + 手机号（AAD）、密钥来源（环境变量或 .env 路径）。
 输出：v1 密文对象（JSON 可序列化）或解密后的明文；密钥缺失时按 0600 生成并持久化。
 调用谁：`yiban.infra.env_io`、`yiban.infra.env_lock`、`Crypto.Cipher.AES`。
-谁调用（实测 import 点）：`yiban.engine.accounts`、`yiban.store.accounts`、
+谁调用（import 点，未必穷尽）：`yiban.engine.accounts`、`yiban.store.accounts`、
 `yiban.store.session_cache`、`yiban.store.migrations`（账号侧加解密）、
 `yiban.notify.config`、`yiban.mail.config`、`web/routes/notify.py`、`web/security.py`
 （配置密钥侧）。
