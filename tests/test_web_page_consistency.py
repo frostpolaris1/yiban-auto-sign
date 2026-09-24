@@ -4,7 +4,7 @@
 标签：F · 前端与界面守卫
 覆盖：整页唯一元素（版本号与开源入口）每页恰好一次、侧栏导航必须是真实 `<a href>` 且指向已注册路由、tab 标记的收窄判据、含分区页面的 WAI-ARIA tabs 与 roving tabindex 初始态
 对应实现：`partials/footer.html` / `partials/sidebar.html` / `layout_*.html` / `pages/*.html`；路由清单取 `web/app.py` 与 `web/routes/*.py` 的注册源码
-关键断言：「恰好一次」必须按 `_frontend_src` 聚合读取（模板 + extends/include 片段 + 外链自研静态资源）才成立——条目搬进共享页脚后只读单文件会读到 0 次而误报缺失；外壳/片段仍禁止全部 tab 标记，页面正文可用 `data-tab-group` 做页内分区，但每个 `data-tab-target` 必须有同文件对应的 `data-tab-id`、`.page-title` 仍恰好 1 个、`data-tab-btn` / `switchTab(` 一律禁止
+关键断言：「恰好一次」必须按 `_frontend_src.frontend_source` 聚合读取（模板 + extends/include 片段 + 外链自研静态资源）才成立——条目搬进共享页脚后只读单文件会读到 0 次而误报缺失；外壳/片段仍禁止全部 tab 标记，页面正文可用 `data-tab-group` 做页内分区，但每个 `data-tab-target` 必须有同文件对应的 `data-tab-id`、`.page-title` 仍恰好 1 个、`data-tab-btn` / `switchTab(` 一律禁止
 依赖：纯本地——读前端源码与注册路由表文本，**不执行 JS、无需 node**、不联网
 
 ## 历史起因（单页 tab 时代，2026-09-10，V3-6）
