@@ -1,19 +1,21 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""不可逆操作的「倒计时确认」前端行为测试（node 真跑，非静态扫描）。
+"""受门禁操作提交的前端行为测试（node 真跑，非静态扫描）。
 
 ## 为什么需要
 
 后端把「危险操作一律输口令」改成三档（`YIBAN_PW_GATE`），档位**只存在于后端**：前端不再
-自己判断档位，而是按响应体的 `reason` 分流——`delay_ack_required` 弹倒计时确认框、确认后带
-`confirm_delay_ack: true` 重发；`password_required` / `password_incorrect` 弹既有口令框。
+自己判断档位，而是**先不带任何凭据发请求**，再按响应体的 `reason` 分流——
+`delay_ack_required` 弹倒计时确认框、确认后带 `confirm_delay_ack: true` 重发；
+`password_required` / `password_incorrect` 弹既有口令框、口令随重发提交。
 这条分流的载体是 `web/static/js/core.js` 的 `YB.dangerousSubmit`，倒计时框是
 `YB.openDelayAckModal`。
 
 静态扫描只能证明函数存在，证明不了**行为**：倒计时真的逐秒递减并在归零后才放行、重发的
-请求体真的带上 `confirm_delay_ack`、凭据只补一次不无限重发、弹窗关闭后定时器真的被清掉。
+请求体真的带上 `confirm_delay_ack`、普通受门禁操作首发真的不带凭据、一次点击要发多个受
+门禁请求时凭据真的从失败那一步续上、凭据只补一次不无限重发、弹窗关闭后定时器真的被清掉。
 故本文件照 `tests/test_logs_by_date.py` / `tests/test_dashboard_stats_caliber_js.py` 的做法，
-把这两个函数从源码里按花括号配对抽出来，配一套最小 DOM/模态/计时器替身在 node 里真跑。
+把这些函数从源码里按花括号配对抽出来，配一套最小 DOM/模态/计时器替身在 node 里真跑。
 
 node 不可用时跳过（本套件其余部分不引入硬性 node 依赖）。
 """
@@ -27,13 +29,34 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
-USER_OPS_JS = os.path.join(BASE, "web", "static", "js", "components", "user-ops.js")
-ACCOUNT_OPS_JS = os.path.join(BASE, "web", "static", "js", "components", "account-ops.js")
-SWITCHES_JS = os.path.join(BASE, "web", "static", "js", "components", "settings-switches.js")
+COMPONENTS = os.path.join(BASE, "web", "static", "js", "components")
+PAGES = os.path.join(BASE, "web", "static", "js", "pages")
 JS_DIR = os.path.join(BASE, "web", "static", "js")
 NODE = shutil.which("node")
 
 PW_INPUT = "MasterPass#2026"
+
+# 受门禁写操作所在组件：每个都必须经统一 helper，不得再自带无条件口令框管道
+_GATED_COMPONENTS = (
+    "user-ops.js",
+    "account-ops.js",
+    "account-form.js",
+    "settings-executors.js",
+    "settings-mail.js",
+    "settings-notify.js",
+    "settings-health.js",
+    "settings-quota.js",
+    "settings-schedule.js",
+    "settings-switches.js",
+    "my-mail-notify.js",
+)
+
+# 唯一允许在 core.js 之外直接弹口令框的文件：自助域收的是**本人账号口令**
+# （`/api/me/delete`、`/api/me/restore` 的 `password` 字段），不经敏感口令门、后端也不下发
+# reason，故没有"先发后补"的余地。新增任何一条都要先问后端有没有 reason 协议。
+_PW_MODAL_ALLOWED = {
+    "my-accounts-page.js": "自助注销/撤销注销收本人账号口令，不经敏感口令门",
+}
 
 
 def _read(path):
@@ -197,6 +220,7 @@ __FUNCS__
   OUT.c_data = await dangerousSubmit({ path: "/api/y", body: { c: 3 }, desc: "PW-DESC" });
   OUT.c_pw_calls = pwCalls.length;
   OUT.c_pw_desc = pwCalls[0];
+  OUT.c_first_body = calls[0] && calls[0].body;
   OUT.c_resend = calls[1] && calls[1].body;
   OUT.c_modals = modalRecords.length;
 
@@ -221,6 +245,39 @@ __FUNCS__
   OUT.e_err = eErr;
   OUT.e_calls = calls.length;
 
+  // F：普通受门禁操作（非不可逆）首发不带凭据；后端直接放行 ⇒ 一次请求、零弹窗
+  reset();
+  script = [ { ok: { msg: "plain-ok" } } ];
+  OUT.f_data = await dangerousSubmit({ path: "/api/plain", body: { f: 6 }, desc: "D" });
+  OUT.f_calls = calls.length;
+  OUT.f_body = calls[0] && calls[0].body;
+  OUT.f_modals = modalRecords.length;
+  OUT.f_pw_calls = pwCalls.length;
+
+  // G：一次点击两个受门禁请求：第一步要口令 ⇒ 从失败那一步续上，已成功的第一步不重发
+  reset();
+  script = [ { err: gate("password_required") }, { ok: { msg: "s1" } }, { ok: { msg: "s2" } } ];
+  OUT.g_data = await dangerousSubmit({
+    requests: [
+      { method: "PUT", path: "/api/r1", body: { r: 1 } },
+      { method: "PUT", path: "/api/r2", body: { r: 2 } }
+    ], desc: "D"
+  });
+  OUT.g_calls = calls.length;
+  OUT.g_paths = calls.map(function (c) { return c.path; });
+  OUT.g_bodies = calls.map(function (c) { return c.body; });
+  OUT.g_notes = (OUT.g_data || []).map(function (d) { return d && d.msg; });
+
+  // H：口令框取消 ⇒ 以 canceled 拒绝、不重发
+  reset();
+  pwMode = "cancel";
+  script = [ { err: gate("password_required") } ];
+  var hErr = null;
+  try { await dangerousSubmit({ path: "/api/h", body: { h: 7 }, desc: "D" }); }
+  catch (e) { hErr = { canceled: !!e.canceled }; }
+  OUT.h_err = hErr;
+  OUT.h_calls = calls.length;
+
   console.log(JSON.stringify(OUT));
 })().catch(function (e) { console.error(e && e.stack || e); process.exit(1); });
 """
@@ -243,7 +300,7 @@ def _run_harness(core_src):
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-@unittest.skipUnless(NODE, "node 不可用：跳过倒计时确认的前端行为测试")
+@unittest.skipUnless(NODE, "node 不可用：跳过受门禁提交的前端行为测试")
 class DelayAckFrontendTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -298,6 +355,8 @@ class DelayAckFrontendTest(unittest.TestCase):
         """password_required 仍走既有口令框，重发带 confirm_password，不弹倒计时框。"""
         self.assertEqual(self.out["c_pw_calls"], 1, "应弹一次口令框")
         self.assertEqual(self.out["c_pw_desc"], "PW-DESC", "口令框文案应沿用调用方给的 desc")
+        self.assertEqual(self.out["c_first_body"], {"c": 3},
+                         "首发不得自带 confirm_password（普通受门禁操作也是先发后补）")
         self.assertEqual(self.out["c_resend"], {"c": 3, "confirm_password": PW_INPUT})
         self.assertEqual(self.out["c_modals"], 0, "口令路径不得弹倒计时框")
         self.assertEqual(self.out["c_data"], {"msg": "pw-ok"})
@@ -313,9 +372,41 @@ class DelayAckFrontendTest(unittest.TestCase):
         self.assertEqual(self.out["e_calls"], 2, "最多首发 + 一次补凭据重发")
         self.assertEqual(self.out["e_err"], {"reason": "delay_ack_required"})
 
+    # ---- 普通受门禁操作（非不可逆）与多请求提交 ----
+    def test_plain_gated_op_sends_without_credentials_first(self):
+        """后端放行时（off / risk 同出口）一次点击只发一次请求，且**零弹窗、零凭据**。
 
-class IrreversibleCallSitesTest(unittest.TestCase):
-    """静态钉点：不可逆操作改走新 helper，其余受门禁操作保持口令框流程。"""
+        这正是"摩擦减掉了"的可证伪形态：若某调用点仍自带无条件口令框管道，这里会出现
+        第二次请求或一次弹窗；若把凭据预先拼进请求体，`f_body` 就不再是原样。
+        """
+        self.assertEqual(self.out["f_calls"], 1, "后端未索要凭据时不得重发")
+        self.assertEqual(self.out["f_body"], {"f": 6}, "首发请求体不得含任何凭据字段")
+        self.assertEqual(self.out["f_modals"], 0, "后端未索要凭据时不得弹任何框")
+        self.assertEqual(self.out["f_pw_calls"], 0)
+        self.assertEqual(self.out["f_data"], {"msg": "plain-ok"})
+
+    def test_multi_request_submission_resumes_at_failing_step(self):
+        """一次点击要发多个受门禁请求时：凭据从**失败那一步**续上，已成功的步骤不重发。
+
+        否则"改出口 + 同时拨故障转移开关"这类保存要么把第一步写两遍（两次审计），
+        要么各弹一次口令框。
+        """
+        self.assertEqual(self.out["g_paths"], ["/api/r1", "/api/r1", "/api/r2"],
+                         "第一步补口令后重发，成功后接第二步；第一步不得再发第三次")
+        self.assertEqual(self.out["g_bodies"], [{"r": 1}, {"r": 1, "confirm_password": PW_INPUT},
+                                                {"r": 2, "confirm_password": PW_INPUT}],
+                         "凭据对整串共用：重发与后续步骤都带同一次口令")
+        self.assertEqual(self.out["g_notes"], ["s1", "s2"],
+                         "多请求形式 resolve 各步响应（调用方按步取 msg/note）")
+
+    def test_password_modal_cancel_is_marked_and_does_not_resend(self):
+        """取消口令框 ⇒ 以 canceled 拒绝、不重发（取消不是失败，调用方据此静默）。"""
+        self.assertEqual(self.out["h_err"], {"canceled": True})
+        self.assertEqual(self.out["h_calls"], 1)
+
+
+class GatedCallSitesTest(unittest.TestCase):
+    """静态钉点：所有受门禁操作都经统一 helper，口令框管道不再各自为政。"""
 
     def test_core_exports_helper_and_countdown_modal(self):
         core = _read(CORE_JS)
@@ -344,30 +435,54 @@ class IrreversibleCallSitesTest(unittest.TestCase):
         self.assertEqual(offenders, [],
                          "confirm_delay_ack 只允许出现在 core.js 的 dangerousSubmit 里")
 
+    def test_every_gated_component_routes_through_helper(self):
+        """受门禁写操作所在组件都必须出现 `YB.dangerousSubmit(`，不得只有无条件口令框。"""
+        missing = [name for name in _GATED_COMPONENTS
+                   if "YB.dangerousSubmit(" not in _read(os.path.join(COMPONENTS, name))]
+        self.assertEqual(missing, [], "这些组件仍有受门禁操作没走统一 helper：%s" % missing)
+
     def test_irreversible_ops_use_helper(self):
-        """四类不可逆操作（删用户 / 清空账号 / purge / 批量删除清除）改走 dangerousSubmit。"""
-        user_ops = _read(USER_OPS_JS)
-        self.assertEqual(user_ops.count("YB.dangerousSubmit("), 4,
-                         "user-ops 的 deleteUser / purge / batchDelete / batchPurge 都应改走 helper")
-        self.assertEqual(_read(ACCOUNT_OPS_JS).count("YB.dangerousSubmit("), 2,
-                         "account-ops 的单条 purge 与批量 purge 都应改走 helper")
-        self.assertEqual(_read(SWITCHES_JS).count("YB.dangerousSubmit("), 1,
-                         "急停（global_pause 0→1）应改走 helper")
+        """不可逆操作（删用户 / 清空账号 / 批量删除清除 / purge / 急停）走 dangerousSubmit。
 
-    def test_non_irreversible_ops_keep_password_modal(self):
-        """非不可逆的受门禁操作保持现状口令框流程（不擅自扩大软摩擦范围）。"""
-        for name in ("settings-executors.js", "settings-mail.js", "settings-notify.js",
-                     "settings-health.js", "settings-quota.js", "settings-schedule.js",
-                     "account-form.js"):
-            src = _read(os.path.join(JS_DIR, "components", name))
-            self.assertIn("openConfirmPasswordModal", src, "%s 应保留口令框流程" % name)
-            self.assertNotIn("dangerousSubmit", src, "%s 不应改走软摩擦提交" % name)
+        计数是**下界**：每个不可逆落点至少一次，多出来的正是同一 helper 承接的普通受门禁操作。
+        """
+        user_ops = _read(os.path.join(COMPONENTS, "user-ops.js"))
+        self.assertGreaterEqual(user_ops.count("YB.dangerousSubmit("), 4,
+                                "user-ops 的 deleteUser / purge / batchDelete / batchPurge 都应改走 helper")
+        account_ops = _read(os.path.join(COMPONENTS, "account-ops.js"))
+        self.assertGreaterEqual(account_ops.count("YB.dangerousSubmit("), 2,
+                                "account-ops 的单条 purge 与批量 purge 都应改走 helper")
+        switches = _read(os.path.join(COMPONENTS, "settings-switches.js"))
+        self.assertGreaterEqual(switches.count("YB.dangerousSubmit("), 1,
+                                "急停（global_pause 0→1）应改走 helper")
 
-    def test_switches_keeps_password_modal_for_other_directions(self):
-        """急停之外的开关方向（恢复签到 / 注册开关）仍走口令框。"""
-        src = _read(SWITCHES_JS)
-        self.assertIn("YB.openConfirmPasswordModal(", src)
-        self.assertIn("body.confirm_password = pw;", src)
+    def test_password_modal_pipeline_only_remains_for_self_service(self):
+        """core.js 之外只剩自助域直接弹口令框：它们收的是本人账号口令，没有 reason 协议。
+
+        这条钉住的是"别再长出第二条无条件口令框管道"——新增一条就会在这里失败，
+        提示先确认后端是否有对应的 reason 字段（有则改走 helper）。
+        """
+        offenders = {}
+        for dirpath, _dirs, files in os.walk(JS_DIR):
+            if os.sep + "vendor" + os.sep in dirpath + os.sep:
+                continue
+            for name in sorted(files):
+                if not name.endswith(".js"):
+                    continue
+                path = os.path.join(dirpath, name)
+                if os.path.abspath(path) == os.path.abspath(CORE_JS):
+                    continue
+                if "openConfirmPasswordModal" in _read(path):
+                    offenders[name] = os.path.relpath(path, BASE)
+        self.assertEqual(sorted(offenders), sorted(_PW_MODAL_ALLOWED),
+                         "口令框管道只剩登记的自助域；其余受门禁操作请改走 helper：%s" % offenders)
+
+    def test_allowed_self_service_sites_are_really_self_service(self):
+        """豁免不能空挂：登记的每个文件都要真的在（文件改名/删除时豁免必须一起处置）。"""
+        for name, reason in _PW_MODAL_ALLOWED.items():
+            self.assertTrue(reason.strip(), "%s 的豁免必须写理由" % name)
+            self.assertTrue(os.path.exists(os.path.join(COMPONENTS, name)),
+                            "%s 已不存在，请从豁免表里删掉" % name)
 
 
 if __name__ == "__main__":
