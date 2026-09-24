@@ -481,5 +481,116 @@ class PostHocAlertTest(_TierBase):
         self.assertIn("高危管理操作告警", [t for t, _b, _u in self.alerts])
 
 
+class ExecutorChangeAlertTest(_TierBase):
+    """执行体写的事后告警：非 full 档下改出口/增删行必须留一条管理员侧信号。
+
+    这一族是本批十类受门禁操作里唯一既无当次口令、也无补偿信号的（改出口能把全站
+    签到流量交给任意代理，还能顺手关掉兜底），故按"真的改了配置才发"补一封脱敏告警。
+    """
+
+    TIER = "risk"
+
+    def _put(self, c, hdr, path, body):
+        return c.put(path, json=body, headers=hdr)
+
+    def test_每个写端点改配置后都有告警(self):
+        """五个写端点（整条保存 / 单段出口 / 追加 / 改行 / 删行）逐条都得有信号。"""
+        for name, call in (
+            ("整条保存", lambda c, h: self._put(c, h, "/api/scheduler/executors",
+                                                {"workers": 3})),
+            ("并行段出口", lambda c, h: self._put(c, h,
+                                                  "/api/scheduler/executors/workers/0",
+                                                  {"egress": "http://203.0.113.9:8080"})),
+            ("兜底段出口", lambda c, h: self._put(c, h, "/api/scheduler/executors/fallback",
+                                                  {"egress": "http://203.0.113.9:8080"})),
+            ("追加行", lambda c, h: c.post("/api/scheduler/executors/rows",
+                                           json={"proxy": "http://203.0.113.9:8080"},
+                                           headers=h)),
+        ):
+            with self.subTest(endpoint=name):
+                c, hdr = self._fresh()
+                self.alerts.clear()
+                r = call(c, hdr)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                self.assertIn("系统设置变更告警", [t for t, _b, _u in self.alerts],
+                              f"{name} 改配置后必须发一条事后告警")
+
+    def test_改行与删行也有告警(self):
+        c, hdr = self._fresh()
+        slot = c.post("/api/scheduler/executors/rows",
+                      json={"proxy": "http://203.0.113.9:8080"}, headers=hdr).get_json()["slot"]
+        self.alerts.clear()
+        r = self._put(c, hdr, f"/api/scheduler/executors/rows/{slot}",
+                      {"proxy": "http://203.0.113.10:8080"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("系统设置变更告警", [t for t, _b, _u in self.alerts], "改行改出口必须留痕")
+        self.alerts.clear()
+        r = c.delete(f"/api/scheduler/executors/rows/{slot}", json={}, headers=hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("系统设置变更告警", [t for t, _b, _u in self.alerts], "删行必须留痕")
+
+    def test_无变更的保存不发告警(self):
+        """同值提交/只改名不是"变更"：发了只会稀释同类告警（与口令门同一判据）。"""
+        c, hdr = self._fresh()
+        slot = c.post("/api/scheduler/executors/rows",
+                      json={"proxy": "http://203.0.113.9:8080", "name": "机房A"},
+                      headers=hdr).get_json()["slot"]
+        self.alerts.clear()
+        self.assertEqual(self._put(c, hdr, f"/api/scheduler/executors/rows/{slot}",
+                                   {"proxy": "http://203.0.113.9:8080"}).status_code, 200)
+        self.assertEqual(self._put(c, hdr, f"/api/scheduler/executors/rows/{slot}",
+                                   {"name": "机房B"}).status_code, 200)
+        self.assertEqual(self.alerts, [], "无实质变更的保存不该发变更告警")
+
+    def test_告警正文不含出口凭据(self):
+        """出口串可能带 user:pass，告警只落动作名与槽位——凭据不进邮件。"""
+        c, hdr = self._fresh()
+        r = c.post("/api/scheduler/executors/rows",
+                   json={"proxy": "http://svc:SecretPw123@203.0.113.9:8080"}, headers=hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = "\n".join(b for _t, b, _u in self.alerts)
+        self.assertNotIn("SecretPw123", body, "告警正文不得含出口凭据")
+        self.assertIn("追加执行体行", body, "至少要能看出动了哪个动作")
+
+    def test_full_档执行体写不新增该告警(self):
+        """full 档当次已要求口令，事后告警不重复发——该档行为逐字不变。"""
+        self._set_tier("full")
+        c, hdr = self._fresh()
+        r = c.post("/api/scheduler/executors/rows",
+                   json={"proxy": "http://203.0.113.9:8080", "confirm_password": ADMIN_PASS},
+                   headers=hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self.alerts, [], "full 档本就有当次口令，不重复发事后告警")
+
+
+class UserDeleteAlertTest(_TierBase):
+    """删用户的两种模式都要有事后告警：都标了不可逆，补偿信号也得两路都有。"""
+
+    TIER = "risk"
+
+    def test_清空账号模式也有告警(self):
+        c, hdr = self._fresh()
+        self._ensure_user("u1@test.local")
+        r = c.post("/api/users/u1@test.local/delete",
+                   json={"mode": "accounts_only", "confirm_delay_ack": True}, headers=hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        titles = [t for t, _b, _u in self.alerts]
+        self.assertIn("高危管理操作告警", titles, f"实际告警 {titles}")
+        body = "\n".join(b for _t, b, _u in self.alerts)
+        self.assertIn("清空用户", body)
+        self.assertNotIn("u1@test.local", body, "告警里的目标邮箱必须脱敏")
+        self.assertIn("u1***@test.local", body)
+
+    def test_完全删除模式仍照旧告警(self):
+        """反向控制：full 分支的告警不得因为补 accounts_only 那一路而被改动。"""
+        c, hdr = self._fresh()
+        self._ensure_user("u1@test.local")
+        r = c.post("/api/users/u1@test.local/delete",
+                   json={"mode": "full", "confirm_delay_ack": True}, headers=hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = "\n".join(b for _t, b, _u in self.alerts)
+        self.assertIn("完全删除用户", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

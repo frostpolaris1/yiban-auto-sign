@@ -546,6 +546,18 @@ def api_user_delete(email):
             )
             return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 已完全删除"})
         m.logger.info("清空用户 %s 的易班账号（保留用户）", m._mask_email(email))
+        # 两种模式都标了不可逆（见上面的门禁调用），补偿信号也必须两路都有：清空某用户
+        # 全部易班凭据同样是不可逆的凭据丢失（用户要重新提交、重新审核），只在 full 分支
+        # 发告警会让这一路既无口令也无任何管理员侧信号——与 irreversible 的声明不自洽。
+        m.send_notification(
+            "高危管理操作告警",
+            m._change_mail(
+                f"清空用户 {m._mask_email(email)} 的全部易班账号。",
+                detail=[("连带", "其易班账号凭据被不可逆清除（用户保留，需重新提交）")],
+                advice=["凭据清空不可恢复；如非本人申请，请核实操作者身份"],
+            ),
+            urgent=True,
+        )
         return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 的易班账号已清空（用户保留，可重新提交）"})
 
 
