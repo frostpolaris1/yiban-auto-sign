@@ -12,10 +12,12 @@
      · role        仅主管理员 + _high_risk_gate（必须带 confirm_password）
      · reset       重置口令入口由页面模态收新密码（走完整策略），此处做 _high_risk_gate；
                    目标为注册管理员时后端再限主管理员
-     · delete      accounts_only 与 full 两种模式都走 _high_risk_gate（都要口令）
-     · purge       已注销用户立即清除：仅主管理员 + _high_risk_gate
-     · batch       reset_password（需 password 过策略 + confirm_password）/ delete（需
-                   confirm_password），角色变更不支持批量；emails 单次 <= 10
+     · delete      删用户不可逆：走 YB.dangerousSubmit，由后端响应 reason 决定要口令
+                   （password_required）还是倒计时确认（delay_ack_required）
+     · purge       已注销用户立即清除：仅主管理员；不可逆，同 delete 走 dangerousSubmit
+     · batch       reset_password（需 password 过策略 + confirm_password）保持口令框；
+                   delete 不可逆，走 dangerousSubmit；角色变更不支持批量；emails 单次 <= 10
+   档位只存在于后端，本组件不判断档位、只按 reason 分流。
    批量超出上限在前端先拦（提示后不发请求），避免落到后端 400。 */
 (function () {
   "use strict";
@@ -24,7 +26,11 @@
   var LIMIT = 10; // BATCH_OP_LIMIT，与后端 /api/users/batch、/api/users/deleted/purge 一致
 
   function create(ctx) {
-    function fail(e) { YB.toast.error((e && e.message) || "操作失败，请稍后再试"); }
+    function fail(e) {
+      // 用户取消弹窗（dangerousSubmit 以 canceled 标记拒绝）：不是失败，不提示
+      if (e && e.canceled) return;
+      YB.toast.error((e && e.message) || "操作失败，请稍后再试");
+    }
     // 单目标端点的成功 msg 含**完整邮箱**（role / password / delete 三处），一律不使用后端
     // msg 上屏，只弹本地无 PII 文案——否则完整邮箱经 toast 进入 DOM。batch / purge 的 msg
     // 只含数量，才允许使用后端 msg（useServerMsg=true）。
@@ -83,6 +89,8 @@
     }
 
     // mode=accounts_only（清空账号，用户保留可重新提交）| full（删除用户及其全部易班账号）
+    // 删除不可逆：走 dangerousSubmit（后端按档位决定要口令还是倒计时确认），
+    // 由响应 reason 分流，前端不判断档位。
     function deleteUser(uid, mode) {
       var email = emailOf(uid);
       if (!email) return;
@@ -95,16 +103,18 @@
         confirmText: full ? "删除用户" : "清空账号", danger: true
       }).then(function (ok) {
         if (!ok) return;
-        YB.openConfirmPasswordModal(
-          (full ? "完全删除用户 " : "清空用户账号 ") + YB.maskEmail(email) + "？请输入当前管理员密码确认。",
-          function (pw) {
-            run(post(path(email, "/delete"), { mode: mode, confirm_password: pw }),
-              full ? "已删除用户" : "已清空账号", false);
-          });
+        run(YB.dangerousSubmit({
+          path: path(email, "/delete"),
+          body: { mode: mode },
+          desc: (full ? "完全删除用户 " : "清空用户账号 ") + YB.maskEmail(email) + "？请输入当前管理员密码确认。",
+          delayDesc: full
+            ? "删除 " + YB.maskEmail(email) + " 及其全部易班账号不可恢复。确认继续？"
+            : "清空 " + YB.maskEmail(email) + " 的易班账号。确认继续？"
+        }), full ? "已删除用户" : "已清空账号", false);
       });
     }
 
-    // 已注销用户立即物理清除：仅主管理员（后端 403 兜底）
+    // 已注销用户立即物理清除：仅主管理员（后端 403 兜底）。不可逆，走 dangerousSubmit。
     function purge(uid) {
       var email = emailOf(uid);
       if (!email) return;
@@ -114,11 +124,12 @@
         confirmText: "立即清除", danger: true
       }).then(function (ok) {
         if (!ok) return;
-        YB.openConfirmPasswordModal(
-          "再次确认：彻底清除 " + YB.maskEmail(email) + "？请输入当前管理员密码确认。",
-          function (pw) {
-            run(post("/api/users/deleted/purge", { emails: [email], confirm_password: pw }), "已彻底清除");
-          });
+        run(YB.dangerousSubmit({
+          path: "/api/users/deleted/purge",
+          body: { emails: [email] },
+          desc: "再次确认：彻底清除 " + YB.maskEmail(email) + "？请输入当前管理员密码确认。",
+          delayDesc: "彻底清除 " + YB.maskEmail(email) + " 将物理删除用户、其易班账号与自选签到时间，不可恢复。确认继续？"
+        }), "已彻底清除");
       });
     }
 
@@ -152,11 +163,12 @@
         confirmText: "删除", danger: true
       }).then(function (ok) {
         if (!ok) return;
-        YB.openConfirmPasswordModal(
-          "再次确认：删除 " + emails.length + " 个用户？请输入当前管理员密码确认。",
-          function (pw) {
-            run(post("/api/users/batch", { action: "delete", emails: emails, confirm_password: pw }), "已删除用户");
-          });
+        run(YB.dangerousSubmit({
+          path: "/api/users/batch",
+          body: { action: "delete", emails: emails },
+          desc: "再次确认：删除 " + emails.length + " 个用户？请输入当前管理员密码确认。",
+          delayDesc: "删除这 " + emails.length + " 个用户及其全部易班账号不可恢复。确认继续？"
+        }), "已删除用户");
       });
     }
 
@@ -169,11 +181,12 @@
         confirmText: "彻底清除", danger: true
       }).then(function (ok) {
         if (!ok) return;
-        YB.openConfirmPasswordModal(
-          "再次确认：彻底清除 " + emails.length + " 个已注销用户？请输入当前管理员密码确认。",
-          function (pw) {
-            run(post("/api/users/deleted/purge", { emails: emails, confirm_password: pw }), "已彻底清除");
-          });
+        run(YB.dangerousSubmit({
+          path: "/api/users/deleted/purge",
+          body: { emails: emails },
+          desc: "再次确认：彻底清除 " + emails.length + " 个已注销用户？请输入当前管理员密码确认。",
+          delayDesc: "彻底清除这 " + emails.length + " 个已注销用户将物理删除用户、易班账号与自选时间，不可恢复。确认继续？"
+        }), "已彻底清除");
       });
     }
 
