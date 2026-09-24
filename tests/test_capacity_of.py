@@ -7,8 +7,8 @@
 3. `executor_count`（K 的唯一口径）的边界：夹到 `[1, 出口数]`、随 N 单调不减、
    `bucket_rate` 变小则 K 不变或变大；
 4. 四处调用点在开关缺省 0 时**数值不变**：`web/services/capacity.py` 与
-   `yiban/engine/runner.py` 两处用显式期望值钉住，另两处（`settings_api` / `cli`）
-   断言调用签名把 `k=1`（单执行体语义）与开关分派一起传给 `capacity_of`。
+   `yiban/engine/runner.py` 两处用显式期望值钉住；另两处（`settings_api` / `cli`）
+   以"包住 `capacity_of` 看它收到什么"作行为断言，验证 `k=1`（单执行体语义）。
 
 依赖：假时钟与假配置快照（runner 预检不读真实 .env、不联网、不落库）。
 """
@@ -27,7 +27,6 @@ from yiban.engine import schedule
 DAY = "2026-09-22"
 #: 固定起跑时刻：默认窗口 06:30~07:50（有效窗口 06:31~07:49），06:40 在窗口内
 START = datetime(2026, 9, 22, 6, 40, 0)
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class CapacityOfDispatchTest(unittest.TestCase):
@@ -160,11 +159,20 @@ class WebCapacityEstimateSwitchOffTest(unittest.TestCase):
 
 
 class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
-    """另两处调用点（CLI `capacity` / 现场实测换算）也必须走 `capacity_of`。
+    """另两处调用点（CLI `capacity` / 现场实测换算）走 `capacity_of` 且按 `k=1` 口径。
 
-    CLI 侧用显式期望值钉住（`capacity_per_executor` 的「每执行体」语义靠 `k=1`）；
-    实测换算是 Flask 路由，这里以"改走 `capacity_of` 且不再直调旧公式"作源码级钉法。
+    断言方式是**包住 `capacity_of` 看它收到什么**：源码文本断言会被无关重构误伤，
+    也证明不了调用点真的传了 `k=1`（"每执行体"的字面语义，v3 下总容量 ≈ 该值 × 出口数）。
     """
+
+    @staticmethod
+    def _spy(seen):
+        real = schedule.capacity_of
+
+        def spy(*a, **kw):
+            seen.append((a, dict(kw)))
+            return real(*a, **kw)
+        return spy
 
     def test_cli_capacity_per_executor_value_unchanged(self):
         from yiban import cli
@@ -173,19 +181,64 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
             "YIBAN_WINDOW_EDGE_FRONT_SEC": "60", "YIBAN_WINDOW_EDGE_BACK_SEC": "60",
             "YIBAN_ACCOUNT_GAP_MAX": "10", "YIBAN_AVG_ATTEMPT_SEC": "8",
         }
-        numbers = cli._capacity_numbers(view, 0)
+        seen = []
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(schedule, "capacity_of", self._spy(seen)):
+            os.environ.pop("YIBAN_SCHEDULER_V3", None)
+            numbers = cli._capacity_numbers(view, 0)
         self.assertEqual(numbers["window_effective_sec"], 4680)
         # 有效窗口 4680s、avg=8、gap=10：(4680-8)//18+1 = 260
         self.assertEqual(numbers["capacity_per_executor"], 260)
+        args, kw = seen[0]
+        self.assertEqual(args, (4680,), "窗口用完整有效窗口（这套配置能容纳几个）")
+        self.assertEqual(kw["gap"], 10)
+        self.assertEqual(kw["avg"], 8)
+        self.assertEqual(kw["k"], 1, "`k=1` 钉住「每执行体」的字面语义")
 
-    def test_source_calls_go_through_capacity_of(self):
-        for rel, needle in (("yiban/cli.py", "capacity_of("),
-                            ("web/routes/settings_api.py", "m.signin.capacity_of(")):
-            with self.subTest(rel=rel):
-                with open(os.path.join(BASE, rel), encoding="utf-8") as f:
-                    src = f.read()
-                self.assertIn(needle, src)
-                self.assertNotIn("capacity_accounts(", src, "不得再直接调旧公式")
+    def test_settings_api_measure_passes_k_one(self):
+        """现场实测换算：真实路由体跑一遍，验证它把 `k=1` 传给了 `capacity_of`。"""
+        import contextlib
+
+        import flask
+
+        from web.routes import settings_api
+        seen = []
+
+        class _Bounds:
+            @staticmethod
+            def full_sec():
+                return 4680
+
+        m = SimpleNamespace(
+            ENV_FILE=".env", DEFAULT_ACCOUNT_GAP_MAX=10, MEASURE_COOLDOWN_SEC=300,
+            clock=SimpleNamespace(now=datetime.now),
+            db=SimpleNamespace(audit=lambda *a, **kw: None),
+            _is_builtin_admin_session=lambda: True,
+            _executors_window=lambda: _Bounds(),
+            _in_sign_window=lambda bounds: False,
+            _json_body=lambda: {},
+            load_accounts=lambda: [{"phone": "13800000001"}],
+            _pick_measure_account=lambda accounts, phone: {"phone": "13800000001"},
+            _as_signin_account=lambda acc: SimpleNamespace(),
+            _mask_phone=lambda p: "138****0001",
+            load_env_int=lambda *a: 10,
+            _measure_state_path=lambda: os.path.join(tempfile.gettempdir(), "m.json"),
+            _read_measure_state=lambda p: {},
+            _write_measure_state=lambda p, d: None,
+            _measure_cooldown_remaining=lambda st, cd: 0,
+            _audit_actor=lambda: "admin",
+            signin=SimpleNamespace(
+                _state_file_lock=lambda p: contextlib.nullcontext(),
+                verify_account=lambda acc: (True, "ok"),
+                capacity_of=self._spy(seen)),
+        )
+        with mock.patch.object(settings_api, "_appmod", lambda: m), \
+                flask.Flask(__name__).app_context():
+            resp = settings_api.api_scheduler_executors_measure()
+        self.assertTrue(resp.get_json()["ok"])
+        args, kw = seen[0]
+        self.assertEqual(args, (4680,))
+        self.assertEqual(kw["k"], 1, "实测换算量的是单执行体容量，`k=1` 是字面语义")
 
     def test_signin_shell_forwards_capacity_of(self):
         """`scripts/signin.py` 是全量转发壳，`m.signin.capacity_of` 自动可用。"""
@@ -202,7 +255,7 @@ class _FakeClock:
 
 
 class RunnerPrecheckSwitchOffTest(unittest.TestCase):
-    """`runner.main` 的容量预检在开关缺省 0 时给出显式期望值。"""
+    """`runner.main` 的容量预检：开关关时逐值不变且不多读环境键，开关开时才带 K。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="yiban-capof-")
@@ -233,8 +286,8 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
-    def _cfg():
-        return {
+    def _cfg(**over):
+        cfg = {
             "order": "sequence", "dist": "uniform",
             "edge_front_sec": 60, "edge_back_sec": 60,
             "block_cap": 15, "mu_min_pct": 40, "mu_max_pct": 60,
@@ -243,11 +296,15 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
             "allow_time_pref": 0, "sign_start": (6, 30), "sign_end": (7, 50),
             "bucket_rate": 1.0, "executors": ["single@testhost"],
         }
+        cfg.update(over)
+        return cfg
 
-    def _run(self):
-        phone = "13800000001"
-        accounts = [SimpleNamespace(phone=phone, user_paused=False, owner="u@1")]
-        sched = {phone: START}
+    def _run(self, *, n=1, cfg=None, planner_config=None, v3=False):
+        """跑一轮 `runner.main`，返回 `(退出码, capacity_of 的调用记录)`。"""
+        cfg = self._cfg() if cfg is None else cfg
+        accounts = [SimpleNamespace(phone=f"1380000{i:04d}", user_paused=False,
+                                    owner="u@1") for i in range(n)]
+        sched = {a.phone: START for a in accounts}
         seen = []
         real = schedule.capacity_of
 
@@ -256,28 +313,55 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
             seen.append((a, kw, out))
             return out
 
-        with mock.patch.object(runner_mod.accounts_mod, "load_accounts",
-                               return_value=accounts), \
-             mock.patch.object(runner_mod.schedule_mod, "build_schedule",
-                               return_value=sched), \
-             mock.patch.object(runner_mod.schedule_mod, "planner_config",
-                               side_effect=self._cfg), \
-             mock.patch.object(runner_mod.schedule_mod, "capacity_of", spy), \
-             mock.patch.object(runner_mod.round_mod, "run_queue_retry",
-                               return_value={phone: (True, "ok", False, "success")}), \
-             mock.patch.object(runner_mod.state_io, "_load_cred_state", return_value={}), \
-             mock.patch.object(runner_mod.state_io, "_save_cred_state"), \
-             mock.patch.object(runner_mod.state_io, "_is_second_run", return_value=False), \
-             mock.patch.object(runner_mod.state_io, "_write_sched_done"), \
-             mock.patch.object(runner_mod.state_io, "_write_sign_state"), \
-             mock.patch.object(runner_mod.db, "add_sign_events_batch"), \
-             mock.patch.object(runner_mod.db, "purge_expired_deleted_accounts"), \
-             mock.patch.object(runner_mod.alerts, "_maybe_alert_zero_success"), \
-             mock.patch.object(runner_mod.alerts, "_flush_admin_mail_summary"):
-            code = runner_mod.main([])
+        planner_config = planner_config or (lambda: cfg)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            if v3:
+                os.environ["YIBAN_SCHEDULER_V3"] = "1"
+            else:
+                os.environ.pop("YIBAN_SCHEDULER_V3", None)
+            with mock.patch.object(runner_mod.accounts_mod, "load_accounts",
+                                   return_value=accounts), \
+                 mock.patch.object(runner_mod.schedule_mod, "build_schedule",
+                                   return_value=sched), \
+                 mock.patch.object(runner_mod.schedule_mod, "_schedule_config",
+                                   side_effect=lambda: cfg), \
+                 mock.patch.object(runner_mod.schedule_mod, "planner_config",
+                                   side_effect=planner_config), \
+                 mock.patch.object(runner_mod.schedule_mod, "capacity_of", spy), \
+                 mock.patch.object(runner_mod.executor_v3, "run_executor_v3",
+                                   return_value={a.phone: (True, "ok", False, "success")
+                                                 for a in accounts}), \
+                 mock.patch.object(runner_mod.round_mod, "run_queue_retry",
+                                   return_value={a.phone: (True, "ok", False, "success")
+                                                 for a in accounts}), \
+                 mock.patch.object(runner_mod.state_io, "_load_cred_state",
+                                   return_value={}), \
+                 mock.patch.object(runner_mod.state_io, "_save_cred_state"), \
+                 mock.patch.object(runner_mod.state_io, "_is_second_run",
+                                   return_value=False), \
+                 mock.patch.object(runner_mod.state_io, "_write_sched_done"), \
+                 mock.patch.object(runner_mod.state_io, "_write_sign_state"), \
+                 mock.patch.object(runner_mod.db, "add_sign_events_batch"), \
+                 mock.patch.object(runner_mod.db, "purge_expired_deleted_accounts"), \
+                 mock.patch.object(runner_mod.alerts, "_maybe_alert_zero_success"), \
+                 mock.patch.object(runner_mod.alerts, "_flush_admin_mail_summary"):
+                code = runner_mod.main([])
         return code, seen
 
-    def test_precheck_value_is_explicit_and_unchanged(self):
+    def test_switch_off_does_not_read_planner_config(self):
+        """开关关时预检连 `planner_config` 都不该读。
+
+        它比调度配置多读 `YIBAN_EGRESS_RATE` / `YIBAN_EXECUTORS`，还会对非法值告警——
+        v2 路径"数值与行为完全不变"要求这些 v3 专属输入在关时根本不产生依赖。
+        """
+        boom = mock.Mock(side_effect=AssertionError("开关关时不得读 planner_config"))
+        code, seen = self._run(planner_config=boom)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
+        self.assertFalse(boom.called, "开关关时预检不得读 planner_config")
+        self.assertEqual(seen[0][2], 230, "关时数值仍逐值不变")
+
+    def test_switch_off_value_is_explicit_and_unchanged(self):
         code, seen = self._run()
         self.assertEqual(code, 0)
         self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
@@ -286,8 +370,27 @@ class RunnerPrecheckSwitchOffTest(unittest.TestCase):
         self.assertEqual(args, (4140.0,))
         self.assertEqual(kw["gap"], 10)
         self.assertEqual(kw["avg"], 8)
+        self.assertIs(kw["enabled"], False, "关时必须显式走 v2 分支，不靠默认值")
+        self.assertNotIn("k", kw, "关时不得计算/传入 K")
+        self.assertNotIn("bucket_rate", kw, "关时不得读桶速率")
         self.assertEqual(out, 230, "开关缺省 0 时预检容量逐值不变")
         self.assertEqual(out, schedule.capacity_accounts(4140, 10, 8))
+
+    def test_switch_on_passes_k_from_executor_count(self):
+        """开关开时 K 真的参与计算：`executor_count` 的入参口径与结果都要落到调用上。"""
+        cfg = self._cfg(executors=["a@h", "b@h", "c@h", "d@h"])
+        code, seen = self._run(n=10000, cfg=cfg, v3=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1, "容量预检必须走 `capacity_of`")
+        args, kw, out = seen[0]
+        k = schedule.executor_count(10000, 4140.0, bucket_rate=1.0, egress_count=4)
+        self.assertEqual(k, 4, "夹具前提：K 要大于 1 才看得出它真的参与计算")
+        self.assertEqual(args, (4140.0,))
+        self.assertIs(kw["enabled"], True)
+        self.assertEqual(kw["k"], k)
+        self.assertEqual(kw["bucket_rate"], 1.0)
+        self.assertEqual(out, schedule.capacity_accounts_v3(4140, k, 8, 1.0))
+        self.assertNotEqual(out, 230, "开时走的必须是 v3 公式，不是 v2 的 230")
 
 
 if __name__ == "__main__":
