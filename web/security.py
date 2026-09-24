@@ -83,8 +83,10 @@ SCRYPT_METHOD = "scrypt:65536:8:1"
 #: 内置主管理员（.env 账号）的会话凭据键名。
 ADMIN_SID_ENV_KEY = "YIBAN_ADMIN_SID"
 
-# 登录失败限速：同一 IP 连续失败超过阈值后锁定
-LOGIN_LOCK_SECONDS = 300
+# 登录失败限速：同一 IP 连续失败超过阈值后锁定。
+# 锁定时长只作"打断自动化喷洒节奏"用，不指望它拦住暴力破解——那由边缘 nginx 限速
+# 与逐次 scrypt 的时延承担；锁太久只会把本人输错口令的恢复成本放大。
+LOGIN_LOCK_SECONDS = 60
 
 # 可信第一跳代理（nginx 反代）：仅当请求来自这些地址时才信任转发头。
 # 生产部署：yiban-web 只监听回环地址，nginx 反代并以 `proxy_set_header X-Forwarded-For $remote_addr`

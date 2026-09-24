@@ -489,8 +489,8 @@ DEFAULT_ACCOUNT_GAP_MAX = 10
 
 # 登录失败限速：同一 IP 连续失败超过阈值后锁定（锁定秒数 LOGIN_LOCK_SECONDS 随安全域
 # 搬入 web/security.py，此处以导入区再导出保持 m.LOGIN_LOCK_SECONDS 可达）
-LOGIN_MAX_FAILS = 5
-# 账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱 5 次锁定
+LOGIN_MAX_FAILS = 10
+# 账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱的失败阈值
 # 只约束单账号，攻击者可换邮箱继续；命中恢复即接管该账号与其易班凭据）
 RESTORE_FAIL_MAX = 30
 RESTORE_FAIL_WINDOW = 600
