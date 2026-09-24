@@ -40,9 +40,9 @@ def _restore_fail_rate():
 
 
 def get_csrf_token():
-    """惰性生成并返回当前会话的 CSRF token。"""
+    """惰性生成并返回当前会话的 CSRF token（本模块只下发，校验在 web/app.py 的 check_csrf）。"""
     if "csrf_token" not in session:
-        session["csrf_token"] = secrets.token_hex(32)
+        session["csrf_token"] = secrets.token_hex(32)  # 唯一下发点是 api_me；前端 core.js 取走后用 X-CSRF-Token 头带回
     return session["csrf_token"]
 
 

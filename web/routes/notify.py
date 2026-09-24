@@ -276,13 +276,9 @@ def api_notify_config_save():
     （0 显式落盘，不再"删键回落默认"）；urgent_only = 仅推送重要告警（非紧急仅走邮件）；
     daily_max / urgent_daily_max 0 = 不限（两本账分账）。
 
-    推送通道与邮件通道是告警仅有的两条出口，"关闭推送 / 清空密钥 /
-    换密钥"三类动作等同给报警器拔线，与三处高危删除同口径加二次鉴权 +
-    限速（同窗口同上限，语义即"高危配置变更限速"，不新建第二套计数）。
-    额度/节流参数（cooldown / urgent_only / daily_max /
-    urgent_daily_max）同样纳入二次鉴权——它们决定告警推不推、何时推、推几条，
-    调大 cooldown、打开 urgent_only、把 daily_max 压到 1 与"拔线"同效
-    （给报警器装消音器），同口径收口。
+    "关闭推送 / 清空密钥 / 换密钥 / 调额度与节流"这几类动作等同给报警器拔线，都过
+    高危门禁（判定条件 (a)~(d) 见下面的代码段），与高危删除同口径共用限速计数、
+    不新建第二套。
     """
     m = _appmod()
     if not m._is_builtin_admin_session():
@@ -308,19 +304,16 @@ def api_notify_config_save():
             return jsonify({"error": f"自定义地址过长（最多 {m.NOTIFY_URL_MAX_LEN} 字符）"}), 400
         if not m.notify.is_safe_url(secret):
             return jsonify({"error": "自定义地址仅允许 HTTPS 且非回环/内网地址"}), 400
-    # ---- 高危判定：会"让推送通道失效、改密钥，
-    # 或调整告警送达节奏/额度"的请求都要口令 ----
-    # (a) type 置空 = 关闭推送；(b) 本次落盘后不再有密钥 = 清空密钥（含"只提交
-    # type 却不带 secret"这条隐蔽路径——它同样会删掉旧密文）；(c) 携带新密钥 = 换钥；
-    # (d)：出现任一额度/节流键 = 调整告警送达参数（同样致盲面）。
+    # ---- 高危判定：(a)~(d) 任一命中就过这道门禁（是否真要口令随 `YIBAN_PW_GATE` 档位）----
+    # (b) 的隐蔽路径：只提交 type 却不带 secret，同样会把旧密文删掉。
     touches_channel = ("type" in data) or ("secret" in data)
-    close_channel = "type" in data and ntype == ""
-    clear_secret = touches_channel and not secret
-    swap_secret = bool(secret)
-    weakens_alerting = any(
+    close_channel = "type" in data and ntype == ""  # (a) type 置空 = 关闭推送
+    clear_secret = touches_channel and not secret  # (b) 本次落盘后不再有密钥 = 清空密钥
+    swap_secret = bool(secret)  # (c) 携带新密钥 = 换钥
+    weakens_alerting = any(  # (d) 出现任一额度/节流键 = 调送达节奏：压额度、开 urgent_only 与拔线同效
         k in data for k in ("cooldown", "urgent_only", "daily_max", "urgent_daily_max")
     )
-    # 三类动作互斥，其并集恰好等于"触碰通道"的请求：带 type/secret 时要么有密钥
+    # 前三类互斥，其并集恰好等于"触碰通道"的请求：带 type/secret 时要么有密钥
     # （换钥）要么没有（关闭或清钥）；(d) 与之可叠加（一次请求既换钥又调参数）
     need_reconfirm = close_channel or clear_secret or swap_secret or weakens_alerting
     # 支持部分更新：仅在请求体出现的字段才写入（如「仅重要告警」开关单独保存时
