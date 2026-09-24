@@ -58,10 +58,49 @@ _PW_MODAL_ALLOWED = {
     "my-accounts-page.js": "自助注销/撤销注销收本人账号口令，不经敏感口令门",
 }
 
+# 直接开出口令框的写法：`openConfirmPasswordModal(` 直呼，或 `openPwModal(..., "confirm")`
+# ——后者是同一个框的另一条入口（mode="confirm" 就是"要当前口令"），只钉前者会被它绕过。
+_OPEN_PW_MODAL_RE = re.compile(r"\bopenPwModal\s*\(")
+
 
 def _read(path):
     with open(path, encoding="utf-8") as fh:
         return fh.read()
+
+
+def _call_args(src, open_idx):
+    """从 `(` 处按括号配对取出实参文本（跳过字符串），用于判字面量模式。"""
+    depth, quote, i = 0, None, open_idx
+    while i < len(src):
+        c = src[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "\"'`":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return src[open_idx + 1:i]
+        i += 1
+    return src[open_idx + 1:]
+
+
+def _pw_modal_calls(src):
+    """源码里"直接开当前口令框"的证据（调用写法），空列表 = 没这条管道。"""
+    hits = []
+    if "openConfirmPasswordModal" in src:
+        hits.append("openConfirmPasswordModal")
+    for m in _OPEN_PW_MODAL_RE.finditer(src):
+        args = _call_args(src, m.end() - 1)
+        if '"confirm"' in args or "'confirm'" in args:
+            hits.append('openPwModal(..., "confirm")')
+    return hits
 
 
 def _extract_function(src, name):
@@ -553,7 +592,9 @@ class GatedCallSitesTest(unittest.TestCase):
         """core.js 之外只剩自助域直接弹口令框：它们收的是本人账号口令，没有 reason 协议。
 
         这条钉住的是"别再长出第二条无条件口令框管道"——新增一条就会在这里失败，
-        提示先确认后端是否有对应的 reason 字段（有则改走 helper）。
+        提示先确认后端是否有对应的 reason 字段（有则改走 helper）。判定同时覆盖
+        `openPwModal(..., "confirm")`：那是同一个"要当前口令"的框，只钉
+        `openConfirmPasswordModal(` 会留下一条等效旁路（helper 与它都已导出）。
         """
         offenders = {}
         for dirpath, _dirs, files in os.walk(JS_DIR):
@@ -565,10 +606,20 @@ class GatedCallSitesTest(unittest.TestCase):
                 path = os.path.join(dirpath, name)
                 if os.path.abspath(path) == os.path.abspath(CORE_JS):
                     continue
-                if "openConfirmPasswordModal" in _read(path):
-                    offenders[name] = os.path.relpath(path, BASE)
+                hits = _pw_modal_calls(_read(path))
+                if hits:
+                    offenders[name] = (os.path.relpath(path, BASE), hits)
         self.assertEqual(sorted(offenders), sorted(_PW_MODAL_ALLOWED),
                          "口令框管道只剩登记的自助域；其余受门禁操作请改走 helper：%s" % offenders)
+
+    def test_confirm_mode_pw_modal_is_detected(self):
+        """判别力自检：`openPwModal(..., "confirm")` 必须被认成口令框管道，set 模式不算。"""
+        confirm = 'YB.openPwModal("DESC", function (pw) { return send(pw); }, "confirm");'
+        self.assertEqual(_pw_modal_calls(confirm), ['openPwModal(..., "confirm")'])
+        self.assertEqual(_pw_modal_calls('YB.openPwModal("d", cb, "set");'), [])
+        self.assertEqual(_pw_modal_calls("YB.openPasswordModal('d', cb);"), [])
+        self.assertEqual(_pw_modal_calls("YB.openConfirmPasswordModal('d', cb);"),
+                         ["openConfirmPasswordModal"])
 
     def test_allowed_self_service_sites_are_really_self_service(self):
         """豁免不能空挂：登记的每个文件都要真的在（文件改名/删除时豁免必须一起处置）。"""

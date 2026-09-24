@@ -524,7 +524,7 @@ PW_DENY_REASON = {"missing": "password_required", "wrong": "password_incorrect"}
 # 拒绝文案按所在路由的 deny_status 取，与口令门两档同构；reason 单独一档，
 # 前端据此弹倒计时框而不是口令框。
 PW_DELAY_ACK_TEXT = {400: "此操作不可逆，请在倒计时结束后确认，操作已取消",
-                     403: "此操作不可逆，请在倒计时结束后确认后重试"}
+                     403: "此操作不可逆，请在倒计时结束后确认，操作未执行"}
 PW_DELAY_ACK_REASON = "delay_ack_required"
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
