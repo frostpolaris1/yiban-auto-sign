@@ -147,23 +147,11 @@ class EgressBucket:
 
 
 class EgressLimiter:
-    """按出口聚合的限速器：`{egress: EgressBucket}` + AIMD 自适应 + 半开。
+    """按出口聚合的限速器：`{egress: EgressBucket}` + AIMD 自适应 + 半开冷却。
 
-    AIMD 是**信号驱动的事件式**回退/上探（每出口独立）：连续 `SUCCESS_STREAK` 次无风控
-    → `rate ×= 1.2`（封顶 `RATE_MAX`）；风控信号（e003 / WAF / 验证码 / 被拦页）→
-    `rate ÷= 2`（下限 `RATE_MIN`）且该出口半开 `HALF_OPEN_SEC`。计数器是"连续"的：
-    任何风控信号清零成功 streak。回退信号**不用延迟**——本项目单账号耗时 t≈1.87~3s
-    近常量，延迟触顶信噪比差，用它回退等于按抖动误伤。
-
-    半开（`is_half_open`）是**按时间**结束的冷却窗口，不是"探测一次成功就放行"：窗口内
-    该出口突发额度恒为 1（只放行单通道探测），探测成功只算一次无风控（进 streak），
-    要等 `HALF_OPEN_SEC` 走完才恢复突发额度与多通道。一次侥幸不该立刻换回 6 条并发。
-
-    `manual`（人工接管）：`.env` 里显式写了速率，它就是这个出口的**上限**——管理员写的
-    值不该被自适应越过（否则"我配的值为什么变快了"无从解释）。故上探在 manual 下
-    no-op。但**安全反应不随之停**：风控信号的乘性回退是安全反应而非自适应，照做且只
-    夹在"不超过上限"之下——把回退也停掉等于让站点贴着风控墙跑；半开与告警同样照旧。
-    一句话：manual 的语义是"不许跑得比管理员设的快"，不是"风控来了也不减速"。
+    三层语义各管一段、别混着读：AIMD 是**信号驱动的事件式**回退/上探（`on_success` /
+    `on_risk_signal`），半开是**按时间**结束的冷却窗口（`acquire` 压突发额度），manual 只锁
+    上探这只脚、不锁安全回退（`_set_rate` 的 `_ceiling`）。每出口独立，互不影响。
     """
 
     def __init__(self, rate=RATE_DEFAULT, burst=DEFAULT_BURST, on_change=None, manual=False):
@@ -196,22 +184,22 @@ class EgressLimiter:
     def acquire(self, egress, now):
         """取一次出口额度。半开期内突发额度压到 1（探测通道），冷却走完才恢复。"""
         b = self.bucket(egress)
+        # 半开只在这里生效：它是按时间结束的冷却，不是"探测一次成功就放行"——窗口内该出口
+        # 始终只放单通道（一次侥幸不该立刻换回 6 条并发），HALF_OPEN_SEC 走完才恢复突发额度
         burst = 1.0 if self.is_half_open(egress, now) else None
         return b.try_acquire(now, burst)
 
     def on_success(self, egress):
-        """连续 `SUCCESS_STREAK` 次无风控 → `rate ×= 1.2`（封顶），返回生效后的 rate。
+        """连续 `SUCCESS_STREAK` 次无风控 → `rate ×= 1.2`（封顶 `_ceiling`），返回生效后 rate。
 
-        半开期内成功只算"这一次没被拦"（进 streak、可触发上探），**不结束半开**：冷却窗按
-        `HALF_OPEN_SEC` 走表，期间该出口始终只放单通道（见 `acquire`）。人工接管时上探
-        no-op（速率不得越过管理员设定值），streak 也不再累计。
+        半开期内的成功只算"这一次没被拦"（进 streak、可触发上探），**不结束半开**。
         """
         b = self.bucket(egress)
         if self.manual:
-            return b.rate
+            return b.rate  # 人工接管连 streak 都不累计：管理员定的值不该被自适应悄悄抬高
         n = self._streak.get(egress, 0) + 1
         if n < SUCCESS_STREAK:
-            self._streak[egress] = n
+            self._streak[egress] = n  # 阈值以下只累计不变速：一次侥幸就 ×1.2 会让速率来回抖
             return b.rate
         self._streak[egress] = 0
         return self._set_rate(egress, b.rate * GROWTH_FACTOR, "连续无风控上探")
@@ -219,28 +207,25 @@ class EgressLimiter:
     def on_risk_signal(self, egress, now):
         """风控信号 → `rate ÷= 2`（下限 `RATE_MIN`）+ 半开 `HALF_OPEN_SEC`，返回新 rate。
 
-        回退是**安全反应**：人工接管下照做（只夹在不超过上限，见 `_set_rate`），半开与
-        告警照旧——人工接管禁的是上探，不是减速。
+        回退是**安全反应**：人工接管下照做，只夹在不超过上限（见 `_set_rate`）。
         """
         self.bucket(egress)
-        self._streak[egress] = 0
+        self._streak[egress] = 0  # 三步次序即语义：先销账，再压通道，最后减速
         self._half_open_until[egress] = now + HALF_OPEN_SEC
         if self.manual:
             logger.warning("出口 %s 风控信号，速率按安全回退下调（.env 人工接管的上限 "
                            "%.3f attempt/s，%ds 半开单通道探测）",
                            egress, self._ceiling, HALF_OPEN_SEC)
         return self._set_rate(egress, self._buckets[egress].rate * SHRINK_FACTOR,
-                              "风控信号回退")
+                              "风控信号回退")  # 回退不吃延迟信号：单账号耗时 t≈1.9~3s 近常量，延迟信噪比差
 
     def downgrade_all(self, now, reason="站点级熔断"):
         """全体出口降档到 `RATE_MIN` 并进入半开，返回 `{egress: rate}`。
 
         站点级熔断（风控信号率超阈）的**降档入口**：阈值判定与告警归调用方，本方法只做
-        降档本身。降档是**粘住的**：已建桶的出口逐一下调，同时把新建桶的起算速率也降到
-        `RATE_MIN`——降档期间新冒出来的出口同样按降档值放行，否则站点级熔断对新出口
-        静默失效。人工接管不阻止降档（安全反应优先于"速率由管理员定"）。
+        降档本身；人工接管不阻止降档（安全反应优先于"速率由管理员定"）。
         """
-        self._baseline_rate = RATE_MIN
+        self._baseline_rate = RATE_MIN  # 降档是粘住的：新建桶也按降档值起算，否则熔断对后到的出口静默失效
         for egress in list(self._buckets):
             self._half_open_until[egress] = now + HALF_OPEN_SEC
             self._streak[egress] = 0
@@ -306,39 +291,37 @@ class EgressLimiter:
 class GlobalLimiter:
     """全局聚合速率上界 Λ（第 2 层；每出口桶是第 1 层）。
 
-    不变量：任意 1s 内实际放行的**尝试数** ≤ `⌈Λ⌉`（**与出口数 K、执行体数无关**）——
-    Λ 存在时加出口不再线性放大总速率。取整是 GCRA 的边界语义：`Λ=1.5` 时首秒最多放 2 条
-    （0s 与 0.67s 各一条），此后按 1.5 条/s 摊销，不会持续超发。`lam` 单位 = 账号尝试/s；
-    None/≤0 = 不限（小站不强迫配置）。本层不带突发额度：全局多放一条就多一份并发冲击，
-    突发额度属于每出口桶。
+    不变量：任意 1s 内实际放行的**尝试数** ≤ `⌈Λ⌉`，**与出口数 K、执行体数无关**——Λ 存在
+    时加出口不再线性放大总速率（取整是 GCRA 的边界语义：`Λ=1.5` 首秒最多 2 条，此后按
+    1.5 条/s 摊销）。`lam` 单位 = 账号尝试/s；None/≤0 = 不限（小站不强迫配置）。本层不带突发
+    额度：全局多放一条就多一份并发冲击，突发额度属于每出口桶。
 
-    取值非法（非数值串等）时按"不限"处理——全局上界缺失不该让整个签到起不来，但这个
-    事实**不静默**：`logger.warning` 明示，且 `invalid` 属性置真，供接线侧据此决定是否
-    拒绝启动（把 Λ 写错成 `abc` 的部署等于没有全局上界，值得让人看见）。空值（`None`
-    或空串/纯空白）是 `.env` 的既有约定"未配置/关闭"，按不限处理且**不告警、不标非法**。
+    取值非法（如 `abc`）按"不限"处理，但这个事实不静默：`logger.warning` + `invalid` 置真，
+    供接线侧据此决定是否拒绝启动（把 Λ 写错的部署等于没有全局上界，值得让人看见）。空值
+    （None / 空串 / 纯空白）是 .env 既有约定的"未配置/关闭"，按不限且不告警、不标非法。
     """
 
     def __init__(self, lam):
         self.invalid = False
         text = lam.strip() if isinstance(lam, str) else lam
         if text is None or text == "":
-            v = 0.0
+            v = 0.0  # 空值=未配置/关闭：按既有约定，不告警也不标非法
         else:
             try:
                 v = float(text)
             except (TypeError, ValueError):
-                self.invalid = True
+                self.invalid = True  # 写错 Λ 等于没有全局上界，必须留下可被接线侧看见的痕迹
                 logger.warning("全局速率上界 Λ=%r 非法（非数值），已按不限处理", lam)
                 v = 0.0
-        self.lam = v if v > 0 else None
+        self.lam = v if v > 0 else None  # ≤0 归一成 None（不限），下游只需判 is None
         self._tat = 0.0
 
     def acquire(self, now):
         """放行一次全局额度；`lam` 为 None/≤0 时恒放行（不记账）。"""
         if self.lam is None:
-            return True
+            return True  # 不限：不记账也不阻塞，全局层缺席时出口桶仍在管速率
         if now < self._tat:
-            return False
+            return False  # 只判不改状态：等待由调用方按 1/Λ 重试（同出口桶的 GCRA 口径）
         self._tat = max(now, self._tat) + 1.0 / self.lam
         return True
 
@@ -346,9 +329,9 @@ class GlobalLimiter:
 class AccountGapGate:
     """每账号 GCRA(T=gap, τ≈0) 可选安全件：同账号两次尝试至少间隔 gap 秒。
 
-    与出口令牌桶**并存**（不是替代）：出口桶管平台/出口维度，本门管账号维度——上游是否
-    按账号维度看间隔两案都还没验，故保留为可选件。`allow` 只判不推进、`commit` 才推进
-    TAT：调用方可以先判后做（尝试真正发起时才 commit），中途放弃不白占间隔。
+    与出口令牌桶**并存**（不是替代）：出口桶管平台/出口维度，本门管账号维度——上游是否按
+    账号维度看间隔两案都还没验，故保留为可选件；gap 本身不可移除（账号间隔、幂等、到期兜底
+    是两种执行形态下的共同底限）。
     """
 
     def __init__(self, gap_sec, enabled=True):
@@ -357,15 +340,15 @@ class AccountGapGate:
         self._tat = {}
 
     def allow(self, phone, now):
-        """该账号现在是否已过 gap（不推进 TAT；关闭或缺省 gap=0 时恒 True）。"""
+        """该账号现在是否已过 gap（**只判不推进**；关闭或 gap=0 时恒 True）。"""
         if not self.enabled or self.gap_sec <= 0:
             return True
         return now >= self._tat.get(phone, 0.0)
 
     def commit(self, phone, now):
-        """推进该账号的 TAT：下一次放行要等到 `now + gap`。"""
+        """推进该账号的 TAT：下一次放行要等到 `now + gap`（**只有真发起尝试才该调**）。"""
         if not self.enabled or self.gap_sec <= 0:
-            return
+            return  # 与 allow 同一判据，否则关闭态下 commit 会白改状态
         self._tat[phone] = max(now, self._tat.get(phone, 0.0)) + self.gap_sec
 
 
@@ -374,13 +357,11 @@ def apply_ewma(prev_rate, risk_ratio_hat, r_target, beta=EWMA_BETA):
 
     `bucket_rate = clamp(prev × (1 + β·(r̂ − R_target)/R_target), RATE_MIN, RATE_MAX)`，
     单次调整幅度再夹到 ±`MAX_STEP`——一次抖动不该把速率打到下限，宁可慢调。
-    `risk_ratio_hat` 是风控信号率的 EWMA，**平滑在调用侧做**（`r̂_t = α·r_t +
-    (1−α)·r̂_{t−1}`，α 见 `EWMA_ALPHA`）：本函数只吃平滑后的 r̂，故不收 α——外环与
-    调用侧用同一套 α/β 才可比，而 α 的作用点在采样，不在这一步更新。
+    `risk_ratio_hat` 的 EWMA 平滑**在调用侧做**（α 见 `EWMA_ALPHA`）：本函数只吃平滑后的 r̂，
+    故不收 α——α 的作用点在采样，不在这一步更新。
 
-    与 AIMD 的分工：AIMD 是信号驱动的事件式回退/上探，本函数是事件之间的微调；调用方须
-    先跑 AIMD 事件、再跑本函数，且**只在两次尝试之间**调整（不在单次尝试中途变速率，
-    否则半程限速会让状态不一致）。人工接管的出口不再调用本函数。
+    与 AIMD 的分工与次序（调用方必须照此排）：先处理 AIMD 事件、再跑本函数，且只在两次尝试
+    之间调整（单次尝试中途变速率会让半程限速的状态不一致）；人工接管的出口不再调用本函数。
     """
     prev = _clamp(prev_rate)
     if not r_target or float(r_target) <= 0:
@@ -434,14 +415,9 @@ def limiter_from_env(channels=DEFAULT_BURST, on_change=None):
 def gap_gate_from_env():
     """按环境配置造每账号 gap 门。
 
-    gap = `YIBAN_ACCOUNT_GAP_MAX`（缺省 10s，与 `capacity_accounts` 的 gap 入参、执行体
-    读的是同一个键）；enabled = `YIBAN_ACCOUNT_GAP_ENFORCE`（**缺省 1=开**）——上游是否
-    按账号维度看间隔尚未实测裁决，故留开关。gap 本身不可移除（账号间隔、幂等、到期兜底
-    是两种形态下的共同底限）。
-
-    该键语义是"缺省开"，故真值判据三分：未设/空白 → 开；显式假值字面量 → 关；显式真值
-    字面量 → 开；**其余手写错值（如 `abc`）→ 开 + 告警**。错值不等于"关闭"：把安全件
-    因一次笔误静默摘掉是 fail-open 方向，宁可多一层间隔并让人看见告警。
+    gap = `YIBAN_ACCOUNT_GAP_MAX`（缺省 10s，与 `capacity_accounts` 的 gap 入参、执行体读的是
+    同一个键）；enabled 由 `YIBAN_ACCOUNT_GAP_ENFORCE` 决定，键语义是"缺省开"，故真值判据
+    分四档、次序不可换（见下）。
     """
     # 局部导入：配置解析口径复用 schedule（避免第二套环境解析），且 schedule 反向引用
     # 本模块的可能性随执行体接线增大，模块级互引会成环。
@@ -449,12 +425,14 @@ def gap_gate_from_env():
     gap = schedule._env_int(ENV_ACCOUNT_GAP_MAX, DEFAULT_ACCOUNT_GAP_SEC, 0, 3600)
     raw = str(os.environ.get(ENV_GAP_ENFORCE, "")).strip()
     if not raw:
-        enabled = True
+        enabled = True  # ① 未设 / 空白 = 缺省开
     elif raw.lower() in _FALSY_LITERALS:
-        enabled = False
+        enabled = False  # ② 显式假值字面量 = 关：这是唯一能关掉安全件的入口，故必须排在真值判之前
     elif schedule._env_flag(ENV_GAP_ENFORCE):
-        enabled = True
+        enabled = True  # ③ 显式真值字面量 = 开
     else:
+        # ④ 其余手写错值（如 abc）：错值不等于"关闭"。把安全件因一次笔误静默摘掉是 fail-open
+        # 方向，宁可多一层间隔并让人看见这条告警
         logger.warning("配置 %s=%r 非法（既非真值也非假值），安全件按缺省开处理",
                        ENV_GAP_ENFORCE, raw)
         enabled = True
