@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """回归守卫：签到日历只有**一份实现**（web/static/js/calendar.js）。
 
+标签：F · 前端与界面守卫
+覆盖：签到日历「全站唯一实现」守卫——`dayCell` 定义处唯一、模板零内联、加载关系成立、无障碍与状态类名契约仍在共享实现里、类名前缀不得与 Adminator 撞车
+对应实现：`web/static/js/calendar.js`（唯一实现）与 `pages/user_calendar.*`、`components/my-accounts.js`、`pages/my_account.js`
+关键断言：`web/static/js/` 下**恰好一个**文件定义 `function dayCell(` 且必须是 calendar.js，`web/templates/` 下零个内联实现；日历页必须引入共享模块并由共享视图组件调 `SignCalendar.render`；Adminator 类名按 **class token 边界**匹配（`mini-cal-grid` 这类前缀变体不误伤）
+依赖：纯本地——读前端源码文本（判定前先剥注释），**不执行 JS、无需 node**、不联网
+
 ## 历史（为什么这条守卫存在）
 
 签到日历原本有两份几乎独立的实现：管理端在 `pages/my_account.js` 里，用户端在

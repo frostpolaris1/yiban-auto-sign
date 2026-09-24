@@ -218,6 +218,7 @@ class SecurityFixes021Test(unittest.TestCase):
         self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
 
     def test_cookie_secure_on_from_environment_variable(self):
+        # 配置来源的第二条路径：环境变量（上一条钉的是 .env 侧），两条都得独立生效
         os.environ["YIBAN_COOKIE_SECURE"] = "true"
         try:
             app = self.webapp.create_app()
