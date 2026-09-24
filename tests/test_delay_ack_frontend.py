@@ -202,14 +202,14 @@ __FUNCS__
   OUT.a_first_body = calls[0] && calls[0].body;
   OUT.a_resend = calls[1] && calls[1].body;
 
-  // B：倒计时框取消 → 以 canceled 拒绝、不重发、定时器被清
+  // B：倒计时框取消 → 以 canceled 拒绝、不重发、定时器被清，且已提交步数为 0
   reset();
   script = [ { err: gate("delay_ack_required") } ];
   var pB = dangerousSubmit({ path: "/api/x", body: { b: 2 }, desc: "D" });
   await flush();
   modalRecords[0].panel.querySelector(".modal-foot").querySelector(".btn--ghost").click();
   var bErr = null;
-  try { await pB; } catch (e) { bErr = { canceled: !!e.canceled, message: e.message }; }
+  try { await pB; } catch (e) { bErr = { canceled: !!e.canceled, message: e.message, completed: e.completed }; }
   OUT.b_err = bErr;
   OUT.b_calls = calls.length;
   OUT.b_cleared = cleared.length;
@@ -278,6 +278,53 @@ __FUNCS__
   OUT.h_err = hErr;
   OUT.h_calls = calls.length;
 
+  // I：多段提交的第一步已成功、第二步索要口令而用户取消 ⇒ 错误必须带回"已提交 1 步"。
+  // 调用方（执行体保存）据此才能告诉用户"部分修改已提交、不会回滚"，否则那次真写入
+  // 既没人刷新视图、也没人提示——库里已经变了而页面还显示旧值。
+  reset();
+  pwMode = "cancel";
+  script = [ { ok: { msg: "s1" } }, { err: gate("password_required") } ];
+  var iErr = null;
+  try {
+    await dangerousSubmit({
+      requests: [
+        { method: "PUT", path: "/api/r1", body: { r: 1 } },
+        { method: "PUT", path: "/api/r2", body: { r: 2 } }
+      ], desc: "D"
+    });
+  } catch (e) { iErr = { canceled: !!e.canceled, completed: e.completed }; }
+  OUT.i_err = iErr;
+  OUT.i_calls = calls.length;
+
+  // J：同上，但第二步索要的是倒计时确认（不可逆那一路）——两条取消路径口径必须一致
+  reset();
+  script = [ { ok: { msg: "s1" } }, { err: gate("delay_ack_required") } ];
+  var pJ = dangerousSubmit({
+    requests: [
+      { method: "PUT", path: "/api/r1", body: { r: 1 } },
+      { method: "PUT", path: "/api/r2", body: { r: 2 } }
+    ], desc: "D"
+  });
+  await flush();
+  modalRecords[0].panel.querySelector(".modal-foot").querySelector(".btn--ghost").click();
+  var jErr = null;
+  try { await pJ; } catch (e) { jErr = { canceled: !!e.canceled, completed: e.completed }; }
+  OUT.j_err = jErr;
+  OUT.j_calls = calls.length;
+
+  // K：第一步就索要口令而用户取消 ⇒ 一步都没提交（completed 必须是 0，不能谎报部分写入）
+  reset();
+  pwMode = "cancel";
+  script = [ { err: gate("password_required") } ];
+  var kErr = null;
+  try {
+    await dangerousSubmit({
+      requests: [{ method: "PUT", path: "/api/r1", body: { r: 1 } }], desc: "D"
+    });
+  } catch (e) { kErr = { canceled: !!e.canceled, completed: e.completed }; }
+  OUT.k_err = kErr;
+  OUT.k_calls = calls.length;
+
   console.log(JSON.stringify(OUT));
 })().catch(function (e) { console.error(e && e.stack || e); process.exit(1); });
 """
@@ -335,8 +382,9 @@ class DelayAckFrontendTest(unittest.TestCase):
     def test_timer_is_cleared_on_cancel(self):
         """取消关闭时也必须清掉定时器（否则弹窗关了 interval 还在跑）。"""
         self.assertEqual(self.out["b_cleared"], 1, "取消路径必须 clearInterval")
-        self.assertEqual(self.out["b_err"], {"canceled": True, "message": ""},
-                         "取消倒计时框应以 canceled 标记拒绝（调用方据此静默，不报失败）")
+        self.assertEqual(self.out["b_err"], {"canceled": True, "message": "", "completed": 0},
+                         "取消倒计时框应以 canceled 标记拒绝（调用方据此静默）；"
+                         "单请求形式一步都没提交，已提交步数必须是 0")
 
     # ---- 提交分流 ----
     def test_resend_carries_confirm_delay_ack(self):
@@ -403,6 +451,51 @@ class DelayAckFrontendTest(unittest.TestCase):
         """取消口令框 ⇒ 以 canceled 拒绝、不重发（取消不是失败，调用方据此静默）。"""
         self.assertEqual(self.out["h_err"], {"canceled": True})
         self.assertEqual(self.out["h_calls"], 1)
+
+    # ---- 取消≠什么都没发生：多段提交的已提交步数 ----
+    def test_multi_request_cancel_reports_completed_steps(self):
+        """多段提交的第一步已落库、第二步取消 ⇒ 错误带回 `completed`=1 且不重发。
+
+        这是"部分写入不得被静默"的可证伪形态：调用方（执行体保存）只有拿到这个数，
+        才能重载视图并告诉用户"部分修改已提交、不会回滚"；没有它，那次真写入既没人
+        刷新也没人提示——库里已改而页面仍旧。
+        """
+        self.assertEqual(self.out["i_err"], {"canceled": True, "completed": 1},
+                         "已成功提交的步数必须随取消回传")
+        self.assertEqual(self.out["i_calls"], 2, "取消后不得重发第二步")
+
+    def test_countdown_cancel_also_reports_completed_steps(self):
+        """两条取消路径（口令框 / 倒计时框）口径一致：都回传已提交步数。"""
+        self.assertEqual(self.out["j_err"], {"canceled": True, "completed": 1})
+        self.assertEqual(self.out["j_calls"], 2)
+
+    def test_cancel_before_any_step_reports_zero_completed(self):
+        """首步被取消 ⇒ 一步都没提交，`completed` 必须是 0（不得谎报部分写入）。"""
+        self.assertEqual(self.out["k_err"], {"canceled": True, "completed": 0})
+        self.assertEqual(self.out["k_calls"], 1)
+
+
+class ExecutorSaveCancelTest(unittest.TestCase):
+    """执行体保存的取消路径：多段提交后取消必须重载视图并交代已生效的部分。
+
+    node 侧的用例能钉住 helper 回传的步数，钉不住调用方拿这个数做了什么（组件依赖
+    真实 DOM 与模态，不在本文件的替身覆盖范围内）——故这里对组件源码做一次结构化钉点：
+    取消分支必须走 `canceledAfter`，而它必须重载视图、把已提交步数讲出来。
+    """
+
+    def setUp(self):
+        self.src = _read(os.path.join(COMPONENTS, "settings-executors.js"))
+
+    def test_cancel_branch_routes_to_dedicated_handler(self):
+        self.assertIn("if (e && e.canceled) return canceledAfter(e);", self.src,
+                      "取消弹窗不得静默 return false：必须先刷新视图再提示")
+
+    def test_handler_reloads_view_and_explains_partial_commit(self):
+        self.assertIn("function canceledAfter(", self.src)
+        body = _extract_function(self.src, "canceledAfter")
+        self.assertIn("load()", body, "取消路径必须重载视图（用户据此后看到库里的真实状态）")
+        self.assertIn("completed", body, "提示必须带上已提交步数")
+        self.assertIn("setTip(", body, "部分提交必须给一条明确提示")
 
 
 class GatedCallSitesTest(unittest.TestCase):
