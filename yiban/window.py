@@ -3,10 +3,19 @@
 
 窗口 = `YIBAN_SIGN_START`~`YIBAN_SIGN_END`（默认 06:30~07:50，北京时间）；
 "有效窗口" = 两端各让出 `YIBAN_WINDOW_EDGE_FRONT_SEC` / `_BACK_SEC` 秒（默认各 60，
-防掐着边界发起请求）。有效窗口被裁剪吃空（前后裁剪 >= 窗口宽度）时**回退默认窗口**
-并在 `fell_back` 上报告——回退与判定必须在 `bounds` 里一起做，否则会出现：
+防掐着边界发起请求）。
 
-- 计划按"回退后的默认窗口"排，而关闭判定按"原始配置"算 → 有完整计划却整轮判
+**退化处置：窗口是管理员意图、缓冲只是精修，故牺牲精修、绝不牺牲意图。**
+前后缓冲之和 >= 窗口宽度时，**保留管理员设的窗口**，把缓冲**等比收缩**到只占窗口
+宽度的 20%（有效窗口 = 窗口宽度的 80%），并在 `edges_clamped` 上报告。为什么不能用
+内置默认窗口顶替：那个默认只是项目作者自己的时段，真实签到时段在别处的部署者会被
+静默改到错误时段签到（例：设 21:00~21:05 + 各 300s 缓冲 ⇒ 改按 06:30~07:50 跑）。
+只有窗口**本身不可用**（宽度 <= 0，上游 `parse_window` 对"起 >= 止/无法解析"已替换为
+默认窗口，故这里是防御分支）才回退默认窗口，并在 `fell_back` 上报告。
+
+收缩与判定必须在 `bounds` 里一起做，否则会出现：
+
+- 计划按"收缩/回退后的窗口"排，而关闭判定按"原始配置"算 → 有完整计划却整轮判
   "时段已结束"、零请求；
 - 容量预检/网页预估用**完整**有效窗口算、不扣已流逝时间 → 迟启动时按满容量放行，
   真实剩余只能容纳 `(eff_hi - now) / (avg + gap)` 个，超出者全部落 skipped_window。
@@ -26,6 +35,14 @@ DEFAULT_END = (7, 50)
 DEFAULT_EDGE_SEC = 60
 EDGE_MIN_SEC = 0
 EDGE_MAX_SEC = 300
+#: 缓冲合计占窗口宽度的比例上限：收缩后有效窗口 = 窗口宽度的 (1 - 此值)。
+#: 取 0.2 是"精修仍有意义"与"窗口被吃空"之间的余量，也远小于前端/保存侧
+#: 单边 20%（合计 40%）的预防上限，故正常路径下根本不会走到收缩。
+EDGE_BUDGET_RATIO = 0.2
+#: 单边缓冲的预防上限（保存侧夹取与前端滑块量程共用）：窗口宽度的 20%。
+#: 两边合计 40%，仍远小于 `bounds` 的收缩阈值（合计 >= 100%），故保存过的配置
+#: 在运行期不会再触发收缩——预防在前，收缩只是手改 .env 时的兜底。
+EDGE_SIDE_CAP_RATIO = 0.2
 # 补签轮（当天最后一轮）触发点，默认 07:12——**必须早于进程内补签轮的等待目标**：
 # signin 的告警抑制靠它判断"是否还有下一轮兜底"。宿主 run.sh 与
 # docker/scheduler.py 读同一个键（后者把真实值注入子进程环境）。
@@ -78,6 +95,18 @@ def retry_hm(env=None):
     return parse_hhmm(env.get("YIBAN_SECOND_RUN_TIME", ""), DEFAULT_RETRY_HM)
 
 
+def edge_cap_sec(window_sec):
+    """单边缓冲的预防上限（秒）：窗口宽度的 20%，按 30s 粒度向下取整，封顶 `EDGE_MAX_SEC`。
+
+    保存侧夹取与前端滑块量程**共用本函数的口径**（前端为同一条式子的 JS 版）：
+    两边合计最多 40%，永远够不到 `bounds` 的收缩阈值（合计 >= 100%）。取整到 30s
+    与提交校验同粒度（0.5 分钟），否则夹出来的值前端滑块表达不出来。
+    """
+    cap = int(window_sec * EDGE_SIDE_CAP_RATIO)
+    cap -= cap % 30
+    return max(EDGE_MIN_SEC, min(cap, EDGE_MAX_SEC))
+
+
 def bounds(cfg, invalid=False):
     """有效窗口边界（分钟，相对当天 0:00）→ `Window`。
 
@@ -85,6 +114,9 @@ def bounds(cfg, invalid=False):
     `edge_front_sec`/`edge_back_sec`（秒）——即 `signin._schedule_config()` 的返回形态。
     两个入口刻意分开：env 解析只发生在 `_schedule_config` / `from_env` 一处，
     引擎内部（排计划、判关闭、算容量）一律拿 cfg 调本函数，口径不可能各算各的。
+
+    退化处置见模块文档：缓冲过大 → 等比收缩缓冲（`edges_clamped`）；窗口宽度 <= 0 →
+    回退默认窗口（`fell_back`）。正常窗口逐值不变（不碰 start/end/edges）。
     """
     start = tuple(cfg["sign_start"])
     end = tuple(cfg["sign_end"])
@@ -93,21 +125,49 @@ def bounds(cfg, invalid=False):
     start_min, end_min = start[0] * 60 + start[1], end[0] * 60 + end[1]
     lo = start_min + front / 60.0
     hi = end_min - back / 60.0
-    fell_back = hi <= lo
-    if fell_back:
-        start_min = DEFAULT_START[0] * 60 + DEFAULT_START[1]
-        end_min = DEFAULT_END[0] * 60 + DEFAULT_END[1]
-        front = back = DEFAULT_EDGE_SEC
-        lo = start_min + front / 60.0
-        hi = end_min - back / 60.0
-    return Window(start_min, end_min, lo, hi, front, back, invalid, fell_back)
+    fell_back = edges_clamped = False
+    if hi <= lo:
+        width_min = end_min - start_min
+        if width_min > 0:
+            # 窗口可用：只等比收缩缓冲。收缩后有效窗口恰为窗口宽度的 80%，
+            # 且窗口宽度 >= 1 分钟（分钟粒度）时必有 lo < hi。
+            budget_sec = width_min * 60.0 * EDGE_BUDGET_RATIO
+            total = front + back
+            scale = budget_sec / total if total > 0 else 0.0
+            front = round(front * scale)
+            back = round(back * scale)
+            lo = start_min + front / 60.0
+            hi = end_min - back / 60.0
+            edges_clamped = True
+        else:
+            fell_back = True
+            start_min = DEFAULT_START[0] * 60 + DEFAULT_START[1]
+            end_min = DEFAULT_END[0] * 60 + DEFAULT_END[1]
+            front = back = DEFAULT_EDGE_SEC
+            lo = start_min + front / 60.0
+            hi = end_min - back / 60.0
+    return Window(start_min, end_min, lo, hi, front, back, invalid, fell_back,
+                  edges_clamped)
 
 
 class Window:
-    """有效窗口的不可变视图（见模块文档的调用方取舍）。"""
+    """有效窗口的不可变视图（见模块文档的调用方取舍）。
+
+    三个退化标记语义**不同，勿混用**：
+
+    - `invalid`：上游 `parse_window` 判"起止无法解析或起 >= 止"的事实，构造参数透传。
+      它描述的是**原始配置**，不代表本视图已被替换（`bounds` 只在宽度 <= 0 时才替换）。
+    - `fell_back`：窗口宽度 <= 0（防御分支）→ start/end/front/back 全部是内置默认值，
+      管理员设的窗口**已不被采用**。这是唯一需要提示"配置异常、已按 X~Y 运行"的情形。
+    - `edges_clamped`：窗口可用但缓冲之和 >= 窗口宽度 → start/end 原样保留，只有
+      front/back 被等比收缩（有效窗口 = 窗口宽度的 80%）。管理员意图未被改动。
+
+    `invalid` 当前全仓无消费者（外部可能打桩读取），故保留而不并入另外两者。
+    """
 
     __slots__ = (
         "back_sec",
+        "edges_clamped",
         "end_min",
         "fell_back",
         "front_sec",
@@ -118,7 +178,8 @@ class Window:
     )
 
     def __init__(self, start_min, end_min, lo_min, hi_min,
-                 front_sec, back_sec, invalid=False, fell_back=False):
+                 front_sec, back_sec, invalid=False, fell_back=False,
+                 edges_clamped=False):
         self.start_min = start_min
         self.end_min = end_min
         self.lo_min = lo_min
@@ -127,6 +188,7 @@ class Window:
         self.back_sec = back_sec
         self.invalid = invalid
         self.fell_back = fell_back
+        self.edges_clamped = edges_clamped
 
     # ---- 容量口径 ----
     def full_sec(self):

@@ -18,20 +18,32 @@
 
 1. **只做协调，不改展示契约**：按日状态文件（`sign-state-*.json`）的 JSON 结构与
    写入时机不动——它是日历/状态展示的事实源，本表只回答"谁领了、了结没有"。
-2. **写入带 owner 条件（CAS）**：租约被接管后，被接管的旧执行体写不进去，
-   避免"两个执行体都以为自己签成功了"。
-3. **降级不阻断**：表未落地（迁移被延后）或库抖动时，`try_claim` 返回 `True`
-   （按"没人在抢"处理）而不是让签到停摆——单执行体形态下这个表可有可无，
-   多执行体形态下它必须可用（届时由启动期自检拦住）。
+2. **写入带 owner 条件（CAS）+ fencing token**：租约被接管后，被接管的旧执行体写不进去，
+   避免"两个执行体都以为自己签成功了"；owner 相同但 `epoch` 落后时同样写不进去
+   （同 owner 重入会让 epoch 递增，见纪律 4）。
+3. **协调不可用即拒跑（fail-closed）**：表未落地（迁移被延后）或库抖动时，`try_claim`
+   返回 `(False, 0)` 并告警，**绝不**答"可执行"。答"可执行"在多执行体下会让两个执行体
+   同时放行同一账号 ⇒ 两次真实登录，踩上游风控红线（"同一账号一天只真实登录一次"是本
+   项目的第一红线）。单执行体形态由调用方按"本轮空转"处理。
+4. **每次写都带 fencing token**：领取自增 `epoch`，`settle` / `give_up` / `touch` 的 WHERE
+   都带 `epoch=?`。只给领取侧发号而不校验收尾写等于没做——执行体被 STW 停顿/容器挂起卡住
+   数分钟后醒来，仍以为自己持有该账号，迟到的写会覆盖接管者的结论。
 
 连接与进程内锁取自同包的 `yiban.store.db`；它把本模块公开名全部再导出。
+
+**过渡说明（v18 起）**：v18 新增的 `sign_tasks`（访问层 `yiban/store/queue_store.py`）
+把本表的 state / result / attempts 语义整体并入，并把本表存量行一次性平移进新表
+（`vshard=-1`、`run_at=claimed_at`，历史行不会被新队列重复领取）。旧表**不删**：
+14 天过渡期内本模块行为不变（仍读写本表），新队列只读写 `sign_tasks`，两表暂不对写；
+双写对齐到一定版本后再由后续迁移冻结旧表。故展示与了结判据此刻仍以本表为准。
 """
 import datetime
 import logging
 import os
 import socket
 
-from yiban import clock
+from yiban import clock, masking
+from yiban import status as yiban_status
 
 logger = logging.getLogger("yiban.store.claims")
 
@@ -51,16 +63,46 @@ STATE_DONE = "done"
 #: 尝试过但**未了结**（重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
 STATE_FAILED = "failed"
-#: 终态集合（只有 done 是真终态；failed 是"可再领"）
-SETTLED_STATES = (STATE_DONE,)
+#: 终态集合（只有 done 是真终态；failed 是"可再领"）。
+#: 值为本表词表与 `yiban.status.TASKS_SETTLED_STATES` 的交集——「了结」的词义定义在
+#: `yiban.status`（同一件事在 `sign_claims` / `sign_tasks` / 状态文件里各有一套 state
+#: 名），此处只做本表词表下的投影，不再自写一份"哪些算完"。
+SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
+                  & yiban_status.TASKS_SETTLED_STATES)
 #: 参与"未了结账号"统计的状态（与 done 互斥）
 OPEN_STATES = (STATE_CLAIMED, STATE_FAILED)
+
+
+#: 领取池不可用的一次性告警标记：`try_claim` 每个账号每轮都会被调到，而"表未落地/库锁"
+#: 是持续状态，不去重会把同一条故障刷成几十条（与 `yiban/engine/schedule.py` 的配置告警
+#: 同一手法：进程内一次）。
+_pool_down_notified = False
 
 
 def _integrity_errors():
     """唯一键冲突类异常（延迟取 sqlite3，便于本模块零依赖导入）。"""
     import sqlite3
     return sqlite3.IntegrityError
+
+
+def _notify_pool_down(e):
+    """领取池不可用（fail-closed 拒跑）的告警：进程内只报一次 + 并入当日汇总邮件。
+
+    只写日志不够：管理员在设置页看到的"多执行体"配置看起来生效，实际签到被静默拒跑，
+    无人知情。故并入当日汇总（A 线），并用模块级标记去重。
+    """
+    global _pool_down_notified
+    if _pool_down_notified:
+        return
+    _pool_down_notified = True
+    logger.error("领取签到账号失败（fail-closed 拒跑）: %s", e)
+    # 局部导入：alerts 经引擎入口反向依赖本模块所在的数据层，模块级互引会成环
+    # （与 yiban/engine/schedule.py 取 alerts 同一手法）。
+    from yiban.engine import alerts
+    alerts._collect_admin_mail(
+        "签到领取池不可用",
+        f"领取池读取失败，本执行体已拒绝执行签到（防同一账号被重复真实登录）：{e}",
+    )
 
 
 def new_owner(prefix=""):
@@ -79,13 +121,20 @@ def _utc_offset_str(seconds):
 
 
 def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settled=False):
-    """原子领取一个账号。返回是否领到。
+    """原子领取一个账号。返回 `(ok, epoch)`。
 
-    领不到的情形：已被别的执行体领取且租约未过期，或当日已了结（除非
-    `allow_settled=True`——手动指定账号、补签轮重跑等显式路径用）。
+    `ok=False` 表示"没领到，必须放弃该账号本轮"；`epoch` 是本次领取的 fencing token
+    （单调递增，插入分支为 1），收尾时必须原样传给 `settle` / `give_up` / `touch`。
+
+    领不到的情形：已被别的执行体领取且租约未过期，当日已了结（除非
+    `allow_settled=True`——手动指定账号、补签轮重跑等显式路径用），或领取池不可用。
 
     实现是**单条 upsert**：并发下 SQLite 串行化写者，后到者的 WHERE 会看到
     先到者已提交的行，故"只可能有一个赢家"，不需要额外的锁表。
+
+    库异常（表未落地/锁超时/IO）时 **fail-closed**：告警 + 返回 `(False, 0)`。
+    语义：多执行体下"按可执行处理"会让两个执行体同时放行同一账号 ⇒ 两次真实登录，
+    踩上游风控红线；故改拒跑，由调用方按"本轮空转"处理。
     """
     from yiban.store import db
     ts = _now_str(now)
@@ -94,17 +143,20 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     #  ① 已了结（done）：**无人持有**，故租约条件不适用——只由 allow_settled 决定；
     #  ② 未了结（claimed 在飞 / failed 弃过）：自己的可重入；他人的须租约已过期
     #     （<=：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期，见 give_up）。
+    # 两条分支都自增 epoch：**任何**一次成功领取都换一代 token，旧 token 随即作废。
     sql = (
         "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
-        "state, result, attempts) VALUES (?, ?, ?, ?, ?, ?, '', 0) "
+        "state, result, attempts, epoch) VALUES (?, ?, ?, ?, ?, ?, '', 0, 1) "
         "ON CONFLICT(phone, day) DO UPDATE SET "
         "owner=excluded.owner, claimed_at=excluded.claimed_at, "
         "heartbeat_at=excluded.heartbeat_at, state=excluded.state, "
+        "epoch=sign_claims.epoch + 1, "
         "attempts=sign_claims.attempts + 1 "
         "WHERE (sign_claims.state = ? AND ?)"
         "   OR (sign_claims.state IN (?, ?) "
         "       AND (sign_claims.owner = excluded.owner "
-        "            OR sign_claims.heartbeat_at <= ?))"
+        "            OR sign_claims.heartbeat_at <= ?)) "
+        "RETURNING epoch"
     )
     try:
         conn = db.get_conn()
@@ -114,34 +166,40 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
                       STATE_DONE, 1 if allow_settled else 0,
                       STATE_CLAIMED, STATE_FAILED, expired_before),
             )
+            # RETURNING 只对**真的写成**的行出行：条件不满足时零行，正是"没领到"。
+            row = cur.fetchone()
             conn.commit()
-            return cur.rowcount == 1
+            return (True, row[0]) if row else (False, 0)
     except _integrity_errors() as e:
         # 唯一键冲突 = 有别人刚领到（极端时序下 upsert 之外的可能路径）。
-        # 此时**必须**答"没领到"：答 True 会让两个执行体同时登录同一账号，
-        # 那是本设计的第一红线（重复登录会加速触发易班侧风控）。
+        # 此时**必须**答"没领到"：答"领到了"会让两个执行体同时登录同一账号，
+        # 那是本设计的第一红线（重复登录会加速触发易班侧风控）。故它**不得**折进
+        # 下面的 fail-closed 分支——那会把"别人在做"这个事实掩盖成"池子坏了"。
         logger.debug("领取竞争失败（他人已领）: %s", e)
-        return False
+        return (False, 0)
     except Exception as e:
-        # 表未落地/库锁/磁盘错误：协调能力不可用。按"没人在抢"处理——
-        # 单执行体形态下这个表可有可无，不能因为协调表坏了就让签到停摆；
-        # 多执行体形态由启动期自检拦住（届时它必须可用）。
-        logger.warning("领取签到账号失败（按可执行处理）: %s", e)
-        return True
+        _notify_pool_down(e)
+        return (False, 0)
 
 
-def touch(phone, day, owner, lease_sec=LEASE_SECONDS, now=None):
-    """续租（只续自己的）。返回是否续上（被接管/已了结时为 False）。"""
+def touch(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, epoch=None):
+    """续租（只续自己的）。返回是否续上（被接管/已了结/token 落后时为 False）。
+
+    `lease_sec` 只用于保持既有调用签名：租约判据在领取侧按心跳时间串比较（见 try_claim），
+    续租只是把心跳写成"现在"。`epoch=None` 时不校验 token（迁移期调用方与既有测试）。
+    """
     from yiban.store import db
     ts = _now_str(now)
+    sql = ("UPDATE sign_claims SET heartbeat_at=? "
+           "WHERE phone=? AND day=? AND owner=? AND state=?")
+    params = [ts, phone, day, owner, STATE_CLAIMED]
+    if epoch is not None:
+        sql += " AND epoch=?"
+        params.append(epoch)
     try:
         conn = db.get_conn()
         with db._conn_lock:
-            cur = conn.execute(
-                "UPDATE sign_claims SET heartbeat_at=? "
-                "WHERE phone=? AND day=? AND owner=? AND state=?",
-                (ts, phone, day, owner, STATE_CLAIMED),
-            )
+            cur = conn.execute(sql, tuple(params))
             conn.commit()
             return cur.rowcount == 1
     except Exception as e:
@@ -149,53 +207,93 @@ def touch(phone, day, owner, lease_sec=LEASE_SECONDS, now=None):
         return False
 
 
-def settle(phone, day, owner, state=STATE_DONE, result=""):
-    """收尾：把领取记录置为终态。返回是否写成功（被接管时为 False）。
+def _explain_fenced_write(phone, day, what):
+    """被 fencing 拒时的回读：区分"对方已了结"与"本执行体确实被接管"。
+
+    写 0 行有两种成因，只 `return False` 会把它们混成一个：
+    ① 行已被收尾（`done`）——本次写是幂等重入（Stripe 幂等键语义），按 info 记；
+    ② 行仍无终态——本执行体拿着作废的 token 在写，按 warning 记。
+    """
+    from yiban.store import db
+    try:
+        with db._conn_lock:
+            row = db.get_conn().execute(
+                "SELECT state FROM sign_claims WHERE phone=? AND day=?",
+                (phone, day)).fetchone()
+    except Exception as e:
+        logger.debug("回读签到记录失败（不影响签到结果）: %s", e)
+        return
+    state = row[0] if row else ""
+    who = masking.mask_phone(phone)
+    if state in SETTLED_STATES:
+        logger.info("%s被 fencing 拒，但该行已有终态 %s（幂等重入）: %s", what, state, who)
+    else:
+        logger.warning("%s被 fencing 拒且无终态: %s", what, who)
+
+
+def settle(phone, day, owner, state=STATE_DONE, result="", epoch=None):
+    """收尾：把领取记录置为终态。返回是否写成功（被接管 / token 落后时为 False）。
 
     `result` 只存**摘要**（截断），且调用方须先脱敏——本表可能被运维查询导出。
+
+    `epoch` 传领取时拿到的 fencing token，被接管者的迟到写由存储端拒绝；写 0 行且传了
+    epoch 时回读一次以区分"幂等重入"与"真被接管"（见 `_explain_fenced_write`）。
     """
     from yiban.store import db
     if state not in SETTLED_STATES:
         raise ValueError(f"非法终态: {state!r}")
+    sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
+           "WHERE phone=? AND day=? AND owner=?")
+    params = [state, (result or "")[:200], clock.ts(), phone, day, owner]
+    if epoch is not None:
+        sql += " AND epoch=?"
+        params.append(epoch)
     try:
         conn = db.get_conn()
         with db._conn_lock:
-            cur = conn.execute(
-                "UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
-                "WHERE phone=? AND day=? AND owner=?",
-                (state, (result or "")[:200], clock.ts(), phone, day, owner),
-            )
+            cur = conn.execute(sql, tuple(params))
             conn.commit()
-            return cur.rowcount == 1
+            if cur.rowcount == 1:
+                return True
     except Exception as e:
         logger.warning("收尾签到记录失败（不影响签到结果）: %s", e)
         return False
+    if epoch is not None:
+        _explain_fenced_write(phone, day, "收尾")
+    return False
 
 
-def give_up(phone, day, owner, result=""):
+def give_up(phone, day, owner, result="", epoch=None):
     """本次执行放弃该账号，但**当日仍未了结**：置 `failed` 并**立刻放开租约**。
 
     为什么必须放开：补签轮（窗口内第二轮）与兜底执行体的存在意义就是接手失败账号。
     若把租约留满 900s，07:10 弃权的账号在 07:12 的补签轮里仍"被持有"→ 补签轮领不到、
     当日再也签不上。放开后任何执行体/任何一轮都能立刻接手。
 
-    返回是否写成功（被接管时为 False）。
+    `epoch` 的语义同 `settle`（弃权同样是终态写：被接管者不得把接管者的在飞记录改成 failed）。
+    返回是否写成功（被接管 / token 落后时为 False）。
     """
     from yiban.store import db
+    sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
+           "WHERE phone=? AND day=? AND owner=?")
+    expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
+    params = [STATE_FAILED, (result or "")[:200], expired, phone, day, owner]
+    if epoch is not None:
+        sql += " AND epoch=?"
+        params.append(epoch)
     try:
         conn = db.get_conn()
-        expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
         with db._conn_lock:
-            cur = conn.execute(
-                "UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
-                "WHERE phone=? AND day=? AND owner=?",
-                (STATE_FAILED, (result or "")[:200], expired, phone, day, owner),
-            )
+            cur = conn.execute(sql, tuple(params))
             conn.commit()
-            return cur.rowcount == 1
+            if cur.rowcount == 1:
+                return True
     except Exception as e:
         logger.warning("放弃签到记录失败（不影响签到结果）: %s", e)
         return False
+    if epoch is not None:
+        _explain_fenced_write(phone, day, "弃权")
+    return False
 
 
 def _day_column(day, column):

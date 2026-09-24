@@ -11,7 +11,7 @@
      不转义引号，且属性值经 HTML 解码后引号复原）：改 data-* 属性 + 事件委托，
      属性值不进 JS 解析器，普通 HTML 转义即安全。
 
-police_link 用例沿用 test_batch18_fixes_0905.py 的 webapp importlib 装载方式。
+police_link 用例沿用 test_web_security_gates.py 的 webapp importlib 装载方式。
 """
 import contextlib
 import importlib.util

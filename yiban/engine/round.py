@@ -35,7 +35,7 @@ import random
 import time
 from datetime import datetime, timedelta
 
-from yiban import clock, egress
+from yiban import clock, egress, window
 from yiban import status as yiban_status
 from yiban.engine import alerts, state_io
 from yiban.engine import attempts as attempts_mod
@@ -57,7 +57,6 @@ _DEFAULT_SLOW_SIGN_SEC = 30
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
-STATUS_PENDING = yiban_status.STATUS_PENDING
 STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
@@ -68,30 +67,37 @@ STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 # 状态码 → 日志/日历符号（同一对象，非副本）
 STATUS_SYMBOL = yiban_status.SYMBOL
 
-#: 领取池的"当日了结"口径（`state_io._second_run_drop_done` 的剔除集合与 `_settle_claims`
-#: 的记 `done` 判据都用它，改一处必须同改另一处）：
-#: 这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）都仍开放，
-#: 由补签轮或兜底执行体接手。
-_CLAIM_DONE_STATUSES = (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
+#: 领取池的"当日了结"口径：`yiban.status.CLAIM_DONE_STATUSES` 的别名（**同一对象**，
+#: 非副本）。这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）
+#: 都仍开放，由补签轮或兜底执行体接手。补签轮定向剔除（`state_io`）判的是同一件事。
+_CLAIM_DONE_STATUSES = yiban_status.CLAIM_DONE_STATUSES
 
 
 def _next_retry_at(now_dt, sch_cfg, rng=None):
     """重试落点：在剩余有效窗口的偏早段重新采样。
 
     - 下界 now + retry_min_interval（防连击）；
-    - 上界 eff_hi = sign_end - edge_back（统一截止口径）；
+    - 上界 = 有效窗口结束（`window.bounds`，与排计划/判关闭同一口径）；
     - 只在前 60% 的剩余窗口里均匀采样：不尾端扎堆、无固定尾序，也不回队尾立即执行；
     - 窗口放不下下一次尝试时返回 None，由调用方走放弃路径。
+
+    上界必须与排计划/判关闭同源：裁剪把窗口吃空时 `window.bounds` 回退默认窗口，而
+    "sign_end - edge_back" 仍按原始配置算，上界会落到有效窗口起点之前——窗口明明还开着，
+    重试却判"放不下"而放弃，白丢一次机会。
+
+    **入参契约**：`sch_cfg` 必须是 `schedule._schedule_config()` 的返回形态，即含
+    `sign_start` / `sign_end` / `edge_front_sec` / `edge_back_sec` 四键（`window.bounds`
+    按这四键折有效窗口）外加 `retry_min_interval`。只给起止两键的旧形态会让 `bounds`
+    取不到裁剪键而抛 KeyError。
     """
     rng = rng or random.Random()
     base = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_min = sch_cfg["sign_end"][0] * 60 + sch_cfg["sign_end"][1]
-    eff_hi = base + timedelta(minutes=end_min - sch_cfg["edge_back_sec"] / 60.0)
+    eff_hi = base + timedelta(minutes=window.bounds(sch_cfg).hi_min)
     lo = now_dt + timedelta(seconds=sch_cfg["retry_min_interval"])
     if lo >= eff_hi:
         return None
-    window = (eff_hi - lo).total_seconds()
-    return lo + timedelta(seconds=rng.uniform(0, window * 0.6))
+    span = (eff_hi - lo).total_seconds()
+    return lo + timedelta(seconds=rng.uniform(0, span * 0.6))
 
 
 def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=None, cred_state=None,
@@ -108,8 +114,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     schedule 非空（自动错峰模式，时间驱动队列）：按 {phone: datetime} 时间点到点执行
     （已过点立即执行），不再叠加启动/账号间随机延迟；失败的账号经 _next_retry_at 重新
     采样到剩余有效窗口的偏早段后非阻塞重插（不再回队尾 + 阻塞等待），窗口不足时明确
-    放弃；相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护统一按
-    eff_hi（sign_end - edge_back）。
+    放弃；相邻请求间隔受 min_exec_gap / exec_gap_min 兜底；截止保护与重试上界统一按
+    有效窗口结束（`window.bounds`，含裁剪吃空时回退的默认窗口）。
 
     cred_state（账密熔断）：暂停中的账号零请求跳过（半开试探日除外）；
     执行后更新凭据失败计数（成功清除、凭据类失败累计、达阈值暂停）。
@@ -166,24 +172,32 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
                    or egress.single_owner())
     claimed_day = {}   # 本进程领到的账号 → 业务日（跨午夜时逐账号不同）
+    # 本进程领到的账号 → 领取时拿到的 fencing token。收尾写必须带上它：重试重插会再次
+    # 领取（同一 owner 重入也自增 epoch），故这里记的是**最近一次**的 token，旧的已作废。
+    claimed_epoch = {}
 
     def _claim(phone, day):
-        """领取该账号当日的工作权；领不到返回 False（别人在做）。
+        """领取该账号当日的工作权；领不到返回 False（别人在做 / 领取池不可用）。
 
         **库未初始化时直接放行且不碰库**：领取池只是"多执行体协调"的手段，
         而"不碰库"是有意的——否则纯状态文件部署（无 DB）会被这次调用顺手创建
         一个默认库，纯属副作用。
+
+        领取池不可用时**拒跑**（与 `claims.try_claim` 的 fail-closed 同一纪律）：
+        这里答"可执行"会让两个执行体同时登录同一账号，踩上游风控红线。该账号本轮
+        空转，由补签轮 / 兜底执行体接手。
         """
         if not db.is_initialized():
             return True
         try:
-            got = db.claim_sign_account(phone, day, executor_id, allow_settled=reclaim)
+            got, epoch = db.claim_sign_account(phone, day, executor_id,
+                                               allow_settled=reclaim)
         except Exception as e:
-            # 协调层故障不得让签到停摆（单执行体形态这个池可有可无）
-            logger.debug(f"[{phone}] 领取失败（按可执行处理）: {e}")
-            got = True
+            logger.error(f"[{_mask_phone(phone)}] 领取签到账号异常（fail-closed 拒跑）: {e}")
+            got, epoch = False, 0
         if got:
             claimed_day[phone] = day
+            claimed_epoch[phone] = epoch
         return got
 
     def _settle_claims(res):
@@ -191,6 +205,9 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
 
         了结口径与展示口径刻意一致：`success/already/no_task` 记为 `done`（当日无需再签），
         其余记为 `failed` 但**未了结**——补签轮与兜底执行体正是为接手它们而存在。
+
+        收尾带上领取时的 fencing token：本轮被接管过的账号写不进去（被接管者迟到的结论
+        不得覆盖接管者的结论）。
         """
         if not claimed_day:
             return   # 本轮没领过任何账号（库未初始化 / 全被他人领取）
@@ -198,11 +215,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             day = claimed_day.get(ph)
             if not day:
                 continue
+            epoch = claimed_epoch.get(ph)
             try:
                 if st in _CLAIM_DONE_STATUSES:
-                    db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st))
+                    db.claim_settle(ph, day, executor_id, db.CLAIM_STATE_DONE, str(st),
+                                    epoch=epoch)
                 else:
-                    db.claim_give_up(ph, day, executor_id, str(st))
+                    db.claim_give_up(ph, day, executor_id, str(st), epoch=epoch)
             except Exception as e:
                 logger.debug(f"[{ph}] 收尾领取记录失败（不影响签到结果）: {e}")
 
@@ -242,8 +261,8 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         退出码 1、失败邮件），而真相是"该账号当日已有结论、无需本轮处理"。透传后汇总
         按真实结论分组：success/already 计入成功；no_task / skipped_window /
         skipped_norange / paused / user_cancelled / no_position 计入跳过；其余
-        （failed 等）仍计失败——真失败必须继续可见。状态串 strip 后比较，
-        口径与 `state_io._has_conclusion` 相同。
+        （failed 等）仍计失败——真失败必须继续可见。状态串 strip 后比较，口径与
+        `state_io._has_conclusion` 相同（同一谓词 `yiban.status.is_concluded_status`）。
 
         **`pending` 不是结论**：排计划阶段给每个账号都写了"计划 HH:MM"（同一份状态
         文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
@@ -260,7 +279,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             if _p in results:
                 continue
             _rec_status = str(recorded.get(_p, "")).strip()
-            if _rec_status not in ("", STATUS_PENDING):
+            if yiban_status.is_concluded_status(_rec_status):
                 results[_p] = (False, "已有当日结论", False, _rec_status)
                 continue
             if not state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW,

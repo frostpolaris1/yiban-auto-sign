@@ -305,10 +305,10 @@ from yiban import __version__ as APP_VERSION  # noqa: E402  # 版本唯一来源
 # cred_state 已无自用点，保留供 web.app.<名字> 取用（须在引导之后导入）
 from yiban import clock, cred_state  # noqa: E402,F401
 
-# 容量预估已迁出（web/services/capacity.py），保留供 web.app.<名字> 取用
-from yiban import window as yb_window  # noqa: E402,F401
+# 窗口唯一口径 `yiban.window`：`sign_window_bounds` 用它把起止与前后裁剪折成有效窗口
+from yiban import window as yb_window  # noqa: E402
 from yiban.attempt import jobs as verify_jobs  # noqa: E402
-from yiban.logging_ext import DailyFlockFileHandler  # noqa: E402
+from yiban.logging_ext import DailyFlockFileHandler, MaskingFormatter  # noqa: E402
 from yiban.masking import mask_phone as _mask_phone  # noqa: E402
 from yiban.masking import mask_url_userinfo as _mask_url_userinfo  # noqa: E402,F401  # 代理脱敏
 
@@ -838,6 +838,24 @@ def edge_front_sec():
     return _render.edge_front_sec(read_env(ENV_FILE))
 
 
+def sign_window_bounds():
+    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.window.Window`。
+
+    唯一口径在 `yiban.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
+    几何会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口切块，网页却按原始
+    配置把片全置灰），用户所选片随之被静默放弃。窗口起止与前后裁剪两个取值点按调用
+    时刻现取本模块的（测试会打桩 `web.app._sign_window` / `web.app.edge_config`）。
+    """
+    start, end = _sign_window()
+    front_sec, back_sec = edge_config()
+    return yb_window.bounds({
+        "sign_start": start,
+        "sign_end": end,
+        "edge_front_sec": front_sec,
+        "edge_back_sec": back_sec,
+    })
+
+
 # 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py；
 # 三个容量缺省值与开关解析器 `_env_flag` 由本模块现取注入（它们是本模块的名字，会被测试改写）。
 def _settings_effective_values(env_file):
@@ -1091,20 +1109,21 @@ ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
 def _slot_to_label(slot_min):
     """自选片窗口内分钟数 → "HH:MM"（实现见 web/services/accounts_data.py）。
 
-    窗口解析器按调用时刻现取本模块的（测试会打桩 `web.app._sign_window`）。
+    有效窗口视图按调用时刻现取本模块的（测试会打桩 `web.app._sign_window` /
+    `web.app.edge_config`，`sign_window_bounds` 现取后穿透到服务层）。
     """
-    return _accounts_data._slot_to_label(slot_min, _sign_window)
+    return _accounts_data._slot_to_label(slot_min, sign_window_bounds)
 
 
 def _estimate_slot(phone):
     """预计签到时段（实现见 web/services/accounts_data.py）。
 
-    账号读入口、`.env` 路径与读取器、整数配置读取器、窗口解析器、掐头去尾口径都按调用
+    账号读入口、`.env` 路径与读取器、整数配置读取器、有效窗口视图都按调用
     时刻现取本模块的（测试会打桩 `read_env` / `_sign_window` / `edge_config` /
     `load_accounts`，也会赋值 `ENV_FILE`）。
     """
     return _accounts_data._estimate_slot(
-        phone, load_accounts, read_env, ENV_FILE, load_env_int, _sign_window, edge_config)
+        phone, load_accounts, read_env, ENV_FILE, load_env_int, sign_window_bounds)
 
 
 # 账号展示序列化（mask_account）、定位与字段校验（find_account_index /
@@ -1198,9 +1217,11 @@ def verify_admin(username, password):
 def sign_status(now=None):
     """基于服务器时间计算签到状态（实现见 web/services/signstatus.py）。
 
-    `.env` 路径、整数配置读取器与窗口解析器都按调用时刻现取本模块的。
+    `.env` 路径、整数配置读取器与有效窗口视图都按调用时刻现取本模块的
+    （测试会打桩 `web.app._sign_window` / `web.app.edge_config`，窗口打桩经
+    `sign_window_bounds` 现取后穿透）。
     """
-    return _signstatus.sign_status(ENV_FILE, load_env_int, _sign_window, now)
+    return _signstatus.sign_status(ENV_FILE, load_env_int, sign_window_bounds, now)
 
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
@@ -1554,7 +1575,7 @@ def create_app(host=None):
                 "仅输出到 stderr/标准日志通道", _log_dir)
             _daily_fh = None
         if _daily_fh is not None:
-            _daily_fh.setFormatter(logging.Formatter(
+            _daily_fh.setFormatter(MaskingFormatter(
                 "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             ))

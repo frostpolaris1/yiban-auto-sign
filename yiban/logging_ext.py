@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""日志落盘处理器：跨进程互斥 + 按天滚动。
+"""日志落盘处理器：跨进程互斥 + 按天滚动 + 出站脱敏。
 
 签到进程与 web 进程写同一批 `sign-YYYY-MM-DD.log`（web 的「日志」页与运维排查
 都读它），必须：
 
 - **跨进程互斥**：并发写入时行不交错——经 `yiban/infra/locks.py` 统一加锁，真无法
   加锁时由 locks 告警留痕；
-- **按天滚动**：常驻的 web 进程跨天自动换文件，与签到子进程"按天分文件"同口径。
+- **按天滚动**：常驻的 web 进程跨天自动换文件，与签到子进程"按天分文件"同口径；
+- **出站脱敏**：`MaskingFormatter` 对格式化后的整行兜底遮手机号，任何调用点
+  （含将来新写的日志）都留不下裸号。
 
 日期口径取 `yiban.clock`（北京时间），与签到事件/状态文件一致。
 """
@@ -14,8 +16,26 @@ import logging
 import os
 
 from yiban.infra import locks
+from yiban.masking import mask_phones_in_text
 
 from . import clock
+
+
+class MaskingFormatter(logging.Formatter):
+    """对最终输出串做幂等手机号脱敏的 formatter（输出面兜底）。
+
+    挂在**输出面**而不是逐个调用点：脱敏此前靠调用点手工调 `mask_phone`，漏一处就
+    漏一处（新写的日志天然不受保护）。放在 formatter 而非 handler filter，是因为
+    formatter 拿到的是最终成文（含 `%(message)s` 插值与异常 traceback），一处覆盖
+    全部落盘/降级通道；且两个日志装配点（CLI 的 `_setup_cli_logging`、web 的
+    `create_app`）都经 `setFormatter` 装配，改这两处即可，改动面最小。
+
+    覆盖 `format`（而非 `formatMessage`）：异常栈文本由 `Formatter.format` 追加，
+    它可能内嵌上游回显的手机号，只有对最终串替换才兜得住。
+    """
+
+    def format(self, record):
+        return mask_phones_in_text(super().format(record))
 
 
 class FlockFileHandler(logging.FileHandler):

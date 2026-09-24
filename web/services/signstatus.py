@@ -5,24 +5,27 @@
 **功能**
 `.env` 开关值解析 `_env_flag`；签到窗口解析 `_sign_window`；"现在是否在窗口内"的纯钟点
 判定 `_in_sign_window` 与含周末门/暂停门的 `_in_run_period`（附门原因 `_day_off_reason`）；
-系统信息族的 `sign_status`（状态文案与配色）与 `check_connectivity`（不登录的可达性探测）。
+系统信息族的 `sign_status`（状态文案与配色，钟点取有效窗口端点，附分钟格式化 `_hm`）
+与 `check_connectivity`（不登录的可达性探测）。
 
 **归属**
 原 `web/app.py` 的模块级窗口与系统信息辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
 转发，把它自己持有、而本模块需要的模块级名字——`.env` 路径 `ENV_FILE`、整数配置读取器
-`load_env_int`、窗口解析器 `_sign_window`、钟点判定 `_in_sign_window`——在调用时刻现取后注入。
+`load_env_int`、窗口解析器 `_sign_window`、有效窗口视图 `sign_window_bounds`、钟点判定
+`_in_sign_window`——在调用时刻现取后注入。
 
 **复用**
-窗口解析委托 `yiban.window.parse_window`、运行时段委托 `yiban.engine.schedule.day_off`——
-与引擎（signin）同一份口径，避免"网页显示 07:50、引擎按别的值判定"这类同概念两套实现；
-`_in_run_period` 复用 `_in_sign_window` 的钟点判定再叠门，不另写一套窗口逻辑。
+窗口解析委托 `yiban.window.parse_window`、有效窗口委托 `yiban.window.bounds`、运行时段委托
+`yiban.engine.schedule.day_off`——与引擎（signin）同一份口径，避免"网页显示 07:50、引擎按
+别的值判定"这类同概念两套实现；`_in_run_period` 复用 `_in_sign_window` 的钟点判定再叠门，
+不另写一套窗口逻辑。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
 模块）。`.env` 路径、读取器与窗口/钟点判定都作为显式参数接收：它们在 `web.app` 上是会被
 测试改写、也会随 `--config` 与运行方式变化的模块级名字（既有测试在 `web.app` 上打桩
-`_sign_window` 与 `_in_sign_window` 来固定窗口与时段），本模块另持一份绑定会让这些改写
-静默失效。
+`_sign_window` / `edge_config` / `_in_sign_window` 来固定窗口与时段，窗口打桩经
+`sign_window_bounds` 现取后穿透到本模块），本模块另持一份绑定会让这些改写静默失效。
 """
 
 import logging
@@ -107,14 +110,43 @@ def _in_run_period(bounds, in_sign_window, day_off_reason, now=None):
 # ---------------------------------------------------------------------------
 # 系统信息
 # ---------------------------------------------------------------------------
-def sign_status(env_file, load_env_int, sign_window, now=None):
+def _hm(minute_of_day):
+    """当天分钟数 → "HH:MM"（向下取整到整分钟，与设置页窗口展示同一取整方向）。
+
+    有效窗口端点可为小数分钟（裁剪值非 60 的倍数时，如 391.5 = 06:31:30），展示到
+    分钟只能取整；取整方向与设置页一致，避免同一窗口在两处显示不同分钟。
+    """
+    m = int(minute_of_day)
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def window_fallback_text(bounds):
+    """窗口不可用（`bounds` 已回退默认窗口）时的可见提示；正常窗口返回空串。
+
+    唯一文案源：`sign_status` 的展示与设置页的提示必须逐字一致——同一异常在两处
+    说成两句话，管理员会以为是两件事。回退是唯一"管理员设的窗口没被采用"的情形
+    （缓冲过大只是收缩缓冲、窗口不动，见 `yiban.window` 的退化处置），故只有它
+    需要"配置异常、已按 X~Y 运行"这句话。
+    """
+    if not getattr(bounds, "fell_back", False):
+        return ""
+    return (f"配置异常：签到窗口不可用，已按 {_hm(bounds.lo_min)}~{_hm(bounds.hi_min)} 运行")
+
+
+def sign_status(env_file, load_env_int, sign_window_bounds, now=None):
     """基于服务器时间计算签到状态。
 
     返回 (显示文本, 颜色)。颜色为原版配色（东京夜蓝系，深浅页面背景均可读）；
     文案不含 emoji（UI 图标统一走前端 SVG 图标系统）。
 
-    `.env` 路径、整数配置读取器与窗口解析器由调用方传入（`web.app` 的
-    `ENV_FILE` / `load_env_int` / `_sign_window`）：三者都会被测试改写或在调用点打桩。
+    三段判定与文案里的钟点都取**有效**窗口端点（`window.bounds`，已扣前后裁剪、
+    缓冲过大时缓冲被收缩）：本函数只服务展示，但展示的正是引擎实际开关点——按原始
+    配置出字会在日常配置下就与引擎分叉 1 分钟（页面说"~07:50 结束"，引擎 07:49 已停手）。
+    窗口本身不可用时（`fell_back`，防御分支）改出"配置异常、已按 X~Y 运行"整句：
+    此时管理员设的窗口根本没被采用，继续报三段状态等于谎报。
+
+    `.env` 路径、整数配置读取器与有效窗口视图由调用方传入（`web.app` 的
+    `ENV_FILE` / `load_env_int` / `sign_window_bounds`）：三者都会被测试改写或在调用点打桩。
     """
     now = now or clock.now()
     if now.weekday() == 6 and not load_env_int(env_file, "YIBAN_SUNDAY_SIGN", 0):
@@ -123,15 +155,16 @@ def sign_status(env_file, load_env_int, sign_window, now=None):
     if now.weekday() == 5 and not load_env_int(env_file, "YIBAN_SATURDAY_SIGN", 0):
         # 周六：默认关闭；开启后走正常窗口逻辑
         return "今日无需打卡（周六）", "#a1a1aa"
-    sw = sign_window()  # 单次读取（每次调用都会重读 .env，避免重复解析）
-    start_h, start_m = sw[0]
-    end_h, end_m = sw[1]
-    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
-    if now < start:
-        return f"未到签到时间（{start_h:02d}:{start_m:02d} 开始）", "#7aa2f7"
-    if now <= end:
-        return f"签到窗口进行中（~{end_h:02d}:{end_m:02d} 结束）", "#9ece6a"
+    win = sign_window_bounds()  # 单次读取（每次调用都会重读 .env，避免重复解析）
+    fallback = window_fallback_text(win)
+    if fallback:
+        return fallback, "#e0af68"
+    lo_min, hi_min = win.lo_min, win.hi_min
+    now_min = now.hour * 60 + now.minute + now.second / 60.0
+    if now_min < lo_min:
+        return f"未到签到时间（{_hm(lo_min)} 开始）", "#7aa2f7"
+    if now_min <= hi_min:
+        return f"签到窗口进行中（~{_hm(hi_min)} 结束）", "#9ece6a"
     return "今日签到已结束", "#e0af68"
 
 

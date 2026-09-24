@@ -23,7 +23,7 @@
 模块）。凡写 `.env` 的入口都接收调用方传入的 `write_batch`（即 `web.app` 的
 `write_env_batch`）：它是既有测试观测每一次落盘的打桩点，本模块另持绑定会让打桩静默失效；
 同理 `_executors_window` 的 `.env` 路径与签到窗口解析器由调用方现取传入。读路径
-（`read_env` / `load_env_int` / `_env_write_lock` / `_is_http_proxy_url`）复用
+（`read_env` / `_env_write_lock` / `_is_http_proxy_url`）复用
 `web.services.env_io` 的同域实现，行分隔符判定取 `yiban.infra.env_io` 真源。
 """
 
@@ -34,7 +34,6 @@ import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.ap
 from web.services.env_io import (
     _env_write_lock,
     _is_http_proxy_url,
-    load_env_int,
     read_env,
 )
 from yiban import egress as yb_egress
@@ -53,16 +52,18 @@ logger = logging.getLogger("web")
 def _executors_window(env_file, sign_window):
     """执行体接口口径的**有效签到窗口**（`window.effective_sec` 即容量换算的分母）。
 
-    `edge_*` 未配置按 0 计（与 GET 的原实现逐字一致，故显示值零变化）；容量估算与
-    "窗口内不做实测"的拦截都用它，保证页面上显示的窗口与这两个判断同源。
+    前后裁剪按 `yiban.window.parse_edges` 解析（与引擎同一份缺省与旧键映射）：缺省 60s，
+    不是 0——示例 `.env` 把这两个键注释掉，缺省 0 会让页面显示的窗口、容量换算的分母与
+    "窗口内不做实测"的拦截都比引擎宽 1 分钟。容量估算与拦截都用它，保证页面上显示的
+    窗口与这两个判断同源。
 
     `.env` 路径与窗口解析器由调用方传入：两者都是 `web.app` 上可被测试改写的模块级名字。
     """
     start, end = sign_window()
+    front, back = yb_window.parse_edges(read_env(env_file))
     return yb_window.bounds({
         "sign_start": start, "sign_end": end,
-        "edge_front_sec": load_env_int(env_file, "YIBAN_WINDOW_EDGE_FRONT_SEC", 0),
-        "edge_back_sec": load_env_int(env_file, "YIBAN_WINDOW_EDGE_BACK_SEC", 0),
+        "edge_front_sec": front, "edge_back_sec": back,
     })
 
 

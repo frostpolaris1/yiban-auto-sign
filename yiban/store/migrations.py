@@ -5,7 +5,7 @@
 **功能**
 - 基线建表 `_create_tables`：accounts / users / audit_logs / time_prefs /
   user_delete_requests 五张表与其索引（幂等 IF NOT EXISTS）；
-- 迁移项 `migrate_v1..v17`：每项对应一个已发布、且**不可再修改**的 schema 版本；
+- 迁移项 `migrate_v1..v20`：每项对应一个已发布、且**不可再修改**的 schema 版本；
 - 迁移助手 `_table_columns` / `_ensure_column` / `_ensure_index` 与表名白名单
   `_ALLOWED_TABLES`（助手对白名单外的表名直接拒绝，防拼接 SQL 的注入面）；
 - 编排 `_run_migrations`：读 user_version、每项包进 BEGIN IMMEDIATE、核心迁移失败阻断
@@ -28,6 +28,8 @@
 `db._ensure_column(...)` / `db._create_tables(...)` / `db._maybe_migrate(...)` 调用面不变。
 `_MIGRATIONS` 是**可变登记表**（测试用 `db._MIGRATIONS = [...]` 缩窄或替换迁移集），由 db
 侧模块类读写转发到本模块——快照式再导出会让缩窄静默失效（编排仍读真表）。
+`terminal_task_state` 与 `_JSON_TERMINAL_TO_TASK_STATE` 是「JSON 状态 → 池状态」判定的
+唯一定义处，`scripts/ledger_check.py` 的对账判定引用它。
 
 **通信**
 迁移函数一律接收调用方传入的 `conn`（事务由 `_run_migrations` 经写事务入口开启），本模块
@@ -44,9 +46,11 @@ import logging
 import os
 import re
 import sqlite3
+from datetime import timedelta
 
 from yiban import clock
-from yiban.infra import account_crypto
+from yiban.infra import account_crypto, env_io
+from yiban.masking import sanitize_text as _sanitize_text
 from yiban.store import accounts as _accounts
 from yiban.store import connection as _connection
 
@@ -154,9 +158,14 @@ def _create_tables(conn):
 # page_visits / server_metrics 已由 migrate_v14 删除，条目保留是必需的：
 # 冻结的 migrate_v6 仍对它们调用 _ensure_column / _ensure_index，全新库的执行序
 # 是 migrate_v4 建表 → migrate_v6 补列 → migrate_v14 删表。迁移只增不改。
+# 作用域：只被三个助手查名——`_table_columns` / `_ensure_column`（两者对白名单外的
+# 表名直接 raise ValueError）与 `db._table_min_max`（取证留痕的表名参数）。既不
+# 约束本模块的建表 DDL，也不许作为"这张表可以随便查"的凭据：其它访问层各按自己的
+# 表名白名单/字面量走。故新表若要走上面三个助手，必须在此登记。
 _ALLOWED_TABLES = {"accounts", "users", "audit_logs", "time_prefs", "user_delete_requests",
                    "sign_events", "page_visits", "server_metrics", "session_cache",
-                   "verify_jobs"}
+                   "verify_jobs", "sign_claims", "sign_tasks",
+                   "egress_state", "app_meta"}
 
 
 def _table_columns(conn, table):
@@ -704,6 +713,241 @@ def migrate_v17(conn):
     conn.commit()
 
 
+def migrate_v18(conn):
+    """v18：持久化任务队列（sign_tasks）+ 出口令牌桶状态（egress_state）；
+    sign_claims 数据平移进 sign_tasks。
+
+    可选迁移（is_core=False，同 v17 口径）：失败只告警不阻断启动，下次启动整段重跑，
+    故必须幂等（CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE）。
+
+    `sign_tasks` 一行 = 一个账号在一个业务日的计划、当前状态与**跨执行体共享**的
+    尝试数（v17 `sign_claims` 的语义整体并入）。`state` 取值：
+
+    | state | 含义 |
+    |-------|------|
+    | `pending` | 待领取（`run_at` 到点后被批量领取） |
+    | `claimed` | 已被某执行体领取、任务级租约未过期 |
+    | `done` / `skipped` | 已完成（成功/已签到/今日无任务/窗口外跳过） |
+    | `failed` / `stolen` | 未了结：可重排（`run_at` 后退）或按分片接管 |
+
+    `vshard` 是把账号划分给执行体的确定性哈希分工所用的虚分片槽位（0..255，
+    256 个槽，故增加执行体时既有计划不必重排）；`sign_claims` 平移行落 **-1**，表示
+    "不参与该分工的历史行"（其 `run_at` 取 `claimed_at`，且 state 非 pending
+    时不会命中批领，故历史行不会被重新领取）。`owner` 一列同时承担"计划归属的执行体"
+    与"当前持有者"，`epoch` 是 fencing token（写入侧的单调序号，用于拒绝被接管者
+    迟到的写）——列在 v18 一次建齐（schema 变更此刻最便宜），其自增与终态写的
+    WHERE 守卫由领取/收尾路径实现。
+
+    **耐久性**：本表回答"当日是否已登录"，终态被回滚等于对同一账号再登录一次
+    （上游风控红线），故连接必须是 FULL——WAL+NORMAL 会丢最近提交。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sign_tasks ("
+        "phone TEXT NOT NULL, "
+        "day TEXT NOT NULL, "
+        "vshard INTEGER NOT NULL, "
+        "owner TEXT NOT NULL DEFAULT '', "
+        "run_at TEXT NOT NULL, "
+        "priority INTEGER NOT NULL DEFAULT 5, "
+        "state TEXT NOT NULL DEFAULT 'pending', "
+        "attempts INTEGER NOT NULL DEFAULT 0, "
+        "lease_until TEXT NOT NULL DEFAULT '', "
+        "epoch INTEGER NOT NULL DEFAULT 0, "
+        "result TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL, "
+        "PRIMARY KEY (phone, day)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_pickup "
+        "ON sign_tasks(day, vshard, state, run_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_lease ON sign_tasks(state, lease_until)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS egress_state ("
+        "egress TEXT PRIMARY KEY, "
+        "rate REAL NOT NULL /* 单位 = 账号尝试/s（attempt/s）：1 = 单出口每秒 1 次账号尝试"
+        "（单账号 = 6 次 HTTP 请求） */, "
+        "burst REAL NOT NULL DEFAULT 0, "
+        "tat REAL NOT NULL DEFAULT 0, "
+        "updated_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
+        "priority, state, attempts, lease_until, result, created_at) "
+        "SELECT phone, day, -1, owner, claimed_at, 5, state, attempts, heartbeat_at, "
+        "result, claimed_at FROM sign_claims"
+    )
+    # 提交建表与平移（与 v17 同形：迁移不做事务管理，框架已持 BEGIN IMMEDIATE）。
+    conn.commit()
+    # 耐久级必须在**事务外**改：SQLite 对事务内的 PRAGMA synchronous 直接报
+    # "Safety level may not be changed inside a transaction"。放在末尾提交之后
+    # 既绕开该限制，又保住建表与平移在前一个事务里原子生效；PRAGMA 若仍失败，
+    # blocked 路径下次启动整段重跑（幂等）收敛。
+    conn.execute("PRAGMA synchronous = FULL")
+
+
+def migrate_v19(conn):
+    """v19：`sign_claims` 补 fencing token 列 `epoch`（可选迁移，失败只告警不阻断）。
+
+    为什么需要：账号级租约 900s 的判据是"心跳时间串"，而执行体会被 STW 停顿/容器
+    挂起卡住数分钟——它醒来后仍以为自己持有该账号，会把迟到的结论写进去，覆盖接管者
+    的结论。故每次领取自增一个单调序号（fencing token），收尾写的 WHERE 带上它，
+    存储端主动拒绝"token 后退的写"（Kleppmann：只给领取侧发号而不校验等于没做）。
+
+    存量行取默认 0（= 从未被领取过），**NOT NULL 是必需的**：领取路径要拿它做
+    `epoch = epoch + 1`，NULL 会让算术静默变 NULL、守卫全失效。
+
+    `sign_tasks.epoch` 由 v18 建齐；此处一并 `_ensure_column` 兜底——v18 若被回退，
+    本迁移仍能把队列侧的护栏补上。两条 ALTER 都幂等，可选迁移失败后下次启动整段重跑。
+    """
+    _ensure_column(conn, "sign_claims", "epoch", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "sign_tasks", "epoch", "INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# v20 backfill 参数（**冻结语义**：迁移一发布即不可修改，见模块头）
+# ---------------------------------------------------------------------------
+#: 回看窗口（天）：与备份保留期、领取池的观察期同量级——够覆盖一次跨版本接管之后
+#: 的对账，又不至于每次启动去翻整年状态文件。
+_BACKFILL_DAYS = 14
+
+#: 状态文件里的 `time` 形态（HH:MM:SS，含取值范围校验）。不匹配则回退当日零点——
+#: `run_at` 是 NOT NULL 且是"批领到期时刻"的比较对象，必须给一个合法时间串。
+_BACKFILL_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$")
+
+#: 单批提交行数：攒够就提交一次，避免一次长事务长时间占住库级写锁。
+_BACKFILL_COMMIT_ROWS = 50
+
+#: JSON 状态 → `sign_tasks.state` 的映射（**冻结语义**；只登记终态）。
+#: 为什么按这三档落：
+#: - `success`/`already`/`no_task` 是 `yiban.status.CLAIM_DONE_STATUSES`，当日不必
+#:   再签 → `done`；
+#: - `skipped_window`/`skipped_norange`/`no_position` 与 `failed` 同落 `failed`：
+#:   前两者**在 `UNDONE_STATUSES` 内**、`no_position` 是可重试侧（点位为空不代表
+#:   今天的窗口不会再开），都属"还该再试"，落 `skipped` 会把它们判成已了结、让
+#:   补签轮不再重跑；
+#: - `paused`/`user_cancelled`/`global_paused` 是管理侧决策（熔断/用户自停/全站
+#:   暂停），今天不会再试 → `skipped`。
+#: 在途状态（`retrying`/`pending`）**不补**：那不是终态，补进台账会凭空多出待办。
+#: **新增状态码必须同步本表**：本表被 v20 补账与 `scripts/ledger_check.py` 的对账判定
+#: 共用，少一格时两头同时失效——该补的行不进台账，而用同一张表做的对账还报"对账平"，
+#: 全程无信号。绑定由 tests/test_migrations_v20.py 的键集守卫钉住。
+# 一致性由 tests/test_migrations_v20.py 与未来 ledger_states 的等价断言共同保证
+# ——将来若把这份映射搬到 `ledger_states.from_status_json`，必须与本表逐格一致。
+_JSON_TERMINAL_TO_TASK_STATE = {
+    "success": "done", "already": "done", "no_task": "done",
+    "failed": "failed",
+    "skipped_window": "failed", "skipped_norange": "failed", "no_position": "failed",
+    "paused": "skipped", "user_cancelled": "skipped", "global_paused": "skipped",
+}
+
+#: 补账行的 owner 标记（对账据此区分"平移行/补账行"）。
+_BACKFILL_OWNER = "backfill"
+
+
+def _read_sign_state(state_dir, day):
+    """读某日的按日状态文件；缺失/损坏/非 dict/空 → None（调用方按"跳过该日"处理）。
+
+    口径与 `state_io._daily_statuses` 一致（`utf-8-sig` 容 BOM、坏文件按无记录），
+    但不复用它的实现：那个函数只读"今天"且把"读失败"折叠成空 dict，而本处要区分
+    "无记录"与"这一日跳过"，以便把扫描账目记准。**不得**读 `sign-daily-<day>.json`
+    ——那是 `{phone: 符号}` 的符号表，没有 `status`/`time`。
+    """
+    path = os.path.join(state_dir, f"sign-state-{day}.json")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        logger.warning("v20 backfill：状态文件缺失，跳过该日 %s", path)
+        return None
+    except (OSError, ValueError, TypeError) as e:
+        logger.warning("v20 backfill：状态文件不可读，跳过该日 %s [%s: %s]",
+                       path, type(e).__name__, _sanitize_text(e))
+        return None
+    if not isinstance(data, dict) or not data:
+        logger.warning("v20 backfill：状态文件非 dict 或为空，跳过该日 %s", path)
+        return None
+    return data
+
+
+def terminal_task_state(entry):
+    """该条目对应的池状态；非终态与「无记录」→ None。
+
+    空串与缺 `status` 键都是「无记录」（与 `status.is_concluded_status` 同口径，
+    即 `""` 不算一条"状态为空的结论"），不是 `pending`。
+
+    公开名字是**有意的**：`scripts/ledger_check.py` 的对账判定必须与本处同一份逻辑，
+    各写一份（哪怕共用同一张常量表）也会在规范化细节上漂移，对账据此报出并不存在的
+    差异或漏报真差异。
+    """
+    if not isinstance(entry, dict):
+        return None
+    return _JSON_TERMINAL_TO_TASK_STATE.get(str(entry.get("status") or "").strip())
+
+
+def _entry_time(entry):
+    """条目里的执行时刻（HH:MM:SS）；缺失或不可解析 → 当日零点。"""
+    raw = str(entry.get("time") or "")
+    return raw if _BACKFILL_TIME_RE.match(raw) else "00:00:00"
+
+
+def migrate_v20(conn):
+    """v20：把 `sign-state-*.json` 里的终态补进 `sign_tasks`（可选迁移，失败只告警不阻断）。
+
+    为什么需要：v18 的平移源是 `sign_claims`，而它只记**真实领取过**的账号（唯一写入点
+    `claims.try_claim`）——JSON 里的跳过类终态（`paused`/`skipped_window`/…）从未进入
+    领取池，只做 v18 的话台账对"已跳过"的账号仍是空白。
+
+    只读 `sign-state-<day>.json`（按日结构化状态文件）；最近 `_BACKFILL_DAYS` 天里
+    文件缺失或损坏的日**跳过**（台账以两张表为准），不报错也不阻断。
+
+    `owner='backfill'` + `vshard=-1` 是与 v18 平移行同形的**惰性历史行**：`-1` 与任何
+    执行体的分片集合不相交，既不参与批领也不被分片级窃取。`INSERT OR IGNORE` 让本
+    迁移幂等——已有行（平移行、执行体真写的行）一概不覆盖，故失败/延后后下次启动
+    整段重跑也能收敛。每 `_BACKFILL_COMMIT_ROWS` 行提交一次，避免长事务占住写锁。
+
+    返回本次**实际补入**的行数（重跑为 0），供调用方与运维判断收敛。
+    """
+    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    # owner 直接内联：`_BACKFILL_OWNER` 是模块常量，不进绑定参数
+    sql = ("INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
+           "priority, state, attempts, lease_until, result, created_at) "
+           f"VALUES (?, ?, -1, '{_BACKFILL_OWNER}', ?, 5, ?, 0, '', '', ?)")
+    anchor = clock.now()
+    inserted = 0
+    scanned_days = 0
+    skipped_days = 0
+    uncommitted = 0
+    for offset in range(_BACKFILL_DAYS):
+        day = (anchor - timedelta(days=offset)).strftime("%Y-%m-%d")
+        entries = _read_sign_state(state_dir, day)
+        if entries is None:
+            skipped_days += 1
+            continue
+        scanned_days += 1
+        for phone, entry in entries.items():
+            state = terminal_task_state(entry)
+            if state is None:
+                continue
+            stamp = f"{day} {_entry_time(entry)}"
+            cur = conn.execute(sql, (phone, day, stamp, state, stamp))
+            inserted += cur.rowcount
+            uncommitted += 1
+            if uncommitted >= _BACKFILL_COMMIT_ROWS:
+                conn.commit()
+                uncommitted = 0
+    conn.commit()
+    # 只报计数：补账涉及的是账号，日志里不得出现手机号
+    logger.info("v20 backfill：补入 %d 行（扫描 %d 天，跳过 %d 天）",
+                inserted, scanned_days, skipped_days)
+    return inserted
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -725,6 +969,9 @@ _MIGRATIONS = [
     (15, "v15_verify_jobs", migrate_v15, False),
     (16, "v16_verify_job_prev_status", migrate_v16, False),
     (17, "v17_sign_claims", migrate_v17, False),
+    (18, "v18_sign_tasks", migrate_v18, False),
+    (19, "v19_fencing_epoch", migrate_v19, False),
+    (20, "v20_backfill_json_terminals", migrate_v20, False),
 ]
 
 

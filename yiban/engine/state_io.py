@@ -85,15 +85,15 @@ _TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _has_conclusion(entry):
-    """该账号当日是否已有"结论"（非空且非 pending）。
+    """该账号当日是否已有"结论"：`status` 非空且非 `pending`（未知状态串也算有结论）。
 
     `pending` 只是计划（"打算什么时候签"），success/failed 等才是事实；"空/缺失"
-    等价于无记录。`_write_sign_state` 的 only_if_absent CAS 与窗口收尾快照共用
-    这一口径。
+    等价于无记录。判据取自 `yiban.status.is_concluded_status`（唯一定义处）：
+    `_write_sign_state` 的 only_if_absent CAS 与窗口收尾预筛共用这一口径。
     """
     if not isinstance(entry, dict):
         return False
-    return str(entry.get("status", "")).strip() not in ("", STATUS_PENDING)
+    return yiban_status.is_concluded_status(entry.get("status", ""))
 
 
 def _sched_marker_exists():
@@ -156,12 +156,12 @@ def _second_run_drop_done(accounts):
     recorded = _daily_statuses()
     if not recorded:
         return accounts
-    # 已了结 = success/already/**no_task**（按 main 自身的"已执行"口径：no_task 指
-    # "今天没任务"，同样无需重跑）。原实现漏了 no_task，补签轮会对这些账号再走一遍
-    # 完整登录——多一轮全站真实登录，且与 UNDONE_STATUSES 口径矛盾。
+    # 已了结 = `yiban.status.CLAIM_DONE_STATUSES`（success/already/**no_task**：no_task
+    # 指"今天没任务"，同样无需重跑）。与领取池记 `done` 的判据是**同一对象**——两处
+    # 各写一份会漂移，让补签轮对这些账号再走一遍完整登录。
     done = {
         p for p, st in recorded.items()
-        if st in (STATUS_SUCCESS, STATUS_ALREADY, STATUS_NO_TASK)
+        if st in yiban_status.CLAIM_DONE_STATUSES
     }
     if not done:
         return accounts
@@ -482,6 +482,10 @@ def mark_worker_finished(index, exit_code=None, now=None):
 
     被信号杀掉（退出码为负）时调用方**不调本函数**：留"有开始、无收尾"，心跳过期后
     由 `worker_presence` 判成 `stale`——那正是"疑似被强杀/超时杀掉"需要用户注意的状态。
+
+    **退出码 >= 0 一律算正常退出**，含子进程"本轮失败"（如 v3 返回空结果、runner 汇总成
+    退出码 1）：那也会写收尾判 `finished`，失败信息靠退出码与告警体现，不由四态承担。
+    只有**单进程直跑**（没有监督进程替它写收尾）时内部未预期异常才留"有开始、无收尾"。
     """
     at = now or clock.now()
     path = worker_alive_path(index)
@@ -505,7 +509,7 @@ def worker_presence(index, now=None):
     | `running` | 有心跳且新鲜（`now - ts <= 2 × WORKER_HEARTBEAT_SEC`） | 在线（正在跑本轮） |
     | `finished` | 有本轮收尾标记（`ended_at`，正常退出） | 已跑完（灰） |
     | `idle` | 本业务日无该槽位记录（今天还没跑） | 未运行（灰） |
-    | `stale` | 有开始记录、无收尾，且心跳已过期 | **异常**（可能被强杀/超时杀掉） |
+    | `stale` | 有开始记录、无收尾，且心跳已过期 | **异常**（可能被强杀/超时杀掉；单进程直跑时内部未预期异常也不写收尾） |
 
     `last_seen_at` 是"最后一次见到它活着"的时间串（收尾态给 `ended_at`；无记录给
     None）。**为什么不回 alive 布尔**：短命进程"没在跑"多数时候是正常的，只有

@@ -9,6 +9,7 @@
 """
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -340,6 +341,95 @@ class ReviewFlowTest(unittest.TestCase):
             self.assertIn("批量复核不符", sent[addr])
             self.assertIn(mine, sent[addr], "批量拒信也要写明被拒的是哪个账号（原先缺失）")
             self.assertNotIn(other, sent[addr], "按户分封，不得把另一户的账号写进这封")
+
+
+ADMIN_PASS_B19 = "MasterPass#2026"
+
+
+def _load_webapp(tag):
+    import db as _db
+    spec = importlib.util.spec_from_file_location(f"webapp_{tag}", os.path.join(BASE, "web", "app.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[f"webapp_{tag}"] = mod
+    with contextlib.suppress(Exception):
+        spec.loader.exec_module(mod)
+    return _db, mod
+
+
+class _Base(unittest.TestCase):
+    """共享脚手架：临时 .env/DB + webapp 加载 + 主管理员登录。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-b19-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with io.open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS_B19}\n"
+            )
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        cls.db, cls.webapp = _load_webapp(cls.__name__)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.db._conn is not None:
+            with contextlib.suppress(Exception):
+                cls.db._conn.close()
+            cls.db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_LOG_FILE", "YIBAN_STATE_DIR"):
+            os.environ.pop(k, None)
+
+    def setUp(self):
+        if self.db._conn is not None:
+            with contextlib.suppress(Exception):
+                self.db._conn.close()
+            self.db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+
+    def _master(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS_B19})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = c.get("/api/me").get_json()["csrf_token"]
+        return c, {"X-CSRF-Token": t}
+
+    def _seed_user_with_account(self, email, phone, status="pending"):
+        """注册用户 + 建一条指定状态的账号（owner=email）。"""
+        self.db.create_user(email, "x", role="user")
+        acc = {"name": "N", "phone": phone, "password": "pw", "status": status, "owner": email}
+        self.db.add_account(acc)
+
+
+class UsersReviewCountTest(_Base):
+    """/api/users review_count：待审核 + 已拒绝（修复口径差）。"""
+
+    def test_review_count_covers_rejected(self):
+        self._seed_user_with_account("u-pending@test.local", "13900139001", "pending")
+        self._seed_user_with_account("u-rejected@test.local", "13900139002", "rejected")
+        self._seed_user_with_account("u-active@test.local", "13900139003", "active")
+        c, h = self._master()
+        data = c.get("/api/users", headers=h).get_json()
+        counts = {u["email"]: u for u in data["users"]}
+        self.assertEqual(counts["u-pending@test.local"]["review_count"], 1)
+        self.assertEqual(counts["u-pending@test.local"]["pending_count"], 1)
+        # 修复点：仅有已拒绝账号的用户 review_count=1（旧口径 pending_count=0 → 不显示）
+        self.assertEqual(counts["u-rejected@test.local"]["review_count"], 1)
+        self.assertEqual(counts["u-rejected@test.local"]["pending_count"], 0)
+        self.assertEqual(counts["u-active@test.local"]["review_count"], 0)
 
 
 if __name__ == "__main__":

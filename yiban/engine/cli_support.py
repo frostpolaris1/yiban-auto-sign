@@ -32,7 +32,7 @@ from contextlib import contextmanager, suppress
 
 from yiban import clock
 from yiban.infra import env_io, locks
-from yiban.logging_ext import FlockFileHandler
+from yiban.logging_ext import FlockFileHandler, MaskingFormatter
 
 logger = logging.getLogger("yiban")
 
@@ -194,7 +194,7 @@ def _setup_cli_logging():
         return
     _cli_logging_ready = True
     handler = _make_log_handler()
-    handler.setFormatter(logging.Formatter(
+    handler.setFormatter(MaskingFormatter(
         "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
