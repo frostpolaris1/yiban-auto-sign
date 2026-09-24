@@ -555,9 +555,12 @@ async def _refiller(queue, shards, ctx):
     提前收干，把刚重排回 `pending` 的重试任务留在库里没人领。
 
     同一循环按间隔驱动两件恢复动作（**函数内不持时间状态**，间隔常量在模块级）：
-    - `reap_expired`：回收租约**超出宽限期**的 `claimed` 行——不回收的话崩溃通道留下的
-      行永远不被重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"；宽限期挡住"还在飞
-      但租约已到"的慢尝试被误回收（详见 `queue_store.REAP_GRACE_SEC`）；
+    - `reap_expired`：回收本业务日内租约**超出宽限期**的 `claimed` 行——不回收的话崩溃
+      通道留下的行永远不被重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"；宽限期
+      挡住"还在飞但租约已到"的慢尝试被误回收（详见 `queue_store.REAP_GRACE_SEC`）。
+      **只回收本业务日**（`day=ctx.day`）：不带 `day` 会连历史业务日的行一起回退成
+      `pending`，而次日进程只按当日领取，那些行只会变成永不被领的空转行；跨午夜长轮次
+      仍在飞的行也会被次日进程重置。
     - 死主接管：对心跳过期的执行体，把其分片集内的 `pending` 行改归本执行体并把分片并入
       领取范围——否则死主的行没有任何人领。
     另按 `WORKER_HEARTBEAT_SEC` 刷新本执行体心跳：一轮可能十几分钟，只在起跑/收尾写盘会
@@ -573,7 +576,7 @@ async def _refiller(queue, shards, ctx):
             state_io.mark_worker_beat(getattr(ctx, "slot", 0), now=_now())
             last_beat = _mono()
         if _mono() - last_recover >= RECOVER_SEC:
-            queue_store.reap_expired(now=_stamp_ms(_now()))
+            queue_store.reap_expired(now=_stamp_ms(_now()), day=ctx.day)
             shards = _widen_with_dead_peers(ctx, shards)
             last_recover = _mono()
         rows = queue_store.claim_batch(
@@ -721,10 +724,11 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     slot = _worker_slot(executor_id)
     # 起跑写文件心跳：执行体页读的是监督进程写的**文件心跳**，单进程 v3 路径不写就只会
     # 显示 idle。回收必须在领取之前——崩溃通道留下的 `claimed` 行只有先回到 `pending`
-    # 才会被 `claim_batch` 重新领取（不回收就是"崩溃即卡死"）。心跳写失败只留 debug，
-    # 回收失败由 queue_store 内部吞掉并告警，两者都不阻断签到。
+    # 才会被 `claim_batch` 重新领取（不回收就是"崩溃即卡死"）。回收只碰本业务日
+    # （`day=day`）：跨日回收会把历史行回退成永不被领的空转行，还会重置跨午夜长轮次的
+    # 在飞行。心跳写失败只留 debug，回收失败由 queue_store 内部吞掉并告警，两者都不阻断签到。
     state_io.mark_worker_started(slot, now=_now())
-    queue_store.reap_expired(now=_stamp_ms(_now()))
+    queue_store.reap_expired(now=_stamp_ms(_now()), day=day)
     try:
         ctx = _Ctx(
             accounts={a.phone: a for a in accounts},

@@ -1510,6 +1510,40 @@ class RecoveryWiringTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)])
         self.assertEqual(len(calls), 1, "每轮起跑必须调用一次回收")
 
+    def test_reap_is_scoped_to_the_business_day(self):
+        """回收只碰本业务日的行：跨日回收会把历史行与跨午夜长轮次的在飞行一起清掉。
+
+        不带 `day` 时，次日进程会把**昨天**的过期 `claimed` 行回退成 `pending`——而
+        `claim_batch` 只按当日领取，历史行只会变成"看着有活、其实无人领"的空转行；
+        跨午夜仍在飞的当日行也会被次日进程重置（同一账号重复真实登录）。
+        """
+        today, stale = _phone(1), _phone(2)
+        self._add_task(today, vshard=0, state="claimed", owner="worker-9@testhost",
+                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60))
+        self._add_task(stale, vshard=0, state="claimed", owner="worker-9@testhost",
+                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60),
+                       day="2026-09-21")
+        self._seed_v(8)
+        calls = []
+        real = queue_store.reap_expired
+
+        def spy(*a, **kw):
+            calls.append(kw)
+            return real(*a, **kw)
+
+        with mock.patch.object(queue_store, "reap_expired", spy), \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(today))
+        self.assertTrue(calls, "本轮必须调用回收")
+        self.assertEqual([c.get("day") for c in calls], [DAY] * len(calls),
+                         "回收必须带本业务日，否则会跨业务日回收历史行")
+        self.assertEqual(self._row(today)["state"], "done", "同日的过期行按宽限期回收")
+        old = self._row(stale, day="2026-09-21")
+        self.assertEqual((old["state"], old["owner"], old["epoch"]),
+                         ("claimed", "worker-9@testhost", 1),
+                         "异日的过期 claimed 行不得被回收")
+
     def test_expired_claim_is_reclaimed_and_completed(self):
         """崩溃执行体留下的过期 `claimed` 行（已过回收宽限期）必须被回收、重领、跑完。"""
         phone = _phone(1)
@@ -1627,6 +1661,49 @@ class DeadPeerTakeoverTest(_Base):
         self.assertEqual(self._row(_phone(2))["owner"], OWNER, "本执行体自己的行不动")
         self.assertEqual(self._row(_phone(2))["epoch"], 1, "自己的行不得被自增 epoch")
         self.assertEqual(out, tuple(sorted(peer_shards)), "死主分片并入本轮领取范围")
+
+
+class DeadPeerTakeoverChainTest(_Base):
+    """接管链路要一路走到"本轮真的领到"：判死 → 改归 → 并入领取集 → `claim_batch` 领出。
+
+    `steal_shards` 的单测只证明行被改归本执行体。只改归属、不把死主分片并入领取集，
+    本执行体不会去扫那些分片，行就成了"改了却领不到"——单测看不出的那一跳。故本用例跑
+    **真实补货**（不注入假条目），断言死主的行在本轮被领取并执行。
+    """
+
+    def test_dead_peer_rows_are_claimed_and_executed_this_round(self):
+        peer = "worker-2@testhost"
+        v = 8
+        self._seed_v(v)
+        cfg = _cfg(executors=[OWNER, peer])
+        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
+        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
+        phones = [_phone(1), _phone(2)]
+        for i, phone in enumerate(phones):
+            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
+                           state="pending", owner=peer, epoch=1, run_at=_ts(seconds=-30))
+        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
+        state_io.mark_worker_started(
+            executor_v3._worker_slot(peer),
+            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
+        ran = []
+
+        def _attempt(acc):
+            ran.append(acc.phone)
+            return (True, "ok", False, "success")
+
+        # 补货循环的恢复间隔置 0：首轮就触发"判死 + 并入"（真实间隔是 60s，用例不真等）
+        with mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
+             mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
+            results = self._run_v3(self._accounts(*phones), cfg=cfg)
+        self.assertEqual(sorted(ran), sorted(phones),
+                         "死主的行必须在本轮被领取并执行（并入领取集那一跳不能少）")
+        for phone in phones:
+            row = self._row(phone)
+            self.assertEqual(row["owner"], OWNER, "接管后 owner 是本执行体")
+            self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
+            self.assertEqual(row["state"], "done")
+            self.assertIn(phone, results)
 
 
 if __name__ == "__main__":
