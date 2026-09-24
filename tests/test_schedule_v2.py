@@ -1,21 +1,25 @@
 # -*- coding: utf-8 -*-
 """调度 v2（S1 demo）build_schedule 统一填充框架测试。
 
+标签：A · 调度：计划与分片
+覆盖：v2 build_schedule
+   的统一填充框架：小人数免分块与分块复用、顺序×均匀线性填块、随机×均匀循环填块、顺序×正态锚点稳定、随机×正态每日重排、四组合首尾缓冲、σ_eff
+   封顶、压缩模式全量给点、旧 YIBAN_SIGN_MODE 兼容映射、固定 seed
+   可复现、对抗配置（空有效窗口、edge=600 掐首块、窗口起点非 5
+   分钟倍数）、SCH-10 等待后再判窗口、min_exec_gap 与 exec_gap_min 的取大关系。
+对应实现：scripts/signin.py（build_schedule、_anchor_z、_schedule_config、_schedule_blocks、_nearest_available）、yiban/engine/schedule.py
+   与 run_queue_retry 的等待/间隔路径、web/app.py 设置页。
+关键断言：顺序 vs 随机是「可预期性」契约而非风格：顺序×均匀必须不同 seed
+   落同一块，随机×正态必须每天重排。所有组合的落点必须留在 [06:31, 07:49]
+   内，且账号一个不丢。到点等待/间隔对齐之后必须再判一次窗口——否则等待期间跨过关停点仍会发出请求。min_exec_gap
+   与 exec_gap_min 是取 max
+   而不是互相取消（过点对齐语义不能被新的账号级间隔削掉）。
+依赖：临时 .env + 临时库 + 全新 Flask app（web
+   类用例）；纯调度用例只动环境变量。不发网络请求。整文件在本机执行，无 skip。
+
 用法（在项目根目录）：
     py -m pytest tests/test_schedule_v2.py -v   # 需要 pytest
     py tests/test_schedule_v2.py                # 无 pytest 也可直接运行
-
-覆盖（对应 docs/design/plan-scheduler-v2.md 第 3/6 章）：
-- 小人数（n≤3）免分块：直接有效窗口内随机时刻
-- 顺序×均匀：线性填块（50 人 → 前 4 块，块内等分）
-- 随机×均匀：循环填块（每块人数均衡、铺满窗口）
-- 顺序×正态：z_i 锚点稳定（hash(phone)，两天波动有界）；全局钟形
-- 随机×正态：每天重排（两次运行结果不同）
-- 首尾缓冲：所有组合 × 多 seed 全部 ∈ [06:31, 07:49]
-- σ_eff 封顶：n 大时 ≤ 有效窗口/3
-- 压缩模式：n=300 全部账号拿到时间点且不越界
-- 兼容映射：旧 YIBAN_SIGN_MODE=normal → 顺序×正态
-- 固定 seed 可复现
 """
 import contextlib
 import importlib.util
@@ -47,7 +51,7 @@ def hm(dt):
 def make_accounts(n):
     accs = []
     for i in range(n):
-        a = signin.Account(phone=str(13800000000 + i), password="p")
+        a = signin.Account(phone=str(13800000000 + i), password="p") # 号连着生成：正态锚点按 phone 哈希，连号才有可比的「同一批账号两天波动」
         accs.append(a)
     return accs
 
@@ -70,7 +74,7 @@ class ScheduleV2Test(unittest.TestCase):
             self.assertTrue(391 <= hm(t) < 395, t)  # 线性填块：两人都在块 0 [06:31,06:35)
         s_rnd = signin.build_schedule(
             accs, order="random", dist="uniform", rng=random.Random(1))
-        blocks = sorted(hm(t) for t in s_rnd.values())
+        blocks = sorted(hm(t) for t in s_rnd.values()) # 排序只为断「两个块都有人」：随机排序下账号与块的对应关系本身无意义
         self.assertLess(blocks[0], 395)      # 循环填块：块 0
         self.assertGreaterEqual(blocks[1], 395)  # 块 1
         self.assertTrue(all(EFF_LO <= t <= EFF_HI for t in blocks))

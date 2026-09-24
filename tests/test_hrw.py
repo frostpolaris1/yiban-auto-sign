@@ -1,9 +1,20 @@
 # -*- coding: utf-8 -*-
 """`yiban.engine.hrw` 的契约用例：纯函数 HRW 分工（虚分片 + argmax 归属）。
 
-覆盖十一条：确定性、跨进程一致（钉死"禁用内置 `hash()`"）、vshard 与 owner 两层都吃
-`day`、`v_for` 阈值、分布无空洞、增删执行体只迁移约 1/K、均衡度落在理论抖动包络内、
-`shards_of` 与 `owner_of`/`assignment` 三方一致、平局按字典序、空执行体不抛。
+标签：A · 调度：计划与分片
+覆盖：虚分片层（vshard_of 确定性、值域、吃 day、blake2b 编码定值、v_for
+   阈值）与归属层（owner_of / shards_of / assignment
+   三方一致、换天重排、增删执行体的迁移量、均衡度包络、平局字典序、空执行体）共十一条契约。
+对应实现：yiban/engine/hrw.py（vshard_of、v_for、owner_of、shards_of、assignment、V_DEFAULT）；取值写进
+   yiban/store/queue_store 的 sign_tasks.vshard。
+关键断言：分片归属必须跨进程一致：判据靠两个全新解释器互验，并且同时钉住「内置 hash()
+   每进程不同」——陷阱没 armed 时这条用例是空转。vshard 层也必须吃
+   day（它要落库，只在 owner
+   层换天等于每天把同一批账号压回同一个执行体）。blake2b
+   的编码被定值钉死：改编码等于作废当天全站计划。增删执行体只迁移约
+   1/K、平局与执行体顺序无关（否则两个执行体会同时领同一分片）。
+依赖：起 2 个全新子解释器（sys.executable，PYTHONHASHSEED=random，超时
+   120s）；其余为纯函数。不建库、不发网络请求。整文件在本机执行，无 skip。
 
 **两处容差比设计文档宽，依据是实测**（HRW 的归属是"每片独立均匀选主"，分片数与每片
 人数都服从多项分布）：
@@ -29,7 +40,7 @@ from yiban.engine import hrw
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DAY = "2026-09-22"
+DAY = "2026-09-22" # 模块 docstring 里的包络容差是按这一天的实测定的，换日期要重测而不是改常数
 NEXT_DAY = "2026-09-23"
 V = hrw.V_DEFAULT
 
@@ -55,7 +66,7 @@ def _child_probe(day):
     """起一个全新解释器求值，返回其输出 dict（PYTHONHASHSEED=random 保证哈希随机化开着）。"""
     env = dict(os.environ)
     env["PYTHONPATH"] = BASE
-    env["PYTHONHASHSEED"] = "random"
+    env["PYTHONHASHSEED"] = "random" # 显式打开随机化：不开时 hash() 恰好稳定，这条陷阱检查就成了空转
     r = subprocess.run(
         [sys.executable, "-c", _CHILD_SRC, BASE, day],
         cwd=BASE, env=env, capture_output=True, text=True, encoding="utf-8",
@@ -63,7 +74,7 @@ def _child_probe(day):
     )
     if r.returncode != 0:
         raise AssertionError(f"子进程求值失败: {r.stdout}{r.stderr}")
-    return json.loads(r.stdout.strip().splitlines()[-1])
+    return json.loads(r.stdout.strip().splitlines()[-1]) # 只取末行：子进程可能先吐一条警告，整段喂 json 会炸
 
 
 class HrwIdentityTest(unittest.TestCase):

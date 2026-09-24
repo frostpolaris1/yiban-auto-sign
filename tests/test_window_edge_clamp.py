@@ -1,11 +1,23 @@
 # -*- coding: utf-8 -*-
 """缓冲过大时收缩缓冲、保留窗口（`yiban/window.bounds` 的退化处置）。
 
-窗口是管理员意图、缓冲只是精修：缓冲之和 >= 窗口宽度时**只等比收缩缓冲**
-（有效窗口 = 窗口宽度的 80%），绝不用内置默认窗口替换管理员设的窗口。后者会让
-"真实签到时段不是 06:30~07:50"的部署者在错误时段签到，而管理员在页面上看不出
-任何异常。窗口本身不可用（宽度 <= 0，上游 `parse_window` 已拦截，此处为防御分支）
-才回退默认窗口。
+标签：A · 调度：计划与分片
+覆盖：yiban.window.bounds
+   的退化处置判定表：正常窗口（默认与非默认）逐值不变、缓冲之和 >=
+   窗口宽度时的等比收缩（含单边吃满）、最小可用窗口收缩后仍 lo <
+   hi、收缩结果喂回不再生效（幂等）、窗口宽度 <= 0
+   的防御分支回退默认、两个标记缺省为假、_schedule_blocks
+   的两条告警与邮件去重。
+对应实现：yiban/window.py（Window、bounds 的 fell_back / edges_clamped
+   分支）、scripts/signin.py（_schedule_blocks 的告警与 _mail_summary
+   并入、_window_clamped_notified / _window_fallback_notified 去重标记）。
+关键断言：窗口是管理员意图、缓冲只是精修：缓冲吃满时只等比收缩缓冲（有效窗口 =
+   窗口宽度的
+   80%），绝不用内置默认窗口替换管理员设的窗口——后者会让「真实签到时段不是
+   06:30~07:50」的部署者在错误时段签到且页面上看不出来。收缩必须幂等（不逐轮越缩越短）。收缩与回退各一条告警、各只并入邮件一次。
+依赖：纯计算 + 打桩 signin 的配置与邮件汇总；用例在 setUp/tearDown
+   重置模块级去重标记与 _mail_summary，避免跨用例串味。不建库、不发网络请求。无
+   skip。
 
 覆盖：
 - 正常窗口（含生产默认 06:30~07:50）逐值不变，两个标记都为假；
@@ -97,7 +109,7 @@ class BoundsClampTest(unittest.TestCase):
 
     def test_markers_default_false(self):
         """两个标记都是构造参数，缺省为假（外部按关键字构造不改变既有行为）。"""
-        win = window.Window(390, 470, 391.0, 469.0, 60, 60)
+        win = window.Window(390, 470, 391.0, 469.0, 60, 60) # 按位置只喂旧的六个参数：新标记必须留在签名末尾且带缺省值
         self.assertFalse(win.fell_back)
         self.assertFalse(win.edges_clamped)
 
