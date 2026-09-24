@@ -735,6 +735,9 @@ sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh 
 # cron 里同样要注入（口令写进 root 的 crontab 行或单独的 0600 环境文件，别放命令历史）
 # 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）
 30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+# 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、或运行脚本与仓库版**漂移**时发一封
+# 管理员告警；正常路径零输出（安装与排期见 scripts/yiban-backup-sentinel.sh 头部）
+5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 # 恢复演练 / 真实恢复（支持 .tar.gz / .gpg / .age）
 sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
   bash scripts/backup.sh --restore <备份包> <目标目录>
