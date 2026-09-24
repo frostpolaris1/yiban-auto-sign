@@ -9,6 +9,27 @@
 3. `is_safe_url` 的段覆盖——`ipaddress.is_private` 不含 CGNAT 100.64.0.0/10
    （云厂商元数据服务落在此段），组播/保留段与 IPv4-mapped IPv6 写法同样放行。
 另附 `_mask_addr` 逗号列表与 `sanitize_url` 手机号两处。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：脱敏三处残余绕过面（复合凭据键名、引号配对截断、`is_safe_url` 段覆盖：CGNAT/组播/
+保留段与 IPv4-mapped IPv6 写法）、收件人逗号列表逐项遮罩、通知密钥定宽遮罩、
+URL query 手机号按名/按值两条口径；末尾另有一组 signin 修复用例（状态文件自愈、
+ydclearance 挑战解码与跳转白名单）。
+对应实现：`yiban/masking.py` 的 `sanitize_text` / `sanitize_url`（`_CRED_KEY`、
+`_QUOTED_OR_BARE`）、`yiban/notify/config.py` 的 `is_safe_url` 与 `_mask_secret`、
+`yiban/mail/config.py` 的 `_mask_addr`；末尾一组走 `signin` 门面（仓库根的旧名 shim），
+真实现在 `yiban/client.py::YibanClient._solve_ydclearance` 与
+`yiban/engine/state_io.py::_write_sign_state`。
+关键断言：段覆盖用例逐个网段列举（含 `100.64.0.0/10` 这段 `ipaddress.is_private`
+**不含**的 CGNAT），配 `test_public_https_targets_still_allowed` 一条正向对照——
+只有负例的话"一律拒绝"也算过。密钥遮罩断的是**星数不随长度变化**（否则等于把密钥
+精确长度也发出去）。ydclearance 三条白名单拒绝分别钉"非白名单 / 形似主机 /
+userinfo 绕过"，是三种不同构造，不要合并成一条。
+本文件的 ydclearance 用例喂的是**自造假挑战页**（`_challenge_text` 按真模板形状造），
+真模板换形状要靠 `legacy_bound` / `timeout_outside_script` 两个变体补，不等于对真站点
+做过验证。
+依赖：无网络（假页 + `__new__` 绕过构造，不发请求）、无 skip；
+`YIBAN_STATE_DIR` 用临时目录覆盖后在 tearDown 还原。
 """
 import json
 import os
