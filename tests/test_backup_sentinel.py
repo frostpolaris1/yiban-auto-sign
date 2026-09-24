@@ -13,6 +13,7 @@ import importlib.util
 import io
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -209,6 +210,72 @@ class DeliveryFailureTest(_Base):
         """收件人为空 → _send_admin_alert 真实实现返回 False → 退出码 1。"""
         with mock.patch("web.services.notify_mail._alert_mail_recipients", return_value=[]):
             self.assertEqual(self.mod.main([]), 1)
+
+
+class WrapperWorkingDirTest(unittest.TestCase):
+    """薄包装必须自己把 cwd 与 .env 路径摆正——cron 的 cwd 是 $HOME。
+
+    这条只能按**行为**钉，不能只看源码里有没有 `cd`：cwd 是哨兵侧所有 cwd 相对回落的
+    基准（`yiban/infra/env_io.py` 的 env_path() 默认 ".env"、`yiban/store/connection.py`
+    的 DB_DEFAULT "yiban.db"）。落在 $HOME 就读不到 .env ⇒ 收件人解析为空 ⇒ 告警发不
+    出去（退出码 1，恰是哨兵要消灭的那种静默），并在 $HOME 就地新建一份野 yiban.db。
+
+    假哨兵只回报"进程落在哪、拿到哪个 .env 路径"：本用例钉的是包装脚本的职责，判据
+    本身由 `_Base` 各组用例钉。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if shutil.which("bash") is None or shutil.which("python3") is None:
+            raise unittest.SkipTest("需要 bash 与 python3（Git Bash/WSL）")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-bksentinel-wd-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.home = os.path.join(self.tmp, "home")
+        self.app_dir = os.path.join(self.tmp, "app")
+        os.makedirs(os.path.join(self.app_dir, "scripts"))
+        os.makedirs(self.home)
+        with io.open(os.path.join(self.app_dir, "scripts", "backup_sentinel.py"), "w",
+                     encoding="utf-8") as f:
+            # 报告"落在哪个目录"用落一个标记文件（而非打印路径）：宿主可能是 Git Bash
+            # （Windows 路径）也可能是 WSL，路径文本形式不可比，标记文件在哪一目了然。
+            f.write("import os\n"
+                    "open('sentinel-cwd', 'w').close()\n"
+                    "print(os.environ.get('YIBAN_ENV_FILE', '<unset>'))\n")
+
+    def _run(self, extra_env=None):
+        """跑一次包装脚本：cwd 取 home（模拟 cron 的 $HOME），返回 CompletedProcess。"""
+        env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
+        env["APP_DIR"] = self.app_dir
+        env.update(extra_env or {})
+        return subprocess.run([shutil.which("bash"), WRAPPER], capture_output=True,
+                              text=True, cwd=self.home, env=env, timeout=60)
+
+    @staticmethod
+    def _slashed(path):
+        """统一分隔符后再比：Git Bash 下 shell 拼出的 <APP_DIR>/.env 是混合分隔符。"""
+        return os.path.normcase(str(path).replace("\\", "/"))
+
+    def test_wrapper_moves_to_app_dir_and_exports_env_file(self):
+        """cwd 必须是 APP_DIR；YIBAN_ENV_FILE 默认导出为 <APP_DIR>/.env。"""
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.app_dir, "sentinel-cwd")),
+                        "哨兵进程的 cwd 必须是 APP_DIR（cron 的 cwd 是 $HOME）："
+                        f"标记文件不在 {self.app_dir}，stderr={r.stderr!r}")
+        self.assertFalse(os.path.exists(os.path.join(self.home, "sentinel-cwd")),
+                         "$HOME 下不得落下任何哨兵进程的痕迹")
+        self.assertEqual(self._slashed(r.stdout.strip()),
+                         self._slashed(os.path.join(self.app_dir, ".env")),
+                         "YIBAN_ENV_FILE 必须默认导出为 <APP_DIR>/.env")
+
+    def test_explicit_env_file_is_kept(self):
+        """部署方显式给出 YIBAN_ENV_FILE 时沿用其值，不覆盖成 <APP_DIR>/.env。"""
+        custom = os.path.join(self.tmp, "custom.env")
+        r = self._run({"YIBAN_ENV_FILE": custom})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self._slashed(r.stdout.strip()), self._slashed(custom))
 
 
 class WrapperSourceTest(unittest.TestCase):
