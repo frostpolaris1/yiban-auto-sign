@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""邮箱域名黑白名单审查测试（2026-08-28 注册预拦截机制）。
+"""邮箱域名黑白名单审查（注册预拦截）。
 
-覆盖：
-- email_policy 模块单元行为：内置保留域名 / 伪 TLD / 数据文件黑名单 / 子域名
-  匹配 / 白名单模式优先级 / 部署追加黑名单 / 数据文件缺失兜底 / mtime 缓存热更新
-- web 注册入口集成：开放注册与管理员自动注册路径命中即 400、用户不落库；
-  白名单 .env 配置经 email_domain_error 生效
-
-用法（项目根目录）：
-    py -m pytest tests/test_email_domain_review.py -v
+标签：H · 通知：邮件与推送
+覆盖：`email_policy` 单元行为——内置保留域名、伪 TLD、数据文件黑名单、子域名匹配、
+    白名单模式优先级、部署追加黑名单、数据文件缺失兜底、mtime 缓存热更新；
+    web 注册入口集成——开放注册与管理员自动注册命中即 400 且用户不落库，
+    白名单经 `.env` 配置由 `email_domain_error` 生效。
+对应实现：判定在 `scripts/email_policy.py`（`email_domain_error`），拦截点在
+    `web/app.py` 的注册路径。
+关键断言：命中必须**不落库**（只拦响应等于把脏数据留在库里）；数据文件缺失是兜底
+    放行而不是崩掉注册流程。
+依赖：importlib/sys.path 注入加载 `scripts/email_policy.py` + Flask test client +
+    临时 DB 与名单数据文件；纯本地，不触网、不发信。
 """
 import contextlib
 import importlib.util

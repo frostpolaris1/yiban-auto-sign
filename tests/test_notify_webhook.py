@@ -1,26 +1,22 @@
 # -*- coding: utf-8 -*-
-"""`yiban/notify` Webhook 推送组件单元测试（2026-08-29）。
+"""`yiban/notify` Webhook 推送组件单元测试。
 
-覆盖：
-- 配置读取：未配置禁用 / 兼容旧明文 YIBAN_NOTIFY_URL / 加密密文解密回读 /
-  密文损坏返回空
-- Server酱：URL 与参数格式（title+desp）、标题截断去换行、code==0 成功、
-  非零 code 失败并告警、异常静默失败
-- 自定义 URL：JSON {title,content}、SSRF 白名单拒绝不安全地址、非 2xx 失败
-- 同类型节流：窗口内同标题跳过、force 绕过、cooldown=0 关闭
-- 日志脱敏：SendKey / URL token / userinfo 一律不进日志
-- 紧急 / 非紧急两本账互不挤占、发送失败退还额度、首次耗尽一次性告知
-  （budget_exhausted_today / pop_exhaustion_notice）、跨日两账同时归零、
-  跳过原因日志同窗口去重
-- 额度"打满当次"即挂耗尽告知（不等下一次被拒）、退还按占用凭证执行
-  （跨日凭证作废、发送途中改上限不多退不漏退、虚警撤回）、pop_exhaustion_notice
-  返回哪些账本耗尽且每本账每日各一次、get_config 一轮只解析一次 .env
-- 虚警判定与告知撤回合并在同一把账本锁内（并发下真实 pending
-  不会被陈旧撤回抹掉）；耗尽告知标记与额度计数同属一本账（notify_ledger._*_daily["notice"]）
-- get_secret 必须按 YIBAN_ENV_FILE 解析路径取钥，不在 cwd 生成游离密钥
-全程 mock requests，不发起真实网络请求。
-用法（项目根目录）：
-    py -m pytest tests/test_notify_0829.py -v
+标签：H · 通知：邮件与推送
+覆盖：配置读取（未配置禁用 / 旧明文 `YIBAN_NOTIFY_URL` 兼容 / 密文解密回读 / 密文损坏
+    返回空）；Server酱的 URL 与参数形状、标题截断去换行、code 判定；自定义 URL 的
+    JSON 形状、SSRF 白名单拒不安全地址、非 2xx 失败；同类型节流与 force 绕过；
+    日志脱敏（SendKey / URL token / userinfo 不进日志）；紧急与非紧急两本账互不挤占、
+    发送失败退还额度、首次耗尽一次性告知、跨日同时归零、跳过原因日志去重；
+    耗尽标记与计数同账本、虚警判定与撤回合并在同一把锁内、`get_secret` 按
+    `YIBAN_ENV_FILE` 取钥且不在 cwd 生成游离密钥。
+对应实现：`yiban/notify/`（`config`/`transport`/`ledger` 三个子模块，公共面走包）；
+    白名单判定复用 `yiban/config` 的 `is_safe_url`。
+关键断言：白名单只管"你给的这一个 URL"，跟随跳转等于绕过——故发送侧必须
+    `allow_redirects=False`，两者是一对；退还额度按占用凭证执行（跨日凭证作废、
+    发送途中改上限不多退不漏退）。
+依赖：pytest + monkeypatch（`notify_transport.requests` 打桩十余处、
+    `account_crypto`、`notify_ledger`）；冻结时钟与临时密钥文件（含 0600 权限断言）；
+    不发真实 HTTP 请求、不触网、不需 SMTP。
 """
 import contextlib
 import importlib.util
