@@ -111,7 +111,7 @@ python -m pytest tests/test_db_integrity.py -v
 | 文件 | 说明 |
 |---|---|
 | `test_env_mailer_tls.py` | 子进程 env + mailer TLS 上下文 |
-| `test_rekey_key_source.py` | 密钥来源去 cwd 依赖 + rekey 迁移推送/邮件密文 + 通道自检 |
+| `test_rekey_key_source.py` | 密钥来源去 cwd 依赖 + 告警通道门禁/日报/留痕 + 账号 purge 门禁与登录留痕 |
 | `test_backup_require_encrypt.py` | backup.sh 契约（静态核验 + bash -n）：--require-encrypt 与异机副本解耦、加密失败 fail-closed 清场 |
 | `test_runsh_env_parse.py` | run.sh 契约（静态核验 + bash -n）：.env 解析去 BOM、key/value 剥空白对齐 env_io |
 

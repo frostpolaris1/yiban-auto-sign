@@ -376,10 +376,10 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
             dur = last_done - t0
             state_io._write_sign_state(phone, status, message, dur=dur)
             _emit_event(phone, status, message, dur=dur)
-            # 单次尝试超阈值 → warning + 通知
+            # 单次尝试超阈值 → warning + 并入收尾汇总信（不即时推送）
             if dur > slow_sec and phone not in slow_notified:
                 slow_notified.add(phone)
-                alerts._alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
+                alerts._alert_slow_sign(phone, dur, slow_sec, status, message)
             # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
             attempts_mod._update_cred_state(cred_state, phone, success, message, today)
             # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过
@@ -511,12 +511,12 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         dur = last_done - t0
         state_io._write_sign_state(phone, status, message, dur=dur)
         _emit_event(phone, status, message, dur=dur)
-        # 单次尝试超阈值 → warning + 通知。节流：每账号每轮最多 1 次（重试连击不刷屏；
-        # 最终失败另有失败通知，此处主要覆盖"慢但成功"的接口劣化预警）；
-        # 通知失败不影响签到（内部已捕获）。
+        # 单次尝试超阈值 → warning + 并入收尾汇总信（不即时推送）。节流：每账号每轮
+        # 最多 1 次（重试连击不刷屏；最终失败另有失败通知，此处主要覆盖"慢但成功"的
+        # 接口劣化预警）；收集失败不影响签到（内部已捕获）。
         if dur > slow_sec and phone not in slow_notified:
             slow_notified.add(phone)
-            alerts._alert_slow_sign(phone, dur, slow_sec, status, message, notify_url)
+            alerts._alert_slow_sign(phone, dur, slow_sec, status, message)
         # 熔断计数：成功清除；凭据类失败累计（含半开试探结果——成功即恢复）
         attempts_mod._update_cred_state(cred_state, phone, success, message, today)
         # 半开试探"凭据健康"判定：签到成功，或已成功登录但被签到时段规则跳过

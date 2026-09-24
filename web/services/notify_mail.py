@@ -6,10 +6,8 @@
 告警正文插值净化 `_nl_safe`；审计行的 actor 取法 `_audit_actor` 与审计链异常告警的
 事实清单 `_audit_alert_facts` / `_last_cleanup_text`；变更类告警正文唯一形状
 `_change_mail`；审核拒绝通知 `_review_reject_mail`；A 线告警收件人唯一算法
-`_alert_mail_recipients`；双通道发送出口 `send_notification`（邮件 + Webhook，含推送
-额度耗尽告知 `_exhaustion_notice_mail`）；两个邮件开关的中文名表 `_MAIL_FLAG_NAMES` 与
-描述 `_mail_flags_desc`、消息推送配置变更描述 `_notify_change_desc`、推送"是否曾配置过"
-的判据 `_push_ever_configured`。
+`_alert_mail_recipients`；双通道发送出口 `send_notification`（邮件 + Webhook）；两个邮件
+开关的中文名表 `_MAIL_FLAG_NAMES`、推送"是否曾配置过"的判据 `_push_ever_configured`。
 
 **归属**
 原 `web/app.py` 的模块级通知与邮件辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
@@ -17,11 +15,11 @@
 `read_env`、同类型告警邮件节流 `_mail_alert_due`——在调用时刻现取后注入。
 
 **复用**
-`_alert_mail_recipients` 只留一份实现，由 `send_notification`、`_exhaustion_notice_mail`
-与 `web/services/channel_health.py` 的 `_alert_channel_status` 共用：通道健康判据要回答的
+`_alert_mail_recipients` 只留一份实现，由 `send_notification` 与
+`web/services/channel_health.py` 的 `_alert_channel_status` 共用：通道健康判据要回答的
 是"这一封日报到底发不发得出去"，它与 `send_notification` 实际取收件人的算法必须严格
 一致，各算一套就会分叉。`_nl_safe` 与 `_audit_alert_facts` / `_last_cleanup_text` 同样
-只留一份；`_exhaustion_notice_mail` 刻意不经 `send_notification`，避免与本函数互相递归。
+只留一份。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
@@ -142,7 +140,7 @@ def _review_reject_mail(phones, reason):
 def _alert_mail_recipients():
     """A 线告警邮件的收件人（唯一算法）：ADMIN_TO（受个人接收开关约束）+ 开启接收的管理员。
 
-    刻意只留一份实现，由 send_notification、_exhaustion_notice_mail 与
+    刻意只留一份实现，由 send_notification 与
     web/services/channel_health.py 的 _alert_channel_status() 共用：通道健康判据要回答的
     是"这一封日报到底发不发得出去"，它与 send_notification 实际取收件人的算法必须严格
     一致，各算一套就会分叉——"只关 admin_notify 且无其他接收管理员"这个组合变体
@@ -188,104 +186,21 @@ def send_notification(title, content, urgent=False, force=False, ledger=None, *,
         logger.info("告警邮件已节流（同类 %s 在窗口内已发送，本次仅通知 webhook）", title)
     # Webhook 推送组件化（Server酱/自定义 URL；未配置 / 节流命中时静默跳过）
     notify.send(title, mail_layout.as_text(content), urgent=urgent, force=force, ledger=ledger)
-    # 手机推送额度耗尽的"补一封"——notify 侧当日首次有账本耗尽时会挂上
-    # 待取走标记，pop_exhaustion_notice() 一次返回全部耗尽账本（如 ["general","urgent"]）。
-    # 必须一次取完拼成一封：循环 pop 到空会让两本账同日各发一封（重复打扰）。
-    # 告知只走邮件（推送额度正是刚用尽的东西），且整段兜异常——耗尽告知属附加信息，
-    # 绝不能把本次主告警带崩。
-    try:
-        exhausted = notify.pop_exhaustion_notice()
-    except Exception as e:  # 兜底：告知接线不得影响本次主告警
-        logger.warning("读取推送额度耗尽标记失败（忽略）: %s", e)
-        exhausted = None
-    if exhausted:
-        try:
-            _exhaustion_notice_mail(exhausted)
-        except Exception as e:  # 兜底：同上
-            logger.warning("推送额度耗尽告知邮件发送失败: %s", e)
+    # 推送额度耗尽不再在这里"补一封"：告知并进通道健康报告（web/services/channel_health.py
+    # 的 _send_channel_health_report 会取走待告知标记并写进报告正文），与其余通道状态
+    # 同源同频——耗尽告知本身是"通道状态"的一部分，挂在每条告警后面只会让它在主告警
+    # 之外又刷一层。
 
 
 _NOTIFY_LEDGER_LABELS = {"general": "非紧急", "urgent": "紧急", "login_fail": "登录失败告警"}
 
 
-def _exhaustion_notice_mail(kinds):
-    """手机推送额度耗尽告知：一封邮件写清哪几本账耗尽、上限是多少。
-
-    kinds 为 notify.pop_exhaustion_notice() 返回的账本名列表（"general"/"urgent"），
-    每本账每日各一次，故本函数每天最多被调用两次且不会重复发同一本。
-    只走邮件通道（不经 send_notification，避免与本函数互相递归）。
-    """
-    try:
-        cfg = notify.get_config()
-    except Exception:  # 兜底：取额度概览失败时按"未知"出文，不抛
-        cfg = {}
-    max_keys = {"general": "daily_max", "urgent": "urgent_daily_max"}
-    parts = []
-    for kind in kinds:
-        label = _NOTIFY_LEDGER_LABELS.get(kind, kind)
-        limit = cfg.get(max_keys.get(kind, ""))
-        has_cap = isinstance(limit, int) and limit > 0
-        tail = f"（今日上限 {limit} 条已全部用尽）" if has_cap else "（今日额度已用尽）"
-        parts.append(f"{label}推送额度已用尽{tail}")
-    report = mail_layout.Mail(
-        summary="手机消息推送今日额度已用尽，当日后续同类告警不再推手机。",
-        items=parts,
-        advice=["请改查管理员告警邮件（邮件通道不受影响）",
-                "如需调整请在 .env 修改 YIBAN_NOTIFY_DAILY_MAX / "
-                "YIBAN_NOTIFY_URGENT_DAILY_MAX（0=不限），或关闭「仅推送重要告警」"],
-        level="warn",
-    )
-    logger.warning("手机推送%s，已补发告知邮件", "、".join(parts))
-    recipients = _alert_mail_recipients()
-    if not recipients:
-        logger.warning("推送额度耗尽告知无法送达（邮件收件人为空），请登录后台自查推送配置")
-        return
-    mailer.send_admin_alert("手机推送额度已用尽告警", report, to=",".join(recipients))
-
-
-# 两个邮件开关的中文名表（env_key → 可读名）：变更告警文案与高危动作标签共用，
-# 避免同一件事在两个地方各写一套字面量（告警标签必须按字段区分）
+# 两个邮件开关的中文名表（env_key → 可读名）：高危动作标签按字段区分用，
+# 避免同一件事在两个地方各写一套字面量
 _MAIL_FLAG_NAMES = {
     "YIBAN_MAIL_ENABLE": "全局邮件通知",
     "YIBAN_MAIL_ADMIN_NOTIFY": "主管理员个人接收",
 }
-
-
-def _mail_flags_desc(flags):
-    """邮件开关变更集（env_key → bool）→ 告警正文可读描述。
-
-    文案里带上"具体改了什么"：运营者只看一行标题无法判断是
-    全局关停下线、还是主管理员个人收件被拔线，两者的处置动作完全不同。
-    键名来自代码常量（非外部输入），无注入面。
-    """
-    return "；".join(
-        f"{_MAIL_FLAG_NAMES.get(k, k)}：{'开启' if v else '关闭'}" for k, v in flags.items()
-    )
-
-
-def _notify_change_desc(ntype, close_channel, clear_secret, swap_secret, numeric):
-    """消息推送配置变更集 → 告警正文可读描述。
-
-    关闭通道与"只是换了个数"在告警里必须一眼可辨：前者是攻击者掩盖痕迹的必经动作，
-    后者是日常调参。ntype 已过白名单校验、numeric 为 int/bool，均无注入面。
-    """
-    parts = []
-    if close_channel:
-        parts.append("通道：关闭（⚠ 告警不再推手机）")
-    elif ntype:
-        parts.append(f"通道：{ntype}")
-    if swap_secret:
-        parts.append("密钥：已更换")
-    elif clear_secret and not close_channel:
-        parts.append("密钥：已清空（⚠ 通道随之失效）")
-    labels = {
-        "cooldown": "节流秒数", "urgent_only": "仅重要告警",
-        "daily_max": "非紧急每日上限", "urgent_daily_max": "紧急每日上限",
-    }
-    for key, value in numeric.items():
-        shown = ("开启" if value else "关闭") if isinstance(value, bool) else value
-        parts.append(f"{labels.get(key, key)}：{shown}")
-    return "；".join(parts) or "无实质变更"
 
 
 # 判定"推送这路是否曾配置过"的最轻事实来源：.env 里这两个键**存在且值非空**。

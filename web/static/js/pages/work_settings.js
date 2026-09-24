@@ -12,7 +12,7 @@
    页面级只做两件事 —— 汇总脏分区、在"要离开这些改动"时问一句。带破坏性的按钮
    （清空收件人 / 恢复默认调度 / 暂停签到）不属于表单值，保持即时执行 + 二次确认。
 
-   字段级权限（逐字段复刻后端内联判定；UI 禁用不是安全边界，高危请求仍带 confirm_password）：
+   字段级权限（逐字段复刻后端内联判定；UI 禁用不是安全边界，受门禁请求仍由后端复核）：
      · 任意管理员：周六/周日、account_verify / probe_*、公告
      · 仅主管理员：调度（排序/分布/掐头去尾/间隔/窗口/自选）、容量上限、通知通道、
        执行体与出口、系统开关（后两者整 tab 隐藏）
@@ -51,7 +51,7 @@
   /* ---------------- 公告（双人发布：任意管理员写草稿，主管理员发布/下线） ----------------
      GET /api/announcement 对管理员返回 {text(线上), draft, draft_by, draft_at,
      published_by, published_at}；PUT 只写草稿（线上不变）；POST /api/announcement/publish
-     仅主管理员 + 当次口令（body.confirm_password）：草稿非空 → 发布并清空草稿；
+     仅主管理员 + 当次口令（走受门禁提交 helper）：草稿非空 → 发布并清空草稿；
      草稿为空且线上有内容 → 下线；两者皆空 → 400。 */
   var annBusy = false;
   var ann = { draft: "", draftBy: "", draftAt: "", text: "", publishedBy: "", publishedAt: "", dirty: false };
@@ -151,9 +151,9 @@
     }).then(function (ok) { annBusy = false; return ok; },
             function (e) { annBusy = false; throw e; });
   }
-  // 发布/下线：先确认影响面 → 口令框收当次口令；回调**返回请求 Promise**（既有契约），
-  // 失败会在框内显示并可改口令重试。发布作用于已保存的草稿，未保存的编辑先自动落草稿，
-  // 避免"看起来发了新内容、其实发的是旧草稿"。
+  // 发布/下线：先确认影响面（发布后立刻对所有访问者可见/消失，是强确认）→ 提交。
+  // 门禁凭据交给统一 helper：先不带凭据发，后端回 reason 才补口令（档位只存在于后端）。
+  // 发布作用于已保存的草稿，未保存的编辑先自动落草稿，避免"看起来发了新内容、其实发的是旧草稿"。
   function publishAnnouncement() {
     if (annBusy || !state.isMaster) return;
     if (!annCurrentText() && !ann.text) return;          // 按钮已禁用，这里防 DOM 篡改
@@ -167,14 +167,13 @@
       danger: offline
     }).then(function (ok) {
       if (!ok) return;
-      YB.openConfirmPasswordModal(
-        (offline ? "下线全站公告" : "发布全站公告") + "会影响所有访问者。请输入当前管理员密码确认。",
-        function (pw) { return submitPublish(pw); });
+      submitPublish(offline);
     });
   }
-  function submitPublish(pw) {
+  function submitPublish(offline) {
     annBusy = true;
     annTip("发布中…", false);
+    // 草稿落盘不改变线上公告、不进门禁，故它先直发；门禁只落在发布那一步
     var chain = Promise.resolve();
     if (ann.dirty) {
       chain = YB.api("PUT", "/api/announcement", { text: annCurrentText() }).then(function () {
@@ -183,15 +182,21 @@
       });
     }
     return chain.then(function () {
-      return YB.api("POST", "/api/announcement/publish", { confirm_password: pw });
+      return YB.dangerousSubmit({
+        path: "/api/announcement/publish", body: {},
+        desc: (offline ? "下线全站公告" : "发布全站公告") + "会影响所有访问者。请输入当前管理员密码确认。"
+      });
     }).then(function (data) {
       YB.toast.success((data && data.msg) || "已发布");
       // 线上文本已变：先就地刷新外壳横幅（不再等一次 GET），再重拉本卡拿到发布人/时刻
       YB.applyAnnouncementText(data && data.text);
       return loadAnnouncement().then(function () { annTip((data && data.msg) || "已发布", false); });
     }).then(function () { annBusy = false; },
-            // 原样上抛：口令框显示错误并保持打开供改口令重试；失败不动已保存的草稿
-            function (e) { annBusy = false; throw e; });
+            function (e) {
+              annBusy = false;
+              // 取消弹窗不是失败：不提示、失败不动已保存的草稿（门禁失败已在弹窗内显示）
+              if (!(e && e.canceled)) annTip((e && e.message) || "发布失败，请稍后重试", true);
+            });
   }
   function bindAnnouncement() {
     var input = annInput();

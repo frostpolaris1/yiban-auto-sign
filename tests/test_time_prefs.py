@@ -52,6 +52,9 @@ class TimePrefsTest(unittest.TestCase):
                 "YIBAN_ALLOW_TIME_PREF=1\n"
                 "YIBAN_TIME_PREF_COOLDOWN_SEC=0\n"  # 默认关闭冷却，冷却专项测试单独开启
                 "YIBAN_PAUSE_COOLDOWN_SEC=0\n"      # 默认关闭暂停冷却，专项测试单独开启
+                # 档位拆分用例钉的是"真变更当次要口令 + A/B 档权限"，固定在 full
+                # （默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")

@@ -28,9 +28,6 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-# 推送/邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
-from _mail_body import render_body  # noqa: E402
-
 from yiban import cred_state  # noqa: E402
 
 
@@ -299,12 +296,13 @@ class BreakerTest(unittest.TestCase):
         self.assertEqual(entry["dur"], 3.45, "应记录单次尝试耗时（P6）")
         self.assertEqual(entry["status"], "success")
 
-    # ---- 6. P6 耗时告警（2026-08-16）：超阈值 → warning + 通知；每账号每轮最多 1 次 ----
-    def test_slow_sign_warns_and_notifies(self):
-        """单次尝试耗时超阈值（31s > 30s）→ 发送耗时告警通知（含耗时与脱敏账号）。"""
+    # ---- 6. P6 耗时告警（2026-08-16）：超阈值 → warning + 并入汇总；每账号每轮最多 1 次 ----
+    def test_slow_sign_warns_and_collects(self):
+        """单次尝试耗时超阈值（31s > 30s）→ warning + 一条汇总条目，不发即时推送。"""
         import unittest.mock as mock
 
         accs = [signin.Account(phone="13800138001", password="p")]
+        signin._mail_summary.clear()
         with mock.patch.object(signin, "time") as tm, \
              mock.patch.object(signin, "attempt_signin") as attempt, \
              mock.patch.object(signin, "_write_sign_state"), \
@@ -315,18 +313,21 @@ class BreakerTest(unittest.TestCase):
             tm.sleep = lambda *a, **k: None
             attempt.return_value = (True, "签到成功", False, signin.STATUS_SUCCESS)
             signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
-        sn.assert_called_once()
-        title, content = sn.call_args[0][0], render_body(sn.call_args[0][1], "markdown")
-        self.assertIn("耗时", title)
-        self.assertIn("31.0", content, "通知应含实际耗时")
-        self.assertIn("138****8001", content, "通知应含脱敏账号")
-        self.assertIn("签到成功", content, "通知应含结果说明")
+        sn.assert_not_called()  # 耗时属"事后可读"的慢信号：只进汇总，不即时推送
+        self.assertEqual(len(signin._mail_summary), 1, f"实际 {signin._mail_summary}")
+        subject, fields = signin._mail_summary[0]
+        self.assertIn("耗时", subject)
+        by_label = dict(fields)
+        self.assertIn("31.0", by_label["耗时"], "汇总条目应含实际耗时")
+        self.assertEqual(by_label["账号"], "138****8001", "汇总条目应含脱敏账号")
+        self.assertIn("签到成功", by_label["结果"], "汇总条目应含结果说明")
 
     def test_slow_sign_throttled_per_round(self):
-        """同一账号两次慢尝试（失败重试）→ 耗时告警只发 1 次（防重试连击刷屏）。"""
+        """同一账号两次慢尝试（失败重试）→ 耗时条目只收 1 条（防重试连击刷屏）。"""
         import unittest.mock as mock
 
         accs = [signin.Account(phone="13800138001", password="p")]
+        signin._mail_summary.clear()
         # 两次尝试：31s / 32s 均超阈值；第 3 个采样点是重试回队时的间隔对齐探测
         # （gap_max=0 → 对齐差值必 ≤0，不产生等待，仅消耗一个时间点）
         seq = iter([100.0, 131.0, 150.0, 200.0, 232.0])
@@ -342,11 +343,12 @@ class BreakerTest(unittest.TestCase):
             attempt.return_value = (False, "登录失败", False, signin.STATUS_FAILED)
             signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
         cf.assert_called()  # 失败确实走了分级
-        # 2 次尝试 → 慢告警 1 次 + 最终放弃失败通知 1 次（慢告警未连发）
-        self.assertEqual(sn.call_count, 2, "慢告警 1 次 + 失败通知 1 次")
-        self.assertEqual(sn.call_args_list[0].args[0], "易班签到耗时告警", "第一次应为耗时告警")
-        self.assertIn("31.0", render_body(sn.call_args_list[0].args[1], "markdown"))
-        self.assertEqual(sn.call_args_list[1].args[0], "易班签到失败", "第二次应为最终失败通知")
+        # 2 次尝试 → 只有最终放弃那一条即时通知（耗时条目未连收）
+        self.assertEqual(sn.call_count, 1, "只有最终放弃的失败通知一条即时推送")
+        self.assertEqual(sn.call_args_list[0].args[0], "易班签到失败")
+        self.assertEqual([s for s, _ in signin._mail_summary].count("易班签到耗时告警"), 1,
+                         f"两次慢尝试只收一条耗时条目，实际 {signin._mail_summary}")
+        self.assertIn("31.0", dict(signin._mail_summary[0][1])["耗时"])
 
 
 

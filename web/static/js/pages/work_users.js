@@ -202,7 +202,7 @@
   // （`web/app.py` 三个单条端点的 `role == "admin" and not is_master` 判定，以及
   // `/api/users/batch` 里对 reset_password/delete 的同口径软跳过；按端点名定位，不钉行号），
   // 故这些动作一律不给出。UI 隐藏不是安全边界：
-  // 请求仍带 confirm_password，后端照旧复核。
+  // 受门禁请求照旧由后端复核（凭据由 core.js 的受门禁提交 helper 按后端 reason 补）。
   function menuItems(u, group) {
     var uid = u.uid;
     var items = [];

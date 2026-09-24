@@ -1859,9 +1859,6 @@ MOVED_NOTIFY = (
     "_review_reject_mail",
     "_alert_mail_recipients",
     "send_notification",
-    "_exhaustion_notice_mail",
-    "_mail_flags_desc",
-    "_notify_change_desc",
     "_push_ever_configured",
     # 只被迁出族使用、随所属域搬的常量
     "_NOTIFY_LEDGER_LABELS",
@@ -1913,7 +1910,6 @@ PURE_REEXPORTS_NOTIFY = {
     "notify_mail": (
         "_nl_safe", "_audit_actor", "_audit_alert_facts", "_last_cleanup_text",
         "_change_mail", "_review_reject_mail", "_alert_mail_recipients",
-        "_exhaustion_notice_mail", "_mail_flags_desc", "_notify_change_desc",
         "_NOTIFY_LEDGER_LABELS", "_MAIL_FLAG_NAMES", "_PUSH_CONFIG_ENV_KEYS",
     ),
     "channel_health": (

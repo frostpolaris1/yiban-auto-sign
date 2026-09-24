@@ -98,7 +98,7 @@ def resolve_path(key, default, *, env=None, env_file=None):
 # .env 行模型工具：读的一半 parse_env_file 在上，写的一半在此收敛
 # ---------------------------------------------------------------------------
 # 读-改-写 .env 的全部写入方（web.app.write_env_batch、account_crypto / db /
-# rekey_accounts / signin 各自的写键实现）用的是同一套宽行模型：
+# signin 各自的写键实现）用的是同一套宽行模型：
 #   f.read().splitlines() + "\n".join(...)
 # 而 str.splitlines() 除了 \n \r 还把 \v \f \x1c \x1d \x1e \x85 \u2028 \u2029
 # 当行边界。校验若只挡 \n \r，含后 8 个字符的键/值就能过检，作为**潜伏分隔符**

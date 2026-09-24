@@ -180,6 +180,9 @@ class SaturdaySettingsWebTest(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 周末开关是 A 档：本类钉的是"真变更当次要口令"，固定在 full
+                # （默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -248,6 +251,7 @@ class SaturdaySettingsWebTest(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 重置也保留门禁档位，见 setUpClass 的说明
             )
         c, t = self._master()
         r = c.get("/api/settings", headers=self._csrf(t))

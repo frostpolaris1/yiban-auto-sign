@@ -401,9 +401,6 @@ class SessionCacheBusinessDayTest(_SessionCacheFixture):
         self.assertIsNotNone(self._get(), "刚写入的缓存应可复用")
 
 
-NEW_KEY = "b" * 64
-
-
 ADMIN_PASS = "TestPass1234!"
 
 
@@ -424,6 +421,9 @@ class _Batch11WebBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本基类下的门禁用例钉的是"当次要口令 / 口令错零写入"，固定在 full
+                # （默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -586,7 +586,8 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
         self.assertEqual(r.status_code, 403, "N3 修复：普通管理员不可物理清除注销用户")
         self.assertIsNotNone(self._user_row("victim@test.local"), "行未被清除")
 
-    def test_master_can_purge_with_alert(self):
+    def test_master_can_purge_without_admin_alert(self):
+        """主管理员物理清除：功能生效、留审计，但不再外发即时告警。"""
         self._make_victim("victim2@test.local")
         ac, at = self._admin_client()
         r = ac.post("/api/users/deleted/purge",
@@ -594,8 +595,11 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIsNone(self._user_row("victim2@test.local"), "主管理员清除生效")
-        self.assertTrue(any(t == "高危管理操作告警" for t, _ in self.alerts),
-                        f"purge 应即时告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "高危管理操作告警" for t, _ in self.alerts),
+                         f"管理操作逐条发信已下线，实际 {self.alerts}")
+        rows = [dict(x) for x in db.get_conn().execute(
+            "SELECT action FROM audit_logs WHERE action='user_deleted_purge'").fetchall()]
+        self.assertTrue(rows, "清除动作必须留在审计链上（告警下线后这是唯一痕迹）")
 
 
 class Batch11NotifyCoverageTest(_Batch11WebBase):
@@ -649,17 +653,23 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertTrue(any(to == EMAIL for to, _ in self.user_mails),
                         "删号必须给本人发留痕邮件")
 
-    def test_single_reset_password_alerts(self):
+    def test_single_reset_password_no_admin_alert(self):
+        """重置他人口令：动作生效、目标旧会话被吊销，但不再外发管理员告警。"""
         self._user_with_account(EMAIL, "13800138004")
         ac, at = self._admin_client()
         r = ac.post(f"/api/users/{EMAIL}/password",
                     json={"password": "Reset#12345", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
-                        f"重置密码应有告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "密码重置告警" for t, _ in self.alerts),
+                         f"重置密码的管理员告警已下线，实际 {self.alerts}")
+        self.assertTrue(
+            [dict(x) for x in db.get_conn().execute(
+                "SELECT action FROM audit_logs WHERE action='user_password_reset'").fetchall()],
+            "重置动作必须留在审计链上",
+        )
 
-    def test_batch_reset_alerts_and_batch_role_removed(self):
+    def test_batch_reset_no_alert_and_batch_role_removed(self):
         self._user_with_account(EMAIL, "13800138005")
         ac, at = self._admin_client()
         r = ac.post("/api/users/batch", json={
@@ -667,8 +677,8 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
             "confirm_password": ADMIN_PASS,
         }, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "密码重置告警" for t, _ in self.alerts),
-                        f"批量重置应有告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "密码重置告警" for t, _ in self.alerts),
+                         f"批量重置的管理员告警已下线，实际 {self.alerts}")
         self.alerts.clear()
         # 2026-09-05 用户裁决：批量角色变更入口移除（提权/降权仅保留单个路径 + 二次鉴权）
         r = ac.post("/api/users/batch", json={
@@ -678,7 +688,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertFalse(any(t == "权限变更告警" for t, _ in self.alerts),
                          "批量提权入口已移除，不应有告警")
 
-    def test_role_change_alerts(self):
+    def test_role_change_no_alert(self):
         self._user_with_account(EMAIL, "13800138006")
         ac, at = self._admin_client()
         # 2026-09-05：角色变更接入高危门禁，须携带当前管理员密码二次鉴权
@@ -686,8 +696,14 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
                     json={"role": "admin", "confirm_password": ADMIN_PASS},
                     headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "权限变更告警" for t, _ in self.alerts),
-                        f"角色变更应有告警，实际 {self.alerts}")
+        self.assertEqual(db.find_user(EMAIL).get("role"), "admin", "角色变更应生效")
+        self.assertFalse(any(t == "权限变更告警" for t, _ in self.alerts),
+                         f"权限变更告警已下线，实际 {self.alerts}")
+        self.assertTrue(
+            [dict(x) for x in db.get_conn().execute(
+                "SELECT action FROM audit_logs WHERE action='user_role'").fetchall()],
+            "角色变更必须留在审计链上",
+        )
 
     def test_role_change_without_reconfirm_rejected(self):
         self._user_with_account(EMAIL, "13800138007")
@@ -706,16 +722,21 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
         self.assertTrue(any(t == "公告变更告警" for t, _ in self.alerts),
                         f"公告变更应有告警，实际 {self.alerts}")
 
-    def test_mail_config_change_alerts(self):
+    def test_mail_config_change_no_alert(self):
         ac, at = self._admin_client()
         r = ac.put("/api/mail-config", json={"enabled": True}, headers=self._csrf(at))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertTrue(any(t == "邮件配置变更告警" for t, _ in self.alerts),
-                        f"邮件配置变更应有告警，实际 {self.alerts}")
+        self.assertFalse(any(t == "邮件配置变更告警" for t, _ in self.alerts),
+                         f"通道变更告警已下线，实际 {self.alerts}")
+        self.assertTrue(
+            [dict(x) for x in db.get_conn().execute(
+                "SELECT action FROM audit_logs WHERE action='mail_config'").fetchall()],
+            "通道变更必须留在审计链上",
+        )
 
 
 class Batch11CleanupClockGuardTest(_Batch11WebBase):
-    """N2：审计/事件清理接入时钟跳变守卫。"""
+    """N2：审计/事件清理接入时钟跳变守卫（跳变只跳一轮：参照点随越界一并推进）。"""
 
     def _set_guard_ref(self, key, dt):
         conn = db.get_conn()
@@ -723,107 +744,44 @@ class Batch11CleanupClockGuardTest(_Batch11WebBase):
                      (dt.strftime("%Y-%m-%d %H:%M:%S"), key))
         conn.commit()
 
-    def test_audit_cleanup_skipped_on_clock_jump(self):
-        for i in range(3):
-            db.audit("admin", f"op{i}", "t", "d")
+    def test_audit_cleanup_skips_one_round_then_resumes(self):
         conn = db.get_conn()
         with db._conn_lock:
             db._audit_cleanup(conn)  # 首次调用建立守卫参照
-        n_before = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        self.assertGreaterEqual(n_before, 3)
-        # 参照拨回 8 天前 → 下次调用视为前进 8 天（>72h）→ 跳过清理
+        # 造一条真正超期的审计行（保留期 180 天）：只有它会让"是否执行了清理"可观测
+        db.audit("admin", "op_old", "t", "d")
+        old_ts = (_datetime_RESTORE.now() - timedelta(days=200)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
+            conn.execute("UPDATE audit_logs SET ts=? WHERE action='op_old'", (old_ts,))
+            conn.commit()
+            n_before = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+            self.assertGreaterEqual(n_before, 1)
+            # 参照拨回 8 天前 → 下次调用视为前进 8 天（>72h）→ 跳过清理
             self._set_guard_ref("audit_cleanup_clock", _datetime_RESTORE.now() - timedelta(days=8))
             db._audit_cleanup(conn)
-        n_after = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        self.assertEqual(n_after, n_before, "时钟跳变时审计清理必须被跳过")
+            n_after = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+            self.assertEqual(n_after, n_before, "时钟跳变时审计清理必须被跳过")
+            # 跳变只跳一轮：越界已推进参照点，下一次调用恢复清理并删掉那条超期行
+            db._audit_cleanup(conn)
+            n_resumed = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+        self.assertLess(n_resumed, n_after, "参照点推进后下一轮必须恢复清理")
 
-    def test_event_cleanup_skipped_on_clock_jump(self):
-        db.add_sign_event("2026-08-29 10:00:00", "13800138000", "success", "m")
+    def test_event_cleanup_skips_one_round_then_resumes(self):
         conn = db.get_conn()
         with db._conn_lock:
             db._event_cleanup(conn)  # 首次调用建立守卫参照
-        n_before = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
-        self.assertGreaterEqual(n_before, 1)
+        old_ts = (_datetime_RESTORE.now() - timedelta(days=200)).strftime("%Y-%m-%d %H:%M:%S")
+        db.add_sign_event(old_ts, "13800138000", "success", "m")
         with db._conn_lock:
+            n_before = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
+            self.assertGreaterEqual(n_before, 1)
             self._set_guard_ref("event_cleanup_clock", _datetime_RESTORE.now() - timedelta(days=8))
             db._event_cleanup(conn)
-        n_after = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
-        self.assertEqual(n_after, n_before, "时钟跳变时事件清理必须被跳过")
-
-
-class Batch11RekeyToolTest(_Batch11WebBase):
-    """N5：ACCOUNTS_KEY 轮换工具。"""
-
-    def _seed_encrypted_account(self, phone, password):
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
-        c = self.webapp.create_app().test_client()
-        t = self._login(c, EMAIL, USER_PASS)
-        r = c.post("/api/my-accounts", json={
-            "name": "n", "phone": phone, "password": password, "phone_code": "code-x",
-        }, headers=self._csrf(t))
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
-
-    def _read_secret(self, conn, phone, col):
-        raw = conn.execute(f"SELECT {col} FROM accounts WHERE phone=?", (phone,)).fetchone()[0]
-        return json.loads(raw)
-
-    def test_rekey_roundtrip(self):
-        self._seed_encrypted_account("13900000001", "plain-pw-1")
-        import rekey_accounts
-
-        from yiban.infra import account_crypto
-        ok, note = rekey_accounts.rekey(self.db_file, bytes.fromhex(TEST_KEY), bytes.fromhex(NEW_KEY))
-        self.assertTrue(ok, note)
-        conn = sqlite3_connect(self.db_file)
-        try:
-            new_obj = self._read_secret(conn, "13900000001", "password")
-            self.assertEqual(
-                account_crypto.decrypt_password(new_obj, bytes.fromhex(NEW_KEY), "13900000001"),
-                "plain-pw-1", "新钥必须能解密且明文一致",
-            )
-            with self.assertRaises(ValueError):
-                account_crypto.decrypt_password(new_obj, bytes.fromhex(TEST_KEY), "13900000001")
-            code_obj = self._read_secret(conn, "13900000001", "phone_code")
-            self.assertEqual(
-                account_crypto.decrypt_password(code_obj, bytes.fromhex(NEW_KEY), "13900000001"),
-                "code-x",
-            )
-        finally:
-            conn.close()
-
-    def test_rekey_rejects_wrong_old_key(self):
-        self._seed_encrypted_account("13900000002", "plain-pw-2")
-        import rekey_accounts
-        conn = sqlite3_connect(self.db_file)
-        before = conn.execute("SELECT password FROM accounts WHERE phone=?",
-                              ("13900000002",)).fetchone()[0]
-        conn.close()
-        ok, _note = rekey_accounts.rekey(self.db_file, bytes.fromhex(NEW_KEY), bytes.fromhex("c" * 64))
-        self.assertFalse(ok, "旧钥不对必须拒绝")
-        conn = sqlite3_connect(self.db_file)
-        after = conn.execute("SELECT password FROM accounts WHERE phone=?",
-                             ("13900000002",)).fetchone()[0]
-        conn.close()
-        self.assertEqual(before, after, "拒绝时库必须保持原状")
-
-    def test_update_env_key_writes_and_rotates(self):
-        import rekey_accounts
-        rekey_accounts.update_env_key(self.env_file, bytes.fromhex(NEW_KEY))
-        content = open(self.env_file, encoding="utf-8-sig").read()
-        self.assertIn(f"YIBAN_ACCOUNTS_KEY={NEW_KEY}", content)
-        self.assertEqual(content.count("YIBAN_ACCOUNTS_KEY="), 1, "旧键行应被替换而非叠加")
-
-
-def sqlite3_connect(path):
-    import sqlite3
-    conn = sqlite3.connect(path, timeout=15)
-    conn.row_factory = sqlite3.Row
-    return conn
+            n_after = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
+            self.assertEqual(n_after, n_before, "时钟跳变时事件清理必须被跳过")
+            db._event_cleanup(conn)
+            n_resumed = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
+        self.assertLess(n_resumed, n_after, "参照点推进后下一轮必须恢复清理")
 
 
 PROD_STALE_MSG = "获取签到任务失败: 未登录或登录已经超时"

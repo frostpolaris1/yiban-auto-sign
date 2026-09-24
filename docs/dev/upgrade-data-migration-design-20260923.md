@@ -157,7 +157,7 @@ A 案 §8 给了一张迁移表，与本分支实际落地的编号**不一致**
 | 3.4 | **备份先行**（动迁移的前置条件） | `ledger-dual-version-design-20260923.md` I-6 / §3.1 Phase 0：当日 `/var/backups/yiban-<date>.tar.gz.gpg` 存在，否则拒绝执行迁移步并告警 |
 | 3.5 | **备份怎么打**（WAL 一致性快照） | `scripts/backup.sh:367-368`「WAL 模式下 `cp` 会漏未合并日志，`.backup` 由 SQLite 内部保证快照一致」；加密默认开、`--require-encrypt` fail-closed（`:319-347`）；保留 30 天（`:63`） |
 | 3.6 | **审计锚点必须随备份走** | `scripts/backup.sh:16-17`「缺了它恢复出来的库无法再自检『删尾 / 删前缀 / 整表清空』——锚点是审计链唯一的外部参照」；`:243-250` 锚点须与库**同批次**落位 |
-| 3.7 | **升级只在 `migrate=True` 的路径发生** | `db.py:486-492`（`if migrate:` 门内才跑迁移）；`db.py:443-452`「只读校验类工具应传 `False`——迁移会重写审计链（v3 rechain）等，使『被校验对象在校验过程中被改动』」。调用点：`scripts/audit_verify.py`、`scripts/db_export.py`、`scripts/clock_guard_reset.py`、`scripts/rekey_accounts.py`、`yiban/cli.py` |
+| 3.7 | **升级只在 `migrate=True` 的路径发生** | `db.py:486-492`（`if migrate:` 门内才跑迁移）；`db.py:443-452`「只读校验类工具应传 `False`——迁移会重写审计链（v3 rechain）等，使『被校验对象在校验过程中被改动』」。调用点：`scripts/audit_verify.py`、`scripts/db_export.py`、`yiban/cli.py` |
 | 3.8 | **状态文件是跨进程契约** | `45-backend-design-spec.md:163-165`（§4.5）六类状态文件 JSON 结构不得改 |
 | 3.9 | **JSON→SQLite 导入与 `.bak` 逃生门** | `migrations.py:897-909`（库**仍为空**才导入，幂等）、`:1012-1032`（改名 `.bak-<date>`、`0600`、同日递增序号）；生产库非空 ⇒ 本批**不触发** |
 | 3.10 | **历史部署做法** | `docs/refactor/68-v044-deploy-record.md:26`（升级前建备份/回滚点目录 + `ROLLBACK.txt`）、`:27-28`（`git fetch` + 纯快进 + 重启服务）、`:33`（核验 `user_version` 与应用日志 `schema 迁移完成: v17_sign_claims`）、`:58-63`（回滚 = `git reset --hard` + 重启；**「v17 只新增表，回滚代码不需要回滚数据库（多一张空表无害）」**） |

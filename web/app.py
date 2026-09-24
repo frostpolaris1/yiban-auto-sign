@@ -112,6 +112,12 @@ from web.security import (  # noqa: E402
     PW_CONFIRM_COOLDOWN_DEFAULT,  # noqa: F401
     PW_CONFIRM_TTL_DEFAULT,  # noqa: F401
     PW_CONFIRM_TTL_MAX,  # noqa: F401
+    PW_GATE_DEFAULT,  # noqa: F401
+    PW_GATE_ENV_KEY,  # noqa: F401
+    PW_GATE_FULL,
+    PW_GATE_OFF,
+    PW_GATE_RISK,  # noqa: F401
+    PW_GATE_TIERS,  # noqa: F401
     SCRYPT_METHOD,  # noqa: F401
     TRUSTED_PROXIES,
     VERIFY_FAIL_AUTH_KEYWORDS,  # noqa: F401
@@ -270,11 +276,8 @@ from web.services.notify_mail import (  # noqa: E402
     _audit_actor,
     _audit_alert_facts,
     _change_mail,  # noqa: F401
-    _exhaustion_notice_mail,  # noqa: F401
     _last_cleanup_text,  # noqa: F401
-    _mail_flags_desc,  # noqa: F401
     _nl_safe,
-    _notify_change_desc,  # noqa: F401
     _review_reject_mail,  # noqa: F401
 )
 from web.services.signstatus import (  # noqa: E402
@@ -483,16 +486,23 @@ DEFAULT_ACCOUNT_GAP_MAX = 10
 
 # 登录失败限速：同一 IP 连续失败超过阈值后锁定（锁定秒数 LOGIN_LOCK_SECONDS 随安全域
 # 搬入 web/security.py，此处以导入区再导出保持 m.LOGIN_LOCK_SECONDS 可达）
-LOGIN_MAX_FAILS = 5
-# 账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱 5 次锁定
+LOGIN_MAX_FAILS = 10
+# 账号恢复的每 IP 聚合失败窗口（跨邮箱喷洒防护——单邮箱的失败阈值
 # 只约束单账号，攻击者可换邮箱继续；命中恢复即接管该账号与其易班凭据）
 RESTORE_FAIL_MAX = 30
 RESTORE_FAIL_WINDOW = 600
-# 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
-LOGIN_FAIL_NOTIFY = 3
+# 连续失败告警阈值：达到后通知管理员（每轮锁定只告警一次）。阈值与锁定阈值
+# （LOGIN_MAX_FAILS）同值时，告警恰好落在"锁定"那一刻——本人反复输错口令是最常见的
+# 失败来源，阈值压低只会把误报刷满告警通道；真攻击由边缘限速与逐次 scrypt 时延承担。
+LOGIN_FAIL_NOTIFY = 10
 # 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
 # 只用于告警与冷却判定，不锁管理员（P18）。
 SENSITIVE_PW_FAIL_WINDOW = 900
+# 口令门失败告警阈值与冷却布防起点（次），与 LOGIN_FAIL_NOTIFY 各取各的值：
+# 登录侧抬高阈值是为了少发误报，而本阈值同时是**同一窗口内允许的 scrypt 尝试次数上界**
+# （达阈值即布防冷却，见 _sensitive_pw_denied），跟着一起抬高等于把门禁预算放宽数倍。
+# 取值沿用门禁改造前的 3，此后两侧各自调参、互不牵连。
+SENSITIVE_PW_FAIL_NOTIFY = 3
 # 敏感口令门禁的两个默认窗口（.env 可覆盖，唯一解析处见 web/security.py 的
 # _sensitive_gate_params）：PW_CONFIRM_TTL_DEFAULT 是豁免窗口（本会话在 TTL 秒内
 # 复核过口令、且出口 IP 未变 → 配置类动作免再输口令），PW_CONFIRM_TTL_MAX 是硬钳
@@ -511,6 +521,15 @@ PW_MISSING_TEXT = {400: "此操作需要输入当前密码，操作已取消",
 # 给前端的机器可读口径（前端不要靠比对中文文案分支）：
 # password_required → 收口令后重试；password_incorrect → 提示输错并计数。
 PW_DENY_REASON = {"missing": "password_required", "wrong": "password_incorrect"}
+# 不可逆操作的"倒计时后确认"凭据（请求体 `confirm_delay_ack`，JSON 布尔）。
+# 非 full 档下它替代口令成为主要摩擦：后端只认 `true` 这一个值（严格判等，字符串
+# "true"/数字 1 都不算——这是给前端的确认凭据，宽松真值判定等于把校验交给输入形态），
+# 且**不校验秒数**（前端可被绕过；真正的兜底是配额 + 事后告警 + 审计链）。
+# 拒绝文案按所在路由的 deny_status 取，与口令门两档同构；reason 单独一档，
+# 前端据此弹倒计时框而不是口令框。
+PW_DELAY_ACK_TEXT = {400: "此操作不可逆，请在倒计时结束后确认，操作已取消",
+                     403: "此操作不可逆，请在倒计时结束后确认，操作未执行"}
+PW_DELAY_ACK_REASON = "delay_ack_required"
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
@@ -620,9 +639,11 @@ DELETE_MAX_REQUESTS_PER_IP = 5
 # 高危删除操作冷却（2026-08-29 被盗号滥用面加固）：同一管理员在窗口内最多执行
 # ADMIN_DELETE_MAX 次删除类高危操作（批量删除/彻底清除/完全删除），防被盗会话
 # 快速反复删除用户并刷告警邮件。与注销冷却同语义，超限 429 且不暴露冷却参数。
+# 上限按合法批量清理的规模定（连续清理若干垃圾账号是常见运维动作，阈值卡太紧会误伤），
+# 防脚本滥用的作用由"窗口内次数"本身承担。
 # .env 可调（YIBAN_ADMIN_DELETE_COOLDOWN_SEC / YIBAN_ADMIN_DELETE_MAX，0=关闭）。
 ADMIN_DELETE_COOLDOWN_SEC = 60
-ADMIN_DELETE_MAX = 5
+ADMIN_DELETE_MAX = 20
 # 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐，与 db.purge_deleted_users
 # 默认一致；已注销用户视图按此计算剩余天数。常量本体（取 db.SOFT_DELETE_RETENTION_DAYS
 # ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
@@ -1035,11 +1056,13 @@ _purge_loop_lock = threading.Lock()
 
 
 # IP 计数表的回收与窗口/失败计数（`_ip_store_trim` / `_bump_window_count` /
-# `_bump_login_failure`）、敏感口令门禁旋钮（`_sensitive_gate_params`）、账号校验配额
-# 与冷却（`_verify_attempt_allowed` / `_verify_fail_cooldown_remaining` /
-# `_record_verify_failure`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达
-# （路由在 m._rate_lock 下调用这些计数助手，同一把锁真源在 web/services/locks.py）。
-# `_sensitive_gate_params` 是唯一例外：它要注入本模块的 `load_env_int`（转发包装见下方）。
+# `_bump_login_failure`）、敏感口令门禁档位与旋钮（`_pw_gate_tier` /
+# `_sensitive_gate_params`）、账号校验配额与冷却（`_verify_attempt_allowed` /
+# `_verify_fail_cooldown_remaining` / `_record_verify_failure`）实现见 web/security.py，
+# 此处以导入区再导出保持 m.* 可达（路由在 m._rate_lock 下调用这些计数助手，同一把锁
+# 真源在 web/services/locks.py）。
+# 两个解析器要注入本模块的读取器（`_pw_gate_tier` 注入 `read_env`、
+# `_sensitive_gate_params` 注入 `load_env_int`），故各自带一个转发包装见下方。
 
 
 def _read_audit_row_due(cnt):
@@ -1061,6 +1084,15 @@ def _sensitive_gate_params(env_path):
     整数配置读取器按调用时刻现取本模块的（测试会打桩 `web.app.load_env_int`）。
     """
     return _security._sensitive_gate_params(env_path, load_env_int)
+
+
+def _pw_gate_tier(env_path):
+    """敏感口令门禁档位（`YIBAN_PW_GATE`）的唯一解析处（实现见 web/security.py）。
+
+    `.env` 读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。路由侧
+    需要它判断"非 full 档才补发事后告警"，故在模块级留一个可 `m.*` 取用的名字。
+    """
+    return _security._pw_gate_tier(env_path, read_env)
 
 
 # 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
@@ -1226,9 +1258,8 @@ def sign_status(now=None):
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
 # `_audit_alert_facts` / `_last_cleanup_text`、变更与审核邮件 `_change_mail` /
-# `_review_reject_mail`、收件人算法 `_alert_mail_recipients`、耗尽告知
-# `_exhaustion_notice_mail`、开关与推送变更描述 `_mail_flags_desc` /
-# `_notify_change_desc` 及随族常量）实现见 web/services/notify_mail.py，此处以导入区
+# `_review_reject_mail`、收件人算法 `_alert_mail_recipients` 及随族常量）实现见
+# web/services/notify_mail.py，此处以导入区
 # 再导出保持 m.* 可达；`send_notification` 与 `_push_ever_configured` 需要注入本模块
 # 持有的名字，故在下方转发。
 
@@ -1294,6 +1325,38 @@ def _send_channel_health_report(force=False):
     return _channel_health._send_channel_health_report(
         force, alert_channel_status=_alert_channel_status,
         status_lines=_channel_status_lines, send_notification=send_notification)
+
+
+# 告警通道健康报告的例行播报日（0=周一）。日报的价值在"通道被关掉这件事看得见"，
+# 而通道健康与否不会在一天内变化——日更只是每天多打扰一封。故例行收敛到固定一天；
+# 通道降级当天照发（见 _channel_health_report_due），报警器被拆仍当天可见。
+_HEALTH_REPORT_WEEKDAY = 0
+
+
+def _channel_health_report_due(status=None):
+    """今天是否该播告警通道健康报告：例行日（周一）、通道降级、或当日有额度耗尽待告知。
+
+    降级判定沿用 `_channel_health_degraded` 的结构化字段（与日报内部同一口径）。额度
+    那一档刻意用只读的 `notify.has_pending_exhaustion_notice()` 与
+    `notify.budget_exhausted_today()`，而不是 `pop_exhaustion_notice()`：pop 是取走
+    语义，在闸门上取走会让真正发信时少了那几行"哪本账用尽"的告知，而账本的 notice
+    标记按日重置 ⇒ 漏到下一个例行日就再也补不回来。两个判据都要：`budget_exhausted_today`
+    只覆盖 general / urgent 两本推送账，登录失败账（login_fail）的耗尽告知同样只有本
+    报告一个取走方——只看前者，攻击当天（非例行日）这封报告不发，告知就在换日归零时
+    永久消失。
+
+    降级期间每天都会判"该发"，与日更时的行为一致：报警器失效必须持续可见，不能因为
+    改成周报而静默。
+    """
+    st = status if status is not None else _alert_channel_status()
+    if _channel_health_degraded(st):
+        return True
+    try:
+        if notify.has_pending_exhaustion_notice() or notify.budget_exhausted_today():
+            return True
+    except Exception as e:  # 兜底：额度状态读不动不该让日报整体缺席
+        logger.warning("读取推送额度状态失败（按未耗尽处理）: %s", e)
+    return clock.now().weekday() == _HEALTH_REPORT_WEEKDAY
 
 
 # 容量核计与触顶告警族（账号/用户配额判定 `_capacity_account_count` /
@@ -2078,7 +2141,8 @@ def create_app(host=None):
         本函数**判定即占用**，故必须在二次鉴权通过
         之后调用（五个高危调用点统一走 _high_risk_gate，不再各自手搓顺序）。
         原先放在口令校验之前，不知口令的被盗会话可以用错口令尝试把主管理员的
-        "删除 + 通道变更"预算（默认 5 次 / 60 秒）刷满，反过来让合法运维全程 429。
+        "删除 + 通道变更"预算（ADMIN_DELETE_MAX 次 / ADMIN_DELETE_COOLDOWN_SEC 秒）刷满，
+        反过来让合法运维全程 429。
         """
         window = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", ADMIN_DELETE_COOLDOWN_SEC)
         limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
@@ -2133,10 +2197,10 @@ def create_app(host=None):
         刻意**绝不写登录失败表**（P18）：能持 Cookie 撞门禁的人若可写登录侧的共享
         计数，就能用错口令把管理员同时锁在"登录"和"所有高危运维"之外，把风控变成攻击面。
 
-        告警按 `== LOGIN_FAIL_NOTIFY` 只发一条（同一窗口不刷屏，运维口径），但冷却按
+        告警按 `== SENSITIVE_PW_FAIL_NOTIFY` 只发一条（同一窗口不刷屏，运维口径），但冷却按
         `>= 阈值` **每次失败都续期**：只在"恰好等于阈值"那一次布防的话，冷却到期后的
         第 4、5… 次失败既不再告警也不再被挡，等于把同一个洞留回原处。续期之后，
-        攻击者每 `cooldown` 秒最多只能做 `LOGIN_FAIL_NOTIFY` 次口令散列（实测单次
+        攻击者每 `cooldown` 秒最多只能做 `SENSITIVE_PW_FAIL_NOTIFY` 次口令散列（实测单次
         scrypt 约 157ms），而不是此前的约 6 次/秒。
         """
         with _rate_lock:
@@ -2144,10 +2208,10 @@ def create_app(host=None):
                            SENSITIVE_PW_FAIL_WINDOW + _IP_STORE_MAX_AGE)
         cnt, _start, _allowed = _bump_window_count(
             _sensitive_pw_fails, key, now, SENSITIVE_PW_FAIL_WINDOW)
-        if cnt >= LOGIN_FAIL_NOTIFY and cooldown > 0:
+        if cnt >= SENSITIVE_PW_FAIL_NOTIFY and cooldown > 0:
             with _rate_lock:
                 _sensitive_pw_cooldown[key] = (cnt, now + cooldown)
-        if cnt == LOGIN_FAIL_NOTIFY:
+        if cnt == SENSITIVE_PW_FAIL_NOTIFY:
             send_notification(
                 "高危操作二次鉴权失败告警",
                 mail_layout.Mail(
@@ -2172,8 +2236,28 @@ def create_app(host=None):
         return jsonify({"error": PW_DENY_TEXT[deny_status],
                         "reason": PW_DENY_REASON["wrong"]}), deny_status
 
+    def _pw_gate_ip_changed():
+        """本次请求的出口 IP 是否与本会话**已验证 IP** 不一致（无基准 = 未知，不触发）。
+
+        判据是"换环境"而非操作密度：要拦的是被盗 session cookie 换个出口后用危险
+        操作拆防护（现实的会话劫持场景），而"同一出口短时连做若干危险操作"恰是管理员
+        清理垃圾账号这类最常见的合法操作，拿它当判据只会误伤。密度面另有
+        `_admin_delete_limited` 的配额兜着，不必在门禁上再叠一层。
+
+        基准取"本会话最近一次口令验证通过的出口"（`pw_ok_ip`，与豁免 TTL 共用同一个
+        键——它记的就是"这个会话在哪个出口上证明过身份"）；会话还没验证过任何口令时
+        退回登录出口 `login_ip`。两级都空 = 未知：历史会话没有 `login_ip`，那种情况
+        只能算未知，不能默认判异常，否则升级后所有存量会话都会被判为换环境，人人被
+        要求输口令，正是要避免的摩擦。
+
+        **不新造存储**：已验证 IP 就是口令验证成功那一刻写进会话的那个键（见
+        `_sensitive_password_gate` 的比对段），判定本身无需任何计数表。
+        """
+        trusted = session.get("pw_ok_ip") or session.get("login_ip")
+        return bool(trusted) and trusted != _client_ip()
+
     def _sensitive_password_gate(data, action, *, always_required=False,
-                                 deny_status=403):
+                                 deny_status=403, irreversible=False):
         """敏感操作口令复核的**唯一入口**。返回 None = 放行，否则是要直接 `return` 的响应。
 
         为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）此前各写各的
@@ -2182,12 +2266,26 @@ def create_app(host=None):
         单次 scrypt 157ms 就能打满一核；比项目自己的登录口（10 次/60 秒 + 第 5 次锁
         300 秒）快约 38 倍且**永不锁**，等于给绕过登录限速留了个算力口子。
 
+        **档位**（`.env` 的 `YIBAN_PW_GATE`，解析见 `_pw_gate_tier`）决定要不要口令：
+
+        - `full`：下面三段判定逐字照旧，`always_required` 由调用点指定（改造前的行为）；
+        - `risk`（默认）：先做风控判定（`_pw_gate_ip_changed`，唯一判据 = 换环境），
+          未命中直接放行；命中则按"当次必须输口令"走下面三段（不吃 TTL 豁免、
+          冷却照常生效）；
+        - `off`：永不要求口令。
+
+        非 `full` 档还多一道**倒计时确认**：`irreversible=True` 的操作（不可逆清除 /
+        删用户 / 急停）要求请求体带 `confirm_delay_ack: true`，缺失即拒。它是软摩擦，
+        挡手滑不挡攻击者（前端常量可绕），所以拒绝文案与 reason 单独一档交给前端弹
+        倒计时框，真正的兜底仍是配额 + 事后告警 + 审计。
+
         三段判定按序：
         1. **冷却优先于口令**：本 (出口 IP, 会话账号) 已进冷却 → 429，正确口令也不放行
            （否则"改用对口令"就是冷却自带的绕过口子）。冷却只封这条门禁：登录、只读
            GET、以及不需要复核的写操作一律照常。
         2. **豁免**（仅 `always_required=False` 的配置类动作）：见 _pw_confirm_exempt。
-        3. **口令比对**：通过则把授权时刻与出口 IP 记进会话，供第 2 段用。
+        3. **口令比对**：通过则把授权时刻与出口 IP 记进会话——授权时刻供第 2 段的豁免
+           用，出口 IP 同时是 `risk` 档"换环境"判据的已验证基准（见 `_pw_gate_ip_changed`）。
 
         `always_required=True` 用于"必须当次输口令"的动作——不可逆清除、关闭/改道告警
         通道、角色变更、重置他人口令、改主管理员口令。调用点逐个标注，见各站点注释。
@@ -2197,6 +2295,19 @@ def create_app(host=None):
         ttl, cooldown = _sensitive_gate_params(ENV_FILE)
         key = (_client_ip(), (session.get("username") or "?").strip().lower()[:64])
         now = time.time()
+        tier = _pw_gate_tier(ENV_FILE)
+        if tier != PW_GATE_FULL:
+            if irreversible and data.get("confirm_delay_ack") is not True:
+                return jsonify({"error": PW_DELAY_ACK_TEXT[deny_status],
+                                "reason": PW_DELAY_ACK_REASON}), deny_status
+            if tier == PW_GATE_OFF:
+                return None
+            if not _pw_gate_ip_changed():
+                return None
+            # 换环境命中 = 当次必须输口令。豁免判的是"本出口刚复核过"，而这里恰恰是
+            # 本出口还没复核过，故显式置位：日后豁免口径若有变动，也不至于把命中的
+            # 那一次悄悄放行。
+            always_required = True
         with _rate_lock:
             _ip_store_trim(_sensitive_pw_cooldown, cooldown + _IP_STORE_MAX_AGE)
             until = (_sensitive_pw_cooldown.get(key) or (0, 0))[1]
@@ -2216,16 +2327,22 @@ def create_app(host=None):
             return jsonify({"error": PW_MISSING_TEXT[deny_status],
                             "reason": PW_DENY_REASON["missing"]}), deny_status
         if _verify_session_password(submitted):
+            # 这个出口已证明过身份：既作豁免 TTL 的依据，也作 `risk` 档"换环境"判据的
+            # 已验证基准——验证通过即记住本 IP，同一出口后续危险操作不再重复要求口令
+            # （见 _pw_gate_ip_changed）。
             session["pw_ok_ts"] = now
             session["pw_ok_ip"] = key[0]
             return None
         return _sensitive_pw_denied(key, action, deny_status, cooldown, now)
 
-    def _reconfirm_admin_password(password, action_label, always_required=True):
+    def _reconfirm_admin_password(data, action_label, *, always_required=True,
+                                  irreversible=False):
         """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
 
-        签名与返回约定保持不变（None = 通过，否则 `(响应, 状态码)` 元组），以免改动
-        20+ 调用点；实现整体交给 _sensitive_password_gate（含失败计数、告警与冷却）。
+        返回约定保持不变（None = 通过，否则 `(响应, 状态码)` 元组）；实现整体交给
+        _sensitive_password_gate（含失败计数、告警与冷却）。第一个参数收**整个请求体**
+        而不是单独的口令串：非 `full` 档还要看同一请求里的倒计时确认凭据
+        （`confirm_delay_ack`），只传口令串会把那个字段截掉，门禁永远判它缺失。
         与原实现的两处语义差别：
         - **不再读写登录失败表**：原实现把失败记进与登录共用的桶并置 lock_until，
           于是与管理员同出口 IP 的被窃会话可以用错口令把主管理员同时锁在"登录"和
@@ -2237,21 +2354,28 @@ def create_app(host=None):
         （签到随机延迟、容量上限）显式传 False 走豁免。
         """
         return _sensitive_password_gate(
-            {"confirm_password": password}, action_label,
-            always_required=always_required, deny_status=400)
+            data, action_label, always_required=always_required, deny_status=400,
+            irreversible=irreversible)
 
-    def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试"):
+    def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试",
+                        irreversible=False):
         """高危动作统一门禁：先二次鉴权，**通过之后**才占用高危限速额度。
 
         顺序即本次修复：原五处调用都是"先判后增再鉴权"，于是
         一个只拿到 Cookie、不知道口令的被盗会话，用错口令反复尝试就能把主管理员
-        的"删除 + 告警通道变更"预算（默认 5 次 / 60 秒）全部吃掉，反过来让合法
+        的"删除 + 告警通道变更"预算（ADMIN_DELETE_MAX 次 / ADMIN_DELETE_COOLDOWN_SEC 秒）
+        全部吃掉，反过来让合法
         运维的每一次高危操作都撞 429（运维 DoS）。口令暴力的防护本就由
         _sensitive_password_gate 里的独立计数与门禁级冷却承担（第 3 次告警并暂停
         敏感操作），不需要再借用高危额度；额度只该被**真实执行过**的高危动作消耗。
 
         仍复用同一套计数（不新建第二套 store，评审口径），不改变"超限即 429"的语义。
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
+
+        `irreversible=True` 标注"不可逆清除/删除"类落点（物理清除、彻底删除、
+        删用户）：非 `full` 档下它们还要求请求体带倒计时确认凭据，见
+        `_sensitive_password_gate`。可逆动作（角色变更、重置口令、关通道/换密钥）
+        不传，避免把"可回滚"的动作也变成不可撤销的确认负担。
 
         本函数走的全部是"必须当次输口令"的动作（`always_required=True`，豁免不适用），
         逐个落点：账号/用户的不可逆清除与删除（/api/accounts/batch 的 purge、
@@ -2266,7 +2390,7 @@ def create_app(host=None):
         /api/settings 的签到随机延迟与容量上限、/api/scheduler/executors* 的写操作。
         """
         pw_err = _reconfirm_admin_password(
-            str(data.get("confirm_password", "")), action_label, always_required=True)
+            data, action_label, always_required=True, irreversible=irreversible)
         if pw_err:
             return pw_err
         if _admin_delete_limited():
@@ -2332,23 +2456,9 @@ def create_app(host=None):
                 elif _health["anchor_msg"]:
                     # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
                     logger.info("审计链提示: %s", _health["anchor_msg"])
-                # 时钟守卫拦截后的持续告警——守卫拦截会把清理永久
-                # 冻结（人工重置前不恢复），每日线程在此读 app_meta 留痕并发邮件，
-                # 直到管理员运行 scripts/clock_guard_reset.py 重置为止（每日重发
-                # 是刻意的：冻结状态必须保持可见，防止静默腐烂）
-                _cg = db.clock_guard_alert()
-                if _cg:
-                    _cg_mail = mail_layout.Mail(
-                        summary="系统时间异常跳变已被拦截，全部物理清理处于冻结状态。",
-                        fields=[("告警时间", _cg.get("ts", "?")),
-                                ("守卫备注", _cg.get("note") or "（无）")],
-                        advice=["先核实系统时间与 NTP 同步状态",
-                                "确认时间正确后运行 "
-                                "python3 scripts/clock_guard_reset.py --confirm 重置"],
-                        level="urgent",
-                    )
-                    logger.error("时钟守卫告警: %s", _cg.get("note", ""))
-                    send_notification("时钟跳变守卫告警", _cg_mail, urgent=True)
+                # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
+                # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
+                # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
                 logger.warning("审计链每日校验/锚点写入失败: %s", e)
@@ -2362,8 +2472,11 @@ def create_app(host=None):
             # 两通道全断时也仍留得住证据。
             # 修复轮 2：标记改在发信成功后才落——本处 except 吞掉的正是"今天没发出去"，
             # 不落标记才能让下一次进程启动（同一日）再试一封，而不是静默到明天。
+            # 周报化：例行收敛到每周固定一天（`_HEALTH_REPORT_WEEKDAY`），通道降级或当日
+            # 额度耗尽时当天就发——清理任务本身仍每日跑，不随本报告改成周跑。
             try:
-                _send_channel_health_report()
+                if _channel_health_report_due():
+                    _send_channel_health_report()
             except Exception as e:
                 logger.warning("告警通道健康日报发送失败: %s", e)
             time.sleep(24 * 3600)

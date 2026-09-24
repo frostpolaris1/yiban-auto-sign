@@ -7,13 +7,13 @@
      · 读 GET /api/notify-config —— 任意管理员可读通道状态与规则配置字段；额度**余量**
        （daily_remaining / urgent_daily_remaining）仅主管理员，无权查看时后端置 null 并
        恒定下发 quota_visible=false（本组件先看 quota_visible 再决定显示口径，不按 null 判）。
-     · 写与测试 —— 仅主管理员，且关闭通道、更换/清空密钥、调整额度节流都要
-       confirm_password（后端 _high_risk_gate：值**真的变了**才要，同值提交不要求；
-       UI 不是安全边界）。
+     · 写与测试 —— 仅主管理员，且关闭通道、更换/清空密钥、调整额度节流受门禁
+       （后端 _high_risk_gate：值**真的变了**才判；UI 不是安全边界）。
    脱敏：密钥只读展示 secret_masked，输入框恒为空（留空=不改动），绝不回显。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存推送配置」
-   才提交，只发送相对快照真正变化的字段。
+   才提交，只发送相对快照真正变化的字段。门禁走统一 helper——先不带凭据发，后端回
+   reason 才补口令，档位只存在于后端。
    对外面：mount/load/apply(load 同义)、save() → Promise<boolean>、isDirty()。 */
 (function () {
   "use strict";
@@ -137,28 +137,26 @@
     return body;
   }
 
+  // 受门禁的保存：**先不带凭据发**，由后端 reason 决定要不要口令（档位只存在于后端）；
+  // 用户取消弹窗 = 本次不保存。
   function submit(body) {
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "保存消息推送配置属于高危操作。\n请输入当前管理员密码确认。",
-        function (pw) {
-          body.confirm_password = pw;
-          busy = true;
-          var btn = $("sn-save"); if (btn) btn.disabled = true;
-          setTip("保存中…", false);
-          YB.api("PUT", "/api/notify-config", body).then(function () {
-            var sec = $("sn-secret"); if (sec) sec.value = "";
-            resolve(true);
-            return load();
-          }, function (e) {
-            setTip((e && e.message) || "保存失败，请稍后重试", true);
-            resolve(false);
-          }).then(function () {
-            busy = false;
-            if (btn && isMaster) btn.disabled = false;
-          });
-        },
-        function () { resolve(false); });     // 取消口令 = 本次不保存
+    busy = true;
+    var btn = $("sn-save"); if (btn) btn.disabled = true;
+    setTip("保存中…", false);
+    return YB.dangerousSubmit({
+      method: "PUT", path: "/api/notify-config", body: body,
+      desc: "保存消息推送配置属于高危操作。\n请输入当前管理员密码确认。"
+    }).then(function () {
+      var sec = $("sn-secret"); if (sec) sec.value = "";
+      return load().then(function () { return true; });
+    }, function (e) {
+      if (e && e.canceled) setTip("", false);
+      else setTip((e && e.message) || "保存失败，请稍后重试", true);
+      return false;
+    }).then(function (ok) {
+      busy = false;
+      if (btn && isMaster) btn.disabled = false;
+      return ok;
     });
   }
 

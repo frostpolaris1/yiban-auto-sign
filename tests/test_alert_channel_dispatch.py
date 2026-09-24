@@ -128,19 +128,22 @@ class SigninAlertGateTest(unittest.TestCase):
     def tearDown(self):
         signin._mail_summary.clear()
 
-    def test_slow_sign_alert_fires_only_when_push_configured(self):
-        """_alert_slow_sign 的即时推送按 is_configured 门控（不再看死键 notify_url）。"""
-        for configured, want_calls in ((True, 1), (False, 0)):
+    def test_slow_sign_alert_is_summary_only_never_pushed(self):
+        """_alert_slow_sign 只并入收尾汇总，不做即时推送（推送额度留给即时故障）。
+
+        反面不再是"推送未配置时不发"——那样即使把推送门控写坏也照样绿：这里直接钉
+        "推送通道已配置也不发即时推送"，只有汇总收集器多一条。
+        """
+        for configured in (True, False):
             with self.subTest(configured=configured):
                 signin._mail_summary.clear()
                 with mock.patch.object(signin.notify, "is_configured",
                                        return_value=configured), \
                      mock.patch.object(signin.notify, "send") as m_send:
-                    signin._alert_slow_sign("13800138001", 30.0, 20, "ok", "有点慢", "")
-                self.assertEqual(m_send.call_count, want_calls)
-                if want_calls:
-                    self.assertEqual(m_send.call_args.args[0], "易班签到耗时告警")
+                    signin._alert_slow_sign("13800138001", 30.0, 20, "ok", "有点慢")
+                m_send.assert_not_called()
                 self.assertEqual(len(signin._mail_summary), 1, "汇总邮件收集不受推送门控影响")
+                self.assertEqual(signin._mail_summary[0][0], "易班签到耗时告警")
 
     def test_no_dead_notify_url_gate_remains_in_source(self):
         """源级断言：即时告警门不得再挂在 YIBAN_NOTIFY_URL 死键上。
@@ -244,14 +247,20 @@ class LoginAlertUrgencyTest(_B14AlertGateBase):
         self.assertFalse(got[0][2], "单账号反复输错不得占用紧急额度")
 
     def test_spray_across_users_is_urgent(self):
-        """同一 IP 打多个用户名且某账号已到阈值 → 撞库特征，升级紧急。"""
+        """同一 IP 打多个用户名且某账号已到阈值 → 撞库特征，升级紧急。
+
+        阈值在用例内调小：告警阈值与每 IP 登录频率上限同量级（均 10 次/60 秒），按真实
+        阈值要凑出"一个用户名累计到阈值 + 另外两个用户名各失败过"至少 12 次请求，会被
+        频率上限先挡下。此处钉的是喷洒判据的逻辑本身。
+        """
         c = self._client()
         users = ["a1@beta.local", "a2@beta.local", "a3@beta.local"]
-        for u in users:
-            for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
-                c.post("/api/login", json={"username": u, "password": "WrongPass#111"})
-        # 第 3 个账号的第 3 次失败触发告警：此时该 IP 已试过 3 个不同用户名
-        c.post("/api/login", json={"username": users[-1], "password": "WrongPass#111"})
+        with mock.patch.object(self.webapp, "LOGIN_FAIL_NOTIFY", 3):
+            for u in users:
+                for _ in range(self.webapp.LOGIN_FAIL_NOTIFY - 1):
+                    c.post("/api/login", json={"username": u, "password": "WrongPass#111"})
+            # 第 3 个账号的第 3 次失败触发告警：此时该 IP 已试过 3 个不同用户名
+            c.post("/api/login", json={"username": users[-1], "password": "WrongPass#111"})
         got = self._alerts()
         self.assertEqual(len(got), 1, f"仅命中阈值那一次告警：{got}")
         self.assertTrue(got[0][2], "跨账号喷洒必须升级紧急")

@@ -134,7 +134,7 @@ def api_users_deleted_purge():
         return jsonify({"error": "邮箱格式不正确"}), 400
     # 盗号滥用面加固：物理清除不可逆 → 二次鉴权 + 同管理员限速
     # （顺序统一为"先鉴权、通过了才占额度"）
-    gate = high_risk_gate()(data, "彻底清除已注销用户")
+    gate = high_risk_gate()(data, "彻底清除已注销用户", irreversible=True)
     if gate:
         return gate
     with m._file_lock:
@@ -149,17 +149,8 @@ def api_users_deleted_purge():
             )
     skipped = [e for e in emails if e not in purged]
     m.logger.info("主管理员手动清除已注销用户: 成功 %d 个", len(purged))
-    if purged:
-        # 物理清除不可逆，与批量删除用户同级即时告警
-        m.send_notification(
-            "高危管理操作告警",
-            m._change_mail(
-                f"物理清除已注销用户 {len(purged)} 个。",
-                detail=[("目标", "、".join(m._mask_email(e) for e in purged[:20]))],
-                advice=["物理清除不可恢复"],
-            ),
-            urgent=True,
-        )
+    # 物理清除不再外发即时告警：留痕由上面的审计行承担（谁、清了哪些、数量），
+    # 管理操作逐条发信会把告警邮件刷成"操作日志"。
     return jsonify({
         "ok": True,
         "purged": purged,
@@ -211,6 +202,8 @@ def api_users_batch():
             "批量删除用户" if action == "delete" else "批量重置密码",
             limit_msg="删除操作过于频繁，请稍后再试"
             if action == "delete" else "重置操作过于频繁，请稍后再试",
+            # 只有 delete 不可逆；批量重置口令可再重置一次，不套倒计时确认
+            irreversible=(action == "delete"),
         )
         if gate:
             return gate
@@ -282,17 +275,8 @@ def api_users_batch():
                     "失败，已回滚",
                 )
                 return jsonify({"error": "批量操作失败，已全部回滚"}), 500
-            if action == "delete":
-                # 批量物理删除用户为不可逆高危操作，即时告警
-                m.send_notification(
-                    "高危管理操作告警",
-                    m._change_mail(
-                        f"批量删除用户 {done} 个。",
-                        detail=[("目标", "、".join(
-                            m._mask_email(e) for e in (emails or [])[:20]))],
-                    ),
-                    urgent=True,
-                )
+            # 批量删除/重置密码不再外发即时告警：留痕由下面的审计行承担
+            # （动作 + 目标清单），管理操作逐条发信会把告警邮件刷成"操作日志"。
             # 批量重置密码后轮换各目标 sid（吊销被盗旧会话）。
             # 只轮换**真正重置了密码**的账号（processed）：若遍历请求里的 emails
             # 原文，被跳过的管理员（内置/非主管理员动其他管理员）密码没变、
@@ -301,16 +285,6 @@ def api_users_batch():
                 for e in processed:
                     with contextlib.suppress(Exception):
                         m.db.set_user_sid(e.strip().lower(), secrets.token_hex(16))
-                # 批量重置密码即时告警
-                m.send_notification(
-                    "密码重置告警",
-                    m._change_mail(
-                        f"批量重置密码 {done} 个。",
-                        detail=[("目标", "、".join(
-                            m._mask_email(e) for e in (processed or [])[:20]))],
-                    ),
-                    urgent=True,
-                )
         # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"；
         # 重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
         audit_detail = (f"处理 {done} 个: " + ",".join(
@@ -402,17 +376,7 @@ def api_user_role(email):
             f"角色 → {new_role}",
         )
         m.logger.info("主管理员 %s 将用户 %s 角色 → %s", m._mask_email(username), m._mask_email(email), new_role)
-        # 提降权即时告警（权限面变更应可感知）
-        m.send_notification(
-            "权限变更告警",
-            m._change_mail(
-                f"用户 {m._mask_email(email)} 的权限已变更。",
-                detail=[("新角色",
-                         "管理员" if new_role == "admin" else "普通用户")],
-                operator=username,
-            ),
-            urgent=True,
-        )
+        # 提降权不再外发即时告警：留痕由上面的审计行承担（谁把谁改成了什么角色）。
         # 成功 msg 出站即脱敏（与日志/告警口径一致），完整邮箱不回显
         return jsonify(
             {
@@ -465,12 +429,8 @@ def api_user_password(email):
             "管理员重置密码",
         )
         m.logger.info("已重置用户 %s 密码", m._mask_email(email))
-        # 重置他人密码即时告警（被盗号会话中的静默接管信号）
-        m.send_notification(
-            "密码重置告警",
-            m._change_mail(f"用户 {m._mask_email(email)} 的密码已被管理员重置。"),
-            urgent=True,
-        )
+        # 重置他人密码不再外发即时告警：留痕由上面的审计行承担（谁重置了谁），
+        # 目标用户的旧会话已随 sid 轮换失效，管理操作逐条发信只会把告警刷成操作日志。
         return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 密码已重置"})
 
 
@@ -495,7 +455,10 @@ def api_user_delete(email):
     gate = high_risk_gate()(
         data,
         "完全删除用户" if mode == "full" else "清空用户账号",
-        limit_msg="删除操作过于频繁，请稍后再试")
+        limit_msg="删除操作过于频繁，请稍后再试",
+        # 两种模式都不可逆（full 连用户一起删，accounts_only 把其全部易班凭据清零）
+        irreversible=True,
+    )
     if gate:
         return gate
     with m._file_lock:
@@ -529,18 +492,21 @@ def api_user_delete(email):
         )
         if mode == "full":
             m.logger.info("完全删除用户 %s（含易班账号）", m._mask_email(email))
-            # 完全删除（物理、不可逆）为高危操作，即时告警
-            m.send_notification(
-                "高危管理操作告警",
-                m._change_mail(
-                    f"完全删除用户 {m._mask_email(email)}。",
-                    detail=[("连带", "其全部易班账号一并清除")],
-                    advice=["物理删除不可恢复"],
-                ),
-                urgent=True,
-            )
+            # 完全删除不再外发即时告警：留痕由上面的审计行承担（谁、删了谁、mode）。
             return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 已完全删除"})
         m.logger.info("清空用户 %s 的易班账号（保留用户）", m._mask_email(email))
+        # 清空账号保留事后告警：一次请求即把该用户的**全部**易班凭据不可逆清零，
+        # 而当事人未必立刻发现（不像完全删除那样连登录入口一起消失）。这条是
+        # 非 full 档下"无当次口令"的补偿信号，与 irreversible 的声明配套。
+        m.send_notification(
+            "高危管理操作告警",
+            m._change_mail(
+                f"清空用户 {m._mask_email(email)} 的全部易班账号。",
+                detail=[("连带", "其易班账号凭据被不可逆清除（用户保留，需重新提交）")],
+                advice=["凭据清空不可恢复；如非本人申请，请核实操作者身份"],
+            ),
+            urgent=True,
+        )
         return jsonify({"ok": True, "msg": f"{m._mask_email(email)} 的易班账号已清空（用户保留，可重新提交）"})
 
 

@@ -533,19 +533,22 @@
     return s.length >= PW_ADMIN_MIN_LEN && passwordClasses(s) >= PW_ADMIN_MIN_CLASSES;
   }
 
-  /* ---------- 口令门禁失败的机器可读分类 ----------
+  /* ---------- 危险操作门禁失败的机器可读分类 ----------
      后端在门禁拒绝时下发 `reason`：password_required = 本次未提交口令（调用方应弹口令框
-     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试）。前端据此分支，
-     不再靠比对中文文案或状态码；旧后端未下发 reason 时回落为空串，按后端原文案显示，
-     语义与既有契约一致。 */
+     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试），
+     delay_ack_required = 不可逆操作缺少/伪造 confirm_delay_ack（应弹倒计时确认框）。
+     档位（YIBAN_PW_GATE）只存在于后端，前端不判断档位、只认 reason；旧后端未下发 reason
+     时回落为空串，按后端原文案显示，语义与既有契约一致。 */
   function pwGateReason(e) {
     var r = e && e.data && e.data.reason;
-    return (r === "password_required" || r === "password_incorrect") ? r : "";
+    return (r === "password_required" || r === "password_incorrect"
+      || r === "delay_ack_required") ? r : "";
   }
   function pwGateMessage(e) {
     var r = pwGateReason(e);
     if (r === "password_required") return "此操作需要输入当前口令，请重新输入后确认。";
     if (r === "password_incorrect") return "当前口令不正确，请重新输入。";
+    if (r === "delay_ack_required") return "此操作需要二次确认，请在倒计时结束后确认。";
     // 非口令门禁失败（冷却 429、无事可做 400、网络错误等）：原样显示后端文案
     return (e && e.message) || "操作失败，请稍后重试";
   }
@@ -635,6 +638,137 @@
       ]
     });
     return pwHandle;
+  }
+
+  /* ---------- 不可逆操作的倒计时确认框 ----------
+     软性摩擦的落地形态：把「输口令打断心流」换成「等几秒再确认」，靠时间成本挡手滑连点，
+     而不是要求现场回忆管理员口令。按钮在倒计时内禁用并显示剩余秒数（5s → 4s → …），
+     归零后启用；确认 resolve(true)，取消/关闭 resolve(false)。
+     倒计时秒数只在前端生效（后端不校验秒数，真正兜底是配额 + 事后告警 + 审计），
+     故这里的定时器必须在两条收尾路径（确认 / 取消关闭）上都清掉，否则弹窗关了还在空转。 */
+  var DELAY_ACK_SECONDS = 5;
+  function delayAckLabel(left) { return left > 0 ? "确认（" + left + "s）" : "确认执行"; }
+  function openDelayAckModal(desc, confirmText) {
+    return new Promise(function (resolve) {
+      var settled = false, timer = null;
+      function settle(v) {
+        if (settled) return;
+        settled = true;
+        if (timer) { clearInterval(timer); timer = null; }
+        resolve(v);
+      }
+      var handle = openModal({
+        title: "不可逆操作确认",
+        body: el("div", { class: "pm-confirm-text", text: desc || "此操作不可逆，请确认。" }),
+        onClose: function () { settle(false); },
+        actions: [
+          { label: "取消", variant: "ghost" },
+          { label: confirmText || "确认执行", variant: "danger", onClick: function () { settle(true); } }
+        ]
+      });
+      var foot = handle.panel.querySelector(".modal-foot");
+      var okBtn = foot ? foot.querySelector(".btn--danger") : null;
+      if (!okBtn) { settle(false); return; }
+      var left = DELAY_ACK_SECONDS;
+      okBtn.disabled = true;
+      okBtn.textContent = delayAckLabel(left);
+      timer = setInterval(function () {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(timer);
+          timer = null;
+          okBtn.disabled = false;
+          okBtn.textContent = delayAckLabel(0);
+          return;
+        }
+        okBtn.textContent = delayAckLabel(left);
+      }, 1000);
+    });
+  }
+
+  /* ---------- 受门禁操作的统一提交入口 ----------
+     档位（YIBAN_PW_GATE）只存在于后端，**受门禁操作一律先不带任何凭据发**：本处不判断
+     档位、也不预判"要不要口令"，只按响应体的 reason 分流——
+       · delay_ack_required → 弹倒计时确认框，确认后带 confirm_delay_ack: true 重发；
+       · password_required / password_incorrect → 弹既有口令框，口令随重发提交；
+       · 其余失败原样上抛，由调用方的失败处理接管。
+     这样每个调用点都不必自己拼口令框管道，也不必猜后端档位（猜错就是"用户白输一次
+     口令"或"请求被 403 打回"）。倒计时只对不可逆操作出现——后端只对它们下发
+     delay_ack_required，非不可逆操作带上该字段也不会被要求。
+     口令与倒计时凭据各只自动补一次：后端再次拒绝即上抛，绝不无限重发；口令错的那次
+     由口令框自身在框内提示并允许改口令重试（沿用既有流程）。用户取消任一弹窗时以带
+     canceled 标记的错误拒绝。取消与被后端打回都**不等于什么都没发生**：多段提交里
+     先成功的步骤已经落库，故两种失败都另带 `completed`（已成功提交的步数），调用方
+     据此刷新视图并说明已生效的部分不会回滚（见 components/settings-executors.js 的
+     canceledAfter / failedAfter）。 */
+  function dangerousSubmit(opts) {
+    // 一次点击要按序发**多个**受门禁请求时用 opts.requests（[{method, path, body}, …]），
+    // 否则用单个 path/body。凭据对整串共用，且**从失败那一步继续**、已成功的步骤不重发，
+    // 故一次点击最多问一次口令——否则"改出口 + 同时拨故障转移开关"这类保存会连弹两次框。
+    // requests 形式 resolve 各步响应组成的数组（调用方按步取 note），单请求形式 resolve 该响应。
+    var multi = !!(opts.requests && opts.requests.length);
+    var steps = multi ? opts.requests.slice() : [{ method: opts.method, path: opts.path, body: opts.body }];
+    var results = [];
+    var triedPw = false, triedAck = false;
+    function merged(base, extra) {
+      var out = {}, keys = Object.keys(base || {}), i;
+      for (i = 0; i < keys.length; i++) out[keys[i]] = base[keys[i]];
+      if (extra) { keys = Object.keys(extra); for (i = 0; i < keys.length; i++) out[keys[i]] = extra[keys[i]]; }
+      return out;
+    }
+    function withExtra(extra, add) {
+      var out = {}, keys = Object.keys(extra || {}), i;
+      for (i = 0; i < keys.length; i++) out[keys[i]] = extra[keys[i]];
+      keys = Object.keys(add);
+      for (i = 0; i < keys.length; i++) out[keys[i]] = add[keys[i]];
+      return out;
+    }
+    function canceled() {
+      // 已成功提交的步数随取消一起回传：多段提交的调用方要据此判断"库里是不是已经有
+      // 一半改动"，只给 canceled 布尔值会让那半次写入没有出口（用户看不见、也不提示）。
+      // results 由 step() 按步号写入，故其长度就是已落库的步数。
+      var e = new Error("");
+      e.canceled = true;
+      e.completed = results.length;
+      return e;
+    }
+    function step(i, extra) {
+      var s = steps[i];
+      return api(s.method || "POST", s.path, merged(s.body, extra)).then(function (data) {
+        results[i] = data;
+        if (i + 1 < steps.length) return step(i + 1, extra);
+        return multi ? results : data;
+      }, function (e) {
+        var r = pwGateReason(e);
+        if (r === "delay_ack_required") {
+          if (triedAck) throw e;
+          triedAck = true;
+          return openDelayAckModal(opts.delayDesc || opts.desc, opts.confirmText).then(function (ok) {
+            if (!ok) throw canceled();
+            return step(i, withExtra(extra, { confirm_delay_ack: true }));
+          });
+        }
+        if (r === "password_required" || r === "password_incorrect") {
+          if (triedPw) throw e;
+          triedPw = true;
+          return new Promise(function (resolve, reject) {
+            openConfirmPasswordModal(opts.desc, function (pw) {
+              // 回调返回 Promise：口令框保持打开直至请求落定；拒绝时在框内提示并可改口令重试
+              return step(i, withExtra(extra, { confirm_password: pw }))
+                .then(resolve, function (e2) { throw e2; });
+            }, function () { reject(canceled()); });
+          });
+        }
+        throw e;
+      });
+    }
+    // 非取消的失败也带上已落库的步数：多段提交在第 2 步被打回时第 1 步已经写进库，调用方
+    // 要据此重载视图并交代已提交的部分——与 canceled 同一口径，否则那半次写入没人提示
+    // （见 components/settings-executors.js 的 failedAfter）。
+    return step(0, null).catch(function (e) {
+      if (e && !e.canceled) e.completed = results.length;
+      throw e;
+    });
   }
 
   /* ---------- 主题 ---------- */
@@ -1354,6 +1488,8 @@
     openPwModal: openPwModal,
     pwGateReason: pwGateReason,
     pwGateMessage: pwGateMessage,
+    openDelayAckModal: openDelayAckModal,
+    dangerousSubmit: dangerousSubmit,
     applyAnnouncementText: applyAnnouncementText,
     iconEl: iconEl,
     toggleTheme: toggleTheme,
@@ -1411,6 +1547,8 @@
   window.openPasswordModal = openPasswordModal;
   window.openConfirmPasswordModal = openConfirmPasswordModal;
   window.openPwModal = openPwModal;
+  window.openDelayAckModal = openDelayAckModal;
+  window.dangerousSubmit = dangerousSubmit;
   window.toggleTheme = toggleTheme;
   window.toggleSidebar = toggleDrawer;
   window.switchTab = switchTab;

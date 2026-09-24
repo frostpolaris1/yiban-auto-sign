@@ -294,7 +294,7 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 </details>
 
 <details>
-<summary>🔐 安全运维：主管理员权限追回 / 账号凭据密钥轮换 / 时钟守卫冻结恢复</summary>
+<summary>🔐 安全运维：主管理员权限追回 / 账号凭据密钥泄露处置 / 时钟守卫</summary>
 
 **核心机制**：主管理员会话有效性绑定 `.env` 的 `YIBAN_ADMIN_PW_VERSION`（整数）；递增即全部旧主管理员会话立即失效（无需重启，下一次请求生效）。v0.26.0 起，通过 SSH 重写 `YIBAN_ADMIN_PASSWORD` 后重启，系统检测到"明文与现存哈希不一致"会**自动递增** PW_VERSION。
 
@@ -310,31 +310,24 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 
 **场景 B：仅会话 cookie 被盗（密码未失守）**：只做第 1 步的 PW_VERSION+1（实时生效）；如需全端下线再做第 4 步。
 
-**场景 C：`YIBAN_ACCOUNTS_KEY` 疑似泄露（账号凭据密钥轮换）**
-
-SSH 失陷时攻击者可读 `.env` 中的 `YIBAN_ACCOUNTS_KEY`，离线解密全部易班账号密码。轮换**必须在停服窗口执行**（Docker：`docker compose stop yiban`——web/scheduler 是该容器内 supervisord 子进程，`stop web scheduler` 这类服务名不存在；裸机：`systemctl stop yiban-web`。工具自身也会扫描进程并拒绝在存活的 web/signin/scheduler 旁执行）：
-
-1. 一步完成解密→重加密→自校验→更新 `.env`：
-   `python3 scripts/rekey_accounts.py --generate`（或 `--new-key <64位hex>` / `--new-key-file <文件>`；可用 `--db`/`--env` 指定路径；`--force` 跳过存活进程探活）。新钥会先落 0600 暂存文件 `<env>.rekey-staging` 作崩溃恢复之用，完成后自动删除；
-2. 重启全部进程（web/signin/scheduler）；若 shell 或容器环境变量里仍设有旧 `YIBAN_ACCOUNTS_KEY`，同步更新——环境变量优先级高于 `.env`；
-3. 事后取证：`python3 scripts/audit_verify.py --db data/yiban.db` 校验审计链（轮换动作本身也留痕）。注意旧密钥应视为已泄露——若攻击者曾拷贝数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
-
-崩溃恢复（注意"改回旧钥即可恢复"只对**提交前**的中断成立）：
-
-- 重加密事务提交**前**中断：库未变更，`.env` 旧钥仍有效，直接重跑本工具；
-- 重加密事务提交**后**、写 `.env` 前中断：库内已是新钥密文而 `.env` 仍是旧钥——新钥就在暂存文件 `<env>.rekey-staging`（0600），写回 `.env` 的 `YIBAN_ACCOUNTS_KEY` 即恢复；或重跑 `python3 scripts/rekey_accounts.py --env-only --new-key-file <暂存文件>` 补完（`--env-only` 会先用新钥抽样试解一行库内密文，密钥不对即拒绝写 `.env`）。
+> **`YIBAN_ACCOUNTS_KEY` 疑似泄露时怎么办**：该键用于静态加密账号凭据，SSH 失陷时攻击者可读 `.env` 后离线解密。
+> 现版本**不再提供自动轮换工具**——轮换是十年一遇场景，且"自动重加密全库"本身就要求停服窗口与崩溃恢复流程，
+> 维护成本高于收益。真要轮换，按以下顺序手工做（每一步都可中断重来）：停服（Docker `docker compose stop yiban`；
+> 裸机 `systemctl stop yiban-web`）→ 用新钥重新加密 `accounts.password` / `phone_code` → 自校验抽样解密 →
+> 改 `.env` 的 `YIBAN_ACCOUNTS_KEY` → 重启全部进程 → 用 `scripts/audit_verify.py` 校验审计链。
+> 旧密钥一律视为已泄露：若攻击者拷走过数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
 
 **事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log`
 一次跑完三件校验——哈希链自洽（防改行）、库外锚点比对（防删尾/删前缀/整表清空/截断或改写锚点文件）、审计写入欠账。
 退出码 0=健康、1=检出异常、2=无法定论（缺密钥/库不存在/锚点不可读）。批量操作审计含脱敏目标清单，登录成功留有匿名化 IP
-审计（登录失败阈值/越权 403/密钥轮换/数据导出同样留痕）。
+审计（登录失败阈值/越权 403/数据导出同样留痕）。
 
 > 诚实边界：以上判据都在**同一台机器**上。拿到 root 者可改 `.env` 里的审计密钥并重启服务，让链在新密钥下重签自洽——
 > 合法的重链只会发生在"任何锚点存在之前"（即升级那一次），锚点之后再出现重链就判异常。但要真正排除，靠的是
-> **离开本机的两份留痕**：每日日报邮件里的链头哈希与记录数、以及异机备份副本（`REMOTE_BACKUP`，其中已含审计锚点文件）。
+> **离开本机的两份留痕**：告警通道健康邮件里的链头哈希与记录数（常规每周一发，通道降级当天就发）、以及异机备份副本（`REMOTE_BACKUP`，其中已含审计锚点文件）。
 > 怀疑失陷时先取这两处比对，再决定是否按密钥泄露处理。
 
-**时钟守卫冻结恢复**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后都会触发）时，全部物理清理会被守卫冻结并邮件告警。核实系统时间已正确后运行 `python3 scripts/clock_guard_reset.py --confirm` 重置（不带 `--confirm` 仅查看状态；刻意不自动恢复——防"拨快一次、下轮洗白"）。
+**时钟守卫**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后都会触发）时，守卫会**记 ERROR 日志并跳过本轮物理清理**（不删任何数据），同时把参照点推进到当前时间 ⇒ **只跳一轮**，下一轮自动恢复。之所以"只跳一轮"而不是一直冻结：冻结需要人工重置，而重置工具本身就是运维负担。诚实边界：正向拨快被拦后参照点落在被拨后的时间，若此后被 NTP 校正回真实时间，会再触发一次回拨跳变 ⇒ 最多连跳两轮。核实系统时间后无需任何操作，等下一轮即可。
 
 > 若 `.env` 不可写：启动迁移失败后主管理员登录会被 fail-closed 拒绝（明文比对已停用），修复文件属主/权限后重启即自动补齐哈希。
 
@@ -457,7 +450,9 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_SUNDAY_SIGN` / `YIBAN_SATURDAY_SIGN` | `1`=当天也执行；缺省/`0`=跳过（两个默认都跳过） | 可选 |
 | `YIBAN_ALLOW_TIME_PREF` | 用户自选时间片总开关：`1`=开启（默认关） | 可选 |
 | `YIBAN_MAX_USERS` / `YIBAN_MAX_ACCOUNTS` | 容量上限（默认 `500` 用户 / `200` 账号；`0`=不限）。调小不删存量，只限制新增；主管理员可在「系统设置 → 容量配额」直接设置 | 可选 |
-| `YIBAN_BATCH_SIGN_COOLDOWN_SEC` | 手动签到全局冷却秒数（默认 `1800`，`0`=关闭）：批量与单条共用；60 秒同账号防抖与此独立 | 可选 |
+| `YIBAN_BATCH_SIGN_COOLDOWN_SEC` | 手动签到全局冷却秒数（默认 `60`，`0`=关闭）：批量与单条共用；30 秒同账号防抖与此独立 | 可选 |
+| `YIBAN_SIGNIN_RATE_WINDOW_SEC` / `YIBAN_SIGNIN_RATE_MAX` | 手动签到全局速率上限（默认 `600` 秒内最多 `10` 次，任一为 `0`=关闭）：冷却是两次触发之间的最小间隔，这是窗口内总次数；按会话用户名计数，只在冷却放行后计数，超限 429（文案「手动签到触发过于频繁」） | 可选 |
+| `YIBAN_ADMIN_DELETE_MAX` / `YIBAN_ADMIN_DELETE_COOLDOWN_SEC` | 同管理员窗口内的高危操作额度（默认 `20` 次 / `60` 秒，任一为 `0`=关闭）：删除类与告警通道变更共用一套计数，超限 429 | 可选 |
 | `YIBAN_LOGINFAIL_DAILY_MAX` | 登录失败告警独立推送日额度（默认 `3`，`0`=不限），与普通/紧急告警额度分账 | 可选 |
 | `YIBAN_SLOW_SIGN_SEC` | 单次签到耗时告警阈值（秒，默认 `30`） | 可选 |
 | `YIBAN_NOTIFY_TYPE` + `YIBAN_NOTIFY_SECRET_ENC` | 消息推送类型（`serverchan` / `custom`）与密钥密文；建议在网页「系统设置 → 通知通道」配置（自动加密落盘）。旧明文 `YIBAN_NOTIFY_URL` 仍兼容（按 `custom` 处理） | 可选 |
@@ -468,6 +463,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_LEGACY_LOGIN` | 设为 `1` 使用旧登录流程（伪造 iOS UA）；默认用真实 App 特征（推荐） | 可选 |
 | `YIBAN_WORKERS` / `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK` / `YIBAN_FALLBACK_ENABLE` / `YIBAN_FALLBACK_INTERVAL` / `YIBAN_CAPACITY_MEASURED` | 多执行体相关（单执行体部署**不需要**配置），见 [多执行体并行签到](#多执行体并行签到可选) 与 [代理配置](#代理配置可选) | 可选 |
 | `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD` | 内置主管理员账号（口令策略：至少 12 位且含四类字符中的至少三类） | 必填（Web） |
+| `YIBAN_PW_GATE` | 危险操作（改他人凭据 / 物理清除 / 删用户 / 重置他人口令 / 改角色 / 改告警通道 / 破坏性设置 / 发公告 / 执行体写 / 急停）要口令的档位：`risk`（默认，仅换环境才要——本次出口 IP 与本会话已验证 IP 不一致，无记录视为未知不触发；验证通过即记住该出口）/ `full`（每个操作都当次要口令）/ `off`（永不要求）。非 `full` 档下不可逆操作还要求请求体带 `confirm_delay_ack`，改他人凭据 / 清空用户账号 / 执行体写三类在操作成功后补一封管理员告警（其余管理操作只留审计）；门禁失败告警与档位无关：任何实际要求了口令并失败的路径都发；非法值回退 `risk` | 可选 |
 | `YIBAN_ACCOUNTS_KEY` / `YIBAN_AUDIT_KEY` / `YIBAN_TRACK_SALT` | 账号密文密钥 / 审计链 HMAC 密钥 / 访问统计盐：**按需自动生成**并写入 `.env`（分别在首次加解密账号、首次写入审计行、首次记录访问时），一般无需手填。注意：刚装好还没加过账号时，`​.env` 里可能只有管理员哈希与会话密钥——别把这一刻的 `.env` 当成「密钥齐全」归档 | 自动 |
 | `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` | 状态文件目录（默认 `/var/log/yiban`）与日志路径（按天分文件） | 可选 |
 | `YIBAN_DB_FILE` / `YIBAN_ENV_FILE` | 数据库与 `.env` 路径（默认相对路径） | 可选 |
@@ -530,14 +526,18 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 类型选 `custom`，密钥填完整地址（旧写法直接填 `YIBAN_NOTIFY_URL`）。
 </details>
 
-**默认额度与节流**（网页可改，`0`=不限）：同类告警节流 60 秒；非紧急告警每日 5 条；紧急告警每日 3 条；登录失败告警单独记账（每日 3 条）——分账是为了避免暴力破解类告警烧完当日额度后，审计链异常这类真告警在手机端被静默吞掉。
+**默认额度与节流**（网页可改，`0`=不限）：同类告警节流 60 秒；非紧急告警每日 5 条；紧急告警每日 3 条；登录失败告警单独记账（每日 3 条）——分账是为了避免暴力破解类告警烧完当日额度后，审计链异常这类真告警在手机端被静默吞掉。**「仅推送重要告警」默认开启**（`YIBAN_NOTIFY_URGENT_ONLY`）：只推安全与系统级告警，用户日常改密、签到结果类仅走邮件，把有限的推送日额度留给真故障。
+
+**告警面**：管理操作（改设置 / 删用户 / 重置他人口令 / 改角色 / 软删 / 彻底删账号 / 通道变更与收件人摘除）**不再逐条外发**，只留审计行（「日志」页可查，链式防篡改）；签到失败、审核拒绝信、以及非 `full` 档下改他人凭据 / 清空用户账号 / 执行体写三类事后告警照发；单账号耗时与容量超载只进收尾汇总信正文（不即时推送），登录失败告警达 10 次与锁定同时发生。
+
+**「仅推送重要告警」开启时（默认）只走邮件的告警**（它们未标 `urgent`，邮件通道不受影响）：改密 / 注销 / 恢复三处的密码校验失败告警、注册用户自助改密的账号安全事件告警、新账号申请待审核告警、公告草稿变更告警。需要这些也推手机时，把「仅推送重要告警」关掉（`YIBAN_NOTIFY_URGENT_ONLY=0`）。
 
 <details>
 <summary>📧 邮箱通知（SMTP）——管理员告警 + 用户签到失败提醒</summary>
 
 邮箱通知与 Webhook **并存**，各配各的：
 
-- **管理员告警邮件**：签到失败、耗时超标、容量超载、登录连续失败锁定等，**签到轮彻底结束后合并成一封**「易班签到汇总」邮件（Webhook 仍即时逐条推送）；
+- **管理员告警邮件**：签到失败、登录连续失败锁定、账号耗时与容量超载等，**签到轮彻底结束后合并成一封**「易班签到汇总」邮件（Webhook 对签到失败与通道降级仍即时逐条推送；耗时/容量超载只进汇总）；备份缺失与备份脚本漂移另由每日 08:05 的哨兵发一封（见「运维 → 备份与恢复」）；
 - **用户签到失败提醒**：普通用户自己账号签到最终失败时，发给其注册邮箱（成功不打扰，每账号每天最多 1 封，额度只按发送成功计）；用户可在「我的账号」自行关闭（默认开启）。
 
 配置：网页「系统设置 → 通知通道 → 邮件通知 → 发件 SMTP 列表」可加多个发件邮箱按顺序主备切换（保存即时生效，无需改文件重启）。未在网页配置过列表时，`.env` 方式作为首个（主）发件条目生效：
@@ -645,7 +645,7 @@ python3 -m web
 
 管理员侧导航：**数据总览 / 签到日志 / 账号管理 / 用户管理 / 系统设置**（个人域为 **我的日历 / 我的账号**）。普通用户走邮箱注册，提交自己的易班账号（名称 + 手机号 + 密码 + 设备信息），管理员审核通过后参与每日自动签到；每人限一个账号，可自助注销（两次确认 + 密码验证，7 天内可登录撤销）。
 
-安全设计：登录失败限速（5 次锁定 5 分钟）+ 连续失败 webhook 告警、CSRF 防护、密码 scrypt 哈希、会话 HttpOnly/SameSite、列表手机号/邮箱脱敏、密码明文永不下发前端。
+安全设计：登录频率 10 次/60 秒、连续失败 10 次锁定 1 分钟（阈值与锁定时长见 `web/app.py` 的 `LOGIN_MAX_FAILS` 与 `web/security.py` 的 `LOGIN_LOCK_SECONDS`）+ 连续失败告警、CSRF 防护、密码 scrypt 哈希、会话 HttpOnly/SameSite、列表手机号/邮箱脱敏、密码明文永不下发前端。
 
 > ⚠️ 无固定域名时建议在云服务商安全组仅放行常用 IP，并定期修改管理员密码。
 
@@ -717,7 +717,7 @@ curl -s -b $J -X POST $B/api/signin -H "X-CSRF-Token: $CSRF" -H 'Content-Type: a
 # POST /api/announcement/publish（仅主管理员 + 当次口令）发布或下线
 ```
 
-绝大多数设置项也可以直接改 `.env` 里的键再重启 web（键名见「配置说明」表；页面上的改动本身就写在 `.env` 里）。涉及口令复核的写操作（改他人账号凭据、执行体配置、破坏性设置等）在接口层要求 `confirm_password` 字段，纯脚本调用时一并带上即可。
+绝大多数设置项也可以直接改 `.env` 里的键再重启 web（键名见「配置说明」表；页面上的改动本身就写在 `.env` 里）。危险操作（改他人账号凭据、执行体配置、破坏性设置等）在接口层按 `YIBAN_PW_GATE` 档位要求 `confirm_password` 字段（默认 `risk`：只有风控命中才要，纯脚本调用通常无需带；`full` 档每次都要）。非 `full` 档下的不可逆操作（物理清除 / 删用户 / 急停）另需请求体带 `confirm_delay_ack: true`，否则返回 `reason=delay_ack_required`（前端据此弹倒计时确认框）。
 
 ### 备份与恢复
 
@@ -734,6 +734,9 @@ sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh 
 # cron 里同样要注入（口令写进 root 的 crontab 行或单独的 0600 环境文件，别放命令历史）
 # 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）
 30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+# 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、或运行脚本与仓库版**漂移**时发一封
+# 管理员告警；正常路径零输出（安装与排期见 scripts/yiban-backup-sentinel.sh 头部）
+5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 # 恢复演练 / 真实恢复（支持 .tar.gz / .gpg / .age）
 sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
   bash scripts/backup.sh --restore <备份包> <目标目录>

@@ -4,7 +4,7 @@
    探针/账号验证会对**全站账号**做真实登录（与签到同一风控面），M12 起收归主管理员，
    档位单源是后端 `web/app.py` 的 `MASTER_ONLY_KEYS`（本文件不再抄第二份键名清单，
    字段名保持 `body.<键> = …` 直写形态供对拍测试读取）。前端禁用控件并挂权限说明
-   （#sh-perm，读屏可及），保存一律先过口令框（A 档值变了必须当次 confirm_password）。
+   （#sh-perm，读屏可及），保存走统一 helper——先不带凭据发，后端回 reason 才补口令。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存探针设置」
    才提交，只发送真正变化的字段；此前这里是"改动即保存"，与同页其它卡片不一致
@@ -78,28 +78,29 @@
     return body;
   }
 
-  function submit(body, fromPw) {
+  // 受门禁的保存：**先不带凭据发**，由后端 reason 决定要不要口令（档位只存在于后端）。
+  // 门禁弹窗由 helper 自己收尾——口令错的那次它把文案显示在框里、允许改口令重试，
+  // 故这里只管弹窗之外的结局（成功提示 / 失败提示 / 取消复位）。
+  function submit(body) {
     saving = true;
     tip("保存中…", false);
     setHidden($("sh-save"), true);
-    return YB.api("POST", "/api/settings", body).then(function (data) {
+    return YB.dangerousSubmit({
+      method: "POST", path: "/api/settings", body: body,
+      desc: "探针与账号验证会让服务器对全站账号发起真实易班登录（与签到同一风控面）。请输入当前管理员密码确认。"
+    }).then(function (data) {
       snap = domSnapshot();
       clearDirty();
       tip((data && data.msg) || "探针设置已保存（将在设定时间后的调度周期自动执行）", false);
       return true;
     }, function (e) {
-      // 从口令框发起：错误原样抛回去，让它显示在框内并保留输入以便改口令重试
-      if (fromPw) throw e;
+      if (e && e.canceled) { tip("", false); return false; }
       tip((e && e.message) || "保存失败，请稍后重试", true);
       return false;
     }).then(function (ok) {
-      saving = false;
+      saving = false;                    // 两条结局都要复位，否则保存按钮永久卡住
       setHidden($("sh-save"), !dirty);
       return ok;
-    }, function (e) {                    // 失败也要复位 saving，否则保存按钮永久卡住
-      saving = false;
-      setHidden($("sh-save"), !dirty);
-      throw e;
     });
   }
 
@@ -112,13 +113,7 @@
       YB.toast.info("没有需要保存的改动");
       return Promise.resolve(true);
     }
-    // A 档：值真的变了就必须当次口令（后端 _high_risk_gate），不收口令直接 403
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "探针与账号验证会让服务器对全站账号发起真实易班登录（与签到同一风控面）。请输入当前管理员密码确认。",
-        function (pw) { body.confirm_password = pw; submit(body, true).then(resolve, function () { resolve(false); }); },
-        function () { resolve(false); });      // 取消口令 = 本次不保存
-    });
+    return submit(body);
   }
 
   function apply(data) {

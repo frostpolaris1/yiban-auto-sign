@@ -32,6 +32,17 @@ from flask import current_app, jsonify, session
 
 from web.routes import appmod as _appmod
 
+#: 手动签到全局冷却默认秒数（.env 的 `YIBAN_BATCH_SIGN_COOLDOWN_SEC` 可覆盖，0=关闭）。
+#: 单条与批量共用同一冷却基准，两处读取必须取同一个默认——各写一遍字面量迟早漂移。
+BATCH_SIGN_COOLDOWN_SEC_DEFAULT = 60
+#: 手动签到全局速率上限（次数 / 窗口秒，.env 的 `YIBAN_SIGNIN_RATE_MAX` 与
+#: `YIBAN_SIGNIN_RATE_WINDOW_SEC` 可覆盖，任一为 0 即关闭）。
+#: 与冷却的分工：冷却是"两次触发之间的最小间隔"（单点节流），本上限是"窗口内总次数"
+#: （积分节流）——冷却被调小或关闭后，被盗会话仍能高频触发真实登录，次数上限是那之后
+#: 唯一还在的防线。
+SIGNIN_RATE_MAX_DEFAULT = 10
+SIGNIN_RATE_WINDOW_SEC_DEFAULT = 600
+
 
 def _signin_state():
     """手动签到的每 app 实例状态（防抖表 / 子进程表 / 批量互斥与冷却基准）。
@@ -70,6 +81,37 @@ def _signin_run_lock_busy(m):
     finally:
         with contextlib.suppress(OSError):
             os.close(fd)
+
+
+def _signin_rate_limited(m, state):
+    """手动签到全局速率上限判定：窗口内超过上限返回 True（调用方回 429）。
+
+    键 = 会话用户名：被盗的是**会话**，换账号不改变这一点；按 IP 计数会让同一出口后的
+    多个管理员互相挡死（与账号详情读取限速同口径）。计数表挂在 `yiban_signin_state`
+    上而不是新建一个 extensions 键——它与同一份状态里的冷却基准是同一件事的两半，
+    另起一处只会让"手动签到节流"有两个注册点。
+
+    只在冷却已放行之后调用：被冷却拒掉的请求没有发起任何真实登录，不该消耗次数额度
+    （否则合法运维连点几次就把 10 分钟的次数预算花光，正是本批要消除的摩擦）。
+    """
+    window = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_WINDOW_SEC",
+                            SIGNIN_RATE_WINDOW_SEC_DEFAULT)
+    limit = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_MAX", SIGNIN_RATE_MAX_DEFAULT)
+    if window <= 0 or limit <= 0:
+        return False
+    key = (session.get("username") or "?").strip().lower()
+    _cnt, _start, allowed = m._bump_window_count(
+        state["rate_limits"], key, time.time(), window, limit=limit)
+    return not allowed
+
+
+def _signin_rate_message(m):
+    """速率超限的用户可见文案：与"签到冷却中"区分开，运维一眼能分辨是哪道闸。"""
+    window = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_WINDOW_SEC",
+                            SIGNIN_RATE_WINDOW_SEC_DEFAULT)
+    limit = m.load_env_int(m.ENV_FILE, "YIBAN_SIGNIN_RATE_MAX", SIGNIN_RATE_MAX_DEFAULT)
+    return (f"手动签到触发过于频繁（{window // 60} 分钟内最多 {limit} 次），"
+            "请稍后再试")
 
 
 def _reap_signin(m, state, phone, proc):
@@ -142,10 +184,12 @@ def _spawn_signin(m, state, phone, accounts=None):
 
     防抖：30 秒内同账号不重复触发（SIGN_MIN_INTERVAL）；仍在运行的旧进程先终止。
     手动签到冷却单源化——单条与批量共用同一冷却计数
-    （YIBAN_BATCH_SIGN_COOLDOWN_SEC，默认 1800s，0=关闭）：spawn 成功前检查
+    （YIBAN_BATCH_SIGN_COOLDOWN_SEC，0=关闭）：spawn 成功前检查
     冷却（与批量端点同口径拒绝），spawn 成功后刷新冷却基准。
     单条手动签到同样受全局冷却约束（被盗会话循环触发
     单号真实登录同样打爆易班风控）；30 秒 per-phone 防抖语义保持不变。
+    冷却之后再过一道全局次数上限（`_signin_rate_limited`）：冷却是单点节流，
+    次数上限才是"窗口内总共能触发几次"的积分节流。
     返回 (ok: bool, msg: str)。
     """
     accounts = accounts if accounts is not None else m.load_accounts()
@@ -158,12 +202,16 @@ def _spawn_signin(m, state, phone, accounts=None):
     if _signin_run_lock_busy(m):
         return False, "签到队列忙（定时签到进行中），请稍后再试"
     with state["batch_lock"]:
-        cooldown = m.load_env_int(m.ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC", 1800)
+        cooldown = m.load_env_int(m.ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC",
+                                  BATCH_SIGN_COOLDOWN_SEC_DEFAULT)
         if cooldown > 0:
             elapsed = time.time() - state["last_batch_ts"]
             if elapsed < cooldown:
                 remain = int(cooldown - elapsed)
                 return False, f"签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
+        # 冷却放行后才记次数：冷却拒掉的请求不消耗次数额度（见 _signin_rate_limited）
+        if _signin_rate_limited(m, state):
+            return False, _signin_rate_message(m)
     with state["lock"]:  # 原子检查+占位：并发请求不能同时通过防抖
         now = time.time()
         if phone in state["last_trigger"] and now - state["last_trigger"][phone] < m.SIGN_MIN_INTERVAL:
@@ -202,6 +250,8 @@ def api_signin():
         if "不可手动签到" in msg:
             return jsonify({"error": msg}), 400
         if "冷却中" in msg:  # 单条与批量共用的全局签到冷却
+            return jsonify({"error": msg}), 429
+        if "过于频繁" in msg:  # 全局次数上限（与冷却区分：文案与判定都是另一道闸）
             return jsonify({"error": msg}), 429
         if "正在签到" in msg or "签到队列忙" in msg:
             return jsonify({"error": msg}), 429
@@ -257,7 +307,8 @@ def api_signin_batch():
         if state["batch_running"]:
             return jsonify({"error": "已有批量签到正在执行，请稍后再试"}), 429
         # 批量签到冷却（防循环触发全量真实登录）——队列完成后窗口内拒绝
-        cooldown = m.load_env_int(m.ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC", 1800)
+        cooldown = m.load_env_int(m.ENV_FILE, "YIBAN_BATCH_SIGN_COOLDOWN_SEC",
+                                  BATCH_SIGN_COOLDOWN_SEC_DEFAULT)
         if cooldown > 0:
             elapsed = time.time() - state["last_batch_ts"]
             if elapsed < cooldown:
@@ -265,6 +316,9 @@ def api_signin_batch():
                 return jsonify({
                     "error": f"批量签到冷却中（约 {remain // 60} 分 {remain % 60} 秒后可重试）"
                 }), 429
+        # 冷却放行后才记次数（与单条同口径，见 _signin_rate_limited）
+        if _signin_rate_limited(m, state):
+            return jsonify({"error": _signin_rate_message(m)}), 429
         state["batch_running"] = True
 
     def _run_batch():
@@ -312,6 +366,8 @@ def register(app):
         "batch_lock": threading.Lock(),
         # 批量签到冷却基准（spawn 成功时刻；单条与批量共用同一计数）
         "last_batch_ts": 0.0,
+        # 全局速率上限计数表：username -> (窗口内次数, 窗口起点)
+        "rate_limits": {},
     }
     app.add_url_rule("/api/signin", view_func=api_signin, methods=["POST"])
     app.add_url_rule("/api/signin/batch", view_func=api_signin_batch, methods=["POST"])

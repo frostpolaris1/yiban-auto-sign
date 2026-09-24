@@ -9,12 +9,10 @@
 - B12-3  容器子进程超时按窗口动态计算（_child_timeout，与 run.sh 同口径）
 - B12-4  锚点路径默认与 web STATE_DIR 对齐；verify_audit_anchor 显式路径同样
          做 app_meta「锚点被删」交叉检查
-- B12-5  rekey：全量重加密端到端（--generate）、新钥暂存文件、--env-only 样本
-         校验拒绝错误密钥；--force 探活旁路参数存在
 - B12-7  最后管理员复核下沉 db 事务：delete_user_with_accounts / set_user_role /
          batch_user_ops 命中抛 LastAdminError
 - B12-8  内置主管理员自助改密即时告警
-- B12-9  时钟守卫拦截留痕 app_meta（clock_guard_alert）+ clock_guard_alert() 读取
+- B12-9  时钟守卫：跳变时拦截清理并把参照点推进到当前时间（下一轮自动恢复）
 - B12-10 db_export 漏传 migrate=False（捕参数断言）+ 导出审计留痕
 - B12-13 默认字面量/弱口令拒绝启动
 - B12-14 登录失败阈值留痕审计链；普通用户越权 403 留痕；sign_events 消费端
@@ -44,8 +42,6 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
-
-from yiban.infra import account_crypto  # noqa: E402
 
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64
@@ -364,10 +360,11 @@ class DbLayerB12Test(unittest.TestCase):
         self.assertEqual(db.find_user(EMAIL).get("role"), "user")
 
     # ---- B12-9 时钟守卫 ----
-    def test_clock_guard_alert_recorded_and_readable(self):
+    def test_clock_guard_trip_skips_once_and_advances_reference(self):
+        """跳变判定为假 + 参照点推进到当前时间（下一轮自动恢复清理，无需人工重置）。"""
         ok, _note = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertTrue(ok)
-        # 模拟参照点为 100 小时前 → 守卫拦截并留痕
+        # 模拟参照点为 100 小时前 → 守卫判定跳变
         old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
             conn = db.get_conn()
@@ -376,36 +373,17 @@ class DbLayerB12Test(unittest.TestCase):
                 ("purge_accounts_clock", old),
             )
             conn.commit()
-        ok2, _note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        ok2, note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertFalse(ok2)
-        alert = db.clock_guard_alert()
-        self.assertIsNotNone(alert)
-        self.assertIn("系统时间异常跳变", alert["note"])
-        # 参照点未被守卫自动更新（防洗白）——仍为旧值
+        self.assertIn("系统时间异常跳变", note2)
+        # 参照点已推进：越界路径同样提交，故调用方的 rollback 不会把它带走
         r = conn.execute(
             "SELECT value FROM app_meta WHERE key='purge_accounts_clock'"
         ).fetchone()
-        self.assertEqual(r["value"], old)
-
-    def test_clock_guard_reset_tool(self):
-        """B12-9：人工重置工具恢复参照点并清除告警。"""
-        import clock_guard_reset
-        with db._conn_lock:
-            conn = db.get_conn()
-            old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('purge_accounts_clock',?)",
-                (old,),
-            )
-            conn.commit()
-        db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
-        self.assertIsNotNone(db.clock_guard_alert())
-        clock_guard_reset.reset(self.db_file)
-        self.assertIsNone(db.clock_guard_alert())
-        r = db.get_conn().execute(
-            "SELECT value FROM app_meta WHERE key='purge_accounts_clock'"
-        ).fetchone()
-        self.assertNotEqual(r["value"], old, "重置后参照点应为当前时间")
+        self.assertNotEqual(r["value"], old, "越界路径必须推进参照点，否则冻结永不解除")
+        # 推进后同一参照点不再判跳变——这就是"只跳一轮"
+        ok3, _note3 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        self.assertTrue(ok3, "参照点推进后下一轮必须恢复清理")
 
     # ---- B12-10 db_export ----
     def test_db_export_passes_migrate_false(self):
@@ -430,152 +408,6 @@ class DbLayerB12Test(unittest.TestCase):
                 "SELECT COUNT(*) FROM audit_logs WHERE action='db_export'"
             ).fetchone()
         self.assertGreaterEqual(r[0], 1)
-
-
-class RekeyToolB12Test(unittest.TestCase):
-    """B12-5：rekey 工具端到端（--generate 全链路 + --env-only 样本校验）。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="b12-rekey-")
-        cls.env_file = os.path.join(cls.tmp, ".env")
-        cls.db_file = os.path.join(cls.tmp, "yiban.db")
-        with io.open(cls.env_file, "w", encoding="utf-8") as f:
-            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AUDIT_KEY={AUDIT_KEY}\n")
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
-        os.environ["YIBAN_DB_FILE"] = cls.db_file
-        os.environ["YIBAN_ENV_FILE"] = cls.env_file
-        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
-        os.environ["YIBAN_AUDIT_KEY"] = AUDIT_KEY
-        db.init_db(cls.db_file, env_file=cls.env_file)
-        # 用旧钥写入两个加密账号（经 replace_accounts 走正式加密口径）
-        db.replace_accounts([
-            {"phone": "13800000001", "password": "pw-甲", "phone_code": "code-1", "owner": EMAIL},
-            {"phone": "13800000002", "password": "pw-乙", "phone_code": "", "owner": ""},
-        ])
-
-    @classmethod
-    def tearDownClass(cls):
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
-        shutil.rmtree(cls.tmp, ignore_errors=True)
-        for k in ("YIBAN_DB_FILE", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_KEY", "YIBAN_AUDIT_KEY"):
-            os.environ.pop(k, None)
-
-    def setUp(self):
-        """每例重建规范状态（unittest 按方法名排序执行，用例不可依赖执行顺序）：
-        .env = TEST_KEY，库内两行账号均以 TEST_KEY 加密。"""
-        with io.open(self.env_file, "w", encoding="utf-8") as f:
-            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AUDIT_KEY={AUDIT_KEY}\n")
-        db.replace_accounts([
-            {"phone": "13800000001", "password": "pw-甲", "phone_code": "code-1", "owner": EMAIL},
-            {"phone": "13800000002", "password": "pw-乙", "phone_code": "", "owner": ""},
-        ])
-
-    def _run_tool(self, *cli):
-        env = dict(os.environ)
-        env["YIBAN_DB_FILE"] = self.db_file
-        env["YIBAN_ENV_FILE"] = self.env_file
-        env["YIBAN_ACCOUNTS_KEY"] = self._current_key()
-        env["YIBAN_AUDIT_KEY"] = AUDIT_KEY
-        # 带 --force：本组测的是轮换机制本身，不是停服探活。Linux 下 rekey 会扫
-        # /proc/*/cmdline，而 pytest -n 8 并行时其他用例正在跑的 run.sh → signin.py
-        # 子进程会命中 _PROCESS_HINTS → 守卫拒绝退出 2 → 本用例假红（跨用例干扰，
-        # 与轮换逻辑无关）。探活行为由本文件 :538 的 _yiban_processes_running 用例覆盖。
-        return subprocess.run(
-            [sys.executable, os.path.join(BASE, "scripts", "rekey_accounts.py"),
-             *cli, "--force"],
-            capture_output=True, text=True, env=env, cwd=BASE, timeout=120,
-            input="n\n",
-        )
-
-    def _current_key(self):
-        with io.open(self.env_file, encoding="utf-8-sig") as f:
-            for ln in f:
-                if ln.strip().startswith("YIBAN_ACCOUNTS_KEY="):
-                    return ln.split("=", 1)[1].strip()
-        return ""
-
-    def _raw_rows(self):
-        import sqlite3
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        try:
-            return conn.execute(
-                "SELECT id, phone, password, phone_code FROM accounts ORDER BY id"
-            ).fetchall()
-        finally:
-            conn.close()
-
-    def test_full_rotation_end_to_end(self):
-        r = self._run_tool("--generate")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        new_key_hex = self._current_key()
-        self.assertNotEqual(new_key_hex, TEST_KEY, ".env 必须已更新为新钥")
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".env.rekey-staging")),
-                         "暂存文件轮换完成后必须删除")
-        key = account_crypto._decode_key(new_key_hex)
-        for row in self._raw_rows():
-            obj = json.loads(row["password"])
-            self.assertEqual(account_crypto.decrypt_password(obj, key, row["phone"]), "pw-甲" if row["phone"] == "13800000001" else "pw-乙")
-        # 轮换动作留痕审计链（B12-14）
-        with db._conn_lock:
-            n = db.get_conn().execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE action='accounts_key_rekey'"
-            ).fetchone()[0]
-        self.assertGreaterEqual(n, 1)
-
-    def test_env_only_rejects_wrong_key(self):
-        """崩溃补完场景误传新随机钥 → 样本校验必须拒绝写 .env（B12-5）。"""
-        before = self._current_key()
-        wrong = "e" * 64
-        r = self._run_tool("--env-only", "--new-key", wrong)
-        self.assertNotEqual(r.returncode, 0, "错误密钥必须被样本校验拒绝")
-        self.assertIn("样本校验失败", r.stdout + r.stderr)
-        self.assertEqual(self._current_key(), before, ".env 必须保持原状")
-
-    def test_env_only_accepts_correct_key(self):
-        """崩溃补完正路：库内已是新钥密文、.env 仍旧钥 → --env-only 用新钥补写成功。"""
-        correct = self._current_key()
-        # 与 .env/库一致的钥会被"新=旧"防呆拦截（不写入）
-        r1 = self._run_tool("--env-only", "--new-key", correct)
-        self.assertNotEqual(r1.returncode, 0)
-        # 模拟崩溃场景：库内用 new_key 重加密（模拟已提交事务），.env 仍是旧钥
-        new_key = "f" * 64
-        import sqlite3
-        conn = sqlite3.connect(self.db_file)
-        try:
-            rows = conn.execute("SELECT id, phone, password FROM accounts").fetchall()
-            for rid, phone, _raw in rows:
-                enc = json.dumps(account_crypto.encrypt_password("pw-甲", account_crypto._decode_key(new_key), phone))
-                conn.execute("UPDATE accounts SET password=? WHERE id=?", (enc, rid))
-            conn.commit()
-        finally:
-            conn.close()
-        r2 = self._run_tool("--env-only", "--new-key", new_key)
-        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
-        self.assertEqual(self._current_key(), new_key, ".env 必须更新为库内实际使用的新钥")
-
-    def test_force_flag_and_staging_helper(self):
-        import rekey_accounts
-        self.assertTrue(hasattr(rekey_accounts, "_write_staging_key"))
-        self.assertTrue(hasattr(rekey_accounts, "sample_verify_key"))
-        self.assertTrue(hasattr(rekey_accounts, "_yiban_processes_running"))
-        supported, hits = rekey_accounts._yiban_processes_running()
-        self.assertIsInstance(supported, bool)
-        self.assertIsInstance(hits, list)
-        # 暂存文件 0600 + 内容为新钥 hex
-        staging = rekey_accounts._write_staging_key(self.env_file, account_crypto._decode_key("a" * 64))
-        try:
-            self.assertTrue(os.path.exists(staging))
-            self.assertEqual(io.open(staging, encoding="utf-8").read().strip(), "a" * 64)
-        finally:
-            os.remove(staging)
 
 
 class BackupDockerScriptTest(unittest.TestCase):
@@ -823,7 +655,8 @@ class WebB12Test(unittest.TestCase):
 
     # ---- B12-14 登录失败 / 越权审计 ----
     def test_login_failure_threshold_audited(self):
-        for _ in range(3):  # LOGIN_FAIL_NOTIFY = 3
+        # 阈值取 app 常量：另抄字面量会在阈值调整后"再也到不了阈值"而静默失测
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
             self.c.post("/api/login", json={"username": EMAIL, "password": "wrong-pass"})
         rows = self._audit_rows("login_failed")
         self.assertGreaterEqual(len(rows), 1, "达到失败阈值必须留痕审计链（B12-14）")
