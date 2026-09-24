@@ -8,7 +8,7 @@
 - 加固2 高危删除操作冷却：同一管理员窗口内批量删除/彻底清除/完全删除超限返回 429
   （YIBAN_ADMIN_DELETE_MAX 次 / YIBAN_ADMIN_DELETE_COOLDOWN_SEC 秒，0=关闭）。
 - 加固3 高危操作二次鉴权：删除类操作须重新输入当前管理员密码，失败与登录/改密共用
-  失败计数，达阈值（LOGIN_FAIL_NOTIFY=3）告警、锁定（LOGIN_MAX_FAILS=5）。
+  失败计数，达阈值（LOGIN_FAIL_NOTIFY）告警、锁定（LOGIN_MAX_FAILS）。
 
 用法（项目根目录）：
     py -m pytest tests/test_account_abuse_gate.py -v
