@@ -378,6 +378,42 @@ class RiskTriggerTest(_TierBase):
         r = self._call("creds", c, hdr, _xff="203.0.113.7")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
+    def test_恢复即登录的会话换IP后要口令(self):
+        """恢复即登录建立的会话必须与登录路径记同一份登录出口。
+
+        两级基准（已验证 IP / 登录 IP）都空 = 未知 ⇒ 不触发，这是给**存量**会话的
+        宽容；但"注销后恢复"建立的是完整会话，若这里不记登录出口，那条判据对它永久
+        失效——同一条风控在恢复入口上被静默豁免。
+        """
+        import db
+        email = "restored-admin@test.local"
+        self._reset_db()
+        # 两个注册管理员：db 的"最后一个注册管理员不可注销"保护会拦住唯一那一个
+        db.create_user(email, self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("keeper@test.local", self.webapp.generate_password_hash(USER_PASS),
+                       role="admin")
+        db.soft_delete_user_with_accounts(email)
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/me/restore", json={"email": email, "password": USER_PASS},
+                   headers={"X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = c.get("/api/me").get_json()["csrf_token"]
+        # 两次都必须是**真变更**：无变更的保存根本不进门禁，那样断言会假绿
+        cur = self.webapp._settings_effective_values(self.env_file).get("sign_order") or "sequential"
+        other = "sequential" if cur == "random" else "random"
+
+        def save(order, xff):
+            return c.post("/api/settings", json={"sign_order": order},
+                          headers={"X-CSRF-Token": token, "X-Forwarded-For": xff})
+
+        # 与恢复时同一个出口：判据未命中，不要求口令
+        r1 = save(other, "203.0.113.7")
+        self.assertEqual(r1.status_code, 200, r1.get_data(as_text=True))
+        # 换出口：命中"换环境"，首次危险操作必须补口令
+        r2 = save(cur, "203.0.113.9")
+        self.assertEqual(r2.status_code, 403, r2.get_data(as_text=True))
+        self.assertEqual(r2.get_json()["reason"], "password_required")
+
     def test_换环境命中后的口令失败仍发门禁失败告警(self):
         """换环境才要求口令，但失败计数与告警这条信号不得因此静音。"""
         c, hdr = self._fresh()
