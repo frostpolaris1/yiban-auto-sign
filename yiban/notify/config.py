@@ -27,6 +27,12 @@ DEFAULT_COOLDOWN = 60
 DEFAULT_DAILY_MAX = 5
 # 紧急告警另开一本独立额度，保证噪声烧完非紧急额度后仍有手机通道
 DEFAULT_URGENT_DAILY_MAX = 3
+# 「仅推送重要告警」默认开：推送日额度有限（Server酱免费版 5 条/天），默认就该留给
+# 安全与系统级告警，日常改密、签到结果类只走邮件。`.env` 写 YIBAN_NOTIFY_URGENT_ONLY=0
+# 即显式关闭，恢复"全部告警都推手机"。
+# 发送期判定（yiban/notify/transport.py）与上报值（本模块 get_config 的 urgent_only
+# 字段）必须取同一个默认常量——两处各写一个字面量，设置页显示与实际行为就会分叉。
+DEFAULT_URGENT_ONLY = 1
 # 登录失败告警独立账本的日额度默认值；该键无 NOTIFY_ 前缀（独立命名），但读取口径
 # （环境变量优先、回退 .env、非法值回退默认）与其他 notify 键一致
 DEFAULT_LOGINFAIL_DAILY_MAX = 3
@@ -240,7 +246,7 @@ def get_config():
         "secret_masked": _mask_secret(secret) if enabled else "",
         "configured": bool(ntype or secret),
         "cooldown": _env_int("COOLDOWN", DEFAULT_COOLDOWN, envs),
-        "urgent_only": bool(_env_int("URGENT_ONLY", 0, envs)),
+        "urgent_only": bool(_env_int("URGENT_ONLY", DEFAULT_URGENT_ONLY, envs)),
         # daily_* 两字段语义是「非紧急账」（字段名不变，前端与既有调用方无需改），
         # 紧急账并列暴露为 urgent_daily_*
         "daily_max": general_max,

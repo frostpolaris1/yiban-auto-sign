@@ -401,30 +401,29 @@ def main(argv=None):
                 "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
                 _win_end,
             )
-            # 与超载分支同口径：超载必须通知管理员，不能只留在日志里——
-            # A 线并入任务结束汇总邮件，webhook 即时推送（只并汇总会让"起跑即窗口已过"
-            # 这类必然全轮跳过的事故在任务结束前完全无声）。
+            # 与超载分支同口径：容量问题并入任务结束汇总邮件，不即时推送——
+            # 它是"事后按窗口/间隔/账号数调参"的慢信号，推送日额度要留给现在就得
+            # 知道的故障。
             alerts.notify_admin_entry("易班签到容量超载", [
                 ("状态", f"起跑时已过有效签到窗口（窗口至 {_win_end}）"),
                 ("影响", f"{active_n} 个账号本轮不会执行"),
                 ("请核查", "触发时刻（cron / 容器调度）与签到窗口设置"
                            "（YIBAN_SIGN_START / YIBAN_SIGN_END）"),
-            ], notify_url)
+            ], push=False)
         elif active_n > _cap:
             logger.warning(
                 "容量预检: %d 个账号 > 剩余有效窗口 %d 秒可容纳的 %d 个"
                 "（单账号 %.0fs + 账号间隔 %ds，窗口至 %s），部分账号可能无法在窗口内完成",
                 active_n, int(_rest_sec), _cap, _cfg["avg_attempt_sec"], gap_max, _win_end,
             )
-            # 超载必须通知管理员，不能只留在日志里。
-            # A 线：并入任务结束汇总邮件；webhook 仍即时推送。
-            # 整段文案原先在邮件与推送各写一遍同样的字面量，改一处必漏另一处，故共用一份。
+            # 超载必须通知管理员，不能只留在日志里。文案只有一份（原先邮件与推送
+            # 各写一遍同样的字面量，改一处必漏另一处）。
             alerts.notify_admin_entry("易班签到容量超载", [
                 ("当前账号", f"{active_n} 个"),
                 ("剩余有效窗口", f"{int(_rest_sec)}s（至 {_win_end}），仅可容纳 {_cap} 个"),
                 ("单账号耗时", f"{_cfg['avg_attempt_sec']}s + 账号间隔 {gap_max}s"),
                 ("处置", "增加窗口时长、缩短账号间隔或减少账号数量（.env 调整）"),
-            ], notify_url)
+            ], push=False)
         # 计划写入状态文件（pending 态展示"今日计划 HH:MM"）；执行时按时间点排序
         for acc in accounts:
             t = schedule.get(acc.phone)

@@ -134,6 +134,9 @@ class MailAlertThrottleTest(_B13WebBase):
         # 隔离验证；webhook 组件（yiban/notify）自身节流测试见 test_notify_webhook.py
         with open(self.env_file, "a", encoding="utf-8") as f:
             f.write("YIBAN_NOTIFY_COOLDOWN=0\n")
+            # 「仅推送重要告警」默认开：这里推的是任意标题（非 urgent），不显式关掉
+            # 会被档位短路在通道之前，测不到 webhook 的节流语义
+            f.write("YIBAN_NOTIFY_URGENT_ONLY=0\n")
         with mock.patch.object(self.webapp.mailer, "send_admin_alert",
                                side_effect=lambda t, c, to=None: mails.append((t, c))), \
              mock.patch.object(self.webapp.notify.transport, "_send_custom",
@@ -183,7 +186,8 @@ class HighRiskDeleteTest(_B13WebBase):
         self._make_user("u2@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        for _i in range(3):
+        # 门禁失败告警按阈值触发：循环次数取 app 的常量，不另抄字面量
+        for _i in range(self.webapp.LOGIN_FAIL_NOTIFY):
             r = c.post("/api/users/batch",
                        json={"action": "delete", "emails": ["u2@test.local"],
                              "confirm_password": "wrong-pass"},
@@ -191,7 +195,7 @@ class HighRiskDeleteTest(_B13WebBase):
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("u2@test.local"), "未通过鉴权不得删除")
         self.assertTrue(any(x == "高危操作二次鉴权失败告警" for x, _ in self.alerts),
-                        f"第 3 次失败应告警，实际 {self.alerts}")
+                        f"达阈值应告警，实际 {self.alerts}")
 
     def test_batch_delete_correct_password_200(self):
         self._make_user("u3@test.local")

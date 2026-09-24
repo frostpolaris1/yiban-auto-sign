@@ -634,26 +634,10 @@ def api_settings_save():
     # 推送日额度——它要立刻叫醒；其余 A 档变更沿用既有的同类节流与紧急账日额度。
     # 纯 B 档变更非紧急。值全部来自现读+本次落盘的配置项，不含凭据，仍过一道
     # _nl_safe 只为杜绝换行伪造告警正文。
-    if changes:
-        try:
-            m.send_notification(
-                "系统设置变更告警",
-                m._change_mail(
-                    "系统设置已变更。",
-                    detail=[
-                        (m._settings_label(k),
-                         f"{m._nl_safe(m._settings_value_text(k, o))} → "
-                         f"{m._nl_safe(m._settings_value_text(k, n))}")
-                        for k, o, n in changes
-                    ],
-                    operator=str(session.get("username") or "?")[:64],
-                    level="urgent" if (a_changes or pause_change is not None) else "info",
-                ),
-                urgent=bool(a_changes) or pause_change is not None,
-                force=bool(pause_change and pause_change[2] == "1"),
-            )
-        except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
-            m.logger.warning("设置变更告警发送失败（不影响已保存的配置）: %s", e)
+    # 变更不再逐次外发告警：改设置是高频管理动作，一次一键一封会刷爆告警邮件与推送
+    # 额度，也让真故障淹没在"谁改了哪个滑块"里。留痕由上面的审计行承担——它逐键记
+    # 旧值→新值，事后可查可回滚；需要"当场叫醒"的只有不可逆操作、凭据改写与告警通道
+    # 变更，那几类各有自己的信号。
     _saved_msg = "设置已保存（cron 下次触发自动生效）"
     if edge_note:
         # 被夹过就必须说清"夹到多少、为什么"：否则管理员看到滑块/输入框里的值

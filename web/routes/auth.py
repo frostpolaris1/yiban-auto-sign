@@ -160,7 +160,7 @@ def api_login():
     fails = m._bump_login_failure(_login_fails(), fail_key, now)
     # 失败登录留痕审计链：失败原仅内存计数+日志，"被盗号溯源"
     # 场景无法从审计还原爆破片段。刻意不在每次失败都写（防爆破刷爆审计表），
-    # 与阈值邮件/锁定同节奏：达到告警阈值（3 次）与锁定阈值（5 次）各留痕一条，
+    # 与阈值邮件/锁定同节奏：告警阈值与锁定阈值各留痕一条（两值相等时只留一条），
     # IP 经 hash_ip 匿名化（与登录成功审计同口径）。用户名截断防长串刷审计。
     if fails in (m.LOGIN_FAIL_NOTIFY, m.LOGIN_MAX_FAILS):
         m.db.audit(
@@ -169,19 +169,19 @@ def api_login():
             m.db.hash_ip(ip),
             f"连续失败 {fails} 次（阈值留痕）",
         )
-    if fails >= m.LOGIN_MAX_FAILS:
+    lock_now = fails >= m.LOGIN_MAX_FAILS
+    if lock_now:
         with m._rate_lock:
             _login_fails()[fail_key] = (0, now + m.LOGIN_LOCK_SECONDS, now)
         m.logger.warning(
             "登录失败次数过多，IP %s 锁定 %s 秒", m.db.hash_ip(ip), m.LOGIN_LOCK_SECONDS
         )
-        return jsonify(
-            {"error": f"密码错误次数过多，已锁定 {m.LOGIN_LOCK_SECONDS // 60} 分钟"}
-        ), 429
-    # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解
+    # 连续失败达到阈值时告警（每轮锁定只发一次），提示可能为暴力破解。
+    # 告警排在锁定之前：两个阈值**同值**时这一刻既要告警也要锁定，若按"先锁定即 return"
+    # 的顺序，告警会在锁定分支之后永不执行——等于把唯一的登录失败信号静音。
     if fails == m.LOGIN_FAIL_NOTIFY:
-        # 告警级别判据：把"输错 3 次密码"一律标成紧急，而紧急额度默认只有 3 条/天——
-        # 一次常见的忘密码触发锁定，就会挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。
+        # 告警级别判据：把"本人输错口令"一律标成紧急，而紧急额度默认只有 3 条/天——
+        # 一次常见的忘密码就会挤掉"告警通道被人拆了""审计链断裂"这类真紧急信号。
         # 故只有同一 IP 正对多个不同用户名失败（口令喷洒特征）才标紧急；单个账号
         # 反复输错走非紧急账（开启「仅推送重要告警」时不再打扰手机，邮件照旧全量）。
         with m._rate_lock:
@@ -203,6 +203,10 @@ def api_login():
             # 喷洒类攻击烧光本账后审计链异常等真紧急告警仍可达手机
             ledger="login_fail",
         )
+    if lock_now:
+        return jsonify(
+            {"error": f"密码错误次数过多，已锁定 {m.LOGIN_LOCK_SECONDS // 60} 分钟"}
+        ), 429
     return jsonify({"error": "用户名或密码错误"}), 401
 
 
