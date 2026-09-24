@@ -152,6 +152,8 @@ class BreakerTest(unittest.TestCase):
         self.assertEqual(self._calls, [], "暂停中不应发起任何请求")
 
     def test_only_bypasses_pause(self):
+        """标签：命令行 `--only <手机号>` 的手动签到路径——它不受熔断暂停约束，
+        名字里的 only 指的是这个参数，不是「只有一个账号」。"""
         cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
                                  "paused_since": self.D3, "probe_date": "2026-08-26"}}
         self._run_main(datetime(2026, 8, 19, 6, 40), dict(cred), only=True)

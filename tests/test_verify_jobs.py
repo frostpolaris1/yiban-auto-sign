@@ -1407,6 +1407,8 @@ class VerifyJobsSchemaTest(_A4Base):
     verify_on = False
 
     def test_v15_creates_table(self):
+        """标签：schema 版本。v15 = 建 verify_jobs 表的那版迁移；钉的是「新库的 user_version
+        必须落在迁移链末档」，停在旧档就意味着任务表压根不存在。"""
         conn = db.get_conn()
         self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
                          db._MIGRATIONS[-1][0])
