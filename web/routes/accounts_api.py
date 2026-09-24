@@ -462,7 +462,7 @@ def api_account_update(idx):
         # "事后告警 + 审计链"兜底：一封"刚才执行了 XX 操作"让管理员可追溯、可回滚。
         # 物理清除那一路本就有即时告警，这里补的是"改写凭据"这一路（此前只通知当事人，
         # 管理员侧零信号）。full 档本就有当次口令，不重复发——该档行为逐字不变。
-        if creds_written and m._pw_gate_tier(m.ENV_FILE) != "full":
+        if creds_written and m._pw_gate_tier(m.ENV_FILE) != m.PW_GATE_FULL:
             m.send_notification(
                 "高危管理操作告警",
                 m._change_mail(
