@@ -2,9 +2,9 @@
 """`run.sh` 的多执行体开关（`YIBAN_WORKERS`）外壳行为。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：run.sh 外壳的三组行为：YIBAN_WORKERS 透传/默认与 1 不传/非法值留告警、M6
+覆盖：run.sh 外壳的三组行为：YIBAN_WORKERS 透传/默认与 1 不传/非法值留告警、
    标记前移（flock 弹开也留痕、次轮以 second_run 身份运行、SUCCESS
-   幂等检查仍在标记块之后）、P3-2 显式 YIBAN_RUN_TIMEOUT_SEC 的钳位矩阵、P3-13
+   幂等检查仍在标记块之后）、显式 YIBAN_RUN_TIMEOUT_SEC 的钳位矩阵、
    日志装配延迟到 main() 后 root 只有一个 FileHandler。
 对应实现：run.sh（workers 参数拼装、noclobber 标记、flock 分支、timeout
    钳位）、scripts/signin.py 的日志装配。
@@ -17,8 +17,8 @@
    时整类skip（Git Bash 在场则真实执行 run.sh，用 fakebin 里的假 flock/timeout
    记录参数）。CliLoggingSingleHandlerTest 不依赖 bash。
 
-用户要求"CLI 完善要结合实际部署教程"——教程里写"`YIBAN_WORKERS=4` 就会拉起 4 个执行体"，
-这句话必须真的成立，所以这里用假 `timeout`（记录被调用的完整参数）钉住三件事：
+部署教程里写"`YIBAN_WORKERS=4` 就会拉起 4 个执行体"，这句话必须真的成立，
+所以这里用假 `timeout`（记录被调用的完整参数）去验拼出来的命令行。
 """
 import io
 import os

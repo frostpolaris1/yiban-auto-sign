@@ -94,7 +94,6 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         self._close_conn()
 
-    # 默认值就是「已到期、可领」的那一行，用例只改与断言有关的那一维
     def _add_task(self, phone, vshard=0, state="pending", run_at=None, priority=5, # 默认值就是「已到期、可领」的那一行，用例只改与断言有关的那一维
                   owner="", attempts=0, lease_until="", result="", day=DAY):
         conn = db.get_conn()

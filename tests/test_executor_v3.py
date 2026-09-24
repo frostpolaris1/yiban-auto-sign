@@ -11,7 +11,7 @@
    零写、计划不可用不抛）、崩溃恢复与死主分片接管的整条链路。
 对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、steal_shards）、yiban/engine/runner.py
    的分流点、yiban/engine/hrw.py 与 token_bucket.py。
-关键断言：开关缺省为 0 时 v2 路径必须零行为变化（只有一行之差）。写进
+关键断言：开关缺省为 0 时 v2 路径必须零行为变化（断的是 `runner` 转调 `round.run_queue_retry`、`run_executor_v3` 零调用，两代实现只有一行之差）。写进
    sign_tasks.vshard 的 V 必须与执行体分片集同源且当日稳定：V
    落库后只读，行索引落在当日 v_for()
    之外也仍要被领取，否则当天计划与领取集错位就永久漏领。vshard=-1
@@ -24,19 +24,6 @@
    共用一份推进，用例不真实 sleep）+ 打桩 attempt_signin 与限速三件套；asyncio
    用例在进程内跑。不发网络请求。整文件在本机执行，无 skip。
 
-覆盖：
-- `schedule.channel_count`（通道数 M 的唯一口径）与 `capacity_accounts_v3` 的逐值回归；
-- `queue_store.pending_count`（带 `vshard` 过滤的待办计数，即"当日是否了结"的闸门）；
-- `scheduler_v3_enabled` 真值表与 runner 的默认 0 分流（v2 路径零行为变化）；
-- asyncio 通道：M 条通道、真并发、非阻塞到点等待、批量领取、收干判据；
-- 退避落点（有界抖动、窗口上界）、终态映射与 fencing 透传、令牌桶三件接线；
-- 产品契约：每次尝试写 sign-state、dry_run 零写、计划不可用时不抛。
-
-关键断言：默认 0 时 `round.run_queue_retry` 被调用且 `run_executor_v3` 零调用；
-写 `sign_tasks.vshard` 的 V 与执行体分片集同源且当日稳定；`vshard=-1` 的历史行
-不计入"当日待办"（把它算作未了结会让该日永远不了结）。
-
-依赖：临时库（`sign_tasks`）、假时钟（用例不真实 sleep）、打桩的 `attempt_signin`。
 """
 import asyncio
 import contextlib
