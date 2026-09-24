@@ -5,7 +5,7 @@
 覆盖：批量/单条重置密码的二次鉴权、`DailyFlockFileHandler` 的目录故障不向调用方传播、`ensure_secret_key` 对空 `.env` 的判定、版本号单源；公告「草稿 / 发布 / 下线」的权限与原子性；备案与隐私页的反射脚本转义、notify/mail 配置的告警口径；设置档位的两向对拍与急停例外
 对应实现：`web/app.py` 的公告路由（PUT 草稿 / publish / 空草稿下线）、`/api/settings` 的档位表（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`）、`DailyFlockFileHandler`、`yiban.__version__`
 关键断言：档位常量与规格表必须互相等齐且**两个方向都对拍**（漏档等于对全体管理员免口令开放）；A 档连「刚复核过」的短时豁免都不吃；急停 0→1 任意管理员可做（当次口令 + 高危额度），1→0 仅主管理员，且先鉴权后占额度（错口令不得刷光合法管理员的预算）；发布=一次原子写（正式=草稿、草稿清空），无草稿发布是 400 而非静默成功；设置变更只留审计、不再外发告警
-依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；告警与邮件出口打桩。无需 node
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；告警与邮件出口打桩。各基类均把 `YIBAN_PW_GATE` 钉成 `full`（默认档 `risk` 下公告发布与 A/B 档写入不再要求当次口令，本文件的 403/400 断言就都不成立）。无需 node
 
 覆盖：
 - P1-2 批量/单条重置密码二次鉴权：普通管理员无 confirm_password 被门禁拦；
