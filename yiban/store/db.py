@@ -568,10 +568,11 @@ def _clock_jump_guard(conn, key):
     拨回），而守卫存在的理由是"防误删"不是"停摆"——参照点一旦推进，后续 cutoff
     按真实当前时间算，误删窗口并未因此打开。
 
-    越界路径**在守卫内提交**：调用方在 ok=False 分支上会 rollback 以解除写锁
-    （见 cleanup / users / events 的钩子），把推进留给调用方就等于让它被一起回滚，
-    冻结会重新变成永久。放行路径刻意不提交：那条 INSERT upsert 在 WAL 下即持
-    RESERVED 写锁，兼作调用方读-删-连带清理的事务边界，由调用方 commit。
+    越界路径**在守卫内提交**：把推进留给调用方就等于让它被一起回滚，冻结会重新变成
+    永久。故调用方在 ok=False 分支上是否 rollback 都不影响这条推进——`users` 的两处
+    钩子就是直接 `return`（不 rollback），`cleanup` / `events` 才 rollback 解除写锁。
+    放行路径刻意不提交：那条 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作调用方
+    读-删-连带清理的事务边界，由调用方 commit。
     """
     now = clock.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
