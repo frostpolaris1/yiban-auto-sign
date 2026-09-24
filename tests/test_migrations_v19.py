@@ -7,6 +7,17 @@
 - 幂等：重跑不报错、不重复加列（可选迁移失败后下次启动整段重跑）；
 - 兜底：`sign_tasks` 缺 `epoch` 时由本迁移补上（v18 若被回退，v19 仍是可用的护栏）；
 - 登记口径：v19 是**可选迁移**，失败不阻断启动、不提升 user_version。
+
+标签：C · 存储：迁移与库完整性
+覆盖：`sign_claims.epoch` 的加列（NOT NULL DEFAULT 0、存量行取默认）、整段重跑的幂等、
+`sign_tasks` 缺列时的兜底补齐，以及 v19/v20 在迁移登记里的"可选"档位。
+对应实现：`yiban/store/` 的 v19 迁移函数与迁移登记表（`_registry_up_to` 按它取前缀）。
+关键断言：`epoch` 必须 NOT NULL——领取路径要拿它做 `epoch = epoch + 1` 的算术，
+NULL 会让整行静默变 NULL 而不是报错，这类"约束缺失"比"列缺失"更难发现，所以
+`test_existing_rows_default_to_zero` 断的是存量行的实际值而非表定义文本；
+`test_v20_is_registered_as_optional` 跨版本钉登记档位，改 v20 的档位会在这里红。
+本文件只覆盖**新代码打开 v17 旧库**这一方向。
+依赖：手工搭到 v17、不借 `db` 全局连接；临时库与临时 `.env`，无网络、无 skip。
 """
 import contextlib
 import os

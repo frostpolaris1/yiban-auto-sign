@@ -53,7 +53,7 @@ class KeySourceGuardTest(unittest.TestCase):
 
     def test_unspecified_source_refuses_generation(self):
         """来源不确定（无显式 env_file、无 YIBAN_ENV_FILE、cwd 无 .env）→ 拒绝。"""
-        os.chdir(self.tmp)  # 空目录：无 .env
+        os.chdir(self.tmp)  # 空目录：无 .env（守卫的判定里 cwd 是第三档来源，必须真换目录）
         try:
             with self.assertRaises(ValueError) as ctx:
                 account_crypto.load_key()

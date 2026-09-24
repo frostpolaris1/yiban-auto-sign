@@ -7,6 +7,27 @@
 - 篡改任意一行后校验失败；
 - 清理旧日志后剩余链仍可校验（新根生效）；
 - 存量旧数据回填后校验通过。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：库内 HMAC 链（迁移加列、连续写入自洽、任意行篡改断链、清理换新根、存量回填）；
+库外锚点文件的行格式与自身完整性（截断/改中间行/删中间行）；锚点判定三重
+（定点 / 稠密 / 留痕）对"删尾后追加""删前缀无留痕""膨胀留痕"的取舍；重链事件登记；
+写债务（write debt）持久化；`scripts/audit_verify.py` 的退出码；备份脚本的取证契约；
+以及审计**读侧**的聚合与出站不携裸号。
+对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
+`record_audit_anchor` / `verify_audit_anchor` / `audit_health`）、
+`scripts/audit_verify.py`、`scripts/backup.sh` 与 `docker/backup-docker.sh`、
+读侧聚合在 web 的审计查询服务。
+关键断言：链内哈希只证明"没被改中间"，**删尾/清空要靠库外锚点**——
+`test_positive_control_suffix_delete_alone` 与 `test_suffix_delete_then_append_is_detected`
+是成对的正负对照：后者才是真缺口（旧判据只在 `cur_max == 锚点 max_id` 时才比链头，
+删尾后只要再写一条就整套静默）。锚点文件自身的截断/删行由 `AnchorFileIntegrityTest`
+负责，跨库误比与本机时钟防不住的情况见 `tests/test_audit_cleanup_visibility.py`。
+`test_missing_meta_fingerprint_does_not_false_alarm` 钉的是"缺指纹降级为链校验、
+不得误报"，别把它读成"缺指纹也算通过校验"。
+依赖：临时库 + 临时锚点文件；`BackupScriptContractTest` 是**源码文本级**断言
+（脚本含中文，Windows 子进程按 GBK 解码 stdout 会误报，故不起子进程）——
+它只保证那段文本还在原位，不执行脚本行为；其余用例无网络、无 skip。
 """
 import contextlib
 import hashlib

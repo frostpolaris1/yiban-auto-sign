@@ -145,6 +145,8 @@ class AuditTraceabilityTest(unittest.TestCase):
         """删掉最近的审计记录（最有价值的攻击）必须被检出。"""
         self._seed(6)
         db.record_audit_anchor()
+        # 故意走裸 SQL 而不是任何应用接口：要模拟的是"拿到库文件的人"，
+        # 应用侧根本不暴露 DELETE，用接口删等于把被测路径自己架空。
         with db._conn_lock:
             conn = db.get_conn()
             max_id = conn.execute("SELECT MAX(id) AS m FROM audit_logs").fetchone()["m"]
