@@ -533,19 +533,22 @@
     return s.length >= PW_ADMIN_MIN_LEN && passwordClasses(s) >= PW_ADMIN_MIN_CLASSES;
   }
 
-  /* ---------- 口令门禁失败的机器可读分类 ----------
+  /* ---------- 危险操作门禁失败的机器可读分类 ----------
      后端在门禁拒绝时下发 `reason`：password_required = 本次未提交口令（调用方应弹口令框
-     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试）。前端据此分支，
-     不再靠比对中文文案或状态码；旧后端未下发 reason 时回落为空串，按后端原文案显示，
-     语义与既有契约一致。 */
+     后重试），password_incorrect = 口令输错（应提示输错并允许改口令重试），
+     delay_ack_required = 不可逆操作缺少/伪造 confirm_delay_ack（应弹倒计时确认框）。
+     档位（YIBAN_PW_GATE）只存在于后端，前端不判断档位、只认 reason；旧后端未下发 reason
+     时回落为空串，按后端原文案显示，语义与既有契约一致。 */
   function pwGateReason(e) {
     var r = e && e.data && e.data.reason;
-    return (r === "password_required" || r === "password_incorrect") ? r : "";
+    return (r === "password_required" || r === "password_incorrect"
+      || r === "delay_ack_required") ? r : "";
   }
   function pwGateMessage(e) {
     var r = pwGateReason(e);
     if (r === "password_required") return "此操作需要输入当前口令，请重新输入后确认。";
     if (r === "password_incorrect") return "当前口令不正确，请重新输入。";
+    if (r === "delay_ack_required") return "此操作需要二次确认，请在倒计时结束后确认。";
     // 非口令门禁失败（冷却 429、无事可做 400、网络错误等）：原样显示后端文案
     return (e && e.message) || "操作失败，请稍后重试";
   }
@@ -635,6 +638,102 @@
       ]
     });
     return pwHandle;
+  }
+
+  /* ---------- 不可逆操作的倒计时确认框 ----------
+     软性摩擦的落地形态：把「输口令打断心流」换成「等几秒再确认」，靠时间成本挡手滑连点，
+     而不是要求现场回忆管理员口令。按钮在倒计时内禁用并显示剩余秒数（5s → 4s → …），
+     归零后启用；确认 resolve(true)，取消/关闭 resolve(false)。
+     倒计时秒数只在前端生效（后端不校验秒数，真正兜底是配额 + 事后告警 + 审计），
+     故这里的定时器必须在两条收尾路径（确认 / 取消关闭）上都清掉，否则弹窗关了还在空转。 */
+  var DELAY_ACK_SECONDS = 5;
+  function delayAckLabel(left) { return left > 0 ? "确认（" + left + "s）" : "确认执行"; }
+  function openDelayAckModal(desc, confirmText) {
+    return new Promise(function (resolve) {
+      var settled = false, timer = null;
+      function settle(v) {
+        if (settled) return;
+        settled = true;
+        if (timer) { clearInterval(timer); timer = null; }
+        resolve(v);
+      }
+      var handle = openModal({
+        title: "不可逆操作确认",
+        body: el("div", { class: "pm-confirm-text", text: desc || "此操作不可逆，请确认。" }),
+        onClose: function () { settle(false); },
+        actions: [
+          { label: "取消", variant: "ghost" },
+          { label: confirmText || "确认执行", variant: "danger", onClick: function () { settle(true); } }
+        ]
+      });
+      var foot = handle.panel.querySelector(".modal-foot");
+      var okBtn = foot ? foot.querySelector(".btn--danger") : null;
+      if (!okBtn) { settle(false); return; }
+      var left = DELAY_ACK_SECONDS;
+      okBtn.disabled = true;
+      okBtn.textContent = delayAckLabel(left);
+      timer = setInterval(function () {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(timer);
+          timer = null;
+          okBtn.disabled = false;
+          okBtn.textContent = delayAckLabel(0);
+          return;
+        }
+        okBtn.textContent = delayAckLabel(left);
+      }, 1000);
+    });
+  }
+
+  /* ---------- 危险操作提交（不可逆操作的统一入口） ----------
+     档位（YIBAN_PW_GATE）只存在于后端：本处不判断档位，只按响应体的 reason 分流——
+       · delay_ack_required → 弹倒计时确认框，确认后带 confirm_delay_ack: true 重发；
+       · password_required / password_incorrect → 弹既有口令框，口令随重发提交；
+       · 其余失败原样上抛，由调用方的失败处理接管。
+     口令与倒计时凭据各只自动补一次：后端再次拒绝即上抛，绝不无限重发；口令错的那次
+     由口令框自身在框内提示并允许改口令重试（沿用既有流程）。用户取消任一弹窗时以带
+     canceled 标记的错误拒绝——取消不是失败，调用方据此静默。 */
+  function dangerousSubmit(opts) {
+    var method = opts.method || "POST";
+    var base = opts.body || {};
+    var triedPw = false, triedAck = false;
+    function merged(extra) {
+      var out = {}, keys = Object.keys(base), i;
+      for (i = 0; i < keys.length; i++) out[keys[i]] = base[keys[i]];
+      if (extra) { keys = Object.keys(extra); for (i = 0; i < keys.length; i++) out[keys[i]] = extra[keys[i]]; }
+      return out;
+    }
+    function canceled() { var e = new Error(""); e.canceled = true; return e; }
+    function attempt(extra) {
+      return api(method, opts.path, merged(extra)).catch(function (e) {
+        var r = pwGateReason(e);
+        if (r === "delay_ack_required") {
+          if (triedAck) throw e;
+          triedAck = true;
+          return openDelayAckModal(opts.delayDesc || opts.desc, opts.confirmText).then(function (ok) {
+            if (!ok) throw canceled();
+            var next = merged(extra);
+            next.confirm_delay_ack = true;
+            return attempt(next);
+          });
+        }
+        if (r === "password_required" || r === "password_incorrect") {
+          if (triedPw) throw e;
+          triedPw = true;
+          return new Promise(function (resolve, reject) {
+            openConfirmPasswordModal(opts.desc, function (pw) {
+              var next = merged(extra);
+              next.confirm_password = pw;
+              // 回调返回 Promise：口令框保持打开直至请求落定；拒绝时在框内提示并可改口令重试
+              return attempt(next).then(resolve, function (e2) { throw e2; });
+            }, function () { reject(canceled()); });
+          });
+        }
+        throw e;
+      });
+    }
+    return attempt(null);
   }
 
   /* ---------- 主题 ---------- */
@@ -1354,6 +1453,8 @@
     openPwModal: openPwModal,
     pwGateReason: pwGateReason,
     pwGateMessage: pwGateMessage,
+    openDelayAckModal: openDelayAckModal,
+    dangerousSubmit: dangerousSubmit,
     applyAnnouncementText: applyAnnouncementText,
     iconEl: iconEl,
     toggleTheme: toggleTheme,
@@ -1411,6 +1512,8 @@
   window.openPasswordModal = openPasswordModal;
   window.openConfirmPasswordModal = openConfirmPasswordModal;
   window.openPwModal = openPwModal;
+  window.openDelayAckModal = openDelayAckModal;
+  window.dangerousSubmit = dangerousSubmit;
   window.toggleTheme = toggleTheme;
   window.toggleSidebar = toggleDrawer;
   window.switchTab = switchTab;
