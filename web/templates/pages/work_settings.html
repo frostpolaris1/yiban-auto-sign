@@ -267,7 +267,7 @@
         <p class="field-help">限 200 字、禁止换行；发布后显示在所有页面顶部（含登录页）。</p>
       </div>
       {# 线上态只读块：与草稿区分节（卡内相邻分组画线分节的既有约定），否则按钮行紧贴它、
-         两段读起来像同一块（用户 2026-09-19 实拍：排版混乱、层级看不出）。
+         两段读起来像同一块（排版混乱、层级看不出）。
          work_settings.js 回填 #set-ann-published / #set-ann-published-meta（不可编辑，故用文本而非输入框） #}
       <div class="ann-published">
         <span class="field-label">线上公告（当前对所有访问者可见）</span>
@@ -472,7 +472,7 @@
     </section>
 
     {# 容量建议与耗时实测：与「容量配额」共用同一份容量数据（计入容量的账号数、有效窗口），
-       故从「执行体」分区挪来同屏（用户 2026-09-17：同类功能合并），并**直接放页面上**、
+       故从「执行体」分区挪来同屏（同类功能合并），并**直接放页面上**、
        不再收进弹窗。数字全部来自 GET /api/scheduler/executors（measured / recommendation 由
        后端算好，前端不换算）；没有实测值就显示「未实测」且不给建议（契约要求，不得编造）。
        非主管理员：本卡整块隐藏——那个接口对他们 403，显示空卡比不显示更糟。 #}
@@ -529,7 +529,7 @@
           <span class="sr-only">探针模式</span>
         </label>
       </div>
-      {# M12：探针/账号验证会对全站账号做真实登录，仅主管理员可改——权限说明与
+      {# 探针/账号验证会对全站账号做真实登录，仅主管理员可改——权限说明与
          控件程序化关联（settings-health.js 的 applyPerm 挂 aria-describedby） #}
       <p class="alert info" id="sh-perm" hidden>仅主管理员可修改健康与探针设置。</p>
       <div class="form-grid">
@@ -562,7 +562,7 @@
        故由 components/settings-executors.js 自带 load()。出口只以脱敏描述串返回（去 userinfo），
        编辑框一律留空并提示「留空 = 不修改」；配置项键名由接口下发，模板与脚本都不写死键名串。 -->
   <div class="tab-panel" role="tabpanel" id="set-panel-executors" aria-labelledby="set-tab-executors" data-tab-id="executors">
-    {# 规模 KPI **放在页面上、不在卡里**（用户 2026-09-17）：数字全部来自接口
+    {# 规模 KPI **放在页面上、不在卡里**（数字全部来自接口
        （executors[] / workers.configured / /api/settings 的容量对象），前端只做计数与一次除法。
        后两张卡的口径（分子分母各取自哪里）写在下面卡头的 ⓘ 里，不占页面。
        —— KPI 卡是 overflow:hidden，ⓘ 浮层放卡内会被裁掉，故不放卡里。 #}
@@ -590,7 +590,7 @@
           <span id="set-exec-fb-text"></span>
         </p>
       </div>
-      {# 操作反馈做成横幅（用户 2026-09-17）：增删改类型/出口的结果与"下一轮生效"写在这里，
+      {# 操作反馈做成横幅（增删改类型/出口的结果与"下一轮生效"写在这里，
          不再是一行小字；成功后由组件写入，任何一次新操作都会覆盖它。 #}
       <p class="alert" id="set-exec-banner" role="status" aria-live="polite" hidden>
         <span class="ico" id="set-exec-banner-ico"></span>
@@ -602,7 +602,7 @@
             <tr>
               <th scope="col">执行体</th>
               <th scope="col">类型</th>
-              {# 状态与当日各占一栏（用户 2026-09-17：合成一栏两串字挤在同格，读起来分不清哪串是状态） #}
+              {# 状态与当日各占一栏（合成一栏两串字挤在同格，读起来分不清哪串是状态） #}
               <th scope="col">状态</th>
               <th scope="col">当日</th>
               <th scope="col">出口</th>
@@ -612,7 +612,7 @@
           <tbody id="set-exec-assign"></tbody>
         </table>
       </div>
-      {# 添加执行体：表格底部单开一行、只在中间放一个按钮（用户 2026-09-17） #}
+      {# 添加执行体：表格底部单开一行、只在中间放一个按钮 #}
       <div class="set-exec-addrow">
         <button type="button" class="btn btn--ghost btn--sm" id="set-exec-row-add">添加执行体</button>
       </div>
