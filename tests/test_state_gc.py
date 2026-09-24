@@ -440,28 +440,28 @@ class CleanupResidueTest(unittest.TestCase):
 
     # ---------------- M3：时钟跳变保护 ----------------
     def test_clock_jump_forward_blocked(self):
-        """系统时间比上次记录前进超过 72h → 必须跳过清理并告警。"""
+        """系统时间比上次记录前进超过 72h → 跳过清理并告警，且参照点推进到当前时间。"""
         conn = db.get_conn()
         with db._conn_lock:
-            yesterday = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
+            four_days_ago = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
-                         ("test_clock_fwd", yesterday))
-            # 2026-09-01 性能修复：INSERT 后立即提交释放写锁——否则守卫跳变分支
-            # 开第二连接写告警（_record_clock_guard_alert）与本连接未提交事务
-            # 争锁超时 5s（全量串行 3 用例各 +5s，生产调用点 guard 前无前置写）。
+                         ("test_clock_fwd", four_days_ago))
             conn.commit()
             ok, note = db._clock_jump_guard(conn, "test_clock_fwd")
+            row = conn.execute("SELECT value FROM app_meta WHERE key='test_clock_fwd'").fetchone()
         self.assertFalse(ok, "前进 4 天（>72h）必须被判定为跳变")
         self.assertIn("跳变", note)
+        self.assertNotEqual(row["value"], four_days_ago,
+                            "越界路径必须推进参照点，否则清理永久冻结")
 
     def test_clock_jump_backward_blocked(self):
-        """系统时间比上次记录回拨超过 1h → 跳过清理。"""
+        """系统时间比上次记录回拨超过 1h → 跳过清理，参照点同样推进。"""
         conn = db.get_conn()
         with db._conn_lock:
             later = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("test_clock_back", later))
-            conn.commit()  # 同上：释放写锁，避免守卫告警连接争锁超时
+            conn.commit()
             ok, _note = db._clock_jump_guard(conn, "test_clock_back")
         self.assertFalse(ok, "回拨 2h（>1h）必须被判定为跳变")
 
@@ -476,8 +476,8 @@ class CleanupResidueTest(unittest.TestCase):
         self.assertTrue(ok, note)
         self.assertEqual(note, "")
 
-    def test_purge_accounts_skips_on_clock_jump(self):
-        """拨快后 purge_expired_deleted_accounts 必须整体跳过（不物理清除）。"""
+    def test_purge_accounts_skips_one_round_then_resumes(self):
+        """拨快后 purge_expired_deleted_accounts 跳过本轮；参照点随之推进，下一轮恢复清除。"""
         # 记录一次"上次运行时刻" = 现在 - 10 天 → 本次调用视为跳变
         aid = self._add("13900000005")
         old = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
@@ -486,12 +486,19 @@ class CleanupResidueTest(unittest.TestCase):
         with db._conn_lock:
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("purge_accounts_clock", old))
-            conn.commit()  # 同上：释放写锁，避免 purge 内守卫告警连接争锁超时
+            conn.commit()
         db.purge_expired_deleted_accounts()  # 应因跳变跳过，账号保留
         rows = db.load_accounts_raw()
         self.assertTrue(
             any(r["phone"] == "13900000005" for r in rows),
             "时钟跳变时 purge 必须跳过——否则刚软删的数据被拨快后立即物理清除",
+        )
+        # 只跳一轮：越界已把参照点推进到当前时间，下一次调用按正常间隔放行
+        db.purge_expired_deleted_accounts()
+        rows = db.load_accounts_raw()
+        self.assertFalse(
+            any(r["phone"] == "13900000005" for r in rows),
+            "跳变只应跳过一轮——参照点推进后下一轮必须恢复物理清除",
         )
 
     # ---------------- M4a：删用户连带清冷却计数 ----------------

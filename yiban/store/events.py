@@ -336,7 +336,7 @@ def _event_cleanup(conn):
     """清理可视化表超期数据；失败仅告警。
 
     接入时钟跳变守卫（同 _audit_cleanup）——sign_events 等表是
-    取证数据源，时钟跳变不应放大清理窗口。
+    取证数据源，时钟跳变不应放大清理窗口。跳变只跳本轮清理，下一轮恢复。
     """
     try:
         ok, note = _facade()._clock_jump_guard(conn, "event_cleanup_clock")

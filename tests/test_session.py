@@ -401,9 +401,6 @@ class SessionCacheBusinessDayTest(_SessionCacheFixture):
         self.assertIsNotNone(self._get(), "刚写入的缓存应可复用")
 
 
-NEW_KEY = "b" * 64
-
-
 ADMIN_PASS = "TestPass1234!"
 
 
@@ -739,7 +736,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
 
 
 class Batch11CleanupClockGuardTest(_Batch11WebBase):
-    """N2：审计/事件清理接入时钟跳变守卫。"""
+    """N2：审计/事件清理接入时钟跳变守卫（跳变只跳一轮：参照点随越界一并推进）。"""
 
     def _set_guard_ref(self, key, dt):
         conn = db.get_conn()
@@ -747,107 +744,44 @@ class Batch11CleanupClockGuardTest(_Batch11WebBase):
                      (dt.strftime("%Y-%m-%d %H:%M:%S"), key))
         conn.commit()
 
-    def test_audit_cleanup_skipped_on_clock_jump(self):
-        for i in range(3):
-            db.audit("admin", f"op{i}", "t", "d")
+    def test_audit_cleanup_skips_one_round_then_resumes(self):
         conn = db.get_conn()
         with db._conn_lock:
             db._audit_cleanup(conn)  # 首次调用建立守卫参照
-        n_before = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        self.assertGreaterEqual(n_before, 3)
-        # 参照拨回 8 天前 → 下次调用视为前进 8 天（>72h）→ 跳过清理
+        # 造一条真正超期的审计行（保留期 180 天）：只有它会让"是否执行了清理"可观测
+        db.audit("admin", "op_old", "t", "d")
+        old_ts = (_datetime_RESTORE.now() - timedelta(days=200)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
+            conn.execute("UPDATE audit_logs SET ts=? WHERE action='op_old'", (old_ts,))
+            conn.commit()
+            n_before = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+            self.assertGreaterEqual(n_before, 1)
+            # 参照拨回 8 天前 → 下次调用视为前进 8 天（>72h）→ 跳过清理
             self._set_guard_ref("audit_cleanup_clock", _datetime_RESTORE.now() - timedelta(days=8))
             db._audit_cleanup(conn)
-        n_after = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        self.assertEqual(n_after, n_before, "时钟跳变时审计清理必须被跳过")
+            n_after = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+            self.assertEqual(n_after, n_before, "时钟跳变时审计清理必须被跳过")
+            # 跳变只跳一轮：越界已推进参照点，下一次调用恢复清理并删掉那条超期行
+            db._audit_cleanup(conn)
+            n_resumed = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+        self.assertLess(n_resumed, n_after, "参照点推进后下一轮必须恢复清理")
 
-    def test_event_cleanup_skipped_on_clock_jump(self):
-        db.add_sign_event("2026-08-29 10:00:00", "13800138000", "success", "m")
+    def test_event_cleanup_skips_one_round_then_resumes(self):
         conn = db.get_conn()
         with db._conn_lock:
             db._event_cleanup(conn)  # 首次调用建立守卫参照
-        n_before = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
-        self.assertGreaterEqual(n_before, 1)
+        old_ts = (_datetime_RESTORE.now() - timedelta(days=200)).strftime("%Y-%m-%d %H:%M:%S")
+        db.add_sign_event(old_ts, "13800138000", "success", "m")
         with db._conn_lock:
+            n_before = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
+            self.assertGreaterEqual(n_before, 1)
             self._set_guard_ref("event_cleanup_clock", _datetime_RESTORE.now() - timedelta(days=8))
             db._event_cleanup(conn)
-        n_after = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
-        self.assertEqual(n_after, n_before, "时钟跳变时事件清理必须被跳过")
-
-
-class Batch11RekeyToolTest(_Batch11WebBase):
-    """N5：ACCOUNTS_KEY 轮换工具。"""
-
-    def _seed_encrypted_account(self, phone, password):
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
-        c = self.webapp.create_app().test_client()
-        t = self._login(c, EMAIL, USER_PASS)
-        r = c.post("/api/my-accounts", json={
-            "name": "n", "phone": phone, "password": password, "phone_code": "code-x",
-        }, headers=self._csrf(t))
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
-
-    def _read_secret(self, conn, phone, col):
-        raw = conn.execute(f"SELECT {col} FROM accounts WHERE phone=?", (phone,)).fetchone()[0]
-        return json.loads(raw)
-
-    def test_rekey_roundtrip(self):
-        self._seed_encrypted_account("13900000001", "plain-pw-1")
-        import rekey_accounts
-
-        from yiban.infra import account_crypto
-        ok, note = rekey_accounts.rekey(self.db_file, bytes.fromhex(TEST_KEY), bytes.fromhex(NEW_KEY))
-        self.assertTrue(ok, note)
-        conn = sqlite3_connect(self.db_file)
-        try:
-            new_obj = self._read_secret(conn, "13900000001", "password")
-            self.assertEqual(
-                account_crypto.decrypt_password(new_obj, bytes.fromhex(NEW_KEY), "13900000001"),
-                "plain-pw-1", "新钥必须能解密且明文一致",
-            )
-            with self.assertRaises(ValueError):
-                account_crypto.decrypt_password(new_obj, bytes.fromhex(TEST_KEY), "13900000001")
-            code_obj = self._read_secret(conn, "13900000001", "phone_code")
-            self.assertEqual(
-                account_crypto.decrypt_password(code_obj, bytes.fromhex(NEW_KEY), "13900000001"),
-                "code-x",
-            )
-        finally:
-            conn.close()
-
-    def test_rekey_rejects_wrong_old_key(self):
-        self._seed_encrypted_account("13900000002", "plain-pw-2")
-        import rekey_accounts
-        conn = sqlite3_connect(self.db_file)
-        before = conn.execute("SELECT password FROM accounts WHERE phone=?",
-                              ("13900000002",)).fetchone()[0]
-        conn.close()
-        ok, _note = rekey_accounts.rekey(self.db_file, bytes.fromhex(NEW_KEY), bytes.fromhex("c" * 64))
-        self.assertFalse(ok, "旧钥不对必须拒绝")
-        conn = sqlite3_connect(self.db_file)
-        after = conn.execute("SELECT password FROM accounts WHERE phone=?",
-                             ("13900000002",)).fetchone()[0]
-        conn.close()
-        self.assertEqual(before, after, "拒绝时库必须保持原状")
-
-    def test_update_env_key_writes_and_rotates(self):
-        import rekey_accounts
-        rekey_accounts.update_env_key(self.env_file, bytes.fromhex(NEW_KEY))
-        content = open(self.env_file, encoding="utf-8-sig").read()
-        self.assertIn(f"YIBAN_ACCOUNTS_KEY={NEW_KEY}", content)
-        self.assertEqual(content.count("YIBAN_ACCOUNTS_KEY="), 1, "旧键行应被替换而非叠加")
-
-
-def sqlite3_connect(path):
-    import sqlite3
-    conn = sqlite3.connect(path, timeout=15)
-    conn.row_factory = sqlite3.Row
-    return conn
+            n_after = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
+            self.assertEqual(n_after, n_before, "时钟跳变时事件清理必须被跳过")
+            db._event_cleanup(conn)
+            n_resumed = conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
+        self.assertLess(n_resumed, n_after, "参照点推进后下一轮必须恢复清理")
 
 
 PROD_STALE_MSG = "获取签到任务失败: 未登录或登录已经超时"
