@@ -13,8 +13,9 @@
 谁调用：`transport.send` / `send_test`（类型、密钥、白名单）、
 `web/routes/notify.py` 的 `api_notify_config` / `api_notify_config_save`（设置页读概览
 与保存前判定）、`yiban/engine/alerts.py`（`is_configured` 决定要不要走手机通道）。
-输出给前端的只有 `get_config()` 的 `secret_masked`（`_mask_secret` 打码后的短指纹），
-明文密钥不经本层出 web。
+输出给前端的凭据只有一种形态：`get_config()` 里的 `secret_masked`（`_mask_secret` 的
+前 3 后 2 短指纹）。`get_secret()` 返回的是明文，只被 `transport` 拿去发请求；本层
+`logger` 的三处调用记的是解密/解析异常与 `url_desc(host)`，都不写出密钥本身。
 """
 import ipaddress
 import json

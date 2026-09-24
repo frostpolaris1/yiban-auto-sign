@@ -7,10 +7,11 @@
 - **跨进程互斥**：并发写入时行不交错——经 `yiban/infra/locks.py` 统一加锁，真无法
   加锁时由 locks 告警留痕；
 - **按天滚动**：常驻的 web 进程跨天自动换文件，与签到子进程"按天分文件"同口径；
-- **出站脱敏**：`MaskingFormatter` 对格式化后的整行兜底遮**手机号**，凡经本模块
-  装配的 handler 落盘（含将来新写的日志）都留不下裸号。这一层只遮号码：口令、
-  token、cookie 类字面量要靠调用点先过 `yiban.masking.sanitize_text`，未过它的
-  调用点不会被本层救回。
+- **出站脱敏**：`MaskingFormatter` 对格式化后的整行兜底遮**手机号**。覆盖面 = 装上这个
+  formatter 的那些 handler——全仓只有 `yiban.engine.cli_support._setup_cli_logging` 与
+  web `create_app` 两处装配，别处自建 handler 写的日志不在保护范围内。且这一层只遮号码：
+  口令、token、cookie 类字面量要靠调用点先过 `yiban.masking.sanitize_text`，未过它的
+  调用点不会被本层救回；号码写成编码或分段形态（凑不出连续 11 位数字）同样照漏。
 
 日期口径取 `yiban.clock`（北京时间），与签到事件/状态文件一致。
 """
