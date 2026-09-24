@@ -15,6 +15,27 @@
 **日志落盘面也脱敏**：日志文件会被转发、导出、截图，故输出面的 formatter 对最终
 消息统一兜底脱敏（`yiban.logging_ext.MaskingFormatter`），不依赖各调用点自觉。
 
+**遮罩只发生在这些层**（写注释前逐个实测过，勿把本模块当成"全面脱敏"）：
+
+- 键值对形态的凭据字面量：`sanitize_text` 按键名匹配抹值；
+- URL 的 query 参数：`sanitize_url` 按键名/值形态打码；
+- 落盘整行的 11 位手机号：`yiban.logging_ext.MaskingFormatter` 兜底。
+
+**已知的未覆盖面**（都是"看着像脱敏了、其实没有"）：
+
+- 键名被百分号编码即绕开键名匹配：`tok%65n=…`、`pass%77ord=…` 原样输出，
+  编码键名中间任意一个字符就够了（`refresh%5Ftoken` 这类能中，是因为残段
+  恰好仍以明文 `token` 起头，不是规则认得它）；
+- `sanitize_url` 只解析 `&` 分隔的 query：`#access_token=…` 的 fragment、
+  以及 `;` 分隔段（落在上一个参数的值里）都原样回显；
+- 高熵兜底是"值全为 `[A-Za-z0-9_-]`"的形式判定：含 `%`、`/`、`+`、`.` 的长
+  令牌（哪怕解码后仍是凭据）不命中，非敏感参数名于是整体放行；
+- 手机号口径只认连续 11 位数字：编码形态、分段书写都不在遮罩之列。
+
+上述形态本模块未处理，改口径要连 `tests/test_masking_ssrf_gaps.py` 一起看。
+此外 `sanitize_url` 输出的是**解码后**的 query（`%2F` 变回 `/`），只可用于日志，
+不可回填去发请求。
+
 ⚠ `mask_email` 不在这里：它与 signin 侧的邮箱脱敏公式不同，合并会改变用户可见输出，
 须与前端展示口径一起改。
 """
@@ -64,7 +85,7 @@ def sanitize_text(text):
     # 而不是要求 `\b`——空格与引号都是非词字符，那里不存在词边界。
     s = re.sub(rf"(?i)(['\"](?:password|phone_code)['\"]\s*[:=]\s*){_QUOTED_OR_BARE}",
                r"\1***", s)
-    # 凭据字面量（M1）：意外落入文本的 token/cookie/session 等直接抹值，
+    # 凭据字面量：意外落入文本的 token/cookie/session 等直接抹值，
     # 键名允许带前后缀（refresh_token / session_id / JSESSIONID / x-csrf / api_key）。
     s = re.sub(
         rf"(?i)(?<![\w-])([a-z0-9_\-]*{_CRED_KEY}[a-z0-9_\-]*)\s*[:=]\s*[^\s,;]+",
