@@ -1322,6 +1322,34 @@ def _send_channel_health_report(force=False):
         status_lines=_channel_status_lines, send_notification=send_notification)
 
 
+# 告警通道健康报告的例行播报日（0=周一）。日报的价值在"通道被关掉这件事看得见"，
+# 而通道健康与否不会在一天内变化——日更只是每天多打扰一封。故例行收敛到固定一天；
+# 通道降级当天照发（见 _channel_health_report_due），报警器被拆仍当天可见。
+_HEALTH_REPORT_WEEKDAY = 0
+
+
+def _channel_health_report_due(status=None):
+    """今天是否该播告警通道健康报告：例行日（周一）、通道降级、或当日推送额度已耗尽。
+
+    降级判定沿用 `_channel_health_degraded` 的结构化字段（与日报内部同一口径）。额度
+    那一档刻意用只读的 `notify.budget_exhausted_today()` 而不是 `pop_exhaustion_notice()`：
+    pop 是取走语义，在闸门上取走会让真正发信时少了那几行"哪本账用尽"的告知，而账本的
+    notice 标记按日重置 ⇒ 漏到下一个例行日就再也补不回来。
+
+    降级期间每天都会判"该发"，与日更时的行为一致：报警器失效必须持续可见，不能因为
+    改成周报而静默。
+    """
+    st = status if status is not None else _alert_channel_status()
+    if _channel_health_degraded(st):
+        return True
+    try:
+        if notify.budget_exhausted_today():
+            return True
+    except Exception as e:  # 兜底：额度状态读不动不该让日报整体缺席
+        logger.warning("读取推送额度状态失败（按未耗尽处理）: %s", e)
+    return clock.now().weekday() == _HEALTH_REPORT_WEEKDAY
+
+
 # 容量核计与触顶告警族（账号/用户配额判定 `_capacity_account_count` /
 # `_capacity_audit_count` / `_accounts_at_capacity` / `_users_at_capacity`、容量预估
 # `_capacity_estimate`、注册暂停 `_registration_paused`、同类型告警邮件节流
@@ -2433,8 +2461,11 @@ def create_app(host=None):
             # 两通道全断时也仍留得住证据。
             # 修复轮 2：标记改在发信成功后才落——本处 except 吞掉的正是"今天没发出去"，
             # 不落标记才能让下一次进程启动（同一日）再试一封，而不是静默到明天。
+            # 周报化：例行收敛到每周固定一天（`_HEALTH_REPORT_WEEKDAY`），通道降级或当日
+            # 额度耗尽时当天就发——清理任务本身仍每日跑，不随本报告改成周跑。
             try:
-                _send_channel_health_report()
+                if _channel_health_report_due():
+                    _send_channel_health_report()
             except Exception as e:
                 logger.warning("告警通道健康日报发送失败: %s", e)
             time.sleep(24 * 3600)
