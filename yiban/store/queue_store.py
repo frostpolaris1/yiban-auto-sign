@@ -8,8 +8,9 @@
   领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
-- `reap_expired`：租约过期回收——崩溃执行体留下的 `claimed` 行回退 `pending` 并自增
-  `epoch`（不做则"崩溃即卡死"：`claim_batch` 只取 `pending`）；
+- `reap_expired`：租约过期回收——崩溃执行体留下的 `claimed` 行在**超出宽限期**
+  （`REAP_GRACE_SEC`）后回退 `pending` 并自增 `epoch`（不做则"崩溃即卡死"：`claim_batch`
+  只取 `pending`；不设宽限则会误回收还在飞的慢尝试，见该函数说明）；
 - `steal_shards`：死主分片接管——把心跳过期执行体分片集内的 `pending` 行改归本执行体
   （只动 `pending`，CAS + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
@@ -53,6 +54,13 @@ logger = logging.getLogger("yiban.store.queue_store")
 #: 任务级短租约（秒）：通道崩溃后到期即被回收重排——比账号级 900s 租约快一个量级，
 #: 崩溃的账号不必等到窗口结束才有人接手。
 LEASE_SECONDS = 60
+
+#: 回收宽限期（秒）：租约到期只是"持有者**可能**已死"，不等于真死。单次尝试可能比租约
+#: 还慢（项目既有"慢签到"告警阈值 30s，超 60s 的尝试并非不可能），此时回收并重领会
+#: 让同一账号被两条通道并发登录——`epoch+1` 只挡迟到的结论写回，挡不住这次重复真实
+#: 登录。宽限期把"在飞被回收"的窗口压到可忽略；要收紧响应速度，真正的旋钮是租约时长
+#: 而不是这里。取 ≥ 2× 租约留出余量。
+REAP_GRACE_SEC = 120
 
 #: 批领缺省行数 = 通道数 × 预取系数。
 CLAIM_BATCH_LIMIT = 32
@@ -98,6 +106,24 @@ def _lease_until(lease_sec):
     """
     t = clock.now() + datetime.timedelta(seconds=lease_sec)
     return t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _shift_stamp(stamp, sec):
+    """时间串平移 `sec` 秒，返回毫秒精度、与 `run_at` 同格式的可比字符串。
+
+    本库的时间串一律北京时间（`yiban.clock`），**不能用 SQL 的 `datetime(..., '-N seconds')`
+    代替**：那会把时间串当 UTC 解释（与 `_lease_until` 同一个坑）。
+    """
+    text = str(stamp)
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            t = datetime.datetime.strptime(text, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        raise ValueError(f"不可解析的时间串: {text!r}")
+    return (t + datetime.timedelta(seconds=sec)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
 def claim_batch(owner, day, vshards, now=None, limit=CLAIM_BATCH_LIMIT,
@@ -204,12 +230,19 @@ def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
         return 0
 
 
-def reap_expired(now=None, day=None):
-    """回收租约过期的在飞任务：`state='claimed'` 且 `lease_until < now` 的行回退为
-    `pending`（清 `owner`/`lease_until`、`epoch = epoch + 1`）。返回受影响行数。
+def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
+    """回收租约**过期且超出宽限期**的在飞任务：`state='claimed'` 且
+    `lease_until < now - grace_sec` 的行回退为 `pending`（清 `owner`/`lease_until`、
+    `epoch = epoch + 1`）。返回受影响行数。
 
     **为什么必须做**：`claim_batch` 只取 `state='pending'` 的行，崩溃/被杀的通道留下的
     `claimed` 行**永远不会被重新领取**——不做回收就是"崩溃即卡死"，该账号当天不再有人签。
+
+    **为什么要宽限期（`REAP_GRACE_SEC`）**：租约到期只说明持有者"可能已死"，不等于真死。
+    单次尝试可能比租约还慢（慢签到告警阈值 30s 而租约 60s），此时若按"过期即回收"，该行
+    会回退 `pending` 并**可能被同一执行体重新领到** ⇒ 同一账号两条通道并发登录。`epoch+1`
+    只保证旧结论写不回，挡不住这次重复真实登录，故必须靠宽限期把"在飞被回收"的窗口压到
+    可忽略；真正的旋钮是 `LEASE_SECONDS`（宽限期取 ≥ 2× 租约留余量）。
 
     **`epoch + 1` 是 fencing 红线**：回退后原持有者可能迟到提交 `settle_tasks`，自增
     token 让它的旧 epoch 写被拒（`settle_tasks(..., epochs=...)` 已支持），否则迟到的旧
@@ -219,17 +252,17 @@ def reap_expired(now=None, day=None):
     回收成 `pending` 只会变成永不被领取的行（`claim_batch` 的 `vshard IN (...)` 挡着），
     白白制造"看着有活、其实无人领"的假象。`day` 给了就只回收该业务日。
 
-    幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常 → 0 + warning（回收是补偿动作，
-    失败不该打断签到；下一轮会再试）。
+    幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常（含 `now` 不可解析）→ 0 + warning
+    （回收是补偿动作，失败不该打断签到；下一轮会再试）。
     """
-    stamp = now or _lease_until(0)
     sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
            "WHERE state=? AND lease_until != '' AND lease_until < ? AND vshard >= 0")
-    params = [STATE_PENDING, STATE_CLAIMED, stamp]
-    if day is not None:
-        sql += " AND day=?"
-        params.append(day)
     try:
+        cutoff = _shift_stamp(now or _lease_until(0), -grace_sec)
+        params = [STATE_PENDING, STATE_CLAIMED, cutoff]
+        if day is not None:
+            sql += " AND day=?"
+            params.append(day)
         conn, lock = _queue_conn()
         with lock:
             cur = conn.execute(sql, tuple(params))
