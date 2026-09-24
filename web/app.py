@@ -635,9 +635,11 @@ DELETE_MAX_REQUESTS_PER_IP = 5
 # 高危删除操作冷却（2026-08-29 被盗号滥用面加固）：同一管理员在窗口内最多执行
 # ADMIN_DELETE_MAX 次删除类高危操作（批量删除/彻底清除/完全删除），防被盗会话
 # 快速反复删除用户并刷告警邮件。与注销冷却同语义，超限 429 且不暴露冷却参数。
+# 上限按合法批量清理的规模定（连续清理若干垃圾账号是常见运维动作，阈值卡太紧会误伤），
+# 防脚本滥用的作用由"窗口内次数"本身承担。
 # .env 可调（YIBAN_ADMIN_DELETE_COOLDOWN_SEC / YIBAN_ADMIN_DELETE_MAX，0=关闭）。
 ADMIN_DELETE_COOLDOWN_SEC = 60
-ADMIN_DELETE_MAX = 5
+ADMIN_DELETE_MAX = 20
 # 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐，与 db.purge_deleted_users
 # 默认一致；已注销用户视图按此计算剩余天数。常量本体（取 db.SOFT_DELETE_RETENTION_DAYS
 # ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
@@ -2104,7 +2106,8 @@ def create_app(host=None):
         本函数**判定即占用**，故必须在二次鉴权通过
         之后调用（五个高危调用点统一走 _high_risk_gate，不再各自手搓顺序）。
         原先放在口令校验之前，不知口令的被盗会话可以用错口令尝试把主管理员的
-        "删除 + 通道变更"预算（默认 5 次 / 60 秒）刷满，反过来让合法运维全程 429。
+        "删除 + 通道变更"预算（ADMIN_DELETE_MAX 次 / ADMIN_DELETE_COOLDOWN_SEC 秒）刷满，
+        反过来让合法运维全程 429。
         """
         window = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_COOLDOWN_SEC", ADMIN_DELETE_COOLDOWN_SEC)
         limit = load_env_int(ENV_FILE, "YIBAN_ADMIN_DELETE_MAX", ADMIN_DELETE_MAX)
@@ -2325,7 +2328,8 @@ def create_app(host=None):
 
         顺序即本次修复：原五处调用都是"先判后增再鉴权"，于是
         一个只拿到 Cookie、不知道口令的被盗会话，用错口令反复尝试就能把主管理员
-        的"删除 + 告警通道变更"预算（默认 5 次 / 60 秒）全部吃掉，反过来让合法
+        的"删除 + 告警通道变更"预算（ADMIN_DELETE_MAX 次 / ADMIN_DELETE_COOLDOWN_SEC 秒）
+        全部吃掉，反过来让合法
         运维的每一次高危操作都撞 429（运维 DoS）。口令暴力的防护本就由
         _sensitive_password_gate 里的独立计数与门禁级冷却承担（第 3 次告警并暂停
         敏感操作），不需要再借用高危额度；额度只该被**真实执行过**的高危动作消耗。
