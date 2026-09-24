@@ -216,7 +216,7 @@ def _max_vshard(day):
     return int(row[0])
 
 
-def _plan_v(day, cfg, accounts, has_plan):
+def _plan_v(day, cfg, accounts, top):
     """当日虚分片数 V：**首次建计划时落库，此后只读**（读不到或与已写行不一致才兜底）。
 
     为什么必须落库：V 是"账号 → 分片索引"的模数，写进计划行的 `vshard` 与执行体
@@ -225,9 +225,11 @@ def _plan_v(day, cfg, accounts, has_plan):
     静默漏签**。故落库值优先；落库值缺失、或已写行的最大分片号已经不小于它（同样有行
     落在范围外）时，按最大分片号放宽并留 error——放宽 V **不会**改变既有索引的归属
     （`hrw.owner_of` 与 V 无关），只会把扫描范围撑到盖住已写行。
+
+    `top` 由调用方一次查出后与"当日是否已有可用计划"共用（`None` = 无 `vshard >= 0`
+    的行）；V 的取值口径只此一处，不另起第二条。
     """
     stored = _stored_v(day)
-    top = _max_vshard(day) if has_plan else None
     if stored is not None and (top is None or top < stored):
         return stored
     if top is not None:
@@ -241,14 +243,24 @@ def _plan_v(day, cfg, accounts, has_plan):
 
 
 def _ensure_plan(accounts, day, cfg):
-    """保证当日有计划行（v3 的队列就是计划），返回当日 V。
+    """保证当日有**可用**计划行（v3 的队列就是计划），返回当日 V。
 
-    `has_plan` / `write_plan` 都幂等；`write_plan` 失败会抛，由调用方捕获后放弃本轮
-    ——没有计划行就没有队列，发不出任何请求，裸抛只会把 traceback 交给调用方。
+    "有计划"的判据必须是当日有真实计划行（`vshard >= 0`）：历史平移与补账留下的
+    `vshard=-1` 行是惰性的——不在任何分片集内、永不被领取，若把它们当成"计划已就绪"，
+    建计划被跳过而队列里又没有可领的行，本轮零领取、零请求，汇总成"全部未执行"。
+    这类行按设计保持原样，只是不再充当"计划已就绪"的证据（`write_plan` 是
+    `INSERT OR IGNORE`，补建也不会覆盖它们）。
+
+    `write_plan` 失败会抛，由调用方捕获后放弃本轮——没有计划行就没有队列，发不出任何
+    请求，裸抛只会把 traceback 交给调用方。
     """
-    has_plan = planner.has_plan(day)
-    v = _plan_v(day, cfg, accounts, has_plan)
-    if not has_plan:
+    top = _max_vshard(day)
+    v = _plan_v(day, cfg, accounts, top)
+    if top is None:
+        if planner.has_plan(day):
+            logger.error(
+                "当日只有历史惰性行（无 vshard >= 0 的计划行），视为无可用计划："
+                "按 %s 补建计划，历史行保持原样", v)
         planner.write_plan(
             planner.build_plan(accounts, day, cfg["executors"], v=v, cfg=cfg), day)
     return v
@@ -326,9 +338,30 @@ def _finish(ctx, phone, epoch, result, state_message, state):
 
 
 def _is_risk_signal(message):
-    """风控信号判定：WAF 拦截或命中风控关键词（与失败分级同一批关键词）。"""
+    """风控信号判定：WAF 拦截或命中风控关键词（与失败分级同一批关键词）。
+
+    `is_waf_blocked` 的入参契约是**响应体**（它按"短响应"设界，见 `yiban.security`），
+    这里传的是失败 `message`：两者共享同一批关键词，且 `message` 可能内嵌服务端返回的
+    `\\uXXXX` 转义 JSON——保留这一路解码。要按契约传响应体，得把响应对象一路带到这里
+    （新数据源）；在那之前本判定以 `message` 为准。
+    """
     return attempts.is_waf_blocked(message) or any(
         kw in message for kw in attempts.RISK_FAIL_KEYWORDS)
+
+
+def _log_give_up(phone, tried, status, message):
+    """最终放弃的留痕：与 v2 的放弃路径同级别、同语义。
+
+    为什么分两级：无点位是易班侧没有数据（非账号/凭据问题，管理员无从修复，重试也拿不
+    到），v2 对它只留 warning、不按"签到失败"告警；其余失败才是 error。手机号与原因都
+    按全模块同一脱敏口径落日志。
+    """
+    if status == STATUS_NO_POSITION:
+        logger.warning("[%s] 🚫 易班未返回签到点位，当日不签到（重试无意义）: %s",
+                       _mask_phone(phone), _sanitize_text(message))
+        return
+    logger.error("[%s] ❌ 已尝试 %d 次，放弃: %s",
+                 _mask_phone(phone), tried, _sanitize_text(message))
 
 
 def _alert_give_up(ctx, acc, phone, status, message):
@@ -435,6 +468,8 @@ async def _attempt(ctx, item):
             return
         logger.error("[%s] ❌ 窗口剩余不足，不再重试: %s",
                      _mask_phone(phone), _sanitize_text(message))
+    else:
+        _log_give_up(phone, attempts_n + 1, status, message)
     ctx.results[phone] = (False, message, False, status)
     _alert_give_up(ctx, acc, phone, status, message)
     _settle(ctx, phone, epoch, queue_store.STATE_FAILED, message)
