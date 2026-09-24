@@ -57,6 +57,38 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
 LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 
+# ---- 触发来源前缀与退出码留痕 ----
+# 排程（cron / systemd / 容器调度）与手工执行共用同一个 sign-YYYY-MM-DD.log，光看时间
+# 戳分不清哪一轮是谁触发的（"今天怎么跑了两轮"是排查的第一句）。判据：有控制终端 =
+# 人在终端里执行；没有 = 排程。容器等场景可用 YIBAN_TRIGGER 显式覆盖。
+if [ -n "${YIBAN_TRIGGER:-}" ]; then
+    TRIGGER_TAG="$YIBAN_TRIGGER"
+elif [ -t 1 ] || [ -t 2 ]; then
+    TRIGGER_TAG="手工"
+else
+    TRIGGER_TAG="排程"
+fi
+
+# 本脚本自己的日志出口：统一带上触发来源前缀（子进程的 stdout/stderr 仍直落同一文件）
+_log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$TRIGGER_TAG] $*" >> "$LOG_FILE"
+}
+
+# 任何退出路径都落一行带退出码的日志。原先只有正常收尾那一行，于是 flock 跳过（0）、
+# 当日已签到成功跳过（0）、当日已收尾跳过（0）、timeout 击杀（124）全都静默收场——
+# 日志里看不出"这一轮跑过没有、为什么没签"。退出码契约 0/1/2/3/10 逐字不变：这里只多写
+# 日志。收到 SIGTERM/SIGINT 也落一行（容器 stop / 宿主重启杀掉本进程时，日志是唯一
+# 现场），退出码沿用 128+信号号——与"被信号杀死"在父进程看来本来就得到的码一致。
+_on_exit() {
+    local rc="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$TRIGGER_TAG] === run.sh 退出，退出码: $rc ===" >> "$LOG_FILE" || true
+    echo "" >> "$LOG_FILE" || true
+    return 0
+}
+trap '_on_exit $?' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
 # 识别「当日已触发过」标记。
 # 06:31 与 07:12 是同一脚本的两次 cron 调用，仅靠 sign-status 状态文件无法区分——
 # 首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）时不写状态文件，07:12 补签
@@ -97,7 +129,7 @@ if [ ! -d "$LOCK_DIR" ]; then
 fi
 exec 9>"$LOCK_DIR/sign.lock"
 flock -n 9 || {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === 已有签到进程在运行，本次跳过 ===" >> "$LOG_FILE"
+    _log "=== 已有签到进程在运行，本次跳过 ==="
     exit 0
 }
 
@@ -154,7 +186,7 @@ _wait_until_hhmm() {
     tgt_s="$(date -d "today $th:$tm" +%s 2>/dev/null)" || return 0
     [ -n "$tgt_s" ] || return 0
     if [ "$now_s" -lt "$tgt_s" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 补签轮：等待至 $target 再执行（约 $(( (tgt_s - now_s) / 60 )) 分钟）" >> "$LOG_FILE"
+        _log "补签轮：等待至 $target 再执行（约 $(( (tgt_s - now_s) / 60 )) 分钟）"
         sleep $(( tgt_s - now_s ))
     fi
     return 0
@@ -177,7 +209,7 @@ _need_second_round() {
 _run_signin_round() {
     local end_hhmm="${YIBAN_SIGN_END:-07:50}" run_timeout end_ts now_ts raw
     if ! echo "$end_hhmm" | grep -qE '^([01]?[0-9]|2[0-3]):[0-5][0-9]$'; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 警告: YIBAN_SIGN_END=$end_hhmm 非法，回退默认 07:50" >> "$LOG_FILE"
+        _log "警告: YIBAN_SIGN_END=$end_hhmm 非法，回退默认 07:50"
         end_hhmm="07:50"
     fi
     end_ts=$(date -d "today $end_hhmm" +%s)
@@ -192,10 +224,10 @@ _run_signin_round() {
         if [[ "$raw" =~ ^[0-9]+$ ]] && [ "$raw" -ge 600 ] 2>/dev/null; then
             run_timeout="$raw"
         else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 警告: YIBAN_RUN_TIMEOUT_SEC=$raw 非法（须为 ≥600 的整数），回退动态计算 ${run_timeout}s" >> "$LOG_FILE"
+            _log "警告: YIBAN_RUN_TIMEOUT_SEC=$raw 非法（须为 ≥600 的整数），回退动态计算 ${run_timeout}s"
         fi
     fi
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 签到超时: ${run_timeout}s（窗口至 $end_hhmm）" >> "$LOG_FILE"
+    _log "签到超时: ${run_timeout}s（窗口至 $end_hhmm）"
     # 多执行体（可选）：YIBAN_WORKERS>1 时由 signin 的监督模式拉起 N 个并行执行体，
     # 分工靠数据库里的领取池（账号不会被两个执行体同时登录）。默认 1 = 现状不变。
     # 非法值只告警并回退 1：绝不能因为一个配置笔误让当天不签到。
@@ -205,11 +237,11 @@ _run_signin_round() {
         if [[ "$workers_raw" =~ ^[0-9]+$ ]] && [ "$workers_raw" -ge 2 ] && [ "$workers_raw" -le 64 ]; then
             workers_args=(--workers "$workers_raw")
         else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 警告: YIBAN_WORKERS=$workers_raw 非法（须为 2~64 的整数），按单执行体执行" >> "$LOG_FILE"
+            _log "警告: YIBAN_WORKERS=$workers_raw 非法（须为 2~64 的整数），按单执行体执行"
         fi
     fi
     if [ ${#workers_args[@]} -gt 0 ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 多执行体: ${workers_raw} 个并行执行体" >> "$LOG_FILE"
+        _log "多执行体: ${workers_raw} 个并行执行体"
     fi
     timeout "$run_timeout" "$PY" scripts/signin.py ${workers_args[@]+"${workers_args[@]}"} >> "$LOG_FILE" 2>&1
     return $?
@@ -249,7 +281,7 @@ _write_status_from_exit() {
 # 当日收尾标记已存在 → 当天该做的都已做完（含补签轮），本次触发无需再跑。
 # 仍然先看 SUCCESS：两者语义重叠但保留原判定，避免行为回归。
 if [ -f "$SECOND_DONE_MARKER" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 今天已完成签到收尾（含补签轮），跳过执行 ===" >> "$LOG_FILE"
+    _log "今天已完成签到收尾（含补签轮），跳过执行 ==="
     exit 0
 fi
 
@@ -257,15 +289,15 @@ fi
 if [ -f "$STATUS_FILE" ]; then
     STATUS=$(cat "$STATUS_FILE")
     if [ "$STATUS" = "SUCCESS" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 今天已签到成功，跳过执行 ===" >> "$LOG_FILE"
+        _log "今天已签到成功，跳过执行 ==="
         exit 0
     fi
 fi
 
 # 记录脚本开始执行
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run.sh 开始执行 ===" >> "$LOG_FILE"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] 工作目录: $(pwd)" >> "$LOG_FILE"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Python版本: $("$PY" --version 2>&1)" >> "$LOG_FILE"
+_log "=== run.sh 开始执行 ==="
+_log "工作目录: $(pwd)"
+_log "Python版本: $("$PY" --version 2>&1)"
 
 # ---- 第一轮（首签轮）----
 _run_signin_round
@@ -279,24 +311,22 @@ if _need_second_round; then
     _wait_until_hhmm "$SECOND_HHMM"
     # 等待期间其它进程进不来（锁在本进程手上）；若等待前状态已是 SUCCESS 则不必补跑
     if [ -f "$STATUS_FILE" ] && [ "$(cat "$STATUS_FILE")" = "SUCCESS" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 补签轮：状态已是 SUCCESS，跳过" >> "$LOG_FILE"
+        _log "补签轮：状态已是 SUCCESS，跳过"
     else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] === 开始补签轮（第二轮）===" >> "$LOG_FILE"
+        _log "=== 开始补签轮（第二轮）==="
         export YIBAN_SECOND_RUN=1   # signin 据此判定 is_second_run（告警口径/剔除已成功账号）
         _run_signin_round
         EXIT_CODE=$?
         _write_status_from_exit "$EXIT_CODE"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] === 补签轮结束，退出码: $EXIT_CODE ===" >> "$LOG_FILE"
+        _log "=== 补签轮结束，退出码: $EXIT_CODE ==="
     fi
 else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 补签轮：无需补跑（当日已收尾且无未了结账号）" >> "$LOG_FILE"
+    _log "补签轮：无需补跑（当日已收尾且无未了结账号）"
 fi
 
 # 当日收尾：标记"该做的都做完了"，避免 07:12 的兜底 cron 再跑第三轮
 : > "$SECOND_DONE_MARKER" 2>/dev/null || true
 
-# 记录脚本执行结果
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] === run.sh 执行完成，退出码: $EXIT_CODE ===" >> "$LOG_FILE"
-echo "" >> "$LOG_FILE"
-
+# 退出码与收场日志由 _on_exit（trap EXIT）统一收口：正常收尾、超时击杀、各处跳过
+# 都在同一处留痕，不再各自 echo 一行、也不再漏掉任一条路径
 exit $EXIT_CODE
