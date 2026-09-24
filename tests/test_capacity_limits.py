@@ -17,6 +17,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sys
@@ -338,6 +339,446 @@ class CapacityAccountsUnitTest(unittest.TestCase):
         # 非法值回退发行缺省档（3s），不抛异常
         with mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "abc"}):
             self.assertEqual(cap(4800, 10), (4800 - 3) // 13 + 1)
+
+
+def _load_webapp_B19(tag):
+    import db as _db
+    spec = importlib.util.spec_from_file_location(f"webapp_{tag}", os.path.join(BASE, "web", "app.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[f"webapp_{tag}"] = mod
+    with contextlib.suppress(Exception):
+        spec.loader.exec_module(mod)
+    return _db, mod
+
+
+class _Base_B19(unittest.TestCase):
+    """共享脚手架：临时 .env/DB + webapp 加载 + 主管理员登录。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-b19-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with io.open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            )
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        cls.db, cls.webapp = _load_webapp_B19(cls.__name__)
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.db._conn is not None:
+            with contextlib.suppress(Exception):
+                cls.db._conn.close()
+            cls.db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_LOG_FILE", "YIBAN_STATE_DIR"):
+            os.environ.pop(k, None)
+
+    def setUp(self):
+        if self.db._conn is not None:
+            with contextlib.suppress(Exception):
+                self.db._conn.close()
+            self.db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+
+    def _master(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        t = c.get("/api/me").get_json()["csrf_token"]
+        return c, {"X-CSRF-Token": t}
+
+    def _seed_user_with_account(self, email, phone, status="pending"):
+        """注册用户 + 建一条指定状态的账号（owner=email）。"""
+        self.db.create_user(email, "x", role="user")
+        acc = {"name": "N", "phone": phone, "password": "pw", "status": status, "owner": email}
+        self.db.add_account(acc)
+
+
+class CapacitySettingsTest(_Base_B19):
+    """/api/settings 容量预估 + 延迟修改的密码确认与超容量拒绝。"""
+
+    def test_get_returns_capacity_estimate(self):
+        # 先重置 env：同类更前的保存用例会写入延迟值，估算按当前设置实时计算
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            )
+        # 清掉可能被其他用例写进进程环境的 avg（本用例断言发行缺省档）
+        with mock.patch.dict(os.environ):
+            os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
+            c, h = self._master()
+            data = c.get("/api/settings", headers=h).get_json()
+        est = data["capacity_estimate"]
+        for k in ("accounts_cap", "current_accounts", "potential_load"):
+            self.assertIn(k, est)
+        # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX=10，掐头去尾缺省前后各 60s
+        # → 有效窗口 4800-120=4680；avg 缺省 3：(4680-3)//13+1 = 360
+        self.assertEqual(est["accounts_cap"], 360)
+        self.assertEqual(est["current_accounts"], 0)
+        self.assertEqual(est["potential_load"], len(self.db.load_users()))
+
+    def test_delay_requires_confirm_password(self):
+        """随机延迟属 A 档：缺口令/错口令都由设置路由统一的 403 拒绝（不落盘）。"""
+        c, h = self._master()
+        r = c.post("/api/settings", json={"start_delay_max": 60}, headers=h)
+        self.assertEqual(r.status_code, 403)
+        r = c.post("/api/settings", json={"start_delay_max": 60, "confirm_password": "wrong!"},
+                   headers=h)
+        self.assertEqual(r.status_code, 403)
+        self.assertNotIn("YIBAN_START_DELAY_MAX=60",
+                         io.open(self.env_file, encoding="utf-8").read())
+
+    def test_delay_save_with_confirm(self):
+        c, h = self._master()
+        r = c.post("/api/settings",
+                   json={"start_delay_max": 60, "gap_max": 10, "confirm_password": ADMIN_PASS},
+                   headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = io.open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_START_DELAY_MAX=60", env)
+        self.assertIn("YIBAN_ACCOUNT_GAP_MAX=10", env)
+
+    def test_delay_save_rejected_when_over_capacity(self):
+        # 重置 env：字母序下 allows_many_users（写 3600）先于本用例执行，防残留误判
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            )
+        # 恶性间隔 gap=3600 → 预估账号容量 = (4680-8)/3608+1 = 2（默认掐头去尾前后各 60s）；
+        # 灌 3 个活跃账号（含裸账号，均占配额）→ 必超
+        for i in range(3):
+            self.db.add_account({"name": "N", "phone": f"1390013900{i}", "password": "pw",
+                                 "status": "active", "owner": "admin"})
+        c, h = self._master()
+        r = c.post("/api/settings",
+                   json={"start_delay_max": 3600, "gap_max": 3600, "confirm_password": ADMIN_PASS},
+                   headers=h)
+        self.assertEqual(r.status_code, 400)
+        err = r.get_json()["error"]
+        self.assertIn("容量", err)
+        # 报错必须给出去路：缩短间隔 / 延长窗口 / 清理账号
+        for kw in ("账号间隔", "签到窗口", "清理"):
+            self.assertIn(kw, err)
+        env = io.open(self.env_file, encoding="utf-8").read()
+        self.assertNotIn("YIBAN_START_DELAY_MAX=3600", env, "拒绝保存时不得落盘")
+
+    def test_delay_save_allows_many_users_few_accounts(self):
+        # 单门口径（2026-09-08）：注册用户多但活跃账号少不构成负载 → 放行
+        # （旧口径 users 分支已删除，不再因注册人数拒绝保存）
+        for i in range(4):
+            self.db.create_user(f"u{i}@test.local", "x", role="user")
+        c, h = self._master()
+        r = c.post("/api/settings",
+                   json={"start_delay_max": 3600, "gap_max": 3600, "confirm_password": ADMIN_PASS},
+                   headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+
+class CapacityFormulaTest(_Base_B19):
+    """_capacity_estimate 公式（有效窗口扣除掐头去尾，avg 与 gap 共同决定容量）。
+
+    avg 经 YIBAN_AVG_ATTEMPT_SEC 固定为 8s，与缺省档解耦（缺省档的断言在
+    CapacitySettingsTest 里按发行缺省值另行核对）。
+    """
+
+    def test_formula_single_tier(self):
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
+            # 4800s 窗口、无间隔：(4800-8)/8+1 = 600（单档返回单值 int）
+            self.assertEqual(self.webapp._capacity_estimate(0), 600)
+            # gap=10：(4800-8)/18+1 = 267
+            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
+            # gap=3600：4792/3608+1 = 2
+            self.assertEqual(self.webapp._capacity_estimate(3600), 2)
+
+    def test_edge_shrinks_capacity(self):
+        # 掐头去尾计入有效窗口：前后各裁 60s → 有效 4680s，容量较 4800s 变小
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
+            with mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)):
+                full = self.webapp._capacity_estimate(10)
+            with mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
+                trimmed = self.webapp._capacity_estimate(10)
+            self.assertEqual(full, (4800 - 8) // 18 + 1)
+            self.assertEqual(trimmed, (4680 - 8) // 18 + 1)
+            self.assertLess(trimmed, full)
+
+    def test_degenerate_window_falls_back_like_engine(self):
+        # 退化窗口（起止同点/裁剪吃空）时，网页与引擎
+        # 一致地回退默认窗口（06:30~07:50、默认裁剪各 60s），故容量**不是** 0。
+        # 原实现网页内联算"原始窗口 − 裁剪"、引擎按回退窗口排计划 → 出现
+        # "引擎有完整计划、网页容量显示 0"的自相矛盾。
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((7, 50), (7, 50))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
+            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+
+    def test_trimmed_empty_window_matches_engine_plan(self):
+        """缓冲过大 → 只收缩缓冲（窗口 1 分钟保留）；网页容量与引擎计划同源。
+
+        窗口 07:00~07:01 前后各 300s（合计 >= 窗口宽度）⇒ 缓冲等比收缩为各 6s，
+        有效窗口 ≈48s；容量 = (47 - 8) / 8 + 1 = 5（**不是** 0，也不是回退默认窗口；
+        47 是 `capacity_accounts` 对窗口秒数取整的结果）。
+        """
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((7, 0), (7, 1))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(300, 300)), \
+             mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
+            self.assertEqual(self.webapp._capacity_estimate(0), 5)
+
+    def test_engine_and_web_share_one_formula(self):
+        """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""
+        import signin
+        with mock.patch.object(self.webapp, "_sign_window",
+                               return_value=((6, 30), (7, 50))), \
+             mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
+            for gap in (0, 10, 60):
+                self.assertEqual(
+                    self.webapp._capacity_estimate(gap),
+                    signin.capacity_accounts(4680, gap),
+                )
+
+
+def _load_webapp_CAP():
+    spec = importlib.util.spec_from_file_location("webapp_capbd", os.path.join(BASE, "web", "app.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["webapp_capbd"] = mod
+    with contextlib.suppress(Exception):
+        spec.loader.exec_module(mod)
+    return mod
+
+
+class _Base_CAP(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-capbd-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp  # cred-state.json 落在此
+        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
+        os.environ["YIBAN_MAIL_ENABLE"] = "0"
+        cls.db = __import__("db")
+        cls.webapp = _load_webapp_CAP()
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.db._conn is not None:
+            with contextlib.suppress(Exception):
+                cls.db._conn.close()
+            cls.db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    @property
+    def cred_state_file(self):
+        return os.path.join(self.tmp, "cred-state.json")
+
+    def setUp(self):
+        if self.db._conn is not None:
+            with contextlib.suppress(Exception):
+                self.db._conn.close()
+            self.db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        if os.path.exists(self.cred_state_file):
+            os.remove(self.cred_state_file)
+        with io.open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(
+                f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
+                "YIBAN_ADMIN_USER=admin@test.local\n"
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+            )
+        self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+
+    # ---- 脚手架 ----
+    def _add(self, phone, owner="admin", paused=False):
+        self.db.add_account({
+            "name": "N", "phone": phone, "password": "pw",
+            "phone_model": "", "phone_code": "", "owner": owner,
+            "status": "active", "reject_reason": "",
+        })
+        if paused:
+            acc = next(a for a in self.db.load_accounts_raw() if a["phone"] == phone)
+            self.db.set_user_paused(acc["id"], 1)
+
+    def _write_cred_state(self, phones, raw=None):
+        with io.open(self.cred_state_file, "w", encoding="utf-8") as f:
+            f.write(raw if raw is not None else json.dumps(
+                {p: {"fail_days": 3, "paused_since": "2026-09-10 06:00:00"} for p in phones}
+            ))
+
+    def _capacity(self):
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        rs = c.get("/api/settings")
+        self.assertEqual(rs.status_code, 200, rs.get_data(as_text=True))
+        return rs.get_json()["capacity"]
+
+
+class CapacityBreakdownTest(_Base_CAP):
+    def test_three_buckets_mutually_exclusive_and_sum(self):
+        """2 正常 + 1 自暂停 + 1 账密故障暂停 + 1 两者都命中 → 优先级归自暂停。"""
+        self._add("13900000001")                      # 正常
+        self._add("13900000002")                      # 正常
+        self._add("13900000003", paused=True)         # 用户自暂停
+        self._add("13900000004")                      # 账密故障暂停（cred-state）
+        self._add("13900000005", paused=True)         # 两者都命中 → 归自暂停
+        self._write_cred_state(["13900000004", "13900000005"])
+
+        cap = self._capacity()
+        bd = cap["accounts_breakdown"]
+        self.assertEqual(bd["normal"], 2, bd)
+        self.assertEqual(bd["user_paused"], 2, bd)
+        self.assertEqual(bd["cred_paused"], 1, bd)
+        self.assertEqual(
+            bd["normal"] + bd["user_paused"] + bd["cred_paused"], cap["accounts"],
+            "三桶必须互斥且求和等于账号总数",
+        )
+
+    def test_soft_deleted_excluded(self):
+        """软删账号不占名额、也不计入任何桶。"""
+        self._add("13900000001")
+        self._add("13900000002", paused=True)
+        self._write_cred_state(["13900000003"])
+        self._add("13900000003")
+        cap0 = self._capacity()
+        self.assertEqual(cap0["accounts"], 3)
+        acc = next(a for a in self.db.load_accounts_raw() if a["phone"] == "13900000003")
+        self.db.set_account_deleted(acc["id"], 1, "2026-09-10 06:00:00")
+        cap1 = self._capacity()
+        self.assertEqual(cap1["accounts"], 2)
+        self.assertEqual(cap1["accounts_breakdown"]["cred_paused"], 0)
+        self.assertEqual(
+            sum(cap1["accounts_breakdown"].values()), cap1["accounts"],
+            "软删后三桶求和仍须等于总数",
+        )
+
+    def test_broken_cred_state_does_not_break_settings(self):
+        """cred-state.json 损坏/缺失时接口仍 200，cred_paused=0（不得 500）。"""
+        self._add("13900000001")
+        with io.open(self.cred_state_file, "w", encoding="utf-8") as f:
+            f.write("{ 这不是合法 JSON")
+        cap = self._capacity()
+        self.assertEqual(cap["accounts_breakdown"]["cred_paused"], 0)
+        self.assertIn("normal", cap["accounts_breakdown"])
+        # 文件不存在同样安全（"无暂停 = 文件不存在"语义）
+        os.remove(self.cred_state_file)
+        cap2 = self._capacity()
+        self.assertEqual(cap2["accounts_breakdown"]["cred_paused"], 0)
+
+    def test_quota_judgement_unchanged(self):
+        """配额判定不受显示层影响：暂停账号仍占额（拆解只是展示）。"""
+        self._add("13900000001")
+        self._add("13900000002", paused=True)
+        self._write_cred_state(["13900000002"])
+        self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "2")
+        try:
+            # 2 个非删除账号（含 1 个自暂停）已到上限 → 再新增 1 个应被拒
+            self.assertTrue(
+                self.webapp._accounts_at_capacity(1),
+                "暂停账号必须仍占名额（配额判定口径未变）",
+            )
+            cap = self._capacity()
+            self.assertEqual(cap["accounts"], 2)
+            self.assertEqual(cap["accounts_max"], 2)
+        finally:
+            self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
+
+    def test_settings_stats_from_raw_snapshot_no_decrypt(self):
+        """2026-09-14 性能回归：设置页统计改用不解密读取并去重。
+
+        钉死两点：
+        (a) 判定路径不触达解密（打桩为抛错，命中即 500）；A2 后 web 侧的解密入口是
+            `db.decrypt_account_rows`，原始读入口是 `db.accounts_snapshot`；
+        (b) accounts 原始读 / users 读各恰一次（去重），且三分类、owners、
+            潜在负载、活跃计数都能用不解密原始行独立复算，口径不变。
+        """
+        self._add("13900000011")                         # 正常
+        self._add("13900000012", paused=True)            # 用户自暂停
+        self._add("13900000013")                         # 账密故障暂停
+        self._add("13900000014", owner="u1@test.local")  # 有主 + 账密故障暂停
+        self._write_cred_state(["13900000013", "13900000014"])
+        self.db.create_user(email="u1@test.local", password_hash="x")
+        self.db.create_user(email="u2@test.local", password_hash="x")  # 空用户 → 潜在负载
+
+        app = self.webapp.create_app()
+        c = app.test_client()
+        r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+        with mock.patch.object(
+            self.db, "decrypt_account_rows",
+            side_effect=AssertionError("设置页不应触发解密"),
+        ) as m_dec, mock.patch.object(
+            self.db, "accounts_snapshot", wraps=self.db.accounts_snapshot
+        ) as m_raw, mock.patch.object(
+            self.db, "load_users", wraps=self.db.load_users
+        ) as m_users:
+            rs = c.get("/api/settings")
+        self.assertEqual(rs.status_code, 200, rs.get_data(as_text=True))
+        m_dec.assert_not_called()
+        self.assertEqual(m_raw.call_count, 1, "账号原始读须去重为单次")
+        self.assertEqual(m_users.call_count, 1, "用户读取须去重为单次")
+
+        data = rs.get_json()
+        cap, bd = data["capacity"], data["capacity"]["accounts_breakdown"]
+        live = [a for a in self.db.load_accounts_raw() if not a["deleted"]]
+        cred = self.webapp._cred_paused_phones()
+        exp_user = sum(1 for a in live if a.get("user_paused"))
+        exp_cred = sum(
+            1 for a in live
+            if not a.get("user_paused") and str(a.get("phone", "")) in cred
+        )
+        self.assertEqual(
+            bd,
+            {"normal": len(live) - exp_user - exp_cred,
+             "user_paused": exp_user, "cred_paused": exp_cred},
+            "三分类口径：自暂停优先于账密故障",
+        )
+        self.assertEqual(cap["accounts"], len(live))
+        self.assertEqual(sum(bd.values()), cap["accounts"], "三桶求和 = 计容量的账号数")
+        owners = {a.get("owner") for a in live if a.get("owner")}
+        self.assertEqual(
+            data["capacity_estimate"]["potential_load"],
+            sum(1 for u in self.db.load_users() if u["email"] not in owners),
+        )
+        # 计数/配额入口同样不得解密
+        with mock.patch.object(
+            self.db, "decrypt_account_rows",
+            side_effect=AssertionError("计数不应触发解密"),
+        ):
+            self.assertEqual(self.webapp._capacity_account_count(), len(live))
+            self.assertFalse(self.webapp._accounts_at_capacity(0))
 
 
 if __name__ == "__main__":

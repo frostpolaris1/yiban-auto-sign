@@ -25,8 +25,8 @@
 输入：`argv`（缺省取 `sys.argv[1:]`）与环境变量/.env（配置只从环境读，命令行不接受
 敏感值）。输出：进程退出码（0/1/2/3/10 口径见 `docs/dev/cli.md` §3）与日志；`--json`
 由 `cli.py` 包裹。
-调用谁：`accounts` / `probe` / `workers` / `round` / `state_io` / `alerts` / `cli_support`
-（跨模块一律走模块属性访问）。
+调用谁：`accounts` / `probe` / `workers` / `round` / `executor_v3` / `state_io` / `alerts`
+/ `cli_support`（跨模块一律走模块属性访问）。
 谁调用：`yiban/cli.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
 `docker/scheduler.py`。
 前端调用点：手动签到 `/api/signin` 经 `web/services/manual_sign.py` 以子进程拉起
@@ -49,7 +49,16 @@ from yiban.engine import accounts as accounts_mod
 
 # 三个模块以带后缀的别名导入：本模块内部有同名局部量（`accounts` 本轮账号列表、
 # `schedule` 本轮时间表、以及内置函数名 `round`），同名会互相遮蔽。
-from yiban.engine import alerts, attempts, cli_support, config_check, probe, state_io, workers
+from yiban.engine import (
+    alerts,
+    attempts,
+    cli_support,
+    config_check,
+    executor_v3,
+    probe,
+    state_io,
+    workers,
+)
 from yiban.engine import round as round_mod
 from yiban.engine import schedule as schedule_mod
 from yiban.infra import env_io
@@ -359,7 +368,12 @@ def main(argv=None):
     if schedule:
         # 容量预检（调度 v2 第三层）：可容纳账号数 < 待签到账号数 → 告警不静默
         # 用户自暂停账号不参与调度，也不计入容量
-        _cfg = schedule_mod._schedule_config()
+        _v3_on = executor_v3.scheduler_v3_enabled()
+        # 配置快照按开关分读：v3 要计划层的超集快照（多带桶速率与执行体清单，K 与容量
+        # 都从它取，免得两处口径分叉）；v2 只读调度配置——关时不因此新增环境键依赖，
+        # 旧路径的数值与行为逐字不变。
+        _cfg = (schedule_mod.planner_config() if _v3_on
+                else schedule_mod._schedule_config())
         _win = window.bounds(_cfg)
         # 预检按**剩余**有效窗口算：本进程此刻才起跑，已流逝的窗口签不了。
         # 按完整窗口算会在迟启动时按满容量放行且不告警，超出的账号只能落
@@ -370,9 +384,18 @@ def main(argv=None):
             _win.hi_min,
         ).strftime("%H:%M")
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
-        # 与 web 容量预估同一函数：账号间隔是「上一次完成 → 下一次开始」的下限，
-        # 故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约 2.3 倍）
-        _cap = schedule_mod.capacity_accounts(max(0.0, _rest_sec), gap_max, _cfg["avg_attempt_sec"])
+        # 与 web 容量预估同一函数（`capacity_of` 按开关分派）：账号间隔是「上一次完成 →
+        # 下一次开始」的下限，故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约
+        # 2.3 倍）。
+        _cap_args = {"gap": gap_max, "avg": _cfg["avg_attempt_sec"]}
+        if _v3_on:
+            # K 只在 v3 侧算并传入（`executor_count` 是 K 的唯一口径，入参要桶速率与
+            # 出口数）：v2 侧连算都不算、也不读这两个键，逐字走旧公式。
+            _cap_args["k"] = schedule_mod.executor_count(
+                active_n, max(0.0, _rest_sec), bucket_rate=_cfg["bucket_rate"],
+                egress_count=len(_cfg["executors"]) or 1)
+            _cap_args["bucket_rate"] = _cfg["bucket_rate"]
+        _cap = schedule_mod.capacity_of(max(0.0, _rest_sec), enabled=_v3_on, **_cap_args)
         if _rest_sec <= 0:
             logger.warning(
                 "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
@@ -412,8 +435,8 @@ def main(argv=None):
                 )
         accounts = sorted(accounts, key=lambda a: schedule.get(a.phone, datetime.max))
         # 调度快照标记：web 端保存自选时间片时以此时刻为"今日/明日生效"分界——
-        # 快照后改选必为明日生效，提示与实际一致（固定"窗口起点+1 分钟"会与
-        # cron 实际读取时刻有几秒偏差窗口）
+        # 快照后改选必为明日生效，提示与实际一致（web 侧兜底按"有效窗口起点"折算，
+        # 与 cron 实际读取时刻仍有偏差窗口）
         try:
             _snap_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
             os.makedirs(_snap_dir, exist_ok=True)
@@ -431,12 +454,23 @@ def main(argv=None):
     # 任务结束后单事务批量落库（见 results 赋值后的 add_sign_events_batch）。
     event_rows = []
     delegated = set()   # 不在本执行体范围内的账号（多执行体分工，见 run_queue_retry 说明）
-    results = round_mod.run_queue_retry(
-        accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
-        event_sink=event_rows.append, delegated=delegated,
-        # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
-        reclaim=bool(args.only),
-    )
+    # 调度 v3 分流（`YIBAN_SCHEDULER_V3`，缺省关；缺省时下面两行逐字不变 = 开关即回滚）。
+    # 分流点**选在执行调用这一行**（而不是更早的 `build_schedule` 处）：v3 只换执行体
+    # 实现，v2 的容量预检 / 计划写状态文件 / `sched-snapshot` / 账密状态收尾 / 事件批量
+    # 落库 / 全量收尾标记 / 退出码汇总全部原样复用——退出码契约 0/1/2/3/10 因此零改动。
+    # 代价是 v2 的时间表白算一遍（可接受：它只是本地计算，不发请求、不落库）。
+    # `--only` 手动签到不走 v3：用户主动触发应当放行，且它用 reclaim 语义重签已了结账号。
+    if not args.only and executor_v3.scheduler_v3_enabled():
+        results = executor_v3.run_executor_v3(
+            accounts, notify_url=notify_url, cred_state=cred_state,
+            event_sink=event_rows.append, delegated=delegated)
+    else:
+        results = round_mod.run_queue_retry(
+            accounts, notify_url, start_delay_max, gap_max, schedule=schedule, cred_state=cred_state,
+            event_sink=event_rows.append, delegated=delegated,
+            # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
+            reclaim=bool(args.only),
+        )
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；
     # 凭据失败→按日累计；其他失败→不动），未处理账号保持原状。
     # 不能用本次（仅含目标账号的）状态整体覆盖保存：空 dict 时会直接删除状态文件，
