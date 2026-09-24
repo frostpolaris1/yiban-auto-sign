@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """设置页滑块量程与后端夹取口径的 JS 行为对拍（缓冲单边上限）。
 
+标签：F · 前端与界面守卫
+覆盖：设置页缓冲滑块上限 `edgeMaxMin(winSec)` 与服务端夹取口径的逐值对拍，以及上限落到 `data-max`、回填消费服务端异常提示的源码形态
+对应实现：`web/static/js/components/settings-schedule.js` 的 `edgeMaxMin`；`yiban.window.edge_cap_sec`
+关键断言：前端上限（分钟）逐值等于 `edge_cap_sec / 60`——前端宽服务端窄会让用户「保存后数字变小」，反之合法值存不进；窗口未知（0）时退回既有量程 5 分钟而不是把滑块锁成 0；上限确实 `setAttribute("data-max"`，回填时消费 `window_fallback_text`
+依赖：⚠ **需要 node 真跑**——`edgeMaxMin` 抽出后交给 node 执行，`shutil.which("node")` 取不到时整类 `skipUnless`；另需能导入 `yiban.window`（纯本地计算，不联网）
+
 **为什么需要**：前端滑块的可选上限与服务端保存时的夹取必须是同一条式子。前端宽、
 服务端窄 → 用户点了保存却看到数字被改小（"保存坏了"）；前端窄、服务端宽 → 用户
 存不进合法值。两边各写一遍必然漂移，故这里把 JS 里那条式子抽出来在 node 里真跑，
@@ -22,7 +28,7 @@ from yiban import window
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEDULE_JS = os.path.join(BASE, "web", "static", "js", "components",
                            "settings-schedule.js")
-NODE = shutil.which("node")
+NODE = shutil.which("node")  # 取不到 ⇒ 本文件的对拍用例整类 skip，不是「没测到」
 
 #: 与 JS 对拍用的窗口宽度（秒）；0 是"窗口未知"的特例，另行断言
 WINDOW_SECS = (120, 300, 600, 900, 1500, 1800, 3000)
