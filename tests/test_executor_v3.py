@@ -1669,6 +1669,11 @@ class DeadPeerTakeoverChainTest(_Base):
     `steal_shards` 的单测只证明行被改归本执行体。只改归属、不把死主分片并入领取集，
     本执行体不会去扫那些分片，行就成了"改了却领不到"——单测看不出的那一跳。故本用例跑
     **真实补货**（不注入假条目），断言死主的行在本轮被领取并执行。
+
+    `RECOVER_SEC` 置 0 保留：起跑那次接管（`DeadPeerTakeoverOnStartTest`）会在本用例的
+    死主上先命中，但补货循环里的那次接管仍是**长轮次中途死主**的唯一出路，置 0 让它在
+    每次补货迭代都执行到，覆盖"补货循环真的会调接管"这一跳。起跑触发另由
+    `DeadPeerTakeoverOnStartTest` 单独钉住（不 patch `RECOVER_SEC`）。
     """
 
     def test_dead_peer_rows_are_claimed_and_executed_this_round(self):
@@ -1704,6 +1709,110 @@ class DeadPeerTakeoverChainTest(_Base):
             self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
             self.assertEqual(row["state"], "done")
             self.assertIn(phone, results)
+
+
+class DeadPeerTakeoverOnStartTest(_Base):
+    """起跑就接管：短轮次（干完自己的活即收干退出）也必须领到死主分片的 `pending` 行。
+
+    补货循环里的接管要活满 `RECOVER_SEC`（60s）才触发，而补货首轮的计时差恒为 0——
+    本执行体干完自己的活就退出，等不到那一刻；补签轮沿用同一套分片划分，死主的行仍
+    无人领 ⇒ **静默漏签**。故起跑阶段（回收之后、首轮领取之前）就要判死接管。
+    本用例**不 patch `RECOVER_SEC`**：能通过只可能是起跑那次接管生效（补货循环的
+    接管在本轮的时长内根本不会触发）。
+    """
+
+    def test_dead_peer_rows_claimed_this_short_round_without_recover_patch(self):
+        peer = "worker-2@testhost"
+        v = 8
+        self._seed_v(v)
+        cfg = _cfg(executors=[OWNER, peer])
+        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
+        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
+        phones = [_phone(1), _phone(2)]
+        for i, phone in enumerate(phones):
+            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
+                           state="pending", owner=peer, epoch=1, run_at=_ts(seconds=-30))
+        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
+        state_io.mark_worker_started(
+            executor_v3._worker_slot(peer),
+            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
+        ran = []
+
+        def _attempt(acc):
+            ran.append(acc.phone)
+            return (True, "ok", False, "success")
+
+        # 真实补货（不注入假条目）、真实 RECOVER_SEC：短轮次不等 60s 也要接管
+        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
+            results = self._run_v3(self._accounts(*phones), cfg=cfg)
+        self.assertEqual(sorted(ran), sorted(phones),
+                         "死主的行必须在本轮被领取并执行（起跑接管那一跳不能少）")
+        for phone in phones:
+            row = self._row(phone)
+            self.assertEqual(row["owner"], OWNER, "接管后 owner 是本执行体")
+            self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
+            self.assertEqual(row["state"], "done")
+            self.assertIn(phone, results)
+
+
+class DeadPeerTakeoverSkipLiveTest(_Base):
+    """起跑接管不得误伤：只有 `stale`（有开始、无收尾且心跳过期）才算死。
+
+    活着的执行体（`running` / `finished`）与"今日还没跑"（`idle`）都不是死主，其分片
+    集内的 `pending` 行**不得**改归本执行体——否则会把别人的在飞/待办抢过来。
+    """
+
+    def _run_with_peer_state(self, state, peer):
+        """按给定四态准备 peer 心跳后跑一轮，返回 peer 的行与是否执行过。"""
+        v = 8
+        self._seed_v(v)
+        cfg = _cfg(executors=[OWNER, peer])
+        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
+        self.assertTrue(peer_shards, "夹具前提：peer 必须有分片，否则本用例什么都不测")
+        phone = _phone(1)
+        self._add_task(phone, vshard=peer_shards[0], state="pending", owner=peer,
+                       epoch=1, run_at=_ts(seconds=-30))
+        slot = executor_v3._worker_slot(peer)
+        if state == state_io.WORKER_STATE_RUNNING:
+            state_io.mark_worker_started(slot, now=self.fc.now())
+        elif state == state_io.WORKER_STATE_FINISHED:
+            state_io.mark_worker_started(slot, now=self.fc.now())
+            state_io.mark_worker_finished(slot, now=self.fc.now())
+        # idle：什么都不写（本业务日无该槽位记录）
+        ran = []
+
+        def _attempt(acc):
+            ran.append(acc.phone)
+            return (True, "ok", False, "success")
+
+        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
+            self._run_v3(self._accounts(phone), cfg=cfg)
+        return phone, ran
+
+    def test_running_peer_is_not_taken_over(self):
+        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_RUNNING,
+                                               "worker-2@testhost")
+        row = self._row(phone)
+        self.assertEqual(ran, [], "活着的执行体的待办不得被领取")
+        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
+        self.assertEqual(row["epoch"], 1, "不得自增 epoch")
+        self.assertEqual(row["state"], "pending", "行保持原样")
+
+    def test_finished_peer_is_not_taken_over(self):
+        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_FINISHED,
+                                               "worker-2@testhost")
+        row = self._row(phone)
+        self.assertEqual(ran, [], "正常跑完的执行体的待办不得被领取")
+        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
+        self.assertEqual(row["state"], "pending", "行保持原样")
+
+    def test_idle_peer_is_not_taken_over(self):
+        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_IDLE,
+                                               "worker-2@testhost")
+        row = self._row(phone)
+        self.assertEqual(ran, [], "今日无心跳记录不算死，不得被领取")
+        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
+        self.assertEqual(row["state"], "pending", "行保持原样")
 
 
 if __name__ == "__main__":

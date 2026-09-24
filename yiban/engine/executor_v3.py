@@ -727,6 +727,13 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # 才会被 `claim_batch` 重新领取（不回收就是"崩溃即卡死"）。回收只碰本业务日
     # （`day=day`）：跨日回收会把历史行回退成永不被领的空转行，还会重置跨午夜长轮次的
     # 在飞行。心跳写失败只留 debug，回收失败由 queue_store 内部吞掉并告警，两者都不阻断签到。
+    #
+    # 起跑也要判死接管，且顺序是「回收 → 接管 → 预扫/首轮领取」：回收把死主留下的过期
+    # `claimed` 行变回 `pending`，接管才有东西可并。为什么不能只靠补货循环里那次接管——
+    # 它按 `RECOVER_SEC`（60s）节流，而补货首轮的计时差恒为 0；短轮次里本执行体干完自己
+    # 的活就收干退出（90 账号的小站是常态），等不到那一刻。死主分片的 `pending` 行于是
+    # 整轮无人领取，补签轮沿用同一套分片划分仍无人领 ⇒ **静默漏签**。判死口径与补货循环
+    # 共用 `_widen_with_dead_peers`（不另起第二份），只有 `stale` 才算死，活着的执行体不受影响。
     state_io.mark_worker_started(slot, now=_now())
     queue_store.reap_expired(now=_stamp_ms(_now()), day=day)
     try:
@@ -737,6 +744,9 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
             executor_id=executor_id, results={}, cred_state=cred_state,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
             rng=rng or random.Random(), slot=slot)
+        # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
+        # 分片并入后这些账号已归本执行体，不该再被登记成"别人负责的活"。
+        ctx.shards = _widen_with_dead_peers(ctx, ctx.shards)
         _prescan(ctx, accounts)
         ctx.limiter.restore_from_store(ctx.egress, now=_mono())
         if ctx.global_limiter.invalid:
