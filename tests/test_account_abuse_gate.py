@@ -399,6 +399,26 @@ class NotifyConfigApiTest(_B13WebBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["urgent_only"])
 
+    def test_put_urgent_only_off_lands_zero_in_env(self):
+        """关闭态必须显式落 `YIBAN_NOTIFY_URGENT_ONLY=0`，不能写空值/删键。
+
+        该键的默认值是「开」：写空值等于删键、随即回落默认，设置页的「关闭」会变成
+        「打开」——与开关本身的意思相反。只断言响应 JSON 抓不住这个洞：那个值来自
+        请求体，删键回落默认时响应照样是 false，必须看盘上落了什么。
+        """
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "admin", ADMIN_PASS)
+        c.put("/api/notify-config",
+              json={"urgent_only": True, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        r = c.put("/api/notify-config",
+                  json={"urgent_only": False, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_NOTIFY_URGENT_ONLY=0", env,
+                      "关闭态必须在 .env 里显式落 0（写空/删键会回落默认「开」）")
+        self.assertFalse(self.webapp.notify.get_config()["urgent_only"],
+                         "落盘后的生效值必须是关")
+
     def test_put_urgent_only_requires_master(self):
         self._make_user("u@test.local")
         c = self.webapp.create_app().test_client()
