@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
-"""`run.sh` 的日志与退出码契约（B6）：**任何**退出路径都留一行带退出码的日志。
+"""`run.sh` 的日志与退出码契约：**任何**退出路径都留一行带退出码的日志。
 
-原先只有正常收尾那一行，flock 跳过、当日已签到成功跳过、当日已收尾跳过、timeout 击杀
-全都不留痕——日志里看不出"这一轮到底跑过没有、为什么没签"。本文件钉两件事：
+标签：J · 运维：部署/备份/发布
+覆盖：flock 弹开、当日已签到成功、当日已收尾、timeout 击杀、正常收尾五条路径的留痕；
+    行首触发来源前缀（排程/手工，按 stdin 有无控制终端自动判，`YIBAN_TRIGGER` 可覆盖）；
+    退出码 0/1/2/3/10 逐字透传；状态文件口径（0 写 SUCCESS、2 写 SKIPPED、其余不写）。
+对应实现：`run.sh`（shell 侧，无 Python 对应物）。
+关键断言：① 每条退出路径都有 `=== run.sh 退出，退出码: N ===`——原先只有正常收尾
+    那一行，日志里看不出"这轮到底跑过没有、为什么没签"；② 加日志不得顺手改退出码。
+依赖：需要 bash（class 级 skipIf，本机无 bash 时整类跳过）；子进程里真跑 run.sh，
+    `flock`/`timeout` 用 PATH 上的假件，不真签到、不碰网络；pty 那条仅 POSIX，
+    Windows 上逐条 skipTest。
 
-1. **留痕**：四条跳过/收场路径都有 `=== run.sh 退出，退出码: N ===`，且行首带触发来源
-   前缀（排程 / 手工，按 **stdin** 有无控制终端自动判，`YIBAN_TRIGGER` 可覆盖）；
-2. **退出码逐字不变**：0/1/2/3/10 照原样透传——加日志不得顺手改了契约。
-
-子进程里跑（无非是"读日志 + 看退出码"这种进程级契约）；`flock` / `timeout` 用假件，
-不真的签到、不碰网络。
+`_run` 把 stdin 钉成 DEVNULL：触发来源看的是 stdin 有没有控制终端，宿主在终端里跑
+pytest 时不钉死的话"排程"这条断言会随宿主而变。
 """
 import io
 import os
@@ -51,7 +55,7 @@ class RunShExitTrailTest(unittest.TestCase):
         os.makedirs(self.fakebin)
         self.calls = os.path.join(self.tmp, "timeout-calls.log")
         self._install_fakes(flock_body=FAKE_FLOCK_OK)
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}  #剥掉宿主 YIBAN_*：否则本机 .env 直接决定 run.sh 走哪条分支
         self.env.update({
             "YIBAN_APP_DIR": self.app_dir,
             "FAKE_TIMEOUT_LOG": self.calls,
@@ -69,7 +73,7 @@ class RunShExitTrailTest(unittest.TestCase):
             path = os.path.join(self.fakebin, name)
             with io.open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(body)
-            os.chmod(path, 0o755)
+            os.chmod(path, 0o755)  #假件必须可执行且抢在 PATH 前面，否则 run.sh 调到真 flock/timeout
 
     def _run(self, state, extra_env=None):
         """跑一次 run.sh；返回 (退出码, 日志文本)。状态目录由调用方准备。
@@ -123,7 +127,7 @@ class ExitTrailTest(RunShExitTrailTest):
 
     def test_settled_marker_path_logs_exit_zero(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
-        open(os.path.join(state, f"yiban-settled-{_today()}.marker"), "w").close()
+        open(os.path.join(state, f"yiban-settled-{_today()}.marker"), "w").close()  #收尾标记只看存在性，内容不参与判定
         code, text = self._run(state)
         self.assertEqual(code, 0)
         self.assertIn("今天已完成签到收尾", text)

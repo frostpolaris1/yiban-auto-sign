@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
 """`scripts/backup_sentinel.py` 与 `scripts/yiban-backup-sentinel.sh` 的契约用例。
 
-钉三件事：
-1. **缺包必须发声**：当日归档/清单缺失、或运行拷贝与仓库版漂移 → 一封管理员告警；
-   正常路径（都在、且一致）零输出零外发——哨兵自己不许变成噪音源。
-2. **节流真的接上了**：第二次运行在窗口内不再外发（跨进程磁盘表，cron 每次新进程）。
-3. **发不出去要能看见**：收件人为空/组件失败 → 返回 1（cron 自己报错是最后一道声音）。
+标签：J · 运维：部署/备份/发布
+覆盖：当日归档与 .sha256 清单齐不齐（gpg/age/明文三种形态都认）、昨日包不算今日备份、
+    运行拷贝与仓库版的漂移比对、跨进程节流真的接上、发不出去要能看见、
+    wrapper 切工作目录与导出 .env、wrapper 头部文档与"只转发"契约。
+对应实现：`scripts/backup_sentinel.py`（判定与外发）、`scripts/yiban-backup-sentinel.sh`
+    （cron 入口）；节流复用 `yiban.notify.ledger`。
+关键断言：① 缺包/缺清单/漂移 → 恰好一封管理员告警且正文带排查路径；② 正常路径
+    （都在且一致）**零输出零外发**——哨兵自己不许变成噪音源；③ 未安装
+    `YIBAN_BACKUP_INSTALLED` → 不报漂移，由缺包那一项兜底；④ 收件人为空/发送失败/
+    发送抛异常 → 返回 1（cron 报错是最后一道声音）；⑤ 第二次运行落在窗口内不再外发。
+依赖：Python 判定部分进程内跑（临时目录 + 打桩 `_send_admin_alert`），不连 SMTP、
+    不碰本机真实备份目录；wrapper 相关两条要 bash 与 python3（Git Bash/WSL），
+    缺任一按 SkipTest 跳过整类；不需 docker。
 
-全程临时目录 + 打桩发送出口，不碰本机真实备份目录、不连 SMTP。
+⚠ 本文件不等于"备份会自动成功"：它只验**缺备份能不能被发现**。backup.sh 自身的
+归档与加密路径由 tests/test_backup_require_encrypt.py 与
+tests/test_deploy_paths_and_restore_verdict.py 分别钉。
 """
 import importlib.util
 import io
@@ -45,7 +55,7 @@ class _Base(unittest.TestCase):
         # 用例放行过的标题会把后面所有用例挡在窗口内（磁盘表按 YIBAN_STATE_DIR 隔离，
         # 内存表不会）。
         notify_ledger._throttle_ts.clear()
-        self.addCleanup(notify_ledger._throttle_ts.clear)
+        self.addCleanup(notify_ledger._throttle_ts.clear)  #内存表不清则后一个用例被前一个的窗口挡住：磁盘表按临时 STATE 隔离，内存表不会
         self.backup_dir = os.path.join(self.tmp, "backups")
         self.app_dir = os.path.join(self.tmp, "app")
         self.state_dir = os.path.join(self.tmp, "state")
@@ -79,7 +89,7 @@ class _Base(unittest.TestCase):
             f.write(b"ciphertext")
         if sidecar:
             with io.open(path + ".sha256", "w", encoding="utf-8") as f:
-                f.write("deadbeef  " + os.path.basename(path) + "\n")
+                f.write("deadbeef  " + os.path.basename(path) + "\n")  #清单内容不参与判定，齐不齐才是判据——这里连哈希都不用真
         return path
 
     def _install_copy(self, content="#!/bin/bash\necho 仓库版\n"):
@@ -93,7 +103,7 @@ class _Base(unittest.TestCase):
         with mock.patch.object(self.mod, "_send_admin_alert", side_effect=sender):
             if due is None:
                 return self.mod.main([])
-            with mock.patch.object(self.mod, "_alert_due", side_effect=due):
+            with mock.patch.object(self.mod, "_alert_due", side_effect=due):  #只打桩"该不该发"，发送出口仍是记录器：节流路径不许被桩绕过
                 return self.mod.main([])
 
 
