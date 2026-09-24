@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """按天日志（sign-YYYY-MM-DD.log）读取与按日期查看功能测试。
 
+标签：F · 前端与界面守卫
+覆盖：按天日志文件的路径推导与行过滤（跨天残留剔除）、`/api/logs` 与 `/api/my-logs` 的日期参数与权限、`recent_*` 字段指向、检索/全量与导出，以及日志页日期校验的 JS 行为
+对应实现：`web/app.py` 的 `log_path_for` / `_log_lines_for` / `parse_sign_log` 与 `/api/logs*`；前端 `web/static/js/pages/data_logs.js` 里的 `isValidDate`
+关键断言：文件日期≠行首日期的残留行不得混入；非法日期 400、历史日期文件缺失返回空而非报错；`yiban.*` 全级别入列而其它组件仅 WARNING+；`recent_log_date` 在当前日期就是最新天时为空串
+依赖：⚠ **需要 node**——`LogsDateValidationTest` 把 `isValidDate` 从前端源码按花括号配对抽出后在 node 里真跑，`shutil.which("node")` 取不到时整类 `skipUnless`；宿主 ICU 不认 `Etc/GMT±N` 时区名时该用例还会 `skipTest`。其余用例纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node
+
 背景（2026-08-16 需求）：日志改为按天分文件后，
 - 管理员 /api/logs?date=YYYY-MM-DD 可查任意日期日志（缺省=今天，行为不变）
 - 用户 /api/my-logs?date= 读对应日期文件（日历点历史日期可见自己的日志）
@@ -361,7 +367,7 @@ LOGS_JS = os.path.join(BASE, "web", "static", "js", "pages", "data_logs.js")
 NODE = shutil.which("node")
 
 
-TIMEZONES = [("Etc/GMT-8", -480), ("Etc/GMT+5", 300)]
+TIMEZONES = [("Etc/GMT-8", -480), ("Etc/GMT+5", 300)]  # POSIX 反号记法：`Etc/GMT-8` 实为 UTC+8
 
 
 VALID_DATES = ("2026-09-11", "2026-02-28", "2024-02-29", "2026-01-01")
@@ -392,6 +398,7 @@ def _extract_function(src, name):
 def _run_in_tz(fn_src, tz):
     """在指定时区里执行抽出函数，返回 (实际偏移, 各日期结果)。"""
     script = (
+        # TZ 必须先于脚本里任何 new Date() 设好，否则进程已按宿主时区初始化
         "process.env.TZ = %s;\n" % json.dumps(tz)
         + fn_src
         + "\nconst dates = %s;\n" % json.dumps(list(VALID_DATES + INVALID_DATES))

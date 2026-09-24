@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """对抗性审查修复验证（2026-09-01）。
 
-覆盖：
+标签：E · Web：认证/权限/API
+覆盖：批量/单条重置密码的二次鉴权、`DailyFlockFileHandler` 的目录故障不向调用方传播、`ensure_secret_key` 对空 `.env` 的判定、版本号单源；公告「草稿 / 发布 / 下线」的权限与原子性；备案与隐私页的反射脚本转义、notify/mail 配置的告警口径；设置档位的两向对拍与急停例外
+对应实现：`web/app.py` 的公告路由（PUT 草稿 / publish / 空草稿下线）、`/api/settings` 的档位表（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`）、`DailyFlockFileHandler`、`yiban.__version__`
+关键断言：档位常量与规格表必须互相等齐且**两个方向都对拍**（漏档等于对全体管理员免口令开放）；A 档连「刚复核过」的短时豁免都不吃；急停 0→1 任意管理员可做（当次口令 + 高危额度），1→0 仅主管理员，且先鉴权后占额度（错口令不得刷光合法管理员的预算）；发布=一次原子写（正式=草稿、草稿清空），无草稿发布是 400 而非静默成功；设置变更只留审计、不再外发告警
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；告警与邮件出口打桩。各基类均把 `YIBAN_PW_GATE` 钉成 `full`（默认档 `risk` 下公告发布与 A/B 档写入不再要求当次口令，本文件以「缺口令 / 错口令」为理由的那批 403 断言就都不成立；权限类 403 与业务类 400 与档位无关，哪个档都成立）
+
+逐项明细：
 - P1-2 批量/单条重置密码二次鉴权：普通管理员无 confirm_password 被门禁拦；
   带正确 confirm_password 成功；普通用户自改密码（/api/me/password）不受门禁影响；
 - P2-1 DailyFlockFileHandler：跨天滚动 + 目录故障（_open 抛 OSError）不传播到
@@ -103,6 +109,7 @@ class Batch16FixesTest(unittest.TestCase):
         self._set_pause_env(None)
 
     def _set_pause_env(self, value):
+        # utf-8-sig：按 `startswith("键名=")` 过滤行，带 BOM 时首行键名前混着不可见字符就匹配不上
         with open(self.env_file, encoding="utf-8-sig") as f:
             lines = f.read().splitlines()
         lines = [ln for ln in lines
