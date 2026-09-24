@@ -23,7 +23,7 @@
 - `accounts`：accounts 表的 CRUD、行加解密与运行期有效性判定。
 - `session_cache`：session_cache 表族的读写、有效期判定与凭据加密。
 - `time_prefs`：time_prefs 表的读写、拥挤度统计与保存冷却查询。
-- `clock_meta`：时钟守卫的告警留痕与读取、app_meta 通用单键读写。
+- `clock_meta`：app_meta 通用单键读写（供日报去重与审计锚点留痕）。
 - `tracking`：追踪盐（YIBAN_TRACK_SALT）的取用/落盘与 IP、手机号加盐哈希。
 
 本模块自身仍持有：启动编排 `init_db`（与冻结的历史迁移函数共存）、密钥来源解析
@@ -313,8 +313,8 @@ _conn_lock = _connection._conn_lock
 #   事件域按表归属并入的暂停冷却两名 → events、用户自选时间片域七名 → time_prefs：
 #   调用方只经门面属性访问，读写转发让 `db.<名字> = 替身` / `del db.<名字>` 落到真定义点
 #   （`last_time_pref_set_at` 体内按属性取的 `db.hash_phone` 读到的正是 tracking 域真身）；
-#   时钟守卫告警与 app_meta 单键读写四名 → clock_meta：告警落库被留守的 `_clock_jump_guard`
-#   在本模块内按属性调用（见该函数的晚解析注释），快照式再导出会让这处内部调用看不到替身；
+#   app_meta 通用单键读写两名 → clock_meta：`db.get_meta = 替身` 要被各域（日报去重、
+#   审计锚点）看见，转发面是这些名字的唯一宿主；
 #   迁移域的 JSON 导入两名 → migrations：门面内 `init_db` 按属性晚解析调用 `_maybe_migrate`；
 #   追踪盐域四名与盐缓存的**可变状态** `_TRACK_SALT_CACHE` → tracking：
 #   `db._TRACK_SALT_CACHE = None`（tests/test_rekey_key_source.py 清盐缓存）必须真的清掉
@@ -374,8 +374,6 @@ _FORWARDED_STATE = {
     "clear_time_pref": _time_prefs,
     "time_pref_stats": _time_prefs,
     # 时钟守卫告警与 app_meta 单键读写（唯一定义点在 yiban/store/clock_meta.py）
-    "_record_clock_guard_alert": _clock_meta,
-    "clock_guard_alert": _clock_meta,
     "get_meta": _clock_meta,
     "set_meta": _clock_meta,
     # JSON → SQLite 自动导入（唯一定义点在 yiban/store/migrations.py；门面内 init_db 晚解析调用）
@@ -551,26 +549,29 @@ def _begin_immediate(conn):
 # 时钟跳变保护参数：
 # 允许的"时间前进"上限。软删保留期 7 天——系统时间被拨快 8 天，刚软删 1 秒的
 # 账号会在下次清理时被立即物理清除、7 天反悔窗口归零。取 72h：每日正常运行的
-# 服务不会超过；停机 >3 天后的首轮清理会被跳过并触发告警，需人工核实时钟后用
-# scripts/clock_guard_reset.py 显式重置（刻意不自动恢复——自动把参照点拨到当前
-# 时间等于给"拨快一次、下轮洗白"开通道）。
+# 服务不会超过；停机 >3 天后的首轮清理会被跳过一轮并告警，参照点随即推进到当前
+# 时间，下一次正常调用即恢复清理（不需要人工重置）。
 _CLOCK_ALLOW_FWD_HOURS = 72
 # 允许的"时间回拨"上限（秒）：正常 NTP 校正是秒级，回拨超过 1h 视为异常
 _CLOCK_ALLOW_BACK_SECONDS = 3600
-# 守卫失败告警的留痕键（唯一定义点在 `yiban/store/clock_meta.py`）：本模块的守卫本体经
-# 晚解析调用那里的告警落库，这里按常量再导出，`db._CLOCK_GUARD_ALERT_KEY` 读取不变。
-_CLOCK_GUARD_ALERT_KEY = _clock_meta._CLOCK_GUARD_ALERT_KEY
 
 
 def _clock_jump_guard(conn, key):
     """以 app_meta 记录的最近一次 seen-now 为参照，检测系统时钟异常跳变。
 
-    返回 (ok, note)：ok=False 时调用方应跳过本次清理（防"拨快后刚软删的
-    数据被立即物理清除"）；note 为告警文本或空串。ok=False 时告警已由
-    _record_clock_guard_alert 落入 app_meta（web 每日线程发邮件），恢复清理
-    需人工确认时钟正确后运行 scripts/clock_guard_reset.py 显式重置参照点。
-    每次调用都会把当前时间 upsert 进 app_meta（ok 路径）——该 INSERT 同时充当
-    库级写锁（WAL 下 INSERT 即持 RESERVED 锁），调用方无需另开 BEGIN IMMEDIATE。
+    返回 (ok, note)：ok=False 时调用方应跳过本次清理（防"拨快后刚软删的数据被立即
+    物理清除"）；note 为告警文本或空串。告警出口只有 logger.error——守卫不承担
+    "冻结状态必须保持可见"的职责，故不留告警状态、不发邮件。
+
+    **两条路径都把参照点推进到当前时间**：跳变只跳一轮，靠下一次正常调用恢复。
+    留一个越界就不推进的参照点等于永久冻结（五处清理会每轮都再触发，直到有人手工
+    拨回），而守卫存在的理由是"防误删"不是"停摆"——参照点一旦推进，后续 cutoff
+    按真实当前时间算，误删窗口并未因此打开。
+
+    越界路径**在守卫内提交**：调用方在 ok=False 分支上会 rollback 以解除写锁
+    （见 cleanup / users / events 的钩子），把推进留给调用方就等于让它被一起回滚，
+    冻结会重新变成永久。放行路径刻意不提交：那条 INSERT upsert 在 WAL 下即持
+    RESERVED 写锁，兼作调用方读-删-连带清理的事务边界，由调用方 commit。
     """
     now = clock.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -589,13 +590,11 @@ def _clock_jump_guard(conn, key):
         note = (
             f"系统时间异常跳变（上次记录 {row['value']}，当前 {ts}，"
             f"前进 {fwd / 3600:.1f}h / 回拨 {back / 3600:.1f}h），"
-            "已跳过本次物理清理以防误删；请核实系统时间，确认正确后运行 "
-            "scripts/clock_guard_reset.py 重置（清理将保持冻结直至重置）"
+            "已跳过本次物理清理以防误删；请核实系统时间与 NTP 同步状态"
         )
         logger.error("%s", note)
-        # 定义点在 yiban/store/clock_meta.py：按属性取，`db._record_clock_guard_alert = 替身`
-        # 一类打桩必须被本函数看见（晚解析）
-        _clock_meta._record_clock_guard_alert(note)
+        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
+        conn.commit()
         return False, note
     conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)", (key, ts))
     return True, ""

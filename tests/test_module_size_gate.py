@@ -254,7 +254,6 @@ OVERSIZED = {
     )),
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),
-    "scripts/rekey_accounts.py": (800, "运维工具：密钥轮换脚本，与本项目运行时解耦"),
     "scripts/loadtest/concurrency_probe.py": (800, "压测工具：并发探针，非运行时路径"),
 }
 
