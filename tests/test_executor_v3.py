@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import datetime
 import json
+import logging
 import math
 import os
 import random
@@ -489,6 +490,61 @@ class VInvariantTest(_Base):
         self.assertEqual(
             clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "41")
 
+    def test_only_historical_rows_are_treated_as_no_usable_plan(self):
+        """当日只剩历史惰性行（`vshard=-1`）时视为"无可用计划"：留 error 并照常建计划。
+
+        只按"当日有任意行"判"有计划"，就会既跳过建计划、又领不到任何行——本轮零领取、
+        零请求，被汇总成"全部未执行"。历史行按设计保持原样，只是不再充当"计划已就绪"
+        的证据。
+        """
+        phones = [_phone(i) for i in range(3)]
+        self._add_task(_phone(99), vshard=-1, state="failed")
+        with self.assertLogs("yiban", level="ERROR") as cm, \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            results = self._run_v3(self._accounts(*phones))
+        self.assertIn("无 vshard >= 0 的计划行", "\n".join(cm.output))
+        v = int(clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""))
+        for p in phones:
+            row = self._row(p)
+            self.assertIsNotNone(row, "计划必须被补建，否则本轮领不到任何行")
+            self.assertGreaterEqual(row["vshard"], 0)
+            self.assertLess(row["vshard"], v, "计划行的索引必须落在扫描范围内")
+            self.assertEqual(row["state"], "done", "账号必须真的被领取并执行")
+        self.assertEqual(set(results), set(phones), "本轮不得空转")
+        self.assertEqual(self._row(_phone(99))["vshard"], -1, "历史惰性行原样不动")
+
+    def test_real_plan_row_is_never_rewritten(self):
+        """当日已有真实计划行时逐字不变：不重写计划（幂等/开销），V 也不动。"""
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        with mock.patch.object(executor_v3.planner, "write_plan") as m_write, \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            results = self._run_v3(self._accounts(phone), [_item(phone)])
+        m_write.assert_not_called()
+        self.assertEqual(results[phone], (True, "ok", False, "success"))
+        self.assertEqual(
+            clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "8")
+
+    def test_rebuilt_plan_rows_share_the_same_v(self):
+        """补建的计划行与执行体分片集同源：每个分片都有执行体认领，否则该行无人领。"""
+        other = "worker-1@testhost"
+        cfg = _cfg(executors=[OWNER, other])
+        phones = [_phone(i) for i in range(3)]
+        self._add_task(_phone(99), vshard=-1, state="failed")
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(*phones), cfg=cfg)
+        v = int(clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""))
+        covered = set()
+        for ex in (OWNER, other):
+            covered |= set(hrw.shards_of(ex, cfg["executors"], DAY, v))
+        self.assertEqual(covered, set(range(v)), "每个分片都要有执行体认领")
+        for p in phones:
+            self.assertLess(self._row(p)["vshard"], v)
+
 
 # ---------------------------------------------------------------------------
 # 通道：M 条、真并发、非阻塞到点
@@ -943,6 +999,70 @@ class GiveUpNotifyTest(_Base):
         self.assertIn(phone, results)
         m_admin.assert_not_called()
         m_user.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 最终放弃的留痕：级别与语义与 v2 的放弃路径对齐
+# ---------------------------------------------------------------------------
+class GiveUpLogTest(_Base):
+    """v2 的放弃路径留两条日志，v3 必须同级别同语义地补回。
+
+    无点位只 warning（易班侧没有数据，非账号/凭据问题，管理员无从修复）；其余失败才
+    error。两条都只在**最终放弃**时打——重试中的失败不打放弃日志（否则每次尝试刷一条）。
+    """
+
+    def _give_up(self, status, *, message, attempts, skip=False, success=False):
+        phone = _phone(1)
+        self._clear_tasks()
+        self._add_claimed(phone, attempts=attempts, epoch=1)
+        self._seed_v(8)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (success, message, skip, status)):
+            return phone, self._run_v3(self._accounts(phone),
+                                       [_item(phone, attempts=attempts)])
+
+    def test_final_give_up_logs_error_like_v2(self):
+        with self.assertLogs("yiban", level="ERROR") as cm:
+            phone, results = self._give_up("failed", message="网络抖动", attempts=2)
+        self.assertIn(phone, results, "预算用尽即终态")
+        joined = "\n".join(cm.output)
+        self.assertIn("已尝试 3 次，放弃", joined)
+        self.assertIn("网络抖动", joined)
+        self.assertNotIn(phone, joined, "手机号必须脱敏后落日志")
+
+    def test_no_position_logs_warning_not_error(self):
+        with self.assertLogs("yiban", level="WARNING") as cm:
+            phone, results = self._give_up(
+                "no_position", message="未找到签到位置数据", attempts=0)
+        self.assertIn(phone, results)
+        joined = "\n".join(cm.output)
+        self.assertIn("易班未返回签到点位", joined)
+        self.assertIn("未找到签到位置数据", joined)
+        self.assertNotIn(phone, joined, "手机号必须脱敏后落日志")
+        self.assertFalse([r for r in cm.records if r.levelno >= logging.ERROR],
+                         "无点位不是 error 级，与 v2 同口径")
+
+    def test_retry_only_logs_no_give_up(self):
+        with self.assertLogs("yiban", level="WARNING") as cm:
+            phone, results = self._give_up("failed", message="e003 风险访问", attempts=0)
+        self.assertNotIn(phone, results, "重试中的账号不是终态")
+        joined = "\n".join(cm.output)
+        self.assertNotIn("放弃", joined)
+        self.assertNotIn("易班未返回签到点位", joined)
+
+    def test_window_exhausted_keeps_only_its_own_error(self):
+        """窗口放不下重试时 v2 只打"窗口剩余不足"，不得再补一条放弃日志。"""
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=0, epoch=1)
+        self._seed_v(8)
+        cfg = _cfg(sign_end=(6, 40), edge_back_sec=0)
+        with self.assertLogs("yiban", level="ERROR") as cm, \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "网络抖动", False, "failed")):
+            self._run_v3(self._accounts(phone), [_item(phone)], cfg=cfg)
+        joined = "\n".join(cm.output)
+        self.assertIn("窗口剩余不足", joined)
+        self.assertNotIn("放弃", joined, "与 v2 同分支：只留窗口不足这一条")
 
 
 # ---------------------------------------------------------------------------
