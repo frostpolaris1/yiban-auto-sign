@@ -16,10 +16,8 @@
 
 **复用**
 `_alert_mail_recipients` 只留一份实现，由 `send_notification` 与
-`web/services/channel_health.py` 的 `_alert_channel_status` 共用：通道健康判据要回答的
-是"这一封日报到底发不发得出去"，它与 `send_notification` 实际取收件人的算法必须严格
-一致，各算一套就会分叉。`_nl_safe` 与 `_audit_alert_facts` / `_last_cleanup_text` 同样
-只留一份。
+`web/services/channel_health.py` 的 `_alert_channel_status` 共用（分叉代价见其函数文档）。
+`_nl_safe` 与 `_audit_alert_facts` / `_last_cleanup_text` 同样只留一份。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
