@@ -1,28 +1,23 @@
 # -*- coding: utf-8 -*-
-"""回归测试：notify 同类型告警节流跨进程化（磁盘持久化）。
+"""notify 同类型告警节流的跨进程化（磁盘持久化）。
 
-修复前的缺陷：
-- `_throttle_due` 只维护进程内 `_throttle_ts` 字典——web（常驻）与 signin
-  （每次 cron 新进程）各持一份节流表，同一告警标题在 cooldown 窗口内可能
-  各放行一条，Server酱等第三方配额被双份刷、管理员手机收两条。
-- 进程重启即清零：冷启动后窗口重置，同类告警立刻可再推。
+标签：H · 通知：邮件与推送
+覆盖：`_throttle_due` 放行即写 `$YIBAN_STATE_DIR/notify-throttle.json`；清空内存节流态
+    （模拟另一进程/重启）后窗口内同标题仍被磁盘判定拦下；窗口过期重新放行、
+    不同标题互不干扰；cooldown=0 关闭节流且不产生磁盘文件；损坏节流文件归档留证 +
+    warning 并按空表处理；写盘顺带清过期条目；冻结时钟下并发同刻恰好一次放行；
+    走完整 `send()` 路径时跨进程节流对真实推送生效、force 仍绕过。
+对应实现：`yiban/notify/ledger.py`（`_throttle_due`、`_throttle_ts`）与
+    `yiban/notify/transport.py`（`send`）。
+关键断言：**磁盘是唯一事实源**——修复前只维护进程内字典，web 与 signin 各持一份，
+    同一告警在窗口内可各放行一条（第三方配额被双份刷、管理员手机收两条），
+    且进程重启即清零。
+依赖：pytest + monkeypatch；时间用 `_freeze_time` 替换 notify 模块级 `time` 引用
+    （不动全局 time 模块）；推送出口打桩，不连 Server酱、不触网；
+    每用例独立 tmp_path，磁盘节流文件互不残留。
 
-修复后的契约（本文件逐一断言）：
-1. `_throttle_due` 放行时把时间戳写入 $YIBAN_STATE_DIR/notify-throttle.json；
-2. 磁盘是唯一事实源：清空内存节流态（模拟另一进程 / 进程重启）后，窗口内
-   同标题仍被磁盘判定拦下（跨进程不双发）；
-3. 窗口过期后同标题重新放行；不同标题互不干扰；
-4. cooldown=0 关闭节流，且不产生磁盘文件；
-5. 损坏节流文件归档留证 + warning，按空表处理（不静默）；
-6. 写盘时顺带清理过期条目，磁盘文件不会无限增长；
-7. 并发同刻请求（冻结时钟）：同窗口内恰好一次放行；
-8. 走完整 send() 路径：跨进程节流对真实推送生效，force 仍绕过。
-
-与账本（notify-ledger.json）同目录同锁机制；Windows 无 fcntl 退化为进程内
-节流（与账本同款取舍）。全程 mock requests，不发起真实网络请求。
-
-用法（项目根目录）：
-    py -m pytest tests/test_notify_throttle_091.py -v
+`_isolate` 显式关掉 `YIBAN_NOTIFY_URGENT_ONLY`：该档默认开，不关的话非紧急用例会被
+档位短路，测不到节流本身。
 """
 import json
 import logging
@@ -51,7 +46,7 @@ def _isolate(tmp_path, monkeypatch):
     每用例独立 tmp_path（磁盘节流文件互不残留）；notify 是全局单例，内存态
     必须在用例间复位。
     """
-    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))  #节流文件的落点就是这个键：指错目录等于用例之间互相看见
     monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", KEY)
     monkeypatch.setenv("YIBAN_ENV_FILE", str(tmp_path / "no-such.env"))
     notify_ledger._throttle_ts.clear()
@@ -59,7 +54,7 @@ def _isolate(tmp_path, monkeypatch):
     notify_ledger._urgent_daily["state"].update({"date": "", "count": 0})
     for ledger in (notify_ledger._general_daily, notify_ledger._urgent_daily):
         ledger["notice"].update({"pending": False, "notified": False, "warned": False})
-    notify_ledger._skip_logged.clear()
+    notify_ledger._skip_logged.clear()  #跳过原因日志按窗口去重：不清会让后一个用例看不到本该出现的那条 warning
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_"):
             monkeypatch.delenv(k)
