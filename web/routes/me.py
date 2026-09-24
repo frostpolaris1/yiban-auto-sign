@@ -22,8 +22,6 @@ CSRF token，供身份接口下发给前端（校验侧仍在 web/app.py 的 che
 generate_password_hash / write_env_batch / _env_write_lock / _client_ip / db 等）必须
 继续生效。登录失败计数表经 `web.routes.login_fails()` 取回，与登录/注册路由共用同一份账
 （安全语义依赖同一份计数）；恢复接口的每 IP 聚合窗口挂在 app.extensions，保每 app 实例一份。
-`/api/me` 响应里的 `csrf_token` 由 `web/static/js/core.js` 取走，写请求再以 `X-CSRF-Token`
-头带回（该头只由前端回填，视图体自己不校验）。
 """
 import secrets
 import sqlite3
@@ -42,9 +40,9 @@ def _restore_fail_rate():
 
 
 def get_csrf_token():
-    """惰性生成并返回当前会话的 CSRF token。"""
+    """惰性生成并返回当前会话的 CSRF token（本模块只下发，校验在 web/app.py 的 check_csrf）。"""
     if "csrf_token" not in session:
-        session["csrf_token"] = secrets.token_hex(32)
+        session["csrf_token"] = secrets.token_hex(32)  # 唯一下发点是 api_me；前端 core.js 取走后用 X-CSRF-Token 头带回
     return session["csrf_token"]
 
 
