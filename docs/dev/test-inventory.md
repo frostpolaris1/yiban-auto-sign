@@ -1,7 +1,7 @@
 # 测试项目清单（按功能分组，2026-09-23）
 
 > 自动生成：扫 `tests/test_*.py` 的模块 docstring 首句 + 用例方法数（`ast` 计数，非 pytest 收集数）。
-> 当前：**126 个文件 / 2667 个用例方法**。
+> 当前：**126 个文件 / 2660 个用例方法**。
 
 ## 怎么只跑一组
 
@@ -42,14 +42,14 @@ python -m pytest tests/ -q -k mine_or_planner_or_hrw               # 按关键�
 | `test_run_sh_workers.py` | 16 | `run.sh` 的多执行体开关（`YIBAN_WORKERS`）外壳行为。 |
 | `test_schedule_retry.py` | 37 | 重试重排与补签时刻：重试落点、槽位时刻与宿主脚本契约。 |
 | `test_scheduler_env_probe.py` | 19 | 对抗性审查修复回归测试（v0.24.3，2026-08-27）。 |
-| `test_scheduler_gate.py` | 57 | 修复回归测试（对抗性审查 2026-08-29）。 |
+| `test_scheduler_gate.py` | 56 | 修复回归测试（对抗性审查 2026-08-29）。 |
 | `test_sign_round_guards.py` | 21 | 签到轮守卫回归（2026-09-08）。 |
 | `test_store_queue.py` | 16 | `yiban/store/queue_store.py`：sign_tasks 的批量领取 / 批量收尾 / 重排 / 当日计数。 |
 | `test_supervisor_recursion_guard.py` | 4 | 多执行体的**子进程不得再当监督进程**（2026-09-17 对抗性审查 H1 的钉版回归）。 |
 | `test_token_bucket.py` | 31 | `yiban/engine/token_bucket.py` 的契约用例：GCRA/TAT 令牌桶、AIMD、全局 Λ、gap 门、EWMA。 |
 | `test_yiban_fallback_sh.py` | 5 | 兜底常驻执行体外壳（`scripts/yiban-fallback.sh`）的行为断言。 |
 
-小计 **19** 文件 / **495** 用例
+小计 **19** 文件 / **494** 用例
 
 ## C · 存储：迁移与库完整性
 
@@ -65,9 +65,9 @@ python -m pytest tests/ -q -k mine_or_planner_or_hrw               # 按关键�
 | `test_migrations_v20.py` | 12 | v20 backfill：把 `sign-state-*.json` 里的**终态**补进 `sign_tasks`。 |
 | `test_session.py` | 37 | 会话缓存表族与会话恢复：有效期判定、凭据加密、重启后恢复。 |
 | `test_sign_events.py` | 12 | 签到事件表 `sign_events`：写入、按天聚合与前端统计口径。 |
-| `test_store_boundary.py` | 140 | store 层拆分边界：门面读写转发 + 表级 CRUD 真实可用。 |
+| `test_store_boundary.py` | 136 | store 层拆分边界：门面读写转发 + 表级 CRUD 真实可用。 |
 
-小计 **11** 文件 / **296** 用例
+小计 **11** 文件 / **292** 用例
 
 ## D · 状态词汇与账号生命周期
 
@@ -146,11 +146,11 @@ python -m pytest tests/ -q -k mine_or_planner_or_hrw               # 按关键�
 | `test_masking_ssrf_gaps.py` | 33 | 对外脱敏与出站白名单的残余缺口回归（本轮对抗性审查活体复现的三条）。 |
 | `test_masking_tokens.py` | 5 | 对外脱敏（`yiban/masking.py::sanitize_text`）的凭据字面量覆盖测试（M1）。 |
 | `test_protocol_masking.py` | 4 | 协议层账号标识脱敏与登录页 key 破损的返回契约。 |
-| `test_rekey_key_source.py` | 92 | 回归测试（2026-08-29）：密钥来源去 cwd 依赖 + 告警通道门禁与留痕。 |
+| `test_rekey_key_source.py` | 91 | 回归测试（2026-08-29）：密钥来源去 cwd 依赖 + 告警通道门禁与留痕。 |
 | `test_url_userinfo_masking.py` | 6 | URL userinfo 脱敏：唯一实现 + 两处调用点（回显与日志）的接线守卫。 |
 | `test_web_mask_email_parity.py` | 9 | 前端 `YB.maskEmail` 与后端 `_mask_email` 的脱敏口径对拍（真实行为，非静态扫描）。 |
 
-小计 **20** 文件 / **340** 用例
+小计 **20** 文件 / **339** 用例
 
 ## H · 通知：邮件与推送
 

@@ -308,8 +308,6 @@ class FacadeBehaviourTest_ACC(_AccountsSplitBase):
 
 
 MOVED_NAMES_CLOCK = (
-    "_record_clock_guard_alert",
-    "clock_guard_alert",
     "get_meta",
     "set_meta",
 )
@@ -407,26 +405,16 @@ class SameObjectTest_CLOCK(_ClockMetaSplitBase):
 
     def test_names_importable_from_db(self):
         # 导入成功本身就是断言的一部分
-        from yiban.store.db import (
-            _record_clock_guard_alert,
-            clock_guard_alert,
-            get_meta,
-            set_meta,
-        )
+        from yiban.store.db import get_meta, set_meta
         self.assertIs(get_meta, meta_mod.get_meta)
         self.assertIs(set_meta, meta_mod.set_meta)
-        self.assertIs(clock_guard_alert, meta_mod.clock_guard_alert)
-        self.assertIs(_record_clock_guard_alert, meta_mod._record_clock_guard_alert)
 
-    def test_alert_key_reexport_and_staying_thresholds(self):
-        """告警键随域迁出（门面按常量再导出）；守卫阈值只被留守本体使用，不随迁。"""
-        self.assertIsNot(impl._CLOCK_GUARD_ALERT_KEY, None)
-        self.assertEqual(impl._CLOCK_GUARD_ALERT_KEY, meta_mod._CLOCK_GUARD_ALERT_KEY)
-        self.assertEqual(meta_mod._CLOCK_GUARD_ALERT_KEY, "clock_guard_alert")
-        self.assertIn("_CLOCK_GUARD_ALERT_KEY", vars(meta_mod))
+    def test_staying_thresholds_not_moved(self):
+        """守卫阈值只被留守本体使用，不随 app_meta 单键读写迁出。"""
         self.assertIn("_CLOCK_ALLOW_FWD_HOURS", vars(impl), "守卫阈值跟留守本体走")
         self.assertIn("_CLOCK_ALLOW_BACK_SECONDS", vars(impl))
         self.assertNotIn("_CLOCK_ALLOW_FWD_HOURS", vars(meta_mod))
+        self.assertNotIn("_CLOCK_ALLOW_BACK_SECONDS", vars(meta_mod))
 
     def test_staying_guard_stays_in_db(self):
         """守卫本体是登记承诺的粘合，定义点仍在 db（cleanup/users/events 经门面调用它）。"""
@@ -435,7 +423,7 @@ class SameObjectTest_CLOCK(_ClockMetaSplitBase):
 
 
 class WriteForwardingTest_CLOCK(_ClockMetaSplitBase):
-    """② 写入落到真定义点；③ 门面内的晚解析（`_record_clock_guard_alert`）。"""
+    """② 写入落到真定义点；③ 越界路径的推进与日志（守卫本体仍留守 db）。"""
 
     SENTINEL = object()
 
@@ -470,14 +458,14 @@ class WriteForwardingTest_CLOCK(_ClockMetaSplitBase):
     def test_shell_write_forwarding_reaches_clock_meta(self):
         """`scripts/db.py` 壳（旧 `import db`）的写入同样落到 clock_meta。"""
         shell = _import_shell_CLOCK()
-        original = meta_mod.clock_guard_alert
+        original = meta_mod.get_meta
         try:
-            shell.clock_guard_alert = self.SENTINEL
-            self.assertIs(meta_mod.clock_guard_alert, self.SENTINEL,
+            shell.get_meta = self.SENTINEL
+            self.assertIs(meta_mod.get_meta, self.SENTINEL,
                           "壳上的赋值经 db 门面后没有落到真定义点")
         finally:
-            shell.clock_guard_alert = original
-        self.assertIs(meta_mod.clock_guard_alert, original)
+            shell.get_meta = original
+        self.assertIs(meta_mod.get_meta, original)
 
     def test_shell_patch_object_round_trips(self):
         shell = _import_shell_CLOCK()
@@ -487,29 +475,20 @@ class WriteForwardingTest_CLOCK(_ClockMetaSplitBase):
         self.assertIs(meta_mod.set_meta, real)
         self.assertIs(impl.set_meta, real)
 
-    def test_record_alert_stub_seen_by_staying_guard(self):
-        """`db._record_clock_guard_alert = 替身` 必须被留守的守卫本体看见（晚解析）。"""
+    def test_trip_logs_and_advances_reference(self):
+        """越界路径：告警只走 logger.error，参照点则被推进到当前时间。"""
         self._init()
-        real = meta_mod._record_clock_guard_alert
-        recorder = mock.MagicMock()
-        with mock.patch.object(impl, "_record_clock_guard_alert", recorder):
-            ok, note = self._trip_guard("test_clock_meta_stub")
+        key = "test_clock_meta_real"
+        old = (datetime.datetime.now() - datetime.timedelta(hours=100)).strftime(
+            "%Y-%m-%d %H:%M:%S")
+        conn = self._set_reference(key, old)
+        with self.assertLogs("yiban.db", level="ERROR") as captured:
+            ok, note = impl._clock_jump_guard(conn, key)
         self.assertFalse(ok, "前进 100h（>72h）必须判定为跳变")
-        recorder.assert_called_once_with(note)
-        self.assertIs(meta_mod._record_clock_guard_alert, real)
-        # 替身在场时真函数一次也没跑 → 库里没有告警留痕
-        self.assertIsNone(impl.clock_guard_alert(),
-                          "真告警落库被跳过才说明替身确实被内部调用点用上")
-
-    def test_record_alert_real_path_still_writes_alert(self):
-        """不替换任何名字时，守卫拦截照旧把告警落进 app_meta 且可读回。"""
-        self._init()
-        ok, note = self._trip_guard("test_clock_meta_real")
-        self.assertFalse(ok)
-        alert = impl.clock_guard_alert()
-        self.assertIsNotNone(alert, "拦截必须留下可读的告警（web 每日线程据此发邮件）")
-        self.assertIn("系统时间异常跳变", alert["note"])
-        self.assertEqual(alert["note"], note)
+        self.assertIn("系统时间异常跳变", note)
+        self.assertIn(note, "\n".join(captured.output), "跳变事实必须留在日志里")
+        row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+        self.assertNotEqual(row["value"], old, "越界路径必须推进参照点")
 
 
 class DeleteHidingTest_CLOCK(_ClockMetaSplitBase):
@@ -567,37 +546,22 @@ class FacadeBehaviourTest_CLOCK(_ClockMetaSplitBase):
         self.assertEqual(impl.get_meta("empty", "fallback"), "")
         self.assertEqual(impl.get_meta("other", None), None)
 
-    def test_clock_guard_alert_round_trip(self):
-        self.assertIsNone(impl.clock_guard_alert(), "初始无告警")
-        ok, note = self._trip_guard("test_clock_meta_roundtrip")
-        self.assertFalse(ok, note)
-        alert = impl.clock_guard_alert()
-        self.assertIsNotNone(alert)
-        self.assertTrue(alert["note"].startswith("系统时间异常跳变"), alert)
-        self.assertTrue(alert["ts"], "告警带写入时刻（web 邮件展示它）")
-        # 人工重置工具清告警的口径：同键写空串 → 读回 None
-        impl.set_meta(meta_mod._CLOCK_GUARD_ALERT_KEY, "")
-        self.assertIsNone(impl.clock_guard_alert(), "清空留痕后应视为无告警")
-
-    def test_clock_guard_alert_tolerates_non_json_value(self):
-        """留痕是非 JSON 串时不抛：按 {ts:'', note:<原文>} 返回（体检不发邮件也得能读）。"""
-        impl.set_meta(meta_mod._CLOCK_GUARD_ALERT_KEY, "not-json")
-        self.assertEqual(impl.clock_guard_alert(), {"ts": "", "note": "not-json"})
-        impl.set_meta(meta_mod._CLOCK_GUARD_ALERT_KEY, '{"ts": "x"}')
-        self.assertEqual(impl.clock_guard_alert(), {"ts": "", "note": '{"ts": "x"}'},
-                         "缺 note 的 JSON 同样回落成原文")
-
-    def test_guard_reference_updated_only_on_pass(self):
-        """放行路径 upsert 参照点，拦截路径不更新（防"拨快一次、下轮洗白"）。"""
+    def test_guard_reference_advanced_on_both_paths(self):
+        """放行与越界都推进参照点——"跳过一轮"因此真的只有一轮。"""
         conn = impl.get_conn()
-        old = (datetime.datetime.now() - datetime.timedelta(hours=1)).strftime(
+        hour_ago = (datetime.datetime.now() - datetime.timedelta(hours=1)).strftime(
             "%Y-%m-%d %H:%M:%S")
-        self._set_reference("test_clock_meta_ok", old)
+        self._set_reference("test_clock_meta_ok", hour_ago)
         ok, note = impl._clock_jump_guard(conn, "test_clock_meta_ok")
         self.assertTrue(ok, note)
         row = conn.execute(
             "SELECT value FROM app_meta WHERE key='test_clock_meta_ok'").fetchone()
-        self.assertNotEqual(row["value"], old, "放行时应把参照点推进到当前时间")
+        self.assertNotEqual(row["value"], hour_ago, "放行时应把参照点推进到当前时间")
+        # 参照点刚被推进到 1h 前：再拨回 100h 仍判跳变，而这一次的推进让下一轮放行
+        ok2, _note2 = self._trip_guard("test_clock_meta_ok")
+        self.assertFalse(ok2, "回拨 100h 仍应判跳变")
+        ok3, _note3 = impl._clock_jump_guard(conn, "test_clock_meta_ok")
+        self.assertTrue(ok3, "越界已推进参照点 ⇒ 下一轮必须放行")
 
     def test_failure_log_uses_new_channel_only(self):
         """日志通道细分为 `yiban.store.clock_meta`；旧通道 `yiban.db` 不再收到本域日志。"""
@@ -607,15 +571,6 @@ class FacadeBehaviourTest_CLOCK(_ClockMetaSplitBase):
             self.assertEqual(impl.get_meta("boom-key", "fallback"), "fallback",
                              "读失败回退 default（兜底路径不得变成新故障点）")
         self.assertIn("读取 app_meta[boom-key] 失败", "\n".join(captured.output))
-
-    def test_alert_log_failure_uses_new_channel(self):
-        """告警落库失败只告警不抛，且走新通道。"""
-        with mock.patch.object(impl, "_db_file", "/nonexistent-dir/yiban.db"), \
-                self.assertLogs("yiban.store.clock_meta", level="WARNING") as captured, \
-                self.assertNoLogs("yiban.db", level="WARNING"):
-            meta_mod._record_clock_guard_alert("note")  # 不得抛出
-        self.assertIn("时钟守卫告警留痕失败", "\n".join(captured.output))
-
 
 
 
@@ -1060,7 +1015,7 @@ class StoreDbLayoutTest(unittest.TestCase):
 DB_PATH = os.path.join(BASE, "yiban", "store", "db.py")
 
 
-FORWARDED_COUNT = 57
+FORWARDED_COUNT = 55
 
 
 EXPECTED_MODULE_FUNCS = {
