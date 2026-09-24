@@ -94,8 +94,8 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 归属（`hrw.owner_of` 与 V 无关），只把扫描范围撑到盖住已写行。
 
 **崩溃恢复**（本轮补齐）：补货循环按 `RECOVER_SEC`（60s）调
-`queue_store.reap_expired`（租约过期回收）与死主分片接管；执行体起跑/存活期/收尾写
-文件心跳（见 §6）。
+`queue_store.reap_expired`（租约过期**并超过宽限期**后回收本业务日的 `claimed` 行）与
+死主分片接管；执行体起跑/存活期/收尾写文件心跳（见 §6）。
 
 ---
 
@@ -143,8 +143,8 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 
 | state | 含义 | 谁能动它 |
 |-------|------|----------|
-| `pending` | 待办（未到点/被重排/被回收） | `claim_batch` 领取；`requeue_task` 重排；`reap_expired` 回收 |
-| `claimed` | 已被某执行体持有（带 `owner`/`lease_until`/`epoch`） | `settle_tasks` 收尾；租约过期由 `reap_expired` 回退 |
+| `pending` | 待办（未到点/被重排/租约过期并超过宽限期后被回收） | `claim_batch` 领取；`requeue_task` 重排；`reap_expired` 回收 |
+| `claimed` | 已被某执行体持有（带 `owner`/`lease_until`/`epoch`） | `settle_tasks` 收尾；租约过期**并超过宽限期**后由 `reap_expired` 回退 |
 | `done` | 了结（签到成功/已签/今日无任务） | 终态 |
 | `failed` | 了结（失败/跳过类终态） | 终态 |
 | `skipped` | 了结（窗口外跳过） | 终态 |
@@ -209,8 +209,9 @@ bash scripts/backup.sh
   故不会空窗）；`sched-run-<day>.json` 是全量收尾标记。
 - **文件心跳与执行体页**：`worker-alive-<slot>.json`（v3 与监督进程都写）。四态：
   `running`（心跳新鲜，`now-ts <= 2×30s`）/ `finished`（有收尾标记）/ `idle`（当日无记录）
-  / `stale`（有开始、无收尾且心跳过期 ⇒ 异常）。v3 起跑/存活期/收尾都写，长轮次不会
-  被判成 `stale`。
+  / `stale`（有开始、无收尾且心跳过期 ⇒ 异常，成因含被强杀 / 超时 / 内部异常）。v3
+  起跑/存活期/正常收尾都写，长轮次不会因心跳不刷新被判成 `stale`；被强杀或内部未预期
+  异常（`run_executor_v3` 返回 `{}` 那档）不写收尾，留"有开始、无收尾"判 `stale`。
 - **影子期对比口径**：`dry_run` 只算计划与落点分布、零落库零请求。用
   `planner.plan_stats` 的 `hist`（按有效窗口 5 分钟格的落点直方图）与 `peak_per_sec` /
   `lam` 跟现网落点对账；**影子期没有 `shadow:` 影子行**，别去库里找。
@@ -237,8 +238,8 @@ bash scripts/backup.sh
 
 | 现象 | 判定 | 处置 |
 |------|------|------|
-| 某些账号当天一直不签，库里是 `claimed` 且 `lease_until` 已过 | 崩溃/被杀的通道留下的行，未被回收 | 正常应由补货循环 60s 内回收；若仍卡住，查 `reap_expired` 是否报 warning（库异常），必要时手工跑一轮或重启执行体 |
-| 页面执行体行显示 `stale` | 有开始心跳、无收尾且过期：进程被强杀/超时杀掉 | 查进程与宿主 `timeout`；长轮次若仍 `stale` 说明心跳刷新没走（补货循环未运行） |
+| 某些账号当天一直不签，库里是 `claimed` 且 `lease_until` 已过 | 崩溃/被杀的通道留下的行，未被回收 | 正常应在 `租约 60s + 宽限 120s + 回收间隔 60s`（最坏约 4 分钟）内回收；宽限期存在是因为**租约到期 ≠ 持有者已死**（慢尝试可能比租约还长，立即回收会让同一账号被重领、重复真实登录）。若仍卡住，查 `reap_expired` 是否报 warning（库异常），必要时手工跑一轮或重启执行体 |
+| 页面执行体行显示 `stale` | 有开始、无收尾（心跳过期）：被强杀 / 超时 / 内部异常（v3 只在正常返回路径写收尾） | 查进程与宿主 `timeout`、日志里的"v3 执行体未预期异常"；长轮次若仍 `stale` 说明心跳刷新没走（补货循环未运行） |
 | 页面执行体行一直 `idle` | 当日无该槽位心跳：v3 未起跑或心跳写失败 | 确认 `YIBAN_SCHEDULER_V3=1` 且本轮真的起跑；看日志有无心跳写失败 debug |
 | 某日闸门永不了结、补签轮反复空跑 | 用 `day_counts` 的 `open` 当闸门，把 `vshard=-1` 历史行算进去了 | 改用 `pending_count(day, 分片集)`；历史行按设计保持原样 |
 | 网页日历空窗（当天没记录） | 尝试未物化状态 | v3 每次尝试结束即写 `sign-state`；若空窗查状态目录权限与库 |
