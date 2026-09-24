@@ -19,7 +19,11 @@
   }
 
   function create(ctx) {
-    function fail(e) { YB.toast.error((e && e.message) || "操作失败，请稍后再试"); }
+    function fail(e) {
+      // 用户取消弹窗（dangerousSubmit 以 canceled 标记拒绝）：不是失败，不提示
+      if (e && e.canceled) return;
+      YB.toast.error((e && e.message) || "操作失败，请稍后再试");
+    }
     // 统一链路：置忙 → 请求 → 成功提示 + 刷新 → 复位。fallback 为空表示不弹成功提示。
     // suffix 追加在（后端 msg 或 fallback）之后，用于「软删除可恢复」这类固定补充说明。
     // after 在刷新完成后执行（ctx.refresh 需返回 Promise），用于对新生行的就地反馈。
@@ -103,14 +107,14 @@
       run(YB.api("POST", "/api/accounts/" + a.index + "/restore", { phone: a.phone }), "已恢复");
     }
 
+    // 彻底删除账号不可逆：走 dangerousSubmit，由后端响应 reason 决定要口令还是倒计时确认
     function purge(a) {
-      YB.openConfirmPasswordModal(
-        "彻底删除「" + a.display_name + "」(" + a.phone + ")？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
-        function (pw) {
-          run(YB.api("POST", "/api/accounts/" + a.index + "/purge",
-            { phone: a.phone, confirm_password: pw }), "已彻底删除");
-        }
-      );
+      run(YB.dangerousSubmit({
+        path: "/api/accounts/" + a.index + "/purge",
+        body: { phone: a.phone },
+        desc: "彻底删除「" + a.display_name + "」(" + a.phone + ")？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
+        delayDesc: "彻底删除「" + a.display_name + "」(" + a.phone + ") 会物理清除其凭据，不可恢复。确认继续？"
+      }), "已彻底删除");
     }
 
     function move(a, dir) {
@@ -164,13 +168,10 @@
         return;
       }
       if (action === "purge") {
-        YB.openConfirmPasswordModal(
-          "彻底删除选中的 " + ids.length + " 个账号？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
-          function (pw) {
-            body.confirm_password = pw;
-            submit("/api/accounts/batch", body);
-          }
-        );
+        submit("/api/accounts/batch", body, {
+          desc: "彻底删除选中的 " + ids.length + " 个账号？凭据将被物理清除，不可恢复！请输入当前管理员密码确认。",
+          delayDesc: "彻底删除选中的 " + ids.length + " 个账号会物理清除其凭据，不可恢复。确认继续？"
+        });
         return;
       }
       var labels = { approve: "通过", delete: "删除", restore: "恢复" };
@@ -183,10 +184,15 @@
       });
     }
 
-    function submit(path, body) {
+    // gated（可选）：不可逆批量操作传 {desc, delayDesc}，改走 dangerousSubmit 由后端
+    // 响应 reason 分流（口令 / 倒计时确认）；不传则沿用原请求路径。
+    function submit(path, body, gated) {
       ctx.busy(true);
       var isDelete = !!(body && body.action === "delete");
-      YB.api("POST", path, body).then(function (data) {
+      var req = gated
+        ? YB.dangerousSubmit({ path: path, body: body, desc: gated.desc, delayDesc: gated.delayDesc })
+        : YB.api("POST", path, body);
+      req.then(function (data) {
         YB.toast.success(((data && data.msg) || "操作成功")
           + (isDelete ? " · 可在『待删除账号』恢复（7 天内）" : ""));
         ctx.onBatchSuccess();
