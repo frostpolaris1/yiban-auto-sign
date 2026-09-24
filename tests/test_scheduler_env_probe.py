@@ -15,10 +15,9 @@
    rc=1）。注定失败的提交不得先发起网络验证。用户失败提醒的每日上限要跨入口统一，同一手机号第二次必须被压住。旧会话缺时间戳时按
    grandfathering 放行，但超绝对上限要强制登出。
 依赖：临时 sqlite + Flask test client + 按路径加载
-   docker/scheduler.py；邮件与网络一律打桩。用法行仍写旧文件名
-   test_audit_fixes_0827.py（已登记）。整文件在本机执行，无 skip。
+   docker/scheduler.py；邮件与网络一律打桩。整文件在本机执行，无 skip。
 
-用法（项目根目录）：py -m pytest tests/test_audit_fixes_0827.py -v
+用法（项目根目录）：py -m pytest tests/test_scheduler_env_probe.py -v
 """
 import contextlib
 import importlib.util

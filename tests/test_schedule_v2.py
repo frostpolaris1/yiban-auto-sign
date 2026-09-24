@@ -6,7 +6,7 @@
    的统一填充框架：小人数免分块与分块复用、顺序×均匀线性填块、随机×均匀循环填块、顺序×正态锚点稳定、随机×正态每日重排、四组合首尾缓冲、σ_eff
    封顶、压缩模式全量给点、旧 YIBAN_SIGN_MODE 兼容映射、固定 seed
    可复现、对抗配置（空有效窗口、edge=600 掐首块、窗口起点非 5
-   分钟倍数）、SCH-10 等待后再判窗口、min_exec_gap 与 exec_gap_min 的取大关系。
+   分钟倍数）、到点等待后再判窗口、min_exec_gap 与 exec_gap_min 的取大关系。
 对应实现：scripts/signin.py（build_schedule、_anchor_z、_schedule_config、_schedule_blocks、_nearest_available）、yiban/engine/schedule.py
    与 run_queue_retry 的等待/间隔路径、web/app.py 设置页。
 关键断言：顺序 vs 随机是「可预期性」契约而非风格：顺序×均匀必须不同 seed

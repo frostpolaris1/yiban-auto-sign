@@ -17,8 +17,8 @@
 依赖：临时 sqlite（每用例重建库与 -wal/-shm）+ 打桩 yiban.egress；并发用例真起
    subprocess 子进程（Windows/WSL 都跑，不 skip）。无网络请求。
 
-第 1 条用**真多进程**验证（`subprocess` 抢同一批账号）：单进程内的锁证明不了
-跨进程原子性，而这正是本表存在的理由。并发用例在 Windows/WSL 都跑。
+跨进程原子性只能用**真多进程**验证（`subprocess` 抢同一批账号）：单进程内的锁
+证明不了它，而这正是本表存在的理由。
 """
 import contextlib
 import json

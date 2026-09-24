@@ -18,7 +18,6 @@
 依赖：临时 sqlite（sign_tasks 由 db.init_db 的迁移建表）+
    固定时刻常量；不发网络请求、不起应用。整文件在本机执行，无 skip。
 
-依赖：临时库（`sign_tasks` 由 `db.init_db` 的迁移建表）。
 """
 import contextlib
 import os
