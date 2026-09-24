@@ -1,0 +1,509 @@
+# -*- coding: utf-8 -*-
+"""口令复核门的三档（`YIBAN_PW_GATE`）与软性摩擦：档位矩阵 + 风控 + 倒计时确认。
+
+背景：危险操作此前**一律**要求当次输入管理员口令，摩擦成本超过威胁收益。现按
+`.env` 的 `YIBAN_PW_GATE` 分三档：
+
+- `full`：每个受保护操作都要当次口令（改造前的行为，本文件逐格回归它不变）；
+- `risk`（**默认**，缺省与非法值都落这里）：只有风控命中才要口令；
+- `off`：永不要求口令。
+
+`risk`/`off` 档用两件软摩擦替代事中口令：不可逆操作要请求体带 `confirm_delay_ack`
+（前端倒计时后置 true），以及最高危两类操作**成功之后**补一封管理员告警。
+
+风控两条判据（`risk` 档，命中任一即当次要口令）：同 session 300 秒内危险操作达到
+3 次（含本次）；本次出口 IP 与登录时记录的不一致。**无登录 IP 记录的历史会话视为
+未知，不触发**——否则升级后存量会话人人被判异常。
+
+全程 mock / 纯本地（Flask test client），无任何网络请求。
+用法（项目根目录）：
+    python -m pytest tests/test_pw_gate_tiers.py -v
+"""
+import contextlib
+import importlib.util
+import json
+import os
+import shutil
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+from _mail_body import render_body
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+TEST_KEY = "a" * 64
+ADMIN_PASS = "TestPass1234!"
+USER_PASS = "UserPass123!"
+# 掩码形态即文档口径 138****0000（脱敏后的手机号是本文件里唯一会出现的号码形态）
+PHONE = "13800000000"
+MASKED_PHONE = "138****0000"
+
+# 受门禁保护的操作族：键 = 本文件的 `_op_<键>`，值是"是否不可逆"与"被拒时的状态码"。
+# 覆盖简报点名的八类：A 档设置、B 档设置、改他人凭据、purge、删用户、急停、执行体写、发公告。
+OPS = {
+    "a_setting": {"irreversible": False, "deny": 403},
+    "b_setting": {"irreversible": False, "deny": 403},
+    "creds": {"irreversible": False, "deny": 400},
+    "purge": {"irreversible": True, "deny": 400},
+    "user_delete": {"irreversible": True, "deny": 400},
+    "estop": {"irreversible": True, "deny": 403},
+    "exec_write": {"irreversible": False, "deny": 403},
+    "announce": {"irreversible": False, "deny": 403},
+}
+
+
+def _load_webapp():
+    """**独立名字**加载 web/app.py：它在导入期把 ENV_FILE 等读成模块级常量，
+    与别的测试文件共用同一模块对象会读到另一个 `.env`。"""
+    spec = importlib.util.spec_from_file_location(
+        "webapp_pwgate", os.path.join(BASE, "web", "app.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["webapp_pwgate"] = mod
+    with contextlib.suppress(Exception):
+        spec.loader.exec_module(mod)
+    return mod
+
+
+class _TierBase(unittest.TestCase):
+    """临时 .env/DB + 主管理员会话；每格操作都从"新 app + 新登录"起。
+
+    风控时间戳日志与高危额度都是 create_app 的工厂局部状态，换一个 app 就是干净的一份
+    ——所以矩阵里每格都重开 app，格与格之间不会互相把对方顶进风控或 429。
+    """
+
+    TIER = None  # None = 不写键（钉缺省档）
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-pw-gate-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
+        cls.users_file = os.path.join(cls.tmp, "users.json")
+        os.environ.update({
+            "YIBAN_ACCOUNTS_KEY": TEST_KEY,
+            "YIBAN_ENV_FILE": cls.env_file,
+            "YIBAN_ACCOUNTS_FILE": cls.accounts_file,
+            "YIBAN_USERS_FILE": cls.users_file,
+            "YIBAN_DB_FILE": cls.db_file,
+            "YIBAN_STATE_DIR": cls.tmp,
+            "YIBAN_LOG_FILE": os.path.join(cls.tmp, "sign.log"),
+            "YIBAN_DISABLE_PURGE_LOOP": "1",
+        })
+        cls.webapp = _load_webapp()
+
+    @classmethod
+    def tearDownClass(cls):
+        import db
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_FILE",
+                  "YIBAN_USERS_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR",
+                  "YIBAN_LOG_FILE", "YIBAN_DISABLE_PURGE_LOOP"):
+            os.environ.pop(k, None)
+
+    def setUp(self):
+        self._write_env()
+        self._reset_db()
+        self.alerts = []
+        p = mock.patch.object(
+            self.webapp, "send_notification",
+            side_effect=lambda t, c, urgent=False, force=False, ledger=None:
+                self.alerts.append((t, render_body(c), urgent)),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    # ---- 夹具 ----
+    def _write_env(self):
+        lines = [
+            f"YIBAN_ACCOUNTS_KEY={TEST_KEY}",
+            "YIBAN_ADMIN_USER=admin",
+            f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}",
+            "YIBAN_MAIL_ADMIN_TO=admin@test.local",
+            # 发公告那一路要有草稿，否则它先报"没有待发布草稿"
+            "YIBAN_ANNOUNCEMENT_DRAFT=测试公告草稿",
+        ]
+        if self.TIER:
+            lines.append(f"YIBAN_PW_GATE={self.TIER}")
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        # 口令门比对的是哈希；重写 .env 会抹掉首启迁移的产物，补跑一次让夹具
+        # 回到真实部署的样子（不是为了让测试变绿而放宽断言）
+        self.webapp.migrate_admin_password_to_hash(self.env_file)
+
+    def _set_tier(self, value):
+        """把档位写进 `.env`（空值 = 删键，用于钉缺省档）。"""
+        self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_GATE": value or ""})
+
+    def _reset_db(self):
+        import db
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        with open(self.accounts_file, "w", encoding="utf-8") as f:
+            json.dump([], f)
+        db.init_db(self.db_file, migrate_from=self.accounts_file,
+                   env_file=self.env_file)
+
+    def _fresh(self):
+        """新 app + 新登录（风控计数与高危额度随之归零），返回 (client, csrf 头)。"""
+        self._reset_db()
+        c = self.webapp.create_app().test_client()
+        r = c.post("/api/login", json={"username": "admin", "password": ADMIN_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = c.get("/api/me").get_json()["csrf_token"]
+        return c, {"X-CSRF-Token": token}
+
+    # ---- 操作族（每格自己备好最小夹具，可反复调用）----
+    def _ensure_user(self, email):
+        import db
+        if db.find_user(email) is None:
+            db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        return email
+
+    def _ensure_account(self, deleted=False):
+        import db
+        rows = db.load_accounts()
+        if not rows:
+            acc_id = db.add_account({"name": "A", "phone": PHONE, "password": "pw-1",
+                                     "status": "active", "owner": "u1@test.local"})
+            rows = db.load_accounts()
+            acc_id = rows[0]["id"]
+        else:
+            acc_id = rows[0]["id"]
+        db.set_account_deleted(acc_id, 1 if deleted else 0)
+        return db.load_accounts()[0]
+
+    def _op_a_setting(self, c, hdr, **extra):
+        return c.post("/api/settings", json={"sunday_sign": 1, **extra}, headers=hdr)
+
+    def _op_b_setting(self, c, hdr, **extra):
+        return c.post("/api/settings", json={"sign_order": "random", **extra}, headers=hdr)
+
+    def _op_estop(self, c, hdr, **extra):
+        return c.post("/api/settings", json={"global_pause": 1, **extra}, headers=hdr)
+
+    def _op_announce(self, c, hdr, **extra):
+        return c.post("/api/announcement/publish", json={**extra}, headers=hdr)
+
+    def _op_exec_write(self, c, hdr, **extra):
+        return c.post("/api/scheduler/executors/rows",
+                      json={"proxy": "http://203.0.113.9:8080", **extra}, headers=hdr)
+
+    def _op_creds(self, c, hdr, **extra):
+        acc = self._ensure_account()
+        body = {"name": "A", "phone": acc["phone"], "password": "new-pw-1", **extra}
+        return c.put("/api/accounts/0", json=body, headers=hdr)
+
+    def _op_purge(self, c, hdr, **extra):
+        acc = self._ensure_account(deleted=True)
+        return c.post("/api/accounts/0/purge",
+                      json={"phone": acc["phone"], **extra}, headers=hdr)
+
+    def _op_user_delete(self, c, hdr, **extra):
+        self._ensure_user("u1@test.local")
+        return c.post("/api/users/u1@test.local/delete",
+                      json={"mode": "full", **extra}, headers=hdr)
+
+    def _call(self, op, c, hdr, **extra):
+        """按操作名分发；`_xff=` 走 X-Forwarded-For（换出口 IP 用，其余进请求体）。"""
+        xff = extra.pop("_xff", None)
+        headers = dict(hdr)
+        if xff:
+            headers["X-Forwarded-For"] = xff
+        return getattr(self, f"_op_{op}")(c, hdr=headers, **extra)
+
+
+class FullTierTest(_TierBase):
+    """`full` 档 = 改造前的行为，逐格不变：无口令必拒、带口令放行。"""
+
+    TIER = "full"
+
+    def test_每个操作无口令都被拒(self):
+        for op, meta in OPS.items():
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, meta["deny"], r.get_data(as_text=True))
+                self.assertEqual(r.get_json()["reason"], "password_required")
+
+    def test_每个操作带口令都放行(self):
+        for op in OPS:
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr, confirm_password=ADMIN_PASS)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_full_档不要求倒计时确认凭据(self):
+        """带了口令就不该再被倒计时框拦（向后兼容：旧前端不知道这个字段）。"""
+        c, hdr = self._fresh()
+        r = self._call("purge", c, hdr, confirm_password=ADMIN_PASS)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self.webapp.load_accounts(), [], "口令对了就该真的清除")
+
+
+class RiskTierTest(_TierBase):
+    """`risk`（默认）档：首击不要口令；不可逆操作改要倒计时确认。"""
+
+    TIER = "risk"
+
+    def test_可逆操作首击不要口令且真的生效(self):
+        for op in ("a_setting", "b_setting", "exec_write", "announce"):
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_不可逆操作缺倒计时确认被拒且操作未发生(self):
+        for op in ("purge", "user_delete", "estop"):
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, OPS[op]["deny"],
+                                 r.get_data(as_text=True))
+                self.assertEqual(r.get_json()["reason"], "delay_ack_required")
+        # 被拒的那次不得留下任何效果
+        c, hdr = self._fresh()
+        self._call("purge", c, hdr)
+        self.assertEqual(len(self.webapp.load_accounts()), 1, "被拒不得物理清除")
+
+    def test_不可逆操作带倒计时确认即放行(self):
+        for op in ("purge", "user_delete", "estop"):
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr, confirm_delay_ack=True)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_改他人凭据首击不要口令(self):
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self.webapp.load_accounts()[0]["password"], "new-pw-1")
+
+
+class OffTierTest(_TierBase):
+    """`off` 档：永不要求口令，只留倒计时确认与事后告警。"""
+
+    TIER = "off"
+
+    def test_可逆操作不要口令(self):
+        for op in ("a_setting", "b_setting", "creds", "exec_write", "announce"):
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_不可逆操作仍要倒计时确认(self):
+        for op in ("purge", "user_delete", "estop"):
+            with self.subTest(op=op):
+                c, hdr = self._fresh()
+                r = self._call(op, c, hdr)
+                self.assertEqual(r.status_code, OPS[op]["deny"],
+                                 r.get_data(as_text=True))
+                self.assertEqual(r.get_json()["reason"], "delay_ack_required")
+                r2 = self._call(op, c, hdr, confirm_delay_ack=True)
+                self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+
+    def test_风控命中也不要口令(self):
+        """off 档连风控也不升级：密集 + 换 IP 双命中，仍一路放行。"""
+        c, hdr = self._fresh()
+        for i in range(3):
+            r = self._call("creds", c, hdr, _xff=f"203.0.113.{i + 1}")
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_永不发门禁失败告警(self):
+        """off 档从不要求口令 ⇒ 门禁失败计数告警也不该被凭空发出（信号不得伪造）。"""
+        c, hdr = self._fresh()
+        for i in range(3):
+            r = self._call("creds", c, hdr, confirm_password="WrongPass999!",
+                           _xff=f"203.0.113.{i + 1}")
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertNotIn("高危操作二次鉴权失败告警", [t for t, _b, _u in self.alerts])
+
+
+class RiskTriggerTest(_TierBase):
+    """`risk` 档的两条风控判据，以及"无登录 IP 记录不触发"。"""
+
+    TIER = "risk"
+
+    def test_同session第三次危险操作要口令(self):
+        c, hdr = self._fresh()
+        for i in range(2):
+            r = self._call("creds", c, hdr)
+            self.assertEqual(r.status_code, 200,
+                             f"第 {i + 1} 次尚未达阈值，不该要口令：{r.get_data(as_text=True)}")
+        r = self._call("creds", c, hdr)
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["reason"], "password_required")
+        # 命中风控的路径与 full 档同路：带对口令即放行
+        r2 = self._call("creds", c, hdr, confirm_password=ADMIN_PASS)
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+
+    def test_换出口IP要口令(self):
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr, _xff="203.0.113.7")
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["reason"], "password_required")
+
+    def test_无登录IP记录不触发(self):
+        """历史会话没有 login_ip 键 = 未知，不得因此把所有人判成换 IP。"""
+        c, hdr = self._fresh()
+        with c.session_transaction() as sess:
+            sess.pop("login_ip", None)
+        r = self._call("creds", c, hdr, _xff="203.0.113.7")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_同IP单次操作不触发(self):
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_风控命中后的口令失败仍发门禁失败告警(self):
+        """命中风控才要求口令，但失败计数与告警这条信号不得因此静音。"""
+        c, hdr = self._fresh()
+        for _ in range(2):
+            self.assertEqual(self._call("creds", c, hdr).status_code, 200)
+        self.alerts.clear()
+        for _ in range(3):
+            r = self._call("creds", c, hdr, confirm_password="WrongPass999!")
+            self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+            self.assertEqual(r.get_json()["reason"], "password_incorrect")
+        self.assertIn("高危操作二次鉴权失败告警", [t for t, _b, _u in self.alerts])
+
+
+class RiskStoreHygieneTest(_TierBase):
+    """风控时间戳日志同样走统一回收：海量不同出口 IP 打不爆内存。"""
+
+    TIER = "risk"
+
+    def test_风控日志表被统一回收(self):
+        limit = self.webapp._IP_STORE_LIMIT
+        captured = []
+        real_trim = self.webapp._ip_store_trim
+
+        def spy(store, max_age):
+            captured.append(store)
+            return real_trim(store, max_age)
+
+        c, hdr = self._fresh()
+        with mock.patch.object(self.webapp, "_ip_store_trim", side_effect=spy):
+            self.assertEqual(self._call("creds", c, hdr).status_code, 200)
+        # 风控表的值是"时间戳列表"（其余门禁/限速表是元组），据此认出来
+        risk_stores = [s for s in captured
+                       if any(isinstance(v, list) for v in s.values())]
+        self.assertTrue(risk_stores, "risk 档写入路径必须对风控时间戳日志做 trim")
+        store = risk_stores[0]
+        stale = time.time() - (self.webapp._IP_STORE_MAX_AGE + 3600)
+        for i in range(limit + 1):
+            store[(f"203.0.113.{i % 251}", f"u{i}")] = [stale]
+        self.assertGreater(len(store), limit, "前置：先撑出超限")
+        with mock.patch.object(self.webapp, "_ip_store_trim", side_effect=spy):
+            self.assertEqual(self._call("creds", c, hdr).status_code, 200)
+        self.assertLessEqual(len(store), limit, "超限后必须回收过期条目")
+
+
+class TierResolutionTest(_TierBase):
+    """档位解析：缺省与非法值都落 `risk`（安全件不得被笔误静默降档到 off）。"""
+
+    TIER = None
+
+    def test_缺省档位是risk(self):
+        self.assertEqual(self.webapp._pw_gate_tier(self.env_file), "risk")
+
+    def test_非法值回退risk并告警(self):
+        self._set_tier("bogus")
+        with self.assertLogs("web", level="WARNING") as cm:
+            tier = self.webapp._pw_gate_tier(self.env_file)
+        self.assertEqual(tier, "risk")
+        self.assertTrue(any("YIBAN_PW_GATE" in line for line in cm.output),
+                        f"非法档位必须留一条可 grep 的告警，实际 {cm.output}")
+
+    def test_三个合法值原样解析(self):
+        for tier in ("off", "risk", "full"):
+            with self.subTest(tier=tier):
+                self._set_tier(tier)
+                self.assertEqual(self.webapp._pw_gate_tier(self.env_file), tier)
+
+    def test_大小写与空白归一(self):
+        self._set_tier("  FULL  ")
+        self.assertEqual(self.webapp._pw_gate_tier(self.env_file), "full")
+
+
+class DelayAckTest(_TierBase):
+    """倒计时确认凭据：只认布尔真值，只在不可逆操作上要求，full 档不要求。"""
+
+    TIER = "risk"
+
+    def test_非布尔真值一律算缺(self):
+        c, hdr = self._fresh()
+        for bad in ("true", "1", 1, 0, None, False):
+            with self.subTest(value=bad):
+                r = self._call("purge", c, hdr, confirm_delay_ack=bad)
+                self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+                self.assertEqual(r.get_json()["reason"], "delay_ack_required")
+
+    def test_full_档不要求该字段(self):
+        self._set_tier("full")
+        c, hdr = self._fresh()
+        r = self._call("purge", c, hdr, confirm_password=ADMIN_PASS)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_可逆操作不要该字段(self):
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+
+class PostHocAlertTest(_TierBase):
+    """非 full 档的软摩擦兜底：改他人凭据成功后补一封管理员告警（脱敏）。"""
+
+    TIER = "risk"
+
+    def test_risk_档改写凭据成功后有告警(self):
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        titles = [t for t, _b, _u in self.alerts]
+        self.assertIn("高危管理操作告警", titles, f"实际告警 {titles}")
+        body = "\n".join(b for _t, b, _u in self.alerts)
+        self.assertIn("改写他人易班凭据", body)
+        self.assertIn(MASKED_PHONE, body, "目标手机号必须脱敏")
+        self.assertNotIn(PHONE, body, "告警不得含完整手机号")
+        self.assertIn("admin", body, "告警要能看出是谁做的")
+        self.assertTrue(all(u for _t, _b, u in self.alerts), "必须走紧急通道")
+
+    def test_off_档改写凭据成功后有告警(self):
+        self._set_tier("off")
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("高危管理操作告警", [t for t, _b, _u in self.alerts])
+
+    def test_full_档不新增该告警(self):
+        self._set_tier("full")
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr, confirm_password=ADMIN_PASS)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self.alerts, [], "full 档本就有当次口令，不重复发事后告警")
+
+    def test_purge_在非full档仍发高危告警(self):
+        c, hdr = self._fresh()
+        r = self._call("purge", c, hdr, confirm_delay_ack=True)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn("高危管理操作告警", [t for t, _b, _u in self.alerts])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
