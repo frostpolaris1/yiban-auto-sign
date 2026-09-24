@@ -6,6 +6,19 @@
 - 引擎的异常消息（requests 会把完整 URL 嵌进去）会落日志。
 `sanitize_url` 只处理 **query 参数**，不碰 userinfo（实测无 query 时原样返回），
 故这两处必须各自过一遍 `mask_url_userinfo`。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：`mask_url_userinfo` 的四种写法（带 scheme / 裸 `user:pass@host` / 混在异常整句里 /
+已遮形态幂等），加两条引擎接线断言。
+对应实现：`yiban/masking.py` 的 `mask_url_userinfo`（`_URL_USERINFO_RE`）、
+`yiban/engine/attempts.py` 与 `yiban/engine/probe.py` 的异常消息组装处。
+关键断言：脱敏函数本身按"整串等值"断（`assertEqual(..., "http://***@host:8080")`），
+接线两条是**源码级** `assertIn` 字面量匹配——它只证明那条调用链的文本还在，
+不证明运行时真的走到；把这三处调用换名或改走 helper 会误红，把脱敏挪到永远不执行
+的分支里则不会红。另外 `mask_url_userinfo` 的调用点不止本文件钉的两处——web 侧
+`web/routes/settings_api.py` 与 `web/services/executor_env.py` 的回显也过它，
+那几处不在本文件的断言范围内。
+依赖：无网络、无 skip；接线用例读仓库源文件，故依赖 BASE 路径与那两处字面量共存。
 """
 import os
 import unittest

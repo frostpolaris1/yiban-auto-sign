@@ -66,6 +66,24 @@ logout_ok。三元组口径与既有 forbidden_path 逐字同构（target 只存
 
 用法（项目根目录，勿设 PYTHONIOENCODING）：
     py -m pytest tests/test_rekey_key_source.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：五块——① 审计密钥/追踪盐的来源回落顺序与"来源不确定即拒绝生成"，取证 CLI 的
+`--env` 存在性校验；② 告警通道门禁（先鉴权后占额度、缺钥生成挪到闸门之后、日报跨重启
+至多一封、通道不可用先落审计痕迹）、通道健康播报的降级判据取结构化字段而非正文符号；
+③ 账号侧物理清除的三层加固（口令二次鉴权 / 冷却 / 节流）与 PUT 防错位 409；
+④ 登录/登出/恢复的审计三元组留痕；⑤ 口令策略前后端与文案对拍。
+对应实现：`yiban/store/audit_chain.py`（`_audit_key` / `_track_salt`）、
+`scripts/audit_verify.py` 与 `scripts/list_duplicate_owners.py`、
+`web/app.py` 的高危门禁与 `_alert_channel_status`、`web/routes/*` 的账号删除与 PUT 路由、
+`yiban/engine/state_io.py` 的冷却账本。
+关键断言：负例一律断"零副作用"（行未删、额度未耗、`.env` 未被新建），只断状态码等于
+放过"先动手后回 403"；`test_wrong_password_tries_do_not_consume_budget` 与
+`test_mail_budget_still_enforced_after_auth` 是一对方向相反的钉（前者防运维 DoS、
+后者防把闸门拆了）。留痕命名只钉改名后的 `login_ok`——**跨版本取证必须同时查
+`('login','login_ok')`**，历史行的动作名是 `login`，这条约束不能随用例一起被"清理"。
+依赖：无网络（Flask test client + mock 发信），无 skip；文件很大（2500+ 行、多套
+`setUpClass` 各起一份 webapp），改公共夹具会同时影响末尾五组用例。
 """
 import contextlib
 import importlib.util
