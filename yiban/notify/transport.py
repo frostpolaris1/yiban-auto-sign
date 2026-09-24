@@ -6,6 +6,17 @@
 
 账本模块以 `ledger_mod` 限定：`send` 的形参名就是 `ledger`（公开 API，不可改名），
 裸名会被形参遮蔽。
+
+**通信**
+谁调用：`web/services/notify_mail.py` 的 `notify.send(...)`（告警邮件正文压成纯文本后
+捎带推手机）、`yiban/engine/alerts.py`（失败提醒与汇总降级推送）、
+`web/routes/notify.py` 的 `api_notify_test` → `send_test()`。
+它调用：`config`（读类型/密钥、`is_safe_url` 白名单）、`ledger`（占额度 / 退还 /
+节流表与跳过日志的去重表）、`requests.post`（两条出口）。
+出口凭据（SendKey 拼在 serverchan 的 URL path 里、custom 的 URL 本身）**只用于发请求，
+不进日志**：本层失败日志只记 `type(e).__name__` 与 `url_desc(url)`（脱敏 host）。
+`title` / `content` 由调用方组装，本层不做脱敏——内容里的手机号靠日志侧
+`MaskingFormatter` 与调用点自净，webhook 对端收到什么取决于调用方传了什么。
 """
 import logging
 import time
@@ -19,11 +30,12 @@ from . import ledger as ledger_mod
 
 logger = logging.getLogger("notify")
 
-SERVERCHAN_TURBO_HOST = "sctapi.ftqq.com"
+SERVERCHAN_TURBO_HOST = "sctapi.ftqq.com"  # 出口一：Server酱，SendKey 拼在 URL 的 path 段里
 
 
+# 也是自定义地址指向域名时的 DNS rebinding 唯一兜底（白名单对域名目标是放行的），别随手调大
 DEFAULT_URL_TIMEOUT = 10
-MAX_TITLE_CHARS = 32
+MAX_TITLE_CHARS = 32  # Server酱服务端对 title 的长度上限，超了会被拒
 # 跳过原因日志的去重窗口（秒）：同一原因窗口内只记一行，避免被刷爆日志
 SKIP_LOG_WINDOW = 60
 
@@ -38,12 +50,12 @@ def _throttle_due(title):
     """
     cooldown = config._env_int("COOLDOWN", config.DEFAULT_COOLDOWN)
     if cooldown <= 0:
-        return True
+        return True  # True = 放行本次发送（名字像在问"到点没"，读调用点时最容易反着看懂）
     now = time.time()
     with ledger_mod._throttle_lock:
         # 内存快速路径：本进程刚放行过，窗口内直接跳过（不读磁盘）
         if now - ledger_mod._throttle_ts.get(title, 0.0) < cooldown:
-            return False
+            return False  # False = 节流命中，调用方据此跳过
         # 磁盘权威：单次文件锁临界区内 读盘 → 判定 → 更新 → 写回。
         # 与账本同构——另一进程放行过的窗口内标题会被这里拦下，双进程不双发。
         with ledger_mod._state_file_lock("notify-throttle.json"):
@@ -140,32 +152,39 @@ def send(title, content, force=False, urgent=False, ledger=None):
     # （_consume_daily_budget / _daily_limit）仍各自按需解析，它们要读发送当刻的最新
     # 配置，把快照传下去反而会读到陈旧上限。
     envs = config._read_env_file()
+    # 下面分五道门，任一道不过就短路返回 False：①配置 ②紧急开关 ③节流 ④占额度 ⑤发送
     ntype = config._env_str("TYPE", envs).strip().lower()
     secret = config.get_secret(envs)
     if not ntype:
         if not secret:
-            return False
+            return False  # 门①未配置（类型与密钥都没有），静默不推
         ntype = "custom"  # 兼容旧明文 YIBAN_NOTIFY_URL（未配 TYPE 但有 URL 时按 custom 发送）
     if not secret:
-        return False
+        return False  # 门①有类型没密钥，同样静默不推（抛错会拖累签到主流程）
+    # 三本日额度互不挤占：具名账优先于紧急账，紧急账优先于普通账
     ledger_id = ledger or ("urgent" if urgent else "general")
     ticket = None  # None = 本次没占额度（force 路径），退还动作对它就是空操作
     if not force:
+        # ①~④ 全排在 ⑤ 之前：这几道闸门一个不过就不该发出请求、更不该花额度
         if config._env_int("URGENT_ONLY", config.DEFAULT_URGENT_ONLY, envs) and not urgent:
             _log_skip("urgent_only",
                       "非紧急告警未推手机（YIBAN_NOTIFY_URGENT_ONLY 未显式置 0）: %s", title)
-            return False  # 仅重要告警：非紧急跳过（不消耗每日预算）
+            return False  # 门②仅重要告警：非紧急跳过（因此也不消耗预算）
         if not _throttle_due(title):
             _log_skip("throttle", "推送节流命中（YIBAN_NOTIFY_COOLDOWN 窗口内同类已推）: %s", title)
-            return False
+            return False  # 门③节流命中
+        # 门④必须在发送之前占：两个进程同时判定的话，占晚了就会双发
         ticket = ledger_mod._consume_daily_budget(ledger_id)
         if not ticket.allowed:
             _log_skip("budget_exhausted_" + ledger_id,
                       "今日推送额度（%s 账）已用尽，本次不推手机: %s", ledger_id, title)
-            return False
-    if ntype == "serverchan":
+            return False  # 门④今日额度用尽
+    if ntype == "serverchan":  # 门⑤出口一：SendKey 拼在 URL 的 path 段里
         sent = _send_serverchan(secret, title, content)
-    elif ntype == "custom":
+    elif ntype == "custom":  # 门⑤出口二：URL 整体就是密钥，因此比出口一更敏感
+        # 白名单只校验"你给的这一个 URL"。若目标回 3xx 把客户端引向内网或云元数据地址，
+        # 跟随跳转等于绕过白名单——所以 _send_custom 里必须 allow_redirects=False。
+        # 两者是一对，拆开了各自都只剩一半效力。
         if not config.is_safe_url(secret):
             logger.warning("自定义通知地址未通过白名单校验，已拒发: host=%s", url_desc(secret))
             sent = False
@@ -173,9 +192,10 @@ def send(title, content, force=False, urgent=False, ledger=None):
             sent = _send_custom(secret, title, content)
     else:
         logger.warning("未知通知类型: %s", ntype)
-        sent = False
+        sent = False  # 类型写错时宁可拒发，也不猜一条出口——那会把凭据送去没预期的对端
     if not sent:
-        ledger_mod._refund_daily_budget(ticket)  # 没送到就不该花额度
+        # "先占再发"的补偿边：不退还的话失败会把额度磨光，真要报警的那天反而推不出
+        ledger_mod._refund_daily_budget(ticket)
     return sent
 
 
