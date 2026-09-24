@@ -14,8 +14,21 @@
 
 功能：字段密钥与写键行模型的注入面回归。
 归属：`yiban/infra`（env_io / account_crypto）与 `yiban/store` 写键方的测试。
-复用：`account_crypto.load_key/has_key/encrypt_field/decrypt_field`、`env_io.write_env_key`。
+复用：`account_crypto.load_key/has_key/encrypt_password/decrypt_password`、`env_io.write_env_key`。
 通信：直接调用上述函数并读写临时 `.env` 文件；由 pytest 收集 `unittest.TestCase`。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：三处写键方（账号密钥 / 审计密钥 / 追踪盐）与 `env_io` 的行模型是否同一套；
+潜伏分隔符拒绝写入；`KEY = v` 空白影子行折叠；密钥缓存按 `env_file` 分源取值。
+对应实现：`yiban/infra/env_io.py` 的 `parse_env_file` / `write_env_keys` / `write_env_key` /
+`has_line_break` / `is_valid_env_key` / `key_line_pattern`，以及
+`yiban/infra/account_crypto.py` 的 `load_key` / `encrypt_password` / `decrypt_password`。
+关键断言：拒绝写入这一支必须**同时**断三件事——抛 ValueError、磁盘字节一个未改、
+不留 `.env.tmp*`。只断抛出最容易漏：实现可以先写好 tmp 再抛，那份 tmp 是含密钥与口令哈希
+的完整 `.env` 副本。非法 key 与解密密钥不匹配都断 `ValueError` 而非宽异常——调用方只
+`except ValueError`，`TypeError` 会从缝里漏出去，这条是"抛什么类型"也是契约。
+依赖：临时目录与临时 `.env`，无网络、无 skip；断言里按 `splitlines()` 与物理行数两套口径
+分别核（潜伏分隔符正是这两套口径的差集）。
 """
 import io
 import os
