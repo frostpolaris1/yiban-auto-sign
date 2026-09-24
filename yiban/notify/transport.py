@@ -6,6 +6,17 @@
 
 账本模块以 `ledger_mod` 限定：`send` 的形参名就是 `ledger`（公开 API，不可改名），
 裸名会被形参遮蔽。
+
+**通信**
+谁调用：`web/services/notify_mail.py` 的 `notify.send(...)`（告警邮件正文压成纯文本后
+捎带推手机）、`yiban/engine/alerts.py`（失败提醒与汇总降级推送）、
+`web/routes/notify.py` 的 `api_notify_test` → `send_test()`。
+它调用：`config`（读类型/密钥、`is_safe_url` 白名单）、`ledger`（占额度 / 退还 /
+节流表与跳过日志的去重表）、`requests.post`（两条出口）。
+出口凭据（SendKey 拼在 serverchan 的 URL path 里、custom 的 URL 本身）**只用于发请求，
+不进日志**：本层失败日志只记 `type(e).__name__` 与 `url_desc(url)`（脱敏 host）。
+`title` / `content` 由调用方组装，本层不做脱敏——内容里的手机号靠日志侧
+`MaskingFormatter` 与调用点自净，webhook 对端收到什么取决于调用方传了什么。
 """
 import logging
 import time
