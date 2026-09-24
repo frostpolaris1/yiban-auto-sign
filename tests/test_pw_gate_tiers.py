@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """口令复核门的三档（`YIBAN_PW_GATE`）与软性摩擦：档位矩阵 + 风控 + 倒计时确认。
 
+标签：E · Web：认证/权限/API
+覆盖：`YIBAN_PW_GATE` 三档（`full` / `risk` / `off`）的档位矩阵——十类受门禁操作逐格验证「要不要当次口令、要不要倒计时确认」，加上风控判据、档位解析与事后告警
+对应实现：`web/app.py` 的 `_pw_gate_tier`、统一口令门、`confirm_delay_ack` 校验与事后告警出口（凭据改写 / 执行体写 / 删用户）
+关键断言：`full` 档逐格无口令必拒、且带了口令就**不再**要求倒计时字段（旧前端不认识它）；`risk` 档可逆操作首击免口令、不可逆操作缺 `confirm_delay_ack` 即拒且操作未发生；`off` 档连换出口 IP 也不要口令，但绝不凭空发出门禁失败告警；风控唯一判据是「换环境」——密度不是判据，两级 IP 都无记录的历史会话不触发；档位缺省与非法值都落 `risk`（非法值另告警一次）
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node。每格都新建 app + 新登录：高危额度与风控计数是 `create_app` 的工厂局部状态，换 app 才是干净的一份。无需 node
+
 背景：危险操作此前**一律**要求当次输入管理员口令，摩擦成本超过威胁收益。现按
 `.env` 的 `YIBAN_PW_GATE` 分三档：
 
@@ -129,6 +135,7 @@ class _TierBase(unittest.TestCase):
             # 发公告那一路要有草稿，否则它先报"没有待发布草稿"
             "YIBAN_ANNOUNCEMENT_DRAFT=测试公告草稿",
         ]
+        # 不设档位时干脆不写这一行，让 `_pw_gate_tier` 走缺省解析路径
         if self.TIER:
             lines.append(f"YIBAN_PW_GATE={self.TIER}")
         with open(self.env_file, "w", encoding="utf-8") as f:
