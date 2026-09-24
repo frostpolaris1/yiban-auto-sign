@@ -15,26 +15,9 @@
 **日志落盘面也脱敏**：日志文件会被转发、导出、截图，故输出面的 formatter 对最终
 消息统一兜底脱敏（`yiban.logging_ext.MaskingFormatter`），不依赖各调用点自觉。
 
-**遮罩只发生在这些层**（写注释前逐个实测过，勿把本模块当成"全面脱敏"）：
-
-- 键值对形态的凭据字面量：`sanitize_text` 按键名匹配抹值；
-- URL 的 query 参数：`sanitize_url` 按键名/值形态打码；
-- 落盘整行的 11 位手机号：`yiban.logging_ext.MaskingFormatter` 兜底。
-
-**已知的未覆盖面**（都是"看着像脱敏了、其实没有"）：
-
-- 键名被百分号编码即绕开键名匹配：`tok%65n=…`、`pass%77ord=…` 原样输出，
-  编码键名中间任意一个字符就够了（`refresh%5Ftoken` 这类能中，是因为残段
-  恰好仍以明文 `token` 起头，不是规则认得它）；
-- `sanitize_url` 只解析 `&` 分隔的 query：`#access_token=…` 的 fragment、
-  以及 `;` 分隔段（落在上一个参数的值里）都原样回显；
-- 高熵兜底是"值全为 `[A-Za-z0-9_-]`"的形式判定：含 `%`、`/`、`+`、`.` 的长
-  令牌（哪怕解码后仍是凭据）不命中，非敏感参数名于是整体放行；
-- 手机号口径只认连续 11 位数字：编码形态、分段书写都不在遮罩之列。
-
-上述形态本模块未处理，改口径要连 `tests/test_masking_ssrf_gaps.py` 一起看。
-此外 `sanitize_url` 输出的是**解码后**的 query（`%2F` 变回 `/`），只可用于日志，
-不可回填去发请求。
+本模块是**按键名/值形态打码**的一层，不是"任何形态都遮得住"的一层：每个规则的
+实际覆盖面与绕过面写在各自那行旁边，改口径要连 `tests/test_masking_ssrf_gaps.py`
+与 `tests/test_masking_tokens.py` 一起看。
 
 ⚠ `mask_email` 不在这里：它与 signin 侧的邮箱脱敏公式不同，合并会改变用户可见输出，
 须与前端展示口径一起改。
@@ -51,7 +34,7 @@ _URL_SENSITIVE_KEY_PARTS = (
 )
 # 大陆手机号形态（11 位、1[3-9] 开头）——参数名不敏感时也按值打码：
 # 上游把手机号回显在 `u=`/`id=` 这类名字里时，24 位高熵阈值够不到 11 位。
-_PHONE_VALUE_RE = re.compile(r"^1[3-9]\d{9}$")
+_PHONE_VALUE_RE = re.compile(r"^1[3-9]\d{9}$")  # 只认连续 11 位数字：编码/分段书写都不命中
 
 # 自由文本里的手机号：与 `_PHONE_VALUE_RE` 同字符口径（直接复用其 pattern，不另写
 # 一套号码规则），只把首尾锚点换成"两侧不能是数字"——否则会把 12 位订单号之类
@@ -63,6 +46,12 @@ _PHONE_IN_TEXT_RE = re.compile(r"(?<!\d)" + _PHONE_VALUE_RE.pattern.strip("^$") 
 # `JSESSIONID` / `x-csrf` / `api_key` 这类带前后缀的复合名——`\b` 在 `_`/`-` 处
 # 不构成边界，原写法只认独立单词，实测 6 类复合名全部漏网。
 # 刻意不含裸 `key`/`sid`：否则 `monkey`/`consider` 这类无关词会被误伤。
+#
+# 绕过面（如实记录，别把这条规则当成键名识别器）：它匹配的是**未经解码的字面文本**，
+# 所以 `sanitize_text` 的输入里键名被百分号编码任意一个字符就绕开——`tok%65n=v`、
+# `pass%77ord=v` 原样输出。`refresh%5Ftoken=v` 看着能中，是因为残段恰好仍以明文
+# `token` 起头，不是规则认得它。同一条 URL 交给 `sanitize_url` 就不会漏，因为那里的
+# 键名经 `parse_qsl` 解码后才参与匹配——两层的差别在解码，不在键名词表。
 _CRED_KEY = r"(?:token|secret|passwd|password|pwd|cookie|session|csrf|authorization|api[-_]?key)"
 # 值按"配对的同种引号串（含反斜杠转义）或裸值"取：`[^'"]*` 会在口令内含
 # 另一种引号时截断，残留首引号之后的明文（repr 对含单引号的口令正好用双引号包裹）。
@@ -130,7 +119,9 @@ def sanitize_url(url):
     raw = str(url)
     try:
         parts = urlsplit(raw)
-        pairs = parse_qsl(parts.query, keep_blank_values=True)
+        # 分隔符只认 `&`：`#access_token=…` 整段落进 fragment 不参与打码；`;token=…`
+        # 会被当成上一个参数的**值**收下来，随后因不含敏感参数名而原样回显。
+        pairs = parse_qsl(parts.query, keep_blank_values=True)  # 键名在此解码，故编码键名绕不开本层
     except ValueError:
         return "<url 解析失败已省略>"
     if not pairs:
@@ -141,12 +132,14 @@ def sanitize_url(url):
         if any(part in k for part in _URL_SENSITIVE_KEY_PARTS):
             return f"{key}=***"
         if len(value) >= 24 and re.fullmatch(r"[A-Za-z0-9_\-]+", value):
-            return f"{key}=***"
+            return f"{key}=***"  # 高熵兜底是纯形式判定：值里含 % / + . 的长令牌不命中
         if _PHONE_VALUE_RE.match(value):
             # 按值兜底：保留 mask_phone 同口径的前 3 后 4，仍可区分是哪个号
             return f"{key}={value[:3]}****{value[7:]}"
-        return f"{key}={value}"
+        return f"{key}={value}"  # 参数名不在片段表 + 值不够"高熵" = 原样回显，这是常态不是异常
 
+    # 注意输出是**解码后**的 query（`%2F` 变回 `/`、`;` 分隔段的值里带回了原文），
+    # 只能拿去写日志；回填成请求会改变实际发出去的内容。
     return urlunsplit(parts._replace(query="&".join(_masked(k, v) for k, v in pairs)))
 
 #: URL 里的 userinfo（`scheme://user:pass@host`）——代理串按契约允许带凭据，
