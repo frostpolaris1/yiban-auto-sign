@@ -21,10 +21,6 @@
 单独兜底出口（`YIBAN_PROXY_FALLBACK`）"，表达不了"停用某一行"与"删中间行不重排"。
 新清单是**单键 JSON 数组**，每个执行体一行：`{"slot", "type", "proxy"}`。
 
-本文件钉住五件事（缺一个就会在生产上表现为"升级后出口串了"或"停用行还在被拉起"）：
-
-全部离线：接口层只用临时目录 + 临时库，不联网（`worker_presence`/`fallback_alive`
-读的是状态目录里的本地文件）。
 """
 import contextlib
 import importlib.util

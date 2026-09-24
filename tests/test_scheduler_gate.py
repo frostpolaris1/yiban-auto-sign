@@ -24,7 +24,7 @@
    client，docker/scheduler.py 按文件路径加载且每次全新实例。不发网络请求。
 
 用法（项目根目录）：
-    py -m pytest tests/test_batch12_fixes_0829.py -v
+    py -m pytest tests/test_scheduler_gate.py -v
 """
 import contextlib
 import importlib.util

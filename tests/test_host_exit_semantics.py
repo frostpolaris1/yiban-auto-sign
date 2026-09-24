@@ -6,19 +6,16 @@
    属了结、真失败优先 → 1、全员窗口外 → 2、暂停与用户取消不触发 2）、sched-run
    标记区分首签/补签轮、混合场景仍写全量完成标记、告警抑制的事实判定（窗口开着
    + 后面还有人接着跑才抑制）、兜底心跳的新鲜度三档。
-对应实现：scripts/signin.py（main
-   尾部退出码汇总、_write_sched_done、_maybe_alert_zero_success、兜底存活判定）、run.sh
-   对这些退出码的消费、scripts/state_io 的 fallback 心跳文件。
+对应实现：yiban/engine/runner.py（汇总各状态算退出码；`scripts/signin.py` 的 `main` 只转发它）、yiban/engine/state_io.py（`_write_sched_done`）、yiban/engine/alerts.py（`_maybe_alert_zero_success`）、run.sh 对这些退出码的消费、state_io 的 fallback 心跳文件。
 关键断言：「有未了结的窗口外账号」必须让宿主写 SKIPPED 从而触发 07:10
    补签，即使本轮有成功——部分成功不是全量完成。真失败优先于窗口跳过（exit
    1），暂停/用户取消是有意状态不得拉成
    2。告警抑制改为事实判定：只有窗口还开着且确实有人接着跑才抑制；窗口已关时兜底也做不了什么，必须让管理员当天知情。心跳过期即判已停（kill
-   -9 不会执行清理，只看文件在不在就永远报「在跑」）。
-依赖：临时状态目录 + 打桩 signin 的写盘/邮件/时钟；退出码用复制的汇总逻辑直算（与
-   main 尾部同构）。不发网络请求。整文件在本机执行，无 skip。
+   -9 不会执行清理，只看文件在不在就永远报「在跑」）。⚠ 退出码那组用例断的是本文件内 `ExitCodeSemanticsTest._compute` 这份副本，不经过 `runner.main`：生产改判定它照样全绿，且副本把 `no_position` 归成真失败、生产归入跳过，两边已经不一致。
+依赖：临时状态目录 + 打桩 signin 的写盘/邮件/时钟。不发网络请求。整文件在本机执行，无 skip。
 
 用法（项目根目录）：
-    py -m pytest tests/test_batch15_exit_semantics_0831.py -v
+    py -m pytest tests/test_host_exit_semantics.py -v
 """
 import os
 import shutil

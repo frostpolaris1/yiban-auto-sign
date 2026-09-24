@@ -6,7 +6,7 @@
    引擎与网页共用的remaining_sec、capacity_accounts）、缓冲吃空时的退化处置与容量非零、窗口关闭收尾对当日已有结论的
    CAS 保护、零请求收尾轮的退出码、手动链路（schedule
    为空）的逐账号窗口钳制、补签轮对 no_task 的「已了结」判定、业务钟（北京
-   +8，与宿主 TZ 无关）驱动窗口判定与按日留痕、F4 非 5
+   +8，与宿主 TZ 无关）驱动窗口判定与按日留痕、非 5
    分钟整数倍窗口的自选尾片。
 对应实现：yiban/window.py（Window、bounds、from_env、remaining_sec、full_sec）、yiban/clock.py（beijing_now、today、ts）、scripts/signin.py（_schedule_config、_schedule_blocks、_window_closed、capacity_accounts、run_queue_retry
    的窗口收尾、main 的退出码）、yiban/db 会话缓存时钟。
