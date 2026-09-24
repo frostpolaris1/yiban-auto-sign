@@ -5,6 +5,9 @@
 磁盘是唯一事实源：`locks.file_lock`（POSIX flock / Windows msvcrt）串行化 web（常驻）
 与 signin（cron 新进程）的读-改-写，进程内锁只承担同进程互斥。
 依赖方向：config ← 本层 ← transport。
+谁调用：`transport`（占额度 / 失败退还 / 节流表与跳过日志去重表）、`config.get_config`
+（读余额）、`web/services/channel_health.py`（`pop_exhaustion_notice` 取耗尽清单）、
+`web/app.py`（只读判据 `has_pending_exhaustion_notice` / `budget_exhausted_today`）。
 """
 import json
 import logging
@@ -22,6 +25,7 @@ logger = logging.getLogger("notify")
 
 # 节流状态的进程内快速路径：本进程刚放行过的标题在窗口内直接跳过，省一次磁盘 IO；
 # 跨进程一致性由磁盘表 + 文件锁保证（见 _throttle_path / transport._throttle_due）。
+# 磁盘表的键就是告警标题原文：标题里带了什么（账号标识等），磁盘上就存什么，不清理。
 # 测试按这两个名字复位内存态（`_throttle_ts.clear()`），不要改名。
 _throttle_ts = {}
 _throttle_lock = threading.Lock()
