@@ -40,8 +40,8 @@ from yiban import window as yb_window
 def _executor_write_guard(data, action, changed):
     """执行体写操作的口令复核（返回 None = 通过，否则是 `(响应, 状态码)`）。
 
-    与 `POST /api/settings` 的系统开关**同一个门禁入口**（前端要求别另立
-    一套），本函数只剩两条落点特有的判断：
+    与 `POST /api/settings` 的系统开关**同一个门禁入口**（不另立第二套，防两处口径分叉），
+    本函数只剩两条落点特有的判断：
 
     - **只在"真的会改配置"时要求**（`changed=False` = 请求值与现值一致 → 不要求）：
       日常无变更的保存不该多一道口令；

@@ -132,9 +132,8 @@ def api_users_deleted_purge():
         return jsonify({"error": f"单次最多清除 {m.BATCH_OP_LIMIT} 个用户"}), 400
     if any(not isinstance(e, str) or len(e) > 64 for e in emails):
         return jsonify({"error": "邮箱格式不正确"}), 400
-    # 物理清除不可逆 → 二次鉴权 + 同管理员限速
-    # （顺序统一为"先鉴权、通过了才占额度"）
-    gate = high_risk_gate()(data, "彻底清除已注销用户", irreversible=True)
+    # 物理清除不可逆 → 过口令门禁 + 同管理员限速（顺序恒为"先鉴权、通过了才占额度"）
+    gate = high_risk_gate()(data, "彻底清除已注销用户", irreversible=True)  # irreversible：非 full 档还要倒计时确认
     if gate:
         return gate
     with m._file_lock:
@@ -164,8 +163,8 @@ def api_users_batch():
     """批量操作注册用户：reset_password/delete。
 
     body: {"action": ..., "emails": [...], "password": "批量重置的新密码"}
-    角色变更不支持批量：提权/降权仅保留
-    /api/users/<email>/role 单个路径，且须二次输入当前管理员密码确认。
+    角色变更不支持批量：提权/降权仅保留 /api/users/<email>/role 单个路径，
+    且须先过高危口令门禁（是否真要当次口令随 `YIBAN_PW_GATE` 档位）。
     Phase 1：整体事务，失败全部回滚；无效项软跳过。
     """
     m = _appmod()
@@ -191,13 +190,11 @@ def api_users_batch():
         # 在 _file_lock 外预计算 scrypt 哈希，避免长时间占用进程锁
         reset_hash = m.generate_password_hash(password, method=m.SCRYPT_METHOD)
 
-    # 删除用户 = 高危不可逆操作 → 二次鉴权 +
-    # 同管理员窗口内限速（防被盗会话快速反复删除用户并刷告警邮件）。
-    # 批量重置密码同为账号控制权转移操作（e2e 实锤：普通管理员
-    # 无口令即可批量接管用户登录），与 delete 同口径走高危门禁。
+    # 删除与批量重置口令都走高危门禁（口令 + 同管理员窗口内限速，防被盗会话快速反复删除
+    # 用户并刷告警邮件）。重置口令入门禁的理由：它同为账号控制权转移操作（e2e 实锤：普通
+    # 管理员无口令即可批量接管用户登录）——只把 delete 当高危是不够的。
     if action in ("delete", "reset_password"):
-        # 顺序统一为"先鉴权、通过了才占额度"（429 文案保持原样）
-        gate = high_risk_gate()(
+        gate = high_risk_gate()(  # 顺序恒为"先鉴权、通过了才占额度"；429 文案各自保持原样
             data,
             "批量删除用户" if action == "delete" else "批量重置密码",
             limit_msg="删除操作过于频繁，请稍后再试"
@@ -311,8 +308,8 @@ def api_user_role(email):
     只能将「正式用户」（有生效账号且无待审核）设为管理员；
     防呆：内置管理员不可改；至少保留 1 个管理员。
 
-    角色变更是权限面变更，接入高危门禁（二次输入当前
-    管理员密码 + 限速）；批量角色变更入口已移除，本端点是唯一变更路径。
+    角色变更是权限面变更，接入高危门禁（口令复核是否索要随 `YIBAN_PW_GATE` 档位 + 限速）；
+    批量角色变更入口已移除，本端点是唯一变更路径。
     """
     m = _appmod()
     # 权限：仅主管理员（普通管理员无管理员权限变更权）
@@ -320,8 +317,7 @@ def api_user_role(email):
     if not m._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改管理员权限"}), 403
     data = m._json_body()
-    # 高危门禁：先过口令门禁（是否索要口令随 `YIBAN_PW_GATE` 档位），通过后才占限速额度（与删除/重置同口径）
-    gate = high_risk_gate()(data, "修改管理员权限")
+    gate = high_risk_gate()(data, "修改管理员权限")  # 与删除/重置同口径：先过门禁，通过了才占额度
     if gate:
         return gate
     new_role = data.get("role")
@@ -395,9 +391,8 @@ def api_user_password(email):
     pw_err = m._password_policy_error(password)
     if pw_err:
         return jsonify({"error": f"新密码不符合要求：{pw_err}"}), 400
-    # 管理员重置他人密码 = 账号控制权转移 → 高危二次鉴权 + 同管理员
-    # 限速（与批量重置同口径）。普通用户自改密码走 /api/me/password（需验当前
-    # 旧密码，且 require_login 已把普通用户挡在管理面之外），不落此门禁。
+    # 管理员重置他人密码 = 账号控制权转移 → 与批量重置同口径过高危门禁（口令 + 同管理员限速）；
+    # 普通用户自改密码走 /api/me/password（验当前旧密码），不落本门禁。
     if m._current_role() == "admin":
         gate = high_risk_gate()(
             data, "重置用户密码", limit_msg="重置操作过于频繁，请稍后再试")
@@ -446,13 +441,9 @@ def api_user_delete(email):
     if email.strip().lower() == m._builtin_admin_email().strip().lower():
         return jsonify({"error": "内置管理员不可删除"}), 400
     is_master = m._is_builtin_admin_session()
-    # 完全删除用户 = 高危不可逆 → 二次鉴权 +
-    # 同管理员限速。
-    # （accounts_only 门禁）：仅清空账号虽保留用户可重新
-    # 提交，但一次请求即把该用户**全部**易班凭据（不可逆）清零，滥用面与 full 同级；
-    # 两种模式统一接入 _high_risk_gate，响应语义与 full 模式对齐（口令错 400/未登录
-    # 401、冷却 429）。
-    gate = high_risk_gate()(
+    # accounts_only 也进门禁的理由：一次请求就把该用户**全部**易班凭据清零，滥用面与
+    # full 同级；两种模式的响应语义对齐（口令错 400 / 未登录 401 / 超限与冷却 429）。
+    gate = high_risk_gate()(  # 完全删除 = 高危不可逆：先过口令门禁（要口令随档位），通过了才占限速额度
         data,
         "完全删除用户" if mode == "full" else "清空用户账号",
         limit_msg="删除操作过于频繁，请稍后再试",
