@@ -51,7 +51,7 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
         os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
         os.environ["YIBAN_DB_FILE"] = cls.db_file
         os.environ["YIBAN_STATE_DIR"] = cls.tmp
-        global db
+        global db  #先 global 再 import：setUpClass 里绑的模块名要让各用例方法看得见
         import db
 
     @classmethod
@@ -66,13 +66,13 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
         if db._conn is not None:
             db._conn.close()
             db._conn = None
-        for suffix in ("", "-wal", "-shm"):
+        for suffix in ("", "-wal", "-shm"):  #WAL/SHM 一起删：留着 sidecar 会让下一个用例读到上一个用例的库内容
             p = self.db_file + suffix
             if os.path.exists(p):
                 os.remove(p)
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
-        db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+        db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)  #走真迁移而不是手写建表：owner 的部分唯一索引只存在于真 schema 里
         db.create_user(EMAIL, "x" * 20)
         self.a = self._add(PHONE_A)
 
@@ -86,7 +86,7 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
 
     def _add_deleted_row(self, phone, deleted_at, deleted_by):
         """加一条**软删**账号行（owner 唯一索引只约束未删除行，故先把 A 暂挂再放回）。"""
-        a_live = not self._row(self.a)["deleted"]
+        a_live = not self._row(self.a)["deleted"]  #先把生效行暂挂再插软删行：唯一索引只管未删除行，不暂挂就插不进去
         if a_live:
             self._set_deleted(self.a, True, deleted_at=_stamp(), deleted_by="")
         row_id = self._add(phone)
@@ -112,7 +112,7 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
             ).fetchone())
 
     def _cancel(self):
-        self.assertTrue(db.soft_delete_user_with_accounts(EMAIL))
+        self.assertTrue(db.soft_delete_user_with_accounts(EMAIL))  #注销走这个函数：它决定"注销当时哪一行在生效"的时刻，恢复语义全看它
 
     def _count(self, phone):
         with db._conn_lock:
