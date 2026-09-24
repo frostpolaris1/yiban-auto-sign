@@ -482,6 +482,10 @@ def mark_worker_finished(index, exit_code=None, now=None):
 
     被信号杀掉（退出码为负）时调用方**不调本函数**：留"有开始、无收尾"，心跳过期后
     由 `worker_presence` 判成 `stale`——那正是"疑似被强杀/超时杀掉"需要用户注意的状态。
+
+    **退出码 >= 0 一律算正常退出**，含子进程"本轮失败"（如 v3 返回空结果、runner 汇总成
+    退出码 1）：那也会写收尾判 `finished`，失败信息靠退出码与告警体现，不由四态承担。
+    只有**单进程直跑**（没有监督进程替它写收尾）时内部未预期异常才留"有开始、无收尾"。
     """
     at = now or clock.now()
     path = worker_alive_path(index)
@@ -505,7 +509,7 @@ def worker_presence(index, now=None):
     | `running` | 有心跳且新鲜（`now - ts <= 2 × WORKER_HEARTBEAT_SEC`） | 在线（正在跑本轮） |
     | `finished` | 有本轮收尾标记（`ended_at`，正常退出） | 已跑完（灰） |
     | `idle` | 本业务日无该槽位记录（今天还没跑） | 未运行（灰） |
-    | `stale` | 有开始记录、无收尾，且心跳已过期 | **异常**（可能被强杀/超时杀掉） |
+    | `stale` | 有开始记录、无收尾，且心跳已过期 | **异常**（可能被强杀/超时杀掉；单进程直跑时内部未预期异常也不写收尾） |
 
     `last_seen_at` 是"最后一次见到它活着"的时间串（收尾态给 `ended_at`；无记录给
     None）。**为什么不回 alive 布尔**：短命进程"没在跑"多数时候是正常的，只有
