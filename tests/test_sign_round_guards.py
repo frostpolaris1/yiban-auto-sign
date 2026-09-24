@@ -540,8 +540,9 @@ class BatchSignCooldownTest(unittest.TestCase):
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file,
                    env_file=self.env_file)
-        # 清掉 .env 中可能残留的冷却键（默认 1800s）
+        # 清掉 .env 中可能残留的冷却与速率上限键（回到默认值）
         self._set_cooldown(None)
+        self._set_rate_limit(None)
         # 插入 3 个 active 账号（owner=admin 直属，不占注册用户配额）
         for i, phone in enumerate(("13800000001", "13800000002", "13800000003")):
             db.add_account({
@@ -567,6 +568,24 @@ class BatchSignCooldownTest(unittest.TestCase):
             lines.append(f"YIBAN_BATCH_SIGN_COOLDOWN_SEC={value}".rstrip())
         with open(self.env_file, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+
+    def _set_rate_limit(self, limit, window=None):
+        """写/删 .env 的全局速率上限键（`limit=None` = 删键回默认，`limit=0` = 关闭）。"""
+        keys = ("YIBAN_SIGNIN_RATE_MAX", "YIBAN_SIGNIN_RATE_WINDOW_SEC")
+        with open(self.env_file, encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+        lines = [ln for ln in lines
+                 if not any(ln.strip().startswith(k + "=") for k in keys)]
+        if limit is not None:
+            lines.append(f"YIBAN_SIGNIN_RATE_MAX={limit}")
+        if window is not None:
+            lines.append(f"YIBAN_SIGNIN_RATE_WINDOW_SEC={window}")
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def _trigger_single(self, c, csrf, phone):
+        return c.post("/api/signin", json={"phone": phone},
+                      headers={"X-CSRF-Token": csrf})
 
     def _login(self, c):
         r = c.post("/api/login", json={"username": "admin", "password": ADMIN_PASS})
@@ -600,7 +619,7 @@ class BatchSignCooldownTest(unittest.TestCase):
 
     # ---- 冷却 ----
     def test_cooldown_blocks_immediate_retry(self):
-        """默认冷却 1800s：队列完成后立即再触发 → 429。"""
+        """默认冷却（60s）：队列完成后立即再触发 → 429。"""
         c = self.webapp.create_app().test_client()
         csrf = self._login(c)
         r1 = self._trigger_batch(c, csrf)
@@ -661,6 +680,58 @@ class BatchSignCooldownTest(unittest.TestCase):
                     headers={"X-CSRF-Token": csrf})
         self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
         self.assertIn("冷却中", r2.get_json()["error"])
+
+    # ---- 全局速率上限（冷却之外的积分节流）----
+    def test_rate_limit_blocks_after_max_triggers(self):
+        """冷却关闭 + 上限 2 次：第 3 次触发 → 429，文案与"冷却中"区分开。"""
+        self._set_cooldown(0)
+        self._set_rate_limit(2, window=600)
+        c = self.webapp.create_app().test_client()
+        csrf = self._login(c)
+        for phone in ("13800000001", "13800000002"):
+            r = self._trigger_single(c, csrf, phone)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        r3 = self._trigger_single(c, csrf, "13800000003")
+        self.assertEqual(r3.status_code, 429, r3.get_data(as_text=True))
+        err = r3.get_json()["error"]
+        self.assertIn("过于频繁", err, f"应命中次数上限：{err}")
+        self.assertNotIn("冷却中", err, "两道闸的文案必须能分辨")
+
+    def test_rate_limit_applies_to_batch_endpoint_too(self):
+        """上限 1 次：单条已用掉额度 → 批量触发同样 429（单条/批量共用同一计数）。"""
+        self._set_cooldown(0)
+        self._set_rate_limit(1, window=600)
+        c = self.webapp.create_app().test_client()
+        csrf = self._login(c)
+        self.assertEqual(self._trigger_single(c, csrf, "13800000001").status_code, 200)
+        r = self._trigger_batch(c, csrf)
+        self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
+        self.assertIn("过于频繁", r.get_json()["error"])
+
+    def test_rate_limit_zero_disables(self):
+        """上限 0 = 关闭：冷却也关闭时连发不受拦。"""
+        self._set_cooldown(0)
+        self._set_rate_limit(0)
+        c = self.webapp.create_app().test_client()
+        csrf = self._login(c)
+        for phone in ("13800000001", "13800000002", "13800000003"):
+            r = self._trigger_single(c, csrf, phone)
+            self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_cooldown_checked_before_rate_limit(self):
+        """顺序契约：冷却先判——上限 1 且冷却默认时，第 2 次报"冷却中"而非"过于频繁"。
+
+        被冷却拒掉的请求没有发起真实登录，不该消耗次数额度（否则合法运维连点几次
+        就把整个窗口的次数预算花光）。
+        """
+        self._set_rate_limit(1, window=600)
+        c = self.webapp.create_app().test_client()
+        csrf = self._login(c)
+        self.assertEqual(self._trigger_single(c, csrf, "13800000001").status_code, 200)
+        r2 = self._trigger_single(c, csrf, "13800000002")
+        self.assertEqual(r2.status_code, 429, r2.get_data(as_text=True))
+        self.assertIn("冷却中", r2.get_json()["error"],
+                      "冷却未过期时不该由次数上限抢先拒绝")
 
 
 if __name__ == "__main__":
