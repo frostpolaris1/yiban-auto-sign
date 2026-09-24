@@ -204,11 +204,13 @@
     return body;
   }
 
-  // 保存收尾：成功清空收件人输入并刷新，失败/取消只落提示行；按钮复位两种路径共用
-  function finish(ok, err, canceled) {
+  // 保存收尾：成功清空收件人输入并刷新，失败/取消只落提示行；按钮复位两种路径共用。
+  // 提示必须落在调用方 load() 之后——load() 末尾无条件 setTip("", false) 清屏，先提示后重载
+  // 会把刚落下的一句整条抹掉（"已保存"看起来从未出现过）。okText 让各动作有自己的成功文案。
+  function finish(ok, err, canceled, okText) {
     if (ok) {
       var to = $("sm-to"); if (to) to.value = "";
-      setTip("邮件配置已保存", false);
+      setTip(okText || "邮件配置已保存", false);
     } else if (canceled) {
       setTip("", false);                     // 取消弹窗 = 本次不保存，不留"保存中…"
     } else {
@@ -272,7 +274,8 @@
     return submit(body);
   }
 
-  // 清空告警收件人：影响面由 confirmDialog 讲清，口令/确认交给统一 helper 按后端 reason 收
+  // 清空告警收件人：影响面由 confirmDialog 讲清，口令/确认交给统一 helper 按后端 reason 收。
+  // 收尾复用 finish：成功提示必须落在 load() 之后（load() 末尾会无条件清屏），与保存路径同口径。
   function clearAdminTo() {
     if (busy || !ctx.isMaster) return;
     YB.confirmDialog({
@@ -282,16 +285,16 @@
     }).then(function (ok) {
       if (!ok) return;
       busy = true;
-      YB.dangerousSubmit({
+      return YB.dangerousSubmit({
         method: "PUT", path: "/api/mail-config", body: { admin_to: "" },
         desc: "再次确认：清空告警收件人？请输入当前管理员密码确认。"
       }).then(function () {
-        setTip("已清空告警收件人", false);
-        return load();
+        return load().then(function () {
+          return finish(true, null, false, "已清空告警收件人");
+        });
       }, function (e) {
-        if (e && e.canceled) { setTip("", false); return; }   // 取消弹窗 = 本次不清空
-        setTip((e && e.message) || "保存失败，请稍后重试", true);
-      }).then(function () { busy = false; });
+        return finish(false, e, !!(e && e.canceled));
+      });
     });
   }
 
