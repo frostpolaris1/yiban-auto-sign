@@ -555,8 +555,9 @@ async def _refiller(queue, shards, ctx):
     提前收干，把刚重排回 `pending` 的重试任务留在库里没人领。
 
     同一循环按间隔驱动两件恢复动作（**函数内不持时间状态**，间隔常量在模块级）：
-    - `reap_expired`：回收租约过期的 `claimed` 行——不回收的话崩溃通道留下的行永远不被
-      重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"；
+    - `reap_expired`：回收租约**超出宽限期**的 `claimed` 行——不回收的话崩溃通道留下的
+      行永远不被重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"；宽限期挡住"还在飞
+      但租约已到"的慢尝试被误回收（详见 `queue_store.REAP_GRACE_SEC`）；
     - 死主接管：对心跳过期的执行体，把其分片集内的 `pending` 行改归本执行体并把分片并入
       领取范围——否则死主的行没有任何人领。
     另按 `WORKER_HEARTBEAT_SEC` 刷新本执行体心跳：一轮可能十几分钟，只在起跑/收尾写盘会
