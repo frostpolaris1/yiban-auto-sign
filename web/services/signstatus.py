@@ -45,22 +45,17 @@ _TRUTHY_LITERALS = ("1", "true", "on", "yes")
 
 
 def _env_flag(value):
-    """把 `.env` 里的开关值解析成布尔（认 1/true/on/yes，大小写不敏感）。
-
-    只认这四个真值字面量，其余（`0`/`false`/空/未设/写错的词）一律按**关**处理：
-    兜底常驻是要占一份出口与一个常驻进程的动作，"开"必须是明确表达的意图。
-    """
+    """把 `.env` 里的开关值解析成布尔（认 1/true/on/yes，大小写不敏感）。"""
+    # 只认 _TRUTHY_LITERALS 那四个字面量，其余（0/false/空/未设/写错的词）一律按**关**：
+    # 兜底常驻要占一份出口和一个常驻进程，"开"必须是明确表达出来的意图
     return str(value if value is not None else "").strip().lower() in _TRUTHY_LITERALS
 
 
 def _sign_window(env_file, read_env):
     """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认）。
 
-    解析委托 `yiban.window.parse_window`——与引擎（signin）同一份口径，
-    避免"网页显示 07:50、引擎按别的值判定"这类同概念两套实现。
-
-    `.env` 路径与读取器由调用方传入（`web.app` 的 `ENV_FILE` 与 `read_env`）：
-    两者都是会被测试改写、也会随 `--config` 变化的模块级名字。
+    与引擎同一份口径（委托 `yiban.window.parse_window`）的原因见模块头「复用」。
+    参数注入口径见模块头「通信」。
     """
     start, end, _invalid = yb_window.parse_window(read_env(env_file))
     return start, end
@@ -82,28 +77,25 @@ def _in_sign_window(bounds, now=None):
 def _day_off_reason(now=None):
     """今天此刻是否被周末门/一键暂停挡下 → 原因串；空串=照常（与引擎同一实现）。
 
-    组合口径只有一处（`yiban.engine.schedule.day_off`）：页面提示与引擎实际行为
-    必须看同一个判据，否则又会出现"页面说会跑、进程其实不跑"。
     """
+    # 只此一处组合口径（yiban.engine.schedule.day_off）：页面提示与引擎行为必须看同一个
+    # 判据，否则就是"页面说会跑、进程其实不跑"
     try:
         return yb_schedule.day_off(now)
-    except Exception:   # 配置读不到时按"照常"处理：宁可多显示一次窗口内，也别谎报跳过
+    except Exception:   # 读不到配置就按"照常"：宁可多显示一次窗口内，也不谎报今天跳过
         return ""
 
 
 def _in_run_period(bounds, in_sign_window, day_off_reason, now=None):
     """当前是否落在**本应运行**的时段内＝有效窗口内 且 今天没被门挡下。
 
-    执行体接口的 `in_window` 用这个（`in_window` 的含义是"兜底现在该不该在跑"，
-    不新增字段）。为什么必须含门：兜底常驻在"周末签到关闭 / 一键暂停"时会直接退出，
-    而这两天的钟点明明落在窗口内——只按钟点算，页面会在每个周末与每次暂停期间报
-    "兜底开了却没跑起来"。含门后前端不需要改判断：`in_window=false` 就是"现在本不该
-    有兜底在跑"的完整答案。
-
-    钟点判定与门判定都由调用方传入（`web.app` 的 `_in_sign_window` / `_day_off_reason`）：
-    两者在 `web.app` 上都可被打桩，本模块另持绑定会让"固定时段/固定门"的桩静默失效。
+    执行体接口的 `in_window` 用这个（`in_window` 的含义是"兜底现在该不该在跑"，不新增字段）。
+    参数注入口径见模块头「通信」（`_in_sign_window` / `_day_off_reason` 都可被打桩）。
     """
     now = now or clock.now()
+    # 必须含门：兜底常驻在"周末签到关闭/一键暂停"时会直接退出，而这两天的钟点明明落在
+    # 窗口内——只按钟点算，页面会在每个周末与每次暂停期间报"兜底开了却没跑起来"。
+    # 含门后前端不必改判断：in_window=false 就是"现在本不该有兜底在跑"的完整答案
     return in_sign_window(bounds, now) and not day_off_reason(now)
 
 
@@ -113,22 +105,19 @@ def _in_run_period(bounds, in_sign_window, day_off_reason, now=None):
 def _hm(minute_of_day):
     """当天分钟数 → "HH:MM"（向下取整到整分钟，与设置页窗口展示同一取整方向）。
 
-    有效窗口端点可为小数分钟（裁剪值非 60 的倍数时，如 391.5 = 06:31:30），展示到
-    分钟只能取整；取整方向与设置页一致，避免同一窗口在两处显示不同分钟。
     """
-    m = int(minute_of_day)
+    m = int(minute_of_day)  # 端点可为小数分钟（391.5 = 06:31:30），只能取整到分钟展示
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
 def window_fallback_text(bounds):
     """窗口不可用（`bounds` 已回退默认窗口）时的可见提示；正常窗口返回空串。
 
-    唯一文案源：`sign_status` 的展示与设置页的提示必须逐字一致——同一异常在两处
-    说成两句话，管理员会以为是两件事。回退是唯一"管理员设的窗口没被采用"的情形
-    （缓冲过大只是收缩缓冲、窗口不动，见 `yiban.window` 的退化处置），故只有它
-    需要"配置异常、已按 X~Y 运行"这句话。
+    唯一文案源：`sign_status` 的展示与设置页的提示必须逐字一致——同一异常在两处说成
+    两句话，管理员会以为是两件事。
     """
     if not getattr(bounds, "fell_back", False):
+        # 只有回退需要这句话：缓冲过大只是收缩缓冲、窗口照旧（见 yiban.window 的退化处置）
         return ""
     return (f"配置异常：签到窗口不可用，已按 {_hm(bounds.lo_min)}~{_hm(bounds.hi_min)} 运行")
 
@@ -145,8 +134,7 @@ def sign_status(env_file, load_env_int, sign_window_bounds, now=None):
     窗口本身不可用时（`fell_back`，防御分支）改出"配置异常、已按 X~Y 运行"整句：
     此时管理员设的窗口根本没被采用，继续报三段状态等于谎报。
 
-    `.env` 路径、整数配置读取器与有效窗口视图由调用方传入（`web.app` 的
-    `ENV_FILE` / `load_env_int` / `sign_window_bounds`）：三者都会被测试改写或在调用点打桩。
+    参数注入口径见模块头「通信」（`ENV_FILE` / `load_env_int` / `sign_window_bounds`）。
     """
     now = now or clock.now()
     if now.weekday() == 6 and not load_env_int(env_file, "YIBAN_SUNDAY_SIGN", 0):
@@ -179,9 +167,9 @@ def check_connectivity():
                 "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
             },
         )
-        ok = resp.status_code < 500
+        ok = resp.status_code < 500  # 4xx 也算"可达"：只回答通不通，不代表凭据有效
         detail = f"HTTP {resp.status_code}"
     except Exception as e:
         ok = False
-        detail = str(e)[:60]
+        detail = str(e)[:60]  # 截 60：异常文本可能带长 URL/链路，接口只给一行
     return ok, detail
