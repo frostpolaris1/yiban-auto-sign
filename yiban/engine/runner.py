@@ -215,7 +215,7 @@ def main(argv=None):
     # 清单里只有 1 个并行执行体时仍走进程内的单执行体路径（`single` 角色、出口读
     # `YIBAN_PROXY`）——与迁移前的 `YIBAN_WORKERS=1` 完全一致。
     #
-    # **子进程不得再当监督进程**（2026-09-17 对抗性审查 H1）：清单是从**环境变量**读的，
+    # **子进程不得再当监督进程**：清单是从**环境变量**读的，
     # 监督进程拉起的子进程会原样继承它，于是"父按清单拉 N 个 → 子也按清单拉 N 个"会递归
     # 成进程树；argv 侧去 `--workers` 的老办法挡不住（清单路径根本不经 argv）。
     # 子进程身份由监督进程注入 `YIBAN_EXECUTOR_ID`（`worker-{i}@{主机名}`），据此短路。
@@ -327,7 +327,7 @@ def main(argv=None):
     # 周日签到开关：关闭时周日跳过（cron 已改为每天执行，靠此开关维持周日不签）；
     # 周六同语义；一键暂停（管理员 Web UI）同理。
     # 三道门**共用 `schedule.day_off`（唯一实现）**：门只写在本函数里会被
-    # `--fallback` 的分支顺序绕过（兜底在它之前 return，2026-09-17 实测），故
+    # `--fallback` 的分支顺序绕过（兜底在它之前 return），故
     # 兜底常驻（`workers.run_fallback_worker`）也走同一个函数。
     # 手动签到（--only）不受限——用户主动触发应当放行。
     if not args.only:
@@ -598,7 +598,7 @@ def main(argv=None):
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。
     # 但异常不能逃逸：退出码是 run.sh/调度器的事实源，任何一个未捕获异常都会把
     # 收尾（sched-run 标记、退出码）打断。只记类型名不记 str(e)——异常文本
-    # 可能内嵌 URL/token（M10）。
+    # 可能内嵌 URL/token。
     try:
         alerts._flush_admin_mail_summary()
     except Exception as e:

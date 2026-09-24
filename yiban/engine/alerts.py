@@ -14,8 +14,9 @@
 发送失败一律只留痕，绝不抛出，也不影响退出码。
 
 **归属**
-`yiban.engine` 的告警通道层；被 `round`（签到成败）、`probe`（健康探测）、`runner`
-（收尾汇总）调用。
+`yiban.engine` 的告警通道层；写汇总条目的调用方是 `round` / `executor_v3`（签到成败）、
+`schedule`（窗口配置异常）、`store.claims`（领取池异常）与 `probe`（健康探测），
+`runner` 只负责收尾发送。
 
 **复用**
 `_collect_admin_mail` / `_flush_admin_mail_summary`（A 线汇总）、`send_user_fail_mail`
@@ -26,7 +27,7 @@
 输入：本轮结果（状态码、账号、失败原因）、收件人/开关/额度配置（来自 .env 与 db）。
 输出：SMTP 邮件、webhook 推送与 `sign_events` 留痕；**只留痕不抛出**，不影响退出码。
 调用谁：`mail`（`mailer`）、`notify`、`db`、`state_io`、`cli_support`、`schedule`。
-谁调用：`round`、`probe`、`runner`。
+谁调用：`round`、`probe`、`runner`、`schedule`、`store.claims`、`executor_v3`。
 前端调用点：邮件/推送配置与"发送测试"由 `/api/mail-config`、`/api/notify-config`、
 `/api/notify-test`（`web/static/js/components/settings-notify.js` 等设置页）管理——告警通道或措辞
 变化会影响用户收到的邮件/推送。
@@ -123,23 +124,18 @@ def _alert_slow_sign(phone, dur, slow_sec, status, message):
 
 
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
-    """窗口外未了结账号的管理员告警。
+    """窗口外未了结账号的管理员告警；返回是否产生了告警（测试用）。
 
     场景：学校签到窗口晚于本地配置（或 Range 延迟放出），账号落
-    skipped_window/skipped_norange。容器调度闸门已把 skip 类
-    计入未了结使补签得以重跑；宿主 run.sh 退出码语义同样保证补签
-    不被「部分成功」吞掉。
+    skipped_window / skipped_norange。这类账号算不算"未了结"、补签能不能重跑由容器闸门与
+    宿主退出码语义负责，本函数只回答"这一刻要不要打扰管理员"。
 
-    告警时机（避免误报噪音）：
-      - 零成功（ok_n==0）且存在窗口外跳过：任何轮次都告警（全员窗口外 =
-        当天可能无签，必须当天知情）；
-      - 部分成功 + 窗口外跳过：只有在"**窗口已关**或**后面不会再有人跑**"时才告警。
-        前面还会重试（补签轮未到 / 兜底执行体在跑）时不打扰管理员。
+    两条时机（避免误报噪音）：
+      - 零成功（ok_n==0）且存在窗口外跳过：任何轮次都告警——当天可能无签，必须当天知情；
+      - 部分成功 + 窗口外跳过：只有"窗口已关"或"后面不会再有人跑"时才告警。
 
-    `is_second_run` 参数保留给调用方表达"本轮是不是补签轮"，但抑制判据**不再依赖它**
-    （多执行体下轮次身份不再可靠，见下）；它仅用于告警文案/日志语境。
-
-    返回是否产生了告警（测试用）。
+    `is_second_run`（不给则现取 sched-run 标记）**在当前实现里不参与任何判定**：抑制判据换成
+    了两个事实（见函数体内注释），保留形参只为兼容既有调用方与测试的传参习惯。
     """
     if not accounts:
         return False
@@ -152,19 +148,16 @@ def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
         return False
     if is_second_run is None:
         is_second_run = state_io._sched_marker_exists()
-    # 抑制的判据不是"猜这是第几轮"，而是两个事实：
-    #   ① 窗口还开着——账号理论上还签得上；
-    #   ② 后面还有没有人接着跑——补签轮还没到（时刻事实），或兜底执行体在跑（心跳事实）。
-    # 两个都成立才抑制：这时打扰管理员没有意义（马上会重试）。
-    # 之所以不看 is_second_run：多执行体形态下"轮次身份"不再可靠——兜底执行体会一直
-    # 重试到窗口关闭，此时即便挂着补签轮身份也没必要告警；反之（没兜底、补签轮也过了）
-    # 必须告警，因为当天不会再有触发了。
+    # 抑制的判据不是"猜这是第几轮"，而是两个事实：① 窗口还开着——账号理论上还签得上；
+    # ② 后面还有没有人接着跑——补签轮还没到（时刻事实）或兜底执行体在跑（心跳事实）。
+    # 之所以不看 is_second_run：兜底执行体会一直重试到窗口关闭，此时即便挂着补签轮身份也没
+    # 必要告警；反之（没兜底、补签轮也过了）必须告警，因为当天不会再有触发了。
     _now = clock.now()
     _alive, _ = state_io.fallback_alive()
     _later_round = (_now.hour, _now.minute) < window.retry_hm() or _alive
     _window_open = not schedule._window_closed(schedule._schedule_config(), _now)
     if ok_n > 0 and _later_round and _window_open:
-        return False
+        return False  # 三个条件同时成立才抑制（马上还会重试），零成功那一支不受此限
     title = "当日签到异常告警" if ok_n == 0 else "签到窗口异常告警"
     if ok_n == 0:
         entry = [
