@@ -35,4 +35,4 @@ gunicorn>=23.0.0
 # 失败即降级为进程内锁——Windows 上 msvcrt.LK_LOCK 约 10 秒放弃，多执行体竞争下
 # 跨进程互斥会静默失效；本库带 timeout/check_interval 重试循环，并提供共享锁与
 # 完备异常分类。改锁语义前先读 scripts/locks.py 的模块说明。
-portalocker>=4.3.2
+portalocker>=4.4.0
