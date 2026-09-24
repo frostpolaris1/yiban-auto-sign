@@ -1,15 +1,23 @@
 # -*- coding: utf-8 -*-
 """v3 崩溃恢复的队列访问层：`queue_store.reap_expired` 与 `queue_store.steal_shards`。
 
-覆盖（对应简报 ⑤ 的恢复部分）：
-5. `reap_expired`：租约**过期且超出宽限期**的 `claimed` → `pending` + 清
-   `owner`/`lease_until` + `epoch+1`；刚过期但仍在宽限期内（可能还在飞）的**不动**；
-   未过期的**不动**；终态不动；`vshard=-1` 的历史行不动；幂等；库异常 → 0 且不抛；
-6. `steal_shards`：只动「分片集内 + `state='pending'` + `owner` 恰为死主」的行；
-   不动 `claimed`/终态/历史行/活着的其他执行体的行；`epoch+1`；重跑 0 行；`vshards=()` → 0；
-7. **fencing 联动**：被回收（`epoch+1`）后，原持有者带旧 epoch 的 `settle_tasks` 不生效。
+标签：B · 调度：领取/队列/执行体
+覆盖：reap_expired
+   的宽限期与判据分档（过期未超宽限不动、超宽限回收、未过期不动、终态与历史行不动、幂等、day
+   限定作用域、表缺失与 now 不可解析分别告警）、steal_shards
+   的接管边界（只动分片集内 pending 且 owner 恰为死主的行、epoch+1、重跑 0
+   行、空分片集不碰库）、回收与 fencing 的联动。
+对应实现：yiban/store/queue_store.py（reap_expired、steal_shards、REAP_GRACE_SEC、claim_batch、settle_tasks）、yiban/engine/executor_v3.py
+   的回收接线。
+关键断言：租约到期不等于持有者已死：单次尝试可能比租约还慢，刚过期就回收会让行回退
+   pending 并被同一执行体重领 ⇒ 同一账号两条通道并发登录（epoch+1
+   只挡迟到的结论写回，挡不住这次重复真实登录）。故宽限期必须 ≥ 2×
+   租约。回收后原持有者带旧 token
+   的迟到收尾必须写不进去，否则新执行体的结论被陈旧结论覆盖。vshard=-1
+   的历史行不属于任何分片集，回收成 pending 只会永不被领取。
+依赖：临时 sqlite（sign_tasks 由 db.init_db 的迁移建表）+
+   固定时刻常量；不发网络请求、不起应用。整文件在本机执行，无 skip。
 
-依赖：临时库（`sign_tasks` 由 `db.init_db` 的迁移建表）。
 """
 import contextlib
 import os
@@ -30,7 +38,7 @@ JUST_EXPIRED = "2026-09-22 06:39:30.000"
 #: 租约过期 150s、已过宽限期（> 120s）——回收条件成立
 GRACE_EXPIRED = "2026-09-22 06:37:30.000"
 FRESH = "2026-09-22 06:41:00.000"
-DEAD = "worker-9@testhost"
+DEAD = "worker-9@testhost" # 用真格式的身份串：接管按 owner 精确匹配，随手编的串会躲过判据
 LIVE = "worker-2@testhost"
 ME = "worker-1@testhost"
 TEST_KEY = "a" * 64
@@ -267,7 +275,7 @@ class FencingAfterReapTest(_Base):
         self.assertEqual(self._row("13800000001")["epoch"], 2)
 
         # 回收后本执行体重新领取同一行 → epoch=3、owner=ME
-        claimed = queue_store.claim_batch(ME, DAY, (2,), now=NOW)
+        claimed = queue_store.claim_batch(ME, DAY, (2,), now=NOW) # 走真实领取路径而不是手改行：epoch 的推进次序必须和生产一致
         self.assertEqual([c["phone"] for c in claimed], ["13800000001"])
         self.assertEqual(claimed[0]["epoch"], 3)
 
