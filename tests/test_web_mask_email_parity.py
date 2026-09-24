@@ -17,6 +17,20 @@
 已含 `*`（幂等）、无 `@`、`@` 在首位、本地部长度 1/2/3/超长等边界。
 
 node 不可用时跳过（本套件其余部分不引入硬性 node 依赖）。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：前后端两份 `_mask_email` / `maskEmail` 的**行为对拍**（11 组输入 + 幂等一条），
+另含两组与本标签无关的用例（站点描述/OG、占位字体），见下方注意。
+对应实现：`web/services/accounts_data.py::_mask_email`（`web.app` 只再导出）与
+`web/static/js/core.js` 的 `maskEmail`。
+关键断言：对拍跑的是真函数体（前端按花括号配对抽 JS 交给 node、后端抽 `def` 体 `exec`），
+不是"文件里有这个函数名"；`test_mask_is_idempotent_on_both_sides` 单独钉一层，
+因为"两边各遮一次"正是域名被吞的表现形式。
+⚠ 末尾两组用例（`SiteDescriptionTest`、`PlaceholderFontParityTest`）与邮箱脱敏无关，
+按文件标签归在 G 只是就近存放——`覆盖：` 不含它们，别据此以为它们受脱敏口径约束。
+依赖：**需要 node**——`@unittest.skipUnless(NODE, ...)` 挂在类上，本机没装 node 时对拍
+两组整体 skip（不是失败）；CI 若无 node，这条前后端口径实际上没人守。
+后端侧靠 `importlib` 起 webapp、读写临时 `.env`，无网络。
 """
 
 import contextlib

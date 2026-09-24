@@ -28,6 +28,21 @@ write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的�
 全程 mock / 纯本地（Flask test client + 临时 .env/DB），无任何网络请求。
 用法（项目根目录，勿设 PYTHONIOENCODING）：
     py -m pytest tests/test_env_line_break_injection.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：提权杀链的四个环节——① 分隔符判据与 `splitlines()` 口径一致（`has_line_break`
+认得全 10 个字符）、② 告警正文落盘前的行安全化、③ `write_env_batch` 的值/键注入拒绝
+与键名白名单、④ 公告→设置的端到端杀链不再生效，外加"同键空白影子行折叠"与
+`verify_admin` 对哈希行歧义的 fail-closed。
+对应实现：`yiban/infra/env_io.py` 的 `has_line_break` / `write_env_keys` / `parse_env_file`、
+web 的公告与设置写接口、`verify_admin` 的主凭据判定。
+关键断言：`test_predicate_matches_splitlines_over_whole_charspace` 是**成对核对**的锚点——
+它拿 `str.splitlines()` 的真行为去校验收口函数，改任何一侧的字符集都会红；
+杀链用例必须断"改完之后的主管理员哈希没变"而不是只断"接口回 400"，否则半生效也算过。
+本文件覆盖的是**写入侧**注入面（值里潜伏分隔符），不覆盖解析顺序本身
+（`parse_env_file` 的 last-wins 语义是设计，靠"不许潜伏"来兜）。
+依赖：Flask test client + 临时 `.env`/DB，无网络、无 skip；r-string 里的
+`\u2028` 等宽字符按码位逐个枚举，别用 `isprintable()` 之类近似判据替代。
 """
 import contextlib
 import importlib.util
