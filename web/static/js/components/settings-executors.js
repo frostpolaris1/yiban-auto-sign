@@ -243,11 +243,23 @@
     return YB.el("td", { class: "set-exec-daily", text: a ? dailyText(a) : "—" });
   }
 
+  // 受门禁写操作的统一入口：先不带凭据发，由 core.js 的 dangerousSubmit 按后端 reason 补
+  // 口令或倒计时确认（档位只存在于后端，本组件不判断、也不预判要不要口令）。调用方只给请求
+  // 与成功回调，不再各自拼口令框管道；失败落到横幅，用户取消弹窗不算失败。
+  function gated(opts, onOk, failWord) {
+    return withBusy(function () {
+      banner("提交中…", "info");
+      return YB.dangerousSubmit(opts).then(function (d) {
+        return load().then(function () { return onOk(d); });
+      });
+    }).catch(function (e) {
+      if (e && e.canceled) return false;
+      failTip(e, failWord);
+      return false;
+    });
+  }
   // 行内「更多」：停用/启用 与 删除 从行弹窗搬到这里（用户 2026-09-17：设置里不再改状态/删行，
   // 放表格操作列作为按钮，且要输主管理员密码）。复用 YB.rowMenu（portal 浮层 + 窄屏收纳）。
-  function askPassword(text, run) {
-    YB.openConfirmPasswordModal(text, run);      // 口令错误/后端 403 会在该弹窗内显示，可重试
-  }
   function rowMenuWrap(row) {
     var type = attr(row.type);
     if (type === "fallback") return null;        // 故障转移行：类型固定、不可删除，只留「设置」
@@ -264,37 +276,43 @@
     return cell.firstElementChild;               // 取 .dd-wrap（触发器 + 菜单）放进自己的操作格
   }
 
-  // 改状态（停用/启用）：要口令；成功/失败都走横幅
+  // 改状态（停用/启用）：受门禁写操作，口令/确认由 helper 按后端 reason 收；成功/失败都走横幅
   function changeType(row, nextType) {
     var slot = count(row.slot);
     var name = rowTitle(row);
     var word = nextType === "disabled" ? "停用" : "启用";
-    askPassword(word + " " + name + "？请输入当前管理员密码确认。", function (pw) {
-      focusAfterPaint = { slot: slot };
-      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot,
-        { type: nextType, confirm_password: pw }).then(function (d) {
-        return load().then(function () {
-          banner("已" + word + " " + name + "：" + note(d), "success");
-          return true;
-        });
-      });
-    });
+    focusAfterPaint = { slot: slot };
+    gated({
+      method: "PUT", path: "/api/scheduler/executors/rows/" + slot,
+      body: { type: nextType },
+      desc: word + " " + name + "？请输入当前管理员密码确认。"
+    }, function (d) {
+      banner("已" + word + " " + name + "：" + note(d), "success");
+      return true;
+    }, word);
   }
 
-  // 删行：要口令（确认与警告合并在口令弹窗的文案里，不叠两层弹窗）
+  // 删行：槽位号不复用、出口配置一并删除，是破坏性动作——影响面由 confirmDialog 讲清
+  // （这条说明原本挂在口令框上；口令改由 helper 按后端 reason 收，确认独立留在确认框里，
+  // 故一次点击不会既弹确认框又弹口令框——两者串行，且多数档位下只有确认框）。
   function removeRow(row) {
     var slot = count(row.slot);
     var name = rowTitle(row);
-    askPassword("删除 " + name + "（槽位 " + slot + "）？它的出口配置会一并删除、槽位号不保留；"
-      + "只是暂时不用请改用「停用」。请输入当前管理员密码确认。", function (pw) {
+    YB.confirmDialog({
+      title: "删除执行体",
+      body: "删除 " + name + "（槽位 " + slot + "）？它的出口配置会一并删除、槽位号不保留；"
+        + "只是暂时不用请改用「停用」。",
+      confirmText: "删除", danger: true
+    }).then(function (ok) {
+      if (!ok) return;
       focusAfterPaint = { slot: slot };
-      return YB.api("DELETE", "/api/scheduler/executors/rows/" + slot,
-        { confirm_password: pw }).then(function (d) {
-        return load().then(function () {
-          banner("已删除 " + name + "：" + note(d), "success");
-          return true;
-        });
-      });
+      gated({
+        method: "DELETE", path: "/api/scheduler/executors/rows/" + slot, body: {},
+        desc: "删除 " + name + "（槽位 " + slot + "）？请输入当前管理员密码确认。"
+      }, function (d) {
+        banner("已删除 " + name + "：" + note(d), "success");
+        return true;
+      }, "删除");
     });
   }
 
@@ -439,9 +457,9 @@
     if (b) b.disabled = !!on || !ctx.isMaster;
   }
 
-  // 失败时**不吞错误、也不还焦点**：本分区三个写动作都从口令框发起，回调返回的 Promise 一旦
-  // resolve，口令框就当作成功而关闭——后端 403「口令校验未通过，设置未生效」必须 reject 出去，
-  // 才会留在框里让操作者改口令重试；焦点同理该留在框内，不能被 restoreFocus 抢走。
+  // 失败时**不吞错误、也不还焦点**：本分区写动作经 gated 走受门禁提交，helper 收口令/倒计时
+  // 框期间焦点与错误都该留在框内（拒绝时它自己把后端文案显示在框里、允许改口令重试），
+  // 不能被 restoreFocus 抢走；成功分支才归还焦点。
   function withBusy(fn) {
     if (busy) return Promise.resolve(false);
     busy = true;
@@ -458,40 +476,20 @@
     });
   }
 
-  // 追加行：后端自 2026-09-17 起对 `POST …/rows` **一律要求** confirm_password（追加一定改配置），
-  // 故先收口令再提交；口令不对时错误留在口令框里、可改口令重试（回调返回 Promise 走那条路径）。
+  // 追加行：受门禁写操作（追加一定改配置），口令/确认由 helper 按后端 reason 收
   function addRow() {
     if (!ctx.isMaster || busy) return;          // busy 是防重入的唯一判据，入口再挡一道
-    askPassword("添加一行执行体（并行、默认直连）？追加行会改动执行体清单，请输入当前管理员密码确认。",
-      function (pw) {
-        return withBusy(function () {
-          banner("添加中…", "info");
-          return YB.api("POST", "/api/scheduler/executors/rows",
-            { type: "worker", confirm_password: pw }).then(function (d) {
-            return load().then(function () {
-              setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
-                + "。想给它单独出口，点那一行的「设置」；编号只增不复用，故障转移行也占一个编号"
-                + "（它固定置顶、行名不带数字），所以并行行跳号是正常的、不影响运行"
-                + "（没删过行却看到跳号，就是它在占号）。", false);
-              focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
-              return true;
-            });
-          }, function (e) { failTip(e, "添加"); throw e; });   // 抛出：错误留在口令框里
-        });
-      });
-  }
-
-  // PUT 单行 + 成功后 `load()` 重画（清除出口等行内写操作共用这一条「提交中→落盘→刷新→横幅」链路）
-  function putRow(slot, payload, okText) {
-    return withBusy(function () {
-      banner("提交中…", "info");
-      return YB.api("PUT", "/api/scheduler/executors/rows/" + slot, payload).then(function (d) {
-        return load().then(function () {
-          setTip(okText + "：" + note(d), false);
-          return true;
-        });
-      }, function (e) { failTip(e, "保存"); throw e; });       // 抛出：错误留在口令框里
-    });
+    gated({
+      method: "POST", path: "/api/scheduler/executors/rows", body: { type: "worker" },
+      desc: "添加一行执行体（并行、默认直连）？追加行会改动执行体清单，请输入当前管理员密码确认。"
+    }, function (d) {
+      setTip("已添加「并行执行体 #" + (count(d && d.slot) + 1) + "」（默认直连）：" + note(d)
+        + "。想给它单独出口，点那一行的「设置」；编号只增不复用，故障转移行也占一个编号"
+        + "（它固定置顶、行名不带数字），所以并行行跳号是正常的、不影响运行"
+        + "（没删过行却看到跳号，就是它在占号）。", false);
+      focusAfterPaint = { slot: count(d && d.slot) };   // 焦点落到新行的「设置」（busy 复位后归还）
+      return true;
+    }, "添加");
   }
 
   /* ---------------- 行内弹窗：类型 + 出口（低频与破坏性动作降到正文里） ---------------- */
@@ -629,10 +627,21 @@
       linkBtn("清除出口（改为直连）", function () {
         if (handle && handle.close) handle.close();
         focusAfterPaint = { slot: slot };
-        // 清除出口 = 改 proxy，后端要口令（改直连也是改配置）；确认与警告并进口令文案，不叠两层弹窗
-        askPassword("清除 " + rowTitle(row) + " 的出口（改为直连）？原出口配置会从配置项里删掉，"
-          + "不可撤销。请输入当前管理员密码确认。", function (pw) {
-          return putRow(slot, { proxy: "", confirm_password: pw }, "已清除出口");
+        // 清除出口 = 改 proxy，是受门禁写操作；原出口配置会被删掉且不可撤销，
+        // 故影响面由 confirmDialog 讲清，口令/确认交给 helper 按后端 reason 收
+        YB.confirmDialog({
+          title: "清除出口",
+          body: "清除 " + rowTitle(row) + " 的出口（改为直连）？原出口配置会从配置项里删掉，不可撤销。",
+          confirmText: "清除", danger: true
+        }).then(function (ok) {
+          if (!ok) return;
+          gated({
+            method: "PUT", path: "/api/scheduler/executors/rows/" + slot, body: { proxy: "" },
+            desc: "清除 " + rowTitle(row) + " 的出口（改为直连）？请输入当前管理员密码确认。"
+          }, function (d) {
+            setTip("已清除出口：" + note(d), false);
+            return true;
+          }, "清除");
         });
       })
     ]));
@@ -641,9 +650,9 @@
       return swInput.checked === (fb.enabled === true) ? null : (swInput.checked ? 1 : 0);
     }
 
-    // 保存：后端 2026-09-17 落地了口令门——**改出口或开关要口令，只改名不要**
-    // （`PUT …/rows` 在 type/proxy 真的会变时才判，`PUT …/executors` 同理）。
-    // 口令不对时后端回 403「口令校验未通过，设置未生效」，由口令框就地显示、可重试。
+    // 保存：**改出口或开关进门禁，只改名不进**（`PUT …/rows` 在 type/proxy 真的会变时才判，
+    // `PUT …/executors` 同理）——名字不影响行为，按后端口径不打这道门，故只改名时直接发。
+    // 门禁请求先不带凭据发，由 helper 按后端 reason 收口令；两个端点一次点击最多问一次口令。
     function save() {
       if (busy) return false;
       var egress = (($(inputId) || {}).value || "").trim();   // 留空＝不改出口（空串语义是"直连"，故不发）
@@ -655,49 +664,47 @@
         banner("没有需要保存的改动（留空 = 不修改出口；改成直连请点上面的「清除出口」）。", "info");
         return false;
       }
-      // 只有真的动出口/开关才要口令；改自定义名不动行为，按后端口径不打这道门。
-      // 取值必须**在这里取完**再关弹窗：关掉后输入框被摘出 DOM，submit() 再按 id 取就是 null
-      // （实测踩过：错口令那次请求只带了 confirm_password，后端回 400「没有可更新的字段」）。
-      var args = { proxy: egress, name: nameArg, enable: enableArg };
+      // 取值必须**在这里取完**再关弹窗：关掉后输入框被摘出 DOM，再按 id 取就是 null
+      // （实测踩过：请求只带了凭据、没带要改的字段，后端回 400「没有可更新的字段」）。
+      var rowBody = {};
+      if (egress) rowBody.proxy = egress;
+      if (nameArg != null) rowBody.name = nameArg;
+      var requests = [];
+      // 行接口缺 type/proxy/name 会回 400「没有可更新的字段」；只拨开关时不能发这个空体
+      if (egress || nameArg != null) {
+        requests.push({ method: "PUT", path: "/api/scheduler/executors/rows/" + slot, body: rowBody });
+      }
       var needsPw = !!egress || enableArg != null;
+      if (enableArg != null) {
+        requests.push({ method: "PUT", path: "/api/scheduler/executors", body: { fallback_enable: enableArg } });
+      }
       if (handle && handle.close) handle.close();
       focusAfterPaint = { slot: slot };
-      if (!needsPw) { submit(null, args); return true; }
+      if (!needsPw) { direct(requests[0]); return true; }
       // 措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"
-      var pwAsk = egress
+      var desc = (egress
         ? "修改 " + rowTitle(row) + " 的出口配置" + (enableArg != null ? "与故障转移开关" : "")
-        : (enableArg ? "开启" : "关闭") + "故障转移";
-      // 回调**必须 return 这个 Promise**：口令框据此保持打开，把后端 403 文案显示在框内，
-      // 并允许改口令重试（不 return 就是"非 Promise 回调"，框会立刻关掉、错误只剩横幅）。
-      askPassword(pwAsk + "？请输入当前管理员密码确认。",
-        function (pw) { return submit(pw, args); });
+        : (enableArg ? "开启" : "关闭") + "故障转移") + "？请输入当前管理员密码确认。";
+      gated({ requests: requests, desc: desc }, function (res) {
+        banner("已保存 " + rowTitle(row) + "：" + note(res && res[0]), "success");
+        if (focusAfterPaint) restoreFocus();
+        return true;
+      }, "保存");
       return true;
     }
-    // pw = null：只改名，不带 confirm_password；args 来自关弹窗前取好的值
-    function submit(pw, args) {
+    // 只改名：不进门的直接提交，成功/失败都走横幅
+    function direct(req) {
       if (busy) return false;
-      var body = {};
-      if (pw != null) body.confirm_password = pw;
-      if (args.proxy) body.proxy = args.proxy;
-      if (args.name != null) body.name = args.name;
-      var steps = [];
-      // 行接口缺 type/proxy/name 会回 400「没有可更新的字段」；只拨开关时不能发这个空体
-      if (args.proxy || args.name != null) {
-        steps.push(YB.api("PUT", "/api/scheduler/executors/rows/" + slot, body));
-      }
-      if (args.enable != null) {
-        steps.push(YB.api("PUT", "/api/scheduler/executors", { fallback_enable: args.enable, confirm_password: pw }));
-      }
       return withBusy(function () {
         banner("提交中…", "info");
-        return Promise.all(steps).then(function (res) {
+        return YB.api(req.method, req.path, req.body).then(function (d) {
           return load().then(function () {
-            banner("已保存 " + rowTitle(row) + "：" + note(res && res[0]), "success");
+            banner("已保存 " + rowTitle(row) + "：" + note(d), "success");
             if (focusAfterPaint) restoreFocus();
             return true;
           });
-        }, function (e) { failTip(e, "保存"); throw e; });     // 抛出：错误留在口令框里
-      });
+        });
+      }).catch(function (e) { failTip(e, "保存"); return false; });
     }
 
     var handle = YB.openModal({

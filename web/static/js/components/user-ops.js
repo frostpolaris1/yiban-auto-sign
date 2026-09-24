@@ -9,15 +9,15 @@
                       或既有契约的 URL path 里出现，绝不写入 DOM
 
    与后端门禁逐条对齐（web/app.py）：
-     · role        仅主管理员 + _high_risk_gate（必须带 confirm_password）
-     · reset       重置口令入口由页面模态收新密码（走完整策略），此处做 _high_risk_gate；
+     · role        仅主管理员 + _high_risk_gate
+     · reset       重置口令入口由页面模态收新密码（走完整策略），此处过 _high_risk_gate；
                    目标为注册管理员时后端再限主管理员
-     · delete      删用户不可逆：走 YB.dangerousSubmit，由后端响应 reason 决定要口令
-                   （password_required）还是倒计时确认（delay_ack_required）
-     · purge       已注销用户立即清除：仅主管理员；不可逆，同 delete 走 dangerousSubmit
-     · batch       reset_password（需 password 过策略 + confirm_password）保持口令框；
-                   delete 不可逆，走 dangerousSubmit；角色变更不支持批量；emails 单次 <= 10
-   档位只存在于后端，本组件不判断档位、只按 reason 分流。
+     · delete      删用户不可逆（后端标 irreversible）
+     · purge       已注销用户立即清除：仅主管理员；不可逆
+     · batch       reset_password（需 password 过策略）；delete 不可逆；角色变更不支持批量；
+                   emails 单次 <= 10
+   档位只存在于后端：**每个受门禁操作都先不带凭据发**，只在后端回 password_required /
+   delay_ack_required 时才补凭据重发，本组件不判断档位、也不预判要不要口令。
    批量超出上限在前端先拦（提示后不发请求），避免落到后端 400。 */
 (function () {
   "use strict";
@@ -49,14 +49,13 @@
         ctx.refresh();
       }).catch(fail).then(function () { ctx.busy(false); });
     }
-    function post(path, body) { return YB.api("POST", path, body); }
     function emailOf(uid) {
       var rec = ctx.resolve(uid);
       return rec && rec.email ? rec.email : "";
     }
     function path(email, tail) { return "/api/users/" + encodeURIComponent(email) + tail; }
 
-    // 角色变更：仅主管理员（后端 403 兜底）；确认 → 口令鉴权 → 提交
+    // 角色变更：仅主管理员（后端 403 兜底）；确认影响面 → 提交（口令由 helper 按后端 reason 收）
     function role(uid, newRole) {
       var email = emailOf(uid);
       if (!email) return;
@@ -67,25 +66,23 @@
         confirmText: action, danger: newRole !== "admin"
       }).then(function (ok) {
         if (!ok) return;
-        YB.openConfirmPasswordModal(
-          action + " " + YB.maskEmail(email) + "？请输入当前管理员密码确认。",
-          function (pw) {
-            run(post(path(email, "/role"), { role: newRole, confirm_password: pw }),
-              newRole === "admin" ? "已设为管理员" : "已取消管理员", false);
-          });
+        run(YB.dangerousSubmit({
+          path: path(email, "/role"),
+          body: { role: newRole },
+          desc: action + " " + YB.maskEmail(email) + "？请输入当前管理员密码确认。"
+        }), newRole === "admin" ? "已设为管理员" : "已取消管理员", false);
       });
     }
 
-    // 重置密码：新密码由页面模态收集并过完整策略，此处做二次鉴权 + 提交
+    // 重置密码：新密码由页面模态收集并过完整策略，此处直接提交（口令由 helper 按后端 reason 收）
     function resetPassword(uid, newPassword) {
       var email = emailOf(uid);
       if (!email || !newPassword) return;
-      YB.openConfirmPasswordModal(
-        "确认重置 " + YB.maskEmail(email) + " 的密码？重置后其旧会话立即失效。请输入当前管理员密码确认。",
-        function (pw) {
-          run(post(path(email, "/password"), { password: newPassword, confirm_password: pw }),
-            "密码已重置", false);
-        });
+      run(YB.dangerousSubmit({
+        path: path(email, "/password"),
+        body: { password: newPassword },
+        desc: "确认重置 " + YB.maskEmail(email) + " 的密码？重置后其旧会话立即失效。请输入当前管理员密码确认。"
+      }), "密码已重置", false);
     }
 
     // mode=accounts_only（清空账号，用户保留可重新提交）| full（删除用户及其全部易班账号）
@@ -145,13 +142,11 @@
     function batchReset(uids, newPassword) {
       var emails = batchEmails(uids);
       if (!emails || !newPassword) return;
-      YB.openConfirmPasswordModal(
-        "确认批量重置 " + emails.length + " 个用户的新密码？重置后其旧会话立即失效。请输入当前管理员密码确认。",
-        function (pw) {
-          run(post("/api/users/batch", {
-            action: "reset_password", emails: emails, password: newPassword, confirm_password: pw
-          }), "已重置密码");
-        });
+      run(YB.dangerousSubmit({
+        path: "/api/users/batch",
+        body: { action: "reset_password", emails: emails, password: newPassword },
+        desc: "确认批量重置 " + emails.length + " 个用户的新密码？重置后其旧会话立即失效。请输入当前管理员密码确认。"
+      }), "已重置密码");
     }
 
     function batchDelete(uids) {

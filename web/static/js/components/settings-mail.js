@@ -6,12 +6,13 @@
 
    权限（与后端 PUT /api/mail-config 的高危门禁逐条对齐）：
      · 全局开关、告警收件人、SMTP 列表：仅主管理员；
-     · 关闭类开关、admin_to 与 smtps 变更需 confirm_password（后端一次请求只验一次）。
+     · 关闭类开关、admin_to 与 smtps 变更受门禁（后端一次请求只验一次）。
      · 「接收发给我自己的邮件提醒」是**个人域**，已迁到 /mine，本页不再有。
 
    保存语义（与全页统一）：全局开关、收件人、SMTP 列表合并为**一个**「保存邮件配置」，
-   只提交相对快照真正变化的键；纯"开启"不带口令（后端同口径：不给正常成功路径加摩擦），
-   关闭/改地址/改 SMTP 才收管理员口令。「清空收件人」是动作（不属表单值），单独确认。
+   只提交相对快照真正变化的键；纯"开启"不带门禁（后端同口径：不给正常成功路径加摩擦），
+   关闭/改地址/改 SMTP 走统一 helper——先不带凭据发，后端回 reason 才补口令。
+   「清空收件人」是动作（不属表单值），影响面单独确认。
    对外面：mount/load/apply(load 同义)、save() → Promise<boolean>、isDirty()。
 
    脱敏：GET /api/mail-config 的 admin_to 与 smtps[].user 已由后端打码；授权码绝不
@@ -203,35 +204,53 @@
     return body;
   }
 
-  function submit(body) {
-    var needPw = Object.prototype.hasOwnProperty.call(body, "admin_to") ||
-      Object.prototype.hasOwnProperty.call(body, "smtps") || body.enabled === false;
-    if (!needPw) return write(body);
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "保存邮件配置：关闭全局通知、修改告警收件人或更换 SMTP 通道属敏感操作。\n请输入当前管理员密码确认。",
-        function (pw) { write(body, pw).then(resolve); },
-        function () { resolve(false); });     // 取消口令 = 本次不保存
+  // 保存收尾：成功清空收件人输入并刷新，失败/取消只落提示行；按钮复位两种路径共用
+  function finish(ok, err, canceled) {
+    if (ok) {
+      var to = $("sm-to"); if (to) to.value = "";
+      setTip("邮件配置已保存", false);
+    } else if (canceled) {
+      setTip("", false);                     // 取消弹窗 = 本次不保存，不留"保存中…"
+    } else {
+      setTip((err && err.message) || "保存失败，请稍后重试", true);
+    }
+    busy = false;
+    var btn = $("sm-save");
+    if (btn && ctx.isMaster) btn.disabled = false;
+    return ok;
+  }
+
+  // 受门禁的保存（关全局通知 / 改收件人 / 改 SMTP 通道）：**先不带凭据发**，由后端 reason
+  // 决定要不要口令（档位只存在于后端，本组件不判断）；用户取消弹窗 = 本次不保存。
+  function gatedWrite(body) {
+    busy = true;
+    var btn = $("sm-save"); if (btn) btn.disabled = true;
+    setTip("保存中…", false);
+    return YB.dangerousSubmit({
+      method: "PUT", path: "/api/mail-config", body: body,
+      desc: "保存邮件配置：关闭全局通知、修改告警收件人或更换 SMTP 通道属敏感操作。\n请输入当前管理员密码确认。"
+    }).then(function () {
+      return load().then(function () { return finish(true); });
+    }, function (e) {
+      return finish(false, e, !!(e && e.canceled));
     });
   }
 
-  function write(body, pw) {
-    if (pw) body.confirm_password = pw;
+  function write(body) {
     busy = true;
     var btn = $("sm-save"); if (btn) btn.disabled = true;
     setTip("保存中…", false);
     return YB.api("PUT", "/api/mail-config", body).then(function () {
-      var to = $("sm-to"); if (to) to.value = "";
-      setTip("邮件配置已保存", false);
-      return load().then(function () { return true; });
+      return load().then(function () { return finish(true); });
     }, function (e) {
-      setTip((e && e.message) || "保存失败，请稍后重试", true);
-      return false;
-    }).then(function (ok) {
-      busy = false;
-      if (btn && ctx.isMaster) btn.disabled = false;
-      return ok;
+      return finish(false, e);
     });
+  }
+
+  function submit(body) {
+    var needPw = Object.prototype.hasOwnProperty.call(body, "admin_to") ||
+      Object.prototype.hasOwnProperty.call(body, "smtps") || body.enabled === false;
+    return needPw ? gatedWrite(body) : write(body);
   }
 
   // 返回 Promise<boolean>：true = 已提交（或本就无改动）；false = 取消或失败。
@@ -253,6 +272,7 @@
     return submit(body);
   }
 
+  // 清空告警收件人：影响面由 confirmDialog 讲清，口令/确认交给统一 helper 按后端 reason 收
   function clearAdminTo() {
     if (busy || !ctx.isMaster) return;
     YB.confirmDialog({
@@ -261,17 +281,17 @@
       confirmText: "清空", danger: true
     }).then(function (ok) {
       if (!ok) return;
-      YB.openConfirmPasswordModal(
-        "再次确认：清空告警收件人？请输入当前管理员密码确认。",
-        function (pw) {
-          busy = true;
-          YB.api("PUT", "/api/mail-config", { admin_to: "", confirm_password: pw }).then(function () {
-            setTip("已清空告警收件人", false);
-            return load();
-          }).catch(function (e) {
-            setTip((e && e.message) || "保存失败，请稍后重试", true);
-          }).then(function () { busy = false; });
-        });
+      busy = true;
+      YB.dangerousSubmit({
+        method: "PUT", path: "/api/mail-config", body: { admin_to: "" },
+        desc: "再次确认：清空告警收件人？请输入当前管理员密码确认。"
+      }).then(function () {
+        setTip("已清空告警收件人", false);
+        return load();
+      }, function (e) {
+        if (e && e.canceled) { setTip("", false); return; }   // 取消弹窗 = 本次不清空
+        setTip((e && e.message) || "保存失败，请稍后重试", true);
+      }).then(function () { busy = false; });
     });
   }
 
