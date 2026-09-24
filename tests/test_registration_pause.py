@@ -5,9 +5,9 @@
 覆盖：注册暂停开关（`.env` 键、公开端点、设置接口权限、全新部署默认值）+ web 日志按天落盘与日志页解析口径
 对应实现：`web/app.py` 的 `/api/register`、`/api/registration_paused`、`/api/settings`、`ensure_secret_key`，以及 `DailyFlockFileHandler` 与 `parse_sign_log`
 关键断言：暂停只关注册入口——已注册用户登录、管理员添加账号的自动建用户都不受影响；普通管理员改该键 403；`.env` 不存在才写默认暂停键、既有部署不补写；root logger 保持 WARNING 而自有组件单独放开 INFO；日志页对 `yiban.*` 全级别入列、其它组件仅 WARNING+
-依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；日志解析用例打桩 `_tail_lines` 与 `log_path_for` 读构造文件。无需 node
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；日志解析用例打桩 `_tail_lines` 与 `log_path_for` 读构造文件
 
-覆盖：
+逐项明细：
 - 注册开关：未配置=允许；YIBAN_REGISTRATION_PAUSE=1 → /api/register 403；
   已注册用户登录不受影响（用户裁决：暂停仅关注册入口）；
 - 设置接口：GET 返回 registration_pause；主管理员可写（写入 .env）；
