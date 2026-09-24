@@ -129,29 +129,29 @@ def slot_width_ms(n, cfg=None):
 def _pref_slices(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi):
     """自选 5 分钟片 → 它覆盖的 1 分钟候选分片（升序）；空列表 = 该片今日不可用。
 
-    可用性判定走 `schedule._slot_to_bi`（与 web `_pref_slots` 同一口径），本函数只把
-    "片"切成 1 分钟分片。两处若各写一份判定，末尾片会出现"网页可点选、计划侧静默丢弃"。
-    基点一律取 `window.bounds` 的窗口起点：片号是**相对窗口起点**的偏移，而有效窗口被
-    前后裁剪吃空时 `bounds` 回退默认窗口——直读 `cfg` 的起止会把片号按原始窗口加一遍，
-    候选非空却整体错位（展示按回退窗口、落点按原始配置）。
+    可用性判定走 `schedule._slot_to_bi`（与 web `_pref_slots` 同一口径），本函数只把"片"切成
+    1 分钟分片：两处各写一份判定的话，末尾片会出现"网页可点选、计划侧静默丢弃"。
     """
     if slot_min not in slot_to_bi:
         return []
+    # 基点一律取 `window.bounds` 的窗口起点：片号是**相对窗口起点**的偏移，而有效窗口被前后
+    # 裁剪吃空时 bounds 回退默认窗口——直读 cfg 的起止会把片号按原始窗口加一遍，候选非空却整体
+    # 错位（展示按回退窗口、落点按原始配置）。与 `_spill_block` 的搜索半径必须同一来源。
     start_min = window.bounds(cfg).start_min
     b = start_min + slot_min
     k_lo = math.floor(b - eff_lo)
     k_hi = math.ceil(b + 5 - eff_lo)
     return [k for k in range(max(0, k_lo), min(n_slices, k_hi))
-            if eff_lo + k < b + 5 and eff_lo + k + 1 > b]
+            if eff_lo + k < b + 5 and eff_lo + k + 1 > b]  # 只留与该片真有交集的分片，跨边界不整片放行
 
 
 def _nearest_free(cands, k0, filled, cap):
     """候选分片内就近找未满（同距离优先更早的片）——v2 `_nearest_available` 的同语义。"""
     for d in range(len(cands)):
-        for k in (k0 - d, k0 + d):
+        for k in (k0 - d, k0 + d):  # 先减后加 = 同距离取更早的分片：错峰往前贴，别烧穿窗口后段
             if k in cands and filled[k] < cap:
                 return k
-    return None
+    return None  # None = 候选全满，由调用方决定溢出到邻近片还是回退自动分配
 
 
 def _spill_block(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi, filled, cap, k0):
@@ -177,10 +177,8 @@ def _spill_block(slot_min, cfg, eff_lo, eff_hi, n_slices, slot_to_bi, filled, ca
 def _density(n, cfg, day, span_sec):
     """正态模式的密度整形 → `(mu_min, sigma_min, alpha, phi_max)`。
 
-    φ 是**归一化**密度（∫φ = 1），峰值到达速率 = `N × φ_max`，受出口令牌桶 Λ 封顶：
-    只封 σ 不封峰值速率时，中段会形成相对突发。违反约束时把正态与均匀按 α 混合
-    **压平峰值**，μ/σ 一律不动——改 σ 会把"作息形状"一起改掉。连均匀密度都超过 Λ 时
-    α 取 1（能做的只有压到最平），余下的缺口属于出口令牌桶。
+    φ 是**归一化**密度（∫φ = 1），峰值到达速率 = `N × φ_max`，受出口令牌桶 Λ 封顶：只封 σ
+    不封峰值速率时，中段会形成相对突发。
     """
     span_min = span_sec / 60.0
     mu_pct = cfg["mu_min_pct"] + _u(day, "mu") * (cfg["mu_max_pct"] - cfg["mu_min_pct"])
@@ -191,26 +189,30 @@ def _density(n, cfg, day, span_sec):
     phi_flat = 1.0 / span_sec
     lam = max(float(cfg["bucket_rate"]), 1e-9)
     peak_norm, peak_flat = n * phi_norm, n * phi_flat
+    # 三档判序（反了就多压）：正态峰值没超 Λ 就不动；连均匀都超才彻底压平；介于两者之间按 α
+    # 混合。压的是"正态/均匀"的混合比，μ/σ 一律不动——改 σ 会把作息形状一起改掉。连 α=1
+    # 都压不下的余量不属于计划层，交给出口令牌桶排队。
     if peak_norm <= lam:
-        alpha = 0.0
+        alpha = 0.0  # 峰值本身合规：保持纯正态形状，不掺均匀
     elif peak_flat >= lam:
-        alpha = 1.0
+        alpha = 1.0  # 连最平的均匀密度都超 Λ：能做的只有压到最平
     else:
-        alpha = (peak_norm - lam) / (peak_norm - peak_flat)
+        alpha = (peak_norm - lam) / (peak_norm - peak_flat)  # 线性插值刚好把峰值压到 Λ
     return mu_min, sigma_min, alpha, (1 - alpha) * phi_norm + alpha * phi_flat
 
 
 def _normal_off(phone, day, mu_min, sigma_min, alpha, span_min):
     """正态模式的落点（相对有效窗口起点的分钟数）。
 
-    反射兜底（v2 同款）：越界就按窗口镜像折回，而不是丢弃重抽——重抽会让同一账号
-    在不同进程里取到不同落点，计划就不再是纯函数。
+    以 α 概率先走均匀（`_density` 压平的产物），否则按正态分位数抽样。
     """
     if _u(phone, day, "flat") < alpha:
-        x = _u(phone, day, "uniform") * span_min
+        x = _u(phone, day, "uniform") * span_min  # α 这一档：被混合掉的尾部按均匀重铺
     else:
         x = mu_min + sigma_min * statistics.NormalDist().inv_cdf(_u(phone, day, "normal"))
     for _ in range(10):
+        # 反射兜底（v2 同款）：越界就按窗口镜像折回，而不是丢弃重抽——重抽会让同一账号在不同
+        # 进程里取到不同落点，"计划是纯函数"（可重放、可审计）就没了
         if x < 0.0:
             x = -x
         elif x > span_min:
@@ -218,7 +220,7 @@ def _normal_off(phone, day, mu_min, sigma_min, alpha, span_min):
         else:
             break
     else:
-        x = _u(phone, day, "reflect") * span_min
+        x = _u(phone, day, "reflect") * span_min  # 镜像 10 次仍越界（极端 σ）才退回直接抽样
     # 上界收在窗口内侧：落点恰在 eff_hi 上会越出有效窗口（槽内相位必须 < 槽宽）
     return min(max(x, 0.0), span_min - 1e-6)
 
@@ -267,9 +269,9 @@ def _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots, fille
                  placed, slot_sec):
     """自选优先占位：先到先得（`updated_at` 升序）→ 片内就近顺延 → 邻近 5 分钟片溢出。
 
-    返回被钉住的手机号集合（其余走自动分配）。片容量 = 槽数（1 槽 1 账号），且**只在
-    自选账号之间判定**：自由账号按 `i mod N_slices` 均衡（分层采样），超出槽位数即
-    多账号共槽（3 万账号 ≈7.1 账号/槽）。
+    返回被钉住的手机号集合（其余走自动分配）。片容量 = 槽数（1 槽 1 账号），且**只在自选账号
+    之间判定**；自由账号按 `i mod N_slices` 均衡（分层采样），超出槽位数即多账号共槽
+    （3 万账号 ≈7.1 账号/槽）。
     """
     if not prefs:
         return set()
@@ -285,7 +287,7 @@ def _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots, fille
             continue
         by_slot.setdefault(slot, []).append((str(p.get("updated_at", "")), phone))
     pinned = set()
-    for slot in sorted(by_slot):
+    for slot in sorted(by_slot):  # 片号升序 + 片内 updated_at 升序：谁抢到空位由这两层次序定，必须确定
         cands = _pref_slices(slot, cfg, eff_lo, eff_hi, n_slices, slot_to_bi)
         if not cands:
             logger.warning("自选时间片 %s 不在今日可选范围，回退自动分配", slot)
@@ -334,11 +336,10 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
     PlanRow = {"phone","day","vshard","owner","run_at","priority","state","epoch"}
     - `run_at` 为 "YYYY-MM-DD HH:MM:SS.mmm"（秒级微槽 + 亚秒相位，字符串可直接比较）；
     - `state` 恒为 `pending`、`priority` 恒为 5（重试 +1 / 手动 0 由运行期改）；
-    - **与 K 无关**：改 `executors` 只改 `owner`，不改任何 `run_at`。
+    - **与 K 无关**：改 `executors` 只改 `owner`，不改任何 `run_at`（加执行体不该挪签到时间）。
 
-    `accounts` 只需 `.phone`（可选 `.user_paused`）；`day` 缺省取 `now`（默认
-    `clock.now()`）的日期；`prefs` 为 `None` 且自选总开关开启时读库；`v` 缺省按
-    规模选虚分片数（`hrw.v_for`）。
+    `accounts` 只需 `.phone`（可选 `.user_paused`）；`day` 缺省取 `now`（默认 `clock.now()`）
+    的日期；`prefs` 为 `None` 且自选总开关开启时读库；`v` 缺省按规模选虚分片数（`hrw.v_for`）。
     """
     cfg = cfg or schedule.planner_config()
     order = (order or cfg["order"]).strip().lower()
@@ -361,6 +362,8 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
 
     placed = {}
     filled = [0] * n_slices
+    # 先钉自选、后铺自由：两次落点共用同一个 filled 计数器，顺序反了自由账号会先把自选片占满、
+    # 用户显式选的时段反而回退自动分配；pinned 集也必须在 `_place_free` 之前成形
     pinned = _place_prefs(phones, day, prefs, cfg, eff_lo, eff_hi, n_slices, slots,
                           filled, placed, slot_sec)
     _place_free(phones, pinned, day, order, dist, cfg, n_slices, slots, slot_sec,
@@ -382,7 +385,7 @@ def build_plan(accounts, day, executors, *, order=None, dist=None, now=None,
             "state": STATE_PENDING,
             "epoch": 0,
         })
-    rows.sort(key=lambda r: (r["run_at"], r["phone"]))
+    rows.sort(key=lambda r: (r["run_at"], r["phone"]))  # 同刻也有唯一次序：落库与重放才逐字段可比
     logger.info("计划：%d 行 / %d 分片 / 槽宽 %dms / 执行体 %d / %s×%s",
                 len(rows), n_slices, int(slot_sec * 1000), len(executors or ()), order, dist)
     return rows
