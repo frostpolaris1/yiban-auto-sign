@@ -178,7 +178,7 @@
      仅合并「尚未返回」的请求，一旦落地即从表中移除——不引入任何响应缓存，后续刷新或写操作
      后的重新拉取仍拿到最新数据，新鲜度语义不变；POST/PUT/DELETE/PATCH 一律不走此路径。
      动机：外壳 core.js 的导航徽标/时钟/公告与页面脚本会在首屏同时拉 /api/accounts、
-     /api/users、/api/clock、/api/announcement，此前每次加载都重复请求一遍（单 worker 生产
+     /api/users、/api/clock、/api/announcement，不去重的话每次切页都要把这些重问一遍（单 worker 生产
      环境下白占线程与带宽）。 */
   var inflightGets = {};
   function api(method, path, body) {
@@ -195,7 +195,7 @@
   }
 
   /* ---------- 外壳数据客户端缓存（sessionStorage） ----------
-     动机（用户要求「一次性加载完然后读缓存，需要实时加载的页面再按时刷新」）：
+     目标：外壳级低频数据一次加载后读缓存，需要实时的分区各自按 TTL 定时刷新。
      MPA 每个页面加载都重跑外壳初始化（/api/me、/api/announcement、导航徽标、时钟），
      快速切页时同一份外壳数据被反复拉取——既是单 worker 上的无谓请求，也是触发全局限速
      429 的主因。apiCached 按 key 缓存成功结果（带写入时间戳 + TTL），命中则不产生网络请求；
