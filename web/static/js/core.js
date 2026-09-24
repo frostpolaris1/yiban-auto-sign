@@ -1,6 +1,10 @@
-// 项目交互层（Adminator 4.3.0 外壳）— 全局 api/toast/modal/时钟/身份/导航行为。
-// 契约区间 L1-L245（tests/test_web_js_modules.py 钉住本文件与 pages/ 的加载顺序）。
-// classic script（非 module）：依赖 partials/theme_boot.html 先行定义的全局 BASE。
+// 全局外壳交互层（Adminator 4.3.0 外壳）：请求层（CSRF / 401 重试 / 超时中止 / 并发 GET 去重 / 外壳数据缓存）、
+// toast、模态、口令与倒计时门禁、时钟、身份、导航徽标、主题、tab 深链。classic script（非 module）。
+// 归属与复用：全站唯一一份外壳行为层，layout_admin / layout_user / layout_auth 三个外壳模板共用；页面与组件脚本一律
+//   经 window.YB.*（或本文件末尾为内联 onclick 保留的裸全局出口）复用，不再各自实现请求与弹窗。
+// 通信（入）：partials/theme_boot.html 先定义全局 BASE 作路径前缀；本文件必须排在 pages/*.js 之前载入（顺序契约见
+//   tests/test_web_js_modules.py）。通信（出）：外壳只读端点 GET /api/me、/api/clock、/api/announcement、
+//   /api/accounts、/api/users、/api/changelog 与会话端点 POST /api/logout，实现见 web/routes/ 下各 blueprint。
 (function () {
   "use strict";
   if (window.YB && window.YB.__ready) return; // 外壳与页面可能各引一次
@@ -91,7 +95,7 @@
   }
   // 请求超时上限：fetch 默认**没有超时**，网络静默掉线（手机切换网络、NAT 静默丢弃）或
   // 服务端线程占满时，Promise 会一直挂着 —— 页面上的骨架/加载条/在途禁用按钮就永不结束
-  // （用户反馈"总览页有概率一直加载、一直不完成"，即此形态）。给每个请求挂 AbortSignal，
+  // 即"总览页一直转圈、永不完成"这一形态。给每个请求挂 AbortSignal，
   // 超时按网络错误处理：既有失败态与「重试」入口随即接管，不再出现"永远转圈"。
   var API_TIMEOUT_MS = 20000;
   function genericMessage(status) {
@@ -554,7 +558,7 @@
   }
 
   /* ---------- 密码模态（重置密码 / 高危操作二次确认共用） ---------- */
-  // 动态构建在 openModal 之上：P4 起旧栈 modal partial 已退役，新 MPA 外壳不再 include
+  // 动态构建在 openModal 之上：新 MPA 外壳不 include partials/modals/*，模态一律在运行时构造（沿用旧 DOM id 会 ReferenceError）。
   // partials/modals/*，故模态一律在运行时构造（沿用旧 DOM id 会 ReferenceError）。
   // set 模式走完整口令策略（长度 + 类别）；confirm 模式只验非空，当前口令由后端最终核对。
   // 动态文案（邮箱等）只经 el 的 text 选项写入 textContent，无 innerHTML 注入面。
@@ -599,7 +603,7 @@
       if (pending || submitted) return false;    // 在途或已提交：忽略重复提交（挡在调用回调之前）
       var fn = cb;
       // 回调**只调一次**：它的返回值决定后续走哪条路。
-      // （2026-09-17 Playwright 实测修掉的老缺陷：为判断"回不返回 Promise"，这里曾先调一次探测、
+      // （老实现为判断"回不返回 Promise"会先探测调一次、再对非 Promise 回调调第二次 —— 回调会真的跑两遍：
       //  再在下方为非 Promise 回调调第二次 —— 那些回调会真的执行两遍：两次写请求（含两次审计）、
       //  实测端点则变成两次真实联网，前端限速形同不存在。）
       // `submitted || pending` 那道护栏还必须留在调用**之前**：非 Promise 回调返回后该次提交虽然
@@ -1002,7 +1006,7 @@
   // 等于服务器当地时间。Date.now() 是 UTC 时刻，加 offset 得到服务器真实时刻；再叠加
   // 「服务器时区 − 浏览器时区」才能让本地 getter 落在服务器墙上时间上。
   // 旧实现只加服务器时区：UTC+8 浏览器会再叠一次 +8h，16:00 后 getDate() 直接跳到次日，
-  // 造成数据总览「今日」KPI 与热力图取不到当天键（2026-09-14 修复）。
+  // 造成数据总览「今日」KPI 与热力图取不到当天键（两侧取日都必须用同一个时刻源）。
   // 未校准前退回浏览器本地时钟，避免把未加时区的 UTC 当成服务器墙上时间。
   function serverNow() {
     if (!clock.ready) return new Date();
@@ -1273,7 +1277,7 @@
   }
 
   /* ---------- 回到顶部（共享） ----------
-     2026-09-14 用户裁决取消三个列表页的表格内滚上限后，长列表改为整页滚动，需要一步回顶。
+     列表页的表格没有内滚上限、长列表整页滚动，因此需要一步回顶的入口。
      按钮固定在右下、滚动超过阈值才出现；只动 opacity/transform（无布局动画），
      reduced-motion 去位移、点击直接回顶（不做平滑滚动）。键盘可达（原生 button + aria-label）。 */
   var TO_TOP_AT = 400;
@@ -1343,7 +1347,7 @@
 
   /* ---------- 顶部导航进度条（MPA 页面切换） ----------
      多页应用没有前端路由，点内部链接即整页跳转；浏览器自身不提供任何"正在导航"
-     反馈，弱网下会出现"点了一下没反应 → 突然白屏换页"的跳变感（用户实拍）。
+     反馈，弱网下会出现"点了一下没反应 → 突然白屏换页"的跳变感。
      本模块在捕获阶段监听合格的同源导航点击，立即显示细进度条并缓慢推进；
      新页面 core.js 载入时读 sessionStorage 里的起点时间，接续补到 100% 再淡出。
      不合格的链接一律放行：修饰键（新标签/下载）、target!=_self、download、
@@ -1443,7 +1447,7 @@
 
   /* ---------- 浏览器级显示偏好（localStorage） ----------
      仅影响本机显示密度，不涉及任何后端策略，故与 yiban-theme 同层使用 localStorage。
-     归属邮箱开关（P10）：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
+     归属邮箱开关：账号表窄屏在名称单元格内补一行归属邮箱，由本偏好控制显隐；
      默认开（键缺失=开），关闭后宽屏归属列不受影响。取值点集中在
      components/account-table.js 一处，改后下次渲染即生效（无需后端往返）。 */
   var PREF_OWNER_EMAIL = "yiban-owner-email";
