@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """管理员目标操作权限测试（安全审查 2026-08 修复验证）。
 
+标签：E · Web：认证/权限/API
+覆盖：普通（注册）管理员与内置主管理员的权限面差——单条与批量的重置密码/删除账号，以及探测与在线校验开关的归属
+对应实现：`web/app.py` 的用户管理路由（单个与批量 reset/delete、`/api/users/<email>/role`、probe_* 与 account_verify 设置键）
+关键断言：注册管理员碰另一名注册管理员一律 403 且账号仍在；批量是「软跳过」——仍返 200 并在计数文案里写明跳过几个；sid 只随**真正重置了密码**的账号轮换（被跳过的不得顺手换）；主管理员同一动作 200 且 `pw_version` 递增
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node。`YIBAN_PW_GATE=full` 由 `setUpClass` 写死，否则默认档 `risk` 下的倒计时确认会抢在权限 403 之前
+
 覆盖：普通管理员不可重置/删除其他注册管理员（单条 403、批量软跳过）；
 主管理员（.env 内置）可重置/删除注册管理员；普通管理员对普通用户的重置/删除不受影响。
 口径与「改角色仅主管理员」一致（/api/users/<email>/role）。
@@ -53,6 +59,8 @@ class AdminPrivilegeWebTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
+        # 导入期异常被 suppress 吞掉：webapp 只装配一半时，症状是后续用例报
+        # AttributeError，而不是 setUpClass 当场失败——排查时先想到这条。
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
 

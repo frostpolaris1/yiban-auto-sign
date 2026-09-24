@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """全局限速分级（用户实拍：快速切页 /api/* 触发 429）。
 
+标签：E · Web：认证/权限/API
+覆盖：全局限速的两桶分级——匿名与写路径走严格桶，已登录 GET 走放宽的独立桶
+对应实现：`web/app.py` 的 `create_app` 内限速包装与 `RATE_MAX` / `RATE_MAX_AUTH_GET`
+关键断言：严格阈值 +1 必现 429 且前 `RATE_MAX` 次全 200；已登录 GET 跨过旧严格阈值仍放行；已登录的写路径照旧吃 429；把放宽桶打满后严格桶仍满额可用（两桶独立计数）
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node（口令以 scrypt 哈希预置，登录走真实校验）。限速计数是 `create_app` 的闭包状态，故每条用例新建 app。无需 node
+
 判据：
 - 匿名请求与写路径（POST/PUT/DELETE）维持严格阈值 RATE_MAX（脚本轰炸主防线）；
 - 已登录 GET 走放宽的独立桶 RATE_MAX_AUTH_GET（页面首屏并发 + 快速切页），
@@ -31,6 +37,7 @@ class RateLimitTierTest(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\n"
+                # 预置哈希而非明文键：登录传明文，走的正是 verify 侧的哈希比对分支
                 f"YIBAN_ADMIN_PASSWORD_HASH={generate_password_hash(ADMIN_PASS, method='scrypt')}\n"
             )
         os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY

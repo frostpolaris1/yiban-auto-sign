@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """内置主管理员（.env 账号）的服务端会话吊销面。
 
+标签：E · Web：认证/权限/API
+覆盖：内置主管理员会话的服务端吊销面——`YIBAN_ADMIN_SID` 的签发、轮换、比对，以及存量部署（该键从未签发）与 `.env` 不可写的降级
+对应实现：`web/app.py` 的 `_effective_role`、登录/登出/自助改密、SSH 追回重迁移与 `write_env_batch` / `migrate_admin_password_to_hash`
+关键断言：每次登录换发 sid 且 `.env` 除该键外不得有任何变化；登出后「被窃副本」立即 401，本人会话同时失效；`.env` 里没有该键 = 从未签发 = 不吊销（升级日不强制重登）；`.env` 写不进时登录仍 200（降级为未签发），换发失败时会话沿用库里现存值而不是没写进去的新值
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；`send_notification` 打桩。`webapp` 以**独立模块名** importlib 装载——共用模块对象会读到别的测试文件的 `.env`
+
 被修的现实缺陷：`/api/logout` 只为 `auth_source == "user"` 轮换 sid，而
 `_effective_role` 对内置主管理员**只比 `pw_version`、从不比 sid**——于是主管理员会话
 没有任何服务端吊销面：被盗 Cookie 能用满 7 天绝对期，本人登出也踢不掉攻击者，唯一
@@ -123,6 +129,7 @@ class _AdminSidBase(unittest.TestCase):
         return self.webapp.read_env(self.env_file)
 
     def _env_lines(self, key):
+        # utf-8-sig：容忍带 BOM 的 .env，否则首行键名会混进不可见字符、匹配不上
         with open(self.env_file, encoding="utf-8-sig") as f:
             return [ln for ln in f.read().splitlines() if ln.strip().startswith(f"{key}=")]
 
@@ -145,6 +152,7 @@ class _AdminSidBase(unittest.TestCase):
                 return c
             except TypeError:
                 continue
+        # 两条都失败就直接 fail：静默跳过会让「被窃副本此刻仍有效」的前置断言变成假担保
         self.fail("当前 Werkzeug 版本无法注入测试 cookie")
 
     def _session_cookie(self, c):

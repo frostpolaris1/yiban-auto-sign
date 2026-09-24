@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """Web 前端注入面契约（2026-09-08）。
 
+标签：E · Web：认证/权限/API
+覆盖：备案链接的 scheme 白名单与回落；模板内联上下文的两条转义契约——`<script>` 里的 `request.script_root` 必须经 `tojson`，`onclick/onchange` 不得拼接用户可控值
+对应实现：`web/app.py` 的 `police_link` 与 `_SAFE_LINK_SCHEMES`；`web/templates/*.html` 的 BASE 声明与 accounts 页的 `data-*` + 事件委托写法
+关键断言：`javascript:` / `data:`（含大小写变体）与空值一律回落固定备案页；模板里必须是 `const BASE = {{ request.script_root | tojson }};` 且不得出现裸插值写法；已审页面不得残留内联事件属性
+依赖：importlib 装载 `web/app.py` + 读模板源码文本（**静态扫描**，不执行 JS）；无需 node、不联网。真跑 JS 行为的前端用例见 `tests/test_delay_ack_frontend.py`
+
 1. police_link()：YIBAN_POLICE_LINK 经 scheme 白名单（复用 _SAFE_LINK_SCHEMES）
    校验后进 href——该值直接渲染在公开登录页，配置 javascript:/data: 即点击型
    XSS；非白名单（含空值）一律回落公安部通用门户。

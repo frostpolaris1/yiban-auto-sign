@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """手动签到与账号编辑守卫回归（2026-09-08）。
 
+标签：E · Web：认证/权限/API
+覆盖：编辑账号时熔断计数的清除条件（只有凭据实际变更才清）+ 手动签到子进程非 0 退出码向签到日志的透传
+对应实现：`web/app.py` 的账号编辑路由（管理员侧与用户侧）与手动签到的子进程收尾（退出码→用户可见原因的映射）
+关键断言：只改备注（password 留空）时 `fail_days` 原样保留、改口令才清除熔断条目；子进程 exit 3 必须在签到日志留下失败痕迹而不是「无声成功」；退出码 0→无原因、3→队列忙、2→跳过、其他→异常退出
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；`subprocess.Popen` 打桩返回假句柄（不真的拉起签到子进程），熔断条目直接写文件构造、不经真实 db 写路径。无需 node
+
 逐项活体复现 + 修复钉版：
 1. 仅凭据（密码/手机号）实际变更才清熔断计数，只改备注不再重置 fail_days
 2. 手动签到子进程非 0 退出码透传到签到日志（用户可见真实失败原因）
@@ -84,6 +90,7 @@ class _WebAppMixin:
         db.init_db(self.db_file, migrate_from=self.accounts_file,
                    env_file=self.env_file)
 
+    # 熔断状态文件就写在 YIBAN_STATE_DIR（= cls.tmp）下，与被测代码读的是同一份
     def _seed_fuse_pause(self, phone, fail_days=3):
         """写入熔断暂停条目（fail_days=3 表示已连续失败 3 天）。"""
         path = os.path.join(self.tmp, "cred-state.json")

@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """在线校验任务：生命周期、失败冷却与并发闸。
 
+标签：E · Web：认证/权限/API
+覆盖：在线校验任务的全生命周期（创建/领取/结算/取消、超龄收口、保留期清理）、失败冷却与熔断、外呼并发闸、按手机号的级联清理，以及「迟到的异步结果不得覆盖人工决定」的状态 CAS
+对应实现：`yiban/store/verify_jobs.py` 与 `web/app.py` 的校验入口（`run_verify_with_gate`、`reclaim_stale_verify_jobs`、`update_account_status_if`、`_record_verify_failure`、`_verify_fail_cooldown_remaining`）
+关键断言：席位满→503 + Retry-After 且**不扣**用户配额；并发外呼同时在跑数不超 `VERIFY_CONCURRENCY_MAX`，配额拒绝与异常路径都不漏席位；超龄与保留期判定只认业务钟（UTC 主机上按宿主 `datetime.now()` 会误判）；每张以 phone 为键的表都必须在级联清单内（schema 枚举兜底，新增表即报红）；管理员审批后校验失败仍保持 active
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；`verify_account` 一律打桩，绝不联网。**异步用例必须在 patch 存活期内轮询到终态**，否则后台线程拿到真实实现会真的外呼易班。无需 node
+
 `yiban/store/verify_jobs.py` + Web 侧校验入口共同构成在线校验：任务创建/领取/结算/取消、
 超龄回收、管理员判定优先、失败后的冷却与熔断。本文件并两处断言：生命周期与并发闸门，
 以及失败冷却、重试预算与冷却助手的行为。
@@ -661,6 +667,7 @@ class _LifecycleBase(unittest.TestCase):
         if age is not None:
             conn.execute("UPDATE verify_jobs SET created_at=? WHERE id=?",
                          (_ago(age), job_id))
+        # running 的超龄判定读的是 started_at，所以这里回拨它而不是 created_at
         if running:
             conn.execute(
                 "UPDATE verify_jobs SET status='running', started_at=? WHERE id=?",
