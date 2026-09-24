@@ -1414,6 +1414,29 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         tuesday = datetime(2026, 9, 22, 9, 0, 0)
         self.assertTrue(self._due_at(tuesday, self._healthy_status(), exhausted=True))
 
+    def test_gate_fires_off_weekday_when_login_fail_ledger_pending(self):
+        """登录失败账挂出耗尽告知 ⇒ 非例行日也判「当天要发」，且闸门不得取走该标记。
+
+        该账的告知只有通道健康报告一个取走方，而 pending 换日即重置：闸门若只问
+        general / urgent 两本推送账的余额，攻击当天（非例行日）这封报告不发，告知
+        就在次日归零时永久消失。
+
+        占用与判闸门都在同一时刻（同一天）里做：账本按 `yiban.clock` 的北京日归零，
+        两者跨日会被正常归零，测的就不是闸门了。
+        """
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        with mock.patch.object(self.webapp.clock, "now", return_value=tuesday), \
+                mock.patch.dict(os.environ, {"YIBAN_LOGINFAIL_DAILY_MAX": "1"}):
+            first = notify_ledger._consume_daily_budget("login_fail")
+            self.assertTrue(first.allowed, "前置：上限 1 时首条应放行")
+            notify_ledger._consume_daily_budget("login_fail")  # 打满 → 挂耗尽告知
+            self.assertTrue(notify_ledger._LEDGERS["login_fail"]["notice"]["pending"],
+                            "前置：打满额度必须挂上待告知标记")
+            self.assertTrue(self.webapp._channel_health_report_due(self._healthy_status()),
+                            "登录失败账挂着告知时，非例行日也必须判「当天要发」")
+            self.assertEqual(notify_ledger.pop_exhaustion_notice(), ["login_fail"],
+                             "闸门必须是只读判据：取走 pending 会让真正发信时少了那几行告知")
+
     def test_gate_tolerates_budget_read_failure(self):
         """额度状态读不动时不得让日报整体缺席，也不得因此每天发。"""
         tuesday = datetime(2026, 9, 22, 9, 0, 0)
