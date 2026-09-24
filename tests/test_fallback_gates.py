@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """兜底常驻执行体的三道门与窗口边界（2026-09-17 实测缺陷的钉版回归）。
 
-**缺陷**：`--fallback` 在 `runner.main` 的分支顺序里排在周末门/一键暂停门**之前**，
-于是这两道门被兜底全部绕过——管理员在网页关掉周末签到、或点了一键暂停，兜底照样
-把账号签掉（周六/周日/暂停三种情形均已实测复现）。另外 `window.Window` 只有
-"关没关"（`is_closed`），含不住"还没开"，而兜底按 cron 模板提前拉起（06:05 起、
-窗口 06:30 开），于是**窗口外每个账号都白登陆一次**（`run_queue_retry` 的手动链路
-本身不判本项目的窗口，实际请求会真的发出去）。
+标签：B · 调度：领取/队列/执行体
+覆盖：day_off
+   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、全量轮在跑时让位、兜底独立锁确实被取、全局锁探测、定时轮与兜底共用同一份门。
+对应实现：yiban/engine/schedule.py（day_off 与 DAY_OFF_*
+   常量）、yiban/engine/runner.py（兜底常驻分支与派发前的门）、yiban/engine/cli_support.py（_run_lock_held）、yiban/engine/schedule.py
+   的窗口判定与 state_io 心跳。
+关键断言：兜底不得绕过任何一道门：它按 cron 提前拉起（06:05 起、窗口 06:30 开），而
+   run_queue_retry
+   的手动链路本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据取全局锁探测且显式用全局锁名——兜底自己的环境变量里放的是它自己的。
+依赖：临时状态目录 + clock.now 替身（按序列返回、超过 max_calls
+   抛错以暴露死循环）+ 打桩 run_queue_retry / 锁探测 /
+   心跳写盘。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上 self.skipTest（flock 仅 POSIX），其余全跑。
 
 钉的四条：
 1. 周末门未开时，兜底一轮都不扫（也不写心跳）；
@@ -28,7 +34,7 @@ from unittest import mock
 from yiban.engine import cli_support, runner, schedule, workers
 
 #: 2026-09 的三个样例日（下面的 weekday 断言保证它们仍是周三/周六/周日）
-WED = _dt.date(2026, 9, 2)
+WED = _dt.date(2026, 9, 2) # 这三个日期只是「星期几」的样本，_WeekdayGuard 每次先验证前提仍成立
 SAT = _dt.date(2026, 9, 5)
 SUN = _dt.date(2026, 9, 6)
 
@@ -82,8 +88,9 @@ class DayOffGateTest(_WeekdayGuard):
     """门本身：`schedule.day_off` 的判定表（定时轮与兜底共用的唯一实现）。"""
 
     def _off(self, day, hm=(6, 35), env=None, **kw):
+        # clear=False 只覆盖列出的键：BASE_ENV 已把窗口与三道门显式给全，宿主渗不进来
         with mock.patch.dict(os.environ, {**BASE_ENV, **(env or {})}, clear=False):
-            return schedule.day_off(_at(day, hm), **kw)
+            return schedule.day_off(_at(day, hm), **kw) # 默认时分 06:35 落在窗口内：让门成为唯一变量，不把窗口判定混进门的判据
 
     def test_weekday_is_go(self):
         self.assertEqual(self._off(WED), "")
@@ -127,7 +134,7 @@ class _FallbackHarness(_WeekdayGuard):
         `mutate_cred`：模拟 `run_queue_retry` 就地改熔断快照；写回调用记录在
         `self.saves`（(data, touched) 列表）。
         """
-        sleeps, beats, scans, saves = [], [], [], []
+        sleeps, beats, scans, saves = [], [], [], [] # 四本流水账分别对应睡过/心跳/扫过/写回，主循环的每个副作用都留痕
         self.saves = saves
         held = list(lock_held) if lock_held else []
         acc = mock.Mock(phone="13800000000", user_paused=False)

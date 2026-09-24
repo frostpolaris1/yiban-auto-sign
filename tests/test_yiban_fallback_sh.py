@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
 """兜底常驻执行体外壳（`scripts/yiban-fallback.sh`）的行为断言。
 
-用户问"怎么把某个执行体设置成兜底型"——答案是一条 cron 跑这个脚本，而**开关在
-`.env` 里**（网页写进去的）。cron 环境里既没有那些变量、又不能安全地 source `.env`，
-所以"先读 .env 再判开关"这段样板必须由脚本自己承担，且必须钉住三件事：
-
-1. **开关关 = 静默**：退出码 0、**不调用 CLI**、不写日志、不建状态目录。
-   默认就是关，而 cron 每 5 分钟一次——任何输出都会变成周期性邮件噪声；
-2. **开关开 = 真的起到 CLI**：以 `--fallback` 调用（不是 `--workers`、不是空跑）；
-3. **环境变量优先于 `.env`**：cron 行里显式赋值可临时覆盖网页配置（与 run.sh 同口径）。
+标签：B · 调度：领取/队列/执行体
+覆盖：兜底常驻外壳的三条契约：开关关时静默（退出码 0、不起
+   CLI、不写日志、不建状态目录）、开关开时以 --fallback 真的起到
+   CLI、真值字面量集合、环境变量优先于 .env、含 BOM/CRLF/多余空白/杂键的 .env
+   仍能读到开关。
+对应实现：scripts/yiban-fallback.sh（.env 解析、开关判定、CLI 调用与锁）。
+关键断言：默认态是关，而 cron 每 5
+   分钟一次：任何输出都会变成周期性邮件噪声，故「静默」是被断言的行为（stdout
+   必须为空、状态目录必须仍为空），退出码 0
+   不足以证明没起进程。反过来「起了进程」必须由桩 PY 记录的完整参数证明是
+   --fallback 而不是空跑。环境变量优先于 .env，好让 cron
+   行临时覆盖网页配置而不必改配置。
+依赖：skipIf(shutil.which('bash') is None)：本机无 bash 时整类 skip；有 bash
+   时用临时「应用目录」+ .venv/bin/python3 桩真实执行脚本，并逐键清空 YIBAN_*
+   环境变量防并发串味。
 
 写法参照 `tests/test_run_sh_workers.py`：每条用例独立 state dir，用桩 PY 记录被调用
 的完整参数——"脚本退出码 0"不足以证明"确实起了兜底进程"（静默退出也是 0）。
@@ -25,7 +32,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_SH = os.path.join(BASE, "scripts", "yiban-fallback.sh")
 
 #: 桩解释器：记录被调用的全部参数（`$*`），不真的跑签到
-STUB_PY = '#!/usr/bin/env bash\necho "$*" >> "$STUB_LOG"\nexit 0\n'
+STUB_PY = '#!/usr/bin/env bash\necho "$*" >> "$STUB_LOG"\nexit 0\n' # 记参数而不是记退出码：「确实以 --fallback 起过 CLI」只能从它收到的东西证明
 
 
 def _to_bash_path(path):
@@ -42,7 +49,7 @@ class YibanFallbackShTest(unittest.TestCase):
         # 连 `.venv/bin/python3` 桩一起造好，就不必给脚本加测试专用的路径开关
         self.scripts = os.path.join(self.tmp, "scripts")
         os.makedirs(self.scripts)
-        shutil.copy(SRC_SH, os.path.join(self.scripts, "yiban-fallback.sh"))
+        shutil.copy(SRC_SH, os.path.join(self.scripts, "yiban-fallback.sh")) # 复制到临时「应用目录」而非给脚本加测试开关：APP_DIR 是由 dirname $0/.. 反推的
         self.venv_bin = os.path.join(self.tmp, ".venv", "bin")
         os.makedirs(self.venv_bin)
         self.state = os.path.join(self.tmp, "state")
@@ -54,7 +61,7 @@ class YibanFallbackShTest(unittest.TestCase):
             path = os.path.join(self.venv_bin, name)
             with io.open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(body)
-            os.chmod(path, 0o755)
+            os.chmod(path, 0o755) # Git Bash 同样要看执行位，否则桩解释器直接 126
         # 逐键清空 YIBAN_*：**不能**让别的测试留在 os.environ 里的配置渗进来
         # （全量 -n 8 并发时同一 worker 里别的用例会写这些键）
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
