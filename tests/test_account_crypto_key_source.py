@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
-"""账号加密密钥的来源守卫（M3）：`load_key` 不得在"来源不确定"时自动建钥落盘。
+"""账号加密密钥的来源守卫：`load_key` 不得在"来源不确定"时自动建钥落盘。
 
-89 号审查发现：`account_crypto.load_key` 的自动建钥分支只在"环境变量缺失 +
-.cenv 无键"时生成，但不校验密钥来源是否确定——若调用方未传 `env_file`、
-`YIBAN_ENV_FILE` 未设、cwd 又无 `.env`（四条同时满足，且该路径要**写**密文），
-会在错误目录落一份游离 `.env` 与新密钥（与 db 层已修的 `_assert_key_source_certain`
-同源缺陷，db 依赖本模块不能反向 import，故判定就地复刻）。
-
+`account_crypto.load_key` 的自动建钥分支只在"环境变量缺失 + .cenv 无键"时生成，
+但不校验密钥来源是否确定——若调用方未传 `env_file`、`YIBAN_ENV_FILE` 未设、
+cwd 又无 `.env`（四条同时满足，且该路径要**写**密文），会在错误目录落一份游离
+`.env` 与新密钥（与 db 层已修的 `_assert_key_source_certain` 同源缺陷，
+db 依赖本模块不能反向 import，故判定就地复刻）。
 只读解密路径不受影响（`has_key()` 先判，不触发生成）。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：自动建钥的四个来源分支——三者全缺（拒绝）／cwd 已有 `.env`／显式 `env_file`／
+`YIBAN_ENV_FILE`（这三条照常生成），外加只读解密路径一条。
+对应实现：`yiban/infra/account_crypto.py` 的 `load_key` 自动建钥分支、`has_key`、
+模块级密钥缓存 `_KEY_CACHE`。
+关键断言：拒绝时抛 ValueError 且消息含"来源不确定"，**并且**临时空目录里不得出现新建的
+`.env`——只断"抛了"不够，落盘和抛出是两个独立动作，守卫失效的典型形态正是"照样落盘"。
+本文件守的是"在错误目录建出第二把钥"这一条，不覆盖"已存在 `.env` 但内含错钥"的情形。
+依赖：无网络、无 skip。用例把 cwd 切到临时目录并在 finally 切回 `tests/`；`setUp` 清
+`YIBAN_ACCOUNTS_KEY`/`YIBAN_ENV_FILE` 两个环境变量并重置 `_KEY_CACHE`。
 """
 import os
 import shutil

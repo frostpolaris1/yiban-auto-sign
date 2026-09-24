@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""审计可追溯性与并发安全回归测试（2026-08-28 审查）。
+"""审计可追溯性与并发安全回归（审查轮活体复现的三条）。
 
 用法（在项目根目录）：
-    py -m pytest tests/test_audit_anchor_0828.py -v
-    py tests/test_audit_anchor_0828.py               # 无 pytest 也可直接运行
+    py -m pytest tests/test_audit_anchor.py -v
+    py tests/test_audit_anchor.py               # 无 pytest 也可直接运行
 
 覆盖三个阻断级缺陷：
 
@@ -17,6 +17,22 @@
 - **B-5** `update_account` 的读-改-写原先跨进程无互斥，两个进程/两个标签页并发
   编辑同一账号会静默丢更新（且 web 自编辑路径不传乐观锁、总回填旧密码，可把用户
   刚改的密码回滚）。现整个读-改-写纳入 BEGIN IMMEDIATE 写锁。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：审计写入失败的可见性（返回值 + 失败计数 + 重试）、库外锚点对「删尾 / 清空整表 /
+无留痕删前缀 / 链尾内容篡改」四种破坏的检出、合法保留期清理不得误报、
+`update_account` 读-改-写的跨线程互斥与换绑重加密。
+对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
+`record_audit_anchor` / `verify_audit_anchor` / `audit_health` / `_audit_cleanup` /
+`_rechain_audit_logs`）与 `yiban/store/accounts.py` 的 `update_account`。
+关键断言：锚点类用例都是"破坏后必须 False"**成对**配一条"合法清理必须 True"——只留一边
+就会把告警调成常亮或常灭而无人发现。锚点只比 min_id/max_id/head_hash 三元组，**内容篡改
+由 `verify_audit_chain` 的逐行哈希负责**（见 `test_anchor_detects_tail_tamper` 里为什么
+改用 chain 判据）；本文件守的是"只破坏数据库"这一类，锚点文件本身被改写由
+`tests/test_audit_chain.py` 的 `AnchorFileIntegrityTest`（截断/改中间行/删中间行）负责，
+跨库误比由 `tests/test_audit_cleanup_visibility.py` 的"外库拒绝"用例守。
+依赖：临时库 + 临时 `.env`（自带 `TEST_KEY`/`AUDIT_KEY`），无网络、无 skip；
+并发用例用线程而非子进程，故只验到进程内互斥语义。
 """
 import contextlib
 import os
