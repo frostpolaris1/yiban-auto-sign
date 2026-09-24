@@ -294,7 +294,7 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 </details>
 
 <details>
-<summary>🔐 安全运维：主管理员权限追回 / 账号凭据密钥轮换 / 时钟守卫冻结恢复</summary>
+<summary>🔐 安全运维：主管理员权限追回 / 账号凭据密钥泄露处置 / 时钟守卫</summary>
 
 **核心机制**：主管理员会话有效性绑定 `.env` 的 `YIBAN_ADMIN_PW_VERSION`（整数）；递增即全部旧主管理员会话立即失效（无需重启，下一次请求生效）。v0.26.0 起，通过 SSH 重写 `YIBAN_ADMIN_PASSWORD` 后重启，系统检测到"明文与现存哈希不一致"会**自动递增** PW_VERSION。
 
@@ -310,31 +310,24 @@ YIBAN_BACKUP_PASSPHRASE='你的口令' bash docker/backup-docker.sh --restore ba
 
 **场景 B：仅会话 cookie 被盗（密码未失守）**：只做第 1 步的 PW_VERSION+1（实时生效）；如需全端下线再做第 4 步。
 
-**场景 C：`YIBAN_ACCOUNTS_KEY` 疑似泄露（账号凭据密钥轮换）**
-
-SSH 失陷时攻击者可读 `.env` 中的 `YIBAN_ACCOUNTS_KEY`，离线解密全部易班账号密码。轮换**必须在停服窗口执行**（Docker：`docker compose stop yiban`——web/scheduler 是该容器内 supervisord 子进程，`stop web scheduler` 这类服务名不存在；裸机：`systemctl stop yiban-web`。工具自身也会扫描进程并拒绝在存活的 web/signin/scheduler 旁执行）：
-
-1. 一步完成解密→重加密→自校验→更新 `.env`：
-   `python3 scripts/rekey_accounts.py --generate`（或 `--new-key <64位hex>` / `--new-key-file <文件>`；可用 `--db`/`--env` 指定路径；`--force` 跳过存活进程探活）。新钥会先落 0600 暂存文件 `<env>.rekey-staging` 作崩溃恢复之用，完成后自动删除；
-2. 重启全部进程（web/signin/scheduler）；若 shell 或容器环境变量里仍设有旧 `YIBAN_ACCOUNTS_KEY`，同步更新——环境变量优先级高于 `.env`；
-3. 事后取证：`python3 scripts/audit_verify.py --db data/yiban.db` 校验审计链（轮换动作本身也留痕）。注意旧密钥应视为已泄露——若攻击者曾拷贝数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
-
-崩溃恢复（注意"改回旧钥即可恢复"只对**提交前**的中断成立）：
-
-- 重加密事务提交**前**中断：库未变更，`.env` 旧钥仍有效，直接重跑本工具；
-- 重加密事务提交**后**、写 `.env` 前中断：库内已是新钥密文而 `.env` 仍是旧钥——新钥就在暂存文件 `<env>.rekey-staging`（0600），写回 `.env` 的 `YIBAN_ACCOUNTS_KEY` 即恢复；或重跑 `python3 scripts/rekey_accounts.py --env-only --new-key-file <暂存文件>` 补完（`--env-only` 会先用新钥抽样试解一行库内密文，密钥不对即拒绝写 `.env`）。
+> **`YIBAN_ACCOUNTS_KEY` 疑似泄露时怎么办**：该键用于静态加密账号凭据，SSH 失陷时攻击者可读 `.env` 后离线解密。
+> 现版本**不再提供自动轮换工具**——轮换是十年一遇场景，且"自动重加密全库"本身就要求停服窗口与崩溃恢复流程，
+> 维护成本高于收益。真要轮换，按以下顺序手工做（每一步都可中断重来）：停服（Docker `docker compose stop yiban`；
+> 裸机 `systemctl stop yiban-web`）→ 用新钥重新加密 `accounts.password` / `phone_code` → 自校验抽样解密 →
+> 改 `.env` 的 `YIBAN_ACCOUNTS_KEY` → 重启全部进程 → 用 `scripts/audit_verify.py` 校验审计链。
+> 旧密钥一律视为已泄露：若攻击者拷走过数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
 
 **事后取证**：`python3 scripts/audit_verify.py --db data/yiban.db --env .env --anchor /var/log/yiban/audit-anchor.log`
 一次跑完三件校验——哈希链自洽（防改行）、库外锚点比对（防删尾/删前缀/整表清空/截断或改写锚点文件）、审计写入欠账。
 退出码 0=健康、1=检出异常、2=无法定论（缺密钥/库不存在/锚点不可读）。批量操作审计含脱敏目标清单，登录成功留有匿名化 IP
-审计（登录失败阈值/越权 403/密钥轮换/数据导出同样留痕）。
+审计（登录失败阈值/越权 403/数据导出同样留痕）。
 
 > 诚实边界：以上判据都在**同一台机器**上。拿到 root 者可改 `.env` 里的审计密钥并重启服务，让链在新密钥下重签自洽——
 > 合法的重链只会发生在"任何锚点存在之前"（即升级那一次），锚点之后再出现重链就判异常。但要真正排除，靠的是
 > **离开本机的两份留痕**：告警通道健康邮件里的链头哈希与记录数（常规每周一发，通道降级当天就发）、以及异机备份副本（`REMOTE_BACKUP`，其中已含审计锚点文件）。
 > 怀疑失陷时先取这两处比对，再决定是否按密钥泄露处理。
 
-**时钟守卫冻结恢复**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后都会触发）时，全部物理清理会被守卫冻结并邮件告警。核实系统时间已正确后运行 `python3 scripts/clock_guard_reset.py --confirm` 重置（不带 `--confirm` 仅查看状态；刻意不自动恢复——防"拨快一次、下轮洗白"）。
+**时钟守卫**：系统时间前进超 72h / 回拨超 1h（合法长停机、时钟维修后都会触发）时，守卫会**记 ERROR 日志并跳过本轮物理清理**（不删任何数据），同时把参照点推进到当前时间 ⇒ **只跳一轮**，下一轮自动恢复。之所以"只跳一轮"而不是一直冻结：冻结需要人工重置，而重置工具本身就是运维负担。诚实边界：正向拨快被拦后参照点落在被拨后的时间，若此后被 NTP 校正回真实时间，会再触发一次回拨跳变 ⇒ 最多连跳两轮。核实系统时间后无需任何操作，等下一轮即可。
 
 > 若 `.env` 不可写：启动迁移失败后主管理员登录会被 fail-closed 拒绝（明文比对已停用），修复文件属主/权限后重启即自动补齐哈希。
 
