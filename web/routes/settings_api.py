@@ -63,6 +63,36 @@ def _executor_write_guard(data, action, changed):
     return None
 
 
+def _executor_change_alert(action, changed):
+    """执行体写成功后的事后告警（非 `full` 档的管理员侧补偿信号）。
+
+    为什么要有：非 `full` 档下执行体写不再当次索要口令，而改出口等于把全站签到流量
+    交给任意代理（顺手还能把兜底关掉）——这一族写端点此前一处都不发告警，是受门禁
+    操作里唯一没有补偿信号的一族（既无口令也无管理员侧痕迹，只剩审计链自己看自己）。
+    `full` 档当次已要求口令，行为逐字不变：不重复发。
+
+    只在**真的会改配置**时发（与 `_executor_write_guard` 同一判据）：无变更的保存不是
+    "变更"，发了只会稀释同类告警。正文只落动作名与槽位（调用方给的 `action`，全是内部
+    常量），过一道 `_nl_safe` 只为杜绝换行伪造告警正文；代理串可能带凭据、自定义名是
+    用户输入，一律不进正文。
+    """
+    m = _appmod()
+    if not changed or m._pw_gate_tier(m.ENV_FILE) == m.PW_GATE_FULL:
+        return
+    try:
+        m.send_notification(
+            "系统设置变更告警",
+            m._change_mail(
+                "执行体配置已变更。",
+                detail=[("动作", m._nl_safe(action))],
+                advice=["如非本人操作，请核对 .env 的执行体清单与出口并回滚"],
+            ),
+            urgent=True,
+        )
+    except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
+        m.logger.warning("执行体变更告警发送失败（不影响已写入的配置）: %s", e)
+
+
 def _reply_slot_egress(env_key, index):
     """单段出口写接口的公共实现（两个路由只差"哪一段"）。
 
@@ -96,7 +126,8 @@ def _reply_slot_egress(env_key, index):
         role_now = m.yb_egress.ROLE_FALLBACK if index is None else m.yb_egress.ROLE_WORKER
         cur_value = str(m.yb_egress.resolve(role_now, index or 0, env=env_now) or "")
         audit_detail = env_key if index is None else f"{env_key}[{index}]"
-    denied = _executor_write_guard(data, f"{audit_detail} 改出口", value != cur_value)
+    changed = value != cur_value
+    denied = _executor_write_guard(data, f"{audit_detail} 改出口", changed)
     if denied:
         return denied
     if rows is not None:
@@ -114,6 +145,7 @@ def _reply_slot_egress(env_key, index):
     if err:
         return jsonify({"error": err}), code
     m.db.audit(m._audit_actor(), "settings", "executors", audit_detail)
+    _executor_change_alert(f"{audit_detail} 改出口", changed)
     return jsonify({"ok": True,
                     "index": index if index is not None else "fallback",
                     "egress": desc})
@@ -870,6 +902,7 @@ def api_scheduler_executors_save():
         return jsonify({"error": str(e)}), 400
     # 审计只记键名：代理串可能带凭据，不得进审计链
     m.db.audit(m._audit_actor(), "settings", "executors", ",".join(sorted(updates))[:200])
+    _executor_change_alert("整条保存:" + ",".join(changed_keys)[:160], bool(changed_keys))
     return jsonify({"ok": True, "applied": sorted(updates),
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -963,6 +996,7 @@ def api_scheduler_executor_row_add():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert("追加执行体行", True)
     return jsonify({"ok": True, "slot": slot, "type": rtype,
                     "egress": m.yb_egress.describe(value),
                     "name": name or None,
@@ -1018,6 +1052,7 @@ def api_scheduler_executor_row_update(slot):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert(f"{m.yb_egress.ENV_MANIFEST}[{slot}] 改行", _changed)
     return jsonify({"ok": True, "slot": slot, "type": row["type"],
                     "egress": m.yb_egress.describe(row["proxy"]),
                     "name": row.get("name") or None,
@@ -1053,6 +1088,7 @@ def api_scheduler_executor_row_delete(slot):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert(f"{m.yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
     return jsonify({"ok": True, "slot": slot, "type": rtype, "deleted": True,
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
