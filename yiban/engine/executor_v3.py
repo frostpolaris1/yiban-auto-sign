@@ -9,6 +9,10 @@
 `yiban.engine` 的执行层（调度 v3）。计划层（`planner`）决定"何时做"、`token_bucket`
 决定"多快做"，本模块把两者与队列消费接起来；入口与退出码汇总仍在 `runner`。
 
+**当前是否生效**：否——`YIBAN_SCHEDULER_V3` 缺省 0，未开闸时本模块不执行签到，轮次走
+`round.run_queue_retry`，这里只有 `scheduler_v3_enabled` 被 `runner.main` 与
+`schedule.capacity_of` 读取；开闸后 `runner.main` 才把执行体换成 `run_executor_v3`。
+
 **复用**
 `scheduler_v3_enabled` 是开关的唯一判据（分流谓词的另一半在调用方）；`next_retry_at_v3`
 是 v3 的重试落点（与 v2 的 `round._next_retry_at` 同窗口准绳、不同采样）；`shadow_stats`

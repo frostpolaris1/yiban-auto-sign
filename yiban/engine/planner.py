@@ -11,8 +11,9 @@
 
 **复用**
 `build_plan` 可重放（同输入逐字段同输出），影子期（dry_run）与审计重放直接调它；
-`write_plan` / `has_plan` / `plan_stats` 分别是落库、降级判定与可观测入口；
-`slot_width_ms` 是压缩模式的判定口径（落库元数据与执行体读同一处）。
+`write_plan` / `has_plan` / `plan_stats` 分别是落库、当日有无计划行的判据与可观测入口；
+`slot_width_ms` 是压缩模式的判定口径（`write_plan` 另把它写进 `app_meta` 作落库元数据，
+生产侧暂无读取方，改它不影响执行）。
 
 **通信**
 输入：账号序列（只读 `.phone`，可选 `.user_paused`）、业务日 `day`、执行体身份串列表；
@@ -22,8 +23,10 @@
 `yiban.engine.schedule`（配置、`_sigma_eff`、自选片成员性判定）、
 `yiban.store.queue_store`（队列库连接与 `sign_tasks` 的 state 词汇）、
 `yiban.store.clock_meta`（计划元数据）。
-谁调用：v3 执行体启动时用 `has_plan` 判"无计划则降级动态领取"；运维与影子期用
-`plan_stats` 对比落点分布与容量。本模块当前尚无调用点。
+谁调用：唯一生产调用点是 `executor_v3`——`_ensure_plan` 在当日没有可用计划行时调
+`build_plan` + `write_plan` 补建，`shadow_stats` 调 `plan_stats` 做影子对账。
+`executor_v3` 自身受 `YIBAN_SCHEDULER_V3` 分流、**缺省 0**：开关未开时本模块零生产调用点。
+运维与影子期另可直接调 `plan_stats` 对比落点分布与容量。
 """
 import datetime
 import logging
@@ -419,9 +422,11 @@ def write_plan(rows, day=None):
 
 
 def has_plan(day):
-    """当日是否已有计划行——执行体启动时的降级判定。
+    """当日是否有计划行（`sign_tasks` 当日任意行，含 `vshard = -1` 的历史惰性行）。
 
-    库不可用 / 表未落地一律回 `False`：调用方据此退回 v17 的动态领取路径，而不是空转。
+    库不可用 / 表未落地一律回 `False`（只 warning 不抛）。唯一生产调用点
+    `executor_v3._ensure_plan` 只把它当「历史惰性行能不能作证」的告警判据：当日没有
+    `vshard >= 0` 的可用行时一律补建计划，不因此退回别的领取路径。
     """
     try:
         conn, lock = queue_store._queue_conn()

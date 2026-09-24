@@ -14,8 +14,9 @@
 发送失败一律只留痕，绝不抛出，也不影响退出码。
 
 **归属**
-`yiban.engine` 的告警通道层；被 `round`（签到成败）、`probe`（健康探测）、`runner`
-（收尾汇总）调用。
+`yiban.engine` 的告警通道层；写汇总条目的调用方是 `round` / `executor_v3`（签到成败）、
+`schedule`（窗口配置异常）、`store.claims`（领取池异常）与 `probe`（健康探测），
+`runner` 只负责收尾发送。
 
 **复用**
 `_collect_admin_mail` / `_flush_admin_mail_summary`（A 线汇总）、`send_user_fail_mail`
@@ -26,7 +27,7 @@
 输入：本轮结果（状态码、账号、失败原因）、收件人/开关/额度配置（来自 .env 与 db）。
 输出：SMTP 邮件、webhook 推送与 `sign_events` 留痕；**只留痕不抛出**，不影响退出码。
 调用谁：`mail`（`mailer`）、`notify`、`db`、`state_io`、`cli_support`、`schedule`。
-谁调用：`round`、`probe`、`runner`。
+谁调用：`round`、`probe`、`runner`、`schedule`、`store.claims`、`executor_v3`。
 前端调用点：邮件/推送配置与"发送测试"由 `/api/mail-config`、`/api/notify-config`、
 `/api/notify-test`（`web/static/js/components/settings-notify.js` 等设置页）管理——告警通道或措辞
 变化会影响用户收到的邮件/推送。
