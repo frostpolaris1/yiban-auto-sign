@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
 """状态集合的单一事实源：JSON 状态码全集、了结/未了结划分、「今日不必再签」三套词表。
 
-「今天还用不用再签」这件事在三个源里各有一套自己的词：日状态文件用 JSON 状态码、
-`sign_claims` 用三态（`claimed`/`done`/`failed`）、`sign_tasks` 用六态。集合定义
-分散在各处时，改一处忘一处会表现为**漏签**或**同一账号被真实登录两次**（后者踩上游
-风控红线），故定义收口到 `yiban.status` 一处，本文件钉住三件事：
+标签：D · 状态词汇与账号生命周期
+覆盖：`ALL_STATUSES` 与状态常量全集及展示映射一致、`CONCLUDED_JSON_STATUSES` 只排除
+    pending、pending 属未了结但不算结论、窗口外跳过状态仍触发补签；三套"了结"词汇的
+    口径差异（认领表侧只认 done、`queue_store.SETTLED_STATES` 认 done+skipped、
+    `TASKS_OPEN_STATES` 与 `TASKS_SETTLED_STATES` 合起来必须覆盖全词表）；
+    `is_concluded_status` 对空串/缺键/未知值/首尾空白的判定；补签轮剔除与
+    `state_io.has_undone_accounts_today`（领取池当日有行时以池为准，无行才回退状态文件）；
+    窗口外跳过预筛不得改写未知状态。
+对应实现：集合与判定的**权威定义全在 `yiban/status.py`**（`ALL_STATUSES`、
+    `CONCLUDED_JSON_STATUSES`、`UNDONE_STATUSES`、`CLAIM_DONE_STATUSES`、
+    `TASKS_OPEN_STATES`/`TASKS_SETTLED_STATES`、`is_concluded_status`）；领取池词表在
+    `yiban/store/queue_store.py`（`STATE_DONE`/`STATE_SKIPPED`/`SETTLED_STATES`/
+    `OPEN_STATES`）；当日未了结判定在 `state_io.has_undone_accounts_today`。
+    本文件不持有第二份集合定义。
+关键断言：**集合成员逐字不变**（实现可换、成员不许变）——补签轮剔除谁、领取池把谁记
+    done 全靠这几个集合；空串/缺 `status` 键是「无记录」而非「结论」，把 `failed`
+    判成无记录会让窗口外跳过覆盖真实结论、连带吞掉失败告警。
+依赖：纯进程内（临时状态文件 + 字典构造），不触网、不起子进程、不需 bash/docker。
 
-1. **集合成员逐字不变**——实现方式可以换，成员不许变（补签轮剔除谁、领取池把谁记
-   `done`，全靠这几个集合）；
-2. **空串/缺 `status` 键是「无记录」而非「结论」**——窗口外跳过的「仅当当日无结论」
-   写入依赖这条：若把 `failed` 之类真实结论判成「无记录」，窗口外跳过会把它覆盖掉，
-   失败告警一并被吞；
-3. **补签轮剔除与「当日是否仍有未了结账号」的判定行为不变**（后者按源择一：领取池
-   当日有行时以池为准，无行才回退状态文件）。
+集合定义分散时，改一处忘一处表现为**漏签**或**同一账号被真实登录两次**（后者踩上游
+风控红线），故收口到 `yiban/status.py` 一处。
 """
 import contextlib
 import json

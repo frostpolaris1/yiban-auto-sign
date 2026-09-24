@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """Docker 镜像内容门禁：源码 COPY 必须覆盖运行时真正导入的本地顶级模块。
 
-背景（2026-09-15 实测）：`yiban/` 被 `scripts/signin.py`（`yiban.status`）与
-`web/app.py`（`yiban.attempt.jobs`）导入，而 `docker/Dockerfile` 只 COPY 了
-`web/` 与 `scripts/`——镜像一旦构建，容器会在 **import 阶段直接崩**，
-且本地跑测试、裸机部署都发现不了（它们的 sys.path 里本来就有仓库根）。
+标签：J · 运维：部署/备份/发布
+覆盖：AST 扫运行时目录得到"被导入的本地顶级模块"，与 `docker/Dockerfile` 的 COPY
+    清单比对；另显式钉住 `yiban/` 必须被 COPY。
+对应实现：`docker/Dockerfile`（COPY 清单）；扫描对象是 `web/`、`scripts/`、`yiban/`、
+    `docker/` 四个运行时目录。
+关键断言：漏 COPY 一个被导入的本地包就报红——镜像一旦构建，容器会在 **import 阶段
+    直接崩**，而本地跑测试、裸机部署都发现不了（它们的 sys.path 里本来就有仓库根）。
+依赖：纯静态——AST 解析源码 + 正则读 Dockerfile 文本；**不需要 docker CLI、不构建镜像**。
 
-因此这里用 AST 扫描运行时目录的 import，推导出"必须被 COPY 进镜像的本地顶级
-模块"，与实际 COPY 清单比对：新增一个被导入的本地包却忘了改 Dockerfile，
-本测试立刻红。
+背景：`yiban/` 被 `scripts/signin.py`（`yiban.status`）与 `web/app.py`
+（`yiban.attempt.jobs`）导入，而 Dockerfile 一度只 COPY 了 `web/` 与 `scripts/`。
 """
 import ast
 import os
@@ -24,7 +27,7 @@ RUNTIME_DIRS = ("web", "scripts", "yiban", "docker")
 
 def _iter_py(root):
     for dirpath, dirnames, filenames in os.walk(os.path.join(BASE, root)):
-        dirnames[:] = [d for d in dirnames if d not in ("__pycache__", "vendor")]
+        dirnames[:] = [d for d in dirnames if d not in ("__pycache__", "vendor")]  #vendor/ 是随镜像一起拷的第三方码，不算本地顶级模块
         for name in filenames:
             if name.endswith(".py"):
                 yield os.path.join(dirpath, name)
@@ -59,7 +62,7 @@ def _local_module_names():
         elif name.endswith(".py"):
             local.add(name[:-3])
     # scripts/ 与 web/ 之下是模块（sys.path 注入后可直接 import，如 db / account_crypto）
-    for d in ("scripts", "web"):
+    for d in ("scripts", "web"):  #这两个目录靠 sys.path 注入直跑，其 .py 文件名也算本地模块名
         for name in os.listdir(os.path.join(BASE, d)):
             if name.endswith(".py"):
                 local.add(name[:-3])
@@ -88,7 +91,7 @@ class DockerImageContentsTest(unittest.TestCase):
         missing = []
         for pkg in sorted(needed):
             # 目录包：`COPY <pkg>/ ...` 或把整个仓库根拷进去都算覆盖
-            if any(c.startswith(pkg + "/") or c.startswith("./" + pkg + "/")
+            if any(c.startswith(pkg + "/") or c.startswith("./" + pkg + "/")  #只认 `COPY <pkg>/` 这一种写法：`COPY . ...` 不满足本判据，别指望它兜底
                    for c in copies):
                 continue
             missing.append(pkg)

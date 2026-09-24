@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""loadtest 工具链轻量冒烟测试（秒级，不进常规重负载）。
+"""压测工具链轻量冒烟（秒级，不进常规重负载）。
 
-覆盖：
-  * mock_yiban 全部接口形状 + 失败注入 + JSONL 落盘 + 配置热读；
-  * scale_driver 的纯解析/统计函数（模拟 N=2 的 mock 日志，验证周期与并发解析）；
-  * concurrency_probe 的切片/锁错误/饱和点判定纯函数；
-  * capacity_probe 的容量换算与建议值（实测 × 2/3、执行体数、硬件上限）纯函数；
-  * mock_env 的 hosts 标记块读写与 --dry-run 幂等；
-  * 五个脚本的 --help 可执行性。
+标签：J · 运维：部署/备份/发布
+覆盖：mock_yiban 全部接口形状 + 失败注入 + JSONL 落盘 + 配置热读 + 默认只绑 loopback；
+    scale_driver 的解析/统计纯函数（N=2 模拟日志）；concurrency_probe 的切片、锁错误、
+    饱和点判定；capacity_probe 的容量换算与建议值（实测 × 2/3、执行体数、硬件上限）；
+    mock_env 的 hosts 标记块读写与 --dry-run 幂等；五个脚本的 --help 可执行性。
+对应实现：`scripts/loadtest/` 下的 mock_yiban、scale_driver、concurrency_probe、
+    capacity_probe、mock_env、seed_accounts。
+关键断言：容量结论的可信方向——未饱和只能当**下界**、硬件上限要在校准前刹车、
+    环境准备失败必须中断阶梯而不是给出建议值。
+依赖：pytest（本文件是模块级函数用例）；起本地 loopback HTTP mock 服务与
+    `sys.executable --help` 子进程；端到端用例带 skipif，需 `YIBAN_LOADTEST_E2E=1`
+    且真实 signin 进程 + TLS + /etc/hosts（要 root/测试机），默认跳过；不连外网。
 
-端到端（真实 signin 进程 + TLS + /etc/hosts）需要 root/测试机，默认跳过：
-设置 ``YIBAN_LOADTEST_E2E=1`` 且提供 ``YIBAN_LOADTEST_*`` 路径后才会执行。
+`mock_env` 的 hosts 读写只在 tmp_path 的副本上做，不改本机 /etc/hosts。
 """
 
 from __future__ import annotations
@@ -509,7 +513,7 @@ def test_scripts_help(name):
 # ---------------------------------------------------------------------------
 # 可选端到端（仅测试机/root，默认跳过）
 # ---------------------------------------------------------------------------
-@pytest.mark.skipif(os.environ.get("YIBAN_LOADTEST_E2E") != "1",
+@pytest.mark.skipif(os.environ.get("YIBAN_LOADTEST_E2E") != "1",  #端到端要 root 与测试机：不进常规套件，显式开环境变量才收集
                     reason="端到端需测试机 root + hosts/TLS，设置 YIBAN_LOADTEST_E2E=1 开启")
 def test_scale_driver_e2e_optional(tmp_path):
     repo = os.environ["YIBAN_LOADTEST_REPO"]

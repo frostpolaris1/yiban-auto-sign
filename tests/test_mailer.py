@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 """mailer 邮箱通知模块单元测试（A 线：管理员告警邮件）。
 
-覆盖：未配置不启用/不发送；SMTP_SSL 成功发送；发送异常静默且日志脱敏
-（不泄露授权码、不回显完整发件地址）；多收件人逗号分隔；邮箱打码。
-全程 mock smtplib，不发起真实网络请求。
+标签：H · 通知：邮件与推送
+覆盖：未配置不启用/不发送；`SMTP_SSL` 成功发送；发送异常静默且日志脱敏（不泄露授权码、
+    不回显完整发件地址）；多收件人逗号分隔；邮箱打码。
+对应实现：`yiban/mail/config.py`（配置与启用判定）、`yiban/mail/transport.py`
+    （实际发送与日志）。
+关键断言：失败必须**静默**（发信失败不能把签到主流程带崩），但日志要留下可判定的
+    分类——"静默"只针对异常传播，不针对记录。
+依赖：monkeypatch `yiban.mail.transport.smtplib`；临时 .env 与 `YIBAN_ACCOUNTS_KEY`；
+    不真发信、不触网。
 """
 import contextlib
 import importlib.util

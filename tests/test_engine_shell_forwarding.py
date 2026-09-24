@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 """兼容壳的**打桩转发**有效性（引擎按"执行一轮"切分后的收口自证）。
 
+标签：J · 运维：部署/备份/发布
+覆盖：`signin.attempt_signin`/`_update_cred_state`/`_write_sign_state`/`run_queue_retry`
+    四个高频打桩名，从壳赋值后实现模块里的跨模块调用点是否看得到替身；另钉住壳入口
+    `signin.main()` 抛 SystemExit(码) 而 `yiban.engine.runner.main` 只返回码。
+对应实现：兼容壳 `scripts/signin.py` 与 `yiban/engine/round.py`、`yiban/engine/runner.py`。
+关键断言：替身必须"确实被调用过"——不是"能 import"、也不是"返回值对"。这类失效最难
+    发现：断言往往照样过，实则跑的是真实现（真登录、真写状态文件、真发告警）。
+依赖：进程内打桩（unittest.mock），不起子进程、不需 bash/docker/网络；写盘全部落在
+    临时 YIBAN_STATE_DIR/DB/LOG/ENV。
+
 壳存在的意义不止"旧名还能 import"：既有用例大量以 `signin.<名字> = 替身` /
-`mock.patch.object(signin, ...)` 打桩，而调用点已经搬进 `yiban/engine/*`。若壳只转发
-**读取**、不把写入同步到真正持有该名字的实现模块，打桩就会静默失效——测试表面通过、
-实则跑的是真实现（真登录、真写状态文件、真发告警）。这类失效最难发现：断言往往
-"照样过"，直到生产上出现重复登录才暴露。
-
-本文件逐个钉住"实现模块里的跨模块调用点看到的是替身"：先用替身记录调用，再从壳发起
-一轮，断言替身确实被调用过。新增引擎模块时，把新出现的高频打桩名照此补一行即可。
-
+`mock.patch.object(signin, ...)` 打桩，而调用点已搬进 `yiban/engine/*`。若壳只转发
+**读取**、不把写入同步到真正持有该名字的实现模块，打桩就静默失效。
 用法（项目根目录）：python -m pytest tests/test_engine_shell_forwarding.py -v
 """
 import os
@@ -66,8 +70,8 @@ class ShellForwardingStubTest(unittest.TestCase):
         with mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
                 mock.patch.object(signin, "_update_cred_state", side_effect=fake_cred), \
                 mock.patch.object(signin, "_write_sign_state", side_effect=fake_state), \
-                mock.patch.object(signin.time, "sleep"):
-            signin.run_queue_retry([self._acc()], "", 0, 0, schedule=None, cred_state={})
+                mock.patch.object(signin.time, "sleep"):  #顺手挡掉真实 sleep：轮次之间要退避，用例不该为此等
+            signin.run_queue_retry([self._acc()], "", 0, 0, schedule=None, cred_state={})  #必须从壳发起：只有穿壳一次才证明写入同步到了实现模块
 
     def test_attempt_signin_stub_reaches_the_engine(self):
         """`attempt_signin` 的调用点在 `yiban/engine/round.py`（单账号尝试已迁出壳）。"""
@@ -118,7 +122,7 @@ class ShellForwardingStubTest(unittest.TestCase):
                 mock.patch.object(signin, "_maybe_alert_zero_success", return_value=False):
             code = runner.main(["--only", PHONE])
         self.assertEqual(code, 2)
-        self.assertIsInstance(code, int)
+        self.assertIsInstance(code, int)  #只断返回类型：壳 sys.exit、引擎 return 是两条契约，合并会改掉 run.sh 的退出码
 
 
 if __name__ == "__main__":
