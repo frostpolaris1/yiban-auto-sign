@@ -48,6 +48,11 @@ _DEFAULT_ALLOW_TIME_PREF = 0    # 用户自选时间片总开关（0=关默认�
 _DEFAULT_BUCKET_RATE = 1.0
 _DEFAULT_CHANNELS_MAX = 16
 _DEFAULT_UTIL = 0.8
+# K 的自动公式里"重试占比" r 的缺省（总尝试量 T = N×(1+r)）：依据既有分级重试预算
+# （`attempts.MAX_ATTEMPTS`=3、风控/会话陈旧 2 次、无点位/凭据错误 1 次）——多数失败类
+# 最多多试 2 次，而失败本身不是常态；取 0.2（约每 5 个账号多 1 次尝试）把重试算进容量，
+# 宁可略高估出口需求，也不按"零重试"把出口排满。
+_DEFAULT_RETRY_RATIO = 0.2
 
 # 签到窗口配置非法的一次性告警标记：_schedule_config 每次调度都会调用，
 # 非法窗口回退默认窗口的告警只收集一次，避免同一配置错误在汇总邮件里重复出现
@@ -160,6 +165,58 @@ def capacity_accounts_v3(window_sec, k=1, avg=None, bucket_rate=1.0, util=0.8):
         bucket_rate = _DEFAULT_BUCKET_RATE
     rate_eff = min(channels / avg, bucket_rate)
     return math.floor(k * rate_eff * max(0, int(window_sec)) * util + 1e-9)
+
+
+def capacity_of(window_sec, *, gap=0, avg=None, k=None, bucket_rate=1.0,
+                util=0.8, enabled=None):
+    """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
+
+    为什么要一个选择函数：两套公式若被各调用点分别内联，同一份配置会在"保存闸门"与
+    "引擎预检"两处按不同口径算出不同容量，出现"保存被拒、计划却排得下"的分裂。收口到
+    一处后，v2 侧（开关缺省关）**逐字**走 `capacity_accounts`（行为不变），v3 侧走
+    `capacity_accounts_v3`，随开关切换自动生效（开关即回滚）。
+
+    `enabled` 缺省取 `executor_v3.scheduler_v3_enabled()`（`YIBAN_SCHEDULER_V3`，缺省 0）；
+    显式传入只为测试与"不读环境"的调用方。`k` 是执行体数，缺省 1（单执行体零额外配置，
+    与 `capacity_accounts_v3` 的缺省一致）——需要按账号量自动定尺的调用方先用
+    `executor_count` 算出 K 再传入。`bucket_rate`/`util` 只在 v3 侧参与。
+    """
+    if enabled is None:
+        # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；
+        # 本函数只被保存闸门/引擎预检/CLI 调用，频率低，局部导入的开销可忽略。
+        from yiban.engine import executor_v3
+        enabled = executor_v3.scheduler_v3_enabled()
+    if not enabled:
+        return capacity_accounts(window_sec, gap, avg)
+    return capacity_accounts_v3(window_sec, 1 if k is None else k, avg,
+                                bucket_rate, util)
+
+
+def executor_count(n_accounts, window_sec, *, bucket_rate=1.0, retry_ratio=None,
+                   egress_count=1):
+    """满足当日账号量的执行体数 `K = clamp(ceil(N×(1+r)/(W×bucket×0.8)), 1, 出口数)`。
+
+    **K 的唯一口径**：容量公式、预检告警与"该开几个执行体"的建议都调本函数——三处各写
+    一份式子，改一处必漏另两处。分子 `T = N×(1+r)` 是**总尝试量**：重试同样占出口额度，
+    按零重试算会把 K 低估（`r` 缺省 0.2，依据见 `_DEFAULT_RETRY_RATIO`）。分母是单执行体
+    的有效速率 `W×bucket×0.8`（`util` 与容量公式同口径：重试与尾延迟降额）。
+
+    结果夹到 `[1, 出口数]`：至少 1（单执行体零配置），至多不超过出口数——再加执行体也
+    只共享同一批出口，加进程不会放大总速率（见 `docs/dev/scheduler-v3.md`）。`egress_count`
+    缺省 1；`bucket_rate` 非正回退出厂速率（与 `channel_count` 同口径）；窗口 <= 0 时无
+    速率可言，回退 1。
+    """
+    r = _DEFAULT_RETRY_RATIO if retry_ratio is None else max(0.0, float(retry_ratio))
+    n = max(0, int(n_accounts))
+    egress = max(1, int(egress_count))
+    w = max(0, int(window_sec))
+    rate = float(bucket_rate)
+    if rate <= 0:
+        rate = _DEFAULT_BUCKET_RATE
+    if w <= 0:
+        return 1
+    need = math.ceil(n * (1.0 + r) / (w * rate * _DEFAULT_UTIL))
+    return min(max(1, need), egress)
 
 
 def _schedule_config():
