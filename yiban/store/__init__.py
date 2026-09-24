@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 """`yiban.store`：数据访问层（SQLite 表级 CRUD）。
 
-事实源是本包的 `yiban.store.db`（连接、锁与兼容再导出都在那，各域定义点见同包子模块）；
-本包其余模块按域把"单表的读写与状态机"逐步搬出来，`yiban.store.db` 保留同名再导出以兼容旧
-调用方，`scripts/db.py` 只剩兼容壳。当前分工：`connection` 管连接单例与路径，`migrations`
+每张表的**唯一定义点在本包对应的域模块**，`yiban.store.db` 是门面：它只自持连接编排
+（`init_db`）、写事务入口与时钟守卫等跨域助手，并把各域名字再导出以兼容旧调用方
+（`db.load_accounts()` 一类调用继续可用）——**依赖方向是 db → 域模块**，不是域模块迁进 db。
+再导出有两类：`migrations` / `audit_chain` / `events` / `session_cache` / `time_prefs` /
+`clock_meta` / `users` / `cleanup` 按原名；`claims` 与 `verify_jobs` 按重命名别名
+（`db.claim_settle` → `claims.settle`、`db.create_verify_job` → `verify_jobs.create`），
+故 `db.try_claim` 一类名字不存在。`scripts/db.py` 只是指向本门面的兼容壳。当前分工：
+`connection` 管连接单例与路径，`migrations`
 管 schema 版本迁移与建表，`audit_chain` 管审计哈希链，`events` 管签到事件表与 audit_logs
 上的暂停冷却查询，`accounts` 管
 账号表 CRUD、行加解密与有效性判定，`session_cache` 管会话凭据缓存的读写与有效期判定，

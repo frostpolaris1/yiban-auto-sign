@@ -50,9 +50,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# 原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
-# 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
-# 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
+# 表级数据访问按表拆在 yiban/store/*，本模块是门面：多数域按原名再导出，`claims` 与
+# `verify_jobs` 两域是**重命名别名**（`claim_*` / `*_verify_job`，见下方绑定），旧调用方
+# （web/app.py、测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
 from yiban import clock  # noqa: E402
 
 # account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
