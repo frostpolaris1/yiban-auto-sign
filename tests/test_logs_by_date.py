@@ -3,7 +3,7 @@
 
 标签：F · 前端与界面守卫
 覆盖：按天日志文件的路径推导与行过滤（跨天残留剔除）、`/api/logs` 与 `/api/my-logs` 的日期参数与权限、`recent_*` 字段指向、检索/全量与导出，以及日志页日期校验的 JS 行为
-对应实现：`web/app.py` 的 `log_path_for` / `_log_lines_for` / `parse_sign_log` 与 `/api/logs*`；前端日志页脚本里的 `isValidDate`
+对应实现：`web/app.py` 的 `log_path_for` / `_log_lines_for` / `parse_sign_log` 与 `/api/logs*`；前端 `web/static/js/pages/data_logs.js` 里的 `isValidDate`
 关键断言：文件日期≠行首日期的残留行不得混入；非法日期 400、历史日期文件缺失返回空而非报错；`yiban.*` 全级别入列而其它组件仅 WARNING+；`recent_log_date` 在当前日期就是最新天时为空串
 依赖：⚠ **需要 node**——`LogsDateValidationTest` 把 `isValidDate` 从前端源码按花括号配对抽出后在 node 里真跑，`shutil.which("node")` 取不到时整类 `skipUnless`；宿主 ICU 不认 `Etc/GMT±N` 时区名时该用例还会 `skipTest`。其余用例纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node
 
