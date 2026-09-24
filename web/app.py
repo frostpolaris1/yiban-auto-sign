@@ -2417,23 +2417,9 @@ def create_app(host=None):
                 elif _health["anchor_msg"]:
                     # 非异常的提示性信息（如保留期清理回收了最早记录），记录即可
                     logger.info("审计链提示: %s", _health["anchor_msg"])
-                # 时钟守卫拦截后的持续告警——守卫拦截会把清理永久
-                # 冻结（人工重置前不恢复），每日线程在此读 app_meta 留痕并发邮件，
-                # 直到管理员运行 scripts/clock_guard_reset.py 重置为止（每日重发
-                # 是刻意的：冻结状态必须保持可见，防止静默腐烂）
-                _cg = db.clock_guard_alert()
-                if _cg:
-                    _cg_mail = mail_layout.Mail(
-                        summary="系统时间异常跳变已被拦截，全部物理清理处于冻结状态。",
-                        fields=[("告警时间", _cg.get("ts", "?")),
-                                ("守卫备注", _cg.get("note") or "（无）")],
-                        advice=["先核实系统时间与 NTP 同步状态",
-                                "确认时间正确后运行 "
-                                "python3 scripts/clock_guard_reset.py --confirm 重置"],
-                        level="urgent",
-                    )
-                    logger.error("时钟守卫告警: %s", _cg.get("note", ""))
-                    send_notification("时钟跳变守卫告警", _cg_mail, urgent=True)
+                # 时钟跳变只跳过一轮清理（守卫在越界路径上同样推进参照点），没有需要
+                # 持续播报的冻结状态，故此处不再读库发信——跳变事实已由守卫的
+                # logger.error 与 run_daily_cleanup 内各钩子的 ERROR 行留在日志里。
                 db.record_audit_anchor(os.path.join(STATE_DIR, "audit-anchor.log"))
             except Exception as e:
                 logger.warning("审计链每日校验/锚点写入失败: %s", e)

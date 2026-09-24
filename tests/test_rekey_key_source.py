@@ -445,23 +445,6 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         self.seed()
 
 
-    def test_clock_guard_reset_keeps_chain_intact(self):
-        """clock_guard_reset 会写审计行：来源解析错目录时该步会用游离密钥签名，链必断。"""
-        r = _run_cli("clock_guard_reset.py",
-                     ["--db", self.db_file, "--env", self.env_file, "--confirm"], cwd=self.work)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("审计留痕失败", r.stdout)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
-        ok, broken, first = self.verify_chain_with_prod_env()
-        self.assertTrue(ok, f"重置留痕用错了密钥：broken={broken} first={first}")
-        conn = sqlite3.connect(self.db_file)
-        try:
-            n = conn.execute("SELECT COUNT(*) FROM audit_logs "
-                             "WHERE action='clock_guard_reset'").fetchone()[0]
-        finally:
-            conn.close()
-        self.assertGreaterEqual(n, 1, "重置动作应留痕（留痕成功才是链路正确的证据）")
-
     def test_audit_verify_reads_key_from_env_flag(self):
         """audit_verify --env：换目录也能读到正确密钥并报"校验通过"（此前报"过程异常"）。"""
         r = _run_cli("audit_verify.py", ["--db", self.db_file, "--env", self.env_file],
@@ -497,7 +480,6 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         empty = self.fresh_empty_cwd()
         cases = [
             ("audit_verify.py", []),                      # create=False → fail-closed
-            ("clock_guard_reset.py", ["--confirm"]),      # create=True → 拒绝生成
             ("list_duplicate_owners.py", []),             # 会跑迁移（重链要用审计密钥）
         ]
         for script, cli in cases:
@@ -527,7 +509,6 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         self.assertFalse(os.path.exists(missing))
         cases = [
             ("audit_verify.py", ["--db", self.db_file, "--env", missing]),
-            ("clock_guard_reset.py", ["--db", self.db_file, "--env", missing, "--confirm"]),
             ("list_duplicate_owners.py", ["--db", self.db_file, "--env", missing]),
         ]
         for script, cli in cases:
