@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""状态文件写盘的原子性（DAT-7）与"标记损坏"的失效方向。
+"""状态文件写盘的原子性与"标记损坏"的失效方向。
 
-缺陷背景：容器调度的时段标记 `sched-slot-<kind>-<date>.json` 原先用
-`open(path, "w")` 直写。容器在写入中途被杀会留下**半截 JSON**，
-`_slot_done` 的 `json.load` 恒失败 → 判定为"本时段没跑过"，而 `hm >= FIRST/SECOND`
-是无上界判定 → 再触发一轮全站登录（幂等但多一轮真实请求，且覆盖当日已 success 的
-状态文件）。signin 侧所有状态文件写入早已是 tmp + `os.replace`，只有容器调度这一处
-漏了。
+标签：D · 状态词汇与账号生命周期
+覆盖：容器调度时段标记 `_mark_slot` 经 `os.replace` 原子落盘、替换失败时标记路径
+    不得存在半截文件、被杀残留的半成品由 `state_gc.sweep` 按 mtime 清走、坏文件退化为
+    "未跑过"而不抛异常；signin 侧四个状态写入函数的原子性与"实现只有一份"。
+对应实现：容器侧在 `docker/scheduler.py`（`_mark_slot`/`_slot_done`/`_slot_marker`），
+    引擎侧写入按 `yiban/engine/state_io.py`、`yiban/engine/probe.py`、
+    `yiban/engine/alerts.py` 三份落点，兼容壳 `scripts/signin.py` 只剩转发。
+关键断言：**失效方向必须是"标记缺失"而不是"文件损坏"**——半截 JSON 会让 `_slot_done`
+    的 `json.load` 恒失败而判定成"本时段没跑过"，配合无-upper-bound 的 `hm >= FIRST`
+    判定，会再触发一轮全站真实登录并覆盖当日已 success 的状态。
+依赖：进程内打桩 `os.replace`（包住真函数再计数）+ 临时 STATEDIR；importlib 加载
+    `docker/scheduler.py`；不跑子进程、不需 bash/docker CLI、不触网。
 
-判据（本文件锁住）：
-1. 标记写入必须经过 `os.replace`（原子替换），且落盘内容可解析；
-2. 替换失败（被杀/磁盘满）时**标记路径不得存在半截文件**——失效方向必须是
-   "标记缺失 → 退化为既有闩锁语义"，而不是"文件损坏 → 每次 json.load 都失败"；
-3. 半成品临时文件不残留（失败路径自行清理；被杀残留的由 state_gc 按 mtime 清）。
+原先只有容器调度这一处漏了 tmp + `os.replace`，signin 侧早已是全项目约定。
 """
 import json
 import os
@@ -42,7 +44,7 @@ class SlotMarkerAtomicWriteTest(unittest.TestCase):
         return scheduler._slot_marker(kind)
 
     def test_mark_slot_replaces_atomically(self):
-        real_replace = os.replace
+        real_replace = os.replace  #包住真 replace 再计数：既要证明走过 os.replace，又不能真把它替掉
         calls = []
 
         def _spy(src, dst):
@@ -76,7 +78,7 @@ class SlotMarkerAtomicWriteTest(unittest.TestCase):
         with open(tmp_file, "w", encoding="utf-8") as f:
             f.write('{"triggered')          # 半截 JSON
         os.utime(tmp_file, (1, 1))         # 1 = 1970，远早于 1 天阈值
-        removed, detail = state_gc.sweep(self.tmp)
+        removed, detail = state_gc.sweep(self.tmp)  #半成品清不掉就等清理兜底：这条把 _mark_slot 与 state_gc.sweep 绑成一对
         self.assertEqual(removed, 1, detail)
         self.assertFalse(os.path.exists(tmp_file))
 
@@ -98,7 +100,7 @@ class SigninWritesAreAtomicTest(unittest.TestCase):
     """
 
     #: 状态文件写入函数 → 实现所在文件（相对仓库根）
-    WRITERS: ClassVar[dict] = {
+    WRITERS: ClassVar[dict] = {  #状态写入只允许一份实现：同名定义再回到壳里，改一份另一份照旧跑
         "_write_sign_state": "yiban/engine/state_io.py",
         "_write_sched_done": "yiban/engine/state_io.py",
         "_write_probe_state": "yiban/engine/probe.py",

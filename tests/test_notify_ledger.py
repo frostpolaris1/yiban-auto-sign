@@ -2,14 +2,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """通知额度账本：磁盘持久化、跨天作废与并发不超支。
 
-账本决定「每天最多发几条告警/通知」，额度记在磁盘上、跨进程共享。本文件并两处断言：
-磁盘状态机的读写（含损坏文件归档后重启、首跑缺文件属正常）、以及多线程/多进程并发
-消费时不丢更新、不超支，且只读路径不重写磁盘。
+标签：H · 通知：邮件与推送
+覆盖：账本磁盘状态机的读写（损坏文件归档后重启、首跑缺文件属正常）、跨天归零、
+    只读路径不重写磁盘、多线程与"无进程内锁"情形下并发消费不丢更新不超支。
+对应实现：`yiban/notify/ledger.py`（`_consume_daily_budget`、`_general_daily`、
+    `_urgent_daily`）；跨进程互斥复用 `yiban/infra/locks.py`（`lock_kind`）。
+关键断言：额度记在磁盘上、跨进程共享——web（常驻）与 signin（每次 cron 新进程）
+    各持一份内存计数就会双发；剥掉进程内锁后仍必须靠**单次文件锁临界区**串行化
+    读-改-写，否则两个进程各读旧值各 +1。
+依赖：pytest + tmp_path；用 `threading.Barrier` 制造同刻并发；跨进程文件锁那条在
+    `locks.lock_kind()` 返回 None（fcntl 与 msvcrt 都不可用）时 skipif，
+    Windows/Linux 本机正常执行；不发真实推送、不触网。
 
 功能：通知账本的持久化与并发正确性回归。
 归属：`yiban/notify/ledger.py` 的测试。
 复用：`BASE` / `KEY` 常量与临时目录隔离助手。
-通信：直接调用账本 API，读写临时账本 JSON 并另起进程/线程并发消费。
+通信：直接调用账本 API，读写临时账本 JSON 并另起线程/进程并发消费。
 """
 import contextlib
 import importlib.util
@@ -345,7 +353,7 @@ def test_multi_thread_consume_no_lost_update(tmp_path, monkeypatch):
         with guard:
             allowed.append(t.allowed)
 
-    threads = [threading.Thread(target=_worker) for _ in range(n)]
+    threads = [threading.Thread(target=_worker) for _ in range(n)]  #Barrier 起跳而不是顺序调用：串行跑不出读-改-写的竞争窗口
     for t in threads:
         t.start()
     for t in threads:
@@ -356,7 +364,7 @@ def test_multi_thread_consume_no_lost_update(tmp_path, monkeypatch):
         "每次消费后磁盘 count 必须与内存 count 一致（无丢失更新）"
 
 
-@pytest.mark.skipif(locks.lock_kind() is None,
+@pytest.mark.skipif(locks.lock_kind() is None,  #Windows 走 msvcrt、POSIX 走 fcntl：真两侧都探不到才跳过，本机一般照跑
                     reason="本平台无跨进程文件锁（fcntl/msvcrt 均不可用），无法验证文件锁串行化")
 def test_no_process_lock_concurrent_not_overspent(tmp_path, monkeypatch):
     """剥离进程内锁（模拟不共享锁的 web/signin 两进程）+ 文件锁生效时：

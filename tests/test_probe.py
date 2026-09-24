@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""探针模式 + 注册时账号验证测试（v0.23.x）。
+"""探针模式与注册时账号验证。
 
-覆盖：
-- signin.verify_account：登录+拉任务成功 / 失败 / 异常（mock YibanClient）
-- signin._probe_due：未开启 / 未到时间 / 当天已跑 / 每 N 天频率 / once 单次
-- signin.run_probe：预警收集（管理员合并 + 用户个人）、落库 stage=probe、once 自动关闭
-- web._account_verify_enabled / _verify_account_clean（mock signin.verify_account）
-
-全程本地（mock 网络与邮件），无真实请求。
-用法（项目根目录）：py -m pytest tests/test_probe.py -v
+标签：D · 状态词汇与账号生命周期
+覆盖：`verify_account` 的登录+拉任务成功/失败/异常三态；`_probe_due` 的未开启、
+    未到时间、当天已跑、每 N 天频率、once 单次；`run_probe` 的预警收集（管理员合并 +
+    用户个人）、落库 stage=probe、once 跑完自动关闭；`.env` 自动关闭时写临时文件
+    权限 0600 且无残留；web 侧 `_account_verify_enabled`/`_verify_account_clean`。
+对应实现：探针与账号验证的实现在 `yiban/engine/probe.py`（兼容壳
+    `scripts/signin.py` 转发），web 侧入口在 `web/app.py`。
+关键断言：探针只在"到期"时才跑、once 必须自我关闭（否则每天重复验证同一账号）；
+    关闭开关写 .env 属敏感文件，必须 0600 且不留下半成品。
+依赖：全程 mock 网络与邮件（`YibanClient`、发送出口），无真实请求；临时
+    STATE/DB/ENV 目录。用法（项目根目录）：py -m pytest tests/test_probe.py -v
 """
 import os
 import shutil

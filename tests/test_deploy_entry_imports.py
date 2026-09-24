@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
 """部署入口脚本的导入条件：只在 `scripts/` 入 sys.path 时也必须能导入。
 
-镜像里 `docker/scheduler.py` 被复制为 `scripts/container_scheduler.py` 并由
-supervisord 直接执行——此时 `sys.path[0]` 是 `scripts/`，而共享包 `yiban/` 在仓库根，
-**缺包导入引导就会 ModuleNotFoundError**。2026-09-15 容器冒烟实测到该故障
-（sched 进程反复退出 → FATAL），原因是新加的 `from yiban import clock` 没带引导。
+标签：J · 运维：部署/备份/发布
+覆盖：`scripts/signin.py` 与 `docker/scheduler.py` 在无 PYTHONPATH 下的真实导入、
+    凡导入 `yiban` 的运行时脚本必须自带包导入引导、引导必须**先于**首个 yiban 导入。
+对应实现：`scripts/signin.py`、`docker/scheduler.py`（镜像里被复制为
+    `scripts/container_scheduler.py`）及各入口的 `sys.path` 引导块。
+关键断言：导入失败以非零码退出、进入主循环则超时——两种情况可区分；空文件/截断文件
+    同样能 import 成功，故额外要求模块真的装配出 `main_loop`。
+依赖：起 `sys.executable` 子进程跑仓库内脚本（清空 PYTHONPATH、cwd=仓库根、临时
+    STATE/LOG/DB/ENV）；不需 bash/docker CLI；读的是仓库源文件而非镜像。
 
-本测试在等价条件下（清空 PYTHONPATH、cwd=仓库根、直接执行脚本）跑真实进程：
-导入失败会立刻以非零码退出，进入主循环则超时——两种情况都能区分。
+镜像里 `docker/scheduler.py` 由 supervisord 直接执行——`sys.path[0]` 是 `scripts/`，
+共享包 `yiban/` 在仓库根，缺引导就 ModuleNotFoundError（容器 sched 进程反复退出→FATAL，
+本地跑测试与裸机部署都发现不了，它们的 sys.path 里本来就有仓库根）。
 """
 import os
 import re
@@ -37,7 +43,7 @@ class DeployEntryImportTest(unittest.TestCase):
             "YIBAN_DB_FILE": os.path.join(tmp, "yiban.db"),
             "YIBAN_ENV_FILE": os.path.join(tmp, ".env"),
         })
-        return subprocess.run([sys.executable, rel, *args], cwd=BASE, env=env,
+        return subprocess.run([sys.executable, rel, *args], cwd=BASE, env=env,  #按文件路径直跑：这就是 supervisord 的执行条件，`-m` 会替它补上引导
                               capture_output=True, text=True, timeout=timeout)
 
     def test_signin_cli_imports_without_repo_root_on_path(self):
@@ -89,7 +95,7 @@ class DeployEntryImportTest(unittest.TestCase):
                 if not m_imp:
                     continue
                 m_boot = BOOT.search(text)
-                if m_boot is None or m_boot.start() > m_imp.start():
+                if m_boot is None or m_boot.start() > m_imp.start():  #比位置，不比字样：引导写在 yiban 导入之后等于没有
                     problems.append(f"{d}/{name}")
         self.assertEqual(problems, [], f"以下脚本导入 yiban 却没有包导入引导：{problems}")
 

@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
-"""SMTP 目标的地址判据与发送侧日志粒度测试。
+"""SMTP 目标的地址判据与发送侧日志粒度。
 
-覆盖：
-- `yiban.mail.config.check_smtp_host`：非路由/保留段（链路本地、CGNAT 元数据、组播、
-  保留、未指定）一律拒；私网/回环（RFC1918 + 127/8 + ::1）无开关拒、开关为
-  1/true/ON 时放行；公网域名与公网 IP 放行；方括号 IPv6 与 IPv4-mapped 正确解析；
-  `localhost` 与非标准 IPv4 字面量（十进制/0x/短式）拒。
-- 发送失败日志的粗分类：回显连接失败/认证失败文案，且**不含**原始异常类型名
-  （ConnectionRefusedError / SMTPAuthenticationError）。
-- 内网目标发送侧 WARNING 进程内只记一次，且不阻断发送（仍会尝试 SMTP）。
-
-全程本地（mock smtplib），无真实网络请求。
-用法（项目根目录）：
-    .venv/Scripts/python.exe -m pytest tests/test_mail_smtp_target.py -q
+标签：H · 通知：邮件与推送
+覆盖：`yiban.mail.config.check_smtp_host`——非路由/保留段（链路本地、CGNAT 元数据、
+    组播、保留、未指定）一律拒；私网与回环（RFC1918 + 127/8 + ::1）无开关时拒、
+    开关为 1/true/ON 时放行；公网域名与公网 IP 放行；方括号 IPv6 与 IPv4-mapped
+    解析；`localhost` 与非标准 IPv4 字面量（十进制/0x/短式）拒。发送失败日志的
+    粗分类与内网目标 WARNING 的进程内一次性。
+对应实现：`yiban/mail/config.py`（`check_smtp_host`）、`yiban/mail/transport.py`
+    （发送与日志）。
+关键断言：日志回显"连接失败/认证失败"文案但**不含原始异常类型名**
+    （`ConnectionRefusedError`、`SMTPAuthenticationError`）；内网目标的 WARNING
+    只记一次且**不阻断发送**——判据说的是"这台机器该不该连它"，不是替用户决定不连。
+依赖：mock `smtplib.SMTP_SSL`（十余处）与 caplog，地址判定走 `ipaddress` 纯计算；
+    不真连 SMTP、不触网、不需 DNS。
 """
 import contextlib
 import importlib.util

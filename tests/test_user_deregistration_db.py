@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""用户主动注销：数据库层测试（软删除 + 宽限期 + 邮箱复用）。
+"""用户主动注销：数据库层（软删除 + 宽限期 + 邮箱复用）。
 
-覆盖：
-- 迁移 v5：users 软删除列、部分唯一索引、注销请求表；
-- 软注销软删除账号，并**保留** time_prefs（物理清除时才清，2026-09-10 批次20 起）；
-- 撤销注销；
-- 邮箱复用；
-- find_user 只返回有效用户；
-- 最后注册管理员判断；
-- 注销请求计数；
-- 超过宽限期 purge。
+标签：L · 注销与软删
+覆盖：迁移 v5（users 软删除列、部分唯一索引、注销请求表）；软注销时软删除账号但
+    **保留** `time_prefs`（物理清除时才清）；撤销注销；邮箱复用；`find_user` 只返回
+    有效用户；最后注册管理员判断；注销请求计数；超宽限期 purge。
+对应实现：`yiban/store/migrations.py`（v5）与 `yiban/store/users.py`
+    （`find_user`、`find_user_any`、`purge_deleted_users`）；到期连带清除
+    `time_prefs` 走 `yiban/store/cleanup.py` 的 purge 路径。
+关键断言：软删与物理删是两条路径——宽限期内只打标记（偏好数据留着，撤销后原样可用），
+    到期才连带清除 `time_prefs`；把偏好提前清掉就等于让"可撤销"变成空壳。
+依赖：临时 sqlite（真实迁移路径）；纯数据层，不启 web、不触网、不发信。
 """
 import contextlib
 import datetime
