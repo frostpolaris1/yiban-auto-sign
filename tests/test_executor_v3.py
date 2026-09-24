@@ -1563,7 +1563,42 @@ class RecoveryWiringTest(_Base):
         self.assertEqual([s[0] for s in seen], [state_io.WORKER_STATE_RUNNING],
                          "起跑写心跳：执行体页必须能判 running（不再显示 idle）")
         self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
-                         "收尾写心跳：正常退出后判 finished")
+                         "收尾正常路径写心跳：判 finished")
+
+
+class WorkerFinishMarkTest(_Base):
+    """收尾标记只在**正常返回路径**写：异常/中断不得被记成"正常跑完"。
+
+    与监督进程同口径——被信号杀掉时不写收尾，留"有开始、无收尾"让四态判 `stale`，
+    用户才会注意到"疑似被强杀"。
+    """
+
+    def test_normal_return_marks_finished(self):
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(phone), [_item(phone)])
+        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+                         "正常跑完必须写收尾标记")
+
+    def test_interrupt_does_not_write_finish_mark(self):
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+
+        async def boom(ctx):
+            raise KeyboardInterrupt
+
+        with mock.patch.object(executor_v3, "_run_async", boom), \
+                self.assertRaises(KeyboardInterrupt):
+            self._run_v3(self._accounts(phone), [_item(phone)])
+        later = self.fc.now() + datetime.timedelta(
+            seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
+        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+                         state_io.WORKER_STATE_STALE,
+                         "中断不得写收尾：心跳过期后要判 stale，而不是 finished")
 
 
 class DeadPeerTakeoverTest(_Base):

@@ -702,7 +702,8 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
       "未执行"计入失败，可见性不受损。
 
     两档都只兜 `Exception`，`KeyboardInterrupt` / `SystemExit`（超时击杀、显式退出）
-    必须照常外逃。
+    必须照常外逃。收尾心跳因此**只在正常返回路径**写：中断/异常路径不写，四态由心跳
+    过期后判 `stale`（与监督进程"被信号杀掉不写收尾"同一口径）。
     """
     cfg = cfg or schedule.planner_config()
     day = day or _now().strftime("%Y-%m-%d")
@@ -723,35 +724,36 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     # 才会被 `claim_batch` 重新领取（不回收就是"崩溃即卡死"）。心跳写失败只留 debug，
     # 回收失败由 queue_store 内部吞掉并告警，两者都不阻断签到。
     state_io.mark_worker_started(slot, now=_now())
+    queue_store.reap_expired(now=_stamp_ms(_now()))
     try:
-        queue_store.reap_expired(now=_stamp_ms(_now()))
-        try:
-            ctx = _Ctx(
-                accounts={a.phone: a for a in accounts},
-                day=day, cfg=cfg, v=v,
-                shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
-                executor_id=executor_id, results={}, cred_state=cred_state,
-                delegated=delegated, notify_url=notify_url, event_sink=event_sink,
-                rng=rng or random.Random(), slot=slot)
-            _prescan(ctx, accounts)
-            ctx.limiter.restore_from_store(ctx.egress, now=_mono())
-            if ctx.global_limiter.invalid:
-                logger.warning("%s 非法，全局速率上界按不限处理（不阻断签到）",
-                               ENV_GLOBAL_RATE)
-            logger.info("v3 执行体：%d 条通道 / %d 个分片 / 出口 %s",
-                        ctx.m, len(ctx.shards), ctx.egress)
-            asyncio.run(_run_async(ctx))
-        except Exception as e:
-            # 异常文本经 _sanitize_text 防注入、_mask_phones_in_text 抹手机号后再落日志
-            logger.error("v3 执行体未预期异常，本轮按无结果收尾（不外逃）: %s",
-                         _mask_phones_in_text(_sanitize_text(str(e))))
-            return {}
-        try:
-            _mark_window_skips(ctx, accounts)
-        except Exception as e:
-            logger.error("v3 窗口收尾失败，已完成的账号结果照常返回: %s",
-                         _mask_phones_in_text(_sanitize_text(str(e))))
-        return ctx.results
-    finally:
-        # 收尾写心跳（正常退出）：四态从 running 落到 finished，执行体页不再挂着"在跑"
-        state_io.mark_worker_finished(slot, now=_now())
+        ctx = _Ctx(
+            accounts={a.phone: a for a in accounts},
+            day=day, cfg=cfg, v=v,
+            shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
+            executor_id=executor_id, results={}, cred_state=cred_state,
+            delegated=delegated, notify_url=notify_url, event_sink=event_sink,
+            rng=rng or random.Random(), slot=slot)
+        _prescan(ctx, accounts)
+        ctx.limiter.restore_from_store(ctx.egress, now=_mono())
+        if ctx.global_limiter.invalid:
+            logger.warning("%s 非法，全局速率上界按不限处理（不阻断签到）",
+                           ENV_GLOBAL_RATE)
+        logger.info("v3 执行体：%d 条通道 / %d 个分片 / 出口 %s",
+                    ctx.m, len(ctx.shards), ctx.egress)
+        asyncio.run(_run_async(ctx))
+    except Exception as e:
+        # 异常文本经 _sanitize_text 防注入、_mask_phones_in_text 抹手机号后再落日志
+        logger.error("v3 执行体未预期异常，本轮按无结果收尾（不外逃）: %s",
+                     _mask_phones_in_text(_sanitize_text(str(e))))
+        return {}
+    try:
+        _mark_window_skips(ctx, accounts)
+    except Exception as e:
+        logger.error("v3 窗口收尾失败，已完成的账号结果照常返回: %s",
+                     _mask_phones_in_text(_sanitize_text(str(e))))
+    # 收尾写心跳**只在正常返回路径**（不是 finally）：四态从 running 落到 finished。
+    # 异常/中断路径不写——`KeyboardInterrupt` / `SystemExit` 是 BaseException、会直接
+    # 外逃，写进去就把"被信号杀掉"记成"正常跑完"；留"有开始、无收尾"让心跳过期后判
+    # `stale`（疑似被强杀，要用户注意），与监督进程不写收尾的口径一致。
+    state_io.mark_worker_finished(slot, now=_now())
+    return ctx.results
