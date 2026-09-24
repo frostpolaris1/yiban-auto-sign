@@ -63,6 +63,36 @@ def _executor_write_guard(data, action, changed):
     return None
 
 
+def _executor_change_alert(action, changed):
+    """执行体写成功后的事后告警（非 `full` 档的管理员侧补偿信号）。
+
+    为什么要有：非 `full` 档下执行体写不再当次索要口令，而改出口等于把全站签到流量
+    交给任意代理（顺手还能把兜底关掉）——这一族写端点此前一处都不发告警，是受门禁
+    操作里唯一没有补偿信号的一族（既无口令也无管理员侧痕迹，只剩审计链自己看自己）。
+    `full` 档当次已要求口令，行为逐字不变：不重复发。
+
+    只在**真的会改配置**时发（与 `_executor_write_guard` 同一判据）：无变更的保存不是
+    "变更"，发了只会稀释同类告警。正文只落动作名与槽位（调用方给的 `action`，全是内部
+    常量），过一道 `_nl_safe` 只为杜绝换行伪造告警正文；代理串可能带凭据、自定义名是
+    用户输入，一律不进正文。
+    """
+    m = _appmod()
+    if not changed or m._pw_gate_tier(m.ENV_FILE) == m.PW_GATE_FULL:
+        return
+    try:
+        m.send_notification(
+            "系统设置变更告警",
+            m._change_mail(
+                "执行体配置已变更。",
+                detail=[("动作", m._nl_safe(action))],
+                advice=["如非本人操作，请核对 .env 的执行体清单与出口并回滚"],
+            ),
+            urgent=True,
+        )
+    except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
+        m.logger.warning("执行体变更告警发送失败（不影响已写入的配置）: %s", e)
+
+
 def _reply_slot_egress(env_key, index):
     """单段出口写接口的公共实现（两个路由只差"哪一段"）。
 
@@ -96,7 +126,8 @@ def _reply_slot_egress(env_key, index):
         role_now = m.yb_egress.ROLE_FALLBACK if index is None else m.yb_egress.ROLE_WORKER
         cur_value = str(m.yb_egress.resolve(role_now, index or 0, env=env_now) or "")
         audit_detail = env_key if index is None else f"{env_key}[{index}]"
-    denied = _executor_write_guard(data, f"{audit_detail} 改出口", value != cur_value)
+    changed = value != cur_value
+    denied = _executor_write_guard(data, f"{audit_detail} 改出口", changed)
     if denied:
         return denied
     if rows is not None:
@@ -114,6 +145,7 @@ def _reply_slot_egress(env_key, index):
     if err:
         return jsonify({"error": err}), code
     m.db.audit(m._audit_actor(), "settings", "executors", audit_detail)
+    _executor_change_alert(f"{audit_detail} 改出口", changed)
     return jsonify({"ok": True,
                     "index": index if index is not None else "fallback",
                     "egress": desc})
@@ -464,10 +496,16 @@ def api_settings_save():
     b_changes = [c for c in changes if c[0] in m.GATED_KEYS]
     pause_change = next((c for c in changes if c[0] == m.GLOBAL_PAUSE_KEY), None)
 
-    def _tier_gate(action_label, always_required, attempted):
-        """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。"""
+    def _tier_gate(action_label, always_required, attempted, irreversible=False):
+        """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
+
+        `irreversible=True`（0→1 急停）在非 `full` 档还要求请求体带倒计时确认凭据；
+        `always_required` 只在 `full` 档区分 A/B 档，其余档由门禁按档位自行决定
+        （见 `_sensitive_password_gate`）。
+        """
         denied = sensitive_password_gate()(data, action_label,
-                                          always_required=always_required)
+                                          always_required=always_required,
+                                          irreversible=irreversible)
         if denied is not None:
             m.db.audit(
                 session.get("username") or "?",
@@ -487,7 +525,9 @@ def api_settings_save():
              if a_changes else [])
             + (["系统开关"] if pause_change else []))
         denied = _tier_gate(_action, True,
-                            (a_changes or []) + ([pause_change] if pause_change else []))
+                            (a_changes or []) + ([pause_change] if pause_change else []),
+                            # 0→1 急停不可逆（当场把全站停下来）；1→0 恢复可逆
+                            irreversible=bool(pause_change and pause_change[2] == "1"))
         if denied is not None:
             return denied
     if pause_change and pause_change[2] == "1" and admin_delete_limited()():
@@ -594,26 +634,10 @@ def api_settings_save():
     # 推送日额度——它要立刻叫醒；其余 A 档变更沿用既有的同类节流与紧急账日额度。
     # 纯 B 档变更非紧急。值全部来自现读+本次落盘的配置项，不含凭据，仍过一道
     # _nl_safe 只为杜绝换行伪造告警正文。
-    if changes:
-        try:
-            m.send_notification(
-                "系统设置变更告警",
-                m._change_mail(
-                    "系统设置已变更。",
-                    detail=[
-                        (m._settings_label(k),
-                         f"{m._nl_safe(m._settings_value_text(k, o))} → "
-                         f"{m._nl_safe(m._settings_value_text(k, n))}")
-                        for k, o, n in changes
-                    ],
-                    operator=str(session.get("username") or "?")[:64],
-                    level="urgent" if (a_changes or pause_change is not None) else "info",
-                ),
-                urgent=bool(a_changes) or pause_change is not None,
-                force=bool(pause_change and pause_change[2] == "1"),
-            )
-        except Exception as e:  # 配置已落盘，告警失败不得把结果带崩成 500
-            m.logger.warning("设置变更告警发送失败（不影响已保存的配置）: %s", e)
+    # 变更不再逐次外发告警：改设置是高频管理动作，一次一键一封会刷爆告警邮件与推送
+    # 额度，也让真故障淹没在"谁改了哪个滑块"里。留痕由上面的审计行承担——它逐键记
+    # 旧值→新值，事后可查可回滚；需要"当场叫醒"的只有不可逆操作、凭据改写与告警通道
+    # 变更，那几类各有自己的信号。
     _saved_msg = "设置已保存（cron 下次触发自动生效）"
     if edge_note:
         # 被夹过就必须说清"夹到多少、为什么"：否则管理员看到滑块/输入框里的值
@@ -862,6 +886,7 @@ def api_scheduler_executors_save():
         return jsonify({"error": str(e)}), 400
     # 审计只记键名：代理串可能带凭据，不得进审计链
     m.db.audit(m._audit_actor(), "settings", "executors", ",".join(sorted(updates))[:200])
+    _executor_change_alert("整条保存:" + ",".join(changed_keys)[:160], bool(changed_keys))
     return jsonify({"ok": True, "applied": sorted(updates),
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -955,6 +980,7 @@ def api_scheduler_executor_row_add():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert("追加执行体行", True)
     return jsonify({"ok": True, "slot": slot, "type": rtype,
                     "egress": m.yb_egress.describe(value),
                     "name": name or None,
@@ -1010,6 +1036,7 @@ def api_scheduler_executor_row_update(slot):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert(f"{m.yb_egress.ENV_MANIFEST}[{slot}] 改行", _changed)
     return jsonify({"ok": True, "slot": slot, "type": row["type"],
                     "egress": m.yb_egress.describe(row["proxy"]),
                     "name": row.get("name") or None,
@@ -1045,6 +1072,7 @@ def api_scheduler_executor_row_delete(slot):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert(f"{m.yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
     return jsonify({"ok": True, "slot": slot, "type": rtype, "deleted": True,
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 

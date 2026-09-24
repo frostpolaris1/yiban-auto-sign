@@ -458,6 +458,21 @@ def api_account_update(idx):
                     )
                 except Exception as e:
                     m.logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
+        # 非 full 档不再当场要口令 ⇒ 改写他人凭据靠"事后告警 + 审计链"兜底：
+        # 一封"刚才执行了 XX 操作"让管理员可追溯、可回滚（此前只通知当事人，
+        # 管理员侧零信号）。full 档本就有当次口令，不重复发——该档行为逐字不变。
+        if creds_written and m._pw_gate_tier(m.ENV_FILE) != m.PW_GATE_FULL:
+            m.send_notification(
+                "高危管理操作告警",
+                m._change_mail(
+                    "改写他人易班凭据。",
+                    detail=[("目标", m._mask_phone(clean["phone"])),
+                            ("归属用户",
+                             m._mask_email(str(clean.get("owner") or "admin")))],
+                    advice=["如非本人申请，请立即核实并回滚该账号凭据"],
+                ),
+                urgent=True,
+            )
         accounts = m.load_accounts()
         m.logger.info("编辑账号 %s", m._mask_phone(clean["phone"]))
         return jsonify(
@@ -475,7 +490,7 @@ def api_accounts_batch():
     "不可逆清除"：一个请求最多 BATCH_OP_LIMIT 条，漏了门禁即为数十秒内把全部
     易班凭据不可逆清零且无人知晓。故 purge 要求二次鉴权 + 同管理员窗口限速
     （429）。delete（软删）虽可逆（7 天宽限 + 409 防错位），但它立即停止该用户
-    代签且受害者无法自助恢复，同样接入该高危限速并逐次告警、但**不要求二次
+    代签且受害者无法自助恢复，同样接入该高危限速、但**不要求二次
     口令**（可逆操作加口令只增误伤）。approve/reject/restore 可逆且有防错位兜底，
     维持无门禁。
     """
@@ -503,15 +518,15 @@ def api_accounts_batch():
         # 统一走 _high_risk_gate（先验口令，通过了才占高危额度）；
         # 429 文案与用户侧批量删除一致，运维只需记一句话
         gate = _high_risk_gate()(
-            data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+            data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试",
+            irreversible=True)
         if gate:
             return gate
     # 软删也占用同一份高危额度：它虽可逆（7 天内可恢复），但立即让该用户当天起
     # 停止代签，且**受害者无法自助恢复**（/api/my-accounts/<idx>/restore 对管理员
     # 删除的行返回 403），因此被盗的注册管理员会话可用几十次调用在数秒内静默让
     # 全站停签——与"删数据 / 拆报警器是同一条链" 同风险。这里**仍然不要求二次
-    # 口令**（可逆不加口令，加了口令只增误伤），只限制速率并逐次告警（告警在
-    # ops 落库与审计之后发送，见下方）。
+    # 口令**（可逆不加口令，加了口令只增误伤），只限制速率（留痕在审计行）。
     if action == "delete" and _admin_delete_limited()():
         return jsonify({"error": "删除操作过于频繁，请稍后再试"}), 429
     with m._file_lock:
@@ -541,8 +556,6 @@ def api_accounts_batch():
 
         ops = []
         batch_targets = []  # 审计留目标清单（脱敏截断）
-        purge_targets = []  # 高危操作（物理删除）即时告警汇总
-        soft_delete_targets = []  # 软删即时告警汇总
         reject_notify_owners = {}  # 批量拒绝每户一封
         # 内存中跟踪每个 owner 当前是否有未删除账号，用于恢复防呆
         live_owners = {
@@ -570,7 +583,6 @@ def api_accounts_batch():
                 # 仅允许彻底删除「已软删除」账号（与单个彻底删除一致，防误删正常账号）
                 if acc.get("deleted"):
                     ops.append(("purge", acc["id"]))
-                    purge_targets.append(m._mask_phone(str(acc.get("phone", ""))))
             elif action == "restore":
                 if acc.get("deleted"):
                     owner = acc.get("owner", "")
@@ -588,23 +600,11 @@ def api_accounts_batch():
                 ops.append(
                     ("set_deleted", acc["id"], 1, m.clock.now().strftime("%Y-%m-%d %H:%M:%S"))
                 )
-                soft_delete_targets.append(m._mask_phone(str(acc.get("phone", ""))))
             batch_targets.append(acc.get("phone", ""))
         done = len(ops)
         if ops:
             try:
                 m.db.batch_account_ops(ops)
-                if purge_targets:
-                    # 高危操作即时告警（不等每日审计体检）
-                    m.send_notification(
-                        "高危管理操作告警",
-                        m._change_mail(
-                            f"批量彻底删除账号 {len(purge_targets)} 个。",
-                            detail=[("目标", "、".join(purge_targets[:20]))],
-                            advice=["物理删除不可恢复；操作前应有当日备份"],
-                        ),
-                        urgent=True,
-                    )
             except m.db.DuplicateOwnerError:
                 m.db.audit(
                     session.get("username") or "?",
@@ -641,23 +641,8 @@ def api_accounts_batch():
                 m._mask_phone(str(p)) for p in (batch_targets or [])[:20]
             ))[:200],
         )
-        if action == "delete" and soft_delete_targets:
-            # 软删即时告警刻意排在 db.audit 之后、
-            # 返回之前——先把证据落进审计链（HMAC 链 + 库外锚点），再尝试外发，
-            # 外发失败不影响留痕（与 api_account_purge 同顺序、同理由）。
-            # 标题沿用「高危管理操作告警」：send_notification 的邮件节流按**标题**
-            # 计窗（见 _mail_alert_due），因此被盗会话快速连删不会刷爆 SMTP 额度、
-            # 合法运维的批量清理也只留一封邮件；webhook 仍逐条实时推送（告警实时性
-            # 由 webhook 保证），两头的语义都保住。
-            m.send_notification(
-                "高危管理操作告警",
-                m._change_mail(
-                    f"批量删除账号（软删）{len(soft_delete_targets)} 个。",
-                    detail=[("目标", "、".join(soft_delete_targets[:20]))],
-                    advice=[f"{m.DELETED_RETENTION_DAYS} 天内可在待删除列表恢复"],
-                ),
-                urgent=True,
-            )
+        # 软删与彻底删除不再外发即时告警：留痕由上面的审计行承担（动作 + 目标清单），
+        # 软删本身可逆（保留期内可恢复），把它当"事故"逐条发信会让真故障淹没。
         accounts = m.load_accounts()
         m.logger.info("批量%s账号 %d 个", action, done)
         msg = {
@@ -679,9 +664,9 @@ def api_accounts_batch():
 def api_account_delete(idx):
     """删除账号（软删除）：进入待删除状态，保留期内可恢复，超期自动彻底清除。
 
-    软删占用高危额度并即时告警——理由见 /api/accounts/batch 的 action=="delete"
-    分支注释（软删可逆但立即停签、受害者无法自助恢复，被盗注册管理员会话可
-    借此静默让全站停签），但不要求二次口令（可逆操作不加口令）。
+    软删占用高危额度（软删可逆但立即停签、受害者无法自助恢复，被盗注册管理员
+    会话可借此静默让全站停签），但不要求二次口令（可逆操作不加口令），也不再
+    外发即时告警——留痕由审计行承担，见函数体内的注释。
     """
     m = _appmod()
     # 门禁刻意留在 _file_lock 之外：_admin_delete_limited 只做内存计数与判速，
@@ -705,17 +690,8 @@ def api_account_delete(idx):
             m._mask_phone(acc.get("phone", "")),
             "软删除",
         )
-        # 先落审计再外发：外发失败不影响留痕（与 api_account_purge 同顺序）。
-        # 标题沿用「高危管理操作告警」以共享邮件节流窗口（见批量分支注释）。
-        m.send_notification(
-            "高危管理操作告警",
-            m._change_mail(
-                "删除账号（软删）。",
-                detail=[("目标", m._mask_phone(str(acc.get("phone", ""))))],
-                advice=[f"{m.DELETED_RETENTION_DAYS} 天内可在待删除列表恢复"],
-            ),
-            urgent=True,
-        )
+        # 软删不再外发即时告警：留痕由上面的审计行承担，且软删可逆
+        # （DELETED_RETENTION_DAYS 天内可在待删除列表恢复）。
         accounts = m.load_accounts()
         m.logger.info(
             "软删除账号 %s（%s 天内可恢复）", m._mask_phone(acc.get("phone", "")), m.DELETED_RETENTION_DAYS
@@ -767,16 +743,17 @@ def api_account_restore(idx):
 def api_account_purge(idx):
     """彻底删除待删除账号：立即物理清除，不可恢复。
 
-    单条物理清除与批量 purge 同口径：二次鉴权 + 同管理员窗口限速（429），
-    成功后发一条 urgent 告警；缺任一项都等于给被盗管理员会话留一条安静的
-    清库通道（不要求确认口令、不受删除冷却约束、成功零外发）。
+    单条物理清除与批量 purge 同口径：二次鉴权 + 同管理员窗口限速（429）。
+    缺任一项都等于给被盗管理员会话留一条安静的清库通道（不要求确认口令、
+    不受删除冷却约束）；动作本身经审计行留痕。
     """
     m = _appmod()
     # 门禁放在 _file_lock 之外（同 api_accounts_batch 与三处高危删除）：
     # 口令校验耗时数百毫秒，放进全局锁里会凭一次尝试卡住全进程账号读写
     data = m._json_body()
     gate = _high_risk_gate()(
-        data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+        data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试",
+        irreversible=True)
     if gate:
         return gate
     with m._file_lock:
@@ -795,20 +772,7 @@ def api_account_purge(idx):
             m._mask_phone(acc.get("phone", "")),
             "彻底删除",
         )
-        # 即时告警刻意排在 db.audit 之后、返回之前——先把证据落进
-        # 审计链（HMAC 哈希链 + 库外锚点），再尝试外发，外发失败不影响留痕。
-        # 标题与批量 purge / 用户侧清除完全相同：send_notification 的邮件节流
-        # 按标题计窗（_mail_alert_due），同标题才共享窗口——被盗会话快速连删
-        # 不会被刷爆 SMTP 额度，合法运维的批量清理也只留一封，两头的语义都保住。
-        m.send_notification(
-            "高危管理操作告警",
-            m._change_mail(
-                "彻底删除账号。",
-                detail=[("目标", m._mask_phone(str(acc.get("phone", ""))))],
-                advice=["物理删除不可恢复"],
-            ),
-            urgent=True,
-        )
+        # 彻底删除不再外发即时告警：留痕由上面的审计行承担（谁、删了哪个号）。
         accounts = m.load_accounts()
         m.logger.info("彻底删除账号 %s", m._mask_phone(acc.get("phone", "")))
         return jsonify(

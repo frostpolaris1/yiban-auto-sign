@@ -35,6 +35,10 @@ TEST_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "secret1"
 BUILTIN_EMAIL = "builtin@test.local"
+# 门禁档位：本文件多数用例钉的是"当次要口令"这一层的机制（冷却、豁免、失败账、
+# 顺序），必须显式固定在 full——默认档是 risk，不固定则这些动作不再当次要口令。
+# 默认档与 off 档的行为由 tests/test_pw_gate_tiers.py 钉。
+GATE_FULL = "full"
 
 
 class SecurityFixes021Test(unittest.TestCase):
@@ -605,7 +609,9 @@ class CredentialWriteGateTest(unittest.TestCase):
         with open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY_CWGATE}\n"
                     "YIBAN_ADMIN_USER=admin\n"
-                    f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS_CWGATE}\n")
+                    f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS_CWGATE}\n"
+                    # 本类钉的是"改写他人凭据要当次二次鉴权"这道机制，固定在 full
+                    f"YIBAN_PW_GATE={GATE_FULL}\n")
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
         for k, v in {
@@ -809,6 +815,8 @@ class RoleHardeningTest(unittest.TestCase):
         cls._env_content = (
             f"YIBAN_ACCOUNTS_KEY={TEST_KEY_ROLE}\n"
             f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS_ROLE}\n"
+            # 角色变更的用例钉的是"当次口令 + 限速 + 权限 403"这套机制，固定在 full
+            f"YIBAN_PW_GATE={GATE_FULL}\n"
         )
         with open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(cls._env_content)
@@ -917,8 +925,7 @@ class RoleHardeningTest(unittest.TestCase):
                         headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(db.find_user("u4@test.local").get("role"), "admin")
-        subjects = [call.args[0] for call in notify.call_args_list]
-        self.assertIn("权限变更告警", subjects, "提权仍须即时告警")
+        notify.assert_not_called()  # 权限变更告警已下线：留痕由审计行承担
         rows = db.audit_rows(50) if hasattr(db, "audit_rows") else []
         if rows:  # 审计留痕（允许无此辅助函数的环境跳过细查）
             self.assertTrue(any(x.get("action") == "user_role" for x in rows))
@@ -1042,6 +1049,10 @@ class _GateBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY_SGATE}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本基类钉的是门禁**机制**本身（冷却、豁免、失败告警、独立计数、
+                # 跨端点共用一份账），这些语义只在"当次要求口令"时才看得见，
+                # 故把档位固定在 full；默认档 risk 的行为由 test_pw_gate_tiers.py 钉。
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -1154,7 +1165,7 @@ class CooldownTest(_GateBase):
 
     def test_threshold_failure_alerts_once_and_next_try_429(self):
         """①错口令 3 次 → 每次 403、告警恰 1 条；第 4 次进冷却返回 429。"""
-        n = self.webapp.LOGIN_FAIL_NOTIFY
+        n = self.webapp.SENSITIVE_PW_FAIL_NOTIFY
         c = self._login()
         codes = self._fail_gate_times(c, n)
         self.assertEqual(codes, [403] * n, f"阈值前每次都是口令不符 403，实际 {codes}")
@@ -1166,6 +1177,27 @@ class CooldownTest(_GateBase):
         r = self._attempt(c, "switch", WRONG_PASS)
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
 
+    def test_gate_threshold_decoupled_from_login_alert_threshold(self):
+        """门禁失败的告警/冷却起点是门禁侧自己的常量，取值 3。
+
+        这个数同时是**同一窗口内允许的 scrypt 尝试次数上界**（达阈值即布防冷却），
+        不能跟登录失败告警阈值共用一个常量：登录侧抬高它只是为了少发误报，与本门禁要挡的
+        "持 Cookie 撞口令"是两件事，共用会让登录侧的一次调参把门禁预算一并放宽数倍。
+        """
+        self.assertEqual(self.webapp.SENSITIVE_PW_FAIL_NOTIFY, 3,
+                         "门禁侧阈值必须是 3（门禁侧自己的取值，与登录告警阈值无关）")
+        self.assertNotEqual(self.webapp.SENSITIVE_PW_FAIL_NOTIFY,
+                            self.webapp.LOGIN_FAIL_NOTIFY,
+                            "两个阈值必须是两个常量——值相同同样会随一侧调参一起漂移")
+        # 行为面：恰好第 3 次失败布防冷却、第 4 次起 429（与登录侧那个更大的阈值无关）
+        c = self._login()
+        codes = self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
+        self.assertEqual(codes, [403, 403, 403], f"阈值内每次都是口令不符 403，实际 {codes}")
+        self.assertEqual(len([a for a in self.alerts if "二次鉴权失败" in a[0]]), 1,
+                         f"首达阈值只告警一次，实际 {self.alerts}")
+        self.assertEqual(self._attempt(c, "switch", WRONG_PASS).status_code, 429,
+                         "第 4 次必须已被门禁冷却挡住")
+
     def test_missing_password_denied_but_not_counted(self):
         """「没带口令」不占冷却预算：它一次散列都不做，计入阈值等于让攻击者用空请求
         把合法管理员的敏感操作预算刷光（与 _admin_delete_limited 修掉的运维 DoS 同类）。
@@ -1175,8 +1207,8 @@ class CooldownTest(_GateBase):
         self.assertEqual(codes, [403] * 6, f"缺口令的拒绝仍是 403，实际 {codes}")
         self.assertEqual(self.alerts, [], "缺口令不得触发复核失败告警")
         # 预算完整：错口令仍是从第 4 次起才进冷却
-        self.assertEqual(self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY),
-                         [403] * self.webapp.LOGIN_FAIL_NOTIFY)
+        self.assertEqual(self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY),
+                         [403] * self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         self.assertEqual(self._attempt(c, "switch", WRONG_PASS).status_code, 429)
 
     def test_missing_and_wrong_password_have_different_copy(self):
@@ -1199,7 +1231,7 @@ class CooldownTest(_GateBase):
     def test_cooldown_rejects_correct_password_too(self):
         """②冷却期内正确口令也不放行——否则"改用对口令"就绕过了冷却。"""
         c = self._login()
-        self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY)
+        self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         r = self._attempt(c, "switch", ADMIN_PASS)
         self.assertEqual(r.status_code, 429, "冷却期内对口令同样拒绝")
         self.assertFalse(self._env_has("YIBAN_GLOBAL_PAUSE=1"), "冷却期不得落盘")
@@ -1208,7 +1240,7 @@ class CooldownTest(_GateBase):
     def test_cooldown_spans_all_reconfirm_endpoints(self):
         """一处撞满阈值，另两处落点同样进冷却（同一入口、同一计数）。"""
         c = self._login()
-        self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY, endpoint="switch")
+        self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY, endpoint="switch")
         for endpoint in ("executors", "batch"):
             r = self._attempt(c, endpoint, ADMIN_PASS)
             self.assertEqual(r.status_code, 429,
@@ -1217,7 +1249,7 @@ class CooldownTest(_GateBase):
     def test_cooldown_leaves_login_reads_and_ungated_writes_alone(self):
         """冷却只封"需要复核的写"：登录、只读 GET、普通页与普通写操作一律照常。"""
         c = self._login()
-        self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY)
+        self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         self.assertEqual(c.get("/api/me").status_code, 200, "只读 GET 不受冷却影响")
         self.assertEqual(c.get("/api/users").status_code, 200, "管理页数据不受冷却影响")
         self.assertEqual(c.get("/api/clock").status_code, 200, "公开只读接口不受冷却影响")
@@ -1236,7 +1268,7 @@ class CooldownTest(_GateBase):
         """冷却窗口过后门禁重新可用（可配的短窗口，免睡长秒）。"""
         self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "1"})
         c = self._login()
-        self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY)
+        self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         self.assertEqual(self._attempt(c, "switch", ADMIN_PASS).status_code, 429)
         time.sleep(1.2)
         r = self._attempt(c, "switch", ADMIN_PASS)
@@ -1252,7 +1284,7 @@ class CooldownTest(_GateBase):
         """
         self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "1"})
         c = self._login()
-        self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY)
+        self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         time.sleep(1.2)
         self.assertEqual(self._attempt(c, "switch", WRONG_PASS).status_code, 403,
                          "冷却到期后这一次是「第 4 次失败」，仍要散列比对一次")
@@ -1263,7 +1295,7 @@ class CooldownTest(_GateBase):
         """冷却窗口 0 = 关闭冷却（告警与独立计数照旧），用于运维按 .env 降级。"""
         self.webapp.write_env_batch(self.env_file, {"YIBAN_PW_CONFIRM_COOLDOWN_SEC": "0"})
         c = self._login()
-        self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY)
+        self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         self.assertEqual(self._attempt(c, "switch", ADMIN_PASS).status_code, 200)
 
 
@@ -1436,7 +1468,7 @@ class StoreHygieneTest(_GateBase):
 
         c = self._login()
         with mock.patch.object(self.webapp, "_ip_store_trim", side_effect=spy):
-            self._fail_gate_times(c, self.webapp.LOGIN_FAIL_NOTIFY)
+            self._fail_gate_times(c, self.webapp.SENSITIVE_PW_FAIL_NOTIFY)
         # 门禁表的键是 (ip, 用户名) 二元组；通用限速表是裸 IP 串，据此筛出门禁自己的表
         gate_stores = {id(s): s for s, _ in captured
                        if any(isinstance(k, tuple) and len(k) == 2 for k in s)}

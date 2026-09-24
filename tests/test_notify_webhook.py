@@ -88,6 +88,10 @@ def _clear(monkeypatch):
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_"):
             monkeypatch.delenv(k)
+    # 本文件测的是推送通道本身（节流 / 两本账 / 退还 / 告知），而「仅推送重要告警」
+    # 默认开——不显式关掉，非紧急用例会被档位短路，测不到要测的东西。档位本身另有
+    # 一组用例（test_urgent_only_*）覆盖，含"不设该键"的默认行为。
+    monkeypatch.setenv("YIBAN_NOTIFY_URGENT_ONLY", "0")
 
 
 def _freeze_day(monkeypatch, day):
@@ -390,6 +394,7 @@ def test_urgent_only_skips_non_urgent(monkeypatch):
 
 def test_urgent_only_off_pushes_all(monkeypatch):
     _configure_serverchan(monkeypatch, cooldown=0)
+    _set(monkeypatch, URGENT_ONLY="0")
     calls = []
 
     class FakeResp:
@@ -397,9 +402,26 @@ def test_urgent_only_off_pushes_all(monkeypatch):
             return {"code": 0}
 
     monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
-    assert notify.send("用户日常改密", "内容") is True   # 未开启时不区分紧急
+    assert notify.send("用户日常改密", "内容") is True   # 显式关闭时不区分紧急
     assert notify.send("用户日常改密", "内容", urgent=True) is True
     assert len(calls) == 2
+
+
+def test_urgent_only_unset_defaults_to_urgent_only(monkeypatch):
+    """不设该键 = 默认只推重要告警：推送日额度留给安全与系统级事件。"""
+    _configure_serverchan(monkeypatch, cooldown=0)
+    monkeypatch.delenv("YIBAN_NOTIFY_URGENT_ONLY", raising=False)
+    calls = []
+
+    class FakeResp:
+        def json(self):
+            return {"code": 0}
+
+    monkeypatch.setattr(notify_transport.requests, "post", lambda *a, **k: calls.append(1) or FakeResp())
+    assert notify.get_config()["urgent_only"] is True, "上报值与发送期判定必须同一默认"
+    assert notify.send("用户日常改密", "内容") is False
+    assert notify.send("高危操作告警", "内容", urgent=True) is True
+    assert len(calls) == 1
 
 
 def test_urgent_only_force_bypasses(monkeypatch):
@@ -874,7 +896,7 @@ def test_skip_reason_logs_deduped_per_window(monkeypatch, caplog):
         assert _info_lines(caplog, "节流") == 1
         assert notify.get_config()["urgent_daily_remaining"] == 2  # 节流不扣额度
         notify_ledger._skip_logged.clear()
-        monkeypatch.delenv("YIBAN_NOTIFY_URGENT_ONLY")
+        _set(monkeypatch, URGENT_ONLY="0")   # 解除档位短路，这一段测的是额度清零
         assert notify.send("普通1", "内容") is True
         assert notify.send("普通2", "内容") is False
         assert notify.send("普通3", "内容") is False
@@ -890,7 +912,8 @@ def test_cooldown_explicit_zero_from_env_file_disables_throttle(monkeypatch, tmp
     env = tmp_path / "prod-like.env"
     env.write_text(
         "YIBAN_ACCOUNTS_KEY={k}\nYIBAN_NOTIFY_TYPE=serverchan\n"
-        "YIBAN_NOTIFY_SECRET_ENC={enc}\nYIBAN_NOTIFY_COOLDOWN=0\nYIBAN_NOTIFY_DAILY_MAX=0\n".format(
+        "YIBAN_NOTIFY_SECRET_ENC={enc}\nYIBAN_NOTIFY_COOLDOWN=0\nYIBAN_NOTIFY_DAILY_MAX=0\n"
+        "YIBAN_NOTIFY_URGENT_ONLY=0\n".format(
             k=key, enc=_enc_with(key, SCT_KEY)),
         encoding="utf-8")
     notify_ledger._throttle_ts.clear()
@@ -1222,9 +1245,14 @@ class Batch18Knife2WebTest(unittest.TestCase):
     # 4. M8 web 侧接线：登录失败告警走独立账本
     # =====================================================================
     def test_m8_login_alert_routed_to_loginfail_ledger(self):
-        """验收：3 次登录失败 → notify.send 收到 ledger="login_fail"（走真实
-        send_notification 验证透传链路）；urgent 仍按喷洒判据为 False。"""
+        """验收：连续失败达告警阈值 → notify.send 收到 ledger="login_fail"（走真实
+        send_notification 验证透传链路）；urgent 仍按喷洒判据为 False。
+
+        告警阈值与锁定阈值同值：第 threshold 次既告警又锁定（429），故只前 threshold-1
+        次是 401。
+        """
         c = self.webapp.create_app().test_client()
+        threshold = self.webapp.LOGIN_FAIL_NOTIFY
         # 口令校验的**两份绑定都要打**：`webapp.check_password_hash` 覆盖注册用户路径
         # （路由经 `m.*` 取 app 侧绑定），`web_security.check_password_hash` 覆盖内置
         # 管理员路径（`web/security.py` 的 verify_admin 用该模块自己的绑定，app 侧打桩
@@ -1235,9 +1263,11 @@ class Batch18Knife2WebTest(unittest.TestCase):
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp.notify, "send") as nsend:
-            for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+            for _ in range(threshold - 1):
                 r = c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
                 self.assertEqual(r.status_code, 401)
+            r = c.post("/api/login", json={"username": "admin", "password": "WrongPass#111"})
+            self.assertEqual(r.status_code, 429, "同值时第 threshold 次同时锁定")
         self.assertEqual(nsend.call_count, 1)
         kwargs = nsend.call_args.kwargs
         self.assertEqual(kwargs.get("ledger"), "login_fail",
@@ -1249,7 +1279,7 @@ class Batch18Knife2WebTest(unittest.TestCase):
     # =====================================================================
     def test_p31_login_fail_key_truncated_to_128(self):
         """验收：200 长用户名截断——同 128 前缀的不同超长用户名共享失败计数
-        （3+2=5 次即锁定）；若未截断则第二键独立计数、第 5 次仍是 401。"""
+        （累计到锁定阈值即锁定）；若未截断则第二键独立计数、末次仍是 401。"""
         c = self.webapp.create_app().test_client()
         long_a, long_b = "a" * 200, "a" * 128 + "b" * 72
         # 两份 check_password_hash 绑定同 test_m8_login_alert_routed_to_loginfail_ledger。
@@ -1258,25 +1288,25 @@ class Batch18Knife2WebTest(unittest.TestCase):
              mock.patch.object(web_security, "check_password_hash", return_value=False), \
              mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
-            for _ in range(3):
-                c.post("/api/login", json={"username": long_a, "password": "x"})
-            r = c.post("/api/login", json={"username": long_b, "password": "x"})
-            self.assertEqual(r.status_code, 401)
+            # 前 threshold-1 次在长键 A、B 之间分摊：只有"两键被截成同一个键"才会累计到锁定
+            for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+                name = long_a if i % 2 == 0 else long_b
+                r = c.post("/api/login", json={"username": name, "password": "x"})
+                self.assertEqual(r.status_code, 401)
             r = c.post("/api/login", json={"username": long_b, "password": "x"})
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
         self.assertIn("已锁定", r.get_json()["error"], "同 128 前缀应合并计数并锁定")
 
     def test_p31_restore_fail_key_truncated_to_128(self):
-        """验收：restore 的 200 长邮箱同样截断 [:128]（3+2=5 次锁定）。"""
+        """验收：restore 的 200 长邮箱同样截断 [:128]（累计到锁定阈值即锁定）。"""
         c = self.webapp.create_app().test_client()
         long_a, long_b = "r" * 200, "r" * 128 + "s" * 72
         with mock.patch.object(self.webapp, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(self.webapp, "send_notification"):
-            for _ in range(3):
-                r = c.post("/api/me/restore", json={"email": long_a, "password": "x"})
+            for i in range(self.webapp.LOGIN_MAX_FAILS - 1):
+                email = long_a if i % 2 == 0 else long_b
+                r = c.post("/api/me/restore", json={"email": email, "password": "x"})
                 self.assertEqual(r.status_code, 400)
-            r = c.post("/api/me/restore", json={"email": long_b, "password": "x"})
-            self.assertEqual(r.status_code, 400)
             r = c.post("/api/me/restore", json={"email": long_b, "password": "x"})
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
         self.assertIn("密码错误次数过多", r.get_json()["error"])
@@ -1447,6 +1477,8 @@ class Batch18Knife2NotifyLedgerTest(unittest.TestCase):
         os.environ["YIBAN_NOTIFY_TYPE"] = "serverchan"
         os.environ["YIBAN_NOTIFY_URL"] = SCT_KEY_K2
         os.environ["YIBAN_NOTIFY_COOLDOWN"] = "0"  # 关节流，单测只看账本
+        # 本类只看账本，「仅推送重要告警」默认开会把非紧急用例短路在档位上
+        os.environ["YIBAN_NOTIFY_URGENT_ONLY"] = "0"
         for k in ("YIBAN_LOGINFAIL_DAILY_MAX", "YIBAN_NOTIFY_DAILY_MAX",
                   "YIBAN_NOTIFY_URGENT_DAILY_MAX"):
             os.environ.pop(k, None)
@@ -1457,6 +1489,7 @@ class Batch18Knife2NotifyLedgerTest(unittest.TestCase):
     def tearDown(self):
         for k in ("YIBAN_STATE_DIR", "YIBAN_ENV_FILE", "YIBAN_ACCOUNTS_KEY",
                   "YIBAN_NOTIFY_TYPE", "YIBAN_NOTIFY_URL", "YIBAN_NOTIFY_COOLDOWN",
+                  "YIBAN_NOTIFY_URGENT_ONLY",
                   "YIBAN_LOGINFAIL_DAILY_MAX", "YIBAN_NOTIFY_DAILY_MAX",
                   "YIBAN_NOTIFY_URGENT_DAILY_MAX"):
             os.environ.pop(k, None)

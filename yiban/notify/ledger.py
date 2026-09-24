@@ -529,7 +529,11 @@ def _log_exhaustion_warning(ledger_id):
 
 
 def budget_exhausted_today(urgent=None):
-    """该本账今日额度是否已用尽；urgent=None 表示"任一账用尽"。无上限恒 False。"""
+    """该本账今日额度是否已用尽；urgent=None 表示"任一账用尽"。无上限恒 False。
+
+    只覆盖 general / urgent 两本推送账：登录失败账（login_fail）的耗尽由
+    `has_pending_exhaustion_notice()` 回答——两者都是"今天要不要发通道健康报告"的判据。
+    """
     if urgent is None:
         return budget_exhausted_today(True) or budget_exhausted_today(False)
     remaining = _daily_remaining("urgent" if urgent else "general")
@@ -539,6 +543,23 @@ def budget_exhausted_today(urgent=None):
 # ---------------------------------------------------------------------------
 # 耗尽告知（阈值由调用方 pop 后自行发信）
 # ---------------------------------------------------------------------------
+
+def has_pending_exhaustion_notice():
+    """当日是否有账本挂着"额度耗尽待告知"标记；**只读**，不取走。
+
+    与 `pop_exhaustion_notice` 的唯一差别就是取不取走：调用方只想回答"今天该不该把
+    耗尽告知捎出去"时，取走会让真正发信那一刻少了那几行"哪本账用尽"——标记按日重置，
+    漏一次就再也补不回来。逐本账都查（含 login_fail）：该账的告知同样只有"通道健康
+    报告"一个取走方，只看 general / urgent 会让它在换日归零时静默消失。
+    """
+    for ledger_id in _LEDGER_IDS:
+        led = _ledger(ledger_id)
+        with led["lock"]:
+            # 经文件锁读盘刷新内存（与 _daily_remaining 同路径）：进程重启后内存态是空的
+            if _with_ledger_locked(
+                    ledger_id, lambda led_, disk_: bool(led_["notice"]["pending"])):
+                return True
+    return False
 
 def _pop_notice_locked(led, disk=None):
     """锁内：取走本账待告知标记并置已交付（调用方必须已持有账本 lock 与文件锁）。

@@ -53,8 +53,9 @@ def _purge_expired_deleted(conn):
     """
     try:
         # 时钟异常跳变（拨快 / 回拨超限）时跳过清理，防"系统时间被拨快后刚软删 1 秒的
-        # 账号被立即物理清除、反悔窗口归零"。守卫的 INSERT upsert 在 WAL 下即持
-        # RESERVED 写锁，兼作下面的读-删-连带清理的事务边界。
+        # 账号被立即物理清除、反悔窗口归零"。只跳本轮：守卫在越界路径上也推进参照点，
+        # 下一轮（≤24h 后）即恢复。守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，
+        # 兼作下面的读-删-连带清理的事务边界。
         ok, note = _facade()._clock_jump_guard(conn, "purge_accounts_clock")
         if not ok:
             logger.error("%s", note)
@@ -128,7 +129,7 @@ def _audit_cleanup(conn):
 
     接入时钟跳变守卫：审计是篡改取证数据源，时钟被拨快（NTP 故障或拿到服务器权限者
     掩盖痕迹）会让 cutoff 前移、审计链被一次性清空，且该清理不动"最后一条"锚点，
-    库外锚点校验不会报警。与三个短保留期 purge 同口径。
+    库外锚点校验不会报警。与三个短保留期 purge 同口径（同样只跳一轮）。
     """
     try:
         ok, note = _facade()._clock_jump_guard(conn, "audit_cleanup_clock")

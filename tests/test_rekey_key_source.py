@@ -1,28 +1,16 @@
 # -*- coding: utf-8 -*-
-"""回归测试（2026-08-29）：密钥来源去 cwd 依赖 + rekey 迁移推送密文。
+"""回归测试（2026-08-29）：密钥来源去 cwd 依赖 + 告警通道门禁与留痕。
 
-覆盖两条已活体复现的缺陷：
+覆盖已活体复现的缺陷：
 
 - P2-5：`db._audit_key()` / `db._track_salt()` 原为 `env_file = _env_file or ".env"`，
-  取证/恢复类 CLI（rekey_accounts / audit_verify / clock_guard_reset /
-  list_duplicate_owners）未传 env_file 时，密钥来源随当前工作目录漂移：在应用根
-  之外运行读不到旧钥 → 就地生成新钥落盘 → 既留下"游离的 .env"，又用错密钥签这条
-  审计行，真实哈希链从此判破（恢复工具反过来破坏恢复对象）。
+  取证/清点类 CLI（audit_verify / list_duplicate_owners）未传 env_file 时，密钥来源随
+  当前工作目录漂移：在应用根之外运行读不到旧钥 → 就地生成新钥落盘 → 既留下"游离的
+  .env"，又用错密钥签这条审计行，真实哈希链从此判破（恢复工具反过来破坏恢复对象）。
   修复：有序回落 init_db(env_file=…) → YIBAN_ENV_FILE → cwd ".env"；来源只能靠 cwd
-  兜底且该文件不存在时拒绝生成；四个 CLI 补传 env_file（其中三个新增 --env）。
-
-- P2-2：rekey 换 YIBAN_ACCOUNTS_KEY 后，.env 里用同一把钥加密的
-  YIBAN_NOTIFY_SECRET_ENC 仍是旧钥密文 → notify.get_secret() 解不开返回空 →
-  消息通道静默死亡（最需要告警的时候没告警）。
-  修复：轮换时旧钥解密 → 新钥重加密 → 与账号密钥同一次原子回写；--skip-notify 可
-  跳过；任何失败都不让轮换失败，只在收尾自检行提示"需重新配置"。
-
-评审后补的修复轮1（同样由本文件钉住）：
-  ① 推送密文的 .env 读取纳入 try/except（读失败只报"需重新配置"，不得抛穿轮换）；
-  ② 读-解密-重加密-写回收进同一把 env 写锁（--force 不停服时不用陈旧快照盖新值）；
-  ③ 四条取证 CLI 对**显式** --env 做存在性校验，路径打错直接非零退出、不新建文件；
-  ④ rekey 的 env_path 与 key_source 统一 strip 后解析一次（账号钥与审计钥同源）；
-  ⑤ 补"什么都不传 + 空 cwd"与"--env 指向不存在路径"两条负例。
+  兜底且该文件不存在时拒绝生成；CLI 补传 env_file（新增 --env）。
+  评审后补（同样由本文件钉住）：③ 对**显式** --env 做存在性校验，路径打错直接非零
+  退出、不新建文件；⑤ 补"什么都不传 + 空 cwd"与"--env 指向不存在路径"两条负例。
 
 Task 3（本文件末尾两组用例，2026-08-29 活体复现的 P1-1）：PUT /api/mail-config 与
 PUT /api/notify-config 原本只校验"是否内置主管理员"，拿到 Cookie 就能两步关掉两条告警
@@ -92,6 +80,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from unittest import mock
 
 import db
@@ -103,8 +92,7 @@ from _mail_body import render_body
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-from yiban import notify  # noqa: E402  # 推送组件实现包（旧壳已删除）
-from yiban.infra import account_crypto, env_io  # noqa: E402
+from yiban.infra import account_crypto  # noqa: E402
 from yiban.notify import ledger as notify_ledger  # noqa: E402  # 账本内部态走子模块
 
 OLD_KEY = "a" * 64
@@ -199,18 +187,6 @@ def _notify_enc(key_hex):
     return json.dumps(enc, ensure_ascii=False)
 
 
-# SMTP 发信条目列表（web 设置页经 YIBAN_MAIL_SMTPS_ENC 落盘的明文结构）
-MAIL_SMTPS = [{"host": "smtp.qq.com", "port": 465, "user": "alert@qq.com",
-               "pass": "smtp-auth-code", "admin_to": "boss@qq.com"}]
-
-
-def _mail_enc(key_hex):
-    """按 web 设置页同口径生成 YIBAN_MAIL_SMTPS_ENC 的值（固定 AAD 的密文 JSON）。"""
-    plain = json.dumps(MAIL_SMTPS, ensure_ascii=False)
-    enc = account_crypto.encrypt_text(plain, account_crypto._decode_key(key_hex))
-    return json.dumps(enc, ensure_ascii=False)
-
-
 def _close_db():
     if db._conn is not None:
         with contextlib.suppress(Exception):
@@ -283,15 +259,10 @@ class _B14Fixture(unittest.TestCase):
         _close_db()
         _clear_caches()
 
-    def seed(self, notify_line=None, mail_line=None):
-        """写 .env（账号钥/审计钥/可选推送与邮件密文）并建库：1 个加密账号 + 2 行审计留痕。"""
+    def seed(self):
+        """写 .env（账号钥/审计钥）并建库：1 个加密账号 + 2 行审计留痕。"""
         lines = [f"YIBAN_ACCOUNTS_KEY={OLD_KEY}", f"YIBAN_AUDIT_KEY={AUDIT_KEY}",
                  "YIBAN_OTHER_KEEP=1"]
-        if notify_line:
-            lines.append("YIBAN_NOTIFY_TYPE=serverchan")
-            lines.append(f"YIBAN_NOTIFY_SECRET_ENC={notify_line}")
-        if mail_line:
-            lines.append(f"YIBAN_MAIL_SMTPS_ENC={mail_line}")
         _write_env(self.env_file, lines)
         _clear_caches()
         db.init_db(db_file=self.db_file, env_file=self.env_file, cleanup=False)
@@ -444,46 +415,36 @@ class KeySourceFallbackB14Test(unittest.TestCase):
         self.assertIn("YIBAN_AUDIT_KEY=", content)
         self.assertIn("YIBAN_OTHER=1", content, "生成不得丢掉 .env 里的其它配置")
 
+    def test_require_existing_env_file_checks_only_explicit_source(self):
+        """③：只校验显式 --env（去空白后比较），未显式给出时保持回落链现状。"""
+        tmp = tempfile.mkdtemp(prefix="b14-require-env-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        existing = os.path.join(tmp, ".env")
+        _write_env(existing, [f"YIBAN_AUDIT_KEY={AUDIT_KEY}"])
+        missing = os.path.join(tmp, "typo-deploy.env")
+        with _os_env(YIBAN_ENV_FILE=None):
+            self.assertIsNone(db.require_existing_env_file(None), "无显式来源 → 交回落链")
+            self.assertIsNone(db.require_existing_env_file("   "), "全空白 = 未指定")
+            self.assertEqual(db.require_existing_env_file(existing), existing)
+            self.assertEqual(db.require_existing_env_file(f" {existing} "), existing,
+                             "显式值与回落值统一 strip 后比较")
+            with self.assertRaises(ValueError) as cm:
+                db.require_existing_env_file(missing)
+            self.assertIn("不存在", str(cm.exception))
+        with _os_env(YIBAN_ENV_FILE=missing):
+            # 未显式给 --env 时 YIBAN_ENV_FILE 指向缺失文件不在此拦截（既有行为不变，
+            # 由 _assert_key_source_certain 在真正要生成密钥时兜底）
+            self.assertEqual(db.require_existing_env_file(None), missing)
+
 
 class ForensicCliKeySourceB14Test(_B14Fixture):
-    """P2-5 之二：四个 CLI 在应用根之外运行（--env 指定密钥源）不得污染密钥与链。"""
+    """P2-5 之二：取证/清点类 CLI 在应用根之外运行（--env 指定密钥源）不得污染密钥与链。"""
 
     def setUp(self):
         super().setUp()
         # 每例重新播种：这些用例断言的是"链仍然自洽"，必须有已建链的库与部署 .env
         self.seed()
 
-    def test_rekey_from_foreign_cwd_leaves_no_stray_env(self):
-        """rekey 子进程在临时 cwd 运行后：该目录无新建 .env，原审计链仍校验通过。"""
-        r = _run_cli("rekey_accounts.py",
-                     ["--db", self.db_file, "--env", self.env_file,
-                      "--new-key", NEW_KEY, "--force"], cwd=self.work)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_AUDIT_KEY"), AUDIT_KEY,
-                         "轮换只换账号密钥，审计密钥必须原样保留")
-        residues = [n for n in os.listdir(self.work) if n.startswith(".env")]
-        self.assertEqual(residues, [], f"游离/临时密钥文件落在临时 cwd 上: {residues}")
-        ok, broken, first = self.verify_chain_with_prod_env()
-        self.assertTrue(ok, f"轮换留痕用错了密钥，真实链被签坏：broken={broken} first={first}")
-        self.assert_db_account_readable(NEW_KEY)
-
-    def test_clock_guard_reset_keeps_chain_intact(self):
-        """clock_guard_reset 会写审计行：来源解析错目录时该步会用游离密钥签名，链必断。"""
-        r = _run_cli("clock_guard_reset.py",
-                     ["--db", self.db_file, "--env", self.env_file, "--confirm"], cwd=self.work)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("审计留痕失败", r.stdout)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
-        ok, broken, first = self.verify_chain_with_prod_env()
-        self.assertTrue(ok, f"重置留痕用错了密钥：broken={broken} first={first}")
-        conn = sqlite3.connect(self.db_file)
-        try:
-            n = conn.execute("SELECT COUNT(*) FROM audit_logs "
-                             "WHERE action='clock_guard_reset'").fetchone()[0]
-        finally:
-            conn.close()
-        self.assertGreaterEqual(n, 1, "重置动作应留痕（留痕成功才是链路正确的证据）")
 
     def test_audit_verify_reads_key_from_env_flag(self):
         """audit_verify --env：换目录也能读到正确密钥并报"校验通过"（此前报"过程异常"）。"""
@@ -520,7 +481,6 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         empty = self.fresh_empty_cwd()
         cases = [
             ("audit_verify.py", []),                      # create=False → fail-closed
-            ("clock_guard_reset.py", ["--confirm"]),      # create=True → 拒绝生成
             ("list_duplicate_owners.py", []),             # 会跑迁移（重链要用审计密钥）
         ]
         for script, cli in cases:
@@ -538,54 +498,18 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         # 部署 .env 里的审计密钥原样未动（没有被"就地生成第二把钥"顶替）
         self.assertEqual(_env_value(self.env_file, "YIBAN_AUDIT_KEY"), AUDIT_KEY)
 
-    def test_env_var_key_without_env_file_is_refused(self):
-        """`YIBAN_ACCOUNTS_KEY` 来自环境变量、却没有任何 --env/YIBAN_ENV_FILE 时拒绝执行。
-
-        此时 env_path 只能回落到相对路径 ".env"（cwd 下并不存在）。旧钥虽能从环境
-        变量拿到，工具不校验那份文件就会在该位置新建一份游离密钥源——库已用新钥
-        重加密，而服务仍按自己那份旧钥读取，凭据从此解不开。
-        fail-closed = 非零退出、给出去路、且什么都不落。
-        """
-        r = _run_cli("rekey_accounts.py",
-                     ["--db", self.db_file, "--new-key", NEW_KEY, "--force"],
-                     cwd=self.work, extra_env={"YIBAN_ACCOUNTS_KEY": OLD_KEY})
-        out = r.stdout + r.stderr
-        self.assertNotEqual(r.returncode, 0, out)
-        self.assertIn("--env", out, f"错误信息须给出去路（--env/YIBAN_ENV_FILE）: {out}")
-        residues = [n for n in os.listdir(self.work) if n.startswith(".env")]
-        self.assertEqual(residues, [], f"不得在 cwd 新建游离密钥源: {residues}")
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), OLD_KEY)
-        ok, broken, first = self.verify_chain_with_prod_env()
-        self.assertTrue(ok, f"被拒绝的执行仍改动了链：broken={broken} first={first}")
-        self.assert_db_account_readable(OLD_KEY)
-
-    def test_env_var_key_with_env_file_still_rotates(self):
-        """环境变量与 .env 同时持有旧钥（容器部署常见）：文件校验通过，轮换照常完成。"""
-        r = _run_cli("rekey_accounts.py",
-                     ["--db", self.db_file, "--new-key", NEW_KEY, "--force"],
-                     cwd=self.work,
-                     extra_env={"YIBAN_ACCOUNTS_KEY": OLD_KEY,
-                                "YIBAN_ENV_FILE": self.env_file})
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [],
-                         "密钥写进 YIBAN_ENV_FILE 指定的文件，不得另落一份")
-        self.assert_db_account_readable(NEW_KEY)
 
     def test_explicit_missing_env_is_rejected(self):
         """修复轮1③+⑤：显式 --env 指向不存在的文件 → 非零退出，且绝不创建该文件。
 
-        打错路径时若继续执行，四条 CLI 都会把该路径当作"来源已确定"，在那里新建
+        打错路径时若继续执行，取证/清点类 CLI 都会把该路径当作"来源已确定"，在那里新建
         .env + 生成新审计密钥，把这次留痕用第三把钥匙签坏（正是这道校验要治的病症
         的新入口）。未显式给 --env 时不受本用例影响（见上一条用例）。
         """
         missing = os.path.join(self.keydir, "typo-deploy.env")   # 目录存在、文件不存在
         self.assertFalse(os.path.exists(missing))
         cases = [
-            ("rekey_accounts.py", ["--db", self.db_file, "--env", missing,
-                                   "--new-key", NEW_KEY, "--force"]),
             ("audit_verify.py", ["--db", self.db_file, "--env", missing]),
-            ("clock_guard_reset.py", ["--db", self.db_file, "--env", missing, "--confirm"]),
             ("list_duplicate_owners.py", ["--db", self.db_file, "--env", missing]),
         ]
         for script, cli in cases:
@@ -596,368 +520,11 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
                                     f"{script} 对不存在的 --env 仍照常执行: {out}")
                 self.assertIn("--env 指定的 .env 不存在", out, f"{script} 未给出明确错误: {out}")
                 self.assertFalse(os.path.exists(missing), f"{script} 在该路径新建了 .env")
-                self.assertFalse(os.path.exists(missing + ".rekey-staging"),
-                                 f"{script} 在错误位置留下了暂存密钥文件")
-        # 中止必须是"什么都没发生"：部署密钥、账号密文与审计链都保持原状
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), OLD_KEY)
+        # 中止必须是"什么都没发生"：部署密钥与审计链都保持原状
         self.assertEqual(_env_value(self.env_file, "YIBAN_AUDIT_KEY"), AUDIT_KEY)
         ok, broken, first = self.verify_chain_with_prod_env()
         self.assertTrue(ok, f"被拒绝的执行仍改动了链：broken={broken} first={first}")
         self.assert_db_account_readable(OLD_KEY)
-
-    def test_padded_yiban_env_file_resolves_to_one_file(self):
-        """修复轮1④+⑤：YIBAN_ENV_FILE 带空白时，账号钥落点与审计钥读点必须是同一个文件。
-
-        此前 rekey 的 env_path 不 strip、key_source 走 strip，" path/.env " 会让两者
-        指向不同文件——账号钥读不到（报"未找到当前密钥"）或账号钥写 A、审计钥读 B。
-        """
-        r = _run_cli("rekey_accounts.py",
-                     ["--db", self.db_file, "--new-key", NEW_KEY, "--force"],
-                     cwd=self.work, extra_env={"YIBAN_ENV_FILE": f" {self.env_file} "})
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY,
-                         "账号密钥必须写进 strip 后的那个文件")
-        self.assertEqual(_env_value(self.env_file, "YIBAN_AUDIT_KEY"), AUDIT_KEY)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [],
-                         "不得因路径带空白而在 cwd 另落一份 .env")
-        ok, broken, first = self.verify_chain_with_prod_env()
-        self.assertTrue(ok, f"留痕读的密钥与写的不是同一份：broken={broken} first={first}")
-
-    def test_rotated_notify_secret_is_re_read_inside_env_lock(self):
-        """修复轮1②+⑤：读现值必须在写锁内——锁外快照会盖掉期间设置页的修改。
-
-        做法：把真实的 env 写锁包一层，在**拿到锁之后**替设置页改写
-        YIBAN_NOTIFY_SECRET_ENC（换成另一把 SendKey）。正确实现（读-改-写同锁）
-        迁移的必须是改写后的值；若读发生在锁外（修复前的 main 流程），
-        落盘的就是改写前的陈旧值。
-        """
-        import rekey_accounts
-
-        from yiban.infra import env_lock
-
-        secret_v1 = _notify_enc(OLD_KEY)
-        secret_v2 = json.dumps(account_crypto.encrypt_text(
-            "SCT406257CHANGEDBY-WEB", account_crypto._decode_key(OLD_KEY)), ensure_ascii=False)
-        tmp = tempfile.mkdtemp(prefix="b14-lock-")
-        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        env = os.path.join(tmp, ".env")
-        _write_env(env, [f"YIBAN_ACCOUNTS_KEY={OLD_KEY}", f"YIBAN_NOTIFY_SECRET_ENC={secret_v1}"])
-        real_lock = env_lock.env_write_lock
-        held = {"n": 0}
-
-        @contextlib.contextmanager
-        def lock_that_sees_web_edit(path):
-            with real_lock(path):
-                held["n"] += 1
-                try:
-                    # 模拟工具启动后才发生的设置页修改（发生在读之前才对测试有意义）
-                    _write_env(path, [f"YIBAN_ACCOUNTS_KEY={OLD_KEY}",
-                                      f"YIBAN_NOTIFY_SECRET_ENC={secret_v2}"])
-                    yield
-                finally:
-                    held["n"] -= 1
-
-        with mock.patch.object(env_lock, "env_write_lock", lock_that_sees_web_edit):
-            notify_state, mail_state = rekey_accounts.rotate_and_write_env(
-                env, account_crypto._decode_key(NEW_KEY), account_crypto._decode_key(OLD_KEY))
-        self.assertEqual(notify_state, "rotated")
-        self.assertEqual(mail_state, "unset", ".env 无邮件密文时报未配置，不误报失败")
-        self.assertEqual(held["n"], 0, "锁必须已释放")
-        self.assertEqual(_env_value(env, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        entry = json.loads(_env_value(env, "YIBAN_NOTIFY_SECRET_ENC"))
-        self.assertEqual(
-            account_crypto.decrypt_text(entry, account_crypto._decode_key(NEW_KEY)),
-            "SCT406257CHANGEDBY-WEB",
-            "迁移必须基于写锁内读到的现值，不能是启动时的陈旧快照")
-
-
-class RekeyNotifySecretB14Test(_B14Fixture):
-    """P2-2：换钥时 YIBAN_NOTIFY_SECRET_ENC 必须随轮换重加密（否则通道静默死亡）。
-
-    ENV_IN_CWD=True：notify.get_secret() 按 _env_path() 取钥——YIBAN_ENV_FILE 优先、
-    未设时才落到 cwd/.env。本夹具全程不设 YIBAN_ENV_FILE（子进程环境里该键被剥掉，
-    走的正是 --env 指定的文件），所以把 .env 放在 cwd 才能按生产口径读回明文。
-    """
-
-    ENV_IN_CWD = True
-
-    def _run_rekey(self, *extra):
-        return _run_cli("rekey_accounts.py",
-                        ["--db", self.db_file, "--env", self.env_file,
-                         "--new-key", NEW_KEY, "--force", *extra], cwd=self.work)
-
-    def test_secret_survives_rotation(self):
-        """正路：轮换后 get_secret() 仍解出原 SendKey，自检行报"已随换钥迁移"。"""
-        self.seed(notify_line=_notify_enc(OLD_KEY))
-        r = self._run_rekey()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("推送通道自检：已随换钥迁移", r.stdout)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        self.assertIn("YIBAN_NOTIFY_TYPE=serverchan", _read_env(self.env_file),
-                      "原子回写必须保留 .env 其它行")
-        new_enc = _env_value(self.env_file, "YIBAN_NOTIFY_SECRET_ENC")
-        entry = json.loads(new_enc)
-        self.assertEqual(
-            account_crypto.decrypt_text(entry, account_crypto._decode_key(NEW_KEY)), SCT_KEY,
-            "密文必须已换成新钥可解")
-        with self.assertRaises(ValueError):
-            account_crypto.decrypt_text(entry, account_crypto._decode_key(OLD_KEY))
-        _clear_caches()
-        with _cwd(self.work):
-            self.assertEqual(notify.get_secret(), SCT_KEY,
-                             "P2-2 未修好：换钥后推送密钥解不开，通道静默死亡")
-            cfg = notify.get_config()
-        self.assertTrue(cfg["enabled"], "设置页应仍显示通道可用")
-        self.assertEqual(cfg["type"], "serverchan")
-        self.assert_db_account_readable(NEW_KEY)
-
-    def test_skip_notify_keeps_old_ciphertext(self):
-        """--skip-notify：轮换照常成功、不报错，但密文保持旧钥（get_secret 变空）。"""
-        old_enc = _notify_enc(OLD_KEY)
-        self.seed(notify_line=old_enc)
-        r = self._run_rekey("--skip-notify")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("Traceback", r.stderr)
-        self.assertIn("推送通道自检：需重新配置", r.stdout)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_NOTIFY_SECRET_ENC"), old_enc,
-                         "跳过迁移就应保持原密文不动")
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        _clear_caches()
-        with _cwd(self.work):
-            self.assertEqual(notify.get_secret(), "",
-                             "旧钥密文在新钥下必须解不开（这正是默认路径要治的静默死亡）")
-
-    def test_corrupted_secret_does_not_abort_rotation(self):
-        """密文损坏：不中止轮换（首要目标是账号凭据不丢），只提示需重新配置。"""
-        self.seed(notify_line="not-a-json-ciphertext")
-        r = self._run_rekey()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("需重新配置", r.stdout)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_NOTIFY_SECRET_ENC"),
-                         "not-a-json-ciphertext", "解不开时不得改写坏值")
-        self.assert_db_account_readable(NEW_KEY)
-        ok, broken, first = self.verify_chain_with_prod_env()
-        self.assertTrue(ok, f"轮换留痕链坏：broken={broken} first={first}")
-
-    def test_unconfigured_notify_stays_unset(self):
-        """未配置推送：自检行报"未配置"，且不得往 .env 里塞空密钥键。"""
-        self.seed()
-        r = self._run_rekey()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("推送通道自检：未配置", r.stdout)
-        self.assertNotIn("YIBAN_NOTIFY_SECRET_ENC", _read_env(self.env_file))
-
-    def test_env_only_completion_also_migrates_secret(self):
-        """崩溃补完（--env-only）同样迁移推送密文：该路径也会换新钥。"""
-        self.seed(notify_line=_notify_enc(OLD_KEY))
-        # 模拟第 2 步提交后中断：库内已是新钥密文，.env 仍是旧钥
-        conn = sqlite3.connect(self.db_file)
-        try:
-            enc = json.dumps(account_crypto.encrypt_password(
-                PW_PLAIN, account_crypto._decode_key(NEW_KEY), PHONE), ensure_ascii=False)
-            conn.execute("UPDATE accounts SET password=?, phone_code='' WHERE phone=?",
-                         (enc, PHONE))
-            conn.commit()
-        finally:
-            conn.close()
-        r = _run_cli("rekey_accounts.py",
-                     ["--db", self.db_file, "--env", self.env_file, "--new-key", NEW_KEY,
-                      "--env-only", "--force"], cwd=self.work)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("推送通道自检：已随换钥迁移", r.stdout)
-        _clear_caches()
-        with _cwd(self.work):
-            self.assertEqual(notify.get_secret(), SCT_KEY)
-
-
-class RekeyMailSmtpsTest(_B14Fixture):
-    """换钥时 YIBAN_MAIL_SMTPS_ENC（SMTP 发信条目密文）必须随轮换重加密。
-
-    与推送密文同机理：漏迁 = 换钥后 mailer 解不开密文而回落旧单条键（通常为空），
-    mailer.is_enabled() 随之为假——邮件告警（安全告警的最后送达路径）静默死亡，
-    而轮换工具收尾自检只报推送通道，运营者看到的是"成功"。迁移纪律与推送一致：
-    同一把 env 写锁内读现值、与账号新钥**同一次原子替换**落盘；解密失败不中止
-    轮换（账号凭据优先），只记 ERROR 并在收尾自检行报"需重新配置"。
-    """
-
-    ENV_IN_CWD = True
-
-    def _run_rekey(self, *extra):
-        return _run_cli("rekey_accounts.py",
-                        ["--db", self.db_file, "--env", self.env_file,
-                         "--new-key", NEW_KEY, "--force", *extra], cwd=self.work)
-
-    def _smtp_list_in_fresh_process(self):
-        """另起进程跑 yiban.mail.smtp_list()——排除进程内缓存，按部署口径验证 .env 可用。"""
-        env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONPATH"] = BASE
-        r = subprocess.run(
-            [sys.executable, "-c",
-             "import json; from yiban import mail as mailer; print(json.dumps(mailer.smtp_list(), ensure_ascii=False))"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=self.work, env=env, timeout=60)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return json.loads(r.stdout)
-
-    def test_mail_blob_survives_rotation(self):
-        """正路：轮换后密文换成新钥可解、旧钥解不开，新进程 mailer.smtp_list() 回读同条目。"""
-        old_blob = _mail_enc(OLD_KEY)
-        self.seed(mail_line=old_blob)
-        # 前置确认：旧密文用新钥解不开（这正是漏迁时通道死亡的机理）
-        with self.assertRaises(ValueError):
-            account_crypto.decrypt_text(json.loads(old_blob),
-                                        account_crypto._decode_key(NEW_KEY))
-        r = self._run_rekey()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("推送通道自检：未配置", r.stdout, "收尾自检必须两条通道都报")
-        self.assertIn("邮件通道自检：已随换钥迁移", r.stdout)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        self.assertIn("YIBAN_OTHER_KEEP=1", _read_env(self.env_file),
-                      "原子回写必须保留 .env 其它行")
-        entry = json.loads(_env_value(self.env_file, "YIBAN_MAIL_SMTPS_ENC"))
-        self.assertEqual(
-            json.loads(account_crypto.decrypt_text(entry, account_crypto._decode_key(NEW_KEY))),
-            MAIL_SMTPS, "密文必须已换成新钥可解且条目不丢")
-        with self.assertRaises(ValueError):
-            account_crypto.decrypt_text(entry, account_crypto._decode_key(OLD_KEY))
-        self.assertEqual(self._smtp_list_in_fresh_process(), MAIL_SMTPS,
-                         "换钥后新进程必须仍能读出发信条目（邮件告警通道不得静默死亡）")
-        self.assert_db_account_readable(NEW_KEY)
-
-    def test_corrupted_mail_blob_does_not_abort_rotation(self):
-        """密文损坏：不中止轮换（账号凭据优先），自检行报"需重新配置"，坏值不得被改写。"""
-        self.seed(mail_line="not-a-json-ciphertext")
-        r = self._run_rekey()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("Traceback", r.stderr)
-        self.assertIn("邮件通道自检：需重新配置", r.stdout)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_MAIL_SMTPS_ENC"),
-                         "not-a-json-ciphertext", "解不开时不得改写坏值")
-        self.assert_db_account_readable(NEW_KEY)
-
-    def test_skip_mail_keeps_old_ciphertext(self):
-        """--skip-mail：轮换照常成功，密文保持旧钥不动，自检行报"按 --skip-mail 未迁移"。"""
-        old_blob = _mail_enc(OLD_KEY)
-        self.seed(mail_line=old_blob)
-        r = self._run_rekey("--skip-mail")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("邮件通道自检：需重新配置：本次按 --skip-mail 未迁移", r.stdout)
-        self.assertEqual(_env_value(self.env_file, "YIBAN_MAIL_SMTPS_ENC"), old_blob,
-                         "跳过迁移就应保持原密文不动")
-        self.assertEqual(_env_value(self.env_file, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-
-    def test_unconfigured_mail_stays_unset(self):
-        """未配置 SMTP 密文：自检行报"未配置"，且不得往 .env 里塞空键。"""
-        self.seed()
-        r = self._run_rekey()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("邮件通道自检：未配置", r.stdout)
-        self.assertNotIn("YIBAN_MAIL_SMTPS_ENC", _read_env(self.env_file))
-
-
-class RekeyBestEffortB14Test(unittest.TestCase):
-    """修复轮1①/③/④ 的边界单测（无需建库，直接打函数）。"""
-
-    def test_write_env_key_uses_shared_narrow_line_model(self):
-        """rekey 的 .env 写回与 store 三处共用窄行模型。
-
-        旧实现自抄一份宽行模型（`splitlines()` + 字面前缀折叠）：值里潜伏 U+2028
-        时读-改-写会把后半截实体化成真配置行（可注入 YIBAN_ADMIN_PASSWORD_HASH=），
-        `KEY = v` 影子行也折不掉。现改调 env_io.write_env_keys，两种病一起治。
-        """
-        import rekey_accounts
-
-        tmp = tempfile.mkdtemp(prefix="b14-rekey-narrow-")
-        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        env = os.path.join(tmp, ".env")
-
-        # 潜伏分隔符：拒绝写入、磁盘一个字节都不改、不留 tmp
-        latent = "notify\u2028YIBAN_ADMIN_PASSWORD_HASH=injected"
-        _write_env(env, ["YIBAN_OTHER=ok", f"YIBAN_ANNOUNCEMENT={latent}"])
-        before = _read_env(env)
-        with self.assertRaises(ValueError) as cm:
-            rekey_accounts._write_env_key(env, account_crypto._decode_key(NEW_KEY))
-        self.assertIn("行分隔符", str(cm.exception))
-        self.assertEqual(_read_env(env), before)
-        self.assertEqual([n for n in os.listdir(tmp) if ".tmp" in n], [])
-
-        # 带空格的影子行：同一条键只留一行
-        _write_env(env, ["YIBAN_ACCOUNTS_KEY = ", "YIBAN_OTHER=1"])
-        rekey_accounts._write_env_key(env, account_crypto._decode_key(NEW_KEY))
-        self.assertEqual(env_io.count_key_lines(env, "YIBAN_ACCOUNTS_KEY"), 1)
-        self.assertEqual(_env_value(env, "YIBAN_ACCOUNTS_KEY"), NEW_KEY)
-        self.assertEqual(_env_value(env, "YIBAN_OTHER"), "1")
-
-    def test_unreadable_env_file_reports_failed_instead_of_raising(self):
-        """①：.env 读失败必须转成 failed 状态，而不是抛穿 main()。
-
-        account_crypto._parse_env_file 对"文件存在但读取失败"（权限/占用）刻意重抛
-        OSError（防 load_key 误判未配置而生成新钥覆盖旧钥）；但轮换工具此时正处在
-        "库里已是新钥、.env 尚未写"的窗口——异常穿透 main 就留下 库=新钥/env=旧钥
-        的不一致态，违反"推送密文迁移是尽力而为"的约束。
-        这里用一个目录当 env 路径制造 OSError（Windows PermissionError / POSIX
-        IsADirectoryError，两者都是 OSError），跨平台且不需要真去改文件权限。
-        """
-        import rekey_accounts
-
-        tmp = tempfile.mkdtemp(prefix="b14-best-effort-")
-        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        old = account_crypto._decode_key(OLD_KEY)
-        new = account_crypto._decode_key(NEW_KEY)
-        self.assertEqual(rekey_accounts.rotate_notify_secret(tmp, old, new), ("failed", None))
-        # --skip-notify 时本就不迁移，读失败也不改变结论（仍报"跳过"）
-        self.assertEqual(rekey_accounts.rotate_notify_secret(tmp, old, new, skip=True),
-                         ("skipped", None))
-
-    def test_rotate_error_messages_name_the_channel(self):
-        """迁移失败的 ERROR 日志必须点名通道（推送 → 重新配置消息推送，
-        邮件 → 重新配置 SMTP 发信条目）：两条 ERROR 与两条收尾自检行要能对上号，
-        泛化后丢了通道限定，ops 分不清哪条日志对应哪路。"""
-        import rekey_accounts
-
-        tmp = tempfile.mkdtemp(prefix="b14-channel-hint-")
-        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        env_file = os.path.join(tmp, ".env")
-        _write_env(env_file, [f"YIBAN_ACCOUNTS_KEY={OLD_KEY}",
-                              "YIBAN_NOTIFY_SECRET_ENC=not-a-json",
-                              "YIBAN_MAIL_SMTPS_ENC=not-a-json"])
-        old = account_crypto._decode_key(OLD_KEY)
-        new = account_crypto._decode_key(NEW_KEY)
-        with self.assertLogs("yiban.rekey", level="ERROR") as logs:
-            rekey_accounts.rotate_notify_secret(env_file, old, new)
-            rekey_accounts.rotate_mail_smtps(env_file, old, new)
-        push_lines = [ln for ln in logs.output if "推送密钥" in ln]
-        mail_lines = [ln for ln in logs.output if "邮件 SMTP 密文" in ln]
-        self.assertEqual(len(push_lines), 1, f"推送侧应恰一条 ERROR，实际 {logs.output}")
-        self.assertEqual(len(mail_lines), 1, f"邮件侧应恰一条 ERROR，实际 {logs.output}")
-        self.assertIn("重新配置消息推送", push_lines[0])
-        self.assertNotIn("SMTP 发信条目", push_lines[0], "推送日志不得混入邮件通道提示")
-        self.assertIn("重新配置 SMTP 发信条目", mail_lines[0])
-        self.assertNotIn("消息推送", mail_lines[0], "邮件日志不得混入推送通道提示")
-
-    def test_require_existing_env_file_checks_only_explicit_source(self):
-        """③+④：只校验显式 --env（去空白后比较），未显式给出时保持回落链现状。"""
-        tmp = tempfile.mkdtemp(prefix="b14-require-env-")
-        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        existing = os.path.join(tmp, ".env")
-        _write_env(existing, [f"YIBAN_AUDIT_KEY={AUDIT_KEY}"])
-        missing = os.path.join(tmp, "typo-deploy.env")
-        with _os_env(YIBAN_ENV_FILE=None):
-            self.assertIsNone(db.require_existing_env_file(None), "无显式来源 → 交回落链")
-            self.assertIsNone(db.require_existing_env_file("   "), "全空白 = 未指定")
-            self.assertEqual(db.require_existing_env_file(existing), existing)
-            self.assertEqual(db.require_existing_env_file(f" {existing} "), existing,
-                             "④：显式值与回落值统一 strip，避免账号钥/审计钥指向不同文件")
-            with self.assertRaises(ValueError) as cm:
-                db.require_existing_env_file(missing)
-            self.assertIn("不存在", str(cm.exception))
-        with _os_env(YIBAN_ENV_FILE=missing):
-            # 未显式给 --env 时 YIBAN_ENV_FILE 指向缺失文件不在此拦截（既有行为不变，
-            # 由 _assert_key_source_certain 在真正要生成密钥时兜底）
-            self.assertEqual(db.require_existing_env_file(None), missing)
 
 
 ADMIN_PASS = "MasterPass#2026"
@@ -988,6 +555,11 @@ class _B14AlertGateBase(unittest.TestCase):
             "YIBAN_ADMIN_USER=admin",
             f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}",
             "YIBAN_MAIL_ADMIN_TO=admin@test.local",
+            # 本基类下的用例钉的是口令门的**机制**（当次要口令、失败零写入、
+            # 鉴权先于额度、防错位 409），故把档位固定在 full——默认档 risk 下
+            # 这些动作不再当次要口令，断言会以"没被拦"的形式失败。
+            # 默认档与 off 档的行为由 tests/test_pw_gate_tiers.py 钉。
+            "YIBAN_PW_GATE=full",
         ]
         _write_env(cls.env_file, cls.env_seed)
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
@@ -1102,24 +674,24 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertEqual(_read_env(self.env_file), before, "鉴权未通过不得留下任何写入")
         self.assertEqual(self.alerts, [], "被拒绝的关闭不应发出变更告警")
 
-    def test_mail_close_wrong_password_alerts_on_third_try(self):
-        """错口令：连续 3 次触发"高危操作二次鉴权失败告警"（同阈值/同计数）。"""
+    def test_mail_close_wrong_password_alerts_at_threshold(self):
+        """错口令：连续失败达阈值触发"高危操作二次鉴权失败告警"（同阈值/同计数）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         # 快照必须在 create_app/登录之后取：启动会迁移管理员口令哈希并补 YIBAN_SECRET_KEY
         before = _read_env(self.env_file)
-        for _ in range(3):
+        for _ in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):
             r = c.put("/api/mail-config",
                       json={"enabled": False, "confirm_password": "wrong-pass"},
                       headers=self._csrf(t))
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(_read_env(self.env_file), before)
         fails = [a for a in self.alerts if a[0] == "高危操作二次鉴权失败告警"]
-        self.assertEqual(len(fails), 1, f"第 3 次失败应告警一次，实际 {self.alerts}")
+        self.assertEqual(len(fails), 1, f"达阈值应告警一次，实际 {self.alerts}")
         self.assertTrue(fails[0][2], "二次鉴权失败告警必须是 urgent（邮件通道正被攻击者盯着关）")
 
-    def test_mail_close_with_password_200_alert_is_urgent(self):
-        """对口令关闭 → 200 + 落盘 + 变更告警 urgent=True，文案写明关的是哪一路。"""
+    def test_mail_close_with_password_200_no_alert(self):
+        """对口令关闭 → 200 + 落盘 + 零告警（通道变更只留审计）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/mail-config",
@@ -1128,10 +700,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["enabled"])
         self.assertIn("YIBAN_MAIL_ENABLE=0", _read_env(self.env_file))
-        title, content, urgent = self.alerts[-1]
-        self.assertEqual(title, "邮件配置变更告警")
-        self.assertTrue(urgent, "配置变更告警必须 urgent：开着「仅重要告警」时非紧急不推手机=致盲")
-        self.assertIn("全局邮件通知：关闭", content)
+        self.assertEqual(self.alerts, [], f"通道变更告警已下线，实际 {self.alerts}")
 
     def test_mail_open_and_enable_need_no_password(self):
         """纯"开启"方向保持原成功路径：不带口令也 200（不得给正常操作加摩擦）。"""
@@ -1191,7 +760,8 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                 self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(_read_env(self.env_file), before)
 
-    def test_notify_close_with_password_200_alert_urgent(self):
+    def test_notify_close_with_password_200_no_alert(self):
+        """对口令关闭推送 → 200 + 密钥一起清掉 + 零告警（通道变更只留审计）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config", json={
@@ -1206,10 +776,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertFalse(r2.get_json()["enabled"])
         env = _read_env(self.env_file)
         self.assertNotIn("YIBAN_NOTIFY_SECRET_ENC=", env, "关闭须连密钥一起清掉")
-        title, content, urgent = self.alerts[-1]
-        self.assertEqual(title, "消息推送配置变更告警")
-        self.assertTrue(urgent)
-        self.assertIn("通道：关闭", content)
+        self.assertEqual(self.alerts, [], f"通道变更告警已下线，实际 {self.alerts}")
 
     def test_notify_numeric_changes_require_password(self):
         """（参数收口）：cooldown/urgent_only/daily_max/urgent_daily_max
@@ -1317,7 +884,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                 self.alerts.clear()  # 两个 subTest 共用记录列表，须各算各的
                 c = self._client()  # _login_fails / 限速表都是 create_app 内的，需新会话
                 t = self._login(c, "admin", ADMIN_PASS)
-                for _ in range(3):  # 第 3 次失败触发告警（LOGIN_FAIL_NOTIFY）
+                for _ in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):  # 达阈值触发告警
                     r = c.put("/api/mail-config",
                               json={field: False, "confirm_password": "wrong-pass"},
                               headers=self._csrf(t))
@@ -1804,10 +1371,79 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         self.assertTrue(urgent, "这种降级必须按 urgent 发")
 
     def test_daily_loop_is_wired_to_health_report(self):
-        """接线检查：日报调用确实挂在每日线程里（否则以上两条只是死代码）。"""
+        """接线检查：日报调用确实挂在每日线程里，且经周报闸门（否则闸门是死代码）。"""
         src = inspect.getsource(self.webapp.create_app)
         self.assertIn("_send_channel_health_report()", src)
+        self.assertIn("_channel_health_report_due()", src,
+                      "日报必须经周报闸门调用——直接调等于每天照发")
         self.assertIn("_daily_purge_loop", src)
+
+    # ---- 周报化：例行只在具名的那一天，通道降级 / 额度耗尽当天就发 ----
+    @staticmethod
+    def _healthy_status():
+        """健康快照：降级判定只看这几个结构化字段（与 _alert_channel_status 同键名）。"""
+        return {"mail_error": "", "push_error": "", "mail_usable": True,
+                "mail_recipients": 2, "push_ever_configured": False, "push_usable": False}
+
+    def _due_at(self, moment, status, exhausted=False):
+        """在指定时刻判闸门：时刻经 `yiban.clock.now` 注入，额度状态按需打桩。"""
+        with mock.patch.object(self.webapp.clock, "now", return_value=moment), \
+                mock.patch.object(self.webapp.notify, "budget_exhausted_today",
+                                  return_value=exhausted):
+            return self.webapp._channel_health_report_due(status)
+
+    def test_gate_only_fires_on_the_named_weekday_when_healthy(self):
+        """健康且非例行日不发（这是日更改周更的全部收益）；例行日发。"""
+        monday = datetime(2026, 9, 21, 9, 0, 0)
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        self.assertEqual(monday.weekday(), self.webapp._HEALTH_REPORT_WEEKDAY,
+                         "具名播报日与用例取的这一天不一致")
+        self.assertTrue(self._due_at(monday, self._healthy_status()))
+        self.assertFalse(self._due_at(tuesday, self._healthy_status()))
+
+    def test_gate_fires_off_weekday_when_channel_degraded(self):
+        """通道降级当天就发：报警器被拆这件事不能等到例行日。"""
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        degraded = dict(self._healthy_status(), mail_usable=False)
+        self.assertTrue(self._due_at(tuesday, degraded))
+        no_recipient = dict(self._healthy_status(), mail_recipients=0)
+        self.assertTrue(self._due_at(tuesday, no_recipient))
+
+    def test_gate_fires_off_weekday_when_budget_exhausted(self):
+        """额度耗尽当天就发：账本的耗尽告知标记按日重置，漏到例行日就补不回来。"""
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        self.assertTrue(self._due_at(tuesday, self._healthy_status(), exhausted=True))
+
+    def test_gate_fires_off_weekday_when_login_fail_ledger_pending(self):
+        """登录失败账挂出耗尽告知 ⇒ 非例行日也判「当天要发」，且闸门不得取走该标记。
+
+        该账的告知只有通道健康报告一个取走方，而 pending 换日即重置：闸门若只问
+        general / urgent 两本推送账的余额，攻击当天（非例行日）这封报告不发，告知
+        就在次日归零时永久消失。
+
+        占用与判闸门都在同一时刻（同一天）里做：账本按 `yiban.clock` 的北京日归零，
+        两者跨日会被正常归零，测的就不是闸门了。
+        """
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        with mock.patch.object(self.webapp.clock, "now", return_value=tuesday), \
+                mock.patch.dict(os.environ, {"YIBAN_LOGINFAIL_DAILY_MAX": "1"}):
+            first = notify_ledger._consume_daily_budget("login_fail")
+            self.assertTrue(first.allowed, "前置：上限 1 时首条应放行")
+            notify_ledger._consume_daily_budget("login_fail")  # 打满 → 挂耗尽告知
+            self.assertTrue(notify_ledger._LEDGERS["login_fail"]["notice"]["pending"],
+                            "前置：打满额度必须挂上待告知标记")
+            self.assertTrue(self.webapp._channel_health_report_due(self._healthy_status()),
+                            "登录失败账挂着告知时，非例行日也必须判「当天要发」")
+            self.assertEqual(notify_ledger.pop_exhaustion_notice(), ["login_fail"],
+                             "闸门必须是只读判据：取走 pending 会让真正发信时少了那几行告知")
+
+    def test_gate_tolerates_budget_read_failure(self):
+        """额度状态读不动时不得让日报整体缺席，也不得因此每天发。"""
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        with mock.patch.object(self.webapp.clock, "now", return_value=tuesday), \
+                mock.patch.object(self.webapp.notify, "budget_exhausted_today",
+                                  side_effect=RuntimeError("boom")):
+            self.assertFalse(self.webapp._channel_health_report_due(self._healthy_status()))
 
 
 class BothChannelsDeadCombinationVariantB14Test(_B14AlertGateBase):
@@ -1860,12 +1496,16 @@ class BothChannelsDeadCombinationVariantB14Test(_B14AlertGateBase):
 
 
 class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
-    """追加 A：send_notification 里接线 pop_exhaustion_notice()（必须跑真实实现）。"""
+    """推送额度耗尽告知不再挂在 send_notification 上：标记由通道健康报告取走。
+
+    这里钉"告警路径上不再内联补发"——接回去就会红；耗尽告知仍在的正面证据见
+    `ChannelHealthReportB14Test`（通道健康报告取走标记并写进正文）。
+    """
 
     PATCH_NOTIFY = False
 
-    def test_exhaustion_notice_pops_once_and_sends_one_mail(self):
-        """一次 pop 拿全列表 → 一封邮件写两本账；不得循环 pop 到空（同日两封）。"""
+    def test_send_notification_does_not_pop_exhaustion_notice(self):
+        """告警路径不取耗尽标记、也不补发告知邮件：只发主告警一封。"""
         mails = []
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
                                return_value=["general", "urgent"]) as pop, \
@@ -1875,40 +1515,9 @@ class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
              mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
             self.webapp.send_notification("测试告警一", "正文一")
             ns.assert_called_once()
-        titles = [m[0] for m in mails]
-        self.assertEqual(titles.count("手机推送额度已用尽告警"), 1,
-                         f"两本账同日只补一封，实际 {titles}")
-        self.assertEqual(pop.call_count, 1, "每次告警最多 pop 一次（循环 pop 会同日发两封）")
-        body = render_body(next(m[1] for m in mails if m[0] == "手机推送额度已用尽告警"))
-        self.assertIn("非紧急", body)
-        self.assertIn("紧急", body)
-        self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX", body, "须给出可操作的调整指引")
-        # 收件人必须是 A 线同一批人（主管理员 + 开启接收的管理员）
-        self.assertTrue(all(m[2] for m in mails), "耗尽告知须落到管理员收件人")
-
-    def test_exhaustion_notice_absent_when_no_ledger_exhausted(self):
-        """无耗尽（pop 返回空列表）→ 只有主告警一封，不多发。"""
-        mails = []
-        with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
-                               return_value=[]), \
-             mock.patch.object(self.webapp.notify, "send"), \
-             mock.patch.object(self.webapp.mailer, "send_admin_alert",
-                               side_effect=lambda s, t, to=None: mails.append((s, t, to))), \
-             mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("测试告警三", "正文三")
-        self.assertEqual([m[0] for m in mails], ["测试告警三"])
-
-    def test_exhaustion_notice_failure_does_not_break_alert(self):
-        """notify 侧异常绝不影响主告警：pop 抛错时主告警邮件仍照常发出、函数不外抛。"""
-        mails = []
-        with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
-                               side_effect=RuntimeError("boom")), \
-             mock.patch.object(self.webapp.notify, "send"), \
-             mock.patch.object(self.webapp.mailer, "send_admin_alert",
-                               side_effect=lambda s, t, to=None: mails.append((s, t, to))), \
-             mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("测试告警二", "正文二")
-        self.assertEqual([m[0] for m in mails], ["测试告警二"])
+        self.assertEqual([m[0] for m in mails], ["测试告警一"],
+                         f"告警路径不该再补发耗尽告知，实际 {[m[0] for m in mails]}")
+        pop.assert_not_called()
 
 
 # ==================== Task 4：账号物理清除门禁 + PUT 防错位（P1-2 / P3-2）====================
@@ -1984,8 +1593,8 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         self.assertTrue(all(a.get("deleted") for a in rows))
         self.assertEqual(self.alerts, [], "被拒绝的清除不应发出任何高危操作告警")
 
-    def test_batch_purge_with_password_200_rows_gone_and_urgent_alert(self):
-        """口令正确 → 200、行真的消失、并补一条 urgent 高危告警（正文含脱敏号）。"""
+    def test_batch_purge_with_password_200_rows_gone_no_alert(self):
+        """口令正确 → 200、行真的消失、零告警（物理清除的痕迹只留在审计链上）。"""
         self._add_account("13800138001", name="A1", deleted=True)
         self._add_account("13800138002", name="A2", deleted=True)
         phones = [a["phone"] for a in self._rows()]
@@ -1995,12 +1604,8 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
                          "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._rows(), [], "彻底删除应物理清除行")
-        self.assertEqual(self._titles().count("高危管理操作告警"), 1, f"实际告警 {self.alerts}")
-        title, content, urgent = self.alerts[-1]
-        self.assertEqual(title, "高危管理操作告警")
-        self.assertTrue(urgent, "物理清除不可逆，必须推手机（非紧急在「仅重要告警」下不送达）")
-        self.assertIn("批量彻底删除账号 2 个", content)
-        self.assertIn(self.webapp._mask_phone(phones[0]), content)
+        self.assertEqual(self.alerts, [], f"物理清除告警已下线，实际 {self.alerts}")
+        self.assertEqual(len(self._audit_rows("account_batch")), 1, "清除动作必须留审计")
 
     def test_batch_purge_gate_does_not_displace_stale_phones_409(self):
         """门禁不得顶掉既有防错位：口令对了、phones 与列表漂移，仍应 409 而非 200。"""
@@ -2014,13 +1619,12 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         self.assertEqual(len(self._rows()), 2, "409 后不得有任何物理清除")
 
     def test_batch_soft_delete_and_restore_still_need_no_password(self):
-        """反向保护：软删/恢复是可逆动作，不得被本次改动顺带要求口令。
+        """反向保护：软删/恢复是可逆动作，既不要求口令、也不再外发告警。
 
-        2026-09-10（批次20 Y1）口径变更：软删**仍然不要求口令**（用户裁决：软删可逆，
-        加口令只增误伤），但**必须发高危告警**——它虽可逆，却立即停止该用户代签且
-        受害者无法自助恢复（/api/my-accounts/<idx>/restore 对管理员删除行返回 403），
-        被盗的注册管理员会话可借此静默让全站停签。恢复（restore）仍是无副作用可逆
-        动作，不告警。
+        软删**仍然不要求口令**（软删可逆，加口令只增误伤），也**不再发高危告警**
+        （可逆动作不是事故）。它仍占用高危额度——软删立即停止该用户代签，且受害者
+        无法自助恢复（/api/my-accounts/<idx>/restore 对管理员删除行返回 403），被盗的
+        注册管理员会话可借此静默让全站停签。留痕由审计行承担。
         """
         self._add_account("13800138001", name="A1")
         self._add_account("13800138002", name="A2")
@@ -2030,16 +1634,13 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
                    json={"action": "delete", "ids": [0, 1], "phones": phones}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(all(a.get("deleted") for a in self._rows()))
-        titles = self._titles()
-        self.assertEqual(len(titles), 1, f"软删应产生 1 条汇总高危告警，实际 {titles}")
-        self.assertEqual(titles[0], "高危管理操作告警")
-        self.assertIn("软删", self.alerts[0][1])
-        self.assertIn("138****8001", self.alerts[0][1], "汇总告警应含脱敏手机号")
+        self.assertEqual(self.alerts, [], f"软删告警已下线，实际 {self.alerts}")
         r2 = c.post("/api/accounts/batch",
                     json={"action": "restore", "ids": [0, 1], "phones": phones}, headers=h)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertFalse(any(a.get("deleted") for a in self._rows()))
-        self.assertEqual(self._titles(), titles, "恢复（restore）不应新增任何告警")
+        self.assertEqual(self.alerts, [], "恢复（restore）同样不告警")
+        self.assertEqual(len(self._audit_rows("account_batch")), 2, "两次批量各留一条审计")
 
     def test_batch_param_errors_still_checked_before_gate(self):
         """既有 400 校验优先级不变：未知动作/空选择/超上限都不该被改成交给门禁判。"""
@@ -2069,27 +1670,19 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         self.assertEqual(len(self._rows()), 1, "无口令的物理清除必须被挡住且不动数据")
         self.assertEqual(self.alerts, [])
 
-    def test_single_purge_with_password_200_and_urgent_alert(self):
-        """改前实测：连发多条单条 purge 全部 200 且零告警（比批量更安静，破坏无痕）。"""
+    def test_single_purge_with_password_200_no_alert(self):
+        """口令正确 → 200、行消失、零告警；留痕由审计行承担。"""
         self._one_deleted()
         c, h = self._master()
         r = c.post("/api/accounts/0/purge",
                    json={"phone": "13800138001", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._rows(), [])
-        self.assertEqual(self._titles(), ["高危管理操作告警"])
-        _title, content, urgent = self.alerts[-1]
-        self.assertTrue(urgent, "单条物理清除同样不可逆，必须 urgent 送达")
-        self.assertIn(self.webapp._mask_phone("13800138001"), content)
-        self.assertIn("操作者：admin", content)
+        self.assertEqual(self.alerts, [], f"物理清除告警已下线，实际 {self.alerts}")
         self.assertEqual(len(self._audit_rows("account_purge")), 1, "审计留痕不得少")
 
-    def test_purge_alert_title_matches_batch_so_throttle_window_is_shared(self):
-        """单条与批量必须同标题：send_notification 的邮件节流按标题计窗（_mail_alert_due），
-
-        同标题才共享窗口——被盗会话快速连删不会被刷爆 SMTP 额度，
-        合法运维的批量清理也只留一封。标题各写一份就会两路各计一窗。
-        """
+    def test_batch_and_single_purge_leave_audit_rows(self):
+        """单条与批量两条清除路径都只留审计：事后仍能还原谁清了哪几条。"""
         self._add_account("13800138001", name="A1", deleted=True)
         self._add_account("13800138002", name="A2", deleted=True)
         self._add_account("13800138003", name="A3", deleted=True)
@@ -2102,13 +1695,13 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         rs = c.post("/api/accounts/0/purge",
                     json={"phone": "13800138003", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(rs.status_code, 200, rs.get_data(as_text=True))
-        self.assertEqual(len(self.alerts), 2, f"实际 {self.alerts}")
-        self.assertEqual({t for t, _c, _u in self.alerts}, {"高危管理操作告警"},
-                         "两次清除的告警标题必须完全一致，否则节流窗口各算一份")
-        self.assertTrue(all(u for _t, _c, u in self.alerts))
+        self.assertEqual(self.alerts, [], f"实际 {self.alerts}")
+        self.assertEqual(len(self._audit_rows("account_batch")), 1, "批量清除留一条审计")
+        self.assertEqual(len(self._audit_rows("account_purge")), 1, "单条清除留一条审计")
 
-    def test_sixth_purge_in_window_hits_cooldown_429(self):
-        """默认额度（5 次 / 60 秒）下第 6 次物理清除应 429，且第 6 条凭据仍在。"""
+    def test_purge_over_window_quota_hits_cooldown_429(self):
+        """额度（用例内显式设 5 次 / 60 秒）用尽后下一次物理清除应 429，那条凭据仍在。"""
+        self._append_env("YIBAN_ADMIN_DELETE_MAX=5\n")
         phones = [f"1380013800{i}" for i in range(1, 7)]
         for p in phones:
             self._add_account(p, name="X", deleted=True)
@@ -2123,7 +1716,7 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         self.assertEqual(r6.status_code, 429, r6.get_data(as_text=True))
         self.assertIn("删除操作过于频繁", r6.get_json()["error"])
         self.assertEqual([a["phone"] for a in self._rows()], [phones[5]],
-                         "429 时最后一条凭据必须原样保留（改前此处 200 且无痕）")
+                         "429 时最后一条凭据必须原样保留")
 
     def test_wrong_password_tries_do_not_consume_purge_budget(self):
         """同口径延伸到账号侧：错口令尝试不得吃掉合法运维的额度。"""
@@ -2354,12 +1947,15 @@ class LoginTrailB14Test(_B14AlertGateBase):
         email, pw = self._user()
         c = self._client()
         bad = "wrong-" + pw
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):   # 3 次：只到告警阈值，不触发锁定
+        th = self.webapp.LOGIN_FAIL_NOTIFY
+        # 告警阈值与锁定阈值同值：第 th 次既留痕又锁定（429），之前都是 401
+        for i in range(th):
             r = c.post("/api/login", json={"username": email, "password": bad})
-            self.assertEqual(r.status_code, 401, r.get_data(as_text=True))
+            self.assertEqual(r.status_code, 429 if i == th - 1 else 401,
+                             r.get_data(as_text=True))
         self.assertEqual(self._audit_rows("login_ok"), [], "失败登录绝不产生成功留痕")
         fails = self._audit_rows("login_failed")
-        self.assertEqual(len(fails), 1, "既有阈值失败留痕（第 3 次一条）不受本例改动影响")
+        self.assertEqual(len(fails), 1, "阈值失败留痕只一条（两阈值同值只落一行）")
         self._assert_triple(fails[0], email)
         self.assertNotIn(bad, self._row_text(fails[0]), "失败留痕同样不得带上尝试的口令")
 
@@ -2919,63 +2515,6 @@ def _close_db():
         with contextlib.suppress(Exception):
             db._conn.close()
         db._conn = None
-
-
-class RekeyArgvLeakP3Test(unittest.TestCase):
-    """P3-2：--new-key argv 泄露的告警与尽力擦除。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="p3-rekey-")
-        cls.key_file = os.path.join(cls.tmp, "newkey.txt")
-        with open(cls.key_file, "w", encoding="utf-8") as f:
-            f.write(TEST_KEY + "\n")
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp, ignore_errors=True)
-
-    def _args(self, **kw):
-        import argparse
-        defaults = {"new_key": "", "new_key_file": "", "generate": False}
-        defaults.update(kw)
-        return argparse.Namespace(**defaults)
-
-    def _read_with_stderr(self, args):
-        import rekey_accounts
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            key = rekey_accounts._read_new_key(args)
-        return key, stderr.getvalue()
-
-    def test_new_key_argv_emits_warning(self):
-        """--new-key 读钥必须向 stderr 告警并推荐 --new-key-file。"""
-        key, msg = self._read_with_stderr(self._args(new_key=TEST_KEY))
-        self.assertEqual(key.hex(), TEST_KEY)
-        self.assertIn("警告", msg)
-        self.assertIn("--new-key-file", msg)
-        self.assertTrue(
-            any(w in msg for w in ("进程列表", "/proc", "ps ", "shell 历史")),
-            f"告警未提及 argv 暴露途径: {msg!r}")
-
-    def test_new_key_file_no_argv_warning(self):
-        """--new-key-file 读钥不应出现 argv 暴露告警。"""
-        key, msg = self._read_with_stderr(
-            self._args(new_key_file=self.key_file))
-        self.assertEqual(key.hex(), TEST_KEY)
-        self.assertNotIn("警告", msg, f"--new-key-file 不应有 argv 暴露告警: {msg!r}")
-
-    def test_generate_no_argv_warning(self):
-        """--generate 读钥同样不应出现 argv 暴露告警。"""
-        key, msg = self._read_with_stderr(self._args(generate=True))
-        self.assertEqual(len(key), 32)
-        self.assertNotIn("警告", msg)
-
-    def test_wipe_argv_never_raises(self):
-        """_wipe_argv 尽力而为：任何平台都不抛异常，返回 bool。"""
-        import rekey_accounts
-        result = rekey_accounts._wipe_argv()
-        self.assertIsInstance(result, bool)
 
 
 if __name__ == "__main__":

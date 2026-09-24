@@ -8,8 +8,9 @@
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存调度设置」才
    提交；提交只发送相对服务器快照真正变化的字段，故非主管理员即便点保存也只送得出 B 档
-   字段。**有改动就一律过口令框**：A 档必须当次口令，B 档同样要口令（只是可被短时豁免），
-   多问一次不会错、少问必然 403。脏时离开页面由 settings.js 统一守卫（保存 / 放弃 / 取消）。
+   字段。**有改动就走统一 helper**：先不带凭据发，后端按档位与风控回 reason 才补口令——
+   本文件不判档、也不预判要不要口令（多问一次必然打断心流，少问一次必然 403）。
+   脏时离开页面由 settings.js 统一守卫（保存 / 放弃 / 取消）。
 
    对外面：apply(data) 回填、save() → Promise<boolean>（false = 取消或失败，页面据此
    决定不跳转）、isDirty()、markLeaving()、refreshWarn()。
@@ -236,19 +237,24 @@
     };
   }
 
-  function submit(body, pw) {
-    if (pw) body.confirm_password = pw;
+  // 受门禁的保存：**先不带凭据发**，由后端 reason 决定要不要口令（档位只存在于后端）；
+  // 用户取消弹窗 = 本次不保存。
+  function submit(body) {
     saving = true;
     setTip("保存中…", false);
     setDisabled("ss-save", true);
-    return YB.api("POST", "/api/settings", body).then(function (data) {
+    return YB.dangerousSubmit({
+      method: "POST", path: "/api/settings", body: body,
+      desc: "调度参数改动会影响全站何时签到（窗口、掐头去尾、账号间隔等），不合适的设置可能拉低成功率或被容量硬门拒绝。请输入当前管理员密码确认。"
+    }).then(function (data) {
       snap = snapshotFromDom();
       clearDirty();
       setTip((data && data.msg) || "调度设置已保存", false);
       if (ctx.onSaved) ctx.onSaved(data);
       return true;
     }, function (e) {
-      setTip((e && e.message) || "保存失败，请稍后重试", true);
+      if (e && e.canceled) setTip("", false);
+      else setTip((e && e.message) || "保存失败，请稍后重试", true);
       return false;
     }).then(function (ok) {
       saving = false;
@@ -267,14 +273,7 @@
       YB.toast.info("没有需要保存的改动");
       return Promise.resolve(true);
     }
-    // A 档必须当次口令，B 档同样要口令（只是可被短时豁免）——本文件不判档，
-    // 一律先收口令再提交：多问一次不会错，少问必然 403。
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "调度参数改动会影响全站何时签到（窗口、掐头去尾、账号间隔等），不合适的设置可能拉低成功率或被容量硬门拒绝。请输入当前管理员密码确认。",
-        function (pw) { submit(body, pw).then(resolve); },
-        function () { resolve(false); });      // 取消口令 = 本次不保存
-    });
+    return submit(body);
   }
 
   function reset() {

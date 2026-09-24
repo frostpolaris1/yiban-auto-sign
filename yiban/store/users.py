@@ -413,7 +413,7 @@ def purge_deleted_users(days=None):
 
     保留期与账号侧共用同一常量：web 的恢复宽限期、账号物理清除、用户物理清除三者若各
     持一份"7"，运维按注释调整时会静默吞掉数据——第 7 天用户与账号应同天清除，邮箱/
-    手机号同时释放，消除「反悔窗口内资产被抢占」的风险。
+    手机号同时释放，消除「反悔窗口内资产被抢占」的风险。时钟跳变只跳本轮清理。
     """
     days = SOFT_DELETE_RETENTION_DAYS if days is None else days
     try:
@@ -507,7 +507,7 @@ def purge_old_delete_requests(days=30):
     """物理清除超过保留期的注销请求记录（默认 30 天）；失败仅告警。
 
     user_delete_requests 只增不删会无限累积（长期使用后 count 查询变慢、库体积膨胀），
-    故随每日清理一并删。
+    故随每日清理一并删。时钟跳变只跳本轮清理。
     """
     try:
         conn = _facade().get_conn()

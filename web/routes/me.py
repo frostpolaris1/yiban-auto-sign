@@ -80,14 +80,17 @@ def api_me_password():
             return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
 
     def _handle_failed_login():
-        """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。"""
+        """当前密码校验失败：递增失败计数，达阈值锁定（与 api_login 一致）。
+
+        告警排在锁定之前：两个阈值同值时这一刻既要告警也要锁定，按"先锁定即 return"
+        的顺序会让告警永不执行。
+        """
         nfails = m._bump_login_failure(_login_fails(), fail_key, now)
-        if nfails >= m.LOGIN_MAX_FAILS:
+        lock_now = nfails >= m.LOGIN_MAX_FAILS
+        if lock_now:
             with m._rate_lock:
                 _login_fails()[fail_key] = (0, now + m.LOGIN_LOCK_SECONDS, now)
             m.logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", m.db.hash_ip(ip), m.LOGIN_LOCK_SECONDS)
-            # 不暴露锁定时长分钟数（信息分层）
-            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         if nfails == m.LOGIN_FAIL_NOTIFY:
             m.send_notification(
                 "改密失败告警",
@@ -98,6 +101,9 @@ def api_me_password():
                     level="warn",
                 ),
             )
+        if lock_now:
+            # 不暴露锁定时长分钟数（信息分层）
+            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         return jsonify({"error": "当前密码不正确"}), 400
 
     # 内置管理员：验证 .env 当前口令后更新（同邮箱注册用户不进入此分支）
@@ -250,14 +256,16 @@ def api_me_delete():
             return jsonify({"error": "尝试次数过多，请稍后再试"}), 429
 
     def _handle_failed_login():
-        """当前密码校验失败：递增失败计数，达阈值锁定（与 api_me_password 一致）。"""
+        """当前密码校验失败：递增失败计数，达阈值锁定（与 api_me_password 一致）。
+
+        告警排在锁定之前（同阈值时两者都要发生，见 api_me_password 的说明）。
+        """
         nfails = m._bump_login_failure(_login_fails(), fail_key, now)
-        if nfails >= m.LOGIN_MAX_FAILS:
+        lock_now = nfails >= m.LOGIN_MAX_FAILS
+        if lock_now:
             with m._rate_lock:
                 _login_fails()[fail_key] = (0, now + m.LOGIN_LOCK_SECONDS, now)
             m.logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", m.db.hash_ip(ip), m.LOGIN_LOCK_SECONDS)
-            # 不暴露锁定时长（信息分层）
-            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         if nfails == m.LOGIN_FAIL_NOTIFY:
             m.send_notification(
                 "注销密码失败告警",
@@ -268,6 +276,9 @@ def api_me_delete():
                     level="warn",
                 ),
             )
+        if lock_now:
+            # 不暴露锁定时长（信息分层）
+            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         return jsonify({"error": "当前密码不正确"}), 400
 
     with m._file_lock:
@@ -363,7 +374,7 @@ def api_me_restore():
         # 共用计数后登录侧锁定同样约束本接口
         now2 = time.time()
         nfails = m._bump_login_failure(_login_fails(), fail_key, now2)
-        # 补每 IP 聚合失败窗口（30 次/10 分钟）——单邮箱 5 次锁定只约束单账号，
+        # 补每 IP 聚合失败窗口（30 次/10 分钟）——单邮箱的失败阈值只约束单账号，
         # 攻击者可跨邮箱喷洒（总速率仅受全局限速约束）；命中即获得该冷静期账号的
         # 完整会话与其易班凭据，须有聚合闸门。恢复失败表写入路径补同口径清理
         # （窗口 + 最大年龄），防无界增长。
@@ -375,11 +386,12 @@ def api_me_restore():
         if not ip_allowed:
             m.logger.warning("恢复密码尝试过于频繁（每 IP 聚合），IP %s 临时限制", m.db.hash_ip(ip))
             return jsonify({"error": "尝试过于频繁，请稍后再试"}), 429
-        if nfails >= m.LOGIN_MAX_FAILS:
+        lock_now = nfails >= m.LOGIN_MAX_FAILS
+        if lock_now:
             with m._rate_lock:
                 _login_fails()[fail_key] = (0, now2 + m.LOGIN_LOCK_SECONDS, now2)
             m.logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", m.db.hash_ip(ip), m.LOGIN_LOCK_SECONDS)
-            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
+        # 告警排在锁定之前（同阈值时两者都要发生，见 api_me_password 的说明）
         if nfails == m.LOGIN_FAIL_NOTIFY:
             m.send_notification(
                 "恢复密码失败告警",
@@ -390,6 +402,8 @@ def api_me_restore():
                     level="warn",
                 ),
             )
+        if lock_now:
+            return jsonify({"error": "密码错误次数过多，请稍后再试"}), 429
         # 统一文案：不区分"账号不存在/已过期"与"密码错误"，防无凭探测"哪些邮箱
         # 正处于注销冷却期"（注销用户警惕性低，是钓鱼高价值目标）
         return jsonify({"error": "邮箱或密码错误，或账号已过恢复期"}), 400
@@ -417,6 +431,10 @@ def api_me_restore():
     session["pw_version"] = u.get("pw_version", 1)
     # 会话绝对过期基准，与 api_login 同口径
     session["login_ts"] = int(time.time())
+    # 登录出口与 api_login 同口径：risk 档"换环境"判据的基准之一，会话还没验证过口令
+    # 时用它兜底。此处不写则本会话两级基准都空 = 未知，那条判据对这条会话永久失效
+    # （恢复即登录建立的同样是完整会话，不该比登录路径少一层风控）。
+    session["login_ip"] = ip
     # 恢复即登录须与 api_login 同样签发 sid 并落库。注销与恢复
     # （db.restore_user）均不轮换 sid，库内保留注销前登录签发的旧值——
     # 此处不签发则新会话无 sid、与库内旧值不匹配，恢复成功后下个请求即 401；

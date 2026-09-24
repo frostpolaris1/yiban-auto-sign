@@ -94,28 +94,32 @@ def _collect_admin_mail(subject, text):
     _mail_summary.append((subject, text))
 
 
-def notify_admin_entry(subject, entry, notify_url=None):
-    """一条管理员告警同时走「汇总邮件」与「即时推送」，两路读同一份 `entry`。
+def notify_admin_entry(subject, entry, notify_url=None, push=True):
+    """一条管理员告警并入任务结束汇总邮件；`push=True` 时同时即时推送。
 
-    原先各调用点要把同一条 `"账号: X\n原因: Y"` 字面量写两遍（邮件一遍、推送一遍），
-    两路必然漂移；收成一次调用后两路共用一份字段表，改文案只改一处。
+    两路读同一份 `entry`：原先各调用点要把同一条 `"账号: X\n原因: Y"` 字面量写两遍
+    （邮件一遍、推送一遍），改一处必漏另一处，收成一次调用后只维护一份字段表。
+
+    `push=False` 用于"事后可读"的慢信号（单账号耗时、容量超载）：它们的价值在汇总信
+    正文里，即时推送只是把同一件事再喊一遍；而推送日额度有限，要留给"现在就得知道"
+    的故障（签到失败、通道降级）。探针预警与窗口配置异常本就只进汇总，与此同口径。
     """
     _collect_admin_mail(subject, entry)
-    if notify.is_configured():
+    if push and notify.is_configured():
         send_notification(subject, layout.Mail(fields=entry, time=""), notify_url)
 
 
-def _alert_slow_sign(phone, dur, slow_sec, status, message, notify_url):
-    """单次尝试耗时超阈值 → warning 日志 + 管理员汇总邮件 + 即时通知。
+def _alert_slow_sign(phone, dur, slow_sec, status, message):
+    """单次尝试耗时超阈值 → warning 日志 + 管理员汇总邮件（不即时推送）。
 
-    堆队列与手动队列两个分支共用，统一口径防漂移。字段表只建一次，邮件与推送读同一份。
+    堆队列与手动队列两个分支共用，统一口径防漂移；字段表只建一次。
     """
     logger.warning(f"[{phone}] ⏱️ 签到耗时 {dur:.1f}s 超过阈值 {slow_sec}s（结果: {status}）")
     notify_admin_entry("易班签到耗时告警", [
         ("账号", _mask_phone(phone)),
         ("耗时", f"{dur:.1f}s（阈值 {slow_sec}s）"),
         ("结果", _sanitize_text(message)),
-    ], notify_url)
+    ], push=False)
 
 
 def _maybe_alert_zero_success(accounts, results, ok_n, is_second_run=None):
