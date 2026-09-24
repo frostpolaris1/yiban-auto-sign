@@ -185,7 +185,7 @@ class _E2EBase(unittest.TestCase):
         """构造真实客户端并把它的 https 流量改写到假服务端。
 
         会话缓存（db）在演练里显式关闭：那不是协议链的一部分，且会引入库依赖；
-        缓存本身的语义由 `tests/test_session_cache_db.py` 与 `tests/test_login_protocol_shape.py`
+        缓存本身的语义由 `tests/test_session.py` 与 `tests/test_login_protocol_shape.py`
         覆盖。
         """
         acc = signin.Account(phone="13800138000", password="secret-pw",

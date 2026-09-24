@@ -21,14 +21,19 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from unittest import mock
 
+import signin
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-import signin  # noqa: E402
-
-from yiban import window  # noqa: E402
+from yiban import (  # noqa: E402
+    clock,
+    window,
+)
 
 PHONE = "13800138000"
 
@@ -66,25 +71,30 @@ class WindowSourceTest(unittest.TestCase):
                    YIBAN_WINDOW_EDGE_BACK_SEC=None)
         self.assertEqual((cfg["edge_front_sec"], cfg["edge_back_sec"]), (120, 120))
 
-    def test_sch3_trimmed_empty_window_falls_back_for_both_plan_and_gate(self):
-        """裁剪吃空时，排计划与判关闭必须都按回退窗口（默认 06:30~07:50）。"""
+    def test_sch3_trimmed_empty_window_clamps_edges_for_both_plan_and_gate(self):
+        """缓冲过大时只收缩缓冲（窗口保留），排计划与判关闭必须都按收缩后的有效窗口。"""
         cfg = _cfg(YIBAN_SIGN_START="07:00", YIBAN_SIGN_END="07:01",
                    YIBAN_WINDOW_EDGE_FRONT_SEC="300", YIBAN_WINDOW_EDGE_BACK_SEC="300")
         win = window.bounds(cfg)
-        self.assertTrue(win.fell_back, "前裁+后裁吃满窗口应回退默认窗口")
-        self.assertEqual((win.lo_min, win.hi_min), (391.0, 469.0))
-        # 计划（_schedule_blocks）与判定（_window_closed）同源：07:00 开启
+        self.assertTrue(win.edges_clamped, "缓冲合计 >= 窗口宽度应收缩缓冲")
+        self.assertFalse(win.fell_back, "窗口可用时不得回退默认窗口")
+        # 窗口 1 分钟保留；缓冲等比收缩到合计 12s（各 6s）→ 有效窗口 48s
+        self.assertEqual((win.start_min, win.end_min), (420, 421))
+        self.assertEqual((win.front_sec, win.back_sec), (6, 6))
+        self.assertEqual((win.lo_min, win.hi_min), (420.1, 420.9))
+        # 计划（_schedule_blocks）与判定（_window_closed）同源
         blocks, eff_lo, eff_hi = signin._schedule_blocks(cfg)
-        self.assertGreater(len(blocks), 0, "回退窗口下应有完整计划")
+        self.assertGreater(len(blocks), 0, "收缩后窗口下应有完整计划")
         self.assertEqual((eff_lo, eff_hi), (win.lo_min, win.hi_min))
         self.assertFalse(
             signin._window_closed(cfg, _dt.datetime(2026, 9, 15, 7, 0)),
-            "07:00 在回退窗口内，不得判『时段已结束』（原实现按原始配置算 → 全员零请求）",
+            "07:00 在有效窗口起点之前，不得判『时段已结束』（按原始配置算 → 全员零请求）",
         )
+        self.assertFalse(signin._window_closed(cfg, _dt.datetime(2026, 9, 15, 7, 0, 20)))
         self.assertTrue(signin._window_closed(cfg, _dt.datetime(2026, 9, 15, 9, 0)))
 
     def test_capacity_nonzero_train_on_trimmed_empty_window(self):
-        """配置异常时容量不再显示 0（回退窗口仍有 80 分钟）。"""
+        """缓冲过大时容量不再显示 0（收缩后仍有 48 秒有效窗口）。"""
         cfg = _cfg(YIBAN_SIGN_START="07:00", YIBAN_SIGN_END="07:01",
                    YIBAN_WINDOW_EDGE_FRONT_SEC="300", YIBAN_WINDOW_EDGE_BACK_SEC="300")
         win = window.bounds(cfg)
@@ -405,6 +415,162 @@ class SecondRunDropDoneTest(unittest.TestCase):
             json.dump({PHONE: {"status": signin.STATUS_FAILED}}, f)
         kept = signin._second_run_drop_done([signin.Account(phone=PHONE, password="p")])
         self.assertEqual([a.phone for a in kept], [PHONE], "失败账号必须保留待补签")
+
+
+sys.path.insert(0, os.path.join(BASE, "scripts"))
+
+
+class _HostClock(_dt.datetime):
+    """宿主墙钟替身：固定在一个**窗口外**的时刻（模拟 UTC 主机的北京 06:40）。"""
+
+    _fixed = _dt.datetime(2026, 1, 1, 22, 40, 0)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._fixed
+
+
+class ClockTest(unittest.TestCase):
+    def test_now_is_beijing_plus_eight(self):
+        """now() 恒为 UTC+8，与宿主 TZ 无关（本用例在任何时区的主机上都应通过）。"""
+        delta = clock.now() - _dt.datetime.utcnow()
+        self.assertAlmostEqual(delta.total_seconds(), 8 * 3600, delta=5)
+
+    def test_now_is_naive(self):
+        """naive：既有全部 datetime 运算都与 naive 混用，带 tzinfo 会直接 TypeError。"""
+        self.assertIsNone(clock.now().tzinfo)
+
+    def test_today_and_ts_formats(self):
+        self.assertEqual(clock.today(), clock.now().strftime("%Y-%m-%d"))
+        self.assertEqual(len(clock.ts()), 19)
+        self.assertEqual(clock.ts()[:10], clock.today())
+
+    def test_session_cache_clock_delegates_to_single_source(self):
+        """db 的会话缓存时钟（原为独立实现的固定 +8）已收口到唯一时钟。"""
+        import db
+        self.assertLess(abs((db._session_cache_now() - clock.now()).total_seconds()), 5)
+
+
+class WindowDecisionUsesBeijingClockTest(unittest.TestCase):
+    """窗口判定必须只认业务钟（核心回归）。"""
+
+    PHONE = "13800138000"
+
+    def setUp(self):
+        for k in ("YIBAN_RETRY_MIN_INTERVAL", "YIBAN_SIGN_START", "YIBAN_SIGN_END",
+                  "YIBAN_WINDOW_EDGE_SEC", "YIBAN_MIN_EXEC_GAP", "YIBAN_EXEC_GAP_MIN"):
+            os.environ.pop(k, None)
+
+    def _run_with_clocks(self, beijing_now):
+        """宿主墙钟固定在窗口外，业务钟固定在 beijing_now，返回 attempt_signin 的调用次数。"""
+        acc = signin.Account(phone=self.PHONE, password="p")
+        sched = {self.PHONE: beijing_now - _dt.timedelta(minutes=20)}
+        with mock.patch.object(signin.clock, "now", lambda: beijing_now), \
+                mock.patch.object(signin, "datetime", _HostClock), \
+                mock.patch.object(signin, "attempt_signin",
+                                  return_value=(True, "ok", False, signin.STATUS_SUCCESS)) as attempt, \
+                mock.patch.object(signin, "_write_sign_state"), \
+                mock.patch.object(signin, "_update_cred_state"), \
+                mock.patch.object(signin.time, "sleep"), \
+                mock.patch.object(signin.time, "monotonic", return_value=100.0):
+            signin.run_queue_retry([acc], "", 0, 0, schedule=sched)
+        return attempt
+
+    def test_window_decision_follows_beijing_clock(self):
+        """北京 06:40（窗口内）+ 宿主墙钟 22:40（窗口外）→ 必须发起签到。
+
+        判定若取宿主钟（旧实现），会判"时段已结束"而整轮零请求——这正是本用例要防的。
+        """
+        beijing_0640 = clock.now().replace(hour=6, minute=40, second=0, microsecond=0)
+        attempt = self._run_with_clocks(beijing_0640)
+        self.assertEqual(attempt.call_count, 1,
+                         "窗口判定取错了钟（宿主墙钟），北京时间 06:40 被误判为已结束")
+
+    def test_window_still_closes_after_deadline(self):
+        """不是"永不判关闭"：北京 08:10（已过 eff_hi）应判结束、零请求。"""
+        beijing_0810 = clock.now().replace(hour=8, minute=10, second=0, microsecond=0)
+        attempt = self._run_with_clocks(beijing_0810)
+        self.assertEqual(attempt.call_count, 0, "已过窗口仍发起请求")
+
+    def test_window_closed_uses_beijing_end(self):
+        cfg = signin._schedule_config()
+        self.assertFalse(signin._window_closed(cfg, clock.now().replace(hour=7, minute=0)))
+        self.assertTrue(signin._window_closed(cfg, clock.now().replace(hour=9, minute=0)))
+
+
+class LogAndStateDateUseBeijingTest(unittest.TestCase):
+    """按日留痕（日志文件名 / 状态文件 / 事件时间戳）也走同一时钟。"""
+
+    def test_signin_log_path_uses_beijing_date(self):
+        """日志按日切分：宿主为 UTC 时若用宿主日期，北京时间 00:00–08:00 会写进前一日。"""
+        fake_bj = _dt.datetime(2026, 3, 2, 1, 30, 0)  # 北京凌晨 = UTC 前一日 17:30
+        with mock.patch.object(clock, "now", return_value=fake_bj):
+            self.assertEqual(clock.today(), "2026-03-02")
+            self.assertEqual(clock.ts(), "2026-03-02 01:30:00")
+
+
+class SlotBoundaryTest(unittest.TestCase):
+    """F4：非 5 分钟整数倍窗口的最后一个自选片必须被尊重。"""
+
+    def setUp(self):
+        # 06:30 ~ 07:52（L=82，非 5 的整数倍）；前后裁剪各 60s
+        os.environ["YIBAN_SIGN_START"] = "06:30"
+        os.environ["YIBAN_SIGN_END"] = "07:52"
+        os.environ["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "60"
+        os.environ["YIBAN_WINDOW_EDGE_BACK_SEC"] = "60"
+        os.environ["YIBAN_ALLOW_TIME_PREF"] = "1"
+        os.environ.pop("YIBAN_SIGN_ORDER", None)
+        os.environ.pop("YIBAN_SIGN_DIST", None)
+        os.environ.pop("YIBAN_SIGN_MODE", None)
+
+    def tearDown(self):
+        for k in ("YIBAN_SIGN_START", "YIBAN_SIGN_END", "YIBAN_WINDOW_EDGE_FRONT_SEC",
+                  "YIBAN_WINDOW_EDGE_BACK_SEC", "YIBAN_ALLOW_TIME_PREF"):
+            os.environ.pop(k, None)
+
+    def _acc(self, phone):
+        return signin.Account(phone=phone, password="pw")
+
+    def test_last_ui_selectable_slot_is_respected(self):
+        """slot=80（07:50，UI 可点选）必须被调度器采纳，而不是静默回退自动分配。"""
+        base = datetime(2026, 8, 28, 0, 0)
+        prefs = {"13900000001": {"slot_min": 80, "updated_at": "2026-08-01 00:00:00"}}
+        schedule = signin.build_schedule(
+            [self._acc("13900000001")], prefs=prefs, now=base
+        )
+        self.assertIn("13900000001", schedule)
+        t = schedule["13900000001"]
+        # 选中片 = 07:50 起的块（[07:50:00, 07:52:00)，有效窗口后裁到 07:51:00）
+        self.assertGreaterEqual(
+            t, base.replace(hour=7, minute=50),
+            f"自选 07:50 片被静默丢弃，实际排到 {t:%H:%M:%S}",
+        )
+        self.assertLess(t, base.replace(hour=7, minute=52))
+
+    def test_out_of_window_slot_still_falls_back(self):
+        """真正落在窗口外的片（slot=90 > L=82）仍应回退自动分配，不崩。"""
+        base = datetime(2026, 8, 28, 0, 0)
+        prefs = {"13900000002": {"slot_min": 90, "updated_at": "2026-08-01 00:00:00"}}
+        schedule = signin.build_schedule(
+            [self._acc("13900000002")], prefs=prefs, now=base
+        )
+        self.assertIn("13900000002", schedule)  # 回退自动分配，账号仍被排上
+        t = schedule["13900000002"]
+        self.assertGreaterEqual(t, base.replace(hour=6, minute=31))
+        self.assertLess(t, base.replace(hour=7, minute=52))
+
+    def test_mid_window_slot_unchanged(self):
+        """窗口中部常规自选片行为不变（回归保护）。"""
+        base = datetime(2026, 8, 28, 0, 0)
+        prefs = {"13900000003": {"slot_min": 40, "updated_at": "2026-08-01 00:00:00"}}
+        schedule = signin.build_schedule(
+            [self._acc("13900000003")], prefs=prefs, now=base
+        )
+        self.assertIn("13900000003", schedule)
+        t = schedule["13900000003"]
+        # slot=40 → 07:10 起的块
+        self.assertGreaterEqual(t, base.replace(hour=7, minute=10))
+        self.assertLess(t, base.replace(hour=7, minute=15))
 
 
 if __name__ == "__main__":

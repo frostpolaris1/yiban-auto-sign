@@ -172,20 +172,21 @@ def _my_phone():
     return None
 
 
-def _pref_slots(sw):
+def _pref_slots(win):
     """窗口内 5 分钟片（时钟对齐）：[{slot_min, label, disabled, edge_note}]。
 
+    `win` 是 `yiban.window.bounds` 的有效窗口视图（经 `web.app.sign_window_bounds` 现取
+    后传入）：起止与前后裁剪都取自它，与引擎排计划同准绳——网页侧各读一遍原始配置，
+    会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口排期，网页却把片全置灰）。
     掐头去尾前后独立：完全落入裁剪区（裁剪 >= 5 分钟覆盖整块）的片标记
     disabled（前端灰色不可选）；部分落入（如前裁 2 分钟 → 首片剩 3 分钟可用）的片
     标记 edge_note 提示且仍可点选（调度在可用部分内安排）。返回全部片（含 disabled），
     前端据此渲染，保证"满 5 分钟才完全灰掉、不足时提示"的需求语义。
     """
-    m = _appmod()
-    start_min = sw[0][0] * 60 + sw[0][1]
-    end_min = sw[1][0] * 60 + sw[1][1]
+    start_min, end_min = win.start_min, win.end_min
     span = end_min - start_min
-    front_min = m.edge_config()[0] / 60.0
-    back_min = m.edge_config()[1] / 60.0
+    front_min = win.front_sec / 60.0
+    back_min = win.back_sec / 60.0
     slots = []
     for b in range(start_min, end_min, 5):
         off = b - start_min  # 片起点相对窗口起点的分钟偏移
@@ -248,15 +249,18 @@ def api_my_time_pref():
 
     拥挤度防调研：普通用户端只下发「已选百分比」（整数，四舍五入），
     不下发真实人数/块容量——不知道 K 无法反推人数；管理端 stats 接口保留精确计数。
+
+    `window` 回的是**有效窗口**（起止已按裁剪收敛、吃空时回退默认窗口）：片卡标签、
+    偏好标签与保存提示都以它为基准，直读原始配置会在回退时让同一页面出现两个钟点。
     """
     m = _appmod()
-    sw = m._sign_window()
+    win = m.sign_window_bounds()
     phone = _my_phone()
     pref = m.db.get_time_pref(phone) if phone else None
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
     cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
     slots = []
-    for s in _pref_slots(sw):
+    for s in _pref_slots(win):
         count = stats.get(s["slot_min"], 0)
         # 粗粒度 10% 档：精确百分比 + 已知默认 K 可反推人数；
         # 未满封顶 90、满员恰好 100——前端 pct>=100 判满精确（19/20=95% 不会再被
@@ -280,7 +284,8 @@ def api_my_time_pref():
         "pref_slot": pref["slot_min"] if pref else None,
         "slots": slots,
         "allowed": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0) == 1,
-        "window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
+        "window": (f"{win.start_min // 60:02d}:{win.start_min % 60:02d} ~ "
+                   f"{win.end_min // 60:02d}:{win.end_min % 60:02d}"),
         "edge_sec": front_sec,                    # 兼容旧前端（=前裁）
         "edge_front_sec": front_sec,              # 前后独立
         "edge_back_sec": back_sec,
@@ -324,10 +329,13 @@ def api_my_time_pref_save():
             slot = int(slot)
         except (TypeError, ValueError):
             return jsonify({"error": "时间片取值无效"}), 400
-        sw = m._sign_window()
-        span = (sw[1][0] * 60 + sw[1][1]) - (sw[0][0] * 60 + sw[0][1])
-        front_min = m.edge_config()[0] / 60.0
-        back_min = m.edge_config()[1] / 60.0
+        # 可用性按 `window.bounds` 的有效窗口算（与 `_pref_slots` 展示同准绳）：有效窗口被
+        # 前后裁剪吃空时 bounds 回退默认窗口，展示侧按回退窗口给出可点选的片——此处若直读
+        # 原始窗口与裁剪，会把每一片都判成"不在可选范围"，形成"点得到、存不下"。
+        win = m.sign_window_bounds()
+        span = win.end_min - win.start_min
+        front_min = win.front_sec / 60.0
+        back_min = win.back_sec / 60.0
         # 前后独立裁剪：部分落入裁剪区的片（如首片剩 3 分钟）允许保存，
         # 调度会在可用部分内安排；完全落入裁剪区（前端已置灰）拒绝。
         if slot % 5 != 0 or not (0 <= slot < span) or not (
@@ -379,7 +387,7 @@ def api_my_time_pref_save():
         # 生效分界（卡点缓冲）：
         # 优先用当日调度快照标记（signin 构建调度后写入 sched-snapshot-YYYY-MM-DD.json，
         # 精确等于 cron 实际读取自选表的时刻）——改选在快照后必为"明日生效"，提示与实际 100% 一致；
-        # 标记不存在（当日 cron 未运行/自选未激活）回退"窗口起点 + 1 分钟"兜底
+        # 标记不存在（当日 cron 未运行/自选未激活）回退"有效窗口起点"兜底
         now = m.clock.now()
         boundary = None
         try:
@@ -396,11 +404,11 @@ def api_my_time_pref_save():
         except (OSError, ValueError, KeyError, TypeError):
             boundary = None
         if boundary is None:
-            try:
-                boundary = now.replace(hour=sw[0][0], minute=sw[0][1], second=0, microsecond=0)
-            except ValueError:
-                boundary = now
-            boundary += timedelta(minutes=1)
+            # 兜底取**有效**窗口起点（已扣前裁）：它就是引擎/cron 读取自选表的近似时刻，
+            # 与快照标记同一准绳。按原始窗口起点 + 1 分钟折算在前裁非默认值时会偏
+            # （前裁 300s 时偏 4 分钟）→ 改选提示的"今日/明日生效"与实际分叉。
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            boundary = midnight + timedelta(seconds=win.lo_min * 60)
         when = "今日生效" if now < boundary else "明日生效"
         return jsonify({"ok": True, "msg": f"已保存自选 {m._slot_to_label(slot)}，{when}{full_notice}"})
 
@@ -408,13 +416,12 @@ def api_my_time_pref_save():
 def api_time_prefs_stats():
     """每片已选人数（拥挤度，管理员；用户端由 my-time-pref 附带，不单独暴露）。"""
     m = _appmod()
-    sw = m._sign_window()
     stats = {s["slot_min"]: s["count"] for s in m.db.time_pref_stats()}
     cap = m.load_env_int(m.ENV_FILE, "YIBAN_BLOCK_CAP", 15)
     return jsonify({
         "ok": True,
         "slots": [{**s, "count": stats.get(s["slot_min"], 0), "cap": cap}
-                  for s in _pref_slots(sw)],
+                  for s in _pref_slots(m.sign_window_bounds())],
     })
 
 

@@ -471,7 +471,7 @@ class ActivityEndpointTest(_WebBase):
             ("13900000006", OWNER_LEGACY, "done"),
         )
         for phone, owner, state in rows:
-            self.assertTrue(store_db.claim_sign_account(phone, day, owner), phone)
+            self.assertTrue(store_db.claim_sign_account(phone, day, owner)[0], phone)
             if state == "done":
                 store_db.claim_settle(phone, day, owner, store_db.CLAIM_STATE_DONE, "ok")
             elif state == "failed":
@@ -1031,11 +1031,11 @@ class AccountsLastExecutorTest(_WebBase):
         self._seed_accounts(self.PHONES)
         prev, today = self._prev_day(), clock.today()
         # 前天（此处借 _prev_day 模拟更早的业务日）：1 号由并行执行体 #1 签
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], prev, OWNER_WORKER))
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], prev, OWNER_WORKER)[0])
         # 今天是最近一次有记录的业务日：2 号由兜底签、3 号由并行执行体 #1 签
         # ——口径是"最近一次"，故 2/3 号按今天的记录解析，1 号（只在更早日有记录）为 null
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[1], today, OWNER_FALLBACK))
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[2], today, OWNER_WORKER))
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[1], today, OWNER_FALLBACK)[0])
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[2], today, OWNER_WORKER)[0])
         got = self._last_executor_of()
         m = self.webapp._mask_phone
         self.assertEqual(got[m(self.PHONES[0])], None,
@@ -1053,7 +1053,7 @@ class AccountsLastExecutorTest(_WebBase):
         from yiban.store import db as store_db
         self._seed_accounts(self.PHONES[:1])
         # 只有更早业务日有记录（模拟周六/周日无签到轮）
-        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], self._prev_day(), OWNER_FALLBACK))
+        self.assertTrue(store_db.claim_sign_account(self.PHONES[0], self._prev_day(), OWNER_FALLBACK)[0])
         got = self._last_executor_of()
         self.assertEqual(got[self.webapp._mask_phone(self.PHONES[0])],
                          {"role": egress.ROLE_FALLBACK, "index": None,
@@ -1072,7 +1072,7 @@ class AccountsLastExecutorTest(_WebBase):
         from yiban.store import db as store_db
         phone = self.PHONES[0]
         self._seed_accounts((phone,))
-        self.assertTrue(store_db.claim_sign_account(phone, self._prev_day(), OWNER_WORKER))
+        self.assertTrue(store_db.claim_sign_account(phone, self._prev_day(), OWNER_WORKER)[0])
         raw = json.dumps(self._login().get("/api/accounts").get_json(), ensure_ascii=False)
         self.assertNotIn(OWNER_WORKER, raw, "不得回显执行体身份原串")
         self.assertNotIn(SECRET_HOST, raw, "主机名属部署信息")

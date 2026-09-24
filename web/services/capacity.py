@@ -19,9 +19,10 @@
 **复用**
 `_capacity_account_count` 与 `_capacity_audit_count` 互斥互补（两者之和 = 全部非删除
 账号），判定口径唯一来源是 `yiban.store.accounts.signs_in`；`_capacity_estimate` 的公式
-与引擎共用 `yiban.engine.schedule.capacity_accounts`，有效窗口取 `yiban.window.bounds`
-（含"裁剪吃空 → 回退默认窗口"），不另写一套容量模型。`_accounts_at_capacity` 复用
-`_capacity_account_count`，`_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。
+与引擎共用 `yiban.engine.schedule.capacity_of`（按开关分派：v2 侧即
+`capacity_accounts`），有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
+不另写一套容量模型。`_accounts_at_capacity` 复用 `_capacity_account_count`，
+`_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
@@ -38,7 +39,7 @@ import time
 
 from web.services.accounts_data import load_accounts_raw
 from yiban import window as yb_window
-from yiban.engine.schedule import capacity_accounts
+from yiban.engine.schedule import capacity_of
 from yiban.mail import layout as mail_layout
 from yiban.store import db
 
@@ -72,7 +73,8 @@ def _capacity_audit_count():
 def _capacity_estimate(gap=0, *, sign_window, edge_config):
     """按当前签到窗口与账号间隔设置预估可容纳账号数（**配置属性**口径）。
 
-    公式与引擎共用 `yiban.engine.schedule.capacity_accounts`，有效窗口取
+    公式与引擎共用 `yiban.engine.schedule.capacity_of`（按 `YIBAN_SCHEDULER_V3` 分派：
+    缺省关时逐字走 `capacity_accounts`，与改造前同值），有效窗口取
     `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
     出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
 
@@ -88,7 +90,7 @@ def _capacity_estimate(gap=0, *, sign_window, edge_config):
         "sign_start": sign_window()[0], "sign_end": sign_window()[1],
         "edge_front_sec": edge_config()[0], "edge_back_sec": edge_config()[1],
     })
-    return capacity_accounts(win.full_sec(), gap)
+    return capacity_of(win.full_sec(), gap=gap)
 
 
 def _accounts_at_capacity(extra_accounts=0, *, env_file, load_env_int, max_accounts_default):
