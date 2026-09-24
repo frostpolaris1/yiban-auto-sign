@@ -1,14 +1,28 @@
 # -*- coding: utf-8 -*-
 """`yiban/engine/planner.py`（双粒度分片 Planner）与 `schedule.capacity_accounts_v3` 的契约用例。
 
+标签：A · 调度：计划与分片
+覆盖：计划层的全部形状契约：确定性与可重放、与执行体数 K
+   解耦、落点有界、分层零方差与微槽/相位两级自由度、跨天重排、小 N
+   前载、自暂停零占位、重复号折叠、自选硬约束与双层溢出（先到先得）、三模式与正态密度/削峰、压缩模式与元数据、plan_stats
+   摘要与直方图基点、capacity_accounts_v3 取值、幂等落库与降级信号。
+对应实现：yiban/engine/planner.py（build_plan、write_plan、has_plan、plan_stats）、yiban/engine/schedule.py（capacity_accounts_v3、planner_config）、yiban/window.py、yiban/store/queue_store
+   与 clock_meta（计划行与元数据的落库处）。
+关键断言：计划层与执行体数无关：改 executors 只改 owner，一个 run_at
+   都不许动——否则换一台机器重排会把当天已跑完的账号再排一遍。分片归属必须由H(phone‖day)
+   决定并与 hrw
+   同口径（用例自算哈希核对）。自选片与直方图桶键的基点一律取「窗口起点」而非收缩后的有效窗口起点——网页片号与计划桶号必须同号，否则用户选的片和实际落的片错位。库不可用时
+   has_plan 读作「当日无计划」让执行体降级动态领取，而 write_plan
+   必须抛异常让调用方显式降级，不得静默半途而废。容量公式不得回退到忽略令牌桶封顶的原稿口径（会高估
+   2.3 倍）。
+依赖：临时 sqlite 库（表由 v18/v19 迁移建齐，仅落库类用例）+
+   环境变量快照还原；纯计算类用例不碰库。不发网络请求。整文件在本机执行，无
+   skip。
+
 窗口取 06:00~07:20、前后各裁 300s ⇒ 有效窗口 70 分钟 = 4200s = 70 个 1 分钟分片
 （每片 60 个 1 秒微槽），与容量核算口径同数。自选片 `slot_min` 仍是"相对窗口起点"的
 5 分钟格（与 web `_pref_slots`、`schedule._slot_to_bi` 同源），故 `slot_min=35` 对应
 06:35~06:40。
-
-覆盖：确定性/可重放、与执行体数 K 无关、落点有界、分层零方差、微槽与相位范围、
-跨天重排、小 N 前载、自选硬约束与双层溢出、先到先得、三模式保留、压缩模式与元数据、
-幂等落库与降级信号、容量公式取值。
 """
 import contextlib
 import datetime
@@ -84,7 +98,7 @@ def _prefs(phones, slot_min):
 
 def _h(*parts):
     """与 `hrw` 同一口径的 blake2b（用例自算，用于核对"按 H(phone‖day) 选片"这条契约）。"""
-    raw = "\x1f".join(str(p) for p in parts).encode("utf-8")
+    raw = "\x1f".join(str(p) for p in parts).encode("utf-8") # 用例独立重算一遍哈希口径：与实现共用常量的话，实现偷换编码就测不出来
     return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big")
 
 
@@ -120,7 +134,7 @@ class _Base(unittest.TestCase):
     """纯函数用例：只动环境（窗口/三模式/桶速率），不碰库。"""
 
     def setUp(self):
-        self._saved = {k: os.environ.get(k) for k in _TOUCHED}
+        self._saved = {k: os.environ.get(k) for k in _TOUCHED} # 先存后清：漏还原会让下一个文件读到本用例的窗口（单跑绿、全量红）
         for k in _TOUCHED:
             os.environ.pop(k, None)
         os.environ.update(WINDOW_ENV)
@@ -139,6 +153,7 @@ class _Base(unittest.TestCase):
     def bounds(self):
         return window.bounds(self.cfg())
 
+    # executors 默认值故意固定：改它只该影响 owner，改 run_at 的用例走的是上面的契约
     def plan(self, accounts, day=DAY, executors=EXECUTORS, **kw):
         return planner.build_plan(accounts, day, executors, **kw)
 
