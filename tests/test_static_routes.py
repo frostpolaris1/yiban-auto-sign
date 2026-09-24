@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """静态资源与合规页路由：自定义优先、缺失 404、短缓存头。
 
+标签：E · Web：认证/权限/API
+覆盖：favicon 与备案图标的「缺失 404 / 存在短缓存」、robots.txt 与 404/500 的分流、合规文档 Markdown 的渲染与缓存失效
+对应实现：`web/app.py` 的静态与错误页路由，渲染真源 `web/render.py`
+关键断言：文件缺失→404、存在→200 且 `image/png` + 短缓存头；`/api/` 下的 404/500 返 JSON、带静态扩展名的路径返空体（不泄漏存在性）、其余渲染 HTML；粗体行不得触发渲染死循环（子线程渲染超时即判失败）；空模板回退中性占位且不泄漏 `<!-- -->` 开发注释；`javascript:` 链接不得输出 `href`
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；临时读写 `web/static/vendor/*` 后在 `tearDownClass` 原样恢复。无需 node、不执行 JS
+
 覆盖 favicon / 页脚备案图标（部署者自放文件优先，测试前后原样恢复）、robots.txt 与
 404/500 错误页分流（`/api/` 返 JSON、静态扩展名返空、其余渲染 HTML）、以及合规文档
 （PRIVACY_POLICY / USER_AGREEMENT）的 Markdown 渲染：段落合并不得对非列表行死循环，

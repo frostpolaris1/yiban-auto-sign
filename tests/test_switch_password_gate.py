@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """系统开关口令门禁测试（global_pause / registration_pause 变更需 confirm_password）。
 
+标签：E · Web：认证/权限/API
+覆盖：`global_pause` / `registration_pause` 变更的口令复核门——缺口令、错口令、值未变三态，以及失败计数的隔离
+对应实现：`web/app.py` 的统一门禁 `_sensitive_password_gate` 与 `/api/settings` 写路径
+关键断言：只有「请求值≠服务端现值」才要口令（两个方向都算变更）；缺口令与错口令同为 403 但 `reason` 与文案必须分开（前端据此决定弹口令框还是提示输错）；被拒不落 `.env`、响应不回显口令、写一条 `settings_switch_pw_fail` 审计；错口令走独立计数并首达阈值告警一次，绝不写与登录共用的 `_login_fails`
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node，每例新登录会话（不带短时豁免态）。无需 node
+
 背景：此前前端口令框收集的 confirm_password 后端并不校验（假门），持主管理员
 Cookie 的会话可无口令直接翻转 global_pause / registration_pause。
 
