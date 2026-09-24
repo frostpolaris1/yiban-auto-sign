@@ -368,9 +368,12 @@ def main(argv=None):
     if schedule:
         # 容量预检（调度 v2 第三层）：可容纳账号数 < 待签到账号数 → 告警不静默
         # 用户自暂停账号不参与调度，也不计入容量
-        # 取计划层同一份配置快照（planner_config 是 _schedule_config 的超集，多带桶速率与
-        # 执行体清单）：K 与容量口径都从它取，不另读一份环境，免得两处口径分叉。
-        _cfg = schedule_mod.planner_config()
+        _v3_on = executor_v3.scheduler_v3_enabled()
+        # 配置快照按开关分读：v3 要计划层的超集快照（多带桶速率与执行体清单，K 与容量
+        # 都从它取，免得两处口径分叉）；v2 只读调度配置——关时不因此新增环境键依赖，
+        # 旧路径的数值与行为逐字不变。
+        _cfg = (schedule_mod.planner_config() if _v3_on
+                else schedule_mod._schedule_config())
         _win = window.bounds(_cfg)
         # 预检按**剩余**有效窗口算：本进程此刻才起跑，已流逝的窗口签不了。
         # 按完整窗口算会在迟启动时按满容量放行且不告警，超出的账号只能落
@@ -383,13 +386,16 @@ def main(argv=None):
         active_n = sum(1 for a in accounts if not getattr(a, "user_paused", False))
         # 与 web 容量预估同一函数（`capacity_of` 按开关分派）：账号间隔是「上一次完成 →
         # 下一次开始」的下限，故单账号周期 = avg + gap（只算 n × avg 会与预估口径相差约
-        # 2.3 倍）。K 按当日活跃账号数自动定尺（`executor_count` 是 K 的唯一口径）：
-        # v2 侧该值不参与（`capacity_of` 逐字走旧公式），故开关缺省时数值逐字不变。
-        _cap = schedule_mod.capacity_of(
-            max(0.0, _rest_sec), gap=gap_max, avg=_cfg["avg_attempt_sec"],
-            k=schedule_mod.executor_count(
+        # 2.3 倍）。
+        _cap_args = {"gap": gap_max, "avg": _cfg["avg_attempt_sec"]}
+        if _v3_on:
+            # K 只在 v3 侧算并传入（`executor_count` 是 K 的唯一口径，入参要桶速率与
+            # 出口数）：v2 侧连算都不算、也不读这两个键，逐字走旧公式。
+            _cap_args["k"] = schedule_mod.executor_count(
                 active_n, max(0.0, _rest_sec), bucket_rate=_cfg["bucket_rate"],
-                egress_count=len(_cfg["executors"]) or 1))
+                egress_count=len(_cfg["executors"]) or 1)
+            _cap_args["bucket_rate"] = _cfg["bucket_rate"]
+        _cap = schedule_mod.capacity_of(max(0.0, _rest_sec), enabled=_v3_on, **_cap_args)
         if _rest_sec <= 0:
             logger.warning(
                 "容量预检: 本进程起跑时签到时段已结束（有效窗口至 %s），本轮不会发起任何请求",
