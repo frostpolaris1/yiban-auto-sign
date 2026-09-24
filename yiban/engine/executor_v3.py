@@ -532,7 +532,7 @@ def _widen_with_dead_peers(ctx, shards):
         peer_shards = hrw.shards_of(peer, ctx.cfg["executors"], ctx.day, v)
         if not peer_shards:
             continue
-        taken = queue_store.steal_shards(ctx.executor_id, peer_shards, ctx.day)
+        taken = queue_store.steal_shards(ctx.executor_id, peer, peer_shards, ctx.day)
         if taken:
             logger.warning("接管心跳过期的执行体 %s 的分片集，%d 条待办改归本执行体",
                            peer, taken)
