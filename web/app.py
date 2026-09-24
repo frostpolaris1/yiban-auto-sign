@@ -276,11 +276,8 @@ from web.services.notify_mail import (  # noqa: E402
     _audit_actor,
     _audit_alert_facts,
     _change_mail,  # noqa: F401
-    _exhaustion_notice_mail,  # noqa: F401
     _last_cleanup_text,  # noqa: F401
-    _mail_flags_desc,  # noqa: F401
     _nl_safe,
-    _notify_change_desc,  # noqa: F401
     _review_reject_mail,  # noqa: F401
 )
 from web.services.signstatus import (  # noqa: E402
@@ -494,8 +491,12 @@ LOGIN_MAX_FAILS = 10
 # 只约束单账号，攻击者可换邮箱继续；命中恢复即接管该账号与其易班凭据）
 RESTORE_FAIL_MAX = 30
 RESTORE_FAIL_WINDOW = 600
-# 连续失败告警阈值：达到后通过 YIBAN_NOTIFY_URL 通知管理员（每轮锁定只告警一次）
-LOGIN_FAIL_NOTIFY = 3
+# 连续失败告警阈值：达到后通知管理员（每轮锁定只告警一次）。阈值与锁定阈值
+# （LOGIN_MAX_FAILS）同值时，告警恰好落在"锁定"那一刻——本人反复输错口令是最常见的
+# 失败来源，阈值压低只会把误报刷满告警通道；真攻击由边缘限速与逐次 scrypt 时延承担。
+# 同一常量也被敏感口令门复用为"告警与门禁级冷却的起点"（见 web/security.py 的
+# _sensitive_gate_params 调用点），改动会同时影响那一路。
+LOGIN_FAIL_NOTIFY = 10
 # 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
 # 只用于告警与冷却判定，不锁管理员（P18）。
 SENSITIVE_PW_FAIL_WINDOW = 900
@@ -1254,9 +1255,8 @@ def sign_status(now=None):
 
 # 通知与告警邮件族（正文净化 `_nl_safe`、审计 actor 与事实 `_audit_actor` /
 # `_audit_alert_facts` / `_last_cleanup_text`、变更与审核邮件 `_change_mail` /
-# `_review_reject_mail`、收件人算法 `_alert_mail_recipients`、耗尽告知
-# `_exhaustion_notice_mail`、开关与推送变更描述 `_mail_flags_desc` /
-# `_notify_change_desc` 及随族常量）实现见 web/services/notify_mail.py，此处以导入区
+# `_review_reject_mail`、收件人算法 `_alert_mail_recipients` 及随族常量）实现见
+# web/services/notify_mail.py，此处以导入区
 # 再导出保持 m.* 可达；`send_notification` 与 `_push_ever_configured` 需要注入本模块
 # 持有的名字，故在下方转发。
 

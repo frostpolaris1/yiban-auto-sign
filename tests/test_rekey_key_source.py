@@ -1107,24 +1107,24 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertEqual(_read_env(self.env_file), before, "鉴权未通过不得留下任何写入")
         self.assertEqual(self.alerts, [], "被拒绝的关闭不应发出变更告警")
 
-    def test_mail_close_wrong_password_alerts_on_third_try(self):
-        """错口令：连续 3 次触发"高危操作二次鉴权失败告警"（同阈值/同计数）。"""
+    def test_mail_close_wrong_password_alerts_at_threshold(self):
+        """错口令：连续失败达阈值触发"高危操作二次鉴权失败告警"（同阈值/同计数）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         # 快照必须在 create_app/登录之后取：启动会迁移管理员口令哈希并补 YIBAN_SECRET_KEY
         before = _read_env(self.env_file)
-        for _ in range(3):
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
             r = c.put("/api/mail-config",
                       json={"enabled": False, "confirm_password": "wrong-pass"},
                       headers=self._csrf(t))
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(_read_env(self.env_file), before)
         fails = [a for a in self.alerts if a[0] == "高危操作二次鉴权失败告警"]
-        self.assertEqual(len(fails), 1, f"第 3 次失败应告警一次，实际 {self.alerts}")
+        self.assertEqual(len(fails), 1, f"达阈值应告警一次，实际 {self.alerts}")
         self.assertTrue(fails[0][2], "二次鉴权失败告警必须是 urgent（邮件通道正被攻击者盯着关）")
 
-    def test_mail_close_with_password_200_alert_is_urgent(self):
-        """对口令关闭 → 200 + 落盘 + 变更告警 urgent=True，文案写明关的是哪一路。"""
+    def test_mail_close_with_password_200_no_alert(self):
+        """对口令关闭 → 200 + 落盘 + 零告警（通道变更只留审计）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/mail-config",
@@ -1133,10 +1133,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["enabled"])
         self.assertIn("YIBAN_MAIL_ENABLE=0", _read_env(self.env_file))
-        title, content, urgent = self.alerts[-1]
-        self.assertEqual(title, "邮件配置变更告警")
-        self.assertTrue(urgent, "配置变更告警必须 urgent：开着「仅重要告警」时非紧急不推手机=致盲")
-        self.assertIn("全局邮件通知：关闭", content)
+        self.assertEqual(self.alerts, [], f"通道变更告警已下线，实际 {self.alerts}")
 
     def test_mail_open_and_enable_need_no_password(self):
         """纯"开启"方向保持原成功路径：不带口令也 200（不得给正常操作加摩擦）。"""
@@ -1196,7 +1193,8 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                 self.assertEqual(r.get_json()["reason"], "password_required")
         self.assertEqual(_read_env(self.env_file), before)
 
-    def test_notify_close_with_password_200_alert_urgent(self):
+    def test_notify_close_with_password_200_no_alert(self):
+        """对口令关闭推送 → 200 + 密钥一起清掉 + 零告警（通道变更只留审计）。"""
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         r = c.put("/api/notify-config", json={
@@ -1211,10 +1209,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         self.assertFalse(r2.get_json()["enabled"])
         env = _read_env(self.env_file)
         self.assertNotIn("YIBAN_NOTIFY_SECRET_ENC=", env, "关闭须连密钥一起清掉")
-        title, content, urgent = self.alerts[-1]
-        self.assertEqual(title, "消息推送配置变更告警")
-        self.assertTrue(urgent)
-        self.assertIn("通道：关闭", content)
+        self.assertEqual(self.alerts, [], f"通道变更告警已下线，实际 {self.alerts}")
 
     def test_notify_numeric_changes_require_password(self):
         """（参数收口）：cooldown/urgent_only/daily_max/urgent_daily_max
@@ -1322,7 +1317,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                 self.alerts.clear()  # 两个 subTest 共用记录列表，须各算各的
                 c = self._client()  # _login_fails / 限速表都是 create_app 内的，需新会话
                 t = self._login(c, "admin", ADMIN_PASS)
-                for _ in range(3):  # 第 3 次失败触发告警（LOGIN_FAIL_NOTIFY）
+                for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):  # 达阈值触发告警
                     r = c.put("/api/mail-config",
                               json={field: False, "confirm_password": "wrong-pass"},
                               headers=self._csrf(t))
@@ -1865,12 +1860,16 @@ class BothChannelsDeadCombinationVariantB14Test(_B14AlertGateBase):
 
 
 class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
-    """追加 A：send_notification 里接线 pop_exhaustion_notice()（必须跑真实实现）。"""
+    """推送额度耗尽告知不再挂在 send_notification 上：标记由通道健康报告取走。
+
+    这里钉"告警路径上不再内联补发"——接回去就会红；耗尽告知仍在的正面证据见
+    `ChannelHealthReportB14Test`（通道健康报告取走标记并写进正文）。
+    """
 
     PATCH_NOTIFY = False
 
-    def test_exhaustion_notice_pops_once_and_sends_one_mail(self):
-        """一次 pop 拿全列表 → 一封邮件写两本账；不得循环 pop 到空（同日两封）。"""
+    def test_send_notification_does_not_pop_exhaustion_notice(self):
+        """告警路径不取耗尽标记、也不补发告知邮件：只发主告警一封。"""
         mails = []
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
                                return_value=["general", "urgent"]) as pop, \
@@ -1880,40 +1879,9 @@ class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
              mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
             self.webapp.send_notification("测试告警一", "正文一")
             ns.assert_called_once()
-        titles = [m[0] for m in mails]
-        self.assertEqual(titles.count("手机推送额度已用尽告警"), 1,
-                         f"两本账同日只补一封，实际 {titles}")
-        self.assertEqual(pop.call_count, 1, "每次告警最多 pop 一次（循环 pop 会同日发两封）")
-        body = render_body(next(m[1] for m in mails if m[0] == "手机推送额度已用尽告警"))
-        self.assertIn("非紧急", body)
-        self.assertIn("紧急", body)
-        self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX", body, "须给出可操作的调整指引")
-        # 收件人必须是 A 线同一批人（主管理员 + 开启接收的管理员）
-        self.assertTrue(all(m[2] for m in mails), "耗尽告知须落到管理员收件人")
-
-    def test_exhaustion_notice_absent_when_no_ledger_exhausted(self):
-        """无耗尽（pop 返回空列表）→ 只有主告警一封，不多发。"""
-        mails = []
-        with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
-                               return_value=[]), \
-             mock.patch.object(self.webapp.notify, "send"), \
-             mock.patch.object(self.webapp.mailer, "send_admin_alert",
-                               side_effect=lambda s, t, to=None: mails.append((s, t, to))), \
-             mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("测试告警三", "正文三")
-        self.assertEqual([m[0] for m in mails], ["测试告警三"])
-
-    def test_exhaustion_notice_failure_does_not_break_alert(self):
-        """notify 侧异常绝不影响主告警：pop 抛错时主告警邮件仍照常发出、函数不外抛。"""
-        mails = []
-        with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
-                               side_effect=RuntimeError("boom")), \
-             mock.patch.object(self.webapp.notify, "send"), \
-             mock.patch.object(self.webapp.mailer, "send_admin_alert",
-                               side_effect=lambda s, t, to=None: mails.append((s, t, to))), \
-             mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("测试告警二", "正文二")
-        self.assertEqual([m[0] for m in mails], ["测试告警二"])
+        self.assertEqual([m[0] for m in mails], ["测试告警一"],
+                         f"告警路径不该再补发耗尽告知，实际 {[m[0] for m in mails]}")
+        pop.assert_not_called()
 
 
 # ==================== Task 4：账号物理清除门禁 + PUT 防错位（P1-2 / P3-2）====================
@@ -1989,8 +1957,8 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         self.assertTrue(all(a.get("deleted") for a in rows))
         self.assertEqual(self.alerts, [], "被拒绝的清除不应发出任何高危操作告警")
 
-    def test_batch_purge_with_password_200_rows_gone_and_urgent_alert(self):
-        """口令正确 → 200、行真的消失、并补一条 urgent 高危告警（正文含脱敏号）。"""
+    def test_batch_purge_with_password_200_rows_gone_no_alert(self):
+        """口令正确 → 200、行真的消失、零告警（物理清除的痕迹只留在审计链上）。"""
         self._add_account("13800138001", name="A1", deleted=True)
         self._add_account("13800138002", name="A2", deleted=True)
         phones = [a["phone"] for a in self._rows()]
@@ -2000,12 +1968,8 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
                          "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._rows(), [], "彻底删除应物理清除行")
-        self.assertEqual(self._titles().count("高危管理操作告警"), 1, f"实际告警 {self.alerts}")
-        title, content, urgent = self.alerts[-1]
-        self.assertEqual(title, "高危管理操作告警")
-        self.assertTrue(urgent, "物理清除不可逆，必须推手机（非紧急在「仅重要告警」下不送达）")
-        self.assertIn("批量彻底删除账号 2 个", content)
-        self.assertIn(self.webapp._mask_phone(phones[0]), content)
+        self.assertEqual(self.alerts, [], f"物理清除告警已下线，实际 {self.alerts}")
+        self.assertEqual(len(self._audit_rows("account_batch")), 1, "清除动作必须留审计")
 
     def test_batch_purge_gate_does_not_displace_stale_phones_409(self):
         """门禁不得顶掉既有防错位：口令对了、phones 与列表漂移，仍应 409 而非 200。"""
@@ -2019,13 +1983,12 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
         self.assertEqual(len(self._rows()), 2, "409 后不得有任何物理清除")
 
     def test_batch_soft_delete_and_restore_still_need_no_password(self):
-        """反向保护：软删/恢复是可逆动作，不得被本次改动顺带要求口令。
+        """反向保护：软删/恢复是可逆动作，既不要求口令、也不再外发告警。
 
-        2026-09-10（批次20 Y1）口径变更：软删**仍然不要求口令**（用户裁决：软删可逆，
-        加口令只增误伤），但**必须发高危告警**——它虽可逆，却立即停止该用户代签且
-        受害者无法自助恢复（/api/my-accounts/<idx>/restore 对管理员删除行返回 403），
-        被盗的注册管理员会话可借此静默让全站停签。恢复（restore）仍是无副作用可逆
-        动作，不告警。
+        软删**仍然不要求口令**（软删可逆，加口令只增误伤），也**不再发高危告警**
+        （可逆动作不是事故）。它仍占用高危额度——软删立即停止该用户代签，且受害者
+        无法自助恢复（/api/my-accounts/<idx>/restore 对管理员删除行返回 403），被盗的
+        注册管理员会话可借此静默让全站停签。留痕由审计行承担。
         """
         self._add_account("13800138001", name="A1")
         self._add_account("13800138002", name="A2")
@@ -2035,16 +1998,13 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
                    json={"action": "delete", "ids": [0, 1], "phones": phones}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(all(a.get("deleted") for a in self._rows()))
-        titles = self._titles()
-        self.assertEqual(len(titles), 1, f"软删应产生 1 条汇总高危告警，实际 {titles}")
-        self.assertEqual(titles[0], "高危管理操作告警")
-        self.assertIn("软删", self.alerts[0][1])
-        self.assertIn("138****8001", self.alerts[0][1], "汇总告警应含脱敏手机号")
+        self.assertEqual(self.alerts, [], f"软删告警已下线，实际 {self.alerts}")
         r2 = c.post("/api/accounts/batch",
                     json={"action": "restore", "ids": [0, 1], "phones": phones}, headers=h)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         self.assertFalse(any(a.get("deleted") for a in self._rows()))
-        self.assertEqual(self._titles(), titles, "恢复（restore）不应新增任何告警")
+        self.assertEqual(self.alerts, [], "恢复（restore）同样不告警")
+        self.assertEqual(len(self._audit_rows("account_batch")), 2, "两次批量各留一条审计")
 
     def test_batch_param_errors_still_checked_before_gate(self):
         """既有 400 校验优先级不变：未知动作/空选择/超上限都不该被改成交给门禁判。"""
@@ -2074,27 +2034,19 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         self.assertEqual(len(self._rows()), 1, "无口令的物理清除必须被挡住且不动数据")
         self.assertEqual(self.alerts, [])
 
-    def test_single_purge_with_password_200_and_urgent_alert(self):
-        """改前实测：连发多条单条 purge 全部 200 且零告警（比批量更安静，破坏无痕）。"""
+    def test_single_purge_with_password_200_no_alert(self):
+        """口令正确 → 200、行消失、零告警；留痕由审计行承担。"""
         self._one_deleted()
         c, h = self._master()
         r = c.post("/api/accounts/0/purge",
                    json={"phone": "13800138001", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self._rows(), [])
-        self.assertEqual(self._titles(), ["高危管理操作告警"])
-        _title, content, urgent = self.alerts[-1]
-        self.assertTrue(urgent, "单条物理清除同样不可逆，必须 urgent 送达")
-        self.assertIn(self.webapp._mask_phone("13800138001"), content)
-        self.assertIn("操作者：admin", content)
+        self.assertEqual(self.alerts, [], f"物理清除告警已下线，实际 {self.alerts}")
         self.assertEqual(len(self._audit_rows("account_purge")), 1, "审计留痕不得少")
 
-    def test_purge_alert_title_matches_batch_so_throttle_window_is_shared(self):
-        """单条与批量必须同标题：send_notification 的邮件节流按标题计窗（_mail_alert_due），
-
-        同标题才共享窗口——被盗会话快速连删不会被刷爆 SMTP 额度，
-        合法运维的批量清理也只留一封。标题各写一份就会两路各计一窗。
-        """
+    def test_batch_and_single_purge_leave_audit_rows(self):
+        """单条与批量两条清除路径都只留审计：事后仍能还原谁清了哪几条。"""
         self._add_account("13800138001", name="A1", deleted=True)
         self._add_account("13800138002", name="A2", deleted=True)
         self._add_account("13800138003", name="A3", deleted=True)
@@ -2107,13 +2059,13 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         rs = c.post("/api/accounts/0/purge",
                     json={"phone": "13800138003", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(rs.status_code, 200, rs.get_data(as_text=True))
-        self.assertEqual(len(self.alerts), 2, f"实际 {self.alerts}")
-        self.assertEqual({t for t, _c, _u in self.alerts}, {"高危管理操作告警"},
-                         "两次清除的告警标题必须完全一致，否则节流窗口各算一份")
-        self.assertTrue(all(u for _t, _c, u in self.alerts))
+        self.assertEqual(self.alerts, [], f"实际 {self.alerts}")
+        self.assertEqual(len(self._audit_rows("account_batch")), 1, "批量清除留一条审计")
+        self.assertEqual(len(self._audit_rows("account_purge")), 1, "单条清除留一条审计")
 
-    def test_sixth_purge_in_window_hits_cooldown_429(self):
-        """默认额度（5 次 / 60 秒）下第 6 次物理清除应 429，且第 6 条凭据仍在。"""
+    def test_purge_over_window_quota_hits_cooldown_429(self):
+        """额度（用例内显式设 5 次 / 60 秒）用尽后下一次物理清除应 429，那条凭据仍在。"""
+        self._append_env("YIBAN_ADMIN_DELETE_MAX=5\n")
         phones = [f"1380013800{i}" for i in range(1, 7)]
         for p in phones:
             self._add_account(p, name="X", deleted=True)
@@ -2128,7 +2080,7 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         self.assertEqual(r6.status_code, 429, r6.get_data(as_text=True))
         self.assertIn("删除操作过于频繁", r6.get_json()["error"])
         self.assertEqual([a["phone"] for a in self._rows()], [phones[5]],
-                         "429 时最后一条凭据必须原样保留（改前此处 200 且无痕）")
+                         "429 时最后一条凭据必须原样保留")
 
     def test_wrong_password_tries_do_not_consume_purge_budget(self):
         """同口径延伸到账号侧：错口令尝试不得吃掉合法运维的额度。"""
@@ -2359,12 +2311,15 @@ class LoginTrailB14Test(_B14AlertGateBase):
         email, pw = self._user()
         c = self._client()
         bad = "wrong-" + pw
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):   # 3 次：只到告警阈值，不触发锁定
+        th = self.webapp.LOGIN_FAIL_NOTIFY
+        # 告警阈值与锁定阈值同值：第 th 次既留痕又锁定（429），之前都是 401
+        for i in range(th):
             r = c.post("/api/login", json={"username": email, "password": bad})
-            self.assertEqual(r.status_code, 401, r.get_data(as_text=True))
+            self.assertEqual(r.status_code, 429 if i == th - 1 else 401,
+                             r.get_data(as_text=True))
         self.assertEqual(self._audit_rows("login_ok"), [], "失败登录绝不产生成功留痕")
         fails = self._audit_rows("login_failed")
-        self.assertEqual(len(fails), 1, "既有阈值失败留痕（第 3 次一条）不受本例改动影响")
+        self.assertEqual(len(fails), 1, "阈值失败留痕只一条（两阈值同值只落一行）")
         self._assert_triple(fails[0], email)
         self.assertNotIn(bad, self._row_text(fails[0]), "失败留痕同样不得带上尝试的口令")
 

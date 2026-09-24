@@ -418,7 +418,8 @@ class RiskTriggerTest(_TierBase):
         """换环境才要求口令，但失败计数与告警这条信号不得因此静音。"""
         c, hdr = self._fresh()
         self.alerts.clear()
-        for _ in range(3):
+        th = self.webapp.LOGIN_FAIL_NOTIFY
+        for _ in range(th):
             r = self._call("creds", c, hdr, confirm_password="WrongPass999!",
                            _xff="203.0.113.7")
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
@@ -510,11 +511,16 @@ class PostHocAlertTest(_TierBase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.alerts, [], "full 档本就有当次口令，不重复发事后告警")
 
-    def test_purge_在非full档仍发高危告警(self):
+    def test_purge_在非full档不再发高危告警(self):
+        """物理清除不再外发即时告警：非 full 档的补偿信号只剩审计行。"""
         c, hdr = self._fresh()
         r = self._call("purge", c, hdr, confirm_delay_ack=True)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertIn("高危管理操作告警", [t for t, _b, _u in self.alerts])
+        self.assertEqual(self.alerts, [], f"物理清除告警已下线，实际 {self.alerts}")
+        import db
+        rows = [dict(x) for x in db.get_conn().execute(
+            "SELECT action FROM audit_logs WHERE action='account_purge'").fetchall()]
+        self.assertTrue(rows, "清除动作必须留在审计链上")
 
 
 class ExecutorChangeAlertTest(_TierBase):
@@ -600,7 +606,7 @@ class ExecutorChangeAlertTest(_TierBase):
 
 
 class UserDeleteAlertTest(_TierBase):
-    """删用户的两种模式都要有事后告警：都标了不可逆，补偿信号也得两路都有。"""
+    """删用户的两种模式：只有"清空账号"保留事后告警，full 分支只剩审计。"""
 
     TIER = "risk"
 
@@ -617,15 +623,19 @@ class UserDeleteAlertTest(_TierBase):
         self.assertNotIn("u1@test.local", body, "告警里的目标邮箱必须脱敏")
         self.assertIn("u1***@test.local", body)
 
-    def test_完全删除模式仍照旧告警(self):
-        """反向控制：full 分支的告警不得因为补 accounts_only 那一路而被改动。"""
+    def test_完全删除模式不再发告警(self):
+        """full 分支的即时告警已下线：清空账号那一路的补偿信号不受此影响（见上一例）。"""
         c, hdr = self._fresh()
         self._ensure_user("u1@test.local")
         r = c.post("/api/users/u1@test.local/delete",
                    json={"mode": "full", "confirm_delay_ack": True}, headers=hdr)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        body = "\n".join(b for _t, b, _u in self.alerts)
-        self.assertIn("完全删除用户", body)
+        self.assertEqual(self.alerts, [], f"完全删除告警已下线，实际 {self.alerts}")
+        import db
+        rows = [dict(x) for x in db.get_conn().execute(
+            "SELECT detail FROM audit_logs WHERE action='user_delete'").fetchall()]
+        self.assertTrue(rows, "完全删除必须留在审计链上")
+        self.assertIn("mode=full", rows[-1]["detail"])
 
 
 if __name__ == "__main__":

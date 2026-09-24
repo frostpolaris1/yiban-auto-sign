@@ -37,7 +37,6 @@ from _mail_body import render_body  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
-LOGIN_FAIL_NOTIFY = 3
 
 
 class SwitchPasswordGateTest(unittest.TestCase):
@@ -101,6 +100,14 @@ class SwitchPasswordGateTest(unittest.TestCase):
         # 每用例回到"两开关均未配置（=开放）"基线
         self.webapp.write_env_batch(self.env_file, {
             "YIBAN_GLOBAL_PAUSE": "", "YIBAN_REGISTRATION_PAUSE": ""})
+
+    @property
+    def _fail_threshold(self):
+        """门禁失败告警/冷却的起点：取 app 的常量，不另抄一份字面量。
+
+        抄一份就会与实现漂移——阈值改了而测试还在按旧值数次数，测的就不是实现。
+        """
+        return self.webapp.LOGIN_FAIL_NOTIFY
 
     def _login(self):
         c = self.webapp.create_app().test_client()
@@ -221,14 +228,14 @@ class SwitchPasswordGateTest(unittest.TestCase):
         也不被误判成锁定（错口令仍是 401 而不是 429）。
         """
         c, hdr = self._login()
+        th = self._fail_threshold
         codes = []
-        for _ in range(6):
+        for _ in range(th):
             r = c.post("/api/settings", json={
                 "registration_pause": 1, "confirm_password": "WrongPass999!"},
                 headers=hdr)
             codes.append(r.status_code)
-        self.assertEqual(codes[:LOGIN_FAIL_NOTIFY], [403] * LOGIN_FAIL_NOTIFY)
-        self.assertTrue(all(x in (403, 429) for x in codes), f"实际 {codes}")
+        self.assertEqual(codes, [403] * th, "阈值内每次都是口令错（未进冷却）")
         self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"), "被拒不得落盘")
         # 登录侧完好无损（同一个 app：_login_fails 是 create_app 的闭包字典，
         # 换 app 探测等于换了个内存桶，测不出门禁有没有污染登录的账）
@@ -242,12 +249,13 @@ class SwitchPasswordGateTest(unittest.TestCase):
         """统一门禁：口令复核失败走独立计数，首达阈值发一次紧急告警。
 
         用户裁决（P18 延续）：不写 _login_fails（不锁管理员），另开独立计数 +
-        连续失败告警。连错 LOGIN_FAIL_NOTIFY 次：每次仍 403，仅第 3 次触发
+        连续失败告警。连错阈值次：每次仍 403，仅达阈值那一次触发
         send_notification 一次（每窗口一次），且有审计留痕。
         """
+        th = self._fail_threshold
         c, hdr = self._login()
         with mock.patch.object(self.webapp, "send_notification") as m:
-            for _ in range(LOGIN_FAIL_NOTIFY):
+            for _ in range(th):
                 r = c.post("/api/settings", json={
                     "registration_pause": 1, "confirm_password": "WrongPass999!"},
                     headers=hdr)
@@ -263,18 +271,19 @@ class SwitchPasswordGateTest(unittest.TestCase):
 
     def test_sensitive_pw_fail_no_repeat_alert_in_same_window(self):
         """同一窗口内超阈值后再多失败也不重复告警（避免刷屏），改为进冷却拒绝。"""
+        th = self._fail_threshold
         c, hdr = self._login()
         codes = []
         with mock.patch.object(self.webapp, "send_notification") as m:
-            for _ in range(LOGIN_FAIL_NOTIFY + 2):
+            for _ in range(th + 2):
                 r = c.post("/api/settings", json={
                     "registration_pause": 1, "confirm_password": "WrongPass999!"},
                     headers=hdr)
                 codes.append(r.status_code)
         self.assertEqual(m.call_count, 1,
                          "窗口未滚动时超阈值再多失败也只告警一次")
-        self.assertEqual(codes[:LOGIN_FAIL_NOTIFY], [403] * LOGIN_FAIL_NOTIFY)
-        self.assertEqual(codes[LOGIN_FAIL_NOTIFY:], [429] * 2,
+        self.assertEqual(codes[:th], [403] * th)
+        self.assertEqual(codes[th:], [429] * 2,
                          f"超阈值后应被冷却挡住，实际 {codes}")
         self.assertFalse(self._env_has("YIBAN_REGISTRATION_PAUSE=1"))
 

@@ -494,29 +494,34 @@ class AdminToWriteTest(_Base):
         self.assertTrue(rows, "应写入 mail_config 审计")
         self.assertNotIn("audited@test.local", rows[0][0], "审计只记打码值")
 
-    def test_old_recipient_notified_on_change(self):
-        """被摘掉的旧收件人必须收到通知——否则被盗会话改收件人即致盲。"""
+    def test_old_recipient_not_notified_on_change(self):
+        """改收件人不再单独通知旧地址，也不发变更告警：只在审计里留痕。
+
+        旧实现用"发给旧收件人"防致盲，但那一封走的正是被改动的通道本身（拆报警器的
+        动作由报警器来通报）——只有通道还活着时才有意义；留痕改由 mail_config 审计承担。
+        """
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=old@test.local\n")
         c, h = self._master()
         with mock.patch.object(self.webapp.mailer, "send_admin_alert", return_value=True) as m, \
-                mock.patch.object(self.webapp, "send_notification", return_value=None):
+                mock.patch.object(self.webapp, "send_notification", return_value=None) as sn:
             r = c.put("/api/mail-config",
                       json={"admin_to": "new@test.local", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        targets = [call.kwargs.get("to") for call in m.call_args_list]
-        self.assertIn("old@test.local", targets,
-                      "旧收件人应收到『你已不再是收件人』通知")
+        self.assertEqual(m.call_args_list, [], "旧收件人通知已下线")
+        sn.assert_not_called()
+        self.assertEqual(self._env_admin_to(), "new@test.local", "改收件人本身必须照旧生效")
 
-    def test_no_stale_notice_when_address_unchanged(self):
-        """地址没变（仅大小写/空白差异之外的同值）不应重复打扰。"""
+    def test_recipient_unchanged_writes_no_alert(self):
+        """地址没变（同值提交）不产生任何外发。"""
         self._reset_env_file("YIBAN_MAIL_ADMIN_TO=same@test.local\n")
         c, h = self._master()
         with mock.patch.object(self.webapp.mailer, "send_admin_alert", return_value=True) as m, \
-                mock.patch.object(self.webapp, "send_notification", return_value=None):
+                mock.patch.object(self.webapp, "send_notification", return_value=None) as sn:
             r = c.put("/api/mail-config",
                       json={"admin_to": "same@test.local", "confirm_password": ADMIN_PASS}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(m.call_args_list, [], "同值提交不应发出旧收件人通知")
+        self.assertEqual(m.call_args_list, [])
+        sn.assert_not_called()
 
 
 _MAIL_ENV_KEYS = (
@@ -834,7 +839,11 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
         with io.open(self.env_file, encoding="utf-8-sig") as f:
             self.assertEqual(f.read(), before, "校验失败的请求不得动 .env")
 
-    def test_change_alert_fires_only_after_successful_write(self):
+    def test_write_failure_leaves_no_trace_and_no_alert(self):
+        """落盘失败 → 500、零写入、零外发；落盘成功 → 配置生效、仍零外发。
+
+        告警下线后留下的是更硬的事实：失败请求不得在 .env 上留半个键。
+        """
         self._reset_env_file()
         c, h = self._master()
         alerts = []
@@ -842,22 +851,20 @@ class MailConfigSaveAtomicTest(_Base_FAILOVER):
                 self.webapp, "send_notification",
                 side_effect=lambda t, c_, urgent=False, force=False, ledger=None:
                 alerts.append(t)):
-            # 写入失败（模拟磁盘错）："配置已变更"告警不得外发——它只能描述已落盘的事实
+            # 写入失败（模拟磁盘错）：不得外发，也不得在 .env 上留半个键
             with mock.patch.object(self.webapp, "write_env_batch",
                                    side_effect=RuntimeError("disk full")):
                 r = c.put("/api/mail-config",
                           json={"enabled": True, "smtps": self.smtps(),
                                 "confirm_password": ADMIN_PASS}, headers=h)
             self.assertEqual(r.status_code, 500, r.get_data(as_text=True))
-            self.assertEqual(alerts, [], "写入失败不得外发「配置已变更」告警")
+            self.assertEqual(alerts, [], "写入失败不得外发")
             self.assertNotIn("YIBAN_MAIL_SMTPS_ENC",
                              env_io.parse_env_file(self.env_file))
-            # 写入成功：两条变更告警在落盘之后发出（force=True 绕过节流，不因
-            # 新写入的参数被吞）
+            # 写入成功：配置真的落盘（通道变更只留审计，不再外发告警）
             r = c.put("/api/mail-config",
                       json={"enabled": True, "smtps": self.smtps(),
                             "confirm_password": ADMIN_PASS}, headers=h)
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertIn("邮件配置变更告警", alerts)
-        self.assertIn("邮件 SMTP 配置变更告警", alerts)
+        self.assertEqual(alerts, [], "通道变更告警已下线")
         self.assertEqual(self._read_enc_entries()[0]["user"], "a@x.com")

@@ -823,7 +823,8 @@ class WebB12Test(unittest.TestCase):
 
     # ---- B12-14 登录失败 / 越权审计 ----
     def test_login_failure_threshold_audited(self):
-        for _ in range(3):  # LOGIN_FAIL_NOTIFY = 3
+        # 阈值取 app 常量：另抄字面量会在阈值调整后"再也到不了阈值"而静默失测
+        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
             self.c.post("/api/login", json={"username": EMAIL, "password": "wrong-pass"})
         rows = self._audit_rows("login_failed")
         self.assertGreaterEqual(len(rows), 1, "达到失败阈值必须留痕审计链（B12-14）")
