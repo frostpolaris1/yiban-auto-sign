@@ -2,13 +2,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """部署路径的解析口径与恢复件核验的结论分类。
 
-两条都来自"真实部署者只照 README 做"的演练，且都会给出**错误结论**而不报错：
+标签：J · 运维：部署/备份/发布
+覆盖：`YIBAN_STATE_DIR`/`YIBAN_LOG_FILE` 在 `.env` 与进程环境两种来源下的解析优先级、
+    引擎与 web 常量是否跟随 .env、backup.sh `--restore` 的四种结论（通过/篡改/工具崩溃/
+    工具缺失）、备份日志目录跟随配置、pull-prod-backup 脚本的参数与只读契约。
+对应实现：路径解析在 `yiban/infra/paths.py` 与 `run.sh`/`web/app.py`；恢复核验与结论
+    分类在 `scripts/backup.sh` 的 `--restore` 分支。
+关键断言：① 进程环境优先于 .env，空值继续回落到默认值；② 恢复核验退出码 0=通过、
+    1=检出篡改、2=无法定论（含工具缺失/崩溃），**退出码 1 不得当"无法核验"用**——
+    解释器缺依赖时 Python 也以 1 退出，会把合法演练报成"审计被改写"。
+依赖：`ResolvePathTest`/`StateDirHonoursEnvFileTest` 纯 Python；`RestoreVerdictTest`、
+    `BackupLogDirTest`、`PullProdBackupContractTest` 需要 bash（class 级 skipIf，本机无
+    bash 时整类跳过），后者另有若干条在无 bash 时逐条 skipTest；起 bash 子进程真跑
+    `--restore`（含 tar 解包与 SQLite integrity_check）；不连网络、不需 docker。
 
-1. `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` 写进 `.env` 时，过去只有跑 `run.sh` 的那条路
-   生效（脚本自己 export），web 进程与直接调用的脚本静默回落到 `/var/log/yiban`——
-   同机第二份部署因此与第一份共用状态目录、锁与磁盘外锚点。
-2. 恢复件审计核验用系统 `python3` 跑，并把**退出码 1** 一律当"检出篡改"。解释器缺依赖
-   时 Python 抛 ImportError 也以 1 退出，于是合法的恢复演练被报成"审计被改写/删除"。
+两条都来自"真实部署者只照 README 做"的演练，且都会给出**错误结论**而不报错：
+`.env` 里的路径过去只对 `run.sh` 那条路生效，web 进程静默回落到 `/var/log/yiban`——
+同机第二份部署因此与第一份共用状态目录、锁与磁盘外锚点。
 """
 
 import io
@@ -148,10 +158,10 @@ class RestoreVerdictTest(unittest.TestCase):
                     '  crash) echo "Traceback (most recent call last):"; '
                     'echo "ModuleNotFoundError: No module named \'Crypto\'" >&2; exit 1 ;;\n'
                     'esac\n')
-        os.chmod(stub, 0o755)
+        os.chmod(stub, 0o755)  #桩解释器必须可执行：backup.sh 是直接调 $APP_DIR/.venv/bin/python 的
         with io.open(os.path.join(self.app, "scripts", "audit_verify.py"),
                      "w", encoding="utf-8") as f:
-            f.write("# 桩：真实脚本由上面的解释器桩替代\n")
+            f.write("# 桩：真实脚本由上面的解释器桩替代\n")  #audit_verify.py 只需存在——判定看的是桩的退出码与输出文案
         # 备份包：含库 + .env + 锚点
         self.archive = os.path.join(self.tmp, "pkg.tar.gz")
         src = os.path.join(self.tmp, "src")
@@ -205,7 +215,7 @@ class RestoreVerdictTest(unittest.TestCase):
 
     def test_missing_tooling_is_not_a_pass(self):
         """包内含库但机器上没有可用解释器/脚本：不能算作"恢复成功"。"""
-        shutil.rmtree(os.path.join(self.app, ".venv"))
+        shutil.rmtree(os.path.join(self.app, ".venv"))  #解释器和脚本一起删才叫"机器上没有工具"：只删一个仍会走到核验分支
         shutil.rmtree(os.path.join(self.app, "scripts"))
         env = dict(os.environ)
         env["APP_DIR"] = "app"

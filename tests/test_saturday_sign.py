@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""周六签到开关测试（2026-08-29；2026-09-07 v0.29.0 默认语义反转：默认关闭）。
+"""周六签到开关（默认关闭）。
 
-覆盖：
-- signin.main()：周六 + 缺省（默认关闭）→ exit 2（SKIPPED）；周六 + 显式开启 → 放行；
-  --only 手动签到不受限；周日语义回归（不变）
-- web sign_status：周六缺省 → 「今日无需打卡（周六）」；显式开启 → 走正常窗口逻辑
-- /api/settings：GET 返回 saturday_sign 默认 0；POST 显式写入 0/1；
-  部分更新不清空其他设置；普通管理员可改（非主管理员专属）
-
-用法（项目根目录）：
-    py -m pytest tests/test_saturday_sign.py -v
+标签：D · 状态词汇与账号生命周期
+覆盖：`signin.main()` 在周六 + 缺省 → exit 2（SKIPPED）、显式开启 → 放行、`--only`
+    手动不受限、周日语义不变；web `sign_status` 周六缺省的"今日无需打卡"文案；
+    `/api/settings` 的 GET 默认 0、POST 显式写 0/1、部分更新不清空其他延迟字段、
+    普通管理员可改（非主管理员专属）。
+对应实现：开关常量与分支在签到入口（`scripts/signin.py` →
+    `yiban/engine/runner.py`），文案在 `web/app.py` 的 `sign_status`，读写走
+    `/api/settings` 与 `.env`。
+关键断言：**默认语义是关闭**——反转前"周六默认也签"会让学校在无任务的周六白打一次；
+    部分更新不得把未提交的字段清空。
+依赖：时钟用 `_FakeDT` 替身注入（只替 `now()`），进程内 mock；web 部分走 Flask test
+    client + 临时 .env/DB；`YIBAN_PW_GATE=full` 固定档，不触网、不需子进程。
 """
 import contextlib
 import datetime as _dt
