@@ -96,8 +96,7 @@ def parse_sign_log(path, tail_lines):
 
     只返回日志行，不返回"日志符号 → 图标"这类派生状态：账号状态的事实源是 sign-state
     文件（`load_sign_state`，`/api/accounts`），日志符号与前端状态码语义不符，透传会把
-    前端图标/统计卡污染。`parse_sign_log` 与 `_log_lines_for` 共用同一条可见性规则，
-    避免两处各写一遍必然漂移。
+    前端图标/统计卡污染。
 
     倒读实现由调用方传入（`web.app` 的 `_tail_lines`）：它是本函数的既有打桩点，
     测试以它替换解析输入。
