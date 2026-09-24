@@ -7,6 +7,8 @@
 
 **归属**：`yiban.engine` 的调度基元层。计划层按分片批量写 `sign_tasks.owner`，执行体用
 `shards_of` 拼 `WHERE vshard IN (...)` 领自己名下的行；本模块自身零依赖、零状态。
+调用点：`planner.build_plan` 用 `v_for` / `vshard_of` / `owner_of`，`executor_v3` 用
+`shards_of` / `vshard_of`——两者都在 `YIBAN_SCHEDULER_V3`（缺省 0）的 v3 路径上。
 
 **复用**：`v_for` 按账号规模选分片数；`assignment` 一次算出全表归属（运维核对/对账用）；
 `shards_of` 是执行体启动第一批查询分片集的唯一来源。

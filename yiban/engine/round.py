@@ -9,8 +9,8 @@
 的账号级租约：领不到即"别人正在做它"，本进程不碰（不写状态、不重试、不告警）。
 
 **归属**
-`yiban.engine` 的签到执行核心；`runner`（定时全量）、`workers`（并行/兜底执行体）与
-手动 `--only` 都落到 `run_queue_retry`。
+`yiban.engine` 的签到执行核心，也是 v3 开关缺省关闭时的实际执行路径；`runner`
+（定时全量）、`workers`（并行/兜底执行体）与手动 `--only` 都落到 `run_queue_retry`。
 
 **复用**
 `run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）；
@@ -20,8 +20,8 @@
 输入：账号列表、时间表（schedule，空即手动队列）、`--only` 过滤后的子集。
 输出：按日状态（经 `state_io`）、`sign_events`、告警（`alerts`）；返回本轮统计供
 `runner` 汇总退出码。
-调用谁：`client`（单次尝试）、`attempts`、`state_io`、`alerts`、`schedule`、`db`。
-谁调用：`runner.run_once`、`workers` 的子进程。
+调用谁：`attempts`（单次尝试，`client` 由它调用）、`state_io`、`alerts`、`schedule`、`db`。
+谁调用：`runner.main` 的 v2 分支与 `workers` 拉起的执行体子进程。
 前端调用点：账号页与我的账号页（`web/static/js/pages/work_accounts.js`、
 `web/static/js/components/my-accounts.js`）、日历/日志（`web/static/js/calendar.js` 拉
 `/api/my-calendar`、`/api/my-logs`）与仪表盘 `/api/admin/sign-events` 读本模块写入的
@@ -267,7 +267,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         **`pending` 不是结论**：排计划阶段给每个账号都写了"计划 HH:MM"（同一份状态
         文件），若把它当成"已有记录"，窗口外起跑的全量轮会一个账号都进不了 `results`
         ——汇总把它们算成失败（❌ N 失败、退出码 1、发失败邮件），而真相是"一个请求都
-        没发"（2026-09-17 测试机实测复现；该行在 `pending` 判定加入前对 base 提交同样）。
+        没发"（实测可复现）。
 
         **快照只用于预筛，落盘再 CAS 一次**：`_daily_statuses()` 是无锁快照，从快照
         判"无记录"到写入之间，另一执行体可能刚把真实结论落盘——写走
