@@ -5,7 +5,7 @@
 覆盖：全局限速的两桶分级——匿名与写路径走严格桶，已登录 GET 走放宽的独立桶
 对应实现：`web/app.py` 的 `create_app` 内限速包装与 `RATE_MAX` / `RATE_MAX_AUTH_GET`
 关键断言：严格阈值 +1 必现 429 且前 `RATE_MAX` 次全 200；已登录 GET 跨过旧严格阈值仍放行；已登录的写路径照旧吃 429；把放宽桶打满后严格桶仍满额可用（两桶独立计数）
-依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node（口令以 scrypt 哈希预置，登录走真实校验）。限速计数是 `create_app` 的闭包状态，故每条用例新建 app。无需 node
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node（口令以 scrypt 哈希预置，登录走真实校验）。限速计数是 `create_app` 的闭包状态，故每条用例新建 app
 
 判据：
 - 匿名请求与写路径（POST/PUT/DELETE）维持严格阈值 RATE_MAX（脚本轰炸主防线）；

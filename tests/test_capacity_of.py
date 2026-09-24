@@ -16,7 +16,6 @@
    `yiban/engine/runner.py` 两处用显式期望值钉住；另两处（`settings_api` / `cli`）
    以"包住 `capacity_of` 看它收到什么"作行为断言，验证 `k=1`（单执行体语义）。
 
-依赖：假时钟与假配置快照（runner 预检不读真实 .env、不联网、不落库）。
 """
 import os
 import shutil

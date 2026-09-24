@@ -11,7 +11,7 @@
     py -m pytest tests/test_breaker.py -v        # 需要 pytest
     py tests/test_breaker.py                     # 无 pytest 也可直接运行
 
-覆盖：
+逐项明细：
 - 凭据失败计数：连续 3 天 → 暂停 + 试探日；同一天多次失败只计 1 天
 - 成功清除计数；网络类失败不计数
 - run_queue_retry：暂停中零请求；--only 手动签到绕过；半开试探日执行并恢复
