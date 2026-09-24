@@ -55,12 +55,9 @@ ACCOUNT_STATUS_REJECTED = "rejected"  # 已拒绝（附理由，用户可编辑�
 # 手机号格式（易班登录账号为中国 11 位手机号；恶意字符可注入前端事件与日志）
 PHONE_RE = re.compile(r"^1\d{10}$")
 
-# 注销宽限期（天）：软删除冷却期，与账号软删除保留期对齐；与 db.purge_deleted_users
-# 默认一致；已注销用户视图按此计算剩余天数。原实现另有硬编码的 7，与
-# db.SOFT_DELETE_RETENTION_DAYS（账号保留期唯一事实源）及 db.purge_deleted_users 默认值
-# 形成三份互不相干的"7"——运维按注释去调 SOFT_DELETE_RETENTION_DAYS 时，账号会被提前
-# 物理清除而恢复宽限期仍按 7 天，用户点恢复会看到"成功"实际账号已消失（静默数据丢失）。
-# 现统一取同一常量（**唯一事实源**，不要再写字面量），使两处口径无法各自漂移。
+# 注销宽限期（天）：**必须**取 db.SOFT_DELETE_RETENTION_DAYS（账号保留期唯一事实源），
+# 不要再写字面量。各写一份"7"就会各自漂移：运维改了保留期之后账号会被提前物理清除，
+# 而恢复宽限期仍按旧值显示，用户点"恢复"会看到成功、实际账号已经没了（静默数据丢失）。
 DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 
 # ---------------------------------------------------------------------------
@@ -76,10 +73,10 @@ _PASSWORD_CLASS_PATTERNS = (r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]")
 _PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
 # 类别下限：文案里的中文"两"须与本常量一致（元测试同时钉住数值与措辞，防只改一处）
 _PASSWORD_MIN_CLASSES = 2
-# 统一口径文案（前后端同句）：旧写法一处把下限写成易被读成"三类起"的中文比较词、另一处
-# 简写得像"数量恰好等于下限"。此后统一用"…中的至少两类"这一无歧义说法。
-# 大小写合并显示（文案精简）；判定仍按上方四类（大写/小写/数字/符号各自独立），
-# 故 _PASSWORD_CLASS_LABELS 保持四元组——管理员"至少三类"消息必须完整列举四类。
+# 统一口径文案（前后端同句）：唯一写法是"…中的至少两类"——单用中文比较词会被读成
+# "三类起"，写成"两类"又会被读成"恰好两类"。
+# 大小写在文案里合并（精简），判定仍按四类各自计数，所以 _PASSWORD_CLASS_LABELS 保持
+# 四元组：主管理员"至少三类"的消息必须把四类列全。
 _PASSWORD_CLASS_HINT = "大小写字母、数字、符号中的至少两类"
 _PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
 # 主管理员（内置 .env 管理员）口令单独提档：至少 12 位且命中至少三类，与启动期的
@@ -94,10 +91,9 @@ ADMIN_PASSWORD_MIN_CLASSES = 3
 def load_accounts():
     """全部账号（SQLite，password/phone_code 已解密为明文，按 sort_order 升序）。
 
-    `_file_lock` 只护住「取快照」这一步：解密是 CPU 密集且不碰连接，放到锁外——
-    否则 8 个 web 线程的账号读写仍会被解密串行化。
-    `_file_lock` 与写操作同锁，避免读到同一连接上未提交事务的部分结果
-    （RLock 可重入，写操作内调用无死锁）。
+    `_file_lock` 与写操作同锁（RLock 可重入，写操作内调用无死锁），但只护住
+    「取快照」这一步：解密是 CPU 密集且不碰连接，放到锁外——否则多路 web 线程的账号
+    读写会被解密串行化。
     """
     def _snap():
         with _file_lock:
@@ -109,10 +105,9 @@ def load_accounts():
 def load_accounts_raw():
     """全部账号原始行（不解密 password/phone_code），供仅需明文列的统计/归类路径。
 
-    只 SELECT + 组行，无 AES-GCM 解密、无明文自愈回写：计数、取 owner 集合、
-    容量三分类等只用得到 phone（本就是明文列，兼作 AAD）/status/user_paused/
-    deleted/owner，调用方拿不到也无需明文凭据。
-    _file_lock 与 load_accounts 同锁：同连接上未提交事务的部分结果不可见。
+    只 SELECT + 组行：无 AES-GCM 解密、无明文自愈回写。计数、取 owner 集合、容量
+    三分类只用明文列（phone 本就是明文、兼作 AAD）与 status/user_paused/deleted/owner，
+    调用方拿不到也无需明文凭据。锁口径与 `load_accounts` 一致。
     """
     with _file_lock:
         return db.accounts_snapshot()
@@ -246,17 +241,15 @@ def _stale_idx_guard(acc, data, *, fail_closed=False):
     返回 True 表示错位，调用方应返回 409 引导刷新。未携带 phone 的请求（旧客户端/
     测试）默认保持兼容不校验。
 
-    比对前双侧 _mask_phone 归一：/api/accounts 出站即脱敏（mask_account），
-    浏览器回传的是 138****8000 形态；_mask_phone 幂等（含 * 原样返回），直连
-    API 发全号的旧客户端/测试同样归一可比；伪造他人号码仍因不等被拦。
-
-    `fail_closed=True` 给"改写凭据"这类写路径：拿不出任何可核对的标识就等于
-    没人证明 idx 仍指向视图里那一行。放行的代价（静默改掉别人的易班凭据、还回
-    200）远大于拒绝的代价（调用方刷新一次页面），故此时按错位处理。
     """
     phone = data.get("phone") if isinstance(data, dict) else None
     if phone is None:
+        # 没带 phone 就等于没人证明"idx 还指向视图里那一行"：改写凭据这类写路径按错位
+        # 处理。放行=静默改掉别人的易班凭据还回 200，代价远大于让用户刷新一次页面
         return fail_closed
+    # 双侧先过 _mask_phone 再比：/api/accounts 出站即脱敏，浏览器回传的是 138****0000
+    # 形态；_mask_phone 幂等（含 * 原样返回），所以直连 API 发全号的旧客户端同样可比。
+    # 伪造别人的号码仍因不等被拦。
     return _mask_phone(str(phone).strip()) != _mask_phone(str(acc.get("phone", "")))
 
 
@@ -321,11 +314,10 @@ def _slot_to_label(slot_min, sign_window_bounds):
     `window.bounds` 回退默认窗口——直读原始窗口起点会让片卡（按有效窗口）显示 06:30、
     而偏好标签与保存提示（按原始窗口）说 07:00，同一页面出现两个钟点。
 
-    窗口视图由调用方传入（`web.app` 的 `sign_window_bounds`）：它是会被测试打桩的
-    模块级名字。
+    参数注入口径见模块头「通信」（`sign_window_bounds` 是既有打桩点）。
     """
     if slot_min is None:
-        return None
+        return None  # 没选片就没有偏移：不出"07:00"这种假默认值
     win = sign_window_bounds()
     m = win.start_min + int(slot_min)
     return f"{m // 60:02d}:{m % 60:02d}"
@@ -342,12 +334,11 @@ def _estimate_slot(phone, load_accounts, read_env, env_file, load_env_int,
     窗口与原始裁剪拼 `eff_lo/eff_hi` 会在回退时得到空区间（span=0），预计时段静默变空。
     找不到可用片时仍返回 `(None, "")`（fail-closed，不回退成某个默认片）。
 
-    账号读入口、`.env` 路径与读取器、整数配置读取器、窗口视图都由调用方传入
-    （`web.app` 的同名模块级名字）：它们会被测试打桩或赋值改写，本模块另持绑定会让
-    这些改写静默失效。
+    参数注入口径见模块头「通信」（`load_accounts` / `read_env` / `ENV_FILE` /
+    `load_env_int` / `sign_window_bounds` 都可被打桩或赋值改写）。
     """
     env = read_env(env_file)
-    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
+    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()  # 旧的模式键，下面两个新键缺省时用它
     order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
         "random" if mode == "random" else "sequence")
     dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
