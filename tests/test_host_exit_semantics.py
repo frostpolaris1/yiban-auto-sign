@@ -1,11 +1,21 @@
 # -*- coding: utf-8 -*-
 """回归测试：宿主 run.sh 补签闸门不被「部分成功」吞掉。
 
-覆盖：
-- 退出码语义：有 skipped_window/skipped_norange 未了结账号时（即使有成功）→ exit 2
-  （run.sh 写 SKIPPED → 07:10 补签重跑）；无窗口外跳过 → 维持 0/1/2 原语义；
-- 告警时机（2026-09-16 改判据）：**窗口还开着 + 后面还有人接着跑**（补签轮未到或兜底执行体
-  在跑）才抑制；窗口已关、或没人接着跑时必须告警。
+标签：B · 调度：领取/队列/执行体
+覆盖：退出码判定矩阵（混合成功与窗口/Range 跳过 → 2、全成功 → 0、no_task
+   属了结、真失败优先 → 1、全员窗口外 → 2、暂停与用户取消不触发 2）、sched-run
+   标记区分首签/补签轮、混合场景仍写全量完成标记、告警抑制的事实判定（窗口开着
+   + 后面还有人接着跑才抑制）、兜底心跳的新鲜度三档。
+对应实现：scripts/signin.py（main
+   尾部退出码汇总、_write_sched_done、_maybe_alert_zero_success、兜底存活判定）、run.sh
+   对这些退出码的消费、scripts/state_io 的 fallback 心跳文件。
+关键断言：「有未了结的窗口外账号」必须让宿主写 SKIPPED 从而触发 07:10
+   补签，即使本轮有成功——部分成功不是全量完成。真失败优先于窗口跳过（exit
+   1），暂停/用户取消是有意状态不得拉成
+   2。告警抑制改为事实判定：只有窗口还开着且确实有人接着跑才抑制；窗口已关时兜底也做不了什么，必须让管理员当天知情。心跳过期即判已停（kill
+   -9 不会执行清理，只看文件在不在就永远报「在跑」）。
+依赖：临时状态目录 + 打桩 signin 的写盘/邮件/时钟；退出码用复制的汇总逻辑直算（与
+   main 尾部同构）。不发网络请求。整文件在本机执行，无 skip。
 
 用法（项目根目录）：
     py -m pytest tests/test_batch15_exit_semantics_0831.py -v
@@ -34,14 +44,14 @@ class ExitCodeSemanticsTest(unittest.TestCase):
 
     def _compute(self, statuses):
         """按 main() 的汇总逻辑计算退出码。"""
-        has_real_failure = False
+        has_real_failure = False # 这段是 main 尾部汇总的副本：判定改了要两边同改，否则这里永远绿
         has_executed = False
         has_window_skip = False
         ok_n = fail_n = skip_n = 0
         accounts = []
         results = {}
         for i, (status, _m) in enumerate(statuses):
-            phone = f"1380000000{i}"
+            phone = f"1380000000{i}" # 号只是 results 的键：本用例断的是状态到退出码的映射，与具体号码无关
             accounts.append(_mk_acc(phone))
             results[phone] = (False, _m, True, status) if status not in (
                 signin.STATUS_SUCCESS, signin.STATUS_ALREADY,
@@ -61,7 +71,7 @@ class ExitCodeSemanticsTest(unittest.TestCase):
                 has_executed = True
         if has_real_failure:
             return 1, ok_n, fail_n, skip_n
-        if not has_executed or has_window_skip:
+        if not has_executed or has_window_skip: # 一个都没执行、或有窗口外未了结，都判 2；run.sh 据此写 SKIPPED 触发补签
             return 2, ok_n, fail_n, skip_n
         return 0, ok_n, fail_n, skip_n
 

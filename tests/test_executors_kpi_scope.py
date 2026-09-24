@@ -2,6 +2,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """执行体分区的口径说明，用源级断言钉住。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：前端源级契约：KPI
+   分子取「计入容量的账号数」且分母只数并行行、容量卡文案点名「账号」、首卡为今日进度、故障转移状态格只报状态徽标且无第二写入路径、弹窗开关的初值/payload
+   字面量/取值归一与只拨开关时不发空体行接口、弹窗措辞随实际写入项取词、开关在弹窗首位且带字段标题、浮层行菜单分隔线无外边距、故障转移
+   off 文案以「开关」为主语、执行体一览的跳号与单行口径句。
+对应实现：web/static/js/components/settings-executors.js、web/templates/pages/work_settings.html、web/static/css/app.css。
+关键断言：断言必须落在可执行代码上而不是注释：同形注释能满足 assertIn（实测 payload
+   键改坏 +
+   注入一行注释，旧用例仍绿），故先剥行注释再断言。只针对函数体而非整文件（注释里引用旧口径说明改动原因是允许的）。分母用后端
+   workers.configured，不由前端按清单长度自算——两侧各算一套迟早给出不同的「平均每执行体人数」。
+依赖：只读前端源文件做文本断言（不解析 JS
+   语法、不起应用、不建库、不联网）。整文件在本机执行，无 skip。
+
 1. **「平均每执行体分到的人数」= 计入容量的账号数 ÷ 并行执行体数**（只数「并行」行：停用与
    故障转移不分担账号）。旧口径是「用户容量上限 ÷ 并行行数」——按名额填满估算，与实际账号数
    无关，用户看到 500 时以为那是"每执行体分到的人数"。同页「设定的账号容量上限」也必须是
@@ -23,7 +36,7 @@ import re
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-JS = os.path.join(BASE, "web", "static", "js", "components", "settings-executors.js")
+JS = os.path.join(BASE, "web", "static", "js", "components", "settings-executors.js") # 直接钉前端源文件：这类口径与控件归属没有运行时断言可依赖
 TPL = os.path.join(BASE, "web", "templates", "pages", "work_settings.html")
 CSS = os.path.join(BASE, "web", "static", "css", "app.css")
 
@@ -39,8 +52,8 @@ def _function_body(src, name):
     断言只针对函数体：注释里引用旧口径说明改动原因是允许的，用整文件 assertNotIn 会误伤
     （写完第一版就被自己的注释命中过一次）。
     """
-    start = src.index("function " + name + "(")
-    end = src.index("\n  }", start)
+    start = src.index("function " + name + "(") # 定位不到就 ValueError 让用例红，绝不静默返回空串（空串会让断言假绿）
+    end = src.index("\n  }", start) # 依赖前端「函数体收在两空格 }」的排版；那边改了缩进风格要同步这里
     return src[start:end]
 
 
