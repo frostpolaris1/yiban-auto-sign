@@ -35,6 +35,10 @@ TEST_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "secret1"
 BUILTIN_EMAIL = "builtin@test.local"
+# 门禁档位：本文件多数用例钉的是"当次要口令"这一层的机制（冷却、豁免、失败账、
+# 顺序），必须显式固定在 full——默认档是 risk，不固定则这些动作不再当次要口令。
+# 默认档与 off 档的行为由 tests/test_pw_gate_tiers.py 钉。
+GATE_FULL = "full"
 
 
 class SecurityFixes021Test(unittest.TestCase):
@@ -605,7 +609,9 @@ class CredentialWriteGateTest(unittest.TestCase):
         with open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY_CWGATE}\n"
                     "YIBAN_ADMIN_USER=admin\n"
-                    f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS_CWGATE}\n")
+                    f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS_CWGATE}\n"
+                    # 本类钉的是"改写他人凭据要当次二次鉴权"这道机制，固定在 full
+                    f"YIBAN_PW_GATE={GATE_FULL}\n")
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
         for k, v in {
@@ -809,6 +815,8 @@ class RoleHardeningTest(unittest.TestCase):
         cls._env_content = (
             f"YIBAN_ACCOUNTS_KEY={TEST_KEY_ROLE}\n"
             f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS_ROLE}\n"
+            # 角色变更的用例钉的是"当次口令 + 限速 + 权限 403"这套机制，固定在 full
+            f"YIBAN_PW_GATE={GATE_FULL}\n"
         )
         with open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(cls._env_content)
@@ -1042,6 +1050,10 @@ class _GateBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY_SGATE}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本基类钉的是门禁**机制**本身（冷却、豁免、失败告警、独立计数、
+                # 跨端点共用一份账），这些语义只在"当次要求口令"时才看得见，
+                # 故把档位固定在 full；默认档 risk 的行为由 test_pw_gate_tiers.py 钉。
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")

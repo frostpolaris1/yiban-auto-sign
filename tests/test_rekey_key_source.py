@@ -988,6 +988,11 @@ class _B14AlertGateBase(unittest.TestCase):
             "YIBAN_ADMIN_USER=admin",
             f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}",
             "YIBAN_MAIL_ADMIN_TO=admin@test.local",
+            # 本基类下的用例钉的是口令门的**机制**（当次要口令、失败零写入、
+            # 鉴权先于额度、防错位 409），故把档位固定在 full——默认档 risk 下
+            # 这些动作不再当次要口令，断言会以"没被拦"的形式失败。
+            # 默认档与 off 档的行为由 tests/test_pw_gate_tiers.py 钉。
+            "YIBAN_PW_GATE=full",
         ]
         _write_env(cls.env_file, cls.env_seed)
         cls.db_file = os.path.join(cls.tmp, "yiban.db")

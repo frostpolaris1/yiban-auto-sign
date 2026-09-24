@@ -458,6 +458,22 @@ def api_account_update(idx):
                     )
                 except Exception as e:
                     m.logger.warning("账号凭据变更通知发送失败（不影响已完成的编辑）: %s", e)
+        # 非 full 档不再当场要口令 ⇒ 最高危的两类操作（改写他人凭据、物理清除）靠
+        # "事后告警 + 审计链"兜底：一封"刚才执行了 XX 操作"让管理员可追溯、可回滚。
+        # 物理清除那一路本就有即时告警，这里补的是"改写凭据"这一路（此前只通知当事人，
+        # 管理员侧零信号）。full 档本就有当次口令，不重复发——该档行为逐字不变。
+        if creds_written and m._pw_gate_tier(m.ENV_FILE) != "full":
+            m.send_notification(
+                "高危管理操作告警",
+                m._change_mail(
+                    "改写他人易班凭据。",
+                    detail=[("目标", m._mask_phone(clean["phone"])),
+                            ("归属用户",
+                             m._mask_email(str(clean.get("owner") or "admin")))],
+                    advice=["如非本人申请，请立即核实并回滚该账号凭据"],
+                ),
+                urgent=True,
+            )
         accounts = m.load_accounts()
         m.logger.info("编辑账号 %s", m._mask_phone(clean["phone"]))
         return jsonify(
@@ -503,7 +519,8 @@ def api_accounts_batch():
         # 统一走 _high_risk_gate（先验口令，通过了才占高危额度）；
         # 429 文案与用户侧批量删除一致，运维只需记一句话
         gate = _high_risk_gate()(
-            data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+            data, "批量彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试",
+            irreversible=True)
         if gate:
             return gate
     # 软删也占用同一份高危额度：它虽可逆（7 天内可恢复），但立即让该用户当天起
@@ -776,7 +793,8 @@ def api_account_purge(idx):
     # 口令校验耗时数百毫秒，放进全局锁里会凭一次尝试卡住全进程账号读写
     data = m._json_body()
     gate = _high_risk_gate()(
-        data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试")
+        data, "彻底删除账号", limit_msg="删除操作过于频繁，请稍后再试",
+        irreversible=True)
     if gate:
         return gate
     with m._file_lock:

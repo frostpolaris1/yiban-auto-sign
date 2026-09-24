@@ -139,6 +139,9 @@ def api_login():
         session["pw_version"] = pw_version  # 密码版本（注册用户改密/被重置后旧会话失效）
         # 会话绝对过期基准：自此刻起最多 SESSION_ABS_TTL_SECONDS
         session["login_ts"] = int(time.time())
+        # 登录时的出口 IP：risk 档风控判据之一"换 IP"的唯一比对基准。只在登录成功时
+        # 记录，历史会话没有这个键 = 未知（不判异常，见 _pw_gate_ip_changed）。
+        session["login_ip"] = ip
         # 服务端会话吊销：注册用户登录签发 sid 并落库——登出/被
         # 重置密码/被踢时轮换，被盗 cookie 重放即失效。内置主管理员没有
         # users 行可存，它的"那一行"就是 .env：同一条吊销面落在

@@ -112,6 +112,14 @@ from web.security import (  # noqa: E402
     PW_CONFIRM_COOLDOWN_DEFAULT,  # noqa: F401
     PW_CONFIRM_TTL_DEFAULT,  # noqa: F401
     PW_CONFIRM_TTL_MAX,  # noqa: F401
+    PW_GATE_DEFAULT,  # noqa: F401
+    PW_GATE_ENV_KEY,  # noqa: F401
+    PW_GATE_FULL,
+    PW_GATE_OFF,
+    PW_GATE_RISK,  # noqa: F401
+    PW_GATE_RISK_MAX,
+    PW_GATE_RISK_WINDOW,
+    PW_GATE_TIERS,  # noqa: F401
     SCRYPT_METHOD,  # noqa: F401
     TRUSTED_PROXIES,
     VERIFY_FAIL_AUTH_KEYWORDS,  # noqa: F401
@@ -511,6 +519,15 @@ PW_MISSING_TEXT = {400: "此操作需要输入当前密码，操作已取消",
 # 给前端的机器可读口径（前端不要靠比对中文文案分支）：
 # password_required → 收口令后重试；password_incorrect → 提示输错并计数。
 PW_DENY_REASON = {"missing": "password_required", "wrong": "password_incorrect"}
+# 不可逆操作的"倒计时后确认"凭据（请求体 `confirm_delay_ack`，JSON 布尔）。
+# 非 full 档下它替代口令成为主要摩擦：后端只认 `true` 这一个值（严格判等，字符串
+# "true"/数字 1 都不算——这是给前端的确认凭据，宽松真值判定等于把校验交给输入形态），
+# 且**不校验秒数**（前端可被绕过；真正的兜底是配额 + 事后告警 + 审计链）。
+# 拒绝文案按所在路由的 deny_status 取，与口令门两档同构；reason 单独一档，
+# 前端据此弹倒计时框而不是口令框。
+PW_DELAY_ACK_TEXT = {400: "此操作不可逆，请在倒计时结束后确认，操作已取消",
+                     403: "此操作不可逆，请在倒计时结束后确认后重试"}
+PW_DELAY_ACK_REASON = "delay_ack_required"
 # 口令喷洒判定：同一 IP 在本窗口内失败过的不同用户名数达到该值 → 告警升级为紧急
 # （低于此值多半是本人忘密码，不该占用每天只有 3 条的紧急账）
 LOGIN_SPRAY_USERS = 3
@@ -1035,11 +1052,13 @@ _purge_loop_lock = threading.Lock()
 
 
 # IP 计数表的回收与窗口/失败计数（`_ip_store_trim` / `_bump_window_count` /
-# `_bump_login_failure`）、敏感口令门禁旋钮（`_sensitive_gate_params`）、账号校验配额
-# 与冷却（`_verify_attempt_allowed` / `_verify_fail_cooldown_remaining` /
-# `_record_verify_failure`）实现见 web/security.py，此处以导入区再导出保持 m.* 可达
-# （路由在 m._rate_lock 下调用这些计数助手，同一把锁真源在 web/services/locks.py）。
-# `_sensitive_gate_params` 是唯一例外：它要注入本模块的 `load_env_int`（转发包装见下方）。
+# `_bump_login_failure`）、敏感口令门禁档位与旋钮（`_pw_gate_tier` /
+# `_sensitive_gate_params`）、账号校验配额与冷却（`_verify_attempt_allowed` /
+# `_verify_fail_cooldown_remaining` / `_record_verify_failure`）实现见 web/security.py，
+# 此处以导入区再导出保持 m.* 可达（路由在 m._rate_lock 下调用这些计数助手，同一把锁
+# 真源在 web/services/locks.py）。
+# 两个解析器要注入本模块的读取器（`_pw_gate_tier` 注入 `read_env`、
+# `_sensitive_gate_params` 注入 `load_env_int`），故各自带一个转发包装见下方。
 
 
 def _read_audit_row_due(cnt):
@@ -1061,6 +1080,15 @@ def _sensitive_gate_params(env_path):
     整数配置读取器按调用时刻现取本模块的（测试会打桩 `web.app.load_env_int`）。
     """
     return _security._sensitive_gate_params(env_path, load_env_int)
+
+
+def _pw_gate_tier(env_path):
+    """敏感口令门禁档位（`YIBAN_PW_GATE`）的唯一解析处（实现见 web/security.py）。
+
+    `.env` 读取器按调用时刻现取本模块的（测试会打桩 `web.app.read_env`）。路由侧
+    需要它判断"非 full 档才补发事后告警"，故在模块级留一个可 `m.*` 取用的名字。
+    """
+    return _security._pw_gate_tier(env_path, read_env)
 
 
 # 手动签到子进程族（等待回收 `_wait_signin_proc` / 队列超时缩放 `_batch_wait_timeout` /
@@ -1736,6 +1764,13 @@ def create_app(host=None):
     app.extensions["yiban_verify_fails"] = {}
     # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
     _admin_delete_limits = {}
+    # risk 档风控判据的"危险操作时间戳日志" {(出口 IP, 用户名): [时刻, …]}：同一 session
+    # 在 PW_GATE_RISK_WINDOW 秒内达到 PW_GATE_RISK_MAX 次危险操作 ⇒ 升级为当次要口令。
+    # 与 _admin_delete_limits 刻意分开两份账：那份的语义是"真实执行过的操作额度"
+    # （判定即占用、只喂 429 文案），本份要数的是**门禁入口的尝试**——攻击者拿不到
+    # 口令时用错口令反复敲门也必须被计入，否则"先验后算"就成了密集攻击的免费通道。
+    # 值末位是时间戳，故写入路径的 _ip_store_trim 按同口径回收（防无界增长）。
+    _danger_op_events = {}
     # 日志导出限速 {ip: (count, window_start)}
     # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.export_limits()
     app.extensions["yiban_export_limits"] = {}
@@ -2172,8 +2207,36 @@ def create_app(host=None):
         return jsonify({"error": PW_DENY_TEXT[deny_status],
                         "reason": PW_DENY_REASON["wrong"]}), deny_status
 
+    def _pw_gate_ip_changed():
+        """本次请求的出口 IP 是否与登录时记录的不一致（无记录 = 未知，不触发）。
+
+        历史会话没有 `login_ip` 键：那种情况只能算"未知"，不能默认判异常——否则
+        升级后所有存量会话都会被判为换 IP，人人被要求输口令，正是要避免的摩擦。
+        """
+        login_ip = session.get("login_ip")
+        return bool(login_ip) and login_ip != _client_ip()
+
+    def _danger_op_risk(key, now):
+        """risk 档的风控命中判定（判定即记账，含本次），返回 True = 本次要口令。
+
+        两个判据任一命中：同 session 短时密集（窗口内达到 PW_GATE_RISK_MAX 次）、
+        换出口 IP。判定必须发生在口令校验**之前**——放在后面就等于"先验后算"：
+        攻击者用错口令反复敲门时每次都还没记账，密集度永远攒不到阈值。
+        记账与判定同在一把锁里，避免并发请求各自读到"还差一次"。
+        """
+        window = PW_GATE_RISK_WINDOW
+        with _rate_lock:
+            events = _danger_op_events.setdefault(key, [])
+            events[:] = [t for t in events if now - t <= window]
+            events.append(now)
+            # 回收放在 append 之后：本表的值是时间戳列表，_ip_store_trim 读 v[-1]，
+            # 空列表会越界——先保证每桶至少一个元素再交给它
+            _ip_store_trim(_danger_op_events, window + _IP_STORE_MAX_AGE)
+            dense = len(events) >= PW_GATE_RISK_MAX
+        return dense or _pw_gate_ip_changed()
+
     def _sensitive_password_gate(data, action, *, always_required=False,
-                                 deny_status=403):
+                                 deny_status=403, irreversible=False):
         """敏感操作口令复核的**唯一入口**。返回 None = 放行，否则是要直接 `return` 的响应。
 
         为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）此前各写各的
@@ -2181,6 +2244,18 @@ def create_app(host=None):
         `confirm_password`，200 次只被通用 API 限速（60 次/10 秒）挡住，约 6 次/秒 ×
         单次 scrypt 157ms 就能打满一核；比项目自己的登录口（10 次/60 秒 + 第 5 次锁
         300 秒）快约 38 倍且**永不锁**，等于给绕过登录限速留了个算力口子。
+
+        **档位**（`.env` 的 `YIBAN_PW_GATE`，解析见 `_pw_gate_tier`）决定要不要口令：
+
+        - `full`：下面三段判定逐字照旧，`always_required` 由调用点指定（改造前的行为）；
+        - `risk`（默认）：先做风控判定（`_danger_op_risk`），未命中直接放行；命中则
+          按"当次必须输口令"走下面三段（不吃 TTL 豁免、冷却照常生效）；
+        - `off`：永不要求口令。
+
+        非 `full` 档还多一道**倒计时确认**：`irreversible=True` 的操作（不可逆清除 /
+        删用户 / 急停）要求请求体带 `confirm_delay_ack: true`，缺失即拒。它是软摩擦，
+        挡手滑不挡攻击者（前端常量可绕），所以拒绝文案与 reason 单独一档交给前端弹
+        倒计时框，真正的兜底仍是配额 + 事后告警 + 审计。
 
         三段判定按序：
         1. **冷却优先于口令**：本 (出口 IP, 会话账号) 已进冷却 → 429，正确口令也不放行
@@ -2197,6 +2272,18 @@ def create_app(host=None):
         ttl, cooldown = _sensitive_gate_params(ENV_FILE)
         key = (_client_ip(), (session.get("username") or "?").strip().lower()[:64])
         now = time.time()
+        tier = _pw_gate_tier(ENV_FILE)
+        if tier != PW_GATE_FULL:
+            if irreversible and data.get("confirm_delay_ack") is not True:
+                return jsonify({"error": PW_DELAY_ACK_TEXT[deny_status],
+                                "reason": PW_DELAY_ACK_REASON}), deny_status
+            if tier == PW_GATE_OFF:
+                return None
+            if not _danger_op_risk(key, now):
+                return None
+            # 命中风控 = 当次必须输口令：豁免给的是"刚复核过的同一出口不必再输一次"，
+            # 而风控要防的恰是"同一出口短时连做危险操作"，故不吃豁免
+            always_required = True
         with _rate_lock:
             _ip_store_trim(_sensitive_pw_cooldown, cooldown + _IP_STORE_MAX_AGE)
             until = (_sensitive_pw_cooldown.get(key) or (0, 0))[1]
@@ -2221,11 +2308,14 @@ def create_app(host=None):
             return None
         return _sensitive_pw_denied(key, action, deny_status, cooldown, now)
 
-    def _reconfirm_admin_password(password, action_label, always_required=True):
+    def _reconfirm_admin_password(data, action_label, *, always_required=True,
+                                  irreversible=False):
         """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
 
-        签名与返回约定保持不变（None = 通过，否则 `(响应, 状态码)` 元组），以免改动
-        20+ 调用点；实现整体交给 _sensitive_password_gate（含失败计数、告警与冷却）。
+        返回约定保持不变（None = 通过，否则 `(响应, 状态码)` 元组）；实现整体交给
+        _sensitive_password_gate（含失败计数、告警与冷却）。第一个参数收**整个请求体**
+        而不是单独的口令串：非 `full` 档还要看同一请求里的倒计时确认凭据
+        （`confirm_delay_ack`），只传口令串会把那个字段截掉，门禁永远判它缺失。
         与原实现的两处语义差别：
         - **不再读写登录失败表**：原实现把失败记进与登录共用的桶并置 lock_until，
           于是与管理员同出口 IP 的被窃会话可以用错口令把主管理员同时锁在"登录"和
@@ -2237,10 +2327,11 @@ def create_app(host=None):
         （签到随机延迟、容量上限）显式传 False 走豁免。
         """
         return _sensitive_password_gate(
-            {"confirm_password": password}, action_label,
-            always_required=always_required, deny_status=400)
+            data, action_label, always_required=always_required, deny_status=400,
+            irreversible=irreversible)
 
-    def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试"):
+    def _high_risk_gate(data, action_label, limit_msg="操作过于频繁，请稍后再试",
+                        irreversible=False):
         """高危动作统一门禁：先二次鉴权，**通过之后**才占用高危限速额度。
 
         顺序即本次修复：原五处调用都是"先判后增再鉴权"，于是
@@ -2252,6 +2343,11 @@ def create_app(host=None):
 
         仍复用同一套计数（不新建第二套 store，评审口径），不改变"超限即 429"的语义。
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
+
+        `irreversible=True` 标注"不可逆清除/删除"类落点（物理清除、彻底删除、
+        删用户）：非 `full` 档下它们还要求请求体带倒计时确认凭据，见
+        `_sensitive_password_gate`。可逆动作（角色变更、重置口令、关通道/换密钥）
+        不传，避免把"可回滚"的动作也变成不可撤销的确认负担。
 
         本函数走的全部是"必须当次输口令"的动作（`always_required=True`，豁免不适用），
         逐个落点：账号/用户的不可逆清除与删除（/api/accounts/batch 的 purge、
@@ -2266,7 +2362,7 @@ def create_app(host=None):
         /api/settings 的签到随机延迟与容量上限、/api/scheduler/executors* 的写操作。
         """
         pw_err = _reconfirm_admin_password(
-            str(data.get("confirm_password", "")), action_label, always_required=True)
+            data, action_label, always_required=True, irreversible=irreversible)
         if pw_err:
             return pw_err
         if _admin_delete_limited():

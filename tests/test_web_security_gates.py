@@ -36,6 +36,10 @@ TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "UserPass123!"
 NEW_PASS = "NewPass123!"
+# 门禁档位：本文件多数用例钉的是"当次要口令"这一层的机制（档位门、冷却、豁免、
+# 变更告警），必须显式固定在 full——默认档是 risk，不固定则这些动作不再当次要口令。
+# 默认档与 off 档的行为由 tests/test_pw_gate_tiers.py 钉。
+GATE_FULL = "full"
 
 
 class Batch16FixesTest(unittest.TestCase):
@@ -48,6 +52,9 @@ class Batch16FixesTest(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、豁免、冷却、变更告警），
+                # 故把档位固定在 full（默认档 risk 下这些动作不再当次要口令）
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -326,6 +333,9 @@ class _AnnBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、豁免、冷却、变更告警），
+                # 故把档位固定在 full（默认档 risk 下这些动作不再当次要口令）
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -376,6 +386,7 @@ class _AnnBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         self.webapp.ENV_FILE = self.env_file
         # 公告缓存是模块级全局：不清零会把上一例的已发布文本带进本例
@@ -804,6 +815,8 @@ class Batch18FixesTest(unittest.TestCase):
         cls._env_content = (
             f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
             f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS_B18F}\n"
+            # 本类里的口令门用例钉的是"当次要口令 + 失败零写入"，固定在 full
+            f"YIBAN_PW_GATE={GATE_FULL}\n"
         )
         with io.open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(cls._env_content)
@@ -1352,6 +1365,9 @@ class _TierBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、豁免、冷却、变更告警），
+                # 故把档位固定在 full（默认档 risk 下这些动作不再当次要口令）
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")

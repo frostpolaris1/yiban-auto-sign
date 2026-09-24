@@ -44,6 +44,10 @@ class _B13WebBase(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
                 f"YIBAN_MAIL_ADMIN_TO=admin@test.local\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、失败告警、高危额度
+                # 顺序），故把档位固定在 full——默认档 risk 下这些动作不再当次要
+                # 口令。默认档与 off 档由 tests/test_pw_gate_tiers.py 钉。
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
