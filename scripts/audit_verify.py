@@ -27,7 +27,9 @@
 输出：三项结论 + 清理留痕数字到 stdout；退出码：全部通过 exit 0；检出异常 exit 1；
 无法定论（密钥缺失 / 校验过程异常）exit 2。
 调用谁：`db`（`yiban.store.db` / `audit_chain` 的兼容壳）。
-谁调用：运维手工取证（只读，无写盘）。
+谁调用：运维手工取证；`scripts/backup.sh` 恢复件双验（restore 流程在解包后调它做审计
+链核验，非 0 视为恢复件不可信）；backup.sh 头部示例还给了 cron 每日 02:30 定排的一条
+命令，把输出重定向到 `audit-verify.log`。只读，无写盘。
 
 --anchor：外部锚点文件路径。默认 db.audit_anchor_path()（YIBAN_STATE_DIR，
 裸机默认 /var/log/yiban，Windows 开发环境默认 cwd）。README 承诺"校验审计链并
@@ -72,9 +74,9 @@ def main():
     #    真实库是否被篡改什么都没说（路径写错时静默误报通过）；
     # 2) 不执行迁移（migrate=False）：迁移会用当前密钥重写审计链，抹平篡改痕迹；
     # 3) 不执行启动清理（cleanup=False）。
-    # 显式 --env 也必须已存在——打错路径时同一套回落逻辑的其余工具
-    # （重置/清点）会在该位置新建 .env 并生成新审计密钥，把留痕用第三把钥匙
-    # 签坏；取证类 CLI 统一在碰任何数据前先拒绝。
+    # 显式 --env 也必须已存在——打错路径时同一套回落逻辑的其余取证 CLI
+    # （如 `scripts/list_duplicate_owners.py`）会在该位置新建 .env 并生成新审计密钥，
+    # 把留痕用第三把钥匙签坏；取证类 CLI 统一在碰任何数据前先拒绝。
     try:
         env_file = db.require_existing_env_file(args.env)
     except ValueError as e:
