@@ -53,7 +53,7 @@
 
   // 容量上限按权限启用/禁用；禁用时把原因 #set-cap-perm 与控件做程序化关联（读屏可及）。
   function applyPerm() {
-    var disabled = !ctx.isMaster;
+    var disabled = !ctx.isMaster;   // 只是显示口径：非主管理员禁用控件并就地说明，拦得住的只有后端那一处
     ["set-max-users", "set-max-accounts"].forEach(function (id) {
       var n = $(id);
       if (!n) return;
@@ -179,8 +179,8 @@
   }
 
   // 冷却/在途：按钮灰掉 + 剩余时间**追加**在结果行末尾（"点了没反应"变成"还要等多久"）。
-  // 追加而不是替换：实测结果本身是要看的内容，倒计时只是补充说明（早先替换过一次，
-  // 结果刚测出来就被倒计时顶掉、10 分钟内看不到数字——实机复现）。
+  // 追加而不是替换：实测结果本身就是要看的内容，倒计时只是补充说明——
+  // 把结果替换成倒计时会让数字刚出来就被顶掉，整个冷却窗口内都看不到（这是踩过的坑）。
   // 后端已按全局冷却拦（429 带 next_allowed_in），前端这份只是把状态显示出来。
   function paintButton() {
     var btn = $("set-cap-measure");

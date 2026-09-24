@@ -206,7 +206,7 @@
   function menuItems(u, group) {
     var uid = u.uid;
     var items = [];
-    var masterOnly = u.role === "admin" && !state.isMaster;
+    var masterOnly = u.role === "admin" && !state.isMaster;   // 显示判断：决定给不给这些菜单项，鉴权在后端
     if (state.isMaster && group === "normal") {
       var isAdmin = u.role === "admin";
       items.push({
