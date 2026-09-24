@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """账号容量口径：**未通过审核的账号不占容量**（2026-09-15 修订）。
 
+标签：I · 容量、熔断与账号有效性
+覆盖：容量口径修订——未通过审核（pending/rejected）的行不计容量、不进「正常」桶、单独给计数；「审核通过」这个开始产生负载的动作本身也要过容量闸门
+对应实现：判据唯一来源 `yiban.store.accounts.signs_in`、运行期复核用的 `account_is_signable`、`webapp._accounts_at_capacity` 与 `/api/settings` 的 `capacity_estimate` / `accounts_audit`
+关键断言：`signs_in` 与 `is_signable` 对同一行必须给出一致判定（一套口径两处取用）；名额被「永不签到的存量」占满时新账号不再被误拒；approve 超容量 403、腾出名额后放行、reject 永不设门（它是减少负载的方向）、上限 0 = 不限；前端必须消费 `accounts_audit`，否则「账号管理里很多行、容量只算 N 个」在页面上无从解释
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node
+
 缺陷背景（DAT-3）：容量原先按"全部非删除账号"统计，含 pending/rejected。这两类行
 永不发起易班请求（引擎加载与运行期复核都按同一条件过滤），却：
 

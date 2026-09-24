@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """web 层拆分边界：名字面完整 + 转发落到 app 模块级真状态。
 
+标签：F · 前端与界面守卫
+覆盖：`web/app.py` 拆分后的边界——各域名字面完整（含 `web/app.py` 收尾总账）、转发必须在调用时刻现取 app 模块级真状态、拆分模块不得 `import web.app`
+对应实现：`web/app.py` 的名字面与 `web/routes/*`、`web/services/*`、`web/render.py`、`web/security.py`
+关键断言：routes 里经 `m.<名字>` 或 `sys.modules[current_app.import_name].<名字>` 晚查找的名字，在 app 与真源两侧都必须可达；测试对 app 模块级常量（`.env` 路径与读取器、窗口解析器、告警出口、原子落盘、状态目录）打桩或直接赋值之后，服务层必须看到新值——服务层另存一份绑定就会**静默**失效；发现拆分模块导入 `web.app` 即判红
+依赖：纯本地——importlib 装载 `web/app.py` 与各真源模块，另起 `subprocess` 验证别名加载安全；不起常驻服务器、无需 node、不联网
+
 `web/app.py` 把实现按域拆入 `web/routes/`、`web/services/`、`web/render.py`、`web/security.py`
 后只剩「应用工厂 + 跨域中间件 + 名字面（再导出与转发包装）」。本文件把各域拆分契约并到一处，
 逐域钉住同一组边界：
