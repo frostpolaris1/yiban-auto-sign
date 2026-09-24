@@ -343,6 +343,9 @@ class _Base(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 改 SMTP/收件人/通道开关的门禁用例钉的是"当次要口令、失败零落盘"，
+                # 固定在 full（默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -386,7 +389,9 @@ class _Base(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
-                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n" + extra
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 重置也保留门禁档位，见 setUpClass 的说明
+                + extra
             )
 
     def _master(self):
@@ -542,6 +547,9 @@ class _Base_FAILOVER(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 改 SMTP/收件人/通道开关的门禁用例钉的是"当次要口令、失败零落盘"，
+                # 固定在 full（默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -585,7 +593,9 @@ class _Base_FAILOVER(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
-                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n" + extra
+                f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 重置也保留门禁档位，见 setUpClass 的说明
+                + extra
             )
 
     def _master(self):

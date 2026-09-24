@@ -134,7 +134,7 @@ def api_users_deleted_purge():
         return jsonify({"error": "邮箱格式不正确"}), 400
     # 盗号滥用面加固：物理清除不可逆 → 二次鉴权 + 同管理员限速
     # （顺序统一为"先鉴权、通过了才占额度"）
-    gate = high_risk_gate()(data, "彻底清除已注销用户")
+    gate = high_risk_gate()(data, "彻底清除已注销用户", irreversible=True)
     if gate:
         return gate
     with m._file_lock:
@@ -211,6 +211,8 @@ def api_users_batch():
             "批量删除用户" if action == "delete" else "批量重置密码",
             limit_msg="删除操作过于频繁，请稍后再试"
             if action == "delete" else "重置操作过于频繁，请稍后再试",
+            # 只有 delete 不可逆；批量重置口令可再重置一次，不套倒计时确认
+            irreversible=(action == "delete"),
         )
         if gate:
             return gate
@@ -495,7 +497,10 @@ def api_user_delete(email):
     gate = high_risk_gate()(
         data,
         "完全删除用户" if mode == "full" else "清空用户账号",
-        limit_msg="删除操作过于频繁，请稍后再试")
+        limit_msg="删除操作过于频繁，请稍后再试",
+        # 两种模式都不可逆（full 连用户一起删，accounts_only 把其全部易班凭据清零）
+        irreversible=True,
+    )
     if gate:
         return gate
     with m._file_lock:

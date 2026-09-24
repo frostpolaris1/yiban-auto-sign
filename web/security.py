@@ -9,7 +9,7 @@
 `_constant_time_dummy` / `reject_default_admin_password` / `check_admin_configured` /
 `_builtin_admin_loginable` / `verify_admin`、客户端出口 `_client_ip`、IP 计数表的
 回收与窗口计数 `_ip_store_trim` / `_bump_window_count` / `_bump_login_failure`、
-敏感口令门禁的旋钮与账号校验配额/冷却 `_sensitive_gate_params` /
+敏感口令门禁的档位与旋钮 `_pw_gate_tier` / `_sensitive_gate_params`、账号校验配额/冷却
 `_verify_attempt_allowed` / `_verify_fail_cooldown_remaining` / `_record_verify_failure`，
 以及原子落盘 `_atomic_write` / `_replace_with_retry`。
 
@@ -120,6 +120,23 @@ VERIFY_FAIL_AUTH_KEYWORDS = ("账号或密码错误", "密码错误", "错误尝
 PW_CONFIRM_TTL_DEFAULT = 300
 PW_CONFIRM_TTL_MAX = 900
 PW_CONFIRM_COOLDOWN_DEFAULT = 300
+
+# 敏感口令门禁的档位（`.env` 键 `YIBAN_PW_GATE`，唯一解析处见 `_pw_gate_tier`）：
+# - `full`：每个受保护操作都要当次口令（改造前的行为，逐字保留）；
+# - `risk`：**默认档**——只有风控命中（短时密集 / 换出口 IP）才要口令；
+# - `off`：永不要求口令，只留倒计时确认与事后告警。
+# 非法值回退 `risk` 而不是 `off`：本键是安全件，一个 `.env` 笔误不得把门禁静默拆掉。
+PW_GATE_OFF = "off"
+PW_GATE_RISK = "risk"
+PW_GATE_FULL = "full"
+PW_GATE_TIERS = (PW_GATE_OFF, PW_GATE_RISK, PW_GATE_FULL)
+PW_GATE_ENV_KEY = "YIBAN_PW_GATE"
+PW_GATE_DEFAULT = PW_GATE_RISK
+
+# `risk` 档的风控判据（同 session 危险操作密度）：窗口内达到该次数即升级为"当次要口令"。
+# 与豁免 TTL / 复核冷却同处一份门禁参数，改动时一眼能看见三者的关系。
+PW_GATE_RISK_WINDOW = 300
+PW_GATE_RISK_MAX = 3
 
 # 仓库公开模板（.env.docker.example）自带的字面量默认口令。
 # 随仓库公开 = 众所周知字符串，忘改即后台口令为公开知识。
@@ -535,6 +552,26 @@ def _sensitive_gate_params(env_path, load_env_int):
     cooldown = load_env_int(env_path, "YIBAN_PW_CONFIRM_COOLDOWN_SEC",
                             PW_CONFIRM_COOLDOWN_DEFAULT)
     return ttl, cooldown
+
+
+def _pw_gate_tier(env_path, read_env):
+    """敏感口令门禁的档位（`YIBAN_PW_GATE`）唯一解析处，返回 off/risk/full 之一。
+
+    缺省与非法值都回退 `PW_GATE_DEFAULT`（risk）——本键是安全件，把拼错的档位当成
+    `off` 等于一次 `.env` 笔误就静默拆掉全部门禁；反过来误判成 `full` 只是多要几次
+    口令，是可接受的失败方向。非法值告警一次，让运维在日志里看见自己的笔误。
+    枚举键没有通用读取工具（`load_env_int` 只处理整数），故按 sign_mode / sign_order
+    的做法现读现校验。
+    """
+    raw = str(read_env(env_path).get(PW_GATE_ENV_KEY, "") or "").strip().lower()
+    if raw in PW_GATE_TIERS:
+        return raw
+    if raw:
+        logger.warning(
+            "%s 的 %s=%r 非法（可选 %s），按 %s 档执行",
+            env_path, PW_GATE_ENV_KEY, raw, "/".join(PW_GATE_TIERS), PW_GATE_DEFAULT,
+        )
+    return PW_GATE_DEFAULT
 
 
 def _verify_attempt_allowed(store, username):

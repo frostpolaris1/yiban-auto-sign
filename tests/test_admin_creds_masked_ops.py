@@ -68,7 +68,10 @@ class AdversarialFixes0820Test(unittest.TestCase):
     @classmethod
     def _write_env(cls, admin_user=None, admin_pass=None):
         """按需写 .env：admin_user/admin_pass 任一为 None 即不写该行（构造部分配置场景）。"""
-        lines = [f"YIBAN_ACCOUNTS_KEY={TEST_KEY}"]
+        lines = [f"YIBAN_ACCOUNTS_KEY={TEST_KEY}",
+                 # 本类钉的是"口令正确时的防错位 409 / 脱敏回显"，固定在 full——
+                 # 默认档 risk 下 purge 会先要倒计时确认，把 409 抢先成 delay_ack_required
+                 "YIBAN_PW_GATE=full"]
         if admin_user is not None:
             lines.append(f"YIBAN_ADMIN_USER={admin_user}")
         if admin_pass is not None:

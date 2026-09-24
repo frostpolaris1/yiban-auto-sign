@@ -464,10 +464,16 @@ def api_settings_save():
     b_changes = [c for c in changes if c[0] in m.GATED_KEYS]
     pause_change = next((c for c in changes if c[0] == m.GLOBAL_PAUSE_KEY), None)
 
-    def _tier_gate(action_label, always_required, attempted):
-        """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。"""
+    def _tier_gate(action_label, always_required, attempted, irreversible=False):
+        """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
+
+        `irreversible=True`（0→1 急停）在非 `full` 档还要求请求体带倒计时确认凭据；
+        `always_required` 只在 `full` 档区分 A/B 档，其余档由门禁按档位自行决定
+        （见 `_sensitive_password_gate`）。
+        """
         denied = sensitive_password_gate()(data, action_label,
-                                          always_required=always_required)
+                                          always_required=always_required,
+                                          irreversible=irreversible)
         if denied is not None:
             m.db.audit(
                 session.get("username") or "?",
@@ -487,7 +493,9 @@ def api_settings_save():
              if a_changes else [])
             + (["系统开关"] if pause_change else []))
         denied = _tier_gate(_action, True,
-                            (a_changes or []) + ([pause_change] if pause_change else []))
+                            (a_changes or []) + ([pause_change] if pause_change else []),
+                            # 0→1 急停不可逆（当场把全站停下来）；1→0 恢复可逆
+                            irreversible=bool(pause_change and pause_change[2] == "1"))
         if denied is not None:
             return denied
     if pause_change and pause_change[2] == "1" and admin_delete_limited()():

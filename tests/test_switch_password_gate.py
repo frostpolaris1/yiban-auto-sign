@@ -49,6 +49,10 @@ class SwitchPasswordGateTest(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、失败文案与独立计数、
+                # 冷却 429、豁免），故把档位固定在 full——默认档 risk 下这些动作
+                # 不再当次要口令。默认档与 off 档由 tests/test_pw_gate_tiers.py 钉。
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
