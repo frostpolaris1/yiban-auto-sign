@@ -9,18 +9,20 @@
 登录两次会让重试预算错乱）。
 
 **归属**
-`yiban.engine` 的账号装载层（引擎入口的第一道门）；`runner` / `probe` / 多执行体子进程
+`yiban.engine` 的账号装载层（引擎入口的第一道门）；`runner` / `workers` / CLI 侧
 都从这里取账号。
 
 **复用**
-`Account` 数据模型与 `load_accounts` 是唯一来源；设备回退与审核态过滤口径被
-`config_check` 与 web 服务层复用。
+`Account` 数据模型与 `load_accounts` 是引擎侧唯一装载入口；`config_check` 只消费它
+产出的 `Account` 列表（脱敏打印、`--only` 过滤），web 侧账号读走 `web.services.
+accounts_data`，不复用本模块。
 
 **通信**
 输入：`db`（accounts 表，密文经 `account_crypto` 解密）、`YIBAN_ACCOUNTS_JSON` /
 旧格式环境变量。输出：`Account` 列表（含 owner / account_id 等运行期字段）。
 调用谁：`db`、`account_crypto`、`config_check`。
-谁调用：`runner`、`probe`、`workers` 的子进程。
+谁调用：`runner.main`、`workers`（监督进程与其子进程）与 `yiban/cli.py`（`config` /
+`--check-config` 传 `migrate=False`）。探针 `probe` 直取 `yiban.store.accounts`，不经本模块。
 前端调用点：`/api/accounts`（`web/static/js/pages/work_accounts.js`、
 `web/static/js/components/account-ops.js`）与 `/api/my-accounts`（`web/static/js/components/my-accounts.js`）
 的增删改由本模块在下一轮装载生效——优先级/去重/审核态口径变化会改变这些页面看到的
@@ -237,8 +239,8 @@ def load_accounts(migrate=True):
 
     migrate：False = **只读校验模式**（`config` 子命令 / `sign --check-config`）：
     不跑 schema 迁移。迁移会重写审计链（v3 rechain）等，使"被校验对象在校验过程
-    中被改动"——`db.init_db` 的文档自述"校验类工具应传 False"（2026-09-21 测试机
-    47 E2E：宣称只读的配置检查实际把目标库迁到 v17）。账号表由 `init_db` 的基线
+    中被改动"——`db.init_db` 的文档自述"校验类工具应传 False"（宣称只读的配置检查实际会把目标
+    库迁到 v17）。账号表由 `init_db` 的基线
     建表保证存在（`CREATE TABLE IF NOT EXISTS`），故只读模式下取账号不依赖迁移。
     """
     for loader in (
