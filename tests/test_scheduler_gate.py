@@ -360,10 +360,11 @@ class DbLayerB12Test(unittest.TestCase):
         self.assertEqual(db.find_user(EMAIL).get("role"), "user")
 
     # ---- B12-9 时钟守卫 ----
-    def test_clock_guard_alert_recorded_and_readable(self):
+    def test_clock_guard_trip_skips_once_and_advances_reference(self):
+        """跳变判定为假 + 参照点推进到当前时间（下一轮自动恢复清理，无需人工重置）。"""
         ok, _note = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertTrue(ok)
-        # 模拟参照点为 100 小时前 → 守卫拦截并留痕
+        # 模拟参照点为 100 小时前 → 守卫判定跳变
         old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
             conn = db.get_conn()
@@ -372,36 +373,17 @@ class DbLayerB12Test(unittest.TestCase):
                 ("purge_accounts_clock", old),
             )
             conn.commit()
-        ok2, _note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        ok2, note2 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertFalse(ok2)
-        alert = db.clock_guard_alert()
-        self.assertIsNotNone(alert)
-        self.assertIn("系统时间异常跳变", alert["note"])
-        # 参照点未被守卫自动更新（防洗白）——仍为旧值
+        self.assertIn("系统时间异常跳变", note2)
+        # 参照点已推进：越界路径同样提交，故调用方的 rollback 不会把它带走
         r = conn.execute(
             "SELECT value FROM app_meta WHERE key='purge_accounts_clock'"
         ).fetchone()
-        self.assertEqual(r["value"], old)
-
-    def test_clock_guard_reset_tool(self):
-        """B12-9：人工重置工具恢复参照点并清除告警。"""
-        import clock_guard_reset
-        with db._conn_lock:
-            conn = db.get_conn()
-            old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('purge_accounts_clock',?)",
-                (old,),
-            )
-            conn.commit()
-        db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
-        self.assertIsNotNone(db.clock_guard_alert())
-        clock_guard_reset.reset(self.db_file)
-        self.assertIsNone(db.clock_guard_alert())
-        r = db.get_conn().execute(
-            "SELECT value FROM app_meta WHERE key='purge_accounts_clock'"
-        ).fetchone()
-        self.assertNotEqual(r["value"], old, "重置后参照点应为当前时间")
+        self.assertNotEqual(r["value"], old, "越界路径必须推进参照点，否则冻结永不解除")
+        # 推进后同一参照点不再判跳变——这就是"只跳一轮"
+        ok3, _note3 = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
+        self.assertTrue(ok3, "参照点推进后下一轮必须恢复清理")
 
     # ---- B12-10 db_export ----
     def test_db_export_passes_migrate_false(self):
