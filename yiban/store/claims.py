@@ -14,7 +14,7 @@
 | `done` | 收尾且**当日无需再签**（即 `yiban.status.CLAIM_DONE_STATUSES`：成功 / 已签到 / 今日无任务） | 是 |
 | `failed` | 收尾但结果未了结（重试预算耗尽、窗口外跳过、无点位） | 否（当日仍可再领，见 `STATE_FAILED`） |
 
-**三条纪律**：
+**四条纪律**：
 
 1. **只做协调，不改展示契约**：按日状态文件（`sign-state-*.json`）的 JSON 结构与
    写入时机不动——它是日历/状态展示的事实源，本表只回答"谁领了、了结没有"。
@@ -29,10 +29,8 @@
    都带 `epoch=?`。只给领取侧发号而不校验收尾写等于没做——执行体被 STW 停顿/容器挂起卡住
    数分钟后醒来，仍以为自己持有该账号，迟到的写会覆盖接管者的结论。
 
-连接与进程内锁取自同包的 `yiban.store.db`。门面对本模块是**重命名**再导出
-（`db.claim_sign_account` → `try_claim`、`db.claim_settle` → `settle`、
-`db.purge_sign_claims` → `purge`、`db.CLAIM_STATE_DONE` → `STATE_DONE` …），
-故 `db.try_claim` 一类原名不存在。
+连接与进程内锁取自同包的 `yiban.store.db`；门面对本模块是**重命名**再导出（`claim_*`
+前缀），逐条别名见 `yiban.store.db` 领取池绑定处的行尾注释。
 
 **过渡说明（v18 起）**：v18 新增的 `sign_tasks`（访问层 `yiban/store/queue_store.py`）
 把本表的 state / result / attempts 语义整体并入，并把本表存量行一次性平移进新表
@@ -66,12 +64,11 @@ STATE_DONE = "done"
 #: 尝试过但**未了结**（重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
 STATE_FAILED = "failed"
-#: 终态集合（只有 done 是真终态；failed 是"可再领"）。
-#: 值为本表词表与 `yiban.status.TASKS_SETTLED_STATES` 的交集——「了结」的词义定义在
-#: `yiban.status`（同一件事在 `sign_claims` / `sign_tasks` / 状态文件里各有一套 state
-#: 名），此处只做本表词表下的投影，不再自写一份"哪些算完"。
+#: 终态集合（「了结」的账号）。
 SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
-                  & yiban_status.TASKS_SETTLED_STATES)
+                  # 「了结」的词义定义在 `yiban.status`（同一件事在 sign_claims / sign_tasks /
+                  # 状态文件里各有一套 state 名），此处只做本表词表下的投影，不自写第二份判据
+                  & yiban_status.TASKS_SETTLED_STATES)  # 交集后只剩 done：failed 是"可再领"、不是终态
 #: 参与"未了结账号"统计的状态（与 done 互斥）
 OPEN_STATES = (STATE_CLAIMED, STATE_FAILED)
 
@@ -247,7 +244,7 @@ def settle(phone, day, owner, state=STATE_DONE, result="", epoch=None):
         raise ValueError(f"非法终态: {state!r}")
     sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
            "WHERE phone=? AND day=? AND owner=?")
-    params = [state, (result or "")[:200], clock.ts(), phone, day, owner]
+    params = [state, (result or "")[:200], clock.ts(), phone, day, owner]  # 只留摘要；200 与 queue_store.RESULT_MAX 同口径，改一处要同步另一处
     if epoch is not None:
         sql += " AND epoch=?"
         params.append(epoch)
@@ -354,7 +351,7 @@ def stats(day):
         out = {STATE_CLAIMED: 0, STATE_DONE: 0, STATE_FAILED: 0}
         for r in rows:
             out[r["state"]] = r["n"]
-        out["settled"] = out[STATE_DONE]
+        out["settled"] = out[STATE_DONE]  # 了结数只等于 done：failed 当日仍可再领，落在 open 里（见 OPEN_STATES）
         out["open"] = out[STATE_CLAIMED] + out[STATE_FAILED]
         out["total"] = out["settled"] + out["open"]
         return out
@@ -403,14 +400,12 @@ def activity(day):
 
 
 def latest_claims_day():
-    """`sign_claims` 里最近一次有记录的业务日（`MAX(day)`）；表空返回 None。
-
-    「上次实领」取**最近一次有记录的日**，不是"昨天"：周末停签后按"昨天"取会让整列
-    空白到下一个工作日，按最近一次取则跨周末也能看到上一轮是谁签的。
-    """
+    """`sign_claims` 里最近一次有记录的业务日（`MAX(day)`）；表空 / 库不可用返回 None。"""
     from yiban.store import db
     try:
         with db._conn_lock:
+            # 「上次实领」取最近一次有记录的日、不是"昨天"：周末停签后按"昨天"取会让整列
+            # 空白到下一个工作日，按最近一次取则跨周末也能看到上一轮是谁签的
             row = db.get_conn().execute("SELECT MAX(day) FROM sign_claims").fetchone()
     except Exception as e:
         logger.debug("读取最近一次签到记录日失败（按空处理）: %s", e)
