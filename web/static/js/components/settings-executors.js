@@ -245,7 +245,7 @@
 
   // 受门禁写操作的统一入口：先不带凭据发，由 core.js 的 dangerousSubmit 按后端 reason 补
   // 口令或倒计时确认（档位只存在于后端，本组件不判断、也不预判要不要口令）。调用方只给请求
-  // 与成功回调，不再各自拼口令框管道；失败落到横幅，用户取消弹窗不算失败。
+  // 与成功回调，不再各自拼口令框管道；失败落到横幅。
   function gated(opts, onOk, failWord) {
     return withBusy(function () {
       banner("提交中…", "info");
@@ -253,8 +253,25 @@
         return load().then(function () { return onOk(d); });
       });
     }).catch(function (e) {
-      if (e && e.canceled) return false;
+      if (e && e.canceled) return canceledAfter(e);
       failTip(e, failWord);
+      return false;
+    });
+  }
+  // 取消弹窗**不是失败，也不等于什么都没发生**：多段保存（改出口 + 拨开关）里先成功的
+  // 步骤已经写进 `.env`，若照旧静默返回，用户会以为整次保存没发生、而配置已经变了。
+  // 故取消路径一律重载视图（页面显示库里的真实状态），并在确有部分写入时讲明不回滚。
+  // 已提交步数由 helper 回传（见 core.js 的 dangerousSubmit / canceled）。
+  function canceledAfter(e) {
+    var done = count(e && e.completed);
+    return load().then(function () {
+      // 顺序不能反：load() 走 apply() 会清掉横幅，所以提示必须落在重载之后
+      if (done > 0) {
+        setTip("已取消；本次保存的前 " + done + " 步已经写入配置（部分修改已提交、不会回滚），"
+          + "上面显示的是配置的当前状态。", true);
+      } else {
+        setTip("", false);
+      }
       return false;
     });
   }
