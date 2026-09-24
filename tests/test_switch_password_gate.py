@@ -103,11 +103,13 @@ class SwitchPasswordGateTest(unittest.TestCase):
 
     @property
     def _fail_threshold(self):
-        """门禁失败告警/冷却的起点：取 app 的常量，不另抄一份字面量。
+        """门禁失败告警/冷却的起点：取门禁侧常量，不另抄一份字面量。
 
         抄一份就会与实现漂移——阈值改了而测试还在按旧值数次数，测的就不是实现。
+        取的是 `SENSITIVE_PW_FAIL_NOTIFY` 而不是登录侧的 `LOGIN_FAIL_NOTIFY`：后者是
+        "登录失败告警阈值"，与门禁的失败预算各调各的（见 web/app.py 的常量注释）。
         """
-        return self.webapp.LOGIN_FAIL_NOTIFY
+        return self.webapp.SENSITIVE_PW_FAIL_NOTIFY
 
     def _login(self):
         c = self.webapp.create_app().test_client()
