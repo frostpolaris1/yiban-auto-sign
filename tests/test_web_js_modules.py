@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """前端脚本装配守卫（多页 MPA + 组件化后的等价判据）。
 
+标签：F · 前端与界面守卫
+覆盖：前端脚本装配守卫——`app.js` 不得复活、活模板引用的自研 JS 真实存在、`id` 不重、core.js 先加载、顶层声明不重名、innerHTML 与裸 fetch 约束、页面脚本用到的组件必须引入、前端批量上限与后端同值、tab 深链只由 core 承担、自助改密只有一份实现
+对应实现：`web/static/js/core.js` 与 `pages/*.js`、`components/*.js`、各 `layout_*.html` / `pages/*.html` / `login.html`；后端 `BATCH_OP_LIMIT`
+关键断言：按 extends 展开后的有效加载顺序里 `core.js` 必须先于其它自研模块——classic script 共享同一全局词法作用域，顶层重名会让整段 SyntaxError、页面**静默**失去全部交互；`pages/*.js` 零 `.innerHTML`、不得裸用 `fetch`（`YB.api` 才带 CSRF/统一错误/401 跳转）；`components/user-ops.js` 不得出现 `data.msg`（后端成功 msg 含完整邮箱）；加载态必须有终止（fetch 挂 AbortController 超时、导航进度条带兜底收尾）
+依赖：纯本地——读模板与 JS 源码文本（含 extends 链解析），**不执行 JS、无需 node**、不联网
+
 ## 为什么替换旧的「7 个连续切片」守卫
 
 旧守卫钉的是 `web/static/js/app.js`（2765 行单页脚本）按**连续源区间**拆成 7 个
