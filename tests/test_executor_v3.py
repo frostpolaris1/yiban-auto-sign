@@ -1483,5 +1483,68 @@ class RunnerSplitTest(unittest.TestCase):
         self.assertEqual(code, 0, "保留的结果集按真实结论汇总，不得落到契约之外")
 
 
+# ---------------------------------------------------------------------------
+# 崩溃恢复接线：起跑回收 + 崩溃行被重新领取 + 文件心跳四态
+# ---------------------------------------------------------------------------
+class RecoveryWiringTest(_Base):
+    """v3 的崩溃恢复：回收必须在领取循环里被调用，否则崩溃行永不被重领。
+
+    另外让 v3 写**既有文件心跳**，使 `/api/scheduler/executors*` 的四态判定对 v3
+    也成立（否则单进程路径没有心跳记录，页面把正在跑的 v3 显示成 `idle`）。
+    """
+
+    def test_round_start_reaps_expired_claims(self):
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        calls = []
+        real = queue_store.reap_expired
+
+        def spy(*a, **kw):
+            calls.append(kw)
+            return real(*a, **kw)
+
+        with mock.patch.object(queue_store, "reap_expired", spy), \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(phone), [_item(phone)])
+        self.assertEqual(len(calls), 1, "每轮起跑必须调用一次回收")
+
+    def test_expired_claim_is_reclaimed_and_completed(self):
+        """崩溃执行体留下的过期 `claimed` 行必须被回收、重领、跑完。"""
+        phone = _phone(1)
+        self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
+                       lease_until=_ts(seconds=-30), epoch=1, run_at=_ts(seconds=-60))
+        self._seed_v(8)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            results = self._run_v3(self._accounts(phone))
+        row = self._row(phone)
+        self.assertEqual(row["state"], "done", "崩溃行必须被重新领取并完成")
+        self.assertEqual(row["owner"], OWNER)
+        self.assertGreater(row["epoch"], 1, "重领同样自增 epoch")
+        self.assertIn(phone, results)
+
+    def test_heartbeat_reports_running_then_finished(self):
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        seen = []
+        real = executor_v3._run_async
+
+        async def spy(ctx):
+            seen.append(state_io.worker_presence(0))
+            return await real(ctx)
+
+        with mock.patch.object(executor_v3, "_run_async", spy), \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(phone), [_item(phone)])
+        self.assertEqual([s[0] for s in seen], [state_io.WORKER_STATE_RUNNING],
+                         "起跑写心跳：执行体页必须能判 running（不再显示 idle）")
+        self.assertEqual(state_io.worker_presence(0)[0], state_io.WORKER_STATE_FINISHED,
+                         "收尾写心跳：正常退出后判 finished")
+
+
 if __name__ == "__main__":
     unittest.main()
