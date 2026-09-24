@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
-"""子路径 / 独立子域 前缀自适应部署契约回归测试（2026-08-23）。
+"""子路径 / 独立子域 前缀自适应部署契约回归测试。
 
-背景：应用可部署在域名根、独立子域、或主站子路径（如 /tools/yiban-auto-sign/demo/）下。
-反向代理只需把完整 URI 原样透传，BasePathMiddleware 自动感知前缀（见 web/app.py 类注释）。
-本测试锁定三类关键契约：
-  1. 根路径部署行为与改造前完全一致（不回归）；
-  2. 子路径下跳转/静态/API 都带前缀，登录后可正常渲染；
-  3. 自动探测 / SCRIPT_NAME / YIBAN_BASE_PATH 的前缀判定。
+标签：J · 运维：部署/备份/发布
+覆盖：前缀自动探测（含图标与旧路径书签）、`SCRIPT_NAME` 透传、`YIBAN_BASE_PATH` 显式
+    覆盖与不匹配时的回落、根路径部署不回归、子路径下跳转/静态/API 都带前缀、
+    子路径登录后可正常渲染数据总览。
+对应实现：`web/app.py` 的 `BasePathMiddleware`（`_detect_prefix`、`_ROOT_MARKERS`）。
+关键断言：① 根路径行为与改造前完全一致（不回归）；② 元测试从 `app.url_map` 自动推导
+    根级路由——新增路由忘了登记前缀清单立刻报红，否则线上表现为"根路径可用、
+    生产子路径 404"。
+依赖：进程内加载 `web/app.py`（importlib 隔离）+ Flask test client；临时目录与临时
+    .env；不起子进程、不需 bash/docker/网络。
 
+反向代理只需把完整 URI 原样透传，中间件自己感知前缀。
 用法：py -m pytest tests/test_subpath_deploy.py -v
 """
 import contextlib
@@ -40,8 +45,8 @@ class SubpathDeployTest(unittest.TestCase):
         os.environ["YIBAN_DB_FILE"] = os.path.join(cls.tmp, "yiban.db")
         os.environ["YIBAN_STATE_DIR"] = cls.tmp
         os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
-        os.environ.pop("YIBAN_BASE_PATH", None)
-        spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
+        os.environ.pop("YIBAN_BASE_PATH", None)  #清掉继承值：本机 .env 配了前缀的话，"根路径不回归"那组会整组红
+        spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))  #按路径隔离加载：与真实 web 模块同名导入会串环境
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
         with contextlib.suppress(Exception):
@@ -90,7 +95,7 @@ class SubpathDeployTest(unittest.TestCase):
             path = str(rule.rule)
             with self.subTest(rule=path):
                 self.assertEqual(det(P + path), P)
-            checked += 1
+            checked += 1  #计数是元测试的自锁：一条路由都没推导出来时断言就白给
         self.assertGreaterEqual(checked, 10, "根级路由数量异常，元测试可能失效")
 
     def test_script_name_passthrough(self):
