@@ -180,7 +180,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     文件：{YIBAN_STATE_DIR}/sign-state-YYYY-MM-DD.json
     结构：{phone: {status, message, time, task}}；task 预留多时段/多星期签到扩展。
     scheduled：今日计划签到时间（HH:MM:SS，自动错峰分配后写入，执行后保留）。
-    dur：单次签到尝试耗时秒数（P6，2026-08-16：慢响应可据此判断网络/接口问题）。
+    dur：单次签到尝试耗时秒数（慢响应可据此判断网络/接口问题）。
     only_if_absent：仅当该账号**当日无结论**时才写入（return True），否则不覆盖
     并返回 False。窗口关闭收尾（`_mark_window_skip`）用它做 CAS：快照判"无记录"
     与落盘之间，另一执行体可能刚写入真实结论（failed 等）——锁内再判一次，
@@ -192,7 +192,7 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
     path = _sign_state_path()
     try:
         os.makedirs(state_dir, exist_ok=True)
-        # M12：读-改-写整体持有状态文件锁，避免并发覆盖丢失条目
+        # 读改写整体持有状态文件锁，避免并发覆盖丢失条目
         with cli_support._state_file_lock(path):
             data = {}
             if os.path.exists(path):
@@ -241,14 +241,14 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
             if scheduled:
                 entry["scheduled"] = scheduled
             data[phone] = entry
-            # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖（对抗性审查发现）
+            # 唯一临时名：防跨进程（cron + 手动 --only 并发）固定 .tmp 名互相覆盖
             tmp = f"{path}.tmp{os.getpid()}"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, path)
             return True
     except (OSError, ValueError, TypeError, AttributeError) as e:
-        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（日志审查 D6，不影响签到执行）；
+        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（不影响签到执行）；
         # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值，C-SIGN-02）
         logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(e))
         return False
@@ -285,10 +285,10 @@ def _write_sched_done(counts=None):
 # ---------------------------------------------------------------------------
 # 补签轮判定（宿主 run.sh 与容器 docker/scheduler.py 共用的单一实现）
 # ---------------------------------------------------------------------------
-# 背景（2026-09-10 批次20 B3）：宿主原先靠**第二个独立 cron**（07:12）做补签，
+# 背景：宿主原先靠**第二个独立 cron**（07:12）做补签，
 # 但首签进程要 sleep 到最晚自选时间片（生产实测 07:25）才结束，flock 由脚本持有至
 # 退出 → 07:12 的 cron 每天撞锁 `exit 0`，补签轮从未真正执行（生产日志 12/12 天实证）。
-# 修法（用户裁决方案一）：宿主改为与容器同语义——**同一进程内**首轮结束后再判定
+# 修法：宿主改为与容器同语义——**同一进程内**首轮结束后再判定
 # 一次"是否需要补跑"，判定口径收敛到此处，两侧不再各写一份。
 #
 # 判定 = 「当日全量未收尾」或「当日存在未了结账号」：
