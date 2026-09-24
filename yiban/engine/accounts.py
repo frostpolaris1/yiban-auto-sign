@@ -14,7 +14,7 @@
 
 **复用**
 `Account` 数据模型与 `load_accounts` 是唯一来源；设备回退与审核态过滤口径被
-`config_check`、web 服务层与 rekey 工具复用。
+`config_check` 与 web 服务层复用。
 
 **通信**
 输入：`db`（accounts 表，密文经 `account_crypto` 解密）、`YIBAN_ACCOUNTS_JSON` /

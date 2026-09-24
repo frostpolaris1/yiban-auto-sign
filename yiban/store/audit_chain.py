@@ -100,8 +100,8 @@ def _resolve_key_env_file():
     """解析密钥来源 .env 路径：connection._env_file → 环境变量 YIBAN_ENV_FILE（去空白）→ ".env"。
 
     密钥来源不能绑在 cwd 上（不能写成 `env_file = _env_file or ".env"`）：
-    取证/恢复类 CLI（rekey / audit_verify / clock_guard_reset /
-    list_duplicate_owners）未传 env_file 时，在应用根之外运行会读不到旧钥，进而
+    取证/恢复类 CLI（audit_verify / clock_guard_reset / list_duplicate_owners）
+    未传 env_file 时，在应用根之外运行会读不到旧钥，进而
     就地生成新钥落盘，同时产出"游离在错误目录的 .env"和"用错密钥签的审计行"
     （真实审计链随即判破，而这正是取证要用的工具）。
 
