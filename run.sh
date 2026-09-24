@@ -61,9 +61,12 @@ LOG_FILE="$(dirname "$LOG_FILE")/sign-$(date +%Y-%m-%d).log"
 # 排程（cron / systemd / 容器调度）与手工执行共用同一个 sign-YYYY-MM-DD.log，光看时间
 # 戳分不清哪一轮是谁触发的（"今天怎么跑了两轮"是排查的第一句）。判据：有控制终端 =
 # 人在终端里执行；没有 = 排程。容器等场景可用 YIBAN_TRIGGER 显式覆盖。
+# 判据取 **stdin**（fd 0）而不是 stdout/stderr：手工执行常把输出重定向进日志
+# （`./run.sh > sign.log`），那两路就不是终端了、会被误判成排程；stdin 是不是终端与
+# "人在不在终端里执行"这件事同步，重定向输出不影响它。
 if [ -n "${YIBAN_TRIGGER:-}" ]; then
     TRIGGER_TAG="$YIBAN_TRIGGER"
-elif [ -t 1 ] || [ -t 2 ]; then
+elif [ -t 0 ]; then
     TRIGGER_TAG="手工"
 else
     TRIGGER_TAG="排程"
