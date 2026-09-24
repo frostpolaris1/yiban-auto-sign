@@ -26,6 +26,18 @@
 - **引擎**（signin 预检）用 `remaining_sec(now)`——它问的是"今天还能签几个"；
 - **Web 设置页**用 `full_sec()`——它问的是"按这套配置能容纳几个"，是配置属性，
   若扣掉流逝时间，管理员在窗口末尾将永远无法保存设置（保存闸门会误拒）。
+
+**通信**
+输入：`YIBAN_SIGN_START` / `YIBAN_SIGN_END` / `YIBAN_WINDOW_EDGE_{FRONT,BACK}_SEC` /
+`YIBAN_SECOND_RUN_TIME`。除 `retry_hm()` 自带 `os.environ` 兜底外，本模块不读 `.env`，
+env 映射一律由调用方取好传进来——这正是上面"两个入口刻意分开"的另一半。
+谁调用：`docker/scheduler.py`（`from_env` 判窗口两段）、`web/app.py` 的
+`sign_window_bounds`（`bounds`，网页展示与引擎排计划共用的那份）、
+`web/services/capacity.py`（`from_env(...).full_sec()` 容量预估）、
+`web/routes/settings_api.py`（`edge_cap_sec` 保存闸门）、`web/render.py`（`parse_edges`）、
+`run.sh`（与 `retry_hm` 读同一个键的宿主 cron 时刻）。
+它调用：标准库 `datetime` / `os`；"现在是几点"由调用方按 `yiban.clock` 取好传入
+（见 `remaining_sec` / `is_open` / `is_closed` 的 `now_dt` 形参）。
 """
 import datetime
 import os
