@@ -8,9 +8,8 @@
   领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
-- `reap_expired`：租约过期回收——崩溃执行体留下的 `claimed` 行在**超出宽限期**
-  （`REAP_GRACE_SEC`）后回退 `pending` 并自增 `epoch`（不做则"崩溃即卡死"：`claim_batch`
-  只取 `pending`；不设宽限则会误回收还在飞的慢尝试，见该函数说明）；
+- `reap_expired`：租约过期**且超出宽限期**的 `claimed` 行回退 `pending`（不做就是"崩溃即卡死"，
+  宽限期的取值理由见 `REAP_GRACE_SEC` 与该函数说明）；
 - `steal_shards`：死主分片接管——把心跳过期执行体分片集内 `owner` 为**该死主**的
   `pending` 行改归本执行体（只动 `pending`，CAS 精确到死主 + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
@@ -78,16 +77,10 @@ STATE_STOLEN = "stolen"
 STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
           STATE_STOLEN)
 
-#: 了结态（当日不必再签）。`skipped` 承接暂停 / 取消类结论（`paused` / `user_cancelled` /
-#: `global_paused`，映射见 `yiban.store.migrations._JSON_TERMINAL_TO_TASK_STATE`）；
-#: 旧表 `sign_claims` 没有这一档，同一批结论当时落 `failed`（未了结、可再领），
-#: 判"当日是否了结"时两表口径不同，跨表比对不得直接对齐。
-#: 成员取自 `yiban.status.TASKS_SETTLED_STATES`（「了结」词义的唯一定义处）。
-SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES
+#: 了结态（当日不必再签）。「了结」的词义只在 `yiban.status` 定义一处，本表不自写判据。
+SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban.store.migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
-#: 成员取自 `yiban.status.TASKS_OPEN_STATES`（「未了结」词义的唯一定义处），顺序沿用本表
-#: 自己的 `STATES`（成员无先后语义，但顺序稳定便于比对与调试）。
-OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)
+OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  # 成员取自 `yiban.status.TASKS_OPEN_STATES`；顺序沿用本表 `STATES`——成员无先后语义，但顺序稳定便于比对与调试
 
 
 def _queue_conn():
