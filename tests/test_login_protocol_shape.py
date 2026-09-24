@@ -1,11 +1,24 @@
 # -*- coding: utf-8 -*-
 """登录与签到**协议形状**的保护存在性断言（第三方层抽取前后都必须绿）。
 
-为什么单独有这一份：`yiban/fyiban/protocol.py` 的抽取会把旧流登录的**顺序与请求形状**
-从 `scripts/signin.py` 搬到隔离层，而**安全校验（WAF 判定、URL 白名单、脱敏、诊断）必须
-留在本项目层并以策略注入**。既有测试只覆盖了"多任务任一成功即停""无点位""会话缓存"
-这些**业务语义**，没有一条断言请求形状——直接搬代码时删掉一整段 WAF 分支或改掉
-`usersure` 的表单字段，现有套件**照样全绿**。故先建这份断言，抽完再核对：
+标签：K · 登录协议与第三方隔离
+覆盖：旧流登录五步与默认流四步的 URL/query/表单字段/顺序/是否跟随重定向、usersure
+   不带 Origin 与 Referer、每个响应点上的 WAF
+   分支真的被走到、跳转目标换成非白名单域必须响亮失败、reUrl 为 null 不抛裸
+   TypeError、签到两接口形状与三态语义、会话缓存命中与失效两分支、已登录标志的主机与路径判定（含子域伪装）、URL
+   白名单边界与逐跳校验、风控文案识别的长度上限与转义解码。
+对应实现：yiban/fyiban/protocol.py（旧流与默认流的登录编排、usersure、已登录标志判定）、yiban/security.py（is_trusted_yiban_url、_is_strict_fyiban_url、WAF
+   文案识别）、scripts/signin.py 的签到接口。
+关键断言：这份断言的存在理由是「抽完再核对」：直接搬代码时删掉一整段 WAF 分支或改掉
+   usersure 的表单字段，业务语义用例照样全绿，所以必须先钉形状。WAF
+   分支要按「真的会被走到」来验（每个响应点各注入一次），文件里存在这段代码不算。usersure
+   必须不带 Origin（实测带上得 e001）。令牌放在 query 末位（后面没有
+   &）也必须提取——曾因此全站登录失败。已登录标志必须同时认主机与路径，子域伪装
+   f.yiban.cn.evil.com 不得命中。断言走真实 requests.Session（只换
+   send），Origin 置 None 这类删头手法只有真实 prepare_request 才观察得到。
+依赖：真实 requests.Session + 脚本化 send 替身、PyCryptodome 现场生成 1024
+   位测试公钥（模块级缓存复用）；不发任何真实网络请求、不建库。整文件在本机执行，无
+   skip。
 
 1. 旧流登录 6 次请求的 URL / query / 表单字段 / 顺序 / 是否跟随重定向；
 2. `usersure` **必须不带 Origin/Referer**（实测带 Origin → e001 无效应用端编号）；
@@ -35,7 +48,7 @@ _TEST_PUBKEY_PEM = None
 def _pubkey_pem():
     global _TEST_PUBKEY_PEM
     if _TEST_PUBKEY_PEM is None:
-        _TEST_PUBKEY_PEM = RSA.generate(1024).publickey().export_key().decode("utf-8")
+        _TEST_PUBKEY_PEM = RSA.generate(1024).publickey().export_key().decode("utf-8") # 1024 位生成快、够用：这里只要形状正确，不要密码学强度
     return _TEST_PUBKEY_PEM
 
 
@@ -43,6 +56,7 @@ def _resp(json_data=None, *, text="", status=200, headers=None, cookies=None, ur
     """构造真实 requests.Response（`.json()` / `.headers` / `.cookies` 都按真实语义）。"""
     r = requests.Response()
     r.status_code = status
+    # 填 _content 而不是包装 json：让真实的 .json() 去解析，形状错在这里就露出来
     r._content = (json.dumps(json_data) if json_data is not None else text).encode("utf-8")
     r.headers.update(headers or {})
     r.url = url
@@ -70,12 +84,12 @@ class _Recorder:
         self.calls = []  # [(PreparedRequest, send_kwargs)]
 
     def __call__(self, session, request, **kwargs):
-        self.calls.append((request, kwargs))
+        self.calls.append((request, kwargs)) # kwargs 也得记：allow_redirects 是 send 的参数，不在请求对象上
         if not self.responses:
             raise AssertionError(
                 f"请求数超出脚本第 {len(self.calls)} 个: {request.method} {request.url}"
             )
-        resp = self.responses.pop(0)
+        resp = self.responses.pop(0) # 脚本逐个消耗：多发出一请求就报错，这正是「形状」断言的一部分
         if resp.cookies:
             # 真实 send 会把响应 Set-Cookie 并入会话 jar——登录态就落在这一步
             session.cookies.update(resp.cookies)
@@ -93,6 +107,7 @@ class _Recorder:
         return urlsplit(self.calls[i][0].url).path
 
     def query(self, i):
+        # keep_blank_values：空值参数也是协议形状，省掉就测不出「少了个键」
         return dict(parse_qsl(urlsplit(self.calls[i][0].url).query, keep_blank_values=True))
 
     def form(self, i):

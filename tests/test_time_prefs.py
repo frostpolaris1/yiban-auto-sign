@@ -1,17 +1,32 @@
 # -*- coding: utf-8 -*-
 """调度 v2（S2/S3）自选时间片全链路测试：db 层 + 调度层 + API 层。
 
-全程 mock / 纯计算，不访问易班服务器（无任何网络请求）。
+标签：A · 调度：计划与分片
+覆盖：自选时间片全链路三层：db 的 set/get/clear/stats
+   与连带清理、调度层的自选固定片与先到先得/双向就近顺延/开关关闭时忽略、API
+   层的 GET/PUT 校验与 5 对齐、拥挤度脱敏（百分比粗粒度、满员恰好
+   100）、弹性冷却与匿名哈希审计、快照分界与兜底分界、账号/设置接口的首尾裁剪量程与窗口回退提示、片级
+   partial/disabled
+   标记、四处钟点跨页一致、暂停与容量配额口径、档位重排后的权限、公告与
+   write_env_key 的换行注入拦截。
+对应实现：scripts/db.py（time_pref
+   读写、purge/delete_user_with_accounts/replace_accounts
+   的连带清理）、scripts/signin.py（build_schedule
+   的自选分支、run_queue_retry）、web/app.py（my-time-pref、stats、accounts、settings、capacity、pause
+   各接口）、web.services 与 yiban/window.py 的共用几何。
+关键断言：自选是硬约束但有溢出语义：选中的片内 100% 落点，超容量的晚者按 updated_at
+   就近顺延而不是丢号。用户侧只许看到已选百分比（10% 粗粒度、未满封顶
+   90、满员恰好
+   100），人数/容量属管理员侧数据——防被反推调研。设置保存必须原子（任一字段校验失败则全部不落盘）且裁剪值被夹到单边
+   20%。含换行的键/值/公告一律拒绝（.env
+   注入新配置行等于提权）。删除与整表替换必须连带清掉孤儿
+   pref，否则拥挤度虚高。
+依赖：临时 .env + 临时 sqlite + accounts/users JSON + 全新 Flask test
+   client；调度断言为纯计算。不发网络请求。整文件在本机执行，无 skip。
+
 用法（项目根目录）：
     py -m pytest tests/test_time_prefs.py -v
     py tests/test_time_prefs.py
-
-覆盖（docs/design/plan-scheduler-v2.md 2.2/2.3/3.3/6 章）：
-- db：set/get/clear/stats；账号 purge 连带清理自选
-- 调度：自选固定所选片；同片超 K 先到先得（updated_at 早者留）；溢出双向就近顺延；
-  总开关关时忽略自选
-- API：my-time-pref GET/PUT 校验（5 对齐/窗口内/null 清除）；stats 仅管理员；
-  accounts 返回 time_pref 字段；settings 读写新参数
 """
 import contextlib
 import datetime as _datetime_TPREF
@@ -66,9 +81,10 @@ class TimePrefsTest(unittest.TestCase):
         os.environ["YIBAN_DB_FILE"] = cls.db_file
         os.environ["YIBAN_ALLOW_TIME_PREF"] = "1"
         os.environ["YIBAN_STATE_DIR"] = cls.tmp  # 快照标记/状态文件隔离到临时目录
-        global db, signin
+        global db, signin # 上面刚改过环境变量：重新导入才拿到指向临时库的那份模块对象
         import db
         import signin
+        # 以独立模块名加载：web/app.py 在导入期就把路径读成模块级常量
         spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
@@ -121,7 +137,7 @@ class TimePrefsTest(unittest.TestCase):
         acc_id = next(
             r["id"] for r in db.load_accounts_raw() if r["phone"] == "13800138001"
         )
-        db.purge_account(acc_id)
+        db.purge_account(acc_id) # 连带清理正是本用例的全部内容：pref 表没有外键兜着，漏清就虚高拥挤度
         self.assertIsNone(db.get_time_pref("13800138001"))
 
     def _add_stat_account(self, phone):

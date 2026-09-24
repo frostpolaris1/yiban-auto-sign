@@ -1,6 +1,21 @@
 # -*- coding: utf-8 -*-
 """`yiban/engine/token_bucket.py` 的契约用例：GCRA/TAT 令牌桶、AIMD、全局 Λ、gap 门、EWMA。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：GCRA/TAT 单出口桶的放行与突发额度、AIMD
+   的事件式上探/回退/半开与时间下界、外环 EWMA 的 ±20% 夹幅与形参契约、全局 Λ
+   与出口数无关的总量上界及取整/非法值分档、配置面（YIBAN_MIN_EXEC_GAP
+   映射突发、人工接管只封上探不封回退）、每账号 gap
+   安全件、速率单位断言、egress_state 落库往返与跨时钟域恢复。
+对应实现：yiban/engine/token_bucket.py（EgressBucket、EgressLimiter、GlobalLimiter、AccountGapGate、apply_ewma、burst_from_env、limiter_from_env、模块常量）、yiban/store/queue_store.py（egress_state
+   的读写）。
+关键断言：速率单位一律是账号尝试/s：退回「1 req/s」的字面实现会让实际请求量只有设计的
+   1/6。tat = max(now, tat) +
+   T——长期空闲不得「积攒」出上千条放行。探测成功不结束半开（冷却窗按时间走表），半开期同一出口只放一条并发。人工配了速率是上限而不是关掉自适应：风控回退与站点级降档是安全反应，照做。安全件的非法值回退到「开」。非数值
+   Λ 不得静默吞成「不限」。
+依赖：全部用例注入浮点秒 now，不真实 sleep；落库用例用临时
+   sqlite。不发网络请求。整文件在本机执行，无 skip。
+
 全部用例注入 `now`（浮点秒），不真实 sleep；落库用例用临时库（与 test_store_queue 同手法）。
 速率单位一律是**账号尝试/s**（attempt/s）——`rate=1` 的 T 是 1.0s，不是 1/6。
 """
@@ -62,7 +77,7 @@ class BucketTest(unittest.TestCase):
     def test_03_tat_not_accumulating(self):
         """`tat = max(now, tat) + T`：长期空闲后仍只放行 burst 条，不"积攒"上千条。"""
         fresh = token_bucket.EgressBucket("e0", rate=1.0, burst=6)
-        self.assertEqual(sum(1 for _ in range(1000) if fresh.try_acquire(1000.0)), 6)
+        self.assertEqual(sum(1 for _ in range(1000) if fresh.try_acquire(1000.0)), 6) # 空转到 1000s 也只放 6 条：桶不积攒额度，突发上限不会变成「存款」
         used = token_bucket.EgressBucket("e0", rate=1.0, burst=6)
         for _ in range(6):
             used.try_acquire(0.0)
@@ -162,6 +177,7 @@ class AimdTest(unittest.TestCase):
                                msg="降档后新建的出口从降档值起算，不是出厂速率 4.0")
 
     def test_08b_rate_stays_within_bounds(self):
+        """500 步随机事件序列（约 30% 风控信号）下速率始终夹在 [RATE_MIN, RATE_MAX]。"""
         # 固定常数种子：序列可复现，换种子会走到另一条回退/上探路径
         rng = random.Random(12345)
         lim = token_bucket.EgressLimiter(rate=1.0, burst=6)
@@ -179,6 +195,7 @@ class EwmaTest(unittest.TestCase):
     """外环：目标跟踪的连续微调，单次幅度夹 ±20%。"""
 
     def test_09_apply_ewma_steps(self):
+        """外环单步微调的四个取样点：撞上限夹幅、无偏差、目标为零、R_target 非法时不动。"""
         # 1.0×(1+0.5×1.0)=1.5 → 被 ±20% 夹到 1.2
         self.assertAlmostEqual(token_bucket.apply_ewma(1.0, 0.4, 0.2), 1.2, places=9)
         self.assertAlmostEqual(token_bucket.apply_ewma(1.0, 0.2, 0.2), 1.0, places=9)
@@ -196,7 +213,7 @@ class GlobalTest(unittest.TestCase):
     """全局 Λ：与出口数 K 无关的总量上界。"""
 
     def test_10_global_lam_caps_attempts(self):
-        g = token_bucket.GlobalLimiter(2.0)
+        g = token_bucket.GlobalLimiter(2.0) # Λ 与出口数 K 无关：K 条通道共用同一个总量上界
         self.assertTrue(g.acquire(0.0))
         self.assertTrue(g.acquire(0.5))
         self.assertFalse(g.acquire(0.6), "1s 内第 3 次放行必须被 Λ 拦下")

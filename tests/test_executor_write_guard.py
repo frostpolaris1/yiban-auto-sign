@@ -1,9 +1,20 @@
 # -*- coding: utf-8 -*-
 """执行体写操作的**口令门**与行的**自定义名**（2026-09-17）。
 
-背景（前端 88 号提示词）：系统开关那类高危动作有口令复核，执行体的写操作此前没有——
-持一个被窃的主管理员会话（Cookie + CSRF 都能拿到）就能改出口、增删执行体、把兜底停掉，
-而这恰恰是最容易造成**静默漏签**的一类配置。
+标签：B · 调度：领取/队列/执行体
+覆盖：执行体写操作的口令门（追加/删除/更新/单段/整条五类入口、同值提交不要求、错口令的
+   403 + 审计、实测端点不要求口令）、行的自定义名（未设 null / 空串清除 /
+   换行与超长拒绝）、兜底显示名的单点来源、审计 actor 取当前会话用户。
+对应实现：web/app.py 的 /api/scheduler/executors* 写接口与
+   _verify_session_password、yiban/egress.py（role_label、manifest 的 name
+   字段）、审计写入。
+关键断言：只在「真的会改配置」时要求口令：同值提交、只改自定义名、只读一律免——被拒时必须配置与清单都不动（不能出现「报失败但已生效」）。口令校验只比对、绝不写与登录共用的失败计数：持
+   Cookie
+   者若能写共享计数，就能反手把管理员锁出登录。审计只落动作与槽位，不记口令/代理串/自定义名。自定义名要与后端
+   label 分开且禁止换行（名字挤在 .env 同一行里，换行即注入口）。
+依赖：临时 .env/DB + 独立模块名加载的 Flask test client；夹具关掉口令 TTL
+   豁免并把门禁固定在 full 档（默认档由别的文件钉）。全程本地，无网络请求，无
+   skip。
 
 口令门口径（**与 `POST /api/settings` 的系统开关逐字同构**，不另立一套）：
 - 只在"**真的会改配置**"时要求 `confirm_password`：同值提交、只改自定义名、只读不要求；
@@ -44,7 +55,7 @@ def _load_webapp():
     spec = importlib.util.spec_from_file_location(
         "webapp_writeguard", os.path.join(BASE, "web", "app.py"))
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["webapp_writeguard"] = mod
+    sys.modules["webapp_writeguard"] = mod # 本文件自带的独立模块名，与别的 web 用例共用就会读到另一个 .env
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
     return mod
@@ -63,7 +74,7 @@ class _GuardBase(unittest.TestCase):
             "YIBAN_DB_FILE": os.path.join(cls.tmp, "yiban.db"),
             "YIBAN_STATE_DIR": cls.tmp,
             "YIBAN_LOG_FILE": os.path.join(cls.tmp, "sign.log"),
-            "YIBAN_DISABLE_PURGE_LOOP": "1",
+            "YIBAN_DISABLE_PURGE_LOOP": "1", # 后台清理一跑就会删旧行，口令与审计断言拿到的不再是自己刚写的东西
         })
         cls.webapp = _load_webapp()
 
@@ -109,7 +120,7 @@ class _GuardBase(unittest.TestCase):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": "admin@test.local", "password": ADMIN_PASS})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        c.csrf = c.get("/api/me").get_json()["csrf_token"]
+        c.csrf = c.get("/api/me").get_json()["csrf_token"] # 写接口一律要 CSRF 头，夹具里顺手取好，用例只关心口令门那一层
         return c
 
     def _rows(self, c):
