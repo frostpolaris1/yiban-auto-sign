@@ -10,10 +10,9 @@
    所以「暂停」与「恢复」是**两颗不同权限的按钮**，不是一颗翻转钮：按当前状态只露出该露
    的那颗，无权限时禁用并就地说明（见 #sw-perm），不能让人点了没反应。
 
-   每次动作都是：confirmDialog 写明影响范围 → 当次鉴权 → 只提交被改的那一个字段。
-   急停（global_pause 0→1）不可逆，走 YB.dangerousSubmit，由后端响应 reason 决定要口令
-   还是倒计时确认；其余方向走 YB.openConfirmPasswordModal 收当前管理员口令，回调返回请求
-   Promise：弹窗保持打开直至后端落定，缺口令/错口令的 403 显示在弹窗内可直接改重试。
+   每次动作都是：confirmDialog 写明影响范围 → 提交。急停（global_pause 0→1）不可逆，
+   后端还会先要一次倒计时确认；其余方向只可能回口令。档位只存在于后端——本组件不判断、
+   也不预判要不要口令，一律先不带凭据发，由响应体的 reason 决定补哪种凭据。
    state 仅成功分支更新，失败/取消时开关视觉状态保持原状。 */
 (function () {
   "use strict";
@@ -77,18 +76,15 @@
     sync();
   }
 
-  function applyPauseResult(field, next, what, data) {
-    if (data == null) return;   // 用户取消：不改状态、不提示
+  function applyPauseResult(field, next, what) {
     if (field === "global_pause") state.globalPause = next;
     else state.regPause = next;
     sync();
     YB.toast.success(next ? what + "已暂停" : what + "已恢复");
   }
 
-  // 危险开关：确认写明影响范围 → 当次鉴权 → 只提交被改的字段。
-  // 急停（global_pause 0→1）不可逆，走 YB.dangerousSubmit：后端按 YIBAN_PW_GATE 决定要
-  // 口令（password_required）还是倒计时确认（delay_ack_required），前端不判断档位。
-  // 其余方向（恢复签到 / 注册开关两方向）保持既有口令框流程。
+  // 危险开关：确认写明影响范围 → 提交（只提交被改的那一个字段）。
+  // 凭据交给统一 helper：先不带凭据发，后端按档位与风控回 reason 才补口令或倒计时确认。
   function pauseAction(field, next) {
     if (!canDo(field, next)) return;          // 方向级兜底：按钮已禁用，这里防 DOM 篡改
     var what = field === "global_pause" ? "签到" : "注册";
@@ -104,23 +100,13 @@
       if (!ok) return;
       var body = {};
       body[field] = next ? 1 : 0;
-      var desc = "确认" + (next ? "暂停" : "恢复") + what + "？请输入当前管理员密码确认。";
-      var req;
-      if (field === "global_pause" && next) {
-        req = YB.dangerousSubmit({
-          path: "/api/settings", body: body, desc: desc,
-          delayDesc: "暂停签到会让所有账号停止自动签到（正在运行的一轮会跑完），确认继续？"
-        });
-      } else {
-        // 回调返回请求 Promise：弹窗保持打开，缺口令/错口令的 403 显示在框内可改重试
-        req = new Promise(function (resolve) {
-          YB.openConfirmPasswordModal(desc, function (pw) {
-            body.confirm_password = pw;
-            return YB.api("POST", "/api/settings", body).then(resolve);
-          }, function () { resolve(null); });
-        });
-      }
-      req.then(function (data) { applyPauseResult(field, next, what, data); })
+      YB.dangerousSubmit({
+        path: "/api/settings", body: body,
+        desc: "确认" + (next ? "暂停" : "恢复") + what + "？请输入当前管理员密码确认。",
+        // 倒计时确认只对不可逆的急停出现；其余方向后端不会下发 delay_ack_required
+        delayDesc: field === "global_pause" && next
+          ? "暂停签到会让所有账号停止自动签到（正在运行的一轮会跑完），确认继续？" : null
+      }).then(function () { applyPauseResult(field, next, what); })
         .catch(function (e) {
           if (e && e.canceled) return;   // 取消弹窗：不是失败
           YB.toast.error((e && e.message) || "操作失败，请稍后再试");

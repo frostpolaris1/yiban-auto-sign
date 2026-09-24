@@ -15,8 +15,8 @@
         页面只保留一道诚实的二次确认。
 
    保存语义（与全页统一）：改动只标脏（脏徽标 + 保存按钮出现），点「保存容量上限」
-   才提交；保存走 confirm_password 高危门禁（不合适的上限会影响新增注册/账号），
-   成功后回调页面刷新容量状态。
+   才提交；保存是受门禁操作，走统一 helper——先不带凭据发，后端回 reason 才补口令
+   （不合适的上限会影响新增注册/账号），成功后回调页面刷新容量状态。
    对外面：mount(options) / apply(data) / applyExecutors(data) / save() → Promise<boolean>。 */
 (function () {
   "use strict";
@@ -77,29 +77,28 @@
     return body;
   }
 
+  // 受门禁的保存：**先不带凭据发**，由后端 reason 决定要不要口令（档位只存在于后端）；
+  // 用户取消弹窗 = 本次不保存。
   function submit(body) {
-    return new Promise(function (resolve) {
-      YB.openConfirmPasswordModal(
-        "调整容量上限：不合适的设置可能影响新增注册/账号，是否继续？\n请输入当前管理员密码确认。",
-        function (pw) {
-          body.confirm_password = pw;
-          busy = true;
-          setTip("保存中…", false);
-          YB.api("POST", "/api/settings", body).then(function (data) {
-            snap = { users: value("set-max-users", snap.users), accounts: value("set-max-accounts", snap.accounts) };
-            clearDirty();
-            setTip((data && data.msg) || "容量上限已保存", false);
-            if (ctx.onSaved) ctx.onSaved(data);
-            resolve(true);
-          }, function (e) {
-            setTip((e && e.message) || "保存失败，请稍后重试", true);
-            resolve(false);
-          }).then(function () {
-            busy = false;
-            applyPerm();
-          });
-        },
-        function () { resolve(false); });     // 取消口令 = 本次不保存
+    busy = true;
+    setTip("保存中…", false);
+    return YB.dangerousSubmit({
+      method: "POST", path: "/api/settings", body: body,
+      desc: "调整容量上限：不合适的设置可能影响新增注册/账号，是否继续？\n请输入当前管理员密码确认。"
+    }).then(function (data) {
+      snap = { users: value("set-max-users", snap.users), accounts: value("set-max-accounts", snap.accounts) };
+      clearDirty();
+      setTip((data && data.msg) || "容量上限已保存", false);
+      if (ctx.onSaved) ctx.onSaved(data);
+      return true;
+    }, function (e) {
+      if (e && e.canceled) setTip("", false);
+      else setTip((e && e.message) || "保存失败，请稍后重试", true);
+      return false;
+    }).then(function (ok) {
+      busy = false;
+      applyPerm();
+      return ok;
     });
   }
 

@@ -31,9 +31,11 @@ _SETTINGS_WRITERS = (
     "settings-switches.js",
 )
 
-# 写请求体里**不是**设置项的字段（协议字段，与档位无关）
+# 写请求体里**不是**设置项的字段（协议字段，与档位无关）。这些字段由受门禁提交 helper
+# 按后端下发的 `reason` 注入，设置写组件不再各自直写（各写一份必然漂移）——故"该字段仍被
+# 声明"的证据是 helper 里出现它，而不是组件里的 `body.<键> = …`。
 _NON_SETTING_FIELDS = {
-    "confirm_password": "口令复核字段，每个写操作都可能带，与设置档位无关",
+    "confirm_password": "口令复核字段：受门禁提交 helper 在 password_required 时注入",
 }
 
 # 档位表里前端**没有**控件的键：豁免必须写理由，且日后有 UI 时必须删掉这条（见下方向一）。
@@ -129,10 +131,11 @@ class FrontendToTierTest(_Base):
         )
 
     def test_non_setting_fields_are_still_declared(self):
-        """登记的非设置字段若已从代码里消失，登记本身就该删（防空挂豁免）。"""
-        stale = set(_NON_SETTING_FIELDS) - self._assigned_keys()
-        self.assertEqual(stale, set(),
-                         f"这些非设置字段已不在前端声明里，豁免失去意义：{sorted(stale)}")
+        """登记的非设置字段若连 helper 也不再注入，登记本身就该删（防空挂豁免）。"""
+        helper = _read(os.path.join(JS_DIR, "core.js"))
+        stale = [k for k in _NON_SETTING_FIELDS if k not in helper]
+        self.assertEqual(stale, [],
+                         f"这些非设置字段已无处声明，豁免失去意义：{sorted(stale)}")
 
 
 class TierToFrontendTest(_Base):
