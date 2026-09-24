@@ -364,6 +364,38 @@ __FUNCS__
   OUT.k_err = kErr;
   OUT.k_calls = calls.length;
 
+  // L：多段提交的第一步已成功、第二步被后端打回（**非取消失败**）⇒ 错误同样带回"已提交 1 步"。
+  // 与取消路径是同一个洞：调用方拿不到这个数，就只能把错误显示在横幅里而页面照旧停在旧数据上——
+  // 库里那一半改动既没人刷新也没人提示。
+  reset();
+  script = [ { ok: { msg: "s1" } }, { err: { message: "boom2", data: {} } } ];
+  var lErr = null;
+  try {
+    await dangerousSubmit({
+      requests: [
+        { method: "PUT", path: "/api/r1", body: { r: 1 } },
+        { method: "PUT", path: "/api/r2", body: { r: 2 } }
+      ], desc: "D"
+    });
+  } catch (e) { lErr = { canceled: !!e.canceled, message: e.message, completed: e.completed }; }
+  OUT.l_err = lErr;
+  OUT.l_calls = calls.length;
+
+  // M：第一步就失败（非取消）⇒ 一步都没提交，completed 必须是 0（不得谎报部分写入）
+  reset();
+  script = [ { err: { message: "boom3", data: {} } } ];
+  var mErr = null;
+  try {
+    await dangerousSubmit({
+      requests: [
+        { method: "PUT", path: "/api/r1", body: { r: 1 } },
+        { method: "PUT", path: "/api/r2", body: { r: 2 } }
+      ], desc: "D"
+    });
+  } catch (e) { mErr = { canceled: !!e.canceled, message: e.message, completed: e.completed }; }
+  OUT.m_err = mErr;
+  OUT.m_calls = calls.length;
+
   console.log(JSON.stringify(OUT));
 })().catch(function (e) { console.error(e && e.stack || e); process.exit(1); });
 """
@@ -513,13 +545,32 @@ class DelayAckFrontendTest(unittest.TestCase):
         self.assertEqual(self.out["k_err"], {"canceled": True, "completed": 0})
         self.assertEqual(self.out["k_calls"], 1)
 
+    def test_multi_request_plain_failure_also_reports_completed_steps(self):
+        """多段提交的第一步已落库、第二步被后端打回（**非取消**）⇒ 错误同样带回 `completed`=1。
+
+        失败与取消在这一点上没有区别：被打回之前成功的步骤已经落盘，调用方拿不到这个数
+        就只能把错误显示在横幅里、页面照旧停在旧数据上——库里那一半改动既没人刷新也没人
+        提示。差别只在提示语，收尾必须走同一条路。
+        """
+        self.assertEqual(self.out["l_err"],
+                         {"canceled": False, "message": "boom2", "completed": 1},
+                         "非取消失败同样必须回传已成功提交的步数")
+        self.assertEqual(self.out["l_calls"], 2, "失败后不得重发第二步")
+
+    def test_plain_failure_before_any_step_reports_zero_completed(self):
+        """首步就失败 ⇒ 一步都没提交，`completed` 必须是 0（"无需重载"的判据）。"""
+        self.assertEqual(self.out["m_err"],
+                         {"canceled": False, "message": "boom3", "completed": 0})
+        self.assertEqual(self.out["m_calls"], 1)
+
 
 class ExecutorSaveCancelTest(unittest.TestCase):
-    """执行体保存的取消路径：多段提交后取消必须重载视图并交代已生效的部分。
+    """执行体保存的收尾：多段提交被打断后必须重载视图并交代已生效的部分。
 
     node 侧的用例能钉住 helper 回传的步数，钉不住调用方拿这个数做了什么（组件依赖
     真实 DOM 与模态，不在本文件的替身覆盖范围内）——故这里对组件源码做一次结构化钉点：
-    取消分支必须走 `canceledAfter`，而它必须重载视图、把已提交步数讲出来。
+    取消分支必须走 `canceledAfter`、非取消失败分支必须走 `failedAfter`，而两者必须复用
+    同一个收尾实现（重载视图 + 把已提交步数讲出来）。
     """
 
     def setUp(self):
@@ -529,12 +580,26 @@ class ExecutorSaveCancelTest(unittest.TestCase):
         self.assertIn("if (e && e.canceled) return canceledAfter(e);", self.src,
                       "取消弹窗不得静默 return false：必须先刷新视图再提示")
 
-    def test_handler_reloads_view_and_explains_partial_commit(self):
-        self.assertIn("function canceledAfter(", self.src)
-        body = _extract_function(self.src, "canceledAfter")
-        self.assertIn("load()", body, "取消路径必须重载视图（用户据此后看到库里的真实状态）")
-        self.assertIn("completed", body, "提示必须带上已提交步数")
-        self.assertIn("setTip(", body, "部分提交必须给一条明确提示")
+    def test_plain_failure_branch_routes_to_reload_handler(self):
+        """非取消失败不得只落一条横幅：第二步回 400 时第一步已经落盘，同样是"已改一半"。"""
+        self.assertIn("return failedAfter(e, failWord);", self.src,
+                      "非取消失败分支必须走重载收尾，而不是停在 failTip")
+
+    def test_both_handlers_share_the_partial_commit_closing(self):
+        """两条收尾共用 `partialAfter`：必须重载视图、讲明已落盘步数、且顺序不能反。
+
+        各写一份就会各自漂移：一处把提示落在重载之后，另一处照旧被 `load()` 末尾的清屏抹掉。
+        """
+        self.assertIn("function partialAfter(", self.src)
+        tail = _extract_function(self.src, "partialAfter")
+        self.assertIn("load()", tail, "收尾必须重载视图（用户据此后看到库里的真实状态）")
+        self.assertIn("setTip(", tail, "部分提交必须给一条明确提示")
+        self.assertIn("已经写入配置", tail, "提示必须讲明那几步已经落盘、不会回滚")
+        for name in ("canceledAfter", "failedAfter"):
+            self.assertIn("function " + name + "(", self.src)
+            body = _extract_function(self.src, name)
+            self.assertIn("completed", body, name + " 必须读 helper 回传的已提交步数")
+            self.assertIn("partialAfter(", body, name + " 必须复用同一收尾")
 
 
 class GatedCallSitesTest(unittest.TestCase):

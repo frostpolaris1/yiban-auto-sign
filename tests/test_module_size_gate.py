@@ -219,9 +219,9 @@ OVERSIZED = {
         "容量实测与建议已抽到 settings-quota.js；三种写操作（追加行/删行/改行）各带口令门，"
         "另有「只改名不打门」的分支。行数账目按实测：状态列的行内开关临时提到 800，"
         "该开关按用户要求收回、只留弹窗一个入口后为 778 行；补上多段保存取消后的收尾"
-        "（重载视图 + 部分提交提示）后为 795 行，上限随之提到 800。"
-        "再涨就先切行内设置弹窗：openRow 及其独有助手（infoTip/linkBtn/ROW_HELP），"
-        "届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
+        "（重载视图 + 部分提交提示）后为 795 行；非取消失败复用同一收尾后为 799 行，"
+        "上限保持 800——已贴到线上限，再涨就先切行内设置弹窗：openRow 及其独有助手"
+        "（infoTip/linkBtn/ROW_HELP），届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
     )),
     "web/static/js/core.js": (None, (
         "前端交互层核心（classic script，非 module）：全局 api/toast/modal/时钟/身份/导航行为，"
