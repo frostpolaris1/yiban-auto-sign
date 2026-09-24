@@ -417,6 +417,10 @@ def api_me_restore():
     session["pw_version"] = u.get("pw_version", 1)
     # 会话绝对过期基准，与 api_login 同口径
     session["login_ts"] = int(time.time())
+    # 登录出口与 api_login 同口径：risk 档"换环境"判据的基准之一，会话还没验证过口令
+    # 时用它兜底。此处不写则本会话两级基准都空 = 未知，那条判据对这条会话永久失效
+    # （恢复即登录建立的同样是完整会话，不该比登录路径少一层风控）。
+    session["login_ip"] = ip
     # 恢复即登录须与 api_login 同样签发 sid 并落库。注销与恢复
     # （db.restore_user）均不轮换 sid，库内保留注销前登录签发的旧值——
     # 此处不签发则新会话无 sid、与库内旧值不匹配，恢复成功后下个请求即 401；
