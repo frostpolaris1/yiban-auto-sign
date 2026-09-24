@@ -55,8 +55,12 @@ jobs:
       # ---- Test ----
       # 单元/回归测试（tests/，pyproject.toml testpaths=["tests"]）
       # -n auto：按 runner 核数并发（GitHub 默认 2 核 → 提速约 2 倍）
+      # --dist loadfile：**按文件**分发、文件内保持原顺序。默认分发（按单条测试）会把
+      #   同一个类拆到不同 worker，叠加进程级 DB 连接单例，导致确定性失败
+      #   （test_web_security_gates 的 cookie path 用例报 401）；本套测试原本按
+      #   "同文件内用例有先后依赖"写就，故必须用 loadfile。
       - name: Test (pytest)
-        run: pytest -q -n auto
+        run: pytest -q -n auto --dist loadfile
 
       - name: Gate ready
         run: echo "Lint + Test gate active."
