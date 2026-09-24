@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """Web 模板渲染「金标准」回归测试（2026-09-10 前端模块化护栏）。
 
+标签：F · 前端与界面守卫
+覆盖：登录页、管理端总览 `/`、用户端 `/user` 与 `/user/calendar` 的渲染结构指纹，以及静态资源引用清单的金标准
+对应实现：`web/app.py` 的页面路由与 `web/templates/**`；快照在 `tests/golden/*.rendered.html` 与 `tests/golden/assets.json`
+关键断言：归一化只允许 N1–N4（清 script/style 内容、`?v=` 归一、空白压平），**不要为了让测试通过而新增规则**；资源清单单独存在是因为「CSS/JS 外提」会被结构指纹悄悄抹平；清单里的每个 `/static/` 资源都必须真实存在于磁盘；快照缺失时报错并给出重建命令，而不是自动重建
+依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node（真渲染页面，故临时库里要预置主管理员与一个 role=user 的账号——`_current_role` 会回查数据库）。更新快照靠 `UPDATE_GOLDEN=1`；无需 node
+
 ## 为什么需要它
 
 本仓前端**零自动化覆盖**：`tests/` 全是 Python，没有任何模板渲染断言。而

@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """回归守卫（2026-09-10，V3-5b）：class 属性里 `dark:` 变体的**作用域**与**重复**。
 
+标签：F · 前端与界面守卫
+覆盖：class 属性里 `dark:` 变体的**作用域**（漏写 `hover:` 的常驻声明）与**重复**（同属性同变体多个色值尾串）
+对应实现：`web/templates/**` 与 `web/static/js/**` 的 class 属性文本；判据在本文件的`_segments` / `_tokens` / `_scan`
+关键断言：`dark:<prop>-v` 与 `dark:hover:<prop>-v` 同值即判「漏写 hover」；同 (variant, prop) 出现两个色值尾串即判重复；按「引号片段 / 去引号剩余」分段检查，互斥三元分支各出现一次不算重复
+依赖：纯本地——扫 `web/templates` + `web/static/js` 的 `.html`/`.js` **原文且不剥注释**，不执行 JS、无需 node、不联网
+
 本仓大量用 Tailwind 的 `dark:` 变体，而它有两种静默出错方式 —— 都不报错、只在暗色下
 看起来"怪"，很难发现：
 
