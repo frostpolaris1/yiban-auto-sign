@@ -151,8 +151,9 @@ def send(title, content, force=False, urgent=False, ledger=None):
     ledger_id = ledger or ("urgent" if urgent else "general")
     ticket = None  # None = 本次没占额度（force 路径），退还动作对它就是空操作
     if not force:
-        if config._env_int("URGENT_ONLY", 0, envs) and not urgent:
-            _log_skip("urgent_only", "非紧急告警未推手机（YIBAN_NOTIFY_URGENT_ONLY=1）: %s", title)
+        if config._env_int("URGENT_ONLY", config.DEFAULT_URGENT_ONLY, envs) and not urgent:
+            _log_skip("urgent_only",
+                      "非紧急告警未推手机（YIBAN_NOTIFY_URGENT_ONLY 未显式置 0）: %s", title)
             return False  # 仅重要告警：非紧急跳过（不消耗每日预算）
         if not _throttle_due(title):
             _log_skip("throttle", "推送节流命中（YIBAN_NOTIFY_COOLDOWN 窗口内同类已推）: %s", title)

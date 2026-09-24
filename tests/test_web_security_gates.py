@@ -36,6 +36,10 @@ TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
 USER_PASS = "UserPass123!"
 NEW_PASS = "NewPass123!"
+# 门禁档位：本文件多数用例钉的是"当次要口令"这一层的机制（档位门、冷却、豁免、
+# 变更告警），必须显式固定在 full——默认档是 risk，不固定则这些动作不再当次要口令。
+# 默认档与 off 档的行为由 tests/test_pw_gate_tiers.py 钉。
+GATE_FULL = "full"
 
 
 class Batch16FixesTest(unittest.TestCase):
@@ -48,6 +52,9 @@ class Batch16FixesTest(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、豁免、冷却、变更告警），
+                # 故把档位固定在 full（默认档 risk 下这些动作不再当次要口令）
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -326,6 +333,9 @@ class _AnnBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、豁免、冷却、变更告警），
+                # 故把档位固定在 full（默认档 risk 下这些动作不再当次要口令）
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -376,6 +386,7 @@ class _AnnBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         self.webapp.ENV_FILE = self.env_file
         # 公告缓存是模块级全局：不清零会把上一例的已发布文本带进本例
@@ -804,6 +815,8 @@ class Batch18FixesTest(unittest.TestCase):
         cls._env_content = (
             f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
             f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS_B18F}\n"
+            # 本类里的口令门用例钉的是"当次要口令 + 失败零写入"，固定在 full
+            f"YIBAN_PW_GATE={GATE_FULL}\n"
         )
         with io.open(cls.env_file, "w", encoding="utf-8") as f:
             f.write(cls._env_content)
@@ -956,12 +969,11 @@ class Batch18FixesTest(unittest.TestCase):
         self.assertIsNotNone(detail)
         self.assertEqual(json.loads(detail)["cooldown"], 90000)
 
-    def test_notify_config_alert_sent_after_write_with_force(self):
-        """notify-config 变更告警在落盘成功之后发出 + force=True。
+    def test_notify_config_change_sends_no_alert(self):
+        """notify-config 变更只落盘 + 留审计，不再外发告警。
 
-        原契约"先告警后落盘"（防新写入的额度/节流参数吞掉告警）不成立：
-        force=True 本就绕过两侧节流；先发反而让写入失败（500）时运营者收到
-        一条描述从未生效变更的通知。落盘成功后必须仍发告警、urgent=True。
+        旧契约（"先告警后落盘"）连同告警本身一起下线；留下的是更硬的事实：
+        落盘一次、审计一行、零外发。
         """
         ac, at = self._admin_client()
         order = []
@@ -971,18 +983,14 @@ class Batch18FixesTest(unittest.TestCase):
             order.append("write")
             return real_write(env_path, updates)
 
-        sn = mock.Mock(side_effect=lambda t, c, **kw: order.append(("alert", kw.get("force"))))
-        with mock.patch.object(self.webapp, "send_notification", sn), \
+        with mock.patch.object(self.webapp, "send_notification") as sn, \
              mock.patch.object(self.webapp, "write_env_batch", _write_spy):
             r = ac.put("/api/notify-config", json={"cooldown": 60, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(order), 2, f"应恰好一次落盘 + 一次告警，实际 {order}")
-        self.assertEqual(order[0], "write", "告警只能描述已落盘的事实：先写入后告警")
-        self.assertEqual(order[1][0], "alert", "落盘成功后必须发出变更告警")
-        self.assertTrue(order[1][1], "变更告警必须 force=True")
-        self.assertEqual(sn.call_args.args[0], "消息推送配置变更告警")
-        self.assertTrue(sn.call_args.kwargs.get("urgent"))
+        sn.assert_not_called()
+        self.assertEqual(order, ["write"], f"只应有落盘，实际 {order}")
+        self.assertEqual(json.loads(self._last_audit_detail("notify_config"))["cooldown"], 60)
 
     def test_notify_config_write_failure_500_without_alert(self):
         """落盘失败（磁盘错）→ 500、零告警、零审计：告警与留痕只能描述已生效的变更。"""
@@ -1000,13 +1008,8 @@ class Batch18FixesTest(unittest.TestCase):
         self.assertEqual(self.webapp.read_env(self.env_file), before,
                          "写入失败不得改动 .env")
 
-    def test_mail_config_alert_sent_after_write_with_force(self):
-        """mail-config 变更告警在落盘成功之后发出 + force=True（安全审查 2026-09-08）。
-
-        原契约"先告警后落盘"的理由（防新写入的节流参数吞掉告警）不成立：
-        force=True 本就绕过两侧节流；先发反而会在加密/写盘失败（500）时外发一条
-        描述从未生效变更的"配置已变更"通知。落盘成功后必须仍发告警。
-        """
+    def test_mail_config_change_sends_no_alert(self):
+        """mail-config 变更只落盘，不再外发告警（关通道这个"拔线"动作也一视同仁）。"""
         ac, at = self._admin_client()
         order = []
         real_write = self.webapp.write_env_batch
@@ -1015,17 +1018,14 @@ class Batch18FixesTest(unittest.TestCase):
             order.append("write")
             return real_write(env_path, updates)
 
-        sn = mock.Mock(side_effect=lambda t, c, **kw: order.append(("alert", kw.get("force"))))
-        with mock.patch.object(self.webapp, "send_notification", sn), \
+        with mock.patch.object(self.webapp, "send_notification") as sn, \
              mock.patch.object(self.webapp, "write_env_batch", _write_spy):
             r = ac.put("/api/mail-config", json={"enabled": False, "confirm_password": ADMIN_PASS_B18F},
                        headers={"X-CSRF-Token": at})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(order), 2, f"应恰好一次落盘 + 一次告警，实际 {order}")
-        self.assertEqual(order[0], "write", "告警只能描述已落盘的事实：先写入后告警")
-        self.assertEqual(order[1][0], "alert", "落盘成功后必须发出变更告警")
-        self.assertTrue(order[1][1], "变更告警必须 force=True")
-        self.assertEqual(sn.call_args.args[0], "邮件配置变更告警")
+        sn.assert_not_called()
+        self.assertEqual(order, ["write"], f"只应有落盘，实际 {order}")
+        self.assertEqual(json.loads(self._last_audit_detail("mail_config"))["enabled"], 0)
 
     def test_mail_config_close_without_password_400_no_alert(self):
         """mail-config 关闭动作未带口令 → 400、零写入、零告警（先验口令才发告警）。"""
@@ -1037,8 +1037,8 @@ class Batch18FixesTest(unittest.TestCase):
         sn.assert_not_called()
         self.assertNotIn("YIBAN_MAIL_ENABLE=0", self.webapp.read_env(self.env_file))
 
-    def test_notify_alert_after_urgent_daily_max_1_still_sent(self):
-        """验收用例：urgent_daily_max=1 落盘后，后续变更告警仍能发出（force 绕过新额度）。"""
+    def test_notify_params_saved_and_no_alert(self):
+        """额度/节流参数照旧可保存并落盘；这些保存不再外发告警。"""
         ac, at = self._admin_client()
         h = {"X-CSRF-Token": at}
         r = ac.put("/api/notify-config", json={
@@ -1048,15 +1048,15 @@ class Batch18FixesTest(unittest.TestCase):
         r = ac.put("/api/notify-config",
                    json={"urgent_daily_max": 1, "confirm_password": ADMIN_PASS_B18F}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        # 走真实 send_notification → 断言 notify.send 收到 force=True（不被刚写入的额度吞掉）
+        self.assertEqual(json.loads(self._last_audit_detail("notify_config"))["urgent_daily_max"], 1)
+        # 再改一次（走真实 send_notification → notify.send）：零外发
         with mock.patch.object(self.webapp.notify, "send") as nsend, \
-             mock.patch.object(self.webapp.mailer, "send_admin_alert"):
+             mock.patch.object(self.webapp.mailer, "send_admin_alert") as mail:
             r = ac.put("/api/notify-config",
                        json={"cooldown": 60, "confirm_password": ADMIN_PASS_B18F}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        nsend.assert_called_once()
-        self.assertTrue(nsend.call_args.kwargs.get("force"), "force 必须透传到 notify.send")
-        self.assertTrue(nsend.call_args.kwargs.get("urgent"))
+        nsend.assert_not_called()
+        mail.assert_not_called()
 
     # =====================================================================
     # 3. M1 编辑回审：改绑一律回 pending 重审
@@ -1352,6 +1352,9 @@ class _TierBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、豁免、冷却、变更告警），
+                # 故把档位固定在 full（默认档 risk 下这些动作不再当次要口令）
+                f"YIBAN_PW_GATE={GATE_FULL}\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -1658,41 +1661,27 @@ class EmergencyStopTest(_TierBase):
 
 
 class ChangeAlertTest(_TierBase):
-    """变更告警：一次请求合并成一条，档位决定紧急度。"""
+    """设置变更：只留审计，不再外发告警（含急停）——紧急度分级随之取消。"""
 
-    def test_multi_key_request_emits_single_alert(self):
+    def test_multi_key_request_saves_without_alert(self):
         c = self._master()
         r = self._save(c, {"sunday_sign": 1, "saturday_sign": 1, "gap_max": 30,
                            "sign_order": "random", "confirm_password": ADMIN_PASS})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(self.alerts), 1, f"一次请求只应有一条告警：{self.alerts}")
-        title, body, urgent, force = self.alerts[0]
-        self.assertIn("系统设置变更", title)
-        self.assertTrue(urgent, "含 A 档变更必须 urgent")
-        self.assertFalse(force, "非「拆报警器 / 不可逆清除 / 全停急停」不得 force")
-        for frag in ("周日签到：关 → 开", "周六签到：关 → 开",
-                     "签到排序：sequence → random", "操作者：admin"):
-            self.assertIn(frag, body, f"告警正文缺少 {frag}")
+        self.assertEqual(self.alerts, [], f"设置变更告警已下线，实际 {self.alerts}")
         rows = self._audit_rows("settings_save")
         self.assertEqual(len(rows), 1, "审计仍是一行 settings_save")
-        self.assertIn("周日签到=关→开", rows[0]["detail"], "审计须带真变化键的旧→新")
+        for frag in ("周日签到=关→开", "周六签到=关→开", "签到排序=sequence→random"):
+            self.assertIn(frag, rows[0]["detail"], f"审计须带真变化键的旧→新：缺 {frag}")
 
-    def test_gated_only_change_is_non_urgent(self):
-        c = self._master()
-        r = self._save(c, {"sign_dist": "normal", "confirm_password": ADMIN_PASS})
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(self.alerts), 1)
-        self.assertFalse(self.alerts[0][2], "纯 B 档变更属非紧急")
-        self.assertFalse(self.alerts[0][3])
-
-    def test_emergency_stop_alert_is_forced(self):
+    def test_emergency_stop_saves_without_alert(self):
+        """急停本身照旧生效（主管理员专属 + 二次鉴权 + 审计），只是不再外发告警。"""
         c = self._reg_admin()
         r = self._save(c, {"global_pause": 1, "confirm_password": REG_PASS})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(self.alerts), 1)
-        _title, body, urgent, force = self.alerts[0]
-        self.assertTrue(urgent and force, "全停急停要立刻叫醒：urgent + force")
-        self.assertIn("全局暂停签到：关 → 开", body)
+        self.assertEqual(self.alerts, [], f"急停告警已下线，实际 {self.alerts}")
+        rows = self._audit_rows("settings_save")
+        self.assertIn("全局暂停签到=关→开", rows[-1]["detail"], "急停必须落盘并留痕")
 
     def test_noop_save_sends_no_alert(self):
         """误点保存（值一个没变）不该发出任何告警，也不该被口令挡住。"""
@@ -1701,21 +1690,6 @@ class ChangeAlertTest(_TierBase):
                            "gap_max": self.webapp.DEFAULT_ACCOUNT_GAP_MAX})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.alerts, [], "无实质变更不得发告警（否则告警成了免费打字机）")
-
-    def test_alert_body_has_no_raw_newline_from_values(self):
-        """值里的换行/控制字符不得把告警正文撑成多行（伪造第二行文案）。"""
-        c = self._master()
-        r = self._save(c, {"probe_time": "06:00", "confirm_password": ADMIN_PASS})
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(len(self.alerts), 1)
-        body = self.alerts[0][1]
-        lines = body.splitlines()
-        # 行数不是判据（摘要/明细/时间之间本来就有空行）；真正要钉的是"每个部分各占
-        # 一行"——值若夹带裸换行，明细行就会裂成两行。
-        self.assertEqual(sum(ln.startswith("· 探针时刻") for ln in lines), 1,
-                         f"值不得把明细项撑成多行：{body!r}")
-        self.assertEqual(sum(ln.startswith("· 操作者") for ln in lines), 1)
-        self.assertEqual(sum(ln.startswith("时间：") for ln in lines), 1)
 
 
 if __name__ == "__main__":

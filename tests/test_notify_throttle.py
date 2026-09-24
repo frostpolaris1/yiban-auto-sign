@@ -63,6 +63,9 @@ def _isolate(tmp_path, monkeypatch):
     for k in list(os.environ):
         if k.startswith("YIBAN_NOTIFY_"):
             monkeypatch.delenv(k)
+    # 本文件测的是节流（磁盘持久化 + 跨进程），而「仅推送重要告警」默认开——不显式
+    # 关掉，非紧急用例会被档位短路，测不到节流本身。
+    monkeypatch.setenv("YIBAN_NOTIFY_URGENT_ONLY", "0")
     yield
 
 

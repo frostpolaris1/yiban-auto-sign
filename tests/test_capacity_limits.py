@@ -53,6 +53,9 @@ class _Base(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 容量/上限用例钉的是"真变更当次要口令、超容量拒绝"这套机制，
+                # 固定在 full（默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -89,6 +92,7 @@ class _Base(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 与 setUpClass 同档：这些用例钉的是当次口令机制
             )
         self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
 
@@ -363,6 +367,9 @@ class _Base_B19(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 容量/上限用例钉的是"真变更当次要口令、超容量拒绝"这套机制，
+                # 固定在 full（默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -419,6 +426,7 @@ class CapacitySettingsTest(_Base_B19):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 与 setUpClass 同档：这些用例钉的是当次口令机制
             )
         # 清掉可能被其他用例写进进程环境的 avg（本用例断言发行缺省档）
         with mock.patch.dict(os.environ):
@@ -462,6 +470,7 @@ class CapacitySettingsTest(_Base_B19):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 与 setUpClass 同档：这些用例钉的是当次口令机制
             )
         # 恶性间隔 gap=3600 → 预估账号容量 = (4680-8)/3608+1 = 2（默认掐头去尾前后各 60s）；
         # 灌 3 个活跃账号（含裸账号，均占配额）→ 必超
@@ -616,6 +625,7 @@ class _Base_CAP(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 "YIBAN_ADMIN_USER=admin@test.local\n"
                 f"YIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                "YIBAN_PW_GATE=full\n"  # 与 setUpClass 同档：这些用例钉的是当次口令机制
             )
         self.db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
 

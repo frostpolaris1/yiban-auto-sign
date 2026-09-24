@@ -361,30 +361,36 @@ class _Base(unittest.TestCase):
         token = c.get("/api/me").get_json()["csrf_token"]
         return c, {"X-CSRF-Token": token}
 
-    def _alerts_with_title(self, kw="高危管理操作告警"):
-        return [(t, c) for t, c, _ in self.alerts if t == kw]
+    def _assert_no_alert(self):
+        """管理操作即时告警已下线：这些路径不该再产生任何外发（含 webhook）。"""
+        self.assertEqual(self.alerts, [], f"预期零告警，实际 {self.alerts}")
 
 
-class SoftDeleteAlertTest(_Base):
-    def test_single_soft_delete_emits_alert(self):
-        """注册管理员单条软删 → 200 且产生告警（脱敏号，不含完整号）。"""
+class SoftDeleteNoAlertTest(_Base):
+    """软删不再外发管理员告警：留痕由审计行承担（软删可逆，不该按事故通报）。
+
+    本类同时守住"告警下线没有连审计一起删掉"——每例都回查那条审计行。
+    """
+
+    def _audit_count(self, action):
+        return len([dict(r) for r in self.db.get_conn().execute(
+            "SELECT action FROM audit_logs WHERE action=?", (action,)).fetchall()])
+
+    def test_single_soft_delete_emits_no_alert(self):
+        """注册管理员单条软删 → 200、无告警、审计留痕。"""
         self._mk_registered_admin()
         self._mk_user_with_account()
         c, h = self._login(REG_ADMIN, REG_ADMIN_PASS)
         r = c.delete("/api/accounts/0", json={}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        hits = self._alerts_with_title()
-        self.assertEqual(len(hits), 1, f"应产生 1 条软删告警，实际 {len(self.alerts)} 条: {self.alerts}")
-        body = hits[0][1]
-        self.assertIn("软删", body)
-        self.assertIn("139****0001", body, "告警应含脱敏手机号")
-        self.assertNotIn("13900000001", body, "告警绝不能含完整手机号")
+        self._assert_no_alert()
+        self.assertEqual(self._audit_count("account_delete"), 1, "软删必须留审计")
         # 确认软删确实生效
         row = next(a for a in self.db.load_accounts_raw() if a["phone"] == "13900000001")
         self.assertEqual(row["deleted"], 1)
 
-    def test_batch_soft_delete_emits_single_summary_alert(self):
-        """批量软删 → 200 且只产生一条汇总告警（含数量与脱敏号清单）。"""
+    def test_batch_soft_delete_emits_no_alert(self):
+        """批量软删 → 200、无告警、审计一条（含目标清单）。"""
         self._mk_registered_admin()
         self._mk_user_with_account(USER, "13900000001")
         self.db.add_account({
@@ -399,11 +405,11 @@ class SoftDeleteAlertTest(_Base):
         r = c.post("/api/accounts/batch",
                    json={"action": "delete", "ids": ids, "phones": phones}, headers=h)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        hits = self._alerts_with_title()
-        self.assertEqual(len(hits), 1, "批量软删应只发一条汇总告警")
-        body = hits[0][1]
-        self.assertIn(f"{len(ids)} 个", body)
-        self.assertNotIn("13900000001", body, "汇总告警同样不能含完整号")
+        self._assert_no_alert()
+        rows = [dict(x) for x in self.db.get_conn().execute(
+            "SELECT target, detail FROM audit_logs WHERE action='account_batch'").fetchall()]
+        self.assertEqual(len(rows), 1, "批量软删必须留一条审计")
+        self.assertIn(f"{len(ids)} 个", rows[0]["detail"])
 
     def test_soft_delete_rate_limited(self):
         """超过 YIBAN_ADMIN_DELETE_MAX 后软删返回 429（单条与批量共用同一额度）。"""

@@ -41,7 +41,7 @@ OVERSIZED = {
         "（限速、登录守卫、CSRF、安全响应头、错误页、高危门禁与口令复核、每日清理线程），"
         "其中 14 处登记进 `app.extensions` 供各域路由取回；另有中间件类 1 个、顶层函数 67 个"
         "（其中 61 个是转发包装：调用时刻现取本模块模块级状态后注入服务层）与 routes 经 `m.*` "
-        "取用的 199 个名字的兼容面。之所以是终态：实现已按域全部拆入 web/routes/、"
+        "取用的 200 个名字的兼容面。之所以是终态：实现已按域全部拆入 web/routes/、"
         "web/services/、web/render.py、web/security.py，剩下的正是「工厂 + 它的 per-app 闭包 + "
         "名字面」这层不可再分的核——中间件与口令门族捕获 per-app 状态（同一把 `_file_lock` 下"
         "的读改写序列、按 app 实例的限速表与门禁闭包），外移就得把共享状态改成跨模块注入"
@@ -211,16 +211,17 @@ OVERSIZED = {
         "逐条硬约定说明）；若增长到 900 行以上，按「透传 sign/probe」与「只读运维子命令"
         "（config/capacity/state/db/version）」切成两个模块。"
     )),
-    "web/static/js/components/settings-executors.js": (780, (
+    "web/static/js/components/settings-executors.js": (800, (
         "执行体分区组件（规模 KPI + 清单表 + 行内设置弹窗 + 每个写操作的口令门 + 写明细口径的注释）。"
         "三块服务于同一个屏与**同一份接口响应**：lastData 被 KPI、清单渲染、行弹窗三处读，"
         "banner/focusAfterPaint/rowName/putRow 等助手三处共用——拆开等于把这份共享状态改成跨模块协议"
         "（门禁判据②），而任何接口字段变动仍要同时改多处（判据③不成立）。"
         "容量实测与建议已抽到 settings-quota.js；三种写操作（追加行/删行/改行）各带口令门，"
-        "另有「只改名不打门」的分支，故上限设在 780（此前为状态列的行内开关临时提到 800，"
-        "该开关已按用户要求收回、只留弹窗一个入口，上限随之回到 780）。"
-        "再涨就先切行内设置弹窗：openRow 及其独有助手（infoTip/linkBtn/ROW_HELP），"
-        "届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
+        "另有「只改名不打门」的分支。行数账目按实测：状态列的行内开关临时提到 800，"
+        "该开关按用户要求收回、只留弹窗一个入口后为 778 行；补上多段保存取消后的收尾"
+        "（重载视图 + 部分提交提示）后为 795 行；非取消失败复用同一收尾后为 799 行，"
+        "上限保持 800——已贴到线上限，再涨就先切行内设置弹窗：openRow 及其独有助手"
+        "（infoTip/linkBtn/ROW_HELP），届时要把它依赖的 lastData/putRow/banner 三样显式注入。"
     )),
     "web/static/js/core.js": (None, (
         "前端交互层核心（classic script，非 module）：全局 api/toast/modal/时钟/身份/导航行为，"
@@ -253,7 +254,6 @@ OVERSIZED = {
     )),
     # 工具脚本（非运行时模块，不参与模块化拆分），只设上限防继续膨胀
     "scripts/build_cjk_font_slices.py": (900, "构建期工具：字体分片生成脚本，一次性运行"),
-    "scripts/rekey_accounts.py": (800, "运维工具：密钥轮换脚本，与本项目运行时解耦"),
     "scripts/loadtest/concurrency_probe.py": (800, "压测工具：并发探针，非运行时路径"),
 }
 

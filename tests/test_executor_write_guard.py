@@ -91,7 +91,10 @@ class _GuardBase(unittest.TestCase):
                     # 本文件钉的是"单次真变更当次就要口令"，而门禁的 TTL 豁免
                     # （刚复核过 + 同出口 IP → 免再输）恰好放松这条；豁免本身的口径
                     # 由 tests/test_web_auth_security.py 负责，这里把它关掉。
-                    "YIBAN_PW_CONFIRM_TTL=0\n")
+                    "YIBAN_PW_CONFIRM_TTL=0\n"
+                    # 同上：默认档 risk 下真变更不再当次要口令，本文件要钉的是门
+                    # 本身，故固定在 full（默认档由 tests/test_pw_gate_tiers.py 钉）。
+                    "YIBAN_PW_GATE=full\n")
         # 重写 .env 会抹掉首启迁移生成的哈希，而 `verify_admin` 对"只有明文"是
         # fail-closed 拒绝 ⇒ 口令门会一律 403。补跑一次与启动同源的迁移，让夹具
         # 回到真实部署的样子（不是为了让测试变绿而放宽断言）。

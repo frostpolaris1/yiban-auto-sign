@@ -8,7 +8,7 @@
 - 加固2 高危删除操作冷却：同一管理员窗口内批量删除/彻底清除/完全删除超限返回 429
   （YIBAN_ADMIN_DELETE_MAX 次 / YIBAN_ADMIN_DELETE_COOLDOWN_SEC 秒，0=关闭）。
 - 加固3 高危操作二次鉴权：删除类操作须重新输入当前管理员密码，失败与登录/改密共用
-  失败计数，达阈值（LOGIN_FAIL_NOTIFY=3）告警、锁定（LOGIN_MAX_FAILS=5）。
+  失败计数，达阈值（LOGIN_FAIL_NOTIFY）告警、锁定（LOGIN_MAX_FAILS）。
 
 用法（项目根目录）：
     py -m pytest tests/test_account_abuse_gate.py -v
@@ -44,6 +44,10 @@ class _B13WebBase(unittest.TestCase):
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
                 f"YIBAN_MAIL_ADMIN_TO=admin@test.local\n"
+                # 本文件钉的是口令门的**机制**（当次要口令、失败告警、高危额度
+                # 顺序），故把档位固定在 full——默认档 risk 下这些动作不再当次要
+                # 口令。默认档与 off 档由 tests/test_pw_gate_tiers.py 钉。
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
@@ -130,6 +134,9 @@ class MailAlertThrottleTest(_B13WebBase):
         # 隔离验证；webhook 组件（yiban/notify）自身节流测试见 test_notify_webhook.py
         with open(self.env_file, "a", encoding="utf-8") as f:
             f.write("YIBAN_NOTIFY_COOLDOWN=0\n")
+            # 「仅推送重要告警」默认开：这里推的是任意标题（非 urgent），不显式关掉
+            # 会被档位短路在通道之前，测不到 webhook 的节流语义
+            f.write("YIBAN_NOTIFY_URGENT_ONLY=0\n")
         with mock.patch.object(self.webapp.mailer, "send_admin_alert",
                                side_effect=lambda t, c, to=None: mails.append((t, c))), \
              mock.patch.object(self.webapp.notify.transport, "_send_custom",
@@ -179,7 +186,9 @@ class HighRiskDeleteTest(_B13WebBase):
         self._make_user("u2@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        for _i in range(3):
+        # 门禁失败告警按**门禁侧**阈值触发：循环次数取 app 的常量，不另抄字面量；
+        # 该常量与登录失败告警阈值是两个数（登录侧调它是为了少发误报）
+        for _i in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):
             r = c.post("/api/users/batch",
                        json={"action": "delete", "emails": ["u2@test.local"],
                              "confirm_password": "wrong-pass"},
@@ -187,7 +196,7 @@ class HighRiskDeleteTest(_B13WebBase):
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertIsNotNone(db.find_user("u2@test.local"), "未通过鉴权不得删除")
         self.assertTrue(any(x == "高危操作二次鉴权失败告警" for x, _ in self.alerts),
-                        f"第 3 次失败应告警，实际 {self.alerts}")
+                        f"达阈值应告警，实际 {self.alerts}")
 
     def test_batch_delete_correct_password_200(self):
         self._make_user("u3@test.local")
@@ -389,6 +398,26 @@ class NotifyConfigApiTest(_B13WebBase):
                   json={"urgent_only": False, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertFalse(r.get_json()["urgent_only"])
+
+    def test_put_urgent_only_off_lands_zero_in_env(self):
+        """关闭态必须显式落 `YIBAN_NOTIFY_URGENT_ONLY=0`，不能写空值/删键。
+
+        该键的默认值是「开」：写空值等于删键、随即回落默认，设置页的「关闭」会变成
+        「打开」——与开关本身的意思相反。只断言响应 JSON 抓不住这个洞：那个值来自
+        请求体，删键回落默认时响应照样是 false，必须看盘上落了什么。
+        """
+        c = self.webapp.create_app().test_client()
+        t = self._login(c, "admin", ADMIN_PASS)
+        c.put("/api/notify-config",
+              json={"urgent_only": True, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        r = c.put("/api/notify-config",
+                  json={"urgent_only": False, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        env = open(self.env_file, encoding="utf-8").read()
+        self.assertIn("YIBAN_NOTIFY_URGENT_ONLY=0", env,
+                      "关闭态必须在 .env 里显式落 0（写空/删键会回落默认「开」）")
+        self.assertFalse(self.webapp.notify.get_config()["urgent_only"],
+                         "落盘后的生效值必须是关")
 
     def test_put_urgent_only_requires_master(self):
         self._make_user("u@test.local")
