@@ -11,8 +11,8 @@
 - `reap_expired`：租约过期回收——崩溃执行体留下的 `claimed` 行在**超出宽限期**
   （`REAP_GRACE_SEC`）后回退 `pending` 并自增 `epoch`（不做则"崩溃即卡死"：`claim_batch`
   只取 `pending`；不设宽限则会误回收还在飞的慢尝试，见该函数说明）；
-- `steal_shards`：死主分片接管——把心跳过期执行体分片集内的 `pending` 行改归本执行体
-  （只动 `pending`，CAS + `epoch+1`）；
+- `steal_shards`：死主分片接管——把心跳过期执行体分片集内 `owner` 为**该死主**的
+  `pending` 行改归本执行体（只动 `pending`，CAS 精确到死主 + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
   闸门，见该函数说明）；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
@@ -273,14 +273,17 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
         return 0
 
 
-def steal_shards(owner, shards, day, now=None):
-    """接管死主分片集内的待办：把「分片集内 + `state='pending'` + 非本执行体所有」的行
-    改为 `owner=<owner>`、`epoch = epoch + 1`。返回受影响行数。
+def steal_shards(me, dead_owner, shards, day, now=None):
+    """接管死主分片集内的待办：把「分片集内 + `state='pending'` + `owner` 恰为死主」的行
+    改为 `owner=<me>`、`epoch = epoch + 1`。返回受影响行数。
 
-    `owner` 是**接管者（本执行体）**的身份串；`shards` 是调用方已判定其归属执行体心跳
-    过期（`state_io.worker_presence` 判 `stale`）的分片集——"死活"的判据是**文件心跳**、
-    不落库，故本层只按"这些分片里还是 `pending` 且还没归我"来写。CAS 语义由 `owner != ?`
-    提供：已归我的行不再计入（重跑 0 行），别的执行体先抢到也不会被二次改写。
+    **两个身份分开传**：`me` 是接管者（本执行体），`dead_owner` 是心跳已被判过期的那具
+    死主。单参数表达不了"从谁手里接管"，CAS 只能退化成 `owner != me`——那会连**活着的**
+    第三个执行体先接管的行一起改写，把别人的在飞任务抢过来。故 CAS 精确写成
+    `owner = <dead_owner>`：只动死主的行。
+
+    `shards` 由调用方保证**只含死主的分片集**（判据是文件心跳四态，不落库）；本层不校验
+    归属，只按"这些分片里还是 `pending` 且 owner 是死主"来写。
 
     **只动 `pending`**：`claimed` 是他人仍在飞的行（租约未到不该抢，租约到了由
     `reap_expired` 回收），终态行更不该动。`vshard = -1` 的历史行不属于任何分片集，
@@ -295,8 +298,8 @@ def steal_shards(owner, shards, day, now=None):
     placeholders = ",".join("?" for _ in shard_set)
     sql = ("UPDATE sign_tasks SET owner=?, epoch=epoch + 1 "
            f"WHERE day=? AND vshard >= 0 AND vshard IN ({placeholders}) "
-           "AND state=? AND owner != ?")
-    params = (owner, day, *shard_set, STATE_PENDING, owner)
+           "AND state=? AND owner=?")
+    params = (me, day, *shard_set, STATE_PENDING, dead_owner)
     try:
         conn, lock = _queue_conn()
         with lock:

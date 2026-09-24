@@ -5,8 +5,8 @@
 5. `reap_expired`：租约**过期且超出宽限期**的 `claimed` → `pending` + 清
    `owner`/`lease_until` + `epoch+1`；刚过期但仍在宽限期内（可能还在飞）的**不动**；
    未过期的**不动**；终态不动；`vshard=-1` 的历史行不动；幂等；库异常 → 0 且不抛；
-6. `steal_shards`：只动「分片集内 + `state='pending'` + 非本执行体所有」的行；
-   不动 `claimed`/终态/历史行；`epoch+1`；`owner` 已是自己时不计入；`vshards=()` → 0；
+6. `steal_shards`：只动「分片集内 + `state='pending'` + `owner` 恰为死主」的行；
+   不动 `claimed`/终态/历史行/活着的其他执行体的行；`epoch+1`；重跑 0 行；`vshards=()` → 0；
 7. **fencing 联动**：被回收（`epoch+1`）后，原持有者带旧 epoch 的 `settle_tasks` 不生效。
 
 依赖：临时库（`sign_tasks` 由 `db.init_db` 的迁移建表）。
@@ -31,6 +31,7 @@ JUST_EXPIRED = "2026-09-22 06:39:30.000"
 GRACE_EXPIRED = "2026-09-22 06:37:30.000"
 FRESH = "2026-09-22 06:41:00.000"
 DEAD = "worker-9@testhost"
+LIVE = "worker-2@testhost"
 ME = "worker-1@testhost"
 TEST_KEY = "a" * 64
 
@@ -181,9 +182,14 @@ class ReapExpiredTest(_Base):
 
 
 class StealShardsTest(_Base):
+    """接管者与死主是两个身份，故签名是 `steal_shards(me, dead_owner, shards, day)`。
+
+    CAS 精确到 `owner = <dead_owner>`：只动死主的行，不误伤活着的其他执行体。
+    """
+
     def test_takes_over_pending_rows_in_shards(self):
         self._add("13800000001", vshard=2, state="pending", owner=DEAD, epoch=1)
-        self.assertEqual(queue_store.steal_shards(ME, (2,), DAY), 1)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (2,), DAY), 1)
         row = self._row("13800000001")
         self.assertEqual(row["owner"], ME, "接管后 owner 必须是本执行体")
         self.assertEqual(row["epoch"], 2, "接管同样要 epoch+1（fencing）")
@@ -194,39 +200,49 @@ class StealShardsTest(_Base):
                   epoch=1)
         self._add("13800000011", vshard=2, state="done", owner=DEAD, epoch=1)
         self._add("13800000012", vshard=2, state="failed", owner=DEAD, epoch=1)
-        self.assertEqual(queue_store.steal_shards(ME, (2,), DAY), 0)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (2,), DAY), 0)
         self.assertEqual(self._row("13800000010")["owner"], DEAD)
         self.assertEqual(self._row("13800000011")["owner"], DEAD)
         self.assertEqual(self._row("13800000012")["owner"], DEAD)
 
     def test_shards_outside_the_set_are_untouched(self):
         self._add("13800000020", vshard=5, state="pending", owner=DEAD, epoch=1)
-        self.assertEqual(queue_store.steal_shards(ME, (2, 3), DAY), 0)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (2, 3), DAY), 0)
         self.assertEqual(self._row("13800000020")["owner"], DEAD)
 
     def test_historical_rows_are_never_stolen(self):
         self._add("13800000030", vshard=-1, state="pending", owner=DEAD, epoch=1)
-        self.assertEqual(queue_store.steal_shards(ME, (-1,), DAY), 0)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (-1,), DAY), 0)
         self.assertEqual(self._row("13800000030")["owner"], DEAD)
 
-    def test_rows_already_owned_by_me_are_not_counted(self):
-        """CAS 语义：owner 已是自己（上一次已接管）则不计入，重跑返回 0。"""
+    def test_rows_owned_by_a_live_peer_are_untouched(self):
+        """同一分片集里可能混着别的**活着**的执行体先接管的行：只认死主，别的一律不动。"""
         self._add("13800000040", vshard=2, state="pending", owner=DEAD, epoch=1)
-        self.assertEqual(queue_store.steal_shards(ME, (2,), DAY), 1)
-        self.assertEqual(queue_store.steal_shards(ME, (2,), DAY), 0, "重跑必须 0 行")
-        self.assertEqual(self._row("13800000040")["epoch"], 2, "不得重复自增")
+        self._add("13800000041", vshard=2, state="pending", owner=LIVE, epoch=5)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (2,), DAY), 1)
+        self.assertEqual(self._row("13800000040")["owner"], ME)
+        live = self._row("13800000041")
+        self.assertEqual((live["owner"], live["epoch"]), (LIVE, 5),
+                         "活着执行体的行不得被误改（含 epoch 不得自增）")
+
+    def test_rerun_after_takeover_is_zero(self):
+        """重跑时行已归本执行体（不再是死主所有）→ CAS 不匹配 → 0 行。"""
+        self._add("13800000050", vshard=2, state="pending", owner=DEAD, epoch=1)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (2,), DAY), 1)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (2,), DAY), 0, "重跑必须 0 行")
+        self.assertEqual(self._row("13800000050")["epoch"], 2, "不得重复自增")
 
     def test_empty_shards_is_zero_without_touching_db(self):
-        self._add("13800000050", vshard=2, state="pending", owner=DEAD, epoch=1)
-        self.assertEqual(queue_store.steal_shards(ME, (), DAY), 0)
-        self.assertEqual(self._row("13800000050")["owner"], DEAD)
+        self._add("13800000060", vshard=2, state="pending", owner=DEAD, epoch=1)
+        self.assertEqual(queue_store.steal_shards(ME, DEAD, (), DAY), 0)
+        self.assertEqual(self._row("13800000060")["owner"], DEAD)
 
     def test_missing_table_returns_zero_with_warning(self):
         conn = db.get_conn()
         conn.execute("DROP TABLE sign_tasks")
         conn.commit()
         with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
-            self.assertEqual(queue_store.steal_shards(ME, (2,), DAY), 0)
+            self.assertEqual(queue_store.steal_shards(ME, DEAD, (2,), DAY), 0)
         self.assertIn("接管死主分片失败", "\n".join(cm.output))
 
 
