@@ -459,7 +459,7 @@
       YB.settingsQuota.mount({ isMaster: state.isMaster, onSaved: refreshAfterQuotaSave });
       // 执行体分区：容量上限由页面注入（规模 KPI 的分子）；同一份响应里的容量建议
       // （measured / recommendation / window / current_accounts）转交「容量配额」分区的建议卡——
-      // 一份数据一次请求，两个分区各取所需（用户 2026-09-17：这两件事共用同一份数据）。
+      // 一份数据一次请求，两个分区各取所需：容量建议与实测用的正是执行体响应里的同一份容量数据。
       YB.settingsExecutors.mount({
         isMaster: state.isMaster,
         capacity: function () { return state.capacity; },

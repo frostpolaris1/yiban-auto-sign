@@ -27,7 +27,7 @@
 
   // 这个方向当前会话能不能做（与后端 api_settings_save 的方向判定同口径）
   function canDo(field, next) {
-    if (field === "global_pause" && !next) return isMaster;   // 恢复签到：仅主管理员
+    if (field === "global_pause" && !next) return isMaster;   // 恢复签到：仅主管理员（前端只决定按钮状态，不在此判权限）
     if (field !== "global_pause") return isMaster;             // 注册开关两个方向：仅主管理员
     return true;                                              // 急停签到：任意管理员
   }
