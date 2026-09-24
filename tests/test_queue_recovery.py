@@ -180,6 +180,16 @@ class ReapExpiredTest(_Base):
             self.assertEqual(queue_store.reap_expired(now=NOW), 0)
         self.assertIn("回收过期签到任务失败", "\n".join(cm.output))
 
+    def test_unparseable_now_warns_separately_from_db_error(self):
+        """`now` 不可解析是调用方入参问题，不与"库异常"共用文案（排查方向不同）。"""
+        self._add("13800000050", state="claimed", owner=DEAD, lease_until=EXPIRED,
+                  epoch=1)
+        with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
+            self.assertEqual(queue_store.reap_expired(now="not-a-stamp"), 0)
+        text = "\n".join(cm.output)
+        self.assertIn("时刻参数不可解析", text)
+        self.assertNotIn("回收过期签到任务失败", text)
+
 
 class StealShardsTest(_Base):
     """接管者与死主是两个身份，故签名是 `steal_shards(me, dead_owner, shards, day)`。
