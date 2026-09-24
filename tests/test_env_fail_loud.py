@@ -39,6 +39,9 @@ class EnvParseFailLoudTest(unittest.TestCase):
 
     def test_missing_file_returns_empty(self):
         missing = os.path.join(self.tmp, "no-such.env")
+        # 这是**两份独立实现**（`account_crypto._parse_env_file` 与
+        # `yiban/store/audit_chain._parse_env_file`，后者经 `db` 门面暴露），
+        # 只测其中一份会放过另一份仍然"读不到就当没配"。
         self.assertEqual(account_crypto._parse_env_file(missing), {})
         self.assertEqual(db._parse_env_file(missing), {})
 
