@@ -418,7 +418,9 @@ class RiskTriggerTest(_TierBase):
         """换环境才要求口令，但失败计数与告警这条信号不得因此静音。"""
         c, hdr = self._fresh()
         self.alerts.clear()
-        th = self.webapp.LOGIN_FAIL_NOTIFY
+        # 阈值取门禁侧常量：登录失败告警阈值是另一件事（登录侧调它是为了少发误报），
+        # 门禁侧这个数同时是"每窗口可做的 scrypt 尝试次数"上界，两者不得互相牵连。
+        th = self.webapp.SENSITIVE_PW_FAIL_NOTIFY
         for _ in range(th):
             r = self._call("creds", c, hdr, confirm_password="WrongPass999!",
                            _xff="203.0.113.7")

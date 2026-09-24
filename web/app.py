@@ -494,12 +494,15 @@ RESTORE_FAIL_WINDOW = 600
 # 连续失败告警阈值：达到后通知管理员（每轮锁定只告警一次）。阈值与锁定阈值
 # （LOGIN_MAX_FAILS）同值时，告警恰好落在"锁定"那一刻——本人反复输错口令是最常见的
 # 失败来源，阈值压低只会把误报刷满告警通道；真攻击由边缘限速与逐次 scrypt 时延承担。
-# 同一常量也被敏感口令门复用为"告警与门禁级冷却的起点"（见 web/security.py 的
-# _sensitive_gate_params 调用点），改动会同时影响那一路。
 LOGIN_FAIL_NOTIFY = 10
 # 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
 # 只用于告警与冷却判定，不锁管理员（P18）。
 SENSITIVE_PW_FAIL_WINDOW = 900
+# 口令门失败告警阈值与冷却布防起点（次），与 LOGIN_FAIL_NOTIFY 各取各的值：
+# 登录侧抬高阈值是为了少发误报，而本阈值同时是**同一窗口内允许的 scrypt 尝试次数上界**
+# （达阈值即布防冷却，见 _sensitive_pw_denied），跟着一起抬高等于把门禁预算放宽数倍。
+# 取值沿用门禁改造前的 3，此后两侧各自调参、互不牵连。
+SENSITIVE_PW_FAIL_NOTIFY = 3
 # 敏感口令门禁的两个默认窗口（.env 可覆盖，唯一解析处见 web/security.py 的
 # _sensitive_gate_params）：PW_CONFIRM_TTL_DEFAULT 是豁免窗口（本会话在 TTL 秒内
 # 复核过口令、且出口 IP 未变 → 配置类动作免再输口令），PW_CONFIRM_TTL_MAX 是硬钳
@@ -2190,10 +2193,10 @@ def create_app(host=None):
         刻意**绝不写登录失败表**（P18）：能持 Cookie 撞门禁的人若可写登录侧的共享
         计数，就能用错口令把管理员同时锁在"登录"和"所有高危运维"之外，把风控变成攻击面。
 
-        告警按 `== LOGIN_FAIL_NOTIFY` 只发一条（同一窗口不刷屏，运维口径），但冷却按
+        告警按 `== SENSITIVE_PW_FAIL_NOTIFY` 只发一条（同一窗口不刷屏，运维口径），但冷却按
         `>= 阈值` **每次失败都续期**：只在"恰好等于阈值"那一次布防的话，冷却到期后的
         第 4、5… 次失败既不再告警也不再被挡，等于把同一个洞留回原处。续期之后，
-        攻击者每 `cooldown` 秒最多只能做 `LOGIN_FAIL_NOTIFY` 次口令散列（实测单次
+        攻击者每 `cooldown` 秒最多只能做 `SENSITIVE_PW_FAIL_NOTIFY` 次口令散列（实测单次
         scrypt 约 157ms），而不是此前的约 6 次/秒。
         """
         with _rate_lock:
@@ -2201,10 +2204,10 @@ def create_app(host=None):
                            SENSITIVE_PW_FAIL_WINDOW + _IP_STORE_MAX_AGE)
         cnt, _start, _allowed = _bump_window_count(
             _sensitive_pw_fails, key, now, SENSITIVE_PW_FAIL_WINDOW)
-        if cnt >= LOGIN_FAIL_NOTIFY and cooldown > 0:
+        if cnt >= SENSITIVE_PW_FAIL_NOTIFY and cooldown > 0:
             with _rate_lock:
                 _sensitive_pw_cooldown[key] = (cnt, now + cooldown)
-        if cnt == LOGIN_FAIL_NOTIFY:
+        if cnt == SENSITIVE_PW_FAIL_NOTIFY:
             send_notification(
                 "高危操作二次鉴权失败告警",
                 mail_layout.Mail(
