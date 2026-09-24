@@ -281,7 +281,7 @@
     rec.timer = setTimeout(function () { dismissToast(rec); }, duration);
     return node;
   }
-  function toast(msg, isError) { return showToast(isError ? "error" : "info", msg); }
+  function toast(msg, isError) { return showToast(isError ? "error" : "info", msg); }      // 出口有两种并存形态：直呼 toast(msg, isError) 与取变体 toast.success/.error/.info，改签名要同时看两类调用点
   toast.success = function (m, o) { return showToast("success", m, o); };
   toast.error = function (m, o) { return showToast("error", m, o); };
   toast.warning = function (m, o) { return showToast("warning", m, o); };
