@@ -686,36 +686,55 @@
     });
   }
 
-  /* ---------- 危险操作提交（不可逆操作的统一入口） ----------
-     档位（YIBAN_PW_GATE）只存在于后端：本处不判断档位，只按响应体的 reason 分流——
+  /* ---------- 受门禁操作的统一提交入口 ----------
+     档位（YIBAN_PW_GATE）只存在于后端，**受门禁操作一律先不带任何凭据发**：本处不判断
+     档位、也不预判"要不要口令"，只按响应体的 reason 分流——
        · delay_ack_required → 弹倒计时确认框，确认后带 confirm_delay_ack: true 重发；
        · password_required / password_incorrect → 弹既有口令框，口令随重发提交；
        · 其余失败原样上抛，由调用方的失败处理接管。
+     这样每个调用点都不必自己拼口令框管道，也不必猜后端档位（猜错就是"用户白输一次
+     口令"或"请求被 403 打回"）。倒计时只对不可逆操作出现——后端只对它们下发
+     delay_ack_required，非不可逆操作带上该字段也不会被要求。
      口令与倒计时凭据各只自动补一次：后端再次拒绝即上抛，绝不无限重发；口令错的那次
      由口令框自身在框内提示并允许改口令重试（沿用既有流程）。用户取消任一弹窗时以带
      canceled 标记的错误拒绝——取消不是失败，调用方据此静默。 */
   function dangerousSubmit(opts) {
-    var method = opts.method || "POST";
-    var base = opts.body || {};
+    // 一次点击要按序发**多个**受门禁请求时用 opts.requests（[{method, path, body}, …]），
+    // 否则用单个 path/body。凭据对整串共用，且**从失败那一步继续**、已成功的步骤不重发，
+    // 故一次点击最多问一次口令——否则"改出口 + 同时拨故障转移开关"这类保存会连弹两次框。
+    // requests 形式 resolve 各步响应组成的数组（调用方按步取 note），单请求形式 resolve 该响应。
+    var multi = !!(opts.requests && opts.requests.length);
+    var steps = multi ? opts.requests.slice() : [{ method: opts.method, path: opts.path, body: opts.body }];
+    var results = [];
     var triedPw = false, triedAck = false;
-    function merged(extra) {
-      var out = {}, keys = Object.keys(base), i;
+    function merged(base, extra) {
+      var out = {}, keys = Object.keys(base || {}), i;
       for (i = 0; i < keys.length; i++) out[keys[i]] = base[keys[i]];
       if (extra) { keys = Object.keys(extra); for (i = 0; i < keys.length; i++) out[keys[i]] = extra[keys[i]]; }
       return out;
     }
+    function withExtra(extra, add) {
+      var out = {}, keys = Object.keys(extra || {}), i;
+      for (i = 0; i < keys.length; i++) out[keys[i]] = extra[keys[i]];
+      keys = Object.keys(add);
+      for (i = 0; i < keys.length; i++) out[keys[i]] = add[keys[i]];
+      return out;
+    }
     function canceled() { var e = new Error(""); e.canceled = true; return e; }
-    function attempt(extra) {
-      return api(method, opts.path, merged(extra)).catch(function (e) {
+    function step(i, extra) {
+      var s = steps[i];
+      return api(s.method || "POST", s.path, merged(s.body, extra)).then(function (data) {
+        results[i] = data;
+        if (i + 1 < steps.length) return step(i + 1, extra);
+        return multi ? results : data;
+      }, function (e) {
         var r = pwGateReason(e);
         if (r === "delay_ack_required") {
           if (triedAck) throw e;
           triedAck = true;
           return openDelayAckModal(opts.delayDesc || opts.desc, opts.confirmText).then(function (ok) {
             if (!ok) throw canceled();
-            var next = merged(extra);
-            next.confirm_delay_ack = true;
-            return attempt(next);
+            return step(i, withExtra(extra, { confirm_delay_ack: true }));
           });
         }
         if (r === "password_required" || r === "password_incorrect") {
@@ -723,17 +742,16 @@
           triedPw = true;
           return new Promise(function (resolve, reject) {
             openConfirmPasswordModal(opts.desc, function (pw) {
-              var next = merged(extra);
-              next.confirm_password = pw;
               // 回调返回 Promise：口令框保持打开直至请求落定；拒绝时在框内提示并可改口令重试
-              return attempt(next).then(resolve, function (e2) { throw e2; });
+              return step(i, withExtra(extra, { confirm_password: pw }))
+                .then(resolve, function (e2) { throw e2; });
             }, function () { reject(canceled()); });
           });
         }
         throw e;
       });
     }
-    return attempt(null);
+    return step(0, null);
   }
 
   /* ---------- 主题 ---------- */
