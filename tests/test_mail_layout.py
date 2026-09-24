@@ -30,7 +30,7 @@ class DisplayWidthTest(unittest.TestCase):
 
     def test_combining_and_control_count_zero(self):
         self.assertEqual(layout._dwidth("a\u0301"), 1)   # a + 组合锐音符
-        self.assertEqual(layout._dwidth("a\tb"), 2)
+        self.assertEqual(layout._dwidth("a\tb"), 2)  #制表符按控制字符计 0：排版层因此不依赖 Tab 对齐，只用空格缩进
 
 
 class FoldTest(unittest.TestCase):
@@ -38,7 +38,7 @@ class FoldTest(unittest.TestCase):
 
     def test_breaks_after_chinese_comma_not_mid_word(self):
         text = "连续失败会被系统自动暂停账号；如账号本身正常，多为易班服务端临时不可用"
-        out = layout._fold(text, width=30)
+        out = layout._fold(text, width=30)  #宽度一律按显示宽度量（不是 len()）：中文按 2 列才算真占位
         self.assertLessEqual(max(layout._dwidth(ln) for ln in out), 30)
         for ln in out:
             self.assertNotIn("账号本", ln.replace("账号本身", "□"), "不得在词中间断开")
@@ -62,12 +62,12 @@ class FoldTest(unittest.TestCase):
                 or layout._dwidth(ln) <= 34),
                 f"断点位置异常: {ln!r}")
             self.assertNotIn("账号间", ln.replace("账号间隔", "□"), "不得切开中文词")
-            self.assertNotIn("45", ln[-1:], "数字与其单位不得分家")
+            self.assertNotIn("45", ln[-1:], "数字与其单位不得分家")  #45 落在行尾就等于 45s 被切开：数字与其单位之间不该有断点
 
     def test_unbreakable_long_token_hard_cut_by_width(self):
         long_hash = "3f9a1c2b4d5e6f708192a3b4c5d6e7f8"   # 32 个半角字符
         out = layout._fold(long_hash, width=16)
-        self.assertEqual(out, ["3f9a1c2b4d5e6f70", "8192a3b4c5d6e7f8"])
+        self.assertEqual(out, ["3f9a1c2b4d5e6f70", "8192a3b4c5d6e7f8"])  #无空格无标点的长串（哈希）是唯一允许硬切的情形：除此之外只能落在分隔符后
         for ln in out:
             self.assertLessEqual(layout._dwidth(ln), 16)
 
@@ -92,7 +92,7 @@ class PlainStructureTest(unittest.TestCase):
             fields=[("操作者", "admin"), ("目标", "138****0001")],
             time="2026-09-18 07:12:03",
         ).to_plain()
-        lines = [ln for ln in text.split("\n") if ln]
+        lines = [ln for ln in text.split("\n") if ln]  #丢掉空行再逐行对：分组之间的空行是排版，不是字段
         self.assertIn("· 操作者：admin", lines)
         self.assertIn("· 目标：138****0001", lines)
         self.assertEqual(lines[-1], "时间：2026-09-18 07:12:03", "时间收在末尾")
