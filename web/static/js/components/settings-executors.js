@@ -254,26 +254,30 @@
       });
     }).catch(function (e) {
       if (e && e.canceled) return canceledAfter(e);
-      failTip(e, failWord);
+      return failedAfter(e, failWord);
+    });
+  }
+  // 取消弹窗与"打到一半被打回"都不是"什么都没发生"：多段保存（改出口 + 拨开关）里先成功的
+  // 步骤已经写进 `.env`，若照旧静默返回或只把错误留在横幅里，用户会以为整次保存没发生、
+  // 而配置已经变了。两条路径共用同一收尾——先重载视图（页面显示库里的真实状态），确有部分
+  // 写入时讲明不回滚；提示语按取消/失败取词，步数由 helper 回传（见 core.js 的 dangerousSubmit）。
+  function partialAfter(done, text) {
+    return load().then(function () {
+      // 顺序不能反：load() 走 apply() 会清掉横幅，所以提示必须落在重载之后
+      setTip(text ? text + "；本次保存的前 " + done + " 步已经写入配置（部分修改已提交、"
+        + "不会回滚），上面显示的是配置的当前状态。" : "", !!text);
       return false;
     });
   }
-  // 取消弹窗**不是失败，也不等于什么都没发生**：多段保存（改出口 + 拨开关）里先成功的
-  // 步骤已经写进 `.env`，若照旧静默返回，用户会以为整次保存没发生、而配置已经变了。
-  // 故取消路径一律重载视图（页面显示库里的真实状态），并在确有部分写入时讲明不回滚。
-  // 已提交步数由 helper 回传（见 core.js 的 dangerousSubmit / canceled）。
   function canceledAfter(e) {
     var done = count(e && e.completed);
-    return load().then(function () {
-      // 顺序不能反：load() 走 apply() 会清掉横幅，所以提示必须落在重载之后
-      if (done > 0) {
-        setTip("已取消；本次保存的前 " + done + " 步已经写入配置（部分修改已提交、不会回滚），"
-          + "上面显示的是配置的当前状态。", true);
-      } else {
-        setTip("", false);
-      }
-      return false;
-    });
+    return partialAfter(done, done > 0 ? "已取消" : "");
+  }
+  // 一步都没提交的失败无需重载（库里没变），提示照旧就地落横幅
+  function failedAfter(e, failWord) {
+    var done = count(e && e.completed);
+    if (!done) { failTip(e, failWord); return false; }
+    return partialAfter(done, (e && e.message) || (failWord + "失败，请稍后重试"));
   }
   // 行内「更多」：停用/启用 与 删除 从行弹窗搬到这里（用户 2026-09-17：设置里不再改状态/删行，
   // 放表格操作列作为按钮，且要输主管理员密码）。复用 YB.rowMenu（portal 浮层 + 窄屏收纳）。

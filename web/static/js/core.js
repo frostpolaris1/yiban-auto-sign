@@ -697,10 +697,10 @@
      delay_ack_required，非不可逆操作带上该字段也不会被要求。
      口令与倒计时凭据各只自动补一次：后端再次拒绝即上抛，绝不无限重发；口令错的那次
      由口令框自身在框内提示并允许改口令重试（沿用既有流程）。用户取消任一弹窗时以带
-     canceled 标记的错误拒绝——取消不是失败，但**不等于什么都没发生**：多段提交里
-     先成功的步骤已经落库，故该错误另带 `completed`（已成功提交的步数），调用方据此
-     刷新视图并说明已生效的部分不会回滚（见 components/settings-executors.js 的
-     canceledAfter）。 */
+     canceled 标记的错误拒绝。取消与被后端打回都**不等于什么都没发生**：多段提交里
+     先成功的步骤已经落库，故两种失败都另带 `completed`（已成功提交的步数），调用方
+     据此刷新视图并说明已生效的部分不会回滚（见 components/settings-executors.js 的
+     canceledAfter / failedAfter）。 */
   function dangerousSubmit(opts) {
     // 一次点击要按序发**多个**受门禁请求时用 opts.requests（[{method, path, body}, …]），
     // 否则用单个 path/body。凭据对整串共用，且**从失败那一步继续**、已成功的步骤不重发，
@@ -762,7 +762,13 @@
         throw e;
       });
     }
-    return step(0, null);
+    // 非取消的失败也带上已落库的步数：多段提交在第 2 步被打回时第 1 步已经写进库，调用方
+    // 要据此重载视图并交代已提交的部分——与 canceled 同一口径，否则那半次写入没人提示
+    // （见 components/settings-executors.js 的 failedAfter）。
+    return step(0, null).catch(function (e) {
+      if (e && !e.canceled) e.completed = results.length;
+      throw e;
+    });
   }
 
   /* ---------- 主题 ---------- */
