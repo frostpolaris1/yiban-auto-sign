@@ -1,7 +1,7 @@
 # 测试项目清单（按功能分组，2026-09-23）
 
 > 自动生成：扫 `tests/test_*.py` 的模块 docstring 首句 + 用例方法数（`ast` 计数，非 pytest 收集数）。
-> 当前：**126 个文件 / 2660 个用例方法**。
+> 当前：**126 个文件 / 2664 个用例方法**。
 
 ## 怎么只跑一组
 
@@ -146,11 +146,11 @@ python -m pytest tests/ -q -k mine_or_planner_or_hrw               # 按关键�
 | `test_masking_ssrf_gaps.py` | 33 | 对外脱敏与出站白名单的残余缺口回归（本轮对抗性审查活体复现的三条）。 |
 | `test_masking_tokens.py` | 5 | 对外脱敏（`yiban/masking.py::sanitize_text`）的凭据字面量覆盖测试（M1）。 |
 | `test_protocol_masking.py` | 4 | 协议层账号标识脱敏与登录页 key 破损的返回契约。 |
-| `test_rekey_key_source.py` | 91 | 回归测试（2026-08-29）：密钥来源去 cwd 依赖 + 告警通道门禁与留痕。 |
+| `test_rekey_key_source.py` | 95 | 回归测试（2026-08-29）：密钥来源去 cwd 依赖 + 告警通道门禁与留痕。 |
 | `test_url_userinfo_masking.py` | 6 | URL userinfo 脱敏：唯一实现 + 两处调用点（回显与日志）的接线守卫。 |
 | `test_web_mask_email_parity.py` | 9 | 前端 `YB.maskEmail` 与后端 `_mask_email` 的脱敏口径对拍（真实行为，非静态扫描）。 |
 
-小计 **20** 文件 / **339** 用例
+小计 **20** 文件 / **343** 用例
 
 ## H · 通知：邮件与推送
 
