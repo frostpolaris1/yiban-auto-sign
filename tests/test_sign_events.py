@@ -9,6 +9,22 @@
 归属：`yiban/store` 数据层 + `web/` 统计展示的交叉测试。
 复用：`BASE` / `TEST_KEY` 与临时库装配助手。
 通信：写临时 SQLite 后经聚合函数读回；由 pytest 收集 `unittest.TestCase`。
+
+标签：C · 存储：迁移与库完整性
+覆盖：`sign_events` 的建表迁移（含删掉旧统计表）、写入函数在表缺失时降级不抛、
+过期清理、按手机/按时间的读回形状、v6 字段与批量写入、WebUI 统计的计数口径、
+`hash_ip` 加盐稳定性，以及可视化表格对同一批事件的解读。
+对应实现：`yiban/store/` 的 sign_events 域（写入/聚合）与 `web/` 侧统计与可视化取数、
+`hash_ip` 的盐取自追踪盐。
+关键断言：**计数按 distinct 手机而非行数**是这里最容易改错的一格——同一账号一天内多次
+事件会把统计抬高，故 `test_stats_count_distinct_phone_not_rows` 与
+`test_stats_same_phone_in_both_status_buckets` 必须成对（后者钉"同机跨两桶各计一次"，
+防止改成全局去重把成功/失败混成一个数）。`test_write_functions_degrade_when_table_missing`
+钉的是**降级不抛**：埋点失败不该掀掉签到主流程，别把它误读成"表可以没有"。
+`test_upgrade_from_v13_drops_legacy_stats_keeps_sign_events` 只覆盖新代码打开 v13 旧库；
+反方向见 `tests/test_migration_compat.py`。
+依赖：临时库 + 临时 `.env`（盐），无网络、无 skip；`hash_ip` 用例对盐值敏感，
+换盐须同步改期望值。
 """
 import contextlib
 import datetime

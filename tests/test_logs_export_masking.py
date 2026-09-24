@@ -17,6 +17,24 @@ date 按天可枚举，一个管理员 GET 即可无痕批量拉取历史未脱�
 全程 mock / 纯本地（Flask test client + 临时 .env/DB/日志目录），无网络请求。
 用法（项目根目录，勿设 PYTHONIOENCODING）：
     py -m pytest tests/test_logs_export_masking.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：`/api/logs/export` 与视图共用同一过滤+脱敏管线（响应体是内存脱敏副本）、
+写入侧两类旁路收口（signin `--only` 未命中路径的裸号、web 告警行的裸 IP）、
+成功导出恰写一条 `logs_export` 审计（400/404 不写）、每 IP 窗口限速、
+401/403 鉴权边界与 `forbidden_path` 留痕不回退。
+对应实现：`web/services/logs.py` 的 `_log_lines_for` / `_mask_log_phones` 与
+导出路由（经 `web/app.py` 门面）、`signin` 的 `--only` 未命中写日志处、
+告警行的 `hash_ip` 口径。
+关键断言：`test_export_serves_masked_copy_not_raw_file` 与
+`test_export_lines_equal_view_lines` 是一对——前者断"不回磁盘原文"，后者断"与视图同口径"，
+只留前者可以通过"导出走另一套更狠的过滤"，只留后者可以通过"两边一起漏"。
+盘上按天日志**按设计仍留裸号**（signin 状态解析与 run.sh 依赖），所以这里守的是
+HTTP 出口那一层，不是"日志文件里查不到裸号"；`test_csrf_warning_logs_hashed_ip_not_raw`
+守的是写入侧（落盘即 hash_ip），与出口侧不是一回事。
+`date` 可按天枚举这条由限速 + 审计留痕共同兜，任何一项被删本文件都会红。
+依赖：Flask test client + 临时 `.env`/DB/日志目录，无网络、无 skip；
+运行环境**不要**预设 `PYTHONIOENCODING`（模块头写明），否则子进程编码约定会变。
 """
 import contextlib
 import importlib.util

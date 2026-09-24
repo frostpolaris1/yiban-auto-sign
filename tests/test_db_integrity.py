@@ -8,6 +8,23 @@
 - H1：restore_user 按用户行 deleted_at 关联恢复账号；
 - M4：_audit_cleanup 不再重建哈希链，verify 首行以自身 prev_hash 为锚；
 - M5：time_pref_stats 排除已删账号，_purge_expired_deleted 连带删除 time_prefs。
+
+标签：C · 存储：迁移与库完整性
+覆盖：六项 db 层修复（硬清不误删活跃账号、v5 先DROP旧唯一索引再建部分唯一索引、
+可选失败后 continue 且不提版本、重试后追平、restore 按 deleted_at 关联、
+`_audit_cleanup` 不再重建哈希链、统计排除已删账号）、批量操作的事务回滚与软跳过、
+删除/改绑后的会话缓存残留清理、`executescript` 原子性与"源码不再出现 executescript"、
+备份明文策略、以及一整套加密/迁移/鉴权 smoke。
+对应实现：`yiban/store/`（accounts / users / time_prefs / audit_chain / session_cache 各域）
+与 `db` 门面、`scripts/backup.sh`。
+关键断言：`test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper` 与
+`tests/test_audit_anchor.py` 的锚点用例是一对——清理必须"换新根"而不是"把删掉的段重新
+签一遍"，后者等于给篡改者提供重链工具。`test_db_source_has_no_executescript_call` 与
+`BackupPlaintextP3Test` 是**源码文本级**断言：它们只保证那段文本还在原位，
+不执行脚本行为（原因见 `BackupScriptContractTest` 的同类说明——Windows 子进程按 GBK
+解码中文 stdout 会误报），别把它们读成"备份流程已被验证"。
+依赖：临时库 + 临时 `.env` + Flask test client；`_FlakyConn` 用注入失败模拟半路崩，
+无网络、无 skip。
 """
 import contextlib
 import datetime
