@@ -2,7 +2,8 @@
 """v3 崩溃恢复的队列访问层：`queue_store.reap_expired` 与 `queue_store.steal_shards`。
 
 覆盖（对应简报 ⑤ 的恢复部分）：
-5. `reap_expired`：过期 `claimed` → `pending` + 清 `owner`/`lease_until` + `epoch+1`；
+5. `reap_expired`：租约**过期且超出宽限期**的 `claimed` → `pending` + 清
+   `owner`/`lease_until` + `epoch+1`；刚过期但仍在宽限期内（可能还在飞）的**不动**；
    未过期的**不动**；终态不动；`vshard=-1` 的历史行不动；幂等；库异常 → 0 且不抛；
 6. `steal_shards`：只动「分片集内 + `state='pending'` + 非本执行体所有」的行；
    不动 `claimed`/终态/历史行；`epoch+1`；`owner` 已是自己时不计入；`vshards=()` → 0；
@@ -22,7 +23,12 @@ from yiban.store import queue_store
 
 DAY = "2026-09-22"
 NOW = "2026-09-22 06:40:00.000"
-EXPIRED = "2026-09-22 06:39:00.000"
+#: 租约已过期且**超出宽限期**（`REAP_GRACE_SEC` 120s）——回收条件成立
+EXPIRED = "2026-09-22 06:36:00.000"
+#: 租约刚过期 30s、仍在宽限期内——持有者可能还在飞，不得回收
+JUST_EXPIRED = "2026-09-22 06:39:30.000"
+#: 租约过期 150s、已过宽限期（> 120s）——回收条件成立
+GRACE_EXPIRED = "2026-09-22 06:37:30.000"
 FRESH = "2026-09-22 06:41:00.000"
 DEAD = "worker-9@testhost"
 ME = "worker-1@testhost"
@@ -105,6 +111,33 @@ class ReapExpiredTest(_Base):
         row = self._row("13800000002")
         self.assertEqual((row["state"], row["owner"], row["epoch"]),
                          ("claimed", DEAD, 1))
+
+    def test_lease_just_expired_is_within_grace_and_untouched(self):
+        """租约到期 ≠ 持有者已死：单次尝试可能比租约还慢。
+
+        刚过期就回收，行会回退 `pending` 并可能被同一执行体重领 ⇒ 同一账号两条通道
+        并发登录（`epoch+1` 只挡迟到的结论写回，挡不住这次重复真实登录）。
+        """
+        self._add("13800000003", state="claimed", owner=DEAD, lease_until=JUST_EXPIRED,
+                  epoch=1)
+        self.assertEqual(queue_store.reap_expired(now=NOW), 0)
+        row = self._row("13800000003")
+        self.assertEqual((row["state"], row["owner"], row["epoch"]), ("claimed", DEAD, 1))
+        self.assertEqual(row["lease_until"], JUST_EXPIRED, "未回收不得改租约")
+
+    def test_lease_expired_beyond_grace_is_reaped(self):
+        """超出宽限期（150s > 120s）才认为持有者确实不在了。"""
+        self._add("13800000004", state="claimed", owner=DEAD, lease_until=GRACE_EXPIRED,
+                  epoch=1)
+        self.assertEqual(queue_store.reap_expired(now=NOW), 1)
+        row = self._row("13800000004")
+        self.assertEqual(row["state"], "pending")
+        self.assertEqual(row["epoch"], 2)
+
+    def test_grace_is_at_least_two_leases(self):
+        """宽限期必须 ≥ 2× 租约：一次尝试慢到两倍租约仍不该被判死。"""
+        self.assertGreaterEqual(queue_store.REAP_GRACE_SEC,
+                                2 * queue_store.LEASE_SECONDS)
 
     def test_terminal_states_are_untouched(self):
         for i, state in enumerate(("done", "failed", "skipped")):

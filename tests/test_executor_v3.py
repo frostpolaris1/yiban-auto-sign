@@ -1511,10 +1511,10 @@ class RecoveryWiringTest(_Base):
         self.assertEqual(len(calls), 1, "每轮起跑必须调用一次回收")
 
     def test_expired_claim_is_reclaimed_and_completed(self):
-        """崩溃执行体留下的过期 `claimed` 行必须被回收、重领、跑完。"""
+        """崩溃执行体留下的过期 `claimed` 行（已过回收宽限期）必须被回收、重领、跑完。"""
         phone = _phone(1)
         self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-30), epoch=1, run_at=_ts(seconds=-60))
+                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60))
         self._seed_v(8)
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
                                lambda acc: (True, "ok", False, "success")):
@@ -1524,6 +1524,26 @@ class RecoveryWiringTest(_Base):
         self.assertEqual(row["owner"], OWNER)
         self.assertGreater(row["epoch"], 1, "重领同样自增 epoch")
         self.assertIn(phone, results)
+
+    def test_claim_just_expired_is_not_reclaimed_this_round(self):
+        """租约刚过期（仍在宽限期内）的行**不回收**：持有者可能还在飞。
+
+        若按"过期即回收"，本轮会把它回退 `pending` 再领一次 ⇒ 同一账号两条通道并发
+        登录；`epoch+1` 只挡迟到的结论写回，挡不住这次重复真实登录。
+        """
+        phone = _phone(1)
+        self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
+                       lease_until=_ts(seconds=-30), epoch=1, run_at=_ts(seconds=-60))
+        self._seed_v(8)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               mock.MagicMock(return_value=(True, "ok", False,
+                                                            "success"))) as attempt:
+            results = self._run_v3(self._accounts(phone))
+        row = self._row(phone)
+        self.assertEqual((row["state"], row["owner"], row["epoch"]),
+                         ("claimed", "worker-9@testhost", 1), "在飞的行不得被回收重领")
+        self.assertEqual(attempt.call_count, 0, "本轮不得对该账号再发一次真实登录")
+        self.assertNotIn(phone, results)
 
     def test_heartbeat_reports_running_then_finished(self):
         phone = _phone(1)
