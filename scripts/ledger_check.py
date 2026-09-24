@@ -88,15 +88,13 @@ def _target_days(args):
 def _read_terminals(state_dir, day):
     """该日的终态账号 → JSON 状态；文件缺失/损坏/非 dict → None（该日无输入）。
 
-    文件在但一条终态都没有时回空 dict（**不是** None）：这种窗口与"没有文件"一样
-    没有可对账的东西，调用方据此判零覆盖，而不是把空集上的"通过"当成平账。
-
-    终态判定复用 `migrations.terminal_task_state`（v20 补账用的同一份逻辑）：只共用
-    常量表而各写一遍规范化，仍会在细节上漂移，对账据此报出并不存在的差异（或漏报
-    真差异）。JSON 状态串原样带出，供差异行打印。
+    文件在但一条终态都没有时回空 dict（**不是** None）：与"没有文件"一样没有可对账的
+    东西，调用方据此判零覆盖，而不是把空集上的"通过"当成平账。JSON 状态串原样带出。
     """
     path = os.path.join(state_dir, f"sign-state-{day}.json")
     try:
+        # utf-8-sig：手工编辑过的状态文件可能带 BOM，BOM 会让 json.load 抛错、整日判成
+        # "无输入"——那是假零覆盖，不是真没跑
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError, TypeError):
@@ -105,6 +103,8 @@ def _read_terminals(state_dir, day):
         return None
     out = {}
     for phone, entry in data.items():
+        # 必须复用 v20 补账那份判据：只共用常量表、规范化各写一遍，就会在细节上漂移，
+        # 对账据此报出并不存在的差异（或漏报真差异）
         if migrations.terminal_task_state(entry) is None:
             continue
         out[phone] = str(entry.get("status") or "").strip()
@@ -153,7 +153,7 @@ def _check_day(conn, state_dir, day, report):
         problems += 1
         report.append(f"[{day}] 计数不自洽: 总数 {total} ≠ 平移 {translated} + "
                       f"补账 {backfilled}（无来源 {other} 行）")
-    return problems, terminals is not None, bool(terminals)
+    return problems, terminals is not None, bool(terminals)  # 三个态分开：无文件/有文件无终态/有终态
 
 
 def main(argv=None):
@@ -193,8 +193,8 @@ def _reconcile(args):
     problems = 0
     days_with_file = 0
     days_with_terminal = 0
-    # 只读口径：不迁移（迁移会写库，且 v20 会顺手补行，使被核对对象在校验过程中
-    # 被改动）、不做启动清理。
+    # 只读口径：migrate=False 尤其关键——迁移会写库、v20 还顺手补行，被核对对象在
+    # 核对过程中被改动，对账就不再是核对
     conn = db.init_db(db_file=db_path, cleanup=False, migrate=False)
     for day in days:
         day_problems, has_file, has_terminal = _check_day(conn, state_dir, day, report)
