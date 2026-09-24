@@ -9,6 +9,22 @@
 归属：`yiban/store` 会话缓存域 + `web/` 会话流程的交叉测试。
 复用：`BASE` / `TEST_KEY` 与临时库装配助手。
 通信：写临时 SQLite 与临时 `.env`，按会话 API 读写；由 pytest 收集 `unittest.TestCase`。
+
+标签：C · 存储：迁移与库完整性
+覆盖：`session_cache` 表族的建表与 v7→v8 升级、CRUD 往返、TTL 与跨业务日两道判据、
+cookies 密文存储且绑 phone 作 AAD、作废日志的调用点脱敏、时钟守卫下的清理跳一轮后续跑、
+`/api/me/restore` 的会话恢复与被盗 Cookie 失效、purge 的权限档位与通知覆盖面、
+签到 stale 分类的尝试预算。
+对应实现：`yiban/store/session_cache.py`（读写与 TTL 判定）、`yiban/infra/account_crypto.py`
+的加解密（AAD 用手机号）、web 的 restore / purge 路由与 `alerts` 的清理闸门。
+关键断言：**TTL 与跨业务日是两道独立的门**——`test_ttl_env_override_extends_validity`
+放宽前者、`test_cross_day_row_dies_even_with_seventy_two_hour_ttl` 必须仍然判死后者；
+只留一条就能靠"把 TTL 调到 72h"顺带把跨业务日也放开。AAD 那条断的是"换个手机号解不开"，
+不是"能解开"，否则等于没验绑定。`test_write_and_read_share_one_clock` 守的是写入侧与
+读取侧取同一个时间源（两侧各读一次 `now`，有效期判据就取决于哪一侧先跑）。
+升级方向（新代码打开 v7 旧库）由 `test_upgrade_from_v7_creates_session_cache` 覆盖；
+反方向不在本文件（见 `tests/test_migration_compat.py`）。
+依赖：临时库 + 临时 `.env` + Flask test client（含 CSRF 与登录），无网络、无 skip。
 """
 import contextlib
 import datetime
