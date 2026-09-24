@@ -16,6 +16,27 @@
 
 管理员账号：首次启动自动生成 SECRET_KEY 并写入 .env；
 在 .env 配置 YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD 后即可登录。
+
+**归属**
+本仓 web 管理后台的入口与装配层。`create_app` 建 Flask 实例、登记工厂局部的可变状态（各类
+限速 / 失败 / 冷却计数表）与跨域中间件（前置限速、登录守卫、CSRF 校验、同源校验、安全响应
+头），再把各视图域交 `web.routes.register_all` 接上。域实现已下沉到 `web/routes/*` 与
+`web/services/*`；本模块留下工厂骨架、共享门禁闭包（`_sensitive_password_gate` /
+`_reconfirm_admin_password` / `_high_risk_gate` / `_admin_delete_limited`）与名字面转发。
+
+**复用**
+`create_app()` 是唯一构建入口。口令门禁的两级真源分工：档位与旋钮的解析在 `web/security.py`
+（`_pw_gate_tier` / `_sensitive_gate_params`，三档语义见该模块 `PW_GATE_*` 常量段），"要不要
+当次复核"的执行在本模块工厂内的那几个闭包——闭包依赖请求上下文与会话状态，只能在 `create_app`
+内定义，路由模块经 `web.routes` 的取回函数按 app 实例拿。
+
+**通信**
+入：HTTP 请求 + `.env`（配置与内置管理员凭据）；出：JSON 与渲染页（渲染在 `web/render.py`）、
+`.env` 原子落盘、SQLite、告警邮件与推送。它调用 `web.routes.register_all`、`web.services.*`、
+`web.security`、`yiban.*`；调用方是 `python -m web`（上面的运行段）与 tests/*。测试以别名加载
+本模块并按属性打桩其模块级名字，路由模块则经 `web.routes.appmod()` 现取这些名字——本模块的
+名字面因此是对外契约的一部分。前端写请求的 `X-CSRF-Token` 头由 `web/static/js/core.js` 从
+`/api/me` 响应取 token 回填，校验侧是本模块的 `check_csrf`。
 """
 
 import argparse
@@ -398,7 +419,7 @@ DELETED_RETENTION_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # 账号编辑时识别码清空哨兵值（收到该值 = 显式删除设备识别码字段）
 CLEAR_SENTINEL = "__clear__"
 
-# 单次批量操作上限（2026-08-29 由 100 收紧为 10）：批量通过/删除/设管理员/重置密码
+# 单次批量操作上限：批量通过/删除/设管理员/重置密码
 # 与「清除已注销用户」共用同一上限——被盗管理员会话即使一个请求，一次最多影响 10 条，
 # 降低误操作与滥用影响范围。三处接口共用本常量，防单处调整后其他路径遗漏。
 BATCH_OP_LIMIT = 10
@@ -496,12 +517,12 @@ RESTORE_FAIL_WINDOW = 600
 # 失败来源，阈值压低只会把误报刷满告警通道；真攻击由边缘限速与逐次 scrypt 时延承担。
 LOGIN_FAIL_NOTIFY = 10
 # 敏感操作口令复核失败的独立计数窗口（秒，M5）：与登录计数分离，
-# 只用于告警与冷却判定，不锁管理员（P18）。
+# 只用于告警与冷却判定，不锁管理员。
 SENSITIVE_PW_FAIL_WINDOW = 900
 # 口令门失败告警阈值与冷却布防起点（次），与 LOGIN_FAIL_NOTIFY 各取各的值：
 # 登录侧抬高阈值是为了少发误报，而本阈值同时是**同一窗口内允许的 scrypt 尝试次数上界**
 # （达阈值即布防冷却，见 _sensitive_pw_denied），跟着一起抬高等于把门禁预算放宽数倍。
-# 取值沿用门禁改造前的 3，此后两侧各自调参、互不牵连。
+# 取值沿用早期版本的 3，此后两侧各自调参、互不牵连。
 SENSITIVE_PW_FAIL_NOTIFY = 3
 # 敏感口令门禁的两个默认窗口（.env 可覆盖，唯一解析处见 web/security.py 的
 # _sensitive_gate_params）：PW_CONFIRM_TTL_DEFAULT 是豁免窗口（本会话在 TTL 秒内
@@ -591,12 +612,12 @@ NOTIFY_URL_MAX_LEN = 2048
 MAIL_ADMIN_TO_MAX = 10
 MAIL_SMTPS_MAX = 10
 
-# 账号验证尝试限频（2026-08-27 P1-2）：每用户窗口内网络验证次数上限。
+# 账号验证尝试限频：每用户窗口内网络验证次数上限。
 # 预验证 = 服务器代发真实易班登录，必须在资格预筛之外再加用户维度节流。
 # 常量本体（VERIFY_MAX / VERIFY_WINDOW）随安全域搬入 web/security.py（判定在
 # `_verify_attempt_allowed`），此处以导入区再导出保持 m.* 可达。
 
-# 账号验证认证失败冷却（2026-09-04 生产复盘）：同一手机号窗口内认证失败达到
+# 账号验证认证失败冷却：同一手机号窗口内认证失败达到
 # 阈值后临时拒绝再验证。密码错误属确定性失败，重复验证每次都是一次真实易班
 # 登录，连续少量错误易班侧即返回「错误尝试过多」锁定账号（生产实测 6 次即锁），
 # 故按「被锁定对象 = 易班账号 = 手机号」设冷却；仅限 web 验证路径，探针与
@@ -609,7 +630,7 @@ VERIFY_FAIL_COOLDOWN_MSG = (
     "连续密码错误会导致易班账号被锁定，如密码有误请先在易班 APP 重置。"
 )
 
-# 外呼校验的**全局**并发上限（A4，2026-09-15）：上面两条配额都是「按会话用户」与
+# 外呼校验的**全局**并发上限：上面两条配额都是「按会话用户」与
 # 「按手机号」，覆盖不到"多个账号同时校验"这个维度。实测 8 个并发校验即占满
 # gunicorn 的 8 个线程 → 整站约 15 秒完全无响应（/api/clock 探针在饱和期无响应）。
 # 这里限制同时在跑的外呼条数，**超出立即失败而非排队**——排队会把线程继续钉住，
@@ -631,12 +652,12 @@ VERIFY_JOB_TERMINAL = verify_jobs.TERMINAL_STATUSES
 # 超限返回 429 且不暴露冷却秒数（信息分层，防恶意用户据此规划批量节奏）
 DELETE_COOLDOWN_SEC = 60
 
-# 会话绝对过期上限默认天数（2026-08-27 P2-5）：实际值在 create_app 内按
+# 会话绝对过期上限默认天数：实际值在 create_app 内按
 # YIBAN_SESSION_ABS_DAYS 解析并钳制到 [1,30]；此处为 create_app 前引用兜底。
 SESSION_ABS_DAYS_DEFAULT = 7
 SESSION_ABS_TTL_SECONDS = SESSION_ABS_DAYS_DEFAULT * 86400
 DELETE_MAX_REQUESTS_PER_IP = 5
-# 高危删除操作冷却（2026-08-29 被盗号滥用面加固）：同一管理员在窗口内最多执行
+# 高危删除操作冷却：同一管理员在窗口内最多执行
 # ADMIN_DELETE_MAX 次删除类高危操作（批量删除/彻底清除/完全删除），防被盗会话
 # 快速反复删除用户并刷告警邮件。与注销冷却同语义，超限 429 且不暴露冷却参数。
 # 上限按合法批量清理的规模定（连续清理若干垃圾账号是常见运维动作，阈值卡太紧会误伤），
@@ -649,7 +670,7 @@ ADMIN_DELETE_MAX = 20
 # ——账号保留期的**唯一事实源**，不要再写字面量）已随账号数据族搬入
 # web/services/accounts_data.py，此处以导入区再导出保持 m.DELETE_GRACE_DAYS 可达。
 
-# 容量上限（2026-08-15 对抗性审查补：注册/使用人数超负载兜底；2026-08-31 口径修订）：
+# 容量上限（注册/使用人数超负载兜底）：
 # 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
 # 账号 = 至少持有 1 个非删除账号的活跃注册用户，上限默认 200（一人一号 ≈ 200 活跃使用者，
 #   调度窗口 80min ÷ 单账号平均 8s ≈ 600 理论上限，留裕量防 web 解密/轮询劣化）。
@@ -681,7 +702,7 @@ GATED_KEYS = frozenset({"sign_order", "sign_dist", "sign_mode", "allow_time_pref
 # 分流（0→1 急停人人可做、1→0 恢复仅主管理员），故单独用这个键名判方向。
 GLOBAL_PAUSE_KEY = "global_pause"
 
-# 自选时间片切换冷却（2026-08-15 用户反馈 → 弹性冷却）：
+# 自选时间片切换冷却（弹性冷却，非固定节流）：
 # 60 秒窗口内前 TIME_PREF_COOLDOWN_FREE 次切换完全自由（浏览式"全点一遍再定"属正常行为）；
 # 超出后冷却递增：基础 × 2^(超限次数)，封顶 TIME_PREF_COOLDOWN_MAX（持续高频才被压制）。
 # 高频切换本质是自我惩罚（updated_at 变晚 → 先到先得排后），冷却只为防连点/防刷屏噪音。
@@ -691,7 +712,7 @@ TIME_PREF_COOLDOWN_FREE = 20        # 60 秒窗口内自由切换次数（覆盖
 TIME_PREF_COOLDOWN_MAX = 300        # 弹性封顶（秒）
 TIME_PREF_COOLDOWN_WINDOW = 60      # 计数窗口（秒）
 
-# 暂停签到冷却（2026-08-16 调整）：恢复不受限；暂停采用弹性冷却——
+# 暂停签到冷却：恢复不受限；暂停采用弹性冷却——
 # 60 秒窗口内前 PAUSE_COOLDOWN_FREE 次完全自由（好奇地暂停/恢复/再暂停不会被误杀），
 # 超出后冷却递增（基础 × 2^(超限次数)，封顶 PAUSE_COOLDOWN_MAX）。
 # 防脚本刷审计/状态显示抖动，但不惩罚正常手快用户。0=关闭。
@@ -1502,7 +1523,7 @@ def _report_env_key_collisions(env_path):
 
 
 # ---------------------------------------------------------------------------
-# 子路径 / 独立子域 前缀自适应中间件（2026-08-23）
+# 子路径 / 独立子域 前缀自适应中间件
 # ---------------------------------------------------------------------------
 # 背景：本应用可部署在域名根、独立子域、或主站子路径（如 /tools/yiban-auto-sign/demo/）下。
 # 部署契约：反向代理只需把完整 URI【原样透传】（proxy_pass 后面不要加 "/" 去剥前缀），
@@ -1749,7 +1770,7 @@ def create_app(host=None):
         )
     app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 14  # 14 天（折中：安全与管理员便利平衡）
 
-    # ---- 会话绝对过期上限（2026-08-27 对抗性审查 P2-5）----
+    # ---- 会话绝对过期上限 ----
     # 滑动续期防不了「被盗 Cookie 永久续命」：任何会话自登录起最多存活 N 天，
     # 到期硬失效需重新登录。YIBAN_SESSION_ABS_DAYS 可配，越界回退默认并告警
     # （风格对齐 M13 会话缓存 TTL 钳制）。判定逻辑见 _current_role。
@@ -1771,7 +1792,7 @@ def create_app(host=None):
     # 路由共用**同一份**字典（安全语义依赖同一份账），取用点收在 web/routes 包。
     app.extensions["yiban_login_fails"] = {}
     # 敏感操作口令复核失败的**独立**计数 {fail_key: [count, window_start]}（M5）：
-    # 与登录失败表分开——P18 教训是"持 Cookie 者若写共享计数可把管理员锁出登录"，
+    # 与登录失败表分开——教训是"持 Cookie 者若写共享计数可把管理员锁出登录"，
     # 故高危二次鉴权/开关门/执行体门的失败只走本计数 + 首达阈值告警，绝不碰登录计数。
     _sensitive_pw_fails = {}
     # 门禁级冷却 {(ip, 用户名): (失败次数, 解锁时刻)}：独立计数达阈值后，解锁时刻之前
@@ -1790,14 +1811,14 @@ def create_app(host=None):
     # 账号恢复的每 IP 聚合失败窗口 {ip: [count, window_start]}（仅恢复接口使用，
     # 状态挂 extensions 保每实例语义）
     app.extensions["yiban_restore_fail_rate"] = {}
-    # 账号验证尝试配额 {username.lower(): (count, window_start)}（2026-08-27 P1-2）
+    # 账号验证尝试配额 {username.lower(): (count, window_start)}
     # 管理员添加与用户自助提交共用同一份账；状态挂 extensions 保每 app 实例一份，
     # 取用点收在 web.routes.verify_limits()
     app.extensions["yiban_verify_limits"] = {}
-    # 账号验证认证失败冷却 {phone: (fails, window_start, cooldown_until)}（2026-09-04 生产复盘）
+    # 账号验证认证失败冷却 {phone: (fails, window_start, cooldown_until)}
     # 同上：两条提交路径共用，取用点 web.routes.verify_fails()
     app.extensions["yiban_verify_fails"] = {}
-    # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
+    # 高危删除操作冷却 {username.lower(): (count, window_start)}
     _admin_delete_limits = {}
     # 日志导出限速 {ip: (count, window_start)}
     # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.export_limits()
@@ -1865,7 +1886,7 @@ def create_app(host=None):
     # _ip_store_trim（上提为模块级，见 _bump_window_count 上方）：
     # 各限速表写入路径统一调用，防公网扫描器用海量键打爆内存。
 
-    # ---- 全局限速：防脚本轰炸 API（2026-08-16 用户决策：只对 /api/* 限速，
+    # ---- 全局限速：防脚本轰炸 API（只对 /api/* 限速，
     # 页面/静态放宽，避免 302+200 双请求导致正常页面浏览被误伤）----
     @app.before_request
     def rate_limit():
@@ -2031,7 +2052,7 @@ def create_app(host=None):
     def _render_error_page(code, title, message):
         """错误页：匿名用认证外壳，**登录态用管理端外壳**（保留侧栏与导航）。
 
-        用户 2026-09-17：登录态管理员点到过期链接时不该"丢侧栏"，错误页恰恰最需要导航。
+        登录态管理员点到过期链接时不该"丢侧栏"，错误页恰恰最需要导航。
         管理端外壳要读更多上下文（导航/公告等），**错误路径本身可能是坏的**，故渲染失败
         （任何异常）一律退回认证外壳，绝不让 404/500 再抛一次。
         """
@@ -2089,7 +2110,7 @@ def create_app(host=None):
     def no_cache(resp):
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
         # 注意：不使用 CSP nonce——模板含大量内联 onclick 处理器（无法加 nonce），
-        # nonce 存在时 'unsafe-inline' 会被浏览器忽略导致全部处理器失效（2026-08-17 线上事故）。
+        # nonce 存在时 'unsafe-inline' 会被浏览器忽略导致全部处理器失效。
         # 后续可将内联事件迁移到 addEventListener 后再启用 nonce 防护。
         resp.headers["X-Content-Type-Options"] = "nosniff"
         # 与边缘 nginx 保持一致（SAMEORIGIN）：防止子路径(经 nginx 反代)下出现
@@ -2104,7 +2125,7 @@ def create_app(host=None):
         # 本应用不再重复下发，避免与 nginx 的 max-age 取值不一致造成双头歧义。
         # 注：若部署不经 nginx（如本地直连远程调试），可在此按需补回
         #   if request.is_secure: resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # 关闭无关能力面（2026-08-20 对抗性审查 P3 补；payment 与 nginx 对齐）
+        # 关闭无关能力面（payment 项与 nginx 配置对齐）
         resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' 'unsafe-inline'; "
@@ -2128,19 +2149,19 @@ def create_app(host=None):
 
     # ---- 敏感操作口令门禁与高危限速（设置 / 执行体 / 公告 / 用户管理各域共用）----
     def _admin_delete_limited():
-        """高危操作限速（2026-08-29）：同一管理员窗口内超限返回 True（应拒绝 429）。
+        """高危操作限速：同一管理员窗口内超限返回 True（应拒绝 429）。
 
         键 = 会话用户名（统一小写）；窗口/上限由 .env 调整，0 = 关闭。
         与登录频率同语义（先判后增）：窗口内允许前 ADMIN_DELETE_MAX 次，之后拒绝。
 
-        调用点从"三处高危删除"扩到"两处告警通道的高危配置变更"
+        调用点覆盖"高危删除"与"告警通道的高危配置变更"两类
         （关闭邮件通道 / 关闭推送 / 清空或更换推送密钥）。刻意共用同一套计数、
         不另建第二套——在攻击者手里"删数据"与"拆报警器"是同一条链，合并计数才
         真的限制得住一个被盗会话能造成多大静默。
 
         本函数**判定即占用**，故必须在二次鉴权通过
-        之后调用（五个高危调用点统一走 _high_risk_gate，不再各自手搓顺序）。
-        原先放在口令校验之前，不知口令的被盗会话可以用错口令尝试把主管理员的
+        之后调用（高危调用点统一走 _high_risk_gate）。
+        若在口令校验之前占用额度，只拿到 Cookie、不知口令的会话就能用错口令反复尝试，把主管理员的
         "删除 + 通道变更"预算（ADMIN_DELETE_MAX 次 / ADMIN_DELETE_COOLDOWN_SEC 秒）刷满，
         反过来让合法运维全程 429。
         """
@@ -2194,7 +2215,7 @@ def create_app(host=None):
     def _sensitive_pw_denied(key, action, deny_status, cooldown, now):
         """门禁口令不符的处置：独立计数 → 首达阈值告警 → 达阈值起进入/续期冷却。
 
-        刻意**绝不写登录失败表**（P18）：能持 Cookie 撞门禁的人若可写登录侧的共享
+        刻意**绝不写登录失败表**：能持 Cookie 撞门禁的人若可写登录侧的共享
         计数，就能用错口令把管理员同时锁在"登录"和"所有高危运维"之外，把风控变成攻击面。
 
         告警按 `== SENSITIVE_PW_FAIL_NOTIFY` 只发一条（同一窗口不刷屏，运维口径），但冷却按
@@ -2260,7 +2281,7 @@ def create_app(host=None):
                                  deny_status=403, irreversible=False):
         """敏感操作口令复核的**唯一入口**。返回 None = 放行，否则是要直接 `return` 的响应。
 
-        为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）此前各写各的
+        为什么必须收成一个入口：三处落点（系统开关、执行体写、高危二次鉴权）各写各的
         判定，共同点是**没有冷却**——实测以主管理员会话对 `POST /api/settings` 连投错误
         `confirm_password`，200 次只被通用 API 限速（60 次/10 秒）挡住，约 6 次/秒 ×
         单次 scrypt 157ms 就能打满一核；比项目自己的登录口（10 次/60 秒 + 第 5 次锁
@@ -2268,7 +2289,7 @@ def create_app(host=None):
 
         **档位**（`.env` 的 `YIBAN_PW_GATE`，解析见 `_pw_gate_tier`）决定要不要口令：
 
-        - `full`：下面三段判定逐字照旧，`always_required` 由调用点指定（改造前的行为）；
+        - `full`：三段判定全部执行，`always_required` 由调用点指定（旧行为，逐字保留）；
         - `risk`（默认）：先做风控判定（`_pw_gate_ip_changed`，唯一判据 = 换环境），
           未命中直接放行；命中则按"当次必须输口令"走下面三段（不吃 TTL 豁免、
           冷却照常生效）；
@@ -2337,17 +2358,17 @@ def create_app(host=None):
 
     def _reconfirm_admin_password(data, action_label, *, always_required=True,
                                   irreversible=False):
-        """高危操作二次鉴权（2026-08-29）：要求当前会话管理员重新输入口令。
+        """高危操作二次鉴权：要求当前会话管理员重新输入口令。
 
-        返回约定保持不变（None = 通过，否则 `(响应, 状态码)` 元组）；实现整体交给
+        返回约定（None = 通过，否则 `(响应, 状态码)` 元组）；实现整体交给
         _sensitive_password_gate（含失败计数、告警与冷却）。第一个参数收**整个请求体**
         而不是单独的口令串：非 `full` 档还要看同一请求里的倒计时确认凭据
         （`confirm_delay_ack`），只传口令串会把那个字段截掉，门禁永远判它缺失。
-        与原实现的两处语义差别：
-        - **不再读写登录失败表**：原实现把失败记进与登录共用的桶并置 lock_until，
+        两条刻意的语义边界：
+        - **不读写登录失败表**：失败若记进与登录共用的桶并置 lock_until，
           于是与管理员同出口 IP 的被窃会话可以用错口令把主管理员同时锁在"登录"和
-          "所有高危运维"之外（P18 残留，本次摘掉）；
-        - 也不再借用登录侧的锁定状态：登录侧锁着，不影响本会话用**正确口令**做运维。
+          "所有高危运维"之外；
+        - 不借用登录侧的锁定状态：登录侧锁着，不影响本会话用**正确口令**做运维。
 
         `always_required` 默认 True——本函数的调用点本来就是一串"不可逆清除 / 角色变更 /
         重置他人口令 / 关闭告警通道"，这些必须当次输口令；只有设置页里两个纯配置项
@@ -2361,7 +2382,7 @@ def create_app(host=None):
                         irreversible=False):
         """高危动作统一门禁：先二次鉴权，**通过之后**才占用高危限速额度。
 
-        顺序即本次修复：原五处调用都是"先判后增再鉴权"，于是
+        顺序即关键：若"先判后增、再鉴权"，则
         一个只拿到 Cookie、不知道口令的被盗会话，用错口令反复尝试就能把主管理员
         的"删除 + 告警通道变更"预算（ADMIN_DELETE_MAX 次 / ADMIN_DELETE_COOLDOWN_SEC 秒）
         全部吃掉，反过来让合法
@@ -2369,7 +2390,7 @@ def create_app(host=None):
         _sensitive_password_gate 里的独立计数与门禁级冷却承担（第 3 次告警并暂停
         敏感操作），不需要再借用高危额度；额度只该被**真实执行过**的高危动作消耗。
 
-        仍复用同一套计数（不新建第二套 store，评审口径），不改变"超限即 429"的语义。
+        仍复用同一套计数，不改变"超限即 429"的语义。
         返回 None 表示放行；否则返回应直接 `return` 给客户端的 4xx 响应。
 
         `irreversible=True` 标注"不可逆清除/删除"类落点（物理清除、彻底删除、
@@ -2407,7 +2428,7 @@ def create_app(host=None):
     app.extensions["yiban_read_audit_trace"] = _read_audit_trace
     app.extensions["yiban_read_audit_denied_trace"] = _read_audit_denied_trace
     app.extensions["yiban_sensitive_password_gate"] = _sensitive_password_gate
-    # ---- 每日自动清除超期注销用户（2026-08-17：修复"仅启动时清除一次"的隐患）----
+    # ---- 每日自动清除超期注销用户 ----
     # 此前 purge_deleted_users 只在 db 连接初始化（服务启动）时执行，长期不重启的
     # 服务会让超期注销用户数据（邮箱、软删易班账密）无限留存，与页面"系统定期
     # 物理清除"的承诺不符。后台 daemon 线程：启动 60s 后先跑一次，此后每 24h 一次。
@@ -2417,7 +2438,7 @@ def create_app(host=None):
         time.sleep(60)
         while True:
             try:
-                # 每日集中清理（2026-08-28 审查 M6 收口）：审计/事件旧数据 +
+                # 每日集中清理：审计/事件旧数据 +
                 # 过期软删账号 + 过期注销用户 + 注销请求记录，统一走 db.run_daily_cleanup()。
                 # 此前 _audit_cleanup/_event_cleanup（全表 DELETE）只挂在 init_db 上，
                 # 而 signin 子进程每天 2~3 次 init_db 也各跑一轮，与 web 8 线程争锁；
@@ -2425,7 +2446,7 @@ def create_app(host=None):
                 db.run_daily_cleanup()
             except Exception as e:
                 logger.warning("每日自动清除注销用户失败: %s", e)
-            # 审计可追溯性每日校验（2026-08-28 审查 B-3）：
+            # 审计可追溯性每日校验：
             # 此前 verify_audit_chain 生产环境从不调用、外部锚点只写不读——审计写入
             # 可静默丢（B-1）、删前缀/删尾/清空验不出（B-2）也无人知晓。
             # 现每日流程：先校验（链自洽 + 库外锚点比对 + 写入失败计数），任一异常
@@ -2508,7 +2529,7 @@ def create_app(host=None):
 def main():
     global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, STATE_DIR, DB_FILE
     parser = argparse.ArgumentParser(description="易班自动签到网页管理系统")
-    # 2026-08-20 对抗性审查 P2：默认改回环——werkzeug 开发服务器不应默认暴露
+    # 默认监听改回环——werkzeug 开发服务器不应默认暴露
     # 全网卡（明文 HTTP + 无反代防护）。生产走 systemd/gunicorn 模板不受影响；
     # 确需直连局域网时显式传 --host 0.0.0.0（自担风险）。
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1，仅回环）")
