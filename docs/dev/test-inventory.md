@@ -1,7 +1,10 @@
 # 测试项目清单（按功能分组，2026-09-23）
 
-> 自动生成：扫 `tests/test_*.py` 的模块 docstring 首句 + 用例方法数（`ast` 计数，非 pytest 收集数）。
-> 当前：**126 个文件 / 2664 个用例方法**。
+> 扫 `tests/test_*.py` 的模块 docstring 首句 + 用例方法数（`ast` 计数，非 pytest 收集数）。
+> 当前：**137 个文件 / 2922 个用例方法**。
+> 注：下方各分组表与「小计」是 2026-09-23 的快照，新增文件未回填——**总数以本行为准**
+> （`python -c "import ast,glob;f=sorted(glob.glob('tests/test_*.py'));print(len(f),sum(1 for p in f for n in ast.walk(ast.parse(open(p,encoding='utf-8').read())) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name.startswith('test')))"`）。
+> 本文件没有仓库内的生成脚本，计数只能手工刷新。
 
 ## 怎么只跑一组
 
