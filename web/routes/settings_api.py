@@ -1117,10 +1117,12 @@ def api_scheduler_executors_measure():
 
     # 容量**复用既有口径**：有效窗口用 _executors_window（= 页面显示的 window.effective_sec
     # 的那一份），单账号周期用实测秒数，间隔用 YIBAN_ACCOUNT_GAP_MAX。
-    per_exec = m.signin.capacity_accounts(
+    # k=1 钉住"实测**单执行体**容量"的字面语义：本接口量的是"这台机器一个执行体能签几个"，
+    # 不是全站总容量（v3 下总容量 ≈ 该值 × 出口数）。公式按开关分派（缺省关时逐字同旧值）。
+    per_exec = m.signin.capacity_of(
         bounds.full_sec(),
-        m.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX),
-        avg=seconds)
+        gap=m.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX),
+        avg=seconds, k=1)
     # 建议值保留 ×2/3 余量：实测值是这台机器这一刻的成绩，留余量才对得上
     # "换机器/换网络都要重新量"的现实。
     recommended = max(1, int(per_exec * 2 / 3))

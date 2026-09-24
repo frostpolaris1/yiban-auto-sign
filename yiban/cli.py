@@ -326,9 +326,10 @@ def _cmd_config(args, view):
 def _capacity_numbers(view, signable):
     """容量三数（**与网页 `/api/scheduler/executors` 同一口径**，不另写公式）。
 
-    - `capacity_per_executor`：有效窗口能容纳的账号数 = `schedule.capacity_accounts`
-      （窗口用 `yiban.window.bounds(...).full_sec()`——网页侧同样是"完整有效窗口"，
-      即"这套配置能容纳几个"，不是"今天还剩几个"）；
+    - `capacity_per_executor`：有效窗口能容纳的账号数 = `schedule.capacity_of`（按开关
+      分派，缺省关时即 `capacity_accounts`；窗口用 `yiban.window.bounds(...).full_sec()`
+      ——网页侧同样是"完整有效窗口"，即"这套配置能容纳几个"，不是"今天还剩几个"）；
+      `k=1` 钉住"每执行体"的字面语义（v3 下总容量 ≈ 该值 × 出口数）；
     - `recommended_per_executor`：部署者实测值（`YIBAN_CAPACITY_MEASURED`，由容量基准
       工具写入）× 2/3（与网页建议值、基准工具的 `--ratio` 同一余量口径）；未实测为 None；
     - `executors_needed`：⌈账号数 ÷ 建议每执行体账号数⌉（与网页同一算法）。
@@ -351,7 +352,8 @@ def _capacity_numbers(view, signable):
         "window_effective_sec": bounds.full_sec(),
         "avg_attempt_sec": avg,
         "gap_sec": gap,
-        "capacity_per_executor": schedule_mod.capacity_accounts(bounds.full_sec(), gap, avg),
+        "capacity_per_executor": schedule_mod.capacity_of(
+            bounds.full_sec(), gap=gap, avg=avg, k=1),
         "measured_per_executor": measured,
         "recommended_per_executor": recommended,
         "executors_needed": needed,
