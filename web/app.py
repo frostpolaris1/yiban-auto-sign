@@ -1334,12 +1334,16 @@ _HEALTH_REPORT_WEEKDAY = 0
 
 
 def _channel_health_report_due(status=None):
-    """今天是否该播告警通道健康报告：例行日（周一）、通道降级、或当日推送额度已耗尽。
+    """今天是否该播告警通道健康报告：例行日（周一）、通道降级、或当日有额度耗尽待告知。
 
     降级判定沿用 `_channel_health_degraded` 的结构化字段（与日报内部同一口径）。额度
-    那一档刻意用只读的 `notify.budget_exhausted_today()` 而不是 `pop_exhaustion_notice()`：
-    pop 是取走语义，在闸门上取走会让真正发信时少了那几行"哪本账用尽"的告知，而账本的
-    notice 标记按日重置 ⇒ 漏到下一个例行日就再也补不回来。
+    那一档刻意用只读的 `notify.has_pending_exhaustion_notice()` 与
+    `notify.budget_exhausted_today()`，而不是 `pop_exhaustion_notice()`：pop 是取走
+    语义，在闸门上取走会让真正发信时少了那几行"哪本账用尽"的告知，而账本的 notice
+    标记按日重置 ⇒ 漏到下一个例行日就再也补不回来。两个判据都要：`budget_exhausted_today`
+    只覆盖 general / urgent 两本推送账，登录失败账（login_fail）的耗尽告知同样只有本
+    报告一个取走方——只看前者，攻击当天（非例行日）这封报告不发，告知就在换日归零时
+    永久消失。
 
     降级期间每天都会判"该发"，与日更时的行为一致：报警器失效必须持续可见，不能因为
     改成周报而静默。
@@ -1348,7 +1352,7 @@ def _channel_health_report_due(status=None):
     if _channel_health_degraded(st):
         return True
     try:
-        if notify.budget_exhausted_today():
+        if notify.has_pending_exhaustion_notice() or notify.budget_exhausted_today():
             return True
     except Exception as e:  # 兜底：额度状态读不动不该让日报整体缺席
         logger.warning("读取推送额度状态失败（按未耗尽处理）: %s", e)

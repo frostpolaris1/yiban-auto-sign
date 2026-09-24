@@ -24,7 +24,12 @@ from .config import (  # noqa: F401
     is_safe_url,
     logger,
 )
-from .ledger import BudgetTicket, budget_exhausted_today, pop_exhaustion_notice  # noqa: F401
+from .ledger import (  # noqa: F401
+    BudgetTicket,
+    budget_exhausted_today,
+    has_pending_exhaustion_notice,
+    pop_exhaustion_notice,
+)
 from .transport import (  # noqa: F401
     DEFAULT_URL_TIMEOUT,
     MAX_TITLE_CHARS,
