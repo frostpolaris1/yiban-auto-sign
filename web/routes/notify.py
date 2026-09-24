@@ -180,9 +180,9 @@ def api_mail_config_save():
     # smtps 与 admin_to 同属"改告警送达路径"，合并为一次口令确认
     # （同时提交只验一次；两者都不涉及则不做口令校验）
     if smtps_list is not None or admin_to_val is not None:
-        # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组
-        denied = _reconfirm_admin_password()(
-            str(data.get("confirm_password", "")), "修改邮件 SMTP 配置")
+        # _reconfirm_admin_password 约定：None=通过，否则 (jsonify, status) 元组；
+        # 第一个参数是整个请求体（门禁还要看 confirm_delay_ack 之类的同请求字段）
+        denied = _reconfirm_admin_password()(data, "修改邮件 SMTP 配置")
         if denied is not None:
             return denied
     if not flags and smtps_list is None and admin_to_val is None:

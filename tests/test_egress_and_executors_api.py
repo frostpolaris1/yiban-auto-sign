@@ -242,6 +242,9 @@ class _WebBase(unittest.TestCase):
             f.write(f"{egress.ENV_FALLBACK}=http://fbuser:fbpw@fb.example:8080\n")
             f.write("YIBAN_WORKERS=3\n")
             f.write("YIBAN_CAPACITY_MEASURED=354\n")
+            # 执行体写操作的门禁用例钉的是"真变更当次要口令、口令错零落盘"这套机制，
+            # 固定在 full（默认档 risk 下这些动作不再当次要口令）
+            f.write("YIBAN_PW_GATE=full\n")
         os.environ.update({
             "YIBAN_ENV_FILE": cls.env_file,
             "YIBAN_ACCOUNTS_KEY": "a" * 64,

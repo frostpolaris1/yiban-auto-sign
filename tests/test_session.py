@@ -424,6 +424,9 @@ class _Batch11WebBase(unittest.TestCase):
             f.write(
                 f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n"
                 f"YIBAN_ADMIN_USER=admin\nYIBAN_ADMIN_PASSWORD={ADMIN_PASS}\n"
+                # 本基类下的门禁用例钉的是"当次要口令 / 口令错零写入"，固定在 full
+                # （默认档 risk 下这些动作不再当次要口令）
+                "YIBAN_PW_GATE=full\n"
             )
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.tmp, "accounts.json")
