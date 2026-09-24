@@ -252,13 +252,18 @@ def reap_expired(now=None, day=None, grace_sec=REAP_GRACE_SEC):
     回收成 `pending` 只会变成永不被领取的行（`claim_batch` 的 `vshard IN (...)` 挡着），
     白白制造"看着有活、其实无人领"的假象。`day` 给了就只回收该业务日。
 
-    幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常（含 `now` 不可解析）→ 0 + warning
-    （回收是补偿动作，失败不该打断签到；下一轮会再试）。
+    幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常 → 0 + warning（回收是补偿动作，
+    失败不该打断签到；下一轮会再试）；`now` 不可解析是**调用方入参问题**，单独一条
+    warning（不与库异常共用文案，免得把排查方向带到存储层）。
     """
     sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
            "WHERE state=? AND lease_until != '' AND lease_until < ? AND vshard >= 0")
     try:
         cutoff = _shift_stamp(now or _lease_until(0), -grace_sec)
+    except ValueError as e:
+        logger.warning("回收过期签到任务的时刻参数不可解析（按无可回收处理）: %s", e)
+        return 0
+    try:
         params = [STATE_PENDING, STATE_CLAIMED, cutoff]
         if day is not None:
             sql += " AND day=?"
