@@ -1566,5 +1566,33 @@ class RecoveryWiringTest(_Base):
                          "收尾写心跳：正常退出后判 finished")
 
 
+class DeadPeerTakeoverTest(_Base):
+    """死主分片接管的接线：`steal_shards` 要**两个身份**（接管者 + 死主），别传错。"""
+
+    def test_dead_peer_pending_rows_are_taken_over_and_shards_widened(self):
+        peer = "worker-2@testhost"
+        v = 8
+        self._seed_v(v)
+        cfg = _cfg(executors=[OWNER, peer])
+        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
+        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
+        shard = peer_shards[0]
+        self._add_task(_phone(1), vshard=shard, state="pending", owner=peer, epoch=1)
+        self._add_task(_phone(2), vshard=shard, state="pending", owner=OWNER, epoch=1)
+        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
+        state_io.mark_worker_started(
+            executor_v3._worker_slot(peer),
+            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
+        ctx = SimpleNamespace(executor_id=OWNER, cfg=cfg, day=DAY, v=v)
+
+        out = executor_v3._widen_with_dead_peers(ctx, ())
+
+        self.assertEqual(self._row(_phone(1))["owner"], OWNER,
+                         "死主的 pending 行必须改归本执行体（dead_owner 要传死主）")
+        self.assertEqual(self._row(_phone(2))["owner"], OWNER, "本执行体自己的行不动")
+        self.assertEqual(self._row(_phone(2))["epoch"], 1, "自己的行不得被自增 epoch")
+        self.assertEqual(out, tuple(sorted(peer_shards)), "死主分片并入本轮领取范围")
+
+
 if __name__ == "__main__":
     unittest.main()
