@@ -15,10 +15,14 @@
 - `attempts`：单账号一次尝试（登录 + 签到）、失败分级、账密熔断计数；
 - `round`：一轮队列（分级重试、领取池分工、窗口收尾）；
 - `workers`：多执行体监督进程与兜底常驻执行体；
-- `runner`：入口与轮次编排（`main(argv) -> int`，退出码由调用方抛出）。
+- `runner`：入口与轮次编排（`main(argv) -> int`，退出码由调用方抛出）；
+- `executor_v3`：调度 v3 的执行体（asyncio 通道消费计划行 + 令牌桶限速）。
 
 命令行入口是 `yiban/cli.py`（`python -m yiban.cli sign [...]`），旧路径
 `scripts/signin.py` 只剩兼容壳（引导 + 全量转发 + `sys.exit`）。
+
+调度 v3 侧（`planner` / `hrw` / `token_bucket` / `executor_v3`）由 `YIBAN_SCHEDULER_V3` 分流、
+**缺省 0**：未开闸时轮次走 `round.run_queue_retry`，v3 模块只有 `scheduler_v3_enabled` 被读。
 
 两条依赖纪律（与 `yiban/` 其它包一致，且直接决定既有测试的打桩是否生效）：
 

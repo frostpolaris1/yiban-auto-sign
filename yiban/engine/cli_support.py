@@ -13,13 +13,14 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁。
 
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
-`GLOBAL_RUN_LOCK_NAME` 与运行锁获取函数；锁原语来自 `yiban.infra.locks`。
+`GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。
 
 **通信**
 输入：日志级别/路径等环境配置、状态文件路径与加锁范围。
 输出：配置好的 logger/handler、被加锁的读改写上下文。
 调用谁：`yiban.infra.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
-谁调用：`runner`、`workers`、`state_io`、`probe`、`alerts` 与 web 服务层。
+谁调用：`yiban/cli.py`（读 `last_fatal_error` 的 `--json` 摘要）、`runner`、`workers`、
+`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
 前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
 页面的"正在跑/存活"判定依赖本模块的全局运行锁。
 本模块内部用裸名，跨模块一律走模块属性访问。
@@ -206,7 +207,7 @@ def _setup_cli_logging():
 
 #: 最近一次致命错误摘要（进程级，单线程 CLI 使用无需加锁）：`report_fatal_error`
 #: 写入，`last_fatal_error` 读取。存在的理由：`--json` 模式下调用方只拿到退出码，
-#: 需要一个机器可读的失败原因（F2，2026-09-21 测试机 47 E2E）。
+#: 需要一个机器可读的失败原因。
 _LAST_FATAL_ERROR = None
 
 
@@ -215,7 +216,7 @@ def report_fatal_error(summary):
 
     为什么不能只靠 `logger.error`：CLI 日志装配只挂**按天文件** handler，stderr 上
     什么都没有——agent/CI 直调 `python -m yiban.cli sign` 时退出码 1 而 stdout/stderr
-    全空，错误只进日志文件（2026-09-21 测试机 47 E2E 实测）。stdout 仍保持"只有结果"
+    全空，错误只进日志文件。stdout 仍保持"只有结果"
     （`docs/dev/cli.md` §2.2），摘要一律走 stderr；`--json` 的 error 字段由调用方
     （`yiban/cli.py`）经 `last_fatal_error()` 取用。
     """
