@@ -164,9 +164,9 @@ class FallbackSwitchPayloadTest(unittest.TestCase):
         self.assertIn("if (fb.enabled === true) swInput.checked = true", body,
                       "勾选初值必须只认配置里的 enabled（这一行是代码，注释与复原语句都顶替不了）")
 
-    def test_submit_posts_the_fallback_payload_literal(self):
-        body = _code_body(_read(JS), "submit")
-        self.assertRegex(body, r"fallback_enable:\s*args\.enable",
+    def test_save_posts_the_fallback_payload_literal(self):
+        body = _code_body(_read(JS), "save")
+        self.assertRegex(body, r"fallback_enable:\s*enableArg",
                          "提交必须带 fallback_enable 的 payload 字面量（关键字被注释满足不算）")
         self.assertIn('"/api/scheduler/executors"', body,
                       "开关属于整条接口，不是行接口")
@@ -179,24 +179,32 @@ class FallbackSwitchPayloadTest(unittest.TestCase):
     def test_switch_only_save_skips_the_rows_endpoint(self):
         """只拨开关时不得发空体的行接口：后端对缺 type/proxy/name 的请求回 400。
 
-        行接口请求必须包在 `if (args.proxy || args.name != null)` 里，否则只拨开关的保存会
-        先 400、Promise.all 直接 reject——用户被告知失败而配置已经落盘。断言只认代码。
+        行接口请求必须包在 `if (egress || nameArg != null)` 里，否则只拨开关的保存会
+        先 400、整串提交直接 reject——用户被告知失败而配置已经落盘。断言只认代码。
         """
-        body = _code_body(_read(JS), "submit")
-        guard = "if (args.proxy || args.name != null)"
-        self.assertIn(guard, body, "行接口请求必须先判有无 type/proxy/name 要改")
+        body = _code_body(_read(JS), "save")
+        guard = "if (egress || nameArg != null)"
+        self.assertIn(guard, body, "行接口请求必须先判有无 proxy/name 要改")
         self.assertLess(body.index(guard), body.index('"/api/scheduler/executors/rows/"'),
-                        "行接口请求必须在该判据成立时才加入 steps")
+                        "行接口请求必须在该判据成立时才加入 requests")
 
-    def test_password_prompt_wording_follows_the_change(self):
-        """口令框措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"。"""
+    def test_prompt_wording_follows_the_change(self):
+        """弹窗措辞随本次实际要写的项取词：只拨开关时不能说成"改出口"。
+
+        措辞现在拼进受门禁提交 helper 的 `desc`（口令框只在后端索要时才由 helper 弹），
+        故锚点从"先拼 pwAsk 再调口令框"换成"拼进 desc 交给 helper"。
+        """
         body = _code_body(_read(JS), "save")
         self.assertIn('(enableArg ? "开启" : "关闭")', body,
-                      "只拨开关时口令框要按方向说「开启/关闭故障转移」")
+                      "只拨开关时要按方向说「开启/关闭故障转移」")
         self.assertIn('"与故障转移开关"', body,
                       "同时改出口与开关时要把开关一并说出来")
-        self.assertIn('askPassword(pwAsk + "？请输入当前管理员密码确认。"', body,
-                      "措辞按本次改动拼装后再接统一的确认尾句")
+        self.assertRegex(body, r"desc:\s*desc",
+                         "措辞拼好后交给受门禁提交 helper 当口令框文案")
+        self.assertIn("gated({ requests: requests, desc: desc }", body,
+                      "受门禁保存必须经统一 helper（先不带凭据发）")
+        self.assertIn("YB.dangerousSubmit(", _code_body(_read(JS), "gated"),
+                      "helper 是 dangerousSubmit 的组件内薄封装，不得自行拼口令框")
 
 
 class RowMenuDividerSpacingTest(unittest.TestCase):
