@@ -8,6 +8,10 @@
   领取时自增 `epoch`（fencing token）并随行返回，收尾侧据此拒绝被接管者的迟到写；
 - `settle_tasks`：一批完成的任务在单事务里收尾（owner + epoch 作用域），不逐账号 commit；
 - `requeue_task`：失败重排——`priority` / `attempts` 递增、`state` 回 `pending`；
+- `reap_expired`：租约过期回收——崩溃执行体留下的 `claimed` 行回退 `pending` 并自增
+  `epoch`（不做则"崩溃即卡死"：`claim_batch` 只取 `pending`）；
+- `steal_shards`：死主分片接管——把心跳过期执行体分片集内的 `pending` 行改归本执行体
+  （只动 `pending`，CAS + `epoch+1`）；
 - `pending_count`：当日「我的分片集」内的待办计数（带 `vshard` 过滤的"当日是否了结"
   闸门，见该函数说明）；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此判
@@ -197,6 +201,77 @@ def requeue_task(phone, day, run_at, priority_delta=1, result="", epoch=None):
             return cur.rowcount
     except Exception as e:
         logger.warning("重排签到任务失败: %s", e)
+        return 0
+
+
+def reap_expired(now=None, day=None):
+    """回收租约过期的在飞任务：`state='claimed'` 且 `lease_until < now` 的行回退为
+    `pending`（清 `owner`/`lease_until`、`epoch = epoch + 1`）。返回受影响行数。
+
+    **为什么必须做**：`claim_batch` 只取 `state='pending'` 的行，崩溃/被杀的通道留下的
+    `claimed` 行**永远不会被重新领取**——不做回收就是"崩溃即卡死"，该账号当天不再有人签。
+
+    **`epoch + 1` 是 fencing 红线**：回退后原持有者可能迟到提交 `settle_tasks`，自增
+    token 让它的旧 epoch 写被拒（`settle_tasks(..., epochs=...)` 已支持），否则迟到的旧
+    结论会覆盖接手者的结论。
+
+    **必须排除 `vshard = -1` 的历史行**（v18 平移 / v20 补账写入）：它们不属于任何分片集，
+    回收成 `pending` 只会变成永不被领取的行（`claim_batch` 的 `vshard IN (...)` 挡着），
+    白白制造"看着有活、其实无人领"的假象。`day` 给了就只回收该业务日。
+
+    幂等：回收后的行不再是 `claimed`，重跑 0 行。库异常 → 0 + warning（回收是补偿动作，
+    失败不该打断签到；下一轮会再试）。
+    """
+    stamp = now or _lease_until(0)
+    sql = ("UPDATE sign_tasks SET state=?, owner='', lease_until='', epoch=epoch + 1 "
+           "WHERE state=? AND lease_until != '' AND lease_until < ? AND vshard >= 0")
+    params = [STATE_PENDING, STATE_CLAIMED, stamp]
+    if day is not None:
+        sql += " AND day=?"
+        params.append(day)
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            cur = conn.execute(sql, tuple(params))
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("回收过期签到任务失败（按无可回收处理）: %s", e)
+        return 0
+
+
+def steal_shards(owner, shards, day, now=None):
+    """接管死主分片集内的待办：把「分片集内 + `state='pending'` + 非本执行体所有」的行
+    改为 `owner=<owner>`、`epoch = epoch + 1`。返回受影响行数。
+
+    `owner` 是**接管者（本执行体）**的身份串；`shards` 是调用方已判定其归属执行体心跳
+    过期（`state_io.worker_presence` 判 `stale`）的分片集——"死活"的判据是**文件心跳**、
+    不落库，故本层只按"这些分片里还是 `pending` 且还没归我"来写。CAS 语义由 `owner != ?`
+    提供：已归我的行不再计入（重跑 0 行），别的执行体先抢到也不会被二次改写。
+
+    **只动 `pending`**：`claimed` 是他人仍在飞的行（租约未到不该抢，租约到了由
+    `reap_expired` 回收），终态行更不该动。`vshard = -1` 的历史行不属于任何分片集，
+    调用方给出的分片集里天然不含它——`shards` 若被误传含 `-1`，这里再显式挡一道。
+
+    `now` 只为与 `reap_expired` 同签名（本函数不按时间过滤，取哪些分片由调用方决定）。
+    `shards=()` → 0（本轮不接管，不算故障）；库异常 → 0 + warning。
+    """
+    shard_set = tuple(shards or ())
+    if not shard_set:
+        return 0
+    placeholders = ",".join("?" for _ in shard_set)
+    sql = ("UPDATE sign_tasks SET owner=?, epoch=epoch + 1 "
+           f"WHERE day=? AND vshard >= 0 AND vshard IN ({placeholders}) "
+           "AND state=? AND owner != ?")
+    params = (owner, day, *shard_set, STATE_PENDING, owner)
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        logger.warning("接管死主分片失败（按未接管处理）: %s", e)
         return 0
 
 

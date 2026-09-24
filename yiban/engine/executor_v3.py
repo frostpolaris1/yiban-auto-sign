@@ -19,9 +19,10 @@
 （随机源可注入，测试固定种子）。输出：`{phone: (success, message, skip, status)}`——
 **与 `round.run_queue_retry` 同形**，故调用方的账密状态收尾、事件批量落库、收尾标记与
 退出码汇总零改动；另有 `sign-state-<day>.json`（每次尝试与重试入队即写，网页日历的事实源）。
-调用谁：`queue_store`（批量领取 / 收尾 / 重排 / 待办计数 / 桶状态落库）、`token_bucket`
+调用谁：`queue_store`（批量领取 / 收尾 / 重排 / 待办计数 / 桶状态落库 / 租约回收 /
+死主接管）、`token_bucket`
 （出口桶 + 全局上界 + gap 门）、`planner`（计划生成与落库、`has_plan`）、`hrw`（分片集）、
-`state_io`（按日状态）、`attempts`（单次尝试与失败分级）、`alerts`（最终放弃时的管理员
+`state_io`（按日状态、执行体文件心跳）、`attempts`（单次尝试与失败分级）、`alerts`（最终放弃时的管理员
 告警与用户失败邮件）、`clock_meta`（当日虚分片数落库）、`schedule`（配置、窗口关闭判定、
 通道数）——均在 `yiban.engine` / `yiban.store` 下。
 谁调用：`runner.main` 的分流点——`YIBAN_SCHEDULER_V3` 为真且非 `--only` 时替换
@@ -56,6 +57,9 @@ ENV_GLOBAL_RATE = "YIBAN_GLOBAL_RATE"
 RETRY_CAP_SEC = 600
 #: 补货间隔（秒）：批量领取的轮询周期
 REFILL_SEC = 5
+#: 崩溃恢复间隔（秒）：租约回收与死主接管的周期。由补货循环节流（函数内不持时间状态）；
+#: 60s 与任务级租约同量级——租约到期后最多再等一个周期就被回收。
+RECOVER_SEC = 60
 #: 出口桶状态落库间隔（秒）
 EGRESS_PERSIST_SEC = 10
 #: 出队排序的 priority 基准（`planner.PRIORITY_DEFAULT`）：领取不返回 priority，
@@ -113,6 +117,16 @@ def _make_global_limiter():
 def _make_gap_gate():
     """每账号 gap 门（缺省开、不可摘除；显式假值才关）。"""
     return token_bucket.gap_gate_from_env()
+
+
+def _worker_slot(executor_id):
+    """执行体槽位序号（文件心跳按槽位命名）：从身份串取，取不到用 0。
+
+    `worker-{i}@{host}` → i；`single@` / `fallback@`（无序号）与解析不出的身份串 → 0。
+    心跳只是可观测性，取不到序号不该让签到失败，故回退 0 而不是抛。
+    """
+    idx = egress.parse_owner(executor_id).get("index")
+    return 0 if idx is None else int(idx)
 
 
 def _parse_run_at(run_at):
@@ -278,13 +292,15 @@ class _Ctx:
     """
 
     def __init__(self, accounts, day, cfg, v, shards, executor_id, results,
-                 cred_state, delegated, notify_url, event_sink, rng):
+                 cred_state, delegated, notify_url, event_sink, rng, slot=0):
         self.accounts = accounts
         self.day = day
         self.cfg = cfg
         self.v = v
         self.shards = shards
         self.executor_id = executor_id
+        # 文件心跳的槽位序号（`worker_presence` 按槽位读）：执行体页据此判存活四态
+        self.slot = slot
         # 桶键 = 执行体身份串（每进程一个出口，与 egress.resolve 的代理一一对应）
         self.egress = executor_id
         self.m = schedule.channel_count(cfg["bucket_rate"], cfg["avg_attempt_sec"])
@@ -494,6 +510,38 @@ async def _lane(queue, lane_id, ctx):
             ctx.busy -= 1
 
 
+def _widen_with_dead_peers(ctx, shards):
+    """把心跳已过期的执行体的分片并入本轮领取范围，并把这些分片内的 `pending` 行改归本
+    执行体；返回并入后的分片集（升序去重）。
+
+    判据是**既有文件心跳的四态**（`state_io.worker_presence`）：只有 `stale`（有开始记录、
+    无收尾且心跳过期）才算死。监督进程未启动 / 单进程直跑时该槽位没有当日记录，四态回
+    `idle`——**不是** `stale`，故不会误接管活着的执行体。`vshard=-1` 的历史行不属于任何
+    分片集（`hrw.shards_of` 产出 `0..V-1`），天然不在接管范围内，不需要额外过滤。
+    """
+    v = getattr(ctx, "v", 0)
+    if v <= 0:
+        return tuple(shards)
+    extra = []
+    for peer in ctx.cfg.get("executors", ()):
+        if peer == ctx.executor_id:
+            continue
+        state, _seen = state_io.worker_presence(_worker_slot(peer), now=_now())
+        if state != state_io.WORKER_STATE_STALE:
+            continue
+        peer_shards = hrw.shards_of(peer, ctx.cfg["executors"], ctx.day, v)
+        if not peer_shards:
+            continue
+        taken = queue_store.steal_shards(ctx.executor_id, peer_shards, ctx.day)
+        if taken:
+            logger.warning("接管心跳过期的执行体 %s 的分片集，%d 条待办改归本执行体",
+                           peer, taken)
+            extra.extend(peer_shards)
+    if not extra:
+        return tuple(shards)
+    return tuple(sorted(set(shards) | set(extra)))
+
+
 async def _refiller(queue, shards, ctx):
     """补货：每 `REFILL_SEC` 秒批量领取自己分片集内到点的任务投进通道队列。
 
@@ -505,10 +553,28 @@ async def _refiller(queue, shards, ctx):
     本来就返回空，只看空返回会把还有待办的一轮误判成收干；也**必须**带 `busy`：正等待
     到点的条目在库里已是 `claimed`、不在 `pending_count` 里，不数进来会在通道还在跑时
     提前收干，把刚重排回 `pending` 的重试任务留在库里没人领。
+
+    同一循环按间隔驱动两件恢复动作（**函数内不持时间状态**，间隔常量在模块级）：
+    - `reap_expired`：回收租约过期的 `claimed` 行——不回收的话崩溃通道留下的行永远不被
+      重领（`claim_batch` 只取 `pending`），即"崩溃即卡死"；
+    - 死主接管：对心跳过期的执行体，把其分片集内的 `pending` 行改归本执行体并把分片并入
+      领取范围——否则死主的行没有任何人领。
+    另按 `WORKER_HEARTBEAT_SEC` 刷新本执行体心跳：一轮可能十几分钟，只在起跑/收尾写盘会
+    让长轮次被执行体页判成 `stale`（异常），比"显示 idle"更糟。
     """
+    shards = tuple(shards)
+    last_beat = _mono()
+    last_recover = _mono()
     while True:
         if schedule._window_closed(ctx.cfg, _now()):
             break
+        if _mono() - last_beat >= state_io.WORKER_HEARTBEAT_SEC:
+            state_io.mark_worker_beat(getattr(ctx, "slot", 0), now=_now())
+            last_beat = _mono()
+        if _mono() - last_recover >= RECOVER_SEC:
+            queue_store.reap_expired(now=_stamp_ms(_now()))
+            shards = _widen_with_dead_peers(ctx, shards)
+            last_recover = _mono()
         rows = queue_store.claim_batch(
             ctx.executor_id, ctx.day, shards, now=_stamp_ms(_now()),
             limit=queue_store.CLAIM_BATCH_LIMIT, lease_sec=queue_store.LEASE_SECONDS)
@@ -626,8 +692,9 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     之外，`run.sh` 的补签闸门与状态写入随之失真。
 
     - **丢结果**：ctx 构建 → 预扫 → 装桶 → `asyncio.run(_run_async)` 这一段失败时，
-      本轮没有可信的账号结论，记 error 后返回空结果（与"计划不可用"同一处置，由
-      runner 汇总成契约内的"未执行"）；
+      `ctx.results` 里可能已有跑完的账号，但按规格**一律丢弃**（异常可能在写状态/收尾
+      中途冒出，留下的结果集不完整、不可信），记 error 后返回空结果（与"计划不可用"
+      同一处置，由 runner 汇总成契约内的"未执行"）；
     - **只丢收尾**：`_mark_window_skips` 失败时结果集已经成型，**照常返回 `ctx.results`**，
       只把这一段记 error 并继续——若并进"丢结果"那一档，一轮基本成功的活会被汇总成
       "全部未执行"（退出码 1 + 失败邮件），与事实相反；没被收尾的账号由 runner 按
@@ -649,29 +716,41 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         return {}
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
                    or egress.single_owner())
+    slot = _worker_slot(executor_id)
+    # 起跑写文件心跳：执行体页读的是监督进程写的**文件心跳**，单进程 v3 路径不写就只会
+    # 显示 idle。回收必须在领取之前——崩溃通道留下的 `claimed` 行只有先回到 `pending`
+    # 才会被 `claim_batch` 重新领取（不回收就是"崩溃即卡死"）。心跳写失败只留 debug，
+    # 回收失败由 queue_store 内部吞掉并告警，两者都不阻断签到。
+    state_io.mark_worker_started(slot, now=_now())
     try:
-        ctx = _Ctx(
-            accounts={a.phone: a for a in accounts},
-            day=day, cfg=cfg, v=v,
-            shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
-            executor_id=executor_id, results={}, cred_state=cred_state,
-            delegated=delegated, notify_url=notify_url, event_sink=event_sink,
-            rng=rng or random.Random())
-        _prescan(ctx, accounts)
-        ctx.limiter.restore_from_store(ctx.egress, now=_mono())
-        if ctx.global_limiter.invalid:
-            logger.warning("%s 非法，全局速率上界按不限处理（不阻断签到）", ENV_GLOBAL_RATE)
-        logger.info("v3 执行体：%d 条通道 / %d 个分片 / 出口 %s",
-                    ctx.m, len(ctx.shards), ctx.egress)
-        asyncio.run(_run_async(ctx))
-    except Exception as e:
-        # 异常文本经 _sanitize_text 防注入、_mask_phones_in_text 抹手机号后再落日志
-        logger.error("v3 执行体未预期异常，本轮按无结果收尾（不外逃）: %s",
-                     _mask_phones_in_text(_sanitize_text(str(e))))
-        return {}
-    try:
-        _mark_window_skips(ctx, accounts)
-    except Exception as e:
-        logger.error("v3 窗口收尾失败，已完成的账号结果照常返回: %s",
-                     _mask_phones_in_text(_sanitize_text(str(e))))
-    return ctx.results
+        queue_store.reap_expired(now=_stamp_ms(_now()))
+        try:
+            ctx = _Ctx(
+                accounts={a.phone: a for a in accounts},
+                day=day, cfg=cfg, v=v,
+                shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
+                executor_id=executor_id, results={}, cred_state=cred_state,
+                delegated=delegated, notify_url=notify_url, event_sink=event_sink,
+                rng=rng or random.Random(), slot=slot)
+            _prescan(ctx, accounts)
+            ctx.limiter.restore_from_store(ctx.egress, now=_mono())
+            if ctx.global_limiter.invalid:
+                logger.warning("%s 非法，全局速率上界按不限处理（不阻断签到）",
+                               ENV_GLOBAL_RATE)
+            logger.info("v3 执行体：%d 条通道 / %d 个分片 / 出口 %s",
+                        ctx.m, len(ctx.shards), ctx.egress)
+            asyncio.run(_run_async(ctx))
+        except Exception as e:
+            # 异常文本经 _sanitize_text 防注入、_mask_phones_in_text 抹手机号后再落日志
+            logger.error("v3 执行体未预期异常，本轮按无结果收尾（不外逃）: %s",
+                         _mask_phones_in_text(_sanitize_text(str(e))))
+            return {}
+        try:
+            _mark_window_skips(ctx, accounts)
+        except Exception as e:
+            logger.error("v3 窗口收尾失败，已完成的账号结果照常返回: %s",
+                         _mask_phones_in_text(_sanitize_text(str(e))))
+        return ctx.results
+    finally:
+        # 收尾写心跳（正常退出）：四态从 running 落到 finished，执行体页不再挂着"在跑"
+        state_io.mark_worker_finished(slot, now=_now())
