@@ -1544,6 +1544,33 @@ class RecoveryWiringTest(_Base):
                          ("claimed", "worker-9@testhost", 1),
                          "异日的过期 claimed 行不得被回收")
 
+    def test_refill_loop_reap_is_scoped_to_the_business_day(self):
+        """补货循环里那次回收也必须带 `day`：它是长轮次里唯一的周期回收点。
+
+        起跑回收与补货循环回收是**两处调用**。只钉起跑那处的话，补货那处丢了 `day` 也
+        不会变红（短轮次在补货首轮的计时差恒为 0，真实 `RECOVER_SEC` 下根本走不到），
+        而它正是跨日回收历史行、重置跨午夜在飞行的入口。故把恢复间隔置 0 驱动它执行。
+        """
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        calls = []
+        real = queue_store.reap_expired
+
+        def spy(*a, **kw):
+            calls.append(kw)
+            return real(*a, **kw)
+
+        with mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
+             mock.patch.object(queue_store, "reap_expired", spy), \
+             mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(phone))
+        self.assertGreaterEqual(len(calls), 2,
+                                "起跑与补货循环各调一次回收（置 0 后补货那处必被执行）")
+        self.assertEqual([c.get("day") for c in calls], [DAY] * len(calls),
+                         "两处回收都必须带本业务日，否则会跨业务日回收历史行")
+
     def test_expired_claim_is_reclaimed_and_completed(self):
         """崩溃执行体留下的过期 `claimed` 行（已过回收宽限期）必须被回收、重领、跑完。"""
         phone = _phone(1)
@@ -1633,6 +1660,29 @@ class WorkerFinishMarkTest(_Base):
         self.assertEqual(state_io.worker_presence(0, now=later)[0],
                          state_io.WORKER_STATE_STALE,
                          "中断不得写收尾：心跳过期后要判 stale，而不是 finished")
+
+    def test_unexpected_exception_does_not_write_finish_mark(self):
+        """未预期 `Exception` 也走"丢结果"档：不写收尾，心跳过期后判 `stale`。
+
+        本用例钉的是**单进程直跑**这一支（没有监督进程替它写收尾）。受监督路径同口径由
+        `workers._await_workers` 决定：子进程以退出码正常退出（含"本轮失败"的 1）时会写
+        `finished`，失败信息靠退出码与告警体现——那是另一条路径，不改变这里的契约。
+        """
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+
+        async def boom(ctx):
+            raise RuntimeError("未预期的内部异常")
+
+        with mock.patch.object(executor_v3, "_run_async", boom):
+            out = self._run_v3(self._accounts(phone), [_item(phone)])
+        self.assertEqual(out, {}, "未预期异常按无结果收尾（不外逃）")
+        later = self.fc.now() + datetime.timedelta(
+            seconds=3 * state_io.WORKER_HEARTBEAT_SEC)
+        self.assertEqual(state_io.worker_presence(0, now=later)[0],
+                         state_io.WORKER_STATE_STALE,
+                         "未预期异常不得写收尾：心跳过期后判 stale，而不是 finished")
 
 
 class DeadPeerTakeoverTest(_Base):
@@ -1752,6 +1802,53 @@ class DeadPeerTakeoverOnStartTest(_Base):
             self.assertEqual(row["owner"], OWNER, "接管后 owner 是本执行体")
             self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
             self.assertEqual(row["state"], "done")
+            self.assertIn(phone, results)
+
+
+class DeadPeerClaimedOnlyTakeoverTest(_Base):
+    """死主把分片内的待办**全领成 `claimed` 后崩**：判死即并入，不能以"偷到几行"为门。
+
+    `reap_expired` 把过期 `claimed` 行回退成 `pending` 时**清空 `owner`**，此时该分片
+    内已没有 `owner=<死主>` 的 `pending` 行，`steal_shards` 返回 0。若把"并入死主分片"
+    挂在 `taken > 0` 上，分片就不进本轮领取集 ⇒ 刚被回收成 `pending` 的行无人可领 =
+    "崩溃即卡死"复现（补货循环那次接管判的是同一个 peer，同样 `taken=0`，救不回来）。
+    故并入与"偷到多少行"解耦：`steal_shards` 的返回值只用于日志与归属修正。
+    """
+
+    def test_claimed_only_dead_peer_shards_are_reclaimed_and_executed(self):
+        peer = "worker-2@testhost"
+        v = 8
+        self._seed_v(v)
+        cfg = _cfg(executors=[OWNER, peer])
+        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
+        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
+        phones = [_phone(1), _phone(2)]
+        for i, phone in enumerate(phones):
+            # 死主把分片内的行**全领成 `claimed`**（分片内没有 pending），随后崩溃：
+            # 租约早已过回收宽限期，但 owner 仍是死主（回收前 `steal_shards` 偷不到）。
+            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
+                           state="claimed", owner=peer, epoch=1,
+                           lease_until=_ts(seconds=-180), run_at=_ts(seconds=-60))
+        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
+        state_io.mark_worker_started(
+            executor_v3._worker_slot(peer),
+            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
+        ran = []
+
+        def _attempt(acc):
+            ran.append(acc.phone)
+            return (True, "ok", False, "success")
+
+        # 不 patch `RECOVER_SEC`：本用例钉的是**短轮次**里起跑那次接管——真实间隔下补货
+        # 循环的接管在本轮时长内不会触发，能通过只可能是判死即并入生效了。
+        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
+            results = self._run_v3(self._accounts(*phones), cfg=cfg)
+        self.assertEqual(sorted(ran), sorted(phones),
+                         "死主分片里被回收的 claimed 行必须在本轮被领取并执行")
+        for phone in phones:
+            row = self._row(phone)
+            self.assertEqual(row["state"], "done", "回收 + 并入后必须跑完，不能留 pending")
+            self.assertEqual(row["owner"], OWNER, "回收后由本执行体持有")
             self.assertIn(phone, results)
 
 
