@@ -697,7 +697,10 @@
      delay_ack_required，非不可逆操作带上该字段也不会被要求。
      口令与倒计时凭据各只自动补一次：后端再次拒绝即上抛，绝不无限重发；口令错的那次
      由口令框自身在框内提示并允许改口令重试（沿用既有流程）。用户取消任一弹窗时以带
-     canceled 标记的错误拒绝——取消不是失败，调用方据此静默。 */
+     canceled 标记的错误拒绝——取消不是失败，但**不等于什么都没发生**：多段提交里
+     先成功的步骤已经落库，故该错误另带 `completed`（已成功提交的步数），调用方据此
+     刷新视图并说明已生效的部分不会回滚（见 components/settings-executors.js 的
+     canceledAfter）。 */
   function dangerousSubmit(opts) {
     // 一次点击要按序发**多个**受门禁请求时用 opts.requests（[{method, path, body}, …]），
     // 否则用单个 path/body。凭据对整串共用，且**从失败那一步继续**、已成功的步骤不重发，
@@ -720,7 +723,15 @@
       for (i = 0; i < keys.length; i++) out[keys[i]] = add[keys[i]];
       return out;
     }
-    function canceled() { var e = new Error(""); e.canceled = true; return e; }
+    function canceled() {
+      // 已成功提交的步数随取消一起回传：多段提交的调用方要据此判断"库里是不是已经有
+      // 一半改动"，只给 canceled 布尔值会让那半次写入没有出口（用户看不见、也不提示）。
+      // results 由 step() 按步号写入，故其长度就是已落库的步数。
+      var e = new Error("");
+      e.canceled = true;
+      e.completed = results.length;
+      return e;
+    }
     function step(i, extra) {
       var s = steps[i];
       return api(s.method || "POST", s.path, merged(s.body, extra)).then(function (data) {
