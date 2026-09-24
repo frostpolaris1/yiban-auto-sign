@@ -78,8 +78,10 @@ STATE_STOLEN = "stolen"
 STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
           STATE_STOLEN)
 
-#: 了结态（当日不必再签）。`sign_claims` 时代"今日无任务/窗口外跳过"记在 `done` 上，
-#: 故 `skipped` 与它同类——判"当日是否了结"时两者都算完。
+#: 了结态（当日不必再签）。`skipped` 承接暂停 / 取消类结论（`paused` / `user_cancelled` /
+#: `global_paused`，映射见 `yiban.store.migrations._JSON_TERMINAL_TO_TASK_STATE`）；
+#: 旧表 `sign_claims` 没有这一档，同一批结论当时落 `failed`（未了结、可再领），
+#: 判"当日是否了结"时两表口径不同，跨表比对不得直接对齐。
 #: 成员取自 `yiban.status.TASKS_SETTLED_STATES`（「了结」词义的唯一定义处）。
 SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。

@@ -11,8 +11,8 @@
 | state | 含义 | 是否了结 |
 |-------|------|----------|
 | `claimed` | 已被某执行体领取、尚未收尾（含执行中） | 否 |
-| `done` | 收尾且结果正常（成功/已签到/今日无任务/无点位/窗口外跳过） | 是 |
-| `failed` | 收尾但结果是失败（重试预算耗尽，本窗口内不再重试） | 是 |
+| `done` | 收尾且**当日无需再签**（即 `yiban.status.CLAIM_DONE_STATUSES`：成功 / 已签到 / 今日无任务） | 是 |
+| `failed` | 收尾但结果未了结（重试预算耗尽、窗口外跳过、无点位） | 否（当日仍可再领，见 `STATE_FAILED`） |
 
 **三条纪律**：
 
@@ -29,7 +29,10 @@
    都带 `epoch=?`。只给领取侧发号而不校验收尾写等于没做——执行体被 STW 停顿/容器挂起卡住
    数分钟后醒来，仍以为自己持有该账号，迟到的写会覆盖接管者的结论。
 
-连接与进程内锁取自同包的 `yiban.store.db`；它把本模块公开名全部再导出。
+连接与进程内锁取自同包的 `yiban.store.db`。门面对本模块是**重命名**再导出
+（`db.claim_sign_account` → `try_claim`、`db.claim_settle` → `settle`、
+`db.purge_sign_claims` → `purge`、`db.CLAIM_STATE_DONE` → `STATE_DONE` …），
+故 `db.try_claim` 一类原名不存在。
 
 **过渡说明（v18 起）**：v18 新增的 `sign_tasks`（访问层 `yiban/store/queue_store.py`）
 把本表的 state / result / attempts 语义整体并入，并把本表存量行一次性平移进新表
@@ -58,7 +61,7 @@ RETENTION_DAYS = 14
 
 #: 在飞：已被某执行体领取、尚未收尾。
 STATE_CLAIMED = "claimed"
-#: **当日了结**：无需再签（成功/已签到/今日无任务/无点位）。
+#: **当日了结**：无需再签（成员见 `yiban.status.CLAIM_DONE_STATUSES`）。
 STATE_DONE = "done"
 #: 尝试过但**未了结**（重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
@@ -402,9 +405,8 @@ def activity(day):
 def latest_claims_day():
     """`sign_claims` 里最近一次有记录的业务日（`MAX(day)`）；表空返回 None。
 
-    「上次实领」的口径是"最近一次"（用户 2026-09-21 定，"上次"的字面意即最近一次）：
-    周末停签后若按"昨天"取，整列会空白到下一个工作日，改按最近一次有记录的日取，
-    跨周末也能看到上一轮是谁签的。
+    「上次实领」取**最近一次有记录的日**，不是"昨天"：周末停签后按"昨天"取会让整列
+    空白到下一个工作日，按最近一次取则跨周末也能看到上一轮是谁签的。
     """
     from yiban.store import db
     try:
