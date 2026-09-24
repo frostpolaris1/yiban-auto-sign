@@ -60,19 +60,14 @@ def _facade():
 # ---------------------------------------------------------------------------
 # 会话 Cookie 缓存（v8，docs/research-lumjiel-core-sign-20260822.md §七）
 # ---------------------------------------------------------------------------
-# 会话有效期两道判据（公测复盘后重定）：
-# ① 主判据 = 同一业务日：签到是"一天一签"的业务，缓存只在当天内复用（同日重试 /
-#    首轮到兜底补签 / 当天手动重试）。隔夜缓存收益最小、风险最大——生产当天 3 个
-#    账号正是复用了前一晚 20:35 写入、被服务端作废的会话。
-# ② 护栏 = TTL 小时数：同一天内的附加上限，默认由 12 降到 6（同日窗口最长 80 分钟，
-#    6 小时已极宽）。旧口径"调大 TTL 以支持跨天复用"已被 ① 取代：再调大也解锁不了
-#    跨天复用，只能放宽同日内的时长。
-# 服务端会话真实有效期未知，取值原则不变：宁多登一次，不可拿过期凭据撞风控。
-SESSION_CACHE_TTL_HOURS_DEFAULT = 6
-# TTL 钳制边界：上限 72h（再大会把远过期凭据反复送去撞风控/已改密账号），
-# 下限 1h（低于 1h 缓存命中形同虚设）。越界不静默接受，回默认并告警。
-SESSION_CACHE_TTL_HOURS_MIN = 1.0
-SESSION_CACHE_TTL_HOURS_MAX = 72.0
+# 会话有效期两道判据：**主判据 = 同一业务日**（签到是一天一签的业务，缓存只在当天内复用：
+# 同日重试 / 首轮到兜底补签 / 当天手动重试），**护栏 = 下面的 TTL 小时数**（同一天内的
+# 附加上限）。跨日复用在判据上就被排除，调 TTL 解锁不了它，只能放宽同日内的时长。
+# 服务端会话真实有效期未知，取值原则：宁多登一次，不可拿过期凭据撞风控。
+SESSION_CACHE_TTL_HOURS_DEFAULT = 6  # 同日窗口最长约 80 分钟，6 小时已极宽
+# TTL 钳制边界：越界不静默接受，回默认并告警（见 `_session_cache_ttl_hours`）。
+SESSION_CACHE_TTL_HOURS_MIN = 1.0  # 低于 1h 缓存命中形同虚设，等于每次真实登录
+SESSION_CACHE_TTL_HOURS_MAX = 72.0  # 再大就会把早已失效的凭据反复送去撞风控 / 已改密账号
 
 # 密钥分离：session_cache 加密密钥不再直接复用账号凭据主密钥，
 # 改由 YIBAN_ACCOUNTS_KEY 经 HKDF-SHA256 派生（info/salt 固定常量）。
@@ -107,10 +102,9 @@ def _session_cache_key():
 
 
 def _session_cache_ttl_hours():
-    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 6）：缺失/非法/非正回退默认。
+    """读 TTL 小时数（YIBAN_SESSION_TTL_HOURS，默认 6）：缺失/非法/非正/越界均回退默认并告警。
 
-    配置越界（<1h 或 >72h）同样回退默认并告警——此前可配 8760h 之类
-    超大值，把早已失效的会话凭据跨季反复复用，等于放大风控与撞库面。
+    越界不静默接受：能配出 8760h 这类值，等于让远过期凭据长期复用，风控与撞库面一起放大。
     """
     raw = os.environ.get("YIBAN_SESSION_TTL_HOURS", "").strip()
     if not raw:
@@ -155,12 +149,13 @@ def get_session_cache(phone):
         ttl_hours = _session_cache_ttl_hours()
         cutoff = (now - datetime.timedelta(hours=ttl_hours)).strftime("%Y-%m-%d %H:%M:%S")
         today = now.strftime("%Y-%m-%d")
-        # 两道判据取更严者，且跨日判定排在前面：否则"昨晚 20:35 写的缓存今早 06:31
-        # 复用"会被报成"超出 TTL"，把业务日语义问题误读成秒数配置问题。
         if row["updated_at"][:10] != today:
+            # 主判据（跨业务日）排在 TTL 之前：否则"昨晚写的缓存今早复用"会被报成
+            # "超出 TTL"，把业务日语义问题误读成秒数配置问题。隔夜缓存正是事故形态——
+            # 生产上三个账号复用了前一晚写入、已被服务端作废的会话
             reason = f"跨业务日（缓存日 {row['updated_at'][:10]} ≠ 今日 {today}）"
         elif row["updated_at"] <= cutoff:
-            reason = f"同日内超出 TTL {ttl_hours} 小时"
+            reason = f"同日内超出 TTL {ttl_hours} 小时"  # 护栏判据：updated_at 是定宽串，字符串比较等价时间序
         else:
             reason = None
         if reason:

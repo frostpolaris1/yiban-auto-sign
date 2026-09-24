@@ -50,9 +50,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# 原 5 处函数内 import 上移（account_crypto 不依赖 db，无循环）
-# 表级数据访问已按表拆入 yiban/store/*；本模块保留同名再导出，旧调用方（web/app.py、
-# 测试）继续用 db.xxx。依赖方向单向：db → store（store 只在函数内延迟取连接）。
+# 表级数据访问按表拆在 yiban/store/*，本模块只做门面：多数域按原名再导出，`claims` 与
+# `verify_jobs` 两域是重命名别名（逐条见各自绑定处的行尾注释）。依赖方向单向 db → store
+# （store 只在函数内延迟取连接），旧调用方（web/app.py、测试）继续用 db.xxx。
 from yiban import clock  # noqa: E402
 
 # account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
@@ -91,7 +91,7 @@ VERIFY_JOB_CANCELLED = _verify_jobs.VERIFY_JOB_CANCELLED
 VERIFY_JOB_STALE_SECONDS = _verify_jobs.VERIFY_JOB_STALE_SECONDS
 VERIFY_JOB_STALE_MSG = _verify_jobs.VERIFY_JOB_STALE_MSG
 
-create_verify_job = _verify_jobs.create
+create_verify_job = _verify_jobs.create  # 域内是短动词名（create/get/claim/finish/cancel），门面上统一补 `_verify_job` 后缀
 get_verify_job = _verify_jobs.get
 claim_verify_job = _verify_jobs.claim
 finish_verify_job = _verify_jobs.finish
@@ -100,19 +100,19 @@ count_active_verify_jobs = _verify_jobs.count_active
 reclaim_stale_verify_jobs = _verify_jobs.reclaim_stale
 purge_verify_jobs = _verify_jobs.purge
 
-# 签到领取池（v17，多执行体协调）
-CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS
+# 签到领取池（v17，多执行体协调）：唯一定义点在 `yiban/store/claims.py`
+CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS  # 账号级租约（900s），与 queue_store 的 60s 任务级租约不是同一档
 CLAIM_RETENTION_DAYS = _claims.RETENTION_DAYS
 CLAIM_STATE_CLAIMED = _claims.STATE_CLAIMED
-CLAIM_STATE_DONE = _claims.STATE_DONE
+CLAIM_STATE_DONE = _claims.STATE_DONE  # 了结词表成员见 yiban.status.CLAIM_DONE_STATUSES
 CLAIM_STATE_FAILED = _claims.STATE_FAILED
 CLAIM_SETTLED_STATES = _claims.SETTLED_STATES
 CLAIM_OPEN_STATES = _claims.OPEN_STATES
 claim_new_owner = _claims.new_owner
-claim_sign_account = _claims.try_claim
-claim_touch = _claims.touch
-claim_settle = _claims.settle
-claim_give_up = _claims.give_up
+claim_sign_account = _claims.try_claim  # 门面名与域内名不同：`db.try_claim` 不存在
+claim_touch = _claims.touch  # 续租只续自己持有的，返回 False = 已被接管
+claim_settle = _claims.settle  # 必须带 try_claim 返回的 epoch，否则迟到的写会覆盖接管者的结论
+claim_give_up = _claims.give_up  # 弃单不等于收工：置 failed（当日仍未了结），租约即刻放开
 claim_states_for_day = _claims.states_for_day
 claim_in_flight = _claims.in_flight_phones
 claim_stats = _claims.stats
@@ -120,7 +120,7 @@ claim_activity = _claims.activity
 claim_owners_for_day = _claims.owners_for_day
 claim_latest_day = _claims.latest_claims_day
 claim_owners_since = _claims.owners_since
-purge_sign_claims = _claims.purge
+purge_sign_claims = _claims.purge  # 只按 RETENTION_DAYS 清追溯用存量，展示口径不读它
 
 # 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
 # `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
