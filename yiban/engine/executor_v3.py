@@ -414,24 +414,25 @@ async def _sleep_until(run_at):
 async def _throttle(ctx, phone):
     """出口限速 → 全局上界 → 每账号 gap：三件都在事件循环线程里同步取额度。
 
-    `_mono` 是桶的时钟域（`tat` 用单调秒），与 `_now`（墙钟、用于 run_at）分开：墙钟跳变
-    不该让桶的放行节奏漂移。gap 门在此只 `allow` 判，`commit` 留到真正发起尝试时（见
-    `_attempt`）——中途放弃不白占间隔。`Λ` 为 None 时 `acquire` 恒放行。
+    `_mono` 是桶的时钟域（`tat` 用单调秒），与 `_now`（墙钟、用于 run_at）分开：墙钟跳变不该
+    让桶的放行节奏漂移。
     """
+    # 三道闸的次序就是成本次序：出口桶（本地字典）→ 全局 Λ（单进程计数）→ gap 门（按账号），
+    # 便宜且易命中的排最前；三件全过才允许走到发起尝试，中途放弃不 commit gap
     while not ctx.limiter.acquire(ctx.egress, _mono()):
-        await _sleep(ctx.limiter.bucket(ctx.egress).retry_after(_mono()))
+        await _sleep(ctx.limiter.bucket(ctx.egress).retry_after(_mono()))  # 睡到桶算好的放行时刻，不自旋空烧
     while not ctx.global_limiter.acquire(_mono()):
-        await _sleep(1.0 / ctx.global_limiter.lam)
+        await _sleep(1.0 / ctx.global_limiter.lam)  # 能进这条说明 lam 非 None（None 时 acquire 恒放行）
     while not ctx.gap_gate.allow(phone, _mono()):
-        await _sleep(ctx.gap_gate.gap_sec)
+        await _sleep(ctx.gap_gate.gap_sec)  # 这里只 allow 不 commit：真正推进 TAT 在 `_attempt` 发起尝试处
 
 
 async def _attempt(ctx, item):
     """一次尝试的完整闭环：跳过判定 → 线程池执行 → 状态物化 → 终态收尾或重排。
 
-    终态映射与 `round._settle_claims` 同口径：`CLAIM_DONE_STATUSES` → `done`，其余（含
-    `skip=True` 的窗口外/无任务/用户取消/账密暂停、预算用尽、窗口放不下重试）→ `failed`。
-    **只有最终态进 `results`**：重试中的账号会被下一轮领取重新处理。
+    终态映射与 `round._settle_claims` 同口径：`CLAIM_DONE_STATUSES` → done，其余（含
+    `skip=True` 的窗口外/无任务/用户取消/账密暂停、预算用尽、窗口放不下重试）→ failed。
+    **只有最终态进 `results`**：重试中的账号由下一轮领取重新处理。
     """
     _priority, _run_at, phone, attempts_n, epoch = item
     today = _now().strftime("%Y-%m-%d")
@@ -444,10 +445,12 @@ async def _attempt(ctx, item):
         return
     cred = ctx.cred_state.get(phone, {})
     if cred.get("paused_since") and not attempts._probe_due(cred, today):
+        # 熔断判定排在取额度之后、发请求之前：这里必须把行了结成 failed 而不是丢着不管，
+        # 否则该行永远 pending、本轮收不干（同上一处 acc is None 的处置理由）
         _finish(ctx, phone, epoch, (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED),
                 "账密异常已暂停（连续失败），请修改密码", queue_store.STATE_FAILED)
         return
-    ctx.gap_gate.commit(phone, _mono())
+    ctx.gap_gate.commit(phone, _mono())  # 走到这才是"真要发请求"：gap 的推进点必须与尝试一一对应
     ctx.inflight += 1
     t0 = _mono()
     try:
@@ -692,33 +695,22 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
                     cred_state=None, notify_url="", event_sink=None,
                     cfg=None, rng=None):
     """同步入口（内部 `asyncio.run`）：跑一轮 v3，返回
-    `{phone: (success, message, skip, status)}`——**与 `round.run_queue_retry` 同形**，
-    故调用方的收尾与退出码汇总零改动。
+    `{phone: (success, message, skip, status)}`——**与 `round.run_queue_retry` 同形**，故调用方
+    的收尾与退出码汇总零改动。
+
+    **当前默认不生效**：`YIBAN_SCHEDULER_V3` 缺省 0，未开闸时轮次走 `round.run_queue_retry`，
+    只有 `scheduler_v3_enabled` 被 `runner.main` 与 `schedule.capacity_of` 读取。
 
     `dry_run=True` 只转调 `shadow_stats`（零落库 / 零领取 / 零请求）并返回空结果。
-    `cred_state` **就地改传入的那个 dict**（调用方持有同一引用并在收尾保存，重新绑定会
-    让熔断计数写不回调用方那份，见 `round.run_queue_retry` 的持有引用注释）。
-    `notify_url` 只为与 v2 的调用签名对齐：逐次失败不在这里通知（通知是 runner 收尾的
-    汇总邮件与告警入口的职责，v2 亦只在最终放弃时通知一次）。
-    计划不可用时返回空结果并留 error：v3 的队列就是 `sign_tasks`，没有可用的库就没有
-    队列，本轮一个请求都不发。
+    `cred_state` **就地改传入的那个 dict**：调用方持有同一引用并在收尾保存，重新绑定会让熔断
+    计数写不回（见 `round.run_queue_retry` 的持有引用注释）。`notify_url` 只为与 v2 的调用签名
+    对齐：逐次失败不在这里通知（汇总邮件是 runner 收尾的职责，v2 亦只在最终放弃时通知一次）。
+    计划不可用时返回空结果并留 error：v3 的队列就是 `sign_tasks`，没有可用的库就没有队列。
 
-    **未预期异常一律不外逃**，但按"结果是否已成型"分两档处置：本函数是 `runner` 退出码
-    汇总的前置调用，任何冒出的异常若逃成 traceback，退出码就会落到契约（0/1/2/3/10）
-    之外，`run.sh` 的补签闸门与状态写入随之失真。
-
-    - **丢结果**：ctx 构建 → 预扫 → 装桶 → `asyncio.run(_run_async)` 这一段失败时，
-      `ctx.results` 里可能已有跑完的账号，但按规格**一律丢弃**（异常可能在写状态/收尾
-      中途冒出，留下的结果集不完整、不可信），记 error 后返回空结果（与"计划不可用"
-      同一处置，由 runner 汇总成契约内的"未执行"）；
-    - **只丢收尾**：`_mark_window_skips` 失败时结果集已经成型，**照常返回 `ctx.results`**，
-      只把这一段记 error 并继续——若并进"丢结果"那一档，一轮基本成功的活会被汇总成
-      "全部未执行"（退出码 1 + 失败邮件），与事实相反；没被收尾的账号由 runner 按
-      "未执行"计入失败，可见性不受损。
-
-    两档都只兜 `Exception`，`KeyboardInterrupt` / `SystemExit`（超时击杀、显式退出）
-    必须照常外逃。收尾心跳因此**只在正常返回路径**写：中断/异常路径不写，四态由心跳
-    过期后判 `stale`（与监督进程"被信号杀掉不写收尾"同一口径）。
+    **未预期异常一律不外逃**：本函数是 `runner` 退出码汇总的前置调用，traceback 逃出去退出码
+    就落到契约（0/1/2/3/10）之外，`run.sh` 的补签闸门与状态写入随之失真。按"结果是否已成型"
+    分两档处置，各自的理由见函数体内两处注释。两档都只兜 `Exception`；`KeyboardInterrupt` /
+    `SystemExit`（超时击杀、显式退出）必须照常外逃。
     """
     cfg = cfg or schedule.planner_config()
     day = day or _now().strftime("%Y-%m-%d")
@@ -729,6 +721,9 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     try:
         v = _ensure_plan(accounts, day, cfg)
     except Exception as e:
+        # 丢结果档①：ctx 构建 → 预扫 → 装桶 → asyncio.run 这一段失败时，ctx.results 里可能已有
+        # 跑完的账号，但一律丢弃（异常可能在写状态/收尾中途冒出，留下的结果集不完整、不可信），
+        # 记 error 后返回空结果——与"计划不可用"同一处置，由 runner 汇总成契约内的"未执行"
         logger.error("当日计划不可用，本轮不执行（v3 需要可用的队列库）: %s", e)
         return {}
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
@@ -775,6 +770,9 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
     try:
         _mark_window_skips(ctx, accounts)
     except Exception as e:
+        # 只丢收尾档②：到这里结果集已经成型，照常返回 ctx.results，只把这一段记 error 并继续。
+        # 并进"丢结果"那一档会把一轮基本成功的活汇总成"全部未执行"（退出码 1 + 失败邮件），与
+        # 事实相反；没被收尾的账号由 runner 按"未执行"计入失败，可见性不受损
         logger.error("v3 窗口收尾失败，已完成的账号结果照常返回: %s",
                      _mask_phones_in_text(_sanitize_text(str(e))))
     # 收尾写心跳**只在正常返回路径**（不是 finally）：四态从 running 落到 finished。

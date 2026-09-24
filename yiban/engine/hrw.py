@@ -35,10 +35,11 @@ V_MEDIUM = 128
 def _h(*parts):
     """HRW 打分：把各段以 `\\x1f` 连接后取 blake2b 前 8 字节的无符号整数。
 
-    取 64 位整数而非先取模：`vshard_of` 的取模与 `owner_of` 的打分比较都直接吃它，
-    64 位空间下平局概率可忽略。`\\x1f`（ASCII 单元分隔符）不会出现在手机号/日期/执行体
-    身份串里，用它连接可避免 `("12", "3")` 与 `("1", "23")` 撞成同一串。
+    取 64 位整数而不是先取模：`vshard_of` 的取模与 `owner_of` 的打分比较都直接吃它，
+    64 位空间下平局概率可忽略。
     """
+    # \\x1f（ASCII 单元分隔符）不会出现在手机号/日期/执行体身份串里，用它连接可避免
+    # ("12","3") 与 ("1","23") 撞成同一串——换成分隔符为空或普通连字符都会引入这类碰撞
     raw = "\x1f".join(str(p) for p in parts).encode("utf-8")
     return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big")
 
@@ -46,21 +47,22 @@ def _h(*parts):
 def vshard_of(phone, day, v=V_DEFAULT):
     """账号所属虚分片 `H(phone ‖ day) mod v`，返回 0..v-1。
 
-    `day` 进哈希输入：当天内完全确定（可落库、可重放、崩溃恢复不漂移），跨天则重排，
+    `day` 进哈希输入是刻意的：当天内完全确定（可落库、可重放、崩溃恢复不漂移），跨天则重排，
     避免"永远是同一批账号落在同一执行体"的偏斜。
     """
-    return _h(phone, day) % v
+    return _h(phone, day) % v  # 取模收在最后：先模会丢掉高位、把平局概率放大
 
 
 def owner_of(vshard, executors, day):
     """虚分片归属 `argmax_e H(vshard ‖ day ‖ executor_e)`；`executors` 为空返回 `""`。
 
-    排序后再 `max`：`max` 返回首个最大值，排序即把平局判给字典序最小的执行体——同一
-    分片集合无论调用方以什么顺序传入，归属都相同（无中心、零通信的共识就建立在这条上）。
-    增删执行体只影响得分被超过的那约 1/K 个分片，其余分片归属不动（迁移量最小）。
+    增删执行体只影响得分被超过的那约 1/K 个分片，其余归属不动（迁移量最小）——这是它取代
+    "按取余轮流分"的全部理由。
     """
     if not executors:
         return ""
+    # 排序后再 max：max 返回首个最大值，排序即把平局判给字典序最小的执行体——同一分片集合
+    # 无论调用方以什么顺序传入，归属都相同（无中心、零通信的共识就建立在这条上）
     return max(sorted(executors), key=lambda e: _h(vshard, day, e))
 
 
