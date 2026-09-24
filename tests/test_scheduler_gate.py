@@ -1,22 +1,27 @@
 # -*- coding: utf-8 -*-
 """修复回归测试（对抗性审查 2026-08-29）。
 
-覆盖：
-- B12-1  docker/backup-docker.sh 产出真实加密备份（herestring 截断管道的空备份
-         修复）+ 尺寸下限/解密自检（假 gpg 端到端，需本机 bash；无则跳过）
-- B12-2  调度闸门把 skipped_window/skipped_norange 计入未了结（补签不再被吞）；
-         零成功专项告警 _maybe_alert_zero_success
-- B12-3  容器子进程超时按窗口动态计算（_child_timeout，与 run.sh 同口径）
-- B12-4  锚点路径默认与 web STATE_DIR 对齐；verify_audit_anchor 显式路径同样
-         做 app_meta「锚点被删」交叉检查
-- B12-7  最后管理员复核下沉 db 事务：delete_user_with_accounts / set_user_role /
-         batch_user_ops 命中抛 LastAdminError
-- B12-8  内置主管理员自助改密即时告警
-- B12-9  时钟守卫：跳变时拦截清理并把参照点推进到当前时间（下一轮自动恢复）
-- B12-10 db_export 漏传 migrate=False（捕参数断言）+ 导出审计留痕
-- B12-13 默认字面量/弱口令拒绝启动
-- B12-14 登录失败阈值留痕审计链；普通用户越权 403 留痕；sign_events 消费端
-         （/api/logs 当日事件、/api/admin/sign-events）
+标签：B · 调度：领取/队列/执行体
+覆盖：Docker 备份脚本的真实产物与自检（假 gpg
+   端到端、空产物拒绝、还原路径穿越拒绝）、调度闸门把窗口外跳过计入未了结、零成功专项告警、子进程超时按窗口动态计算与键优先级、锚点路径默认与
+   web STATE_DIR
+   对齐及显式路径的交叉检查、最后管理员复核下沉事务、内置主管理员改密即时告警、时钟守卫跳变处置、db_export
+   漏传 migrate=False
+   的参数断言、默认字面量/弱口令拒绝启动、登录失败与越权留痕、sign_events
+   消费端、--only 部分命中不静默吞号、YIBAN_SECOND_RUN
+   优先于标记、槽位标记跨重启不重触发。
+对应实现：docker/backup-docker.sh、docker/scheduler.py（_UNDONE_STATUSES、_has_undone_today、_child_timeout、main_loop
+   的槽位闩锁）、scripts/signin.py（_maybe_alert_zero_success、_only_filter、补签轮判定）、scripts/db.py（最后管理员事务、锚点校验、clock
+   guard）、web/app.py。
+关键断言：未了结集合必须把 skipped_window / skipped_norange
+   算进去——漏了它们，全员窗口外跳过的一轮会被判成「已收尾」，当天再无补签。补签轮判定以
+   YIBAN_SECOND_RUN 优先于 sched-run 标记（首签被 timeout
+   击杀时标记根本没写）。子进程动态超时恒大于「距窗口关闭的剩余时间」，否则晚到触发的重跑会被自己掐死。hm
+   >= FIRST 无上界 +
+   闩锁只存内存的组合会让容器重启追加必然重复的全站轮，故槽位标记按日落盘。最后管理员的删除/降级必须在事务内判定（并发降级会锁死后台）。
+依赖：备份脚本与还原用例带 skipIf(shutil.which('bash') is None)：本机无 bash
+   时这四条 skip（需要 bash + 假 gpg）。其余用临时库/临时状态目录 + Flask test
+   client，docker/scheduler.py 按文件路径加载且每次全新实例。不发网络请求。
 
 用法（项目根目录）：
     py -m pytest tests/test_batch12_fixes_0829.py -v
@@ -53,7 +58,7 @@ PHONE = "13800138001"
 def _load_webapp():
     spec = importlib.util.spec_from_file_location("webapp_b12", os.path.join(BASE, "web", "app.py"))
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["webapp_b12"] = mod
+    sys.modules["webapp_b12"] = mod # 独立模块名配独立 .env：共用模块对象会读到别的用例的环境
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
     return mod
@@ -69,7 +74,7 @@ class SchedulerGateTest(unittest.TestCase):
         # scheduler.STATEDIR 在模块导入时固化，测试需同步指到临时目录
         cls._old_statedir = scheduler.STATEDIR
         scheduler.STATEDIR = cls.tmp
-        cls._old_run_timeout = os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None)
+        cls._old_run_timeout = os.environ.pop("YIBAN_RUN_TIMEOUT_SEC", None) # 宿主带着这个键跑测时，动态超时会变成显式值，断言就失去意义
 
     @classmethod
     def tearDownClass(cls):
@@ -80,6 +85,7 @@ class SchedulerGateTest(unittest.TestCase):
             os.environ["YIBAN_RUN_TIMEOUT_SEC"] = cls._old_run_timeout
 
     def _write_state(self, payload):
+        # 用 scheduler 自己那份 datetime：两边不同日，预置的状态文件它看不见
         path = os.path.join(self.tmp, f"sign-state-{scheduler.datetime.now():%Y-%m-%d}.json")
         with io.open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
@@ -89,7 +95,7 @@ class SchedulerGateTest(unittest.TestCase):
         self.assertIn("skipped_norange", scheduler._UNDONE_STATUSES)
         self.assertIn("failed", scheduler._UNDONE_STATUSES)
         # 有意状态不算未了结
-        self.assertNotIn("user_cancelled", scheduler._UNDONE_STATUSES)
+        self.assertNotIn("user_cancelled", scheduler._UNDONE_STATUSES) # 有意状态不进未了结集合：否则暂停过的账号会天天拖着补签轮重跑
         self.assertNotIn("paused", scheduler._UNDONE_STATUSES)
 
     def test_gate_reruns_on_all_window_skipped(self):

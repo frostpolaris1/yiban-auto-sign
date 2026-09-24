@@ -1,18 +1,23 @@
 # -*- coding: utf-8 -*-
 """对抗性审查修复回归测试（v0.24.3，2026-08-27）。
 
-覆盖以下八组修复：
-- 容器调度器：.env 白名单注入子进程环境（P1-1）；分钟级到点闩锁语义常量齐备；
-- 探针：状态文件 BOM 容错 + M12 锁写（P2-9）；main() 中 --probe 先于零账号守卫
-  （空账号部署静默 rc=0，签到模式仍 rc=1，防顺序回退）；
-- 注册/添加账号即时验证：资格预筛前置——注定失败的提交不发起网络验证（P1-2）；
-  每用户验证尝试配额（P1-2）；
-- 邮件：用户失败提醒每账号每日上限三入口统一（P2-1）；管理员汇总条数封顶截断
-  （P2-2）；
-- Web 会话绝对过期：超限失效 / 旧会话就地补记 / YIBAN_SESSION_ABS_DAYS 越界钳制
-  （P2-5）。
+标签：B · 调度：领取/队列/执行体
+覆盖：容器调度器的 .env 白名单注入与分钟级闩锁常量、探针状态文件的 BOM
+   容错与锁内读改写、--probe
+   与零账号守卫的先后次序、注册/添加账号的资格预筛前置与每用户验证配额、用户失败提醒的每账号每日上限跨入口统一、管理员汇总条数封顶、探针邮件措辞与结构化事件按日可查、SMTP_PORT
+   非法值显式暴露回退、会话绝对过期与越界钳制。
+对应实现：docker/scheduler.py（build_child_env、FIRST/SECOND/PROBE_TRY_SECONDS）、scripts/signin.py（main
+   的 --probe 次序、探针状态读写与事件）、web/app.py（账号预筛与验证配额、会话
+   TTL）、yiban/mail 与 notify（汇总与措辞）。
+关键断言：子进程环境只透传 YIBAN_*
+   白名单且文件值覆盖进程环境——整份继承会把宿主的凭据与代理带进签到子进程。--probe
+   必须排在零账号守卫之前（否则空账号部署上探针连跑的机会都没有，而签到模式仍要
+   rc=1）。注定失败的提交不得先发起网络验证。用户失败提醒的每日上限要跨入口统一，同一手机号第二次必须被压住。旧会话缺时间戳时按
+   grandfathering 放行，但超绝对上限要强制登出。
+依赖：临时 sqlite + Flask test client + 按路径加载
+   docker/scheduler.py；邮件与网络一律打桩。用法行仍写旧文件名
+   test_audit_fixes_0827.py（已登记）。整文件在本机执行，无 skip。
 
-全程本地（临时 sqlite + Flask test client + mock），无真实网络请求。
 用法（项目根目录）：py -m pytest tests/test_audit_fixes_0827.py -v
 """
 import contextlib
@@ -43,7 +48,7 @@ USER_PASS = "secret1"
 def _load_module(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
+    sys.modules[name] = mod # 注册进 sys.modules：exec_module 期间的自我引用要能找到自己
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
     return mod
@@ -80,7 +85,7 @@ class SchedulerEnvMergeTest(unittest.TestCase):
             "broken line no equals\n"        # 无等号丢弃
             "export YIBAN_PROXY=http://x\n"  # export 前缀键名不合 → 丢弃（对齐 run.sh）
         )
-        base = {"PATH": "/usr/bin", "TZ": "UTC",
+        base = {"PATH": "/usr/bin", "TZ": "UTC", # base 用显式字典而不是 os.environ：白名单与覆盖次序才是可复现的
                 "YIBAN_PROBE_TIME": "20:00", "HOME": "/root"}
         merged = self.sched.build_child_env(env_file=env_file, base=base)
         self.assertEqual(merged["YIBAN_PROBE_ENABLE"], "1")
@@ -97,13 +102,14 @@ class SchedulerEnvMergeTest(unittest.TestCase):
         )
         self.assertEqual(merged["YIBAN_SIGN_MODE"], "random")
 
+    # 时间点到点常量：改语义可以，悄悄改掉缺省值不行
     def test_latch_constants_present(self):
         # P2-10 分钟级闩锁重写的时间点常量保持既有语义
         # 探针由固定时刻（PROBE_AT=(23,55)）改为周期尝试
         # （PROBE_TRY_SECONDS，64a273e），原断言随之更新，避免 CI 门禁恢复后红
         self.assertEqual(self.sched.FIRST, (6, 31))
         self.assertEqual(self.sched.SECOND, (7, 10))
-        self.assertEqual(self.sched.PROBE_TRY_SECONDS, 600)
+        self.assertEqual(self.sched.PROBE_TRY_SECONDS, 600) # 周期常量本身被钉住：它的语义改动会连带影响上面的到点断言
 
 
 class ProbeStateBomLockTest(unittest.TestCase):

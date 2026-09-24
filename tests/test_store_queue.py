@@ -1,6 +1,21 @@
 # -*- coding: utf-8 -*-
 """`yiban/store/queue_store.py`：sign_tasks 的批量领取 / 批量收尾 / 重排 / 当日计数。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：sign_tasks 的批量领取（分片集过滤、limit 截断、priority + run_at
+   排序、不改动不相关行、领到的行落 state
+   与任务级短租约、二次领取为空、空分片集不碰库）、表缺失与「只是没到期行」的告警分档、settle_tasks
+   的 owner 作用域与 result 截断、requeue_task 的 priority/attempts
+   递增、day_counts 与直接 SQL 的一致口径及派生键。
+对应实现：yiban/store/queue_store.py（claim_batch、settle_tasks、requeue_task、day_counts）、scripts/db.py
+   的建表迁移、yiban/store/claims.py 的 stats 键口径。
+关键断言：「表未落地」与「表在但无到期行」必须是两件事：前者要空返回并告警，调用方据此退回动态领取；后者静默，不能天天喊库坏了。limit
+   截断时的取舍必须显式排序（priority 小者、同优先级 run_at 早者），因为 UPDATE
+   ... RETURNING 的行序不保证。空 day（含库不可用路径）也要给出与 claims.stats
+   同口径的键，调用方不得 KeyError。
+依赖：临时 sqlite（每用例重建）+
+   假时间戳助手；无网络请求、不起应用。整文件在本机执行，无 skip。
+
 覆盖 claim_batch 的四条边界（分片集过滤、limit 截断、priority+run_at 排序、
 不改动不相关行）、领取后的 state 与任务级短租约、settle_tasks 的 owner 作用域与
 result 截断、requeue_task 的 priority/attempts 递增，以及 day_counts 与直接 SQL
@@ -25,7 +40,7 @@ TEST_KEY = "a" * 64
 DAY = "2026-09-22"
 OWNER = "hostA:100:090000"
 OTHER = "hostB:200:090001"
-MY_SHARDS = (0, 1)
+MY_SHARDS = (0, 1) # 只认领两片：7 号片的行必须原样不动，跨界领取是最贵的那类 bug
 FOREIGN_SHARD = 7
 
 
@@ -79,7 +94,8 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         self._close_conn()
 
-    def _add_task(self, phone, vshard=0, state="pending", run_at=None, priority=5,
+    # 默认值就是「已到期、可领」的那一行，用例只改与断言有关的那一维
+    def _add_task(self, phone, vshard=0, state="pending", run_at=None, priority=5, # 默认值就是「已到期、可领」的那一行，用例只改与断言有关的那一维
                   owner="", attempts=0, lease_until="", result="", day=DAY):
         conn = db.get_conn()
         conn.execute(

@@ -1,12 +1,24 @@
 # -*- coding: utf-8 -*-
 """`run.sh` 的多执行体开关（`YIBAN_WORKERS`）外壳行为。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：run.sh 外壳的三组行为：YIBAN_WORKERS 透传/默认与 1 不传/非法值留告警、M6
+   标记前移（flock 弹开也留痕、次轮以 second_run 身份运行、SUCCESS
+   幂等检查仍在标记块之后）、P3-2 显式 YIBAN_RUN_TIMEOUT_SEC 的钳位矩阵、P3-13
+   日志装配延迟到 main() 后 root 只有一个 FileHandler。
+对应实现：run.sh（workers 参数拼装、noclobber 标记、flock 分支、timeout
+   钳位）、scripts/signin.py 的日志装配。
+关键断言：教程里写的 YIBAN_WORKERS=4
+   必须真的成立；非法值只能告警回退，绝不为一笔误配置停签。被 flock
+   弹开发生在标记写入之后，所以弹开也要留痕——否则 06:31
+   撞车的实例次日永远被判成首签。超时钳位的下限保住「距窗口关闭还有多久」这条底线。模块导入必须零副作用（否则
+   root 上叠出第二个 FileHandler，日志翻倍）。
+依赖：三个 bash 用例类带 skipIf(shutil.which('bash') is None)：本机没有 bash
+   时整类skip（Git Bash 在场则真实执行 run.sh，用 fakebin 里的假 flock/timeout
+   记录参数）。CliLoggingSingleHandlerTest 不依赖 bash。
+
 用户要求"CLI 完善要结合实际部署教程"——教程里写"`YIBAN_WORKERS=4` 就会拉起 4 个执行体"，
 这句话必须真的成立，所以这里用假 `timeout`（记录被调用的完整参数）钉住三件事：
-
-1. `YIBAN_WORKERS=4` → signin 收到 `--workers 4`；
-2. `YIBAN_WORKERS` 未设 / `=1` → **不传** `--workers`（默认形态逐字不变）；
-3. 非法值（`0` / `abc` / `999`）→ 不传、并在日志里留一条告警（绝不因为一笔误配置停签）。
 """
 import io
 import os
@@ -38,11 +50,12 @@ class RunShWorkersTest(unittest.TestCase):
         os.makedirs(self.state)
         self.fakebin = os.path.join(self.tmp, "fakebin")
         os.makedirs(self.fakebin)
+        # 把假 bin 前置进 PATH：flock/timeout 在 Windows 上没有，桩顺便记录收到的参数
         for name, body in (("flock", FAKE_FLOCK), ("timeout", FAKE_TIMEOUT)):
             path = os.path.join(self.fakebin, name)
             with io.open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(body)
-            os.chmod(path, 0o755)
+            os.chmod(path, 0o755) # Git Bash 同样只看执行位，桩没有它就直接 126
         self.calls = os.path.join(self.tmp, "timeout-calls.log")
         self.env = dict(os.environ)
         self.env.update({
@@ -74,7 +87,7 @@ class RunShWorkersTest(unittest.TestCase):
             env["YIBAN_WORKERS"] = workers
         r = subprocess.run([self.bash, RUN_SH], capture_output=True, env=env,
                            cwd=self.tmp, timeout=120)
-        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")) # 先确认 run.sh 自己退出码为 0，否则「根本没调 signin」会被误读成参数断言失败
         with io.open(self.calls, encoding="utf-8", errors="replace") as f:
             return [ln for ln in f.read().splitlines() if ln]
 

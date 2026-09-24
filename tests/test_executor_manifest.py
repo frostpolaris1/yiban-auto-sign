@@ -1,20 +1,27 @@
 # -*- coding: utf-8 -*-
 """**执行体清单**（`YIBAN_EXECUTORS`）的模型、迁移等价与行接口断言。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：执行体清单的模型层（解析/序列化/槽位只增不复用/上限
+   63/兜底唯一/停用行语义）、旧三键各形态的迁移等价与只读回退、接口层的首次读迁移写回与以清单为准、删当前最大槽位后「真被用过」不复用、claims.owners_since
+   的保留期口径、行 CRUD
+   与权限脱敏、单行写入不影响他行、拉起列表与槽位号贯穿身份/锁/心跳、派发监督进程前的周末/暂停/补签轮闸门。
+对应实现：yiban/egress.py（manifest
+   读写、legacy_rows、apply_legacy_config、manifest_state、SLOT_MAX）、web/app.py
+   的执行体行接口、yiban/store/claims.py（owners_since）、yiban/engine/runner.py
+   与 workers.py（拉起列表、槽位透传、派发前的门）。
+关键断言：迁移必须逐字等价（顺序、空位=直连、兜底位置、worker
+   数量），旧键在写回后再留一个版本周期——不一致的表现是「升级后出口串了」。槽位只增不复用，且删掉的号若真出现在领取历史里就不得再发出去（否则新执行体顶用死执行体的身份，归属统计串人）；从没用过的号照旧复用。disabled
+   行保留出口、不进拉起列表、不计入建议值分母、不报存活。清单与旧键并存时以清单为准，但旧接口在清单模式下也必须同步维护清单。周末/暂停/补签判定必须排在派发监督进程之前。
+依赖：临时目录 + 独立模块名加载的 Flask test client + SimpleNamespace
+   替身；worker_presence / fallback_alive
+   读的是临时状态目录里的本地文件。全部离线，无 skip。
+
 旧口径是"一个数量（`YIBAN_WORKERS`）+ 一整条逗号列表（`YIBAN_PROXY_LIST`）+
 单独兜底出口（`YIBAN_PROXY_FALLBACK`）"，表达不了"停用某一行"与"删中间行不重排"。
 新清单是**单键 JSON 数组**，每个执行体一行：`{"slot", "type", "proxy"}`。
 
 本文件钉住五件事（缺一个就会在生产上表现为"升级后出口串了"或"停用行还在被拉起"）：
-
-1. **迁移等价**：旧三键各形态（空位=直连、userinfo 代理、列表不足循环取用、只配
-   `YIBAN_PROXY`、空白列表、64 行占满槽位）迁移成清单后，`resolve`/`assignments`
-   的结果**逐字一致**；迁移写回后清单键存在、**旧键保留**（一个版本周期）；
-2. **槽位只增不复用**：删中间行不重排，新行拿到 `max + 1`；上限 63；
-3. **停用语义**：`disabled` 行保留出口、不进拉起列表、不计入建议值分母、不报存活；
-4. **兜底唯一**：`fallback` 最多 1 行，第 2 行被明确拒绝（400）；
-5. **单行写入不影响别的行**：与既有"按序号写单段"同一纪律；接口只回脱敏描述串，
-   任何凭据原文都不出现在响应里。
 
 全部离线：接口层只用临时目录 + 临时库，不联网（`worker_presence`/`fallback_alive`
 读的是状态目录里的本地文件）。
@@ -49,14 +56,14 @@ WEEKDAY_06_40 = datetime(2026, 9, 2, 6, 40)
 
 def _manifest(*rows):
     """紧凑 JSON 串（与 `egress.dump_manifest` 同一写法，便于手写 .env 用例）。"""
-    return json.dumps(list(rows), ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(list(rows), ensure_ascii=False, separators=(",", ":")) # 紧凑写法与 dump_manifest 一致，手写的 .env 才能逐字比对
 
 
 # ---------------------------------------------------------------------------
 # 纯函数：迁移等价
 # ---------------------------------------------------------------------------
 #: 旧三键的各种形态（覆盖空位、userinfo、循环取用、只配单出口、空白列表、占满槽位）
-LEGACY_CASES = (
+LEGACY_CASES = ( # 这批形态就是升级路径的全部已知输入，少一种等于没测那条路
     {},
     {"YIBAN_WORKERS": "1"},
     {"YIBAN_WORKERS": "3", "YIBAN_PROXY_LIST": f"{SECRET_PROXY},,http://c.example:3128"},
@@ -79,9 +86,9 @@ class MigrationEquivalenceTest(unittest.TestCase):
     def test_worker_proxies_match_legacy_resolve(self):
         for env in LEGACY_CASES:
             with self.subTest(env=env):
-                n = egress.legacy_worker_count(env)
+                n = egress.legacy_worker_count(env) # 先拿旧口径的人数当基准，再逐个比迁移结果，而不是反过来
                 rows = egress.legacy_rows(env)
-                migrated = egress.worker_rows(rows)
+                migrated = egress.worker_rows(rows) # 只取 worker 行：兜底行不占 worker 序号，混进来会把槽位比歪
                 self.assertEqual([r["slot"] for r in migrated], list(range(n)),
                                  "槽位必须就是旧的 0..N-1（顺序不变）")
                 for r in migrated:

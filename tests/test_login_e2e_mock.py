@@ -1,10 +1,24 @@
 # -*- coding: utf-8 -*-
 """登录 / 签到链的**端到端演练**：真 HTTP 往返 + 假易班服务端（绝不碰真实易班）。
 
-为什么需要这一层：登录路径是"钱路"——请求形状、跳转顺序、成功标志任一处改错都可能
-悄悄坏到线上，而单测用脚本化响应只能证明"我们发的确实是这个形状"，证明不了"这套形状
-能跑完一整条链"。这里用 `scripts/loadtest/mock_yiban.py` 起一个假服务端，让真实客户端
-从头跑到尾（默认 KillYiBan 流程 + 旧 iOS 流程两条），并按落盘 JSONL 断言**握手顺序**。
+标签：K · 登录协议与第三方隔离
+覆盖：默认 KillYiBan 流程的整链演练（登录 + 探针 + 一次签到）、旧 iOS
+   流程的演练、usersure
+   与登录页两种被风控位置的表现差异、签到最后一步被服务端拒绝的业务层判定、按落盘
+   JSONL 断言握手顺序。
+对应实现：scripts/loadtest/mock_yiban.py（假服务端）、yiban/fyiban/protocol.py 与
+   client 外观、scripts/signin.py 的登录与签到编排。
+关键断言：端到端跑的是真 HTTP
+   往返：脚本化响应的单测只能证明「我们发的确实是这个形状」，证明不了「这套形状能跑完一整条链」。因此必须响亮失败地确认回环流量没被本机加速器/TUN
+   按 Host
+   头转发到真实易班——否则用例只是「失败」，而真实请求量、账号锁定、风控都已经发生。URL
+   改写只发生在连接层且保留原始 Host，故响应 url
+   必须还原成逻辑形态，不然逐跳白名单校验会把回环地址误判成站外。
+依赖：进程内假服务端（127.0.0.1 随机端口、明文 HTTP）+ requests 适配器改写 +
+   真回环；本机装有按 Host 转发的加速器/TUN
+   时会被守卫判为拦截并报错要求先退出。test_full_chain_rehearsal 与
+   test_legacy_chain_rehearsal
+   是已知的时序敏感项（并发全量下偶发红，单文件串行复跑为绿）。
 
 假服务端跑在回环**明文 HTTP** 上；客户端的 https URL 由**测试侧适配器**改写到本机
 端口——不改被测代码的任何常量或分支，CI 也不需要 root/TLS/改 hosts。
@@ -27,7 +41,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 _LOADTEST = os.path.join(_ROOT, "scripts", "loadtest")
 if os.path.dirname(_LOADTEST) not in sys.path:
-    sys.path.insert(0, os.path.dirname(_LOADTEST))
+    sys.path.insert(0, os.path.dirname(_LOADTEST)) # 把 scripts/ 的父目录加进来，mock_yiban 才能以 loadtest.* 的身份被导入
 
 mock_yiban = importlib.import_module("loadtest.mock_yiban")
 
@@ -77,10 +91,10 @@ class _FakeYiban:
         state = mock_yiban.MockState(log_path=self.log_path)
         config = mock_yiban.MockConfig(**cfg)
         servers, state, config = mock_yiban.create_servers(
-            host="127.0.0.1", port=0, cert=None, key=None,
+            host="127.0.0.1", port=0, cert=None, key=None, # port=0 让系统挑空闲端口：并发跑测时各用例的假服务端不互相抢口
             state=state, config=config, enable_ipv6=False,
         )
-        self.server, self.state = servers[0], state
+        self.server, self.state = servers[0], state # enable_ipv6=False 下只有一个 listener，取错索引就连到不监听的 socket 上
         self.port = self.server.server_address[1]
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self._thread.start()
@@ -107,7 +121,7 @@ class _FakeYiban:
 
         try:
             r = _rq.get(f"http://127.0.0.1:{self.port}/__health",
-                        headers={"Host": "oauth.yiban.cn"}, timeout=3)
+                        headers={"Host": "oauth.yiban.cn"}, timeout=3) # 探一次就够：判据是「回环上谁在应答」，不是这个健康检查本身有没有用
         except Exception as e:
             self._fail_intercepted(f"直连回环失败: {type(e).__name__}: {e}")
             return

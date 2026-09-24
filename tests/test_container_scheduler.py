@@ -1,6 +1,23 @@
 # -*- coding: utf-8 -*-
 """容器内签到调度器（docker/scheduler.py）回归测试。
 
+标签：B · 调度：领取/队列/执行体
+覆盖：容器调度器的两代修复：build_child_env 每次触发重解析 .env、首签/补签闸门改以
+   sched-run-<date>.json 全量标记为准（含标记损坏/非 dict/缺失的 fail-safe
+   分档、failed/retrying/pending/window-skip
+   判未了结、全员了结才跳过）、main_loop
+   与闸门谓词的一致性（探针周期尝试照常触发）、兜底常驻的四道关判定与拉起/回收/不叠进程、主循环接线、web
+   层会话与锚点修复回归、签到子进程挂起时循环留痕继续。
+对应实现：docker/scheduler.py（_full_run_done_today、_has_undone_today、main_loop、build_child_env、_fallback_should_run、_tick_fallback、_run_signin_child）、web/app.py
+   的会话/锚点路径、yiban/engine/workers.py。
+关键断言：闸门判据必须是「当日全量是否收尾」而不是「任一账号是否成功」——旧语义下用户手动签到或首签部分成功都会压制
+   06:31 首签与 07:10
+   补签，让失败账号失去当日兜底。标记缺失或损坏一律按「未跑过」放行（宁可重跑，不可漏签；signin
+   内部幂等）。窗口结束由引擎自行判定退出，调度器只回收、不重启、不强杀。判据必须走共享实现（打桩即证明容器侧没另写一套门）。
+依赖：按文件路径加载 docker/scheduler.py（它不在包内）；临时状态目录 +
+   subprocess/time 模块桩（真循环靠 sleep 抛异常打断）。web 类用例起临时库与
+   Flask test client。不发网络请求。整文件在本机执行，无 skip。
+
 用法（在项目根目录）：
     py -m pytest tests/test_container_scheduler.py -v
     py tests/test_container_scheduler.py          # 无 pytest 也可直接运行
@@ -51,7 +68,7 @@ class _Stop(Exception):
 
 def _stop_sleep(_seconds):
     """替换 sched.time.sleep：首次调用即抛出 _Stop，用于跳出无限循环。"""
-    raise _Stop()
+    raise _Stop() # 主循环是 while True：不打断这一觉，用例会挂死而不是失败
 
 
 class _FakeProc:
@@ -87,7 +104,7 @@ def _stub_subprocess(recorder=None):
 
 def _stub_module(**members):
     """构造一个只含指定成员的模块桩，避免污染真实的 time / subprocess。"""
-    return type("_Stub", (), {k: staticmethod(v) for k, v in members.items()})()
+    return type("_Stub", (), {k: staticmethod(v) for k, v in members.items()})() # 交出列出的那几样就够：整模块打桩会污染同进程里别的用例
 
 
 def _today():
