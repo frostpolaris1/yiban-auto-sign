@@ -518,6 +518,14 @@ def _widen_with_dead_peers(ctx, shards):
     无收尾且心跳过期）才算死。监督进程未启动 / 单进程直跑时该槽位没有当日记录，四态回
     `idle`——**不是** `stale`，故不会误接管活着的执行体。`vshard=-1` 的历史行不属于任何
     分片集（`hrw.shards_of` 产出 `0..V-1`），天然不在接管范围内，不需要额外过滤。
+
+    **并入与"偷到多少行"解耦**：判死就并入分片，`steal_shards` 的返回值只用于日志。
+    若拿 `taken > 0` 当门，死主"把分片内的待办全领成 `claimed` 后崩"就漏了——
+    `reap_expired` 回收这些行时把 `owner` 清成 `''`，分片内已没有 `owner=<死主>` 的
+    `pending` 行，`steal_shards` 返回 0，分片不进领取集；随后回收出的 `pending` 行
+    无人可领 = "崩溃即卡死"（`claim_batch` 不筛 `owner`，并入即可领）。
+    归属修正仍要做：owner 与实际接管者一致，展示与后续判死才有意义。日志只在真改归了
+    行时打（判死后的分片每 `RECOVER_SEC` 都会再并一次，按"有行"打不会刷屏）。
     """
     v = getattr(ctx, "v", 0)
     if v <= 0:
@@ -536,7 +544,7 @@ def _widen_with_dead_peers(ctx, shards):
         if taken:
             logger.warning("接管心跳过期的执行体 %s 的分片集，%d 条待办改归本执行体",
                            peer, taken)
-            extra.extend(peer_shards)
+        extra.extend(peer_shards)
     if not extra:
         return tuple(shards)
     return tuple(sorted(set(shards) | set(extra)))
