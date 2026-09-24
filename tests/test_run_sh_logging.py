@@ -5,7 +5,7 @@
 全都不留痕——日志里看不出"这一轮到底跑过没有、为什么没签"。本文件钉两件事：
 
 1. **留痕**：四条跳过/收场路径都有 `=== run.sh 退出，退出码: N ===`，且行首带触发来源
-   前缀（排程 / 手工，按有无控制终端自动判，`YIBAN_TRIGGER` 可覆盖）；
+   前缀（排程 / 手工，按 **stdin** 有无控制终端自动判，`YIBAN_TRIGGER` 可覆盖）；
 2. **退出码逐字不变**：0/1/2/3/10 照原样透传——加日志不得顺手改了契约。
 
 子进程里跑（无非是"读日志 + 看退出码"这种进程级契约）；`flock` / `timeout` 用假件，
@@ -72,13 +72,18 @@ class RunShExitTrailTest(unittest.TestCase):
             os.chmod(path, 0o755)
 
     def _run(self, state, extra_env=None):
-        """跑一次 run.sh；返回 (退出码, 日志文本)。状态目录由调用方准备。"""
+        """跑一次 run.sh；返回 (退出码, 日志文本)。状态目录由调用方准备。
+
+        stdin 显式钉成 DEVNULL：触发来源判据看的是 stdin 有没有控制终端，而用例宿主
+        自身的 stdin 可能是终端（开发者在终端里跑 pytest）——不钉死的话"排程"这条
+        断言会随宿主的终端而变。
+        """
         env = dict(self.env)
         env["YIBAN_STATE_DIR"] = state
         env["YIBAN_LOG_FILE"] = os.path.join(state, "sign.log")
         env.update(extra_env or {})
         r = subprocess.run([self.bash, RUN_SH], capture_output=True, env=env,
-                           cwd=self.tmp, timeout=120)
+                           cwd=self.tmp, timeout=120, stdin=subprocess.DEVNULL)
         log_path = os.path.join(state, f"sign-{_today()}.log")
         text = ""
         if os.path.exists(log_path):
@@ -165,13 +170,42 @@ class ExitCodeContractTest(RunShExitTrailTest):
 
 
 class TriggerTagTest(RunShExitTrailTest):
-    """触发来源前缀：无控制终端 = 排程；有 tty 或 YIBAN_TRIGGER = 手工/显式值。"""
+    """触发来源前缀：无控制终端（stdin 非终端）= 排程；有 tty 或 YIBAN_TRIGGER = 手工/显式值。"""
 
     def test_no_tty_is_scheduled(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
         _code, text = self._run(state)
         self.assertIn("[排程] === run.sh 开始执行 ===", text,
                       f"子进程没有控制终端，应判为排程触发：\n{text}")
+
+    def test_manual_run_with_redirected_output_is_not_scheduled(self):
+        """手工执行但把输出重定向进日志 ⇒ 仍判「手工」：判据只看 stdin 有没有控制终端。
+
+        按 stdout/stderr 判会把这种最常见的排障姿势（`./run.sh > sign.log`）误报成
+        排程——那正是"这条日志到底是谁触发的"要回答的问题。
+        """
+        if os.name == "nt":
+            self.skipTest("pty 仅 POSIX")
+        import pty  # 仅 POSIX：Windows 上无此模块（上一行已跳过）
+
+        state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+        env = dict(self.env)
+        env["YIBAN_STATE_DIR"] = state
+        env["YIBAN_LOG_FILE"] = os.path.join(state, "sign.log")
+        master, slave = pty.openpty()
+        try:
+            with io.open(os.path.join(self.tmp, "redirected.log"), "wb") as out:
+                subprocess.run([self.bash, RUN_SH], stdin=slave, stdout=out,
+                               stderr=subprocess.STDOUT, env=env, cwd=self.tmp,
+                               timeout=120)
+        finally:
+            os.close(slave)
+            os.close(master)
+        with io.open(os.path.join(state, f"sign-{_today()}.log"), encoding="utf-8",
+                     errors="replace") as f:
+            text = f.read()
+        self.assertIn("[手工] === run.sh 开始执行 ===", text,
+                      f"stdin 是终端 ⇒ 人在终端里执行，输出重定向不该改变这个判断：\n{text}")
 
     def test_explicit_override_wins(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
@@ -213,6 +247,13 @@ class SourceContractTest(unittest.TestCase):
                          "带时间戳的 echo 只应剩 _log 与 _on_exit 两处（其余走 _log）")
         self.assertEqual(self.src.count("[$TRIGGER_TAG]"), 2,
                          "两处时间戳日志都必须带触发来源前缀")
+
+    def test_trigger_tag_judges_on_stdin(self):
+        """判据取 stdin（fd 0）：手工执行常把输出重定向进日志，按 stdout/stderr 判会误报排程。"""
+        self.assertIn("elif [ -t 0 ]; then", self.src,
+                      "触发来源判据必须是 stdin 有没有控制终端")
+        self.assertNotIn("[ -t 1 ]", self.src,
+                         "按 stdout 判会把「手工执行但重定向了输出」误判成排程")
 
 
 if __name__ == "__main__":
