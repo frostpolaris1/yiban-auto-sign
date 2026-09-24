@@ -123,10 +123,17 @@ PW_CONFIRM_TTL_DEFAULT = 300
 PW_CONFIRM_TTL_MAX = 900
 PW_CONFIRM_COOLDOWN_DEFAULT = 300
 
-# 敏感口令门禁的档位（`.env` 键 `YIBAN_PW_GATE`，唯一解析处见 `_pw_gate_tier`）：
-# - `full`：每个受保护操作都要当次口令（旧行为，逐字保留）；
-# - `risk`：**默认档**——只有风控命中（换出口 IP，判据见 `_pw_gate_ip_changed`）才要口令；
-# - `off`：永不要求口令；软摩擦照旧——不可逆操作仍要倒计时确认，变更类告警按操作类别发。
+# 敏感口令门禁的档位（`.env` 键 `YIBAN_PW_GATE`，唯一解析处见 `_pw_gate_tier`）。
+# 这里是三档语义的准绳；执行侧在 web/app.py 的 `_sensitive_password_gate`，各分支处另有一行。
+# - `full`：三段判定（①冷却 ②豁免 ③口令比对）逐条执行，每个受保护操作都要当次口令
+#   （旧行为，逐字保留）；
+# - `risk`（缺省）：判据只有一个——出口 IP 变了才要口令（`_pw_gate_ip_changed`），没换就
+#   放行。也就是**危险操作默认不要口令**，只在换环境时要求一次，这按现状描述、不是漏口；
+# - `off`：永不要求口令，但并非全无阻力——不可逆操作的倒计时确认排在 off 早退**之前**，
+#   缺 `confirm_delay_ack` 照样拒；变更类事后告警反而只在本档与 risk 档发（见
+#   web/routes/settings_api.py 的 `_executor_change_alert`、web/routes/accounts_api.py
+#   改写他人凭据后的告警分支——full 档当次已要口令，刻意不重复发）。
+# 门禁之外、三档都照旧生效的：高危限速配额 `_admin_delete_limited` 与操作成功后的审计。
 # 非法值回退 `risk` 而不是 `off`：本键是安全件，一个 `.env` 笔误不得把门禁静默拆掉。
 PW_GATE_OFF = "off"
 PW_GATE_RISK = "risk"
