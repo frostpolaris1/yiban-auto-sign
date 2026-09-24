@@ -602,6 +602,73 @@ class ExecutorSaveCancelTest(unittest.TestCase):
             self.assertIn("partialAfter(", body, name + " 必须复用同一收尾")
 
 
+#: settings-mail.js 的「清空收件人」行为替身：组件依赖的 `setTip` / `load` / `$` /
+#: `busy` / `ctx` 与 `YB.confirmDialog` / `YB.dangerousSubmit` 全在此定义。
+#: `load` 的替身刻意照抄真实形态——**末尾无条件清屏**，这正是"先提示后重载"会被抹掉的原因。
+_MAIL_CLEAR_HARNESS = r"""
+var OUT = {};
+var tips = [], loads = 0, submitted = [];
+function setTip(text, bad) { tips.push([text, bad]); }
+function load() { loads += 1; setTip("", false); return Promise.resolve(true); }
+function $(id) { return null; }
+var busy = false;
+var ctx = { isMaster: true };
+var YB = {
+  confirmDialog: function () { return Promise.resolve(true); },
+  dangerousSubmit: function (opts) { submitted.push(opts); return Promise.resolve({}); },
+  toast: { info: function () {}, error: function () {} }
+};
+
+__FUNC__
+
+(async function () {
+  clearAdminTo();
+  await new Promise(function (r) { setTimeout(r, 0); });
+  OUT.tips = tips;
+  OUT.loads = loads;
+  OUT.busy = busy;
+  OUT.paths = submitted.map(function (o) { return o.path; });
+  console.log(JSON.stringify(OUT));
+})().catch(function (e) { console.error(e && e.stack || e); process.exit(1); });
+"""
+
+
+def _run_mail_clear():
+    src = _read(os.path.join(COMPONENTS, "settings-mail.js"))
+    # finish 一并抽出来：清空路径复用它收尾，只抽 clearAdminTo 会测不到"提示落在重载之后"
+    funcs = "\n\n".join(
+        _extract_function(src, name) for name in ("finish", "clearAdminTo"))
+    script = _MAIL_CLEAR_HARNESS.replace("__FUNC__", funcs)
+    proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise AssertionError("node 执行失败：%s" % (proc.stderr or proc.stdout))
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@unittest.skipUnless(NODE, "node 不可用：跳过清空收件人的前端行为测试")
+class MailClearAdminToTipTest(unittest.TestCase):
+    """清空告警收件人的成功提示必须落在重载之后。
+
+    `load()` 末尾无条件清屏，先提示后重载的顺序会让「已清空」整条被抹掉——用户点完只看到
+    一条空白横幅，分不清"清掉了"还是"没生效"。保存路径（finish 在 load() 之后落提示）已是
+    这个口径，本用例把清空这条路钉在同一处。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = _run_mail_clear()
+
+    def test_clear_goes_through_gated_helper(self):
+        """清空是不可逆的配置变更，仍走统一 helper（受门禁），不经裸 api 调用。"""
+        self.assertEqual(self.out["paths"], ["/api/mail-config"])
+
+    def test_success_tip_is_the_last_one_after_reload(self):
+        self.assertEqual(self.out["loads"], 1, "清空成功后必须重载视图")
+        self.assertEqual(self.out["tips"][-1], ["已清空告警收件人", False],
+                         "成功提示必须是最后落下的那一条——重载末尾的清屏不得把它抹掉")
+        self.assertFalse(self.out["busy"], "流程结束后必须复位在途标记")
+
+
 class GatedCallSitesTest(unittest.TestCase):
     """静态钉点：所有受门禁操作都经统一 helper，口令框管道不再各自为政。"""
 
