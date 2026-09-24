@@ -1,15 +1,26 @@
 # -*- coding: utf-8 -*-
-"""2026-08-20 对抗性审查修复回归测试。
+"""管理员凭据门禁、账号 idx 防错位与 my-accounts 出站脱敏的回归。
 
 覆盖：
-1. 空凭据/部分配置管理员登录拒绝（P1：verify_admin 空配置直通）
-2. idx 寻址防错位校验：单账号 mutation 携带 phone 不匹配 → 409（P1：列表漂移错位操作）
+1. 空凭据/部分配置管理员登录拒绝（`verify_admin` 曾对空配置直通）
+2. idx 寻址防错位校验：单账号 mutation 携带 phone 不匹配 → 409（列表漂移会错位操作）
 3. 批量接口 phones 对齐校验 + bool 索引混淆修复
-4. /api/my-accounts 日志出站脱敏（P3：与 /api/my-logs 口径统一）
+4. /api/my-accounts 日志出站脱敏（与 /api/my-logs 同口径）
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
-    python -m pytest tests/test_adversarial_fixes_0820.py -v
+    python -m pytest tests/test_admin_creds_masked_ops.py -v
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：登录侧空/半配置凭据（内置管理员）、账号 mutation 的 idx↔phone 对齐（单条与批量）、
+`true` 被当成索引的混淆、my-accounts 响应体里日志行的出站脱敏。
+对应实现：`web/app.py` 的 `verify_admin` / 账号单条与批量路由 / `api_my_accounts`，
+出站脱敏走展示层 `_mask_log_phones`（与 `/api/my_logs` 同一函数）。
+关键断言：409 之外还必须断"库里那行没被动过"——错位操作即使回错状态码也可能已写；
+出站脱敏只喂了**方括号形态**的号（`[13800138000]`），裸号形态的出站面不在本用例覆盖内
+（那是 `test_logs_export_masking.py` 与 `test_log_masking_formatter.py` 的口径）。
+依赖：Flask test client + 临时库/临时日志目录，无网络；内置管理员口令哈希经
+`_write_env` 现写现恢复，改的是临时 `.env` 而非仓库那份。
 """
 import contextlib
 import importlib.util
