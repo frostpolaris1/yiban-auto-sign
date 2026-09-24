@@ -186,8 +186,9 @@ class HighRiskDeleteTest(_B13WebBase):
         self._make_user("u2@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "admin", ADMIN_PASS)
-        # 门禁失败告警按阈值触发：循环次数取 app 的常量，不另抄字面量
-        for _i in range(self.webapp.LOGIN_FAIL_NOTIFY):
+        # 门禁失败告警按**门禁侧**阈值触发：循环次数取 app 的常量，不另抄字面量；
+        # 该常量与登录失败告警阈值是两个数（登录侧调它是为了少发误报）
+        for _i in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):
             r = c.post("/api/users/batch",
                        json={"action": "delete", "emails": ["u2@test.local"],
                              "confirm_password": "wrong-pass"},

@@ -680,7 +680,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
         t = self._login(c, "admin", ADMIN_PASS)
         # 快照必须在 create_app/登录之后取：启动会迁移管理员口令哈希并补 YIBAN_SECRET_KEY
         before = _read_env(self.env_file)
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+        for _ in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):
             r = c.put("/api/mail-config",
                       json={"enabled": False, "confirm_password": "wrong-pass"},
                       headers=self._csrf(t))
@@ -884,7 +884,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                 self.alerts.clear()  # 两个 subTest 共用记录列表，须各算各的
                 c = self._client()  # _login_fails / 限速表都是 create_app 内的，需新会话
                 t = self._login(c, "admin", ADMIN_PASS)
-                for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):  # 达阈值触发告警
+                for _ in range(self.webapp.SENSITIVE_PW_FAIL_NOTIFY):  # 达阈值触发告警
                     r = c.put("/api/mail-config",
                               json={field: False, "confirm_password": "wrong-pass"},
                               headers=self._csrf(t))
