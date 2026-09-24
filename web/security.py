@@ -123,7 +123,7 @@ PW_CONFIRM_COOLDOWN_DEFAULT = 300
 
 # 敏感口令门禁的档位（`.env` 键 `YIBAN_PW_GATE`，唯一解析处见 `_pw_gate_tier`）：
 # - `full`：每个受保护操作都要当次口令（改造前的行为，逐字保留）；
-# - `risk`：**默认档**——只有风控命中（短时密集 / 换出口 IP）才要口令；
+# - `risk`：**默认档**——只有风控命中（换出口 IP，判据见 `_pw_gate_ip_changed`）才要口令；
 # - `off`：永不要求口令，只留倒计时确认与事后告警。
 # 非法值回退 `risk` 而不是 `off`：本键是安全件，一个 `.env` 笔误不得把门禁静默拆掉。
 PW_GATE_OFF = "off"
@@ -132,11 +132,6 @@ PW_GATE_FULL = "full"
 PW_GATE_TIERS = (PW_GATE_OFF, PW_GATE_RISK, PW_GATE_FULL)
 PW_GATE_ENV_KEY = "YIBAN_PW_GATE"
 PW_GATE_DEFAULT = PW_GATE_RISK
-
-# `risk` 档的风控判据（同 session 危险操作密度）：窗口内达到该次数即升级为"当次要口令"。
-# 与豁免 TTL / 复核冷却同处一份门禁参数，改动时一眼能看见三者的关系。
-PW_GATE_RISK_WINDOW = 300
-PW_GATE_RISK_MAX = 3
 
 # 仓库公开模板（.env.docker.example）自带的字面量默认口令。
 # 随仓库公开 = 众所周知字符串，忘改即后台口令为公开知识。

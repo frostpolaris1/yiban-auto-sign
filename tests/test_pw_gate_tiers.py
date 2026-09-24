@@ -11,9 +11,9 @@
 `risk`/`off` 档用两件软摩擦替代事中口令：不可逆操作要请求体带 `confirm_delay_ack`
 （前端倒计时后置 true），以及最高危两类操作**成功之后**补一封管理员告警。
 
-风控两条判据（`risk` 档，命中任一即当次要口令）：同 session 300 秒内危险操作达到
-3 次（含本次）；本次出口 IP 与登录时记录的不一致。**无登录 IP 记录的历史会话视为
-未知，不触发**——否则升级后存量会话人人被判异常。
+风控唯一判据（`risk` 档）：**换环境**——本次出口 IP 与本会话"已验证 IP"（最近一次
+口令验证通过的出口）不一致，会话还没验证过则退回登录出口。**两级都无记录的历史会话
+视为未知，不触发**——否则升级后存量会话人人被判异常。
 
 全程 mock / 纯本地（Flask test client），无任何网络请求。
 用法（项目根目录）：
@@ -26,7 +26,6 @@ import os
 import shutil
 import sys
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -70,8 +69,8 @@ def _load_webapp():
 class _TierBase(unittest.TestCase):
     """临时 .env/DB + 主管理员会话；每格操作都从"新 app + 新登录"起。
 
-    风控时间戳日志与高危额度都是 create_app 的工厂局部状态，换一个 app 就是干净的一份
-    ——所以矩阵里每格都重开 app，格与格之间不会互相把对方顶进风控或 429。
+    高危额度是 create_app 的工厂局部状态，换一个 app 就是干净的一份——所以矩阵里每格
+    都重开 app，格与格之间不会互相把对方顶进 429；换环境判据只读会话，随新登录重置。
     """
 
     TIER = None  # None = 不写键（钉缺省档）
@@ -316,8 +315,8 @@ class OffTierTest(_TierBase):
                 r2 = self._call(op, c, hdr, confirm_delay_ack=True)
                 self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
 
-    def test_风控命中也不要口令(self):
-        """off 档连风控也不升级：密集 + 换 IP 双命中，仍一路放行。"""
+    def test_换环境也不要口令(self):
+        """off 档连风控也不升级：连续换出口 IP，仍一路放行。"""
         c, hdr = self._fresh()
         for i in range(3):
             r = self._call("creds", c, hdr, _xff=f"203.0.113.{i + 1}")
@@ -334,84 +333,61 @@ class OffTierTest(_TierBase):
 
 
 class RiskTriggerTest(_TierBase):
-    """`risk` 档的两条风控判据，以及"无登录 IP 记录不触发"。"""
+    """`risk` 档的唯一判据"换环境"，以及"无已验证/登录 IP 记录不触发"。"""
 
     TIER = "risk"
 
-    def test_同session第三次危险操作要口令(self):
-        c, hdr = self._fresh()
-        for i in range(2):
-            r = self._call("creds", c, hdr)
-            self.assertEqual(r.status_code, 200,
-                             f"第 {i + 1} 次尚未达阈值，不该要口令：{r.get_data(as_text=True)}")
-        r = self._call("creds", c, hdr)
-        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["reason"], "password_required")
-        # 命中风控的路径与 full 档同路：带对口令即放行
-        r2 = self._call("creds", c, hdr, confirm_password=ADMIN_PASS)
-        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
-
-    def test_换出口IP要口令(self):
+    def test_换IP后首次危险操作要口令(self):
         c, hdr = self._fresh()
         r = self._call("creds", c, hdr, _xff="203.0.113.7")
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["reason"], "password_required")
+        # 命中后的路径与 full 档同路：带对口令即放行
+        r2 = self._call("creds", c, hdr, confirm_password=ADMIN_PASS,
+                        _xff="203.0.113.7")
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+
+    def test_同IP不要求口令(self):
+        """同一出口的危险操作不因"次数多"而被要求口令：密度不是判据。"""
+        c, hdr = self._fresh()
+        for i in range(3):
+            r = self._call("creds", c, hdr)
+            self.assertEqual(r.status_code, 200,
+                             f"第 {i + 1} 次同出口操作不该要口令：{r.get_data(as_text=True)}")
+
+    def test_换IP后口令正确则该IP被记住且后续不再要口令(self):
+        c, hdr = self._fresh()
+        r = self._call("creds", c, hdr, _xff="203.0.113.7")
+        self.assertEqual(r.get_json()["reason"], "password_required")
+        r2 = self._call("creds", c, hdr, confirm_password=ADMIN_PASS, _xff="203.0.113.7")
+        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
+        # 同一出口后续危险操作不再重复要求（验证通过即记住该 IP）
+        r3 = self._call("creds", c, hdr, _xff="203.0.113.7")
+        self.assertEqual(r3.status_code, 200, r3.get_data(as_text=True))
+        # 记住的是**最近一次验证过的出口**，不是把登录出口永久放行：换回登录出口
+        # 仍要一次口令（否则"记住"就退化成"见过即信任"的白名单）
+        r4 = self._call("creds", c, hdr)
+        self.assertEqual(r4.status_code, 400, r4.get_data(as_text=True))
+        self.assertEqual(r4.get_json()["reason"], "password_required")
 
     def test_无登录IP记录不触发(self):
-        """历史会话没有 login_ip 键 = 未知，不得因此把所有人判成换 IP。"""
+        """历史会话没有 login_ip 键、也没验证过口令 = 未知，不得因此判成换环境。"""
         c, hdr = self._fresh()
         with c.session_transaction() as sess:
             sess.pop("login_ip", None)
         r = self._call("creds", c, hdr, _xff="203.0.113.7")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
 
-    def test_同IP单次操作不触发(self):
+    def test_换环境命中后的口令失败仍发门禁失败告警(self):
+        """换环境才要求口令，但失败计数与告警这条信号不得因此静音。"""
         c, hdr = self._fresh()
-        r = self._call("creds", c, hdr)
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-
-    def test_风控命中后的口令失败仍发门禁失败告警(self):
-        """命中风控才要求口令，但失败计数与告警这条信号不得因此静音。"""
-        c, hdr = self._fresh()
-        for _ in range(2):
-            self.assertEqual(self._call("creds", c, hdr).status_code, 200)
         self.alerts.clear()
         for _ in range(3):
-            r = self._call("creds", c, hdr, confirm_password="WrongPass999!")
+            r = self._call("creds", c, hdr, confirm_password="WrongPass999!",
+                           _xff="203.0.113.7")
             self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
             self.assertEqual(r.get_json()["reason"], "password_incorrect")
         self.assertIn("高危操作二次鉴权失败告警", [t for t, _b, _u in self.alerts])
-
-
-class RiskStoreHygieneTest(_TierBase):
-    """风控时间戳日志同样走统一回收：海量不同出口 IP 打不爆内存。"""
-
-    TIER = "risk"
-
-    def test_风控日志表被统一回收(self):
-        limit = self.webapp._IP_STORE_LIMIT
-        captured = []
-        real_trim = self.webapp._ip_store_trim
-
-        def spy(store, max_age):
-            captured.append(store)
-            return real_trim(store, max_age)
-
-        c, hdr = self._fresh()
-        with mock.patch.object(self.webapp, "_ip_store_trim", side_effect=spy):
-            self.assertEqual(self._call("creds", c, hdr).status_code, 200)
-        # 风控表的值是"时间戳列表"（其余门禁/限速表是元组），据此认出来
-        risk_stores = [s for s in captured
-                       if any(isinstance(v, list) for v in s.values())]
-        self.assertTrue(risk_stores, "risk 档写入路径必须对风控时间戳日志做 trim")
-        store = risk_stores[0]
-        stale = time.time() - (self.webapp._IP_STORE_MAX_AGE + 3600)
-        for i in range(limit + 1):
-            store[(f"203.0.113.{i % 251}", f"u{i}")] = [stale]
-        self.assertGreater(len(store), limit, "前置：先撑出超限")
-        with mock.patch.object(self.webapp, "_ip_store_trim", side_effect=spy):
-            self.assertEqual(self._call("creds", c, hdr).status_code, 200)
-        self.assertLessEqual(len(store), limit, "超限后必须回收过期条目")
 
 
 class TierResolutionTest(_TierBase):

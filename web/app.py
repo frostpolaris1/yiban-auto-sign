@@ -117,8 +117,6 @@ from web.security import (  # noqa: E402
     PW_GATE_FULL,
     PW_GATE_OFF,
     PW_GATE_RISK,  # noqa: F401
-    PW_GATE_RISK_MAX,
-    PW_GATE_RISK_WINDOW,
     PW_GATE_TIERS,  # noqa: F401
     SCRYPT_METHOD,  # noqa: F401
     TRUSTED_PROXIES,
@@ -1764,13 +1762,6 @@ def create_app(host=None):
     app.extensions["yiban_verify_fails"] = {}
     # 高危删除操作冷却 {username.lower(): (count, window_start)}（2026-08-29）
     _admin_delete_limits = {}
-    # risk 档风控判据的"危险操作时间戳日志" {(出口 IP, 用户名): [时刻, …]}：同一 session
-    # 在 PW_GATE_RISK_WINDOW 秒内达到 PW_GATE_RISK_MAX 次危险操作 ⇒ 升级为当次要口令。
-    # 与 _admin_delete_limits 刻意分开两份账：那份的语义是"真实执行过的操作额度"
-    # （判定即占用、只喂 429 文案），本份要数的是**门禁入口的尝试**——攻击者拿不到
-    # 口令时用错口令反复敲门也必须被计入，否则"先验后算"就成了密集攻击的免费通道。
-    # 值末位是时间戳，故写入路径的 _ip_store_trim 按同口径回收（防无界增长）。
-    _danger_op_events = {}
     # 日志导出限速 {ip: (count, window_start)}
     # 状态挂 extensions 保每 app 实例一份，取用点 web.routes.export_limits()
     app.extensions["yiban_export_limits"] = {}
@@ -2208,32 +2199,24 @@ def create_app(host=None):
                         "reason": PW_DENY_REASON["wrong"]}), deny_status
 
     def _pw_gate_ip_changed():
-        """本次请求的出口 IP 是否与登录时记录的不一致（无记录 = 未知，不触发）。
+        """本次请求的出口 IP 是否与本会话**已验证 IP** 不一致（无基准 = 未知，不触发）。
 
-        历史会话没有 `login_ip` 键：那种情况只能算"未知"，不能默认判异常——否则
-        升级后所有存量会话都会被判为换 IP，人人被要求输口令，正是要避免的摩擦。
+        判据是"换环境"而非操作密度：要拦的是被盗 session cookie 换个出口后用危险
+        操作拆防护（现实的会话劫持场景），而"同一出口短时连做若干危险操作"恰是管理员
+        清理垃圾账号这类最常见的合法操作，拿它当判据只会误伤。密度面另有
+        `_admin_delete_limited` 的配额兜着，不必在门禁上再叠一层。
+
+        基准取"本会话最近一次口令验证通过的出口"（`pw_ok_ip`，与豁免 TTL 共用同一个
+        键——它记的就是"这个会话在哪个出口上证明过身份"）；会话还没验证过任何口令时
+        退回登录出口 `login_ip`。两级都空 = 未知：历史会话没有 `login_ip`，那种情况
+        只能算未知，不能默认判异常，否则升级后所有存量会话都会被判为换环境，人人被
+        要求输口令，正是要避免的摩擦。
+
+        **不新造存储**：已验证 IP 就是口令验证成功那一刻写进会话的那个键（见
+        `_sensitive_password_gate` 的比对段），判定本身无需任何计数表。
         """
-        login_ip = session.get("login_ip")
-        return bool(login_ip) and login_ip != _client_ip()
-
-    def _danger_op_risk(key, now):
-        """risk 档的风控命中判定（判定即记账，含本次），返回 True = 本次要口令。
-
-        两个判据任一命中：同 session 短时密集（窗口内达到 PW_GATE_RISK_MAX 次）、
-        换出口 IP。判定必须发生在口令校验**之前**——放在后面就等于"先验后算"：
-        攻击者用错口令反复敲门时每次都还没记账，密集度永远攒不到阈值。
-        记账与判定同在一把锁里，避免并发请求各自读到"还差一次"。
-        """
-        window = PW_GATE_RISK_WINDOW
-        with _rate_lock:
-            events = _danger_op_events.setdefault(key, [])
-            events[:] = [t for t in events if now - t <= window]
-            events.append(now)
-            # 回收放在 append 之后：本表的值是时间戳列表，_ip_store_trim 读 v[-1]，
-            # 空列表会越界——先保证每桶至少一个元素再交给它
-            _ip_store_trim(_danger_op_events, window + _IP_STORE_MAX_AGE)
-            dense = len(events) >= PW_GATE_RISK_MAX
-        return dense or _pw_gate_ip_changed()
+        trusted = session.get("pw_ok_ip") or session.get("login_ip")
+        return bool(trusted) and trusted != _client_ip()
 
     def _sensitive_password_gate(data, action, *, always_required=False,
                                  deny_status=403, irreversible=False):
@@ -2248,8 +2231,9 @@ def create_app(host=None):
         **档位**（`.env` 的 `YIBAN_PW_GATE`，解析见 `_pw_gate_tier`）决定要不要口令：
 
         - `full`：下面三段判定逐字照旧，`always_required` 由调用点指定（改造前的行为）；
-        - `risk`（默认）：先做风控判定（`_danger_op_risk`），未命中直接放行；命中则
-          按"当次必须输口令"走下面三段（不吃 TTL 豁免、冷却照常生效）；
+        - `risk`（默认）：先做风控判定（`_pw_gate_ip_changed`，唯一判据 = 换环境），
+          未命中直接放行；命中则按"当次必须输口令"走下面三段（不吃 TTL 豁免、
+          冷却照常生效）；
         - `off`：永不要求口令。
 
         非 `full` 档还多一道**倒计时确认**：`irreversible=True` 的操作（不可逆清除 /
@@ -2262,7 +2246,8 @@ def create_app(host=None):
            （否则"改用对口令"就是冷却自带的绕过口子）。冷却只封这条门禁：登录、只读
            GET、以及不需要复核的写操作一律照常。
         2. **豁免**（仅 `always_required=False` 的配置类动作）：见 _pw_confirm_exempt。
-        3. **口令比对**：通过则把授权时刻与出口 IP 记进会话，供第 2 段用。
+        3. **口令比对**：通过则把授权时刻与出口 IP 记进会话——授权时刻供第 2 段的豁免
+           用，出口 IP 同时是 `risk` 档"换环境"判据的已验证基准（见 `_pw_gate_ip_changed`）。
 
         `always_required=True` 用于"必须当次输口令"的动作——不可逆清除、关闭/改道告警
         通道、角色变更、重置他人口令、改主管理员口令。调用点逐个标注，见各站点注释。
@@ -2279,10 +2264,11 @@ def create_app(host=None):
                                 "reason": PW_DELAY_ACK_REASON}), deny_status
             if tier == PW_GATE_OFF:
                 return None
-            if not _danger_op_risk(key, now):
+            if not _pw_gate_ip_changed():
                 return None
-            # 命中风控 = 当次必须输口令：豁免给的是"刚复核过的同一出口不必再输一次"，
-            # 而风控要防的恰是"同一出口短时连做危险操作"，故不吃豁免
+            # 换环境命中 = 当次必须输口令。豁免判的是"本出口刚复核过"，而这里恰恰是
+            # 本出口还没复核过，故显式置位：日后豁免口径若有变动，也不至于把命中的
+            # 那一次悄悄放行。
             always_required = True
         with _rate_lock:
             _ip_store_trim(_sensitive_pw_cooldown, cooldown + _IP_STORE_MAX_AGE)
@@ -2303,6 +2289,9 @@ def create_app(host=None):
             return jsonify({"error": PW_MISSING_TEXT[deny_status],
                             "reason": PW_DENY_REASON["missing"]}), deny_status
         if _verify_session_password(submitted):
+            # 这个出口已证明过身份：既作豁免 TTL 的依据，也作 `risk` 档"换环境"判据的
+            # 已验证基准——验证通过即记住本 IP，同一出口后续危险操作不再重复要求口令
+            # （见 _pw_gate_ip_changed）。
             session["pw_ok_ts"] = now
             session["pw_ok_ip"] = key[0]
             return None

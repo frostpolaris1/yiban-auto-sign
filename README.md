@@ -468,7 +468,7 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_LEGACY_LOGIN` | 设为 `1` 使用旧登录流程（伪造 iOS UA）；默认用真实 App 特征（推荐） | 可选 |
 | `YIBAN_WORKERS` / `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK` / `YIBAN_FALLBACK_ENABLE` / `YIBAN_FALLBACK_INTERVAL` / `YIBAN_CAPACITY_MEASURED` | 多执行体相关（单执行体部署**不需要**配置），见 [多执行体并行签到](#多执行体并行签到可选) 与 [代理配置](#代理配置可选) | 可选 |
 | `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD` | 内置主管理员账号（口令策略：至少 12 位且含四类字符中的至少三类） | 必填（Web） |
-| `YIBAN_PW_GATE` | 危险操作（改他人凭据 / 物理清除 / 删用户 / 重置他人口令 / 改角色 / 改告警通道 / 破坏性设置 / 发公告 / 执行体写 / 急停）要口令的档位：`risk`（默认，仅风控命中才要——同一会话 300 秒内第 3 次，或出口 IP 与登录时不一致）/ `full`（每个操作都当次要口令）/ `off`（永不要求）。非 `full` 档下不可逆操作还要求请求体带 `confirm_delay_ack`，最高危的两类在操作成功后补一封管理员告警；非法值回退 `risk` | 可选 |
+| `YIBAN_PW_GATE` | 危险操作（改他人凭据 / 物理清除 / 删用户 / 重置他人口令 / 改角色 / 改告警通道 / 破坏性设置 / 发公告 / 执行体写 / 急停）要口令的档位：`risk`（默认，仅换环境才要——本次出口 IP 与本会话已验证 IP 不一致，无记录视为未知不触发；验证通过即记住该出口）/ `full`（每个操作都当次要口令）/ `off`（永不要求）。非 `full` 档下不可逆操作还要求请求体带 `confirm_delay_ack`，最高危的两类在操作成功后补一封管理员告警；非法值回退 `risk` | 可选 |
 | `YIBAN_ACCOUNTS_KEY` / `YIBAN_AUDIT_KEY` / `YIBAN_TRACK_SALT` | 账号密文密钥 / 审计链 HMAC 密钥 / 访问统计盐：**按需自动生成**并写入 `.env`（分别在首次加解密账号、首次写入审计行、首次记录访问时），一般无需手填。注意：刚装好还没加过账号时，`​.env` 里可能只有管理员哈希与会话密钥——别把这一刻的 `.env` 当成「密钥齐全」归档 | 自动 |
 | `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` | 状态文件目录（默认 `/var/log/yiban`）与日志路径（按天分文件） | 可选 |
 | `YIBAN_DB_FILE` / `YIBAN_ENV_FILE` | 数据库与 `.env` 路径（默认相对路径） | 可选 |
