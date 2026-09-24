@@ -80,6 +80,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from unittest import mock
 
 import db
@@ -1375,10 +1376,56 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         self.assertTrue(urgent, "这种降级必须按 urgent 发")
 
     def test_daily_loop_is_wired_to_health_report(self):
-        """接线检查：日报调用确实挂在每日线程里（否则以上两条只是死代码）。"""
+        """接线检查：日报调用确实挂在每日线程里，且经周报闸门（否则闸门是死代码）。"""
         src = inspect.getsource(self.webapp.create_app)
         self.assertIn("_send_channel_health_report()", src)
+        self.assertIn("_channel_health_report_due()", src,
+                      "日报必须经周报闸门调用——直接调等于每天照发")
         self.assertIn("_daily_purge_loop", src)
+
+    # ---- 周报化：例行只在具名的那一天，通道降级 / 额度耗尽当天就发 ----
+    @staticmethod
+    def _healthy_status():
+        """健康快照：降级判定只看这几个结构化字段（与 _alert_channel_status 同键名）。"""
+        return {"mail_error": "", "push_error": "", "mail_usable": True,
+                "mail_recipients": 2, "push_ever_configured": False, "push_usable": False}
+
+    def _due_at(self, moment, status, exhausted=False):
+        """在指定时刻判闸门：时刻经 `yiban.clock.now` 注入，额度状态按需打桩。"""
+        with mock.patch.object(self.webapp.clock, "now", return_value=moment), \
+                mock.patch.object(self.webapp.notify, "budget_exhausted_today",
+                                  return_value=exhausted):
+            return self.webapp._channel_health_report_due(status)
+
+    def test_gate_only_fires_on_the_named_weekday_when_healthy(self):
+        """健康且非例行日不发（这是日更改周更的全部收益）；例行日发。"""
+        monday = datetime(2026, 9, 21, 9, 0, 0)
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        self.assertEqual(monday.weekday(), self.webapp._HEALTH_REPORT_WEEKDAY,
+                         "具名播报日与用例取的这一天不一致")
+        self.assertTrue(self._due_at(monday, self._healthy_status()))
+        self.assertFalse(self._due_at(tuesday, self._healthy_status()))
+
+    def test_gate_fires_off_weekday_when_channel_degraded(self):
+        """通道降级当天就发：报警器被拆这件事不能等到例行日。"""
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        degraded = dict(self._healthy_status(), mail_usable=False)
+        self.assertTrue(self._due_at(tuesday, degraded))
+        no_recipient = dict(self._healthy_status(), mail_recipients=0)
+        self.assertTrue(self._due_at(tuesday, no_recipient))
+
+    def test_gate_fires_off_weekday_when_budget_exhausted(self):
+        """额度耗尽当天就发：账本的耗尽告知标记按日重置，漏到例行日就补不回来。"""
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        self.assertTrue(self._due_at(tuesday, self._healthy_status(), exhausted=True))
+
+    def test_gate_tolerates_budget_read_failure(self):
+        """额度状态读不动时不得让日报整体缺席，也不得因此每天发。"""
+        tuesday = datetime(2026, 9, 22, 9, 0, 0)
+        with mock.patch.object(self.webapp.clock, "now", return_value=tuesday), \
+                mock.patch.object(self.webapp.notify, "budget_exhausted_today",
+                                  side_effect=RuntimeError("boom")):
+            self.assertFalse(self.webapp._channel_health_report_due(self._healthy_status()))
 
 
 class BothChannelsDeadCombinationVariantB14Test(_B14AlertGateBase):
