@@ -40,8 +40,8 @@ from yiban import window as yb_window
 def _executor_write_guard(data, action, changed):
     """执行体写操作的口令复核（返回 None = 通过，否则是 `(响应, 状态码)`）。
 
-    与 `POST /api/settings` 的系统开关**同一个门禁入口**（前端 88 号提示词要求别另立
-    一套），本函数只剩两条落点特有的判断：
+    与 `POST /api/settings` 的系统开关**同一个门禁入口**（不另立第二套，防两处口径分叉），
+    本函数只剩两条落点特有的判断：
 
     - **只在"真的会改配置"时要求**（`changed=False` = 请求值与现值一致 → 不要求）：
       日常无变更的保存不该多一道口令；
@@ -459,7 +459,7 @@ def api_settings_save():
         if (edge_front, edge_back) != _edge_before:
             edge_note = (f"缓冲已按窗口宽度上限收缩为 前 {edge_front}s / 后 {edge_back}s"
                          f"（单边不超过窗口的 20%，避免有效窗口被裁剪吃空）")
-    # 每个档位键 → 本次落盘后的**生效值**（None = 该键本次不写）。注意几处"删键≠0"：
+    # 每个档位键 → 本次落盘后的**生效值**。注意几处"删键≠0"：
     # gap 写 0 是删键、生效值回到默认，按 0 比会把"没改"当成"改了"（反之亦然）。
     proposed = {
         "start_delay_max": str(start) if has_start else None,
