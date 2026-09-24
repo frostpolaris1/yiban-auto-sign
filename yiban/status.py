@@ -18,9 +18,8 @@
 `CONCLUDED_JSON_STATUSES`，以及领取池侧的 `TASKS_*`）：补签闸门、补签轮剔除与领取池
 收尾都引用同一批对象，判定口径只有一处可改。
 
-**这里没有脱敏**：本模块只定状态词汇，状态串会随日志、日状态文件、`/api/my-accounts`
-与告警文本外发，遮手机号/凭据发生在 `yiban.masking` 与 `yiban.logging_ext` 两层，
-新增状态码时别指望本模块替你把关输出面。
+**这里没有脱敏**：本模块只是状态词汇，遮手机号/凭据发生在 `yiban.masking` 与
+`yiban.logging_ext` 两层——状态串会进日志、日状态文件与 `/api/my-accounts`，把关不在这里。
 """
 # ---- 状态码 ----
 STATUS_SUCCESS = "success"               # 签到成功（服务器确认打卡完成）

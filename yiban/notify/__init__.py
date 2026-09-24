@@ -16,8 +16,8 @@
 （`pop_exhaustion_notice` 把额度耗尽写进通道健康报告）、`web/app.py`（只读耗尽判据）、
 `web/routes/notify.py`（`get_config` 概览 + `send_test`）。
 它调用：`config`（读 .env / 解密密钥 / SSRF 白名单）、`ledger`（额度与节流）、
-`transport`（`requests` 出网）。日志一律走 logger `"notify"`，落盘经
-`yiban.logging_ext.MaskingFormatter` 遮手机号；本组件不含其它脱敏实现。
+`transport`（`requests` 出网）。日志一律走 logger `"notify"`；落盘那一层遮手机号的是
+`yiban.logging_ext.MaskingFormatter`，本组件内不含第二套脱敏实现。
 """
 
 # 公共 API 显式转发（依赖方向 config ← ledger ← transport；转发的是同一对象）。
