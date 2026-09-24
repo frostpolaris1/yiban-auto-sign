@@ -54,11 +54,59 @@ _ASSIGN_RE = re.compile(r"\bbody\.([a-z_][a-z0-9_]*)\s*=")
 _LITERAL_RE = re.compile(r"[\"']([a-z_][a-z0-9_]*)[\"']")
 # 真正写设置的调用形态（只认 YB.api("POST", "/api/settings"，不认注释与 GET 回填）
 _POST_SETTINGS_RE = re.compile(r"YB\.api\(\s*[\"']POST[\"']\s*,\s*[\"']/api/settings[\"']")
+# 注入表达式：`confirm_password: pw` / `confirm_password = pw` 这类**真的把值传下去**的
+# 形态（右侧必须有内容）。只认"整份源码里出现过该键"会把注释、文案里的键名也算成证据。
+_INJECTION_RE = r"\b%s\s*[:=]\s*\S"
 
 
 def _read(path):
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+def _strip_js_comments(src):
+    """剥掉 `//` 与 `/* */` 注释，只留可执行代码（字符串内的 `//` 不动）。
+
+    "该字段仍被声明"的证据必须是代码：注释里写一个键名不算——那正是防空挂豁免要防的
+    形态（把注入删掉、只在注释里留个键名，登记就永远是"有效"的）。只删不增，故最坏
+    情况是判得更严（漏判会在这里响亮地失败），不会把注释放行成证据。
+    """
+    out, i, n, quote = [], 0, len(src), None
+    while i < n:
+        c = src[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in "\"'`":
+            quote = c
+            out.append(c)
+            i += 1
+            continue
+        if src[i:i + 2] == "//":
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if src[i:i + 2] == "/*":
+            end = src.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _injected_fields(src):
+    """源码里以注入表达式出现的非设置字段（右侧为空不算），供"登记不得空挂"判定。"""
+    code = _strip_js_comments(src)
+    return {k for k in _NON_SETTING_FIELDS
+            if re.search(_INJECTION_RE % re.escape(k), code)}
 
 
 def _tier_keys(webapp):
@@ -131,11 +179,22 @@ class FrontendToTierTest(_Base):
         )
 
     def test_non_setting_fields_are_still_declared(self):
-        """登记的非设置字段若连 helper 也不再注入，登记本身就该删（防空挂豁免）。"""
-        helper = _read(os.path.join(JS_DIR, "core.js"))
-        stale = [k for k in _NON_SETTING_FIELDS if k not in helper]
+        """登记的非设置字段若连 helper 也不再注入，登记本身就该删（防空挂豁免）。
+
+        证据只认注释被剥掉之后的**注入表达式**（`confirm_password: pw`）：注释或文案里
+        提到该键不算——否则把注入删掉、只在注释里留个键名，这条豁免就永远"有效"。
+        """
+        injected = _injected_fields(_read(os.path.join(JS_DIR, "core.js")))
+        stale = sorted(set(_NON_SETTING_FIELDS) - injected)
         self.assertEqual(stale, [],
-                         f"这些非设置字段已无处声明，豁免失去意义：{sorted(stale)}")
+                         f"这些非设置字段已无处声明（注释里的键名不算证据），豁免失去意义：{stale}")
+
+    def test_comment_mention_is_not_evidence(self):
+        """判别力自检：只在注释里出现的键名不得被认成"仍被声明"。"""
+        self.assertEqual(_injected_fields("// confirm_password: 由 helper 注入\n"), set())
+        self.assertEqual(_injected_fields("var x = 1; /* confirm_password = pw */"), set())
+        self.assertEqual(_injected_fields("withExtra(extra, { confirm_password: pw })"),
+                         {"confirm_password"})
 
 
 class TierToFrontendTest(_Base):
