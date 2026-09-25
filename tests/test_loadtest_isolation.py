@@ -21,6 +21,7 @@ from __future__ import annotations
 import http.client
 import importlib
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -355,3 +356,33 @@ def test_concurrency_probe_mem_abort_not_reported_when_meminfo_unreadable(
     assert rc != 0
     out = (capsys.readouterr().out + "").lower()
     assert "内存饱和" not in out
+
+
+# ---------------------------------------------------------------------------
+# 10. 归属读取：库缺失 ⇒ None（owner 检查不得空过放行）
+# ---------------------------------------------------------------------------
+def test_account_owners_missing_db_returns_none(tmp_path):
+    assert isolation._account_owners(str(tmp_path / "no-such.db")) is None
+
+
+def test_loadtest_target_refuses_missing_db(tmp_path):
+    """库缺失 ⇒ 归属读不到 ⇒ 目标门拒绝（fail-closed），不再被空列表空过放行。"""
+    missing = str(tmp_path / "no-such.db")
+    with pytest.raises(isolation.IsolationError):
+        isolation.assert_loadtest_target(
+            missing, isolation.loadtest_db_fingerprint(missing))
+
+
+def test_account_owners_reads_special_char_path(tmp_path):
+    """含空格的库路径也要能只读读到 owner（只读 URI 经 pathlib 转义，不拼裸路径）。"""
+    d = tmp_path / "dir with space"
+    d.mkdir()
+    p = d / "lt.db"
+    conn = sqlite3.connect(str(p))
+    try:
+        conn.execute("CREATE TABLE accounts (owner TEXT)")
+        conn.execute("INSERT INTO accounts (owner) VALUES ('a@mock.invalid')")
+        conn.commit()
+    finally:
+        conn.close()
+    assert isolation._account_owners(str(p)) == ["a@mock.invalid"]

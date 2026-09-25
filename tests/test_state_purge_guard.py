@@ -106,6 +106,18 @@ class StateCleanupArgvTest(unittest.TestCase):
         self.assertEqual(state_cleanup.main([]), 0)
         self.assertFalse(os.path.exists(self.expired), "cron 默认路径仍要正常清理")
 
+    def test_dry_run_covers_empty_cred_state(self):
+        """空 cred-state.json 的删除必须出现在 dry-run 清单里（将删与实际一致）。"""
+        cred = os.path.join(self.tmp, "cred-state.json")
+        with open(cred, "w", encoding="utf-8") as f:
+            f.write("{}")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = state_cleanup.main(["--dry-run"])
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("cred-state.json", out.getvalue(), "dry-run 应报出空 cred-state.json")
+        self.assertTrue(os.path.exists(cred), "dry-run 不得真删")
+
 
 class CliStateGuardTest(unittest.TestCase):
     KEY = "a" * 64
@@ -188,6 +200,16 @@ class CliStateGuardTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(n, 1, "应落一条 state_purge 留痕")
+
+    def test_fingerprint_covers_empty_cred_state(self):
+        """空 cred-state.json 属将删清单：它的出现必须改变 --yes 指纹（确认覆盖到它）。"""
+        cred = os.path.join(self.state_dir, "cred-state.json")
+        fp_before = self._fingerprint()
+        with open(cred, "w", encoding="utf-8") as f:
+            f.write("{}")
+        fp_after = self._fingerprint()
+        self.assertNotEqual(fp_before, fp_after,
+                            "空 cred-state.json 未计入将删清单，指纹覆盖不到它")
 
 
 if __name__ == "__main__":

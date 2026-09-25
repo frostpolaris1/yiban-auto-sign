@@ -131,6 +131,16 @@ class SeedAccountsGuardTest(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertEqual(_counts(self.db_path), before, "拒绝路径必须零删除")
 
+    def test_refusal_does_not_create_db_file(self):
+        """拒绝路径不得留下新库文件（确认门在 init_db 之前，指纹读取不建库）。"""
+        missing = os.path.join(self.tmp, "absent-loadtest.db")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = seed_accounts.main(["--n", "2", "--db", missing,
+                                     "--env", self.env_file, "--yes"])
+        self.assertEqual(rc, 2)
+        self.assertFalse(os.path.exists(missing), "拒绝造数不得建库")
+
     def test_correct_fingerprint_wipes_and_audits(self):
         self._seed_existing("loadtest00000@mock.invalid")
         rc, _ = self._run(["--yes", "--fingerprint", self._fp()])
