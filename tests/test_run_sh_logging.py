@@ -18,7 +18,9 @@ pytest 时不钉死的话"排程"这条断言会随宿主而变。
 import io
 import os
 import shutil
+import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -115,15 +117,60 @@ class ExitTrailTest(RunShExitTrailTest):
         self.assertIn("已有签到进程在运行，本次跳过", text)
         self._assert_exit_line(text, 0)
 
+    def _seed_success_facts(self):
+        """MF-82 同批更新：SUCCESS 现在要与库内当日事实交叉核对后才采信。
+
+        给 run.sh 一个可执行的解释器（$APP_DIR/.venv/bin/python3 包装，交叉核对
+        走 $PY 直查 sqlite，不经假 timeout）+ 一个种了当日 done 行的临时库。
+        """
+        db = os.path.join(self.tmp, "facts-%d.db" % len(os.listdir(self.tmp)))
+        con = sqlite3.connect(db)
+        try:
+            con.execute("CREATE TABLE sign_tasks (phone TEXT, day TEXT, state TEXT)")
+            con.execute("INSERT INTO sign_tasks VALUES (?,?,?)",
+                        ("138****0000", _today(), "done"))
+            con.commit()
+        finally:
+            con.close()
+        venv_bin = os.path.join(self.app_dir, ".venv", "bin")
+        os.makedirs(venv_bin, exist_ok=True)
+        pyw = os.path.join(venv_bin, "python3")
+        with io.open(pyw, "w", encoding="utf-8", newline="\n") as f:
+            f.write('#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"))
+        os.chmod(pyw, os.stat(pyw).st_mode | 0o755)
+        return db
+
     def test_already_success_path_logs_exit_zero(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+        db = self._seed_success_facts()
         with io.open(os.path.join(state, f"sign-status-{_today()}.txt"), "w",
                      encoding="utf-8") as f:
             f.write("SUCCESS")
-        code, text = self._run(state)
+        code, text = self._run(state, {"YIBAN_DB_FILE": db})
         self.assertEqual(code, 0)
         self.assertIn("今天已签到成功，跳过执行", text)
         self._assert_exit_line(text, 0)
+
+    def test_forged_success_status_is_not_the_skip_path(self):
+        """MF-82 活体反例（本文件侧的钉）：手写 SUCCESS、库内当日无完成 ⇒
+        该路径不再是"已签到成功跳过"——拒绝采信 + 告警，本轮照常执行。"""
+        state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+        db = self._seed_success_facts()
+        con = sqlite3.connect(db)          # 清空当日事实：只留空表
+        try:
+            con.execute("DELETE FROM sign_tasks")
+            con.commit()
+        finally:
+            con.close()
+        with io.open(os.path.join(state, f"sign-status-{_today()}.txt"), "w",
+                     encoding="utf-8") as f:
+            f.write("SUCCESS")
+        code, text = self._run(state, {"YIBAN_DB_FILE": db})
+        self.assertEqual(code, 0, "伪造件被拒后本轮（假 timeout 退 0）正常收场")
+        self.assertNotIn("今天已签到成功，跳过执行", text,
+                         "无库内事实支撑的 SUCCESS 不得走幂等跳过")
+        self.assertIn("拒绝采信", text)
+        self.assertIn("run.sh 开始执行", text, "拒绝采信 ⇒ 按未完成继续跑本轮")
 
     def test_settled_marker_path_logs_exit_zero(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
