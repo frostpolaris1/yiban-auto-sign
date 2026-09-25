@@ -20,7 +20,10 @@
    写入时机不动——它是日历/状态展示的事实源，本表只回答"谁领了、了结没有"。
 2. **写入带 owner 条件（CAS）+ fencing token**：租约被接管后，被接管的旧执行体写不进去，
    避免"两个执行体都以为自己签成功了"；owner 相同但 `epoch` 落后时同样写不进去
-   （同 owner 重入会让 epoch 递增，见纪律 4）。
+   （同 owner 重入会让 epoch 递增，见纪律 4）。**owner 串本身不是身份证明**：同一个
+   稳定槽位名（`single@{主机名}` 之类）可能同机两个进程共用（cron 全量与网页手动），
+   故缺省身份由 `yiban.egress.runtime_owner` 拼上进程号与代次，且冲突分支不认
+   "owner 相同即重入"——重入必须出示上一代的 `epoch`。
 3. **协调不可用即拒跑（fail-closed）**：表未落地（迁移被延后）或库抖动时，`try_claim`
    返回 `(False, 0)` 并告警，**绝不**答"可执行"。答"可执行"在多执行体下会让两个执行体
    同时放行同一账号 ⇒ 两次真实登录，踩上游风控红线（"同一账号一天只真实登录一次"是本
@@ -125,7 +128,8 @@ def _utc_offset_str(seconds):
     return t.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settled=False):
+def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settled=False,
+              epoch=None):
     """原子领取一个账号。返回 `(ok, epoch)`。
 
     `ok=False` 表示"没领到，必须放弃该账号本轮"；`epoch` 是本次领取的 fencing token
@@ -135,7 +139,23 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     `allow_settled=True`——手动指定账号、补签轮重跑等显式路径用），或领取池不可用。
 
     实现是**单条 upsert**：并发下 SQLite 串行化写者，后到者的 WHERE 会看到
-    先到者已提交的行，故"只可能有一个赢家"，不需要额外的锁表。
+    先到者已提交的行，故"只可能有一个赢家"，不需要额外的锁表。判据与写入在同一条
+    UPDATE 的 WHERE 里，没有"先查后写"可被撞上的跨语句窗口。
+
+    **冲突分支的准入判据（按行状态分两条）**：
+
+    - 已了结（`done`）：只由 `allow_settled` 决定——done 行无人持有，没有租约可校。
+      `epoch` 另给了就要求行仍在这一代：`allow_settled` 的调用方若先读过行再重开，
+      落后的代说明中间已被人改过，此时必须拒绝而不是盲目覆盖。
+    - 未了结（`claimed` / `failed`）：**租约已过期**（`heartbeat_at <= now - lease_sec`，
+      崩溃自愈的唯一入口），或**出示领取时拿到的 `epoch`**（真持有者本人的轮内重试）。
+      **仅 owner 串相同不放行**：同机上两个进程可能拿到同一个身份串
+      （cron 全量与网页手动曾都是 `single@{主机名}`），把同名认成"自己人"就是两边
+      同时登录同一账号——本项目第一红线。故缺省身份须含进程号与代次
+      （`yiban.egress.runtime_owner`），重入须出示 token；重启后的新进程没有上一代的
+      token，只能等租约过期或由心跳/回收机制处置。
+
+    `epoch=None` 保持迁移期调用方的旧语义（不校验代），但**同样不允许**同名重入。
 
     库异常（表未落地/锁超时/IO）时 **fail-closed**：告警 + 返回 `(False, 0)`。
     语义：多执行体下"按可执行处理"会让两个执行体同时放行同一账号 ⇒ 两次真实登录，
@@ -144,11 +164,8 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
     from yiban.store import db
     ts = _now_str(now)
     expired_before = _utc_offset_str(lease_sec)
-    # 冲突分支的两种情形分开写清楚：
-    #  ① 已了结（done）：**无人持有**，故租约条件不适用——只由 allow_settled 决定；
-    #  ② 未了结（claimed 在飞 / failed 弃过）：自己的可重入；他人的须租约已过期
-    #     （<=：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期，见 give_up）。
     # 两条分支都自增 epoch：**任何**一次成功领取都换一代 token，旧 token 随即作废。
+    # <= 的比较口径：租约 0 秒即"立刻可接管"；弃权时租约被主动置为过期（见 give_up）。
     sql = (
         "INSERT INTO sign_claims (phone, day, owner, claimed_at, heartbeat_at, "
         "state, result, attempts, epoch) VALUES (?, ?, ?, ?, ?, ?, '', 0, 1) "
@@ -157,10 +174,11 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
         "heartbeat_at=excluded.heartbeat_at, state=excluded.state, "
         "epoch=sign_claims.epoch + 1, "
         "attempts=sign_claims.attempts + 1 "
-        "WHERE (sign_claims.state = ? AND ?)"
+        "WHERE (sign_claims.state = ? AND ? AND (? IS NULL OR sign_claims.epoch = ?))"
         "   OR (sign_claims.state IN (?, ?) "
-        "       AND (sign_claims.owner = excluded.owner "
-        "            OR sign_claims.heartbeat_at <= ?)) "
+        "       AND (sign_claims.heartbeat_at <= ? "
+        "            OR (? IS NOT NULL AND sign_claims.owner = excluded.owner "
+        "                AND sign_claims.epoch = ?))) "
         "RETURNING epoch"
     )
     try:
@@ -168,8 +186,9 @@ def try_claim(phone, day, owner, lease_sec=LEASE_SECONDS, now=None, allow_settle
         with db._conn_lock:
             cur = conn.execute(
                 sql, (phone, day, owner, ts, ts, STATE_CLAIMED,
-                      STATE_DONE, 1 if allow_settled else 0,
-                      STATE_CLAIMED, STATE_FAILED, expired_before),
+                      STATE_DONE, 1 if allow_settled else 0, epoch, epoch,
+                      STATE_CLAIMED, STATE_FAILED, expired_before,
+                      epoch, epoch),
             )
             # RETURNING 只对**真的写成**的行出行：条件不满足时零行，正是"没领到"。
             row = cur.fetchone()
@@ -456,12 +475,25 @@ def owners_since(days=RETENTION_DAYS):
 
 
 def purge(days=RETENTION_DAYS):
-    """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。"""
+    """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。
+
+    接入时钟跳变守卫（同库其余清理同形，见 `yiban.store.db._clock_jump_guard`）：
+    系统时间被拨快 >72h 时按日比较的 cutoff 会一下子跳到未来，"保留期外"的判据于是
+    把最近几天的行全部算超期——本表是**当日互斥面**（(phone, day) 的持有记录），
+    整删当日行等于把当天所有账号放行给下一个执行体重复真实登录。跳变只跳本轮：
+    守卫在越界路径上也推进参照点，下一轮（≤24h 后）即恢复正常清理。
+    守卫的 INSERT upsert 在 WAL 下即持 RESERVED 写锁，兼作 DELETE 的事务边界。
+    """
     from yiban.store import db
     cutoff = (clock.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         conn = db.get_conn()
         with db._conn_lock:
+            ok, note = db._clock_jump_guard(conn, "purge_claims_clock")
+            if not ok:
+                logger.error("%s", note)
+                conn.rollback()   # 越界路径已在守卫内提交参照点；此处只是解除写锁
+                return 0
             cur = conn.execute("DELETE FROM sign_claims WHERE day < ?", (cutoff,))
             conn.commit()
             return cur.rowcount

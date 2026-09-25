@@ -149,14 +149,17 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
     first_round = True
 
     # ---- 领取池（多执行体协调；单执行体形态下永远领得到，行为与旧版一致）----
-    # 单执行体形态的身份是稳定槽位名 `single@{主机名}`：跨重启不变，故重启后立刻认领
-    # 自己上一轮的在飞账号；代价是同一槽位名不得两台机器同时跑（跨主机靠 @主机名 区分，
-    # 同机靠运行锁挡住——单执行体形态由调用方持锁，见 yiban/engine/cli_support.py）。
+    # 缺省身份是**运行时身份**：稳定槽位名 `single@{主机名}` 再拼上本进程的进程号与代次。
+    # 稳定名跨重启不变，界面与槽位号靠它；但同机上 cron 全量与网页手动是两个进程、会得到
+    # 同一个稳定名，而领取池按 owner 串认"自己人"——那样它们就能同时放行同一账号、
+    # 各登录一次（第一红线）。进程号+代次把同名消掉。`YIBAN_EXECUTOR_ID`（并行执行体/
+    # 兜底的槽位身份）由调用方给出、本身按槽位唯一，不再叠加；单执行体形态由调用方持
+    # 运行锁，见 `yiban/engine/cli_support.py`。
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
-                   or egress.single_owner())
+                   or egress.runtime_owner(egress.single_owner()))
     claimed_day = {}   # 本进程领到的账号 → 业务日（跨午夜时逐账号不同）
     # 本进程领到的账号 → 领取时拿到的 fencing token。收尾写必须带上它：重试重插会再次
-    # 领取（同一 owner 重入也自增 epoch），故这里记的是**最近一次**的 token，旧的已作废。
+    # 领取（同一持有者重入也会换一代，故这里记的是**最近一次**的 token，旧的已作废）。
     claimed_epoch = {}
 
     def _claim(phone, day):
@@ -165,12 +168,17 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         领取池不可用时**拒跑**（fail-closed，与 `claims.try_claim` 同一纪律）：这里答
         "可执行"等于允许两个执行体同时登录同一账号，踩上游风控红线；该账号本轮空转，
         由补签轮 / 兜底执行体接手。
+
+        轮内重试会再次领取同一账号，此时必须带上第一次领到的 token：领取池对未了结行
+        的准入只有"租约已过期"或"出示当前代"两条，不带 token 的重入一律拒绝（同名进程
+        互相重入就是重复登录）。
         """
         if not db.is_initialized():
             return True  # 放行且**不碰库**：纯状态文件部署（无 DB）不该被这次签到顺手建出默认库
         try:
             got, epoch = db.claim_sign_account(phone, day, executor_id,
-                                               allow_settled=reclaim)
+                                               allow_settled=reclaim,
+                                               epoch=claimed_epoch.get(phone))
         except Exception as e:
             logger.error(f"[{_mask_phone(phone)}] 领取签到账号异常（fail-closed 拒跑）: {e}")
             got, epoch = False, 0

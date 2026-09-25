@@ -726,6 +726,11 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         # 记 error 后返回空结果——与"计划不可用"同一处置，由 runner 汇总成契约内的"未执行"
         logger.error("当日计划不可用，本轮不执行（v3 需要可用的队列库）: %s", e)
         return {}
+    # 队列 owner 用**稳定槽位名**，不叠加进程号/代次：它同时是 HRW 分片身份
+    # （`hrw.shards_of` 要求它是 `cfg["executors"]` 的成员，否则一件活都领不到）与出口
+    # 令牌桶的持久键（`egress_state.egress`，跨重启必须同名才能续上自适应速率）。
+    # 同名进程在 v3 不构成重复登录：`claim_batch` 只取 `pending` 行，冲突判据不含
+    # "owner 相同即重入"——同一行仍只会被一个进程领到。
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
                    or egress.single_owner())
     slot = _worker_slot(executor_id)
