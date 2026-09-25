@@ -251,7 +251,7 @@ class DeadAccountSkipTest(unittest.TestCase):
         修复前主循环会先睡到死号槽位才发现可跳过（活号被挤出窗口）。"""
         dead = SimpleNamespace(phone="13800000001", user_paused=False, owner="")
         live = SimpleNamespace(phone="13800000002", user_paused=False, owner="")
-        now = datetime.now()
+        now = signin.clock.now()
         schedule = {
             "13800000001": datetime.fromtimestamp(now.timestamp() + 180),
             "13800000002": datetime.fromtimestamp(now.timestamp() - 5),

@@ -26,7 +26,9 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from yiban import clock
 
 from _mail_body import render_body
 
@@ -232,7 +234,7 @@ class UserAccountSoftDeleteTest(unittest.TestCase):
         r = c.delete("/api/my-accounts/0", headers=self._csrf(token))
         self.assertEqual(r.status_code, 200)
         # 回拨 deleted_at 超过保留期
-        stale = (datetime.now() - timedelta(days=db.SOFT_DELETE_RETENTION_DAYS + 1)).strftime(
+        stale = (clock.now() - timedelta(days=db.SOFT_DELETE_RETENTION_DAYS + 1)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         conn = db.get_conn()

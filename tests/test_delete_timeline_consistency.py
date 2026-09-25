@@ -20,7 +20,9 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from yiban import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,7 +34,7 @@ STAMP = "%Y-%m-%d %H:%M:%S"
 
 
 def _stamp(delta_days=0):
-    return (datetime.now() + timedelta(days=delta_days)).strftime(STAMP)
+    return (clock.now() + timedelta(days=delta_days)).strftime(STAMP)
 
 
 class DeleteTimelineConsistencyTest(unittest.TestCase):

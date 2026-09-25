@@ -43,6 +43,8 @@ from unittest import mock
 
 import db
 
+from yiban import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -295,7 +297,7 @@ class DbFixes021Test(unittest.TestCase):
     def test_audit_cleanup_keeps_chain_without_rechain_and_detects_tamper(self):
         db.init_db(self.db_file, env_file=self.env_file)
         conn = db.get_conn()
-        old_ts = (datetime.datetime.now() - datetime.timedelta(days=200)).strftime(
+        old_ts = (clock.now() - datetime.timedelta(days=200)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         h1 = _insert_audit_row(conn, old_ts, "admin", "old1", prev_hash="")
@@ -340,7 +342,7 @@ class DbFixes021Test(unittest.TestCase):
         db.init_db(self.db_file, env_file=self.env_file)
         account_id = self._add_account("user@test.local", "13800000031")
         db.set_time_pref("13800000031", 480, "2026-08-17 10:00:00")
-        old = (datetime.datetime.now() - datetime.timedelta(days=8)).strftime(
+        old = (clock.now() - datetime.timedelta(days=8)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         db.set_account_deleted(account_id, 1, old)
@@ -597,7 +599,7 @@ class DbResidueTest(unittest.TestCase):
         src = os.path.join(self.tmp, "accounts.json")
         with open(src, "w", encoding="utf-8") as f:
             json.dump([{"phone": "13800138000", "password": "plain"}], f)
-        bak0 = src + ".bak-" + _dt.datetime.now().strftime("%Y%m%d")
+        bak0 = src + ".bak-" + clock.now().strftime("%Y%m%d")
         with open(bak0, "w", encoding="utf-8") as f:
             f.write("[]")  # 预置今日已存在的同名 .bak，制造冲突
         key = db.account_crypto.load_key(self.env_file)
@@ -1019,7 +1021,7 @@ class SmokeTest(unittest.TestCase):
 
     # ---- 2. JSON→SQLite 迁移 + 解密 + 惰性清理 ----
     def test_migration_encrypts_and_decrypts(self):
-        old = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
+        old = (clock.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
         self._write_accounts([
             {"name": "测试", "phone": "13800138000", "password": "plain-pass", "status": "active"},
             # 超期软删除账号：迁移后 load 时应被惰性清理
@@ -1081,7 +1083,7 @@ class SmokeTest(unittest.TestCase):
         db.add_account({"name": "正常", "phone": "13800138000", "password": "p1", "status": "active"})
         deleted_id = db.add_account({"name": "已删", "phone": "13900139000", "password": "p2",
                                      "status": "active"})
-        db.set_account_deleted(deleted_id, 1, datetime.datetime.now().isoformat(timespec="seconds"))
+        db.set_account_deleted(deleted_id, 1, clock.now().isoformat(timespec="seconds"))
         # 模拟批量 purge 逻辑：仅删 deleted 的
         accounts = db.load_accounts()
         deleted = [a for a in accounts if a.get("deleted")]
@@ -1094,7 +1096,7 @@ class SmokeTest(unittest.TestCase):
     # ---- 5. 软删除超期清理（2026-08-20 契约变更：移出读路径，显式调用）----
     def test_expired_soft_delete_cleaned(self):
         self._init_db()
-        old = (datetime.datetime.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
+        old = (clock.now() - datetime.timedelta(days=8)).isoformat(timespec="seconds")
         db.add_account({"name": "A", "phone": "13800138000", "password": "p1", "status": "active"})
         db.set_account_deleted(db.load_accounts()[0]["id"], 1, old)
         # 读路径不再惰性清理（防 idx 寻址漂移）：超期行在列表中保持原位
@@ -1156,7 +1158,7 @@ class SmokeTest(unittest.TestCase):
         # A 上移（已到顶，失败）
         self.assertFalse(db.move_account(id1, -1))
         # 软删除的账号不参与交换
-        db.set_account_deleted(id2, 1, datetime.datetime.now().isoformat(timespec="seconds"))
+        db.set_account_deleted(id2, 1, clock.now().isoformat(timespec="seconds"))
         self.assertFalse(db.move_account(id3, 1))  # C 之后无未删除账号
 
     # ---- 10. 审计写入 ----
