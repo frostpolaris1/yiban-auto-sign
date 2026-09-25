@@ -7,7 +7,7 @@
 对应实现：scripts/signin.py（run_queue_retry 的领取/收尾/接管路径、_write_sign_state
    的状态优先级）、yiban/engine/workers.py（run_worker_supervisor、子进程 argv
    与退出码汇总）、yiban/store/claims.py（give_up 分档 / try_claim 的 allow_failed）。
-关键断言：「同一账号同一天只碰一次」与「未了结必须能被下一轮接手」是一对：前者是防重复登录的第一道闸，后者是补签轮存在的意义——但接手要**分档**：预算耗尽档默认拦住（否则当日每轮重领一次真实登录），只有显式路径（补签轮/兜底/手动）能接。no_task
+关键断言：「同一账号同一天只碰一次」与「未了结必须能被下一轮接手」是一对：前者是防重复登录的第一道闸，后者是补签轮存在的意义——但接手要**分档**：预算耗尽档默认拦住（否则当日每轮重领一次真实登录），只有有界显式路径（补签轮/手动）能接。no_task
    也算了结（再登录一次纯属风控暴露），而 --only
    是用户主动触发可豁免（且已收敛为单进程，不再派发执行体）。每个执行体启动都会写一遍全量计划，故计划态不得覆盖已有结果，但事实之间照旧后写覆盖。子进程入口必须是
    python -m yiban.cli sign 且 argv 不得带 --workers（否则递归拉起）。
@@ -168,7 +168,7 @@ class OpenAccountIsHandedOverTest(_Base):
         _r2, calls2, _s2 = self._run(PHONE_FAIL, self.OK, executor="exec-B:2")
         self.assertEqual(calls2, [], "预算耗尽档弃权的账号不得被默认轮重领（跨轮上限）")
 
-        # 显式路径（补签轮/兜底，retry_failed=True）：必须能接手并了结
+        # 有界显式路径（补签轮/手动，retry_failed=True）：必须能接手并了结
         _r3, calls3, _s3 = self._run(PHONE_FAIL, self.OK, executor="exec-C:3",
                                      retry_failed=True)
         self.assertEqual(calls3, [PHONE_FAIL], "补签轮/兜底（显式路径）必须能接手失败账号")

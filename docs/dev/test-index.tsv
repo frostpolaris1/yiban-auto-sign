@@ -981,6 +981,7 @@ tests/test_fallback_gates.py	FallbackGateTest.test_sunday_off_never_scans	B	-	??
 tests/test_fallback_gates.py	FallbackGateTest.test_waits_before_window_then_scans	B	-	窗口 06:30 开、进程 06:05 起：先等（零扫描、无心跳），开了才扫。
 tests/test_fallback_gates.py	FallbackGateTest.test_weekend_on_scans_within_window	B	-	反向控制：周末签到已开 ⇒ 兜底照跑（门没误伤正中情形）。
 tests/test_fallback_gates.py	FallbackGateTest.test_window_closed_exits	B	-	??
+tests/test_fallback_gates.py	FallbackNotExplicitReclaimPathTest.test_fallback_leg_reclaims_retry_tier_but_not_final_tier	B	-	??
 tests/test_fallback_gates.py	FallbackOwnLockTest.test_lock_name_is_the_fallback_one	B	-	取的是**兜底自己的**锁名，不是全局锁——否则会挡住定时轮。
 tests/test_fallback_gates.py	FallbackOwnLockTest.test_second_fallback_exits_3_before_signing	B	-	??
 tests/test_fallback_gates.py	RunLockProbeTest.test_probe_ignores_own_lock_name_env	B	-	探测必须**显式**用全局锁名：兜底自己的环境变量里放的是它自己的锁名。

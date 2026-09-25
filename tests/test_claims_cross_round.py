@@ -6,14 +6,16 @@
    `final:` 档，窗口外/无点位落 `retry:` 档；`claims.try_claim` 的 `allow_failed` 显式
    参数（默认关，等价 allow_settled 那一档）；收尸路径（`reap_unreported` /
    `reap_abandoned`）默认仍可再领；崩溃留下的 `claimed` 行按租约接管不受影响；
-   `round.run_queue_retry` 把补签轮/兜底/手动三条显式路径接到 `allow_failed` 上。
+   `round.run_queue_retry` 把补签轮/手动两条**有界**显式路径接到 `allow_failed` 上；兜底常驻
+   是无界循环、取默认（不接），否则预算耗尽档在窗口内每轮重登一次。
 对应实现：yiban/store/claims.py（try_claim / give_up / reap_unreported / reap_abandoned /
    RESULT_RETRY_PREFIX / RESULT_FINAL_PREFIX / RETRYABLE_GIVE_UP_STATUSES）、
    yiban/engine/round.py（_claim / _settle_claims / retry_failed）。
 关键断言：**预算耗尽而弃权的账号，当日不得被默认参数再领**——旧行为下 `failed` 与
    `claimed` 同列"可再接手"，后面每一轮（补签轮、兜底常驻、别的执行体）都会把它重领一遍
    重走登录+签到，无上限。修法是把"该重试"（窗口外/无点位）与"不该无上限重试"
-   （预算耗尽/风控）在领取层分开：前者默认放行，后者必须走显式路径（补签/兜底/手动）。
+   （预算耗尽/风控）在领取层分开：前者默认放行，后者必须走**有界**显式路径（补签轮/手动）——兜底常驻是无界
+   循环、取默认，不得作为这条路径。
    判据的输入由被判对象写（result 前缀），故每条活体反例都自带"把结果改坏 ⇒ 默认再领必须红"
    的方向（见 MF-91）。收尸行必须仍默认可领，否则崩溃账号当天再也签不上。
 依赖：临时 sqlite（每用例重建）+ 冻结业务时钟 + 真两轮领取（无子进程、无网络）。
@@ -105,7 +107,7 @@ class GiveUpReasonTierTest(_Base):
         self.assertEqual(db.claim_sign_account(PHONE, DAY, OWNER_B), (False, 0),
                          "预算耗尽弃权后，默认参数不得再领（旧行为会无上限重来一遍）")
         ok2, e2 = db.claim_sign_account(PHONE, DAY, OWNER_B, allow_failed=True)
-        self.assertTrue(ok2, "显式路径（补签/兜底/手动）才可再领")
+        self.assertTrue(ok2, "有界显式路径（补签轮/手动）才可再领")
         self.assertGreater(e2, e1, "再领取换新代 token")
         self.assertEqual(self._row()["attempts"], 1,
                          "attempts 必须递增可查（第一次领取记 0，再领自增到 1）")
