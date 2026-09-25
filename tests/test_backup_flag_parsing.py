@@ -84,6 +84,27 @@ class BackupFlagParsingBehaviorTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertTrue("备份包不存在" in r.stderr or "恢复目标" in r.stderr, r.stderr)
 
+    def test_restore_with_missing_target_is_rejected_with_message(self):
+        """`--restore <库>` 只剩 1 个位置参数：不得因解析尾部 shift 归零而静默退 1。"""
+        r = self._run("--restore", "/tmp/yiban-no-such-archive.tar.gz")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(r.stderr.strip(),
+                        "缺目标目录必须给出诊断，不能零输出地 rc=1（解析期 shift 失败）")
+        self.assertTrue("备份包不存在" in r.stderr or "恢复目标" in r.stderr, r.stderr)
+
+    def test_restore_with_two_args_is_rejected_with_message(self):
+        """`--restore a b`（包不存在）：拒绝且带明确诊断，不静默中止。"""
+        r = self._run("--restore", "a", "b")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue("备份包不存在" in r.stderr or "恢复目标" in r.stderr, r.stderr)
+
+    def test_restore_with_extra_arg_is_rejected(self):
+        """`--restore a b c` 多出的 c 必须报错，不得被静默丢弃。"""
+        r = self._run("--restore", "a", "b", "c")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("未知参数", r.stderr)
+        self.assertIn("c", r.stderr)
+
     def test_help_exits_zero(self):
         r = self._run("--help")
         self.assertEqual(r.returncode, 0, r.stderr)

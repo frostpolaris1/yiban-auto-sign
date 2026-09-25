@@ -859,7 +859,9 @@ class BackupScriptContractTest(unittest.TestCase):
 
     def test_restore_section(self):
         """(d) --restore 必须有停服提示、删残留 -wal/-shm、恢复锚点、双验。"""
-        block = self._block('restore() {', 'if [ "${1:-}" = "--restore" ]')
+        # 切片边界取 restore() 之后的参数解析初始化行：旧的 `if [ "${1:-}" = "--restore" ]`
+        # 已被全参数 case 解析取代（不再按位置判旗标），沿用旧串会在 index() 抛错。
+        block = self._block('restore() {', 'RESTORE_MODE=0 RESTORE_ARCHIVE=')
         self.assertIn("systemctl stop yiban-web", block, "缺停服提示")
         self.assertIn("-wal", block)
         self.assertIn("-shm", block)
