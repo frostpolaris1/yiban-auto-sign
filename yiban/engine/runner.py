@@ -23,8 +23,8 @@
 
 **通信**
 输入：`argv`（缺省取 `sys.argv[1:]`）与环境变量/.env（配置只从环境读，命令行不接受
-敏感值）。输出：进程退出码（0/1/2/3/10 口径见 `docs/dev/cli.md` §3）与日志；`--json`
-由 `cli.py` 包裹。
+敏感值）。输出：进程退出码（0/1/2/3/4/10 口径见 `docs/dev/cli.md` §3；4 = 迁移完整性
+拒启，MF-40）与日志；`--json` 由 `cli.py` 包裹。
 调用谁：`accounts` / `probe` / `workers` / `round` / `executor_v3` / `state_io` / `alerts`
 / `cli_support`（跨模块一律走模块属性访问）。
 谁调用：`yiban/cli.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
@@ -253,6 +253,14 @@ def main(argv=None):
     # 对象在校验过程中被改动"；db.init_db 文档自述校验类工具应传 False）
     try:
         accounts = accounts_mod.load_accounts(migrate=not args.check_config)
+    except db.MigrationIntegrityError as e:
+        # 迁移完整性拒启（MF-40）：user_version 声称已过某迁移，但完成记录/核心产物
+        # 缺失——领取路径在这种库上只会静默零签到。这不是配置错误(1)，独立码 4 让
+        # run.sh / cron / 容器调度方区分"schema 半升级"；异常文本已点名缺哪条迁移。
+        logger.error(f"schema 迁移完整性校验失败，拒绝启动: {e}")
+        cli_support.report_fatal_error(
+            f"schema 迁移完整性校验失败，拒绝启动: {e}")
+        return cli_support.EXIT_SCHEMA_MIGRATION
     except (RuntimeError, ValueError) as e:
         # ValueError 来自 `_parse_account_dict` 的字段缺失（phone/password 为空）：
         # 配置错误同样要落成"配置加载失败 + 退出码 1"，不得变裸 traceback

@@ -2,7 +2,8 @@
 """`scripts/backup_sentinel.py` 与 `scripts/yiban-backup-sentinel.sh` 的契约用例。
 
 标签：J · 运维：部署/备份/发布
-覆盖：当日归档与 .sha256 清单齐不齐（gpg/age/明文三种形态都认）、昨日包不算今日备份、
+覆盖：当日归档与 .sha256 清单齐不齐（只有密文形态 gpg/age 计入健康——M3 批次0
+    MF-79：明文包不再算数，且单独触发告警）、昨日包不算今日备份、
     运行拷贝与仓库版的漂移比对、跨进程节流真的接上、发不出去要能看见、
     wrapper 切工作目录与导出 .env、wrapper 头部文档与"只转发"契约。
 对应实现：`scripts/backup_sentinel.py`（判定与外发）、`scripts/yiban-backup-sentinel.sh`
@@ -116,16 +117,40 @@ class SentryVerdictTest(_Base):
         self.assertEqual(self._run(), 0)
         self.assertEqual(self.mails, [], "正常路径不得外发任何告警")
 
-    def test_plaintext_and_age_forms_also_accepted(self):
-        """明文/age 形态也认：认不出会在合法部署上误报"没有备份"，那正是要消灭的噪音。"""
-        for suffix in (".tar.gz", ".tar.gz.age"):
-            with self.subTest(suffix=suffix):
-                shutil.rmtree(self.backup_dir)
-                os.makedirs(self.backup_dir)
-                self.mails.clear()
-                self._write_archive(suffix=suffix)
-                self.assertEqual(self._run(), 0)
-                self.assertEqual(self.mails, [])
+    def test_age_form_still_accepted(self):
+        """age 形态是密文，认：认不出会在合法部署上误报"没有备份"，那正是要消灭的噪音。
+
+        M3 批次0（MF-79）：`.tar.gz`（明文）从"也认"名单里移除——"明文包直接满足
+        当日包存在=健康"曾让告警链整体静默；明文判定见 test_plaintext_only_is_unhealthy。
+        """
+        self._write_archive(suffix=".tar.gz.age")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(self.mails, [])
+
+    def test_plaintext_only_is_unhealthy(self):
+        """验收不变量反例：目录里只放明文 .tar.gz（哪怕带清单）⇒ 哨兵必须告警。"""
+        self._write_archive(suffix=".tar.gz")
+        rc = self._run()
+        self.assertEqual(rc, 0, "检查完成（告警已发），退出码语义不变")
+        self.assertEqual(len(self.mails), 1, f"明文包不得计入健康，实际 {self.mails}")
+        body = self.mails[0][1].to_plain()
+        self.assertIn("明文", body, "告警要说清为什么不健康：只有明文包 = 加密链路失效")
+        self.assertIn(self.backup_dir, body, "正文要给到运维排查的路径")
+
+    def test_plaintext_not_matched_by_health_probe(self):
+        """判定原语本身：_find_archive 不得把明文包认作当日归档。"""
+        path = self._write_archive(suffix=".tar.gz")
+        found, _ = self.mod._find_archive(self.backup_dir, self.mod._now())
+        self.assertIsNone(found, f"明文包被计为健康归档：{found}")
+        self.assertNotIn(path, self.mod._archive_candidates(self.backup_dir, self.mod._now()),
+                         "健康候选名单里不应再有裸 .tar.gz")
+
+    def test_plaintext_alongside_encrypted_is_silent(self):
+        """同日既有密文又有明文残留（加密切换的过渡日）：密文已满足健康，不双告警。"""
+        self._write_archive(suffix=".tar.gz.gpg")
+        self._write_archive(suffix=".tar.gz")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(self.mails, [])
 
     def test_missing_archive_alerts_with_expected_path(self):
         self.assertEqual(self._run(), 0)

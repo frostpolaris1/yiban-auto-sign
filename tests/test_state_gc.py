@@ -33,7 +33,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import state_gc  # noqa: E402
+from yiban import clock, state_gc  # noqa: E402
 
 
 def _day(delta):  #文件名日期是判据，落盘 mtime 不是——所以造文件要连着造名字
@@ -457,10 +457,16 @@ class CleanupResidueTest(unittest.TestCase):
                             "越界路径必须推进参照点，否则清理永久冻结")
 
     def test_clock_jump_backward_blocked(self):
-        """系统时间比上次记录回拨超过 1h → 跳过清理，参照点同样推进。"""
+        """系统时间比上次记录回拨超过 1h → 跳过清理，参照点同样推进。
+
+        参照点必须与守卫同源：`db._clock_jump_guard` 用业务时钟 `clock.now()`
+        （北京时间）比对 app_meta，测试若改用裸 `datetime.now()` 取的是宿主时区
+        ——UTC runner 上"回拨 2h"实际比守卫的当前时刻早 6h，前进未超 72h →
+        放行 → 本用例在 UTC 环境必红（main 分支 CI 现存红，MF-105）。
+        """
         conn = db.get_conn()
         with db._conn_lock:
-            later = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+            later = (clock.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
                          ("test_clock_back", later))
             conn.commit()

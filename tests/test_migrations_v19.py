@@ -4,13 +4,15 @@
 覆盖三件事：
 - schema 落地：`epoch INTEGER NOT NULL DEFAULT 0`，存量行取默认 0（不可为 NULL——
   领取路径要拿它做算术，NULL 会让 `epoch = epoch + 1` 静默变 NULL）；
-- 幂等：重跑不报错、不重复加列（可选迁移失败后下次启动整段重跑）；
+- 幂等：重跑不报错、不重复加列（迁移失败则版本不提升，下次启动整段重跑）；
 - 兜底：`sign_tasks` 缺 `epoch` 时由本迁移补上（v18 若被回退，v19 仍是可用的护栏）；
-- 登记口径：v19 是**可选迁移**，失败不阻断启动、不提升 user_version。
+- 登记口径：v19 是**核心迁移**（MF-40 修复改判：`try_claim`/`claim_batch` 把 `epoch`
+  当硬编列名，缺列则整条 v3 领取路径静默拒跑——失败必须阻断启动，不得只告警）。
+  v20 仍为可选档（补的是台账数据，延后重试即可）。
 
 标签：C · 存储：迁移与库完整性
 覆盖：`sign_claims.epoch` 的加列（NOT NULL DEFAULT 0、存量行取默认）、整段重跑的幂等、
-`sign_tasks` 缺列时的兜底补齐，以及 v19/v20 在迁移登记里的"可选"档位。
+`sign_tasks` 缺列时的兜底补齐，以及 v19（核心）/v20（可选）在迁移登记里的档位。
 对应实现：`yiban/store/` 的 v19 迁移函数与迁移登记表（`_registry_up_to` 按它取前缀）。
 关键断言：`epoch` 必须 NOT NULL——领取路径要拿它做 `epoch = epoch + 1` 的算术，
 NULL 会让整行静默变 NULL 而不是报错，这类"约束缺失"比"列缺失"更难发现，所以
@@ -107,11 +109,11 @@ class SchemaTest(_Base):
         self.assertEqual(col["notnull"], 1, "epoch 必须 NOT NULL：NULL 会让自增算术静默失效")
         self.assertEqual(str(col["dflt_value"]), "0")
 
-    def test_v19_is_optional(self):
-        """可选迁移：失败只告警不阻断启动（epoch 属护栏，不是启动必需能力）。"""
+    def test_v19_is_core(self):
+        """核心迁移：epoch 是 try_claim 硬编列名，失败必须阻断启动（MF-40 改判）。"""
         narrow = self._registry_up_to(19)
         self.assertEqual(narrow[-1][0], 19, "≤19 的登记尾项应是 v19")
-        self.assertIs(narrow[-1][3], False)
+        self.assertIs(narrow[-1][3], True)
 
     def test_v20_is_registered_as_optional(self):
         """v20 同为可选迁移（补账失败只告警，下次启动整段重跑收敛）。"""
@@ -174,10 +176,14 @@ class IdempotenceTest(_Base):
             conn.close()
 
 
-class OptionalRegistrationTest(_Base):
-    """v19 失败不得阻断启动、不得提升 user_version。"""
+class RegistrationTierBehaviorTest(_Base):
+    """框架档位语义：登记表里可选档的条目失败只告警不阻断；核心档失败阻断。
 
-    def test_v19_failure_does_not_block_startup(self):
+    （v19 **本体**已是核心档——见 `SchemaTest.test_v19_is_core`；本类打桩的是登记表
+    对该档位标志的通用处理，不是 v19 的登记值。）
+    """
+
+    def test_optional_tier_entry_failure_does_not_block_startup(self):
         def failing_v19(conn):
             raise RuntimeError("boom")
 
@@ -187,6 +193,19 @@ class OptionalRegistrationTest(_Base):
             conn = db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
             self.assertIsNotNone(conn)
             self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
+        finally:
+            db._MIGRATIONS = old
+
+    def test_core_tier_entry_failure_blocks_startup(self):
+        def failing_v19(conn):
+            raise RuntimeError("boom")
+
+        old = db._MIGRATIONS
+        db._MIGRATIONS = [(19, "v19_failing", failing_v19, True)]
+        try:
+            with self.assertRaises(RuntimeError):
+                db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+            self.assertIsNone(db._conn, "核心失败必须复位连接（阻断启动）")
         finally:
             db._MIGRATIONS = old
 
