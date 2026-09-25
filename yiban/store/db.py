@@ -12,7 +12,8 @@
 
 本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
-- `migrations`：建表/索引、`migrate_v1..v19`、版本编排 `_run_migrations`，以及 JSON → SQLite
+- `migrations`：建表/索引、`migrate_v1..v20`、版本编排 `_run_migrations` 与完整性校验
+  （`MigrationIntegrityError`：迁移记录/核心产物缺失 ⇒ 拒启），以及 JSON → SQLite
   自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
 - `events`：sign_events 的写入/查询/统计与保留期清理，以及 audit_logs 上的暂停冷却查询。
@@ -247,13 +248,14 @@ _audit_cleanup = _cleanup._audit_cleanup
 _purge_expired_deleted = _cleanup._purge_expired_deleted
 purge_expired_deleted_accounts = _cleanup.purge_expired_deleted_accounts
 
-# 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v19、版本编排
+# 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v20、版本编排
 # `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
 # / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
 # （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。JSON → SQLite 自动导入两名
 # （`_maybe_migrate` / `_rename_backup`）同样走读写转发：门面内的 `init_db` 按属性晚解析
 # 调用它们，快照式再导出会让 `db._maybe_migrate = 替身` 的打桩看不到。
 MigrationDeferred = _migrations.MigrationDeferred
+MigrationIntegrityError = _migrations.MigrationIntegrityError
 _ALLOWED_TABLES = _migrations._ALLOWED_TABLES
 _table_columns = _migrations._table_columns
 _ensure_column = _migrations._ensure_column
@@ -282,6 +284,7 @@ migrate_v16 = _migrations.migrate_v16
 migrate_v17 = _migrations.migrate_v17
 migrate_v18 = _migrations.migrate_v18
 migrate_v19 = _migrations.migrate_v19
+migrate_v20 = _migrations.migrate_v20
 _run_migrations = _migrations._run_migrations
 
 logger = logging.getLogger("yiban.db")
