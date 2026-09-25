@@ -31,7 +31,7 @@ MISSING = "??"                      # 唯一允许的"解析不到"标记：绝�
 COLS = ("file", "case", "category", "needs", "guards")
 FIELDS = ("标签", "覆盖", "对应实现", "关键断言", "依赖")   # 字段名与顺序由测试文件头约定
 GROUP_LETTERS = frozenset("ABCDEFGHIJKLM")                # 标签组的合法字母（A~M）
-RUNTIMES = ("node", "bash")         # 本索引只区分这两类外部解释器依赖
+RUNTIMES = ("node", "bash")         # 只有这两种外部解释器会被标进 needs 列（其它子进程形态不算）
 # 只有 which() 的入参和 argv 首位算"真需要"：注释与 依赖 字段里提到 node 不代表会起进程
 SPAWN_FUNCS = frozenset({"run", "Popen", "call", "check_call", "check_output",
                          "getoutput", "getstatusoutput"})
