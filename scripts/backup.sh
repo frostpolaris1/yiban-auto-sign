@@ -820,7 +820,9 @@ fi
 #   cp -p 保时间戳导入、RETENTION 被改小都是真实触发路径）；
 # - 明文包从紧：裸 .tar.gz 与其侧车至多留 ${PLAIN_MAX_AGE_DAYS} 天——明文归档含
 #   .env 全部密钥，30 天保留期=30 天泄露窗口，2 天已够"昨天出事今天还有素材可查"；
-#   与 RETENTION_DAYS 取小者执行。
+#   与 RETENTION_DAYS 取小者执行。**明文 pass 豁免下界（终审 Important①）**：日备机器
+#   第 3 天的明文包仍落在最近 7 组内，下界会把头注释/rc=6 承诺的"≤2 天"静默压成 ~7 天
+#   ——下界保护可恢复性（密文是资产），明文是泄露面不是资产；机制取调用点 nofloor 标志。
 # K=7 的理由：一周兜底份数——单日误删/坏包时还有可回退的最近一整个星期；
 # 可用 BACKUP_MIN_KEEP 覆盖（0=关闭下界，仅剩 mtime 判据——自担风险）。
 MIN_KEEP_ARCHIVES="${BACKUP_MIN_KEEP:-7}"
@@ -838,17 +840,18 @@ KEEP_KEYS="$(find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*' -printf '%f\n' 2>/
     | sed -nE 's/^yiban-([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' \
     | sort -u -r | awk -v n="${MIN_KEEP_ARCHIVES}" 'NR<=n')"
 
-rotate_pass() {  # $1=文件名模式 $2=生效天数：超期且不在最近 K 组 ⇒ 删除并逐件记日志
-    local pat="$1" days="$2" f key
+rotate_pass() {  # $1=文件名模式 $2=生效天数 $3=nofloor(非空=豁免最近 K 组下界，明文 pass 专用)
+    local pat="$1" days="$2" nofloor="${3:-}" f key why
+    [ -n "${nofloor}" ] && why="> ${days} 天，明文从紧·豁免下界" || why="> ${days} 天且已过最近 ${MIN_KEEP_ARCHIVES} 组下界"
     while IFS= read -r f; do
         [ -f "${f}" ] || continue  # 前面的 pass 可能已删过同组侧车，不重复报删除
         key="$(basename "${f}" | sed -nE 's/^yiban-([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p')"
-        if [ -n "${key}" ] && [ -n "${KEEP_KEYS}" ] \
+        if [ -z "${nofloor}" ] && [ -n "${key}" ] && [ -n "${KEEP_KEYS}" ] \
             && printf '%s\n' "${KEEP_KEYS}" | grep -qxF "${key}"; then
-            continue  # 下界保护：最近 K 组之内，mtime 再老也不删
+            continue  # 下界保护：最近 K 组之内，mtime 再老也不删（明文 pass 豁免此门）
         fi
         rm -f "${f}"
-        log "轮转删除（> ${days} 天且已过最近 ${MIN_KEEP_ARCHIVES} 组下界）：$(basename "${f}")"
+        log "轮转删除（${why}）：$(basename "${f}")"
     done < <(find "${BACKUP_DIR}" -maxdepth 1 -name "${pat}" -mtime "+${days}")
 }
 
@@ -856,15 +859,16 @@ PLAIN_DAYS="${RETENTION_DAYS}"
 if [ "${PLAIN_MAX_AGE_DAYS}" -lt "${PLAIN_DAYS}" ]; then
     PLAIN_DAYS="${PLAIN_MAX_AGE_DAYS}"
 fi
-rotate_pass 'yiban-*.tar.gz' "${PLAIN_DAYS}"
-rotate_pass 'yiban-*.tar.gz.sha256' "${PLAIN_DAYS}"
+# 明文两条 pass 传 nofloor：过期即删，即使日期组仍在最近 K 内（终审 Important①）；密文/兜底仍受下界保护。
+rotate_pass 'yiban-*.tar.gz' "${PLAIN_DAYS}" nofloor
+rotate_pass 'yiban-*.tar.gz.sha256' "${PLAIN_DAYS}" nofloor
 rotate_pass 'yiban-*.tar.gz.gpg' "${RETENTION_DAYS}"
 rotate_pass 'yiban-*.tar.gz.gpg.sha256' "${RETENTION_DAYS}"
 rotate_pass 'yiban-*.tar.gz.age' "${RETENTION_DAYS}"
 rotate_pass 'yiban-*.tar.gz.age.sha256' "${RETENTION_DAYS}"
 # 兜底：旧命名/孤儿的其它 yiban-*.sha256 侧车按主保留期清（防止回到"侧车永久堆积"）
 rotate_pass 'yiban-*.sha256' "${RETENTION_DAYS}"
-log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车；最近 ${MIN_KEEP_ARCHIVES} 组受下界保护）"
+log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
 
 # 删后自检（MF-77）：轮转"删完不数不验"正是历史被清而无人知的成因之一。
 # 当日归档是整条保留策略的锚点——它不在就说明轮转（或别的什么）删错了东西，

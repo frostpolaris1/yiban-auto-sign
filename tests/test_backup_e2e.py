@@ -389,16 +389,25 @@ class RotationGuardTest(_BackupRunBase):
         self.assertTrue(os.path.isfile(self._archive_name()), "当日件不得被轮转波及")
 
     def test_plaintext_archives_expire_tighter_than_encrypted(self):
-        """明文包（含全量密钥）保留期从紧：3 天前的明文轮被删，同日密文轮按 30 天留存。"""
+        """明文包（含全量密钥）保留期从紧：**默认 K=7 下界也压不过 ≤2 天承诺**。
+
+        2026-09-25 终审 Important①：旧实现里 rotate_pass 的"最近 K 组"下界对明文 pass
+        同样生效——日备机器上 3 天前的明文包仍在最近 7 组内，"≤2 天"（脚本头注释、
+        rc=6 大字告警、预案 Task-2 方向2）被静默压成 ~7 天。旧测试用
+        BACKUP_MIN_KEEP=1 把下界关掉才通过，恰是掩盖。现按**默认 K** 钉死：
+        明文过期必删、即使其日期组仍在最近 7 组内；同组密文受下界保护照常留存。
+        """
         day = _day_str(3)
         plain = os.path.join(self.backups, f"yiban-{day}.tar.gz")
         enc = plain + ".gpg"
         for p in (plain, plain + ".sha256", enc, enc + ".sha256"):
             _age_file(p, 3)
-        r = self._run((), {"BACKUP_PLAINTEXT": "1", "BACKUP_MIN_KEEP": "1"})
+        r = self._run((), {"BACKUP_PLAINTEXT": "1"})
         out = self._out(r)
         self.assertIn(r.returncode, (0, 6), out)
-        self.assertFalse(os.path.exists(plain), f"明文包过期(2天)应删：{out}")
+        self.assertFalse(
+            os.path.exists(plain),
+            f"明文包过期(2天)必须删除——不得被默认 K=7 轮转下界静默豁免：{out}")
         self.assertFalse(os.path.exists(plain + ".sha256"))
         self.assertTrue(os.path.exists(enc), "密文包 3 天 << 30 天保留期，不得删")
         self.assertTrue(os.path.exists(enc + ".sha256"))
