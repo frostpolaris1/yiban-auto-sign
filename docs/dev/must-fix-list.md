@@ -58,7 +58,7 @@
 > 一律**只登记未修**。证据标记：✅=协调者或汇总者真复跑过；📄=静态读码可核（命令已给）；
 > ⚠=代理自报、数字或结论待独立取证。
 > **编号预约已兑现（2026-09-25 汇总）**：审查流初稿原 MF-4..25 按本节预约整体 **+36** 重编号为 **MF-40..61**；跨流对账（FA-vs-ANNOTATE）带出的 5 条注释回归记 **MF-62..66**；注释流据那 5 条反查代码、新立 **MF-67**（领取层无当日跨轮上限）。
-> **下一空号：MF-68**（审查流剩余 L2/L3/S/semgrep 的产出从 68 起排；`MF-67` 已被占用，勿双写）。
+> **收尾轮已兑现（2026-09-25 下午）**：派发 2/3 的产出登记为 **MF-68..103**（36 条，见"补充检出"节）。其简报写"下一空号 MF-67"时先于注释流 MF-67 入库，且 8 个分片代理各自自报编号造成撞车；合并入库时整体 **+1** 重排，**最终号-内容映射以该节为准**。**下一空号：MF-104**（MF-67 已被注释流占用，勿双写）。
 
 ### 高
 
@@ -485,6 +485,216 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
   这个缺口在仓内不再有任何自认）。与 MF-47 的六条绕过路径**不同轴**：MF-47 讲"同一时刻被领两次"，
   本条讲"先后每一轮各领一次且无上限"。
 
+## 补充检出（MF-68..103，2026-09-25 收尾轮 · 全部经独立裁决）
+
+> 来源：`DISPATCH-REMAINING.md` 派发 2/3。semgrep 265 条归类（`_scratch/m2rev/out/SEMGREP-TRIAGE.md`）
+> 与全部 `out/*.md` 发现节的补漏对账（`out/MF-CANDIDATES.md`：去重前 61 条自报候选 ⇒ 50 簇）。
+> **8 个分片代理各自从 67 起编号造成全面撞车，最终号由指挥者统一分配**；并入 develop 时又因 MF-67 已被注释流占用而整体 **+1**（收尾轮原稿号 = 现号 − 1，故 `out/` 各报告里的 C-nn 按本节映射查号）；本节的号-内容映射是唯一有效的。
+> 每条末注 `〔C-xx · 裁决 out/ADJ-n〕`，取证细节在对应 ADJ 报告里；本节只给四件。
+> **严重度以裁决后为准**——12 条原报"高"里有 8 条被降级或改判，5 条被驳回（见"本流否证追加"）。
+
+### 覆盖性订正（与原条目冲突时以本节为准，不必回改原条目）
+- **MF-49 ③ 那句方向写反**：原文"升级后从能搜到变搜不到"不成立。基线 `_mask_log_phones` 即宽口径，
+  `data.py:91 masked_all` 在 `:93 if q:` 之前 ⇒ **现在**粘 11 位完整号进 `q` 就恒 0 命中（`[号码]` 轮次行
+  09-24 219 行 / 09-23 226 行从来搜不到）；"上线后新增搜不到"只对现网窄口径漏出的那 124 个/日非方括号裸号成立。两半各需各的断言。
+- **MF-56 引用的 `L3` 是来源层名（`out/L3-e2e-perf.md`）不是 L03 行**；**MF-57 的"L9 持锁部分"** L09 实为外发邮箱、疑为 R9e/L37 错标；**MF-58 的 `L54`** 正文无 git 分叉内容、L54 实落 MF-41/42；**MF-60 的 `L62`** 已由 MF-41 独占、其正文真身是 L21。
+- **MF-52、MF-54 缺"合并 Lxx"头**；**MF-62..66 被压成 3 列表格**，缺"现网三态"6 格、"验收不变量"5 格（与 MF-1..39 的四件式不一致）。
+- **台账 L43 的两条主张在基线上为假**（`check_smtp_host:91-92` **显式拒** `localhost`；设置页与发送侧同用 `smtp_list()`，全仓 `smtp_host` 在前端 0 命中 ⇒ 不存在"界面说 A 真走 B"）⇒ 以本节 **MF-94** 的收窄形态为准。
+- **MF-49 的数字口径需标出处**：表里"裸号行 09-22/23/24 = 258/314/368"与 `out/V4` §2.3 实测"09-24=313 / 09-23=359（按行计，占 517/547 行）"逐字不一致且日期序列方向相反 ⇒ 必须标"哪份取证 + grep 口径（行数 or 命中数）+ 覆盖哪几日"，否则修复流无法复算。谁对不由本流裁。
+
+### J 簇 · 会把真实请求打到易班 / 拿用户凭据冒险
+#### MF-68 压测隔离链的前提不成立：经代理时 `/etc/hosts` 改写完全无效（高）
+`scripts/loadtest/scale_driver.py:221`、`concurrency_probe.py:306` 用 `dict(os.environ)` 继承全部代理键且从不摘除；引擎 `yiban/client.py:135` 裸 `requests.Session()`、`trust_env` 在生产代码 0 处设置（默认 True）⇒ 解析发生在代理端，本机 hosts 与 `--dport 443` REJECT（`mock_env.py:64`，且 REJECT 用 `-A` 追加链尾 vs ACCEPT `-I 1`）双双旁落；现网确有 Squid `127.0.0.1:3128`。"测试机"红线只有 Linux+root 两条（`mock_env.py:393-399`），生产机全中。唯一主动探测在缺省 `--egress-probe-ip=""` 下**恒走 `[SKIP]` ⇒ 代理路径下必报绿**（这才是假担保本体，判高）。全树 `atexit` 0 命中、搭建段无 try/finally。隔离件在部署线 `6d4eafa` 与基线**逐字节相同** ⇒ 代码已在现网树。
+**收窄**：外呼打出去的是**对真实号段的假凭据登录风暴**（`capacity_probe.py:426-427` 用 `test.env`/`data/yiban.db`，`seed_accounts.py:75-83` 造假密码 + `131…` 真号段）；真凭据仅在 `--db/--env` 被显式写成生产路径时成立（`required=True` 无指纹校验）。
+验收不变量：loadtest 启动即断言"环境里无任何 `*PROXY*` 键 + 探测 IP 非空 + mock 侧记账条数 == 发出条数"，任一不满足拒绝启动；`grep -rn trust_env yiban/ scripts/` 必须有正向命中。开发机本机已两次独立实测干净（hosts 0 命中、无代理变量）。〔C-09 · ADJ-5〕
+
+#### MF-69 会话 cookie 往返丢掉 `domain`，空域即对任意主机带出（中）
+`yiban/client.py:74` 把整份会话装回活动 session，`dict_from_cookiejar`/`cookiejar_from_dict` 往返折叠掉 `domain`（项目自己在 `protocol.py:456-457` 写明"域名为空即对任意主机带出"）；同族更早的一处是 `protocol.py:320-322`（legacy 命中挑战即在登录过程中做一次整 jar 往返）。三档降级里只有 `domain` 成立（`HttpOnly` 不适用、`Secure` 需 http 跳而默认流无、`expires` 由 DB 侧同业务日 + TTL 6h 双判据接管）。〔C-11⑤ · ADJ-11〕
+验收不变量：往返后的 cookie 必须保留 `domain`，或断言"活动 session 内不存在空域 cookie"。
+
+#### MF-70 重定向链信任校验晚于发出请求（低-中）
+全仓唯一 `allow_redirects=True` 在 `protocol.py:271`，链信任校验在 `:275` ⇒ 先跳后判。危害有限：校验先于 `parse_login_page(:277)`（攻击者公钥不会被装载），那一跳 jar 里只有客户端自造的随机 `csrf_token`。同文件 `:469-479` 已有"先验后发 + 5 跳封顶"的正确模板可照搬。〔C-11③ · ADJ-11〕
+
+#### MF-71 风控/WAF 失败分类整体错位，且分类口径实有**四**份（高，腿①需登机）
+`ast` 遍历 `waf.py` 全部 raise 结点得 **15 处**（14 处带"ydclearance 挑战解析失败:"前缀 + `:146` 白名单；候选稿写的"9 处"须订正），逐条过表 ⇒ **全部**落 `classify_failure → MAX_ATTEMPTS=3` 的普通重试档（`_retry_budget` 还 `clear_cache=False`）：既不清会话也不减速。最可能的触发是 `waf.py:60「未找到挑战函数」`——且不需要易盾改版，`looks_like_challenge:40` 自身就能把正常响应判成挑战页。腿②的真实文案是 requests 的 `Expecting value:`（`>2000` 拦截页过 `require_not_blocked` 后 `.json()` 抛），四份口径零命中。**第四份口径是本轮新发现**：`probe.py:68-75 PROBE_HARD_FAIL_RE`（消费点 `:253`）同样不含这些文案 ⇒ 探针与"提交即验证"路径也不预警。
+归置：登记表逐词元（`WAF`/`风控`/`ydclearance`/`挑战`/`分类`/`MAX_ATTEMPTS`/`关键词`）**命中数全为 0**（对照组 `签到`=6、`登录`=4 证明检索通道没坏）⇒ **MF-56 未覆盖这件事，L23 只是被它挂了号**：请把 L23 从 MF-56 合并清单删掉、改挂本条。修 `is_waf_blocked` 的 `len>2000` 短路易撞测试：`tests/test_login_protocol_shape.py:617-622` 把它**当规格钉住**，须同批改。腿①默认流不可达（`solve_ydclearance` 唯一调用点在 `login_legacy` 内，`client.py:125` 默认 killyiban），开关状态需登机。〔C-13 · ADJ-12〕
+验收不变量：任意一条解析失败路径必须落进一个显式的"不可重试"档，且每档各带一条"把输入改坏 ⇒ 判据必须红"的活体反例（见 MF-91）。
+
+#### MF-72 `login_killyiban` 只判 `code==0` 即宣称成功并写缓存 ⇒ 假成功同时进日志与密文库（中）
+`protocol.py:482-489` 唯一判据是 `code==0`，随后 `logger.info("登录成功")` + 无条件 `session_store.save()`；`:382/:407` 形参 `csrf` 被缓存值覆盖。主后果是**审计不可信**（假成功写进 `session_cache` 密文库）与重复真实登录；漏签不成立（`:404-407` 探针判死会自愈）。
+**修法锚点须订正**：被当作"正确参照"的 `login_legacy:359-360` 那句 cookie 存在性复核本身近乎恒真（`:256`/`:385` 已本地预置 `csrf_token`，`client.py:88-90` 只挡空 jar）⇒ **照抄不等于修好**，要新增的是"签发方回执"级判据。行为后果需假上游故障注入（派发 1）才能测，本流未测；现有测试把 `set_session_cache` 整体 mock（`test_login_protocol_shape.py:406/433/453`），对该缺口是瞎的。现网旁证"未登录或登录已经超时 18 次"被 `attempts.py:79-81` 的自然过期解释完全覆盖，**不可归因**。〔C-12 · ADJ-12〕
+
+#### MF-73 执行体"实测"恒取账号表第一个，且当事人零知情（中）
+`web/services/measure.py:110-116 _pick_measure_account` 恒取列表第一个（无排序/轮转/钉号），前端 `settings-quota.js:227` 传 `{}` ⇒ 每次点"实测"都用同一个不知情用户的真号发一次真实登录；一次 = **5 个请求**（`settings_api.py:1098`/`:1171` 自述 + `client.verify()` 拉任务）；全仓仅 `YIBAN_MEASURE_COOLDOWN`/`YIBAN_CAPACITY_MEASURED` 两键、**无隔离账号配置**；函数体内无任何通知调用。冷却的两处 fail-open 属实，但它是节流器不是鉴权（鉴权 fail-closed 于 `settings_api.py:1106`，且只有 `.env` 内置管理员可点，另 2 个 `role=admin` 必 403）⇒ 失控有界（600s ⇒ ≤144 次/日）。与 MF-59 根因不同（那条是"未验凭据以 ACTIVE 落库"，本条账号本就 ACTIVE、外呼由人手动触发），**不被其覆盖**。
+验收不变量：实测必须走一个显式配置的专用账号，且落选账号不得是 `accounts` 首行；每次实测写一条含操作者的审计。〔C-04 · ADJ-9〕
+
+#### MF-74 `--only` 的豁免只覆盖门，派发照旧 ⇒ 三处确定性危害（中）
+链路：`signin_api.py:225→139→150` spawn ⇒ `scripts/signin.py:124` ⇒ `runner.py:222-243`（`:227-231` 派发只看 worker 行数，豁免只挡 `_day_off_skip()`）⇒ `:242 return run_worker_supervisor(argv)`；子进程 `workers.py:142-153` 原样带 `--only`、`:132-133` 各自独立 owner 与锁名。实测 2 行 worker ⇒ 2 个子进程都带同一号。
+**"N 次真实登录"不成立**：`claims.py:150-152` 的 `state='claimed'` + fresh heartbeat 挡住了 done 分支（临时库探针：worker-0 `(True,2)`、worker-1/2 `(False,0)`）⇒ 是 **race ≤N**，归 MF-47① 族（补句见表六）。真正成立的是三条确定性后果：① 抢输的一路经 `runner.py:522-527→:620-622` rc=2 ⇒ `manual_sign.py:77,102-104` 把**其实成功了的那次点击**写成"本轮未实际签到"；② `--only` 的锁从"非阻塞即退 3"（`runner.py:352`）翻成阻塞 600s 后**无锁继续**（`workers.py:105` + `cli_support.py:112-134`）；③ web 的 `terminate()`（`signin_api.py:220-222`）只杀监督进程 ⇒ N 个子进程孤儿化。
+**"与 MF-56 有顺序耦合"两头都是错的**：`executor_count`（`schedule.py:195-219`）从不参与派发（`runner.py:227-231`）；实测 `executor_count(89|122|361, 4200s, egress∈{1,2,4}) = 1` ⇒ 现网 K≡1 由"量 ÷ 窗口"造成、不是被出口数夹死。现网部署线 `6d4eafa` 同结构；唯一未知是启用 worker 行数（`PROD-FACTS.md` 未记 ⇒ 需 4 条只读命令）。
+另记：这不是疏忽而是**记录在案的取舍**——`runner.py:232-234` 注释自述"三者照旧派发"，且 `tests/test_multi_executor_engine.py:289-331` 正向断言每个子进程都带 `--only`；而 `docs/dev/reviewfix-intended-design-20260922.md` L4-2 写的是相反意图 ⇒ 进待裁决 #8，修法必须同时移注释与测试。〔C-02 · ADJ-2〕
+验收不变量：一条 `--only <单号>` 进程树整轮 `attempts.attempt_signin` 调用数 == 1、`Popen` 记录 ≤ 1、成功时 rc ∈ {0}；且 `--only` 必须仍能返回 3。
+
+#### MF-75 容器调度器一次异常即让当天五项全废且不再重启（高，现网不触发）
+`docker/scheduler.py:341-393 main_loop` 循环体无兜底，其中 `_run_signin_child:228` 的 `Popen` 没有 `except OSError`——对照同文件 `_start_fallback_child:299` 的调用点 `:319-323` 接住并 print，即同一文件两种判法。外层无人救：`supervisord.conf` 未写 `startsecs/startretries`（默认 1s/3 次），崩溃发生在重启后第一 tick（`hm>=FIRST` 立判、`_mark_slot` 排在子进程之后）⇒ 秒级三连进 **FATAL 不再重启**；`docker-compose.yml:56-62` 的 healthcheck 只 curl web 端口 ⇒ `restart: unless-stopped` 永不救。后果是首签/补签/探针/兜底/清理同进程全废全天。
+**双跑改判**：`docker stop` **不产孤儿**（supervisord 是 PID 1，namespace 一起死）；真孤儿源是 `supervisorctl restart sched`（`stopasgroup/killasgroup` 未设）与崩溃重启，且容器子进程**其实拿引擎全局锁**（`runner.py:352`），只是全量模式 600s 后 fail-open（`cli_support.py:117-135`）＋同机 owner 同为 `single@{host}`（`round.py:169`）令 `claims.py:157` 恒放行 ⇒ 归 MF-47 补句，本条只登异常面。启用容器（`docker-compose up -d` 且不停宿主 cron）即变"已在现网"。〔C-08 · ADJ-15〕
+
+### K 簇 · 备份与运维脚本（可恢复性不可证明 + 命令注入）
+#### MF-76 备份"完成"不证明可解：明文唯一副本在验证前就被删，哨兵件从未安装（中）
+`scripts/backup.sh:559-561` 在 `try_encrypt` 返回 0（判据只有 gpg 退出码 `:146-153`）后**立刻 `rm -f "${ARCHIVE}"`**；全仓唯一能证明密文可读的 `--restore`（`:169-214` 解密 + 三重包校验 → `:260-303` integrity/audit 双验）**没有任何 cron 或代码调用点**（只在 `:653` 当提示、README:287/742 手写命令）；`:585` 的 `sha256sum "${FINAL_LOCAL}"` 是对密文自指纹，证不了可解。**同仓反证**：`docker/backup-docker.sh:103-118` 已经做了"尺寸下限 + 流式解密解包自检 + 失败删件非 0 退出"⇒ 一个仓库两套契约，**弱的那套正是 cron 装的**。口径修正：删明文那一刻 `TMPDIR_BAK` 里还有明文组件（`:108-109` EXIT trap 收尾才清），且删除发生在异机同步之前。另一半是 **`backup_sentinel` 在现网从未安装**（V8 三源同判：L19 内容在登记表零命中；MF-34/MF-65 只覆盖相邻的退出码与注释）。
+验收不变量：当日归档必须能经 `--restore` 解到临时目录且 `integrity_check=ok`，否则**不得删明文、不得出清单、非 0 退出**。〔C-23/L19 · ADJ-6〕
+
+#### MF-77 备份轮转按 mtime 删、无最少保留、删后不数不验（中）
+`backup.sh:646-649` 四条 `find -mtime +N -delete`；`RETENTION_DAYS`（`:66`）零校验 ⇒ `RETENTION_DAYS=0` 是合法值（`-mtime +0` = 删掉除当天外全部）；哨兵只查**当日**包存在（`backup_sentinel.py:12-13,94-103`）⇒ 历史被清而当天件在 ⇒ 完全静默。真实触发是时钟前跳、`cp -p` 保时间戳拷入、或 RETENTION 被改小（**不是**"mtime 变新"）。反证：同仓 `pull-prod-backup.sh:250-258` 已是"按文件名日期保留最近 N 份"并有 `:127` freshness_check。加重项：备份目录与主库同机 + `REMOTE_BACKUP` 默认空 ⇒ 退化成同盘单份。〔C-24② · ADJ-6〕
+
+#### MF-78 `pull-prod-backup.sh`：一个环境变量就能在**生产机**上执行任意命令（高）
+`:50 REMOTE_DIR="${REMOTE_BACKUP_DIR:-…}"` 与 `:52 MAX_FETCH` 被**未加引号地插进** `:85`/`:112` 的远端命令串 ⇒ `REMOTE_BACKUP_DIR='x; id #'` 一步成立，零文件名配合，且 `MAX_FETCH` 全脚本无整数校验。提报的"远端 `ls` 文件名回流"支（`:93-96` 单引号拼接）也成立但更窄：实测必须含 `'` 才能闭合（`$()`/反引号在单引号内不执行）；`:203 IFS= read -r` + `:209 basename` 不滤元字符。增量：跳过 `:213-215` 后"远端哈希自证"（`:233`）在远端失陷下结构性无效 ⇒ 执行/投放/反取证一条完成。`:49 SSH_HOST` 另给**本机** RCE（`-oProxyCommand` 作单 argv，中）。
+**"现网未启用"不算豁免**：`:85` 的 glob 正命中生产同机的 `.gpg` 产物，真豁免只有"仓内 0 调度 + 跑在工作站"，而 `:28-32` 正在劝运维排调度 ⇒ 明天配了就爆。契约测试 10 条全是 `assertIn` 读源码文本 ⇒ 与 MF-10 同族假绿。生产实件与仓内是否同源=未知（MF-42）。
+验收不变量：所有进远端串的变量必须经白名单校验（目录必须匹配 `^/[\w/.-]+$`、`MAX_FETCH` 必须是整数），并有一条"注入值 ⇒ 拒绝执行且退非 0"的活体反例。〔C-25 · ADJ-14〕
+
+#### MF-79 `BACKUP_PLAINTEXT=1` 一个开关即产出含 `.env`+整库+`accounts-key` 的明文包，且哨兵认它"健康"（中-高）
+明文包落 `${BACKUP_DIR:-/var/backups}/yiban-<date>.tar.gz`（`:65/:107/:533`，文件 0600/umask 077，但 `:355` **从不 chmod 目录**）；构成件已核全：`.env`(`:76`,`:361-368`) + 整库(`:390-427`) + `keys/accounts-key`(`:440-443`) + state 白名单 + 30 天 `sign-*.log`(`:509-517`)；零确认、零落盘护栏，且明文包同样享 30 天保留。**最硬的一条不在原指控里**：`backup_sentinel.py:70 ARCHIVE_SUFFIXES` 含 `.tar.gz` ⇒ **明文归档直接满足"当日包存在 = 健康"**，任何告警只进 MF-42 实测 0644 的 `backup.log`。
+提醒：登记表 424 行把"明文凭据进备份包"记为误报，那依据（`:482-489`）挡的是 **state 白名单**，不可用来否掉本条。〔C-24③ · ADJ-14〕
+
+#### MF-80 备份的三道路径护栏在 `tar` 自身非 0 退出时**整体 fail-open**（中）
+`:58 set -euo pipefail` 使 `:201/:205/:211` 三护栏在 `tar` 非 0 时**全部不执行**（活体复现"GUARD_SKIPPED"，去掉 pipefail 才会拒绝），叠加两处 `2>/dev/null` 吞诊断。
+**原指控的两条口径不成立、行号错了**：唯一 `--anchored` 站点是 `:216-217`（`:551-558` 是明文告警块、`:509-517` 是日志入包）；`--anchored` 在无 pattern 的抽取上是死选项（非 GNU 方言下首选恒失败 ⇒ 加固从未存在），去掉它不多打任何目录；换行拆行**绕不过**穿越判据，反而 `data/x\nlog.txt` 会让 `:205` 的 `^l` **误拒一份好备份**。路径穿越在 GNU tar 默认消毒（全脚本无 `-P`）下现网不成立、非 GNU 方言下条件成立。〔C-24④ · ADJ-14〕
+
+#### MF-81 `run.sh` 把"写失败"当成状态翻转：一面漏签、一面再跑整轮真实登录（高-条件可达）
+① `run.sh:331` `: > "$SECOND_DONE_MARKER" 2>/dev/null || true` 零留痕 ⇒ 标记缺失时 `:286` 不跳、`:292-297` 状态非 SUCCESS、`:306` **再跑一整轮真实登录**（重复真实登录；现网被 `PROD-FACTS.md:34`"07:12 从未拿到锁"遮蔽）。② 镜像面 `:110-114` 把 **noclobber 写失败**当成"今日已触发"⇒ 导出 `YIBAN_SECOND_RUN=1` ⇒ `:201` **静默关闭进程内补签轮**（漏签；脚本自己在 `:50-52` 承认这条混淆），而现网补签只剩这一条通道。③ `:128-131` 对锁目录做属主硬校验，对承载判定的 `STATE_DIR` **零校验**。④ `:17` `.env` 不可读时无 else 分支、静默回落默认值（配合 PROD-FACTS"仅 root 可读"与 README:824 的用户位 `yiban`）。⑤ `:204` 用 `_is_truthy`、`:276` 用 `= "1"` ⇒ 同一键两套取值域。MF-43② 登记的是同段另外三面，"写失败 ⇒ 状态翻转"未登记。〔C-06 · ADJ-6〕
+验收不变量：任何决定"跑/不跑"的写入必须判码，写失败一律走 fail-closed（不跑并告警），且不得存在"写失败==已完成"的等价类。
+
+#### MF-82 `run.sh` 无条件采信 `sign-status` 文本 ⇒ 与 MF-46 的注入面成环（中）
+`:292-297` 与 `:316` 精确等串采信，无属主/来源/与库内事实的交叉核对 ⇒ 伪造或搬走 `STATE_DIR` 即可让当天 89 个账号一次不签，日志与真实成功一字不差。
+**注入通道要降格**：快照上枚举写入方（`sign-status|STATUS_FILE|yiban-settled|yiban-run-today` 在 `*.py *.sh *.js`）**只命中 run.sh + 3 个测试** ⇒ 不是低权远程注入；环的另一半只能走 MF-46 的 `.env` 臂，而该臂在 `9d3f491` **仍活**（`web/services/env_io.py:238-239` 只验本次传入值、`:243/251` 仍 `splitlines()+join` ⇒ 存量潜伏分隔符被实体化；`:280/294 ensure_secret_key()` 是不需人为动作的第二条触发器，见 MF-84）。〔C-07 · ADJ-6〕
+
+### L 簇 · `.env` 写入面（安全开关可被静默改）
+#### MF-83 `.env` 的整文件读-改-写不保证持锁，锁责任写在 docstring 里（中）
+`yiban/infra/env_io.py:write_env_keys` 函数体不持锁（`:234` docstring 推给调用方），运行期无痕迹。逐个核完 10 个写入点：**9 个真持锁**（`account_crypto.py:318-323`、`audit_chain.py:129-133`、`tracking.py:69-73`、`web/services/env_io.py:232/260`、`me.py:118`、`settings_api.py:861`、`executor_env.py:193/220/240`、`probe.py:189`），**1 个不持锁**：`scripts/loadtest/seed_accounts.py:32-57`（无锁 + `open(path,"w")` 就地截断 + `:149` 把 `YIBAN_GLOBAL_PAUSE` 写成 `"0"`）。"拿不到锁 30s 后告警并继续写"（`locks.py:128-131`）今天不可达（`.env` 那把锁内查不到慢 I/O；MF-57 的 150 分钟是**另一把** `_file_lock`），但"锁文件建不出来""相对路径 + 不同 cwd 使 `abspath` 分叉"两支不需要攻击者（后者已在 MF-57，不重复）。后果是**整行消失**而非值覆盖（后落盘者的 `out` 里根本没有对方刚 append 的那行；delete 语义还会把对方新行删成不存在）。〔C-16 · ADJ-13〕
+验收不变量：锁在 `write_env_keys` 内部取得（外层拿不到即失败），并有一条 `grep` 级断言"不存在不持锁的 `.env` 写入方"。
+
+#### MF-84 `ensure_secret_key` 用宽松读判"全新部署"⇒ 读不到就生成新钥并折叠旧键（中）
+同文件口径自相矛盾是最硬证据：`yiban/infra/env_io.py:31-32` 明写"读失败误判未配置会静默生成新钥覆盖旧钥，宁可启动失败"，该 strict 支在 `account_crypto.py:282-290`、`audit_chain.py:79` 被采纳，**唯独 `web/services/env_io.py:267` 用宽松读做同一形状的决策**。机理关键是 `:267`（宽松）与 `:279-280`（裸读）**两次不同源读取**。删除真发生：`:288-290` 无条件滤掉旧键行，`:291-293` 追加 `YIBAN_REGISTRATION_PAUSE=1` 却**不折叠旧的 `=0` 行** ⇒ 两行并存、后写覆盖先写、注册被静默关闭。权限正常时最可能的触发是"空/残缺文件窗口"（`upsert_env` 截断、`vim` 默认 unlink+新建 ⇒ 走 `FileNotFoundError` 支）；`UnicodeDecodeError` 不吞、会炸启动（排除项）。
+现网取证一条（只读）：日志里在非首启机器上重复出现"已自动生成 YIBAN_SECRET_KEY"即命中。不并入 MF-46，但须引用其影子行机制，并与 MF-58（同支宽松读的读侧 fail-open）、MF-48 交叉引用。〔C-17 · ADJ-13〕
+
+### M 簇 · 凭据与隐私出口
+#### MF-85 弱密钥只 `WARNING` 不阻断，而模板自带一把**逃过全部三条判据**的示例钥（中）
+实算（跑 `_decode_key` 同款判据）：`.env.example:18` 的 `0123456789abcdef`×4 解出 `01 23 45 67 89 ab cd ef`×4 ⇒ 全零 False、`len(set)=8` False、`bytes(range(32))`/逆序均 False ⇒ **三条全逃**。根因是判据 3 比的是**字节值**连续，而模板串连续的是**十六进制字符**（`account_crypto.py:292/300/302/304/306`）。
+打折项：`:18` 是**注释态**、`.env.docker.example` 与 compose 都不注入该键、默认自动建钥走 `:108 secrets.token_bytes(32)` ⇒ 触发需人工取消注释；"仓库挂公开 GitHub"这一支撑"高"的前提在基线与 PROD-FACTS 里查不到（实证据是 `git pull gitee server-web`）⇒ 不据此升档（公开仓一事仍留在待裁决 #6）。修法裁为**阻断 + 模板换占位**（精确比对公开串零误杀）；否决 KDF/通用熵检测——Web 侧不管理这把钥（无写侧校验点可挂），改成读侧启动即崩会把外泄风险换成全站不可用并撞 MF-50 的不可轮换。〔C-30 · ADJ-16〕
+
+#### MF-86 `phone_code` 不计入 `creds_written` ⇒ 只改设备识别码不要口令、不标凭据改写、不发变更信（中）
+读写口径互斥：读侧只认 password+phone 共 3 处（`accounts_api.py:376-377`，同式在 `logs.py:297-300`）；写侧与 password 同档 4 处（`store/accounts.py:161/443-446/454-457/467-473`）。门与信号原文行：`accounts_api.py:378-381`（门调用点）+ `app.py:2269-2275`（full 必输 / risk 未命中换环境即放行 / off 永不）、`:426-432`（"改写凭据"位）、`:437-458`（当事人信）、`:464-475`（管理员 urgent）。
+**前提订正**：`protocol.py:250/365` 两条登录函数参数里没有 `phone_code`，它只进 `sign_in_form:237-243` 的 `"Code"` ⇒ **不是账号接管**，且无下发通道（`accounts_data.py:152`）；成立的是完整性/可用性轴的静默改写。现网三态：`6d4eafa` 的 `accounts_api.py:374` 同形 ⇒ **已在现网**，且现网 `PW_GATE` 缺省 `risk`。〔C-41 · ADJ-9〕
+
+#### MF-87 `__clear__` 哨兵在进 SET 前被 pop ⇒ 清空凭据是静默空操作而接口回 200（中）
+`accounts_api.py:386-387` 与 `my.py:702-704` 把哨兵 `pop` 掉 ⇒ 不进 SET；全仓 4 个消费点无一折算成 `""` ⇒ 用户点"清除设备识别码"看到"已保存"，库里值原封不动。MF-61 只从前端侧记过"`__clear__` 空操作却回 200 + toast"，**后端为何空操作的机制未登记**（本条即机制），二者勿分两处修。〔ADJ-9 新挖 · 关联 MF-61〕
+
+#### MF-88 个人提交口把"号码是否在册"变成可定向确认的预言机（中）
+`my.py:443` 的判重打在**全站账号表**上（`accounts_data.py:94-106/179-184`），且早于任何真实外呼（`my.py:458`）⇒ 零配额、**零留痕**（`:454-458` 区间无 `db.audit`）。可达者是"已登录且名下无未删账号"的会话（现网 110−89 ≥ 21 个天然可达）。
+**两条原报数字被推翻**：限速是 `app.py:541-542` 的 60 次/10 秒 ⇒ **≈21 600 次/小时/IP**（不是 360）；但 89 个在册目标 ÷ `^1\d{10}$`(=10¹⁰) ⇒ 满速期望约 5 100 小时一次命中 ⇒ **"批量枚举"不成立**，只剩"定向确认某个号在不在册"。管理口 7 处 400 回显（`accounts_api.py:175/233/284/288/371/410/414`）行号复核为真，但回显的是**调用方自输**的 `clean['phone']`、审计与日志侧均已 `_mask_phone`（`:429/:477`）⇒ 不构成外泄；`_duplicate_phone_error:187-202` 自订的是"不泄露**归属**"而非"遮号码"⇒ 原报的"正面冲突"不成立。〔C-38 · ADJ-9〕
+
+#### MF-89 状态文件用内置 `open()` 建 tmp ⇒ 终文件继承 umask，"创建即 0600"的既有契约只覆盖部分通道（低，两条待取证）
+13 站点逐个复核（tmp 命名行 / `open()` 行 / `os.replace()` 行三行号全对上 ST-3 清单）；仓内已有合规助手 `state_io._write_private_json`（`os.open(...,0o600)`）并被 `test_probe.py:204`、`test_notify_webhook.py:1361` 钉死。内容分档：**明手机号 6 处**（`state_io.py:229/:246`、`alerts.py:321/:353`、`runner.py:591`、`cred_state.py:129`）、仅计数/时刻/pid 7 处；**凭据字段 0 处、审计明文 0 处**。两条升级口已堵：`sign-state.message` 上游已脱敏（`attempts.py:208-212`）、`cred-state.json` 只有 `fail_days/last_fail/paused_since/probe_date`。
+不成立的是"多台机全局可读"：`runner.py:142` 与 `cli.py:754` 都在 `main()` 首行 `os.umask(0o077)`，`web/deploy/yiban-web.service` 模板自带 `UMask=0077`（仓内共 12 条 umask 077 代码锚点 + 1 条 systemd 声明）；按进程切比按站点切有用——web 只写其中 3 处（cred-state / notify-ledger / notify-throttle），其模式**唯一押在实装 unit 的 `UMask=` 行上**。tmp 的真窗口不是半写而是"整表内容 + 宽模式 + 崩溃残留 ≥1 天"（`state_gc.py:83-84 _TMP_MAX_AGE_SEC=86400`）。缺的两条取证：状态目录模式（README:171 裸 `mkdir` 会是 0755）与是否存在第三用户 ⇒ 任一为"宽"则升中。
+与 `migrations.py:1195-1199`（已判入 MF-40）**同族同判**：`os.replace` 不改 mode、chmod 追不上残留 tmp，"补 chmod"劣于"只走一个通道"。〔C-28 · ADJ-8〕
+验收不变量：`tests/test_state_file_writes.py` 里**外层套 `os.umask(0o000)`** 再断言终文件 0600 + 无 tmp 残留——不加这一句，测试会继承 077 而恒绿，这正是这 13 处今天漏网的原因。
+
+#### MF-90 告警无幂等：服务端已接收之后才超时会换条目**重发同一封**，上界 10 份（中）
+机制源码级闭合：`smtplib.SMTP.__exit__` 的 QUIT 会抛未被放行的 `SMTPResponseException` ⇒ `transport.py:114` 捕获 ⇒ 换下一条目再投同一封；全仓无 `Message-ID`/幂等键 ⇒ 上界 = `web/app.py:592 MAIL_SMTPS_MAX = 10`。
+**行号与措辞订正**：`sent = sent or _send(...)` 全仓 grep 0 命中（`:111` 实为 `sendmail`，聚合真身在 `:143-147`）；`web/security.py:hash_ip` **不存在**（唯一定义在 `tracking.py:109`）。分轴后另两支不占号：OR 聚合 + `SMTPRecipientsRefused.recipients` 零消费者 ⇒ **补句 MF-44**（并写明"零记录"过头——`:112/:118-122` 逐地址记了日志，缺的是结构化投递账）；逐地址串行/每地址重建连接 ⇒ **同 MF-57**；`_classify_send_error`（`:40-42`）把证书失败与断网同文案 ⇒ 低、不占号（`:103 create_default_context()` 已挡住外泄，`:28-34` 是写明的反端口扫描取舍）。收件人 4 与 SMTP 条数是**假定值**（现网未取证）。〔C-21轴2 · ADJ-16〕
+
+### N 簇 · 自检面与数字口径（绿了但什么都没证明）
+#### MF-91 伞形条目：判据的输入由被检对象的写入者供给 ⇒ "缺陷 ⇒ 判据红"这条边被构造性切断（高，元条目）
+本簇四条（MF-92/93/94 + 已登记的 MF-52）共享一个可用一句写完的元命题：**期望集或输入来自被验证的那一方，且测试用夹具绕开同源点 ⇒ 没有任何一层会喊**。分工必须写死，否则会与 MF-54 混修：MF-54 治"**源**的分叉"（不变量＝第二份定义不存在，grep 可门禁）；本条治"**证据的独立性**"（不变量＝每道自检必须自带一条"把输入改坏 ⇒ 工具必须红"的活体反例）。**MF-54 的修法在 MF-93 这类条目上反而有害**（把两份定义收成一份自证的定义，一致得更彻底）。
+条目只管元命题 + 硬门禁 + 一张"每道自检的独立证据来源"登记表；点条目不并进来，只打标记。〔ADJ-10 总问题〕
+
+#### MF-92 `ledger_check` 拿补账的输入去对账补出来的表 ⇒ 且窗口外反向**恒红**（高）
+`ledger_check.py:128-133` 用 `sign-state-<day>.json` 验 `sign_tasks`，而 `migrations.py:861/934` 的补账来源正是同一份 `terminal_task_state` ⇒ 对被 v20 补出的那批行 check 1 构造上恒真。**措辞要改**：不是"恒通过"——check 1 只 `SELECT phone` **不比状态**，而 v20 是 `INSERT OR IGNORE` ⇒ planner 先写的行赢，"JSON 说 success / 台账说 failed"**永久失明**；而窗口之外（v20 一次性、只回看 14 天，删账号还会连带删台账）它**恒红**。骗过的门有两处：设计文档 `ledger-dual-version-design-20260923.md:258` 把它写成"迁移的唯一验收门"并承诺**三方对账**，交付时被瘦成单向；`tests/test_ledger_check.py:80-86` 的夹具刻意绕开 backfill ⇒ 13 例全绿证的不是生产数据流。另 `:144-155` check3 的 `other = total − translated − backfilled` 是残差定义（不构成独立证据）。〔C-26 · ADJ-10〕
+
+#### MF-93 容量估算是"一份算式跨两个配置层"⇒ 保存闸门按偏大值放行（中）
+`capacity.py:93` 只传 `gap`，`avg/enabled` 落 `schedule.py:69` 的 `os.environ`；**web 进程从不把 `.env` 装进环境**（`web/*.py` 内 `load_dotenv`/`os.environ[` 零命中），而 `gap` 偏偏读 `.env`（`settings_api.py:310-312`）⇒ 同一次估算跨两层。复算：W=4200/gap=10 时 avg=3⇒**323**、avg=12⇒**191**（台账写 190，差一），高估 **69%**（≈台账的"约 70%"）。骗过的门是闸门自己：展示面 `:202/:213` 与判定面 `:312-314` 共用同一个偏大值 ⇒ 两出口永远互相对齐；`test_capacity_*.py` 18 处全用 `mock.patch.dict(os.environ,…)` 造输入，测的是另一个前提。现网 89 < 191 ⇒ **当前不越线**，但界面白送约 130 个名额的错觉。〔C-27/L11 · ADJ-10〕
+
+#### MF-94 邮件配置"写 `.env`、读进程环境"+ README 教的部署方式会把新值冻住（中，含 L43 订正）
+真不同源在**读序**：`mail/config.py:_get` 是 env 优先、`.env` 兜底，而 `README.md:634` 指示的部署正是把整份 `.env` 拷成 `EnvironmentFile` ⇒ 保存的新值被启动期冻结拷贝压住，**restart 也修不好**。与 MF-51（按数组位置沿用凭据 ⇒ 才是"界面 A 凭据 B"的真路径）**不是同一条**；与 MF-50 同拓扑、不同后果面。另有 1 个新增低危点：`host` 写成 `127.0.0.1:465` 会因 `_is_ipv4_literal_like` 的"4 段全数字"判据被放成"真域名"（构造性绕过，但 `getaddrinfo` 必失败 ⇒ 后果低）。`SMTP_PORT` 非法→回退 465 有**两份实现**且发送侧零日志。
+需订正：**台账 L43 的两条主张在基线上为假**（`check_smtp_host:91-92` 显式拒 `localhost`；设置页渲染与发送侧同用 `smtp_list()` ⇒ 不存在"界面说 A 真走 B"）⇒ 本条即其收窄后的幸存形态。三态：②③④⑤代码级即可判；①需现网取证 `/proc/<gunicorn pid>/environ` 是否含 `YIBAN_MAIL_*`（按红线未登机）。〔C-22/L43 · ADJ-10〕
+
+#### MF-95 注销冷静期把 `/api/login` 变成零留痕的凭据验证器（中，代码已在现网、当前可达集合 0）
+`auth.py:92-99` 判据与 `:157-159 recoverable` 出口 ⇒ 口令输对但账号处于冷静期时既不写 `login_ok` 审计（`db.audit` 在 `if role:` 块 `:104-126` 内）也不计失败（`:160`）。应用侧确实零留痕：`audit_chain.py:359/404` 是唯一写入口且未被走到，`page_visits`/`server_metrics` 已由 v14 删除，两个限速表是进程内 dict ⇒ 只剩 nginx 一条同为 200 的 access log（不可归因）。
+**两处原报口径必须改**：①限速绑的是 `auth.py:71` 的 **10 次/60 秒/IP（600/h）**，`app.py:541-542` 的 60/10s（21600/h）是更宽的全局桶 ⇒ "无限次"与"21600/h"都不成立（XFF 由 nginx 覆盖式写、不可伪造；`-w 1` 计数不分叉）；②时延放大器**方向反了**：冷静期账号对错都跑 2 次 scrypt，不存在/活跃只 1 次 ⇒ 2× 标出的是"7 天内注销过的邮箱"（**免口令枚举**），而口令对错由响应体直告。
+三态：`6d4eafa` 的 `auth.py:92-99/153-155` 同形 ⇒ 代码已在现网；`deleted=1` 是冷静期的**超集**，"软删 0 ⇒ 此刻可达集合 0"成立，但窗口由任一用户自助注销打开 7 天 ⇒ 写"已在现网、当前可达集合 0"，**不采纳**"现网不触发"。〔C-42 · ADJ-15〕
+
+### O 簇 · 面板与接口给假信号
+#### MF-96 `POST /api/notify-test`：`force=True` 跳过冷却与两本每日额度、零审计（中）
+`web/routes/notify.py:406-414` 确实只判 `_is_builtin_admin_session()`、无 `_high_risk_gate`、零 `db.audit`（notify.py 的审计只有 `:238/:398`；全站唯一 `after_request`（`app.py:2088`）只设响应头）。外呼为真但**不是 SMTP**：`transport.py:182-188 → send(force=True)`，`:153` 把 cooldown（`:158`）与两本每日额度（`:161`）一起跳过，出口是 `:71-100` 的 ServerChan HTTPS POST 或经白名单的 custom webhook；**不能群发到任意地址**（view 不读任何请求参数，收件方 100% 来自服务端配置）。"无限额"订正为：仍吃全站 `RATE_MAX=60/10s`（`app.py:541-542,1870-1890`）+ CSRF（`:1979-2011`）+ nginx 50r/s。"不在 `app.py:2380-2390` 清单"= **同 MF-58** 的根（那份 docstring 是"必须当次输口令"的落点表，不是审计清单，提报定性偏了）。现网：该路由在部署线 `6d4eafa` 存在（`:459/:476`），触发需主管理员会话被盗。〔C-44 · ADJ-7〕
+验收不变量：第 4 次调用必须 429 且**零外呼**；每次外呼必须落一条含操作者的审计。
+
+#### MF-97 `/api/logs` 的三元组各说一件事 ⇒ 前端"是否还有更多"必然判错（中，已在现网）
+`web/routes/data.py:api_logs:91-102`：`total_lines = len(masked_all)` 在 `if q:` **之前**；`_LOG_VIEW_CAP = 5000` 在 `if show_all:` 分支**体内**赋值；`truncated = len(masked_all) > _LOG_VIEW_CAP` 在过滤**之后** ⇒ 三个数不同轴。同族两份封顶口径（`-80:` 裸字面量 vs `_LOG_VIEW_CAP`）属 MF-54 补句。复核状态：**单源未独立裁决**（纯计数逻辑，可由读码直接判）。〔C-48 · GAP-4〕
+
+#### MF-98 "我的日历"把"状态目录读不到"渲染成"这个月没签"，还把伴生文件当成额外的天（中，幻影键已在现网）
+`web/routes/my.py:615-627`：`except OSError: pass` ⇒ `ok:true` + 全月空白 + 零日志；`date = entry.name[11:-5]` 不过滤伴生文件 ⇒ `X.json.lock` 被切成 `"X.json"`、`X.json.tmp1234` 切成 `"X.json.tm"`。造键源 `runner.py:572`（每天必造 `.lock`）+ `locks.py:62` + `state_gc.py:7/81-85`（`_TMP_MARK=".tmp"`、`_TMP_MAX_AGE_SEC=86400`）。幻影键部分**已在现网**（只要写过 `sign-daily-<date>.json` 就必有 `.lock`，`python -c` 切片实跑验证），空白日历部分未知（需权限异常/目录分叉）。属 MF-45/MF-61"面板给假安心"的反面同族 ⇒ 交叉引用不合并。〔C-34 · ST-3，实跑取证〕
+
+#### MF-99 日志页用宽行模型切日志、不匹配就 `continue` ⇒ 被撑开的后半行整块静默消失（中，取证未知）
+`web/services/logs.py:91 raw.decode(…).splitlines()`，`parse_sign_log:94-116` 内 `:107` 不中即 `:110-111 continue`；`_log_lines_for:139-152` 还要 `startswith(f"[{date_str} ")` ⇒ 半行永久丢失且无计数。对照窄侧 `:85 f.readline()`。可达性依赖与 MF-86 同一个"无字符集校验"字段。与 MF-46 的 `.env` 行模型同族但对象是日志文件 ⇒ **勿并**。复核状态：单源（ST-4），机制读码可判、触发需生产日志里的裸 U+0085。〔C-36 · ST-4〕
+
+#### MF-100 脱敏上线后运维按完整手机号 `grep`/`journalctl` 恒返回空，且没有替代口径与 runbook 禁则（中，代码外面）
+盘上不再有 11 位连续数字 ⇒ 按完整号码的 shell/journalctl 检索恒空，会把人引向"这台机器没签过这个号"的错误结论。修法缺口：MF-49 的方向只覆盖"单一原语 + 展示层禁止第二套口径 + 版本号可判别"，**没有** a) 后 4 位/遮罩形态的反查工具 b) runbook 禁则。本流独立复核 `journalctl|runbook|后 4 位|反查` 在登记表命中 0。与 MF-49③（UI 侧 `q=`）分两半：代码内 vs 代码外 ⇒ 独立成条、双向交叉引用。〔C-49 · GAP-4〕
+
+#### MF-101 手动签到不在 spawn 前过滤 `user_paused` ⇒ 批量"N 个账号"计数虚高（低）
+`signin_api.py:200/:294` 不在派发前剔除已自暂停的号（全文件 `user_paused` 0 命中），单条提示与批量计数都会虚高；真正拦住的是引擎侧 `round.py:464`（rc=2、`attempt_signin=0`、日志"⏹️ 用户已取消签到"）。
+**必须同时记录这次改判**：原指控"一键暂停/周末/熔断/自暂停四类门对手动腿完全无效，急停后照样真实登录"经实跑**不成立**——①急停、②周末确实放行（但这是写进 UI 契约的**设计**：`work_settings.html:632/636`「手动签到不受影响」，由 `tests/test_global_pause.py:59` 锁定，自 `c700ae2` 即如此）；③用户自暂停**实际拦住**；④熔断放行 1 次且成功后清除记录、失败顺延 `probe_date`（半开试探语义）。三份取证共同断言的"子进程 exit 0、全链路无信号"实为 **exit 2**，并经 `signin_api.py:127 → manual_sign.py:74-76,98-105` 往当天日志写"⚠️ 手动签到未完成…本轮未实际签到"，另有 ⏹️ 状态与 `:259` 审计行。设计意图冲突另立待裁决 #8。〔C-01 · ADJ-1〕
+
+#### MF-102 窗口谓词两式不一致 ⇒ 每天恰有 1 个墙钟秒"文案已打、门未关"（低）
+`window.py:198-201` 预检用 `remaining_sec <= 0`，`:203-205 is_closed` 用 `>`，而 `_minute_of_day`（`:245-246`）只到整秒 ⇒ 在 hi（缺省 07:49:00.000~0.999）有 1 秒窗口文案已打、门未关；该请求仍在 `YIBAN_SIGN_END` 之内，只越过自设掐尾缓冲。修法：**预检改用 `_win.is_closed(now)` 复用同一谓词**。
+**严禁照原指控"补 `return`"**：`runner.py:399-412` 之后有第二道同源门必然挡住（v2 `round.py:323 _window_closed` 是 `while pending:` 弹出第一条判定、排在唯一请求出口 `:374` 之前；v3 `executor_v3.py:581` 同理排在 `claim_batch:589` 之前；`tests/test_effective_window.py:188` 断言 `attempt.call_count == 0`）。补 return 会让 `results` 留空、账号落进 `runner.py:528` 的"未执行"默认桶 ⇒ 退出码 1 + 失败邮件 + `run.sh` 写不出 SKIPPED，正是 `:267-270` 记过并修掉的坑。另清点 21 条"宣告整轮不干"的文案，除 `runner.py:401/409` 外**全部自带 break/return/continue** ⇒ 单点非家族。〔ADJ-3 残留〕
+
+#### MF-103 `core.js` 的 4 处 string-HTML 出口不在 JS 不变量的文件集内（低，潜伏 footgun 而非漏洞）
+`core.js:310/:340/:396/:57` 是仅存的 string-HTML 出口，而 `tests/test_web_js_modules.py:251-268/:270-289` 两条规则只扫 `pages/*.js` 与 `components/*.js` ⇒ **`core.js` 与 `calendar.js` 都不在文件集里**，缺口正好是被指控的那个文件。补强断言：把 `appendBody` 收成只接受节点（`:310` 那句"调用方保证可信"的注释承诺变成类型上不可表达），并把 `core.js`/`calendar.js` 纳入扫描集。
+**必须同时记录这次改判（原指控"存储型 XSS 打到管理员"不成立）**：提报把 `YB.confirmDialog({body:"…"+name})` 当成了 `openModal`——`core.js:445` 是 `body: el("div",{class:"pm-confirm-text", text: opts.body})`，`el()` 的 `text` 分支即 `core.js:56 node.textContent` ⇒ `appendBody` 在 `:309` 走 `nodeType` 分支返回，**被指控的 `:310` 分支根本不执行**。5 个被点名的调用点（`account-ops.js:83/97`、`my-accounts.js:310/337/367`）全是这个形态；全仓 11 个 `display_name` 出口逐条读完 **0 处进 innerHTML**；`setBody` 全仓 0 个调用者（死分支）；`insertAdjacentHTML/outerHTML/document.write/eval` 全 0。写侧确为真（任何登录用户可写 `name`，`accounts_data.py:217-218` 只查 `len>50` 不查字符集，而同函数 `:224` 的 `PHONE_RE` 把 phone 钉死），但只作**纵深口径附注、不挂 XSS**。"sessionStorage 里有 csrf 会放大"也不成立：同源脚本本就能 `GET /api/me` 自取 token（页面自己在 `core.js:975` 就这么干）⇒ 该事实属 L40/MF-49 的独立面，不得在 XSS 下重复计价。库里是否已有人塞 `<` = 未知（取证 SQL 在 `out/ADJ-4-xss.md` §D）。〔ADJ-4 · 关联 ST-4〕
+
+### 表六 · 补句清单（判为"同一条/应回填"，**不占号**；逐字表述见 `out/MF-CANDIDATES.md` 表二）
+
+| 目标条目 | 要补进去的要点（一句） | 出处 |
+|---|---|---|
+| MF-47 ① | `--only` 多子进程是 **race ≤N**（被 `claims.py:150-152` 挡住），并补 CLI 侧第二处入口证据与 v3 `pending_count` 库异常时 `warning + return 0` 的 fail-open（与同表 `try_claim` 的 fail-closed 相反） | ADJ-2 / GAP-2 ②1 / GAP-3 ② |
+| MF-47 ⑤ | web 侧第五支：`signin_api.py:74 except OSError: return True  # 被其他签到进程持有`——把任何 flock 错误报成"有人在跑"；并补"只持 `signin-run.lock.fallback`、一辈子不碰全局锁"的兜底常驻（接上 `scripts/yiban-fallback.sh:94` 即变已在现网），锁名裸字面量另归 MF-54 | ST-3 §4-B / GAP-4 / ADJ-7 |
+| MF-47 ⑥ | 时钟跳变守卫的站点清单不能只有 `claims.purge`，须补 8 个（`state_io`/`alerts`/`notify/ledger`/`mail/transport`） | GAP-2 + GAP-3 互证 |
+| MF-43 ①② | 兜底轮 `workers.py:271-277` 不传 `event_sink` ⇒ 补签成功也不写台账；`L2-A 2-4`（同一分钟 shell 与 python 对"要不要补跑"给出相反判定，且这次"只读判定"顺手拉起 2 个执行体并各 purge 一次）与 `1-6/1-7`（`--second-run-check` 除 10 外一切码当"无需补跑"） | GAP-2 ②2 / GAP-3 ② |
+| MF-44 | 额度独立腿：`settings_api.py:_executor_change_alert:83-91` 用 `urgent=True` 但**不带 `force=True`**，与 6 处管理侧告警同账本（`DEFAULT_URGENT_DAILY_MAX=3`）⇒ 改执行体清单即吃光当日紧急额度，耗尽后只 `_log_skip`、客户端零信号；另加 MF-90 的"OR 聚合 + `recipients` 零消费者" | GAP-2 ②5 / ADJ-16 |
+| MF-49 | 见本节开头"覆盖性订正"第 1、5 条；再补：②类点修清单缺 `time_prefs.py:118`、`claims._notify_pool_added`、`alerts.py:117`、`logs.py` 服务层直返未脱敏行四个出口；②类另有一处出口 = **HTTP 响应体**（`signin_api.py:219/229/237` 三条文案原样回显裸号，同函数入日志与审计处均已遮）；argv 落点是 `ps`/`/proc/cmdline` 而非日志（`_launch_signin_proc:151` 无 shell ⇒ 不落 history；`combined` 只记请求行 ⇒ 不落 nginx）；`round.py:226/288` 两条证明 **66 命中是下界**；加 C-37 的"点修原语自身失效"（`mask_phone` 的 `len!=11` 直返 + `_mask_email` 无 `@` 直返 + 第二份定义 `store/accounts.py:141` 丢了幂等保护 ⇒ 只留一份原语）；加 C-39 的"`target` 列三套口径"（`jobs.py:117`、`signin_api.py:259` 用 `mask()`/`_mask_phone()` 而 `time_prefs.py:60-64` 用加盐哈希） | GAP-4 / ST-1 / ST-3 / ADJ-16 |
+| MF-50/MF-53 | 加盐哈希手机号：盐是 `.env` 键且**与主库同目录、同进 `backup.sh` 归档**（不需登机即可判）；穷举口径实测 7×10⁹、本机 1.69×10⁶/s ⇒ ≈69 分钟单核。但**同库 `migrations.py:85 phone TEXT NOT NULL UNIQUE` 本就是明文**、AAD 也是明文号 ⇒ 穷举不产生新号码集合，成立的是"匿名声明不成立"。**否决**"补进 MF-52/MF-53"（MF-53 症状是"追不到人"，本条相反，照它修会打断 `time_prefs` 的冷却关联键） | ADJ-16 |
+| MF-52 | ①写日志/写审计前不过 `_nl_safe`（`api_settings_save:609-617` 与 `db.audit:623/625` 直拼请求体原文）；②`_anchor_file_state:852-863 except ValueError: return {}` 把"指纹 JSON 损坏"当"从未写过锚点"⇒ 整段库内指纹判据被跳过；③本条缺"验收不变量"一格 | GAP-2 ②4 / GAP-1 表三 |
+| MF-53 | 恢复场景必须写：锚点是跨日单一追加文件、库是每日快照 ⇒ 恢复到 D-7 后 `_anchor_file_state` 只有 `<`/`==` 两支 ⇒ 当日校验整体不执行；**照 README 把 `state/` 一并覆盖会让锚点被回退、D-7 之后的防删除证据永久消失**（链头在库、链仍自洽 ⇒ `audit_health.healthy=True`）；`audit_verify.py:83` 的库路径自成一式（可能验的是**另一个库**的链仍输出"通过"）；`audit_chain.py:882 except Exception: pass` 把"查不动"也判通过 | GAP-2 / ST-3 / GAP-3 |
+| MF-54 | 计数须含：`.env` 第三份解析在 `backup.sh:88-94 env_get`；"600 秒缓冲"经新键被**整键丢弃回 60**（不是夹取）；已了结词表在链上被重新解释共 5 处；`api_signin` 状态码靠**中文子串匹配** msg（单条与批量各抄一遍字面量 ⇒ 改文案即静默改 HTTP 契约）；`/api/logs` 两份封顶口径；本条缺"验收不变量"格且证据只给计数未列 `文件:符号` | GAP-3 / GAP-4 / GAP-1 |
+| MF-55 / MF-45 | ①`accounts_api.py:59-64` 的 `user_paused` 分支**无条件**覆写当日状态为"已取消"，不看是否已有终态 ⇒ 签成功后自暂停即显示"已取消"，与 `sign_events` 相反；②批量审计计数两口径（`batch_targets` 无条件 append vs `done = len(ops)` 只数满足前置的行）；③**MF-45 未写同页另一侧**：`_my_account_indices_of` 的 `a.get("owner")==email` 在 `YIBAN_ADMIN_USER` 取字面量 `admin` 时与无主裸账号的 owner 撞车 ⇒ 内置管理员 /mine 列出全部裸账号并开放编辑/删除 | GAP-2 ②8 / GAP-3 |
+| MF-56 ① | 补 web 进程内状态落点：`app.py:1766-1815` 的 16 张表 + `capacity.py:149 _mail_alert_ts` + 手动签到的 30s 防抖 / `procs` / `batch_running` / `last_batch_ts` 四份字典（`-w>1` 同倍放大；现网 `-w 1` 不触发的脚枪）。**反例要写进去**：notify 推送节流在盘上（`ledger.py:24/108-112`）⇒ 不是所有节流都在内存。原引 `app.py:592` 是 `MAIL_SMTPS_MAX`，错行 | ADJ-7 / GAP-4 |
+| MF-57 | 见本节 MF-49 订正第 5 条下方 **`out/GAP-4-late.md` §3 全段**：下界（30s/条目 ⇒ 5 分钟、加 DNS 5~8 分钟）与上界（15 操作×15s≈225s×N=10×R）两套算法都要；`MAIL_SMTPS_MAX=10` 仅写侧校验、读侧不截断；`timeout=15` **硬编码** `transport.py:105/107`、是 per-socket-operation 空闲超时不是墙钟截止、不覆盖 `getaddrinfo`；R=4/N=10 是**假定值**；排版层实测 9ms 非瓶颈；`MAIL_SUMMARY_MAX_CHARS=200_000` 只量纯文本而同一封 MIME 实测 918.9KB（×14.7）；`locks.py:74 with lock:` 无限等待且零日志（告警在 `_acquire` 里而它没被调到） | GAP-4 §3 / GAP-3 |
+| MF-58 | ①注册口 `api_register:242-244` 对内置管理员邮箱给**独有文案**且排在 scrypt 之前（不耗时）⇒ 匿名者零成本定位超管邮箱；②口令门被挡下的前 N-1 次既不告警也不写审计，第 N 次的 `db.audit` 还额外要求 `cooldown > 0`，且 `YIBAN_ADMIN_DELETE_MAX=0` 一键整体关闭高危额度**无痕迹**；③**清单腐化的逐字复现实例**：`app.py:2380-2390` 列了 `/api/accounts/<idx>/delete`，实测注册面上不存在（真实是 `DELETE /api/accounts/<int:idx>`，`accounts_api.py:897`），对应视图 `:664-675` 只占额度不调 `_high_risk_gate` | GAP-2 ②6 / ST-2 |
+| MF-59 | 补第二/第三处入口：`store/accounts.py:replace_accounts:603` 缺省 `status='active'` vs `add_account:383` 与 DDL（`migrations.py:90`）缺省 `'pending'` ⇒ 整体替换/导入绕审直进主链；`my.py:472` 配额已扣而 `_start_verify_job:559` 抛 `VerifyGateBusy` 只 warning、响应仍 `ok:true` 且不含 `job_id` | GAP-2 ②3 |
+| MF-40 | ①`migrations.py:1195-1199` 先写 tmp 才 chmod 是同族第二处（方向已给）；②SQL 标识符未转义残留（`:352` 未双写单引号、`:576-587` 未双写双引号）最坏后果是迁移抛 `OperationalError` ⇒ 启动被阻断，正落在本条不变量上 ⇒ 不另立号；③"重建型迁移缺列/行守恒断言"一句；④另补 C-19：v20 回填的**明文驻留无上界**（`_BACKFILL_DAYS=14` 是扫描窗口不是保留期，全仓唯一 `DELETE FROM sign_tasks` 是 `db.py:685` 按 phone，而源文件 `sign-state-*.json` 在 `log` 桶默认 **365 天**） | ST-3 / ST-3 §5 / ADJ-15 |
+| MF-46 | ①脚本侧第三份 `.env` 写入实现 = `seed_accounts.py:32-56`（:36 宽行模型、:44/:53 拼值零校验、:54 非原子、:56 事后 chmod；`web/services/env_io.py:285-286` 注释自证"scripts/ 各写入方尚未收敛"）⇒ 不变量 `grep -c "def upsert_env\|def write_env" scripts/` == 0；②`:241-249` 的"不校验本次值"只对盘上旧行跑 `has_line_break`，`out.append(f"{key}={value}")` 的 value 不过任何校验；③**前缀放行 `YIBAN_*` 属本条第三支**（`scripts/child_env.py:40`，不是"docker/child_env.py:56-57"；宿主侧 `signin_api.py:139` 也在调但 `:142` 把 `YIBAN_DB_FILE`/`YIBAN_ENV_FILE` 钉回 ⇒ 手动签对 DB 重定向免疫，**cron 那路三键全穿透**；`env_io.py:91 resolve_path` 自己就读 `.env`，不需要子进程这一环）⇒ 与 MF-46 是"注入器 / 生效器"的**成环关系**，最大增量是注入 `YIBAN_PROXY` 让真实凭据经攻击者代理外泄 | ST-4 / ADJ-13 |
+| MF-48 | 补三个同族删除入口：`scale_driver.py:372-373` 在参数拼出的可预测路径上 `shutil.rmtree` 且删前不校验"目录里有我们的标记文件"；`capacity_probe.ensure_platform:296-301` 红线只有 Linux+root；`backup.sh:restore` 目标只判空串。另 `.env` 读失败静默继承宿主的**第三、第四份实现**（`child_env.py:32-46`、`web/services/env_io.py:267-268`）；`db_export` 一族三条（`os.open` 的 mode 只在新建生效 ⇒ 重跑时整段写入期间保持旧宽模式、抛异常则 `:51` 的 chmod 永不执行；无 `O_NOFOLLOW` ⇒ 符号链接可把凭据写到攻击者选的位置；`--plaintext` **不是只读**——`accounts.py:190-207/303` 的明文自愈会 UPDATE+commit） | GAP-3 / GAP-2 / ADJ-10 |
+| MF-51 | "审计只记 `smtps_count`"这一取证未登记；执行体变更告警正文只含 `YIBAN_EXECUTORS[<slot>] 改行/加行`、不含 proxy ⇒ 事后无法还原改了哪条出口 | GAP-1 / GAP-3 |
+| MF-34 / MF-65 | 同族三处"响亮失败但无人听见"：`state_cleanup.py:87-95` 只有 `removed>0` 才写 `cleanup.log`（**全部删除都失败时也返回 0 且零留痕**）、`_append_log` 的 `except OSError: pass`、`state_dir` 不存在时只 print + return 1；`yiban-fallback.sh:77` 建目录失败被吞后 `>> "$LOG_FILE"` 也失败 ⇒ 错误只进 stderr 且无 MTA | GAP-3 |
+| MF-42 | 修法须点名**哨件在位性**与**可恢复性证明**（MF-76 的未闭合半条）；并补"rc=4（源库损坏、归档照留）/rc=5（缺 sqlite3、快照未经 integrity 核验）契约本身正确，但 `:42` 的 cron 模板 `>> /var/log/yiban/backup.log 2>&1` 使 rc **无任何消费者**" | GAP-1 / GAP-2 / GAP-3 |
+| MF-6 | 补 C-08 的验收落点：现有容器用例一律直接调容器侧自己的谓词，全文件 `assert_called` 仅 2 处且都是 `window.from_env` | 本流对账 |
+| （新增不变量） | `/api/my-` 的 `startswith` 前缀通配（`app.py:1911`）= **命名即授权**：R3a S3 / R3f b5 / R3h B2-2 三条独立撞实，新增越权面不需改守卫；现网不触发（6 条 `my-*` 写端点逐条查到 session 收窄）⇒ 与 MF-58 共用 gate manifest 修法，先记在 MF-58 修法下 | ST-2 §1-adjacent |
+| （否证回填） | 双斜杠绕过（`//api/accounts` 让三处 `startswith("/api/")` 失效）**不成立**：Werkzeug `Request.__init__` 是 `"/" + path.lstrip("/")`，matcher 只在初次匹配失败后才 `re.sub` 合并斜杠、不回写 environ（锁 `werkzeug==3.1.8`）。依据是上游源码、本机无 flask ⇒ 转成一条必须真跑的 CI 用例 `I5` | ST-2 |
+
+### 本流否证追加（收尾轮，别再去修）
+`存储型 XSS 打到管理员`（`confirmDialog` 走 `textContent`，被指控的分支是死代码；见 MF-103）· `急停/周末对签到完全无效`（放行手动腿是设计且有测试锁定；自暂停真的拦住，见 MF-101）· `窗口已结束却不 return ⇒ 整轮打真实登录`（第二道同源门必然挡住；见 MF-102）· `--only 一次点击 = N 次真实登录`（是 race ≤N，被 `claims.py:150-152` 挡；见 MF-74）· `一次性令牌被 GET query / Referer 外泄`（目标恒为代码内常量主机、默认流全程不改 Referer、无第三域路径；见 MF-69/70 的收窄形态）· `手机号可被批量枚举`（600~21600/h 都对得上，但 89÷10¹⁰ ⇒ 满速期望 5100 小时一次命中）· `管理口 400 回显构成号码外泄`（回显的是调用方自输值，日志/审计侧已遮）· `check_smtp_host 放行 localhost`（`:91-92` 显式拒）· `状态文件在多台机上全局可读`（`runner.py:142`/`cli.py:754` 首行 `os.umask(0o077)` + unit 模板 `UMask=0077`）· `verify_zero_egress 从未被调用`（调用点在 `mock_env.py:422` 且会退 1；真缺陷是"代理路径下恒 SKIP ⇒ 报绿"）· `loadtest 会拿真实用户凭据打易班`（默认走 `test.env` + 假密码，真凭据需显式把 `--db/--env` 指到生产路径）· `备份连断是当前状态`（历史漂移，V8 已订正）· `24 条 innerHTML 都在 calendar.js`（24 是全仓总数；calendar 只有 6 条且 0 处可控）· `草案 25 条`（实际 22 条，25 是末条原编号）。
+
+### 未编号候选（单源、未独立裁决，落笔前须复现；详情在 `out/MF-CANDIDATES.md` 表一）
+C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`session_cache.py:146/192-215` + `locks.py:33` 自证是 `RLock`）· C-43 代理清单"空段跳过校验"`,,,` 即落盘＝全站直连无补偿信号 · C-50 一次性邮箱黑名单静默 fail-open（缺文件零日志、读失败却有 warning）· C-31/C-32 GAP-3 的"落盘静默"与 `logging.basicConfig` 无 `force` 两支 · C-14 兜底质心点未过 `point_in_polygon`——**前提已被本项目 09-21 实测推翻**（真实空缺是自交/退化环，非"凹必漏"），且提报方未在快照重跑 ⇒ 入库前必须独立复现，严重度按复现结果重定 · C-10/C-15/C-18/C-33/C-35/C-40/C-45（`_stale_idx_guard` 那半条已判为 MF-61 补句）。
+
+### 收尾轮修复顺序（接在原"修复顺序"之后）
+0. **MF-68 + MF-78 + MF-79 + MF-80 + MF-81 + MF-82** —— 先把"会打到真实易班"与"备份/运维脚本不可逆"两类关掉；这六条都不需要改引擎逻辑，属启动前置断言与脚本判码。
+1. **MF-91 先行**（元条目）：它决定后面每一条"验收不变量"要不要带活体反例，晚做就得重跑一遍。
+2. MF-76/MF-77（备份可恢复性与轮转）与 MF-75/MF-71/MF-72（分类与假成功）两批并行。
+3. MF-83/MF-84/MF-86/MF-87/MF-89/MF-90（配置面 + 凭据 + 隐私出口）。
+4. MF-92..MF-100（自检面与假信号），最后 MF-101/102/103（低危三条可打包）。
+5. **派发 1（假上游故障注入旋钮 + L3 剩余 16 格）属修复流**：本轮再次确认有 5 条（MF-71 腿②、MF-72、MF-90、C-05、C-12 族）的现网三态**只有注入才能坐实**，旋钮落地前不要把这几条当"已复现"。
+
 ## 待裁决（原草案 7 条：两条已由读码裁决，五条待你拍板）
 
 | # | 事项 | 现状 | 建议 |
@@ -495,7 +705,13 @@ M3 前排产：需要先定"什么叫源文本断言"的判据。
 | 4 | ~~`YIBAN_WORKERS` 校验与 K≡1 是否同一处~~ | **已裁决（读码 2026-09-25）**：不是同一处——`egress.py:369-374` 的 1~64 钳制管**旧口径 worker 数**；K≡1 是 `schedule.executor_count` 被**配置的出口数**夹死；两套会叠加（出口 1 ⇒ K=1，与 WORKERS 无关） | 并入 MF-56 一并修 |
 | 5 | 注释流 4 条洗白（MF-62..65） | 不 revert、各立一条"从注释反查回代码"；**例外 MF-64** 应改准 | 待确认（本轮提问） |
 | 6 | 许可与公开仓：`waf.py` 血缘三口径（README"已弃用" vs PROVENANCE"另议" vs `docs/dev/README` 第三口径）；GitHub 公开仓含真名样式示例；**桌面明文备份口令** | 需要你处理 | 口令轮换+移出明文；血缘统一成一处；示例改名或脱敏 |
-| 7 | 旧服务器：22 端口 OPEN、Web 与每日备份仍在跑、签到 cron 是否真停未核实 ⇒ 跨机**零互斥面** | 需要你授权 | 派只读代理登机核一次 |
+| 7 | 旧服务器：22 端口 OPEN、Web 与每日备份仍在跑、签到 cron 是否真停未核实 ⇒ 跨机**零互斥面** | 需要你授权 | 派只读代理登机核一次（核查清单已备好：`_scratch/m2rev/DISPATCH-REMAINING.md` 末节 7 步；**只有 root、没有只读账号 ⇒ 本流按 fail-closed 未动**） |
+| 8 | 手动签到这条腿到底该不该受急停/周末管？ | 实现、UI 契约与一条测试三方一致（`work_settings.html:632/636`「手动签到不受影响」+ `test_global_pause.py:59` + `runner.py:232-234` 注释"三者照旧派发"），而设计文档 `reviewfix-intended-design-20260922.md` L4-2 写的是相反意图；MF-74 的"派发不豁免"与 MF-101 的"急停放行"都挂在这一个决策上 | 先定意图再修代码：**改实现就得同批改注释与测试**，改文档就关掉这两条的立项理由 |
+| 9 | `waf.py` 分类（MF-71）的 `>2000` 短路被 `test_login_protocol_shape.py:617-622` **当规格钉住** | 修腿②必撞该测试 | 需要你裁：是"长度判据本就是规格"（则只补分类表），还是"判据本身就是缺陷"（则连测试一起改） |
+| 10 | semgrep v2 规则集（19 条，`_scratch/m2rev/semgrep/yiban-logic-secrets-v2.yaml`）与 gate manifest 方案（`out/ST-2-gates.md` §7）要不要入库 | 目前只在仓外；v2 已 `--validate` 0 error、带阳性对照，但 6 条只能 ratchet、6 条只能当清单 | 建议：入库的只有"能当硬门"的 6 条 + `test_route_gate_manifest.py`（须照抄 `test_subpath_deploy.py` 的数量地板，防元测试自己静默全绿） |
+| 11 | 桌面那份文档里的**明文备份口令** | 操作清单已给出（`DISPATCH-REMAINING.md` 末节 7 步，含"旧口令在保留期内不能丢"） | 涉及生产写操作，本流不代做，等你手动执行 |
 
 ## 覆盖面声明（别把这份当"查过了"）
-L1 84/84 单元已覆盖（`web/static/vendor/**` 31,331 行第三方与 `web/static/css/**` 4,508 行样式**未审**，`tests/**` 属注释流范围）；V1–V8 只覆盖被点名的 8 条高危；L2 覆盖任务书点名的 5 条链；**L3 只有 4/20 格有真 HTTP 全链路证据**（6 格因假上游缺故障注入能力而不可判）；S 只覆盖清单内测试项目。**未做**：跨用户并发压测、真实浏览器端到端、v3 开态实测、旧服务器、以及任何依赖读 `.env` 内容/`/etc/nginx` 全文的判定。
+L1 84 份报告覆盖划分表全部 86 个单元 ID（`R12ef`/`R13ij` 各合写两单元）；`web/static/vendor/**` 31,331 行第三方与 `web/static/css/**` 4,508 行样式**未审**，`tests/**` 属注释流范围；V1–V8 只覆盖被点名的 8 条高危；L2 覆盖任务书点名的 5 条链；**L3 只有 4/20 格有真 HTTP 全链路证据**（余下卡在假上游无故障注入能力，见派发 1）；S 只覆盖清单内测试项目。
+**收尾轮（2026-09-25 下午）新增**：semgrep 11 规则 265 命中已逐条四类归类（`out/SEMGREP-TRIAGE.md`，闭合 265 = 真缺陷 20 / 已知面 63 / 误报 114 / 噪音 68），候选 61 条去重成 50 簇（`out/MF-CANDIDATES.md`），并派 **16 个独立裁决代理**逐条复现 ⇒ 新立 MF-68..103（36 条）。其中 **32 条经独立裁决**（裁决累计驳回 14 条主张，清单见该节末"本流否证追加"）、**4 条（MF-97/98/99/100）是单源取证未二次裁决**，另有 10 余簇未编号待复现（见上"未编号候选"）。
+**仍未做**：跨用户并发压测、真实浏览器端到端、v3 开态实测、旧服务器、以及任何依赖读 `.env` 内容/`/etc/nginx` 全文的判定；`/etc/yiban/*` 内容与备份口令文件**一律未读**。
