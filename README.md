@@ -185,6 +185,22 @@ mkdir -p /var/log/yiban
 
 周六、周日默认都不签到：在「系统设置 → 签到调度」打开「周六签到 / 周日签到」后才会尝试（学校该日确实无任务时显示为无需签到）。
 
+> 📦 **生产执行件已入库（M3 批次0，MF-42）**：上面的 crontab 行与清理/探针排期在
+> `deploy/prod/cron.d/` 有原件（`yiban-sign`/`yiban-cleanup`/`yiban-probe`），配合
+> `deploy/prod/manifest.tsv` + `deploy/prod/install.sh` 一键落位（支持 `DESTDIR` 无特权
+> 安装；对已存在文件先做 sha256 对账，**校验和不符即拒装**——现网手工漂移必须先 diff
+> 回填仓库，或确认以仓库为准后加 `--adopt-production` 归档覆写）。备份的 cron 入口改为
+> wrapper：`deploy/prod/yiban-backup-wrapper.sh` 从 0600 口令文件读出口令后经 **stdin
+> (fd 0) 单跳**注入 `yiban-backup.sh`，口令不再进入任何进程的环境变量（旧 `export`
+> 形态会把口令带进整棵子进程树）。"cron 引用的路径必须能在仓库找到原件"由
+> `scripts/check-cron-provenance.sh` 机器断言（安装时强制跑；`tests/test_deploy_prod_artifacts.py`
+> 用活体反例钉死这道门）。
+>
+> 🚦 **部署可达门（MF-41）**：上线前断言目标提交真的在部署线上——
+> `bash scripts/check-deploy-target.sh gitee server-web "$(git rev-parse HEAD)"`
+> （只 fetch 比对，**永不 push**；红 = 按现流程 `git pull gitee server-web` 部署不到这份
+> 代码，发布线统一需持有人执行）。
+
 #### 7. 手动测试
 
 ```bash
@@ -726,12 +742,17 @@ curl -s -b $J -X POST $B/api/signin -H "X-CSRF-Token: $CSRF" -H 'Content-Type: a
 包内内容除 `yiban.db`、`.env`、密钥文件外，还含**当日闸门标记与账本**（`sched-run-*`/`sched-slot-*`/`sched-snapshot-*`/`notify-ledger.json`/`notify-throttle.json`/`cred-state.json`）与**审计链外部锚点** `audit-anchor.log`：缺前者恢复当天会重签或漏签、告警日额度被重置；缺后者恢复出来的库就再也验不了"删尾/删前缀/整表清空"。`--restore` 解包后会自动跑 `integrity_check` 与 `audit_verify.py`（链 + 锚点 + 欠账）并带回结论，同时提示"先停服再覆盖"与"必须删除残留 `-wal`/`-shm`"。
 
 ```bash
-# 备份（安装到 /usr/local/sbin 后用 root crontab 调用；--require-encrypt 不可省：
-# 不带时一旦加密配置失效，cron 会静默产出含全部密钥与口令哈希的明文归档）
-sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh
-# 加密口令**经环境变量注入**（脚本不读任何口令文件；不给就会以"无可用加密方式"拒绝执行）
+# 备份（生产执行件收编在 deploy/prod/：backup.sh→/usr/local/sbin/yiban-backup.sh、
+# wrapper、三张 cron 表一起按 manifest.tsv 落位；sha256 对账不过即拒装，见其头注释。
+# 单独手工安装亦可：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
+sudo bash deploy/prod/install.sh
+# root crontab 调 wrapper（--require-encrypt 由 wrapper 钉死，不带时加密配置失效会
+# 静默产出含全部密钥与口令哈希的明文归档）。口令从 0600 口令文件经 **stdin fd 0 单跳**
+# 注入，不进 crontab 行 / 命令历史 / 任何子进程的 env（M3 批次0 起，MF-42）：
+#   printf '你的备份口令\n' | sudo tee /etc/yiban/backup-passphrase && sudo chmod 600 /etc/yiban/backup-passphrase
+#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+# 手工/恢复场景仍可环境变量注入（会给整棵子进程树带上口令，用完即散）：
 sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh --require-encrypt
-# cron 里同样要注入（口令写进 root 的 crontab 行或单独的 0600 环境文件，别放命令历史）
 # 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）
 30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
 # 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、或运行脚本与仓库版**漂移**时发一封
@@ -742,7 +763,7 @@ sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
   bash scripts/backup.sh --restore <备份包> <目标目录>
 ```
 
-> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。**备份口令只从环境变量取**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密），脚本不会去读任何口令文件——所以口令**必须另行离机保存一份**（密码管理器/离线介质），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
+> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
 >
 > ℹ️ 恢复路径的审计核验按结论分档：**通过**（退出码 0）/ **检出异常**（1，链被改写或库与锚点不同批次）/ **无法定论**（2，缺解释器、缺 `YIBAN_AUDIT_KEY` 或包内 `.env`）。给到 2 时别按"备份完好"处理，也别按"被篡改"处理——先补齐解释器与密钥来源再重跑。恢复件用的解释器优先取部署自己的 `.venv/bin/python`（系统 `python3` 往往没有 `pycryptodome` 等依赖）。
 
