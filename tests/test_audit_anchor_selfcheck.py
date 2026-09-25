@@ -370,6 +370,24 @@ class WitnessThreeWayTest(_Fixture):
         self.assertFalse(h["healthy"], "见证之后新增的审计被删必须判红")
         self.assertIn("见证", h["anchor_msg"])
 
+    def test_corrupt_witness_json_is_indeterminate_not_crash(self):
+        """手工损坏的见证 JSON（数值字段变成字符串）⇒ corrupt 降级，不得抛穿体检。
+
+        见证文件是安装/运维侧可手工编辑的：字段非数字时旧实现的 `int()` 抛 ValueError，
+        而 `_anchor_file_state_ex` 的调用位于 `_anchor_status` 的 try 之外——一次手工
+        损坏就把每日体检印成一次崩溃，而不是"控制面损坏 ⇒ 不健康"。
+        """
+        self._baseline_with_witness(4)
+        with open(self.witness, encoding="utf-8") as f:
+            fp = json.load(f)
+        fp["db_max_id"] = "not-a-number"
+        with open(self.witness, "w", encoding="utf-8") as f:
+            json.dump(fp, f)
+        h = self._health()          # 旧实现：ValueError 穿出 audit_health
+        self.assertFalse(h["healthy"])
+        self.assertEqual(h["anchor_status"], "indeterminate", h["anchor_msg"])
+        self.assertEqual(h["anchor_witness"], "corrupt")
+
     def test_double_write_attacker_is_caught_by_independent_file(self):
         """模拟双写攻击：改锚点 + 改库内指纹使两者自洽 ⇒ 独立文件不一致 ⇒ 红。
 
@@ -403,6 +421,82 @@ class WitnessThreeWayTest(_Fixture):
         self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
         self.assertIn("见证", h["anchor_msg"])
         self.assertFalse(h["healthy"])
+
+
+class PurgeEventForgeryTest(_Fixture):
+    """可伪造的清理留痕不得解释掉被见证行：删尾 + 种一条假留痕事件仍须判红。
+
+    `audit_purge_events` 与 `audit_purge_total` 都住在应用可写的 app_meta 里。旧判据在
+    "被见证行已不存在 / 当前 max_id 低于见证值"两支上都先问 `_purge_event_covers`，于是
+    删掉锚点之后新增的审计行、再种一条"把该 id 删掉了"的假事件（连累计数都不用动），
+    体检即 green——留痕本身成了把篡改翻成通过的开关。
+
+    被见证行按构造至多一个见证间隔（root 见证 cron 间隔）之旧，合法保留期清理只删
+    月级窗口，永远够不到它；真要做整库/手工清理属 root 级维护，其运行手册步骤是重置
+    独立见证文件（root 操作）再由下一轮 cron 重新播种——应用身份做不到。因此对**被
+    见证行**取消留痕豁免：假事件只能解释更旧的锚点行，不能解释被见证行。
+    """
+
+    def _witness_after_post_anchor_rows(self, post=4):
+        """真锚点 + 锚点之后新增 post 条 + 真见证（见证记下库内真实链尾 id）。"""
+        self._seed(6)
+        db.record_audit_anchor(self.anchor)
+        self._seed(post)
+        self.assertEqual(db.record_audit_anchor_witness(self.anchor, self.witness)[0], "written")
+        with open(self.witness, encoding="utf-8") as f:
+            w = json.load(f)
+        self.assertEqual(w.get("db_max_id"), 6 + post,
+                         "见证必须回库记下真实 max(id)——否则删尾无从检出")
+        return w
+
+    def _forge_purge_event(self, deleted, before_max, after_max, counter=None):
+        """按 `_record_purge_event` 的真实字段形状种一条假留痕事件。
+
+        形状与写库路径一致（表名/序号/前后 min-max），否则一眼可疑；攻击者只伪造
+        "这次删除解释了被见证行"这一句。counter 非 None 时同步抬高累计数。
+        """
+        ev = {
+            "kind": "audit_cleanup", "table": "audit_logs", "cutoff": "x",
+            "deleted": deleted, "before_min": 1, "before_max": before_max,
+            "after_min": 1, "after_max": after_max,
+            "ts": "2026-01-01 00:00:00", "audit_seq": 1,
+        }
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_purge_events", json.dumps([ev])))
+        if counter is not None:
+            self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                      ("audit_purge_total", str(counter)))
+
+    def test_forged_purge_event_without_counter_cannot_excuse_deletion(self):
+        """删掉锚点之后新增的审计 + 覆盖被见证 id 的假事件、不动累计数 ⇒ 仍判红。
+
+        复现评审的活体反例：只动库（删 id>6）+ 种一条 before_max=10/after_max=6 的
+        假事件，被见证行 id=10 在库内已不存在却被事件"解释"掉，旧实现在此返回
+        healthy=True。
+        """
+        self._witness_after_post_anchor_rows()
+        self._raw("DELETE FROM audit_logs WHERE id > 6")
+        self._forge_purge_event(deleted=4, before_max=10, after_max=6)
+        h = self._health()
+        self.assertFalse(h["healthy"], "留痕住在应用可写的 app_meta，不得成为翻绿开关")
+        self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
+        self.assertIn("id=10", h["anchor_msg"], "必须点名被见证行")
+
+    def test_forged_purge_event_with_counter_cannot_excuse_deletion(self):
+        """连累计数一起配平、让假留痕与稠密判据自洽 ⇒ 被见证行仍不得被解释掉。
+
+        留痕事件是攻击者自选的：把 deleted 与累计数设成恰好等于锚点那批消失的行数，
+        稠密判据（missing == explained）就被喂饱；锚点行由事件 span 覆盖。旧实现下
+        只剩被见证行也由同一条事件豁免——healthy=True。取消被见证行豁免后同样判红。
+        """
+        self._witness_after_post_anchor_rows()
+        # 删掉锚点行及其后全部行：锚点那批恰好消失 4 条，配平累计数即自洽
+        self._raw("DELETE FROM audit_logs WHERE id > 2")
+        self._forge_purge_event(deleted=4, before_max=10, after_max=2, counter=4)
+        h = self._health()
+        self.assertFalse(h["healthy"], "累计数配平也解释不掉被见证行")
+        self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
+        self.assertIn("id=10", h["anchor_msg"])
 
 
 class CliIndeterminateTest(_Fixture):
