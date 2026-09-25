@@ -296,16 +296,24 @@ class _Ctx:
     """
 
     def __init__(self, accounts, day, cfg, v, shards, executor_id, results,
-                 cred_state, delegated, notify_url, event_sink, rng, slot=0):
+                 cred_state, delegated, notify_url, event_sink, rng, slot=0,
+                 runtime_id=None):
         self.accounts = accounts
         self.day = day
         self.cfg = cfg
         self.v = v
         self.shards = shards
+        # 稳定槽位名：HRW 分片成员判据（`hrw.shards_of` 要求它是 `cfg["executors"]`
+        # 的成员）与出口令牌桶的持久键（`egress_state.egress`）都用它。**不用于写库**。
         self.executor_id = executor_id
+        # 写库的**持有者**身份（`sign_tasks.owner`）：稳定名再拼本进程的进程号/代次。
+        # 与稳定名分开是必需的——同名进程（同槽位重启、同机两个进程）在 owner 上必须
+        # 可分辨，否则收尾/重排/接管的 CAS 分不出"是不是同一个人"。
+        self.runtime_id = runtime_id or executor_id
         # 文件心跳的槽位序号（`worker_presence` 按槽位读）：执行体页据此判存活四态
         self.slot = slot
-        # 桶键 = 执行体身份串（每进程一个出口，与 egress.resolve 的代理一一对应）
+        # 桶键 = 执行体身份串（每进程一个出口，与 egress.resolve 的代理一一对应）；
+        # 用稳定名：跨重启同名才能续上自适应速率
         self.egress = executor_id
         self.m = schedule.channel_count(cfg["bucket_rate"], cfg["avg_attempt_sec"])
         self.results = results
@@ -343,8 +351,13 @@ def _emit_event(ctx, phone, status, message, dur=None, attempt_no=None):
 
 
 def _settle(ctx, phone, epoch, state, message):
-    """单行收尾：带上领取时的 fencing token——被接管者迟到的写会被拒。"""
-    queue_store.settle_tasks(ctx.executor_id, ctx.day, [(phone, message)],
+    """单行收尾：带上领取时的 fencing token——被接管者迟到的写会被拒。
+
+    owner 用 `ctx.runtime_id`（领取时写进 `sign_tasks.owner` 的那个运行时身份）：
+    收尾的 CAS 校验的是"还是不是我持有的这一行"，稳定名在这里会把同槽位的另一代
+    当成自己人。
+    """
+    queue_store.settle_tasks(ctx.runtime_id, ctx.day, [(phone, message)],
                              state=state, epochs={phone: epoch})
 
 
@@ -547,7 +560,10 @@ def _widen_with_dead_peers(ctx, shards):
         peer_shards = hrw.shards_of(peer, ctx.cfg["executors"], ctx.day, v)
         if not peer_shards:
             continue
-        taken = queue_store.steal_shards(ctx.executor_id, peer, peer_shards, ctx.day)
+        # `me` 用运行时身份（写库的持有者），`peer` 用稳定槽位名：死主的行有两类
+        # owner（计划 owner 是稳定名、被重排回来的行带着它的运行时身份），
+        # `steal_shards` 按前缀把两类都算进来。
+        taken = queue_store.steal_shards(ctx.runtime_id, peer, peer_shards, ctx.day)
         if taken:
             logger.warning("接管心跳过期的执行体 %s 的分片集，%d 条待办改归本执行体",
                            peer, taken)
@@ -595,7 +611,7 @@ async def _refiller(queue, shards, ctx):
             shards = _widen_with_dead_peers(ctx, shards)
             last_recover = _mono()
         rows = queue_store.claim_batch(
-            ctx.executor_id, ctx.day, shards, now=_stamp_ms(_now()),
+            ctx.runtime_id, ctx.day, shards, now=_stamp_ms(_now()),
             limit=queue_store.CLAIM_BATCH_LIMIT, lease_sec=queue_store.LEASE_SECONDS)
         for r in rows:
             queue.put_nowait((PRIORITY_ORDER_BASE, r["run_at"], r["phone"],
@@ -726,13 +742,19 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         # 记 error 后返回空结果——与"计划不可用"同一处置，由 runner 汇总成契约内的"未执行"
         logger.error("当日计划不可用，本轮不执行（v3 需要可用的队列库）: %s", e)
         return {}
-    # 队列 owner 用**稳定槽位名**，不叠加进程号/代次：它同时是 HRW 分片身份
-    # （`hrw.shards_of` 要求它是 `cfg["executors"]` 的成员，否则一件活都领不到）与出口
-    # 令牌桶的持久键（`egress_state.egress`，跨重启必须同名才能续上自适应速率）。
-    # 同名进程在 v3 不构成重复登录：`claim_batch` 只取 `pending` 行，冲突判据不含
-    # "owner 相同即重入"——同一行仍只会被一个进程领到。
+    # **两个身份显式分开**（详见 `_Ctx` 的字段注释）：
+    # - 稳定槽位名（`executor_id`）：HRW 分片成员判据（`hrw.shards_of` 要求它是
+    #   `cfg["executors"]` 的成员，否则一件活都领不到）与出口令牌桶的持久键
+    #   （`egress_state.egress`，跨重启必须同名才能续上自适应速率）；
+    # - 运行时身份（`runtime_id = egress.runtime_owner(稳定名)`）：写进 `sign_tasks.owner`
+    #   的**持有者**身份，含本进程的进程号与代次。
+    # 为什么持有者必须含进程号/代次：同名进程在 v3 仍可能并存（同槽位重启后的新进程、
+    # 同机手工再起一个），而收尾/重排/接管的 CAS 按 owner 做作用域校验——名字相同就
+    # 分不出"是不是同一个持有者"。计划行（`planner.write_plan`）仍写稳定名：那是 HRW
+    # 归属（"这件活归哪个槽位"），与"此刻谁在持有"不是一回事。
     executor_id = (os.environ.get("YIBAN_EXECUTOR_ID", "").strip()
                    or egress.single_owner())
+    runtime_id = egress.runtime_owner(executor_id)
     slot = _worker_slot(executor_id)
     # 起跑写文件心跳：执行体页读的是监督进程写的**文件心跳**，单进程 v3 路径不写就只会
     # 显示 idle。回收必须在领取之前——崩溃通道留下的 `claimed` 行只有先回到 `pending`
@@ -753,7 +775,8 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
             accounts={a.phone: a for a in accounts},
             day=day, cfg=cfg, v=v,
             shards=hrw.shards_of(executor_id, cfg["executors"], day, v),
-            executor_id=executor_id, results={}, cred_state=cred_state,
+            executor_id=executor_id, runtime_id=runtime_id, results={},
+            cred_state=cred_state,
             delegated=delegated, notify_url=notify_url, event_sink=event_sink,
             rng=rng or random.Random(), slot=slot)
         # 接管须在预扫之前：预扫按 `ctx.shards` 判"不在本执行体分片集"的账号，接管把死主
