@@ -498,9 +498,9 @@ def main(argv=None):
             event_sink=event_rows.append, delegated=delegated,
             # 手动指定账号（--only）允许重签当日已了结的账号：用户主动点的那一下应当照做
             reclaim=bool(args.only),
-            # 显式路径才可重领"预算耗尽/风控"档弃权的账号：手动与补签轮都算（兜底在
-            # `workers.run_fallback_worker` 里同样传 True）。默认轮不传 ⇒ 那类账号不会被
-            # 后面每一轮无上限地重领一遍。
+            # 显式路径才可重领"预算耗尽/风控"档弃权的账号：手动（--only）与补签轮都算。
+            # 兜底常驻不传——无界循环不算有界显式路径，见 `workers.run_fallback_worker`。
+            # 默认轮不传 ⇒ 那类账号不会被后面每一轮无上限地重领一遍。
             retry_failed=bool(args.only) or _second_run,
         )
     # --only 只能把本次处理账号的熔断增量合并回存量状态（成功→清除该账号记录；

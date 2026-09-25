@@ -171,7 +171,7 @@ class OpenAccountIsHandedOverTest(_Base):
         # 有界显式路径（补签轮/手动，retry_failed=True）：必须能接手并了结
         _r3, calls3, _s3 = self._run(PHONE_FAIL, self.OK, executor="exec-C:3",
                                      retry_failed=True)
-        self.assertEqual(calls3, [PHONE_FAIL], "补签轮/兜底（显式路径）必须能接手失败账号")
+        self.assertEqual(calls3, [PHONE_FAIL], "补签轮/手动（显式路径）必须能接手失败账号")
         self.assertEqual(db.claim_states_for_day(DAY)[PHONE_FAIL], db.CLAIM_STATE_DONE)
 
     def test_window_out_account_is_retried_by_default(self):
