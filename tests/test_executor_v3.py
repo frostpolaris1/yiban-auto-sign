@@ -45,7 +45,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
-from yiban import clock, window  # noqa: E402
+from yiban import clock, egress, window  # noqa: E402
 from yiban.engine import (  # noqa: E402
     executor_v3,
     hrw,
@@ -64,6 +64,9 @@ DAY = "2026-09-22"          # 周二，避开周末门
 #: 固定起跑时刻：默认窗口 06:30~07:50（有效窗口 06:31~07:49），06:40 在窗口内
 START = datetime.datetime(2026, 9, 22, 6, 40, 0)
 OWNER = "single@testhost"
+#: 队列**持有者**身份：稳定槽位名再拼本进程的进程号与代次（`egress.runtime_owner`）。
+#: 稳定名仍是 HRW 分片成员判据与出口桶持久键，两者刻意分开——见 `HolderIdentitySplitTest`。
+RUNTIME_OWNER = egress.runtime_owner(OWNER)
 MY_SHARDS = (0, 1, 2, 3) # 与 FOREIGN_SHARD 配对：任何顺手扫了别人分片的改动都会在这里现形
 FOREIGN_SHARD = 7
 
@@ -276,8 +279,12 @@ class _Base(unittest.TestCase):
         conn.commit()
 
     def _add_claimed(self, phone, vshard=0, attempts=0, epoch=1, run_at=None, priority=5):
-        """已由本执行体领取的行（等价于 `claim_batch` 刚返回它）。"""
-        self._add_task(phone, vshard=vshard, state="claimed", owner=OWNER,
+        """已由本执行体领取的行（等价于 `claim_batch` 刚返回它）。
+
+        owner 用**运行时身份**：持有者一列落 PID/代次（同一稳定槽位名的两个进程因此
+        可分辨），收尾/重排按它做作用域校验。
+        """
+        self._add_task(phone, vshard=vshard, state="claimed", owner=RUNTIME_OWNER,
                        run_at=run_at, priority=priority, attempts=attempts,
                        lease_until=_ts(seconds=30), epoch=epoch)
 
@@ -717,8 +724,9 @@ class RefillerTest(_Base):
         self._add_task(_phone(1), vshard=-1, state="failed")
         self._add_task(_phone(2), vshard=-1, state="pending")
         self._seed_v(8)
-        ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER, m=2,
-                              inflight=0, busy=0)
+        ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
+                              runtime_id=RUNTIME_OWNER, m=2, inflight=0, busy=0,
+                              slot=0)
         queue = asyncio.PriorityQueue()
         asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
         self.assertEqual(self.fc.sleeps, [], "首轮即应判收干，不进入轮询等待")
@@ -1592,7 +1600,8 @@ class RecoveryWiringTest(_Base):
             results = self._run_v3(self._accounts(phone))
         row = self._row(phone)
         self.assertEqual(row["state"], "done", "崩溃行必须被重新领取并完成")
-        self.assertEqual(row["owner"], OWNER)
+        self.assertEqual(row["owner"], RUNTIME_OWNER,
+                         "重领后的持有者是**运行时身份**（含 PID/代次）")
         self.assertGreater(row["epoch"], 1, "重领同样自增 epoch")
         self.assertIn(phone, results)
 
@@ -1712,11 +1721,12 @@ class DeadPeerTakeoverTest(_Base):
         state_io.mark_worker_started(
             executor_v3._worker_slot(peer),
             now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ctx = SimpleNamespace(executor_id=OWNER, cfg=cfg, day=DAY, v=v)
+        ctx = SimpleNamespace(executor_id=OWNER, runtime_id=RUNTIME_OWNER, cfg=cfg,
+                              day=DAY, v=v)
 
         out = executor_v3._widen_with_dead_peers(ctx, ())
 
-        self.assertEqual(self._row(_phone(1))["owner"], OWNER,
+        self.assertEqual(self._row(_phone(1))["owner"], RUNTIME_OWNER,
                          "死主的 pending 行必须改归本执行体（dead_owner 要传死主）")
         self.assertEqual(self._row(_phone(2))["owner"], OWNER, "本执行体自己的行不动")
         self.assertEqual(self._row(_phone(2))["epoch"], 1, "自己的行不得被自增 epoch")
@@ -1765,7 +1775,8 @@ class DeadPeerTakeoverChainTest(_Base):
                          "死主的行必须在本轮被领取并执行（并入领取集那一跳不能少）")
         for phone in phones:
             row = self._row(phone)
-            self.assertEqual(row["owner"], OWNER, "接管后 owner 是本执行体")
+            self.assertEqual(row["owner"], RUNTIME_OWNER,
+                             "接管后 owner 是本执行体（运行时身份）")
             self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
             self.assertEqual(row["state"], "done")
             self.assertIn(phone, results)
@@ -1809,7 +1820,8 @@ class DeadPeerTakeoverOnStartTest(_Base):
                          "死主的行必须在本轮被领取并执行（起跑接管那一跳不能少）")
         for phone in phones:
             row = self._row(phone)
-            self.assertEqual(row["owner"], OWNER, "接管后 owner 是本执行体")
+            self.assertEqual(row["owner"], RUNTIME_OWNER,
+                             "接管后 owner 是本执行体（运行时身份）")
             self.assertGreater(row["epoch"], 1, "接管自增 epoch（fencing）")
             self.assertEqual(row["state"], "done")
             self.assertIn(phone, results)
@@ -1858,7 +1870,8 @@ class DeadPeerClaimedOnlyTakeoverTest(_Base):
         for phone in phones:
             row = self._row(phone)
             self.assertEqual(row["state"], "done", "回收 + 并入后必须跑完，不能留 pending")
-            self.assertEqual(row["owner"], OWNER, "回收后由本执行体持有")
+            self.assertEqual(row["owner"], RUNTIME_OWNER,
+                             "回收后由本执行体持有（运行时身份）")
             self.assertIn(phone, results)
 
 
@@ -1920,6 +1933,55 @@ class DeadPeerTakeoverSkipLiveTest(_Base):
         self.assertEqual(ran, [], "今日无心跳记录不算死，不得被领取")
         self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
         self.assertEqual(row["state"], "pending", "行保持原样")
+
+
+class HolderIdentitySplitTest(_Base):
+    """v3 的两个身份必须显式分开：持有者落 PID/代次，稳定名留给分片与出口桶。
+
+    `sign_tasks.owner` 一列同时是"计划 owner"与"当前持有者"。HRW 分片成员判据
+    （`hrw.shards_of` 要求身份串是 `cfg["executors"]` 的成员）与出口令牌桶的持久键
+    （`egress_state.egress`，跨重启必须同名）都要求**稳定槽位名**；而"谁在持有"必须
+    含进程号与代次，否则同机两个进程拿同一个名字，接管/收尾的作用域校验就分不出人。
+    两个身份各走各的路，不许再合并成一个变量。
+    """
+
+    def test_stable_name_is_the_shard_member_and_runtime_is_not(self):
+        cfg = _cfg(executors=[OWNER])
+        self.assertTrue(hrw.shards_of(OWNER, cfg["executors"], DAY, 8),
+                        "稳定槽位名必须仍是 HRW 分片成员（否则一件活都领不到）")
+        self.assertEqual(hrw.shards_of(RUNTIME_OWNER, cfg["executors"], DAY, 8), (),
+                         "运行时身份不是清单成员：拿它去分片会零领取（故两个身份不能合并）")
+        self.assertIn(f":{os.getpid()}:", RUNTIME_OWNER)
+
+    def test_ctx_exposes_stable_for_egress_and_runtime_for_holder(self):
+        seen = {}
+        real = executor_v3._run_async
+
+        async def spy(ctx):
+            seen["executor_id"] = ctx.executor_id
+            seen["runtime_id"] = ctx.runtime_id
+            seen["egress"] = ctx.egress
+            return await real(ctx)
+
+        with mock.patch.object(executor_v3, "_run_async", spy),                 mock.patch.object(executor_v3.attempts, "attempt_signin",
+                                  lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(_phone(0)))
+        self.assertEqual(seen["executor_id"], OWNER, "稳定名仍是分片/展示口径")
+        self.assertEqual(seen["egress"], OWNER,
+                         "出口令牌桶的持久键必须稳定（跨重启续上自适应速率）")
+        self.assertEqual(seen["runtime_id"], RUNTIME_OWNER,
+                         "写库的持有者身份必须含本进程的 PID/代次")
+
+    def test_real_refill_writes_runtime_owner_to_queue(self):
+        phone = _phone(0)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            results = self._run_v3(self._accounts(phone))
+        row = self._row(phone)
+        self.assertEqual(row["owner"], RUNTIME_OWNER,
+                         "真实补货领取后，持有者一列必须是运行时身份（含 PID/代次）")
+        self.assertIn(phone, results)
+        self.assertEqual(row["state"], "done")
 
 
 if __name__ == "__main__":
