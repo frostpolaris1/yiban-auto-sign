@@ -32,6 +32,12 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+# 隔离断言（fail-closed）。见 scripts/loadtest/isolation.py 的加载兼容说明。
+try:
+    from loadtest import isolation
+except ImportError:  # pragma: no cover - 取决于加载方式
+    import isolation
+
 DEFAULT_GAP = 10
 PROD_WINDOW_SEC = 4680  # 80 分钟窗口 - 前后各 60s 掐头去尾（容量换算基线）
 
@@ -205,14 +211,21 @@ def compute_window(now, window_sec):
 
 
 def reset_state_dir(state_dir):
-    """清空测试状态目录：避免上一轮残留的状态/标记污染本轮统计。"""
+    """清空测试状态目录：避免上一轮残留的状态/标记污染本轮统计。
+
+    白名单补齐此前漏掉的瞬态件：``sched-slot-*``、``mail-user-fail-*``，以及进程级
+    锁文件 ``*.lock``（如 ``signin-run.lock``）与原子写残留 ``*.tmp<pid>``。这些残留
+    会让「本轮完成/失败计数」读到上一轮的值，直接污染容量结论。
+    """
     try:
         entries = os.listdir(state_dir)
     except OSError:
         return
+    prefixes = ("sign-state-", "sign-daily-", "sched-run-", "sched-snapshot-",
+                "cred-state", "probe-state", "sched-slot-", "mail-user-fail-")
     for name in entries:
-        if name.startswith(("sign-state-", "sign-daily-", "sched-run-", "sched-snapshot-",
-                            "cred-state", "probe-state")):
+        tmp_pid = ".tmp" in name and name.rsplit(".tmp", 1)[1].isdigit()
+        if name.startswith(prefixes) or name.endswith(".lock") or tmp_pid:
             with contextlib.suppress(OSError):
                 os.remove(os.path.join(state_dir, name))
 
@@ -229,7 +242,9 @@ def base_env(env_file, repo, ca_pem, extra=None):
     ).strip(os.pathsep)
     if extra:
         env.update(extra)
-    return env
+    # 主动摘除代理键：即便入口已断言过，子进程环境也必须做到「无任何 *PROXY* 键」，
+    # 否则被压进程里的 requests 会经代理出口，隔离链当场旁落（见 MF-68）。
+    return isolation.strip_proxy(env)
 
 
 def run_once(args, mock_log, window_sec):
@@ -381,6 +396,14 @@ def write_csv(path, row):
 
 
 def main(argv=None):
+    # 启动即断言（fail-closed，早于 argparse）：进程环境含任何 *PROXY* 键即拒绝，
+    # 原因见 scripts/loadtest/isolation.py。缺这一条，代理机上会「打真实易班却报绿」。
+    try:
+        isolation.assert_no_proxy(os.environ, source="scale_driver 进程")
+    except isolation.IsolationError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 2
+
     ap = argparse.ArgumentParser(
         prog="scale_driver.py",
         description="单进程规模驱动：真实调度一轮 + 资源采样（测试机/沙箱专用）",

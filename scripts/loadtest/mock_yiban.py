@@ -141,6 +141,11 @@ class MockState:
         self.inflight = 0
         self.max_inflight = 0
         self.req_seq = 0
+        # 记账对平用：total = 已处理条数；durable = 成功落 JSONL 条数；log_errors =
+        # 落盘失败条数。三者满足 total == durable + log_errors（含 log_path 时），
+        # 一旦 log_errors>0 说明有请求处理了却没被驱动读到（旁路/丢日志），测不得。
+        self.durable = 0
+        self.log_errors = 0
         self.t0 = time.time()
         self.log_path = log_path
 
@@ -185,8 +190,12 @@ class MockState:
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            with self._lock:
+                self.durable += 1
         except OSError:
-            pass  # 日志不可写不影响服务
+            # 不再静默吞：计入 log_errors，使 total≠durable 可被驱动侧记账对平检出（MF-68）
+            with self._lock:
+                self.log_errors += 1
 
     def snapshot(self, cfg):
         with self._lock:
@@ -198,6 +207,8 @@ class MockState:
                 "inflight": self.inflight,
                 "max_inflight": self.max_inflight,
                 "req_seq": self.req_seq,
+                "durable": self.durable,
+                "log_errors": self.log_errors,
                 "uptime_s": round(time.time() - self.t0, 1),
             }
         snap["cfg"] = cfg
@@ -309,6 +320,8 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                 p = self._path()
                 host = self._host()
                 injected = False
+                # 运维/探测端点不计入记账，避免驱动侧对 /__stats 的轮询自扰
+                is_ops = p in ("/__stats", "/__health")
 
                 if p == "/__stats":
                     self._send_json(state.snapshot(cfg))
@@ -356,7 +369,8 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                         self._send_position()
                 else:
                     self._send_json({"code": 404, "msg": "not found"}, code=404)
-                state.record(host, p, self._last_status(), d, inflight, injected, "ok")
+                if not is_ops:
+                    state.record(host, p, self._last_status(), d, inflight, injected, "ok")
             finally:
                 state.leave()
 

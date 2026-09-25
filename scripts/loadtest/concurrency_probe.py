@@ -47,7 +47,17 @@ try:  # resource 仅 POSIX 可用；Windows 本地只能做纯函数单测
 except ImportError:  # pragma: no cover - 平台差异
     resource = None  # type: ignore[assignment]
 
+# 隔离断言（fail-closed）。见 scripts/loadtest/isolation.py 的加载兼容说明。
+try:
+    from loadtest import isolation
+except ImportError:  # pragma: no cover - 取决于加载方式
+    import isolation
+
 NCROP = os.cpu_count() or 1
+
+
+class MeminfoUnavailable(RuntimeError):
+    """/proc/meminfo 读不到：内存饱和判定失去依据，必须显式报错而非假报「内存饱和」。"""
 
 LOCK_KEYWORDS = ("database is locked", "database table is locked", "database is busy",
                  "operationalerror", "保存会话缓存失败", "写入失败", "disk i/o error")
@@ -143,18 +153,25 @@ def percentile(sv, p):
 # ---------------------------------------------------------------------------
 # 系统采样
 # ---------------------------------------------------------------------------
-def read_meminfo():
-    """返回 (MemTotal_MB, MemAvailable_MB)。"""
-    total = avail = 0
+def read_meminfo(path="/proc/meminfo"):
+    """返回 (MemTotal_MB, MemAvailable_MB)。
+
+    读取失败/无有效值一律显式抛 :class:`MeminfoUnavailable`：此前 ``except OSError:
+    pass`` 会返回 (0, 0)，升档闸门 `avail < reserve` 于是恒真 → 假报「内存饱和 K=1」，
+    把读不到当成测得准。内存观不到就拒绝下内存结论（fail-closed）。
+    """
+    total = avail = 0.0
     try:
-        with open("/proc/meminfo", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for ln in f:
                 if ln.startswith("MemTotal:"):
                     total = int(ln.split()[1]) / 1024.0
                 elif ln.startswith("MemAvailable:"):
                     avail = int(ln.split()[1]) / 1024.0
-    except OSError:
-        pass
+    except OSError as e:
+        raise MeminfoUnavailable(f"无法读取 {path}（内存饱和判定失去依据）：{e}") from e
+    if total <= 0:
+        raise MeminfoUnavailable(f"{path} 未给出有效 MemTotal（读到 {total}），拒绝据此判内存饱和")
     return total, avail
 
 
@@ -313,7 +330,8 @@ def build_proc_env(env_file, repo, ca, extra):
         [os.path.join(repo, "scripts"), repo, env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
     env.update(extra)
-    return env
+    # 主动摘除代理键：K 个子进程都不得继承 *PROXY*，否则并发探测全经代理打真实出口。
+    return isolation.strip_proxy(env)
 
 
 def read_state_summary(state_dir):
@@ -568,6 +586,13 @@ def _db_bytes(db_path):
 
 
 def main(argv=None):
+    # 启动即断言（fail-closed，早于 argparse）：见 isolation.assert_no_proxy 与 MF-68。
+    try:
+        isolation.assert_no_proxy(os.environ, source="concurrency_probe 进程")
+    except isolation.IsolationError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 2
+
     ap = argparse.ArgumentParser(
         prog="concurrency_probe.py",
         description="多进程并发探测：K 阶梯找 CPU/内存/DB 写饱和点（测试机专用）",
@@ -613,7 +638,11 @@ def main(argv=None):
         if len(slices) < k:
             log(f"K={k}: 账号不足，实际只起 {len(slices)} 个进程，停止升档")
             break
-        _, avail = read_meminfo()
+        try:
+            _, avail = read_meminfo()
+        except MeminfoUnavailable as e:
+            print(f"错误：{e}", file=sys.stderr)
+            return 3
         # 只保证下一档有基本余量（真正的饱和由运行中 min_available/OOM 判定）
         if avail < args.mem_reserve_mb + 60:
             log(f"K={k}: 可用内存 {avail:.0f}MB 过少，停止升档（内存饱和）")
@@ -645,7 +674,11 @@ def main(argv=None):
     for r in rows:
         r["degradation_x"] = round(r["per_acct_wall_s"] / base, 2) if base else None
 
-    total_mem_mb, _ = read_meminfo()
+    try:
+        total_mem_mb, _ = read_meminfo()
+    except MeminfoUnavailable as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 3
     verdict = classify_bottlenecks(rows, total_mem_mb, args.mem_reserve_mb)
 
     out = {
