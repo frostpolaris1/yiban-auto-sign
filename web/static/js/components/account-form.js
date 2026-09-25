@@ -34,7 +34,7 @@
       phoneEditHelp: ""
     },
     admin: {
-      nameLabel: "名称（可选，不填显示为 账号N）", namePlaceholder: "如：武陵123庄方宜",
+      nameLabel: "名称（可选，不填显示为 账号N）", namePlaceholder: "如：电力123示例站",
       nameHelp: "不填显示为 账号N。",
       phoneLabel: "手机号", phonePlaceholder: "易班登录手机号",
       passwordLabel: "密码", passwordNewPlaceholder: "易班登录密码",
