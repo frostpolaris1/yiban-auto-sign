@@ -9,6 +9,23 @@
 1. 三处都用同一个原语（不再各写一份）；
 2. 本平台的锁后端**不是 None**（`fcntl` 或 `msvcrt` 至少有一个可用）——若哪天
    又一次"静默降级"，`lock_kind()` 会连同降级告警一起暴露出来。
+
+标签：G · 安全：脱敏/审计/配置注入
+覆盖：锁原语本身（后端存在性、锁文件 0600、同线程可重入、退出即释放、等待而非立即降级、
+包装方确实传了重试超时、跨进程互斥），以及三处历史各写一份的调用方现在都走同一原语。
+对应实现：`yiban/infra/locks.py` 的 `lock_kind` / `file_lock`、
+`yiban/infra/env_lock.py` 的 `env_write_lock`、
+`yiban/engine/cli_support._state_file_lock`（signin 侧经它）与
+`yiban/notify/ledger._state_file_lock`。
+关键断言：`lock_kind()` 非 None 这条守的是"静默退化成 no-op"这个具体失效面——
+Windows 上原先两份实现直接什么都不做，锁住了也判不出来；同理 `test_lock_file_created_0600`
+与"等待而非立即降级"各钉一格（权限泄漏、拿不到锁就并发写）。
+`test_open_failure_logs_warning_and_degrades_to_inprocess_lock` 一族是**如实记录现状**：
+打不开锁文件时确实退化为进程内锁，只是必须留 WARNING，不是"绝不降级"。
+依赖：三条用例带 `@unittest.skipUnless(os.name == "posix", ...)`，Windows 上直接 skip——
+`test_waits_for_holder_instead_of_degrading_immediately`、`test_cross_process_exclusion_posix`、
+`EnvLockTest.test_env_write_lock_cross_process_posix`；也就是"跨进程真互斥"这一格只在 POSIX
+被验过，Windows 侧只剩退化路径的断言。其余用例两端都跑，无网络。
 """
 import os
 import sys

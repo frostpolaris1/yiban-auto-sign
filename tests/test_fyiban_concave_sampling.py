@@ -1,6 +1,18 @@
 # -*- coding: utf-8 -*-
 """凹围栏采样：剪耳剖分路径的出界保证、绕序变化与退化输入边界。
 
+标签：K · 登录协议与第三方隔离
+覆盖：凹形围栏（L
+   形、门形、五角星）的出界保证、凸形不受影响、起点轮换与整体反向等绕序变体、打乱顶点与退化输入只要求不崩、闭合环与相邻重复顶点仍走剖分路径、自交多边形一律不走新路径、空输入返回
+   None、内缩比例严格小于 1、剖分缓存的命中/重建/LRU
+   淘汰/不可用记账/自检失败回退、剪耳剖分的面积守恒与面积均匀性冒烟。
+对应实现：yiban/fyiban/algo.py（generate_position_in_polygon、point_in_polygon、_ear_clip_triangles、_triangulation
+   缓存、SCALE_FACTOR）。
+关键断言：采样点必须由本层自己的 point_in_polygon
+   回判（调用方用的同一裁判），不另立标准。凹形的缺陷前提本身也要断言成立（顶点算术平均确实在围栏外），否则哪天围栏换了、用例静默失去意义也无人知。退化/自交输入只保证「不抛异常、形状合法」，不保证界内——围栏数据本该由服务端给出有序顶点。剖分缓存的自检失败必须把该围栏记为不可用并回退旧路径，而不是交回坏点。
+依赖：纯几何计算（每用例最多 2000 点采样，无
+   IO、无网络、无库）。整文件在本机执行，无 skip。
+
 背景：以顶点算术平均为圆心撒点的旧算法，在凹形围栏（L 形、门形）上圆心落在围栏
 外，主采样一次都过不了验收。本文件把"凹形也必须采出界内点"钉住，并覆盖剖分路径
 会遇到的退化写法（重合顶点、首尾闭合、共线、自交）与绕序变化。
@@ -38,7 +50,7 @@ def _star_polygon(points, outer, inner, center):
     return ring
 
 
-STAR_SHAPE = _star_polygon(5, 1.5, 0.62, (1.5, 1.5))
+STAR_SHAPE = _star_polygon(5, 1.5, 0.62, (1.5, 1.5)) # 五角星比 L 形多出十个凹口：只测两种形状就还是「只讨好这两种」
 
 
 def _vertices_are_inside(polygon, count):
@@ -98,6 +110,7 @@ class ConcaveFenceSamplingTest(unittest.TestCase):
         打乱后的顶点序列把一个围栏描述成自交路径，围栏的"内/外"本身失去了意义
         （围栏数据该由服务端给出有序顶点）。这里只钉"不抛异常、返回值形状合法"。
         """
+        # 只判形状不判界内：顶点被打乱后这条环已经不是那块围栏，「内/外」失去定义
         shuffled = [L_SHAPE[0], L_SHAPE[3], L_SHAPE[1], L_SHAPE[5], L_SHAPE[2], L_SHAPE[4]]
         for _ in range(50):
             point = SAMPLE(shuffled)
@@ -109,7 +122,7 @@ class ConcaveFenceSamplingTest(unittest.TestCase):
         重复点对形状没有贡献，却会挡住剪耳，让正常的凹围栏退回旧路径；这里同时
         确认剖分没被挡住、采样全部在界内。
         """
-        closed_l = [*L_SHAPE, L_SHAPE[0]]
+        closed_l = [*L_SHAPE, L_SHAPE[0]] # 真实围栏数据常把首点重复写在末尾，剪耳必须能吸收这种写法
         repeated_l = [L_SHAPE[0], L_SHAPE[0], L_SHAPE[1], L_SHAPE[1],
                       L_SHAPE[2], L_SHAPE[3], L_SHAPE[4], L_SHAPE[5], L_SHAPE[5]]
         for name, polygon in (("闭合环", closed_l), ("重复顶点", repeated_l)):

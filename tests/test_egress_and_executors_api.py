@@ -1,33 +1,28 @@
 # -*- coding: utf-8 -*-
 """出口分配（`yiban/egress.py`）与执行体接口（`/api/scheduler/executors`）的断言。
 
-多执行体上线后，部署者要能给**每个执行体（含兜底常驻执行体）**单独配出口，
-也可以留空走本机出口。这里钉住三件事：
+标签：B · 调度：领取/队列/执行体
+覆盖：出口分配规则与脱敏（resolve/describe/assignments/replace_slot）、执行体身份串的构造与解析同源且跨重启稳定、旧格式仍认得、/api/scheduler/executors
+   的权限与建议值、兜底开关 × 心跳四态、activity
+   的分组与脱敏、整条与单段的写路径（非法值不落盘、审计不含凭据）、并行执行体存活四态、账号列表
+   last_executor 的口径、限频实测端点的冷却与窗口判据、校验失败文案不回填凭据。
+对应实现：yiban/egress.py（resolve、describe、assignments、replace_slot、worker_owner/fallback_owner/single_owner/parse_owner/role_label、worker_presence）、web/app.py
+   的 /api/scheduler/executors* 与
+   /api/accounts、yiban/store/claims.py（activity、owners_since）、scripts/state_io
+   的心跳文件。
+关键断言：分配规则唯一：拉起执行体的一方与展示接口必须得到同一答案（列表按序取、不足循环、空位=直连、未配列表退回单出口）。任何响应与审计都不得出现代理凭据或含主机名的身份原串，只许
+   scheme://host[:port] 与角色 + 1-based
+   槽位号。没实测就不给建议值（recommended 为 null），有实测也按 2/3
+   留余量。写单段只替换目标段、其余段逐字保留——前端整条回写会把别人段的凭据清空。存活用四态而非
+   alive
+   布尔：执行体是一轮就退出的短命进程，只有「有开始、无收尾且心跳过期」才值得报警。
+依赖：临时库 + 临时 .env + 以独立模块名加载的 Flask test client；socket
+   仅用于取主机名。实测端点的 verify_account
+   一律打桩——它真的会用真实账号访问易班一次，故本文件绝不联网。整文件在本机执行，无
+   skip。
 
-1. **分配规则唯一**：列表按序取、不足循环、空位=直连、未配列表退回单出口——
-   拉起执行体的一方与展示接口必须得到同一答案；
-2. **不泄漏凭据**：代理串可能带 `user:pass@`，日志与接口只允许出现
-   `scheme://host[:port]`（`describe()`）；接口另外只许主管理员访问；
-3. **建议值不编数字**：没实测就没有建议（`recommended` 为 null），实测了才按
-   实测 × 2/3 给建议，且文案说明"是建议不是上限"；
-4. **执行体身份可判定且不回原串**：身份串的构造与解析同源（`worker_owner` /
-   `fallback_owner` / `single_owner` / `parse_owner` / `role_label`），接口只回角色与
-   1-based 槽位号——身份串含主机名，属部署信息，任何响应里都不许出现原串
-   （本文件的脱敏断言反查它）。名字**跨重启稳定**（不含进程号/启动时刻），
-   解析同时认得**旧格式**（库里有 14 天保留期的存量记录）；
-5. **单段出口写接口**（`PUT …/executors/workers/<index>` 与 `…/executors/fallback`）：
-   只替换目标段、其余段**逐字保留**（前端整条回写会把别人段的凭据清成空，这是本接口
-   存在的理由），读接口只回描述串（不含 userinfo）；
-6. **每个并行执行体的存活四态**（`workers.assignments[].state`）：`running` / `finished`
-   / `idle` / `stale`，由后端按心跳文件算好。四态而非 alive 布尔，是因为执行体是
-   **一轮就退出的短命进程**——"没在跑"多数时候正常，只有"有开始、无收尾且心跳过期"
-   才值得报警；
-7. **账号列表的 `last_executor`**：口径是**最近一次有记录的业务日**是谁签的（用户
-   2026-09-21 定，「上次」的字面意即最近一次；跨周末停签仍显示上一轮），
-   无记录为 `null`，且只回角色/槽位/标签（身份原串含主机名）；
-8. **限频实测端点**（`POST …/executors/measure`）：仅主管理员、全局冷却（429 + 剩余
-   秒数）、窗口内拒绝（409）；它**真的会用真实账号访问易班一次**（只读路径，不写
-   签到状态、不动领取池），故这里的 `verify_account` 一律打桩，绝不联网。
+多执行体上线后，部署者要能给**每个执行体（含兜底常驻执行体）**单独配出口，
+也可以留空走本机出口；分配规则只有一份，接口与拉起方必须给出同一个答案。
 """
 import contextlib
 import importlib.util
@@ -59,11 +54,11 @@ def _load_webapp():
     spec = importlib.util.spec_from_file_location(
         "webapp_egress", os.path.join(BASE, "web", "app.py"))
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["webapp_egress"] = mod
+    sys.modules["webapp_egress"] = mod # 名字必须独占：共用 webapp 会复用别的文件那份 .env 常量
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
     return mod
-SECRET_PROXY = "http://svcuser:svcp@proxy1.example:8080"
+SECRET_PROXY = "http://svcuser:svcp@proxy1.example:8080" # 故意带 userinfo：脱敏断言就是反查这两个词有没有漏进响应
 
 
 class EgressRulesTest(unittest.TestCase):
@@ -121,7 +116,7 @@ class EgressRulesTest(unittest.TestCase):
         self.assertEqual([d for _i, _p, d in got],
                          ["http://proxy1.example:8080", "直连（本机出口）",
                           "http://c:3", "http://proxy1.example:8080"])
-        self.assertNotIn("svcp", json.dumps([d for _i, _p, d in got]))
+        self.assertNotIn("svcp", json.dumps([d for _i, _p, d in got])) # 整段序列化后反查：逐个字段断言拦不住以后新增的字段
 
 
 class OwnerIdentityTest(unittest.TestCase):

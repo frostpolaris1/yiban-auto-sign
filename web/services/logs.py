@@ -48,24 +48,20 @@ logger = logging.getLogger("web")
 # 日志行可见性
 # ---------------------------------------------------------------------------
 def _log_line_visible(level, logger_name):
-    """日志页 / 导出 / 账号卡「最近记录」显示哪些行。
-
-    - `yiban` 及其**子模块**（`yiban.*`）：全部级别。签到链路的细节都在这些 logger 下
-      （`yiban.fyiban.protocol` 的登录成功、`yiban.client` 的生成定位与签到成功、`yiban.engine.*`
-      的逐账号判定），漏掉它们页面就只剩结果；DEBUG 也是部署自己开的级别，开了就该看得到。
-    - 其它组件（werkzeug / mailer / notify 等）：仅 WARNING 以上——它们的 INFO 与签到无关
-      （请求日志、发送成功），全量入列会把日志页灌满、把故障留痕冲走。
-    """
+    """日志页 / 导出 / 账号卡「最近记录」显示哪些行（三处共用这一份口径）。"""
     if logger_name == "yiban" or logger_name.startswith("yiban."):
-        return True
+        # 子模块也算：签到细节都在 yiban.* 下（protocol 登录成功、client 生成定位与签到
+        # 成功、engine.* 逐账号判定），只认精确名会让页面只剩汇总与结果
+        return True  # DEBUG 也放行：那是部署自己开的级别，开了就该看得到
+    # 其它组件（werkzeug / mailer / notify）的 INFO 与签到无关（请求日志、发送成功），
+    # 全放会把日志页灌满、把故障留痕冲走
     return level in ("WARNING", "ERROR", "CRITICAL")
 
 
 # 日志格式（与 signin.py 相同）
 # 行格式: [2026-08-07 06:40:04] [INFO] yiban: [手机号] ✅ 签到成功
-# logger 名允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：旧正则用 `(\w+)`，匹配不到
-# 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）因此整行被丢弃，日志页只剩
-# 汇总与结果。
+# logger 名必须允许点分（`yiban.client` / `yiban.fyiban.protocol` …）：只认 `\w+` 的话，
+# 签到链路的细节行（登录成功 / 生成定位 / 签到成功）整行匹配失败被丢弃，日志页只剩汇总
 SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] ([\w.]+): (.*)")
 
 #: 日志倒读上限 2MB（约 2 万行）
@@ -96,8 +92,7 @@ def parse_sign_log(path, tail_lines):
 
     只返回日志行，不返回"日志符号 → 图标"这类派生状态：账号状态的事实源是 sign-state
     文件（`load_sign_state`，`/api/accounts`），日志符号与前端状态码语义不符，透传会把
-    前端图标/统计卡污染。`parse_sign_log` 与 `_log_lines_for` 共用同一条可见性规则，
-    避免两处各写一遍必然漂移。
+    前端图标/统计卡污染。
 
     倒读实现由调用方传入（`web.app` 的 `_tail_lines`）：它是本函数的既有打桩点，
     测试以它替换解析输入。
@@ -129,8 +124,7 @@ def log_path_for(log_file, date_str=None):
     日志按天分文件：每天一个文件，按日期查看 = 直接读对应文件；
     run.sh / signin.py / 手动签到子进程均写入当天文件（保留 `LOG_FILE` 配置的目录）。
 
-    `log_file` 由调用方传入（`web.app` 的 `LOG_FILE`）——它可被测试直接赋值改写，
-    也会随 `--config` 变化。
+    参数注入口径见模块头「通信」（`LOG_FILE` 可被测试直接赋值改写）。
     """
     date_str = date_str or clock.now().strftime("%Y-%m-%d")
     return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
@@ -164,10 +158,9 @@ _most_recent_log_cache = {"history_date": None, "checked_day": ""}
 def _today_has_logs(path_for, tail_lines):
     """今天是否有 yiban 签到日志行（整读当天文件判定，不依赖文件尾部）。
 
-    只扫文件尾部会误判：尾部一旦被其他 logger（如 web 每日清理循环的 yiban.db 告警）
-    刷屏就会得出「今天无日志」而回退到历史日期。按天文件体积有限，整读开销可忽略；
-    判定口径与 `_log_lines_for` 一致（logger=yiban 且非 DEBUG）。
     """
+    # 整读而不倒读：尾部被其他 logger（如 web 每日清理循环的 yiban.db 告警）刷屏时，
+    # 只看尾部会得出「今天无日志」而回退到历史日期；按天文件体积有限，整读开销可忽略
     return bool(_log_lines_for(clock.now().strftime("%Y-%m-%d"), path_for, tail_lines))
 
 
@@ -255,15 +248,13 @@ def load_sign_state(state_dir, date_str=None):
 def _cred_paused_phones():
     """处于「账密故障暂停」（熔断/半开试探中）的手机号集合，供设置页容量拆解展示。
 
-    数据源：STATE_DIR/cred-state.json（signin 维护，{phone: {fail_days, last_fail,
-    paused_since, probe_date}}）。判定口径与 signin 一致：`paused_since` 非空即暂停中。
-    **必须容错**：该文件由签到进程按"无暂停=文件不存在"语义维护，随时可能缺失、被删或
-    半写；设置页不能因为一个可选状态文件读不出来就 500，故一切异常都退化为空集合
-    （展示层显示 0，判定逻辑不受影响——本函数只服务显示，绝不参与配额判定）。
-    utf-8-sig 容错 Windows 手工编辑留下的 BOM（与 signin._load_cred_state 同口径）。
+    数据源经 `yiban.cred_state` 唯一入口（读写口径与 signin 一致）：`paused_since`
+    非空即暂停中。**只服务展示**——配额与调度判定一律不读这里，所以退化成本低。
     """
     data = cred_state.read()
     if not data:
+        # 一切异常退化为空集合：该文件由签到进程按"无暂停=文件不存在"语义维护，随时
+        # 可能缺失、被删或半写，设置页不能因一个可选状态文件读不出来就 500
         return set()
     return {
         str(phone)
@@ -275,9 +266,9 @@ def _cred_paused_phones():
 def clear_fuse_pause(phone):
     """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
 
-    经 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）。自己读整个文件、删一条、
-    再整体写回且**完全不持锁**会与签到进程收尾保存并发：按自己的读取结果重写会抹掉对方
-    写入的其他账号记录。文件不存在时无需清除，静默返回——用户每次编辑账号都会走到这里，
+    必须走 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）：自己读整个文件、
+    删一条、再整体写回且不持锁，会与签到进程的收尾保存并发——按自己的读取结果重写会
+    抹掉对方写入的其他账号记录。文件不存在时静默返回：用户每次编辑账号都走到这里，
     按 I/O 失败告警会刷屏。
     """
     try:
@@ -291,10 +282,10 @@ def clear_fuse_pause(phone):
 def clear_fuse_on_cred_change(old_phone, old_password, clean):
     """仅凭据（密码/手机号）实际变更时清除熔断计数；只改备注/状态等不清。
 
-    此前任意编辑都触发 clear_fuse_pause → fail_days 清零 → 熔断永不跳闸。
-    改绑清旧号条目（账号主体已迁移），改密清当前号条目（立即恢复签到资格）。
+    只清真正变过的那一项：备注/状态等编辑一律不清——任意编辑都清会让 fail_days 反复
+    归零，熔断永不跳闸。
     """
     if old_phone != clean["phone"]:
-        clear_fuse_pause(old_phone)
+        clear_fuse_pause(old_phone)  # 改绑：主体已迁走，清旧手机号的条目
     if clean["password"] != old_password:
-        clear_fuse_pause(clean["phone"])
+        clear_fuse_pause(clean["phone"])  # 改密：新密码可能已经能用，立刻给一次重试资格

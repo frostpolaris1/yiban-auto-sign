@@ -1,6 +1,8 @@
-// 数据总览页脚本（classic script，非 module）。
-// 依赖外壳（layout_admin.html）先载入的 core.js（YB.api/el/toast/getServerNow）与本地 Chart.js 4.5.1。
-// 所有图表颜色从 CSS 自定义属性读取，主题切换（document 的 yiban:theme 事件）时重建。
+// 数据总览页脚本（管理端 /data/dashboard，classic script 非 module）：KPI、趋势、分布、时段自选、热力图、容量、运行状态
+// 七组卡片的渲染与重试；模板 templates/pages/data_dashboard.html 只出骨架 DOM，本文件按 id 填数。
+// 通信（全只读，除 ping）：GET /api/settings、/api/admin/sign-events?days=30&stage=sign、/api/time-prefs/stats、
+//   /api/accounts、/api/clock、/api/announcement；POST /api/ping（仅点「检测易班接口」时）。依赖外壳先载入的 core.js
+//   （YB.api/el/toast/getServerNow）与本地 Chart.js。颜色一律从 CSS 自定义属性取，主题切换时重建图表——本文件不写色值。
 (function () {
   "use strict";
   var YB = window.YB || {};

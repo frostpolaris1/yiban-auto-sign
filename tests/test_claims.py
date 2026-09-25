@@ -1,15 +1,24 @@
 # -*- coding: utf-8 -*-
 """签到领取池与账号级租约（`yiban/store/claims.py`，v17）的行为与并发断言。
 
-多执行体的正确性全压在两条性质上，本文件因此**必须**同时覆盖它们：
+标签：B · 调度：领取/队列/执行体
+覆盖：领取池表结构（v17
+   唯一键与索引）、领取/重入/接管/收尾/弃权/续租/清理的语义、done 与 failed
+   的「了结 vs 未了结」分界、result 摘要截断、activity
+   按执行体归属的分组计数与稳定顺序、身份串写入与解析互为逆运算、领取必须是单条
+   upsert、K 个真进程抢同一批账号。
+对应实现：scripts/db.py 的 claim_* 门面与
+   yiban/store/claims.py（claim_sign_account、claim_settle、claim_give_up、claim_touch、claim_states_for_day、claim_stats、claim_in_flight、purge_sign_claims、activity）、yiban/egress.py（new_owner
+   / parse_owner）。
+关键断言：同一账号同一天只可能有一个执行体在跑——两个执行体同时登录同一账号会加速触发上游风控，这是设计的第一红线，且必须用真多进程证明（单进程内的锁证明不了跨进程原子性）。收尾写入必须带
+   owner
+   条件，否则被接管的旧执行体会把失败账号静默记成成功。弃权要立刻放开租约，否则补签轮领不到、当日彻底签不上。表未落地时拒跑而不是答「可执行」。领取拆成「先查后插」就出现可被撞上的时间窗口，故断言
+   SQL 是单条 upsert。
+依赖：临时 sqlite（每用例重建库与 -wal/-shm）+ 打桩 yiban.egress；并发用例真起
+   subprocess 子进程（Windows/WSL 都跑，不 skip）。无网络请求。
 
-1. **同一账号同一天只可能有一个执行体在跑**（原子领取 + 租约接管），
-   ——两个执行体同时登录同一账号会加速触发易班侧风控，这是设计的第一红线；
-2. **收尾写入带 owner 条件**（租约被接管后，旧执行体写不进去），
-   否则"两个执行体都以为自己签成功了"，失败账号会被静默记成成功。
-
-第 1 条用**真多进程**验证（`subprocess` 抢同一批账号）：单进程内的锁证明不了
-跨进程原子性，而这正是本表存在的理由。并发用例在 Windows/WSL 都跑。
+跨进程原子性只能用**真多进程**验证（`subprocess` 抢同一批账号）：单进程内的锁
+证明不了它，而这正是本表存在的理由。
 """
 import contextlib
 import json
@@ -44,7 +53,7 @@ class _Base(unittest.TestCase):
         cls.env_file = os.path.join(cls.tmp, ".env")
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
         with open(cls.env_file, "w", encoding="utf-8") as f:
-            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n") # 账号列是加密存储的，没这把键连建表都起不来
         os.environ.update({
             "YIBAN_ACCOUNTS_KEY": TEST_KEY,
             "YIBAN_ENV_FILE": cls.env_file,
@@ -73,7 +82,7 @@ class _Base(unittest.TestCase):
             p = self.db_file + suffix
             if os.path.exists(p):
                 os.remove(p)
-        db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
+        db.init_db(self.db_file, env_file=self.env_file, cleanup=False) # cleanup=False：自动清理会按日删行，purge 的时机必须由用例自己控住
 
     def tearDown(self):
         if db._conn is not None:
@@ -94,7 +103,7 @@ class SchemaTest(_Base):
         self.assertEqual(set(cols), {"phone", "day", "owner", "claimed_at",
                                      "heartbeat_at", "state", "result", "attempts",
                                      "epoch"})
-        self.assertEqual(cols["phone"], 1)
+        self.assertEqual(cols["phone"], 1) # 复合主键的顺序就是唯一键的顺序：写反了 upsert 的冲突判不出来
         self.assertEqual(cols["day"], 2)
         self.assertGreaterEqual(
             db.get_conn().execute("PRAGMA user_version").fetchone()[0], 17)
@@ -171,7 +180,7 @@ class ClaimSemanticsTest(_Base):
         db.claim_give_up(PHONE, DAY, OWNER_A, "x" * 500)
         row = db.get_conn().execute(
             "SELECT result FROM sign_claims WHERE phone=? AND day=?", (PHONE, DAY)).fetchone()
-        self.assertEqual(len(row["result"]), 200)
+        self.assertEqual(len(row["result"]), 200) # 截断长度本身是契约：这张表可能被运维整表导出
 
     def test_status_helpers(self):
         self._claim(PHONE, DAY, OWNER_A)

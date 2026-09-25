@@ -1,20 +1,18 @@
 # -*- coding: utf-8 -*-
 """注销（用户软删）与账号软删的**保留期与恢复口径**一致性。
 
-缺陷背景（DAT-4）：用户可以先把账号删掉、再注销账号（"先自删账号再注销"）。
-原实现有两条断链：
-
-1. **保留期各算各的**：注销只给"当时仍生效"的行打时刻，此前自删的行按各自更早的
-   deleted_at 独立到期 → 账号先于用户行被物理清除，而用户仍在"7 天内可反悔"窗口内；
-2. **恢复按时刻等值匹配**：注销前自删的行时刻不等 → 恢复用户回来一个账号都没有
-   （"只有唯一账号、先自删再注销"这一常见形态必现）。
-
-修法（三处配套，缺一不可）：
-- `restore_user` 改为"注销之前已软删（`<=`）、非管理员删除"里**最新的那一行**，
-  单行恢复——多行一起置 deleted=0 会当场撞同一 owner 的唯一索引；
-- `_purge_expired_deleted` 增加豁免：owner 已注销（仍在窗口内）的账号不清除，
-  使自删更早的行活到用户的反悔窗口结束；用户行到期后由 purge_deleted_users 连带清除；
-- 注销路径本身**不给自删行改时刻**（那时刻是"注销当时哪一行在生效"的唯一线索）。
+标签：L · 注销与软删
+覆盖：用户先自删账号再注销这一路径下，账号行的到期时刻与用户反悔窗口是否一致；
+    `restore_user` 恢复哪一行；`_purge_expired_deleted` 对"owner 已注销但仍 in
+    窗口"的账号的豁免。
+对应实现：`yiban/store/users.py`（`restore_user`、`purge_deleted_users`）与
+    `yiban/store/cleanup.py`（`_purge_expired_deleted`、`purge_expired_deleted_accounts`）；
+    触发入口在 `web/app.py` 的注销与恢复端点。
+关键断言：两条路径各自的触发条件必须分清——**软删可恢复**（本人撤销/管理员恢复，
+    按时刻等值匹配会漏行）与**到期物理清除**（按 deleted_at 独立到期）；
+    原实现让账号先于用户被物理清除，用户回来时"一个账号都没有"。
+依赖：临时 sqlite + 手工构造时间戳（宽限期边界用文件名/字段日期判定），
+    Flask test client 或直接调数据层；不触网、不发信。
 """
 import contextlib
 import json
@@ -53,7 +51,7 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
         os.environ["YIBAN_ACCOUNTS_FILE"] = cls.accounts_file
         os.environ["YIBAN_DB_FILE"] = cls.db_file
         os.environ["YIBAN_STATE_DIR"] = cls.tmp
-        global db
+        global db  #先 global 再 import：setUpClass 里绑的模块名要让各用例方法看得见
         import db
 
     @classmethod
@@ -68,13 +66,13 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
         if db._conn is not None:
             db._conn.close()
             db._conn = None
-        for suffix in ("", "-wal", "-shm"):
+        for suffix in ("", "-wal", "-shm"):  #WAL/SHM 一起删：留着 sidecar 会让下一个用例读到上一个用例的库内容
             p = self.db_file + suffix
             if os.path.exists(p):
                 os.remove(p)
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
-        db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
+        db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)  #走真迁移而不是手写建表：owner 的部分唯一索引只存在于真 schema 里
         db.create_user(EMAIL, "x" * 20)
         self.a = self._add(PHONE_A)
 
@@ -88,7 +86,7 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
 
     def _add_deleted_row(self, phone, deleted_at, deleted_by):
         """加一条**软删**账号行（owner 唯一索引只约束未删除行，故先把 A 暂挂再放回）。"""
-        a_live = not self._row(self.a)["deleted"]
+        a_live = not self._row(self.a)["deleted"]  #先把生效行暂挂再插软删行：唯一索引只管未删除行，不暂挂就插不进去
         if a_live:
             self._set_deleted(self.a, True, deleted_at=_stamp(), deleted_by="")
         row_id = self._add(phone)
@@ -114,7 +112,7 @@ class DeleteTimelineConsistencyTest(unittest.TestCase):
             ).fetchone())
 
     def _cancel(self):
-        self.assertTrue(db.soft_delete_user_with_accounts(EMAIL))
+        self.assertTrue(db.soft_delete_user_with_accounts(EMAIL))  #注销走这个函数：它决定"注销当时哪一行在生效"的时刻，恢复语义全看它
 
     def _count(self, phone):
         with db._conn_lock:

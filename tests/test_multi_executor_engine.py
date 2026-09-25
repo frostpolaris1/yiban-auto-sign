@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
 """多执行体的**引擎侧**行为断言：领取池进入执行循环后的分派与了结语义。
 
-三件必须钉住的事（缺一个就会在生产上表现为"漏签"或"重复登录"）：
-
-1. **同一账号同一天只被自动执行碰一次**：昨轮已了结（成功/已签到/今日无任务）
-   的账号，下一轮（补签轮/兜底执行体）不再发起任何请求——这是防重复登录的第一道闸；
-2. **未了结的账号必须能被下一轮接手**：失败、窗口外跳过等落在 `failed` 并放开租约，
-   补签轮正是为它们存在（若这里也挡，等于把补签轮废掉）；
-3. **手动指定账号（--only）照做**：用户主动点的签到可以重签当日已了结的账号。
+标签：B · 调度：领取/队列/执行体
+覆盖：领取池进入执行循环后的四条性质：当日已了结账号下一轮不再自动碰、未了结账号必须能被下一轮接手、别的执行体在飞时不碰且租约过期可接管、库未初始化时零副作用；计划态与结果态的覆盖次序；子进程入口与
+   --workers 下传剔除；监督进程退出码汇总。
+对应实现：scripts/signin.py（run_queue_retry 的领取/收尾/接管路径、_write_sign_state
+   的状态优先级）、yiban/engine/workers.py（run_worker_supervisor、子进程 argv
+   与退出码汇总）。
+关键断言：「同一账号同一天只碰一次」与「未了结必须被下一轮接手」是一对：前者是防重复登录的第一道闸，后者是补签轮存在的意义——这里一起挡等于把补签轮废掉。no_task
+   也算了结（再登录一次纯属风控暴露），而 --only
+   是用户主动触发可豁免。每个执行体启动都会写一遍全量计划，故计划态不得覆盖已有结果，但事实之间照旧后写覆盖。子进程入口必须是
+   python -m yiban.cli sign 且 argv 不得带 --workers（否则递归拉起）。
+依赖：临时 sqlite（每用例重建）+ 固定业务时钟 + 打桩 attempt_signin / 写盘 /
+   sleep；拉起断言为源码与 argv 检查，不 spawn 真子进程。不发网络请求。无
+   skip。
 
 另外两条边界：别的执行体正在做（`claimed` 且租约有效）时本进程不碰；库未初始化时
 领取池不参与、也不留下任何副作用（纯状态文件部署不受影响）。
@@ -103,7 +109,7 @@ class _Base(unittest.TestCase):
         states = []
 
         def fake_attempt(_acc):
-            calls.append(_acc.phone)
+            calls.append(_acc.phone) # 只记号不记结果：断言的是「这一轮真的发了尝试」，重试次数也因此暴露
             return result
 
         with mock.patch.dict(os.environ, {"YIBAN_EXECUTOR_ID": executor} if executor else {},
@@ -113,7 +119,8 @@ class _Base(unittest.TestCase):
                 mock.patch.object(signin, "_write_sign_state",
                                   side_effect=lambda p, st, msg, **kw: states.append((p, st))), \
                 mock.patch.object(signin.time, "sleep"):
-            sched = {phone: FIXED_NOW - timedelta(seconds=5)} if schedule else None
+            sched = {phone: FIXED_NOW - timedelta(seconds=5)} if schedule else None # 落点设在「已过点」以跳过等待；schedule=None 走的是无计划的动态领取分支
+            # sleep 与写盘都在上面的 with 里打桩：过点账号仍会走间隔等待，不打桩就真睡
             results = signin.run_queue_retry([self._acc(phone)], None, 0, 0,
                                              schedule=sched, cred_state={},
                                              reclaim=reclaim)

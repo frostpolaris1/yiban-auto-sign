@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""告警推送出口的判定与兜底（2026-09-08）。
+"""告警推送出口的判定与兜底。
 
-覆盖：
-- notify.is_configured()：推送通道是否「类型已设（含旧明文 URL 兼容）且密钥可解出」；
-- signin 的即时告警门控由已废弃的 YIBAN_NOTIFY_URL 死键改判 is_configured
-  （生产不配旧键 → 账号级失败/耗时推送此前永不发出）；源级断言不再出现
-  if notify_url: 门；
-- _flush_admin_mail_summary 收件人集为空时的整卷兜底：推送已配置 → 同一份汇总
-  改走推送恰好一次（urgent+force）；未配置 → 仅 warning 留痕。
-
-全程 mock，不发起网络请求。
-用法（项目根目录）：python -m pytest tests/test_alert_channel_dispatch.py -v
+标签：H · 通知：邮件与推送
+覆盖：`notify.is_configured()` 的判定口径（类型已设、含旧明文 URL 兼容，且密钥可解出）；
+    signin 即时告警门控从已废弃的 `YIBAN_NOTIFY_URL` 死键改判 `is_configured`；
+    `_flush_admin_mail_summary` 收件人集为空时的整卷兜底。
+对应实现：通道判定在 `yiban/notify/`（配置解析与 `is_configured`），门控调用点在
+    `yiban/engine/alerts.py`（壳 `scripts/signin.py` 转发），邮件汇总在 web 侧。
+关键断言：源级断言不再出现 `if notify_url:` 那类死键门（生产不配旧键 → 账号级失败与
+    耗时推送此前永不发出）；收件人为空时推送已配置 → 同一份汇总改走推送**恰好一次**
+    （urgent+force），未配置 → 仅 warning 留痕（不得静默丢弃整卷）。
+依赖：全程进程内 mock（`notify`/`signin`/`web.security`）+ 临时 STATE/DB/ENV；
+    复用同目录 `tests/test_rekey_key_source.py` 的 `_B14AlertGateBase` 基类，
+    故须在仓库根跑 pytest（同目录 import）；不连 SMTP、不发真实推送。
 """
 import json
 import os

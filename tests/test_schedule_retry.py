@@ -2,9 +2,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """重试重排与补签时刻：重试落点、槽位时刻与宿主脚本契约。
 
-调度把未了结账号按重试余量重排，并据此决定下一次外呼时刻（`retry_hm`）；容器的重试槽位
-由宿主注入。本文件并两处断言：重试重排的间隔与顺序语义，以及重试槽位/告警阈值在
-`run.sh` 与容器调度器之间的注入契约。
+标签：B · 调度：领取/队列/执行体
+覆盖：重试重排的间隔与顺序语义（失败不阻塞他号、落点区间与偏早段、窗口不足即弃、上界随收缩窗口、入队时补记原因与日志注入转义）、retry_hm
+   的取值与容错（调用期读 env）、宿主 run.sh
+   与容器的缺省同源、告警阈值随实际补签时刻、容器把实际触发点注入子进程、need_second_run
+   判定矩阵、run.sh 进程内补签轮的两轮语义与逃生开关、宿主与容器判定一致。
+对应实现：yiban/engine/schedule.py 与
+   scripts/signin.py（_next_retry_at、run_queue_retry 的重试入队、retry_hm
+   常量）、run.sh 与 docker/scheduler.py（SECOND 闸门、_UNDONE_STATUSES）。
+关键断言：A 失败不得阻塞 B（旧行为 A→A(重试)→B
+   会把整轮拖住），重试落点必须夹在[now+retry_min_interval, 有效窗口结束]
+   且偏早段——缓冲留给下一次重试。补签时刻在长驻进程里必须按调用期读取（导入期缓存会让管理员改的值不生效）。宿主与容器两侧的补签判定必须完全一致且未了结集合是同一份引用，两侧各写一套就是漂移的开始；容器注入的实际触发点优先于
+   .env 里的旧值。
+依赖：假时钟 + 打桩 attempt_signin / 写盘 / 告警；run.sh 契约用例真起 bash
+   子进程（无 bash 的机器会失败而非 skip，本机可跑），并读 run.sh 与
+   docker/scheduler.py 原文做文本断言。不发网络请求。
 
 功能：重试重排与补签时刻的调度回归。
 归属：`yiban/engine/schedule.py` 与容器调度入口的交叉测试。
@@ -43,7 +55,7 @@ class FakeNow:
 
     @classmethod
     def now(cls):
-        return cls.NOW
+        return cls.NOW # 子类只改 NOW 就能换时刻：两套时点共用同一组打桩
 
 
 def _acc(phone):
@@ -61,7 +73,7 @@ class RetryRescheduleTest(unittest.TestCase):
         calls = []
 
         def fake_attempt(acc):
-            calls.append(acc.phone)
+            calls.append(acc.phone) # 调用顺序本身就是断言主体（A→B→A），不是「两个号都跑过」
             if acc.phone == "13800138000" and calls.count(acc.phone) == 1:
                 return (False, "网络超时", False, signin.STATUS_FAILED)
             return (True, "ok", False, signin.STATUS_SUCCESS)
@@ -96,7 +108,7 @@ class RetryRescheduleTest(unittest.TestCase):
             lo = now.replace(minute=1, second=0, microsecond=0)
             eff_hi = now.replace(hour=7, minute=50, second=0, microsecond=0)
             for seed in range(100):
-                nxt = signin._next_retry_at(now, cfg, rng=__import__("random").Random(seed))
+                nxt = signin._next_retry_at(now, cfg, rng=__import__("random").Random(seed)) # 逐个换固定 seed 扫遍抖动分布：失败信息能指到具体是哪种随机序列
                 self.assertIsNotNone(nxt)
                 self.assertGreaterEqual(nxt, lo, f"seed {seed}: 早于下界")
                 self.assertLessEqual(nxt, eff_hi, f"seed {seed}: 越过窗口末端")

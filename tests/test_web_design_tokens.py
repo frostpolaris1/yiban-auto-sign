@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """回归守卫（2026-09-10，V3-5）：设计令牌的两类"静默失败"。
 
+标签：F · 前端与界面守卫
+覆盖：设计令牌的两类静默失败——用到的色档必须在 app.css 有 `--c-*` 且在 tailwind config 声明（缺一即类不生效或属性静默丢失）；状态徽标必须是单一事实源且配色达 AA
+对应实现：`web/templates/partials/tailwind_config.html` 的 colors 声明、`web/static/css/app.css`的调色板与 `.yb-badge` 系列
+关键断言：两个方向各一条用例（config 有 / 调色板无，与反之）；徽标的内联整段写法不得复活、基础类必须显式 nowrap；5 个变体的对比度由 `_wcag` 从调色板**实时算出**且两种模式都达 AA；阈值常量与 WCAG 一致
+依赖：纯本地——扫前端源码**原文且不剥注释**（故注释里出现色值或徽标 class 串会被判成违规），无需 node、不联网
+
 ## 一、调色板完整性：用了但没定义的档位 → 属性**静默丢失**
 
 本项目的 Tailwind 用自定义色板：`tailwind_config.html` 声明

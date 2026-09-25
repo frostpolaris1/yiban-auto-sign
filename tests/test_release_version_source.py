@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """版本号单一来源 + 轮次横幅带版本号（发布门槛的自证前提）。
 
+标签：J · 运维：部署/备份/发布
+覆盖：版本字面量只在 `yiban/__init__.py` 出现（CHANGELOG 除外）、web 侧从包引用版本、
+    CHANGELOG 顶部条目与包版本一致、引擎轮次横幅与汇总行确实打了版本号、
+    用的是本项目版本而非易班 App 版本。
+对应实现：`yiban/__init__.py`（唯一来源）、`web/app.py`、`yiban/engine/runner.py`
+    （横幅/汇总行，兼容壳 `scripts/signin.py` 只剩转发）。
+关键断言：版本号一旦分叉，"日志里写的版本"就不再等于"代码的版本"，台账失效且无人察觉
+    ——所以钉的是"只有一处定义"，不是"值等于某个字面量"。
+依赖：全程静态（读源码文本 + os.walk 扫运行时目录），不联网、不起进程、不需 bash。
+
 **为什么需要这组用例**：`main` 的门槛要求"同一提交在生产机上完成 ≥3 个有效轮次"
-（PROMPT.md §6.10 / docs/dev/release-gate.md）。生产日志不自带版本号，所以台账
-靠"引擎在轮次开始时打印的版本号"与提交对齐。这要求两件事同时成立：
-
-1. 版本号只有**一个**定义处（`yiban/__init__.py`），web 侧与引擎都引用它；
-   一旦分叉，"日志里写的版本"就不再等于"代码的版本"，台账失效且无人察觉；
-2. 引擎**确实**把版本打进轮次横幅与汇总行（不能只写在文档里）。
-
-全程静态检查（读源码文本），不联网、不起进程。
-用法（项目根目录）：
-    python -m pytest tests/test_release_version_source.py -v
+（PROMPT.md §6.10 / docs/dev/release-gate.md），生产日志不自带版本号，台账靠引擎
+轮次横幅里的版本号与提交对齐。
+用法（项目根目录）：python -m pytest tests/test_release_version_source.py -v
 """
 import os
 import re
@@ -36,7 +39,7 @@ class SingleVersionSourceTest(unittest.TestCase):
     def test_version_defined_once(self):
         from yiban import __version__ as v
         self.assertTrue(re.fullmatch(r"\d+\.\d+\.\d+", v), f"版本号格式异常: {v!r}")
-        literal = f'"{v}"'
+        literal = f'"{v}"'  #连引号一起搜：只搜数字会命中注释与 CHANGELOG 里的历史版本
         offenders = []
         for d in SCAN_DIRS:
             root = os.path.join(BASE, d)
@@ -68,7 +71,7 @@ class SingleVersionSourceTest(unittest.TestCase):
 
     def test_changelog_top_entry_matches(self):
         from yiban import __version__ as v
-        head = "\n".join(_read("CHANGELOG.md").splitlines()[:8])
+        head = "\n".join(_read("CHANGELOG.md").splitlines()[:8])  #只看顶部 8 行：对的是最新条目，全文件搜会命中旧版本而恒成立
         self.assertIn(f"v{v}", head, "CHANGELOG 顶部条目与本项目版本号不一致")
 
 

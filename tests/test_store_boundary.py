@@ -20,6 +20,20 @@
 复用：`BASE` / `TEST_KEY` / 各域 `MOVED_*` 名字清单、`_import_shell()` 兼容壳装载助手。
 通信：导入 `yiban.store.db` 与各域模块，读写临时 SQLite 与临时 `.env`；由 pytest 收集
 `unittest.TestCase`。
+
+标签：C · 存储：迁移与库完整性
+覆盖：`yiban/store/db.py` 退成门面后各域（accounts / clock_meta / connection /
+session_cache / time_prefs / tracking 等）的五项契约——同一对象、写转发落真定义点、
+打桩对模块内部调用点可见、`delattr` 隐藏名可撤销、经门面的真实 CRUD；
+外加"行数与裸导入不得回潮"的布局记账。
+对应实现：`yiban/store/db.py` 的 `_FORWARDED_STATE` 读写转发与各域模块的定义点。
+关键断言：本文件几乎不测数据，它测的是**打桩打在哪**——`SameObjectTest` 断 `is` 同一性、
+`WriteForwardingTest` 断赋值落到域模块，两者缺一就会出现"测试绿但替身根本没生效"
+（门面与定义点各持一份绑定）。布局那组是 AST/源码级断言，只保证行数与导入形状，
+不保证行为。迁移与库语义本身不在这里，见 `test_db_migrations.py` 与
+`test_migration_compat.py`（两个升级方向分工说明在那两处）。
+依赖：临时库 + 临时 `.env`，无网络、无 skip；各域用 `_import_shell_*` 另装一份模块实例，
+新增用例别复用 `sys.modules` 里的那份，否则打桩会串。
 """
 import ast
 import contextlib

@@ -13,6 +13,19 @@
 
 库是**手工搭到 v19** 的（v17 建 `sign_claims`、v18 建 `sign_tasks`）——不借 `db` 的
 全局连接，免得多用例共享单例连接互相干扰。
+
+标签：C · 存储：迁移与库完整性
+覆盖：v20 backfill 的六类——版本提升与重入零新增、JSON 终态到池状态的逐类映射（在途/
+无记录不落库）、只认 `sign-state-<day>.json`（`sign-daily-*` 是符号表不得作输入）、
+不覆盖已有行（`INSERT OR IGNORE`）、某日损坏或目录缺失只跳过不抛、`run_at` 时间回退
+与批量提交不丢行；另钉映射表与 `ALL_STATUSES` 的键绑定。
+对应实现：`yiban/store/` 的 v20 backfill 与 `yiban/status.py::ALL_STATUSES`、
+`yiban/engine/state_io.py` 写出的状态文件形状。
+关键断言：`TerminalMapGuardTest` 是**防静默失效**的一条——映射表少一格时两侧都不报错、
+只是那一类的终态永远补不进账本，故断"键集合 = 全词表减在途集合"而不是逐条抽查；
+`test_sign_daily_symbol_table_is_not_an_input` 与"某日损坏跳过"合起来守的是
+"输入面宁可少补，不可补错"。只覆盖**新代码打开 v19 库**方向。
+依赖：手工搭到 v19 + 临时状态目录（写真 `sign-state-*.json`），无网络、无 skip。
 """
 import contextlib
 import json
