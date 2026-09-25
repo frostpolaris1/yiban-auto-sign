@@ -14,6 +14,8 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁。
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
 `GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。
+运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
+互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
 
 **通信**
 输入：日志级别/路径等环境配置、状态文件路径与加锁范围。
@@ -82,18 +84,38 @@ class _RunLockHeld(Exception):
     """签到锁被其他进程持有（--only 模式下由 _acquire_run_lock 抛出）。"""
 
 
+class _RunLockUnavailable(RuntimeError):
+    """运行锁**不可用**：本进程无法进入互斥保护区（锁文件不可写、平台无锁后端、等待超时）。
+
+    与 `_RunLockHeld`（"别人正在跑"）分开，是因为处置不同但都必须 **fail-closed**：
+    两者都不得"无锁继续"。无锁继续在多执行体下等于同一账号被两个进程并发真实登录
+    （本项目第一红线），故拿不到互斥一律拒绝运行；调用点按既有退出码族把这一事实透出
+    （见 `runner` / `workers` 各处 `except _RunLockUnavailable` 的注释）。
+    """
+
+
+#: `_run_lock_held` 的"探测不出"告警去重标记：兜底常驻每 `_YIELD_POLL_SEC` 探一次，
+#: 不去重会把同一条平台缺陷刷满日志。
+_PROBE_UNAVAILABLE_WARNED = False
+
+
 def _acquire_run_lock(only_mode, name=None):
     """进程级签到单实例锁：防 cron 全量队列与手动 --only 并发签到同一账号。
 
     web 端的防抖/terminate 只覆盖 web 自己 spawn 的子进程，与 cron 全量队列之间没有
     任何互斥——同账号被两个进程并发登录易班会导致重复打卡/会话异常/风控画像。
     锁文件 <STATE_DIR>/signin-run.lock：
-    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），超时告警后
-      无锁继续——漏签一整天的代价高于极小概率的重叠；
-    - --only 模式：立即尝试一次，被持有则抛 _RunLockHeld（调用方退出并留痕，
+    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），等到就继续；
+      **超时即拒绝运行**（抛 `_RunLockUnavailable`）——旧行为是告警后"无锁继续"，
+      那等于把"另一轮全量正在签同一批账号"这个事实忽略掉，两边各登录一次；
+    - --only 模式：立即尝试一次，被持有则抛 `_RunLockHeld`（调用方退出并留痕，
       管理员稍后重试）——手动触发不应在 web 已返回的后台进程里排队阻塞。
-    返回持锁文件句柄（flock 随进程退出自动释放）；Windows 无 fcntl 或状态目录
-    不可写时返回 None（不互斥、不阻断，与 _state_file_lock 降级策略一致）。
+    返回持锁文件句柄（flock 随进程退出自动释放）。
+
+    **三条 fail-open 已全部收口**（拿不到互斥就拒绝，绝不交出未加锁的句柄）：
+    等待超时、状态目录不可写/锁文件打不开（旧为静默 `return None`）、平台无 fcntl
+    （旧为告警后返回未加锁句柄）。理由同第一红线：本锁是多执行体之外的**第二道**互斥
+    （同机多个执行体进程、兜底与全量之间），静默失效等于让它在最需要的时候不存在。
 
     `name`：锁文件名，缺省取 `YIBAN_RUN_LOCK_NAME`（多执行体子进程用它换成自己的锁）
     再退到 `GLOBAL_RUN_LOCK_NAME`。**显式传参可绕过环境变量**——探测全局锁必须显式
@@ -107,17 +129,20 @@ def _acquire_run_lock(only_mode, name=None):
     try:
         os.makedirs(state_dir, exist_ok=True)
         fh = open(os.path.join(state_dir, lock_name), "a+", encoding="utf-8")
-    except OSError:
-        return None
+    except OSError as e:
+        logger.error(
+            "签到运行锁不可用（状态目录不可写或锁文件打不开），本次拒绝运行: %s", e)
+        raise _RunLockUnavailable(str(e)) from e
     if fcntl is None:
         # 无 fcntl 时锁退化为无互斥：管理员在 Windows 上跑多进程（cron + 手动）会
-        # 静默出现同账号并发签到的可能（重复打卡/风控），必须明确告警一次
-        logger.warning(
-            "当前平台无 fcntl（Windows），签到单实例锁未生效："
-            "cron 全量队列与手动 --only 并发时可能对同一账号重复签到，"
-            "建议在 Linux/容器环境运行或避免同时触发手动与定时签到"
+        # 静默出现同账号并发签到的可能（重复打卡/风控）。交出未加锁句柄等于把
+        # "没有互斥"伪装成"持锁在跑"，故显式报不可用并拒绝运行。
+        fh.close()
+        logger.error(
+            "当前平台无 fcntl，签到单实例锁不可用：无法保证同一账号不被并发真实登录，"
+            "本次拒绝运行（请在 Linux/容器环境运行）"
         )
-        return fh
+        raise _RunLockUnavailable("平台无 fcntl，运行锁不可用")
     wait_sec = 0.0
     if not only_mode:
         try:
@@ -136,11 +161,12 @@ def _acquire_run_lock(only_mode, name=None):
             fh.close()
             raise _RunLockHeld()
         if wait_sec >= wait_limit:
-            logger.warning(
-                "等待签到锁超时（%ss），本次无锁继续执行（可能与另一签到进程并发，请检查）",
-                wait_limit,
+            fh.close()
+            logger.error(
+                "等待签到锁超时（%ss），无法取得互斥，本次拒绝运行（不再无锁继续："
+                "另一轮可能正在签同一批账号）", wait_limit,
             )
-            return fh
+            raise _RunLockUnavailable(f"等待签到锁超时（{wait_limit}s）")
         time.sleep(0.5)
         wait_sec += 0.5
 
@@ -155,14 +181,22 @@ def _run_lock_held(name=None):
     代价：持有期间（微秒级）另一进程的 `--only` 手动签到可能被判成"队列忙"重试一次，
     概率极低且只影响一次手动触发；相比"兜底冲掉全量轮的计划"这个代价是划算的。
 
-    无 fcntl（Windows）或状态目录不可写时返回 False——与 `_acquire_run_lock` 同一降级
-    策略：锁不生效就不该假装有人在跑（否则兜底永远不动）。
+    **探测不出锁状态时按"有人在跑"处置**（`_RunLockUnavailable`，进程内只告警一次）：
+    本函数只服务"该不该让位"这一个决策，而两种判错的代价不对称——错报"没人跑"会让
+    兜底与全量轮抢同一批账号、把它精心错峰的计划冲掉；错报"有人在跑"只是兜底这一轮
+    不捡漏（下一轮还会再看）。安全的判错方向是让位，故不再返回 False 假装锁不存在。
     """
-    if fcntl is None:
-        return False
+    global _PROBE_UNAVAILABLE_WARNED
     try:
         fh = _acquire_run_lock(True, name=name or GLOBAL_RUN_LOCK_NAME)
     except _RunLockHeld:
+        return True
+    except _RunLockUnavailable as e:
+        if not _PROBE_UNAVAILABLE_WARNED:
+            _PROBE_UNAVAILABLE_WARNED = True
+            logger.warning(
+                "运行锁不可用（%s），无法探测是否有全量轮在跑：按'有人在跑'处置，"
+                "兜底本轮让位（这条告警每进程只报一次）", e)
         return True
     if fh is not None:
         with suppress(OSError):
