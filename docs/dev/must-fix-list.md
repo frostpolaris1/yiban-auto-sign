@@ -775,7 +775,20 @@ C-05 会话缓存 miss→登录→写回 三步无跨进程占位（判中，`se
 - **现网三态**：**现网不触发**（生产宿主为北京时区）；条件缺陷——换宿主/改时区/容器化部署即触发。
 - **归置**：不阻塞批 1 红线；随批 2（告警/隐私与运维一致面）或容量批处置。
 
-**下一空号：MF-110**。
+### MF-110 测试标签块/生成式索引的门约定失效：批0 新增测试无标签块、索引过期、CI 未接 `--check`（脚本自称已接）
+- **现象**（2026-09-26 批 1 期间翻查写作规范时发现）：`scripts/test_index.py` 约定 `tests/test_*.py`
+  头部五字段标签块（标签/覆盖/对应实现/关键断言/依赖）并生成 `docs/dev/test-index.tsv`，
+  docstring 自称"CI 在跑测试之前执行 `--check`"。实测：① ci.yml/nightly.yml **无** test_index 调用（门未接线）；
+  ② 本机 `--check` 红——批 0 新增测试文件（test_deploy_prod_artifacts / test_loadtest_isolation /
+  test_migrations_fail_closed 等）缺标签块字段；③ 批 1 Task 2b 实删 26 条用例后索引必然失同步（未重生成）。
+- **证据**：📄 本机 WSL `python scripts/test_index.py --check`（多条 `! … 缺字段`）；
+  `grep -rn test_index .github/workflows/` 零命中。
+- **验收不变量**：`--check` 全绿；CI（nightly）真实执行 `--check`；此后新增测试文件自带标签块。
+- **现网三态**：不涉现网（开发约定面）。
+- **处置**：批 1 补一个小任务（批 0 新增测试文件补标签块 + 重生成索引 + nightly 接 `--check`）；
+  批 1 后续任务派单要求"新建测试文件自带标签块"。
+
+**下一空号：MF-111**。
 
 ## 待裁决（11 条：十条已裁决或关闭，仅 #11 备份口令轮换等你手动执行）
 
