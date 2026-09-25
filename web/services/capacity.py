@@ -52,7 +52,11 @@ def _capacity_account_count():
 
     口径（判据唯一来源 `yiban.store.accounts.signs_in`）：**非删除且审核态已通过**；
     user_paused 仍计入（用户主动暂停、一键可恢复，总览三分类已单独列出）。
-    显示/配额/预估三处同一源，改这里等于同时改三处。
+    「同源」成立在**判据**上，不成立在**计数表达式**上：设置页视图（
+    `web/routes/settings_api.py` 的 `_cur_accounts = sum(... account_signs_in(a))`）另写了
+    一份计数，为的是单请求只读一次明文列、不复本函数的解密开销；「预估」那路走的是引擎
+    公式 `yiban.engine.schedule.capacity_of`，也不经本函数。故改本函数只改到调用它的
+    显示与配额两处；要改**口径**得改 `account_signs_in`，那两处才会一起跟上。
     """
     # 审核未通过（pending/rejected）的行永不签到（引擎加载与运行期复核按同一条件过滤），
     # 计入会让"永不签到的存量"长期占满名额：新账号提交时被「账号数量已达上限」误拒，

@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""告警通道健康族：两条通道的结构化可用性判据、展示行与每日健康日报。
+"""告警通道健康族：两条通道的结构化可用性判据、展示行与例行健康报告。
 
 **功能**
 两条告警通道的结构化可用性判据 `_alert_channel_status`；"是否算降级"的判定
 `_channel_health_degraded`；当前状态文本行 `_channel_status_lines` 与两本推送额度账的
-今日剩余 `_daily_budget_desc`；日报"今日已播"标记读取 `_health_report_sent_today`、
+今日剩余 `_daily_budget_desc`；报告"今日已播"标记读取 `_health_report_sent_today`、
 压缩事实摘要 `_channel_health_facts`、降级痕迹落审计链 `_audit_channel_health_degraded`；
-每日健康日报本体 `_send_channel_health_report`（含 app_meta 去重标记）。
+健康报告本体 `_send_channel_health_report`（含 app_meta 去重标记）。本模块自己**不管
+什么时候播**——例行播一周一次、通道降级或额度耗尽当天照发，判据在 `web/app.py` 的
+`_channel_health_report_due`；名字里的"日报"是收敛为周报之前的旧称，仍留在若干符号里。
 
 **归属**
 原 `web/app.py` 的模块级通道健康辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
@@ -325,7 +327,8 @@ def _audit_channel_health_degraded(facts):
 
 def _send_channel_health_report(force=False, *, alert_channel_status, status_lines,
                                 send_notification):
-    """告警通道健康日报（每日线程调用）。
+    """告警通道健康报告（旧称"日报"；线程每日醒一次，例行只在 `_HEALTH_REPORT_WEEKDAY`
+    那天播，通道降级或额度耗尽当天照发——要不要播由调用侧判定，本函数不重复判）。
 
     三件事：① 固定附一行两条通道当前状态（被关闭也要看得见"被关"）；
     ② 接线 `notify.pop_exhaustion_notice()`——当日有账本额度耗尽且尚未告知时，

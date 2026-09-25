@@ -35,8 +35,11 @@
 输入：环境变量 `BACKUP_DIR` / `APP_DIR` / `YIBAN_BACKUP_INSTALLED` / `YIBAN_ENV_FILE` /
 `YIBAN_STATE_DIR`（与 `backup.sh`、`run.sh` 同口径）。
 输出：结论与原因到 stdout（cron 重定向到日志）；异常时一封管理员告警邮件。
-退出码：`0`=检查完成（含"缺失但告警已发出"）；`1`=检查本身失败或告警发不出去——此时
-cron 自己的报错邮件是最后一道声音，不能吞掉。
+退出码：`0`=检查完成（含"缺失但告警已发出"）；`1`=检查本身失败或告警发不出去。
+⚠ 但别把退出码当成"最后一道声音"：仓库给出的三条排期行（`README.md`、`scripts/backup.sh`、
+本脚本头部）都带 `>> /var/log/yiban/backup.log 2>&1`，stderr 被并进日志文件、cron 不发
+报错邮件（全仓也没有任何 `MAILTO` 设置）⇒ 退出码 1 实际只在有人翻 backup.log 时才看得见。
+真要让"发不出去"这件事自己响，得去掉 `2>&1` 并配 `MAILTO`，或把退出码接进监控。
 调用谁：`yiban.mail`、`web.services.notify_mail`、`yiban.notify.transport`。
 谁调用：cron（每日一次）；无其它调用点。
 """
@@ -161,7 +164,7 @@ def _send_admin_alert(title, mail):
     recipients = _alert_mail_recipients()
     if not recipients:
         # 空收件人不静默当成功：本脚本的意义就是"不允许静默"，"没人收得到"必须让上层
-        # 看见（退出码 1，cron 自己的报错邮件是最后一道声音）
+        # 看见（退出码 1；它能否真的被看见，见模块头部对 `2>&1` 的那段提醒）
         logger.warning("备份哨兵告警无可用收件人（ADMIN_TO 与开启接收的管理员均为空）")
         return False
     return bool(mailer.send_admin_alert(title, mail, to=",".join(recipients)))
