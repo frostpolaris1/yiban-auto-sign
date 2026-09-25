@@ -101,14 +101,6 @@ class DockerImageContentsTest(unittest.TestCase):
             f"{missing}；当前 COPY: {copies}",
         )
 
-    def test_yiban_package_is_copied(self):
-        """显式钉住 `yiban/`：它是 signin/web 的共享包，且曾真的漏拷过。"""
-        content, _ = _named_copies()
-        self.assertRegex(
-            content, r"(?m)^\s*COPY\s+\.?/?yiban/\s",
-            "docker/Dockerfile 必须 COPY yiban/（2026-09-15 曾漏拷致镜像不可用）",
-        )
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

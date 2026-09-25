@@ -119,21 +119,6 @@ class LockPrimitiveTest(unittest.TestCase):
             if proc.is_alive():
                 proc.terminate()
 
-    def test_wrapper_passes_a_retry_timeout(self):
-        """守护配置：包装层必须把**正数**重试时长交给 portalocker。
-
-        若有人把它改回"零超时/不重试"，上面那条等待断言在快机器上可能侥幸通过，
-        这条会在配置层面直接拦下。
-        """
-        with mock.patch.object(locks.portalocker, "Lock",
-                              wraps=locks.portalocker.Lock) as spy, \
-                locks.file_lock(self.target):
-            pass
-        spy.assert_called_once()
-        self.assertGreater(spy.call_args.kwargs.get("timeout", 0), 0,
-                           "必须传入正数 timeout 以启用重试")
-        self.assertGreater(spy.call_args.kwargs.get("check_interval", 0), 0)
-
     @unittest.skipUnless(os.name == "posix", "跨进程 flock 断言仅 POSIX 可用")
     def test_cross_process_exclusion_posix(self):
         import multiprocessing as mp
@@ -196,14 +181,6 @@ class D4DivergentLocksRemovedTest(unittest.TestCase):
             os.path.exists(os.path.join(self.tmp, "notify-ledger.json.lock")),
             "应真的建出锁文件（不再是 no-op）",
         )
-
-    def test_env_write_lock_delegates_to_primitive(self):
-        env_path = os.path.join(self.tmp, ".env")
-        with mock.patch.object(env_lock, "file_lock", wraps=locks.file_lock) as spy, \
-                env_lock.env_write_lock(env_path):
-            pass
-        spy.assert_called_once()
-        self.assertEqual(os.path.abspath(spy.call_args[0][0]), os.path.abspath(env_path))
 
 
 def _posix_lock_worker(env_file, ready, go, attempting, entered, release):

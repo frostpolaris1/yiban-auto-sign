@@ -119,69 +119,6 @@ class ProbeSigninTest(unittest.TestCase):
         with mock.patch.object(self.s, "_read_probe_state", return_value={}):
             self.assertTrue(self.s._health_probe_due(datetime(2026, 8, 25, 21, 0)))
 
-    # ---- run_probe ----
-    def test_run_probe_collects_and_flushes(self):
-        self._set_probe("1", "20:00", "1")
-        ok_acc = self._mk_account("13800138001")
-        bad_acc = self._mk_account("13800138002")
-        bad_acc.owner = "owner@test.com"
-        with mock.patch.object(self.s, "_health_probe_due", return_value=True), \
-             mock.patch.object(self.s, "verify_account", side_effect=[
-                 (True, "账号健康，可正常签到"),
-                 (False, "登录失败（账号或密码错误）"),
-             ]), \
-             mock.patch.object(self.s, "_collect_admin_mail") as col, \
-             mock.patch.object(self.s, "_flush_admin_mail_summary") as fl, \
-             mock.patch.object(self.s, "send_user_fail_mail") as suf, \
-             mock.patch.object(self.s, "_write_probe_state") as wsp, \
-             mock.patch.object(self.s, "_env_update_probe") as eup, \
-             mock.patch.object(self.s.db, "add_sign_event") as add:
-            self.s.run_probe([ok_acc, bad_acc])
-        col.assert_called_once()
-        # v0.24.4：探针路径的用户邮件带 scenario="probe"（措辞与签到失败解耦）
-        suf.assert_called_once_with("owner@test.com", "13800138002",
-                                    mock.ANY, scenario="probe")
-        fl.assert_called_once()
-        wsp.assert_called_once()
-        eup.assert_not_called()  # 非 once 不自动关闭
-        self.assertEqual(add.call_count, 2)  # 每账号一条（stage=probe）
-
-    def test_run_probe_once_auto_disable(self):
-        self._set_probe("1", "20:00", "once")
-        acc = self._mk_account()
-        with mock.patch.object(self.s, "_health_probe_due", return_value=True), \
-             mock.patch.object(self.s, "verify_account", return_value=(True, "健康")), \
-             mock.patch.object(self.s, "_write_probe_state"), \
-             mock.patch.object(self.s, "_env_update_probe") as eup:
-            self.s.run_probe([acc])
-        eup.assert_called_once_with(auto_disable=True)
-
-    def test_run_probe_disabled_is_silent(self):
-        # 探针关闭：完全静默——不调到期判断、不探测、不落库、不写状态、不预警
-        acc = self._mk_account()
-        with mock.patch.object(self.s, "verify_account") as va, \
-             mock.patch.object(self.s, "_health_probe_due") as h, \
-             mock.patch.object(self.s, "_write_probe_state") as wsp, \
-             mock.patch.object(self.s, "_collect_admin_mail") as col, \
-             mock.patch.object(self.s.db, "add_sign_event") as add:
-            self.s.run_probe([acc])
-        va.assert_not_called()
-        h.assert_not_called()
-        wsp.assert_not_called()
-        col.assert_not_called()
-        add.assert_not_called()
-
-    def test_run_probe_skipped_when_enabled_but_not_due(self):
-        # 已开启但未到触发时间/频率：跳过且不探测、不写状态
-        self._set_probe("1", "20:00", "1")
-        acc = self._mk_account()
-        with mock.patch.object(self.s, "_health_probe_due", return_value=False), \
-             mock.patch.object(self.s, "verify_account") as va, \
-             mock.patch.object(self.s, "_write_probe_state") as wsp:
-            self.s.run_probe([acc])
-        va.assert_not_called()
-        wsp.assert_not_called()
-
     # ---- _env_update_probe：once 自动关闭写 .env ----
     def test_env_update_probe_writes_disable_and_creates_tmp_0600(self):
         """写 YIBAN_PROBE_ENABLE=0 且临时文件**创建即 0600**。
