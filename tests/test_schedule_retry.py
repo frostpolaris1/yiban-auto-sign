@@ -48,7 +48,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import window  # noqa: E402
+from yiban import clock, window  # noqa: E402
 
 
 class FakeNow:
@@ -394,7 +394,13 @@ class ContainerInjectsRetrySlotTest(unittest.TestCase):
                          f"{scheduler.SECOND[0]:02d}:{scheduler.SECOND[1]:02d}")
 
 
+#: run.sh 的按日文件（sign-status-<date>.txt / sign-<date>.log）与库内当日事实查询
+#: 都用宿主 `date +%Y-%m-%d`（run.sh:183 等），跑 run.sh 的用例须与宿主日对齐。
 TODAY = datetime.now().strftime("%Y-%m-%d")
+
+#: signin/scheduler 的 sched-run-<date>.json / sign-state-<date>.json 取业务钟
+#: （yiban.clock，北京 +8），跨宿主 TZ 时与 TODAY 可能不同日——这两类消费方必须用 BIZ_TODAY。
+BIZ_TODAY = clock.today()
 
 
 _MISSING = object()  # 哨兵：区分"不创建该文件"
@@ -409,10 +415,11 @@ STUB_SIGNIN = '''# -*- coding: utf-8 -*-
   再按 $STATE_DIR/round_exit 的值退出（缺省 0）
 """
 import json, os, sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 state = os.environ.get("YIBAN_STATE_DIR", ".")
-today = datetime.now().strftime("%Y-%m-%d")
+# 模拟生产 signin 的按日留痕（yiban.clock 北京钟）：固定 +8，不随宿主 TZ 漂移
+today = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")
 
 
 def _read_int(name, default):
@@ -454,55 +461,55 @@ class NeedSecondRunTest(unittest.TestCase):
 
     def test_no_sched_marker_needs_second(self):
         """当日全量未收尾（标记缺失）→ 需要补跑。"""
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_done_and_all_success_no_second(self):
         """已收尾 + 全部 success → 不需要补跑。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {
             "13800000001": {"status": "success"},
             "13800000002": {"status": "already"},
             "13800000003": {"status": "no_task"},
         })
-        self.assertFalse(signin.need_second_run(self.tmp, TODAY))
+        self.assertFalse(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_done_with_failed_needs_second(self):
         """已收尾但有 failed 账号 → 需要补跑（补签轮的核心价值）。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {
             "13800000001": {"status": "success"},
             "13800000002": {"status": "failed"},
         })
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_done_with_window_skip_needs_second(self):
         """已收尾但有 skipped_window（学校窗口晚于本地配置）→ 需要补跑。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {"13800000001": {"status": "skipped_window"}})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "skipped_window"}})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_completed_false_needs_second(self):
         """标记存在但 completed=false（首轮被 timeout 击杀）→ 需要补跑。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": False})
-        self._write(f"sign-state-{TODAY}.json", {"13800000001": {"status": "success"}})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": False})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "success"}})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_missing_state_file_fails_safe(self):
         """标记已写但状态文件缺失 → 按"未了结"处理（宁多跑一轮，不漏签）。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_corrupted_state_file_fails_safe(self):
         """状态文件损坏 → 同样按"需要补跑"。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", "{ 不是合法 JSON")
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", "{ 不是合法 JSON")
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_empty_state_dict_fails_safe(self):
         """状态文件是空对象 → 按"需要补跑"。"""
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {})
-        self.assertTrue(signin.need_second_run(self.tmp, TODAY))
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {})
+        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_cli_exit_code_contract(self):
         """CLI 契约：需要补跑 → 10；不需要 → 0（run.sh 依赖该退出码）。"""
@@ -515,8 +522,8 @@ class NeedSecondRunTest(unittest.TestCase):
                          "无标记时应返回 10（需要补跑）")
         self.assertEqual(signin.SECOND_RUN_CHECK_NEED, 10, "退出码契约不得改动")
 
-        self._write(f"sched-run-{TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{TODAY}.json", {"13800000001": {"status": "success"}})
+        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
+        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "success"}})
         r2 = subprocess.run(cmd, capture_output=True, env=env, cwd=BASE)
         self.assertEqual(r2.returncode, signin.SECOND_RUN_CHECK_SKIP,
                          "已收尾且无未了结账号时应返回 0")
@@ -735,19 +742,19 @@ class HostContainerAgreementTest(unittest.TestCase):
             if name.startswith(("sched-run-", "sign-state-")):
                 os.remove(os.path.join(self.tmp, name))
         if sched_payload is not _MISSING:
-            with io.open(os.path.join(self.tmp, f"sched-run-{TODAY}.json"), "w",
+            with io.open(os.path.join(self.tmp, f"sched-run-{BIZ_TODAY}.json"), "w",
                          encoding="utf-8") as f:
                 f.write(sched_payload if isinstance(sched_payload, str)
                         else json.dumps(sched_payload))
         if state_payload is not _MISSING:
-            with io.open(os.path.join(self.tmp, f"sign-state-{TODAY}.json"), "w",
+            with io.open(os.path.join(self.tmp, f"sign-state-{BIZ_TODAY}.json"), "w",
                          encoding="utf-8") as f:
                 f.write(state_payload if isinstance(state_payload, str)
                         else json.dumps(state_payload))
 
     def _assert_agree(self, sched_payload, state_payload, expected):
         self._setup(sched_payload, state_payload)
-        host = signin.need_second_run(self.tmp, TODAY)
+        host = signin.need_second_run(self.tmp, BIZ_TODAY)
         container = (not self.scheduler._full_run_done_today()) or \
             self.scheduler._has_undone_today()
         self.assertEqual(host, container,

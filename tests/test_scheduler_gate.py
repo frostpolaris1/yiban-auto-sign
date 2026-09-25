@@ -43,6 +43,8 @@ from unittest import mock
 
 import signin
 
+from yiban import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
@@ -85,8 +87,8 @@ class SchedulerGateTest(unittest.TestCase):
             os.environ["YIBAN_RUN_TIMEOUT_SEC"] = cls._old_run_timeout
 
     def _write_state(self, payload):
-        # 用 scheduler 自己那份 datetime：两边不同日，预置的状态文件它看不见
-        path = os.path.join(self.tmp, f"sign-state-{scheduler.datetime.now():%Y-%m-%d}.json")
+        # 用 scheduler 自己那份业务钟：状态文件名取 clock.now，宿主 TZ 不同日会看不见
+        path = os.path.join(self.tmp, f"sign-state-{scheduler.clock.now():%Y-%m-%d}.json")
         with io.open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
 
@@ -171,14 +173,19 @@ class ZeroSuccessAlertTest(unittest.TestCase):
         self.assertFalse(signin._mail_summary)
 
     def test_alerts_on_mixed_second_run(self):
-        """补签轮（is_second_run=True）仍有窗口外未了结：当天无下一触发点，必须知情。"""
+        """补签轮（is_second_run=True）仍有窗口外未了结：当天无下一触发点，必须知情。
+
+        冻结到窗口关闭后（补签轮已过、无兜底）：抑制三条件不可能同时成立，
+        用例不再随运行时刻（北京午夜窗口未开）漂移。
+        """
         accounts = [SimpleNamespace(phone="13800000001"), SimpleNamespace(phone="13800000002")]
         results = {
             "13800000001": (True, "签到成功", False, "success"),
             "13800000002": (False, "签到时段已结束", True, "skipped_window"),
         }
-        self.assertTrue(signin._maybe_alert_zero_success(
-            accounts, results, ok_n=1, is_second_run=True))
+        with _frozen_clock_at(2026, 9, 8, 8, 30):
+            self.assertTrue(signin._maybe_alert_zero_success(
+                accounts, results, ok_n=1, is_second_run=True))
         self.assertTrue(any(s == "签到窗口异常告警" for s, _t in signin._mail_summary))
 
     def test_silent_when_any_success(self):
@@ -371,7 +378,7 @@ class DbLayerB12Test(unittest.TestCase):
         ok, _note = db._clock_jump_guard(db.get_conn(), "purge_accounts_clock")
         self.assertTrue(ok)
         # 模拟参照点为 100 小时前 → 守卫判定跳变
-        old = (db.datetime.datetime.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (db.clock.now() - db.datetime.timedelta(hours=100)).strftime("%Y-%m-%d %H:%M:%S")
         with db._conn_lock:
             conn = db.get_conn()
             conn.execute(
@@ -680,7 +687,7 @@ class WebB12Test(unittest.TestCase):
 
     # ---- sign_events 消费端 ----
     def test_logs_api_exposes_sign_events(self):
-        ts = db.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = db.clock.now().strftime("%Y-%m-%d %H:%M:%S")
         db.add_sign_events_batch([{
             "ts": ts, "phone": PHONE, "status": "failed", "message": "登录失败",
             "stage": "sign", "attempt": 2, "dur_sec": 1.5, "finished_at": ts,
@@ -694,7 +701,7 @@ class WebB12Test(unittest.TestCase):
         self.assertEqual(ev["attempt"], 2)
 
     def test_admin_sign_events_endpoint(self):
-        ts = db.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = db.clock.now().strftime("%Y-%m-%d %H:%M:%S")
         db.add_sign_events_batch([{
             "ts": ts, "phone": PHONE, "status": "success", "message": "签到成功",
             "stage": "sign", "attempt": 1, "finished_at": ts,
@@ -806,7 +813,11 @@ class SecondRunEnvTest(unittest.TestCase):
             self.assertFalse(signin._is_second_run())
 
     def test_alert_on_partial_success_window_skip_second_run(self):
-        """部分成功 + 窗口外：补签轮（YIBAN_SECOND_RUN=1，标记缺失）必须告警。"""
+        """部分成功 + 窗口外：补签轮（YIBAN_SECOND_RUN=1，标记缺失）必须告警。
+
+        冻结到窗口关闭后（补签轮已过、无兜底）：不注入时钟时，北京午夜窗口未开
+        会让"还有下一轮"事实成立、告警被抑制，用例翻面。
+        """
         accounts = [_mk_acc("13800000001"), _mk_acc("13800000002")]
         results = {
             "13800000001": (True, "签到成功", False, signin.STATUS_SUCCESS),
@@ -814,6 +825,7 @@ class SecondRunEnvTest(unittest.TestCase):
         }
         with mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
              mock.patch.object(signin, "_sched_marker_exists", return_value=False), \
+             _frozen_clock_at(2026, 9, 8, 8, 30), \
              mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": "1"}):
             is_second = signin._is_second_run()
             alerted = signin._maybe_alert_zero_success(
@@ -905,7 +917,8 @@ class _Stop(Exception):
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    # 当日状态/标记文件名一律走业务钟（signin/scheduler 同源），宿主 TZ 下须一致
+    return clock.today()
 
 
 class _FakeDT(datetime):
@@ -917,6 +930,23 @@ class _FakeDT(datetime):
     @classmethod
     def now(cls, tz=None):
         return cls(*cls._date, *cls._hm)
+
+
+def _frozen_clock_at(y, mo, d, h, mi):
+    """把 `signin.clock.now` 固定到指定业务时刻（返回 patch 上下文）。
+
+    告警抑制判据含"窗口是否已关 / 是否还有下一轮"两个**时刻事实**，不注入就会随
+    运行时刻漂移：北京午夜（=UTC 16:00–24:00 窗口）窗口未开、又早于补签触发点，
+    抑制三条件成立 → 本应告警的用例翻面。
+    """
+    class _DT(datetime):
+        _at = (y, mo, d, h, mi)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls(*cls._at)
+
+    return mock.patch.object(signin.clock, "now", _DT.now)
 
 
 class _FakeProc:
@@ -1015,8 +1045,7 @@ class ChildTimeoutBoundTest(unittest.TestCase):
             fake = type(f"_DT{hm[0]}{hm[1]}", (_FakeDT,), {"_hm": hm})
             with mock.patch.object(sched.clock, "now", fake.now):
                 timeout = sched._child_timeout(env)
-            now = datetime.now().replace(year=2026, month=9, day=6,
-                                         hour=hm[0], minute=hm[1], second=0)
+            now = datetime(2026, 9, 6, hm[0], hm[1], 0)  # 与被 patch 的 _FakeDT._date 同日，构造固定时刻
             end = now.replace(hour=7, minute=50)
             remaining = max(0, (end - now).total_seconds())
             self.assertGreater(
@@ -1036,7 +1065,8 @@ RUN_SH = os.path.join(BASE, "run.sh")
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    # 当日状态/标记文件名一律走业务钟（signin/scheduler 同源），宿主 TZ 下须一致
+    return clock.today()
 
 
 FAKE_FLOCK = "#!/usr/bin/env bash\nexit ${FAKE_FLOCK_EXIT:-0}\n"
