@@ -112,7 +112,10 @@ def is_concluded_status(value):
 
 
 #: 领取池（sign_tasks）侧的两个集合，state 词表见 yiban/store/queue_store.py。
-#: 与 JSON 状态码是两套词：池里的 `done` 同时涵盖 success/already/no_task/no_position/
-#: skipped_window 多种结论，故判「当日是否了结」只能按池自己的词表来。
+#: 与 JSON 状态码是两套词，且**不是一一对应**：池里的 `done` 只收 `CLAIM_DONE_STATUSES`
+#: 那三种（success / already / no_task）；`no_position` / `skipped_window` / `skipped_norange`
+#: 平移进的是 `failed`（见 `migrations._JSON_TERMINAL_TO_TASK_STATE`，`round._settle_claims`
+#: 与 `executor_v3` 都走同一口径）。把这三格误读成 `done`，等于把"当日没签成"当成
+#: "当日已了结"，补签闸门会因此放过它——判「当日是否了结」一律用下面这两个集合。
 TASKS_OPEN_STATES = frozenset(("pending", "claimed", "failed", "stolen"))
 TASKS_SETTLED_STATES = frozenset(("done", "skipped"))
