@@ -441,6 +441,9 @@ def _patch_setup_peripherals(monkeypatch, tmp_path, *, egress_ok, ipt_ok):
     若不打桩就会在测试里真调 iptables。--egress-probe-ip 现为搭建路径必填项。
     """
     monkeypatch.setattr(mock_env.sys, "platform", "linux")  # 绕过"仅 Linux"前置
+    # 绕过"需要 root"前置：CI runner 是普通用户（Linux 有 geteuid 且非 0 → main 直接退 2）
+    # raising=False：Windows 的 os 没有 geteuid，本地照样绿
+    monkeypatch.setattr(mock_env.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(mock_env, "ensure_certs", lambda *a, **k: {})
     monkeypatch.setattr(mock_env, "apply_hosts", lambda *a, **k: True)
     monkeypatch.setattr(mock_env, "verify_zero_egress", lambda *a, **k: egress_ok)
