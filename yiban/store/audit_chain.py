@@ -551,6 +551,29 @@ _RECHAIN_EVENTS_KEEP = 50
 #: 后少一个 token，整行变得不可解析（曾导致每日误报"锚点文件被删除"）。
 _ANCHOR_GENESIS = "0" * 64
 
+#: 独立见证指纹文件的部署目录（与锚点文件**不同目录、不同属主**）。
+#: 生产由 deploy/prod/install.sh 预建、root 侧定时进程写入，应用身份只读——这是
+#: "锚点 + 库内指纹同属应用，拿到应用写权限者可双写掩盖删审计"的唯一补丁。
+#: 开发/测试环境（os.name == "nt"）落当前目录，属主与锚点相同，即降级形态。
+_ANCHOR_FP_DEFAULT_DIR_POSIX = "/var/lib/yiban-audit"
+_ANCHOR_FP_FILENAME = "anchor-fingerprint.json"
+
+
+def audit_anchor_fingerprint_path():
+    """独立见证指纹文件路径。
+
+    刻意**不**跟随 YIBAN_STATE_DIR：锚点文件在状态目录（/var/log/yiban），若见证
+    也落在那里，两者同属主同目录，应用身份可同时改写 ⇒ 跨权限保护消失。生产路径
+    由 install.sh 创建（0755 root）、root 侧进程写 0644，应用只读。
+
+    开发/测试（Windows）无特权目录可用，落当前目录下的 yiban-audit-witness/，
+    属主与锚点相同；此形态下独立文件对"同 uid 双写者"不构成额外阻力，残余风险
+    在 `_anchor_witness_state` 与 `_anchor_file_state_ex` 的注释里写明。
+    """
+    if os.name == "nt":
+        return os.path.join(".", "yiban-audit-witness", _ANCHOR_FP_FILENAME)
+    return os.path.join(_ANCHOR_FP_DEFAULT_DIR_POSIX, _ANCHOR_FP_FILENAME)
+
 
 def audit_anchor_path():
     """外部锚点文件路径（库外 append-only）。
@@ -617,11 +640,33 @@ def _parse_anchor_line(ln):
 
 def _read_anchor_lines(path):
     """锚点文件的全部非空行（保持顺序）。文件不存在/不可读返回 None（区别于 []）。"""
+    lines, _status = _read_anchor_lines_ex(path)
+    return lines
+
+
+def _read_anchor_lines_ex(path):
+    """同 `_read_anchor_lines`，但把"为什么没读到"一并返回：`(lines, status)`。
+
+    status 取值：
+      "ok"            读到了（可能为空列表）；
+      "missing"       文件不存在；
+      "io-error"      文件存在但不可读（权限/IO 错误）；
+      "decode-error"  内容不是合法 UTF-8。
+
+    区分四态是必需的：若让 `UnicodeDecodeError` 抛出，调用方的兜底 except 会把它
+    吞成一条 WARNING ⇒ **当日整段校验不执行**（一条非法字节就能让审计自检静默）；
+    把 "decode-error"/"io-error" 与 "missing" 混为一谈又会把"读不出"印成"无异常"。
+    调用方对所有非 "ok" 一律按"无法定论"处理，绝不当无异常。
+    """
+    if not os.path.exists(path):
+        return None, "missing"
     try:
         with open(path, encoding="utf-8") as f:
-            return [ln.strip() for ln in f if ln.strip()]
+            return [ln.strip() for ln in f if ln.strip()], "ok"
+    except UnicodeDecodeError:
+        return None, "decode-error"
     except OSError:
-        return None
+        return None, "io-error"
 
 
 def _get_anchor_meta():
@@ -757,7 +802,14 @@ def record_audit_anchor(path=None):
         ts = clock.now().strftime("%Y-%m-%d %H:%M:%S")
         # 行间链：prev_line_hash 取**前一行原文**的哈希，旧格式（v1）行同样参与
         # 链——否则攻击者只要删掉文件末尾的 v1 行，剩余行依然自洽，无从发现。
-        lines = _read_anchor_lines(path) or []
+        lines, read_state = _read_anchor_lines_ex(path)
+        if read_state not in ("ok", "missing"):
+            # 读不出（非法 UTF-8/权限）时**拒绝追加**：按空列表续写会把行间链接到
+            # 一个读不出来的前缀上（GENESIS 假前驱），既掩盖现场又让文件此后永远
+            # 解析失败。无法定论状态下宁缺毋滥，由每日告警催人修文件。
+            logger.error("锚点文件不可解析（%s），拒绝追加新锚点行以免破坏行间链", read_state)
+            return None
+        lines = lines or []
         prev_line_hash = _anchor_line_sha(lines[-1]) if lines else _ANCHOR_GENESIS
         line = f"{ts} {min_id} {max_id} {count} {purge_total} {head} {prev_line_hash}"
         d = os.path.dirname(path)
@@ -785,7 +837,13 @@ def _record_anchor_trace(path, ts):
       必须有库内指纹交叉对照。行数只增不减——被截断后即使补写一行把长度凑回来，
       本次指纹仍停留在更高的历史值上（见 _anchor_file_state）。
     """
-    lines = _read_anchor_lines(path) or []
+    lines, read_state = _read_anchor_lines_ex(path)
+    if read_state not in ("ok", "missing"):
+        # 读不出时不能按空列表写指纹：那会把库内行数高水位冲成 0、末行哈希冲成空，
+        # 之后正常修复好的锚点反而因"行数变多"被判红。宁可本次不更新指纹。
+        logger.error("锚点文件不可解析（%s），本次不更新库内指纹（保持原高水位）", read_state)
+        return
+    lines = lines or []
     try:
         with _facade()._conn_lock:
             conn = _facade().get_conn()
@@ -818,6 +876,36 @@ def _record_anchor_trace(path, ts):
         logger.warning("锚点元数据留痕失败（不影响锚点本身）: %s", meta_err)
 
 
+def _parse_anchor_lines(lines):
+    """把锚点行文本列表解析成已解析行列表（不可解析的行被丢弃，保序）。"""
+    out = []
+    for ln in lines:
+        parsed = _parse_anchor_line(ln)
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
+def _last_anchor_of(lines):
+    """最后一条可解析的锚点行；没有返回 None。"""
+    parsed = _parse_anchor_lines(lines)
+    return parsed[-1] if parsed else None
+
+
+def _max_anchor_of(lines):
+    """`max_id` 最大的那条可解析锚点行（并列取靠后的）。
+
+    校验基准取"最大真行"而不是"最后一行"：追加一行**旧状态**的锚点（max_id 更小）
+    即可把基准换成一个与现状自洽的旧记录，让删尾判据对着错的锚点算。取最大 max_id
+    使基准只会被更强的记录替换；伪造一条更大的 max_id 也无用——那一行在库内不存在
+    或哈希对不上，定点判据随即为红。
+    """
+    parsed = _parse_anchor_lines(lines)
+    if not parsed:
+        return None
+    return max(parsed, key=lambda p: p["max_id"])
+
+
 def _last_audit_anchor(path):
     """读取最后一条有效锚点行；无锚点或格式不符返回 None。
 
@@ -831,64 +919,253 @@ def _last_audit_anchor(path):
     lines = _read_anchor_lines(path)
     if not lines:
         return None
-    for ln in reversed(lines):
-        parsed = _parse_anchor_line(ln)
-        if parsed is not None:
-            return parsed
-    return None
+    return _last_anchor_of(lines)
 
 
-def _anchor_file_state(path):
-    """锚点文件**自身**完整性：行间链 + 库内指纹交叉校验。返回异常描述或 ''。
+def _read_anchor_fingerprint(path):
+    """读独立见证指纹：`(state, data)`，state ∈ missing/unreadable/corrupt/ok。
 
-    审计链的哈希校验只覆盖库内行；锚点文件若被截断/改写，判据会整体失效
-    （verify_audit_anchor 只读末行）。本函数把"锚点文件不可信"从静默降级
-    变成显式失败。
+    损坏与不可读**不返回 None**：那会被上层当成"从未写过见证"而静默降级，
+    正是"把读不出印成无异常"的等价类。
     """
-    lines = _read_anchor_lines(path)
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return "missing", None
+    except OSError:
+        return "unreadable", None
+    try:
+        val = json.loads(raw)
+    except ValueError:
+        return "corrupt", None
+    if not isinstance(val, dict) or not isinstance(val.get("lines"), int):
+        return "corrupt", None
+    return "ok", val
+
+
+def record_audit_anchor_witness(anchor_path=None, fingerprint_path=None):
+    """独立见证：把锚点文件当前指纹写进库外、**与锚点不同属主**的独立文件。
+
+    与 `record_audit_anchor` 的分工：后者以应用身份写锚点行并同步库内指纹，两者
+    同属一个身份；拿到应用写权限的人可以同时改写锚点行与库内指纹，把"最近 N 条
+    审计被删"伪装成自洽状态。本函数由部署方 root 侧定时进程调用，只读锚点、只写
+    独立文件——改写它需要另一份权限，双写掩盖才会留下缺口。
+
+    单调写，只前进不后退：观测到行数变少、或同一行内容变化时**拒绝覆盖**并记错误
+    日志——那正是篡改现场，覆盖掉等于替攻击者擦证据。返回 `(state, message)`，
+    state ∈ written/unchanged/regression/rewritten/unparseable/corrupt/unreadable/no-anchor。
+    """
+    ap = anchor_path or audit_anchor_path()
+    fp = fingerprint_path or audit_anchor_fingerprint_path()
+    lines, status = _read_anchor_lines_ex(ap)
+    if status != "ok" or not lines:
+        return "no-anchor", f"锚点不可用（{status}），本次不写独立见证"
+    last = _parse_anchor_line(lines[-1])
+    if last is None:
+        return "unparseable", "锚点末行无法解析，本次不写独立见证（不拿坏值当真值）"
+    curr = {
+        "lines": len(lines),
+        "line_hash": _anchor_line_sha(lines[-1]),
+        "max_id": last["max_id"],
+        "head": last["head"],
+        "count": last.get("count"),
+        "purge_total": last.get("purge_total"),
+        "ts": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    prev_state, prev = _read_anchor_fingerprint(fp)
+    if prev_state in ("corrupt", "unreadable"):
+        logger.error("独立见证指纹文件%s，拒绝覆盖（需人工核查）: %s",
+                     "损坏" if prev_state == "corrupt" else "不可读", fp)
+        return prev_state, f"独立见证文件{prev_state}，拒绝覆盖"
+    if prev:
+        if curr["lines"] < prev.get("lines", 0):
+            logger.error("锚点文件行数 %s 少于独立见证记录的 %s，拒绝回退覆盖（疑似篡改现场）",
+                         curr["lines"], prev.get("lines"))
+            return "regression", "锚点行数少于独立见证，拒绝覆盖"
+        if curr["lines"] == prev.get("lines") and curr["line_hash"] != prev.get("line_hash"):
+            logger.error("锚点末行与独立见证不符，拒绝覆盖（疑似篡改现场）")
+            return "rewritten", "锚点末行与独立见证不符，拒绝覆盖"
+        if curr["lines"] == prev.get("lines"):
+            return "unchanged", ""
+    d = os.path.dirname(fp)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = fp + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(curr, f, ensure_ascii=False, sort_keys=True)
+    # 0644：应用身份要能**读**（校验需要），但只有写入者（root）能改
+    with contextlib.suppress(OSError):
+        os.chmod(tmp, 0o644)
+    os.replace(tmp, fp)
+    return "written", ""
+
+
+def _witness_owner_state(anchor_path, fingerprint_path):
+    """独立文件与锚点文件是否属主分离：separate / same-owner / unknown。
+
+    只做"两者 st_uid 是否不同"这一条可移植判据（Windows 无 st_uid → unknown）。
+    不拿"目录是否 root"推断：文件可能被部署到任意受控目录，属主比对才是事实。
+    """
+    try:
+        a_uid = os.stat(anchor_path).st_uid
+        f_uid = os.stat(fingerprint_path).st_uid
+    except (OSError, AttributeError):
+        return "unknown"
+    return "separate" if a_uid != f_uid else "same-owner"
+
+
+def _anchor_witness_state(lines, meta, fingerprint_path, anchor_path=None):
+    """独立见证与锚点文件/库内指纹的三方一致性；返回 `(status, msg, state, data)`。
+
+    三方（库内指纹 / 锚点旁路即文件末行自报 / 独立文件）任一不一致即红。判据在
+    锚点文件一侧只做两件事：见证记录的那一行必须还在原位且内容未变；库内指纹不得
+    落后于见证。见证自己记的 max_id/head 与库内行的比对在 `_anchor_status` 内做
+    （那里已有库连接）。
+
+    state（anchor_witness）区分独立文件是否真的"跨权限"：separate（属主不同，生产
+    形态）/ same-owner（**降级形态**）/ absent / unreadable / corrupt。
+
+    残余风险（same-owner 与 absent）：独立文件与锚点同属主时，同 uid 双写者能把两份
+    一起改，本判据只剩"抗误删/抗意外损坏"的价值，挡不住有意掩盖；生产必须让
+    install.sh 用 root 建目录、root 侧进程写文件，才能拿到跨权限保护。
+    """
+    state, fp = _read_anchor_fingerprint(fingerprint_path)
+    if state == "missing":
+        return "ok", "", "absent", None
+    if state in ("unreadable", "corrupt"):
+        return (
+            "indeterminate",
+            f"独立见证指纹文件存在但{'损坏' if state == 'corrupt' else '不可读'}"
+            "——无法判断锚点是否被改写，校验无法定论（不等于无异常）",
+            state, None,
+        )
+    owner = _witness_owner_state(anchor_path or audit_anchor_path(), fingerprint_path)
+    n = int(fp["lines"])
+    if len(lines) < n:
+        return (
+            "tampered",
+            f"锚点文件仅 {len(lines)} 行，早于独立见证记录的 {n} 行——锚点被截断"
+            "（见证由应用之外的身份写入，非应用可改写）",
+            owner, fp,
+        )
+    if _anchor_line_sha(lines[n - 1]) != fp.get("line_hash"):
+        return (
+            "tampered",
+            f"独立见证记录的第 {n} 行内容已变——锚点历史被改写",
+            owner, fp,
+        )
+    recorded = int(meta.get("lines") or 0) if meta else 0
+    if recorded and recorded < n:
+        return (
+            "tampered",
+            f"库内锚点指纹行数 {recorded} 落后于独立见证的 {n} 行——库内指纹被回滚",
+            owner, fp,
+        )
+    if recorded == n and meta.get("last_hash") and meta["last_hash"] != fp.get("line_hash"):
+        return (
+            "tampered",
+            "库内锚点指纹末行哈希与独立见证不符——库内指纹被改写",
+            owner, fp,
+        )
+    return "ok", "", owner, fp
+
+
+def _anchor_file_state_ex(path=None, lines=None, meta=None, fingerprint_path=None):
+    """锚点文件自身完整性：行数三支 + 行间链 + 库内指纹 + 独立见证。
+
+    返回 `(status, msg, witness_state, witness_data)`，status ∈ ok/tampered/indeterminate。
+
+    行数判据必须三支齐全。只判"变少"与"相等"会漏掉"变多"：**仅追加 1 条垃圾行**
+    就让两道判据同时返回"无异常"——行数变多无人管、相等分支又因末行变了却只比
+    last_hash 时被跳过。此处"变多"与"变少"同等判红：正常写入路径每写一行都会把库内
+    指纹的行数高水位同步抬高，因此"锚点比库内指纹多行"本身就是应用写入之外的动作。
+
+    不可解析的行（合法 UTF-8 但不是锚点行格式）判"无法定论"而非"无异常"：它既可能
+    是磁盘损坏也可能是有人在试探判据，处置方向不同，不能压成同一结论；也**不**当
+    普通红——那会把一次编码事故误报成确证的篡改。
+    """
     if lines is None:
-        return ""  # 文件缺失/不可读由 audit_anchor_last 那一支判定
+        lines, status = _read_anchor_lines_ex(path)
+        if status != "ok" or lines is None:
+            # 缺失/读不出由调用方（_anchor_status）判定，这里不重复下结论
+            return "ok", "", "absent", None
+    if meta is None:
+        meta = _get_anchor_meta()
+    recorded = int(meta.get("lines") or 0) if meta else 0
+    if recorded:
+        if len(lines) < recorded:
+            return (
+                "tampered",
+                f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
+                "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）",
+                "absent", None,
+            )
+        if len(lines) > recorded:
+            return (
+                "tampered",
+                f"锚点文件行数由库内指纹记录的 {recorded} 增至 {len(lines)}"
+                "——应用写入之外被追加了行（仅追加 1 条垃圾行即可同时骗过"
+                "「变少/相等」两支判据，故此处与减少同等判红）",
+                "absent", None,
+            )
+    for i, ln in enumerate(lines):
+        if _parse_anchor_line(ln) is None:
+            return (
+                "indeterminate",
+                f"锚点文件第 {i + 1} 行不是合法锚点行（内容损坏或被人为写入）"
+                "——校验无法定论，不等于无异常，请人工核查该行",
+                "absent", None,
+            )
     for i, ln in enumerate(lines):
         parsed = _parse_anchor_line(ln)
-        if parsed is None or parsed["prev_line_hash"] is None:
+        if parsed["prev_line_hash"] is None:
             continue  # 旧格式行没有行间链字段：作为前驱参与哈希，自身不做链校验
         expect = _anchor_line_sha(lines[i - 1]) if i > 0 else _ANCHOR_GENESIS
         if parsed["prev_line_hash"] != expect:
             where = _anchor_line_sha(lines[i - 1])[:12] if i > 0 else _ANCHOR_GENESIS[:12]
             return (
+                "tampered",
                 f"锚点文件第 {i + 1} 行的行间哈希不符（期望前驱行 {where}）"
-                "——锚点历史被改写或删除过整行"
+                "——锚点历史被改写或删除过整行",
+                "absent", None,
             )
-    meta = _get_anchor_meta()
-    recorded = int(meta.get("lines") or 0) if meta else 0
-    if recorded:
-        if len(lines) < recorded:
-            return (
-                f"锚点文件行数由库内指纹记录的 {recorded} 减至 {len(lines)}"
-                "——锚点文件被截断（删掉最后一行不会被行间链发现，正是为绕过锚点而设计）"
-            )
-        if (len(lines) == recorded and meta.get("last_hash")
-                and _anchor_line_sha(lines[-1]) != meta["last_hash"]):
-            return "锚点文件末行与库内指纹不符——末行内容被改写"
-    return ""
+    if recorded == len(lines) and meta.get("last_hash") and _anchor_line_sha(lines[-1]) != meta["last_hash"]:
+        return "tampered", "锚点文件末行与库内指纹不符——末行内容被改写", "absent", None
+    w_status, w_msg, w_state, w_data = _anchor_witness_state(
+        lines, meta, fingerprint_path or audit_anchor_fingerprint_path(), path)
+    if w_status != "ok":
+        return w_status, w_msg, w_state, w_data
+    return "ok", "", w_state, w_data
 
 
-def verify_audit_anchor(path=None):
-    """与库外锚点比对，检出「删尾 / 清空整表 / 篡改链尾」。
+def _anchor_file_state(path):
+    """`_anchor_file_state_ex` 的兼容包装：返回异常描述或 ''（旧调用面）。"""
+    return _anchor_file_state_ex(path)[1]
 
-    返回 (ok: bool, message: str)：
-    - ok=False → 确证异常，调用方应告警；
-    - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
-    无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
-    app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/
-    不可读 → 判定异常（锚点被整删会使删尾/清空检测静默失效）。
-    这项元数据交叉检查对**显式路径同样生效**：只查默认路径时，web 每日线程改传
-    显式路径就会把它整个跳过，锚点被删仍判通过（致盲换个形式复发）。
-    仓库内所有调用方都持有已初始化的库连接，app_meta 查询始终可用。
+
+def _anchor_status(path=None, fingerprint_path=None):
+    """锚点自检结论：`(status, message)`，status ∈ ok/tampered/indeterminate/none。
+
+    "ok" 与 "none" 都不是异常（none = 从未写过锚点，首次运行不判定）；
+    "indeterminate"（无法定论）必须与两者都区分开——它既不是"无异常"，也不是
+    "确证篡改"，而是"这次没验成"：处置方向不同（修文件/查编码 vs 查攻击），
+    混进任一侧都会让告警或静默失效。`audit_health` 对它一律判不健康。
     """
     path = path or audit_anchor_path()
-    anchor = _last_audit_anchor(path)
-    if anchor is None:
+    lines, read_state = _read_anchor_lines_ex(path)
+    if read_state == "decode-error":
+        return (
+            "indeterminate",
+            "锚点文件含非法 UTF-8 字节，整份文件无法解析——校验无法定论（不等于"
+            "无异常），当日自检不执行；请人工核查该文件内容",
+        )
+    if read_state == "io-error":
+        return (
+            "indeterminate",
+            "锚点文件存在但不可读（权限或 IO 错误）——校验无法定论（不等于无异常）",
+        )
+    if read_state == "missing" or not lines:
         try:
             with _facade()._conn_lock:
                 conn = _facade().get_conn()
@@ -896,19 +1173,26 @@ def verify_audit_anchor(path=None):
                     "SELECT value FROM app_meta WHERE key='audit_anchor_last'"
                 ).fetchone()
             if r is not None and r["value"]:
-                return False, (
+                return "tampered", (
                     f"审计锚点文件缺失或不可读，但应用元数据记录曾于 "
                     f"{r['value']} 写入锚点——疑似锚点文件被删除，"
                     "删尾/清空检测已失效，请立即核查"
                 )
         except Exception:
             pass  # app_meta 不存在（旧库/跳过迁移）→ 维持旧行为
-        return True, ""
-    file_err = _anchor_file_state(path)
-    if file_err:
+        return "none", ""
+    anchor = _max_anchor_of(lines)
+    if anchor is None:
+        return (
+            "indeterminate",
+            "锚点文件存在但没有一行是合法锚点行——校验无法定论（不等于无异常）",
+        )
+    file_status, file_msg, _w_state, w_fp = _anchor_file_state_ex(
+        path, lines=lines, fingerprint_path=fingerprint_path)
+    if file_status != "ok":
         # 锚点文件自身不可信时，后面所有"拿末行与库内比对"的判据都是拿伪造值
         # 在校验伪造值——必须先判失败。
-        return False, file_err
+        return file_status, file_msg
     try:
         with _facade()._conn_lock:
             conn = _facade().get_conn()
@@ -923,6 +1207,11 @@ def verify_audit_anchor(path=None):
             ).fetchone()[0]
             purge_total = _facade()._audit_purge_total(conn)
             events = _audit_purge_events(conn)
+            witnessed = None
+            if w_fp is not None and w_fp.get("max_id") is not None:
+                witnessed = conn.execute(
+                    "SELECT hash FROM audit_logs WHERE id=?", (int(w_fp["max_id"]),)
+                ).fetchone()
         n = int(row["n"] or 0)
         cur_min = int(row["min_id"]) if row["min_id"] is not None else 0
         cur_max = int(row["max_id"]) if row["max_id"] is not None else 0
@@ -931,7 +1220,7 @@ def verify_audit_anchor(path=None):
         # 留痕累计数只增不减：倒退意味着 app_meta 的删除留痕被人清过/改过，
         # 而这正是"批量删除后自证清白"唯一的通路，必须当场判失败。
         if anchor_pt is not None and purge_total < anchor_pt:
-            return False, (
+            return "tampered", (
                 f"物理删除留痕累计数由锚点记录的 {anchor_pt} 倒退为 {purge_total}"
                 "——app_meta 删除留痕被清除或改写，删除追溯已失效，请立即核查"
             )
@@ -940,14 +1229,31 @@ def verify_audit_anchor(path=None):
 
         if n == 0:
             if explained is not None and anchor_count and explained >= anchor_count:
-                return True, (
+                return "ok", (
                     f"审计链 {anchor_count} 条已按保留期全部清理完毕"
                     f"（有留痕，锚点以来累计删除 {explained} 条），非告警"
                 )
-            return False, (
+            return "tampered", (
                 f"审计表为空，但锚点（{anchor['ts']}）记录曾有 {anchor['max_id']} 条"
                 f"——疑似整表被清空（无任何清理留痕可解释，留痕累计={explained}）"
             )
+
+        # ---- 独立见证与库内真值比对 ----
+        # 见证记的是"某时刻锚点行自报的链尾行 id 与哈希"。拿它回库核对，是为了抓
+        # "删最近 N 条 + 改写锚点行与库内指纹，让两者对彼此自洽"这一类：库内那行
+        # 已经不在或哈希已变，而见证由另一属主持有，改不动。
+        if w_fp is not None and w_fp.get("max_id") is not None:
+            wid = int(w_fp["max_id"])
+            if witnessed is None and not _purge_event_covers(events, w_fp.get("purge_total"), wid):
+                return "tampered", (
+                    f"独立见证记录的链尾行 id={wid} 在库内已不存在，且无清理留痕可"
+                    "解释——最近审计被删除后用改写锚点掩盖，请立即核查"
+                )
+            if witnessed is not None and (witnessed["hash"] or "") != (w_fp.get("head") or ""):
+                return "tampered", (
+                    f"独立见证记录的链尾行 id={wid} 哈希与库内不符——审计链被抹后"
+                    "重签，请立即核查"
+                )
 
         # ---- 判据一：定点 ----
         # 锚点 max_id 那一行必须还在、哈希必须还对得上。原判据是
@@ -960,12 +1266,12 @@ def verify_audit_anchor(path=None):
                 if cur_max < anchor["max_id"]
                 else f"当前 max_id={cur_max} 反而更大——删尾后用新写入掩盖"
             )
-            return False, (
+            return "tampered", (
                 f"锚点记录的链尾行 id={anchor['max_id']} 已不存在，且无清理留痕可解释："
                 f"{trend}；锚点以来有留痕的删除累计={explained}"
             )
         if anchored is not None and anchored["hash"] != anchor["head"]:
-            return False, (
+            return "tampered", (
                 f"审计链尾行 id={anchor['max_id']} 的哈希与锚点不符（链尾内容被篡改或被"
                 f"全表重签）{_rechain_hint(anchor)}"
             )
@@ -980,7 +1286,7 @@ def verify_audit_anchor(path=None):
             missing = anchor_count - era_rows     # 锚点以来消失的行数
             exp = explained if explained is not None else 0
             if missing > exp:
-                return False, (
+                return "tampered", (
                     f"审计记录条数减少且无清理留痕：锚点（{anchor['ts']}）记录 {anchor_count} 条，"
                     f"当前该批仅剩 {era_rows} 条（此后新增 {appended} 条），"
                     f"消失 {missing} 条而有留痕的物理删除仅 {exp} 条——"
@@ -988,7 +1294,7 @@ def verify_audit_anchor(path=None):
                     f"变为 {cur_min}，max_id 由 {anchor['max_id']} 变为 {cur_max}"
                 )
             if missing < exp:
-                return False, (
+                return "tampered", (
                     f"清理留痕与链实际状态不符：留痕声称锚点以来删除 {exp} 条，"
                     f"实际仅消失 {missing} 条——留痕被伪造/重复写入，判为异常"
                 )
@@ -997,29 +1303,53 @@ def verify_audit_anchor(path=None):
         if cur_min > anchor["min_id"]:
             if anchor_count is None:
                 # v1 锚点：没有 count 可核对，维持旧的"信息"定性（不因此判失败）
-                return True, (
+                return "ok", (
                     f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
                     "（旧版锚点无 count 字段，无法核对清理留痕，非告警；"
                     "本次已按新格式重写锚点，明日恢复完整判据）"
                 )
             if not _purge_event_sets_min(events, anchor_pt, cur_min):
-                return False, (
+                return "tampered", (
                     f"审计链 min_id 由 {anchor['min_id']} 跃迁至 {cur_min}（跃迁 "
                     f"{cur_min - anchor['min_id']} 条），但没有任何一条清理留痕事件的"
                     f"删除后 min_id 与之相符——前缀删除无留痕，判为非法删除"
                 )
-            return True, (
+            return "ok", (
                 f"审计链最早记录由 id={anchor['min_id']} 回收至 {cur_min}"
                 "（有清理留痕，保留期清理的正常现象，非告警）"
             )
         if cur_min < anchor["min_id"]:
-            return False, (
+            return "tampered", (
                 f"审计链 min_id 由 {anchor['min_id']} 倒退至 {cur_min}——"
                 "锚点之后不可能凭空出现更早的记录，判为异常（库被替换或 id 被重写）"
             )
-        return True, ""
+        return "ok", ""
     except Exception as e:
-        return False, f"锚点校验异常: {e}"
+        # 校验过程自身异常（库锁/连接等）也算"无法定论"：既不能印成通过，也不该
+        # 冒充一次成功的取证。调用方据 status 分开处置。
+        return "indeterminate", f"锚点校验异常: {e}"
+
+
+def verify_audit_anchor(path=None, fingerprint_path=None):
+    """与库外锚点比对，检出「删尾 / 清空整表 / 篡改链尾 / 锚点文件被改写」。
+
+    返回 (ok: bool, message: str)：
+    - ok=False → 非"通过"（确证异常或无法定论，message 里注明是哪一种）；
+    - ok=True 且 message 非空 → 提示性信息（如合法清理造成的前缀回收），记录即可。
+    无可用锚点时返回 (True, "")——首次运行或从未记录过锚点不做判定。
+
+    需要区分三态（无异常 / 无法定论 / 确证异常）的调用方改用 `_anchor_status`；
+    本函数保留二元返回是为了不破坏既有调用面，"无法定论"时 message 以
+    「无法定论」开头，且 ok=False（绝不显示成通过）。
+
+    app_meta 记录过锚点（audit_anchor_last）而锚点文件此刻缺失/不可读 → 判定异常。
+    这项元数据交叉检查对**显式路径同样生效**：只查默认路径时，web 每日线程改传
+    显式路径就会把它整个跳过，锚点被删仍判通过（致盲换个形式复发）。
+    """
+    status, msg = _anchor_status(path, fingerprint_path)
+    if status == "indeterminate":
+        return False, "无法定论：" + msg
+    return status in ("ok", "none"), msg
 
 
 def _purge_events_after_anchor(events, anchor_pt):
@@ -1089,13 +1419,18 @@ def _rechain_hint(anchor):
     )
 
 
-def audit_health(path=None):
+def audit_health(path=None, fingerprint_path=None):
     """审计可追溯性综合体检（供每日线程 / audit_verify.py 调用）。
 
     返回 dict：
       chain_ok      链内哈希自洽（False = 有记录被篡改/删除）
       broken        链内断链条数（-1 = 校验异常或密钥缺失）
-      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾 / 无痕删除）
+      anchor_ok     与库外锚点一致（False = 删尾 / 清空 / 篡改链尾 / 无痕删除 /
+                    无法定论；"无法定论"不是"无异常"，也不是确证篡改）
+      anchor_status 锚点自检的三态结论：ok/none/tampered/indeterminate
+                    （none = 从未写过锚点，首次运行不判定）
+      anchor_witness 独立见证形态：separate/present/absent/unreadable/corrupt
+                    （absent/unreadable/corrupt = 降级或需人工核查，见代码注释残余风险）
       anchor_msg    锚点判定的说明或提示信息
       write_failures 累计的审计写入失败次数（>0 = 有操作未留痕；落库不随重启归零）
       rechain_events app_meta 里的全表重链留痕（诊断用，最新在末尾）
@@ -1109,13 +1444,31 @@ def audit_health(path=None):
     ——守卫的参照点每次成功都会推进，容差内每天小幅拨快即可在真实时间数十天内合法清掉
     整段保留期审计，且不触发任何告警。这两个数字的用途是**随日报出箱**：异机侧看"累计
     删除量"与"最近 cutoff 是否持续前移"，本机看不到的异常清理在外部就能看出来。
+
+    `fingerprint_path` 是独立见证文件路径（默认 `audit_anchor_fingerprint_path()`）；
+    显式传入供测试与多部署定位，生产走默认。
     """
     path = path or audit_anchor_path()
     chain_ok, broken, _first = verify_audit_chain()
-    anchor_ok, anchor_msg = verify_audit_anchor(path)
+    anchor_status, anchor_msg = _anchor_status(path, fingerprint_path)
+    # 三态压成二态：只有 ok/none 算"通过"。"无法定论"必须落到 anchor_ok=False，
+    # 否则一条非法字节就能让当日自检在"healthy=True"里静默消失。
+    anchor_ok = anchor_status in ("ok", "none")
+    anchor_witness = _anchor_witness_state(
+        _read_anchor_lines(path) or [], _get_anchor_meta(),
+        fingerprint_path or audit_anchor_fingerprint_path(), path)[2]
     write_failures = audit_write_failures()
     rechain_events, empty_hash_rows = _rechain_diagnostics()
     notes = []
+    if anchor_status == "indeterminate":
+        notes.append("锚点自检无法定论（既非通过也非确证篡改）：" + anchor_msg)
+    if anchor_witness in ("absent", "unreadable", "corrupt"):
+        # 单用户/开发部署的降级形态：独立见证未启用（或读不出）时，锚点与库内指纹
+        # 同属一个身份，拿到该身份写权限者可双写掩盖删审计——这是已声明的残余风险。
+        notes.append(
+            "独立见证指纹未启用或不可读（%s）：锚点与库内指纹同属一个身份，"
+            "双写掩盖删除仍无独立证据，强烈建议按 deploy/prod 部署 root 侧见证" % anchor_witness
+        )
     rechain_after_anchor = False
     if rechain_events:
         anchor = _last_audit_anchor(path)
@@ -1148,6 +1501,8 @@ def audit_health(path=None):
         "chain_ok": chain_ok,
         "broken": broken,
         "anchor_ok": anchor_ok,
+        "anchor_status": anchor_status,
+        "anchor_witness": anchor_witness,
         "anchor_msg": anchor_msg,
         "write_failures": write_failures,
         "rechain_events": rechain_events,
