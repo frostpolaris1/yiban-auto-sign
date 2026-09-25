@@ -558,8 +558,10 @@ ORIGINAL (596)          counted=596  limit=600  violations=NONE
   node/bash 列：无需 123 / 仅 node 5 / 仅 bash 9。
   `--check` 经协调者破坏性验证：改标签组字母、删索引行均退出码 1 并给 unified diff，还原后 0。
   ⚠ **`test-index.tsv` 必须入库**——`--check` 要跟它比对，不入库则新 checkout 无基准。
-- **回灌**：`must-fix-list.md` 新增 **MF-4 … MF-38**（高 2 / 中 8 / 低-中 5 / 低 16 + 索引类 3），
-  下一空号 **MF-39**。两条高危均经协调者本人复跑确认。
+- **回灌**：`must-fix-list.md` 新增 **MF-4 … MF-39**（高 2 / 中 8 / 低-中 5 / 低 16 + 索引与门禁类 4），
+  下一空号 **MF-40**。两条高危均经协调者本人复跑确认。
+  ⚠ 附带查出**门禁命令本身有盲区**：`ruff check yiban/ tests/ scripts/` 不含 `web/`，
+  而 `web/` 是 29 个 py / 12,784 行的最大面，那里 2 处 RUF100 自基线就存在、从没人看见（MF-39）。
 - 各份报告与派发动作书、落点范本、验收工具在 `C:/Users/Frostpolaris/qoder-scratch/m2-annotate/`
   （**个人 scratch，不在仓库内**）——`REFERENCE.md` / `DISPATCH-COMMON.md` / `spec-*.md` /
   `report-*.md` / `CONSOLIDATED-findings.md` / `astcheck.py` / `verify-all.py`。
