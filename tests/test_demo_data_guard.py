@@ -4,8 +4,9 @@
 标签：J · 运维：部署/备份/发布
 覆盖：`scripts/generate_demo_data.py` 的四条防线——dry-run 打印将清对象与计数且
     文件系统零删除；缺确认/指纹不匹配一律拒绝且零删除；指纹齐全才真清并在
-    `audit_logs` 落一条 `demo_purge`；审计写入失败必须让清库失败（fail-closed、
-    零删除）；未知参数报错退出。
+    `audit_logs` 落一条 `demo_purge_begin` 与一条 `demo_purge`（begin 写在
+    audit_logs 清零之后，故存活到最终状态）；审计写入失败必须让清库失败（fail-closed、
+    业务表零删除）；未知参数报错退出。
 对应实现：`scripts/generate_demo_data.py`（`main` 的 `--dry-run` / `--yes` /
     `--fingerprint` 分支）与 `yiban/store/purge_guard.py`。
 关键断言：`--yes` 单独不构成放行（指纹回显是前置）；"dry-run" 必须真的不删；
@@ -116,6 +117,15 @@ class DemoDataGuardTest(unittest.TestCase):
         rc, _ = self._run(["--bogus"])
         self.assertEqual(rc, 2)
 
+    def test_refusal_does_not_create_db_file(self):
+        """拒绝路径不得留下新库文件（确认门在 init_db 之前，指纹读取不建库）。"""
+        missing = os.path.join(self.tmp, "absent-demo.db")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = generate_demo_data.main(["--db", missing, "--env", self.env_file, "--yes"])
+        self.assertEqual(rc, 2)
+        self.assertFalse(os.path.exists(missing), "拒绝清库不得建库")
+
     # ---- 正常路径 ----
     def test_correct_fingerprint_clears_and_leaves_one_audit_row(self):
         rc, text = self._run(["--yes", "--fingerprint", self.fp,
@@ -138,11 +148,32 @@ class DemoDataGuardTest(unittest.TestCase):
 
     # ---- 审计 fail-closed ----
     def test_audit_failure_aborts_purge(self):
+        """留痕写不进去即放弃：业务表零删除（audit_logs 是被重建的审计链本身）。"""
         before = _counts(self.db_path)
         with mock.patch.object(generate_demo_data.db, "audit", return_value=False):
             rc, _ = self._run(["--yes", "--fingerprint", self.fp, "--users", "2"])
         self.assertNotEqual(rc, 0, "审计写入失败必须让清库失败")
-        self.assertEqual(_counts(self.db_path), before, "审计失败必须零删除（fail-closed）")
+        after = _counts(self.db_path)
+        for table in ("accounts", "users", "sign_events", "time_prefs"):
+            self.assertEqual(after[table], before[table],
+                             f"审计失败不得删业务表 {table}（fail-closed）")
+
+    def test_purge_begin_trail_survives_final_state(self):
+        """清空留痕写在 audit_logs 清零之后，必须存活到最终状态（不再被自己删掉）。"""
+        rc, text = self._run(["--yes", "--fingerprint", self.fp,
+                              "--users", "2", "--admin-accounts", "1",
+                              "--events-per-day", "1", "--days", "1"])
+        self.assertEqual(rc, 0, text)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            begins = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='demo_purge_begin'").fetchone()[0]
+            purges = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE action='demo_purge'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(begins, 1, "清库开始留痕必须存活在最终 audit_logs 里")
+        self.assertEqual(purges, 1, "清库收尾留痕也应恰有一条")
 
 
 if __name__ == "__main__":

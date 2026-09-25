@@ -28,8 +28,10 @@ from yiban.store import purge_guard
 
 DEFAULT_DEMO_DB = "demo-log/demo.db"
 
-# 清空顺序：先事件/日志后账号/用户（初始化时 foreign_keys=OFF，顺序只影响可读性）
+# 清空顺序：先事件/日志后账号/用户（初始化时 foreign_keys=OFF，顺序只影响可读性）。
+# audit_logs 单列：它要先清、清完立刻写清库留痕，再清其余表（见 main 里的两段式清空）。
 _WIPE_ORDER = ("sign_events", "time_prefs", "audit_logs", "accounts", "users")
+_WIPE_AFTER_AUDIT = tuple(t for t in _WIPE_ORDER if t != "audit_logs")
 
 
 def _phone(i):
@@ -95,23 +97,28 @@ def main(argv=None):
     # 与 db_export 同理——demo 脚本不得在初始化时触发破坏性清理
     db.init_db(args.db, env_file=args.env, cleanup=False)
 
-    # 清空前的审计能力前置校验：留痕写不进去就不许动（fail-closed）。这条随后会被
-    # 清空 audit_logs 一并删掉，它的意义是"在不可逆动作之前证明留痕可用"。
+    conn = db.get_conn()
+    print(f"将清空目标数据库: {args.db}（指纹 {fingerprint}）")
+
+    # 两段式清空：audit_logs 必须**单独先清**，随后立刻写入 demo_purge_begin 留痕。
+    # 按原顺序"先写留痕、再连 audit_logs 一并清"，这条留痕会被同一次清空删掉，最终
+    # 只剩收尾那一条；收尾写失败时库里就是"数据已清、audit_logs 为空"的无留痕形态。
+    # 这里让 begin 留痕落在 audit_logs 清零之后、业务表删除之前，既保留"不可逆删除
+    # 业务数据前先证明留痕可写"这一性质，又让它存活到最终状态。
+    conn.execute("DELETE FROM audit_logs")
+    conn.commit()
     if not db.audit("demo-data", "demo_purge_begin", fingerprint,
                     f"授权清空 demo 库（原 {total} 行）"):
-        print("拒绝执行：清库留痕写入失败，按 fail-closed 放弃清空（未删除任何行）。",
-              file=sys.stderr)
+        print("拒绝执行：清库留痕写入失败，按 fail-closed 放弃清空"
+              "（业务表未删除；audit_logs 已随重建清空）。", file=sys.stderr)
         return 1
 
-    conn = db.get_conn()
-
-    # 清空旧 demo 数据（含 audit_logs：demo 审计链整体重建）
-    print(f"将清空目标数据库: {args.db}（指纹 {fingerprint}）")
-    for table in _WIPE_ORDER:
+    # 清空其余业务表（audit_logs 已在上面单独清空）
+    for table in _WIPE_AFTER_AUDIT:
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
 
-    # 清空后写一条留痕，作为重建后 demo 审计链的起点。写不进去必须响亮失败——
+    # 清空后写一条留痕，作为重建后 demo 审计链的收尾。写不进去必须响亮失败——
     # "删了但没留痕"正是要防的形态。
     if not db.audit("demo-data", "demo_purge", fingerprint,
                     f"已清空 5 表（原 {total} 行）并重建 demo 数据"):
