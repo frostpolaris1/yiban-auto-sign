@@ -95,6 +95,23 @@ tests/test_audit_anchor.py	UpdateAccountLockTest.test_update_account_waits_for_w
 tests/test_audit_anchor_field_source.py	AnchorFieldCoherenceTest.test_head_matches_the_row_recorded_as_max_id	G	-	??
 tests/test_audit_anchor_field_source.py	RechainDiagnosisReachableTest.test_hash_mismatch_yields_diagnosis_not_exception	G	-	??
 tests/test_audit_anchor_field_source.py	RechainDiagnosisReachableTest.test_rechain_hint_is_callable_with_anchor_only	G	-	签名固定为单参：多传一个实参会抛 TypeError，被外层兜成通用异常。
+tests/test_audit_anchor_selfcheck.py	CliIndeterminateTest.test_cli_exit_two_on_indeterminate_anchor	G	-	??
+tests/test_audit_anchor_selfcheck.py	HealthyBaselineTest.test_clean_state_is_healthy_with_witness	G	-	??
+tests/test_audit_anchor_selfcheck.py	HealthyBaselineTest.test_witness_is_monotonic_and_idempotent	G	-	??
+tests/test_audit_anchor_selfcheck.py	HealthyBaselineTest.test_witness_path_is_separate_from_anchor_path	G	-	独立见证的**默认路径**必须与锚点分离：同目录 = 同权限 = 保护归零。
+tests/test_audit_anchor_selfcheck.py	HealthyBaselineTest.test_witness_refuses_regression_without_overwrite	G	-	锚点被截断后再跑见证：拒绝回退覆盖并留现场（覆盖掉等于替攻击者擦证据）。
+tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_alert_facts_name_indeterminate_and_witness	G	-	??
+tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_invalid_utf8_is_indeterminate_not_healthy	G	-	??
+tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_record_anchor_refuses_to_append_onto_broken_file	G	-	读不出的锚点文件不得续写：按空列表续写会把行间链接到假前驱并掩盖现场。
+tests/test_audit_anchor_selfcheck.py	IndeterminateStateTest.test_unparseable_line_without_meta_is_indeterminate	G	-	无库内指纹可比时，结构坏行仍必须是"无法定论"而不是"无异常"。
+tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_claimed_count_mismatch_goes_red	G	-	锚点自报与库内真值不一致（声称 count=2，链内实有 6 行）必须判红。
+tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_garbage_line_append_goes_red_by_growth_branch	G	-	只追加 1 条垃圾行——旧实现两道判据同时"无异常"，现在必须判红。
+tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_truncation_still_goes_red	G	-	??
+tests/test_audit_anchor_selfcheck.py	ThreeBranchJudgeTest.test_valid_append_by_app_is_not_flagged	G	-	正例对照：应用自己追加一行（库内高水位同步抬高）不得误报。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_double_write_attacker_is_caught_by_independent_file	G	-	模拟双写攻击：改锚点 + 改库内指纹使两者自洽 ⇒ 独立文件不一致 ⇒ 红。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_forged_v2_anchor_line_is_rejected	G	-	无密钥伪造 v2 锚点行（自报一个库内不存在的 max_id）必须被拦下。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_max_anchor_baseline_ignores_smaller_trailing_claim	G	-	基准取 max_id 最大真行：尾部再来一条更小 max_id 的"自洽"旧记录不算数。
+tests/test_audit_anchor_selfcheck.py	WitnessThreeWayTest.test_witnessed_db_row_deleted_is_red	G	-	见证记的链尾行从库里消失（只动库、不动锚点）⇒ 独立见证当场点出。
 tests/test_audit_chain.py	AnchorFileIntegrityTest.test_clean_chain_passes	G	-	??
 tests/test_audit_chain.py	AnchorFileIntegrityTest.test_dropping_middle_anchor_line_is_detected	G	-	??
 tests/test_audit_chain.py	AnchorFileIntegrityTest.test_editing_middle_anchor_line_is_detected	G	-	??
